@@ -795,22 +795,23 @@ function left_kernel_all(R::Matrix{Int})::Vector{Vector{Int}}
     m, n = size(R)
 
     # ── Nemo / FLINT fast path ──────────────────────────────────────────────
-    # Nemo.kernel(A) returns the right kernel of A (columns span null space).
-    # Left kernel of R  =  right kernel of R'.
+    # nullspace(M) returns (ν, N) where N is n×ν and MN = 0 (right nullspace).
+    # Left nullspace of R  =  right nullspace of R'.
+    # Lift elements via ZZ to get plain Int values.
     try
         F = Nemo.GF(ell)
         Rnemo = Nemo.matrix(F, m, n,
                     [F(mod(R[i,j], ell)) for i in 1:m for j in 1:n])
-        rk, K = Nemo.kernel(transpose(Rnemo))   # K: m × (m - rk)
+        nu, K = nullspace(transpose(Rnemo))   # K: m × nu, columns = left null vecs
         result = Vector{Int}[]
-        for col in 1:Nemo.ncols(K)
-            γ = [Int(Nemo.lift(K[row, col])) for row in 1:Nemo.nrows(K)]
+        for col in 1:nu
+            γ = [Int(lift(ZZ, K[row, col])) for row in 1:m]
             any(!=(0), γ) && push!(result, γ)
         end
         return result
     catch e
         # ── Pure-Julia fallback (correct but slow for large matrices) ────────
-        @warn "Nemo kernel failed ($e); falling back to pure-Julia elimination."
+        @warn "Nemo nullspace failed ($e); falling back to pure-Julia elimination."
     end
 
     aug  = hcat(Matrix{Int}(I, m, m), mod.(R, ell))
