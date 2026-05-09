@@ -148,6 +148,184 @@ end
 
 
 
+
+# ---------------------------------------------------------------------------
+#  Matrix diagnostics for LA speedups
+#
+#  We inspect the final sparse relation matrix in three ways:
+#    1. Row/column sparsity statistics.
+#    2. Column co-occurrence components (possible block decomposition).
+#    3. Leaf-stripping / peeling core (possible sparse elimination savings).
+# ---------------------------------------------------------------------------
+function analyze_relation_matrix(rel_rows::Vector{Dict{Int,Int}}, nF::Int; verbose::Bool=true)
+    nrel = length(rel_rows)
+    nrel == 0 && return nothing
+
+    # Row supports and column degrees.
+    supports    = Vector{Vector{Int}}(undef, nrel)
+    col_to_rows = [Int[] for _ in 1:nF]
+    coldeg      = zeros(Int, nF)
+    row_hist    = Dict{Int,Int}()
+    total_nz    = 0
+
+    for i in 1:nrel
+        cols = Int[]
+        for (j, v) in rel_rows[i]
+            v == 0 && continue
+            1 <= j <= nF || continue
+            push!(cols, j)
+        end
+        sort!(cols)
+        supports[i] = cols
+        w = length(cols)
+        row_hist[w] = get(row_hist, w, 0) + 1
+        total_nz += w
+        for j in cols
+            coldeg[j] += 1
+            push!(col_to_rows[j], i)
+        end
+    end
+
+    # Basic stats.
+    deg_sorted = sort(copy(coldeg))
+    zero_cols  = count(==(0), coldeg)
+    deg1_cols   = count(==(1), coldeg)
+    deg2_cols   = count(==(2), coldeg)
+    avg_w       = total_nz / nrel
+    density     = total_nz / (nrel * nF)
+
+    # Connected components of the column co-occurrence graph.
+    parent = collect(1:nF)
+    rank   = zeros(Int, nF)
+
+    function findroot(x::Int)::Int
+        y = x
+        while parent[y] != y
+            y = parent[y]
+        end
+        while parent[x] != x
+            px = parent[x]
+            parent[x] = y
+            x = px
+        end
+        return y
+    end
+
+    function unite(a::Int, b::Int)
+        ra = findroot(a)
+        rb = findroot(b)
+        ra == rb && return
+        if rank[ra] < rank[rb]
+            parent[ra] = rb
+        elseif rank[ra] > rank[rb]
+            parent[rb] = ra
+        else
+            parent[rb] = ra
+            rank[ra] += 1
+        end
+    end
+
+    for cols in supports
+        length(cols) <= 1 && continue
+        c1 = cols[1]
+        for k in 2:length(cols)
+            unite(c1, cols[k])
+        end
+    end
+
+    comp_sizes = Dict{Int,Int}()
+    for j in 1:nF
+        r = findroot(j)
+        comp_sizes[r] = get(comp_sizes, r, 0) + 1
+    end
+    comps = sort(collect(values(comp_sizes)), rev=true)
+    ncomp = length(comps)
+    largest_comp = isempty(comps) ? 0 : comps[1]
+    singleton_comps = count(==(1), comps)
+
+    # Peeling / leaf stripping on the incidence hypergraph.
+    active_col = trues(nF)
+    active_row = trues(nrel)
+    deg        = copy(coldeg)
+    q          = Int[]
+
+    for j in 1:nF
+        deg[j] <= 1 && push!(q, j)
+    end
+
+    while !isempty(q)
+        j = pop!(q)
+        active_col[j] || continue
+        deg[j] > 1 && continue
+        active_col[j] = false
+
+        for ri in col_to_rows[j]
+            active_row[ri] || continue
+            active_row[ri] = false
+            for k in supports[ri]
+                k == j && continue
+                active_col[k] || continue
+                deg[k] -= 1
+                deg[k] <= 1 && push!(q, k)
+            end
+        end
+    end
+
+    core_cols = count(identity, active_col)
+    core_rows = count(identity, active_row)
+
+    if verbose
+        println("Matrix diagnostics for LA:")
+        @printf("  rows = %d, cols = %d, nonzeros = %d, avg row weight = %.3f, density = %.4g
+",
+                nrel, nF, total_nz, avg_w, density)
+
+        row_keys = sort(collect(keys(row_hist)))
+        row_descs = String[]
+        for k in row_keys
+            push!(row_descs, string(k, ":", row_hist[k]))
+        end
+        println("  row-weight histogram: ", join(row_descs, ", "))
+
+        @printf("  column degrees: zero=%d, deg1=%d, deg2=%d, min=%d, median=%d, max=%d
+",
+                zero_cols, deg1_cols, deg2_cols,
+                isempty(deg_sorted) ? 0 : deg_sorted[1],
+                isempty(deg_sorted) ? 0 : deg_sorted[(length(deg_sorted)+1) ÷ 2],
+                isempty(deg_sorted) ? 0 : deg_sorted[end])
+
+        @printf("  component graph: %d components, largest=%d, singletons=%d
+",
+                ncomp, largest_comp, singleton_comps)
+
+        @printf("  peel/core estimate: core cols = %d, core rows = %d, peeled cols = %d
+",
+                core_cols, core_rows, nF - core_cols)
+
+        if largest_comp < nF
+            @printf("  note: matrix is block-disconnected enough to split off subproblems
+")
+        end
+        if core_cols < nF
+            @printf("  note: leaf-stripping removes %d/%d columns before any dense solve
+",
+                    nF - core_cols, nF)
+        end
+    end
+
+    return (
+        supports = supports,
+        row_hist = row_hist,
+        coldeg = coldeg,
+        components = comps,
+        core_cols = core_cols,
+        core_rows = core_rows,
+        density = density,
+        total_nz = total_nz,
+    )
+end
+
+
 # ---------------------------------------------------------------------------
 #  index_calculus_walk  (two-phase: FB-fill then LP)
 #
@@ -180,9 +358,10 @@ Two-phase walk:
            are combined to eliminate it, yielding a full relation.
 """
 function index_calculus_walk(G::Div2, T::Div2;
-                             fb_size::Int    = 650,
-                             walk_steps::Int = 500_000,
-                             verbose::Bool   = true)
+                             fb_size::Int       = 650,
+                             walk_steps::Int    = 500_000,
+                             verbose::Bool      = true,
+                             analyze_matrix::Bool = true)
 
     all_pts = curve_points()
     t0      = time()
@@ -387,6 +566,8 @@ function index_calculus_walk(G::Div2, T::Div2;
         1 <= j <= nF || continue
         Rmat[i, j] = mod(Rmat[i, j] + v, ell)
     end
+
+    analyze_matrix && analyze_relation_matrix(rel_rows, nF; verbose=verbose)
 
     verbose && println("Left-kernel search over GF($ell)...")
     gamma = left_kernel(Rmat)
