@@ -1,0 +1,718 @@
+#!/usr/bin/env julia
+# =============================================================================
+#  trial2.jl  --  Index calculus via Markov-walk / phi-function relations
+#
+#  Same curve/field/subgroup as trial1.jl.  Instead of the Gaudry-Harley
+#  random-pair strategy we use the Diem plane-model variant:
+#
+#  Walk step  (current point P0 = (px, py)):
+#    1. Pick random (alpha, beta), form D = alpha*G + beta*T  (degree-2 Mumford).
+#       Extract the two affine support points Q1=(x1,y1), Q2=(x2,y2) of D.
+#    2. Build phi = a*x^2 + b*x + c + d*y  vanishing at P0, Q1, Q2.
+#       (4 coefficients, 1 overall scale => 3 free parameters, 3 conditions
+#        => unique phi up to scale.)
+#    3. div(phi) on C has degree 5 (C is a plane quintic):
+#         div(phi) = [P0] + [Q1] + [Q2] + [R] + [S] - 5*[inf]
+#       Recover R, S by forming N(x) = (a*x^2+b*x+c)^2 - d^2*f(x) (degree 5),
+#       then dividing out the three known roots px, x1, x2.
+#    4. Principal-divisor relation in Cl^0:
+#         atom(P0) + atom(R) + atom(S) = -(alpha*G + beta*T)
+#       where atom(P) = [P] - [inf].
+#       When P0, R, S are all in the factor base F, record this relation.
+#    5. Set P_next = R;  add P0, R, S to F during the build phase.
+#
+#  Phase 1: walk until |F| >= fb_target.
+#  Phase 2: continue walk, recording relations whenever P0,R,S in F.
+#           Stop after |F|+20 relations; left-kernel => k.
+# =============================================================================
+
+include("trial1.jl")   # all Fp/poly/Jacobian/curve utilities
+using LinearAlgebra
+
+# ---------------------------------------------------------------------------
+#  phi construction
+#
+#  phi(x,y) = a*x^2 + b*x + c + d*y
+#
+#  Vanishing conditions (mod p):
+#    a*px^2 + b*px + c + d*py = 0
+#    a*x1^2 + b*x1 + c + d*y1 = 0
+#    a*x2^2 + b*x2 + c + d*y2 = 0
+#
+#  Fix d=1 and solve the 3x3 system in (a,b,c).  If singular, fix a=1 and
+#  solve for (b,c,d).  Returns (a,b,c,d) or nothing.
+# ---------------------------------------------------------------------------
+function build_phi(px::Int, py::Int,
+                   x1::Int, y1::Int,
+                   x2::Int, y2::Int)::Union{NTuple{4,Int}, Nothing}
+
+    M = [fp(px*px)  px  1  py;
+         fp(x1*x1)  x1  1  y1;
+         fp(x2*x2)  x2  1  y2]
+
+    # 3x3 Gaussian elimination over Fp.  A is 3x3, rhs is length-3.
+    function solve3(A::Matrix{Int}, rhs::Vector{Int})::Union{Vector{Int}, Nothing}
+        Aug = hcat(mod.(A, p), mod.(rhs, p))
+        for col in 1:3
+            piv = findfirst(r -> Aug[r, col] != 0, col:3)
+            piv === nothing && return nothing
+            piv += col - 1
+            Aug[[col, piv], :] = Aug[[piv, col], :]
+            inv_lc = powermod(Int(Aug[col, col]), p - 2, p)
+            Aug[col, :] = mod.(Aug[col, :] .* inv_lc, p)
+            for r in 1:3
+                r == col && continue
+                f = Aug[r, col]
+                f == 0 && continue
+                Aug[r, :] = mod.(Aug[r, :] .- f .* Aug[col, :], p)
+            end
+        end
+        Aug[:, 4]
+    end
+
+    # Try d = 1: solve M[:,1:3] * [a,b,c]' = -M[:,4]
+    rhs1 = [fp(-py), fp(-y1), fp(-y2)]
+    sol1 = solve3(M[:, 1:3], rhs1)
+    if sol1 !== nothing
+        a, b, c = sol1
+        return (fp(a), fp(b), fp(c), 1)
+    end
+
+    # Fallback: a = 1, solve M[:,2:4] * [b,c,d]' = -M[:,1]
+    rhs2 = [fp(-fp(px*px)), fp(-fp(x1*x1)), fp(-fp(x2*x2))]
+    sol2 = solve3(M[:, 2:4], rhs2)
+    sol2 === nothing && return nothing
+    b2, c2, d2 = sol2
+    return (1, fp(b2), fp(c2), fp(d2))
+end
+
+# ---------------------------------------------------------------------------
+#  Residual intersection points R, S
+#
+#  phi(x,y) = 0 on C: substitute y = -(a*x^2+b*x+c)/d into y^2=f(x):
+#    N(x) = (a*x^2+b*x+c)^2 - d^2*f(x)   (degree 5, leading coeff -d^2)
+#
+#  Three roots px, x1, x2 are known.  Divide them out -> degree-2 residual.
+#  Returns vector of (x,y) pairs with correct y-sign (length 0, 1, or 2).
+# ---------------------------------------------------------------------------
+function phi_residual_points(a::Int, b::Int, c::Int, d::Int,
+                              px::Int, x1::Int, x2::Int)::Vector{NTuple{2,Int}}
+    d == 0 && return NTuple{2,Int}[]
+
+    # N(x) = (a*x^2+b*x+c)^2 - d^2*f(x)
+    apoly = Int[c, b, a]                    # ascending-coeff representation
+    sq    = pmul(apoly, apoly)              # degree 4
+    fd2   = pscale(F_POLY, fp(d * d))      # d^2*f(x), degree 5 (len 6)
+    nlen  = max(length(sq), length(fd2))
+    N     = ptrim(mod.(
+                vcat(sq,  zeros(Int, nlen - length(sq))) .-
+                vcat(fd2, zeros(Int, nlen - length(fd2))),
+                p))
+
+    # Divide out a known root r => divide by (x - r) = [-r, 1]
+    function divide_out(poly::Vector{Int}, r::Int)::Union{Vector{Int}, Nothing}
+        q, rem = pdivrem(poly, Int[fp(-r), 1])
+        pzero(rem) ? q : nothing
+    end
+
+    q = divide_out(N,  px);  q === nothing && return NTuple{2,Int}[]
+    q = divide_out(q,  x1);  q === nothing && return NTuple{2,Int}[]
+    q = divide_out(q,  x2);  q === nothing && return NTuple{2,Int}[]
+    q = ptrim(q)
+
+    # Given x-coordinate, find correct y using phi(x,y) = 0
+    function y_for_x(xr::Int)::Union{NTuple{2,Int}, Nothing}
+        yr = sqrt_fp(eval_f(xr));  yr === nothing && return nothing
+        base = fp(a * fp(xr * xr) + b * xr + c)
+        fp(base + d * yr) == 0 && return (xr, yr)
+        fp(base - d * yr) == 0 && return (xr, fp(-yr))
+        return nothing
+    end
+
+    pts = NTuple{2,Int}[]
+    dq  = pdeg(q)
+
+    if dq == 1
+        xr = fp(-q[1] * fpinv(q[2]))
+        pt = y_for_x(xr);  pt !== nothing && push!(pts, pt)
+
+    elseif dq == 2
+        q_monic = pscale(q, fpinv(q[end]))   # normalise to monic for u2_roots
+        rs = u2_roots(q_monic);  rs === nothing && return NTuple{2,Int}[]
+        for xr in rs
+            pt = y_for_x(xr);  pt !== nothing && push!(pts, pt)
+        end
+    end
+
+    pts
+end
+
+
+
+
+# ---------------------------------------------------------------------------
+#  Matrix diagnostics for LA speedups
+#
+#  We inspect the final sparse relation matrix in three ways:
+#    1. Row/column sparsity statistics.
+#    2. Column co-occurrence components (possible block decomposition).
+#    3. Leaf-stripping / peeling core (possible sparse elimination savings).
+# ---------------------------------------------------------------------------
+function analyze_relation_matrix(rel_rows::Vector{Dict{Int,Int}}, nF::Int; verbose::Bool=true)
+    nrel = length(rel_rows)
+    nrel == 0 && return nothing
+
+    # Row supports and column degrees.
+    supports    = Vector{Vector{Int}}(undef, nrel)
+    col_to_rows = [Int[] for _ in 1:nF]
+    coldeg      = zeros(Int, nF)
+    row_hist    = Dict{Int,Int}()
+    total_nz    = 0
+
+    for i in 1:nrel
+        cols = Int[]
+        for (j, v) in rel_rows[i]
+            v == 0 && continue
+            1 <= j <= nF || continue
+            push!(cols, j)
+        end
+        sort!(cols)
+        supports[i] = cols
+        w = length(cols)
+        row_hist[w] = get(row_hist, w, 0) + 1
+        total_nz += w
+        for j in cols
+            coldeg[j] += 1
+            push!(col_to_rows[j], i)
+        end
+    end
+
+    # Basic stats.
+    deg_sorted = sort(copy(coldeg))
+    zero_cols  = count(==(0), coldeg)
+    deg1_cols   = count(==(1), coldeg)
+    deg2_cols   = count(==(2), coldeg)
+    avg_w       = total_nz / nrel
+    density     = total_nz / (nrel * nF)
+
+    # Connected components of the column co-occurrence graph.
+    parent = collect(1:nF)
+    rank   = zeros(Int, nF)
+
+    function findroot(x::Int)::Int
+        y = x
+        while parent[y] != y
+            y = parent[y]
+        end
+        while parent[x] != x
+            px = parent[x]
+            parent[x] = y
+            x = px
+        end
+        return y
+    end
+
+    function unite(a::Int, b::Int)
+        ra = findroot(a)
+        rb = findroot(b)
+        ra == rb && return
+        if rank[ra] < rank[rb]
+            parent[ra] = rb
+        elseif rank[ra] > rank[rb]
+            parent[rb] = ra
+        else
+            parent[rb] = ra
+            rank[ra] += 1
+        end
+    end
+
+    for cols in supports
+        length(cols) <= 1 && continue
+        c1 = cols[1]
+        for k in 2:length(cols)
+            unite(c1, cols[k])
+        end
+    end
+
+    comp_sizes = Dict{Int,Int}()
+    for j in 1:nF
+        r = findroot(j)
+        comp_sizes[r] = get(comp_sizes, r, 0) + 1
+    end
+    comps = sort(collect(values(comp_sizes)), rev=true)
+    ncomp = length(comps)
+    largest_comp = isempty(comps) ? 0 : comps[1]
+    singleton_comps = count(==(1), comps)
+
+    # Peeling / leaf stripping on the incidence hypergraph.
+    active_col = trues(nF)
+    active_row = trues(nrel)
+    deg        = copy(coldeg)
+    q          = Int[]
+
+    for j in 1:nF
+        deg[j] <= 1 && push!(q, j)
+    end
+
+    while !isempty(q)
+        j = pop!(q)
+        active_col[j] || continue
+        deg[j] > 1 && continue
+        active_col[j] = false
+
+        for ri in col_to_rows[j]
+            active_row[ri] || continue
+            active_row[ri] = false
+            for k in supports[ri]
+                k == j && continue
+                active_col[k] || continue
+                deg[k] -= 1
+                deg[k] <= 1 && push!(q, k)
+            end
+        end
+    end
+
+    core_cols = count(identity, active_col)
+    core_rows = count(identity, active_row)
+
+    if verbose
+        println("Matrix diagnostics for LA:")
+        @printf("  rows = %d, cols = %d, nonzeros = %d, avg row weight = %.3f, density = %.4g
+",
+                nrel, nF, total_nz, avg_w, density)
+
+        row_keys = sort(collect(keys(row_hist)))
+        row_descs = String[]
+        for k in row_keys
+            push!(row_descs, string(k, ":", row_hist[k]))
+        end
+        println("  row-weight histogram: ", join(row_descs, ", "))
+
+        @printf("  column degrees: zero=%d, deg1=%d, deg2=%d, min=%d, median=%d, max=%d
+",
+                zero_cols, deg1_cols, deg2_cols,
+                isempty(deg_sorted) ? 0 : deg_sorted[1],
+                isempty(deg_sorted) ? 0 : deg_sorted[(length(deg_sorted)+1) ÷ 2],
+                isempty(deg_sorted) ? 0 : deg_sorted[end])
+
+        @printf("  component graph: %d components, largest=%d, singletons=%d
+",
+                ncomp, largest_comp, singleton_comps)
+
+        @printf("  peel/core estimate: core cols = %d, core rows = %d, peeled cols = %d
+",
+                core_cols, core_rows, nF - core_cols)
+
+        if largest_comp < nF
+            @printf("  note: matrix is block-disconnected enough to split off subproblems
+")
+        end
+        if core_cols < nF
+            @printf("  note: leaf-stripping removes %d/%d columns before any dense solve
+",
+                    nF - core_cols, nF)
+        end
+    end
+
+    return (
+        supports = supports,
+        row_hist = row_hist,
+        coldeg = coldeg,
+        components = comps,
+        core_cols = core_cols,
+        core_rows = core_rows,
+        density = density,
+        total_nz = total_nz,
+    )
+end
+
+
+# ---------------------------------------------------------------------------
+#  Spectral gap diagnostics for the column co-occurrence graph
+#
+#  For a given prefix of relations, build the weighted graph on factor-base
+#  columns where each relation contributes a clique on its support. Then
+#  compute the second-largest eigenvalue of the normalized adjacency matrix
+#  B = D^{-1/2} W D^{-1/2}. The spectral gap is 1 - λ2(B).
+#
+#  For connected non-bipartite graphs, a larger gap generally means better
+#  expansion / mixing, which is the regime where sparse iterative LA tends to
+#  behave well.
+# ---------------------------------------------------------------------------
+function spectral_gap_report(rel_rows::Vector{Dict{Int,Int}}, nF::Int;
+                             prefixes::Vector{Int}=Int[],
+                             verbose::Bool=true)
+    nrel = length(rel_rows)
+    nrel == 0 && return nothing
+
+    prefixes = isempty(prefixes) ? unique(sort(Int[
+        min(nrel, max(50, nrel ÷ 8)),
+        min(nrel, max(100, nrel ÷ 4)),
+        min(nrel, max(200, nrel ÷ 2)),
+        nrel
+    ])) : unique(sort(filter(x -> 1 <= x <= nrel, prefixes)))
+
+    function gap_for_prefix(m::Int)
+        # Weighted adjacency matrix for the first m rows.
+        W = zeros(Float64, nF, nF)
+        for i in 1:m
+            cols = Int[]
+            for (j, v) in rel_rows[i]
+                v == 0 && continue
+                1 <= j <= nF || continue
+                push!(cols, j)
+            end
+            length(cols) <= 1 && continue
+            w = 1.0 / (length(cols) - 1)
+            for a in 1:length(cols)-1, b in a+1:length(cols)
+                i1 = cols[a]; i2 = cols[b]
+                W[i1, i2] += w
+                W[i2, i1] += w
+            end
+        end
+
+        deg = vec(sum(W, dims=2))
+        nz = findall(>(0.0), deg)
+        if length(nz) <= 1
+            return (m=m, gap=NaN, lambda2=NaN, lambda1=NaN, comp_size=length(nz))
+        end
+
+        idx = nz
+        Ws = W[idx, idx]
+        ds = deg[idx]
+        invsqrt = Diagonal(1.0 ./ sqrt.(ds))
+        B = invsqrt * Ws * invsqrt
+        vals = sort(real.(eigvals(Symmetric(B))), rev=true)
+        λ1 = vals[1]
+        λ2 = length(vals) >= 2 ? vals[2] : NaN
+        gap = 1.0 - λ2
+        return (m=m, gap=gap, lambda2=λ2, lambda1=λ1, comp_size=length(idx))
+    end
+
+    stats = map(gap_for_prefix, prefixes)
+    if verbose
+        println("Spectral gap diagnostics (normalized adjacency of column graph):")
+        for s in stats
+            if isnan(s.gap)
+                @printf("  rows=%d: insufficient support to estimate gap\n", s.m)
+            else
+                @printf("  rows=%d: active cols=%d, lambda1=%.6f, lambda2=%.6f, gap=%.6f\n",
+                        s.m, s.comp_size, s.lambda1, s.lambda2, s.gap)
+            end
+        end
+        if length(stats) >= 2 && !isnan(stats[end].gap) && !isnan(stats[1].gap)
+            @printf("  gap change: %.6f -> %.6f\n", stats[1].gap, stats[end].gap)
+        end
+    end
+    return stats
+end
+
+
+# ---------------------------------------------------------------------------
+#  index_calculus_walk  (two-phase: FB-fill then LP)
+#
+#  Phase 1 (FB fill): treat S as a regular atom, add P0/R/S to the FB until
+#  |FB| >= fb_size.  This naturally seeds the FB with high-frequency points.
+#
+#  Phase 2 (LP phase): FB is frozen.  For each phi-step:
+#    - P0 and R must be in FB.
+#    - S is treated as a large prime (LP).
+#    - If S is also in FB, record a full relation immediately.
+#    - Otherwise, store a partial relation keyed by S.
+#      When a second partial with the same S appears, combine them to
+#      eliminate S and obtain a full relation over FB.
+#
+#  Relation encoding:
+#    atom(P0) + atom(R) + atom(S) = -alpha*G - beta*T
+#  Combining two partials sharing LP L:
+#    row1: P0a + Ra + L = -a1*G - b1*T
+#    row2: P0b + Rb + L = -a2*G - b2*T
+#    => (P0a+Ra) - (P0b+Rb) = -(a1-a2)*G - (b1-b2)*T   (L cancels)
+# ---------------------------------------------------------------------------
+"""
+    index_calculus_walk(G, T; fb_size, walk_steps, verbose) -> k or nothing
+
+Two-phase walk:
+  Phase 1: accumulate atoms into the factor base until |FB| == fb_size.
+  Phase 2: FB frozen; P0 and R must be in FB; S is a large prime (LP).
+           Full relations (S in FB) recorded directly.
+           LP-partial relations stored; two partials with the same LP
+           are combined to eliminate it, yielding a full relation.
+"""
+function index_calculus_walk(G::Div2, T::Div2;
+                             fb_size::Int       = 650,
+                             walk_steps::Int    = 500_000,
+                             verbose::Bool      = true,
+                             analyze_matrix::Bool = true,
+                             solve::Bool = true)
+
+    all_pts = curve_points()
+    t0      = time()
+
+    # ------------------------------------------------------------------
+    # Running Jacobian state
+    # ------------------------------------------------------------------
+    cur_pt    = all_pts[rand(1:length(all_pts))]
+    alpha_cur = rand(1:ell-1)
+    beta_cur  = rand(0:ell-1)
+    D_cur     = jac_add(jac_mul(G, alpha_cur), jac_mul(T, beta_cur))
+
+    # ------------------------------------------------------------------
+    # Factor base (built dynamically in Phase 1)
+    # ------------------------------------------------------------------
+    fb        = NTuple{2,Int}[]          # ordered list of FB atoms
+    pt2idx    = Dict{NTuple{2,Int},Int}() # point -> 1-based column index
+    fb_frozen = false
+
+    # ------------------------------------------------------------------
+    # Relation storage (full relations ready for the matrix)
+    # ------------------------------------------------------------------
+    alpha_vec   = Int[]
+    beta_vec    = Int[]
+    # sparse rows: each entry is a Dict{col_idx => coefficient}
+    rel_rows    = Vector{Dict{Int,Int}}()
+
+    # ------------------------------------------------------------------
+    # LP storage: lp_table[S] = (alpha, beta, sparse_row_without_S)
+    # where sparse_row_without_S covers only P0 and R columns.
+    # ------------------------------------------------------------------
+    lp_table = Dict{NTuple{2,Int}, Tuple{Int,Int,Dict{Int,Int}}}()
+
+    # ------------------------------------------------------------------
+    # Counters
+    # ------------------------------------------------------------------
+    hits_total  = 0
+    hits_full   = 0
+    hits_lp     = 0
+    hits_lp2    = 0   # LP collisions that produced a relation
+
+    verbose && @printf("Walking %d steps...\n", walk_steps)
+
+    for step in 1:walk_steps
+
+        # Advance D by G (O(1))
+        D_cur     = jac_add(D_cur, G)
+        alpha_cur = mod(alpha_cur + 1, ell)
+        if step % 128 == 0
+            D_cur    = jac_add(D_cur, T)
+            beta_cur = mod(beta_cur + 1, ell)
+        end
+
+        # D must be degree-2 and split over Fp
+        pdeg(D_cur.u) != 2 && continue
+        rs_D = u2_roots(D_cur.u)
+        rs_D === nothing && continue
+        x1, x2 = rs_D
+
+        px, py = cur_pt
+        (px == x1 || px == x2 || x1 == x2) && continue
+
+        y1 = peval(D_cur.v, x1)
+        y2 = peval(D_cur.v, x2)
+        eval_f(x1) == fp(y1 * y1) || continue
+        eval_f(x2) == fp(y2 * y2) || continue
+
+        phi_c = build_phi(px, py, x1, y1, x2, y2)
+        phi_c === nothing && continue
+        a, b, c, d = phi_c
+
+        res = phi_residual_points(a, b, c, d, px, x1, x2)
+        length(res) < 2 && continue
+        R, S = res[1], res[2]
+
+        eval_f(R[1]) == fp(R[2] * R[2]) || continue
+        eval_f(S[1]) == fp(S[2] * S[2]) || continue
+
+        hits_total += 1
+
+        al = alpha_cur
+        be = beta_cur
+        P0 = cur_pt
+        neg_al = mod(ell - al, ell)
+        neg_be = mod(ell - be, ell)
+
+        # ── Phase 1: FB fill ─────────────────────────────────────────
+        # P0, R, S all enter the FB; record a full relation immediately.
+        if !fb_frozen
+            for pt in (P0, R, S)
+                if !haskey(pt2idx, pt)
+                    push!(fb, pt)
+                    pt2idx[pt] = length(fb)
+                end
+            end
+            i0  = pt2idx[P0]
+            ir  = pt2idx[R]
+            is_ = pt2idx[S]
+            row = Dict{Int,Int}()
+            for idx in (i0, ir, is_)
+                row[idx] = get(row, idx, 0) + 1
+            end
+            push!(alpha_vec, neg_al); push!(beta_vec, neg_be); push!(rel_rows, row)
+            hits_full += 1
+
+            # Advance in chain; freeze FB when full
+            cur_pt = R
+            if length(fb) >= fb_size
+                fb_frozen = true
+                cur_pt = fb[rand(1:length(fb))]
+                verbose && @printf("  FB full (%d atoms) after %d valid steps, %d rels\n",
+                                   length(fb), hits_total, hits_full)
+            end
+            continue
+        end
+
+        # ── Phase 2: LP mode ─────────────────────────────────────────
+        # P0 = cur_pt is always a FB member (enforced by cur_pt policy below).
+        # R and S are each in FB or a large prime.  Skip the 2-LP case.
+        i0  = get(pt2idx, P0, 0)
+        ir  = get(pt2idx, R,  0)
+        is_ = get(pt2idx, S,  0)
+        i0 == 0 && continue   # shouldn't happen, but guard
+
+        # Advance cur_pt: stay in FB if possible
+        cur_pt = (ir != 0) ? R : fb[rand(1:length(fb))]
+
+        if ir != 0 && is_ != 0
+            # ── All three in FB: full relation ────────────────────────
+            row = Dict{Int,Int}()
+            for idx in (i0, ir, is_)
+                row[idx] = get(row, idx, 0) + 1
+            end
+            push!(alpha_vec, neg_al); push!(beta_vec, neg_be); push!(rel_rows, row)
+            hits_full += 1
+
+        elseif ir != 0 && is_ == 0
+            # ── S is LP ───────────────────────────────────────────────
+            hits_lp += 1
+            row_known = Dict{Int,Int}(i0 => 1)
+            row_known[ir] = get(row_known, ir, 0) + 1
+            if haskey(lp_table, S)
+                (al2, be2, row2) = lp_table[S]
+                combined = copy(row_known)
+                for (col, v) in row2; combined[col] = get(combined, col, 0) - v; end
+                filter!(kv -> kv[2] != 0, combined)
+                if !isempty(combined)
+                    push!(alpha_vec, mod(neg_al - al2, ell))
+                    push!(beta_vec,  mod(neg_be - be2, ell))
+                    push!(rel_rows,  combined)
+                    hits_lp2 += 1
+                end
+                delete!(lp_table, S)
+            else
+                lp_table[S] = (neg_al, neg_be, row_known)
+            end
+
+        elseif ir == 0 && is_ != 0
+            # ── R is LP ───────────────────────────────────────────────
+            hits_lp += 1
+            row_known = Dict{Int,Int}(i0 => 1)
+            row_known[is_] = get(row_known, is_, 0) + 1
+            if haskey(lp_table, R)
+                (al2, be2, row2) = lp_table[R]
+                combined = copy(row_known)
+                for (col, v) in row2; combined[col] = get(combined, col, 0) - v; end
+                filter!(kv -> kv[2] != 0, combined)
+                if !isempty(combined)
+                    push!(alpha_vec, mod(neg_al - al2, ell))
+                    push!(beta_vec,  mod(neg_be - be2, ell))
+                    push!(rel_rows,  combined)
+                    hits_lp2 += 1
+                end
+                delete!(lp_table, R)
+            else
+                lp_table[R] = (neg_al, neg_be, row_known)
+            end
+
+        # else: both R and S are LPs — skip
+        end
+    end
+
+    nF   = length(fb)
+    nrel = length(alpha_vec)
+
+    verbose && @printf(
+        "Walk done: %d valid steps / %d total  (%.1fs)\n",
+        hits_total, walk_steps, time()-t0)
+    verbose && @printf(
+        "FB: %d atoms | full rels: %d | LP partials seen: %d | LP pairs: %d\n",
+        nF, hits_full, hits_lp, hits_lp2)
+    verbose && @printf("Total relations: %d  (need >= %d)\n", nrel, nF + 1)
+
+    nrel < nF + 1 && error("Too few relations ($nrel) for FB size $nF. " *
+                           "Increase walk_steps or decrease fb_size.")
+
+    # ------------------------------------------------------------------
+    # Dense relation matrix and left kernel
+    # ------------------------------------------------------------------
+    Rmat = zeros(Int, nrel, nF)
+    for i in 1:nrel, (j, v) in rel_rows[i]
+        1 <= j <= nF || continue
+        Rmat[i, j] = mod(Rmat[i, j] + v, ell)
+    end
+
+    analyze_matrix && analyze_relation_matrix(rel_rows, nF; verbose=verbose)
+    analyze_matrix && spectral_gap_report(rel_rows, nF; verbose=verbose)
+
+    !solve && return nothing
+
+    verbose && println("Left-kernel search over GF($ell)...")
+    gamma = left_kernel(Rmat)
+    gamma === nothing && error("Kernel not found -- collect more relations")
+
+    Sa = mod(sum(Int128(gamma[i]) * alpha_vec[i] for i in 1:nrel), ell)
+    Sb = mod(sum(Int128(gamma[i]) * beta_vec[i]  for i in 1:nrel), ell)
+    Sb == 0 && error("beta sum = 0 in kernel vector; retry")
+
+    k  = mod(-Int(Sa) * powermod(Int(Sb), ell - 2, ell), ell)
+    ok = jac_mul(G, k) == T
+
+    if verbose
+        ok ? println("  ✓  k = $k   (k*G == T)") :
+             println("  ✗  k = $k   FAILED")
+    end
+    ok ? k : nothing
+end
+
+# ---------------------------------------------------------------------------
+function main2()
+    println("="^62)
+    println("  trial2: Markov-walk phi-relation index calculus")
+    println("  y^2 = x^5+3x^3+2x^2+5x+4  /F_$p,  ell=$ell")
+    println("="^62, "\n")
+
+    pts = curve_points()
+
+    println("Finding G of order ell...")
+    G = find_ell_generator(pts)
+    @printf("G.u = %s\nG.v = %s\n", G.u, G.v)
+    @assert jac_isid(jac_mul_raw(G, ell))  "G does not have order ell"
+    println("Confirmed: ell*G = identity\n")
+
+    k_true = rand(2:ell-1)
+    T      = jac_mul(G, k_true)
+    @printf("Secret k = %d\n\n", k_true)
+
+    # Optional quick sweep: keep the walk cheap, but inspect how the matrix
+    # and its spectral gap behave as the factor base size changes.
+    sweep_fb_sizes = [450, 550, 650]
+    for fb in sweep_fb_sizes
+        println("--- diagnostic sweep for fb_size=$fb ---")
+        _ = index_calculus_walk(G, T; fb_size=fb, walk_steps=200_000,
+                                verbose=true, analyze_matrix=true, solve=false)
+        println()
+    end
+
+    # Main run
+    k_rec = index_calculus_walk(G, T; fb_size=650, walk_steps=500_000,
+                                verbose=true, analyze_matrix=true, solve=true)
+
+    println()
+    if k_rec !== nothing
+        @printf("Recovered k = %-8d  true k = %-8d  match = %s\n",
+                k_rec, k_true, k_rec == k_true)
+    else
+        println("DLP not recovered.")
+    end
+end
+
+main2()
