@@ -116,6 +116,15 @@ end
 
 Base.:(==)(A::Div2, B::Div2) = (A.u == B.u) && (A.v == B.v)
 
+# Without this, Dict{Div2,Int} hashes by pointer (mutable Vector fields),
+# so baby-giant collisions in jac_order_bsgs never fire.  Julia's built-in
+# hash(::Vector{Int}, h) does content hashing, so this is correct and O(deg).
+function Base.hash(D::Div2, h::UInt)
+    h = hash(D.u, h)
+    h = hash(D.v, h)
+    h
+end
+
 const JacID = Div2(Int[1], Int[0])
 jac_isid(D::Div2) = pdeg(D.u) == 0
 
@@ -240,37 +249,66 @@ end
 
 # Find a random generator of prime order ell by first determining the exact
 # order of a random element, then taking its largest prime divisor.
-function find_ell_generator(pts::Vector{NTuple{2,Int}})
-    n = length(pts)
-    for attempt in 1:100
-        D = mumford_from_pts(pts[rand(1:n)], pts[rand(1:n)])
-        jac_isid(D) && continue
+function largest_prime_factor(n::Int)
+    n <= 1 && return 0
 
-        ord = jac_order_bsgs(D; verbose=false)
-        fac = Dict{Int,Int}()
-        x = ord
-        while x % 2 == 0
-            fac[2] = get(fac, 2, 0) + 1
-            x ÷= 2
-        end
-        d = 3
-        while d*d <= x
-            while x % d == 0
-                fac[d] = get(fac, d, 0) + 1
-                x ÷= d
-            end
-            d += 2
-        end
-        x > 1 && (fac[x] = get(fac, x, 0) + 1)
+    best = 0
+    m = n
+    d = 2
 
-        ell_found = maximum(keys(fac))
-        G = jac_mul_raw(D, div(ord, ell_found))
-        jac_isid(G) && continue
-        jac_isid(jac_mul_raw(G, ell_found)) || continue
-        return G, ell_found, ord
+    while d*d <= m
+        while m % d == 0
+            best = d
+            m ÷= d
+        end
+        d += (d == 2 ? 1 : 2)
     end
-    error("find_ell_generator failed — try again with a different random seed")
+
+    if m > 1
+        best = max(best, m)
+    end
+
+    return best
 end
+
+
+function find_ell_generator(pts::Vector{Tuple{Int,Int}})
+    println("Finding G of large prime order...")
+
+    while true
+        D = random_jacobian_divisor(pts)
+
+        ord = jacobian_order_bsgs(D)
+
+        if ord <= 1
+            continue
+        end
+
+        ell = largest_prime_factor(ord)
+
+        if ell <= 3
+            continue
+        end
+
+        h = ord ÷ ell
+        h == 0 && continue
+
+        G = jacobian_scalar_mul(h, D)
+
+        if is_identity(G)
+            continue
+        end
+
+        # verify exact order ell
+        if is_identity(jacobian_scalar_mul(ell, G))
+            println("  ord(D) = $ord")
+            println("  ell    = $ell")
+            println("  h      = $h")
+            return G, ell
+        end
+    end
+end
+
 
 # ──────────────────────── Curve utilities ─────────────────────────────────────
 eval_f(x::Int) = peval(F_POLY, fp(x))

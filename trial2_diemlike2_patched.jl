@@ -26,7 +26,7 @@
 #           Stop after |F|+20 relations; left-kernel => k.
 # =============================================================================
 
-include("trial1.jl")   # all Fp/poly/Jacobian/curve utilities
+include("trial1_autoell_p10.jl")   # all Fp/poly/Jacobian/curve utilities
 using LinearAlgebra
 
 # ---------------------------------------------------------------------------

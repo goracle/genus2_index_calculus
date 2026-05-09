@@ -26,7 +26,8 @@
 #           Stop after |F|+20 relations; left-kernel => k.
 # =============================================================================
 
-include("trial1.jl")   # all Fp/poly/Jacobian/curve utilities
+#include("trial1.jl")   # all Fp/poly/Jacobian/curve utilities
+include("trial1_autoell_p10.jl")   # all Fp/poly/Jacobian/curve utilities
 using LinearAlgebra
 
 # ---------------------------------------------------------------------------
@@ -871,6 +872,7 @@ function index_calculus_walk(G::Div2, T::Div2;
     hits_lp    = 0
     hits_lp2   = 0
     hits_tree  = 0
+    hits_lp0_p2 = 0   # lp_count==0 fires in phase 2 (sanity counter)
 
     # ------------------------------------------------------------------
     # Precompute random walk steps to break deterministic +G degeneracy.
@@ -891,7 +893,10 @@ function index_calculus_walk(G::Div2, T::Div2;
         step_b[i] = b
     end
 
-    verbose && @printf("Walking %d steps...\n", walk_steps)
+    # walk_steps is a hard cap; we stop early once we have enough relations.
+    target_excess = max(20, fb_size ÷ 10)
+    verbose && @printf("Walking (cap=%d steps, target=%d rels)...\n",
+                       walk_steps, fb_size + 1 + target_excess)
 
     for step in 1:walk_steps
 
@@ -972,12 +977,17 @@ function index_calculus_walk(G::Div2, T::Div2;
         lp_count, lp_pt, sum_row_others, sum_a_others, sum_b_others = combined_relation_from_points(pts, pt2idx, tree)
 
         if lp_count == 0
+            # All points resolve to FB or tree — record relation.
+            hits_lp0_p2 += 1
             push!(alpha_vec, mod(neg_al - sum_a_others, ell))
             push!(beta_vec,  mod(neg_be - sum_b_others, ell))
             push!(rel_rows, sum_row_others)
             update_guidance!(guidance, sum_row_others)
             hits_full += 1
             cur_pt = choose_next_anchor(pts, pt2idx, guidance, tree; current=P0)
+            if length(alpha_vec) >= length(fb) + 1 + target_excess
+                break
+            end
 
         elseif lp_count == 1
             lp = lp_pt
@@ -996,7 +1006,14 @@ function index_calculus_walk(G::Div2, T::Div2;
                 push!(rel_rows, row)
                 update_guidance!(guidance, row)
                 hits_tree += 1
-                cur_pt = lp
+                # BUG FIX: never anchor on an off-FB point.  Anchoring on lp
+                # keeps P0 off-FB permanently, starving the lp_count==0 branch.
+                fb_pts = filter(pt -> haskey(pt2idx, pt), pts)
+                cur_pt = isempty(fb_pts) ? fb[rand(1:length(fb))] :
+                         choose_next_anchor(fb_pts, pt2idx, guidance, tree; current=P0)
+                if length(alpha_vec) >= length(fb) + 1 + target_excess
+                    break
+                end
                 continue
             end
 
@@ -1011,7 +1028,10 @@ function index_calculus_walk(G::Div2, T::Div2;
                 added = tree_add_vertex!(tree, lp, parent, lp_row, lp_a, lp_b)
                 if added
                     hits_tree += 1
-                    cur_pt = lp
+                    # BUG FIX: same — don't anchor on lp.
+                    fb_pts = filter(pt -> haskey(pt2idx, pt), pts)
+                    cur_pt = isempty(fb_pts) ? fb[rand(1:length(fb))] :
+                             choose_next_anchor(fb_pts, pt2idx, guidance, tree; current=P0)
                 end
 
                 if length(tree.vertices) >= tree.max_vertices && tree.stage_limit < tree.max_vertices
@@ -1030,12 +1050,18 @@ function index_calculus_walk(G::Div2, T::Div2;
                         push!(rel_rows, combined)
                         update_guidance!(guidance, combined)
                         hits_lp2 += 1
+                        if length(alpha_vec) >= length(fb) + 1 + target_excess
+                            break
+                        end
                     end
                     delete!(lp_table, lp)
                 else
                     lp_table[lp] = (lp_a, lp_b, lp_row)
                 end
-                cur_pt = choose_next_anchor(pts, pt2idx, guidance, tree; current=P0)
+                # BUG FIX: pts still contains lp; filter to FB-only so P0 stays in FB.
+                fb_pts = filter(pt -> haskey(pt2idx, pt), pts)
+                cur_pt = isempty(fb_pts) ? fb[rand(1:length(fb))] :
+                         choose_next_anchor(fb_pts, pt2idx, guidance, tree; current=P0)
             end
 
         else
@@ -1052,6 +1078,9 @@ function index_calculus_walk(G::Div2, T::Div2;
     verbose && @printf(
         "FB: %d atoms | tree verts: %d | full rels: %d | tree rows: %d | LP partials seen: %d | LP pairs: %d\n",
         nF, length(tree.vertices), hits_full, hits_tree, hits_lp, hits_lp2)
+    verbose && @printf(
+        "  lp_count==0 fires in phase 2: %d  (expected ~25%% of valid-phase-2 steps)\n",
+        hits_lp0_p2)
     verbose && @printf("Total relations: %d  (need >= %d)\n", nrel, nF + 1)
 
     # ------------------------------------------------------------------
@@ -1255,6 +1284,34 @@ function main2()
 
     pts = curve_points()
 
+    # ── compute ell if not already set ──────────────────────────────────────
+    if ell == 0
+        println("Computing ell from Jacobian order...")
+        pts_tmp = curve_points()
+        n = length(pts_tmp)
+        local found = false
+        for _ in 1:200
+            i, j = rand(1:n), rand(1:n)
+            # avoid same-x pairs that collapse to degree-1 or identity
+            pts_tmp[i][1] == pts_tmp[j][1] && continue
+            D = mumford_from_pts(pts_tmp[i], pts_tmp[j])
+            jac_isid(D) && continue
+            length(D.u) != 3 && continue   # must be degree-2 Mumford element
+            local ord
+            try
+                ord = jac_order_bsgs(D)
+            catch
+                continue
+            end
+            ord <= 1 && continue
+            global ell = largest_prime_factor(ord)
+            println("  ell = $ell")
+            found = true
+            break
+        end
+        found || error("Could not bootstrap ell — check curve/p setup")
+    end
+
     println("Finding G of order ell...")
     G = find_ell_generator(pts)
     @printf("G.u = %s\nG.v = %s\n", G.u, G.v)
@@ -1265,20 +1322,17 @@ function main2()
     T      = jac_mul(G, k_true)
     @printf("Secret k = %d\n\n", k_true)
 
-    # Optional quick sweep: keep the walk cheap, but inspect how the matrix
-    # and its spectral gap behave as the factor base size changes.
-    # Tiny FBs are not informative for the asymptotics we care about here.
     sweep_fb_sizes = [650, 800]
     for fb in sweep_fb_sizes
         println("--- diagnostic sweep for fb_size=$fb ---")
-        _ = index_calculus_walk(G, T; fb_size=fb, walk_steps=200_000,
+        _ = index_calculus_walk(G, T; fb_size=fb, walk_steps=500_000,
                                 verbose=true, analyze_matrix=true, asymptotic=true,
                                 solve=false, guided=true)
         println()
     end
 
-    # Main run
-    k_rec = index_calculus_walk(G, T; fb_size=650, walk_steps=500_000,
+    # Main run: 5M step hard cap; walk exits early once enough relations collected.
+    k_rec = index_calculus_walk(G, T; fb_size=650, walk_steps=5_000_000,
                                 verbose=true, analyze_matrix=true, asymptotic=true,
                                 solve=true, guided=true)
 
