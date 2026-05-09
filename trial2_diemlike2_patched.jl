@@ -508,12 +508,15 @@ function tree_ab(tree::LPStageTree, pt::NTuple{2,Int})::Tuple{Int,Int}
     return (v.alpha, v.beta)
 end
 
+const MAX_TREE_DEPTH = 2   # depth > 2 causes exponential row-weight blowup
+
 function tree_add_vertex!(tree::LPStageTree, pt::NTuple{2,Int},
                           parent::Union{Nothing, NTuple{2,Int}},
                           row::Dict{Int,Int}, alpha::Int, beta::Int)
     haskey(tree.vertices, pt) && return false
 
     pdep = parent === nothing ? 0 : tree.vertices[parent].depth
+    pdep + 1 > MAX_TREE_DEPTH && return false   # enforce sparsity cap
 
     tree.vertices[pt] = TreeVertex(parent, pdep + 1, copy(row), alpha, beta)
     tree_maybe_advance_stage!(tree)
@@ -614,6 +617,44 @@ function combined_relation_from_points(points::Vector{NTuple{2,Int}},
     return lp_count, lp_pt, row, a, b
 end
 
+# ---------------------------------------------------------------------------
+#  left_kernel_all: return ALL left null vectors of R over GF(ell).
+#
+#  Same augmented row-reduction as left_kernel in trial1.jl, but we
+#  collect every row whose R-part is all-zero, not just the first.
+#  This lets the solver try each null vector in turn and pick the first
+#  one with nonzero beta-sum, avoiding spurious beta=0 failures without
+#  requiring a full walk restart.
+# ---------------------------------------------------------------------------
+function left_kernel_all(R::Matrix{Int})::Vector{Vector{Int}}
+    m, n  = size(R)
+    aug   = hcat(Matrix{Int}(I, m, m), mod.(R, ell))
+    prow  = 1
+
+    for col in m+1:m+n
+        piv = findfirst(r -> aug[r, col] != 0, prow:m)
+        piv === nothing && continue
+        piv += prow - 1
+        aug[[prow, piv], :] = aug[[piv, prow], :]
+        s = powermod(aug[prow, col], ell - 2, ell)
+        aug[prow, :] = mod.(aug[prow, :] .* s, ell)
+        for r in 1:m
+            r == prow && continue
+            f = aug[r, col];  f == 0 && continue
+            aug[r, :] = mod.(aug[r, :] .- f .* aug[prow, :], ell)
+        end
+        prow += 1;  prow > m && break
+    end
+
+    result = Vector{Int}[]
+    for row in 1:m
+        all(aug[row, m+1:end] .== 0) || continue
+        γ = aug[row, 1:m]
+        any(!=(0), γ) && push!(result, γ)
+    end
+    result
+end
+
 function index_calculus_walk(G::Div2, T::Div2;
                              fb_size::Int         = 650,
                              walk_steps::Int      = 500_000,
@@ -667,17 +708,34 @@ function index_calculus_walk(G::Div2, T::Div2;
     hits_lp2   = 0
     hits_tree  = 0
 
+    # ------------------------------------------------------------------
+    # Precompute random walk steps to break deterministic +G degeneracy.
+    # Without this, tree path substitutions yield delta_beta=0 relations
+    # which span a beta-blind subspace, forcing sum(gamma*beta) = 0.
+    # ------------------------------------------------------------------
+    # 256 steps ensures wide beta coverage; both a,b strictly nonzero so every
+    # step carries T-information and no step is a pure-G translation.
+    N_STEPS = 256
+    step_D = Vector{Div2}(undef, N_STEPS)
+    step_a = zeros(Int, N_STEPS)
+    step_b = zeros(Int, N_STEPS)
+    for i in 1:N_STEPS
+        a = rand(1:ell-1)
+        b = rand(1:ell-1)   # strictly 1..ell-1, never 0
+        step_D[i] = jac_add(jac_mul(G, a), jac_mul(T, b))
+        step_a[i] = a
+        step_b[i] = b
+    end
+
     verbose && @printf("Walking %d steps...\n", walk_steps)
 
     for step in 1:walk_steps
 
-        # Advance D by G (O(1))
-        D_cur     = jac_add(D_cur, G)
-        alpha_cur = mod(alpha_cur + 1, ell)
-        if step % 128 == 0
-            D_cur    = jac_add(D_cur, T)
-            beta_cur = mod(beta_cur + 1, ell)
-        end
+        # Advance D with a random step from the precomputed table
+        si        = rand(1:N_STEPS)
+        D_cur     = jac_add(D_cur, step_D[si])
+        alpha_cur = mod(alpha_cur + step_a[si], ell)
+        beta_cur  = mod(beta_cur  + step_b[si], ell)
 
         # D must be degree-2 and split over Fp
         pdeg(D_cur.u) != 2 && continue
@@ -790,16 +848,6 @@ function index_calculus_walk(G::Div2, T::Div2;
                 if added
                     hits_tree += 1
                     cur_pt = lp
-                else
-                    v = tree.vertices[lp]
-                    row = copy(sum_row_others)
-                    sparse_add!(row, v.row)
-                    push!(alpha_vec, mod(neg_al - sum_a_others - v.alpha, ell))
-                    push!(beta_vec,  mod(neg_be - sum_b_others - v.beta, ell))
-                    push!(rel_rows, row)
-                    update_guidance!(guidance, row)
-                    hits_tree += 1
-                    cur_pt = lp
                 end
 
                 if length(tree.vertices) >= tree.max_vertices && tree.stage_limit < tree.max_vertices
@@ -843,7 +891,7 @@ function index_calculus_walk(G::Div2, T::Div2;
     verbose && @printf("Total relations: %d  (need >= %d)\n", nrel, nF + 1)
 
     # ------------------------------------------------------------------
-    # Dense relation matrix and left kernel
+    # Dense relation matrix
     # ------------------------------------------------------------------
     Rmat = zeros(Int, nrel, nF)
     for i in 1:nrel, (j, v) in rel_rows[i]
@@ -856,12 +904,8 @@ function index_calculus_walk(G::Div2, T::Div2;
 
     if nrel < nF + 1
         msg = "Too few relations ($nrel) for FB size $nF. Increase walk_steps or decrease fb_size."
-        if solve
-            error(msg)
-        else
-            verbose && println("  shortfall: ", msg, "  (diagnostics only; skipping solve)")
-            return nothing
-        end
+        verbose && println("  shortfall: ", msg, solve ? "  (retrying)" : "  (diagnostics only; skipping solve)")
+        return nothing
     end
 
     if verbose && !isempty(tree.vertices)
@@ -872,28 +916,212 @@ function index_calculus_walk(G::Div2, T::Div2;
 
     !solve && return nothing
 
-    verbose && println("Left-kernel search over GF($ell)...")
-    gamma = left_kernel(Rmat)
-    gamma === nothing && error("No kernel vector found; restart with a fresh matrix")
+    # ------------------------------------------------------------------
+    # Structured Gaussian Elimination (SGE): leaf-stripping
+    #
+    # We iteratively remove degree-1 columns (FB elements that appear in
+    # only one relation). Each such column j with unique row i lets us
+    # express FB element j in terms of the other elements in row i, then
+    # substitute and delete both.  This reduces the system before the
+    # expensive O(N^3) dense solve.
+    #
+    # We track a substitution stack so we can reconstruct the full gamma
+    # vector after solving the reduced system.
+    # ------------------------------------------------------------------
+    verbose && println("SGE (leaf-stripping) on $(nrel)x$(nF) matrix...")
 
-    Sa = mod(sum(Int128(gamma[i]) * alpha_vec[i] for i in 1:nrel), ell)
-    Sb = mod(sum(Int128(gamma[i]) * beta_vec[i]  for i in 1:nrel), ell)
-    if Sb == 0
-        error("Kernel vector had beta sum = 0; restart with a fresh walk")
+    # Work on copies; row_active[i]=true means row i is still in system.
+    # We store the reduced system as explicit dense rows after stripping.
+    row_alpha  = copy(alpha_vec)          # length nrel
+    row_beta   = copy(beta_vec)
+    Rwork      = [copy(Rmat[i, :]) for i in 1:nrel]   # Vector of row vectors
+    row_active = trues(nrel)
+    col_active = trues(nF)
+
+    # col_degree[j] = number of active rows in which col j is nonzero
+    col_degree = zeros(Int, nF)
+    col_to_rows = [Int[] for _ in 1:nF]
+    for i in 1:nrel, j in 1:nF
+        Rwork[i][j] == 0 && continue
+        col_degree[j] += 1
+        push!(col_to_rows[j], i)
     end
 
-    k  = mod(-Int(Sa) * powermod(Int(Sb), ell - 2, ell), ell)
-    ok = jac_mul(G, k) == T
+    # substitution_stack: each entry is (elim_row_idx, elim_col_idx)
+    # meaning: row elim_row_idx was used to eliminate col elim_col_idx.
+    # We replay this in reverse to lift gamma from the reduced system.
+    # subst_stack records eliminated (row, col) pairs for future back-substitution
+    # if we ever need the full gamma vector. For now we solve in the reduced system.
+    subst_stack = Tuple{Int,Int}[]
 
-    if verbose
-        ok ? println("  ✓  k = $k   (k*G == T)") :
-             println("  ✗  k = $k   FAILED")
+    peeled = 0
+    changed = true
+    while changed
+        changed = false
+        for j in 1:nF
+            col_active[j] || continue
+            col_degree[j] == 1 || continue
+
+            # Find the unique active row containing j
+            pivot_row = 0
+            for ri in col_to_rows[j]
+                row_active[ri] || continue
+                Rwork[ri][j] == 0 && continue
+                pivot_row = ri
+                break
+            end
+            pivot_row == 0 && continue
+
+            # Scale pivot row so coefficient of j is 1
+            piv_val = Rwork[pivot_row][j]
+            inv_piv = powermod(piv_val, ell - 2, ell)
+            for jj in 1:nF
+                Rwork[pivot_row][jj] = mod(Rwork[pivot_row][jj] * inv_piv, ell)
+            end
+            row_alpha[pivot_row] = mod(row_alpha[pivot_row] * inv_piv, ell)
+            row_beta[pivot_row]  = mod(row_beta[pivot_row]  * inv_piv, ell)
+
+            # Eliminate j from all other active rows; update col_degree incrementally
+            for ri in col_to_rows[j]
+                ri == pivot_row && continue
+                row_active[ri] || continue
+                Rwork[ri][j] == 0 && continue
+                f = Rwork[ri][j]
+                for jj in 1:nF
+                    old_nz = Rwork[ri][jj] != 0
+                    Rwork[ri][jj] = mod(Rwork[ri][jj] - f * Rwork[pivot_row][jj], ell)
+                    new_nz = Rwork[ri][jj] != 0
+                    if old_nz && !new_nz && col_active[jj]
+                        col_degree[jj] -= 1
+                    elseif !old_nz && new_nz && col_active[jj]
+                        col_degree[jj] += 1
+                        push!(col_to_rows[jj], ri)
+                    end
+                end
+                row_alpha[ri] = mod(row_alpha[ri] - f * row_alpha[pivot_row], ell)
+                row_beta[ri]  = mod(row_beta[ri]  - f * row_beta[pivot_row],  ell)
+            end
+
+            # Deactivate pivot row and column j; decrement degrees for pivot row's nonzeros
+            for jj in 1:nF
+                jj == j && continue
+                col_active[jj] || continue
+                Rwork[pivot_row][jj] == 0 && continue
+                col_degree[jj] -= 1
+            end
+
+            push!(subst_stack, (pivot_row, j))
+            row_active[pivot_row] = false
+            col_active[j]         = false
+            col_degree[j]         = 0
+            peeled += 1
+            changed = true
+            break  # restart outer loop after one peel
+        end
     end
-    ok ? k : nothing
+
+    active_rows = findall(row_active)
+    active_cols = findall(col_active)
+    nr2 = length(active_rows)
+    nc2 = length(active_cols)
+    verbose && @printf("SGE peeled %d columns; reduced to %dx%d (was %dx%d)\n",
+                       peeled, nr2, nc2, nrel, nF)
+
+    if nr2 < nc2 + 1
+        verbose && println("  SGE left insufficient relations; will retry.")
+        return nothing
+    end
+
+    # Build reduced dense matrix
+    Rred = zeros(Int, nr2, nc2)
+    for (ii, ri) in enumerate(active_rows), (jj, j) in enumerate(active_cols)
+        Rred[ii, jj] = Rwork[ri][j]
+    end
+    alpha_red = [row_alpha[ri] for ri in active_rows]
+    beta_red  = [row_beta[ri]  for ri in active_rows]
+
+    # ------------------------------------------------------------------
+    # Solve: try every null vector in the left kernel of the reduced
+    # matrix, testing each for nonzero beta sum. This avoids the need
+    # to retry the entire walk when only the kernel pick is unlucky.
+    # ------------------------------------------------------------------
+    verbose && println("Left-kernel search over GF($ell) on reduced $(nr2)x$(nc2) matrix...")
+
+    k_found = nothing
+    null_vecs = left_kernel_all(Rred)
+    verbose && @printf("  Found %d null vector(s) to try\n", length(null_vecs))
+
+    for gamma in null_vecs
+        Sa = mod(sum(Int128(gamma[i]) * alpha_red[i] for i in 1:nr2), ell)
+        Sb = mod(sum(Int128(gamma[i]) * beta_red[i]  for i in 1:nr2), ell)
+        Sb == 0 && continue
+
+        k_cand = mod(-Int(Sa) * powermod(Int(Sb), ell - 2, ell), ell)
+        if jac_mul(G, k_cand) == T
+            k_found = k_cand
+            break
+        end
+    end
+
+    if k_found !== nothing
+        verbose && println("  ✓  k = $k_found   (k*G == T)")
+    else
+        verbose && println("  No usable kernel vector found; will retry with fresh walk.")
+    end
+    k_found
 end
 
 
 
 
+
+function main2()
+    println("="^62)
+    println("  trial2: Markov-walk phi-relation index calculus")
+    println("  y^2 = x^5+3x^3+2x^2+5x+4  /F_$p,  ell=$ell")
+    println("="^62, "\n")
+
+    pts = curve_points()
+
+    println("Finding G of order ell...")
+    G = find_ell_generator(pts)
+    @printf("G.u = %s\nG.v = %s\n", G.u, G.v)
+    @assert jac_isid(jac_mul_raw(G, ell))  "G does not have order ell"
+    println("Confirmed: ell*G = identity\n")
+
+    k_true = rand(2:ell-1)
+    T      = jac_mul(G, k_true)
+    @printf("Secret k = %d\n\n", k_true)
+
+    # Optional quick sweep: keep the walk cheap, but inspect how the matrix
+    # and its spectral gap behave as the factor base size changes.
+    sweep_fb_sizes = [450, 550, 650]
+    for fb in sweep_fb_sizes
+        println("--- diagnostic sweep for fb_size=$fb ---")
+        _ = index_calculus_walk(G, T; fb_size=fb, walk_steps=200_000,
+                                verbose=true, analyze_matrix=true, solve=false, guided=true)
+        println()
+    end
+
+    # Main run
+    k_rec = nothing
+    max_restarts = 5
+    for attempt in 1:max_restarts
+        if attempt > 1
+            println("Retrying the full walk with fresh randomness... (attempt $attempt/$max_restarts)")
+        end
+        k_rec = index_calculus_walk(G, T; fb_size=650, walk_steps=500_000,
+                                    verbose=true, analyze_matrix=true, solve=true, guided=true)
+        k_rec !== nothing && break
+    end
+
+    println()
+    if k_rec !== nothing
+        @printf("Recovered k = %-8d  true k = %-8d  match = %s\n",
+                k_rec, k_true, k_rec == k_true)
+    else
+        println("DLP not recovered.")
+    end
+end
 
 main2()
