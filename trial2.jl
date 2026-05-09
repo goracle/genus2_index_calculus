@@ -256,8 +256,8 @@ function index_calculus_walk(G::Div2, T::Div2;
         hits += 1
         Q1 = (x1, y1);  Q2 = (x2, y2)
 
-        # Count atom frequencies
-        for pt in (cur_pt, Q1, Q2, R, S)
+        # Count atom frequencies: only P0, R, S need to be in FB
+        for pt in (cur_pt, R, S)
             atom_count[pt] = get(atom_count, pt, 0) + 1
         end
 
@@ -284,45 +284,28 @@ function index_calculus_walk(G::Div2, T::Div2;
                        sorted_atoms[min(nF,end)][2])
 
     # ------------------------------------------------------------------
-    # Extract relations: all 5 atoms must be in F
+    # Extract relations: P0, R, S must all be in F
     # ------------------------------------------------------------------
-    # Relation: atom(P0)+atom(Q1)+atom(Q2)+atom(R)+atom(S) = 0  in Cl^0
-    # and  atom(Q1)+atom(Q2) = alpha*G + beta*T  (D = alpha*G+beta*T)
-    # so   atom(P0)+atom(R)+atom(S) = -alpha*G - beta*T
-    # Store alpha_stored=-alpha, beta_stored=-beta, +1 at {P0,R,S} cols.
-    #
-    # Actually we can use all 5 atoms and set the rhs to 0:
-    #   +1 at {P0,Q1,Q2,R,S}, alpha_stored=alpha, beta_stored=beta
-    #   and the relation encodes: sum_of_atoms - D = 0
-    #   => sum_of_atoms = alpha*G + beta*T
-    # Use the 5-atom form so more relations survive the FB filter.
+    # atom(P0) + atom(R) + atom(S) = -alpha*G - beta*T
+    # Row: +1 at columns {i0, iR, iS};  stored (ell-alpha, ell-beta).
 
     alpha_vec   = Int[]
     beta_vec    = Int[]
     rel_entries = Vector{Tuple{Int,Int}}[]
 
     for (al, be, p0, q1, q2, r, s) in raw_rels
-        i0 = get(pt2idx, p0, 0);  iq1 = get(pt2idx, q1, 0)
-        iq2 = get(pt2idx, q2, 0); ir  = get(pt2idx, r,  0)
-        is_ = get(pt2idx, s,  0)
-        (i0==0 || iq1==0 || iq2==0 || ir==0 || is_==0) && continue
+        # Only P0, R, S need to be in F.
+        # Q1,Q2 are the support of D = al*G + be*T, already expressed in G,T.
+        # Relation: atom(P0) + atom(R) + atom(S) = -al*G - be*T
+        i0 = get(pt2idx, p0, 0)
+        ir = get(pt2idx, r,  0)
+        is_ = get(pt2idx, s, 0)
+        (i0==0 || ir==0 || is_==0) && continue
 
-        # Relation: [P0]+[Q1]+[Q2]+[R]+[S] ~ 5[inf]
-        # => atom(P0)+atom(Q1)+atom(Q2)+atom(R)+atom(S) = alpha*G+beta*T
-        # (since [Q1]+[Q2] reduced = D = alpha*G+beta*T,
-        #  and atom(P0)+atom(R)+atom(S) = -D,
-        #  but let's record all 5 atoms explicitly with their signs.)
-        #
-        # In the matrix: row has +1 at {P0,Q1,Q2,R,S},
-        # rhs = alpha*G + beta*T.  The left-kernel γ with γ^T R=0 gives
-        # Σγ_i*(alpha_i*G+beta_i*T) = 0  => (Σγ_i*alpha_i)*G = -(Σγ_i*beta_i)*T
-        # => k = -(Σγ_i*alpha_i)/(Σγ_i*beta_i).
-
-        push!(alpha_vec, Int(al))
-        push!(beta_vec,  Int(be))
-        # accumulate coefficients (a point may appear multiple times in one row)
+        push!(alpha_vec, mod(ell - Int(al), ell))   # -alpha mod ell
+        push!(beta_vec,  mod(ell - Int(be), ell))   # -beta  mod ell
         row = Dict{Int,Int}()
-        for idx in (i0, iq1, iq2, ir, is_)
+        for idx in (i0, ir, is_)
             row[idx] = get(row, idx, 0) + 1
         end
         push!(rel_entries, [(idx2,v) for (idx2,v) in row])
@@ -379,7 +362,7 @@ function main2()
     T      = jac_mul(G, k_true)
     @printf("Secret k = %d\n\n", k_true)
 
-    k_rec = index_calculus_walk(G, T; fb_size=300, walk_steps=200_000, verbose=true)
+    k_rec = index_calculus_walk(G, T; fb_size=150, walk_steps=200_000, verbose=true)
 
     println()
     if k_rec !== nothing
