@@ -450,10 +450,24 @@ function update_guidance!(G::WalkGuidance, row::Dict{Int,Int})
     return nothing
 end
 
+function sparse_add!(dst::Dict{Int,Int}, src::Dict{Int,Int}; sign::Int = 1)
+    for (k, v) in src
+        nv = get(dst, k, 0) + sign * v
+        if nv == 0
+            delete!(dst, k)
+        else
+            dst[k] = nv
+        end
+    end
+    return dst
+end
+
+#### gemini edits:
+
 mutable struct TreeVertex
     parent::Union{Nothing, NTuple{2,Int}}
     depth::Int
-    local_row::Dict{Int,Int}
+    row::Dict{Int,Int}
     alpha::Int
     beta::Int
 end
@@ -470,52 +484,6 @@ function LPStageTree(; stage_limit::Int, max_vertices::Int)
                        stage_limit, max_vertices)
 end
 
-function sparse_add!(dst::Dict{Int,Int}, src::Dict{Int,Int}; sign::Int = 1)
-    for (k, v) in src
-        nv = get(dst, k, 0) + sign * v
-        if nv == 0
-            delete!(dst, k)
-        else
-            dst[k] = nv
-        end
-    end
-    return dst
-end
-
-function tree_depth(tree::LPStageTree, pt::NTuple{2,Int})::Int
-    haskey(tree.vertices, pt) ? tree.vertices[pt].depth : 0
-end
-
-function tree_row(tree::LPStageTree, pt::NTuple{2,Int})::Dict{Int,Int}
-    haskey(tree.vertices, pt) || error("tree_row called on non-tree vertex")
-    return tree_materialized_row(tree, pt)
-end
-
-function tree_ab(tree::LPStageTree, pt::NTuple{2,Int})::Tuple{Int,Int}
-    haskey(tree.vertices, pt) || error("tree_ab called on non-tree vertex")
-    v = tree.vertices[pt]
-    return (v.alpha, v.beta)
-end
-
-function tree_materialized_row(tree::LPStageTree, pt::NTuple{2,Int})::Dict{Int,Int}
-    haskey(tree.vertices, pt) || error("tree_materialized_row called on non-tree vertex")
-
-    stack = NTuple{2,Int}[]
-    cur = pt
-    while true
-        push!(stack, cur)
-        v = tree.vertices[cur]
-        v.parent === nothing && break
-        cur = v.parent::NTuple{2,Int}
-    end
-
-    row = Dict{Int,Int}()
-    for node in reverse(stack)
-        sparse_add!(row, tree.vertices[node].local_row)
-    end
-    return row
-end
-
 function tree_maybe_advance_stage!(tree::LPStageTree)
     if length(tree.vertices) >= tree.stage_limit && tree.stage_limit < tree.max_vertices
         tree.stage += 1
@@ -524,18 +492,30 @@ function tree_maybe_advance_stage!(tree::LPStageTree)
     return nothing
 end
 
+
+function tree_depth(tree::LPStageTree, pt::NTuple{2,Int})::Int
+    haskey(tree.vertices, pt) ? tree.vertices[pt].depth : 0
+end
+
+function tree_row(tree::LPStageTree, pt::NTuple{2,Int})::Dict{Int,Int}
+    haskey(tree.vertices, pt) || error("tree_row called on non-tree vertex")
+    return copy(tree.vertices[pt].row)
+end
+
+function tree_ab(tree::LPStageTree, pt::NTuple{2,Int})::Tuple{Int,Int}
+    haskey(tree.vertices, pt) || error("tree_ab called on non-tree vertex")
+    v = tree.vertices[pt]
+    return (v.alpha, v.beta)
+end
+
 function tree_add_vertex!(tree::LPStageTree, pt::NTuple{2,Int},
                           parent::Union{Nothing, NTuple{2,Int}},
-                          local_row::Dict{Int,Int}, alpha::Int, beta::Int)
+                          row::Dict{Int,Int}, alpha::Int, beta::Int)
     haskey(tree.vertices, pt) && return false
 
-    pa   = parent === nothing ? 0 : tree.vertices[parent].alpha
-    pb   = parent === nothing ? 0 : tree.vertices[parent].beta
     pdep = parent === nothing ? 0 : tree.vertices[parent].depth
 
-    tree.vertices[pt] = TreeVertex(parent, pdep + 1, copy(local_row),
-                                   mod(pa + alpha, ell),
-                                   mod(pb + beta, ell))
+    tree.vertices[pt] = TreeVertex(parent, pdep + 1, copy(row), alpha, beta)
     tree_maybe_advance_stage!(tree)
     return true
 end
@@ -545,7 +525,7 @@ function point_contrib(pt::NTuple{2,Int},
                        tree::LPStageTree)
     if haskey(tree.vertices, pt)
         v = tree.vertices[pt]
-        return (:tree, tree_materialized_row(tree, pt), v.alpha, v.beta)
+        return (:tree, copy(v.row), v.alpha, v.beta)
     end
     idx = get(pt2idx, pt, 0)
     if idx != 0
@@ -610,453 +590,6 @@ function choose_next_anchor(cands::Vector{NTuple{2,Int}},
         end
     end
     return best_pt
-end
-
-function expand_with_tree(row_known::Dict{Int,Int},
-                          tree::LPStageTree,
-                          lp::NTuple{2,Int},
-                          neg_al::Int, neg_be::Int)
-    v = tree.vertices[lp]
-    row = copy(row_known)
-    sparse_add!(row, tree_materialized_row(tree, lp))
-    return row, mod(neg_al + v.alpha, ell), mod(neg_be + v.beta, ell)
-end
-
-function combined_relation_from_points(points::Vector{NTuple{2,Int}},
-                                       pt2idx::Dict{NTuple{2,Int},Int},
-                                       tree::LPStageTree)
-    row = Dict{Int,Int}()
-    a = 0
-    b = 0
-    lp_count = 0
-    lp_pt = nothing
-    for pt in points
-        typ, r, aa, bb = point_contrib(pt, pt2idx, tree)
-        if typ == :lp
-            lp_count += 1
-            lp_pt = pt
-        else
-            sparse_add!(row, r)
-            a = mod(a + aa, ell)
-            b = mod(b + bb, ell)
-        end
-    end
-    return lp_count, lp_pt, row, a, b
-end
-
-# ---------------------------------------------------------------------------
-#  index_calculus_walk  (Diem-like staged LP tree)
-# ---------------------------------------------------------------------------
-"""
-    index_calculus_walk(G, T; fb_size, walk_steps, verbose) -> k or nothing
-
-Diem-like staged walk:
-  Phase 1: fill the factor base.
-  Phase 2: build a shallow LP tree with staged attachment, then use the tree
-           to expand LPs into factor-base rows.
-"""
-function index_calculus_walk(G::Div2, T::Div2;
-                             fb_size::Int         = 650,
-                             walk_steps::Int      = 500_000,
-                             verbose::Bool        = true,
-                             analyze_matrix::Bool = true,
-                             solve::Bool          = true,
-                             guided::Bool         = true)
-
-    all_pts = curve_points()
-    t0      = time()
-
-    # ------------------------------------------------------------------
-    # Running Jacobian state
-    # ------------------------------------------------------------------
-    cur_pt    = all_pts[rand(1:length(all_pts))]
-    alpha_cur = rand(1:ell-1)
-    beta_cur  = rand(0:ell-1)
-    D_cur     = jac_add(jac_mul(G, alpha_cur), jac_mul(T, beta_cur))
-
-    # ------------------------------------------------------------------
-    # Factor base (built dynamically in Phase 1)
-    # ------------------------------------------------------------------
-    fb        = NTuple{2,Int}[]
-    pt2idx    = Dict{NTuple{2,Int},Int}()
-    fb_frozen = false
-    guidance  = WalkGuidance(recent_limit=64)
-
-    # ------------------------------------------------------------------
-    # Staged large-prime tree, only used after the FB is frozen.
-    # ------------------------------------------------------------------
-    tree_limit   = max(128, fb_size ÷ 2)
-    tree_max     = max(2 * fb_size, fb_size + max(100, fb_size ÷ 2))
-    tree         = LPStageTree(stage_limit=tree_limit, max_vertices=tree_max)
-
-    # ------------------------------------------------------------------
-    # Relation storage
-    # ------------------------------------------------------------------
-    alpha_vec   = Int[]
-    beta_vec    = Int[]
-    rel_rows    = Vector{Dict{Int,Int}}()
-
-    # Partial rows keyed by a large prime not yet in the tree.
-    lp_table = Dict{NTuple{2,Int}, Tuple{Int,Int,Dict{Int,Int}}}()
-
-    # ------------------------------------------------------------------
-    # Counters
-    # ------------------------------------------------------------------
-    hits_total = 0
-    hits_full  = 0
-    hits_lp    = 0
-    hits_lp2   = 0
-    hits_tree  = 0
-
-    verbose && @printf("Walking %d steps...\n", walk_steps)
-
-    for step in 1:walk_steps
-
-        # Advance D by G (O(1))
-        D_cur     = jac_add(D_cur, G)
-        alpha_cur = mod(alpha_cur + 1, ell)
-        if step % 128 == 0
-            D_cur    = jac_add(D_cur, T)
-            beta_cur = mod(beta_cur + 1, ell)
-        end
-
-        # D must be degree-2 and split over Fp
-        pdeg(D_cur.u) != 2 && continue
-        rs_D = u2_roots(D_cur.u)
-        rs_D === nothing && continue
-        x1, x2 = rs_D
-
-        px, py = cur_pt
-        (px == x1 || px == x2 || x1 == x2) && continue
-
-        y1 = peval(D_cur.v, x1)
-        y2 = peval(D_cur.v, x2)
-        eval_f(x1) == fp(y1 * y1) || continue
-        eval_f(x2) == fp(y2 * y2) || continue
-
-        phi_c = build_phi(px, py, x1, y1, x2, y2)
-        phi_c === nothing && continue
-        a, b, c, d = phi_c
-
-        res = phi_residual_points(a, b, c, d, px, x1, x2)
-        length(res) < 2 && continue
-        R, S = res[1], res[2]
-
-        eval_f(R[1]) == fp(R[2] * R[2]) || continue
-        eval_f(S[1]) == fp(S[2] * S[2]) || continue
-
-        hits_total += 1
-
-        al = alpha_cur
-        be = beta_cur
-        P0 = cur_pt
-        neg_al = mod(ell - al, ell)
-        neg_be = mod(ell - be, ell)
-
-        # ------------------------------------------------------------------
-        # Phase 1: fill the factor base only.
-        # ------------------------------------------------------------------
-        if !fb_frozen
-            for pt in (P0, R, S)
-                if !haskey(pt2idx, pt)
-                    push!(fb, pt)
-                    pt2idx[pt] = length(fb)
-                end
-            end
-
-            row = Dict{Int,Int}()
-            for idx in (pt2idx[P0], pt2idx[R], pt2idx[S])
-                row[idx] = get(row, idx, 0) + 1
-            end
-            push!(alpha_vec, neg_al)
-            push!(beta_vec, neg_be)
-            push!(rel_rows, row)
-            update_guidance!(guidance, row)
-            hits_full += 1
-
-            cur_pt = choose_next_anchor([P0, R, S], pt2idx, guidance, tree; current=P0)
-            if length(fb) >= fb_size
-                fb_frozen = true
-                cur_pt = choose_next_anchor(fb, pt2idx, guidance, tree; current=nothing)
-                verbose && @printf("  FB full (%d atoms) after %d valid steps, %d rels\n",
-                                   length(fb), hits_total, hits_full)
-            end
-            continue
-        end
-
-        # ------------------------------------------------------------------
-        # Phase 2: staged LP tree and LP collision handling.
-        # ------------------------------------------------------------------
-        pts = [P0, R, S]
-        lp_count, lp_pt, row_known, a_known, b_known = combined_relation_from_points(pts, pt2idx, tree)
-
-        if lp_count == 0
-            # Full relation after tree expansion.
-            push!(alpha_vec, mod(neg_al + a_known, ell))
-            push!(beta_vec,  mod(neg_be + b_known, ell))
-            push!(rel_rows, row_known)
-            update_guidance!(guidance, row_known)
-            hits_full += 1
-            cur_pt = choose_next_anchor(pts, pt2idx, guidance, tree; current=P0)
-
-        elseif lp_count == 1
-            lp = lp_pt
-            # The LP is already in the tree: expand immediately.
-            if haskey(tree.vertices, lp)
-                row, a2, b2 = expand_with_tree(row_known, tree, lp, neg_al + a_known, neg_be + b_known)
-                push!(alpha_vec, a2)
-                push!(beta_vec, b2)
-                push!(rel_rows, row)
-                update_guidance!(guidance, row)
-                hits_tree += 1
-                cur_pt = lp
-                continue
-            end
-
-            # The LP is new and the tree is still growing: attach it.
-            if length(tree.vertices) < tree.max_vertices
-                others = NTuple{2,Int}[]
-                for pt in pts
-                    pt == lp && continue
-                    push!(others, pt)
-                end
-
-                parent = choose_tree_parent(others, pt2idx, tree, guidance)
-                local_row = Dict{Int,Int}()
-                local_a = 0
-                local_b = 0
-
-                for pt in others
-                    if parent !== nothing && pt == parent
-                        continue
-                    end
-                    typ, r, aa, bb = point_contrib(pt, pt2idx, tree)
-                    typ == :lp && continue
-                    sparse_add!(local_row, r)
-                    local_a = mod(local_a + aa, ell)
-                    local_b = mod(local_b + bb, ell)
-                end
-
-                added = tree_add_vertex!(tree, lp, parent, local_row,
-                                         mod(neg_al + local_a, ell),
-                                         mod(neg_be + local_b, ell))
-                if added
-                    hits_tree += 1
-                    cur_pt = lp
-                else
-                    # If somehow already present, use the tree expansion.
-                    row, a2, b2 = expand_with_tree(row_known, tree, lp, neg_al + a_known, neg_be + b_known)
-                    push!(alpha_vec, a2)
-                    push!(beta_vec, b2)
-                    push!(rel_rows, row)
-                    update_guidance!(guidance, row)
-                    hits_tree += 1
-                    cur_pt = lp
-                end
-
-                if length(tree.vertices) >= tree.max_vertices
-                    verbose && @printf("  tree frozen at %d vertices (stage=%d, next limit=%d)\n",
-                                       length(tree.vertices), tree.stage, tree.stage_limit)
-                end
-            else
-                # Tree frozen: keep a partial for later collision.
-                hits_lp += 1
-                if haskey(lp_table, lp)
-                    (al2, be2, row2) = lp_table[lp]
-                    combined = copy(row_known)
-                    sparse_add!(combined, row2, sign = -1)
-                    filter!(kv -> kv[2] != 0, combined)
-                    if !isempty(combined)
-                        push!(alpha_vec, mod(neg_al + a_known - al2, ell))
-                        push!(beta_vec,  mod(neg_be + b_known - be2, ell))
-                        push!(rel_rows, combined)
-                        update_guidance!(guidance, combined)
-                        hits_lp2 += 1
-                    end
-                    delete!(lp_table, lp)
-                else
-                    lp_table[lp] = (mod(neg_al + a_known, ell),
-                                    mod(neg_be + b_known, ell),
-                                    row_known)
-                end
-                cur_pt = choose_next_anchor(pts, pt2idx, guidance, tree; current=P0)
-            end
-
-        else
-            # More than one LP: skip.  These are rare in this setup and are
-            # currently not worth the extra bookkeeping.
-            continue
-        end
-    end
-
-    nF   = length(fb)
-    nrel = length(alpha_vec)
-
-    verbose && @printf(
-        "Walk done: %d valid steps / %d total  (%.1fs)\n",
-        hits_total, walk_steps, time()-t0)
-    verbose && @printf(
-        "FB: %d atoms | tree verts: %d | full rels: %d | tree rows: %d | LP partials seen: %d | LP pairs: %d\n",
-        nF, length(tree.vertices), hits_full, hits_tree, hits_lp, hits_lp2)
-    verbose && @printf("Total relations: %d  (need >= %d)
-", nrel, nF + 1)
-
-    # ------------------------------------------------------------------
-    # Dense relation matrix and left kernel
-    # ------------------------------------------------------------------
-    Rmat = zeros(Int, nrel, nF)
-    for i in 1:nrel, (j, v) in rel_rows[i]
-        1 <= j <= nF || continue
-        Rmat[i, j] = mod(Rmat[i, j] + v, ell)
-    end
-
-    analyze_matrix && analyze_relation_matrix(rel_rows, nF; verbose=verbose)
-    analyze_matrix && spectral_gap_report(rel_rows, nF; verbose=verbose)
-
-    if nrel < nF + 1
-        msg = "Too few relations ($nrel) for FB size $nF. Increase walk_steps or decrease fb_size."
-        if solve
-            error(msg)
-        else
-            verbose && println("  shortfall: ", msg, "  (diagnostics only; skipping solve)")
-            return nothing
-        end
-    end
-
-    if verbose && !isempty(tree.vertices)
-        depths = [v.depth for v in values(tree.vertices)]
-        @printf("Tree summary: stage=%d, next_limit=%d, max_depth=%d, avg_depth=%.2f\n",
-                tree.stage, tree.stage_limit, maximum(depths), sum(depths)/length(depths))
-    end
-
-    !solve && return nothing
-
-    verbose && println("Left-kernel search over GF($ell)...")
-    gamma = left_kernel(Rmat)
-    gamma === nothing && begin
-        verbose && println("  no kernel vector found; restart with a fresh matrix")
-        return nothing
-    end
-
-    Sa = mod(sum(Int128(gamma[i]) * alpha_vec[i] for i in 1:nrel), ell)
-    Sb = mod(sum(Int128(gamma[i]) * beta_vec[i]  for i in 1:nrel), ell)
-    if Sb == 0
-        verbose && println("  kernel vector had beta sum = 0; restart with a fresh walk")
-        return nothing
-    end
-
-    k  = mod(-Int(Sa) * powermod(Int(Sb), ell - 2, ell), ell)
-    ok = jac_mul(G, k) == T
-
-    if verbose
-        ok ? println("  ✓  k = $k   (k*G == T)") :
-             println("  ✗  k = $k   FAILED")
-    end
-    ok ? k : nothing
-end
-
-# ---------------------------------------------------------------------------
-function main2()
-    println("="^62)
-    println("  trial2: Markov-walk phi-relation index calculus")
-    println("  y^2 = x^5+3x^3+2x^2+5x+4  /F_$p,  ell=$ell")
-    println("="^62, "\n")
-
-    pts = curve_points()
-
-    println("Finding G of order ell...")
-    G = find_ell_generator(pts)
-    @printf("G.u = %s\nG.v = %s\n", G.u, G.v)
-    @assert jac_isid(jac_mul_raw(G, ell))  "G does not have order ell"
-    println("Confirmed: ell*G = identity\n")
-
-    k_true = rand(2:ell-1)
-    T      = jac_mul(G, k_true)
-    @printf("Secret k = %d\n\n", k_true)
-
-    # Optional quick sweep: keep the walk cheap, but inspect how the matrix
-    # and its spectral gap behave as the factor base size changes.
-    sweep_fb_sizes = [450, 550, 650]
-    for fb in sweep_fb_sizes
-        println("--- diagnostic sweep for fb_size=$fb ---")
-        _ = index_calculus_walk(G, T; fb_size=fb, walk_steps=200_000,
-                                verbose=true, analyze_matrix=true, solve=false, guided=true)
-        println()
-    end
-
-    # Main run
-    k_rec = nothing
-    max_restarts = 5
-    for attempt in 1:max_restarts
-        if attempt > 1
-            println("Retrying the full walk with fresh randomness... (attempt $attempt/$max_restarts)")
-        end
-        k_rec = index_calculus_walk(G, T; fb_size=650, walk_steps=500_000,
-                                    verbose=true, analyze_matrix=true, solve=true, guided=true)
-        k_rec !== nothing && break
-    end
-
-    println()
-    if k_rec !== nothing
-        @printf("Recovered k = %-8d  true k = %-8d  match = %s\n",
-                k_rec, k_true, k_rec == k_true)
-    else
-        println("DLP not recovered.")
-    end
-end
-
-
-
-
-#### gemini edits:
-
-mutable struct TreeVertex
-    parent::Union{Nothing, NTuple{2,Int}}
-    depth::Int
-    row::Dict{Int,Int}
-    alpha::Int
-    beta::Int
-end
-
-function tree_depth(tree::LPStageTree, pt::NTuple{2,Int})::Int
-    haskey(tree.vertices, pt) ? tree.vertices[pt].depth : 0
-end
-
-function tree_row(tree::LPStageTree, pt::NTuple{2,Int})::Dict{Int,Int}
-    haskey(tree.vertices, pt) || error("tree_row called on non-tree vertex")
-    return copy(tree.vertices[pt].row)
-end
-
-function tree_ab(tree::LPStageTree, pt::NTuple{2,Int})::Tuple{Int,Int}
-    haskey(tree.vertices, pt) || error("tree_ab called on non-tree vertex")
-    v = tree.vertices[pt]
-    return (v.alpha, v.beta)
-end
-
-function tree_add_vertex!(tree::LPStageTree, pt::NTuple{2,Int},
-                          parent::Union{Nothing, NTuple{2,Int}},
-                          row::Dict{Int,Int}, alpha::Int, beta::Int)
-    haskey(tree.vertices, pt) && return false
-
-    pdep = parent === nothing ? 0 : tree.vertices[parent].depth
-
-    tree.vertices[pt] = TreeVertex(parent, pdep + 1, copy(row), alpha, beta)
-    tree_maybe_advance_stage!(tree)
-    return true
-end
-
-function point_contrib(pt::NTuple{2,Int},
-                       pt2idx::Dict{NTuple{2,Int},Int},
-                       tree::LPStageTree)
-    if haskey(tree.vertices, pt)
-        v = tree.vertices[pt]
-        return (:tree, copy(v.row), v.alpha, v.beta)
-    end
-    idx = get(pt2idx, pt, 0)
-    if idx != 0
-        return (:fb, Dict{Int,Int}(idx => 1), 0, 0)
-    end
-    return (:lp, Dict{Int,Int}(), 0, 0)
 end
 
 function combined_relation_from_points(points::Vector{NTuple{2,Int}},
