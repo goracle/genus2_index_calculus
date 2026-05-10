@@ -440,82 +440,191 @@ end
 #
 #  Returns the exact element order, or falls back to jac_order_bsgs on failure.
 # ---------------------------------------------------------------------------
-function jac_order_pollard_rho(D::Div2; N::Int=0, max_iter::Int=0,
-                                dp_mask::Int=1023, verbose::Bool=false)::Int
+function jac_order_pollard_rho(
+    D::Div2;
+    N::Int = 0,
+    max_iter::Int = 0,
+    dp_mask::Int = 1023,
+    verbose::Bool = false,
+    abort_flag::Union{Threads.Atomic{Bool}, Nothing} = nothing
+)::Int
+
     if N == 0
-        N = (isqrt(p) + 1)^4   # Hasse-Weil upper bound
+        N = (isqrt(p) + 1)^4
     end
+
     if max_iter == 0
-        max_iter = 64 * isqrt(N) + 10_000
+        max_iter = 64 * p + 10_000
     end
 
-    # Classify a Jacobian element into one of 3 sets by its u-poly hash.
+    # ------------------------------------------------------------------
+    # Cancellation helper — throws InterruptException if abort_flag is set.
+    # Callers catch this and treat it as a clean early exit.
+    # ------------------------------------------------------------------
+    @inline function maybe_abort()
+        abort_flag !== nothing && abort_flag[] && throw(InterruptException())
+    end
+
+    # ------------------------------------------------------------------
+    # Partition function
+    # ------------------------------------------------------------------
+
     @inline function classify(X::Div2)::Int
-        h = length(X.u) >= 2 ? X.u[1] : 0
-        mod(h * 0x9e3779b9 % (1 << 30), 3)
+
+        u0 = length(X.u) >= 1 ? Int(X.u[1]) : 0
+        u1 = length(X.u) >= 2 ? Int(X.u[2]) : 0
+        v0 = length(X.v) >= 1 ? Int(X.v[1]) : 0
+
+        h = xor(u0, xor(u1 << 1, v0 << 2))
+
+        return mod(h, 8)
     end
 
-    # One rho step: update (X, a) where X = a*D.
-    @inline function rho_step(X::Div2, a::Int)::Tuple{Div2,Int}
+    # ------------------------------------------------------------------
+    # Random walk update
+    # ------------------------------------------------------------------
+
+    @inline function rho_step(X::Div2, a::Int)
+
+        maybe_abort()
+
         s = classify(X)
+
         if s == 0
+
             return jac_add(X, D), mod(a + 1, N)
+
         elseif s == 1
-            return jac_add(X, X), mod(2 * a, N)
+
+            return jac_add(X, X), mod(2a, N)
+
+        elseif s == 2
+
+            return jac_add(jac_add(X, X), D), mod(2a + 1, N)
+
+        elseif s == 3
+
+            return jac_add(X, jac_mul_raw(D, 3)), mod(a + 3, N)
+
+        elseif s == 4
+
+            return jac_add(X, jac_mul_raw(D, 5)), mod(a + 5, N)
+
+        elseif s == 5
+
+            Y = jac_add(X, X)
+            return jac_add(Y, jac_mul_raw(D, 3)), mod(2a + 3, N)
+
+        elseif s == 6
+
+            return jac_add(X, jac_neg(D)), mod(a - 1, N)
+
         else
-            return jac_add(X, D), mod(a + 1, N)
+
+            return jac_add(X, jac_mul_raw(D, 7)), mod(a + 7, N)
         end
     end
 
-    # Distinguished-point variant: collect (a, X) when X has dp_mask zeros.
-    dp_table = Dict{Div2, Int}()   # X -> a at distinguished points
+    # ------------------------------------------------------------------
+    # Distinguished points
+    # ------------------------------------------------------------------
 
-    X  = D;  a  = 1
-    Xf = D;  af = 1   # "fast" pointer (Floyd tortoise/hare for fallback)
-    Xs = D;  as_ = 1  # "slow"
+    dp_table = Dict{UInt64, Int}()
+
+    @inline function dp_hash(X::Div2)::UInt64
+
+        u0 = length(X.u) >= 1 ? UInt64(X.u[1]) : 0
+        u1 = length(X.u) >= 2 ? UInt64(X.u[2]) : 0
+        v0 = length(X.v) >= 1 ? UInt64(X.v[1]) : 0
+        v1 = length(X.v) >= 2 ? UInt64(X.v[2]) : 0
+
+        return xor(
+            u0,
+            xor(
+                u1 << 13,
+                xor(v0 << 27, v1 << 41)
+            )
+        )
+    end
+
+    X  = D
+    a  = 1
+
+    Xs = D
+    as = 1
+
+    Xf = D
+    af = 1
 
     dp_found = 0
-    n_iter   = 0
 
-    while n_iter < max_iter
-        n_iter += 1
+    for iter in 1:max_iter
 
-        # Distinguished-point check for hare.
-        u1 = length(X.u) >= 1 ? X.u[1] : 0
-        if (u1 & dp_mask) == 0
-            if haskey(dp_table, X)
-                a_prev = dp_table[X]
-                diff   = mod(a - a_prev, N)
+        maybe_abort()
+
+        # --------------------------------------------------------------
+        # Distinguished point logic
+        # --------------------------------------------------------------
+
+        h = dp_hash(X)
+
+        if (h & UInt64(dp_mask)) == 0
+
+            if haskey(dp_table, h)
+
+                a_prev = dp_table[h]
+
+                diff = mod(a - a_prev, N)
+
                 if diff != 0
-                    # Candidate multiple of ord(D).
-                    # Reduce to exact order.
+
                     return _reduce_to_order(D, diff, N)
                 end
+
             else
-                dp_table[X] = a
-                dp_found    += 1
+
+                dp_table[h] = a
+                dp_found += 1
             end
         end
 
-        X, a   = rho_step(X, a)
+        # --------------------------------------------------------------
+        # Main walk
+        # --------------------------------------------------------------
 
-        # Also advance Floyd hare twice, tortoise once (backup collision detector).
+        X, a = rho_step(X, a)
+
+        # --------------------------------------------------------------
+        # Floyd backup collision detection
+        # --------------------------------------------------------------
+
+        Xs, as = rho_step(Xs, as)
+
         Xf, af = rho_step(Xf, af)
         Xf, af = rho_step(Xf, af)
-        Xs, as_ = rho_step(Xs, as_)
-        if Xf == Xs
-            diff = mod(af - as_, N)
+
+        if Xs == Xf
+
+            diff = mod(af - as, N)
+
             if diff != 0
+
                 return _reduce_to_order(D, diff, N)
             end
         end
     end
 
-    # Fallback: BSGS (reliable but O(√N) memory)
-    verbose && @printf("  [pollard_rho] max_iter=%d reached after %d dp hits; falling back to BSGS\n",
-                       max_iter, dp_found)
-    return jac_order_bsgs(D; verbose=verbose)
+    verbose && @printf(
+        "  [pollard_rho] max_iter=%d reached after %d distinguished points\n",
+        max_iter,
+        dp_found
+    )
+
+    # fallback
+    return jac_order_bsgs(D; verbose = verbose)
 end
+
+
 
 # Helper: given that n = candidate is a multiple of ord(D), reduce to exact order.
 function _reduce_to_order(D::Div2, candidate::Int, N::Int)::Int

@@ -1707,58 +1707,78 @@ end
 #    order in O(√#Jac) ≈ 165 000 jac_add calls — a few seconds, not forever.
 # ---------------------------------------------------------------------------
 function fast_find_ell_generator(::Div2 = JacID; trials::Int = 200)
+
     println("Finding G of large prime order (Pollard rho, parallel)...")
+
     t_start = time()
+
     pts = curve_points()
     n   = length(pts)
+
     n < 2 && error("Not enough rational points on the curve")
 
     nthreads = Threads.nthreads()
-    # trials_per_thread: each thread runs up to this many independent attempts.
-    # Total budget stays ≈ trials regardless of thread count.
     trials_per_thread = max(1, cld(trials, nthreads))
 
-    # Channel depth 1: first thread to find a valid generator posts it and all
-    # others exit on the next attempt check.
     result_ch = Channel{Tuple{Div2, Int, NamedTuple}}(1)
-    done      = Threads.Atomic{Bool}(false)
 
-    tasks = map(1:nthreads) do tid
+    done = Threads.Atomic{Bool}(false)
+
+    # hard cap for rho
+    rho_max = 64 * p + 10_000
+
+    for tid in 1:nthreads
+
         Threads.@spawn begin
-            n_id_skips   = 0
-            n_tiny_ell   = 0
-            n_id_cofac   = 0
-            n_bad_verify = 0
-            n_ord_calls  = 0
+
+            n_id_skips     = 0
+            n_tiny_ell     = 0
+            n_id_cofac     = 0
+            n_bad_verify   = 0
+            n_ord_calls    = 0
             total_ord_time = 0.0
 
             for attempt in 1:trials_per_thread
+
                 done[] && break
 
                 P = pts[rand(1:n)]
                 Q = pts[rand(1:n)]
+
                 D = mumford_from_pts(P, Q)
+
                 if jac_isid(D)
                     n_id_skips += 1
                     continue
                 end
 
                 t_ord = time()
-                ord = jac_order_pollard_rho(D)
+
+                ord = try
+                    jac_order_pollard_rho(D; max_iter = rho_max, abort_flag = done)
+                catch e
+                    e isa InterruptException && break
+                    rethrow(e)
+                end
+
                 total_ord_time += time() - t_ord
                 n_ord_calls += 1
+
                 ord <= 1 && continue
 
                 ell_cand = largest_prime_factor(ord)
-                if ell_cand < 1000
+
+                if ell_cand < max(isqrt(p), 3)
                     n_tiny_ell += 1
                     continue
                 end
 
                 cofactor = ord ÷ ell_cand
+
                 cofactor == 0 && continue
 
                 G = jac_mul_raw(D, cofactor)
+
                 if jac_isid(G)
                     n_id_cofac += 1
                     continue
@@ -1769,47 +1789,96 @@ function fast_find_ell_generator(::Div2 = JacID; trials::Int = 200)
                     continue
                 end
 
-                # Race: only the first thread to set done wins.
-                if Threads.atomic_cas!(done, false, true) == false
+                old = Threads.atomic_cas!(done, false, true)
+
+                if !old
+
+                    GC.safepoint()   # nudge Julia scheduler; stuck threads re-check done[] sooner
+
                     stats = (
-                        thread       = tid,
-                        attempt      = attempt,
-                        ord          = ord,
-                        ell_cand     = ell_cand,
-                        cofactor     = cofactor,
-                        n_ord_calls  = n_ord_calls,
+                        thread         = tid,
+                        attempt        = attempt,
+                        ord            = ord,
+                        ell_cand       = ell_cand,
+                        cofactor       = cofactor,
+                        n_ord_calls    = n_ord_calls,
                         total_ord_time = total_ord_time,
-                        n_id_skips   = n_id_skips,
-                        n_tiny_ell   = n_tiny_ell,
-                        n_id_cofac   = n_id_cofac,
-                        n_bad_verify = n_bad_verify,
+                        n_id_skips     = n_id_skips,
+                        n_tiny_ell     = n_tiny_ell,
+                        n_id_cofac     = n_id_cofac,
+                        n_bad_verify   = n_bad_verify,
                     )
+
+                    # nonblocking because channel size = 1
                     put!(result_ch, (G, ell_cand, stats))
                 end
+
                 break
             end
         end
     end
 
-    # Wait for all threads; if none posted a result we error.
-    for t in tasks; wait(t); end
+    # separate waiter task
+    waiter = Threads.@spawn take!(result_ch)
 
-    isready(result_ch) || error("fast_find_ell_generator: no large-prime-order element found in $(trials) attempts")
+    timeout_s = 60.0 + 120.0 * (p / 164147)
 
-    G, ell_cand, s = take!(result_ch)
+    t0 = time()
+
+    while !istaskdone(waiter)
+
+        if (time() - t0) > timeout_s
+
+            done[] = true
+            GC.safepoint()
+
+            error("fast_find_ell_generator: timeout after $(timeout_s)s")
+        end
+
+        sleep(0.05)
+    end
+
+    done[] = true
+    GC.safepoint()
+
+    G, ell_cand, s = fetch(waiter)
+
     total_elapsed = time() - t_start
-    @printf("  thread %d, attempt %d: ord(D) = %d,  ell = %d,  cofactor h = %d\n",
-            s.thread, s.attempt, s.ord, s.ell_cand, s.cofactor)
-    @printf("  order calls (winner thread): %d,  avg rho time: %.4fs,  total rho time: %.4fs\n",
-            s.n_ord_calls, s.total_ord_time / max(1, s.n_ord_calls), s.total_ord_time)
-    @printf("  skips (winner) — id_divisor: %d,  tiny_ell: %d,  id_after_cofac: %d,  bad_verify: %d\n",
-            s.n_id_skips, s.n_tiny_ell, s.n_id_cofac, s.n_bad_verify)
-    @printf("  generator search total wall time: %.3fs  (%d threads)\n", total_elapsed, nthreads)
+
+    @printf(
+        "  thread %d, attempt %d: ord(D) = %d, ell = %d, cofactor h = %d\n",
+        s.thread,
+        s.attempt,
+        s.ord,
+        s.ell_cand,
+        s.cofactor
+    )
+
+    @printf(
+        "  order calls (winner thread): %d, avg rho time: %.4fs, total rho time: %.4fs\n",
+        s.n_ord_calls,
+        s.total_ord_time / max(1, s.n_ord_calls),
+        s.total_ord_time
+    )
+
+    @printf(
+        "  skips (winner) — id_divisor: %d, tiny_ell: %d, id_after_cofac: %d, bad_verify: %d\n",
+        s.n_id_skips,
+        s.n_tiny_ell,
+        s.n_id_cofac,
+        s.n_bad_verify
+    )
+
+    @printf(
+        "  generator search total wall time: %.3fs (%d threads)\n",
+        total_elapsed,
+        nthreads
+    )
+
     flush(stdout)
+
     return G, ell_cand
 end
-
-
 
 
 main2()
