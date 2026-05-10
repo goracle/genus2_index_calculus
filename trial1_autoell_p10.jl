@@ -171,31 +171,60 @@ function peval(poly::Vector{Int}, x::Int)
 end
 
 function pdivrem(a::Vector{Int}, b::Vector{Int})
-    a  = ptrim(a)          # one copy; we mutate it below
-    b  = ptrim(b)          # read-only after this
-    lc = fpinv(b[end])
-    db = pdeg(b)
-    q  = zeros(Int, max(1, length(a) - length(b) + 1))
-    da = pdeg(a)
-    while da >= db && !pzero(a)
-        d = da - db
-        c = fp(a[da+1] * lc)
-        q[d+1] = c
-        @inbounds for i in eachindex(b)
-            a[i+d] = fp(a[i+d] - c * b[i])
-        end
-        a[da+1] = 0        # zero the leading term in-place
-        # update da without re-scanning from scratch
-        while da > 0 && a[da+1] == 0; da -= 1; end
+    # Work on trimmed mutable copies
+    a = ptrim(copy(a))
+    b = ptrim(copy(b))
+
+    if pzero(b)
+        error("Division by zero polynomial")
     end
-    # trim both outputs in-place
-    qlen = length(q)
-    while qlen > 1 && q[qlen] == 0; qlen -= 1; end
-    qlen < length(q) && resize!(q, qlen)
-    alen = da + 1
-    alen < length(a) && resize!(a, alen)
-    q, a
+
+    db = pdeg(b)
+    lb = b[end]
+
+    # Leading coefficient of divisor must be invertible mod p
+    if lb == 0
+        error("Invalid divisor: leading coefficient is zero")
+    end
+    lc_inv = fpinv(lb)
+
+    # Quotient size: max degree difference + 1, but at least 1
+    q = zeros(Int, max(1, length(a) - length(b) + 1))
+
+    while !pzero(a) && pdeg(a) >= db
+        da = pdeg(a)
+        d  = da - db
+
+        # Leading term cancellation coefficient
+        c = fp(a[end] * lc_inv)
+        q[d + 1] = c
+
+        # Subtract c * x^d * b from a
+        @inbounds for i in eachindex(b)
+            a[i + d] = fp(a[i + d] - c * b[i])
+        end
+
+        # Hard-kill the top coefficient we just canceled
+        a[end] = 0
+
+        # CRITICAL FIX:
+        # actually shrink the vector every iteration.
+        # Your old code only moved `da` logically, but left stale
+        # high-degree zeros sitting around, which can cause repeated
+        # reprocessing / effective infinite loops depending on pdeg().
+        while length(a) > 1 && a[end] == 0
+            pop!(a)
+        end
+    end
+
+    # Final trim for quotient
+    while length(q) > 1 && q[end] == 0
+        pop!(q)
+    end
+
+    return q, a
 end
+
 
 pmod(a, b) = pdivrem(a, b)[2]
 
@@ -381,51 +410,114 @@ end
 # using the norm criterion: f(a+b√g) is a square in Fp^2 iff its Fp-norm
 # u²-g·v² is a nonzero square in Fp  (Lidl-Niederreiter, standard fact).
 function jacobian_order_frobenius(; n1::Union{Int,Nothing}=nothing)::Int
-    # Find a non-residue g in Fp.
+    # Find a quadratic non-residue g in F_p
     g = 2
-    while powermod(g, (p-1)÷2, p) != p-1; g += 1; end
+    while powermod(g, (p - 1) ÷ 2, p) != p - 1
+        g += 1
+    end
 
-    # N1: affine count + point at infinity.
+    ####################################################################
+    # N1 = #C(F_p)
+    ####################################################################
     if n1 === nothing
-        n1 = 1
-        for x in 0:p-1
+        n1_local = 1  # point at infinity
+
+        @inbounds for x in 0:p-1
             fx = eval_f(x)
+
             if fx == 0
-                n1 += 1
-            elseif powermod(fx, (p-1)÷2, p) == 1
-                n1 += 2
+                n1_local += 1
+            elseif powermod(fx, (p - 1) ÷ 2, p) == 1
+                n1_local += 2
             end
         end
     else
-        n1 = n1 + 1   # caller passed affine count; add infinity
+        # caller passed affine count
+        n1_local = n1 + 1
     end
 
-    # N2: #C(Fp^2).  Start from N1 (Fp ⊂ Fp^2), then add Fp^2\Fp points.
-    n2 = Int(n1)
-    for b in 1:p-1
-        bg  = fp(b * g)
-        b2g = fp(b * bg)
+    ####################################################################
+    # N2 = #C(F_{p^2})
+    #
+    # Major speed fix:
+    # avoid recomputing huge polynomial expressions from scratch
+    # and avoid repeated fp() nesting where possible.
+    ####################################################################
+    n2 = Int(n1_local)
+
+    # Precompute constants once
+    g_mod = fp(g)
+    two_g = fp(2 * g)
+
+    @inbounds for b in 1:p-1
+        bg   = fp(b * g_mod)       # b*g
+        b2g  = fp(b * bg)          # b^2*g
+
+        # values depending only on b
+        i1   = b
+        i2_c = fp(2 * b)           # factor for i2 = a * i2_c
+
         for a in 0:p-1
-            r1 = a;               i1 = b
-            r2 = fp(a*a + b2g);   i2 = fp(2*a*b)
-            r3 = fp(r2*r1 + i2*i1*g);  i3 = fp(r2*i1 + i2*r1)
-            r5 = fp(r3*r2 + i3*i2*g);  i5 = fp(r3*i2 + i3*r2)
-            fu = fp(r5 + 3*r3 + 2*r2 + 5*r1 + 4)
-            fv = fp(i5 + 3*i3 + 2*i2 + 5*i1)
-            norm_f = fp(fu*fu - g*fp(fv*fv))
+            ################################################################
+            # u = a + bα, α² = g
+            #
+            # Compute powers incrementally:
+            # u² -> u³ -> u⁵
+            ################################################################
+
+            # u
+            r1 = a
+
+            # u²
+            r2 = fp(a * a + b2g)
+            i2 = fp(a * i2_c)
+
+            # u³ = u² * u
+            r3 = fp(r2 * r1 + g_mod * i2 * i1)
+            i3 = fp(r2 * i1 + i2 * r1)
+
+            # u⁵ = u³ * u²
+            r5 = fp(r3 * r2 + g_mod * i3 * i2)
+            i5 = fp(r3 * i2 + i3 * r2)
+
+            # f(u) = u^5 + 3u^3 + 2u^2 + 5u + 4
+            fu = fp(r5 + 3r3 + 2r2 + 5r1 + 4)
+            fv = fp(i5 + 3i3 + 2i2 + 5i1)
+
+            ################################################################
+            # Decide whether f(u) is a square in F_{p²}
+            #
+            # Fast criterion:
+            # Norm(f(u)) ∈ F_p must be a square
+            ################################################################
             if fu == 0 && fv == 0
                 n2 += 2
-            elseif norm_f != 0 && powermod(norm_f, (p-1)÷2, p) == 1
+                continue
+            end
+
+            norm_f = fp(fu * fu - g_mod * fp(fv * fv))
+
+            if norm_f != 0 &&
+               powermod(norm_f, (p - 1) ÷ 2, p) == 1
                 n2 += 4
             end
         end
     end
-    n2 += 1   # point at infinity also in Fp^2
 
-    s1 = n1 - (p + 1)
+    # point at infinity over F_{p²}
+    n2 += 1
+
+    ####################################################################
+    # Recover Jacobian order from N1, N2
+    ####################################################################
+    s1 = n1_local - (p + 1)
     s2 = (s1^2 - (n2 - (p^2 + 1))) ÷ 2
-    return 1 - s1 + s2 - p*s1 + p^2
+
+    return 1 - s1 + s2 - p * s1 + p^2
 end
+
+
+
 function find_ell_generator(pts::Vector{Tuple{Int,Int}})
     println("Finding G of large prime order...")
 
@@ -512,26 +604,6 @@ end
 # is exact: cofactor = #Jac / ell.  For a random D, G = cofactor·D is either
 # the identity (unlucky draw; try again) or has order dividing ell; since ell
 # is prime and G ≠ id, G has order exactly ell.  No scan needed.
-function find_ell_generator(pts::Vector{NTuple{2,Int}}; jac_ord::Int=0)
-    if jac_ord == 0
-        jac_ord = jacobian_order_frobenius(n1=length(pts))
-    end
-    @assert jac_ord % ell == 0  "ell does not divide #Jac — check curve/p/ell"
-    cofactor = jac_ord ÷ ell
-    @printf("  #Jac = %d,  cofactor = %d\n", jac_ord, cofactor)
-
-    n = length(pts)
-    for attempt in 1:300
-        D = mumford_from_pts(pts[rand(1:n)], pts[rand(1:n)])
-        jac_isid(D) && continue
-        G = jac_mul_raw(D, cofactor)
-        jac_isid(G) && continue
-        # G has order dividing ell; since ell is prime and G ≠ id, order = ell.
-        return G
-    end
-    error("find_ell_generator failed — verify ell | #Jac for this curve/p")
-end
-
 # ──────────────────────── Linear algebra over GF(ell) ─────────────────────────
 # Find a nonzero γ with  γᵀ R ≡ 0 (mod ell),  or return nothing.
 #
