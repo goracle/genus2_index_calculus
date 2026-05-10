@@ -963,6 +963,91 @@ end
 
 
 
+# ---------------------------------------------------------------------------
+#  try_lp1_doubled_cross_close!
+#
+#  Called (under shared_lp1_lock) when a new 1-LP entry for `pt` has just been
+#  stored OR when a new doubled entry for `pt` has just been stored, to check
+#  whether the complementary entry already exists and emit a pure FB relation.
+#
+#  Invariants:
+#    shared_lp1[pt]      : atom(pt) + row_1 = neg_al_1·G + neg_be_1·T
+#    shared_lp_doubled[pt]: 2·atom(pt) + row_d = al_d·G + be_d·T
+#
+#  Cross-close: 2*(row_1 entry) - (doubled entry):
+#    (2·row_1 - row_d) = (2·neg_al_1 - al_d)·G + (2·neg_be_1 - be_d)·T
+#
+#  Returns true if a relation was emitted.
+# ---------------------------------------------------------------------------
+function try_lp1_doubled_cross_close!(
+        pt::NTuple{2,Int},
+        shared_lp1::Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int, Int}},
+        shared_lp_doubled::Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int}},
+        ell::Int,
+        alpha_vec::Vector{Int}, beta_vec::Vector{Int},
+        rel_rows::Vector{Dict{Int,Int}},
+        rank_growth::Vector{Tuple{Int,Int}},
+        raw_steps::Int,
+        rel_counter::Threads.Atomic{Int},
+        G::Div2, T::Div2,
+        fb::Vector{NTuple{2,Int}})::Bool
+
+    haskey(shared_lp1, pt) || return false
+    haskey(shared_lp_doubled, pt) || return false
+
+    row_1, neg_al_1, neg_be_1, _step = shared_lp1[pt]
+    row_d, al_d,     be_d            = shared_lp_doubled[pt]
+
+    combined = Dict{Int,Int}()
+    for (j, v) in row_1
+        nv = 2 * v
+        nv == 0 || (combined[j] = nv)
+    end
+    for (j, v) in row_d
+        nv = get(combined, j, 0) - v
+        nv == 0 ? delete!(combined, j) : (combined[j] = nv)
+    end
+    combined_al = mod(2 * neg_al_1 - al_d, ell)
+    combined_be = mod(2 * neg_be_1 - be_d, ell)
+
+    # Consume both entries regardless of whether the relation is trivial.
+    delete!(shared_lp1, pt)
+    delete!(shared_lp_doubled, pt)
+
+    isempty(combined) && return false
+    combined_al == 0 && combined_be == 0 && return false
+
+    # --- PRINCIPAL DIVISOR CHECK ---
+    let
+        D_fb_sum = JacID
+        for (idx, v) in combined
+            pt_fb = fb[idx]
+            D_fb  = mumford1(pt_fb[1], pt_fb[2])
+            absv  = abs(v)
+            Dv    = jac_mul_raw(D_fb, absv)
+            D_fb_sum = v > 0 ? jac_add(D_fb_sum, Dv) : jac_sub(D_fb_sum, Dv)
+        end
+        D_G  = jac_mul(G, combined_al)
+        D_T  = jac_mul(T, combined_be)
+        RHS  = jac_add(D_G, D_T)
+        ok_pos = jac_isid(jac_sub(D_fb_sum, RHS))
+        ok_neg = jac_isid(jac_add(D_fb_sum, RHS))
+        if !(ok_pos || ok_neg)
+            @printf("[LP-DOUBLED-DIAG tid=%d] FAIL cross-close pt=%s  al=%d be=%d  row_weight=%d\n",
+                    Threads.threadid(), string(pt), combined_al, combined_be, length(combined))
+            @assert false "try_lp1_doubled_cross_close!: relation failed principal divisor check"
+        end
+    end
+    # --------------------------------
+
+    push!(alpha_vec, combined_al)
+    push!(beta_vec,  combined_be)
+    push!(rel_rows,  combined)
+    push!(rank_growth, (raw_steps, length(rel_rows)))
+    Threads.atomic_add!(rel_counter, 1)
+    return true
+end
+
 function phase2_worker(G::Div2, T::Div2,
                        fb::Vector{NTuple{2,Int}},
                        pt2idx::Dict{NTuple{2,Int},Int},
@@ -976,6 +1061,7 @@ function phase2_worker(G::Div2, T::Div2,
                        shared_lp1_lock::ReentrantLock,
                        shared_lp2::LP2Graph,
                        shared_lp2_lock::ReentrantLock,
+                       shared_lp_doubled::Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int}},
                        # per-thread LP residual collector (write-only from this thread)
                        lp_col::LPResidualCollector;
                        verbose::Bool = true)
@@ -1007,6 +1093,8 @@ function phase2_worker(G::Div2, T::Div2,
     hits_1lp_emit = 0
     hits_lp2seen  = 0
     hits_lp2emit  = 0
+    hits_lp2_cross = 0   # 2-LP steps resolved via 1-LP table cross-lookup
+    hits_lp2_odd  = 0   # odd-parity 2-LP cycles stored/closed in shared_lp_doubled
     hits_skip     = 0
     raw_steps     = 0
 
@@ -1144,6 +1232,15 @@ function phase2_worker(G::Div2, T::Div2,
                     end
                 else
                     shared_lp1[lp_pt] = (copy(fb_row_scratch), neg_al, neg_be, raw_steps)
+                    # Case 1/3: if this point already has a doubled entry, cross-close.
+                    if try_lp1_doubled_cross_close!(lp_pt, shared_lp1, shared_lp_doubled,
+                                                    ell, alpha_vec, beta_vec, rel_rows,
+                                                    rank_growth, raw_steps, rel_counter,
+                                                    G, T, fb)
+                        hits_full    += 1
+                        hits_lp2emit += 1
+                        closed = true
+                    end
                 end
             finally
                 unlock(shared_lp1_lock)
@@ -1201,7 +1298,7 @@ function phase2_worker(G::Div2, T::Div2,
                 unlock(shared_lp2_lock)
             end
 
-            if emitted_rel !== nothing
+            if emitted_rel !== nothing && emitted_rel.type === :even_cycle
                 # emitted_rel.alpha/beta satisfy:
                 #   combined_fb_row = emitted_rel.alpha·G + emitted_rel.beta·T
                 # Kernel solve expects: fb_row = alpha_vec·G + beta_vec·T
@@ -1229,8 +1326,8 @@ function phase2_worker(G::Div2, T::Div2,
                     D_T = jac_mul(T, emitted_rel.beta)
                     RHS = jac_add(D_G, D_T)
 
-                    ok_pos = jac_isid(jac_sub(D_fb_sum, RHS))   # D_fb == +alpha*G + beta*T
-                    ok_neg = jac_isid(jac_add(D_fb_sum, RHS))   # D_fb == -alpha*G - beta*T
+                    ok_pos = jac_isid(jac_sub(D_fb_sum, RHS))
+                    ok_neg = jac_isid(jac_add(D_fb_sum, RHS))
 
                     if !(ok_pos || ok_neg)
                         @printf("[LP2-DIAG tid=%d] FAIL  ok_pos=%s ok_neg=%s  alpha=%d beta=%d  row_weight=%d  root_signs=(%d,%d)  depths=(%d,%d)\n",
@@ -1247,6 +1344,60 @@ function phase2_worker(G::Div2, T::Div2,
                 # ------------------------------------
 
                 cur_pt = fb[rand(1:nF_cur)]
+
+            elseif emitted_rel !== nothing && emitted_rel.type === :odd_cycle
+                # odd cycle: 2·atom(root) + row = alpha·G + beta·T
+                # Store in shared_lp_doubled; close immediately if root already present.
+                hits_lp2_odd += 1
+                lock(shared_lp1_lock)
+                try
+                    root = emitted_rel.root
+                    if haskey(shared_lp_doubled, root)
+                        prev_row, prev_al, prev_be = shared_lp_doubled[root]
+                        # Subtract: (row - prev_row) = (alpha - prev_al)·G + (beta - prev_be)·T
+                        # This is a pure FB relation (the 2·atom(root) cancels).
+                        combined = copy(emitted_rel.row)
+                        for (j, v) in prev_row
+                            nv = get(combined, j, 0) - v
+                            nv == 0 ? delete!(combined, j) : (combined[j] = nv)
+                        end
+                        combined_al = mod(emitted_rel.alpha - prev_al, ell)
+                        combined_be = mod(emitted_rel.beta  - prev_be, ell)
+                        delete!(shared_lp_doubled, root)
+                        if !isempty(combined) && !(combined_al == 0 && combined_be == 0)
+                            push!(alpha_vec, combined_al)
+                            push!(beta_vec,  combined_be)
+                            push!(rel_rows,  combined)
+                            push!(rank_growth, (raw_steps, length(rel_rows)))
+                            hits_full    += 1
+                            hits_lp2emit += 1
+                            Threads.atomic_add!(rel_counter, 1)
+                        end
+                    else
+                        shared_lp_doubled[root] = (emitted_rel.row, emitted_rel.alpha, emitted_rel.beta)
+                        # Case 1/3: if root already has a 1-LP entry, cross-close.
+                        if try_lp1_doubled_cross_close!(root, shared_lp1, shared_lp_doubled,
+                                                        ell, alpha_vec, beta_vec, rel_rows,
+                                                        rank_growth, raw_steps, rel_counter,
+                                                        G, T, fb)
+                            hits_full    += 1
+                            hits_lp2emit += 1
+                        end
+                    end
+                finally
+                    unlock(shared_lp1_lock)
+                end
+
+                if i0 != 0
+                    cur_pt = P0
+                elseif iR != 0
+                    cur_pt = R
+                elseif iS != 0
+                    cur_pt = S
+                else
+                    cur_pt = fb[rand(1:nF_cur)]
+                end
+
             else
                 # No emission; advance anchor to the one FB point if available.
                 if i0 != 0
@@ -1260,6 +1411,72 @@ function phase2_worker(G::Div2, T::Div2,
                 end
             end
 
+            # ── Cross-lookup: resolve 2-LP via 1-LP table ───────────────────
+            # Invariant for this step:
+            #   atom(lp2_a) + atom(lp2_b) + fb_row_scratch = neg_al·G + neg_be·T
+            #
+            # If lp2_a or lp2_b is already in shared_lp1 with entry
+            #   atom(lp_pt) + r = neg_al_pt·G + neg_be_pt·T
+            # substituting yields a 1-LP relation for the other point:
+            #   atom(other) + (fb_row_scratch - r) = (neg_al - neg_al_pt)·G + (neg_be - neg_be_pt)·T
+            # which we store in shared_lp1 (or close immediately if other is already there).
+            #
+            # We check both endpoints; the first hit wins for simplicity.
+            lock(shared_lp1_lock)
+            try
+                for (lp_known, lp_other) in ((lp2_a, lp2_b), (lp2_b, lp2_a))
+                    haskey(shared_lp1, lp_known) || continue
+
+                    r_known, na_known, nb_known, _step_known = shared_lp1[lp_known]
+                    # New 1-LP entry for lp_other:
+                    #   atom(lp_other) + new_row = new_neg_al·G + new_neg_be·T
+                    new_row    = copy(fb_row_scratch)
+                    for (j, v) in r_known
+                        nv = get(new_row, j, 0) - v
+                        nv == 0 ? delete!(new_row, j) : (new_row[j] = nv)
+                    end
+                    new_neg_al = mod(neg_al - na_known, ell)
+                    new_neg_be = mod(neg_be - nb_known, ell)
+
+                    hits_lp2_cross += 1
+
+                    if haskey(shared_lp1, lp_other)
+                        # Immediate closure: lp_other already in table.
+                        prev_row, prev_al, prev_be, prev_step = shared_lp1[lp_other]
+                        combined    = copy(new_row)
+                        lp2_subtract_rows(combined, prev_row)
+                        combined_al = mod(new_neg_al - prev_al, ell)
+                        combined_be = mod(new_neg_be - prev_be, ell)
+                        delete!(shared_lp1, lp_other)
+                        record_closure!(lp_col, raw_steps, prev_step)
+                        if !isempty(combined) && !(combined_al == 0 && combined_be == 0)
+                            push!(alpha_vec, combined_al)
+                            push!(beta_vec,  combined_be)
+                            push!(rel_rows,  combined)
+                            push!(rank_growth, (raw_steps, length(rel_rows)))
+                            hits_full    += 1
+                            hits_1lp_emit += 1
+                            Threads.atomic_add!(rel_counter, 1)
+                        end
+                    else
+                        # Store as a new 1-LP entry for lp_other.
+                        shared_lp1[lp_other] = (new_row, new_neg_al, new_neg_be, raw_steps)
+                        # Case 1/3: if lp_other already has a doubled entry, cross-close.
+                        if try_lp1_doubled_cross_close!(lp_other, shared_lp1, shared_lp_doubled,
+                                                        ell, alpha_vec, beta_vec, rel_rows,
+                                                        rank_growth, raw_steps, rel_counter,
+                                                        G, T, fb)
+                            hits_full    += 1
+                            hits_lp2emit += 1
+                        end
+                    end
+                    break   # one substitution per step is enough
+                end
+            finally
+                unlock(shared_lp1_lock)
+            end
+            # ────────────────────────────────────────────────────────────────
+
         else
             hits_skip += 1
             cur_pt = fb[rand(1:nF_cur)]
@@ -1268,9 +1485,9 @@ function phase2_worker(G::Div2, T::Div2,
 
     elapsed_total = time() - t_worker_start
     if verbose
-        @printf("[thread %2d | DONE | t=%.1fs] raw=%d valid=%d 0lp=%d 1lp_emit=%d 1lp_step=%d 2lp_seen=%d 2lp_emit=%d skip=%d  rels_local=%d\n",
+        @printf("[thread %2d | DONE | t=%.1fs] raw=%d valid=%d 0lp=%d 1lp_emit=%d 1lp_step=%d 2lp_seen=%d 2lp_emit=%d 2lp_cross=%d 2lp_odd=%d skip=%d  rels_local=%d\n",
                 tid, elapsed_total, raw_steps, hits_total, hits_0lp, hits_1lp_emit,
-                hits_lp1, hits_lp2seen, hits_lp2emit, hits_skip, length(rel_rows))
+                hits_lp1, hits_lp2seen, hits_lp2emit, hits_lp2_cross, hits_lp2_odd, hits_skip, length(rel_rows))
         @printf("           phi-valid rate: %.4f%%  |  full-rel/valid: %.4f%%  |  steps/full: %.1f\n",
                 100.0 * hits_total / max(1, raw_steps),
                 100.0 * hits_full / max(1, hits_total),
@@ -1288,7 +1505,8 @@ function phase2_worker(G::Div2, T::Div2,
     return (rel_rows=rel_rows, alpha_vec=alpha_vec, beta_vec=beta_vec,
             hits_total=hits_total, hits_full=hits_full, hits_0lp=hits_0lp,
             hits_lp1=hits_lp1, hits_1lp_emit=hits_1lp_emit, hits_lp2seen=hits_lp2seen,
-            hits_lp2emit=hits_lp2emit, hits_skip=hits_skip,
+            hits_lp2emit=hits_lp2emit, hits_lp2_cross=hits_lp2_cross, hits_lp2_odd=hits_lp2_odd,
+            hits_skip=hits_skip,
             sample_rels=sample_rels,
             total_steps=raw_steps,
             smooth_hist=smooth_hist,
@@ -1368,6 +1586,7 @@ function index_calculus_walk(G::Div2, T::Div2;
     shared_lp1_lock  = ReentrantLock()
     shared_lp2       = LP2Graph()
     shared_lp2_lock  = ReentrantLock()
+    shared_lp_doubled = Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int}}()
 
     if verbose
         println()
@@ -1396,6 +1615,7 @@ function index_calculus_walk(G::Div2, T::Div2;
             rel_counter, rel_target, step_cap ÷ Threads.nthreads(),
             shared_lp1, shared_lp1_lock,
             shared_lp2, shared_lp2_lock,
+            shared_lp_doubled,
             thread_collectors[tid]; verbose=verbose)
     end
     # Collect results; a timed wait surfaces hangs as an error rather than
@@ -1438,6 +1658,7 @@ function index_calculus_walk(G::Div2, T::Div2;
     hits_1lp_emit = 0
     hits_lp2seen  = 0
     hits_lp2emit  = 0
+    hits_lp2_odd  = 0
     hits_skip     = 0
     all_samples   = similar(results[1].sample_rels, 0)
 
@@ -1457,6 +1678,7 @@ function index_calculus_walk(G::Div2, T::Div2;
         hits_1lp_emit += r.hits_1lp_emit
         hits_lp2seen  += r.hits_lp2seen
         hits_lp2emit  += r.hits_lp2emit
+        hits_lp2_odd  += r.hits_lp2_odd
         hits_skip     += r.hits_skip
         append!(all_samples, r.sample_rels)
         push!(thread_hits,  r.hits_total)
@@ -1488,6 +1710,8 @@ function index_calculus_walk(G::Div2, T::Div2;
                 hits_lp2seen, 100.0 * hits_lp2seen / max(1, hits_total))
         @printf("    2-LP closures emit:  %d  (%.2f%%)\n",
                 hits_lp2emit, 100.0 * hits_lp2emit / max(1, hits_total))
+        @printf("    2-LP odd stored:     %d  (%.2f%%)\n",
+                hits_lp2_odd, 100.0 * hits_lp2_odd / max(1, hits_total))
         @printf("    3-LP skips:          %d  (%.2f%%)\n",
                 hits_skip, 100.0 * hits_skip / max(1, hits_total))
         println()
@@ -1498,7 +1722,9 @@ function index_calculus_walk(G::Div2, T::Div2;
         @printf("    depth-pruned:        %d\n",  shared_lp2.n_depth_pruned)
         @printf("    weight-pruned:       %d\n",  shared_lp2.n_weight_pruned)
         @printf("    parity-pruned:       %d\n",  shared_lp2.n_parity_pruned)
+        @printf("    odd-cycle stored:    %d\n",  shared_lp2.n_odd_stored)
         @printf("    LP nodes in graph:   %d\n",  length(shared_lp2.nodes))
+        @printf("    lp_doubled residual: %d entries\n", length(shared_lp_doubled))
         cycle_rate = shared_lp2.n_cycles_found / max(1, shared_lp2.n_edges_inserted)
         emit_rate  = shared_lp2.n_emitted      / max(1, shared_lp2.n_cycles_found)
         @printf("    cycle/edge rate:     %.4f\n", cycle_rate)

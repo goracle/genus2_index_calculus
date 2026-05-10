@@ -179,12 +179,13 @@ mutable struct LP2Graph
     n_depth_pruned   ::Int
     n_weight_pruned  ::Int
     n_parity_pruned  ::Int
+    n_odd_stored     ::Int   # odd cycles passed to caller for doubled-atom storage
 end
 
 function LP2Graph()
     LP2Graph(
         Dict{NTuple{2,Int}, LP2Node}(),
-        0, 0, 0, 0, 0, 0
+        0, 0, 0, 0, 0, 0, 0
     )
 end
 
@@ -278,6 +279,9 @@ function lp2_insert_edge!(g::LP2Graph,
 
     g.n_edges_inserted += 1
 
+    # Degenerate: self-loop (double LP point in divisor). Nothing to learn.
+    L == R && return nothing
+
     rL = lp2_tree_root(g, L)
     rR = lp2_tree_root(g, R)
 
@@ -293,15 +297,40 @@ function lp2_insert_edge!(g::LP2Graph,
             return nothing
         end
 
-        # Reject odd cycles (roots fail to cancel)
+        # Odd cycle: both paths reach root with the same sign, so
+        #   atom(L) + atom(R) + fb_row = -al·G - be·T
+        # becomes  2s·atom(root) = s·(pathL.row + pathR.row - fb_row) + ...
+        # Multiply through by s to get the canonical  2·atom(root) + row = al·G + be·T
+        # and pass the result back tagged so the caller can store it in shared_lp_doubled.
         if pathL.root_sign == pathR.root_sign
             g.n_parity_pruned += 1
-            if g.n_parity_pruned <= 8
-                @printf("[LP2-PARITY tid=%d] odd cycle rejected at cycle-detect: L=%s R=%s root_signs=(%d,%d) depths=(%d,%d)\n",
-                        Threads.threadid(), string(L), string(R),
-                        pathL.root_sign, pathR.root_sign, pathL.depth, pathR.depth)
+            g.n_odd_stored    += 1
+            s = pathL.root_sign   # +1 or -1
+
+            odd_row = Dict{Int,Int}()
+            for (j, v) in pathL.row
+                nv = get(odd_row, j, 0) - s * v
+                nv == 0 ? delete!(odd_row, j) : (odd_row[j] = nv)
             end
-            return nothing
+            for (j, v) in pathR.row
+                nv = get(odd_row, j, 0) - s * v
+                nv == 0 ? delete!(odd_row, j) : (odd_row[j] = nv)
+            end
+            for (j, v) in fb_row
+                nv = get(odd_row, j, 0) + s * v
+                nv == 0 ? delete!(odd_row, j) : (odd_row[j] = nv)
+            end
+
+            odd_alpha = mod(s * (pathL.alpha + pathR.alpha - alpha), ell)
+            odd_beta  = mod(s * (pathL.beta  + pathR.beta  - beta),  ell)
+
+            if length(odd_row) > MAX_LP2_ROW_WEIGHT
+                g.n_weight_pruned += 1
+                return nothing
+            end
+
+            return (type=:odd_cycle, root=rL,
+                    row=odd_row, alpha=odd_alpha, beta=odd_beta)
         end
 
         combined = copy(fb_row)
@@ -319,15 +348,16 @@ function lp2_insert_edge!(g::LP2Graph,
             return nothing
         end
 
-        combined_alpha = mod(alpha - pathL.alpha - pathR.alpha, ell)
-        combined_beta  = mod(beta  - pathL.beta  - pathR.beta,  ell)
+        combined_alpha = mod(pathL.alpha + pathR.alpha - alpha, ell)
+        combined_beta  = mod(pathL.beta  + pathR.beta  - beta,  ell)
 
         if isempty(combined) || (combined_alpha == 0 && combined_beta == 0)
             return nothing
         end
 
         g.n_emitted += 1
-        return (row=combined,
+        return (type=:even_cycle,
+                row=combined,
                 alpha=combined_alpha,
                 beta=combined_beta,
                 root_signs=(pathL.root_sign, pathR.root_sign),
@@ -370,67 +400,26 @@ function lp2_insert_edge!(g::LP2Graph,
             g.nodes[R] = LP2Node(L, new_depth, copy(fb_row), alpha, beta)
 
         else
-            # Both L and R are in different trees (rL != rR guaranteed here).
-            # We must attach rL to rR (or vice-versa) — never a non-root node.
-            # Compute paths L->rL and R->rR to derive the edge label for rL->rR.
-            pathL = lp2_path_to_root(g, L, ell)
-            pathR = lp2_path_to_root(g, R, ell)
-
-            if pathL === nothing || pathR === nothing
-                g.n_depth_pruned += 1
-                return nothing
+            # Both L and R are in different existing trees (rL != rR).
+            #
+            # Cross-tree merge is UNSOUND with the alternating-sign path convention.
+            # lp2_path_to_root encodes atom(X) = root_sign·atom(root) - path.row - path.alpha·G.
+            # A cross-tree edge gives root_sign_L·atom(rL) + root_sign_R·atom(rR) = RHS.
+            # When root_signs are opposite (needed for cycle-emit atom cancellation),
+            # this equals atom(rL) - atom(rR), NOT atom(rL) + atom(rR), so any derived
+            # root-to-root edge label would violate the edge invariant and corrupt all
+            # future cycle detections that traverse it.
+            #
+            # Safe fix: don't merge.  Insert new singleton roots for any nodes not yet
+            # in the graph so future edges have something to attach to.
+            # We only emit relations from same-tree cycles, which are algebraically clean.
+            if node_L === nothing
+                g.nodes[L] = LP2Node(nothing, 0, Dict{Int,Int}(), 0, 0)
             end
-
-            # Same parity roots are incompatible in this tree model:
-            # the stored alternating-sign path convention would make the
-            # root-to-root edge land in the wrong sign class.
-            if pathL.root_sign == pathR.root_sign
-                g.n_parity_pruned += 1
-                if g.n_parity_pruned <= 8
-                    @printf("[LP2-PARITY tid=%d] tree-merge rejected: L=%s R=%s rL=%s rR=%s root_signs=(%d,%d) depths=(%d,%d)\n",
-                            Threads.threadid(), string(L), string(R), string(rL), string(rR),
-                            pathL.root_sign, pathR.root_sign, pathL.depth, pathR.depth)
-                end
-                return nothing
+            if node_R === nothing
+                g.nodes[R] = LP2Node(nothing, 0, Dict{Int,Int}(), 0, 0)
             end
-
-            # Depth bound: merged tree height is pathL.depth + 1 + pathR.depth
-            new_root_depth = pathL.depth + 1 + pathR.depth
-            if new_root_depth > MAX_LP2_DEPTH
-                g.n_depth_pruned += 1
-                return nothing
-            end
-
-            # Compute the edge label for the new rL->rR link.
-            # Same arithmetic as the cycle-emit case, but stored instead of emitted.
-            edge_row = copy(fb_row)
-            for (j, v) in pathL.row
-                nv = get(edge_row, j, 0) - v
-                nv == 0 ? delete!(edge_row, j) : (edge_row[j] = nv)
-            end
-            for (j, v) in pathR.row
-                nv = get(edge_row, j, 0) - v
-                nv == 0 ? delete!(edge_row, j) : (edge_row[j] = nv)
-            end
-            edge_alpha = mod(alpha - pathL.alpha - pathR.alpha, ell)
-            edge_beta  = mod(beta  - pathL.beta  - pathR.beta,  ell)
-
-            # Attach the shallower-rooted tree under the deeper one.
-            if pathL.depth <= pathR.depth
-                # attach rL as child of rR
-                g.nodes[rL] = LP2Node(rR, pathR.depth + 1,
-                                      edge_row, edge_alpha, edge_beta)
-            else
-                # attach rR as child of rL; negate edge label (direction flipped)
-                neg_edge_row = Dict{Int,Int}()
-                for (j, v) in edge_row
-                    neg_edge_row[j] = -v
-                end
-                neg_edge_alpha = mod(ell - edge_alpha, ell)
-                neg_edge_beta  = mod(ell - edge_beta,  ell)
-                g.nodes[rR] = LP2Node(rL, pathL.depth + 1,
-                                      neg_edge_row, neg_edge_alpha, neg_edge_beta)
-            end
+            # (Both already in separate trees — no merge, no emission.)
         end
 
         # Integrity check: verify no cycle was just introduced for the two nodes we touched.
