@@ -33,6 +33,8 @@ using Base.Threads
 using Nemo
 using Dates
 
+include("lp_residual_stats.jl")   # LP residual diagnostics (occupancy, entropy, autocorr, clustering)
+
 # ---------------------------------------------------------------------------
 #  phi construction
 #
@@ -1074,6 +1076,224 @@ end
 #  the walk — only the atomic increment on emit.
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+#  LP2Graph — shared 2-large-prime graph for cycle-based relation emission
+#
+#  Each 2-LP walk step yields a pair of off-factor-base points (L, R) and
+#  a factor-base row expressing:
+#
+#      atom(L) + atom(R) + fb_row  =  -alpha*G - beta*T      ... (*)
+#
+#  We model this as a weighted graph where nodes are LP points and each
+#  such step inserts an edge (L, R) labelled with (fb_row, alpha, beta).
+#
+#  A cycle in this graph means we can subtract two edge labels to eliminate
+#  the shared LP node and produce a pure factor-base relation.  We detect
+#  cycles online via union-find: when we try to insert edge (L,R) and L,R
+#  are already in the same component, we have a cycle.  We then walk the
+#  stored spanning-tree path from L to their common root and from R to that
+#  root, cancelling LP nodes along the way, to recover the FB relation.
+#
+#  Spanning tree storage:
+#    Each LP node v stores parent[v], edge_to_parent[v] = (fb_row, alpha, beta).
+#    The edge direction is always child→parent, so "subtracting" means we negate
+#    when traversing parent→child.
+#
+#  Row-weight bound:
+#    Each path-combination can double the row weight at each step.  We cap the
+#    total combined row weight at MAX_LP2_ROW_WEIGHT; if exceeded we discard
+#    rather than emit a bloated row.
+#
+#  Thread safety:
+#    The struct is shared across all walker threads behind a single ReentrantLock.
+#    Lock is held only during graph mutation and cycle checks — O(depth) work,
+#    bounded by MAX_LP2_DEPTH.
+# ---------------------------------------------------------------------------
+
+const MAX_LP2_DEPTH       = 6    # max spanning-tree depth; prevents row blowup
+const MAX_LP2_ROW_WEIGHT  = 24   # max nonzeros in an emitted 2-LP relation
+
+mutable struct LP2Node
+    parent   ::Union{NTuple{2,Int}, Nothing}   # nothing = this node is a root
+    depth    ::Int
+    # edge to parent: fb_row contribution when traversing child→parent
+    edge_row  ::Dict{Int,Int}
+    edge_alpha::Int
+    edge_beta ::Int
+end
+
+mutable struct LP2Graph
+    nodes    ::Dict{NTuple{2,Int}, LP2Node}
+    n_edges_inserted ::Int
+    n_cycles_found   ::Int
+    n_emitted        ::Int
+    n_depth_pruned   ::Int
+    n_weight_pruned  ::Int
+end
+
+function LP2Graph()
+    LP2Graph(
+        Dict{NTuple{2,Int}, LP2Node}(),
+        0, 0, 0, 0, 0
+    )
+end
+
+# Walk the spanning tree from `pt` to find its root (node with parent===nothing).
+# Returns the root key, or nothing if pt is not in the tree.
+function lp2_tree_root(g::LP2Graph, pt::NTuple{2,Int})
+    cur = pt
+    while true
+        node = get(g.nodes, cur, nothing)
+        node === nothing && return nothing   # pt not in tree at all
+        node.parent === nothing && return cur
+        cur = node.parent
+    end
+end
+
+# Walk the spanning tree from `start` up to the root, accumulating the
+# combined fb_row (with signs) and alpha/beta into (row, a, b).
+# Returns (row, alpha, beta, depth_reached) or nothing if depth exceeded.
+function lp2_path_to_root(g::LP2Graph, start::NTuple{2,Int}, ell::Int)
+    row   = Dict{Int,Int}()
+    alpha = 0
+    beta  = 0
+    sign_node = 1
+    cur   = start
+    depth = 0
+    while true
+        node = get(g.nodes, cur, nothing)
+        if node === nothing || node.parent === nothing
+            break
+        end
+
+        depth += 1
+        if depth > MAX_LP2_DEPTH
+            return nothing
+        end
+
+        for (j, v) in node.edge_row
+            nv = get(row, j, 0) + sign_node * v   # +sign_node (consistent with alpha/beta)
+            nv == 0 ? delete!(row, j) : (row[j] = nv)
+        end
+        alpha = mod(alpha + sign_node * node.edge_alpha, ell)
+        beta  = mod(beta  + sign_node * node.edge_beta,  ell)
+
+        sign_node = -sign_node
+        cur = node.parent
+    end
+    return (row=row, alpha=alpha, beta=beta, root_sign=sign_node, depth=depth)
+end
+
+
+# Try to insert edge (L, R) with label (fb_row, alpha, beta).
+# If L and R are already connected → cycle → emit a relation.
+# Otherwise insert L or R as a new child in the spanning tree.
+# Returns the emitted (row, alpha, beta) or nothing.
+function lp2_insert_edge!(g::LP2Graph,
+                          L::NTuple{2,Int}, R::NTuple{2,Int},
+                          fb_row::Dict{Int,Int},
+                          alpha::Int, beta::Int,
+                          ell::Int)
+
+    g.n_edges_inserted += 1
+
+    rL = lp2_tree_root(g, L)
+    rR = lp2_tree_root(g, R)
+
+    # Cycle: both nodes already in the same spanning tree
+    if rL !== nothing && rR !== nothing && rL == rR
+        g.n_cycles_found += 1
+
+        pathL = lp2_path_to_root(g, L, ell)
+        pathR = lp2_path_to_root(g, R, ell)
+
+        if pathL === nothing || pathR === nothing
+            g.n_depth_pruned += 1
+            return nothing
+        end
+
+        # Reject odd cycles (roots fail to cancel)
+        if pathL.root_sign == pathR.root_sign
+            g.n_depth_pruned += 1
+            return nothing
+        end
+
+        combined = copy(fb_row)
+        for (j, v) in pathL.row
+            nv = get(combined, j, 0) - v
+            nv == 0 ? delete!(combined, j) : (combined[j] = nv)
+        end
+        for (j, v) in pathR.row
+            nv = get(combined, j, 0) - v
+            nv == 0 ? delete!(combined, j) : (combined[j] = nv)
+        end
+
+        if length(combined) > MAX_LP2_ROW_WEIGHT
+            g.n_weight_pruned += 1
+            return nothing
+        end
+
+        combined_alpha = mod(pathL.alpha + pathR.alpha - alpha, ell)
+        combined_beta  = mod(pathL.beta  + pathR.beta  - beta,  ell)
+
+        if isempty(combined) || (combined_alpha == 0 && combined_beta == 0)
+            return nothing
+        end
+
+        g.n_emitted += 1
+        return (row=combined, alpha=combined_alpha, beta=combined_beta)
+
+    else
+        # Tree-merge: attach whichever endpoint is not yet in a tree (or is shallower)
+        node_L = get(g.nodes, L, nothing)
+        node_R = get(g.nodes, R, nothing)
+        depth_L = node_L === nothing ? 0 : node_L.depth
+        depth_R = node_R === nothing ? 0 : node_R.depth
+
+        attach_child  = nothing
+        attach_parent = nothing
+        new_depth     = 0
+
+        if node_L === nothing && node_R !== nothing
+            attach_child  = L
+            attach_parent = R
+            new_depth     = depth_R + 1
+        elseif node_R === nothing && node_L !== nothing
+            attach_child  = R
+            attach_parent = L
+            new_depth     = depth_L + 1
+        elseif node_L === nothing && node_R === nothing
+            # Neither in tree yet: make R a root, attach L as child
+            g.nodes[R] = LP2Node(nothing, 0, Dict{Int,Int}(), 0, 0)
+            attach_child  = L
+            attach_parent = R
+            new_depth     = 1
+        else
+            # Both in separate trees: attach the shallower-rooted one
+            if depth_L <= depth_R
+                attach_child  = L
+                attach_parent = R
+                new_depth     = depth_R + 1
+            else
+                attach_child  = R
+                attach_parent = L
+                new_depth     = depth_L + 1
+            end
+        end
+
+        if new_depth > MAX_LP2_DEPTH
+            g.n_depth_pruned += 1
+            return nothing
+        end
+
+        g.nodes[attach_child] = LP2Node(attach_parent, new_depth,
+                                        copy(fb_row), alpha, beta)
+        return nothing
+    end
+end
+
+
+
 function phase2_worker(G::Div2, T::Div2,
                        fb::Vector{NTuple{2,Int}},
                        pt2idx::Dict{NTuple{2,Int},Int},
@@ -1082,8 +1302,12 @@ function phase2_worker(G::Div2, T::Div2,
                        step_b::Vector{Int},
                        rel_counter::Threads.Atomic{Int},
                        rel_target::Int,
-                       shared_lp1::Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int}},
-                       shared_lp1_lock::ReentrantLock;
+                       shared_lp1::Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int, Int}},
+                       shared_lp1_lock::ReentrantLock,
+                       shared_lp2::LP2Graph,
+                       shared_lp2_lock::ReentrantLock,
+                       # per-thread LP residual collector (write-only from this thread)
+                       lp_col::LPResidualCollector;
                        verbose::Bool = true)
 
     nF_cur   = length(fb)
@@ -1165,15 +1389,16 @@ function phase2_worker(G::Div2, T::Div2,
         if verbose && (now_t - t_last_report) >= report_interval_secs
             elapsed = now_t - t_worker_start
             rel_local = length(rel_rows)
-            @printf("[thread %2d | t=%6.1fs] raw=%d valid=%d 0lp=%d 1lp_emit=%d 1lp_step=%d 2lp=%d skip=%d  rels_local=%d  global=%d/%d\n",
+            @printf("[thread %2d | t=%6.1fs] raw=%d valid=%d 0lp=%d 1lp_emit=%d 1lp_step=%d 2lp_seen=%d 2lp_emit=%d skip=%d  rels_local=%d  global=%d/%d\n",
                     tid, elapsed, raw_steps, hits_total, hits_0lp, hits_1lp_emit,
-                    hits_lp1, hits_lp2seen, hits_skip,
+                    hits_lp1, hits_lp2seen, hits_lp2emit, hits_skip,
                     rel_local, rel_counter[], rel_target)
-            @printf("           rates: phi_val=%.3f%%  full=%.3f%%  1lp=%.3f%%  2lp=%.3f%%  skip=%.3f%%\n",
+            @printf("           rates: phi_val=%.3f%%  full=%.3f%%  1lp=%.3f%%  2lp_seen=%.3f%%  2lp_emit=%.3f%%  skip=%.3f%%\n",
                     100.0 * hits_total / raw_steps,
                     100.0 * hits_full  / max(1, hits_total),
                     100.0 * hits_lp1   / max(1, hits_total),
                     100.0 * hits_lp2seen / max(1, hits_total),
+                    100.0 * hits_lp2emit / max(1, hits_total),
                     100.0 * hits_skip  / max(1, hits_total))
             @printf("           smoothness histogram (0-LP, 1-LP, 2-LP, 3-LP): %d %d %d %d\n",
                     smooth_hist[1], smooth_hist[2], smooth_hist[3], smooth_hist[4])
@@ -1220,17 +1445,23 @@ function phase2_worker(G::Div2, T::Div2,
                 fb_row_scratch[idx] = get(fb_row_scratch, idx, 0) + 1
             end
 
+            # ── LP residual recording ────────────────────────────────────
+            record_lp1!(lp_col, lp_pt, al, be, raw_steps)
+            # ─────────────────────────────────────────────────────────────
+
             closed = false
             lock(shared_lp1_lock)
             try
                 if haskey(shared_lp1, lp_pt)
-                    prev_row, prev_al, prev_be = shared_lp1[lp_pt]
+                    prev_row, prev_al, prev_be, prev_step = shared_lp1[lp_pt]
                     combined    = copy(fb_row_scratch)
                     lp2_subtract_rows(combined, prev_row)
                     combined_al = mod(neg_al - prev_al, ell)
                     combined_be = mod(neg_be - prev_be, ell)
                     delete!(shared_lp1, lp_pt)
                     closed = true
+                    # ── record closure gap ───────────────────────────────
+                    record_closure!(lp_col, raw_steps, prev_step)
                     
                     if !isempty(combined) && !(combined_al == 0 && combined_be == 0)
                         push!(alpha_vec, combined_al)
@@ -1242,7 +1473,7 @@ function phase2_worker(G::Div2, T::Div2,
                         Threads.atomic_add!(rel_counter, 1)
                     end
                 else
-                    shared_lp1[lp_pt] = (copy(fb_row_scratch), neg_al, neg_be)
+                    shared_lp1[lp_pt] = (copy(fb_row_scratch), neg_al, neg_be, raw_steps)
                 end
             finally
                 unlock(shared_lp1_lock)
@@ -1260,14 +1491,98 @@ function phase2_worker(G::Div2, T::Div2,
 
         elseif n_lp == 2
             hits_lp2seen += 1
-            if i0 != 0
-                cur_pt = P0
-            elseif iR != 0
-                cur_pt = R
-            elseif iS != 0
-                cur_pt = S
-            else
+
+            # Identify the two LP points.  Exactly two of {P0,R,S} are off-FB.
+            lp2_a = i0 == 0 ? P0 : (iR == 0 ? R : S)
+            lp2_b = if i0 == 0 && iR == 0
+                        R
+                    elseif i0 == 0 && iS == 0
+                        S
+                    else
+                        S   # iR==0, iS==0
+                    end
+
+            # ── LP residual recording ────────────────────────────────────
+            record_lp2!(lp_col, lp2_a, lp2_b, raw_steps)
+
+            # Build the FB-only part of this 2-LP edge.
+            # Relation: atom(lp2_a) + atom(lp2_b) + fb_part = -neg_al*G - neg_be*T
+            # where fb_part covers the one FB point among {P0,R,S}.
+            empty!(fb_row_scratch)
+            for idx in (i0, iR, iS)
+                idx == 0 && continue
+                fb_row_scratch[idx] = get(fb_row_scratch, idx, 0) + 1
+            end
+
+            # Attempt edge insertion / cycle detection under the LP2 lock.
+            # We pass al/be (not neg_al/neg_be): the edge invariant is
+            #   atom(L) + atom(R) + fb_row = -al·G - be·T
+            # so alpha/beta stored on edges are the raw walk values.
+            emitted_rel = nothing
+            lock(shared_lp2_lock)
+            try
+                emitted_rel = lp2_insert_edge!(
+                    shared_lp2,
+                    lp2_a, lp2_b,
+                    fb_row_scratch,
+                    al, be,
+                    ell)
+            finally
+                unlock(shared_lp2_lock)
+            end
+
+            if emitted_rel !== nothing
+                # emitted_rel.alpha/beta satisfy:
+                #   combined_fb_row = emitted_rel.alpha·G + emitted_rel.beta·T
+                # Kernel solve expects: fb_row = alpha_vec·G + beta_vec·T
+                # so push them directly without negating.
+                push!(alpha_vec, emitted_rel.alpha)
+                push!(beta_vec,  emitted_rel.beta)
+                push!(rel_rows,  emitted_rel.row)
+                push!(rank_growth, (raw_steps, length(rel_rows)))
+                hits_full    += 1
+                hits_lp2emit += 1
+                Threads.atomic_add!(rel_counter, 1)
+
+                # --- PRINCIPAL DIVISOR DIAGNOSTIC ---
+                let
+                    # Compute D_fb = Σ row[j] · atom(fb[j])
+                    D_fb_sum = JacID
+                    for (idx, v) in emitted_rel.row
+                        pt = fb[idx]
+                        D_fb = mumford1(pt[1], pt[2])
+                        absv = abs(v)
+                        Dv = jac_mul_raw(D_fb, absv)
+                        D_fb_sum = v > 0 ? jac_add(D_fb_sum, Dv) : jac_sub(D_fb_sum, Dv)
+                    end
+                    D_G = jac_mul(G, emitted_rel.alpha)
+                    D_T = jac_mul(T, emitted_rel.beta)
+                    RHS = jac_add(D_G, D_T)
+
+                    ok_pos = jac_isid(jac_sub(D_fb_sum, RHS))   # D_fb == +alpha*G + beta*T
+                    ok_neg = jac_isid(jac_add(D_fb_sum, RHS))   # D_fb == -alpha*G - beta*T
+
+                    if !ok_pos
+                        @printf("[LP2-DIAG tid=%d] FAIL  ok_pos=%s ok_neg=%s  alpha=%d beta=%d  row_weight=%d\n",
+                                Threads.threadid(), ok_pos, ok_neg,
+                                emitted_rel.alpha, emitted_rel.beta, length(emitted_rel.row))
+                        @assert false "LP2 emitted relation is not principal! (see diagnostic above)"
+                    end
+                end
+                # ------------------------------------
+
                 cur_pt = fb[rand(1:nF_cur)]
+            else
+                # No emission; advance anchor to the one FB point if available.
+                if i0 != 0
+                    cur_pt = P0
+                elseif iR != 0
+                    cur_pt = R
+                elseif iS != 0
+                    cur_pt = S
+                else
+                    cur_pt = fb[rand(1:nF_cur)]
+                end
             end
 
         else
@@ -1278,9 +1593,9 @@ function phase2_worker(G::Div2, T::Div2,
 
     elapsed_total = time() - t_worker_start
     if verbose
-        @printf("[thread %2d | DONE | t=%.1fs] raw=%d valid=%d 0lp=%d 1lp_emit=%d 1lp_step=%d 2lp=%d skip=%d  rels_local=%d\n",
+        @printf("[thread %2d | DONE | t=%.1fs] raw=%d valid=%d 0lp=%d 1lp_emit=%d 1lp_step=%d 2lp_seen=%d 2lp_emit=%d skip=%d  rels_local=%d\n",
                 tid, elapsed_total, raw_steps, hits_total, hits_0lp, hits_1lp_emit,
-                hits_lp1, hits_lp2seen, hits_skip, length(rel_rows))
+                hits_lp1, hits_lp2seen, hits_lp2emit, hits_skip, length(rel_rows))
         @printf("           phi-valid rate: %.4f%%  |  full-rel/valid: %.4f%%  |  steps/full: %.1f\n",
                 100.0 * hits_total / max(1, raw_steps),
                 100.0 * hits_full / max(1, hits_total),
@@ -1302,7 +1617,8 @@ function phase2_worker(G::Div2, T::Div2,
             sample_rels=sample_rels,
             total_steps=raw_steps,
             smooth_hist=smooth_hist,
-            rank_growth=rank_growth)
+            rank_growth=rank_growth,
+            lp_col=lp_col)
 end
 
 function index_calculus_walk(G::Div2, T::Div2;
@@ -1358,8 +1674,10 @@ function index_calculus_walk(G::Div2, T::Div2;
     rel_target = nF + 1 + target_excess
     rel_counter = Threads.Atomic{Int}(0)
 
-    shared_lp1       = Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int}}()
+    shared_lp1       = Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int, Int}}()
     shared_lp1_lock  = ReentrantLock()
+    shared_lp2       = LP2Graph()
+    shared_lp2_lock  = ReentrantLock()
 
     if verbose
         println()
@@ -1375,12 +1693,16 @@ function index_calculus_walk(G::Div2, T::Div2;
 
     t_phase2_start = time()
     tasks = Vector{Task}(undef, Threads.nthreads())
+    # One collector per thread: no locking needed during walk, merged after.
+    thread_collectors = [LPResidualCollector() for _ in 1:Threads.nthreads()]
     for tid in 1:Threads.nthreads()
         tasks[tid] = Threads.@spawn phase2_worker(
             G, T, fb, pt2idx,
             step_D, step_a, step_b,
             rel_counter, rel_target,
-            shared_lp1, shared_lp1_lock; verbose=verbose)
+            shared_lp1, shared_lp1_lock,
+            shared_lp2, shared_lp2_lock,
+            thread_collectors[tid]; verbose=verbose)
     end
     results = [fetch(t) for t in tasks]
     t_phase2_done = time() - t_phase2_start
@@ -1449,6 +1771,18 @@ function index_calculus_walk(G::Div2, T::Div2;
         @printf("    3-LP skips:          %d  (%.2f%%)\n",
                 hits_skip, 100.0 * hits_skip / max(1, hits_total))
         println()
+        @printf("  2-LP graph stats:\n")
+        @printf("    edges inserted:      %d\n",  shared_lp2.n_edges_inserted)
+        @printf("    cycles found:        %d\n",  shared_lp2.n_cycles_found)
+        @printf("    relations emitted:   %d\n",  shared_lp2.n_emitted)
+        @printf("    depth-pruned:        %d\n",  shared_lp2.n_depth_pruned)
+        @printf("    weight-pruned:       %d\n",  shared_lp2.n_weight_pruned)
+        @printf("    LP nodes in graph:   %d\n",  length(shared_lp2.nodes))
+        cycle_rate = shared_lp2.n_cycles_found / max(1, shared_lp2.n_edges_inserted)
+        emit_rate  = shared_lp2.n_emitted      / max(1, shared_lp2.n_cycles_found)
+        @printf("    cycle/edge rate:     %.4f\n", cycle_rate)
+        @printf("    emit/cycle rate:     %.4f  (pruning loss)\n", emit_rate)
+        println()
         @printf("  total relations collected:   %d\n", nrel)
         @printf("  FB size (nF):                %d\n", nF)
         @printf("  relation surplus:            %+d\n", nrel - (nF + 1))
@@ -1482,6 +1816,13 @@ function index_calculus_walk(G::Div2, T::Div2;
                                     hits_lp2=hits_1lp_emit,
                                     verbose=verbose)
 
+    # ── LP residual statistics (ChatGPT analysis) ────────────────────────────
+    if verbose
+        merged_col = merge_collectors(thread_collectors)
+        lp_residual_report(merged_col; p_field=p, verbose=true)
+    end
+    # ─────────────────────────────────────────────────────────────────────────
+
     if nrel < nF + 1
         verbose && println("  shortfall: too few relations; skipping solve")
         return nothing
@@ -1490,6 +1831,7 @@ function index_calculus_walk(G::Div2, T::Div2;
     !solve && return nothing
 
     empty!(shared_lp1)
+    empty!(shared_lp2.nodes)
     empty!(all_samples)
     GC.gc()
 
