@@ -31,6 +31,7 @@ include("trial1_autoell_p10.jl")   # all Fp/poly/Jacobian/curve utilities
 using LinearAlgebra
 using Base.Threads
 using Nemo
+using Dates
 
 # ---------------------------------------------------------------------------
 #  phi construction
@@ -1087,6 +1088,8 @@ function phase2_worker(G::Div2, T::Div2,
 
     nF_cur   = length(fb)
     N_STEPS  = length(step_D)
+    tid      = Threads.threadid()
+    t_worker_start = time()
 
     # Per-thread mutable state
     cur_pt    = fb[rand(1:nF_cur)]
@@ -1097,6 +1100,11 @@ function phase2_worker(G::Div2, T::Div2,
     alpha_vec = Int[]
     beta_vec  = Int[]
     rel_rows  = Vector{Dict{Int,Int}}()
+    # sizehint avoids repeated doublings during the walk.
+    hint = max(64, cld(rel_target, Threads.nthreads()) + 32)
+    sizehint!(alpha_vec, hint)
+    sizehint!(beta_vec,  hint)
+    sizehint!(rel_rows,  hint)
 
     hits_total   = 0
     hits_full    = 0
@@ -1104,16 +1112,29 @@ function phase2_worker(G::Div2, T::Div2,
     hits_lp2seen = 0
     hits_lp2emit = 0
     hits_skip    = 0
-    step         = 0
+    raw_steps    = 0   # every loop iteration (including deg-1/non-split rejects)
 
+    # Per-thread smoothness histogram: how many of {P0,R,S} are in FB
+    smooth_hist  = zeros(Int, 4)   # smooth_hist[k+1] = count of n_lp == k
+
+    # Timing buckets: cumulative seconds in each category
+    t_last_report = time()
+    report_interval_secs = 30.0   # emit a progress line every 30s
+
+    # Reusable scratch dict for fb_row construction — avoids one Dict alloc
+    # per valid step.  Only copied to heap when we need to store/push it.
+    fb_row_scratch = Dict{Int,Int}()
+    sizehint!(fb_row_scratch, 4)
 
     # Sample full relations for algebraic spot-checking.
     sample_rels = Vector{Tuple{Div2,Dict{Int,Int},Int,Int,NTuple{2,Int},NTuple{2,Int},NTuple{2,Int}}}()
     # (2-LP graph disabled — closures have sign errors that poison the kernel)
 
-    while rel_counter[] < rel_target
-        # (rel_counter check at top of loop is the only exit condition)
+    # Rank growth tracking: record (raw_step, nrel_local) at each full emission
+    rank_growth = Tuple{Int,Int}[]   # (raw_steps_at_emission, cumulative_local_rels)
 
+    while rel_counter[] < rel_target
+        raw_steps += 1
         si        = rand(1:N_STEPS)
         D_cur     = jac_add(D_cur, step_D[si])
         alpha_cur = mod(alpha_cur + step_a[si], ell)
@@ -1145,12 +1166,26 @@ function phase2_worker(G::Div2, T::Div2,
         eval_f(S[1]) == fp(S[2] * S[2]) || continue
 
         hits_total += 1
-        step += 1
 
-        if verbose && step % 100_000 == 0
-            @printf("[thread %d] steps=%d  hits=%d  rels=%d/%d\n",
-                    Threads.threadid(), step, hits_total, rel_counter[], rel_target)
+        # Periodic verbose progress report
+        now_t = time()
+        if verbose && (now_t - t_last_report) >= report_interval_secs
+            elapsed = now_t - t_worker_start
+            rel_local = length(rel_rows)
+            @printf("[thread %2d | t=%6.1fs] raw=%d valid=%d full=%d 1lp=%d 2lp=%d skip=%d  rels_local=%d  global=%d/%d\n",
+                    tid, elapsed, raw_steps, hits_total, hits_full,
+                    hits_lp1, hits_lp2seen, hits_skip,
+                    rel_local, rel_counter[], rel_target)
+            @printf("           rates: phi_val=%.3f%%  full=%.3f%%  1lp=%.3f%%  2lp=%.3f%%  skip=%.3f%%\n",
+                    100.0 * hits_total / raw_steps,
+                    100.0 * hits_full  / max(1, hits_total),
+                    100.0 * hits_lp1   / max(1, hits_total),
+                    100.0 * hits_lp2seen / max(1, hits_total),
+                    100.0 * hits_skip  / max(1, hits_total))
+            @printf("           smoothness histogram (0-LP, 1-LP, 2-LP, 3-LP): %d %d %d %d\n",
+                    smooth_hist[1], smooth_hist[2], smooth_hist[3], smooth_hist[4])
             flush(stdout)
+            t_last_report = now_t
         end
 
         al     = alpha_cur
@@ -1163,16 +1198,19 @@ function phase2_worker(G::Div2, T::Div2,
         iR = get(pt2idx, R,  0)
         iS = get(pt2idx, S,  0)
         n_lp = (i0 == 0 ? 1 : 0) + (iR == 0 ? 1 : 0) + (iS == 0 ? 1 : 0)
+        smooth_hist[n_lp + 1] += 1
 
         if n_lp == 0
-            fb_row = Dict{Int,Int}()
+            # Build fb_row into scratch, then snapshot it for storage.
+            empty!(fb_row_scratch)
             for idx in (i0, iR, iS)
-                fb_row[idx] = get(fb_row, idx, 0) + 1
+                fb_row_scratch[idx] = get(fb_row_scratch, idx, 0) + 1
             end
+            fb_row = copy(fb_row_scratch)   # one alloc per emitted relation
             push!(alpha_vec, neg_al)
             push!(beta_vec,  neg_be)
             push!(rel_rows,  fb_row)
-            # Stash first few full relations with their divisor for spot-checking
+            push!(rank_growth, (raw_steps, length(rel_rows)))
             if length(sample_rels) < 10
                 push!(sample_rels, (D_cur, copy(fb_row), neg_al, neg_be, P0, R, S))
             end
@@ -1183,16 +1221,18 @@ function phase2_worker(G::Div2, T::Div2,
         elseif n_lp == 1
             hits_lp1 += 1
             lp_pt = i0 == 0 ? P0 : (iR == 0 ? R : S)
-            fb_row = Dict{Int,Int}()
+            # Build fb_row (FB-only part) into scratch.
+            empty!(fb_row_scratch)
             for idx in (i0, iR, iS)
                 idx == 0 && continue
-                fb_row[idx] = get(fb_row, idx, 0) + 1
+                fb_row_scratch[idx] = get(fb_row_scratch, idx, 0) + 1
             end
 
             lock(shared_lp1_lock)
             if haskey(shared_lp1, lp_pt)
                 prev_row, prev_al, prev_be = shared_lp1[lp_pt]
-                combined = copy(fb_row)
+                # Combine into scratch (subtract prev_row in-place, reuse scratch).
+                combined = copy(fb_row_scratch)   # alloc only on closure
                 lp2_subtract_rows(combined, prev_row)
                 combined_al = mod(neg_al - prev_al, ell)
                 combined_be = mod(neg_be - prev_be, ell)
@@ -1202,15 +1242,16 @@ function phase2_worker(G::Div2, T::Div2,
                     push!(alpha_vec, combined_al)
                     push!(beta_vec,  combined_be)
                     push!(rel_rows,  combined)
+                    push!(rank_growth, (raw_steps, length(rel_rows)))
                     hits_full += 1
                     Threads.atomic_add!(rel_counter, 1)
                 end
             else
-                shared_lp1[lp_pt] = (fb_row, neg_al, neg_be)
+                # Store a heap copy (shared_lp1 owns it); scratch is reused next iter.
+                shared_lp1[lp_pt] = (copy(fb_row_scratch), neg_al, neg_be)
                 unlock(shared_lp1_lock)
             end
 
-            # Re-anchor to a known FB point without allocating a temp vector.
             if i0 != 0
                 cur_pt = P0
             elseif iR != 0
@@ -1223,8 +1264,7 @@ function phase2_worker(G::Div2, T::Div2,
 
         elseif n_lp == 2
             hits_lp2seen += 1
-            # 2-LP closures are disabled (sign/involution errors poison the kernel).
-            # Don't accumulate edge structs — just re-anchor on any known FB point.
+            # 2-LP closures disabled (sign/involution errors poison the kernel).
             if i0 != 0
                 cur_pt = P0
             elseif iR != 0
@@ -1241,11 +1281,34 @@ function phase2_worker(G::Div2, T::Div2,
         end
     end
 
+    elapsed_total = time() - t_worker_start
+    if verbose
+        @printf("[thread %2d | DONE | t=%.1fs] raw=%d valid=%d full=%d 1lp=%d 2lp=%d skip=%d  rels_local=%d\n",
+                tid, elapsed_total, raw_steps, hits_total, hits_full,
+                hits_lp1, hits_lp2seen, hits_skip, length(rel_rows))
+        @printf("           phi-valid rate: %.4f%%  |  full-rel/valid: %.4f%%  |  steps/full: %.1f\n",
+                100.0 * hits_total / max(1, raw_steps),
+                100.0 * hits_full / max(1, hits_total),
+                raw_steps / max(1, hits_full))
+        @printf("           smoothness (0-LP 1-LP 2-LP 3-LP): %d %d %d %d\n",
+                smooth_hist[1], smooth_hist[2], smooth_hist[3], smooth_hist[4])
+        # Rank growth: report spacing between first few emissions
+        if length(rank_growth) >= 2
+            gaps = [rank_growth[i][1] - rank_growth[i-1][1] for i in 2:min(10, length(rank_growth))]
+            @printf("           first-emission raw step gaps (up to 10): %s\n",
+                    join(string.(gaps), " "))
+        end
+        flush(stdout)
+    end
+
     return (rel_rows=rel_rows, alpha_vec=alpha_vec, beta_vec=beta_vec,
             hits_total=hits_total, hits_full=hits_full,
             hits_lp1=hits_lp1, hits_lp2seen=hits_lp2seen,
             hits_lp2emit=hits_lp2emit, hits_skip=hits_skip,
-            sample_rels=sample_rels)
+            sample_rels=sample_rels,
+            total_steps=raw_steps,
+            smooth_hist=smooth_hist,
+            rank_growth=rank_growth)
 end
 
 
@@ -1258,6 +1321,8 @@ function index_calculus_walk(G::Div2, T::Div2;
                              solve::Bool          = true,
                              guided::Bool         = true)
 
+    t_walk_start = time()
+
     all_pts = curve_points()
     n_all   = length(all_pts)
     n_all < 2 && error("Not enough rational points on the curve")
@@ -1267,9 +1332,28 @@ function index_calculus_walk(G::Div2, T::Div2;
     fb = all_pts[1:nF]
     pt2idx = Dict{NTuple{2,Int},Int}(pt => i for (i, pt) in enumerate(fb))
 
-    verbose && @printf("Factor base: %d / %d rational points\n", nF, n_all)
+    if verbose
+        println()
+        @printf("── Factor base ─────────────────────────────────────────────────────\n")
+        @printf("  FB size:          %d / %d total rational points\n", nF, n_all)
+        @printf("  curve coverage:   %.4f%%  (FB/total)\n", 100.0 * nF / n_all)
+        @printf("  smoothness bound: B = %d  (p^(2/3) = %.1f)\n", nF, p^(2/3))
+        @printf("  x-range of FB:    [%d, %d]\n",
+                minimum(pt[1] for pt in fb), maximum(pt[1] for pt in fb))
+        # Expected raw smoothness probability: both x1,x2 in FB.
+        # Each root is uniform over ~p values; prob(one root in FB) ≈ nF/n_all.
+        p_smooth_one = nF / n_all
+        p_smooth_both = p_smooth_one^2
+        # prob D has degree-2 split u-poly ≈ 0.5 (heuristic)
+        @printf("  expected full-rel prob per valid step: ~%.2e  (FB/total)^2\n",
+                p_smooth_both)
+        @printf("  expected full-rel prob incl. LP: ~%.2e  (1-LP pairs)\n",
+                2 * p_smooth_one * (1 - p_smooth_one))
+        flush(stdout)
+    end
 
     # Precompute random walk steps.
+    t_step_build = time()
     N_STEPS = 256
     step_D = Vector{Div2}(undef, N_STEPS)
     step_a = zeros(Int, N_STEPS)
@@ -1281,19 +1365,29 @@ function index_calculus_walk(G::Div2, T::Div2;
         step_a[i] = a
         step_b[i] = b
     end
+    t_step_done = time() - t_step_build
 
     target_excess = max(20, nF ÷ 10)
     rel_target = nF + 1 + target_excess
     rel_counter = Threads.Atomic{Int}(0)
 
-    # Shared 1-LP table across all threads — the single biggest closure multiplier.
-    # A ReentrantLock guards it; contention is low because each insert/lookup is O(1).
+    # Shared 1-LP table across all threads.
     shared_lp1       = Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int}}()
     shared_lp1_lock  = ReentrantLock()
 
-    verbose && @printf("Phase 2: launching %d walker thread(s), target=%d live rels...\n",
-                       Threads.nthreads(), rel_target)
+    if verbose
+        println()
+        @printf("── Walk setup ──────────────────────────────────────────────────────\n")
+        @printf("  N_STEPS (precomputed):  %d\n", N_STEPS)
+        @printf("  step table build time:  %.3fs\n", t_step_done)
+        @printf("  rel_target:             %d  (nF + 1 + %d excess)\n",
+                rel_target, target_excess)
+        @printf("  threads:                %d\n", Threads.nthreads())
+        @printf("  launching walkers at:   %s\n", string(Dates.now()))
+        flush(stdout)
+    end
 
+    t_phase2_start = time()
     tasks = Vector{Task}(undef, Threads.nthreads())
     for tid in 1:Threads.nthreads()
         tasks[tid] = Threads.@spawn phase2_worker(
@@ -1303,17 +1397,24 @@ function index_calculus_walk(G::Div2, T::Div2;
             shared_lp1, shared_lp1_lock; verbose=verbose)
     end
     results = [fetch(t) for t in tasks]
+    t_phase2_done = time() - t_phase2_start
 
     alpha_vec = Int[]
     beta_vec  = Int[]
     rel_rows  = Vector{Dict{Int,Int}}()
-    hits_total = 0
-    hits_full  = 0
-    hits_lp1   = 0
-    hits_lp2seen = 0
-    hits_lp2emit = 0
-    hits_skip  = 0
-    all_samples = similar(results[1].sample_rels, 0)
+    hits_total    = 0
+    hits_full     = 0
+    hits_lp1      = 0
+    hits_lp2seen  = 0
+    hits_lp2emit  = 0
+    hits_skip     = 0
+    all_samples   = similar(results[1].sample_rels, 0)
+
+    # Per-thread stats for diagnosis
+    thread_hits   = Int[]
+    thread_full   = Int[]
+    thread_lp1    = Int[]
+    thread_steps  = Int[]
 
     for r in results
         append!(alpha_vec, r.alpha_vec)
@@ -1326,20 +1427,63 @@ function index_calculus_walk(G::Div2, T::Div2;
         hits_lp2emit += r.hits_lp2emit
         hits_skip    += r.hits_skip
         append!(all_samples, r.sample_rels)
+        push!(thread_hits,  r.hits_total)
+        push!(thread_full,  r.hits_full)
+        push!(thread_lp1,   r.hits_lp1)
+        push!(thread_steps, r.total_steps)
     end
 
     nrel = length(rel_rows)
-    verbose && @printf("Walk done: %d valid steps\n", hits_total)
-    verbose && @printf(
-        "FB: %d atoms | full rels: %d | 1-LP steps: %d | 2-LP seen: %d | 2-LP closures: %d | skips: %d\n",
-        nF, hits_full, hits_lp1, hits_lp2seen, hits_lp2emit, hits_skip)
-    verbose && @printf("Total relations: %d  (need >= %d)\n", nrel, nF + 1)
+
+    if verbose
+        println()
+        @printf("── Walk results ────────────────────────────────────────────────────\n")
+        @printf("  phase-2 wall time:     %.3fs\n", t_phase2_done)
+        @printf("  total raw steps:       %d  (across all threads)\n",
+                sum(thread_steps))
+        @printf("  valid phi steps:       %d\n", hits_total)
+        @printf("  phi validity rate:     %.4f%%\n",
+                100.0 * hits_total / max(1, sum(thread_steps)))
+        println()
+        @printf("  smoothness breakdown:\n")
+        @printf("    full rels (0-LP):    %d  (%.2f%% of valid steps)\n",
+                hits_full, 100.0 * hits_full / max(1, hits_total))
+        @printf("    1-LP steps:          %d  (%.2f%%)\n",
+                hits_lp1, 100.0 * hits_lp1 / max(1, hits_total))
+        @printf("    2-LP seen:           %d  (%.2f%%)\n",
+                hits_lp2seen, 100.0 * hits_lp2seen / max(1, hits_total))
+        @printf("    2-LP closures emit:  %d  (%.2f%%)\n",
+                hits_lp2emit, 100.0 * hits_lp2emit / max(1, hits_total))
+        @printf("    3-LP skips:          %d  (%.2f%%)\n",
+                hits_skip, 100.0 * hits_skip / max(1, hits_total))
+        println()
+        @printf("  total relations collected:   %d\n", nrel)
+        @printf("  FB size (nF):                %d\n", nF)
+        @printf("  relation surplus:            %+d\n", nrel - (nF + 1))
+        @printf("  relation yield rate:         %.4e rels/sec\n",
+                nrel / max(1e-9, t_phase2_done))
+        @printf("  full-rel yield rate:         %.4e rels/sec\n",
+                hits_full / max(1e-9, t_phase2_done))
+        @printf("  steps per full relation:     %.1f\n",
+                sum(thread_steps) / max(1, hits_full))
+        @printf("  1-LP table size (residual):  %d entries\n", length(shared_lp1))
+        @printf("  1-LP pair rate:              %.4f  (LP-closures / LP-steps)\n",
+                (hits_lp1 - length(shared_lp1)) / max(1, hits_lp1))
+        println()
+        @printf("  per-thread breakdown:\n")
+        for tid in 1:length(thread_hits)
+            @printf("    thread %d: steps=%d  valid=%d  full=%d  1-LP=%d\n",
+                    tid, thread_steps[tid], thread_hits[tid],
+                    thread_full[tid], thread_lp1[tid])
+        end
+        flush(stdout)
+    end
 
     analyze_matrix && analyze_relation_matrix(rel_rows, nF; verbose=verbose)
     analyze_matrix && spectral_gap_report(rel_rows, nF; verbose=verbose)
     asymptotic && asymptotic_report(rel_rows, nF;
                                     hits_total=hits_total,
-                                    walk_steps=hits_total,
+                                    walk_steps=sum(thread_steps),
                                     hits_full=hits_full,
                                     hits_tree=0,
                                     hits_lp=hits_lp1,
@@ -1353,8 +1497,7 @@ function index_calculus_walk(G::Div2, T::Div2;
 
     !solve && return nothing
 
-    # Free walk-phase memory before the kernel solve: shared_lp1 can hold
-    # O(100k) Dict entries; all_samples holds Div2+Dict copies.
+    # Free walk-phase memory before the kernel solve.
     empty!(shared_lp1)
     empty!(all_samples)
     GC.gc()
@@ -1362,24 +1505,49 @@ function index_calculus_walk(G::Div2, T::Div2;
 
     # ── Diagnostics before solve ──────────────────────────────────────────────
     if verbose
-        println("  [diag] nrel=$(nrel), nF=$(nF), kernel dim to follow...")
-        println("  [diag] alpha_vec range: $(extrema(alpha_vec))")
-        println("  [diag] beta_vec range:  $(extrema(beta_vec))")
+        println()
+        @printf("── Pre-solve diagnostics ───────────────────────────────────────────\n")
+        @printf("  nrel=%d, nF=%d, kernel dim to follow...\n", nrel, nF)
+        @printf("  alpha_vec range: [%d, %d]\n", extrema(alpha_vec)...)
+        @printf("  beta_vec range:  [%d, %d]\n", extrema(beta_vec)...)
         weights = [length(rel_rows[i]) for i in 1:nrel]
-        println("  [diag] row weight: min=$(minimum(weights)), max=$(maximum(weights)), mean=$(round(sum(weights)/nrel, digits=2))")
+        @printf("  row weight: min=%d, max=%d, mean=%.2f, median=%d\n",
+                minimum(weights), maximum(weights),
+                sum(weights)/nrel,
+                sort(weights)[(length(weights)+1)÷2])
         n_zero_row = count(isempty, rel_rows)
         n_zero_ab  = count(i -> alpha_vec[i]==0 && beta_vec[i]==0, 1:nrel)
-        println("  [diag] zero rows=$(n_zero_row), zero-alpha-and-beta=$(n_zero_ab)")
+        @printf("  zero rows: %d,  zero-alpha-and-beta: %d\n", n_zero_row, n_zero_ab)
+
+        # Aggregate rank growth across threads
+        all_rg = vcat([r.rank_growth for r in results]...)
+        if !isempty(all_rg)
+            total_raw = sum(r.total_steps for r in results)
+            @printf("  rank growth: %d emissions logged across threads\n", length(all_rg))
+            @printf("  total raw steps (all threads): %d\n", total_raw)
+            @printf("  raw steps per full emission (global): %.1f\n",
+                    total_raw / max(1, hits_full))
+        end
+
+        # Aggregate smoothness histograms
+        agg_hist = zeros(Int, 4)
+        for r in results
+            agg_hist .+= r.smooth_hist
+        end
+        @printf("  global smoothness histogram (0-LP 1-LP 2-LP 3-LP): %d %d %d %d\n",
+                agg_hist[1], agg_hist[2], agg_hist[3], agg_hist[4])
+        total_smooth = sum(agg_hist)
+        if total_smooth > 0
+            @printf("  smoothness fractions: 0-LP=%.3f  1-LP=%.3f  2-LP=%.3f  3-LP=%.3f\n",
+                    agg_hist[1]/total_smooth, agg_hist[2]/total_smooth,
+                    agg_hist[3]/total_smooth, agg_hist[4]/total_smooth)
+        end
 
         # Algebraic spot-check: for each sampled full relation,
         # verify neg_al*G + neg_be*T == D_cur (the step divisor).
-        # The phi relation gives atom(P0)+atom(R)+atom(S) = -D_cur,
-        # and we store neg_al=-alpha, neg_be=-beta, so neg_al*G+neg_be*T == D_cur.
-        println("  [diag] spot-checking $(min(5,length(all_samples))) full relations:")
+        @printf("  spot-checking %d full relations:\n", min(5, length(all_samples)))
         n_ok = 0; n_bad = 0
         for (D_stored, fb_row, neg_al, neg_be, P0, R, S) in all_samples[1:min(5,end)]
-            # neg_al = ell - alpha, neg_be = ell - beta, D_stored = alpha*G + beta*T
-            # so neg_al*G + neg_be*T = -D_stored.  Check that.
             lhs = jac_add(jac_mul(G, neg_al), jac_mul(T, neg_be))
             neg_D = jac_neg(D_stored)
             step_ok = (lhs == neg_D)
@@ -1387,16 +1555,21 @@ function index_calculus_walk(G::Div2, T::Div2;
                     neg_al, neg_be, step_ok)
             step_ok ? (n_ok += 1) : (n_bad += 1)
         end
-        println("  [diag] spot-check: $(n_ok) ok, $(n_bad) BAD")
-        println("  [diag] ell*G == id: $(jac_isid(jac_mul_raw(G, ell)))")
-        println("  [diag] ell = $(ell)")
+        @printf("  spot-check: %d ok, %d BAD\n", n_ok, n_bad)
+        @printf("  ell*G == id: %s,  ell = %d\n",
+                jac_isid(jac_mul_raw(G, ell)), ell)
+        flush(stdout)
     end
 
-    verbose && println("Left-kernel search over GF($ell)...")
+    verbose && @printf("\n── Kernel solve ────────────────────────────────────────────────────\n")
+    verbose && @printf("  Left-kernel search over GF(%d)...\n", ell)
+    t_solve_start = time()
     kernels = left_kernel_all(rel_rows, nF, ell)
+    t_solve_done = time() - t_solve_start
     isempty(kernels) && error("Kernel not found — collect more relations")
 
-    verbose && @printf("  kernel dimension = %d\n", length(kernels))
+    verbose && @printf("  kernel solve time: %.3fs\n", t_solve_done)
+    verbose && @printf("  kernel dimension:  %d\n", length(kernels))
 
     n_tried = 0
     for γ in kernels
@@ -1410,7 +1583,9 @@ function index_calculus_walk(G::Div2, T::Div2;
                     n_tried, Sa, Sb, k_cand, jac_mul(G, k_cand) == T)
         end
         if jac_mul(G, k_cand) == T
-            verbose && println("  ✓  k = $k_cand   (k*G == T)")
+            verbose && @printf("  ✓  k = %d   (k*G == T)  [kernel vec %d of %d]\n",
+                               k_cand, n_tried, length(kernels))
+            verbose && @printf("  total walk+solve time: %.3fs\n", time() - t_walk_start)
             return k_cand
         end
     end
@@ -1442,50 +1617,75 @@ end
 
 
 function main2()
-    println("="^62)
+    t_main_start = time()
+    println("="^70)
     println("  trial2: Markov-walk phi-relation index calculus")
-    println("  y^2 = x^5+3x^3+2x^2+5x+4  /F_$p,  ell=$ell")
-    println("="^62, "\n")
+    println("  y^2 = x^5+3x^3+2x^2+5x+4  /F_$p,  ell=<auto>")
+    println("  threads = $(Threads.nthreads())  |  start: $(Dates.now())")
+    println("="^70, "\n")
 
-    # 1. Get the list of points
+    # 1. Get the list of points and print curve stats
+    t_pts = time()
     pts = curve_points()
+    t_pts_done = time() - t_pts
     if length(pts) < 2
         error("No affine points found on curve.")
     end
+    @printf("Curve enumeration: %d affine rational points in %.3fs\n", length(pts), t_pts_done)
+    @printf("  expected ~p = %d points (density check: %.4f)\n",
+            p, length(pts) / Float64(p))
+    println()
 
-    # ── fast subgroup bootstrap via BSGS ─────────────────────────────────
+    # ── subgroup bootstrap via Pollard rho ────────────────────────────────
+    println("── Generator search (Pollard rho) ──────────────────────────────────")
     t_ell = time()
     G, ell_found = fast_find_ell_generator()
-    
+    t_ell_done = time() - t_ell
     global ell = ell_found
-    @printf("  bootstrap time = %.2fs\n", time()-t_ell)
-    @printf("G.u = %s\nG.v = %s\n", G.u, G.v)
-    
+
+    @printf("  bootstrap total time = %.3fs\n", t_ell_done)
+    @printf("  G.u = %s\n  G.v = %s\n", G.u, G.v)
+    @printf("  ell = %d  (%.1f bits)\n", ell, log2(ell))
+    @printf("  ell/p ratio = %.6f\n", ell / p)
+
     # Verification
     @assert jac_isid(jac_mul_raw(G, ell))  "G does not have order ell"
-    println("Confirmed: ell*G = identity\n")
+    println("  Confirmed: ell*G = identity")
+    println()
 
     k_true = rand(2:ell-1)
     T      = jac_mul(G, k_true)
-    @printf("Secret k = %d\n\n", k_true)
+    @printf("Secret k = %d  (%.1f bits)\n\n", k_true, log2(k_true + 1))
 
     # Scale FB size as p^(2/3) — the standard smoothness bound for genus-2
     # index calculus.  At p≈100k: ~2154; p≈164k: ~3024; p≈1M: ~10000.
-    fb_auto  = clamp(round(Int, p^(2/3)), 200, 20000)
+    fb_auto = clamp(round(Int, p^(2/3)), 200, 20000)
+    @printf("Auto FB size: %d  (= ceil(p^(2/3)) clamped to [200,20000])\n", fb_auto)
+    @printf("  target relations: %d + excess\n", fb_auto + 1)
+    @printf("  expected smoothness prob per step: ~(fb_auto/p)^2 ~ %.2e\n",
+            (fb_auto / p)^2)
+    println()
 
     # Main run
+    println("── Index calculus walk ─────────────────────────────────────────────")
+    t_walk = time()
     k_rec = index_calculus_walk(G, T;
                                 fb_size=fb_auto,
-                                verbose=true, analyze_matrix=false, asymptotic=false,
+                                verbose=true, analyze_matrix=true, asymptotic=true,
                                 solve=true, guided=true)
+    t_walk_done = time() - t_walk
 
     println()
+    println("── Final results ───────────────────────────────────────────────────")
+    @printf("  walk+solve wall time: %.3fs\n", t_walk_done)
+    @printf("  total wall time:      %.3fs\n", time() - t_main_start)
     if k_rec !== nothing
-        @printf("Recovered k = %-8d  true k = %-8d  match = %s\n",
+        @printf("  Recovered k = %-10d  true k = %-10d  match = %s\n",
                 k_rec, k_true, k_rec == k_true)
     else
-        println("DLP not recovered.")
+        println("  DLP not recovered.")
     end
+    println("="^70)
 end
 
 
@@ -1507,41 +1707,106 @@ end
 #    order in O(√#Jac) ≈ 165 000 jac_add calls — a few seconds, not forever.
 # ---------------------------------------------------------------------------
 function fast_find_ell_generator(::Div2 = JacID; trials::Int = 200)
-    println("Finding G of large prime order (BSGS)...")
+    println("Finding G of large prime order (Pollard rho, parallel)...")
+    t_start = time()
     pts = curve_points()
     n   = length(pts)
     n < 2 && error("Not enough rational points on the curve")
 
-    for attempt in 1:trials
-        # Random degree-2 divisor from two independently chosen rational points.
-        P = pts[rand(1:n)]
-        Q = pts[rand(1:n)]
-        D = mumford_from_pts(P, Q)
-        jac_isid(D) && continue
+    nthreads = Threads.nthreads()
+    # trials_per_thread: each thread runs up to this many independent attempts.
+    # Total budget stays ≈ trials regardless of thread count.
+    trials_per_thread = max(1, cld(trials, nthreads))
 
-        # Exact element order via baby-giant.  For p = 164147 this stores
-        # ≈ 165 000 Div2 entries and does ≈ 330 000 jac_add calls.
-        ord = jac_order_bsgs(D)
-        ord <= 1 && continue
+    # Channel depth 1: first thread to find a valid generator posts it and all
+    # others exit on the next attempt check.
+    result_ch = Channel{Tuple{Div2, Int, NamedTuple}}(1)
+    done      = Threads.Atomic{Bool}(false)
 
-        # Extract the largest prime factor without Oscar (trial division).
-        ell_cand = largest_prime_factor(ord)
-        ell_cand < 1000 && continue          # skip if subgroup is tiny
+    tasks = map(1:nthreads) do tid
+        Threads.@spawn begin
+            n_id_skips   = 0
+            n_tiny_ell   = 0
+            n_id_cofac   = 0
+            n_bad_verify = 0
+            n_ord_calls  = 0
+            total_ord_time = 0.0
 
-        cofactor = ord ÷ ell_cand
-        cofactor == 0 && continue
+            for attempt in 1:trials_per_thread
+                done[] && break
 
-        G = jac_mul_raw(D, cofactor)
-        jac_isid(G) && continue              # unlucky draw; try again
+                P = pts[rand(1:n)]
+                Q = pts[rand(1:n)]
+                D = mumford_from_pts(P, Q)
+                if jac_isid(D)
+                    n_id_skips += 1
+                    continue
+                end
 
-        # Sanity: ell_cand · G must be the identity.
-        jac_isid(jac_mul_raw(G, ell_cand)) || continue
+                t_ord = time()
+                ord = jac_order_pollard_rho(D)
+                total_ord_time += time() - t_ord
+                n_ord_calls += 1
+                ord <= 1 && continue
 
-        @printf("  attempt %d: ord(D) = %d,  ell = %d\n", attempt, ord, ell_cand)
-        return G, ell_cand
+                ell_cand = largest_prime_factor(ord)
+                if ell_cand < 1000
+                    n_tiny_ell += 1
+                    continue
+                end
+
+                cofactor = ord ÷ ell_cand
+                cofactor == 0 && continue
+
+                G = jac_mul_raw(D, cofactor)
+                if jac_isid(G)
+                    n_id_cofac += 1
+                    continue
+                end
+
+                if !jac_isid(jac_mul_raw(G, ell_cand))
+                    n_bad_verify += 1
+                    continue
+                end
+
+                # Race: only the first thread to set done wins.
+                if Threads.atomic_cas!(done, false, true) == false
+                    stats = (
+                        thread       = tid,
+                        attempt      = attempt,
+                        ord          = ord,
+                        ell_cand     = ell_cand,
+                        cofactor     = cofactor,
+                        n_ord_calls  = n_ord_calls,
+                        total_ord_time = total_ord_time,
+                        n_id_skips   = n_id_skips,
+                        n_tiny_ell   = n_tiny_ell,
+                        n_id_cofac   = n_id_cofac,
+                        n_bad_verify = n_bad_verify,
+                    )
+                    put!(result_ch, (G, ell_cand, stats))
+                end
+                break
+            end
+        end
     end
 
-    error("fast_find_ell_generator: no large-prime-order element found in $trials attempts")
+    # Wait for all threads; if none posted a result we error.
+    for t in tasks; wait(t); end
+
+    isready(result_ch) || error("fast_find_ell_generator: no large-prime-order element found in $(trials) attempts")
+
+    G, ell_cand, s = take!(result_ch)
+    total_elapsed = time() - t_start
+    @printf("  thread %d, attempt %d: ord(D) = %d,  ell = %d,  cofactor h = %d\n",
+            s.thread, s.attempt, s.ord, s.ell_cand, s.cofactor)
+    @printf("  order calls (winner thread): %d,  avg rho time: %.4fs,  total rho time: %.4fs\n",
+            s.n_ord_calls, s.total_ord_time / max(1, s.n_ord_calls), s.total_ord_time)
+    @printf("  skips (winner) — id_divisor: %d,  tiny_ell: %d,  id_after_cofac: %d,  bad_verify: %d\n",
+            s.n_id_skips, s.n_tiny_ell, s.n_id_cofac, s.n_bad_verify)
+    @printf("  generator search total wall time: %.3fs  (%d threads)\n", total_elapsed, nthreads)
+    flush(stdout)
+    return G, ell_cand
 end
 
 

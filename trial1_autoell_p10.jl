@@ -164,6 +164,36 @@ function pscale(a::Vector{Int}, s::Int)
     ptrim!(c)
 end
 
+# In-place: scale a by s, trim, return a.  No allocation.
+function pscale!(a::Vector{Int}, s::Int)
+    s = fp(s)
+    @inbounds for i in eachindex(a); a[i] = fp(a[i] * s); end
+    ptrim!(a)
+end
+
+# In-place: negate a, trim, return a.  No allocation.
+function pneg!(a::Vector{Int})
+    @inbounds for i in eachindex(a); a[i] = fp(-a[i]); end
+    ptrim!(a)
+end
+
+# Compute F_POLY - V*V into a pre-allocated buffer dst (resized as needed).
+# Returns the degree-5 result in dst.  One allocation avoided vs psub(F_POLY, pmul(V,V)).
+function f_minus_vsq!(dst::Vector{Int}, V::Vector{Int})
+    lv = length(V)
+    # V*V has degree 2*(lv-1), so length lv+lv-1; F_POLY has length 6.
+    lout = max(6, 2 * lv - 1)
+    resize!(dst, lout)
+    fill!(dst, 0)
+    # Add F_POLY
+    @inbounds for i in 1:6; dst[i] = fp(dst[i] + F_POLY[i]); end
+    # Subtract V^2
+    @inbounds for i in 1:lv, j in 1:lv
+        dst[i+j-1] = fp(dst[i+j-1] - V[i] * V[j])
+    end
+    ptrim!(dst)
+end
+
 function peval(poly::Vector{Int}, x::Int)
     x = fp(x); r = 0
     for i in length(poly):-1:1; r = fp(r * x + poly[i]); end
@@ -293,11 +323,15 @@ function jac_add(D1::Div2, D2::Div2)::Div2
     U = pscale(U, fpinv(U[end]))                # make monic
 
     # ── Reduction: while deg(U) > g = 2 ──────────────────────────────────────
+    # Reuse a single buffer for f - V² across reduction steps.
+    _tmp = Vector{Int}(undef, 6)
     while pdeg(U) > 2
-        U2, _ = pdivrem(psub(F_POLY, pmul(V, V)), U)   # exact: U | V²-f
-        U2    = pscale(U2, fpinv(U2[end]))
-        V     = pmod(pneg(V), U2)
-        U     = U2
+        f_minus_vsq!(_tmp, V)                   # _tmp = F_POLY - V²  (no alloc)
+        U2, _ = pdivrem(_tmp, U)                # exact: U | V²-f
+        pscale!(U2, fpinv(U2[end]))             # make monic in-place
+        pneg!(V)                                # V = -V in-place
+        V = pmod(V, U2)                         # one alloc (pmod result)
+        U = U2
     end
 
     Div2(ptrim(U), ptrim(V))
@@ -386,6 +420,129 @@ function jac_order_bsgs(D::Div2; verbose::Bool=false)::Int
     return n
 end
 
+# ---------------------------------------------------------------------------
+#  Pollard rho for Jacobian element order computation.
+#
+#  We want ord(D) given that ord(D) | N (the Hasse-Weil bound).
+#  Strategy: run Pollard rho on the cyclic group ⟨D⟩ of order N to find
+#  a collision  aD = bD  ⟹  (a-b)D = 0  ⟹  ord(D) | (a-b).
+#  Then divide out prime factors to get the exact order, just as in BSGS.
+#
+#  The walk is the standard Floyd-cycle / distinguished-point variant on
+#  the product group Z_N × ⟨D⟩.  We use 3-way splitting:
+#    S0: add D    (xD = (a+1)D,  a += 1)
+#    S1: double   (2xD,          a *= 2)
+#    S2: add D    (xD = (a+1)D,  a += 1)  [asymmetric split avoids period-2]
+#  Classification is by hash of the Mumford u-poly's first coefficient.
+#
+#  Distinguished-point criterion: low-order bits of u[1] all zero.
+#  This avoids the O(√N) table of BSGS while keeping expected work O(√N).
+#
+#  Returns the exact element order, or falls back to jac_order_bsgs on failure.
+# ---------------------------------------------------------------------------
+function jac_order_pollard_rho(D::Div2; N::Int=0, max_iter::Int=0,
+                                dp_mask::Int=1023, verbose::Bool=false)::Int
+    if N == 0
+        N = (isqrt(p) + 1)^4   # Hasse-Weil upper bound
+    end
+    if max_iter == 0
+        max_iter = 64 * isqrt(N) + 10_000
+    end
+
+    # Classify a Jacobian element into one of 3 sets by its u-poly hash.
+    @inline function classify(X::Div2)::Int
+        h = length(X.u) >= 2 ? X.u[1] : 0
+        mod(h * 0x9e3779b9 % (1 << 30), 3)
+    end
+
+    # One rho step: update (X, a) where X = a*D.
+    @inline function rho_step(X::Div2, a::Int)::Tuple{Div2,Int}
+        s = classify(X)
+        if s == 0
+            return jac_add(X, D), mod(a + 1, N)
+        elseif s == 1
+            return jac_add(X, X), mod(2 * a, N)
+        else
+            return jac_add(X, D), mod(a + 1, N)
+        end
+    end
+
+    # Distinguished-point variant: collect (a, X) when X has dp_mask zeros.
+    dp_table = Dict{Div2, Int}()   # X -> a at distinguished points
+
+    X  = D;  a  = 1
+    Xf = D;  af = 1   # "fast" pointer (Floyd tortoise/hare for fallback)
+    Xs = D;  as_ = 1  # "slow"
+
+    dp_found = 0
+    n_iter   = 0
+
+    while n_iter < max_iter
+        n_iter += 1
+
+        # Distinguished-point check for hare.
+        u1 = length(X.u) >= 1 ? X.u[1] : 0
+        if (u1 & dp_mask) == 0
+            if haskey(dp_table, X)
+                a_prev = dp_table[X]
+                diff   = mod(a - a_prev, N)
+                if diff != 0
+                    # Candidate multiple of ord(D).
+                    # Reduce to exact order.
+                    return _reduce_to_order(D, diff, N)
+                end
+            else
+                dp_table[X] = a
+                dp_found    += 1
+            end
+        end
+
+        X, a   = rho_step(X, a)
+
+        # Also advance Floyd hare twice, tortoise once (backup collision detector).
+        Xf, af = rho_step(Xf, af)
+        Xf, af = rho_step(Xf, af)
+        Xs, as_ = rho_step(Xs, as_)
+        if Xf == Xs
+            diff = mod(af - as_, N)
+            if diff != 0
+                return _reduce_to_order(D, diff, N)
+            end
+        end
+    end
+
+    # Fallback: BSGS (reliable but O(√N) memory)
+    verbose && @printf("  [pollard_rho] max_iter=%d reached after %d dp hits; falling back to BSGS\n",
+                       max_iter, dp_found)
+    return jac_order_bsgs(D; verbose=verbose)
+end
+
+# Helper: given that n = candidate is a multiple of ord(D), reduce to exact order.
+function _reduce_to_order(D::Div2, candidate::Int, N::Int)::Int
+    n = candidate
+    function factor_int_small(x::Int)::Dict{Int,Int}
+        fac = Dict{Int,Int}()
+        d = 2
+        while d * d <= x
+            while x % d == 0
+                fac[d] = get(fac, d, 0) + 1
+                x ÷= d
+            end
+            d += 1
+        end
+        x > 1 && (fac[x] = get(fac, x, 0) + 1)
+        fac
+    end
+    fac = factor_int_small(n)
+    for q in sort!(collect(keys(fac)))
+        while n % q == 0 && jac_isid(jac_mul_raw(D, n ÷ q))
+            n ÷= q
+        end
+    end
+    n
+end
+
+
 # Find a random generator of prime order ell by first determining the exact
 # order of a random element, then taking its largest prime divisor.
 function largest_prime_factor(n::Int)
@@ -439,73 +596,52 @@ function jacobian_order_frobenius(; n1::Union{Int,Nothing}=nothing)::Int
     ####################################################################
     # N2 = #C(F_{p^2})
     #
-    # Major speed fix:
-    # avoid recomputing huge polynomial expressions from scratch
-    # and avoid repeated fp() nesting where possible.
+    # Outer loop over b is embarrassingly parallel: each b-row is
+    # independent.  Use per-thread accumulators to avoid atomic contention.
     ####################################################################
-    n2 = Int(n1_local)
-
     # Precompute constants once
     g_mod = fp(g)
-    two_g = fp(2 * g)
 
-    @inbounds for b in 1:p-1
-        bg   = fp(b * g_mod)       # b*g
-        b2g  = fp(b * bg)          # b^2*g
+    nthreads = Threads.nthreads()
+    n2_partial = zeros(Int, nthreads)
 
-        # values depending only on b
-        i1   = b
-        i2_c = fp(2 * b)           # factor for i2 = a * i2_c
+    Threads.@threads :static for tid in 1:nthreads
+        chunk = cld(p - 1, nthreads)
+        b_lo  = (tid - 1) * chunk + 1
+        b_hi  = min(tid * chunk, p - 1)
+        local_n2 = 0
 
-        for a in 0:p-1
-            ################################################################
-            # u = a + bα, α² = g
-            #
-            # Compute powers incrementally:
-            # u² -> u³ -> u⁵
-            ################################################################
+        for b in b_lo:b_hi
+            bg   = fp(b * g_mod)
+            b2g  = fp(b * bg)
+            i1   = b
+            i2_c = fp(2 * b)
 
-            # u
-            r1 = a
+            for a in 0:p-1
+                r1 = a
+                r2 = fp(a * a + b2g)
+                i2 = fp(a * i2_c)
+                r3 = fp(r2 * r1 + g_mod * i2 * i1)
+                i3 = fp(r2 * i1 + i2 * r1)
+                r5 = fp(r3 * r2 + g_mod * i3 * i2)
+                i5 = fp(r3 * i2 + i3 * r2)
+                fu = fp(r5 + 3r3 + 2r2 + 5r1 + 4)
+                fv = fp(i5 + 3i3 + 2i2 + 5i1)
 
-            # u²
-            r2 = fp(a * a + b2g)
-            i2 = fp(a * i2_c)
-
-            # u³ = u² * u
-            r3 = fp(r2 * r1 + g_mod * i2 * i1)
-            i3 = fp(r2 * i1 + i2 * r1)
-
-            # u⁵ = u³ * u²
-            r5 = fp(r3 * r2 + g_mod * i3 * i2)
-            i5 = fp(r3 * i2 + i3 * r2)
-
-            # f(u) = u^5 + 3u^3 + 2u^2 + 5u + 4
-            fu = fp(r5 + 3r3 + 2r2 + 5r1 + 4)
-            fv = fp(i5 + 3i3 + 2i2 + 5i1)
-
-            ################################################################
-            # Decide whether f(u) is a square in F_{p²}
-            #
-            # Fast criterion:
-            # Norm(f(u)) ∈ F_p must be a square
-            ################################################################
-            if fu == 0 && fv == 0
-                n2 += 2
-                continue
-            end
-
-            norm_f = fp(fu * fu - g_mod * fp(fv * fv))
-
-            if norm_f != 0 &&
-               powermod(norm_f, (p - 1) ÷ 2, p) == 1
-                n2 += 4
+                if fu == 0 && fv == 0
+                    local_n2 += 2
+                    continue
+                end
+                norm_f = fp(fu * fu - g_mod * fp(fv * fv))
+                if norm_f != 0 && powermod(norm_f, (p - 1) ÷ 2, p) == 1
+                    local_n2 += 4
+                end
             end
         end
+        n2_partial[tid] = local_n2
     end
 
-    # point at infinity over F_{p²}
-    n2 += 1
+    n2 = Int(n1_local) + sum(n2_partial) + 1   # +1 for point at infinity over F_{p²}
 
     ####################################################################
     # Recover Jacobian order from N1, N2
@@ -559,13 +695,34 @@ end
 # ──────────────────────── Curve utilities ─────────────────────────────────────
 eval_f(x::Int) = peval(F_POLY, fp(x))
 
-# All affine rational points (x, y) on C, ordered by x
+# All affine rational points (x, y) on C, ordered by x.
+# Threaded: each thread scans a contiguous x-range; results are merged in order.
 function curve_points()
+    nthreads = Threads.nthreads()
+    # Pre-allocate per-thread buffers.  Upper bound: 2 points per x.
+    chunk_size = cld(p, nthreads)
+    buffers = [NTuple{2,Int}[] for _ in 1:nthreads]
+    for buf in buffers
+        sizehint!(buf, 2 * chunk_size)
+    end
+
+    Threads.@threads :static for tid in 1:nthreads
+        x_lo = (tid - 1) * chunk_size
+        x_hi = min(tid * chunk_size - 1, p - 1)
+        buf  = buffers[tid]
+        for x in x_lo:x_hi
+            y = sqrt_fp(eval_f(x));  y === nothing && continue
+            push!(buf, (x, y))
+            y != 0 && push!(buf, (x, fp(-y)))
+        end
+    end
+
+    # Merge in thread order so the result is sorted by x (matching old behaviour).
+    total = sum(length(b) for b in buffers)
     pts = NTuple{2,Int}[]
-    for x in 0:p-1
-        y = sqrt_fp(eval_f(x));  y === nothing && continue
-        push!(pts, (x, y))
-        y != 0 && push!(pts, (x, fp(-y)))
+    sizehint!(pts, total)
+    for buf in buffers
+        append!(pts, buf)
     end
     pts
 end
