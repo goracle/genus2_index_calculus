@@ -1429,20 +1429,27 @@ function main2()
     T      = jac_mul(G, k_true)
     @printf("Secret k = %d\n\n", k_true)
 
-    # Optimal FB size ~ p^(2/3). For p=164147: 164147^(2/3) ~ 3000.
-    # Sweep a couple of sizes for diagnostics, then run the main solve.
-    sweep_fb_sizes = [2000, 3000]
+    # Scaling: full-relation rate per valid step ~ fb/p (P0 forced in FB,
+    # one of R/S becomes next P0, so only one free point needs to land in FB).
+    # To collect fb relations: valid_steps ~ p; total steps (25% yield) ~ 4p.
+    # Optimal FB size ~ p^(2/3).
+    fb_main       = round(Int, p^(2/3))
+    sweep_steps   = 2 * p          # enough for ~half the needed relations (diagnostic)
+    main_steps    = 8 * p          # 2× safety margin over the 4p needed
+    sweep_fb_sizes = [round(Int, 0.7 * fb_main), fb_main]
+
+    @printf("Scaling for p=%d: fb_main=%d, sweep_steps=%d, main_steps=%d\n\n",
+            p, fb_main, sweep_steps, main_steps)
+
     for fb in sweep_fb_sizes
         println("--- diagnostic sweep for fb_size=$fb ---")
-        _ = index_calculus_walk(G, T; fb_size=fb, walk_steps=2_000_000,
+        _ = index_calculus_walk(G, T; fb_size=fb, walk_steps=sweep_steps,
                                 verbose=true, analyze_matrix=true, asymptotic=true,
                                 solve=false, guided=true)
         println()
     end
 
-    # Main run: 20M step hard cap; 1-LP collision strategy should reach 3000 relations
-    # in roughly 3000 / (2 * 3000/164147) / collision_rate valid steps.
-    k_rec = index_calculus_walk(G, T; fb_size=3000, walk_steps=20_000_000,
+    k_rec = index_calculus_walk(G, T; fb_size=fb_main, walk_steps=main_steps,
                                 verbose=true, analyze_matrix=true, asymptotic=true,
                                 solve=true, guided=true)
 

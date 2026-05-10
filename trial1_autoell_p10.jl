@@ -17,10 +17,31 @@
 #  between the RELATION GENERATION markers in index_calculus() below.
 # =============================================================================
 
-using LinearAlgebra, Printf
+using LinearAlgebra, Printf, Primes
 
 # ─────────────────────────── Global parameters ────────────────────────────────
-const p      = 164147
+# Accept an optional command-line argument: the prime (or near-prime) to use.
+# We find the next prime >= the supplied value, mirroring Sage's next_prime().
+function _next_prime(n::Int)::Int
+    n < 2 && return 2
+    candidate = n % 2 == 0 ? n + 1 : n
+    while !isprime(candidate)
+        candidate += 2
+    end
+    return candidate
+end
+
+const p = let
+    if !isempty(ARGS)
+        raw = tryparse(Int, ARGS[1])
+        raw === nothing && error("Command-line argument must be an integer, got: $(ARGS[1])")
+        np = _next_prime(raw)
+        np != raw && println("next_prime($raw) = $np  →  using p = $np")
+        np
+    else
+        164147   # default
+    end
+end
 ell = 0  # computed automatically at runtime
 # f(x) = x^5 + 3x^3 + 2x^2 + 5x + 4;  F_POLY[i] = coeff of x^(i-1)
 const F_POLY = Int[4, 5, 2, 3, 0, 1]
@@ -29,11 +50,35 @@ const F_POLY = Int[4, 5, 2, 3, 0, 1]
 @inline fp(x::Integer)    = mod(x, p)
 @inline fpinv(x::Integer) = powermod(fp(x), p - 2, p)
 
-# Square root in Fp; valid since the chosen p is 3 (mod 4)
+# Square root in Fp via Tonelli-Shanks (works for any odd prime p).
 function sqrt_fp(a::Int)
     a = fp(a);  a == 0 && return 0
-    r = powermod(a, (p + 1) >> 2, p)
-    fp(r * r) == a ? r : nothing
+    # Quick Euler criterion: a^((p-1)/2) must be 1
+    powermod(a, (p - 1) >> 1, p) == 1 || return nothing
+    if p % 4 == 3
+        r = powermod(a, (p + 1) >> 2, p)
+        return fp(r * r) == a ? r : nothing
+    end
+    # Tonelli-Shanks for p ≡ 1 (mod 4)
+    Q, S = p - 1, 0
+    while Q % 2 == 0; Q >>= 1; S += 1; end
+    # Find a quadratic non-residue z
+    z = 2
+    while powermod(z, (p - 1) >> 1, p) != p - 1; z += 1; end
+    M2 = S
+    c = powermod(z, Q, p)
+    t = powermod(a, Q, p)
+    r = powermod(a, (Q + 1) >> 1, p)
+    while true
+        t == 1 && return r
+        i, tmp = 1, fp(t * t)
+        while tmp != 1; tmp = fp(tmp * tmp); i += 1; end
+        b = powermod(c, 1 << (M2 - i - 1), p)
+        M2 = i
+        c = fp(b * b)
+        t = fp(t * c)
+        r = fp(r * b)
+    end
 end
 
 # ─────────────────────── Polynomial ring Fp[x] ────────────────────────────────
