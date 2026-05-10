@@ -1083,6 +1083,9 @@ function phase2_worker(G::Div2, T::Div2,
     hits_skip    = 0
     step         = 0
 
+
+    # Sample full relations for algebraic spot-checking.
+    sample_rels = Vector{Tuple{Div2,Dict{Int,Int},Int,Int,NTuple{2,Int},NTuple{2,Int},NTuple{2,Int}}}()
     # 1-LP cache: exact point collisions.
     lp1_table = Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int}}()
 
@@ -1152,6 +1155,10 @@ function phase2_worker(G::Div2, T::Div2,
             push!(alpha_vec, neg_al)
             push!(beta_vec,  neg_be)
             push!(rel_rows,  fb_row)
+            # Stash first few full relations with their divisor for spot-checking
+            if length(sample_rels) < 10
+                push!(sample_rels, (D_cur, copy(fb_row), neg_al, neg_be, P0, R, S))
+            end
             hits_full += 1
             Threads.atomic_add!(rel_counter, 1)
             cur_pt = fb[rand(1:nF_cur)]
@@ -1211,14 +1218,20 @@ function phase2_worker(G::Div2, T::Div2,
                 continue
             end
 
-            # Feed the 2-LP graph.  Any cycle closure or endpoint collision can
-            # emit a pure FB relation.
+            # Feed the 2-LP graph for bookkeeping/counting only.
+            # Emission disabled: synthetic rows from graph closure carry
+            # sign/involution errors that poison the kernel.  Store edges
+            # and count closures but do not push rows into rel_rows.
+            _dummy_rows  = Vector{Dict{Int,Int}}()
+            _dummy_alpha = Int[]
+            _dummy_beta  = Int[]
+            _dummy_ctr   = Threads.Atomic{Int}(0)
             emitted = lp2_attach!(lp2_edges, lp2_live, lp2_incidence,
                                   lp_pts[1], lp_pts[2], fb_row, neg_al, neg_be,
-                                  rel_rows, alpha_vec, beta_vec,
-                                  rel_counter)
+                                  _dummy_rows, _dummy_alpha, _dummy_beta,
+                                  _dummy_ctr)
             hits_lp2emit += emitted
-            hits_full += emitted
+            # hits_full NOT incremented; rows intentionally not added to matrix
 
             # Re-anchor on the known FB point if there is one; otherwise reseed.
             if i0 != 0
@@ -1240,7 +1253,8 @@ function phase2_worker(G::Div2, T::Div2,
     return (rel_rows=rel_rows, alpha_vec=alpha_vec, beta_vec=beta_vec,
             hits_total=hits_total, hits_full=hits_full,
             hits_lp1=hits_lp1, hits_lp2seen=hits_lp2seen,
-            hits_lp2emit=hits_lp2emit, hits_skip=hits_skip)
+            hits_lp2emit=hits_lp2emit, hits_skip=hits_skip,
+            sample_rels=sample_rels)
 end
 
 
@@ -1302,6 +1316,7 @@ function index_calculus_walk(G::Div2, T::Div2;
     hits_lp2seen = 0
     hits_lp2emit = 0
     hits_skip  = 0
+    all_samples = similar(results[1].sample_rels, 0)
 
     for r in results
         append!(alpha_vec, r.alpha_vec)
@@ -1313,6 +1328,7 @@ function index_calculus_walk(G::Div2, T::Div2;
         hits_lp2seen += r.hits_lp2seen
         hits_lp2emit += r.hits_lp2emit
         hits_skip    += r.hits_skip
+        append!(all_samples, r.sample_rels)
     end
 
     nrel = length(rel_rows)
@@ -1346,21 +1362,62 @@ function index_calculus_walk(G::Div2, T::Div2;
         Rmat[i, j] = mod(Rmat[i, j] + v, ell)
     end
 
+    # ── Diagnostics before solve ──────────────────────────────────────────────
+    if verbose
+        println("  [diag] nrel=$(nrel), nF=$(nF), kernel dim to follow...")
+        println("  [diag] alpha_vec range: $(extrema(alpha_vec))")
+        println("  [diag] beta_vec range:  $(extrema(beta_vec))")
+        weights = [length(rel_rows[i]) for i in 1:nrel]
+        println("  [diag] row weight: min=$(minimum(weights)), max=$(maximum(weights)), mean=$(round(sum(weights)/nrel, digits=2))")
+        n_zero_row = count(isempty, rel_rows)
+        n_zero_ab  = count(i -> alpha_vec[i]==0 && beta_vec[i]==0, 1:nrel)
+        println("  [diag] zero rows=$(n_zero_row), zero-alpha-and-beta=$(n_zero_ab)")
+
+        # Algebraic spot-check: for each sampled full relation,
+        # verify neg_al*G + neg_be*T == D_cur (the step divisor).
+        # The phi relation gives atom(P0)+atom(R)+atom(S) = -D_cur,
+        # and we store neg_al=-alpha, neg_be=-beta, so neg_al*G+neg_be*T == D_cur.
+        println("  [diag] spot-checking $(min(5,length(all_samples))) full relations:")
+        n_ok = 0; n_bad = 0
+        for (D_stored, fb_row, neg_al, neg_be, P0, R, S) in all_samples[1:min(5,end)]
+            # neg_al = ell - alpha, neg_be = ell - beta, D_stored = alpha*G + beta*T
+            # so neg_al*G + neg_be*T = -D_stored.  Check that.
+            lhs = jac_add(jac_mul(G, neg_al), jac_mul(T, neg_be))
+            neg_D = jac_neg(D_stored)
+            step_ok = (lhs == neg_D)
+            @printf("    neg_al=%d neg_be=%d  neg_al*G+neg_be*T == -D_cur: %s\n",
+                    neg_al, neg_be, step_ok)
+            step_ok ? (n_ok += 1) : (n_bad += 1)
+        end
+        println("  [diag] spot-check: $(n_ok) ok, $(n_bad) BAD")
+        println("  [diag] ell*G == id: $(jac_isid(jac_mul_raw(G, ell)))")
+        println("  [diag] ell = $(ell)")
+    end
+
     verbose && println("Left-kernel search over GF($ell)...")
     kernels = left_kernel_all(Rmat)
     isempty(kernels) && error("Kernel not found — collect more relations")
 
+    verbose && @printf("  kernel dimension = %d\n", length(kernels))
+
+    n_tried = 0
     for γ in kernels
         Sa = mod(sum(Int128(γ[i]) * alpha_vec[i] for i in 1:nrel), ell)
         Sb = mod(sum(Int128(γ[i]) * beta_vec[i]  for i in 1:nrel), ell)
         Sb == 0 && continue
         k_cand = mod(-Int(Sa) * powermod(Int(Sb), ell - 2, ell), ell)
+        n_tried += 1
+        if verbose && n_tried <= 5
+            @printf("  kernel vec %d: Sa=%d Sb=%d k_cand=%d  match=%s\n",
+                    n_tried, Sa, Sb, k_cand, jac_mul(G, k_cand) == T)
+        end
         if jac_mul(G, k_cand) == T
             verbose && println("  ✓  k = $k_cand   (k*G == T)")
             return k_cand
         end
     end
 
+    verbose && @printf("  tried %d kernel vectors, none matched\n", n_tried)
     verbose && println("  No usable kernel vector found; will retry with fresh walk.")
     return nothing
 end
@@ -1414,9 +1471,13 @@ function main2()
     T      = jac_mul(G, k_true)
     @printf("Secret k = %d\n\n", k_true)
 
+    # Scale FB size as p^(2/3) — the standard smoothness bound for genus-2
+    # index calculus.  At p≈100k: ~2154; p≈164k: ~3024; p≈1M: ~10000.
+    fb_auto  = clamp(round(Int, p^(2/3)), 200, 20000)
+
     # Main run
     k_rec = index_calculus_walk(G, T;
-                                fb_size=3000,
+                                fb_size=fb_auto,
                                 verbose=true, analyze_matrix=false, asymptotic=false,
                                 solve=true, guided=true)
 
