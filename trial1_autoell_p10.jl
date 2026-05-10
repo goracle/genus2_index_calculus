@@ -17,7 +17,7 @@
 #  between the RELATION GENERATION markers in index_calculus() below.
 # =============================================================================
 
-using LinearAlgebra, Printf, Primes
+using LinearAlgebra, Printf, Primes, Oscar
 
 # ─────────────────────────── Global parameters ────────────────────────────────
 # Accept an optional command-line argument: the prime (or near-prime) to use.
@@ -361,27 +361,71 @@ end
 # order of a random element, then taking its largest prime divisor.
 function largest_prime_factor(n::Int)
     n <= 1 && return 0
-
-    best = 0
-    m = n
-    d = 2
-
-    while d*d <= m
-        while m % d == 0
-            best = d
-            m ÷= d
-        end
-        d += (d == 2 ? 1 : 2)
-    end
-
-    if m > 1
-        best = max(best, m)
-    end
-
-    return best
+    fac = Oscar.factor(ZZ(n))   # factor over ZZ; returns Fac{ZZRingElem}
+    return maximum(Int(q) for (q, _) in fac)
 end
 
 
+# ──────────────────────── Jacobian order via Frobenius point-counting ────────
+# For a genus-2 curve C/Fp, the characteristic polynomial of Frobenius is
+#
+#   χ(T) = T^4 - s1·T^3 + s2·T^2 - p·s1·T + p^2
+#
+# where  s1 = N1 - (p+1)  and  s2 = (s1^2 - (N2 - (p^2+1))) / 2,
+# with N1 = #C(Fp), N2 = #C(Fp^2)  (affine + point at infinity).
+#
+# Then  #Jac(C/Fp) = χ(1) = 1 - s1 + s2 - p·s1 + p^2.
+#
+# N1 is free (caller may pass the pre-enumerated affine count via `n1`).
+# N2 requires one O(p) pass over Fp^2 = Fp[sqrt(g)] for a non-residue g,
+# using the norm criterion: f(a+b√g) is a square in Fp^2 iff its Fp-norm
+# u²-g·v² is a nonzero square in Fp  (Lidl-Niederreiter, standard fact).
+function jacobian_order_frobenius(; n1::Union{Int,Nothing}=nothing)::Int
+    # Find a non-residue g in Fp.
+    g = 2
+    while powermod(g, (p-1)÷2, p) != p-1; g += 1; end
+
+    # N1: affine count + point at infinity.
+    if n1 === nothing
+        n1 = 1
+        for x in 0:p-1
+            fx = eval_f(x)
+            if fx == 0
+                n1 += 1
+            elseif powermod(fx, (p-1)÷2, p) == 1
+                n1 += 2
+            end
+        end
+    else
+        n1 = n1 + 1   # caller passed affine count; add infinity
+    end
+
+    # N2: #C(Fp^2).  Start from N1 (Fp ⊂ Fp^2), then add Fp^2\Fp points.
+    n2 = Int(n1)
+    for b in 1:p-1
+        bg  = fp(b * g)
+        b2g = fp(b * bg)
+        for a in 0:p-1
+            r1 = a;               i1 = b
+            r2 = fp(a*a + b2g);   i2 = fp(2*a*b)
+            r3 = fp(r2*r1 + i2*i1*g);  i3 = fp(r2*i1 + i2*r1)
+            r5 = fp(r3*r2 + i3*i2*g);  i5 = fp(r3*i2 + i3*r2)
+            fu = fp(r5 + 3*r3 + 2*r2 + 5*r1 + 4)
+            fv = fp(i5 + 3*i3 + 2*i2 + 5*i1)
+            norm_f = fp(fu*fu - g*fp(fv*fv))
+            if fu == 0 && fv == 0
+                n2 += 2
+            elseif norm_f != 0 && powermod(norm_f, (p-1)÷2, p) == 1
+                n2 += 4
+            end
+        end
+    end
+    n2 += 1   # point at infinity also in Fp^2
+
+    s1 = n1 - (p + 1)
+    s2 = (s1^2 - (n2 - (p^2 + 1))) ÷ 2
+    return 1 - s1 + s2 - p*s1 + p^2
+end
 function find_ell_generator(pts::Vector{Tuple{Int,Int}})
     println("Finding G of large prime order...")
 
@@ -462,29 +506,28 @@ function u2_roots(u::Vector{Int})
 end
 
 # ──────────────────────── Key generation ──────────────────────────────────────
-# Find a Div2 of order exactly ell by scanning cofactors in the Hasse-Weil range.
+# Find a Div2 of order exactly ell.
 #
-# Hasse-Weil for g=2:  #Jac ∈ [(√p-1)^4, (√p+1)^4]
-# cofactor = #Jac / ell ∈ [(√p-1)^4/ell, (√p+1)^4/ell]  (range ≈ 1400 values)
-#
-# For any random D, ell*(c*D) = 0 iff cofactor | c (since order(D) | #Jac = ell*cofactor).
-# We scan c values; the unique c ≈ #Jac/ell in range will satisfy this and give
-# G = c*D as a non-identity element of order ell.
-function find_ell_generator(pts::Vector{NTuple{2,Int}})
-    sqp = isqrt(p)
-    lo  = max(1, (sqp - 2)^4 ÷ ell - 10)
-    hi  =         (sqp + 2)^4 ÷ ell + 10
-    @printf("  Cofactor scan range: [%d, %d]  (%d candidates)\n", lo, hi, hi - lo + 1)
+# Since we now know #Jac exactly from jacobian_order_frobenius, the cofactor
+# is exact: cofactor = #Jac / ell.  For a random D, G = cofactor·D is either
+# the identity (unlucky draw; try again) or has order dividing ell; since ell
+# is prime and G ≠ id, G has order exactly ell.  No scan needed.
+function find_ell_generator(pts::Vector{NTuple{2,Int}}; jac_ord::Int=0)
+    if jac_ord == 0
+        jac_ord = jacobian_order_frobenius(n1=length(pts))
+    end
+    @assert jac_ord % ell == 0  "ell does not divide #Jac — check curve/p/ell"
+    cofactor = jac_ord ÷ ell
+    @printf("  #Jac = %d,  cofactor = %d\n", jac_ord, cofactor)
 
     n = length(pts)
     for attempt in 1:300
         D = mumford_from_pts(pts[rand(1:n)], pts[rand(1:n)])
         jac_isid(D) && continue
-        for c in lo:hi
-            G = jac_mul_raw(D, c)        # must use raw mul; c < ell here
-            jac_isid(G) && continue
-            jac_isid(jac_mul_raw(G, ell)) && return G
-        end
+        G = jac_mul_raw(D, cofactor)
+        jac_isid(G) && continue
+        # G has order dividing ell; since ell is prime and G ≠ id, order = ell.
+        return G
     end
     error("find_ell_generator failed — verify ell | #Jac for this curve/p")
 end

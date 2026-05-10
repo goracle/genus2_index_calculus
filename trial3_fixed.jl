@@ -1490,31 +1490,8 @@ function largest_prime_factor(n::Int)
     return max(best, n)
 end
 
-# cycle detection
-function order_via_cycle(D)
-    f(X) = jac_add(X, D)
-
-    power = 1
-    lam = 1
-    tortoise = D
-    hare = f(D)
-
-    while tortoise != hare
-        if power == lam
-            tortoise = hare
-            power *= 2
-            lam = 0
-        end
-        hare = f(hare)
-        lam += 1
-
-        if lam > 10^7
-            return 0
-        end
-    end
-
-    return lam
-end
+# order_via_cycle removed: Floyd's cycle detection with a 1e7 cap can never find
+# element orders for #Jac ≈ p² ≈ 2.7e10.  Use jac_order_bsgs (O(√#Jac)) instead.
 
 
 
@@ -1531,16 +1508,9 @@ function main2()
         error("No affine points found on curve.")
     end
 
-    # 2. Create the divisor from the first affine point
-    # Bypass Nemo and use the native mumford1 function from trial1!
-    px, py = pts[2]
-    D = mumford1(px, py)
-
-    # ── fast subgroup bootstrap ───────────────────────────────────────────
+    # ── fast subgroup bootstrap via BSGS ─────────────────────────────────
     t_ell = time()
-    
-    # Pass the correctly typed Div2 object
-    G, ell_found = fast_find_ell_generator(D)
+    G, ell_found = fast_find_ell_generator()
     
     global ell = ell_found
     @printf("  bootstrap time = %.2fs\n", time()-t_ell)
@@ -1571,49 +1541,58 @@ end
 
 
 
-# IMPORTANT: seed divisor comes from your system, not points
-function random_jacobian_element(seed::Div2; steps=20)
-    D = seed
+# ---------------------------------------------------------------------------
+#  fast_find_ell_generator — BSGS-based, O(√#Jac) = O(p) jac_add calls.
+#
+#  Strategy:
+#    1. Pick two random affine rational points, build a random degree-2 divisor.
+#    2. Find its exact order via jac_order_bsgs (baby-giant, O(√#Jac) ≈ O(p)).
+#    3. Extract the largest prime factor ell_cand of that order.
+#    4. Multiply D by the cofactor to get a generator of order exactly ell_cand.
+#    5. Verify ell_cand * G = id, then return.
+#
+#  Why not order_via_cycle?
+#    Floyd's cycle detection needs O(λ) iterations where λ is the element order.
+#    For a random element of the genus-2 Jacobian, λ ≈ #Jac ≈ p² ≈ 2.7e10
+#    (for p = 164147), which vastly exceeds any practical cap.  BSGS finds the
+#    order in O(√#Jac) ≈ 165 000 jac_add calls — a few seconds, not forever.
+# ---------------------------------------------------------------------------
+function fast_find_ell_generator(::Div2 = JacID; trials::Int = 200)
+    println("Finding G of large prime order (BSGS)...")
+    pts = curve_points()
+    n   = length(pts)
+    n < 2 && error("Not enough rational points on the curve")
 
-    for _ in 1:steps
-        k = rand(1:10)
-        # Fix: Use jac_mul_raw because global 'ell' is still 0 here
-        D = jac_add(D, jac_mul_raw(seed, k))
+    for attempt in 1:trials
+        # Random degree-2 divisor from two independently chosen rational points.
+        P = pts[rand(1:n)]
+        Q = pts[rand(1:n)]
+        D = mumford_from_pts(P, Q)
+        jac_isid(D) && continue
+
+        # Exact element order via baby-giant.  For p = 164147 this stores
+        # ≈ 165 000 Div2 entries and does ≈ 330 000 jac_add calls.
+        ord = jac_order_bsgs(D)
+        ord <= 1 && continue
+
+        # Extract the largest prime factor without Oscar (trial division).
+        ell_cand = largest_prime_factor(ord)
+        ell_cand < 1000 && continue          # skip if subgroup is tiny
+
+        cofactor = ord ÷ ell_cand
+        cofactor == 0 && continue
+
+        G = jac_mul_raw(D, cofactor)
+        jac_isid(G) && continue              # unlucky draw; try again
+
+        # Sanity: ell_cand · G must be the identity.
+        jac_isid(jac_mul_raw(G, ell_cand)) || continue
+
+        @printf("  attempt %d: ord(D) = %d,  ell = %d\n", attempt, ord, ell_cand)
+        return G, ell_cand
     end
 
-    return D
-end
-
-function fast_find_ell_generator(seed::Div2; trials=50)
-    println("Finding G of large prime order (robust)...")
-
-    for _ in 1:trials
-        D = random_jacobian_element(seed)
-
-        if is_identity(D)
-            continue
-        end
-
-        ord = order_via_cycle(D)
-        if ord <= 1
-            continue
-        end
-
-        ell = largest_prime_factor(ord)
-        if ell < 1000
-            continue
-        end
-
-        # Fix: Use jac_mul_raw here as well, because global 'ell' isn't set yet!
-        G = jac_mul_raw(D, div(ord, ell))
-
-        if !is_identity(G)
-            println("Found ell = $ell")
-            return G, ell
-        end
-    end
-
-    error("Failed to find large prime-order generator")
+    error("fast_find_ell_generator: no large-prime-order element found in $trials attempts")
 end
 
 
