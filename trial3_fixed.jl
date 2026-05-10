@@ -983,26 +983,34 @@ function combined_relation_from_points(points::Vector{NTuple{2,Int}},
     return lp_count, lp_pt, row, a, b
 end
 
-# ---------------------------------------------------------------------------
 #  left_kernel_all: return ALL left null vectors of R over GF(ell).
 #
-#  Uses Nemo.jl (FLINT backend) for the dense finite-field kernel computation,
-#  which crushes 3000x3000 GF(p) matrices in milliseconds vs minutes for a
-#  pure-Julia O(N^3) loop.  Falls back to the pure-Julia path if Nemo is
-#  unavailable or the matrix is tiny.
+#  Takes rel_rows sparse format directly to avoid materializing a dense matrix.
+#  Uses Nemo.jl (FLINT backend) for the dense finite-field kernel computation.
+#  Falls back to pure-Julia elimination if Nemo is unavailable.
 # ---------------------------------------------------------------------------
-function left_kernel_all(R::Matrix{Int})::Vector{Vector{Int}}
-    m, n = size(R)
+function left_kernel_all(rel_rows::Vector{Dict{Int,Int}}, nF::Int, ell::Int)::Vector{Vector{Int}}
+    m = length(rel_rows)
+    n = nF
 
     # ── Nemo / FLINT fast path ──────────────────────────────────────────────
-    # nullspace(M) returns (ν, N) where N is n×ν and MN = 0 (right nullspace).
-    # Left nullspace of R  =  right nullspace of R'.
-    # Lift elements via ZZ to get plain Int values.
+    # Build the Nemo matrix directly from sparse rel_rows — never touch a dense Julia array.
     try
         F = Nemo.GF(ell)
-        Rnemo = Nemo.matrix(F, m, n,
-                    [F(mod(R[i,j], ell)) for i in 1:m for j in 1:n])
-        nu, K = nullspace(transpose(Rnemo))   # K: m × nu, columns = left null vecs
+        # Nemo.matrix from a flat vector of elements, row-major.
+        entries = Vector{elem_type(F)}(undef, m * n)
+        for i in 1:m
+            base = (i-1)*n
+            for j in 1:n
+                entries[base+j] = F(0)
+            end
+            for (j, v) in rel_rows[i]
+                1 <= j <= n || continue
+                entries[base+j] = F(mod(v, ell))
+            end
+        end
+        Rnemo = Nemo.matrix(F, m, n, entries)
+        nu, K = nullspace(transpose(Rnemo))
         result = Vector{Int}[]
         for col in 1:nu
             γ = [Int(lift(ZZ, K[row, col])) for row in 1:m]
@@ -1010,13 +1018,19 @@ function left_kernel_all(R::Matrix{Int})::Vector{Vector{Int}}
         end
         return result
     catch e
-        # ── Pure-Julia fallback (correct but slow for large matrices) ────────
         @warn "Nemo nullspace failed ($e); falling back to pure-Julia elimination."
     end
 
-    aug  = hcat(Matrix{Int}(I, m, m), mod.(R, ell))
-    prow = 1
+    # ── Pure-Julia fallback ─────────────────────────────────────────────────
+    # Build dense matrix only in fallback path (small matrices only).
+    R = zeros(Int, m, n)
+    for i in 1:m, (j, v) in rel_rows[i]
+        1 <= j <= n || continue
+        R[i, j] = mod(R[i, j] + v, ell)
+    end
 
+    aug  = hcat(Matrix{Int}(I, m, m), R)
+    prow = 1
     for col in m+1:m+n
         piv = findfirst(r -> aug[r, col] != 0, prow:m)
         piv === nothing && continue
@@ -1059,7 +1073,9 @@ function phase2_worker(G::Div2, T::Div2,
                        step_a::Vector{Int},
                        step_b::Vector{Int},
                        rel_counter::Threads.Atomic{Int},
-                       rel_target::Int;
+                       rel_target::Int,
+                       shared_lp1::Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int}},
+                       shared_lp1_lock::ReentrantLock;
                        verbose::Bool = true)
 
     nF_cur   = length(fb)
@@ -1086,10 +1102,7 @@ function phase2_worker(G::Div2, T::Div2,
 
     # Sample full relations for algebraic spot-checking.
     sample_rels = Vector{Tuple{Div2,Dict{Int,Int},Int,Int,NTuple{2,Int},NTuple{2,Int},NTuple{2,Int}}}()
-    # 1-LP cache: exact point collisions.
-    lp1_table = Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int}}()
-
-    # 2-LP graph: sparse edge walk.
+    # 2-LP graph: sparse edge walk (per-thread; no lock needed).
     lp2_edges    = LP2Edge[]
     lp2_live     = Bool[]
     lp2_incidence = Dict{NTuple{2,Int}, Vector{Int}}()
@@ -1172,12 +1185,15 @@ function phase2_worker(G::Div2, T::Div2,
                 fb_row[idx] = get(fb_row, idx, 0) + 1
             end
 
-            if haskey(lp1_table, lp_pt)
-                prev_row, prev_al, prev_be = lp1_table[lp_pt]
+            lock(shared_lp1_lock)
+            if haskey(shared_lp1, lp_pt)
+                prev_row, prev_al, prev_be = shared_lp1[lp_pt]
                 combined = copy(fb_row)
                 lp2_subtract_rows(combined, prev_row)
                 combined_al = mod(neg_al - prev_al, ell)
                 combined_be = mod(neg_be - prev_be, ell)
+                delete!(shared_lp1, lp_pt)
+                unlock(shared_lp1_lock)
                 if !isempty(combined) && !(combined_al == 0 && combined_be == 0)
                     push!(alpha_vec, combined_al)
                     push!(beta_vec,  combined_be)
@@ -1185,9 +1201,9 @@ function phase2_worker(G::Div2, T::Div2,
                     hits_full += 1
                     Threads.atomic_add!(rel_counter, 1)
                 end
-                delete!(lp1_table, lp_pt)
             else
-                lp1_table[lp_pt] = (fb_row, neg_al, neg_be)
+                shared_lp1[lp_pt] = (fb_row, neg_al, neg_be)
+                unlock(shared_lp1_lock)
             end
 
             # Re-anchor to a known FB point without allocating a temp vector.
@@ -1295,6 +1311,11 @@ function index_calculus_walk(G::Div2, T::Div2;
     rel_target = nF + 1 + target_excess
     rel_counter = Threads.Atomic{Int}(0)
 
+    # Shared 1-LP table across all threads — the single biggest closure multiplier.
+    # A ReentrantLock guards it; contention is low because each insert/lookup is O(1).
+    shared_lp1       = Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int}}()
+    shared_lp1_lock  = ReentrantLock()
+
     verbose && @printf("Phase 2: launching %d walker thread(s), target=%d live rels...\n",
                        Threads.nthreads(), rel_target)
 
@@ -1303,7 +1324,8 @@ function index_calculus_walk(G::Div2, T::Div2;
         tasks[tid] = Threads.@spawn phase2_worker(
             G, T, fb, pt2idx,
             step_D, step_a, step_b,
-            rel_counter, rel_target; verbose=verbose)
+            rel_counter, rel_target,
+            shared_lp1, shared_lp1_lock; verbose=verbose)
     end
     results = [fetch(t) for t in tasks]
 
@@ -1356,11 +1378,6 @@ function index_calculus_walk(G::Div2, T::Div2;
 
     !solve && return nothing
 
-    Rmat = zeros(Int, nrel, nF)
-    for i in 1:nrel, (j, v) in rel_rows[i]
-        1 <= j <= nF || continue
-        Rmat[i, j] = mod(Rmat[i, j] + v, ell)
-    end
 
     # ── Diagnostics before solve ──────────────────────────────────────────────
     if verbose
@@ -1395,7 +1412,7 @@ function index_calculus_walk(G::Div2, T::Div2;
     end
 
     verbose && println("Left-kernel search over GF($ell)...")
-    kernels = left_kernel_all(Rmat)
+    kernels = left_kernel_all(rel_rows, nF, ell)
     isempty(kernels) && error("Kernel not found — collect more relations")
 
     verbose && @printf("  kernel dimension = %d\n", length(kernels))
