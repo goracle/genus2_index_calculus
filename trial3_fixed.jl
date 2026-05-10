@@ -711,125 +711,9 @@ function sparse_add!(dst::Dict{Int,Int}, src::Dict{Int,Int}; sign::Int = 1)
     return dst
 end
 
-# ---------------------------------------------------------------------------
-#  2-LP graph helpers
-#
-#  We treat a 2-LP relation as an edge between the two large-prime points.
-#  When two edges meet at a shared endpoint, subtracting them eliminates the
-#  shared LP and yields a new edge between the other endpoints.  Repeating this
-#  is a sparse graph walk; when the endpoints coincide, the LPs cancel and we
-#  emit a pure factor-base relation.
-# ---------------------------------------------------------------------------
-struct LP2Edge
-    left::NTuple{2,Int}
-    right::NTuple{2,Int}
-    row::Dict{Int,Int}
-    alpha::Int
-    beta::Int
-    function LP2Edge(a::NTuple{2,Int}, b::NTuple{2,Int},
-                     row::Dict{Int,Int}, alpha::Int, beta::Int)
-        a <= b ? new(a, b, row, alpha, beta) : new(b, a, row, alpha, beta)
-    end
-end
 
-@inline lp2_other(e::LP2Edge, pt::NTuple{2,Int})::Union{NTuple{2,Int},Nothing} =
-    e.left == pt ? e.right : (e.right == pt ? e.left : nothing)
+include("lp2.jl")   # LP2Edge helpers and LP2Graph spanning-tree
 
-function lp2_subtract_rows(dst::Dict{Int,Int}, src::Dict{Int,Int})
-    for (j, v) in src
-        nv = get(dst, j, 0) - v
-        nv == 0 ? delete!(dst, j) : (dst[j] = nv)
-    end
-    return dst
-end
-
-function lp2_attach!(edges::Vector{LP2Edge},
-                     live::Vector{Bool},
-                     incidence::Dict{NTuple{2,Int}, Vector{Int}},
-                     left::NTuple{2,Int},
-                     right::NTuple{2,Int},
-                     row::Dict{Int,Int},
-                     alpha::Int,
-                     beta::Int,
-                     rel_rows::Vector{Dict{Int,Int}},
-                     alpha_vec::Vector{Int},
-                     beta_vec::Vector{Int},
-                     rel_counter::Threads.Atomic{Int})::Int
-    cur_left  = left
-    cur_right = right
-    cur_row   = copy(row)
-    cur_alpha = alpha
-    cur_beta  = beta
-
-    # One bounded fold only: if the new edge touches an existing live edge,
-    # cancel that shared LP once. This closes local triangles without letting
-    # the graph walk recurse or chase long cyclic components.
-    hit_eid = 0
-    hit_pt  = cur_left
-
-    if haskey(incidence, cur_left)
-        vec = incidence[cur_left]
-        while !isempty(vec) && !live[vec[end]]
-            pop!(vec)
-        end
-        if !isempty(vec)
-            hit_eid = vec[end]
-            hit_pt  = cur_left
-        end
-    end
-
-    if hit_eid == 0 && haskey(incidence, cur_right)
-        vec = incidence[cur_right]
-        while !isempty(vec) && !live[vec[end]]
-            pop!(vec)
-        end
-        if !isempty(vec)
-            hit_eid = vec[end]
-            hit_pt  = cur_right
-        end
-    end
-
-    if hit_eid == 0
-        e = LP2Edge(cur_left, cur_right, copy(cur_row), cur_alpha, cur_beta)
-        push!(edges, e)
-        push!(live, true)
-        eid = length(edges)
-        push!(get!(incidence, e.left, Int[]), eid)
-        push!(get!(incidence, e.right, Int[]), eid)
-        return 0
-    end
-
-    old = edges[hit_eid]
-    old_other = lp2_other(old, hit_pt)
-    old_other === nothing && (live[hit_eid] = false; return 0)
-
-    live[hit_eid] = false
-    cur_row   = lp2_subtract_rows(copy(cur_row), old.row)
-    cur_alpha = mod(cur_alpha - old.alpha, ell)
-    cur_beta  = mod(cur_beta  - old.beta, ell)
-
-    cur_other = hit_pt == cur_left ? cur_right : cur_left
-
-    if old_other == cur_other
-        if !isempty(cur_row) && !(cur_alpha == 0 && cur_beta == 0)
-            push!(alpha_vec, cur_alpha)
-            push!(beta_vec,  cur_beta)
-            push!(rel_rows,  cur_row)
-            Threads.atomic_add!(rel_counter, 1)
-        end
-        return 1
-    end
-
-    # Store the folded edge and stop. The next closure attempt happens only
-    # when a fresh relation later hits one of its endpoints.
-    e = LP2Edge(old_other, cur_other, cur_row, cur_alpha, cur_beta)
-    push!(edges, e)
-    push!(live, true)
-    eid = length(edges)
-    push!(get!(incidence, e.left, Int[]), eid)
-    push!(get!(incidence, e.right, Int[]), eid)
-    return 0
-end
 
 #### gemini edits:
 
@@ -1076,221 +960,6 @@ end
 #  the walk — only the atomic increment on emit.
 # ---------------------------------------------------------------------------
 
-# ---------------------------------------------------------------------------
-#  LP2Graph — shared 2-large-prime graph for cycle-based relation emission
-#
-#  Each 2-LP walk step yields a pair of off-factor-base points (L, R) and
-#  a factor-base row expressing:
-#
-#      atom(L) + atom(R) + fb_row  =  -alpha*G - beta*T      ... (*)
-#
-#  We model this as a weighted graph where nodes are LP points and each
-#  such step inserts an edge (L, R) labelled with (fb_row, alpha, beta).
-#
-#  A cycle in this graph means we can subtract two edge labels to eliminate
-#  the shared LP node and produce a pure factor-base relation.  We detect
-#  cycles online via union-find: when we try to insert edge (L,R) and L,R
-#  are already in the same component, we have a cycle.  We then walk the
-#  stored spanning-tree path from L to their common root and from R to that
-#  root, cancelling LP nodes along the way, to recover the FB relation.
-#
-#  Spanning tree storage:
-#    Each LP node v stores parent[v], edge_to_parent[v] = (fb_row, alpha, beta).
-#    The edge direction is always child→parent, so "subtracting" means we negate
-#    when traversing parent→child.
-#
-#  Row-weight bound:
-#    Each path-combination can double the row weight at each step.  We cap the
-#    total combined row weight at MAX_LP2_ROW_WEIGHT; if exceeded we discard
-#    rather than emit a bloated row.
-#
-#  Thread safety:
-#    The struct is shared across all walker threads behind a single ReentrantLock.
-#    Lock is held only during graph mutation and cycle checks — O(depth) work,
-#    bounded by MAX_LP2_DEPTH.
-# ---------------------------------------------------------------------------
-
-const MAX_LP2_DEPTH       = 6    # max spanning-tree depth; prevents row blowup
-const MAX_LP2_ROW_WEIGHT  = 24   # max nonzeros in an emitted 2-LP relation
-
-mutable struct LP2Node
-    parent   ::Union{NTuple{2,Int}, Nothing}   # nothing = this node is a root
-    depth    ::Int
-    # edge to parent: fb_row contribution when traversing child→parent
-    edge_row  ::Dict{Int,Int}
-    edge_alpha::Int
-    edge_beta ::Int
-end
-
-mutable struct LP2Graph
-    nodes    ::Dict{NTuple{2,Int}, LP2Node}
-    n_edges_inserted ::Int
-    n_cycles_found   ::Int
-    n_emitted        ::Int
-    n_depth_pruned   ::Int
-    n_weight_pruned  ::Int
-end
-
-function LP2Graph()
-    LP2Graph(
-        Dict{NTuple{2,Int}, LP2Node}(),
-        0, 0, 0, 0, 0
-    )
-end
-
-# Walk the spanning tree from `pt` to find its root (node with parent===nothing).
-# Returns the root key, or nothing if pt is not in the tree.
-function lp2_tree_root(g::LP2Graph, pt::NTuple{2,Int})
-    cur = pt
-    while true
-        node = get(g.nodes, cur, nothing)
-        node === nothing && return nothing   # pt not in tree at all
-        node.parent === nothing && return cur
-        cur = node.parent
-    end
-end
-
-# Walk the spanning tree from `start` up to the root, accumulating the
-# combined fb_row (with signs) and alpha/beta into (row, a, b).
-# Returns (row, alpha, beta, depth_reached) or nothing if depth exceeded.
-function lp2_path_to_root(g::LP2Graph, start::NTuple{2,Int}, ell::Int)
-    row   = Dict{Int,Int}()
-    alpha = 0
-    beta  = 0
-    sign_node = 1
-    cur   = start
-    depth = 0
-    while true
-        node = get(g.nodes, cur, nothing)
-        if node === nothing || node.parent === nothing
-            break
-        end
-
-        depth += 1
-        if depth > MAX_LP2_DEPTH
-            return nothing
-        end
-
-        for (j, v) in node.edge_row
-            nv = get(row, j, 0) + sign_node * v   # +sign_node (consistent with alpha/beta)
-            nv == 0 ? delete!(row, j) : (row[j] = nv)
-        end
-        alpha = mod(alpha + sign_node * node.edge_alpha, ell)
-        beta  = mod(beta  + sign_node * node.edge_beta,  ell)
-
-        sign_node = -sign_node
-        cur = node.parent
-    end
-    return (row=row, alpha=alpha, beta=beta, root_sign=sign_node, depth=depth)
-end
-
-
-# Try to insert edge (L, R) with label (fb_row, alpha, beta).
-# If L and R are already connected → cycle → emit a relation.
-# Otherwise insert L or R as a new child in the spanning tree.
-# Returns the emitted (row, alpha, beta) or nothing.
-function lp2_insert_edge!(g::LP2Graph,
-                          L::NTuple{2,Int}, R::NTuple{2,Int},
-                          fb_row::Dict{Int,Int},
-                          alpha::Int, beta::Int,
-                          ell::Int)
-
-    g.n_edges_inserted += 1
-
-    rL = lp2_tree_root(g, L)
-    rR = lp2_tree_root(g, R)
-
-    # Cycle: both nodes already in the same spanning tree
-    if rL !== nothing && rR !== nothing && rL == rR
-        g.n_cycles_found += 1
-
-        pathL = lp2_path_to_root(g, L, ell)
-        pathR = lp2_path_to_root(g, R, ell)
-
-        if pathL === nothing || pathR === nothing
-            g.n_depth_pruned += 1
-            return nothing
-        end
-
-        # Reject odd cycles (roots fail to cancel)
-        if pathL.root_sign == pathR.root_sign
-            g.n_depth_pruned += 1
-            return nothing
-        end
-
-        combined = copy(fb_row)
-        for (j, v) in pathL.row
-            nv = get(combined, j, 0) - v
-            nv == 0 ? delete!(combined, j) : (combined[j] = nv)
-        end
-        for (j, v) in pathR.row
-            nv = get(combined, j, 0) - v
-            nv == 0 ? delete!(combined, j) : (combined[j] = nv)
-        end
-
-        if length(combined) > MAX_LP2_ROW_WEIGHT
-            g.n_weight_pruned += 1
-            return nothing
-        end
-
-        combined_alpha = mod(pathL.alpha + pathR.alpha - alpha, ell)
-        combined_beta  = mod(pathL.beta  + pathR.beta  - beta,  ell)
-
-        if isempty(combined) || (combined_alpha == 0 && combined_beta == 0)
-            return nothing
-        end
-
-        g.n_emitted += 1
-        return (row=combined, alpha=combined_alpha, beta=combined_beta)
-
-    else
-        # Tree-merge: attach whichever endpoint is not yet in a tree (or is shallower)
-        node_L = get(g.nodes, L, nothing)
-        node_R = get(g.nodes, R, nothing)
-        depth_L = node_L === nothing ? 0 : node_L.depth
-        depth_R = node_R === nothing ? 0 : node_R.depth
-
-        attach_child  = nothing
-        attach_parent = nothing
-        new_depth     = 0
-
-        if node_L === nothing && node_R !== nothing
-            attach_child  = L
-            attach_parent = R
-            new_depth     = depth_R + 1
-        elseif node_R === nothing && node_L !== nothing
-            attach_child  = R
-            attach_parent = L
-            new_depth     = depth_L + 1
-        elseif node_L === nothing && node_R === nothing
-            # Neither in tree yet: make R a root, attach L as child
-            g.nodes[R] = LP2Node(nothing, 0, Dict{Int,Int}(), 0, 0)
-            attach_child  = L
-            attach_parent = R
-            new_depth     = 1
-        else
-            # Both in separate trees: attach the shallower-rooted one
-            if depth_L <= depth_R
-                attach_child  = L
-                attach_parent = R
-                new_depth     = depth_R + 1
-            else
-                attach_child  = R
-                attach_parent = L
-                new_depth     = depth_L + 1
-            end
-        end
-
-        if new_depth > MAX_LP2_DEPTH
-            g.n_depth_pruned += 1
-            return nothing
-        end
-
-        g.nodes[attach_child] = LP2Node(attach_parent, new_depth,
-                                        copy(fb_row), alpha, beta)
-        return nothing
-    end
-end
 
 
 
@@ -1302,6 +971,7 @@ function phase2_worker(G::Div2, T::Div2,
                        step_b::Vector{Int},
                        rel_counter::Threads.Atomic{Int},
                        rel_target::Int,
+                       step_cap::Int,
                        shared_lp1::Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int, Int}},
                        shared_lp1_lock::ReentrantLock,
                        shared_lp2::LP2Graph,
@@ -1351,7 +1021,7 @@ function phase2_worker(G::Div2, T::Div2,
     sample_rels = Vector{Tuple{Div2,Dict{Int,Int},Int,Int,NTuple{2,Int},NTuple{2,Int},NTuple{2,Int}}}()
     rank_growth = Tuple{Int,Int}[]
 
-    while rel_counter[] < rel_target
+    while rel_counter[] < rel_target && raw_steps < step_cap
         raw_steps += 1
         si        = rand(1:N_STEPS)
         D_cur     = jac_add(D_cur, step_D[si])
@@ -1459,7 +1129,6 @@ function phase2_worker(G::Div2, T::Div2,
                     combined_al = mod(neg_al - prev_al, ell)
                     combined_be = mod(neg_be - prev_be, ell)
                     delete!(shared_lp1, lp_pt)
-                    closed = true
                     # ── record closure gap ───────────────────────────────
                     record_closure!(lp_col, raw_steps, prev_step)
                     
@@ -1471,6 +1140,7 @@ function phase2_worker(G::Div2, T::Div2,
                         hits_full += 1
                         hits_1lp_emit += 1
                         Threads.atomic_add!(rel_counter, 1)
+                        closed = true   # only reset cur_pt when we got a usable relation
                     end
                 else
                     shared_lp1[lp_pt] = (copy(fb_row_scratch), neg_al, neg_be, raw_steps)
@@ -1562,11 +1232,16 @@ function phase2_worker(G::Div2, T::Div2,
                     ok_pos = jac_isid(jac_sub(D_fb_sum, RHS))   # D_fb == +alpha*G + beta*T
                     ok_neg = jac_isid(jac_add(D_fb_sum, RHS))   # D_fb == -alpha*G - beta*T
 
-                    if !ok_pos
-                        @printf("[LP2-DIAG tid=%d] FAIL  ok_pos=%s ok_neg=%s  alpha=%d beta=%d  row_weight=%d\n",
+                    if !(ok_pos || ok_neg)
+                        @printf("[LP2-DIAG tid=%d] FAIL  ok_pos=%s ok_neg=%s  alpha=%d beta=%d  row_weight=%d  root_signs=(%d,%d)  depths=(%d,%d)\n",
                                 Threads.threadid(), ok_pos, ok_neg,
-                                emitted_rel.alpha, emitted_rel.beta, length(emitted_rel.row))
-                        @assert false "LP2 emitted relation is not principal! (see diagnostic above)"
+                                emitted_rel.alpha, emitted_rel.beta, length(emitted_rel.row),
+                                emitted_rel.root_signs[1], emitted_rel.root_signs[2],
+                                emitted_rel.depths[1], emitted_rel.depths[2])
+                        @printf("  lp2_a=%s  lp2_b=%s  cur_pt=%s  i0=%d iR=%d iS=%d\n",
+                                string(lp2_a), string(lp2_b), string(cur_pt), i0, iR, iS)
+                        @printf("  row = %s\n", string(emitted_rel.row))
+                        @assert false "LP2 emitted relation is not principal in either sign convention! (see diagnostic above)"
                     end
                 end
                 # ------------------------------------
@@ -1674,6 +1349,21 @@ function index_calculus_walk(G::Div2, T::Div2;
     rel_target = nF + 1 + target_excess
     rel_counter = Threads.Atomic{Int}(0)
 
+    # Step cap: derived entirely from the smoothness geometry — no magic number.
+    # A single phi-valid step is 0-LP smooth with probability (nF/n_all)^2.
+    # LP-variant relations (1-LP closures) contribute at rate ~2*(nF/n_all)*(1-nF/n_all).
+    # Combined expected full-rel rate per valid step:
+    p_smooth_step = (nF / n_all)^2 + 2.0 * (nF / n_all) * (1.0 - nF / n_all)
+    # We need rel_target relations across all threads; each thread carries
+    # 1/nthreads of the load.  Add a safety factor of 1/p_smooth_step to convert
+    # from "expected relations" to "raw steps needed", then multiply by a headroom
+    # factor equal to the inverse phi-validity rate (conservatively estimated as
+    # the reciprocal of the 0-LP probability alone, i.e. 1/(nF/n_all)^2 capped
+    # to avoid absurd caps when coverage is very low).
+    phi_valid_rate_est = clamp((nF / n_all)^2, 1e-8, 1.0)
+    steps_per_rel_est  = 1.0 / (p_smooth_step * phi_valid_rate_est)
+    step_cap = round(Int, steps_per_rel_est * rel_target / Threads.nthreads()) * Threads.nthreads()
+
     shared_lp1       = Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int, Int}}()
     shared_lp1_lock  = ReentrantLock()
     shared_lp2       = LP2Graph()
@@ -1686,6 +1376,10 @@ function index_calculus_walk(G::Div2, T::Div2;
         @printf("  step table build time:  %.3fs\n", t_step_done)
         @printf("  rel_target:             %d  (nF + 1 + %d excess)\n",
                 rel_target, target_excess)
+        @printf("  p_smooth per step:      %.3e  (0-LP + LP-closure estimate)\n",
+                p_smooth_step)
+        @printf("  step_cap per thread:    %d  (derived from smoothness geometry)\n",
+                step_cap ÷ Threads.nthreads())
         @printf("  threads:                %d\n", Threads.nthreads())
         @printf("  launching walkers at:   %s\n", string(Dates.now()))
         flush(stdout)
@@ -1699,12 +1393,38 @@ function index_calculus_walk(G::Div2, T::Div2;
         tasks[tid] = Threads.@spawn phase2_worker(
             G, T, fb, pt2idx,
             step_D, step_a, step_b,
-            rel_counter, rel_target,
+            rel_counter, rel_target, step_cap ÷ Threads.nthreads(),
             shared_lp1, shared_lp1_lock,
             shared_lp2, shared_lp2_lock,
             thread_collectors[tid]; verbose=verbose)
     end
-    results = [fetch(t) for t in tasks]
+    # Collect results; a timed wait surfaces hangs as an error rather than
+    # blocking forever.  Timeout is derived: enough wall-clock time for each
+    # thread to exhaust its step_cap at a conservative throughput floor.
+    # Timeout: derived from step_cap and a conservative jac_add throughput estimate.
+    # Each raw walk step does at most a handful of jac_add calls.  We use the
+    # observed phi-validity rate (~(nF/n_all)^2) to estimate useful-step density,
+    # then bound total wall time as step_cap / (estimated steps/s).
+    # "Estimated steps/s" = 1 / (cost_per_jac_add_secs * jac_adds_per_step).
+    # We set cost_per_jac_add_secs conservatively (slow end for genus-2 over F_p
+    # with p < 2^20) and jac_adds_per_step to a typical upper bound.
+    cost_per_jac_add_secs  = 1e-5   # 10 µs — deliberately pessimistic for small p
+    jac_adds_per_raw_step  = 6      # build_phi + phi_residual + a few eval_f checks
+    secs_per_raw_step_est  = cost_per_jac_add_secs * jac_adds_per_raw_step
+    timeout_secs = (step_cap / Threads.nthreads()) * secs_per_raw_step_est * 4.0
+    timed_out = falses(length(tasks))
+    for (i, t) in enumerate(tasks)
+        status = timedwait(() -> istaskdone(t), timeout_secs)
+        if status === :timed_out
+            timed_out[i] = true
+            @printf("[WARNING] task %d did not finish within %.0fs timeout\n", i, timeout_secs)
+        end
+    end
+    any(timed_out) && @printf("[WARNING] %d/%d walker tasks timed out; results will be partial\n",
+                               sum(timed_out), length(tasks))
+    results = [istaskdone(t) ? fetch(t) : nothing for t in tasks]
+    results = filter(!isnothing, results)
+    isempty(results) && error("All walker tasks timed out — rel_target unreachable at current smoothness rate")
     t_phase2_done = time() - t_phase2_start
 
     alpha_vec = Int[]
@@ -1777,6 +1497,7 @@ function index_calculus_walk(G::Div2, T::Div2;
         @printf("    relations emitted:   %d\n",  shared_lp2.n_emitted)
         @printf("    depth-pruned:        %d\n",  shared_lp2.n_depth_pruned)
         @printf("    weight-pruned:       %d\n",  shared_lp2.n_weight_pruned)
+        @printf("    parity-pruned:       %d\n",  shared_lp2.n_parity_pruned)
         @printf("    LP nodes in graph:   %d\n",  length(shared_lp2.nodes))
         cycle_rate = shared_lp2.n_cycles_found / max(1, shared_lp2.n_edges_inserted)
         emit_rate  = shared_lp2.n_emitted      / max(1, shared_lp2.n_cycles_found)
