@@ -1,0 +1,286 @@
+next_prime(100000) = 100003  →  using p = 100003
+======================================================================
+  trial2: Markov-walk phi-relation index calculus
+  y^2 = x^5+3x^3+2x^2+5x+4  /F_100003,  ell=<auto>
+  threads = 32  |  start: 2026-05-10T11:34:31.833
+======================================================================
+
+Curve enumeration: 99788 affine rational points in 0.060s
+  expected ~p = 100003 points (density check: 0.9979)
+
+── Generator search (Pollard rho) ──────────────────────────────────
+Finding G of large prime order (Pollard rho, parallel)...
+  thread 22, attempt 1: ord(D) = 9979288444, ell = 2494822111, cofactor h = 4
+  order calls (winner thread): 1, avg rho time: 18.9048s, total rho time: 18.9048s
+  skips (winner) — id_divisor: 0, tiny_ell: 0, id_after_cofac: 0, bad_verify: 0
+  generator search total wall time: 19.484s (32 threads)
+  bootstrap total time = 19.788s
+  G.u = [65655, 59049, 1]
+  G.v = [68738, 34997]
+  ell = 2494822111  (31.2 bits)
+  ell/p ratio = 24947.472686
+  Confirmed: ell*G = identity
+
+Secret k = 1549461917  (30.5 bits)
+
+Auto FB size: 2154  (= ceil(p^(2/3)) clamped to [200,20000])
+  target relations: 2155 + excess
+  expected smoothness prob per step: ~(fb_auto/p)^2 ~ 4.64e-04
+
+── Index calculus walk ─────────────────────────────────────────────
+
+── Factor base ─────────────────────────────────────────────────────
+  FB size:          2154 / 99788 total rational points
+  curve coverage:   2.1586%  (FB/total)
+  smoothness bound: B = 2154  (p^(2/3) = 2154.5)
+  x-range of FB:    [0, 2135]
+  expected full-rel prob per valid step: ~4.66e-04  (FB/total)^2
+  expected full-rel prob incl. LP: ~4.22e-02  (1-LP pairs)
+
+── Walk setup ──────────────────────────────────────────────────────
+  N_STEPS (precomputed):  256
+  step table build time:  0.091s
+  rel_target:             2370  (nF + 1 + 215 excess)
+  threads:                32
+  launching walkers at:   2026-05-10T11:34:52.196
+[thread 13 | DONE | t=5.6s] raw=71451 valid=17756 full=95 1lp=780 2lp=16967 skip=0  rels_local=95
+[thread  2 | DONE | t=5.6s] raw=62233 valid=15561 full=87 1lp=677 2lp=14874 skip=0  rels_local=87
+[thread 24 | DONE | t=5.6s] raw=66226 valid=16455 full=76 1lp=662 2lp=15783 skip=0  rels_local=76
+[thread 33 | DONE | t=5.6s] raw=51932 valid=13023 full=62 1lp=550 2lp=12463 skip=0  rels_local=62
+[thread 25 | DONE | t=5.6s] raw=54613 valid=13585 full=59 1lp=539 2lp=13038 skip=0  rels_local=59
+[thread 14 | DONE | t=5.6s] raw=87072 valid=21526 full=89 1lp=919 2lp=20599 skip=0  rels_local=89
+[thread 32 | DONE | t=5.6s] raw=56361 valid=13962 full=78 1lp=615 2lp=13342 skip=0  rels_local=78
+[thread 17 | DONE | t=5.6s] raw=78108 valid=19377 full=77 1lp=788 2lp=18580 skip=0  rels_local=77
+[thread 22 | DONE | t=5.6s] raw=53248 valid=13391 full=53 1lp=557 2lp=12827 skip=0  rels_local=53
+[thread 11 | DONE | t=5.6s] raw=56588 valid=13928 full=63 1lp=573 2lp=13350 skip=0  rels_local=63
+[thread 26 | DONE | t=5.6s] raw=75993 valid=19059 full=86 1lp=781 2lp=18270 skip=0  rels_local=86
+[thread  7 | DONE | t=5.6s] raw=44822 valid=11259 full=59 1lp=494 2lp=10756 skip=0  rels_local=59
+[thread 15 | DONE | t=5.6s] raw=56840 valid=14260 full=75 1lp=579 2lp=13676 skip=0  rels_local=75
+[thread 27 | DONE | t=5.6s] raw=60784 valid=14970 full=58 1lp=619 2lp=14344 skip=0  rels_local=58
+[thread  8 | DONE | t=5.6s] raw=57265 valid=14235 full=57 1lp=574 2lp=13654 skip=0  rels_local=57
+[thread 19 | DONE | t=5.6s] raw=72109 valid=17942 full=86 1lp=767 2lp=17171 skip=0  rels_local=86
+[thread  3 | DONE | t=5.6s] raw=71870 valid=17786 full=78 1lp=727 2lp=17048 skip=0  rels_local=78
+[thread 30 | DONE | t=5.6s] raw=64610 valid=16177 full=82 1lp=686 2lp=15478 skip=0  rels_local=82
+[thread 20 | DONE | t=5.6s] raw=70218 valid=17512 full=73 1lp=738 2lp=16765 skip=0  rels_local=73
+[thread 28 | DONE | t=5.6s] raw=42088 valid=10366 full=43 1lp=468 2lp=9896 skip=0  rels_local=43
+[thread  9 | DONE | t=5.6s] raw=62273 valid=15652 full=65 1lp=681 2lp=14964 skip=0  rels_local=65
+[thread 10 | DONE | t=5.6s] raw=86994 valid=21434 full=92 1lp=863 2lp=20558 skip=0  rels_local=92
+[thread  6 | DONE | t=5.6s] raw=99053 valid=24732 full=99 1lp=1004 2lp=23721 skip=0  rels_local=99
+[thread 23 | DONE | t=5.6s] raw=68396 valid=17082 full=70 1lp=723 2lp=16352 skip=0  rels_local=70
+[thread 16 | DONE | t=5.6s] raw=57279 valid=14322 full=69 1lp=626 2lp=13689 skip=0  rels_local=69
+[thread 29 | DONE | t=5.6s] raw=50678 valid=12610 full=70 1lp=556 2lp=12051 skip=0  rels_local=70
+[thread 12 | DONE | t=5.6s] raw=71012 valid=17730 full=68 1lp=753 2lp=16971 skip=0  rels_local=68
+[thread 18 | DONE | t=5.6s] raw=57807 valid=14427 full=77 1lp=588 2lp=13835 skip=0  rels_local=77
+[thread  5 | DONE | t=5.6s] raw=69501 valid=17255 full=81 1lp=686 2lp=16561 skip=0  rels_local=81
+[thread  4 | DONE | t=5.6s] raw=61127 valid=15125 full=78 1lp=611 2lp=14507 skip=0  rels_local=78
+[thread 21 | DONE | t=5.6s] raw=69764 valid=17407 full=77 1lp=766 2lp=16637 skip=0  rels_local=77
+[thread 31 | DONE | t=5.6s] raw=70929 valid=17592 full=88 1lp=731 2lp=16856 skip=0  rels_local=88
+           phi-valid rate: 24.6130%  |  full-rel/valid: 0.4523%  |  steps/full: 898.2
+           phi-valid rate: 24.7724%  |  full-rel/valid: 0.5587%  |  steps/full: 722.6
+           phi-valid rate: 25.1484%  |  full-rel/valid: 0.3958%  |  steps/full: 1004.7
+           phi-valid rate: 24.8581%  |  full-rel/valid: 0.4004%  |  steps/full: 1004.6
+           phi-valid rate: 24.8467%  |  full-rel/valid: 0.4619%  |  steps/full: 871.4
+           phi-valid rate: 25.0039%  |  full-rel/valid: 0.4818%  |  steps/full: 830.1
+           phi-valid rate: 25.0880%  |  full-rel/valid: 0.5259%  |  steps/full: 757.9
+           phi-valid rate: 24.6282%  |  full-rel/valid: 0.3874%  |  steps/full: 1048.0
+           phi-valid rate: 25.0799%  |  full-rel/valid: 0.4512%  |  steps/full: 883.6
+           phi-valid rate: 24.8826%  |  full-rel/valid: 0.5551%  |  steps/full: 724.0
+           phi-valid rate: 24.9676%  |  full-rel/valid: 0.3835%  |  steps/full: 1044.3
+           phi-valid rate: 24.7221%  |  full-rel/valid: 0.4135%  |  steps/full: 978.3
+           phi-valid rate: 24.8750%  |  full-rel/valid: 0.4343%  |  steps/full: 925.6
+           phi-valid rate: 25.1194%  |  full-rel/valid: 0.5240%  |  steps/full: 759.7
+           phi-valid rate: 24.9395%  |  full-rel/valid: 0.4169%  |  steps/full: 961.9
+           phi-valid rate: 24.8506%  |  full-rel/valid: 0.5350%  |  steps/full: 752.1
+           phi-valid rate: 25.0770%  |  full-rel/valid: 0.4761%  |  steps/full: 837.6
+           phi-valid rate: 24.8270%  |  full-rel/valid: 0.4694%  |  steps/full: 858.0
+           phi-valid rate: 24.8080%  |  full-rel/valid: 0.3974%  |  steps/full: 1014.4
+           phi-valid rate: 25.1345%  |  full-rel/valid: 0.4153%  |  steps/full: 958.0
+           phi-valid rate: 24.7475%  |  full-rel/valid: 0.4385%  |  steps/full: 921.4
+           phi-valid rate: 24.7436%  |  full-rel/valid: 0.5157%  |  steps/full: 783.7
+           phi-valid rate: 24.9751%  |  full-rel/valid: 0.4098%  |  steps/full: 977.1
+           phi-valid rate: 25.0044%  |  full-rel/valid: 0.5591%  |  steps/full: 715.3
+           phi-valid rate: 24.9572%  |  full-rel/valid: 0.5337%  |  steps/full: 750.7
+           phi-valid rate: 24.6293%  |  full-rel/valid: 0.4148%  |  steps/full: 978.8
+           phi-valid rate: 24.9685%  |  full-rel/valid: 0.4003%  |  steps/full: 1000.5
+           phi-valid rate: 24.8818%  |  full-rel/valid: 0.4793%  |  steps/full: 838.5
+           phi-valid rate: 24.6385%  |  full-rel/valid: 0.4292%  |  steps/full: 945.6
+           phi-valid rate: 24.8023%  |  full-rel/valid: 0.5002%  |  steps/full: 806.0
+           phi-valid rate: 24.9513%  |  full-rel/valid: 0.4424%  |  steps/full: 906.0
+           phi-valid rate: 25.0379%  |  full-rel/valid: 0.5069%  |  steps/full: 787.9
+           smoothness (0-LP 1-LP 2-LP 3-LP): 8 686 16561 0
+           smoothness (0-LP 1-LP 2-LP 3-LP): 10 662 15783 0
+           smoothness (0-LP 1-LP 2-LP 3-LP): 8 781 18270 0
+           smoothness (0-LP 1-LP 2-LP 3-LP): 3 556 12051 0
+           smoothness (0-LP 1-LP 2-LP 3-LP): 7 557 12827 0
+           smoothness (0-LP 1-LP 2-LP 3-LP): 5 573 13350 0
+           smoothness (0-LP 1-LP 2-LP 3-LP): 13 686 15478 0
+           smoothness (0-LP 1-LP 2-LP 3-LP): 9 788 18580 0
+           smoothness (0-LP 1-LP 2-LP 3-LP): 7 619 14344 0
+           smoothness (0-LP 1-LP 2-LP 3-LP): 13 863 20558 0
+           smoothness (0-LP 1-LP 2-LP 3-LP): 9 738 16765 0
+           smoothness (0-LP 1-LP 2-LP 3-LP): 2 468 9896 0
+           smoothness (0-LP 1-LP 2-LP 3-LP): 7 681 14964 0
+           smoothness (0-LP 1-LP 2-LP 3-LP): 10 550 12463 0
+           first-emission raw step gaps (up to 10): 802 189 1196 39 827 614 1666 1772 168
+           first-emission raw step gaps (up to 10): 10700 446 885 743 2064 519 4510 1792 268
+           first-emission raw step gaps (up to 10): 1140 1137 2192 889 30 1073 606 875 434
+           first-emission raw step gaps (up to 10): 1363 726 1501 1637 1422 2097 1323 398 1805
+           first-emission raw step gaps (up to 10): 1532 2967 6834 1106 4294 1395 2989 169 186
+           first-emission raw step gaps (up to 10): 3850 1699 972 828 8 391 3701 870 2425
+           first-emission raw step gaps (up to 10): 2221 3281 4010 4567 1760 3957 818 674 267
+           first-emission raw step gaps (up to 10): 6459 11633 480 3387 603 550 1553 560 1708
+           smoothness (0-LP 1-LP 2-LP 3-LP): 5 731 16856 0
+           first-emission raw step gaps (up to 10): 2163 2891 583 1604 1370 1216 682 13 696
+           smoothness (0-LP 1-LP 2-LP 3-LP): 10 677 14874 0
+           smoothness (0-LP 1-LP 2-LP 3-LP): 6 753 16971 0
+           smoothness (0-LP 1-LP 2-LP 3-LP): 7 1004 23721 0
+           first-emission raw step gaps (up to 10): 3933 1622 2245 150 707 2248 1657 339 2272
+           smoothness (0-LP 1-LP 2-LP 3-LP): 7 626 13689 0
+           smoothness (0-LP 1-LP 2-LP 3-LP): 7 574 13654 0
+           smoothness (0-LP 1-LP 2-LP 3-LP): 11 727 17048 0
+           first-emission raw step gaps (up to 10): 7038 3603 1293 2081 130 1892 321 1078 741
+           smoothness (0-LP 1-LP 2-LP 3-LP): 5 615 13342 0
+           smoothness (0-LP 1-LP 2-LP 3-LP): 9 780 16967 0
+           smoothness (0-LP 1-LP 2-LP 3-LP): 8 919 20599 0
+           smoothness (0-LP 1-LP 2-LP 3-LP): 7 611 14507 0
+           smoothness (0-LP 1-LP 2-LP 3-LP): 5 579 13676 0
+           first-emission raw step gaps (up to 10): 3854 77 1547 1767 2840 1009 2716 377 13
+           smoothness (0-LP 1-LP 2-LP 3-LP): 4 766 16637 0
+           first-emission raw step gaps (up to 10): 4652 8364 817 970 1120 856 321 404 1487
+           smoothness (0-LP 1-LP 2-LP 3-LP): 4 588 13835 0
+           smoothness (0-LP 1-LP 2-LP 3-LP): 7 723 16352 0
+           smoothness (0-LP 1-LP 2-LP 3-LP): 9 494 10756 0
+           smoothness (0-LP 1-LP 2-LP 3-LP): 8 539 13038 0
+           smoothness (0-LP 1-LP 2-LP 3-LP): 4 767 17171 0
+           first-emission raw step gaps (up to 10): 4222 1547 3893 1180 103 289 18 3444 15
+           first-emission raw step gaps (up to 10): 2880 2370 8488 376 4183 934 66 266 498
+           first-emission raw step gaps (up to 10): 2799 251 3738 1479 60 1787 2596 489 576
+           first-emission raw step gaps (up to 10): 957 475 240 4781 9188 2360 958 856 1707
+           first-emission raw step gaps (up to 10): 1580 3564 1112 1159 4664 500 552 3380 1491
+           first-emission raw step gaps (up to 10): 2212 1387 1617 2053 144 3128 940 888 1503
+           first-emission raw step gaps (up to 10): 12144 320 344 8026 2448 1277 327 1922 434
+           first-emission raw step gaps (up to 10): 775 4948 1865 783 1648 1028 2235 2444 2007
+           first-emission raw step gaps (up to 10): 350 1359 1668 9135 331 678 741 1747 154
+           first-emission raw step gaps (up to 10): 1510 8074 9540 5096 3722 1159 1526 119 504
+           first-emission raw step gaps (up to 10): 5800 100 438 3116 468 161 98 557 650
+           first-emission raw step gaps (up to 10): 2145 2292 143 256 1533 3705 1675 3889 30
+           first-emission raw step gaps (up to 10): 10937 2005 457 156 6377 174 127 629 1117
+           first-emission raw step gaps (up to 10): 2911 411 132 1795 1955 6549 749 1315 1274
+           first-emission raw step gaps (up to 10): 370 1702 420 1879 1163 352 295 935 3584
+           first-emission raw step gaps (up to 10): 3866 1109 893 2356 2560 857 1779 364 659
+           first-emission raw step gaps (up to 10): 2016 833 2565 3045 1000 981 533 1997 61
+           first-emission raw step gaps (up to 10): 870 1868 1078 3939 628 367 2154 644 13
+           first-emission raw step gaps (up to 10): 304 697 3051 1435 2007 774 1477 234 2278
+
+── Walk results ────────────────────────────────────────────────────
+  phase-2 wall time:     7.265s
+  total raw steps:       2079244  (across all threads)
+  valid phi steps:       517498
+  phi validity rate:     24.8888%
+
+  smoothness breakdown:
+    full rels (0-LP):    2370  (0.46% of valid steps)
+    1-LP steps:          21681  (4.19%)
+    2-LP seen:           495583  (95.77%)
+    2-LP closures emit:  0  (0.00%)
+    3-LP skips:          0  (0.00%)
+
+  total relations collected:   2370
+  FB size (nF):                2154
+  relation surplus:            +215
+  relation yield rate:         3.2622e+02 rels/sec
+  full-rel yield rate:         3.2622e+02 rels/sec
+  steps per full relation:     877.3
+  1-LP table size (residual):  17409 entries
+  1-LP pair rate:              0.1970  (LP-closures / LP-steps)
+
+  per-thread breakdown:
+    thread 1: steps=78108  valid=19377  full=77  1-LP=788
+    thread 2: steps=71451  valid=17756  full=95  1-LP=780
+    thread 3: steps=57265  valid=14235  full=57  1-LP=574
+    thread 4: steps=71870  valid=17786  full=78  1-LP=727
+    thread 5: steps=57807  valid=14427  full=77  1-LP=588
+    thread 6: steps=75993  valid=19059  full=86  1-LP=781
+    thread 7: steps=71012  valid=17730  full=68  1-LP=753
+    thread 8: steps=56840  valid=14260  full=75  1-LP=579
+    thread 9: steps=86994  valid=21434  full=92  1-LP=863
+    thread 10: steps=66226  valid=16455  full=76  1-LP=662
+    thread 11: steps=44822  valid=11259  full=59  1-LP=494
+    thread 12: steps=62233  valid=15561  full=87  1-LP=677
+    thread 13: steps=99053  valid=24732  full=99  1-LP=1004
+    thread 14: steps=61127  valid=15125  full=78  1-LP=611
+    thread 15: steps=54613  valid=13585  full=59  1-LP=539
+    thread 16: steps=62273  valid=15652  full=65  1-LP=681
+    thread 17: steps=69501  valid=17255  full=81  1-LP=686
+    thread 18: steps=87072  valid=21526  full=89  1-LP=919
+    thread 19: steps=42088  valid=10366  full=43  1-LP=468
+    thread 20: steps=70218  valid=17512  full=73  1-LP=738
+    thread 21: steps=50678  valid=12610  full=70  1-LP=556
+    thread 22: steps=68396  valid=17082  full=70  1-LP=723
+    thread 23: steps=51932  valid=13023  full=62  1-LP=550
+    thread 24: steps=56588  valid=13928  full=63  1-LP=573
+    thread 25: steps=60784  valid=14970  full=58  1-LP=619
+    thread 26: steps=72109  valid=17942  full=86  1-LP=767
+    thread 27: steps=69764  valid=17407  full=77  1-LP=766
+    thread 28: steps=53248  valid=13391  full=53  1-LP=557
+    thread 29: steps=56361  valid=13962  full=78  1-LP=615
+    thread 30: steps=57279  valid=14322  full=69  1-LP=626
+    thread 31: steps=70929  valid=17592  full=88  1-LP=731
+    thread 32: steps=64610  valid=16177  full=82  1-LP=686
+Matrix diagnostics for LA:
+  rows = 2370, cols = 2154, nonzeros = 9211, avg row weight = 3.886, density = 0.001804
+  row-weight histogram: 2:16, 3:237, 4:2117
+  column degrees: zero=217, deg1=457, deg2=514, min=0, median=2, max=109
+  component graph: 219 components, largest=1935, singletons=217
+  peel/core estimate: core cols = 1347, core rows = 1807, peeled cols = 807
+  note: matrix is block-disconnected enough to split off subproblems
+  note: leaf-stripping removes 807/2154 columns before any dense solve
+Spectral gap diagnostics (normalized adjacency of column graph):
+  rows=296: active cols=620, lambda1=1.000000, lambda2=1.000000, gap=-0.000000
+  rows=592: active cols=1021, lambda1=1.000000, lambda2=0.941528, gap=0.058472
+  rows=1185: active cols=1514, lambda1=1.000000, lambda2=1.000000, gap=0.000000
+  rows=2370: active cols=1937, lambda1=1.000000, lambda2=1.000000, gap=0.000000
+  gap change: -0.000000 -> 0.000000
+Asymptotic diagnostics (prefix growth across the matrix):
+  walk yield: 517498 valid steps / 2079244 total = 0.2489
+  relation mix: full=2370, tree=0, LP-partials=21681, LP-pairs=0
+  normalized relation rates: full/valid=0.0046, tree/valid=0.0000, LP-pairs/valid=0.0000
+  rows=148: nz=574, avg_w=3.88, core=0/2154 (0.000), peel=2154, gap=-0.000000
+  rows=296: nz=1147, avg_w=3.88, core=0/2154 (0.000), peel=2154, gap=-0.000000
+  rows=592: nz=2303, avg_w=3.89, core=0/2154 (0.000), peel=2154, gap=0.058472
+  rows=1185: nz=4601, avg_w=3.88, core=0/2154 (0.000), peel=2154, gap=0.000000
+  rows=2370: nz=9211, avg_w=3.89, core=1347/2154 (0.625), peel=807, gap=0.000000
+  log-log fit total_nz ~ rows^a: a=1.0009
+  log-log fit avg row weight ~ rows^a: a=0.0009
+  log-log fit core cols ~ rows^a: a=NaN
+  log-log fit core rows ~ rows^a: a=NaN
+  log-log fit peel fraction ~ rows^a: a=-0.2832
+
+── Pre-solve diagnostics ───────────────────────────────────────────
+  nrel=2370, nF=2154, kernel dim to follow...
+  alpha_vec range: [91753, 2494006380]
+  beta_vec range:  [594891, 2493986786]
+  row weight: min=2, max=4, mean=3.89, median=4
+  zero rows: 0,  zero-alpha-and-beta: 0
+  rank growth: 2370 emissions logged across threads
+  total raw steps (all threads): 2079244
+  raw steps per full emission (global): 877.3
+  global smoothness histogram (0-LP 1-LP 2-LP 3-LP): 234 21681 495583 0
+  smoothness fractions: 0-LP=0.000  1-LP=0.042  2-LP=0.958  3-LP=0.000
+  spot-checking 0 full relations:
+  spot-check: 0 ok, 0 BAD
+  ell*G == id: true,  ell = 2494822111
+
+── Kernel solve ────────────────────────────────────────────────────
+  Left-kernel search over GF(2494822111)...
+  kernel solve time: 2.862s
+  kernel dimension:  460
+  kernel vec 1: Sa=1870388050 Sb=322002321 k_cand=1549461917  match=true
+  ✓  k = 1549461917   (k*G == T)  [kernel vec 1 of 460]
+  total walk+solve time: 14.028s
+
+── Final results ───────────────────────────────────────────────────
+  walk+solve wall time: 14.028s
+  total wall time:      34.242s
+  Recovered k = 1549461917  true k = 1549461917  match = true
+======================================================================

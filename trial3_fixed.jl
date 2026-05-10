@@ -1100,38 +1100,32 @@ function phase2_worker(G::Div2, T::Div2,
     alpha_vec = Int[]
     beta_vec  = Int[]
     rel_rows  = Vector{Dict{Int,Int}}()
-    # sizehint avoids repeated doublings during the walk.
+    
     hint = max(64, cld(rel_target, Threads.nthreads()) + 32)
     sizehint!(alpha_vec, hint)
     sizehint!(beta_vec,  hint)
     sizehint!(rel_rows,  hint)
 
-    hits_total   = 0
-    hits_full    = 0
-    hits_lp1     = 0
-    hits_lp2seen = 0
-    hits_lp2emit = 0
-    hits_skip    = 0
-    raw_steps    = 0   # every loop iteration (including deg-1/non-split rejects)
+    hits_total    = 0
+    hits_full     = 0
+    hits_0lp      = 0
+    hits_lp1      = 0
+    hits_1lp_emit = 0
+    hits_lp2seen  = 0
+    hits_lp2emit  = 0
+    hits_skip     = 0
+    raw_steps     = 0
 
-    # Per-thread smoothness histogram: how many of {P0,R,S} are in FB
-    smooth_hist  = zeros(Int, 4)   # smooth_hist[k+1] = count of n_lp == k
+    smooth_hist  = zeros(Int, 4) 
 
-    # Timing buckets: cumulative seconds in each category
     t_last_report = time()
-    report_interval_secs = 30.0   # emit a progress line every 30s
+    report_interval_secs = 30.0
 
-    # Reusable scratch dict for fb_row construction — avoids one Dict alloc
-    # per valid step.  Only copied to heap when we need to store/push it.
     fb_row_scratch = Dict{Int,Int}()
     sizehint!(fb_row_scratch, 4)
 
-    # Sample full relations for algebraic spot-checking.
     sample_rels = Vector{Tuple{Div2,Dict{Int,Int},Int,Int,NTuple{2,Int},NTuple{2,Int},NTuple{2,Int}}}()
-    # (2-LP graph disabled — closures have sign errors that poison the kernel)
-
-    # Rank growth tracking: record (raw_step, nrel_local) at each full emission
-    rank_growth = Tuple{Int,Int}[]   # (raw_steps_at_emission, cumulative_local_rels)
+    rank_growth = Tuple{Int,Int}[]
 
     while rel_counter[] < rel_target
         raw_steps += 1
@@ -1167,13 +1161,12 @@ function phase2_worker(G::Div2, T::Div2,
 
         hits_total += 1
 
-        # Periodic verbose progress report
         now_t = time()
         if verbose && (now_t - t_last_report) >= report_interval_secs
             elapsed = now_t - t_worker_start
             rel_local = length(rel_rows)
-            @printf("[thread %2d | t=%6.1fs] raw=%d valid=%d full=%d 1lp=%d 2lp=%d skip=%d  rels_local=%d  global=%d/%d\n",
-                    tid, elapsed, raw_steps, hits_total, hits_full,
+            @printf("[thread %2d | t=%6.1fs] raw=%d valid=%d 0lp=%d 1lp_emit=%d 1lp_step=%d 2lp=%d skip=%d  rels_local=%d  global=%d/%d\n",
+                    tid, elapsed, raw_steps, hits_total, hits_0lp, hits_1lp_emit,
                     hits_lp1, hits_lp2seen, hits_skip,
                     rel_local, rel_counter[], rel_target)
             @printf("           rates: phi_val=%.3f%%  full=%.3f%%  1lp=%.3f%%  2lp=%.3f%%  skip=%.3f%%\n",
@@ -1201,12 +1194,11 @@ function phase2_worker(G::Div2, T::Div2,
         smooth_hist[n_lp + 1] += 1
 
         if n_lp == 0
-            # Build fb_row into scratch, then snapshot it for storage.
             empty!(fb_row_scratch)
             for idx in (i0, iR, iS)
                 fb_row_scratch[idx] = get(fb_row_scratch, idx, 0) + 1
             end
-            fb_row = copy(fb_row_scratch)   # one alloc per emitted relation
+            fb_row = copy(fb_row_scratch)
             push!(alpha_vec, neg_al)
             push!(beta_vec,  neg_be)
             push!(rel_rows,  fb_row)
@@ -1215,56 +1207,59 @@ function phase2_worker(G::Div2, T::Div2,
                 push!(sample_rels, (D_cur, copy(fb_row), neg_al, neg_be, P0, R, S))
             end
             hits_full += 1
+            hits_0lp += 1
             Threads.atomic_add!(rel_counter, 1)
             cur_pt = fb[rand(1:nF_cur)]
 
         elseif n_lp == 1
             hits_lp1 += 1
-            lp_pt = i0 == 0 ? P0 : (iR == 0 ? R : S)
-            # Build fb_row (FB-only part) into scratch.
+            lp_pt = iR == 0 ? R : S
             empty!(fb_row_scratch)
             for idx in (i0, iR, iS)
                 idx == 0 && continue
                 fb_row_scratch[idx] = get(fb_row_scratch, idx, 0) + 1
             end
 
+            closed = false
             lock(shared_lp1_lock)
-            if haskey(shared_lp1, lp_pt)
-                prev_row, prev_al, prev_be = shared_lp1[lp_pt]
-                # Combine into scratch (subtract prev_row in-place, reuse scratch).
-                combined = copy(fb_row_scratch)   # alloc only on closure
-                lp2_subtract_rows(combined, prev_row)
-                combined_al = mod(neg_al - prev_al, ell)
-                combined_be = mod(neg_be - prev_be, ell)
-                delete!(shared_lp1, lp_pt)
-                unlock(shared_lp1_lock)
-                if !isempty(combined) && !(combined_al == 0 && combined_be == 0)
-                    push!(alpha_vec, combined_al)
-                    push!(beta_vec,  combined_be)
-                    push!(rel_rows,  combined)
-                    push!(rank_growth, (raw_steps, length(rel_rows)))
-                    hits_full += 1
-                    Threads.atomic_add!(rel_counter, 1)
+            try
+                if haskey(shared_lp1, lp_pt)
+                    prev_row, prev_al, prev_be = shared_lp1[lp_pt]
+                    combined    = copy(fb_row_scratch)
+                    lp2_subtract_rows(combined, prev_row)
+                    combined_al = mod(neg_al - prev_al, ell)
+                    combined_be = mod(neg_be - prev_be, ell)
+                    delete!(shared_lp1, lp_pt)
+                    closed = true
+                    
+                    if !isempty(combined) && !(combined_al == 0 && combined_be == 0)
+                        push!(alpha_vec, combined_al)
+                        push!(beta_vec,  combined_be)
+                        push!(rel_rows,  combined)
+                        push!(rank_growth, (raw_steps, length(rel_rows)))
+                        hits_full += 1
+                        hits_1lp_emit += 1
+                        Threads.atomic_add!(rel_counter, 1)
+                    end
+                else
+                    shared_lp1[lp_pt] = (copy(fb_row_scratch), neg_al, neg_be)
                 end
-            else
-                # Store a heap copy (shared_lp1 owns it); scratch is reused next iter.
-                shared_lp1[lp_pt] = (copy(fb_row_scratch), neg_al, neg_be)
+            finally
                 unlock(shared_lp1_lock)
             end
 
-            if i0 != 0
-                cur_pt = P0
+            if closed
+                cur_pt = fb[rand(1:nF_cur)]
             elseif iR != 0
                 cur_pt = R
             elseif iS != 0
                 cur_pt = S
             else
-                cur_pt = fb[rand(1:nF_cur)]
+                cur_pt = P0
             end
 
         elseif n_lp == 2
             hits_lp2seen += 1
-            # 2-LP closures disabled (sign/involution errors poison the kernel).
             if i0 != 0
                 cur_pt = P0
             elseif iR != 0
@@ -1283,8 +1278,8 @@ function phase2_worker(G::Div2, T::Div2,
 
     elapsed_total = time() - t_worker_start
     if verbose
-        @printf("[thread %2d | DONE | t=%.1fs] raw=%d valid=%d full=%d 1lp=%d 2lp=%d skip=%d  rels_local=%d\n",
-                tid, elapsed_total, raw_steps, hits_total, hits_full,
+        @printf("[thread %2d | DONE | t=%.1fs] raw=%d valid=%d 0lp=%d 1lp_emit=%d 1lp_step=%d 2lp=%d skip=%d  rels_local=%d\n",
+                tid, elapsed_total, raw_steps, hits_total, hits_0lp, hits_1lp_emit,
                 hits_lp1, hits_lp2seen, hits_skip, length(rel_rows))
         @printf("           phi-valid rate: %.4f%%  |  full-rel/valid: %.4f%%  |  steps/full: %.1f\n",
                 100.0 * hits_total / max(1, raw_steps),
@@ -1292,7 +1287,6 @@ function phase2_worker(G::Div2, T::Div2,
                 raw_steps / max(1, hits_full))
         @printf("           smoothness (0-LP 1-LP 2-LP 3-LP): %d %d %d %d\n",
                 smooth_hist[1], smooth_hist[2], smooth_hist[3], smooth_hist[4])
-        # Rank growth: report spacing between first few emissions
         if length(rank_growth) >= 2
             gaps = [rank_growth[i][1] - rank_growth[i-1][1] for i in 2:min(10, length(rank_growth))]
             @printf("           first-emission raw step gaps (up to 10): %s\n",
@@ -1302,16 +1296,14 @@ function phase2_worker(G::Div2, T::Div2,
     end
 
     return (rel_rows=rel_rows, alpha_vec=alpha_vec, beta_vec=beta_vec,
-            hits_total=hits_total, hits_full=hits_full,
-            hits_lp1=hits_lp1, hits_lp2seen=hits_lp2seen,
+            hits_total=hits_total, hits_full=hits_full, hits_0lp=hits_0lp,
+            hits_lp1=hits_lp1, hits_1lp_emit=hits_1lp_emit, hits_lp2seen=hits_lp2seen,
             hits_lp2emit=hits_lp2emit, hits_skip=hits_skip,
             sample_rels=sample_rels,
             total_steps=raw_steps,
             smooth_hist=smooth_hist,
             rank_growth=rank_growth)
 end
-
-
 
 function index_calculus_walk(G::Div2, T::Div2;
                              fb_size::Int         = 650,
@@ -1327,7 +1319,6 @@ function index_calculus_walk(G::Div2, T::Div2;
     n_all   = length(all_pts)
     n_all < 2 && error("Not enough rational points on the curve")
 
-    # Use the first fb_size rational points as a fixed factor base.
     nF = min(fb_size, n_all)
     fb = all_pts[1:nF]
     pt2idx = Dict{NTuple{2,Int},Int}(pt => i for (i, pt) in enumerate(fb))
@@ -1337,14 +1328,11 @@ function index_calculus_walk(G::Div2, T::Div2;
         @printf("── Factor base ─────────────────────────────────────────────────────\n")
         @printf("  FB size:          %d / %d total rational points\n", nF, n_all)
         @printf("  curve coverage:   %.4f%%  (FB/total)\n", 100.0 * nF / n_all)
-        @printf("  smoothness bound: B = %d  (p^(2/3) = %.1f)\n", nF, p^(2/3))
+        @printf("  smoothness bound: B = %d  (p^(1/2) = %.1f)\n", nF, p^(1/2))
         @printf("  x-range of FB:    [%d, %d]\n",
                 minimum(pt[1] for pt in fb), maximum(pt[1] for pt in fb))
-        # Expected raw smoothness probability: both x1,x2 in FB.
-        # Each root is uniform over ~p values; prob(one root in FB) ≈ nF/n_all.
         p_smooth_one = nF / n_all
         p_smooth_both = p_smooth_one^2
-        # prob D has degree-2 split u-poly ≈ 0.5 (heuristic)
         @printf("  expected full-rel prob per valid step: ~%.2e  (FB/total)^2\n",
                 p_smooth_both)
         @printf("  expected full-rel prob incl. LP: ~%.2e  (1-LP pairs)\n",
@@ -1352,7 +1340,6 @@ function index_calculus_walk(G::Div2, T::Div2;
         flush(stdout)
     end
 
-    # Precompute random walk steps.
     t_step_build = time()
     N_STEPS = 256
     step_D = Vector{Div2}(undef, N_STEPS)
@@ -1371,7 +1358,6 @@ function index_calculus_walk(G::Div2, T::Div2;
     rel_target = nF + 1 + target_excess
     rel_counter = Threads.Atomic{Int}(0)
 
-    # Shared 1-LP table across all threads.
     shared_lp1       = Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int}}()
     shared_lp1_lock  = ReentrantLock()
 
@@ -1402,15 +1388,17 @@ function index_calculus_walk(G::Div2, T::Div2;
     alpha_vec = Int[]
     beta_vec  = Int[]
     rel_rows  = Vector{Dict{Int,Int}}()
+    
     hits_total    = 0
     hits_full     = 0
+    hits_0lp      = 0
     hits_lp1      = 0
+    hits_1lp_emit = 0
     hits_lp2seen  = 0
     hits_lp2emit  = 0
     hits_skip     = 0
     all_samples   = similar(results[1].sample_rels, 0)
 
-    # Per-thread stats for diagnosis
     thread_hits   = Int[]
     thread_full   = Int[]
     thread_lp1    = Int[]
@@ -1420,12 +1408,14 @@ function index_calculus_walk(G::Div2, T::Div2;
         append!(alpha_vec, r.alpha_vec)
         append!(beta_vec,  r.beta_vec)
         append!(rel_rows,  r.rel_rows)
-        hits_total   += r.hits_total
-        hits_full    += r.hits_full
-        hits_lp1     += r.hits_lp1
-        hits_lp2seen += r.hits_lp2seen
-        hits_lp2emit += r.hits_lp2emit
-        hits_skip    += r.hits_skip
+        hits_total    += r.hits_total
+        hits_full     += r.hits_full
+        hits_0lp      += r.hits_0lp
+        hits_lp1      += r.hits_lp1
+        hits_1lp_emit += r.hits_1lp_emit
+        hits_lp2seen  += r.hits_lp2seen
+        hits_lp2emit  += r.hits_lp2emit
+        hits_skip     += r.hits_skip
         append!(all_samples, r.sample_rels)
         push!(thread_hits,  r.hits_total)
         push!(thread_full,  r.hits_full)
@@ -1446,10 +1436,12 @@ function index_calculus_walk(G::Div2, T::Div2;
                 100.0 * hits_total / max(1, sum(thread_steps)))
         println()
         @printf("  smoothness breakdown:\n")
-        @printf("    full rels (0-LP):    %d  (%.2f%% of valid steps)\n",
-                hits_full, 100.0 * hits_full / max(1, hits_total))
+        @printf("    0-LP (pure FB):      %d  (%.2f%% of valid steps)\n",
+                hits_0lp, 100.0 * hits_0lp / max(1, hits_total))
         @printf("    1-LP steps:          %d  (%.2f%%)\n",
                 hits_lp1, 100.0 * hits_lp1 / max(1, hits_total))
+        @printf("    1-LP closures emit:  %d  (%.2f%%)\n",
+                hits_1lp_emit, 100.0 * hits_1lp_emit / max(1, hits_total))
         @printf("    2-LP seen:           %d  (%.2f%%)\n",
                 hits_lp2seen, 100.0 * hits_lp2seen / max(1, hits_total))
         @printf("    2-LP closures emit:  %d  (%.2f%%)\n",
@@ -1468,7 +1460,7 @@ function index_calculus_walk(G::Div2, T::Div2;
                 sum(thread_steps) / max(1, hits_full))
         @printf("  1-LP table size (residual):  %d entries\n", length(shared_lp1))
         @printf("  1-LP pair rate:              %.4f  (LP-closures / LP-steps)\n",
-                (hits_lp1 - length(shared_lp1)) / max(1, hits_lp1))
+                hits_1lp_emit / max(1, hits_lp1))
         println()
         @printf("  per-thread breakdown:\n")
         for tid in 1:length(thread_hits)
@@ -1484,10 +1476,10 @@ function index_calculus_walk(G::Div2, T::Div2;
     asymptotic && asymptotic_report(rel_rows, nF;
                                     hits_total=hits_total,
                                     walk_steps=sum(thread_steps),
-                                    hits_full=hits_full,
+                                    hits_full=hits_0lp,
                                     hits_tree=0,
                                     hits_lp=hits_lp1,
-                                    hits_lp2=hits_lp2emit,
+                                    hits_lp2=hits_1lp_emit,
                                     verbose=verbose)
 
     if nrel < nF + 1
@@ -1497,13 +1489,10 @@ function index_calculus_walk(G::Div2, T::Div2;
 
     !solve && return nothing
 
-    # Free walk-phase memory before the kernel solve.
     empty!(shared_lp1)
     empty!(all_samples)
     GC.gc()
 
-
-    # ── Diagnostics before solve ──────────────────────────────────────────────
     if verbose
         println()
         @printf("── Pre-solve diagnostics ───────────────────────────────────────────\n")
@@ -1519,7 +1508,6 @@ function index_calculus_walk(G::Div2, T::Div2;
         n_zero_ab  = count(i -> alpha_vec[i]==0 && beta_vec[i]==0, 1:nrel)
         @printf("  zero rows: %d,  zero-alpha-and-beta: %d\n", n_zero_row, n_zero_ab)
 
-        # Aggregate rank growth across threads
         all_rg = vcat([r.rank_growth for r in results]...)
         if !isempty(all_rg)
             total_raw = sum(r.total_steps for r in results)
@@ -1529,7 +1517,6 @@ function index_calculus_walk(G::Div2, T::Div2;
                     total_raw / max(1, hits_full))
         end
 
-        # Aggregate smoothness histograms
         agg_hist = zeros(Int, 4)
         for r in results
             agg_hist .+= r.smooth_hist
@@ -1543,8 +1530,6 @@ function index_calculus_walk(G::Div2, T::Div2;
                     agg_hist[3]/total_smooth, agg_hist[4]/total_smooth)
         end
 
-        # Algebraic spot-check: for each sampled full relation,
-        # verify neg_al*G + neg_be*T == D_cur (the step divisor).
         @printf("  spot-checking %d full relations:\n", min(5, length(all_samples)))
         n_ok = 0; n_bad = 0
         for (D_stored, fb_row, neg_al, neg_be, P0, R, S) in all_samples[1:min(5,end)]
@@ -1657,10 +1642,10 @@ function main2()
     T      = jac_mul(G, k_true)
     @printf("Secret k = %d  (%.1f bits)\n\n", k_true, log2(k_true + 1))
 
-    # Scale FB size as p^(2/3) — the standard smoothness bound for genus-2
+    # Scale FB size as p^(1/2) — the standard smoothness bound for genus-2
     # index calculus.  At p≈100k: ~2154; p≈164k: ~3024; p≈1M: ~10000.
-    fb_auto = clamp(round(Int, p^(2/3)), 200, 20000)
-    @printf("Auto FB size: %d  (= ceil(p^(2/3)) clamped to [200,20000])\n", fb_auto)
+    fb_auto = clamp(round(Int, p^(1/2)), 200, 20000)
+    @printf("Auto FB size: %d  (= ceil(p^(1/2)) clamped to [200,20000])\n", fb_auto)
     @printf("  target relations: %d + excess\n", fb_auto + 1)
     @printf("  expected smoothness prob per step: ~(fb_auto/p)^2 ~ %.2e\n",
             (fb_auto / p)^2)

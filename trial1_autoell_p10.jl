@@ -466,19 +466,15 @@ function jac_order_pollard_rho(
     end
 
     # ------------------------------------------------------------------
-    # Partition function
+    # Precompute small multiples of D (constant throughout the walk).
+    # These are used in rho_step; computing them on every step via
+    # jac_mul_raw hit 50% of steps and was the primary rho bottleneck.
     # ------------------------------------------------------------------
-
-    @inline function classify(X::Div2)::Int
-
-        u0 = length(X.u) >= 1 ? Int(X.u[1]) : 0
-        u1 = length(X.u) >= 2 ? Int(X.u[2]) : 0
-        v0 = length(X.v) >= 1 ? Int(X.v[1]) : 0
-
-        h = xor(u0, xor(u1 << 1, v0 << 2))
-
-        return mod(h, 8)
-    end
+    D_neg = jac_neg(D)
+    D2    = jac_add(D, D)
+    D3    = jac_add(D2, D)
+    D5    = jac_add(D3, D2)
+    D7    = jac_add(D5, D2)
 
     # ------------------------------------------------------------------
     # Random walk update
@@ -488,40 +484,24 @@ function jac_order_pollard_rho(
 
         maybe_abort()
 
-        s = classify(X)
+        s = Int(X.u[1]) & 7   # cheap 3-bit classify; was mod(hash(...), 8)
 
         if s == 0
-
-            return jac_add(X, D), mod(a + 1, N)
-
+            return jac_add(X, D),    mod(a + 1, N)
         elseif s == 1
-
-            return jac_add(X, X), mod(2a, N)
-
+            return jac_add(X, X),    mod(2a, N)
         elseif s == 2
-
             return jac_add(jac_add(X, X), D), mod(2a + 1, N)
-
         elseif s == 3
-
-            return jac_add(X, jac_mul_raw(D, 3)), mod(a + 3, N)
-
+            return jac_add(X, D3),   mod(a + 3, N)
         elseif s == 4
-
-            return jac_add(X, jac_mul_raw(D, 5)), mod(a + 5, N)
-
+            return jac_add(X, D5),   mod(a + 5, N)
         elseif s == 5
-
-            Y = jac_add(X, X)
-            return jac_add(Y, jac_mul_raw(D, 3)), mod(2a + 3, N)
-
+            return jac_add(jac_add(X, X), D3), mod(2a + 3, N)
         elseif s == 6
-
-            return jac_add(X, jac_neg(D)), mod(a - 1, N)
-
+            return jac_add(X, D_neg), mod(a - 1, N)
         else
-
-            return jac_add(X, jac_mul_raw(D, 7)), mod(a + 7, N)
+            return jac_add(X, D7),   mod(a + 7, N)
         end
     end
 
@@ -550,12 +530,6 @@ function jac_order_pollard_rho(
     X  = D
     a  = 1
 
-    Xs = D
-    as = 1
-
-    Xf = D
-    af = 1
-
     dp_found = 0
 
     for iter in 1:max_iter
@@ -563,7 +537,7 @@ function jac_order_pollard_rho(
         maybe_abort()
 
         # --------------------------------------------------------------
-        # Distinguished point logic
+        # Distinguished point collision detection
         # --------------------------------------------------------------
 
         h = dp_hash(X)
@@ -588,30 +562,7 @@ function jac_order_pollard_rho(
             end
         end
 
-        # --------------------------------------------------------------
-        # Main walk
-        # --------------------------------------------------------------
-
         X, a = rho_step(X, a)
-
-        # --------------------------------------------------------------
-        # Floyd backup collision detection
-        # --------------------------------------------------------------
-
-        Xs, as = rho_step(Xs, as)
-
-        Xf, af = rho_step(Xf, af)
-        Xf, af = rho_step(Xf, af)
-
-        if Xs == Xf
-
-            diff = mod(af - as, N)
-
-            if diff != 0
-
-                return _reduce_to_order(D, diff, N)
-            end
-        end
     end
 
     verbose && @printf(
@@ -917,7 +868,7 @@ end
 Solve k·G = T in the ell-order subgroup of Jac(C/Fp).
 
 `fb_size`: number of rational points to use as factor base.
-           Default ≈ p^(2/3) is the asymptotically optimal choice.
+           Default ≈ p^(1/2) is the smoothness bound used here.
 
 To plug in a different relation-generation mechanism, replace the block
 between the RELATION GENERATION markers below.  The contract for each
