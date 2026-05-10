@@ -994,23 +994,30 @@ function left_kernel_all(rel_rows::Vector{Dict{Int,Int}}, nF::Int, ell::Int)::Ve
     n = nF
 
     # ── Nemo / FLINT fast path ──────────────────────────────────────────────
-    # Build the Nemo matrix directly from sparse rel_rows — never touch a dense Julia array.
+    # Build the matrix TRANSPOSED (n×m) so nullspace() gives left kernel directly
+    # without materializing a second dense matrix via transpose().
+    # Use raw Int entries in a flat Vector{Int} — Nemo.matrix(F, nrows, ncols, vec)
+    # accepts Int directly and converts inside FLINT, avoiding m*n boxed GF objects.
     try
         F = Nemo.GF(ell)
-        # Nemo.matrix from a flat vector of elements, row-major.
-        entries = Vector{elem_type(F)}(undef, m * n)
+        # entries[j + (i-1)*n] = R[i,j] stored as plain Int (column-major for transposed matrix)
+        # We want the TRANSPOSED matrix: rows=n, cols=m, entry[j,i] = R[i,j]
+        # Flat vector in row-major order for the transposed matrix: row j, col i → R[i,j]
+        entries = zeros(Int, n * m)
         for i in 1:m
-            base = (i-1)*n
-            for j in 1:n
-                entries[base+j] = F(0)
-            end
             for (j, v) in rel_rows[i]
                 1 <= j <= n || continue
-                entries[base+j] = F(mod(v, ell))
+                # transposed matrix: row j, col i, row-major index = (j-1)*m + i
+                entries[(j-1)*m + i] = mod(v, ell)
             end
         end
-        Rnemo = Nemo.matrix(F, m, n, entries)
-        nu, K = nullspace(transpose(Rnemo))
+        # Build n×m matrix (the transpose of the original m×n relation matrix)
+        Rnemo_t = Nemo.matrix(F, n, m, entries)
+        entries = nothing   # allow GC before nullspace
+        GC.gc()
+        nu, K = nullspace(Rnemo_t)
+        Rnemo_t = nothing
+        GC.gc()
         result = Vector{Int}[]
         for col in 1:nu
             γ = [Int(lift(ZZ, K[row, col])) for row in 1:m]
@@ -1102,10 +1109,7 @@ function phase2_worker(G::Div2, T::Div2,
 
     # Sample full relations for algebraic spot-checking.
     sample_rels = Vector{Tuple{Div2,Dict{Int,Int},Int,Int,NTuple{2,Int},NTuple{2,Int},NTuple{2,Int}}}()
-    # 2-LP graph: sparse edge walk (per-thread; no lock needed).
-    lp2_edges    = LP2Edge[]
-    lp2_live     = Bool[]
-    lp2_incidence = Dict{NTuple{2,Int}, Vector{Int}}()
+    # (2-LP graph disabled — closures have sign errors that poison the kernel)
 
     while rel_counter[] < rel_target
         # (rel_counter check at top of loop is the only exit condition)
@@ -1219,37 +1223,8 @@ function phase2_worker(G::Div2, T::Div2,
 
         elseif n_lp == 2
             hits_lp2seen += 1
-            fb_row = Dict{Int,Int}()
-            lp_pts = NTuple{2,Int}[]
-            for (idx, pt) in ((i0, P0), (iR, R), (iS, S))
-                if idx == 0
-                    push!(lp_pts, pt)
-                else
-                    fb_row[idx] = get(fb_row, idx, 0) + 1
-                end
-            end
-            if length(lp_pts) != 2
-                hits_skip += 1
-                cur_pt = fb[rand(1:nF_cur)]
-                continue
-            end
-
-            # Feed the 2-LP graph for bookkeeping/counting only.
-            # Emission disabled: synthetic rows from graph closure carry
-            # sign/involution errors that poison the kernel.  Store edges
-            # and count closures but do not push rows into rel_rows.
-            _dummy_rows  = Vector{Dict{Int,Int}}()
-            _dummy_alpha = Int[]
-            _dummy_beta  = Int[]
-            _dummy_ctr   = Threads.Atomic{Int}(0)
-            emitted = lp2_attach!(lp2_edges, lp2_live, lp2_incidence,
-                                  lp_pts[1], lp_pts[2], fb_row, neg_al, neg_be,
-                                  _dummy_rows, _dummy_alpha, _dummy_beta,
-                                  _dummy_ctr)
-            hits_lp2emit += emitted
-            # hits_full NOT incremented; rows intentionally not added to matrix
-
-            # Re-anchor on the known FB point if there is one; otherwise reseed.
+            # 2-LP closures are disabled (sign/involution errors poison the kernel).
+            # Don't accumulate edge structs — just re-anchor on any known FB point.
             if i0 != 0
                 cur_pt = P0
             elseif iR != 0
@@ -1377,6 +1352,12 @@ function index_calculus_walk(G::Div2, T::Div2;
     end
 
     !solve && return nothing
+
+    # Free walk-phase memory before the kernel solve: shared_lp1 can hold
+    # O(100k) Dict entries; all_samples holds Div2+Dict copies.
+    empty!(shared_lp1)
+    empty!(all_samples)
+    GC.gc()
 
 
     # ── Diagnostics before solve ──────────────────────────────────────────────
