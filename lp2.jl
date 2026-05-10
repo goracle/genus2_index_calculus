@@ -319,8 +319,8 @@ function lp2_insert_edge!(g::LP2Graph,
             return nothing
         end
 
-        combined_alpha = mod(pathL.alpha + pathR.alpha - alpha, ell)
-        combined_beta  = mod(pathL.beta  + pathR.beta  - beta,  ell)
+        combined_alpha = mod(alpha - pathL.alpha - pathR.alpha, ell)
+        combined_beta  = mod(beta  - pathL.beta  - pathR.beta,  ell)
 
         if isempty(combined) || (combined_alpha == 0 && combined_beta == 0)
             return nothing
