@@ -708,6 +708,126 @@ function sparse_add!(dst::Dict{Int,Int}, src::Dict{Int,Int}; sign::Int = 1)
     return dst
 end
 
+# ---------------------------------------------------------------------------
+#  2-LP graph helpers
+#
+#  We treat a 2-LP relation as an edge between the two large-prime points.
+#  When two edges meet at a shared endpoint, subtracting them eliminates the
+#  shared LP and yields a new edge between the other endpoints.  Repeating this
+#  is a sparse graph walk; when the endpoints coincide, the LPs cancel and we
+#  emit a pure factor-base relation.
+# ---------------------------------------------------------------------------
+struct LP2Edge
+    left::NTuple{2,Int}
+    right::NTuple{2,Int}
+    row::Dict{Int,Int}
+    alpha::Int
+    beta::Int
+    function LP2Edge(a::NTuple{2,Int}, b::NTuple{2,Int},
+                     row::Dict{Int,Int}, alpha::Int, beta::Int)
+        a <= b ? new(a, b, row, alpha, beta) : new(b, a, row, alpha, beta)
+    end
+end
+
+@inline lp2_other(e::LP2Edge, pt::NTuple{2,Int})::Union{NTuple{2,Int},Nothing} =
+    e.left == pt ? e.right : (e.right == pt ? e.left : nothing)
+
+function lp2_subtract_rows(dst::Dict{Int,Int}, src::Dict{Int,Int})
+    for (j, v) in src
+        nv = get(dst, j, 0) - v
+        nv == 0 ? delete!(dst, j) : (dst[j] = nv)
+    end
+    return dst
+end
+
+function lp2_attach!(edges::Vector{LP2Edge},
+                     live::Vector{Bool},
+                     incidence::Dict{NTuple{2,Int}, Vector{Int}},
+                     left::NTuple{2,Int},
+                     right::NTuple{2,Int},
+                     row::Dict{Int,Int},
+                     alpha::Int,
+                     beta::Int,
+                     rel_rows::Vector{Dict{Int,Int}},
+                     alpha_vec::Vector{Int},
+                     beta_vec::Vector{Int},
+                     rel_counter::Threads.Atomic{Int})::Int
+    cur_left  = left
+    cur_right = right
+    cur_row   = copy(row)
+    cur_alpha = alpha
+    cur_beta  = beta
+
+    # One bounded fold only: if the new edge touches an existing live edge,
+    # cancel that shared LP once. This closes local triangles without letting
+    # the graph walk recurse or chase long cyclic components.
+    hit_eid = 0
+    hit_pt  = cur_left
+
+    if haskey(incidence, cur_left)
+        vec = incidence[cur_left]
+        while !isempty(vec) && !live[vec[end]]
+            pop!(vec)
+        end
+        if !isempty(vec)
+            hit_eid = vec[end]
+            hit_pt  = cur_left
+        end
+    end
+
+    if hit_eid == 0 && haskey(incidence, cur_right)
+        vec = incidence[cur_right]
+        while !isempty(vec) && !live[vec[end]]
+            pop!(vec)
+        end
+        if !isempty(vec)
+            hit_eid = vec[end]
+            hit_pt  = cur_right
+        end
+    end
+
+    if hit_eid == 0
+        e = LP2Edge(cur_left, cur_right, copy(cur_row), cur_alpha, cur_beta)
+        push!(edges, e)
+        push!(live, true)
+        eid = length(edges)
+        push!(get!(incidence, e.left, Int[]), eid)
+        push!(get!(incidence, e.right, Int[]), eid)
+        return 0
+    end
+
+    old = edges[hit_eid]
+    old_other = lp2_other(old, hit_pt)
+    old_other === nothing && (live[hit_eid] = false; return 0)
+
+    live[hit_eid] = false
+    cur_row   = lp2_subtract_rows(copy(cur_row), old.row)
+    cur_alpha = mod(cur_alpha - old.alpha, ell)
+    cur_beta  = mod(cur_beta  - old.beta, ell)
+
+    cur_other = hit_pt == cur_left ? cur_right : cur_left
+
+    if old_other == cur_other
+        if !isempty(cur_row) && !(cur_alpha == 0 && cur_beta == 0)
+            push!(alpha_vec, cur_alpha)
+            push!(beta_vec,  cur_beta)
+            push!(rel_rows,  cur_row)
+            Threads.atomic_add!(rel_counter, 1)
+        end
+        return 1
+    end
+
+    # Store the folded edge and stop. The next closure attempt happens only
+    # when a fresh relation later hits one of its endpoints.
+    e = LP2Edge(old_other, cur_other, cur_row, cur_alpha, cur_beta)
+    push!(edges, e)
+    push!(live, true)
+    eid = length(edges)
+    push!(get!(incidence, e.left, Int[]), eid)
+    push!(get!(incidence, e.right, Int[]), eid)
+    return 0
+end
+
 #### gemini edits:
 
 mutable struct TreeVertex
@@ -931,6 +1051,7 @@ end
 #  Each thread has its own lp_table, so no synchronisation is needed during
 #  the walk — only the atomic increment on emit.
 # ---------------------------------------------------------------------------
+
 function phase2_worker(G::Div2, T::Div2,
                        fb::Vector{NTuple{2,Int}},
                        pt2idx::Dict{NTuple{2,Int},Int},
@@ -954,14 +1075,21 @@ function phase2_worker(G::Div2, T::Div2,
     beta_vec  = Int[]
     rel_rows  = Vector{Dict{Int,Int}}()
 
-    hits_total = 0
-    hits_full  = 0
-    hits_lp1   = 0
-    hits_lp2   = 0
-    hits_skip  = 0
-    step       = 0
+    hits_total   = 0
+    hits_full    = 0
+    hits_lp1     = 0
+    hits_lp2seen = 0
+    hits_lp2emit = 0
+    hits_skip    = 0
+    step         = 0
 
-    lp_table = Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int}}()
+    # 1-LP cache: exact point collisions.
+    lp1_table = Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int}}()
+
+    # 2-LP graph: sparse edge walk.
+    lp2_edges    = LP2Edge[]
+    lp2_live     = Bool[]
+    lp2_incidence = Dict{NTuple{2,Int}, Vector{Int}}()
 
     while rel_counter[] < rel_target
         # (rel_counter check at top of loop is the only exit condition)
@@ -1037,13 +1165,10 @@ function phase2_worker(G::Div2, T::Div2,
                 fb_row[idx] = get(fb_row, idx, 0) + 1
             end
 
-            if haskey(lp_table, lp_pt)
-                prev_row, prev_al, prev_be = lp_table[lp_pt]
+            if haskey(lp1_table, lp_pt)
+                prev_row, prev_al, prev_be = lp1_table[lp_pt]
                 combined = copy(fb_row)
-                for (j, v) in prev_row
-                    nv = mod(get(combined, j, 0) - v, ell)
-                    nv == 0 ? delete!(combined, j) : (combined[j] = nv)
-                end
+                lp2_subtract_rows(combined, prev_row)
                 combined_al = mod(neg_al - prev_al, ell)
                 combined_be = mod(neg_be - prev_be, ell)
                 if !isempty(combined) && !(combined_al == 0 && combined_be == 0)
@@ -1053,13 +1178,49 @@ function phase2_worker(G::Div2, T::Div2,
                     hits_full += 1
                     Threads.atomic_add!(rel_counter, 1)
                 end
-                hits_lp2 += 1
-                delete!(lp_table, lp_pt)
+                delete!(lp1_table, lp_pt)
             else
-                lp_table[lp_pt] = (fb_row, neg_al, neg_be)
+                lp1_table[lp_pt] = (fb_row, neg_al, neg_be)
             end
 
             # Re-anchor to a known FB point without allocating a temp vector.
+            if i0 != 0
+                cur_pt = P0
+            elseif iR != 0
+                cur_pt = R
+            elseif iS != 0
+                cur_pt = S
+            else
+                cur_pt = fb[rand(1:nF_cur)]
+            end
+
+        elseif n_lp == 2
+            hits_lp2seen += 1
+            fb_row = Dict{Int,Int}()
+            lp_pts = NTuple{2,Int}[]
+            for (idx, pt) in ((i0, P0), (iR, R), (iS, S))
+                if idx == 0
+                    push!(lp_pts, pt)
+                else
+                    fb_row[idx] = get(fb_row, idx, 0) + 1
+                end
+            end
+            if length(lp_pts) != 2
+                hits_skip += 1
+                cur_pt = fb[rand(1:nF_cur)]
+                continue
+            end
+
+            # Feed the 2-LP graph.  Any cycle closure or endpoint collision can
+            # emit a pure FB relation.
+            emitted = lp2_attach!(lp2_edges, lp2_live, lp2_incidence,
+                                  lp_pts[1], lp_pts[2], fb_row, neg_al, neg_be,
+                                  rel_rows, alpha_vec, beta_vec,
+                                  rel_counter)
+            hits_lp2emit += emitted
+            hits_full += emitted
+
+            # Re-anchor on the known FB point if there is one; otherwise reseed.
             if i0 != 0
                 cur_pt = P0
             elseif iR != 0
@@ -1078,8 +1239,11 @@ function phase2_worker(G::Div2, T::Div2,
 
     return (rel_rows=rel_rows, alpha_vec=alpha_vec, beta_vec=beta_vec,
             hits_total=hits_total, hits_full=hits_full,
-            hits_lp1=hits_lp1, hits_lp2=hits_lp2, hits_skip=hits_skip)
+            hits_lp1=hits_lp1, hits_lp2seen=hits_lp2seen,
+            hits_lp2emit=hits_lp2emit, hits_skip=hits_skip)
 end
+
+
 
 function index_calculus_walk(G::Div2, T::Div2;
                              fb_size::Int         = 650,
@@ -1090,390 +1254,116 @@ function index_calculus_walk(G::Div2, T::Div2;
                              guided::Bool         = true)
 
     all_pts = curve_points()
-    t0      = time()
+    n_all   = length(all_pts)
+    n_all < 2 && error("Not enough rational points on the curve")
 
-    # ------------------------------------------------------------------
-    # Running Jacobian state
-    # ------------------------------------------------------------------
-    cur_pt    = all_pts[rand(1:length(all_pts))]
-    alpha_cur = rand(1:ell-1)
-    beta_cur  = rand(0:ell-1)
-    D_cur     = jac_add(jac_mul(G, alpha_cur), jac_mul(T, beta_cur))
+    # Use the first fb_size rational points as a fixed factor base.
+    nF = min(fb_size, n_all)
+    fb = all_pts[1:nF]
+    pt2idx = Dict{NTuple{2,Int},Int}(pt => i for (i, pt) in enumerate(fb))
 
-    # ------------------------------------------------------------------
-    # Factor base (built dynamically in Phase 1)
-    # ------------------------------------------------------------------
-    fb        = NTuple{2,Int}[]
-    pt2idx    = Dict{NTuple{2,Int},Int}()
-    fb_frozen = false
-    guidance  = WalkGuidance(recent_limit=64)
+    verbose && @printf("Factor base: %d / %d rational points\n", nF, n_all)
 
-
-
-    # ------------------------------------------------------------------
-    # Relation storage (sparse dicts; column indices: 1..nF for FB,
-    # nF+1..nF+n_lp for LP auxiliary columns)
-    # ------------------------------------------------------------------
-    alpha_vec   = Int[]
-    beta_vec    = Int[]
-    rel_rows    = Vector{Dict{Int,Int}}()
-
-    # ------------------------------------------------------------------
-    # Counters
-    # ------------------------------------------------------------------
-    hits_total  = 0
-    hits_full   = 0   # all-FB relations emitted (direct + LP-collision derived)
-    hits_lp1    = 0   # steps with exactly 1 LP (stored in lp_table)
-    hits_lp2    = 0   # LP collisions that produced a pure-FB relation
-    hits_skip   = 0   # steps with 2+ LPs (skipped)
-
-    # lp_table: LP point → (fb_row::Dict{Int,Int}, alpha, beta) of first occurrence.
-    # On second hit of same LP, subtract rows to cancel the LP and emit a pure-FB relation.
-    lp_table = Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int}}()
-
-
-    # ------------------------------------------------------------------
-    # Precompute random walk steps to break deterministic +G degeneracy.
-    # Without this, tree path substitutions yield delta_beta=0 relations
-    # which span a beta-blind subspace, forcing sum(gamma*beta) = 0.
-    # ------------------------------------------------------------------
-    # 256 steps ensures wide beta coverage; both a,b strictly nonzero so every
-    # step carries T-information and no step is a pure-G translation.
+    # Precompute random walk steps.
     N_STEPS = 256
     step_D = Vector{Div2}(undef, N_STEPS)
     step_a = zeros(Int, N_STEPS)
     step_b = zeros(Int, N_STEPS)
     for i in 1:N_STEPS
         a = rand(1:ell-1)
-        b = rand(1:ell-1)   # strictly 1..ell-1, never 0
+        b = rand(1:ell-1)
         step_D[i] = jac_add(jac_mul(G, a), jac_mul(T, b))
         step_a[i] = a
         step_b[i] = b
     end
 
-    # walk runs until enough relations are collected; no step cap.
-    target_excess = max(20, fb_size ÷ 10)
-    verbose && @printf("Walking (uncapped, target=%d rels)...\n",
-                       fb_size + 1 + target_excess)  # target = live rels needed
-
-    step = 0
-    while true
-        step += 1
-
-        # Advance D with a random step from the precomputed table
-        si        = rand(1:N_STEPS)
-        D_cur     = jac_add(D_cur, step_D[si])
-        alpha_cur = mod(alpha_cur + step_a[si], ell)
-        beta_cur  = mod(beta_cur  + step_b[si], ell)
-
-        # D must be degree-2 and split over Fp
-        pdeg(D_cur.u) != 2 && continue
-        rs_D = u2_roots(D_cur.u)
-        rs_D === nothing && continue
-        x1, x2 = rs_D
-
-        px, py = cur_pt
-        (px == x1 || px == x2 || x1 == x2) && continue
-
-        y1 = peval(D_cur.v, x1)
-        y2 = peval(D_cur.v, x2)
-        eval_f(x1) == fp(y1 * y1) || continue
-        eval_f(x2) == fp(y2 * y2) || continue
-
-        phi_c = build_phi(px, py, x1, y1, x2, y2)
-        phi_c === nothing && continue
-        a, b, c, d = phi_c
-
-        res = phi_residual_points(a, b, c, d, px, x1, x2)
-        (res[1] === nothing || res[2] === nothing) && continue
-        R = res[1]::NTuple{2,Int}
-        S = res[2]::NTuple{2,Int}
-
-        eval_f(R[1]) == fp(R[2] * R[2]) || continue
-        eval_f(S[1]) == fp(S[2] * S[2]) || continue
-
-        hits_total += 1
-
-        al = alpha_cur
-        be = beta_cur
-        P0 = cur_pt
-        neg_al = mod(ell - al, ell)
-        neg_be = mod(ell - be, ell)
-
-        # ------------------------------------------------------------------
-        # Phase 1: fill the factor base only.
-        # ------------------------------------------------------------------
-        if !fb_frozen
-            for pt in (P0, R, S)
-                if !haskey(pt2idx, pt)
-                    push!(fb, pt)
-                    pt2idx[pt] = length(fb)
-                end
-            end
-
-            row = Dict{Int,Int}()
-            for idx in (pt2idx[P0], pt2idx[R], pt2idx[S])
-                row[idx] = get(row, idx, 0) + 1
-            end
-            push!(alpha_vec, neg_al)
-            push!(beta_vec, neg_be)
-            push!(rel_rows, row)
-            update_guidance!(guidance, row)
-            hits_full += 1
-
-            fb_pts_p1 = [P0, R, S]
-            cur_pt = choose_next_anchor(fb_pts_p1, pt2idx, guidance,
-                                        LPStageTree(stage_limit=1, max_vertices=1); current=P0)
-            if length(fb) >= fb_size
-                fb_frozen = true
-                cur_pt = fb[rand(1:length(fb))]
-                verbose && @printf("  FB full (%d atoms) after %d valid steps, %d rels\n",
-                                   length(fb), hits_total, hits_full)
-            end
-            continue
-        end
-
-        # Phase 2 is handled below via threaded workers; exit phase-1 loop.
-        break  # FB is frozen; phase 2 starts after
-    end  # ── end of phase-1 walk loop ──
-
-    # ------------------------------------------------------------------
-    # Phase 2 (threaded): spin up one worker per available thread.
-    # Each worker runs an independent walk over the frozen FB, with its
-    # own lp_table and relation buffers.  A shared atomic counter stops
-    # all workers once enough relations have been collected.
-    # ------------------------------------------------------------------
-    nthreads = Threads.nthreads()
-    # Phase-1 gives ~fb_size-1 spanning-tree rows (linearly independent, kept).
-    # Phase 2 must collect another fb_size rows to overdetermine the system.
-    # Seed the counter at 0 so phase 2 runs for its full quota independently.
-    n_phase1_rows = hits_full   # boundary: rows [1..n_phase1_rows] are phase-1
-    rel_target  = length(fb) + 1 + target_excess
+    target_excess = max(20, nF ÷ 10)
+    rel_target = nF + 1 + target_excess
     rel_counter = Threads.Atomic{Int}(0)
 
     verbose && @printf("Phase 2: launching %d walker thread(s), target=%d live rels...\n",
-                       nthreads, rel_target)
+                       Threads.nthreads(), rel_target)
 
-    # Precompute step table (shared read-only across threads)
-    step_D2 = Vector{Div2}(undef, N_STEPS)
-    step_a2 = zeros(Int, N_STEPS)
-    step_b2 = zeros(Int, N_STEPS)
-    for i in 1:N_STEPS
-        a2 = rand(1:ell-1); b2 = rand(1:ell-1)
-        step_D2[i] = jac_add(jac_mul(G, a2), jac_mul(T, b2))
-        step_a2[i] = a2; step_b2[i] = b2
-    end
-
-    steps_per_thread = typemax(Int)   # uncapped; workers stop via rel_counter >= rel_target
-    tasks = Vector{Task}(undef, nthreads)
-    for tid in 1:nthreads
+    tasks = Vector{Task}(undef, Threads.nthreads())
+    for tid in 1:Threads.nthreads()
         tasks[tid] = Threads.@spawn phase2_worker(
             G, T, fb, pt2idx,
-            step_D2, step_a2, step_b2,
+            step_D, step_a, step_b,
             rel_counter, rel_target; verbose=verbose)
     end
     results = [fetch(t) for t in tasks]
 
-    # Merge all thread results
-    for r in results
-        append!(alpha_vec,  r.alpha_vec)
-        append!(beta_vec,   r.beta_vec)
-        append!(rel_rows,   r.rel_rows)
-        hits_total += r.hits_total
-        hits_full  += r.hits_full
-        hits_lp1   += r.hits_lp1
-        hits_lp2   += r.hits_lp2
-        hits_skip  += r.hits_skip
-    end
-    nF   = length(fb)
-    nrel = length(alpha_vec)
+    alpha_vec = Int[]
+    beta_vec  = Int[]
+    rel_rows  = Vector{Dict{Int,Int}}()
+    hits_total = 0
+    hits_full  = 0
+    hits_lp1   = 0
+    hits_lp2seen = 0
+    hits_lp2emit = 0
+    hits_skip  = 0
 
+    for r in results
+        append!(alpha_vec, r.alpha_vec)
+        append!(beta_vec,  r.beta_vec)
+        append!(rel_rows,  r.rel_rows)
+        hits_total   += r.hits_total
+        hits_full    += r.hits_full
+        hits_lp1     += r.hits_lp1
+        hits_lp2seen += r.hits_lp2seen
+        hits_lp2emit += r.hits_lp2emit
+        hits_skip    += r.hits_skip
+    end
+
+    nrel = length(rel_rows)
+    verbose && @printf("Walk done: %d valid steps\n", hits_total)
     verbose && @printf(
-        "Walk done: %d valid steps / %d total  (%.1fs)\n",
-        hits_total, step + hits_total, time()-t0)
-    verbose && @printf(
-        "FB: %d atoms | full rels: %d | 1-LP steps: %d | LP collisions: %d | 2-LP skips: %d\n",
-        nF, hits_full, hits_lp1, hits_lp2, hits_skip)
+        "FB: %d atoms | full rels: %d | 1-LP steps: %d | 2-LP seen: %d | 2-LP closures: %d | skips: %d\n",
+        nF, hits_full, hits_lp1, hits_lp2seen, hits_lp2emit, hits_skip)
     verbose && @printf("Total relations: %d  (need >= %d)\n", nrel, nF + 1)
 
-    # ------------------------------------------------------------------
-    # Dense relation matrix: pure FB columns only (no LP).
-    # All rows (phase-1 spanning tree + phase-2 overdetermination) are used.
-    # ------------------------------------------------------------------
-    verbose && @printf("  Phase-1 rows: %d | Phase-2 rows: %d | Total: %d\n",
-                       n_phase1_rows, nrel - n_phase1_rows, nrel)
-
-    nCols = nF
-    Rmat = zeros(Int, nrel, nCols)
-    for i in 1:nrel, (j, v) in rel_rows[i]
-        1 <= j <= nCols || continue
-        Rmat[i, j] = mod(Rmat[i, j] + v, ell)
-    end
-
-    analyze_matrix && analyze_relation_matrix(rel_rows, nCols; verbose=verbose)
+    analyze_matrix && analyze_relation_matrix(rel_rows, nF; verbose=verbose)
     analyze_matrix && spectral_gap_report(rel_rows, nF; verbose=verbose)
     asymptotic && asymptotic_report(rel_rows, nF;
                                     hits_total=hits_total,
-                                    walk_steps=step + hits_total,
+                                    walk_steps=hits_total,
                                     hits_full=hits_full,
                                     hits_tree=0,
                                     hits_lp=hits_lp1,
-                                    hits_lp2=hits_lp2,
+                                    hits_lp2=hits_lp2emit,
                                     verbose=verbose)
 
     if nrel < nF + 1
-        msg = "Too few relations ($nrel) for FB size $nF."
-        verbose && println("  shortfall: ", msg, solve ? "  (skipping solve)" : "  (diagnostics only; skipping solve)")
+        verbose && println("  shortfall: too few relations; skipping solve")
         return nothing
     end
 
     !solve && return nothing
 
-    # ------------------------------------------------------------------
-    # Structured Gaussian Elimination (SGE): leaf-stripping over FB only.
-    # ------------------------------------------------------------------
-    verbose && println("SGE on $(nrel)x$(nCols) FB matrix...")
-
-    row_alpha  = copy(alpha_vec)
-    row_beta   = copy(beta_vec)
-    Rwork      = [copy(Rmat[i, :]) for i in 1:nrel]
-    row_active = trues(nrel)
-    col_active = trues(nCols)
-
-    # col_degree[j] = number of active rows in which col j is nonzero
-    col_degree = zeros(Int, nCols)
-    col_to_rows = [Int[] for _ in 1:nCols]
-    for i in 1:nrel, j in 1:nCols
-        Rwork[i][j] == 0 && continue
-        col_degree[j] += 1
-        push!(col_to_rows[j], i)
+    Rmat = zeros(Int, nrel, nF)
+    for i in 1:nrel, (j, v) in rel_rows[i]
+        1 <= j <= nF || continue
+        Rmat[i, j] = mod(Rmat[i, j] + v, ell)
     end
 
-    # substitution_stack: each entry is (elim_row_idx, elim_col_idx)
-    # meaning: row elim_row_idx was used to eliminate col elim_col_idx.
-    # We replay this in reverse to lift gamma from the reduced system.
-    # subst_stack records eliminated (row, col) pairs for future back-substitution
-    # if we ever need the full gamma vector. For now we solve in the reduced system.
-    subst_stack = Tuple{Int,Int}[]
+    verbose && println("Left-kernel search over GF($ell)...")
+    kernels = left_kernel_all(Rmat)
+    isempty(kernels) && error("Kernel not found — collect more relations")
 
-    peeled = 0
-    changed = true
-    while changed
-        changed = false
-        for j in 1:nCols
-            col_active[j] || continue
-            col_degree[j] == 1 || continue
-
-            # Find the unique active row containing j
-            pivot_row = 0
-            for ri in col_to_rows[j]
-                row_active[ri] || continue
-                Rwork[ri][j] == 0 && continue
-                pivot_row = ri
-                break
-            end
-            pivot_row == 0 && continue
-
-            # Scale pivot row so coefficient of j is 1
-            piv_val = Rwork[pivot_row][j]
-            inv_piv = powermod(piv_val, ell - 2, ell)
-            for jj in 1:nCols
-                Rwork[pivot_row][jj] = mod(Rwork[pivot_row][jj] * inv_piv, ell)
-            end
-            row_alpha[pivot_row] = mod(row_alpha[pivot_row] * inv_piv, ell)
-            row_beta[pivot_row]  = mod(row_beta[pivot_row]  * inv_piv, ell)
-
-            # Eliminate j from all other active rows; update col_degree incrementally
-            for ri in col_to_rows[j]
-                ri == pivot_row && continue
-                row_active[ri] || continue
-                Rwork[ri][j] == 0 && continue
-                f = Rwork[ri][j]
-                for jj in 1:nCols
-                    old_nz = Rwork[ri][jj] != 0
-                    Rwork[ri][jj] = mod(Rwork[ri][jj] - f * Rwork[pivot_row][jj], ell)
-                    new_nz = Rwork[ri][jj] != 0
-                    if old_nz && !new_nz && col_active[jj]
-                        col_degree[jj] -= 1
-                    elseif !old_nz && new_nz && col_active[jj]
-                        col_degree[jj] += 1
-                        push!(col_to_rows[jj], ri)
-                    end
-                end
-                row_alpha[ri] = mod(row_alpha[ri] - f * row_alpha[pivot_row], ell)
-                row_beta[ri]  = mod(row_beta[ri]  - f * row_beta[pivot_row],  ell)
-            end
-
-            # Deactivate pivot row and column j; decrement degrees for pivot row's nonzeros
-            for jj in 1:nCols
-                jj == j && continue
-                col_active[jj] || continue
-                Rwork[pivot_row][jj] == 0 && continue
-                col_degree[jj] -= 1
-            end
-
-            push!(subst_stack, (pivot_row, j))
-            row_active[pivot_row] = false
-            col_active[j]         = false
-            col_degree[j]         = 0
-            peeled += 1
-            changed = true
-            break  # restart outer loop after one peel
-        end
-    end
-
-    active_rows = findall(row_active)
-    active_cols = findall(col_active)
-    nr2 = length(active_rows)
-    nc2 = length(active_cols)
-    verbose && @printf("SGE peeled %d columns; reduced to %dx%d (was %dx%d)\n",
-                       peeled, nr2, nc2, nrel, nF)
-
-    if nr2 < nc2 + 1
-        verbose && println("  SGE left insufficient relations; will retry.")
-        return nothing
-    end
-
-    # Build reduced dense matrix
-    Rred = zeros(Int, nr2, nc2)
-    for (ii, ri) in enumerate(active_rows), (jj, j) in enumerate(active_cols)
-        Rred[ii, jj] = Rwork[ri][j]
-    end
-    alpha_red = [row_alpha[ri] for ri in active_rows]
-    beta_red  = [row_beta[ri]  for ri in active_rows]
-
-    # ------------------------------------------------------------------
-    # Solve: try every null vector in the left kernel of the reduced
-    # matrix, testing each for nonzero beta sum. This avoids the need
-    # to retry the entire walk when only the kernel pick is unlucky.
-    # ------------------------------------------------------------------
-    verbose && println("Left-kernel search over GF($ell) on reduced $(nr2)x$(nc2) matrix...")
-
-    k_found = nothing
-    null_vecs = left_kernel_all(Rred)
-    verbose && @printf("  Found %d null vector(s) to try\n", length(null_vecs))
-
-    for gamma in null_vecs
-        Sa = mod(sum(Int128(gamma[i]) * alpha_red[i] for i in 1:nr2), ell)
-        Sb = mod(sum(Int128(gamma[i]) * beta_red[i]  for i in 1:nr2), ell)
+    for γ in kernels
+        Sa = mod(sum(Int128(γ[i]) * alpha_vec[i] for i in 1:nrel), ell)
+        Sb = mod(sum(Int128(γ[i]) * beta_vec[i]  for i in 1:nrel), ell)
         Sb == 0 && continue
-
         k_cand = mod(-Int(Sa) * powermod(Int(Sb), ell - 2, ell), ell)
         if jac_mul(G, k_cand) == T
-            k_found = k_cand
-            break
+            verbose && println("  ✓  k = $k_cand   (k*G == T)")
+            return k_cand
         end
     end
 
-    if k_found !== nothing
-        verbose && println("  ✓  k = $k_found   (k*G == T)")
-    else
-        verbose && println("  No usable kernel vector found; will retry with fresh walk.")
-    end
-    k_found
+    verbose && println("  No usable kernel vector found; will retry with fresh walk.")
+    return nothing
 end
-
-
 
 
 
