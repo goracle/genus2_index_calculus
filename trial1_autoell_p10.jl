@@ -83,35 +83,86 @@ end
 
 # ─────────────────────── Polynomial ring Fp[x] ────────────────────────────────
 # Representation: Vector{Int} with poly[i] = coeff of x^(i-1); always trimmed.
+#
+# Allocation discipline: every function that returns a fresh Vector allocates
+# exactly one output vector and nothing else.  In particular:
+#   - ptrim!  mutates in place (resize!); ptrim returns a new trimmed copy.
+#   - padd/psub/pmul each allocate exactly one output vector.
+#   - pneg/pscale avoid broadcast temporaries by using a manual loop.
+#   - pdivrem trims the remainder in-place via resize! rather than re-slicing.
+#   - pgcd_ext is the main Cantor hot path; its alloc count per call is O(deg).
 
-ptrim(a::Vector{Int}) = (n = length(a); while n > 1 && a[n] == 0; n -= 1; end; a[1:n])
-pdeg(a::Vector{Int})  = length(ptrim(a)) - 1
+# Trim trailing zeros in-place; returns the same vector.
+function ptrim!(a::Vector{Int})
+    n = length(a)
+    while n > 1 && a[n] == 0; n -= 1; end
+    n < length(a) && resize!(a, n)
+    a
+end
+
+# Allocating trim (used when a new vector is needed).
+function ptrim(a::Vector{Int})
+    n = length(a)
+    while n > 1 && a[n] == 0; n -= 1; end
+    n == length(a) ? copy(a) : a[1:n]
+end
+
+# Degree without allocating a trimmed copy.
+function pdeg(a::Vector{Int})
+    n = length(a)
+    while n > 1 && a[n] == 0; n -= 1; end
+    n - 1
+end
+
 pzero(a::Vector{Int}) = (length(a) == 1 && a[1] == 0)
 
 function padd(a::Vector{Int}, b::Vector{Int})
-    c = zeros(Int, max(length(a), length(b)))
-    for i in eachindex(a); c[i] = fp(a[i]); end
-    for i in eachindex(b); c[i] = fp(c[i] + b[i]); end
-    ptrim(c)
+    la, lb = length(a), length(b)
+    c = Vector{Int}(undef, max(la, lb))
+    if la >= lb
+        @inbounds for i in 1:lb;  c[i] = fp(a[i] + b[i]); end
+        @inbounds for i in lb+1:la; c[i] = fp(a[i]); end
+    else
+        @inbounds for i in 1:la;  c[i] = fp(a[i] + b[i]); end
+        @inbounds for i in la+1:lb; c[i] = fp(b[i]); end
+    end
+    ptrim!(c)
 end
 
 function psub(a::Vector{Int}, b::Vector{Int})
-    c = zeros(Int, max(length(a), length(b)))
-    for i in eachindex(a); c[i] = fp(a[i]); end
-    for i in eachindex(b); c[i] = fp(c[i] - b[i]); end
-    ptrim(c)
+    la, lb = length(a), length(b)
+    c = Vector{Int}(undef, max(la, lb))
+    if la >= lb
+        @inbounds for i in 1:lb;  c[i] = fp(a[i] - b[i]); end
+        @inbounds for i in lb+1:la; c[i] = fp(a[i]); end
+    else
+        @inbounds for i in 1:la;  c[i] = fp(a[i] - b[i]); end
+        @inbounds for i in la+1:lb; c[i] = fp(-b[i]); end
+    end
+    ptrim!(c)
 end
 
 function pmul(a::Vector{Int}, b::Vector{Int})
-    c = zeros(Int, length(a) + length(b) - 1)
-    @inbounds for i in eachindex(a), j in eachindex(b)
+    la, lb = length(a), length(b)
+    c = zeros(Int, la + lb - 1)
+    @inbounds for i in 1:la, j in 1:lb
         c[i+j-1] = fp(c[i+j-1] + a[i] * b[j])
     end
-    ptrim(c)
+    ptrim!(c)
 end
 
-pneg(a::Vector{Int})           = ptrim(fp.(-a))
-pscale(a::Vector{Int}, s::Int) = ptrim(fp.(a .* fp(s)))
+function pneg(a::Vector{Int})
+    c = Vector{Int}(undef, length(a))
+    @inbounds for i in eachindex(a); c[i] = fp(-a[i]); end
+    ptrim!(c)
+end
+
+function pscale(a::Vector{Int}, s::Int)
+    s = fp(s)
+    c = Vector{Int}(undef, length(a))
+    @inbounds for i in eachindex(a); c[i] = fp(a[i] * s); end
+    ptrim!(c)
+end
 
 function peval(poly::Vector{Int}, x::Int)
     x = fp(x); r = 0
@@ -120,16 +171,30 @@ function peval(poly::Vector{Int}, x::Int)
 end
 
 function pdivrem(a::Vector{Int}, b::Vector{Int})
-    a  = copy(ptrim(a));  b = ptrim(b)
-    lc = fpinv(b[end]);   db = pdeg(b)
+    a  = ptrim(a)          # one copy; we mutate it below
+    b  = ptrim(b)          # read-only after this
+    lc = fpinv(b[end])
+    db = pdeg(b)
     q  = zeros(Int, max(1, length(a) - length(b) + 1))
-    while !pzero(a) && pdeg(a) >= db
-        d = pdeg(a) - db;  c = fp(a[end] * lc)
+    da = pdeg(a)
+    while da >= db && !pzero(a)
+        d = da - db
+        c = fp(a[da+1] * lc)
         q[d+1] = c
-        for i in eachindex(b); a[i+d] = fp(a[i+d] - c * b[i]); end
-        a = ptrim(a)
+        @inbounds for i in eachindex(b)
+            a[i+d] = fp(a[i+d] - c * b[i])
+        end
+        a[da+1] = 0        # zero the leading term in-place
+        # update da without re-scanning from scratch
+        while da > 0 && a[da+1] == 0; da -= 1; end
     end
-    ptrim(q), a
+    # trim both outputs in-place
+    qlen = length(q)
+    while qlen > 1 && q[qlen] == 0; qlen -= 1; end
+    qlen < length(q) && resize!(q, qlen)
+    alen = da + 1
+    alen < length(a) && resize!(a, alen)
+    q, a
 end
 
 pmod(a, b) = pdivrem(a, b)[2]

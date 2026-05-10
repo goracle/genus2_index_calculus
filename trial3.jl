@@ -49,43 +49,80 @@ function build_phi(px::Int, py::Int,
                    x1::Int, y1::Int,
                    x2::Int, y2::Int)::Union{NTuple{4,Int}, Nothing}
 
-    M = [fp(px*px)  px  1  py;
-         fp(x1*x1)  x1  1  y1;
-         fp(x2*x2)  x2  1  y2]
+    # Vanishing conditions give the 3×4 augmented system.
+    # We unroll Gaussian elimination entirely into scalars to avoid
+    # allocating any matrix, vector, or slice.
+    #
+    # Rows:  [x²  x  1  y | rhs]
+    #   r0:  [px² px 1 py | rhs0]
+    #   r1:  [x1² x1 1 y1 | rhs1]
+    #   r2:  [x2² x2 1 y2 | rhs2]
 
-    # 3x3 Gaussian elimination over Fp.  A is 3x3, rhs is length-3.
-    function solve3(A::Matrix{Int}, rhs::Vector{Int})::Union{Vector{Int}, Nothing}
-        Aug = hcat(mod.(A, p), mod.(rhs, p))
-        for col in 1:3
-            piv = findfirst(r -> Aug[r, col] != 0, col:3)
-            piv === nothing && return nothing
-            piv += col - 1
-            Aug[[col, piv], :] = Aug[[piv, col], :]
-            inv_lc = powermod(Int(Aug[col, col]), p - 2, p)
-            Aug[col, :] = mod.(Aug[col, :] .* inv_lc, p)
-            for r in 1:3
-                r == col && continue
-                f = Aug[r, col]
-                f == 0 && continue
-                Aug[r, :] = mod.(Aug[r, :] .- f .* Aug[col, :], p)
+    # ── Try d=1: solve for (a,b,c) from the 3×3 left block ──────────────────
+    # augmented columns: A = [x² x 1], rhs = -y
+    @inline function solve3x3(a00,a01,a02, a10,a11,a12, a20,a21,a22,
+                               r0, r1, r2)::Union{NTuple{3,Int},Nothing}
+        # Column 0 pivot
+        if a00 != 0
+            inv0 = fpinv(a00)
+            # eliminate row1 col0
+            f10 = fp(a10 * inv0)
+            a10 = 0; a11 = fp(a11 - f10*a01); a12 = fp(a12 - f10*a02); r1 = fp(r1 - f10*r0)
+            # eliminate row2 col0
+            f20 = fp(a20 * inv0)
+            a20 = 0; a21 = fp(a21 - f20*a01); a22 = fp(a22 - f20*a02); r2 = fp(r2 - f20*r0)
+            # back-eliminate into row0 later; focus on col1 next
+            if a11 != 0
+                inv1 = fpinv(a11)
+                f21 = fp(a21 * inv1)
+                a21 = 0; a22 = fp(a22 - f21*a12); r2 = fp(r2 - f21*r1)
+                a22 == 0 && return nothing
+                inv2 = fpinv(a22)
+                # back-sub col2
+                x2v = fp(r2 * inv2)
+                x1v = fp((r1 - a12*x2v) * inv1)
+                x0v = fp((r0 - a01*x1v - a02*x2v) * inv0)
+                return (x0v, x1v, x2v)
+            elseif a21 != 0
+                # swap rows 1 and 2
+                a11,a21 = a21,a11; a12,a22 = a22,a12; r1,r2 = r2,r1
+                inv1 = fpinv(a11)
+                f21 = fp(a21 * inv1)  # a21 is now 0, but we already swapped
+                a22 = fp(a22 - f21*a12); r2 = fp(r2 - f21*r1)
+                a22 == 0 && return nothing
+                inv2 = fpinv(a22)
+                x2v = fp(r2 * inv2)
+                x1v = fp((r1 - a12*x2v) * inv1)
+                x0v = fp((r0 - a01*x1v - a02*x2v) * inv0)
+                return (x0v, x1v, x2v)
+            else
+                return nothing  # col1 all-zero after col0 elimination
             end
+        elseif a10 != 0
+            # swap rows 0 and 1 then redo
+            return solve3x3(a10,a11,a12, a00,a01,a02, a20,a21,a22, r1,r0,r2)
+        elseif a20 != 0
+            return solve3x3(a20,a21,a22, a10,a11,a12, a00,a01,a02, r2,r1,r0)
+        else
+            return nothing  # col0 all-zero
         end
-        Aug[:, 4]
     end
 
-    # Try d = 1: solve M[:,1:3] * [a,b,c]' = -M[:,4]
-    rhs1 = [fp(-py), fp(-y1), fp(-y2)]
-    sol1 = solve3(M[:, 1:3], rhs1)
-    if sol1 !== nothing
-        a, b, c = sol1
+    px2 = fp(px*px); x12 = fp(x1*x1); x22 = fp(x2*x2)
+
+    # Try d=1: solve [x² x 1]*[a,b,c]' = -y
+    sol = solve3x3(px2,px,1, x12,x1,1, x22,x2,1,
+                   fp(-py), fp(-y1), fp(-y2))
+    if sol !== nothing
+        a,b,c = sol
         return (fp(a), fp(b), fp(c), 1)
     end
 
-    # Fallback: a = 1, solve M[:,2:4] * [b,c,d]' = -M[:,1]
-    rhs2 = [fp(-fp(px*px)), fp(-fp(x1*x1)), fp(-fp(x2*x2))]
-    sol2 = solve3(M[:, 2:4], rhs2)
-    sol2 === nothing && return nothing
-    b2, c2, d2 = sol2
+    # Fallback a=1: solve [x 1 y]*[b,c,d]' = -x²
+    sol = solve3x3(px,1,py, x1,1,y1, x2,1,y2,
+                   fp(-px2), fp(-x12), fp(-x22))
+    sol === nothing && return nothing
+    b2,c2,d2 = sol
     return (1, fp(b2), fp(c2), fp(d2))
 end
 
@@ -99,32 +136,74 @@ end
 #  Returns vector of (x,y) pairs with correct y-sign (length 0, 1, or 2).
 # ---------------------------------------------------------------------------
 function phi_residual_points(a::Int, b::Int, c::Int, d::Int,
-                              px::Int, x1::Int, x2::Int)::Vector{NTuple{2,Int}}
-    d == 0 && return NTuple{2,Int}[]
+                              px::Int, x1::Int, x2::Int)::NTuple{2, Union{NTuple{2,Int},Nothing}}
+    # Returns exactly two slots; caller checks for nothing entries.
+    _nothing2 = (nothing, nothing)
+    d == 0 && return _nothing2
 
-    # N(x) = (a*x^2+b*x+c)^2 - d^2*f(x)
-    apoly = Int[c, b, a]                    # ascending-coeff representation
-    sq    = pmul(apoly, apoly)              # degree 4
-    fd2   = pscale(F_POLY, fp(d * d))      # d^2*f(x), degree 5 (len 6)
-    nlen  = max(length(sq), length(fd2))
-    N     = ptrim(mod.(
-                vcat(sq,  zeros(Int, nlen - length(sq))) .-
-                vcat(fd2, zeros(Int, nlen - length(fd2))),
-                p))
+    # N(x) = (a*x²+b*x+c)² - d²*f(x)  — degree 5, fixed 6-element buffer.
+    # Compute coefficients of (a*x²+b*x+c)² directly:
+    #   coeff of x^k in apoly² where apoly = [c,b,a]
+    d2 = fp(d * d)
+    # apoly² coefficients (degree 0..4):
+    N0 = fp(c*c)
+    N1 = fp(2*b*c)
+    N2 = fp(b*b + 2*a*c)
+    N3 = fp(2*a*b)
+    N4 = fp(a*a)
+    # subtract d²*f(x); F_POLY = [f0,f1,f2,f3,0,1] (len 6, degree 5)
+    N = (fp(N0 - d2*F_POLY[1]),
+         fp(N1 - d2*F_POLY[2]),
+         fp(N2 - d2*F_POLY[3]),
+         fp(N3 - d2*F_POLY[4]),
+         fp(N4 - d2*F_POLY[5]),
+         fp(   - d2*F_POLY[6]))   # = -d² (leading)
 
-    # Divide out a known root r => divide by (x - r) = [-r, 1]
-    function divide_out(poly::Vector{Int}, r::Int)::Union{Vector{Int}, Nothing}
-        q, rem = pdivrem(poly, Int[fp(-r), 1])
-        pzero(rem) ? q : nothing
+    # Synthetic division of a degree-5 poly (6 coeffs, ascending) by (x - r).
+    # Returns the degree-4 quotient as a 5-tuple, or nothing if remainder != 0.
+    @inline function syndiv5(n0,n1,n2,n3,n4,n5, r::Int)
+        # Descending Horner for poly div by (x-r): process from high to low.
+        q4 = n5
+        q3 = fp(n4 + q4*r)
+        q2 = fp(n3 + q3*r)
+        q1 = fp(n2 + q2*r)
+        q0 = fp(n1 + q1*r)
+        rem = fp(n0 + q0*r)
+        rem != 0 && return nothing
+        (q0, q1, q2, q3, q4)
     end
 
-    q = divide_out(N,  px);  q === nothing && return NTuple{2,Int}[]
-    q = divide_out(q,  x1);  q === nothing && return NTuple{2,Int}[]
-    q = divide_out(q,  x2);  q === nothing && return NTuple{2,Int}[]
-    q = ptrim(q)
+    @inline function syndiv4(n0,n1,n2,n3,n4, r::Int)
+        q3 = n4
+        q2 = fp(n3 + q3*r)
+        q1 = fp(n2 + q2*r)
+        q0 = fp(n1 + q1*r)
+        rem = fp(n0 + q0*r)
+        rem != 0 && return nothing
+        (q0, q1, q2, q3)
+    end
 
-    # Given x-coordinate, find correct y using phi(x,y) = 0
-    function y_for_x(xr::Int)::Union{NTuple{2,Int}, Nothing}
+    @inline function syndiv3(n0,n1,n2,n3, r::Int)
+        q2 = n3
+        q1 = fp(n2 + q2*r)
+        q0 = fp(n1 + q1*r)
+        rem = fp(n0 + q0*r)
+        rem != 0 && return nothing
+        (q0, q1, q2)
+    end
+
+    q5 = syndiv5(N[1],N[2],N[3],N[4],N[5],N[6], px)
+    q5 === nothing && return _nothing2
+    q4 = syndiv4(q5[1],q5[2],q5[3],q5[4],q5[5], x1)
+    q4 === nothing && return _nothing2
+    q3 = syndiv3(q4[1],q4[2],q4[3],q4[4], x2)
+    q3 === nothing && return _nothing2
+
+    # q3 is the degree-2 residual (q3[1], q3[2], q3[3]) = [r0, r1, r2] ascending.
+    r0, r1, r2 = q3
+
+    # Given x-coordinate, find correct y using phi(x,y) = 0.
+    @inline function y_for_x(xr::Int)::Union{NTuple{2,Int},Nothing}
         yr = sqrt_fp(eval_f(xr));  yr === nothing && return nothing
         base = fp(a * fp(xr * xr) + b * xr + c)
         fp(base + d * yr) == 0 && return (xr, yr)
@@ -132,22 +211,23 @@ function phi_residual_points(a::Int, b::Int, c::Int, d::Int,
         return nothing
     end
 
-    pts = NTuple{2,Int}[]
-    dq  = pdeg(q)
+    dq = (r2 != 0) ? 2 : (r1 != 0 ? 1 : 0)
 
     if dq == 1
-        xr = fp(-q[1] * fpinv(q[2]))
-        pt = y_for_x(xr);  pt !== nothing && push!(pts, pt)
-
+        # linear: r1*x + r0 = 0  =>  x = -r0 / r1
+        xr = fp(-r0 * fpinv(r1))
+        return (y_for_x(xr), nothing)
     elseif dq == 2
-        q_monic = pscale(q, fpinv(q[end]))   # normalise to monic for u2_roots
-        rs = u2_roots(q_monic);  rs === nothing && return NTuple{2,Int}[]
-        for xr in rs
-            pt = y_for_x(xr);  pt !== nothing && push!(pts, pt)
-        end
+        # quadratic: r2*x² + r1*x + r0 = 0
+        # normalise to monic then use u2_roots
+        inv_r2 = fpinv(r2)
+        u_monic = Int[fp(r0*inv_r2), fp(r1*inv_r2), 1]
+        rs = u2_roots(u_monic)
+        rs === nothing && return _nothing2
+        return (y_for_x(rs[1]), y_for_x(rs[2]))
+    else
+        return _nothing2
     end
-
-    pts
 end
 
 
@@ -858,12 +938,11 @@ function phase2_worker(G::Div2, T::Div2,
                        step_a::Vector{Int},
                        step_b::Vector{Int},
                        rel_counter::Threads.Atomic{Int},
-                       rel_target::Int,
-                       walk_steps::Int)
+                       rel_target::Int;
+                       verbose::Bool = true)
 
     nF_cur   = length(fb)
     N_STEPS  = length(step_D)
-    all_pts  = curve_points()
 
     # Per-thread mutable state
     cur_pt    = fb[rand(1:nF_cur)]
@@ -880,13 +959,12 @@ function phase2_worker(G::Div2, T::Div2,
     hits_lp1   = 0
     hits_lp2   = 0
     hits_skip  = 0
+    step       = 0
 
     lp_table = Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int}}()
 
-    for step in 1:walk_steps
-        # Check shared target before each step (cheap atomic read)
-
-        rel_counter[] >= rel_target && break
+    while rel_counter[] < rel_target
+        # (rel_counter check at top of loop is the only exit condition)
 
         si        = rand(1:N_STEPS)
         D_cur     = jac_add(D_cur, step_D[si])
@@ -911,17 +989,25 @@ function phase2_worker(G::Div2, T::Div2,
         a, b, c, d = phi_c
 
         res = phi_residual_points(a, b, c, d, px, x1, x2)
-        length(res) < 2 && continue
-        R, S = res[1], res[2]
+        (res[1] === nothing || res[2] === nothing) && continue
+        R = res[1]::NTuple{2,Int}
+        S = res[2]::NTuple{2,Int}
 
         eval_f(R[1]) == fp(R[2] * R[2]) || continue
         eval_f(S[1]) == fp(S[2] * S[2]) || continue
 
         hits_total += 1
+        step += 1
 
-        al = alpha_cur
-        be = beta_cur
-        P0 = cur_pt
+        if verbose && step % 100_000 == 0
+            @printf("[thread %d] steps=%d  hits=%d  rels=%d/%d\n",
+                    Threads.threadid(), step, hits_total, rel_counter[], rel_target)
+            flush(stdout)
+        end
+
+        al     = alpha_cur
+        be     = beta_cur
+        P0     = cur_pt
         neg_al = mod(ell - al, ell)
         neg_be = mod(ell - be, ell)
 
@@ -930,22 +1016,17 @@ function phase2_worker(G::Div2, T::Div2,
         iS = get(pt2idx, S,  0)
         n_lp = (i0 == 0 ? 1 : 0) + (iR == 0 ? 1 : 0) + (iS == 0 ? 1 : 0)
 
-        function emit!(fb_row::Dict{Int,Int}, eal::Int, ebe::Int)
-            push!(alpha_vec, eal)
-            push!(beta_vec,  ebe)
-            push!(rel_rows,  fb_row)
-            hits_full += 1
-            Threads.atomic_add!(rel_counter, 1)
-        end
-
         if n_lp == 0
             fb_row = Dict{Int,Int}()
             for idx in (i0, iR, iS)
                 fb_row[idx] = get(fb_row, idx, 0) + 1
             end
-            emit!(fb_row, neg_al, neg_be)
-            fb_pts = NTuple{2,Int}[P0, R, S]
-            cur_pt = fb[rand(1:nF_cur)]   # simple random re-anchor (no guidance needed per-thread)
+            push!(alpha_vec, neg_al)
+            push!(beta_vec,  neg_be)
+            push!(rel_rows,  fb_row)
+            hits_full += 1
+            Threads.atomic_add!(rel_counter, 1)
+            cur_pt = fb[rand(1:nF_cur)]
 
         elseif n_lp == 1
             hits_lp1 += 1
@@ -958,10 +1039,6 @@ function phase2_worker(G::Div2, T::Div2,
 
             if haskey(lp_table, lp_pt)
                 prev_row, prev_al, prev_be = lp_table[lp_pt]
-                # Subtract the stored partial from the current one so the shared
-                # large prime S cancels:
-                #   (fb_row - prev_row) + (S - S) = 0
-                # i.e. combined = current_fb_row - prev_fb_row  (coefficients mod ell)
                 combined = copy(fb_row)
                 for (j, v) in prev_row
                     nv = mod(get(combined, j, 0) - v, ell)
@@ -970,7 +1047,11 @@ function phase2_worker(G::Div2, T::Div2,
                 combined_al = mod(neg_al - prev_al, ell)
                 combined_be = mod(neg_be - prev_be, ell)
                 if !isempty(combined) && !(combined_al == 0 && combined_be == 0)
-                    emit!(combined, combined_al, combined_be)
+                    push!(alpha_vec, combined_al)
+                    push!(beta_vec,  combined_be)
+                    push!(rel_rows,  combined)
+                    hits_full += 1
+                    Threads.atomic_add!(rel_counter, 1)
                 end
                 hits_lp2 += 1
                 delete!(lp_table, lp_pt)
@@ -978,11 +1059,16 @@ function phase2_worker(G::Div2, T::Div2,
                 lp_table[lp_pt] = (fb_row, neg_al, neg_be)
             end
 
-            fb_pts_here = NTuple{2,Int}[]
-            i0 != 0 && push!(fb_pts_here, P0)
-            iR != 0 && push!(fb_pts_here, R)
-            iS != 0 && push!(fb_pts_here, S)
-            cur_pt = isempty(fb_pts_here) ? fb[rand(1:nF_cur)] : fb_pts_here[rand(1:length(fb_pts_here))]
+            # Re-anchor to a known FB point without allocating a temp vector.
+            if i0 != 0
+                cur_pt = P0
+            elseif iR != 0
+                cur_pt = R
+            elseif iS != 0
+                cur_pt = S
+            else
+                cur_pt = fb[rand(1:nF_cur)]
+            end
 
         else
             hits_skip += 1
@@ -997,7 +1083,6 @@ end
 
 function index_calculus_walk(G::Div2, T::Div2;
                              fb_size::Int         = 650,
-                             walk_steps::Int      = 500_000,
                              verbose::Bool        = true,
                              analyze_matrix::Bool = true,
                              asymptotic::Bool     = true,
@@ -1066,12 +1151,14 @@ function index_calculus_walk(G::Div2, T::Div2;
         step_b[i] = b
     end
 
-    # walk_steps is a hard cap; we stop early once we have enough relations.
+    # walk runs until enough relations are collected; no step cap.
     target_excess = max(20, fb_size ÷ 10)
-    verbose && @printf("Walking (cap=%d steps, target=%d rels)...\n",
-                       walk_steps, fb_size + 1 + target_excess)  # target = live rels needed
+    verbose && @printf("Walking (uncapped, target=%d rels)...\n",
+                       fb_size + 1 + target_excess)  # target = live rels needed
 
-    for step in 1:walk_steps
+    step = 0
+    while true
+        step += 1
 
         # Advance D with a random step from the precomputed table
         si        = rand(1:N_STEPS)
@@ -1098,8 +1185,9 @@ function index_calculus_walk(G::Div2, T::Div2;
         a, b, c, d = phi_c
 
         res = phi_residual_points(a, b, c, d, px, x1, x2)
-        length(res) < 2 && continue
-        R, S = res[1], res[2]
+        (res[1] === nothing || res[2] === nothing) && continue
+        R = res[1]::NTuple{2,Int}
+        S = res[2]::NTuple{2,Int}
 
         eval_f(R[1]) == fp(R[2] * R[2]) || continue
         eval_f(S[1]) == fp(S[2] * S[2]) || continue
@@ -1145,9 +1233,9 @@ function index_calculus_walk(G::Div2, T::Div2;
             continue
         end
 
-        # Phase 2 is handled below via threaded workers; skip old single-thread body
-        break  # exit the phase-1/2 for loop; phase 2 starts after
-    end  # ── end of combined phase-1/2 walk loop ──
+        # Phase 2 is handled below via threaded workers; exit phase-1 loop.
+        break  # FB is frozen; phase 2 starts after
+    end  # ── end of phase-1 walk loop ──
 
     # ------------------------------------------------------------------
     # Phase 2 (threaded): spin up one worker per available thread.
@@ -1156,8 +1244,12 @@ function index_calculus_walk(G::Div2, T::Div2;
     # all workers once enough relations have been collected.
     # ------------------------------------------------------------------
     nthreads = Threads.nthreads()
+    # Phase-1 gives ~fb_size-1 spanning-tree rows (linearly independent, kept).
+    # Phase 2 must collect another fb_size rows to overdetermine the system.
+    # Seed the counter at 0 so phase 2 runs for its full quota independently.
+    n_phase1_rows = hits_full   # boundary: rows [1..n_phase1_rows] are phase-1
     rel_target  = length(fb) + 1 + target_excess
-    rel_counter = Threads.Atomic{Int}(hits_full)  # seed with phase-1 relations already collected
+    rel_counter = Threads.Atomic{Int}(0)
 
     verbose && @printf("Phase 2: launching %d walker thread(s), target=%d live rels...\n",
                        nthreads, rel_target)
@@ -1172,14 +1264,13 @@ function index_calculus_walk(G::Div2, T::Div2;
         step_a2[i] = a2; step_b2[i] = b2
     end
 
-    steps_per_thread = max(1, walk_steps ÷ nthreads)
+    steps_per_thread = typemax(Int)   # uncapped; workers stop via rel_counter >= rel_target
     tasks = Vector{Task}(undef, nthreads)
     for tid in 1:nthreads
         tasks[tid] = Threads.@spawn phase2_worker(
             G, T, fb, pt2idx,
             step_D2, step_a2, step_b2,
-            rel_counter, rel_target,
-            steps_per_thread)
+            rel_counter, rel_target; verbose=verbose)
     end
     results = [fetch(t) for t in tasks]
 
@@ -1199,7 +1290,7 @@ function index_calculus_walk(G::Div2, T::Div2;
 
     verbose && @printf(
         "Walk done: %d valid steps / %d total  (%.1fs)\n",
-        hits_total, walk_steps, time()-t0)
+        hits_total, step + hits_total, time()-t0)
     verbose && @printf(
         "FB: %d atoms | full rels: %d | 1-LP steps: %d | LP collisions: %d | 2-LP skips: %d\n",
         nF, hits_full, hits_lp1, hits_lp2, hits_skip)
@@ -1207,8 +1298,11 @@ function index_calculus_walk(G::Div2, T::Div2;
 
     # ------------------------------------------------------------------
     # Dense relation matrix: pure FB columns only (no LP).
-    # All rows are full relations; matrix is nrel x nF over GF(ell).
+    # All rows (phase-1 spanning tree + phase-2 overdetermination) are used.
     # ------------------------------------------------------------------
+    verbose && @printf("  Phase-1 rows: %d | Phase-2 rows: %d | Total: %d\n",
+                       n_phase1_rows, nrel - n_phase1_rows, nrel)
+
     nCols = nF
     Rmat = zeros(Int, nrel, nCols)
     for i in 1:nrel, (j, v) in rel_rows[i]
@@ -1220,7 +1314,7 @@ function index_calculus_walk(G::Div2, T::Div2;
     analyze_matrix && spectral_gap_report(rel_rows, nF; verbose=verbose)
     asymptotic && asymptotic_report(rel_rows, nF;
                                     hits_total=hits_total,
-                                    walk_steps=walk_steps,
+                                    walk_steps=step + hits_total,
                                     hits_full=hits_full,
                                     hits_tree=0,
                                     hits_lp=hits_lp1,
@@ -1429,28 +1523,9 @@ function main2()
     T      = jac_mul(G, k_true)
     @printf("Secret k = %d\n\n", k_true)
 
-    # Scaling: full-relation rate per valid step ~ fb/p (P0 forced in FB,
-    # one of R/S becomes next P0, so only one free point needs to land in FB).
-    # To collect fb relations: valid_steps ~ p; total steps (25% yield) ~ 4p.
-    # Optimal FB size ~ p^(2/3).
-    fb_main       = round(Int, p^(2/3))
-    sweep_steps   = 2 * p          # enough for ~half the needed relations (diagnostic)
-    main_steps    = 8 * p          # 2× safety margin over the 4p needed
-    sweep_fb_sizes = [round(Int, 0.7 * fb_main), fb_main]
-
-    @printf("Scaling for p=%d: fb_main=%d, sweep_steps=%d, main_steps=%d\n\n",
-            p, fb_main, sweep_steps, main_steps)
-
-    for fb in sweep_fb_sizes
-        println("--- diagnostic sweep for fb_size=$fb ---")
-        _ = index_calculus_walk(G, T; fb_size=fb, walk_steps=sweep_steps,
-                                verbose=true, analyze_matrix=true, asymptotic=true,
-                                solve=false, guided=true)
-        println()
-    end
-
-    k_rec = index_calculus_walk(G, T; fb_size=fb_main, walk_steps=main_steps,
-                                verbose=true, analyze_matrix=true, asymptotic=true,
+    # Main run: uncapped walk; runs until enough relations are collected.
+    k_rec = index_calculus_walk(G, T; fb_size=3000,
+                                verbose=true, analyze_matrix=false, asymptotic=false,
                                 solve=true, guided=true)
 
     println()
