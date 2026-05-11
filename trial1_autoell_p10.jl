@@ -48,7 +48,11 @@ const F_POLY = Int[4, 5, 2, 3, 0, 1]
 
 # ─────────────────────────── Fp arithmetic ────────────────────────────────────
 @inline fp(x::Integer)    = mod(x, p)
-@inline fpinv(x::Integer) = powermod(fp(x), p - 2, p)
+@inline function fpinv(x::Integer)
+    r = fp(x)
+    r == 0 && throw(ArgumentError("fpinv: cannot invert zero mod $p"))
+    powermod(r, p - 2, p)
+end
 
 # Square root in Fp via Tonelli-Shanks (works for any odd prime p).
 function sqrt_fp(a::Int)
@@ -269,6 +273,10 @@ function pgcd_ext(a0::Vector{Int}, b0::Vector{Int})
         s0, s1 = s1, psub(s0, pmul(q, s1))
         t0, t1 = t1, psub(t0, pmul(q, t1))
     end
+    if r0[end] == 0
+        throw(ArgumentError(
+            "pgcd_ext: GCD result has zero leading coefficient — degenerate polynomials?"))
+    end
     sc = fpinv(r0[end])
     pscale(r0, sc), pscale(s0, sc), pscale(t0, sc)
 end
@@ -320,6 +328,11 @@ function jac_add(D1::Div2, D2::Div2)::Div2
         V     = pmod(Vd, U)
     end
 
+    if U[end] == 0
+        throw(ArgumentError(
+            "jac_add composition: U has zero leading coefficient before reduction; " *
+            "u1=$(D1.u) v1=$(D1.v) u2=$(D2.u) v2=$(D2.v)"))
+    end
     U = pscale(U, fpinv(U[end]))                # make monic
 
     # ── Reduction: while deg(U) > g = 2 ──────────────────────────────────────
@@ -328,6 +341,11 @@ function jac_add(D1::Div2, D2::Div2)::Div2
     while pdeg(U) > 2
         f_minus_vsq!(_tmp, V)                   # _tmp = F_POLY - V²  (no alloc)
         U2, _ = pdivrem(_tmp, U)                # exact: U | V²-f
+        if U2[end] == 0
+            throw(ArgumentError(
+                "jac_add reduction: U2 has zero leading coefficient after pdivrem; " *
+                "U=$U V=$V — U does not divide f-V² exactly (corrupt Div2 input or arithmetic bug)"))
+        end
         pscale!(U2, fpinv(U2[end]))             # make monic in-place
         pneg!(V)                                # V = -V in-place
         V = pmod(V, U2)                         # one alloc (pmod result)
@@ -790,6 +808,8 @@ end
 mumford1(x0::Int, y0::Int) = Div2(Int[fp(-x0), 1], Int[fp(y0)])
 
 function mumford2(x1::Int, y1::Int, x2::Int, y2::Int)::Div2
+    x1 == x2 && throw(ArgumentError(
+        "mumford2: x1 == x2 ($x1); use mumford_from_pts for the tangent/negation cases"))
     u  = Int[fp(x1 * x2), fp(-(x1 + x2)), 1]
     sl = fp((y2 - y1) * fpinv(x2 - x1))
     Div2(u, ptrim(Int[fp(y1 - sl * x1), sl]))

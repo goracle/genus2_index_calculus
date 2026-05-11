@@ -967,76 +967,108 @@ end
 #  Falls back to pure-Julia elimination if Nemo is unavailable.
 # ---------------------------------------------------------------------------
 function left_kernel_all(rel_rows::Vector{Dict{Int,Int}}, nF::Int, ell::Int)::Vector{Vector{Int}}
-    m = length(rel_rows)
-    n = nF
+    m = length(rel_rows) # number of relations
+    n = nF               # number of FB elements
+    
+    if m == 0
+        return Vector{Int}[]
+    end
 
-    # ── Nemo / FLINT fast path ──────────────────────────────────────────────
-    # Build the matrix TRANSPOSED (n×m) so nullspace() gives left kernel directly
-    # without materializing a second dense matrix via transpose().
-    # Use raw Int entries in a flat Vector{Int} — Nemo.matrix(F, nrows, ncols, vec)
-    # accepts Int directly and converts inside FLINT, avoiding m*n boxed GF objects.
+    # ── Nemo / FLINT Path ──────────────────────────────────────────────────
+    # Standard: Build Transpose (n x m). The Right Nullspace of Rᵀ 
+    # is the Left Nullspace of R.
     try
         F = Nemo.GF(ell)
-        # entries[j + (i-1)*n] = R[i,j] stored as plain Int (column-major for transposed matrix)
-        # We want the TRANSPOSED matrix: rows=n, cols=m, entry[j,i] = R[i,j]
-        # Flat vector in row-major order for the transposed matrix: row j, col i → R[i,j]
         entries = zeros(Int, n * m)
         for i in 1:m
             for (j, v) in rel_rows[i]
-                1 <= j <= n || continue
-                # transposed matrix: row j, col i, row-major index = (j-1)*m + i
-                entries[(j-1)*m + i] = mod(v, ell)
+                if 1 <= j <= n
+                    # Row-major fill for a (n rows x m cols) matrix:
+                    # Index = (row-1)*ncols + col
+                    entries[(j-1)*m + i] = mod(v, ell)
+                end
             end
         end
-        # Build n×m matrix (the transpose of the original m×n relation matrix)
+        
         Rnemo_t = Nemo.matrix(F, n, m, entries)
-        entries = nothing   # allow GC before nullspace
-        GC.gc()
+        entries = nothing
+        
+        # nullspace(A) returns (dimension, Matrix)
+        # Works for any n, m. If n > m and columns are independent, nu = 0.
         nu, K = nullspace(Rnemo_t)
-        Rnemo_t = nothing
-        GC.gc()
+        
         result = Vector{Int}[]
         for col in 1:nu
             γ = [Int(lift(ZZ, K[row, col])) for row in 1:m]
-            any(!=(0), γ) && push!(result, γ)
+            if any(!=(0), γ)
+                push!(result, γ)
+            end
         end
         return result
     catch e
-        @warn "Nemo nullspace failed ($e); falling back to pure-Julia elimination."
+        @warn "Nemo nullspace failed ($e); falling back to pure-Julia."
     end
 
     # ── Pure-Julia fallback ─────────────────────────────────────────────────
-    # Build dense matrix only in fallback path (small matrices only).
+    # We perform row reduction on the augmented matrix [I | R]
+    # Any row that becomes [γ | 0 0 ... 0] means γ is in the left kernel.
     R = zeros(Int, m, n)
     for i in 1:m, (j, v) in rel_rows[i]
-        1 <= j <= n || continue
-        R[i, j] = mod(R[i, j] + v, ell)
+        if 1 <= j <= n
+            R[i, j] = mod(R[i, j] + v, ell)
+        end
     end
 
-    aug  = hcat(Matrix{Int}(I, m, m), R)
+    # aug is m x (m + n)
+    aug = hcat(Matrix{Int}(I, m, m), R)
     prow = 1
-    for col in m+1:m+n
+    # Iterate through columns of R (which start at index m+1 in aug)
+    for col in (m+1):(m+n)
         piv = findfirst(r -> aug[r, col] != 0, prow:m)
         piv === nothing && continue
+        
         piv += prow - 1
-        aug[[prow, piv], :] = aug[[piv, prow], :]
-        s = powermod(aug[prow, col], ell - 2, ell)
-        aug[prow, :] = mod.(aug[prow, :] .* s, ell)
+        # Swap rows
+        if piv != prow
+            aug[[prow, piv], :] = aug[[piv, prow], :]
+        end
+        
+        # Scale pivot to 1
+        inv_val = powermod(aug[prow, col], ell - 2, ell)
+        aug[prow, :] = mod.(aug[prow, :] .* inv_val, ell)
+        
+        # Eliminate other rows
         for r in 1:m
             r == prow && continue
-            f = aug[r, col];  f == 0 && continue
-            aug[r, :] = mod.(aug[r, :] .- f .* aug[prow, :], ell)
+            factor = aug[r, col]
+            factor == 0 && continue
+            aug[r, :] = mod.(aug[r, :] .- factor .* aug[prow, :], ell)
         end
-        prow += 1;  prow > m && break
+        
+        prow += 1
+        if prow > m; break; end
     end
 
+    # Any row in the R-part (cols m+1 to end) that is all zeros 
+    # provides a left kernel vector from the I-part (cols 1 to m).
     result = Vector{Int}[]
-    for row in 1:m
-        all(aug[row, m+1:end] .== 0) || continue
-        γ = aug[row, 1:m]
-        any(!=(0), γ) && push!(result, γ)
+    for r in 1:m
+        is_zero_rel = true
+        for c in (m+1):(m+n)
+            if aug[r, c] != 0
+                is_zero_rel = false
+                break
+            end
+        end
+        
+        if is_zero_rel
+            γ = aug[r, 1:m]
+            if any(!=(0), γ)
+                push!(result, γ)
+            end
+        end
     end
-    result
+    return result
 end
 
 
@@ -1729,6 +1761,156 @@ function phase2_worker(G::Div2, T::Div2,
             lp_col=lp_col)
 end
 
+# ---------------------------------------------------------------------------
+#  Phase 1: self-building factor base via the phi walk
+#
+#  Walk until the FB reaches fb_cap points.  At each step:
+#    - P0 is the current anchor (guaranteed in FB from previous step).
+#    - Pick random α, β; form D = αG + βT.
+#    - Build φ through P0 and D; recover R, S.
+#    - Check membership of P0, R, S BEFORE growing the FB.
+#    - If all three were already in FB, bank the relation.
+#    - Add R and S to the FB if new (P0 is always already in FB).
+#    - Set cur_pt = R for the next step.
+#
+#  Returns (fb, pt2idx, alpha_vec, beta_vec, rel_rows) so phase 2 can
+#  pick up exactly where phase 1 left off, with banked relations included.
+# ---------------------------------------------------------------------------
+function phase1_walk(G::Div2, T::Div2,
+                     fb_cap::Int;
+                     verbose::Bool = true)
+
+    # Seed: one random curve point to start the chain.
+    seed_pts = curve_points()
+    isempty(seed_pts) && error("No rational points on curve for phase-1 seed")
+
+    fb     = NTuple{2,Int}[]
+    pt2idx = Dict{NTuple{2,Int},Int}()
+    sizehint!(fb,     fb_cap)
+    sizehint!(pt2idx, fb_cap)
+
+    alpha_vec = Int[]
+    beta_vec  = Int[]
+    rel_rows  = Vector{Dict{Int,Int}}()
+
+    function maybe_add!(pt::NTuple{2,Int})
+        haskey(pt2idx, pt) && return
+        length(fb) >= fb_cap && return
+        push!(fb, pt)
+        pt2idx[pt] = length(fb)
+    end
+
+    cur_pt = seed_pts[rand(1:length(seed_pts))]
+    maybe_add!(cur_pt)   # seed is always the first FB entry
+
+    raw_steps   = 0
+    hits_valid  = 0
+    hits_banked = 0
+
+    t0 = time()
+
+    while true
+        raw_steps += 1
+        α  = rand(1:ell-1)
+        β  = rand(0:ell-1)
+        D  = jac_add(jac_mul(G, α), jac_mul(T, β))
+
+        pdeg(D.u) != 2 && continue
+
+        u0 = D.u[1]; u1 = D.u[2]
+        v0 = D.v[1]
+        v1 = length(D.v) >= 2 ? D.v[2] : 0
+
+        px, py = cur_pt
+        upx = fp(fp(px*px) + fp(u1*px) + u0)
+        upx == 0 && continue
+
+        phi_c = build_phi_mumford(px, py, u0, u1, v0, v1)
+        phi_c === nothing && continue
+        a, b, c, _ = phi_c
+
+        res = phi_residual_mumford(a, b, c, px, u0, u1)
+        res === nothing && continue
+        res[1] === nothing && continue   # conjugate pair — skip in phase 1
+
+        R = res[1]::NTuple{2,Int}
+        S = res[2]::NTuple{2,Int}
+
+        hits_valid += 1
+
+        # How many new points would this step add?
+        r_new = !haskey(pt2idx, R)
+        s_new = !haskey(pt2idx, S)
+        slots_needed = (r_new ? 1 : 0) + (s_new ? 1 : 0)
+        slots_free   = fb_cap - length(fb)
+
+        if slots_needed > slots_free
+            # Overshoot: add only what fits.
+            if r_new && slots_free >= 1
+                maybe_add!(R)
+            end
+            # Either way: if all three are already in the FB (slots_needed==0 can't
+            # reach here; this branch means slots_needed>0 so at least one is new),
+            # we can't bank.  Just advance the anchor and keep walking with frozen FB.
+            cur_pt = haskey(pt2idx, R) ? R : (haskey(pt2idx, S) ? S : cur_pt)
+            # Don't break — keep collecting pure-FB relations with the frozen FB.
+            continue
+        end
+
+        # Add R and S to FB (no-ops if already present), then bank —
+        # all three are guaranteed in FB after this.
+        maybe_add!(R)
+        maybe_add!(S)
+
+        i0 = get(pt2idx, cur_pt, 0)
+        iR = get(pt2idx, R, 0)
+        iS = get(pt2idx, S, 0)
+
+        neg_al = mod(ell - α, ell)
+        neg_be = mod(ell - β, ell)
+        row = Dict{Int,Int}()
+        for idx in (i0, iR, iS)
+            row[idx] = get(row, idx, 0) + 1
+        end
+        push!(alpha_vec, neg_al)
+        push!(beta_vec,  neg_be)
+        push!(rel_rows,  row)
+        hits_banked += 1
+
+        # Chain: next anchor is R.
+        cur_pt = R
+
+
+        #WHY IS IT DOING THIS
+        # Once the FB is full, keep walking to collect pure-FB relations.
+        # Stop when we have enough to be useful as a head-start for phase 2,
+        # or after a bounded extra budget (avoid running forever).
+        if length(fb) >= fb_cap
+            break # just stop
+            
+            # crazy ai nonsense
+            # Continue until we bank at least fb_cap÷5 relations or exhaust
+            # an extra step budget of 10×fb_cap raw steps past FB completion.
+            extra_budget = 10 * fb_cap
+            if hits_banked >= max(fb_cap ÷ 5, 1) || raw_steps > 3 * fb_cap + extra_budget
+                break
+            end
+        end
+    end
+
+    if verbose
+        @printf("── Phase 1 done ────────────────────────────────────────────────────\n")
+        @printf("  raw steps:        %d\n", raw_steps)
+        @printf("  valid phi hits:   %d\n", hits_valid)
+        @printf("  FB built:         %d / %d cap\n", length(fb), fb_cap)
+        @printf("  relations banked: %d\n", hits_banked)
+        @printf("  wall time:        %.3fs\n", time() - t0)
+        flush(stdout)
+    end
+
+    return fb, pt2idx, alpha_vec, beta_vec, rel_rows
+end
+
 function index_calculus_walk(G::Div2, T::Div2;
                              fb_size::Int         = 650,
                              verbose::Bool        = true,
@@ -1739,28 +1921,38 @@ function index_calculus_walk(G::Div2, T::Div2;
 
     t_walk_start = time()
 
-    all_pts = curve_points()
-    n_all   = length(all_pts)
-    n_all < 2 && error("Not enough rational points on the curve")
-
-    nF = min(fb_size, n_all)
-    fb = all_pts[1:nF]
-    pt2idx = Dict{NTuple{2,Int},Int}(pt => i for (i, pt) in enumerate(fb))
-
+    # ── Phase 1: build the factor base via the phi walk ───────────────────────
+    # Walk fb_size÷2 steps, growing the FB organically from encountered points.
+    # Relations where all three atoms land in the FB are banked for phase 2.
     if verbose
         println()
-        @printf("── Factor base ─────────────────────────────────────────────────────\n")
-        @printf("  FB size:          %d / %d total rational points\n", nF, n_all)
-        @printf("  curve coverage:   %.4f%%  (FB/total)\n", 100.0 * nF / n_all)
-        @printf("  smoothness bound: B = %d  (p^(1/2) = %.1f)\n", nF, p^(1/2))
+        @printf("── Phase 1: building factor base ───────────────────────────────────\n")
+        @printf("  FB cap:    %d  (walk until full)\n", fb_size)
+        flush(stdout)
+    end
+
+    fb, pt2idx, p1_alpha, p1_beta, p1_rows =
+        phase1_walk(G, T, fb_size; verbose=verbose)
+
+    nF = length(fb)
+    # Curve size for smoothness estimates (phase 1 doesn't enumerate all points,
+    # so we do a cheap full enumeration here for the step_cap formula).
+    n_all = length(curve_points())
+
+    if verbose
+        n_curve = n_all
+        cov = nF / max(1, n_curve)
+        println()
+        @printf("── Factor base (after phase 1) ─────────────────────────────────────\n")
+        @printf("  FB size:          %d / %d cap\n", nF, fb_size)
+        @printf("  relations banked: %d\n", length(p1_rows))
+        @printf("  curve coverage:   %.4f%%  (FB / ~%d total curve pts)\n",
+                100.0 * cov, n_curve)
         @printf("  x-range of FB:    [%d, %d]\n",
                 minimum(pt[1] for pt in fb), maximum(pt[1] for pt in fb))
-        p_smooth_one = nF / n_all
-        p_smooth_both = p_smooth_one^2
-        @printf("  expected full-rel prob per valid step: ~%.2e  (FB/total)^2\n",
-                p_smooth_both)
-        @printf("  expected full-rel prob incl. LP: ~%.2e  (1-LP pairs)\n",
-                2 * p_smooth_one * (1 - p_smooth_one))
+        @printf("  expected full-rel prob per valid step: ~%.2e  (FB/total)^2\n", cov^2)
+        @printf("  expected full-rel prob incl. LP:       ~%.2e\n",
+                2 * cov * (1 - cov))
         flush(stdout)
     end
 
@@ -1779,7 +1971,9 @@ function index_calculus_walk(G::Div2, T::Div2;
     t_step_done = time() - t_step_build
 
     target_excess = max(20, nF ÷ 10)
-    rel_target = nF + 1 + target_excess
+    rel_target_total = nF + 1 + target_excess
+    p1_banked  = length(p1_rows)
+    rel_target = max(1, rel_target_total - p1_banked)
     rel_counter = Threads.Atomic{Int}(0)
 
     # Step cap: derived entirely from the smoothness geometry — no magic number.
@@ -1810,8 +2004,8 @@ function index_calculus_walk(G::Div2, T::Div2;
         @printf("── Walk setup ──────────────────────────────────────────────────────\n")
         @printf("  N_STEPS (precomputed):  %d\n", N_STEPS)
         @printf("  step table build time:  %.3fs\n", t_step_done)
-        @printf("  rel_target:             %d  (nF + 1 + %d excess)\n",
-                rel_target, target_excess)
+        @printf("  rel_target:             %d total  (%d after phase-1 credit of %d)\n",
+                rel_target_total, rel_target, p1_banked)
         @printf("  p_smooth per step:      %.3e  (0-LP + LP-closure estimate)\n",
                 p_smooth_step)
         @printf("  step_cap per thread:    %d  (derived from smoothness geometry)\n",
@@ -1865,10 +2059,11 @@ function index_calculus_walk(G::Div2, T::Div2;
     isempty(results) && error("All walker tasks timed out — rel_target unreachable at current smoothness rate")
     t_phase2_done = time() - t_phase2_start
 
-    alpha_vec = Int[]
-    beta_vec  = Int[]
-    rel_rows  = Vector{Dict{Int,Int}}()
-    
+    # Seed accumulators with phase-1 banked relations.
+    alpha_vec = copy(p1_alpha)
+    beta_vec  = copy(p1_beta)
+    rel_rows  = copy(p1_rows)
+
     hits_total    = 0
     hits_full     = 0
     hits_0lp      = 0
@@ -1910,6 +2105,7 @@ function index_calculus_walk(G::Div2, T::Div2;
     if verbose
         println()
         @printf("── Walk results ────────────────────────────────────────────────────\n")
+        @printf("  phase-1 banked relations: %d\n", length(p1_rows))
         @printf("  phase-2 wall time:     %.3fs\n", t_phase2_done)
         @printf("  total raw steps:       %d  (across all threads)\n",
                 sum(thread_steps))
@@ -2055,6 +2251,58 @@ function index_calculus_walk(G::Div2, T::Div2;
 
     verbose && @printf("\n── Kernel solve ────────────────────────────────────────────────────\n")
     verbose && @printf("  Left-kernel search over GF(%d)...\n", ell)
+
+    # --- Incremental Solve Loop ---
+    p1_count = length(p1_rows)
+    total_count = length(rel_rows)
+    
+    # Define how many Phase 2 relations to add in each iteration (e.g., 5% of Phase 2)
+    p2_step = max(1, (total_count - p1_count) ÷ 20)
+    
+    println("\n── Incremental retrieval attempt ────────────────────────────────────")
+    for current_limit in [p1_count; (p1_count + p2_step):p2_step:(total_count - 1); total_count]
+        # Slice relations: Phase 1 is indices 1:p1_count; Phase 2 follows.
+        sub_rel_rows = rel_rows[1:current_limit]
+        sub_alpha = alpha_vec[1:current_limit]
+        sub_beta = beta_vec[1:current_limit]
+        
+        # Check if we even have enough rows to solve the system (m > n)
+        if current_limit < nF + 1-1000000000000
+            @printf("Rows: %d/%d (Phase 1 + %d) - Shortfall: need at least %d\n", 
+                    current_limit, total_count, current_limit - p1_count, nF + 1)
+            continue
+        end
+        
+        @printf("Rows: %d/%d (Phase 1 + %d) - Attempting kernel solve...\n", 
+                current_limit, total_count, current_limit - p1_count)
+        
+        # Solve kernel for this specific subset
+        kernels = left_kernel_all(sub_rel_rows, nF, ell)
+        
+        if isempty(kernels)
+            println("  -> No kernel found for this subset.")
+            continue
+        end
+
+        # Test each kernel vector to see if it retrieves the secret k
+        found_k = false
+        for γ in kernels
+            Sa = mod(sum(Int128(γ[i]) * sub_alpha[i] for i in 1:length(γ)), ell)
+            Sb = mod(sum(Int128(γ[i]) * sub_beta[i] for i in 1:length(γ)), ell)
+            
+            if Sb != 0
+                k_cand = mod(-Int(Sa) * powermod(Int(Sb), ell - 2, ell), ell)
+                # Verify k_cand against the target T
+                if jac_mul(G, k_cand) == T
+                    @printf("  >> SUCCESS! Secret k found with %d relations: %d\n", current_limit, k_cand)
+                    return k_cand
+                end
+            end
+        end
+        println("  -> Kernel found, but k_true not retrieved (insufficient rank or dependency).")
+    end
+    # --- End Loop ---
+
     t_solve_start = time()
     kernels = left_kernel_all(rel_rows, nF, ell)
     t_solve_done = time() - t_solve_start
