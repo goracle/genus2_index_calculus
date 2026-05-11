@@ -19,6 +19,7 @@ using Nemo
 using Dates
 
 include("lp_residual_stats.jl")   # LP residual diagnostics
+include("kernel_phase_diag.jl")   # phase-transition instrumentation (ChatGPT)
 
 # ---------------------------------------------------------------------------
 #  Relation integrity asserts  (unchanged)
@@ -1776,6 +1777,7 @@ end
 #  Returns (fb, pt2idx, alpha_vec, beta_vec, rel_rows) so phase 2 can
 #  pick up exactly where phase 1 left off, with banked relations included.
 # ---------------------------------------------------------------------------
+
 function phase1_walk(G::Div2, T::Div2,
                      fb_cap::Int;
                      verbose::Bool = true)
@@ -1845,16 +1847,9 @@ function phase1_walk(G::Div2, T::Div2,
         slots_free   = fb_cap - length(fb)
 
         if slots_needed > slots_free
-            # Overshoot: add only what fits.
-            if r_new && slots_free >= 1
-                maybe_add!(R)
-            end
-            # Either way: if all three are already in the FB (slots_needed==0 can't
-            # reach here; this branch means slots_needed>0 so at least one is new),
-            # we can't bank.  Just advance the anchor and keep walking with frozen FB.
-            cur_pt = haskey(pt2idx, R) ? R : (haskey(pt2idx, S) ? S : cur_pt)
-            # Don't break — keep collecting pure-FB relations with the frozen FB.
-            continue
+            # The factor base is full enough for phase 1. Stop here and let
+            # phase 2 collect the LP relations.
+            break
         end
 
         # Add R and S to FB (no-ops if already present), then bank —
@@ -1880,21 +1875,8 @@ function phase1_walk(G::Div2, T::Div2,
         # Chain: next anchor is R.
         cur_pt = R
 
-
-        #WHY IS IT DOING THIS
-        # Once the FB is full, keep walking to collect pure-FB relations.
-        # Stop when we have enough to be useful as a head-start for phase 2,
-        # or after a bounded extra budget (avoid running forever).
         if length(fb) >= fb_cap
-            break # just stop
-            
-            # crazy ai nonsense
-            # Continue until we bank at least fb_cap÷5 relations or exhaust
-            # an extra step budget of 10×fb_cap raw steps past FB completion.
-            extra_budget = 10 * fb_cap
-            if hits_banked >= max(fb_cap ÷ 5, 1) || raw_steps > 3 * fb_cap + extra_budget
-                break
-            end
+            break
         end
     end
 
@@ -2186,10 +2168,20 @@ function index_calculus_walk(G::Div2, T::Div2;
 
     if nrel < nF + 1
         verbose && println("  shortfall: too few relations; skipping solve")
-        return nothing
+        return (k = nothing,
+                rel_rows  = rel_rows,
+                alpha_vec = alpha_vec,
+                beta_vec  = beta_vec,
+                nF        = nF,
+                shortfall = true)
     end
 
-    !solve && return nothing
+    !solve && return (k = nothing,
+                      rel_rows  = rel_rows,
+                      alpha_vec = alpha_vec,
+                      beta_vec  = beta_vec,
+                      nF        = nF,
+                      shortfall = false)
 
     empty!(shared_lp1)
     empty!(shared_lp2.nodes)
@@ -2295,7 +2287,21 @@ function index_calculus_walk(G::Div2, T::Div2;
                 # Verify k_cand against the target T
                 if jac_mul(G, k_cand) == T
                     @printf("  >> SUCCESS! Secret k found with %d relations: %d\n", current_limit, k_cand)
-                    return k_cand
+                    if verbose && @isdefined(kernel_phase_instrumentation)
+                        try
+                            kernel_phase_instrumentation(
+                                sub_rel_rows, sub_alpha, sub_beta, nF, ell;
+                                G=G, T=T, verbose=true)
+                        catch kpe
+                            @printf("  [kernel_phase_diag] skipped: %s\n", string(kpe))
+                        end
+                    end
+                    return (k = k_cand,
+                            rel_rows  = rel_rows,
+                            alpha_vec = alpha_vec,
+                            beta_vec  = beta_vec,
+                            nF        = nF,
+                            shortfall = false)
                 end
             end
         end
@@ -2326,13 +2332,32 @@ function index_calculus_walk(G::Div2, T::Div2;
             verbose && @printf("  ✓  k = %d   (k*G == T)  [kernel vec %d of %d]\n",
                                k_cand, n_tried, length(kernels))
             verbose && @printf("  total walk+solve time: %.3fs\n", time() - t_walk_start)
-            return k_cand
+            if verbose && @isdefined(kernel_phase_instrumentation)
+                try
+                    kernel_phase_instrumentation(
+                        rel_rows, alpha_vec, beta_vec, nF, ell;
+                        G=G, T=T, verbose=true)
+                catch kpe
+                    @printf("  [kernel_phase_diag] skipped: %s\n", string(kpe))
+                end
+            end
+            return (k = k_cand,
+                    rel_rows  = rel_rows,
+                    alpha_vec = alpha_vec,
+                    beta_vec  = beta_vec,
+                    nF        = nF,
+                    shortfall = false)
         end
     end
 
     verbose && @printf("  tried %d kernel vectors, none matched\n", n_tried)
     verbose && println("  No usable kernel vector found; will retry with fresh walk.")
-    return nothing
+    return (k = nothing,
+            rel_rows  = rel_rows,
+            alpha_vec = alpha_vec,
+            beta_vec  = beta_vec,
+            nF        = nF,
+            shortfall = false)
 end
 
 
@@ -2411,11 +2436,12 @@ function main2()
     # Main run
     println("── Index calculus walk ─────────────────────────────────────────────")
     t_walk = time()
-    k_rec = index_calculus_walk(G, T;
+    wres = index_calculus_walk(G, T;
                                 fb_size=fb_auto,
                                 verbose=true, analyze_matrix=true, asymptotic=true,
                                 solve=true, guided=true)
     t_walk_done = time() - t_walk
+    k_rec = wres === nothing ? nothing : wres.k
 
     println()
     println("── Final results ───────────────────────────────────────────────────")

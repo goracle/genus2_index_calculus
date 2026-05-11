@@ -48,11 +48,77 @@ const F_POLY = Int[4, 5, 2, 3, 0, 1]
 
 # ─────────────────────────── Fp arithmetic ────────────────────────────────────
 @inline fp(x::Integer)    = mod(x, p)
-@inline function fpinv(x::Integer)
-    r = fp(x)
-    r == 0 && throw(ArgumentError("fpinv: cannot invert zero mod $p"))
-    powermod(r, p - 2, p)
+# Multiplicative inverse in F_p
+@inline function fpinv(a::Integer)
+    aa = mod(Int(a), p)
+    aa == 0 && throw(DomainError(a, "attempted inversion of zero modulo p"))
+    return powermod(aa, p - 2, p)
 end
+
+function pdivrem(a::Vector{Int}, b::Vector{Int})
+    # Work on mutable copies, normalize coefficients first, then trim again.
+    # Trimming before normalization is not enough because a trailing coefficient
+    # can be nonzero as an integer but become 0 mod p.
+    a = copy(a)
+    b = copy(b)
+
+    @inbounds for i in eachindex(a)
+        a[i] = fp(a[i])
+    end
+    @inbounds for i in eachindex(b)
+        b[i] = fp(b[i])
+    end
+
+    a = ptrim!(a)
+    b = ptrim!(b)
+
+    if pzero(b)
+        error("Division by zero polynomial")
+    end
+
+    db = pdeg(b)
+    lb = b[end]  # now guaranteed reduced and trimmed
+
+    if lb == 0
+        error("Invalid divisor: leading coefficient is zero mod $p")
+    end
+
+    lc_inv = fpinv(lb)
+
+    # Quotient size: degree(a) - degree(b) + 1, but at least 1
+    q = zeros(Int, max(1, length(a) - length(b) + 1))
+
+    while !pzero(a) && pdeg(a) >= db
+        da = pdeg(a)
+        d  = da - db
+
+        # Leading-term cancellation coefficient
+        c = fp(a[end] * lc_inv)
+        q[d + 1] = c
+
+        # Subtract c * x^d * b from a
+        @inbounds for i in eachindex(b)
+            a[i + d] = fp(a[i + d] - c * b[i])
+        end
+
+        # Force the highest coefficient to zero, then physically shrink
+        a[end] = 0
+        while length(a) > 1 && a[end] == 0
+            pop!(a)
+        end
+    end
+
+    # Trim quotient
+    while length(q) > 1 && q[end] == 0
+        pop!(q)
+    end
+
+    # Ensure remainder is in canonical trimmed form
+    return q, ptrim(a)
+end
+
+
+
 
 # Square root in Fp via Tonelli-Shanks (works for any odd prime p).
 function sqrt_fp(a::Int)
@@ -97,18 +163,48 @@ end
 #   - pgcd_ext is the main Cantor hot path; its alloc count per call is O(deg).
 
 # Trim trailing zeros in-place; returns the same vector.
-function ptrim!(a::Vector{Int})
+# ----------------------------------------------------------------------
+# Non-allocating trim (safe to use on owned mutable vectors only)
+# ----------------------------------------------------------------------
+@inline function ptrim!(a::Vector{Int})
     n = length(a)
-    while n > 1 && a[n] == 0; n -= 1; end
-    n < length(a) && resize!(a, n)
-    a
+    @inbounds while n > 1 && a[n] == 0
+        n -= 1
+    end
+    if n < length(a)
+        resize!(a, n)
+    end
+    return a
 end
 
-# Allocating trim (used when a new vector is needed).
-function ptrim(a::Vector{Int})
+
+# ----------------------------------------------------------------------
+# Allocating trim
+#
+# IMPORTANT:
+#   The old version returned copy(a) when already trimmed. Under heavy
+#   multithreaded GC pressure (especially with GAP/Oscar root scanning),
+#   that unnecessary allocation can trigger pathological GC behavior.
+#
+#   This version allocates ONLY when trailing zeros actually need removal.
+# ----------------------------------------------------------------------
+@inline function ptrim(a::Vector{Int})
     n = length(a)
-    while n > 1 && a[n] == 0; n -= 1; end
-    n == length(a) ? copy(a) : a[1:n]
+    @inbounds while n > 1 && a[n] == 0
+        n -= 1
+    end
+
+    # Always return an owned copy.
+    #
+    # Returning the original vector when already trimmed is faster, but it
+    # allows subtle aliasing bugs when callers assume they received a fresh
+    # polynomial object and later mutate it in-place. Correctness is much more
+    # important here than avoiding one small allocation.
+    if n == length(a)
+        return copy(a)
+    else
+        return a[1:n]
+    end
 end
 
 # Degree without allocating a trimmed copy.
@@ -204,67 +300,15 @@ function peval(poly::Vector{Int}, x::Int)
     r
 end
 
-function pdivrem(a::Vector{Int}, b::Vector{Int})
-    # Work on trimmed mutable copies
-    a = ptrim(copy(a))
-    b = ptrim(copy(b))
-
-    if pzero(b)
-        error("Division by zero polynomial")
-    end
-
-    db = pdeg(b)
-    lb = b[end]
-
-    # Leading coefficient of divisor must be invertible mod p
-    if lb == 0
-        error("Invalid divisor: leading coefficient is zero")
-    end
-    lc_inv = fpinv(lb)
-
-    # Quotient size: max degree difference + 1, but at least 1
-    q = zeros(Int, max(1, length(a) - length(b) + 1))
-
-    while !pzero(a) && pdeg(a) >= db
-        da = pdeg(a)
-        d  = da - db
-
-        # Leading term cancellation coefficient
-        c = fp(a[end] * lc_inv)
-        q[d + 1] = c
-
-        # Subtract c * x^d * b from a
-        @inbounds for i in eachindex(b)
-            a[i + d] = fp(a[i + d] - c * b[i])
-        end
-
-        # Hard-kill the top coefficient we just canceled
-        a[end] = 0
-
-        # CRITICAL FIX:
-        # actually shrink the vector every iteration.
-        # Your old code only moved `da` logically, but left stale
-        # high-degree zeros sitting around, which can cause repeated
-        # reprocessing / effective infinite loops depending on pdeg().
-        while length(a) > 1 && a[end] == 0
-            pop!(a)
-        end
-    end
-
-    # Final trim for quotient
-    while length(q) > 1 && q[end] == 0
-        pop!(q)
-    end
-
-    return q, a
-end
-
 
 pmod(a, b) = pdivrem(a, b)[2]
 
 # Extended GCD: returns (g, s, t) with g monic, g = s·a + t·b
 function pgcd_ext(a0::Vector{Int}, b0::Vector{Int})
-    r0, r1 = ptrim(a0), ptrim(b0)
+    # Work on owned copies so no caller-owned vector can be mutated through
+    # aliasing across nested or threaded Jacobian arithmetic.
+    r0 = copy(ptrim(a0))
+    r1 = copy(ptrim(b0))
     s0, s1 = Int[1], Int[0]
     t0, t1 = Int[0], Int[1]
     while !pzero(r1)
@@ -273,9 +317,8 @@ function pgcd_ext(a0::Vector{Int}, b0::Vector{Int})
         s0, s1 = s1, psub(s0, pmul(q, s1))
         t0, t1 = t1, psub(t0, pmul(q, t1))
     end
-    if r0[end] == 0
-        throw(ArgumentError(
-            "pgcd_ext: GCD result has zero leading coefficient — degenerate polynomials?"))
+    if pzero(r0)
+        throw(ArgumentError("pgcd_ext: gcd collapsed to zero polynomial"))
     end
     sc = fpinv(r0[end])
     pscale(r0, sc), pscale(s0, sc), pscale(t0, sc)
@@ -306,6 +349,12 @@ const JacID = Div2(Int[1], Int[0])
 jac_isid(D::Div2) = pdeg(D.u) == 0
 
 function jac_add(D1::Div2, D2::Div2)::Div2
+    # Canonicalize onto owned copies.  The divisor fields are mutable vectors,
+    # and identity / negation shortcuts can otherwise hand out aliases that are
+    # unsafe once the same objects are used from multiple threads.
+    D1 = Div2(copy(ptrim(D1.u)), copy(ptrim(D1.v)))
+    D2 = Div2(copy(ptrim(D2.u)), copy(ptrim(D2.v)))
+
     jac_isid(D1) && return D2
     jac_isid(D2) && return D1
 
@@ -355,18 +404,31 @@ function jac_add(D1::Div2, D2::Div2)::Div2
     Div2(ptrim(U), ptrim(V))
 end
 
-jac_neg(D::Div2)             = Div2(D.u, pmod(pneg(D.v), D.u))
+
+
+jac_neg(D::Div2)             = Div2(copy(ptrim(D.u)), pmod(pneg(D.v), D.u))
 jac_sub(D1::Div2, D2::Div2) = jac_add(D1, jac_neg(D2))
 
 # Raw scalar multiplication — no modular reduction of the scalar
 function jac_mul_raw(D::Div2, n::Integer)::Div2
-    n = Int(n);  n == 0 && return JacID
-    R = JacID;  Q = D
+    n = Int(n)
+    n == 0 && return Div2(copy(JacID.u), copy(JacID.v))
+
+    # Never reuse global/shared divisor objects directly.
+    # Q is made into an owned copy, and R starts as a fresh identity.
+    R = Div2(copy(JacID.u), copy(JacID.v))
+    Q = Div2(copy(ptrim(D.u)), copy(ptrim(D.v)))
+
     while n > 0
-        isodd(n) && (R = jac_add(R, Q))
-        Q = jac_add(Q, Q);  n >>= 1
+        if isodd(n)
+            R = jac_add(R, Q)
+        end
+        if n > 1
+            Q = jac_add(Q, Q)
+        end
+        n >>= 1
     end
-    R
+    return R
 end
 
 # Scalar multiplication in the ell-order subgroup (reduces n mod ell)
