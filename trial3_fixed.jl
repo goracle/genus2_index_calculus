@@ -26,14 +26,11 @@ include("kernel_phase_diag.jl")   # phase-transition instrumentation (ChatGPT)
 # ---------------------------------------------------------------------------
 const ASSERT_RELATIONS = true
 
-# Cap on shared_lp1 / shared_lp1_conj size.
-# When the LP bound is wide relative to p, 1-LP points are so sparse that
-# entries almost never close — they just accumulate.  The birthday bound
-# means you need ~sqrt(|LP set|) steps for a collision; if that's >> step_cap,
-# old entries are dead weight and should be evicted to reclaim memory.
-# Each entry: one Dict{Int,Int} (~200-400B) + 3 Ints.  500_000 entries ~ 200MB.
-# Tune this down further if you are still OOMing.
-const MAX_LP1_ENTRIES = 500_000
+# Cap on shared_lp1 / shared_lp1_conj size.  Set very high — LP1 eviction
+# kills relation yield by discarding entries before they can close.
+# The main memory fix is LP2Graph node pruning after cycle emission.
+# Only lower this if you are genuinely OOM.
+const MAX_LP1_ENTRIES = 50_000_000
 
 # Maximum rank-growth samples stored per thread (diagnostic only; not used in linear algebra).
 const MAX_RANK_GROWTH_SAMPLES = 10_000
@@ -610,10 +607,10 @@ function asymptotic_report(rel_rows::Vector{Dict{Int,Int}}, nF::Int;
                            prefixes::Vector{Int}=Int[],
                            hits_total::Int=0,
                            walk_steps::Int=0,
-                           hits_full::Int=0,
-                           hits_tree::Int=0,
-                           hits_lp::Int=0,
-                           hits_lp2::Int=0,
+                           hits_emitted::Int=0,
+                           hits_0lp::Int=0,
+                           hits_1lp_steps::Int=0,
+                           hits_2lp_emits::Int=0,
                            verbose::Bool=true)
     nrel = length(rel_rows)
     nrel == 0 && return nothing
@@ -729,10 +726,10 @@ function asymptotic_report(rel_rows::Vector{Dict{Int,Int}}, nF::Int;
         @printf("  walk yield: %d valid steps / %d total = %.4f\n",
                 hits_total, walk_steps, walk_steps == 0 ? 0.0 : hits_total / walk_steps)
         if hits_total > 0
-            @printf("  relation mix: full=%d, tree=%d, LP-partials=%d, LP-pairs=%d\n",
-                    hits_full, hits_tree, hits_lp, hits_lp2)
-            @printf("  normalized relation rates: full/valid=%.4f, tree/valid=%.4f, LP-pairs/valid=%.4f\n",
-                    hits_full / hits_total, hits_tree / hits_total, hits_lp2 / hits_total)
+            @printf("  relation mix: emitted_total=%d, 0LP=%d, 1LP-steps=%d, 2LP-emits=%d\n",
+                    hits_emitted, hits_0lp, hits_1lp_steps, hits_2lp_emits)
+            @printf("  normalized relation rates: emitted_total/valid=%.4f, 0LP/valid=%.4f, 2LP-emits/valid=%.4f\n",
+                    hits_emitted / hits_total, hits_0lp / hits_total, hits_2lp_emits / hits_total)
         end
 
         for s in prefix_stats
@@ -1201,7 +1198,7 @@ function phase2_worker(G::Div2, T::Div2,
                        # Conjugate-pair table: keyed by (c0,c1,v0,v1) full Mumford representation.
                        # MUST be separate from shared_lp1 (affine-point keys) so the 2-LP
                        # cross-lookup never confuses a Mumford token for a single atom.
-                       shared_lp1_conj::Dict{NTuple{4,Int}, Tuple{Dict{Int,Int}, Int, Int, Int}},  # keyed by canonical (c0,c1,v0,v1)
+                       shared_lp1_conj::Dict{NTuple{4,Int}, Tuple{Dict{Int,Int}, Int, Int, Int}},
                        shared_lp2_conj::LP2ConjGraph,          # ← NEW
                        shared_lp2_conj_lock::ReentrantLock,    # ← NEW
                        # per-thread LP residual collector (write-only from this thread)
@@ -1289,25 +1286,7 @@ function phase2_worker(G::Div2, T::Div2,
         rs_split = res[1] !== nothing   # true iff R,S are individually Fp-rational
         R = rs_split ? res[1]::NTuple{2,Int} : nothing
         S = rs_split ? res[2]::NTuple{2,Int} : nothing
-        RS_mumford = rs_split ? nothing : res[3]::NTuple{4,Int}  # (c0,c1,v0,v1) full Mumford representation
-        # For LP1 birthday matching we only need (c0,c1) — the u-polynomial that identifies
-        # the geometric pair of points.  Two steps hitting the same pair will share (c0,c1)
-        # but may have different v-polys (from different D_cur), so keying on all 4 would
-        # require a #J-sized birthday collision instead of a p-sized one.
-        # Key for shared_lp1_conj: canonicalize the v-sign to avoid false matches
-        # between [D_RS] and its Jacobian negation [-D_RS].  Negation sends (v0,v1)→(-v0,-v1).
-        # We pick the lex-smaller of (v0,v1) vs (-v0,-v1) as the canonical key.
-        RS_ukey = if !rs_split
-            c0_rs, c1_rs, v0_rs, v1_rs = res[3]
-            nv0 = p - v0_rs; nv1 = p - v1_rs   # -v mod p (fp() not needed; both in [0,p))
-            if v0_rs < nv0 || (v0_rs == nv0 && v1_rs <= nv1)
-                (c0_rs, c1_rs, v0_rs, v1_rs)
-            else
-                (c0_rs, c1_rs, nv0, nv1)
-            end
-        else
-            nothing
-        end
+        RS_mumford = rs_split ? nothing : res[3]::NTuple{4,Int}  # (c0,c1,v0,v1) full Mumford key
 
         now_t = time()
         if verbose && (now_t - t_last_report) >= report_interval_secs
@@ -1326,10 +1305,6 @@ function phase2_worker(G::Div2, T::Div2,
                     100.0 * hits_skip  / max(1, hits_total))
             @printf("           smoothness histogram (0-LP, 1-LP, 2-LP, 3-LP): %d %d %d %d\n",
                     smooth_hist[1], smooth_hist[2], smooth_hist[3], smooth_hist[4])
-            lp1_sz = 0; lp1c_sz = 0
-            lock(shared_lp1_lock)
-            try; lp1_sz = length(shared_lp1); lp1c_sz = length(shared_lp1_conj); finally; unlock(shared_lp1_lock); end
-            @printf("           lp1_table=%d  lp1_conj_table=%d\n", lp1_sz, lp1c_sz)
             flush(stdout)
             t_last_report = now_t
         end
@@ -1350,11 +1325,7 @@ function phase2_worker(G::Div2, T::Div2,
             # We only attempt the 1-LP closure when P0 is on-FB (one unknown: the RS element).
             # When P0 is off-FB (two unknowns: P0 and RS), we skip — the LP2 graph is typed
             # for NTuple{2,Int} nodes and cannot handle 4-tuple RS keys without refactoring.
-            # Use (c0,c1) u-polynomial as the key — identifies the geometric RS pair.
-            # Keying on the full (c0,c1,v0,v1) would require a #J-sized birthday
-            # collision (~p^2 steps) instead of a p-sized one (~p^(1/2) steps for FB
-            # coverage fraction nF/p).
-            lp_key = RS_ukey::NTuple{4,Int}
+            lp_key = RS_mumford::NTuple{4,Int}
 
             if i0 != 0
                 hits_lp2seen += 1   # count in lp2seen momentarily then flip
@@ -1373,7 +1344,7 @@ function phase2_worker(G::Div2, T::Div2,
                         combined_al = mod(neg_al - prev_al, ell)
                         combined_be = mod(neg_be - prev_be, ell)
                         delete!(shared_lp1_conj, lp_key)
-                        # The RS element cancelled; combined is a pure FB relation.
+                        # The RS Mumford element cancelled; combined is a pure FB relation.
                         # Invariant: current  →  fb_row_scratch + atom(RS) = neg_al·G + neg_be·T
                         #            stored   →  prev_row       + atom(RS) = prev_al·G + prev_be·T
                         #            diff     →  (fb_row_scratch - prev_row) = (neg_al-prev_al)·G + ...
@@ -1385,7 +1356,7 @@ function phase2_worker(G::Div2, T::Div2,
                                             Threads.threadid(), string(fb_row_scratch), string(prev_row))
                                     @printf("[RS-CONJ-CLOSE DIAG]  neg_al=%d neg_be=%d  prev_al=%d prev_be=%d\n",
                                             neg_al, neg_be, prev_al, prev_be)
-                                    @printf("[RS-CONJ-CLOSE DIAG]  RS_ukey=(c0=%d,c1=%d,v0=%d,v1=%d canonical)  P0=%s  i0=%d\n",
+                                    @printf("[RS-CONJ-CLOSE DIAG]  RS_mumford=(c0=%d,c1=%d,v0=%d,v1=%d)  P0=%s  i0=%d\n",
                                             lp_key[1], lp_key[2], lp_key[3], lp_key[4], string(P0), i0)
                                 end
                                 @assert ok "Conjugate-pair 1-LP closure emission failed principal divisor check (see diagnostic above)"
@@ -1402,8 +1373,8 @@ function phase2_worker(G::Div2, T::Div2,
                             cur_pt = P0
                         end
                     else
-                        # Store: atom(RS_pair) + {i0->1} = neg_al·G + neg_be·T
-                        # Key is (c0,c1) — the u-polynomial identifying the geometric RS pair.
+                        # Store: atom(RS) + {i0->1} = neg_al·G + neg_be·T
+                        # Key is the full 4-tuple Mumford representation of the RS element.
                         if length(shared_lp1_conj) >= MAX_LP1_ENTRIES
                             delete!(shared_lp1_conj, first(keys(shared_lp1_conj)))
                         end
@@ -2120,7 +2091,7 @@ function index_calculus_walk(G::Div2, T::Div2;
     # to avoid absurd caps when coverage is very low).
     phi_valid_rate_est = clamp((nF / n_all)^2, 1e-8, 1.0)
     steps_per_rel_est  = 1.0 / (p_smooth_step * phi_valid_rate_est)
-    step_cap = round(Int, steps_per_rel_est * rel_target)   # total; divided by n_threads_p2 at spawn
+    step_cap = round(Int, steps_per_rel_est * rel_target / Threads.nthreads()) * Threads.nthreads()
 
     shared_lp1       = Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int, Int}}()
     shared_lp1_lock  = ReentrantLock()
@@ -2128,7 +2099,7 @@ function index_calculus_walk(G::Div2, T::Div2;
     shared_lp2_lock  = ReentrantLock()
     shared_lp_doubled = Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int}}()
     # Conjugate-pair 1-LP table: keyed by full 4-tuple Mumford, never mixed with shared_lp1.
-    shared_lp1_conj  = Dict{NTuple{4,Int}, Tuple{Dict{Int,Int}, Int, Int, Int}}()  # keyed by canonical (c0,c1,v0,v1)
+    shared_lp1_conj  = Dict{NTuple{4,Int}, Tuple{Dict{Int,Int}, Int, Int, Int}}()
     # Extension-field 2-LP graph: nodes are LPKey = Union{NTuple{2,Int}, NTuple{4,Int}}.
     shared_lp2_conj      = LP2ConjGraph()                               # ← NEW
     shared_lp2_conj_lock = ReentrantLock()                              # ← NEW
@@ -2142,61 +2113,27 @@ function index_calculus_walk(G::Div2, T::Div2;
                 rel_target_total, rel_target, p1_banked)
         @printf("  p_smooth per step:      %.3e  (0-LP + LP-closure estimate)\n",
                 p_smooth_step)
-        @printf("  step_cap (total):       %d  (derived from smoothness geometry)\n", step_cap)
-        @printf("  threads (available):    %d\n", Threads.nthreads())
+        @printf("  step_cap per thread:    %d  (derived from smoothness geometry)\n",
+                step_cap ÷ Threads.nthreads())
+        @printf("  threads:                %d\n", Threads.nthreads())
         @printf("  launching walkers at:   %s\n", string(Dates.now()))
         flush(stdout)
     end
 
-    # Thread count for phase 2: more threads does NOT help LP collision rate.
-    # shared_lp1 is a shared table; collisions occur when the same LP point is
-    # seen by ANY thread.  With T threads, the table accumulates T× as many
-    # unmatched entries but the LP point space is unchanged, so the collision
-    # rate per entry is the same — you just use T× the memory for the same yield.
-    # The birthday bound: collisions ~ total_steps^2 / (2 * |LP_set|).
-    # Doubling threads doubles total steps (same wall time) but also doubles
-    # entries, so memory grows linearly with T for constant collision count.
-    # Cap threads so that expected LP1 table size stays bounded.
-    # Heuristic: allow at most MAX_LP1_ENTRIES / (step_cap * lp1_rate_est) threads,
-    # where lp1_rate_est ~ (1 - nF/n_all) * nF/n_all (one off-FB point prob).
-    lp1_rate_est = (nF / n_all) * (1.0 - nF / n_all)
-    # Expected LP1 entries per thread over its step budget:
-    lp1_entries_per_thread = lp1_rate_est * (step_cap / Threads.nthreads())
-    # How many threads before we hit MAX_LP1_ENTRIES?
-    max_useful_threads = max(1, floor(Int, MAX_LP1_ENTRIES / max(1.0, lp1_entries_per_thread)))
-    n_threads_p2 = min(Threads.nthreads(), max_useful_threads)
-    # Also cap at hardware threads — no point going above nthreads().
-    n_threads_p2 = clamp(n_threads_p2, 1, Threads.nthreads())
-
-    if verbose
-        @printf("  LP1 table sizing:
-")
-        @printf("    lp1_rate_est:           %.3e  (prob step is 1-LP)
-", lp1_rate_est)
-        @printf("    lp1_entries_per_thread: %.0f  (over step budget)
-", lp1_entries_per_thread)
-        @printf("    max_useful_threads:     %d  (before LP1 table hits cap)
-", max_useful_threads)
-        @printf("    n_threads_p2:           %d  (capped to nthreads=%d)
-",
-                n_threads_p2, Threads.nthreads())
-        flush(stdout)
-    end
-
     t_phase2_start = time()
-    tasks = Vector{Task}(undef, n_threads_p2)
+    tasks = Vector{Task}(undef, Threads.nthreads())
     # One collector per thread: no locking needed during walk, merged after.
-    thread_collectors = [LPResidualCollector() for _ in 1:n_threads_p2]
-    for tid in 1:n_threads_p2
+    thread_collectors = [LPResidualCollector() for _ in 1:Threads.nthreads()]
+    for tid in 1:Threads.nthreads()
         tasks[tid] = Threads.@spawn phase2_worker(
             G, T, fb, pt2idx,
             step_D, step_a, step_b,
-            rel_counter, rel_target, step_cap ÷ n_threads_p2,
+            rel_counter, rel_target, step_cap ÷ Threads.nthreads(),
             shared_lp1, shared_lp1_lock,
             shared_lp2, shared_lp2_lock,
             shared_lp_doubled,
             shared_lp1_conj,
-            shared_lp2_conj, shared_lp2_conj_lock,
+            shared_lp2_conj, shared_lp2_conj_lock,   # ← NEW
             thread_collectors[tid]; verbose=verbose)
     end
     # Collect results; a timed wait surfaces hangs as an error rather than
@@ -2212,7 +2149,7 @@ function index_calculus_walk(G::Div2, T::Div2;
     cost_per_jac_add_secs  = 1e-5   # 10 µs — deliberately pessimistic for small p
     jac_adds_per_raw_step  = 6      # build_phi + phi_residual + a few eval_f checks
     secs_per_raw_step_est  = cost_per_jac_add_secs * jac_adds_per_raw_step
-    timeout_secs = (step_cap / n_threads_p2) * secs_per_raw_step_est * 4.0
+    timeout_secs = (step_cap / Threads.nthreads()) * secs_per_raw_step_est * 4.0
     timed_out = falses(length(tasks))
     for (i, t) in enumerate(tasks)
         status = timedwait(() -> istaskdone(t), timeout_secs)
@@ -2347,10 +2284,10 @@ function index_calculus_walk(G::Div2, T::Div2;
     asymptotic && asymptotic_report(rel_rows, nF;
                                     hits_total=hits_total,
                                     walk_steps=sum(thread_steps),
-                                    hits_full=hits_0lp,
-                                    hits_tree=0,
-                                    hits_lp=hits_lp1,
-                                    hits_lp2=hits_1lp_emit,
+                                    hits_emitted=hits_full,
+                                    hits_0lp=hits_0lp,
+                                    hits_1lp_steps=hits_lp1,
+                                    hits_2lp_emits=hits_lp2emit,
                                     verbose=verbose)
 
     # ── LP residual statistics (ChatGPT analysis) ────────────────────────────
