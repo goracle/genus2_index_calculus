@@ -59,6 +59,13 @@ end
 
 const MAX_LP2_DEPTH       = 6    # max spanning-tree depth; prevents row blowup
 const MAX_LP2_ROW_WEIGHT  = 24   # max nonzeros in an emitted 2-LP relation
+# Hard cap on total nodes in the LP2Graph.  When reached, the graph is cleared
+# entirely.  This is a blunt instrument but correct: a cleared graph loses
+# pending edges but not correctness.  Without this, a walk where the LP bound
+# is large relative to p accumulates millions of nodes and OOMs.
+# At ~500 bytes per node (Dict overhead + edge_row), 50_000 nodes ≈ 25 MB per graph.
+# Two graphs (affine + conj) × this cap = ~50 MB total for LP2 state.
+const MAX_LP2_NODES = 50_000
 
 mutable struct LP2Node
     parent   ::Union{NTuple{2,Int}, Nothing}   # nothing = this node is a root
@@ -78,12 +85,13 @@ mutable struct LP2Graph
     n_weight_pruned  ::Int
     n_parity_pruned  ::Int
     n_odd_stored     ::Int   # odd cycles passed to caller for doubled-atom storage
+    n_clears         ::Int   # number of times graph was fully cleared due to node cap
 end
 
 function LP2Graph()
     LP2Graph(
         Dict{NTuple{2,Int}, LP2Node}(),
-        0, 0, 0, 0, 0, 0, 0
+        0, 0, 0, 0, 0, 0, 0, 0
     )
 end
 
@@ -255,6 +263,15 @@ function lp2_insert_edge!(g::LP2Graph,
         # attach the ROOT of one tree to the ROOT of the other.  Attaching a
         # non-root node would overwrite its existing parent pointer and create a
         # cycle in the parent-pointer graph, causing lp2_tree_root to loop forever.
+
+        # Hard node cap: if the graph has grown too large without producing cycles
+        # (LP bound too wide relative to p, so collisions are rare), clear it entirely
+        # and start fresh.  We lose pending edges but not correctness.
+        if length(g.nodes) >= MAX_LP2_NODES
+            empty!(g.nodes)
+            g.n_clears += 1
+        end
+
         node_L = get(g.nodes, L, nothing)
         node_R = get(g.nodes, R, nothing)
 

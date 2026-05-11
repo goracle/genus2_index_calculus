@@ -56,6 +56,9 @@
 # ---------------------------------------------------------------------------
 const LPKey = Union{NTuple{2,Int}, NTuple{4,Int}}
 
+# Node cap for LP2ConjGraph — same rationale as MAX_LP2_NODES in lp2.jl.
+const MAX_LP2C_NODES = 50_000
+
 # ---------------------------------------------------------------------------
 #  LP2ConjNode — one vertex in the mixed LP2 spanning tree
 # ---------------------------------------------------------------------------
@@ -79,10 +82,11 @@ mutable struct LP2ConjGraph
     n_weight_pruned   ::Int
     n_parity_pruned   ::Int
     n_odd_stored      ::Int
+    n_clears          ::Int
 end
 
 function LP2ConjGraph()
-    LP2ConjGraph(Dict{LPKey, LP2ConjNode}(), 0, 0, 0, 0, 0, 0, 0)
+    LP2ConjGraph(Dict{LPKey, LP2ConjNode}(), 0, 0, 0, 0, 0, 0, 0, 0)
 end
 
 # ---------------------------------------------------------------------------
@@ -255,6 +259,12 @@ function lp2c_insert_edge!(g::LP2ConjGraph,
 
     else
         # ── Tree insertion / merge ───────────────────────────────────────
+        # Hard node cap: clear the graph if it has grown without producing cycles.
+        if length(g.nodes) >= MAX_LP2C_NODES
+            empty!(g.nodes)
+            g.n_clears += 1
+        end
+
         node_L = get(g.nodes, L, nothing)
         node_R = get(g.nodes, R, nothing)
 
