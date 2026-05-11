@@ -21,6 +21,21 @@ using Dates
 include("lp_residual_stats.jl")   # LP residual diagnostics
 include("kernel_phase_diag.jl")   # phase-transition instrumentation (ChatGPT)
 
+# Safe wrapper around the kernel-phase diagnostics.  These are helpful, but
+# they should never be able to abort a successful solve.
+function safe_kernel_phase_instrumentation(args...; kwargs...)
+    if !@isdefined(kernel_phase_instrumentation)
+        return nothing
+    end
+    try
+        return kernel_phase_instrumentation(args...; kwargs...)
+    catch kpe
+        @printf("  [kernel_phase_diag] skipped: %s\n", string(kpe))
+        return nothing
+    end
+end
+
+
 # ---------------------------------------------------------------------------
 #  Relation integrity asserts  (unchanged)
 # ---------------------------------------------------------------------------
@@ -2355,16 +2370,6 @@ function index_calculus_walk(G::Div2, T::Div2;
     end
     # ─────────────────────────────────────────────────────────────────────────
 
-    if nrel < nF + 1
-        verbose && println("  shortfall: too few relations; skipping solve")
-        return (k = nothing,
-                rel_rows  = rel_rows,
-                alpha_vec = alpha_vec,
-                beta_vec  = beta_vec,
-                nF        = nF,
-                shortfall = true)
-    end
-
     !solve && return (k = nothing,
                       rel_rows  = rel_rows,
                       alpha_vec = alpha_vec,
@@ -2447,13 +2452,6 @@ function index_calculus_walk(G::Div2, T::Div2;
         sub_alpha = alpha_vec[1:current_limit]
         sub_beta = beta_vec[1:current_limit]
         
-        # Check if we even have enough rows to solve the system (m > n)
-        if current_limit < nF + 1-1000000000000
-            @printf("Rows: %d/%d (Phase 1 + %d) - Shortfall: need at least %d\n", 
-                    current_limit, total_count, current_limit - p1_count, nF + 1)
-            continue
-        end
-        
         @printf("Rows: %d/%d (Phase 1 + %d) - Attempting kernel solve...\n", 
                 current_limit, total_count, current_limit - p1_count)
         
@@ -2478,7 +2476,7 @@ function index_calculus_walk(G::Div2, T::Div2;
                     @printf("  >> SUCCESS! Secret k found with %d relations: %d\n", current_limit, k_cand)
                     if verbose && @isdefined(kernel_phase_instrumentation)
                         try
-                            kernel_phase_instrumentation(
+                            safe_kernel_phase_instrumentation(
                                 sub_rel_rows, sub_alpha, sub_beta, nF, ell;
                                 G=G, T=T, verbose=true)
                         catch kpe
@@ -2523,7 +2521,7 @@ function index_calculus_walk(G::Div2, T::Div2;
             verbose && @printf("  total walk+solve time: %.3fs\n", time() - t_walk_start)
             if verbose && @isdefined(kernel_phase_instrumentation)
                 try
-                    kernel_phase_instrumentation(
+                    safe_kernel_phase_instrumentation(
                         rel_rows, alpha_vec, beta_vec, nF, ell;
                         G=G, T=T, verbose=true)
                 catch kpe
