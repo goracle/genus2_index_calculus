@@ -1,48 +1,30 @@
 #!/usr/bin/env julia
 # =============================================================================
-#  trial2.jl  --  Index calculus via Markov-walk / phi-function relations
+#  trial3_fixed.jl  --  Index calculus via Markov-walk / phi-function relations
 #
-#  Same curve/field/subgroup as trial1.jl.  Instead of the Gaudry-Harley
-#  random-pair strategy we use the Diem plane-model variant:
-#
-#  Walk step  (current point P0 = (px, py)):
-#    1. Pick random (alpha, beta), form D = alpha*G + beta*T  (degree-2 Mumford).
-#       Extract the two affine support points Q1=(x1,y1), Q2=(x2,y2) of D.
-#    2. Build phi = a*x^2 + b*x + c + d*y  vanishing at P0, Q1, Q2.
-#       (4 coefficients, 1 overall scale => 3 free parameters, 3 conditions
-#        => unique phi up to scale.)
-#    3. div(phi) on C has degree 5 (C is a plane quintic):
-#         div(phi) = [P0] + [Q1] + [Q2] + [R] + [S] - 5*[inf]
-#       Recover R, S by forming N(x) = (a*x^2+b*x+c)^2 - d^2*f(x) (degree 5),
-#       then dividing out the three known roots px, x1, x2.
-#    4. Principal-divisor relation in Cl^0:
-#         atom(P0) + atom(R) + atom(S) = -(alpha*G + beta*T)
-#       where atom(P) = [P] - [inf].
-#       When P0, R, S are all in the factor base F, record this relation.
-#    5. Set P_next = R;  add P0, R, S to F during the build phase.
-#
-#  Phase 1: walk until |F| >= fb_target.
-#  Phase 2: continue walk, recording relations whenever P0,R,S in F.
-#           Stop after |F|+20 relations; left-kernel => k.
+#  Generator bootstrap changed: instead of Pollard rho (fast_find_ell_generator),
+#  we use the exact Frobenius / Sage approach:
+#    1. Shell out to Sage for frobenius_polynomial() -> #J(F_p) exactly.
+#    2. Factor #J via Oscar/FLINT -> ell = largest prime factor.
+#    3. Pick a random divisor D, multiply by cofactor h = #J/ell to get G.
+#    4. Retry if G = identity (probability 1 - ell/#J ≈ tiny).
+#  This avoids the O(sqrt(#J)) Pollard rho entirely and gives the exact ell
+#  in a deterministic O(1) Sage call + O(log #J) FLINT factorisation.
 # =============================================================================
 
-#include("trial1.jl")   # all Fp/poly/Jacobian/curve utilities
 include("trial1_autoell_p10.jl")   # all Fp/poly/Jacobian/curve utilities
 using LinearAlgebra
 using Base.Threads
 using Nemo
 using Dates
 
-include("lp_residual_stats.jl")   # LP residual diagnostics (occupancy, entropy, autocorr, clustering)
+include("lp_residual_stats.jl")   # LP residual diagnostics
 
 # ---------------------------------------------------------------------------
-#  Relation integrity asserts
-#
-#  Set ASSERT_RELATIONS = true to enable per-emission Jacobian verification.
-#  This is O(row_weight * jac_mul) per emission — expensive but definitive.
-#  Set to false for production runs.
+#  Relation integrity asserts  (unchanged)
 # ---------------------------------------------------------------------------
 const ASSERT_RELATIONS = true
+
 
 # Check: does  Σ_j row[j]·atom(fb[j])  ==  al·G + be·T  in the Jacobian?
 # (atom(P) = [P] - [∞]; in practice, mumford1(x,y) is the degree-1 Mumford
@@ -270,6 +252,76 @@ function phi_residual_mumford(a::Int, b::Int, c::Int,
 
     return ((xR, yR), (xS, yS), nothing)
 end
+
+# ---------------------------------------------------------------------------
+#  Exact #J(F_p) via Sage frobenius_polynomial  (replaces Pollard rho)
+# ---------------------------------------------------------------------------
+"""
+    frobenius_jacobian_order() -> (N::Int, ell::Int, h::Int)
+
+Shell out to Sage to compute the Frobenius polynomial of J(C/F_p), evaluate
+at 1 to get N = #J(F_p), then factor with Oscar/FLINT to extract
+ell = largest prime factor and cofactor h = N/ell.
+
+Sage uses Kedlaya's p-adic algorithm (hypellfrob) -- O(p^{1/2} polylog p) --
+so this is fast even for p ~ 10^6.
+"""
+function frobenius_jacobian_order()::Tuple{Int,Int,Int}
+    sage_script = """
+p = $(p)
+F = GF(p)
+R.<x> = F[]
+f = x^5 + 3*x^3 + 2*x^2 + 5*x + 4
+H = HyperellipticCurve(f)
+chi = H.frobenius_polynomial()
+N = ZZ(chi(1))
+print(int(N))
+"""
+    raw  = readchomp(`sage -c $sage_script`)
+    N    = Int(parse(BigInt, strip(raw)))
+    fac  = Oscar.factor(Oscar.ZZ(N))
+    ell  = maximum(Int(q) for (q, _) in fac)
+    h    = N ÷ ell
+    return N, ell, h
+end
+
+# ---------------------------------------------------------------------------
+#  Generator bootstrap via exact Frobenius order
+#  (replaces fast_find_ell_generator / Pollard rho)
+# ---------------------------------------------------------------------------
+function frobenius_find_ell_generator(pts::Vector{NTuple{2,Int}})::Tuple{Div2,Int}
+    t0 = time()
+    print("  Computing #J via Sage frobenius_polynomial... ")
+    flush(stdout)
+    N, ell_found, h = frobenius_jacobian_order()
+    @printf("done (%.3fs)\n", time() - t0)
+    @printf("  #J = %d\n", N)
+    @printf("  factorisation: %s\n", string(Oscar.factor(Oscar.ZZ(N))))
+    @printf("  ell = %d  (%.1f bits)\n", ell_found, log2(ell_found))
+    @printf("  cofactor h = %d\n", h)
+
+    n = length(pts)
+    n < 2 && error("Not enough rational affine points on the curve")
+
+    attempts = 0
+    while true
+        attempts += 1
+        P = pts[rand(1:n)]
+        Q = pts[rand(1:n)]
+        D = mumford_from_pts(P, Q)
+        jac_isid(D) && continue
+
+        G = jac_mul_raw(D, h)
+        jac_isid(G) && continue    # unlucky; retry
+
+        @assert jac_isid(jac_mul_raw(G, ell_found)) "ell*G != id -- Frobenius order wrong?"
+
+        @printf("  found G in %d attempt(s), total bootstrap time: %.3fs\n",
+                attempts, time() - t0)
+        return G, ell_found
+    end
+end
+
 
 
 
@@ -2076,10 +2128,11 @@ function main2()
             p, length(pts) / Float64(p))
     println()
 
-    # ── subgroup bootstrap via Pollard rho ────────────────────────────────
-    println("── Generator search (Pollard rho) ──────────────────────────────────")
+
+    # ── subgroup bootstrap via Frobenius / Sage (replaces Pollard rho) ───────
+    println("── Generator search (Frobenius / Sage) ─────────────────────────────")
     t_ell = time()
-    G, ell_found = fast_find_ell_generator()
+    G, ell_found = frobenius_find_ell_generator(pts)
     t_ell_done = time() - t_ell
     global ell = ell_found
 
@@ -2092,6 +2145,7 @@ function main2()
     @assert jac_isid(jac_mul_raw(G, ell))  "G does not have order ell"
     println("  Confirmed: ell*G = identity")
     println()
+
 
     k_true = rand(2:ell-1)
     T      = jac_mul(G, k_true)
@@ -2127,198 +2181,5 @@ function main2()
     end
     println("="^70)
 end
-
-
-
-# ---------------------------------------------------------------------------
-#  fast_find_ell_generator — BSGS-based, O(√#Jac) = O(p) jac_add calls.
-#
-#  Strategy:
-#    1. Pick two random affine rational points, build a random degree-2 divisor.
-#    2. Find its exact order via jac_order_bsgs (baby-giant, O(√#Jac) ≈ O(p)).
-#    3. Extract the largest prime factor ell_cand of that order.
-#    4. Multiply D by the cofactor to get a generator of order exactly ell_cand.
-#    5. Verify ell_cand * G = id, then return.
-#
-#  Why not order_via_cycle?
-#    Floyd's cycle detection needs O(λ) iterations where λ is the element order.
-#    For a random element of the genus-2 Jacobian, λ ≈ #Jac ≈ p² ≈ 2.7e10
-#    (for p = 164147), which vastly exceeds any practical cap.  BSGS finds the
-#    order in O(√#Jac) ≈ 165 000 jac_add calls — a few seconds, not forever.
-# ---------------------------------------------------------------------------
-function fast_find_ell_generator(::Div2 = JacID; trials::Int = 200)
-
-    println("Finding G of large prime order (Pollard rho, parallel)...")
-
-    t_start = time()
-
-    pts = curve_points()
-    n   = length(pts)
-
-    n < 2 && error("Not enough rational points on the curve")
-
-    nthreads = Threads.nthreads()
-    trials_per_thread = max(1, cld(trials, nthreads))
-
-    result_ch = Channel{Tuple{Div2, Int, NamedTuple}}(1)
-
-    done = Threads.Atomic{Bool}(false)
-
-    # hard cap for rho
-    rho_max = 64 * p + 10_000
-
-    for tid in 1:nthreads
-
-        Threads.@spawn begin
-
-            n_id_skips     = 0
-            n_tiny_ell     = 0
-            n_id_cofac     = 0
-            n_bad_verify   = 0
-            n_ord_calls    = 0
-            total_ord_time = 0.0
-
-            for attempt in 1:trials_per_thread
-
-                done[] && break
-
-                P = pts[rand(1:n)]
-                Q = pts[rand(1:n)]
-
-                D = mumford_from_pts(P, Q)
-
-                if jac_isid(D)
-                    n_id_skips += 1
-                    continue
-                end
-
-                t_ord = time()
-
-                ord = try
-                    jac_order_pollard_rho(D; max_iter = rho_max, abort_flag = done)
-                catch e
-                    e isa InterruptException && break
-                    rethrow(e)
-                end
-
-                total_ord_time += time() - t_ord
-                n_ord_calls += 1
-
-                ord <= 1 && continue
-
-                ell_cand = largest_prime_factor(ord)
-
-                if ell_cand < max(isqrt(p), 3)
-                    n_tiny_ell += 1
-                    continue
-                end
-
-                cofactor = ord ÷ ell_cand
-
-                cofactor == 0 && continue
-
-                G = jac_mul_raw(D, cofactor)
-
-                if jac_isid(G)
-                    n_id_cofac += 1
-                    continue
-                end
-
-                if !jac_isid(jac_mul_raw(G, ell_cand))
-                    n_bad_verify += 1
-                    continue
-                end
-
-                old = Threads.atomic_cas!(done, false, true)
-
-                if !old
-
-                    GC.safepoint()   # nudge Julia scheduler; stuck threads re-check done[] sooner
-
-                    stats = (
-                        thread         = tid,
-                        attempt        = attempt,
-                        ord            = ord,
-                        ell_cand       = ell_cand,
-                        cofactor       = cofactor,
-                        n_ord_calls    = n_ord_calls,
-                        total_ord_time = total_ord_time,
-                        n_id_skips     = n_id_skips,
-                        n_tiny_ell     = n_tiny_ell,
-                        n_id_cofac     = n_id_cofac,
-                        n_bad_verify   = n_bad_verify,
-                    )
-
-                    # nonblocking because channel size = 1
-                    put!(result_ch, (G, ell_cand, stats))
-                end
-
-                break
-            end
-        end
-    end
-
-    # separate waiter task
-    waiter = Threads.@spawn take!(result_ch)
-
-    timeout_s = 60.0 + 120.0 * (p / 164147)
-
-    t0 = time()
-
-    while !istaskdone(waiter)
-
-        if (time() - t0) > timeout_s
-
-            done[] = true
-            GC.safepoint()
-
-            error("fast_find_ell_generator: timeout after $(timeout_s)s")
-        end
-
-        sleep(0.05)
-    end
-
-    done[] = true
-    GC.safepoint()
-
-    G, ell_cand, s = fetch(waiter)
-
-    total_elapsed = time() - t_start
-
-    @printf(
-        "  thread %d, attempt %d: ord(D) = %d, ell = %d, cofactor h = %d\n",
-        s.thread,
-        s.attempt,
-        s.ord,
-        s.ell_cand,
-        s.cofactor
-    )
-
-    @printf(
-        "  order calls (winner thread): %d, avg rho time: %.4fs, total rho time: %.4fs\n",
-        s.n_ord_calls,
-        s.total_ord_time / max(1, s.n_ord_calls),
-        s.total_ord_time
-    )
-
-    @printf(
-        "  skips (winner) — id_divisor: %d, tiny_ell: %d, id_after_cofac: %d, bad_verify: %d\n",
-        s.n_id_skips,
-        s.n_tiny_ell,
-        s.n_id_cofac,
-        s.n_bad_verify
-    )
-
-    @printf(
-        "  generator search total wall time: %.3fs (%d threads)\n",
-        total_elapsed,
-        nthreads
-    )
-
-    flush(stdout)
-
-    return G, ell_cand
-end
-
 
 main2()
