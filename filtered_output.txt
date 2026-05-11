@@ -1,0 +1,321 @@
+
+next_prime(1000000) = 1000003  →  using p = 1000003
+======================================================================
+  trial2: Markov-walk phi-relation index calculus
+  y^2 = x^5+3x^3+2x^2+5x+4  /F_1000003,  ell=<auto>
+  threads = 32  |  start: 2026-05-11T11:12:04.711
+======================================================================
+
+Curve enumeration: 1000735 affine rational points in 0.113s
+  expected ~p = 1000003 points (density check: 1.0007)
+
+── Generator search (Frobenius / Sage) ─────────────────────────────
+  Computing #J via Sage frobenius_polynomial... done (0.803s)
+  #J = 1000738684124
+  factorisation: 2^2 * 71 * 3523727761
+  ell = 3523727761  (31.7 bits)
+  cofactor h = 284
+  found G in 1 attempt(s), total bootstrap time: 0.927s
+  bootstrap total time = 0.927s
+  G.u = [236454, 682058, 1]
+  G.v = [929949, 988102]
+  ell = 3523727761  (31.7 bits)
+  ell/p ratio = 3523.717190
+  Confirmed: ell*G = identity
+
+Secret k = 2862125930  (31.4 bits)
+
+Auto FB size: 1000  (= ceil(p^(1/2)) clamped to [200,20000])
+  target relations: 1001 + excess
+  expected smoothness prob per step: ~(fb_auto/p)^2 ~ 1.00e-06
+
+── Index calculus walk ─────────────────────────────────────────────
+
+── Phase 1: building factor base ───────────────────────────────────
+  FB cap:    1000  (walk until full)
+── Phase 1 done ────────────────────────────────────────────────────
+  raw steps:        929
+  valid phi hits:   500
+  FB built:         1000 / 1000 cap
+  relations banked: 500
+  wall time:        0.721s
+
+── Factor base (after phase 1) ─────────────────────────────────────
+  FB size:          1000 / 1000 cap
+  relations banked: 500
+  curve coverage:   0.0999%  (FB / ~1000735 total curve pts)
+  x-range of FB:    [2, 997785]
+  expected full-rel prob per valid step: ~9.99e-07  (FB/total)^2
+  expected full-rel prob incl. LP:       ~2.00e-03
+
+── Walk setup ──────────────────────────────────────────────────────
+  N_STEPS (precomputed):  256
+  step table build time:  0.126s
+  rel_target:             1101 total  (601 after phase-1 credit of 500)
+  p_smooth per step:      1.998e-03  (0-LP + LP-closure estimate)
+  step_cap per thread:    9416051119  (derived from smoothness geometry)
+  threads:                32
+  launching walkers at:   2026-05-11T11:12:07.249
+── Walk results ────────────────────────────────────────────────────
+  phase-1 banked relations: 500
+  phase-2 wall time:     165.571s
+  total raw steps:       3931262  (across all threads)
+  valid phi steps:       3931250
+  phi validity rate:     99.9997%
+
+  smoothness breakdown:
+    0-LP (pure FB):      6  (0.00% of valid steps)
+    1-LP steps:          1968212  (50.07%)
+    1-LP closures emit:  592  (0.02%)
+    2-LP seen:           1963032  (49.93%)
+    2-LP closures emit:  3  (0.00%)
+    2-LP odd stored:     2  (0.00%)
+    3-LP skips:          0  (0.00%)
+
+  2-LP graph stats (affine):
+    edges inserted:      1963032
+    cycles found:        6
+    relations emitted:   3
+    depth-pruned:        78
+    weight-pruned:       0
+    parity-pruned:       2
+    odd-cycle stored:    2
+    LP nodes in graph:   979865
+    lp_doubled residual: 2 entries
+  2-LP graph stats (QLP/conj):
+    edges inserted:      0
+    cycles found:        0
+    relations emitted:   0
+    depth-pruned:        0
+    weight-pruned:       0
+    parity-pruned:       0
+    cycle/edge rate:     0.0000
+    emit/cycle rate:     0.5000  (pruning loss)
+
+  total relations collected:   1101
+  FB size (nF):                1000
+  relation surplus:            +100
+  relation yield rate:         6.6497e+00 rels/sec
+  full-rel yield rate:         3.6299e+00 rels/sec
+  steps per full relation:     6541.2
+  1-LP table size (residual):  47543 entries
+  1-LP pair rate:              0.0003  (LP-closures / LP-steps)
+
+  per-thread breakdown:
+    thread 1: steps=122614  valid=122614  full=19  1-LP=61266
+    thread 2: steps=130655  valid=130654  full=25  1-LP=65249
+    thread 3: steps=134948  valid=134948  full=24  1-LP=67566
+    thread 4: steps=120571  valid=120571  full=16  1-LP=60327
+    thread 5: steps=123458  valid=123457  full=18  1-LP=61747
+    thread 6: steps=121121  valid=121120  full=16  1-LP=60468
+    thread 7: steps=113732  valid=113731  full=13  1-LP=56798
+    thread 8: steps=131005  valid=131005  full=25  1-LP=65483
+    thread 9: steps=119674  valid=119674  full=12  1-LP=59905
+    thread 10: steps=116030  valid=116030  full=9  1-LP=58079
+    thread 11: steps=135831  valid=135830  full=22  1-LP=67987
+    thread 12: steps=124727  valid=124727  full=14  1-LP=62646
+    thread 13: steps=117413  valid=117412  full=19  1-LP=59039
+    thread 14: steps=131505  valid=131505  full=18  1-LP=65929
+    thread 15: steps=114056  valid=114056  full=18  1-LP=57155
+    thread 16: steps=118864  valid=118864  full=19  1-LP=59608
+    thread 17: steps=126319  valid=126319  full=16  1-LP=63220
+    thread 18: steps=117410  valid=117410  full=17  1-LP=58407
+    thread 19: steps=125314  valid=125313  full=18  1-LP=62672
+    thread 20: steps=125269  valid=125269  full=26  1-LP=62821
+    thread 21: steps=116329  valid=116329  full=22  1-LP=58145
+    thread 22: steps=119266  valid=119265  full=22  1-LP=59991
+    thread 23: steps=125138  valid=125137  full=24  1-LP=62745
+    thread 24: steps=116185  valid=116185  full=21  1-LP=57998
+    thread 25: steps=121179  valid=121178  full=11  1-LP=60692
+    thread 26: steps=130388  valid=130388  full=25  1-LP=65474
+    thread 27: steps=125040  valid=125039  full=18  1-LP=62388
+    thread 28: steps=119466  valid=119466  full=21  1-LP=59821
+    thread 29: steps=129570  valid=129570  full=19  1-LP=64679
+    thread 30: steps=118929  valid=118929  full=15  1-LP=59685
+    thread 31: steps=124153  valid=124152  full=20  1-LP=62305
+    thread 32: steps=115103  valid=115103  full=19  1-LP=57917
+Matrix diagnostics for LA:
+  rows = 1101, cols = 1000, nonzeros = 7239, avg row weight = 6.575, density = 0.006575
+  row-weight histogram: 2:11, 3:506, 4:4, 5:23, 6:33, 7:58, 8:86, 9:71, 10:95, 11:80, 12:46, 13:36, 14:20, 15:15, 16:11, 17:3, 18:2, 19:1
+  column degrees: zero=0, deg1=38, deg2=91, min=1, median=6, max=30
+  component graph: 1 components, largest=1000, singletons=0
+  peel/core estimate: core cols = 956, core rows = 1057, peeled cols = 44
+  note: leaf-stripping removes 44/1000 columns before any dense solve
+Spectral gap diagnostics (normalized adjacency of column graph):
+  rows=137: active cols=275, lambda1=1.000000, lambda2=0.999869, gap=0.000131
+  rows=275: active cols=551, lambda1=1.000000, lambda2=0.999967, gap=0.000033
+  rows=550: active cols=1000, lambda1=1.000000, lambda2=0.987070, gap=0.012930
+  rows=1101: active cols=1000, lambda1=1.000000, lambda2=0.631327, gap=0.368673
+  gap change: 0.000131 -> 0.368673
+Asymptotic diagnostics (prefix growth across the matrix):
+  walk yield: 3931250 valid steps / 3931262 total = 1.0000
+  relation mix: full=6, tree=0, LP-partials=1968212, LP-pairs=592
+  normalized relation rates: full/valid=0.0000, tree/valid=0.0000, LP-pairs/valid=0.0002
+  rows=68: nz=204, avg_w=3.00, core=0/1000 (0.000), peel=1000, gap=0.000534
+  rows=137: nz=411, avg_w=3.00, core=0/1000 (0.000), peel=1000, gap=0.000131
+  rows=275: nz=825, avg_w=3.00, core=0/1000 (0.000), peel=1000, gap=0.000033
+  rows=550: nz=1961, avg_w=3.57, core=0/1000 (0.000), peel=1000, gap=0.012930
+  rows=1101: nz=7239, avg_w=6.57, core=956/1000 (0.956), peel=44, gap=0.368673
+  log-log fit total_nz ~ rows^a: a=1.2500
+  log-log fit avg row weight ~ rows^a: a=0.2500
+  log-log fit core cols ~ rows^a: a=NaN
+  log-log fit core rows ~ rows^a: a=NaN
+  log-log fit peel fraction ~ rows^a: a=-0.8965
+
+══════════════════════════════════════════════════════════════════
+  LP Residual Statistics
+══════════════════════════════════════════════════════════════════
+
+── 1. LP Point Occupancy ───────────────────────────────────────────
+  Total 1-LP events recorded:  3896
+  Distinct LP points seen:     3892
+  Expected distinct (uniform): 3888.4   (p*(1-e^{-N/p}))
+  Compression ratio:           0.9991x  (> 1 = clustered, < 1 = sparse)
+  Average revisits per point:  1.001
+
+── 2. LP Revisit Frequency Histogram ───────────────────────────────
+  Multiplicities present: 1, 2
+    mult=  2: 4 LP points
+    mult=  1: 3888 LP points
+  Singleton LP points (seen once): 99.897%
+  Events from 'heavy' points (mult >= 3): 0.000%
+  Max multiplicity: 2
+
+── 3. LP Distribution Entropy ──────────────────────────────────────
+  Empirical entropy H:              11.9257 bits
+  H_max over observed support:      11.9263 bits
+  H_max uniform over F_p:           19.9316 bits
+  H / H_max(observed):              1.0000   (1.0 = uniform over seen)
+  H / H_max(uniform/F_p):           0.5983   (1.0 = uniform over F_p)
+
+── 4. Alpha/Beta Autocorrelation at LP Events ─────────────────────
+  lag    alpha_acf    beta_acf    x_acf
+     1   -0.003963   -0.021700   +0.005579
+     2   -0.010294   -0.000506   +0.012647
+     4   +0.010345   +0.020133   -0.011177
+     8   -0.000973   +0.003982   -0.002681
+    16   +0.019769   +0.019452   +0.027382
+    32   -0.030628   +0.009346   +0.011187
+
+── 5. LP–LP Residual Graph Clustering ──────────────────────────────
+  LP nodes in 2-LP graph:   979887
+  2-LP co-occurrence edges: 1963032
+  Connected components:      821
+  Largest component size:   978160  (99.82% of LP nodes)
+  Singleton components:     0
+  Max LP node degree:       16
+  Mean LP node degree:      4.007
+  Top-5 component sizes:    978160, 4, 4, 4, 4
+  *** GIANT COMPONENT: LP residuals densely interconnected ***
+
+── 6. Effective LP State-Space Size M_eff ──────────────────────────
+  Closure events recorded:     584
+  Mean inter-closure gap:      28186.3 steps
+  Median inter-closure gap:    21069 steps
+  M_effective (from gap):      5.058e+08   (birthday: M = 2*gap^2/π)
+  M_naive (= p):               1.000e+06
+  Compression M_naive/M_eff:   0.0020x
+
+══════════════════════════════════════════════════════════════════
+
+── Pre-solve diagnostics ───────────────────────────────────────────
+  nrel=1101, nF=1000, kernel dim to follow...
+  alpha_vec range: [584827, 3513732724]
+  beta_vec range:  [2800192, 3521368250]
+  row weight: min=2, max=19, mean=6.57, median=6
+  zero rows: 0,  zero-alpha-and-beta: 0
+  rank growth: 601 emissions logged across threads
+  total raw steps (all threads): 3931262
+  raw steps per full emission (global): 6541.2
+  global smoothness histogram (0-LP 1-LP 2-LP 3-LP): 6 3896 1963032 0
+  smoothness fractions: 0-LP=0.000  1-LP=0.002  2-LP=0.998  3-LP=0.000
+  spot-checking 0 full relations:
+  spot-check: 0 ok, 0 BAD
+  ell*G == id: true,  ell = 3523727761
+
+── Kernel solve ────────────────────────────────────────────────────
+  Left-kernel search over GF(3523727761)...
+
+── Incremental retrieval attempt ────────────────────────────────────
+Rows: 500/1101 (Phase 1 + 0) - Attempting kernel solve...
+  -> No kernel found for this subset.
+Rows: 530/1101 (Phase 1 + 30) - Attempting kernel solve...
+  -> No kernel found for this subset.
+Rows: 560/1101 (Phase 1 + 60) - Attempting kernel solve...
+  -> No kernel found for this subset.
+Rows: 590/1101 (Phase 1 + 90) - Attempting kernel solve...
+  -> No kernel found for this subset.
+Rows: 620/1101 (Phase 1 + 120) - Attempting kernel solve...
+  -> No kernel found for this subset.
+Rows: 650/1101 (Phase 1 + 150) - Attempting kernel solve...
+  -> No kernel found for this subset.
+Rows: 680/1101 (Phase 1 + 180) - Attempting kernel solve...
+  -> No kernel found for this subset.
+Rows: 710/1101 (Phase 1 + 210) - Attempting kernel solve...
+  -> No kernel found for this subset.
+Rows: 740/1101 (Phase 1 + 240) - Attempting kernel solve...
+  -> No kernel found for this subset.
+Rows: 770/1101 (Phase 1 + 270) - Attempting kernel solve...
+  -> No kernel found for this subset.
+Rows: 800/1101 (Phase 1 + 300) - Attempting kernel solve...
+  -> No kernel found for this subset.
+Rows: 830/1101 (Phase 1 + 330) - Attempting kernel solve...
+  -> No kernel found for this subset.
+Rows: 860/1101 (Phase 1 + 360) - Attempting kernel solve...
+  -> No kernel found for this subset.
+Rows: 890/1101 (Phase 1 + 390) - Attempting kernel solve...
+  -> No kernel found for this subset.
+Rows: 920/1101 (Phase 1 + 420) - Attempting kernel solve...
+  -> No kernel found for this subset.
+Rows: 950/1101 (Phase 1 + 450) - Attempting kernel solve...
+  -> No kernel found for this subset.
+Rows: 980/1101 (Phase 1 + 480) - Attempting kernel solve...
+  -> No kernel found for this subset.
+Rows: 1010/1101 (Phase 1 + 510) - Attempting kernel solve...
+  >> SUCCESS! Secret k found with 1010 relations: 2862125930
+
+── Kernel Phase Diagnostics ────────────────────────────────────────
+  nF=1000  nrel=1010  ell=3523727761
+  T_ker=1000   nF=1000   Δ = T_ker - nF = +0   (found in 2.068s)
+  Kernel vector (at m=1000):
+    support size:    943  (of 1000 rows)
+    α-projection:    743621463  (Σγᵢαᵢ mod ell)
+    β-projection:    1670509961  (Σγᵢβᵢ mod ell)
+    solvable (β≠0):  true
+    k_candidate:     2862125930   k·G==T: true
+  Betti trace (±3 around T_ker):
+    m=997  b₁=0
+    m=998  b₁=0
+    m=999  b₁=0
+    m=1000  b₁=1  ← T_ker
+    m=1001  b₁=2
+    m=1002  b₁=3
+    m=1003  b₁=4
+  Row-weight histogram at T_ker=1000:
+    weight  2: 11 rows
+    weight  3: 504 rows
+    weight  4: 4 rows
+    weight  5: 20 rows
+    weight  6: 28 rows
+    weight  7: 50 rows
+    weight  8: 72 rows
+    weight  9: 59 rows
+    weight 10: 79 rows
+    weight 11: 65 rows
+    weight 12: 35 rows
+    weight 13: 29 rows
+    weight 14: 15 rows
+    weight 15: 13 rows
+    weight 16: 10 rows
+    weight 17: 3 rows
+    weight 18: 2 rows
+    weight 19: 1 rows
+  Average row weight at T_ker: 6.248
+  Spectral gap at T_ker=1000: 0.283344
+── End Kernel Phase Diagnostics ─────────────────────────────────
+
+── Final results ───────────────────────────────────────────────────
+  walk+solve wall time: 183.083s
+  total wall time:      184.477s
+  Recovered k = 2862125930  true k = 2862125930  match = true
+======================================================================

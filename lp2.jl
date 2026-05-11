@@ -89,44 +89,26 @@ end
 
 # Walk the spanning tree from `pt` to find its root (node with parent===nothing).
 # Returns the root key, or nothing if pt is not in the tree.
+#
+# Allocation-free: we bound the walk by MAX_LP2_DEPTH+1 steps using the stored
+# depth field.  No Set is needed because the tree invariant (maintained by
+# lp2_insert_edge!) guarantees no parent-pointer cycles; we error if the depth
+# bound is exceeded so bugs surface immediately.
 function lp2_tree_root(g::LP2Graph, pt::NTuple{2,Int})
     cur = pt
-    visited = Set{NTuple{2,Int}}()
+    steps = 0
     while true
         node = get(g.nodes, cur, nothing)
         node === nothing && return nothing   # pt not in tree at all
         node.parent === nothing && return cur
-        next = node.parent
-        if next in visited
-            # Parent-pointer cycle detected — dump the cycle and abort.
-            @printf("[LP2-CYCLE] Detected parent-pointer cycle starting from %s!\n", string(pt))
-            @printf("[LP2-CYCLE] Cycle node: %s -> parent %s (already visited)\n", string(cur), string(next))
-            @printf("[LP2-CYCLE] Full walk from start:\n")
-            walk_cur = pt
-            walk_depth = 0
-            while walk_depth < 2 * length(g.nodes) + 5
-                walk_node = get(g.nodes, walk_cur, nothing)
-                if walk_node === nothing
-                    @printf("[LP2-CYCLE]   [%d] %s -> (not in graph)\n", walk_depth, string(walk_cur))
-                    break
-                end
-                @printf("[LP2-CYCLE]   [%d] %s -> parent=%s  depth_field=%d\n",
-                        walk_depth, string(walk_cur),
-                        walk_node.parent === nothing ? "ROOT" : string(walk_node.parent),
-                        walk_node.depth)
-                walk_node.parent === nothing && break
-                walk_cur = walk_node.parent
-                walk_depth += 1
-                if walk_depth > 2 * length(g.nodes) + 4
-                    @printf("[LP2-CYCLE]   ... (truncated)\n")
-                end
-            end
-            @printf("[LP2-CYCLE] Graph has %d nodes total\n", length(g.nodes))
+        steps += 1
+        if steps > MAX_LP2_DEPTH + 1
+            @printf("[LP2-CYCLE] Root walk exceeded depth bound from %s (steps=%d)\n",
+                    string(pt), steps)
             flush(stdout)
-            error("lp2_tree_root: parent-pointer cycle detected — see LP2-CYCLE diagnostics above")
+            error("lp2_tree_root: depth bound exceeded — possible parent-pointer cycle")
         end
-        push!(visited, cur)
-        cur = next
+        cur = node.parent
     end
 end
 
@@ -254,6 +236,12 @@ function lp2_insert_edge!(g::LP2Graph,
         end
 
         g.n_emitted += 1
+
+        # Prune both paths to reclaim memory: nodes in a completed even-cycle
+        # component will never contribute to a future relation, so delete them.
+        lp2_prune_path!(g, L)
+        lp2_prune_path!(g, R)
+
         return (type=:even_cycle,
                 row=combined,
                 alpha=combined_alpha,
@@ -313,31 +301,26 @@ function lp2_insert_edge!(g::LP2Graph,
             # edges are counted by the caller's 2lp_cross statistic and discarded.
         end
 
-        # Integrity check: verify no cycle was just introduced for the two nodes we touched.
-        # This is O(depth) and cheap; remove once the bug is confirmed fixed.
-        for check_pt in (L, R)
-            visited_check = Set{NTuple{2,Int}}()
-            walk = check_pt
-            steps = 0
-            while true
-                n = get(g.nodes, walk, nothing)
-                n === nothing && break
-                n.parent === nothing && break
-                if n.parent in visited_check
-                    @printf("[LP2-POSTCYCLE tid=%d] Cycle introduced by last insert! node=%s parent=%s\n",
-                            Threads.threadid(), string(walk), string(n.parent))
-                    @printf("[LP2-POSTCYCLE] L=%s R=%s rL=%s rR=%s\n",
-                            string(L), string(R), string(rL), string(rR))
-                    flush(stdout)
-                    error("lp2_insert_edge!: cycle introduced — see LP2-POSTCYCLE diagnostics")
-                end
-                push!(visited_check, walk)
-                walk = n.parent
-                steps += 1
-                steps > length(g.nodes) + 5 && break
-            end
-        end
-
         return nothing
+    end
+end
+
+# Delete all nodes on the path from `start` up to and including the root.
+# Called after an even-cycle emission to prevent unbounded graph growth:
+# once a component has produced a relation, all stored edges in that component
+# are stale and the memory can be reclaimed.
+# Allocation-free: bounded by MAX_LP2_DEPTH+1 steps.
+function lp2_prune_path!(g::LP2Graph, start::NTuple{2,Int})
+    cur = start
+    steps = 0
+    while true
+        node = get(g.nodes, cur, nothing)
+        node === nothing && break
+        next = node.parent   # capture before delete
+        delete!(g.nodes, cur)
+        node.parent === nothing && break   # was the root; done
+        steps += 1
+        steps > MAX_LP2_DEPTH + 1 && break
+        cur = next
     end
 end

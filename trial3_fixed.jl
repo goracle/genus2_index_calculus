@@ -26,6 +26,15 @@ include("kernel_phase_diag.jl")   # phase-transition instrumentation (ChatGPT)
 # ---------------------------------------------------------------------------
 const ASSERT_RELATIONS = true
 
+# Cap on shared_lp1 / shared_lp1_conj size.  Set very high — LP1 eviction
+# kills relation yield by discarding entries before they can close.
+# The main memory fix is LP2Graph node pruning after cycle emission.
+# Only lower this if you are genuinely OOM.
+const MAX_LP1_ENTRIES = 50_000_000
+
+# Maximum rank-growth samples stored per thread (diagnostic only; not used in linear algebra).
+const MAX_RANK_GROWTH_SAMPLES = 10_000
+
 
 # Check: does  Σ_j row[j]·atom(fb[j])  ==  al·G + be·T  in the Jacobian?
 # (atom(P) = [P] - [∞]; in practice, mumford1(x,y) is the degree-1 Mumford
@@ -803,7 +812,8 @@ function sparse_add!(dst::Dict{Int,Int}, src::Dict{Int,Int}; sign::Int = 1)
 end
 
 
-include("lp2.jl")   # LP2Edge helpers and LP2Graph spanning-tree
+include("lp2.jl")       # LP2Edge helpers and LP2Graph spanning-tree
+include("lp2_conj.jl")  # mixed affine/QLP LP2 graph for extension-field LPs
 
 
 #### gemini edits:
@@ -1166,7 +1176,7 @@ function try_lp1_doubled_cross_close!(
     push!(alpha_vec, combined_al)
     push!(beta_vec,  combined_be)
     push!(rel_rows,  combined)
-    push!(rank_growth, (raw_steps, length(rel_rows)))
+    length(rank_growth) < MAX_RANK_GROWTH_SAMPLES && push!(rank_growth, (raw_steps, length(rel_rows)))
     Threads.atomic_add!(rel_counter, 1)
     return true
 end
@@ -1189,6 +1199,8 @@ function phase2_worker(G::Div2, T::Div2,
                        # MUST be separate from shared_lp1 (affine-point keys) so the 2-LP
                        # cross-lookup never confuses a Mumford token for a single atom.
                        shared_lp1_conj::Dict{NTuple{4,Int}, Tuple{Dict{Int,Int}, Int, Int, Int}},
+                       shared_lp2_conj::LP2ConjGraph,          # ← NEW
+                       shared_lp2_conj_lock::ReentrantLock,    # ← NEW
                        # per-thread LP residual collector (write-only from this thread)
                        lp_col::LPResidualCollector;
                        verbose::Bool = true)
@@ -1352,7 +1364,7 @@ function phase2_worker(G::Div2, T::Div2,
                             push!(alpha_vec, combined_al)
                             push!(beta_vec,  combined_be)
                             push!(rel_rows,  combined)
-                            push!(rank_growth, (raw_steps, length(rel_rows)))
+                            length(rank_growth) < MAX_RANK_GROWTH_SAMPLES && push!(rank_growth, (raw_steps, length(rel_rows)))
                             hits_full += 1
                             hits_1lp_emit += 1
                             Threads.atomic_add!(rel_counter, 1)
@@ -1361,8 +1373,11 @@ function phase2_worker(G::Div2, T::Div2,
                             cur_pt = P0
                         end
                     else
-                        # Store: atom(RS) + {i0→1} = neg_al·G + neg_be·T
+                        # Store: atom(RS) + {i0->1} = neg_al·G + neg_be·T
                         # Key is the full 4-tuple Mumford representation of the RS element.
+                        if length(shared_lp1_conj) >= MAX_LP1_ENTRIES
+                            delete!(shared_lp1_conj, first(keys(shared_lp1_conj)))
+                        end
                         shared_lp1_conj[lp_key] = (copy(fb_row_scratch), neg_al, neg_be, raw_steps)
                         cur_pt = P0
                     end
@@ -1370,12 +1385,109 @@ function phase2_worker(G::Div2, T::Div2,
                     unlock(shared_lp1_lock)
                 end
             else
-                # P0 off-FB: two unknowns (P0 and RS Mumford element).
-                # Skipping LP2 insertion — LP2Graph uses NTuple{2,Int} nodes and cannot
-                # accommodate the 4-tuple RS key without refactoring.  These steps are
-                # simply discarded (counted as 2-LP seen, no emission).
+                # P0 off-FB: two unknowns — affine P0 and QLP (RS Mumford element).
+                # Route through LP2ConjGraph so cycles between QLP tokens yield FB relations.
                 hits_lp2seen += 1
-                cur_pt = fb[rand(1:nF_cur)]
+
+                # Edge invariant (consistent with lp2.jl convention):
+                #   atom(P0) + atom(QLP) + {} = neg_al·G + neg_be·T
+                # fb_row is empty because no FB point appears among {P0, RS}.
+                # We pass neg_al/neg_be (not al/be) so the sign matches what
+                # lp2c_path_to_root reconstructs — same convention as lp2_insert_edge!
+                # which stores al/be on edges and reconstructs neg via path sign flips.
+                # NOTE: to keep the sign convention identical to lp2.jl we pass al/be
+                # (the raw walk accumulator values), not neg_al/neg_be.
+                lp2c_L = P0::NTuple{2,Int}
+                lp2c_R = RS_mumford::NTuple{4,Int}
+                lp2c_fb = Dict{Int,Int}()   # no FB point in this step
+
+                emitted_conj = nothing
+                lock(shared_lp2_conj_lock)
+                try
+                    emitted_conj = lp2c_insert_edge!(
+                        shared_lp2_conj,
+                        lp2c_L, lp2c_R,
+                        lp2c_fb,
+                        al, be,
+                        ell)
+                finally
+                    unlock(shared_lp2_conj_lock)
+                end
+
+                if emitted_conj !== nothing && emitted_conj.type === :even_cycle
+                    push!(alpha_vec, emitted_conj.alpha)
+                    push!(beta_vec,  emitted_conj.beta)
+                    push!(rel_rows,  emitted_conj.row)
+                    length(rank_growth) < MAX_RANK_GROWTH_SAMPLES && push!(rank_growth, (raw_steps, length(rel_rows)))
+                    hits_full    += 1
+                    hits_lp2emit += 1
+                    Threads.atomic_add!(rel_counter, 1)
+
+                    if ASSERT_RELATIONS
+                        ok = check_relation_principal(emitted_conj.row, emitted_conj.alpha,
+                                                      emitted_conj.beta, "α", fb, G, T;
+                                                      tag="QLP-CONJ-CYCLE")
+                        @assert ok "QLP LP2 even-cycle emission failed principal divisor check"
+                    end
+
+                    cur_pt = fb[rand(1:nF_cur)]
+
+                elseif emitted_conj !== nothing && emitted_conj.type === :odd_cycle
+                    # 2·atom(root) + row = alpha·G + beta·T
+                    # root is a LPKey; it can be an affine point (NTuple{2,Int})
+                    # or a QLP token (NTuple{4,Int}).  We can only cross-close with
+                    # shared_lp_doubled when the root is an affine FB or LP point.
+                    hits_lp2_odd += 1
+                    root_key = emitted_conj.root
+                    if root_key isa NTuple{2,Int}
+                        root_affine = root_key::NTuple{2,Int}
+                        lock(shared_lp1_lock)
+                        try
+                            if haskey(shared_lp_doubled, root_affine)
+                                prev_row, prev_al, prev_be = shared_lp_doubled[root_affine]
+                                combined    = copy(emitted_conj.row)
+                                for (j, v) in prev_row
+                                    nv = get(combined, j, 0) - v
+                                    nv == 0 ? delete!(combined, j) : (combined[j] = nv)
+                                end
+                                combined_al = mod(emitted_conj.alpha - prev_al, ell)
+                                combined_be = mod(emitted_conj.beta  - prev_be, ell)
+                                delete!(shared_lp_doubled, root_affine)
+                                if !isempty(combined) && !(combined_al == 0 && combined_be == 0)
+                                    push!(alpha_vec, combined_al)
+                                    push!(beta_vec,  combined_be)
+                                    push!(rel_rows,  combined)
+                                    length(rank_growth) < MAX_RANK_GROWTH_SAMPLES && push!(rank_growth, (raw_steps, length(rel_rows)))
+                                    hits_full    += 1
+                                    hits_lp2emit += 1
+                                    Threads.atomic_add!(rel_counter, 1)
+                                end
+                            else
+                                shared_lp_doubled[root_affine] = (emitted_conj.row,
+                                                                   emitted_conj.alpha,
+                                                                   emitted_conj.beta)
+                                if try_lp1_doubled_cross_close!(root_affine,
+                                                                 shared_lp1, shared_lp_doubled,
+                                                                 ell, alpha_vec, beta_vec,
+                                                                 rel_rows, rank_growth,
+                                                                 raw_steps, rel_counter,
+                                                                 G, T, fb)
+                                    hits_full    += 1
+                                    hits_lp2emit += 1
+                                end
+                            end
+                        finally
+                            unlock(shared_lp1_lock)
+                        end
+                    end
+                    # If root is a QLP token: 2·atom(QLP) cancels when two identical
+                    # QLP keys appear as roots.  Store in shared_lp2_conj_doubled
+                    # (future work; skip for now — the even-cycle path already captures
+                    # most of the gain).
+                    cur_pt = fb[rand(1:nF_cur)]
+                else
+                    cur_pt = fb[rand(1:nF_cur)]
+                end
             end
             continue   # done with this step
         end
@@ -1399,7 +1511,7 @@ function phase2_worker(G::Div2, T::Div2,
             push!(alpha_vec, neg_al)
             push!(beta_vec,  neg_be)
             push!(rel_rows,  fb_row)
-            push!(rank_growth, (raw_steps, length(rel_rows)))
+            length(rank_growth) < MAX_RANK_GROWTH_SAMPLES && push!(rank_growth, (raw_steps, length(rel_rows)))
             if length(sample_rels) < 10
                 push!(sample_rels, (D_cur, copy(fb_row), neg_al, neg_be, P0,
                                     R::NTuple{2,Int}, S::NTuple{2,Int}))
@@ -1449,7 +1561,7 @@ function phase2_worker(G::Div2, T::Div2,
                         push!(alpha_vec, combined_al)
                         push!(beta_vec,  combined_be)
                         push!(rel_rows,  combined)
-                        push!(rank_growth, (raw_steps, length(rel_rows)))
+                        length(rank_growth) < MAX_RANK_GROWTH_SAMPLES && push!(rank_growth, (raw_steps, length(rel_rows)))
                         hits_full += 1
                         hits_1lp_emit += 1
                         Threads.atomic_add!(rel_counter, 1)
@@ -1459,6 +1571,10 @@ function phase2_worker(G::Div2, T::Div2,
                     if ASSERT_RELATIONS
                         ok = check_lp1_stored(lp_pt, fb_row_scratch, neg_al, neg_be, fb, G, T; tag="1LP-STORE")
                         @assert ok "1-LP store invariant failed — row is not in the expected FB-only form (see diagnostic above)"
+                    end
+                    # Evict oldest entry if table is at cap to bound memory usage.
+                    if length(shared_lp1) >= MAX_LP1_ENTRIES
+                        delete!(shared_lp1, first(keys(shared_lp1)))
                     end
                     shared_lp1[lp_pt] = (copy(fb_row_scratch), neg_al, neg_be, raw_steps)
                     # Case 1/3: if this point already has a doubled entry, cross-close.
@@ -1535,7 +1651,7 @@ function phase2_worker(G::Div2, T::Div2,
                 push!(alpha_vec, emitted_rel.alpha)
                 push!(beta_vec,  emitted_rel.beta)
                 push!(rel_rows,  emitted_rel.row)
-                push!(rank_growth, (raw_steps, length(rel_rows)))
+                length(rank_growth) < MAX_RANK_GROWTH_SAMPLES && push!(rank_growth, (raw_steps, length(rel_rows)))
                 hits_full    += 1
                 hits_lp2emit += 1
                 Threads.atomic_add!(rel_counter, 1)
@@ -1597,7 +1713,7 @@ function phase2_worker(G::Div2, T::Div2,
                             push!(alpha_vec, combined_al)
                             push!(beta_vec,  combined_be)
                             push!(rel_rows,  combined)
-                            push!(rank_growth, (raw_steps, length(rel_rows)))
+                            length(rank_growth) < MAX_RANK_GROWTH_SAMPLES && push!(rank_growth, (raw_steps, length(rel_rows)))
                             hits_full    += 1
                             hits_lp2emit += 1
                             Threads.atomic_add!(rel_counter, 1)
@@ -1686,7 +1802,7 @@ function phase2_worker(G::Div2, T::Div2,
                             push!(alpha_vec, combined_al)
                             push!(beta_vec,  combined_be)
                             push!(rel_rows,  combined)
-                            push!(rank_growth, (raw_steps, length(rel_rows)))
+                            length(rank_growth) < MAX_RANK_GROWTH_SAMPLES && push!(rank_growth, (raw_steps, length(rel_rows)))
                             hits_full    += 1
                             hits_1lp_emit += 1
                             Threads.atomic_add!(rel_counter, 1)
@@ -1707,6 +1823,10 @@ function phase2_worker(G::Div2, T::Div2,
                                         neg_al, neg_be, string(lp2_a), string(lp2_b))
                             end
                             @assert ok "2-LP cross-store invariant failed — derived 1-LP row inconsistent (see diagnostic above)"
+                        end
+                        # Evict oldest entry if table is at cap.
+                        if length(shared_lp1) >= MAX_LP1_ENTRIES
+                            delete!(shared_lp1, first(keys(shared_lp1)))
                         end
                         shared_lp1[lp_other] = (new_row, new_neg_al, new_neg_be, raw_steps)
                         # Case 1/3: if lp_other already has a doubled entry, cross-close.
@@ -1978,8 +2098,11 @@ function index_calculus_walk(G::Div2, T::Div2;
     shared_lp2       = LP2Graph()
     shared_lp2_lock  = ReentrantLock()
     shared_lp_doubled = Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int}}()
-    # Conjugate-pair table: keyed by full 4-tuple Mumford (c0,c1,v0,v1), never mixed with shared_lp1.
+    # Conjugate-pair 1-LP table: keyed by full 4-tuple Mumford, never mixed with shared_lp1.
     shared_lp1_conj  = Dict{NTuple{4,Int}, Tuple{Dict{Int,Int}, Int, Int, Int}}()
+    # Extension-field 2-LP graph: nodes are LPKey = Union{NTuple{2,Int}, NTuple{4,Int}}.
+    shared_lp2_conj      = LP2ConjGraph()                               # ← NEW
+    shared_lp2_conj_lock = ReentrantLock()                              # ← NEW
 
     if verbose
         println()
@@ -2010,6 +2133,7 @@ function index_calculus_walk(G::Div2, T::Div2;
             shared_lp2, shared_lp2_lock,
             shared_lp_doubled,
             shared_lp1_conj,
+            shared_lp2_conj, shared_lp2_conj_lock,   # ← NEW
             thread_collectors[tid]; verbose=verbose)
     end
     # Collect results; a timed wait surfaces hangs as an error rather than
@@ -2111,7 +2235,7 @@ function index_calculus_walk(G::Div2, T::Div2;
         @printf("    3-LP skips:          %d  (%.2f%%)\n",
                 hits_skip, 100.0 * hits_skip / max(1, hits_total))
         println()
-        @printf("  2-LP graph stats:\n")
+        @printf("  2-LP graph stats (affine):\n")
         @printf("    edges inserted:      %d\n",  shared_lp2.n_edges_inserted)
         @printf("    cycles found:        %d\n",  shared_lp2.n_cycles_found)
         @printf("    relations emitted:   %d\n",  shared_lp2.n_emitted)
@@ -2121,6 +2245,13 @@ function index_calculus_walk(G::Div2, T::Div2;
         @printf("    odd-cycle stored:    %d\n",  shared_lp2.n_odd_stored)
         @printf("    LP nodes in graph:   %d\n",  length(shared_lp2.nodes))
         @printf("    lp_doubled residual: %d entries\n", length(shared_lp_doubled))
+        @printf("  2-LP graph stats (QLP/conj):\n")
+        @printf("    edges inserted:      %d\n",  shared_lp2_conj.n_edges_inserted)
+        @printf("    cycles found:        %d\n",  shared_lp2_conj.n_cycles_found)
+        @printf("    relations emitted:   %d\n",  shared_lp2_conj.n_emitted)
+        @printf("    depth-pruned:        %d\n",  shared_lp2_conj.n_depth_pruned)
+        @printf("    weight-pruned:       %d\n",  shared_lp2_conj.n_weight_pruned)
+        @printf("    parity-pruned:       %d\n",  shared_lp2_conj.n_parity_pruned)
         cycle_rate = shared_lp2.n_cycles_found / max(1, shared_lp2.n_edges_inserted)
         emit_rate  = shared_lp2.n_emitted      / max(1, shared_lp2.n_cycles_found)
         @printf("    cycle/edge rate:     %.4f\n", cycle_rate)
