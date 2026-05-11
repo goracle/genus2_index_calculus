@@ -36,201 +36,138 @@ using Dates
 include("lp_residual_stats.jl")   # LP residual diagnostics (occupancy, entropy, autocorr, clustering)
 
 # ---------------------------------------------------------------------------
-#  phi construction
+#  phi construction from Mumford representation
 #
 #  phi(x,y) = a*x^2 + b*x + c + d*y
 #
-#  Vanishing conditions (mod p):
-#    a*px^2 + b*px + c + d*py = 0
-#    a*x1^2 + b*x1 + c + d*y1 = 0
-#    a*x2^2 + b*x2 + c + d*y2 = 0
+#  Vanishing at P0=(px,py):          a*px^2 + b*px + c + d*py = 0        ... (i)
+#  Vanishing at support of D=Div2(u,v) where u=x^2+u1*x+u0, v=v0+v1*x:
+#    phi(x,v(x)) ≡ 0 mod u(x)
+#    = a*x^2 + (b+d*v1)*x + (c+d*v0) mod (x^2+u1*x+u0)
+#    Reduce x^2 → -u1*x - u0:
+#      const coeff: c + d*v0 - a*u0 = 0                                   ... (ii)
+#      x     coeff: b + d*v1 - a*u1 = 0                                   ... (iii)
 #
-#  Fix d=1 and solve the 3x3 system in (a,b,c).  If singular, fix a=1 and
-#  solve for (b,c,d).  Returns (a,b,c,d) or nothing.
+#  Fix d=1: from (ii) c = a*u0 - v0, from (iii) b = a*u1 - v1.
+#  Substitute into (i): a*(px^2 + u1*px + u0) = v1*px + v0 - py
+#  Denominator = u(px).  If u(px)=0, px is a root of D — excluded by
+#  the collision check in the walk loop.  So d=1 always works here.
+#
+#  Returns (a,b,c,d) or nothing (only if u(px)=0, which shouldn't happen).
 # ---------------------------------------------------------------------------
-function build_phi(px::Int, py::Int,
-                   x1::Int, y1::Int,
-                   x2::Int, y2::Int)::Union{NTuple{4,Int}, Nothing}
+function build_phi_mumford(px::Int, py::Int,
+                           u0::Int, u1::Int,
+                           v0::Int, v1::Int)::Union{NTuple{4,Int}, Nothing}
+    # u(px) = px^2 + u1*px + u0
+    upx = fp(fp(px * px) + fp(u1 * px) + u0)
+    upx == 0 && return nothing   # px is a root of D — caller should have filtered
 
-    # Vanishing conditions give the 3×4 augmented system.
-    # We unroll Gaussian elimination entirely into scalars to avoid
-    # allocating any matrix, vector, or slice.
-    #
-    # Rows:  [x²  x  1  y | rhs]
-    #   r0:  [px² px 1 py | rhs0]
-    #   r1:  [x1² x1 1 y1 | rhs1]
-    #   r2:  [x2² x2 1 y2 | rhs2]
-
-    # ── Try d=1: solve for (a,b,c) from the 3×3 left block ──────────────────
-    # augmented columns: A = [x² x 1], rhs = -y
-    @inline function solve3x3(a00,a01,a02, a10,a11,a12, a20,a21,a22,
-                               r0, r1, r2)::Union{NTuple{3,Int},Nothing}
-        # Column 0 pivot
-        if a00 != 0
-            inv0 = fpinv(a00)
-            # eliminate row1 col0
-            f10 = fp(a10 * inv0)
-            a10 = 0; a11 = fp(a11 - f10*a01); a12 = fp(a12 - f10*a02); r1 = fp(r1 - f10*r0)
-            # eliminate row2 col0
-            f20 = fp(a20 * inv0)
-            a20 = 0; a21 = fp(a21 - f20*a01); a22 = fp(a22 - f20*a02); r2 = fp(r2 - f20*r0)
-            # back-eliminate into row0 later; focus on col1 next
-            if a11 != 0
-                inv1 = fpinv(a11)
-                f21 = fp(a21 * inv1)
-                a21 = 0; a22 = fp(a22 - f21*a12); r2 = fp(r2 - f21*r1)
-                a22 == 0 && return nothing
-                inv2 = fpinv(a22)
-                # back-sub col2
-                x2v = fp(r2 * inv2)
-                x1v = fp((r1 - a12*x2v) * inv1)
-                x0v = fp((r0 - a01*x1v - a02*x2v) * inv0)
-                return (x0v, x1v, x2v)
-            elseif a21 != 0
-                # swap rows 1 and 2
-                a11,a21 = a21,a11; a12,a22 = a22,a12; r1,r2 = r2,r1
-                inv1 = fpinv(a11)
-                f21 = fp(a21 * inv1)  # a21 is now 0, but we already swapped
-                a22 = fp(a22 - f21*a12); r2 = fp(r2 - f21*r1)
-                a22 == 0 && return nothing
-                inv2 = fpinv(a22)
-                x2v = fp(r2 * inv2)
-                x1v = fp((r1 - a12*x2v) * inv1)
-                x0v = fp((r0 - a01*x1v - a02*x2v) * inv0)
-                return (x0v, x1v, x2v)
-            else
-                return nothing  # col1 all-zero after col0 elimination
-            end
-        elseif a10 != 0
-            # swap rows 0 and 1 then redo
-            return solve3x3(a10,a11,a12, a00,a01,a02, a20,a21,a22, r1,r0,r2)
-        elseif a20 != 0
-            return solve3x3(a20,a21,a22, a10,a11,a12, a00,a01,a02, r2,r1,r0)
-        else
-            return nothing  # col0 all-zero
-        end
-    end
-
-    px2 = fp(px*px); x12 = fp(x1*x1); x22 = fp(x2*x2)
-
-    # Try d=1: solve [x² x 1]*[a,b,c]' = -y
-    sol = solve3x3(px2,px,1, x12,x1,1, x22,x2,1,
-                   fp(-py), fp(-y1), fp(-y2))
-    if sol !== nothing
-        a,b,c = sol
-        return (fp(a), fp(b), fp(c), 1)
-    end
-
-    # Fallback a=1: solve [x 1 y]*[b,c,d]' = -x²
-    sol = solve3x3(px,1,py, x1,1,y1, x2,1,y2,
-                   fp(-px2), fp(-x12), fp(-x22))
-    sol === nothing && return nothing
-    b2,c2,d2 = sol
-    return (1, fp(b2), fp(c2), fp(d2))
+    # a = (v1*px + v0 - py) / u(px)
+    numer = fp(fp(v1 * px) + v0 - py)
+    a = fp(numer * fpinv(upx))
+    b = fp(fp(a * u1) - v1)
+    c = fp(fp(a * u0) - v0)
+    return (a, b, c, 1)
 end
 
 # ---------------------------------------------------------------------------
-#  Residual intersection points R, S
+#  Residual intersection points R, S from Mumford representation
 #
-#  phi(x,y) = 0 on C: substitute y = -(a*x^2+b*x+c)/d into y^2=f(x):
-#    N(x) = (a*x^2+b*x+c)^2 - d^2*f(x)   (degree 5, leading coeff -d^2)
+#  phi(x,y) = a*x^2 + b*x + c + d*y  (d=1 always from build_phi_mumford)
 #
-#  Three roots px, x1, x2 are known.  Divide them out -> degree-2 residual.
-#  Returns vector of (x,y) pairs with correct y-sign (length 0, 1, or 2).
+#  N(x) = (a*x^2+b*x+c)^2 - f(x)   (degree 5, leading coeff a^2-1 or -1)
+#
+#  Known factors: (x - px) from P0, and u(x)=x^2+u1*x+u0 from D's support.
+#  Divide N by (x-px) then by u(x) to get the degree-2 residual u_RS(x).
+#
+#  u_RS is the Mumford u-polynomial for {R,S}.  Return it as (c0,c1) of the
+#  monic form x^2+c1*x+c0, plus the two individual points if they're Fp-rational.
+#  Always returns the monic residual; point slots are nothing if not Fp-rational.
 # ---------------------------------------------------------------------------
-function phi_residual_points(a::Int, b::Int, c::Int, d::Int,
-                              px::Int, x1::Int, x2::Int)::NTuple{2, Union{NTuple{2,Int},Nothing}}
-    # Returns exactly two slots; caller checks for nothing entries.
-    _nothing2 = (nothing, nothing)
-    d == 0 && return _nothing2
-
-    # N(x) = (a*x²+b*x+c)² - d²*f(x)  — degree 5, fixed 6-element buffer.
-    # Compute coefficients of (a*x²+b*x+c)² directly:
-    #   coeff of x^k in apoly² where apoly = [c,b,a]
-    d2 = fp(d * d)
-    # apoly² coefficients (degree 0..4):
+function phi_residual_mumford(a::Int, b::Int, c::Int,
+                               px::Int,
+                               u0::Int, u1::Int)::Union{
+                                   NTuple{3, Union{NTuple{2,Int},Nothing}},   # (R, S, nothing) — RS split
+                                   Tuple{Nothing, Nothing, NTuple{2,Int}},    # (nothing, nothing, (c0,c1)) — RS unsplit
+                                   Nothing}
+    # d=1 always (from build_phi_mumford), so N(x) = (a*x^2+b*x+c)^2 - f(x).
+    # Coefficients of (a*x^2+b*x+c)^2 (degree 0..4):
     N0 = fp(c*c)
     N1 = fp(2*b*c)
     N2 = fp(b*b + 2*a*c)
     N3 = fp(2*a*b)
     N4 = fp(a*a)
-    # subtract d²*f(x); F_POLY = [f0,f1,f2,f3,0,1] (len 6, degree 5)
-    N = (fp(N0 - d2*F_POLY[1]),
-         fp(N1 - d2*F_POLY[2]),
-         fp(N2 - d2*F_POLY[3]),
-         fp(N3 - d2*F_POLY[4]),
-         fp(N4 - d2*F_POLY[5]),
-         fp(   - d2*F_POLY[6]))   # = -d² (leading)
+    # N(x) = N4*x^4 + N3*x^3 + N2*x^2 + N1*x + N0 - f(x)
+    # f(x) = x^5 + F_POLY[4]*x^3 + F_POLY[3]*x^2 + F_POLY[2]*x + F_POLY[1]
+    # (F_POLY[5]=0, F_POLY[6]=1, ascending indexing)
+    # So N has degree 5 with leading coeff -1 (from -x^5):
+    N = (fp(N0 - F_POLY[1]),
+         fp(N1 - F_POLY[2]),
+         fp(N2 - F_POLY[3]),
+         fp(N3 - F_POLY[4]),
+         fp(N4 - F_POLY[5]),   # = N4 since F_POLY[5]=0
+         fp(   - F_POLY[6]))   # = -1 (leading x^5 coeff)
 
-    # Synthetic division of a degree-5 poly (6 coeffs, ascending) by (x - r).
-    # Returns the degree-4 quotient as a 5-tuple, or nothing if remainder != 0.
-    @inline function syndiv5(n0,n1,n2,n3,n4,n5, r::Int)
-        # Descending Horner for poly div by (x-r): process from high to low.
-        q4 = n5
-        q3 = fp(n4 + q4*r)
-        q2 = fp(n3 + q3*r)
-        q1 = fp(n2 + q2*r)
-        q0 = fp(n1 + q1*r)
-        rem = fp(n0 + q0*r)
-        rem != 0 && return nothing
-        (q0, q1, q2, q3, q4)
+    # Step 1: divide N(x) by (x - px) via descending Horner → degree-4 quotient Q4.
+    # Ascending input, descending Horner: process n5,n4,...,n0.
+    q4_4 = N[6]
+    q4_3 = fp(N[5] + q4_4*px)
+    q4_2 = fp(N[4] + q4_3*px)
+    q4_1 = fp(N[3] + q4_2*px)
+    q4_0 = fp(N[2] + q4_1*px)
+    rem1  = fp(N[1] + q4_0*px)
+    rem1 != 0 && return nothing   # px not a root — bug if this fires
+
+    # Q4(x) = q4_4*x^4 + q4_3*x^3 + q4_2*x^2 + q4_1*x + q4_0  (ascending: q4_0..q4_4)
+
+    # Step 2: divide Q4(x) by u(x) = x^2 + u1*x + u0 → degree-2 quotient + remainder.
+    # Long division of degree-4 by degree-2 (monic), 3 steps:
+    #   leading term of Q4 is q4_4*x^4; divide by x^2 → q4_4*x^2
+    #   subtract q4_4*x^2*(x^2+u1*x+u0) from Q4:
+    s2 = q4_4                                   # coeff of x^2 in quotient
+    r3 = fp(q4_3 - s2*u1)                       # coeff of x^3 in remainder so far
+    r2 = fp(q4_2 - s2*u0)                       # coeff of x^2 in remainder so far
+    #   next: leading term r3*x^3; divide by x^2 → r3*x
+    s1 = r3                                      # coeff of x^1 in quotient
+    r2b = fp(r2 - s1*u1)                        # coeff of x^2 after subtraction
+    r1  = fp(q4_1 - s1*u0)                      # coeff of x^1 after subtraction
+    #   next: leading term r2b*x^2; divide by x^2 → r2b
+    s0  = r2b                                    # coeff of x^0 in quotient
+    # remainder: (r1 - s0*u1)*x + (q4_0 - s0*u0)
+    res1 = fp(r1  - s0*u1)
+    res0 = fp(q4_0 - s0*u0)
+
+    # res1 and res0 should both be zero since u(x) divides Q4(x) exactly.
+    # If not, it means the support of D_cur is not in the zero locus of phi — bug.
+    (res0 != 0 || res1 != 0) && return nothing
+
+    # Quotient s(x) = s2*x^2 + s1*x + s0 is the residual (up to sign/scale).
+    # Make monic: divide by s2.  s2 = q4_4 = leading coeff of Q4 = leading coeff of N[6] = -1.
+    # So s2 = -1, and monic residual u_RS = x^2 + (-s1)*x + (-s0), i.e. c1=-s1/s2, c0=-s0/s2.
+    # Since s2 = fp(-1) = p-1, inv(s2) = p-1 as well (since (p-1)^2 = 1 mod p).
+    inv_s2 = fpinv(s2)
+    c1_rs  = fp(s1 * inv_s2)   # monic x-coeff  (= -s1 when s2=-1)
+    c0_rs  = fp(s0 * inv_s2)   # monic const    (= -s0 when s2=-1)
+
+    # Try to split x^2 + c1_rs*x + c0_rs over Fp.
+    disc = fp(fp(c1_rs * c1_rs) - fp(4 * c0_rs))
+    sq   = sqrt_fp(disc)
+
+    if sq === nothing
+        # Conjugate pair over Fp^2 — return the monic u-poly coefficients.
+        return (nothing, nothing, (c0_rs, c1_rs))
     end
 
-    @inline function syndiv4(n0,n1,n2,n3,n4, r::Int)
-        q3 = n4
-        q2 = fp(n3 + q3*r)
-        q1 = fp(n2 + q2*r)
-        q0 = fp(n1 + q1*r)
-        rem = fp(n0 + q0*r)
-        rem != 0 && return nothing
-        (q0, q1, q2, q3)
-    end
+    # Two Fp-rational roots.
+    inv2 = fpinv(2)
+    xR   = fp(fp(p - c1_rs + sq) * inv2)
+    xS   = fp(fp(p - c1_rs - sq) * inv2)   # = fp(fp(p - c1_rs) - sq) * inv2
 
-    @inline function syndiv3(n0,n1,n2,n3, r::Int)
-        q2 = n3
-        q1 = fp(n2 + q2*r)
-        q0 = fp(n1 + q1*r)
-        rem = fp(n0 + q0*r)
-        rem != 0 && return nothing
-        (q0, q1, q2)
-    end
+    # Recover y from phi(x,y)=0: a*x^2+b*x+c+y=0 → y = -(a*x^2+b*x+c)
+    yR = fp(p - fp(fp(a * fp(xR*xR)) + fp(b*xR) + c))
+    yS = fp(p - fp(fp(a * fp(xS*xS)) + fp(b*xS) + c))
 
-    q5 = syndiv5(N[1],N[2],N[3],N[4],N[5],N[6], px)
-    q5 === nothing && return _nothing2
-    q4 = syndiv4(q5[1],q5[2],q5[3],q5[4],q5[5], x1)
-    q4 === nothing && return _nothing2
-    q3 = syndiv3(q4[1],q4[2],q4[3],q4[4], x2)
-    q3 === nothing && return _nothing2
-
-    # q3 is the degree-2 residual (q3[1], q3[2], q3[3]) = [r0, r1, r2] ascending.
-    r0, r1, r2 = q3
-
-    # Given x-coordinate, find correct y using phi(x,y) = 0.
-    @inline function y_for_x(xr::Int)::Union{NTuple{2,Int},Nothing}
-        yr = sqrt_fp(eval_f(xr));  yr === nothing && return nothing
-        base = fp(a * fp(xr * xr) + b * xr + c)
-        fp(base + d * yr) == 0 && return (xr, yr)
-        fp(base - d * yr) == 0 && return (xr, fp(-yr))
-        return nothing
-    end
-
-    dq = (r2 != 0) ? 2 : (r1 != 0 ? 1 : 0)
-
-    if dq == 1
-        # linear: r1*x + r0 = 0  =>  x = -r0 / r1
-        xr = fp(-r0 * fpinv(r1))
-        return (y_for_x(xr), nothing)
-    elseif dq == 2
-        # quadratic: r2*x² + r1*x + r0 = 0
-        # normalise to monic then use u2_roots
-        inv_r2 = fpinv(r2)
-        u_monic = Int[fp(r0*inv_r2), fp(r1*inv_r2), 1]
-        rs = u2_roots(u_monic)
-        rs === nothing && return _nothing2
-        return (y_for_x(rs[1]), y_for_x(rs[2]))
-    else
-        return _nothing2
-    end
+    return ((xR, yR), (xS, yS), nothing)
 end
 
 
@@ -1116,32 +1053,38 @@ function phase2_worker(G::Div2, T::Div2,
         alpha_cur = mod(alpha_cur + step_a[si], ell)
         beta_cur  = mod(beta_cur  + step_b[si], ell)
 
+        # D_cur must be a genuine degree-2 divisor (not identity or degree-1).
         pdeg(D_cur.u) != 2 && continue
-        rs_D = u2_roots(D_cur.u)
-        rs_D === nothing && continue
-        x1, x2 = rs_D
+
+        # Extract Mumford coefficients: u = x^2 + u1*x + u0, v = v0 + v1*x.
+        # (D_cur.u is monic degree-2; D_cur.v is degree ≤ 1.)
+        u0 = D_cur.u[1]; u1 = D_cur.u[2]   # u[3]=1 (monic)
+        v0 = D_cur.v[1]
+        v1 = length(D_cur.v) >= 2 ? D_cur.v[2] : 0
 
         px, py = cur_pt
-        (px == x1 || px == x2 || x1 == x2) && continue
 
-        y1 = peval(D_cur.v, x1)
-        y2 = peval(D_cur.v, x2)
-        eval_f(x1) == fp(y1 * y1) || continue
-        eval_f(x2) == fp(y2 * y2) || continue
+        # Guard: px must not be a root of u (i.e. P0 not in support of D_cur).
+        # u(px) = px^2 + u1*px + u0
+        upx = fp(fp(px*px) + fp(u1*px) + u0)
+        upx == 0 && continue
 
-        phi_c = build_phi(px, py, x1, y1, x2, y2)
-        phi_c === nothing && continue
-        a, b, c, d = phi_c
+        phi_c = build_phi_mumford(px, py, u0, u1, v0, v1)
+        phi_c === nothing && continue   # should not happen given upx != 0
+        a, b, c, _ = phi_c   # d=1 always
 
-        res = phi_residual_points(a, b, c, d, px, x1, x2)
-        (res[1] === nothing || res[2] === nothing) && continue
-        R = res[1]::NTuple{2,Int}
-        S = res[2]::NTuple{2,Int}
-
-        eval_f(R[1]) == fp(R[2] * R[2]) || continue
-        eval_f(S[1]) == fp(S[2] * S[2]) || continue
+        res = phi_residual_mumford(a, b, c, px, u0, u1)
+        res === nothing && continue   # syndiv failed — bug if this fires
 
         hits_total += 1
+
+        # res is one of:
+        #   ((xR,yR), (xS,yS), nothing)  — R,S both Fp-rational
+        #   (nothing, nothing, (c0,c1))  — R,S conjugate pair, residual monic u-poly
+        rs_split = res[1] !== nothing   # true iff R,S are individually Fp-rational
+        R = rs_split ? res[1]::NTuple{2,Int} : nothing
+        S = rs_split ? res[2]::NTuple{2,Int} : nothing
+        RS_upoly = rs_split ? nothing : res[3]::NTuple{2,Int}  # (c0,c1) of monic u_RS
 
         now_t = time()
         if verbose && (now_t - t_last_report) >= report_interval_secs
@@ -1171,8 +1114,92 @@ function phase2_worker(G::Div2, T::Div2,
         neg_be = mod(ell - be, ell)
 
         i0 = get(pt2idx, P0, 0)
-        iR = get(pt2idx, R,  0)
-        iS = get(pt2idx, S,  0)
+
+        if !rs_split
+            # R,S are a conjugate pair — treat {R,S} as a single 2-LP token keyed
+            # by the monic residual u-poly (c0,c1).  The relation is:
+            #   atom(P0) + Jac({R,S}) + fb_P0 = neg_al·G + neg_be·T
+            # where Jac({R,S}) is the degree-2 Jacobian element with u=x^2+c1*x+c0.
+            # Route through shared_lp2 using RS_upoly as both node keys (self-loop
+            # keyed by the pair token vs P0).  Actually: P0 is one "point", RS_upoly
+            # token is the other — insert as a 2-LP edge (P0_as_token, RS_token).
+            # Simplest correct treatment: store as a 1-LP entry keyed by RS_upoly,
+            # with fb_row including P0's FB contribution (if any).
+            hits_lp2seen += 1
+
+            empty!(fb_row_scratch)
+            if i0 != 0
+                fb_row_scratch[i0] = get(fb_row_scratch, i0, 0) + 1
+            end
+
+            # RS_upoly is used as the LP node key for the conjugate pair.
+            # If P0 in FB: one unknown → 1-LP keyed by RS_upoly.
+            # If P0 off-FB: two unknowns → 2-LP edge (P0, RS_upoly).
+            if i0 != 0
+                # 1-LP: unknown is {R,S} Mumford pair, fb_row already has P0.
+                hits_lp2seen -= 1   # undo, count as lp1
+                hits_lp1 += 1
+                lp_key = RS_upoly
+                lock(shared_lp1_lock)
+                try
+                    if haskey(shared_lp1, lp_key)
+                        prev_row, prev_al, prev_be, prev_step = shared_lp1[lp_key]
+                        combined    = copy(fb_row_scratch)
+                        lp2_subtract_rows(combined, prev_row)
+                        combined_al = mod(neg_al - prev_al, ell)
+                        combined_be = mod(neg_be - prev_be, ell)
+                        delete!(shared_lp1, lp_key)
+                        if !isempty(combined) && !(combined_al == 0 && combined_be == 0)
+                            push!(alpha_vec, combined_al)
+                            push!(beta_vec,  combined_be)
+                            push!(rel_rows,  combined)
+                            push!(rank_growth, (raw_steps, length(rel_rows)))
+                            hits_full += 1
+                            hits_1lp_emit += 1
+                            Threads.atomic_add!(rel_counter, 1)
+                            cur_pt = fb[rand(1:nF_cur)]
+                        else
+                            cur_pt = P0
+                        end
+                    else
+                        shared_lp1[lp_key] = (copy(fb_row_scratch), neg_al, neg_be, raw_steps)
+                        cur_pt = P0
+                    end
+                finally
+                    unlock(shared_lp1_lock)
+                end
+            else
+                # 2-LP: unknowns are P0 (off-FB) and {R,S} Mumford pair.
+                emitted_rel = nothing
+                lock(shared_lp2_lock)
+                try
+                    emitted_rel = lp2_insert_edge!(
+                        shared_lp2,
+                        P0, RS_upoly,
+                        fb_row_scratch,
+                        al, be, ell)
+                finally
+                    unlock(shared_lp2_lock)
+                end
+                if emitted_rel !== nothing && emitted_rel.type === :even_cycle
+                    push!(alpha_vec, emitted_rel.alpha)
+                    push!(beta_vec,  emitted_rel.beta)
+                    push!(rel_rows,  emitted_rel.row)
+                    push!(rank_growth, (raw_steps, length(rel_rows)))
+                    hits_full    += 1
+                    hits_lp2emit += 1
+                    Threads.atomic_add!(rel_counter, 1)
+                    cur_pt = fb[rand(1:nF_cur)]
+                else
+                    cur_pt = fb[rand(1:nF_cur)]
+                end
+            end
+            continue   # done with this step
+        end
+
+        # R,S are individually Fp-rational from here on.
+        iR = get(pt2idx, R::NTuple{2,Int},  0)
+        iS = get(pt2idx, S::NTuple{2,Int},  0)
         n_lp = (i0 == 0 ? 1 : 0) + (iR == 0 ? 1 : 0) + (iS == 0 ? 1 : 0)
         smooth_hist[n_lp + 1] += 1
 
@@ -1187,7 +1214,8 @@ function phase2_worker(G::Div2, T::Div2,
             push!(rel_rows,  fb_row)
             push!(rank_growth, (raw_steps, length(rel_rows)))
             if length(sample_rels) < 10
-                push!(sample_rels, (D_cur, copy(fb_row), neg_al, neg_be, P0, R, S))
+                push!(sample_rels, (D_cur, copy(fb_row), neg_al, neg_be, P0,
+                                    R::NTuple{2,Int}, S::NTuple{2,Int}))
             end
             hits_full += 1
             hits_0lp += 1
@@ -1196,7 +1224,7 @@ function phase2_worker(G::Div2, T::Div2,
 
         elseif n_lp == 1
             hits_lp1 += 1
-            lp_pt = iR == 0 ? R : S
+            lp_pt = iR == 0 ? R::NTuple{2,Int} : S::NTuple{2,Int}
             empty!(fb_row_scratch)
             for idx in (i0, iR, iS)
                 idx == 0 && continue
