@@ -182,7 +182,7 @@ function phi_residual_mumford(a::Int, b::Int, c::Int,
                                px::Int,
                                u0::Int, u1::Int)::Union{
                                    NTuple{3, Union{NTuple{2,Int},Nothing}},   # (R, S, nothing) — RS split
-                                   Tuple{Nothing, Nothing, NTuple{4,Int}},    # (nothing, nothing, (c0,c1,v0,v1)) — RS unsplit
+                                   Tuple{Nothing, Nothing, NTuple{2,Int}},    # (nothing, nothing, (c0,c1)) — RS unsplit
                                    Nothing}
     # d=1 always (from build_phi_mumford), so N(x) = (a*x^2+b*x+c)^2 - f(x).
     # Coefficients of (a*x^2+b*x+c)^2 (degree 0..4):
@@ -248,15 +248,8 @@ function phi_residual_mumford(a::Int, b::Int, c::Int,
     sq   = sqrt_fp(disc)
 
     if sq === nothing
-        # Conjugate pair over Fp^2.
-        # Compute v-poly: v_RS(x) = -(a*x^2+b*x+c) mod u_RS(x).
-        # Reduce x^2 → -c1_rs*x - c0_rs:
-        #   v_RS(x) = -a*(-c1_rs*x - c0_rs) - b*x - c
-        #           = (a*c1_rs - b)*x + (a*c0_rs - c)
-        v1_rs = fp(fp(a * c1_rs) - b)
-        v0_rs = fp(fp(a * c0_rs) - c)
-        # Full Mumford key: (u0, u1, v0, v1) uniquely identifies the degree-2 element.
-        return (nothing, nothing, (c0_rs, c1_rs, v0_rs, v1_rs))
+        # Conjugate pair over Fp^2 — return the monic u-poly coefficients.
+        return (nothing, nothing, (c0_rs, c1_rs))
     end
 
     # Two Fp-rational roots.
@@ -1100,10 +1093,6 @@ function phase2_worker(G::Div2, T::Div2,
                        shared_lp2::LP2Graph,
                        shared_lp2_lock::ReentrantLock,
                        shared_lp_doubled::Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int}},
-                       # Conjugate-pair table: keyed by (c0,c1,v0,v1) full Mumford representation.
-                       # MUST be separate from shared_lp1 (affine-point keys) so the 2-LP
-                       # cross-lookup never confuses a Mumford token for a single atom.
-                       shared_lp1_conj::Dict{NTuple{4,Int}, Tuple{Dict{Int,Int}, Int, Int, Int}},
                        # per-thread LP residual collector (write-only from this thread)
                        lp_col::LPResidualCollector;
                        verbose::Bool = true)
@@ -1189,7 +1178,7 @@ function phase2_worker(G::Div2, T::Div2,
         rs_split = res[1] !== nothing   # true iff R,S are individually Fp-rational
         R = rs_split ? res[1]::NTuple{2,Int} : nothing
         S = rs_split ? res[2]::NTuple{2,Int} : nothing
-        RS_mumford = rs_split ? nothing : res[3]::NTuple{4,Int}  # (c0,c1,v0,v1) full Mumford key
+        RS_upoly = rs_split ? nothing : res[3]::NTuple{2,Int}  # (c0,c1) of monic u_RS
 
         now_t = time()
         if verbose && (now_t - t_last_report) >= report_interval_secs
@@ -1221,47 +1210,47 @@ function phase2_worker(G::Div2, T::Div2,
         i0 = get(pt2idx, P0, 0)
 
         if !rs_split
-            # R,S are a conjugate pair over Fp^2.
-            # The full Mumford key (c0,c1,v0,v1) uniquely identifies the degree-2 Jacobian
-            # element [R]+[S]-2[∞].  Two steps producing the same u-poly (c0,c1) but different
-            # v-polys represent DIFFERENT Jacobian elements and must not be collapsed.
-            # We only attempt the 1-LP closure when P0 is on-FB (one unknown: the RS element).
-            # When P0 is off-FB (two unknowns: P0 and RS), we skip — the LP2 graph is typed
-            # for NTuple{2,Int} nodes and cannot handle 4-tuple RS keys without refactoring.
-            lp_key = RS_mumford::NTuple{4,Int}
+            # R,S are a conjugate pair — treat {R,S} as a single 2-LP token keyed
+            # by the monic residual u-poly (c0,c1).  The relation is:
+            #   atom(P0) + Jac({R,S}) + fb_P0 = neg_al·G + neg_be·T
+            # where Jac({R,S}) is the degree-2 Jacobian element with u=x^2+c1*x+c0.
+            # Route through shared_lp2 using RS_upoly as both node keys (self-loop
+            # keyed by the pair token vs P0).  Actually: P0 is one "point", RS_upoly
+            # token is the other — insert as a 2-LP edge (P0_as_token, RS_token).
+            # Simplest correct treatment: store as a 1-LP entry keyed by RS_upoly,
+            # with fb_row including P0's FB contribution (if any).
+            hits_lp2seen += 1
 
+            empty!(fb_row_scratch)
             if i0 != 0
-                hits_lp2seen += 1   # count in lp2seen momentarily then flip
-                hits_lp2seen -= 1
+                fb_row_scratch[i0] = get(fb_row_scratch, i0, 0) + 1
+            end
+
+            # RS_upoly is used as the LP node key for the conjugate pair.
+            # If P0 in FB: one unknown → 1-LP keyed by RS_upoly.
+            # If P0 off-FB: two unknowns → 2-LP edge (P0, RS_upoly).
+            if i0 != 0
+                # 1-LP: unknown is {R,S} Mumford pair, fb_row already has P0.
+                hits_lp2seen -= 1   # undo, count as lp1
                 hits_lp1 += 1
-
-                empty!(fb_row_scratch)
-                fb_row_scratch[i0] = 1   # only P0 is known; RS is the single unknown
-
+                lp_key = RS_upoly
                 lock(shared_lp1_lock)
                 try
-                    if haskey(shared_lp1_conj, lp_key)
-                        prev_row, prev_al, prev_be, prev_step = shared_lp1_conj[lp_key]
+                    if haskey(shared_lp1, lp_key)
+                        prev_row, prev_al, prev_be, prev_step = shared_lp1[lp_key]
                         combined    = copy(fb_row_scratch)
                         lp2_subtract_rows(combined, prev_row)
                         combined_al = mod(neg_al - prev_al, ell)
                         combined_be = mod(neg_be - prev_be, ell)
-                        delete!(shared_lp1_conj, lp_key)
-                        # The RS Mumford element cancelled; combined is a pure FB relation.
-                        # Invariant: current  →  fb_row_scratch + atom(RS) = neg_al·G + neg_be·T
-                        #            stored   →  prev_row       + atom(RS) = prev_al·G + prev_be·T
-                        #            diff     →  (fb_row_scratch - prev_row) = (neg_al-prev_al)·G + ...
+                        delete!(shared_lp1, lp_key)
                         if !isempty(combined) && !(combined_al == 0 && combined_be == 0)
+                            # The {R,S} Mumford token cancelled; combined is a pure FB
+                            # relation.  We cannot check the individual stored entry (the
+                            # RS_upoly key is not a real affine point so check_lp1_stored
+                            # doesn't apply), but we CAN assert the combined closure is
+                            # principal over FB alone.
                             if ASSERT_RELATIONS
                                 ok = check_relation_principal(combined, combined_al, combined_be, "α", fb, G, T; tag="RS-CONJ-CLOSE")
-                                if !ok
-                                    @printf("[RS-CONJ-CLOSE DIAG tid=%d] fb_row_scratch=%s  prev_row=%s\n",
-                                            Threads.threadid(), string(fb_row_scratch), string(prev_row))
-                                    @printf("[RS-CONJ-CLOSE DIAG]  neg_al=%d neg_be=%d  prev_al=%d prev_be=%d\n",
-                                            neg_al, neg_be, prev_al, prev_be)
-                                    @printf("[RS-CONJ-CLOSE DIAG]  RS_mumford=(c0=%d,c1=%d,v0=%d,v1=%d)  P0=%s  i0=%d\n",
-                                            lp_key[1], lp_key[2], lp_key[3], lp_key[4], string(P0), i0)
-                                end
                                 @assert ok "Conjugate-pair 1-LP closure emission failed principal divisor check (see diagnostic above)"
                             end
                             push!(alpha_vec, combined_al)
@@ -1276,21 +1265,42 @@ function phase2_worker(G::Div2, T::Div2,
                             cur_pt = P0
                         end
                     else
-                        # Store: atom(RS) + {i0→1} = neg_al·G + neg_be·T
-                        # Key is the full 4-tuple Mumford representation of the RS element.
-                        shared_lp1_conj[lp_key] = (copy(fb_row_scratch), neg_al, neg_be, raw_steps)
+                        # Store 1-LP entry keyed by the RS Mumford token.
+                        # We skip check_lp1_stored here because RS_upoly is not a real
+                        # affine point — it's a (c0,c1) Mumford token for the conjugate
+                        # pair {R,S}.  The closure check above will catch any error
+                        # when this entry is eventually paired.
+                        shared_lp1[lp_key] = (copy(fb_row_scratch), neg_al, neg_be, raw_steps)
                         cur_pt = P0
                     end
                 finally
                     unlock(shared_lp1_lock)
                 end
             else
-                # P0 off-FB: two unknowns (P0 and RS Mumford element).
-                # Skipping LP2 insertion — LP2Graph uses NTuple{2,Int} nodes and cannot
-                # accommodate the 4-tuple RS key without refactoring.  These steps are
-                # simply discarded (counted as 2-LP seen, no emission).
-                hits_lp2seen += 1
-                cur_pt = fb[rand(1:nF_cur)]
+                # 2-LP: unknowns are P0 (off-FB) and {R,S} Mumford pair.
+                emitted_rel = nothing
+                lock(shared_lp2_lock)
+                try
+                    emitted_rel = lp2_insert_edge!(
+                        shared_lp2,
+                        P0, RS_upoly,
+                        fb_row_scratch,
+                        al, be, ell)
+                finally
+                    unlock(shared_lp2_lock)
+                end
+                if emitted_rel !== nothing && emitted_rel.type === :even_cycle
+                    push!(alpha_vec, emitted_rel.alpha)
+                    push!(beta_vec,  emitted_rel.beta)
+                    push!(rel_rows,  emitted_rel.row)
+                    push!(rank_growth, (raw_steps, length(rel_rows)))
+                    hits_full    += 1
+                    hits_lp2emit += 1
+                    Threads.atomic_add!(rel_counter, 1)
+                    cur_pt = fb[rand(1:nF_cur)]
+                else
+                    cur_pt = fb[rand(1:nF_cur)]
+                end
             end
             continue   # done with this step
         end
@@ -1326,13 +1336,7 @@ function phase2_worker(G::Div2, T::Div2,
 
         elseif n_lp == 1
             hits_lp1 += 1
-            #lp_pt = iR == 0 ? R::NTuple{2,Int} : S::NTuple{2,Int} # before, wrong, apparently
-            # AFTER (correct):
-            lp_pt = i0 == 0 ? P0 :
-                iR == 0 ? R::NTuple{2,Int} :
-                S::NTuple{2,Int}
-
-
+            lp_pt = iR == 0 ? R::NTuple{2,Int} : S::NTuple{2,Int}
             empty!(fb_row_scratch)
             for idx in (i0, iR, iS)
                 idx == 0 && continue
@@ -1610,17 +1614,6 @@ function phase2_worker(G::Div2, T::Div2,
                         # Store as a new 1-LP entry for lp_other.
                         if ASSERT_RELATIONS
                             ok = check_lp1_stored(lp_other, new_row, new_neg_al, new_neg_be, fb, G, T; tag="2LP-CROSS-STORE")
-                            if !ok
-                                @printf("[2LP-CROSS-STORE DIAG tid=%d] lp_known=%s  lp_other=%s\n",
-                                        Threads.threadid(), string(lp_known), string(lp_other))
-                                @printf("[2LP-CROSS-STORE DIAG]  r_known=%s  na_known=%d  nb_known=%d\n",
-                                        string(r_known), na_known, nb_known)
-                                @printf("[2LP-CROSS-STORE DIAG]  fb_row_scratch=%s\n", string(fb_row_scratch))
-                                @printf("[2LP-CROSS-STORE DIAG]  new_row=%s  new_neg_al=%d  new_neg_be=%d\n",
-                                        string(new_row), new_neg_al, new_neg_be)
-                                @printf("[2LP-CROSS-STORE DIAG]  neg_al=%d neg_be=%d  lp2_a=%s  lp2_b=%s\n",
-                                        neg_al, neg_be, string(lp2_a), string(lp2_b))
-                            end
                             @assert ok "2-LP cross-store invariant failed — derived 1-LP row inconsistent (see diagnostic above)"
                         end
                         shared_lp1[lp_other] = (new_row, new_neg_al, new_neg_be, raw_steps)
@@ -1750,8 +1743,6 @@ function index_calculus_walk(G::Div2, T::Div2;
     shared_lp2       = LP2Graph()
     shared_lp2_lock  = ReentrantLock()
     shared_lp_doubled = Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int}}()
-    # Conjugate-pair table: keyed by full 4-tuple Mumford (c0,c1,v0,v1), never mixed with shared_lp1.
-    shared_lp1_conj  = Dict{NTuple{4,Int}, Tuple{Dict{Int,Int}, Int, Int, Int}}()
 
     if verbose
         println()
@@ -1781,7 +1772,6 @@ function index_calculus_walk(G::Div2, T::Div2;
             shared_lp1, shared_lp1_lock,
             shared_lp2, shared_lp2_lock,
             shared_lp_doubled,
-            shared_lp1_conj,
             thread_collectors[tid]; verbose=verbose)
     end
     # Collect results; a timed wait surfaces hangs as an error rather than

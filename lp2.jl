@@ -2,7 +2,7 @@
 #  lp2.jl  --  2-Large-Prime graph structures and helpers
 #
 #  Included by trial3_fixed.jl.  Requires: ell (global), fp/fpinv (from trial1),
-#  Div2/jac_* types, and the sparse_add!/lp2_subtract_rows helpers below.
+#  Div2/jac_* types, and the sparse_add!/lp2_subtract_rows helpers.
 # =============================================================================
 
 # ---------------------------------------------------------------------------
@@ -14,20 +14,6 @@
 #  is a sparse graph walk; when the endpoints coincide, the LPs cancel and we
 #  emit a pure factor-base relation.
 # ---------------------------------------------------------------------------
-struct LP2Edge
-    left::NTuple{2,Int}
-    right::NTuple{2,Int}
-    row::Dict{Int,Int}
-    alpha::Int
-    beta::Int
-    function LP2Edge(a::NTuple{2,Int}, b::NTuple{2,Int},
-                     row::Dict{Int,Int}, alpha::Int, beta::Int)
-        a <= b ? new(a, b, row, alpha, beta) : new(b, a, row, alpha, beta)
-    end
-end
-
-@inline lp2_other(e::LP2Edge, pt::NTuple{2,Int})::Union{NTuple{2,Int},Nothing} =
-    e.left == pt ? e.right : (e.right == pt ? e.left : nothing)
 
 function lp2_subtract_rows(dst::Dict{Int,Int}, src::Dict{Int,Int})
     for (j, v) in src
@@ -35,94 +21,6 @@ function lp2_subtract_rows(dst::Dict{Int,Int}, src::Dict{Int,Int})
         nv == 0 ? delete!(dst, j) : (dst[j] = nv)
     end
     return dst
-end
-
-function lp2_attach!(edges::Vector{LP2Edge},
-                     live::Vector{Bool},
-                     incidence::Dict{NTuple{2,Int}, Vector{Int}},
-                     left::NTuple{2,Int},
-                     right::NTuple{2,Int},
-                     row::Dict{Int,Int},
-                     alpha::Int,
-                     beta::Int,
-                     rel_rows::Vector{Dict{Int,Int}},
-                     alpha_vec::Vector{Int},
-                     beta_vec::Vector{Int},
-                     rel_counter::Threads.Atomic{Int})::Int
-    cur_left  = left
-    cur_right = right
-    cur_row   = copy(row)
-    cur_alpha = alpha
-    cur_beta  = beta
-
-    # One bounded fold only: if the new edge touches an existing live edge,
-    # cancel that shared LP once. This closes local triangles without letting
-    # the graph walk recurse or chase long cyclic components.
-    hit_eid = 0
-    hit_pt  = cur_left
-
-    if haskey(incidence, cur_left)
-        vec = incidence[cur_left]
-        while !isempty(vec) && !live[vec[end]]
-            pop!(vec)
-        end
-        if !isempty(vec)
-            hit_eid = vec[end]
-            hit_pt  = cur_left
-        end
-    end
-
-    if hit_eid == 0 && haskey(incidence, cur_right)
-        vec = incidence[cur_right]
-        while !isempty(vec) && !live[vec[end]]
-            pop!(vec)
-        end
-        if !isempty(vec)
-            hit_eid = vec[end]
-            hit_pt  = cur_right
-        end
-    end
-
-    if hit_eid == 0
-        e = LP2Edge(cur_left, cur_right, copy(cur_row), cur_alpha, cur_beta)
-        push!(edges, e)
-        push!(live, true)
-        eid = length(edges)
-        push!(get!(incidence, e.left, Int[]), eid)
-        push!(get!(incidence, e.right, Int[]), eid)
-        return 0
-    end
-
-    old = edges[hit_eid]
-    old_other = lp2_other(old, hit_pt)
-    old_other === nothing && (live[hit_eid] = false; return 0)
-
-    live[hit_eid] = false
-    cur_row   = lp2_subtract_rows(copy(cur_row), old.row)
-    cur_alpha = mod(cur_alpha - old.alpha, ell)
-    cur_beta  = mod(cur_beta  - old.beta, ell)
-
-    cur_other = hit_pt == cur_left ? cur_right : cur_left
-
-    if old_other == cur_other
-        if !isempty(cur_row) && !(cur_alpha == 0 && cur_beta == 0)
-            push!(alpha_vec, cur_alpha)
-            push!(beta_vec,  cur_beta)
-            push!(rel_rows,  cur_row)
-            Threads.atomic_add!(rel_counter, 1)
-        end
-        return 1
-    end
-
-    # Store the folded edge and stop. The next closure attempt happens only
-    # when a fresh relation later hits one of its endpoints.
-    e = LP2Edge(old_other, cur_other, cur_row, cur_alpha, cur_beta)
-    push!(edges, e)
-    push!(live, true)
-    eid = length(edges)
-    push!(get!(incidence, e.left, Int[]), eid)
-    push!(get!(incidence, e.right, Int[]), eid)
-    return 0
 end
 
 # ---------------------------------------------------------------------------
@@ -410,16 +308,9 @@ function lp2_insert_edge!(g::LP2Graph,
             # root-to-root edge label would violate the edge invariant and corrupt all
             # future cycle detections that traverse it.
             #
-            # Safe fix: don't merge.  Insert new singleton roots for any nodes not yet
-            # in the graph so future edges have something to attach to.
-            # We only emit relations from same-tree cycles, which are algebraically clean.
-            if node_L === nothing
-                g.nodes[L] = LP2Node(nothing, 0, Dict{Int,Int}(), 0, 0)
-            end
-            if node_R === nothing
-                g.nodes[R] = LP2Node(nothing, 0, Dict{Int,Int}(), 0, 0)
-            end
-            # (Both already in separate trees — no merge, no emission.)
+            # Don't merge. Both nodes are already in the graph; nothing to do.
+            # Relations from same-tree cycles are algebraically clean; cross-tree
+            # edges are counted by the caller's 2lp_cross statistic and discarded.
         end
 
         # Integrity check: verify no cycle was just introduced for the two nodes we touched.
