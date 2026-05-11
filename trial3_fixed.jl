@@ -32,6 +32,11 @@ const ASSERT_RELATIONS = true
 # Only lower this if you are genuinely OOM.
 const MAX_LP1_ENTRIES = 50_000_000
 
+# Hard caps for 2-LP memory growth.  These are intentionally conservative so
+# a runaway LP graph cannot consume the whole machine.
+const DEFAULT_MAX_LP2_NODES      = 250_000
+const DEFAULT_MAX_LP2_CONJ_NODES  = 100_000
+
 # Maximum rank-growth samples stored per thread (diagnostic only; not used in linear algebra).
 const MAX_RANK_GROWTH_SAMPLES = 10_000
 
@@ -607,10 +612,10 @@ function asymptotic_report(rel_rows::Vector{Dict{Int,Int}}, nF::Int;
                            prefixes::Vector{Int}=Int[],
                            hits_total::Int=0,
                            walk_steps::Int=0,
-                           hits_emitted::Int=0,
-                           hits_0lp::Int=0,
-                           hits_1lp_steps::Int=0,
-                           hits_2lp_emits::Int=0,
+                           hits_full::Int=0,
+                           hits_tree::Int=0,
+                           hits_lp::Int=0,
+                           hits_lp2::Int=0,
                            verbose::Bool=true)
     nrel = length(rel_rows)
     nrel == 0 && return nothing
@@ -726,10 +731,10 @@ function asymptotic_report(rel_rows::Vector{Dict{Int,Int}}, nF::Int;
         @printf("  walk yield: %d valid steps / %d total = %.4f\n",
                 hits_total, walk_steps, walk_steps == 0 ? 0.0 : hits_total / walk_steps)
         if hits_total > 0
-            @printf("  relation mix: emitted_total=%d, 0LP=%d, 1LP-steps=%d, 2LP-emits=%d\n",
-                    hits_emitted, hits_0lp, hits_1lp_steps, hits_2lp_emits)
-            @printf("  normalized relation rates: emitted_total/valid=%.4f, 0LP/valid=%.4f, 2LP-emits/valid=%.4f\n",
-                    hits_emitted / hits_total, hits_0lp / hits_total, hits_2lp_emits / hits_total)
+            @printf("  relation mix: full=%d, tree=%d, LP-partials=%d, LP-pairs=%d\n",
+                    hits_full, hits_tree, hits_lp, hits_lp2)
+            @printf("  normalized relation rates: full/valid=%.4f, tree/valid=%.4f, LP-pairs/valid=%.4f\n",
+                    hits_full / hits_total, hits_tree / hits_total, hits_lp2 / hits_total)
         end
 
         for s in prefix_stats
@@ -809,6 +814,29 @@ function sparse_add!(dst::Dict{Int,Int}, src::Dict{Int,Int}; sign::Int = 1)
         end
     end
     return dst
+end
+
+function lp2_graph_node_count(g)
+    for nm in propertynames(g)
+        if nm === :nodes || nm === :vertices
+            obj = getproperty(g, nm)
+            return obj isa AbstractDict || obj isa AbstractVector ? length(obj) : 0
+        end
+    end
+    return typemax(Int)
+end
+
+function clear_lp2_graph!(g)
+    for nm in propertynames(g)
+        if nm === :nodes || nm === :vertices
+            obj = getproperty(g, nm)
+            if obj isa AbstractDict || obj isa AbstractVector
+                empty!(obj)
+            end
+            return nothing
+        end
+    end
+    return nothing
 end
 
 
@@ -1199,8 +1227,11 @@ function phase2_worker(G::Div2, T::Div2,
                        # MUST be separate from shared_lp1 (affine-point keys) so the 2-LP
                        # cross-lookup never confuses a Mumford token for a single atom.
                        shared_lp1_conj::Dict{NTuple{4,Int}, Tuple{Dict{Int,Int}, Int, Int, Int}},
-                       shared_lp2_conj::LP2ConjGraph,          # ← NEW
-                       shared_lp2_conj_lock::ReentrantLock,    # ← NEW
+                       shared_lp2_conj::LP2ConjGraph,
+                       shared_lp2_conj_lock::ReentrantLock,
+                       enable_lp2_conj::Bool,
+                       max_lp2_nodes::Int,
+                       max_lp2_conj_nodes::Int,
                        # per-thread LP residual collector (write-only from this thread)
                        lp_col::LPResidualCollector;
                        verbose::Bool = true)
@@ -1234,6 +1265,7 @@ function phase2_worker(G::Div2, T::Div2,
     hits_lp2emit  = 0
     hits_lp2_cross = 0   # 2-LP steps resolved via 1-LP table cross-lookup
     hits_lp2_odd  = 0   # odd-parity 2-LP cycles stored/closed in shared_lp_doubled
+    hits_lp2_cap  = 0    # 2-LP insertions skipped because the graph hit its memory cap
     hits_skip     = 0
     raw_steps     = 0
 
@@ -1402,16 +1434,26 @@ function phase2_worker(G::Div2, T::Div2,
                 lp2c_fb = Dict{Int,Int}()   # no FB point in this step
 
                 emitted_conj = nothing
-                lock(shared_lp2_conj_lock)
-                try
-                    emitted_conj = lp2c_insert_edge!(
-                        shared_lp2_conj,
-                        lp2c_L, lp2c_R,
-                        lp2c_fb,
-                        al, be,
-                        ell)
-                finally
-                    unlock(shared_lp2_conj_lock)
+                if enable_lp2_conj
+                    if lp2_graph_node_count(shared_lp2_conj) >= max_lp2_conj_nodes
+                        hits_lp2_cap += 1
+                    else
+                        lock(shared_lp2_conj_lock)
+                        try
+                            if lp2_graph_node_count(shared_lp2_conj) < max_lp2_conj_nodes
+                                emitted_conj = lp2c_insert_edge!(
+                                    shared_lp2_conj,
+                                    lp2c_L, lp2c_R,
+                                    lp2c_fb,
+                                    al, be,
+                                    ell)
+                            else
+                                hits_lp2_cap += 1
+                            end
+                        finally
+                            unlock(shared_lp2_conj_lock)
+                        end
+                    end
                 end
 
                 if emitted_conj !== nothing && emitted_conj.type === :even_cycle
@@ -1630,15 +1672,24 @@ function phase2_worker(G::Div2, T::Div2,
             # We pass al/be (not neg_al/neg_be): the edge invariant is
             #   atom(L) + atom(R) + fb_row = -al·G - be·T
             # so alpha/beta stored on edges are the raw walk values.
+            if lp2_graph_node_count(shared_lp2) >= max_lp2_nodes
+                hits_lp2_cap += 1
+                cur_pt = fb[rand(1:nF_cur)]
+                continue
+            end
             emitted_rel = nothing
             lock(shared_lp2_lock)
             try
-                emitted_rel = lp2_insert_edge!(
-                    shared_lp2,
-                    lp2_a, lp2_b,
-                    fb_row_scratch,
-                    al, be,
-                    ell)
+                if lp2_graph_node_count(shared_lp2) < max_lp2_nodes
+                    emitted_rel = lp2_insert_edge!(
+                        shared_lp2,
+                        lp2_a, lp2_b,
+                        fb_row_scratch,
+                        al, be,
+                        ell)
+                else
+                    hits_lp2_cap += 1
+                end
             finally
                 unlock(shared_lp2_lock)
             end
@@ -1853,9 +1904,9 @@ function phase2_worker(G::Div2, T::Div2,
 
     elapsed_total = time() - t_worker_start
     if verbose
-        @printf("[thread %2d | DONE | t=%.1fs] raw=%d valid=%d 0lp=%d 1lp_emit=%d 1lp_step=%d 2lp_seen=%d 2lp_emit=%d 2lp_cross=%d 2lp_odd=%d skip=%d  rels_local=%d\n",
+        @printf("[thread %2d | DONE | t=%.1fs] raw=%d valid=%d 0lp=%d 1lp_emit=%d 1lp_step=%d 2lp_seen=%d 2lp_emit=%d 2lp_cross=%d 2lp_odd=%d 2lp_cap=%d skip=%d  rels_local=%d\n",
                 tid, elapsed_total, raw_steps, hits_total, hits_0lp, hits_1lp_emit,
-                hits_lp1, hits_lp2seen, hits_lp2emit, hits_lp2_cross, hits_lp2_odd, hits_skip, length(rel_rows))
+                hits_lp1, hits_lp2seen, hits_lp2emit, hits_lp2_cross, hits_lp2_odd, hits_lp2_cap, hits_skip, length(rel_rows))
         @printf("           phi-valid rate: %.4f%%  |  full-rel/valid: %.4f%%  |  steps/full: %.1f\n",
                 100.0 * hits_total / max(1, raw_steps),
                 100.0 * hits_full / max(1, hits_total),
@@ -1874,7 +1925,7 @@ function phase2_worker(G::Div2, T::Div2,
             hits_total=hits_total, hits_full=hits_full, hits_0lp=hits_0lp,
             hits_lp1=hits_lp1, hits_1lp_emit=hits_1lp_emit, hits_lp2seen=hits_lp2seen,
             hits_lp2emit=hits_lp2emit, hits_lp2_cross=hits_lp2_cross, hits_lp2_odd=hits_lp2_odd,
-            hits_skip=hits_skip,
+            hits_lp2_cap=hits_lp2_cap, hits_skip=hits_skip,
             sample_rels=sample_rels,
             total_steps=raw_steps,
             smooth_hist=smooth_hist,
@@ -2019,7 +2070,10 @@ function index_calculus_walk(G::Div2, T::Div2;
                              analyze_matrix::Bool = true,
                              asymptotic::Bool     = true,
                              solve::Bool          = true,
-                             guided::Bool         = true)
+                             guided::Bool         = true,
+                             enable_lp2_conj::Bool = true,
+                             max_lp2_nodes::Int = DEFAULT_MAX_LP2_NODES,
+                             max_lp2_conj_nodes::Int = DEFAULT_MAX_LP2_CONJ_NODES)
 
     t_walk_start = time()
 
@@ -2115,6 +2169,9 @@ function index_calculus_walk(G::Div2, T::Div2;
                 p_smooth_step)
         @printf("  step_cap per thread:    %d  (derived from smoothness geometry)\n",
                 step_cap ÷ Threads.nthreads())
+        @printf("  2-LP cap (affine):      %d nodes\n", max_lp2_nodes)
+        @printf("  2-LP cap (conj):        %d nodes\n", max_lp2_conj_nodes)
+        @printf("  conj LP2 enabled:       %s\n", string(enable_lp2_conj))
         @printf("  threads:                %d\n", Threads.nthreads())
         @printf("  launching walkers at:   %s\n", string(Dates.now()))
         flush(stdout)
@@ -2133,7 +2190,8 @@ function index_calculus_walk(G::Div2, T::Div2;
             shared_lp2, shared_lp2_lock,
             shared_lp_doubled,
             shared_lp1_conj,
-            shared_lp2_conj, shared_lp2_conj_lock,   # ← NEW
+            shared_lp2_conj, shared_lp2_conj_lock,
+            enable_lp2_conj, max_lp2_nodes, max_lp2_conj_nodes,
             thread_collectors[tid]; verbose=verbose)
     end
     # Collect results; a timed wait surfaces hangs as an error rather than
@@ -2243,7 +2301,7 @@ function index_calculus_walk(G::Div2, T::Div2;
         @printf("    weight-pruned:       %d\n",  shared_lp2.n_weight_pruned)
         @printf("    parity-pruned:       %d\n",  shared_lp2.n_parity_pruned)
         @printf("    odd-cycle stored:    %d\n",  shared_lp2.n_odd_stored)
-        @printf("    LP nodes in graph:   %d\n",  length(shared_lp2.nodes))
+        @printf("    LP nodes in graph:   %d\n",  lp2_graph_node_count(shared_lp2))
         @printf("    lp_doubled residual: %d entries\n", length(shared_lp_doubled))
         @printf("  2-LP graph stats (QLP/conj):\n")
         @printf("    edges inserted:      %d\n",  shared_lp2_conj.n_edges_inserted)
@@ -2284,10 +2342,10 @@ function index_calculus_walk(G::Div2, T::Div2;
     asymptotic && asymptotic_report(rel_rows, nF;
                                     hits_total=hits_total,
                                     walk_steps=sum(thread_steps),
-                                    hits_emitted=hits_full,
-                                    hits_0lp=hits_0lp,
-                                    hits_1lp_steps=hits_lp1,
-                                    hits_2lp_emits=hits_lp2emit,
+                                    hits_full=hits_full,
+                                    hits_tree=hits_0lp,
+                                    hits_lp=hits_lp1,
+                                    hits_lp2=hits_lp2emit,
                                     verbose=verbose)
 
     # ── LP residual statistics (ChatGPT analysis) ────────────────────────────
@@ -2315,7 +2373,7 @@ function index_calculus_walk(G::Div2, T::Div2;
                       shortfall = false)
 
     empty!(shared_lp1)
-    empty!(shared_lp2.nodes)
+    clear_lp2_graph!(shared_lp2)
     empty!(all_samples)
     GC.gc()
 
@@ -2512,7 +2570,34 @@ end
 
 
 
-function main2()
+function parse_trial3_cli(args::Vector{String})
+    fb_size::Union{Nothing,Int} = nothing
+    enable_lp2_conj = true
+    max_lp2_nodes = DEFAULT_MAX_LP2_NODES
+    max_lp2_conj_nodes = DEFAULT_MAX_LP2_CONJ_NODES
+
+    for arg in args
+        if arg == "--no-conj"
+            enable_lp2_conj = false
+        elseif startswith(arg, "--fb-size=")
+            fb_size = parse(Int, split(arg, "=", limit=2)[2])
+        elseif startswith(arg, "--max-lp2-nodes=")
+            max_lp2_nodes = parse(Int, split(arg, "=", limit=2)[2])
+        elseif startswith(arg, "--max-lp2-conj-nodes=")
+            max_lp2_conj_nodes = parse(Int, split(arg, "=", limit=2)[2])
+        end
+    end
+
+    return (fb_size=fb_size,
+            enable_lp2_conj=enable_lp2_conj,
+            max_lp2_nodes=max_lp2_nodes,
+            max_lp2_conj_nodes=max_lp2_conj_nodes)
+end
+
+function main2(; fb_size::Union{Nothing,Int}=nothing,
+               enable_lp2_conj::Bool=true,
+               max_lp2_nodes::Int=DEFAULT_MAX_LP2_NODES,
+               max_lp2_conj_nodes::Int=DEFAULT_MAX_LP2_CONJ_NODES)
     t_main_start = time()
     println("="^70)
     println("  trial2: Markov-walk phi-relation index calculus")
@@ -2567,10 +2652,14 @@ function main2()
     # Main run
     println("── Index calculus walk ─────────────────────────────────────────────")
     t_walk = time()
+    fb_run = fb_size === nothing ? fb_auto : fb_size
     wres = index_calculus_walk(G, T;
-                                fb_size=fb_auto,
+                                fb_size=fb_run,
                                 verbose=true, analyze_matrix=true, asymptotic=true,
-                                solve=true, guided=true)
+                                solve=true, guided=true,
+                                enable_lp2_conj=enable_lp2_conj,
+                                max_lp2_nodes=max_lp2_nodes,
+                                max_lp2_conj_nodes=max_lp2_conj_nodes)
     t_walk_done = time() - t_walk
     k_rec = wres === nothing ? nothing : wres.k
 
@@ -2587,4 +2676,14 @@ function main2()
     println("="^70)
 end
 
-main2()
+function main2_from_argv()
+    opts = parse_trial3_cli(ARGS)
+    main2(; fb_size=opts.fb_size,
+          enable_lp2_conj=opts.enable_lp2_conj,
+          max_lp2_nodes=opts.max_lp2_nodes,
+          max_lp2_conj_nodes=opts.max_lp2_conj_nodes)
+end
+
+if abspath(PROGRAM_FILE) == @__FILE__
+    main2_from_argv()
+end
