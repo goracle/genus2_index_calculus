@@ -1336,46 +1336,17 @@ function phase2_worker(G::Div2, T::Div2,
     sample_rels = Vector{Tuple{Div2,Dict{Int,Int},Int,Int,NTuple{2,Int},NTuple{2,Int},NTuple{2,Int}}}()
     rank_growth = Tuple{Int,Int}[]
 
-    # ── Batch walk precompute ────────────────────────────────────────────────────
-    # Instead of calling jac_add once per hot-loop iteration (allocating 2+
-    # Vector{Int} objects every step under GC), we precompute BATCH_SIZE steps
-    # at a time into a fixed-length array, then consume them by index.
-    # This keeps the hot loop mostly on already-materialized state and avoids
-    # drip-feeding lots of tiny transient allocations into the GC.
-    const_BATCH_SIZE = 50_000   # bigger batches reduce refill churn and keep the walk steadier
-    batch_D     = Vector{Div2}(undef, const_BATCH_SIZE)
-    batch_alpha = Vector{Int}(undef, const_BATCH_SIZE)
-    batch_beta  = Vector{Int}(undef, const_BATCH_SIZE)
-
-    function fill_batch!(D::Div2, a::Int, b::Int)
-        @inbounds for i in 1:const_BATCH_SIZE
-            si     = rand(1:N_STEPS)
-            D      = jac_add(D, step_D[si])
-            a      = mod(a + step_a[si], ell)
-            b      = mod(b + step_b[si], ell)
-            batch_D[i]     = D
-            batch_alpha[i] = a
-            batch_beta[i]  = b
-        end
-        return D, a, b
-    end
-
-    D_cur, alpha_cur, beta_cur = fill_batch!(D_cur, alpha_cur, beta_cur)
-    batch_pos = 1
-    # ────────────────────────────────────────────────────────────────────────────
-
+    # Streaming walk state: one reusable divisor and scalars per worker.
+    # No giant per-thread batch buffers; the current state is updated in place.
     while rel_counter[] < rel_target && raw_steps < step_cap
         raw_steps += 1
 
-        # Refill batch when exhausted.
-        if batch_pos > const_BATCH_SIZE
-            D_cur, alpha_cur, beta_cur = fill_batch!(D_cur, alpha_cur, beta_cur)
-            batch_pos = 1
-        end
-        D_cur     = batch_D[batch_pos]
-        al        = batch_alpha[batch_pos]
-        be        = batch_beta[batch_pos]
-        batch_pos += 1
+        si = rand(1:N_STEPS)
+        D_cur     = jac_add(D_cur, step_D[si])
+        alpha_cur = mod(alpha_cur + step_a[si], ell)
+        beta_cur  = mod(beta_cur + step_b[si], ell)
+        al        = alpha_cur
+        be        = beta_cur
 
         # D_cur must be a genuine degree-2 divisor (not identity or degree-1).
         # fp3_deg is the SVector-typed version of pdeg for Fp3 = SVector{3,Int}.
@@ -2263,50 +2234,50 @@ function index_calculus_walk(G::Div2, T::Div2;
         flush(stdout)
     end
 
-    t_phase2_start = time()
-    tasks = Vector{Task}(undef, Threads.nthreads())
+    # ---------------------------------------------------------------------------
+    #  Phase 2: persistent long-lived walker tasks with channel-based scatter/gather
+    #
+    #  Workers are spawned ONCE and run until rel_target is globally satisfied or
+    #  step_cap is exhausted.  Results are pushed to a shared channel and gathered
+    #  after all workers complete.  No task is interrupted, polled, or respawned.
+    #
+    #  The cooperative stopping mechanism (rel_counter[] >= rel_target) is
+    #  unchanged — workers check it in their inner loop and exit naturally.
+    # ---------------------------------------------------------------------------
+
     # One collector per thread: no locking needed during walk, merged after.
     thread_collectors = [LPResidualCollector() for _ in 1:Threads.nthreads()]
+
+    # Buffered to nthreads so no worker ever blocks on put!.
+    worker_results_ch = Channel{Any}(Threads.nthreads())
+
+    t_phase2_start = time()
+
     for tid in 1:Threads.nthreads()
-        tasks[tid] = Threads.@spawn phase2_worker(
-            G, T, fb, pt2idx,
-            step_D, step_a, step_b,
-            rel_counter, rel_target, step_cap ÷ Threads.nthreads(),
-            shared_lp1, shared_lp1_lock,
-            shared_lp2, shared_lp2_lock,
-            shared_lp_doubled,
-            shared_lp1_conj, shared_lp1_conj_lock,
-            shared_lp2_conj, shared_lp2_conj_lock,
-            enable_lp2_conj, max_lp2_nodes, max_lp2_conj_nodes,
-            thread_collectors[tid]; verbose=verbose)
-    end
-    # Collect results; a timed wait surfaces hangs as an error rather than
-    # blocking forever.  Timeout is derived: enough wall-clock time for each
-    # thread to exhaust its step_cap at a conservative throughput floor.
-    # Timeout: derived from step_cap and a conservative jac_add throughput estimate.
-    # Each raw walk step does at most a handful of jac_add calls.  We use the
-    # observed phi-validity rate (~(nF/n_all)^2) to estimate useful-step density,
-    # then bound total wall time as step_cap / (estimated steps/s).
-    # "Estimated steps/s" = 1 / (cost_per_jac_add_secs * jac_adds_per_step).
-    # We set cost_per_jac_add_secs conservatively (slow end for genus-2 over F_p
-    # with p < 2^20) and jac_adds_per_step to a typical upper bound.
-    cost_per_jac_add_secs  = 1e-5   # 10 µs — deliberately pessimistic for small p
-    jac_adds_per_raw_step  = 6      # build_phi + phi_residual + a few eval_f checks
-    secs_per_raw_step_est  = cost_per_jac_add_secs * jac_adds_per_raw_step
-    timeout_secs = (step_cap / Threads.nthreads()) * secs_per_raw_step_est * 4.0
-    timed_out = falses(length(tasks))
-    for (i, t) in enumerate(tasks)
-        status = timedwait(() -> istaskdone(t), timeout_secs)
-        if status === :timed_out
-            timed_out[i] = true
-            @printf("[WARNING] task %d did not finish within %.0fs timeout\n", i, timeout_secs)
+        Threads.@spawn begin
+            result = phase2_worker(
+                G, T, fb, pt2idx,
+                step_D, step_a, step_b,
+                rel_counter, rel_target, step_cap ÷ Threads.nthreads(),
+                shared_lp1, shared_lp1_lock,
+                shared_lp2, shared_lp2_lock,
+                shared_lp_doubled,
+                shared_lp1_conj, shared_lp1_conj_lock,
+                shared_lp2_conj, shared_lp2_conj_lock,
+                enable_lp2_conj, max_lp2_nodes, max_lp2_conj_nodes,
+                thread_collectors[tid]; verbose=verbose)
+            put!(worker_results_ch, result)
         end
     end
-    any(timed_out) && @printf("[WARNING] %d/%d walker tasks timed out; results will be partial\n",
-                               sum(timed_out), length(tasks))
-    results = [istaskdone(t) ? fetch(t) : nothing for t in tasks]
-    results = filter(!isnothing, results)
-    isempty(results) && error("All walker tasks timed out — rel_target unreachable at current smoothness rate")
+
+    # Gather: block until all workers have pushed their result.
+    # No polling, no timedwait, no spurious interruption.
+    results = Vector{Any}(undef, Threads.nthreads())
+    for i in 1:Threads.nthreads()
+        results[i] = take!(worker_results_ch)
+    end
+    close(worker_results_ch)
+
     t_phase2_done = time() - t_phase2_start
 
     # Seed accumulators with phase-1 banked relations.
