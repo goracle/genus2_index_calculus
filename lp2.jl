@@ -133,7 +133,7 @@ const MAX_LP2_ROW_WEIGHT  = 24   # max nonzeros in an emitted 2-LP relation
 # Two graphs (affine + conj) × this cap = ~50 MB total for LP2 state.
 const MAX_LP2_NODES = 50_000
 
-mutable struct LP2Node
+struct LP2Node
     parent   ::Union{NTuple{2,Int}, Nothing}   # nothing = this node is a root
     depth    ::Int
     # Edge to parent: at most 1 FB entry per 2-LP step (one of P0/R/S is in FB).
