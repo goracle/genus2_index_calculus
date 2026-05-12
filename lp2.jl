@@ -355,4 +355,6 @@ function lp2_prune_path!(g::LP2Graph, start::NTuple{2,Int})
         steps > MAX_LP2_DEPTH + 1 && break
         cur = next
     end
+    @printf("[LP2 Prune] Removed %d nodes. Current graph size: %d\n", 
+            nodes_removed, length(g.nodes))
 end

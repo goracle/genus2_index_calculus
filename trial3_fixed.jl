@@ -1341,6 +1341,12 @@ function phase2_worker(G::Div2, T::Div2,
     while rel_counter[] < rel_target && raw_steps < step_cap
         raw_steps += 1
 
+        # In trial3_fixed.jl, inside the walk loop
+        if length(shared_lp2.nodes) > (max_lp2_nodes * 0.9)
+            @printf("[MEMORY WARNING] LP2 nodes at 90%% capacity (%d/%d). CPU may dip during GC.\n", 
+                    length(shared_lp2.nodes), max_lp2_nodes)
+        end
+
         si = rand(1:N_STEPS)
         D_cur     = jac_add(D_cur, step_D[si])
         alpha_cur = mod(alpha_cur + step_a[si], ell)
@@ -2725,5 +2731,6 @@ function main2_from_argv()
 end
 
 if abspath(PROGRAM_FILE) == @__FILE__
+    # Assuming main2_from_argv() is your entry point in trial3_fixed.jl
     main2_from_argv()
 end
