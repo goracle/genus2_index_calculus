@@ -40,20 +40,35 @@ mutable struct LPResidualCollector
     # Closure events (1-LP pair that cancelled)
     closure_steps::Vector{Int}            # raw_step when a 1-LP closure fired
     closure_gaps ::Vector{Int}            # raw_step gap since the first half
+
+    # Hard cap on lp_points / lp2_pairs records (per thread).
+    # Diagnostics need only O(thousands) samples; without a cap these vectors
+    # grow at ~50% of raw step rate and exhaust memory before any relation is found.
+    max_lp1_records ::Int
+    max_lp2_records ::Int
 end
 
-function LPResidualCollector()
+const DEFAULT_MAX_LP1_RECORDS = 100_000
+const DEFAULT_MAX_LP2_RECORDS =  50_000
+
+function LPResidualCollector(;
+        max_lp1_records::Int = DEFAULT_MAX_LP1_RECORDS,
+        max_lp2_records::Int = DEFAULT_MAX_LP2_RECORDS)
     LPResidualCollector(
         NTuple{2,Int}[],
         Int[], Int[], Int[],
         NTuple{2, NTuple{2,Int}}[],
         Int[],
-        Int[], Int[]
+        Int[], Int[],
+        max_lp1_records, max_lp2_records
     )
 end
 
 function merge_collectors(cols::Vector{LPResidualCollector})::LPResidualCollector
-    merged = LPResidualCollector()
+    max1 = isempty(cols) ? DEFAULT_MAX_LP1_RECORDS : maximum(c.max_lp1_records for c in cols)
+    max2 = isempty(cols) ? DEFAULT_MAX_LP2_RECORDS : maximum(c.max_lp2_records for c in cols)
+    merged = LPResidualCollector(; max_lp1_records = max1 * length(cols),
+                                    max_lp2_records = max2 * length(cols))
     for c in cols
         append!(merged.lp_points,    c.lp_points)
         append!(merged.lp_alphas,    c.lp_alphas)
@@ -72,6 +87,7 @@ function record_lp1!(col::LPResidualCollector,
                      lp_pt::NTuple{2,Int},
                      alpha::Int, beta::Int,
                      raw_step::Int)
+    length(col.lp_points) >= col.max_lp1_records && return
     push!(col.lp_points, lp_pt)
     push!(col.lp_alphas, alpha)
     push!(col.lp_betas,  beta)
@@ -81,6 +97,7 @@ end
 function record_lp2!(col::LPResidualCollector,
                      left::NTuple{2,Int}, right::NTuple{2,Int},
                      raw_step::Int)
+    length(col.lp2_pairs) >= col.max_lp2_records && return
     pair = left <= right ? (left, right) : (right, left)
     push!(col.lp2_pairs, pair)
     push!(col.lp2_steps, raw_step)

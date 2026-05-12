@@ -166,7 +166,7 @@ function find_first_kernel_row(rel_rows  ::Vector{Dict{Int,Int}},
     Mfull = Nemo.matrix(F, m, nF, entries_full)
     m - Nemo.rank(Mfull) < 1 && return nothing   # no kernel at all
 
-    lo, hi = max(1, nF - 10), m   # start just below nF — typical transition zone
+    lo, hi = min(m, max(1, nF - 10)), m   # start just below nF — but never past m
     # Ensure lo truly has no kernel.
     while lo >= 1
         entries = zeros(Int, lo * nF)

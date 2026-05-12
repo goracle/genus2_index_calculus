@@ -47,6 +47,11 @@ const ASSERT_RELATIONS = true
 # Only lower this if you are genuinely OOM.
 const MAX_LP1_ENTRIES = 50_000_000
 
+# Conjugate-RS table cap: keyspace is ~p^2 so closures are astronomically rare.
+# Storing more than O(sqrt(ell)) entries is wasted memory — every entry is a
+# permanently-live Dict until a closure fires (which essentially never happens).
+const MAX_LP1_CONJ_ENTRIES = 500_000
+
 # Hard caps for 2-LP memory growth.  These are intentionally conservative so
 # a runaway LP graph cannot consume the whole machine.
 const DEFAULT_MAX_LP2_NODES      = 250_000
@@ -1241,7 +1246,8 @@ function phase2_worker(G::Div2, T::Div2,
                        # Conjugate-pair table: keyed by (c0,c1,v0,v1) full Mumford representation.
                        # MUST be separate from shared_lp1 (affine-point keys) so the 2-LP
                        # cross-lookup never confuses a Mumford token for a single atom.
-                       shared_lp1_conj::Dict{NTuple{4,Int}, Tuple{Dict{Int,Int}, Int, Int, Int}},
+                       shared_lp1_conj::Dict{NTuple{4,Int}, Tuple{Int, Int, Int, Int}},
+                       shared_lp1_conj_lock::ReentrantLock,
                        shared_lp2_conj::LP2ConjGraph,
                        shared_lp2_conj_lock::ReentrantLock,
                        enable_lp2_conj::Bool,
@@ -1413,28 +1419,24 @@ function phase2_worker(G::Div2, T::Div2,
                 hits_lp2seen -= 1
                 hits_lp1 += 1
 
-                empty!(fb_row_scratch)
-                fb_row_scratch[i0] = 1   # only P0 is known; RS is the single unknown
-
-                lock(shared_lp1_lock)
+                lock(shared_lp1_conj_lock)
                 try
                     if haskey(shared_lp1_conj, lp_key)
-                        prev_row, prev_al, prev_be, prev_step = shared_lp1_conj[lp_key]
-                        combined    = copy(fb_row_scratch)
-                        lp2_subtract_rows(combined, prev_row)
+                        prev_col, prev_al, prev_be, prev_step = shared_lp1_conj[lp_key]
+                        # combined row: current {i0=>1} minus stored {prev_col=>1}
+                        # If i0 == prev_col they cancel → empty row (trivial relation, skip)
                         combined_al = mod(neg_al - prev_al, ell)
                         combined_be = mod(neg_be - prev_be, ell)
                         delete!(shared_lp1_conj, lp_key)
-                        # The RS Mumford element cancelled; combined is a pure FB relation.
-                        # Invariant: current  →  fb_row_scratch + atom(RS) = neg_al·G + neg_be·T
-                        #            stored   →  prev_row       + atom(RS) = prev_al·G + prev_be·T
-                        #            diff     →  (fb_row_scratch - prev_row) = (neg_al-prev_al)·G + ...
-                        if !isempty(combined) && !(combined_al == 0 && combined_be == 0)
+                        if !(combined_al == 0 && combined_be == 0) && i0 != prev_col
+                            combined = Dict{Int,Int}()
+                            combined[i0]       =  1
+                            combined[prev_col] = -1
                             if ASSERT_RELATIONS
                                 ok = check_relation_principal(combined, combined_al, combined_be, "α", fb, G, T; tag="RS-CONJ-CLOSE")
                                 if !ok
-                                    @printf("[RS-CONJ-CLOSE DIAG tid=%d] fb_row_scratch=%s  prev_row=%s\n",
-                                            Threads.threadid(), string(fb_row_scratch), string(prev_row))
+                                    @printf("[RS-CONJ-CLOSE DIAG tid=%d] i0=%d prev_col=%d\n",
+                                            Threads.threadid(), i0, prev_col)
                                     @printf("[RS-CONJ-CLOSE DIAG]  neg_al=%d neg_be=%d  prev_al=%d prev_be=%d\n",
                                             neg_al, neg_be, prev_al, prev_be)
                                     @printf("[RS-CONJ-CLOSE DIAG]  RS_mumford=(c0=%d,c1=%d,v0=%d,v1=%d)  P0=%s  i0=%d\n",
@@ -1454,16 +1456,13 @@ function phase2_worker(G::Div2, T::Div2,
                             cur_pt = P0
                         end
                     else
-                        # Store: atom(RS) + {i0->1} = neg_al·G + neg_be·T
-                        # Key is the full 4-tuple Mumford representation of the RS element.
-                        if length(shared_lp1_conj) >= MAX_LP1_ENTRIES
-                            delete!(shared_lp1_conj, first(keys(shared_lp1_conj)))
-                        end
-                        shared_lp1_conj[lp_key] = (copy(fb_row_scratch), neg_al, neg_be, raw_steps)
+                        # Store: atom(RS) + {i0=>1} = neg_al·G + neg_be·T
+                        # Store i0 as a plain Int — the FB contribution is always exactly 1 entry.
+                        shared_lp1_conj[lp_key] = (i0, neg_al, neg_be, raw_steps)
                         cur_pt = P0
                     end
                 finally
-                    unlock(shared_lp1_lock)
+                    unlock(shared_lp1_conj_lock)
                 end
             else
                 # P0 off-FB: two unknowns — affine P0 and QLP (RS Mumford element).
@@ -2202,7 +2201,8 @@ function index_calculus_walk(G::Div2, T::Div2;
     shared_lp2_lock  = ReentrantLock()
     shared_lp_doubled = Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int}}()
     # Conjugate-pair 1-LP table: keyed by full 4-tuple Mumford, never mixed with shared_lp1.
-    shared_lp1_conj  = Dict{NTuple{4,Int}, Tuple{Dict{Int,Int}, Int, Int, Int}}()
+    shared_lp1_conj      = Dict{NTuple{4,Int}, Tuple{Int, Int, Int, Int}}()
+    shared_lp1_conj_lock = ReentrantLock()   # separate from shared_lp1_lock
     # Extension-field 2-LP graph: nodes are LPKey = Union{NTuple{2,Int}, NTuple{4,Int}}.
     shared_lp2_conj      = LP2ConjGraph()                               # ← NEW
     shared_lp2_conj_lock = ReentrantLock()                              # ← NEW
@@ -2238,7 +2238,7 @@ function index_calculus_walk(G::Div2, T::Div2;
             shared_lp1, shared_lp1_lock,
             shared_lp2, shared_lp2_lock,
             shared_lp_doubled,
-            shared_lp1_conj,
+            shared_lp1_conj, shared_lp1_conj_lock,
             shared_lp2_conj, shared_lp2_conj_lock,
             enable_lp2_conj, max_lp2_nodes, max_lp2_conj_nodes,
             thread_collectors[tid]; verbose=verbose)
