@@ -836,6 +836,15 @@ function sparse_add!(dst::Dict{Int,Int}, src::Dict{Int,Int}; sign::Int = 1)
     return dst
 end
 
+function sparse_copy!(dst::Dict{Int,Int}, src::Dict{Int,Int})
+    empty!(dst)
+    sizehint!(dst, length(src))
+    for (k, v) in src
+        dst[k] = v
+    end
+    return dst
+end
+
 function lp2_graph_node_count(g)
     for nm in propertynames(g)
         if nm === :nodes || nm === :vertices
@@ -1069,66 +1078,90 @@ function left_kernel_all(rel_rows::Vector{Dict{Int,Int}}, nF::Int, ell::Int)::Ve
     end
 
     # ── Pure-Julia fallback ─────────────────────────────────────────────────
-    # We perform row reduction on the augmented matrix [I | R]
+    # We perform row reduction on the augmented matrix [I | R].
     # Any row that becomes [γ | 0 0 ... 0] means γ is in the left kernel.
-    R = zeros(Int, m, n)
-    for i in 1:m, (j, v) in rel_rows[i]
-        if 1 <= j <= n
-            R[i, j] = mod(R[i, j] + v, ell)
+    aug = zeros(Int, m, m + n)
+    for i in 1:m
+        aug[i, i] = 1
+        for (j, v) in rel_rows[i]
+            if 1 <= j <= n
+                aug[i, m + j] = mod(aug[i, m + j] + v, ell)
+            end
         end
     end
 
-    # aug is m x (m + n)
-    aug = hcat(Matrix{Int}(I, m, m), R)
     prow = 1
-    # Iterate through columns of R (which start at index m+1 in aug)
-    for col in (m+1):(m+n)
-        piv = findfirst(r -> aug[r, col] != 0, prow:m)
-        piv === nothing && continue
-        
-        piv += prow - 1
-        # Swap rows
-        if piv != prow
-            aug[[prow, piv], :] = aug[[piv, prow], :]
+    for col in (m + 1):(m + n)
+        piv = 0
+        for r in prow:m
+            if aug[r, col] != 0
+                piv = r
+                break
+            end
         end
-        
-        # Scale pivot to 1
+        piv == 0 && continue
+
+        if piv != prow
+            for c in 1:(m + n)
+                aug[prow, c], aug[piv, c] = aug[piv, c], aug[prow, c]
+            end
+        end
+
         inv_val = powermod(aug[prow, col], ell - 2, ell)
-        aug[prow, :] = mod.(aug[prow, :] .* inv_val, ell)
-        
-        # Eliminate other rows
+        for c in 1:(m + n)
+            aug[prow, c] = mod(aug[prow, c] * inv_val, ell)
+        end
+
         for r in 1:m
             r == prow && continue
             factor = aug[r, col]
             factor == 0 && continue
-            aug[r, :] = mod.(aug[r, :] .- factor .* aug[prow, :], ell)
+            for c in 1:(m + n)
+                aug[r, c] = mod(aug[r, c] - factor * aug[prow, c], ell)
+            end
         end
-        
+
         prow += 1
-        if prow > m; break; end
+        prow > m && break
     end
 
-    # Any row in the R-part (cols m+1 to end) that is all zeros 
+    # Any row in the R-part (cols m+1 to end) that is all zeros
     # provides a left kernel vector from the I-part (cols 1 to m).
     result = Vector{Int}[]
     for r in 1:m
         is_zero_rel = true
-        for c in (m+1):(m+n)
+        for c in (m + 1):(m + n)
             if aug[r, c] != 0
                 is_zero_rel = false
                 break
             end
         end
-        
+
         if is_zero_rel
-            γ = aug[r, 1:m]
-            if any(!=(0), γ)
+            γ = Vector{Int}(undef, m)
+            has_nonzero = false
+            for c in 1:m
+                γ[c] = aug[r, c]
+                has_nonzero |= (γ[c] != 0)
+            end
+            if has_nonzero
                 push!(result, γ)
             end
         end
     end
     return result
 end
+
+
+# ---------------------------------------------------------------------------
+#  phase2_worker: one independent phase-2 walk thread.
+#
+#  Takes the frozen factor base and precomputed step table (read-only, safe to
+#  share across threads).  Runs until the shared atomic counter `rel_counter`
+#  reaches `rel_target`, then returns its collected relations and counters.
+#  Each thread has its own lp_table, so no synchronisation is needed during
+#  the walk — only the atomic increment on emit.
+# ---------------------------------------------------------------------------
 
 
 # ---------------------------------------------------------------------------
@@ -1171,6 +1204,7 @@ function try_lp1_doubled_cross_close!(
         raw_steps::Int,
         rel_counter::Threads.Atomic{Int},
         G::Div2, T::Div2,
+        combined_scratch::Dict{Int,Int},
         fb::Vector{NTuple{2,Int}})::Bool
 
     haskey(shared_lp1, pt) || return false
@@ -1179,10 +1213,9 @@ function try_lp1_doubled_cross_close!(
     row_1, neg_al_1, neg_be_1, _step = shared_lp1[pt]
     row_d, al_d,     be_d            = shared_lp_doubled[pt]
 
-    combined = Dict{Int,Int}()
-    for (j, v) in row_1
-        nv = 2 * v
-        nv == 0 || (combined[j] = nv)
+    combined = sparse_copy!(combined_scratch, row_1)
+    for (j, v) in combined
+        combined[j] = 2 * v
     end
     for (j, v) in row_d
         nv = get(combined, j, 0) - v
@@ -1223,7 +1256,7 @@ function try_lp1_doubled_cross_close!(
 
     push!(alpha_vec, combined_al)
     push!(beta_vec,  combined_be)
-    push!(rel_rows,  combined)
+    push!(rel_rows,  copy(combined))
     length(rank_growth) < MAX_RANK_GROWTH_SAMPLES && push!(rank_growth, (raw_steps, length(rel_rows)))
     Threads.atomic_add!(rel_counter, 1)
     return true
@@ -1297,6 +1330,8 @@ function phase2_worker(G::Div2, T::Div2,
 
     fb_row_scratch = Dict{Int,Int}()
     sizehint!(fb_row_scratch, 4)
+    combined_row_scratch = Dict{Int,Int}()
+    sizehint!(combined_row_scratch, 8)
 
     sample_rels = Vector{Tuple{Div2,Dict{Int,Int},Int,Int,NTuple{2,Int},NTuple{2,Int},NTuple{2,Int}}}()
     rank_growth = Tuple{Int,Int}[]
@@ -1305,10 +1340,9 @@ function phase2_worker(G::Div2, T::Div2,
     # Instead of calling jac_add once per hot-loop iteration (allocating 2+
     # Vector{Int} objects every step under GC), we precompute BATCH_SIZE steps
     # at a time into a fixed-length array, then consume them by index.
-    # The allocation churn is identical in total but concentrated into a single
-    # burst that the GC can sweep with good locality, rather than drip-feeding
-    # one object per iteration interleaved with Dict and lock operations.
-    const_BATCH_SIZE = 50_000
+    # This keeps the hot loop mostly on already-materialized state and avoids
+    # drip-feeding lots of tiny transient allocations into the GC.
+    const_BATCH_SIZE = 50_000   # bigger batches reduce refill churn and keep the walk steadier
     batch_D     = Vector{Div2}(undef, const_BATCH_SIZE)
     batch_alpha = Vector{Int}(undef, const_BATCH_SIZE)
     batch_beta  = Vector{Int}(undef, const_BATCH_SIZE)
@@ -1429,9 +1463,7 @@ function phase2_worker(G::Div2, T::Div2,
                         combined_be = mod(neg_be - prev_be, ell)
                         delete!(shared_lp1_conj, lp_key)
                         if !(combined_al == 0 && combined_be == 0) && i0 != prev_col
-                            combined = Dict{Int,Int}()
-                            combined[i0]       =  1
-                            combined[prev_col] = -1
+                            combined = Dict{Int,Int}(i0 => 1, prev_col => -1)
                             if ASSERT_RELATIONS
                                 ok = check_relation_principal(combined, combined_al, combined_be, "α", fb, G, T; tag="RS-CONJ-CLOSE")
                                 if !ok
@@ -1561,7 +1593,7 @@ function phase2_worker(G::Div2, T::Div2,
                                                                  ell, alpha_vec, beta_vec,
                                                                  rel_rows, rank_growth,
                                                                  raw_steps, rel_counter,
-                                                                 G, T, fb)
+                                                                 G, T, combined_row_scratch, fb)
                                     hits_full    += 1
                                     hits_lp2emit += 1
                                 end
@@ -1593,17 +1625,16 @@ function phase2_worker(G::Div2, T::Div2,
             for idx in (i0, iR, iS)
                 fb_row_scratch[idx] = get(fb_row_scratch, idx, 0) + 1
             end
-            fb_row = copy(fb_row_scratch)
             if ASSERT_RELATIONS
-                ok = check_relation_principal(fb_row, neg_al, neg_be, "α", fb, G, T; tag="0LP-EMIT")
+                ok = check_relation_principal(fb_row_scratch, neg_al, neg_be, "α", fb, G, T; tag="0LP-EMIT")
                 @assert ok "0-LP emission failed principal divisor check (see diagnostic above)"
             end
             push!(alpha_vec, neg_al)
             push!(beta_vec,  neg_be)
-            push!(rel_rows,  fb_row)
+            push!(rel_rows,  copy(fb_row_scratch))
             length(rank_growth) < MAX_RANK_GROWTH_SAMPLES && push!(rank_growth, (raw_steps, length(rel_rows)))
             if length(sample_rels) < 10
-                push!(sample_rels, (D_cur, copy(fb_row), neg_al, neg_be, P0,
+                push!(sample_rels, (D_cur, copy(fb_row_scratch), neg_al, neg_be, P0,
                                     R::NTuple{2,Int}, S::NTuple{2,Int}))
             end
             hits_full += 1
@@ -1635,7 +1666,7 @@ function phase2_worker(G::Div2, T::Div2,
             try
                 if haskey(shared_lp1, lp_pt)
                     prev_row, prev_al, prev_be, prev_step = shared_lp1[lp_pt]
-                    combined    = copy(fb_row_scratch)
+                    combined    = sparse_copy!(combined_row_scratch, fb_row_scratch)
                     lp2_subtract_rows(combined, prev_row)
                     combined_al = mod(neg_al - prev_al, ell)
                     combined_be = mod(neg_be - prev_be, ell)
@@ -1664,14 +1695,17 @@ function phase2_worker(G::Div2, T::Div2,
                     end
                     # Evict oldest entry if table is at cap to bound memory usage.
                     if length(shared_lp1) >= MAX_LP1_ENTRIES
-                        delete!(shared_lp1, first(keys(shared_lp1)))
+                        for evict_key in keys(shared_lp1)
+                            delete!(shared_lp1, evict_key)
+                            break
+                        end
                     end
                     shared_lp1[lp_pt] = (copy(fb_row_scratch), neg_al, neg_be, raw_steps)
                     # Case 1/3: if this point already has a doubled entry, cross-close.
                     if try_lp1_doubled_cross_close!(lp_pt, shared_lp1, shared_lp_doubled,
                                                     ell, alpha_vec, beta_vec, rel_rows,
                                                     rank_growth, raw_steps, rel_counter,
-                                                    G, T, fb)
+                                                    G, T, combined_row_scratch, fb)
                         hits_full    += 1
                         hits_lp2emit += 1
                         closed = true
@@ -1800,7 +1834,7 @@ function phase2_worker(G::Div2, T::Div2,
                         prev_row, prev_al, prev_be = shared_lp_doubled[root]
                         # Subtract: (row - prev_row) = (alpha - prev_al)·G + (beta - prev_be)·T
                         # This is a pure FB relation (the 2·atom(root) cancels).
-                        combined = copy(emitted_rel.row)
+                        combined = sparse_copy!(combined_row_scratch, emitted_rel.row)
                         for (j, v) in prev_row
                             nv = get(combined, j, 0) - v
                             nv == 0 ? delete!(combined, j) : (combined[j] = nv)
@@ -1823,7 +1857,7 @@ function phase2_worker(G::Div2, T::Div2,
                         if try_lp1_doubled_cross_close!(root, shared_lp1, shared_lp_doubled,
                                                         ell, alpha_vec, beta_vec, rel_rows,
                                                         rank_growth, raw_steps, rel_counter,
-                                                        G, T, fb)
+                                                        G, T, combined_row_scratch, fb)
                             hits_full    += 1
                             hits_lp2emit += 1
                         end
@@ -1874,7 +1908,7 @@ function phase2_worker(G::Div2, T::Div2,
                     r_known, na_known, nb_known, _step_known = shared_lp1[lp_known]
                     # New 1-LP entry for lp_other:
                     #   atom(lp_other) + new_row = new_neg_al·G + new_neg_be·T
-                    new_row    = copy(fb_row_scratch)
+                    new_row = copy(fb_row_scratch)
                     for (j, v) in r_known
                         nv = get(new_row, j, 0) - v
                         nv == 0 ? delete!(new_row, j) : (new_row[j] = nv)
@@ -1925,14 +1959,17 @@ function phase2_worker(G::Div2, T::Div2,
                         end
                         # Evict oldest entry if table is at cap.
                         if length(shared_lp1) >= MAX_LP1_ENTRIES
-                            delete!(shared_lp1, first(keys(shared_lp1)))
+                            for evict_key in keys(shared_lp1)
+                                delete!(shared_lp1, evict_key)
+                                break
+                            end
                         end
                         shared_lp1[lp_other] = (new_row, new_neg_al, new_neg_be, raw_steps)
                         # Case 1/3: if lp_other already has a doubled entry, cross-close.
                         if try_lp1_doubled_cross_close!(lp_other, shared_lp1, shared_lp_doubled,
                                                         ell, alpha_vec, beta_vec, rel_rows,
                                                         rank_growth, raw_steps, rel_counter,
-                                                        G, T, fb)
+                                                        G, T, combined_row_scratch, fb)
                             hits_full    += 1
                             hits_lp2emit += 1
                         end

@@ -1091,8 +1091,27 @@ end
 # ──────────────────────── Curve utilities ─────────────────────────────────────
 eval_f(x::Int) = peval(F_POLY, fp(x))
 
+# Collect only the first `cap` affine rational points on C.
+# This is the only path needed for bootstrap / factor-base construction.
+function factor_base_points(cap::Int)
+    cap <= 0 && return NTuple{2,Int}[]
+    fb = NTuple{2,Int}[]
+    sizehint!(fb, cap)
+
+    for x in 0:p-1
+        y = sqrt_fp(eval_f(x));  y === nothing && continue
+        push!(fb, (x, y))
+        length(fb) >= cap && return fb
+        y != 0 && push!(fb, (x, fp(-y)))
+        length(fb) >= cap && return fb
+    end
+
+    fb
+end
+
 # All affine rational points (x, y) on C, ordered by x.
 # Threaded: each thread scans a contiguous x-range; results are merged in order.
+# NOTE: This materializes the full curve and is kept only for debugging.
 function curve_points()
     nthreads = Threads.nthreads()
     # Pre-allocate per-thread buffers.  Upper bound: 2 points per x.
@@ -1142,8 +1161,8 @@ end
 
 # ──────────────────────── Smoothness test ─────────────────────────────────────
 # For a degree-2 monic Mumford u-poly, find both Fp-roots or return nothing.
-function u2_roots(u::Vector{Int})
-    length(u) != 3 && return nothing          # must be degree 2 (u[3]=1)
+function u2_roots(u::Fp3)
+    fp3_deg(u) != 2 && return nothing          # must be degree 2 (u[3]=1)
     c0, c1 = u[1], u[2]                       # u(x) = x² + c1·x + c0
     disc   = fp(c1^2 - 4c0)
     sq     = sqrt_fp(disc)
@@ -1165,35 +1184,62 @@ end
 # Method: augment [I_m | R] (m × m+n), row-reduce the R columns.
 # Any row whose R-part is all-zero is a left null vector; read γ from I-part.
 function left_kernel(R::Matrix{Int})
-    m, n  = size(R)
-    aug   = hcat(Matrix{Int}(I, m, m), mod.(R, ell))
-    prow  = 1
+    m, n = size(R)
+    aug  = hcat(Matrix{Int}(I, m, m), mod.(R, ell))
+    prow = 1
+    lastcol = m + n
 
-    for col in m+1:m+n
+    for col in m+1:lastcol
         # find pivot in current column, at or below pivot row
-        piv = findfirst(r -> aug[r, col] != 0, prow:m)
-        piv === nothing && continue
-        piv += prow - 1
+        piv = 0
+        @inbounds for r in prow:m
+            if aug[r, col] != 0
+                piv = r
+                break
+            end
+        end
+        piv == 0 && continue
 
         # swap and normalize pivot row
-        aug[[prow, piv], :] = aug[[piv, prow], :]
+        if piv != prow
+            @inbounds for c in 1:lastcol
+                aug[prow, c], aug[piv, c] = aug[piv, c], aug[prow, c]
+            end
+        end
         s = powermod(aug[prow, col], ell - 2, ell)
-        aug[prow, :] = mod.(aug[prow, :] .* s, ell)
-
-        # eliminate this column in all other rows
-        for r in 1:m
-            r == prow && continue
-            f = aug[r, col];  f == 0 && continue
-            aug[r, :] = mod.(aug[r, :] .- f .* aug[prow, :], ell)
+        @inbounds for c in 1:lastcol
+            aug[prow, c] = mod(aug[prow, c] * s, ell)
         end
 
-        prow += 1;  prow > m && break
+        # eliminate this column in all other rows
+        @inbounds for r in 1:m
+            r == prow && continue
+            f = aug[r, col]
+            f == 0 && continue
+            for c in 1:lastcol
+                aug[r, c] = mod(aug[r, c] - f * aug[prow, c], ell)
+            end
+        end
+
+        prow += 1
+        prow > m && break
     end
 
     # Return the first row whose R-part is all zero (= a left null vector)
-    for row in 1:m
-        all(aug[row, m+1:end] .== 0) || continue
-        γ = aug[row, 1:m]
+    @inbounds for row in 1:m
+        all_zero = true
+        for c in m+1:lastcol
+            if aug[row, c] != 0
+                all_zero = false
+                break
+            end
+        end
+        all_zero || continue
+
+        γ = Vector{Int}(undef, m)
+        for c in 1:m
+            γ[c] = aug[row, c]
+        end
         any(!=(0), γ) && return γ
     end
     nothing
@@ -1219,11 +1265,10 @@ function index_calculus(G::Div2, T::Div2;
                         verbose::Bool = true)
 
     # ── Build factor base ─────────────────────────────────────────────────────
-    all_pts = curve_points()
-    fb      = all_pts[1:min(fb_size, length(all_pts))]
+    fb      = factor_base_points(fb_size)
     nF      = length(fb)
     pt2idx  = Dict(pt => i for (i, pt) in enumerate(fb))
-    verbose && @printf("Factor base: %d / %d rational points\n", nF, length(all_pts))
+    verbose && @printf("Factor base: %d rational points (cap=%d)\n", nF, fb_size)
 
     # ── Relation collection ───────────────────────────────────────────────────
     needed = nF + 20
@@ -1317,9 +1362,8 @@ function main()
     println("  ell = (auto-computed below)")
     println("="^62, "\n")
 
-    pts = curve_points()
-    @printf("Rational affine points on C: %d\n\n", length(pts))
-
+    pts = factor_base_points(10_000)
+    @printf("Bootstrap/sample affine points on C: %d (capped)\n\n", length(pts))
     run_sanity_checks(pts)
     println()
 

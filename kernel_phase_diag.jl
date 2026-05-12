@@ -36,38 +36,138 @@
 using Printf, Statistics, LinearAlgebra
 
 # ---------------------------------------------------------------------------
+#  Flattened row storage
+# ---------------------------------------------------------------------------
+#
+#  The input rows are still accepted as Vector{Dict{Int,Int}} for compatibility,
+#  but the heavy lifting is done on a compact flattened representation:
+#
+#      row_ptr[i] : row_ptr[i+1]-1
+#          indexes the nonzeros for row i in `cols` / `vals`
+#
+#  This removes the repeated per-row Dict traversal from the hot paths.
+# ---------------------------------------------------------------------------
+
+struct FlatRelRows
+    row_ptr::Vector{Int}   # 1-based CSR row pointers, length nrows + 1
+    cols::Vector{Int}      # factor-base column indices
+    vals::Vector{Int}      # coefficients reduced mod ell
+end
+
+@inline nrows(flat::FlatRelRows) = length(flat.row_ptr) - 1
+
+@inline function row_range(flat::FlatRelRows, i::Int)
+    @inbounds return flat.row_ptr[i]:(flat.row_ptr[i + 1] - 1)
+end
+
+function flatten_rel_rows(rel_rows::Vector{Dict{Int,Int}},
+                          nF::Int,
+                          ell_val::Int)::FlatRelRows
+    nrel = length(rel_rows)
+    nrel == 0 && throw(ArgumentError("flatten_rel_rows: rel_rows is empty"))
+    ell_val < 2 && throw(ArgumentError("flatten_rel_rows: ell_val=$ell_val < 2"))
+
+    row_ptr = Vector{Int}(undef, nrel + 1)
+    row_ptr[1] = 1
+
+    nnz = 0
+    @inbounds for i in 1:nrel
+        row = rel_rows[i]
+        for (j, v) in row
+            if 1 <= j <= nF && v != 0
+                nnz += 1
+            end
+        end
+        row_ptr[i + 1] = nnz + 1
+    end
+
+    cols = Vector{Int}(undef, nnz)
+    vals = Vector{Int}(undef, nnz)
+
+    pos = 1
+    @inbounds for i in 1:nrel
+        for (j, v) in rel_rows[i]
+            if 1 <= j <= nF && v != 0
+                cols[pos] = j
+                vals[pos] = mod(v, ell_val)
+                pos += 1
+            end
+        end
+    end
+
+    return FlatRelRows(row_ptr, cols, vals)
+end
+
+# ---------------------------------------------------------------------------
 #  Data types
 # ---------------------------------------------------------------------------
 
 """Result of a single-trial kernel-phase instrumentation run."""
 struct KernelPhaseDiag
-    nF         ::Int           # factor-base size
-    nrel_total ::Int           # total rows collected
+    nF         ::Int
+    nrel_total ::Int
 
     # --- Δ = T_ker - nF ---
-    T_ker      ::Union{Int, Nothing}   # row index at which b₁ first becomes ≥ 1
-    delta      ::Union{Int, Nothing}   # T_ker - nF (nothing if kernel never appeared)
+    T_ker      ::Union{Int, Nothing}
+    delta      ::Union{Int, Nothing}
 
     # --- kernel vector stats at T_ker ---
-    gamma_support_size ::Union{Int, Nothing}   # |supp(γ)|
-    gamma_beta_proj    ::Union{Int, Nothing}   # Σ γᵢ βᵢ mod ell
-    gamma_alpha_proj   ::Union{Int, Nothing}   # Σ γᵢ αᵢ mod ell
-    gamma_solvable     ::Union{Bool, Nothing}  # β-proj ≠ 0
+    gamma_support_size ::Union{Int, Nothing}
+    gamma_beta_proj    ::Union{Int, Nothing}
+    gamma_alpha_proj   ::Union{Int, Nothing}
+    gamma_solvable     ::Union{Bool, Nothing}
 
     # --- k recovery ---
-    k_candidate        ::Union{Int, Nothing}   # recovered k (nothing if β=0 or not attempted)
-    k_correct          ::Union{Bool, Nothing}  # true iff jac_mul(G, k_cand) == T
+    k_candidate        ::Union{Int, Nothing}
+    k_correct          ::Union{Bool, Nothing}
 
     # --- Betti b₁ trace ---
-    betti_trace        ::Vector{Tuple{Int,Int}}  # [(row_count, b1), ...]
-    first_nonzero_betti::Union{Int, Nothing}     # first m with b₁ ≥ 1
+    betti_trace        ::Vector{Tuple{Int,Int}}
+    first_nonzero_betti::Union{Int, Nothing}
 
     # --- row-weight distribution at T_ker ---
-    weight_histogram   ::Dict{Int,Int}   # weight → count, computed at T_ker rows
+    weight_histogram   ::Vector{Tuple{Int,Int}}
     avg_weight_at_tker ::Float64
 
     # --- spectral gap at T_ker (if available) ---
-    gap_at_tker        ::Float64   # NaN if not computed
+    gap_at_tker        ::Float64
+end
+
+
+# ---------------------------------------------------------------------------
+#  Dense prefix materialisation helpers
+# ---------------------------------------------------------------------------
+
+@inline function fill_dense_prefix!(entries::Vector{Int},
+                                    flat::FlatRelRows,
+                                    m::Int,
+                                    nF::Int)
+    fill!(entries, 0)
+    @inbounds for i in 1:m
+        base = (i - 1) * nF
+        for p in row_range(flat, i)
+            entries[base + flat.cols[p]] = flat.vals[p]
+        end
+    end
+    return entries
+end
+
+@inline function prefix_matrix(F, flat::FlatRelRows, m::Int, nF::Int, entries::Vector{Int})
+    fill_dense_prefix!(entries, flat, m, nF)
+    if length(entries) == m * nF
+        return Nemo.matrix(F, m, nF, entries)
+    end
+    return Nemo.matrix(F, m, nF, view(entries, 1:(m * nF)))
+end
+
+@inline function prefix_has_kernel(flat::FlatRelRows,
+                                    nF::Int,
+                                    ell_val::Int,
+                                    m::Int,
+                                    F,
+                                    entries::Vector{Int})::Bool
+    Mm = prefix_matrix(F, flat, m, nF, entries)
+    return m - Nemo.rank(Mm) >= 1
 end
 
 
@@ -79,32 +179,24 @@ end
 #
 #  Returns a vector of (m, b1) tuples and the first m with b1 ≥ 1.
 # ---------------------------------------------------------------------------
-function betti_trace(rel_rows ::Vector{Dict{Int,Int}},
+function betti_trace(flat::FlatRelRows,
                      nF       ::Int,
                      ell_val  ::Int;
                      step     ::Int = 1,
                      verbose  ::Bool = false)::Tuple{Vector{Tuple{Int,Int}}, Union{Int,Nothing}}
 
-    m = length(rel_rows)
+    m = nrows(flat)
     m == 0 && throw(ArgumentError("betti_trace: rel_rows is empty"))
     step < 1 && throw(ArgumentError("betti_trace: step must be ≥ 1"))
 
-    F       = Nemo.GF(ell_val)
-    rank_m  = 0
-    trace   = Tuple{Int,Int}[]
+    F      = Nemo.GF(ell_val)
+    trace  = Tuple{Int,Int}[]
+    buf    = Vector{Int}(undef, m * nF)
     first_nonzero = nothing
 
     for row_limit in 1:step:m
-        # Materialise dense matrix of size row_limit × nF over GF(ell).
-        entries = zeros(Int, row_limit * nF)
-        for i in 1:row_limit
-            for (j, v) in rel_rows[i]
-                (1 <= j <= nF) || continue
-                entries[(i - 1) * nF + j] = mod(v, ell_val)
-            end
-        end
-        Mnemo = Nemo.matrix(F, row_limit, nF, entries)
-        rank_m = Nemo.rank(Mnemo)
+        Mm = prefix_matrix(F, flat, row_limit, nF, buf)
+        rank_m = Nemo.rank(Mm)
         b1 = row_limit - rank_m
         push!(trace, (row_limit, b1))
 
@@ -115,18 +207,10 @@ function betti_trace(rel_rows ::Vector{Dict{Int,Int}},
         end
     end
 
-    # Always include the final row if not already there.
     if isempty(trace) || trace[end][1] != m
-        entries = zeros(Int, m * nF)
-        for i in 1:m
-            for (j, v) in rel_rows[i]
-                (1 <= j <= nF) || continue
-                entries[(i - 1) * nF + j] = mod(v, ell_val)
-            end
-        end
-        Mnemo  = Nemo.matrix(F, m, nF, entries)
-        rank_m = Nemo.rank(Mnemo)
-        b1     = m - rank_m
+        Mm = prefix_matrix(F, flat, m, nF, buf)
+        rank_m = Nemo.rank(Mm)
+        b1 = m - rank_m
         push!(trace, (m, b1))
         if first_nonzero === nothing && b1 >= 1
             first_nonzero = m
@@ -134,6 +218,15 @@ function betti_trace(rel_rows ::Vector{Dict{Int,Int}},
     end
 
     return trace, first_nonzero
+end
+
+function betti_trace(rel_rows::Vector{Dict{Int,Int}},
+                     nF       ::Int,
+                     ell_val  ::Int;
+                     step     ::Int = 1,
+                     verbose  ::Bool = false)::Tuple{Vector{Tuple{Int,Int}}, Union{Int,Nothing}}
+    flat = flatten_rel_rows(rel_rows, nF, ell_val)
+    return betti_trace(flat, nF, ell_val; step=step, verbose=verbose)
 end
 
 
@@ -144,111 +237,138 @@ end
 #  then records the kernel vector at that m.  Avoids the O(m²) full trace
 #  when only T_ker is needed.
 # ---------------------------------------------------------------------------
-function find_first_kernel_row(rel_rows  ::Vector{Dict{Int,Int}},
+function find_first_kernel_row(flat::FlatRelRows,
                                nF        ::Int,
                                ell_val   ::Int)::Union{Int, Nothing}
 
-    m = length(rel_rows)
+    m = nrows(flat)
     m == 0 && throw(ArgumentError("find_first_kernel_row: rel_rows is empty"))
 
     F = Nemo.GF(ell_val)
+    buf = Vector{Int}(undef, m * nF)
 
-    # Binary search over row counts nF .. m.
-    # Invariant: kernel absent at `lo`, present (or unknown) at `hi`.
     # Quick check: does the full matrix have a kernel at all?
-    entries_full = zeros(Int, m * nF)
-    for i in 1:m
-        for (j, v) in rel_rows[i]
-            (1 <= j <= nF) || continue
-            entries_full[(i-1)*nF + j] = mod(v, ell_val)
-        end
+    if !prefix_has_kernel(flat, nF, ell_val, m, F, buf)
+        return nothing
     end
-    Mfull = Nemo.matrix(F, m, nF, entries_full)
-    m - Nemo.rank(Mfull) < 1 && return nothing   # no kernel at all
 
-    lo, hi = min(m, max(1, nF - 10)), m   # start just below nF — but never past m
-    # Ensure lo truly has no kernel.
+    lo, hi = min(m, max(1, nF - 10)), m
+
+    # Ensure lo truly has no kernel, walking down in chunks.
     while lo >= 1
-        entries = zeros(Int, lo * nF)
-        for i in 1:lo
-            for (j, v) in rel_rows[i]
-                (1 <= j <= nF) || continue
-                entries[(i-1)*nF + j] = mod(v, ell_val)
-            end
+        if !prefix_has_kernel(flat, nF, ell_val, lo, F, buf)
+            break
         end
-        Mlo = Nemo.matrix(F, lo, nF, entries)
-        lo - Nemo.rank(Mlo) < 1 && break
         lo = max(1, lo - 10)
     end
     lo = max(1, lo)
 
     while lo < hi
         mid = (lo + hi) ÷ 2
-        entries = zeros(Int, mid * nF)
-        for i in 1:mid
-            for (j, v) in rel_rows[i]
-                (1 <= j <= nF) || continue
-                entries[(i-1)*nF + j] = mod(v, ell_val)
-            end
-        end
-        Mmid  = Nemo.matrix(F, mid, nF, entries)
-        b1mid = mid - Nemo.rank(Mmid)
-        if b1mid >= 1
+        if prefix_has_kernel(flat, nF, ell_val, mid, F, buf)
             hi = mid
         else
             lo = mid + 1
         end
     end
 
-    return lo   # smallest m with b₁ ≥ 1
+    return lo
+end
+
+function find_first_kernel_row(rel_rows::Vector{Dict{Int,Int}},
+                               nF        ::Int,
+                               ell_val   ::Int)::Union{Int, Nothing}
+    flat = flatten_rel_rows(rel_rows, nF, ell_val)
+    return find_first_kernel_row(flat, nF, ell_val)
 end
 
 
 # ---------------------------------------------------------------------------
 #  Extract first kernel vector at exactly m rows
 # ---------------------------------------------------------------------------
-function first_kernel_vector(rel_rows::Vector{Dict{Int,Int}},
+function first_kernel_vector(flat::FlatRelRows,
                              nF      ::Int,
                              ell_val ::Int,
                              m       ::Int)::Union{Vector{Int}, Nothing}
 
     m < 1 && throw(ArgumentError("first_kernel_vector: m=$m < 1"))
-    m > length(rel_rows) && throw(ArgumentError(
-        "first_kernel_vector: m=$m exceeds rel_rows length $(length(rel_rows))"))
+    m > nrows(flat) && throw(ArgumentError(
+        "first_kernel_vector: m=$m exceeds rel_rows length $(nrows(flat))"))
 
     F       = Nemo.GF(ell_val)
-    entries = zeros(Int, m * nF)
-    for i in 1:m
-        for (j, v) in rel_rows[i]
-            (1 <= j <= nF) || continue
-            entries[(i-1)*nF + j] = mod(v, ell_val)
-        end
-    end
-    Mnemo = Nemo.matrix(F, m, nF, entries)
+    entries  = Vector{Int}(undef, m * nF)
+    Mnemo    = prefix_matrix(F, flat, m, nF, entries)
+
     # Left kernel = right kernel of transpose.
     Mt    = Nemo.transpose(Mnemo)
     nu, K = Nemo.nullspace(Mt)
     nu < 1 && return nothing
 
-    γ = [Int(Nemo.lift(Nemo.ZZ, K[r, 1])) for r in 1:m]
+    γ = Vector{Int}(undef, m)
+    @inbounds for r in 1:m
+        γ[r] = Int(Nemo.lift(Nemo.ZZ, K[r, 1]))
+    end
     any(!=(0), γ) || return nothing
     return γ
+end
+
+function first_kernel_vector(rel_rows::Vector{Dict{Int,Int}},
+                             nF      ::Int,
+                             ell_val ::Int,
+                             m       ::Int)::Union{Vector{Int}, Nothing}
+    flat = flatten_rel_rows(rel_rows, nF, ell_val)
+    return first_kernel_vector(flat, nF, ell_val, m)
 end
 
 
 # ---------------------------------------------------------------------------
 #  Row-weight histogram for first m rows
 # ---------------------------------------------------------------------------
-function row_weight_histogram(rel_rows::Vector{Dict{Int,Int}}, m::Int,
-                              nF::Int)::Tuple{Dict{Int,Int}, Float64}
-    hist = Dict{Int,Int}()
+function row_weight_histogram(flat::FlatRelRows, m::Int,
+                              nF::Int)::Tuple{Vector{Tuple{Int,Int}}, Float64}
+    lim = min(m, nrows(flat))
+    counts = zeros(Int, nF + 1)
     total = 0
-    for i in 1:min(m, length(rel_rows))
-        w = count(kv -> 1 <= kv[1] <= nF && kv[2] != 0, rel_rows[i])
-        hist[w] = get(hist, w, 0) + 1
-        total  += w
+
+    @inbounds for i in 1:lim
+        w = flat.row_ptr[i + 1] - flat.row_ptr[i]
+        counts[w + 1] += 1
+        total += w
     end
-    avg = m == 0 ? 0.0 : total / m
+
+    hist = Tuple{Int,Int}[]
+    @inbounds for w in 0:nF
+        c = counts[w + 1]
+        c == 0 && continue
+        push!(hist, (w, c))
+    end
+
+    avg = lim == 0 ? 0.0 : total / lim
+    return hist, avg
+end
+
+function row_weight_histogram(rel_rows::Vector{Dict{Int,Int}}, m::Int,
+                              nF::Int)::Tuple{Vector{Tuple{Int,Int}}, Float64}
+    lim = min(m, length(rel_rows))
+    counts = zeros(Int, nF + 1)
+    total = 0
+    @inbounds for i in 1:lim
+        w = 0
+        for (j, v) in rel_rows[i]
+            if 1 <= j <= nF && v != 0
+                w += 1
+            end
+        end
+        counts[w + 1] += 1
+        total += w
+    end
+    hist = Tuple{Int,Int}[]
+    @inbounds for w in 0:nF
+        c = counts[w + 1]
+        c == 0 && continue
+        push!(hist, (w, c))
+    end
+    avg = lim == 0 ? 0.0 : total / lim
     return hist, avg
 end
 
@@ -303,6 +423,9 @@ function kernel_phase_instrumentation(
         "kernel_phase_instrumentation: beta_vec length $(length(beta_vec)) ≠ nrel=$nrel"))
     ell_val < 2 && throw(ArgumentError("kernel_phase_instrumentation: ell_val=$ell_val < 2"))
 
+    flat = flatten_rel_rows(rel_rows, nF, ell_val)
+    nrel = nrows(flat)
+
     verbose && begin
         println()
         @printf("── Kernel Phase Diagnostics ────────────────────────────────────────\n")
@@ -312,7 +435,7 @@ function kernel_phase_instrumentation(
 
     # ── 1. Find T_ker (binary search) ────────────────────────────────────────
     t0 = time()
-    T_ker = find_first_kernel_row(rel_rows, nF, ell_val)
+    T_ker = find_first_kernel_row(flat, nF, ell_val)
     t_tker = time() - t0
 
     if T_ker === nothing
@@ -321,7 +444,7 @@ function kernel_phase_instrumentation(
                                nothing, nothing, nothing, nothing,
                                nothing, nothing,
                                Tuple{Int,Int}[], nothing,
-                               Dict{Int,Int}(), 0.0, NaN)
+                               Tuple{Int,Int}[], 0.0, NaN)
     end
 
     delta = T_ker - nF
@@ -329,7 +452,7 @@ function kernel_phase_instrumentation(
                        T_ker, nF, delta, t_tker)
 
     # ── 2. Kernel vector at T_ker ─────────────────────────────────────────────
-    γ = first_kernel_vector(rel_rows, nF, ell_val, T_ker)
+    γ = first_kernel_vector(flat, nF, ell_val, T_ker)
 
     gamma_support_size = nothing
     gamma_beta_proj    = nothing
@@ -339,11 +462,18 @@ function kernel_phase_instrumentation(
     k_correct          = nothing
 
     if γ !== nothing
-        gamma_support_size = count(!=(0), γ)
+        gamma_support_size = 0
+        @inbounds for x in γ
+            x != 0 && (gamma_support_size += 1)
+        end
 
-        # Projections
-        Sa = mod(sum(Int128(γ[i]) * alpha_vec[i] for i in 1:T_ker), ell_val)
-        Sb = mod(sum(Int128(γ[i]) * beta_vec[i]  for i in 1:T_ker), ell_val)
+        ell128 = Int128(ell_val)
+        Sa = Int128(0)
+        Sb = Int128(0)
+        @inbounds for i in 1:T_ker
+            Sa = mod(Sa + Int128(γ[i]) * Int128(alpha_vec[i]), ell128)
+            Sb = mod(Sb + Int128(γ[i]) * Int128(beta_vec[i]), ell128)
+        end
         gamma_alpha_proj = Int(Sa)
         gamma_beta_proj  = Int(Sb)
         gamma_solvable   = (Sb != 0)
@@ -353,7 +483,7 @@ function kernel_phase_instrumentation(
             @printf("    support size:    %d  (of %d rows)\n", gamma_support_size, T_ker)
             @printf("    α-projection:    %d  (Σγᵢαᵢ mod ell)\n", gamma_alpha_proj)
             @printf("    β-projection:    %d  (Σγᵢβᵢ mod ell)\n", gamma_beta_proj)
-            @printf("    solvable (β≠0):  %s\n", gamma_solvable)
+            @printf("    solvable (β≠0):  %s\n", string(gamma_solvable))
         end
 
         # k recovery
@@ -361,9 +491,9 @@ function kernel_phase_instrumentation(
             k_candidate = mod(-Int(Sa) * powermod(Int(Sb), ell_val - 2, ell_val), ell_val)
             k_correct   = jac_mul(G, k_candidate) == T
             verbose && @printf("    k_candidate:     %d   k·G==T: %s%s\n",
-                               k_candidate, k_correct,
+                               k_candidate, string(k_correct),
                                k_true !== nothing ? "   true k: $k_true" : "")
-        elseif !gamma_solvable
+        elseif gamma_solvable === false
             verbose && @printf("    β=0: kernel vec doesn't solve DLP this round\n")
         end
     else
@@ -372,13 +502,13 @@ function kernel_phase_instrumentation(
 
     # ── 3. Betti trace ────────────────────────────────────────────────────────
     betti_tr = Tuple{Int,Int}[]
-    first_nonzero_betti = T_ker   # we already know this
+    first_nonzero_betti = T_ker
 
     if full_betti_trace
         verbose && @printf("  Computing full Betti trace (step=%d)...\n", betti_step)
         t_bt = time()
-        betti_tr, first_nonzero_betti = betti_trace(rel_rows, nF, ell_val;
-                                                     step=betti_step, verbose=verbose)
+        betti_tr, first_nonzero_betti = betti_trace(flat, nF, ell_val;
+                                                    step=betti_step, verbose=verbose)
         verbose && @printf("  Betti trace computed in %.3fs  (%d sample points)\n",
                            time() - t_bt, length(betti_tr))
         if verbose && !isempty(betti_tr)
@@ -394,18 +524,12 @@ function kernel_phase_instrumentation(
         end
     else
         # Minimal trace: just bracket around T_ker.
+        F = Nemo.GF(ell_val)
+        buf = Vector{Int}(undef, nF * nrel)
         for m_check in max(1, T_ker - 3):min(nrel, T_ker + 3)
             try
-                entries = zeros(Int, m_check * nF)
-                for i in 1:m_check
-                    for (j, v) in rel_rows[i]
-                        (1 <= j <= nF) || continue
-                        entries[(i-1)*nF + j] = mod(v, ell_val)
-                    end
-                end
-                F    = Nemo.GF(ell_val)
-                Mm   = Nemo.matrix(F, m_check, nF, entries)
-                b1   = m_check - Nemo.rank(Mm)
+                Mm = prefix_matrix(F, flat, m_check, nF, buf)
+                b1 = m_check - Nemo.rank(Mm)
                 push!(betti_tr, (m_check, b1))
             catch
                 # Non-fatal; skip this point.
@@ -421,11 +545,11 @@ function kernel_phase_instrumentation(
     end
 
     # ── 4. Row-weight histogram at T_ker ──────────────────────────────────────
-    wt_hist, avg_wt = row_weight_histogram(rel_rows, T_ker, nF)
+    wt_hist, avg_wt = row_weight_histogram(flat, T_ker, nF)
     if verbose
         @printf("  Row-weight histogram at T_ker=%d:\n", T_ker)
-        for w in sort(collect(keys(wt_hist)))
-            @printf("    weight %2d: %d rows\n", w, wt_hist[w])
+        for (w, c) in wt_hist
+            @printf("    weight %2d: %d rows\n", w, c)
         end
         @printf("  Average row weight at T_ker: %.3f\n", avg_wt)
     end
@@ -494,7 +618,12 @@ function delta_report(delta_samples::Vector{Union{Int,Nothing}};
         return
     end
 
-    vals = Int[d for d in delta_samples if d !== nothing]
+    vals = Int[]
+    sizehint!(vals, n_solved)
+    for d in delta_samples
+        d === nothing || push!(vals, d)
+    end
+
     μ    = mean(vals)
     σ    = n_solved > 1 ? std(vals) : NaN
     med  = median(vals)
@@ -508,15 +637,19 @@ function delta_report(delta_samples::Vector{Union{Int,Nothing}};
     @printf("    min    = %d\n",   mn)
     @printf("    max    = %d\n",   mx)
 
-    # Histogram of Δ values.
-    hist = Dict{Int,Int}()
-    for v in vals
-        hist[v] = get(hist, v, 0) + 1
-    end
+    sort!(vals)
     println("  Histogram (Δ → count):")
-    for k in sort(collect(keys(hist)))
-        bar = repeat("█", min(hist[k], 50))
-        @printf("    Δ=%+3d : %3d  %s\n", k, hist[k], bar)
+    i = 1
+    while i <= length(vals)
+        v = vals[i]
+        j = i + 1
+        while j <= length(vals) && vals[j] == v
+            j += 1
+        end
+        c = j - i
+        bar = repeat("█", min(c, 50))
+        @printf("    Δ=%+3d : %3d  %s\\n", v, c, bar)
+        i = j
     end
     println("── End Δ Report ─────────────────────────────────────────────────────")
     flush(stdout)

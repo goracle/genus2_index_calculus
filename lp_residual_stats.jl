@@ -1,23 +1,22 @@
-
 # =============================================================================
 #  LP Residual Statistics
 #
-#  Implements the diagnostics proposed in the ChatGPT analysis:
+#  Implements diagnostics for residual LP behavior with a bias toward
+#  low-allocation, low-churn data flow:
 #
 #    1.  Distinct LP residual count + occupancy vs. uniform expectation
 #    2.  Revisit frequencies per LP point (collision histogram)
 #    3.  Entropy of the empirical LP distribution (compared to H_max)
 #    4.  Autocorrelation of the alpha / beta sequences emitted at LP events
-#    5.  Residual graph clustering (LP–LP and LP–FB bipartite structure)
+#    5.  Residual graph clustering (LP–LP bipartite structure)
 #    6.  Compressed-space heuristic: estimate M_effective vs. naive M = p
 #
-#  Every function is pure (read-only on its inputs) and returns a named
-#  tuple so callers can archive the raw numbers alongside the printout.
-#
-#  Wire-up: call collect_lp_residual_data! inside phase2_worker to fill
-#  an LPResidualCollector, then pass it to lp_residual_report() at the
-#  end of index_calculus_walk.
+#  The collector keeps the raw event streams compact, and the report code
+#  reuses a single sorted frequency pass instead of rebuilding hash maps in
+#  every statistic.
 # =============================================================================
+
+using Printf
 
 # ---------------------------------------------------------------------------
 #  Collector struct
@@ -67,17 +66,17 @@ end
 function merge_collectors(cols::Vector{LPResidualCollector})::LPResidualCollector
     max1 = isempty(cols) ? DEFAULT_MAX_LP1_RECORDS : maximum(c.max_lp1_records for c in cols)
     max2 = isempty(cols) ? DEFAULT_MAX_LP2_RECORDS : maximum(c.max_lp2_records for c in cols)
-    merged = LPResidualCollector(; max_lp1_records = max1 * length(cols),
-                                    max_lp2_records = max2 * length(cols))
+    merged = LPResidualCollector(; max_lp1_records = max1 * max(1, length(cols)),
+                                    max_lp2_records = max2 * max(1, length(cols)))
     for c in cols
-        append!(merged.lp_points,    c.lp_points)
-        append!(merged.lp_alphas,    c.lp_alphas)
-        append!(merged.lp_betas,     c.lp_betas)
-        append!(merged.lp_steps,     c.lp_steps)
-        append!(merged.lp2_pairs,    c.lp2_pairs)
-        append!(merged.lp2_steps,    c.lp2_steps)
-        append!(merged.closure_steps, c.closure_steps)
-        append!(merged.closure_gaps,  c.closure_gaps)
+        append!(merged.lp_points,     c.lp_points)
+        append!(merged.lp_alphas,     c.lp_alphas)
+        append!(merged.lp_betas,      c.lp_betas)
+        append!(merged.lp_steps,      c.lp_steps)
+        append!(merged.lp2_pairs,     c.lp2_pairs)
+        append!(merged.lp2_steps,     c.lp2_steps)
+        append!(merged.closure_steps,  c.closure_steps)
+        append!(merged.closure_gaps,   c.closure_gaps)
     end
     merged
 end
@@ -112,15 +111,104 @@ end
 
 
 # ---------------------------------------------------------------------------
+#  Shared low-allocation helpers
+# ---------------------------------------------------------------------------
+function _sorted_lp_points(col::LPResidualCollector)
+    isempty(col.lp_points) && return NTuple{2,Int}[]
+    pts = copy(col.lp_points)
+    sort!(pts)
+    return pts
+end
+
+function _point_counts(col::LPResidualCollector)
+    pts = _sorted_lp_points(col)
+    isempty(pts) && return NTuple{2,Int}[], Int[]
+
+    uniq_pts = NTuple{2,Int}[]
+    counts   = Int[]
+    sizehint!(uniq_pts, length(pts))
+    sizehint!(counts,   length(pts))
+
+    cur = pts[1]
+    c = 1
+    @inbounds for i in 2:length(pts)
+        p = pts[i]
+        if p == cur
+            c += 1
+        else
+            push!(uniq_pts, cur)
+            push!(counts, c)
+            cur = p
+            c = 1
+        end
+    end
+    push!(uniq_pts, cur)
+    push!(counts, c)
+    return uniq_pts, counts
+end
+
+function _sorted_run_lengths(values::AbstractVector{Int})
+    isempty(values) && return Int[], Int[]
+    tmp = copy(values)
+    sort!(tmp)
+
+    uniq_vals = Int[]
+    counts    = Int[]
+    sizehint!(uniq_vals, length(tmp))
+    sizehint!(counts,    length(tmp))
+
+    cur = tmp[1]
+    c = 1
+    @inbounds for i in 2:length(tmp)
+        v = tmp[i]
+        if v == cur
+            c += 1
+        else
+            push!(uniq_vals, cur)
+            push!(counts, c)
+            cur = v
+            c = 1
+        end
+    end
+    push!(uniq_vals, cur)
+    push!(counts, c)
+    return uniq_vals, counts
+end
+
+@inline function _acf(seq::Vector{Int}, lag::Int)
+    lag >= length(seq) && return NaN
+    n = length(seq)
+    m = 0.0
+    @inbounds for x in seq
+        m += x
+    end
+    m /= n
+
+    var = 0.0
+    @inbounds for x in seq
+        dx = x - m
+        var += dx * dx
+    end
+    var /= n
+    var < 1e-12 && return NaN
+
+    cov = 0.0
+    upper = n - lag
+    @inbounds for i in 1:upper
+        cov += (seq[i] - m) * (seq[i + lag] - m)
+    end
+    cov /= upper
+    return cov / var
+end
+
+
+# ---------------------------------------------------------------------------
 #  1. Distinct LP count and occupancy
 # ---------------------------------------------------------------------------
 function lp_occupancy(col::LPResidualCollector; p_field::Int)
     isempty(col.lp_points) && return nothing
-    freq = Dict{NTuple{2,Int},Int}()
-    for pt in col.lp_points
-        freq[pt] = get(freq, pt, 0) + 1
-    end
-    n_distinct = length(freq)
+    _, counts = _point_counts(col)
+    n_distinct = length(counts)
     n_total    = length(col.lp_points)
     # Naive expectation: uniform over p points  → distinct ≈ p*(1-e^{-N/p})
     expected_distinct = p_field * (1.0 - exp(-n_total / p_field))
@@ -141,24 +229,30 @@ end
 # ---------------------------------------------------------------------------
 function lp_revisit_histogram(col::LPResidualCollector)
     isempty(col.lp_points) && return nothing
-    freq = Dict{NTuple{2,Int},Int}()
-    for pt in col.lp_points
-        freq[pt] = get(freq, pt, 0) + 1
+    _, counts = _point_counts(col)
+    isempty(counts) && return nothing
+
+    mults, mult_counts = _sorted_run_lengths(counts)
+    heavy_events = 0
+    singleton_points = 0
+    @inbounds for i in 1:length(mults)
+        m = mults[i]
+        npts = mult_counts[i]
+        if m == 1
+            singleton_points = npts
+        elseif m >= 3
+            heavy_events += m * npts
+        end
     end
-    hist = Dict{Int,Int}()   # multiplicity → count of LP points with that multiplicity
-    for v in values(freq)
-        hist[v] = get(hist, v, 0) + 1
-    end
-    sorted_mults = sort(collect(keys(hist)))
-    # Fraction of total LP events that come from "heavy hitter" points (mult >= 3)
-    heavy_events  = sum(k * hist[k] for k in sorted_mults if k >= 3; init=0)
-    total_events  = length(col.lp_points)
+
+    total_events = length(col.lp_points)
+    max_mult = mults[end]
     return (
-        histogram       = hist,                     # Dict: mult => n_lp_pts
-        sorted_mults    = sorted_mults,
-        heavy_frac      = heavy_events / max(1, total_events),
-        max_multiplicity = sorted_mults[end],
-        singleton_frac  = get(hist, 1, 0) / max(1, length(freq)),
+        multiplicities       = mults,
+        multiplicity_counts  = mult_counts,
+        heavy_frac           = heavy_events / max(1, total_events),
+        max_multiplicity     = max_mult,
+        singleton_frac       = singleton_points / max(1, length(counts)),
     )
 end
 
@@ -172,26 +266,23 @@ end
 # ---------------------------------------------------------------------------
 function lp_entropy(col::LPResidualCollector; p_field::Int)
     isempty(col.lp_points) && return nothing
-    freq = Dict{NTuple{2,Int},Int}()
-    for pt in col.lp_points
-        freq[pt] = get(freq, pt, 0) + 1
-    end
+    _, counts = _point_counts(col)
     N = length(col.lp_points)
     H = 0.0
-    for v in values(freq)
+    @inbounds for v in counts
         if v > 0
             pv = v / N
             H -= pv * log2(pv)
         end
     end
-    H_max_obs  = log2(max(1, length(freq)))   # uniform over observed distinct
-    H_max_unif = log2(max(1, p_field))         # uniform over all p field points
+    H_max_obs  = log2(max(1, length(counts)))
+    H_max_unif = log2(max(1, p_field))
     return (
-        entropy              = H,
-        H_max_observed       = H_max_obs,
-        H_max_uniform        = H_max_unif,
-        entropy_fraction_obs  = H / max(1e-12, H_max_obs),   # 1.0 = uniform over seen
-        entropy_fraction_unif = H / max(1e-12, H_max_unif),  # 1.0 = uniform over F_p
+        entropy               = H,
+        H_max_observed        = H_max_obs,
+        H_max_uniform         = H_max_unif,
+        entropy_fraction_obs  = H / max(1e-12, H_max_obs),
+        entropy_fraction_unif = H / max(1e-12, H_max_unif),
     )
 end
 
@@ -211,28 +302,25 @@ function lp_autocorrelation(col::LPResidualCollector;
     n = length(col.lp_alphas)
     n < 2 && return nothing
 
-    function acf(seq::Vector{Int}, lag::Int)
-        lag >= length(seq) && return NaN
-        m   = sum(seq) / length(seq)
-        var = sum((x - m)^2 for x in seq) / length(seq)
-        var < 1e-12 && return NaN
-        cov = sum((seq[i] - m) * (seq[i + lag] - m)
-                  for i in 1:length(seq) - lag) / (length(seq) - lag)
-        return cov / var
+    active_lags = Int[]
+    alpha_vals  = Float64[]
+    beta_vals   = Float64[]
+    x_vals      = Float64[]
+
+    xs = Int[pt[1] for pt in col.lp_points]
+    @inbounds for τ in lags
+        τ < n || continue
+        push!(active_lags, τ)
+        push!(alpha_vals, _acf(col.lp_alphas, τ))
+        push!(beta_vals,  _acf(col.lp_betas,  τ))
+        push!(x_vals,     _acf(xs, τ))
     end
 
-    alpha_acf = Dict(τ => acf(col.lp_alphas, τ) for τ in lags if τ < n)
-    beta_acf  = Dict(τ => acf(col.lp_betas,  τ) for τ in lags if τ < n)
-
-    # Also test x-coordinates of LP points directly
-    xs = [pt[1] for pt in col.lp_points]
-    x_acf = Dict(τ => acf(xs, τ) for τ in lags if τ < n)
-
     return (
-        lags      = lags,
-        alpha_acf = alpha_acf,
-        beta_acf  = beta_acf,
-        x_acf     = x_acf,
+        lags      = active_lags,
+        alpha_acf = alpha_vals,
+        beta_acf  = beta_vals,
+        x_acf     = x_vals,
     )
 end
 
@@ -240,32 +328,26 @@ end
 # ---------------------------------------------------------------------------
 #  5.  Residual graph clustering
 #
-#  Build a bipartite graph:  LP_points × FB_columns.
-#  Edge (lp_pt, fb_col) exists if any step had both that LP point and that
-#  FB column in its P0/R/S triple.
-#
-#  We track this from the collector's lp_points alongside fb_row information.
-#  Since the collector doesn't store the fb_row per event by default, we
-#  provide a separate lightweight path: analyze the LP–LP co-occurrence
-#  from 2-LP pairs (lp2_pairs) directly.
-#
-#  For LP–LP:
-#    - Build a graph where nodes are LP points seen in 2-LP steps.
-#    - Edge = co-occurrence in a 2-LP event.
-#    - Compute number of connected components; if small, state space is compressed.
-#
-#  We also compute the LP–FB incidence if fb_rows are supplied separately.
+#  Build a graph on LP points that co-occur in 2-LP events.
+#  We avoid hash tables by sorting the unique point list once, then using
+#  binary search for point-to-id lookup.
 # ---------------------------------------------------------------------------
 function lp_clustering(col::LPResidualCollector)
     isempty(col.lp2_pairs) && return nothing
 
-    # Union-Find on LP points seen in 2-LP events
-    all_lp_pts = unique(vcat([[p[1], p[2]] for p in col.lp2_pairs]...))
-    pt_to_id   = Dict(pt => i for (i, pt) in enumerate(all_lp_pts))
-    n_pts      = length(all_lp_pts)
-    parent     = collect(1:n_pts)
+    all_lp_pts = NTuple{2,Int}[]
+    sizehint!(all_lp_pts, 2 * length(col.lp2_pairs))
+    @inbounds for (l, r) in col.lp2_pairs
+        push!(all_lp_pts, l)
+        push!(all_lp_pts, r)
+    end
+    sort!(all_lp_pts)
+    unique!(all_lp_pts)
 
-    function findroot(x)
+    n_pts  = length(all_lp_pts)
+    parent = collect(1:n_pts)
+
+    function findroot(x::Int)
         while parent[x] != x
             parent[x] = parent[parent[x]]
             x = parent[x]
@@ -273,29 +355,42 @@ function lp_clustering(col::LPResidualCollector)
         return x
     end
 
-    function unite(a, b)
-        ra = findroot(a); rb = findroot(b)
+    function unite(a::Int, b::Int)
+        ra = findroot(a)
+        rb = findroot(b)
         ra != rb && (parent[ra] = rb)
+        return nothing
     end
 
-    for (l, r) in col.lp2_pairs
-        unite(pt_to_id[l], pt_to_id[r])
+    @inbounds for (l, r) in col.lp2_pairs
+        li = searchsortedfirst(all_lp_pts, l)
+        ri = searchsortedfirst(all_lp_pts, r)
+        unite(li, ri)
     end
 
-    comp_sizes = Dict{Int,Int}()
-    for i in 1:n_pts
-        r = findroot(i)
-        comp_sizes[r] = get(comp_sizes, r, 0) + 1
+    comp_sizes = zeros(Int, n_pts)
+    @inbounds for i in 1:n_pts
+        comp_sizes[findroot(i)] += 1
     end
-    sizes = sort(collect(values(comp_sizes)), rev=true)
+    sizes = Int[]
+    sizehint!(sizes, n_pts)
+    @inbounds for s in comp_sizes
+        s > 0 && push!(sizes, s)
+    end
+    sort!(sizes, rev=true)
 
-    # Co-occurrence degree of LP points (how many distinct LP partners)
-    lp_degree = Dict{NTuple{2,Int},Int}()
-    for (l, r) in col.lp2_pairs
-        lp_degree[l] = get(lp_degree, l, 0) + 1
-        lp_degree[r] = get(lp_degree, r, 0) + 1
+    # Co-occurrence degree of LP points (how many distinct 2-LP incidences)
+    degrees = zeros(Int, n_pts)
+    @inbounds for (l, r) in col.lp2_pairs
+        degrees[searchsortedfirst(all_lp_pts, l)] += 1
+        degrees[searchsortedfirst(all_lp_pts, r)] += 1
     end
-    degrees = sort(collect(values(lp_degree)), rev=true)
+    degvals = Int[]
+    sizehint!(degvals, n_pts)
+    @inbounds for d in degrees
+        d > 0 && push!(degvals, d)
+    end
+    sort!(degvals, rev=true)
 
     return (
         n_lp_nodes        = n_pts,
@@ -304,8 +399,8 @@ function lp_clustering(col::LPResidualCollector)
         largest_component = isempty(sizes) ? 0 : sizes[1],
         singleton_comps   = count(==(1), sizes),
         component_sizes   = sizes,
-        max_lp_degree     = isempty(degrees) ? 0 : degrees[1],
-        mean_lp_degree    = isempty(degrees) ? 0.0 : sum(degrees) / length(degrees),
+        max_lp_degree     = isempty(degvals) ? 0 : degvals[1],
+        mean_lp_degree    = isempty(degvals) ? 0.0 : sum(degvals) / length(degvals),
     )
 end
 
@@ -327,13 +422,16 @@ function lp_effective_space(col::LPResidualCollector; p_field::Int)
     # E[gap] ≈ sqrt(π * M / 2)  → M ≈ 2 * E[gap]^2 / π
     M_eff = 2.0 * mean_gap^2 / π
 
+    gaps_sorted = sort(copy(col.closure_gaps))
+    median_gap = gaps_sorted[(length(gaps_sorted) + 1) ÷ 2]
+
     return (
         n_closures       = length(col.closure_gaps),
         mean_gap_steps   = mean_gap,
-        median_gap_steps = sort(col.closure_gaps)[(length(col.closure_gaps)+1)÷2],
+        median_gap_steps = median_gap,
         M_effective      = M_eff,
         M_naive          = Float64(p_field),
-        M_compression    = p_field / max(1.0, M_eff),   # >> 1 means compressed
+        M_compression    = p_field / max(1.0, M_eff),
     )
 end
 
@@ -376,10 +474,11 @@ function lp_residual_report(col::LPResidualCollector;
     if rev !== nothing
         println("\n── 2. LP Revisit Frequency Histogram ───────────────────────────────")
         @printf("  Multiplicities present: %s\n",
-                join(string.(rev.sorted_mults), ", "))
-        top_mults = rev.sorted_mults[end:-1:max(1, end-4)]
+                join(string.(rev.multiplicities), ", "))
+        top_mults = rev.multiplicities[end:-1:max(1, end-4)]
         for m in top_mults
-            @printf("    mult=%3d: %d LP points\n", m, get(rev.histogram, m, 0))
+            idx = searchsortedfirst(rev.multiplicities, m)
+            @printf("    mult=%3d: %d LP points\n", m, rev.multiplicity_counts[idx])
         end
         @printf("  Singleton LP points (seen once): %.3f%%\n",
                 100.0 * rev.singleton_frac)
@@ -409,16 +508,19 @@ function lp_residual_report(col::LPResidualCollector;
     if acf !== nothing
         println("\n── 4. Alpha/Beta Autocorrelation at LP Events ─────────────────────")
         println("  lag    alpha_acf    beta_acf    x_acf")
-        for τ in sort(collect(keys(acf.alpha_acf)))
-            aa = get(acf.alpha_acf, τ, NaN)
-            ba = get(acf.beta_acf,  τ, NaN)
-            xa = get(acf.x_acf,    τ, NaN)
+        @inbounds for i in eachindex(acf.lags)
+            τ  = acf.lags[i]
+            aa = acf.alpha_acf[i]
+            ba = acf.beta_acf[i]
+            xa = acf.x_acf[i]
             @printf("  %4d   %+.6f   %+.6f   %+.6f\n", τ, aa, ba, xa)
         end
-        lag1_alpha = get(acf.alpha_acf, 1, NaN)
-        if !isnan(lag1_alpha) && abs(lag1_alpha) > 0.2
-            @printf("  *** SIGNIFICANT LAG-1 ALPHA AUTOCORR (%.4f): walk is sticky in alpha ***\n",
-                    lag1_alpha)
+        if !isempty(acf.lags)
+            lag1_alpha = acf.alpha_acf[1]
+            if !isnan(lag1_alpha) && abs(lag1_alpha) > 0.2
+                @printf("  *** SIGNIFICANT LAG-1 ALPHA AUTOCORR (%.4f): walk is sticky in alpha ***\n",
+                        lag1_alpha)
+            end
         end
     end
 

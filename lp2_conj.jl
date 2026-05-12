@@ -55,6 +55,7 @@
 #  Node-key type alias
 # ---------------------------------------------------------------------------
 const LPKey = Union{NTuple{2,Int}, NTuple{4,Int}}
+const LPRow = Vector{Pair{Int,Int}}
 
 # Node cap for LP2ConjGraph — same rationale as MAX_LP2_NODES in lp2.jl.
 const MAX_LP2C_NODES = 50_000
@@ -62,12 +63,12 @@ const MAX_LP2C_NODES = 50_000
 # ---------------------------------------------------------------------------
 #  LP2ConjNode — one vertex in the mixed LP2 spanning tree
 # ---------------------------------------------------------------------------
-mutable struct LP2ConjNode
-    parent    ::Union{LPKey, Nothing}   # nothing → this node is a root
-    depth     ::Int
-    edge_row  ::Dict{Int,Int}           # fb contribution on edge to parent
-    edge_alpha::Int
-    edge_beta ::Int
+struct LP2ConjNode
+    parent     ::Union{LPKey, Nothing}   # nothing → this node is a root
+    depth      ::Int
+    edge_row   ::LPRow                   # compact sparse row payload
+    edge_alpha ::Int
+    edge_beta  ::Int
 end
 
 # ---------------------------------------------------------------------------
@@ -75,7 +76,7 @@ end
 # ---------------------------------------------------------------------------
 mutable struct LP2ConjGraph
     nodes             ::Dict{LPKey, LP2ConjNode}
-    n_edges_inserted  ::Int
+    n_edges_inserted   ::Int
     n_cycles_found    ::Int
     n_emitted         ::Int
     n_depth_pruned    ::Int
@@ -90,7 +91,39 @@ function LP2ConjGraph()
 end
 
 # ---------------------------------------------------------------------------
-#  Internal helpers (mirrors lp2.jl exactly, generalised key type)
+#  Small row helpers
+# ---------------------------------------------------------------------------
+
+@inline function lp2c_copy_row_pairs(fb_row::Dict{Int,Int})::LPRow
+    row = Vector{Pair{Int,Int}}(undef, length(fb_row))
+    i = 1
+    for (j, v) in fb_row
+        row[i] = j => v
+        i += 1
+    end
+    return row
+end
+
+@inline function lp2c_accumulate_pairs!(dst::Dict{Int,Int}, row::LPRow, sign::Int)
+    @inbounds for p in row
+        j = p.first
+        v = p.second
+        nv = get(dst, j, 0) + sign * v
+        nv == 0 ? delete!(dst, j) : (dst[j] = nv)
+    end
+    return dst
+end
+
+@inline function lp2c_accumulate_dict!(dst::Dict{Int,Int}, src::Dict{Int,Int}, sign::Int)
+    for (j, v) in src
+        nv = get(dst, j, 0) + sign * v
+        nv == 0 ? delete!(dst, j) : (dst[j] = nv)
+    end
+    return dst
+end
+
+# ---------------------------------------------------------------------------
+#  Internal helpers (mirrors lp2.jl exactly, generalized key type)
 # ---------------------------------------------------------------------------
 
 function lp2c_tree_root(g::LP2ConjGraph, pt::LPKey)::Union{LPKey,Nothing}
@@ -112,7 +145,7 @@ function lp2c_tree_root(g::LP2ConjGraph, pt::LPKey)::Union{LPKey,Nothing}
 end
 
 function lp2c_path_to_root(g::LP2ConjGraph, start::LPKey, ell::Int)
-    row   = Dict{Int,Int}()
+    acc   = Dict{Int,Int}()
     alpha = 0
     beta  = 0
     sign_node = 1
@@ -125,14 +158,22 @@ function lp2c_path_to_root(g::LP2ConjGraph, start::LPKey, ell::Int)
         if depth > MAX_LP2_DEPTH
             return nothing
         end
-        for (j, v) in node.edge_row
-            nv = get(row, j, 0) + sign_node * v
-            nv == 0 ? delete!(row, j) : (row[j] = nv)
+        for p in node.edge_row
+            j = p.first
+            v = p.second
+            nv = get(acc, j, 0) + sign_node * v
+            nv == 0 ? delete!(acc, j) : (acc[j] = nv)
         end
         alpha     = mod(alpha + sign_node * node.edge_alpha, ell)
         beta      = mod(beta  + sign_node * node.edge_beta,  ell)
         sign_node = -sign_node
         cur       = node.parent::LPKey
+    end
+    row = Vector{Pair{Int,Int}}(undef, length(acc))
+    i = 1
+    for (j, v) in acc
+        row[i] = j => v
+        i += 1
     end
     return (row=row, alpha=alpha, beta=beta, root_sign=sign_node, depth=depth)
 end
@@ -197,18 +238,10 @@ function lp2c_insert_edge!(g::LP2ConjGraph,
             s = pathL.root_sign
 
             odd_row = Dict{Int,Int}()
-            for (j, v) in pathL.row
-                nv = get(odd_row, j, 0) - s * v
-                nv == 0 ? delete!(odd_row, j) : (odd_row[j] = nv)
-            end
-            for (j, v) in pathR.row
-                nv = get(odd_row, j, 0) - s * v
-                nv == 0 ? delete!(odd_row, j) : (odd_row[j] = nv)
-            end
-            for (j, v) in fb_row
-                nv = get(odd_row, j, 0) + s * v
-                nv == 0 ? delete!(odd_row, j) : (odd_row[j] = nv)
-            end
+            lp2c_accumulate_pairs!(odd_row, pathL.row, -s)
+            lp2c_accumulate_pairs!(odd_row, pathR.row, -s)
+            lp2c_accumulate_dict!(odd_row, fb_row, s)
+
             odd_alpha = mod(s * (pathL.alpha + pathR.alpha - alpha), ell)
             odd_beta  = mod(s * (pathL.beta  + pathR.beta  - beta),  ell)
 
@@ -223,14 +256,8 @@ function lp2c_insert_edge!(g::LP2ConjGraph,
 
         # Even cycle: LPs cancel, pure FB relation.
         combined = copy(fb_row)
-        for (j, v) in pathL.row
-            nv = get(combined, j, 0) - v
-            nv == 0 ? delete!(combined, j) : (combined[j] = nv)
-        end
-        for (j, v) in pathR.row
-            nv = get(combined, j, 0) - v
-            nv == 0 ? delete!(combined, j) : (combined[j] = nv)
-        end
+        lp2c_accumulate_pairs!(combined, pathL.row, -1)
+        lp2c_accumulate_pairs!(combined, pathR.row, -1)
 
         if length(combined) > MAX_LP2_ROW_WEIGHT
             g.n_weight_pruned += 1
@@ -269,19 +296,20 @@ function lp2c_insert_edge!(g::LP2ConjGraph,
         node_R = get(g.nodes, R, nothing)
 
         if node_L === nothing && node_R === nothing
-            1 > MAX_LP2_DEPTH && (g.n_depth_pruned += 1; return nothing)
-            g.nodes[R] = LP2ConjNode(nothing, 0, Dict{Int,Int}(), 0, 0)
-            g.nodes[L] = LP2ConjNode(R, 1, copy(fb_row), alpha, beta)
+            new_depth = 1
+            new_depth > MAX_LP2_DEPTH && (g.n_depth_pruned += 1; return nothing)
+            g.nodes[R] = LP2ConjNode(nothing, 0, Pair{Int,Int}[], 0, 0)
+            g.nodes[L] = LP2ConjNode(R, new_depth, lp2c_copy_row_pairs(fb_row), alpha, beta)
 
         elseif node_L === nothing
             new_depth = node_R.depth + 1
             new_depth > MAX_LP2_DEPTH && (g.n_depth_pruned += 1; return nothing)
-            g.nodes[L] = LP2ConjNode(R, new_depth, copy(fb_row), alpha, beta)
+            g.nodes[L] = LP2ConjNode(R, new_depth, lp2c_copy_row_pairs(fb_row), alpha, beta)
 
         elseif node_R === nothing
             new_depth = node_L.depth + 1
             new_depth > MAX_LP2_DEPTH && (g.n_depth_pruned += 1; return nothing)
-            g.nodes[R] = LP2ConjNode(L, new_depth, copy(fb_row), alpha, beta)
+            g.nodes[R] = LP2ConjNode(L, new_depth, lp2c_copy_row_pairs(fb_row), alpha, beta)
 
         else
             # Both in different existing trees — cross-tree merge is unsound
