@@ -53,7 +53,7 @@ const F_POLY = Int[4, 5, 2, 3, 0, 1]
 @inline function fpinv(a::Integer)
     aa = mod(Int(a), p)
     aa == 0 && throw(DomainError(a, "attempted inversion of zero modulo p"))
-    return powermod(aa, p - 2, p)
+    return Int(invmod(aa, p))
 end
 
 function pdivrem(a::Vector{Int}, b::Vector{Int})
