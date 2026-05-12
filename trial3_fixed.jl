@@ -1295,21 +1295,57 @@ function phase2_worker(G::Div2, T::Div2,
     sample_rels = Vector{Tuple{Div2,Dict{Int,Int},Int,Int,NTuple{2,Int},NTuple{2,Int},NTuple{2,Int}}}()
     rank_growth = Tuple{Int,Int}[]
 
+    # ── Batch walk precompute ────────────────────────────────────────────────────
+    # Instead of calling jac_add once per hot-loop iteration (allocating 2+
+    # Vector{Int} objects every step under GC), we precompute BATCH_SIZE steps
+    # at a time into a fixed-length array, then consume them by index.
+    # The allocation churn is identical in total but concentrated into a single
+    # burst that the GC can sweep with good locality, rather than drip-feeding
+    # one object per iteration interleaved with Dict and lock operations.
+    const_BATCH_SIZE = 50_000
+    batch_D     = Vector{Div2}(undef, const_BATCH_SIZE)
+    batch_alpha = Vector{Int}(undef, const_BATCH_SIZE)
+    batch_beta  = Vector{Int}(undef, const_BATCH_SIZE)
+
+    function fill_batch!(D::Div2, a::Int, b::Int)
+        @inbounds for i in 1:const_BATCH_SIZE
+            si     = rand(1:N_STEPS)
+            D      = jac_add(D, step_D[si])
+            a      = mod(a + step_a[si], ell)
+            b      = mod(b + step_b[si], ell)
+            batch_D[i]     = D
+            batch_alpha[i] = a
+            batch_beta[i]  = b
+        end
+        return D, a, b
+    end
+
+    D_cur, alpha_cur, beta_cur = fill_batch!(D_cur, alpha_cur, beta_cur)
+    batch_pos = 1
+    # ────────────────────────────────────────────────────────────────────────────
+
     while rel_counter[] < rel_target && raw_steps < step_cap
         raw_steps += 1
-        si        = rand(1:N_STEPS)
-        D_cur     = jac_add(D_cur, step_D[si])
-        alpha_cur = mod(alpha_cur + step_a[si], ell)
-        beta_cur  = mod(beta_cur  + step_b[si], ell)
+
+        # Refill batch when exhausted.
+        if batch_pos > const_BATCH_SIZE
+            D_cur, alpha_cur, beta_cur = fill_batch!(D_cur, alpha_cur, beta_cur)
+            batch_pos = 1
+        end
+        D_cur     = batch_D[batch_pos]
+        al        = batch_alpha[batch_pos]
+        be        = batch_beta[batch_pos]
+        batch_pos += 1
 
         # D_cur must be a genuine degree-2 divisor (not identity or degree-1).
-        pdeg(D_cur.u) != 2 && continue
+        # fp3_deg is the SVector-typed version of pdeg for Fp3 = SVector{3,Int}.
+        fp3_deg(D_cur.u) != 2 && continue
 
         # Extract Mumford coefficients: u = x^2 + u1*x + u0, v = v0 + v1*x.
-        # (D_cur.u is monic degree-2; D_cur.v is degree ≤ 1.)
+        # D_cur.u is Fp3 = SVector{3,Int} (monic degree-2); D_cur.v is Fp2 = SVector{2,Int}.
         u0 = D_cur.u[1]; u1 = D_cur.u[2]   # u[3]=1 (monic)
         v0 = D_cur.v[1]
-        v1 = length(D_cur.v) >= 2 ? D_cur.v[2] : 0
+        v1 = D_cur.v[2]   # Fp2 = SVector{2,Int}: index 2 always valid
 
         px, py = cur_pt
 
@@ -1356,8 +1392,6 @@ function phase2_worker(G::Div2, T::Div2,
             t_last_report = now_t
         end
 
-        al     = alpha_cur
-        be     = beta_cur
         P0     = cur_pt
         neg_al = mod(ell - al, ell)
         neg_be = mod(ell - be, ell)
@@ -2003,11 +2037,11 @@ function phase1_walk(G::Div2, T::Div2,
         β  = rand(0:ell-1)
         D  = jac_add(jac_mul(G, α), jac_mul(T, β))
 
-        pdeg(D.u) != 2 && continue
+        fp3_deg(D.u) != 2 && continue
 
         u0 = D.u[1]; u1 = D.u[2]
         v0 = D.v[1]
-        v1 = length(D.v) >= 2 ? D.v[2] : 0
+        v1 = D.v[2]   # Fp2 = SVector{2,Int}: index 2 always valid
 
         px, py = cur_pt
         upx = fp(fp(px*px) + fp(u1*px) + u0)

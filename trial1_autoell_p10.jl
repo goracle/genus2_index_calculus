@@ -18,6 +18,7 @@
 # =============================================================================
 
 using LinearAlgebra, Printf, Primes, Oscar
+using StaticArrays
 
 # ─────────────────────────── Global parameters ────────────────────────────────
 # Accept an optional command-line argument: the prime (or near-prime) to use.
@@ -151,63 +152,126 @@ function sqrt_fp(a::Int)
     end
 end
 
-# ─────────────────────── Polynomial ring Fp[x] ────────────────────────────────
-# Representation: Vector{Int} with poly[i] = coeff of x^(i-1); always trimmed.
+# =============================================================================
+#  Polynomial ring Fp[x]  —  two layers:
 #
-# Allocation discipline: every function that returns a fresh Vector allocates
-# exactly one output vector and nothing else.  In particular:
-#   - ptrim!  mutates in place (resize!); ptrim returns a new trimmed copy.
-#   - padd/psub/pmul each allocate exactly one output vector.
-#   - pneg/pscale avoid broadcast temporaries by using a manual loop.
-#   - pdivrem trims the remainder in-place via resize! rather than re-slicing.
-#   - pgcd_ext is the main Cantor hot path; its alloc count per call is O(deg).
+#  HOT PATH (stack-allocated, zero heap):
+#    Fp3 = SVector{3,Int}  represents degree ≤ 2:  c0 + c1·x + c2·x²
+#    Fp2 = SVector{2,Int}  represents degree ≤ 1:  c0 + c1·x
+#    All arithmetic on Fp3/Fp2 is fully inlined and allocation-free.
+#
+#  COLD PATH (heap Vector{Int}, variable degree):
+#    Used by pgcd_ext, pdivrem, jac_order_bsgs, mumford2, etc.
+#    Untouched from the original implementation.
+#
+#  Div2 is now an immutable struct holding (u::Fp3, v::Fp2), making it a
+#  40-byte stack value.  jac_add on the hot path never touches the heap.
+# =============================================================================
 
-# Trim trailing zeros in-place; returns the same vector.
-# ----------------------------------------------------------------------
-# Non-allocating trim (safe to use on owned mutable vectors only)
-# ----------------------------------------------------------------------
+const Fp3 = SVector{3,Int}   # degree-≤-2 poly: [c0, c1, c2]
+const Fp2 = SVector{2,Int}   # degree-≤-1 poly: [c0, c1]
+
+# Degree of an Fp3 (ignoring trailing zeros)
+@inline fp3_deg(u::Fp3) = u[3] != 0 ? 2 : (u[2] != 0 ? 1 : 0)
+@inline fp2_deg(v::Fp2) = v[2] != 0 ? 1 : 0
+
+@inline fp3_iszero(u::Fp3) = u[1] == 0 && u[2] == 0 && u[3] == 0
+@inline fp2_iszero(v::Fp2) = v[1] == 0 && v[2] == 0
+
+# Evaluate an Fp3/Fp2 at a point
+@inline fp3_eval(u::Fp3, x::Int) = fp(u[1] + x * fp(u[2] + x * u[3]))
+@inline fp2_eval(v::Fp2, x::Int) = fp(v[1] + x * v[2])
+
+# Convert to/from heap Vector{Int} for cold-path interop.
+# to_vec trims trailing zeros.
+@inline function fp3_to_vec(u::Fp3)::Vector{Int}
+    u[3] != 0 && return Int[u[1], u[2], u[3]]
+    u[2] != 0 && return Int[u[1], u[2]]
+    return Int[u[1]]
+end
+@inline function fp2_to_vec(v::Fp2)::Vector{Int}
+    v[2] != 0 && return Int[v[1], v[2]]
+    return Int[v[1]]
+end
+@inline function vec_to_fp3(a::Vector{Int})::Fp3
+    la = length(a)
+    Fp3(la >= 1 ? fp(a[1]) : 0,
+        la >= 2 ? fp(a[2]) : 0,
+        la >= 3 ? fp(a[3]) : 0)
+end
+@inline function vec_to_fp2(a::Vector{Int})::Fp2
+    la = length(a)
+    Fp2(la >= 1 ? fp(a[1]) : 0,
+        la >= 2 ? fp(a[2]) : 0)
+end
+
+# ── Hot-path arithmetic on Fp3/Fp2 ──────────────────────────────────────────
+# All functions are @inline and allocation-free.
+
+# Fp3 + Fp3 → Fp3
+@inline fp3_add(a::Fp3, b::Fp3) = Fp3(fp(a[1]+b[1]), fp(a[2]+b[2]), fp(a[3]+b[3]))
+# Fp3 - Fp3 → Fp3
+@inline fp3_sub(a::Fp3, b::Fp3) = Fp3(fp(a[1]-b[1]), fp(a[2]-b[2]), fp(a[3]-b[3]))
+# Fp2 + Fp2 → Fp2
+@inline fp2_add(a::Fp2, b::Fp2) = Fp2(fp(a[1]+b[1]), fp(a[2]+b[2]))
+# Fp2 - Fp2 → Fp2
+@inline fp2_sub(a::Fp2, b::Fp2) = Fp2(fp(a[1]-b[1]), fp(a[2]-b[2]))
+# -Fp2 → Fp2
+@inline fp2_neg(v::Fp2)         = Fp2(fp(-v[1]), fp(-v[2]))
+# scalar * Fp3 → Fp3
+@inline fp3_scale(a::Fp3, s::Int) = Fp3(fp(a[1]*s), fp(a[2]*s), fp(a[3]*s))
+# scalar * Fp2 → Fp2
+@inline fp2_scale(v::Fp2, s::Int) = Fp2(fp(v[1]*s), fp(v[2]*s))
+
+# Fp2 * Fp2 → Fp3  (degree ≤ 2)
+@inline function fp2_mul(a::Fp2, b::Fp2)::Fp3
+    Fp3(fp(a[1]*b[1]),
+        fp(a[1]*b[2] + a[2]*b[1]),
+        fp(a[2]*b[2]))
+end
+
+# Fp3 mod Fp3-monic-deg2: compute a mod u where u is monic degree 2.
+# Reduces degree-2 term: x² ≡ -u[2]·x - u[1]  (since u = x²+u[2]·x+u[1])
+# Input a has degree ≤ 2; output has degree ≤ 1 → Fp2.
+@inline function fp3_mod_u2(a::Fp3, u::Fp3)::Fp2
+    # u is monic degree 2: u[3]=1, u = x²+u[2]x+u[1]
+    # a = a[3]x² + a[2]x + a[1]
+    # subtract a[3]·u: a[3]·(x²+u[2]x+u[1]) from a
+    # result: (a[2] - a[3]*u[2])x + (a[1] - a[3]*u[1])
+    c = a[3]
+    Fp2(fp(a[1] - c*u[1]),
+        fp(a[2] - c*u[2]))
+end
+
+# Fp2 mod Fp3-monic-deg2 → Fp2  (already degree ≤ 1, no-op)
+@inline fp2_mod_u2(v::Fp2, ::Fp3)::Fp2 = v
+
+# ── Cantor jac_add: fully inlined, zero allocation ──────────────────────────
+#
+# For genus-2 Jacobians the generic Cantor composition+reduction has a
+# known closed form when gcd(u1,u2)=1 (the overwhelmingly common case).
+# We special-case the full generic path inline.
+#
+# Notation:  u1,u2 are monic degree-2 Fp3;  v1,v2 are degree≤1 Fp2.
+# The degenerate path (gcd≠1) falls through to the Vector-based implementation.
+#
+# Returns a new Div2 from stack-only arithmetic.
+
+# ── Old heap-based poly utilities (cold path only) ───────────────────────────
+
 @inline function ptrim!(a::Vector{Int})
     n = length(a)
-    @inbounds while n > 1 && a[n] == 0
-        n -= 1
-    end
-    if n < length(a)
-        resize!(a, n)
-    end
-    return a
+    @inbounds while n > 1 && a[n] == 0; n -= 1; end
+    n < length(a) && resize!(a, n)
+    a
 end
 
-
-# ----------------------------------------------------------------------
-# Allocating trim
-#
-# IMPORTANT:
-#   The old version returned copy(a) when already trimmed. Under heavy
-#   multithreaded GC pressure (especially with GAP/Oscar root scanning),
-#   that unnecessary allocation can trigger pathological GC behavior.
-#
-#   This version allocates ONLY when trailing zeros actually need removal.
-# ----------------------------------------------------------------------
 @inline function ptrim(a::Vector{Int})
     n = length(a)
-    @inbounds while n > 1 && a[n] == 0
-        n -= 1
-    end
-
-    # Always return an owned copy.
-    #
-    # Returning the original vector when already trimmed is faster, but it
-    # allows subtle aliasing bugs when callers assume they received a fresh
-    # polynomial object and later mutate it in-place. Correctness is much more
-    # important here than avoiding one small allocation.
-    if n == length(a)
-        return copy(a)
-    else
-        return a[1:n]
-    end
+    @inbounds while n > 1 && a[n] == 0; n -= 1; end
+    n == length(a) ? copy(a) : a[1:n]
 end
 
-# Degree without allocating a trimmed copy.
 function pdeg(a::Vector{Int})
     n = length(a)
     while n > 1 && a[n] == 0; n -= 1; end
@@ -220,10 +284,10 @@ function padd(a::Vector{Int}, b::Vector{Int})
     la, lb = length(a), length(b)
     c = Vector{Int}(undef, max(la, lb))
     if la >= lb
-        @inbounds for i in 1:lb;  c[i] = fp(a[i] + b[i]); end
+        @inbounds for i in 1:lb;    c[i] = fp(a[i] + b[i]); end
         @inbounds for i in lb+1:la; c[i] = fp(a[i]); end
     else
-        @inbounds for i in 1:la;  c[i] = fp(a[i] + b[i]); end
+        @inbounds for i in 1:la;    c[i] = fp(a[i] + b[i]); end
         @inbounds for i in la+1:lb; c[i] = fp(b[i]); end
     end
     ptrim!(c)
@@ -233,10 +297,10 @@ function psub(a::Vector{Int}, b::Vector{Int})
     la, lb = length(a), length(b)
     c = Vector{Int}(undef, max(la, lb))
     if la >= lb
-        @inbounds for i in 1:lb;  c[i] = fp(a[i] - b[i]); end
+        @inbounds for i in 1:lb;    c[i] = fp(a[i] - b[i]); end
         @inbounds for i in lb+1:la; c[i] = fp(a[i]); end
     else
-        @inbounds for i in 1:la;  c[i] = fp(a[i] - b[i]); end
+        @inbounds for i in 1:la;    c[i] = fp(a[i] - b[i]); end
         @inbounds for i in la+1:lb; c[i] = fp(-b[i]); end
     end
     ptrim!(c)
@@ -264,30 +328,23 @@ function pscale(a::Vector{Int}, s::Int)
     ptrim!(c)
 end
 
-# In-place: scale a by s, trim, return a.  No allocation.
 function pscale!(a::Vector{Int}, s::Int)
     s = fp(s)
     @inbounds for i in eachindex(a); a[i] = fp(a[i] * s); end
     ptrim!(a)
 end
 
-# In-place: negate a, trim, return a.  No allocation.
 function pneg!(a::Vector{Int})
     @inbounds for i in eachindex(a); a[i] = fp(-a[i]); end
     ptrim!(a)
 end
 
-# Compute F_POLY - V*V into a pre-allocated buffer dst (resized as needed).
-# Returns the degree-5 result in dst.  One allocation avoided vs psub(F_POLY, pmul(V,V)).
 function f_minus_vsq!(dst::Vector{Int}, V::Vector{Int})
     lv = length(V)
-    # V*V has degree 2*(lv-1), so length lv+lv-1; F_POLY has length 6.
     lout = max(6, 2 * lv - 1)
     resize!(dst, lout)
     fill!(dst, 0)
-    # Add F_POLY
     @inbounds for i in 1:6; dst[i] = fp(dst[i] + F_POLY[i]); end
-    # Subtract V^2
     @inbounds for i in 1:lv, j in 1:lv
         dst[i+j-1] = fp(dst[i+j-1] - V[i] * V[j])
     end
@@ -300,13 +357,9 @@ function peval(poly::Vector{Int}, x::Int)
     r
 end
 
-
 pmod(a, b) = pdivrem(a, b)[2]
 
-# Extended GCD: returns (g, s, t) with g monic, g = s·a + t·b
 function pgcd_ext(a0::Vector{Int}, b0::Vector{Int})
-    # Work on owned copies so no caller-owned vector can be mutated through
-    # aliasing across nested or threaded Jacobian arithmetic.
     r0 = copy(ptrim(a0))
     r1 = copy(ptrim(b0))
     s0, s1 = Int[1], Int[0]
@@ -317,121 +370,325 @@ function pgcd_ext(a0::Vector{Int}, b0::Vector{Int})
         s0, s1 = s1, psub(s0, pmul(q, s1))
         t0, t1 = t1, psub(t0, pmul(q, t1))
     end
-    if pzero(r0)
-        throw(ArgumentError("pgcd_ext: gcd collapsed to zero polynomial"))
-    end
+    pzero(r0) && throw(ArgumentError("pgcd_ext: gcd collapsed to zero polynomial"))
     sc = fpinv(r0[end])
     pscale(r0, sc), pscale(s0, sc), pscale(t0, sc)
 end
 
 # ──────────────────────── Genus-2 Jacobian (Cantor) ───────────────────────────
-# A reduced divisor D = Div2(u, v) satisfies:
-#   u monic deg ≤ 2,  deg v < deg u,  u | v² - f.
-# Identity element: u = [1], v = [0].
+# Div2 is now a fully stack-allocated value type.
+# u::Fp3 = SVector{3,Int}: coefficients of the monic u-poly (degree ≤ 2).
+# v::Fp2 = SVector{2,Int}: coefficients of the v-poly (degree ≤ 1).
+# Identity: u = [1,0,0] (degree 0), v = [0,0].
 
 struct Div2
-    u::Vector{Int}
-    v::Vector{Int}
+    u::Fp3
+    v::Fp2
 end
 
 Base.:(==)(A::Div2, B::Div2) = (A.u == B.u) && (A.v == B.v)
 
-# Without this, Dict{Div2,Int} hashes by pointer (mutable Vector fields),
-# so baby-giant collisions in jac_order_bsgs never fire.  Julia's built-in
-# hash(::Vector{Int}, h) does content hashing, so this is correct and O(deg).
 function Base.hash(D::Div2, h::UInt)
     h = hash(D.u, h)
     h = hash(D.v, h)
     h
 end
 
-const JacID = Div2(Int[1], Int[0])
-jac_isid(D::Div2) = pdeg(D.u) == 0
+const JacID = Div2(Fp3(1,0,0), Fp2(0,0))
+@inline jac_isid(D::Div2) = D.u[2] == 0 && D.u[3] == 0   # degree 0
+
+# ── Generic (degenerate) Cantor via heap polys — called only when gcd(u1,u2)≠1
+function _jac_add_degenerate(D1::Div2, D2::Div2)::Div2
+    u1 = fp3_to_vec(D1.u); v1 = fp2_to_vec(D1.v)
+    u2 = fp3_to_vec(D2.u); v2 = fp2_to_vec(D2.v)
+    d1, e1, e2 = pgcd_ext(u1, u2)
+    d, c1v, c2v = pgcd_ext(d1, padd(v1, v2))
+    s1v = pmul(c1v, e1); s2v = pmul(c1v, e2)
+    U, _  = pdivrem(pmul(u1, u2), pmul(d, d))
+    Vn    = padd(padd(pmul(pmul(s1v, u1), v2), pmul(pmul(s2v, u2), v1)),
+                 pmul(c2v, padd(pmul(v1, v2), F_POLY)))
+    Vd, _ = pdivrem(Vn, d)
+    V     = pmod(Vd, U)
+    U[end] == 0 && throw(ArgumentError("jac_add degenerate: zero leading coeff"))
+    U = pscale(U, fpinv(U[end]))
+    _tmp = Vector{Int}(undef, 6)
+    while pdeg(U) > 2
+        f_minus_vsq!(_tmp, V)
+        U2, _ = pdivrem(_tmp, U)
+        U2[end] == 0 && throw(ArgumentError("jac_add reduction: zero leading coeff"))
+        pscale!(U2, fpinv(U2[end]))
+        pneg!(V)
+        V = pmod(V, U2)
+        U = U2
+    end
+    Div2(vec_to_fp3(U), vec_to_fp2(V))
+end
+
+# ── Hot-path Cantor: generic case gcd(u1,u2)=1, both degree-2, inline.
+#
+# Explicit Cantor formulas for genus 2 with deg(u1)=deg(u2)=2, gcd=1.
+# See Lange "Formulae for Arithmetic on Genus 2 Hyperelliptic Curves" or
+# direct derivation from Cantor's algorithm.
+#
+# u_i = x² + a_i·x + b_i  (monic, stored as Fp3(b,a,1))
+# v_i = c_i + d_i·x       (stored as Fp2(c,d))
+#
+# Step 1 (composition): U = u1·u2, find V mod U.
+# We need s,t with s·u1 + t·u2 = 1 (since gcd=1).
+# By extended Euclidean on degree-2 polys, s and t are degree ≤ 1.
+#
+# For monic degree-2 coprime u1,u2:
+#   gcd_ext gives s,t degree ≤ 1 with s·u1 + t·u2 = 1.
+#   V = (s·u1·v2 + t·u2·v1) mod U    (degree ≤ 3 before reduction, ≤ 3 after mod)
+#
+# Step 2 (reduction): U has degree 4; reduce once to get degree 2.
+#   U' = (f - V²) / U   (degree 5 - 4 = 1... wait, need one more step)
+# Actually for genus 2 composition of two degree-2 elements gives degree-4 U,
+# which reduces in exactly two steps to degree 2.
+# We implement this directly with fixed-size arithmetic.
+#
+# For the s,t computation with degree-2 coprime u1,u2:
+#   Write u1 = x²+a1·x+b1, u2 = x²+a2·x+b2.
+#   u1 - u2 = (a1-a2)·x + (b1-b2).
+#   If a1≠a2: gcd(u1,u2) divides u1-u2 which is degree 1, so gcd=1 iff a1≠a2 or b1≠b2.
+#   s = 1/(a1-a2) (scalar), but we need the full extended gcd for the general case.
+#   We fall back to the heap version for the extended gcd since it's degree ≤ 2,
+#   and the vectors are tiny (length 3). The key win is that AFTER the gcd,
+#   all arithmetic stays in Fp3/Fp2 without further heap allocation.
 
 function jac_add(D1::Div2, D2::Div2)::Div2
-    # Canonicalize onto owned copies.  The divisor fields are mutable vectors,
-    # and identity / negation shortcuts can otherwise hand out aliases that are
-    # unsafe once the same objects are used from multiple threads.
-    D1 = Div2(copy(ptrim(D1.u)), copy(ptrim(D1.v)))
-    D2 = Div2(copy(ptrim(D2.u)), copy(ptrim(D2.v)))
-
     jac_isid(D1) && return D2
     jac_isid(D2) && return D1
 
-    u1, v1, u2, v2 = D1.u, D1.v, D2.u, D2.v
+    u1 = D1.u; v1 = D1.v
+    u2 = D2.u; v2 = D2.v
 
-    # ── Composition ───────────────────────────────────────────────────────────
-    d1, e1, e2 = pgcd_ext(u1, u2)
+    # Degree check: if either u is degree < 2, use heap path.
+    (u1[3] == 0 || u2[3] == 0) && return _jac_add_degenerate(D1, D2)
 
-    if pdeg(d1) == 0                            # gcd(u1,u2) = 1  (generic path)
-        U = pmul(u1, u2)
-        V = pmod(padd(pmul(pmul(e1, u1), v2),
-                      pmul(pmul(e2, u2), v1)), U)
-    else                                        # degenerate: shared root(s)
-        d, c1, c2 = pgcd_ext(d1, padd(v1, v2))
-        s1 = pmul(c1, e1);  s2 = pmul(c1, e2)
-        U, _  = pdivrem(pmul(u1, u2), pmul(d, d))   # exact
-        Vn    = padd(padd(pmul(pmul(s1, u1), v2), pmul(pmul(s2, u2), v1)),
-                     pmul(c2, padd(pmul(v1, v2), F_POLY)))
-        Vd, _ = pdivrem(Vn, d)                       # exact
-        V     = pmod(Vd, U)
+    # ── Inline stack-allocated extended GCD of two monic degree-2 polys ──────
+    #
+    # u1 = x² + a1·x + b1  (u1 = Fp3(b1, a1, 1))
+    # u2 = x² + a2·x + b2  (u2 = Fp3(b2, a2, 1))
+    #
+    # We need e1, e2 (degree ≤ 1) with e1·u1 + e2·u2 = 1  (when gcd=1).
+    #
+    # u1 - u2 = δa·x + δb  where δa = a1-a2, δb = b1-b2.
+    #
+    # Case A: δa ≠ 0  (generic — the common case).
+    #   Let L = δa·x + δb  (degree 1).
+    #   gcd(u1, u2) = gcd(u1, L).
+    #   We need s (degree ≤ 1) with s·L ≡ 1 (mod u1):
+    #     (s0 + s1·x)(δb + δa·x) ≡ 1 (mod x²+a1·x+b1)
+    #   Expand: δb·s0 + (δa·s0+δb·s1)·x + δa·s1·x²
+    #   Reduce x² ≡ -a1·x - b1:
+    #     const: δb·s0 - δa·s1·b1
+    #     x:     δa·s0 + δb·s1 - δa·s1·a1
+    #   Set = [1, 0]:
+    #     δb·s0 - δa·b1·s1 = 1
+    #     δa·s0 + (δb - δa·a1)·s1 = 0
+    #   From the second: s0 = -(δb - δa·a1)·s1 / δa = (δa·a1 - δb)·s1 / δa
+    #   Let γ = δa·a1 - δb  (= a2·δa since δa=a1-a2, δb=b1-b2:
+    #     γ = δa·a1 - δb = (a1-a2)·a1 - (b1-b2) = a1²-a1·a2-b1+b2)
+    #   s0 = γ·s1/δa.  Sub into first:
+    #     δb·γ·s1/δa - δa·b1·s1 = 1
+    #     s1·(δb·γ - δa²·b1)/δa = 1
+    #     s1 = δa / (δb·γ - δa²·b1)
+    #   Denominator: D = δb·γ - δa²·b1
+    #               = (b1-b2)(a1²-a1·a2-b1+b2) - (a1-a2)²·b1
+    #   If D = 0, gcd(u1,u2) > 1 → degenerate path.
+    #   Otherwise:
+    #     s1 = δa · inv(D)
+    #     s0 = γ · s1 / δa = γ · inv(D)    (γ/δa · δa·inv(D) = γ·inv(D))
+    #   So  s = inv(D)·(γ + δa·x)  is the Bezout coeff for L on the u1 side.
+    #   Now e1·u1 + e2·u2 = 1 with e2 = s (works mod u2 as well by symmetry):
+    #     Actually: s·L = 1 mod u1, and L = u1 - u2, so s·(u1-u2) = 1 mod u1
+    #     → -s·u2 ≡ 1 mod u1  → e2 = -s (as a polynomial Bezout coeff for u1+u2=1 form).
+    #     More carefully: e1·u1 + e2·u2 = 1
+    #     We have s·L = s·(u1-u2) = s·u1 - s·u2 ≡ 1 mod u1 (means s·u1 - s·u2 = 1 + k·u1 for some k)
+    #     Rearranging: (s-k)·u1 + (-s)·u2 = 1  → e1 = s-k (degree doesn't matter for Cantor),
+    #     e2 = -s.  For the Cantor formula we only need e1 mod u1 and e2 mod u2:
+    #     e2 mod u2 = (-s) mod u2.  Since deg(s)=1 < deg(u2)=2, e2 = -s directly.
+    #     e1: we need e1 mod u1.  s·L = 1 mod u1 means s·u1 - s·u2 - 1 = 0 mod u1
+    #     → s·u1 ≡ 1 + s·u2 mod u1 → not helpful.  But for Cantor we compute
+    #     V_num = e1·u1·v2 + e2·u2·v1 = (e1·u1)·v2 + (e2·u2)·v1.
+    #     e1·u1 mod U = e1·u1 mod (u1·u2): using e1·u1 + e2·u2 = 1 we get
+    #     e1·u1 = 1 - e2·u2, so e1·u1·v2 = v2 - e2·u2·v2, and
+    #     V_num = v2 - e2·u2·v2 + e2·u2·v1 = v2 + e2·u2·(v1-v2).
+    #     This is the key identity that avoids needing e1 explicitly!
+    #
+    # Case B: δa = 0, δb ≠ 0  (u1 and u2 share leading coefficient, differ in const).
+    #   L = δb (nonzero scalar). gcd(u1, u2) = gcd(u1, δb) = 1.
+    #   s = inv(δb) (scalar), e2 = -inv(δb), and same V_num identity applies.
+    #   In this sub-case: γ = δa·a1 - δb = -δb, D = δb·(-δb) - 0 = -δb².
+    #   inv(D) = inv(-δb²) = -inv(δb)².  s1 = δa·inv(D) = 0.  s0 = γ·inv(D) = -δb·(-inv(δb²)) = inv(δb). ✓
+    #   So Case B falls out of the same formula with δa=0: s = (γ·inv(D), 0·inv(D)) = (inv(δb), 0). ✓
+    #
+    # Summary of unified formula (no branches beyond D=0 check):
+    #   δa = a1 - a2,  δb = b1 - b2
+    #   γ  = δa·a1 - δb
+    #   D  = δb·γ - δa²·b1      (if 0: degenerate)
+    #   invD = fpinv(D)
+    #   e2  = Fp2(-γ·invD, -δa·invD)   (= -s, degree ≤ 1)
+    #   V_num (mod U) = v2 + e2·u2·(v1-v2) — computed below without storing e1.
+
+    a1 = u1[2]; b1 = u1[1]
+    a2 = u2[2]; b2 = u2[1]
+    δa = fp(a1 - a2)
+    δb = fp(b1 - b2)
+    γ  = fp(δa * a1 - δb)
+    D  = fp(δb * γ - fp(δa * δa) * b1)
+
+    if D == 0
+        return _jac_add_degenerate(D1, D2)
     end
 
-    if U[end] == 0
-        throw(ArgumentError(
-            "jac_add composition: U has zero leading coefficient before reduction; " *
-            "u1=$(D1.u) v1=$(D1.v) u2=$(D2.u) v2=$(D2.v)"))
-    end
-    U = pscale(U, fpinv(U[end]))                # make monic
+    invD = fpinv(D)
+    # e2 = -s = Fp2(-γ·invD, -δa·invD)
+    e2 = Fp2(fp(-γ * invD), fp(-δa * invD))
 
-    # ── Reduction: while deg(U) > g = 2 ──────────────────────────────────────
-    # Reuse a single buffer for f - V² across reduction steps.
-    _tmp = Vector{Int}(undef, 6)
-    while pdeg(U) > 2
-        f_minus_vsq!(_tmp, V)                   # _tmp = F_POLY - V²  (no alloc)
-        U2, _ = pdivrem(_tmp, U)                # exact: U | V²-f
-        if U2[end] == 0
-            throw(ArgumentError(
-                "jac_add reduction: U2 has zero leading coefficient after pdivrem; " *
-                "U=$U V=$V — U does not divide f-V² exactly (corrupt Div2 input or arithmetic bug)"))
-        end
-        pscale!(U2, fpinv(U2[end]))             # make monic in-place
-        pneg!(V)                                # V = -V in-place
-        V = pmod(V, U2)                         # one alloc (pmod result)
-        U = U2
-    end
+    # ── Compute V_num = v2 + e2·u2·(v1-v2) mod U  (degree ≤ 3 after reduction) ──
+    #
+    # Identity: e1·u1 + e2·u2 = 1  →  e1·u1·v2 + e2·u2·v1
+    #         = v2·(1 - e2·u2) + e2·u2·v1 = v2 + e2·u2·(v1-v2).
+    # This avoids computing e1 entirely and saves ~8 multiplications.
+    #
+    # dv = v1 - v2  (Fp2, degree ≤ 1)
+    # e2·u2: Fp2·Fp3 → degree ≤ 3  (4 scalar coefficients)
+    # e2·u2·dv: degree ≤ 4  (5 coefficients)
+    # V_num = v2 + e2·u2·dv: add v2 into the degree-0 and degree-1 terms.
+    # Then reduce mod U = u1·u2 (degree 4, monic) by subtracting the degree-4 term.
 
-    Div2(ptrim(U), ptrim(V))
+    dv0 = fp(v1[1] - v2[1])
+    dv1 = fp(v1[2] - v2[2])
+
+    # e2·u2: Fp2(e2[1],e2[2]) * Fp3(b2,a2,1) → 4 coeffs
+    e2u2_0 = fp(e2[1]*u2[1])
+    e2u2_1 = fp(e2[1]*u2[2] + e2[2]*u2[1])
+    e2u2_2 = fp(e2[1]*u2[3] + e2[2]*u2[2])
+    e2u2_3 = fp(e2[2]*u2[3])
+
+    # (e2·u2)·dv: degree ≤ 4, then add v2 into coeffs 0 and 1.
+    vn0 = fp(v2[1] + e2u2_0*dv0)
+    vn1 = fp(v2[2] + e2u2_0*dv1 + e2u2_1*dv0)
+    vn2 = fp(        e2u2_1*dv1  + e2u2_2*dv0)
+    vn3 = fp(        e2u2_2*dv1  + e2u2_3*dv0)
+    vn4 = fp(        e2u2_3*dv1)
+
+    # U = u1·u2, degree 4, monic.
+    ub0 = fp(u1[1]*u2[1])
+    ub1 = fp(u1[1]*u2[2] + u1[2]*u2[1])
+    ub2 = fp(u1[1] + u1[2]*u2[2] + u2[1])
+    ub3 = fp(u1[2] + u2[2])
+    # ub4 = 1 (monic)
+
+    # Reduce Vn (degree ≤ 4) mod U by eliminating the degree-4 term.
+    c4 = vn4
+    r0 = fp(vn0 - c4*ub0)
+    r1 = fp(vn1 - c4*ub1)
+    r2 = fp(vn2 - c4*ub2)
+    r3 = fp(vn3 - c4*ub3)
+    # V_raw = r3·x³ + r2·x² + r1·x + r0  (degree ≤ 3)
+
+    # ── Cantor reduction: deg(U)=4 → deg(U1)=2 ─────────────────────────────
+    # U1 = (f - V_raw²) / U  where f = curve polynomial (degree 5).
+    # deg(V_raw) ≤ 3 → deg(V_raw²) ≤ 6; deg(f-V_raw²) ≤ 6; quotient degree ≤ 2. ✓
+    # V1 = -(V_raw mod U1).
+
+    # V_raw² coefficients (degree ≤ 6 from V of degree 3):
+    vsq0 = fp(r0*r0)
+    vsq1 = fp(2*r0*r1)
+    vsq2 = fp(2*r0*r2 + r1*r1)
+    vsq3 = fp(2*r0*r3 + 2*r1*r2)
+    vsq4 = fp(2*r1*r3 + r2*r2)
+    vsq5 = fp(2*r2*r3)
+    vsq6 = fp(r3*r3)
+
+    # f - V²: degree 5 (leading term from f is x⁵ coeff=1, from V² is vsq6·x⁶)
+    # But vsq6 = r3² where r3 comes from degree-3 remainder — could be nonzero.
+    # (f-V²) has degree ≤ 6; we need to divide by U (degree 4) to get degree ≤ 2.
+    # Polynomial long division of degree-6 by degree-4 monic:
+    # g = (f - V²):  g[i] for i=0..6
+    g0 = fp(F_POLY[1] - vsq0)
+    g1 = fp(F_POLY[2] - vsq1)
+    g2 = fp(F_POLY[3] - vsq2)
+    g3 = fp(F_POLY[4] - vsq3)
+    g4 = fp(           - vsq4)   # F_POLY[5]=0
+    g5 = fp(1          - vsq5)   # F_POLY[6]=1 (leading x⁵ coeff)
+    g6 = fp(           - vsq6)   # degree-6 term (from V²)
+
+    # Synthetic division of g (degree ≤ 6) by U (degree 4, monic).
+    # Quotient qq = [qq0, qq1, qq2] = U1 (the new u-polynomial, degree 2).
+    qq2 = g6
+    rr5 = fp(g5 - qq2*ub3)
+    rr4 = fp(g4 - qq2*ub2)
+    rr3 = fp(g3 - qq2*ub1)
+    rr2 = fp(g2 - qq2*ub0)
+
+    qq1 = rr5
+    rr4b = fp(rr4 - qq1*ub3)
+    rr3b = fp(rr3 - qq1*ub2)
+    rr2b = fp(rr2 - qq1*ub1)
+    rr1  = fp(g1  - qq1*ub0)
+
+    qq0 = rr4b
+    # Remainder rr3c..rr0 not needed (zero when Cantor invariant holds).
+    # U1 = quotient [qq0, qq1, qq2], make monic:
+    if qq2 == 0
+        return _jac_add_degenerate(D1, D2)
+    end
+    inv_u1lc = fpinv(qq2)
+    U1_0 = fp(qq0 * inv_u1lc)
+    U1_1 = fp(qq1 * inv_u1lc)
+    U1 = Fp3(U1_0, U1_1, 1)
+
+    # V1 = -V_raw mod U1.
+    # V_raw = r3·x³ + r2·x² + r1·x + r0  (degree ≤ 3).
+    # Reduce mod U1 (monic degree 2: x² ≡ -U1_1·x - U1_0):
+    # First reduce x³: x³ = x·x² ≡ x·(-U1_1·x - U1_0) = -U1_1·x² - U1_0·x
+    #                              ≡ -U1_1·(-U1_1·x-U1_0) - U1_0·x = (U1_1²-U1_0)·x + U1_1·U1_0
+    # So reduce V_raw of degree 3 to degree ≤ 1:
+    # Eliminate x³: subtract r3·x·(x² + U1_1·x + U1_0) → contributes -r3·U1_1 to x², -r3·U1_0 to x
+    # New x² coeff: r2 - r3*U1_1
+    # New x coeff:  r1 - r3*U1_0
+    # New x⁰ coeff: r0
+    s2 = fp(r2 - r3*U1_1)
+    s1_ = fp(r1 - r3*U1_0)
+    # s0 = r0
+    # Now degree ≤ 2: s2·x² + s1_·x + r0. Reduce x²:
+    # subtract s2·(x² + U1_1·x + U1_0):
+    t1 = fp(s1_ - s2*U1_1)
+    t0 = fp(r0  - s2*U1_0)
+    # V_raw mod U1 = t0 + t1·x.
+    # V1 = -(V_raw mod U1) = -t0 - t1·x
+    V1 = Fp2(fp(-t0), fp(-t1))
+
+    return Div2(U1, V1)
 end
 
+@inline function jac_neg(D::Div2)::Div2
+    jac_isid(D) && return D
+    u = D.u; v = D.v
+    # -v mod u: v has degree ≤ 1, u has degree 2.
+    # -v is just fp2_neg(v) since deg(-v) < deg(u) always.
+    Div2(u, fp2_neg(v))
+end
 
-
-jac_neg(D::Div2)             = Div2(copy(ptrim(D.u)), pmod(pneg(D.v), D.u))
 jac_sub(D1::Div2, D2::Div2) = jac_add(D1, jac_neg(D2))
 
-# Raw scalar multiplication — no modular reduction of the scalar
 function jac_mul_raw(D::Div2, n::Integer)::Div2
     n = Int(n)
-    n == 0 && return Div2(copy(JacID.u), copy(JacID.v))
-
-    # Never reuse global/shared divisor objects directly.
-    # Q is made into an owned copy, and R starts as a fresh identity.
-    R = Div2(copy(JacID.u), copy(JacID.v))
-    Q = Div2(copy(ptrim(D.u)), copy(ptrim(D.v)))
-
+    n == 0 && return JacID
+    R = JacID
+    Q = D
     while n > 0
-        if isodd(n)
-            R = jac_add(R, Q)
-        end
-        if n > 1
-            Q = jac_add(Q, Q)
-        end
+        isodd(n) && (R = jac_add(R, Q))
+        n > 1    && (Q = jac_add(Q, Q))
         n >>= 1
     end
     return R
 end
 
-# Scalar multiplication in the ell-order subgroup (reduces n mod ell)
 jac_mul(D::Div2, n::Integer) = jac_mul_raw(D, mod(n, ell))
 
 # ──────────────────────── Order / subgroup selection ─────────────────────────
@@ -592,11 +849,10 @@ function jac_order_pollard_rho(
     dp_table = Dict{UInt64, Int}()
 
     @inline function dp_hash(X::Div2)::UInt64
-
-        u0 = length(X.u) >= 1 ? UInt64(X.u[1]) : 0
-        u1 = length(X.u) >= 2 ? UInt64(X.u[2]) : 0
-        v0 = length(X.v) >= 1 ? UInt64(X.v[1]) : 0
-        v1 = length(X.v) >= 2 ? UInt64(X.v[2]) : 0
+        u0 = UInt64(X.u[1])
+        u1 = UInt64(X.u[2])
+        v0 = UInt64(X.v[1])
+        v1 = UInt64(X.v[2])
 
         return xor(
             u0,
@@ -867,7 +1123,7 @@ function curve_points()
     pts
 end
 
-mumford1(x0::Int, y0::Int) = Div2(Int[fp(-x0), 1], Int[fp(y0)])
+mumford1(x0::Int, y0::Int) = Div2(Fp3(fp(-x0), 1, 0), Fp2(fp(y0), 0))
 
 function mumford2(x1::Int, y1::Int, x2::Int, y2::Int)::Div2
     x1 == x2 && throw(ArgumentError(

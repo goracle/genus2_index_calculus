@@ -23,6 +23,72 @@ function lp2_subtract_rows(dst::Dict{Int,Int}, src::Dict{Int,Int})
     return dst
 end
 
+# ── Stack-allocated sparse row for LP2 edge storage ──────────────────────────
+#
+# Each 2-LP walk step has exactly one FB point among {P0,R,S}, so each edge
+# stored in LP2Node has at most 1 nonzero entry.  Encoding it as two plain Ints
+# (edge_col=0 means empty) eliminates the per-node Dict{Int,Int} entirely.
+#
+# SmallRow: fixed-capacity inline sparse row for path accumulation.
+# MAX_LP2_DEPTH=6 edges × 1 entry each = at most 6 nonzeros after cancellation.
+# Capacity 8 (next power of 2) with a length field; all ops allocation-free.
+
+const SMALL_ROW_CAP = 8
+
+struct SmallRow
+    cols::NTuple{SMALL_ROW_CAP, Int}
+    vals::NTuple{SMALL_ROW_CAP, Int}
+    len ::Int
+end
+
+SmallRow() = SmallRow(ntuple(_->0, SMALL_ROW_CAP), ntuple(_->0, SMALL_ROW_CAP), 0)
+
+@inline function smallrow_add(r::SmallRow, col::Int, sv::Int)::SmallRow
+    sv == 0 && return r
+    cols = r.cols; vals = r.vals; len = r.len
+    for i in 1:len
+        if cols[i] == col
+            nv = vals[i] + sv
+            if nv == 0
+                # Remove: swap with last entry
+                new_cols = Base.setindex(Base.setindex(cols, cols[len], i), 0, len)
+                new_vals = Base.setindex(Base.setindex(vals, vals[len], i), 0, len)
+                return SmallRow(new_cols, new_vals, len - 1)
+            else
+                return SmallRow(Base.setindex(cols, col, i), Base.setindex(vals, nv, i), len)
+            end
+        end
+    end
+    # New entry — silently drop if at cap (shouldn't happen at depth≤6 with 1 entry/edge)
+    len >= SMALL_ROW_CAP && return r
+    return SmallRow(Base.setindex(cols, col, len+1), Base.setindex(vals, sv, len+1), len + 1)
+end
+
+# Merge a single (col, val) edge entry into a SmallRow with given sign.
+@inline function smallrow_add_edge(r::SmallRow, edge_col::Int, edge_val::Int, sign::Int)::SmallRow
+    edge_col == 0 && return r   # empty edge (root node)
+    smallrow_add(r, edge_col, sign * edge_val)
+end
+
+# Spill SmallRow into a Dict{Int,Int} (only at cycle-emit time — rare).
+function smallrow_to_dict(r::SmallRow)::Dict{Int,Int}
+    d = Dict{Int,Int}()
+    sizehint!(d, r.len)
+    for i in 1:r.len
+        d[r.cols[i]] = r.vals[i]
+    end
+    return d
+end
+
+# Subtract a SmallRow from a Dict{Int,Int} (rare: only at cycle-emit time).
+function smallrow_subtract_into_dict!(dst::Dict{Int,Int}, r::SmallRow)
+    for i in 1:r.len
+        col = r.cols[i]; v = r.vals[i]
+        nv = get(dst, col, 0) - v
+        nv == 0 ? delete!(dst, col) : (dst[col] = nv)
+    end
+end
+
 # ---------------------------------------------------------------------------
 #  LP2Graph — shared 2-large-prime graph for cycle-based relation emission
 #
@@ -70,8 +136,10 @@ const MAX_LP2_NODES = 50_000
 mutable struct LP2Node
     parent   ::Union{NTuple{2,Int}, Nothing}   # nothing = this node is a root
     depth    ::Int
-    # edge to parent: fb_row contribution when traversing child→parent
-    edge_row  ::Dict{Int,Int}
+    # Edge to parent: at most 1 FB entry per 2-LP step (one of P0/R/S is in FB).
+    # Stored as plain Ints; edge_col==0 means no FB contribution (root node).
+    edge_col  ::Int
+    edge_val  ::Int
     edge_alpha::Int
     edge_beta ::Int
 end
@@ -121,10 +189,11 @@ function lp2_tree_root(g::LP2Graph, pt::NTuple{2,Int})
 end
 
 # Walk the spanning tree from `start` up to the root, accumulating the
-# combined fb_row (with signs) and alpha/beta into (row, a, b).
-# Returns (row, alpha, beta, depth_reached) or nothing if depth exceeded.
+# combined fb_row (with alternating signs) and alpha/beta.
+# Returns (row::SmallRow, alpha, beta, root_sign, depth) or nothing if depth exceeded.
+# Allocation-free: SmallRow is a stack-allocated immutable tuple struct.
 function lp2_path_to_root(g::LP2Graph, start::NTuple{2,Int}, ell::Int)
-    row   = Dict{Int,Int}()
+    row   = SmallRow()
     alpha = 0
     beta  = 0
     sign_node = 1
@@ -141,10 +210,7 @@ function lp2_path_to_root(g::LP2Graph, start::NTuple{2,Int}, ell::Int)
             return nothing
         end
 
-        for (j, v) in node.edge_row
-            nv = get(row, j, 0) + sign_node * v   # +sign_node (consistent with alpha/beta)
-            nv == 0 ? delete!(row, j) : (row[j] = nv)
-        end
+        row   = smallrow_add_edge(row, node.edge_col, node.edge_val, sign_node)
         alpha = mod(alpha + sign_node * node.edge_alpha, ell)
         beta  = mod(beta  + sign_node * node.edge_beta,  ell)
 
@@ -156,9 +222,9 @@ end
 
 
 # Try to insert edge (L, R) with label (fb_row, alpha, beta).
-# If L and R are already connected → cycle → emit a relation.
-# Otherwise insert L or R as a new child in the spanning tree.
-# Returns the emitted (row, alpha, beta) or nothing.
+# fb_row has at most 1 entry (one FB point per 2-LP step); we extract it for
+# inline storage in LP2Node (edge_col/edge_val), avoiding per-node Dict alloc.
+# Returns the emitted relation namedtuple or nothing.
 function lp2_insert_edge!(g::LP2Graph,
                           L::NTuple{2,Int}, R::NTuple{2,Int},
                           fb_row::Dict{Int,Int},
@@ -166,14 +232,15 @@ function lp2_insert_edge!(g::LP2Graph,
                           ell::Int)
 
     g.n_edges_inserted += 1
-
-    # Degenerate: self-loop (double LP point in divisor). Nothing to learn.
     L == R && return nothing
+
+    # Extract the single FB entry (if any) for inline node storage.
+    edge_col = 0; edge_val = 0
+    for (j, v) in fb_row; edge_col = j; edge_val = v; break; end
 
     rL = lp2_tree_root(g, L)
     rR = lp2_tree_root(g, R)
 
-    # Cycle: both nodes already in the same spanning tree
     if rL !== nothing && rR !== nothing && rL == rR
         g.n_cycles_found += 1
 
@@ -185,29 +252,20 @@ function lp2_insert_edge!(g::LP2Graph,
             return nothing
         end
 
-        # Odd cycle: both paths reach root with the same sign, so
-        #   atom(L) + atom(R) + fb_row = -al·G - be·T
-        # becomes  2s·atom(root) = s·(pathL.row + pathR.row - fb_row) + ...
-        # Multiply through by s to get the canonical  2·atom(root) + row = al·G + be·T
-        # and pass the result back tagged so the caller can store it in shared_lp_doubled.
         if pathL.root_sign == pathR.root_sign
+            # Odd cycle — spill SmallRows to Dict (rare path)
             g.n_parity_pruned += 1
             g.n_odd_stored    += 1
-            s = pathL.root_sign   # +1 or -1
+            s = pathL.root_sign
 
             odd_row = Dict{Int,Int}()
-            for (j, v) in pathL.row
-                nv = get(odd_row, j, 0) - s * v
-                nv == 0 ? delete!(odd_row, j) : (odd_row[j] = nv)
-            end
-            for (j, v) in pathR.row
-                nv = get(odd_row, j, 0) - s * v
-                nv == 0 ? delete!(odd_row, j) : (odd_row[j] = nv)
-            end
+            smallrow_subtract_into_dict!(odd_row, pathL.row)
+            smallrow_subtract_into_dict!(odd_row, pathR.row)
             for (j, v) in fb_row
-                nv = get(odd_row, j, 0) + s * v
+                nv = get(odd_row, j, 0) + v
                 nv == 0 ? delete!(odd_row, j) : (odd_row[j] = nv)
             end
+            if s == -1; for k in keys(odd_row); odd_row[k] = -odd_row[k]; end; end
 
             odd_alpha = mod(s * (pathL.alpha + pathR.alpha - alpha), ell)
             odd_beta  = mod(s * (pathL.beta  + pathR.beta  - beta),  ell)
@@ -216,20 +274,14 @@ function lp2_insert_edge!(g::LP2Graph,
                 g.n_weight_pruned += 1
                 return nothing
             end
-
             return (type=:odd_cycle, root=rL,
                     row=odd_row, alpha=odd_alpha, beta=odd_beta)
         end
 
+        # Even cycle — spill SmallRows to Dict (rare path)
         combined = copy(fb_row)
-        for (j, v) in pathL.row
-            nv = get(combined, j, 0) - v
-            nv == 0 ? delete!(combined, j) : (combined[j] = nv)
-        end
-        for (j, v) in pathR.row
-            nv = get(combined, j, 0) - v
-            nv == 0 ? delete!(combined, j) : (combined[j] = nv)
-        end
+        smallrow_subtract_into_dict!(combined, pathL.row)
+        smallrow_subtract_into_dict!(combined, pathR.row)
 
         if length(combined) > MAX_LP2_ROW_WEIGHT
             g.n_weight_pruned += 1
@@ -244,9 +296,6 @@ function lp2_insert_edge!(g::LP2Graph,
         end
 
         g.n_emitted += 1
-
-        # Prune both paths to reclaim memory: nodes in a completed even-cycle
-        # component will never contribute to a future relation, so delete them.
         lp2_prune_path!(g, L)
         lp2_prune_path!(g, R)
 
@@ -258,15 +307,6 @@ function lp2_insert_edge!(g::LP2Graph,
                 depths=(pathL.depth, pathR.depth))
 
     else
-        # Tree-merge: attach whichever endpoint is not yet in a tree.
-        # IMPORTANT: when both L and R are already in *different* trees, we must
-        # attach the ROOT of one tree to the ROOT of the other.  Attaching a
-        # non-root node would overwrite its existing parent pointer and create a
-        # cycle in the parent-pointer graph, causing lp2_tree_root to loop forever.
-
-        # Hard node cap: if the graph has grown too large without producing cycles
-        # (LP bound too wide relative to p, so collisions are rare), clear it entirely
-        # and start fresh.  We lose pending edges but not correctness.
         if length(g.nodes) >= MAX_LP2_NODES
             empty!(g.nodes)
             g.n_clears += 1
@@ -276,46 +316,21 @@ function lp2_insert_edge!(g::LP2Graph,
         node_R = get(g.nodes, R, nothing)
 
         if node_L === nothing && node_R === nothing
-            # Neither in tree yet: make R a root, attach L as child.
-            if 1 > MAX_LP2_DEPTH
-                g.n_depth_pruned += 1
-                return nothing
-            end
-            g.nodes[R] = LP2Node(nothing, 0, Dict{Int,Int}(), 0, 0)
-            g.nodes[L] = LP2Node(R, 1, copy(fb_row), alpha, beta)
+            1 > MAX_LP2_DEPTH && (g.n_depth_pruned += 1; return nothing)
+            g.nodes[R] = LP2Node(nothing, 0, 0, 0, 0, 0)
+            g.nodes[L] = LP2Node(R, 1, edge_col, edge_val, alpha, beta)
 
         elseif node_L === nothing
-            # L is new; attach it directly as child of R.
             new_depth = node_R.depth + 1
-            if new_depth > MAX_LP2_DEPTH
-                g.n_depth_pruned += 1
-                return nothing
-            end
-            g.nodes[L] = LP2Node(R, new_depth, copy(fb_row), alpha, beta)
+            new_depth > MAX_LP2_DEPTH && (g.n_depth_pruned += 1; return nothing)
+            g.nodes[L] = LP2Node(R, new_depth, edge_col, edge_val, alpha, beta)
 
         elseif node_R === nothing
-            # R is new; attach it directly as child of L.
             new_depth = node_L.depth + 1
-            if new_depth > MAX_LP2_DEPTH
-                g.n_depth_pruned += 1
-                return nothing
-            end
-            g.nodes[R] = LP2Node(L, new_depth, copy(fb_row), alpha, beta)
+            new_depth > MAX_LP2_DEPTH && (g.n_depth_pruned += 1; return nothing)
+            g.nodes[R] = LP2Node(L, new_depth, edge_col, edge_val, alpha, beta)
 
-        else
-            # Both L and R are in different existing trees (rL != rR).
-            #
-            # Cross-tree merge is UNSOUND with the alternating-sign path convention.
-            # lp2_path_to_root encodes atom(X) = root_sign·atom(root) - path.row - path.alpha·G.
-            # A cross-tree edge gives root_sign_L·atom(rL) + root_sign_R·atom(rR) = RHS.
-            # When root_signs are opposite (needed for cycle-emit atom cancellation),
-            # this equals atom(rL) - atom(rR), NOT atom(rL) + atom(rR), so any derived
-            # root-to-root edge label would violate the edge invariant and corrupt all
-            # future cycle detections that traverse it.
-            #
-            # Don't merge. Both nodes are already in the graph; nothing to do.
-            # Relations from same-tree cycles are algebraically clean; cross-tree
-            # edges are counted by the caller's 2lp_cross statistic and discarded.
+        # else: both in different trees — cross-tree merge unsound, discard.
         end
 
         return nothing
