@@ -70,12 +70,7 @@ SmallRow() = SmallRow(ntuple(_->0, SMALL_ROW_CAP), ntuple(_->0, SMALL_ROW_CAP), 
         end
     end
     # New entry.
-    if len >= SMALL_ROW_CAP
-        # Capacity overflow — return r unmodified. If this happens, the length
-        # caps at SMALL_ROW_CAP. We set the cap high enough (128) that it should
-        # be pruned by MAX_LP2_ROW_WEIGHT (64) before it ever overflows.
-        return r
-    end
+    @assert len < SMALL_ROW_CAP "SmallRow capacity overflow (len=$len >= SMALL_ROW_CAP=$SMALL_ROW_CAP); increase SMALL_ROW_CAP"
     return SmallRow(Base.setindex(cols, col,  len+1),
                     Base.setindex(vals, sv,   len+1), len + 1)
 end
