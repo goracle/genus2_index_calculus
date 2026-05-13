@@ -1630,7 +1630,7 @@ function phase2_worker(G::Div2, T::Div2,
                         end
                         push!(alpha_vec, combined_al)
                         push!(beta_vec,  combined_be)
-                        push!(rel_rows,  combined)
+                        push!(rel_rows,  copy(combined))
                         length(rank_growth) < MAX_RANK_GROWTH_SAMPLES && push!(rank_growth, (raw_steps, length(rel_rows)))
                         hits_full += 1
                         hits_1lp_emit += 1
@@ -1772,7 +1772,7 @@ function phase2_worker(G::Div2, T::Div2,
                         if !isempty(combined) && !(combined_al == 0 && combined_be == 0)
                             push!(alpha_vec, combined_al)
                             push!(beta_vec,  combined_be)
-                            push!(rel_rows,  combined)
+                            push!(rel_rows,  copy(combined))
                             length(rank_growth) < MAX_RANK_GROWTH_SAMPLES && push!(rank_growth, (raw_steps, length(rel_rows)))
                             hits_full    += 1
                             hits_lp2emit += 1
