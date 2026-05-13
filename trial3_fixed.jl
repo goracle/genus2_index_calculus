@@ -243,6 +243,7 @@ function index_calculus_walk(G::Div2, T::Div2;
                              asymptotic       ::Bool = true,
                              solve            ::Bool = true,
                              guided           ::Bool = true,
+                             enable_lp2       ::Bool = true,
                              enable_lp2_conj  ::Bool = true,
                              max_lp2_nodes    ::Int  = DEFAULT_MAX_LP2_NODES,
                              max_lp2_conj_nodes::Int = DEFAULT_MAX_LP2_CONJ_NODES)
@@ -330,9 +331,10 @@ function index_calculus_walk(G::Div2, T::Div2;
         @printf("  p_smooth per step:      %.3e  (0-LP + LP-closure estimate)\n", p_smooth_step)
         @printf("  step_cap per thread:    %d  (derived from smoothness geometry)\n",
                 step_cap ÷ Threads.nthreads())
+        @printf("  2-LP (affine) enabled:  %s\n", string(enable_lp2))
         @printf("  2-LP cap (affine):      %d nodes\n", max_lp2_nodes)
-        @printf("  2-LP cap (conj):        %d nodes\n", max_lp2_conj_nodes)
         @printf("  conj LP2 enabled:       %s\n", string(enable_lp2_conj))
+        @printf("  2-LP cap (conj):        %d nodes\n", max_lp2_conj_nodes)
         @printf("  threads:                %d\n", Threads.nthreads())
         @printf("  launching walkers at:   %s\n", string(Dates.now()))
         flush(stdout)
@@ -355,7 +357,7 @@ function index_calculus_walk(G::Div2, T::Div2;
                 shared_lp_doubled,
                 shared_lp1_conj,
                 shared_lp2_conj, shared_lp2_conj_lock,
-                enable_lp2_conj, max_lp2_nodes, max_lp2_conj_nodes,
+                enable_lp2, enable_lp2_conj, max_lp2_nodes, max_lp2_conj_nodes,
                 thread_collectors[tid]; verbose=verbose)
         end
     end
@@ -618,13 +620,17 @@ end
 #  CLI helpers
 # ---------------------------------------------------------------------------
 function parse_trial3_cli(args::Vector{String})
-    fb_size          = nothing
-    enable_lp2_conj  = true
-    max_lp2_nodes    = DEFAULT_MAX_LP2_NODES
+    fb_size            = nothing
+    enable_lp2         = true
+    enable_lp2_conj    = true
+    max_lp2_nodes      = DEFAULT_MAX_LP2_NODES
     max_lp2_conj_nodes = DEFAULT_MAX_LP2_CONJ_NODES
 
     for arg in args
-        if arg == "--no-conj"
+        if arg == "--no-lp2"
+            enable_lp2      = false
+            enable_lp2_conj = false   # lp2_conj is a subset; disable both
+        elseif arg == "--no-conj"
             enable_lp2_conj = false
         elseif startswith(arg, "--fb-size=")
             fb_size = parse(Int, split(arg, "=", limit=2)[2])
@@ -634,7 +640,7 @@ function parse_trial3_cli(args::Vector{String})
             max_lp2_conj_nodes = parse(Int, split(arg, "=", limit=2)[2])
         end
     end
-    return (fb_size=fb_size, enable_lp2_conj=enable_lp2_conj,
+    return (fb_size=fb_size, enable_lp2=enable_lp2, enable_lp2_conj=enable_lp2_conj,
             max_lp2_nodes=max_lp2_nodes, max_lp2_conj_nodes=max_lp2_conj_nodes)
 end
 
@@ -642,6 +648,7 @@ end
 #  main2 — top-level entry point
 # ---------------------------------------------------------------------------
 function main2(; fb_size            ::Union{Nothing,Int} = nothing,
+                 enable_lp2         ::Bool = true,
                  enable_lp2_conj    ::Bool = true,
                  max_lp2_nodes      ::Int  = DEFAULT_MAX_LP2_NODES,
                  max_lp2_conj_nodes ::Int  = DEFAULT_MAX_LP2_CONJ_NODES)
@@ -694,6 +701,7 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
                                   fb_size=fb_run, verbose=true,
                                   analyze_matrix=true, asymptotic=true,
                                   solve=true, guided=true,
+                                  enable_lp2=enable_lp2,
                                   enable_lp2_conj=enable_lp2_conj,
                                   max_lp2_nodes=max_lp2_nodes,
                                   max_lp2_conj_nodes=max_lp2_conj_nodes)
@@ -715,7 +723,8 @@ end
 
 function main2_from_argv()
     opts = parse_trial3_cli(ARGS)
-    main2(; fb_size=opts.fb_size, enable_lp2_conj=opts.enable_lp2_conj,
+    main2(; fb_size=opts.fb_size, enable_lp2=opts.enable_lp2,
+          enable_lp2_conj=opts.enable_lp2_conj,
           max_lp2_nodes=opts.max_lp2_nodes, max_lp2_conj_nodes=opts.max_lp2_conj_nodes)
 end
 

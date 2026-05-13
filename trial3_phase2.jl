@@ -747,6 +747,7 @@ function phase2_worker(G               ::Div2,
                        shared_lp1_conj ::ShardedLP1Conj,
                        shared_lp2_conj ::LP2ConjGraph,
                        shared_lp2_conj_lock::ReentrantLock,
+                       enable_lp2      ::Bool,
                        enable_lp2_conj ::Bool,
                        max_lp2_nodes   ::Int,
                        max_lp2_conj_nodes::Int,
@@ -921,22 +922,27 @@ function phase2_worker(G               ::Div2,
             # ------------------------------------------------------------------
             #  2-LP affine: exactly two of P0, R, S are not in FB
             # ------------------------------------------------------------------
-            empty!(fb_row_scratch)
-            for idx in (i0, iR, iS)
-                idx == 0 && continue
-                fb_row_scratch[idx] = get(fb_row_scratch, idx, 0) + 1
-            end
+            if !enable_lp2
+                s.hits_skip += 1
+                cur_pt = fb[rand(1:nF_cur)]
+            else
+                empty!(fb_row_scratch)
+                for idx in (i0, iR, iS)
+                    idx == 0 && continue
+                    fb_row_scratch[idx] = get(fb_row_scratch, idx, 0) + 1
+                end
 
-            cur_pt = handle_2lp_affine!(i0, iR, iS,
-                                         R::NTuple{2,Int}, S::NTuple{2,Int}, P0,
-                                         fb_row_scratch, neg_al, neg_be,
-                                         ell, fb, nF_cur, G, T,
-                                         alpha_vec, beta_vec, rel_rows, rel_counter, s,
-                                         shared_lp1, shared_lp1_lock,
-                                         shared_lp2, shared_lp2_lock,
-                                         shared_lp_doubled,
-                                         lp_col, max_lp2_nodes, rank_growth,
-                                         combined_scratch)
+                cur_pt = handle_2lp_affine!(i0, iR, iS,
+                                             R::NTuple{2,Int}, S::NTuple{2,Int}, P0,
+                                             fb_row_scratch, neg_al, neg_be,
+                                             ell, fb, nF_cur, G, T,
+                                             alpha_vec, beta_vec, rel_rows, rel_counter, s,
+                                             shared_lp1, shared_lp1_lock,
+                                             shared_lp2, shared_lp2_lock,
+                                             shared_lp_doubled,
+                                             lp_col, max_lp2_nodes, rank_growth,
+                                             combined_scratch)
+            end
 
         else
             # ------------------------------------------------------------------
