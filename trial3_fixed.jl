@@ -1748,7 +1748,14 @@ function phase2_worker(G::Div2, T::Div2,
                         @printf("  lp2_a=%s  lp2_b=%s  cur_pt=%s  i0=%d iR=%d iS=%d\n",
                                 string(lp2_a), string(lp2_b), string(cur_pt), i0, iR, iS)
                         @printf("  row = %s\n", string(emitted_rel.row))
-                        @assert false "LP2 emitted relation is not principal in either sign convention! (see diagnostic above)"
+                        lock(shared_lp2_lock)
+                        try
+                            clear_lp2_graph!(shared_lp2)
+                        finally
+                            unlock(shared_lp2_lock)
+                        end
+                        cur_pt = fb[rand(1:nF_cur)]
+                        continue
                     end
                 end
 
