@@ -1229,59 +1229,294 @@ function try_lp1_doubled_cross_close!(
     haskey(shared_lp1, pt) || return false
     haskey(shared_lp_doubled, pt) || return false
 
-    row_1, neg_al_1, neg_be_1, _step = shared_lp1[pt]
-    row_d, al_d,     be_d            = shared_lp_doubled[pt]
+    row_1, neg_al_1, neg_be_1, step_1 = shared_lp1[pt]
+    row_d, al_d, be_d                = shared_lp_doubled[pt]
 
-    combined = sparse_copy!(combined_scratch, row_1)
-    for (j, v) in combined
-        combined[j] = 2 * v
-    end
+    # Combine: result = 2 * row_1 - row_d
+    combined = copy(row_1)
+    for (j, v) in combined; combined[j] = 2 * v; end
     for (j, v) in row_d
         nv = get(combined, j, 0) - v
         nv == 0 ? delete!(combined, j) : (combined[j] = nv)
     end
-    combined_al = mod(2 * neg_al_1 - al_d, ell)
-    combined_be = mod(2 * neg_be_1 - be_d, ell)
 
-    # Consume both entries regardless of whether the relation is trivial.
+    c_al = mod(2 * neg_al_1 - al_d, ell)
+    c_be = mod(2 * neg_be_1 - be_d, ell)
+
+    # Validate
+    if ASSERT_RELATIONS
+        D_sum = JacID
+        for (idx, v) in combined
+            D_fb = mumford1(fb[idx][1], fb[idx][2])
+            D_v  = jac_mul_raw(D_fb, abs(v))
+            D_sum = v > 0 ? jac_add(D_sum, D_v) : jac_sub(D_sum, D_v)
+        end
+
+        RHS    = jac_add(jac_mul(G, c_al), jac_mul(T, c_be))
+        diff   = jac_sub(D_sum, RHS)
+        ok_pos = jac_isid(diff)
+        ok_neg = jac_isid(jac_add(D_sum, RHS))
+
+        if !(ok_pos || ok_neg)
+            # DUMP DIAGNOSTICS
+            @printf("\n[!!!] LP-DOUBLED DIVISOR FAIL at pt=%s\n", pt)
+            @printf("  - Relation Check: Failed (Residual is NOT Identity)\n")
+            @printf("  - Divisor Sum (LHS): %s\n", string(D_sum))
+            @printf("  - Target Scalar (RHS): %s\n", string(RHS))
+            @printf("  - Raw Residual (LHS - RHS): %s\n", string(diff))
+            @printf("  - Coefficients: al=%d, be=%d\n", c_al, c_be)
+            @printf("  - Weight: %d terms\n", length(combined))
+            
+            # Useful for detecting sign/scale errors
+            @printf("  - Row1 (%d terms): %s\n", length(row_1), string(row_1))
+            @printf("  - RowD (%d terms): %s\n", length(row_d), string(row_d))
+            
+            @assert false "try_lp1_doubled_cross_close!: principal divisor check failed"
+        end
+    end
+
+    # Commit
     delete!(shared_lp1, pt)
     delete!(shared_lp_doubled, pt)
 
-    isempty(combined) && return false
-    combined_al == 0 && combined_be == 0 && return false
-
-    # --- PRINCIPAL DIVISOR CHECK ---
-    let
-        D_fb_sum = JacID
-        for (idx, v) in combined
-            pt_fb = fb[idx]
-            D_fb  = mumford1(pt_fb[1], pt_fb[2])
-            absv  = abs(v)
-            Dv    = jac_mul_raw(D_fb, absv)
-            D_fb_sum = v > 0 ? jac_add(D_fb_sum, Dv) : jac_sub(D_fb_sum, Dv)
-        end
-        D_G  = jac_mul(G, combined_al)
-        D_T  = jac_mul(T, combined_be)
-        RHS  = jac_add(D_G, D_T)
-        ok_pos = jac_isid(jac_sub(D_fb_sum, RHS))
-        ok_neg = jac_isid(jac_add(D_fb_sum, RHS))
-        if !(ok_pos || ok_neg)
-            @printf("[LP-DOUBLED-DIAG tid=%d] FAIL cross-close pt=%s  al=%d be=%d  row_weight=%d\n",
-                    Threads.threadid(), string(pt), combined_al, combined_be, length(combined))
-            @assert false "try_lp1_doubled_cross_close!: relation failed principal divisor check"
-        end
+    if isempty(combined) || (c_al == 0 && c_be == 0)
+        return false
     end
-    # --------------------------------
 
-    push!(alpha_vec, combined_al)
-    push!(beta_vec,  combined_be)
+    push!(alpha_vec, c_al)
+    push!(beta_vec,  c_be)
     push!(rel_rows,  copy(combined))
-    length(rank_growth) < MAX_RANK_GROWTH_SAMPLES && push!(rank_growth, (raw_steps, length(rel_rows)))
+    if length(rank_growth) < MAX_RANK_GROWTH_SAMPLES 
+        push!(rank_growth, (raw_steps, length(rel_rows)))
+    end
     Threads.atomic_add!(rel_counter, 1)
     return true
 end
 
 
+mutable struct WorkerStats
+    hits_total::Int
+    hits_full::Int
+    hits_0lp::Int
+    hits_lp1::Int
+    hits_1lp_emit::Int
+    hits_lp2seen::Int
+    hits_lp2emit::Int
+    hits_lp2_cross::Int
+    hits_lp2_odd::Int
+    hits_lp2_cap::Int
+    hits_skip::Int
+    raw_steps::Int
+    smooth_hist::Vector{Int}
+    rel_local::Int
+
+    WorkerStats() = new(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, zeros(Int, 4), 0)
+end
+
+
+# --- Reporting ---
+function report_worker_progress(tid, elapsed, stats, rel_counter, rel_target)
+    @printf("[thread %2d | t=%6.1fs] raw=%d valid=%d 0lp=%d 1lp_emit=%d 1lp_step=%d 2lp_seen=%d 2lp_emit=%d skip=%d  rels_local=%d  global=%d/%d\n",
+            tid, elapsed, stats.raw_steps, stats.hits_total, stats.hits_0lp, stats.hits_1lp_emit,
+            stats.hits_lp1, stats.hits_lp2seen, stats.hits_lp2emit, stats.hits_skip,
+            stats.rel_local, rel_counter[], rel_target)
+    @printf("           rates: phi_val=%.3f%%  full=%.3f%%  1lp=%.3f%%  2lp_seen=%.3f%%  2lp_emit=%.3f%%  skip=%.3f%%\n",
+            100.0 * stats.hits_total / stats.raw_steps,
+            100.0 * stats.hits_full  / max(1, stats.hits_total),
+            100.0 * stats.hits_lp1   / max(1, stats.hits_total),
+            100.0 * stats.hits_lp2seen / max(1, stats.hits_total),
+            100.0 * stats.hits_lp2emit / max(1, stats.hits_total),
+            100.0 * stats.hits_skip  / max(1, stats.hits_total))
+    @printf("           smoothness histogram (0-LP, 1-LP, 2-LP, 3-LP): %d %d %d %d\n",
+            stats.smooth_hist[1], stats.smooth_hist[2], stats.smooth_hist[3], stats.smooth_hist[4])
+    flush(stdout)
+end
+
+# --- Case: Residual is a degree-2 point (not split) ---
+function handle_rs_not_split!(lp_key::NTuple{4,Int}, P0::NTuple{2,Int},
+                             al::Int, be::Int, neg_al::Int, neg_be::Int,
+                             i0::Int, fb::Vector{NTuple{2,Int}}, pt2idx::Dict{NTuple{2,Int},Int},
+                             alpha_vec::Vector{Int}, beta_vec::Vector{Int}, rel_rows::Vector{Dict{Int,Int}}, rel_counter::Threads.Atomic{Int}, stats,
+                             shared_lp1_conj::ShardedLP1Conj, shared_lp2_conj, shared_lp2_conj_lock::ReentrantLock,
+                             shared_lp1::Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int, Int}}, shared_lp1_lock::ReentrantLock,
+                             shared_lp_doubled::Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int}}, G::Div2, T::Div2,
+                             enable_lp2_conj::Bool, max_lp2_conj_nodes::Int, rank_growth::Vector{Tuple{Int,Int}},
+                             combined_row_scratch::Dict{Int,Int}, ell::Int)
+    nF_cur = length(fb)
+
+    if i0 != 0
+        stats.hits_lp1 += 1
+        si = conj_shard_idx(lp_key)
+        conj_dict, conj_lock = shared_lp1_conj.shards[si], shared_lp1_conj.locks[si]
+
+        lock(conj_lock)
+        try
+            if haskey(conj_dict, lp_key)
+                prev_col, prev_al, prev_be, _ = conj_dict[lp_key]
+                combined_al, combined_be = mod(neg_al - prev_al, ell), mod(neg_be - prev_be, ell)
+                delete!(conj_dict, lp_key)
+                if !(combined_al == 0 && combined_be == 0) && i0 != prev_col
+                    combined = Dict{Int,Int}(i0 => 1, prev_col => -1)
+                    if ASSERT_RELATIONS
+                        @assert check_relation_principal(combined, combined_al, combined_be, "α", fb, G, T; tag="RS-CONJ-CLOSE")
+                    end
+                    push!(alpha_vec, combined_al)
+                    push!(beta_vec, combined_be)
+                    push!(rel_rows, combined)
+                    stats.hits_full += 1
+                    stats.hits_1lp_emit += 1
+                    stats.rel_local += 1
+                    Threads.atomic_add!(rel_counter, 1)
+                    return fb[rand(1:nF_cur)]
+                end
+            else
+                if length(conj_dict) >= MAX_LP1_CONJ_ENTRIES ÷ N_CONJ_SHARDS
+                    empty!(conj_dict)
+                end
+                conj_dict[lp_key] = (i0, neg_al, neg_be, stats.raw_steps)
+            end
+        finally
+            unlock(conj_lock)
+        end
+        return P0
+    end
+
+    stats.hits_lp2seen += 1
+    if !enable_lp2_conj
+        return P0
+    end
+
+    lp2c_L = P0
+    lp2c_R = lp_key
+    lp2c_fb = Dict{Int,Int}()
+    emitted_conj = nothing
+
+    if lp2_graph_node_count(shared_lp2_conj) < max_lp2_conj_nodes
+        lock(shared_lp2_conj_lock)
+        try
+            if lp2_graph_node_count(shared_lp2_conj) < max_lp2_conj_nodes
+                emitted_conj = lp2c_insert_edge!(shared_lp2_conj, lp2c_L, lp2c_R, lp2c_fb, neg_al, neg_be, ell)
+            else
+                hits_lp2_cap += 1
+            end
+        finally
+            unlock(shared_lp2_conj_lock)
+        end
+    else
+        hits_lp2_cap += 1
+    end
+
+    if emitted_conj === nothing
+        return P0
+    end
+
+    if emitted_conj.type === :even_cycle
+        push!(alpha_vec, emitted_conj.alpha)
+        push!(beta_vec, emitted_conj.beta)
+        push!(rel_rows, emitted_conj.row)
+        length(rank_growth) < MAX_RANK_GROWTH_SAMPLES && push!(rank_growth, (stats.raw_steps, length(rel_rows)))
+        stats.hits_full += 1
+        stats.hits_lp2emit += 1
+        stats.rel_local += 1
+        Threads.atomic_add!(rel_counter, 1)
+
+        if ASSERT_RELATIONS
+            ok = check_relation_principal(emitted_conj.row, emitted_conj.alpha,
+                                          emitted_conj.beta, "α", fb, G, T; tag="QLP-CONJ-CYCLE")
+            @assert ok "QLP LP2 even-cycle emission failed principal divisor check"
+        end
+        return fb[rand(1:nF_cur)]
+    end
+
+    if emitted_conj.type === :odd_cycle
+        stats.hits_lp2_odd += 1
+        root_key = emitted_conj.root
+        if root_key isa NTuple{2,Int}
+            root_affine = root_key::NTuple{2,Int}
+            lock(shared_lp1_lock)
+            try
+                if haskey(shared_lp_doubled, root_affine)
+                    prev_row, prev_al, prev_be = shared_lp_doubled[root_affine]
+                    combined = copy(emitted_conj.row)
+                    for (j, v) in prev_row
+                        nv = get(combined, j, 0) - v
+                        nv == 0 ? delete!(combined, j) : (combined[j] = nv)
+                    end
+                    combined_al = mod(emitted_conj.alpha - prev_al, ell)
+                    combined_be = mod(emitted_conj.beta  - prev_be, ell)
+                    delete!(shared_lp_doubled, root_affine)
+                    if !isempty(combined) && !(combined_al == 0 && combined_be == 0)
+                        push!(alpha_vec, combined_al)
+                        push!(beta_vec, combined_be)
+                        push!(rel_rows, combined)
+                        length(rank_growth) < MAX_RANK_GROWTH_SAMPLES && push!(rank_growth, (stats.raw_steps, length(rel_rows)))
+                        stats.hits_full += 1
+                        stats.hits_lp2emit += 1
+                        stats.rel_local += 1
+                        Threads.atomic_add!(rel_counter, 1)
+                    end
+                else
+                    shared_lp_doubled[root_affine] = (emitted_conj.row, emitted_conj.alpha, emitted_conj.beta)
+                    if try_lp1_doubled_cross_close!(root_affine, shared_lp1, shared_lp_doubled,
+                                                    ell, alpha_vec, beta_vec, rel_rows,
+                                                    rank_growth, stats.raw_steps, rel_counter,
+                                                    G, T, combined_row_scratch, fb)
+                        stats.hits_full += 1
+                        stats.hits_lp2emit += 1
+                    end
+                end
+            finally
+                unlock(shared_lp1_lock)
+            end
+        end
+    end
+
+    return P0
+end
+
+# --- Case: Residual is 0-LP (Full Relation) ---
+function handle_0lp!(fb_row, neg_al, neg_be, fb, G, T, alpha_vec, beta_vec, rel_rows, rel_counter, stats, rank_growth)
+    if ASSERT_RELATIONS
+        @assert check_relation_principal(fb_row, neg_al, neg_be, "α", fb, G, T; tag="0LP-EMIT")
+    end
+    push!(alpha_vec, neg_al); push!(beta_vec, neg_be); push!(rel_rows, copy(fb_row))
+    stats.hits_full += 1; stats.hits_0lp += 1; stats.rel_local += 1
+    Threads.atomic_add!(rel_counter, 1)
+    return fb[rand(1:length(fb))]
+end
+
+# --- Case: Residual is 1-LP ---
+function handle_1lp!(lp_pt, fb_row, al, be, neg_al, neg_be, fb, G, T, 
+                     alpha_vec, beta_vec, rel_rows, rel_counter, stats, 
+                     shared_lp1, shared_lp1_lock, shared_lp_doubled, 
+                     lp_col, rank_growth, combined_row_scratch, R, S, iR, iS, P0)
+    record_lp1!(lp_col, lp_pt, al, be, stats.raw_steps)
+    closed = false
+    lock(shared_lp1_lock)
+    try
+        if haskey(shared_lp1, lp_pt)
+            prev_row, prev_al, prev_be, prev_step = shared_lp1[lp_pt]
+            combined = sparse_copy!(combined_row_scratch, fb_row)
+            lp2_subtract_rows(combined, prev_row)
+            combined_al, combined_be = mod(neg_al - prev_al, ell), mod(neg_be - prev_be, ell)
+            delete!(shared_lp1, lp_pt)
+            record_closure!(lp_col, stats.raw_steps, prev_step)
+            if !isempty(combined) && !(combined_al == 0 && combined_be == 0)
+                push!(alpha_vec, combined_al); push!(beta_vec, combined_be); push!(rel_rows, copy(combined))
+                stats.hits_full += 1; stats.hits_1lp_emit += 1; stats.rel_local += 1
+                Threads.atomic_add!(rel_counter, 1); closed = true
+            end
+        else
+            if length(shared_lp1) >= MAX_LP1_ENTRIES; (for k in keys(shared_lp1) delete!(shared_lp1, k); break; end); end
+            shared_lp1[lp_pt] = (copy(fb_row), neg_al, neg_be, stats.raw_steps)
+            if try_lp1_doubled_cross_close!(lp_pt, shared_lp1, shared_lp_doubled, ell, alpha_vec, beta_vec, rel_rows, rank_growth, stats.raw_steps, rel_counter, G, T, combined_row_scratch, fb)
+                stats.hits_full += 1; stats.hits_lp2emit += 1; stats.rel_local += 1; closed = true
+            end
+        end
+    finally unlock(shared_lp1_lock) end
+    
+    return closed ? fb[rand(1:length(fb))] : (iR != 0 ? R : iS != 0 ? S : P0)
+end
 
 function phase2_worker(G::Div2, T::Div2,
                        fb::Vector{NTuple{2,Int}},
@@ -1490,7 +1725,7 @@ function phase2_worker(G::Div2, T::Div2,
                                     shared_lp2_conj,
                                     lp2c_L, lp2c_R,
                                     lp2c_fb,
-                                    al, be,
+                                    neg_al, neg_be,
                                     ell)
                             else
                                 hits_lp2_cap += 1
@@ -1705,7 +1940,7 @@ function phase2_worker(G::Div2, T::Div2,
                         shared_lp2,
                         lp2_a, lp2_b,
                         fb_row_scratch,
-                        al, be,
+                        neg_al, neg_be,
                         ell)
                 else
                     hits_lp2_cap += 1
@@ -2157,6 +2392,8 @@ function index_calculus_walk(G::Div2, T::Div2;
     # Extension-field 2-LP graph: nodes are LPKey = Union{NTuple{2,Int}, NTuple{4,Int}}.
     shared_lp2_conj      = LP2ConjGraph()                               # ← NEW
     shared_lp2_conj_lock = ReentrantLock()                              # ← NEW
+
+    set_lp2_principal_check_context!(fb, G, T)
 
     if verbose
         println()

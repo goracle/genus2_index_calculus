@@ -1,21 +1,21 @@
 # =============================================================================
 #  lp2.jl  --  2-Large-Prime graph structures and helpers
 #
-#  Included by trial3_fixed.jl.  Requires: ell (global), fp/fpinv (from trial1),
+#  Included by trial3_fixed.jl. Requires: ell (global), fp/fpinv (from trial1),
 #  Div2/jac_* types, and the sparse_add!/lp2_subtract_rows helpers.
 #
 #  KEY CHANGE vs. previous version:
 #    LP2Node now stores a SmallRow (not a single edge_col/edge_val pair) for the
-#    edge-to-parent label.  This enables cross-tree merges: when both L and R are
+#    edge-to-parent label. This enables cross-tree merges: when both L and R are
 #    already in the graph but in *different* spanning trees, we walk both paths to
 #    their respective roots, compose the two SmallRows plus the new edge into a
-#    single composite SmallRow, and attach rR as a depth-1 child of rL.  The
+#    single composite SmallRow, and attach rR as a depth-1 child of rL. The
 #    composite row records the full path contribution in one hop so subsequent
 #    lp2_path_to_root walks remain allocation-free and depth-bounded.
 #
 #    Previously cross-tree merges were silently discarded, which meant that at
 #    large p the graph accumulated tens of thousands of disconnected depth-1/2
-#    stubs and almost never formed a cycle.  This produced zero 2-LP emissions and
+#    stubs and almost never formed a cycle. This produced zero 2-LP emissions and
 #    a large null-space dimension (~1000) in the relation matrix.
 # =============================================================================
 
@@ -34,15 +34,15 @@ end
 # Capacity notes:
 #   - A single incoming edge has at most 1 nonzero (one FB point per 2-LP step).
 #   - A path of depth D accumulates at most D nonzeros after cancellations.
-#   - A cross-tree merge composes two depth-≤MAX_LP2_DEPTH paths plus 1 edge,
-#     so the composite row has at most 2*MAX_LP2_DEPTH + 1 = 13 nonzeros before
-#     cancellation.  We use capacity 16 (next power of 2 above 13).
-#   - At cycle-emit time the combined row from two depth-≤MAX_LP2_DEPTH paths
-#     has at most 2*MAX_LP2_DEPTH + 1 nonzeros, same bound.
+#   - A cross-tree merge composes two depth-≤MAX_LP2_DEPTH paths plus 1 edge.
+#   - Because composite edges can themselves contain multiple nonzeros, we MUST 
+#     provide a capacity strictly larger than MAX_LP2_ROW_WEIGHT (64) so that 
+#     large rows are properly evaluated and pruned by the weight limits rather 
+#     than silently truncating and mathematically corrupting the graph.
 #
-# SMALL_ROW_CAP = 16 covers all cases.
+# SMALL_ROW_CAP = 128 safely covers all cases below the pruning threshold.
 
-const SMALL_ROW_CAP = 16
+const SMALL_ROW_CAP = 128
 
 struct SmallRow
     cols::NTuple{SMALL_ROW_CAP, Int}
@@ -71,10 +71,9 @@ SmallRow() = SmallRow(ntuple(_->0, SMALL_ROW_CAP), ntuple(_->0, SMALL_ROW_CAP), 
     end
     # New entry.
     if len >= SMALL_ROW_CAP
-        # Capacity overflow — should not happen given the depth bounds above.
-        # Silently drop rather than corrupt; the resulting composite may be
-        # heavier than intended but won't be wrong (missing FB entries make the
-        # emitted relation fail the principal-divisor assert, which surfaces it).
+        # Capacity overflow — return r unmodified. If this happens, the length
+        # caps at SMALL_ROW_CAP. We set the cap high enough (128) that it should
+        # be pruned by MAX_LP2_ROW_WEIGHT (64) before it ever overflows.
         return r
     end
     return SmallRow(Base.setindex(cols, col,  len+1),
@@ -87,7 +86,7 @@ end
     smallrow_add(r, col, sign * val)
 end
 
-# Merge all entries of src (scaled by sign) into dst.  Allocation-free.
+# Merge all entries of src (scaled by sign) into dst. Allocation-free.
 @inline function smallrow_merge(dst::SmallRow, src::SmallRow, sign::Int)::SmallRow
     r = dst
     for i in 1:src.len
@@ -130,6 +129,106 @@ function smallrow_add_into_dict!(dst::Dict{Int,Int}, r::SmallRow)
 end
 
 # ---------------------------------------------------------------------------
+#  Hard principal-divisor checks for LP2 emission paths.
+#  These are mandatory: any failure is a hard abort.
+# ---------------------------------------------------------------------------
+
+const LP2_PRINCIPAL_CHECK_CTX = Ref{Any}(nothing)
+
+function set_lp2_principal_check_context!(fb::Vector{NTuple{2,Int}},
+                                          G::Div2,
+                                          T::Div2)
+    LP2_PRINCIPAL_CHECK_CTX[] = (fb = fb, G = G, T = T)
+    return nothing
+end
+
+function clear_lp2_principal_check_context!()
+    LP2_PRINCIPAL_CHECK_CTX[] = nothing
+    return nothing
+end
+
+@inline function _lp2_principal_ctx()
+    ctx = LP2_PRINCIPAL_CHECK_CTX[]
+    ctx === nothing && error("LP2 principal-divisor check context not set")
+    return ctx
+end
+
+function lp2_assert_even_cycle_principal!(
+    row::Dict{Int,Int}, alpha::Int, beta::Int;
+    tag::String = ""
+)
+    ctx = _lp2_principal_ctx()
+    fb = ctx.fb
+    G  = ctx.G
+    T  = ctx.T
+
+    lhs = JacID
+    for (idx, v) in row
+        pt = fb[idx]
+        Dp = mumford1(pt[1], pt[2])
+        Dv = jac_mul_raw(Dp, abs(v))
+        lhs = v > 0 ? jac_add(lhs, Dv) : jac_sub(lhs, Dv)
+    end
+
+    rhs = jac_add(jac_mul(G, alpha), jac_mul(T, beta))
+
+    if lhs != rhs
+        rhs_neg = jac_neg(rhs)
+        if lhs == rhs_neg
+            @printf("[LP2 PRINCIPAL %s] SIGN-FLIP on even cycle: alpha=%d beta=%d row_w=%d\n",
+                    tag, alpha, beta, length(row))
+        else
+            @printf("[LP2 PRINCIPAL %s] FAIL on even cycle: alpha=%d beta=%d row_w=%d\n",
+                    tag, alpha, beta, length(row))
+        end
+        @printf("  lhs = %s\n", string(lhs))
+        @printf("  rhs = %s\n", string(rhs))
+        @printf("  row = %s\n", string(row))
+        @assert false "LP2 even-cycle principal divisor check failed"
+    end
+
+    return true
+end
+
+function lp2_assert_odd_cycle_principal!(
+    root::NTuple{2,Int}, row::Dict{Int,Int}, alpha::Int, beta::Int;
+    tag::String = ""
+)
+    ctx = _lp2_principal_ctx()
+    fb = ctx.fb
+    G  = ctx.G
+    T  = ctx.T
+
+    root_atom = mumford1(root[1], root[2])
+    lhs = jac_add(root_atom, root_atom)
+    for (idx, v) in row
+        pt = fb[idx]
+        Dp = mumford1(pt[1], pt[2])
+        Dv = jac_mul_raw(Dp, abs(v))
+        lhs = v > 0 ? jac_add(lhs, Dv) : jac_sub(lhs, Dv)
+    end
+
+    rhs = jac_add(jac_mul(G, alpha), jac_mul(T, beta))
+
+    if lhs != rhs
+        rhs_neg = jac_neg(rhs)
+        if lhs == rhs_neg
+            @printf("[LP2 PRINCIPAL %s] SIGN-FLIP on odd cycle: root=%s alpha=%d beta=%d row_w=%d\n",
+                    tag, string(root), alpha, beta, length(row))
+        else
+            @printf("[LP2 PRINCIPAL %s] FAIL on odd cycle: root=%s alpha=%d beta=%d row_w=%d\n",
+                    tag, string(root), alpha, beta, length(row))
+        end
+        @printf("  lhs = %s\n", string(lhs))
+        @printf("  rhs = %s\n", string(rhs))
+        @printf("  row = %s\n", string(row))
+        @assert false "LP2 odd-cycle principal divisor check failed"
+    end
+
+    return true
+end
+
+# ---------------------------------------------------------------------------
 #  LP2Graph — shared 2-large-prime graph for cycle-based relation emission
 #
 #  Invariant: each LP node v stores
@@ -153,7 +252,7 @@ end
 #    When edge (L, R) arrives and both L (in tree T_L rooted at rL) and R (in tree
 #    T_R rooted at rR) already exist but rL ≠ rR, we merge the trees by walking
 #    both paths to their roots, composing the path rows into a single SmallRow, and
-#    storing rR as a depth-1 child of rL with the composite edge.  This collapses
+#    storing rR as a depth-1 child of rL with the composite edge. This collapses
 #    the two trees into one; future edges may then form a cycle.
 #
 #    Composite edge label for rR→rL:
@@ -171,18 +270,17 @@ end
 # ---------------------------------------------------------------------------
 
 const MAX_LP2_DEPTH       = 6    # max spanning-tree depth; prevents row blowup
-const MAX_LP2_ROW_WEIGHT  = 24   # max nonzeros in an emitted 2-LP relation
+const MAX_LP2_ROW_WEIGHT  = 64   # max nonzeros in an emitted 2-LP relation
 
-# Hard cap on total nodes.  When reached the graph is cleared entirely.
+# Hard cap on total nodes. When reached the graph is cleared entirely.
 # At ~200 bytes per node (SmallRow inlined, no Dict per node), 250_000 nodes ≈ 50 MB.
 const MAX_LP2_NODES = 50_000
 
 struct LP2Node
     parent    ::Union{NTuple{2,Int}, Nothing}   # nothing = root
-    depth     ::Int
     # Edge to parent: SmallRow encodes all FB contributions along this edge.
     # For direct insertions this has at most 1 entry; for cross-tree composite
-    # edges it may have up to 2*MAX_LP2_DEPTH+1 entries (bounded by SMALL_ROW_CAP).
+    # edges it may have many entries (bounded by SMALL_ROW_CAP).
     edge_row  ::SmallRow
     edge_alpha::Int
     edge_beta ::Int
@@ -208,10 +306,10 @@ function LP2Graph()
     )
 end
 
-# Walk from pt to its root.  Returns root key or nothing if pt not in tree.
+# Walk from pt to its root. Returns root key or nothing if pt not in tree.
 #
 # After cross-tree merges, grafted subtree nodes retain stale depth fields; their
-# actual depth to the new root can exceed MAX_LP2_DEPTH.  We use a generous step
+# actual depth to the new root can exceed MAX_LP2_DEPTH. We use a generous step
 # budget so valid (acyclic) merged trees always terminate, and return nothing
 # (rather than throwing) if the budget is exceeded.
 const _LP2_ROOT_STEP_LIMIT = MAX_LP2_DEPTH * MAX_LP2_DEPTH + MAX_LP2_DEPTH + 4
@@ -225,9 +323,7 @@ function lp2_tree_root(g::LP2Graph, pt::NTuple{2,Int})
         node.parent === nothing && return cur
         steps += 1
         if steps > _LP2_ROOT_STEP_LIMIT
-            # Stale depths or true cycle — delete the stuck node and bail.
-            delete!(g.nodes, cur)
-            return nothing
+            return nothing   # don't delete — that orphans children
         end
         cur = node.parent
     end
@@ -245,12 +341,15 @@ function lp2_path_to_root(g::LP2Graph, start::NTuple{2,Int}, ell::Int)
     depth     = 0
     while true
         node = get(g.nodes, cur, nothing)
-        if node === nothing || node.parent === nothing
-            break
+        # Missing node: dangling parent pointer from a deleted node.
+        # This is corruption — return nothing so the caller discards cleanly.
+        if node === nothing
+            return nothing
         end
+        node.parent === nothing && break   # reached root cleanly
 
         depth += 1
-        if depth > MAX_LP2_DEPTH
+        if depth > _LP2_ROOT_STEP_LIMIT    # same budget as lp2_tree_root
             return nothing
         end
 
@@ -264,13 +363,30 @@ function lp2_path_to_root(g::LP2Graph, start::NTuple{2,Int}, ell::Int)
     return (row=row, alpha=alpha, beta=beta, root_sign=-sign_node, depth=depth)
 end
 
+function lp2_actual_depth(g::LP2Graph, x)
+    d = 0
+    seen = Set{typeof(x)}()
+    cur = x
+
+    while true
+        cur in seen && error("cycle in LP2 parent pointers at $cur")
+        push!(seen, cur)
+
+        node = get(g.nodes, cur, nothing)
+        node === nothing && return d
+        node.parent === nothing && return d
+
+        d += 1
+        cur = node.parent
+    end
+end
 
 # ---------------------------------------------------------------------------
 #  lp2_insert_edge!
 #
 #  Try to insert edge (L, R) with label (fb_row, alpha, beta).
 #
-#  fb_row has at most 1 entry (one FB point per 2-LP step).  We convert it to a
+#  fb_row has at most 1 entry (one FB point per 2-LP step). We convert it to a
 #  SmallRow for node storage, avoiding per-node Dict allocation.
 #
 #  Cases:
@@ -295,7 +411,7 @@ function lp2_insert_edge!(g::LP2Graph,
     edge_sr = SmallRow()
     for (j, v) in fb_row
         edge_sr = smallrow_add(edge_sr, j, v)
-        break   # at most one entry
+        break
     end
 
     rL = lp2_tree_root(g, L)
@@ -313,48 +429,74 @@ function lp2_insert_edge!(g::LP2Graph,
             return nothing
         end
 
-        if pathL.root_sign == pathR.root_sign
-            # Odd cycle.
+        signL = pathL.root_sign
+        signR = pathR.root_sign
+
+        # ── Odd cycle ───────────────────────────────────────────────────────
+        if signL == signR
+            # signL == signR means the roots add up to ±2*atom(root).
             g.n_parity_pruned += 1
             g.n_odd_stored    += 1
-            s = pathL.root_sign
 
+            # Base cycle row before root-sign normalization:
             odd_row = Dict{Int,Int}()
-            smallrow_subtract_into_dict!(odd_row, pathL.row)
-            smallrow_subtract_into_dict!(odd_row, pathR.row)
-            smallrow_add_into_dict!(odd_row, edge_sr)
-            if s == -1
-                for k in keys(odd_row); odd_row[k] = -odd_row[k]; end
-            end
+            smallrow_add_into_dict!(odd_row, pathL.row)
+            smallrow_add_into_dict!(odd_row, pathR.row)
+            smallrow_subtract_into_dict!(odd_row, edge_sr)
 
-            odd_alpha = mod(s * (pathL.alpha + pathR.alpha - alpha), ell)
-            odd_beta  = mod(s * (pathL.beta  + pathR.beta  - beta),  ell)
+            # Extract the proper positive coefficients for the RHS
+            odd_alpha = mod(pathL.alpha + pathR.alpha - alpha, ell)
+            odd_beta  = mod(pathL.beta  + pathR.beta  - beta,  ell)
+
+            # Normalize to +2*atom(root) so the stored invariant is always
+            #   2*atom(root) + row = alpha*G + beta*T.
+            if signL == -1
+                for k in keys(odd_row)
+                    odd_row[k] = -odd_row[k]
+                end
+                odd_alpha = mod(-odd_alpha, ell)
+                odd_beta  = mod(-odd_beta,  ell)
+            end
 
             if length(odd_row) > MAX_LP2_ROW_WEIGHT
                 g.n_weight_pruned += 1
                 return nothing
             end
-            return (type=:odd_cycle, root=rL,
-                    row=odd_row, alpha=odd_alpha, beta=odd_beta,
-                    debug=(L=L, R=R, rL=rL, rR=rR,
-                           sL=pathL.root_sign, sR=pathR.root_sign,
-                           depth_L=pathL.depth, depth_R=pathR.depth,
-                           edge_row=smallrow_to_dict(edge_sr),
-                           pathL=pathL, pathR=pathR))
+
+            lp2_assert_odd_cycle_principal!(rL, odd_row, odd_alpha, odd_beta;
+                                             tag = "lp2_insert_edge!/odd_cycle")
+
+            return (
+                type  = :odd_cycle,
+                root  = rL,
+                row   = odd_row,
+                alpha = odd_alpha,
+                beta  = odd_beta,
+                debug = (
+                    L = L, R = R, rL = rL, rR = rR,
+                    signL = signL, signR = signR,
+                    depthL = pathL.depth, depthR = pathR.depth,
+                    edge_row = smallrow_to_dict(edge_sr),
+                    pathL_alpha = pathL.alpha, pathL_beta  = pathL.beta,
+                    pathR_alpha = pathR.alpha, pathR_beta  = pathR.beta,
+                    pathL_row = smallrow_to_dict(pathL.row),
+                    pathR_row = smallrow_to_dict(pathR.row),
+                )
+            )
         end
 
-        # Even cycle.
+        # ── Even cycle ──────────────────────────────────────────────────────
+        # Here the root terms cancel directly (signL != signR):
         combined = Dict{Int,Int}()
-        smallrow_add_into_dict!(combined, edge_sr)
-        smallrow_subtract_into_dict!(combined, pathL.row)
-        smallrow_subtract_into_dict!(combined, pathR.row)
+        smallrow_add_into_dict!(combined, pathL.row)
+        smallrow_add_into_dict!(combined, pathR.row)
+        smallrow_subtract_into_dict!(combined, edge_sr)
 
         if length(combined) > MAX_LP2_ROW_WEIGHT
             g.n_weight_pruned += 1
             return nothing
         end
 
-        # Swap the subtraction order (around lines 155-156)
         combined_alpha = mod(pathL.alpha + pathR.alpha - alpha, ell)
         combined_beta  = mod(pathL.beta  + pathR.beta  - beta,  ell)
 
@@ -362,27 +504,40 @@ function lp2_insert_edge!(g::LP2Graph,
             return nothing
         end
 
+        lp2_assert_even_cycle_principal!(combined, combined_alpha, combined_beta;
+                                         tag = "lp2_insert_edge!/even_cycle")
+
         g.n_emitted += 1
+
+        debug_payload = (
+            L = L, R = R, rL = rL, rR = rR,
+            signL = signL, signR = signR,
+            path_depthL = pathL.depth, path_depthR = pathR.depth,
+            edge_row = smallrow_to_dict(edge_sr),
+            combined = copy(combined),
+            combined_alpha = combined_alpha, combined_beta  = combined_beta,
+            pathL_alpha = pathL.alpha, pathL_beta  = pathL.beta,
+            pathR_alpha = pathR.alpha, pathR_beta  = pathR.beta,
+            pathL_row = smallrow_to_dict(pathL.row), pathR_row = smallrow_to_dict(pathR.row),
+        )
+
         lp2_prune_component!(g, rL)
 
-        return (type=:even_cycle,
-                row=combined,
-                alpha=combined_alpha,
-                beta=combined_beta,
-                root_signs=(pathL.root_sign, pathR.root_sign),
-                depths=(pathL.depth, pathR.depth),
-                debug=(L=L, R=R, rL=rL, rR=rR,
-                       sL=sL, sR=sR,
-                       depth_L=node_L.depth, depth_R=node_R.depth,
-                       edge_row=smallrow_to_dict(edge_sr),
-                       pathL=pathL, pathR=pathR))
+        return (
+            type  = :even_cycle,
+            row   = combined,
+            alpha = combined_alpha,
+            beta  = combined_beta,
+            root_signs = (signL, signR),
+            depths = (pathL.depth, pathR.depth),
+            debug = debug_payload,
+        )
     end
 
     # ── Node cap: evict before inserting new nodes ───────────────────────────
     if length(g.nodes) >= MAX_LP2_NODES
         empty!(g.nodes)
         g.n_clears += 1
-        # Re-read roots after clear — both are now nothing.
         rL = nothing
         rR = nothing
     end
@@ -392,196 +547,97 @@ function lp2_insert_edge!(g::LP2Graph,
 
     # ── Case (a): both new ───────────────────────────────────────────────────
     if node_L === nothing && node_R === nothing
-        # depth check: the L node will be at depth 1
         if 1 > MAX_LP2_DEPTH
             g.n_depth_pruned += 1
             return nothing
         end
-        g.nodes[R] = LP2Node(nothing, 0, SmallRow(), 0, 0)
-        g.nodes[L] = LP2Node(R, 1, edge_sr, alpha, beta)
-
-    # ── Case (b): L new, R exists ────────────────────────────────────────────
-    elseif node_L === nothing
-        new_depth = node_R.depth + 1
-        if new_depth > MAX_LP2_DEPTH
-            g.n_depth_pruned += 1
-            return nothing
-        end
-        g.nodes[L] = LP2Node(R, new_depth, edge_sr, alpha, beta)
-
-    # ── Case (c): R new, L exists ────────────────────────────────────────────
-    elseif node_R === nothing
-        new_depth = node_L.depth + 1
-        if new_depth > MAX_LP2_DEPTH
-            g.n_depth_pruned += 1
-            return nothing
-        end
-        g.nodes[R] = LP2Node(L, new_depth, edge_sr, alpha, beta)
-
-    # ── Case (e): both exist in DIFFERENT trees — cross-tree merge ───────────
-    #
-    #  We attach rR as a depth-1 child of rL, using a composite SmallRow that
-    #  encodes the full path rR → R → L → rL.
-    #
-    #  Derivation of composite label:
-    #    Let pathR = lp2_path_to_root(R):
-    #      walks rR ← ... ← R  (backwards from R; root_sign tells parity)
-    #      encodes: (contribution from R's side)
-    #    Let pathL = lp2_path_to_root(L):
-    #      walks rL ← ... ← L
-    #
-    #    The stored edge on a node v contributes +edge_row * sign when walking
-    #    child→parent (sign starts +1 at first edge, flips each hop).
-    #
-    #    Path from rR side: pathR accumulates with sign_node starting at +1 at R,
-    #      so it represents the sum of edge contributions R→...→rR with alternating
-    #      signs starting +.  The "root_sign" at the end is the sign that would have
-    #      been applied to rR's (nonexistent) edge; it encodes the parity of depth_R.
-    #
-    #    Path from L side: pathL accumulates similarly from L toward rL.
-    #
-    #    The new edge (L, R) contributes fb_row with a sign determined by its
-    #    position in the combined path.  In the combined path rR→R→L→rL the
-    #    L-side path is traversed in the *reverse* direction (rL←L), so the sign
-    #    for the new edge and the L-side path must be reconciled.
-    #
-    #    Concretely, the composite edge on rR→rL should satisfy:
-    #      For any future path walk that reaches rR and takes this one edge to rL,
-    #      the contribution is exactly:
-    #        sign * composite_row, sign * composite_alpha, sign * composite_beta
-    #      where sign is the sign_node at rR during that future walk.
-    #
-    #    Working out the algebra (treating pathL.root_sign and pathR.root_sign as
-    #    the "exit signs" from their respective sides):
-    #
-    #      The path from R to rR contributes pathR (with sign +1 at R's first edge).
-    #      The new edge (R,L) contributes fb_row; in the rR→rL direction the new
-    #        edge is traversed with sign = pathR.root_sign (the sign after walking
-    #        the full R-side path up to rR, which is the sign that would apply to
-    #        the "next" step beyond rR, i.e., the step from rR to the new edge).
-    #      The path from L to rL is traversed in reverse (rL→L direction), so each
-    #        edge's sign is negated relative to the forward (L→rL) walk.  The entry
-    #        sign for the L-side reversal is pathR.root_sign * pathL.root_sign
-    #        (accumulated parity from rR side times the parity needed to reverse rL side).
-    #
-    #    composite_row   = pathR.row
-    #                    + pathR.root_sign * fb_row
-    #                    + pathR.root_sign * pathL.root_sign * pathL.row   (negated: subtract)
-    #    composite_alpha = pathR.alpha
-    #                    + pathR.root_sign * alpha
-    #                    - pathR.root_sign * pathL.root_sign * pathL.alpha
-    #    composite_beta  = pathR.beta
-    #                    + pathR.root_sign * beta
-    #                    - pathR.root_sign * pathL.root_sign * pathL.beta
-    #
-    #    (mod ell throughout)
-    #
-    #  After storing rR→rL with this composite edge, lp2_path_to_root from rR will
-    #  traverse exactly one hop to rL, contributing the composite row with sign +1,
-    #  which correctly reconstructs the full combined path.
-    else
-        # rL != rR, both non-nothing (otherwise we'd have hit case b or c after the clear).
-        pathL = lp2_path_to_root(g, L, ell)
-        pathR = lp2_path_to_root(g, R, ell)
-
-        if pathL === nothing || pathR === nothing
-            g.n_depth_pruned += 1
-            return nothing
-        end
-
-        # Depth of composite edge: rR becomes depth-1 child of rL.
-        # Future paths from rR to rL will be depth 1, so any node that previously
-        # had rR as an ancestor and had depth d now has depth ≤ d - depth_R + 1.
-        # We only need to check that the composite node itself fits at depth 1, which
-        # is trivially true (1 ≤ MAX_LP2_DEPTH).  But nodes below rR in the R-tree
-        # keep their old depths; we do NOT re-root or rebalance them.  Those nodes
-        # may have depth up to MAX_LP2_DEPTH already, and their depth field is now
-        # stale (their actual depth to the new root is depth_to_rR + 1).
-        # We handle this conservatively: only merge if both sides are shallow enough
-        # that the composite node cannot create a path longer than MAX_LP2_DEPTH
-        # through an existing R-tree node.
-        depth_R_actual = node_R.depth   # depth of R in R's tree (= depth from R to rR)
-        depth_L_actual = node_L.depth   # depth of L in L's tree
-
-        # Worst-case future path depth through the merged tree:
-        #   A node at depth d_R in R's original tree is now at depth d_R + 1 from rL
-        #   (one hop rR→rL plus d_R hops to rR).  From an arbitrary node at depth
-        #   d_R in R's tree, a path to the new root (rL) has length d_R + 1.
-        #   We require d_R + 1 ≤ MAX_LP2_DEPTH for any node in R's tree.
-        #   The deepest R-tree node could be at depth MAX_LP2_DEPTH already, giving
-        #   MAX_LP2_DEPTH + 1 — one too many.  So we require the tallest R-tree node
-        #   to be at depth ≤ MAX_LP2_DEPTH - 1.  We conservatively bound this by
-        #   depth_R_actual (depth of R itself) since we don't track subtree height.
-        if depth_R_actual + 1 > MAX_LP2_DEPTH || depth_L_actual + 1 > MAX_LP2_DEPTH
-            g.n_depth_pruned += 1
-            return nothing
-        end
-
-        sR = pathR.root_sign
-        sL = pathL.root_sign
-
-        # Cross-tree merge: valid for both (sR,sL) = (+1,+1) and (-1,-1).
-        #
-        # Full derivation:
-        #
-        #   Path equations (from lp2_path_to_root):
-        #     atom(L) + sL*atom(rL) = pathL.alpha*G + pathL.beta*T - pathL.row   ... (1)
-        #     atom(R) + sR*atom(rR) = pathR.alpha*G + pathR.beta*T - pathR.row   ... (2)
-        #   New edge:
-        #     atom(L) + atom(R) + fb_row = alpha*G + beta*T                      ... (3)
-        #
-        #   Goal: atom(rR) + atom(rL) + comp_row = comp_alpha*G + comp_beta*T
-        #
-        #   Multiply (1) by sL, multiply (2) by sR, subtract (3) scaled as needed:
-        #
-        #   Case sL = sR = +1:
-        #     (1)+(2)-(3): atom(rL) + atom(rR) + fb_row - pathL.row - pathR.row
-        #                    = (pathL.alpha + pathR.alpha - alpha)*G + ...
-        #     => comp_row   = fb_row - pathL.row - pathR.row
-        #        comp_alpha = pathL.alpha + pathR.alpha - alpha
-        #
-        #   Case sL = sR = -1:
-        #     Multiply (1) by -1, (2) by -1, add (3):
-        #     atom(rL) + atom(rR) + fb_row - pathL.row - pathR.row
-        #                    = (-pathL.alpha - pathR.alpha + alpha)*G + ...
-        #     => comp_row   = fb_row - pathL.row - pathR.row   (same!)
-        #        comp_alpha = alpha - pathL.alpha - pathR.alpha = sR*(pathL.alpha + pathR.alpha - alpha)
-        #
-        #   In both cases comp_row = edge_sr - pathL.row - pathR.row (sign-independent!).
-        #   comp_alpha = sR * (pathL.alpha + pathR.alpha - alpha)  (correctly handles both signs).
-        #
-        #   Case sL != sR (mixed parity):
-        #     atom(L)*(1+sL) + atom(R)*(1+sR) terms do NOT cancel regardless of combination.
-        #     e.g. sR=+1, sL=-1: adding (1)+sL*(2)-(3) leaves atom(L)*(1+sL)=0, atom(R)*(1+sR)=2*atom(R) — stuck.
-        #     => Mixed-parity merges cannot be expressed as the standard edge invariant.  Reject.
-        if sR * sL != 1
-            g.n_depth_pruned += 1
-            return nothing
-        end
-
-        # Composite edge (rR → rL).
-        # comp_row = edge_sr - pathR.row - pathL.row  (sign-independent; see derivation above).
-        # comp_alpha/beta scale by sR to handle both parity cases uniformly.
-        comp_row = smallrow_merge(SmallRow(), edge_sr,    1)
-        comp_row = smallrow_merge(comp_row,   pathR.row, -1)
-        comp_row = smallrow_merge(comp_row,   pathL.row, -1)
-
-        comp_alpha = mod(sR * (pathR.alpha + pathL.alpha - alpha), ell)
-        comp_beta  = mod(sR * (pathR.beta  + pathL.beta  - beta),  ell)
-
-        if comp_row.len > MAX_LP2_ROW_WEIGHT
-            g.n_weight_pruned += 1
-            return nothing
-        end
-
-        # Attach rR as depth-1 child of rL with the composite edge.
-        g.nodes[rR] = LP2Node(rL, 1, comp_row, comp_alpha, comp_beta)
-        g.n_merges += 1
+        g.nodes[R] = LP2Node(nothing, SmallRow(), 0, 0)
+        g.nodes[L] = LP2Node(R, edge_sr, alpha, beta)
+        return nothing
     end
 
+    # ── Case (b): L new, R exists ────────────────────────────────────────────
+    if node_L === nothing
+        new_depth = lp2_actual_depth(g, R)
+        if new_depth > MAX_LP2_DEPTH
+            g.n_depth_pruned += 1
+            return nothing
+        end
+        g.nodes[L] = LP2Node(R, edge_sr, alpha, beta)
+        return nothing
+    end
+
+    # ── Case (c): R new, L exists ────────────────────────────────────────────
+    if node_R === nothing
+        new_depth = lp2_actual_depth(g, L)
+        if new_depth > MAX_LP2_DEPTH
+            g.n_depth_pruned += 1
+            return nothing
+        end
+        g.nodes[R] = LP2Node(L, edge_sr, alpha, beta)
+        return nothing
+    end
+
+    # ── Case (e): both exist in DIFFERENT trees — cross-tree merge ───────────
+    pathL = lp2_path_to_root(g, L, ell)
+    pathR = lp2_path_to_root(g, R, ell)
+
+    if pathL === nothing || pathR === nothing
+        g.n_depth_pruned += 1
+        return nothing
+    end
+
+    # Determine merge direction (smaller depth merges into larger depth)
+    depthL = lp2_actual_depth(g, L)
+    depthR = lp2_actual_depth(g, R)
+    
+    if depthL <= depthR
+        src_root, dst_root   = rL, rR
+        src_path, dst_path   = pathL, pathR
+        src_sign, dst_sign   = pathL.root_sign, pathR.root_sign
+    else
+        src_root, dst_root   = rR, rL
+        src_path, dst_path   = pathR, pathL
+        src_sign, dst_sign   = pathR.root_sign, pathL.root_sign
+    end
+
+    # We can ONLY merge if the roots share the same parity/sign in the bipartite graph.
+    # Connecting mismatched signs breaks the alternating path assumptions entirely.
+    if src_sign != dst_sign
+        return nothing
+    end
+
+    sig = src_sign
+
+    # Compute composite edge representing the jump from src_root directly to dst_root
+    comp_row = smallrow_merge(SmallRow(), edge_sr, -sig)
+    comp_row = smallrow_merge(comp_row, src_path.row, sig)
+    comp_row = smallrow_merge(comp_row, dst_path.row, sig)
+
+    comp_alpha = mod(sig * (src_path.alpha + dst_path.alpha - alpha), ell)
+    comp_beta  = mod(sig * (src_path.beta  + dst_path.beta  - beta),  ell)
+
+    if comp_row.len > MAX_LP2_ROW_WEIGHT
+        g.n_weight_pruned += 1
+        return nothing
+    end
+
+    if dst_path.depth + 1 > MAX_LP2_DEPTH
+        g.n_depth_pruned += 1
+        return nothing
+    end
+
+    # Mutate the graph and attach
+    g.nodes[src_root] = LP2Node(
+        dst_root,
+        comp_row,
+        comp_alpha,
+        comp_beta
+    )
+
+    g.n_merges += 1
     return nothing
 end
-
 
 # ---------------------------------------------------------------------------
 #  lp2_prune_component!
@@ -590,7 +646,7 @@ end
 #  Called after an even-cycle emission to reclaim the whole component.
 #
 #  Implementation: build a reverse-adjacency (parent → children) map in one
-#  pass over g.nodes, then BFS/DFS from `root`.  This is O(N) in the number
+#  pass over g.nodes, then BFS/DFS from `root`. This is O(N) in the number
 #  of nodes in the graph, not O(N·depth) like a per-node root-walk would be.
 #
 #  This correctly handles the full component including nodes in subtrees that
@@ -603,7 +659,7 @@ function lp2_prune_component!(g::LP2Graph, root::NTuple{2,Int})
 
     # Build children map (parent → [child, ...]) for the whole graph.
     # We only need to include nodes that are actually in the same component,
-    # but since we don't track that we scan all nodes.  One O(N) pass.
+    # but since we don't track that we scan all nodes. One O(N) pass.
     children = Dict{NTuple{2,Int}, Vector{NTuple{2,Int}}}()
     for (pt, node) in g.nodes
         node.parent === nothing && continue
@@ -632,8 +688,8 @@ end
 #  lp2_prune_path! — compatibility alias
 #
 #  The old implementation deleted only the two paths to root (leaving orphan
-#  subtrees).  We now delegate to lp2_prune_component! which correctly
-#  removes the entire tree.  The `start` argument is walked to its root first.
+#  subtrees). We now delegate to lp2_prune_component! which correctly
+#  removes the entire tree. The `start` argument is walked to its root first.
 # ---------------------------------------------------------------------------
 function lp2_prune_path!(g::LP2Graph, start::NTuple{2,Int})
     root = lp2_tree_root(g, start)
