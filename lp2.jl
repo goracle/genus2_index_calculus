@@ -265,7 +265,7 @@ end
 # ---------------------------------------------------------------------------
 
 const MAX_LP2_DEPTH       = 6    # max spanning-tree depth; prevents row blowup
-const MAX_LP2_ROW_WEIGHT  = 64   # max nonzeros in an emitted 2-LP relation
+const MAX_LP2_ROW_WEIGHT  = 24   # max nonzeros in an emitted 2-LP relation
 
 # Hard cap on total nodes. When reached the graph is cleared entirely.
 # At ~200 bytes per node (SmallRow inlined, no Dict per node), 250_000 nodes ≈ 50 MB.
