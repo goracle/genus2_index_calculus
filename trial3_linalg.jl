@@ -102,6 +102,90 @@ function left_kernel_all(rel_rows::Vector{Dict{Int,Int}}, nF::Int, ell::Int)::Ve
 end
 
 # ---------------------------------------------------------------------------
+#  OnlineRankTracker
+#
+#  Maintains a sparse reduced row echelon basis over GF(ell) incrementally.
+#  For each new relation row, reduce it against the current basis:
+#    - If the reduction is non-zero: insert the reduced row as a new pivot
+#      (rank increases by 1, b₁ unchanged).
+#    - If the reduction is zero: the row is linearly dependent; increment b₁.
+#
+#  Thread-safe: a single ReentrantLock guards the basis dict.  Basis updates
+#  are O(nnz · current_rank) in the worst case but cheap relative to the walk.
+#
+#  b₁ is stored as an Atomic{Int} so the walk loop can check it without
+#  acquiring the lock.
+# ---------------------------------------------------------------------------
+mutable struct OnlineRankTracker
+    ell     ::Int
+    # basis: pivot_col → (pivot_col, sparse row as Dict{col→val mod ell})
+    # Invariant: basis[c][c] == 1 for each pivot column c.
+    basis   ::Dict{Int, Dict{Int,Int}}
+    lock    ::ReentrantLock
+    b1      ::Threads.Atomic{Int}
+end
+
+function OnlineRankTracker(ell::Int)
+    OnlineRankTracker(ell, Dict{Int, Dict{Int,Int}}(), ReentrantLock(), Threads.Atomic{Int}(0))
+end
+
+ort_b1(ort::OnlineRankTracker) = ort.b1[]
+
+# Reduce `row` (Dict{col→val}) against `basis` in-place over GF(ell).
+# Returns the reduced row (may be empty if fully reduced to zero).
+function _ort_reduce!(row::Dict{Int,Int}, basis::Dict{Int, Dict{Int,Int}}, ell::Int)
+    for (pivot_col, basis_row) in basis
+        v = get(row, pivot_col, 0)
+        v == 0 && continue
+        # row -= v * basis_row  (basis_row[pivot_col] == 1)
+        for (c, bv) in basis_row
+            nv = mod(get(row, c, 0) - v * bv, ell)
+            if nv == 0; delete!(row, c)
+            else;       row[c] = nv
+            end
+        end
+    end
+    return row
+end
+
+# Add a new relation row to the tracker.
+# Returns true if b₁ increased (i.e. the row was linearly dependent).
+function ort_add_row!(ort::OnlineRankTracker, rel::Dict{Int,Int})::Bool
+    ell = ort.ell
+    # Work on a copy so we don't mutate the caller's relation.
+    row = Dict{Int,Int}(k => mod(v, ell) for (k, v) in rel if mod(v, ell) != 0)
+    lock(ort.lock)
+    try
+        _ort_reduce!(row, ort.basis, ell)
+        if isempty(row)
+            Threads.atomic_add!(ort.b1, 1)
+            return true
+        end
+        # Find the smallest pivot column and normalise.
+        pivot_col = minimum(keys(row))
+        inv_v     = powermod(row[pivot_col], ell - 2, ell)
+        for c in keys(row)
+            row[c] = mod(row[c] * inv_v, ell)
+        end
+        # Back-reduce existing basis rows against the new pivot.
+        for (pc, brow) in ort.basis
+            v = get(brow, pivot_col, 0)
+            v == 0 && continue
+            for (c, rv) in row
+                nv = mod(get(brow, c, 0) - v * rv, ell)
+                if nv == 0; delete!(brow, c)
+                else;       brow[c] = nv
+                end
+            end
+        end
+        ort.basis[pivot_col] = row
+        return false
+    finally
+        unlock(ort.lock)
+    end
+end
+
+# ---------------------------------------------------------------------------
 #  analyze_relation_matrix
 #
 #  Reports three things about the m × nF sparse relation matrix:

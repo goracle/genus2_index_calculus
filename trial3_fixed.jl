@@ -30,6 +30,7 @@ using Dates
 
 include("lp_residual_stats.jl")   # LP residual diagnostics
 include("kernel_phase_diag.jl")   # phase-transition instrumentation
+include("early_solve_monitor.jl") # online b₁ / 2-core / DSU diagnostics
 
 include("trial3_config.jl")
 include("trial3_phi.jl")
@@ -345,6 +346,10 @@ function index_calculus_walk(G::Div2, T::Div2;
     thread_collectors = [LPResidualCollector() for _ in 1:Threads.nthreads()]
     results           = Vector{Any}(undef, Threads.nthreads())
 
+    # Instantiate the tracker here so all threads can stream rows into it
+    # (Ensure OnlineRankTracker is thread-safe or locked if your code requires it!)
+    rank_tracker      = OnlineRankTracker(ell)
+
     t_phase2_start = time()
     @sync for tid in 1:Threads.nthreads()
         Threads.@spawn begin
@@ -358,7 +363,7 @@ function index_calculus_walk(G::Div2, T::Div2;
                 shared_lp1_conj,
                 shared_lp2_conj, shared_lp2_conj_lock,
                 enable_lp2, enable_lp2_conj, max_lp2_nodes, max_lp2_conj_nodes,
-                thread_collectors[tid]; verbose=verbose)
+                thread_collectors[tid], rank_tracker; verbose=verbose)
         end
     end
     t_phase2_done = time() - t_phase2_start
@@ -544,11 +549,34 @@ function index_calculus_walk(G::Div2, T::Div2;
     total_count = length(rel_rows)
     p2_step     = max(1, (total_count - p1_count) ÷ 20)
 
+    # Build the early-solve monitor from all collected relations.
+    # check_interval mirrors the 5% chunk size so core/rank updates are cheap.
+    esm = build_monitor_from_relations(rel_rows, nF, ell;
+                                        check_interval = p2_step)
+
     println("\n── Incremental retrieval attempt ────────────────────────────────────")
     for current_limit in [p1_count; (p1_count + p2_step):p2_step:(total_count - 1); total_count]
         sub_rel = rel_rows[1:current_limit]
         sub_al  = alpha_vec[1:current_limit]
         sub_be  = beta_vec[1:current_limit]
+
+        @printf("Rows: %d/%d (Phase 1 + %d) — checking phase-transition signals...\n",
+                current_limit, total_count, current_limit - p1_count)
+
+        # Force rank computation at every chunk boundary for a dense Betti trace.
+        sig = monitor_check(esm, sub_rel, sub_al, sub_be;
+                             force_rank = true, verbose = verbose)
+
+        # Only attempt the expensive left_kernel_all when b₁ > 0 — i.e. rank
+        # deficiency is confirmed.  core_solvable and support2_found are
+        # informational only; they do not imply a kernel exists yet.
+        if !sig.b1_positive
+            println("  -> b₁=0; skipping kernel attempt.")
+            continue
+        end
+
+        @printf("  -> b₁=%d at m=%d — attempting kernel solve.\n",
+                sig.b1, current_limit)
 
         @printf("Rows: %d/%d (Phase 1 + %d) — attempting kernel solve...\n",
                 current_limit, total_count, current_limit - p1_count)
@@ -568,6 +596,7 @@ function index_calculus_walk(G::Div2, T::Div2;
             if jac_mul(G, k_cand) == T
                 @printf("  >> SUCCESS! Secret k found with %d relations: %d\n",
                         current_limit, k_cand)
+                monitor_print_history(esm)
                 if verbose
                     safe_kernel_phase_instrumentation(sub_rel, sub_al, sub_be, nF, ell;
                                                       G=G, T=T, verbose=true)
@@ -578,6 +607,8 @@ function index_calculus_walk(G::Div2, T::Div2;
         end
         println("  -> Kernel found, but k_true not retrieved (insufficient rank or dependency).")
     end
+
+    monitor_print_history(esm)
 
     # ── Final full kernel solve on all relations ──────────────────────────────
     t_solve_start = time()

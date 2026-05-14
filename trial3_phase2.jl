@@ -59,6 +59,7 @@ function try_lp1_doubled_cross_close!(
         rank_growth    ::Vector{Tuple{Int,Int}},
         raw_steps      ::Int,
         rel_counter    ::Threads.Atomic{Int},
+        ort            ::OnlineRankTracker,
         G              ::Div2,
         T              ::Div2,
         combined_scratch::Dict{Int,Int},
@@ -110,6 +111,7 @@ function try_lp1_doubled_cross_close!(
     (isempty(combined) || (c_al == 0 && c_be == 0)) && return false
 
     push!(alpha_vec, c_al); push!(beta_vec, c_be); push!(rel_rows, copy(combined))
+    ort_add_row!(ort, combined)
     length(rank_growth) < MAX_RANK_GROWTH_SAMPLES &&
         push!(rank_growth, (raw_steps, length(rel_rows)))
     Threads.atomic_add!(rel_counter, 1)
@@ -156,12 +158,15 @@ end
                            beta_vec   ::Vector{Int},
                            rel_rows   ::Vector{Dict{Int,Int}},
                            rel_counter::Threads.Atomic{Int},
+                           ort        ::OnlineRankTracker,
                            s          ::WorkerStats,
                            rank_growth::Vector{Tuple{Int,Int}})
     if ASSERT_RELATIONS
         @assert check_relation_principal(fb_row, neg_al, neg_be, "α", fb, G, T; tag="0LP-EMIT")
     end
-    push!(alpha_vec, neg_al); push!(beta_vec, neg_be); push!(rel_rows, copy(fb_row))
+    row_copy = copy(fb_row)
+    push!(alpha_vec, neg_al); push!(beta_vec, neg_be); push!(rel_rows, row_copy)
+    ort_add_row!(ort, row_copy)
     length(rank_growth) < MAX_RANK_GROWTH_SAMPLES &&
         push!(rank_growth, (s.raw_steps, length(rel_rows)))
     s.hits_full += 1; s.hits_0lp += 1; s.rel_local += 1
@@ -197,6 +202,7 @@ end
         beta_vec       ::Vector{Int},
         rel_rows       ::Vector{Dict{Int,Int}},
         rel_counter    ::Threads.Atomic{Int},
+        ort            ::OnlineRankTracker,
         s              ::WorkerStats,
         shared_lp1     ::Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int, Int}},
         shared_lp1_lock::ReentrantLock,
@@ -230,8 +236,10 @@ end
                     @assert check_relation_principal(combined, combined_al, combined_be,
                                                      "α", fb, G, T; tag="1LP-CLOSE")
                 end
+                row_copy = copy(combined)
                 push!(alpha_vec, combined_al); push!(beta_vec, combined_be)
-                push!(rel_rows, copy(combined))
+                push!(rel_rows, row_copy)
+                ort_add_row!(ort, row_copy)
                 length(rank_growth) < MAX_RANK_GROWTH_SAMPLES &&
                     push!(rank_growth, (s.raw_steps, length(rel_rows)))
                 s.hits_full += 1; s.hits_1lp_emit += 1; s.rel_local += 1
@@ -255,7 +263,7 @@ end
             # Check whether the complementary doubled entry already exists.
             if try_lp1_doubled_cross_close!(lp_pt, shared_lp1, shared_lp_doubled,
                                             ell, alpha_vec, beta_vec, rel_rows,
-                                            rank_growth, s.raw_steps, rel_counter,
+                                            rank_growth, s.raw_steps, rel_counter, ort,
                                             G, T, combined_scratch, fb)
                 s.hits_full += 1; s.hits_lp2emit += 1; s.rel_local += 1; closed = true
             end
@@ -292,12 +300,13 @@ end
         beta_vec       ::Vector{Int},
         rel_rows       ::Vector{Dict{Int,Int}},
         rel_counter    ::Threads.Atomic{Int},
+        ort            ::OnlineRankTracker,
         s              ::WorkerStats,
         shared_lp1_conj::ShardedLP1Conj,
         rank_growth    ::Vector{Tuple{Int,Int}},
         P0             ::NTuple{2,Int})::NTuple{2,Int}
 
-    si        = conj_shard_idx(lp_key)
+    si = conj_shard_idx(lp_key)
     conj_dict = shared_lp1_conj.shards[si]
     conj_lock = shared_lp1_conj.locks[si]
 
@@ -327,6 +336,7 @@ end
                 end
                 push!(alpha_vec, combined_al); push!(beta_vec, combined_be)
                 push!(rel_rows, combined)
+                ort_add_row!(ort, combined)
                 length(rank_growth) < MAX_RANK_GROWTH_SAMPLES &&
                     push!(rank_growth, (s.raw_steps, length(rel_rows)))
                 s.hits_full += 1; s.hits_1lp_emit += 1; s.rel_local += 1
@@ -346,121 +356,13 @@ end
     return P0
 end
 
+
 # --- 2-LP conjugate: P0 is not in FB; RS is a non-split Mumford pair. ---
 #
 # Insert an edge (P0, lp_key) into the extension-field LP2 graph.  The graph
 # mixes affine-point nodes (NTuple{2,Int}) and Mumford-pair nodes (NTuple{4,Int}).
 # An even cycle in this mixed graph yields a pure FB relation; an odd cycle
 # produces a doubled residual that may cross-close with a stored 1-LP entry.
-@inline function handle_2lp_conj!(
-        P0                ::NTuple{2,Int},
-        lp_key            ::NTuple{4,Int},
-        neg_al            ::Int,
-        neg_be            ::Int,
-        ell               ::Int,
-        fb                ::Vector{NTuple{2,Int}},
-        nF_cur            ::Int,
-        G                 ::Div2,
-        T                 ::Div2,
-        alpha_vec         ::Vector{Int},
-        beta_vec          ::Vector{Int},
-        rel_rows          ::Vector{Dict{Int,Int}},
-        rel_counter       ::Threads.Atomic{Int},
-        s                 ::WorkerStats,
-        shared_lp1        ::Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int, Int}},
-        shared_lp1_lock   ::ReentrantLock,
-        shared_lp_doubled ::Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int}},
-        shared_lp2_conj   ::LP2ConjGraph,
-        shared_lp2_conj_lock::ReentrantLock,
-        max_lp2_conj_nodes::Int,
-        rank_growth       ::Vector{Tuple{Int,Int}},
-        combined_scratch  ::Dict{Int,Int})::NTuple{2,Int}
-
-    s.hits_lp2seen += 1
-
-    emitted_conj = nothing
-    if lp2_graph_node_count(shared_lp2_conj) >= max_lp2_conj_nodes
-        s.hits_lp2_cap += 1
-    else
-        lock(shared_lp2_conj_lock)
-        try
-            if lp2_graph_node_count(shared_lp2_conj) < max_lp2_conj_nodes
-                emitted_conj = lp2c_insert_edge!(shared_lp2_conj, P0, lp_key,
-                                                  Dict{Int,Int}(), neg_al, neg_be, ell)
-            else
-                s.hits_lp2_cap += 1
-            end
-        finally
-            unlock(shared_lp2_conj_lock)
-        end
-    end
-
-    emitted_conj === nothing && return fb[rand(1:nF_cur)]
-
-    if emitted_conj.type === :even_cycle
-        # Even cycle → full FB relation directly.
-        push!(alpha_vec, emitted_conj.alpha); push!(beta_vec, emitted_conj.beta)
-        push!(rel_rows, emitted_conj.row)
-        length(rank_growth) < MAX_RANK_GROWTH_SAMPLES &&
-            push!(rank_growth, (s.raw_steps, length(rel_rows)))
-        s.hits_full += 1; s.hits_lp2emit += 1; s.rel_local += 1
-        Threads.atomic_add!(rel_counter, 1)
-        if ASSERT_RELATIONS
-            @assert check_relation_principal(emitted_conj.row, emitted_conj.alpha,
-                                             emitted_conj.beta, "α", fb, G, T; tag="QLP-CONJ-CYCLE")
-        end
-        return fb[rand(1:nF_cur)]
-
-    elseif emitted_conj.type === :odd_cycle
-        # Odd cycle → the root contributes 2·atom(root) to the divisor sum.
-        # If the root is an affine point, try to pair with a stored 1-LP entry
-        # (try_lp1_doubled_cross_close!), or park in shared_lp_doubled for
-        # a future 1-LP closure to consume.
-        s.hits_lp2_odd += 1
-        root_key = emitted_conj.root
-        if root_key isa NTuple{2,Int}
-            root_affine = root_key::NTuple{2,Int}
-            lock(shared_lp1_lock)
-            try
-                if haskey(shared_lp_doubled, root_affine)
-                    # A previous odd cycle already stored 2·atom(root).
-                    # Combine: subtract the two doubled rows.
-                    prev_row, prev_al, prev_be = shared_lp_doubled[root_affine]
-                    combined    = copy(emitted_conj.row)
-                    for (j, v) in prev_row
-                        nv = get(combined, j, 0) - v
-                        nv == 0 ? delete!(combined, j) : (combined[j] = nv)
-                    end
-                    combined_al = mod(emitted_conj.alpha - prev_al, ell)
-                    combined_be = mod(emitted_conj.beta  - prev_be, ell)
-                    delete!(shared_lp_doubled, root_affine)
-                    if !isempty(combined) && !(combined_al == 0 && combined_be == 0)
-                        push!(alpha_vec, combined_al); push!(beta_vec, combined_be)
-                        push!(rel_rows, combined)
-                        length(rank_growth) < MAX_RANK_GROWTH_SAMPLES &&
-                            push!(rank_growth, (s.raw_steps, length(rel_rows)))
-                        s.hits_full += 1; s.hits_lp2emit += 1; s.rel_local += 1
-                        Threads.atomic_add!(rel_counter, 1)
-                    end
-                else
-                    # Park: store 2·atom(root) for a future 1-LP entry to consume.
-                    shared_lp_doubled[root_affine] = (emitted_conj.row, emitted_conj.alpha, emitted_conj.beta)
-                    if try_lp1_doubled_cross_close!(root_affine, shared_lp1, shared_lp_doubled,
-                                                    ell, alpha_vec, beta_vec, rel_rows,
-                                                    rank_growth, s.raw_steps, rel_counter,
-                                                    G, T, combined_scratch, fb)
-                        s.hits_full += 1; s.hits_lp2emit += 1; s.rel_local += 1
-                    end
-                end
-            finally
-                unlock(shared_lp1_lock)
-            end
-        end
-        return fb[rand(1:nF_cur)]
-    end
-
-    return fb[rand(1:nF_cur)]
-end
 
 # --- 2-LP affine: exactly two atoms are outside the FB. ---
 #
@@ -501,6 +403,7 @@ end
         beta_vec       ::Vector{Int},
         rel_rows       ::Vector{Dict{Int,Int}},
         rel_counter    ::Threads.Atomic{Int},
+        ort            ::OnlineRankTracker,
         s              ::WorkerStats,
         shared_lp1     ::Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int, Int}},
         shared_lp1_lock::ReentrantLock,
@@ -515,15 +418,12 @@ end
     s.hits_lp2seen += 1
 
     # Identify the two non-FB atoms.
-    lp2_a, lp2_b = if i0 == 0 && iR == 0;  P0, R
-                   elseif i0 == 0 && iS == 0;  P0, S
-                   else;                        R, S   # iR==0 && iS==0
+    lp2_a, lp2_b = if i0 == 0 && iR == 0; P0, R
+                   elseif i0 == 0 && iS == 0; P0, S
+                   else; R, S   # iR==0 && iS==0
                    end
 
     record_lp2!(lp_col, lp2_a, lp2_b, s.raw_steps)
-
-    # fb_row_scratch is already populated by the caller (the n_lp == 2 branch
-    # in phase2_worker builds it before dispatching here).
 
     # --- LP2 graph insertion ---
     if lp2_graph_node_count(shared_lp2) >= max_lp2_nodes
@@ -546,6 +446,7 @@ end
         if emitted_rel !== nothing && emitted_rel.type === :even_cycle
             push!(alpha_vec, emitted_rel.alpha); push!(beta_vec, emitted_rel.beta)
             push!(rel_rows, emitted_rel.row)
+            ort_add_row!(ort, emitted_rel.row)
             length(rank_growth) < MAX_RANK_GROWTH_SAMPLES &&
                 push!(rank_growth, (s.raw_steps, length(rel_rows)))
             s.hits_full += 1; s.hits_lp2emit += 1; s.rel_local += 1
@@ -571,14 +472,13 @@ end
                         @printf("  row = %s\n", string(row))
                         lock(shared_lp2_lock)
                         try; clear_lp2_graph!(shared_lp2); finally; unlock(shared_lp2_lock); end
+                        error("Relation validation failed during 2-LP even cycle closure.")
                     end
                 end
             end
             return fb[rand(1:nF_cur)]
 
         elseif emitted_rel !== nothing && emitted_rel.type === :odd_cycle
-            # Odd cycle from LP2 graph: the root contributes 2·atom(root) to the
-            # divisor sum.  Attempt the same doubled cross-close as in the conj case.
             s.hits_lp2_odd += 1
             lock(shared_lp1_lock)
             try
@@ -596,6 +496,7 @@ end
                     if !isempty(combined) && !(combined_al == 0 && combined_be == 0)
                         push!(alpha_vec, combined_al); push!(beta_vec, combined_be)
                         push!(rel_rows, copy(combined))
+                        ort_add_row!(ort, combined)
                         length(rank_growth) < MAX_RANK_GROWTH_SAMPLES &&
                             push!(rank_growth, (s.raw_steps, length(rel_rows)))
                         s.hits_full += 1; s.hits_lp2emit += 1; s.rel_local += 1
@@ -606,7 +507,7 @@ end
                     if try_lp1_doubled_cross_close!(root, shared_lp1, shared_lp_doubled,
                                                     ell, alpha_vec, beta_vec, rel_rows,
                                                     rank_growth, s.raw_steps, rel_counter,
-                                                    G, T, combined_scratch, fb)
+                                                    ort, G, T, combined_scratch, fb)
                         s.hits_full += 1; s.hits_lp2emit += 1; s.rel_local += 1
                     end
                 end
@@ -617,23 +518,12 @@ end
     end   # end LP2 graph insertion block
 
     # --- Cross-close with existing 1-LP entries ---
-    #
-    # A 2-LP step can be resolved without the LP2 graph if one of the two LP
-    # atoms (lp2_a or lp2_b) already has a stored 1-LP entry.  Combining the
-    # fb_row of this step with the stored row eliminates that atom, leaving a
-    # 1-LP entry for the other atom.  If the other atom is also stored, we get
-    # a full relation immediately.
-    #
-    # We check (lp2_a, lp2_b) and (lp2_b, lp2_a) in order; only the first
-    # match is acted on (to avoid double-counting).
     lock(shared_lp1_lock)
     try
         for (lp_known, lp_other) in ((lp2_a, lp2_b), (lp2_b, lp2_a))
             haskey(shared_lp1, lp_known) || continue
 
             r_known, na_known, nb_known, _step_known = shared_lp1[lp_known]
-            # Derived 1-LP entry for lp_other:
-            #   atom(lp_other) + (fb_row - r_known) = (neg_al - na_known)·G + (neg_be - nb_known)·T
             new_row    = copy(fb_row_scratch)
             for (j, v) in r_known
                 nv = get(new_row, j, 0) - v
@@ -645,7 +535,6 @@ end
             s.hits_lp2_cross += 1
 
             if haskey(shared_lp1, lp_other)
-                # lp_other is also stored → full relation.
                 prev_row, prev_al, prev_be, prev_step = shared_lp1[lp_other]
                 combined    = copy(new_row)
                 lp2_subtract_rows(combined, prev_row)
@@ -660,13 +549,13 @@ end
                     end
                     push!(alpha_vec, combined_al); push!(beta_vec, combined_be)
                     push!(rel_rows, combined)
+                    ort_add_row!(ort, combined)
                     length(rank_growth) < MAX_RANK_GROWTH_SAMPLES &&
                         push!(rank_growth, (s.raw_steps, length(rel_rows)))
                     s.hits_full += 1; s.hits_1lp_emit += 1; s.rel_local += 1
                     Threads.atomic_add!(rel_counter, 1)
                 end
             else
-                # Store derived 1-LP entry for lp_other.
                 if ASSERT_RELATIONS
                     ok = check_lp1_stored(lp_other, new_row, new_neg_al, new_neg_be,
                                           fb, G, T; tag="2LP-CROSS-STORE")
@@ -689,7 +578,7 @@ end
                 if try_lp1_doubled_cross_close!(lp_other, shared_lp1, shared_lp_doubled,
                                                 ell, alpha_vec, beta_vec, rel_rows,
                                                 rank_growth, s.raw_steps, rel_counter,
-                                                G, T, combined_scratch, fb)
+                                                ort, G, T, combined_scratch, fb)
                     s.hits_full += 1; s.hits_lp2emit += 1; s.rel_local += 1
                 end
             end
@@ -699,11 +588,10 @@ end
         unlock(shared_lp1_lock)
     end
 
-    # Next anchor: prefer a non-LP atom if available.
     if i0 != 0;  return P0
     elseif iR != 0; return R
     elseif iS != 0; return S
-    else;           return fb[rand(1:nF_cur)]
+    else; return fb[rand(1:nF_cur)]
     end
 end
 
@@ -751,7 +639,8 @@ function phase2_worker(G               ::Div2,
                        enable_lp2_conj ::Bool,
                        max_lp2_nodes   ::Int,
                        max_lp2_conj_nodes::Int,
-                       lp_col          ::LPResidualCollector;
+                       lp_col          ::LPResidualCollector,
+                       ort             ::OnlineRankTracker;
                        verbose         ::Bool = true)
 
     nF_cur   = length(fb)
@@ -784,9 +673,6 @@ function phase2_worker(G               ::Div2,
     t_last_report = time()
     report_interval_secs = 30.0
 
-    # LP2 node-count cache: checking length(shared_lp2.nodes) under the lock
-    # every step is expensive.  We cache the count and only refresh it when
-    # we actually need to insert an edge (or every CHECK_INTERVAL steps).
     lp2_node_cache     = 0
     lp2_check_interval = 256
     lp2_check_countdown = 0
@@ -852,18 +738,16 @@ function phase2_worker(G               ::Div2,
         if !rs_split
             lp_key = RS_mumford::NTuple{4,Int}
             if i0 != 0
-                # P0 ∈ FB, RS ∉ F_p → 1-LP conjugate
                 s.hits_lp1 += 1
                 cur_pt = handle_1lp_conj!(lp_key, i0, neg_al, neg_be, ell,
                                            fb, nF_cur, G, T,
                                            alpha_vec, beta_vec, rel_rows, rel_counter,
-                                           s, shared_lp1_conj, rank_growth, P0)
+                                           ort, s, shared_lp1_conj, rank_growth, P0)
             elseif enable_lp2_conj
-                # P0 ∉ FB, RS ∉ F_p → 2-LP conjugate (both "atoms" are non-affine)
                 cur_pt = handle_2lp_conj!(P0, lp_key, neg_al, neg_be, ell,
                                            fb, nF_cur, G, T,
                                            alpha_vec, beta_vec, rel_rows, rel_counter,
-                                           s, shared_lp1, shared_lp1_lock,
+                                           ort, s, shared_lp1, shared_lp1_lock,
                                            shared_lp_doubled,
                                            shared_lp2_conj, shared_lp2_conj_lock,
                                            max_lp2_conj_nodes, rank_growth,
@@ -891,7 +775,7 @@ function phase2_worker(G               ::Div2,
                 fb_row_scratch[idx] = get(fb_row_scratch, idx, 0) + 1
             end
             emit_0lp!(fb_row_scratch, neg_al, neg_be, fb, G, T,
-                      alpha_vec, beta_vec, rel_rows, rel_counter, s, rank_growth)
+                      alpha_vec, beta_vec, rel_rows, rel_counter, ort, s, rank_growth)
             if length(sample_rels) < 10
                 push!(sample_rels, (D_cur, copy(fb_row_scratch), neg_al, neg_be,
                                     P0, R::NTuple{2,Int}, S::NTuple{2,Int}))
@@ -913,7 +797,7 @@ function phase2_worker(G               ::Div2,
 
             cur_pt = handle_1lp_affine!(lp_pt, fb_row_scratch, al, be, neg_al, neg_be,
                                          ell, fb, nF_cur, G, T,
-                                         alpha_vec, beta_vec, rel_rows, rel_counter, s,
+                                         alpha_vec, beta_vec, rel_rows, rel_counter, ort, s,
                                          shared_lp1, shared_lp1_lock, shared_lp_doubled,
                                          lp_col, rank_growth, combined_scratch,
                                          iR, iS, R, S, P0)
@@ -936,7 +820,7 @@ function phase2_worker(G               ::Div2,
                                              R::NTuple{2,Int}, S::NTuple{2,Int}, P0,
                                              fb_row_scratch, neg_al, neg_be,
                                              ell, fb, nF_cur, G, T,
-                                             alpha_vec, beta_vec, rel_rows, rel_counter, s,
+                                             alpha_vec, beta_vec, rel_rows, rel_counter, ort, s,
                                              shared_lp1, shared_lp1_lock,
                                              shared_lp2, shared_lp2_lock,
                                              shared_lp_doubled,
@@ -996,4 +880,116 @@ function phase2_worker(G               ::Div2,
             smooth_hist   = s.smooth_hist,
             rank_growth   = rank_growth,
             lp_col        = lp_col)
+end
+
+
+### from gemini:
+@inline function handle_2lp_conj!(
+        P0                ::NTuple{2,Int},
+        lp_key            ::NTuple{4,Int},
+        neg_al            ::Int,
+        neg_be            ::Int,
+        ell               ::Int,
+        fb                ::Vector{NTuple{2,Int}},
+        nF_cur            ::Int,
+        G                 ::Div2,
+        T                 ::Div2,
+        alpha_vec         ::Vector{Int},
+        beta_vec          ::Vector{Int},
+        rel_rows          ::Vector{Dict{Int,Int}},
+        rel_counter       ::Threads.Atomic{Int},
+        ort               ::OnlineRankTracker,
+        s                 ::WorkerStats,
+        shared_lp1        ::Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int, Int}},
+        shared_lp1_lock   ::ReentrantLock,
+        shared_lp_doubled ::Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int}},
+        shared_lp2_conj   ::LP2ConjGraph,
+        shared_lp2_conj_lock::ReentrantLock,
+        max_lp2_conj_nodes::Int,
+        rank_growth       ::Vector{Tuple{Int,Int}},
+        combined_scratch  ::Dict{Int,Int})::NTuple{2,Int}
+
+    s.hits_lp2seen += 1
+
+    emitted_conj = nothing
+    if lp2_graph_node_count(shared_lp2_conj) >= max_lp2_conj_nodes
+        s.hits_lp2_cap += 1
+    else
+        lock(shared_lp2_conj_lock)
+        try
+            if lp2_graph_node_count(shared_lp2_conj) < max_lp2_conj_nodes
+                emitted_conj = lp2c_insert_edge!(shared_lp2_conj, P0, lp_key,
+                                                 Dict{Int,Int}(), neg_al, neg_be, ell)
+            else
+                s.hits_lp2_cap += 1
+            end
+        finally
+            unlock(shared_lp2_conj_lock)
+        end
+    end
+
+    emitted_conj === nothing && return fb[rand(1:nF_cur)]
+
+    if emitted_conj.type === :even_cycle
+        # Even cycle → full FB relation directly.
+        push!(alpha_vec, emitted_conj.alpha); push!(beta_vec, emitted_conj.beta)
+        push!(rel_rows, emitted_conj.row)
+        ort_add_row!(ort, emitted_conj.row)
+        length(rank_growth) < MAX_RANK_GROWTH_SAMPLES &&
+            push!(rank_growth, (s.raw_steps, length(rel_rows)))
+        s.hits_full += 1; s.hits_lp2emit += 1; s.rel_local += 1
+        Threads.atomic_add!(rel_counter, 1)
+        if ASSERT_RELATIONS
+            @assert check_relation_principal(emitted_conj.row, emitted_conj.alpha,
+                                             emitted_conj.beta, "α", fb, G, T; tag="QLP-CONJ-CYCLE")
+        end
+        return fb[rand(1:nF_cur)]
+
+    elseif emitted_conj.type === :odd_cycle
+        # Odd cycle → the root contributes 2·atom(root) to the divisor sum.
+        s.hits_lp2_odd += 1
+        root_key = emitted_conj.root
+        if root_key isa NTuple{2,Int}
+            root_affine = root_key::NTuple{2,Int}
+            lock(shared_lp1_lock)
+            try
+                if haskey(shared_lp_doubled, root_affine)
+                    # A previous odd cycle already stored 2·atom(root).
+                    # Combine: subtract the two doubled rows.
+                    prev_row, prev_al, prev_be = shared_lp_doubled[root_affine]
+                    combined    = copy(emitted_conj.row)
+                    for (j, v) in prev_row
+                        nv = get(combined, j, 0) - v
+                        nv == 0 ? delete!(combined, j) : (combined[j] = nv)
+                    end
+                    combined_al = mod(emitted_conj.alpha - prev_al, ell)
+                    combined_be = mod(emitted_conj.beta  - prev_be, ell)
+                    delete!(shared_lp_doubled, root_affine)
+                    if !isempty(combined) && !(combined_al == 0 && combined_be == 0)
+                        push!(alpha_vec, combined_al); push!(beta_vec, combined_be)
+                        push!(rel_rows, combined)
+                        ort_add_row!(ort, combined)
+                        length(rank_growth) < MAX_RANK_GROWTH_SAMPLES &&
+                            push!(rank_growth, (s.raw_steps, length(rel_rows)))
+                        s.hits_full += 1; s.hits_lp2emit += 1; s.rel_local += 1
+                        Threads.atomic_add!(rel_counter, 1)
+                    end
+                else
+                    # Park: store 2·atom(root) for a future 1-LP entry to consume.
+                    shared_lp_doubled[root_affine] = (emitted_conj.row, emitted_conj.alpha, emitted_conj.beta)
+                    if try_lp1_doubled_cross_close!(root_affine, shared_lp1, shared_lp_doubled,
+                                                    ell, alpha_vec, beta_vec, rel_rows,
+                                                    rank_growth, s.raw_steps, rel_counter,
+                                                    ort, G, T, combined_scratch, fb)
+                        s.hits_full += 1; s.hits_lp2emit += 1; s.rel_local += 1
+                    end
+                end
+            finally
+                unlock(shared_lp1_lock)
+            end
+        end
+        return fb[rand(1:nF_cur)]
+    end
+
+    return fb[rand(1:nF_cur)]
 end
