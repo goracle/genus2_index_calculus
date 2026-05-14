@@ -151,7 +151,7 @@ end
 function phi_residual_mumford(a::Int, b::Int, c::Int,
                                px::Int,
                                u0::Int, u1::Int)::Union{
-                                   NTuple{3, Union{NTuple{2,Int},Nothing}},
+                                   Tuple{NTuple{2,Int}, NTuple{2,Int}, NTuple{4,Int}},
                                    Tuple{Nothing, Nothing, NTuple{4,Int}},
                                    Nothing}
     # --- Build N(x) = (a·x²+b·x+c)² - f(x)  (coefficients ascending) ---
@@ -198,23 +198,28 @@ function phi_residual_mumford(a::Int, b::Int, c::Int,
     c1_rs  = fp(s1 * inv_s2)   # monic x-coeff of u_RS
     c0_rs  = fp(s0 * inv_s2)   # monic constant of u_RS
 
+    # --- Compute v_RS(x) = -(a·x²+b·x+c) mod u_RS(x) unconditionally ---
+    # Reduce x² → -c1_rs·x - c0_rs:
+    #   v_RS(x) = a·(c1_rs·x + c0_rs) - b·x - c
+    #           = (a·c1_rs - b)·x + (a·c0_rs - c)
+    # Valid for all root configurations (split or conjugate) because the
+    # reduction is a pure polynomial identity — it does not depend on whether
+    # u_RS splits over F_p or F_p².
+    v1_rs = fp(fp(a * c1_rs) - b)
+    v0_rs = fp(fp(a * c0_rs) - c)
+
     # --- Try to split u_RS over F_p ---
     disc = fp(fp(c1_rs * c1_rs) - fp(4 * c0_rs))
     sq   = sqrt_fp(disc)
 
     if sq === nothing
         # R, S are a conjugate pair over F_p².
-        # Compute v_RS(x) = -(a·x²+b·x+c) mod u_RS(x).
-        # Reduce x² → -c1_rs·x - c0_rs:
-        #   v_RS(x) = a·(c1_rs·x + c0_rs) - b·x - c
-        #           = (a·c1_rs - b)·x + (a·c0_rs - c)
-        v1_rs = fp(fp(a * c1_rs) - b)
-        v0_rs = fp(fp(a * c0_rs) - c)
         # Full Mumford key (c0, c1, v0, v1) uniquely identifies the degree-2 element.
         return (nothing, nothing, (c0_rs, c1_rs, v0_rs, v1_rs))
     end
 
-    # Two F_p-rational roots.
+    # Two F_p-rational roots.  Also return the canonical Mumford key so the
+    # caller can use a single unified lookup table regardless of split/conjugate.
     inv2 = fpinv(2)
     xR   = fp(fp(p - c1_rs + sq) * inv2)
     xS   = fp(fp(p - c1_rs - sq) * inv2)
@@ -223,5 +228,5 @@ function phi_residual_mumford(a::Int, b::Int, c::Int,
     yR = fp(p - fp(fp(a * fp(xR*xR)) + fp(b*xR) + c))
     yS = fp(p - fp(fp(a * fp(xS*xS)) + fp(b*xS) + c))
 
-    return ((xR, yR), (xS, yS), nothing)
+    return ((xR, yR), (xS, yS), (c0_rs, c1_rs, v0_rs, v1_rs))
 end

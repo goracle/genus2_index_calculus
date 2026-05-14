@@ -730,7 +730,8 @@ function phase2_worker(G               ::Div2,
         rs_split   = res[1] !== nothing
         R          = rs_split ? res[1]::NTuple{2,Int}   : nothing
         S          = rs_split ? res[2]::NTuple{2,Int}   : nothing
-        RS_mumford = rs_split ? nothing : res[3]::NTuple{4,Int}
+        #RS_mumford = rs_split ? nothing : res[3]::NTuple{4,Int} # bugged version
+        RS_mumford = res[3]::NTuple{4,Int}   # valid for both split and conjugate, non-bugged
 
         # ==========================================================================
         #  BRANCH A: conjugate residual (RS is a degree-2 Mumford pair over F_p²)
