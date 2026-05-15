@@ -697,7 +697,7 @@ function phase2_worker(G               ::Div2,
     # ==========================================================================
     #  Main walk loop
     # ==========================================================================
-    while rel_counter[] < rel_target && s.raw_steps < step_cap
+    while rel_counter[] < rel_target && s.raw_steps < step_cap && ort_b1(ort) == 0
         s.raw_steps += 1
 
         # --- Take a random precomputed step ---
@@ -860,8 +860,11 @@ function phase2_worker(G               ::Div2,
     # ==========================================================================
     elapsed_total = time() - t_start
     if verbose
-        @printf("[thread %2d | DONE | t=%.1fs] raw=%d valid=%d 0lp=%d 1lp_emit=%d 1lp_step=%d 2lp_seen=%d 2lp_emit=%d 2lp_cross=%d 2lp_odd=%d 2lp_cap=%d skip=%d  rels_local=%d\n",
-                tid, elapsed_total, s.raw_steps, s.hits_total, s.hits_0lp, s.hits_1lp_emit,
+        exit_reason = ort_b1(ort) > 0  ? "b₁>0 (kernel found)" :
+                      rel_counter[] >= rel_target ? "rel_target reached" :
+                                                    "step_cap reached"
+        @printf("[thread %2d | DONE | t=%.1fs | exit: %s] raw=%d valid=%d 0lp=%d 1lp_emit=%d 1lp_step=%d 2lp_seen=%d 2lp_emit=%d 2lp_cross=%d 2lp_odd=%d 2lp_cap=%d skip=%d  rels_local=%d\n",
+                tid, elapsed_total, exit_reason, s.raw_steps, s.hits_total, s.hits_0lp, s.hits_1lp_emit,
                 s.hits_lp1, s.hits_lp2seen, s.hits_lp2emit, s.hits_lp2_cross, s.hits_lp2_odd,
                 s.hits_lp2_cap, s.hits_skip, length(rel_rows))
         @printf("           phi-valid rate: %.4f%%  |  full-rel/valid: %.4f%%  |  steps/full: %.1f\n",
