@@ -88,7 +88,7 @@ function try_lp1_doubled_cross_close!(
             D_v  = jac_mul_raw(D_fb, abs(v))
             D_sum = v > 0 ? jac_add(D_sum, D_v) : jac_sub(D_sum, D_v)
         end
-        RHS    = jac_add(jac_mul(G, c_al), jac_mul(T, c_be))
+        RHS    = jac_add(jac_mul(G, c_al, ell), jac_mul(T, c_be, ell))
         ok_pos = jac_isid(jac_sub(D_sum, RHS))
         ok_neg = jac_isid(jac_add(D_sum, RHS))
         if !(ok_pos || ok_neg)
@@ -212,8 +212,8 @@ end
         combined_scratch::Dict{Int,Int},
         iR             ::Int,
         iS             ::Int,
-        R              ::Union{NTuple{2,Int},Nothing},
-        S              ::Union{NTuple{2,Int},Nothing},
+        R              ::NTuple{2,Int},
+        S              ::NTuple{2,Int},
         P0             ::NTuple{2,Int})::NTuple{2,Int}
 
     record_lp1!(lp_col, lp_pt, Int(al), Int(be), s.raw_steps)
@@ -274,8 +274,8 @@ end
 
     # Next anchor: random FB point after closure; best non-LP atom otherwise.
     if closed;  return fb[rand(1:nF_cur)]
-    elseif iR != 0; return R::NTuple{2,Int}
-    elseif iS != 0; return S::NTuple{2,Int}
+    elseif iR != 0; return R
+    elseif iS != 0; return S
     else;           return P0
     end
 end
@@ -461,7 +461,7 @@ end
                         Dv   = jac_mul_raw(D_fb, abs(v))
                         D_sum = v > 0 ? jac_add(D_sum, Dv) : jac_sub(D_sum, Dv)
                     end
-                    RHS = jac_add(jac_mul(G, α), jac_mul(T, β))
+                    RHS = jac_add(jac_mul(G, α, ell), jac_mul(T, β, ell))
                     if !(jac_isid(jac_sub(D_sum, RHS)) || jac_isid(jac_add(D_sum, RHS)))
                         @printf("[LP2-DIAG tid=%d] FAIL  alpha=%s beta=%s  row_weight=%d  root_signs=(%d,%d)  depths=(%d,%d)\n",
                                 Threads.threadid(), string(α), string(β), length(row),
@@ -649,11 +649,21 @@ function phase2_worker(G               ::Div2,
     tid      = Threads.threadid()
     t_start  = time()
 
+    # Use Int locally in the hot loop; convert back to BigInt only when a
+    # relation is emitted or stored.
+    ellI = Int(ell)
+    step_a_i = Vector{Int}(undef, length(step_a))
+    step_b_i = Vector{Int}(undef, length(step_b))
+    @inbounds for i in eachindex(step_a)
+        step_a_i[i] = Int(step_a[i])
+        step_b_i[i] = Int(step_b[i])
+    end
+
     # --- Walk state ---
     cur_pt    = fb[rand(1:nF_cur)]
-    alpha_cur = BigInt(rand(1:ell-1))
-    beta_cur  = BigInt(rand(0:ell-1))
-    D_cur     = jac_add(jac_mul(G, alpha_cur), jac_mul(T, beta_cur))
+    alpha_cur = rand(1:ellI-1)
+    beta_cur  = rand(0:ellI-1)
+    D_cur     = jac_add(jac_mul(G, BigInt(alpha_cur), ell), jac_mul(T, BigInt(beta_cur), ell))
 
     # --- Per-thread relation accumulation ---
     hint = max(64, cld(rel_target, Threads.nthreads()) + 32)
@@ -669,7 +679,7 @@ function phase2_worker(G               ::Div2,
     combined_scratch = sizehint!(Dict{Int,Int}(), 8)
 
     # --- Diagnostics ---
-    sample_rels  = Vector{Tuple{Div2,Dict{Int,Int},BigInt,BigInt,NTuple{2,Int},NTuple{2,Int},NTuple{2,Int}}}()
+    sample_phase2_rels = Vector{Tuple{Div2,BigInt,BigInt,NTuple{2,Int},NTuple{2,Int},NTuple{2,Int}}}()
     rank_growth  = Tuple{Int,Int}[]
     t_last_report = time()
     report_interval_secs = 30.0
@@ -687,8 +697,8 @@ function phase2_worker(G               ::Div2,
         # --- Take a random precomputed step ---
         si        = rand(1:N_STEPS)
         D_cur     = jac_add(D_cur, step_D[si])
-        alpha_cur = mod(alpha_cur + step_a[si], ell)
-        beta_cur  = mod(beta_cur  + step_b[si], ell)
+        alpha_cur = mod(alpha_cur + step_a_i[si], ellI)
+        beta_cur  = mod(beta_cur  + step_b_i[si], ellI)
 
         # --- Gate 1: D_cur must be a degree-2 divisor (generic Jacobian element) ---
         fp3_deg(D_cur.u) != 2 && continue
@@ -706,8 +716,8 @@ function phase2_worker(G               ::Div2,
         phi_c === nothing && continue
         a, b, c, _ = phi_c
 
-        res = phi_residual_mumford(a, b, c, px, u0, u1)
-        res === nothing && continue
+        res_R, res_S, RS_mumford = phi_residual_mumford(a, b, c, px, u0, u1)
+        RS_mumford === SENTINEL_MUMFORD && continue   # division failed
 
         s.hits_total += 1
 
@@ -723,16 +733,16 @@ function phase2_worker(G               ::Div2,
 
         al     = alpha_cur
         be     = beta_cur
-        neg_al = mod(ell - al, ell)
-        neg_be = mod(ell - be, ell)
+        neg_al = mod(ellI - al, ellI)
+        neg_be = mod(ellI - be, ellI)
+        # BigInt conversion deferred to emit/store sites — avoids 4 heap allocs
+        # on every valid step including 3-LP discards.
         P0     = cur_pt
         i0     = get(pt2idx, P0, 0)
 
-        rs_split   = res[1] !== nothing
-        R          = rs_split ? res[1]::NTuple{2,Int}   : nothing
-        S          = rs_split ? res[2]::NTuple{2,Int}   : nothing
-        #RS_mumford = rs_split ? nothing : res[3]::NTuple{4,Int} # bugged version
-        RS_mumford = res[3]::NTuple{4,Int}   # valid for both split and conjugate, non-bugged
+        rs_split   = res_R !== SENTINEL_PT
+        R          = res_R   # NTuple{2,Int} always; SENTINEL_PT if conjugate
+        S          = res_S   # NTuple{2,Int} always; SENTINEL_PT if conjugate
 
         # ==========================================================================
         #  BRANCH A: conjugate residual (RS is a degree-2 Mumford pair over F_p²)
@@ -741,12 +751,14 @@ function phase2_worker(G               ::Div2,
             lp_key = RS_mumford::NTuple{4,Int}
             if i0 != 0
                 s.hits_lp1 += 1
-                cur_pt = handle_1lp_conj!(lp_key, i0, neg_al, neg_be, BigInt(ell),
+                neg_al_big = BigInt(neg_al); neg_be_big = BigInt(neg_be)
+                cur_pt = handle_1lp_conj!(lp_key, i0, neg_al_big, neg_be_big, ell,
                                            fb, nF_cur, G, T,
                                            alpha_vec, beta_vec, rel_rows, rel_counter,
                                            ort, s, shared_lp1_conj, rank_growth, P0)
             elseif enable_lp2_conj
-                cur_pt = handle_2lp_conj!(P0, lp_key, neg_al, neg_be, ell,
+                neg_al_big = BigInt(neg_al); neg_be_big = BigInt(neg_be)
+                cur_pt = handle_2lp_conj!(P0, lp_key, neg_al_big, neg_be_big, ell,
                                            fb, nF_cur, G, T,
                                            alpha_vec, beta_vec, rel_rows, rel_counter,
                                            ort, s, shared_lp1, shared_lp1_lock,
@@ -763,8 +775,8 @@ function phase2_worker(G               ::Div2,
         # ==========================================================================
         #  BRANCH B: split residual (R, S are both F_p-rational)
         # ==========================================================================
-        iR = get(pt2idx, R::NTuple{2,Int}, 0)
-        iS = get(pt2idx, S::NTuple{2,Int}, 0)
+        iR = get(pt2idx, R, 0)
+        iS = get(pt2idx, S, 0)
         n_lp = (i0 == 0 ? 1 : 0) + (iR == 0 ? 1 : 0) + (iS == 0 ? 1 : 0)
         s.smooth_hist[n_lp + 1] += 1
 
@@ -776,11 +788,12 @@ function phase2_worker(G               ::Div2,
             for idx in (i0, iR, iS)
                 fb_row_scratch[idx] = get(fb_row_scratch, idx, 0) + 1
             end
-            emit_0lp!(fb_row_scratch, neg_al, neg_be, fb, G, T,
+            neg_al_big = BigInt(neg_al); neg_be_big = BigInt(neg_be)
+            emit_0lp!(fb_row_scratch, neg_al_big, neg_be_big, fb, G, T,
                       alpha_vec, beta_vec, rel_rows, rel_counter, ort, s, rank_growth)
-            if length(sample_rels) < 10
-                push!(sample_rels, (D_cur, copy(fb_row_scratch), neg_al, neg_be,
-                                    P0, R::NTuple{2,Int}, S::NTuple{2,Int}))
+            if length(sample_phase2_rels) < 10
+                push!(sample_phase2_rels, (D_cur, neg_al_big, neg_be_big,
+                                           P0, R, S))
             end
             cur_pt = fb[rand(1:nF_cur)]
 
@@ -789,7 +802,7 @@ function phase2_worker(G               ::Div2,
             #  1-LP affine: exactly one of P0, R, S is not in FB
             # ------------------------------------------------------------------
             s.hits_lp1 += 1
-            lp_pt = i0 == 0 ? P0 : iR == 0 ? R::NTuple{2,Int} : S::NTuple{2,Int}
+            lp_pt = i0 == 0 ? P0 : iR == 0 ? R : S
 
             empty!(fb_row_scratch)
             for idx in (i0, iR, iS)
@@ -797,7 +810,9 @@ function phase2_worker(G               ::Div2,
                 fb_row_scratch[idx] = get(fb_row_scratch, idx, 0) + 1
             end
 
-            cur_pt = handle_1lp_affine!(lp_pt, fb_row_scratch, al, be, neg_al, neg_be,
+            al_big = BigInt(al); be_big = BigInt(be)
+            neg_al_big = BigInt(neg_al); neg_be_big = BigInt(neg_be)
+            cur_pt = handle_1lp_affine!(lp_pt, fb_row_scratch, al_big, be_big, neg_al_big, neg_be_big,
                                          ell, fb, nF_cur, G, T,
                                          alpha_vec, beta_vec, rel_rows, rel_counter, ort, s,
                                          shared_lp1, shared_lp1_lock, shared_lp_doubled,
@@ -818,9 +833,10 @@ function phase2_worker(G               ::Div2,
                     fb_row_scratch[idx] = get(fb_row_scratch, idx, 0) + 1
                 end
 
+                neg_al_big = BigInt(neg_al); neg_be_big = BigInt(neg_be)
                 cur_pt = handle_2lp_affine!(i0, iR, iS,
-                                             R::NTuple{2,Int}, S::NTuple{2,Int}, P0,
-                                             fb_row_scratch, neg_al, neg_be,
+                                             R, S, P0,
+                                             fb_row_scratch, neg_al_big, neg_be_big,
                                              ell, fb, nF_cur, G, T,
                                              alpha_vec, beta_vec, rel_rows, rel_counter, ort, s,
                                              shared_lp1, shared_lp1_lock,
@@ -877,7 +893,7 @@ function phase2_worker(G               ::Div2,
             hits_lp2_odd  = s.hits_lp2_odd,
             hits_lp2_cap  = s.hits_lp2_cap,
             hits_skip     = s.hits_skip,
-            sample_rels   = sample_rels,
+            sample_rels   = sample_phase2_rels,
             total_steps   = s.raw_steps,
             smooth_hist   = s.smooth_hist,
             rank_growth   = rank_growth,

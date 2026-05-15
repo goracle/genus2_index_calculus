@@ -676,7 +676,9 @@ function jac_mul_raw(D::Div2, n::Integer)::Div2
     return R
 end
 
-jac_mul(D::Div2, n::Integer) = jac_mul_raw(D, mod(n, ell))
+@inline function jac_mul(D::Div2, n::Integer, ell::Integer)
+    jac_mul_raw(D, mod(n, ell))
+end
 
 # ──────────────────────── Order / subgroup selection ─────────────────────────
 # Find the exact order of a Jacobian element by BSGS, using the Hasse-Weil bound
@@ -1273,7 +1275,7 @@ function index_calculus(G::Div2, T::Div2;
         # ── RELATION GENERATION (replace this block for custom strategy) ──────
         α = rand(1:ell-1)
         β = rand(0:ell-1)
-        D = jac_add(jac_mul(G, α), jac_mul(T, β))
+        D = jac_add(jac_mul(G, α, ell), jac_mul(T, β, ell))
         # ─────────────────────────────────────────────────────────────────────
 
         tries += 1
@@ -1317,7 +1319,7 @@ function index_calculus(G::Div2, T::Div2;
     k = mod(fpmul(Int(-Σα), powermod(Int(Σβ), ell - 2, ell)), ell)
 
     # ── Verify ───────────────────────────────────────────────────────────────
-    ok = jac_mul(G, k) == T
+    ok = jac_mul(G, k, ell) == T
     if verbose
         ok ? println("  ✓  k = $k   (k·G == T)") : println("  ✗  k = $k   FAILED")
     end
@@ -1371,7 +1373,7 @@ function main()
 
     # Key pair
     k = rand(2:ell-1)
-    T = jac_mul(G, k)
+    T = jac_mul(G, k, ell)
     @printf("Secret k = %d\nT.u = %s\nT.v = %s\n\n", k, T.u, T.v)
 
     println("Running index calculus (fb_size=650)...")

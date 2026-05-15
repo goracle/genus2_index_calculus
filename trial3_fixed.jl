@@ -170,7 +170,7 @@ function phase1_walk(G::Div2, T::Div2, fb_cap::Int; verbose::Bool = true)
         raw_steps += 1
         α = rand(1:ell-1)
         β = rand(0:ell-1)
-        D = jac_add(jac_mul(G, α), jac_mul(T, β))
+        D = jac_add(jac_mul(G, α, ell), jac_mul(T, β, ell))
 
         fp3_deg(D.u) != 2 && continue
 
@@ -185,12 +185,10 @@ function phase1_walk(G::Div2, T::Div2, fb_cap::Int; verbose::Bool = true)
         phi_c === nothing && continue
         a, b, c, _ = phi_c
 
-        res = phi_residual_mumford(a, b, c, px, u0, u1)
-        res === nothing && continue
-        res[1] === nothing && continue   # conjugate pair — skip in phase 1
+        R, S, rs_mumford = phi_residual_mumford(a, b, c, px, u0, u1)
+        rs_mumford === SENTINEL_MUMFORD && continue
+        R === SENTINEL_PT && continue   # conjugate pair — skip in phase 1
 
-        R = res[1]::NTuple{2,Int}
-        S = res[2]::NTuple{2,Int}
         hits_valid += 1
 
         # How many new points would this step add?
@@ -291,7 +289,7 @@ function index_calculus_walk(G::Div2, T::Div2;
     step_b  = Vector{BigInt}(undef, N_STEPS)
     for i in 1:N_STEPS
         a = BigInt(rand(1:ell-1)); b = BigInt(rand(1:ell-1))
-        step_D[i] = jac_add(jac_mul(G, Int(a)), jac_mul(T, Int(b)))
+        step_D[i] = jac_add(jac_mul(G, Int(a), ell), jac_mul(T, Int(b), ell))
         step_a[i] = a; step_b[i] = b
     end
     t_step_done = time() - t_step_build
@@ -532,7 +530,7 @@ function index_calculus_walk(G::Div2, T::Div2;
         @printf("  spot-checking %d full relations:\n", min(5, length(all_samples)))
         n_ok = 0; n_bad = 0
         for (D_stored, fb_row, neg_al, neg_be, P0, R, S) in all_samples[1:min(5,end)]
-            lhs    = jac_add(jac_mul(G, neg_al), jac_mul(T, neg_be))
+            lhs    = jac_add(jac_mul(G, neg_al, ell), jac_mul(T, neg_be, ell))
             neg_D  = jac_neg(D_stored)
             step_ok = (lhs == neg_D)
             @printf("    neg_al=%d neg_be=%d  neg_al*G+neg_be*T == -D_cur: %s\n",
@@ -596,7 +594,7 @@ function index_calculus_walk(G::Div2, T::Div2;
             Sb = mod(sum(BigInt(γ[i]) * sub_be[i] for i in eachindex(γ)), ell)
             Sb == 0 && continue
             k_cand = mod(-Sa * powermod(Sb, ell - 2, ell), ell)
-            if jac_mul(G, k_cand) == T
+            if jac_mul(G, k_cand, ell) == T
                 @printf("  >> SUCCESS! Secret k found with %d relations: %d\n",
                         current_limit, k_cand)
                 monitor_print_history(esm)
@@ -631,9 +629,9 @@ function index_calculus_walk(G::Div2, T::Div2;
         n_tried += 1
         if verbose && n_tried <= 5
             @printf("  kernel vec %d: Sa=%d Sb=%d k_cand=%d  match=%s\n",
-                    n_tried, Sa, Sb, k_cand, jac_mul(G, k_cand) == T)
+                    n_tried, Sa, Sb, k_cand, jac_mul(G, k_cand, ell) == T)
         end
-        if jac_mul(G, k_cand) == T
+        if jac_mul(G, k_cand, ell) == T
             verbose && @printf("  ✓  k = %d   (k*G == T)  [kernel vec %d of %d]\n",
                                k_cand, n_tried, length(kernels))
             verbose && @printf("  total walk+solve time: %.3fs\n", time() - t_walk_start)
@@ -717,7 +715,7 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
     println("  Confirmed: ell*G = identity\n")
 
     k_true = rand(2:ell-1)
-    T      = jac_mul(G, k_true)
+    T      = jac_mul(G, k_true, ell)
     @printf("Secret k = %d  (%.1f bits)\n\n", k_true, log2(k_true + 1))
 
     # Auto FB size: p^(1/2) is the standard smoothness bound for genus-2 index calculus.

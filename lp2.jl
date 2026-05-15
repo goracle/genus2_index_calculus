@@ -161,11 +161,11 @@ function lp2_assert_even_cycle_principal!(
     for (idx, v) in row
         pt = fb[idx]
         Dp = mumford1(pt[1], pt[2])
-        Dv = jac_mul_raw(Dp, abs(v))
+        Dv = jac_mul_raw(Dp, abs(v), ell)
         lhs = v > 0 ? jac_add(lhs, Dv) : jac_sub(lhs, Dv)
     end
 
-    rhs = jac_add(jac_mul(G, alpha), jac_mul(T, beta))
+    rhs = jac_add(jac_mul(G, alpha, ell), jac_mul(T, beta, ell))
 
     if lhs != rhs
         rhs_neg = jac_neg(rhs)
@@ -203,7 +203,7 @@ function lp2_assert_odd_cycle_principal!(
         lhs = v > 0 ? jac_add(lhs, Dv) : jac_sub(lhs, Dv)
     end
 
-    rhs = jac_add(jac_mul(G, alpha), jac_mul(T, beta))
+    rhs = jac_add(jac_mul(G, alpha, ell), jac_mul(T, beta, ell))
 
     if lhs != rhs
         rhs_neg = jac_neg(rhs)

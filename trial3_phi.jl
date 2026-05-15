@@ -45,7 +45,7 @@ function check_relation_principal(
         Dv   = jac_mul_raw(Dp, absv)
         D_fb = v > 0 ? jac_add(D_fb, Dv) : jac_sub(D_fb, Dv)
     end
-    D_rhs = jac_add(jac_mul(G, al), jac_mul(T, be))
+    D_rhs = jac_add(jac_mul(G, al, ell), jac_mul(T, be, ell))
 
     D_fb == D_rhs && return true
 
@@ -83,7 +83,7 @@ function check_lp1_stored(
     end
     D_lp  = mumford1(lp_pt[1], lp_pt[2])
     D_lhs = jac_add(D_fb, D_lp)    # Σ fb + atom(lp_pt)
-    D_rhs = jac_add(jac_mul(G, neg_al), jac_mul(T, neg_be))
+    D_rhs = jac_add(jac_mul(G, neg_al, ell), jac_mul(T, neg_be, ell))
 
     D_lhs == D_rhs && return true
     D_rhs_neg = jac_neg(D_rhs)
@@ -133,41 +133,36 @@ end
 # ---------------------------------------------------------------------------
 #  Residual intersection {R, S} from Mumford representation
 #
-#  Given φ(x,y) = a·x² + b·x + c + y  (d=1), define
-#    N(x) = (a·x²+b·x+c)² - f(x)    (degree 5, leading coeff -1)
+#  Returns a 3-tuple:
+#    (R::NTuple{2,Int}, S::NTuple{2,Int}, RS_mumford::NTuple{4,Int})
 #
-#  N has three known factors: (x - px) from P0, and u(x) = x²+u1·x+u0
-#  from D's support.  Dividing out these factors leaves the degree-2
-#  residual u_RS(x) = x² + c1·x + c0, the Mumford u-polynomial for {R, S}.
+#  Sentinel conventions (avoids Union{...,Nothing} heap boxing):
+#    • R == S == SENTINEL_PT   → conjugate pair (non-split); RS_mumford is valid
+#    • RS_mumford == SENTINEL_MUMFORD → division failed (upstream bug)
 #
-#  Return type:
-#    - Two split rational points (R, S, nothing) if disc ≥ 0 in F_p.
-#    - (nothing, nothing, (c0, c1, v0_RS, v1_RS)) if {R,S} are a conjugate
-#      pair over F_p² — the full Mumford representation is returned so the
-#      caller can key the conjugate-pair LP table.
-#    - nothing if the division has a nonzero remainder (should not happen;
-#      indicates a bug upstream).
+#  Callers check:
+#    res === nothing     → impossible now (function never returns nothing)
+#    rs_split            → res[1] != SENTINEL_PT
+#    division ok         → res[3] != SENTINEL_MUMFORD
 # ---------------------------------------------------------------------------
-function phi_residual_mumford(a::Int, b::Int, c::Int,
+const SENTINEL_PT      = (-1, -1)::NTuple{2,Int}
+const SENTINEL_MUMFORD = (-1, -1, -1, -1)::NTuple{4,Int}
+
+@inline function phi_residual_mumford(a::Int, b::Int, c::Int,
                                px::Int,
-                               u0::Int, u1::Int)::Union{
-                                   Tuple{NTuple{2,Int}, NTuple{2,Int}, NTuple{4,Int}},
-                                   Tuple{Nothing, Nothing, NTuple{4,Int}},
-                                   Nothing}
+                               u0::Int, u1::Int)::Tuple{NTuple{2,Int}, NTuple{2,Int}, NTuple{4,Int}}
     # --- Build N(x) = (a·x²+b·x+c)² - f(x)  (coefficients ascending) ---
     N0 = fpmul(c,c)
     N1 = fp(2*fpmul(b,c))
     N2 = fp(fpmul(b,b) + 2*fpmul(a,c))
     N3 = fp(2*fpmul(a,b))
     N4 = fpmul(a,a)
-    # f(x) = x^5 + F_POLY[4]·x^3 + F_POLY[3]·x^2 + F_POLY[2]·x + F_POLY[1]
-    # F_POLY[5]=0, F_POLY[6]=1 (ascending indexing, leading coeff 1)
     N = (fp(N0 - F_POLY[1]),
          fp(N1 - F_POLY[2]),
          fp(N2 - F_POLY[3]),
          fp(N3 - F_POLY[4]),
-         fp(N4 - F_POLY[5]),   # = N4 since F_POLY[5]=0
-         fp(   - F_POLY[6]))   # = -1  (leading x^5 coefficient)
+         fp(N4 - F_POLY[5]),
+         fp(   - F_POLY[6]))
 
     # --- Step 1: divide N(x) by (x - px) via descending Horner ---
     q4_4 = N[6]
@@ -176,7 +171,7 @@ function phi_residual_mumford(a::Int, b::Int, c::Int,
     q4_1 = fp(N[3] + fpmul(q4_2,px))
     q4_0 = fp(N[2] + fpmul(q4_1,px))
     rem1  = fp(N[1] + fpmul(q4_0,px))
-    rem1 != 0 && return nothing   # px not a root — upstream bug if this fires
+    rem1 != 0 && return (SENTINEL_PT, SENTINEL_PT, SENTINEL_MUMFORD)
 
     # --- Step 2: divide Q4(x) = q4_4·x^4+…+q4_0 by u(x) = x²+u1·x+u0 ---
     s2  = q4_4
@@ -188,7 +183,7 @@ function phi_residual_mumford(a::Int, b::Int, c::Int,
     s0  = r2b
     res1 = fp(r1  - fpmul(s0,u1))
     res0 = fp(q4_0 - fpmul(s0,u0))
-    (res0 != 0 || res1 != 0) && return nothing
+    (res0 != 0 || res1 != 0) && return (SENTINEL_PT, SENTINEL_PT, SENTINEL_MUMFORD)
 
     # --- Make quotient s(x) = s2·x²+s1·x+s0 monic ---
     inv_s2 = fpinv(s2)
@@ -203,21 +198,18 @@ function phi_residual_mumford(a::Int, b::Int, c::Int,
     disc = fp(fpmul(c1_rs, c1_rs) - 4*c0_rs)
     sq   = sqrt_fp(disc)
 
+    mumford_key = (c0_rs, c1_rs, v0_rs, v1_rs)
+
     if sq === nothing
-        # R, S are a conjugate pair over F_p².
-        # Full Mumford key (c0, c1, v0, v1) uniquely identifies the degree-2 element.
-        return (nothing, nothing, (c0_rs, c1_rs, v0_rs, v1_rs))
+        return (SENTINEL_PT, SENTINEL_PT, mumford_key)
     end
 
-    # Two F_p-rational roots.  Also return the canonical Mumford key so the
-    # caller can use a single unified lookup table regardless of split/conjugate.
     inv2 = fpinv(2)
     xR   = fpmul(fp(-c1_rs + sq), inv2)
     xS   = fpmul(fp(-c1_rs - sq), inv2)
 
-    # Recover y: φ(x,y)=0 with d=1 → y = -(a·x²+b·x+c).
     yR = fp(-fpmul(a, fpmul(xR,xR)) - fpmul(b,xR) - c)
     yS = fp(-fpmul(a, fpmul(xS,xS)) - fpmul(b,xS) - c)
 
-    return ((xR, yR), (xS, yS), (c0_rs, c1_rs, v0_rs, v1_rs))
+    return ((xR, yR), (xS, yS), mumford_key)
 end
