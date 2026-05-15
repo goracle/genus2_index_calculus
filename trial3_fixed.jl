@@ -89,16 +89,19 @@ end
 # ---------------------------------------------------------------------------
 #  Generator bootstrap via exact Frobenius order
 # ---------------------------------------------------------------------------
-function frobenius_find_ell_generator(pts::Vector{NTuple{2,Int}})::Tuple{Div2,BigInt}
+function frobenius_find_ell_generator(pts::Vector{NTuple{2,Int}})::Tuple{Div2,Int}
     t0 = time()
     print("  Computing #J via Sage frobenius_polynomial... ")
     flush(stdout)
-    N, ell_found, h = frobenius_jacobian_order()
+    N, ell_big, h = frobenius_jacobian_order()
     @printf("done (%.3fs)\n", time() - t0)
     @printf("  #J = %d\n", N)
     @printf("  factorisation: %s\n", string(Oscar.factor(Oscar.ZZ(N))))
-    @printf("  ell = %d  (%.1f bits)\n", ell_found, log2(ell_found))
+    @printf("  ell = %d  (%.1f bits)\n", ell_big, log2(ell_big))
     @printf("  cofactor h = %d\n", h)
+    ell_big <= typemax(Int) || throw(OverflowError(
+        "ell=$ell_big exceeds typemax(Int)=$(typemax(Int)); p is too large for Int64 arithmetic"))
+    ell_found = Int(ell_big)
 
     n = length(pts)
     n < 2 && error("Not enough rational affine points on the curve")
@@ -348,7 +351,7 @@ function index_calculus_walk(G::Div2, T::Div2;
 
     # Instantiate the tracker here so all threads can stream rows into it
     # (Ensure OnlineRankTracker is thread-safe or locked if your code requires it!)
-    rank_tracker      = OnlineRankTracker(Int(ell))
+    rank_tracker      = OnlineRankTracker(ell)
 
     t_phase2_start = time()
     @sync for tid in 1:Threads.nthreads()
@@ -551,7 +554,7 @@ function index_calculus_walk(G::Div2, T::Div2;
 
     # Build the early-solve monitor from all collected relations.
     # check_interval mirrors the 5% chunk size so core/rank updates are cheap.
-    esm = build_monitor_from_relations(rel_rows, nF, Int(ell);
+    esm = build_monitor_from_relations(rel_rows, nF, ell;
                                         check_interval = p2_step)
 
     println("\n── Incremental retrieval attempt ────────────────────────────────────")
@@ -581,7 +584,7 @@ function index_calculus_walk(G::Div2, T::Div2;
         @printf("Rows: %d/%d (Phase 1 + %d) — attempting kernel solve...\n",
                 current_limit, total_count, current_limit - p1_count)
 
-        kernels = left_kernel_all(sub_rel, nF, Int(ell))
+        kernels = left_kernel_all(sub_rel, nF, ell)
         if isempty(kernels)
             println("  -> No kernel found for this subset.")
             continue
@@ -612,7 +615,7 @@ function index_calculus_walk(G::Div2, T::Div2;
 
     # ── Final full kernel solve on all relations ──────────────────────────────
     t_solve_start = time()
-    kernels       = left_kernel_all(rel_rows, nF, Int(ell))
+    kernels       = left_kernel_all(rel_rows, nF, ell)
     t_solve_done  = time() - t_solve_start
     isempty(kernels) && error("Kernel not found — collect more relations")
 

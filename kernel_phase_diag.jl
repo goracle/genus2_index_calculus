@@ -62,7 +62,7 @@ end
 
 function flatten_rel_rows(rel_rows::Vector{Dict{Int,Int}},
                           nF::Int,
-                          ell_val::Integer)::FlatRelRows
+                          ell_val::Int)::FlatRelRows
     nrel = length(rel_rows)
     nrel == 0 && throw(ArgumentError("flatten_rel_rows: rel_rows is empty"))
     ell_val < 2 && throw(ArgumentError("flatten_rel_rows: ell_val=$ell_val < 2"))
@@ -162,7 +162,7 @@ end
 
 @inline function prefix_has_kernel(flat::FlatRelRows,
                                     nF::Int,
-                                    ell_val::Integer,
+                                    ell_val::Int,
                                     m::Int,
                                     F,
                                     entries::Vector{Int})::Bool
@@ -181,7 +181,7 @@ end
 # ---------------------------------------------------------------------------
 function betti_trace(flat::FlatRelRows,
                      nF       ::Int,
-                     ell_val::Integer;
+                     ell_val::Int;
                      step     ::Int = 1,
                      verbose  ::Bool = false)::Tuple{Vector{Tuple{Int,Int}}, Union{Int,Nothing}}
 
@@ -222,7 +222,7 @@ end
 
 function betti_trace(rel_rows::Vector{Dict{Int,Int}},
                      nF       ::Int,
-                     ell_val::Integer;
+                     ell_val::Int;
                      step     ::Int = 1,
                      verbose  ::Bool = false)::Tuple{Vector{Tuple{Int,Int}}, Union{Int,Nothing}}
     flat = flatten_rel_rows(rel_rows, nF, ell_val)
@@ -239,7 +239,7 @@ end
 # ---------------------------------------------------------------------------
 function find_first_kernel_row(flat::FlatRelRows,
                                nF        ::Int,
-                               ell_val::Integer)::Union{Int, Nothing}
+                               ell_val::Int)::Union{Int, Nothing}
 
     m = nrows(flat)
     m == 0 && throw(ArgumentError("find_first_kernel_row: rel_rows is empty"))
@@ -277,7 +277,7 @@ end
 
 function find_first_kernel_row(rel_rows::Vector{Dict{Int,Int}},
                                nF        ::Int,
-                               ell_val::Integer)::Union{Int, Nothing}
+                               ell_val::Int)::Union{Int, Nothing}
     flat = flatten_rel_rows(rel_rows, nF, ell_val)
     return find_first_kernel_row(flat, nF, ell_val)
 end
@@ -288,7 +288,7 @@ end
 # ---------------------------------------------------------------------------
 function first_kernel_vector(flat::FlatRelRows,
                              nF      ::Int,
-                             ell_val::Integer,
+                             ell_val::Int,
                              m       ::Int)::Union{Vector{Int}, Vector{BigInt}, Nothing}
 
     m < 1 && throw(ArgumentError("first_kernel_vector: m=$m < 1"))
@@ -320,7 +320,7 @@ end
 
 function first_kernel_vector(rel_rows::Vector{Dict{Int,Int}},
                              nF      ::Int,
-                             ell_val::Integer,
+                             ell_val::Int,
                              m       ::Int)::Union{Vector{Int}, Vector{BigInt}, Nothing}
     flat = flatten_rel_rows(rel_rows, nF, ell_val)
     return first_kernel_vector(flat, nF, ell_val, m)
@@ -413,7 +413,7 @@ function kernel_phase_instrumentation(
         alpha_vec ::Vector{<:Integer},
         beta_vec  ::Vector{<:Integer},
         nF        ::Int,
-        ell_val::Integer;
+        ell_val::Int;
         G                 = nothing,
         T                 = nothing,
         k_true            = nothing,
@@ -681,7 +681,7 @@ function multi_trial_delta_run(
         G, T,
         n_trials ::Int;
         fb_size  ::Int  = 200,
-        ell_val::Integer  = ell,
+        ell_val::Int  = ell,
         verbose_walk::Bool = false,
         verbose_diag::Bool = true)
 
