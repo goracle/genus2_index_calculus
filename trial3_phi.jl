@@ -29,8 +29,8 @@
 
 function check_relation_principal(
         row        ::Dict{Int,Int},
-        al         ::BigInt,
-        be         ::BigInt,
+        al         ::Integer,
+        be         ::Integer,
         alpha_name ::String,   # label for the alpha coefficient (diagnostic)
         fb         ::Vector{NTuple{2,Int}},
         G          ::Div2,
@@ -66,8 +66,8 @@ end
 function check_lp1_stored(
         lp_pt  ::NTuple{2,Int},
         row    ::Dict{Int,Int},
-        neg_al ::BigInt,
-        neg_be ::BigInt,
+        neg_al ::Integer,
+        neg_be ::Integer,
         fb     ::Vector{NTuple{2,Int}},
         G      ::Div2,
         T      ::Div2;

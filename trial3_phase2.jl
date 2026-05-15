@@ -685,7 +685,7 @@ function phase2_worker(G               ::Div2,
     combined_scratch = sizehint!(Dict{Int,Int}(), 8)
 
     # --- Diagnostics ---
-    sample_phase2_rels = Vector{Tuple{Div2,BigInt,BigInt,NTuple{2,Int},NTuple{2,Int},NTuple{2,Int}}}()
+    sample_phase2_rels = Vector{Tuple{Div2,Int,Int,NTuple{2,Int},NTuple{2,Int},NTuple{2,Int}}}()
     rank_growth  = Tuple{Int,Int}[]
     t_last_report = time()
     report_interval_secs = 30.0
@@ -757,14 +757,12 @@ function phase2_worker(G               ::Div2,
             lp_key = RS_mumford::NTuple{4,Int}
             if i0 != 0
                 s.hits_lp1 += 1
-                neg_al_big = BigInt(neg_al); neg_be_big = BigInt(neg_be)
-                cur_pt = handle_1lp_conj!(lp_key, i0, neg_al_big, neg_be_big, ell,
+                cur_pt = handle_1lp_conj!(lp_key, i0, neg_al, neg_be, ell,
                                            fb, nF_cur, G, T,
                                            alpha_vec, beta_vec, rel_rows, rel_counter,
                                            ort, s, shared_lp1_conj, rank_growth, P0)
             elseif enable_lp2_conj
-                neg_al_big = BigInt(neg_al); neg_be_big = BigInt(neg_be)
-                cur_pt = handle_2lp_conj!(P0, lp_key, neg_al_big, neg_be_big, ell,
+                cur_pt = handle_2lp_conj!(P0, lp_key, neg_al, neg_be, ell,
                                            fb, nF_cur, G, T,
                                            alpha_vec, beta_vec, rel_rows, rel_counter,
                                            ort, s, shared_lp1, shared_lp1_lock,
@@ -794,11 +792,10 @@ function phase2_worker(G               ::Div2,
             for idx in (i0, iR, iS)
                 fb_row_scratch[idx] = get(fb_row_scratch, idx, 0) + 1
             end
-            neg_al_big = BigInt(neg_al); neg_be_big = BigInt(neg_be)
-            emit_0lp!(fb_row_scratch, neg_al_big, neg_be_big, fb, G, T,
+            emit_0lp!(fb_row_scratch, neg_al, neg_be, fb, G, T,
                       alpha_vec, beta_vec, rel_rows, rel_counter, ort, s, rank_growth)
             if length(sample_phase2_rels) < 10
-                push!(sample_phase2_rels, (D_cur, neg_al_big, neg_be_big,
+                push!(sample_phase2_rels, (D_cur, neg_al, neg_be,
                                            P0, R, S))
             end
             cur_pt = fb[rand(1:nF_cur)]
@@ -816,9 +813,7 @@ function phase2_worker(G               ::Div2,
                 fb_row_scratch[idx] = get(fb_row_scratch, idx, 0) + 1
             end
 
-            al_big = BigInt(al); be_big = BigInt(be)
-            neg_al_big = BigInt(neg_al); neg_be_big = BigInt(neg_be)
-            cur_pt = handle_1lp_affine!(lp_pt, fb_row_scratch, al_big, be_big, neg_al_big, neg_be_big,
+            cur_pt = handle_1lp_affine!(lp_pt, fb_row_scratch, al, be, neg_al, neg_be,
                                          ell, fb, nF_cur, G, T,
                                          alpha_vec, beta_vec, rel_rows, rel_counter, ort, s,
                                          shared_lp1, shared_lp1_lock, shared_lp_doubled,
@@ -839,10 +834,9 @@ function phase2_worker(G               ::Div2,
                     fb_row_scratch[idx] = get(fb_row_scratch, idx, 0) + 1
                 end
 
-                neg_al_big = BigInt(neg_al); neg_be_big = BigInt(neg_be)
                 cur_pt = handle_2lp_affine!(i0, iR, iS,
                                              R, S, P0,
-                                             fb_row_scratch, neg_al_big, neg_be_big,
+                                             fb_row_scratch, neg_al, neg_be,
                                              ell, fb, nF_cur, G, T,
                                              alpha_vec, beta_vec, rel_rows, rel_counter, ort, s,
                                              shared_lp1, shared_lp1_lock,
