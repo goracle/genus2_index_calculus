@@ -357,7 +357,7 @@ function index_calculus_walk(G::Div2, T::Div2;
     @sync for tid in 1:Threads.nthreads()
         Threads.@spawn begin
             results[tid] = phase2_worker(
-                G, T, fb, pt2idx,
+                G, T, fb, BigInt(ell), pt2idx,
                 step_D, step_a, step_b,
                 rel_counter, rel_target, step_cap ÷ Threads.nthreads(),
                 shared_lp1, shared_lp1_lock,

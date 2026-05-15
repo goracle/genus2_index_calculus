@@ -620,6 +620,7 @@ end
 function phase2_worker(G               ::Div2,
                        T               ::Div2,
                        fb              ::Vector{NTuple{2,Int}},
+                       ell             ::BigInt,  # <--- Add this here
                        pt2idx          ::Dict{NTuple{2,Int},Int},
                        step_D          ::Vector{Div2},
                        step_a          ::Vector{BigInt},
@@ -647,9 +648,6 @@ function phase2_worker(G               ::Div2,
     N_STEPS  = length(step_D)
     tid      = Threads.threadid()
     t_start  = time()
-
-    # ell as BigInt for all modular arithmetic on exponents.
-    ell_big = BigInt(ell)
 
     # --- Walk state ---
     cur_pt    = fb[rand(1:nF_cur)]
@@ -689,8 +687,8 @@ function phase2_worker(G               ::Div2,
         # --- Take a random precomputed step ---
         si        = rand(1:N_STEPS)
         D_cur     = jac_add(D_cur, step_D[si])
-        alpha_cur = mod(alpha_cur + step_a[si], ell_big)
-        beta_cur  = mod(beta_cur  + step_b[si], ell_big)
+        alpha_cur = mod(alpha_cur + step_a[si], ell)
+        beta_cur  = mod(beta_cur  + step_b[si], ell)
 
         # --- Gate 1: D_cur must be a degree-2 divisor (generic Jacobian element) ---
         fp3_deg(D_cur.u) != 2 && continue
@@ -725,8 +723,8 @@ function phase2_worker(G               ::Div2,
 
         al     = alpha_cur
         be     = beta_cur
-        neg_al = mod(ell_big - al, ell_big)
-        neg_be = mod(ell_big - be, ell_big)
+        neg_al = mod(ell - al, ell)
+        neg_be = mod(ell - be, ell)
         P0     = cur_pt
         i0     = get(pt2idx, P0, 0)
 
@@ -743,7 +741,7 @@ function phase2_worker(G               ::Div2,
             lp_key = RS_mumford::NTuple{4,Int}
             if i0 != 0
                 s.hits_lp1 += 1
-                cur_pt = handle_1lp_conj!(lp_key, i0, neg_al, neg_be, ell,
+                cur_pt = handle_1lp_conj!(lp_key, i0, neg_al, neg_be, BigInt(ell),
                                            fb, nF_cur, G, T,
                                            alpha_vec, beta_vec, rel_rows, rel_counter,
                                            ort, s, shared_lp1_conj, rank_growth, P0)
