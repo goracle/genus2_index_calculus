@@ -23,9 +23,9 @@ using StaticArrays
 # ─────────────────────────── Global parameters ────────────────────────────────
 # Accept an optional command-line argument: the prime (or near-prime) to use.
 # We find the next prime >= the supplied value, mirroring Sage's next_prime().
-function _next_prime(n::Int)::Int
+function _next_prime(n::Integer)::Int
     n < 2 && return 2
-    candidate = n % 2 == 0 ? n + 1 : n
+    candidate = Int(n % 2 == 0 ? n + 1 : n)
     while !isprime(candidate)
         candidate += 2
     end
@@ -34,10 +34,10 @@ end
 
 const p = let
     if !isempty(ARGS)
-        raw = tryparse(Int, ARGS[1])
+        raw = tryparse(Int128, ARGS[1])
         raw === nothing && error("Command-line argument must be an integer, got: $(ARGS[1])")
         np = _next_prime(raw)
-        np != raw && println("next_prime($raw) = $np  →  using p = $np")
+        np != Int(raw) && println("next_prime($raw) = $np  →  using p = $np")
         np
     else
         164147   # default
@@ -49,6 +49,8 @@ const F_POLY = Int[4, 5, 2, 3, 0, 1]
 
 # ─────────────────────────── Fp arithmetic ────────────────────────────────────
 @inline fp(x::Integer)    = mod(x, p)
+# fpmul: multiplication in F_p safe for any p < 2^62 (uses 128-bit intermediate)
+@inline fpmul(a::Integer, b::Integer) = Int(mod(widemul(Int64(a), Int64(b)), p))
 # Multiplicative inverse in F_p
 @inline function fpinv(a::Integer)
     aa = mod(Int(a), p)
@@ -94,12 +96,12 @@ function pdivrem(a::Vector{Int}, b::Vector{Int})
         d  = da - db
 
         # Leading-term cancellation coefficient
-        c = fp(a[end] * lc_inv)
+        c = fpmul(a[end], lc_inv)
         q[d + 1] = c
 
         # Subtract c * x^d * b from a
         @inbounds for i in eachindex(b)
-            a[i + d] = fp(a[i + d] - c * b[i])
+            a[i + d] = fp(a[i + d] - fpmul(c, b[i]))
         end
 
         # Force the highest coefficient to zero, then physically shrink
@@ -128,7 +130,7 @@ function sqrt_fp(a::Int)
     powermod(a, (p - 1) >> 1, p) == 1 || return nothing
     if p % 4 == 3
         r = powermod(a, (p + 1) >> 2, p)
-        return fp(r * r) == a ? r : nothing
+        return fpmul(r, r) == a ? r : nothing
     end
     # Tonelli-Shanks for p ≡ 1 (mod 4)
     Q, S = p - 1, 0
@@ -142,13 +144,14 @@ function sqrt_fp(a::Int)
     r = powermod(a, (Q + 1) >> 1, p)
     while true
         t == 1 && return r
-        i, tmp = 1, fp(t * t)
-        while tmp != 1; tmp = fp(tmp * tmp); i += 1; end
-        b = powermod(c, 1 << (M2 - i - 1), p)
+        i, tmp = 1, fpmul(t, t)
+        while tmp != 1; tmp = fpmul(tmp, tmp); i += 1; end
+        # Use powermod(c, 2^(M2-i-1), p) to avoid shift overflow
+        b = powermod(c, Int128(1) << (M2 - i - 1), p)
         M2 = i
-        c = fp(b * b)
-        t = fp(t * c)
-        r = fp(r * b)
+        c = fpmul(b, b)
+        t = fpmul(t, c)
+        r = fpmul(r, b)
     end
 end
 
@@ -179,8 +182,8 @@ const Fp2 = SVector{2,Int}   # degree-≤-1 poly: [c0, c1]
 @inline fp2_iszero(v::Fp2) = v[1] == 0 && v[2] == 0
 
 # Evaluate an Fp3/Fp2 at a point
-@inline fp3_eval(u::Fp3, x::Int) = fp(u[1] + x * fp(u[2] + x * u[3]))
-@inline fp2_eval(v::Fp2, x::Int) = fp(v[1] + x * v[2])
+@inline fp3_eval(u::Fp3, x::Int) = fp(u[1] + fpmul(x, fp(u[2] + fpmul(x, u[3]))))
+@inline fp2_eval(v::Fp2, x::Int) = fp(v[1] + fpmul(x, v[2]))
 
 # Convert to/from heap Vector{Int} for cold-path interop.
 # to_vec trims trailing zeros.
@@ -219,15 +222,15 @@ end
 # -Fp2 → Fp2
 @inline fp2_neg(v::Fp2)         = Fp2(fp(-v[1]), fp(-v[2]))
 # scalar * Fp3 → Fp3
-@inline fp3_scale(a::Fp3, s::Int) = Fp3(fp(a[1]*s), fp(a[2]*s), fp(a[3]*s))
+@inline fp3_scale(a::Fp3, s::Int) = Fp3(fpmul(a[1],s), fpmul(a[2],s), fpmul(a[3],s))
 # scalar * Fp2 → Fp2
-@inline fp2_scale(v::Fp2, s::Int) = Fp2(fp(v[1]*s), fp(v[2]*s))
+@inline fp2_scale(v::Fp2, s::Int) = Fp2(fpmul(v[1],s), fpmul(v[2],s))
 
 # Fp2 * Fp2 → Fp3  (degree ≤ 2)
 @inline function fp2_mul(a::Fp2, b::Fp2)::Fp3
-    Fp3(fp(a[1]*b[1]),
-        fp(a[1]*b[2] + a[2]*b[1]),
-        fp(a[2]*b[2]))
+    Fp3(fpmul(a[1],b[1]),
+        fp(fpmul(a[1],b[2]) + fpmul(a[2],b[1])),
+        fpmul(a[2],b[2]))
 end
 
 # Fp3 mod Fp3-monic-deg2: compute a mod u where u is monic degree 2.
@@ -239,8 +242,8 @@ end
     # subtract a[3]·u: a[3]·(x²+u[2]x+u[1]) from a
     # result: (a[2] - a[3]*u[2])x + (a[1] - a[3]*u[1])
     c = a[3]
-    Fp2(fp(a[1] - c*u[1]),
-        fp(a[2] - c*u[2]))
+    Fp2(fp(a[1] - fpmul(c, u[1])),
+        fp(a[2] - fpmul(c, u[2])))
 end
 
 # Fp2 mod Fp3-monic-deg2 → Fp2  (already degree ≤ 1, no-op)
@@ -310,7 +313,7 @@ function pmul(a::Vector{Int}, b::Vector{Int})
     la, lb = length(a), length(b)
     c = zeros(Int, la + lb - 1)
     @inbounds for i in 1:la, j in 1:lb
-        c[i+j-1] = fp(c[i+j-1] + a[i] * b[j])
+        c[i+j-1] = fp(c[i+j-1] + fpmul(a[i], b[j]))
     end
     ptrim!(c)
 end
@@ -324,13 +327,13 @@ end
 function pscale(a::Vector{Int}, s::Int)
     s = fp(s)
     c = Vector{Int}(undef, length(a))
-    @inbounds for i in eachindex(a); c[i] = fp(a[i] * s); end
+    @inbounds for i in eachindex(a); c[i] = fpmul(a[i], s); end
     ptrim!(c)
 end
 
 function pscale!(a::Vector{Int}, s::Int)
     s = fp(s)
-    @inbounds for i in eachindex(a); a[i] = fp(a[i] * s); end
+    @inbounds for i in eachindex(a); a[i] = fpmul(a[i], s); end
     ptrim!(a)
 end
 
@@ -346,14 +349,14 @@ function f_minus_vsq!(dst::Vector{Int}, V::Vector{Int})
     fill!(dst, 0)
     @inbounds for i in 1:6; dst[i] = fp(dst[i] + F_POLY[i]); end
     @inbounds for i in 1:lv, j in 1:lv
-        dst[i+j-1] = fp(dst[i+j-1] - V[i] * V[j])
+        dst[i+j-1] = fp(dst[i+j-1] - fpmul(V[i], V[j]))
     end
     ptrim!(dst)
 end
 
 function peval(poly::Vector{Int}, x::Int)
     x = fp(x); r = 0
-    for i in length(poly):-1:1; r = fp(r * x + poly[i]); end
+    for i in length(poly):-1:1; r = fp(fpmul(r, x) + poly[i]); end
     r
 end
 
@@ -536,8 +539,8 @@ function jac_add(D1::Div2, D2::Div2)::Div2
     a2 = u2[2]; b2 = u2[1]
     δa = fp(a1 - a2)
     δb = fp(b1 - b2)
-    γ  = fp(δa * a1 - δb)
-    D  = fp(δb * γ - fp(δa * δa) * b1)
+    γ  = fp(fpmul(δa, a1) - δb)
+    D  = fp(fpmul(δb, γ) - fpmul(fpmul(δa, δa), b1))
 
     if D == 0
         return _jac_add_degenerate(D1, D2)
@@ -545,7 +548,7 @@ function jac_add(D1::Div2, D2::Div2)::Div2
 
     invD = fpinv(D)
     # e2 = -s = Fp2(-γ·invD, -δa·invD)
-    e2 = Fp2(fp(-γ * invD), fp(-δa * invD))
+    e2 = Fp2(fp(-fpmul(γ, invD)), fp(-fpmul(δa, invD)))
 
     # ── Compute V_num = v2 + e2·u2·(v1-v2) mod U  (degree ≤ 3 after reduction) ──
     #
@@ -563,31 +566,31 @@ function jac_add(D1::Div2, D2::Div2)::Div2
     dv1 = fp(v1[2] - v2[2])
 
     # e2·u2: Fp2(e2[1],e2[2]) * Fp3(b2,a2,1) → 4 coeffs
-    e2u2_0 = fp(e2[1]*u2[1])
-    e2u2_1 = fp(e2[1]*u2[2] + e2[2]*u2[1])
-    e2u2_2 = fp(e2[1]*u2[3] + e2[2]*u2[2])
-    e2u2_3 = fp(e2[2]*u2[3])
+    e2u2_0 = fpmul(e2[1],u2[1])
+    e2u2_1 = fp(fpmul(e2[1],u2[2]) + fpmul(e2[2],u2[1]))
+    e2u2_2 = fp(fpmul(e2[1],u2[3]) + fpmul(e2[2],u2[2]))
+    e2u2_3 = fpmul(e2[2],u2[3])
 
     # (e2·u2)·dv: degree ≤ 4, then add v2 into coeffs 0 and 1.
-    vn0 = fp(v2[1] + e2u2_0*dv0)
-    vn1 = fp(v2[2] + e2u2_0*dv1 + e2u2_1*dv0)
-    vn2 = fp(        e2u2_1*dv1  + e2u2_2*dv0)
-    vn3 = fp(        e2u2_2*dv1  + e2u2_3*dv0)
-    vn4 = fp(        e2u2_3*dv1)
+    vn0 = fp(v2[1] + fpmul(e2u2_0,dv0))
+    vn1 = fp(v2[2] + fpmul(e2u2_0,dv1) + fpmul(e2u2_1,dv0))
+    vn2 = fp(        fpmul(e2u2_1,dv1)  + fpmul(e2u2_2,dv0))
+    vn3 = fp(        fpmul(e2u2_2,dv1)  + fpmul(e2u2_3,dv0))
+    vn4 = fp(        fpmul(e2u2_3,dv1))
 
     # U = u1·u2, degree 4, monic.
-    ub0 = fp(u1[1]*u2[1])
-    ub1 = fp(u1[1]*u2[2] + u1[2]*u2[1])
-    ub2 = fp(u1[1] + u1[2]*u2[2] + u2[1])
+    ub0 = fpmul(u1[1],u2[1])
+    ub1 = fp(fpmul(u1[1],u2[2]) + fpmul(u1[2],u2[1]))
+    ub2 = fp(u1[1] + fpmul(u1[2],u2[2]) + u2[1])
     ub3 = fp(u1[2] + u2[2])
     # ub4 = 1 (monic)
 
     # Reduce Vn (degree ≤ 4) mod U by eliminating the degree-4 term.
     c4 = vn4
-    r0 = fp(vn0 - c4*ub0)
-    r1 = fp(vn1 - c4*ub1)
-    r2 = fp(vn2 - c4*ub2)
-    r3 = fp(vn3 - c4*ub3)
+    r0 = fp(vn0 - fpmul(c4,ub0))
+    r1 = fp(vn1 - fpmul(c4,ub1))
+    r2 = fp(vn2 - fpmul(c4,ub2))
+    r3 = fp(vn3 - fpmul(c4,ub3))
     # V_raw = r3·x³ + r2·x² + r1·x + r0  (degree ≤ 3)
 
     # ── Cantor reduction: deg(U)=4 → deg(U1)=2 ─────────────────────────────
@@ -596,19 +599,15 @@ function jac_add(D1::Div2, D2::Div2)::Div2
     # V1 = -(V_raw mod U1).
 
     # V_raw² coefficients (degree ≤ 6 from V of degree 3):
-    vsq0 = fp(r0*r0)
-    vsq1 = fp(2*r0*r1)
-    vsq2 = fp(2*r0*r2 + r1*r1)
-    vsq3 = fp(2*r0*r3 + 2*r1*r2)
-    vsq4 = fp(2*r1*r3 + r2*r2)
-    vsq5 = fp(2*r2*r3)
-    vsq6 = fp(r3*r3)
+    vsq0 = fpmul(r0,r0)
+    vsq1 = fp(2*fpmul(r0,r1))
+    vsq2 = fp(2*fpmul(r0,r2) + fpmul(r1,r1))
+    vsq3 = fp(2*fpmul(r0,r3) + 2*fpmul(r1,r2))
+    vsq4 = fp(2*fpmul(r1,r3) + fpmul(r2,r2))
+    vsq5 = fp(2*fpmul(r2,r3))
+    vsq6 = fpmul(r3,r3)
 
-    # f - V²: degree 5 (leading term from f is x⁵ coeff=1, from V² is vsq6·x⁶)
-    # But vsq6 = r3² where r3 comes from degree-3 remainder — could be nonzero.
-    # (f-V²) has degree ≤ 6; we need to divide by U (degree 4) to get degree ≤ 2.
-    # Polynomial long division of degree-6 by degree-4 monic:
-    # g = (f - V²):  g[i] for i=0..6
+    # f - V²
     g0 = fp(F_POLY[1] - vsq0)
     g1 = fp(F_POLY[2] - vsq1)
     g2 = fp(F_POLY[3] - vsq2)
@@ -618,18 +617,17 @@ function jac_add(D1::Div2, D2::Div2)::Div2
     g6 = fp(           - vsq6)   # degree-6 term (from V²)
 
     # Synthetic division of g (degree ≤ 6) by U (degree 4, monic).
-    # Quotient qq = [qq0, qq1, qq2] = U1 (the new u-polynomial, degree 2).
     qq2 = g6
-    rr5 = fp(g5 - qq2*ub3)
-    rr4 = fp(g4 - qq2*ub2)
-    rr3 = fp(g3 - qq2*ub1)
-    rr2 = fp(g2 - qq2*ub0)
+    rr5 = fp(g5 - fpmul(qq2,ub3))
+    rr4 = fp(g4 - fpmul(qq2,ub2))
+    rr3 = fp(g3 - fpmul(qq2,ub1))
+    rr2 = fp(g2 - fpmul(qq2,ub0))
 
     qq1 = rr5
-    rr4b = fp(rr4 - qq1*ub3)
-    rr3b = fp(rr3 - qq1*ub2)
-    rr2b = fp(rr2 - qq1*ub1)
-    rr1  = fp(g1  - qq1*ub0)
+    rr4b = fp(rr4 - fpmul(qq1,ub3))
+    rr3b = fp(rr3 - fpmul(qq1,ub2))
+    rr2b = fp(rr2 - fpmul(qq1,ub1))
+    rr1  = fp(g1  - fpmul(qq1,ub0))
 
     qq0 = rr4b
     # Remainder rr3c..rr0 not needed (zero when Cantor invariant holds).
@@ -638,28 +636,17 @@ function jac_add(D1::Div2, D2::Div2)::Div2
         return _jac_add_degenerate(D1, D2)
     end
     inv_u1lc = fpinv(qq2)
-    U1_0 = fp(qq0 * inv_u1lc)
-    U1_1 = fp(qq1 * inv_u1lc)
+    U1_0 = fpmul(qq0, inv_u1lc)
+    U1_1 = fpmul(qq1, inv_u1lc)
     U1 = Fp3(U1_0, U1_1, 1)
 
     # V1 = -V_raw mod U1.
-    # V_raw = r3·x³ + r2·x² + r1·x + r0  (degree ≤ 3).
-    # Reduce mod U1 (monic degree 2: x² ≡ -U1_1·x - U1_0):
-    # First reduce x³: x³ = x·x² ≡ x·(-U1_1·x - U1_0) = -U1_1·x² - U1_0·x
-    #                              ≡ -U1_1·(-U1_1·x-U1_0) - U1_0·x = (U1_1²-U1_0)·x + U1_1·U1_0
-    # So reduce V_raw of degree 3 to degree ≤ 1:
-    # Eliminate x³: subtract r3·x·(x² + U1_1·x + U1_0) → contributes -r3·U1_1 to x², -r3·U1_0 to x
-    # New x² coeff: r2 - r3*U1_1
-    # New x coeff:  r1 - r3*U1_0
-    # New x⁰ coeff: r0
-    s2 = fp(r2 - r3*U1_1)
-    s1_ = fp(r1 - r3*U1_0)
-    # s0 = r0
-    # Now degree ≤ 2: s2·x² + s1_·x + r0. Reduce x²:
-    # subtract s2·(x² + U1_1·x + U1_0):
-    t1 = fp(s1_ - s2*U1_1)
-    t0 = fp(r0  - s2*U1_0)
-    # V_raw mod U1 = t0 + t1·x.
+    # Reduce mod U1 (monic degree 2):
+    s2 = fp(r2 - fpmul(r3,U1_1))
+    s1_ = fp(r1 - fpmul(r3,U1_0))
+    # Now degree ≤ 2: reduce x²:
+    t1 = fp(s1_ - fpmul(s2,U1_1))
+    t0 = fp(r0  - fpmul(s2,U1_0))
     # V1 = -(V_raw mod U1) = -t0 - t1·x
     V1 = Fp2(fp(-t0), fp(-t1))
 
@@ -697,7 +684,8 @@ jac_mul(D::Div2, n::Integer) = jac_mul_raw(D, mod(n, ell))
 # p is still modest, so a table of O(p) Jacobian elements is practical.
 function jac_order_bsgs(D::Div2; verbose::Bool=false)::Int
     # Safe upper bound for the group order.
-    B = (isqrt(p) + 1)^4
+    # (isqrt(p)+1)^4 overflows Int64 for p > 2^15; use Int128.
+    B = Int(min(Int128(isqrt(p) + 1)^4, typemax(Int)))
     m = isqrt(B) + 1
 
     baby = Dict{Div2,Int}()
@@ -787,7 +775,7 @@ function jac_order_pollard_rho(
 )::Int
 
     if N == 0
-        N = (isqrt(p) + 1)^4
+        N = Int(min(Int128(isqrt(p) + 1)^4, typemax(Int)))
     end
 
     if max_iter == 0
@@ -1008,27 +996,27 @@ function jacobian_order_frobenius(; n1::Union{Int,Nothing}=nothing)::Int
         local_n2 = 0
 
         for b in b_lo:b_hi
-            bg   = fp(b * g_mod)
-            b2g  = fp(b * bg)
+            bg   = fpmul(b, g_mod)
+            b2g  = fpmul(b, bg)
             i1   = b
             i2_c = fp(2 * b)
 
             for a in 0:p-1
                 r1 = a
-                r2 = fp(a * a + b2g)
-                i2 = fp(a * i2_c)
-                r3 = fp(r2 * r1 + g_mod * i2 * i1)
-                i3 = fp(r2 * i1 + i2 * r1)
-                r5 = fp(r3 * r2 + g_mod * i3 * i2)
-                i5 = fp(r3 * i2 + i3 * r2)
-                fu = fp(r5 + 3r3 + 2r2 + 5r1 + 4)
-                fv = fp(i5 + 3i3 + 2i2 + 5i1)
+                r2 = fp(fpmul(a, a) + b2g)
+                i2 = fpmul(a, i2_c)
+                r3 = fp(fpmul(r2, r1) + fpmul(g_mod, fpmul(i2, i1)))
+                i3 = fp(fpmul(r2, i1) + fpmul(i2, r1))
+                r5 = fp(fpmul(r3, r2) + fpmul(g_mod, fpmul(i3, i2)))
+                i5 = fp(fpmul(r3, i2) + fpmul(i3, r2))
+                fu = fp(r5 + 3*r3 + 2*r2 + 5*r1 + 4)
+                fv = fp(i5 + 3*i3 + 2*i2 + 5*i1)
 
                 if fu == 0 && fv == 0
                     local_n2 += 2
                     continue
                 end
-                norm_f = fp(fu * fu - g_mod * fp(fv * fv))
+                norm_f = fp(fpmul(fu, fu) - fpmul(g_mod, fpmul(fv, fv)))
                 if norm_f != 0 && powermod(norm_f, (p - 1) ÷ 2, p) == 1
                     local_n2 += 4
                 end
@@ -1043,9 +1031,12 @@ function jacobian_order_frobenius(; n1::Union{Int,Nothing}=nothing)::Int
     # Recover Jacobian order from N1, N2
     ####################################################################
     s1 = n1_local - (p + 1)
-    s2 = (s1^2 - (n2 - (p^2 + 1))) ÷ 2
+    # Use Int128 arithmetic — s1 ~ O(p^{1/2}), p^2 overflows Int64 for p > 2^31
+    s1_128 = Int128(s1)
+    p_128  = Int128(p)
+    s2 = Int((s1_128^2 - (Int128(n2) - (p_128^2 + 1))) ÷ 2)
 
-    return 1 - s1 + s2 - p * s1 + p^2
+    return Int(1 - s1_128 + s2 - p_128 * s1_128 + p_128^2)
 end
 
 
@@ -1147,9 +1138,9 @@ mumford1(x0::Int, y0::Int) = Div2(Fp3(fp(-x0), 1, 0), Fp2(fp(y0), 0))
 function mumford2(x1::Int, y1::Int, x2::Int, y2::Int)::Div2
     x1 == x2 && throw(ArgumentError(
         "mumford2: x1 == x2 ($x1); use mumford_from_pts for the tangent/negation cases"))
-    u  = Int[fp(x1 * x2), fp(-(x1 + x2)), 1]
-    sl = fp((y2 - y1) * fpinv(x2 - x1))
-    Div2(u, ptrim(Int[fp(y1 - sl * x1), sl]))
+    u  = Int[fpmul(x1, x2), fp(-(x1 + x2)), 1]
+    sl = fpmul(fp(y2 - y1), fpinv(x2 - x1))
+    Div2(vec_to_fp3(u), vec_to_fp2(ptrim(Int[fp(y1 - fpmul(sl, x1)), sl])))
 end
 
 function mumford_from_pts(P::NTuple{2,Int}, Q::NTuple{2,Int})::Div2
@@ -1164,11 +1155,11 @@ end
 function u2_roots(u::Fp3)
     fp3_deg(u) != 2 && return nothing          # must be degree 2 (u[3]=1)
     c0, c1 = u[1], u[2]                       # u(x) = x² + c1·x + c0
-    disc   = fp(c1^2 - 4c0)
+    disc   = fp(fpmul(c1, c1) - 4*c0)
     sq     = sqrt_fp(disc)
     sq === nothing && return nothing
     inv2   = fpinv(2)
-    (fp((-c1 + sq) * inv2), fp((-c1 - sq) * inv2))
+    (fpmul(fp(-c1 + sq), inv2), fpmul(fp(-c1 - sq), inv2))
 end
 
 # ──────────────────────── Key generation ──────────────────────────────────────
@@ -1208,7 +1199,7 @@ function left_kernel(R::Matrix{Int})
         end
         s = powermod(aug[prow, col], ell - 2, ell)
         @inbounds for c in 1:lastcol
-            aug[prow, c] = mod(aug[prow, c] * s, ell)
+            aug[prow, c] = mod(Int128(aug[prow, c]) * s, ell)
         end
 
         # eliminate this column in all other rows
@@ -1217,7 +1208,7 @@ function left_kernel(R::Matrix{Int})
             f = aug[r, col]
             f == 0 && continue
             for c in 1:lastcol
-                aug[r, c] = mod(aug[r, c] - f * aug[prow, c], ell)
+                aug[r, c] = mod(Int128(aug[r, c]) - Int128(f) * aug[prow, c], ell)
             end
         end
 
@@ -1323,7 +1314,7 @@ function index_calculus(G::Div2, T::Div2;
     Σβ = mod(sum(Int128(γ[i]) * βvec[i] for i in 1:nrel), ell)
     Σβ == 0 && error("β-coefficient = 0 in kernel vector; collect more relations and retry")
 
-    k = mod(-Σα * powermod(Int(Σβ), ell - 2, ell), ell)
+    k = mod(fpmul(Int(-Σα), powermod(Int(Σβ), ell - 2, ell)), ell)
 
     # ── Verify ───────────────────────────────────────────────────────────────
     ok = jac_mul(G, k) == T

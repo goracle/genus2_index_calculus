@@ -37,17 +37,20 @@ const MAX_LP1_CONJ_ENTRIES = 500_000
 const N_CONJ_SHARDS = 64
 
 struct ShardedLP1Conj
-    shards ::NTuple{N_CONJ_SHARDS, Dict{NTuple{4,Int}, Tuple{Int,Int,Int,Int}}}
+    shards ::NTuple{N_CONJ_SHARDS, Dict{NTuple{4,Int}, Tuple{Int,BigInt,BigInt,Int}}}
     locks  ::NTuple{N_CONJ_SHARDS, ReentrantLock}
 end
+# Value tuple layout: (col_idx::Int, neg_al::BigInt, neg_be::BigInt, raw_steps::Int)
+# neg_al/neg_be are DLP exponents mod ell and can exceed 2^31 when p > 2^15.
 
 function ShardedLP1Conj()
-    shards = ntuple(_ -> Dict{NTuple{4,Int}, Tuple{Int,Int,Int,Int}}(), N_CONJ_SHARDS)
+    shards = ntuple(_ -> Dict{NTuple{4,Int}, Tuple{Int,BigInt,BigInt,Int}}(), N_CONJ_SHARDS)
     locks  = ntuple(_ -> ReentrantLock(), N_CONJ_SHARDS)
     ShardedLP1Conj(shards, locks)
 end
 
 # Map a Mumford 4-tuple key to its shard index (1-based).
+# The key holds F_p coordinates (plain Int, always < p < 2^63 on 64-bit Julia).
 @inline function conj_shard_idx(key::NTuple{4,Int})
     h = key[1] ⊻ key[2] ⊻ key[3] ⊻ key[4]
     (h & (N_CONJ_SHARDS - 1)) + 1

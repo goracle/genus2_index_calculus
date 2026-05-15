@@ -164,8 +164,8 @@ function lp2c_path_to_root(g::LP2ConjGraph, start::LPKey, ell::Int)
             nv = get(acc, j, 0) + sign_node * v
             nv == 0 ? delete!(acc, j) : (acc[j] = nv)
         end
-        alpha     = mod(alpha + sign_node * node.edge_alpha, ell)
-        beta      = mod(beta  + sign_node * node.edge_beta,  ell)
+        alpha     = Int(mod(Int128(alpha) + sign_node * Int128(node.edge_alpha), ell))
+        beta      = Int(mod(Int128(beta)  + sign_node * Int128(node.edge_beta),  ell))
         sign_node = -sign_node
         cur       = node.parent::LPKey
     end
@@ -242,8 +242,8 @@ function lp2c_insert_edge!(g::LP2ConjGraph,
             lp2c_accumulate_pairs!(odd_row, pathR.row, -s)
             lp2c_accumulate_dict!(odd_row, fb_row, s)
 
-            odd_alpha = mod(s * (pathL.alpha + pathR.alpha - alpha), ell)
-            odd_beta  = mod(s * (pathL.beta  + pathR.beta  - beta),  ell)
+            odd_alpha = Int(mod(s * (Int128(pathL.alpha) + pathR.alpha - alpha), ell))
+            odd_beta  = Int(mod(s * (Int128(pathL.beta)  + pathR.beta  - beta),  ell))
 
             if length(odd_row) > MAX_LP2_ROW_WEIGHT
                 g.n_weight_pruned += 1
@@ -264,8 +264,8 @@ function lp2c_insert_edge!(g::LP2ConjGraph,
             return nothing
         end
 
-        combined_alpha = mod(pathL.alpha + pathR.alpha - alpha, ell)
-        combined_beta  = mod(pathL.beta  + pathR.beta  - beta,  ell)
+        combined_alpha = Int(mod(Int128(pathL.alpha) + pathR.alpha - alpha, ell))
+        combined_beta  = Int(mod(Int128(pathL.beta)  + pathR.beta  - beta,  ell))
 
         if isempty(combined) || (combined_alpha == 0 && combined_beta == 0)
             return nothing

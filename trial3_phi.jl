@@ -29,8 +29,8 @@
 
 function check_relation_principal(
         row        ::Dict{Int,Int},
-        al         ::Int,
-        be         ::Int,
+        al         ::BigInt,
+        be         ::BigInt,
         alpha_name ::String,   # label for the alpha coefficient (diagnostic)
         fb         ::Vector{NTuple{2,Int}},
         G          ::Div2,
@@ -66,8 +66,8 @@ end
 function check_lp1_stored(
         lp_pt  ::NTuple{2,Int},
         row    ::Dict{Int,Int},
-        neg_al ::Int,
-        neg_be ::Int,
+        neg_al ::BigInt,
+        neg_be ::BigInt,
         fb     ::Vector{NTuple{2,Int}},
         G      ::Div2,
         T      ::Div2;
@@ -120,13 +120,13 @@ end
 function build_phi_mumford(px::Int, py::Int,
                            u0::Int, u1::Int,
                            v0::Int, v1::Int)::Union{NTuple{4,Int}, Nothing}
-    upx = fp(fp(px * px) + fp(u1 * px) + u0)
+    upx = fp(fpmul(px, px) + fpmul(u1, px) + u0)
     upx == 0 && return nothing   # px is a root of D — caller should filter
 
-    numer = fp(fp(v1 * px) + v0 - py)
-    a = fp(numer * fpinv(upx))
-    b = fp(fp(a * u1) - v1)
-    c = fp(fp(a * u0) - v0)
+    numer = fp(fpmul(v1, px) + v0 - py)
+    a = fpmul(numer, fpinv(upx))
+    b = fp(fpmul(a, u1) - v1)
+    c = fp(fpmul(a, u0) - v0)
     return (a, b, c, 1)
 end
 
@@ -155,11 +155,11 @@ function phi_residual_mumford(a::Int, b::Int, c::Int,
                                    Tuple{Nothing, Nothing, NTuple{4,Int}},
                                    Nothing}
     # --- Build N(x) = (a·x²+b·x+c)² - f(x)  (coefficients ascending) ---
-    N0 = fp(c*c)
-    N1 = fp(2*b*c)
-    N2 = fp(b*b + 2*a*c)
-    N3 = fp(2*a*b)
-    N4 = fp(a*a)
+    N0 = fpmul(c,c)
+    N1 = fp(2*fpmul(b,c))
+    N2 = fp(fpmul(b,b) + 2*fpmul(a,c))
+    N3 = fp(2*fpmul(a,b))
+    N4 = fpmul(a,a)
     # f(x) = x^5 + F_POLY[4]·x^3 + F_POLY[3]·x^2 + F_POLY[2]·x + F_POLY[1]
     # F_POLY[5]=0, F_POLY[6]=1 (ascending indexing, leading coeff 1)
     N = (fp(N0 - F_POLY[1]),
@@ -171,45 +171,36 @@ function phi_residual_mumford(a::Int, b::Int, c::Int,
 
     # --- Step 1: divide N(x) by (x - px) via descending Horner ---
     q4_4 = N[6]
-    q4_3 = fp(N[5] + q4_4*px)
-    q4_2 = fp(N[4] + q4_3*px)
-    q4_1 = fp(N[3] + q4_2*px)
-    q4_0 = fp(N[2] + q4_1*px)
-    rem1  = fp(N[1] + q4_0*px)
+    q4_3 = fp(N[5] + fpmul(q4_4,px))
+    q4_2 = fp(N[4] + fpmul(q4_3,px))
+    q4_1 = fp(N[3] + fpmul(q4_2,px))
+    q4_0 = fp(N[2] + fpmul(q4_1,px))
+    rem1  = fp(N[1] + fpmul(q4_0,px))
     rem1 != 0 && return nothing   # px not a root — upstream bug if this fires
 
     # --- Step 2: divide Q4(x) = q4_4·x^4+…+q4_0 by u(x) = x²+u1·x+u0 ---
-    # Long division of degree-4 by monic degree-2, three reduction steps:
-    s2  = q4_4                    # leading quotient coeff (x^2 term)
-    r3  = fp(q4_3 - s2*u1)
-    r2  = fp(q4_2 - s2*u0)
-    s1  = r3                      # next quotient coeff (x^1 term)
-    r2b = fp(r2  - s1*u1)
-    r1  = fp(q4_1 - s1*u0)
-    s0  = r2b                     # constant quotient coeff
-    # Remainder should be zero — nonzero means D's support is not in zero(φ)
-    res1 = fp(r1  - s0*u1)
-    res0 = fp(q4_0 - s0*u0)
+    s2  = q4_4
+    r3  = fp(q4_3 - fpmul(s2,u1))
+    r2  = fp(q4_2 - fpmul(s2,u0))
+    s1  = r3
+    r2b = fp(r2  - fpmul(s1,u1))
+    r1  = fp(q4_1 - fpmul(s1,u0))
+    s0  = r2b
+    res1 = fp(r1  - fpmul(s0,u1))
+    res0 = fp(q4_0 - fpmul(s0,u0))
     (res0 != 0 || res1 != 0) && return nothing
 
     # --- Make quotient s(x) = s2·x²+s1·x+s0 monic ---
-    # s2 = q4_4 = N[6] = -1 (mod p), so inv(s2) = p-1 = -1 mod p.
     inv_s2 = fpinv(s2)
-    c1_rs  = fp(s1 * inv_s2)   # monic x-coeff of u_RS
-    c0_rs  = fp(s0 * inv_s2)   # monic constant of u_RS
+    c1_rs  = fpmul(s1, inv_s2)
+    c0_rs  = fpmul(s0, inv_s2)
 
     # --- Compute v_RS(x) = -(a·x²+b·x+c) mod u_RS(x) unconditionally ---
-    # Reduce x² → -c1_rs·x - c0_rs:
-    #   v_RS(x) = a·(c1_rs·x + c0_rs) - b·x - c
-    #           = (a·c1_rs - b)·x + (a·c0_rs - c)
-    # Valid for all root configurations (split or conjugate) because the
-    # reduction is a pure polynomial identity — it does not depend on whether
-    # u_RS splits over F_p or F_p².
-    v1_rs = fp(fp(a * c1_rs) - b)
-    v0_rs = fp(fp(a * c0_rs) - c)
+    v1_rs = fp(fpmul(a, c1_rs) - b)
+    v0_rs = fp(fpmul(a, c0_rs) - c)
 
     # --- Try to split u_RS over F_p ---
-    disc = fp(fp(c1_rs * c1_rs) - fp(4 * c0_rs))
+    disc = fp(fpmul(c1_rs, c1_rs) - 4*c0_rs)
     sq   = sqrt_fp(disc)
 
     if sq === nothing
@@ -221,12 +212,12 @@ function phi_residual_mumford(a::Int, b::Int, c::Int,
     # Two F_p-rational roots.  Also return the canonical Mumford key so the
     # caller can use a single unified lookup table regardless of split/conjugate.
     inv2 = fpinv(2)
-    xR   = fp(fp(p - c1_rs + sq) * inv2)
-    xS   = fp(fp(p - c1_rs - sq) * inv2)
+    xR   = fpmul(fp(-c1_rs + sq), inv2)
+    xS   = fpmul(fp(-c1_rs - sq), inv2)
 
     # Recover y: φ(x,y)=0 with d=1 → y = -(a·x²+b·x+c).
-    yR = fp(p - fp(fp(a * fp(xR*xR)) + fp(b*xR) + c))
-    yS = fp(p - fp(fp(a * fp(xS*xS)) + fp(b*xS) + c))
+    yR = fp(-fpmul(a, fpmul(xR,xR)) - fpmul(b,xR) - c)
+    yS = fp(-fpmul(a, fpmul(xS,xS)) - fpmul(b,xS) - c)
 
     return ((xR, yR), (xS, yS), (c0_rs, c1_rs, v0_rs, v1_rs))
 end

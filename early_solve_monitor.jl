@@ -239,7 +239,10 @@ function _incremental_rank(rel_rows   ::Vector{Dict{Int,Int}},
         @warn "_incremental_rank: Nemo failed ($e), using pure-Julia"
     end
 
-    # Pure-Julia fallback: row-echelon on a dense (m2 × n2) matrix.
+    # Pure-Julia fallback: row-echelon on a dense (m2 × n2) matrix over GF(ell).
+    # All entries are kept in [0, ell-1] as plain Int (always < 2^63 on 64-bit Julia).
+    # Products are computed via widemul → Int128 to avoid overflow when ell > 2^31.
+    ell128 = Int128(ell)
     A    = zeros(Int, m2, n2)
     for (i, r) in enumerate(rows)
         for (j, v) in r
@@ -256,12 +259,18 @@ function _incremental_rank(rel_rows   ::Vector{Dict{Int,Int}},
         end
         piv == 0 && continue
         piv != prow && (A[[prow, piv], :] = A[[piv, prow], :])
-        inv_v = powermod(A[prow, col], ell - 2, ell)
-        for c in col:n2; A[prow, c] = mod(A[prow, c] * inv_v, ell); end
+        # powermod works correctly on BigInt to avoid overflow in the exponentiation
+        inv_v = Int(powermod(BigInt(A[prow, col]), ell - 2, ell))
+        for c in col:n2
+            A[prow, c] = Int(mod(widemul(A[prow, c], inv_v), ell128))
+        end
         for r in 1:m2
             r == prow && continue
             f = A[r, col]; f == 0 && continue
-            for c in col:n2; A[r, c] = mod(A[r, c] - f * A[prow, c], ell); end
+            for c in col:n2
+                # Both f and A[prow,c] are in [0, ell-1]; widemul gives exact Int128.
+                A[r, c] = Int(mod(Int128(A[r, c]) - widemul(f, A[prow, c]), ell128))
+            end
         end
         rk   += 1
         prow += 1
@@ -302,8 +311,8 @@ end
 # ---------------------------------------------------------------------------
 function monitor_check(mon       ::EarlySolveMonitor,
                         rel_rows  ::Vector{Dict{Int,Int}},
-                        alpha_vec ::Vector{Int},
-                        beta_vec  ::Vector{Int};
+                        alpha_vec ::Vector{BigInt},
+                        beta_vec  ::Vector{BigInt};
                         force_rank::Bool = false,
                         verbose   ::Bool = true)::MonitorSignal
 

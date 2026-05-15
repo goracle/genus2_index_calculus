@@ -50,11 +50,11 @@
 # ---------------------------------------------------------------------------
 function try_lp1_doubled_cross_close!(
         pt             ::NTuple{2,Int},
-        shared_lp1     ::Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int, Int}},
-        shared_lp_doubled::Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int}},
-        ell            ::Int,
-        alpha_vec      ::Vector{Int},
-        beta_vec       ::Vector{Int},
+        shared_lp1     ::Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, BigInt, BigInt, Int}},
+        shared_lp_doubled::Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, BigInt, BigInt}},
+        ell            ::BigInt,
+        alpha_vec      ::Vector{BigInt},
+        beta_vec       ::Vector{BigInt},
         rel_rows       ::Vector{Dict{Int,Int}},
         rank_growth    ::Vector{Tuple{Int,Int}},
         raw_steps      ::Int,
@@ -97,7 +97,7 @@ function try_lp1_doubled_cross_close!(
             @printf("  Divisor Sum (LHS): %s\n", string(D_sum))
             @printf("  Target (RHS):      %s\n", string(RHS))
             @printf("  Residual (LHS-RHS):%s\n", string(jac_sub(D_sum, RHS)))
-            @printf("  Coefficients: al=%d, be=%d, weight=%d\n", c_al, c_be, length(combined))
+            @printf("  Coefficients: al=%s, be=%s, weight=%d\n", string(c_al), string(c_be), length(combined))
             @printf("  row_1 (%d terms): %s\n", length(row_1), string(row_1))
             @printf("  row_d (%d terms): %s\n", length(row_d), string(row_d))
             @assert false "try_lp1_doubled_cross_close!: principal divisor check failed"
@@ -149,13 +149,13 @@ end
 
 # --- 0-LP: all three atoms are in the factor base → emit immediately. ---
 @inline function emit_0lp!(fb_row     ::Dict{Int,Int},
-                           neg_al     ::Int,
-                           neg_be     ::Int,
+                           neg_al     ::BigInt,
+                           neg_be     ::BigInt,
                            fb         ::Vector{NTuple{2,Int}},
                            G          ::Div2,
                            T          ::Div2,
-                           alpha_vec  ::Vector{Int},
-                           beta_vec   ::Vector{Int},
+                           alpha_vec  ::Vector{BigInt},
+                           beta_vec   ::Vector{BigInt},
                            rel_rows   ::Vector{Dict{Int,Int}},
                            rel_counter::Threads.Atomic{Int},
                            ort        ::OnlineRankTracker,
@@ -189,24 +189,24 @@ end
 @inline function handle_1lp_affine!(
         lp_pt          ::NTuple{2,Int},
         fb_row         ::Dict{Int,Int},
-        al             ::Int,
-        be             ::Int,
-        neg_al         ::Int,
-        neg_be         ::Int,
-        ell            ::Int,
+        al             ::BigInt,
+        be             ::BigInt,
+        neg_al         ::BigInt,
+        neg_be         ::BigInt,
+        ell            ::BigInt,
         fb             ::Vector{NTuple{2,Int}},
         nF_cur         ::Int,
         G              ::Div2,
         T              ::Div2,
-        alpha_vec      ::Vector{Int},
-        beta_vec       ::Vector{Int},
+        alpha_vec      ::Vector{BigInt},
+        beta_vec       ::Vector{BigInt},
         rel_rows       ::Vector{Dict{Int,Int}},
         rel_counter    ::Threads.Atomic{Int},
         ort            ::OnlineRankTracker,
         s              ::WorkerStats,
-        shared_lp1     ::Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int, Int}},
+        shared_lp1     ::Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, BigInt, BigInt, Int}},
         shared_lp1_lock::ReentrantLock,
-        shared_lp_doubled::Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int}},
+        shared_lp_doubled::Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, BigInt, BigInt}},
         lp_col         ::LPResidualCollector,
         rank_growth    ::Vector{Tuple{Int,Int}},
         combined_scratch::Dict{Int,Int},
@@ -216,7 +216,7 @@ end
         S              ::Union{NTuple{2,Int},Nothing},
         P0             ::NTuple{2,Int})::NTuple{2,Int}
 
-    record_lp1!(lp_col, lp_pt, al, be, s.raw_steps)
+    record_lp1!(lp_col, lp_pt, Int(al), Int(be), s.raw_steps)
 
     closed = false
     lock(shared_lp1_lock)
@@ -289,15 +289,15 @@ end
 @inline function handle_1lp_conj!(
         lp_key         ::NTuple{4,Int},
         i0             ::Int,
-        neg_al         ::Int,
-        neg_be         ::Int,
-        ell            ::Int,
+        neg_al         ::BigInt,
+        neg_be         ::BigInt,
+        ell            ::BigInt,
         fb             ::Vector{NTuple{2,Int}},
         nF_cur         ::Int,
         G              ::Div2,
         T              ::Div2,
-        alpha_vec      ::Vector{Int},
-        beta_vec       ::Vector{Int},
+        alpha_vec      ::Vector{BigInt},
+        beta_vec       ::Vector{BigInt},
         rel_rows       ::Vector{Dict{Int,Int}},
         rel_counter    ::Threads.Atomic{Int},
         ort            ::OnlineRankTracker,
@@ -327,8 +327,8 @@ end
                     if !ok
                         @printf("[RS-CONJ-CLOSE DIAG tid=%d] i0=%d prev_col=%d\n",
                                 Threads.threadid(), i0, prev_col)
-                        @printf("[RS-CONJ-CLOSE DIAG]  neg_al=%d neg_be=%d prev_al=%d prev_be=%d\n",
-                                neg_al, neg_be, prev_al, prev_be)
+                        @printf("[RS-CONJ-CLOSE DIAG]  neg_al=%s neg_be=%s prev_al=%s prev_be=%s\n",
+                                string(neg_al), string(neg_be), string(prev_al), string(prev_be))
                         @printf("[RS-CONJ-CLOSE DIAG]  lp_key=(c0=%d,c1=%d,v0=%d,v1=%d) i0=%d\n",
                                 lp_key..., i0)
                     end
@@ -392,24 +392,24 @@ end
         S              ::NTuple{2,Int},
         P0             ::NTuple{2,Int},
         fb_row_scratch ::Dict{Int,Int},
-        neg_al         ::Int,
-        neg_be         ::Int,
-        ell            ::Int,
+        neg_al         ::BigInt,
+        neg_be         ::BigInt,
+        ell            ::BigInt,
         fb             ::Vector{NTuple{2,Int}},
         nF_cur         ::Int,
         G              ::Div2,
         T              ::Div2,
-        alpha_vec      ::Vector{Int},
-        beta_vec       ::Vector{Int},
+        alpha_vec      ::Vector{BigInt},
+        beta_vec       ::Vector{BigInt},
         rel_rows       ::Vector{Dict{Int,Int}},
         rel_counter    ::Threads.Atomic{Int},
         ort            ::OnlineRankTracker,
         s              ::WorkerStats,
-        shared_lp1     ::Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int, Int}},
+        shared_lp1     ::Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, BigInt, BigInt, Int}},
         shared_lp1_lock::ReentrantLock,
         shared_lp2     ::LP2Graph,
         shared_lp2_lock::ReentrantLock,
-        shared_lp_doubled::Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int}},
+        shared_lp_doubled::Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, BigInt, BigInt}},
         lp_col         ::LPResidualCollector,
         max_lp2_nodes  ::Int,
         rank_growth    ::Vector{Tuple{Int,Int}},
@@ -463,8 +463,8 @@ end
                     end
                     RHS = jac_add(jac_mul(G, α), jac_mul(T, β))
                     if !(jac_isid(jac_sub(D_sum, RHS)) || jac_isid(jac_add(D_sum, RHS)))
-                        @printf("[LP2-DIAG tid=%d] FAIL  alpha=%d beta=%d  row_weight=%d  root_signs=(%d,%d)  depths=(%d,%d)\n",
-                                Threads.threadid(), α, β, length(row),
+                        @printf("[LP2-DIAG tid=%d] FAIL  alpha=%s beta=%s  row_weight=%d  root_signs=(%d,%d)  depths=(%d,%d)\n",
+                                Threads.threadid(), string(α), string(β), length(row),
                                 emitted_rel.root_signs[1], emitted_rel.root_signs[2],
                                 emitted_rel.depths[1], emitted_rel.depths[2])
                         @printf("  lp2_a=%s  lp2_b=%s  i0=%d iR=%d iS=%d\n",
@@ -622,16 +622,16 @@ function phase2_worker(G               ::Div2,
                        fb              ::Vector{NTuple{2,Int}},
                        pt2idx          ::Dict{NTuple{2,Int},Int},
                        step_D          ::Vector{Div2},
-                       step_a          ::Vector{Int},
-                       step_b          ::Vector{Int},
+                       step_a          ::Vector{BigInt},
+                       step_b          ::Vector{BigInt},
                        rel_counter     ::Threads.Atomic{Int},
                        rel_target      ::Int,
                        step_cap        ::Int,
-                       shared_lp1      ::Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int, Int}},
+                       shared_lp1      ::Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, BigInt, BigInt, Int}},
                        shared_lp1_lock ::ReentrantLock,
                        shared_lp2      ::LP2Graph,
                        shared_lp2_lock ::ReentrantLock,
-                       shared_lp_doubled::Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int}},
+                       shared_lp_doubled::Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, BigInt, BigInt}},
                        shared_lp1_conj ::ShardedLP1Conj,
                        shared_lp2_conj ::LP2ConjGraph,
                        shared_lp2_conj_lock::ReentrantLock,
@@ -648,16 +648,19 @@ function phase2_worker(G               ::Div2,
     tid      = Threads.threadid()
     t_start  = time()
 
+    # ell as BigInt for all modular arithmetic on exponents.
+    ell_big = BigInt(ell)
+
     # --- Walk state ---
     cur_pt    = fb[rand(1:nF_cur)]
-    alpha_cur = rand(1:ell-1)
-    beta_cur  = rand(0:ell-1)
+    alpha_cur = BigInt(rand(1:ell-1))
+    beta_cur  = BigInt(rand(0:ell-1))
     D_cur     = jac_add(jac_mul(G, alpha_cur), jac_mul(T, beta_cur))
 
     # --- Per-thread relation accumulation ---
     hint = max(64, cld(rel_target, Threads.nthreads()) + 32)
-    alpha_vec = sizehint!(Int[], hint)
-    beta_vec  = sizehint!(Int[], hint)
+    alpha_vec = sizehint!(BigInt[], hint)
+    beta_vec  = sizehint!(BigInt[], hint)
     rel_rows  = sizehint!(Vector{Dict{Int,Int}}(), hint)
 
     # --- Counters (collected in WorkerStats at the end) ---
@@ -668,7 +671,7 @@ function phase2_worker(G               ::Div2,
     combined_scratch = sizehint!(Dict{Int,Int}(), 8)
 
     # --- Diagnostics ---
-    sample_rels  = Vector{Tuple{Div2,Dict{Int,Int},Int,Int,NTuple{2,Int},NTuple{2,Int},NTuple{2,Int}}}()
+    sample_rels  = Vector{Tuple{Div2,Dict{Int,Int},BigInt,BigInt,NTuple{2,Int},NTuple{2,Int},NTuple{2,Int}}}()
     rank_growth  = Tuple{Int,Int}[]
     t_last_report = time()
     report_interval_secs = 30.0
@@ -686,8 +689,8 @@ function phase2_worker(G               ::Div2,
         # --- Take a random precomputed step ---
         si        = rand(1:N_STEPS)
         D_cur     = jac_add(D_cur, step_D[si])
-        alpha_cur = mod(alpha_cur + step_a[si], ell)
-        beta_cur  = mod(beta_cur  + step_b[si], ell)
+        alpha_cur = mod(alpha_cur + step_a[si], ell_big)
+        beta_cur  = mod(beta_cur  + step_b[si], ell_big)
 
         # --- Gate 1: D_cur must be a degree-2 divisor (generic Jacobian element) ---
         fp3_deg(D_cur.u) != 2 && continue
@@ -722,8 +725,8 @@ function phase2_worker(G               ::Div2,
 
         al     = alpha_cur
         be     = beta_cur
-        neg_al = mod(ell - al, ell)
-        neg_be = mod(ell - be, ell)
+        neg_al = mod(ell_big - al, ell_big)
+        neg_be = mod(ell_big - be, ell_big)
         P0     = cur_pt
         i0     = get(pt2idx, P0, 0)
 
@@ -888,22 +891,22 @@ end
 @inline function handle_2lp_conj!(
         P0                ::NTuple{2,Int},
         lp_key            ::NTuple{4,Int},
-        neg_al            ::Int,
-        neg_be            ::Int,
-        ell               ::Int,
+        neg_al            ::BigInt,
+        neg_be            ::BigInt,
+        ell               ::BigInt,
         fb                ::Vector{NTuple{2,Int}},
         nF_cur            ::Int,
         G                 ::Div2,
         T                 ::Div2,
-        alpha_vec         ::Vector{Int},
-        beta_vec          ::Vector{Int},
+        alpha_vec         ::Vector{BigInt},
+        beta_vec          ::Vector{BigInt},
         rel_rows          ::Vector{Dict{Int,Int}},
         rel_counter       ::Threads.Atomic{Int},
         ort               ::OnlineRankTracker,
         s                 ::WorkerStats,
-        shared_lp1        ::Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int, Int}},
+        shared_lp1        ::Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, BigInt, BigInt, Int}},
         shared_lp1_lock   ::ReentrantLock,
-        shared_lp_doubled ::Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int}},
+        shared_lp_doubled ::Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, BigInt, BigInt}},
         shared_lp2_conj   ::LP2ConjGraph,
         shared_lp2_conj_lock::ReentrantLock,
         max_lp2_conj_nodes::Int,

@@ -74,7 +74,7 @@ function left_kernel_all(rel_rows::Vector{Dict{Int,Int}}, nF::Int, ell::Int)::Ve
 
         inv_val = powermod(aug[prow, col], ell - 2, ell)
         for c in 1:(m + n)
-            aug[prow, c] = mod(aug[prow, c] * inv_val, ell)
+            aug[prow, c] = mod(Int128(aug[prow, c]) * inv_val, ell)
         end
 
         for r in 1:m
@@ -82,7 +82,7 @@ function left_kernel_all(rel_rows::Vector{Dict{Int,Int}}, nF::Int, ell::Int)::Ve
             factor = aug[r, col]
             factor == 0 && continue
             for c in 1:(m + n)
-                aug[r, c] = mod(aug[r, c] - factor * aug[prow, c], ell)
+                aug[r, c] = mod(Int128(aug[r, c]) - Int128(factor) * aug[prow, c], ell)
             end
         end
 
@@ -139,9 +139,9 @@ function _ort_reduce!(row::Dict{Int,Int}, basis::Dict{Int, Dict{Int,Int}}, ell::
         v == 0 && continue
         # row -= v * basis_row  (basis_row[pivot_col] == 1)
         for (c, bv) in basis_row
-            nv = mod(get(row, c, 0) - v * bv, ell)
+            nv = mod(Int128(get(row, c, 0)) - Int128(v) * bv, ell)
             if nv == 0; delete!(row, c)
-            else;       row[c] = nv
+            else;       row[c] = Int(nv)
             end
         end
     end
@@ -165,16 +165,16 @@ function ort_add_row!(ort::OnlineRankTracker, rel::Dict{Int,Int})::Bool
         pivot_col = minimum(keys(row))
         inv_v     = powermod(row[pivot_col], ell - 2, ell)
         for c in keys(row)
-            row[c] = mod(row[c] * inv_v, ell)
+            row[c] = Int(mod(Int128(row[c]) * inv_v, ell))
         end
         # Back-reduce existing basis rows against the new pivot.
         for (pc, brow) in ort.basis
             v = get(brow, pivot_col, 0)
             v == 0 && continue
             for (c, rv) in row
-                nv = mod(get(brow, c, 0) - v * rv, ell)
+                nv = mod(Int128(get(brow, c, 0)) - Int128(v) * rv, ell)
                 if nv == 0; delete!(brow, c)
-                else;       brow[c] = nv
+                else;       brow[c] = Int(nv)
                 end
             end
         end

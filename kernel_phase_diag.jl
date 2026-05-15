@@ -62,7 +62,7 @@ end
 
 function flatten_rel_rows(rel_rows::Vector{Dict{Int,Int}},
                           nF::Int,
-                          ell_val::Int)::FlatRelRows
+                          ell_val::Integer)::FlatRelRows
     nrel = length(rel_rows)
     nrel == 0 && throw(ArgumentError("flatten_rel_rows: rel_rows is empty"))
     ell_val < 2 && throw(ArgumentError("flatten_rel_rows: ell_val=$ell_val < 2"))
@@ -162,7 +162,7 @@ end
 
 @inline function prefix_has_kernel(flat::FlatRelRows,
                                     nF::Int,
-                                    ell_val::Int,
+                                    ell_val::Integer,
                                     m::Int,
                                     F,
                                     entries::Vector{Int})::Bool
@@ -181,7 +181,7 @@ end
 # ---------------------------------------------------------------------------
 function betti_trace(flat::FlatRelRows,
                      nF       ::Int,
-                     ell_val  ::Int;
+                     ell_val::Integer;
                      step     ::Int = 1,
                      verbose  ::Bool = false)::Tuple{Vector{Tuple{Int,Int}}, Union{Int,Nothing}}
 
@@ -222,7 +222,7 @@ end
 
 function betti_trace(rel_rows::Vector{Dict{Int,Int}},
                      nF       ::Int,
-                     ell_val  ::Int;
+                     ell_val::Integer;
                      step     ::Int = 1,
                      verbose  ::Bool = false)::Tuple{Vector{Tuple{Int,Int}}, Union{Int,Nothing}}
     flat = flatten_rel_rows(rel_rows, nF, ell_val)
@@ -239,7 +239,7 @@ end
 # ---------------------------------------------------------------------------
 function find_first_kernel_row(flat::FlatRelRows,
                                nF        ::Int,
-                               ell_val   ::Int)::Union{Int, Nothing}
+                               ell_val::Integer)::Union{Int, Nothing}
 
     m = nrows(flat)
     m == 0 && throw(ArgumentError("find_first_kernel_row: rel_rows is empty"))
@@ -277,7 +277,7 @@ end
 
 function find_first_kernel_row(rel_rows::Vector{Dict{Int,Int}},
                                nF        ::Int,
-                               ell_val   ::Int)::Union{Int, Nothing}
+                               ell_val::Integer)::Union{Int, Nothing}
     flat = flatten_rel_rows(rel_rows, nF, ell_val)
     return find_first_kernel_row(flat, nF, ell_val)
 end
@@ -288,8 +288,8 @@ end
 # ---------------------------------------------------------------------------
 function first_kernel_vector(flat::FlatRelRows,
                              nF      ::Int,
-                             ell_val ::Int,
-                             m       ::Int)::Union{Vector{Int}, Nothing}
+                             ell_val::Integer,
+                             m       ::Int)::Union{Vector{Int}, Vector{BigInt}, Nothing}
 
     m < 1 && throw(ArgumentError("first_kernel_vector: m=$m < 1"))
     m > nrows(flat) && throw(ArgumentError(
@@ -304,18 +304,24 @@ function first_kernel_vector(flat::FlatRelRows,
     nu, K = Nemo.nullspace(Mt)
     nu < 1 && return nothing
 
-    γ = Vector{Int}(undef, m)
+    # Lift kernel vector from GF(ell) to BigInt; entries are in [0, ell-1].
+    # We use BigInt here so the vector is safe for any ell (including ell > 2^31).
+    γ = Vector{BigInt}(undef, m)
     @inbounds for r in 1:m
-        γ[r] = Int(Nemo.lift(Nemo.ZZ, K[r, 1]))
+        γ[r] = BigInt(Nemo.lift(Nemo.ZZ, K[r, 1]))
     end
     any(!=(0), γ) || return nothing
+    # Convert to Int if ell fits in Int64 (common case — avoids BigInt overhead downstream).
+    if ell_val <= typemax(Int)
+        return Int.(γ)
+    end
     return γ
 end
 
 function first_kernel_vector(rel_rows::Vector{Dict{Int,Int}},
                              nF      ::Int,
-                             ell_val ::Int,
-                             m       ::Int)::Union{Vector{Int}, Nothing}
+                             ell_val::Integer,
+                             m       ::Int)::Union{Vector{Int}, Vector{BigInt}, Nothing}
     flat = flatten_rel_rows(rel_rows, nF, ell_val)
     return first_kernel_vector(flat, nF, ell_val, m)
 end
@@ -404,10 +410,10 @@ Returns a KernelPhaseDiag named tuple.
 """
 function kernel_phase_instrumentation(
         rel_rows  ::Vector{Dict{Int,Int}},
-        alpha_vec ::Vector{Int},
-        beta_vec  ::Vector{Int},
+        alpha_vec ::Vector{<:Integer},
+        beta_vec  ::Vector{<:Integer},
         nF        ::Int,
-        ell_val   ::Int;
+        ell_val::Integer;
         G                 = nothing,
         T                 = nothing,
         k_true            = nothing,
@@ -467,28 +473,30 @@ function kernel_phase_instrumentation(
             x != 0 && (gamma_support_size += 1)
         end
 
-        ell128 = Int128(ell_val)
-        Sa = Int128(0)
-        Sb = Int128(0)
+        # Accumulate Σ γᵢ·αᵢ and Σ γᵢ·βᵢ mod ell using BigInt to handle ell > 2^31.
+        ell_big = BigInt(ell_val)
+        Sa = BigInt(0)
+        Sb = BigInt(0)
         @inbounds for i in 1:T_ker
-            Sa = mod(Sa + Int128(γ[i]) * Int128(alpha_vec[i]), ell128)
-            Sb = mod(Sb + Int128(γ[i]) * Int128(beta_vec[i]), ell128)
+            Sa = mod(Sa + BigInt(γ[i]) * BigInt(alpha_vec[i]), ell_big)
+            Sb = mod(Sb + BigInt(γ[i]) * BigInt(beta_vec[i]), ell_big)
         end
-        gamma_alpha_proj = Int(Sa)
-        gamma_beta_proj  = Int(Sb)
+        # Store as Int when safe (ell fits in Int64 and result is in [0, ell-1]).
+        gamma_alpha_proj = ell_val <= typemax(Int) ? Int(Sa) : Sa
+        gamma_beta_proj  = ell_val <= typemax(Int) ? Int(Sb) : Sb
         gamma_solvable   = (Sb != 0)
 
         verbose && begin
             @printf("  Kernel vector (at m=%d):\n", T_ker)
             @printf("    support size:    %d  (of %d rows)\n", gamma_support_size, T_ker)
-            @printf("    α-projection:    %d  (Σγᵢαᵢ mod ell)\n", gamma_alpha_proj)
-            @printf("    β-projection:    %d  (Σγᵢβᵢ mod ell)\n", gamma_beta_proj)
+            @printf("    α-projection:    %s  (Σγᵢαᵢ mod ell)\n", string(gamma_alpha_proj))
+            @printf("    β-projection:    %s  (Σγᵢβᵢ mod ell)\n", string(gamma_beta_proj))
             @printf("    solvable (β≠0):  %s\n", string(gamma_solvable))
         end
 
-        # k recovery
+        # k recovery: k = −Sa · Sb⁻¹ mod ell
         if gamma_solvable && G !== nothing && T !== nothing
-            k_candidate = mod(-Int(Sa) * powermod(Int(Sb), ell_val - 2, ell_val), ell_val)
+            k_candidate = Int(mod(-Sa * powermod(Sb, ell_big - 2, ell_big), ell_big))
             k_correct   = jac_mul(G, k_candidate) == T
             verbose && @printf("    k_candidate:     %d   k·G==T: %s%s\n",
                                k_candidate, string(k_correct),
@@ -673,7 +681,7 @@ function multi_trial_delta_run(
         G, T,
         n_trials ::Int;
         fb_size  ::Int  = 200,
-        ell_val  ::Int  = ell,
+        ell_val::Integer  = ell,
         verbose_walk::Bool = false,
         verbose_diag::Bool = true)
 

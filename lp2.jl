@@ -349,8 +349,8 @@ function lp2_path_to_root(g::LP2Graph, start::NTuple{2,Int}, ell::Int)
         end
 
         row   = smallrow_merge(row, node.edge_row, sign_node)
-        alpha = mod(alpha + sign_node * node.edge_alpha, ell)
-        beta  = mod(beta  + sign_node * node.edge_beta,  ell)
+        alpha = Int(mod(Int128(alpha) + sign_node * Int128(node.edge_alpha), ell))
+        beta  = Int(mod(Int128(beta)  + sign_node * Int128(node.edge_beta),  ell))
 
         sign_node = -sign_node
         cur = node.parent
@@ -440,8 +440,8 @@ function lp2_insert_edge!(g::LP2Graph,
             smallrow_subtract_into_dict!(odd_row, edge_sr)
 
             # Extract the proper positive coefficients for the RHS
-            odd_alpha = mod(pathL.alpha + pathR.alpha - alpha, ell)
-            odd_beta  = mod(pathL.beta  + pathR.beta  - beta,  ell)
+            odd_alpha = Int(mod(Int128(pathL.alpha) + pathR.alpha - alpha, ell))
+            odd_beta  = Int(mod(Int128(pathL.beta)  + pathR.beta  - beta,  ell))
 
             # Normalize to +2*atom(root) so the stored invariant is always
             #   2*atom(root) + row = alpha*G + beta*T.
@@ -492,8 +492,8 @@ function lp2_insert_edge!(g::LP2Graph,
             return nothing
         end
 
-        combined_alpha = mod(pathL.alpha + pathR.alpha - alpha, ell)
-        combined_beta  = mod(pathL.beta  + pathR.beta  - beta,  ell)
+        combined_alpha = Int(mod(Int128(pathL.alpha) + pathR.alpha - alpha, ell))
+        combined_beta  = Int(mod(Int128(pathL.beta)  + pathR.beta  - beta,  ell))
 
         if isempty(combined) || (combined_alpha == 0 && combined_beta == 0)
             return nothing
@@ -609,8 +609,8 @@ function lp2_insert_edge!(g::LP2Graph,
     comp_row = smallrow_merge(comp_row, src_path.row, sig)
     comp_row = smallrow_merge(comp_row, dst_path.row, sig)
 
-    comp_alpha = mod(sig * (src_path.alpha + dst_path.alpha - alpha), ell)
-    comp_beta  = mod(sig * (src_path.beta  + dst_path.beta  - beta),  ell)
+    comp_alpha = Int(mod(sig * (Int128(src_path.alpha) + dst_path.alpha - alpha), ell))
+    comp_beta  = Int(mod(sig * (Int128(src_path.beta)  + dst_path.beta  - beta),  ell))
 
     if comp_row.len > MAX_LP2_ROW_WEIGHT
         g.n_weight_pruned += 1

@@ -67,7 +67,7 @@ ell = largest prime factor and cofactor h = N/ell.
 Sage uses Kedlaya's p-adic algorithm (hypellfrob) — O(p^{1/2} polylog p) —
 so this is fast even for p ~ 10^6.
 """
-function frobenius_jacobian_order()::Tuple{Int,Int,Int}
+function frobenius_jacobian_order()::Tuple{BigInt,BigInt,BigInt}
     sage_script = """
 p = $(p)
 F = GF(p)
@@ -79,17 +79,17 @@ N = ZZ(chi(1))
 print(int(N))
 """
     raw = readchomp(`sage -c $sage_script`)
-    N   = Int(parse(BigInt, strip(raw)))
-    fac = Oscar.factor(Oscar.ZZ(N))
-    ell = maximum(Int(q) for (q, _) in fac)
-    h   = N ÷ ell
-    return N, ell, h
+    N_big   = parse(BigInt, strip(raw))
+    fac     = Oscar.factor(Oscar.ZZ(N_big))
+    ell_big = BigInt(maximum(q for (q, _) in fac))
+    h_big   = N_big ÷ ell_big
+    return N_big, ell_big, h_big
 end
 
 # ---------------------------------------------------------------------------
 #  Generator bootstrap via exact Frobenius order
 # ---------------------------------------------------------------------------
-function frobenius_find_ell_generator(pts::Vector{NTuple{2,Int}})::Tuple{Div2,Int}
+function frobenius_find_ell_generator(pts::Vector{NTuple{2,Int}})::Tuple{Div2,BigInt}
     t0 = time()
     print("  Computing #J via Sage frobenius_polynomial... ")
     flush(stdout)
@@ -144,8 +144,8 @@ function phase1_walk(G::Div2, T::Div2, fb_cap::Int; verbose::Bool = true)
     fb     = sizehint!(NTuple{2,Int}[], fb_cap)
     pt2idx = sizehint!(Dict{NTuple{2,Int},Int}(), fb_cap)
 
-    alpha_vec = Int[]
-    beta_vec  = Int[]
+    alpha_vec = BigInt[]
+    beta_vec  = BigInt[]
     rel_rows  = Vector{Dict{Int,Int}}()
 
     function maybe_add!(pt::NTuple{2,Int})
@@ -284,11 +284,11 @@ function index_calculus_walk(G::Div2, T::Div2;
     t_step_build = time()
     N_STEPS = 256
     step_D  = Vector{Div2}(undef, N_STEPS)
-    step_a  = zeros(Int, N_STEPS)
-    step_b  = zeros(Int, N_STEPS)
+    step_a  = Vector{BigInt}(undef, N_STEPS)
+    step_b  = Vector{BigInt}(undef, N_STEPS)
     for i in 1:N_STEPS
-        a = rand(1:ell-1); b = rand(1:ell-1)
-        step_D[i] = jac_add(jac_mul(G, a), jac_mul(T, b))
+        a = BigInt(rand(1:ell-1)); b = BigInt(rand(1:ell-1))
+        step_D[i] = jac_add(jac_mul(G, Int(a)), jac_mul(T, Int(b)))
         step_a[i] = a; step_b[i] = b
     end
     t_step_done = time() - t_step_build
@@ -311,11 +311,11 @@ function index_calculus_walk(G::Div2, T::Div2;
                          Threads.nthreads()
 
     # ── Shared walk state ─────────────────────────────────────────────────────
-    shared_lp1            = Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int, Int}}()
+    shared_lp1            = Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, BigInt, BigInt, Int}}()
     shared_lp1_lock       = ReentrantLock()
     shared_lp2            = LP2Graph()
     shared_lp2_lock       = ReentrantLock()
-    shared_lp_doubled     = Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int}}()
+    shared_lp_doubled     = Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, BigInt, BigInt}}()
     shared_lp1_conj       = ShardedLP1Conj()
     shared_lp2_conj       = LP2ConjGraph()
     shared_lp2_conj_lock  = ReentrantLock()
@@ -348,7 +348,7 @@ function index_calculus_walk(G::Div2, T::Div2;
 
     # Instantiate the tracker here so all threads can stream rows into it
     # (Ensure OnlineRankTracker is thread-safe or locked if your code requires it!)
-    rank_tracker      = OnlineRankTracker(ell)
+    rank_tracker      = OnlineRankTracker(Int(ell))
 
     t_phase2_start = time()
     @sync for tid in 1:Threads.nthreads()
@@ -551,7 +551,7 @@ function index_calculus_walk(G::Div2, T::Div2;
 
     # Build the early-solve monitor from all collected relations.
     # check_interval mirrors the 5% chunk size so core/rank updates are cheap.
-    esm = build_monitor_from_relations(rel_rows, nF, ell;
+    esm = build_monitor_from_relations(rel_rows, nF, Int(ell);
                                         check_interval = p2_step)
 
     println("\n── Incremental retrieval attempt ────────────────────────────────────")
@@ -581,7 +581,7 @@ function index_calculus_walk(G::Div2, T::Div2;
         @printf("Rows: %d/%d (Phase 1 + %d) — attempting kernel solve...\n",
                 current_limit, total_count, current_limit - p1_count)
 
-        kernels = left_kernel_all(sub_rel, nF, ell)
+        kernels = left_kernel_all(sub_rel, nF, Int(ell))
         if isempty(kernels)
             println("  -> No kernel found for this subset.")
             continue
@@ -589,10 +589,10 @@ function index_calculus_walk(G::Div2, T::Div2;
 
         found_k = false
         for γ in kernels
-            Sa = mod(sum(Int128(γ[i]) * sub_al[i] for i in eachindex(γ)), ell)
-            Sb = mod(sum(Int128(γ[i]) * sub_be[i] for i in eachindex(γ)), ell)
+            Sa = mod(sum(BigInt(γ[i]) * sub_al[i] for i in eachindex(γ)), ell)
+            Sb = mod(sum(BigInt(γ[i]) * sub_be[i] for i in eachindex(γ)), ell)
             Sb == 0 && continue
-            k_cand = mod(-Int(Sa) * powermod(Int(Sb), ell - 2, ell), ell)
+            k_cand = mod(-Sa * powermod(Sb, ell - 2, ell), ell)
             if jac_mul(G, k_cand) == T
                 @printf("  >> SUCCESS! Secret k found with %d relations: %d\n",
                         current_limit, k_cand)
@@ -612,7 +612,7 @@ function index_calculus_walk(G::Div2, T::Div2;
 
     # ── Final full kernel solve on all relations ──────────────────────────────
     t_solve_start = time()
-    kernels       = left_kernel_all(rel_rows, nF, ell)
+    kernels       = left_kernel_all(rel_rows, nF, Int(ell))
     t_solve_done  = time() - t_solve_start
     isempty(kernels) && error("Kernel not found — collect more relations")
 
@@ -621,10 +621,10 @@ function index_calculus_walk(G::Div2, T::Div2;
 
     n_tried = 0
     for γ in kernels
-        Sa = mod(sum(Int128(γ[i]) * alpha_vec[i] for i in 1:nrel), ell)
-        Sb = mod(sum(Int128(γ[i]) * beta_vec[i]  for i in 1:nrel), ell)
+        Sa = mod(sum(BigInt(γ[i]) * alpha_vec[i] for i in 1:nrel), ell)
+        Sb = mod(sum(BigInt(γ[i]) * beta_vec[i]  for i in 1:nrel), ell)
         Sb == 0 && continue
-        k_cand = mod(-Int(Sa) * powermod(Int(Sb), ell - 2, ell), ell)
+        k_cand = mod(-Sa * powermod(Sb, ell - 2, ell), ell)
         n_tried += 1
         if verbose && n_tried <= 5
             @printf("  kernel vec %d: Sa=%d Sb=%d k_cand=%d  match=%s\n",
