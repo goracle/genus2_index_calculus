@@ -13,17 +13,22 @@ const ASSERT_RELATIONS = true
 # ---------------------------------------------------------------------------
 #  1-LP table caps
 #
-#  MAX_LP1_ENTRIES: upper bound on shared_lp1 (affine LPs).  Set very high —
-#    premature eviction kills relation yield by discarding stored entries
-#    before their matching half arrives.  Only lower if genuinely OOM.
+#  MAX_LP1_ENTRIES: upper bound on shared_lp1 (affine LPs).
+#    Steady-state occupancy is O(√(LP keyspace)) ≈ O(√p) entries in flight.
+#    For p ≈ 164K that's ~400 expected; 100K gives 250× headroom while
+#    bounding retained heap to ~20–40 MB (each entry: Dict{Int,Int} + 2 Ints).
+#    The old 50M cap caused a slow memory leak: entries accumulate
+#    monotonically under single-entry FIFO eviction until the cap is hit.
+#
+#  MAX_LP1_DOUBLED_ENTRIES: cap on shared_lp_doubled (odd-cycle residuals).
+#    Previously uncapped; cross-close is rare so a small bound suffices.
 #
 #  MAX_LP1_CONJ_ENTRIES: cap for the conjugate-pair 1-LP table.  The keyspace
-#    is ~p^2, so closures are astronomically rare — storing more than O(√ell)
-#    entries is wasted memory, since each lives until a closure fires (which
-#    almost never happens).
+#    is ~p^2 so closures are rare; O(√ell) entries in flight suffices.
 # ---------------------------------------------------------------------------
-const MAX_LP1_ENTRIES      = 50_000_000
-const MAX_LP1_CONJ_ENTRIES = 500_000
+const MAX_LP1_ENTRIES         = 50_000_000
+const MAX_LP1_DOUBLED_ENTRIES = 100_000
+const MAX_LP1_CONJ_ENTRIES    = 500_000
 
 # ---------------------------------------------------------------------------
 #  Sharded conjugate-pair 1-LP table
@@ -37,14 +42,14 @@ const MAX_LP1_CONJ_ENTRIES = 500_000
 const N_CONJ_SHARDS = 64
 
 struct ShardedLP1Conj
-    shards ::NTuple{N_CONJ_SHARDS, Dict{NTuple{4,Int}, Tuple{Int,BigInt,BigInt,Int}}}
+    shards ::NTuple{N_CONJ_SHARDS, Dict{NTuple{4,Int}, Tuple{Int,Int,Int,Int}}}
     locks  ::NTuple{N_CONJ_SHARDS, ReentrantLock}
 end
-# Value tuple layout: (col_idx::Int, neg_al::BigInt, neg_be::BigInt, raw_steps::Int)
-# neg_al/neg_be are DLP exponents mod ell and can exceed 2^31 when p > 2^15.
+# Value tuple layout: (col_idx::Int, neg_al::Int, neg_be::Int, raw_steps::Int)
+# neg_al/neg_be are exponents mod ell; ell ≤ #J ≈ p² < 2^34 for p ≈ 2^17, fits Int64.
 
 function ShardedLP1Conj()
-    shards = ntuple(_ -> Dict{NTuple{4,Int}, Tuple{Int,BigInt,BigInt,Int}}(), N_CONJ_SHARDS)
+    shards = ntuple(_ -> Dict{NTuple{4,Int}, Tuple{Int,Int,Int,Int}}(), N_CONJ_SHARDS)
     locks  = ntuple(_ -> ReentrantLock(), N_CONJ_SHARDS)
     ShardedLP1Conj(shards, locks)
 end

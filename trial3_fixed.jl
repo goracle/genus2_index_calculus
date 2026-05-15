@@ -312,11 +312,11 @@ function index_calculus_walk(G::Div2, T::Div2;
                          Threads.nthreads()
 
     # ── Shared walk state ─────────────────────────────────────────────────────
-    shared_lp1            = Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, BigInt, BigInt, Int}}()
+    shared_lp1            = Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int, Int}}()
     shared_lp1_lock       = ReentrantLock()
     shared_lp2            = LP2Graph()
     shared_lp2_lock       = ReentrantLock()
-    shared_lp_doubled     = Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, BigInt, BigInt}}()
+    shared_lp_doubled     = Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int}}()
     shared_lp1_conj       = ShardedLP1Conj()
     shared_lp2_conj       = LP2ConjGraph()
     shared_lp2_conj_lock  = ReentrantLock()

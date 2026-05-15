@@ -50,8 +50,8 @@
 # ---------------------------------------------------------------------------
 function try_lp1_doubled_cross_close!(
         pt             ::NTuple{2,Int},
-        shared_lp1     ::Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, BigInt, BigInt, Int}},
-        shared_lp_doubled::Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, BigInt, BigInt}},
+        shared_lp1     ::Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int, Int}},
+        shared_lp_doubled::Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int}},
         ell            ::BigInt,
         alpha_vec      ::Vector{BigInt},
         beta_vec       ::Vector{BigInt},
@@ -78,8 +78,8 @@ function try_lp1_doubled_cross_close!(
         nv = get(combined, j, 0) - v
         nv == 0 ? delete!(combined, j) : (combined[j] = nv)
     end
-    c_al = mod(2*neg_al_1 - al_d, ell)
-    c_be = mod(2*neg_be_1 - be_d, ell)
+    c_al = mod(2*neg_al_1 - al_d, Int(ell))
+    c_be = mod(2*neg_be_1 - be_d, Int(ell))
 
     if ASSERT_RELATIONS
         D_sum = JacID
@@ -149,8 +149,8 @@ end
 
 # --- 0-LP: all three atoms are in the factor base → emit immediately. ---
 @inline function emit_0lp!(fb_row     ::Dict{Int,Int},
-                           neg_al     ::BigInt,
-                           neg_be     ::BigInt,
+                           neg_al         ::Int,
+                           neg_be         ::Int,
                            fb         ::Vector{NTuple{2,Int}},
                            G          ::Div2,
                            T          ::Div2,
@@ -189,10 +189,10 @@ end
 @inline function handle_1lp_affine!(
         lp_pt          ::NTuple{2,Int},
         fb_row         ::Dict{Int,Int},
-        al             ::BigInt,
-        be             ::BigInt,
-        neg_al         ::BigInt,
-        neg_be         ::BigInt,
+        al             ::Int,
+        be             ::Int,
+        neg_al         ::Int,
+        neg_be         ::Int,
         ell            ::BigInt,
         fb             ::Vector{NTuple{2,Int}},
         nF_cur         ::Int,
@@ -204,9 +204,9 @@ end
         rel_counter    ::Threads.Atomic{Int},
         ort            ::OnlineRankTracker,
         s              ::WorkerStats,
-        shared_lp1     ::Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, BigInt, BigInt, Int}},
+        shared_lp1     ::Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int, Int}},
         shared_lp1_lock::ReentrantLock,
-        shared_lp_doubled::Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, BigInt, BigInt}},
+        shared_lp_doubled::Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int}},
         lp_col         ::LPResidualCollector,
         rank_growth    ::Vector{Tuple{Int,Int}},
         combined_scratch::Dict{Int,Int},
@@ -226,8 +226,9 @@ end
             prev_row, prev_al, prev_be, prev_step = shared_lp1[lp_pt]
             combined    = sparse_copy!(combined_scratch, fb_row)
             lp2_subtract_rows(combined, prev_row)
-            combined_al = mod(neg_al - prev_al, ell)
-            combined_be = mod(neg_be - prev_be, ell)
+            ellI_loc    = Int(ell)
+            combined_al = mod(neg_al - prev_al, ellI_loc)
+            combined_be = mod(neg_be - prev_be, ellI_loc)
             delete!(shared_lp1, lp_pt)
             record_closure!(lp_col, s.raw_steps, prev_step)
 
@@ -259,7 +260,6 @@ end
                 end
             end
             shared_lp1[lp_pt] = (copy(fb_row), neg_al, neg_be, s.raw_steps)
-
             # Check whether the complementary doubled entry already exists.
             if try_lp1_doubled_cross_close!(lp_pt, shared_lp1, shared_lp_doubled,
                                             ell, alpha_vec, beta_vec, rel_rows,
@@ -289,8 +289,8 @@ end
 @inline function handle_1lp_conj!(
         lp_key         ::NTuple{4,Int},
         i0             ::Int,
-        neg_al         ::BigInt,
-        neg_be         ::BigInt,
+        neg_al         ::Int,
+        neg_be         ::Int,
         ell            ::BigInt,
         fb             ::Vector{NTuple{2,Int}},
         nF_cur         ::Int,
@@ -314,8 +314,8 @@ end
     try
         if haskey(conj_dict, lp_key)
             prev_col, prev_al, prev_be, _ = conj_dict[lp_key]
-            combined_al = mod(neg_al - prev_al, ell)
-            combined_be = mod(neg_be - prev_be, ell)
+            combined_al = mod(neg_al - prev_al, Int(ell))
+            combined_be = mod(neg_be - prev_be, Int(ell))
             delete!(conj_dict, lp_key)
 
             if !(combined_al == 0 && combined_be == 0) && i0 != prev_col
@@ -392,8 +392,8 @@ end
         S              ::NTuple{2,Int},
         P0             ::NTuple{2,Int},
         fb_row_scratch ::Dict{Int,Int},
-        neg_al         ::BigInt,
-        neg_be         ::BigInt,
+        neg_al         ::Int,
+        neg_be         ::Int,
         ell            ::BigInt,
         fb             ::Vector{NTuple{2,Int}},
         nF_cur         ::Int,
@@ -405,11 +405,11 @@ end
         rel_counter    ::Threads.Atomic{Int},
         ort            ::OnlineRankTracker,
         s              ::WorkerStats,
-        shared_lp1     ::Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, BigInt, BigInt, Int}},
+        shared_lp1     ::Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int, Int}},
         shared_lp1_lock::ReentrantLock,
         shared_lp2     ::LP2Graph,
         shared_lp2_lock::ReentrantLock,
-        shared_lp_doubled::Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, BigInt, BigInt}},
+        shared_lp_doubled::Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int}},
         lp_col         ::LPResidualCollector,
         max_lp2_nodes  ::Int,
         rank_growth    ::Vector{Tuple{Int,Int}},
@@ -503,7 +503,12 @@ end
                         Threads.atomic_add!(rel_counter, 1)
                     end
                 else
-                    shared_lp_doubled[root] = (emitted_rel.row, emitted_rel.alpha, emitted_rel.beta)
+                    shared_lp_doubled[root] = (emitted_rel.row, Int(emitted_rel.alpha), Int(emitted_rel.beta))
+                    if length(shared_lp_doubled) > MAX_LP1_DOUBLED_ENTRIES
+                        for evict_key in keys(shared_lp_doubled)
+                            delete!(shared_lp_doubled, evict_key); break
+                        end
+                    end
                     if try_lp1_doubled_cross_close!(root, shared_lp1, shared_lp_doubled,
                                                     ell, alpha_vec, beta_vec, rel_rows,
                                                     rank_growth, s.raw_steps, rel_counter,
@@ -529,8 +534,9 @@ end
                 nv = get(new_row, j, 0) - v
                 nv == 0 ? delete!(new_row, j) : (new_row[j] = nv)
             end
-            new_neg_al = mod(neg_al - na_known, ell)
-            new_neg_be = mod(neg_be - nb_known, ell)
+            ellI_loc   = Int(ell)
+            new_neg_al = mod(neg_al - na_known, ellI_loc)
+            new_neg_be = mod(neg_be - nb_known, ellI_loc)
 
             s.hits_lp2_cross += 1
 
@@ -538,8 +544,8 @@ end
                 prev_row, prev_al, prev_be, prev_step = shared_lp1[lp_other]
                 combined    = copy(new_row)
                 lp2_subtract_rows(combined, prev_row)
-                combined_al = mod(new_neg_al - prev_al, ell)
-                combined_be = mod(new_neg_be - prev_be, ell)
+                combined_al = mod(new_neg_al - prev_al, ellI_loc)
+                combined_be = mod(new_neg_be - prev_be, ellI_loc)
                 delete!(shared_lp1, lp_other)
                 record_closure!(lp_col, s.raw_steps, prev_step)
                 if !isempty(combined) && !(combined_al == 0 && combined_be == 0)
@@ -628,11 +634,11 @@ function phase2_worker(G               ::Div2,
                        rel_counter     ::Threads.Atomic{Int},
                        rel_target      ::Int,
                        step_cap        ::Int,
-                       shared_lp1      ::Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, BigInt, BigInt, Int}},
+                       shared_lp1      ::Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int, Int}},
                        shared_lp1_lock ::ReentrantLock,
                        shared_lp2      ::LP2Graph,
                        shared_lp2_lock ::ReentrantLock,
-                       shared_lp_doubled::Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, BigInt, BigInt}},
+                       shared_lp_doubled::Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int}},
                        shared_lp1_conj ::ShardedLP1Conj,
                        shared_lp2_conj ::LP2ConjGraph,
                        shared_lp2_conj_lock::ReentrantLock,
@@ -905,9 +911,9 @@ end
 @inline function handle_2lp_conj!(
         P0                ::NTuple{2,Int},
         lp_key            ::NTuple{4,Int},
-        neg_al            ::BigInt,
-        neg_be            ::BigInt,
-        ell               ::BigInt,
+        neg_al         ::Int,
+        neg_be         ::Int,
+        ell            ::BigInt,
         fb                ::Vector{NTuple{2,Int}},
         nF_cur            ::Int,
         G                 ::Div2,
@@ -918,9 +924,9 @@ end
         rel_counter       ::Threads.Atomic{Int},
         ort               ::OnlineRankTracker,
         s                 ::WorkerStats,
-        shared_lp1        ::Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, BigInt, BigInt, Int}},
+        shared_lp1        ::Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int, Int}},
         shared_lp1_lock   ::ReentrantLock,
-        shared_lp_doubled ::Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, BigInt, BigInt}},
+        shared_lp_doubled ::Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int}},
         shared_lp2_conj   ::LP2ConjGraph,
         shared_lp2_conj_lock::ReentrantLock,
         max_lp2_conj_nodes::Int,
@@ -994,7 +1000,12 @@ end
                     end
                 else
                     # Park: store 2·atom(root) for a future 1-LP entry to consume.
-                    shared_lp_doubled[root_affine] = (emitted_conj.row, emitted_conj.alpha, emitted_conj.beta)
+                    shared_lp_doubled[root_affine] = (emitted_conj.row, Int(emitted_conj.alpha), Int(emitted_conj.beta))
+                    if length(shared_lp_doubled) > MAX_LP1_DOUBLED_ENTRIES
+                        for evict_key in keys(shared_lp_doubled)
+                            delete!(shared_lp_doubled, evict_key); break
+                        end
+                    end
                     if try_lp1_doubled_cross_close!(root_affine, shared_lp1, shared_lp_doubled,
                                                     ell, alpha_vec, beta_vec, rel_rows,
                                                     rank_growth, s.raw_steps, rel_counter,
