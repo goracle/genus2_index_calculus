@@ -28,7 +28,7 @@ const ASSERT_RELATIONS = true
 # ---------------------------------------------------------------------------
 const MAX_LP1_ENTRIES         = 50_000_000
 const MAX_LP1_DOUBLED_ENTRIES = 100_000
-const MAX_LP1_CONJ_ENTRIES    = 500_000
+const MAX_LP1_CONJ_ENTRIES    = 5_000_000
 
 # ---------------------------------------------------------------------------
 #  Sharded conjugate-pair 1-LP table

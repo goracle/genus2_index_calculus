@@ -254,7 +254,7 @@ end
             end
             # Evict one entry if the table is full (single-entry FIFO — avoids
             # evicting the entry we just inserted).
-            if length(shared_lp1) >= MAX_LP1_ENTRIES*ell
+            if length(shared_lp1) >= MAX_LP1_ENTRIES
                 for evict_key in keys(shared_lp1)
                     delete!(shared_lp1, evict_key); break
                 end
@@ -345,7 +345,7 @@ end
             end
         else
             # Store: shard is capped per shard to MAX_LP1_CONJ_ENTRIES ÷ N_CONJ_SHARDS.
-            if length(conj_dict) >= ell*MAX_LP1_CONJ_ENTRIES ÷ N_CONJ_SHARDS
+            if length(conj_dict) >= MAX_LP1_CONJ_ENTRIES ÷ N_CONJ_SHARDS
                 empty!(conj_dict)   # evict entire shard — closures are too rare to cherry-pick
             end
             conj_dict[lp_key] = (i0, neg_al, neg_be, s.raw_steps)
@@ -504,7 +504,7 @@ end
                     end
                 else
                     shared_lp_doubled[root] = (emitted_rel.row, Int(emitted_rel.alpha), Int(emitted_rel.beta))
-                    if length(shared_lp_doubled) > ell*MAX_LP1_DOUBLED_ENTRIES
+                    if length(shared_lp_doubled) > MAX_LP1_DOUBLED_ENTRIES
                         for evict_key in keys(shared_lp_doubled)
                             delete!(shared_lp_doubled, evict_key); break
                         end
@@ -575,7 +575,7 @@ end
                     end
                     @assert ok "2-LP cross-store: derived 1-LP row inconsistent"
                 end
-                if length(shared_lp1) >= ell*MAX_LP1_ENTRIES
+                if length(shared_lp1) >= MAX_LP1_ENTRIES
                     for evict_key in keys(shared_lp1)
                         delete!(shared_lp1, evict_key); break
                     end
@@ -1001,7 +1001,7 @@ end
                 else
                     # Park: store 2·atom(root) for a future 1-LP entry to consume.
                     shared_lp_doubled[root_affine] = (emitted_conj.row, Int(emitted_conj.alpha), Int(emitted_conj.beta))
-                    if length(shared_lp_doubled) > ell*MAX_LP1_DOUBLED_ENTRIES
+                    if length(shared_lp_doubled) > MAX_LP1_DOUBLED_ENTRIES
                         for evict_key in keys(shared_lp_doubled)
                             delete!(shared_lp_doubled, evict_key); break
                         end
