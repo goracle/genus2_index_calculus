@@ -221,6 +221,87 @@ function cycle_union_solve(rel_rows   ::Vector{Dict{Int,Int}},
                       n_deferred_resolved=0)
 
     # ------------------------------------------------------------------
+    #  Fast path: same-support pairs.
+    #
+    #  The observed early-solve case is a kernel vector with support size 2:
+    #  two rows r1, r2 that share identical column support {a,b,c} with the
+    #  same coefficients.  Their combination γ = (β_r2, -β_r1) satisfies:
+    #
+    #    γ·rel  = β_r2·row_r1 - β_r1·row_r2
+    #           = (β_r2 - β_r1)·[a+b+c cols]  (cancels iff same support+coeffs)
+    #
+    #  More generally: two rows with the same normalised support give a
+    #  kernel vector immediately.  We check this in O(n) with a hash map
+    #  keyed on (sorted columns, normalised coefficients).
+    #
+    #  For each such pair (r1, r2), the combination is:
+    #    Sa = β_r2·α_r1 - β_r1·α_r2   (mod ell)
+    #    Sb = β_r2·β_r1 - β_r1·β_r2  = 0  ← that's Sb=0, no good
+    #
+    #  Wait — if the columns cancel entirely we need Sb ≠ 0, so the rows
+    #  must NOT be identical on the β side.  The actual kernel structure is:
+    #
+    #    row_r1: cols C, α_r1·G + β_r1·T  →  sum_C log[c] = α_r1 + β_r1·k
+    #    row_r2: cols C, α_r2·G + β_r2·T  →  sum_C log[c] = α_r2 + β_r2·k
+    #
+    #  Subtracting:  0 = (α_r1 - α_r2) + (β_r1 - β_r2)·k
+    #                k = (α_r2 - α_r1)·(β_r1 - β_r2)^{-1}  mod ell
+    #
+    #  This works whenever β_r1 ≠ β_r2.  No DSU needed at all.
+    # ------------------------------------------------------------------
+    # Build canonical support key: sorted vector of (col, coeff mod ell) pairs.
+    support_key(row) = sort!([(j, mod(v, ell)) for (j,v) in row if mod(v,ell) != 0])
+    # Map key → (row_index, α, β) of first row seen with this support.
+    support_map = Dict{Vector{Tuple{Int,Int}}, Tuple{Int,BigInt,BigInt}}()
+
+    n_same_support = 0
+    k_candidate    = nothing
+
+    function verify_k(k::Int)
+        G === nothing && return true
+        jac_mul(G, k, ell) == T
+    end
+
+    for ri in 1:m
+        key = support_key(rel_rows[ri])
+        isempty(key) && continue
+        ai  = alpha_vec[ri]
+        bi  = beta_vec[ri]
+
+        if haskey(support_map, key)
+            rj, aj, bj = support_map[key]
+            # rows ri and rj have identical support+coeffs.
+            # k = (aj - ai) * (bi - bj)^{-1}  mod ell
+            Δβ = mod(Int(bi) - Int(bj), ell)
+            if Δβ != 0
+                Δα  = mod(Int(aj) - Int(ai), ell)
+                k_try = mod(Δα * powermod(Δβ, ell - 2, ell), ell)
+                n_same_support += 1
+                if verify_k(k_try)
+                    k_candidate = k_try
+                    verbose && @printf("[cycle_union] same-support pair (rows %d,%d) → k=%d ✓\n",
+                                       ri, rj, k_candidate)
+                    # Return immediately — this is O(1) once found.
+                    return (k                      = k_candidate,
+                            atom_logs              = nothing,
+                            cycle_solver_succeeded = true,
+                            n_cycles_found         = 1,
+                            n_deferred_resolved    = 0)
+                end
+            end
+            # Δβ=0 means same β too → trivially dependent, skip.
+        else
+            support_map[key] = (ri, ai, bi)
+        end
+    end
+
+    verbose && n_same_support > 0 &&
+        @printf("[cycle_union] %d same-support pairs found but none gave valid k\n", n_same_support)
+
+    # ------------------------------------------------------------------
+    #  Work-queue peeling solver (handles deeper kernel structure).
+    # ------------------------------------------------------------------
+    # ------------------------------------------------------------------
     #  Level-1 DSU: track atom-log offsets from component roots.
     #  label[v]  =  log[v] - log[root(v)]   mod ell
     #  When log[root(v)] is known (pinned), log[v] = label[v] + log[root].
@@ -449,6 +530,572 @@ function cycle_union_solve(rel_rows   ::Vector{Dict{Int,Int}},
             cycle_solver_succeeded = k_candidate !== nothing,
             n_cycles_found         = n_cycles,
             n_deferred_resolved    = n_deferred_resolved)
+end
+
+# ---------------------------------------------------------------------------
+#  chain_path_solve
+#
+#  O(nF + m_lp) kernel solver that exploits the phase-1 chain structure.
+#
+#  BACKGROUND
+#  ──────────
+#  Phase-1 builds the factor base by chaining: each row i has the form
+#
+#      {anchor_i,  anchor_{i+1},  S_i}    with RHS  α_i + β_i·k
+#
+#  where the *next* anchor is always R (the left residual from phi_residual),
+#  and S_i is the pendant ("right residual").  Consecutive rows share exactly
+#  one atom (anchor_{i+1}).  This makes the phase-1 incidence graph a *path*
+#  on the anchor atoms, with pendant S-atoms attached to each edge.
+#
+#  SYMBOLIC LOG PROPAGATION
+#  ────────────────────────
+#  Fix L₀ = log[anchor_0] as a free variable.  Define for each chain atom v:
+#
+#      log[v]  ≡  Av + Bv·k + L₀   (mod ell)
+#
+#  where Av, Bv are integers computed from cumulative chain sums, and the
+#  implicit coefficient of L₀ is 1 for every atom reachable from anchor_0.
+#  (For atoms not on the phase-1 chain we leave them symbolically unresolved
+#  and fall back to Gaussian elimination for those rows.)
+#
+#  Along the chain, starting from anchor_0:
+#    Row 0:  log[anchor_0] + log[anchor_1] + log[S_0] = α_0 + β_0·k
+#            ⟹  (L₀) + (A_{a1} + B_{a1}·k + L₀) + (A_{S0} + B_{S0}·k + L₀)
+#                = α_0 + β_0·k
+#
+#  But we have 3 unknowns in row 0 (anchor_0, anchor_1, S_0) and only 1
+#  equation, so we can't immediately pin everyone.  The trick is to treat
+#  the system as a 2D linear system over the pair (L₀, k):
+#
+#    For each atom v, represent its log as  log[v] = Av + Bv·k + Cv·L₀
+#    with initial assignments:
+#      anchor_0:  A=0, B=0, C=1   (log = L₀)
+#      everyone else: unknown (C=0, A=0, B=0 until assigned)
+#
+#  Process chain rows left-to-right.  Row i has atoms {anchor_i, anchor_{i+1}, S_i}.
+#  After processing row i-1, anchor_i is assigned.  Row i then gives:
+#
+#    (A_ai + B_ai·k + C_ai·L₀)
+#  + (A_{ai+1} + B_{ai+1}·k + C_{ai+1}·L₀)
+#  + (A_{Si} + B_{Si}·k + C_{Si}·L₀)
+#  = α_i + β_i·k
+#
+#  This is an equation over (L₀, k).  If exactly one of {anchor_{i+1}, S_i}
+#  is unassigned, we can express it directly.  After processing all chain rows
+#  in a single forward pass, we've assigned every chain atom a (A,B,C) triple.
+#
+#  LP-CLOSURE ROWS → EQUATIONS IN (L₀, k)
+#  ─────────────────────────────────────────
+#  Any phase-2 LP-closure row that involves only chain-assigned atoms gives:
+#
+#    Σ_j coeff_j · (A_j + B_j·k + C_j·L₀) = α_lp + β_lp·k
+#    ⟹  (Σ coeff_j·A_j - α_lp) + (Σ coeff_j·B_j - β_lp)·k
+#        + (Σ coeff_j·C_j)·L₀ = 0
+#    ⟹  P + Q·k + R·L₀ = 0   (one linear equation in two unknowns)
+#
+#  Two such LP-closure rows with (P₁,Q₁,R₁) and (P₂,Q₂,R₂) give a 2×2 system:
+#
+#    [Q₁  R₁] [k ]   [-P₁]
+#    [Q₂  R₂] [L₀] = [-P₂]
+#
+#  Solve via Cramer's rule mod ell.  If the determinant Q₁R₂ - Q₂R₁ ≠ 0, we
+#  get unique k.
+#
+#  FALLBACK
+#  ────────
+#  If chain propagation stalls (because a chain row has >1 unresolved atom
+#  even after the forward pass), or if no LP-closure equation pair solves for k,
+#  the function returns (k=nothing, succeeded=false) and the caller falls back
+#  to Gaussian elimination.
+#
+#  The n_phase1 parameter tells us how many of rel_rows[1:n_phase1] are the
+#  ordered phase-1 chain rows.  rel_rows[n_phase1+1:end] are phase-2 rows.
+#
+#  Returns NamedTuple with same shape as cycle_union_solve.
+# ---------------------------------------------------------------------------
+function chain_path_solve(rel_rows   ::Vector{Dict{Int,Int}},
+                          alpha_vec  ::Vector{BigInt},
+                          beta_vec   ::Vector{BigInt},
+                          nF         ::Int,
+                          ell        ::Int,
+                          n_phase1   ::Int;
+                          G          ::Union{Nothing,Div2} = nothing,
+                          T          ::Union{Nothing,Div2} = nothing,
+                          verbose    ::Bool = true)
+
+    m = length(rel_rows)
+    (m == 0 || n_phase1 == 0) && return (k=nothing, atom_logs=nothing,
+                                          chain_path_succeeded=false,
+                                          n_equations=0)
+
+    # ── Symbolic log representation ───────────────────────────────────────────
+    #
+    # Each atom v gets a triple (Av, Bv, Cv) meaning:
+    #     log[v]  ≡  Av + Bv·k + Cv·L₀   (mod ell)
+    # where L₀ = log[anchor_0] is a free scalar and k is the DLP target.
+    #
+    # We start with anchor_0 → (0, 0, 1).  We propagate assignments using
+    # the relation rows.  When all atoms in a row are assigned, we collect
+    # a linear constraint   P + Q·k + R·L₀ ≡ 0  (mod ell).
+    # Two such independent constraints solve the 2×2 system for k and L₀.
+    #
+    # KEY FIX vs original: handle the 2-unknown case in chain rows by using
+    # a second free variable.  We introduce a "relative" representation:
+    # when a chain row has anchor_i assigned and {anchor_{i+1}, S_i} both
+    # unknown, we:
+    #   (a) Assign anchor_{i+1} → (0, 0, 0, 1) with a NEW free variable L_j
+    #       (the j-th free anchor log beyond L₀).
+    #   (b) Assign S_i in terms of (anchor_i, anchor_{i+1}, rhs).
+    #
+    # This gives each atom a 4-tuple (Av, Bv, Cv, Dv) where Dv is the
+    # coefficient of L_j, the free variable introduced at chain step j.
+    # When anchor_{i+1} gets pinned later (from an LP-closure row making
+    # it n_unk==1), we substitute and reduce all downstream atoms.
+    #
+    # Rather than implementing this full symbolic algebra, we use a simpler
+    # equivalent: a sparse augmented-matrix representation.  Each atom's log
+    # is a linear combination of [k, L₀, L_1, L_2, ...] where L_0=log[anchor_0]
+    # and L_j are free anchor logs introduced per chain segment.
+    #
+    # We maintain: for each atom v, a sparse vector coeffs[v] (length = 1 + 1 +
+    # n_free_introduced) plus a constant term const[v], such that:
+    #     log[v] = const[v] + coeffs_k[v]·k + Σ_j coeffs_free[v][j]·L_j
+    #
+    # When two atoms in the same equation are linked through the free variable
+    # system and all atoms are expressed in terms of the same free variables,
+    # the constraint becomes a linear equation in those free variables + k.
+    # We collect these and solve.
+    #
+    # IMPLEMENTATION: to keep it simple, we cap the number of free variables
+    # at 2 (k and L₀).  Any chain segment that can't be expressed with these
+    # two is left unresolved and falls through to Gaussian elim.  In practice,
+    # the LP-closure rows (weight 2) quickly pin anchor atoms and allow the
+    # rest of the chain to resolve.
+
+    # ── Step 1: Identify phase-1 chain topology ───────────────────────────────
+    # anchor_seq[i] = the anchor atom at chain position i (0-indexed).
+    # We extract this from the row structure: each consecutive pair of phase-1
+    # rows shares exactly one atom (the "next anchor" = R in the walk).
+    #
+    # Phase-1 walk does:  cur_pt = R  after each step, and the row is {cur, R, S}.
+    # So row i: {anchor_i, anchor_{i+1}, S_i}  where anchor_{i+1} is the shared
+    # atom between row i and row i+1.
+    #
+    # Build atom_to_chain_pos: atom → chain position (anchor sequence index).
+    # Also build chain_S: chain_S[i] = the pendant (S) atom of row i.
+
+    # Get distinct atom sets for each phase-1 row.
+    p1_atoms = Vector{Vector{Int}}(undef, n_phase1)
+    for i in 1:n_phase1
+        p1_atoms[i] = [j for (j, v) in rel_rows[i] if mod(v, ell) != 0 && 1 <= j <= nF]
+    end
+
+    # Identify chain anchor sequence by mutual overlap between consecutive rows.
+    anchor_seq = Int[]    # anchor_seq[i] = anchor at position i-1 (1-indexed)
+    chain_S    = Int[]    # chain_S[i] = pendant atom of chain row i
+
+    # Row 1: find which atom is shared with row 2.
+    if n_phase1 >= 2
+        set1 = Set(p1_atoms[1])
+        set2 = Set(p1_atoms[2])
+        shared_12 = intersect(set1, set2)
+        if isempty(shared_12)
+            verbose && @printf("[chain_path] rows 1-2 share no atom; chain not detected\n")
+            return (k=nothing, atom_logs=nothing, chain_path_succeeded=false, n_equations=0)
+        end
+        anchor1 = first(shared_12)   # anchor at position 1 (= anchor_{1} in 0-indexed)
+        # anchor_0 = the atom in row 1 that is NOT anchor1 and NOT the S atom.
+        non_anchor1 = [a for a in p1_atoms[1] if a != anchor1]
+        anchor0 = isempty(non_anchor1) ? anchor1 : non_anchor1[1]
+        S0      = length(non_anchor1) >= 2 ? non_anchor1[2] : anchor1
+        push!(anchor_seq, anchor0, anchor1)
+        push!(chain_S, S0)
+        # Rows 2..n_phase1: anchor_{i} is already in anchor_seq; find anchor_{i+1} and S_i.
+        for i in 2:n_phase1
+            cur_anchor = anchor_seq[end]
+            atoms_i    = p1_atoms[i]
+            rest       = [a for a in atoms_i if a != cur_anchor]
+            if isempty(rest)
+                push!(chain_S, cur_anchor)   # degenerate
+                push!(anchor_seq, cur_anchor)
+                continue
+            end
+            # Find next anchor: atom in row i that also appears in row i+1 (if exists).
+            if i < n_phase1
+                set_next = Set(p1_atoms[i+1])
+                shared = [a for a in rest if a in set_next]
+                if !isempty(shared)
+                    next_anchor = shared[1]
+                    s_i = first(a for a in rest if a != next_anchor)
+                else
+                    next_anchor = rest[1]
+                    s_i = length(rest) >= 2 ? rest[2] : rest[1]
+                end
+            else
+                next_anchor = rest[1]
+                s_i = length(rest) >= 2 ? rest[2] : rest[1]
+            end
+            push!(anchor_seq, next_anchor)
+            push!(chain_S, s_i)
+        end
+    elseif n_phase1 == 1
+        atoms1 = p1_atoms[1]
+        length(atoms1) < 2 && return (k=nothing, atom_logs=nothing, chain_path_succeeded=false, n_equations=0)
+        push!(anchor_seq, atoms1[1], atoms1[2])
+        push!(chain_S, length(atoms1) >= 3 ? atoms1[3] : atoms1[1])
+    else
+        return (k=nothing, atom_logs=nothing, chain_path_succeeded=false, n_equations=0)
+    end
+
+    # ── Step 2: Symbolic assignment using 4-component vectors ────────────────
+    #
+    # Represent each atom's log as a linear combination of basis elements:
+    #   basis[1] = k        (the DLP secret)
+    #   basis[2] = L₀       (log of anchor_0, free)
+    #   basis[3..] = L_j    (log of anchor_j introduced when that anchor is
+    #                         unresolved at the time of a chain row)
+    #
+    # coeffs[v] = sparse Dict{Int,Int}: basis_index → coefficient mod ell
+    # const_v[v] = constant term mod ell
+    # assigned[v] = true once log[v] is fully expressed.
+
+    # We keep the basis size bounded.  In practice we introduce at most one
+    # free variable per "gap" in the chain (when an LP closure doesn't come
+    # early enough).  Bound: at most n_phase1 + 2 basis elements.
+    MAX_BASIS = n_phase1 + 4
+
+    const_v  = zeros(Int, nF)
+    coeffs   = [Dict{Int,Int}() for _ in 1:nF]   # basis_idx → coeff
+    assigned = falses(nF)
+    n_basis  = 2   # initially: basis[1]=k, basis[2]=L₀
+
+    # basis_atom[j] = atom index whose free variable is basis element j (for j>=2)
+    basis_atom = fill(-1, MAX_BASIS)
+    basis_atom[2] = anchor_seq[1]   # L₀ = log[anchor_0]
+
+    function assign!(v::Int, c::Int, cs::Dict{Int,Int})
+        const_v[v] = mod(c, ell)
+        coeffs[v]  = Dict{Int,Int}(k => mod(cv, ell) for (k, cv) in cs if mod(cv, ell) != 0)
+        assigned[v] = true
+    end
+
+    # Introduce a new free basis element for atom `v` (unresolvable anchor).
+    function introduce_free!(v::Int)::Int
+        n_basis + 1 > MAX_BASIS && return -1
+        n_basis += 1
+        basis_atom[n_basis] = v
+        assign!(v, 0, Dict{Int,Int}(n_basis => 1))
+        return n_basis
+    end
+
+    # Assign anchor_0 as basis element 2 (L₀).
+    assign!(anchor_seq[1], 0, Dict{Int,Int}(2 => 1))
+
+    # ── Symbolic arithmetic helpers ───────────────────────────────────────────
+
+    # Add two symbolic expressions (c1, cs1) + coeff*(c2, cs2), return new (c, cs).
+    function sym_add(c1::Int, cs1::Dict{Int,Int}, coeff::Int, c2::Int, cs2::Dict{Int,Int})
+        c  = Int(mod(Int128(c1) + Int128(coeff) * c2, ell))
+        cs = copy(cs1)
+        for (bi, cv) in cs2
+            nv = Int(mod(Int128(get(cs, bi, 0)) + Int128(coeff) * cv, ell))
+            nv == 0 ? delete!(cs, bi) : (cs[bi] = nv)
+        end
+        return c, cs
+    end
+
+    # Scale (c, cs) by scalar s.
+    function sym_scale(s::Int, c::Int, cs::Dict{Int,Int})
+        c2  = Int(mod(Int128(s) * c, ell))
+        cs2 = Dict{Int,Int}()
+        for (bi, cv) in cs
+            nv = Int(mod(Int128(s) * cv, ell))
+            nv != 0 && (cs2[bi] = nv)
+        end
+        return c2, cs2
+    end
+
+    # Given a row equation  Σ_j cj·log[j] = αi + βi·k
+    # with some atoms assigned, try to assign one more unknown,
+    # or collect a (P + Q·k + R·L₀) constraint.
+    #
+    # Returns :assigned, :constraint, :deferred_free, :deferred_many
+    constraints_linear = Vector{Tuple{Int, Dict{Int,Int}}}()  # (P, coeffs_of_bases) s.t. P + Σ c_b·L_b = 0
+
+    function process_row!(row::Dict{Int,Int}, αi::BigInt, βi::BigInt)
+        support = [(j, mod(v, ell)) for (j, v) in row if mod(v, ell) != 0 && 1 <= j <= nF]
+        isempty(support) && return :skip
+
+        # Accumulate known part.
+        sum_c  = 0
+        sum_cs = Dict{Int,Int}()
+        unknowns = Tuple{Int,Int}[]
+
+        for (j, cj) in support
+            if assigned[j]
+                sum_c, sum_cs = sym_add(sum_c, sum_cs, cj, const_v[j], coeffs[j])
+            else
+                push!(unknowns, (j, cj))
+            end
+        end
+
+        ai_mod = mod(Int(αi), ell)
+        bi_mod = mod(Int(βi), ell)
+        n_unk  = length(unknowns)
+
+        # RHS as symbolic expression: αi + βi·k = ai_mod + (bi_mod)·k
+        # Constraint form: sum_c + sum_cs·bases - ai_mod - bi_mod·k = Σ_j cj·log[j_unk]
+        # Rewrite: Σ_j cj·log[j_unk] = (ai_mod - sum_c) + (bi_mod)·k - sum_cs·bases
+
+        if n_unk == 0
+            # Full constraint: sum_c + sum_cs·bases ≡ ai_mod + bi_mod·k
+            # ⟹  (sum_c - ai_mod) + (get(sum_cs,1,0) - bi_mod)·k + Σ_{b≥2} sum_cs[b]·L_b = 0
+            P    = mod(sum_c - ai_mod, ell)
+            cmap = copy(sum_cs)
+            cmap[1] = mod(get(cmap, 1, 0) - bi_mod, ell)
+            cmap[1] == 0 && delete!(cmap, 1)
+            push!(constraints_linear, (P, cmap))
+            return :constraint
+
+        elseif n_unk == 1
+            # Assign: cj·log[j] = (ai_mod - sum_c) + (bi_mod - get(sum_cs,1,0))·k
+            #                     - Σ_{b≥2} sum_cs[b]·L_b
+            j, cj = unknowns[1]
+            cj_inv = powermod(cj, ell - 2, ell)
+            rhs_c  = mod(ai_mod - sum_c, ell)
+            rhs_cs = Dict{Int,Int}(b => mod(-cv, ell) for (b, cv) in sum_cs)
+            rhs_cs[1] = mod(get(rhs_cs, 1, 0) + bi_mod, ell)
+            rhs_cs[1] == 0 && delete!(rhs_cs, 1)
+            new_c, new_cs = sym_scale(cj_inv, rhs_c, rhs_cs)
+            assign!(j, new_c, new_cs)
+            return :assigned
+
+        elseif n_unk == 2
+            # Two unknowns: can we introduce a free variable for one?
+            # Only do this for chain rows where one unknown is the "next anchor"
+            # (it will appear in subsequent rows).
+            # We introduce it as a new basis element if we have space.
+            j1, c1 = unknowns[1]
+            j2, c2 = unknowns[2]
+
+            # Assign j2 in terms of j1 as a new free basis element.
+            if n_basis < MAX_BASIS - 1
+                idx = introduce_free!(j1)
+                idx == -1 && return :deferred_many
+                # Now j1 is assigned; retry this row.
+                # j2: c2·log[j2] = (ai_mod - sum_c - c1·log[j1]) + bi_mod·k - sum_cs·bases
+                rhs_c, rhs_cs = sym_add(ai_mod - sum_c, Dict{Int,Int}(b => mod(-cv, ell) for (b,cv) in sum_cs),
+                                         -c1, const_v[j1], coeffs[j1])
+                rhs_cs[1] = mod(get(rhs_cs, 1, 0) + bi_mod, ell)
+                rhs_cs[1] == 0 && delete!(rhs_cs, 1)
+                c2_inv = powermod(c2, ell - 2, ell)
+                new_c, new_cs = sym_scale(c2_inv, rhs_c, rhs_cs)
+                assign!(j2, new_c, new_cs)
+                return :assigned
+            else
+                return :deferred_many
+            end
+
+        else
+            return :deferred_many
+        end
+    end
+
+    # ── Step 3: Interleaved chain+LP forward pass, then mop-up ──────────────
+    #
+    # KEY INSIGHT: process chain row i, then *immediately* drain any LP-closure
+    # rows that can make progress with the current assigned set — before
+    # advancing to chain row i+1.  This gives LP rows the earliest possible
+    # opportunity to pin atoms and prevent free-variable proliferation.
+    #
+    # Only introduce a fresh free basis element for an unresolved chain anchor
+    # if the LP drain came up completely empty (no LP row could do anything).
+    # This keeps n_basis small: ideally O(1) rather than O(n_phase1).
+
+    # Partition rows: LP (phase-2) rows are indices n_phase1+1 .. m.
+    lp_pending_ref = Ref(collect((n_phase1 + 1):m))   # use Ref so closures can reassign
+
+    # Drain: scan lp_pending once, process any row that can make progress.
+    # Returns true if at least one row made progress (:assigned or :constraint).
+    function drain_lp_once!()::Bool
+        progress = false
+        next_pending = Int[]
+        for ri in lp_pending_ref[]
+            result = process_row!(rel_rows[ri], alpha_vec[ri], beta_vec[ri])
+            if result == :assigned || result == :constraint
+                progress = true
+                result == :assigned || push!(next_pending, ri)
+            elseif result != :skip
+                push!(next_pending, ri)
+            end
+        end
+        lp_pending_ref[] = next_pending
+        return progress
+    end
+
+    # Full LP drain: repeat until no progress.
+    function drain_lp_full!()
+        while drain_lp_once!() end
+    end
+
+    # ── Interleaved chain forward pass ────────────────────────────────────────
+    for i in 1:n_phase1
+        result = process_row!(rel_rows[i], alpha_vec[i], beta_vec[i])
+
+        if result == :deferred_many || result == :deferred_free
+            # Chain row i still has ≥2 unknowns.  Give LP rows a chance
+            # to pin something first.
+            drain_lp_full!()
+            # Retry chain row i.
+            result = process_row!(rel_rows[i], alpha_vec[i], beta_vec[i])
+        end
+
+        if result == :deferred_many || result == :deferred_free
+            # LP drain didn't help.  Introduce a free variable for the first
+            # unresolved atom in this chain row so we can keep propagating.
+            # (This is the fallback — same as the old code, but now it only
+            # fires when LP rows genuinely can't resolve the stall.)
+            support_i = [(j, mod(v, ell)) for (j, v) in rel_rows[i]
+                         if mod(v, ell) != 0 && 1 <= j <= nF]
+            unknowns_i = [(j, cj) for (j, cj) in support_i if !assigned[j]]
+            if length(unknowns_i) >= 1
+                j_free = unknowns_i[1][1]
+                if !assigned[j_free]
+                    idx = introduce_free!(j_free)
+                    if idx != -1
+                        # Retry with j_free now assigned.
+                        process_row!(rel_rows[i], alpha_vec[i], beta_vec[i])
+                    end
+                end
+            end
+        end
+
+        # After each chain step, do a quick LP drain to propagate early wins.
+        drain_lp_once!()
+    end
+
+    # ── Mop-up: full iterative passes over all remaining rows ─────────────────
+    # (lp_pending_ref[] now contains only rows that still have unknowns)
+    changed = true
+    passes  = 0
+    max_passes = 8
+    while changed && passes < max_passes && !isempty(lp_pending_ref[])
+        changed = false
+        passes += 1
+        next_pending = Int[]
+        for ri in lp_pending_ref[]
+            result = process_row!(rel_rows[ri], alpha_vec[ri], beta_vec[ri])
+            if result == :assigned
+                changed = true
+            elseif result != :skip
+                push!(next_pending, ri)
+            end
+        end
+        lp_pending_ref[] = next_pending
+    end
+
+    n_assigned = count(identity, assigned)
+
+    # ── Step 4: Extract and solve the linear system ───────────────────────────
+    #
+    # Each constraint is:  P + Σ_b c_b · L_b = 0  (mod ell)
+    # where L_1 = k, L_2 = log[anchor_0], L_3... = additional free anchors.
+    #
+    # We want to solve for k (= L_1).  Eliminate non-k variables by collecting
+    # equations as rows of a matrix and running light Gaussian elimination.
+
+    n_eq  = length(constraints_linear)
+    n_var = n_basis   # L_1..L_{n_basis}
+
+    k_candidate = nothing
+
+    function verify_k(k_try::Int)::Bool
+        G === nothing && return true
+        return jac_mul(G, k_try, ell) == T
+    end
+
+    if n_eq >= 1 && n_var <= n_eq + 2
+        # Build augmented matrix [coeffs | -P] for variables L_1..L_{n_var}.
+        # Row i: Σ_b coeff[i][b] · L_b = -P_i
+        mat = zeros(Int, n_eq, n_var + 1)
+        for (i, (P, cmap)) in enumerate(constraints_linear)
+            mat[i, n_var + 1] = mod(-P, ell)   # RHS
+            for (b, cv) in cmap
+                1 <= b <= n_var || continue
+                mat[i, b] = mod(cv, ell)
+            end
+        end
+
+        # Gaussian elimination to get k from column 1.
+        # Simple partial-pivot elimination mod ell.
+        pivot_row = fill(0, n_var)   # pivot_row[b] = row index where basis b is pivot
+        cur_row = 1
+        for col in 1:n_var
+            # Find pivot.
+            piv = 0
+            for r in cur_row:n_eq
+                mat[r, col] != 0 && (piv = r; break)
+            end
+            piv == 0 && continue
+            piv != cur_row && (mat[[cur_row, piv], :] = mat[[piv, cur_row], :])
+            pivot_row[col] = cur_row
+
+            inv_v = powermod(mat[cur_row, col], ell - 2, ell)
+            for c in 1:(n_var + 1)
+                mat[cur_row, c] = Int(mod(Int128(mat[cur_row, c]) * inv_v, ell))
+            end
+            for r in 1:n_eq
+                r == cur_row && continue
+                fac = mat[r, col]
+                fac == 0 && continue
+                for c in 1:(n_var + 1)
+                    mat[r, c] = Int(mod(Int128(mat[r, c]) - Int128(fac) * mat[cur_row, c], ell))
+                end
+            end
+            cur_row += 1
+            cur_row > n_eq && break
+        end
+
+        # Extract k from column 1 (basis index 1 = k).
+        pr = pivot_row[1]
+        if pr != 0 && mat[pr, 1] == 1
+            k_try = mat[pr, n_var + 1]
+            if verify_k(k_try)
+                k_candidate = k_try
+                verbose && @printf("[chain_path] Gaussian elim on constraint system → k=%d ✓\n", k_candidate)
+            end
+        end
+
+        # If that didn't work, try direct 2×2 pairs on columns (1, b) for b>1.
+        if k_candidate === nothing
+            for (P1, cm1) in constraints_linear
+                k_candidate !== nothing && break
+                Q1 = get(cm1, 1, 0)   # coeff of k
+                Q1 == 0 && continue
+                R1 = get(cm1, 2, 0)   # coeff of L₀
+                R1 == 0 || continue   # only handle R=0 case (direct k extraction)
+                # Check all other basis elements are 0 too.
+                all_zero = all(b == 1 || cv == 0 for (b, cv) in cm1)
+                all_zero || continue
+                k_try = mod(mod(-P1, ell) * powermod(Q1, ell - 2, ell), ell)
+                if verify_k(k_try)
+                    k_candidate = k_try
+                    verbose && @printf("[chain_path] Direct R=0 constraint → k=%d ✓\n", k_candidate)
+                end
+            end
+        end
+    end
+
+    n_free_introduced = n_basis - 2   # basis[1]=k, basis[2]=L₀ are structural; rest are chain stalls
+    verbose && @printf("[chain_path] assigned=%d/%d, basis=%d (free_introduced=%d), equations=%d, k=%s\n",
+                       n_assigned, nF, n_basis, n_free_introduced, n_eq,
+                       k_candidate === nothing ? "nothing" : string(k_candidate))
+
+    return (k                    = k_candidate,
+            atom_logs            = nothing,
+            chain_path_succeeded = k_candidate !== nothing,
+            n_equations          = n_eq)
 end
 
 # ---------------------------------------------------------------------------

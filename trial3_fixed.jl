@@ -584,6 +584,17 @@ function index_calculus_walk(G::Div2, T::Div2;
         @printf("Rows: %d/%d (Phase 1 + %d) — attempting kernel solve...\n",
                 current_limit, total_count, current_limit - p1_count)
 
+        # ── Chain-path O(nF) attempt (phase-1 chain structure) ──────────────
+        cp = chain_path_solve(sub_rel, sub_al, sub_be, nF, ell, p1_count;
+                               G=G, T=T, verbose=verbose)
+        if cp.chain_path_succeeded
+            @printf("  -> chain_path_solve succeeded: k=%d  (equations=%d)\n",
+                    cp.k, cp.n_equations)
+            monitor_print_history(esm)
+            return (k=cp.k, rel_rows=rel_rows, alpha_vec=alpha_vec,
+                    beta_vec=beta_vec, nF=nF, shortfall=false)
+        end
+
         # ── Cycle-union O(n) attempt (H₂=0 conjecture) ──────────────────────
         if use_cycle_union
             cu = cycle_union_solve(sub_rel, sub_al, sub_be, nF, ell;
@@ -631,7 +642,19 @@ function index_calculus_walk(G::Div2, T::Div2;
     # ── Final full kernel solve on all relations ──────────────────────────────
     t_solve_start = time()
 
-    # Try cycle-union first (O(n), H₂=0 conjecture).
+    # Try chain-path solve first (O(nF), exploits phase-1 chain structure).
+    verbose && println("  Attempting chain_path_solve on full relation set...")
+    cp = chain_path_solve(rel_rows, alpha_vec, beta_vec, nF, ell, p1_count;
+                          G=G, T=T, verbose=verbose)
+    if cp.chain_path_succeeded
+        t_solve_done = time() - t_solve_start
+        verbose && @printf("  chain_path_solve succeeded: k=%d  time=%.3fs  (equations=%d)\n",
+                           cp.k, t_solve_done, cp.n_equations)
+        return (k=cp.k, rel_rows=rel_rows, alpha_vec=alpha_vec,
+                beta_vec=beta_vec, nF=nF, shortfall=false)
+    end
+
+    # Try cycle-union next (O(n), H₂=0 conjecture).
     if use_cycle_union
         verbose && println("  Attempting cycle_union_solve on full relation set...")
         cu = cycle_union_solve(rel_rows, alpha_vec, beta_vec, nF, ell;
@@ -743,7 +766,7 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
     println("  y^2 = x^5+3x^3+2x^2+5x+4  /F_$p,  ell=<auto>")
     println("  threads = $(Threads.nthreads())  |  start: $(Dates.now())")
     amortized       && println("  mode: AMORTIZED (α-only precompute + single β≠0 DLP)")
-    use_cycle_union && !amortized && println("  LA mode: cycle-union O(n) solver (H₂=0 conjecture)")
+    !amortized      && println("  LA mode: chain-path O(nF) solver (always) + cycle-union (if --cycle-union)")
     println("="^70, "\n")
 
     t_pts = time()
