@@ -394,7 +394,7 @@ end
         fb_row_scratch ::Dict{Int,Int},
         neg_al         ::Int,
         neg_be         ::Int,
-        ell            ::BigInt,
+        ell            ::Integer,
         fb             ::Vector{NTuple{2,Int}},
         nF_cur         ::Int,
         G              ::Div2,
@@ -940,7 +940,7 @@ end
         try
             if lp2_graph_node_count(shared_lp2_conj) < max_lp2_conj_nodes
                 emitted_conj = lp2c_insert_edge!(shared_lp2_conj, P0, lp_key,
-                                                 Dict{Int,Int}(), neg_al, neg_be, ell)
+                                                 Dict{Int,Int}(), neg_al, neg_be, Int(ell))
             else
                 s.hits_lp2_cap += 1
             end

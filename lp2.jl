@@ -327,7 +327,7 @@ end
 # Walk from start to root, accumulating SmallRow and alpha/beta with alternating signs.
 # sign_node starts at +1 for the first edge (start→parent(start)) and flips each hop.
 # Returns (row, alpha, beta, root_sign, depth) or nothing if depth exceeded.
-function lp2_path_to_root(g::LP2Graph, start::NTuple{2,Int}, ell::Int)
+function lp2_path_to_root(g::LP2Graph, start::NTuple{2,Int}, ell::Integer)
     row       = SmallRow()
     alpha     = 0
     beta      = 0
@@ -397,7 +397,7 @@ function lp2_insert_edge!(g::LP2Graph,
                           L::NTuple{2,Int}, R::NTuple{2,Int},
                           fb_row::Dict{Int,Int},
                           alpha::Int, beta::Int,
-                          ell::Int)
+                          ell::Integer)
 
     g.n_edges_inserted += 1
     L == R && return nothing

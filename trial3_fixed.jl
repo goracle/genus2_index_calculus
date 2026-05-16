@@ -39,6 +39,7 @@ include("lp2.jl")
 include("lp2_conj.jl")
 include("trial3_linalg.jl")
 include("trial3_phase2.jl")
+include("trial3_amortized.jl")
 
 # Safe wrapper around the kernel-phase diagnostics.  These are helpful, but
 # they should never be able to abort a successful solve.
@@ -248,7 +249,8 @@ function index_calculus_walk(G::Div2, T::Div2;
                              enable_lp2       ::Bool = true,
                              enable_lp2_conj  ::Bool = true,
                              max_lp2_nodes    ::Int  = DEFAULT_MAX_LP2_NODES,
-                             max_lp2_conj_nodes::Int = DEFAULT_MAX_LP2_CONJ_NODES)
+                             max_lp2_conj_nodes::Int = DEFAULT_MAX_LP2_CONJ_NODES,
+                             use_cycle_union  ::Bool = false)
 
     t_walk_start = time()
 
@@ -582,6 +584,21 @@ function index_calculus_walk(G::Div2, T::Div2;
         @printf("Rows: %d/%d (Phase 1 + %d) — attempting kernel solve...\n",
                 current_limit, total_count, current_limit - p1_count)
 
+        # ── Cycle-union O(n) attempt (H₂=0 conjecture) ──────────────────────
+        if use_cycle_union
+            cu = cycle_union_solve(sub_rel, sub_al, sub_be, nF, ell;
+                                   G=G, T=T, verbose=verbose)
+            if cu.cycle_solver_succeeded
+                @printf("  -> cycle_union_solve succeeded: k=%d  (cycles=%d, deferred=%d)\n",
+                        cu.k, cu.n_cycles_found, cu.n_deferred_resolved)
+                monitor_print_history(esm)
+                return (k=cu.k, rel_rows=rel_rows, alpha_vec=alpha_vec,
+                        beta_vec=beta_vec, nF=nF, shortfall=false)
+            end
+            verbose && @printf("  -> cycle_union_solve: no k found (cycles=%d); falling back to Gaussian elim.\n",
+                               cu.n_cycles_found)
+        end
+
         kernels = left_kernel_all(sub_rel, nF, ell)
         if isempty(kernels)
             println("  -> No kernel found for this subset.")
@@ -613,6 +630,23 @@ function index_calculus_walk(G::Div2, T::Div2;
 
     # ── Final full kernel solve on all relations ──────────────────────────────
     t_solve_start = time()
+
+    # Try cycle-union first (O(n), H₂=0 conjecture).
+    if use_cycle_union
+        verbose && println("  Attempting cycle_union_solve on full relation set...")
+        cu = cycle_union_solve(rel_rows, alpha_vec, beta_vec, nF, ell;
+                               G=G, T=T, verbose=verbose)
+        if cu.cycle_solver_succeeded
+            t_solve_done = time() - t_solve_start
+            verbose && @printf("  cycle_union_solve succeeded: k=%d  time=%.3fs  (cycles=%d, deferred=%d)\n",
+                               cu.k, t_solve_done, cu.n_cycles_found, cu.n_deferred_resolved)
+            return (k=cu.k, rel_rows=rel_rows, alpha_vec=alpha_vec,
+                    beta_vec=beta_vec, nF=nF, shortfall=false)
+        end
+        verbose && @printf("  cycle_union_solve: no k found (cycles=%d); falling back to Gaussian elim.\n",
+                           cu.n_cycles_found)
+    end
+
     kernels       = left_kernel_all(rel_rows, nF, ell)
     t_solve_done  = time() - t_solve_start
     isempty(kernels) && error("Kernel not found — collect more relations")
@@ -657,6 +691,15 @@ function parse_trial3_cli(args::Vector{String})
     enable_lp2_conj    = true
     max_lp2_nodes      = DEFAULT_MAX_LP2_NODES
     max_lp2_conj_nodes = DEFAULT_MAX_LP2_CONJ_NODES
+    # New flags:
+    #   --amortized          run amortize_alpha_phase + amortized_dlp instead of
+    #                        the standard walk+kernel flow
+    #   --cycle-union        use cycle_union_solve (O(n)) before left_kernel_all
+    #                        fallback in the standard flow
+    #   --n-targets=N        number of DLP targets when --amortized is set
+    amortized          = false
+    use_cycle_union    = false
+    n_targets          = 3
 
     for arg in args
         if arg == "--no-lp2"
@@ -670,10 +713,17 @@ function parse_trial3_cli(args::Vector{String})
             max_lp2_nodes = parse(Int, split(arg, "=", limit=2)[2])
         elseif startswith(arg, "--max-lp2-conj-nodes=")
             max_lp2_conj_nodes = parse(Int, split(arg, "=", limit=2)[2])
+        elseif arg == "--amortized"
+            amortized = true
+        elseif arg == "--cycle-union"
+            use_cycle_union = true
+        elseif startswith(arg, "--n-targets=")
+            n_targets = parse(Int, split(arg, "=", limit=2)[2])
         end
     end
     return (fb_size=fb_size, enable_lp2=enable_lp2, enable_lp2_conj=enable_lp2_conj,
-            max_lp2_nodes=max_lp2_nodes, max_lp2_conj_nodes=max_lp2_conj_nodes)
+            max_lp2_nodes=max_lp2_nodes, max_lp2_conj_nodes=max_lp2_conj_nodes,
+            amortized=amortized, use_cycle_union=use_cycle_union, n_targets=n_targets)
 end
 
 # ---------------------------------------------------------------------------
@@ -683,12 +733,17 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
                  enable_lp2         ::Bool = true,
                  enable_lp2_conj    ::Bool = true,
                  max_lp2_nodes      ::Int  = DEFAULT_MAX_LP2_NODES,
-                 max_lp2_conj_nodes ::Int  = DEFAULT_MAX_LP2_CONJ_NODES)
+                 max_lp2_conj_nodes ::Int  = DEFAULT_MAX_LP2_CONJ_NODES,
+                 amortized          ::Bool = false,
+                 use_cycle_union    ::Bool = false,
+                 n_targets          ::Int  = 3)
     t_main_start = time()
     println("="^70)
     println("  trial3: Markov-walk phi-relation index calculus")
     println("  y^2 = x^5+3x^3+2x^2+5x+4  /F_$p,  ell=<auto>")
     println("  threads = $(Threads.nthreads())  |  start: $(Dates.now())")
+    amortized       && println("  mode: AMORTIZED (α-only precompute + single β≠0 DLP)")
+    use_cycle_union && !amortized && println("  LA mode: cycle-union O(n) solver (H₂=0 conjecture)")
     println("="^70, "\n")
 
     t_pts = time()
@@ -714,6 +769,37 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
     @assert jac_isid(jac_mul_raw(G, ell)) "G does not have order ell"
     println("  Confirmed: ell*G = identity\n")
 
+    # ── Amortised mode: α-only precompute, then one β≠0 step per DLP ──────────
+    if amortized
+        fb_run = fb_size === nothing ? clamp(round(Int, p^(1/2)), 200, 20_000) : fb_size
+        @printf("── Amortised precomputation (β=0 walk, FB=%d) ───────────────────────\n", fb_run)
+        t_pre = time()
+        pre = amortize_alpha_phase(G, ell; fb_size=fb_run, verbose=true)
+        @printf("Precomputation done in %.3fs.  Atom-log dict: %d entries.\n\n",
+                time() - t_pre, length(pre.atom_log_dict))
+
+        println("── Amortised DLP trials ─────────────────────────────────────────────")
+        n_ok = 0
+        for trial in 1:n_targets
+            k_true = rand(2:ell-1)
+            T      = jac_mul(G, k_true, ell)
+            @printf("[Trial %d/%d]  k_true = %d\n", trial, n_targets, k_true)
+            k_rec = amortized_dlp(G, T, pre.atom_log_dict, pre.fb, ell; verbose=true)
+            if k_rec !== nothing
+                match = k_rec == k_true
+                @printf("  Recovered k = %d  match = %s\n", k_rec, match)
+                match && (n_ok += 1)
+            else
+                println("  FAILED to recover k")
+            end
+        end
+        @printf("\n── Summary ─────────────────────────────────────────────────────────\n")
+        @printf("  %d / %d DLP trials recovered correctly\n", n_ok, n_targets)
+        @printf("  total wall time: %.3fs\n", time() - t_main_start)
+        println("="^70)
+        return
+    end
+
     k_true = rand(2:ell-1)
     T      = jac_mul(G, k_true, ell)
     @printf("Secret k = %d  (%.1f bits)\n\n", k_true, log2(k_true + 1))
@@ -736,7 +822,8 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
                                   enable_lp2=enable_lp2,
                                   enable_lp2_conj=enable_lp2_conj,
                                   max_lp2_nodes=max_lp2_nodes,
-                                  max_lp2_conj_nodes=max_lp2_conj_nodes)
+                                  max_lp2_conj_nodes=max_lp2_conj_nodes,
+                                  use_cycle_union=use_cycle_union)
     t_walk_done = time() - t_walk
     k_rec = wres === nothing ? nothing : wres.k
 
@@ -757,7 +844,9 @@ function main2_from_argv()
     opts = parse_trial3_cli(ARGS)
     main2(; fb_size=opts.fb_size, enable_lp2=opts.enable_lp2,
           enable_lp2_conj=opts.enable_lp2_conj,
-          max_lp2_nodes=opts.max_lp2_nodes, max_lp2_conj_nodes=opts.max_lp2_conj_nodes)
+          max_lp2_nodes=opts.max_lp2_nodes, max_lp2_conj_nodes=opts.max_lp2_conj_nodes,
+          amortized=opts.amortized, use_cycle_union=opts.use_cycle_union,
+          n_targets=opts.n_targets)
 end
 
 if abspath(PROGRAM_FILE) == @__FILE__
