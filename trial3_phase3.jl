@@ -174,6 +174,7 @@ function phase3_trial_worker(
     n_1lp_aff_local  = 0   # affine closure against local birthday dict
     n_1lp_conj_pre   = 0   # conj closure against shared_lp1_conj_pre
     n_1lp_conj_local = 0   # conj closure against local birthday dict
+    n_conj_branch    = 0   # times we entered A1 (i0∈FB, conj residual), before haskey
     k_rec            = nothing
 
     # ── Helper: solve k from a pure-FB row ───────────────────────────────────
@@ -239,6 +240,7 @@ function phase3_trial_worker(
 
             if i0 != 0
                 # A1: 1-LP-conj — P0 is in FB, RS pair is the LP atom
+                n_conj_branch += 1
                 si_shard   = conj_shard_idx(lp_key)
                 conj_dict  = lp1_conj_pre.shards[si_shard]
 
@@ -343,9 +345,9 @@ function phase3_trial_worker(
         k_rec_s  = k_rec  === nothing ? "none" : string(k_rec)
         k_true_s = k_true === nothing ? "?"    : string(k_true)
         match_s  = verified ? "ok" : "MISMATCH"
-        @printf("[phase3 trial %d | t=%.3fs] k_rec=%s  k_true=%s  match=%s  steps=%d  0lp=%d  1lp_aff_pre=%d  1lp_aff_local=%d  1lp_conj_pre=%d  1lp_conj_local=%d\n",
+        @printf("[phase3 trial %d | t=%.3fs] k_rec=%s  k_true=%s  match=%s  steps=%d  0lp=%d  1lp_aff_pre=%d  1lp_aff_local=%d  1lp_conj_pre=%d  1lp_conj_local=%d  conj_branch=%d\n",
                 trial_idx, elapsed, k_rec_s, k_true_s, match_s,
-                n_steps, n_0lp, n_1lp_aff_pre, n_1lp_aff_local, n_1lp_conj_pre, n_1lp_conj_local)
+                n_steps, n_0lp, n_1lp_aff_pre, n_1lp_aff_local, n_1lp_conj_pre, n_1lp_conj_local, n_conj_branch)
         flush(stdout)
     end
 

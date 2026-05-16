@@ -938,6 +938,12 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
 
         @printf("  Phase2Tables ready: FB=%d  atom_logs=%d  lp1_entries=%d\n",
                 length(fb_pre), length(atom_log_dict), length(shared_lp1_pre))
+        let sh = shared_lp1_conj_pre.shards
+            conj_total    = sum(length(sh[i]) for i in eachindex(sh))
+            conj_nonempty = count(i -> !isempty(sh[i]), eachindex(sh))
+            @printf("  shared_lp1_conj_pre: %d entries across %d/%d nonempty shards\n",
+                    conj_total, conj_nonempty, length(sh))
+        end
         @printf("  total precompute time: %.3fs\n\n", time() - t_pre)
 
         # ── Build per-target list ─────────────────────────────────────────────
