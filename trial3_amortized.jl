@@ -902,97 +902,24 @@ function chain_path_solve(rel_rows   ::Vector{Dict{Int,Int}},
         end
     end
 
-    # ── Step 3: Interleaved chain+LP forward pass, then mop-up ──────────────
-    #
-    # KEY INSIGHT: process chain row i, then *immediately* drain any LP-closure
-    # rows that can make progress with the current assigned set — before
-    # advancing to chain row i+1.  This gives LP rows the earliest possible
-    # opportunity to pin atoms and prevent free-variable proliferation.
-    #
-    # Only introduce a fresh free basis element for an unresolved chain anchor
-    # if the LP drain came up completely empty (no LP row could do anything).
-    # This keeps n_basis small: ideally O(1) rather than O(n_phase1).
+    # ── Step 3: Forward pass over chain rows, then all rows iteratively ───────
 
-    # Partition rows: LP (phase-2) rows are indices n_phase1+1 .. m.
-    lp_pending_ref = Ref(collect((n_phase1 + 1):m))   # use Ref so closures can reassign
-
-    # Drain: scan lp_pending once, process any row that can make progress.
-    # Returns true if at least one row made progress (:assigned or :constraint).
-    function drain_lp_once!()::Bool
-        progress = false
-        next_pending = Int[]
-        for ri in lp_pending_ref[]
-            result = process_row!(rel_rows[ri], alpha_vec[ri], beta_vec[ri])
-            if result == :assigned || result == :constraint
-                progress = true
-                result == :assigned || push!(next_pending, ri)
-            elseif result != :skip
-                push!(next_pending, ri)
-            end
-        end
-        lp_pending_ref[] = next_pending
-        return progress
-    end
-
-    # Full LP drain: repeat until no progress.
-    function drain_lp_full!()
-        while drain_lp_once!() end
-    end
-
-    # ── Interleaved chain forward pass ────────────────────────────────────────
+    # First pass: chain rows in order.
     for i in 1:n_phase1
-        result = process_row!(rel_rows[i], alpha_vec[i], beta_vec[i])
-
-        if result == :deferred_many || result == :deferred_free
-            # Chain row i still has ≥2 unknowns.  Give LP rows a chance
-            # to pin something first.
-            drain_lp_full!()
-            # Retry chain row i.
-            result = process_row!(rel_rows[i], alpha_vec[i], beta_vec[i])
-        end
-
-        if result == :deferred_many || result == :deferred_free
-            # LP drain didn't help.  Introduce a free variable for the first
-            # unresolved atom in this chain row so we can keep propagating.
-            # (This is the fallback — same as the old code, but now it only
-            # fires when LP rows genuinely can't resolve the stall.)
-            support_i = [(j, mod(v, ell)) for (j, v) in rel_rows[i]
-                         if mod(v, ell) != 0 && 1 <= j <= nF]
-            unknowns_i = [(j, cj) for (j, cj) in support_i if !assigned[j]]
-            if length(unknowns_i) >= 1
-                j_free = unknowns_i[1][1]
-                if !assigned[j_free]
-                    idx = introduce_free!(j_free)
-                    if idx != -1
-                        # Retry with j_free now assigned.
-                        process_row!(rel_rows[i], alpha_vec[i], beta_vec[i])
-                    end
-                end
-            end
-        end
-
-        # After each chain step, do a quick LP drain to propagate early wins.
-        drain_lp_once!()
+        process_row!(rel_rows[i], alpha_vec[i], beta_vec[i])
     end
 
-    # ── Mop-up: full iterative passes over all remaining rows ─────────────────
-    # (lp_pending_ref[] now contains only rows that still have unknowns)
+    # Iterative passes over ALL rows until no progress.
     changed = true
     passes  = 0
-    max_passes = 8
-    while changed && passes < max_passes && !isempty(lp_pending_ref[])
+    max_passes = 6
+    while changed && passes < max_passes
         changed = false
         passes += 1
-        next_pending = Int[]
-        for ri in lp_pending_ref[]
+        for ri in 1:m
             result = process_row!(rel_rows[ri], alpha_vec[ri], beta_vec[ri])
-            if result == :assigned
-                changed = true
-            elseif result != :skip
-                push!(next_pending, ri)
-            end
+            result == :assigned && (changed = true)
         end
-        lp_pending_ref[] = next_pending
     end
 
     n_assigned = count(identity, assigned)
@@ -1087,9 +1014,8 @@ function chain_path_solve(rel_rows   ::Vector{Dict{Int,Int}},
         end
     end
 
-    n_free_introduced = n_basis - 2   # basis[1]=k, basis[2]=L₀ are structural; rest are chain stalls
-    verbose && @printf("[chain_path] assigned=%d/%d, basis=%d (free_introduced=%d), equations=%d, k=%s\n",
-                       n_assigned, nF, n_basis, n_free_introduced, n_eq,
+    verbose && @printf("[chain_path] assigned=%d/%d, basis=%d, equations=%d, k=%s\n",
+                       n_assigned, nF, n_basis, n_eq,
                        k_candidate === nothing ? "nothing" : string(k_candidate))
 
     return (k                    = k_candidate,
