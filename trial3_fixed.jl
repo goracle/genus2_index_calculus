@@ -25,6 +25,7 @@
 include("trial1_autoell_p10.jl")   # all Fp/poly/Jacobian/curve utilities
 using LinearAlgebra
 using Base.Threads
+using Random
 using Nemo
 using Dates
 
@@ -854,7 +855,7 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
                     shared_lp2_conj_pre, shared_lp2_conj_lock_pre,
                     enable_lp2, enable_lp2_conj, max_lp2_nodes, max_lp2_conj_nodes,
                     thread_collectors_pre[tid], rank_tracker_pre;
-                    verbose=true, beta_zero=true)
+                    verbose=true, beta_zero=true, amortized_precompute=true)
             end
         end
 
