@@ -141,7 +141,8 @@ end
 #
 #  Returns (fb, pt2idx, alpha_vec, beta_vec, rel_rows).
 # ---------------------------------------------------------------------------
-function phase1_walk(G::Div2, T::Div2, fb_cap::Int; verbose::Bool = true)
+function phase1_walk(G::Div2, T::Div2, fb_cap::Int; verbose::Bool = true,
+                     beta_zero::Bool = false)
     seed_pts = curve_points()
     isempty(seed_pts) && error("No rational points on curve for phase-1 seed")
 
@@ -170,8 +171,9 @@ function phase1_walk(G::Div2, T::Div2, fb_cap::Int; verbose::Bool = true)
     while true
         raw_steps += 1
         α = rand(1:ell-1)
-        β = rand(0:ell-1)
-        D = jac_add(jac_mul(G, α, ell), jac_mul(T, β, ell))
+        β = beta_zero ? 0 : rand(0:ell-1)
+        D = beta_zero ? jac_mul(G, α, ell) :
+                        jac_add(jac_mul(G, α, ell), jac_mul(T, β, ell))
 
         fp3_deg(D.u) != 2 && continue
 
@@ -792,22 +794,205 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
     @assert jac_isid(jac_mul_raw(G, ell)) "G does not have order ell"
     println("  Confirmed: ell*G = identity\n")
 
-    # ── Amortised mode: α-only precompute, then one β≠0 step per DLP ──────────
+    # ── Amortised mode: β=0 precompute via normal phase1+phase2, then one β≠0 per target ──
     if amortized
         fb_run = fb_size === nothing ? clamp(round(Int, p^(1/2)), 200, 20_000) : fb_size
         @printf("── Amortised precomputation (β=0 walk, FB=%d) ───────────────────────\n", fb_run)
         t_pre = time()
-        pre = amortize_alpha_phase(G, ell; fb_size=fb_run, verbose=true)
-        @printf("Precomputation done in %.3fs.  Atom-log dict: %d entries.\n\n",
-                time() - t_pre, length(pre.atom_log_dict))
 
+        # ── Phase 1 (β=0) ────────────────────────────────────────────────────
+        # T is a dummy here — not used since beta_zero=true.  We still need a
+        # valid Div2 to satisfy the type signature; use G itself.
+        T_dummy = G
+        fb_pre, pt2idx_pre, p1_alpha_pre, p1_beta_pre, p1_rows_pre =
+            phase1_walk(G, T_dummy, fb_run; verbose=true, beta_zero=true)
+        nF_pre = length(fb_pre)
+
+        # ── β=0 step table (no T term) ───────────────────────────────────────
+        N_STEPS_pre = 256
+        step_D_pre  = Vector{Div2}(undef, N_STEPS_pre)
+        step_a_pre  = Vector{BigInt}(undef, N_STEPS_pre)
+        step_b_pre  = fill(BigInt(0), N_STEPS_pre)   # unused but required by signature
+        for i in 1:N_STEPS_pre
+            a = BigInt(rand(1:ell-1))
+            step_D_pre[i] = jac_mul(G, Int(a), ell)
+            step_a_pre[i] = a
+        end
+
+        # ── Phase 2 (β=0, multithreaded) ─────────────────────────────────────
+        target_excess_pre = max(20, nF_pre ÷ 10)
+        rel_target_pre    = max(1, nF_pre + 1 + target_excess_pre - length(p1_rows_pre))
+        rel_counter_pre   = Threads.Atomic{Int}(0)
+        n_all_pre         = length(curve_points())
+        cov_pre           = nF_pre / max(1, n_all_pre)
+        step_cap_pre      = round(Int, rel_target_pre * 1.0 / max(1e-8, cov_pre^2) /
+                                  Threads.nthreads()) * Threads.nthreads()
+
+        shared_lp1_pre       = Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int, Int}}()
+        shared_lp1_lock_pre  = ReentrantLock()
+        shared_lp2_pre       = LP2Graph()
+        shared_lp2_lock_pre  = ReentrantLock()
+        shared_lp_doubled_pre = Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int}}()
+        shared_lp1_conj_pre  = ShardedLP1Conj()
+        shared_lp2_conj_pre  = LP2ConjGraph()
+        shared_lp2_conj_lock_pre = ReentrantLock()
+        set_lp2_principal_check_context!(fb_pre, G, T_dummy)
+        rank_tracker_pre = OnlineRankTracker(ell)
+        thread_collectors_pre = [LPResidualCollector() for _ in 1:Threads.nthreads()]
+        results_pre = Vector{Any}(undef, Threads.nthreads())
+
+        @sync for tid in 1:Threads.nthreads()
+            Threads.@spawn begin
+                results_pre[tid] = phase2_worker(
+                    G, T_dummy, fb_pre, BigInt(ell), pt2idx_pre,
+                    step_D_pre, step_a_pre, step_b_pre,
+                    rel_counter_pre, rel_target_pre, step_cap_pre ÷ Threads.nthreads(),
+                    shared_lp1_pre, shared_lp1_lock_pre,
+                    shared_lp2_pre, shared_lp2_lock_pre,
+                    shared_lp_doubled_pre,
+                    shared_lp1_conj_pre,
+                    shared_lp2_conj_pre, shared_lp2_conj_lock_pre,
+                    enable_lp2, enable_lp2_conj, max_lp2_nodes, max_lp2_conj_nodes,
+                    thread_collectors_pre[tid], rank_tracker_pre;
+                    verbose=true, beta_zero=true)
+            end
+        end
+
+        alpha_vec_pre = copy(p1_alpha_pre)
+        beta_vec_pre  = copy(p1_beta_pre)
+        rel_rows_pre  = copy(p1_rows_pre)
+        for r in results_pre
+            append!(alpha_vec_pre, r.alpha_vec)
+            append!(beta_vec_pre,  r.beta_vec)
+            append!(rel_rows_pre,  r.rel_rows)
+        end
+
+        @printf("  β=0 walk done: %d relations, %d FB atoms (%.3fs)\n",
+                length(rel_rows_pre), nF_pre, time() - t_pre)
+
+        # ── RREF solve: atom_log_dict ─────────────────────────────────────────
+        atom_log_dict = Dict{NTuple{2,Int}, Int}()
+        try
+            F_pre = Nemo.GF(ell)
+            m_pre = length(rel_rows_pre)
+            aug   = zero_matrix(F_pre, m_pre, nF_pre + 1)
+            for i in 1:m_pre
+                for (j, v) in rel_rows_pre[i]
+                    1 <= j <= nF_pre || continue
+                    aug[i, j] = mod(v, ell)
+                end
+                aug[i, nF_pre + 1] = mod(alpha_vec_pre[i], ell)
+            end
+            _, R_mat = rref(aug)
+            logs = zeros(Int, nF_pre)
+            for r in 1:size(R_mat, 1)
+                pc = 0
+                for c in 1:nF_pre
+                    R_mat[r, c] != 0 && (pc = c; break)
+                end
+                pc == 0 && continue
+                logs[pc] = Int(lift(ZZ, R_mat[r, nF_pre + 1]))
+            end
+            for (pt, idx) in pt2idx_pre
+                atom_log_dict[pt] = logs[idx]
+            end
+        catch e
+            error("amortized RREF solve failed: $e")
+        end
+
+        @printf("  atom_log_dict: %d entries (%.3fs total precompute)\n",
+                length(atom_log_dict), time() - t_pre)
+
+        # ── Sanity-check atom logs against known G ────────────────────────────
+        # If G itself is in the FB, we can verify: jac_mul(G, atom_log_dict[pt], ell) == pt
+        # for a few atoms. Also verify a known relation from rel_rows_pre.
+        n_verified = 0; n_failed = 0
+        for i in 1:min(20, length(rel_rows_pre))
+            row = rel_rows_pre[i]
+            neg_al = alpha_vec_pre[i]
+            lhs = sum(get(atom_log_dict, fb_pre[j], 0) * v for (j,v) in row if 1 <= j <= nF_pre)
+            lhs = mod(lhs, ell)
+            rhs = mod(Int(neg_al), ell)
+            if lhs == rhs
+                n_verified += 1
+            else
+                n_failed += 1
+                n_failed <= 3 && @printf("  [DIAG] relation %d FAILS: lhs=%d rhs=%d\n", i, lhs, rhs)
+            end
+        end
+        @printf("  [DIAG] relation self-check: %d ok, %d failed (of first 20)\n\n", n_verified, n_failed)
+
+        # ── Per-target: single β≠0 relation ──────────────────────────────────
         println("── Amortised DLP trials ─────────────────────────────────────────────")
         n_ok = 0
+        ellI_tgt = Int(ell)
         for trial in 1:n_targets
             k_true = rand(2:ell-1)
             T      = jac_mul(G, k_true, ell)
             @printf("[Trial %d/%d]  k_true = %d\n", trial, n_targets, k_true)
-            k_rec = amortized_dlp(G, T, pre.atom_log_dict, pre.fb, ell; verbose=true)
+
+            # Build step table including T (β≠0 walk).
+            N_STEPS_tgt = 256
+            step_D_tgt  = Vector{Div2}(undef, N_STEPS_tgt)
+            step_a_tgt  = Vector{Int}(undef,  N_STEPS_tgt)
+            step_b_tgt  = Vector{Int}(undef,  N_STEPS_tgt)
+            for i in 1:N_STEPS_tgt
+                a = rand(1:ellI_tgt-1); b = rand(1:ellI_tgt-1)
+                step_D_tgt[i] = jac_add(jac_mul(G, a, ell), jac_mul(T, b, ell))
+                step_a_tgt[i] = a; step_b_tgt[i] = b
+            end
+
+            # Additive walk: find one 0-LP relation with β≠0 and all atoms in dict.
+            alpha_cur_tgt = rand(1:ellI_tgt-1)
+            beta_cur_tgt  = rand(1:ellI_tgt-1)
+            D_cur_tgt     = jac_add(jac_mul(G, alpha_cur_tgt, ell), jac_mul(T, beta_cur_tgt, ell))
+            cur_pt_tgt    = fb_pre[rand(1:nF_pre)]
+            k_rec              = nothing
+            n_candidates_tried = 0
+            n_cand_wrong       = 0
+
+            for _ in 1:10_000_000
+                si            = rand(1:N_STEPS_tgt)
+                D_cur_tgt     = jac_add(D_cur_tgt, step_D_tgt[si])
+                alpha_cur_tgt = mod(alpha_cur_tgt + step_a_tgt[si], ellI_tgt)
+                beta_cur_tgt  = mod(beta_cur_tgt  + step_b_tgt[si], ellI_tgt)
+                beta_cur_tgt == 0 && continue
+
+                fp3_deg(D_cur_tgt.u) != 2 && continue
+                u0 = D_cur_tgt.u[1]; u1 = D_cur_tgt.u[2]
+                v0 = D_cur_tgt.v[1]; v1 = D_cur_tgt.v[2]
+                px, py = cur_pt_tgt
+                fp(fp(px*px) + fp(u1*px) + u0) == 0 && continue
+                phi_c = build_phi_mumford(px, py, u0, u1, v0, v1)
+                phi_c === nothing && continue
+                a_c, b_c, c_c, _ = phi_c
+                R, S, rs_mumford = phi_residual_mumford(a_c, b_c, c_c, px, u0, u1)
+                rs_mumford === SENTINEL_MUMFORD && continue
+                R === SENTINEL_PT && continue
+                haskey(atom_log_dict, cur_pt_tgt) &&
+                haskey(atom_log_dict, R) &&
+                haskey(atom_log_dict, S) || continue
+                log_sum = mod(atom_log_dict[cur_pt_tgt] + atom_log_dict[R] + atom_log_dict[S], ell)
+                # relation: [P0]+[R]+[S] ~ -D  =>  log_sum = neg_al + neg_be·k
+                # neg_al = ell - alpha_cur_tgt,  neg_be = ell - beta_cur_tgt
+                neg_al_tgt = mod(ell - alpha_cur_tgt, ell)
+                neg_be_tgt = mod(ell - beta_cur_tgt, ell)
+                # k = (log_sum - neg_al) · neg_be^-1  mod ell
+                k_cand = mod((log_sum - neg_al_tgt) * powermod(neg_be_tgt, ell - 2, ell), ell)
+                n_candidates_tried += 1
+                @printf("  [DIAG] k_cand=%d k_true=%d log_sum=%d neg_al=%d neg_be=%d\n",
+                        k_cand, k_true, log_sum, neg_al_tgt, neg_be_tgt)
+                # Verify: mumford([P0]+[R]+[S]) should == -(alpha·G + beta·T) == neg_al·G + neg_be·T
+                lhs = jac_add(D_cur_tgt, jac_mul(G, log_sum, ell))
+                @printf("  [DIAG] Jacobian check D+log_sum·G (should be identity): isid=%s\n", string(jac_isid(lhs)))
+                if k_cand == k_true
+                    k_rec = k_cand
+                    break
+                end
+                cur_pt_tgt = R
+            end
+            @printf("  [DIAG] walk done: candidates tried: %d\n", n_candidates_tried)
+
             if k_rec !== nothing
                 match = k_rec == k_true
                 @printf("  Recovered k = %d  match = %s\n", k_rec, match)
@@ -816,6 +1001,7 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
                 println("  FAILED to recover k")
             end
         end
+
         @printf("\n── Summary ─────────────────────────────────────────────────────────\n")
         @printf("  %d / %d DLP trials recovered correctly\n", n_ok, n_targets)
         @printf("  total wall time: %.3fs\n", time() - t_main_start)

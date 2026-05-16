@@ -326,11 +326,16 @@ function cycle_union_solve(rel_rows   ::Vector{Dict{Int,Int}},
         return mod(lv + rl, ell)
     end
 
-    # Merge components of u and v with edge constraint:
-    #   coeff_u · log[u] + coeff_v · log[v] ≡ rhs_known  (mod ell)
-    # where rhs_known is the part of the relation rhs after subtracting
-    # contributions of already-resolved atoms.
-    # Returns :cycle if both were already in the same component.
+    # Attempt to solve a binary relation once at least one side is pinned.
+    #
+    # IMPORTANT: we do *not* fake a DSU union here.  A zero-weight union would
+    # assert log[u] ≡ log[v], which is generally false and silently corrupts
+    # labels.  If neither side is pinned yet, we simply defer the row.
+    #
+    # Returns:
+    #   :pinned    — a new root log was recovered and pinned
+    #   :cycle     — both atoms were already in the same component
+    #   :deferred  — not enough information yet
     function merge_binary!(u::Int, cu::Int, v::Int, cv::Int, rhs::Int)
         ru, lu = dsu_find(dsu, u)
         rv, lv = dsu_find(dsu, v)
@@ -339,35 +344,29 @@ function cycle_union_solve(rel_rows   ::Vector{Dict{Int,Int}},
             return :cycle
         end
 
-        # We need: cu*(lu + R_ru) + cv*(lv + R_rv) ≡ rhs
-        # After merge, one root disappears.  If R_ru is known:
-        #   cv*(lv + R_rv) ≡ rhs - cu*(lu + R_ru)
-        #   R_rv ≡ (rhs - cu*(lu + R_ru) - cv*lv) / cv
+        # If the u-side component is pinned, solve for v.
         if root_log[ru] != -1
-            known_part = mod(rhs - cu * (lu + root_log[ru]), ell)
-            cv_inv     = powermod(mod(cv, ell), ell - 2, ell)
-            R_rv_val   = mod((known_part - cv * lv) * cv_inv, ell)
-            # Perform the DSU merge: ru absorbs rv (or vice versa, doesn't matter
-            # for correctness since we track root_log separately).
-            dsu_union!(dsu, u, v, 0)   # structural merge; labels get recomputed
-            new_r, _ = dsu_find(dsu, u)
-            root_log[new_r] = (new_r == ru) ? root_log[ru] :
-                               mod(root_log[ru] - lu, ell)   # adjust for new root
-            # Pin the now-merged component with R_rv info baked in.
-            pin_root!(new_r, (new_r == ru) ? root_log[ru] : R_rv_val)
-        elseif root_log[rv] != -1
-            known_part = mod(rhs - cv * (lv + root_log[rv]), ell)
-            cu_inv     = powermod(mod(cu, ell), ell - 2, ell)
-            R_ru_val   = mod((known_part - cu * lu) * cu_inv, ell)
-            dsu_union!(dsu, u, v, 0)
-            new_r, _ = dsu_find(dsu, u)
-            pin_root!(new_r, (new_r == rv) ? root_log[rv] : R_ru_val)
-        else
-            # Neither root is pinned; just merge structurally.
-            # Record the constraint for later resolution.
-            dsu_union!(dsu, u, v, 0)
+            cv_mod = mod(cv, ell)
+            cv_mod == 0 && return :deferred
+            log_u  = mod(lu + root_log[ru], ell)
+            log_v  = mod((rhs - cu * log_u) * powermod(cv_mod, ell - 2, ell), ell)
+            r_v, l_v = dsu_find(dsu, v)
+            pin_root!(r_v, mod(log_v - l_v, ell))
+            return :pinned
         end
-        return :merged
+
+        # Otherwise, if the v-side component is pinned, solve for u.
+        if root_log[rv] != -1
+            cu_mod = mod(cu, ell)
+            cu_mod == 0 && return :deferred
+            log_v  = mod(lv + root_log[rv], ell)
+            log_u  = mod((rhs - cv * log_v) * powermod(cu_mod, ell - 2, ell), ell)
+            r_u, l_u = dsu_find(dsu, u)
+            pin_root!(r_u, mod(log_u - l_u, ell))
+            return :pinned
+        end
+
+        return :deferred
     end
 
     # ------------------------------------------------------------------
@@ -378,17 +377,6 @@ function cycle_union_solve(rel_rows   ::Vector{Dict{Int,Int}},
     n_cycles           = 0
     n_deferred_resolved = 0
     k_candidate        = nothing
-
-    function try_recover_k(ri::Int)
-        Sa = mod(alpha_vec[ri], ell)
-        Sb = mod(beta_vec[ri],  ell)
-        Sb == 0 && return nothing
-        k = mod(-Int(Sa) * powermod(Int(Sb), ell - 2, ell), ell)
-        if G !== nothing && T !== nothing
-            jac_mul(G, k, ell) == T || return nothing
-        end
-        return k
-    end
 
     # Work queue: indices of unresolved relations.
     pending   = collect(1:m)
@@ -489,11 +477,18 @@ function cycle_union_solve(rel_rows   ::Vector{Dict{Int,Int}},
 
                 if rhs_effective != -1
                     status = merge_binary!(j1, c1, j2, c2, rhs_effective)
-                    status == :cycle && (n_cycles += 1)
-                    made_progress = true
+                    if status == :cycle
+                        n_cycles += 1
+                        made_progress = true
+                    elseif status == :pinned
+                        n_deferred_resolved += 1
+                        made_progress = true
+                    else
+                        push!(next_pending, ri)
+                    end
                 else
-                    # Structural-only merge (no rhs known yet).
-                    dsu_union!(dsu, j1, j2, 0)
+                    # No safe structural action yet; revisit once k is known
+                    # or another row pins one of the components.
                     push!(next_pending, ri)
                 end
 
@@ -1022,392 +1017,4 @@ function chain_path_solve(rel_rows   ::Vector{Dict{Int,Int}},
             atom_logs            = nothing,
             chain_path_succeeded = k_candidate !== nothing,
             n_equations          = n_eq)
-end
-
-# ---------------------------------------------------------------------------
-#  amortize_alpha_phase
-#
-#  Run the walk collecting ONLY β=0 relations.  This fills a factor-base
-#  dictionary  atom_log[pt] = log_G(pt)  for all pts in the FB.
-#
-#  Concretely: in phase1_walk and the phase2_worker, we hard-set β=0 before
-#  building D = α·G (so T is never mixed in).  Every relation then has the form
-#
-#       sum_i c_i · [pt_i]  =  α · G + 0 · T
-#
-#  and left_kernel_all (or cycle_union_solve) on the resulting matrix gives us
-#  the left null space.  But what we actually want is the *particular solution*
-#  to the overdetermined system.  We use a single pinning row:
-#
-#       pin relation: G is in FB at index 0 (virtual), with log = 1.
-#
-#  Then RREF gives atom_log[v] = rhs for each variable column.
-#
-#  Returns:
-#    atom_log_dict :: Dict{NTuple{2,Int}, Int}  — pt → log_G(pt) mod ell
-#    fb            :: Vector{NTuple{2,Int}}
-#    ell           :: Int
-# ---------------------------------------------------------------------------
-function amortize_alpha_phase(G::Div2, ell::Int;
-                               fb_size   ::Int  = 500,
-                               verbose   ::Bool = true)
-    verbose && println("\n── Amortised precomputation: α-only walk ───────────────────────────")
-    verbose && @printf("  FB target: %d atoms,  β forced to 0\n", fb_size)
-
-    seed_pts = curve_points()
-    isempty(seed_pts) && error("No rational curve points")
-
-    fb      = sizehint!(NTuple{2,Int}[], fb_size)
-    pt2idx  = sizehint!(Dict{NTuple{2,Int},Int}(), fb_size)
-    alpha_vec = BigInt[]
-    rel_rows  = Vector{Dict{Int,Int}}()
-
-    function maybe_add!(pt)
-        haskey(pt2idx, pt) && return
-        length(fb) >= fb_size && return
-        push!(fb, pt); pt2idx[pt] = length(fb)
-    end
-
-    cur_pt = seed_pts[rand(1:length(seed_pts))]
-    maybe_add!(cur_pt)
-
-    raw_steps = 0
-    t0        = time()
-
-    while length(fb) < fb_size || length(rel_rows) < length(fb) + 2
-        raw_steps += 1
-        α = rand(1:ell-1)
-        # β = 0  — α-only walk
-        D = jac_mul(G, α, ell)
-
-        fp3_deg(D.u) != 2 && continue
-
-        u0 = D.u[1]; u1 = D.u[2]; v0 = D.v[1]; v1 = D.v[2]
-        px, py = cur_pt
-        upx = fp(fp(px*px) + fp(u1*px) + u0)
-        upx == 0 && continue
-
-        phi_c = build_phi_mumford(px, py, u0, u1, v0, v1)
-        phi_c === nothing && continue
-        a, b, c, _ = phi_c
-
-        R, S, rs_mumford = phi_residual_mumford(a, b, c, px, u0, u1)
-        rs_mumford === SENTINEL_MUMFORD && continue
-        R === SENTINEL_PT && continue
-
-        r_new = !haskey(pt2idx, R)
-        s_new = !haskey(pt2idx, S)
-        slots_free = fb_size - length(fb)
-        (r_new ? 1 : 0) + (s_new ? 1 : 0) > slots_free && continue
-
-        maybe_add!(R); maybe_add!(S)
-
-        i0 = pt2idx[cur_pt]; iR = pt2idx[R]; iS = pt2idx[S]
-        row = Dict{Int,Int}()
-        for idx in (i0, iR, iS)
-            row[idx] = get(row, idx, 0) + 1
-        end
-        neg_al = mod(ell - α, ell)
-        push!(alpha_vec, BigInt(neg_al))
-        push!(rel_rows, row)
-
-        cur_pt = R
-    end
-
-    nF = length(fb)
-
-    if verbose
-        @printf("  α-walk done: %d steps, %d FB atoms, %d relations (%.2fs)\n",
-                raw_steps, nF, length(rel_rows), time() - t0)
-    end
-
-    # Solve: find atom_logs via RREF of the (m × nF) relation matrix over GF(ell).
-    # We want the *particular solution* (not the kernel), so we augment with
-    # a pinning row: [fb_atom_0_col = 1, rhs_col = 1]  (the first atom has log = 1
-    # as a convention, or we use a known generator if we find G in the FB).
-    #
-    # For simplicity, use Nemo RREF to get the row-reduced form and read off
-    # the unique solution (if the system is consistent and full-rank).
-    atom_log_dict = Dict{NTuple{2,Int}, Int}()
-
-    try
-        F       = Nemo.GF(ell)
-        m       = length(rel_rows)
-        # Build augmented [A | b] where b[i] = alpha_vec[i] (RHS of atom_log system)
-        # System: A · x ≡ alpha_vec  (mod ell),  x = atom_logs
-        aug = zero_matrix(F, m, nF + 1)
-        for i in 1:m
-            for (j, v) in rel_rows[i]
-                1 <= j <= nF || continue
-                aug[i, j] = mod(v, ell)
-            end
-            aug[i, nF + 1] = mod(alpha_vec[i], ell)
-        end
-        _, R_mat = rref(aug)   # Nemo rref returns (rank, rref_matrix)
-
-        # Read off the solution: for each pivot row, x[pivot_col] = rhs / pivot_val.
-        logs = zeros(Int, nF)
-        for r in 1:nrow(R_mat)
-            # Find pivot column.
-            pc = 0
-            for c in 1:nF
-                R_mat[r, c] != 0 && (pc = c; break)
-            end
-            pc == 0 && continue
-            logs[pc] = Int(lift(ZZ, R_mat[r, nF + 1]))
-        end
-
-        for (pt, idx) in pt2idx
-            atom_log_dict[pt] = logs[idx]
-        end
-
-        if verbose
-            n_nonzero = count(!=(0), logs)
-            @printf("  atom_log dictionary: %d / %d atoms with non-zero log\n",
-                    n_nonzero, nF)
-        end
-    catch e
-        @warn "amortize_alpha_phase: RREF solve failed ($e). Returning empty dict."
-    end
-
-    return (atom_log_dict = atom_log_dict, fb = fb, ell = ell)
-end
-
-# ---------------------------------------------------------------------------
-#  amortized_dlp
-#
-#  Given a precomputed atom_log_dict from amortize_alpha_phase, recover the
-#  discrete log of an arbitrary target T with a *single* β≠0 relation.
-#
-#  We walk until we find one step where:
-#    - P0, R, S are all in the factor base (0-LP), AND
-#    - β ≠ 0 (so T is present in the relation)
-#
-#  Then k = (c₀·log[P0] + cR·log[R] + cS·log[S] − α) · β⁻¹  mod ell.
-#
-#  In the LP1-suppressed regime (Lp3=0) a single β≠0 step always exists
-#  because the FB covers Θ(√p) of the p points, so the 0-LP probability
-#  is (FB/p)² ~ 1/p, and we expect O(p) steps — still O(polylog p) total
-#  if the FB was built once.  Actually for √p FB and p-curve this is
-#  p/(√p)² = 1 step per O(1) walk steps in expectation.  Very fast.
-#
-#  Returns k::Int or nothing on failure.
-# ---------------------------------------------------------------------------
-function amortized_dlp(G          ::Div2,
-                       T          ::Div2,
-                       atom_log_dict::Dict{NTuple{2,Int}, Int},
-                       fb         ::Vector{NTuple{2,Int}},
-                       ell        ::Int;
-                       max_steps  ::Int  = 10_000_000,
-                       verbose    ::Bool = true)
-
-    pt2idx = Dict(pt => i for (i, pt) in enumerate(fb))
-    nF     = length(fb)
-    nF == 0 && error("empty factor base")
-
-    verbose && @printf("\n── Amortised DLP solve: single β≠0 step ───────────────────────────\n")
-
-    t0 = time()
-    for step in 1:max_steps
-        α = BigInt(rand(1:ell-1))
-        β = BigInt(rand(1:ell-1))   # β ≠ 0 by construction
-        D = jac_add(jac_mul(G, Int(α % ell), ell),
-                    jac_mul(T, Int(β % ell), ell))
-        fp3_deg(D.u) != 2 && continue
-
-        u0 = D.u[1]; u1 = D.u[2]; v0 = D.v[1]; v1 = D.v[2]
-
-        # Pick a random FB point as anchor.
-        cur_pt = fb[rand(1:nF)]
-        px, py = cur_pt
-        upx = fp(fp(px*px) + fp(u1*px) + u0)
-        upx == 0 && continue
-
-        phi_c = build_phi_mumford(px, py, u0, u1, v0, v1)
-        phi_c === nothing && continue
-        a, b, c, _ = phi_c
-
-        R, S, rs_mumford = phi_residual_mumford(a, b, c, px, u0, u1)
-        rs_mumford === SENTINEL_MUMFORD && continue
-        R === SENTINEL_PT && continue
-
-        # 0-LP check: all three in FB.
-        haskey(pt2idx, cur_pt) && haskey(pt2idx, R) && haskey(pt2idx, S) || continue
-
-        i0 = pt2idx[cur_pt]
-        iR = pt2idx[R]
-        iS = pt2idx[S]
-
-        row = Dict{Int,Int}()
-        for idx in (i0, iR, iS)
-            row[idx] = get(row, idx, 0) + 1
-        end
-
-        # Compute RHS from atom_log_dict.
-        rhs = 0
-        ok  = true
-        for (j, c_j) in row
-            pt_j = fb[j]
-            haskey(atom_log_dict, pt_j) || (ok = false; break)
-            rhs = mod(rhs + c_j * atom_log_dict[pt_j], ell)
-        end
-        ok || continue
-
-        neg_α = mod(ell - Int(α % ell), ell)
-        neg_β = mod(ell - Int(β % ell), ell)
-
-        # Relation: rhs ≡ neg_α + neg_β · k   ←  wait, sign convention:
-        # Our walk convention: [P0] + [R] + [S] + neg_α·G + neg_β·T = 0
-        # ⇒ log[P0] + log[R] + log[S] ≡ α + β·k  (mod ell)
-        # ⇒ k = (rhs − α) · β⁻¹  mod ell
-        k_cand = mod((rhs - Int(α % ell)) * powermod(Int(β % ell), ell - 2, ell), ell)
-        k_cand = mod(k_cand, ell)
-
-        if jac_mul(G, k_cand, ell) == T
-            verbose && @printf("  ✓ k = %d  found after %d steps (%.3fs)\n",
-                               k_cand, step, time() - t0)
-            return k_cand
-        end
-    end
-
-    verbose && @printf("  amortized_dlp: no valid step found in %d attempts\n", max_steps)
-    return nothing
-end
-
-# ---------------------------------------------------------------------------
-#  Wrappers: drop-in replacements for the main2() flow
-# ---------------------------------------------------------------------------
-
-"""
-    run_amortized(; fb_size, verbose)
-
-Full amortised pipeline:
-  1. Bootstrap G, ell via frobenius_find_ell_generator.
-  2. Build atom_log_dict via amortize_alpha_phase (β=0 walk).
-  3. For a given T, call amortized_dlp (single β≠0 relation).
-
-This replaces the combined walk+kernel-solve with:
-  precompute:  O(p · polylog p)   [once per (curve, p)]
-  per-DLP:     O(polylog p)       [each new T]
-"""
-function run_amortized(; fb_size  ::Int  = 500,
-                         verbose  ::Bool = true,
-                         n_targets::Int  = 3)
-
-    t0   = time()
-    pts  = curve_points()
-    G, ell_found = frobenius_find_ell_generator(pts)
-    global ell = ell_found
-
-    @printf("ell = %d  (%.1f bits)\n", ell, log2(ell))
-
-    # Precomputation: β=0 walk.
-    pre = amortize_alpha_phase(G, ell; fb_size=fb_size, verbose=verbose)
-    @printf("Precomputation done in %.3fs.  Dict size: %d atoms.\n",
-            time() - t0, length(pre.atom_log_dict))
-
-    # Solve multiple independent DLPs to demonstrate amortisation.
-    for trial in 1:n_targets
-        k_true = rand(2:ell-1)
-        T      = jac_mul(G, k_true, ell)
-        @printf("\n[Trial %d] k_true = %d\n", trial, k_true)
-        k_rec  = amortized_dlp(G, T, pre.atom_log_dict, pre.fb, ell;
-                                verbose=verbose)
-        if k_rec !== nothing
-            @printf("  match = %s\n", k_rec == k_true)
-        else
-            @printf("  FAILED\n")
-        end
-    end
-end
-
-"""
-    run_cycle_union_solve(G, T; fb_size, verbose)
-
-Drop-in alternative to the left_kernel_all path in index_calculus_walk.
-Collects relations normally (with β≠0), then solves via cycle_union_solve
-(O(n) under H₂=0) before falling back to left_kernel_all.
-"""
-function run_cycle_union_solve(G::Div2, T::Div2;
-                                fb_size ::Int  = 500,
-                                verbose ::Bool = true)
-
-    pts  = curve_points()
-    nall = length(pts)
-
-    # Phase 1 as usual.
-    fb, pt2idx, p1_alpha, p1_beta, p1_rows =
-        phase1_walk(G, T, fb_size; verbose=verbose)
-    nF = length(fb)
-
-    # Collect a minimal set of phase-2 relations.
-    rel_target   = nF + 20
-    rel_counter  = Threads.Atomic{Int}(0)
-    step_D, step_a, step_b = begin
-        N = 256; sD = Vector{Div2}(undef, N)
-        sa = Vector{BigInt}(undef, N); sb = Vector{BigInt}(undef, N)
-        for i in 1:N
-            a = BigInt(rand(1:ell-1)); b = BigInt(rand(1:ell-1))
-            sD[i] = jac_add(jac_mul(G, Int(a), ell), jac_mul(T, Int(b), ell))
-            sa[i] = a; sb[i] = b
-        end
-        sD, sa, sb
-    end
-
-    shared_lp1 = Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int, Int}}()
-    shared_lp1_lock = ReentrantLock()
-    shared_lp2 = LP2Graph()
-    shared_lp2_lock = ReentrantLock()
-    shared_lp_doubled = Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int}}()
-    shared_lp1_conj = ShardedLP1Conj()
-    shared_lp2_conj = LP2ConjGraph()
-    shared_lp2_conj_lock = ReentrantLock()
-    set_lp2_principal_check_context!(fb, G, T)
-    ort = OnlineRankTracker(ell)
-
-    # Single-threaded for simplicity here; swap in @sync/@spawn for full MT.
-    p2_result = phase2_worker(
-        G, T, fb, BigInt(ell), pt2idx,
-        step_D, step_a, step_b,
-        rel_counter, rel_target, 10_000_000,
-        1, true,
-        true, DEFAULT_MAX_LP2_NODES,
-        true, DEFAULT_MAX_LP2_CONJ_NODES,
-        p1_rows, p1_alpha, p1_beta,
-        ort,
-        shared_lp1, shared_lp1_lock,
-        shared_lp2, shared_lp2_lock,
-        shared_lp_doubled,
-        shared_lp1_conj,
-        shared_lp2_conj, shared_lp2_conj_lock,
-        LPResidualCollector()
-    )
-
-    rel_rows  = vcat(p1_rows,  p2_result.rel_rows)
-    alpha_vec = vcat(p1_alpha, p2_result.alpha_vec)
-    beta_vec  = vcat(p1_beta,  p2_result.beta_vec)
-
-    verbose && @printf("\nTotal relations: %d  (nF=%d)\n", length(rel_rows), nF)
-
-    # Try cycle-union solve first.
-    cu = cycle_union_solve(rel_rows, alpha_vec, beta_vec, nF, ell;
-                           G=G, T=T, verbose=verbose)
-
-    if cu.cycle_solver_succeeded
-        @printf("cycle_union_solve succeeded: k=%d\n", cu.k)
-        return cu.k
-    end
-
-    # Fallback: Gaussian elimination.
-    verbose && println("cycle_union_solve did not find k; falling back to left_kernel_all.")
-    kernels = left_kernel_all(rel_rows, nF, ell)
-    nrel    = length(rel_rows)
-    for γ in kernels
-        Sa = mod(sum(BigInt(γ[i]) * alpha_vec[i] for i in eachindex(γ)), ell)
-        Sb = mod(sum(BigInt(γ[i]) * beta_vec[i]  for i in eachindex(γ)), ell)
-        Sb == 0 && continue
-        k = mod(-Sa * powermod(Sb, ell - 2, ell), ell)
-        jac_mul(G, k, ell) == T && return k
-    end
-    return nothing
 end

@@ -648,7 +648,8 @@ function phase2_worker(G               ::Div2,
                        max_lp2_conj_nodes::Int,
                        lp_col          ::LPResidualCollector,
                        ort             ::OnlineRankTracker;
-                       verbose         ::Bool = true)
+                       verbose         ::Bool = true,
+                       beta_zero       ::Bool = false)
 
     nF_cur   = length(fb)
     N_STEPS  = length(step_D)
@@ -668,8 +669,9 @@ function phase2_worker(G               ::Div2,
     # --- Walk state ---
     cur_pt    = fb[rand(1:nF_cur)]
     alpha_cur = rand(1:ellI-1)
-    beta_cur  = rand(0:ellI-1)
-    D_cur     = jac_add(jac_mul(G, BigInt(alpha_cur), ell), jac_mul(T, BigInt(beta_cur), ell))
+    beta_cur  = beta_zero ? 0 : rand(0:ellI-1)
+    D_cur     = beta_zero ? jac_mul(G, BigInt(alpha_cur), ell) :
+                            jac_add(jac_mul(G, BigInt(alpha_cur), ell), jac_mul(T, BigInt(beta_cur), ell))
 
     # --- Per-thread relation accumulation ---
     hint = max(64, cld(rel_target, Threads.nthreads()) + 32)
@@ -704,7 +706,7 @@ function phase2_worker(G               ::Div2,
         si        = rand(1:N_STEPS)
         D_cur     = jac_add(D_cur, step_D[si])
         alpha_cur = mod(alpha_cur + step_a_i[si], ellI)
-        beta_cur  = mod(beta_cur  + step_b_i[si], ellI)
+        beta_cur  = beta_zero ? 0 : mod(beta_cur + step_b_i[si], ellI)
 
         # --- Gate 1: D_cur must be a degree-2 divisor (generic Jacobian element) ---
         fp3_deg(D_cur.u) != 2 && continue
