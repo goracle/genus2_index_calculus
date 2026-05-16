@@ -41,6 +41,7 @@ include("lp2_conj.jl")
 include("trial3_linalg.jl")
 include("trial3_phase2.jl")
 include("trial3_amortized.jl")
+include("trial3_phase3.jl")
 
 # Safe wrapper around the kernel-phase diagnostics.  These are helpful, but
 # they should never be able to abort a successful solve.
@@ -905,105 +906,58 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
                 length(atom_log_dict), time() - t_pre)
 
         # ── Sanity-check atom logs against known G ────────────────────────────
-        # If G itself is in the FB, we can verify: jac_mul(G, atom_log_dict[pt], ell) == pt
-        # for a few atoms. Also verify a known relation from rel_rows_pre.
         n_verified = 0; n_failed = 0
         for i in 1:min(20, length(rel_rows_pre))
-            row = rel_rows_pre[i]
+            row    = rel_rows_pre[i]
             neg_al = alpha_vec_pre[i]
-            lhs = sum(get(atom_log_dict, fb_pre[j], 0) * v for (j,v) in row if 1 <= j <= nF_pre)
-            lhs = mod(lhs, ell)
-            rhs = mod(Int(neg_al), ell)
+            lhs    = sum(get(atom_log_dict, fb_pre[j], 0) * v
+                         for (j, v) in row if 1 <= j <= nF_pre)
+            lhs    = mod(lhs, ell)
+            rhs    = mod(Int(neg_al), ell)
             if lhs == rhs
                 n_verified += 1
             else
                 n_failed += 1
-                n_failed <= 3 && @printf("  [DIAG] relation %d FAILS: lhs=%d rhs=%d\n", i, lhs, rhs)
+                n_failed <= 3 && @printf("  [DIAG] relation %d FAILS: lhs=%d rhs=%d\n",
+                                         i, lhs, rhs)
             end
         end
-        @printf("  [DIAG] relation self-check: %d ok, %d failed (of first 20)\n\n", n_verified, n_failed)
+        @printf("  [DIAG] relation self-check: %d ok, %d failed (of first 20)\n\n",
+                n_verified, n_failed)
 
-        # ── Per-target: single β≠0 relation ──────────────────────────────────
-        println("── Amortised DLP trials ─────────────────────────────────────────────")
-        n_ok = 0
-        ellI_tgt = Int(ell)
-        for trial in 1:n_targets
-            k_true = rand(2:ell-1)
-            T      = jac_mul(G, k_true, ell)
-            @printf("[Trial %d/%d]  k_true = %d\n", trial, n_targets, k_true)
+        # ── Bundle precompute output into Phase2Tables ────────────────────────
+        tables = Phase2Tables(
+            fb_pre,
+            pt2idx_pre,
+            atom_log_dict,
+            shared_lp1_pre,       # READ ONLY in phase 3
+            shared_lp2_pre,
+            shared_lp1_conj_pre,
+            shared_lp2_conj_pre,
+            BigInt(ell))
 
-            # Build step table including T (β≠0 walk).
-            N_STEPS_tgt = 256
-            step_D_tgt  = Vector{Div2}(undef, N_STEPS_tgt)
-            step_a_tgt  = Vector{Int}(undef,  N_STEPS_tgt)
-            step_b_tgt  = Vector{Int}(undef,  N_STEPS_tgt)
-            for i in 1:N_STEPS_tgt
-                a = rand(1:ellI_tgt-1); b = rand(1:ellI_tgt-1)
-                step_D_tgt[i] = jac_add(jac_mul(G, a, ell), jac_mul(T, b, ell))
-                step_a_tgt[i] = a; step_b_tgt[i] = b
-            end
+        @printf("  Phase2Tables ready: FB=%d  atom_logs=%d  lp1_entries=%d\n",
+                length(fb_pre), length(atom_log_dict), length(shared_lp1_pre))
+        @printf("  total precompute time: %.3fs\n\n", time() - t_pre)
 
-            # Additive walk: find one 0-LP relation with β≠0 and all atoms in dict.
-            alpha_cur_tgt = rand(1:ellI_tgt-1)
-            beta_cur_tgt  = rand(1:ellI_tgt-1)
-            D_cur_tgt     = jac_add(jac_mul(G, alpha_cur_tgt, ell), jac_mul(T, beta_cur_tgt, ell))
-            cur_pt_tgt    = fb_pre[rand(1:nF_pre)]
-            k_rec              = nothing
-            n_candidates_tried = 0
-            n_cand_wrong       = 0
-
-            for _ in 1:10_000_000
-                si            = rand(1:N_STEPS_tgt)
-                D_cur_tgt     = jac_add(D_cur_tgt, step_D_tgt[si])
-                alpha_cur_tgt = mod(alpha_cur_tgt + step_a_tgt[si], ellI_tgt)
-                beta_cur_tgt  = mod(beta_cur_tgt  + step_b_tgt[si], ellI_tgt)
-                beta_cur_tgt == 0 && continue
-
-                fp3_deg(D_cur_tgt.u) != 2 && continue
-                u0 = D_cur_tgt.u[1]; u1 = D_cur_tgt.u[2]
-                v0 = D_cur_tgt.v[1]; v1 = D_cur_tgt.v[2]
-                px, py = cur_pt_tgt
-                fp(fp(px*px) + fp(u1*px) + u0) == 0 && continue
-                phi_c = build_phi_mumford(px, py, u0, u1, v0, v1)
-                phi_c === nothing && continue
-                a_c, b_c, c_c, _ = phi_c
-                R, S, rs_mumford = phi_residual_mumford(a_c, b_c, c_c, px, u0, u1)
-                rs_mumford === SENTINEL_MUMFORD && continue
-                R === SENTINEL_PT && continue
-                haskey(atom_log_dict, cur_pt_tgt) &&
-                haskey(atom_log_dict, R) &&
-                haskey(atom_log_dict, S) || continue
-                log_sum = mod(atom_log_dict[cur_pt_tgt] + atom_log_dict[R] + atom_log_dict[S], ell)
-                # relation: [P0]+[R]+[S] ~ -D  =>  log_sum = neg_al + neg_be·k
-                # neg_al = ell - alpha_cur_tgt,  neg_be = ell - beta_cur_tgt
-                neg_al_tgt = mod(ell - alpha_cur_tgt, ell)
-                neg_be_tgt = mod(ell - beta_cur_tgt, ell)
-                # k = (log_sum - neg_al) · neg_be^-1  mod ell
-                k_cand = mod((log_sum - neg_al_tgt) * powermod(neg_be_tgt, ell - 2, ell), ell)
-                n_candidates_tried += 1
-                @printf("  [DIAG] k_cand=%d k_true=%d log_sum=%d neg_al=%d neg_be=%d\n",
-                        k_cand, k_true, log_sum, neg_al_tgt, neg_be_tgt)
-                # Verify: mumford([P0]+[R]+[S]) should == -(alpha·G + beta·T) == neg_al·G + neg_be·T
-                lhs = jac_add(D_cur_tgt, jac_mul(G, log_sum, ell))
-                @printf("  [DIAG] Jacobian check D+log_sum·G (should be identity): isid=%s\n", string(jac_isid(lhs)))
-                if k_cand == k_true
-                    k_rec = k_cand
-                    break
-                end
-                cur_pt_tgt = R
-            end
-            @printf("  [DIAG] walk done: candidates tried: %d\n", n_candidates_tried)
-
-            if k_rec !== nothing
-                match = k_rec == k_true
-                @printf("  Recovered k = %d  match = %s\n", k_rec, match)
-                match && (n_ok += 1)
-            else
-                println("  FAILED to recover k")
-            end
+        # ── Build per-target list ─────────────────────────────────────────────
+        println("── Generating targets ───────────────────────────────────────────────")
+        targets = Vector{Tuple{Div2, Union{Int,Nothing}}}(undef, n_targets)
+        for i in 1:n_targets
+            k_true_i = rand(2:Int(ell)-1)
+            T_i      = jac_mul(G, k_true_i, ell)
+            targets[i] = (T_i, k_true_i)
+            @printf("  [target %d/%d] k_true = %d\n", i, n_targets, k_true_i)
         end
+        flush(stdout)
 
-        @printf("\n── Summary ─────────────────────────────────────────────────────────\n")
+        # ── Phase 3: parallel per-target DLP solves ───────────────────────────
+        results = phase3_solve_targets(tables, targets, G;
+                                       step_cap = 10_000_000,
+                                       verbose  = true)
+
+        n_ok = count(r -> r.success, results)
+        @printf("\n── Final amortized summary ──────────────────────────────────────────\n")
         @printf("  %d / %d DLP trials recovered correctly\n", n_ok, n_targets)
         @printf("  total wall time: %.3fs\n", time() - t_main_start)
         println("="^70)
