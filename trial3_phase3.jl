@@ -164,8 +164,8 @@ function phase3_trial_worker(
     # ── Local birthday fallback tables ────────────────────────────────────────
     # affine: lp_pt → (fb_row, neg_al, neg_be)
     local_lp1_affine = Dict{NTuple{2,Int},   Tuple{Dict{Int,Int}, Int, Int}}()
-    # conj:   lp_key → (i0_col, neg_al, neg_be)
-    local_lp1_conj   = Dict{NTuple{4,Int},   Tuple{Int, Int, Int}}()
+    # conj:   lp_key → LP1ConjVal
+    local_lp1_conj   = Dict{NTuple{4,UInt32}, LP1ConjVal}()
 
     # ── Counters ──────────────────────────────────────────────────────────────
     n_steps          = 0
@@ -236,7 +236,7 @@ function phase3_trial_worker(
         #  BRANCH A: conjugate residual
         # ======================================================================
         if res_R === SENTINEL_PT
-            lp_key = RS_mumford::NTuple{4,Int}
+            lp_key = conj_key32(RS_mumford::NTuple{4,Int})
 
             if i0 != 0
                 # A1: 1-LP-conj — P0 is in FB, RS pair is the LP atom
@@ -246,7 +246,8 @@ function phase3_trial_worker(
 
                 if haskey(conj_dict, lp_key)
                     # Close against precomputed entry (read-only — no delete)
-                    prev_col, prev_al, prev_be, _ = conj_dict[lp_key]
+                    v = conj_dict[lp_key]
+                    prev_col, prev_al, prev_be = Int(v.i0), Int(v.neg_al), Int(v.neg_be)
                     c_al = mod(neg_al - prev_al, ellI)
                     c_be = mod(neg_be - prev_be, ellI)
                     n_1lp_conj_pre += 1
@@ -255,7 +256,8 @@ function phase3_trial_worker(
 
                 elseif haskey(local_lp1_conj, lp_key)
                     # Close against local birthday entry
-                    prev_col, prev_al, prev_be = local_lp1_conj[lp_key]
+                    v = local_lp1_conj[lp_key]
+                    prev_col, prev_al, prev_be = Int(v.i0), Int(v.neg_al), Int(v.neg_be)
                     c_al = mod(neg_al - prev_al, ellI)
                     c_be = mod(neg_be - prev_be, ellI)
                     delete!(local_lp1_conj, lp_key)
@@ -263,7 +265,7 @@ function phase3_trial_worker(
                     k_rec = try_solve_conj(i0, prev_col, c_al, c_be)
                     k_rec !== nothing && break
                 else
-                    local_lp1_conj[lp_key] = (i0, neg_al, neg_be)
+                    local_lp1_conj[lp_key] = LP1ConjVal(UInt16(i0), UInt64(neg_al), UInt64(neg_be))
                 end
             end
             # A2: i0 not in FB → 2-LP-conj, skip
@@ -392,6 +394,8 @@ function phase3_solve_targets(
     @printf("   targets=%d  threads=%d  FB=%d  lp1_pre_entries=%d  step_cap=%d\n",
             n, Threads.nthreads(), length(tables.fb),
             length(tables.shared_lp1), step_cap)
+    @printf("   RSS at phase3 start: %.1f MB  |  GC live: %.1f MB\n",
+            Sys.maxrss() / 1024^2, Base.gc_live_bytes() / 1024^2)
     flush(stdout)
 
     t0 = time()
@@ -417,6 +421,8 @@ function phase3_solve_targets(
     @printf("  closure breakdown: 0-LP=%d  1LP-preclose=%d  1LP-local=%d\n",
             n_0lp_tot, n_pre, n_loc)
     @printf("  wall time: %.3fs\n", time() - t0)
+    @printf("  Process RSS at phase3 exit: %.1f MB  |  GC live: %.1f MB\n",
+            Sys.maxrss() / 1024^2, Base.gc_live_bytes() / 1024^2)
     println("="^70)
     flush(stdout)
 

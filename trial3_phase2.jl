@@ -287,24 +287,25 @@ end
 # against a stored entry (producing a relation between two FB columns with
 # coefficients ±1) or store for future closure.
 @inline function handle_1lp_conj!(
-        lp_key         ::NTuple{4,Int},
-        i0             ::Int,
-        neg_al         ::Int,
-        neg_be         ::Int,
-        ell            ::BigInt,
-        fb             ::Vector{NTuple{2,Int}},
-        nF_cur         ::Int,
-        G              ::Div2,
-        T              ::Div2,
-        alpha_vec      ::Vector{BigInt},
-        beta_vec       ::Vector{BigInt},
-        rel_rows       ::Vector{Dict{Int,Int}},
-        rel_counter    ::Threads.Atomic{Int},
-        ort            ::OnlineRankTracker,
-        s              ::WorkerStats,
-        shared_lp1_conj::ShardedLP1Conj,
-        rank_growth    ::Vector{Tuple{Int,Int}},
-        P0             ::NTuple{2,Int})::NTuple{2,Int}
+        lp_key          ::NTuple{4,UInt32},
+        i0              ::Int,
+        neg_al          ::Int,
+        neg_be          ::Int,
+        ell             ::BigInt,
+        fb              ::Vector{NTuple{2,Int}},
+        nF_cur          ::Int,
+        G               ::Div2,
+        T               ::Div2,
+        alpha_vec       ::Vector{BigInt},
+        beta_vec        ::Vector{BigInt},
+        rel_rows        ::Vector{Dict{Int,Int}},
+        rel_counter     ::Threads.Atomic{Int},
+        ort             ::OnlineRankTracker,
+        s               ::WorkerStats,
+        shared_lp1_conj ::ShardedLP1Conj,
+        rank_growth     ::Vector{Tuple{Int,Int}},
+        combined_scratch::Dict{Int,Int},
+        P0              ::NTuple{2,Int})::NTuple{2,Int}
 
     si = conj_shard_idx(lp_key)
     conj_dict = shared_lp1_conj.shards[si]
@@ -313,16 +314,21 @@ end
     lock(conj_lock)
     try
         if haskey(conj_dict, lp_key)
-            prev_col, prev_al, prev_be, _ = conj_dict[lp_key]
+            v = conj_dict[lp_key]
+            prev_col, prev_al, prev_be = Int(v.i0), Int(v.neg_al), Int(v.neg_be)
             combined_al = mod(neg_al - prev_al, Int(ell))
             combined_be = mod(neg_be - prev_be, Int(ell))
             delete!(conj_dict, lp_key)
 
             if !(combined_al == 0 && combined_be == 0) && i0 != prev_col
                 # Relation: atom(fb[i0]) - atom(fb[prev_col]) = combined_al·G + combined_be·T
-                combined = Dict{Int,Int}(i0 => 1, prev_col => -1)
+                # Reuse combined_scratch to avoid per-closure Dict allocation (weight-2 rows
+                # are always exactly 2 entries; scratch is cleared and refilled here).
+                empty!(combined_scratch)
+                combined_scratch[i0]       = 1
+                combined_scratch[prev_col] = -1
                 if ASSERT_RELATIONS
-                    ok = check_relation_principal(combined, combined_al, combined_be,
+                    ok = check_relation_principal(combined_scratch, combined_al, combined_be,
                                                   "α", fb, G, T; tag="RS-CONJ-CLOSE")
                     if !ok
                         @printf("[RS-CONJ-CLOSE DIAG tid=%d] i0=%d prev_col=%d\n",
@@ -335,8 +341,8 @@ end
                     @assert ok "Conjugate-pair 1-LP closure failed principal divisor check"
                 end
                 push!(alpha_vec, combined_al); push!(beta_vec, combined_be)
-                push!(rel_rows, combined)
-                ort_add_row!(ort, combined)
+                push!(rel_rows, copy(combined_scratch))
+                ort_add_row!(ort, combined_scratch)
                 length(rank_growth) < MAX_RANK_GROWTH_SAMPLES &&
                     push!(rank_growth, (s.raw_steps, length(rel_rows)))
                 s.hits_full += 1; s.hits_1lp_emit += 1; s.rel_local += 1
@@ -344,11 +350,14 @@ end
                 return fb[rand(1:nF_cur)]
             end
         else
-            # Store: shard is capped per shard to MAX_LP1_CONJ_ENTRIES ÷ N_CONJ_SHARDS.
-            if length(conj_dict) >= MAX_LP1_CONJ_ENTRIES ÷ N_CONJ_SHARDS
-                empty!(conj_dict)   # evict entire shard — closures are too rare to cherry-pick
+            # Store: evict one entry (FIFO) if the shard is at its share of the
+            # total cap.  Per-shard limit = total cap / N_CONJ_SHARDS.
+            if length(conj_dict) >= cld(shared_lp1_conj.max_entries, N_CONJ_SHARDS)
+                for evict_key in keys(conj_dict)
+                    delete!(conj_dict, evict_key); break
+                end
             end
-            conj_dict[lp_key] = (i0, neg_al, neg_be, s.raw_steps)
+            conj_dict[lp_key] = LP1ConjVal(UInt16(i0), UInt64(neg_al), UInt64(neg_be))
         end
     finally
         unlock(conj_lock)
@@ -757,15 +766,16 @@ function phase2_worker(G               ::Div2,
         #  BRANCH A: conjugate residual (RS is a degree-2 Mumford pair over F_p²)
         # ==========================================================================
         if !rs_split
-            lp_key = RS_mumford::NTuple{4,Int}
+            lp_key32 = conj_key32(RS_mumford::NTuple{4,Int})
             if i0 != 0
                 s.hits_lp1 += 1
-                cur_pt = handle_1lp_conj!(lp_key, i0, neg_al, neg_be, ell,
+                cur_pt = handle_1lp_conj!(lp_key32, i0, neg_al, neg_be, ell,
                                            fb, nF_cur, G, T,
                                            alpha_vec, beta_vec, rel_rows, rel_counter,
-                                           ort, s, shared_lp1_conj, rank_growth, P0)
+                                           ort, s, shared_lp1_conj, rank_growth,
+                                           combined_scratch, P0)
             elseif enable_lp2_conj
-                cur_pt = handle_2lp_conj!(P0, lp_key, neg_al, neg_be, ell,
+                cur_pt = handle_2lp_conj!(P0, RS_mumford::NTuple{4,Int}, neg_al, neg_be, ell,
                                            fb, nF_cur, G, T,
                                            alpha_vec, beta_vec, rel_rows, rel_counter,
                                            ort, s, shared_lp1, shared_lp1_lock,

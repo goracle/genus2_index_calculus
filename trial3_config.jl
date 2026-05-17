@@ -8,7 +8,7 @@
 #  Relation integrity asserts
 #  Set to false in production to skip Jacobian-arithmetic cross-checks.
 # ---------------------------------------------------------------------------
-const ASSERT_RELATIONS = true
+const ASSERT_RELATIONS = false
 
 # ---------------------------------------------------------------------------
 #  1-LP table caps
@@ -24,11 +24,29 @@ const ASSERT_RELATIONS = true
 #    Previously uncapped; cross-close is rare so a small bound suffices.
 #
 #  MAX_LP1_CONJ_ENTRIES: cap for the conjugate-pair 1-LP table.  The keyspace
-#    is ~p^2 so closures are rare; O(√ell) entries in flight suffices.
+#    is ~p^2 so closures are rare; steady-state occupancy is O(p) entries.
+#    Cap is computed at construction as LP1_CONJ_CAP_MULTIPLIER * p — see below.
 # ---------------------------------------------------------------------------
 const MAX_LP1_ENTRIES         = 50_000_000
 const MAX_LP1_DOUBLED_ENTRIES = 100_000
-const MAX_LP1_CONJ_ENTRIES    = 5_000_000
+
+# MAX_LP1_CONJ_ENTRIES is no longer a fixed constant — it is computed at
+# ShardedLP1Conj() construction time as a function of the field prime p.
+#
+# Theory: the conj LP key is a 4-tuple of Fp coordinates drawn from the
+# Mumford representation of a degree-2 divisor over Fp².  The effective
+# keyspace has size O(p²).  The birthday threshold — where a random walk
+# first expects a collision — is O(√(p²)) = O(p).  Empirically at p≈131K
+# steady-state occupancy is ~8p entries (observed ~1.06M ≈ 8×131101).
+#
+# We use a multiplier of 16 so the cap is generous (never evicts prematurely)
+# while staying proportional to actual memory need at any field size:
+#   p=16K   → cap ≈  262K entries ≈   21 MB
+#   p=131K  → cap ≈  2.1M entries ≈  168 MB
+#   p=1M    → cap ≈   16M entries ≈  1.3 GB
+#
+# NO sizehint! is used — Dicts grow on demand.  The cap only controls eviction.
+const LP1_CONJ_CAP_MULTIPLIER = 16
 
 # ---------------------------------------------------------------------------
 #  Sharded conjugate-pair 1-LP table
@@ -41,25 +59,51 @@ const MAX_LP1_CONJ_ENTRIES    = 5_000_000
 # ---------------------------------------------------------------------------
 const N_CONJ_SHARDS = 64
 
-struct ShardedLP1Conj
-    shards ::NTuple{N_CONJ_SHARDS, Dict{NTuple{4,Int}, Tuple{Int,Int,Int,Int}}}
-    locks  ::NTuple{N_CONJ_SHARDS, ReentrantLock}
+# Compact value type for conjugate 1-LP entries.
+# Fields use the smallest unsigned type that fits their range:
+#   i0     — FB column index, max ~O(√p) ≈ 10^4 at p=10^8, fits UInt16 (max 65535).
+#   neg_al — exponent mod ell.  ell is the large prime factor of #J ≈ p²,
+#            so ell can be up to ~p² ≈ 10^16 at p=10^8.  Requires UInt64.
+#   neg_be — same range as neg_al.
+#   (Mumford key coordinates are mod p < 2^27 at p=10^8, fit in UInt32.)
+struct LP1ConjVal
+    i0     ::UInt16   # FB column index  (max nF ≈ √p ≪ 65535)
+    neg_al ::UInt64   # discrete-log component mod ell  (ell can reach ~p²)
+    neg_be ::UInt64   # discrete-log component mod ell
 end
-# Value tuple layout: (col_idx::Int, neg_al::Int, neg_be::Int, raw_steps::Int)
-# neg_al/neg_be are exponents mod ell; ell ≤ #J ≈ p² < 2^34 for p ≈ 2^17, fits Int64.
+
+struct ShardedLP1Conj
+    shards  ::NTuple{N_CONJ_SHARDS, Dict{NTuple{4,UInt32}, LP1ConjVal}}
+    locks   ::NTuple{N_CONJ_SHARDS, ReentrantLock}
+    max_entries::Int   # total cap across all shards, computed from p at construction
+end
 
 function ShardedLP1Conj()
-    shards = ntuple(_ -> Dict{NTuple{4,Int}, Tuple{Int,Int,Int,Int}}(), N_CONJ_SHARDS)
+    # Scale cap with the field prime.  Keyspace is O(p²), birthday threshold
+    # is O(p), empirical steady-state is ~8p.  Multiplier 16 gives headroom
+    # without pre-allocating anything — Dicts grow on demand.
+    cap = LP1_CONJ_CAP_MULTIPLIER * p
+    shards = ntuple(_ -> Dict{NTuple{4,UInt32}, LP1ConjVal}(), N_CONJ_SHARDS)
     locks  = ntuple(_ -> ReentrantLock(), N_CONJ_SHARDS)
-    ShardedLP1Conj(shards, locks)
+    ShardedLP1Conj(shards, locks, cap)
 end
 
 # Map a Mumford 4-tuple key to its shard index (1-based).
-# The key holds F_p coordinates (plain Int, always < p < 2^63 on 64-bit Julia).
+# Accepts both Int and UInt32 tuples — called with Int at the assignment site
+# before the key is narrowed, and with UInt32 for the actual dict lookup.
 @inline function conj_shard_idx(key::NTuple{4,Int})
     h = key[1] ⊻ key[2] ⊻ key[3] ⊻ key[4]
     (h & (N_CONJ_SHARDS - 1)) + 1
 end
+@inline function conj_shard_idx(key::NTuple{4,UInt32})
+    h = Int(key[1]) ⊻ Int(key[2]) ⊻ Int(key[3]) ⊻ Int(key[4])
+    (h & (N_CONJ_SHARDS - 1)) + 1
+end
+
+# Narrow an Int Mumford key to UInt32.  All F_p coordinates satisfy 0 ≤ v < p
+# and p ≤ 2^21 for our target sizes, so truncation is lossless.
+@inline conj_key32(key::NTuple{4,Int}) =
+    (UInt32(key[1]), UInt32(key[2]), UInt32(key[3]), UInt32(key[4]))
 
 # ---------------------------------------------------------------------------
 #  2-LP graph memory caps

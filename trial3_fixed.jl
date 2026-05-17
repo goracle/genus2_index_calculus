@@ -35,6 +35,22 @@ include("early_solve_monitor.jl") # online b₁ / 2-core / DSU diagnostics
 
 include("trial3_config.jl")
 include("trial3_phi.jl")
+
+# ---------------------------------------------------------------------------
+#  mem_checkpoint — fine-grained RSS/GC-live probe with delta tracking
+# ---------------------------------------------------------------------------
+let _mem_prev = Ref(0.0)
+    global function mem_checkpoint(tag::String)
+        rss  = Sys.maxrss() / 1024^2
+        live = Base.gc_live_bytes() / 1024^2
+        Δ    = live - _mem_prev[]
+        @printf("[MEM @%-38s]  RSS=%7.1f MB  GC-live=%7.1f MB  Δlive=%+7.1f MB\n",
+                tag, rss, live, Δ)
+        flush(stdout)
+        _mem_prev[] = live
+        return live
+    end
+end
 include("trial3_tree.jl")
 include("lp2.jl")
 include("lp2_conj.jl")
@@ -81,9 +97,11 @@ chi = H.frobenius_polynomial()
 N = ZZ(chi(1))
 print(int(N))
 """
-    raw = readchomp(`sage -c $sage_script`)
+    mem_checkpoint("before sage shell-out")
+    raw     = readchomp(`sage -c $sage_script`)
     N_big   = parse(BigInt, strip(raw))
-    fac     = Oscar.factor(Oscar.ZZ(N_big))
+    oz      = Oscar.ZZ(N_big)
+    fac     = Oscar.factor(oz)
     ell_big = BigInt(maximum(q for (q, _) in fac))
     h_big   = N_big ÷ ell_big
     return N_big, ell_big, h_big
@@ -100,6 +118,7 @@ function frobenius_find_ell_generator(pts::Vector{NTuple{2,Int}})::Tuple{Div2,In
     @printf("done (%.3fs)\n", time() - t0)
     @printf("  #J = %d\n", N)
     @printf("  factorisation: %s\n", string(Oscar.factor(Oscar.ZZ(N))))
+    mem_checkpoint("after Oscar bootstrap")
     @printf("  ell = %d  (%.1f bits)\n", ell_big, log2(ell_big))
     @printf("  cofactor h = %d\n", h)
     ell_big <= typemax(Int) || throw(OverflowError(
@@ -754,6 +773,105 @@ function parse_trial3_cli(args::Vector{String})
 end
 
 # ---------------------------------------------------------------------------
+#  mem_report_phase2tables — print a per-structure memory breakdown
+#
+#  Uses Sys.maxrss() for process RSS and Base.gc_live_bytes() for GC-tracked
+#  live heap.  Per-structure sizes are estimated from known layout:
+#
+#    shared_lp1      : Dict{NTuple{2,Int}, Tuple{Dict,Int,Int,Int}}
+#      each entry owns a fb_row Dict; row weight sampled from first 100 entries
+#    shared_lp1_conj : Dict{NTuple{4,Int}, Tuple{Int,Int,Int}}
+#      key(32) + val(24) + ~1.43x slot overhead ≈ 80 B/entry
+#    fb / pt2idx     : NTuple{2,Int} = 16 B; Dict slot ~1.43x load factor
+#    atom_log_dict   : same key + Int value ≈ 40 B/entry
+# ---------------------------------------------------------------------------
+function mem_report_phase2tables(tables::Phase2Tables,
+                                 results_pre,
+                                 thread_collectors_pre)
+    rss_mb  = Sys.maxrss() / 1024^2
+    live_mb = Base.gc_live_bytes() / 1024^2
+
+    nF      = length(tables.fb)
+    n_lp1   = length(tables.shared_lp1)
+    n_alog  = length(tables.atom_log_dict)
+
+    sh      = tables.shared_lp1_conj.shards
+    n_conj  = sum(length(sh[i]) for i in eachindex(sh))
+
+    # Sample first 100 lp1 entries to estimate average fb_row Dict weight.
+    avg_row_weight = if n_lp1 > 0
+        sample_n = min(100, n_lp1)
+        s = 0
+        for (_, v) in Iterators.take(tables.shared_lp1, sample_n)
+            s += length(v[1])   # v[1] is the fb_row Dict{Int,Int}
+        end
+        s / sample_n
+    else
+        0.0
+    end
+
+    # Layout estimates (conservative):
+    #   fb_row Dict: 56 B header + 16 B/slot × nextpow2(weight) at ~70% load
+    fb_row_bytes  = (56 + avg_row_weight * 16 * 2) * n_lp1
+    lp1_key_bytes = n_lp1 * 16 * 1.43      # NTuple{2,Int} + slot overhead
+    lp1_val_bytes = n_lp1 * 32             # pointer + 3 Ints (row, neg_al, neg_be, step)
+    lp1_est_mb    = (lp1_key_bytes + lp1_val_bytes + fb_row_bytes) / 1024^2
+
+    conj_est_mb   = n_conj  * 80  / 1024^2   # 32+24+overhead ≈ 80 B/entry
+    fb_est_mb     = nF      * 16  * 1.43 * 2 / 1024^2   # vec + pt2idx dict
+    alog_est_mb   = n_alog  * 40  * 1.43 / 1024^2
+
+    # Walk survivors: rel_rows still alive in results_pre.
+    # Each rel_row is a Dict{Int,Int}; estimate ~(56 + weight*32) bytes each.
+    total_rel_rows = sum(r !== nothing ? length(r.rel_rows) : 0 for r in results_pre)
+    avg_rel_weight = begin
+        s = 0; n = 0
+        for r in results_pre
+            r === nothing && continue
+            for row in Iterators.take(r.rel_rows, 10)
+                s += length(row); n += 1
+            end
+        end
+        n > 0 ? s/n : 2.0
+    end
+    walk_rels_est_mb = total_rel_rows * (56 + avg_rel_weight * 32) / 1024^2
+
+    # alpha_vec / beta_vec: BigInt per entry ≈ 48 B for single-limb values.
+    total_scalars = sum(r !== nothing ? length(r.alpha_vec) + length(r.beta_vec) : 0
+                        for r in results_pre)
+    scalars_est_mb = total_scalars * 48 / 1024^2
+
+    est_total = fb_est_mb + alog_est_mb + lp1_est_mb + conj_est_mb +
+                walk_rels_est_mb + scalars_est_mb
+
+    println("── Memory diagnostics (post-precompute, after GC.gc(true)) ──────────")
+    @printf("  Process RSS:                    %8.1f MB\n", rss_mb)
+    @printf("  GC live heap:                   %8.1f MB\n", live_mb)
+    println("  Estimated per-structure:")
+    @printf("    fb + pt2idx  (%6d pts):                        %6.1f MB\n", nF,     fb_est_mb)
+    @printf("    atom_log_dict(%6d pts):                        %6.1f MB\n", n_alog, alog_est_mb)
+    @printf("    shared_lp1   (%6d entries, avg_row_wt=%.1f):   %6.1f MB\n",
+            n_lp1, avg_row_weight, lp1_est_mb)
+    @printf("    shared_lp1_conj (%d entries @ ~80 B/entry):    %6.1f MB\n",
+            n_conj, conj_est_mb)
+    @printf("    walk rel_rows (%d rows, avg_wt=%.1f):           %6.1f MB\n",
+            total_rel_rows, avg_rel_weight, walk_rels_est_mb)
+    @printf("    walk alpha/beta vecs (%d BigInts):              %6.1f MB\n",
+            total_scalars, scalars_est_mb)
+    @printf("  Estimated Julia heap total:     %8.1f MB\n", est_total)
+    @printf("  Unaccounted Julia heap:         %8.1f MB  ← Nemo/FLINT/Oscar C heap + runtime\n",
+            max(0.0, live_mb - est_total))
+    @printf("  RSS − GC-live gap:              %8.1f MB  ← fragmentation + mapped libs\n",
+            max(0.0, rss_mb - live_mb))
+    println("─"^70)
+    flush(stdout)
+end
+
+# Backward-compat single-arg form (for call sites without walk results).
+mem_report_phase2tables(tables::Phase2Tables) =
+    mem_report_phase2tables(tables, Any[], [])
+
+# ---------------------------------------------------------------------------
 #  main2 — top-level entry point
 # ---------------------------------------------------------------------------
 function main2(; fb_size            ::Union{Nothing,Int} = nothing,
@@ -775,6 +893,7 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
 
     t_pts = time()
     pts   = curve_points()
+    mem_checkpoint("after curve_points()")
     t_pts_done = time() - t_pts
     length(pts) < 2 && error("No affine points found on curve.")
     @printf("Curve enumeration: %d affine rational points in %.3fs\n", length(pts), t_pts_done)
@@ -809,6 +928,7 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
         fb_pre, pt2idx_pre, p1_alpha_pre, p1_beta_pre, p1_rows_pre =
             phase1_walk(G, T_dummy, fb_run; verbose=true, beta_zero=true)
         nF_pre = length(fb_pre)
+        mem_checkpoint("after phase1_walk (amortized)")
 
         # ── β=0 step table (no T term) ───────────────────────────────────────
         N_STEPS_pre = 256
@@ -820,6 +940,7 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
             step_D_pre[i] = jac_mul(G, Int(a), ell)
             step_a_pre[i] = a
         end
+        mem_checkpoint("after step-table precompute")
 
         # ── Phase 2 (β=0, multithreaded) ─────────────────────────────────────
         target_excess_pre = max(20, nF_pre ÷ 10)
@@ -836,12 +957,17 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
         shared_lp2_lock_pre  = ReentrantLock()
         shared_lp_doubled_pre = Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int}}()
         shared_lp1_conj_pre  = ShardedLP1Conj()
+        mem_checkpoint("after ShardedLP1Conj() (cap=$(shared_lp1_conj_pre.max_entries))")
         shared_lp2_conj_pre  = LP2ConjGraph()
         shared_lp2_conj_lock_pre = ReentrantLock()
         set_lp2_principal_check_context!(fb_pre, G, T_dummy)
         rank_tracker_pre = OnlineRankTracker(ell)
         thread_collectors_pre = [LPResidualCollector() for _ in 1:Threads.nthreads()]
         results_pre = Vector{Any}(undef, Threads.nthreads())
+
+        @printf("  [MEM] before phase2 walk:  RSS=%.1f MB  GC-live=%.1f MB\n",
+                Sys.maxrss()/1024^2, Base.gc_live_bytes()/1024^2)
+        flush(stdout)
 
         @sync for tid in 1:Threads.nthreads()
             Threads.@spawn begin
@@ -860,6 +986,10 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
             end
         end
 
+        @printf("  [MEM] after  phase2 walk:  RSS=%.1f MB  GC-live=%.1f MB\n",
+                Sys.maxrss()/1024^2, Base.gc_live_bytes()/1024^2)
+        flush(stdout)
+
         alpha_vec_pre = copy(p1_alpha_pre)
         beta_vec_pre  = copy(p1_beta_pre)
         rel_rows_pre  = copy(p1_rows_pre)
@@ -875,6 +1005,9 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
         # ── RREF solve: atom_log_dict ─────────────────────────────────────────
         atom_log_dict = Dict{NTuple{2,Int}, Int}()
         try
+            @printf("  [MEM] before RREF solve:   RSS=%.1f MB  GC-live=%.1f MB\n",
+                    Sys.maxrss()/1024^2, Base.gc_live_bytes()/1024^2)
+            flush(stdout)
             F_pre = Nemo.GF(ell)
             m_pre = length(rel_rows_pre)
             aug   = zero_matrix(F_pre, m_pre, nF_pre + 1)
@@ -886,6 +1019,9 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
                 aug[i, nF_pre + 1] = mod(alpha_vec_pre[i], ell)
             end
             _, R_mat = rref(aug)
+            @printf("  [MEM] after  rref():       RSS=%.1f MB  GC-live=%.1f MB\n",
+                    Sys.maxrss()/1024^2, Base.gc_live_bytes()/1024^2)
+            flush(stdout)
             logs = zeros(Int, nF_pre)
             for r in 1:size(R_mat, 1)
                 pc = 0
@@ -945,6 +1081,13 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
                     conj_total, conj_nonempty, length(sh))
         end
         @printf("  total precompute time: %.3fs\n\n", time() - t_pre)
+
+        # ── Memory diagnostics ────────────────────────────────────────────────
+        # Force a full GC before reporting so dead walk allocations are collected
+        # and we see the true live set (Nemo/FLINT native heap will still show in RSS).
+        GC.gc(true)
+        mem_checkpoint("after final GC.gc(true) post-precompute")
+        mem_report_phase2tables(tables, results_pre, thread_collectors_pre)
 
         # ── Build per-target list ─────────────────────────────────────────────
         println("── Generating targets ───────────────────────────────────────────────")
