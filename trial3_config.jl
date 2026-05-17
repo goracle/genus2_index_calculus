@@ -24,26 +24,31 @@ const ASSERT_RELATIONS = false
 #    Previously uncapped; cross-close is rare so a small bound suffices.
 #
 #  MAX_LP1_CONJ_ENTRIES: cap for the conjugate-pair 1-LP table.  The keyspace
-#    is ~p^2 so closures are rare; steady-state occupancy is O(p) entries.
-#    Cap is computed at construction as LP1_CONJ_CAP_MULTIPLIER * p — see below.
+#    is ~p^2 so closures are rare; steady-state occupancy is O(min(ell,p)).
+#    Cap is computed at construction as LP1_CONJ_CAP_MULTIPLIER * min(ell,p).
 # ---------------------------------------------------------------------------
 const MAX_LP1_ENTRIES         = 50_000_000
 const MAX_LP1_DOUBLED_ENTRIES = 100_000
 
 # MAX_LP1_CONJ_ENTRIES is no longer a fixed constant — it is computed at
-# ShardedLP1Conj() construction time as a function of the field prime p.
+# ShardedLP1Conj(ell) construction time.
 #
-# Theory: the conj LP key is a 4-tuple of Fp coordinates drawn from the
-# Mumford representation of a degree-2 divisor over Fp².  The effective
-# keyspace has size O(p²).  The birthday threshold — where a random walk
-# first expects a collision — is O(√(p²)) = O(p).  Empirically at p≈131K
-# steady-state occupancy is ~8p entries (observed ~1.06M ≈ 8×131101).
+# Theory: the conj LP key is a 4-tuple of F_p coordinates from the Mumford
+# representation of a degree-2 residual over F_p².  Although the full Mumford
+# keyspace has size O(p²), the walk only produces residuals whose group order
+# divides ell (the large prime factor of #J).  The number of distinct conj LP
+# keys the walk can encounter is therefore O(min(ell, p)), not O(p).
 #
-# We use a multiplier of 16 so the cap is generous (never evicts prematurely)
-# while staying proportional to actual memory need at any field size:
-#   p=16K   → cap ≈  262K entries ≈   21 MB
-#   p=131K  → cap ≈  2.1M entries ≈  168 MB
-#   p=1M    → cap ≈   16M entries ≈  1.3 GB
+# This matters critically when ell ≪ p (e.g. p=13M, ell=196K from a highly
+# composite #J): using p as the cap allocates 209M-entry capacity that is
+# never needed and OOMs the process.  Using min(ell, p) keeps the cap tight.
+#
+# Empirical: at p≈131K, ell≈p, steady-state ≈ 8·min(ell,p).  Multiplier 16
+# gives comfortable headroom in both regimes:
+#   ell≈p=16K   → cap ≈  262K entries ≈    5 MB
+#   ell≈p=131K  → cap ≈  2.1M entries ≈   36 MB
+#   ell≈p=1.3M  → cap ≈   21M entries ≈  360 MB
+#   ell=196K, p=13M → cap ≈ 3.1M entries ≈   53 MB  (was 209M → OOM)
 #
 # NO sizehint! is used — Dicts grow on demand.  The cap only controls eviction.
 const LP1_CONJ_CAP_MULTIPLIER = 16
@@ -78,11 +83,11 @@ struct ShardedLP1Conj
     max_entries::Int   # total cap across all shards, computed from p at construction
 end
 
-function ShardedLP1Conj()
-    # Scale cap with the field prime.  Keyspace is O(p²), birthday threshold
-    # is O(p), empirical steady-state is ~8p.  Multiplier 16 gives headroom
-    # without pre-allocating anything — Dicts grow on demand.
-    cap = LP1_CONJ_CAP_MULTIPLIER * p
+function ShardedLP1Conj(ell::Integer)
+    # Cap scales with the number of distinct conj LP keys the walk can produce,
+    # which is O(min(ell, p)).  When ell ≪ p (composite #J) this is much
+    # smaller than p and avoids catastrophic over-allocation.
+    cap = LP1_CONJ_CAP_MULTIPLIER * Int(min(ell, p))
     shards = ntuple(_ -> Dict{NTuple{4,UInt32}, LP1ConjVal}(), N_CONJ_SHARDS)
     locks  = ntuple(_ -> ReentrantLock(), N_CONJ_SHARDS)
     ShardedLP1Conj(shards, locks, cap)

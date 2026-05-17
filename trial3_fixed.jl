@@ -342,7 +342,7 @@ function index_calculus_walk(G::Div2, T::Div2;
     shared_lp2            = LP2Graph()
     shared_lp2_lock       = ReentrantLock()
     shared_lp_doubled     = Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int}}()
-    shared_lp1_conj       = ShardedLP1Conj()
+    shared_lp1_conj       = ShardedLP1Conj(ell)
     shared_lp2_conj       = LP2ConjGraph()
     shared_lp2_conj_lock  = ReentrantLock()
 
@@ -956,7 +956,7 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
         shared_lp2_pre       = LP2Graph()
         shared_lp2_lock_pre  = ReentrantLock()
         shared_lp_doubled_pre = Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int}}()
-        shared_lp1_conj_pre  = ShardedLP1Conj()
+        shared_lp1_conj_pre  = ShardedLP1Conj(ell)
         mem_checkpoint("after ShardedLP1Conj() (cap=$(shared_lp1_conj_pre.max_entries))")
         shared_lp2_conj_pre  = LP2ConjGraph()
         shared_lp2_conj_lock_pre = ReentrantLock()
