@@ -1135,6 +1135,21 @@ function curve_points()
     pts
 end
 
+# Lightweight alternative to curve_points() that stops after collecting n points.
+# Used for generator search (which only needs a handful of random points) and
+# avoids storing the full O(p) array (~1.4 GB at p=21M).
+function sample_curve_points(n::Int = 100)::Vector{NTuple{2,Int}}
+    pts = NTuple{2,Int}[]
+    sizehint!(pts, n)
+    for x in 0:p-1
+        y = sqrt_fp(eval_f(x))
+        y === nothing && continue
+        push!(pts, (x, y))
+        length(pts) >= n && break
+    end
+    pts
+end
+
 mumford1(x0::Int, y0::Int) = Div2(Fp3(fp(-x0), 1, 0), Fp2(fp(y0), 0))
 
 function mumford2(x1::Int, y1::Int, x2::Int, y2::Int)::Div2

@@ -164,7 +164,7 @@ end
 # ---------------------------------------------------------------------------
 function phase1_walk(G::Div2, T::Div2, fb_cap::Int; verbose::Bool = true,
                      beta_zero::Bool = false)
-    seed_pts = curve_points()
+    seed_pts = sample_curve_points(100)
     isempty(seed_pts) && error("No rational points on curve for phase-1 seed")
 
     fb     = sizehint!(NTuple{2,Int}[], fb_cap)
@@ -289,7 +289,7 @@ function index_calculus_walk(G::Div2, T::Div2;
         phase1_walk(G, T, fb_size; verbose=verbose)
 
     nF    = length(fb)
-    n_all = length(curve_points())   # full curve count for step_cap formula
+    n_all = p   # Hasse bound: #E(F_p) ≈ p; avoids full curve enumeration
 
     if verbose
         cov = nF / max(1, n_all)
@@ -892,13 +892,10 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
     println("="^70, "\n")
 
     t_pts = time()
-    pts   = curve_points()
-    mem_checkpoint("after curve_points()")
+    pts   = sample_curve_points(100)
     t_pts_done = time() - t_pts
     length(pts) < 2 && error("No affine points found on curve.")
-    @printf("Curve enumeration: %d affine rational points in %.3fs\n", length(pts), t_pts_done)
-    @printf("  expected ~p = %d points (density check: %.4f)\n",
-            p, length(pts) / Float64(p))
+    @printf("Curve sample: %d affine rational points sampled in %.3fs\n", length(pts), t_pts_done)
     println()
 
     println("── Generator search (Frobenius / Sage) ─────────────────────────────")
@@ -946,7 +943,7 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
         target_excess_pre = max(20, nF_pre ÷ 10)
         rel_target_pre    = max(1, nF_pre + 1 + target_excess_pre - length(p1_rows_pre))
         rel_counter_pre   = Threads.Atomic{Int}(0)
-        n_all_pre         = length(curve_points())
+        n_all_pre         = p   # Hasse bound: #E(F_p) ≈ p
         cov_pre           = nF_pre / max(1, n_all_pre)
         step_cap_pre      = round(Int, rel_target_pre * 1.0 / max(1e-8, cov_pre^2) /
                                   Threads.nthreads()) * Threads.nthreads()

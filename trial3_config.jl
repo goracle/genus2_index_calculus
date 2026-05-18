@@ -8,7 +8,7 @@
 #  Relation integrity asserts
 #  Set to false in production to skip Jacobian-arithmetic cross-checks.
 # ---------------------------------------------------------------------------
-const ASSERT_RELATIONS = false
+const ASSERT_RELATIONS = true
 
 # ---------------------------------------------------------------------------
 #  1-LP table caps
@@ -52,6 +52,10 @@ const MAX_LP1_DOUBLED_ENTRIES = 100_000
 #
 # NO sizehint! is used — Dicts grow on demand.  The cap only controls eviction.
 const LP1_CONJ_CAP_MULTIPLIER = 16
+# Hard ceiling regardless of p/ell — prevents the table from growing to
+# LP1_CONJ_CAP_MULTIPLIER * p entries when ell ≫ p (e.g. ell/p ≈ 341 at p=21M
+# gives a 342M-entry cap → ~27 GB live heap).  2M entries ≈ 160 MB.
+const LP1_CONJ_CAP_MAX = 20_000_000
 
 # ---------------------------------------------------------------------------
 #  Sharded conjugate-pair 1-LP table
@@ -87,7 +91,7 @@ function ShardedLP1Conj(ell::Integer)
     # Cap scales with the number of distinct conj LP keys the walk can produce,
     # which is O(min(ell, p)).  When ell ≪ p (composite #J) this is much
     # smaller than p and avoids catastrophic over-allocation.
-    cap = LP1_CONJ_CAP_MULTIPLIER * Int(min(ell, p))
+    cap = min(LP1_CONJ_CAP_MULTIPLIER * Int(min(ell, p)), LP1_CONJ_CAP_MAX)
     shards = ntuple(_ -> Dict{NTuple{4,UInt32}, LP1ConjVal}(), N_CONJ_SHARDS)
     locks  = ntuple(_ -> ReentrantLock(), N_CONJ_SHARDS)
     ShardedLP1Conj(shards, locks, cap)
