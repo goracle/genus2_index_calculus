@@ -122,17 +122,25 @@ end
 #  report_worker_progress — periodic per-thread status line
 # ---------------------------------------------------------------------------
 function report_worker_progress(tid, elapsed, s::WorkerStats, rel_counter, rel_target)
-    @printf("[thread %2d | t=%6.1fs] raw=%d valid=%d 0lp=%d 1lp_emit=%d 1lp_step=%d 2lp_seen=%d 2lp_emit=%d skip=%d  rels_local=%d  global=%d/%d\n",
-            tid, elapsed, s.raw_steps, s.hits_total, s.hits_0lp, s.hits_1lp_emit,
-            s.hits_lp1, s.hits_lp2seen, s.hits_lp2emit, s.hits_skip,
+    lp1_total = s.hits_lp1 + s.hits_lp1_conj
+    @printf("[thread %2d | t=%6.1fs] raw=%d valid=%d 0lp=%d  1lp_aff(step=%d emit=%d) 1lp_conj(step=%d emit=%d)  2lp_seen=%d 2lp_emit=%d skip=%d  rels_local=%d  global=%d/%d\n",
+            tid, elapsed, s.raw_steps, s.hits_total, s.hits_0lp,
+            s.hits_lp1,      s.hits_1lp_emit,
+            s.hits_lp1_conj, s.hits_1lp_conj_emit,
+            s.hits_lp2seen, s.hits_lp2emit, s.hits_skip,
             s.rel_local, rel_counter[], rel_target)
-    @printf("           rates: phi_val=%.3f%%  full=%.3f%%  1lp=%.3f%%  2lp_seen=%.3f%%  2lp_emit=%.3f%%  skip=%.3f%%\n",
-            100.0 * s.hits_total  / max(1, s.raw_steps),
-            100.0 * s.hits_full   / max(1, s.hits_total),
-            100.0 * s.hits_lp1    / max(1, s.hits_total),
-            100.0 * s.hits_lp2seen/ max(1, s.hits_total),
-            100.0 * s.hits_lp2emit/ max(1, s.hits_total),
-            100.0 * s.hits_skip   / max(1, s.hits_total))
+    @printf("           rates: phi_val=%.3f%%  full=%.3f%%  1lp_aff=%.3f%%  1lp_conj=%.3f%%  2lp_seen=%.3f%%  2lp_emit=%.3f%%  skip=%.3f%%\n",
+            100.0 * s.hits_total       / max(1, s.raw_steps),
+            100.0 * s.hits_full        / max(1, s.hits_total),
+            100.0 * s.hits_lp1         / max(1, s.hits_total),
+            100.0 * s.hits_lp1_conj    / max(1, s.hits_total),
+            100.0 * s.hits_lp2seen     / max(1, s.hits_total),
+            100.0 * s.hits_lp2emit     / max(1, s.hits_total),
+            100.0 * s.hits_skip        / max(1, s.hits_total))
+    @printf("           1lp_conj closure rate: %.3f%%  |  1lp_aff closure rate: %.3f%%  |  conj_evictions=%d\n",
+            100.0 * s.hits_1lp_conj_emit / max(1, s.hits_lp1_conj),
+            100.0 * s.hits_1lp_emit      / max(1, s.hits_lp1),
+            s.evictions_conj)
     @printf("           smoothness histogram (0-LP, 1-LP, 2-LP, 3-LP): %d %d %d %d\n",
             s.smooth_hist[1], s.smooth_hist[2], s.smooth_hist[3], s.smooth_hist[4])
     flush(stdout)
@@ -345,7 +353,7 @@ end
                 ort_add_row!(ort, combined_scratch)
                 length(rank_growth) < MAX_RANK_GROWTH_SAMPLES &&
                     push!(rank_growth, (s.raw_steps, length(rel_rows)))
-                s.hits_full += 1; s.hits_1lp_emit += 1; s.rel_local += 1
+                s.hits_full += 1; s.hits_1lp_conj_emit += 1; s.rel_local += 1
                 Threads.atomic_add!(rel_counter, 1)
                 return fb[rand(1:nF_cur)]
             end
@@ -356,6 +364,7 @@ end
                 for evict_key in keys(conj_dict)
                     delete!(conj_dict, evict_key); break
                 end
+                s.evictions_conj += 1
             end
             conj_dict[lp_key] = LP1ConjVal(UInt16(i0), UInt64(neg_al), UInt64(neg_be))
         end
@@ -768,7 +777,7 @@ function phase2_worker(G               ::Div2,
         if !rs_split
             lp_key32 = conj_key32(RS_mumford::NTuple{4,Int})
             if i0 != 0
-                s.hits_lp1 += 1
+                s.hits_lp1_conj += 1
                 cur_pt = handle_1lp_conj!(lp_key32, i0, neg_al, neg_be, ell,
                                            fb, nF_cur, G, T,
                                            alpha_vec, beta_vec, rel_rows, rel_counter,
@@ -876,10 +885,12 @@ function phase2_worker(G               ::Div2,
         exit_reason = (!amortized_precompute && ort_b1(ort) > 0) ? "b₁>0 (kernel found)" :
                       rel_counter[] >= rel_target ? "rel_target reached" :
                                                     "step_cap reached"
-        @printf("[thread %2d | DONE | t=%.1fs | exit: %s] raw=%d valid=%d 0lp=%d 1lp_emit=%d 1lp_step=%d 2lp_seen=%d 2lp_emit=%d 2lp_cross=%d 2lp_odd=%d 2lp_cap=%d skip=%d  rels_local=%d\n",
-                tid, elapsed_total, exit_reason, s.raw_steps, s.hits_total, s.hits_0lp, s.hits_1lp_emit,
-                s.hits_lp1, s.hits_lp2seen, s.hits_lp2emit, s.hits_lp2_cross, s.hits_lp2_odd,
-                s.hits_lp2_cap, s.hits_skip, length(rel_rows))
+        @printf("[thread %2d | DONE | t=%.1fs | exit: %s] raw=%d valid=%d 0lp=%d  1lp_aff(step=%d emit=%d) 1lp_conj(step=%d emit=%d)  2lp_seen=%d 2lp_emit=%d 2lp_cross=%d 2lp_odd=%d 2lp_cap=%d skip=%d  conj_evict=%d  rels_local=%d\n",
+                tid, elapsed_total, exit_reason, s.raw_steps, s.hits_total, s.hits_0lp,
+                s.hits_lp1,      s.hits_1lp_emit,
+                s.hits_lp1_conj, s.hits_1lp_conj_emit,
+                s.hits_lp2seen, s.hits_lp2emit, s.hits_lp2_cross, s.hits_lp2_odd,
+                s.hits_lp2_cap, s.hits_skip, s.evictions_conj, length(rel_rows))
         @printf("           phi-valid rate: %.4f%%  |  full-rel/valid: %.4f%%  |  steps/full: %.1f\n",
                 100.0 * s.hits_total / max(1, s.raw_steps),
                 100.0 * s.hits_full  / max(1, s.hits_total),
@@ -903,12 +914,15 @@ function phase2_worker(G               ::Div2,
             hits_0lp      = s.hits_0lp,
             hits_lp1      = s.hits_lp1,
             hits_1lp_emit = s.hits_1lp_emit,
+            hits_lp1_conj      = s.hits_lp1_conj,
+            hits_1lp_conj_emit = s.hits_1lp_conj_emit,
             hits_lp2seen  = s.hits_lp2seen,
             hits_lp2emit  = s.hits_lp2emit,
             hits_lp2_cross= s.hits_lp2_cross,
             hits_lp2_odd  = s.hits_lp2_odd,
             hits_lp2_cap  = s.hits_lp2_cap,
             hits_skip     = s.hits_skip,
+            evictions_conj= s.evictions_conj,
             sample_rels   = sample_phase2_rels,
             total_steps   = s.raw_steps,
             smooth_hist   = s.smooth_hist,

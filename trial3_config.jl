@@ -136,20 +136,23 @@ const MAX_RANK_GROWTH_SAMPLES = 10_000
 #  owning thread and read only after the worker returns.
 # ---------------------------------------------------------------------------
 mutable struct WorkerStats
-    hits_total    ::Int   # phi steps that produced a valid residual
-    hits_full     ::Int   # full relations emitted (0-LP + 1-LP closures + 2-LP closures)
-    hits_0lp      ::Int   # pure factor-base relations
-    hits_lp1      ::Int   # phi steps with exactly one large prime (before closure)
-    hits_1lp_emit ::Int   # 1-LP closures that produced a full relation
-    hits_lp2seen  ::Int   # phi steps with exactly two large primes
-    hits_lp2emit  ::Int   # 2-LP cycles that produced a full relation
-    hits_lp2_cross::Int   # 2-LP steps resolved via existing 1-LP entry (cross-close)
-    hits_lp2_odd  ::Int   # 2-LP odd-cycle events (stored in lp_doubled or cross-closed)
-    hits_lp2_cap  ::Int   # 2-LP steps dropped because LP2 graph was at capacity
-    hits_skip     ::Int   # phi steps with ≥3 large primes (discarded)
-    raw_steps     ::Int   # total walk iterations (including non-smooth)
-    smooth_hist   ::Vector{Int}  # histogram: smooth_hist[k+1] = count of k-LP steps
-    rel_local     ::Int   # relations collected by this thread (for logging)
+    hits_total         ::Int   # phi steps that produced a valid residual
+    hits_full          ::Int   # full relations emitted (0-LP + 1-LP closures + 2-LP closures)
+    hits_0lp           ::Int   # pure factor-base relations
+    hits_lp1           ::Int   # phi steps with exactly one large prime (affine, before closure)
+    hits_lp1_conj      ::Int   # phi steps with exactly one large prime (conjugate, before closure)
+    hits_1lp_emit      ::Int   # 1-LP affine closures that produced a full relation
+    hits_1lp_conj_emit ::Int   # 1-LP conjugate closures that produced a full relation
+    hits_lp2seen       ::Int   # phi steps with exactly two large primes
+    hits_lp2emit       ::Int   # 2-LP cycles that produced a full relation
+    hits_lp2_cross     ::Int   # 2-LP steps resolved via existing 1-LP entry (cross-close)
+    hits_lp2_odd       ::Int   # 2-LP odd-cycle events (stored in lp_doubled or cross-closed)
+    hits_lp2_cap       ::Int   # 2-LP steps dropped because LP2 graph was at capacity
+    hits_skip          ::Int   # phi steps with ≥3 large primes (discarded)
+    evictions_conj     ::Int   # conj LP1 shard evictions (entry lost before closure)
+    raw_steps          ::Int   # total walk iterations (including non-smooth)
+    smooth_hist        ::Vector{Int}  # histogram: smooth_hist[k+1] = count of k-LP steps
+    rel_local          ::Int   # relations collected by this thread (for logging)
 
-    WorkerStats() = new(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, zeros(Int, 4), 0)
+    WorkerStats() = new(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, zeros(Int, 4), 0)
 end
