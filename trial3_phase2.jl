@@ -283,12 +283,13 @@ end
         unlock(shared_lp1_lock)
     end
 
-    # Next anchor: random FB point after closure; best non-LP atom otherwise.
-    if closed;  return fb[rand(1:nF_cur)]
-    elseif iR != 0; return R
-    elseif iS != 0; return S
-    else;           return P0
-    end
+    # Next anchor: always a random FB point.
+    #
+    # Returning R/S/P0 after a miss biases subsequent steps toward the same
+    # φ-neighborhood, causing the LP table to fill with re-generated copies of
+    # the same keys (correlated evictions, near-zero closure rate).  A random
+    # jump breaks the attractor feedback and lets the birthday matching work.
+    return fb[rand(1:nF_cur)]
 end
 
 # --- 1-LP conjugate: P0 is in FB; RS is a non-split Mumford pair. ---
@@ -375,7 +376,10 @@ end
     finally
         unlock(conj_lock)
     end
-    return P0
+    # After a conj miss, jump to a random FB point rather than re-anchoring at
+    # P0.  Returning P0 pins the walk to the same anchor, re-generating nearly
+    # identical conj LP keys that fill the shard and are dropped as evictions.
+    return fb[rand(1:nF_cur)]
 end
 
 
