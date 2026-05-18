@@ -260,20 +260,23 @@ end
             if ASSERT_RELATIONS
                 @assert check_lp1_stored(lp_pt, fb_row, neg_al, neg_be, fb, G, T; tag="1LP-STORE")
             end
-            # Evict one entry if the table is full (single-entry FIFO — avoids
-            # evicting the entry we just inserted).
+            # Skip (do not store) if the table is full.  Evicting a random
+            # existing entry is counter-productive: it destroys an unmatched
+            # entry before it can close, causes correlated re-generation of the
+            # same keys, and produces duplicate relations.  A full table of
+            # stable unmatched entries is strictly better — closures drain it
+            # naturally.
             if length(shared_lp1) >= MAX_LP1_ENTRIES
-                for evict_key in keys(shared_lp1)
-                    delete!(shared_lp1, evict_key); break
+                # drop silently; doubled cross-close check is skipped too
+            else
+                shared_lp1[lp_pt] = (copy(fb_row), neg_al, neg_be, s.raw_steps)
+                # Check whether the complementary doubled entry already exists.
+                if try_lp1_doubled_cross_close!(lp_pt, shared_lp1, shared_lp_doubled,
+                                                ell, alpha_vec, beta_vec, rel_rows,
+                                                rank_growth, s.raw_steps, rel_counter, ort,
+                                                G, T, combined_scratch, fb)
+                    s.hits_full += 1; s.hits_lp2emit += 1; s.rel_local += 1; closed = true
                 end
-            end
-            shared_lp1[lp_pt] = (copy(fb_row), neg_al, neg_be, s.raw_steps)
-            # Check whether the complementary doubled entry already exists.
-            if try_lp1_doubled_cross_close!(lp_pt, shared_lp1, shared_lp_doubled,
-                                            ell, alpha_vec, beta_vec, rel_rows,
-                                            rank_growth, s.raw_steps, rel_counter, ort,
-                                            G, T, combined_scratch, fb)
-                s.hits_full += 1; s.hits_lp2emit += 1; s.rel_local += 1; closed = true
             end
         end
     finally
@@ -358,15 +361,16 @@ end
                 return fb[rand(1:nF_cur)]
             end
         else
-            # Store: evict one entry (FIFO) if the shard is at its share of the
-            # total cap.  Per-shard limit = total cap / N_CONJ_SHARDS.
+            # Skip (do not store) if the shard is full.  Evicting a random
+            # existing entry destroys an unmatched key before it can close,
+            # causing correlated re-generation and near-zero closure rates.
+            # A stable full table lets closures drain it naturally.
+            # Per-shard limit = total cap / N_CONJ_SHARDS.
             if length(conj_dict) >= cld(shared_lp1_conj.max_entries, N_CONJ_SHARDS)
-                for evict_key in keys(conj_dict)
-                    delete!(conj_dict, evict_key); break
-                end
-                s.evictions_conj += 1
+                s.evictions_conj += 1   # repurposed as drop counter
+            else
+                conj_dict[lp_key] = LP1ConjVal(UInt16(i0), UInt64(neg_al), UInt64(neg_be))
             end
-            conj_dict[lp_key] = LP1ConjVal(UInt16(i0), UInt64(neg_al), UInt64(neg_be))
         end
     finally
         unlock(conj_lock)
@@ -1024,19 +1028,17 @@ end
                     end
                 else
                     # Park: store 2·atom(root) for a future 1-LP entry to consume.
-                    shared_lp_doubled[root_affine] = (emitted_conj.row, Int(emitted_conj.alpha), Int(emitted_conj.beta))
-                    if length(shared_lp_doubled) > MAX_LP1_DOUBLED_ENTRIES
-                        for evict_key in keys(shared_lp_doubled)
-                            delete!(shared_lp_doubled, evict_key); break
+                    # Skip if full rather than evicting — same reasoning as lp1/lp1_conj.
+                    if length(shared_lp_doubled) <= MAX_LP1_DOUBLED_ENTRIES
+                        shared_lp_doubled[root_affine] = (emitted_conj.row, Int(emitted_conj.alpha), Int(emitted_conj.beta))
+                        if try_lp1_doubled_cross_close!(root_affine, shared_lp1, shared_lp_doubled,
+                                                        ell, alpha_vec, beta_vec, rel_rows,
+                                                        rank_growth, s.raw_steps, rel_counter,
+                                                        ort, G, T, combined_scratch, fb)
+                            s.hits_full += 1; s.hits_lp2emit += 1; s.rel_local += 1
                         end
                     end
-                    if try_lp1_doubled_cross_close!(root_affine, shared_lp1, shared_lp_doubled,
-                                                    ell, alpha_vec, beta_vec, rel_rows,
-                                                    rank_growth, s.raw_steps, rel_counter,
-                                                    ort, G, T, combined_scratch, fb)
-                        s.hits_full += 1; s.hits_lp2emit += 1; s.rel_local += 1
-                    end
-                end
+                end  # else (haskey branch)
             finally
                 unlock(shared_lp1_lock)
             end
