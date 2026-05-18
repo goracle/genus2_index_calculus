@@ -121,7 +121,8 @@ end
 # ---------------------------------------------------------------------------
 #  report_worker_progress — periodic per-thread status line
 # ---------------------------------------------------------------------------
-function report_worker_progress(tid, elapsed, s::WorkerStats, rel_counter, rel_target)
+function report_worker_progress(tid, elapsed, s::WorkerStats, rel_counter, rel_target,
+                                shared_lp1_conj::ShardedLP1Conj)
     lp1_total = s.hits_lp1 + s.hits_lp1_conj
     @printf("[thread %2d | t=%6.1fs] raw=%d valid=%d 0lp=%d  1lp_aff(step=%d emit=%d) 1lp_conj(step=%d emit=%d)  2lp_seen=%d 2lp_emit=%d skip=%d  rels_local=%d  global=%d/%d\n",
             tid, elapsed, s.raw_steps, s.hits_total, s.hits_0lp,
@@ -137,12 +138,21 @@ function report_worker_progress(tid, elapsed, s::WorkerStats, rel_counter, rel_t
             100.0 * s.hits_lp2seen     / max(1, s.hits_total),
             100.0 * s.hits_lp2emit     / max(1, s.hits_total),
             100.0 * s.hits_skip        / max(1, s.hits_total))
-    @printf("           1lp_conj closure rate: %.3f%%  |  1lp_aff closure rate: %.3f%%  |  conj_evictions=%d\n",
+    @printf("           1lp_conj closure rate: %.3f%%  |  1lp_aff closure rate: %.3f%%  |  conj_cap_drops=%d\n",
             100.0 * s.hits_1lp_conj_emit / max(1, s.hits_lp1_conj),
             100.0 * s.hits_1lp_emit      / max(1, s.hits_lp1),
             s.evictions_conj)
     @printf("           smoothness histogram (0-LP, 1-LP, 2-LP, 3-LP): %d %d %d %d\n",
             s.smooth_hist[1], s.smooth_hist[2], s.smooth_hist[3], s.smooth_hist[4])
+    # Print conj table occupancy once (from thread 2 only) to avoid redundant summation.
+    # (Thread 1 is the coordinator and never enters the worker report path.)
+    if tid == 2
+        conj_total = sum(length(shard) for shard in shared_lp1_conj.shards)
+        @printf("           conj_table: %d / %d entries (%.2f%% full, cap/shard=%d)\n",
+                conj_total, shared_lp1_conj.max_entries,
+                100.0 * conj_total / max(1, shared_lp1_conj.max_entries),
+                cld(shared_lp1_conj.max_entries, N_CONJ_SHARDS))
+    end
     flush(stdout)
 end
 
@@ -761,7 +771,8 @@ function phase2_worker(G               ::Div2,
             now_t = time()
             if (now_t - t_last_report) >= report_interval_secs
                 s.raw_steps = s.raw_steps   # flush to struct (it's already there)
-                report_worker_progress(tid, now_t - t_start, s, rel_counter, rel_target)
+                report_worker_progress(tid, now_t - t_start, s, rel_counter, rel_target,
+                                       shared_lp1_conj)
                 t_last_report = now_t
             end
         end
