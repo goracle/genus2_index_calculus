@@ -13,7 +13,7 @@ def filter_walker_log(input_file, output_file):
                     continue
                 
                 # Check for the end of the zone
-                if "after phase2" in line:
+                if "after  phase2" in line:
                     omit_zone = False
                     f_out.write(line)
                     continue
