@@ -79,7 +79,8 @@ struct Phase2Tables
     shared_lp2     ::LP2Graph
 
     # Extension-field LP tables (optional; may be empty)
-    shared_lp1_conj::ShardedLP1Conj
+    # V = LP1ConjVal (amortized) or LP1ConjValFull (single-shot)
+    shared_lp1_conj::ShardedLP1Conj{LP1ConjVal}
     shared_lp2_conj::LP2ConjGraph
 
     # Group order
@@ -164,8 +165,10 @@ function phase3_trial_worker(
     # ── Local birthday fallback tables ────────────────────────────────────────
     # affine: lp_pt → (fb_row, neg_al, neg_be)
     local_lp1_affine = Dict{NTuple{2,Int},   Tuple{Dict{Int,Int}, Int, Int}}()
-    # conj:   lp_key → LP1ConjVal
-    local_lp1_conj   = Dict{NTuple{4,UInt32}, LP1ConjVal}()
+    # conj:   lp_key → LP1ConjValFull
+    # Local birthday dict runs β≠0, so we need to store neg_be.
+    # The precomputed table uses LP1ConjVal (amortized, neg_be=0 implicit).
+    local_lp1_conj   = Dict{NTuple{4,UInt32}, LP1ConjValFull}()
 
     # ── Counters ──────────────────────────────────────────────────────────────
     n_steps          = 0
@@ -244,12 +247,15 @@ function phase3_trial_worker(
                 si_shard   = conj_shard_idx(lp_key)
                 conj_dict  = lp1_conj_pre.shards[si_shard]
 
-                if haskey(conj_dict, lp_key)
-                    # Close against precomputed entry (read-only — no delete)
-                    v = conj_dict[lp_key]
-                    prev_col, prev_al, prev_be = Int(v.i0), Int(v.neg_al), Int(v.neg_be)
+                slot_pre = _conj_find(conj_dict, lp_key)
+                if slot_pre != 0
+                    # Close against precomputed entry (read-only — no delete).
+                    # Precomputed table is amortized: neg_be was always 0.
+                    v = @inbounds conj_dict.vals[slot_pre]
+                    prev_col = Int(v.i0)
+                    prev_al  = Int(v.neg_al)
                     c_al = mod(neg_al - prev_al, ellI)
-                    c_be = mod(neg_be - prev_be, ellI)
+                    c_be = neg_be   # mod(neg_be - 0, ellI) == neg_be
                     n_1lp_conj_pre += 1
                     k_rec = try_solve_conj(i0, prev_col, c_al, c_be)
                     k_rec !== nothing && break
@@ -265,7 +271,7 @@ function phase3_trial_worker(
                     k_rec = try_solve_conj(i0, prev_col, c_al, c_be)
                     k_rec !== nothing && break
                 else
-                    local_lp1_conj[lp_key] = LP1ConjVal(UInt16(i0), UInt64(neg_al), UInt64(neg_be))
+                    local_lp1_conj[lp_key] = LP1ConjValFull(UInt16(i0), UInt64(neg_al), UInt64(neg_be))
                 end
             end
             # A2: i0 not in FB → 2-LP-conj, skip

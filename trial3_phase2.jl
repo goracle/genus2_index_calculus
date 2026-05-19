@@ -122,7 +122,7 @@ end
 #  report_worker_progress — periodic per-thread status line
 # ---------------------------------------------------------------------------
 function report_worker_progress(tid, elapsed, s::WorkerStats, rel_counter, rel_target,
-                                shared_lp1_conj::ShardedLP1Conj)
+                                shared_lp1_conj::ShardedLP1Conj{<:Any})
     lp1_total = s.hits_lp1 + s.hits_lp1_conj
     @printf("[thread %2d | t=%6.1fs] raw=%d valid=%d 0lp=%d  1lp_aff(step=%d emit=%d) 1lp_conj(step=%d emit=%d)  2lp_seen=%d 2lp_emit=%d skip=%d  rels_local=%d  global=%d/%d\n",
             tid, elapsed, s.raw_steps, s.hits_total, s.hits_0lp,
@@ -147,7 +147,7 @@ function report_worker_progress(tid, elapsed, s::WorkerStats, rel_counter, rel_t
     # Print conj table occupancy once (from thread 2 only) to avoid redundant summation.
     # (Thread 1 is the coordinator and never enters the worker report path.)
     if tid == 2
-        conj_total = sum(length(shard) for shard in shared_lp1_conj.shards)
+        conj_total = sum(sh.count for sh in shared_lp1_conj.shards)
         @printf("           conj_table: %d / %d entries (%.2f%% full, cap/shard=%d)\n",
                 conj_total, shared_lp1_conj.max_entries,
                 100.0 * conj_total / max(1, shared_lp1_conj.max_entries),
@@ -324,23 +324,29 @@ end
         rel_counter     ::Threads.Atomic{Int},
         ort             ::OnlineRankTracker,
         s               ::WorkerStats,
-        shared_lp1_conj ::ShardedLP1Conj,
+        shared_lp1_conj ::ShardedLP1Conj{V},
         rank_growth     ::Vector{Tuple{Int,Int}},
         combined_scratch::Dict{Int,Int},
-        P0              ::NTuple{2,Int})::NTuple{2,Int}
+        P0              ::NTuple{2,Int})::NTuple{2,Int} where V
 
-    si = conj_shard_idx(lp_key)
-    conj_dict = shared_lp1_conj.shards[si]
+    si        = conj_shard_idx(lp_key)
+    sh        = shared_lp1_conj.shards[si]
     conj_lock = shared_lp1_conj.locks[si]
 
     lock(conj_lock)
     try
-        if haskey(conj_dict, lp_key)
-            v = conj_dict[lp_key]
-            prev_col, prev_al, prev_be = Int(v.i0), Int(v.neg_al), Int(v.neg_be)
+        slot = _conj_find(sh, lp_key)
+        if slot != 0
+            # --- Close against stored entry ---
+            # _conj_prev_be returns 0 for LP1ConjVal (amortized) and v.neg_be
+            # for LP1ConjValFull (single-shot).  Both cases are compiled away.
+            v        = @inbounds sh.vals[slot]
+            prev_col = Int(v.i0)
+            prev_al  = Int(v.neg_al)
+            prev_be  = _conj_prev_be(v)
             combined_al = mod(neg_al - prev_al, Int(ell))
             combined_be = mod(neg_be - prev_be, Int(ell))
-            delete!(conj_dict, lp_key)
+            _conj_delete_slot!(sh, slot)
 
             if !(combined_al == 0 && combined_be == 0) && i0 != prev_col
                 # Relation: atom(fb[i0]) - atom(fb[prev_col]) = combined_al·G + combined_be·T
@@ -372,15 +378,15 @@ end
                 return fb[rand(1:nF_cur)]
             end
         else
+            # --- Store this entry ---
             # Skip (do not store) if the shard is full.  Evicting a random
             # existing entry destroys an unmatched key before it can close,
             # causing correlated re-generation and near-zero closure rates.
             # A stable full table lets closures drain it naturally.
-            # Per-shard limit = total cap / N_CONJ_SHARDS.
-            if length(conj_dict) >= cld(shared_lp1_conj.max_entries, N_CONJ_SHARDS)
+            # _conj_make_val drops neg_be for LP1ConjVal (amortized mode).
+            val = _conj_make_val(V, UInt16(i0), UInt64(neg_al), UInt64(neg_be))
+            if !conj_insert!(shared_lp1_conj, si, lp_key, val)
                 s.evictions_conj += 1   # repurposed as drop counter
-            else
-                conj_dict[lp_key] = LP1ConjVal(UInt16(i0), UInt64(neg_al), UInt64(neg_be))
             end
         end
     finally
@@ -675,7 +681,7 @@ function phase2_worker(G               ::Div2,
                        shared_lp2      ::LP2Graph,
                        shared_lp2_lock ::ReentrantLock,
                        shared_lp_doubled::Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int}},
-                       shared_lp1_conj ::ShardedLP1Conj,
+                       shared_lp1_conj ::ShardedLP1Conj{<:Any},
                        shared_lp2_conj ::LP2ConjGraph,
                        shared_lp2_conj_lock::ReentrantLock,
                        enable_lp2      ::Bool,

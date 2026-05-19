@@ -342,7 +342,7 @@ function index_calculus_walk(G::Div2, T::Div2;
     shared_lp2            = LP2Graph()
     shared_lp2_lock       = ReentrantLock()
     shared_lp_doubled     = Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int}}()
-    shared_lp1_conj       = ShardedLP1Conj(ell)
+    shared_lp1_conj       = ShardedLP1Conj(ell; amortized=false)
     shared_lp2_conj       = LP2ConjGraph()
     shared_lp2_conj_lock  = ReentrantLock()
 
@@ -796,7 +796,7 @@ function mem_report_phase2tables(tables::Phase2Tables,
     n_alog  = length(tables.atom_log_dict)
 
     sh      = tables.shared_lp1_conj.shards
-    n_conj  = sum(length(sh[i]) for i in eachindex(sh))
+    n_conj  = sum(sh[i].count for i in eachindex(sh))
 
     # Sample first 100 lp1 entries to estimate average fb_row Dict weight.
     avg_row_weight = if n_lp1 > 0
@@ -817,7 +817,7 @@ function mem_report_phase2tables(tables::Phase2Tables,
     lp1_val_bytes = n_lp1 * 32             # pointer + 3 Ints (row, neg_al, neg_be, step)
     lp1_est_mb    = (lp1_key_bytes + lp1_val_bytes + fb_row_bytes) / 1024^2
 
-    conj_est_mb   = n_conj  * 80  / 1024^2   # 32+24+overhead ≈ 80 B/entry
+    conj_est_mb   = n_conj  * 32  / 1024^2   # flat table: 16B key + 10B val at 80% load ≈ 32 B/entry
     fb_est_mb     = nF      * 16  * 1.43 * 2 / 1024^2   # vec + pt2idx dict
     alog_est_mb   = n_alog  * 40  * 1.43 / 1024^2
 
@@ -852,7 +852,7 @@ function mem_report_phase2tables(tables::Phase2Tables,
     @printf("    atom_log_dict(%6d pts):                        %6.1f MB\n", n_alog, alog_est_mb)
     @printf("    shared_lp1   (%6d entries, avg_row_wt=%.1f):   %6.1f MB\n",
             n_lp1, avg_row_weight, lp1_est_mb)
-    @printf("    shared_lp1_conj (%d entries @ ~80 B/entry):    %6.1f MB\n",
+    @printf("    shared_lp1_conj (%d entries @ ~32 B/entry):    %6.1f MB\n",
             n_conj, conj_est_mb)
     @printf("    walk rel_rows (%d rows, avg_wt=%.1f):           %6.1f MB\n",
             total_rel_rows, avg_rel_weight, walk_rels_est_mb)
@@ -1072,8 +1072,8 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
         @printf("  Phase2Tables ready: FB=%d  atom_logs=%d  lp1_entries=%d\n",
                 length(fb_pre), length(atom_log_dict), length(shared_lp1_pre))
         let sh = shared_lp1_conj_pre.shards
-            conj_total    = sum(length(sh[i]) for i in eachindex(sh))
-            conj_nonempty = count(i -> !isempty(sh[i]), eachindex(sh))
+            conj_total    = sum(sh[i].count for i in eachindex(sh))
+            conj_nonempty = count(i -> sh[i].count > 0, eachindex(sh))
             @printf("  shared_lp1_conj_pre: %d entries across %d/%d nonempty shards\n",
                     conj_total, conj_nonempty, length(sh))
         end
