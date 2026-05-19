@@ -274,8 +274,13 @@ end
 end
 
 # Narrow an Int Mumford key to UInt32.
+# Coordinates must be reduced mod p before casting: v-polynomial components
+# can be negative (or ≥ p after arithmetic), and UInt32(negative_int) wraps
+# silently mod 2^32, producing keys that differ from the same geometric object
+# computed on a different code path.  mod(x, p) normalises to [0, p) first.
 @inline conj_key32(key::NTuple{4,Int}) =
-    (UInt32(key[1]), UInt32(key[2]), UInt32(key[3]), UInt32(key[4]))
+    (UInt32(mod(key[1], p)), UInt32(mod(key[2], p)),
+     UInt32(mod(key[3], p)), UInt32(mod(key[4], p)))
 
 # Total live entries across all shards (for reporting).
 function conj_total_entries(sc::ShardedLP1Conj)::Int
