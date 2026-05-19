@@ -7,13 +7,13 @@ def filter_walker_log(input_file, output_file):
             
             for line in f_in:
                 # Check for the start of the zone
-                if "launching walkers at" in line:
+                if "before phase2" in line:
                     f_out.write(line)
                     omit_zone = True
                     continue
                 
                 # Check for the end of the zone
-                if "Walk results" in line:
+                if "after phase2" in line:
                     omit_zone = False
                     f_out.write(line)
                     continue
