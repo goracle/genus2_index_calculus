@@ -45,55 +45,58 @@ const MAX_LP1_DOUBLED_ENTRIES = 100_000
 #
 # Empirical: at p≈131K, ell≈p, steady-state ≈ 8·min(ell,p).  Multiplier 16
 # gives comfortable headroom in both regimes:
-#   ell≈p=16K   → cap ≈  262K entries ≈    2 MB  (was ~5 MB with Dict)
-#   ell≈p=131K  → cap ≈  2.1M entries ≈   21 MB  (was ~36 MB)
-#   ell≈p=1.3M  → cap ≈   21M entries ≈  168 MB  (was ~360 MB)
-#   ell=196K, p=13M → cap ≈ 3.1M entries ≈   25 MB  (was ~53 MB, was 209M → OOM)
+#   ell≈p=16K   → cap ≈  262K entries ≈    4 MB  (was ~5 MB with Dict)
+#   ell≈p=131K  → cap ≈  2.1M entries ≈   27 MB  (was ~36 MB)
+#   ell≈p=1.3M  → cap ≈   21M entries ≈  273 MB  (was ~360 MB)
+#   ell=196K, p=13M → cap ≈ 3.1M entries ≈   40 MB  (was ~53 MB, was 209M → OOM)
 #
 const LP1_CONJ_CAP_MULTIPLIER = 16
 # Hard ceiling regardless of p/ell — prevents catastrophic over-allocation.
-# 2M entries ≈ 16 MB with the flat table (was ~160 MB with Dict).
-const LP1_CONJ_CAP_MAX = 20_000_000
+const LP1_CONJ_CAP_MAX = 200_000_000
 
 # ---------------------------------------------------------------------------
 #  Sharded conjugate-pair 1-LP table
 #
-#  Each shard is a flat open-addressing hash table over two parallel Vectors:
-#    shard_keys[i]  ::NTuple{4,UInt32}   — the Mumford 4-tuple key
-#    shard_vals[i]  ::LP1ConjVal         — the stored value
+#  Each shard is a flat open-addressing hash table storing both the full
+#  4×UInt32 Mumford key and the associated value.  Storing the full key:
 #
-#  A sentinel key (all UInt32 max) marks empty slots.
-#  We target 80% max load (keys_per_shard = cap_per_shard × LOAD_DENOM ÷ LOAD_NUM).
+#    • Eliminates false-positive matches entirely.  The fingerprint-only design
+#      had ~5% false-positive rate per probe at 80% load, producing bad
+#      relations on every closure.
 #
-#  This replaces the previous Dict{NTuple{4,UInt32}, LP1ConjVal} per shard.
-#  Benefits:
-#    • No GC tracking of individual entries — the Vectors are plain blobs.
-#    • No per-entry slot byte + pointer indirection from Dict's open-addressing.
-#    • Cache-sequential access: key probe touches a contiguous UInt32 array.
-#    • Memory per entry: 16 (key) + 10 (val, amortized) = 26 bytes at 80% load
-#      → 32.5 effective bytes/entry, vs ~100–120 bytes/entry for Dict.
-#      That is a 3–4× reduction.
+#    • Enables backward-shift deletion (Robin Hood compaction on delete)
+#      instead of tombstones.  Tombstone-based designs without stored keys
+#      cannot rehash correctly during rebuild.  Backward-shift is O(1)
+#      amortized per delete, keeps chains contiguous, and requires no
+#      separate rebuild pass.
+#
+#  Memory per entry at 80% load:
+#    key:  16 bytes/slot → 20 effective bytes/entry
+#    val:  10 bytes/slot (amortized) → 12.5 effective bytes/entry
+#    total ≈ 33 bytes/entry   vs ~110 (Dict)
 #
 #  N_CONJ_SHARDS must be a power of 2 for the cheap mask in conj_shard_idx.
 # ---------------------------------------------------------------------------
-const N_CONJ_SHARDS    = 64
-const CONJ_LOAD_NUM    = 4    # max load = LOAD_NUM / LOAD_DENOM = 80%
-const CONJ_LOAD_DENOM  = 5
+const N_CONJ_SHARDS   = 64
+const CONJ_LOAD_NUM   = 4    # max load = LOAD_NUM / LOAD_DENOM = 80%
+const CONJ_LOAD_DENOM = 5
 
-# Sentinel: marks an empty slot in the flat key array.
-const CONJ_KEY_EMPTY = (typemax(UInt32), typemax(UInt32), typemax(UInt32), typemax(UInt32))
+# Sentinel key — marks an empty slot.  All four components are typemax(UInt32),
+# which is never a valid F_p coordinate since p < 2^32 and field elements are
+# in [0, p).
+const CONJ_KEY_EMPTY = (typemax(UInt32), typemax(UInt32),
+                        typemax(UInt32), typemax(UInt32))
 
 # ---------------------------------------------------------------------------
 #  LP1ConjVal — value stored in the conj 1-LP table.
 #
-#  Amortized mode (beta_zero=true): neg_be is always 0 — drop the field
-#  entirely.  Use LP1ConjVal (10 bytes) in amortized mode and LP1ConjValFull
-#  (18 bytes) in single-shot mode.
+#  Amortized mode (beta_zero=true): neg_be is always 0 — drop the field.
+#    LP1ConjVal     (10 bytes): i0::UInt16 + neg_al::UInt64
+#    LP1ConjValFull (18 bytes): i0::UInt16 + neg_al::UInt64 + neg_be::UInt64
 #
 #  i0     — FB column index, max ~O(√p) ≈ 10^4 at p=10^8, fits UInt16.
-#  neg_al — exponent mod ell.  ell ≤ #J ≈ p², so ell < 2^64 for p < 2^32.
-#           Requires UInt64.
-#  neg_be — same range; omitted in LP1ConjVal (amortized) since it's always 0.
+#  neg_al — exponent mod ell.  ell ≤ #J ≈ p², fits UInt64 for p < 2^32.
+#  neg_be — same range; omitted in amortized mode (always 0).
 # ---------------------------------------------------------------------------
 struct LP1ConjVal          # amortized mode  (10 bytes)
     i0     ::UInt16
@@ -107,26 +110,32 @@ struct LP1ConjValFull      # single-shot mode (18 bytes)
 end
 
 # ---------------------------------------------------------------------------
-#  ConjShard — one shard of the flat open-addressing table.
+#  ConjShard — one shard of the full-key open-addressing hash table.
 #
-#  Layout: parallel arrays keys[1..cap] and vals[1..cap].
-#  Empty slots have keys[i] == CONJ_KEY_EMPTY.
-#  count tracks live entries for cap enforcement.
-#  cap = length(keys) = the allocated slot count (always a power of 2 so that
-#  the probe step h = hash & (cap-1) is a single mask).
+#  keys[i]  ::NTuple{4,UInt32}  — full Mumford key, or CONJ_KEY_EMPTY
+#  vals[i]  ::V                 — stored value (meaningful only when
+#                                 keys[i] != CONJ_KEY_EMPTY)
+#  count    ::Int               — live entry count
+#  cap      ::Int               — slot count, always a power of 2
+#  mask     ::UInt              — cap - 1, for cheap slot wrapping
+#  max_entries::Int             — live-entry cap (drop threshold)
+#
+#  Deletion uses backward-shift (Robin Hood compaction): when a slot is
+#  vacated, entries behind it in the probe chain that were displaced from
+#  their natural slot are shifted back to fill the gap.  This keeps chains
+#  contiguous so lookup stops on the first empty slot — no tombstones,
+#  no separate rebuild pass needed.
 # ---------------------------------------------------------------------------
 mutable struct ConjShard{V}
-    keys  ::Vector{NTuple{4,UInt32}}
-    vals  ::Vector{V}
-    count ::Int
-    cap   ::Int   # == length(keys), always a power of 2
-    mask  ::UInt  # == cap - 1
-    max_entries::Int  # live-entry cap (eviction threshold)
+    keys        ::Vector{NTuple{4,UInt32}}
+    vals        ::Vector{V}
+    count       ::Int   # live entries
+    cap         ::Int   # slot count, always a power of 2
+    mask        ::UInt  # cap - 1
+    max_entries ::Int   # live-entry cap (drop threshold)
 end
 
 function ConjShard{V}(cap_entries::Int) where V
-    # Round cap up to next power of 2 so mask works.
-    # Allocate enough slots for 80% load.
     slot_count = max(16, nextpow(2, cld(cap_entries * CONJ_LOAD_DENOM, CONJ_LOAD_NUM)))
     keys = fill(CONJ_KEY_EMPTY, slot_count)
     vals = Vector{V}(undef, slot_count)
@@ -134,101 +143,91 @@ function ConjShard{V}(cap_entries::Int) where V
 end
 
 # ---------------------------------------------------------------------------
-#  Flat open-addressing primitives for ConjShard.
-#
-#  Hash function: XOR-fold the four UInt32 coords, then apply a finalizer.
-#  Linear probing is used (simplest; cache-friendly for our load factors).
+#  Hash — maps a Mumford 4-tuple to a starting slot (1-based).
+#  Each component gets a distinct multiply constant so no XOR cancellation
+#  is possible (unlike the old design which XOR'd all four together first,
+#  making keys like (a,b,a,b) hash identically to (0,0,0,0) XOR-wise).
 # ---------------------------------------------------------------------------
-
-@inline function _conj_slot_hash(key::NTuple{4,UInt32}, mask::UInt)::Int
-    h = UInt(key[1]) ⊻ UInt(key[2]) ⊻ UInt(key[3]) ⊻ UInt(key[4])
-    # Finalizer borrowed from FNV/murmur style — reduces clustering on
-    # arithmetic sequences of Mumford coordinates.
-    h = h ⊻ (h >> 16)
-    h = h * 0x45d9f3b37197344d % UInt64
-    h = h ⊻ (h >> 16)
-    Int(h & mask) + 1   # 1-based
+@inline function _conj_hash64(key::NTuple{4,UInt32})::UInt64
+    h = UInt64(key[1]) * 0x9e3779b97f4a7c15 +
+        UInt64(key[2]) * 0x6c62272e07bb0142 +
+        UInt64(key[3]) * 0x94d049bb133111eb +
+        UInt64(key[4]) * 0xbf58476d1ce4e5b9
+    h = h ⊻ (h >> 32)
+    h = h * 0x45d9f3b37197344d
+    h = h ⊻ (h >> 32)
+    h
 end
 
-# Returns the slot index of key if present, or 0 if absent.
+@inline function _conj_slot_hash(key::NTuple{4,UInt32}, mask::UInt)::Int
+    Int(_conj_hash64(key) & mask) + 1   # 1-based
+end
+
+# ---------------------------------------------------------------------------
+#  Core primitives — all require caller to hold the shard lock.
+# ---------------------------------------------------------------------------
+
+# Find the slot holding `key`.  Returns slot > 0 if found, 0 if absent.
 @inline function _conj_find(shard::ConjShard, key::NTuple{4,UInt32})::Int
     cap  = shard.cap
-    mask = shard.mask
     keys = shard.keys
-    slot = _conj_slot_hash(key, mask)
+    slot = _conj_slot_hash(key, shard.mask)
     @inbounds while true
         k = keys[slot]
-        k === key          && return slot
-        k === CONJ_KEY_EMPTY && return 0
-        slot = slot & cap == cap ? 1 : slot + 1  # wrap: if slot==cap → 1
+        k == key            && return slot
+        k == CONJ_KEY_EMPTY && return 0
+        slot = slot == cap ? 1 : slot + 1
     end
 end
 
 # Insert key→val.  Caller must have verified count < max_entries and that
-# key is not already present.  Does not check for duplicates.
+# the key is not already present.
 @inline function _conj_insert!(shard::ConjShard{V}, key::NTuple{4,UInt32}, val::V) where V
     cap  = shard.cap
-    mask = shard.mask
     keys = shard.keys
     vals = shard.vals
-    slot = _conj_slot_hash(key, mask)
-    @inbounds while keys[slot] !== CONJ_KEY_EMPTY
-        slot = slot & cap == cap ? 1 : slot + 1
+    slot = _conj_slot_hash(key, shard.mask)
+    @inbounds while true
+        if keys[slot] == CONJ_KEY_EMPTY
+            keys[slot] = key
+            vals[slot] = val
+            shard.count += 1
+            return
+        end
+        slot = slot == cap ? 1 : slot + 1
     end
-    @inbounds keys[slot] = key
-    @inbounds vals[slot] = val
-    shard.count += 1
-    nothing
 end
 
-# Delete the entry at a known slot (from _conj_find).  Uses backward-shift
-# deletion to maintain the linear-probe invariant without tombstones.
+# Delete the entry at `slot` using backward-shift (Robin Hood compaction).
+# Entries displaced from their natural slot are shifted back to fill the gap,
+# keeping probe chains contiguous so future lookups remain correct.
+# Caller must hold the shard lock.
 @inline function _conj_delete_slot!(shard::ConjShard, slot::Int)
     cap  = shard.cap
     keys = shard.keys
     vals = shard.vals
     mask = shard.mask
-    @inbounds keys[slot] = CONJ_KEY_EMPTY
-    shard.count -= 1
-    # Backward-shift deletion for linear probing (1-based indices, cap = power of 2).
-    #
-    # Invariant: after we empty slot `cur`, we check the next slot `nxt = cur mod cap + 1`.
-    # If keys[nxt] is not empty, it may have been pushed there by a collision that
-    # originally wanted a slot ≤ cur.  We move it back to `cur` if its natural
-    # slot `nat` does NOT lie in the open interval (cur, nxt] cyclically — i.e.
-    # if `nat` would have probed through `cur` on the way to `nxt`, then emptying
-    # `cur` breaks its chain and we must pull it back.
-    #
-    # Displacement condition (all indices 1-based, range [1..cap]):
-    #   If nat == nxt: not displaced (it's already at its natural slot).
-    #   Otherwise: cur lies in [nat, nxt) cyclically
-    #     ≡  (nat <= cur) XOR (nxt < nat)     [standard circular-interval test]
-    cur = slot
-    @inbounds while true
-        nxt = cur == cap ? 1 : cur + 1
-        keys[nxt] === CONJ_KEY_EMPTY && break
-        nat = _conj_slot_hash(keys[nxt], mask)
-        # Circular interval: nat ∈ (cur, nxt] means NOT displaced.
-        # Equivalently displaced iff nat NOT in (cur, nxt] cyclically.
-        # (cur, nxt] cyclically = {nxt} since nxt = cur+1 (or wrap).
-        # So: displaced iff nat != nxt AND nat is in [nat_wrap ... cur]:
-        displaced = nat != nxt && ((nat <= cur) != (nxt <= cur))
-        # Simplified: since nxt = cur+1 or 1:
-        # • nxt = cur+1 (no wrap): (cur,nxt] = {nxt}; displaced iff nat ≠ nxt ∧ nat ≤ cur
-        # • nxt = 1 (wrap):        (cur,nxt] = {1};   displaced iff nat ≠ 1 ∧ nat > cur
-        # Both cases covered by: displaced = (nat != nxt) && (nxt == 1 ? nat > cur : nat <= cur)
-        displaced = if nxt == 1
-            nat != 1 && nat > cur
-        else
-            nat != nxt && nat <= cur
-        end
-        if displaced
-            keys[cur] = keys[nxt]
-            vals[cur] = vals[nxt]
-            keys[nxt] = CONJ_KEY_EMPTY
-            cur = nxt
-        else
-            break
+    @inbounds begin
+        keys[slot] = CONJ_KEY_EMPTY
+        shard.count -= 1
+        gap  = slot
+        curr = slot == cap ? 1 : slot + 1
+        while keys[curr] != CONJ_KEY_EMPTY
+            nat = _conj_slot_hash(keys[curr], mask)
+            # Entry at curr should move into gap if gap lies on the probe path
+            # from nat to curr, i.e. if nat "wrapped past" gap to reach curr.
+            displaced = if gap < curr
+                nat <= gap || nat > curr
+            else   # gap > curr (probe chain wrapped around)
+                nat <= gap && nat > curr
+            end
+            if displaced
+                keys[gap] = keys[curr]
+                vals[gap] = vals[curr]
+                keys[curr] = CONJ_KEY_EMPTY
+                gap = curr
+            end
+            curr = curr == cap ? 1 : curr + 1
         end
     end
     nothing
@@ -285,8 +284,7 @@ function conj_total_entries(sc::ShardedLP1Conj)::Int
     s
 end
 
-# Lookup: returns the slot index (>0) if found, 0 otherwise.
-# Caller must hold the shard lock.
+# Lookup: returns true if key is present.  Caller must hold the shard lock.
 @inline function conj_haskey(sc::ShardedLP1Conj, si::Int, key::NTuple{4,UInt32})::Bool
     _conj_find(sc.shards[si], key) != 0
 end
