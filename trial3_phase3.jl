@@ -196,16 +196,16 @@ function phase3_trial_worker(
     # A conj closure gives:  atom(fb[i0_cur]) - atom(fb[i0_pre]) ≡ c_al·G + c_be·T
     # Both atoms are in atom_log_dict, so:
     #   c_al + c_be·k  ≡  alog[fb[i0_cur]] - alog[fb[i0_pre]]  (mod ell)
-    @inline function try_solve_conj(i0_cur::Int, i0_pre::Int, c_al::Int, c_be::Int)::Union{Int,Nothing}
-        c_be == 0 && return nothing
-        i0_cur == i0_pre && return nothing
-        lhs = mod(get(alog, fb[i0_cur], 0) - get(alog, fb[i0_pre], 0), ellI)
+    @inline function try_solve_conj(i0_cur::Int, i0_pre::Int, c_al::Int, c_be::Int)::Int
+        c_be == 0 && throw(ErrorException("try_solve_conj: c_be==0 (i0_cur=$i0_cur i0_pre=$i0_pre c_al=$c_al)"))
+        lhs   = mod(get(alog, fb[i0_cur], 0) - get(alog, fb[i0_pre], 0), ellI)
         k_try = mod((lhs - c_al) * powermod(c_be, ell - 2, ell), ellI)
-        jac_mul(G, k_try, ell) == T && return k_try
-        return nothing
+        jac_mul(G, k_try, ell) == T || throw(ErrorException("try_solve_conj: principal divisor check failed (i0_cur=$i0_cur i0_pre=$i0_pre c_al=$c_al c_be=$c_be lhs=$lhs k_try=$k_try)"))
+        return k_try
     end
 
     # ── Main walk loop ────────────────────────────────────────────────────────
+
     for _ in 1:step_cap
         si        = rand(1:n_steps_prebuilt)
         D_cur     = jac_add(D_cur, step_D[si])
@@ -258,7 +258,7 @@ function phase3_trial_worker(
                     c_be = neg_be   # mod(neg_be - 0, ellI) == neg_be
                     n_1lp_conj_pre += 1
                     k_rec = try_solve_conj(i0, prev_col, c_al, c_be)
-                    k_rec !== nothing && break
+                    break
 
                 elseif haskey(local_lp1_conj, lp_key)
                     # Close against local birthday entry
@@ -269,7 +269,7 @@ function phase3_trial_worker(
                     delete!(local_lp1_conj, lp_key)
                     n_1lp_conj_local += 1
                     k_rec = try_solve_conj(i0, prev_col, c_al, c_be)
-                    k_rec !== nothing && break
+                    break
                 else
                     local_lp1_conj[lp_key] = LP1ConjValFull(UInt16(i0), UInt64(neg_al), UInt64(neg_be))
                 end
