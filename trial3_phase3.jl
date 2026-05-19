@@ -196,12 +196,66 @@ function phase3_trial_worker(
     # A conj closure gives:  atom(fb[i0_cur]) - atom(fb[i0_pre]) ≡ c_al·G + c_be·T
     # Both atoms are in atom_log_dict, so:
     #   c_al + c_be·k  ≡  alog[fb[i0_cur]] - alog[fb[i0_pre]]  (mod ell)
-    @inline function try_solve_conj(i0_cur::Int, i0_pre::Int, c_al::Int, c_be::Int)::Int
-        c_be == 0 && throw(ErrorException("try_solve_conj: c_be==0 (i0_cur=$i0_cur i0_pre=$i0_pre c_al=$c_al)"))
-        lhs   = mod(get(alog, fb[i0_cur], 0) - get(alog, fb[i0_pre], 0), ellI)
-        k_try = mod((lhs - c_al) * powermod(c_be, ell - 2, ell), ellI)
-        jac_mul(G, k_try, ell) == T || throw(ErrorException("try_solve_conj: principal divisor check failed (i0_cur=$i0_cur i0_pre=$i0_pre c_al=$c_al c_be=$c_be lhs=$lhs k_try=$k_try)"))
-        return k_try
+    # try_solve_conj: attempt to recover k from a conj 1-LP closure.
+    # Returns k::Int on success, nothing on any soft failure (missing logs,
+    # self-closure, wrong k).  Hard-throws only on conditions that indicate a
+    # genuine code bug (c_be==0 with non-trivial scalars, or atom logs present
+    # but inconsistent with the Jacobian — the latter means the RREF produced
+    # a wrong answer that slipped past the gauge filter).
+    function try_solve_conj(i0_cur::Int, i0_pre::Int, c_al::Int, c_be::Int)::Union{Int,Nothing}
+        # Self-closure: same atom on both sides → row cancels.
+        # The relation collapses to 0 = c_al·G + c_be·T, which is a pure
+        # scalar equation giving k = -c_al · c_be⁻¹ mod ell directly.
+        # No atom logs needed — just verify and return.
+        if i0_cur == i0_pre
+            c_be == 0 && return nothing   # 0 = c_al·G, degenerate
+            k_try = mod(-c_al * powermod(c_be, ell - 2, ell), ellI)
+            jac_mul(G, k_try, ell) == T && return k_try
+            return nothing   # scalar relation didn't verify; discard
+        end
+
+        c_be == 0 && throw(ErrorException(
+            "try_solve_conj: c_be==0 with non-trivial closure " *
+            "(i0_cur=$i0_cur i0_pre=$i0_pre c_al=$c_al) — logic error"))
+
+        pt_cur = fb[i0_cur]
+        pt_pre = fb[i0_pre]
+        alog_cur_present = haskey(alog, pt_cur)
+        alog_pre_present = haskey(alog, pt_pre)
+
+        # Soft skip: atom log not in alog (gauge-freedom exclusion or never solved).
+        # The precomputed table is read-only, so just discard and keep walking.
+        (!alog_cur_present || !alog_pre_present) && return nothing
+
+        log_cur = alog[pt_cur]
+        log_pre = alog[pt_pre]
+        lhs     = mod(log_cur - log_pre, ellI)
+        k_try   = mod((lhs - c_al) * powermod(c_be, ell - 2, ell), ellI)
+
+        jac_mul(G, k_try, ell) == T && return k_try
+
+        # Verification failed even though both atom logs are present.
+        # Check whether the logs are actually consistent with G to distinguish
+        # RREF-wrong-log from a non-principal conj closure row.
+        G_cur_ok = jac_isid(jac_sub(jac_mul(G, log_cur, ell),
+                                     mumford1(pt_cur[1], pt_cur[2])))
+        G_pre_ok = jac_isid(jac_sub(jac_mul(G, log_pre, ell),
+                                     mumford1(pt_pre[1], pt_pre[2])))
+        diagnosis = if G_cur_ok && G_pre_ok
+            "both atom logs self-consistent => conj closure row is non-principal"
+        elseif !G_cur_ok && !G_pre_ok
+            "BOTH atom logs wrong => RREF gauge filter missed these atoms"
+        elseif !G_cur_ok
+            "atom log for i0_cur=$i0_cur wrong => RREF gauge filter missed this atom"
+        else
+            "atom log for i0_pre=$i0_pre wrong => RREF gauge filter missed this atom"
+        end
+        throw(ErrorException(
+            "try_solve_conj: principal divisor check failed\n" *
+            "  i0_cur=$i0_cur pt_cur=$pt_cur log_cur=$log_cur alog_ok=$G_cur_ok\n" *
+            "  i0_pre=$i0_pre pt_pre=$pt_pre log_pre=$log_pre alog_ok=$G_pre_ok\n" *
+            "  c_al=$c_al c_be=$c_be lhs=$lhs k_try=$k_try\n" *
+            "  diagnosis: $diagnosis"))
     end
 
     # ── Main walk loop ────────────────────────────────────────────────────────
@@ -258,7 +312,7 @@ function phase3_trial_worker(
                     c_be = neg_be   # mod(neg_be - 0, ellI) == neg_be
                     n_1lp_conj_pre += 1
                     k_rec = try_solve_conj(i0, prev_col, c_al, c_be)
-                    break
+                    k_rec !== nothing && break
 
                 elseif haskey(local_lp1_conj, lp_key)
                     # Close against local birthday entry
@@ -269,7 +323,7 @@ function phase3_trial_worker(
                     delete!(local_lp1_conj, lp_key)
                     n_1lp_conj_local += 1
                     k_rec = try_solve_conj(i0, prev_col, c_al, c_be)
-                    break
+                    k_rec !== nothing && break
                 else
                     local_lp1_conj[lp_key] = LP1ConjValFull(UInt16(i0), UInt64(neg_al), UInt64(neg_be))
                 end

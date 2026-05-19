@@ -1028,9 +1028,35 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
                 pc == 0 && continue
                 logs[pc] = Int(lift(ZZ, R_mat[r, nF_pre + 1]))
             end
+
+            # ── Gauge-freedom filter ──────────────────────────────────────────
+            # The RREF may leave free variables at 0 when the relation system
+            # only constrains log-differences (e.g. pure conj-closure rows with
+            # --no-lp1-aff).  Each free variable anchors an entire connected
+            # component at an arbitrary value, making every log in that component
+            # wrong by the same offset.  Detect and exclude such atoms so phase 3
+            # does not silently use garbage logs.
+            #
+            # Verification: log L is correct iff L*G == fb[j] in the Jacobian.
+            # We check every atom that will go into atom_log_dict; the check is
+            # O(nF_pre) scalar multiplications (each O(log ell) group ops) and
+            # runs once, so the overhead is negligible compared to the RREF.
+            n_ok = 0; n_bad = 0
             for (pt, idx) in pt2idx_pre
-                atom_log_dict[pt] = logs[idx]
+                L = logs[idx]
+                if L == 0 || !jac_isid(jac_sub(jac_mul(G, L, BigInt(ell)),
+                                                mumford1(pt[1], pt[2])))
+                    # L == 0 is almost certainly a free variable default; skip.
+                    # Explicit check catches wrong-but-nonzero gauge offsets too.
+                    n_bad += 1
+                else
+                    atom_log_dict[pt] = L
+                    n_ok += 1
+                end
             end
+            @printf("  [DIAG] atom log verification: %d correct, %d excluded (gauge/zero)\n",
+                    n_ok, n_bad)
+            flush(stdout)
         catch e
             error("amortized RREF solve failed: $e")
         end
@@ -1038,15 +1064,23 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
         @printf("  atom_log_dict: %d entries (%.3fs total precompute)\n",
                 length(atom_log_dict), time() - t_pre)
 
-        # ── Sanity-check atom logs against known G ────────────────────────────
-        n_verified = 0; n_failed = 0
-        for i in 1:min(20, length(rel_rows_pre))
+        # ── Sanity-check atom logs against relations ─────────────────────────
+        # Only check relations where every atom in the row has a verified log
+        # (i.e. is in atom_log_dict after gauge-freedom filtering).  Relations
+        # containing excluded atoms are skipped — they can't be checked.
+        n_verified = 0; n_failed = 0; n_skipped = 0
+        for i in 1:min(50, length(rel_rows_pre))
             row    = rel_rows_pre[i]
             neg_al = alpha_vec_pre[i]
-            lhs    = sum(get(atom_log_dict, fb_pre[j], 0) * v
-                         for (j, v) in row if 1 <= j <= nF_pre)
-            lhs    = mod(lhs, ell)
-            rhs    = mod(Int(neg_al), ell)
+            all_present = all(haskey(atom_log_dict, fb_pre[j])
+                              for (j, _) in row if 1 <= j <= nF_pre)
+            if !all_present
+                n_skipped += 1
+                continue
+            end
+            lhs = mod(sum(atom_log_dict[fb_pre[j]] * v
+                          for (j, v) in row if 1 <= j <= nF_pre), ell)
+            rhs = mod(Int(neg_al), ell)
             if lhs == rhs
                 n_verified += 1
             else
@@ -1055,8 +1089,8 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
                                          i, lhs, rhs)
             end
         end
-        @printf("  [DIAG] relation self-check: %d ok, %d failed (of first 20)\n\n",
-                n_verified, n_failed)
+        @printf("  [DIAG] relation self-check (of first 50): %d ok, %d failed, %d skipped (excluded atoms)\n\n",
+                n_verified, n_failed, n_skipped)
 
         # ── Bundle precompute output into Phase2Tables ────────────────────────
         tables = Phase2Tables(
@@ -1069,7 +1103,9 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
             shared_lp2_conj_pre,
             BigInt(ell))
 
-        @printf("  Phase2Tables ready: FB=%d  atom_logs=%d  lp1_entries=%d\n",
+        n_unresolved = length(fb_pre) - length(atom_log_dict)
+        n_unresolved > 0 && @printf("  [WARN] %d / %d FB atoms have unverified logs (gauge-freedom) — phase3 conj closures will miss these atoms\n", n_unresolved, length(fb_pre))
+        @printf("  Phase2Tables ready: FB=%d  atom_logs=%d (verified)  lp1_entries=%d\n",
                 length(fb_pre), length(atom_log_dict), length(shared_lp1_pre))
         let sh = shared_lp1_conj_pre.shards
             conj_total    = sum(sh[i].count for i in eachindex(sh))

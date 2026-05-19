@@ -692,7 +692,8 @@ function phase2_worker(G               ::Div2,
                        ort             ::OnlineRankTracker;
                        verbose         ::Bool = true,
                        beta_zero       ::Bool = false,
-                       amortized_precompute::Bool = false)
+                       amortized_precompute::Bool = false,
+                       enable_lp1_aff  ::Bool = true)
 
     nF_cur   = length(fb)
     N_STEPS  = length(step_D)
@@ -851,6 +852,10 @@ function phase2_worker(G               ::Div2,
             # ------------------------------------------------------------------
             #  1-LP affine: exactly one of P0, R, S is not in FB
             # ------------------------------------------------------------------
+            if !enable_lp1_aff
+                s.hits_skip += 1
+                cur_pt = fb[rand(1:nF_cur)]
+            else
             s.hits_lp1 += 1
             lp_pt = i0 == 0 ? P0 : iR == 0 ? R : S
 
@@ -866,6 +871,7 @@ function phase2_worker(G               ::Div2,
                                          shared_lp1, shared_lp1_lock, shared_lp_doubled,
                                          lp_col, rank_growth, combined_scratch,
                                          iR, iS, R, S, P0)
+            end  # enable_lp1_aff
 
         elseif n_lp == 2
             # ------------------------------------------------------------------
