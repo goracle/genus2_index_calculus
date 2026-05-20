@@ -59,6 +59,7 @@ include("trial3_phase2.jl")
 include("trial3_amortized.jl")
 include("trial3_phase3.jl")
 include("trial3_phase3_dsu.jl")
+include("trial3_sqrt.jl")
 
 # Safe wrapper around the kernel-phase diagnostics.  These are helpful, but
 # they should never be able to abort a successful solve.
@@ -753,6 +754,8 @@ function parse_trial3_cli(args::Vector{String})
     use_cycle_union    = false
     enable_lp1_aff     = true
     n_targets          = 3
+    sqrt_mode          = false
+    table_size         = nothing
 
     for arg in args
         if arg == "--no-lp2"
@@ -774,12 +777,17 @@ function parse_trial3_cli(args::Vector{String})
             enable_lp1_aff = false
         elseif startswith(arg, "--n-targets=")
             n_targets = parse(Int, split(arg, "=", limit=2)[2])
+        elseif arg == "--sqrt"
+            sqrt_mode = true
+        elseif startswith(arg, "--table-size=")
+            table_size = parse(Int, split(arg, "=", limit=2)[2])
         end
     end
     return (fb_size=fb_size, enable_lp2=enable_lp2, enable_lp2_conj=enable_lp2_conj,
             max_lp2_nodes=max_lp2_nodes, max_lp2_conj_nodes=max_lp2_conj_nodes,
             amortized=amortized, use_cycle_union=use_cycle_union,
-            enable_lp1_aff=enable_lp1_aff, n_targets=n_targets)
+            enable_lp1_aff=enable_lp1_aff, n_targets=n_targets,
+            sqrt_mode=sqrt_mode, table_size=table_size)
 end
 
 # ---------------------------------------------------------------------------
@@ -892,15 +900,18 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
                  amortized          ::Bool = false,
                  use_cycle_union    ::Bool = false,
                  enable_lp1_aff     ::Bool = true,
-                 n_targets          ::Int  = 3)
+                 n_targets          ::Int  = 3,
+                 sqrt_mode          ::Bool = false,
+                 table_size         ::Union{Nothing,Int} = nothing)
     t_main_start = time()
     println("="^70)
     println("  trial3: Markov-walk phi-relation index calculus")
     println("  y^2 = x^5+3x^3+2x^2+5x+4  /F_$p,  ell=<auto>")
     println("  threads = $(Threads.nthreads())  |  start: $(Dates.now())")
+    sqrt_mode       && println("  mode: SQRT (birthday LP1 collision — O(√p) time/memory)")
     amortized       && println("  mode: AMORTIZED (α-only precompute + single β≠0 DLP)")
-    !amortized      && println("  LA mode: chain-path O(nF) solver (always) + cycle-union (if --cycle-union)")
-    !enable_lp1_aff && println("  1-LP affine: DISABLED (--no-lp1-aff)")
+    !amortized && !sqrt_mode && println("  LA mode: chain-path O(nF) solver (always) + cycle-union (if --cycle-union)")
+    !enable_lp1_aff && !sqrt_mode && println("  1-LP affine: DISABLED (--no-lp1-aff)")
     println("="^70, "\n")
 
     t_pts = time()
@@ -923,6 +934,53 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
 
     @assert jac_isid(jac_mul_raw(G, ell)) "G does not have order ell"
     println("  Confirmed: ell*G = identity\n")
+
+    # ── √p birthday mode ─────────────────────────────────────────────────────
+    # Phase 2 is T-independent, so the table is built once and amortized over
+    # all n_targets.  Each target is solved independently in phase 3.
+    if sqrt_mode
+        println("="^70)
+        println("  mode: SQRT (birthday LP1 collision, no factor base, no linalg)")
+        @printf("  targets = %d  (phase-2 table shared across all)\n", n_targets)
+        println("="^70, "\n")
+
+        local ts   = table_size === nothing ? isqrt(ell) + 1 : table_size
+        local scap = 20 * ts
+
+        # Build target list with known k_true for verification
+        targets_sqrt = Tuple{Div2, Union{Int,Nothing}}[
+            let k = rand(2:ell-1); (jac_mul(G, BigInt(k), BigInt(ell)), k) end
+            for _ in 1:n_targets]
+
+        println("── Targets ─────────────────────────────────────────────────────────")
+        for (i, (_, k)) in enumerate(targets_sqrt)
+            @printf("  [target %d] k_true = %d  (%.1f bits)\n", i, k, log2(k+1))
+        end
+        println()
+
+        all_k = sqrt_dlp_multi(G, targets_sqrt, ell;
+                               table_size = ts,
+                               step_cap   = scap,
+                               verbose    = true)
+
+        println()
+        println("── Final results ───────────────────────────────────────────────────")
+        @printf("  total wall time: %.3fs\n", time() - t_main_start)
+        n_ok = 0
+        for (i, (k_rec, (_, k_true))) in enumerate(zip(all_k, targets_sqrt))
+            if k_rec !== nothing
+                match = k_rec == k_true
+                match && (n_ok += 1)
+                @printf("  target %d: k_rec=%-10d  k_true=%-10d  %s\n",
+                        i, k_rec, k_true, match ? "YES ✓" : "MISMATCH ✗")
+            else
+                @printf("  target %d: NOT RECOVERED\n", i)
+            end
+        end
+        @printf("  %d / %d targets solved\n", n_ok, n_targets)
+        println("="^70)
+        return
+    end
 
     # ── Amortised mode: β=0 precompute via normal phase1+phase2, then one β≠0 per target ──
     if amortized
@@ -1256,7 +1314,8 @@ function main2_from_argv()
           enable_lp2_conj=opts.enable_lp2_conj,
           max_lp2_nodes=opts.max_lp2_nodes, max_lp2_conj_nodes=opts.max_lp2_conj_nodes,
           amortized=opts.amortized, use_cycle_union=opts.use_cycle_union,
-          enable_lp1_aff=opts.enable_lp1_aff, n_targets=opts.n_targets)
+          enable_lp1_aff=opts.enable_lp1_aff, n_targets=opts.n_targets,
+          sqrt_mode=opts.sqrt_mode, table_size=opts.table_size)
 end
 
 if abspath(PROGRAM_FILE) == @__FILE__
