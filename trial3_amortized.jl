@@ -209,8 +209,8 @@ end
 function cycle_union_solve(rel_rows   ::Vector{Dict{Int,Int}},
                            alpha_vec  ::Vector{BigInt},
                            beta_vec   ::Vector{BigInt},
-                           nF         ::Int,
-                           ell        ::Int;
+                           nF         ::Integer,
+                           ell        ::Integer;
                            G          ::Union{Nothing,Div2} = nothing,
                            T          ::Union{Nothing,Div2} = nothing,
                            verbose    ::Bool = true)
@@ -524,7 +524,9 @@ function cycle_union_solve(rel_rows   ::Vector{Dict{Int,Int}},
             atom_logs              = atom_logs,
             cycle_solver_succeeded = k_candidate !== nothing,
             n_cycles_found         = n_cycles,
-            n_deferred_resolved    = n_deferred_resolved)
+            n_deferred_resolved    = n_deferred_resolved,
+            dsu                    = dsu,       # ← add these
+            root_log               = root_log)  # ← add these
 end
 
 # ---------------------------------------------------------------------------

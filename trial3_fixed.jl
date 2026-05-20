@@ -58,6 +58,7 @@ include("trial3_linalg.jl")
 include("trial3_phase2.jl")
 include("trial3_amortized.jl")
 include("trial3_phase3.jl")
+include("trial3_phase3_dsu.jl")
 
 # Safe wrapper around the kernel-phase diagnostics.  These are helpful, but
 # they should never be able to abort a successful solve.
@@ -389,7 +390,8 @@ function index_calculus_walk(G::Div2, T::Div2;
                 shared_lp1_conj,
                 shared_lp2_conj, shared_lp2_conj_lock,
                 enable_lp2, enable_lp2_conj, max_lp2_nodes, max_lp2_conj_nodes,
-                thread_collectors[tid], rank_tracker; verbose=verbose)
+                thread_collectors[tid], rank_tracker; verbose=verbose,
+                enable_lp1_aff=enable_lp1_aff)
         end
     end
     t_phase2_done = time() - t_phase2_start
@@ -742,9 +744,14 @@ function parse_trial3_cli(args::Vector{String})
     #                        the standard walk+kernel flow
     #   --cycle-union        use cycle_union_solve (O(n)) before left_kernel_all
     #                        fallback in the standard flow
+    #   --no-lp1-aff         disable affine 1-LP birthday matching in phase 2
+    #                        (1-LP steps are discarded; useful for β=0 amortized
+    #                        precompute where lp1 table is unused anyway, or to
+    #                        test pure 0-LP + conj-LP throughput)
     #   --n-targets=N        number of DLP targets when --amortized is set
     amortized          = false
     use_cycle_union    = false
+    enable_lp1_aff     = true
     n_targets          = 3
 
     for arg in args
@@ -763,13 +770,16 @@ function parse_trial3_cli(args::Vector{String})
             amortized = true
         elseif arg == "--cycle-union"
             use_cycle_union = true
+        elseif arg == "--no-lp1-aff"
+            enable_lp1_aff = false
         elseif startswith(arg, "--n-targets=")
             n_targets = parse(Int, split(arg, "=", limit=2)[2])
         end
     end
     return (fb_size=fb_size, enable_lp2=enable_lp2, enable_lp2_conj=enable_lp2_conj,
             max_lp2_nodes=max_lp2_nodes, max_lp2_conj_nodes=max_lp2_conj_nodes,
-            amortized=amortized, use_cycle_union=use_cycle_union, n_targets=n_targets)
+            amortized=amortized, use_cycle_union=use_cycle_union,
+            enable_lp1_aff=enable_lp1_aff, n_targets=n_targets)
 end
 
 # ---------------------------------------------------------------------------
@@ -881,6 +891,7 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
                  max_lp2_conj_nodes ::Int  = DEFAULT_MAX_LP2_CONJ_NODES,
                  amortized          ::Bool = false,
                  use_cycle_union    ::Bool = false,
+                 enable_lp1_aff     ::Bool = true,
                  n_targets          ::Int  = 3)
     t_main_start = time()
     println("="^70)
@@ -889,6 +900,7 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
     println("  threads = $(Threads.nthreads())  |  start: $(Dates.now())")
     amortized       && println("  mode: AMORTIZED (α-only precompute + single β≠0 DLP)")
     !amortized      && println("  LA mode: chain-path O(nF) solver (always) + cycle-union (if --cycle-union)")
+    !enable_lp1_aff && println("  1-LP affine: DISABLED (--no-lp1-aff)")
     println("="^70, "\n")
 
     t_pts = time()
@@ -979,7 +991,8 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
                     shared_lp2_conj_pre, shared_lp2_conj_lock_pre,
                     enable_lp2, enable_lp2_conj, max_lp2_nodes, max_lp2_conj_nodes,
                     thread_collectors_pre[tid], rank_tracker_pre;
-                    verbose=true, beta_zero=true, amortized_precompute=true)
+                    verbose=true, beta_zero=true, amortized_precompute=true,
+                    enable_lp1_aff=enable_lp1_aff)
             end
         end
 
@@ -999,70 +1012,93 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
         @printf("  β=0 walk done: %d relations, %d FB atoms (%.3fs)\n",
                 length(rel_rows_pre), nF_pre, time() - t_pre)
 
-        # ── RREF solve: atom_log_dict ─────────────────────────────────────────
         atom_log_dict = Dict{NTuple{2,Int}, Int}()
-        try
-            @printf("  [MEM] before RREF solve:   RSS=%.1f MB  GC-live=%.1f MB\n",
-                    Sys.maxrss()/1024^2, Base.gc_live_bytes()/1024^2)
-            flush(stdout)
-            F_pre = Nemo.GF(ell)
-            m_pre = length(rel_rows_pre)
-            aug   = zero_matrix(F_pre, m_pre, nF_pre + 1)
-            for i in 1:m_pre
-                for (j, v) in rel_rows_pre[i]
-                    1 <= j <= nF_pre || continue
-                    aug[i, j] = mod(v, ell)
-                end
-                aug[i, nF_pre + 1] = mod(alpha_vec_pre[i], ell)
-            end
-            _, R_mat = rref(aug)
-            @printf("  [MEM] after  rref():       RSS=%.1f MB  GC-live=%.1f MB\n",
-                    Sys.maxrss()/1024^2, Base.gc_live_bytes()/1024^2)
-            flush(stdout)
-            logs = zeros(Int, nF_pre)
-            for r in 1:size(R_mat, 1)
-                pc = 0
-                for c in 1:nF_pre
-                    R_mat[r, c] != 0 && (pc = c; break)
-                end
-                pc == 0 && continue
-                logs[pc] = Int(lift(ZZ, R_mat[r, nF_pre + 1]))
-            end
+        atom_logs_vec  = nothing   # populated by cycle_union path for DSU construction
+        logs_resolved  = nothing   # full cycle_union_solve result (carries .dsu / .root_log)
 
-            # ── Gauge-freedom filter ──────────────────────────────────────────
-            # The RREF may leave free variables at 0 when the relation system
-            # only constrains log-differences (e.g. pure conj-closure rows with
-            # --no-lp1-aff).  Each free variable anchors an entire connected
-            # component at an arbitrary value, making every log in that component
-            # wrong by the same offset.  Detect and exclude such atoms so phase 3
-            # does not silently use garbage logs.
-            #
-            # Verification: log L is correct iff L*G == fb[j] in the Jacobian.
-            # We check every atom that will go into atom_log_dict; the check is
-            # O(nF_pre) scalar multiplications (each O(log ell) group ops) and
-            # runs once, so the overhead is negligible compared to the RREF.
-            n_ok = 0; n_bad = 0
-            for (pt, idx) in pt2idx_pre
-                L = logs[idx]
-                if L == 0 || !jac_isid(jac_sub(jac_mul(G, L, BigInt(ell)),
-                                                mumford1(pt[1], pt[2])))
-                    # L == 0 is almost certainly a free variable default; skip.
-                    # Explicit check catches wrong-but-nonzero gauge offsets too.
-                    n_bad += 1
-                else
-                    atom_log_dict[pt] = L
-                    n_ok += 1
+        if use_cycle_union
+            # ── CYCLE UNION SOLVE (Gauge-Fixed Graph Traversal) ───────────────
+            try
+                @printf("  ── Running Cycle Union Solve on Precompute Relations ────────────────\n")
+                @printf("  [MEM] before cycle union:  RSS=%.1f MB  GC-live=%.1f MB\n",
+                        Sys.maxrss()/1024^2, Base.gc_live_bytes()/1024^2)
+                flush(stdout)
+
+                # Execute your spanning-tree cycle/DSU solver on the collected β=0 rows.
+                # Since β=0, this will find relative logs within connected components.
+
+                logs_resolved = cycle_union_solve(rel_rows_pre, alpha_vec_pre, beta_vec_pre, nF_pre, ell; verbose=true)
+
+                n_ok = 0
+                atom_logs_vec = logs_resolved.atom_logs   # preserve for DSU state construction
+                if logs_resolved.atom_logs !== nothing
+                    for j in 1:nF_pre
+                        val = logs_resolved.atom_logs[j]
+                        if val != -1
+                            atom_log_dict[fb_pre[j]] = mod(val, ell)
+                            n_ok += 1
+                        end
+                    end
                 end
+
+                @printf("  [DIAG] atom log verification: %d component-resolved atoms banked via cycle-union\n", n_ok)
+                flush(stdout)
+            catch e
+                error("amortized cycle union solve failed: $e")
             end
-            @printf("  [DIAG] atom log verification: %d correct, %d excluded (gauge/zero)\n",
-                    n_ok, n_bad)
-            flush(stdout)
-        catch e
-            error("amortized RREF solve failed: $e")
+        else
+            # ── STANDARD RREF SOLVE ───────────────────────────────────────────
+            try
+                @printf("  [MEM] before RREF solve:   RSS=%.1f MB  GC-live=%.1f MB\n",
+                        Sys.maxrss()/1024^2, Base.gc_live_bytes()/1024^2)
+                flush(stdout)
+                F_pre = Nemo.GF(ell)
+                m_pre = length(rel_rows_pre)
+                aug   = zero_matrix(F_pre, m_pre, nF_pre + 1)
+                for i in 1:m_pre
+                    for (j, v) in rel_rows_pre[i]
+                        1 <= j <= nF_pre || continue
+                        aug[i, j] = mod(v, ell)
+                    end
+                    aug[i, nF_pre + 1] = mod(alpha_vec_pre[i], ell)
+                end
+                _, R_mat = rref(aug)
+                @printf("  [MEM] after  rref():       RSS=%.1f MB  GC-live=%.1f MB\n",
+                        Sys.maxrss()/1024^2, Base.gc_live_bytes()/1024^2)
+                flush(stdout)
+                logs = zeros(Int, nF_pre)
+                for r in 1:size(R_mat, 1)
+                    pc = 0
+                    for c in 1:nF_pre
+                        R_mat[r, c] != 0 && (pc = c; break)
+                    end
+                    pc == 0 && continue
+                    logs[pc] = Int(lift(ZZ, R_mat[r, nF_pre + 1]))
+                end
+
+                # ── Gauge-freedom filter ──────────────────────────────────────
+                n_ok = 0; n_bad = 0
+                for (pt, idx) in pt2idx_pre
+                    L = logs[idx]
+                    if L == 0 || !jac_isid(jac_sub(jac_mul(G, L, BigInt(ell)),
+                                                   mumford1(pt[1], pt[2])))
+                        n_bad += 1
+                    else
+                        atom_log_dict[pt] = L
+                        n_ok += 1
+                    end
+                end
+                @printf("  [DIAG] atom log verification: %d correct, %d excluded (gauge/zero)\n",
+                        n_ok, n_bad)
+                flush(stdout)
+            catch e
+                error("amortized RREF solve failed: $e")
+            end
         end
 
         @printf("  atom_log_dict: %d entries (%.3fs total precompute)\n",
                 length(atom_log_dict), time() - t_pre)
+
 
         # ── Sanity-check atom logs against relations ─────────────────────────
         # Only check relations where every atom in the row has a verified log
@@ -1092,8 +1128,12 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
         @printf("  [DIAG] relation self-check (of first 50): %d ok, %d failed, %d skipped (excluded atoms)\n\n",
                 n_verified, n_failed, n_skipped)
 
-        # ── Bundle precompute output into Phase2Tables ────────────────────────
-        tables = Phase2Tables(
+        # ── Bundle precompute output into tables ──────────────────────────────
+        # In amortized+cycle_union mode we build a Phase2TablesWithDSU so that
+        # phase3_dsu_worker can clone the frozen DSU state for each target
+        # instead of relying solely on atom_log_dict (which excludes gauge-free
+        # atoms).  In the standard RREF path we fall back to plain Phase2Tables.
+        base_tables = Phase2Tables(
             fb_pre,
             pt2idx_pre,
             atom_log_dict,
@@ -1102,6 +1142,20 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
             shared_lp1_conj_pre,
             shared_lp2_conj_pre,
             BigInt(ell))
+
+        if use_cycle_union && logs_resolved !== nothing
+            dsu_state = build_precomputed_dsu_state(logs_resolved.dsu, logs_resolved.root_log, nF_pre, Int(ell))
+            tables = Phase2TablesWithDSU(base_tables.fb, base_tables.pt2idx, base_tables.atom_log_dict, base_tables.shared_lp1,
+                                         base_tables.shared_lp2, base_tables.shared_lp1_conj, base_tables.shared_lp2_conj,
+                                         base_tables.ell, dsu_state)
+
+
+
+            @printf("  Phase2TablesWithDSU ready: DSU nF=%d  atom_logs=%d (verified)\n",
+                    tables.dsu_state.nF, length(atom_log_dict))
+        else
+            tables = base_tables
+        end
 
         n_unresolved = length(fb_pre) - length(atom_log_dict)
         n_unresolved > 0 && @printf("  [WARN] %d / %d FB atoms have unverified logs (gauge-freedom) — phase3 conj closures will miss these atoms\n", n_unresolved, length(fb_pre))
@@ -1120,7 +1174,7 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
         # and we see the true live set (Nemo/FLINT native heap will still show in RSS).
         GC.gc(true)
         mem_checkpoint("after final GC.gc(true) post-precompute")
-        mem_report_phase2tables(tables, results_pre, thread_collectors_pre)
+        mem_report_phase2tables(base_tables, results_pre, thread_collectors_pre)
 
         # ── Build per-target list ─────────────────────────────────────────────
         println("── Generating targets ───────────────────────────────────────────────")
@@ -1134,9 +1188,19 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
         flush(stdout)
 
         # ── Phase 3: parallel per-target DLP solves ───────────────────────────
-        results = phase3_solve_targets(tables, targets, G;
-                                       step_cap = 10_000_000,
-                                       verbose  = true)
+        # In amortized+cycle_union mode, use the DSU-augmented worker which
+        # clones the frozen symbolic DSU per trial and accumulates β≠0 relations
+        # into it, resolving k the instant a cycle closes with b≠0.
+        # In standard amortized mode, use the plain phase3_solve_targets.
+        results = if tables isa Phase2TablesWithDSU
+            phase3_dsu_solve_targets(tables, targets, G;
+                                     step_cap = 10_000_000,
+                                     verbose  = true)
+        else
+            phase3_solve_targets(tables, targets, G;
+                                 step_cap = 10_000_000,
+                                 verbose  = true)
+        end
 
         n_ok = count(r -> r.success, results)
         @printf("\n── Final amortized summary ──────────────────────────────────────────\n")
@@ -1192,7 +1256,7 @@ function main2_from_argv()
           enable_lp2_conj=opts.enable_lp2_conj,
           max_lp2_nodes=opts.max_lp2_nodes, max_lp2_conj_nodes=opts.max_lp2_conj_nodes,
           amortized=opts.amortized, use_cycle_union=opts.use_cycle_union,
-          n_targets=opts.n_targets)
+          enable_lp1_aff=opts.enable_lp1_aff, n_targets=opts.n_targets)
 end
 
 if abspath(PROGRAM_FILE) == @__FILE__

@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import sys
 
 def filter_walker_log(input_file, output_file):
