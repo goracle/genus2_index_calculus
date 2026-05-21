@@ -1,0 +1,163 @@
+
+next_prime(5000183) = 5000197  →  using p = 5000197
+======================================================================
+  trial3: Markov-walk phi-relation index calculus
+  y^2 = x^5+3x^3+2x^2+5x+4  /F_5000197,  ell=<auto>
+  threads = 32  |  start: 2026-05-21T11:38:54.208
+  mode: AMORTIZED (α-only precompute + single β≠0 DLP)
+  1-LP affine: DISABLED (--no-lp1-aff)
+======================================================================
+
+Curve sample: 100 affine rational points sampled in 0.042s
+
+── Generator search (Frobenius / Sage) ─────────────────────────────
+  Computing #J via Sage frobenius_polynomial... [MEM @before sage shell-out                 ]  RSS= 2025.5 MB  GC-live=  578.4 MB  Δlive= +578.4 MB
+done (0.938s)
+  #J = 24994099686358
+  factorisation: 2 * 11 * 967261 * 1174549
+[MEM @after Oscar bootstrap                 ]  RSS= 2025.5 MB  GC-live=  599.7 MB  Δlive=  +21.3 MB
+  ell = 1174549  (20.2 bits)
+  cofactor h = 21279742
+  found G in 1 attempt(s), total bootstrap time: 1.274s
+  ell too small (21 bits) — advancing to next prime p = 5000201
+  Computing #J via Sage frobenius_polynomial... [MEM @before sage shell-out                 ]  RSS= 2025.5 MB  GC-live=  619.3 MB  Δlive=  +19.5 MB
+done (0.822s)
+  #J = 25004982042698
+  factorisation: 2 * 7 * 31 * 283 * 3547 * 57397
+[MEM @after Oscar bootstrap                 ]  RSS= 2025.5 MB  GC-live=  619.4 MB  Δlive=   +0.1 MB
+  ell = 57397  (15.8 bits)
+  cofactor h = 435649634
+  found G in 1 attempt(s), total bootstrap time: 0.824s
+  ell too small (16 bits) — advancing to next prime p = 5000213
+  Computing #J via Sage frobenius_polynomial... [MEM @before sage shell-out                 ]  RSS= 2025.5 MB  GC-live=  620.9 MB  Δlive=   +1.5 MB
+done (0.790s)
+  #J = 24993063353711
+  factorisation: 24993063353711
+[MEM @after Oscar bootstrap                 ]  RSS= 2025.5 MB  GC-live=  621.6 MB  Δlive=   +0.7 MB
+  ell = 24993063353711  (44.5 bits)
+  cofactor h = 1
+  found G in 1 attempt(s), total bootstrap time: 0.797s
+  min-ell-bits=45 satisfied: ell = 24993063353711  (45 bits)  p = 5000213
+  bootstrap total time = 2.895s
+  G.u = [561, 5000151, 1]
+  G.v = [532378, 3700903]
+  ell = 24993063353711  (44.5 bits)
+  ell/p ratio = 4998399.738913
+  Confirmed: ell*G = identity
+
+── Amortised precomputation (β=0 walk, FB=2236) ───────────────────────
+── Phase 1 done ────────────────────────────────────────────────────
+  raw steps:        2252
+  valid phi hits:   1118
+  FB built:         2235 / 2236 cap
+  relations banked: 1117
+  wall time:        4.036s
+[MEM @after phase1_walk (amortized)         ]  RSS= 2068.7 MB  GC-live=  700.8 MB  Δlive=  +79.2 MB
+[MEM @after step-table precompute           ]  RSS= 2068.7 MB  GC-live=  559.5 MB  Δlive= -141.3 MB
+[MEM @after ShardedLP1Conj() (cap=80003408) ]  RSS= 4041.9 MB  GC-live= 4532.8 MB  Δlive=+3973.3 MB
+  [MEM] before phase2 walk:  RSS=4041.9 MB  GC-live=4532.8 MB
+  [MEM] after  phase2 walk:  RSS=6969.3 MB  GC-live=4847.6 MB
+  β=0 walk done: 2459 relations, 2235 FB atoms (3691.332s)
+  [MEM] before RREF solve:   RSS=6969.3 MB  GC-live=4854.3 MB
+  [MEM] after  rref():       RSS=7134.3 MB  GC-live=4870.9 MB
+  [DIAG] atom log verification: 2110 correct, 125 excluded (gauge/zero)
+  atom_log_dict: 2110 entries (3697.415s total precompute)
+  [DIAG] relation self-check (of first 50): 48 ok, 0 failed, 2 skipped (excluded atoms)
+
+  [WARN] 125 / 2235 FB atoms have unverified logs (gauge-freedom) — phase3 conj closures will miss these atoms
+  Phase2Tables ready: FB=2235  atom_logs=2110 (verified)  lp1_entries=0
+  shared_lp1_conj_pre: 80003456 entries across 64/64 nonempty shards
+  total precompute time: 3697.535s
+
+[MEM @after final GC.gc(true) post-precompute]  RSS= 7134.3 MB  GC-live= 4579.8 MB  Δlive=  +47.0 MB
+── Memory diagnostics (post-precompute, after GC.gc(true)) ──────────
+  Process RSS:                      7134.3 MB
+  GC live heap:                     4579.8 MB
+  Estimated per-structure:
+    fb + pt2idx  (  2235 pts):                           0.1 MB
+    atom_log_dict(  2110 pts):                           0.1 MB
+    shared_lp1   (     0 entries, avg_row_wt=0.0):      0.0 MB
+    shared_lp1_conj (80003456 entries @ ~32 B/entry):    2441.5 MB
+    walk rel_rows (1342 rows, avg_wt=2.1):              0.2 MB
+    walk alpha/beta vecs (2684 BigInts):                 0.1 MB
+  Estimated Julia heap total:       2442.0 MB
+  Unaccounted Julia heap:           2137.8 MB  ← Nemo/FLINT/Oscar C heap + runtime
+  RSS − GC-live gap:                2554.5 MB  ← fragmentation + mapped libs
+──────────────────────────────────────────────────────────────────────
+── Generating targets ───────────────────────────────────────────────
+  [target 1/30] k_true = 21981997715030
+  [target 2/30] k_true = 8889630435171
+  [target 3/30] k_true = 24040494024693
+  [target 4/30] k_true = 2446497544666
+  [target 5/30] k_true = 17937115953365
+  [target 6/30] k_true = 21059746108658
+  [target 7/30] k_true = 1125422893802
+  [target 8/30] k_true = 10426790106197
+  [target 9/30] k_true = 13185200141308
+  [target 10/30] k_true = 19791126680529
+  [target 11/30] k_true = 8827475970659
+  [target 12/30] k_true = 4365890202233
+  [target 13/30] k_true = 8658748188021
+  [target 14/30] k_true = 19835117655074
+  [target 15/30] k_true = 6089694699226
+  [target 16/30] k_true = 6224918177919
+  [target 17/30] k_true = 16976551253549
+  [target 18/30] k_true = 24801156501736
+  [target 19/30] k_true = 2188259615193
+  [target 20/30] k_true = 7151279652002
+  [target 21/30] k_true = 3881428410686
+  [target 22/30] k_true = 17745570704069
+  [target 23/30] k_true = 23618905977644
+  [target 24/30] k_true = 7982423523230
+  [target 25/30] k_true = 19503114543536
+  [target 26/30] k_true = 20665587023992
+  [target 27/30] k_true = 8734217924538
+  [target 28/30] k_true = 5076401305519
+  [target 29/30] k_true = 23780295209165
+  [target 30/30] k_true = 14748844121044
+── Phase 3: amortised DLP solves ────────────────────────────────────
+   targets=30  threads=32  FB=2235  lp1_pre_entries=0  step_cap=10000000
+   RSS at phase3 start: 7134.3 MB  |  GC live: 4629.4 MB
+[phase3 trial 23 | t=26.370s] k_rec=23618905977644  k_true=23618905977644  match=ok  steps=17067  0lp=0  1lp_aff_pre=0  1lp_aff_local=0  1lp_conj_pre=1  1lp_conj_local=0  conj_branch=8588
+[phase3 trial 30 | t=28.018s] k_rec=14748844121044  k_true=14748844121044  match=ok  steps=18744  0lp=0  1lp_aff_pre=0  1lp_aff_local=0  1lp_conj_pre=1  1lp_conj_local=0  conj_branch=9502
+[phase3 trial 1 | t=28.221s] k_rec=21981997715030  k_true=21981997715030  match=ok  steps=24669  0lp=0  1lp_aff_pre=0  1lp_aff_local=0  1lp_conj_pre=1  1lp_conj_local=0  conj_branch=12330
+[phase3 trial 6 | t=30.821s] k_rec=21059746108658  k_true=21059746108658  match=ok  steps=39836  0lp=0  1lp_aff_pre=0  1lp_aff_local=0  1lp_conj_pre=1  1lp_conj_local=0  conj_branch=19857
+[phase3 trial 22 | t=36.140s] k_rec=17745570704069  k_true=17745570704069  match=ok  steps=55335  0lp=0  1lp_aff_pre=0  1lp_aff_local=0  1lp_conj_pre=1  1lp_conj_local=0  conj_branch=27676
+[phase3 trial 12 | t=37.481s] k_rec=4365890202233  k_true=4365890202233  match=ok  steps=63210  0lp=0  1lp_aff_pre=0  1lp_aff_local=0  1lp_conj_pre=1  1lp_conj_local=0  conj_branch=31423
+[phase3 trial 5 | t=38.656s] k_rec=17937115953365  k_true=17937115953365  match=ok  steps=77701  0lp=0  1lp_aff_pre=0  1lp_aff_local=0  1lp_conj_pre=1  1lp_conj_local=0  conj_branch=38815
+[phase3 trial 10 | t=45.756s] k_rec=19791126680529  k_true=19791126680529  match=ok  steps=114412  0lp=0  1lp_aff_pre=0  1lp_aff_local=0  1lp_conj_pre=1  1lp_conj_local=0  conj_branch=56959
+[phase3 trial 26 | t=46.454s] k_rec=20665587023992  k_true=20665587023992  match=ok  steps=122631  0lp=0  1lp_aff_pre=0  1lp_aff_local=0  1lp_conj_pre=1  1lp_conj_local=0  conj_branch=61466
+[phase3 trial 14 | t=49.606s] k_rec=19835117655074  k_true=19835117655074  match=ok  steps=160140  0lp=0  1lp_aff_pre=0  1lp_aff_local=0  1lp_conj_pre=1  1lp_conj_local=0  conj_branch=79865
+[phase3 trial 3 | t=52.692s] k_rec=24040494024693  k_true=24040494024693  match=ok  steps=163910  0lp=0  1lp_aff_pre=0  1lp_aff_local=0  1lp_conj_pre=1  1lp_conj_local=0  conj_branch=82070
+[phase3 trial 27 | t=59.475s] k_rec=8734217924538  k_true=8734217924538  match=ok  steps=216472  0lp=0  1lp_aff_pre=0  1lp_aff_local=0  1lp_conj_pre=2  1lp_conj_local=0  conj_branch=108419
+[phase3 trial 9 | t=59.514s] k_rec=13185200141308  k_true=13185200141308  match=ok  steps=202545  0lp=0  1lp_aff_pre=0  1lp_aff_local=0  1lp_conj_pre=1  1lp_conj_local=0  conj_branch=101044
+[phase3 trial 20 | t=59.846s] k_rec=7151279652002  k_true=7151279652002  match=ok  steps=211179  0lp=0  1lp_aff_pre=0  1lp_aff_local=0  1lp_conj_pre=1  1lp_conj_local=0  conj_branch=106042
+[phase3 trial 8 | t=60.245s] k_rec=10426790106197  k_true=10426790106197  match=ok  steps=234242  0lp=0  1lp_aff_pre=0  1lp_aff_local=0  1lp_conj_pre=2  1lp_conj_local=0  conj_branch=117327
+[phase3 trial 25 | t=60.442s] k_rec=19503114543536  k_true=19503114543536  match=ok  steps=217471  0lp=0  1lp_aff_pre=0  1lp_aff_local=0  1lp_conj_pre=1  1lp_conj_local=0  conj_branch=109080
+[phase3 trial 16 | t=62.027s] k_rec=6224918177919  k_true=6224918177919  match=ok  steps=246317  0lp=0  1lp_aff_pre=0  1lp_aff_local=0  1lp_conj_pre=1  1lp_conj_local=0  conj_branch=123209
+[phase3 trial 19 | t=66.969s] k_rec=2188259615193  k_true=2188259615193  match=ok  steps=279815  0lp=0  1lp_aff_pre=0  1lp_aff_local=0  1lp_conj_pre=1  1lp_conj_local=0  conj_branch=139524
+[phase3 trial 2 | t=68.619s] k_rec=8889630435171  k_true=8889630435171  match=ok  steps=299768  0lp=0  1lp_aff_pre=0  1lp_aff_local=0  1lp_conj_pre=1  1lp_conj_local=0  conj_branch=149880
+[phase3 trial 17 | t=72.473s] k_rec=16976551253549  k_true=16976551253549  match=ok  steps=341905  0lp=0  1lp_aff_pre=0  1lp_aff_local=0  1lp_conj_pre=1  1lp_conj_local=0  conj_branch=170955
+[phase3 trial 18 | t=73.399s] k_rec=24801156501736  k_true=24801156501736  match=ok  steps=355725  0lp=0  1lp_aff_pre=0  1lp_aff_local=0  1lp_conj_pre=3  1lp_conj_local=0  conj_branch=178620
+[phase3 trial 28 | t=75.447s] k_rec=5076401305519  k_true=5076401305519  match=ok  steps=387711  0lp=1  1lp_aff_pre=0  1lp_aff_local=0  1lp_conj_pre=1  1lp_conj_local=0  conj_branch=193988
+[phase3 trial 21 | t=76.329s] k_rec=3881428410686  k_true=3881428410686  match=ok  steps=400023  0lp=0  1lp_aff_pre=0  1lp_aff_local=0  1lp_conj_pre=1  1lp_conj_local=0  conj_branch=200162
+[phase3 trial 4 | t=76.655s] k_rec=2446497544666  k_true=2446497544666  match=ok  steps=365229  0lp=0  1lp_aff_pre=0  1lp_aff_local=0  1lp_conj_pre=1  1lp_conj_local=0  conj_branch=182397
+[phase3 trial 7 | t=79.297s] k_rec=1125422893802  k_true=1125422893802  match=ok  steps=493831  0lp=0  1lp_aff_pre=0  1lp_aff_local=0  1lp_conj_pre=1  1lp_conj_local=0  conj_branch=247191
+[phase3 trial 15 | t=93.059s] k_rec=6089694699226  k_true=6089694699226  match=ok  steps=782807  0lp=0  1lp_aff_pre=0  1lp_aff_local=0  1lp_conj_pre=1  1lp_conj_local=0  conj_branch=390993
+[phase3 trial 11 | t=94.783s] k_rec=8827475970659  k_true=8827475970659  match=ok  steps=842327  0lp=0  1lp_aff_pre=0  1lp_aff_local=0  1lp_conj_pre=1  1lp_conj_local=0  conj_branch=421418
+[phase3 trial 13 | t=100.634s] k_rec=8658748188021  k_true=8658748188021  match=ok  steps=1009745  0lp=0  1lp_aff_pre=0  1lp_aff_local=0  1lp_conj_pre=1  1lp_conj_local=0  conj_branch=505533
+[phase3 trial 29 | t=101.649s] k_rec=23780295209165  k_true=23780295209165  match=ok  steps=1018296  0lp=0  1lp_aff_pre=0  1lp_aff_local=0  1lp_conj_pre=2  1lp_conj_local=0  conj_branch=508882
+[phase3 trial 24 | t=115.921s] k_rec=7982423523230  k_true=7982423523230  match=ok  steps=1798537  0lp=1  1lp_aff_pre=0  1lp_aff_local=0  1lp_conj_pre=0  1lp_conj_local=0  conj_branch=899768
+
+── Phase 3 summary ──────────────────────────────────────────────────
+  30 / 30 targets solved correctly
+  total steps: 10561600  (avg 352053.3/target)
+  closure breakdown: 0-LP=2  1LP-preclose=34  1LP-local=0
+  wall time: 117.332s
+  Process RSS at phase3 exit: 7816.2 MB  |  GC live: 5436.1 MB
+======================================================================
+
+── Final amortized summary ──────────────────────────────────────────
+  30 / 30 DLP trials recovered correctly
+  total wall time: 3818.967s
+======================================================================
