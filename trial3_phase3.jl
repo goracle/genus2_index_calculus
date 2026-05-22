@@ -341,7 +341,7 @@ function phase3_trial_worker(
         #  BRANCH A: conjugate residual
         # ======================================================================
         if res_R === SENTINEL_PT
-            lp_key = conj_key32(RS_mumford::NTuple{4,Int})
+            lp_key = canonical_lp1_conj_key(RS_mumford::NTuple{4,Int})
 
             if i0 != 0
                 # A1: 1-LP-conj — P0 is in FB, RS pair is the LP atom
