@@ -517,69 +517,153 @@ function _lsm_flush_shard!(sc::LP1ConjLSM{V}, si::Int) where V
 end
 
 # ---------------------------------------------------------------------------
-#  Compact all runs into a single sorted run.
+#  Compact all runs into a single sorted run via k-way merge.
 #  Caller must hold sc.file_lock.
+#
+#  Memory profile:
+#    • One record buffer per run (k × RECORD_BYTES, negligible).
+#    • A min-heap of k cursors (one entry per run).
+#    • One write-side IOBuffer (COMPACT_WRITE_BUF_BYTES), flushed incrementally.
+#  Total extra RAM: O(k) + write buffer — independent of total dataset size.
 # ---------------------------------------------------------------------------
+
+const COMPACT_WRITE_BUF_BYTES = 4 * 1024 * 1024   # 4 MB write buffer
+
+# Heap entry: (fp, run_index, pos_in_run)
+# We use a simple binary min-heap over (fp, ri) tuples stored in a Vector.
+
+@inline function _heap_less(a::Tuple{UInt64,Int,Int}, b::Tuple{UInt64,Int,Int})
+    a[1] < b[1] || (a[1] == b[1] && a[2] < b[2])
+end
+
+function _heap_push!(h::Vector{Tuple{UInt64,Int,Int}}, x::Tuple{UInt64,Int,Int})
+    push!(h, x)
+    i = length(h)
+    @inbounds while i > 1
+        p = i >> 1
+        if _heap_less(h[i], h[p])
+            h[i], h[p] = h[p], h[i]
+            i = p
+        else
+            break
+        end
+    end
+    nothing
+end
+
+function _heap_pop!(h::Vector{Tuple{UInt64,Int,Int}})::Tuple{UInt64,Int,Int}
+    top = h[1]
+    n = length(h)
+    if n == 1
+        pop!(h)
+        return top
+    end
+    h[1] = pop!(h)
+    i = 1
+    n -= 1
+    @inbounds while true
+        l = 2i; r = 2i + 1
+        smallest = i
+        l <= n && _heap_less(h[l], h[smallest]) && (smallest = l)
+        r <= n && _heap_less(h[r], h[smallest]) && (smallest = r)
+        smallest == i && break
+        h[i], h[smallest] = h[smallest], h[i]
+        i = smallest
+    end
+    top
+end
+
 function _lsm_compact!(sc::LP1ConjLSM)
     length(sc.runs) <= 1 && return
 
-    # Collect all live records from the mmap into one array, sorted by fp.
-    mm = sc.spill_mmap
+    mm         = sc.spill_mmap
     total_live = sc.n_disk_live
     total_live == 0 && return
 
-    fps_out  = Vector{UInt64}(undef, total_live)
-    bufs_out = Vector{UInt8}(undef, total_live * RECORD_BYTES)
+    # Per-run cursors: next live position to emit from each run.
+    # Advance past any leading tombstones on initialisation.
+    nruns   = length(sc.runs)
+    cursors = Vector{Int}(undef, nruns)   # next pos (1-based) to read, or rm.len+1 if exhausted
+    for ri in 1:nruns
+        rm  = sc.runs[ri]
+        pos = 1
+        while pos <= rm.len && _run_is_dead(rm, pos)
+            pos += 1
+        end
+        cursors[ri] = pos
+    end
 
-    idx = 0
-    for (ri, rm) in enumerate(sc.runs)
-        for pos in 1:rm.len
-            _run_is_dead(rm, pos) && continue
-            base = _rec_base(rm, pos)
-            idx += 1
-            fps_out[idx] = _rec_fp(mm, base)
-            dst = (idx - 1) * RECORD_BYTES
-            @inbounds for b in 0:RECORD_BYTES-1
-                bufs_out[dst + b + 1] = mm[base + b + 1]
-            end
+    # Seed the min-heap with the first live record from each run.
+    heap = Tuple{UInt64,Int,Int}[]   # (fp, ri, pos)
+    sizehint!(heap, nruns)
+    for ri in 1:nruns
+        rm  = sc.runs[ri]
+        pos = cursors[ri]
+        pos > rm.len && continue
+        base = _rec_base(rm, pos)
+        fp   = _rec_fp(mm, base)
+        _heap_push!(heap, (fp, ri, pos))
+    end
+
+    # Open temp file; stream merged records into it via a write buffer.
+    tmp_path  = sc.spill_path * ".compact"
+    tmp_io    = open(tmp_path, "w+")
+    wbuf      = Vector{UInt8}(undef, COMPACT_WRITE_BUF_BYTES)
+    wbuf_pos  = 0   # bytes currently in wbuf
+
+    actual    = 0
+    first_fp  = UInt64(0)
+    last_fp   = UInt64(0)
+
+    rec_scratch = Vector{UInt8}(undef, RECORD_BYTES)
+
+    while !isempty(heap)
+        fp, ri, pos = _heap_pop!(heap)
+        rm   = sc.runs[ri]
+        base = _rec_base(rm, pos)
+
+        # Copy record into write buffer, flushing if full.
+        if wbuf_pos + RECORD_BYTES > COMPACT_WRITE_BUF_BYTES
+            write(tmp_io, view(wbuf, 1:wbuf_pos))
+            wbuf_pos = 0
+        end
+        @inbounds for b in 0:RECORD_BYTES-1
+            wbuf[wbuf_pos + b + 1] = mm[base + b + 1]
+        end
+        wbuf_pos += RECORD_BYTES
+
+        actual == 0 && (first_fp = fp)
+        last_fp = fp
+        actual += 1
+
+        # Advance cursor past next tombstones, push next live record if any.
+        pos += 1
+        while pos <= rm.len && _run_is_dead(rm, pos)
+            pos += 1
+        end
+        cursors[ri] = pos
+        if pos <= rm.len
+            base2 = _rec_base(rm, pos)
+            fp2   = _rec_fp(mm, base2)
+            _heap_push!(heap, (fp2, ri, pos))
         end
     end
-    # idx should equal total_live
-    actual = idx
-    resize!(fps_out,  actual)
 
-    # Sort by fingerprint
-    order = sortperm(fps_out)
-
-    # Write merged run to a fresh temp file, then replace spill file
-    tmp_path = sc.spill_path * ".compact"
-    tmp_io   = open(tmp_path, "w+")
-    merged_buf = Vector{UInt8}(undef, actual * RECORD_BYTES)
-    @inbounds for i in 1:actual
-        oi = order[i]
-        src = (oi - 1) * RECORD_BYTES
-        dst = (i  - 1) * RECORD_BYTES
-        for b in 0:RECORD_BYTES-1
-            merged_buf[dst + b + 1] = bufs_out[src + b + 1]
-        end
-    end
-    write(tmp_io, merged_buf)
+    # Flush remaining write buffer.
+    wbuf_pos > 0 && write(tmp_io, view(wbuf, 1:wbuf_pos))
     flush(tmp_io)
     close(tmp_io)
 
-    # Close current IO, replace file, reopen
+    # Atomically replace spill file.
     close(sc.spill_io)
     mv(tmp_path, sc.spill_path; force=true)
-    sc.spill_io   = open(sc.spill_path, "a+")
-    sc.spill_size = actual * RECORD_BYTES
+    sc.spill_io    = open(sc.spill_path, "a+")
+    sc.spill_size  = actual * RECORD_BYTES
     sc.n_disk_live = actual
 
-    # Rebuild single run meta
-    min_fp = fps_out[order[1]]
-    max_fp = fps_out[order[actual]]
-    sc.runs = [RunMeta(1, 0, actual, min_fp, max_fp)]
+    # Rebuild single run meta (no tombstones — all dead records were skipped).
+    sc.runs = actual > 0 ? [RunMeta(1, 0, actual, first_fp, last_fp)] : RunMeta[]
 
-    # Remap
     _lsm_remap!(sc)
     nothing
 end
