@@ -168,18 +168,24 @@ end
 #  Exact #J(F_p) via Sage frobenius_polynomial
 # ---------------------------------------------------------------------------
 """
-    frobenius_jacobian_order() -> (N, ell, h)
+    frobenius_jacobian_order(p_val, min_ell_bits) -> (N, ell, h, p_winner)
 
-Shell out to Sage to compute the Frobenius polynomial of J(C/F_p), evaluate
+Shell out to Sage to compute the Frobenius polynomial of J(C/F_{p_val}), evaluate
 at 1 to get N = #J(F_p), then factor with Oscar/FLINT to extract
 ell = largest prime factor and cofactor h = N/ell.
+
+If ell has fewer than min_ell_bits bits, advance p_val to the next prime and retry.
+Sets the global p to the winning prime before returning so that all fp/fpmul/fpinv
+calls (which close over p) see the correct field.
 
 Sage uses Kedlaya's p-adic algorithm (hypellfrob) — O(p^{1/2} polylog p) —
 so this is fast even for p ~ 10^6.
 """
-function frobenius_jacobian_order()::Tuple{BigInt,BigInt,BigInt}
-    sage_script = """
-p = $(p)
+function frobenius_jacobian_order(p_val::Int, min_ell_bits::Int)::Tuple{BigInt,BigInt,BigInt,Int}
+    p_try = p_val
+    while true
+        sage_script = """
+p = $(p_try)
 F = GF(p)
 R.<x> = F[]
 f = x^5 + 3*x^3 + 2*x^2 + 5*x + 4
@@ -188,49 +194,71 @@ chi = H.frobenius_polynomial()
 N = ZZ(chi(1))
 print(int(N))
 """
-    mem_checkpoint("before sage shell-out")
-    raw     = readchomp(`sage -c $sage_script`)
-    N_big   = parse(BigInt, strip(raw))
-    oz      = Oscar.ZZ(N_big)
-    fac     = Oscar.factor(oz)
-    ell_big = BigInt(maximum(q for (q, _) in fac))
-    h_big   = N_big ÷ ell_big
-    return N_big, ell_big, h_big
+        mem_checkpoint("before sage shell-out")
+        raw     = readchomp(`sage -c $sage_script`)
+        N_big   = parse(BigInt, strip(raw))
+        oz      = Oscar.ZZ(N_big)
+        fac     = Oscar.factor(oz)
+        ell_big = BigInt(maximum(q for (q, _) in fac))
+        h_big   = N_big ÷ ell_big
+        if min_ell_bits == 0 || Float64(log2(ell_big)) >= min_ell_bits
+            # Winner: update the global p so fp/fpmul/fpinv use the right field.
+            global p = p_try
+            return N_big, ell_big, h_big, p_try
+        end
+        @printf("  p=%d → ell=%d (%.1f bits) < %d required, trying next prime
+",
+                p_try, ell_big, log2(ell_big), min_ell_bits)
+        flush(stdout)
+        p_try = _next_prime(p_try + 1)
+    end
 end
 
 # ---------------------------------------------------------------------------
 #  Generator bootstrap via exact Frobenius order
 # ---------------------------------------------------------------------------
-function frobenius_find_ell_generator(pts::Vector{NTuple{2,Int}})::Tuple{Div2,Int}
+function frobenius_find_ell_generator(pts::Vector{NTuple{2,Int}}, min_ell_bits::Int)::Tuple{Div2,Int}
     t0 = time()
+    p_before = p
     print("  Computing #J via Sage frobenius_polynomial... ")
     flush(stdout)
-    N, ell_big, h = frobenius_jacobian_order()
-    @printf("done (%.3fs)\n", time() - t0)
-    @printf("  #J = %d\n", N)
-    @printf("  factorisation: %s\n", string(Oscar.factor(Oscar.ZZ(N))))
+    N, ell_big, h, p_winner = frobenius_jacobian_order(p, min_ell_bits)
+    @printf("done (%.3fs)
+", time() - t0)
+    p_winner != p_before && @printf("  advanced to p=%d to satisfy --min-ell-bits=%d
+",
+                                    p_winner, min_ell_bits)
+    @printf("  #J = %d
+", N)
+    @printf("  factorisation: %s
+", string(Oscar.factor(Oscar.ZZ(N))))
     mem_checkpoint("after Oscar bootstrap")
-    @printf("  ell = %d  (%.1f bits)\n", ell_big, log2(ell_big))
-    @printf("  cofactor h = %d\n", h)
+    @printf("  ell = %d  (%.1f bits)
+", ell_big, log2(ell_big))
+    @printf("  cofactor h = %d
+", h)
     ell_big <= typemax(Int) || throw(OverflowError(
         "ell=$ell_big exceeds typemax(Int)=$(typemax(Int)); p is too large for Int64 arithmetic"))
     ell_found = Int(ell_big)
 
-    n = length(pts)
-    n < 2 && error("Not enough rational affine points on the curve")
+    # Re-sample curve points under the (possibly new) global p.
+    pts2 = sample_curve_points(100)
+    length(pts2) < 2 && error("Not enough rational affine points on curve after p update")
+    n = length(pts2)
 
     attempts = 0
     while true
         attempts += 1
-        P = pts[rand(1:n)]
-        Q = pts[rand(1:n)]
+        P = pts2[rand(1:n)]
+        Q = pts2[rand(1:n)]
         D = mumford_from_pts(P, Q)
         jac_isid(D) && continue
         G = jac_mul_raw(D, h)
         jac_isid(G) && continue    # unlucky; retry
 
         @assert jac_isid(jac_mul_raw(G, ell_found)) "ell*G != id — Frobenius order wrong?"
-        @printf("  found G in %d attempt(s), total bootstrap time: %.3fs\n",
+        @printf("  found G in %d attempt(s), total bootstrap time: %.3fs
+",
                 attempts, time() - t0)
         return G, ell_found
     end
@@ -853,6 +881,7 @@ function parse_trial3_cli(args::Vector{String})
     n_targets          = 3
     sqrt_mode          = false
     table_size         = nothing
+    min_ell_bits       = 0    # 0 = no minimum
 
     for arg in args
         if arg == "--no-lp2"
@@ -878,13 +907,15 @@ function parse_trial3_cli(args::Vector{String})
             sqrt_mode = true
         elseif startswith(arg, "--table-size=")
             table_size = parse(Int, split(arg, "=", limit=2)[2])
+        elseif startswith(arg, "--min-ell-bits=")
+            min_ell_bits = parse(Int, split(arg, "=", limit=2)[2])
         end
     end
     return (fb_size=fb_size, enable_lp2=enable_lp2, enable_lp2_conj=enable_lp2_conj,
             max_lp2_nodes=max_lp2_nodes, max_lp2_conj_nodes=max_lp2_conj_nodes,
             amortized=amortized, use_cycle_union=use_cycle_union,
             enable_lp1_aff=enable_lp1_aff, n_targets=n_targets,
-            sqrt_mode=sqrt_mode, table_size=table_size)
+            sqrt_mode=sqrt_mode, table_size=table_size, min_ell_bits=min_ell_bits)
 end
 
 # ---------------------------------------------------------------------------
@@ -999,7 +1030,8 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
                  enable_lp1_aff     ::Bool = true,
                  n_targets          ::Int  = 3,
                  sqrt_mode          ::Bool = false,
-                 table_size         ::Union{Nothing,Int} = nothing)
+                 table_size         ::Union{Nothing,Int} = nothing,
+                 min_ell_bits       ::Int  = 0)
     t_main_start = time()
     println("="^70)
     println("  trial3: Markov-walk phi-relation index calculus")
@@ -1020,7 +1052,7 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
 
     println("── Generator search (Frobenius / Sage) ─────────────────────────────")
     t_ell = time()
-    G, ell_found = frobenius_find_ell_generator(pts)
+    G, ell_found = frobenius_find_ell_generator(pts, min_ell_bits)
     t_ell_done = time() - t_ell
     global ell = ell_found
 
@@ -1351,7 +1383,8 @@ function main2_from_argv()
           max_lp2_nodes=opts.max_lp2_nodes, max_lp2_conj_nodes=opts.max_lp2_conj_nodes,
           amortized=opts.amortized, use_cycle_union=opts.use_cycle_union,
           enable_lp1_aff=opts.enable_lp1_aff, n_targets=opts.n_targets,
-          sqrt_mode=opts.sqrt_mode, table_size=opts.table_size)
+          sqrt_mode=opts.sqrt_mode, table_size=opts.table_size,
+          min_ell_bits=opts.min_ell_bits)
 end
 
 if abspath(PROGRAM_FILE) == @__FILE__

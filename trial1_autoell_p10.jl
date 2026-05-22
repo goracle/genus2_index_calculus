@@ -32,7 +32,10 @@ function _next_prime(n::Integer)::Int
     return candidate
 end
 
-const p = let
+# p is a type-annotated global (not const) so that main2 can reassign it when
+# --min-ell-bits causes a prime search.  The Int annotation preserves the same
+# type-specialisation that const would give, keeping fp/fpmul/fpinv fast.
+global p::Int = let
     if !isempty(ARGS)
         raw = tryparse(Int128, ARGS[1])
         raw === nothing && error("Command-line argument must be an integer, got: $(ARGS[1])")
