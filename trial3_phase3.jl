@@ -91,15 +91,16 @@ end
 #  Phase3Result  —  result record for a single target
 # ---------------------------------------------------------------------------
 struct Phase3Result
-    target_idx     ::Int
-    k_recovered    ::Union{Int, Nothing}
-    k_true         ::Union{Int, Nothing}   # nothing if not a test run
-    n_steps        ::Int
-    n_0lp_hits     ::Int
-    n_1lp_preclose ::Int   # closures against shared_lp1_pre
-    n_1lp_local    ::Int   # closures against local lp1 dict
-    elapsed_s      ::Float64
-    success        ::Bool
+    target_idx      ::Int
+    k_recovered     ::Union{Int, Nothing}
+    k_true          ::Union{Int, Nothing}   # nothing if not a test run
+    n_steps         ::Int
+    n_0lp_hits      ::Int
+    n_1lp_preclose  ::Int   # closures against shared_lp1_pre
+    n_1lp_local     ::Int   # closures against local lp1 dict
+    n_alog_extended ::Int   # new atom logs derived locally from β=0 closures
+    elapsed_s       ::Float64
+    success         ::Bool
 end
 
 # ---------------------------------------------------------------------------
@@ -170,7 +171,17 @@ function phase3_trial_worker(
     # The precomputed table uses LP1ConjVal (amortized, neg_be=0 implicit).
     local_lp1_conj   = Dict{NTuple{4,UInt32}, LP1ConjValFull}()
 
-    # ── Counters ──────────────────────────────────────────────────────────────
+    # ── Local alog extension ──────────────────────────────────────────────────
+    # When a closure yields a β=0 combined row (c_neg_be == 0), the relation is
+    # a pure G-relation that may let us extend atom logs beyond what phase 2
+    # computed.  We store these in a local overlay rather than mutating the
+    # shared read-only tables.atom_log_dict.
+    #
+    # Helper: look up atom log, checking local extension first.
+    local_alog = Dict{NTuple{2,Int}, Int}()
+    @inline alog_get(pt) = get(local_alog, pt, get(alog, pt, -1))
+
+    # Counters ──────────────────────────────────────────────────────────────
     n_steps          = 0
     n_0lp            = 0
     n_1lp_aff_pre    = 0   # affine closure against shared_lp1_pre
@@ -178,28 +189,75 @@ function phase3_trial_worker(
     n_1lp_conj_pre   = 0   # conj closure against shared_lp1_conj_pre
     n_1lp_conj_local = 0   # conj closure against local birthday dict
     n_conj_branch    = 0   # times we entered A1 (i0∈FB, conj residual), before haskey
+    n_alog_extended  = 0   # new atom logs derived from β=0 closures
     k_rec            = nothing
 
-    # ── Helper: solve k from a pure-FB row ───────────────────────────────────
-    @inline function try_solve(fb_row::Dict{Int,Int}, neg_al::Int, neg_be::Int)::Union{Int,Nothing}
-        neg_be == 0 && return nothing
-        log_sum = 0
-        for (j, v) in fb_row
-            log_sum = mod(log_sum + v * get(alog, fb[j], 0), ellI)
+    # ── Helper: attempt to extend local_alog from a β=0 combined row ─────────
+    # combined_row maps FB index → coefficient.  The relation is:
+    #   Σ coeff[j] · log(fb[j])  ≡  neg_al   (mod ell)   with neg_be == 0
+    # If exactly one atom is unknown we can solve for it.
+    function try_extend_alog!(combined_row::Dict{Int,Int}, neg_al::Int)
+        unknown_idx = 0
+        unknown_coeff = 0
+        known_sum = 0
+        for (j, coeff) in combined_row
+            l = alog_get(fb[j])
+            if l == -1
+                if unknown_idx != 0
+                    return   # two unknowns — can't solve
+                end
+                unknown_idx   = j
+                unknown_coeff = coeff
+            else
+                known_sum = mod(known_sum + coeff * l, ellI)
+            end
         end
+        unknown_idx == 0 && return   # fully determined row — nothing new to store
+        # Solve: unknown_coeff · log(fb[unknown_idx]) ≡ neg_al - known_sum (mod ell)
+        rhs = mod(neg_al - known_sum, ellI)
+        # unknown_coeff must be invertible mod ell (ell is prime)
+        @assert gcd(unknown_coeff, ellI) == 1 "non-invertible coefficient in try_extend_alog!"
+        log_new = mod(rhs * powermod(unknown_coeff, ell - 2, ell), ellI)
+        local_alog[fb[unknown_idx]] = log_new
+        n_alog_extended += 1
+    end
+
+    # ── Helper: solve k from a pure-FB row ───────────────────────────────────
+    # Returns k on success, nothing on inapplicable (β=0 or missing logs),
+    # and ASSERTS on internal inconsistency (all logs present but k fails to verify).
+    @inline function try_solve(fb_row::Dict{Int,Int}, neg_al::Int, neg_be::Int)::Union{Int,Nothing}
+        if neg_be == 0
+            # β=0 relation: pure G row, try to extend alog rather than solve for k.
+            try_extend_alog!(fb_row, neg_al)
+            return nothing
+        end
+        log_sum = 0
+        all_known = true
+        for (j, v) in fb_row
+            l = alog_get(fb[j])
+            if l == -1
+                all_known = false
+                break
+            end
+            log_sum = mod(log_sum + v * l, ellI)
+        end
+        # Soft skip: one or more atom logs still unknown.
+        all_known || return nothing
         k_try = mod((log_sum - neg_al) * powermod(neg_be, ell - 2, ell), ellI)
-        jac_mul(G, k_try, ell) == T && return k_try
-        return nothing
+        if jac_mul(G, k_try, ell) == T
+            return k_try
+        end
+        # All atom logs were present and β≠0, but k failed to verify.
+        # This indicates an inconsistency in the relation or atom logs.
+        @assert false "try_solve: bad relation — all atom logs present, β≠0, but k_try=$(k_try) failed verification (neg_al=$(neg_al), neg_be=$(neg_be))"
     end
 
     # ── Helper: solve k from a conj closure ──────────────────────────────────
     # A conj closure gives:  atom(fb[i0_cur]) - atom(fb[i0_pre]) ≡ c_al·G + c_be·T
-    # Both atoms are in atom_log_dict, so:
+    # Both atoms are in atom_log_dict (or local_alog), so:
     #   c_al + c_be·k  ≡  alog[fb[i0_cur]] - alog[fb[i0_pre]]  (mod ell)
-    # try_solve_conj: attempt to recover k from a conj 1-LP closure.
-    # Returns k::Int on success, nothing on any soft failure.
-    # Missing logs, self-closure, inconsistent closures, and singular cases
-    # are all treated as "keep walking" rather than as hard failures.
+    # Returns k::Int on success, nothing on soft inapplicable (missing logs, β=0).
+    # Asserts on internal inconsistency (all logs present, β≠0, k fails verify).
 
     function try_solve_conj(i0_cur::Int, i0_pre::Int, c_al::Int, c_be::Int)::Union{Int,Nothing}
         # Self-closure: same atom on both sides → row cancels.
@@ -209,34 +267,43 @@ function phase3_trial_worker(
         if i0_cur == i0_pre
             c_be == 0 && return nothing   # 0 = c_al·G, degenerate
             k_try = mod(-c_al * powermod(c_be, ell - 2, ell), ellI)
-            jac_mul(G, k_try, ell) == T && return k_try
-            return nothing   # scalar relation didn't verify; discard
+            if jac_mul(G, k_try, ell) == T
+                return k_try
+            end
+            @assert false "try_solve_conj: self-closure bad relation — k_try=$(k_try) failed verification (c_al=$(c_al), c_be=$(c_be))"
         end
 
-        c_be == 0 && return nothing
-
+        if c_be == 0
+            # β=0 self-opposite conj closure: pure G relation between two atoms.
+            # Attempt to extend alog: atom(fb[i0_cur]) - atom(fb[i0_pre]) ≡ c_al·G
+            l_pre = alog_get(fb[i0_pre])
+            l_cur = alog_get(fb[i0_cur])
+            if l_pre != -1 && l_cur == -1
+                local_alog[fb[i0_cur]] = mod(c_al + l_pre, ellI)
+                n_alog_extended += 1
+            elseif l_cur != -1 && l_pre == -1
+                local_alog[fb[i0_pre]] = mod(l_cur - c_al, ellI)
+                n_alog_extended += 1
+            end
+            return nothing
+        end
 
         pt_cur = fb[i0_cur]
         pt_pre = fb[i0_pre]
-        alog_cur_present = haskey(alog, pt_cur)
-        alog_pre_present = haskey(alog, pt_pre)
+        l_cur  = alog_get(pt_cur)
+        l_pre  = alog_get(pt_pre)
 
-        # Soft skip: atom log not in alog (gauge-freedom exclusion or never solved).
-        # The precomputed table is read-only, so just discard and keep walking.
-        (!alog_cur_present || !alog_pre_present) && return nothing
+        # Soft skip: atom log not yet known.
+        (l_cur == -1 || l_pre == -1) && return nothing
 
-        log_cur = alog[pt_cur]
-        log_pre = alog[pt_pre]
-        lhs     = mod(log_cur - log_pre, ellI)
-        k_try   = mod((lhs - c_al) * powermod(c_be, ell - 2, ell), ellI)
+        lhs   = mod(l_cur - l_pre, ellI)
+        k_try = mod((lhs - c_al) * powermod(c_be, ell - 2, ell), ellI)
 
-        jac_mul(G, k_try, ell) == T && return k_try
-
-        # Verification failed even though both atom logs are present.
-        # This is not fatal — it just means this closure did not produce a
-        # usable target relation.
-        return nothing
-
+        if jac_mul(G, k_try, ell) == T
+            return k_try
+        end
+        # Both atom logs present, β≠0, but k failed to verify — internal inconsistency.
+        @assert false "try_solve_conj: bad relation — all atom logs present, β≠0, but k_try=$(k_try) failed verification (i0_cur=$(i0_cur), i0_pre=$(i0_pre), c_al=$(c_al), c_be=$(c_be), lhs=$(lhs))"
     end
 
     # ── Main walk loop ────────────────────────────────────────────────────────
@@ -388,9 +455,9 @@ function phase3_trial_worker(
         k_rec_s  = k_rec  === nothing ? "none" : string(k_rec)
         k_true_s = k_true === nothing ? "?"    : string(k_true)
         match_s  = verified ? "ok" : "MISMATCH"
-        @printf("[phase3 trial %d | t=%.3fs] k_rec=%s  k_true=%s  match=%s  steps=%d  0lp=%d  1lp_aff_pre=%d  1lp_aff_local=%d  1lp_conj_pre=%d  1lp_conj_local=%d  conj_branch=%d\n",
+        @printf("[phase3 trial %d | t=%.3fs] k_rec=%s  k_true=%s  match=%s  steps=%d  0lp=%d  1lp_aff_pre=%d  1lp_aff_local=%d  1lp_conj_pre=%d  1lp_conj_local=%d  conj_branch=%d  alog_ext=%d\n",
                 trial_idx, elapsed, k_rec_s, k_true_s, match_s,
-                n_steps, n_0lp, n_1lp_aff_pre, n_1lp_aff_local, n_1lp_conj_pre, n_1lp_conj_local, n_conj_branch)
+                n_steps, n_0lp, n_1lp_aff_pre, n_1lp_aff_local, n_1lp_conj_pre, n_1lp_conj_local, n_conj_branch, n_alog_extended)
         flush(stdout)
     end
 
@@ -402,6 +469,7 @@ function phase3_trial_worker(
         n_0lp,
         n_1lp_aff_pre + n_1lp_conj_pre,
         n_1lp_aff_local + n_1lp_conj_local,
+        n_alog_extended,
         elapsed,
         success && verified)
 end
@@ -455,12 +523,14 @@ function phase3_solve_targets(
     n_pre       = sum(r -> r.n_1lp_preclose, results)
     n_loc       = sum(r -> r.n_1lp_local, results)
     n_0lp_tot   = sum(r -> r.n_0lp_hits, results)
+    n_alog_ext  = sum(r -> r.n_alog_extended, results)
     println()
     @printf("── Phase 3 summary ──────────────────────────────────────────────────\n")
     @printf("  %d / %d targets solved correctly\n", n_ok, n)
     @printf("  total steps: %d  (avg %.1f/target)\n", total_steps, avg_steps)
     @printf("  closure breakdown: 0-LP=%d  1LP-preclose=%d  1LP-local=%d\n",
             n_0lp_tot, n_pre, n_loc)
+    @printf("  alog extensions from β=0 closures: %d\n", n_alog_ext)
     @printf("  wall time: %.3fs\n", time() - t0)
     @printf("  Process RSS at phase3 exit: %.1f MB  |  GC live: %.1f MB\n",
             Sys.maxrss() / 1024^2, Base.gc_live_bytes() / 1024^2)
