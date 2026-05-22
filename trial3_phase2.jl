@@ -142,9 +142,6 @@ function report_worker_progress(tid, elapsed, s::WorkerStats, rel_counter, rel_t
             100.0 * s.hits_1lp_conj_emit / max(1, s.hits_lp1_conj),
             100.0 * s.hits_1lp_emit      / max(1, s.hits_lp1),
             s.evictions_conj)
-    @printf("           conj discards: samecol=%d zeroalbe=%d  toctou_loss=%d  roundtrip_fail=%d\n",
-            s.conj_discard_samecol, s.conj_discard_zeroalbe,
-            s.conj_toctou_loss, s.conj_roundtrip_fail)
     @printf("           smoothness histogram (0-LP, 1-LP, 2-LP, 3-LP): %d %d %d %d\n",
             s.smooth_hist[1], s.smooth_hist[2], s.smooth_hist[3], s.smooth_hist[4])
     # Print conj table occupancy once (from thread 2 only) to avoid redundant summation.
@@ -164,6 +161,28 @@ end
 #  Arguments that would need to be closed over from the outer scope are
 #  passed explicitly so Julia's inference can see them.
 # ---------------------------------------------------------------------------
+
+# conj_insert_or_pop! for ShardedLP1Conj: same atomic semantics as the LSM
+# version.  Under the shard lock: if key present, pop and return value; else
+# insert and return nothing.
+@inline function conj_insert_or_pop!(sc::ShardedLP1Conj{V}, si::Int,
+                                      key::CanonicalLP1Key, val::V)::Union{V,Nothing} where V
+    lock(sc.locks[si]) do
+        sh   = sc.shards[si]
+        slot = _conj_find(sh, key)
+        if slot != 0
+            v = @inbounds sh.vals[slot]
+            _conj_delete_slot!(sh, slot)
+            v
+        elseif sh.count < sh.max_entries
+            _conj_insert!(sh, key, val)
+            nothing
+        else
+            # At cap: drop silently (same behaviour as old conj_insert! cap-drop).
+            nothing
+        end
+    end
+end
 
 # --- 0-LP: all three atoms are in the factor base → emit immediately. ---
 @inline function emit_0lp!(fb_row     ::Dict{Int,Int},
@@ -331,35 +350,25 @@ end
 
     si = conj_shard_idx(lp_key)
 
-    if conj_haskey(shared_lp1_conj, si, lp_key)
+    # Use atomic insert-or-pop to close the haskey/insert TOCTOU race.
+    # Two threads that both miss conj_haskey and both insert end up with
+    # duplicate entries; each later closes against its own entry and gets
+    # combined_al=0 — a useless discard.  conj_insert_or_pop! collapses the
+    # check+act into one shard-lock critical section, eliminating the race.
+    val = _conj_make_val(V, UInt16(i0), UInt64(neg_al), UInt64(neg_be))
+    prev = conj_insert_or_pop!(shared_lp1_conj, si, lp_key, val)
+
+    if prev !== nothing
         # --- Close against stored entry ---
-        v = conj_pop_safe(shared_lp1_conj, si, lp_key)
-        if v === nothing
-            # TOCTOU: another thread popped it between haskey and pop.
-            s.conj_toctou_loss += 1
-            return fb[rand(1:nF_cur)]
-        end
+        v        = prev
         prev_col = Int(v.i0)
         prev_al  = Int(v.neg_al)
         prev_be  = _conj_prev_be(v)
         combined_al = mod(neg_al - prev_al, Int(ell))
         combined_be = mod(neg_be - prev_be, Int(ell))
 
-        # --- Discard accounting ---
-        if combined_al == 0 && combined_be == 0
-            s.conj_discard_zeroalbe += 1
-        elseif i0 == prev_col
-            s.conj_discard_samecol += 1
-        end
-
         if !(combined_al == 0 && combined_be == 0) && i0 != prev_col
             # Relation: atom(fb[i0]) - atom(fb[prev_col]) = combined_al·G + combined_be·T
-            # Dump first few closes so we can verify key integrity.
-            if s.hits_1lp_conj_emit < 5
-                @printf("[CONJ-CLOSE-DUMP tid=%d] lp_key=0x%032x  i0=%d prev_col=%d  neg_al=%d prev_al=%d  combined_al=%d combined_be=%d\n",
-                        Threads.threadid(), lp_key, i0, prev_col, neg_al, prev_al, combined_al, combined_be)
-                flush(stdout)
-            end
             # Reuse combined_scratch to avoid per-closure Dict allocation (weight-2 rows
             # are always exactly 2 entries; scratch is cleared and refilled here).
             empty!(combined_scratch)
@@ -387,25 +396,9 @@ end
             Threads.atomic_add!(rel_counter, 1)
             return fb[rand(1:nF_cur)]
         end
-    else
-        # --- Store this entry ---
-        # If the hot shard is full, LSM flushes to disk and inserts; no drop.
-        val = _conj_make_val(V, UInt16(i0), UInt64(neg_al), UInt64(neg_be))
-        conj_insert!(shared_lp1_conj, si, lp_key, val)
-        # Round-trip check: verify the entry is immediately findable.
-        # Catches LSM hot-table bugs (wrong slot hash, silent insert failure, etc.)
-        # Only instrument the first 200 inserts per thread to keep overhead near zero.
-        if s.hits_lp1_conj - s.hits_1lp_conj_emit < 200
-            if !conj_haskey(shared_lp1_conj, si, lp_key)
-                s.conj_roundtrip_fail += 1
-                if s.conj_roundtrip_fail <= 3
-                    @printf("[CONJ-ROUNDTRIP-FAIL tid=%d] key=0x%032x si=%d  inserted but not findable!\n",
-                            Threads.threadid(), lp_key, si)
-                    flush(stdout)
-                end
-            end
-        end
+        # combined_al==0 or i0==prev_col: useless close, fall through to random jump
     end
+    # Miss (inserted) or useless close: jump to random FB point.
     # After a conj miss, jump to a random FB point rather than re-anchoring at
     # P0.  Returning P0 pins the walk to the same anchor, re-generating nearly
     # identical conj LP keys that fill the shard and are dropped as evictions.
