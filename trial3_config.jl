@@ -81,11 +81,11 @@ const N_CONJ_SHARDS   = 64
 const CONJ_LOAD_NUM   = 4    # max load = LOAD_NUM / LOAD_DENOM = 80%
 const CONJ_LOAD_DENOM = 5
 
-# Sentinel key — marks an empty slot.  All four components are typemax(UInt32),
-# which is never a valid F_p coordinate since p < 2^32 and field elements are
-# in [0, p).
-const CONJ_KEY_EMPTY = (typemax(UInt32), typemax(UInt32),
-                        typemax(UInt32), typemax(UInt32))
+# Sentinel key — marks an empty slot.  typemax(UInt128) is never a valid
+# CanonicalLP1Key because all four 32-bit limbs would need to be 0xffffffff,
+# but p < 2^32 so all valid coordinates are in [0, p).
+const CanonicalLP1Key = UInt128
+const CONJ_KEY_EMPTY  = typemax(CanonicalLP1Key)
 
 # ---------------------------------------------------------------------------
 #  LP1ConjVal — value stored in the conj 1-LP table.
@@ -263,24 +263,23 @@ end
 #  call sites in phase2 and phase3 change minimally.
 # ---------------------------------------------------------------------------
 
-# Route a key to its shard index (1-based).
-@inline function conj_shard_idx(key::NTuple{4,Int})::Int
-    h = key[1] ⊻ key[2] ⊻ key[3] ⊻ key[4]
-    (h & (N_CONJ_SHARDS - 1)) + 1
-end
-@inline function conj_shard_idx(key::NTuple{4,UInt32})::Int
-    h = Int(key[1]) ⊻ Int(key[2]) ⊻ Int(key[3]) ⊻ Int(key[4])
-    (h & (N_CONJ_SHARDS - 1)) + 1
+# Route a CanonicalLP1Key to its shard index (1-based).
+# Shard is determined by the low log2(N_CONJ_SHARDS) bits of the key
+# (i.e. the low bits of u0 after mod-p reduction).
+@inline function conj_shard_idx(key::CanonicalLP1Key)::Int
+    Int(key & UInt128(N_CONJ_SHARDS - 1)) + 1
 end
 
-# Narrow an Int Mumford key to UInt32.
-# Coordinates must be reduced mod p before casting: v-polynomial components
-# can be negative (or ≥ p after arithmetic), and UInt32(negative_int) wraps
-# silently mod 2^32, producing keys that differ from the same geometric object
-# computed on a different code path.  mod(x, p) normalises to [0, p) first.
-@inline conj_key32(key::NTuple{4,Int}) =
-    (UInt32(mod(key[1], p)), UInt32(mod(key[2], p)),
-     UInt32(mod(key[3], p)), UInt32(mod(key[4], p)))
+# THE ONLY valid canonical form for LP1-conj keys.
+# All hashing, storage, lookup, serialization must use this.
+@inline function canonical_lp1_conj_key(u0::Int, u1::Int, v0::Int, v1::Int)::CanonicalLP1Key
+    UInt128(UInt32(mod(u0, p))) |
+    (UInt128(UInt32(mod(u1, p))) << 32) |
+    (UInt128(UInt32(mod(v0, p))) << 64) |
+    (UInt128(UInt32(mod(v1, p))) << 96)
+end
+@inline canonical_lp1_conj_key(key::NTuple{4,Int})::CanonicalLP1Key =
+    canonical_lp1_conj_key(key[1], key[2], key[3], key[4])
 
 # Total live entries across all shards (for reporting).
 function conj_total_entries(sc::ShardedLP1Conj)::Int

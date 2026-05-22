@@ -34,6 +34,7 @@ include("kernel_phase_diag.jl")   # phase-transition instrumentation
 include("early_solve_monitor.jl") # online b₁ / 2-core / DSU diagnostics
 
 include("trial3_config.jl")
+include("lp1_conj_lsm.jl")
 include("trial3_phi.jl")
 
 # ---------------------------------------------------------------------------
@@ -461,7 +462,8 @@ function index_calculus_walk(G::Div2, T::Div2;
     shared_lp2            = LP2Graph()
     shared_lp2_lock       = ReentrantLock()
     shared_lp_doubled     = Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int}}()
-    shared_lp1_conj       = ShardedLP1Conj(ell; amortized=false)
+    shared_lp1_conj       = LP1ConjLSM(ell; amortized=false,
+                                          hdf_path="/tmp/lp1_conj_main.h5")
     shared_lp2_conj       = LP2ConjGraph()
     shared_lp2_conj_lock  = ReentrantLock()
 
@@ -635,6 +637,7 @@ function index_calculus_walk(G::Div2, T::Div2;
 
     # ── Pre-solve cleanup ─────────────────────────────────────────────────────
     empty!(shared_lp1); clear_lp2_graph!(shared_lp2); empty!(all_samples)
+    lsm_close!(shared_lp1_conj)
     GC.gc()
     ccall((:flint_set_num_threads, :libflint), Cvoid, (Cint,), 1)  # avoid FLINT/Julia pthread deadlock
 
@@ -941,8 +944,8 @@ function mem_report_phase2tables(tables::Phase2Tables,
     n_lp1   = length(tables.shared_lp1)
     n_alog  = length(tables.atom_log_dict)
 
-    sh      = tables.shared_lp1_conj.shards
-    n_conj  = sum(sh[i].count for i in eachindex(sh))
+    sh      = tables.shared_lp1_conj
+    n_conj  = conj_total_entries(sh)
 
     # Sample first 100 lp1 entries to estimate average fb_row Dict weight.
     avg_row_weight = if n_lp1 > 0
@@ -1152,8 +1155,8 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
         shared_lp2_pre       = LP2Graph()
         shared_lp2_lock_pre  = ReentrantLock()
         shared_lp_doubled_pre = Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int}}()
-        shared_lp1_conj_pre  = ShardedLP1Conj(ell)
-        mem_checkpoint("after ShardedLP1Conj() (cap=$(shared_lp1_conj_pre.max_entries))")
+        shared_lp1_conj_pre  = LP1ConjLSM(ell; hdf_path="/tmp/lp1_conj_pre.h5")
+        mem_checkpoint("after LP1ConjLSM() (hot_cap=$(N_CONJ_SHARDS * 50_000) entries)")
         shared_lp2_conj_pre  = LP2ConjGraph()
         shared_lp2_conj_lock_pre = ReentrantLock()
         set_lp2_principal_check_context!(fb_pre, G, T_dummy)
@@ -1297,11 +1300,9 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
                                     n_unresolved, length(fb_pre))
         @printf("  Phase2Tables ready: FB=%d  atom_logs=%d (verified)  lp1_entries=%d\n",
                 length(fb_pre), length(atom_log_dict), length(shared_lp1_pre))
-        let sh = shared_lp1_conj_pre.shards
-            conj_total    = sum(sh[i].count for i in eachindex(sh))
-            conj_nonempty = count(i -> sh[i].count > 0, eachindex(sh))
-            @printf("  shared_lp1_conj_pre: %d entries across %d/%d nonempty shards\n",
-                    conj_total, conj_nonempty, length(sh))
+        let n_conj = conj_total_entries(shared_lp1_conj_pre)
+            @printf("  shared_lp1_conj_pre: %d entries (hot+disk)\n", n_conj)
+            lsm_info(shared_lp1_conj_pre)
         end
         @printf("  total precompute time: %.3fs\n\n", time() - t_pre)
 

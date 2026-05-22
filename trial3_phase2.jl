@@ -122,7 +122,7 @@ end
 #  report_worker_progress — periodic per-thread status line
 # ---------------------------------------------------------------------------
 function report_worker_progress(tid, elapsed, s::WorkerStats, rel_counter, rel_target,
-                                shared_lp1_conj::ShardedLP1Conj{<:Any})
+                                shared_lp1_conj::Union{ShardedLP1Conj{<:Any}, LP1ConjLSM{<:Any}})
     lp1_total = s.hits_lp1 + s.hits_lp1_conj
     @printf("[thread %2d | t=%6.1fs] raw=%d valid=%d 0lp=%d  1lp_aff(step=%d emit=%d) 1lp_conj(step=%d emit=%d)  2lp_seen=%d 2lp_emit=%d skip=%d  rels_local=%d  global=%d/%d\n",
             tid, elapsed, s.raw_steps, s.hits_total, s.hits_0lp,
@@ -147,11 +147,8 @@ function report_worker_progress(tid, elapsed, s::WorkerStats, rel_counter, rel_t
     # Print conj table occupancy once (from thread 2 only) to avoid redundant summation.
     # (Thread 1 is the coordinator and never enters the worker report path.)
     if tid == 2
-        conj_total = sum(sh.count for sh in shared_lp1_conj.shards)
-        @printf("           conj_table: %d / %d entries (%.2f%% full, cap/shard=%d)\n",
-                conj_total, shared_lp1_conj.max_entries,
-                100.0 * conj_total / max(1, shared_lp1_conj.max_entries),
-                cld(shared_lp1_conj.max_entries, N_CONJ_SHARDS))
+        conj_total = conj_total_entries(shared_lp1_conj)
+        @printf("           conj_table: %d entries (hot+disk)\n", conj_total)
     end
     flush(stdout)
 end
@@ -309,7 +306,7 @@ end
 # against a stored entry (producing a relation between two FB columns with
 # coefficients ±1) or store for future closure.
 @inline function handle_1lp_conj!(
-        lp_key          ::NTuple{4,UInt32},
+        lp_key          ::CanonicalLP1Key,
         i0              ::Int,
         neg_al          ::Int,
         neg_be          ::Int,
@@ -324,73 +321,56 @@ end
         rel_counter     ::Threads.Atomic{Int},
         ort             ::OnlineRankTracker,
         s               ::WorkerStats,
-        shared_lp1_conj ::ShardedLP1Conj{V},
+        shared_lp1_conj ::Union{ShardedLP1Conj{V}, LP1ConjLSM{V}},
         rank_growth     ::Vector{Tuple{Int,Int}},
         combined_scratch::Dict{Int,Int},
         P0              ::NTuple{2,Int})::NTuple{2,Int} where V
 
-    si        = conj_shard_idx(lp_key)
-    sh        = shared_lp1_conj.shards[si]
-    conj_lock = shared_lp1_conj.locks[si]
+    si = conj_shard_idx(lp_key)
 
-    lock(conj_lock)
-    try
-        slot = _conj_find(sh, lp_key)
-        if slot != 0
-            # --- Close against stored entry ---
-            # _conj_prev_be returns 0 for LP1ConjVal (amortized) and v.neg_be
-            # for LP1ConjValFull (single-shot).  Both cases are compiled away.
-            v        = @inbounds sh.vals[slot]
-            prev_col = Int(v.i0)
-            prev_al  = Int(v.neg_al)
-            prev_be  = _conj_prev_be(v)
-            combined_al = mod(neg_al - prev_al, Int(ell))
-            combined_be = mod(neg_be - prev_be, Int(ell))
-            _conj_delete_slot!(sh, slot)
+    if conj_haskey(shared_lp1_conj, si, lp_key)
+        # --- Close against stored entry ---
+        v        = conj_pop!(shared_lp1_conj, si, lp_key)
+        prev_col = Int(v.i0)
+        prev_al  = Int(v.neg_al)
+        prev_be  = _conj_prev_be(v)
+        combined_al = mod(neg_al - prev_al, Int(ell))
+        combined_be = mod(neg_be - prev_be, Int(ell))
 
-            if !(combined_al == 0 && combined_be == 0) && i0 != prev_col
-                # Relation: atom(fb[i0]) - atom(fb[prev_col]) = combined_al·G + combined_be·T
-                # Reuse combined_scratch to avoid per-closure Dict allocation (weight-2 rows
-                # are always exactly 2 entries; scratch is cleared and refilled here).
-                empty!(combined_scratch)
-                combined_scratch[i0]       = 1
-                combined_scratch[prev_col] = -1
-                if ASSERT_RELATIONS
-                    ok = check_relation_principal(combined_scratch, combined_al, combined_be,
-                                                  "α", fb, G, T; tag="RS-CONJ-CLOSE")
-                    if !ok
-                        @printf("[RS-CONJ-CLOSE DIAG tid=%d] i0=%d prev_col=%d\n",
-                                Threads.threadid(), i0, prev_col)
-                        @printf("[RS-CONJ-CLOSE DIAG]  neg_al=%s neg_be=%s prev_al=%s prev_be=%s\n",
-                                string(neg_al), string(neg_be), string(prev_al), string(prev_be))
-                        @printf("[RS-CONJ-CLOSE DIAG]  lp_key=(c0=%d,c1=%d,v0=%d,v1=%d) i0=%d\n",
-                                lp_key..., i0)
-                    end
-                    @assert ok "Conjugate-pair 1-LP closure failed principal divisor check"
+        if !(combined_al == 0 && combined_be == 0) && i0 != prev_col
+            # Relation: atom(fb[i0]) - atom(fb[prev_col]) = combined_al·G + combined_be·T
+            # Reuse combined_scratch to avoid per-closure Dict allocation (weight-2 rows
+            # are always exactly 2 entries; scratch is cleared and refilled here).
+            empty!(combined_scratch)
+            combined_scratch[i0]       = 1
+            combined_scratch[prev_col] = -1
+            if ASSERT_RELATIONS
+                ok = check_relation_principal(combined_scratch, combined_al, combined_be,
+                                              "α", fb, G, T; tag="RS-CONJ-CLOSE")
+                if !ok
+                    @printf("[RS-CONJ-CLOSE DIAG tid=%d] i0=%d prev_col=%d\n",
+                            Threads.threadid(), i0, prev_col)
+                    @printf("[RS-CONJ-CLOSE DIAG]  neg_al=%s neg_be=%s prev_al=%s prev_be=%s\n",
+                            string(neg_al), string(neg_be), string(prev_al), string(prev_be))
+                    @printf("[RS-CONJ-CLOSE DIAG]  lp_key=(c0=%d,c1=%d,v0=%d,v1=%d) i0=%d\n",
+                            lp_key..., i0)
                 end
-                push!(alpha_vec, combined_al); push!(beta_vec, combined_be)
-                push!(rel_rows, copy(combined_scratch))
-                ort_add_row!(ort, combined_scratch)
-                length(rank_growth) < MAX_RANK_GROWTH_SAMPLES &&
-                    push!(rank_growth, (s.raw_steps, length(rel_rows)))
-                s.hits_full += 1; s.hits_1lp_conj_emit += 1; s.rel_local += 1
-                Threads.atomic_add!(rel_counter, 1)
-                return fb[rand(1:nF_cur)]
+                @assert ok "Conjugate-pair 1-LP closure failed principal divisor check"
             end
-        else
-            # --- Store this entry ---
-            # Skip (do not store) if the shard is full.  Evicting a random
-            # existing entry destroys an unmatched key before it can close,
-            # causing correlated re-generation and near-zero closure rates.
-            # A stable full table lets closures drain it naturally.
-            # _conj_make_val drops neg_be for LP1ConjVal (amortized mode).
-            val = _conj_make_val(V, UInt16(i0), UInt64(neg_al), UInt64(neg_be))
-            if !conj_insert!(shared_lp1_conj, si, lp_key, val)
-                s.evictions_conj += 1   # repurposed as drop counter
-            end
+            push!(alpha_vec, combined_al); push!(beta_vec, combined_be)
+            push!(rel_rows, copy(combined_scratch))
+            ort_add_row!(ort, combined_scratch)
+            length(rank_growth) < MAX_RANK_GROWTH_SAMPLES &&
+                push!(rank_growth, (s.raw_steps, length(rel_rows)))
+            s.hits_full += 1; s.hits_1lp_conj_emit += 1; s.rel_local += 1
+            Threads.atomic_add!(rel_counter, 1)
+            return fb[rand(1:nF_cur)]
         end
-    finally
-        unlock(conj_lock)
+    else
+        # --- Store this entry ---
+        # If the hot shard is full, LSM flushes to disk and inserts; no drop.
+        val = _conj_make_val(V, UInt16(i0), UInt64(neg_al), UInt64(neg_be))
+        conj_insert!(shared_lp1_conj, si, lp_key, val)
     end
     # After a conj miss, jump to a random FB point rather than re-anchoring at
     # P0.  Returning P0 pins the walk to the same anchor, re-generating nearly
@@ -681,7 +661,7 @@ function phase2_worker(G               ::Div2,
                        shared_lp2      ::LP2Graph,
                        shared_lp2_lock ::ReentrantLock,
                        shared_lp_doubled::Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int}},
-                       shared_lp1_conj ::ShardedLP1Conj{<:Any},
+                       shared_lp1_conj ::Union{ShardedLP1Conj{<:Any}, LP1ConjLSM{<:Any}},
                        shared_lp2_conj ::LP2ConjGraph,
                        shared_lp2_conj_lock::ReentrantLock,
                        enable_lp2      ::Bool,
@@ -801,7 +781,7 @@ function phase2_worker(G               ::Div2,
         #  BRANCH A: conjugate residual (RS is a degree-2 Mumford pair over F_p²)
         # ==========================================================================
         if !rs_split
-            lp_key32 = conj_key32(RS_mumford::NTuple{4,Int})
+            lp_key32 = canonical_lp1_conj_key(RS_mumford::NTuple{4,Int})
             if i0 != 0
                 s.hits_lp1_conj += 1
                 cur_pt = handle_1lp_conj!(lp_key32, i0, neg_al, neg_be, ell,

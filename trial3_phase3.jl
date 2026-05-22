@@ -80,7 +80,7 @@ struct Phase2Tables
 
     # Extension-field LP tables (optional; may be empty)
     # V = LP1ConjVal (amortized) or LP1ConjValFull (single-shot)
-    shared_lp1_conj::ShardedLP1Conj{LP1ConjVal}
+    shared_lp1_conj::Union{ShardedLP1Conj{LP1ConjVal}, LP1ConjLSM{LP1ConjVal}}
     shared_lp2_conj::LP2ConjGraph
 
     # Group order
@@ -169,7 +169,7 @@ function phase3_trial_worker(
     # conj:   lp_key → LP1ConjValFull
     # Local birthday dict runs β≠0, so we need to store neg_be.
     # The precomputed table uses LP1ConjVal (amortized, neg_be=0 implicit).
-    local_lp1_conj   = Dict{NTuple{4,UInt32}, LP1ConjValFull}()
+    local_lp1_conj   = Dict{CanonicalLP1Key, LP1ConjValFull}()
 
     # ── Local alog extension ──────────────────────────────────────────────────
     # When a closure yields a β=0 combined row (c_neg_be == 0), the relation is
@@ -346,14 +346,12 @@ function phase3_trial_worker(
             if i0 != 0
                 # A1: 1-LP-conj — P0 is in FB, RS pair is the LP atom
                 n_conj_branch += 1
-                si_shard   = conj_shard_idx(lp_key)
-                conj_dict  = lp1_conj_pre.shards[si_shard]
+                si_shard = conj_shard_idx(lp_key)
 
-                slot_pre = _conj_find(conj_dict, lp_key)
-                if slot_pre != 0
+                if conj_haskey(lp1_conj_pre, si_shard, lp_key)
                     # Close against precomputed entry (read-only — no delete).
                     # Precomputed table is amortized: neg_be was always 0.
-                    v = @inbounds conj_dict.vals[slot_pre]
+                    v = conj_getval(lp1_conj_pre, si_shard, lp_key)
                     prev_col = Int(v.i0)
                     prev_al  = Int(v.neg_al)
                     c_al = mod(neg_al - prev_al, ellI)
