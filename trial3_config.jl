@@ -362,6 +362,12 @@ mutable struct WorkerStats
     raw_steps          ::Int
     smooth_hist        ::Vector{Int}
     rel_local          ::Int
+    # 1-LP conj diagnostics
+    conj_roundtrip_fail  ::Int   # insert→haskey immediately returned false (LSM bug)
+    conj_toctou_loss     ::Int   # haskey=true but pop returned nothing (race)
+    conj_discard_samecol ::Int   # closed but i0==prev_col
+    conj_discard_zeroalbe::Int   # closed but combined_al==combined_be==0
 
-    WorkerStats() = new(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, zeros(Int, 4), 0)
+    WorkerStats() = new(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, zeros(Int, 4), 0,
+                        0, 0, 0, 0)
 end

@@ -511,6 +511,42 @@ function conj_pop!(sc::LP1ConjLSM{V}, si::Int, key::CanonicalLP1Key)::V where V
     return _conj_make_val(V, i0_v, al_v, be_v)
 end
 
+# Like conj_pop! but returns nothing on TOCTOU miss (haskey=true but entry vanished)
+# rather than throwing.  Used by handle_1lp_conj! to distinguish races from bugs.
+function conj_pop_safe(sc::LP1ConjLSM{V}, si::Int, key::CanonicalLP1Key)::Union{V,Nothing} where V
+    result = Ref{V}()
+    hot_found = lock(sc.shard_locks[si]) do
+        slot = _lsm_hot_find(sc, si, key)
+        if slot != 0
+            result[] = @inbounds sc.hot_vals[si][slot]
+            _lsm_hot_delete!(sc, si, slot)
+            true
+        else
+            false
+        end
+    end
+    hot_found && return result[]
+    found, ri, pos, i0_v, al_v, be_v = lock(sc.file_lock) do
+        res = _lsm_disk_find(sc, key)
+        if res[1]
+            _lsm_disk_delete!(sc, res[2], res[3])
+        end
+        res
+    end
+    found || return nothing
+    return _conj_make_val(V, i0_v, al_v, be_v)
+end
+
+# Immediate round-trip check: insert key/val, then verify haskey returns true.
+# Returns true if the entry is findable immediately after insert.
+# Inserts unconditionally (for diagnostic purposes) regardless of whether key exists.
+# Caller must ensure this is only called when key is NOT already present.
+function conj_roundtrip_ok(sc::LP1ConjLSM{V}, si::Int,
+                            key::CanonicalLP1Key, val::V)::Bool where V
+    conj_insert!(sc, si, key, val)
+    return conj_haskey(sc, si, key)
+end
+
 # Insert key→val.  If hot shard is full (at flush threshold), flush to disk
 # first, then insert.  Returns true if stored, false if dropped (only when
 # flush itself fails — shouldn't happen under normal conditions).
