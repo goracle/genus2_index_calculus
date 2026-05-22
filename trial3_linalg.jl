@@ -510,3 +510,55 @@ function asymptotic_report(rel_rows::Vector{Dict{Int,Int}}, nF::Int;
 
     return (prefix_stats=prefix_stats, gap_stats=gap_stats)
 end
+
+function prune_isolated_and_pendants(A::Matrix{Int}, nF::Int)
+    # A is an M x (nF + 1) matrix containing the raw relations
+    M, cols = size(A)
+    if cols != nF + 1
+        throw(ArgumentError("Matrix must have exactly nF + 1 columns, got $cols"))
+    end
+    
+    active_rows = trues(M)
+    
+    while true
+        changed = false
+        # Compute current column weights for the factor base atoms
+        col_weights = zeros(Int, nF)
+        col_to_row = zeros(Int, nF) # Track the row index for potential weight-1 columns
+        
+        for r in 1:M
+            if active_rows[r]
+                for c in 1:nF
+                    if A[r, c] != 0
+                        col_weights[c] += 1
+                        col_to_row[c] = r
+                    end
+                end
+            end
+        end
+        
+        # Identify pendant columns and mark their unique rows for removal
+        for c in 1:nF
+            if col_weights[c] == 1
+                r = col_to_row[c]
+                if active_rows[r]
+                    active_rows[r] = false
+                    changed = true
+                end
+            end
+        end
+        
+        # If no new pendant columns were found in this pass, we have reached the core
+        if !changed
+            break
+        end
+    end
+    
+    # Filter down to the clean core rows
+    pruned_A = A[active_rows, :]
+    if size(pruned_A, 1) == 0
+        throw(ErrorException("Pruning cleared the entire matrix. Factor base relations are completely unknotted."))
+    end
+    
+    return pruned_A
+end

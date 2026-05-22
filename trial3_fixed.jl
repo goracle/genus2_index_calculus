@@ -67,6 +67,95 @@ function safe_kernel_phase_instrumentation(args...; kwargs...)
     if !@isdefined(kernel_phase_instrumentation)
         return nothing
     end
+
+# ---------------------------------------------------------------------------
+#  prune_relation_core — strip leaf/isolated columns and their incident rows
+# ---------------------------------------------------------------------------
+function prune_relation_core(rel_rows::Vector{Dict{Int,Int}},
+                             alpha_vec::AbstractVector,
+                             beta_vec::AbstractVector,
+                             nF::Int; min_degree::Int = 2,
+                             verbose::Bool = false)
+    m = length(rel_rows)
+    m == 0 && return rel_rows, alpha_vec, beta_vec, nF, Int[]
+
+    active_rows = trues(m)
+    active_cols = trues(nF)
+
+    row_cols = Vector{Vector{Int}}(undef, m)
+    col_rows = [Int[] for _ in 1:nF]
+
+    for i in 1:m
+        cols = Int[]
+        for (j, _) in rel_rows[i]
+            1 <= j <= nF || continue
+            push!(cols, j)
+            push!(col_rows[j], i)
+        end
+        row_cols[i] = cols
+    end
+
+    col_deg = [length(col_rows[j]) for j in 1:nF]
+    queue   = Int[]
+    in_q    = falses(nF)
+    for j in 1:nF
+        if col_deg[j] < min_degree
+            push!(queue, j)
+            in_q[j] = true
+        end
+    end
+
+    while !isempty(queue)
+        j = pop!(queue)
+        in_q[j] = false
+        active_cols[j] || continue
+        active_cols[j] = false
+
+        for i in col_rows[j]
+            active_rows[i] || continue
+            active_rows[i] = false
+            for k in row_cols[i]
+                active_cols[k] || continue
+                col_deg[k] -= 1
+                if col_deg[k] < min_degree && !in_q[k]
+                    push!(queue, k)
+                    in_q[k] = true
+                end
+            end
+        end
+    end
+
+    kept_cols = [j for j in 1:nF if active_cols[j]]
+    col_map   = Dict{Int,Int}(j => idx for (idx, j) in enumerate(kept_cols))
+
+    pr_rel = Vector{Dict{Int,Int}}()
+    pr_al  = eltype(alpha_vec)[]
+    pr_be  = eltype(beta_vec)[]
+
+    kept_rows = Int[]
+    for i in 1:m
+        active_rows[i] || continue
+        row = Dict{Int,Int}()
+        for (j, v) in rel_rows[i]
+            newj = get(col_map, j, 0)
+            newj == 0 && continue
+            row[newj] = get(row, newj, 0) + v
+        end
+        isempty(row) && continue
+        push!(pr_rel, row)
+        push!(pr_al, alpha_vec[i])
+        push!(pr_be, beta_vec[i])
+        push!(kept_rows, i)
+    end
+
+    if verbose
+        @printf("  pruned core: kept %d/%d rows, %d/%d columns\n",
+                length(pr_rel), m, length(kept_cols), nF)
+    end
+
+    return pr_rel, pr_al, pr_be, length(kept_cols), kept_rows
+end
+
     try
         return kernel_phase_instrumentation(args...; kwargs...)
     catch kpe
@@ -592,26 +681,30 @@ function index_calculus_walk(G::Div2, T::Div2;
         @printf("Rows: %d/%d (Phase 1 + %d) — checking phase-transition signals...\n",
                 current_limit, total_count, current_limit - p1_count)
 
+        # Prune leaf/isolated columns before asking the monitor or the solver.
+        pr_rel, pr_al, pr_be, pr_nF, kept_rows =
+            prune_relation_core(sub_rel, sub_al, sub_be, nF; verbose=false)
+        pr_p1_count = count(i -> i <= p1_count, kept_rows)
+
         # Force rank computation at every chunk boundary for a dense Betti trace.
-        sig = monitor_check(esm, sub_rel, sub_al, sub_be;
+        sig = monitor_check(esm, pr_rel, pr_al, pr_be;
                              force_rank = true, verbose = verbose)
 
-        # Only attempt the expensive left_kernel_all when b₁ > 0 — i.e. rank
-        # deficiency is confirmed.  core_solvable and support2_found are
-        # informational only; they do not imply a kernel exists yet.
-        if !sig.b1_positive
-            println("  -> b₁=0; skipping kernel attempt.")
+        if isempty(pr_rel)
+            println("  -> pruned subset empty; skipping kernel attempt.")
             continue
         end
 
-        @printf("  -> b₁=%d at m=%d — attempting kernel solve.\n",
+        @printf("  -> pruned to %d rows / %d columns before solve.\n",
+                length(pr_rel), pr_nF)
+        @printf("  -> monitor b₁=%d at m=%d — attempting kernel solve.\n",
                 sig.b1, current_limit)
 
         @printf("Rows: %d/%d (Phase 1 + %d) — attempting kernel solve...\n",
                 current_limit, total_count, current_limit - p1_count)
 
         # ── Chain-path O(nF) attempt (phase-1 chain structure) ──────────────
-        cp = chain_path_solve(sub_rel, sub_al, sub_be, nF, ell, p1_count;
+        cp = chain_path_solve(pr_rel, pr_al, pr_be, pr_nF, ell, pr_p1_count;
                                G=G, T=T, verbose=verbose)
         if cp.chain_path_succeeded
             @printf("  -> chain_path_solve succeeded: k=%d  (equations=%d)\n",
@@ -623,7 +716,7 @@ function index_calculus_walk(G::Div2, T::Div2;
 
         # ── Cycle-union O(n) attempt (H₂=0 conjecture) ──────────────────────
         if use_cycle_union
-            cu = cycle_union_solve(sub_rel, sub_al, sub_be, nF, ell;
+            cu = cycle_union_solve(pr_rel, pr_al, pr_be, pr_nF, ell;
                                    G=G, T=T, verbose=verbose)
             if cu.cycle_solver_succeeded
                 @printf("  -> cycle_union_solve succeeded: k=%d  (cycles=%d, deferred=%d)\n",
@@ -636,7 +729,7 @@ function index_calculus_walk(G::Div2, T::Div2;
                                cu.n_cycles_found)
         end
 
-        kernels = left_kernel_all(sub_rel, nF, ell)
+        kernels = left_kernel_all(pr_rel, pr_nF, ell)
         if isempty(kernels)
             println("  -> No kernel found for this subset.")
             continue
@@ -668,9 +761,13 @@ function index_calculus_walk(G::Div2, T::Div2;
     # ── Final full kernel solve on all relations ──────────────────────────────
     t_solve_start = time()
 
+    full_rel, full_al, full_be, full_nF, full_kept_rows =
+        prune_relation_core(rel_rows, alpha_vec, beta_vec, nF; verbose=false)
+    full_p1_count = count(i -> i <= p1_count, full_kept_rows)
+
     # Try chain-path solve first (O(nF), exploits phase-1 chain structure).
     verbose && println("  Attempting chain_path_solve on full relation set...")
-    cp = chain_path_solve(rel_rows, alpha_vec, beta_vec, nF, ell, p1_count;
+    cp = chain_path_solve(full_rel, full_al, full_be, full_nF, ell, full_p1_count;
                           G=G, T=T, verbose=verbose)
     if cp.chain_path_succeeded
         t_solve_done = time() - t_solve_start
@@ -682,8 +779,8 @@ function index_calculus_walk(G::Div2, T::Div2;
 
     # Try cycle-union next (O(n), H₂=0 conjecture).
     if use_cycle_union
-        verbose && println("  Attempting cycle_union_solve on full relation set...")
-        cu = cycle_union_solve(rel_rows, alpha_vec, beta_vec, nF, ell;
+        verbose && println("  Attempting cycle_union_solve on full relation set.")
+        cu = cycle_union_solve(full_rel, full_al, full_be, full_nF, ell;
                                G=G, T=T, verbose=verbose)
         if cu.cycle_solver_succeeded
             t_solve_done = time() - t_solve_start
@@ -696,7 +793,7 @@ function index_calculus_walk(G::Div2, T::Div2;
                            cu.n_cycles_found)
     end
 
-    kernels       = left_kernel_all(rel_rows, nF, ell)
+    kernels       = left_kernel_all(full_rel, full_nF, ell)
     t_solve_done  = time() - t_solve_start
     isempty(kernels) && error("Kernel not found — collect more relations")
 
@@ -1071,92 +1168,57 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
                 length(rel_rows_pre), nF_pre, time() - t_pre)
 
         atom_log_dict = Dict{NTuple{2,Int}, Int}()
-        atom_logs_vec  = nothing   # populated by cycle_union path for DSU construction
-        logs_resolved  = nothing   # full cycle_union_solve result (carries .dsu / .root_log)
 
         if use_cycle_union
-            # ── CYCLE UNION SOLVE (Gauge-Fixed Graph Traversal) ───────────────
-            try
-                @printf("  ── Running Cycle Union Solve on Precompute Relations ────────────────\n")
-                @printf("  [MEM] before cycle union:  RSS=%.1f MB  GC-live=%.1f MB\n",
-                        Sys.maxrss()/1024^2, Base.gc_live_bytes()/1024^2)
-                flush(stdout)
-
-                # Execute your spanning-tree cycle/DSU solver on the collected β=0 rows.
-                # Since β=0, this will find relative logs within connected components.
-
-                logs_resolved = cycle_union_solve(rel_rows_pre, alpha_vec_pre, beta_vec_pre, nF_pre, ell; verbose=true)
-
-                n_ok = 0
-                atom_logs_vec = logs_resolved.atom_logs   # preserve for DSU state construction
-                if logs_resolved.atom_logs !== nothing
-                    for j in 1:nF_pre
-                        val = logs_resolved.atom_logs[j]
-                        if val != -1
-                            atom_log_dict[fb_pre[j]] = mod(val, ell)
-                            n_ok += 1
-                        end
-                    end
-                end
-
-                @printf("  [DIAG] atom log verification: %d component-resolved atoms banked via cycle-union\n", n_ok)
-                flush(stdout)
-            catch e
-                error("amortized cycle union solve failed: $e")
-            end
-        else
-            # ── STANDARD RREF SOLVE ───────────────────────────────────────────
-            try
-                @printf("  [MEM] before RREF solve:   RSS=%.1f MB  GC-live=%.1f MB\n",
-                        Sys.maxrss()/1024^2, Base.gc_live_bytes()/1024^2)
-                flush(stdout)
-                F_pre = Nemo.GF(ell)
-                m_pre = length(rel_rows_pre)
-                aug   = zero_matrix(F_pre, m_pre, nF_pre + 1)
-                for i in 1:m_pre
-                    for (j, v) in rel_rows_pre[i]
-                        1 <= j <= nF_pre || continue
-                        aug[i, j] = mod(v, ell)
-                    end
-                    aug[i, nF_pre + 1] = mod(alpha_vec_pre[i], ell)
-                end
-                _, R_mat = rref(aug)
-                @printf("  [MEM] after  rref():       RSS=%.1f MB  GC-live=%.1f MB\n",
-                        Sys.maxrss()/1024^2, Base.gc_live_bytes()/1024^2)
-                flush(stdout)
-                logs = zeros(Int, nF_pre)
-                for r in 1:size(R_mat, 1)
-                    pc = 0
-                    for c in 1:nF_pre
-                        R_mat[r, c] != 0 && (pc = c; break)
-                    end
-                    pc == 0 && continue
-                    logs[pc] = Int(lift(ZZ, R_mat[r, nF_pre + 1]))
-                end
-
-                # ── Gauge-freedom filter ──────────────────────────────────────
-                n_ok = 0; n_bad = 0
-                for (pt, idx) in pt2idx_pre
-                    L = logs[idx]
-                    if L == 0 || !jac_isid(jac_sub(jac_mul(G, L, BigInt(ell)),
-                                                   mumford1(pt[1], pt[2])))
-                        n_bad += 1
-                    else
-                        atom_log_dict[pt] = L
-                        n_ok += 1
-                    end
-                end
-                @printf("  [DIAG] atom log verification: %d correct, %d excluded (gauge/zero)\n",
-                        n_ok, n_bad)
-                flush(stdout)
-            catch e
-                error("amortized RREF solve failed: $e")
-            end
+            @printf("  [DIAG] cycle-union requested; using RREF to pin the atom logs and reserving cycle-union for diagnostics only.\n")
         end
 
-        @printf("  atom_log_dict: %d entries (%.3fs total precompute)\n",
-                length(atom_log_dict), time() - t_pre)
+        try
+            @printf("  [MEM] before RREF solve:   RSS=%.1f MB  GC-live=%.1f MB\n",
+                    Sys.maxrss()/1024^2, Base.gc_live_bytes()/1024^2)
+            flush(stdout)
+            F_pre = Nemo.GF(ell)
+            m_pre = length(rel_rows_pre)
+            aug   = zero_matrix(F_pre, m_pre, nF_pre + 1)
+            for i in 1:m_pre
+                for (j, v) in rel_rows_pre[i]
+                    1 <= j <= nF_pre || continue
+                    aug[i, j] = mod(v, ell)
+                end
+                aug[i, nF_pre + 1] = mod(alpha_vec_pre[i], ell)
+            end
+            _, R_mat = rref(aug)
+            @printf("  [MEM] after  rref():       RSS=%.1f MB  GC-live=%.1f MB\n",
+                    Sys.maxrss()/1024^2, Base.gc_live_bytes()/1024^2)
+            flush(stdout)
+            logs = zeros(Int, nF_pre)
+            for r in 1:size(R_mat, 1)
+                pc = 0
+                for c in 1:nF_pre
+                    R_mat[r, c] != 0 && (pc = c; break)
+                end
+                pc == 0 && continue
+                logs[pc] = Int(lift(ZZ, R_mat[r, nF_pre + 1]))
+            end
 
+            # ── Gauge-freedom filter ──────────────────────────────────────
+            n_ok = 0; n_bad = 0
+            for (pt, idx) in pt2idx_pre
+                L = logs[idx]
+                if L == 0 || !jac_isid(jac_sub(jac_mul(G, L, BigInt(ell)),
+                                               mumford1(pt[1], pt[2])))
+                    n_bad += 1
+                else
+                    atom_log_dict[pt] = L
+                    n_ok += 1
+                end
+            end
+            @printf("  [DIAG] atom log verification: %d correct, %d excluded (gauge/zero)\n",
+                    n_ok, n_bad)
+            flush(stdout)
+        catch e
+            error("amortized RREF solve failed: $e")
+        end
 
         # ── Sanity-check atom logs against relations ─────────────────────────
         # Only check relations where every atom in the row has a verified log
@@ -1187,11 +1249,8 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
                 n_verified, n_failed, n_skipped)
 
         # ── Bundle precompute output into tables ──────────────────────────────
-        # In amortized+cycle_union mode we build a Phase2TablesWithDSU so that
-        # phase3_dsu_worker can clone the frozen DSU state for each target
-        # instead of relying solely on atom_log_dict (which excludes gauge-free
-        # atoms).  In the standard RREF path we fall back to plain Phase2Tables.
-        base_tables = Phase2Tables(
+        # Phase 3 consumes the RREF-pinned atom logs directly.
+        tables = Phase2Tables(
             fb_pre,
             pt2idx_pre,
             atom_log_dict,
@@ -1201,22 +1260,9 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
             shared_lp2_conj_pre,
             BigInt(ell))
 
-        if use_cycle_union && logs_resolved !== nothing
-            dsu_state = build_precomputed_dsu_state(logs_resolved.dsu, logs_resolved.root_log, nF_pre, Int(ell))
-            tables = Phase2TablesWithDSU(base_tables.fb, base_tables.pt2idx, base_tables.atom_log_dict, base_tables.shared_lp1,
-                                         base_tables.shared_lp2, base_tables.shared_lp1_conj, base_tables.shared_lp2_conj,
-                                         base_tables.ell, dsu_state)
-
-
-
-            @printf("  Phase2TablesWithDSU ready: DSU nF=%d  atom_logs=%d (verified)\n",
-                    tables.dsu_state.nF, length(atom_log_dict))
-        else
-            tables = base_tables
-        end
-
         n_unresolved = length(fb_pre) - length(atom_log_dict)
-        n_unresolved > 0 && @printf("  [WARN] %d / %d FB atoms have unverified logs (gauge-freedom) — phase3 conj closures will miss these atoms\n", n_unresolved, length(fb_pre))
+        n_unresolved > 0 && @printf("  [WARN] %d / %d FB atoms have unverified logs; closures that touch them will simply be skipped\n",
+                                    n_unresolved, length(fb_pre))
         @printf("  Phase2Tables ready: FB=%d  atom_logs=%d (verified)  lp1_entries=%d\n",
                 length(fb_pre), length(atom_log_dict), length(shared_lp1_pre))
         let sh = shared_lp1_conj_pre.shards
@@ -1232,7 +1278,7 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
         # and we see the true live set (Nemo/FLINT native heap will still show in RSS).
         GC.gc(true)
         mem_checkpoint("after final GC.gc(true) post-precompute")
-        mem_report_phase2tables(base_tables, results_pre, thread_collectors_pre)
+        mem_report_phase2tables(tables, results_pre, thread_collectors_pre)
 
         # ── Build per-target list ─────────────────────────────────────────────
         println("── Generating targets ───────────────────────────────────────────────")
@@ -1246,19 +1292,9 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
         flush(stdout)
 
         # ── Phase 3: parallel per-target DLP solves ───────────────────────────
-        # In amortized+cycle_union mode, use the DSU-augmented worker which
-        # clones the frozen symbolic DSU per trial and accumulates β≠0 relations
-        # into it, resolving k the instant a cycle closes with b≠0.
-        # In standard amortized mode, use the plain phase3_solve_targets.
-        results = if tables isa Phase2TablesWithDSU
-            phase3_dsu_solve_targets(tables, targets, G;
-                                     step_cap = 10_000_000,
-                                     verbose  = true)
-        else
-            phase3_solve_targets(tables, targets, G;
-                                 step_cap = 10_000_000,
-                                 verbose  = true)
-        end
+        results = phase3_solve_targets(tables, targets, G;
+                                        step_cap = 10_000_000,
+                                        verbose  = true)
 
         n_ok = count(r -> r.success, results)
         @printf("\n── Final amortized summary ──────────────────────────────────────────\n")

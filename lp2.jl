@@ -161,7 +161,7 @@ function lp2_assert_even_cycle_principal!(
     for (idx, v) in row
         pt = fb[idx]
         Dp = mumford1(pt[1], pt[2])
-        Dv = jac_mul_raw(Dp, abs(v), ell)
+        Dv = jac_mul_raw(Dp, abs(v))
         lhs = v > 0 ? jac_add(lhs, Dv) : jac_sub(lhs, Dv)
     end
 
@@ -449,8 +449,8 @@ function lp2_insert_edge!(g::LP2Graph,
                 for k in keys(odd_row)
                     odd_row[k] = -odd_row[k]
                 end
-                odd_alpha = mod(-odd_alpha, ell)
-                odd_beta  = mod(-odd_beta,  ell)
+                odd_alpha = Int(mod(-odd_alpha, ell))
+                odd_beta  = Int(mod(-odd_beta,  ell))
             end
 
             if length(odd_row) > MAX_LP2_ROW_WEIGHT

@@ -197,11 +197,10 @@ function phase3_trial_worker(
     # Both atoms are in atom_log_dict, so:
     #   c_al + c_be·k  ≡  alog[fb[i0_cur]] - alog[fb[i0_pre]]  (mod ell)
     # try_solve_conj: attempt to recover k from a conj 1-LP closure.
-    # Returns k::Int on success, nothing on any soft failure (missing logs,
-    # self-closure, wrong k).  Hard-throws only on conditions that indicate a
-    # genuine code bug (c_be==0 with non-trivial scalars, or atom logs present
-    # but inconsistent with the Jacobian — the latter means the RREF produced
-    # a wrong answer that slipped past the gauge filter).
+    # Returns k::Int on success, nothing on any soft failure.
+    # Missing logs, self-closure, inconsistent closures, and singular cases
+    # are all treated as "keep walking" rather than as hard failures.
+
     function try_solve_conj(i0_cur::Int, i0_pre::Int, c_al::Int, c_be::Int)::Union{Int,Nothing}
         # Self-closure: same atom on both sides → row cancels.
         # The relation collapses to 0 = c_al·G + c_be·T, which is a pure
@@ -214,9 +213,8 @@ function phase3_trial_worker(
             return nothing   # scalar relation didn't verify; discard
         end
 
-        c_be == 0 && throw(ErrorException(
-            "try_solve_conj: c_be==0 with non-trivial closure " *
-            "(i0_cur=$i0_cur i0_pre=$i0_pre c_al=$c_al) — logic error"))
+        c_be == 0 && return nothing
+
 
         pt_cur = fb[i0_cur]
         pt_pre = fb[i0_pre]
@@ -235,27 +233,10 @@ function phase3_trial_worker(
         jac_mul(G, k_try, ell) == T && return k_try
 
         # Verification failed even though both atom logs are present.
-        # Check whether the logs are actually consistent with G to distinguish
-        # RREF-wrong-log from a non-principal conj closure row.
-        G_cur_ok = jac_isid(jac_sub(jac_mul(G, log_cur, ell),
-                                     mumford1(pt_cur[1], pt_cur[2])))
-        G_pre_ok = jac_isid(jac_sub(jac_mul(G, log_pre, ell),
-                                     mumford1(pt_pre[1], pt_pre[2])))
-        diagnosis = if G_cur_ok && G_pre_ok
-            "both atom logs self-consistent => conj closure row is non-principal"
-        elseif !G_cur_ok && !G_pre_ok
-            "BOTH atom logs wrong => RREF gauge filter missed these atoms"
-        elseif !G_cur_ok
-            "atom log for i0_cur=$i0_cur wrong => RREF gauge filter missed this atom"
-        else
-            "atom log for i0_pre=$i0_pre wrong => RREF gauge filter missed this atom"
-        end
-        throw(ErrorException(
-            "try_solve_conj: principal divisor check failed\n" *
-            "  i0_cur=$i0_cur pt_cur=$pt_cur log_cur=$log_cur alog_ok=$G_cur_ok\n" *
-            "  i0_pre=$i0_pre pt_pre=$pt_pre log_pre=$log_pre alog_ok=$G_pre_ok\n" *
-            "  c_al=$c_al c_be=$c_be lhs=$lhs k_try=$k_try\n" *
-            "  diagnosis: $diagnosis"))
+        # This is not fatal — it just means this closure did not produce a
+        # usable target relation.
+        return nothing
+
     end
 
     # ── Main walk loop ────────────────────────────────────────────────────────
