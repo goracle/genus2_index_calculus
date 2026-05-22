@@ -142,6 +142,9 @@ function report_worker_progress(tid, elapsed, s::WorkerStats, rel_counter, rel_t
             100.0 * s.hits_1lp_conj_emit / max(1, s.hits_lp1_conj),
             100.0 * s.hits_1lp_emit      / max(1, s.hits_lp1),
             s.evictions_conj)
+    @printf("           conj discards: samecol=%d zeroalbe=%d  toctou_loss=%d  roundtrip_fail=%d\n",
+            s.conj_discard_samecol, s.conj_discard_zeroalbe,
+            s.conj_toctou_loss, s.conj_roundtrip_fail)
     @printf("           smoothness histogram (0-LP, 1-LP, 2-LP, 3-LP): %d %d %d %d\n",
             s.smooth_hist[1], s.smooth_hist[2], s.smooth_hist[3], s.smooth_hist[4])
     # Print conj table occupancy once (from thread 2 only) to avoid redundant summation.
@@ -330,15 +333,33 @@ end
 
     if conj_haskey(shared_lp1_conj, si, lp_key)
         # --- Close against stored entry ---
-        v        = conj_pop!(shared_lp1_conj, si, lp_key)
+        v = conj_pop_safe(shared_lp1_conj, si, lp_key)
+        if v === nothing
+            # TOCTOU: another thread popped it between haskey and pop.
+            s.conj_toctou_loss += 1
+            return fb[rand(1:nF_cur)]
+        end
         prev_col = Int(v.i0)
         prev_al  = Int(v.neg_al)
         prev_be  = _conj_prev_be(v)
         combined_al = mod(neg_al - prev_al, Int(ell))
         combined_be = mod(neg_be - prev_be, Int(ell))
 
+        # --- Discard accounting ---
+        if combined_al == 0 && combined_be == 0
+            s.conj_discard_zeroalbe += 1
+        elseif i0 == prev_col
+            s.conj_discard_samecol += 1
+        end
+
         if !(combined_al == 0 && combined_be == 0) && i0 != prev_col
             # Relation: atom(fb[i0]) - atom(fb[prev_col]) = combined_al·G + combined_be·T
+            # Dump first few closes so we can verify key integrity.
+            if s.hits_1lp_conj_emit < 5
+                @printf("[CONJ-CLOSE-DUMP tid=%d] lp_key=0x%032x  i0=%d prev_col=%d  neg_al=%d prev_al=%d  combined_al=%d combined_be=%d\n",
+                        Threads.threadid(), lp_key, i0, prev_col, neg_al, prev_al, combined_al, combined_be)
+                flush(stdout)
+            end
             # Reuse combined_scratch to avoid per-closure Dict allocation (weight-2 rows
             # are always exactly 2 entries; scratch is cleared and refilled here).
             empty!(combined_scratch)
@@ -371,6 +392,19 @@ end
         # If the hot shard is full, LSM flushes to disk and inserts; no drop.
         val = _conj_make_val(V, UInt16(i0), UInt64(neg_al), UInt64(neg_be))
         conj_insert!(shared_lp1_conj, si, lp_key, val)
+        # Round-trip check: verify the entry is immediately findable.
+        # Catches LSM hot-table bugs (wrong slot hash, silent insert failure, etc.)
+        # Only instrument the first 200 inserts per thread to keep overhead near zero.
+        if s.hits_lp1_conj - s.hits_1lp_conj_emit < 200
+            if !conj_haskey(shared_lp1_conj, si, lp_key)
+                s.conj_roundtrip_fail += 1
+                if s.conj_roundtrip_fail <= 3
+                    @printf("[CONJ-ROUNDTRIP-FAIL tid=%d] key=0x%032x si=%d  inserted but not findable!\n",
+                            Threads.threadid(), lp_key, si)
+                    flush(stdout)
+                end
+            end
+        end
     end
     # After a conj miss, jump to a random FB point rather than re-anchoring at
     # P0.  Returning P0 pins the walk to the same anchor, re-generating nearly

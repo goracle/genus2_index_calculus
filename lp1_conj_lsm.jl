@@ -200,8 +200,9 @@ function LP1ConjLSM{V}(
         hot_thresh[i] = thresh
     end
 
-    # Open (or create) HDF5 file
-    fid = h5open(hdf_path, "cw")   # create-or-truncate; caller passes fresh path
+    # Open (or create) HDF5 file — always truncate so run_NNNN names start from 1
+    # and never collide with groups left behind by a prior crashed run.
+    fid = h5open(hdf_path, "w")
 
     LP1ConjLSM{V}(
         hot_keys, hot_vals, hot_counts, hot_caps, hot_masks, hot_thresh,
