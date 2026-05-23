@@ -849,21 +849,19 @@ end
 
 function conj_insert!(sc::LP1ConjLSM{V}, si::Int,
                        key::CanonicalLP1Key, val::V)::Bool where V
-    needs_flush = lock(sc.shard_locks[si]) do
-        if sc.hot_counts[si] >= sc.hot_thresh[si]
-            true
-        else
-            _lsm_hot_insert!(sc, si, key, val)
-            false
-        end
+    lock(sc.shard_locks[si])
+    if sc.hot_counts[si] < sc.hot_thresh[si]
+        _lsm_hot_insert!(sc, si, key, val)
+        unlock(sc.shard_locks[si])
+        return true
     end
-    needs_flush || return true
-    lock(sc.file_lock) do
-        lock(sc.shard_locks[si]) do
-            sc.hot_counts[si] >= sc.hot_thresh[si] && _lsm_flush_shard!(sc, si)
-            _lsm_hot_insert!(sc, si, key, val)
-        end
-    end
+    unlock(sc.shard_locks[si])
+    lock(sc.file_lock)
+    lock(sc.shard_locks[si])
+    sc.hot_counts[si] >= sc.hot_thresh[si] && _lsm_flush_shard!(sc, si)
+    _lsm_hot_insert!(sc, si, key, val)
+    unlock(sc.shard_locks[si])
+    unlock(sc.file_lock)
     true
 end
 
@@ -922,87 +920,73 @@ function conj_insert_or_pop!(sc::LP1ConjLSM{V}, si::Int,
     # Fast path: Bloom says key is definitely not on disk (or no disk yet).
     # Only need the shard lock — no file_lock contention.
     if isempty(sc.runs) || !bloom_maybe_has(sc.bloom, fp)
-        fast_result = lock(sc.shard_locks[si]) do
-            slot = _lsm_hot_find(sc, si, key)
-            if slot != 0
-                v = @inbounds sc.hot_vals[si][slot]
-                _lsm_hot_delete!(sc, si, slot)
-                Some(v)
-            elseif sc.hot_counts[si] < sc.hot_thresh[si]
-                _lsm_hot_insert!(sc, si, key, val)
-                nothing
-            else
-                :needs_flush
-            end
-        end
-        if fast_result !== :needs_flush
-            if fast_result isa Some
-                _bday_record_collision!(sc, now_t)
-                return something(fast_result)
-            end
+        lock(sc.shard_locks[si])
+        slot = _lsm_hot_find(sc, si, key)
+        if slot != 0
+            v = @inbounds sc.hot_vals[si][slot]
+            _lsm_hot_delete!(sc, si, slot)
+            unlock(sc.shard_locks[si])
+            _bday_record_collision!(sc, now_t)
+            return v
+        elseif sc.hot_counts[si] < sc.hot_thresh[si]
+            _lsm_hot_insert!(sc, si, key, val)
+            unlock(sc.shard_locks[si])
             return nothing
         end
+        unlock(sc.shard_locks[si])
         # Shard is full and needs a flush — fall through to slow path.
-        # (Flush requires file_lock; we do not re-check Bloom after flush since
-        # this key was not on disk before and we hold no lock in between — still
-        # safe to insert without a disk probe.)
-        final_result = Ref{Union{V,Nothing}}(nothing)
-        lock(sc.file_lock) do
-            lock(sc.shard_locks[si]) do
-                # Re-check hot after acquiring locks (another thread may have
-                # inserted or flushed in the window).
-                slot = _lsm_hot_find(sc, si, key)
-                if slot != 0
-                    v = @inbounds sc.hot_vals[si][slot]
-                    _lsm_hot_delete!(sc, si, slot)
-                    final_result[] = v
-                    return
-                end
-                if sc.hot_counts[si] >= sc.hot_thresh[si]
-                    _lsm_flush_shard!(sc, si)
-                end
-                _lsm_hot_insert!(sc, si, key, val)
-            end
-        end
-        if final_result[] !== nothing
+        lock(sc.file_lock)
+        lock(sc.shard_locks[si])
+        slot = _lsm_hot_find(sc, si, key)
+        if slot != 0
+            v = @inbounds sc.hot_vals[si][slot]
+            _lsm_hot_delete!(sc, si, slot)
+            unlock(sc.shard_locks[si])
+            unlock(sc.file_lock)
             _bday_record_collision!(sc, now_t)
+            return v
         end
-        return final_result[]
+        if sc.hot_counts[si] >= sc.hot_thresh[si]
+            _lsm_flush_shard!(sc, si)
+        end
+        _lsm_hot_insert!(sc, si, key, val)
+        unlock(sc.shard_locks[si])
+        unlock(sc.file_lock)
+        return nothing
     end
 
     # Slow path: Bloom says key may be on disk.  Need file_lock for consistent
     # view of runs + mmap during the disk probe.
-    final_result = Ref{Union{V,Nothing}}(nothing)
-    lock(sc.file_lock) do
-        lock(sc.shard_locks[si]) do
-            slot = _lsm_hot_find(sc, si, key)
-            if slot != 0
-                v = @inbounds sc.hot_vals[si][slot]
-                _lsm_hot_delete!(sc, si, slot)
-                final_result[] = v
-                return
-            end
-            # Re-check Bloom inside lock in case runs changed since the
-            # lockless read above.
-            if !isempty(sc.runs) && bloom_maybe_has(sc.bloom, fp)
-                found, ri, pos, i0_v, al_v, be_v = _lsm_disk_find(sc, key, fp)
-                if found
-                    _lsm_disk_delete!(sc, ri, pos)
-                    final_result[] = _conj_make_val(V, i0_v, al_v, be_v)
-                    return
-                end
-            end
-            if sc.hot_counts[si] >= sc.hot_thresh[si]
-                _lsm_flush_shard!(sc, si)
-            end
-            _lsm_hot_insert!(sc, si, key, val)
-            final_result[] = nothing
+    lock(sc.file_lock)
+    lock(sc.shard_locks[si])
+    slot = _lsm_hot_find(sc, si, key)
+    if slot != 0
+        v = @inbounds sc.hot_vals[si][slot]
+        _lsm_hot_delete!(sc, si, slot)
+        unlock(sc.shard_locks[si])
+        unlock(sc.file_lock)
+        _bday_record_collision!(sc, now_t)
+        return v
+    end
+    # Re-check Bloom inside lock in case runs changed since the lockless read above.
+    if !isempty(sc.runs) && bloom_maybe_has(sc.bloom, fp)
+        found, ri, pos, i0_v, al_v, be_v = _lsm_disk_find(sc, key, fp)
+        if found
+            _lsm_disk_delete!(sc, ri, pos)
+            result_v = _conj_make_val(V, i0_v, al_v, be_v)
+            unlock(sc.shard_locks[si])
+            unlock(sc.file_lock)
+            _bday_record_collision!(sc, now_t)
+            return result_v
         end
     end
-    if final_result[] !== nothing
-        _bday_record_collision!(sc, now_t)
+    if sc.hot_counts[si] >= sc.hot_thresh[si]
+        _lsm_flush_shard!(sc, si)
     end
-    final_result[]
+    _lsm_hot_insert!(sc, si, key, val)
+    unlock(sc.shard_locks[si])
+    unlock(sc.file_lock)
+    return nothing
 end
 
 # ---------------------------------------------------------------------------
@@ -1045,17 +1029,17 @@ end
 #           r/2 is the LP1-conj emission rate.
 # ---------------------------------------------------------------------------
 function lsm_bday_report(sc::LP1ConjLSM, p::Integer, r::Real; io::IO = stdout)
-    m, t_coll, t0, n_emitted, occ_u, occ_n, rc, rsc, rsc2 = lock(sc.bday_lock) do
-        (sc.bday_first_coll_m,
-         sc.bday_first_coll_t,
-         sc.bday_t0,
-         sc.bday_emissions,
-         sc.occ_unique,
-         sc.occ_n,
-         copy(sc.renyi_counts),
-         sc.renyi_sum_c,
-         sc.renyi_sum_c2)
-    end
+    lock(sc.bday_lock)
+    m        = sc.bday_first_coll_m
+    t_coll   = sc.bday_first_coll_t
+    t0       = sc.bday_t0
+    n_emitted= sc.bday_emissions
+    occ_u    = sc.occ_unique
+    occ_n    = sc.occ_n
+    rc       = copy(sc.renyi_counts)
+    rsc      = sc.renyi_sum_c
+    rsc2     = sc.renyi_sum_c2
+    unlock(sc.bday_lock)
 
     lam = r / 2.0          # LP1-conj emission rate
     pf  = Float64(p)
