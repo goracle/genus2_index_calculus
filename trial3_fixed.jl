@@ -463,7 +463,13 @@ function index_calculus_walk(G::Div2, T::Div2;
     shared_lp2_lock       = ReentrantLock()
     shared_lp_doubled     = Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int}}()
     shared_lp1_conj       = LP1ConjLSM(ell; amortized=false,
-                                          spill_path="/tmp/lp1_conj_main.h5")
+                                          spill_path=joinpath(homedir(), "crypto", "tmp", "lp1_conj_main.h5"))
+    let _p = shared_lp1_conj.spill_path
+        atexit(() -> begin
+            isfile(_p)            && rm(_p;            force=true)
+            isfile(_p * ".compact") && rm(_p * ".compact"; force=true)
+        end)
+    end
     shared_lp2_conj       = LP2ConjGraph()
     shared_lp2_conj_lock  = ReentrantLock()
 
@@ -629,6 +635,11 @@ function index_calculus_walk(G::Div2, T::Div2;
         merged_col = merge_collectors(thread_collectors)
         lp_residual_report(merged_col; p_field=p, verbose=true)
     end
+
+    # Birthday diagnostics: report LP1-conj effective support estimate.
+    # r = total throughput (valid phi steps across all threads) / phase2 wall time
+    r_est = hits_total / max(1e-9, t_phase2_done)
+    lsm_bday_report(shared_lp1_conj, p, r_est)
 
     if !solve
         return (k=nothing, rel_rows=rel_rows, alpha_vec=alpha_vec,
@@ -1155,7 +1166,13 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
         shared_lp2_pre       = LP2Graph()
         shared_lp2_lock_pre  = ReentrantLock()
         shared_lp_doubled_pre = Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int}}()
-        shared_lp1_conj_pre  = LP1ConjLSM(ell; spill_path="/tmp/lp1_conj_pre.h5")
+        shared_lp1_conj_pre  = LP1ConjLSM(ell; spill_path=joinpath(homedir(), "crypto", "tmp", "lp1_conj_pre.h5"))
+        let _p = shared_lp1_conj_pre.spill_path
+            atexit(() -> begin
+                isfile(_p)            && rm(_p;            force=true)
+                isfile(_p * ".compact") && rm(_p * ".compact"; force=true)
+            end)
+        end
         mem_checkpoint("after LP1ConjLSM() (hot_cap=$(N_CONJ_SHARDS * 50_000) entries)")
         shared_lp2_conj_pre  = LP2ConjGraph()
         shared_lp2_conj_lock_pre = ReentrantLock()
@@ -1303,6 +1320,9 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
         let n_conj = conj_total_entries(shared_lp1_conj_pre)
             @printf("  shared_lp1_conj_pre: %d entries (hot+disk)\n", n_conj)
             lsm_info(shared_lp1_conj_pre)
+            r_est_pre = sum(r !== nothing ? r.hits_total : 0 for r in results_pre) /
+                        max(1e-9, time() - t_pre)
+            lsm_bday_report(shared_lp1_conj_pre, p, r_est_pre)
         end
         @printf("  total precompute time: %.3fs\n\n", time() - t_pre)
 

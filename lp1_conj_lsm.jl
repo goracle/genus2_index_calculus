@@ -189,6 +189,15 @@ mutable struct LP1ConjLSM{V}
     max_entries ::Int
     n_disk_live ::Int
     amortized   ::Bool
+
+    # Birthday diagnostics — LP1-conj first-collision estimator
+    # See: S_eff ~ (r * t_first / 2)^2  where r/2 = LP1-conj emission rate.
+    # Under naive ambient model S ~ p^2/2, so t_first ~ sqrt(2)*p/r.
+    bday_emissions      ::Int          # total LP1-conj partials emitted so far
+    bday_t0             ::Float64      # time of first emission (time_ns() / 1e9)
+    bday_first_coll_m   ::Int          # emission count at first collision (0 = not yet)
+    bday_first_coll_t   ::Float64      # wall time at first collision (seconds, 0 = not yet)
+    bday_lock           ::ReentrantLock
 end
 
 # ---------------------------------------------------------------------------
@@ -230,7 +239,8 @@ function LP1ConjLSM{V}(
         hot_thresh[i] = thresh
     end
 
-    # Create (or truncate) spill file
+    # Ensure spill directory exists, then create (or truncate) spill file
+    mkpath(dirname(spill_path))
     spill_io = open(spill_path, "w+")
 
     LP1ConjLSM{V}(
@@ -241,14 +251,16 @@ function LP1ConjLSM{V}(
         0,         # spill_size
         BloomFilter(max_entries),
         n_shards, max_entries, 0,
-        amortized
+        amortized,
+        # birthday diagnostics
+        0, 0.0, 0, 0.0, ReentrantLock()
     )
 end
 
 function LP1ConjLSM(
         ell           ::Integer;
         amortized     ::Bool   = true,
-        spill_path    ::String = "/tmp/lp1_conj_lsm.bin",
+        spill_path    ::String = joinpath(homedir(), "crypto", "tmp", "lp1_conj_lsm.bin"),
         max_hot_ram_mb::Int    = 512
     )
     cap = min(LP1_CONJ_CAP_MULTIPLIER * Int(min(ell, p)), LP1_CONJ_CAP_MAX)
@@ -576,6 +588,10 @@ end
 function _lsm_compact!(sc::LP1ConjLSM)
     length(sc.runs) <= 1 && return
 
+    # Snapshot the mmap and keep it alive for the entire merge loop.
+    # Without this, _lsm_remap! (called by a flush in another thread, or even
+    # by the GC finalizer reclaiming the previous sc.spill_mmap assignment)
+    # can munmap the pages we are actively reading → SIGBUS.
     mm         = sc.spill_mmap
     total_live = sc.n_disk_live
     total_live == 0 && return
@@ -617,6 +633,7 @@ function _lsm_compact!(sc::LP1ConjLSM)
 
     rec_scratch = Vector{UInt8}(undef, RECORD_BYTES)
 
+    GC.@preserve mm begin
     while !isempty(heap)
         fp, ri, pos = _heap_pop!(heap)
         rm   = sc.runs[ri]
@@ -648,6 +665,7 @@ function _lsm_compact!(sc::LP1ConjLSM)
             _heap_push!(heap, (fp2, ri, pos))
         end
     end
+    end # GC.@preserve mm
 
     # Flush remaining write buffer.
     wbuf_pos > 0 && write(tmp_io, view(wbuf, 1:wbuf_pos))
@@ -683,6 +701,7 @@ function _lsm_disk_find(sc::LP1ConjLSM,
     kv0 = UInt32((key >> 64)  & 0x00000000ffffffff)
     kv1 = UInt32((key >> 96)  & 0x00000000ffffffff)
 
+    GC.@preserve mm begin
     for (ri, rm) in enumerate(sc.runs)
         (fp_target < rm.min_fp || fp_target > rm.max_fp) && continue
 
@@ -717,6 +736,7 @@ function _lsm_disk_find(sc::LP1ConjLSM,
             pos += 1
         end
     end
+    end # GC.@preserve mm
     (false, 0, 0, UInt16(0), UInt64(0), UInt64(0))
 end
 
@@ -834,6 +854,16 @@ function conj_insert_or_pop!(sc::LP1ConjLSM{V}, si::Int,
 
     fp = _lsm_fp(key)
 
+    # --- Birthday diagnostics: count this emission, record start time -------
+    now_t = time_ns() * 1e-9
+    lock(sc.bday_lock) do
+        if sc.bday_emissions == 0
+            sc.bday_t0 = now_t
+        end
+        sc.bday_emissions += 1
+    end
+    # ------------------------------------------------------------------------
+
     # Fast path: Bloom says key is definitely not on disk (or no disk yet).
     # Only need the shard lock — no file_lock contention.
     if isempty(sc.runs) || !bloom_maybe_has(sc.bloom, fp)
@@ -851,7 +881,11 @@ function conj_insert_or_pop!(sc::LP1ConjLSM{V}, si::Int,
             end
         end
         if fast_result !== :needs_flush
-            return fast_result isa Some ? something(fast_result) : nothing
+            if fast_result isa Some
+                _bday_record_collision!(sc, now_t)
+                return something(fast_result)
+            end
+            return nothing
         end
         # Shard is full and needs a flush — fall through to slow path.
         # (Flush requires file_lock; we do not re-check Bloom after flush since
@@ -874,6 +908,9 @@ function conj_insert_or_pop!(sc::LP1ConjLSM{V}, si::Int,
                 end
                 _lsm_hot_insert!(sc, si, key, val)
             end
+        end
+        if final_result[] !== nothing
+            _bday_record_collision!(sc, now_t)
         end
         return final_result[]
     end
@@ -907,7 +944,108 @@ function conj_insert_or_pop!(sc::LP1ConjLSM{V}, si::Int,
             final_result[] = nothing
         end
     end
+    if final_result[] !== nothing
+        _bday_record_collision!(sc, now_t)
+    end
     final_result[]
+end
+
+# ---------------------------------------------------------------------------
+#  Birthday diagnostics helpers
+# ---------------------------------------------------------------------------
+
+# Called on every confirmed LP1-conj collision.  Only records the *first* one.
+@inline function _bday_record_collision!(sc::LP1ConjLSM, now_t::Float64)
+    lock(sc.bday_lock) do
+        sc.bday_first_coll_m == 0 || return   # already recorded
+        sc.bday_first_coll_m = sc.bday_emissions
+        sc.bday_first_coll_t = now_t
+    end
+    nothing
+end
+
+# ---------------------------------------------------------------------------
+#  lsm_bday_report — print birthday-paradox support-size estimate.
+#
+#  Call after the first collision (or at any time to see current state).
+#
+#  Theory recap:
+#    λ = r/2 = LP1-conj emission rate  (partials/step)
+#    m_first = number of LP1-conj partials at first collision
+#    t_first = wall time elapsed to first collision
+#
+#    S_eff  = m_first^2          (birthday estimate of effective support)
+#    S_naive = p^2 / 2           (naive ambient model)
+#
+#    If S_eff << S_naive the walk-induced measure is concentrated on a
+#    strictly smaller subspace: first collision at t ~ p^α/r implies S ~ p^{2α}.
+#
+#  Arguments:
+#    sc   — LP1ConjLSM instance
+#    p    — curve prime (Int or Integer)
+#    r    — total throughput in partials/step across all threads (Float64)
+#           r/2 is the LP1-conj emission rate.
+# ---------------------------------------------------------------------------
+function lsm_bday_report(sc::LP1ConjLSM, p::Integer, r::Real; io::IO = stdout)
+    m, t_coll, t0, n_emitted = lock(sc.bday_lock) do
+        (sc.bday_first_coll_m,
+         sc.bday_first_coll_t,
+         sc.bday_t0,
+         sc.bday_emissions)
+    end
+
+    lam = r / 2.0          # LP1-conj emission rate
+    pf  = Float64(p)
+
+    @printf(io, "\n[LP1-conj birthday diagnostics]\n")
+    @printf(io, "  total LP1-conj emitted : %d\n", n_emitted)
+
+    if m == 0
+        @printf(io, "  first collision        : not yet observed\n")
+        # Predict when we expect it under the naive model
+        t_naive = sqrt(2.0) * pf / r
+        m_naive = lam * t_naive
+        @printf(io, "  naive prediction       : m_first ~ %.3g,  t_first ~ %.3g s\n",
+                m_naive, t_naive)
+        if t0 > 0.0
+            t_elapsed = (time_ns() * 1e-9) - t0
+            frac = t_elapsed / t_naive
+            @printf(io, "  elapsed / t_naive      : %.4f  (%s)\n",
+                    frac,
+                    frac >= 1.0 ? "OVERDUE — support may be smaller than p^2" :
+                                  "still within naive expectation")
+        end
+        @printf(io, "\n")
+        return
+    end
+
+    t_first   = t_coll - t0           # wall seconds to first collision
+    S_eff     = Float64(m)^2          # S_eff ~ m_first^2
+    S_naive   = pf^2 / 2.0            # naive ambient support
+    ratio     = S_eff / S_naive       # should be ~1 if ambient, <1 if concentrated
+    # Effective exponent: S_eff ~ p^{2α}  →  α = log(m_first)/log(p)
+    alpha     = log(Float64(m)) / log(pf)
+    # Expected m and t under naive model
+    m_naive   = sqrt(S_naive)         # ~ p/sqrt(2)
+    t_naive   = m_naive / lam         # ~ sqrt(2)*p/r
+
+    @printf(io, "  first collision at     : m = %d  (t_wall = %.3f s)\n", m, t_first)
+    @printf(io, "  S_eff  = m^2           : %.6g\n", S_eff)
+    @printf(io, "  S_naive = p^2/2        : %.6g\n", S_naive)
+    @printf(io, "  S_eff / S_naive        : %.4g\n", ratio)
+    @printf(io, "  alpha  (S ~ p^{2*alpha}): %.4f   [alpha=1 ↔ S~p^2, alpha=0.75 ↔ S~p^1.5, ...]\n", alpha)
+    @printf(io, "  t_first (observed)     : %.3f s\n", t_first)
+    @printf(io, "  t_first (naive p^2/2)  : %.3f s   (= sqrt(2)*p/r)\n", t_naive)
+    @printf(io, "  t_obs / t_naive        : %.4f\n", t_first / t_naive)
+    if ratio < 0.1
+        @printf(io, "  *** support is << p^2: effective space ~ p^{%.2f} ***\n", 2*alpha)
+    elseif ratio < 0.5
+        @printf(io, "  support is moderately smaller than p^2\n")
+    else
+        @printf(io, "  support is consistent with naive p^2 model\n")
+    end
+    @printf(io, "\n")
+    nothing
 end
 
 function lsm_flush_all!(sc::LP1ConjLSM)
