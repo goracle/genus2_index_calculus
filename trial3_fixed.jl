@@ -36,6 +36,7 @@ include("early_solve_monitor.jl") # online b₁ / 2-core / DSU diagnostics
 include("trial3_config.jl")
 include("lp1_conj_lsm.jl")
 include("trial3_phi.jl")
+include("phi_bias_diag.jl")
 
 # ---------------------------------------------------------------------------
 #  mem_checkpoint — fine-grained RSS/GC-live probe with delta tracking
@@ -497,6 +498,7 @@ function index_calculus_walk(G::Div2, T::Div2;
     # ── Phase 2: multithreaded walk ───────────────────────────────────────────
     # One collector per thread: no locking needed during walk, merged after.
     thread_collectors = [LPResidualCollector() for _ in 1:Threads.nthreads()]
+    thread_phi_stats  = [PhiBiasStat(p)        for _ in 1:Threads.nthreads()]
     results           = Vector{Any}(undef, Threads.nthreads())
 
     # Instantiate the tracker here so all threads can stream rows into it
@@ -516,7 +518,8 @@ function index_calculus_walk(G::Div2, T::Div2;
                 shared_lp1_conj,
                 shared_lp2_conj, shared_lp2_conj_lock,
                 enable_lp2, enable_lp2_conj, max_lp2_nodes, max_lp2_conj_nodes,
-                thread_collectors[tid], rank_tracker; verbose=verbose,
+                thread_collectors[tid], rank_tracker,
+                thread_phi_stats[tid]; verbose=verbose,
                 enable_lp1_aff=enable_lp1_aff)
         end
     end
@@ -635,6 +638,11 @@ function index_calculus_walk(G::Div2, T::Div2;
         merged_col = merge_collectors(thread_collectors)
         lp_residual_report(merged_col; p_field=p, verbose=true)
     end
+
+    # φ a-parameter bias report (printed regardless of verbose; it's cheap and
+    # the signal — if any — is important enough not to suppress).
+    merged_phi_stat = merge_phi_bias_stats(thread_phi_stats)
+    print_phi_bias_report(merged_phi_stat; p=p)
 
     # Birthday diagnostics: report LP1-conj effective support estimate.
     # r = total throughput (valid phi steps across all threads) / phase2 wall time
@@ -1179,6 +1187,7 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
         set_lp2_principal_check_context!(fb_pre, G, T_dummy)
         rank_tracker_pre = OnlineRankTracker(ell)
         thread_collectors_pre = [LPResidualCollector() for _ in 1:Threads.nthreads()]
+        thread_phi_stats_pre  = [PhiBiasStat(p)        for _ in 1:Threads.nthreads()]
         results_pre = Vector{Any}(undef, Threads.nthreads())
 
         @printf("  [MEM] before phase2 walk:  RSS=%.1f MB  GC-live=%.1f MB\n",
@@ -1197,7 +1206,8 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
                     shared_lp1_conj_pre,
                     shared_lp2_conj_pre, shared_lp2_conj_lock_pre,
                     enable_lp2, enable_lp2_conj, max_lp2_nodes, max_lp2_conj_nodes,
-                    thread_collectors_pre[tid], rank_tracker_pre;
+                    thread_collectors_pre[tid], rank_tracker_pre,
+                    thread_phi_stats_pre[tid];
                     verbose=true, beta_zero=true, amortized_precompute=true,
                     enable_lp1_aff=enable_lp1_aff)
             end
@@ -1218,6 +1228,9 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
 
         @printf("  β=0 walk done: %d relations, %d FB atoms (%.3fs)\n",
                 length(rel_rows_pre), nF_pre, time() - t_pre)
+
+        merged_phi_stat_pre = merge_phi_bias_stats(thread_phi_stats_pre)
+        print_phi_bias_report(merged_phi_stat_pre; p=p)
 
         atom_log_dict = Dict{NTuple{2,Int}, Int}()
 

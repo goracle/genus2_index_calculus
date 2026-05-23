@@ -331,6 +331,48 @@ end
 @inline _conj_make_val(::Type{LP1ConjValFull}, i0::UInt16, al::UInt64, be::UInt64) = LP1ConjValFull(i0, al, be)
 
 # ---------------------------------------------------------------------------
+#  Phase 3 step cap  (scales with √ell)
+# ---------------------------------------------------------------------------
+const PHASE3_STEP_MULTIPLIER = 10
+const PHASE3_STEP_CAP_MIN    = 500_000
+const PHASE3_STEP_CAP_MAX    = 500_000_000
+
+function phase3_default_step_cap(ell::Integer)::Int
+    raw = PHASE3_STEP_MULTIPLIER * isqrt(BigInt(ell))
+    Int(clamp(raw, PHASE3_STEP_CAP_MIN, PHASE3_STEP_CAP_MAX))
+end
+
+# ---------------------------------------------------------------------------
+#  Phase 3 local LP table caps
+#
+#  Each per-trial worker maintains two local birthday dicts as fallbacks when
+#  the precomputed tables miss.  Without a cap these grow monotonically at
+#  O(√ell) expected entries in steady state, and with many threads running
+#  concurrently the combined heap explodes:
+#    threads × 2 dicts × O(√ell) entries × ~100 B/entry
+#  At ell≈1.85×10¹², √ell≈1.36×10⁶, 32 threads → ~8 GB → OOM.
+#
+#  Cap strategy: store up to phase3_local_lp_cap(ell) entries per dict.
+#  On overflow the incoming entry is dropped (not stored); the walk generates
+#  another matchable entry at the cost of a small increase in expected steps.
+#
+#  PHASE3_LOCAL_LP_NUM / PHASE3_LOCAL_LP_DENOM: cap as a fraction of √ell.
+#    0.5 × √ell × 2 dicts × 32 threads × ~100 B ≈ 4 GB — manageable.
+#    Reduce the numerator further if RSS is still tight.
+#  PHASE3_LOCAL_LP_MIN: floor so tiny-ell cases still get a usable table.
+#  PHASE3_LOCAL_LP_MAX: hard ceiling regardless of ell.
+# ---------------------------------------------------------------------------
+const PHASE3_LOCAL_LP_NUM   = 1       # cap = (NUM/DENOM) × √ell per dict
+const PHASE3_LOCAL_LP_DENOM = 2       # → 0.5 × √ell
+const PHASE3_LOCAL_LP_MIN   = 1_000
+const PHASE3_LOCAL_LP_MAX   = 2_000_000
+
+function phase3_local_lp_cap(ell::Integer)::Int
+    raw = (PHASE3_LOCAL_LP_NUM * isqrt(BigInt(ell))) ÷ PHASE3_LOCAL_LP_DENOM
+    Int(clamp(raw, PHASE3_LOCAL_LP_MIN, PHASE3_LOCAL_LP_MAX))
+end
+
+# ---------------------------------------------------------------------------
 #  2-LP graph memory caps
 # ---------------------------------------------------------------------------
 const DEFAULT_MAX_LP2_NODES      = 250_000

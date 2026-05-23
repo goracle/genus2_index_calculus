@@ -133,13 +133,16 @@ function phase3_trial_worker(
         k_true           ::Union{Int,Nothing},
         tables           ::Phase2Tables,
         G                ::Div2;
-        step_cap         ::Int   = 10_000_000,
+        step_cap         ::Int   = -1,   # -1 → auto-scaled via phase3_default_step_cap(ell)
         n_steps_prebuilt ::Int   = 512,
         verbose          ::Bool  = false)::Phase3Result
 
     t0    = time()
     ell   = tables.ell
     ellI  = Int(ell)
+    # Auto-scale step_cap and local LP table caps from ell.
+    step_cap     = step_cap < 0 ? phase3_default_step_cap(ell) : step_cap
+    local_lp_cap = phase3_local_lp_cap(ell)
     pt2idx        = tables.pt2idx
     fb            = tables.fb
     nF            = length(fb)
@@ -371,7 +374,9 @@ function phase3_trial_worker(
                     k_rec = try_solve_conj(i0, prev_col, c_al, c_be)
                     k_rec !== nothing && break
                 else
-                    local_lp1_conj[lp_key] = LP1ConjValFull(UInt16(i0), UInt64(neg_al), UInt64(neg_be))
+                    if length(local_lp1_conj) < local_lp_cap
+                        local_lp1_conj[lp_key] = LP1ConjValFull(UInt16(i0), UInt64(neg_al), UInt64(neg_be))
+                    end
                 end
             end
             # A2: i0 not in FB → 2-LP-conj, skip
@@ -434,7 +439,9 @@ function phase3_trial_worker(
                 k_rec = try_solve(combined, c_neg_al, c_neg_be)
                 k_rec !== nothing && break
             else
-                local_lp1_affine[lp_pt] = (copy(fb_row), neg_al, neg_be)
+                if length(local_lp1_affine) < local_lp_cap
+                    local_lp1_affine[lp_pt] = (copy(fb_row), neg_al, neg_be)
+                end
             end
 
             cur_pt = iR != 0 ? R : iS != 0 ? S : fb[rand(1:nF)]
@@ -491,16 +498,19 @@ function phase3_solve_targets(
         tables   ::Phase2Tables,
         targets  ::Vector{<:Tuple{Div2, <:Union{Int,Nothing}}},
         G        ::Div2;
-        step_cap ::Int  = 10_000_000,
+        step_cap ::Int  = -1,   # -1 → auto-scaled via phase3_default_step_cap(ell)
         verbose  ::Bool = true)::Vector{Phase3Result}
 
     n = length(targets)
     results = Vector{Phase3Result}(undef, n)
 
     println("── Phase 3: amortised DLP solves ────────────────────────────────────")
-    @printf("   targets=%d  threads=%d  FB=%d  lp1_pre_entries=%d  step_cap=%d\n",
+    eff_step_cap  = step_cap < 0 ? phase3_default_step_cap(tables.ell) : step_cap
+    eff_local_cap = phase3_local_lp_cap(tables.ell)
+    @printf("   targets=%d  threads=%d  FB=%d  lp1_pre_entries=%d  step_cap=%d (%.1f×√ell)  local_lp_cap=%d\n",
             n, Threads.nthreads(), length(tables.fb),
-            length(tables.shared_lp1), step_cap)
+            length(tables.shared_lp1), eff_step_cap,
+            eff_step_cap / sqrt(Float64(tables.ell)), eff_local_cap)
     @printf("   RSS at phase3 start: %.1f MB  |  GC live: %.1f MB\n",
             Sys.maxrss() / 1024^2, Base.gc_live_bytes() / 1024^2)
     flush(stdout)

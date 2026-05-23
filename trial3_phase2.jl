@@ -696,7 +696,8 @@ function phase2_worker(G               ::Div2,
                        max_lp2_nodes   ::Int,
                        max_lp2_conj_nodes::Int,
                        lp_col          ::LPResidualCollector,
-                       ort             ::OnlineRankTracker;
+                       ort             ::OnlineRankTracker,
+                       phi_bias_stat   ::PhiBiasStat;
                        verbose         ::Bool = true,
                        beta_zero       ::Bool = false,
                        amortized_precompute::Bool = false,
@@ -804,6 +805,27 @@ function phase2_worker(G               ::Div2,
         R          = res_R   # NTuple{2,Int} always; SENTINEL_PT if conjugate
         S          = res_S   # NTuple{2,Int} always; SENTINEL_PT if conjugate
 
+        # --- φ a-parameter bias diagnostics ---
+        # RS_mumford = (c0_rs, c1_rs, v0_rs, v1_rs); we use indices 1 and 2.
+        # For split steps we do a cheap pt2idx lookup so the a=0 FB-smooth
+        # counter is accurate.  These lookups are redundant with the ones in
+        # BRANCH B below, but they cost one Dict lookup each and keep the
+        # diagnostic self-contained.  For non-split steps iR/iS are not
+        # meaningful; we pass false and the a=0_fb counter will not fire.
+        let c0_rs = RS_mumford[1], c1_rs = RS_mumford[2]
+            if rs_split
+                _iR_d = get(pt2idx, R, 0)
+                _iS_d = get(pt2idx, S, 0)
+                record_phi_step!(phi_bias_stat, a, c1_rs, c0_rs,
+                                 true, _iR_d != 0, _iS_d != 0,
+                                 (u0, u1, v0, v1), p)
+            else
+                record_phi_step!(phi_bias_stat, a, c1_rs, c0_rs,
+                                 false, false, false,
+                                 (u0, u1, v0, v1), p)
+            end
+        end
+
         # ==========================================================================
         #  BRANCH A: conjugate residual (RS is a degree-2 Mumford pair over F_p²)
         # ==========================================================================
@@ -811,6 +833,7 @@ function phase2_worker(G               ::Div2,
             lp_key32 = canonical_lp1_conj_key(RS_mumford::NTuple{4,Int})
             if i0 != 0
                 s.hits_lp1_conj += 1
+                record_lp1_conj_hit!(phi_bias_stat, s.raw_steps)
                 cur_pt = handle_1lp_conj!(lp_key32, i0, neg_al, neg_be, ell,
                                            fb, nF_cur, G, T,
                                            alpha_vec, beta_vec, rel_rows, rel_counter,
@@ -825,8 +848,12 @@ function phase2_worker(G               ::Div2,
                                            shared_lp2_conj, shared_lp2_conj_lock,
                                            max_lp2_conj_nodes, rank_growth,
                                            combined_scratch)
+                # 2-LP-conj: the returned anchor may or may not be LP-derived;
+                # conservatively mark as LP for Seq 3 since P0 came from a conj step.
+                phi_bias_stat._prev_anchor_was_lp = true
             else
                 cur_pt = fb[rand(1:nF_cur)]
+                record_random_anchor!(phi_bias_stat)
             end
             continue
         end
@@ -854,6 +881,7 @@ function phase2_worker(G               ::Div2,
                                            P0, R, S))
             end
             cur_pt = fb[rand(1:nF_cur)]
+            record_random_anchor!(phi_bias_stat)
 
         elseif n_lp == 1
             # ------------------------------------------------------------------
@@ -862,6 +890,7 @@ function phase2_worker(G               ::Div2,
             if !enable_lp1_aff
                 s.hits_skip += 1
                 cur_pt = fb[rand(1:nF_cur)]
+                record_random_anchor!(phi_bias_stat)
             else
             s.hits_lp1 += 1
             lp_pt = i0 == 0 ? P0 : iR == 0 ? R : S
@@ -878,6 +907,12 @@ function phase2_worker(G               ::Div2,
                                          shared_lp1, shared_lp1_lock, shared_lp_doubled,
                                          lp_col, rank_growth, combined_scratch,
                                          iR, iS, R, S, P0)
+            # 1-LP affine: handle_1lp_affine! returns the LP point as the next
+            # anchor when it stores/conjugates, otherwise a random FB element.
+            # We mark LP-derived here since the LP point is the structurally
+            # interesting anchor; handle_1lp_affine! emitting random is less
+            # frequent and folding it in is conservative.
+            phi_bias_stat._prev_anchor_was_lp = true
             end  # enable_lp1_aff
 
         elseif n_lp == 2
@@ -887,6 +922,7 @@ function phase2_worker(G               ::Div2,
             if !enable_lp2
                 s.hits_skip += 1
                 cur_pt = fb[rand(1:nF_cur)]
+                record_random_anchor!(phi_bias_stat)
             else
                 empty!(fb_row_scratch)
                 for idx in (i0, iR, iS)
@@ -912,6 +948,7 @@ function phase2_worker(G               ::Div2,
             # ------------------------------------------------------------------
             s.hits_skip += 1
             cur_pt = fb[rand(1:nF_cur)]
+            record_random_anchor!(phi_bias_stat)
         end
     end   # end main walk loop
 
@@ -965,7 +1002,8 @@ function phase2_worker(G               ::Div2,
             total_steps   = s.raw_steps,
             smooth_hist   = s.smooth_hist,
             rank_growth   = rank_growth,
-            lp_col        = lp_col)
+            lp_col        = lp_col,
+            phi_bias_stat = phi_bias_stat)
 end
 
 
