@@ -46,6 +46,26 @@
 #    a-histogram on post-LP steps against the baseline histogram.  A KS
 #    divergence here means the LP-derived anchors bias the a-distribution.
 #
+#  Four spectral diagnostics (new, all computed post-hoc from lp1_conj_arrivals;
+#  no additional per-step storage is required):
+#
+#  Spec 1 — Welch PSD:  bin arrivals into fixed windows → binary indicator →
+#    Hann-windowed DFT per window, averaged (Welch estimate).  Compared to a
+#    shuffled-gap null.  Low-frequency lift > 2× indicates long-range order.
+#
+#  Spec 2 — Windowed spectrogram:  divide arrivals into 4 chronological slices
+#    and report per-slice density and gap CV.  Reveals regime switching and
+#    intermittency invisible to global statistics.
+#
+#  Spec 3 — Shuffled spectral comparison:  built into Spec 1 above; every PSD
+#    bin is shown alongside its shuffled-gap null, exposing the exact frequency
+#    range carrying the excess power.
+#
+#  Spec 4 — Allan factor variance scaling:  F(T) = Var(N_T)/E[N_T] over a
+#    geometric progression of window sizes.  Poisson → F(T)≈1; clustered →
+#    F(T) grows.  A log-log slope (Hurst proxy) summarises long-memory.
+#    Each F(T) is also compared to a shuffled-gap null.
+#
 #  All accumulators are per-thread (no locking during the walk).
 #  Call merge_phi_bias_stats to combine and print_phi_bias_report to display.
 #
@@ -410,7 +430,8 @@ function print_phi_bias_report(stat::PhiBiasStat; p::Int = 0)
     end
     println()
 
-    # --- Seq 2: LP1-conj Fano factor + Conditional Intensity Ratio + fingerprint ---
+    # --- Seq 2: LP1-conj Fano factor + CIR + Spectral (Welch PSD, spectrogram,
+    #           Allan factor) + key fingerprint ---
     @printf("  Seq 2 — LP1-conj temporal analysis:\n")
     arrivals = stat.lp1_conj_arrivals
     lp_keys  = stat.lp1_conj_keys
@@ -435,50 +456,52 @@ function print_phi_bias_report(stat::PhiBiasStat; p::Int = 0)
         @printf("    Fano factor      : %.3f%s\n", fano, flag_fano)
 
         # ---- Conditional Intensity Ratio (CIR) --------------------------------
-        # For each window W ∈ {10, 50, 200}, count how many of the N-1 pairs
-        # (hit_i, hit_j) with j>i have arrival[j] - arrival[i] ≤ W.
-        # Divide by the expected count from the shuffled-gap null:
-        #   shuffle all inter-arrival gaps, recompute cumulative arrivals,
-        #   repeat 20 times and average the window counts.
+        # Null realisations are independent — parallelise over them with
+        # per-thread RNGs.  Observed counts are O(N log N) and fast; serial.
         @printf("    Conditional Intensity Ratios (CIR) vs shuffled-gap null:\n")
         @printf("      window  observed  null_mean  CIR    interpretation\n")
         n_hits   = length(arrivals)
         n_shuf   = 20
-        rng_gaps = copy(gaps)   # will be shuffled in place
+        # Pre-generate all n_shuf shuffled arrival arrays in parallel.
+        # One RNG per iteration slot — avoids threadid() bounds issues when
+        # Julia schedules tasks with IDs that exceed nthreads().
+        cir_rngs     = [MersenneTwister(rand(UInt64)) for _ in 1:n_shuf]
+        null_arrs    = [similar(arrivals) for _ in 1:n_shuf]
+        Threads.@threads for si in 1:n_shuf
+            sg     = copy(gaps)
+            rng_c  = cir_rngs[si]
+            for k in n_gaps:-1:2
+                j2 = rand(rng_c, 1:k)
+                sg[k], sg[j2] = sg[j2], sg[k]
+            end
+            na = null_arrs[si]
+            na[1] = arrivals[1]
+            for k in 2:n_hits
+                na[k] = na[k-1] + sg[k-1]
+            end
+            sort!(na)
+        end
 
-        for W in (10, 50, 200, 500, 1000, 2000, 5000, 10000, 50000)
-            # Observed: count pairs (i,j) with j>i and arrivals[j]-arrivals[i] ≤ W.
-            # Equivalent to: for each i, count how many j in (i+1..end) have
-            # arrivals[j] ≤ arrivals[i]+W.  Use searchsortedlast for O(N log N).
+        for W in (10, 50, 200, 500, 1000, 2000, 5000, 10000, 50000, 100000, 250000, 500000, 1000000)
+            # Observed count: O(N log N), fast serial.
             obs_count = 0
             for i in 1:n_hits
                 hi = searchsortedlast(arrivals, arrivals[i] + W)
                 obs_count += max(0, hi - i)
             end
 
-            # Null: repeat with shuffled gaps.
-            null_total = 0.0
-            null_arr   = similar(arrivals)
-            for _ in 1:n_shuf
-                # Fisher-Yates shuffle of gaps.
-                for k in n_gaps:-1:2
-                    j2 = rand(1:k)
-                    rng_gaps[k], rng_gaps[j2] = rng_gaps[j2], rng_gaps[k]
-                end
-                # Rebuild arrival times from shuffled gaps (same first arrival).
-                null_arr[1] = arrivals[1]
-                for k in 2:n_hits
-                    null_arr[k] = null_arr[k-1] + rng_gaps[k-1]
-                end
-                sort!(null_arr)
+            # Null: reuse pre-shuffled arrays — just count pairs per array.
+            null_counts = zeros(Int, n_shuf)
+            Threads.@threads for si in 1:n_shuf
+                na  = null_arrs[si]
                 cnt = 0
                 for i in 1:n_hits
-                    hi = searchsortedlast(null_arr, null_arr[i] + W)
+                    hi = searchsortedlast(na, na[i] + W)
                     cnt += max(0, hi - i)
                 end
-                null_total += cnt
+                null_counts[si] = cnt
             end
-            null_mean = null_total / n_shuf
+            null_mean = sum(null_counts) / n_shuf
             cir       = obs_count / max(1.0, null_mean)
             flag_cir  = cir > 1.5 ? " ← HOT (basin exploitable)" :
                         cir < 0.7 ? " ← COLD (anti-clustered)"   :
@@ -486,6 +509,302 @@ function print_phi_bias_report(stat::PhiBiasStat; p::Int = 0)
             @printf("      W=%-5d  %8d  %9.1f  %5.3f  %s\n",
                     W, obs_count, null_mean, cir, flag_cir)
         end
+
+        # ---- Spectral 1: Welch PSD of hit-indicator binary sequence -------------
+        # Bin arrivals into fixed-width windows → binary indicator series → DFT.
+        # Compare low-frequency vs high-frequency power to detect long-range
+        # organisation invisible to short-lag CIR.
+        #
+        # Parallelism: real windows and each shuffled-null realisation are
+        # independent.  We use @threads over both loops; each thread gets its
+        # own MersenneTwister so there is no RNG contention.
+        @printf("    Welch PSD (hit-indicator series):\n")
+        if length(arrivals) >= 8
+            total_span = arrivals[end] - arrivals[1] + 1
+            # Use ~64 windows; each window covers total_span/64 steps.
+            n_welch_win = max(4, min(64, length(arrivals) ÷ 8))
+            win_len     = max(8, total_span ÷ n_welch_win)
+            n_bins_half = win_len ÷ 2          # positive-frequency bins
+
+            # Inner DFT helper — pure function, no captures, safe to call from
+            # any thread.  O(n²) is fine: win_len is typically ≤512.
+            function _psd_window(hit_indicator::Vector{Float64}, nb::Int)::Vector{Float64}
+                n = length(hit_indicator)
+                w  = [0.5 * (1.0 - cos(2π * (i-1) / max(1, n-1))) for i in 1:n]
+                xw = hit_indicator .* w
+                out = zeros(Float64, nb)
+                for k in 1:nb
+                    s     = zero(ComplexF64)
+                    tw    = exp(-2π * im * (k-1) / n)
+                    tw_pw = one(ComplexF64)
+                    for j in 1:n
+                        s    += xw[j] * tw_pw
+                        tw_pw *= tw
+                    end
+                    out[k] = abs2(s)
+                end
+                return out
+            end
+
+            # --- Real PSD: parallel over Welch windows --------------------------
+            # One result slot per window iteration — no threadid() indexing.
+            psd_wins    = [zeros(Float64, n_bins_half) for _ in 1:n_welch_win]
+            wins_valid  = zeros(Bool, n_welch_win)
+            offset      = arrivals[1]
+
+            Threads.@threads for wi in 0:(n_welch_win - 1)
+                t_start = offset + wi * win_len
+                ind     = zeros(Float64, win_len)
+                for t in arrivals
+                    idx = t - t_start + 1
+                    if 1 <= idx <= win_len
+                        ind[idx] = 1.0
+                    end
+                end
+                if sum(ind) >= 1
+                    psd_wins[wi + 1]  = _psd_window(ind, n_bins_half)
+                    wins_valid[wi + 1] = true
+                end
+            end
+            psd_sum     = reduce(.+, psd_wins[wins_valid])
+            n_wins_used = sum(wins_valid)
+
+            # --- Shuffled-null PSD: parallel over realisations ------------------
+            # One RNG + result slot per realisation — no threadid() indexing.
+            n_spec_shuf   = 20
+            shuf_rngs     = [MersenneTwister(rand(UInt64)) for _ in 1:n_spec_shuf]
+            psd_shuf_slots = [zeros(Float64, n_bins_half) for _ in 1:n_spec_shuf]
+            shuf_valid    = zeros(Bool, n_spec_shuf)
+
+            Threads.@threads for si in 1:n_spec_shuf
+                rng       = shuf_rngs[si]
+                shuf_g    = copy(gaps)
+                for k in length(shuf_g):-1:2
+                    j2 = rand(rng, 1:k)
+                    shuf_g[k], shuf_g[j2] = shuf_g[j2], shuf_g[k]
+                end
+                null_arr2    = similar(arrivals)
+                null_arr2[1] = arrivals[1]
+                for k in 2:length(arrivals)
+                    null_arr2[k] = null_arr2[k-1] + shuf_g[k-1]
+                end
+                sort!(null_arr2)
+                win_sum  = zeros(Float64, n_bins_half)
+                win_cnt  = 0
+                for wi in 0:(n_welch_win - 1)
+                    t_start = offset + wi * win_len
+                    ind2    = zeros(Float64, win_len)
+                    for t in null_arr2
+                        idx = t - t_start + 1
+                        if 1 <= idx <= win_len
+                            ind2[idx] = 1.0
+                        end
+                    end
+                    if sum(ind2) >= 1
+                        win_sum .+= _psd_window(ind2, n_bins_half)
+                        win_cnt  += 1
+                    end
+                end
+                if win_cnt >= 1
+                    psd_shuf_slots[si] = win_sum ./ win_cnt
+                    shuf_valid[si]     = true
+                end
+            end
+            psd_shuf_avg = any(shuf_valid) ?
+                           reduce(.+, psd_shuf_slots[shuf_valid]) ./ max(1, sum(shuf_valid)) :
+                           zeros(Float64, n_bins_half)
+
+            if n_wins_used >= 2
+                psd_avg = psd_sum ./ n_wins_used
+
+                # Summarise: low-freq (lowest 10%) vs high-freq (top 50%) power ratio.
+                n_lo = max(1, n_bins_half ÷ 10)
+                n_hi = max(1, n_bins_half ÷ 2)
+                power_lo  = sum(psd_avg[1:n_lo])
+                power_hi  = sum(psd_avg[(n_bins_half - n_hi + 1):end])
+                power_lo_s = sum(psd_shuf_avg[1:n_lo])
+                power_hi_s = sum(psd_shuf_avg[(n_bins_half - n_hi + 1):end])
+
+                lo_lift = power_lo / max(1e-30, power_lo_s)
+                hi_lift = power_hi / max(1e-30, power_hi_s)
+
+                flag_psd = lo_lift > 2.0 ? " ← LOW-FREQ EXCESS (long-range order)" :
+                           lo_lift < 0.5 ? " ← LOW-FREQ DEFICIT" :
+                                           " (≈ flat / random)"
+                @printf("      windows used         : %d  (win_len=%d, bins=%d)\n",
+                        n_wins_used, win_len, n_bins_half)
+                @printf("      low-freq power lift  : %.3f%s\n", lo_lift, flag_psd)
+                @printf("      high-freq power lift : %.3f\n", hi_lift)
+
+                # Print the first 8 PSD bins (real / shuffled).
+                n_show = min(8, n_bins_half)
+                @printf("      bin (freq×win_len):  %s\n",
+                        join([@sprintf("%6d", k) for k in 1:n_show], " "))
+                @printf("      PSD real:            %s\n",
+                        join([@sprintf("%6.1f", psd_avg[k]) for k in 1:n_show], " "))
+                @printf("      PSD shuffled:        %s\n",
+                        join([@sprintf("%6.1f", psd_shuf_avg[k]) for k in 1:n_show], " "))
+                @printf("      ratio real/shuf:     %s\n",
+                        join([@sprintf("%6.2f", psd_avg[k] / max(1e-30, psd_shuf_avg[k]))
+                              for k in 1:n_show], " "))
+            else
+                @printf("      (too few windowed hits for Welch PSD)\n")
+            end
+        else
+            @printf("      (need ≥8 hits for Welch PSD)\n")
+        end
+        println()
+
+        # ---- Spectral 2: windowed spectrogram (rolling 4-slice) -----------------
+        # Divide arrivals into 4 equal chronological slices; compute per-slice
+        # mean gap and hit density.  Reveals regime switching / intermittency
+        # that global PSD averages away.
+        @printf("    Spectrogram (4-slice chronological):\n")
+        if length(arrivals) >= 16
+            n_slices  = 4
+            slice_len = length(arrivals) ÷ n_slices
+            @printf("      slice  hits   span_steps   density(hits/kstep)   mean_gap  cv_gap\n")
+            for si in 1:n_slices
+                i1 = (si - 1) * slice_len + 1
+                i2 = si == n_slices ? length(arrivals) : si * slice_len
+                sl_arr  = arrivals[i1:i2]
+                sl_n    = length(sl_arr)
+                sl_span = sl_arr[end] - sl_arr[1] + 1
+                sl_density = 1000.0 * sl_n / max(1, sl_span)
+                if sl_n >= 2
+                    sl_gaps   = [sl_arr[j] - sl_arr[j-1] for j in 2:sl_n]
+                    sl_mean   = sum(sl_gaps) / length(sl_gaps)
+                    sl_var    = length(sl_gaps) > 1 ?
+                                sum((g - sl_mean)^2 for g in sl_gaps) / (length(sl_gaps) - 1) :
+                                0.0
+                    sl_cv     = sqrt(sl_var) / max(1.0, sl_mean)
+                    @printf("      %5d  %4d  %11d   %19.3f   %8.1f  %.3f\n",
+                            si, sl_n, sl_span, sl_density, sl_mean, sl_cv)
+                else
+                    @printf("      %5d  %4d  %11d   (insufficient)\n", si, sl_n, sl_span)
+                end
+            end
+            # Flag if density varies > 2× between any two slices.
+            densities = Float64[]
+            for si in 1:n_slices
+                i1 = (si - 1) * slice_len + 1
+                i2 = si == n_slices ? length(arrivals) : si * slice_len
+                sl_arr = arrivals[i1:i2]
+                sl_n   = length(sl_arr)
+                sl_span = sl_arr[end] - sl_arr[1] + 1
+                push!(densities, sl_n / max(1, sl_span))
+            end
+            d_max = maximum(densities); d_min = minimum(densities)
+            ratio_sg = d_max / max(1e-30, d_min)
+            flag_sg  = ratio_sg > 2.0 ? " ← REGIME SWITCHING (density varies ×$(round(ratio_sg, digits=1)))" :
+                                         " (density stable across slices)"
+            @printf("      max/min slice density  : %.2f×%s\n", ratio_sg, flag_sg)
+        else
+            @printf("      (need ≥16 hits for spectrogram)\n")
+        end
+        println()
+
+        # ---- Spectral 4: Allan factor (variance scaling with window size) -------
+        # F(T) = Var(N_T) / E[N_T] where N_T = hit count in window of T steps.
+        # Poisson → F(T) ≈ 1 for all T.
+        # Clustered (long-memory) → F(T) grows with T.
+        # Compared against shuffled-gap null to isolate the signal.
+        @printf("    Allan factor F(T) = Var(N_T)/E[N_T]:\n")
+        if length(arrivals) >= 8
+            total_span_af = arrivals[end] - arrivals[1] + 1
+            # Choose window sizes as geometric progression from ~10 to total_span/4.
+            min_T  = max(10, total_span_af ÷ 1000)
+            max_T  = total_span_af ÷ 4
+            af_windows = Int[]
+            if min_T < max_T
+                T = min_T
+                while T <= max_T
+                    push!(af_windows, T)
+                    T = max(T + 1, round(Int, T * 2.5))
+                end
+            end
+            if isempty(af_windows)
+                push!(af_windows, max(10, total_span_af ÷ 8))
+            end
+
+            function allan_factor(arr::Vector{Int}, T::Int, span::Int)
+                # Partition [arr[1], arr[1]+span) into windows of T steps.
+                n_windows = max(1, span ÷ T)
+                counts = zeros(Int, n_windows)
+                t0 = arr[1]
+                for a in arr
+                    wi = min(n_windows, (a - t0) ÷ T + 1)
+                    counts[wi] += 1
+                end
+                mn = sum(counts) / n_windows
+                vr = n_windows > 1 ?
+                     sum((c - mn)^2 for c in counts) / (n_windows - 1) : 0.0
+                return vr / max(1e-30, mn), mn
+            end
+
+            # Shuffled null for Allan factor — one RNG per iteration slot.
+            n_af_shuf    = 10
+            af_rngs      = [MersenneTwister(rand(UInt64)) for _ in 1:n_af_shuf]
+            null_arrs_af = [similar(arrivals) for _ in 1:n_af_shuf]
+            Threads.@threads for si in 1:n_af_shuf
+                sg    = copy(gaps)
+                rng_a = af_rngs[si]
+                for k in length(sg):-1:2
+                    j2 = rand(rng_a, 1:k)
+                    sg[k], sg[j2] = sg[j2], sg[k]
+                end
+                na = null_arrs_af[si]
+                na[1] = arrivals[1]
+                for k in 2:length(arrivals)
+                    na[k] = na[k-1] + sg[k-1]
+                end
+                sort!(na)
+            end
+
+            @printf("      T_steps    F(T)_real   F(T)_null   lift   interpretation\n")
+            # Parallel over window sizes: each T is independent.
+            n_af_T       = length(af_windows)
+            results_af   = Vector{NTuple{4,Float64}}(undef, n_af_T)  # (T, f_real, f_null, lift)
+            Threads.@threads for ti in 1:n_af_T
+                T      = af_windows[ti]
+                f_real, _ = allan_factor(arrivals, T, total_span_af)
+                f_null_sum = 0.0
+                for si in 1:n_af_shuf
+                    fn, _ = allan_factor(null_arrs_af[si], T, total_span_af)
+                    f_null_sum += fn
+                end
+                f_null = f_null_sum / n_af_shuf
+                lift   = f_real / max(1e-30, f_null)
+                results_af[ti] = (Float64(T), f_real, f_null, lift)
+            end
+            for (T_f, f_real, f_null, lift_af) in results_af
+                flag_af = lift_af > 2.0 ? " CLUSTERED" :
+                          lift_af < 0.5 ? " ANTI-CLUST" :
+                                          " ≈Poisson"
+                @printf("      %9d  %11.3f  %10.3f  %6.2f  %s\n",
+                        round(Int, T_f), f_real, f_null, lift_af, flag_af)
+            end
+            println()
+
+            # Slope of log F(T) vs log T (Hurst-like exponent estimate).
+            if length(af_windows) >= 3
+                log_T = [log(Float64(T)) for T in af_windows]
+                log_F = [log(max(1e-30, r[2])) for r in results_af]
+                n_pts = length(log_T)
+                mx = sum(log_T) / n_pts; my = sum(log_F) / n_pts
+                slope_num = sum((log_T[i] - mx) * (log_F[i] - my) for i in 1:n_pts)
+                slope_den = sum((log_T[i] - mx)^2 for i in 1:n_pts)
+                hurst_slope = slope_den > 0.0 ? slope_num / slope_den : 0.0
+                flag_hurst = hurst_slope > 0.3  ? " ← LONG-MEMORY (H>0.5 analog)" :
+                             hurst_slope < -0.1 ? " ← ANTI-PERSISTENT" :
+                                                   " (≈ Poisson, uncorrelated)"
+                @printf("      Allan log-log slope (Hurst proxy): %.3f%s\n",
+                        hurst_slope, flag_hurst)
+            end
+        else
+            @printf("      (need ≥8 hits for Allan factor)\n")
+        end
+        println()
 
         # ---- Key fingerprint: do close-in-time hits share algebraic keys? ------
         # For each hit i, look at hits within W_fp steps and count what fraction
