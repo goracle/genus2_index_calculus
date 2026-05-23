@@ -1314,19 +1314,6 @@ function phase2_worker(G               ::Div2,
     end   # end main walk loop
 
     # ==========================================================================
-    #  Exported LP1-conj timing statistic
-    # ==========================================================================
-    # Phase 3 needs the mean gap in *valid-step units*, derived from the actual
-    # LP1-conj emission timestamps recorded in phi_bias_stat.  This must be the
-    # raw arrival gap, not any streak-length proxy.
-    @inline function _lp1_conj_mean_gap_steps(stat::PhiBiasStat)::Float64
-        arrivals = stat.lp1_conj_arrivals
-        n = length(arrivals)
-        n >= 2 || return 0.0
-        return (arrivals[end] - arrivals[1]) / Float64(n - 1)
-    end
-
-    # ==========================================================================
     #  Final report
     # ==========================================================================
     elapsed_total = time() - t_start
@@ -1415,9 +1402,22 @@ function phase2_worker(G               ::Div2,
                 sort!(pairs, rev=true)
                 [p[2] for p in pairs]   # return just the fb indices, sorted by hotness
             end,
-            lp1_conj_mean_gap_steps = _lp1_conj_mean_gap_steps(phi_bias_stat),
             basin_steers_fired = basin_steers_fired,
-            basin_steers_hit   = basin_steers_hit)
+            basin_steers_hit   = basin_steers_hit,
+            lp1_conj_mean_gap_steps = begin
+                arrivals = phi_bias_stat.lp1_conj_arrivals
+                n = length(arrivals)
+                if n < 2
+                    0.0
+                else
+                    arr = sort(copy(arrivals))
+                    gap_sum = 0.0
+                    @inbounds for i in 2:n
+                        gap_sum += arr[i] - arr[i-1]
+                    end
+                    gap_sum / (n - 1)
+                end
+            end)
 end
 
 
