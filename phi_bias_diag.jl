@@ -46,8 +46,7 @@
 #    a-histogram on post-LP steps against the baseline histogram.  A KS
 #    divergence here means the LP-derived anchors bias the a-distribution.
 #
-#  Four spectral diagnostics (new, all computed post-hoc from lp1_conj_arrivals;
-#  no additional per-step storage is required):
+#  Four spectral diagnostics (computed post-hoc from lp1_conj_arrivals):
 #
 #  Spec 1 — Welch PSD:  bin arrivals into fixed windows → binary indicator →
 #    Hann-windowed DFT per window, averaged (Welch estimate).  Compared to a
@@ -58,13 +57,33 @@
 #    intermittency invisible to global statistics.
 #
 #  Spec 3 — Shuffled spectral comparison:  built into Spec 1 above; every PSD
-#    bin is shown alongside its shuffled-gap null, exposing the exact frequency
-#    range carrying the excess power.
+#    bin is shown alongside its shuffled-gap null.
 #
 #  Spec 4 — Allan factor variance scaling:  F(T) = Var(N_T)/E[N_T] over a
 #    geometric progression of window sizes.  Poisson → F(T)≈1; clustered →
 #    F(T) grows.  A log-log slope (Hurst proxy) summarises long-memory.
-#    Each F(T) is also compared to a shuffled-gap null.
+#
+#  Five new signal diagnostics (computed post-hoc from lp1_conj_arrivals and
+#  lp1_conj_a_hist; New 3 requires one extra field in PhiBiasStat):
+#
+#  New 1 — Density autocorrelation:  bin arrivals into coarse count series and
+#    compute lag-1/2/3 ACF.  Positive ACF → persistent hot/cold epochs.
+#
+#  New 2 — Hot/cold window conditioning:  classify windows by hit density
+#    (hot ≥ median, cold < median) and compute lift = E[N_{t+1}|hot] /
+#    E[N_{t+1}|cold].  Lift >> 1 means bursts are temporally predictive.
+#
+#  New 3 — State-space a-region hotness:  compare LP1-conj emission histogram
+#    per a-bucket against visit histogram (split_hist) to find dynamically hot
+#    a-regions.  χ²/dof flags systematic dynamic bias.
+#
+#  New 4 — Multitaper PSD + spectral slope:  K=4 cosine tapers for reduced
+#    variance at low frequencies; OLS log-log slope gives 1/fᵅ exponent α.
+#    α > 1 → long-memory; α ≈ 0 → white noise.
+#
+#  New 5 — MMPP-2 model fit:  method-of-moments fit of a 2-state Markov-
+#    Modulated Poisson Process to (μ_gap, σ²_gap, ρ₁_gap).  Reports estimated
+#    (λ_hot, λ_cold, q_HC, q_CH) and implied burst concentration.
 #
 #  All accumulators are per-thread (no locking during the walk).
 #  Call merge_phi_bias_stats to combine and print_phi_bias_report to display.
@@ -126,6 +145,13 @@ mutable struct PhiBiasStat
     post_lp_a_hist      ::Vector{Int}
     baseline_a_hist     ::Vector{Int}
     _prev_anchor_was_lp ::Bool   # true iff the step just recorded used an LP-derived P0
+
+    # ---- New 3: state-space a-region hotness ------------------------------------
+    # lp1_conj_a_hist[bucket] = number of LP1-conj *emissions* whose triggering
+    # phi step fell in bucket.  Compared to the overall split_hist to identify
+    # dynamically hot a-regions: buckets where emissions are over-represented
+    # relative to visit frequency.  Set by record_lp1_conj_hit! via bucket arg.
+    lp1_conj_a_hist ::Vector{Int}
 end
 
 const MAX_RUN_LEN = 64   # run-length histogram cap (longer runs fold into bin 64)
@@ -152,6 +178,8 @@ function PhiBiasStat(p::Int)
         zeros(Int, nbuckets),          # post_lp_a_hist
         zeros(Int, nbuckets),          # baseline_a_hist
         false,                         # _prev_anchor_was_lp
+        # New 3: a-region hotness
+        zeros(Int, nbuckets),          # lp1_conj_a_hist
     )
 end
 
@@ -254,21 +282,18 @@ end
 #  record_lp1_conj_hit! — called inside handle_1lp_conj! only when a relation
 #  is actually emitted (i.e. a birthday match is closed).  raw_step is the
 #  current s.raw_steps counter passed through from the worker.
-#  lp_key is the CanonicalLP1Key (UInt128) of the emitted LP1-conj hit,
-#  captured at the emit site for the fingerprint / CIR analysis.
-#
-#  Previous design called this on every conj step where P0∈FB, which fires
-#  at ~50% of all valid steps (whenever the residual is non-split).  That
-#  made inter-arrival gaps ≈ 2 raw steps and Fano ≈ 0.06 regardless of any
-#  real clustering — the diagnostic was measuring the split/non-split rate,
-#  not LP productivity.  Calling only on emission means arrivals are spaced
-#  O(√ell) steps apart on average, and Fano > 1 genuinely indicates temporal
-#  clustering of productive LP events in the Jacobian.
+#  lp_key is the CanonicalLP1Key (UInt128) of the emitted LP1-conj hit.
+#  a_bucket is the 1-based bucket index of the triggering a-value (same
+#  bucketing as split_hist); pass 0 if not available to skip hotness tracking.
 # ---------------------------------------------------------------------------
 @inline function record_lp1_conj_hit!(stat::PhiBiasStat, raw_step::Int,
-                                       lp_key::UInt128 = zero(UInt128))
+                                       lp_key::UInt128 = zero(UInt128),
+                                       a_bucket::Int   = 0)
     push!(stat.lp1_conj_arrivals, raw_step)
     push!(stat.lp1_conj_keys,     lp_key)
+    if 1 <= a_bucket <= length(stat.lp1_conj_a_hist)
+        stat.lp1_conj_a_hist[a_bucket] += 1
+    end
     stat._prev_anchor_was_lp = true
     return nothing
 end
@@ -296,6 +321,7 @@ function merge_phi_bias_stats(stats::Vector{PhiBiasStat})::PhiBiasStat
     resize!(merged.nonsplit_hist,    nb); fill!(merged.nonsplit_hist,    0)
     resize!(merged.post_lp_a_hist,   nb); fill!(merged.post_lp_a_hist,  0)
     resize!(merged.baseline_a_hist,  nb); fill!(merged.baseline_a_hist, 0)
+    resize!(merged.lp1_conj_a_hist,  nb); fill!(merged.lp1_conj_a_hist, 0)
     resize!(merged.run_hist_split,    MAX_RUN_LEN); fill!(merged.run_hist_split,    0)
     resize!(merged.run_hist_nonsplit, MAX_RUN_LEN); fill!(merged.run_hist_nonsplit, 0)
 
@@ -308,10 +334,11 @@ function merge_phi_bias_stats(stats::Vector{PhiBiasStat})::PhiBiasStat
         append!(merged.lp1_conj_arrivals, s.lp1_conj_arrivals)
         append!(merged.lp1_conj_keys,     s.lp1_conj_keys)
         for i in eachindex(merged.split_hist)
-            merged.split_hist[i]      += s.split_hist[i]
-            merged.nonsplit_hist[i]   += s.nonsplit_hist[i]
-            merged.post_lp_a_hist[i]  += s.post_lp_a_hist[i]
-            merged.baseline_a_hist[i] += s.baseline_a_hist[i]
+            merged.split_hist[i]       += s.split_hist[i]
+            merged.nonsplit_hist[i]    += s.nonsplit_hist[i]
+            merged.post_lp_a_hist[i]   += s.post_lp_a_hist[i]
+            merged.baseline_a_hist[i]  += s.baseline_a_hist[i]
+            merged.lp1_conj_a_hist[i]  += s.lp1_conj_a_hist[i]
         end
         for k in 1:MAX_RUN_LEN
             merged.run_hist_split[k]    += s.run_hist_split[k]
@@ -803,6 +830,368 @@ function print_phi_bias_report(stat::PhiBiasStat; p::Int = 0)
             end
         else
             @printf("      (need ≥8 hits for Allan factor)\n")
+        end
+        println()
+
+        # ════════════════════════════════════════════════════════════════════
+        # New 1 — Autocorrelation of hit-density over coarse bins
+        # ════════════════════════════════════════════════════════════════════
+        # Bin arrivals into windows of sizes T ∈ {10⁴, 2·10⁴, …} and compute
+        # normalised lag-k autocorrelations of the count series N_T[w].
+        # Poisson → ACF ≈ 0 at all lags.  Positive ACF → persistent hot/cold
+        # epochs; negative → alternating (anti-persistence).
+        # Parallel over bin-size values; each is independent.
+        @printf("    Density autocorrelation (ACF of coarse hit-count series):\n")
+        if length(arrivals) >= 16
+            total_span_acf = arrivals[end] - arrivals[1] + 1
+            # Choose 4 bin sizes geometrically; need ≥20 bins each.
+            acf_bin_sizes = Int[]
+            T_try = max(100, total_span_acf ÷ 200)
+            while T_try <= total_span_acf ÷ 20 && length(acf_bin_sizes) < 5
+                push!(acf_bin_sizes, T_try)
+                T_try = max(T_try + 1, round(Int, T_try * 2.0))
+            end
+
+            # Per bin-size result: (T, n_bins, acf_lag1, acf_lag2, acf_lag3, flag)
+            acf_results = Vector{Any}(undef, length(acf_bin_sizes))
+            Threads.@threads for ti in 1:length(acf_bin_sizes)
+                T       = acf_bin_sizes[ti]
+                n_bins  = total_span_acf ÷ T
+                n_bins < 8 && (acf_results[ti] = (T, n_bins, NaN, NaN, NaN); continue)
+                counts  = zeros(Float64, n_bins)
+                t0      = arrivals[1]
+                for a in arrivals
+                    wi = min(n_bins, (a - t0) ÷ T + 1)
+                    counts[wi] += 1.0
+                end
+                mn   = sum(counts) / n_bins
+                var0 = sum((c - mn)^2 for c in counts) / n_bins
+                if var0 < 1e-30
+                    acf_results[ti] = (T, n_bins, 0.0, 0.0, 0.0)
+                    continue
+                end
+                # ACF at lags 1, 2, 3.
+                acf = ntuple(lag -> begin
+                    cov = sum((counts[w] - mn) * (counts[w + lag] - mn)
+                              for w in 1:(n_bins - lag)) / (n_bins - lag)
+                    cov / var0
+                end, 3)
+                acf_results[ti] = (T, n_bins, acf[1], acf[2], acf[3])
+            end
+
+            @printf("      T_steps  n_bins   ACF(1)   ACF(2)   ACF(3)   interpretation\n")
+            for r in acf_results
+                T, nb_r = r[1], r[2]
+                if isnan(r[3])
+                    @printf("      %7d  %6d   (too few bins)\n", T, nb_r)
+                    continue
+                end
+                a1, a2, a3 = r[3], r[4], r[5]
+                flag_acf = abs(a1) > 0.15 ?
+                           (a1 > 0 ? " ← PERSISTENT (hot/cold epochs)" :
+                                     " ← ANTI-PERSISTENT (alternating)") :
+                           " (≈ uncorrelated)"
+                @printf("      %7d  %6d   %+6.3f   %+6.3f   %+6.3f  %s\n",
+                        T, nb_r, a1, a2, a3, flag_acf)
+            end
+        else
+            @printf("      (need ≥16 hits for ACF)\n")
+        end
+        println()
+
+        # ════════════════════════════════════════════════════════════════════
+        # New 2 — Hot/cold window conditioning
+        # ════════════════════════════════════════════════════════════════════
+        # Classify each fixed-width window as "hot" (hit density ≥ median) or
+        # "cold" (< median).  Then compare the *next* window's closure rate
+        # (hit count) conditioned on the current window's class.
+        # Hot→hot persistence means the walk has memory: a burst now predicts
+        # a burst soon.  Reported as lift = E[N_{t+1}|hot] / E[N_{t+1}|cold].
+        @printf("    Hot/cold window conditioning (burst memory):\n")
+        if length(arrivals) >= 20
+            total_span_hc = arrivals[end] - arrivals[1] + 1
+            T_hc          = max(100, total_span_hc ÷ 50)   # ~50 windows
+            n_wins_hc     = total_span_hc ÷ T_hc
+            if n_wins_hc >= 10
+                counts_hc = zeros(Int, n_wins_hc)
+                t0_hc     = arrivals[1]
+                for a in arrivals
+                    wi = min(n_wins_hc, (a - t0_hc) ÷ T_hc + 1)
+                    counts_hc[wi] += 1
+                end
+                # Median threshold.
+                sorted_c = sort(counts_hc)
+                median_c = length(sorted_c) % 2 == 0 ?
+                           (sorted_c[length(sorted_c)÷2] + sorted_c[length(sorted_c)÷2 + 1]) / 2.0 :
+                           Float64(sorted_c[(length(sorted_c)+1)÷2])
+                # For each window w, record next-window count conditioned on hot/cold.
+                hot_next = Int[]; cold_next = Int[]
+                for w in 1:(n_wins_hc - 1)
+                    if counts_hc[w] >= median_c
+                        push!(hot_next,  counts_hc[w + 1])
+                    else
+                        push!(cold_next, counts_hc[w + 1])
+                    end
+                end
+                n_hot  = length(hot_next);  n_cold = length(cold_next)
+                mu_hot  = n_hot  > 0 ? sum(hot_next)  / n_hot  : 0.0
+                mu_cold = n_cold > 0 ? sum(cold_next) / n_cold : 0.0
+                lift_hc = mu_hot / max(1e-9, mu_cold)
+                flag_hc = lift_hc > 1.3 ? " ← MEMORY: hot predicts hot" :
+                          lift_hc < 0.77 ? " ← ANTI-MEMORY: hot predicts cold" :
+                                           " (no burst memory)"
+                @printf("      window T       : %d steps (%d windows)\n", T_hc, n_wins_hc)
+                @printf("      density median : %.2f hits/window\n", median_c)
+                @printf("      hot windows    : %d  →  next mean = %.3f hits\n", n_hot, mu_hot)
+                @printf("      cold windows   : %d  →  next mean = %.3f hits\n", n_cold, mu_cold)
+                @printf("      lift hot/cold  : %.3f%s\n", lift_hc, flag_hc)
+
+                # Also compute 2-step: hot window now → hot window in 2 steps.
+                if n_wins_hc >= 12
+                    hot2_next = Int[]; cold2_next = Int[]
+                    for w in 1:(n_wins_hc - 2)
+                        if counts_hc[w] >= median_c
+                            push!(hot2_next,  counts_hc[w + 2])
+                        else
+                            push!(cold2_next, counts_hc[w + 2])
+                        end
+                    end
+                    mu_hot2  = length(hot2_next)  > 0 ? sum(hot2_next)  / length(hot2_next)  : 0.0
+                    mu_cold2 = length(cold2_next) > 0 ? sum(cold2_next) / length(cold2_next) : 0.0
+                    lift2    = mu_hot2 / max(1e-9, mu_cold2)
+                    @printf("      lag-2 lift     : %.3f  (memory decay %s)\n",
+                            lift2, lift2 > 1.0 ? "persists" : "gone")
+                end
+            else
+                @printf("      (need ≥10 windows; got %d with T=%d)\n", n_wins_hc, T_hc)
+            end
+        else
+            @printf("      (need ≥20 hits)\n")
+        end
+        println()
+
+        # ════════════════════════════════════════════════════════════════════
+        # New 3 — State-space a-region hotness (dynamic bias)
+        # ════════════════════════════════════════════════════════════════════
+        # Compare lp1_conj_a_hist (emissions per a-bucket) against split_hist
+        # (visits per a-bucket) to find dynamically hot a-regions.
+        # lift[bucket] = (emissions/total_emissions) / (visits/total_visits).
+        # lift >> 1 means that bucket produces LP1-conj hits at higher-than-
+        # expected rate given how often it is visited — dynamic bias even when
+        # the global a-distribution looks uniform.
+        @printf("    State-space a-region hotness (dynamic vs static bias):\n")
+        lc_hist   = stat.lp1_conj_a_hist
+        vis_hist  = stat.split_hist   # visits = split steps (where LP can fire)
+        n_lc_tot  = sum(lc_hist)
+        n_vis_tot = sum(vis_hist)
+        if n_lc_tot >= 10 && n_vis_tot >= 10
+            # Per-bucket lift, clipped to avoid divide-by-zero.
+            lifts = [
+                (lc_hist[i] / max(1e-30, Float64(n_lc_tot))) /
+                (vis_hist[i] / max(1e-30, Float64(n_vis_tot)))
+                for i in eachindex(lc_hist)
+            ]
+            # Sort and report top-5 and bottom-5.
+            order = sortperm(lifts, rev=true)
+            @printf("      total LP1-conj emissions : %d  total split visits: %d\n",
+                    n_lc_tot, n_vis_tot)
+            @printf("      TOP-5 hot a-buckets (lift = emission_rate / visit_rate):\n")
+            for rank in 1:min(5, length(order))
+                bi = order[rank]
+                frac_str = p > 0 ? @sprintf(" [a∈[%d,%d))", (bi-1)*p÷nb, bi*p÷nb) : ""
+                @printf("        bucket %4d%s  lift=%.3f  emissions=%d  visits=%d\n",
+                        bi, frac_str, lifts[bi], lc_hist[bi], vis_hist[bi])
+            end
+            @printf("      BOTTOM-5 cold a-buckets:\n")
+            for rank in max(1,length(order)-4):length(order)
+                bi = order[rank]
+                frac_str = p > 0 ? @sprintf(" [a∈[%d,%d))", (bi-1)*p÷nb, bi*p÷nb) : ""
+                @printf("        bucket %4d%s  lift=%.3f  emissions=%d  visits=%d\n",
+                        bi, frac_str, lifts[bi], lc_hist[bi], vis_hist[bi])
+            end
+            # χ² test: are emissions distributed proportional to visits?
+            expected_lc = [vis_hist[i] * Float64(n_lc_tot) / max(1.0, Float64(n_vis_tot))
+                           for i in eachindex(vis_hist)]
+            chi2_lc = sum((lc_hist[i] - expected_lc[i])^2 / max(1.0, expected_lc[i])
+                          for i in eachindex(lc_hist))
+            dof_lc  = length(lc_hist) - 1
+            ratio_lc = chi2_lc / max(1.0, Float64(dof_lc))
+            flag_lc  = ratio_lc > 2.0 ? " ← DYNAMIC BIAS (some a-regions systematically hotter)" :
+                                          " (emissions proportional to visits)"
+            @printf("      χ²/dof (emissions vs visits): %.3f%s\n", ratio_lc, flag_lc)
+        else
+            @printf("      (need ≥10 LP1-conj emissions; got %d)\n", n_lc_tot)
+        end
+        println()
+
+        # ════════════════════════════════════════════════════════════════════
+        # New 4 — Multitaper PSD + spectral slope (1/fᵅ test)
+        # ════════════════════════════════════════════════════════════════════
+        # Uses K=4 DPSS-like tapers (approximated by cosine tapers of orders
+        # 1..K) for reduced variance at low frequencies.  Reports spectral
+        # slope α from log-log OLS fit to avoid Welch bias at very low freqs.
+        # All tapers computed in parallel (each is an independent DFT).
+        @printf("    Multitaper PSD + spectral slope (1/fᵅ):\n")
+        if length(arrivals) >= 16
+            total_span_mt = arrivals[end] - arrivals[1] + 1
+            n_mt_bins = min(512, max(32, length(arrivals) * 2))
+            # Bin hits into n_mt_bins equal-width time buckets.
+            mt_counts = zeros(Float64, n_mt_bins)
+            t0_mt     = arrivals[1]
+            bin_width = max(1, total_span_mt ÷ n_mt_bins)
+            for a in arrivals
+                bi = min(n_mt_bins, (a - t0_mt) ÷ bin_width + 1)
+                mt_counts[bi] += 1.0
+            end
+            # Subtract mean.
+            mt_mean    = sum(mt_counts) / n_mt_bins
+            mt_centred = mt_counts .- mt_mean
+            n_bins_half_mt = n_mt_bins ÷ 2
+
+            # K cosine tapers: w_k[j] = sqrt(2/(N+1)) * sin(k*π*j/(N+1)), k=1..K
+            K_tapers = 4
+            mt_psd_slots = [zeros(Float64, n_bins_half_mt) for _ in 1:K_tapers]
+            Threads.@threads for k in 1:K_tapers
+                taper = [sqrt(2.0 / (n_mt_bins + 1)) *
+                         sin(k * π * j / (n_mt_bins + 1))
+                         for j in 1:n_mt_bins]
+                xw    = mt_centred .* taper
+                psd_k = zeros(Float64, n_bins_half_mt)
+                for freq in 1:n_bins_half_mt
+                    s     = zero(ComplexF64)
+                    tw    = exp(-2π * im * (freq - 1) / n_mt_bins)
+                    tw_pw = one(ComplexF64)
+                    for j in 1:n_mt_bins
+                        s    += xw[j] * tw_pw
+                        tw_pw *= tw
+                    end
+                    psd_k[freq] = abs2(s)
+                end
+                mt_psd_slots[k] = psd_k
+            end
+            mt_psd = reduce(.+, mt_psd_slots) ./ K_tapers
+
+            # Spectral slope: OLS log(PSD) ~ α·log(freq) over low 20% of freqs.
+            n_fit = max(4, n_bins_half_mt ÷ 5)
+            log_f = [log(Float64(k)) for k in 1:n_fit]
+            log_p = [log(max(1e-30, mt_psd[k])) for k in 1:n_fit]
+            mf = sum(log_f) / n_fit; mp = sum(log_p) / n_fit
+            slope_num_mt = sum((log_f[i] - mf) * (log_p[i] - mp) for i in 1:n_fit)
+            slope_den_mt = sum((log_f[i] - mf)^2 for i in 1:n_fit)
+            alpha_mt     = slope_den_mt > 0 ? -slope_num_mt / slope_den_mt : 0.0
+            # α > 0 means power decreases with freq → red/1/fᵅ noise.
+            flag_alpha = alpha_mt > 1.5  ? " ← STRONG 1/fᵅ (α≈$(round(alpha_mt,digits=2)), long-memory)" :
+                         alpha_mt > 0.5  ? " ← MILD 1/fᵅ (sub-Brownian memory)" :
+                         alpha_mt < -0.3 ? " ← BLUE NOISE (anti-persistent)" :
+                                           " (≈ white noise, α≈0)"
+            @printf("      bins=%d  tapers=%d  fit_bins=%d\n", n_mt_bins, K_tapers, n_fit)
+            @printf("      spectral slope α : %.3f%s\n", alpha_mt, flag_alpha)
+
+            # Show first 8 multitaper PSD bins vs Welch (already computed above
+            # if available — just show MT here standalone).
+            n_show_mt = min(8, n_bins_half_mt)
+            @printf("      freq bin:   %s\n",
+                    join([@sprintf("%8d", k) for k in 1:n_show_mt], " "))
+            @printf("      MT PSD:     %s\n",
+                    join([@sprintf("%8.2f", mt_psd[k]) for k in 1:n_show_mt], " "))
+        else
+            @printf("      (need ≥16 hits for multitaper PSD)\n")
+        end
+        println()
+
+        # ════════════════════════════════════════════════════════════════════
+        # New 5 — Renewal / MMPP model fit (method of moments)
+        # ════════════════════════════════════════════════════════════════════
+        # Model: 2-state Markov-Modulated Poisson Process.
+        #   State H (hot):  emissions at rate λ_H, exit rate q_HC
+        #   State C (cold): emissions at rate λ_C, exit rate q_CH
+        # Method-of-moments using:
+        #   E[gap]   = mean inter-arrival
+        #   Var[gap] = gap variance
+        #   E[gap²]  = second moment
+        #   E[gap³]  = third moment   (over-determined; last used for residual)
+        # For a 2-state MMPP, the gap distribution is a mixture of
+        # hyper-exponentials (or Erlang-like for symmetric case).
+        # We use the simpler approximation:
+        #   Fano = 1 + 2·(λ_H - λ_C)² · π_H·π_C / (q_HC + q_CH) / λ̄
+        # and the lag-1 ACF of gaps:
+        #   ρ_1 = -(λ_H - λ_C)² · π_H·π_C / [(λ̄² + σ²_λ)(q_HC + q_CH + λ̄)]
+        # to estimate (λ_H, λ_C, q_HC, q_CH) from (μ_gap, σ²_gap, ρ_1_gap).
+        @printf("    Renewal / MMPP model fit (2-state, method of moments):\n")
+        if length(arrivals) >= 20
+            n_g      = length(gaps)
+            mu_g     = mean_gap
+            var_g    = var_gap
+            fano_g   = fano   # already computed above
+
+            # Lag-1 ACF of inter-arrival gaps.
+            if n_g >= 4
+                rho1_num = sum((gaps[i] - mu_g) * (gaps[i+1] - mu_g) for i in 1:(n_g-1))
+                rho1_den = sum((g - mu_g)^2 for g in gaps)
+                rho1     = rho1_den > 0.0 ? rho1_num / rho1_den : 0.0
+            else
+                rho1 = 0.0
+            end
+
+            # MMPP moment equations (rates in units of 1/step):
+            #   λ̄ = 1/μ_g
+            #   Fano - 1 ≈ 2·Δλ²·π_H·π_C / (q·λ̄)        where q = q_HC + q_CH
+            #   ρ_1 ≈ -(Δλ²·π_H·π_C) / (λ̄²·(q + λ̄)·(1 + CV²))
+            # Let A = Δλ²·π_H·π_C.  Then:
+            #   A = (Fano - 1)·q·λ̄ / 2
+            #   ρ_1 = -A / (λ̄²·(q + λ̄)·(1 + CV²))
+            # Solve for q given ρ_1 (one real root via quadratic in q):
+            #   ρ_1·λ̄²·(1+CV²)·(q + λ̄) = -(Fano-1)·q·λ̄/2
+            # → q·[ρ_1·λ̄²·(1+CV²) + (Fano-1)·λ̄/2] = -ρ_1·λ̄³·(1+CV²)
+            lambda_bar = 1.0 / max(1.0, mu_g)
+            cv2        = var_g / max(1.0, mu_g^2)   # CV²
+            denom_q    = rho1 * lambda_bar^2 * (1.0 + cv2) + (fano_g - 1.0) * lambda_bar / 2.0
+            q_est      = abs(denom_q) > 1e-15 ?
+                         -rho1 * lambda_bar^3 * (1.0 + cv2) / denom_q :
+                         NaN
+            A_est      = isnan(q_est) ? NaN :
+                         (fano_g - 1.0) * q_est * lambda_bar / 2.0
+
+            # From A = Δλ²·π_H·π_C and Δλ = λ_H - λ_C, λ̄ = π_H·λ_H + π_C·λ_C:
+            # with symmetric rates π_H = π_CH/(q) and π_C = π_HC/(q):
+            # Simple two-point approximation: assume π_H = π_C = 0.5 (symmetric).
+            pi_H = 0.5; pi_C = 0.5   # symmetric approximation
+            delta_lambda = isnan(A_est) ? NaN : sqrt(max(0.0, A_est / (pi_H * pi_C)))
+            lambda_H     = isnan(delta_lambda) ? NaN : lambda_bar + pi_C * delta_lambda
+            lambda_C     = isnan(delta_lambda) ? NaN : lambda_bar - pi_H * delta_lambda
+            q_HC         = isnan(q_est) ? NaN : q_est * pi_C   # = q·π_C for symmetric
+            q_CH         = isnan(q_est) ? NaN : q_est * pi_H
+
+            @printf("      Observed gap stats:\n")
+            @printf("        μ_gap=%.1f  σ²_gap=%.1f  Fano=%.3f  ρ₁_gap=%+.4f\n",
+                    mu_g, var_g, fano_g, rho1)
+            if !isnan(lambda_H) && lambda_C >= 0.0
+                @printf("      MMPP-2 fit (symmetric π=0.5):\n")
+                @printf("        λ_hot  = %.2e /step  (mean gap in hot  = %.1f steps)\n",
+                        lambda_H, 1.0 / max(1e-30, lambda_H))
+                @printf("        λ_cold = %.2e /step  (mean gap in cold = %.1f steps)\n",
+                        lambda_C, 1.0 / max(1e-30, lambda_C))
+                @printf("        q_HC   = %.2e /step  (mean hot duration = %.1f steps)\n",
+                        q_HC, 1.0 / max(1e-30, q_HC))
+                @printf("        q_CH   = %.2e /step  (mean cold duration= %.1f steps)\n",
+                        q_CH, 1.0 / max(1e-30, q_CH))
+                # Implied burst concentration: fraction of emissions in hot state.
+                burst_frac = lambda_H / max(1e-30, lambda_H + lambda_C)
+                @printf("        implied emission concentration: %.1f%% in hot state\n",
+                        100.0 * burst_frac)
+                flag_mmpp = fano_g > 2.0 && !isnan(lambda_H) && lambda_C >= 0.0 ?
+                    " ← MMPP FIT PLAUSIBLE (Fano>>1, ρ₁ finite)" :
+                    fano_g <= 2.0 ? " (Fano near 1; Poisson adequate)" :
+                                    " (degenerate fit)"
+                @printf("        model verdict: %s\n", flag_mmpp)
+            else
+                @printf("      MMPP-2 fit degenerate (negative λ_cold or q; Poisson may suffice)\n")
+                @printf("        raw q_est=%.3e  A_est=%.3e  ρ₁=%+.4f\n",
+                        isnan(q_est) ? 0.0 : q_est,
+                        isnan(A_est) ? 0.0 : A_est, rho1)
+            end
+        else
+            @printf("      (need ≥20 hits for MMPP fit)\n")
         end
         println()
 
