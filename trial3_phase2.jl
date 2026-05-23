@@ -983,6 +983,23 @@ function phase2_worker(G               ::Div2,
     basin_steers_hit      = 0
     basin_steer_countdown = 0   # steps remaining in the post-steer observation window
 
+    # ── Burst exploitation ────────────────────────────────────────────────────
+    # When a LP1-conj hit fires, D_cur is geometrically hot.  Save it and probe
+    # it with fresh independent offsets for burst_budget steps before resuming
+    # the normal walk.  D_cur keeps accumulating so resumption is seamless.
+    # Budget ≈ mean_gap/3 estimated from running inter-arrival; fall back to 2000.
+    _burst_arrivals_sum = 0   # sum of inter-arrival gaps observed so far
+    _burst_arrivals_n   = 0   # count
+    _burst_last_hit_step = 0  # s.hits_total at last LP1-conj hit
+    _burst_budget_default = 2000
+    burst_budget        = 0
+    burst_active        = false
+    hot_D_b2            = G       # dummy init; overwritten before burst_active is ever true
+    hot_alpha_b2        = 0
+    hot_beta_b2         = 0
+    n_burst_steps_b2    = 0
+    n_burst_hits_b2     = 0
+
     @inline function record_basin_hit!(anchor_idx::Int)
         # Search for this anchor_idx in the buffer; if found, increment its count.
         # Otherwise insert into the next slot (LRU eviction of oldest entry).
@@ -1009,6 +1026,21 @@ function phase2_worker(G               ::Div2,
             basin_steers_hit      += 1
             basin_steer_countdown  = 0
         end
+        # Arm burst: save current hot divisor and set budget.
+        # Update running inter-arrival estimate for adaptive budgeting.
+        if _burst_last_hit_step > 0
+            gap = s.hits_total - _burst_last_hit_step
+            _burst_arrivals_sum += gap
+            _burst_arrivals_n   += 1
+            mean_gap = _burst_arrivals_sum / _burst_arrivals_n
+            _burst_budget_default = max(500, round(Int, mean_gap / 3))
+        end
+        _burst_last_hit_step = s.hits_total
+        hot_D_b2     = D_cur
+        hot_alpha_b2 = alpha_cur
+        hot_beta_b2  = beta_cur
+        burst_budget = _burst_budget_default
+        burst_active = true
     end
 
     # Return the anchor index of the highest-hit-count slot, or 0 if basin
@@ -1118,14 +1150,30 @@ function phase2_worker(G               ::Div2,
         alpha_cur = mod(alpha_cur + step_a_i[si], ellI)
         beta_cur  = beta_zero ? 0 : mod(beta_cur + step_b_i[si], ellI)
 
-        # --- Gate 1: D_cur must be a degree-2 divisor (generic Jacobian element) ---
-        fp3_deg(D_cur.u) != 2 && continue
+        # Burst mode: probe hot_D with a fresh independent step.
+        # All three of (D_eff, alpha_eff, beta_eff) use the same si_burst so
+        # the divisor and scalar tracking stay consistent.
+        D_eff     = D_cur
+        alpha_eff = alpha_cur
+        beta_eff  = beta_cur
+        if burst_active
+            si_burst  = rand(1:N_STEPS)
+            D_eff     = jac_add(hot_D_b2, step_D[si_burst])
+            alpha_eff = mod(hot_alpha_b2 + step_a_i[si_burst], ellI)
+            beta_eff  = beta_zero ? 0 : mod(hot_beta_b2 + step_b_i[si_burst], ellI)
+            n_burst_steps_b2 += 1
+            burst_budget -= 1
+            burst_active  = burst_budget > 0
+        end
 
-        u0 = D_cur.u[1]; u1 = D_cur.u[2]
-        v0 = D_cur.v[1]; v1 = D_cur.v[2]
+        # --- Gate 1: D_eff must be a degree-2 divisor (generic Jacobian element) ---
+        fp3_deg(D_eff.u) != 2 && continue
+
+        u0 = D_eff.u[1]; u1 = D_eff.u[2]
+        v0 = D_eff.v[1]; v1 = D_eff.v[2]
         px, py = cur_pt
 
-        # --- Gate 2: P0 must not be in the support of D_cur ---
+        # --- Gate 2: P0 must not be in the support of D_eff ---
         upx = fp(fp(px*px) + fp(u1*px) + u0)
         upx == 0 && continue
 
@@ -1156,8 +1204,8 @@ function phase2_worker(G               ::Div2,
             end
         end
 
-        al     = alpha_cur
-        be     = beta_cur
+        al     = alpha_eff
+        be     = beta_eff
         neg_al = mod(ellI - al, ellI)
         neg_be = mod(ellI - be, ellI)
         # BigInt conversion deferred to emit/store sites — avoids 4 heap allocs
@@ -1200,6 +1248,7 @@ function phase2_worker(G               ::Div2,
                 # IDEA 4: record basin hit using the FB index of P0 (the anchor
                 # that produced this LP1-conj step), not anchor_cursor which has
                 # already been advanced to the *next* anchor.
+                burst_active && (n_burst_hits_b2 += 1)
                 let p0_basin_idx = get(pt2idx, P0, 0)
                     record_basin_hit!(p0_basin_idx != 0 ? p0_basin_idx : anchor_cursor)
                 end
@@ -1368,6 +1417,13 @@ function phase2_worker(G               ::Div2,
             100.0 * basin_steers_hit / lp1c_total : 0.0
         @printf("           burst-exploit: credited_hits=%d / total_lp1c_emit=%d = %.1f%% of emissions came within steer window\n",
                 basin_steers_hit, lp1c_total, exploit_efficiency)
+        burst_hit_rate = n_burst_steps_b2 > 0 ? n_burst_hits_b2 / n_burst_steps_b2 : 0.0
+        cold_steps_b2  = s.hits_total - n_burst_steps_b2
+        cold_hits_b2   = s.hits_lp1_conj - n_burst_hits_b2
+        cold_rate_b2   = cold_steps_b2 > 0 ? cold_hits_b2 / cold_steps_b2 : 0.0
+        @printf("           burst: budget=%d  burst_steps=%d  burst_hits=%d  burst_rate=%.4f  cold_rate=%.4f  lift=%.2f\n",
+                _burst_budget_default, n_burst_steps_b2, n_burst_hits_b2, burst_hit_rate, cold_rate_b2,
+                cold_rate_b2 > 0 ? burst_hit_rate / cold_rate_b2 : 0.0)
         @printf("           ALPHA_MOD=%d (log2(ell)=%.1f)  UV_MOD=%d  INERTIA_FLIP=%.2f  BASIN_TRIGGER=%d\n",
                 ALPHA_MOD, log2(max(2,ellI)), UV_MOD, INERTIA_FLIP_PROB, BASIN_TRIGGER)
         if basin_buf_count > 0

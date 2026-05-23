@@ -784,73 +784,65 @@ function conj_total_entries(sc::LP1ConjLSM)::Int
 end
 
 function conj_haskey(sc::LP1ConjLSM, si::Int, key::CanonicalLP1Key)::Bool
-    hot_found = lock(sc.shard_locks[si]) do
-        _lsm_hot_find(sc, si, key) != 0
-    end
+    lock(sc.shard_locks[si])
+    hot_found = _lsm_hot_find(sc, si, key) != 0
+    unlock(sc.shard_locks[si])
     hot_found && return true
     fp = _lsm_fp(key)
     !bloom_maybe_has(sc.bloom, fp) && return false
-    found, _, _, _, _, _ = lock(sc.file_lock) do
-        _lsm_disk_find(sc, key, fp)
-    end
+    lock(sc.file_lock)
+    found, _, _, _, _, _ = _lsm_disk_find(sc, key, fp)
+    unlock(sc.file_lock)
     found
 end
 
 function conj_getval(sc::LP1ConjLSM{V}, si::Int, key::CanonicalLP1Key)::V where V
-    slot = lock(sc.shard_locks[si]) do
-        _lsm_hot_find(sc, si, key)
-    end
+    lock(sc.shard_locks[si])
+    slot = _lsm_hot_find(sc, si, key)
+    unlock(sc.shard_locks[si])
     slot != 0 && return @inbounds sc.hot_vals[si][slot]
     fp = _lsm_fp(key)
-    found, _, _, i0_v, al_v, be_v = lock(sc.file_lock) do
-        _lsm_disk_find(sc, key, fp)
-    end
+    lock(sc.file_lock)
+    found, _, _, i0_v, al_v, be_v = _lsm_disk_find(sc, key, fp)
+    unlock(sc.file_lock)
     found || throw(KeyError(key))
     _conj_make_val(V, i0_v, al_v, be_v)
 end
 
 function conj_pop!(sc::LP1ConjLSM{V}, si::Int, key::CanonicalLP1Key)::V where V
-    result = Ref{V}()
-    hot_found = lock(sc.shard_locks[si]) do
-        slot = _lsm_hot_find(sc, si, key)
-        if slot != 0
-            result[] = @inbounds sc.hot_vals[si][slot]
-            _lsm_hot_delete!(sc, si, slot)
-            true
-        else
-            false
-        end
+    lock(sc.shard_locks[si])
+    slot = _lsm_hot_find(sc, si, key)
+    if slot != 0
+        result = @inbounds sc.hot_vals[si][slot]
+        _lsm_hot_delete!(sc, si, slot)
+        unlock(sc.shard_locks[si])
+        return result
     end
-    hot_found && return result[]
+    unlock(sc.shard_locks[si])
     fp = _lsm_fp(key)
-    found, ri, pos, i0_v, al_v, be_v = lock(sc.file_lock) do
-        res = _lsm_disk_find(sc, key, fp)
-        res[1] && _lsm_disk_delete!(sc, res[2], res[3])
-        res
-    end
+    lock(sc.file_lock)
+    found, ri, pos, i0_v, al_v, be_v = _lsm_disk_find(sc, key, fp)
+    found && _lsm_disk_delete!(sc, ri, pos)
+    unlock(sc.file_lock)
     found || throw(KeyError(key))
     _conj_make_val(V, i0_v, al_v, be_v)
 end
 
 function conj_pop_safe(sc::LP1ConjLSM{V}, si::Int, key::CanonicalLP1Key)::Union{V,Nothing} where V
-    result = Ref{V}()
-    hot_found = lock(sc.shard_locks[si]) do
-        slot = _lsm_hot_find(sc, si, key)
-        if slot != 0
-            result[] = @inbounds sc.hot_vals[si][slot]
-            _lsm_hot_delete!(sc, si, slot)
-            true
-        else
-            false
-        end
+    lock(sc.shard_locks[si])
+    slot = _lsm_hot_find(sc, si, key)
+    if slot != 0
+        result = @inbounds sc.hot_vals[si][slot]
+        _lsm_hot_delete!(sc, si, slot)
+        unlock(sc.shard_locks[si])
+        return result
     end
-    hot_found && return result[]
+    unlock(sc.shard_locks[si])
     fp = _lsm_fp(key)
-    found, ri, pos, i0_v, al_v, be_v = lock(sc.file_lock) do
-        res = _lsm_disk_find(sc, key, fp)
-        res[1] && _lsm_disk_delete!(sc, res[2], res[3])
-        res
-    end
+    lock(sc.file_lock)
+    found, ri, pos, i0_v, al_v, be_v = _lsm_disk_find(sc, key, fp)
+    found && _lsm_disk_delete!(sc, ri, pos)
+    unlock(sc.file_lock)
     found || return nothing
     _conj_make_val(V, i0_v, al_v, be_v)
 end
@@ -1179,24 +1171,24 @@ function lsm_bday_report(sc::LP1ConjLSM, p::Integer, r::Real; io::IO = stdout)
 end
 
 function lsm_flush_all!(sc::LP1ConjLSM)
-    lock(sc.file_lock) do
-        for si in 1:sc.n_shards
-            lock(sc.shard_locks[si]) do
-                sc.hot_counts[si] > 0 && _lsm_flush_shard!(sc, si)
-            end
-        end
+    lock(sc.file_lock)
+    for si in 1:sc.n_shards
+        lock(sc.shard_locks[si])
+        sc.hot_counts[si] > 0 && _lsm_flush_shard!(sc, si)
+        unlock(sc.shard_locks[si])
     end
+    unlock(sc.file_lock)
     nothing
 end
 
 function lsm_close!(sc::LP1ConjLSM)
     lsm_flush_all!(sc)
-    lock(sc.file_lock) do
-        if sc.spill_io !== nothing
-            close(sc.spill_io)
-            sc.spill_io = nothing
-        end
+    lock(sc.file_lock)
+    if sc.spill_io !== nothing
+        close(sc.spill_io)
+        sc.spill_io = nothing
     end
+    unlock(sc.file_lock)
     nothing
 end
 

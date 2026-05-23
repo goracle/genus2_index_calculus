@@ -239,7 +239,7 @@ function phase3_trial_worker(
     # produces conj hits at elevated rate for ~tau* ≈ mu/3 steps.  Rather than
     # drifting away via the cumulative walk, we save the hot divisor and spend
     # burst_budget steps probing it with fresh independent offsets each time:
-    #   D_probe = hot_D + step_D[si]   (single fresh step, not accumulated)
+    #   D_probe = hot_D + step_D[si_burst]   (single fresh step, not accumulated)
     # D_cur keeps accumulating normally during burst mode so resumption is
     # seamless when the budget runs out.
     _burst_budget_default = let mg = tables.lp1_conj_mean_gap_steps
@@ -327,8 +327,15 @@ function phase3_trial_worker(
         push!(local_rel_be,   0)
         push!(local_rel_al,   Int(al))
     end
-    local_rel_limit = nF + length(tables.rel_rows_pre) + 30
-    n_local_linalg  = 0                         # how many times we attempted elimination
+    # The β=0 rows already seeded (~nF of them from phase1+phase2) constrain the
+    # atom log subspace; each β≠0 row adds one equation involving k.  The system
+    # has nF+1 unknowns total, so once the seeded β=0 rows already span rank ~nF
+    # we need only O(1) β≠0 rows to pin k.  Attempt solve after every new β≠0
+    # row (with a small backoff on failure to avoid spending time on under-determined
+    # prefixes); never wait for nF more rows.
+    n_local_be_rows  = 0    # count of β≠0 rows added during the walk
+    n_local_linalg   = 0    # how many times we attempted elimination
+    _next_linalg_at  = 1    # attempt when n_local_be_rows reaches this
 
     # GF(ell) Gaussian elimination on the augmented system.
     # Columns 1..nF = atom log unknowns; column nF+1 = k; column nF+2 = RHS (neg_al).
@@ -420,8 +427,9 @@ function phase3_trial_worker(
         push!(local_rel_rows, fb_row)
         push!(local_rel_be,   neg_be)
         push!(local_rel_al,   neg_al)
-        length(local_rel_rows) >= local_rel_limit || return nothing
-        local_rel_limit += 10   # need more rows if this attempt fails; keep accumulating
+        n_local_be_rows += 1
+        n_local_be_rows >= _next_linalg_at || return nothing
+        _next_linalg_at += 5   # backoff: try again after 5 more β≠0 rows
         return try_local_linalg_solve()
     end
 
@@ -487,8 +495,9 @@ function phase3_trial_worker(
             push!(local_rel_rows, row_conj)
             push!(local_rel_be,   c_be)
             push!(local_rel_al,   al_adj)
-            length(local_rel_rows) >= local_rel_limit || return nothing
-            local_rel_limit += 10
+            n_local_be_rows += 1
+            n_local_be_rows >= _next_linalg_at || return nothing
+            _next_linalg_at += 5
             return try_local_linalg_solve()
         end
 
@@ -503,8 +512,18 @@ function phase3_trial_worker(
     end
 
     # ── Main walk loop ────────────────────────────────────────────────────────
+    t_last_heartbeat = time()
 
-    for _ in 1:step_cap
+    for _raw_step in 1:step_cap
+        if _raw_step & 0xffff == 0   # every 65536 raw steps
+            now = time()
+            if now - t_last_heartbeat >= 30.0
+                @printf("[phase3 trial %d | heartbeat] raw_step=%d  n_steps=%d  n_conj_branch=%d  n_linalg=%d  elapsed=%.1fs\n",
+                        trial_idx, _raw_step, n_steps, n_conj_branch, n_local_linalg, now - t0)
+                flush(stdout)
+                t_last_heartbeat = now
+            end
+        end
         si        = rand(1:n_steps_prebuilt)
         # Always advance the cumulative walk (keeps D_cur fresh for after burst).
         D_cur     = jac_add(D_cur, step_D[si])
@@ -512,13 +531,22 @@ function phase3_trial_worker(
         beta_cur  = mod(beta_cur  + step_b[si], ellI)
 
         # In burst mode: probe the hot divisor with a fresh independent offset.
-        D_probe     = burst_active ? jac_add(hot_D, step_D[rand(1:n_steps_prebuilt)]) : D_cur
-        alpha_probe = burst_active ? mod(hot_alpha + step_a[si], ellI) : alpha_cur
-        beta_probe  = burst_active ? mod(hot_beta  + step_b[si], ellI) : beta_cur
+        # All three of (D_probe, alpha_probe, beta_probe) must use the same step
+        # index so that D_probe = hot_D + step_D[si_burst] is consistent with
+        # alpha_probe = hot_alpha + step_a[si_burst] and beta_probe = hot_beta + step_b[si_burst].
+        # Using si (the main walk's index) for alpha/beta but rand() for D was the bug.
         if burst_active
+            si_burst    = rand(1:n_steps_prebuilt)
+            D_probe     = jac_add(hot_D, step_D[si_burst])
+            alpha_probe = mod(hot_alpha + step_a[si_burst], ellI)
+            beta_probe  = mod(hot_beta  + step_b[si_burst], ellI)
             n_burst_steps += 1
             burst_budget  -= 1
             burst_active   = burst_budget > 0
+        else
+            D_probe     = D_cur
+            alpha_probe = alpha_cur
+            beta_probe  = beta_cur
         end
 
         beta_probe == 0 && continue
