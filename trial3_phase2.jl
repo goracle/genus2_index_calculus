@@ -817,10 +817,18 @@ function phase2_worker(G               ::Div2,
         mod(_small_primes[min(tid, length(_small_primes))], nF_cur - 1) + 1 :
         1
     # Ensure stride is coprime to nF_cur via gcd reduction; fallback to 1.
-    # Ensure stride is coprime to nF_cur via gcd reduction; fallback to 1.
-    function _gcd(a, b); while b != 0; a, b = b, a % b; end; a; end
-    while nF_cur > 1 && _gcd(anchor_stride, nF_cur) != 1
-        anchor_stride = mod(anchor_stride, nF_cur) + 1
+    function _gcd(a, b)
+        b == 0 && throw(ArgumentError("_gcd: divisor b is zero (a=$a)"))
+        while b != 0; a, b = b, a % b; end
+        a
+    end
+    if nF_cur > 1
+        start_stride = anchor_stride
+        while _gcd(anchor_stride, nF_cur) != 1
+            anchor_stride = mod(anchor_stride, nF_cur) + 1
+            anchor_stride == start_stride && throw(ErrorException(
+                "phase2_worker tid=$tid: no anchor_stride coprime to nF_cur=$nF_cur found (full cycle)"))
+        end
     end
     anchor_cursor = mod((tid - 1) * anchor_stride, max(1, nF_cur)) + 1
 
@@ -893,14 +901,21 @@ function phase2_worker(G               ::Div2,
     inertia_alpha_dir = alpha_stride    # companion alpha perturbation
 
     @inline function next_anchor_inertia()
+        nF_cur <= 0 && throw(ErrorException(
+            "next_anchor_inertia tid=$tid: empty factor base (nF_cur=$nF_cur)"))
         pt = fb[anchor_cursor]
         # With probability INERTIA_FLIP_PROB, flip direction to a new one.
         if rand() < INERTIA_FLIP_PROB
             # Pick a new direction from the small-primes list, shifted by tid
             # so threads diverge when they flip simultaneously.
             new_dir = _small_primes[mod(anchor_cursor + tid, length(_small_primes)) + 1]
-            while nF_cur > 1 && _gcd(new_dir, nF_cur) != 1
-                new_dir = mod(new_dir + 1, nF_cur) + 1
+            if nF_cur > 1
+                start_dir = new_dir
+                while _gcd(new_dir, nF_cur) != 1
+                    new_dir = mod(new_dir, nF_cur) + 1
+                    new_dir == start_dir && throw(ErrorException(
+                        "next_anchor_inertia tid=$tid: no direction coprime to nF_cur=$nF_cur (full cycle)"))
+                end
             end
             inertia_dir = new_dir
         end

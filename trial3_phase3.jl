@@ -232,38 +232,36 @@ function phase3_trial_worker(
                        clamp(hot_anchors[mod(trial_idx - 1, length(hot_anchors)) + 1], 1, nF)
 
     inertia_dir_p3 = anchor_stride_p3
-    P3_INERTIA_FLIP  = 0.05
-    P3_BASIN_TRIGGER = 500
-    p3_dry_streak = 0
+    p3_dry_streak  = 0
 
-    # Mini basin buffer: track LP-conj hits locally within this trial.
-    p3_basin_buf   = zeros(Int, 8)
-    p3_basin_head  = 1
-    p3_basin_count = 0
+    # ── Burst-orbit exploitation ──────────────────────────────────────────────
+    # When a conj closure fires, D_cur is geometrically hot — its neighbourhood
+    # produces conj hits at elevated rate for ~tau* ≈ mu/3 steps.  Rather than
+    # drifting away via the cumulative walk, we save the hot divisor and spend
+    # burst_budget steps probing it with fresh independent offsets each time:
+    #   D_probe = hot_D + step_D[si]   (single fresh step, not accumulated)
+    # D_cur keeps accumulating normally during burst mode so resumption is
+    # seamless when the budget runs out.
+    _burst_budget_default = let mg = tables.lp1_conj_mean_gap_steps
+        mg >= 100.0 ? round(Int, mg / 3.0) : 2000
+    end
+    burst_budget  = 0
+    burst_active  = false
+    hot_D         = D_cur
+    hot_alpha     = alpha_cur
+    hot_beta      = beta_cur
 
-    @inline function p3_record_basin!(idx::Int)
-        p3_basin_buf[p3_basin_head] = idx
-        p3_basin_head  = mod(p3_basin_head, 8) + 1
-        p3_basin_count = min(p3_basin_count + 1, 8)
-        p3_dry_streak  = 0
+    @inline function p3_record_hit!()
+        hot_D         = D_cur
+        hot_alpha     = alpha_cur
+        hot_beta      = beta_cur
+        burst_budget  = _burst_budget_default
+        burst_active  = true
+        p3_dry_streak = 0
     end
 
     @inline function p3_next_anchor()
-        # Basin steer if cold long enough.
-        if p3_dry_streak >= P3_BASIN_TRIGGER && p3_basin_count > 0
-            base = p3_basin_buf[mod(p3_basin_head - 2 + 8, 8) + 1]
-            if base != 0
-                anchor_cursor_p3 = mod(base - 1 + rand(-2:2), nF) + 1
-                p3_dry_streak    = 0
-            end
-        end
         pt = fb[anchor_cursor_p3]
-        # Inertia flip.
-        if rand() < P3_INERTIA_FLIP
-            nd = _small_primes_p3[mod(anchor_cursor_p3 + trial_idx, length(_small_primes_p3)) + 1]
-            while nF > 1 && _gcd_p3(nd, nF) != 1; nd = mod(nd + 1, nF) + 1; end
-            inertia_dir_p3 = nd
-        end
         anchor_cursor_p3 = mod(anchor_cursor_p3 - 1 + inertia_dir_p3, nF) + 1
         return pt
     end
@@ -279,19 +277,8 @@ function phase3_trial_worker(
     n_1lp_conj_local = 0   # conj closure against local birthday dict
     n_conj_branch    = 0   # times we entered A1 (i0∈FB, conj residual), before haskey
     n_alog_extended  = 0   # new atom logs derived from β=0 closures
-    # Burst-exploitation efficiency: closure rate conditioned on p3_dry_streak band.
-    # The phase-2 export is a coarse proxy; if it is too small to be a sensible
-    # emission-scale threshold, fall back to the basin-steering scale so the
-    # diagnostic bands stay meaningful and comparable across runs.
-    _mg = max(0.0, tables.lp1_conj_mean_gap_steps)
-    _burst_scale = _mg >= 1000.0 ? _mg : Float64(P3_BASIN_TRIGGER)
-    _hot_thresh  = max(8, floor(Int, 0.15 * _burst_scale))
-    _warm_thresh = max(_hot_thresh + 1, floor(Int, 0.40 * _burst_scale))
-    @printf("[phase3 trial %d] burst bands: scale=%.0f  hot<%d  warm<%d  cold>=%d\n",
-            trial_idx, _burst_scale, _hot_thresh, _warm_thresh, _warm_thresh)
-    n_conj_emit_hot  = 0; n_conj_steps_hot  = 0
-    n_conj_emit_warm = 0; n_conj_steps_warm = 0
-    n_conj_emit_cold = 0; n_conj_steps_cold = 0
+    n_burst_steps    = 0   # walk steps taken in burst mode
+    n_burst_hits     = 0   # conj closures that fired during burst mode
     k_rec            = nothing
 
     # ── Helper: attempt to extend local_alog from a β=0 combined row ─────────
@@ -324,15 +311,94 @@ function phase3_trial_worker(
         n_alog_extended += 1
     end
 
+    # ── Local relation accumulator for self-contained GF(ell) solve ──────────
+    # Each relation row contributes one equation to the system:
+    #   Σ_j coef[j]·log(fb[j])  +  neg_be·k  ≡  neg_al   (mod ell)
+    # Unknowns: atom logs (columns 1..nF) and k (column nF+1).
+    # β=0 rows (neg_be=0) constrain atom logs only; β≠0 rows pin k.
+    # Seeded with the precomputed β=0 relation set so the null space is
+    # already constrained before the walk adds β≠0 rows.
+    local_rel_rows  = Vector{Dict{Int,Int}}()
+    local_rel_be    = Vector{Int}()
+    local_rel_al    = Vector{Int}()
+    # Seed from precomputed β=0 relations (read-only shared data).
+    for (row, al) in zip(tables.rel_rows_pre, tables.alpha_vec_pre)
+        push!(local_rel_rows, row)
+        push!(local_rel_be,   0)
+        push!(local_rel_al,   Int(al))
+    end
+    local_rel_limit = nF + length(tables.rel_rows_pre) + 30
+    n_local_linalg  = 0                         # how many times we attempted elimination
+
+    # GF(ell) Gaussian elimination on the augmented system.
+    # Columns 1..nF = atom log unknowns; column nF+1 = k; column nF+2 = RHS (neg_al).
+    # Returns k::Int if uniquely determined and group-law verified, else nothing.
+    function try_local_linalg_solve()::Union{Int,Nothing}
+        n_local_linalg += 1
+        m   = length(local_rel_rows)
+        nc  = nF + 2   # nF atom cols + k col + RHS col
+        # Build dense matrix mod ell.
+        A = zeros(Int, m, nc)
+        for ri in 1:m
+            for (j, v) in local_rel_rows[ri]
+                1 <= j <= nF || continue
+                A[ri, j] = mod(v, ellI)
+            end
+            A[ri, nF+1] = local_rel_be[ri]   # coefficient of k
+            A[ri, nF+2] = local_rel_al[ri]   # RHS
+        end
+        # Forward elimination with partial pivoting over GF(ell).
+        pivot_col = zeros(Int, m)   # pivot_col[r] = column of pivot in row r, 0 if zero row
+        pr = 1   # next pivot row
+        for c in 1:nF+1
+            # Find pivot in column c at or below row pr.
+            piv = 0
+            for r in pr:m
+                A[r, c] != 0 && (piv = r; break)
+            end
+            piv == 0 && continue
+            # Swap rows piv ↔ pr.
+            A[pr, :], A[piv, :] = A[piv, :], A[pr, :]
+            # Normalise pivot row so A[pr,c] = 1.
+            inv_piv = powermod(A[pr, c], ellI - 2, ellI)
+            for cc in c:nc
+                A[pr, cc] = mod(A[pr, cc] * inv_piv, ellI)
+            end
+            # Eliminate column c in all other rows.
+            for r in 1:m
+                r == pr && continue
+                A[r, c] == 0 && continue
+                f = A[r, c]
+                for cc in c:nc
+                    A[r, cc] = mod(A[r, cc] - f * A[pr, cc], ellI)
+                end
+            end
+            pivot_col[pr] = c
+            pr += 1
+        end
+        # Look for a row whose only nonzero variable is k (column nF+1).
+        for r in 1:m
+            pivot_col[r] == nF+1 || continue
+            # Row reads: k = A[r, nF+2]
+            k_try = A[r, nF+2]
+            jac_mul(G, k_try, ell) == T && return k_try
+            # Pivot on k but verify failed — bad relations in accumulator; flush and retry.
+            return nothing
+        end
+        return nothing
+    end
+
     # ── Helper: solve k from a pure-FB row ───────────────────────────────────
-    # Returns k on success, nothing on inapplicable (β=0 or missing logs),
-    # and ASSERTS on internal inconsistency (all logs present but k fails to verify).
+    # First tries direct solve from alog_get (fast path when atom logs are known).
+    # Falls back to accumulating the relation for local GF(ell) elimination.
+    # β=0 rows go to try_extend_alog! instead.
     @inline function try_solve(fb_row::Dict{Int,Int}, neg_al::Int, neg_be::Int)::Union{Int,Nothing}
         if neg_be == 0
             # β=0 relation: pure G row, try to extend alog rather than solve for k.
             try_extend_alog!(fb_row, neg_al)
             return nothing
         end
+        # Fast path: all atom logs already known.
         log_sum = 0
         all_known = true
         for (j, v) in fb_row
@@ -343,15 +409,20 @@ function phase3_trial_worker(
             end
             log_sum = mod(log_sum + v * l, ellI)
         end
-        # Soft skip: one or more atom logs still unknown.
-        all_known || return nothing
-        k_try = mod((log_sum - neg_al) * powermod(neg_be, ell - 2, ell), ellI)
-        if jac_mul(G, k_try, ell) == T
-            return k_try
+        if all_known
+            k_try = mod((log_sum - neg_al) * powermod(neg_be, ell - 2, ell), ellI)
+            if jac_mul(G, k_try, ell) == T
+                return k_try
+            end
+            @assert false "try_solve: bad relation — all atom logs present, β≠0, but k_try=$(k_try) failed verification (neg_al=$(neg_al), neg_be=$(neg_be))"
         end
-        # All atom logs were present and β≠0, but k failed to verify.
-        # This indicates an inconsistency in the relation or atom logs.
-        @assert false "try_solve: bad relation — all atom logs present, β≠0, but k_try=$(k_try) failed verification (neg_al=$(neg_al), neg_be=$(neg_be))"
+        # Slow path: accumulate relation and attempt local linalg solve.
+        push!(local_rel_rows, fb_row)
+        push!(local_rel_be,   neg_be)
+        push!(local_rel_al,   neg_al)
+        length(local_rel_rows) >= local_rel_limit || return nothing
+        local_rel_limit += 10   # need more rows if this attempt fails; keep accumulating
+        return try_local_linalg_solve()
     end
 
     # ── Helper: solve k from a conj closure ──────────────────────────────────
@@ -395,8 +466,31 @@ function phase3_trial_worker(
         l_cur  = alog_get(pt_cur)
         l_pre  = alog_get(pt_pre)
 
-        # Soft skip: atom log not yet known.
-        (l_cur == -1 || l_pre == -1) && return nothing
+        if l_cur == -1 || l_pre == -1
+            # Atom logs missing: express as a 2-atom relation and accumulate.
+            # atom(fb[i0_cur]) - atom(fb[i0_pre]) ≡ c_al·G + c_be·T  (mod ell)
+            # → 1·log(fb[i0_cur]) + (-1)·log(fb[i0_pre]) + c_be·k ≡ c_al  (mod ell)
+            row_conj = Dict{Int,Int}(i0_cur => 1)
+            i0_cur != i0_pre && (row_conj[i0_pre] = get(row_conj, i0_pre, 0) - 1)
+            # If l_cur or l_pre is known, fold it into c_al to reduce unknowns.
+            al_adj = c_al
+            if l_cur != -1
+                al_adj = mod(al_adj - l_cur, ellI)
+                delete!(row_conj, i0_cur)
+            end
+            if l_pre != -1
+                al_adj = mod(al_adj + l_pre, ellI)
+                # remove pre contribution (was -1 coef)
+                nv = get(row_conj, i0_pre, 0) + 1
+                nv == 0 ? delete!(row_conj, i0_pre) : (row_conj[i0_pre] = nv)
+            end
+            push!(local_rel_rows, row_conj)
+            push!(local_rel_be,   c_be)
+            push!(local_rel_al,   al_adj)
+            length(local_rel_rows) >= local_rel_limit || return nothing
+            local_rel_limit += 10
+            return try_local_linalg_solve()
+        end
 
         lhs   = mod(l_cur - l_pre, ellI)
         k_try = mod((lhs - c_al) * powermod(c_be, ell - 2, ell), ellI)
@@ -412,18 +506,34 @@ function phase3_trial_worker(
 
     for _ in 1:step_cap
         si        = rand(1:n_steps_prebuilt)
+        # Always advance the cumulative walk (keeps D_cur fresh for after burst).
         D_cur     = jac_add(D_cur, step_D[si])
         alpha_cur = mod(alpha_cur + step_a[si], ellI)
         beta_cur  = mod(beta_cur  + step_b[si], ellI)
-        beta_cur == 0 && continue
+
+        # In burst mode: probe the hot divisor with a fresh independent offset.
+        D_probe     = burst_active ? jac_add(hot_D, step_D[rand(1:n_steps_prebuilt)]) : D_cur
+        alpha_probe = burst_active ? mod(hot_alpha + step_a[si], ellI) : alpha_cur
+        beta_probe  = burst_active ? mod(hot_beta  + step_b[si], ellI) : beta_cur
+        if burst_active
+            n_burst_steps += 1
+            burst_budget  -= 1
+            burst_active   = burst_budget > 0
+        end
+
+        beta_probe == 0 && continue
+        # Use probe values for the rest of this step.
+        D_eff     = D_probe
+        alpha_eff = alpha_probe
+        beta_eff  = beta_probe
 
         # Gate 1: degree-2 divisor
-        fp3_deg(D_cur.u) != 2 && continue
-        u0 = D_cur.u[1]; u1 = D_cur.u[2]
-        v0 = D_cur.v[1]; v1 = D_cur.v[2]
+        fp3_deg(D_eff.u) != 2 && continue
+        u0 = D_eff.u[1]; u1 = D_eff.u[2]
+        v0 = D_eff.v[1]; v1 = D_eff.v[2]
         px, py = cur_pt
 
-        # Gate 2: P0 not in support of D_cur
+        # Gate 2: P0 not in support of D_eff
         fp(fp(px*px) + fp(u1*px) + u0) == 0 && continue
 
         phi_c = build_phi_mumford(px, py, u0, u1, v0, v1)
@@ -435,8 +545,8 @@ function phase3_trial_worker(
 
         n_steps += 1
 
-        neg_al = mod(ellI - alpha_cur, ellI)
-        neg_be = mod(ellI - beta_cur,  ellI)
+        neg_al = mod(ellI - alpha_eff, ellI)
+        neg_be = mod(ellI - beta_eff,  ellI)
         i0     = get(pt2idx, cur_pt, 0)
 
         # ======================================================================
@@ -450,54 +560,33 @@ function phase3_trial_worker(
                 n_conj_branch += 1
                 si_shard = conj_shard_idx(lp_key)
 
-                # Burst-exploitation: which dry-streak band are we in?
-                if p3_dry_streak < _hot_thresh
-                    n_conj_steps_hot += 1
-                elseif p3_dry_streak < _warm_thresh
-                    n_conj_steps_warm += 1
-                else
-                    n_conj_steps_cold += 1
-                end
-
                 if conj_haskey(lp1_conj_pre, si_shard, lp_key)
-                    # Close against precomputed entry (read-only — no delete).
-                    # Precomputed table is amortized: neg_be was always 0.
                     v = conj_getval(lp1_conj_pre, si_shard, lp_key)
                     prev_col = Int(v.i0)
                     prev_al  = Int(v.neg_al)
                     c_al = mod(neg_al - prev_al, ellI)
-                    c_be = neg_be   # mod(neg_be - 0, ellI) == neg_be
+                    c_be = neg_be
                     n_1lp_conj_pre += 1
-                    # Credit to dry-streak band
-                    if p3_dry_streak < _hot_thresh; n_conj_emit_hot += 1
-                    elseif p3_dry_streak < _warm_thresh; n_conj_emit_warm += 1
-                    else; n_conj_emit_cold += 1; end
+                    burst_active && (n_burst_hits += 1)
+                    p3_record_hit!()
                     k_rec = try_solve_conj(i0, prev_col, c_al, c_be)
                     k_rec !== nothing && break
-                    # IDEA 4: successful LP1-conj step — record basin hit.
-                    p3_record_basin!(anchor_cursor_p3)
 
                 elseif haskey(local_lp1_conj, lp_key)
-                    # Close against local birthday entry
                     v = local_lp1_conj[lp_key]
                     prev_col, prev_al, prev_be = Int(v.i0), Int(v.neg_al), Int(v.neg_be)
                     c_al = mod(neg_al - prev_al, ellI)
                     c_be = mod(neg_be - prev_be, ellI)
                     delete!(local_lp1_conj, lp_key)
                     n_1lp_conj_local += 1
-                    # Credit to dry-streak band
-                    if p3_dry_streak < _hot_thresh; n_conj_emit_hot += 1
-                    elseif p3_dry_streak < _warm_thresh; n_conj_emit_warm += 1
-                    else; n_conj_emit_cold += 1; end
+                    burst_active && (n_burst_hits += 1)
+                    p3_record_hit!()
                     k_rec = try_solve_conj(i0, prev_col, c_al, c_be)
                     k_rec !== nothing && break
-                    # IDEA 4: record basin hit for local closure too.
-                    p3_record_basin!(anchor_cursor_p3)
                 else
                     if length(local_lp1_conj) < local_lp_cap
                         local_lp1_conj[lp_key] = LP1ConjValFull(UInt16(i0), UInt64(neg_al), UInt64(neg_be))
                     end
-                    # Non-productive conj step: advance dry streak.
                     p3_dry_streak += 1
                 end
             else
@@ -588,20 +677,16 @@ function phase3_trial_worker(
         k_rec_s  = k_rec  === nothing ? "none" : string(k_rec)
         k_true_s = k_true === nothing ? "?"    : string(k_true)
         match_s  = verified ? "ok" : "MISMATCH"
-        @printf("[phase3 trial %d | t=%.3fs] k_rec=%s  k_true=%s  match=%s  steps=%d  0lp=%d  1lp_aff_pre=%d  1lp_aff_local=%d  1lp_conj_pre=%d  1lp_conj_local=%d  conj_branch=%d  alog_ext=%d\n",
+        burst_hit_rate = n_burst_steps > 0 ? n_burst_hits / n_burst_steps : 0.0
+        cold_steps     = n_steps - n_burst_steps
+        cold_hits      = (n_1lp_conj_pre + n_1lp_conj_local) - n_burst_hits
+        cold_hit_rate  = cold_steps > 0 ? cold_hits / cold_steps : 0.0
+        @printf("[phase3 trial %d | t=%.3fs] k_rec=%s  k_true=%s  match=%s  steps=%d  0lp=%d  1lp_aff_pre=%d  1lp_aff_local=%d  1lp_conj_pre=%d  1lp_conj_local=%d  conj_branch=%d  linalg_attempts=%d\n",
                 trial_idx, elapsed, k_rec_s, k_true_s, match_s,
-                n_steps, n_0lp, n_1lp_aff_pre, n_1lp_aff_local, n_1lp_conj_pre, n_1lp_conj_local, n_conj_branch, n_alog_extended)
-        # Burst-exploitation efficiency: conj closure rate per dry-streak band.
-        # Interpretation: if hot_rate >> cold_rate, basin warm-start is working.
-        # If rates are similar, we are not exploiting any genuine attractor.
-        rate_hot  = n_conj_steps_hot  > 0 ? n_conj_emit_hot  / n_conj_steps_hot  : 0.0
-        rate_warm = n_conj_steps_warm > 0 ? n_conj_emit_warm / n_conj_steps_warm : 0.0
-        rate_cold = n_conj_steps_cold > 0 ? n_conj_emit_cold / n_conj_steps_cold : 0.0
-        @printf("[phase3 trial %d | burst-exploit] conj_closure_rate: hot(streak<%d)=%.4f (%d/%d)  warm(streak<%d)=%.4f (%d/%d)  cold(streak>=%d)=%.4f (%d/%d)\n",
-                trial_idx, _hot_thresh,
-                rate_hot,  n_conj_emit_hot,  n_conj_steps_hot,
-                _warm_thresh, rate_warm, n_conj_emit_warm, n_conj_steps_warm,
-                _warm_thresh, rate_cold, n_conj_emit_cold, n_conj_steps_cold)
+                n_steps, n_0lp, n_1lp_aff_pre, n_1lp_aff_local, n_1lp_conj_pre, n_1lp_conj_local, n_conj_branch, n_local_linalg)
+        @printf("[phase3 trial %d | burst] budget=%d  burst_steps=%d  burst_hits=%d  burst_rate=%.4f  cold_rate=%.4f  lift=%.2f\n",
+                trial_idx, _burst_budget_default, n_burst_steps, n_burst_hits, burst_hit_rate, cold_hit_rate,
+                cold_hit_rate > 0 ? burst_hit_rate / cold_hit_rate : 0.0)
         flush(stdout)
     end
 
@@ -669,7 +754,7 @@ function phase3_solve_targets(
     # Every derived value is verified against the group law before being accepted —
     # this catches any gauge-freedom inconsistency (which would manifest as a
     # verification failure rather than a wrong log slipping through).
-    if !isempty(tables.rel_rows_pre)
+    if !isempty(tables.atom_log_dict) && !isempty(tables.rel_rows_pre)
         t_enrich  = time()
         n_pre     = length(tables.atom_log_dict)
         ellI_e    = Int(tables.ell)
