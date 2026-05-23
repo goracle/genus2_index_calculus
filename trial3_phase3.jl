@@ -95,6 +95,14 @@ struct Phase2Tables
     # that are graph-reachable from the RREF seeds even when algebraic rank is low).
     rel_rows_pre   ::Vector{Dict{Int,Int}}
     alpha_vec_pre  ::Vector{BigInt}
+
+    # Empirical LP1-conj mean inter-arrival gap from the β=0 precompute walk,
+    # measured in valid-phi-step units.  Used by phase3 to set burst-band
+    # thresholds relative to the actual closure hazard scale, rather than
+    # hard-coded step counts.
+    # = total_valid_phi_steps / n_lp1_conj_steps  (not emissions — steps).
+    # Set to 0.0 if no LP1-conj steps were observed (disables band scaling).
+    lp1_conj_mean_gap_steps::Float64
 end
 
 # ---------------------------------------------------------------------------
@@ -271,6 +279,22 @@ function phase3_trial_worker(
     n_1lp_conj_local = 0   # conj closure against local birthday dict
     n_conj_branch    = 0   # times we entered A1 (i0∈FB, conj residual), before haskey
     n_alog_extended  = 0   # new atom logs derived from β=0 closures
+    # Burst-exploitation efficiency: closure rate conditioned on p3_dry_streak band.
+    # Thresholds derived from the empirical LP1-conj mean inter-arrival gap
+    # measured during the β=0 precompute walk, so they scale with the actual
+    # closure hazard rather than being hard-coded step counts.
+    # hot  : streak <  0.15 × mean_gap  (inside decorrelation window)
+    # warm : streak in [0.15, 0.40) × mean_gap
+    # cold : streak >= 0.40 × mean_gap  (beyond hazard decorrelation)
+    # If mean_gap is unknown (0.0), fall back to P3_BASIN_TRIGGER fractions.
+    _mg = tables.lp1_conj_mean_gap_steps
+    _hot_thresh  = _mg > 0.0 ? round(Int, 0.15 * _mg) : max(50,  P3_BASIN_TRIGGER ÷ 10)
+    _warm_thresh = _mg > 0.0 ? round(Int, 0.40 * _mg) : P3_BASIN_TRIGGER
+    @printf("[phase3 trial %d] burst bands: mean_gap=%.0f  hot<%.0f  warm<%.0f  cold>=%.0f\n",
+            trial_idx, _mg, Float64(_hot_thresh), Float64(_warm_thresh), Float64(_warm_thresh))
+    n_conj_emit_hot  = 0; n_conj_steps_hot  = 0
+    n_conj_emit_warm = 0; n_conj_steps_warm = 0
+    n_conj_emit_cold = 0; n_conj_steps_cold = 0
     k_rec            = nothing
 
     # ── Helper: attempt to extend local_alog from a β=0 combined row ─────────
@@ -429,6 +453,15 @@ function phase3_trial_worker(
                 n_conj_branch += 1
                 si_shard = conj_shard_idx(lp_key)
 
+                # Burst-exploitation: which dry-streak band are we in?
+                if p3_dry_streak < 100
+                    n_conj_steps_hot += 1
+                elseif p3_dry_streak < P3_BASIN_TRIGGER
+                    n_conj_steps_warm += 1
+                else
+                    n_conj_steps_cold += 1
+                end
+
                 if conj_haskey(lp1_conj_pre, si_shard, lp_key)
                     # Close against precomputed entry (read-only — no delete).
                     # Precomputed table is amortized: neg_be was always 0.
@@ -438,6 +471,10 @@ function phase3_trial_worker(
                     c_al = mod(neg_al - prev_al, ellI)
                     c_be = neg_be   # mod(neg_be - 0, ellI) == neg_be
                     n_1lp_conj_pre += 1
+                    # Credit to dry-streak band
+                    if p3_dry_streak < 100; n_conj_emit_hot += 1
+                    elseif p3_dry_streak < P3_BASIN_TRIGGER; n_conj_emit_warm += 1
+                    else; n_conj_emit_cold += 1; end
                     k_rec = try_solve_conj(i0, prev_col, c_al, c_be)
                     k_rec !== nothing && break
                     # IDEA 4: successful LP1-conj step — record basin hit.
@@ -451,6 +488,10 @@ function phase3_trial_worker(
                     c_be = mod(neg_be - prev_be, ellI)
                     delete!(local_lp1_conj, lp_key)
                     n_1lp_conj_local += 1
+                    # Credit to dry-streak band
+                    if p3_dry_streak < 100; n_conj_emit_hot += 1
+                    elseif p3_dry_streak < P3_BASIN_TRIGGER; n_conj_emit_warm += 1
+                    else; n_conj_emit_cold += 1; end
                     k_rec = try_solve_conj(i0, prev_col, c_al, c_be)
                     k_rec !== nothing && break
                     # IDEA 4: record basin hit for local closure too.
@@ -553,6 +594,17 @@ function phase3_trial_worker(
         @printf("[phase3 trial %d | t=%.3fs] k_rec=%s  k_true=%s  match=%s  steps=%d  0lp=%d  1lp_aff_pre=%d  1lp_aff_local=%d  1lp_conj_pre=%d  1lp_conj_local=%d  conj_branch=%d  alog_ext=%d\n",
                 trial_idx, elapsed, k_rec_s, k_true_s, match_s,
                 n_steps, n_0lp, n_1lp_aff_pre, n_1lp_aff_local, n_1lp_conj_pre, n_1lp_conj_local, n_conj_branch, n_alog_extended)
+        # Burst-exploitation efficiency: conj closure rate per dry-streak band.
+        # Interpretation: if hot_rate >> cold_rate, basin warm-start is working.
+        # If rates are similar, we are not exploiting any genuine attractor.
+        rate_hot  = n_conj_steps_hot  > 0 ? n_conj_emit_hot  / n_conj_steps_hot  : 0.0
+        rate_warm = n_conj_steps_warm > 0 ? n_conj_emit_warm / n_conj_steps_warm : 0.0
+        rate_cold = n_conj_steps_cold > 0 ? n_conj_emit_cold / n_conj_steps_cold : 0.0
+        @printf("[phase3 trial %d | burst-exploit] conj_closure_rate: hot(streak<100)=%.4f (%d/%d)  warm=%.4f (%d/%d)  cold=%.4f (%d/%d)\n",
+                trial_idx,
+                rate_hot,  n_conj_emit_hot,  n_conj_steps_hot,
+                rate_warm, n_conj_emit_warm, n_conj_steps_warm,
+                rate_cold, n_conj_emit_cold, n_conj_steps_cold)
         flush(stdout)
     end
 

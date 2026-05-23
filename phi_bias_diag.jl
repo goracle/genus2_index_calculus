@@ -94,6 +94,8 @@
 #  arithmetic that dominates phase2_worker.
 # =============================================================================
 
+using FFTW   # required for rfft / plan_rfft in Welch and multitaper sections
+
 # ---------------------------------------------------------------------------
 #  PhiBiasStat — per-thread accumulator
 # ---------------------------------------------------------------------------
@@ -552,45 +554,45 @@ function print_phi_bias_report(stat::PhiBiasStat; p::Int = 0)
             # Use ~64 windows; each window covers total_span/64 steps.
             n_welch_win = max(4, min(64, length(arrivals) ÷ 8))
             win_len     = max(8, total_span ÷ n_welch_win)
-            n_bins_half = win_len ÷ 2          # positive-frequency bins
+            n_bins_half = win_len ÷ 2 + 1     # rfft output length for real input of win_len
 
-            # Inner DFT helper — pure function, no captures, safe to call from
-            # any thread.  O(n²) is fine: win_len is typically ≤512.
-            function _psd_window(hit_indicator::Vector{Float64}, nb::Int)::Vector{Float64}
-                n = length(hit_indicator)
-                w  = [0.5 * (1.0 - cos(2π * (i-1) / max(1, n-1))) for i in 1:n]
-                xw = hit_indicator .* w
-                out = zeros(Float64, nb)
-                for k in 1:nb
-                    s     = zero(ComplexF64)
-                    tw    = exp(-2π * im * (k-1) / n)
-                    tw_pw = one(ComplexF64)
-                    for j in 1:n
-                        s    += xw[j] * tw_pw
-                        tw_pw *= tw
-                    end
-                    out[k] = abs2(s)
+            # Precompute Hann window and FFTW plan once — amortised over all windows
+            # and all shuffled realisations.
+            hann_w   = [0.5 * (1.0 - cos(2π * (i-1) / max(1, win_len-1))) for i in 1:win_len]
+            _tmp_fft = zeros(Float64, win_len)
+            fft_plan = plan_rfft(_tmp_fft)
+
+            # Inner PSD helper: Hann-window then rfft.  O(n log n).
+            # Caller owns ind_buf (length win_len) and tmp_buf (length win_len).
+            function _psd_window_fft(ind_buf::Vector{Float64},
+                                     tmp_buf::Vector{Float64})::Vector{Float64}
+                @inbounds @simd for i in eachindex(tmp_buf)
+                    tmp_buf[i] = ind_buf[i] * hann_w[i]
                 end
-                return out
+                F = fft_plan * tmp_buf
+                return abs2.(F)   # length n_bins_half
             end
 
             # --- Real PSD: parallel over Welch windows --------------------------
-            # One result slot per window iteration — no threadid() indexing.
+            # Each thread gets its own ind/tmp buffers to avoid false sharing.
             psd_wins    = [zeros(Float64, n_bins_half) for _ in 1:n_welch_win]
             wins_valid  = zeros(Bool, n_welch_win)
             offset      = arrivals[1]
 
             Threads.@threads for wi in 0:(n_welch_win - 1)
-                t_start = offset + wi * win_len
-                ind     = zeros(Float64, win_len)
-                for t in arrivals
-                    idx = t - t_start + 1
-                    if 1 <= idx <= win_len
-                        ind[idx] = 1.0
-                    end
+                t_start  = offset + wi * win_len
+                t_end    = t_start + win_len - 1
+                ind      = zeros(Float64, win_len)
+                tmp      = zeros(Float64, win_len)
+                # Slice arrivals to only those inside this window — O(log N + hits_in_win)
+                lo = searchsortedfirst(arrivals, t_start)
+                hi = searchsortedlast(arrivals,  t_end)
+                for k in lo:hi
+                    idx = arrivals[k] - t_start + 1
+                    ind[idx] = 1.0
                 end
-                if sum(ind) >= 1
-                    psd_wins[wi + 1]  = _psd_window(ind, n_bins_half)
+                if (hi >= lo)
+                    psd_wins[wi + 1]   = _psd_window_fft(ind, tmp)
                     wins_valid[wi + 1] = true
                 end
             end
@@ -619,17 +621,21 @@ function print_phi_bias_report(stat::PhiBiasStat; p::Int = 0)
                 sort!(null_arr2)
                 win_sum  = zeros(Float64, n_bins_half)
                 win_cnt  = 0
+                ind2 = zeros(Float64, win_len)
+                tmp2 = zeros(Float64, win_len)
                 for wi in 0:(n_welch_win - 1)
                     t_start = offset + wi * win_len
-                    ind2    = zeros(Float64, win_len)
-                    for t in null_arr2
-                        idx = t - t_start + 1
-                        if 1 <= idx <= win_len
-                            ind2[idx] = 1.0
-                        end
+                    t_end   = t_start + win_len - 1
+                    fill!(ind2, 0.0)
+                    # Slice null arrivals to this window — avoids full rescan
+                    lo2 = searchsortedfirst(null_arr2, t_start)
+                    hi2 = searchsortedlast(null_arr2,  t_end)
+                    for k in lo2:hi2
+                        idx = null_arr2[k] - t_start + 1
+                        ind2[idx] = 1.0
                     end
-                    if sum(ind2) >= 1
-                        win_sum .+= _psd_window(ind2, n_bins_half)
+                    if hi2 >= lo2
+                        win_sum .+= _psd_window_fft(ind2, tmp2)
                         win_cnt  += 1
                     end
                 end
@@ -641,16 +647,23 @@ function print_phi_bias_report(stat::PhiBiasStat; p::Int = 0)
             psd_shuf_avg = any(shuf_valid) ?
                            reduce(.+, psd_shuf_slots[shuf_valid]) ./ max(1, sum(shuf_valid)) :
                            zeros(Float64, n_bins_half)
+            # n_bins_half is rfft output length (win_len÷2+1); downstream
+            # indexing into psd_avg / psd_shuf_avg is safe because both arrays
+            # have this length.
 
             if n_wins_used >= 2
                 psd_avg = psd_sum ./ n_wins_used
 
-                # Summarise: low-freq (lowest 10%) vs high-freq (top 50%) power ratio.
-                n_lo = max(1, n_bins_half ÷ 10)
-                n_hi = max(1, n_bins_half ÷ 2)
-                power_lo  = sum(psd_avg[1:n_lo])
+                # n_bins_half = rfft length = win_len÷2+1 (DC bin + positive freqs).
+                # Bin 1 = DC; bins 2..n_bins_half are positive freqs.
+                # low-freq = bottom 10% of positive freqs; high-freq = top 50%.
+                n_pos  = n_bins_half - 1          # positive-frequency bins
+                n_lo   = max(1, n_pos ÷ 10)
+                n_hi   = max(1, n_pos ÷ 2)
+                # Skip DC (bin 1) in the power sums.
+                power_lo  = sum(psd_avg[2:1+n_lo])
                 power_hi  = sum(psd_avg[(n_bins_half - n_hi + 1):end])
-                power_lo_s = sum(psd_shuf_avg[1:n_lo])
+                power_lo_s = sum(psd_shuf_avg[2:1+n_lo])
                 power_hi_s = sum(psd_shuf_avg[(n_bins_half - n_hi + 1):end])
 
                 lo_lift = power_lo / max(1e-30, power_lo_s)
@@ -664,16 +677,16 @@ function print_phi_bias_report(stat::PhiBiasStat; p::Int = 0)
                 @printf("      low-freq power lift  : %.3f%s\n", lo_lift, flag_psd)
                 @printf("      high-freq power lift : %.3f\n", hi_lift)
 
-                # Print the first 8 PSD bins (real / shuffled).
-                n_show = min(8, n_bins_half)
+                # Print bins 2..n_show+1 (positive-frequency, skipping DC at bin 1).
+                n_show = min(8, n_bins_half - 1)
                 @printf("      bin (freq×win_len):  %s\n",
                         join([@sprintf("%6d", k) for k in 1:n_show], " "))
                 @printf("      PSD real:            %s\n",
-                        join([@sprintf("%6.1f", psd_avg[k]) for k in 1:n_show], " "))
+                        join([@sprintf("%6.1f", psd_avg[k+1]) for k in 1:n_show], " "))
                 @printf("      PSD shuffled:        %s\n",
-                        join([@sprintf("%6.1f", psd_shuf_avg[k]) for k in 1:n_show], " "))
+                        join([@sprintf("%6.1f", psd_shuf_avg[k+1]) for k in 1:n_show], " "))
                 @printf("      ratio real/shuf:     %s\n",
-                        join([@sprintf("%6.2f", psd_avg[k] / max(1e-30, psd_shuf_avg[k]))
+                        join([@sprintf("%6.2f", psd_avg[k+1] / max(1e-30, psd_shuf_avg[k+1]))
                               for k in 1:n_show], " "))
             else
                 @printf("      (too few windowed hits for Welch PSD)\n")
@@ -1051,24 +1064,19 @@ function print_phi_bias_report(stat::PhiBiasStat; p::Int = 0)
 
             # K cosine tapers: w_k[j] = sqrt(2/(N+1)) * sin(k*π*j/(N+1)), k=1..K
             K_tapers = 4
+            # Precompute FFTW plan for this signal length — shared across taper threads.
+            _mt_tmp  = zeros(Float64, n_mt_bins)
+            mt_plan  = plan_rfft(_mt_tmp)
+            n_bins_half_mt = n_mt_bins ÷ 2 + 1   # rfft output length
             mt_psd_slots = [zeros(Float64, n_bins_half_mt) for _ in 1:K_tapers]
             Threads.@threads for k in 1:K_tapers
                 taper = [sqrt(2.0 / (n_mt_bins + 1)) *
                          sin(k * π * j / (n_mt_bins + 1))
                          for j in 1:n_mt_bins]
                 xw    = mt_centred .* taper
-                psd_k = zeros(Float64, n_bins_half_mt)
-                for freq in 1:n_bins_half_mt
-                    s     = zero(ComplexF64)
-                    tw    = exp(-2π * im * (freq - 1) / n_mt_bins)
-                    tw_pw = one(ComplexF64)
-                    for j in 1:n_mt_bins
-                        s    += xw[j] * tw_pw
-                        tw_pw *= tw
-                    end
-                    psd_k[freq] = abs2(s)
-                end
-                mt_psd_slots[k] = psd_k
+                # rfft: O(n log n) instead of O(n²)
+                F     = mt_plan * xw
+                mt_psd_slots[k] = abs2.(F)
             end
             mt_psd = reduce(.+, mt_psd_slots) ./ K_tapers
 
@@ -1228,7 +1236,101 @@ function print_phi_bias_report(stat::PhiBiasStat; p::Int = 0)
         end
         println()
 
-        # ---- Key fingerprint: do close-in-time hits share algebraic keys? ------
+        # ════════════════════════════════════════════════════════════════════
+        # New 6 — Hazard function: P(hit | time since last hit = τ)
+        # ════════════════════════════════════════════════════════════════════
+        # For a Poisson process the hazard is flat (memoryless).
+        # If there is a sticky metastable basin, the hazard should be ELEVATED
+        # shortly after a hit and decay to baseline on the decorrelation timescale.
+        # We estimate h(τ) = (hits with gap ≤ τ+Δτ) / (gaps in (τ, τ+Δτ])
+        # over a geometric grid of τ values.
+        # Key question: does excess hazard survive beyond ~mean_gap?
+        #   If yes  → genuine metastable basin (sticky attractor).
+        #   If no   → burst is just correlated arrival times (slow drift).
+        @printf("    Hazard function h(τ) vs Poisson baseline:\n")
+        if n_gaps >= 20
+            sorted_gaps_haz = sort(gaps)
+            # Build geometric grid up to ≈5×mean_gap
+            τ_max = round(Int, 5.0 * mean_gap)
+            τ_grid = Int[]
+            τ = max(1, round(Int, mean_gap / 16.0))
+            while τ <= τ_max
+                push!(τ_grid, τ)
+                τ = max(τ+1, round(Int, τ * 1.7))
+            end
+            poisson_baseline_haz = 1.0 / max(1.0, mean_gap)
+            @printf("      (Poisson baseline rate λ=1/μ = %.5f)\n", poisson_baseline_haz)
+            @printf("      tau_steps    h(tau)    Poisson_h   lift_h   interp\n")
+            prev_τ = 0
+            decor_τ = -1
+            for τ in τ_grid
+                Δτ = τ - prev_τ
+                n_in_band = searchsortedlast(sorted_gaps_haz, τ) -
+                            searchsortedlast(sorted_gaps_haz, prev_τ)
+                h_obs  = n_in_band / max(1, n_gaps * Δτ)
+                h_poi  = poisson_baseline_haz
+                lift_h = h_obs / max(1e-30, h_poi)
+                flag_h = lift_h > 2.0 ? " HOT" :
+                         lift_h > 1.3 ? " warm" :
+                         lift_h < 0.7 ? " cold" : ""
+                @printf("      %8d  %8.5f  %10.5f  %6.3f  %s\n",
+                        τ, h_obs, h_poi, lift_h, flag_h)
+                if decor_τ < 0 && lift_h < 1.3 && τ > round(Int, mean_gap/4.0)
+                    decor_τ = τ
+                end
+                prev_τ = τ
+            end
+            if decor_τ > 0
+                @printf("      -> decorr tau* ~= %d steps  (lift first < 1.3)\n", decor_τ)
+                @printf("         decay ratio tau*/mu = %.2f  (>1 -> basin persists past mean inter-arrival)\n",
+                        decor_τ / max(1.0, mean_gap))
+            else
+                @printf("      -> hazard elevated through tau_max=%d (strong stickiness)\n", τ_max)
+            end
+        else
+            @printf("      (need >=20 gaps for hazard estimate)\n")
+        end
+        println()
+        # New 7 — CIR decorrelation length (extract from existing CIR table)
+        # ════════════════════════════════════════════════════════════════════
+        # We already computed CIR(W) for a grid of W values above, but we don't
+        # store the results in a variable for later use.  Here we re-derive the
+        # decorrelation scale directly from the gap series using a fast estimator:
+        #   R(lag) = ACF of the binary hit-indicator series at the raw-step level.
+        # We bin at window_size = max(10, mean_gap/4) and find the first lag
+        # where the ACF of the *gap* series drops below 1/e.
+        @printf("    CIR decorrelation length from gap ACF:\n")
+        if n_gaps >= 20
+            max_lag_g = min(20, n_gaps ÷ 2)
+            gap_acf   = zeros(Float64, max_lag_g)
+            var_g_loc = n_gaps > 1 ?
+                sum((g - mean_gap)^2 for g in gaps) / (n_gaps - 1) : 0.0
+            if var_g_loc > 0.0
+                for lag in 1:max_lag_g
+                    cov = sum((gaps[i] - mean_gap) * (gaps[i+lag] - mean_gap)
+                              for i in 1:(n_gaps - lag)) / (n_gaps - lag)
+                    gap_acf[lag] = cov / var_g_loc
+                end
+                inv_e = exp(-1.0)
+                decor_lag = findfirst(r -> r < inv_e, gap_acf)
+                acf_str = join([@sprintf("%+.3f", gap_acf[k]) for k in 1:min(8, max_lag_g)], "  ")
+                @printf("      gap ACF lags 1..%d: %s\n", min(8, max_lag_g), acf_str)
+                if decor_lag !== nothing
+                    @printf("      decorr lag: %d gaps  (ACF first < 1/e=%.3f)\n",
+                            decor_lag, inv_e)
+                    @printf("      in step-units: ~= %d steps\n",
+                            round(Int, decor_lag * mean_gap))
+                else
+                    @printf("      ACF does not decay below 1/e within %d lags -- very long memory\n",
+                            max_lag_g)
+                end
+            else
+                @printf("      (gap variance zero -- degenerate walk)\n")
+            end
+        else
+            @printf("      (need >=20 gaps for gap ACF)\n")
+        end
+        println()
         # For each hit i, look at hits within W_fp steps and count what fraction
         # share the same lp_key.  Compare to the global key collision rate
         # (expected under random key assignment).
@@ -1286,6 +1388,21 @@ function print_phi_bias_report(stat::PhiBiasStat; p::Int = 0)
     else
         @printf("    (insufficient data for KS test)\n")
     end
+    println()
+
+    # ── FB-scaling advisory ────────────────────────────────────────────────
+    # GPT diagnosis: with FB~300 and p~16411, closure opportunities are
+    # extremely sparse and any productive basin dominates burst statistics.
+    # Print a reminder to run with larger FB to distinguish combinatorial
+    # sparsity from genuine Jacobian dynamical structure.
+    @printf("  FB-scaling advisory:\n")
+    @printf("    Current diagnostics may conflate combinatorial sparsity (small FB)\n")
+    @printf("    with genuine Jacobian attractor dynamics.  Recommended experiments:\n")
+    @printf("    1. Re-run with FB×2, FB×4, FB×8.  If burst persistence vanishes → sparsity.\n")
+    @printf("       If persistence survives large FB → genuine walk geometry.\n")
+    @printf("    2. Measure decorrelation τ* (hazard / gap ACF above) at each FB size.\n")
+    @printf("       Prediction: sparsity → τ* ~ const; geometry → τ* grows with FB.\n")
+    @printf("    3. Fano factor at each FB size: sparsity → Fano drops; geometry → stable.\n")
     println()
 
     @printf("──────────────────────────────────────────────────────────────────────\n")

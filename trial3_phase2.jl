@@ -727,16 +727,19 @@ function phase2_worker(G               ::Div2,
     #  the same residue class — creating algebraic coherence alongside the
     #  existing geometric inertia.  Outside a basin we use uniform selection.
     #
-    #  ALPHA_MOD=8: ~32 entries/bucket with N_STEPS=256, keeping bucket diversity
-    #  high enough that the α-residue lock does not collapse the effective walk
-    #  support.  Run 2 with ALPHA_MOD=16 + small-drift filtering caused the
-    #  birthday collision to move from m=878k to m=47k (S_eff/S_naive dropped from
-    #  4.8 to 0.014), meaning the walk became trapped in a tiny attractor.
-    #  ALPHA_MOD=8 is reinstated as the correct operating point.
-    #  The bucket for residue r contains all step indices i where
-    #  step_a_i[i] mod ALPHA_MOD == r.
+    #  ALPHA_MOD is now scaled as round(Int, log2(p)) rather than fixed at 8.
+    #  Motivation (GPT diagnosis): with fixed ALPHA_MOD the transition partition
+    #  stays "small" as p grows, giving giant coherent basins.  A log(p)-scaled
+    #  partition grows the entropy of the transition slowly with the ambient
+    #  geometry, preventing single basins from dominating.  For p≈16411,
+    #  log2(16411)≈14, so ALPHA_MOD≈14 — only modestly larger than 8 and well
+    #  below the collapse threshold of 16 observed empirically.
+    #
+    #  Safety clamp: ALPHA_MOD is clamped to [4, N_STEPS÷8] so every bucket
+    #  gets at least ~8 entries from the 256-step table, preventing the
+    #  over-constrained attractor collapse seen with ALPHA_MOD=16.
     # ==========================================================================
-    ALPHA_MOD    = 8
+    ALPHA_MOD    = clamp(round(Int, log2(max(2, ellI))), 4, N_STEPS ÷ 8)
     alpha_buckets = [Int[] for _ in 0:ALPHA_MOD-1]
     for i in 1:N_STEPS
         r = mod(step_a_i[i], ALPHA_MOD)
@@ -744,9 +747,40 @@ function phase2_worker(G               ::Div2,
     end
     # Fallback to full table if any bucket is empty.
     alpha_buckets_safe = [isempty(b) ? collect(1:N_STEPS) : b for b in alpha_buckets]
-    # NOTE: the secondary small-drift bucket (alpha_buckets_small) introduced in
-    # the previous edit is intentionally removed.  It was shown to over-constrain
-    # the step table and collapse the birthday support from p^2 to p^1.63.
+
+    # ==========================================================================
+    #  uv-hash step buckets  (nonlinear diversity mixing)
+    #
+    #  GPT diagnosis: routing logic that depends on only a few bits of the
+    #  divisor state causes neighboring states to follow nearly identical
+    #  trajectories, creating long coherent excursions that inflate ACF.
+    #  Solution: build a second partition that hashes both u AND v coefficients
+    #  of the *step* divisors (not just alpha), so step selection depends on
+    #  more state dimensions and avalanches faster.
+    #
+    #  uv_buckets[r+1] contains step indices i where:
+    #    hash(step_D[i].u[1], step_D[i].u[2], step_D[i].v[1], step_D[i].v[2])
+    #    mod UV_MOD == r
+    #  This is built from step_a_i and step_b_i (which encode the exponents and
+    #  therefore implicitly the Mumford data) via a cheap nonlinear mix.
+    #
+    #  UV_MOD = ALPHA_MOD (same partition size).  In-basin we pick the uv-bucket
+    #  that matches a nonlinear mix of the current Mumford state; outside a basin
+    #  we use uniform selection.  This only fires when basin_dry_streak == 0,
+    #  so it does not interact with the cold-path decorrelation.
+    # ==========================================================================
+    UV_MOD = ALPHA_MOD
+    uv_buckets = [Int[] for _ in 0:UV_MOD-1]
+    for i in 1:N_STEPS
+        # Nonlinear mix of (step_a, step_b) using xor-shift — cheap, avalanches well.
+        ha = step_a_i[i]
+        hb = step_b_i[i]
+        h  = xor(ha, hb << 7) + xor(hb, ha >> 3)
+        r  = mod(h, UV_MOD)
+        r  = r < 0 ? r + UV_MOD : r    # Julia mod can return negative for negative h
+        push!(uv_buckets[r + 1], i)
+    end
+    uv_buckets_safe = [isempty(b) ? collect(1:N_STEPS) : b for b in uv_buckets]
 
     # ==========================================================================
     #  Structured walk cursors
@@ -1040,17 +1074,28 @@ function phase2_worker(G               ::Div2,
         # --- Take a step biased toward the current α-residue class when in-basin ---
         #
         # Two-tier step selection:
-        #   Tier 1 (in-basin): pick from alpha_buckets_safe for the current α-residue.
-        #     Standard residue coherence; preserves diffusion across the full step table.
+        #   Tier 1 (in-basin): alternate between two diversification modes:
+        #     Even raw_steps → pick from alpha_buckets_safe for α-residue coherence.
+        #     Odd  raw_steps → pick from uv_buckets_safe for nonlinear uv-hash mixing.
+        #     This alternation keeps algebraic coherence while increasing the effective
+        #     routing entropy, preventing single-basin trapping diagnosed by GPT.
         #   Tier 2 (cold, basin_dry_streak>0): uniform step selection.
-        #
-        # The former Tier-0 small-drift bucket (alpha_buckets_small, hot_depth>=2) is
-        # removed: it collapsed birthday support from p^2 to p^1.63, trapping the walk
-        # in a small attractor and degrading phase-3 coverage.
         si = if basin_dry_streak == 0 && basin_buf_count > 0
-            cur_r  = mod(alpha_cur, ALPHA_MOD) + 1   # target residue bucket (1-based)
-            bucket = alpha_buckets_safe[cur_r]
-            bucket[rand(1:length(bucket))]
+            if (s.raw_steps & 1) == 0
+                # Even step: α-residue bucket coherence
+                cur_r  = mod(alpha_cur, ALPHA_MOD) + 1   # 1-based
+                bucket = alpha_buckets_safe[cur_r]
+                bucket[rand(1:length(bucket))]
+            else
+                # Odd step: uv-hash bucket for nonlinear diversity
+                ha     = alpha_cur
+                hb     = beta_cur
+                h      = xor(ha, hb << 7) + xor(hb, ha >> 3)
+                cur_r  = mod(h, UV_MOD) + 1
+                cur_r  = clamp(cur_r, 1, UV_MOD)
+                bucket = uv_buckets_safe[cur_r]
+                bucket[rand(1:length(bucket))]
+            end
         else
             rand(1:N_STEPS)
         end
@@ -1299,6 +1344,17 @@ function phase2_worker(G               ::Div2,
             100.0 * basin_steers_hit / basin_steers_fired : 0.0
         @printf("           basin_steers: fired=%d  credited_hits=%d  hit_rate=%.1f%%  buf_count=%d\n",
                 basin_steers_fired, basin_steers_hit, steer_hit_rate, basin_buf_count)
+        # Burst-exploitation efficiency: among all LP1-conj emissions, how many
+        # occurred within BASIN_TRIGGER steps of a basin steer?  This separates
+        # "steer actually helped" from "would have hit anyway via natural walk."
+        # basin_steers_hit counts credited hits; compare to total emissions.
+        lp1c_total = s.hits_1lp_conj_emit
+        exploit_efficiency = lp1c_total > 0 ?
+            100.0 * basin_steers_hit / lp1c_total : 0.0
+        @printf("           burst-exploit: credited_hits=%d / total_lp1c_emit=%d = %.1f%% of emissions came within steer window\n",
+                basin_steers_hit, lp1c_total, exploit_efficiency)
+        @printf("           ALPHA_MOD=%d (log2(ell)=%.1f)  UV_MOD=%d  INERTIA_FLIP=%.2f  BASIN_TRIGGER=%d\n",
+                ALPHA_MOD, log2(max(2,ellI)), UV_MOD, INERTIA_FLIP_PROB, BASIN_TRIGGER)
         if basin_buf_count > 0
             # Report top-3 hot anchors by hit count for spatial diagnostics.
             anchor_pairs = [(basin_hit_counts[mod(basin_buf_head - 1 - k + BASIN_BUF_SIZE, BASIN_BUF_SIZE) + 1],

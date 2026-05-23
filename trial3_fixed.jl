@@ -491,6 +491,7 @@ function index_calculus_walk(G::Div2, T::Div2;
         @printf("  conj LP2 enabled:       %s\n", string(enable_lp2_conj))
         @printf("  2-LP cap (conj):        %d nodes\n", max_lp2_conj_nodes)
         @printf("  threads:                %d\n", Threads.nthreads())
+        @printf("  step partition:         ALPHA_MOD=log2(ell)-scaled, UV_MOD=same (see phase2)\n")
         @printf("  launching walkers at:   %s\n", string(Dates.now()))
         flush(stdout)
     end
