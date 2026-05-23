@@ -1257,30 +1257,45 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
             @printf("  [MEM] after  rref():       RSS=%.1f MB  GC-live=%.1f MB\n",
                     Sys.maxrss()/1024^2, Base.gc_live_bytes()/1024^2)
             flush(stdout)
-            logs = zeros(Int, nF_pre)
+            logs          = zeros(Int, nF_pre)
+            rref_assigned = falses(nF_pre)   # true only for pivot columns
             for r in 1:size(R_mat, 1)
                 pc = 0
                 for c in 1:nF_pre
                     R_mat[r, c] != 0 && (pc = c; break)
                 end
                 pc == 0 && continue
-                logs[pc] = Int(lift(ZZ, R_mat[r, nF_pre + 1]))
+                logs[pc]          = Int(lift(ZZ, R_mat[r, nF_pre + 1]))
+                rref_assigned[pc] = true
             end
 
             # ── Gauge-freedom filter ──────────────────────────────────────
-            n_ok = 0; n_bad = 0
+            # BUG FIX: the old code tested `L == 0` to exclude atoms, which
+            # incorrectly excluded *all* non-pivot columns (their logs[] entry
+            # is 0 only because the array was zero-initialised, not because
+            # RREF solved them to zero).  With 420 pivots out of 1731 FB atoms,
+            # ~1311 atoms were silently dropped before BFS could propagate them.
+            # BFS then started from only 420 seeds, saw no 1-unknown rows, and
+            # made zero progress → "420 → 420 / 1731".
+            #
+            # Correct logic: accept a pivot column's log regardless of its value,
+            # verifying it with the group law.  Non-pivot columns are left out
+            # of atom_log_dict here; BFS fills them in from the pivot seeds.
+            n_ok = 0; n_bad = 0; n_zero_valid = 0
             for (pt, idx) in pt2idx_pre
+                rref_assigned[idx] || continue   # non-pivot: let BFS handle
                 L = logs[idx]
-                if L == 0 || !jac_isid(jac_sub(jac_mul(G, L, BigInt(ell)),
-                                               mumford1(pt[1], pt[2])))
-                    n_bad += 1
+                if !jac_isid(jac_sub(jac_mul(G, L, BigInt(ell)),
+                                     mumford1(pt[1], pt[2])))
+                    n_bad += 1   # RREF gave a wrong value (shouldn't happen)
                 else
                     atom_log_dict[pt] = L
                     n_ok += 1
+                    L == 0 && (n_zero_valid += 1)
                 end
             end
-            @printf("  [DIAG] atom log verification: %d correct, %d excluded (gauge/zero)\n",
-                    n_ok, n_bad)
+            @printf("  [DIAG] atom log verification: %d correct (%d with L=0), %d RREF-inconsistent, %d non-pivot (for BFS)\n",
+                    n_ok, n_zero_valid, n_bad, nF_pre - count(rref_assigned))
             flush(stdout)
 
             # ── BFS enrichment: propagate RREF seeds through relation graph ───

@@ -884,8 +884,22 @@ function conj_insert_or_pop!(sc::LP1ConjLSM{V}, si::Int,
     fp = _lsm_fp(key)
 
     # --- Birthday / occupancy / Rényi diagnostics: count this emission -------
+    # IMPORTANT: use explicit lock/unlock rather than `lock(f) do...end`.
+    # The closure form allocates a heap object for the captured environment,
+    # which can trigger GC *while the lock is held*.  If the GC then tries to
+    # stop-the-world, any other thread blocked on bday_lock cannot reach a
+    # safepoint (it is spinning on the lock, not at an allocation site), causing
+    # a GC safepoint deadlock that manifests as an intermittent hang on Ctrl-C.
+    #
+    # Explicit lock/unlock is allocation-free on the fast path.  All arithmetic
+    # inside the critical section is kept strictly allocation-free:
+    #   * old_c + 1 stays Int; saturation via ifelse avoids min(UInt32,Int)
+    #     which promotes to Int64 and boxes (ijl_box_int64 in the hang trace).
+    #   * Int64 arithmetic on renyi_sum_c / renyi_sum_c2 is unboxed because
+    #     the struct fields are declared ::Int64.
     now_t = time_ns() * 1e-9
-    lock(sc.bday_lock) do
+    lock(sc.bday_lock)
+    try
         if sc.bday_emissions == 0
             sc.bday_t0 = now_t
         end
@@ -894,21 +908,22 @@ function conj_insert_or_pop!(sc::LP1ConjLSM{V}, si::Int,
 
         # Rényi-2: increment the fingerprint bucket and update Σcᵢ, Σcᵢ².
         # We update as:  Σcᵢ² += 2·cᵢ + 1  (because (c+1)² - c² = 2c+1).
-        rb = Int(fp >> RENYI_SHIFT) + 1          # 1-based bucket index
+        rb    = Int(fp >> RENYI_SHIFT) + 1          # 1-based bucket index
         old_c = Int(sc.renyi_counts[rb])
-        sc.renyi_counts[rb] = UInt32(min(typemax(UInt32), old_c + 1))
+        # Saturating increment: stay allocation-free by avoiding min(UInt32,Int)
+        # which boxes.  ifelse is a pure integer select with no allocation.
+        sc.renyi_counts[rb] = ifelse(old_c < Int(typemax(UInt32)),
+                                     UInt32(old_c + 1), typemax(UInt32))
         sc.renyi_sum_c  += Int64(1)
         sc.renyi_sum_c2 += Int64(2 * old_c + 1)
 
         # Occupancy: a new unique key is one whose bucket was zero before this
-        # emission.  This is exact for RENYI_BITS-bit resolution (each bucket
-        # covers 2^(64-RENYI_BITS) keys, so old_c==0 is a conservative proxy
-        # for "bucket not previously seen").  It slightly over-counts unique
-        # keys when RENYI_BITS is small and the walk is very diffuse, but at
-        # the S~p^1.6–1.9 scales we care about the error is negligible.
+        # emission.
         if old_c == 0
             sc.occ_unique += 1
         end
+    finally
+        unlock(sc.bday_lock)
     end
     # -------------------------------------------------------------------------
 
@@ -1004,10 +1019,13 @@ end
 
 # Called on every confirmed LP1-conj collision.  Only records the *first* one.
 @inline function _bday_record_collision!(sc::LP1ConjLSM, now_t::Float64)
-    lock(sc.bday_lock) do
+    lock(sc.bday_lock)
+    try
         sc.bday_first_coll_m == 0 || return   # already recorded
         sc.bday_first_coll_m = sc.bday_emissions
         sc.bday_first_coll_t = now_t
+    finally
+        unlock(sc.bday_lock)
     end
     nothing
 end
