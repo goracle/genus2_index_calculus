@@ -446,7 +446,7 @@ function print_phi_bias_report(stat::PhiBiasStat; p::Int = 0)
         n_shuf   = 20
         rng_gaps = copy(gaps)   # will be shuffled in place
 
-        for W in (10, 50, 200)
+        for W in (10, 50, 200, 500, 1000, 2000, 5000, 10000, 50000)
             # Observed: count pairs (i,j) with j>i and arrivals[j]-arrivals[i] ≤ W.
             # Equivalent to: for each i, count how many j in (i+1..end) have
             # arrivals[j] ≤ arrivals[i]+W.  Use searchsortedlast for O(N log N).
@@ -492,7 +492,7 @@ function print_phi_bias_report(stat::PhiBiasStat; p::Int = 0)
         # share the same lp_key.  Compare to the global key collision rate
         # (expected under random key assignment).
         if !isempty(lp_keys) && length(lp_keys) == n_hits
-            W_fp         = 50          # fingerprint window (same as medium CIR window)
+            W_fp         = 2000         # fingerprint window — matches mid-range CIR lag
             fp_pairs     = 0           # pairs within window
             fp_same_key  = 0           # of those, pairs with matching key
             for i in 1:n_hits
@@ -514,8 +514,7 @@ function print_phi_bias_report(stat::PhiBiasStat; p::Int = 0)
             key_lift      = obs_frac / max(1e-9, expected_frac)
             flag_key      = key_lift > 2.0 ? " ← FINGERPRINT: close hits share keys" :
                                               " (key sharing ≈ random)"
-            @printf("    Key fingerprint (W=%d): %d pairs, %d same-key (%.2f%%)," *
-                    " expected %.2f%%, lift=%.2f%s\n",
+            @printf("    Key fingerprint (W=%d): %d pairs, %d same-key (%.2f%%), expected %.2f%%, lift=%.2f%s\n",
                     W_fp, fp_pairs, fp_same_key,
                     100.0 * obs_frac, 100.0 * expected_frac,
                     key_lift, flag_key)
