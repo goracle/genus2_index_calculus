@@ -81,9 +81,10 @@
 #    variance at low frequencies; OLS log-log slope gives 1/fᵅ exponent α.
 #    α > 1 → long-memory; α ≈ 0 → white noise.
 #
-#  New 5 — MMPP-2 model fit:  method-of-moments fit of a 2-state Markov-
-#    Modulated Poisson Process to (μ_gap, σ²_gap, ρ₁_gap).  Reports estimated
-#    (λ_hot, λ_cold, q_HC, q_CH) and implied burst concentration.
+#  New 5 — Gap-distribution characterisation (replaces unstable MMPP-2 MoM fit):
+#    (a) burst-size distribution with KS test vs Geometric null,
+#    (b) short/long gap fractions vs Poisson prediction (hot/cold persistence),
+#    (c) KS test of rescaled gaps vs Exponential(1) with heavy-tail flag.
 #
 #  All accumulators are per-thread (no locking during the walk).
 #  Call merge_phi_bias_stats to combine and print_phi_bias_report to display.
@@ -1100,98 +1101,130 @@ function print_phi_bias_report(stat::PhiBiasStat; p::Int = 0)
         println()
 
         # ════════════════════════════════════════════════════════════════════
-        # New 5 — Renewal / MMPP model fit (method of moments)
+        # New 5 — Gap-distribution characterisation (replaces unstable MMPP fit)
         # ════════════════════════════════════════════════════════════════════
-        # Model: 2-state Markov-Modulated Poisson Process.
-        #   State H (hot):  emissions at rate λ_H, exit rate q_HC
-        #   State C (cold): emissions at rate λ_C, exit rate q_CH
-        # Method-of-moments using:
-        #   E[gap]   = mean inter-arrival
-        #   Var[gap] = gap variance
-        #   E[gap²]  = second moment
-        #   E[gap³]  = third moment   (over-determined; last used for residual)
-        # For a 2-state MMPP, the gap distribution is a mixture of
-        # hyper-exponentials (or Erlang-like for symmetric case).
-        # We use the simpler approximation:
-        #   Fano = 1 + 2·(λ_H - λ_C)² · π_H·π_C / (q_HC + q_CH) / λ̄
-        # and the lag-1 ACF of gaps:
-        #   ρ_1 = -(λ_H - λ_C)² · π_H·π_C / [(λ̄² + σ²_λ)(q_HC + q_CH + λ̄)]
-        # to estimate (λ_H, λ_C, q_HC, q_CH) from (μ_gap, σ²_gap, ρ_1_gap).
-        @printf("    Renewal / MMPP model fit (2-state, method of moments):\n")
-        if length(arrivals) >= 20
+        # The symmetric MMPP-2 method-of-moments fit is numerically unstable
+        # when the Fano factor is large: it produces negative transition rates
+        # (q < 0) and epoch durations of ~10^30 steps — physically meaningless.
+        # We replace it with three robust, interpretable diagnostics:
+        #
+        #   (a) Burst-size distribution: how many hits arrive in bursts of 1/2/3+?
+        #       A burst is a run of hits with inter-arrival < burst_sep steps.
+        #       Geometric burst sizes → Poisson; heavy tail → clustering.
+        #
+        #   (b) Hot-window persistence (gap-conditioned tail):
+        #       Fraction of gaps that are "short" (< μ/2) vs "long" (> 2μ).
+        #       For a Poisson process P(gap < μ/2) ≈ 1 - e^{-0.5} ≈ 0.39 and
+        #       P(gap > 2μ) ≈ e^{-2} ≈ 0.135.  Excess short-gap fraction means
+        #       bursts; excess long-gap fraction means cold epochs between bursts.
+        #
+        #   (c) Geometric vs heavy-tail gap test (KS vs Exponential):
+        #       Rescale gaps by their mean → unit-mean Exponential(1) null.
+        #       KS statistic > 0.1 flags a non-Poisson gap distribution.
+        #       A right-skewed empirical CDF (excess large gaps) is the
+        #       signature of a bursty / heavy-tailed process.
+        @printf("    Gap distribution (burst / persistence / tail):\n")
+        if length(arrivals) >= 10
             n_g      = length(gaps)
             mu_g     = mean_gap
             var_g    = var_gap
-            fano_g   = fano   # already computed above
 
-            # Lag-1 ACF of inter-arrival gaps.
+            # Lag-1 ACF of gaps (retain for summary line).
+            rho1 = 0.0
             if n_g >= 4
                 rho1_num = sum((gaps[i] - mu_g) * (gaps[i+1] - mu_g) for i in 1:(n_g-1))
                 rho1_den = sum((g - mu_g)^2 for g in gaps)
                 rho1     = rho1_den > 0.0 ? rho1_num / rho1_den : 0.0
-            else
-                rho1 = 0.0
             end
+            @printf("      Observed gap stats: μ=%.1f  σ²=%.1f  Fano=%.3f  ρ₁=%+.4f\n",
+                    mu_g, var_g, fano, rho1)
 
-            # MMPP moment equations (rates in units of 1/step):
-            #   λ̄ = 1/μ_g
-            #   Fano - 1 ≈ 2·Δλ²·π_H·π_C / (q·λ̄)        where q = q_HC + q_CH
-            #   ρ_1 ≈ -(Δλ²·π_H·π_C) / (λ̄²·(q + λ̄)·(1 + CV²))
-            # Let A = Δλ²·π_H·π_C.  Then:
-            #   A = (Fano - 1)·q·λ̄ / 2
-            #   ρ_1 = -A / (λ̄²·(q + λ̄)·(1 + CV²))
-            # Solve for q given ρ_1 (one real root via quadratic in q):
-            #   ρ_1·λ̄²·(1+CV²)·(q + λ̄) = -(Fano-1)·q·λ̄/2
-            # → q·[ρ_1·λ̄²·(1+CV²) + (Fano-1)·λ̄/2] = -ρ_1·λ̄³·(1+CV²)
-            lambda_bar = 1.0 / max(1.0, mu_g)
-            cv2        = var_g / max(1.0, mu_g^2)   # CV²
-            denom_q    = rho1 * lambda_bar^2 * (1.0 + cv2) + (fano_g - 1.0) * lambda_bar / 2.0
-            q_est      = abs(denom_q) > 1e-15 ?
-                         -rho1 * lambda_bar^3 * (1.0 + cv2) / denom_q :
-                         NaN
-            A_est      = isnan(q_est) ? NaN :
-                         (fano_g - 1.0) * q_est * lambda_bar / 2.0
-
-            # From A = Δλ²·π_H·π_C and Δλ = λ_H - λ_C, λ̄ = π_H·λ_H + π_C·λ_C:
-            # with symmetric rates π_H = π_CH/(q) and π_C = π_HC/(q):
-            # Simple two-point approximation: assume π_H = π_C = 0.5 (symmetric).
-            pi_H = 0.5; pi_C = 0.5   # symmetric approximation
-            delta_lambda = isnan(A_est) ? NaN : sqrt(max(0.0, A_est / (pi_H * pi_C)))
-            lambda_H     = isnan(delta_lambda) ? NaN : lambda_bar + pi_C * delta_lambda
-            lambda_C     = isnan(delta_lambda) ? NaN : lambda_bar - pi_H * delta_lambda
-            q_HC         = isnan(q_est) ? NaN : q_est * pi_C   # = q·π_C for symmetric
-            q_CH         = isnan(q_est) ? NaN : q_est * pi_H
-
-            @printf("      Observed gap stats:\n")
-            @printf("        μ_gap=%.1f  σ²_gap=%.1f  Fano=%.3f  ρ₁_gap=%+.4f\n",
-                    mu_g, var_g, fano_g, rho1)
-            if !isnan(lambda_H) && lambda_C >= 0.0
-                @printf("      MMPP-2 fit (symmetric π=0.5):\n")
-                @printf("        λ_hot  = %.2e /step  (mean gap in hot  = %.1f steps)\n",
-                        lambda_H, 1.0 / max(1e-30, lambda_H))
-                @printf("        λ_cold = %.2e /step  (mean gap in cold = %.1f steps)\n",
-                        lambda_C, 1.0 / max(1e-30, lambda_C))
-                @printf("        q_HC   = %.2e /step  (mean hot duration = %.1f steps)\n",
-                        q_HC, 1.0 / max(1e-30, q_HC))
-                @printf("        q_CH   = %.2e /step  (mean cold duration= %.1f steps)\n",
-                        q_CH, 1.0 / max(1e-30, q_CH))
-                # Implied burst concentration: fraction of emissions in hot state.
-                burst_frac = lambda_H / max(1e-30, lambda_H + lambda_C)
-                @printf("        implied emission concentration: %.1f%% in hot state\n",
-                        100.0 * burst_frac)
-                flag_mmpp = fano_g > 2.0 && !isnan(lambda_H) && lambda_C >= 0.0 ?
-                    " ← MMPP FIT PLAUSIBLE (Fano>>1, ρ₁ finite)" :
-                    fano_g <= 2.0 ? " (Fano near 1; Poisson adequate)" :
-                                    " (degenerate fit)"
-                @printf("        model verdict: %s\n", flag_mmpp)
-            else
-                @printf("      MMPP-2 fit degenerate (negative λ_cold or q; Poisson may suffice)\n")
-                @printf("        raw q_est=%.3e  A_est=%.3e  ρ₁=%+.4f\n",
-                        isnan(q_est) ? 0.0 : q_est,
-                        isnan(A_est) ? 0.0 : A_est, rho1)
+            # (a) Burst-size distribution.
+            # Define burst separator as max(1, floor(μ/3)).
+            burst_sep    = max(1, floor(Int, mu_g / 3.0))
+            burst_sizes  = Int[]
+            cur_burst    = 1
+            for k in 1:(n_g)
+                if k <= n_g && gaps[k] <= burst_sep
+                    cur_burst += 1
+                else
+                    push!(burst_sizes, cur_burst)
+                    cur_burst = 1
+                end
             end
+            push!(burst_sizes, cur_burst)  # last burst
+            n_bursts = length(burst_sizes)
+            cnt1 = count(==(1), burst_sizes)
+            cnt2 = count(==(2), burst_sizes)
+            cnt3p = count(>=(3), burst_sizes)
+            mean_burst = n_bursts > 0 ? sum(burst_sizes) / n_bursts : 0.0
+            max_burst  = n_bursts > 0 ? maximum(burst_sizes) : 0
+            # Geometric(p) burst sizes: P(size=k) = (1-p)^{k-1}·p.
+            # Mean = 1/p, so p = 1/mean_burst.
+            p_geo = n_bursts > 0 && mean_burst > 1.0 ? 1.0 / mean_burst : 1.0
+            # KS vs Geometric CDF for burst sizes.
+            bsorted = sort(burst_sizes)
+            ks_b = 0.0; cumul_b = 0.0
+            for bs in bsorted
+                cumul_b += 1.0 / n_bursts
+                geo_cdf_b = 1.0 - (1.0 - p_geo)^bs
+                ks_b = max(ks_b, abs(cumul_b - geo_cdf_b))
+            end
+            flag_burst = ks_b > 0.1 ? " ← NON-GEOMETRIC (heavy-tail bursts)" :
+                                       " (consistent with geometric)"
+            @printf("      (a) Burst-size distribution (sep=%.0f steps):\n", Float64(burst_sep))
+            @printf("          n_bursts=%d  mean=%.2f  max=%d\n", n_bursts, mean_burst, max_burst)
+            @printf("          size=1: %d (%.1f%%)  size=2: %d (%.1f%%)  size≥3: %d (%.1f%%)\n",
+                    cnt1, 100.0*cnt1/max(1,n_bursts),
+                    cnt2, 100.0*cnt2/max(1,n_bursts),
+                    cnt3p, 100.0*cnt3p/max(1,n_bursts))
+            @printf("          KS vs Geometric(1/mean)=%.4f%s\n", ks_b, flag_burst)
+
+            # (b) Short/long gap fractions vs Poisson prediction.
+            n_short = count(g -> g < mu_g / 2.0, gaps)
+            n_long  = count(g -> g > 2.0 * mu_g, gaps)
+            f_short = n_short / n_g
+            f_long  = n_long  / n_g
+            # Poisson(rate 1/μ) predictions:
+            poisson_short = 1.0 - exp(-0.5)   # ≈ 0.394
+            poisson_long  = exp(-2.0)          # ≈ 0.135
+            flag_pers = if f_short > poisson_short * 1.3 || f_long > poisson_long * 1.5
+                " ← HOT/COLD PERSISTENCE (excess short+long gaps)"
+            elseif f_short < poisson_short * 0.7
+                " ← ANTI-PERSISTENT (gaps more uniform than Poisson)"
+            else
+                " (consistent with Poisson persistence)"
+            end
+            @printf("      (b) Hot/cold persistence:\n")
+            @printf("          short (< μ/2): %.1f%%  [Poisson expect %.1f%%]\n",
+                    100.0*f_short, 100.0*poisson_short)
+            @printf("          long  (> 2μ) : %.1f%%  [Poisson expect %.1f%%]%s\n",
+                    100.0*f_long, 100.0*poisson_long, flag_pers)
+
+            # (c) KS test of rescaled gaps vs Exponential(1).
+            rescaled = sort(gaps ./ max(1.0, mu_g))
+            ks_exp   = 0.0
+            for (k, rg) in enumerate(rescaled)
+                emp_cdf = k / n_g
+                exp_cdf = 1.0 - exp(-rg)
+                ks_exp  = max(ks_exp, abs(emp_cdf - exp_cdf))
+            end
+            # Right-skew: top 5% of gaps vs Exponential prediction.
+            top5_thresh = -log(0.05)   # Exp(1) quantile at 95% ≈ 3.0
+            n_top5 = count(g -> g / mu_g > top5_thresh, gaps)
+            expected_top5 = round(Int, 0.05 * n_g)
+            flag_tail = if n_top5 > 2 * expected_top5
+                @sprintf(" ← HEAVY RIGHT TAIL (%d gaps > 3μ, expected %d)", n_top5, expected_top5)
+            elseif ks_exp > 0.1
+                " ← NON-EXPONENTIAL gap distribution"
+            else
+                " (consistent with Exponential / Poisson)"
+            end
+            @printf("      (c) Gap tail test (KS vs Exponential):\n")
+            @printf("          KS=%.4f  gaps>3μ: %d (expected %d)%s\n",
+                    ks_exp, n_top5, expected_top5, flag_tail)
         else
-            @printf("      (need ≥20 hits for MMPP fit)\n")
+            @printf("      (need ≥10 hits for gap analysis)\n")
         end
         println()
 

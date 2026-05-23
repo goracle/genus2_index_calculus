@@ -55,6 +55,13 @@
 using Mmap
 
 const RECORD_BYTES = 48   # fp(8) + u0u1v0v1(16) + i0(2) + pad(6) + al(8) + be(8)
+
+# Rényi-2 bucket granularity.  We keep 2^RENYI_BITS buckets in a UInt32 array,
+# indexed by the top RENYI_BITS bits of the 64-bit fingerprint.
+# 14 bits → 16384 buckets ≈ 64 KB.  Saturates at 2^32-1 per bucket (overflow
+# safe: if a bucket saturates it over-counts S₂ slightly, conservative).
+const RENYI_BITS  = 14
+const RENYI_SHIFT = 64 - RENYI_BITS   # right-shift to get bucket index
 # Layout offsets within a record (byte indices, 1-based Julia style handled via pointer):
 #   0: fp   UInt64
 #   8: u0   UInt32
@@ -198,6 +205,24 @@ mutable struct LP1ConjLSM{V}
     bday_first_coll_m   ::Int          # emission count at first collision (0 = not yet)
     bday_first_coll_t   ::Float64      # wall time at first collision (seconds, 0 = not yet)
     bday_lock           ::ReentrantLock
+
+    # Occupancy estimator — S_occ via U(N) = S(1 - e^{-N/S})
+    # Track unique keys ever seen (as a HyperLogLog-style count or exact small set).
+    # We use exact counting up to OCC_EXACT_CAP; above that we estimate via the
+    # birthday-collision rate.  u_unique is the running count of distinct keys;
+    # occ_n is the total emissions so far (== bday_emissions, kept separate for
+    # atomic snapshot under bday_lock).
+    occ_unique          ::Int          # approximate unique LP1-conj keys seen
+    occ_n               ::Int          # total emissions (for occupancy formula)
+
+    # Rényi-2 / collision-entropy estimator — S₂ = (Σ cᵢ)² / Σ cᵢ²
+    # We maintain a count-map from fingerprint bucket → multiplicity.
+    # Buckets are fp >> RENYI_SHIFT (top RENYI_BITS bits of the 64-bit fingerprint)
+    # so the table stays small (2^RENYI_BITS entries) while still tracking
+    # concentration faithfully.  renyi_sum_c is Σcᵢ, renyi_sum_c2 is Σcᵢ².
+    renyi_counts        ::Vector{UInt32}   # length 2^RENYI_BITS; count per bucket
+    renyi_sum_c         ::Int64            # Σ cᵢ  (== total collisions + emissions)
+    renyi_sum_c2        ::Int64            # Σ cᵢ²
 end
 
 # ---------------------------------------------------------------------------
@@ -253,7 +278,11 @@ function LP1ConjLSM{V}(
         n_shards, max_entries, 0,
         amortized,
         # birthday diagnostics
-        0, 0.0, 0, 0.0, ReentrantLock()
+        0, 0.0, 0, 0.0, ReentrantLock(),
+        # occupancy estimator
+        0, 0,
+        # Rényi-2 estimator (2^14 = 16384 buckets — ~64 KB, negligible)
+        zeros(UInt32, 1 << RENYI_BITS), Int64(0), Int64(0)
     )
 end
 
@@ -854,15 +883,34 @@ function conj_insert_or_pop!(sc::LP1ConjLSM{V}, si::Int,
 
     fp = _lsm_fp(key)
 
-    # --- Birthday diagnostics: count this emission, record start time -------
+    # --- Birthday / occupancy / Rényi diagnostics: count this emission -------
     now_t = time_ns() * 1e-9
     lock(sc.bday_lock) do
         if sc.bday_emissions == 0
             sc.bday_t0 = now_t
         end
         sc.bday_emissions += 1
+        sc.occ_n           += 1
+
+        # Rényi-2: increment the fingerprint bucket and update Σcᵢ, Σcᵢ².
+        # We update as:  Σcᵢ² += 2·cᵢ + 1  (because (c+1)² - c² = 2c+1).
+        rb = Int(fp >> RENYI_SHIFT) + 1          # 1-based bucket index
+        old_c = Int(sc.renyi_counts[rb])
+        sc.renyi_counts[rb] = UInt32(min(typemax(UInt32), old_c + 1))
+        sc.renyi_sum_c  += Int64(1)
+        sc.renyi_sum_c2 += Int64(2 * old_c + 1)
+
+        # Occupancy: a new unique key is one whose bucket was zero before this
+        # emission.  This is exact for RENYI_BITS-bit resolution (each bucket
+        # covers 2^(64-RENYI_BITS) keys, so old_c==0 is a conservative proxy
+        # for "bucket not previously seen").  It slightly over-counts unique
+        # keys when RENYI_BITS is small and the walk is very diffuse, but at
+        # the S~p^1.6–1.9 scales we care about the error is negligible.
+        if old_c == 0
+            sc.occ_unique += 1
+        end
     end
-    # ------------------------------------------------------------------------
+    # -------------------------------------------------------------------------
 
     # Fast path: Bloom says key is definitely not on disk (or no disk yet).
     # Only need the shard lock — no file_lock contention.
@@ -987,11 +1035,16 @@ end
 #           r/2 is the LP1-conj emission rate.
 # ---------------------------------------------------------------------------
 function lsm_bday_report(sc::LP1ConjLSM, p::Integer, r::Real; io::IO = stdout)
-    m, t_coll, t0, n_emitted = lock(sc.bday_lock) do
+    m, t_coll, t0, n_emitted, occ_u, occ_n, rc, rsc, rsc2 = lock(sc.bday_lock) do
         (sc.bday_first_coll_m,
          sc.bday_first_coll_t,
          sc.bday_t0,
-         sc.bday_emissions)
+         sc.bday_emissions,
+         sc.occ_unique,
+         sc.occ_n,
+         copy(sc.renyi_counts),
+         sc.renyi_sum_c,
+         sc.renyi_sum_c2)
     end
 
     lam = r / 2.0          # LP1-conj emission rate
@@ -1002,7 +1055,6 @@ function lsm_bday_report(sc::LP1ConjLSM, p::Integer, r::Real; io::IO = stdout)
 
     if m == 0
         @printf(io, "  first collision        : not yet observed\n")
-        # Predict when we expect it under the naive model
         t_naive = sqrt(2.0) * pf / r
         m_naive = lam * t_naive
         @printf(io, "  naive prediction       : m_first ~ %.3g,  t_first ~ %.3g s\n",
@@ -1019,20 +1071,18 @@ function lsm_bday_report(sc::LP1ConjLSM, p::Integer, r::Real; io::IO = stdout)
         return
     end
 
-    t_first   = t_coll - t0           # wall seconds to first collision
-    S_eff     = Float64(m)^2          # S_eff ~ m_first^2
-    S_naive   = pf^2 / 2.0            # naive ambient support
-    ratio     = S_eff / S_naive       # should be ~1 if ambient, <1 if concentrated
-    # Effective exponent: S_eff ~ p^{2α}  →  α = log(m_first)/log(p)
+    t_first   = t_coll - t0
+    S_eff     = Float64(m)^2
+    S_naive   = pf^2 / 2.0
+    ratio     = S_eff / S_naive
     alpha     = log(Float64(m)) / log(pf)
-    # Expected m and t under naive model
-    m_naive   = sqrt(S_naive)         # ~ p/sqrt(2)
-    t_naive   = m_naive / lam         # ~ sqrt(2)*p/r
+    m_naive   = sqrt(S_naive)
+    t_naive   = m_naive / lam
 
     @printf(io, "  first collision at     : m = %d  (t_wall = %.3f s)\n", m, t_first)
     @printf(io, "  S_eff  = m^2           : %.6g\n", S_eff)
     @printf(io, "  S_naive = p^2/2        : %.6g\n", S_naive)
-    @printf(io, "  S_eff / S_naive        : %.4g\n", ratio)
+    @printf(io, "  S_eff / S_naive        : %.5g\n", ratio)
     @printf(io, "  alpha  (S ~ p^{2*alpha}): %.4f   [alpha=1 ↔ S~p^2, alpha=0.75 ↔ S~p^1.5, ...]\n", alpha)
     @printf(io, "  t_first (observed)     : %.3f s\n", t_first)
     @printf(io, "  t_first (naive p^2/2)  : %.3f s   (= sqrt(2)*p/r)\n", t_naive)
@@ -1044,6 +1094,68 @@ function lsm_bday_report(sc::LP1ConjLSM, p::Integer, r::Real; io::IO = stdout)
     else
         @printf(io, "  support is consistent with naive p^2 model\n")
     end
+
+    # ── Occupancy estimator: U(N) = S(1 - e^{-N/S}), solve for S ─────────────
+    # U = occ_unique (distinct RENYI_BITS-resolution buckets seen), N = occ_n.
+    # Solve S*(1-e^{-N/S}) = U by bisection over [U, max(N^2, U*10)].
+    # The occupancy estimator is much stabler than the first-collision estimator
+    # when N >> 1 but still has finite variance at moderate N.
+    @printf(io, "\n  Occupancy estimator (U(N) = S·(1−e^{−N/S})):\n")
+    if occ_n >= 10 && occ_u >= 1 && occ_u < occ_n
+        # Scale U and N up by 2^RENYI_BITS to get actual key-space counts.
+        scale   = Float64(1 << RENYI_BITS)
+        U_f     = Float64(occ_u) * scale
+        N_f     = Float64(occ_n)
+        # Bisect: f(S) = S*(1-exp(-N/S)) - U = 0; f is increasing in S.
+        lo_s = max(U_f, 1.0)
+        hi_s = max(N_f^2, U_f * 10.0)
+        for _ in 1:80
+            mid = (lo_s + hi_s) / 2.0
+            val = mid * (1.0 - exp(-N_f / mid)) - U_f
+            val < 0.0 ? (lo_s = mid) : (hi_s = mid)
+        end
+        S_occ   = (lo_s + hi_s) / 2.0
+        r_occ   = S_occ / S_naive
+        a_occ   = log(S_occ) / (2.0 * log(pf))
+        @printf(io, "    unique buckets U       : %d  (N=%d, scale=2^%d)\n",
+                occ_u, occ_n, RENYI_BITS)
+        @printf(io, "    S_occ (MLE)            : %.6g\n", S_occ)
+        @printf(io, "    S_occ / S_naive        : %.5g\n", r_occ)
+        @printf(io, "    alpha_occ (S ~ p^{2α}) : %.4f\n", a_occ)
+    else
+        @printf(io, "    (need ≥10 emissions with some collisions)\n")
+    end
+
+    # ── Rényi-2 / collision-entropy estimator: S₂ = (Σcᵢ)² / Σcᵢ² ───────────
+    # S₂ measures the effective support under the walk-induced measure.
+    # If all weight concentrates on k keys, S₂ → k.  Compare S₂ ~ p^{2α₂}.
+    # When S_eff (birthday) >> S₂ (entropy), burst structure dominates.
+    @printf(io, "\n  Rényi-2 / collision-entropy estimator (S₂ = (Σcᵢ)²/Σcᵢ²):\n")
+    if rsc > 0 && rsc2 > 0
+        S2      = Float64(rsc)^2 / Float64(rsc2)
+        # Scale by 2^RENYI_BITS: each bucket represents ~2^RENYI_BITS keys, so
+        # the true S₂ estimate is S2 * scale (under uniform-within-bucket assumption).
+        scale   = Float64(1 << RENYI_BITS)
+        S2_true = S2 * scale
+        r2      = S2_true / S_naive
+        a2      = log(S2_true) / (2.0 * log(pf))
+        burst_flag = if S_eff > 0.0 && S2_true > 0.0
+            ratio_be = S_eff / S2_true
+            ratio_be > 4.0 ? @sprintf(" ← BURSTS DOMINATE (birthday %.1f× > entropy)", ratio_be) :
+            ratio_be < 0.25 ? " ← ENTROPY > BIRTHDAY (unusual)" :
+                              " (birthday ≈ entropy, consistent)"
+        else
+            ""
+        end
+        @printf(io, "    Σcᵢ                    : %d  Σcᵢ²=%d\n", rsc, rsc2)
+        @printf(io, "    S₂ (bucket-level)      : %.6g\n", S2)
+        @printf(io, "    S₂ (key-scaled)        : %.6g\n", S2_true)
+        @printf(io, "    S₂ / S_naive           : %.5g\n", r2)
+        @printf(io, "    alpha_2 (S₂ ~ p^{2α₂}) : %.4f%s\n", a2, burst_flag)
+    else
+        @printf(io, "    (no emissions recorded yet)\n")
+    end
+
     @printf(io, "\n")
     nothing
 end

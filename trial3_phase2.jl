@@ -727,21 +727,16 @@ function phase2_worker(G               ::Div2,
     #  the same residue class — creating algebraic coherence alongside the
     #  existing geometric inertia.  Outside a basin we use uniform selection.
     #
-    #  ALPHA_MOD=16: finer than the former 8, giving ~16 entries/bucket with
-    #  N_STEPS=256.  A parallel set of small-drift buckets (|step_a_i| <= median)
-    #  is used as a Tier-0 bias when hot_depth>=2.
+    #  ALPHA_MOD=8: ~32 entries/bucket with N_STEPS=256, keeping bucket diversity
+    #  high enough that the α-residue lock does not collapse the effective walk
+    #  support.  Run 2 with ALPHA_MOD=16 + small-drift filtering caused the
+    #  birthday collision to move from m=878k to m=47k (S_eff/S_naive dropped from
+    #  4.8 to 0.014), meaning the walk became trapped in a tiny attractor.
+    #  ALPHA_MOD=8 is reinstated as the correct operating point.
     #  The bucket for residue r contains all step indices i where
     #  step_a_i[i] mod ALPHA_MOD == r.
     # ==========================================================================
-    # ALPHA_MOD=16: finer residue partitioning than the former 8.
-    # With N_STEPS≈256 this gives ~16 entries/bucket on average — still enough
-    # for random selection to be non-degenerate.  The higher modulus narrows
-    # the α-residue cone we stay in during a hot basin, amplifying LP1-conj
-    # collision probability by ~16× in the joint (geom, α) space vs ~8× before.
-    # We also build a parallel set of "small-step" buckets (|step_a_i| < α_small_thresh)
-    # for a secondary within-basin bias: prefer steps that keep α drifting slowly,
-    # reducing decorrelation from the hot algebraic region.
-    ALPHA_MOD    = 16
+    ALPHA_MOD    = 8
     alpha_buckets = [Int[] for _ in 0:ALPHA_MOD-1]
     for i in 1:N_STEPS
         r = mod(step_a_i[i], ALPHA_MOD)
@@ -749,19 +744,9 @@ function phase2_worker(G               ::Div2,
     end
     # Fallback to full table if any bucket is empty.
     alpha_buckets_safe = [isempty(b) ? collect(1:N_STEPS) : b for b in alpha_buckets]
-
-    # Secondary "small-drift" step buckets: within each α-residue bucket, filter
-    # for steps where |step_a_i| is below the median |step_a_i| across all steps.
-    # These are used inside a hot basin to reduce α-diffusion rate.
-    _all_abs_a = sort!([abs(step_a_i[i]) for i in 1:N_STEPS])
-    _alpha_small_thresh = _all_abs_a[max(1, N_STEPS ÷ 2)]   # median
-    alpha_buckets_small = Vector{Vector{Int}}(undef, ALPHA_MOD)
-    for r in 0:ALPHA_MOD-1
-        full_bucket = alpha_buckets_safe[r + 1]
-        small_sub   = filter(i -> abs(step_a_i[i]) <= _alpha_small_thresh, full_bucket)
-        # Fall back to the full residue bucket if the small subset would be empty.
-        alpha_buckets_small[r + 1] = isempty(small_sub) ? full_bucket : small_sub
-    end
+    # NOTE: the secondary small-drift bucket (alpha_buckets_small) introduced in
+    # the previous edit is intentionally removed.  It was shown to over-constrain
+    # the step table and collapse the birthday support from p^2 to p^1.63.
 
     # ==========================================================================
     #  Structured walk cursors
@@ -862,9 +847,11 @@ function phase2_worker(G               ::Div2,
     #  ε = INERTIA_FLIP_PROB controls the mixing/recurrence tradeoff:
     #    ε → 0 : maximum persistence (nearly periodic orbit)
     #    ε → 1 : standard cursor walk (no inertia)
-    #  Empirically, ε ≈ 0.05 gives Allan slope ≈ 0.5+ and ACF ≈ 0.8 in tests.
+    #  At ε=0.05 the walk was over-coherent (Rényi-2 burst dominance 566×, phase-3 430k avg
+    #  steps vs 376k). Raising to ε=0.15 restores cold-path exploration while keeping
+    #  hot-epoch coherence (inertia persists ~7 steps on average before a flip).
     # ==========================================================================
-    INERTIA_FLIP_PROB = 0.05   # flip to new direction with 5% probability
+    INERTIA_FLIP_PROB = 0.15   # flip to new direction with 15% probability
 
     # Direction state: offset added to anchor_cursor on each "next" call when
     # inertia is active.  Same parity as anchor_stride so it stays coprime.
@@ -928,8 +915,8 @@ function phase2_worker(G               ::Div2,
     #  hit, wasting steers; 4500 fires well into the next expected hot window.
     #
     #  basin_hot_depth: within a hot epoch (basin_dry_streak == 0 after a hit),
-    #  we track how many consecutive LP-conj hits we have seen; this gates the
-    #  alpha-small-drift bias (only engage small-drift when hot_depth >= 2).
+    #  we track how many consecutive LP-conj hits we have seen (retained for
+    #  diagnostics; no longer gates any step-selection tier).
     # ==========================================================================
     BASIN_BUF_SIZE  = 32    # remember last 32 LP-conj hit anchor indices
     BASIN_TRIGGER   = 4500  # steer back after this many non-LP-conj steps
@@ -1050,25 +1037,33 @@ function phase2_worker(G               ::Div2,
     while rel_counter[] < rel_target && s.raw_steps < step_cap && (amortized_precompute || ort_b1(ort) == 0)
         s.raw_steps += 1
 
+        # --- Cold-path α-scramble: prevents α from drifting into a narrow band ----
+        # When the walk has been cold for BASIN_TRIGGER/2 consecutive valid steps
+        # without an LP1-conj hit, we randomize alpha_cur to a fresh value derived
+        # from the alpha cursor.  This breaks the implicit α-locking that occurs
+        # when the inertia walk stays near the same anchor region: without a scramble,
+        # alpha_cur accumulates the same sequence of step_a_i increments each time
+        # we re-enter the same anchor neighbourhood, reinforcing the same α-residue
+        # class and collapsing Rényi-2 support (observed: S₂ ~ p^1.46 without this).
+        # The scramble fires at most once per BASIN_TRIGGER/2 cold steps, so it
+        # does not disrupt in-basin hot epochs (basin_dry_streak == 0 there).
+        if basin_dry_streak > 0 && basin_dry_streak % (BASIN_TRIGGER ÷ 2) == 1
+            alpha_cur = mod(alpha_cur * 1000003 + s.raw_steps, ellI)  # cheap scramble
+        end
+
         # --- Take a step biased toward the current α-residue class when in-basin ---
         #
-        # Three-tier step selection:
-        #   Tier 0 (hot, confirmed cluster, hot_depth>=2): pick from alpha_buckets_small
-        #     — small-drift steps in the current α-residue.  Keeps α near the hot
-        #     algebraic value AND reduces geometric diffusion.
-        #   Tier 1 (in-basin, hot_depth<2): pick from alpha_buckets_safe for the
-        #     current α-residue.  Standard residue coherence, no drift restriction.
+        # Two-tier step selection:
+        #   Tier 1 (in-basin): pick from alpha_buckets_safe for the current α-residue.
+        #     Standard residue coherence; preserves diffusion across the full step table.
         #   Tier 2 (cold, basin_dry_streak>0): uniform step selection.
         #
-        # The small-drift tier engages only after 2 consecutive LP1-conj hits
-        # (hot_depth>=2) so a single random hit doesn't over-constrain the step table.
+        # The former Tier-0 small-drift bucket (alpha_buckets_small, hot_depth>=2) is
+        # removed: it collapsed birthday support from p^2 to p^1.63, trapping the walk
+        # in a small attractor and degrading phase-3 coverage.
         si = if basin_dry_streak == 0 && basin_buf_count > 0
             cur_r  = mod(alpha_cur, ALPHA_MOD) + 1   # target residue bucket (1-based)
-            if basin_hot_depth >= 2
-                bucket = alpha_buckets_small[cur_r]
-            else
-                bucket = alpha_buckets_safe[cur_r]
-            end
+            bucket = alpha_buckets_safe[cur_r]
             bucket[rand(1:length(bucket))]
         else
             rand(1:N_STEPS)
