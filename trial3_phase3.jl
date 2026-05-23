@@ -87,10 +87,14 @@ struct Phase2Tables
     ell            ::BigInt
 
     # IDEA 4: hot-basin anchor indices from the precompute walk.
-    # These are FB indices (1-based into fb) where LP1-conj events were
-    # recorded.  Phase 3 uses them to warm-start each trial's anchor cursor
-    # near productive geometric regions, exploiting state persistence.
     hot_basin_anchors ::Vector{Int}
+
+    # β=0 relation rows and α coefficients from the precompute walk.
+    # Used by phase3 to run cycle_union_solve and enrich atom_log_dict beyond
+    # what the dense RREF recovered (the DSU label-propagation can pin atoms
+    # that are graph-reachable from the RREF seeds even when algebraic rank is low).
+    rel_rows_pre   ::Vector{Dict{Int,Int}}
+    alpha_vec_pre  ::Vector{BigInt}
 end
 
 # ---------------------------------------------------------------------------
@@ -600,6 +604,122 @@ function phase3_solve_targets(
     @printf("   RSS at phase3 start: %.1f MB  |  GC live: %.1f MB\n",
             Sys.maxrss() / 1024^2, Base.gc_live_bytes() / 1024^2)
     flush(stdout)
+
+    # ── Enrich atom_log_dict via seeded BFS over the β=0 relation set ─────────
+    # The dense RREF in the precompute phase pins only pivot-column atoms —
+    # typically ~10% of the FB when β=0 relations are nearly linearly dependent
+    # due to the chained walk structure.  The remaining atoms are not algebraically
+    # underdetermined; they just weren't chosen as pivots.  Many are graph-reachable
+    # from the RREF seeds via the relation graph: if a β=0 row has exactly one
+    # unknown atom and all others are pinned, we can solve for the unknown directly.
+    #
+    # Algorithm: BFS work-queue.  Seeds are the RREF-verified atom_log_dict entries.
+    # For each relation with exactly one unknown atom, solve and pin it, then re-scan
+    # all relations that touch the newly-pinned atom.  O(|rel_rows| × avg_weight).
+    #
+    # Every derived value is verified against the group law before being accepted —
+    # this catches any gauge-freedom inconsistency (which would manifest as a
+    # verification failure rather than a wrong log slipping through).
+    if !isempty(tables.rel_rows_pre)
+        t_enrich  = time()
+        n_pre     = length(tables.atom_log_dict)
+        ellI_e    = Int(tables.ell)
+        nF_e      = length(tables.fb)
+
+        # Working log array: index → log, -1 if unknown.  Seeded from atom_log_dict.
+        work_logs = fill(-1, nF_e)
+        for (pt, l) in tables.atom_log_dict
+            idx = get(tables.pt2idx, pt, 0)
+            idx != 0 && (work_logs[idx] = l)
+        end
+
+        # For each atom index, which rows contain it?
+        atom_rows = [Int[] for _ in 1:nF_e]
+        for (ri, row) in enumerate(tables.rel_rows_pre)
+            for (j, _) in row
+                1 <= j <= nF_e && push!(atom_rows[j], ri)
+            end
+        end
+
+        # Row → number of unknowns (initialise from work_logs).
+        n_unknown = Vector{Int}(undef, length(tables.rel_rows_pre))
+        for (ri, row) in enumerate(tables.rel_rows_pre)
+            n_unknown[ri] = count(p -> 1 <= p[1] <= nF_e && work_logs[p[1]] == -1, row)
+        end
+
+        # Work queue: rows with exactly one unknown (initially).
+        in_queue = falses(length(tables.rel_rows_pre))
+        queue    = Int[]
+        for ri in eachindex(tables.rel_rows_pre)
+            if n_unknown[ri] == 1
+                push!(queue, ri)
+                in_queue[ri] = true
+            end
+        end
+
+        n_enriched  = 0
+        n_verified  = 0
+
+        while !isempty(queue)
+            ri  = pop!(queue)
+            in_queue[ri] = false
+            row     = tables.rel_rows_pre[ri]
+            neg_al  = Int(tables.alpha_vec_pre[ri])
+
+            # Re-count unknowns (state may have changed since enqueue).
+            unk_j    = 0
+            unk_coef = 0
+            known_sum = 0
+            valid    = true
+            for (j, coef) in row
+                (1 <= j <= nF_e) || (valid = false; break)
+                lj = work_logs[j]
+                if lj == -1
+                    if unk_j != 0
+                        valid = false; break   # two unknowns now — skip
+                    end
+                    unk_j    = j
+                    unk_coef = coef
+                else
+                    known_sum = mod(known_sum + coef * lj, ellI_e)
+                end
+            end
+            (!valid || unk_j == 0) && continue   # 0 or 2+ unknowns
+
+            # Solve: unk_coef * log(fb[unk_j]) ≡ neg_al - known_sum  (mod ell)
+            rhs = mod(neg_al - known_sum, ellI_e)
+            gcd(unk_coef, ellI_e) != 1 && continue   # non-invertible (shouldn't happen, ell prime)
+            log_new = mod(rhs * powermod(unk_coef, ellI_e - 2, ellI_e), ellI_e)
+
+            # Verify against the group law before accepting.
+            pt = tables.fb[unk_j]
+            if !jac_isid(jac_sub(jac_mul(G, log_new, tables.ell), mumford1(pt[1], pt[2])))
+                continue   # gauge-inconsistent — skip
+            end
+
+            n_verified += 1
+            work_logs[unk_j] = log_new
+
+            if !haskey(tables.atom_log_dict, pt)
+                tables.atom_log_dict[pt] = log_new
+                n_enriched += 1
+            end
+
+            # Decrement unknown count for all rows containing unk_j, enqueue new unit-unknowns.
+            for ri2 in atom_rows[unk_j]
+                n_unknown[ri2] > 0 && (n_unknown[ri2] -= 1)
+                if n_unknown[ri2] == 1 && !in_queue[ri2]
+                    push!(queue, ri2)
+                    in_queue[ri2] = true
+                end
+            end
+        end
+
+        @printf("   [enrich] BFS propagation: %d → %d / %d atom logs  (+%d new, %d verified, %.3fs)\n",
+                n_pre, length(tables.atom_log_dict), nF_e,
+                n_enriched, n_verified, time() - t_enrich)
+        flush(stdout)
+    end
 
     t0 = time()
     @sync for i in 1:n

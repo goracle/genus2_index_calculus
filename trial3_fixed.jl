@@ -1281,6 +1281,79 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
             @printf("  [DIAG] atom log verification: %d correct, %d excluded (gauge/zero)\n",
                     n_ok, n_bad)
             flush(stdout)
+
+            # ── BFS enrichment: propagate RREF seeds through relation graph ───
+            # The RREF pins pivot columns only.  Many non-pivot atoms are
+            # graph-reachable: a β=0 row with one unknown + all others pinned
+            # directly solves for the unknown.  We iterate to convergence.
+            t_bfs = time()
+            ellI_bfs = Int(ell)
+
+            work_bfs = fill(-1, nF_pre)
+            for (pt, l) in atom_log_dict
+                idx = get(pt2idx_pre, pt, 0)
+                idx != 0 && (work_bfs[idx] = l)
+            end
+
+            atom_rows_bfs = [Int[] for _ in 1:nF_pre]
+            for (ri, row) in enumerate(rel_rows_pre)
+                for (j, _) in row
+                    1 <= j <= nF_pre && push!(atom_rows_bfs[j], ri)
+                end
+            end
+
+            n_unk_bfs = [count(p -> 1 <= p[1] <= nF_pre && work_bfs[p[1]] == -1, row)
+                         for row in rel_rows_pre]
+
+            in_q_bfs  = falses(length(rel_rows_pre))
+            q_bfs     = Int[]
+            for ri in eachindex(rel_rows_pre)
+                if n_unk_bfs[ri] == 1
+                    push!(q_bfs, ri); in_q_bfs[ri] = true
+                end
+            end
+
+            n_bfs_new = 0
+            while !isempty(q_bfs)
+                ri = pop!(q_bfs); in_q_bfs[ri] = false
+                row_bfs  = rel_rows_pre[ri]
+                neg_al_b = Int(alpha_vec_pre[ri])
+                unk_j = 0; unk_c = 0; ksum = 0; ok = true
+                for (j, c) in row_bfs
+                    (1 <= j <= nF_pre) || (ok = false; break)
+                    lj = work_bfs[j]
+                    if lj == -1
+                        unk_j != 0 && (ok = false; break)
+                        unk_j = j; unk_c = c
+                    else
+                        ksum = mod(ksum + c * lj, ellI_bfs)
+                    end
+                end
+                (!ok || unk_j == 0) && continue
+                gcd(unk_c, ellI_bfs) != 1 && continue
+                rhs_b   = mod(neg_al_b - ksum, ellI_bfs)
+                log_new = mod(rhs_b * powermod(unk_c, ellI_bfs - 2, ellI_bfs), ellI_bfs)
+                pt_b    = fb_pre[unk_j]
+                jac_isid(jac_sub(jac_mul(G, log_new, BigInt(ell)),
+                                 mumford1(pt_b[1], pt_b[2]))) || continue
+                work_bfs[unk_j] = log_new
+                if !haskey(atom_log_dict, pt_b)
+                    atom_log_dict[pt_b] = log_new
+                    n_bfs_new += 1
+                end
+                for ri2 in atom_rows_bfs[unk_j]
+                    n_unk_bfs[ri2] > 0 && (n_unk_bfs[ri2] -= 1)
+                    if n_unk_bfs[ri2] == 1 && !in_q_bfs[ri2]
+                        push!(q_bfs, ri2); in_q_bfs[ri2] = true
+                    end
+                end
+            end
+
+            if n_bfs_new > 0
+                @printf("  [DIAG] BFS enrichment: +%d atom logs  → %d / %d total  (%.3fs)\n",
+                        n_bfs_new, length(atom_log_dict), nF_pre, time() - t_bfs)
+                flush(stdout)
+            end
         catch e
             error("amortized RREF solve failed: $e")
         end
@@ -1343,7 +1416,9 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
             shared_lp1_conj_pre,
             shared_lp2_conj_pre,
             BigInt(ell),
-            hot_basin_anchors_merged)
+            hot_basin_anchors_merged,
+            rel_rows_pre,
+            alpha_vec_pre)
 
         n_unresolved = length(fb_pre) - length(atom_log_dict)
         n_unresolved > 0 && @printf("  [WARN] %d / %d FB atoms have unverified logs; closures that touch them will simply be skipped\n",

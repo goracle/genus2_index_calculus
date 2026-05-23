@@ -727,18 +727,41 @@ function phase2_worker(G               ::Div2,
     #  the same residue class — creating algebraic coherence alongside the
     #  existing geometric inertia.  Outside a basin we use uniform selection.
     #
-    #  ALPHA_MOD is kept small (8) so each bucket has ~N_STEPS/8 entries and
-    #  the bias doesn't starve any geometric region.  The bucket for residue r
-    #  contains all step indices i where step_a_i[i] mod ALPHA_MOD == r.
+    #  ALPHA_MOD=16: finer than the former 8, giving ~16 entries/bucket with
+    #  N_STEPS=256.  A parallel set of small-drift buckets (|step_a_i| <= median)
+    #  is used as a Tier-0 bias when hot_depth>=2.
+    #  The bucket for residue r contains all step indices i where
+    #  step_a_i[i] mod ALPHA_MOD == r.
     # ==========================================================================
-    ALPHA_MOD    = 8
+    # ALPHA_MOD=16: finer residue partitioning than the former 8.
+    # With N_STEPS≈256 this gives ~16 entries/bucket on average — still enough
+    # for random selection to be non-degenerate.  The higher modulus narrows
+    # the α-residue cone we stay in during a hot basin, amplifying LP1-conj
+    # collision probability by ~16× in the joint (geom, α) space vs ~8× before.
+    # We also build a parallel set of "small-step" buckets (|step_a_i| < α_small_thresh)
+    # for a secondary within-basin bias: prefer steps that keep α drifting slowly,
+    # reducing decorrelation from the hot algebraic region.
+    ALPHA_MOD    = 16
     alpha_buckets = [Int[] for _ in 0:ALPHA_MOD-1]
     for i in 1:N_STEPS
         r = mod(step_a_i[i], ALPHA_MOD)
         push!(alpha_buckets[r + 1], i)   # +1 for 1-based indexing
     end
-    # Fallback to full table if any bucket is empty (shouldn't happen with N_STEPS=256).
+    # Fallback to full table if any bucket is empty.
     alpha_buckets_safe = [isempty(b) ? collect(1:N_STEPS) : b for b in alpha_buckets]
+
+    # Secondary "small-drift" step buckets: within each α-residue bucket, filter
+    # for steps where |step_a_i| is below the median |step_a_i| across all steps.
+    # These are used inside a hot basin to reduce α-diffusion rate.
+    _all_abs_a = sort!([abs(step_a_i[i]) for i in 1:N_STEPS])
+    _alpha_small_thresh = _all_abs_a[max(1, N_STEPS ÷ 2)]   # median
+    alpha_buckets_small = Vector{Vector{Int}}(undef, ALPHA_MOD)
+    for r in 0:ALPHA_MOD-1
+        full_bucket = alpha_buckets_safe[r + 1]
+        small_sub   = filter(i -> abs(step_a_i[i]) <= _alpha_small_thresh, full_bucket)
+        # Fall back to the full residue bucket if the small subset would be empty.
+        alpha_buckets_small[r + 1] = isempty(small_sub) ? full_bucket : small_sub
+    end
 
     # ==========================================================================
     #  Structured walk cursors
@@ -890,54 +913,100 @@ function phase2_worker(G               ::Div2,
     end
 
     # ==========================================================================
-    #  IDEA 4: LP-basin memory — track recent LP1-conj hit anchor indices
+    #  IDEA 4 (enhanced): LP-basin memory with weighted anchor scoring
     #
-    #  When the walk produces a LP1-conj hit, we record the current anchor
-    #  index in a small circular buffer.  After `BASIN_TRIGGER` consecutive
-    #  non-LP steps, we steer the anchor back toward the most recently visited
-    #  basin by jumping anchor_cursor to the stored index.  This implements
-    #  the "productive basin" concept: the walk identifies hot regions by
-    #  self-observation and preferentially revisits them.
+    #  When the walk produces a LP1-conj hit, we record both the current anchor
+    #  index AND a hit count for that anchor.  `basin_steer_anchor` now picks the
+    #  highest-hit-count entry rather than the most recent one, so we steer toward
+    #  the algebraically hottest remembered anchor, not just the newest one.
     #
-    #  The buffer size BASIN_BUF_SIZE and trigger BASIN_TRIGGER are tuned so
-    #  that the basin memory does not override the inertia mechanism — they
-    #  act at different timescales (BASIN_TRIGGER >> typical inertia orbit).
+    #  BASIN_BUF_SIZE=32: doubled from 16 so we remember more candidates across
+    #  the observed ~2800-step inter-arrival mean.
+    #
+    #  BASIN_TRIGGER tuning: set to ~1.5x observed inter-arrival mean (2826) ->
+    #  ~4500 steps.  The previous value of 2000 fired before the expected next
+    #  hit, wasting steers; 4500 fires well into the next expected hot window.
+    #
+    #  basin_hot_depth: within a hot epoch (basin_dry_streak == 0 after a hit),
+    #  we track how many consecutive LP-conj hits we have seen; this gates the
+    #  alpha-small-drift bias (only engage small-drift when hot_depth >= 2).
     # ==========================================================================
-    BASIN_BUF_SIZE  = 16    # remember last 16 LP-conj hit anchor indices
-    BASIN_TRIGGER   = 2000  # steer back after this many non-LP steps
+    BASIN_BUF_SIZE  = 32    # remember last 32 LP-conj hit anchor indices
+    BASIN_TRIGGER   = 4500  # steer back after this many non-LP-conj steps
 
-    basin_buf         = zeros(Int, BASIN_BUF_SIZE)   # circular buffer
-    basin_buf_head    = 1                              # write head
-    basin_buf_count   = 0                              # how many valid entries
-    basin_dry_streak  = 0                              # steps since last LP-conj hit
+    basin_buf         = zeros(Int, BASIN_BUF_SIZE)   # circular buffer: anchor indices
+    basin_hit_counts  = zeros(Int, BASIN_BUF_SIZE)   # parallel: hit count for each slot
+    basin_buf_head    = 1
+    basin_buf_count   = 0
+    basin_dry_streak  = 0
+    basin_hot_depth   = 0   # consecutive LP1-conj hits since last dry period
+
+    # Diagnostics: count how many times basin steering actually fired, and how
+    # many LP1-conj hits followed within BASIN_TRIGGER steps of a steer.
+    basin_steers_fired    = 0
+    basin_steers_hit      = 0
+    basin_steer_countdown = 0   # steps remaining in the post-steer observation window
 
     @inline function record_basin_hit!(anchor_idx::Int)
-        basin_buf[basin_buf_head] = anchor_idx
-        basin_buf_head   = mod(basin_buf_head, BASIN_BUF_SIZE) + 1
-        basin_buf_count  = min(basin_buf_count + 1, BASIN_BUF_SIZE)
+        # Search for this anchor_idx in the buffer; if found, increment its count.
+        # Otherwise insert into the next slot (LRU eviction of oldest entry).
+        found_slot = 0
+        for k in 1:basin_buf_count
+            slot = mod(basin_buf_head - 1 - k + BASIN_BUF_SIZE, BASIN_BUF_SIZE) + 1
+            if basin_buf[slot] == anchor_idx
+                found_slot = slot
+                break
+            end
+        end
+        if found_slot != 0
+            basin_hit_counts[found_slot] += 1
+        else
+            basin_buf[basin_buf_head]        = anchor_idx
+            basin_hit_counts[basin_buf_head] = 1
+            basin_buf_head  = mod(basin_buf_head, BASIN_BUF_SIZE) + 1
+            basin_buf_count = min(basin_buf_count + 1, BASIN_BUF_SIZE)
+        end
         basin_dry_streak = 0
+        basin_hot_depth += 1
+        # If a steer was pending observation, credit it.
+        if basin_steer_countdown > 0
+            basin_steers_hit      += 1
+            basin_steer_countdown  = 0
+        end
     end
 
-    # Return an anchor index to steer toward, or 0 if basin is empty/inactive.
+    # Return the anchor index of the highest-hit-count slot, or 0 if basin
+    # is inactive / dry streak has not reached trigger.
     @inline function basin_steer_anchor()::Int
         basin_buf_count == 0 && return 0
         basin_dry_streak < BASIN_TRIGGER && return 0
-        # Pick a random entry from the hot-basin buffer with small random jitter
-        # so we don't re-trace the exact same orbit.
-        base_idx = basin_buf[mod(basin_buf_head - 2 + BASIN_BUF_SIZE, BASIN_BUF_SIZE) + 1]
-        base_idx == 0 && return 0
-        jitter   = rand(-3:3)
+        # Find the slot with the highest hit count.
+        best_slot  = 0
+        best_count = 0
+        for k in 1:basin_buf_count
+            slot = mod(basin_buf_head - 1 - k + BASIN_BUF_SIZE, BASIN_BUF_SIZE) + 1
+            if basin_buf[slot] != 0 && basin_hit_counts[slot] > best_count
+                best_count = basin_hit_counts[slot]
+                best_slot  = slot
+            end
+        end
+        best_slot == 0 && return 0
+        base_idx = basin_buf[best_slot]
+        jitter   = rand(-2:2)
         return mod(base_idx - 1 + jitter, nF_cur) + 1
     end
 
     # Unified next_anchor that combines inertia + basin steering.
     # Priority: basin steer (when dry streak is long) > inertia > affine.
     @inline function next_anchor_structured()
-        # Basin steering: jump to a hot region if we've been cold too long.
+        # Basin steering: jump to a hot region if we have been cold too long.
         steered = basin_steer_anchor()
         if steered != 0
-            anchor_cursor    = steered
-            basin_dry_streak = 0
+            anchor_cursor         = steered
+            basin_dry_streak      = 0
+            basin_hot_depth       = 0    # reset hot depth after a forced steer
+            basin_steers_fired   += 1
+            basin_steer_countdown = BASIN_TRIGGER   # observe next BASIN_TRIGGER steps for a hit
         end
         # Fall through to inertia walk from (possibly updated) cursor.
         return next_anchor_inertia()
@@ -982,14 +1051,24 @@ function phase2_worker(G               ::Div2,
         s.raw_steps += 1
 
         # --- Take a step biased toward the current α-residue class when in-basin ---
-        # In a hot basin (basin_dry_streak == 0), pick from the step bucket that
-        # keeps alpha_cur in the same residue class mod ALPHA_MOD.  This couples
-        # the algebraic tag (α mod ALPHA_MOD) to the geometric basin, amplifying
-        # LP1-conj collision probability by ~ALPHA_MOD× in the joint (geom, α) space.
-        # Outside the basin, use uniform selection to maintain full coverage.
+        #
+        # Three-tier step selection:
+        #   Tier 0 (hot, confirmed cluster, hot_depth>=2): pick from alpha_buckets_small
+        #     — small-drift steps in the current α-residue.  Keeps α near the hot
+        #     algebraic value AND reduces geometric diffusion.
+        #   Tier 1 (in-basin, hot_depth<2): pick from alpha_buckets_safe for the
+        #     current α-residue.  Standard residue coherence, no drift restriction.
+        #   Tier 2 (cold, basin_dry_streak>0): uniform step selection.
+        #
+        # The small-drift tier engages only after 2 consecutive LP1-conj hits
+        # (hot_depth>=2) so a single random hit doesn't over-constrain the step table.
         si = if basin_dry_streak == 0 && basin_buf_count > 0
-            cur_r   = mod(alpha_cur, ALPHA_MOD) + 1   # target residue bucket (1-based)
-            bucket  = alpha_buckets_safe[cur_r]
+            cur_r  = mod(alpha_cur, ALPHA_MOD) + 1   # target residue bucket (1-based)
+            if basin_hot_depth >= 2
+                bucket = alpha_buckets_small[cur_r]
+            else
+                bucket = alpha_buckets_safe[cur_r]
+            end
             bucket[rand(1:length(bucket))]
         else
             rand(1:N_STEPS)
@@ -1018,6 +1097,12 @@ function phase2_worker(G               ::Div2,
         RS_mumford === SENTINEL_MUMFORD && continue   # division failed
 
         s.hits_total += 1
+        # Basin dry streak: advance on every valid step; reset inside record_basin_hit!
+        # on LP1-conj hits.  Counting all valid steps (not just 3-LP) gives a more
+        # accurate picture of how long we have been away from LP1-conj events.
+        basin_dry_streak += 1
+        # Steer observation countdown: tick down on every valid step.
+        basin_steer_countdown > 0 && (basin_steer_countdown -= 1)
 
         # --- Periodic progress report ---
         if verbose
@@ -1071,9 +1156,14 @@ function phase2_worker(G               ::Div2,
             lp_key32 = canonical_lp1_conj_key(RS_mumford::NTuple{4,Int})
             if i0 != 0
                 s.hits_lp1_conj += 1
-                # IDEA 4: record basin hit — LP1-conj steps are the "productive"
-                # events; remember this anchor index for future basin steering.
-                record_basin_hit!(anchor_cursor)
+                # IDEA 4: record basin hit using the FB index of P0 (the anchor
+                # that produced this LP1-conj step), not anchor_cursor which has
+                # already been advanced to the *next* anchor.
+                let p0_basin_idx = get(pt2idx, P0, 0)
+                    record_basin_hit!(p0_basin_idx != 0 ? p0_basin_idx : anchor_cursor)
+                end
+                # basin_steer_countdown is ticked globally at hits_total; record_basin_hit!
+                # resets it to 0 on a credited hit -- no separate decrement here.
                 cur_pt = handle_1lp_conj!(lp_key32, i0, neg_al, neg_be, ell,
                                            fb, nF_cur, G, T,
                                            alpha_vec, beta_vec, rel_rows, rel_counter,
@@ -1120,8 +1210,9 @@ function phase2_worker(G               ::Div2,
                 push!(sample_phase2_rels, (D_cur, neg_al, neg_be,
                                            P0, R, S))
             end
-            # IDEA 4: 0-LP is a productive step — reset dry streak.
-            basin_dry_streak = 0
+            # IDEA 4: 0-LP is a full relation but NOT a LP1-conj event.
+            # basin_dry_streak is now incremented globally at hits_total and reset
+            # only inside record_basin_hit! on LP1-conj hits; do not touch it here.
             cur_pt = next_anchor()
             record_random_anchor!(phi_bias_stat)
 
@@ -1189,8 +1280,8 @@ function phase2_worker(G               ::Div2,
             #  3-LP: discard step, advance structured cursor
             # ------------------------------------------------------------------
             s.hits_skip += 1
-            # IDEA 4: non-productive step — advance dry streak for basin steering.
-            basin_dry_streak += 1
+            # basin_dry_streak is now incremented globally on every valid step
+            # at the hits_total site above; no separate increment needed here.
             cur_pt = next_anchor()
             record_random_anchor!(phi_bias_stat)
         end
@@ -1222,6 +1313,21 @@ function phase2_worker(G               ::Div2,
             @printf("           first-emission raw step gaps (up to 10): %s\n",
                     join(string.(gaps), " "))
         end
+        # Basin steer diagnostic report
+        steer_hit_rate = basin_steers_fired > 0 ?
+            100.0 * basin_steers_hit / basin_steers_fired : 0.0
+        @printf("           basin_steers: fired=%d  credited_hits=%d  hit_rate=%.1f%%  buf_count=%d\n",
+                basin_steers_fired, basin_steers_hit, steer_hit_rate, basin_buf_count)
+        if basin_buf_count > 0
+            # Report top-3 hot anchors by hit count for spatial diagnostics.
+            anchor_pairs = [(basin_hit_counts[mod(basin_buf_head - 1 - k + BASIN_BUF_SIZE, BASIN_BUF_SIZE) + 1],
+                             basin_buf[mod(basin_buf_head - 1 - k + BASIN_BUF_SIZE, BASIN_BUF_SIZE) + 1])
+                            for k in 1:basin_buf_count]
+            sort!(anchor_pairs, rev=true)
+            top_n = min(3, length(anchor_pairs))
+            @printf("           top-%d hot anchors (hits, fb_idx): %s\n",
+                    top_n, join(["($c,$i)" for (c,i) in anchor_pairs[1:top_n]], "  "))
+        end
         flush(stdout)
     end
 
@@ -1248,9 +1354,19 @@ function phase2_worker(G               ::Div2,
             rank_growth   = rank_growth,
             lp_col        = lp_col,
             phi_bias_stat = phi_bias_stat,
-            # IDEA 4: export hot-basin anchor indices so phase3 can warm-start
-            # its walk near productive LP-conj regions from the precompute.
-            basin_hot_anchors = basin_buf[1:basin_buf_count])
+            # IDEA 4 (enhanced): export hot-basin anchors with hit counts so
+            # phase3 can warm-start near the algebraically hottest FB regions.
+            # basin_hot_anchors is a Vector of (hit_count, fb_idx) pairs sorted
+            # by hit_count descending.
+            basin_hot_anchors = let
+                pairs = [(basin_hit_counts[mod(basin_buf_head - 1 - k + BASIN_BUF_SIZE, BASIN_BUF_SIZE) + 1],
+                          basin_buf[mod(basin_buf_head - 1 - k + BASIN_BUF_SIZE, BASIN_BUF_SIZE) + 1])
+                         for k in 1:basin_buf_count if basin_buf[mod(basin_buf_head - 1 - k + BASIN_BUF_SIZE, BASIN_BUF_SIZE) + 1] != 0]
+                sort!(pairs, rev=true)
+                [p[2] for p in pairs]   # return just the fb indices, sorted by hotness
+            end,
+            basin_steers_fired = basin_steers_fired,
+            basin_steers_hit   = basin_steers_hit)
 end
 
 
