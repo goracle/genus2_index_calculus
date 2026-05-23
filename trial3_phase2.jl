@@ -719,6 +719,28 @@ function phase2_worker(G               ::Div2,
     end
 
     # ==========================================================================
+    #  α-residue step buckets  (algebraic inertia)
+    #
+    #  Partition the step table by (step_a_i[i] mod ALPHA_MOD) into ALPHA_MOD
+    #  buckets.  When the walk is inside a hot geometric basin (basin_dry_streak
+    #  == 0), we bias step selection toward the bucket that keeps alpha_cur in
+    #  the same residue class — creating algebraic coherence alongside the
+    #  existing geometric inertia.  Outside a basin we use uniform selection.
+    #
+    #  ALPHA_MOD is kept small (8) so each bucket has ~N_STEPS/8 entries and
+    #  the bias doesn't starve any geometric region.  The bucket for residue r
+    #  contains all step indices i where step_a_i[i] mod ALPHA_MOD == r.
+    # ==========================================================================
+    ALPHA_MOD    = 8
+    alpha_buckets = [Int[] for _ in 0:ALPHA_MOD-1]
+    for i in 1:N_STEPS
+        r = mod(step_a_i[i], ALPHA_MOD)
+        push!(alpha_buckets[r + 1], i)   # +1 for 1-based indexing
+    end
+    # Fallback to full table if any bucket is empty (shouldn't happen with N_STEPS=256).
+    alpha_buckets_safe = [isempty(b) ? collect(1:N_STEPS) : b for b in alpha_buckets]
+
+    # ==========================================================================
     #  Structured walk cursors
     #
     #  Instead of fully random anchor and alpha restarts, each thread maintains
@@ -753,9 +775,10 @@ function phase2_worker(G               ::Div2,
         mod(_small_primes[min(tid, length(_small_primes))], nF_cur - 1) + 1 :
         1
     # Ensure stride is coprime to nF_cur via gcd reduction; fallback to 1.
+    # Ensure stride is coprime to nF_cur via gcd reduction; fallback to 1.
     function _gcd(a, b); while b != 0; a, b = b, a % b; end; a; end
     while nF_cur > 1 && _gcd(anchor_stride, nF_cur) != 1
-        anchor_stride = mod(anchor_stride + 1, nF_cur) + 1
+        anchor_stride = mod(anchor_stride, nF_cur) + 1
     end
     anchor_cursor = mod((tid - 1) * anchor_stride, max(1, nF_cur)) + 1
 
@@ -818,7 +841,7 @@ function phase2_worker(G               ::Div2,
     #    ε → 1 : standard cursor walk (no inertia)
     #  Empirically, ε ≈ 0.05 gives Allan slope ≈ 0.5+ and ACF ≈ 0.8 in tests.
     # ==========================================================================
-    const INERTIA_FLIP_PROB = 0.05   # flip to new direction with 5% probability
+    INERTIA_FLIP_PROB = 0.05   # flip to new direction with 5% probability
 
     # Direction state: offset added to anchor_cursor on each "next" call when
     # inertia is active.  Same parity as anchor_stride so it stays coprime.
@@ -880,8 +903,8 @@ function phase2_worker(G               ::Div2,
     #  that the basin memory does not override the inertia mechanism — they
     #  act at different timescales (BASIN_TRIGGER >> typical inertia orbit).
     # ==========================================================================
-    const BASIN_BUF_SIZE  = 16    # remember last 16 LP-conj hit anchor indices
-    const BASIN_TRIGGER   = 2000  # steer back after this many non-LP steps
+    BASIN_BUF_SIZE  = 16    # remember last 16 LP-conj hit anchor indices
+    BASIN_TRIGGER   = 2000  # steer back after this many non-LP steps
 
     basin_buf         = zeros(Int, BASIN_BUF_SIZE)   # circular buffer
     basin_buf_head    = 1                              # write head
@@ -958,8 +981,19 @@ function phase2_worker(G               ::Div2,
     while rel_counter[] < rel_target && s.raw_steps < step_cap && (amortized_precompute || ort_b1(ort) == 0)
         s.raw_steps += 1
 
-        # --- Take a random precomputed step ---
-        si        = rand(1:N_STEPS)
+        # --- Take a step biased toward the current α-residue class when in-basin ---
+        # In a hot basin (basin_dry_streak == 0), pick from the step bucket that
+        # keeps alpha_cur in the same residue class mod ALPHA_MOD.  This couples
+        # the algebraic tag (α mod ALPHA_MOD) to the geometric basin, amplifying
+        # LP1-conj collision probability by ~ALPHA_MOD× in the joint (geom, α) space.
+        # Outside the basin, use uniform selection to maintain full coverage.
+        si = if basin_dry_streak == 0 && basin_buf_count > 0
+            cur_r   = mod(alpha_cur, ALPHA_MOD) + 1   # target residue bucket (1-based)
+            bucket  = alpha_buckets_safe[cur_r]
+            bucket[rand(1:length(bucket))]
+        else
+            rand(1:N_STEPS)
+        end
         D_cur     = jac_add(D_cur, step_D[si])
         alpha_cur = mod(alpha_cur + step_a_i[si], ellI)
         beta_cur  = beta_zero ? 0 : mod(beta_cur + step_b_i[si], ellI)

@@ -220,8 +220,8 @@ function phase3_trial_worker(
                        clamp(hot_anchors[mod(trial_idx - 1, length(hot_anchors)) + 1], 1, nF)
 
     inertia_dir_p3 = anchor_stride_p3
-    const P3_INERTIA_FLIP  = 0.05
-    const P3_BASIN_TRIGGER = 500
+    P3_INERTIA_FLIP  = 0.05
+    P3_BASIN_TRIGGER = 500
     p3_dry_streak = 0
 
     # Mini basin buffer: track LP-conj hits locally within this trial.
