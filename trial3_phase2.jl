@@ -1037,20 +1037,6 @@ function phase2_worker(G               ::Div2,
     while rel_counter[] < rel_target && s.raw_steps < step_cap && (amortized_precompute || ort_b1(ort) == 0)
         s.raw_steps += 1
 
-        # --- Cold-path α-scramble: prevents α from drifting into a narrow band ----
-        # When the walk has been cold for BASIN_TRIGGER/2 consecutive valid steps
-        # without an LP1-conj hit, we randomize alpha_cur to a fresh value derived
-        # from the alpha cursor.  This breaks the implicit α-locking that occurs
-        # when the inertia walk stays near the same anchor region: without a scramble,
-        # alpha_cur accumulates the same sequence of step_a_i increments each time
-        # we re-enter the same anchor neighbourhood, reinforcing the same α-residue
-        # class and collapsing Rényi-2 support (observed: S₂ ~ p^1.46 without this).
-        # The scramble fires at most once per BASIN_TRIGGER/2 cold steps, so it
-        # does not disrupt in-basin hot epochs (basin_dry_streak == 0 there).
-        if basin_dry_streak > 0 && basin_dry_streak % (BASIN_TRIGGER ÷ 2) == 1
-            alpha_cur = mod(alpha_cur * 1000003 + s.raw_steps, ellI)  # cheap scramble
-        end
-
         # --- Take a step biased toward the current α-residue class when in-basin ---
         #
         # Two-tier step selection:
