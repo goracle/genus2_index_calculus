@@ -346,7 +346,8 @@ end
         shared_lp1_conj ::Union{ShardedLP1Conj{V}, LP1ConjLSM{V}},
         rank_growth     ::Vector{Tuple{Int,Int}},
         combined_scratch::Dict{Int,Int},
-        P0              ::NTuple{2,Int})::NTuple{2,Int} where V
+        P0              ::NTuple{2,Int},
+        phi_bias_stat   ::PhiBiasStat)::NTuple{2,Int} where V
 
     si = conj_shard_idx(lp_key)
 
@@ -394,6 +395,10 @@ end
                 push!(rank_growth, (s.raw_steps, length(rel_rows)))
             s.hits_full += 1; s.hits_1lp_conj_emit += 1; s.rel_local += 1
             Threads.atomic_add!(rel_counter, 1)
+            # Record arrival only on actual emission, not on every conj hit.
+            # Pass lp_key so the CIR fingerprint analysis can correlate
+            # temporally-close hits with shared algebraic structure.
+            record_lp1_conj_hit!(phi_bias_stat, s.raw_steps, lp_key)
             return fb[rand(1:nF_cur)]
         end
         # combined_al==0 or i0==prev_col: useless close, fall through to random jump
@@ -833,12 +838,11 @@ function phase2_worker(G               ::Div2,
             lp_key32 = canonical_lp1_conj_key(RS_mumford::NTuple{4,Int})
             if i0 != 0
                 s.hits_lp1_conj += 1
-                record_lp1_conj_hit!(phi_bias_stat, s.raw_steps)
                 cur_pt = handle_1lp_conj!(lp_key32, i0, neg_al, neg_be, ell,
                                            fb, nF_cur, G, T,
                                            alpha_vec, beta_vec, rel_rows, rel_counter,
                                            ort, s, shared_lp1_conj, rank_growth,
-                                           combined_scratch, P0)
+                                           combined_scratch, P0, phi_bias_stat)
             elseif enable_lp2_conj
                 cur_pt = handle_2lp_conj!(P0, RS_mumford::NTuple{4,Int}, neg_al, neg_be, ell,
                                            fb, nF_cur, G, T,

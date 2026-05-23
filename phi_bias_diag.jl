@@ -89,10 +89,14 @@ mutable struct PhiBiasStat
     run_hist_split   ::Vector{Int}   # length MAX_RUN_LEN
     run_hist_nonsplit::Vector{Int}   # length MAX_RUN_LEN
 
-    # ---- Seq 2: LP1-conj inter-arrival Fano factor -----------------------------
+    # ---- Seq 2: LP1-conj inter-arrival Fano factor + conditional intensity -----
     # raw-step index at each 1-LP-conj hit; used post-run to compute inter-arrival
     # gaps → variance/mean (Fano factor ≈ 1 ↔ Poisson; >> 1 ↔ clustering).
     lp1_conj_arrivals::Vector{Int}
+    # Mumford key (CanonicalLP1Key = UInt128) at each emission, parallel to
+    # lp1_conj_arrivals.  Used to detect whether temporally-close hits also share
+    # algebraic structure (same key → same Jacobian neighbourhood).
+    lp1_conj_keys    ::Vector{UInt128}
 
     # ---- Seq 3: post-LP anchor correlation -------------------------------------
     # Compare a-histograms conditioned on how the anchor P0 was chosen:
@@ -121,8 +125,9 @@ function PhiBiasStat(p::Int)
         0,                             # _run_len
         zeros(Int, MAX_RUN_LEN),       # run_hist_split
         zeros(Int, MAX_RUN_LEN),       # run_hist_nonsplit
-        # Seq 2: LP1-conj arrivals
+        # Seq 2: LP1-conj arrivals + keys
         Int[],
+        UInt128[],
         # Seq 3: post-LP anchor
         zeros(Int, nbuckets),          # post_lp_a_hist
         zeros(Int, nbuckets),          # baseline_a_hist
@@ -226,13 +231,24 @@ end
 end
 
 # ---------------------------------------------------------------------------
-#  record_lp1_conj_hit! — called in the walk loop each time a 1-LP-conj step
-#  is detected.  raw_step is the current s.raw_steps counter.
-#  Sets _prev_anchor_was_lp = true so the NEXT phi step records into
-#  post_lp_a_hist.
+#  record_lp1_conj_hit! — called inside handle_1lp_conj! only when a relation
+#  is actually emitted (i.e. a birthday match is closed).  raw_step is the
+#  current s.raw_steps counter passed through from the worker.
+#  lp_key is the CanonicalLP1Key (UInt128) of the emitted LP1-conj hit,
+#  captured at the emit site for the fingerprint / CIR analysis.
+#
+#  Previous design called this on every conj step where P0∈FB, which fires
+#  at ~50% of all valid steps (whenever the residual is non-split).  That
+#  made inter-arrival gaps ≈ 2 raw steps and Fano ≈ 0.06 regardless of any
+#  real clustering — the diagnostic was measuring the split/non-split rate,
+#  not LP productivity.  Calling only on emission means arrivals are spaced
+#  O(√ell) steps apart on average, and Fano > 1 genuinely indicates temporal
+#  clustering of productive LP events in the Jacobian.
 # ---------------------------------------------------------------------------
-@inline function record_lp1_conj_hit!(stat::PhiBiasStat, raw_step::Int)
+@inline function record_lp1_conj_hit!(stat::PhiBiasStat, raw_step::Int,
+                                       lp_key::UInt128 = zero(UInt128))
     push!(stat.lp1_conj_arrivals, raw_step)
+    push!(stat.lp1_conj_keys,     lp_key)
     stat._prev_anchor_was_lp = true
     return nothing
 end
@@ -270,6 +286,7 @@ function merge_phi_bias_stats(stats::Vector{PhiBiasStat})::PhiBiasStat
         merged.a_zero_fb        += s.a_zero_fb
         merged.image_collisions += s.image_collisions
         append!(merged.lp1_conj_arrivals, s.lp1_conj_arrivals)
+        append!(merged.lp1_conj_keys,     s.lp1_conj_keys)
         for i in eachindex(merged.split_hist)
             merged.split_hist[i]      += s.split_hist[i]
             merged.nonsplit_hist[i]   += s.nonsplit_hist[i]
@@ -393,25 +410,118 @@ function print_phi_bias_report(stat::PhiBiasStat; p::Int = 0)
     end
     println()
 
-    # --- Seq 2: LP1-conj Fano factor ---
-    @printf("  Seq 2 — LP1-conj temporal Fano factor:\n")
+    # --- Seq 2: LP1-conj Fano factor + Conditional Intensity Ratio + fingerprint ---
+    @printf("  Seq 2 — LP1-conj temporal analysis:\n")
     arrivals = stat.lp1_conj_arrivals
+    lp_keys  = stat.lp1_conj_keys
     if length(arrivals) >= 4
-        sort!(arrivals)
-        gaps = [arrivals[i] - arrivals[i-1] for i in 2:length(arrivals)]
-        n_gaps = length(gaps)
+        # Sort by arrival time (merge across threads may be out of order).
+        perm     = sortperm(arrivals)
+        arrivals = arrivals[perm]
+        lp_keys  = lp_keys[perm]
+
+        gaps    = [arrivals[i] - arrivals[i-1] for i in 2:length(arrivals)]
+        n_gaps  = length(gaps)
         mean_gap = sum(gaps) / n_gaps
-        var_gap  = sum((g - mean_gap)^2 for g in gaps) / (n_gaps - 1)
-        fano     = var_gap / max(1.0, mean_gap)
-        flag = fano > 2.0 ? " ← CLUSTERING (algebraic structure)" :
-               fano < 0.5 ? " ← ANTI-CLUSTERING (over-dispersed)"  :
-                            " (consistent with Poisson)"
+        var_gap  = n_gaps > 1 ? sum((g - mean_gap)^2 for g in gaps) / (n_gaps - 1) :
+                                 0.0
+        fano    = var_gap / max(1.0, mean_gap)
+        flag_fano = fano > 2.0 ? " ← CLUSTERING (algebraic structure)" :
+                    fano < 0.5 ? " ← ANTI-CLUSTERING (over-dispersed)"  :
+                                 " (consistent with Poisson)"
         @printf("    LP1-conj hits    : %d\n", length(arrivals))
         @printf("    inter-arrival μ  : %.1f steps\n", mean_gap)
         @printf("    inter-arrival σ² : %.1f\n", var_gap)
-        @printf("    Fano factor      : %.3f%s\n", fano, flag)
+        @printf("    Fano factor      : %.3f%s\n", fano, flag_fano)
+
+        # ---- Conditional Intensity Ratio (CIR) --------------------------------
+        # For each window W ∈ {10, 50, 200}, count how many of the N-1 pairs
+        # (hit_i, hit_j) with j>i have arrival[j] - arrival[i] ≤ W.
+        # Divide by the expected count from the shuffled-gap null:
+        #   shuffle all inter-arrival gaps, recompute cumulative arrivals,
+        #   repeat 20 times and average the window counts.
+        @printf("    Conditional Intensity Ratios (CIR) vs shuffled-gap null:\n")
+        @printf("      window  observed  null_mean  CIR    interpretation\n")
+        n_hits   = length(arrivals)
+        n_shuf   = 20
+        rng_gaps = copy(gaps)   # will be shuffled in place
+
+        for W in (10, 50, 200)
+            # Observed: count pairs (i,j) with j>i and arrivals[j]-arrivals[i] ≤ W.
+            # Equivalent to: for each i, count how many j in (i+1..end) have
+            # arrivals[j] ≤ arrivals[i]+W.  Use searchsortedlast for O(N log N).
+            obs_count = 0
+            for i in 1:n_hits
+                hi = searchsortedlast(arrivals, arrivals[i] + W)
+                obs_count += max(0, hi - i)
+            end
+
+            # Null: repeat with shuffled gaps.
+            null_total = 0.0
+            null_arr   = similar(arrivals)
+            for _ in 1:n_shuf
+                # Fisher-Yates shuffle of gaps.
+                for k in n_gaps:-1:2
+                    j2 = rand(1:k)
+                    rng_gaps[k], rng_gaps[j2] = rng_gaps[j2], rng_gaps[k]
+                end
+                # Rebuild arrival times from shuffled gaps (same first arrival).
+                null_arr[1] = arrivals[1]
+                for k in 2:n_hits
+                    null_arr[k] = null_arr[k-1] + rng_gaps[k-1]
+                end
+                sort!(null_arr)
+                cnt = 0
+                for i in 1:n_hits
+                    hi = searchsortedlast(null_arr, null_arr[i] + W)
+                    cnt += max(0, hi - i)
+                end
+                null_total += cnt
+            end
+            null_mean = null_total / n_shuf
+            cir       = obs_count / max(1.0, null_mean)
+            flag_cir  = cir > 1.5 ? " ← HOT (basin exploitable)" :
+                        cir < 0.7 ? " ← COLD (anti-clustered)"   :
+                                    " (≈ random)"
+            @printf("      W=%-5d  %8d  %9.1f  %5.3f  %s\n",
+                    W, obs_count, null_mean, cir, flag_cir)
+        end
+
+        # ---- Key fingerprint: do close-in-time hits share algebraic keys? ------
+        # For each hit i, look at hits within W_fp steps and count what fraction
+        # share the same lp_key.  Compare to the global key collision rate
+        # (expected under random key assignment).
+        if !isempty(lp_keys) && length(lp_keys) == n_hits
+            W_fp         = 50          # fingerprint window (same as medium CIR window)
+            fp_pairs     = 0           # pairs within window
+            fp_same_key  = 0           # of those, pairs with matching key
+            for i in 1:n_hits
+                hi = searchsortedlast(arrivals, arrivals[i] + W_fp)
+                for j in (i+1):hi
+                    fp_pairs += 1
+                    if lp_keys[j] == lp_keys[i]
+                        fp_same_key += 1
+                    end
+                end
+            end
+            # Expected same-key rate under uniform random key assignment:
+            # P(key_i == key_j) = Σ_k (count_k / N)² (birthday collision prob).
+            key_counts   = Dict{UInt128,Int}()
+            for k in lp_keys; key_counts[k] = get(key_counts, k, 0) + 1; end
+            expected_frac = sum(Float64(v)^2 for v in values(key_counts)) /
+                            Float64(n_hits)^2
+            obs_frac      = fp_same_key / max(1, fp_pairs)
+            key_lift      = obs_frac / max(1e-9, expected_frac)
+            flag_key      = key_lift > 2.0 ? " ← FINGERPRINT: close hits share keys" :
+                                              " (key sharing ≈ random)"
+            @printf("    Key fingerprint (W=%d): %d pairs, %d same-key (%.2f%%)," *
+                    " expected %.2f%%, lift=%.2f%s\n",
+                    W_fp, fp_pairs, fp_same_key,
+                    100.0 * obs_frac, 100.0 * expected_frac,
+                    key_lift, flag_key)
+        end
     else
-        @printf("    LP1-conj hits    : %d  (need ≥4 for Fano)\n", length(arrivals))
+        @printf("    LP1-conj hits    : %d  (need ≥4 for analysis)\n", length(arrivals))
     end
     println()
 
