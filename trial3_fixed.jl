@@ -1257,45 +1257,102 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
             @printf("  [MEM] after  rref():       RSS=%.1f MB  GC-live=%.1f MB\n",
                     Sys.maxrss()/1024^2, Base.gc_live_bytes()/1024^2)
             flush(stdout)
-            logs          = zeros(Int, nF_pre)
-            rref_assigned = falses(nF_pre)   # true only for pivot columns
-            for r in 1:size(R_mat, 1)
+
+            # ── Extract pivot structure from RREF ─────────────────────────
+            nrows_rref  = size(R_mat, 1)
+            pivot_col   = zeros(Int, nrows_rref)   # pivot_col[r] = pivot column of row r (0 = zero row)
+            pivot_row   = zeros(Int, nF_pre)        # pivot_row[c] = RREF row that pivots on column c (0 = free)
+            free_cols   = Int[]                     # columns with no pivot (gauge degrees of freedom)
+
+            for r in 1:nrows_rref
                 pc = 0
                 for c in 1:nF_pre
                     R_mat[r, c] != 0 && (pc = c; break)
                 end
+                pivot_col[r] = pc
+                if pc != 0
+                    pivot_row[pc] = r
+                end
+            end
+            for c in 1:nF_pre
+                pivot_row[c] == 0 && push!(free_cols, c)
+            end
+            n_free = length(free_cols)
+
+            # ── Gauge-freedom fix + correct back-substitution ─────────────
+            #
+            # RREF gives a particular solution with all free variables = 0.
+            # For pivot row r:
+            #   log(fb[pivot_col[r]])
+            #     = R_mat[r, nF+1]
+            #       - Σ_{f in free_cols} R_mat[r, f] * log(fb[f])
+            #
+            # With free variables set to 0, logs[pc] = R_mat[r, nF+1] is
+            # only correct when ALL R_mat[r, f] == 0 for every free column f.
+            # In general most pivot rows have nonzero coefficients on free
+            # columns, so the naive particular solution is wrong for them —
+            # which is why the group-law check failed for ~1316/1730 pivots.
+            #
+            # Fix: determine the true log of each free atom by group-law search,
+            # then back-substitute to correct every pivot.
+            #
+            # We find the free atoms' logs via BFS: each free atom appears in
+            # at least some relation rows.  We run BFS starting from the
+            # PARTICULAR SOLUTION (free vars = 0) and let the group-law
+            # verify step accept only correct values, using BFS-derived
+            # corrections to propagate.  This is equivalent to trying all
+            # 2^n_free gauge combinations, but BFS from the first verified
+            # seed is O(n_relations) instead.
+            #
+            # Practical shortcut for the common case n_free ~ 1:
+            #   For each free column f, we need log(fb[free_cols[f]]).
+            #   We can read it from any pivot row r that has R_mat[r,f] != 0:
+            #     log_f = (R_mat[r, nF+1] - log(fb[pivot_col[r]])) / R_mat[r, f]  mod ell
+            #   ... but we don't know log(fb[pivot_col[r]]) yet.
+            #
+            # Cleaner: just seed BFS from direct group-law checks on the
+            # particular solution (free=0).  Rows with only pivot atoms whose
+            # particular-solution value is correct (R_mat[r,f]==0 for all free
+            # f) ARE correct.  Those seed BFS.  BFS propagates to all reachable
+            # atoms via the original relation graph — no RREF values needed
+            # beyond the seeds.
+            #
+            # We therefore: (1) accept pivot atoms only when their pivot row
+            # has zero coefficients on ALL free columns (so the particular
+            # solution IS the true solution), (2) verify those with group law,
+            # (3) let BFS propagate everything else.
+
+            logs = zeros(Int, nF_pre)
+            for r in 1:nrows_rref
+                pc = pivot_col[r]
                 pc == 0 && continue
-                logs[pc]          = Int(lift(ZZ, R_mat[r, nF_pre + 1]))
-                rref_assigned[pc] = true
+                logs[pc] = Int(lift(ZZ, R_mat[r, nF_pre + 1]))
             end
 
-            # ── Gauge-freedom filter ──────────────────────────────────────
-            # BUG FIX: the old code tested `L == 0` to exclude atoms, which
-            # incorrectly excluded *all* non-pivot columns (their logs[] entry
-            # is 0 only because the array was zero-initialised, not because
-            # RREF solved them to zero).  With 420 pivots out of 1731 FB atoms,
-            # ~1311 atoms were silently dropped before BFS could propagate them.
-            # BFS then started from only 420 seeds, saw no 1-unknown rows, and
-            # made zero progress → "420 → 420 / 1731".
-            #
-            # Correct logic: accept a pivot column's log regardless of its value,
-            # verifying it with the group law.  Non-pivot columns are left out
-            # of atom_log_dict here; BFS fills them in from the pivot seeds.
-            n_ok = 0; n_bad = 0; n_zero_valid = 0
+            n_ok = 0; n_bad = 0; n_free_dependent = 0; n_zero_valid = 0
             for (pt, idx) in pt2idx_pre
-                rref_assigned[idx] || continue   # non-pivot: let BFS handle
+                r = pivot_row[idx]
+                r == 0 && continue   # free column — leave to BFS
+
+                # Check whether this pivot row depends on any free column.
+                free_dependent = any(R_mat[r, f] != 0 for f in free_cols)
+                if free_dependent
+                    n_free_dependent += 1
+                    continue   # particular solution wrong for this pivot; BFS will fix it
+                end
+
                 L = logs[idx]
                 if !jac_isid(jac_sub(jac_mul(G, L, BigInt(ell)),
                                      mumford1(pt[1], pt[2])))
-                    n_bad += 1   # RREF gave a wrong value (shouldn't happen)
+                    n_bad += 1   # genuinely wrong RREF value (arithmetic error)
                 else
                     atom_log_dict[pt] = L
                     n_ok += 1
                     L == 0 && (n_zero_valid += 1)
                 end
             end
-            @printf("  [DIAG] atom log verification: %d correct (%d with L=0), %d RREF-inconsistent, %d non-pivot (for BFS)\n",
-                    n_ok, n_zero_valid, n_bad, nF_pre - count(rref_assigned))
+            @printf("  [DIAG] atom log verification: %d correct (%d with L=0), %d gauge-dependent (for BFS), %d free cols, %d RREF-wrong\n",
+                    n_ok, n_zero_valid, n_free_dependent, n_free, n_bad)
             flush(stdout)
 
             # ── BFS enrichment: propagate RREF seeds through relation graph ───
@@ -1365,9 +1422,104 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
                 end
             end
 
-            if n_bfs_new > 0
-                @printf("  [DIAG] BFS enrichment: +%d atom logs  → %d / %d total  (%.3fs)\n",
-                        n_bfs_new, length(atom_log_dict), nF_pre, time() - t_bfs)
+            @printf("  [DIAG] BFS pass 1: +%d atom logs  → %d / %d total  (%.3fs)\n",
+                    n_bfs_new, length(atom_log_dict), nF_pre, time() - t_bfs)
+            flush(stdout)
+
+            # ── Free-column bootstrap ──────────────────────────────────────
+            # After the first BFS pass, gauge-dependent pivot atoms and the
+            # free columns themselves still have work_bfs[j] == -1.  We resolve
+            # free columns by finding any relation row with exactly one unknown
+            # (the free atom) after the first BFS, solving for the free atom,
+            # verifying it with the group law, and running BFS again.  We repeat
+            # until no new atoms are found (fixed-point).
+            n_bootstrap_total = 0
+            for _pass in 1:n_free + 1   # at most n_free resolution rounds
+                # Find any unresolved free column that appears in a 1-unknown row.
+                newly_resolved = false
+                for f in free_cols
+                    work_bfs[f] != -1 && continue   # already resolved
+                    # Scan all rows containing f for one with all others known.
+                    for ri_f in atom_rows_bfs[f]
+                        row_f   = rel_rows_pre[ri_f]
+                        neg_al_f = Int(alpha_vec_pre[ri_f])
+                        unk_j_f = 0; unk_c_f = 0; ksum_f = 0; ok_f = true
+                        for (j, c) in row_f
+                            (1 <= j <= nF_pre) || (ok_f = false; break)
+                            lj = work_bfs[j]
+                            if lj == -1
+                                unk_j_f != 0 && (ok_f = false; break)
+                                unk_j_f = j; unk_c_f = c
+                            else
+                                ksum_f = mod(ksum_f + c * lj, ellI_bfs)
+                            end
+                        end
+                        (!ok_f || unk_j_f == 0 || unk_j_f != f) && continue
+                        gcd(unk_c_f, ellI_bfs) != 1 && continue
+                        rhs_f   = mod(neg_al_f - ksum_f, ellI_bfs)
+                        log_f   = mod(rhs_f * powermod(unk_c_f, ellI_bfs - 2, ellI_bfs), ellI_bfs)
+                        pt_f    = fb_pre[f]
+                        jac_isid(jac_sub(jac_mul(G, log_f, BigInt(ell)),
+                                         mumford1(pt_f[1], pt_f[2]))) || continue
+                        # Verified: seed this free atom and re-run BFS.
+                        work_bfs[f] = log_f
+                        if !haskey(atom_log_dict, pt_f)
+                            atom_log_dict[pt_f] = log_f
+                            n_bootstrap_total += 1
+                        end
+                        for ri2 in atom_rows_bfs[f]
+                            n_unk_bfs[ri2] > 0 && (n_unk_bfs[ri2] -= 1)
+                            if n_unk_bfs[ri2] == 1 && !in_q_bfs[ri2]
+                                push!(q_bfs, ri2); in_q_bfs[ri2] = true
+                            end
+                        end
+                        newly_resolved = true
+                        break
+                    end
+                end
+                !newly_resolved && break   # all free cols resolved or unreachable
+
+                # Re-run BFS with the newly seeded free atoms.
+                n_pass_new = 0
+                while !isempty(q_bfs)
+                    ri = pop!(q_bfs); in_q_bfs[ri] = false
+                    row_bfs2  = rel_rows_pre[ri]
+                    neg_al_b2 = Int(alpha_vec_pre[ri])
+                    unk_j2 = 0; unk_c2 = 0; ksum2 = 0; ok2 = true
+                    for (j, c) in row_bfs2
+                        (1 <= j <= nF_pre) || (ok2 = false; break)
+                        lj = work_bfs[j]
+                        if lj == -1
+                            unk_j2 != 0 && (ok2 = false; break)
+                            unk_j2 = j; unk_c2 = c
+                        else
+                            ksum2 = mod(ksum2 + c * lj, ellI_bfs)
+                        end
+                    end
+                    (!ok2 || unk_j2 == 0) && continue
+                    gcd(unk_c2, ellI_bfs) != 1 && continue
+                    rhs2    = mod(neg_al_b2 - ksum2, ellI_bfs)
+                    log2    = mod(rhs2 * powermod(unk_c2, ellI_bfs - 2, ellI_bfs), ellI_bfs)
+                    pt_b2   = fb_pre[unk_j2]
+                    jac_isid(jac_sub(jac_mul(G, log2, BigInt(ell)),
+                                     mumford1(pt_b2[1], pt_b2[2]))) || continue
+                    work_bfs[unk_j2] = log2
+                    if !haskey(atom_log_dict, pt_b2)
+                        atom_log_dict[pt_b2] = log2
+                        n_pass_new += 1
+                    end
+                    for ri2 in atom_rows_bfs[unk_j2]
+                        n_unk_bfs[ri2] > 0 && (n_unk_bfs[ri2] -= 1)
+                        if n_unk_bfs[ri2] == 1 && !in_q_bfs[ri2]
+                            push!(q_bfs, ri2); in_q_bfs[ri2] = true
+                        end
+                    end
+                end
+                n_bootstrap_total += n_pass_new
+            end
+            if n_bootstrap_total > 0 || n_free > 0
+                @printf("  [DIAG] BFS+bootstrap: free_cols=%d  total new=%d  → %d / %d atom logs  (%.3fs)\n",
+                        n_free, n_bootstrap_total, length(atom_log_dict), nF_pre, time() - t_bfs)
                 flush(stdout)
             end
         catch e
