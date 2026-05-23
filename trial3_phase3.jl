@@ -280,18 +280,15 @@ function phase3_trial_worker(
     n_conj_branch    = 0   # times we entered A1 (i0∈FB, conj residual), before haskey
     n_alog_extended  = 0   # new atom logs derived from β=0 closures
     # Burst-exploitation efficiency: closure rate conditioned on p3_dry_streak band.
-    # Thresholds derived from the empirical LP1-conj mean inter-arrival gap
-    # measured during the β=0 precompute walk, so they scale with the actual
-    # closure hazard rather than being hard-coded step counts.
-    # hot  : streak <  0.15 × mean_gap  (inside decorrelation window)
-    # warm : streak in [0.15, 0.40) × mean_gap
-    # cold : streak >= 0.40 × mean_gap  (beyond hazard decorrelation)
-    # If mean_gap is unknown (0.0), fall back to P3_BASIN_TRIGGER fractions.
-    _mg = tables.lp1_conj_mean_gap_steps
-    _hot_thresh  = _mg > 0.0 ? round(Int, 0.15 * _mg) : max(50,  P3_BASIN_TRIGGER ÷ 10)
-    _warm_thresh = _mg > 0.0 ? round(Int, 0.40 * _mg) : P3_BASIN_TRIGGER
-    @printf("[phase3 trial %d] burst bands: mean_gap=%.0f  hot<%.0f  warm<%.0f  cold>=%.0f\n",
-            trial_idx, _mg, Float64(_hot_thresh), Float64(_warm_thresh), Float64(_warm_thresh))
+    # The phase-2 export is a coarse proxy; if it is too small to be a sensible
+    # emission-scale threshold, fall back to the basin-steering scale so the
+    # diagnostic bands stay meaningful and comparable across runs.
+    _mg = max(0.0, tables.lp1_conj_mean_gap_steps)
+    _burst_scale = _mg >= 1000.0 ? _mg : Float64(P3_BASIN_TRIGGER)
+    _hot_thresh  = max(8, floor(Int, 0.15 * _burst_scale))
+    _warm_thresh = max(_hot_thresh + 1, floor(Int, 0.40 * _burst_scale))
+    @printf("[phase3 trial %d] burst bands: scale=%.0f  hot<%d  warm<%d  cold>=%d\n",
+            trial_idx, _burst_scale, _hot_thresh, _warm_thresh, _warm_thresh)
     n_conj_emit_hot  = 0; n_conj_steps_hot  = 0
     n_conj_emit_warm = 0; n_conj_steps_warm = 0
     n_conj_emit_cold = 0; n_conj_steps_cold = 0
@@ -454,9 +451,9 @@ function phase3_trial_worker(
                 si_shard = conj_shard_idx(lp_key)
 
                 # Burst-exploitation: which dry-streak band are we in?
-                if p3_dry_streak < 100
+                if p3_dry_streak < _hot_thresh
                     n_conj_steps_hot += 1
-                elseif p3_dry_streak < P3_BASIN_TRIGGER
+                elseif p3_dry_streak < _warm_thresh
                     n_conj_steps_warm += 1
                 else
                     n_conj_steps_cold += 1
@@ -472,8 +469,8 @@ function phase3_trial_worker(
                     c_be = neg_be   # mod(neg_be - 0, ellI) == neg_be
                     n_1lp_conj_pre += 1
                     # Credit to dry-streak band
-                    if p3_dry_streak < 100; n_conj_emit_hot += 1
-                    elseif p3_dry_streak < P3_BASIN_TRIGGER; n_conj_emit_warm += 1
+                    if p3_dry_streak < _hot_thresh; n_conj_emit_hot += 1
+                    elseif p3_dry_streak < _warm_thresh; n_conj_emit_warm += 1
                     else; n_conj_emit_cold += 1; end
                     k_rec = try_solve_conj(i0, prev_col, c_al, c_be)
                     k_rec !== nothing && break
@@ -489,8 +486,8 @@ function phase3_trial_worker(
                     delete!(local_lp1_conj, lp_key)
                     n_1lp_conj_local += 1
                     # Credit to dry-streak band
-                    if p3_dry_streak < 100; n_conj_emit_hot += 1
-                    elseif p3_dry_streak < P3_BASIN_TRIGGER; n_conj_emit_warm += 1
+                    if p3_dry_streak < _hot_thresh; n_conj_emit_hot += 1
+                    elseif p3_dry_streak < _warm_thresh; n_conj_emit_warm += 1
                     else; n_conj_emit_cold += 1; end
                     k_rec = try_solve_conj(i0, prev_col, c_al, c_be)
                     k_rec !== nothing && break
@@ -600,11 +597,11 @@ function phase3_trial_worker(
         rate_hot  = n_conj_steps_hot  > 0 ? n_conj_emit_hot  / n_conj_steps_hot  : 0.0
         rate_warm = n_conj_steps_warm > 0 ? n_conj_emit_warm / n_conj_steps_warm : 0.0
         rate_cold = n_conj_steps_cold > 0 ? n_conj_emit_cold / n_conj_steps_cold : 0.0
-        @printf("[phase3 trial %d | burst-exploit] conj_closure_rate: hot(streak<100)=%.4f (%d/%d)  warm=%.4f (%d/%d)  cold=%.4f (%d/%d)\n",
-                trial_idx,
+        @printf("[phase3 trial %d | burst-exploit] conj_closure_rate: hot(streak<%d)=%.4f (%d/%d)  warm(streak<%d)=%.4f (%d/%d)  cold(streak>=%d)=%.4f (%d/%d)\n",
+                trial_idx, _hot_thresh,
                 rate_hot,  n_conj_emit_hot,  n_conj_steps_hot,
-                rate_warm, n_conj_emit_warm, n_conj_steps_warm,
-                rate_cold, n_conj_emit_cold, n_conj_steps_cold)
+                _warm_thresh, rate_warm, n_conj_emit_warm, n_conj_steps_warm,
+                _warm_thresh, rate_cold, n_conj_emit_cold, n_conj_steps_cold)
         flush(stdout)
     end
 
