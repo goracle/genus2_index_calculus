@@ -1419,7 +1419,11 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
             BigInt(ell),
             hot_basin_anchors_merged,
             rel_rows_pre,
-            alpha_vec_pre)
+            alpha_vec_pre,
+            let total_valid = sum(r !== nothing ? r.hits_total    : 0 for r in results_pre),
+                n_lp1_conj  = sum(r !== nothing ? r.hits_lp1_conj : 0 for r in results_pre)
+                n_lp1_conj > 0 ? Float64(total_valid) / Float64(n_lp1_conj) : 0.0
+            end)
 
         n_unresolved = length(fb_pre) - length(atom_log_dict)
         n_unresolved > 0 && @printf("  [WARN] %d / %d FB atoms have unverified logs; closures that touch them will simply be skipped\n",
