@@ -1315,6 +1315,25 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
 
         # ── Bundle precompute output into tables ──────────────────────────────
         # Phase 3 consumes the RREF-pinned atom logs directly.
+
+        # IDEA 4: Collect hot-basin anchor indices from all precompute threads.
+        # Each thread's phase2_worker result carries a basin_hot_anchors vector
+        # of FB indices where LP1-conj events were recorded.  We merge them,
+        # deduplicate, and keep up to 256 entries for phase3 warm-start.
+        all_hot_anchors = Int[]
+        for r in results_pre
+            if r !== nothing && hasproperty(r, :basin_hot_anchors)
+                append!(all_hot_anchors, r.basin_hot_anchors)
+            end
+        end
+        unique!(all_hot_anchors)
+        filter!(x -> 1 <= x <= length(fb_pre), all_hot_anchors)
+        hot_basin_anchors_merged = all_hot_anchors[1:min(256, length(all_hot_anchors))]
+        if !isempty(hot_basin_anchors_merged)
+            @printf("  hot-basin anchors collected: %d unique FB indices from precompute\n",
+                    length(hot_basin_anchors_merged))
+        end
+
         tables = Phase2Tables(
             fb_pre,
             pt2idx_pre,
@@ -1323,7 +1342,8 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
             shared_lp2_pre,
             shared_lp1_conj_pre,
             shared_lp2_conj_pre,
-            BigInt(ell))
+            BigInt(ell),
+            hot_basin_anchors_merged)
 
         n_unresolved = length(fb_pre) - length(atom_log_dict)
         n_unresolved > 0 && @printf("  [WARN] %d / %d FB atoms have unverified logs; closures that touch them will simply be skipped\n",

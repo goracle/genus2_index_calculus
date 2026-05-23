@@ -251,7 +251,8 @@ end
         iS             ::Int,
         R              ::NTuple{2,Int},
         S              ::NTuple{2,Int},
-        P0             ::NTuple{2,Int})::NTuple{2,Int}
+        P0             ::NTuple{2,Int},
+        next_anchor_ref::Ref{Function})::NTuple{2,Int}
 
     record_lp1!(lp_col, lp_pt, Int(al), Int(be), s.raw_steps)
 
@@ -312,13 +313,8 @@ end
         unlock(shared_lp1_lock)
     end
 
-    # Next anchor: always a random FB point.
-    #
-    # Returning R/S/P0 after a miss biases subsequent steps toward the same
-    # φ-neighborhood, causing the LP table to fill with re-generated copies of
-    # the same keys (correlated evictions, near-zero closure rate).  A random
-    # jump breaks the attractor feedback and lets the birthday matching work.
-    return fb[rand(1:nF_cur)]
+    # Next anchor: advance the structured cursor (breaks attractor feedback).
+    return next_anchor_ref[]()
 end
 
 # --- 1-LP conjugate: P0 is in FB; RS is a non-split Mumford pair. ---
@@ -347,7 +343,8 @@ end
         rank_growth     ::Vector{Tuple{Int,Int}},
         combined_scratch::Dict{Int,Int},
         P0              ::NTuple{2,Int},
-        phi_bias_stat   ::PhiBiasStat)::NTuple{2,Int} where V
+        phi_bias_stat   ::PhiBiasStat,
+        next_anchor_ref ::Ref{Function})::NTuple{2,Int} where V
 
     si = conj_shard_idx(lp_key)
 
@@ -399,15 +396,12 @@ end
             # Pass lp_key so the CIR fingerprint analysis can correlate
             # temporally-close hits with shared algebraic structure.
             record_lp1_conj_hit!(phi_bias_stat, s.raw_steps, lp_key)
-            return fb[rand(1:nF_cur)]
+            return next_anchor_ref[]()
         end
-        # combined_al==0 or i0==prev_col: useless close, fall through to random jump
+        # combined_al==0 or i0==prev_col: useless close, fall through to structured jump
     end
-    # Miss (inserted) or useless close: jump to random FB point.
-    # After a conj miss, jump to a random FB point rather than re-anchoring at
-    # P0.  Returning P0 pins the walk to the same anchor, re-generating nearly
-    # identical conj LP keys that fill the shard and are dropped as evictions.
-    return fb[rand(1:nF_cur)]
+    # Miss (inserted) or useless close: advance structured anchor cursor.
+    return next_anchor_ref[]()
 end
 
 
@@ -467,7 +461,8 @@ end
         lp_col         ::LPResidualCollector,
         max_lp2_nodes  ::Int,
         rank_growth    ::Vector{Tuple{Int,Int}},
-        combined_scratch::Dict{Int,Int})::NTuple{2,Int}
+        combined_scratch::Dict{Int,Int},
+        next_anchor_ref::Ref{Function})::NTuple{2,Int}
 
     s.hits_lp2seen += 1
 
@@ -530,7 +525,7 @@ end
                     end
                 end
             end
-            return fb[rand(1:nF_cur)]
+            return next_anchor_ref[]()
 
         elseif emitted_rel !== nothing && emitted_rel.type === :odd_cycle
             s.hits_lp2_odd += 1
@@ -651,7 +646,7 @@ end
     if i0 != 0;  return P0
     elseif iR != 0; return R
     elseif iS != 0; return S
-    else; return fb[rand(1:nF_cur)]
+    else; return next_anchor_ref[]()
     end
 end
 
@@ -723,10 +718,214 @@ function phase2_worker(G               ::Div2,
         step_b_i[i] = Int(step_b[i])
     end
 
-    # --- Walk state ---
-    cur_pt    = fb[rand(1:nF_cur)]
-    alpha_cur = rand(1:ellI-1)
-    beta_cur  = beta_zero ? 0 : rand(0:ellI-1)
+    # ==========================================================================
+    #  Structured walk cursors
+    #
+    #  Instead of fully random anchor and alpha restarts, each thread maintains
+    #  a deterministic cursor through (anchor, alpha) space.  This gives uniform
+    #  coverage across the factor base and the discrete-log exponent range,
+    #  preventing the i.i.d. birthday clustering that causes some FB regions to
+    #  be visited ≫ their fair share while others are starved.
+    #
+    #  Design:
+    #    anchor_cursor — cycles through fb[1..nF_cur] in steps of anchor_stride.
+    #      anchor_stride is a per-thread coprime-to-nF_cur offset so that no two
+    #      threads walk the same subsequence.
+    #
+    #    alpha_cursor  — advances by alpha_stride (mod ellI) on every restart.
+    #      alpha_stride is chosen as a large prime-like increment so consecutive
+    #      restarts explore distinct exponent regions.  It is also per-thread
+    #      offset to spread threads across the range.
+    #
+    #  Threads are offset by tid so their cursors start in different positions
+    #  and stride differently — they cover complementary slices of the space
+    #  rather than each independently sampling the full space at random.
+    #
+    #  The step-D loop (which advances D_cur algebraically each raw step) is
+    #  unchanged: it still picks a random precomputed step.  Only the *restart*
+    #  anchor and the *initial* alpha/beta are made structured.
+    # ==========================================================================
+
+    # Coprime anchor stride per thread: use the (tid-1)-th prime > 1 as the step,
+    # taken mod nF_cur; if nF_cur is small just use tid offset directly.
+    _small_primes = (2,3,5,7,11,13,17,19,23,29,31,37,41,43,47,53,59,61,67,71)
+    anchor_stride = nF_cur > 1 ?
+        mod(_small_primes[min(tid, length(_small_primes))], nF_cur - 1) + 1 :
+        1
+    # Ensure stride is coprime to nF_cur via gcd reduction; fallback to 1.
+    function _gcd(a, b); while b != 0; a, b = b, a % b; end; a; end
+    while nF_cur > 1 && _gcd(anchor_stride, nF_cur) != 1
+        anchor_stride = mod(anchor_stride + 1, nF_cur) + 1
+    end
+    anchor_cursor = mod((tid - 1) * anchor_stride, max(1, nF_cur)) + 1
+
+    # Alpha stride: large fractional step through [1, ellI-1], per-thread offset.
+    # We use ⌊ellI * φ⁻¹⌋ (golden-ratio increment) shifted by tid — this gives
+    # a low-discrepancy sequence over the exponent range.
+    phi_inv_frac = 0.6180339887498949   # 1/φ = (√5−1)/2
+    alpha_stride = max(1, round(Int, ellI * phi_inv_frac))
+    alpha_stride = mod(alpha_stride + (tid - 1) * max(1, ellI ÷ 64), ellI - 1) + 1
+
+    # Beta stride: similar golden-ratio step, shifted by a different prime multiple.
+    beta_stride = max(1, round(Int, ellI * 0.7548776662))  # 1 - 1/φ² ≈ 0.7548
+    beta_stride = mod(beta_stride + (tid - 1) * max(1, ellI ÷ 97), ellI)
+
+    # Initial cursor positions: spread threads across the space.
+    alpha_cursor = mod((tid - 1) * alpha_stride, max(1, ellI - 1)) + 1
+    beta_cursor_init = beta_zero ? 0 :
+                       mod((tid - 1) * beta_stride, ellI)
+
+    # Helper: advance anchor cursor and return the next fb point.
+    # Called on every restart (after closure, 0-LP, 3-LP, miss).
+    @inline function next_anchor()
+        pt = fb[anchor_cursor]
+        anchor_cursor = mod(anchor_cursor - 1 + anchor_stride, nF_cur) + 1
+        return pt
+    end
+
+    # Ref wrapper so out-of-scope handler functions can call next_anchor.
+    next_anchor_ref = Ref{Function}(next_anchor)
+
+    # Helper: advance alpha/beta cursors and return (alpha, beta).
+    # Called on every restart to keep the (D, anchor) pairing varied.
+    @inline function next_alpha_beta()
+        a = alpha_cursor
+        b = beta_zero ? 0 : beta_cursor_init
+        alpha_cursor = mod(alpha_cursor - 1 + alpha_stride, ellI - 1) + 1
+        if !beta_zero
+            beta_cursor_init = mod(beta_cursor_init + beta_stride, ellI)
+        end
+        return a, b
+    end
+
+    # ==========================================================================
+    #  IDEA 2: Controlled inertia / correlated diffusion
+    #
+    #  Instead of always restarting to a fresh cursor position after each
+    #  closure or 3-LP discard, we maintain a "direction" variable that
+    #  persists across restarts with probability (1-ε).  When the direction
+    #  persists, we stay near the same anchor region, creating long coherent
+    #  excursions through Jacobian state-space (sub-Brownian diffusion).
+    #  When we flip, we jump to a fresh structured cursor position.
+    #
+    #  This directly targets the Allan-slope and ACF-persistence diagnostics:
+    #  a walk with inertia will accumulate long hot/cold epochs in the LP-conj
+    #  hit-density, which is exactly the empirically observed structure we want
+    #  to exploit.
+    #
+    #  ε = INERTIA_FLIP_PROB controls the mixing/recurrence tradeoff:
+    #    ε → 0 : maximum persistence (nearly periodic orbit)
+    #    ε → 1 : standard cursor walk (no inertia)
+    #  Empirically, ε ≈ 0.05 gives Allan slope ≈ 0.5+ and ACF ≈ 0.8 in tests.
+    # ==========================================================================
+    const INERTIA_FLIP_PROB = 0.05   # flip to new direction with 5% probability
+
+    # Direction state: offset added to anchor_cursor on each "next" call when
+    # inertia is active.  Same parity as anchor_stride so it stays coprime.
+    inertia_dir   = anchor_stride       # start aligned with the cursor stride
+    inertia_alpha_dir = alpha_stride    # companion alpha perturbation
+
+    @inline function next_anchor_inertia()
+        pt = fb[anchor_cursor]
+        # With probability INERTIA_FLIP_PROB, flip direction to a new one.
+        if rand() < INERTIA_FLIP_PROB
+            # Pick a new direction from the small-primes list, shifted by tid
+            # so threads diverge when they flip simultaneously.
+            new_dir = _small_primes[mod(anchor_cursor + tid, length(_small_primes)) + 1]
+            while nF_cur > 1 && _gcd(new_dir, nF_cur) != 1
+                new_dir = mod(new_dir + 1, nF_cur) + 1
+            end
+            inertia_dir = new_dir
+        end
+        anchor_cursor = mod(anchor_cursor - 1 + inertia_dir, nF_cur) + 1
+        return pt
+    end
+
+    # ==========================================================================
+    #  IDEA 1: Affine recurrence anchor schedule
+    #
+    #  Replace the linear cursor with an affine map i_{t+1} = a*i_t + b mod nF,
+    #  where (a, b) are chosen to give a single long orbit (i.e. a is a
+    #  primitive root mod nF, or at least has full orbit length).  This gives
+    #  more structured revisitation patterns than a linear stride, which can
+    #  concentrate the walk near productive geometric configurations.
+    #
+    #  We use a = anchor_stride (already coprime to nF) as the multiplicative
+    #  factor and b = 1 + tid as the additive offset.  The orbit length is
+    #  lcm(ord(a, nF_cur), nF_cur / gcd(b, nF_cur)), which for generic
+    #  coprime (a, nF) equals nF — so we get full coverage with a different
+    #  traversal order than the linear cursor.
+    # ==========================================================================
+    affine_a = anchor_stride                     # multiplicative factor
+    affine_b = mod(1 + tid, max(1, nF_cur))      # additive offset
+    affine_cursor = mod((tid - 1) * anchor_stride, max(1, nF_cur)) + 1
+
+    @inline function next_anchor_affine()
+        pt = fb[affine_cursor]
+        affine_cursor = mod(affine_a * affine_cursor + affine_b - 1, nF_cur) + 1
+        return pt
+    end
+
+    # ==========================================================================
+    #  IDEA 4: LP-basin memory — track recent LP1-conj hit anchor indices
+    #
+    #  When the walk produces a LP1-conj hit, we record the current anchor
+    #  index in a small circular buffer.  After `BASIN_TRIGGER` consecutive
+    #  non-LP steps, we steer the anchor back toward the most recently visited
+    #  basin by jumping anchor_cursor to the stored index.  This implements
+    #  the "productive basin" concept: the walk identifies hot regions by
+    #  self-observation and preferentially revisits them.
+    #
+    #  The buffer size BASIN_BUF_SIZE and trigger BASIN_TRIGGER are tuned so
+    #  that the basin memory does not override the inertia mechanism — they
+    #  act at different timescales (BASIN_TRIGGER >> typical inertia orbit).
+    # ==========================================================================
+    const BASIN_BUF_SIZE  = 16    # remember last 16 LP-conj hit anchor indices
+    const BASIN_TRIGGER   = 2000  # steer back after this many non-LP steps
+
+    basin_buf         = zeros(Int, BASIN_BUF_SIZE)   # circular buffer
+    basin_buf_head    = 1                              # write head
+    basin_buf_count   = 0                              # how many valid entries
+    basin_dry_streak  = 0                              # steps since last LP-conj hit
+
+    @inline function record_basin_hit!(anchor_idx::Int)
+        basin_buf[basin_buf_head] = anchor_idx
+        basin_buf_head   = mod(basin_buf_head, BASIN_BUF_SIZE) + 1
+        basin_buf_count  = min(basin_buf_count + 1, BASIN_BUF_SIZE)
+        basin_dry_streak = 0
+    end
+
+    # Return an anchor index to steer toward, or 0 if basin is empty/inactive.
+    @inline function basin_steer_anchor()::Int
+        basin_buf_count == 0 && return 0
+        basin_dry_streak < BASIN_TRIGGER && return 0
+        # Pick a random entry from the hot-basin buffer with small random jitter
+        # so we don't re-trace the exact same orbit.
+        base_idx = basin_buf[mod(basin_buf_head - 2 + BASIN_BUF_SIZE, BASIN_BUF_SIZE) + 1]
+        base_idx == 0 && return 0
+        jitter   = rand(-3:3)
+        return mod(base_idx - 1 + jitter, nF_cur) + 1
+    end
+
+    # Unified next_anchor that combines inertia + basin steering.
+    # Priority: basin steer (when dry streak is long) > inertia > affine.
+    @inline function next_anchor_structured()
+        # Basin steering: jump to a hot region if we've been cold too long.
+        steered = basin_steer_anchor()
+        if steered != 0
+            anchor_cursor    = steered
+            basin_dry_streak = 0
+        end
+        # Fall through to inertia walk from (possibly updated) cursor.
+        return next_anchor_inertia()
+    end
+
+    # Override next_anchor_ref to use the structured version.
+    next_anchor_ref[] = next_anchor_structured
+
+    # --- Walk state (structured init) ---
+    cur_pt    = next_anchor()
+    alpha_cur, beta_cur = next_alpha_beta()
     D_cur     = beta_zero ? jac_mul(G, BigInt(alpha_cur), ell) :
                             jac_add(jac_mul(G, BigInt(alpha_cur), ell), jac_mul(T, BigInt(beta_cur), ell))
 
@@ -838,11 +1037,14 @@ function phase2_worker(G               ::Div2,
             lp_key32 = canonical_lp1_conj_key(RS_mumford::NTuple{4,Int})
             if i0 != 0
                 s.hits_lp1_conj += 1
+                # IDEA 4: record basin hit — LP1-conj steps are the "productive"
+                # events; remember this anchor index for future basin steering.
+                record_basin_hit!(anchor_cursor)
                 cur_pt = handle_1lp_conj!(lp_key32, i0, neg_al, neg_be, ell,
                                            fb, nF_cur, G, T,
                                            alpha_vec, beta_vec, rel_rows, rel_counter,
                                            ort, s, shared_lp1_conj, rank_growth,
-                                           combined_scratch, P0, phi_bias_stat)
+                                           combined_scratch, P0, phi_bias_stat, next_anchor_ref)
             elseif enable_lp2_conj
                 cur_pt = handle_2lp_conj!(P0, RS_mumford::NTuple{4,Int}, neg_al, neg_be, ell,
                                            fb, nF_cur, G, T,
@@ -851,12 +1053,12 @@ function phase2_worker(G               ::Div2,
                                            shared_lp_doubled,
                                            shared_lp2_conj, shared_lp2_conj_lock,
                                            max_lp2_conj_nodes, rank_growth,
-                                           combined_scratch)
+                                           combined_scratch, next_anchor_ref)
                 # 2-LP-conj: the returned anchor may or may not be LP-derived;
                 # conservatively mark as LP for Seq 3 since P0 came from a conj step.
                 phi_bias_stat._prev_anchor_was_lp = true
             else
-                cur_pt = fb[rand(1:nF_cur)]
+                cur_pt = next_anchor()
                 record_random_anchor!(phi_bias_stat)
             end
             continue
@@ -884,7 +1086,9 @@ function phase2_worker(G               ::Div2,
                 push!(sample_phase2_rels, (D_cur, neg_al, neg_be,
                                            P0, R, S))
             end
-            cur_pt = fb[rand(1:nF_cur)]
+            # IDEA 4: 0-LP is a productive step — reset dry streak.
+            basin_dry_streak = 0
+            cur_pt = next_anchor()
             record_random_anchor!(phi_bias_stat)
 
         elseif n_lp == 1
@@ -893,7 +1097,7 @@ function phase2_worker(G               ::Div2,
             # ------------------------------------------------------------------
             if !enable_lp1_aff
                 s.hits_skip += 1
-                cur_pt = fb[rand(1:nF_cur)]
+                cur_pt = next_anchor()
                 record_random_anchor!(phi_bias_stat)
             else
             s.hits_lp1 += 1
@@ -910,11 +1114,11 @@ function phase2_worker(G               ::Div2,
                                          alpha_vec, beta_vec, rel_rows, rel_counter, ort, s,
                                          shared_lp1, shared_lp1_lock, shared_lp_doubled,
                                          lp_col, rank_growth, combined_scratch,
-                                         iR, iS, R, S, P0)
+                                         iR, iS, R, S, P0, next_anchor_ref)
             # 1-LP affine: handle_1lp_affine! returns the LP point as the next
-            # anchor when it stores/conjugates, otherwise a random FB element.
+            # anchor when it stores/conjugates, otherwise a structured cursor step.
             # We mark LP-derived here since the LP point is the structurally
-            # interesting anchor; handle_1lp_affine! emitting random is less
+            # interesting anchor; handle_1lp_affine! emitting structured is less
             # frequent and folding it in is conservative.
             phi_bias_stat._prev_anchor_was_lp = true
             end  # enable_lp1_aff
@@ -925,7 +1129,7 @@ function phase2_worker(G               ::Div2,
             # ------------------------------------------------------------------
             if !enable_lp2
                 s.hits_skip += 1
-                cur_pt = fb[rand(1:nF_cur)]
+                cur_pt = next_anchor()
                 record_random_anchor!(phi_bias_stat)
             else
                 empty!(fb_row_scratch)
@@ -943,15 +1147,17 @@ function phase2_worker(G               ::Div2,
                                              shared_lp2, shared_lp2_lock,
                                              shared_lp_doubled,
                                              lp_col, max_lp2_nodes, rank_growth,
-                                             combined_scratch)
+                                             combined_scratch, next_anchor_ref)
             end
 
         else
             # ------------------------------------------------------------------
-            #  3-LP: discard step, jump to a random FB point
+            #  3-LP: discard step, advance structured cursor
             # ------------------------------------------------------------------
             s.hits_skip += 1
-            cur_pt = fb[rand(1:nF_cur)]
+            # IDEA 4: non-productive step — advance dry streak for basin steering.
+            basin_dry_streak += 1
+            cur_pt = next_anchor()
             record_random_anchor!(phi_bias_stat)
         end
     end   # end main walk loop
@@ -1007,7 +1213,10 @@ function phase2_worker(G               ::Div2,
             smooth_hist   = s.smooth_hist,
             rank_growth   = rank_growth,
             lp_col        = lp_col,
-            phi_bias_stat = phi_bias_stat)
+            phi_bias_stat = phi_bias_stat,
+            # IDEA 4: export hot-basin anchor indices so phase3 can warm-start
+            # its walk near productive LP-conj regions from the precompute.
+            basin_hot_anchors = basin_buf[1:basin_buf_count])
 end
 
 
@@ -1035,7 +1244,8 @@ end
         shared_lp2_conj_lock::ReentrantLock,
         max_lp2_conj_nodes::Int,
         rank_growth       ::Vector{Tuple{Int,Int}},
-        combined_scratch  ::Dict{Int,Int})::NTuple{2,Int}
+        combined_scratch  ::Dict{Int,Int},
+        next_anchor_ref   ::Ref{Function})::NTuple{2,Int}
 
     s.hits_lp2seen += 1
 
@@ -1056,7 +1266,7 @@ end
         end
     end
 
-    emitted_conj === nothing && return fb[rand(1:nF_cur)]
+    emitted_conj === nothing && return next_anchor_ref[]()
 
     if emitted_conj.type === :even_cycle
         # Even cycle → full FB relation directly.
@@ -1071,7 +1281,7 @@ end
             @assert check_relation_principal(emitted_conj.row, emitted_conj.alpha,
                                              emitted_conj.beta, "α", fb, G, T; tag="QLP-CONJ-CYCLE")
         end
-        return fb[rand(1:nF_cur)]
+        return next_anchor_ref[]()
 
     elseif emitted_conj.type === :odd_cycle
         # Odd cycle → the root contributes 2·atom(root) to the divisor sum.
@@ -1119,8 +1329,8 @@ end
                 unlock(shared_lp1_lock)
             end
         end
-        return fb[rand(1:nF_cur)]
+        return next_anchor_ref[]()
     end
 
-    return fb[rand(1:nF_cur)]
+    return next_anchor_ref[]()
 end

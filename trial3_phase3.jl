@@ -85,6 +85,12 @@ struct Phase2Tables
 
     # Group order
     ell            ::BigInt
+
+    # IDEA 4: hot-basin anchor indices from the precompute walk.
+    # These are FB indices (1-based into fb) where LP1-conj events were
+    # recorded.  Phase 3 uses them to warm-start each trial's anchor cursor
+    # near productive geometric regions, exploiting state persistence.
+    hot_basin_anchors ::Vector{Int}
 end
 
 # ---------------------------------------------------------------------------
@@ -164,7 +170,22 @@ function phase3_trial_worker(
     alpha_cur = rand(1:ellI-1)
     beta_cur  = rand(1:ellI-1)
     D_cur     = jac_add(jac_mul(G, alpha_cur, ell), jac_mul(T, beta_cur, ell))
-    cur_pt    = fb[rand(1:nF)]
+
+    # IDEA 4: Warm-start anchor from the hot-basin indices recorded during
+    # the β=0 precompute.  Rather than picking a random FB point, we start
+    # near a region that was productive for LP1-conj events.  Each trial
+    # picks a different entry from the basin buffer (using trial_idx as
+    # selector) to spread trials across multiple hot regions rather than
+    # crowding one.  If the basin is empty (first run, no hits), fall back
+    # to the standard random init.
+    hot_anchors = tables.hot_basin_anchors
+    if !isempty(hot_anchors)
+        basin_idx = hot_anchors[mod(trial_idx - 1, length(hot_anchors)) + 1]
+        basin_idx = clamp(basin_idx, 1, nF)
+        cur_pt    = fb[basin_idx]
+    else
+        cur_pt    = fb[rand(1:nF)]
+    end
 
     # ── Local birthday fallback tables ────────────────────────────────────────
     # affine: lp_pt → (fb_row, neg_al, neg_be)
@@ -181,6 +202,59 @@ function phase3_trial_worker(
     # shared read-only tables.atom_log_dict.
     #
     # Helper: look up atom log, checking local extension first.
+
+    # ── IDEA 2 & 4: Phase3 inertia + mini basin memory ────────────────────────
+    # Mirror the phase2 inertia mechanism in phase3 to keep the β≠0 walk near
+    # productive geometric configurations.  Basin steering uses the precomputed
+    # hot_basin_anchors (seeded via warm-start) and a local dry-streak counter.
+    _small_primes_p3 = (2,3,5,7,11,13,17,19,23,29,31,37,41,43,47,53)
+    function _gcd_p3(a, b); while b != 0; a, b = b, a % b; end; a; end
+
+    anchor_stride_p3 = nF > 1 ?
+        mod(_small_primes_p3[mod(trial_idx - 1, length(_small_primes_p3)) + 1], nF - 1) + 1 : 1
+    while nF > 1 && _gcd_p3(anchor_stride_p3, nF) != 1
+        anchor_stride_p3 = mod(anchor_stride_p3 + 1, nF) + 1
+    end
+    # Start cursor at the warm-start position if available.
+    anchor_cursor_p3 = isempty(hot_anchors) ? rand(1:nF) :
+                       clamp(hot_anchors[mod(trial_idx - 1, length(hot_anchors)) + 1], 1, nF)
+
+    inertia_dir_p3 = anchor_stride_p3
+    const P3_INERTIA_FLIP  = 0.05
+    const P3_BASIN_TRIGGER = 500
+    p3_dry_streak = 0
+
+    # Mini basin buffer: track LP-conj hits locally within this trial.
+    p3_basin_buf   = zeros(Int, 8)
+    p3_basin_head  = 1
+    p3_basin_count = 0
+
+    @inline function p3_record_basin!(idx::Int)
+        p3_basin_buf[p3_basin_head] = idx
+        p3_basin_head  = mod(p3_basin_head, 8) + 1
+        p3_basin_count = min(p3_basin_count + 1, 8)
+        p3_dry_streak  = 0
+    end
+
+    @inline function p3_next_anchor()
+        # Basin steer if cold long enough.
+        if p3_dry_streak >= P3_BASIN_TRIGGER && p3_basin_count > 0
+            base = p3_basin_buf[mod(p3_basin_head - 2 + 8, 8) + 1]
+            if base != 0
+                anchor_cursor_p3 = mod(base - 1 + rand(-2:2), nF) + 1
+                p3_dry_streak    = 0
+            end
+        end
+        pt = fb[anchor_cursor_p3]
+        # Inertia flip.
+        if rand() < P3_INERTIA_FLIP
+            nd = _small_primes_p3[mod(anchor_cursor_p3 + trial_idx, length(_small_primes_p3)) + 1]
+            while nF > 1 && _gcd_p3(nd, nF) != 1; nd = mod(nd + 1, nF) + 1; end
+            inertia_dir_p3 = nd
+        end
+        anchor_cursor_p3 = mod(anchor_cursor_p3 - 1 + inertia_dir_p3, nF) + 1
+        return pt
+    end
     local_alog = Dict{NTuple{2,Int}, Int}()
     @inline alog_get(pt) = get(local_alog, pt, get(alog, pt, -1))
 
@@ -362,6 +436,8 @@ function phase3_trial_worker(
                     n_1lp_conj_pre += 1
                     k_rec = try_solve_conj(i0, prev_col, c_al, c_be)
                     k_rec !== nothing && break
+                    # IDEA 4: successful LP1-conj step — record basin hit.
+                    p3_record_basin!(anchor_cursor_p3)
 
                 elseif haskey(local_lp1_conj, lp_key)
                     # Close against local birthday entry
@@ -373,14 +449,20 @@ function phase3_trial_worker(
                     n_1lp_conj_local += 1
                     k_rec = try_solve_conj(i0, prev_col, c_al, c_be)
                     k_rec !== nothing && break
+                    # IDEA 4: record basin hit for local closure too.
+                    p3_record_basin!(anchor_cursor_p3)
                 else
                     if length(local_lp1_conj) < local_lp_cap
                         local_lp1_conj[lp_key] = LP1ConjValFull(UInt16(i0), UInt64(neg_al), UInt64(neg_be))
                     end
+                    # Non-productive conj step: advance dry streak.
+                    p3_dry_streak += 1
                 end
+            else
+                p3_dry_streak += 1
             end
             # A2: i0 not in FB → 2-LP-conj, skip
-            cur_pt = i0 != 0 ? cur_pt : fb[rand(1:nF)]
+            cur_pt = i0 != 0 ? cur_pt : p3_next_anchor()
             continue
         end
 
@@ -401,7 +483,9 @@ function phase3_trial_worker(
             n_0lp += 1
             k_rec = try_solve(fb_row, neg_al, neg_be)
             k_rec !== nothing && break
-            cur_pt = fb[rand(1:nF)]
+            # IDEA 4: 0-LP is productive — reset dry streak.
+            p3_dry_streak = 0
+            cur_pt = p3_next_anchor()
 
         elseif n_lp == 1
             # B1: 1-LP-affine
@@ -442,13 +526,15 @@ function phase3_trial_worker(
                 if length(local_lp1_affine) < local_lp_cap
                     local_lp1_affine[lp_pt] = (copy(fb_row), neg_al, neg_be)
                 end
+                p3_dry_streak += 1
             end
 
-            cur_pt = iR != 0 ? R : iS != 0 ? S : fb[rand(1:nF)]
+            cur_pt = iR != 0 ? R : iS != 0 ? S : p3_next_anchor()
 
         else
             # B2/B3: 2-LP or 3-LP, discard
-            cur_pt = fb[rand(1:nF)]
+            p3_dry_streak += 1
+            cur_pt = p3_next_anchor()
         end
     end
 
