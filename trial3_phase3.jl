@@ -156,6 +156,7 @@ function phase3_trial_worker(
         n_steps_prebuilt ::Int   = 512,
         verbose          ::Bool  = false,
         conj_dict        ::Union{Dict{CanonicalLP1Key, LP1ConjVal}, Nothing} = nothing,
+        hot_anchors      ::Union{Vector{Int}, Nothing} = nothing,
         seeded_rel_rows  ::Union{Vector{Dict{Int,Int}}, Nothing} = nothing,
         seeded_rel_be    ::Union{Vector{Int},           Nothing} = nothing,
         seeded_rel_al    ::Union{Vector{BigInt},        Nothing} = nothing)::Phase3Result
@@ -164,7 +165,6 @@ function phase3_trial_worker(
     # ── DIAG checkpoint helper (thread-safe: @printf is atomic per-call) ──────
     _cp(tag) = (@printf("[p3 trial %2d | %+8.3fs | %s]\n", trial_idx, time()-t0, tag); flush(stdout))
 
-    _cp("entered worker")
     ell   = tables.ell
     ellI  = Int(ell)
     # step_cap and local_lp_cap are pre-computed in the main thread before spawning
@@ -180,46 +180,32 @@ function phase3_trial_worker(
     # contention across the 30+ simultaneous phase3 threads.
     lp1_conj_dict = conj_dict   # Dict{CanonicalLP1Key, LP1ConjVal} or nothing
 
-    _cp("locals assigned")
-
     # ── Prebuilt step table for the β≠0 walk ─────────────────────────────────
     step_D = Vector{Div2}(undef, n_steps_prebuilt)
     step_a = Vector{Int}(undef,  n_steps_prebuilt)
     step_b = Vector{Int}(undef,  n_steps_prebuilt)
-    _cp("step vecs allocated")   # ← add this
     for i in 1:n_steps_prebuilt
         a = rand(1:ellI-1); b = rand(1:ellI-1)
         step_D[i] = jac_add(jac_mul(G, a, ellI), jac_mul(T, b, ellI))
         step_a[i] = a; step_b[i] = b
-        i == 1 && _cp("step table first iteration done")
     end
-
-    _cp("step table built ($(n_steps_prebuilt) entries)")
 
     # ── Walk state ────────────────────────────────────────────────────────────
     alpha_cur = rand(1:ellI-1)
     beta_cur  = rand(1:ellI-1)
     D_cur = jac_add(jac_mul(G, alpha_cur, ellI), jac_mul(T, beta_cur, ellI))
 
-    _cp("walk state initialised")
-
-    # IDEA 4: Warm-start anchor from the hot-basin indices recorded during
-    # the β=0 precompute.  Rather than picking a random FB point, we start
-    # near a region that was productive for LP1-conj events.  Each trial
-    # picks a different entry from the basin buffer (using trial_idx as
-    # selector) to spread trials across multiple hot regions rather than
-    # crowding one.  If the basin is empty (first run, no hits), fall back
-    # to the standard random init.
-    hot_anchors = tables.hot_basin_anchors
-    if !isempty(hot_anchors)
-        basin_idx = hot_anchors[mod(trial_idx - 1, length(hot_anchors)) + 1]
+    # IDEA 4: The hot-anchor snapshot is created in the parent thread and
+    # passed in as a plain vector.  This keeps worker startup read-only.
+    if hot_anchors !== nothing && !isempty(hot_anchors)
+        hot_len  = length(hot_anchors)
+        hot_pos  = mod(trial_idx - 1, hot_len) + 1
+        basin_idx = hot_anchors[hot_pos]
         basin_idx = clamp(basin_idx, 1, nF)
         cur_pt    = fb[basin_idx]
     else
         cur_pt    = fb[rand(1:nF)]
     end
-
-    _cp("anchor set")
 
     # ── Local birthday fallback tables ────────────────────────────────────────
     # affine: lp_pt → (fb_row, neg_al, neg_be)
@@ -291,8 +277,10 @@ function phase3_trial_worker(
     @inline function p3_next_anchor()
         if !isempty(hot_anchors) && rand() >= p3_ε_expl
             # Exploitation: rotate through hot_anchors with jitter.
-            p3_hot_idx = mod(p3_hot_idx, length(hot_anchors)) + 1
-            base = clamp(hot_anchors[p3_hot_idx], 1, nF)
+            hot_len = length(hot_anchors)
+            p3_hot_idx = mod(p3_hot_idx, hot_len) + 1
+            base = hot_anchors[p3_hot_idx]
+            base = clamp(base, 1, nF)
             jitter = rand(-3:3)
             anchor_cursor_p3 = mod(base - 1 + jitter, nF) + 1
         end
@@ -369,8 +357,6 @@ function phase3_trial_worker(
     n_local_be_rows  = 0    # count of β≠0 rows added during the walk
     n_local_linalg   = 0    # how many times we attempted elimination
     _next_linalg_at  = 1    # attempt when n_local_be_rows reaches this
-
-    _cp("rel_rows seeded ($(length(local_rel_rows)) rows from precompute)")
 
     # GF(ell) Gaussian elimination on the augmented system.
     # Columns 1..nF = atom log unknowns; column nF+1 = k; column nF+2 = RHS (neg_al).
@@ -549,12 +535,7 @@ function phase3_trial_worker(
     # ── Main walk loop ────────────────────────────────────────────────────────
     t_last_heartbeat = time()
 
-    _cp("entering walk loop  step_cap=$(step_cap)")
-
     for _raw_step in 1:step_cap
-        if _raw_step == 1
-            _cp("first walk step executing")
-        end
         if _raw_step & 0xffff == 0   # every 65536 raw steps
             now = time()
             if now - t_last_heartbeat >= 30.0
@@ -940,15 +921,14 @@ function phase3_solve_targets(
             length(conj_snap), time() - t_snap)
     flush(stdout)
 
-    # Pre-allocate seeded relation vectors for each worker in the main thread,
-    # before spawning.  If this is done inside the spawned tasks, all 30 threads
-    # simultaneously call Int(::BigInt) (or allocate BigInt copies) under GC
-    # contention, serialising on the GMP allocator and producing a near-deadlock
-    # with one hot core and the rest parked.
+    # Pre-allocate seeded relation vectors and the hot-anchor snapshot in the
+    # main thread before spawning.  Doing this inside the spawned tasks can
+    # create allocator / GC contention and reintroduce launch-time stalls.
     n_pre_rows = length(tables.rel_rows_pre)
     seeded_rel_rows = [copy(tables.rel_rows_pre)      for _ in 1:n]
     seeded_rel_be   = [zeros(Int, n_pre_rows)         for _ in 1:n]
     seeded_rel_al   = [copy(tables.alpha_vec_pre)     for _ in 1:n]
+    hot_anchor_snap = copy(tables.hot_basin_anchors)
 
     @sync for i in 1:n
         Threads.@spawn begin
@@ -957,6 +937,7 @@ function phase3_solve_targets(
                                               step_cap=eff_step_cap, local_lp_cap=eff_local_cap,
                                               verbose=verbose,
                                               conj_dict=conj_snap,
+                                              hot_anchors=hot_anchor_snap,
                                               seeded_rel_rows=seeded_rel_rows[i],
                                               seeded_rel_be=seeded_rel_be[i],
                                               seeded_rel_al=seeded_rel_al[i])
