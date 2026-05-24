@@ -429,7 +429,7 @@ function phase3_trial_worker(
         push!(local_rel_al,   neg_al)
         n_local_be_rows += 1
         n_local_be_rows >= _next_linalg_at || return nothing
-        _next_linalg_at += 5   # backoff: try again after 5 more β≠0 rows
+        _next_linalg_at += 10   # backoff: try again after 10 more β≠0 rows
         return try_local_linalg_solve()
     end
 
