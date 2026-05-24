@@ -441,8 +441,9 @@ function index_calculus_walk(G::Div2, T::Div2;
     t_step_done = time() - t_step_build
 
     # ── Relation target and step cap ─────────────────────────────────────────
-    target_excess      = max(20, nF ÷ 10)
-    rel_target_total   = nF + 1 + target_excess
+    # Target 1.2×nF relations (20% surplus over the LA minimum) to improve
+    # rank stability and reduce the probability of a deficient system.
+    rel_target_total   = round(Int, 1.2 * nF) + 1
     p1_banked          = length(p1_rows)
     rel_target         = max(1, rel_target_total - p1_banked)
     rel_counter        = Threads.Atomic{Int}(0)
@@ -481,7 +482,7 @@ function index_calculus_walk(G::Div2, T::Div2;
         @printf("── Walk setup ──────────────────────────────────────────────────────\n")
         @printf("  N_STEPS (precomputed):  %d\n", N_STEPS)
         @printf("  step table build time:  %.3fs\n", t_step_done)
-        @printf("  rel_target:             %d total  (%d after phase-1 credit of %d)\n",
+        @printf("  rel_target:             %d total  (%d after phase-1 credit of %d)  [= 1.2×nF+1]\n",
                 rel_target_total, rel_target, p1_banked)
         @printf("  p_smooth per step:      %.3e  (0-LP + LP-closure estimate)\n", p_smooth_step)
         @printf("  step_cap per thread:    %d  (derived from smoothness geometry)\n",

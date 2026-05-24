@@ -331,6 +331,29 @@ end
 @inline _conj_make_val(::Type{LP1ConjValFull}, i0::UInt16, al::UInt64, be::UInt64) = LP1ConjValFull(i0, al, be)
 
 # ---------------------------------------------------------------------------
+#  conj_to_dict — snapshot a ShardedLP1Conj into a plain Dict for lockless
+#  read-only use in phase3 workers.  Call once before spawning workers.
+# ---------------------------------------------------------------------------
+function conj_to_dict(sc::ShardedLP1Conj{V})::Dict{CanonicalLP1Key, V} where V
+    d = Dict{CanonicalLP1Key, V}()
+    sizehint!(d, conj_total_entries(sc) + 16)
+    for si in 1:N_CONJ_SHARDS
+        lock(sc.locks[si])
+        sh = sc.shards[si]
+        @inbounds for slot in 1:sh.cap
+            k = sh.keys[slot]
+            k == CONJ_KEY_EMPTY && continue
+            # Reconstruct UInt128 key from NTuple{4,UInt32} — same as canonical_lp1_conj_key.
+            ck = UInt128(k[1]) | (UInt128(k[2]) << 32) |
+                 (UInt128(k[3]) << 64) | (UInt128(k[4]) << 96)
+            d[ck] = sh.vals[slot]
+        end
+        unlock(sc.locks[si])
+    end
+    d
+end
+
+# ---------------------------------------------------------------------------
 #  Phase 3 step cap  (scales with √ell)
 # ---------------------------------------------------------------------------
 const PHASE3_STEP_MULTIPLIER = 10

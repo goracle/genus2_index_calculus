@@ -1154,6 +1154,61 @@ function lsm_bday_report(sc::LP1ConjLSM, p::Integer, r::Real; io::IO = stdout)
     nothing
 end
 
+# ---------------------------------------------------------------------------
+#  lsm_to_dict — snapshot all hot+disk entries into a plain Dict for lockless
+#  read-only use in phase3 workers.  Call once (under no concurrent writers)
+#  before spawning phase3 threads.  The LSM remains usable afterwards.
+# ---------------------------------------------------------------------------
+function lsm_to_dict(sc::LP1ConjLSM{V})::Dict{CanonicalLP1Key, V} where V
+    d = Dict{CanonicalLP1Key, V}()
+    sizehint!(d, conj_total_entries(sc) + 16)
+
+    # ── Hot shards ────────────────────────────────────────────────────────
+    for si in 1:sc.n_shards
+        lock(sc.shard_locks[si])
+        keys = sc.hot_keys[si]
+        vals = sc.hot_vals[si]
+        cap  = sc.hot_caps[si]
+        @inbounds for slot in 1:cap
+            k = keys[slot]
+            k == CONJ_KEY_EMPTY && continue
+            d[k] = vals[slot]
+        end
+        unlock(sc.shard_locks[si])
+    end
+
+    # ── Disk runs ─────────────────────────────────────────────────────────
+    lock(sc.file_lock)
+    mm = sc.spill_mmap
+    if !isempty(mm)
+        GC.@preserve mm begin
+            for rm in sc.runs
+                for pos in 1:rm.len
+                    _run_is_dead(rm, pos) && continue
+                    base  = _rec_base(rm, pos)
+                    ku0   = _mmap_u32(mm, base + OFF_U0)
+                    ku1   = _mmap_u32(mm, base + OFF_U1)
+                    kv0   = _mmap_u32(mm, base + OFF_V0)
+                    kv1   = _mmap_u32(mm, base + OFF_V1)
+                    i0_v  = _mmap_u16(mm, base + OFF_I0)
+                    al_v  = _mmap_u64(mm, base + OFF_AL)
+                    be_v  = _mmap_u64(mm, base + OFF_BE)
+                    ck    = UInt128(ku0) | (UInt128(ku1) << 32) |
+                            (UInt128(kv0) << 64) | (UInt128(kv1) << 96)
+                    # Hot-shard entry (more recent) takes priority.
+                    haskey(d, ck) || (d[ck] = _conj_make_val(V, i0_v, al_v, be_v))
+                end
+            end
+        end
+    end
+    unlock(sc.file_lock)
+
+    d
+end
+
+# Unified dispatch so phase3 can call conj_to_dict on either table type.
+conj_to_dict(sc::LP1ConjLSM{V}) where V = lsm_to_dict(sc)
+
 function lsm_flush_all!(sc::LP1ConjLSM)
     lock(sc.file_lock)
     for si in 1:sc.n_shards

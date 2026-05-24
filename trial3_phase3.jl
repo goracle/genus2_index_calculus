@@ -152,36 +152,56 @@ function phase3_trial_worker(
         tables           ::Phase2Tables,
         G                ::Div2;
         step_cap         ::Int   = -1,   # -1 → auto-scaled via phase3_default_step_cap(ell)
+        local_lp_cap     ::Int   = -1,   # -1 → auto-scaled via phase3_local_lp_cap(ell)
         n_steps_prebuilt ::Int   = 512,
-        verbose          ::Bool  = false)::Phase3Result
+        verbose          ::Bool  = false,
+        conj_dict        ::Union{Dict{CanonicalLP1Key, LP1ConjVal}, Nothing} = nothing,
+        seeded_rel_rows  ::Union{Vector{Dict{Int,Int}}, Nothing} = nothing,
+        seeded_rel_be    ::Union{Vector{Int},           Nothing} = nothing,
+        seeded_rel_al    ::Union{Vector{BigInt},        Nothing} = nothing)::Phase3Result
 
     t0    = time()
+    # ── DIAG checkpoint helper (thread-safe: @printf is atomic per-call) ──────
+    _cp(tag) = (@printf("[p3 trial %2d | %+8.3fs | %s]\n", trial_idx, time()-t0, tag); flush(stdout))
+
+    _cp("entered worker")
     ell   = tables.ell
     ellI  = Int(ell)
-    # Auto-scale step_cap and local LP table caps from ell.
-    step_cap     = step_cap < 0 ? phase3_default_step_cap(ell) : step_cap
-    local_lp_cap = phase3_local_lp_cap(ell)
+    # step_cap and local_lp_cap are pre-computed in the main thread before spawning
+    # to avoid 30 workers simultaneously calling isqrt(BigInt(ell)) via GMP.
+    step_cap     = step_cap     < 0 ? phase3_default_step_cap(ell) : step_cap
+    local_lp_cap = local_lp_cap < 0 ? phase3_local_lp_cap(ell)    : local_lp_cap
     pt2idx        = tables.pt2idx
     fb            = tables.fb
     nF            = length(fb)
     alog          = tables.atom_log_dict
     lp1_pre       = tables.shared_lp1        # READ ONLY — affine 1-LP
-    lp1_conj_pre  = tables.shared_lp1_conj  # READ ONLY — conj 1-LP (ShardedLP1Conj)
+    # Use the pre-snapshotted plain Dict for conj lookups — no locks, no file_lock
+    # contention across the 30+ simultaneous phase3 threads.
+    lp1_conj_dict = conj_dict   # Dict{CanonicalLP1Key, LP1ConjVal} or nothing
+
+    _cp("locals assigned")
 
     # ── Prebuilt step table for the β≠0 walk ─────────────────────────────────
     step_D = Vector{Div2}(undef, n_steps_prebuilt)
     step_a = Vector{Int}(undef,  n_steps_prebuilt)
     step_b = Vector{Int}(undef,  n_steps_prebuilt)
+    _cp("step vecs allocated")   # ← add this
     for i in 1:n_steps_prebuilt
         a = rand(1:ellI-1); b = rand(1:ellI-1)
-        step_D[i] = jac_add(jac_mul(G, a, ell), jac_mul(T, b, ell))
+        step_D[i] = jac_add(jac_mul(G, a, ellI), jac_mul(T, b, ellI))
         step_a[i] = a; step_b[i] = b
+        i == 1 && _cp("step table first iteration done")
     end
+
+    _cp("step table built ($(n_steps_prebuilt) entries)")
 
     # ── Walk state ────────────────────────────────────────────────────────────
     alpha_cur = rand(1:ellI-1)
     beta_cur  = rand(1:ellI-1)
-    D_cur     = jac_add(jac_mul(G, alpha_cur, ell), jac_mul(T, beta_cur, ell))
+    D_cur = jac_add(jac_mul(G, alpha_cur, ellI), jac_mul(T, beta_cur, ellI))
+
+    _cp("walk state initialised")
 
     # IDEA 4: Warm-start anchor from the hot-basin indices recorded during
     # the β=0 precompute.  Rather than picking a random FB point, we start
@@ -198,6 +218,8 @@ function phase3_trial_worker(
     else
         cur_pt    = fb[rand(1:nF)]
     end
+
+    _cp("anchor set")
 
     # ── Local birthday fallback tables ────────────────────────────────────────
     # affine: lp_pt → (fb_row, neg_al, neg_be)
@@ -260,7 +282,20 @@ function phase3_trial_worker(
         p3_dry_streak = 0
     end
 
+    # IS: lightweight ε-greedy restart using hot_anchors from precompute.
+    # Phase3 inherits the IS philosophy but has no full reservoir — it just
+    # uses the precomputed hot_anchors list with a small random perturbation.
+    p3_ε_expl   = 0.30   # 30% exploration (phase3 walks shorter so keep high)
+    p3_hot_idx  = 0      # round-robin pointer into hot_anchors
+
     @inline function p3_next_anchor()
+        if !isempty(hot_anchors) && rand() >= p3_ε_expl
+            # Exploitation: rotate through hot_anchors with jitter.
+            p3_hot_idx = mod(p3_hot_idx, length(hot_anchors)) + 1
+            base = clamp(hot_anchors[p3_hot_idx], 1, nF)
+            jitter = rand(-3:3)
+            anchor_cursor_p3 = mod(base - 1 + jitter, nF) + 1
+        end
         pt = fb[anchor_cursor_p3]
         anchor_cursor_p3 = mod(anchor_cursor_p3 - 1 + inertia_dir_p3, nF) + 1
         return pt
@@ -277,7 +312,8 @@ function phase3_trial_worker(
     n_1lp_conj_local = 0   # conj closure against local birthday dict
     n_conj_branch    = 0   # times we entered A1 (i0∈FB, conj residual), before haskey
     n_alog_extended  = 0   # new atom logs derived from β=0 closures
-    n_burst_steps    = 0   # walk steps taken in burst mode
+    n_burst_steps    = 0   # raw burst iterations (pre-gate)
+    n_burst_valid    = 0   # burst iterations that passed all gates (same units as n_steps)
     n_burst_hits     = 0   # conj closures that fired during burst mode
     k_rec            = nothing
 
@@ -318,15 +354,12 @@ function phase3_trial_worker(
     # β=0 rows (neg_be=0) constrain atom logs only; β≠0 rows pin k.
     # Seeded with the precomputed β=0 relation set so the null space is
     # already constrained before the walk adds β≠0 rows.
-    local_rel_rows  = Vector{Dict{Int,Int}}()
-    local_rel_be    = Vector{Int}()
-    local_rel_al    = Vector{Int}()
-    # Seed from precomputed β=0 relations (read-only shared data).
-    for (row, al) in zip(tables.rel_rows_pre, tables.alpha_vec_pre)
-        push!(local_rel_rows, row)
-        push!(local_rel_be,   0)
-        push!(local_rel_al,   Int(al))
-    end
+    # Use pre-allocated seeded vectors built in the main thread before spawning.
+    # Building these inside the worker (esp. the BigInt copies) causes all 30
+    # threads to contend on the GMP allocator simultaneously → deadlock.
+    local_rel_rows  = seeded_rel_rows !== nothing ? seeded_rel_rows : copy(tables.rel_rows_pre)
+    local_rel_be    = seeded_rel_be   !== nothing ? seeded_rel_be   : zeros(Int, length(tables.rel_rows_pre))
+    local_rel_al    = seeded_rel_al   !== nothing ? seeded_rel_al   : copy(tables.alpha_vec_pre)
     # The β=0 rows already seeded (~nF of them from phase1+phase2) constrain the
     # atom log subspace; each β≠0 row adds one equation involving k.  The system
     # has nF+1 unknowns total, so once the seeded β=0 rows already span rank ~nF
@@ -336,6 +369,8 @@ function phase3_trial_worker(
     n_local_be_rows  = 0    # count of β≠0 rows added during the walk
     n_local_linalg   = 0    # how many times we attempted elimination
     _next_linalg_at  = 1    # attempt when n_local_be_rows reaches this
+
+    _cp("rel_rows seeded ($(length(local_rel_rows)) rows from precompute)")
 
     # GF(ell) Gaussian elimination on the augmented system.
     # Columns 1..nF = atom log unknowns; column nF+1 = k; column nF+2 = RHS (neg_al).
@@ -351,8 +386,8 @@ function phase3_trial_worker(
                 1 <= j <= nF || continue
                 A[ri, j] = mod(v, ellI)
             end
-            A[ri, nF+1] = local_rel_be[ri]   # coefficient of k
-            A[ri, nF+2] = local_rel_al[ri]   # RHS
+            A[ri, nF+1] = local_rel_be[ri]              # coefficient of k
+            A[ri, nF+2] = Int(mod(local_rel_al[ri], ellI))  # RHS (handle BigInt seed rows)
         end
         # Forward elimination with partial pivoting over GF(ell).
         pivot_col = zeros(Int, m)   # pivot_col[r] = column of pivot in row r, 0 if zero row
@@ -514,7 +549,12 @@ function phase3_trial_worker(
     # ── Main walk loop ────────────────────────────────────────────────────────
     t_last_heartbeat = time()
 
+    _cp("entering walk loop  step_cap=$(step_cap)")
+
     for _raw_step in 1:step_cap
+        if _raw_step == 1
+            _cp("first walk step executing")
+        end
         if _raw_step & 0xffff == 0   # every 65536 raw steps
             now = time()
             if now - t_last_heartbeat >= 30.0
@@ -535,6 +575,7 @@ function phase3_trial_worker(
         # index so that D_probe = hot_D + step_D[si_burst] is consistent with
         # alpha_probe = hot_alpha + step_a[si_burst] and beta_probe = hot_beta + step_b[si_burst].
         # Using si (the main walk's index) for alpha/beta but rand() for D was the bug.
+        this_step_was_burst = burst_active
         if burst_active
             si_burst    = rand(1:n_steps_prebuilt)
             D_probe     = jac_add(hot_D, step_D[si_burst])
@@ -572,6 +613,7 @@ function phase3_trial_worker(
         RS_mumford === SENTINEL_MUMFORD && continue
 
         n_steps += 1
+        this_step_was_burst && (n_burst_valid += 1)
 
         neg_al = mod(ellI - alpha_eff, ellI)
         neg_be = mod(ellI - beta_eff,  ellI)
@@ -586,10 +628,11 @@ function phase3_trial_worker(
             if i0 != 0
                 # A1: 1-LP-conj — P0 is in FB, RS pair is the LP atom
                 n_conj_branch += 1
-                si_shard = conj_shard_idx(lp_key)
 
-                if conj_haskey(lp1_conj_pre, si_shard, lp_key)
-                    v = conj_getval(lp1_conj_pre, si_shard, lp_key)
+                # Lockless lookup into the pre-snapshotted plain dict.
+                _conj_v = lp1_conj_dict !== nothing ? get(lp1_conj_dict, lp_key, nothing) : nothing
+                if _conj_v !== nothing
+                    v = _conj_v
                     prev_col = Int(v.i0)
                     prev_al  = Int(v.neg_al)
                     c_al = mod(neg_al - prev_al, ellI)
@@ -705,15 +748,15 @@ function phase3_trial_worker(
         k_rec_s  = k_rec  === nothing ? "none" : string(k_rec)
         k_true_s = k_true === nothing ? "?"    : string(k_true)
         match_s  = verified ? "ok" : "MISMATCH"
-        burst_hit_rate = n_burst_steps > 0 ? n_burst_hits / n_burst_steps : 0.0
-        cold_steps     = n_steps - n_burst_steps
+        burst_hit_rate = n_burst_valid > 0 ? Float64(n_burst_hits) / Float64(n_burst_valid) : 0.0
+        cold_steps     = n_steps - n_burst_valid
         cold_hits      = (n_1lp_conj_pre + n_1lp_conj_local) - n_burst_hits
-        cold_hit_rate  = cold_steps > 0 ? cold_hits / cold_steps : 0.0
+        cold_hit_rate  = cold_steps > 0 ? Float64(cold_hits) / Float64(cold_steps) : 0.0
         @printf("[phase3 trial %d | t=%.3fs] k_rec=%s  k_true=%s  match=%s  steps=%d  0lp=%d  1lp_aff_pre=%d  1lp_aff_local=%d  1lp_conj_pre=%d  1lp_conj_local=%d  conj_branch=%d  linalg_attempts=%d\n",
                 trial_idx, elapsed, k_rec_s, k_true_s, match_s,
                 n_steps, n_0lp, n_1lp_aff_pre, n_1lp_aff_local, n_1lp_conj_pre, n_1lp_conj_local, n_conj_branch, n_local_linalg)
-        @printf("[phase3 trial %d | burst] budget=%d  burst_steps=%d  burst_hits=%d  burst_rate=%.4f  cold_rate=%.4f  lift=%.2f\n",
-                trial_idx, _burst_budget_default, n_burst_steps, n_burst_hits, burst_hit_rate, cold_hit_rate,
+        @printf("[phase3 trial %d | burst] budget=%d  burst_steps=%d  burst_valid=%d  burst_hits=%d  burst_rate=%.4f  cold_rate=%.4f  lift=%.2f\n",
+                trial_idx, _burst_budget_default, n_burst_steps, n_burst_valid, n_burst_hits, burst_hit_rate, cold_hit_rate,
                 cold_hit_rate > 0 ? burst_hit_rate / cold_hit_rate : 0.0)
         flush(stdout)
     end
@@ -884,11 +927,39 @@ function phase3_solve_targets(
     end
 
     t0 = time()
+
+    # Snapshot the conj LP1 table into a plain Dict BEFORE spawning any workers.
+    # conj_haskey/conj_getval on the LSM (or ShardedLP1Conj) both take a shared
+    # file_lock (or shard lock), which causes 30+ threads to fully serialise on
+    # every conj lookup — collapsing throughput to ~0 and triggering GC safepoint
+    # deadlocks under 32-thread load.  A plain Dict needs no locks and allows
+    # all workers to read concurrently with zero contention.
+    t_snap = time()
+    conj_snap = conj_to_dict(tables.shared_lp1_conj)
+    @printf("   [phase3] conj snapshot: %d entries in %.3fs\n",
+            length(conj_snap), time() - t_snap)
+    flush(stdout)
+
+    # Pre-allocate seeded relation vectors for each worker in the main thread,
+    # before spawning.  If this is done inside the spawned tasks, all 30 threads
+    # simultaneously call Int(::BigInt) (or allocate BigInt copies) under GC
+    # contention, serialising on the GMP allocator and producing a near-deadlock
+    # with one hot core and the rest parked.
+    n_pre_rows = length(tables.rel_rows_pre)
+    seeded_rel_rows = [copy(tables.rel_rows_pre)      for _ in 1:n]
+    seeded_rel_be   = [zeros(Int, n_pre_rows)         for _ in 1:n]
+    seeded_rel_al   = [copy(tables.alpha_vec_pre)     for _ in 1:n]
+
     @sync for i in 1:n
         Threads.@spawn begin
             T_i, k_true_i = targets[i]
             results[i] = phase3_trial_worker(i, T_i, k_true_i, tables, G;
-                                              step_cap=step_cap, verbose=verbose)
+                                              step_cap=eff_step_cap, local_lp_cap=eff_local_cap,
+                                              verbose=verbose,
+                                              conj_dict=conj_snap,
+                                              seeded_rel_rows=seeded_rel_rows[i],
+                                              seeded_rel_be=seeded_rel_be[i],
+                                              seeded_rel_al=seeded_rel_al[i])
         end
     end
 
