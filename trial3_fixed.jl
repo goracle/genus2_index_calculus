@@ -965,8 +965,8 @@ function mem_report_phase2tables(tables::Phase2Tables,
     n_lp1   = length(tables.shared_lp1)
     n_alog  = length(tables.atom_log_dict)
 
-    sh      = tables.shared_lp1_conj
-    n_conj  = conj_total_entries(sh)
+    # shared_lp1_conj is a plain Dict{CanonicalLP1Key, LP1ConjVal} snapshot
+    n_conj  = length(tables.shared_lp1_conj)
 
     # Sample first 100 lp1 entries to estimate average fb_row Dict weight.
     avg_row_weight = if n_lp1 > 0
@@ -1266,26 +1266,12 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
                     length(hot_basin_anchors_merged))
         end
 
-        tables = Phase2Tables(
-            fb_pre,
-            pt2idx_pre,
-            atom_log_dict,
-            shared_lp1_pre,       # READ ONLY in phase 3
-            shared_lp2_pre,
-            shared_lp1_conj_pre,
-            shared_lp2_conj_pre,
-            BigInt(ell),
-            copy(hot_basin_anchors_merged),
-            rel_rows_pre,
-            alpha_vec_pre,
-            let total_valid = sum(r !== nothing ? r.hits_total    : 0 for r in results_pre),
-                n_lp1_conj  = sum(r !== nothing ? r.hits_lp1_conj : 0 for r in results_pre)
-                n_lp1_conj > 0 ? Float64(total_valid) / Float64(n_lp1_conj) : 0.0
-            end)
-
-        @printf("  atom_log_dict empty; phase3 will solve via accumulated β≠0 relations\n")
-        @printf("  Phase2Tables ready: FB=%d  atom_logs=%d (verified)  lp1_entries=%d\n",
-                length(fb_pre), length(atom_log_dict), length(shared_lp1_pre))
+        # ── Snapshot conj LSM → close/free it → GC → THEN build Phase2Tables ──
+        # The LSM can be ~6 GB.  We must free it before building Phase2Tables
+        # (which would keep it alive) and before spawning phase-3 workers
+        # (which would double-count it alongside the snapshot Dict).
+        # Order: (1) report stats, (2) snapshot to plain Dict, (3) lsm_close!,
+        #        (4) GC, (5) build tables with snapshot Dict in the field.
         let n_conj = conj_total_entries(shared_lp1_conj_pre)
             @printf("  shared_lp1_conj_pre: %d entries (hot+disk)\n", n_conj)
             lsm_info(shared_lp1_conj_pre)
@@ -1293,6 +1279,44 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
                         max(1e-9, time() - t_pre)
             lsm_bday_report(shared_lp1_conj_pre, p, r_est_pre)
         end
+
+        t_snap = time()
+        conj_snap_pre = conj_to_dict(shared_lp1_conj_pre)
+        @printf("  conj snapshot: %d entries built in %.3fs\n",
+                length(conj_snap_pre), time() - t_snap)
+        flush(stdout)
+
+        # Free the LSM now — the snapshot Dict is the only copy we need going forward.
+        lsm_close!(shared_lp1_conj_pre)
+        # Clear all references so the GC can reclaim the hot shards and HDF5 file.
+        shared_lp1_conj_pre = nothing
+        GC.gc(true)
+        @printf("  [MEM] post-LSM-free GC: RSS=%.1f MB  GC-live=%.1f MB\n",
+                Sys.maxrss()/1024^2, Base.gc_live_bytes()/1024^2)
+        flush(stdout)
+
+        lp1_conj_mean_gap = let total_valid = sum(r !== nothing ? r.hits_total    : 0 for r in results_pre),
+                                n_lp1_conj  = sum(r !== nothing ? r.hits_lp1_conj : 0 for r in results_pre)
+                n_lp1_conj > 0 ? Float64(total_valid) / Float64(n_lp1_conj) : 0.0
+            end
+
+        tables = Phase2Tables(
+            fb_pre,
+            pt2idx_pre,
+            atom_log_dict,
+            shared_lp1_pre,       # READ ONLY in phase 3
+            shared_lp2_pre,
+            conj_snap_pre,        # plain Dict — LSM already closed above
+            shared_lp2_conj_pre,
+            BigInt(ell),
+            copy(hot_basin_anchors_merged),
+            rel_rows_pre,
+            alpha_vec_pre,
+            lp1_conj_mean_gap)
+
+        @printf("  atom_log_dict empty; phase3 will solve via accumulated β≠0 relations\n")
+        @printf("  Phase2Tables ready: FB=%d  atom_logs=%d (verified)  lp1_entries=%d  conj_snap=%d\n",
+                length(fb_pre), length(atom_log_dict), length(shared_lp1_pre), length(conj_snap_pre))
         @printf("  total precompute time: %.3fs\n\n", time() - t_pre)
 
         # ── Memory diagnostics ────────────────────────────────────────────────

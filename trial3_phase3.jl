@@ -79,8 +79,10 @@ struct Phase2Tables
     shared_lp2     ::LP2Graph
 
     # Extension-field LP tables (optional; may be empty)
-    # V = LP1ConjVal (amortized) or LP1ConjValFull (single-shot)
-    shared_lp1_conj::Union{ShardedLP1Conj{LP1ConjVal}, LP1ConjLSM{LP1ConjVal}}
+    # Stored as a plain Dict snapshot — the LSM is closed and freed in main2
+    # before Phase2Tables is constructed, so this field never holds the LSM.
+    # Plain Dict: no locks, zero contention across all phase-3 worker threads.
+    shared_lp1_conj::Dict{CanonicalLP1Key, LP1ConjVal}
     shared_lp2_conj::LP2ConjGraph
 
     # Group order
@@ -909,16 +911,12 @@ function phase3_solve_targets(
 
     t0 = time()
 
-    # Snapshot the conj LP1 table into a plain Dict BEFORE spawning any workers.
-    # conj_haskey/conj_getval on the LSM (or ShardedLP1Conj) both take a shared
-    # file_lock (or shard lock), which causes 30+ threads to fully serialise on
-    # every conj lookup — collapsing throughput to ~0 and triggering GC safepoint
-    # deadlocks under 32-thread load.  A plain Dict needs no locks and allows
-    # all workers to read concurrently with zero contention.
-    t_snap = time()
-    conj_snap = conj_to_dict(tables.shared_lp1_conj)
-    @printf("   [phase3] conj snapshot: %d entries in %.3fs\n",
-            length(conj_snap), time() - t_snap)
+    # tables.shared_lp1_conj is already a plain Dict{CanonicalLP1Key, LP1ConjVal}
+    # snapshot — the LSM was closed and freed in main2 before Phase2Tables was
+    # constructed.  No conversion needed here; no lock contention across workers.
+    conj_snap = tables.shared_lp1_conj
+    @printf("   [phase3] conj dict: %d entries (pre-snapshotted, no conversion needed)\n",
+            length(conj_snap))
     flush(stdout)
 
     # Pre-allocate seeded relation vectors and the hot-anchor snapshot in the
