@@ -1390,21 +1390,6 @@ function print_phi_bias_report(stat::PhiBiasStat; p::Int = 0)
     end
     println()
 
-    # ── FB-scaling advisory ────────────────────────────────────────────────
-    # GPT diagnosis: with FB~300 and p~16411, closure opportunities are
-    # extremely sparse and any productive basin dominates burst statistics.
-    # Print a reminder to run with larger FB to distinguish combinatorial
-    # sparsity from genuine Jacobian dynamical structure.
-    @printf("  FB-scaling advisory:\n")
-    @printf("    Current diagnostics may conflate combinatorial sparsity (small FB)\n")
-    @printf("    with genuine Jacobian attractor dynamics.  Recommended experiments:\n")
-    @printf("    1. Re-run with FB×2, FB×4, FB×8.  If burst persistence vanishes → sparsity.\n")
-    @printf("       If persistence survives large FB → genuine walk geometry.\n")
-    @printf("    2. Measure decorrelation τ* (hazard / gap ACF above) at each FB size.\n")
-    @printf("       Prediction: sparsity → τ* ~ const; geometry → τ* grows with FB.\n")
-    @printf("    3. Fano factor at each FB size: sparsity → Fano drops; geometry → stable.\n")
-    println()
-
     @printf("──────────────────────────────────────────────────────────────────────\n")
     flush(stdout)
 end
