@@ -161,11 +161,20 @@ function phase3_trial_worker(
         hot_anchors      ::Union{Vector{Int}, Nothing} = nothing,
         seeded_rel_rows  ::Union{Vector{Dict{Int,Int}}, Nothing} = nothing,
         seeded_rel_be    ::Union{Vector{Int},           Nothing} = nothing,
-        seeded_rel_al    ::Union{Vector{BigInt},        Nothing} = nothing)::Phase3Result
+        seeded_rel_al    ::Union{Vector{BigInt},        Nothing} = nothing,
+        prebuilt_step_D  ::Union{Vector{Div2}, Nothing} = nothing,
+        prebuilt_step_a  ::Union{Vector{Int},  Nothing} = nothing,
+        prebuilt_step_b  ::Union{Vector{Int},  Nothing} = nothing)::Phase3Result
 
     t0    = time()
     # ── DIAG checkpoint helper (thread-safe: @printf is atomic per-call) ──────
     _cp(tag) = (@printf("[p3 trial %2d | %+8.3fs | %s]\n", trial_idx, time()-t0, tag); flush(stdout))
+
+    @printf("[p3 trial %2d] worker entered on thread %d  seeded_rows=%d  seeded_al=%d\n",
+            trial_idx, Threads.threadid(),
+            seeded_rel_rows !== nothing ? length(seeded_rel_rows) : -1,
+            seeded_rel_al   !== nothing ? length(seeded_rel_al)   : -1)
+    flush(stdout)
 
     ell   = tables.ell
     ellI  = Int(ell)
@@ -183,13 +192,29 @@ function phase3_trial_worker(
     lp1_conj_dict = conj_dict   # Dict{CanonicalLP1Key, LP1ConjVal} or nothing
 
     # ── Prebuilt step table for the β≠0 walk ─────────────────────────────────
-    step_D = Vector{Div2}(undef, n_steps_prebuilt)
-    step_a = Vector{Int}(undef,  n_steps_prebuilt)
-    step_b = Vector{Int}(undef,  n_steps_prebuilt)
-    for i in 1:n_steps_prebuilt
-        a = rand(1:ellI-1); b = rand(1:ellI-1)
-        step_D[i] = jac_add(jac_mul(G, a, ellI), jac_mul(T, b, ellI))
-        step_a[i] = a; step_b[i] = b
+    # If pre-built tables were passed in from the main thread (to avoid 30-way
+    # GMP contention), use them directly.  Otherwise build locally (fallback).
+    local step_D::Vector{Div2}
+    local step_a::Vector{Int}
+    local step_b::Vector{Int}
+    if prebuilt_step_D !== nothing
+        step_D = prebuilt_step_D
+        step_a = prebuilt_step_a
+        step_b = prebuilt_step_b
+        @printf("[p3 trial %2d] using pre-built step table (%d steps)\n",
+                trial_idx, length(step_D)); flush(stdout)
+    else
+        @printf("[p3 trial %2d] building step table (n_steps_prebuilt=%d)...\n",
+                trial_idx, n_steps_prebuilt); flush(stdout)
+        step_D = Vector{Div2}(undef, n_steps_prebuilt)
+        step_a = Vector{Int}(undef,  n_steps_prebuilt)
+        step_b = Vector{Int}(undef,  n_steps_prebuilt)
+        for i in 1:n_steps_prebuilt
+            a = rand(1:ellI-1); b = rand(1:ellI-1)
+            step_D[i] = jac_add(jac_mul(G, a, ellI), jac_mul(T, b, ellI))
+            step_a[i] = a; step_b[i] = b
+        end
+        @printf("[p3 trial %2d] step table built (%.2fs)\n", trial_idx, time()-t0); flush(stdout)
     end
 
     # ── Walk state ────────────────────────────────────────────────────────────
@@ -367,6 +392,9 @@ function phase3_trial_worker(
         n_local_linalg += 1
         m   = length(local_rel_rows)
         nc  = nF + 2   # nF atom cols + k col + RHS col
+        @printf("[p3 trial %2d | linalg #%d] m=%d  nc=%d  matrix %.1f MB\n",
+                trial_idx, n_local_linalg, m, nc, m*nc*8/1024^2)
+        flush(stdout)
         # Build dense matrix mod ell.
         A = zeros(Int, m, nc)
         for ri in 1:m
@@ -536,6 +564,8 @@ function phase3_trial_worker(
 
     # ── Main walk loop ────────────────────────────────────────────────────────
     t_last_heartbeat = time()
+    @printf("[p3 trial %2d] entering main walk loop (step_cap=%d)\n", trial_idx, step_cap)
+    flush(stdout)
 
     for _raw_step in 1:step_cap
         if _raw_step & 0xffff == 0   # every 65536 raw steps
@@ -922,14 +952,81 @@ function phase3_solve_targets(
     # Pre-allocate seeded relation vectors and the hot-anchor snapshot in the
     # main thread before spawning.  Doing this inside the spawned tasks can
     # create allocator / GC contention and reintroduce launch-time stalls.
+    #
+    # CRITICAL: seeded_rel_rows must be a DEEP copy — each worker appends to its
+    # local_rel_rows (which aliases seeded_rel_rows[i]) and may mutate individual
+    # Dict entries.  A shallow copy (copy(tables.rel_rows_pre)) copies the vector
+    # spine but leaves all Dict objects shared across workers, causing concurrent
+    # mutation → GMP allocator deadlock at phase 3 start.
     n_pre_rows = length(tables.rel_rows_pre)
-    seeded_rel_rows = [copy(tables.rel_rows_pre)      for _ in 1:n]
-    seeded_rel_be   = [zeros(Int, n_pre_rows)         for _ in 1:n]
-    seeded_rel_al   = [copy(tables.alpha_vec_pre)     for _ in 1:n]
+    @printf("   [phase3 prealloc] n=%d  n_pre_rows=%d  alpha_vec_pre length=%d\n",
+            n, n_pre_rows, length(tables.alpha_vec_pre))
+    @printf("   [phase3 prealloc] RSS=%.1f MB  GC-live=%.1f MB\n",
+            Sys.maxrss()/1024^2, Base.gc_live_bytes()/1024^2)
+    flush(stdout)
+
+    t_prealloc = time()
+    @printf("   [phase3 prealloc] deep-copying rel_rows (30×%d Dicts)...\n", n_pre_rows)
+    flush(stdout)
+    seeded_rel_rows = [[copy(d) for d in tables.rel_rows_pre] for _ in 1:n]
+    @printf("   [phase3 prealloc] rel_rows done (%.2fs)  RSS=%.1f MB  GC-live=%.1f MB\n",
+            time()-t_prealloc, Sys.maxrss()/1024^2, Base.gc_live_bytes()/1024^2)
+    flush(stdout)
+
+    t_be = time()
+    @printf("   [phase3 prealloc] allocating rel_be...\n"); flush(stdout)
+    seeded_rel_be   = [zeros(Int, n_pre_rows)                 for _ in 1:n]
+    @printf("   [phase3 prealloc] rel_be done (%.2fs)\n", time()-t_be); flush(stdout)
+
+    t_al = time()
+    @printf("   [phase3 prealloc] deep-copying alpha_vec_pre (30×%d BigInts)...\n",
+            length(tables.alpha_vec_pre)); flush(stdout)
+    seeded_rel_al   = [copy(tables.alpha_vec_pre)             for _ in 1:n]
+    @printf("   [phase3 prealloc] alpha_vec done (%.2fs)  RSS=%.1f MB  GC-live=%.1f MB\n",
+            time()-t_al, Sys.maxrss()/1024^2, Base.gc_live_bytes()/1024^2)
+    flush(stdout)
+
     hot_anchor_snap = copy(tables.hot_basin_anchors)
+    @printf("   [phase3 prealloc] total prealloc time: %.2fs  hot_anchors=%d\n",
+            time()-t_prealloc, length(hot_anchor_snap))
+
+    # ── Pre-build step tables in the MAIN thread (sequential, avoids GMP deadlock) ──
+    # Building 30×512 jac_mul calls simultaneously in spawned workers causes all
+    # threads to contend on GMP's global allocator lock → deadlock.
+    # Build all per-worker step tables here sequentially; pass in as plain arrays.
+    ellI_pre = Int(tables.ell)
+    n_steps_prebuilt = 512
+    @printf("   [phase3 prealloc] building %d step tables (%d steps each) in main thread...\n",
+            n, n_steps_prebuilt); flush(stdout)
+    t_steptab = time()
+    all_step_D = Vector{Vector{Div2}}(undef, n)
+    all_step_a = Vector{Vector{Int}}(undef,  n)
+    all_step_b = Vector{Vector{Int}}(undef,  n)
+    for i in 1:n
+        T_i, _ = targets[i]
+        sd = Vector{Div2}(undef, n_steps_prebuilt)
+        sa = Vector{Int}(undef,  n_steps_prebuilt)
+        sb = Vector{Int}(undef,  n_steps_prebuilt)
+        for j in 1:n_steps_prebuilt
+            a = rand(1:ellI_pre-1); b = rand(1:ellI_pre-1)
+            sd[j] = jac_add(jac_mul(G, a, ellI_pre), jac_mul(T_i, b, ellI_pre))
+            sa[j] = a; sb[j] = b
+        end
+        all_step_D[i] = sd
+        all_step_a[i] = sa
+        all_step_b[i] = sb
+    end
+    @printf("   [phase3 prealloc] step tables done (%.2fs)  RSS=%.1f MB  GC-live=%.1f MB\n",
+            time()-t_steptab, Sys.maxrss()/1024^2, Base.gc_live_bytes()/1024^2)
+    @printf("   [phase3 prealloc] RSS=%.1f MB  GC-live=%.1f MB  — spawning %d workers\n",
+            Sys.maxrss()/1024^2, Base.gc_live_bytes()/1024^2, n)
+    flush(stdout)
 
     @sync for i in 1:n
+        @printf("   [phase3 spawn] launching worker %d/%d\n", i, n); flush(stdout)
         Threads.@spawn begin
+            @printf("   [phase3 worker %d] started on thread %d\n", i, Threads.threadid())
+            flush(stdout)
             T_i, k_true_i = targets[i]
             results[i] = phase3_trial_worker(i, T_i, k_true_i, tables, G;
                                               step_cap=eff_step_cap, local_lp_cap=eff_local_cap,
@@ -938,7 +1035,13 @@ function phase3_solve_targets(
                                               hot_anchors=hot_anchor_snap,
                                               seeded_rel_rows=seeded_rel_rows[i],
                                               seeded_rel_be=seeded_rel_be[i],
-                                              seeded_rel_al=seeded_rel_al[i])
+                                              seeded_rel_al=seeded_rel_al[i],
+                                              prebuilt_step_D=all_step_D[i],
+                                              prebuilt_step_a=all_step_a[i],
+                                              prebuilt_step_b=all_step_b[i])
+            @printf("   [phase3 worker %d] finished: success=%s  steps=%d  elapsed=%.1fs\n",
+                    i, string(results[i].success), results[i].n_steps, results[i].elapsed_s)
+            flush(stdout)
         end
     end
 
