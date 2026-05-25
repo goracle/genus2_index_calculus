@@ -344,7 +344,12 @@ end
         combined_scratch::Dict{Int,Int},
         P0              ::NTuple{2,Int},
         phi_bias_stat   ::PhiBiasStat,
-        next_anchor_ref ::Ref{Function})::NTuple{2,Int} where V
+        next_anchor_ref ::Ref{Function},
+        a_bucket        ::Int)::NTuple{2,Int} where V
+
+    # Record every partial (stored and closed) for α₂ scaling diagnostics.
+    # Must come before insert-or-pop so both branches are covered unconditionally.
+    record_lp1_conj_partial!(phi_bias_stat, lp_key)
 
     si = conj_shard_idx(lp_key)
 
@@ -395,7 +400,7 @@ end
             # Record arrival only on actual emission, not on every conj hit.
             # Pass lp_key so the CIR fingerprint analysis can correlate
             # temporally-close hits with shared algebraic structure.
-            record_lp1_conj_hit!(phi_bias_stat, s.raw_steps, lp_key)
+            record_lp1_conj_hit!(phi_bias_stat, s.raw_steps, lp_key, a_bucket)
             return next_anchor_ref[]()
         end
         # combined_al==0 or i0==prev_col: useless close, fall through to structured jump
@@ -1616,11 +1621,14 @@ function phase2_worker(G               ::Div2,
                     # basin_hit / IS updates gated on emission (after handle call)
                     # so basin_dry_streak reflects actual productive-step drought.
                     emit_before = s.hits_1lp_conj_emit
+                    _nb_a2 = length(phi_bias_stat.split_hist)
+                    _a_bucket = clamp(1 + (Int(a) * _nb_a2) ÷ p, 1, _nb_a2)
                     cur_pt = handle_1lp_conj!(lp_key32, i0, neg_al, neg_be, ell,
                                                fb, nF_cur, G, T,
                                                alpha_vec, beta_vec, rel_rows, rel_counter,
                                                ort, s, shared_lp1_conj, rank_growth,
-                                               combined_scratch, P0, phi_bias_stat, next_anchor_ref)
+                                               combined_scratch, P0, phi_bias_stat, next_anchor_ref,
+                                               _a_bucket)
                     if s.hits_1lp_conj_emit > emit_before
                         # An actual closure fired — credit basin + IS + burst.
                         record_basin_hit!(p0_basin_idx != 0 ? p0_basin_idx : anchor_cursor)

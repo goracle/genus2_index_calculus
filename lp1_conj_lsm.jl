@@ -223,6 +223,12 @@ mutable struct LP1ConjLSM{V}
     renyi_counts        ::Vector{UInt32}   # length 2^RENYI_BITS; count per bucket
     renyi_sum_c         ::Int64            # Σ cᵢ  (== total collisions + emissions)
     renyi_sum_c2        ::Int64            # Σ cᵢ²
+
+    # Time-ordered partial stream — one UInt16 bucket index per partial, in
+    # chronological order of insertion.  Used post-walk by lsm_bday_report to
+    # compute dyadic-window α₂(T) scaling diagnostics on the partial stream.
+    # At 3.7M partials × 2 bytes = ~7 MB — negligible.  Written under bday_lock.
+    partial_fp_log      ::Vector{UInt16}
 end
 
 # ---------------------------------------------------------------------------
@@ -282,7 +288,8 @@ function LP1ConjLSM{V}(
         # occupancy estimator
         0, 0,
         # Rényi-2 estimator (2^14 = 16384 buckets — ~64 KB, negligible)
-        zeros(UInt32, 1 << RENYI_BITS), Int64(0), Int64(0)
+        zeros(UInt32, 1 << RENYI_BITS), Int64(0), Int64(0),
+        UInt16[]              # partial_fp_log
     )
 end
 
@@ -912,6 +919,9 @@ function conj_insert_or_pop!(sc::LP1ConjLSM{V}, si::Int,
         if old_c == 0
             sc.occ_unique += 1
         end
+
+        # Time-series log: record the fp bucket index for α₂ scaling diagnostics.
+        push!(sc.partial_fp_log, UInt16(rb - 1))   # 0-based bucket, fits UInt16
     finally
         unlock(sc.bday_lock)
     end
@@ -1148,6 +1158,96 @@ function lsm_bday_report(sc::LP1ConjLSM, p::Integer, r::Real; io::IO = stdout)
         @printf(io, "    alpha_2 (S₂ ~ p^{2α₂}) : %.4f%s\n", a2, burst_flag)
     else
         @printf(io, "    (no emissions recorded yet)\n")
+    end
+
+    @printf(io, "\n")
+
+    # ── α₂ scaling diagnostics on the partial key stream ─────────────────────
+    # blog is the chronological sequence of fp-bucket indices (UInt16, 0-based)
+    # for every LP1-conj partial inserted.  nb = 2^RENYI_BITS buckets.
+    # We compute dyadic-window S₂(T) and S_occ(T) to measure how α₂ scales
+    # with observation window — the key question for genus-2 IC asymptotics.
+    let blog = copy(sc.partial_fp_log)
+        nb     = 1 << RENYI_BITS
+        n_blog = length(blog)
+        @printf(io, "  LP1-conj partial stream α₂ scaling:\n")
+        if n_blog < 64
+            @printf(io, "    (need ≥64 partials; got %d)\n\n", n_blog)
+        else
+            @printf(io, "    nb=%d fp-buckets  N=%d partials\n", nb, n_blog)
+            @printf(io, "    window_T    n_events   α₂(T)    S_occ(T)   ρ=S_occ/S₂  dα₂/dlogT\n")
+
+            T0   = max(32, n_blog ÷ 64)
+            Tw   = T0
+            prev_a2 = NaN; prev_logT = NaN
+            a2_vals = Float64[]; logT_vals = Float64[]
+
+            while Tw <= n_blog
+                n_wins = n_blog ÷ Tw
+                n_wins < 1 && break
+                s2_acc = 0.0; socc_acc = 0.0; n_valid = 0
+                counts_T = zeros(Int, nb)
+                for wi in 0:(n_wins - 1)
+                    fill!(counts_T, 0)
+                    for k in (wi*Tw + 1):((wi+1)*Tw)
+                        counts_T[Int(blog[k]) + 1] += 1
+                    end
+                    n_T = sum(counts_T)
+                    n_T == 0 && continue
+                    p2sum = sum((counts_T[i] / n_T)^2 for i in 1:nb)
+                    s2_T  = p2sum > 0.0 ? -log2(p2sum) : NaN
+                    n_occ = count(>(0), counts_T)
+                    socc_T = n_occ > 0 ? log2(Float64(n_occ)) : 0.0
+                    if !isnan(s2_T)
+                        s2_acc += s2_T; socc_acc += socc_T; n_valid += 1
+                    end
+                end
+                n_valid == 0 && (Tw *= 2; continue)
+
+                a2_T   = s2_acc   / n_valid
+                socc_T = socc_acc / n_valid
+                rho_T  = a2_T > 0.0 ? socc_T / a2_T : NaN
+                logT   = log2(Float64(Tw))
+                da2    = (!isnan(prev_a2) && !isnan(prev_logT) && logT > prev_logT) ?
+                         (a2_T - prev_a2) / (logT - prev_logT) : NaN
+                da_str  = isnan(da2) ? "        —" : @sprintf("%+9.4f", da2)
+                rho_str = isnan(rho_T) ? "         —" : @sprintf("%10.4f", rho_T)
+                @printf(io, "    %9d  %9d  %8.4f  %9.4f  %s  %s\n",
+                        Tw, n_wins * Tw, a2_T, socc_T, rho_str, da_str)
+                push!(a2_vals, a2_T); push!(logT_vals, logT)
+                prev_a2 = a2_T; prev_logT = logT
+                Tw *= 2
+            end
+
+            # Classify convergence
+            if length(a2_vals) >= 3
+                da2_late  = (a2_vals[end]   - a2_vals[end-1]) / (logT_vals[end]   - logT_vals[end-1])
+                da2_early = (a2_vals[2]     - a2_vals[1])     / (logT_vals[2]     - logT_vals[1])
+                verdict = if abs(da2_late) < 0.02
+                    "  → α₂ CONVERGED — single exponent (Case A)"
+                elseif da2_early > 0.05 && abs(da2_late) < 0.05
+                    "  → α₂ CROSSOVER — two plateaus (Case B: burst then mixing)"
+                elseif da2_late > 0.05
+                    "  → α₂ DRIFTING UPWARD — no fixed exponent (Case C)"
+                else
+                    "  → α₂ trend inconclusive"
+                end
+                @printf(io, "    %s\n", verdict)
+            end
+
+            # Translate the converged α₂(T) value to the key-space exponent.
+            # Each fp bucket represents ~2^RENYI_BITS keys under uniform assumption,
+            # so S₂_keys = S₂_buckets * 2^RENYI_BITS.  Then α₂_keys = log(S₂_keys)/(2·log p).
+            if !isempty(a2_vals) && pf > 1.0
+                a2_bucket_converged = a2_vals[end]
+                S2_bucket = 2.0^a2_bucket_converged
+                S2_keys   = S2_bucket * Float64(1 << RENYI_BITS)
+                a2_keys   = log(S2_keys) / (2.0 * log(pf))
+                @printf(io, "    converged α₂ (bucket-space)  : %.4f bits\n", a2_bucket_converged)
+                @printf(io, "    S₂_keys (bucket × 2^%d)     : %.5g\n", RENYI_BITS, S2_keys)
+                @printf(io, "    α₂_keys (S₂ ~ p^{2α₂})      : %.4f  [compare birthday α₂ above]\n", a2_keys)
+            end
+        end
     end
 
     @printf(io, "\n")

@@ -86,9 +86,11 @@
 #    (b) short/long gap fractions vs Poisson prediction (hot/cold persistence),
 #    (c) KS test of rescaled gaps vs Exponential(1) with heavy-tail flag.
 #
-#  Seven α₂ scaling diagnostics (computed post-hoc from step_bucket_log and
-#  split_step_log; no additional overhead during the walk beyond one push! per
-#  valid phi step):
+#  Seven α₂ scaling diagnostics (computed post-hoc from lp1_conj_bucket_log
+#  and lp1_conj_arrivals; all diagnostics focus on the LP1-conj key space,
+#  consistent with the birthday block.  slog is implicitly all-true since
+#  every LP1-conj emission is a split step; α₂-7 and α₂-9 therefore use
+#  alternative splits — first/second-half and inter-block KL respectively):
 #
 #  α₂-1 — Time-resolved α₂(T):  dyadic windows T, 2T, 4T … covering the full
 #    run.  Tracks α₂(T) and dα₂/d(logT).  Convergence → single exponent;
@@ -114,8 +116,8 @@
 #    entropy over dyadic windows.  ρ ≈ const → consistent scaling dimension;
 #    ρ growing → decoupled geometry.
 #
-#  α₂-7 — φ-conditioned α₂:  α₂ on split steps vs non-split steps (φ-step type).
-#    Tests whether φ is shaping collision geometry or just relabeling it.
+#  α₂-7 — LP1-conj key geometry stationarity:  α₂ on first half vs second half
+#    of the emission sequence.  Δα₂ ≠ 0 → non-stationary key geometry over run.
 #
 #  All accumulators are per-thread (no locking during the walk).
 #  Call merge_phi_bias_stats to combine and print_phi_bias_report to display.
@@ -193,8 +195,16 @@ mutable struct PhiBiasStat
     lp1_conj_bucket_log::Vector{Int}
 
     # ════════════════════════════════════════════════════════════════════════
-    # α₂ scaling diagnostics (α₂-1 through α₂-7)
+    # α₂ scaling diagnostics (α₂-1 through α₂-11)
     # ════════════════════════════════════════════════════════════════════════
+    # lp1_conj_key_blog: top-RENYI_BITS bucket index of every LP1-conj partial
+    # (both stored and closed), in chronological order per thread.  Populated
+    # by record_lp1_conj_partial! on every call to handle_1lp_conj!, so this
+    # is the full partial stream — not just the ~O(100s) of emission closures.
+    # UInt16 per entry = 2 bytes; 3.7M partials × 2 B = ~7 MB total.
+    # Bucket index = top 14 bits of _lsm_fp(key), matching the LSM's Rényi buckets.
+    lp1_conj_key_blog ::Vector{UInt16}
+
     # step_bucket_log: bucket index (1-based) of every valid phi step, in
     # chronological order.  Position in the vector is the step ordinal.
     # Used post-hoc for all seven α₂ diagnostics.  One Int per step.
@@ -238,6 +248,7 @@ function PhiBiasStat(p::Int)
         zeros(Int, nbuckets),          # lp1_conj_a_hist
         Int[],                         # lp1_conj_bucket_log
         # α₂ scaling diagnostics
+        UInt16[],                      # lp1_conj_key_blog
         Int[],                         # step_bucket_log
         Bool[],                        # split_step_log
         UInt64[],                      # event_hash_log
@@ -345,6 +356,33 @@ end
     stat._event_hash_state = _mix_event_hash(stat._event_hash_state, bucket, split, a, c1_rs, c0_rs, stat.total)
     push!(stat.event_hash_log, stat._event_hash_state)
 
+    return nothing
+end
+
+# ---------------------------------------------------------------------------
+#  record_lp1_conj_partial! — called inside handle_1lp_conj! on EVERY partial
+#  (both stored and closed), to build the full LP1-conj key stream for α₂ scaling.
+#  Uses the same fingerprint hash as the LSM (_lsm_fp) so the bucket indices are
+#  consistent with lsm_bday_report's Rényi estimator.
+#  RENYI_BITS = 14 → 16384 buckets; UInt16 bucket index is stored per partial.
+# ---------------------------------------------------------------------------
+const _PHI_RENYI_BITS  = 14
+const _PHI_RENYI_SHIFT = 64 - _PHI_RENYI_BITS
+
+@inline function _phi_fp(key::UInt128)::UInt64
+    lo = UInt64(key & 0xffffffffffffffff)
+    hi = UInt64(key >> 64)
+    h  = lo * UInt64(0x9e3779b97f4a7c15) +
+         hi * UInt64(0x6c62272e07bb0142)
+    h  = h ⊻ (h >> 32)
+    h  = h * UInt64(0x45d9f3b37197344d)
+    h  = h ⊻ (h >> 32)
+    h
+end
+
+@inline function record_lp1_conj_partial!(stat::PhiBiasStat, lp_key::UInt128)
+    bkt = UInt16(_phi_fp(lp_key) >> _PHI_RENYI_SHIFT)
+    push!(stat.lp1_conj_key_blog, bkt)
     return nothing
 end
 
@@ -491,6 +529,7 @@ function merge_phi_bias_stats(stats::Vector{PhiBiasStat})::PhiBiasStat
         append!(merged.split_step_log,  s.split_step_log)
         append!(merged.event_hash_log,  s.event_hash_log)
         append!(merged.lp1_conj_bucket_log, s.lp1_conj_bucket_log)
+        append!(merged.lp1_conj_key_blog,    s.lp1_conj_key_blog)
     end
     return merged
 end
@@ -1537,9 +1576,9 @@ function print_phi_bias_report(stat::PhiBiasStat; p::Int = 0)
     # ════════════════════════════════════════════════════════════════════════
     # α₂ SCALING DIAGNOSTICS  (α₂-1 through α₂-7)
     # ════════════════════════════════════════════════════════════════════════
-    # All seven diagnostics run from step_bucket_log and split_step_log, which
-    # are the per-step bucket-index and split-flag timeseries logged during the
-    # walk.  No walk-time overhead beyond two push! calls per phi step.
+    # All seven diagnostics run from lp1_conj_bucket_log (sorted by arrival time),
+    # focusing exclusively on the LP1-conj key space.  The birthday block already
+    # measures the same object via key collision statistics.
     #
     # Helper: compute Rényi-2 (collision) entropy and occupancy entropy from a
     # bucket count vector.  Returns (S2, S_occ, n_steps).
@@ -1557,20 +1596,14 @@ function print_phi_bias_report(stat::PhiBiasStat; p::Int = 0)
         return (S2, S_occ, n)
     end
 
-    # ── α₂ sections: operate on LP1-conj emission sequence ───────────────────
-    # Sort lp1_conj_bucket_log by arrival time so the timeseries is chronological
-    # even after multi-thread merge.  lp1_conj_arrivals may be unsorted after merge.
-    # slog: always true (LP1-conj emissions are by definition split steps).
-    blog = let
-        lc_arr = stat.lp1_conj_arrivals
-        lc_bkt = stat.lp1_conj_bucket_log
-        if length(lc_arr) == length(lc_bkt) && !isempty(lc_arr)
-            lc_bkt[sortperm(lc_arr)]
-        else
-            Int[]
-        end
-    end
-    slog   = fill(true, length(blog))
+    # ── α₂ sections: operate on the full LP1-conj partial key stream ────────────
+    # blog = lp1_conj_key_blog: one UInt16 fp-bucket index per LP1-conj partial
+    # (both stored and closed), populated by record_lp1_conj_partial! on every
+    # call to handle_1lp_conj!.  nb = 2^±14 = 16384 fp-buckets, matching the
+    # LSM’s Rényi granularity.  This is the quantity whose scaling exponent
+    # α₂ governs the complexity of genus-2 IC via LP1-conj.
+    blog   = stat.lp1_conj_key_blog   # Vector{UInt16}, 0-based bucket indices
+    nb_a2  = 1 << _PHI_RENYI_BITS     # 16384 fp-buckets for α₂ diagnostics
     n_blog = length(blog)
 
     if n_blog < 32
@@ -1599,13 +1632,13 @@ function print_phi_bias_report(stat::PhiBiasStat; p::Int = 0)
         n_wins_a2 = n_blog ÷ T
         n_wins_a2 < 1 && continue
         s2_acc = 0.0; socc_acc = 0.0; n_valid = 0
-        counts_T = zeros(Int, nb)
+        counts_T = zeros(Int, nb_a2)
         for wi in 0:(n_wins_a2 - 1)
             fill!(counts_T, 0)
             for k in (wi*T + 1):((wi+1)*T)
-                counts_T[blog[k]] += 1
+                counts_T[Int(blog[k]) + 1] += 1
             end
-            (s2, socc, _) = _bucket_entropies(counts_T, nb)
+            (s2, socc, _) = _bucket_entropies(counts_T, nb_a2)
             if !isnan(s2)
                 s2_acc += s2; socc_acc += socc; n_valid += 1
             end
@@ -1645,15 +1678,11 @@ function print_phi_bias_report(stat::PhiBiasStat; p::Int = 0)
 
     # ── α₂-2: Intra vs inter-regime collision split ───────────────────────────
     @printf("  α₂-2 — Intra vs inter-regime collision split:\n")
-    # Classify each step as hot/cold by a sliding window over lp1_conj_arrivals.
-    # A step at position t (in step_bucket_log) is "hot" if the LP1-conj hit
-    # density in a surrounding ±W_regime steps (raw-step units) exceeds the
-    # global median.  We approximate: map step ordinal → raw_step via linear
-    # interpolation from total and lp1_conj_arrivals.
-    # Simple fallback: classify by step ordinal in step_bucket_log using
-    # the hot/cold split already computed in the hot/cold window section
-    # (which used lp1_conj hit density in windows of T_hc steps).
-    # We use a compact density vector over fixed windows of n_blog ÷ 50 steps.
+    # Classify each LP1-conj emission as hot/cold by a sliding window over
+    # lp1_conj_arrivals.  blog[i] is the a-bucket of the i-th emission in
+    # chronological order; hot_mask[i] = true iff the surrounding arrival
+    # density in the walk-step dimension exceeds the global median.
+    # Simple density vector over fixed windows of n_blog ÷ 50 emissions.
     let
         T_rc   = max(8, n_blog ÷ 50)
         n_rc   = n_blog ÷ T_rc
@@ -1685,27 +1714,27 @@ function print_phi_bias_report(stat::PhiBiasStat; p::Int = 0)
 
             # Compute S₂ for four subsets of step pairs:
             # intra-hot, intra-cold, inter (hot-cold or cold-hot)
-            counts_hot  = zeros(Int, nb)
-            counts_cold = zeros(Int, nb)
+            counts_hot  = zeros(Int, nb_a2)
+            counts_cold = zeros(Int, nb_a2)
             for i in 1:n_blog
                 if hot_mask[i]
-                    counts_hot[blog[i]]  += 1
+                    counts_hot[Int(blog[i]) + 1]  += 1
                 else
-                    counts_cold[blog[i]] += 1
+                    counts_cold[Int(blog[i]) + 1] += 1
                 end
             end
             n_hot_steps  = sum(counts_hot)
             n_cold_steps = sum(counts_cold)
 
             # Intra-collision entropy: S₂ computed within each regime
-            (s2_hot,  socc_hot,  _) = _bucket_entropies(counts_hot,  nb)
-            (s2_cold, socc_cold, _) = _bucket_entropies(counts_cold, nb)
+            (s2_hot,  socc_hot,  _) = _bucket_entropies(counts_hot,  nb_a2)
+            (s2_cold, socc_cold, _) = _bucket_entropies(counts_cold, nb_a2)
 
             # Inter-collision entropy: use mixing formula
             # S₂^inter ≈ -log2( Σᵢ (n_hot[i]/n_hot) * (n_cold[i]/n_cold) )
             if n_hot_steps > 0 && n_cold_steps > 0
                 cross = sum((counts_hot[i] / n_hot_steps) * (counts_cold[i] / n_cold_steps)
-                            for i in 1:nb)
+                            for i in 1:nb_a2)
                 s2_inter = cross > 0.0 ? -log2(cross) : NaN
             else
                 s2_inter = NaN
@@ -1713,7 +1742,7 @@ function print_phi_bias_report(stat::PhiBiasStat; p::Int = 0)
 
             # Overall S₂ from combined counts (for reference)
             counts_all = counts_hot .+ counts_cold
-            (s2_all, _, _) = _bucket_entropies(counts_all, nb)
+            (s2_all, _, _) = _bucket_entropies(counts_all, nb_a2)
 
             @printf("    Regime split: T_window=%d, n_windows=%d, median_density=%.2f hits/window\n",
                     T_rc, n_rc, median_lc)
@@ -1755,11 +1784,11 @@ function print_phi_bias_report(stat::PhiBiasStat; p::Int = 0)
         if n_wins_acf >= 16
             # Collision count per window: Σᵢ cᵢ² (unnormalised)
             coll_series = zeros(Float64, n_wins_acf)
-            counts_w    = zeros(Int, nb)
+            counts_w    = zeros(Int, nb_a2)
             for wi in 0:(n_wins_acf - 1)
                 fill!(counts_w, 0)
                 for k in (wi*T_acf + 1):((wi+1)*T_acf)
-                    counts_w[blog[k]] += 1
+                    counts_w[Int(blog[k]) + 1] += 1
                 end
                 coll_series[wi+1] = Float64(sum(x^2 for x in counts_w))
             end
@@ -1884,13 +1913,13 @@ function print_phi_bias_report(stat::PhiBiasStat; p::Int = 0)
         n_wins_r = n_blog ÷ T
         n_wins_r < 1 && continue
         s2_acc6 = 0.0; socc_acc6 = 0.0; n_v6 = 0
-        counts_T6 = zeros(Int, nb)
+        counts_T6 = zeros(Int, nb_a2)
         for wi in 0:(n_wins_r - 1)
             fill!(counts_T6, 0)
             for k in (wi*T + 1):((wi+1)*T)
-                counts_T6[blog[k]] += 1
+                counts_T6[Int(blog[k]) + 1] += 1
             end
-            (s2, socc, _) = _bucket_entropies(counts_T6, nb)
+            (s2, socc, _) = _bucket_entropies(counts_T6, nb_a2)
             if !isnan(s2)
                 s2_acc6 += s2; socc_acc6 += socc; n_v6 += 1
             end
@@ -1934,11 +1963,11 @@ function print_phi_bias_report(stat::PhiBiasStat; p::Int = 0)
     @printf("  α₂-7 — LP1-conj collision geometry: first-half vs second-half α₂:\n")
     if n_blog >= 8
         mid = n_blog ÷ 2
-        counts_h1 = zeros(Int, nb); counts_h2 = zeros(Int, nb)
-        for i in 1:mid;        counts_h1[blog[i]] += 1; end
-        for i in (mid+1):n_blog; counts_h2[blog[i]] += 1; end
-        (s2_h1, socc_h1, n_h1) = _bucket_entropies(counts_h1, nb)
-        (s2_h2, socc_h2, n_h2) = _bucket_entropies(counts_h2, nb)
+        counts_h1 = zeros(Int, nb_a2); counts_h2 = zeros(Int, nb_a2)
+        for i in 1:mid;        counts_h1[Int(blog[i]) + 1] += 1; end
+        for i in (mid+1):n_blog; counts_h2[Int(blog[i]) + 1] += 1; end
+        (s2_h1, socc_h1, n_h1) = _bucket_entropies(counts_h1, nb_a2)
+        (s2_h2, socc_h2, n_h2) = _bucket_entropies(counts_h2, nb_a2)
         @printf("    first  half: %d events  α₂=%s  S_occ=%s\n",
                 n_h1, isnan(s2_h1) ? "—" : @sprintf("%.4f", s2_h1),
                       isnan(socc_h1) ? "—" : @sprintf("%.4f", socc_h1))
@@ -1979,13 +2008,13 @@ function print_phi_bias_report(stat::PhiBiasStat; p::Int = 0)
         n_wins_a2 = n_blog ÷ T
         n_wins_a2 < 2 && continue
         window_a2 = Float64[]
-        counts_T = zeros(Int, nb)
+        counts_T = zeros(Int, nb_a2)
         for wi in 0:(n_wins_a2 - 1)
             fill!(counts_T, 0)
             for k in (wi*T + 1):((wi+1)*T)
-                counts_T[blog[k]] += 1
+                counts_T[Int(blog[k]) + 1] += 1
             end
-            (s2w, _, _) = _bucket_entropies(counts_T, nb)
+            (s2w, _, _) = _bucket_entropies(counts_T, nb_a2)
             !isnan(s2w) && push!(window_a2, s2w)
         end
         if length(window_a2) >= 2
@@ -2003,11 +2032,11 @@ function print_phi_bias_report(stat::PhiBiasStat; p::Int = 0)
             n_wins_a2 = n_blog ÷ T
             n_wins_a2 < 2 && continue
             kls = Float64[]
-            prev_counts = zeros(Int, nb)
+            prev_counts = zeros(Int, nb_a2)
             for wi in 0:(n_wins_a2 - 1)
-                counts_T = zeros(Int, nb)
+                counts_T = zeros(Int, nb_a2)
                 for k in (wi*T + 1):((wi+1)*T)
-                    counts_T[blog[k]] += 1
+                    counts_T[Int(blog[k]) + 1] += 1
                 end
                 if wi > 0
                     push!(kls, _kl_divergence_counts(prev_counts, counts_T))
@@ -2020,56 +2049,70 @@ function print_phi_bias_report(stat::PhiBiasStat; p::Int = 0)
             end
         end
     end
-    # Susceptibility proxy: compare split vs non-split α₂ inside coarse blocks.
+    # Susceptibility proxy: KL drift between consecutive coarse blocks.
+    # (slog is all-true for LP1-conj emissions, so split/non-split partition
+    # is degenerate; instead measure inter-block KL divergence as a proxy for
+    # stationarity — large KL → the a-bucket distribution is drifting.)
     if length(blog) >= 64
         block_T = max(8, n_blog ÷ 32)
         n_blocks = n_blog ÷ block_T
         if n_blocks >= 4
-            pert_vals = Float64[]
+            kl_drift_vals = Float64[]
+            prev_cnts = zeros(Int, nb_a2)
             for bi in 0:(n_blocks - 1)
                 lo = bi * block_T + 1
-                hi = (bi + 1) * block_T
-                hi > length(blog) && break
-                cnts_split = zeros(Int, nb)
-                cnts_nspl  = zeros(Int, nb)
+                hi = min((bi + 1) * block_T, n_blog)
+                cur_cnts = zeros(Int, nb_a2)
                 for j in lo:hi
-                    if slog[j]
-                        cnts_split[blog[j]] += 1
-                    else
-                        cnts_nspl[blog[j]]  += 1
-                    end
+                    cur_cnts[Int(blog[j]) + 1] += 1
                 end
-                s2s, _, _ = _bucket_entropies(cnts_split, nb)
-                s2n, _, _ = _bucket_entropies(cnts_nspl, nb)
-                if !isnan(s2s) && !isnan(s2n)
-                    push!(pert_vals, abs(s2s - s2n))
+                if bi > 0 && sum(prev_cnts) > 0 && sum(cur_cnts) > 0
+                    push!(kl_drift_vals, _kl_divergence_counts(prev_cnts, cur_cnts))
                 end
+                prev_cnts .= cur_cnts
             end
-            if !isempty(pert_vals)
-                @printf("    susceptibility proxy  : mean |Δα₂(split-nonsplit)| = %.5f\n",
-                        sum(pert_vals)/length(pert_vals))
+            if !isempty(kl_drift_vals)
+                mean_kl = sum(kl_drift_vals) / length(kl_drift_vals)
+                max_kl  = maximum(kl_drift_vals)
+                flag_kl = mean_kl > 0.5 ? "  ← HIGH DRIFT (a-dist non-stationary)" :
+                          mean_kl > 0.1 ? "  (moderate drift)" :
+                                          "  (a-dist stable across blocks)"
+                @printf("    KL drift proxy (block_T=%d): mean=%.5f  max=%.5f%s\n",
+                        block_T, mean_kl, max_kl, flag_kl)
             else
-                @printf("    susceptibility proxy  : insufficient block data\n")
+                @printf("    KL drift proxy        : insufficient block data\n")
             end
         end
     end
     println()
 
     # ── α₂-10: collision entropy decomposition and hot-bucket concentration ──
-    @printf("  α₂-10 — collision entropy decomposition / entropy whales:\n")
-    (s2_all, socc_all, n_all) = _bucket_entropies(stat.split_hist, nb)
-    if n_all > 0
-        top1 = _top_share(stat.split_hist, 0.01)
-        top5 = _top_share(stat.split_hist, 0.05)
-        top10 = _top_share(stat.split_hist, 0.10)
-        @printf("    α₂(split_hist)         : %.5f\n", s2_all)
-        @printf("    top 1%% / 5%% / 10%% share : %.3f  %.3f  %.3f\n", top1, top5, top10)
-        @printf("    occupancy entropy      : %.5f\n", socc_all)
-        if top1 > 0.25
-            @printf("    verdict                 :  ← entropy dominated by rare hot buckets\n")
-        else
-            @printf("    verdict                 :  (no extreme entropy whales)\n")
+    # Operates on the full LP1-conj partial key stream (blog / lp1_conj_key_blog),
+    # exactly as α₂-1 through α₂-9.  Accumulate bucket counts from the entire
+    # blog vector and compute S₂ (Rényi-2 entropy) and concentration metrics.
+    @printf("  α₂-10 — collision entropy decomposition / entropy whales (LP1-conj keys):\n")
+    if n_blog >= 1
+        counts_a10 = zeros(Int, nb_a2)
+        for b in blog
+            counts_a10[Int(b) + 1] += 1
         end
+        (s2_all, socc_all, n_all) = _bucket_entropies(counts_a10, nb_a2)
+        if n_all > 0
+            top1  = _top_share(counts_a10, 0.01)
+            top5  = _top_share(counts_a10, 0.05)
+            top10 = _top_share(counts_a10, 0.10)
+            @printf("    n_partials             : %d  (nb_fp_buckets=%d)\n", n_all, nb_a2)
+            @printf("    α₂(lp1_conj keys)      : %.5f\n", s2_all)
+            @printf("    top 1%% / 5%% / 10%% share : %.3f  %.3f  %.3f\n", top1, top5, top10)
+            @printf("    occupancy entropy      : %.5f\n", socc_all)
+            if top1 > 0.25
+                @printf("    verdict                 :  ← entropy dominated by rare hot buckets\n")
+            else
+                @printf("    verdict                 :  (no extreme entropy whales)\n")
+            end
+        end
+    else
+        @printf("    (no LP1-conj partials recorded)\n")
     end
     println()
 
@@ -2102,22 +2145,31 @@ function print_phi_bias_report(stat::PhiBiasStat; p::Int = 0)
         end
     end
 
-    if length(slog) >= 4
-        motif_counts = Dict{NTuple{4,Bool},Int}()
-        for i in 1:(length(slog)-3)
-            mot = (slog[i], slog[i+1], slog[i+2], slog[i+3])
-            motif_counts[mot] = get(motif_counts, mot, 0) + 1
+    if length(blog) >= 4
+        # a-bucket 4-gram motifs: detect repeated local patterns in the LP1-conj
+        # a-bucket sequence.  Under i.i.d. uniform over nb buckets, every 4-gram
+        # has probability 1/nb³; excess repetitions flag structural correlation.
+        motif_counts_b = Dict{NTuple{4,Int},Int}()
+        for i in 1:(length(blog)-3)
+            mot = (blog[i], blog[i+1], blog[i+2], blog[i+3])
+            motif_counts_b[mot] = get(motif_counts_b, mot, 0) + 1
         end
-        if !isempty(motif_counts)
-            top_motif = first(sort(collect(motif_counts), by = x -> -last(x)))
-            p_split = sum(slog) / length(slog)
-            p_motif = 1.0
-            for b in top_motif[1]
-                p_motif *= b ? p_split : (1 - p_split)
-            end
-            expected = p_motif * max(1, length(slog) - 3)
-            @printf("    top 4-step split motif : %s  count=%d  expected≈%.2f\n",
-                    join([b ? "S" : "N" for b in top_motif[1]], ""), top_motif[2], expected)
+        if !isempty(motif_counts_b)
+            top_motif_b = first(sort(collect(motif_counts_b), by = x -> -last(x)))
+            n_4grams    = length(blog) - 3
+            # Expected count for most-probable 4-gram under empirical marginal:
+            # use product of empirical bucket frequencies as independence baseline.
+            bkt_freq = zeros(Float64, nb_a2)
+            for b in blog; bkt_freq[Int(b)+1] += 1.0; end
+            bkt_freq ./= max(1.0, length(blog))
+            p_indep = prod(bkt_freq[Int(b)+1] for b in top_motif_b[1])
+            expected_b = p_indep * max(1, n_4grams)
+            lift_b = top_motif_b[2] / max(1e-9, expected_b)
+            flag_b = lift_b > 3.0 ? "  ← REPEATED STRUCTURAL MOTIF" :
+                     lift_b > 1.5 ? "  (mild motif excess)" :
+                                    "  (consistent with independence)"
+            @printf("    top a-bucket 4-gram    : (%d,%d,%d,%d)  count=%d  expected≈%.2f  lift=%.2f%s\n",
+                    top_motif_b[1]..., top_motif_b[2], expected_b, lift_b, flag_b)
         end
     end
 
