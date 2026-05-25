@@ -254,17 +254,29 @@ function phase3_trial_worker(
     # Mirror the phase2 inertia mechanism in phase3 to keep the β≠0 walk near
     # productive geometric configurations.  Basin steering uses the precomputed
     # hot_basin_anchors (seeded via warm-start) and a local dry-streak counter.
-    _small_primes_p3 = (2,3,5,7,11,13,17,19,23,29,31,37,41,43,47,53)
-    function _gcd_p3(a, b); while b != 0; a, b = b, a % b; end; a; end
+    
+    _small_primes_p3 = (2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53)
 
-    anchor_stride_p3 = nF > 1 ?
-        mod(_small_primes_p3[mod(trial_idx - 1, length(_small_primes_p3)) + 1], nF - 1) + 1 : 1
-    while nF > 1 && _gcd_p3(anchor_stride_p3, nF) != 1
-        anchor_stride_p3 = mod(anchor_stride_p3 + 1, nF) + 1
+    # Calculate initial stride using 1-based indexing safety
+    anchor_stride_p3 = if nF > 1
+        prime_target = _small_primes_p3[mod1(trial_idx, length(_small_primes_p3))]
+        mod1(prime_target, nF - 1)
+    else
+        1
     end
-    # Start cursor at the warm-start position if available.
-    anchor_cursor_p3 = isempty(hot_anchors) ? rand(1:nF) :
-                       clamp(hot_anchors[mod(trial_idx - 1, length(hot_anchors)) + 1], 1, nF)
+
+    # Step by 1 within the [1, nF] boundary using standard Base.gcd
+    while nF > 1 && gcd(anchor_stride_p3, nF) != 1
+        anchor_stride_p3 = mod1(anchor_stride_p3 + 1, nF)
+    end
+
+    # Start cursor at the warm-start position if available
+    anchor_cursor_p3 = if isempty(hot_anchors)
+        rand(1:nF)
+    else
+        target_anchor = hot_anchors[mod1(trial_idx, length(hot_anchors))]
+        clamp(target_anchor, 1, nF)
+    end
 
     inertia_dir_p3 = anchor_stride_p3
     p3_dry_streak  = 0
