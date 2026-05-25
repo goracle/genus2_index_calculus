@@ -205,18 +205,12 @@ mutable struct PhiBiasStat
     # Bucket index = top 14 bits of _lsm_fp(key), matching the LSM's Rényi buckets.
     lp1_conj_key_blog ::Vector{UInt16}
 
-    # step_bucket_log: bucket index (1-based) of every valid phi step, in
-    # chronological order.  Position in the vector is the step ordinal.
-    # Used post-hoc for all seven α₂ diagnostics.  One Int per step.
-    step_bucket_log ::Vector{Int}
-    # split_step_log: true iff the corresponding step in step_bucket_log was a
-    # split step (residual quadratic split over 𝔽ₚ).  Parallel to step_bucket_log.
-    # Used for α₂-7 (φ-conditioned α₂).
-    split_step_log  ::Vector{Bool}
-    # event_hash_log: thread-local provenance hash chain over the recorded step
-    # stream.  A repeated hash is a strong hint that the walk is revisiting the
-    # same structural motif rather than merely the same scalar summary.
-    event_hash_log  ::Vector{UInt64}
+    # NOTE: step_bucket_log (Int/step), split_step_log (Bool/step), and
+    # event_hash_log (UInt64/step) were removed — they grew to O(valid phi steps),
+    # ~10 bytes × 125M steps = ~1.25 GB, causing OOM.  The α₂ diagnostics they
+    # served are entirely superseded by lp1_conj_key_blog (the LP1-conj partial
+    # stream), which is O(LP1-conj partials) ≪ O(walk steps).
+    # The provenance check is replaced by a single running scalar _event_hash_state.
     _event_hash_state::UInt64
 end
 
@@ -249,9 +243,6 @@ function PhiBiasStat(p::Int)
         Int[],                         # lp1_conj_bucket_log
         # α₂ scaling diagnostics
         UInt16[],                      # lp1_conj_key_blog
-        Int[],                         # step_bucket_log
-        Bool[],                        # split_step_log
-        UInt64[],                      # event_hash_log
         UInt64(0x9e3779b97f4a7c15),    # _event_hash_state
     )
 end
@@ -348,13 +339,8 @@ end
     # cur_pt, not here, so the flag read above reflects the *previous* step's
     # anchor choice, which is what we want.
 
-    # --- α₂ timeseries logging ---
-    push!(stat.step_bucket_log, bucket)
-    push!(stat.split_step_log,  split)
-
-    # --- provenance hash chain (thread-local) ---
+    # --- provenance hash chain (thread-local scalar only, no per-step vector) ---
     stat._event_hash_state = _mix_event_hash(stat._event_hash_state, bucket, split, a, c1_rs, c0_rs, stat.total)
-    push!(stat.event_hash_log, stat._event_hash_state)
 
     return nothing
 end
@@ -522,12 +508,9 @@ function merge_phi_bias_stats(stats::Vector{PhiBiasStat})::PhiBiasStat
             merged.run_hist_split[k]    += s.run_hist_split[k]
             merged.run_hist_nonsplit[k] += s.run_hist_nonsplit[k]
         end
-        # α₂ timeseries: concatenate across threads (order within each thread
-        # is already chronological; cross-thread interleaving is unordered but
-        # sufficient for all dyadic-window α₂ computations).
-        append!(merged.step_bucket_log, s.step_bucket_log)
-        append!(merged.split_step_log,  s.split_step_log)
-        append!(merged.event_hash_log,  s.event_hash_log)
+        # α₂ timeseries: concatenate LP1-conj partial stream across threads.
+        # (step_bucket_log / split_step_log / event_hash_log removed — OOM vectors.)
+        merged._event_hash_state ⊻= s._event_hash_state   # fold per-thread digests
         append!(merged.lp1_conj_bucket_log, s.lp1_conj_bucket_log)
         append!(merged.lp1_conj_key_blog,    s.lp1_conj_key_blog)
     end
@@ -2183,16 +2166,9 @@ function print_phi_bias_report(stat::PhiBiasStat; p::Int = 0)
         end
     end
 
-    if !isempty(stat.event_hash_log)
-        hset = length(unique(stat.event_hash_log))
-        repeats = length(stat.event_hash_log) - hset
-        final_digest = reduce(⊻, stat.event_hash_log; init=UInt64(0))
-        @printf("    provenance hash states : %d  unique=%d  repeats=%d\n",
-                length(stat.event_hash_log), hset, repeats)
-        @printf("    provenance digest      : 0x%016x\n", final_digest)
-        if repeats > 0
-            @printf("    verdict                : repeated structural motifs detected\n")
-        end
+    if stat._event_hash_state != UInt64(0x9e3779b97f4a7c15)
+        @printf("    provenance digest      : 0x%016x  (XOR of per-thread hash chains)\n",
+                stat._event_hash_state)
     end
     println()
 
