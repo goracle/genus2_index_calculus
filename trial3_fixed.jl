@@ -906,6 +906,7 @@ function parse_trial3_cli(args::Vector{String})
     sqrt_mode          = false
     table_size         = nothing
     min_ell_bits       = 0    # 0 = no minimum
+    rel_multiplier     = 2.0  # β=0 relation target = rel_multiplier × nF
 
     for arg in args
         if arg == "--no-lp2"
@@ -933,13 +934,16 @@ function parse_trial3_cli(args::Vector{String})
             table_size = parse(Int, split(arg, "=", limit=2)[2])
         elseif startswith(arg, "--min-ell-bits=")
             min_ell_bits = parse(Int, split(arg, "=", limit=2)[2])
+        elseif startswith(arg, "--rel-multiplier=")
+            rel_multiplier = parse(Float64, split(arg, "=", limit=2)[2])
         end
     end
     return (fb_size=fb_size, enable_lp2=enable_lp2, enable_lp2_conj=enable_lp2_conj,
             max_lp2_nodes=max_lp2_nodes, max_lp2_conj_nodes=max_lp2_conj_nodes,
             amortized=amortized, use_cycle_union=use_cycle_union,
             enable_lp1_aff=enable_lp1_aff, n_targets=n_targets,
-            sqrt_mode=sqrt_mode, table_size=table_size, min_ell_bits=min_ell_bits)
+            sqrt_mode=sqrt_mode, table_size=table_size, min_ell_bits=min_ell_bits,
+            rel_multiplier=rel_multiplier)
 end
 
 # ---------------------------------------------------------------------------
@@ -1045,17 +1049,18 @@ mem_report_phase2tables(tables::Phase2Tables) =
 #  main2 — top-level entry point
 # ---------------------------------------------------------------------------
 function main2(; fb_size            ::Union{Nothing,Int} = nothing,
-                 enable_lp2         ::Bool = true,
-                 enable_lp2_conj    ::Bool = true,
-                 max_lp2_nodes      ::Int  = DEFAULT_MAX_LP2_NODES,
-                 max_lp2_conj_nodes ::Int  = DEFAULT_MAX_LP2_CONJ_NODES,
-                 amortized          ::Bool = false,
-                 use_cycle_union    ::Bool = false,
-                 enable_lp1_aff     ::Bool = true,
-                 n_targets          ::Int  = 3,
-                 sqrt_mode          ::Bool = false,
+                 enable_lp2         ::Bool  = true,
+                 enable_lp2_conj    ::Bool  = true,
+                 max_lp2_nodes      ::Int   = DEFAULT_MAX_LP2_NODES,
+                 max_lp2_conj_nodes ::Int   = DEFAULT_MAX_LP2_CONJ_NODES,
+                 amortized          ::Bool  = false,
+                 use_cycle_union    ::Bool  = false,
+                 enable_lp1_aff     ::Bool  = true,
+                 n_targets          ::Int   = 3,
+                 sqrt_mode          ::Bool  = false,
                  table_size         ::Union{Nothing,Int} = nothing,
-                 min_ell_bits       ::Int  = 0)
+                 min_ell_bits       ::Int   = 0,
+                 rel_multiplier     ::Float64 = 2.0)
     t_main_start = time()
     println("="^70)
     println("  trial3: Markov-walk phi-relation index calculus")
@@ -1163,8 +1168,17 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
         mem_checkpoint("after step-table precompute")
 
         # ── Phase 2 (β=0, multithreaded) ─────────────────────────────────────
-        target_excess_pre = max(20, nF_pre ÷ 10)
+        # Walk-generated β=0 relations have strong linear dependencies (consecutive
+        # steps share atoms), so effective rank grows much slower than 1/relation.
+        # Empirically, ~2×nF rows are needed to get a near-full-rank system before
+        # handing off to phase3.  --rel-multiplier (default 2.0) controls this.
+        _rel_mult         = rel_multiplier
+        target_excess_pre = max(20, round(Int, (_rel_mult - 1.0) * nF_pre))
         rel_target_pre    = max(1, nF_pre + 1 + target_excess_pre - length(p1_rows_pre))
+        @printf("  β=0 relation target: %d  (%.1f×nF=%d, excess=%d, phase1_credit=%d)\n",
+                nF_pre + 1 + target_excess_pre, _rel_mult, nF_pre,
+                target_excess_pre, length(p1_rows_pre))
+        flush(stdout)
         rel_counter_pre   = Threads.Atomic{Int}(0)
         n_all_pre         = p   # Hasse bound: #E(F_p) ≈ p
         cov_pre           = nF_pre / max(1, n_all_pre)
@@ -1398,7 +1412,7 @@ function main2_from_argv()
           amortized=opts.amortized, use_cycle_union=opts.use_cycle_union,
           enable_lp1_aff=opts.enable_lp1_aff, n_targets=opts.n_targets,
           sqrt_mode=opts.sqrt_mode, table_size=opts.table_size,
-          min_ell_bits=opts.min_ell_bits)
+          min_ell_bits=opts.min_ell_bits, rel_multiplier=opts.rel_multiplier)
 end
 
 if abspath(PROGRAM_FILE) == @__FILE__
