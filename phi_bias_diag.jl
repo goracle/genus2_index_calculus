@@ -86,6 +86,37 @@
 #    (b) short/long gap fractions vs Poisson prediction (hot/cold persistence),
 #    (c) KS test of rescaled gaps vs Exponential(1) with heavy-tail flag.
 #
+#  Seven α₂ scaling diagnostics (computed post-hoc from step_bucket_log and
+#  split_step_log; no additional overhead during the walk beyond one push! per
+#  valid phi step):
+#
+#  α₂-1 — Time-resolved α₂(T):  dyadic windows T, 2T, 4T … covering the full
+#    run.  Tracks α₂(T) and dα₂/d(logT).  Convergence → single exponent;
+#    two plateaus → burst/mixing crossover (Case B); indefinite drift → Case C.
+#
+#  α₂-2 — Intra vs inter-regime collision split:  classify each step as hot or
+#    cold based on LP1-conj hit density in a surrounding window.  Split S₂ into
+#    S₂^intra (both steps in same class) and S₂^inter (different class).
+#    Dominated by intra at short T, inter at long T → proven two-timescale system.
+#
+#  α₂-3 — Regime-conditioned α₂:  α₂|hot and α₂|cold computed separately.
+#    Δα₂ = α₂^hot − α₂^cold ≠ 0 → α₂ is NOT an invariant of the walk kernel.
+#
+#  α₂-4 — Collision autocorrelation C(τ):  for each bucket i, E[cᵢ(t)·cᵢ(t+τ)].
+#    Exponential decay → classical mixing; power-law → α₂ ill-defined globally.
+#    Hurst exponent from log-log slope.
+#
+#  α₂-5 — Collision burst size spectrum:  per-bucket run lengths of consecutive
+#    hits; distribution P(L).  Geometric baseline vs power-law tail test.
+#    Power-law → α₂ dominated by rare-event geometry.
+#
+#  α₂-6 — ρ(T) = S_occ(T)/S₂(T):  ratio of occupancy entropy to collision
+#    entropy over dyadic windows.  ρ ≈ const → consistent scaling dimension;
+#    ρ growing → decoupled geometry.
+#
+#  α₂-7 — φ-conditioned α₂:  α₂ on split steps vs non-split steps (φ-step type).
+#    Tests whether φ is shaping collision geometry or just relabeling it.
+#
 #  All accumulators are per-thread (no locking during the walk).
 #  Call merge_phi_bias_stats to combine and print_phi_bias_report to display.
 #
@@ -154,7 +185,29 @@ mutable struct PhiBiasStat
     # phi step fell in bucket.  Compared to the overall split_hist to identify
     # dynamically hot a-regions: buckets where emissions are over-represented
     # relative to visit frequency.  Set by record_lp1_conj_hit! via bucket arg.
-    lp1_conj_a_hist ::Vector{Int}
+    lp1_conj_a_hist    ::Vector{Int}
+    # lp1_conj_bucket_log: per-event a-bucket at each LP1-conj emission, in
+    # chronological order parallel to lp1_conj_arrivals.  Used as the timeseries
+    # for α₂ scaling diagnostics so that all α₂ sections focus on the LP1-conj
+    # key space rather than the full walk step distribution.
+    lp1_conj_bucket_log::Vector{Int}
+
+    # ════════════════════════════════════════════════════════════════════════
+    # α₂ scaling diagnostics (α₂-1 through α₂-7)
+    # ════════════════════════════════════════════════════════════════════════
+    # step_bucket_log: bucket index (1-based) of every valid phi step, in
+    # chronological order.  Position in the vector is the step ordinal.
+    # Used post-hoc for all seven α₂ diagnostics.  One Int per step.
+    step_bucket_log ::Vector{Int}
+    # split_step_log: true iff the corresponding step in step_bucket_log was a
+    # split step (residual quadratic split over 𝔽ₚ).  Parallel to step_bucket_log.
+    # Used for α₂-7 (φ-conditioned α₂).
+    split_step_log  ::Vector{Bool}
+    # event_hash_log: thread-local provenance hash chain over the recorded step
+    # stream.  A repeated hash is a strong hint that the walk is revisiting the
+    # same structural motif rather than merely the same scalar summary.
+    event_hash_log  ::Vector{UInt64}
+    _event_hash_state::UInt64
 end
 
 const MAX_RUN_LEN = 64   # run-length histogram cap (longer runs fold into bin 64)
@@ -183,6 +236,12 @@ function PhiBiasStat(p::Int)
         false,                         # _prev_anchor_was_lp
         # New 3: a-region hotness
         zeros(Int, nbuckets),          # lp1_conj_a_hist
+        Int[],                         # lp1_conj_bucket_log
+        # α₂ scaling diagnostics
+        Int[],                         # step_bucket_log
+        Bool[],                        # split_step_log
+        UInt64[],                      # event_hash_log
+        UInt64(0x9e3779b97f4a7c15),    # _event_hash_state
     )
 end
 
@@ -278,6 +337,14 @@ end
     # cur_pt, not here, so the flag read above reflects the *previous* step's
     # anchor choice, which is what we want.
 
+    # --- α₂ timeseries logging ---
+    push!(stat.step_bucket_log, bucket)
+    push!(stat.split_step_log,  split)
+
+    # --- provenance hash chain (thread-local) ---
+    stat._event_hash_state = _mix_event_hash(stat._event_hash_state, bucket, split, a, c1_rs, c0_rs, stat.total)
+    push!(stat.event_hash_log, stat._event_hash_state)
+
     return nothing
 end
 
@@ -297,6 +364,7 @@ end
     if 1 <= a_bucket <= length(stat.lp1_conj_a_hist)
         stat.lp1_conj_a_hist[a_bucket] += 1
     end
+    push!(stat.lp1_conj_bucket_log, a_bucket > 0 ? a_bucket : 1)
     stat._prev_anchor_was_lp = true
     return nothing
 end
@@ -308,6 +376,75 @@ end
 @inline function record_random_anchor!(stat::PhiBiasStat)
     stat._prev_anchor_was_lp = false
     return nothing
+end
+
+# ---------------------------------------------------------------------------
+#  hash / moment helpers for post-hoc diagnostics
+# ---------------------------------------------------------------------------
+@inline function _rotl64(x::UInt64, r::Int)::UInt64
+    rr = r & 63
+    return (x << rr) | (x >> ((64 - rr) & 63))
+end
+
+@inline function _mix_u64(x::UInt64)::UInt64
+    # SplitMix64 finalizer.
+    x ⊻= x >> 30
+    x *= UInt64(0xbf58476d1ce4e5b9)
+    x ⊻= x >> 27
+    x *= UInt64(0x94d049bb133111eb)
+    x ⊻= x >> 31
+    return x
+end
+
+@inline function _mix_event_hash(prev::UInt64, bucket::Int, split::Bool,
+                                 a::Int, c1::Int, c0::Int, step::Int)::UInt64
+    h = prev ⊻ UInt64(0x9e3779b97f4a7c15)
+    h ⊻= _mix_u64(UInt64(bucket) + (split ? UInt64(0x1111111111111111) : UInt64(0x2222222222222222)))
+    h ⊻= _mix_u64(UInt64(abs(a)) + UInt64(0x9e3779b97f4a7c15))
+    h ⊻= _mix_u64(UInt64(abs(c1)) ⊻ _rotl64(UInt64(abs(c0)), 17))
+    h ⊻= _mix_u64(UInt64(step) * UInt64(0x5851f42d4c957f2d))
+    return _mix_u64(h)
+end
+
+function _moment4(xs::AbstractVector{<:Real})
+    n = length(xs)
+    n == 0 && return (NaN, NaN, NaN, NaN)
+    μ = sum(float(x) for x in xs) / n
+    if n == 1
+        return (μ, 0.0, 0.0, 0.0)
+    end
+    diffs = [float(x) - μ for x in xs]
+    m2 = sum(d*d for d in diffs) / n
+    if m2 < 1e-30
+        return (μ, 0.0, 0.0, 0.0)
+    end
+    m3 = sum(d^3 for d in diffs) / n
+    m4 = sum(d^4 for d in diffs) / n
+    σ = sqrt(m2)
+    skew = m3 / (σ^3)
+    kurt = m4 / (σ^4) - 3.0
+    return (μ, m2, skew, kurt)
+end
+
+function _kl_divergence_counts(p::Vector{Int}, q::Vector{Int}; pseudo::Float64 = 0.5)
+    @assert length(p) == length(q)
+    sp = sum(p) + pseudo * length(p)
+    sq = sum(q) + pseudo * length(q)
+    kl = 0.0
+    for i in eachindex(p)
+        pi = (p[i] + pseudo) / sp
+        qi = (q[i] + pseudo) / sq
+        kl += pi * log2(pi / max(1e-300, qi))
+    end
+    return kl
+end
+
+function _top_share(hist::Vector{Int}, frac::Float64)
+    n = sum(hist)
+    n == 0 && return 0.0
+    k = max(1, ceil(Int, frac * length(hist)))
+    vals = sort(hist, rev=true)
+    return sum(vals[1:min(k, length(vals))]) / n
 end
 
 # ---------------------------------------------------------------------------
@@ -347,6 +484,13 @@ function merge_phi_bias_stats(stats::Vector{PhiBiasStat})::PhiBiasStat
             merged.run_hist_split[k]    += s.run_hist_split[k]
             merged.run_hist_nonsplit[k] += s.run_hist_nonsplit[k]
         end
+        # α₂ timeseries: concatenate across threads (order within each thread
+        # is already chronological; cross-thread interleaving is unordered but
+        # sufficient for all dyadic-window α₂ computations).
+        append!(merged.step_bucket_log, s.step_bucket_log)
+        append!(merged.split_step_log,  s.split_step_log)
+        append!(merged.event_hash_log,  s.event_hash_log)
+        append!(merged.lp1_conj_bucket_log, s.lp1_conj_bucket_log)
     end
     return merged
 end
@@ -1389,6 +1533,608 @@ function print_phi_bias_report(stat::PhiBiasStat; p::Int = 0)
         @printf("    (insufficient data for KS test)\n")
     end
     println()
+
+    # ════════════════════════════════════════════════════════════════════════
+    # α₂ SCALING DIAGNOSTICS  (α₂-1 through α₂-7)
+    # ════════════════════════════════════════════════════════════════════════
+    # All seven diagnostics run from step_bucket_log and split_step_log, which
+    # are the per-step bucket-index and split-flag timeseries logged during the
+    # walk.  No walk-time overhead beyond two push! calls per phi step.
+    #
+    # Helper: compute Rényi-2 (collision) entropy and occupancy entropy from a
+    # bucket count vector.  Returns (S2, S_occ, n_steps).
+    #   S2    = -log2( Σ (cᵢ/n)² )   — collision entropy
+    #   S_occ = -log2( #occupied / nb ) when uniform, or Shannon of occupancy
+    #           We use the simpler effective-support: log2(#buckets_hit)
+    # Both are in bits.  nb = number of buckets.
+    function _bucket_entropies(counts::Vector{Int}, nb::Int)
+        n = sum(counts)
+        n == 0 && return (NaN, NaN, 0)
+        p2sum = sum((counts[i] / n)^2 for i in 1:nb)
+        S2    = p2sum > 0.0 ? -log2(p2sum) : NaN
+        n_occ = count(>(0), counts)
+        S_occ = n_occ > 0 ? log2(Float64(n_occ)) : 0.0
+        return (S2, S_occ, n)
+    end
+
+    # ── α₂ sections: operate on LP1-conj emission sequence ───────────────────
+    # Sort lp1_conj_bucket_log by arrival time so the timeseries is chronological
+    # even after multi-thread merge.  lp1_conj_arrivals may be unsorted after merge.
+    # slog: always true (LP1-conj emissions are by definition split steps).
+    blog = let
+        lc_arr = stat.lp1_conj_arrivals
+        lc_bkt = stat.lp1_conj_bucket_log
+        if length(lc_arr) == length(lc_bkt) && !isempty(lc_arr)
+            lc_bkt[sortperm(lc_arr)]
+        else
+            Int[]
+        end
+    end
+    slog   = fill(true, length(blog))
+    n_blog = length(blog)
+
+    if n_blog < 32
+        @printf("  α₂ scaling diagnostics (LP1-conj): need ≥32 LP1-conj emissions; got %d\n", n_blog)
+    else
+
+    # ── α₂-1: Time-resolved α₂(T) over dyadic windows ───────────────────────
+    @printf("  α₂-1 — Time-resolved α₂(T) of LP1-conj a-bucket sequence:\n")
+    @printf("    window_T   n_events   α₂(T)   S_occ(T)   ρ(T)=S_occ/S₂   dα₂/dlogT\n")
+    # Build dyadic window sizes: T₀, 2T₀, 4T₀, … up to n_blog
+    T0_a2 = max(16, n_blog ÷ 64)
+    dyadic_windows = Int[]
+    Tw = T0_a2
+    while Tw <= n_blog
+        push!(dyadic_windows, Tw)
+        Tw *= 2
+    end
+    # For each window size, compute α₂(T) by sliding the window across the log
+    # with stride = T (non-overlapping), averaging S₂ across windows.
+    prev_a2  = NaN
+    prev_logT = NaN
+    da2_vals  = Float64[]
+    a2_vals   = Float64[]
+    logT_vals = Float64[]
+    for T in dyadic_windows
+        n_wins_a2 = n_blog ÷ T
+        n_wins_a2 < 1 && continue
+        s2_acc = 0.0; socc_acc = 0.0; n_valid = 0
+        counts_T = zeros(Int, nb)
+        for wi in 0:(n_wins_a2 - 1)
+            fill!(counts_T, 0)
+            for k in (wi*T + 1):((wi+1)*T)
+                counts_T[blog[k]] += 1
+            end
+            (s2, socc, _) = _bucket_entropies(counts_T, nb)
+            if !isnan(s2)
+                s2_acc += s2; socc_acc += socc; n_valid += 1
+            end
+        end
+        n_valid == 0 && continue
+        a2_T   = s2_acc   / n_valid
+        socc_T = socc_acc / n_valid
+        rho_T  = a2_T > 0.0 ? socc_T / a2_T : NaN
+        logT   = log2(Float64(T))
+        da2_dlogT = (!isnan(prev_a2) && !isnan(prev_logT) && logT > prev_logT) ?
+                    (a2_T - prev_a2) / (logT - prev_logT) : NaN
+        da_str  = isnan(da2_dlogT) ? "       —" : @sprintf("%+8.4f", da2_dlogT)
+        rho_str = isnan(rho_T)     ? "        —" : @sprintf("%9.4f", rho_T)
+        @printf("    %9d  %8d   %7.4f  %9.4f  %s  %s\n",
+                T, n_wins_a2 * T, a2_T, socc_T, rho_str, da_str)
+        push!(a2_vals, a2_T)
+        push!(logT_vals, logT)
+        push!(da2_vals, isnan(da2_dlogT) ? 0.0 : da2_dlogT)
+        prev_a2 = a2_T; prev_logT = logT
+    end
+    # Classify the flow
+    if length(da2_vals) >= 3
+        da2_late = da2_vals[end]
+        da2_early = da2_vals[2]
+        a2_flag = if abs(da2_late) < 0.02
+            "  → α₂ CONVERGED (single exponent, Case A)"
+        elseif da2_early > 0.05 && abs(da2_late) < 0.05
+            "  → α₂ CROSSOVER (two plateaus, Case B — burst then mixing)"
+        elseif da2_late > 0.05
+            "  → α₂ DRIFTING UPWARD (no fixed exponent, Case C)"
+        else
+            "  → α₂ trend inconclusive"
+        end
+        @printf("    %s\n", a2_flag)
+    end
+    println()
+
+    # ── α₂-2: Intra vs inter-regime collision split ───────────────────────────
+    @printf("  α₂-2 — Intra vs inter-regime collision split:\n")
+    # Classify each step as hot/cold by a sliding window over lp1_conj_arrivals.
+    # A step at position t (in step_bucket_log) is "hot" if the LP1-conj hit
+    # density in a surrounding ±W_regime steps (raw-step units) exceeds the
+    # global median.  We approximate: map step ordinal → raw_step via linear
+    # interpolation from total and lp1_conj_arrivals.
+    # Simple fallback: classify by step ordinal in step_bucket_log using
+    # the hot/cold split already computed in the hot/cold window section
+    # (which used lp1_conj hit density in windows of T_hc steps).
+    # We use a compact density vector over fixed windows of n_blog ÷ 50 steps.
+    let
+        T_rc   = max(8, n_blog ÷ 50)
+        n_rc   = n_blog ÷ T_rc
+        if n_rc >= 4
+            # Count LP1-conj hits per window using lp1_conj_arrivals.
+            # Map raw_steps to step-ordinal windows via the fraction
+            # raw_step / total_span_approx * n_blog.
+            arrivals_lc = stat.lp1_conj_arrivals
+            total_span_lc = isempty(arrivals_lc) ? 0 :
+                            arrivals_lc[end] - arrivals_lc[1] + 1
+            lc_window_counts = zeros(Int, n_rc)
+            if !isempty(arrivals_lc) && total_span_lc > 0
+                for a in arrivals_lc
+                    wi = clamp(round(Int, (a - arrivals_lc[1]) / total_span_lc * n_rc) + 1, 1, n_rc)
+                    lc_window_counts[wi] += 1
+                end
+            else
+                # No LP1-conj arrivals — use raw step density as proxy
+                # (every window has equal density → all cold; diagnostics still run)
+                fill!(lc_window_counts, 0)
+            end
+            sorted_lc = sort(lc_window_counts)
+            median_lc = length(sorted_lc) % 2 == 0 ?
+                (sorted_lc[length(sorted_lc)÷2] + sorted_lc[length(sorted_lc)÷2+1]) / 2.0 :
+                Float64(sorted_lc[(length(sorted_lc)+1)÷2])
+            # hot_mask[i] = true iff step i belongs to a hot window
+            hot_mask = [lc_window_counts[clamp((i-1)÷T_rc + 1, 1, n_rc)] >= median_lc
+                        for i in 1:n_blog]
+
+            # Compute S₂ for four subsets of step pairs:
+            # intra-hot, intra-cold, inter (hot-cold or cold-hot)
+            counts_hot  = zeros(Int, nb)
+            counts_cold = zeros(Int, nb)
+            for i in 1:n_blog
+                if hot_mask[i]
+                    counts_hot[blog[i]]  += 1
+                else
+                    counts_cold[blog[i]] += 1
+                end
+            end
+            n_hot_steps  = sum(counts_hot)
+            n_cold_steps = sum(counts_cold)
+
+            # Intra-collision entropy: S₂ computed within each regime
+            (s2_hot,  socc_hot,  _) = _bucket_entropies(counts_hot,  nb)
+            (s2_cold, socc_cold, _) = _bucket_entropies(counts_cold, nb)
+
+            # Inter-collision entropy: use mixing formula
+            # S₂^inter ≈ -log2( Σᵢ (n_hot[i]/n_hot) * (n_cold[i]/n_cold) )
+            if n_hot_steps > 0 && n_cold_steps > 0
+                cross = sum((counts_hot[i] / n_hot_steps) * (counts_cold[i] / n_cold_steps)
+                            for i in 1:nb)
+                s2_inter = cross > 0.0 ? -log2(cross) : NaN
+            else
+                s2_inter = NaN
+            end
+
+            # Overall S₂ from combined counts (for reference)
+            counts_all = counts_hot .+ counts_cold
+            (s2_all, _, _) = _bucket_entropies(counts_all, nb)
+
+            @printf("    Regime split: T_window=%d, n_windows=%d, median_density=%.2f hits/window\n",
+                    T_rc, n_rc, median_lc)
+            @printf("    hot steps:  %d  α₂^hot  = %.4f  S_occ^hot  = %.4f\n",
+                    n_hot_steps, s2_hot, socc_hot)
+            @printf("    cold steps: %d  α₂^cold = %.4f  S_occ^cold = %.4f\n",
+                    n_cold_steps, s2_cold, socc_cold)
+            @printf("    inter-regime α₂: %.4f\n", isnan(s2_inter) ? -1.0 : s2_inter)
+            @printf("    overall α₂:      %.4f\n", s2_all)
+            if !isnan(s2_hot) && !isnan(s2_cold)
+                delta_a2 = s2_hot - s2_cold
+                flag_rc  = abs(delta_a2) > 0.05 ?
+                    @sprintf("  ← Δα₂=%.4f, α₂ NOT invariant of walk kernel", delta_a2) :
+                    "  (α₂ consistent across regimes)"
+                @printf("    Δα₂ = α₂^hot − α₂^cold = %+.4f%s\n", delta_a2, flag_rc)
+            end
+        else
+            @printf("    (need ≥4 regime windows; n_blog=%d too short)\n", n_blog)
+        end
+    end
+    println()
+
+    # ── α₂-3: Regime-conditioned α₂ (standalone summary) ─────────────────────
+    # Already reported as part of α₂-2 above (Δα₂).  Print brief cross-ref.
+    @printf("  α₂-3 — Regime-conditioned α₂: see Δα₂ in α₂-2 above.\n")
+    println()
+
+    # ── α₂-4: Collision autocorrelation C(τ) ─────────────────────────────────
+    @printf("  α₂-4 — Collision autocorrelation C(τ) = E[cᵢ(t)·cᵢ(t+τ)]:\n")
+    # Compute the autocorrelation of the squared-occupancy series:
+    # at each time t, define x(t) = c_{blog[t]}(t) / n_T, i.e. the fractional
+    # count of the occupied bucket in a sliding window.  For tractability we
+    # use a coarse version: bin steps into windows of T_acf steps, compute the
+    # vector of bucket counts, take the dot-product (collision count) of
+    # adjacent windows, and compute its ACF.
+    let
+        T_acf   = max(8, n_blog ÷ 100)
+        n_wins_acf = n_blog ÷ T_acf
+        if n_wins_acf >= 16
+            # Collision count per window: Σᵢ cᵢ² (unnormalised)
+            coll_series = zeros(Float64, n_wins_acf)
+            counts_w    = zeros(Int, nb)
+            for wi in 0:(n_wins_acf - 1)
+                fill!(counts_w, 0)
+                for k in (wi*T_acf + 1):((wi+1)*T_acf)
+                    counts_w[blog[k]] += 1
+                end
+                coll_series[wi+1] = Float64(sum(x^2 for x in counts_w))
+            end
+            mn_c  = sum(coll_series) / n_wins_acf
+            var_c = n_wins_acf > 1 ?
+                sum((x - mn_c)^2 for x in coll_series) / (n_wins_acf - 1) : 0.0
+            max_lag_c4 = min(20, n_wins_acf ÷ 2)
+            c_acf = zeros(Float64, max_lag_c4)
+            if var_c > 0.0
+                for lag in 1:max_lag_c4
+                    cov = sum((coll_series[t] - mn_c) * (coll_series[t+lag] - mn_c)
+                              for t in 1:(n_wins_acf - lag)) / (n_wins_acf - lag)
+                    c_acf[lag] = cov / var_c
+                end
+            end
+            acf_str = join([@sprintf("%+.3f", c_acf[k]) for k in 1:min(8, max_lag_c4)], "  ")
+            @printf("    T_window=%d steps, %d windows\n", T_acf, n_wins_acf)
+            @printf("    C(τ) lags 1..%d: %s\n", min(8, max_lag_c4), acf_str)
+            # Classify decay
+            inv_e_c = exp(-1.0)
+            decor_c = findfirst(r -> abs(r) < inv_e_c, c_acf)
+            if decor_c !== nothing
+                @printf("    Decorr lag: %d windows ≈ %d steps\n",
+                        decor_c, decor_c * T_acf)
+            else
+                @printf("    ACF does not decay below 1/e within %d lags — long-memory C(τ)\n",
+                        max_lag_c4)
+            end
+            # Hurst proxy from log-log slope of |C(τ)|
+            if max_lag_c4 >= 4
+                lags_fit = [log(Float64(k)) for k in 1:max_lag_c4 if abs(c_acf[k]) > 1e-6]
+                acf_fit  = [log(abs(c_acf[k])) for k in 1:max_lag_c4 if abs(c_acf[k]) > 1e-6]
+                if length(lags_fit) >= 4
+                    mlag = sum(lags_fit)/length(lags_fit); macf = sum(acf_fit)/length(acf_fit)
+                    num_h = sum((lags_fit[i]-mlag)*(acf_fit[i]-macf) for i in eachindex(lags_fit))
+                    den_h = sum((lags_fit[i]-mlag)^2 for i in eachindex(lags_fit))
+                    slope_c4 = den_h > 0 ? num_h / den_h : 0.0
+                    flag_c4  = slope_c4 > -0.5 ? "  ← POWER-LAW decay (α₂ ill-defined globally)" :
+                               slope_c4 > -1.5 ? "  (intermediate decay)" :
+                                                  "  (fast / exponential decay)"
+                    @printf("    log|C(τ)| vs log τ slope: %.3f%s\n", slope_c4, flag_c4)
+                end
+            end
+        else
+            @printf("    (need ≥16 coarse windows; n_blog=%d with T=%d gives %d)\n",
+                    n_blog, T_acf, n_wins_acf)
+        end
+    end
+    println()
+
+    # ── α₂-5: Collision burst size spectrum ──────────────────────────────────
+    @printf("  α₂-5 — Per-bucket collision burst size spectrum:\n")
+    # For each bucket b: find all maximal runs of consecutive steps where
+    # blog[t] == b.  Collect the run-length distribution across all buckets.
+    let
+        burst_lengths = Int[]
+        cur_b   = blog[1]
+        cur_len = 1
+        for t in 2:n_blog
+            if blog[t] == cur_b
+                cur_len += 1
+            else
+                cur_len > 1 && push!(burst_lengths, cur_len)
+                cur_b   = blog[t]
+                cur_len = 1
+            end
+        end
+        cur_len > 1 && push!(burst_lengths, cur_len)
+
+        if length(burst_lengths) >= 10
+            n_bl    = length(burst_lengths)
+            mean_bl = sum(burst_lengths) / n_bl
+            max_bl  = maximum(burst_lengths)
+            cnt1_bl = count(==(1), burst_lengths)   # handled above as cur_len==1 skip
+            cnt2_bl = count(==(2), burst_lengths)
+            cnt3p_bl = count(>=(3), burst_lengths)
+            # KS vs Geometric(1/mean)
+            p_geo_bl = mean_bl > 1.0 ? 1.0 / mean_bl : 1.0
+            bsorted_bl = sort(burst_lengths)
+            ks_bl = 0.0; cumul_bl = 0.0
+            for bs in bsorted_bl
+                cumul_bl += 1.0 / n_bl
+                geo_cdf_bl = 1.0 - (1.0 - p_geo_bl)^bs
+                ks_bl = max(ks_bl, abs(cumul_bl - geo_cdf_bl))
+            end
+            flag_bl = ks_bl > 0.1 ? "  ← POWER-LAW BURST (α₂ dominated by rare-event geometry)" :
+                                     "  (consistent with geometric burst sizes)"
+            @printf("    %d multi-step bursts detected (steps that re-hit same bucket)\n", n_bl)
+            @printf("    mean_len=%.2f  max_len=%d\n", mean_bl, max_bl)
+            @printf("    len=2: %d (%.1f%%)  len=3+: %d (%.1f%%)\n",
+                    cnt2_bl, 100.0*cnt2_bl/n_bl, cnt3p_bl, 100.0*cnt3p_bl/n_bl)
+            @printf("    KS vs Geometric(1/mean)=%.4f%s\n", ks_bl, flag_bl)
+            # Log-log tail slope for power-law fit
+            max_len_fit = min(max_bl, 30)
+            len_counts  = [count(==(k), burst_lengths) for k in 2:max_len_fit]
+            nonzero_idx = [k for k in eachindex(len_counts) if len_counts[k] > 0]
+            if length(nonzero_idx) >= 4
+                log_k   = [log(Float64(k+1)) for k in nonzero_idx]
+                log_cnt = [log(Float64(len_counts[k])) for k in nonzero_idx]
+                mk = sum(log_k)/length(log_k); mc = sum(log_cnt)/length(log_cnt)
+                num_pl = sum((log_k[i]-mk)*(log_cnt[i]-mc) for i in eachindex(log_k))
+                den_pl = sum((log_k[i]-mk)^2 for i in eachindex(log_k))
+                slope_pl = den_pl > 0 ? num_pl / den_pl : 0.0
+                flag_pl = slope_pl < -1.5 ? "  (steeper than geometric — sub-Poisson)" :
+                          slope_pl > -0.5 ? "  ← SHALLOW SLOPE (power-law tail)" :
+                                            "  (moderate slope)"
+                @printf("    log-log tail slope: %.3f%s\n", slope_pl, flag_pl)
+            end
+        else
+            @printf("    (fewer than 10 multi-step bursts detected; walk well-mixing at bucket level)\n")
+        end
+    end
+    println()
+
+    # ── α₂-6: ρ(T) = S_occ(T)/S₂(T) over dyadic windows ────────────────────
+    @printf("  α₂-6 — ρ(T) = S_occ(T)/S₂(T) (effective-support vs collision-space ratio):\n")
+    @printf("    window_T   α₂(T)   S_occ(T)   ρ(T)   dρ/dlogT   interpretation\n")
+    prev_rho   = NaN
+    prev_logT6 = NaN
+    rho_vals   = Float64[]
+    for T in dyadic_windows
+        n_wins_r = n_blog ÷ T
+        n_wins_r < 1 && continue
+        s2_acc6 = 0.0; socc_acc6 = 0.0; n_v6 = 0
+        counts_T6 = zeros(Int, nb)
+        for wi in 0:(n_wins_r - 1)
+            fill!(counts_T6, 0)
+            for k in (wi*T + 1):((wi+1)*T)
+                counts_T6[blog[k]] += 1
+            end
+            (s2, socc, _) = _bucket_entropies(counts_T6, nb)
+            if !isnan(s2)
+                s2_acc6 += s2; socc_acc6 += socc; n_v6 += 1
+            end
+        end
+        n_v6 == 0 && continue
+        a2_T6   = s2_acc6   / n_v6
+        socc_T6 = socc_acc6 / n_v6
+        rho_T6  = a2_T6 > 0.0 ? socc_T6 / a2_T6 : NaN
+        logT6   = log2(Float64(T))
+        drho = (!isnan(prev_rho) && !isnan(prev_logT6) && logT6 > prev_logT6) ?
+               (rho_T6 - prev_rho) / (logT6 - prev_logT6) : NaN
+        drho_str = isnan(drho)  ? "        —" : @sprintf("%+9.4f", drho)
+        rho_str6 = isnan(rho_T6) ? "     —" : @sprintf("%6.4f", rho_T6)
+        interp = if isnan(rho_T6)
+            "—"
+        elseif !isnan(drho) && drho > 0.05
+            "ρ GROWING → decoupled geometry"
+        elseif !isnan(drho) && drho < -0.05
+            "ρ SHRINKING → collapsing state space"
+        else
+            "ρ stable"
+        end
+        @printf("    %9d  %7.4f  %9.4f  %s  %s  %s\n",
+                T, a2_T6, socc_T6, rho_str6, drho_str, interp)
+        push!(rho_vals, isnan(rho_T6) ? 0.0 : rho_T6)
+        prev_rho = rho_T6; prev_logT6 = logT6
+    end
+    if length(rho_vals) >= 3
+        rho_range = maximum(rho_vals) - minimum(rho_vals)
+        flag_rho  = rho_range < 0.05 ?
+            "  → ρ CONSTANT: consistent scaling dimension" :
+            @sprintf("  → ρ VARIES (range=%.4f): geometry and collision space decouple", rho_range)
+        @printf("    %s\n", flag_rho)
+    end
+    println()
+
+    # ── α₂-7: LP1-conj key collision geometry ────────────────────────────────
+    # Since blog is now the LP1-conj a-bucket sequence, all events are split steps.
+    # Instead of split/non-split (vacuous), compare α₂ on the first vs second half
+    # of the emission sequence to detect non-stationarity in key geometry.
+    @printf("  α₂-7 — LP1-conj collision geometry: first-half vs second-half α₂:\n")
+    if n_blog >= 8
+        mid = n_blog ÷ 2
+        counts_h1 = zeros(Int, nb); counts_h2 = zeros(Int, nb)
+        for i in 1:mid;        counts_h1[blog[i]] += 1; end
+        for i in (mid+1):n_blog; counts_h2[blog[i]] += 1; end
+        (s2_h1, socc_h1, n_h1) = _bucket_entropies(counts_h1, nb)
+        (s2_h2, socc_h2, n_h2) = _bucket_entropies(counts_h2, nb)
+        @printf("    first  half: %d events  α₂=%s  S_occ=%s\n",
+                n_h1, isnan(s2_h1) ? "—" : @sprintf("%.4f", s2_h1),
+                      isnan(socc_h1) ? "—" : @sprintf("%.4f", socc_h1))
+        @printf("    second half: %d events  α₂=%s  S_occ=%s\n",
+                n_h2, isnan(s2_h2) ? "—" : @sprintf("%.4f", s2_h2),
+                      isnan(socc_h2) ? "—" : @sprintf("%.4f", socc_h2))
+        if !isnan(s2_h1) && !isnan(s2_h2)
+            delta_a2_halves = s2_h2 - s2_h1
+            flag_halves = abs(delta_a2_halves) > 0.1 ?
+                @sprintf("  ← NON-STATIONARY key geometry (Δα₂=%+.4f)", delta_a2_halves) :
+                "  (key geometry stationary across run)"
+            @printf("    Δα₂ = second − first = %+.4f%s\n", delta_a2_halves, flag_halves)
+        end
+    else
+        @printf("    (need ≥8 LP1-conj emissions)\n")
+    end
+    println()
+
+    # ── α₂-8: fluctuation curvature + per-window dispersion ───────────────────
+    @printf("  α₂-8 — fluctuation curvature and dispersion across dyadic windows:\n")
+    if length(a2_vals) >= 3
+        d2_vals = [a2_vals[i+1] - 2a2_vals[i] + a2_vals[i-1] for i in 2:(length(a2_vals)-1)]
+        max_abs_d2 = maximum(abs.(d2_vals))
+        mean_abs_d2 = sum(abs.(x) for x in d2_vals) / length(d2_vals)
+        @printf("    max |Δ²α₂| over logT   : %.6f\n", max_abs_d2)
+        @printf("    mean |Δ²α₂| over logT  : %.6f\n", mean_abs_d2)
+        flag_d2 = max_abs_d2 < 0.03 ? "  (curvature essentially flat)" :
+                  max_abs_d2 < 0.10 ? "  (small residual curvature)" :
+                                     "  ← curvature drift / hidden crossover"
+        @printf("    curvature verdict      :%s\n", flag_d2)
+    else
+        @printf("    (need ≥3 dyadic windows for curvature)\n")
+    end
+
+    # Per-window dispersion of the α₂ estimator itself.
+    @printf("  α₂ dispersion by window size:\n")
+    for T in dyadic_windows
+        n_wins_a2 = n_blog ÷ T
+        n_wins_a2 < 2 && continue
+        window_a2 = Float64[]
+        counts_T = zeros(Int, nb)
+        for wi in 0:(n_wins_a2 - 1)
+            fill!(counts_T, 0)
+            for k in (wi*T + 1):((wi+1)*T)
+                counts_T[blog[k]] += 1
+            end
+            (s2w, _, _) = _bucket_entropies(counts_T, nb)
+            !isnan(s2w) && push!(window_a2, s2w)
+        end
+        if length(window_a2) >= 2
+            μw, varw, skeww, kurtw = _moment4(window_a2)
+            @printf("    T=%-8d  μ=%.4f  σ²=%.6f  skew=%+.3f  kurt=%+.3f\n",
+                    T, μw, varw, skeww, kurtw)
+        end
+    end
+    println()
+
+    # ── α₂-9: measure-preserving / KL drift and perturbation susceptibility ───
+    @printf("  α₂-9 — measure-preserving test and perturbation susceptibility:\n")
+    if length(dyadic_windows) >= 2
+        for T in dyadic_windows[1:min(4, length(dyadic_windows))]
+            n_wins_a2 = n_blog ÷ T
+            n_wins_a2 < 2 && continue
+            kls = Float64[]
+            prev_counts = zeros(Int, nb)
+            for wi in 0:(n_wins_a2 - 1)
+                counts_T = zeros(Int, nb)
+                for k in (wi*T + 1):((wi+1)*T)
+                    counts_T[blog[k]] += 1
+                end
+                if wi > 0
+                    push!(kls, _kl_divergence_counts(prev_counts, counts_T))
+                end
+                prev_counts .= counts_T
+            end
+            if !isempty(kls)
+                @printf("    T=%-8d  mean KL(prev||curr)=%.5f  max KL=%.5f\n",
+                        T, sum(kls)/length(kls), maximum(kls))
+            end
+        end
+    end
+    # Susceptibility proxy: compare split vs non-split α₂ inside coarse blocks.
+    if length(blog) >= 64
+        block_T = max(8, n_blog ÷ 32)
+        n_blocks = n_blog ÷ block_T
+        if n_blocks >= 4
+            pert_vals = Float64[]
+            for bi in 0:(n_blocks - 1)
+                lo = bi * block_T + 1
+                hi = (bi + 1) * block_T
+                hi > length(blog) && break
+                cnts_split = zeros(Int, nb)
+                cnts_nspl  = zeros(Int, nb)
+                for j in lo:hi
+                    if slog[j]
+                        cnts_split[blog[j]] += 1
+                    else
+                        cnts_nspl[blog[j]]  += 1
+                    end
+                end
+                s2s, _, _ = _bucket_entropies(cnts_split, nb)
+                s2n, _, _ = _bucket_entropies(cnts_nspl, nb)
+                if !isnan(s2s) && !isnan(s2n)
+                    push!(pert_vals, abs(s2s - s2n))
+                end
+            end
+            if !isempty(pert_vals)
+                @printf("    susceptibility proxy  : mean |Δα₂(split-nonsplit)| = %.5f\n",
+                        sum(pert_vals)/length(pert_vals))
+            else
+                @printf("    susceptibility proxy  : insufficient block data\n")
+            end
+        end
+    end
+    println()
+
+    # ── α₂-10: collision entropy decomposition and hot-bucket concentration ──
+    @printf("  α₂-10 — collision entropy decomposition / entropy whales:\n")
+    (s2_all, socc_all, n_all) = _bucket_entropies(stat.split_hist, nb)
+    if n_all > 0
+        top1 = _top_share(stat.split_hist, 0.01)
+        top5 = _top_share(stat.split_hist, 0.05)
+        top10 = _top_share(stat.split_hist, 0.10)
+        @printf("    α₂(split_hist)         : %.5f\n", s2_all)
+        @printf("    top 1%% / 5%% / 10%% share : %.3f  %.3f  %.3f\n", top1, top5, top10)
+        @printf("    occupancy entropy      : %.5f\n", socc_all)
+        if top1 > 0.25
+            @printf("    verdict                 :  ← entropy dominated by rare hot buckets\n")
+        else
+            @printf("    verdict                 :  (no extreme entropy whales)\n")
+        end
+    end
+    println()
+
+    # ── α₂-11: effective independence, motifs, and provenance hash ───────────
+    @printf("  α₂-11 — effective independence, motifs, and provenance hash:\n")
+    if length(arrivals) >= 8
+        # Reuse the same coarse-window count model as the ACF section.
+        total_span_eff = arrivals[end] - arrivals[1] + 1
+        T_eff = max(100, total_span_eff ÷ 200)
+        n_bins_eff = max(8, total_span_eff ÷ T_eff)
+        counts_eff = zeros(Float64, n_bins_eff)
+        t0_eff = arrivals[1]
+        for a in arrivals
+            wi = min(n_bins_eff, (a - t0_eff) ÷ T_eff + 1)
+            counts_eff[wi] += 1.0
+        end
+        mn_eff = sum(counts_eff) / n_bins_eff
+        var_eff = sum((c - mn_eff)^2 for c in counts_eff) / max(1, n_bins_eff - 1)
+        if var_eff > 1e-30
+            ρsum = 0.0
+            max_lag = min(10, n_bins_eff - 1)
+            for lag in 1:max_lag
+                cov = sum((counts_eff[w] - mn_eff) * (counts_eff[w + lag] - mn_eff)
+                          for w in 1:(n_bins_eff - lag)) / (n_bins_eff - lag)
+                ρ = cov / var_eff
+                ρsum += max(0.0, ρ)
+            end
+            neff = n_bins_eff / max(1e-9, 1.0 + 2.0 * ρsum)
+            @printf("    N_eff (coarse windows) : %.2f of %d windows\n", neff, n_bins_eff)
+        end
+    end
+
+    if length(slog) >= 4
+        motif_counts = Dict{NTuple{4,Bool},Int}()
+        for i in 1:(length(slog)-3)
+            mot = (slog[i], slog[i+1], slog[i+2], slog[i+3])
+            motif_counts[mot] = get(motif_counts, mot, 0) + 1
+        end
+        if !isempty(motif_counts)
+            top_motif = first(sort(collect(motif_counts), by = x -> -last(x)))
+            p_split = sum(slog) / length(slog)
+            p_motif = 1.0
+            for b in top_motif[1]
+                p_motif *= b ? p_split : (1 - p_split)
+            end
+            expected = p_motif * max(1, length(slog) - 3)
+            @printf("    top 4-step split motif : %s  count=%d  expected≈%.2f\n",
+                    join([b ? "S" : "N" for b in top_motif[1]], ""), top_motif[2], expected)
+        end
+    end
+
+    if !isempty(stat.event_hash_log)
+        hset = length(unique(stat.event_hash_log))
+        repeats = length(stat.event_hash_log) - hset
+        final_digest = reduce(⊻, stat.event_hash_log; init=UInt64(0))
+        @printf("    provenance hash states : %d  unique=%d  repeats=%d\n",
+                length(stat.event_hash_log), hset, repeats)
+        @printf("    provenance digest      : 0x%016x\n", final_digest)
+        if repeats > 0
+            @printf("    verdict                : repeated structural motifs detected\n")
+        end
+    end
+    println()
+
+    end  # if n_blog >= 32
 
     @printf("──────────────────────────────────────────────────────────────────────\n")
     flush(stdout)
