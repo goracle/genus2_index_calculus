@@ -724,98 +724,106 @@ function print_phi_bias_report(stat::PhiBiasStat; p::Int = 0)
         end
 
         # ---- Spectral 1: Welch PSD of hit-indicator binary sequence -------------
-        # Bin arrivals into fixed-width windows → binary indicator series → DFT.
-        # Compare low-frequency vs high-frequency power to detect long-range
-        # organisation invisible to short-lag CIR.
-        #
-        # Parallelism: real windows and each shuffled-null realisation are
-        # independent.  We use @threads over both loops; each thread gets its
-        # own MersenneTwister so there is no RNG contention.
         @printf("    Welch PSD (hit-indicator series):\n")
         if length(arrivals) >= 8
             total_span = arrivals[end] - arrivals[1] + 1
-            # Use ~64 windows; each window covers total_span/64 steps.
             n_welch_win = max(4, min(64, length(arrivals) ÷ 8))
-            win_len     = max(8, total_span ÷ n_welch_win)
-            n_bins_half = win_len ÷ 2 + 1     # rfft output length for real input of win_len
 
-            # Precompute Hann window and FFTW plan once — amortised over all windows
-            # and all shuffled realisations.
+            # FIX: Cap the FFT window size to a power of 2 (max 4096 bins).
+            # Binning the raw steps prevents massive prime-sized FFT allocations
+            # that cause O(N^2) memory explosions and OOMs.
+            W_span      = max(8, total_span ÷ n_welch_win)
+            win_len     = min(4096, nextpow(2, W_span))
+            n_bins_half = win_len ÷ 2 + 1
+
             hann_w   = [0.5 * (1.0 - cos(2π * (i-1) / max(1, win_len-1))) for i in 1:win_len]
-            _tmp_fft = zeros(Float64, win_len)
-            fft_plan = plan_rfft(_tmp_fft)
 
-            # Inner PSD helper: Hann-window then rfft.  O(n log n).
-            # Caller owns ind_buf (length win_len) and tmp_buf (length win_len).
+            # FIX: Remove the shared fft_plan. FFTW plans aren't always safe for 
+            # concurrent execution on different arrays. Direct rfft is fast and lock-free.
             function _psd_window_fft(ind_buf::Vector{Float64},
                                      tmp_buf::Vector{Float64})::Vector{Float64}
+                length(ind_buf) == length(tmp_buf) || throw(ArgumentError("Buffer size mismatch in Welch PSD window"))
                 @inbounds @simd for i in eachindex(tmp_buf)
                     tmp_buf[i] = ind_buf[i] * hann_w[i]
                 end
-                F = fft_plan * tmp_buf
-                return abs2.(F)   # length n_bins_half
+                return abs2.(rfft(tmp_buf))
             end
 
+            n_wins_used = 0
             # --- Real PSD: parallel over Welch windows --------------------------
-            # Each thread gets its own ind/tmp buffers to avoid false sharing.
             psd_wins    = [zeros(Float64, n_bins_half) for _ in 1:n_welch_win]
             wins_valid  = zeros(Bool, n_welch_win)
             offset      = arrivals[1]
-
             Threads.@threads for wi in 0:(n_welch_win - 1)
-                t_start  = offset + wi * win_len
-                t_end    = t_start + win_len - 1
+                t_start  = offset + wi * W_span
+                t_end    = t_start + W_span - 1
                 ind      = zeros(Float64, win_len)
                 tmp      = zeros(Float64, win_len)
-                # Slice arrivals to only those inside this window — O(log N + hits_in_win)
+
                 lo = searchsortedfirst(arrivals, t_start)
                 hi = searchsortedlast(arrivals,  t_end)
                 for k in lo:hi
-                    idx = arrivals[k] - t_start + 1
-                    ind[idx] = 1.0
+                    idx = arrivals[k] - t_start
+                    b_idx = clamp(floor(Int, idx * win_len / W_span) + 1, 1, win_len)
+                    ind[b_idx] += 1.0
                 end
                 if (hi >= lo)
                     psd_wins[wi + 1]   = _psd_window_fft(ind, tmp)
                     wins_valid[wi + 1] = true
                 end
             end
-            psd_sum     = reduce(.+, psd_wins[wins_valid])
-            n_wins_used = sum(wins_valid)
+            # Explicitly count valid windows after the thread loop
+            n_wins_used = count(wins_valid)
+            psd_sum = zeros(Float64, n_bins_half)
 
+            if n_wins_used > 0
+                for wi in 1:n_welch_win
+                    if wins_valid[wi]
+                        psd_sum .+= psd_wins[wi]
+                    end
+                end
+                psd_sum ./= n_wins_used
+            end
+            
+            # Now, psd_sum is guaranteed to exist in this scope for the report
+            @printf("    Welch PSD done (%d windows). Peak power: %.4e\n", 
+                    n_wins_used, maximum(psd_sum))
             # --- Shuffled-null PSD: parallel over realisations ------------------
-            # One RNG + result slot per realisation — no threadid() indexing.
-            n_spec_shuf   = 20
-            shuf_rngs     = [MersenneTwister(rand(UInt64)) for _ in 1:n_spec_shuf]
+            n_spec_shuf    = 20
+            shuf_rngs      = [MersenneTwister(rand(UInt64)) for _ in 1:n_spec_shuf]
             psd_shuf_slots = [zeros(Float64, n_bins_half) for _ in 1:n_spec_shuf]
-            shuf_valid    = zeros(Bool, n_spec_shuf)
+            shuf_valid     = zeros(Bool, n_spec_shuf)
 
             Threads.@threads for si in 1:n_spec_shuf
-                rng       = shuf_rngs[si]
-                shuf_g    = copy(gaps)
+                rng = shuf_rngs[si]
+                shuf_g = copy(gaps)
                 for k in length(shuf_g):-1:2
                     j2 = rand(rng, 1:k)
                     shuf_g[k], shuf_g[j2] = shuf_g[j2], shuf_g[k]
                 end
-                null_arr2    = similar(arrivals)
+                null_arr2 = similar(arrivals)
                 null_arr2[1] = arrivals[1]
                 for k in 2:length(arrivals)
                     null_arr2[k] = null_arr2[k-1] + shuf_g[k-1]
                 end
                 sort!(null_arr2)
+
                 win_sum  = zeros(Float64, n_bins_half)
                 win_cnt  = 0
                 ind2 = zeros(Float64, win_len)
                 tmp2 = zeros(Float64, win_len)
+
                 for wi in 0:(n_welch_win - 1)
-                    t_start = offset + wi * win_len
-                    t_end   = t_start + win_len - 1
+                    t_start = offset + wi * W_span
+                    t_end   = t_start + W_span - 1
                     fill!(ind2, 0.0)
-                    # Slice null arrivals to this window — avoids full rescan
+
                     lo2 = searchsortedfirst(null_arr2, t_start)
                     hi2 = searchsortedlast(null_arr2,  t_end)
                     for k in lo2:hi2
-                        idx = null_arr2[k] - t_start + 1
-                        ind2[idx] = 1.0
+                        idx = null_arr2[k] - t_start
+                        b_idx = clamp(floor(Int, idx * win_len / W_span) + 1, 1, win_len)
+                        ind2[b_idx] += 1.0
                     end
                     if hi2 >= lo2
                         win_sum .+= _psd_window_fft(ind2, tmp2)
@@ -827,6 +835,8 @@ function print_phi_bias_report(stat::PhiBiasStat; p::Int = 0)
                     shuf_valid[si]     = true
                 end
             end
+
+
             psd_shuf_avg = any(shuf_valid) ?
                            reduce(.+, psd_shuf_slots[shuf_valid]) ./ max(1, sum(shuf_valid)) :
                            zeros(Float64, n_bins_half)
