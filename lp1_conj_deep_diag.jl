@@ -97,6 +97,7 @@ const DEEP_DIAG_BUCKET_BITS = 10          # 2^10 = 1024 coarse buckets for condi
 const DEEP_DIAG_N_BUCKETS   = 1 << DEEP_DIAG_BUCKET_BITS
 const DEEP_DIAG_MAX_ANCESTRY = 500_000    # cap on ancestry log entries per thread
 const DEEP_DIAG_COND_ENT_LAG = 4         # max lag for conditional collision entropy
+const DEEP_DIAG_MAX_OPCODE_LOG = 2_000_000  # cap on opcode log entries per thread (~2 MB)
 
 # ---------------------------------------------------------------------------
 #  ConjDeepStat — per-thread accumulator
@@ -119,6 +120,32 @@ mutable struct ConjDeepStat
     # to simulate incremental table saturation.
     is_first_closure::Vector{Bool}
     n_emissions     ::Int
+
+    # D8 — closure-depth distribution.
+    # Shadow side-table: lp_key → store_step.  Populated at miss (store), consumed
+    # at close.  Per-thread so no locking is needed.  Int32 store_step is fine
+    # since raw_steps fits in 32 bits for any realistic run length.
+    d8_shadow       ::Dict{UInt128, Int}   # lp_key → raw_steps at store time
+    # Parallel vectors accumulated at close time:
+    d8_depths       ::Vector{Int}          # closure depth = close_step − store_step
+    d8_close_bkt    ::Vector{UInt16}       # coarse key bucket at close (DEEP_DIAG_BUCKET_BITS bits)
+    d8_close_abkt   ::Vector{UInt16}       # a_bucket at close (clamped to UInt16)
+    # Depth of the previous closure, for autocorrelation.
+    d8_prev_depth   ::Int                  # -1 if no previous closure yet
+
+    # D9 — step-opcode conditional entropy H(opcode | recent LP1-conj).
+    # opcode_log: one UInt8 per VALID phi step recording the step type:
+    #   0 = 0-LP (full relation)
+    #   1 = 1-LP affine (store or close)
+    #   2 = 1-LP conj (store or close)
+    #   3 = 2-LP affine
+    #   4 = 2-LP conj
+    #   5 = 3-LP / skip
+    # Capped at DEEP_DIAG_MAX_OPCODE_LOG entries to bound memory.
+    # opcode_is_lp1c: parallel Bool — true iff this step was a 1-LP-conj EMISSION
+    # (i.e. a relation was produced).  Used to find "recent LP1-conj" windows.
+    opcode_log      ::Vector{UInt8}
+    opcode_is_lp1c  ::Vector{Bool}
 end
 
 function ConjDeepStat()
@@ -128,6 +155,10 @@ function ConjDeepStat()
         UInt16[], UInt8[], UInt32[],
         Bool[],
         0,
+        Dict{UInt128,Int}(),
+        Int[], UInt16[], UInt16[],
+        -1,
+        UInt8[], Bool[],
     )
 end
 
@@ -144,8 +175,36 @@ function merge_conj_deep_stats(stats::Vector{ConjDeepStat})::ConjDeepStat
         append!(merged.ancestry_log_keyhash, s.ancestry_log_keyhash)
         append!(merged.is_first_closure,     s.is_first_closure)
         merged.n_emissions += s.n_emissions
+        # D8: merge parallel depth/bucket vectors; shadow table is not merged
+        # (per-thread keys are disjoint in expectation; any residual open entries
+        # are simply unclosed and would distort the depth distribution).
+        append!(merged.d8_depths,     s.d8_depths)
+        append!(merged.d8_close_bkt,  s.d8_close_bkt)
+        append!(merged.d8_close_abkt, s.d8_close_abkt)
+        # D9: merge opcode log (cap to DEEP_DIAG_MAX_OPCODE_LOG total)
+        n_remaining = DEEP_DIAG_MAX_OPCODE_LOG - length(merged.opcode_log)
+        if n_remaining > 0
+            n_take = min(n_remaining, length(s.opcode_log))
+            append!(merged.opcode_log,     s.opcode_log[1:n_take])
+            append!(merged.opcode_is_lp1c, s.opcode_is_lp1c[1:n_take])
+        end
     end
     return merged
+end
+
+# ---------------------------------------------------------------------------
+#  record_conj_deep_miss! — call from handle_1lp_conj! at every STORE (miss).
+#
+#  Records raw_step into the per-thread shadow table so that when the key is
+#  later closed, we can compute closure_depth = close_step - store_step.
+#  Does nothing if the key is already in the shadow table (duplicate store from
+#  a race or useless close that re-inserts; we keep the first store_step).
+# ---------------------------------------------------------------------------
+@inline function record_conj_deep_miss!(stat    ::ConjDeepStat,
+                                         lp_key  ::UInt128,
+                                         raw_step::Int)
+    haskey(stat.d8_shadow, lp_key) || (stat.d8_shadow[lp_key] = raw_step)
+    return nothing
 end
 
 # ---------------------------------------------------------------------------
@@ -185,12 +244,51 @@ end
     # D7 closure flag
     push!(stat.is_first_closure, is_first)
 
+    # D8 closure depth: consume shadow table entry if present.
+    store_step = get(stat.d8_shadow, lp_key, -1)
+    if store_step >= 0
+        delete!(stat.d8_shadow, lp_key)
+        depth = raw_step - store_step
+        if depth >= 0
+            push!(stat.d8_depths,     depth)
+            push!(stat.d8_close_bkt,  UInt16(bkt))
+            push!(stat.d8_close_abkt, UInt16(clamp(a_bucket, 0, 65535)))
+        end
+    end
+
     return nothing
 end
 
 # ---------------------------------------------------------------------------
-#  Internal hash helpers
+#  record_conj_deep_opcode! — call from the main walk loop on EVERY valid phi
+#  step, to build the opcode log for D9 conditional entropy analysis.
+#
+#  opcode values:
+#    OPCODE_0LP      = 0x00   full relation (0-LP)
+#    OPCODE_1LP_AFF  = 0x01   1-LP affine (store or close)
+#    OPCODE_1LP_CONJ = 0x02   1-LP conj (store or close — any handle_1lp_conj! call)
+#    OPCODE_2LP_AFF  = 0x03   2-LP affine
+#    OPCODE_2LP_CONJ = 0x04   2-LP conj
+#    OPCODE_SKIP     = 0x05   3-LP or disabled branch (skip)
+#
+#  is_emission: true iff this specific step produced an LP1-conj relation.
+#  Only meaningful when opcode == OPCODE_1LP_CONJ.
 # ---------------------------------------------------------------------------
+const OPCODE_0LP      = 0x00
+const OPCODE_1LP_AFF  = 0x01
+const OPCODE_1LP_CONJ = 0x02
+const OPCODE_2LP_AFF  = 0x03
+const OPCODE_2LP_CONJ = 0x04
+const OPCODE_SKIP     = 0x05
+
+@inline function record_conj_deep_opcode!(stat       ::ConjDeepStat,
+                                           opcode     ::UInt8,
+                                           is_emission::Bool)
+    length(stat.opcode_log) >= DEEP_DIAG_MAX_OPCODE_LOG && return nothing
+    push!(stat.opcode_log,     opcode)
+    push!(stat.opcode_is_lp1c, is_emission)
+    return nothing
+end
 @inline function _deep_fp64(key::UInt128)::UInt64
     lo = UInt64(key & 0xffffffffffffffff)
     hi = UInt64(key >> 64)
@@ -236,7 +334,16 @@ function _hill_exponent(sorted_desc::Vector{Int}; k::Int = 50)::Float64
 end
 
 # ---------------------------------------------------------------------------
-#  print_conj_deep_report — main entry point.
+#  _top_share — fraction of total mass in top frac×n items (sorted desc).
+# ---------------------------------------------------------------------------
+function _top_share(counts::Vector{Int}, frac::Float64)::Float64
+    isempty(counts) && return 0.0
+    total = sum(counts)
+    total == 0 && return 0.0
+    sorted = sort(counts, rev=true)
+    k = max(1, round(Int, frac * length(sorted)))
+    sum(sorted[1:k]) / total
+end
 #
 #  Arguments:
 #    phi_stat  — merged PhiBiasStat (for arrivals, keys, bucket log)
@@ -793,6 +900,541 @@ function print_conj_deep_report(phi_stat ::PhiBiasStat,
             @printf("    Conj snapshot size             : %d entries\n", snap_sz)
             @printf("    Closures / snapshot entry      : %.4f\n",
                     snap_sz > 0 ? n_first / snap_sz : 0.0)
+        end
+    end
+
+    # ──────────────────────────────────────────────────────────────────────
+    #  D8 — Closure-depth distribution
+    # ──────────────────────────────────────────────────────────────────────
+    @printf("\n  D8 — Closure-depth distribution\n")
+    @printf("  ─────────────────────────────────────────────────────────────────\n")
+    let
+        depths = deep_stat.d8_depths
+        nd = length(depths)
+
+        if nd < 2
+            @printf("    (need ≥ 2 closures with depth data; got %d — check miss-path wiring)\n", nd)
+            @goto d8_done
+        end
+
+        # ── Basic moments ──────────────────────────────────────────────────
+        d_min  = minimum(depths)
+        d_max  = maximum(depths)
+        d_mean = sum(depths) / nd
+        d_var  = nd < 2 ? 0.0 : sum((x - d_mean)^2 for x in depths) / (nd - 1)
+        d_std  = sqrt(d_var)
+        d_cv   = d_mean > 0 ? d_std / d_mean : NaN
+        d_sorted = sort(depths)
+        p10 = d_sorted[max(1, round(Int, 0.10 * nd))]
+        p50 = d_sorted[max(1, round(Int, 0.50 * nd))]
+        p90 = d_sorted[max(1, round(Int, 0.90 * nd))]
+        p99 = d_sorted[max(1, round(Int, 0.99 * nd))]
+
+        @printf("    Closures with depth data       : %d\n", nd)
+        @printf("    Depth min/p10/p50/p90/p99/max  : %d / %d / %d / %d / %d / %d\n",
+                d_min, p10, p50, p90, p99, d_max)
+        @printf("    Mean depth / CV                : %.1f / %.4f\n", d_mean, d_cv)
+        if d_cv > 1.5
+            @printf("    ↑ CV > 1.5: HIGHLY HEAVY-TAILED depth distribution\n")
+            @printf("      → consistent with metastable basin hopping: most closures fast,\n")
+            @printf("        rare closures survive extremely long.\n")
+        elseif d_cv > 1.0
+            @printf("    ↑ CV > 1.0: moderately heavy tail (over-dispersed)\n")
+        else
+            @printf("    ↑ CV ≤ 1.0: depth distribution near-geometric (memoryless)\n")
+        end
+
+        # ── Depth histogram with log-spaced bins ───────────────────────────
+        # Bins: [0,1), [1,5), [5,20), [20,50), [50,150), [150,400), [400,∞)
+        bins      = [0, 1, 5, 20, 50, 150, 400, typemax(Int)]
+        bin_names = ["[0,1)", "[1,5)", "[5,20)", "[20,50)", "[50,150)", "[150,400)", "[400,∞)"]
+        bin_cnts  = zeros(Int, length(bins) - 1)
+        for d in depths
+            for bi in 1:(length(bins)-1)
+                if d >= bins[bi] && d < bins[bi+1]
+                    bin_cnts[bi] += 1; break
+                end
+            end
+        end
+        @printf("    Closure-depth histogram:\n")
+        @printf("      %12s  %7s  %7s\n", "depth range", "count", "frac%")
+        for bi in 1:length(bin_cnts)
+            @printf("      %12s  %7d  %7.2f%%\n",
+                    bin_names[bi], bin_cnts[bi], 100.0 * bin_cnts[bi] / nd)
+        end
+
+        # ── Hazard function h(d) ───────────────────────────────────────────
+        # h(d) = P(close at step d | not closed before d)
+        # Use same log-spaced bins; survivors = nd - cumulative closed before bin.
+        @printf("    Hazard h(band) = P(close in band | survived to band start):\n")
+        @printf("      %12s  %7s  %7s  %7s\n", "band", "closed", "survived", "h(band)")
+        surviving = nd
+        for bi in 1:length(bin_cnts)
+            closed_in_band = bin_cnts[bi]
+            h = surviving > 0 ? closed_in_band / surviving : 0.0
+            @printf("      %12s  %7d  %7d  %7.4f%s\n",
+                    bin_names[bi], closed_in_band, surviving,
+                    h, h > 0.5 ? "  ← dominant" : "")
+            surviving -= closed_in_band
+        end
+
+        # ── Conditional success P(close in band d | not before) ───────────
+        # Same as hazard above but expressed as cumulative survival complement.
+        # Already printed implicitly via h(d); skip duplication.
+
+        # ── Depth autocorrelation ACF(1) ──────────────────────────────────
+        if nd >= 8
+            μd  = d_mean
+            cov_d = sum((depths[i] - μd) * (depths[i+1] - μd)
+                        for i in 1:(nd-1)) / (nd - 1)
+            var_d = nd > 1 ? sum((x - μd)^2 for x in depths) / nd : 1.0
+            acf1_d = var_d > 0 ? cov_d / var_d : 0.0
+            @printf("    Depth ACF(1)                   : %.4f  %s\n", acf1_d,
+                    acf1_d > 0.15  ? "← POSITIVE: consecutive depths correlated (basin memory)" :
+                    acf1_d < -0.15 ? "← NEGATIVE: depth alternates (repulsion between long closures)" :
+                    "(≈ uncorrelated)")
+        end
+
+        # ── Depth-band transition matrix (3 coarse bands) ─────────────────
+        # Bands: short=[0,20), medium=[20,150), long=[150,∞)
+        band_of(d) = d < 20 ? 1 : d < 150 ? 2 : 3
+        band_names = ["short(<20)", "med(20-150)", "long(≥150)"]
+        trans_bd = zeros(Int, 3, 3)
+        for i in 1:(nd-1)
+            bf = band_of(depths[i])
+            bt = band_of(depths[i+1])
+            trans_bd[bf, bt] += 1
+        end
+        @printf("    Depth-band transition matrix (rows=from, cols=to):\n")
+        @printf("      %12s  %12s  %12s  %12s\n", "from\\to", band_names[1], band_names[2], band_names[3])
+        for r in 1:3
+            row_sum = sum(trans_bd[r, :])
+            if row_sum > 0
+                @printf("      %12s  %12.3f  %12.3f  %12.3f\n",
+                        band_names[r],
+                        trans_bd[r,1]/row_sum, trans_bd[r,2]/row_sum, trans_bd[r,3]/row_sum)
+            end
+        end
+
+        # ── Depth-conditioned emission entropy H(key | depth band) ────────
+        # For each depth band, compute Shannon entropy of coarse key bucket.
+        @printf("    Depth-conditioned key entropy H(bucket | depth band):\n")
+        @printf("      %12s  %7s  %7s  %8s\n", "band", "n", "H(bits)", "H/H_max")
+        close_bkt = deep_stat.d8_close_bkt
+        for (bi, bname) in enumerate(band_names)
+            band_bkts = Int[]
+            for ci in 1:nd
+                band_of(depths[ci]) == bi && push!(band_bkts, Int(close_bkt[ci]))
+            end
+            nb_band = length(band_bkts)
+            nb_band < 2 && continue
+            cnt_b = Dict{Int,Int}()
+            for b in band_bkts; cnt_b[b] = get(cnt_b, b, 0) + 1; end
+            H_band = -sum((c/nb_band)*log2(c/nb_band) for c in values(cnt_b))
+            H_max  = log2(Float64(DEEP_DIAG_N_BUCKETS))
+            @printf("      %12s  %7d  %7.4f  %8.4f\n", bname, nb_band, H_band, H_max > 0 ? H_band/H_max : 0.0)
+        end
+
+        # ── Depth-conditioned α₂ (collision entropy) ──────────────────────
+        @printf("    Depth-conditioned collision entropy α₂(bucket | depth band):\n")
+        @printf("      %12s  %7s  %10s  %s\n", "band", "n", "α₂ (bits)", "interpretation")
+        for (bi, bname) in enumerate(band_names)
+            band_bkts = Int[]
+            for ci in 1:nd
+                band_of(depths[ci]) == bi && push!(band_bkts, Int(close_bkt[ci]))
+            end
+            nb_band = length(band_bkts)
+            nb_band < 2 && continue
+            cnt_b = Dict{Int,Int}()
+            for b in band_bkts; cnt_b[b] = get(cnt_b, b, 0) + 1; end
+            p2sum = sum((c/nb_band)^2 for c in values(cnt_b))
+            a2_band = p2sum > 0 ? -log2(p2sum) : NaN
+            interp = isnan(a2_band) ? "—" :
+                     a2_band < 4.0  ? "← VERY LOW: tiny support (high concentration)" :
+                     a2_band < 7.0  ? "← low-moderate" :
+                     a2_band < 9.0  ? "← near-uniform in active set" :
+                     "← near-uniform over full bucket space"
+            @printf("      %12s  %7d  %10.4f  %s\n", bname, nb_band, a2_band, interp)
+        end
+
+        # ── Lyapunov proxy: depth variance conditioned on a_bucket ────────
+        # Partition closures into 8 coarse a-buckets; report depth std per band.
+        # High variance in a specific a-bucket → that a-value drives long-lived keys.
+        close_abkt = deep_stat.d8_close_abkt
+        N_ABKT_COARSE = 8
+        abkt_depths = [Int[] for _ in 1:N_ABKT_COARSE]
+        if !isempty(close_abkt)
+            max_abkt = maximum(Int.(close_abkt))
+            for ci in 1:nd
+                ab = Int(close_abkt[ci])
+                coarse = clamp(1 + (ab * N_ABKT_COARSE) ÷ (max_abkt + 1), 1, N_ABKT_COARSE)
+                push!(abkt_depths[coarse], depths[ci])
+            end
+            @printf("    Lyapunov proxy — depth std dev by a-bucket band (8 coarse bands):\n")
+            @printf("      %8s  %7s  %9s  %9s\n", "a-band", "n", "mean_d", "std_d")
+            for ab in 1:N_ABKT_COARSE
+                v = abkt_depths[ab]
+                length(v) < 2 && continue
+                μ_ab = sum(v) / length(v)
+                σ_ab = sqrt(sum((x - μ_ab)^2 for x in v) / (length(v)-1))
+                @printf("      %8d  %7d  %9.1f  %9.1f\n", ab, length(v), μ_ab, σ_ab)
+            end
+        end
+
+        @label d8_done
+    end
+
+    # ──────────────────────────────────────────────────────────────────────
+    #  D9 — H(step opcode | recent LP1-conj)
+    #
+    #  For each step in the opcode log we ask: given that this step follows
+    #  within τ* steps of an LP1-conj emission, does the distribution of step
+    #  opcodes change?  H(opcode | in_window) vs H(opcode | baseline) reveals
+    #  whether the walk enters dynamically constrained regions post-emission.
+    #
+    #  We use τ* = 128 steps (from hazard decay in D8) and τ_long = 512 as a
+    #  far-field baseline check.
+    # ──────────────────────────────────────────────────────────────────────
+    @printf("\n  D9 — H(step opcode | recent LP1-conj)\n")
+    @printf("  ─────────────────────────────────────────────────────────────────\n")
+    let
+        n_op = length(deep_stat.opcode_log)
+        if n_op < 20
+            @printf("    (opcode log too short: %d steps — check record_conj_deep_opcode! wiring)\n", n_op)
+        else
+            opcodes   = deep_stat.opcode_log
+            is_lp1c   = deep_stat.opcode_is_lp1c
+            opcode_names = ["0-LP", "1LP-aff", "1LP-conj", "2LP-aff", "2LP-conj", "skip"]
+            N_OPCODES = 6
+
+            # Build in_window flag: step i is "in window" if there exists j < i
+            # with is_lp1c[j] == true and (i - j) ≤ τ_win.
+            for (τ_win_label, τ_win) in (("τ*=128", 128), ("τ_long=512", 512))
+                # Scan forward: maintain last_lp1c_idx.
+                cnt_window   = zeros(Int, N_OPCODES)
+                cnt_baseline = zeros(Int, N_OPCODES)
+                last_lp1c    = -typemax(Int)
+                for i in 1:n_op
+                    is_lp1c[i] && (last_lp1c = i)
+                    in_win = (i - last_lp1c) <= τ_win && last_lp1c > 0
+                    opc = Int(opcodes[i]) + 1
+                    1 <= opc <= N_OPCODES || continue
+                    if in_win
+                        cnt_window[opc] += 1
+                    else
+                        cnt_baseline[opc] += 1
+                    end
+                end
+
+                n_win  = sum(cnt_window)
+                n_base = sum(cnt_baseline)
+
+                _ent(cnt) = begin
+                    n = sum(cnt)
+                    n == 0 && return 0.0
+                    -sum((c / n) * log2(max(1e-300, c / n)) for c in cnt if c > 0)
+                end
+
+                H_win  = _ent(cnt_window)
+                H_base = _ent(cnt_baseline)
+
+                @printf("    Window %s  (n_win=%d  n_base=%d):\n", τ_win_label, n_win, n_base)
+                @printf("      H(opcode | in_window)  : %.4f bits\n", H_win)
+                @printf("      H(opcode | baseline)   : %.4f bits\n", H_base)
+                Δ = H_base - H_win
+                @printf("      ΔH = H_base − H_win    : %+.4f bits  %s\n", Δ,
+                        Δ > 0.3  ? "← ENTROPY COLLAPSE: walk constrained post-emission" :
+                        Δ > 0.1  ? "← moderate constraint post-emission" :
+                        Δ < -0.1 ? "← entropy INCREASE post-emission (diversification)" :
+                        "(≈ no change)")
+                @printf("      %12s  %8s  %8s  %8s\n", "opcode", "P_win", "P_base", "lift")
+                for k in 1:N_OPCODES
+                    p_w = n_win  > 0 ? cnt_window[k]   / n_win  : 0.0
+                    p_b = n_base > 0 ? cnt_baseline[k] / n_base : 0.0
+                    lift = p_b > 1e-12 ? p_w / p_b : (p_w > 0 ? Inf : 1.0)
+                    @printf("      %12s  %8.5f  %8.5f  %8.3f  %s\n",
+                            opcode_names[k], p_w, p_b, lift,
+                            lift > 2.0 ? "← OVER-REPRESENTED in window" :
+                            lift < 0.5 ? "← SUPPRESSED in window" : "")
+                end
+                println()
+            end
+        end
+    end
+
+    # ──────────────────────────────────────────────────────────────────────
+    #  D10 — Transition graph compression
+    #
+    #  Operates on the existing n_trans matrix (D2) to estimate:
+    #    1. Spectral gap of the row-stochastic emission transition matrix
+    #       via power iteration (λ₁=1 − λ₂ where λ₂ is the second eigenvalue).
+    #       Small gap → slow mixing; large gap → fast mixing.
+    #    2. SCC persistence: identify strongly-connected components of the
+    #       directed bucket graph (edges with weight ≥ threshold) and report
+    #       their sizes and self-transition rates.
+    #    3. Return probability to the top-5 most-visited buckets.
+    # ──────────────────────────────────────────────────────────────────────
+    @printf("\n  D10 — Transition graph compression\n")
+    @printf("  ─────────────────────────────────────────────────────────────────\n")
+    let
+        nb  = DEEP_DIAG_N_BUCKETS
+        T   = deep_stat.n_trans
+        row_totals = [Int(sum(T[i, :])) for i in 1:nb]
+        grand_total = sum(row_totals)
+
+        if grand_total < 8
+            @printf("    (insufficient transition data: %d transitions)\n", grand_total)
+            @goto d10_done
+        end
+
+        # Build row-stochastic matrix P (only for active rows to save work).
+        # Active = rows with row_total ≥ 1.
+        active_rows = [i for i in 1:nb if row_totals[i] > 0]
+        n_active = length(active_rows)
+
+        # ── Spectral gap via power iteration on P ────────────────────────
+        # We only iterate on the active subspace (n_active × n_active).
+        # Start from a non-stationary vector, run ~50 iterations, compare
+        # convergence to estimate gap.  This is a rough heuristic only.
+        if n_active >= 2
+            # Map active rows to 1:n_active
+            row_idx = Dict(r => i for (i, r) in enumerate(active_rows))
+            # Stationary vector estimate: proportional to row_totals.
+            pi_vec = [Float64(row_totals[active_rows[i]]) for i in 1:n_active]
+            pi_vec ./= sum(pi_vec)
+
+            # Random starting vector orthogonal to pi_vec (approximately).
+            # Use alternating ±1 signed as a simple non-pi vector.
+            v = Float64[isodd(i) ? 1.0 : -1.0 for i in 1:n_active]
+            v .-= sum(v .* pi_vec) .* pi_vec   # project out pi component
+            v_norm = sqrt(sum(v.^2))
+            v_norm < 1e-12 && (v = randn(n_active); v .-= sum(v .* pi_vec) .* pi_vec; v_norm = sqrt(sum(v.^2)))
+            v ./= max(1e-30, v_norm)
+
+            # Apply P: w[j] = Σᵢ v[i] × P[active_rows[i], active_rows[j]]
+            λ2_est = NaN
+            for iter in 1:60
+                w = zeros(Float64, n_active)
+                for (li, r) in enumerate(active_rows)
+                    rt = row_totals[r]
+                    rt == 0 && continue
+                    vi = v[li]
+                    abs(vi) < 1e-15 && continue
+                    for (lj, c) in enumerate(active_rows)
+                        t_rc = Int(T[r, c])
+                        t_rc == 0 && continue
+                        w[lj] += vi * (t_rc / rt)
+                    end
+                end
+                # Project out pi and renormalise.
+                w .-= sum(w .* pi_vec) .* pi_vec
+                w_norm = sqrt(sum(w.^2))
+                if w_norm < 1e-15
+                    λ2_est = 0.0; break
+                end
+                λ2_est = w_norm   # |Pv| / |v| ≈ |λ₂|
+                v = w ./ w_norm
+            end
+
+            if !isnan(λ2_est)
+                spectral_gap = 1.0 - λ2_est
+                @printf("    Active buckets (row_total ≥ 1)  : %d / %d\n", n_active, nb)
+                @printf("    |λ₂| estimate (power iter, 60)  : %.6f\n", λ2_est)
+                @printf("    Spectral gap  1 − |λ₂|          : %.6f  %s\n", spectral_gap,
+                        spectral_gap > 0.5  ? "← FAST mixing: emission sequence mixes quickly" :
+                        spectral_gap > 0.1  ? "← moderate mixing" :
+                        spectral_gap > 0.01 ? "← SLOW mixing: persistent metastable clusters" :
+                        "← NEAR-ZERO GAP: extremely slow mixing or disconnected graph")
+            end
+        end
+
+        # ── SCC detection (Kosaraju on the active bucket graph) ──────────
+        # Threshold: include edge (i→j) if T[i,j] / row_total[i] ≥ 1/n_active.
+        # This keeps only edges that carry at least 1/(n_active) of traffic.
+        edge_thresh = n_active > 0 ? 1.0 / n_active : 0.0
+        # Forward DFS pass
+        visited  = falses(nb)
+        finish_order = Int[]
+        sizehint!(finish_order, n_active)
+        function dfs_forward!(u)
+            visited[u] = true
+            rt = row_totals[u]
+            if rt > 0
+                for c in active_rows
+                    !visited[c] && Int(T[u, c]) / rt >= edge_thresh && dfs_forward!(c)
+                end
+            end
+            push!(finish_order, u)
+        end
+        for r in active_rows; !visited[r] && dfs_forward!(r); end
+
+        # Reverse DFS pass: follow transpose edges in reverse finish order.
+        in_scc    = zeros(Int, nb)   # scc_id for each node (0 = unassigned)
+        scc_id    = 0
+        visited2  = falses(nb)
+        function dfs_reverse!(u, sid)
+            visited2[u] = true
+            in_scc[u] = sid
+            for r2 in active_rows
+                rt2 = row_totals[r2]
+                !visited2[r2] && rt2 > 0 && Int(T[r2, u]) / rt2 >= edge_thresh &&
+                    dfs_reverse!(r2, sid)
+            end
+        end
+        for u in reverse(finish_order)
+            if !visited2[u] && row_totals[u] > 0
+                scc_id += 1
+                dfs_reverse!(u, scc_id)
+            end
+        end
+
+        # Summarize SCCs.
+        scc_sizes = Dict{Int, Int}()
+        for r in active_rows
+            sid = in_scc[r]
+            sid == 0 && continue
+            scc_sizes[sid] = get(scc_sizes, sid, 0) + 1
+        end
+        sorted_sccs = sort(collect(values(scc_sizes)), rev=true)
+        n_sccs = length(sorted_sccs)
+        large_sccs = count(x -> x > 1, sorted_sccs)
+        singleton_sccs = count(x -> x == 1, sorted_sccs)
+
+        @printf("    SCCs (edge_thresh=1/n_active)    : %d total  (%d large, %d singleton)\n",
+                n_sccs, large_sccs, singleton_sccs)
+        if !isempty(sorted_sccs)
+            @printf("    Top-5 SCC sizes                 :")
+            for sz in sorted_sccs[1:min(5, end)]
+                @printf(" %d", sz)
+            end
+            @printf("\n")
+            if sorted_sccs[1] > n_active ÷ 2
+                @printf("    ↑ Giant SCC covers >50%% of active buckets: well-connected emission graph\n")
+            elseif large_sccs <= 3 && singleton_sccs > n_active * 0.7
+                @printf("    ↑ Mostly singletons: fragmented emission graph — distinct dynamical channels\n")
+            end
+        end
+
+        # ── Return probabilities to top-5 most-visited buckets ───────────
+        top5_by_traffic = sort(active_rows, by=r -> -row_totals[r])[1:min(5, end)]
+        @printf("    Return probability to top-5 most-visited buckets:\n")
+        @printf("      %6s  %8s  %8s  %8s\n", "bucket", "traffic", "p_self", "p_return(2)")
+        for r in top5_by_traffic
+            rt = row_totals[r]
+            rt == 0 && continue
+            p_self = Float64(Int(T[r, r])) / rt
+
+            # p_return in 2 steps: Σⱼ P[r,j] × P[j,r]
+            p_ret2 = 0.0
+            for c in active_rows
+                p_rc = Float64(Int(T[r, c])) / rt
+                p_rc < 1e-12 && continue
+                rtc = row_totals[c]
+                rtc == 0 && continue
+                p_cr = Float64(Int(T[c, r])) / rtc
+                p_ret2 += p_rc * p_cr
+            end
+            @printf("      %6d  %8d  %8.5f  %8.5f  %s\n", r - 1, rt, p_self, p_ret2,
+                    p_self > 0.3 ? "← STICKY" : p_self > 0.1 ? "← moderate self-loop" : "")
+        end
+
+        @label d10_done
+    end
+
+    # ──────────────────────────────────────────────────────────────────────
+    #  D11 — Branch-conditioned α₂
+    #
+    #  Uses deep_stat.opcode_log and phi_stat.lp1_conj_key_blog together to
+    #  compute per-opcode collision entropy α₂.  The key_blog is the full
+    #  LP1-conj partial stream (every store and close), recorded by
+    #  record_lp1_conj_partial! in handle_1lp_conj!.  The opcode log records
+    #  a superset of steps; we extract only the 1LP-conj steps (opcode == 2).
+    #
+    #  Additionally, using the opcode_log, we compute:
+    #    • per-opcode step fraction (traffic share),
+    #    • per-opcode 1LP-conj emission lift (emissions relative to traffic),
+    #    • α₂ on 1LP-conj partials: first half vs second half of key_blog
+    #      (stationarity check, equivalent to D8's depth-conditioned α₂).
+    # ──────────────────────────────────────────────────────────────────────
+    @printf("\n  D11 — Branch-conditioned α₂ and step-opcode traffic analysis\n")
+    @printf("  ─────────────────────────────────────────────────────────────────\n")
+    let
+        n_op = length(deep_stat.opcode_log)
+        blog = phi_stat.lp1_conj_key_blog   # UInt16 bucket per LP1-conj partial
+        n_blog = length(blog)
+
+        opcode_names = ["0-LP", "1LP-aff", "1LP-conj", "2LP-aff", "2LP-conj", "skip"]
+        N_OPCODES = 6
+
+        if n_op < 10
+            @printf("    (opcode log too short: %d steps)\n", n_op)
+        else
+            # Per-opcode step counts.
+            opc_count = zeros(Int, N_OPCODES)
+            opc_emit  = zeros(Int, N_OPCODES)   # LP1-conj emissions per opcode
+            for i in 1:n_op
+                k = Int(deep_stat.opcode_log[i]) + 1
+                1 <= k <= N_OPCODES && (opc_count[k] += 1)
+                deep_stat.opcode_is_lp1c[i] && k == 3 && (opc_emit[3] += 1)
+            end
+            total_steps = sum(opc_count)
+            total_emit  = sum(opc_emit)
+
+            @printf("    Step-opcode traffic distribution (n=%d valid phi steps):\n", total_steps)
+            @printf("      %12s  %8s  %8s  %8s\n", "opcode", "count", "share%", "emit_lift")
+            for k in 1:N_OPCODES
+                share = total_steps > 0 ? opc_count[k] / total_steps : 0.0
+                # emit_lift: fraction of LP1-conj emissions originating from this opcode
+                # relative to traffic share.  Only meaningful for k==3 (1LP-conj).
+                emit_frac = total_emit > 0 ? opc_emit[k] / total_emit : 0.0
+                lift = share > 1e-12 ? emit_frac / share : (emit_frac > 0 ? Inf : 0.0)
+                @printf("      %12s  %8d  %8.3f%%  %8.3f  %s\n",
+                        opcode_names[k], opc_count[k], 100.0 * share, lift,
+                        k == 3 && lift > 0 ? "(by definition)" : "")
+            end
+            println()
+        end
+
+        # α₂ per half of key_blog (stationarity of LP1-conj key geometry).
+        if n_blog >= 8
+            half = n_blog ÷ 2
+            function _alpha2_blog(slice::AbstractVector{UInt16})
+                n = length(slice)
+                n == 0 && return NaN
+                cnt = Dict{UInt16, Int}()
+                for b in slice; cnt[b] = get(cnt, b, 0) + 1; end
+                p2 = sum((c / n)^2 for c in values(cnt))
+                p2 > 0 ? -log2(p2) : NaN
+            end
+            a2_first  = _alpha2_blog(blog[1:half])
+            a2_second = _alpha2_blog(blog[half+1:end])
+            a2_all    = _alpha2_blog(blog)
+            Δa2 = a2_second - a2_first
+
+            @printf("    LP1-conj key_blog α₂ stationarity (n=%d partials):\n", n_blog)
+            @printf("      α₂ (full)        : %.4f bits\n", a2_all)
+            @printf("      α₂ (first half)  : %.4f bits\n", a2_first)
+            @printf("      α₂ (second half) : %.4f bits\n", a2_second)
+            @printf("      Δα₂ (2nd − 1st)  : %+.4f bits  %s\n", Δa2,
+                    abs(Δa2) > 1.0 ? "← NON-STATIONARY: key geometry changing over run" :
+                    abs(Δa2) > 0.3 ? "← moderate drift" :
+                    "(≈ stationary)")
+            println()
+
+            # Per-quartile α₂ to catch gradual drift.
+            if n_blog >= 16
+                q = n_blog ÷ 4
+                @printf("    Per-quartile α₂:\n")
+                @printf("      %6s  %8s  %8s\n", "qrt", "n", "α₂")
+                for qi in 1:4
+                    lo = (qi - 1) * q + 1
+                    hi = qi == 4 ? n_blog : qi * q
+                    a2q = _alpha2_blog(blog[lo:hi])
+                    @printf("      %6d  %8d  %8.4f\n", qi, hi - lo + 1, a2q)
+                end
+            end
+        else
+            @printf("    (key_blog too short for α₂ stationarity: %d partials)\n", n_blog)
         end
     end
 

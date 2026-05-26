@@ -358,6 +358,11 @@ end
     val = _conj_make_val(V, UInt16(i0), UInt64(neg_al), UInt64(neg_be))
     prev = conj_insert_or_pop!(shared_lp1_conj, si, lp_key, val)
 
+    if prev === nothing
+        # Miss: key was freshly stored.  Record store-step for D8 closure-depth.
+        record_conj_deep_miss!(deep_stat, lp_key, s.raw_steps)
+    end
+
     if prev !== nothing
         # --- Close against stored entry ---
         v        = prev
@@ -889,12 +894,16 @@ function phase2_worker(G               ::Div2,
                 s.hits_lp1_conj += 1
                 let _nb_a2 = length(phi_bias_stat.split_hist)
                     _a_bucket = clamp(1 + (Int(a) * _nb_a2) ÷ p, 1, _nb_a2)
+                    n_emit_before = deep_stat.n_emissions
                     cur_pt = handle_1lp_conj!(lp_key32, i0, neg_al, neg_be, ell,
                                                fb, nF_cur, G, T,
                                                alpha_vec, beta_vec, rel_rows, rel_counter,
                                                ort, s, shared_lp1_conj, rank_growth,
                                                combined_scratch, P0, phi_bias_stat, next_anchor_ref,
                                                _a_bucket, deep_stat)
+                    # D9: record 1LP-conj opcode; is_emission = true iff handle produced an emission
+                    record_conj_deep_opcode!(deep_stat, OPCODE_1LP_CONJ,
+                                             deep_stat.n_emissions > n_emit_before)
                 end
             elseif enable_lp2_conj
                 cur_pt = handle_2lp_conj!(P0, RS_mumford::NTuple{4,Int}, neg_al, neg_be, ell,
@@ -908,9 +917,11 @@ function phase2_worker(G               ::Div2,
                 # 2-LP-conj: the returned anchor may or may not be LP-derived;
                 # conservatively mark as LP for Seq 3 since P0 came from a conj step.
                 phi_bias_stat._prev_anchor_was_lp = true
+                record_conj_deep_opcode!(deep_stat, OPCODE_2LP_CONJ, false)
             else
                 cur_pt = next_anchor()
                 record_random_anchor!(phi_bias_stat)
+                record_conj_deep_opcode!(deep_stat, OPCODE_SKIP, false)
             end
             continue
         end
@@ -940,6 +951,7 @@ function phase2_worker(G               ::Div2,
             # IDEA 4: 0-LP is a full relation but NOT a LP1-conj event.
             cur_pt = next_anchor()
             record_random_anchor!(phi_bias_stat)
+            record_conj_deep_opcode!(deep_stat, OPCODE_0LP, false)
 
         elseif n_lp == 1
             # ------------------------------------------------------------------
@@ -949,6 +961,7 @@ function phase2_worker(G               ::Div2,
                 s.hits_skip += 1
                 cur_pt = next_anchor()
                 record_random_anchor!(phi_bias_stat)
+                record_conj_deep_opcode!(deep_stat, OPCODE_SKIP, false)
             else
             s.hits_lp1 += 1
             lp_pt = i0 == 0 ? P0 : iR == 0 ? R : S
@@ -971,6 +984,7 @@ function phase2_worker(G               ::Div2,
             # interesting anchor; handle_1lp_affine! emitting structured is less
             # frequent and folding it in is conservative.
             phi_bias_stat._prev_anchor_was_lp = true
+            record_conj_deep_opcode!(deep_stat, OPCODE_1LP_AFF, false)
             end  # enable_lp1_aff
 
         elseif n_lp == 2
@@ -981,6 +995,7 @@ function phase2_worker(G               ::Div2,
                 s.hits_skip += 1
                 cur_pt = next_anchor()
                 record_random_anchor!(phi_bias_stat)
+                record_conj_deep_opcode!(deep_stat, OPCODE_SKIP, false)
             else
                 empty!(fb_row_scratch)
                 for idx in (i0, iR, iS)
@@ -998,6 +1013,7 @@ function phase2_worker(G               ::Div2,
                                              shared_lp_doubled,
                                              lp_col, max_lp2_nodes, rank_growth,
                                              combined_scratch, next_anchor_ref)
+                record_conj_deep_opcode!(deep_stat, OPCODE_2LP_AFF, false)
             end
 
         else
@@ -1008,6 +1024,7 @@ function phase2_worker(G               ::Div2,
             # at the hits_total site above; no separate increment needed here.
             cur_pt = next_anchor()
             record_random_anchor!(phi_bias_stat)
+            record_conj_deep_opcode!(deep_stat, OPCODE_SKIP, false)
         end
     end   # end main walk loop
 
