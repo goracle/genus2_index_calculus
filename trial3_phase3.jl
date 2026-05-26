@@ -178,6 +178,10 @@ function phase3_trial_worker(
 
     ell   = tables.ell
     ellI  = Int(ell)
+    # mulmod: multiply two values that may each be O(ell) and reduce mod ellI.
+    # For ell ~ 2^38 the product is ~2^76, which overflows Int64 (max 2^63-1).
+    # widemul(Int64, Int64) -> Int128 is exact; the final mod fits back in Int64.
+    @inline mulmod(a::Int, b::Int) = Int(mod(widemul(a, b), ellI))
     # step_cap and local_lp_cap are pre-computed in the main thread before spawning
     # to avoid 30 workers simultaneously calling isqrt(BigInt(ell)) via GMP.
     step_cap     = step_cap     < 0 ? phase3_default_step_cap(ell) : step_cap
@@ -369,7 +373,7 @@ function phase3_trial_worker(
         rhs = mod(neg_al - known_sum, ellI)
         # unknown_coeff must be invertible mod ell (ell is prime)
         @assert gcd(unknown_coeff, ellI) == 1 "non-invertible coefficient in try_extend_alog!"
-        log_new = mod(rhs * powermod(unknown_coeff, ell - 2, ell), ellI)
+        log_new = mulmod(rhs, Int(powermod(unknown_coeff, ell - 2, ell)))
         local_alog[fb[unknown_idx]] = log_new
         n_alog_extended += 1
     end
@@ -408,14 +412,23 @@ function phase3_trial_worker(
                 trial_idx, n_local_linalg, m, nc, m*nc*8/1024^2)
         flush(stdout)
         # Build dense matrix mod ell.
-        A = zeros(Int, m, nc)
+        # Use Int128 so that products A[r,cc]*f and A[pr,cc]*inv_piv (both ∈ [0,ell-1])
+        # do not overflow; for ell ~ 2^38 the product is ~2^76 > Int64 max.
+        #
+        # Relation semantics: Σ_j coef[j]·log(fb[j])  =  neg_al + neg_be·k  (mod ell)
+        # Rearranged as a linear system with unknowns x[j]=log(fb[j]) and k:
+        #   Σ_j coef[j]·x[j]  +  (-neg_be)·k  =  neg_al
+        # So column nF+1 carries the coefficient of k, which is -neg_be mod ell.
+        # Using +neg_be here would flip the sign of k in the linalg solution,
+        # giving k_try = (neg_al - log_sum)/neg_be instead of (log_sum - neg_al)/neg_be.
+        A = zeros(Int128, m, nc)
         for ri in 1:m
             for (j, v) in local_rel_rows[ri]
                 1 <= j <= nF || continue
                 A[ri, j] = mod(v, ellI)
             end
-            A[ri, nF+1] = local_rel_be[ri]              # coefficient of k
-            A[ri, nF+2] = Int(mod(local_rel_al[ri], ellI))  # RHS (handle BigInt seed rows)
+            A[ri, nF+1] = mod(ellI - local_rel_be[ri], ellI)    # coefficient of k = -neg_be mod ell
+            A[ri, nF+2] = Int128(mod(local_rel_al[ri], ellI))   # RHS (handle BigInt seed rows)
         end
         # Forward elimination with partial pivoting over GF(ell).
         pivot_col = zeros(Int, m)   # pivot_col[r] = column of pivot in row r, 0 if zero row
@@ -430,7 +443,7 @@ function phase3_trial_worker(
             # Swap rows piv ↔ pr.
             A[pr, :], A[piv, :] = A[piv, :], A[pr, :]
             # Normalise pivot row so A[pr,c] = 1.
-            inv_piv = powermod(A[pr, c], ellI - 2, ellI)
+            inv_piv = Int128(powermod(Int(A[pr, c]), ellI - 2, ellI))
             for cc in c:nc
                 A[pr, cc] = mod(A[pr, cc] * inv_piv, ellI)
             end
@@ -450,10 +463,13 @@ function phase3_trial_worker(
         for r in 1:m
             pivot_col[r] == nF+1 || continue
             # Row reads: k = A[r, nF+2]
-            k_try = A[r, nF+2]
+            k_try = Int(A[r, nF+2])
             jac_mul(G, k_try, ell) == T && return k_try
-            # Pivot on k but verify failed — bad relations in accumulator; flush and retry.
-            return nothing
+            # Pivot on k but verify failed.  This means a corrupt relation slipped
+            # through (most likely an overflow bug upstream).  Crash loudly rather
+            # than silently discarding the result and continuing — a wrong k that
+            # accidentally passes the group-law check is far worse than a crash.
+            @assert false "try_local_linalg_solve: k_try=$(k_try) failed group-law verification — relation accumulator is corrupt (overflow?)"
         end
         return nothing
     end
@@ -480,7 +496,7 @@ function phase3_trial_worker(
             log_sum = mod(log_sum + v * l, ellI)
         end
         if all_known
-            k_try = mod((log_sum - neg_al) * powermod(neg_be, ell - 2, ell), ellI)
+            k_try = mulmod(mod(log_sum - neg_al, ellI), Int(powermod(neg_be, ell - 2, ell)))
             if jac_mul(G, k_try, ell) == T
                 return k_try
             end
@@ -510,7 +526,7 @@ function phase3_trial_worker(
         # No atom logs needed — just verify and return.
         if i0_cur == i0_pre
             c_be == 0 && return nothing   # 0 = c_al·G, degenerate
-            k_try = mod(-c_al * powermod(c_be, ell - 2, ell), ellI)
+            k_try = mulmod(mod(-c_al, ellI), Int(powermod(c_be, ell - 2, ell)))
             if jac_mul(G, k_try, ell) == T
                 return k_try
             end
@@ -540,7 +556,8 @@ function phase3_trial_worker(
         if l_cur == -1 || l_pre == -1
             # Atom logs missing: express as a 2-atom relation and accumulate.
             # atom(fb[i0_cur]) - atom(fb[i0_pre]) ≡ c_al·G + c_be·T  (mod ell)
-            # → 1·log(fb[i0_cur]) + (-1)·log(fb[i0_pre]) + c_be·k ≡ c_al  (mod ell)
+            # → 1·log(fb[i0_cur]) + (-1)·log(fb[i0_pre]) ≡ c_al + c_be·k  (mod ell)
+            # Stored as (row_conj, c_be, al_adj): linalg puts -c_be in column nF+1.
             row_conj = Dict{Int,Int}(i0_cur => 1)
             i0_cur != i0_pre && (row_conj[i0_pre] = get(row_conj, i0_pre, 0) - 1)
             # If l_cur or l_pre is known, fold it into c_al to reduce unknowns.
@@ -565,7 +582,7 @@ function phase3_trial_worker(
         end
 
         lhs   = mod(l_cur - l_pre, ellI)
-        k_try = mod((lhs - c_al) * powermod(c_be, ell - 2, ell), ellI)
+        k_try = mulmod(mod(lhs - c_al, ellI), Int(powermod(c_be, ell - 2, ell)))
 
         if jac_mul(G, k_try, ell) == T
             return k_try
@@ -681,6 +698,11 @@ function phase3_trial_worker(
                     k_rec !== nothing && break
                 else
                     if length(local_lp1_conj) < local_lp_cap
+                        # neg_al and neg_be are both in [0, ellI-1] after mod above,
+                        # so UInt64 is safe for ell < 2^64.  Assert to catch any future
+                        # regression where ellI is set wider than 64 bits.
+                        @assert neg_al >= 0 && neg_be >= 0 "negative neg_al/neg_be before UInt64 cast"
+                        @assert ell < typemax(UInt64) "ell too large for UInt64 LP1ConjValFull fields — widen struct"
                         local_lp1_conj[lp_key] = LP1ConjValFull(UInt16(i0), UInt64(neg_al), UInt64(neg_be))
                     end
                     p3_dry_streak += 1
@@ -855,6 +877,10 @@ function phase3_solve_targets(
         n_pre     = length(tables.atom_log_dict)
         ellI_e    = Int(tables.ell)
         nF_e      = length(tables.fb)
+        # mulmod_e: safe multiply mod ellI_e for values that may each be O(ell ~ 2^38).
+        # coef from RREF-reduced rel_rows_pre can be in [0, ell-1]; lj likewise.
+        # Their product needs ~76 bits — overflows Int64.  widemul -> Int128 is exact.
+        @inline mulmod_e(a::Int, b::Int) = Int(mod(widemul(a, b), ellI_e))
 
         # Working log array: index → log, -1 if unknown.  Seeded from atom_log_dict.
         work_logs = fill(-1, nF_e)
@@ -911,7 +937,7 @@ function phase3_solve_targets(
                     unk_j    = j
                     unk_coef = coef
                 else
-                    known_sum = mod(known_sum + coef * lj, ellI_e)
+                    known_sum = mod(known_sum + mulmod_e(coef, lj), ellI_e)
                 end
             end
             (!valid || unk_j == 0) && continue   # 0 or 2+ unknowns
@@ -919,7 +945,7 @@ function phase3_solve_targets(
             # Solve: unk_coef * log(fb[unk_j]) ≡ neg_al - known_sum  (mod ell)
             rhs = mod(neg_al - known_sum, ellI_e)
             gcd(unk_coef, ellI_e) != 1 && continue   # non-invertible (shouldn't happen, ell prime)
-            log_new = mod(rhs * powermod(unk_coef, ellI_e - 2, ellI_e), ellI_e)
+            log_new = Int(mod(widemul(rhs, powermod(unk_coef, ellI_e - 2, ellI_e)), ellI_e))
 
             # Verify against the group law before accepting.
             pt = tables.fb[unk_j]
