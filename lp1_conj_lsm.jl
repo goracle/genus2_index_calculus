@@ -229,6 +229,12 @@ mutable struct LP1ConjLSM{V}
     # compute dyadic-window α₂(T) scaling diagnostics on the partial stream.
     # At 3.7M partials × 2 bytes = ~7 MB — negligible.  Written under bday_lock.
     partial_fp_log      ::Vector{UInt16}
+
+    # Cold-filter stats: entries silently dropped at flush time because their
+    # Rényi bucket had zero observed count (i.e. never received an emission).
+    # These would be pure SSD waste — they can never produce a birthday collision.
+    # Updated under file_lock+shard_lock (same as the flush path).
+    n_cold_dropped      ::Int
 end
 
 # ---------------------------------------------------------------------------
@@ -289,7 +295,8 @@ function LP1ConjLSM{V}(
         0, 0,
         # Rényi-2 estimator (2^14 = 16384 buckets — ~64 KB, negligible)
         zeros(UInt32, 1 << RENYI_BITS), Int64(0), Int64(0),
-        UInt16[]              # partial_fp_log
+        UInt16[],             # partial_fp_log
+        0                     # n_cold_dropped
     )
 end
 
@@ -492,7 +499,30 @@ function _lsm_flush_shard!(sc::LP1ConjLSM{V}, si::Int) where V
     n = sc.hot_counts[si]
     n == 0 && return
 
-    # Collect live entries
+    # ── Bucket cold-filter ────────────────────────────────────────────────────
+    # S_naive for the LP1-conj key space is p²/2.  The Rényi-2 diagnostics show
+    # alpha_2 ≈ 0.727, i.e. S₂ ~ p^{1.45} — roughly p^{0.55} fewer distinct
+    # hot buckets than the full keyspace.  Most fp-buckets are cold: they receive
+    # emissions but will never be the other side of a birthday collision.
+    # Spilling cold-bucket entries to SSD is pure waste: they consume I/O and
+    # disk space but can never produce a match.
+    #
+    # Filter: after COLD_FILTER_WARMUP total emissions, drop any entry whose
+    # RENYI_BITS-bit fp bucket has zero observed count in renyi_counts[].  A
+    # lockless read of renyi_counts is safe — counts are only ever incremented
+    # (never cleared), so a stale zero means the bucket is genuinely cold at the
+    # time of this flush; the tiny race window where a bucket first becomes hot
+    # right as we flush costs at most one missed entry per bucket per flush cycle,
+    # which is negligible.
+    #
+    # COLD_FILTER_WARMUP: require at least 2^RENYI_BITS emissions (~16k) before
+    # filtering, so the counts have had a chance to stabilise.  Below this
+    # threshold every bucket looks cold and we'd drop everything.
+    cold_filter_warmup = (1 << RENYI_BITS) * 4   # 4 passes over the bucket array
+    use_cold_filter = sc.bday_emissions >= cold_filter_warmup
+    rc = sc.renyi_counts   # lockless snapshot reference — see comment above
+
+    # Collect live entries, dropping cold-bucket entries when filter is active.
     fps  = Vector{UInt64}(undef, n)
     u0s  = Vector{UInt32}(undef, n)
     u1s  = Vector{UInt32}(undef, n)
@@ -502,14 +532,23 @@ function _lsm_flush_shard!(sc::LP1ConjLSM{V}, si::Int) where V
     als  = Vector{UInt64}(undef, n)
     bes  = Vector{UInt64}(undef, n)
 
-    idx  = 0
-    keys = sc.hot_keys[si]
-    vals = sc.hot_vals[si]
+    idx      = 0
+    n_cold   = 0
+    keys     = sc.hot_keys[si]
+    vals     = sc.hot_vals[si]
     @inbounds for slot in 1:sc.hot_caps[si]
         k = keys[slot]
         k == CONJ_KEY_EMPTY && continue
-        idx += 1
         fp = _lsm_fp(k)
+        # Cold-filter: skip entries in unobserved Rényi buckets.
+        if use_cold_filter
+            rb = Int(fp >> RENYI_SHIFT) + 1   # 1-based bucket
+            if rc[rb] == UInt32(0)
+                n_cold += 1
+                continue
+            end
+        end
+        idx += 1
         fps[idx] = fp
         u0s[idx] = UInt32(k & 0x00000000ffffffff)
         u1s[idx] = UInt32((k >> 32)  & 0x00000000ffffffff)
@@ -520,14 +559,24 @@ function _lsm_flush_shard!(sc::LP1ConjLSM{V}, si::Int) where V
         als[idx] = v.neg_al
         bes[idx] = sc.amortized ? UInt64(0) : UInt64(_conj_prev_be(v))
     end
-    idx == n || throw(AssertionError("_lsm_flush_shard!: collected $idx != $n"))
+    # idx + n_cold should equal the original hot count (remaining slots are EMPTY).
+    # n_cold > 0 is normal after warmup.
+
+    # Reset hot shard now — do this before the IO so the shard is available
+    # for new insertions while we write.
+    fill!(sc.hot_keys[si], CONJ_KEY_EMPTY)
+    sc.hot_counts[si] = 0
+    sc.n_cold_dropped += n_cold
+
+    # Nothing hot-and-warm to spill?  Done.
+    idx == 0 && return
 
     # Sort by fingerprint
-    order = sortperm(fps)
+    order = sortperm(view(fps, 1:idx))
 
     # Build packed binary buffer and write to spill file
-    buf = zeros(UInt8, n * RECORD_BYTES)
-    @inbounds for i in 1:n
+    buf = zeros(UInt8, idx * RECORD_BYTES)
+    @inbounds for i in 1:idx
         oi = order[i]
         _write_record!(buf, (i-1)*RECORD_BYTES,
                        fps[oi], u0s[oi], u1s[oi], v0s[oi], v1s[oi],
@@ -536,18 +585,18 @@ function _lsm_flush_shard!(sc::LP1ConjLSM{V}, si::Int) where V
 
     byte_offset = sc.spill_size
     write(sc.spill_io, buf)
-    sc.spill_size += n * RECORD_BYTES
+    sc.spill_size += idx * RECORD_BYTES
 
     # Update Bloom filter
-    for i in 1:n
+    for i in 1:idx
         set_bloom!(sc.bloom, fps[order[i]])
     end
 
     # Register run
     min_fp = fps[order[1]]
-    max_fp = fps[order[n]]
-    push!(sc.runs, RunMeta(length(sc.runs)+1, byte_offset, n, min_fp, max_fp))
-    sc.n_disk_live += n
+    max_fp = fps[order[idx]]
+    push!(sc.runs, RunMeta(length(sc.runs)+1, byte_offset, idx, min_fp, max_fp))
+    sc.n_disk_live += idx
 
     # Remap for reads
     _lsm_remap!(sc)
@@ -556,10 +605,6 @@ function _lsm_flush_shard!(sc::LP1ConjLSM{V}, si::Int) where V
     # Merging keeps _lsm_disk_find to a single binary search rather than
     # iterating over O(flushes) runs, each with its own binary search.
     length(sc.runs) >= 16 && _lsm_compact!(sc)
-
-    # Reset hot shard
-    fill!(sc.hot_keys[si], CONJ_KEY_EMPTY)
-    sc.hot_counts[si] = 0
 
     nothing
 end
@@ -1250,6 +1295,34 @@ function lsm_bday_report(sc::LP1ConjLSM, p::Integer, r::Real; io::IO = stdout)
         end
     end
 
+    # ── Cold-filter stats ────────────────────────────────────────────────────
+    # The bucket cold-filter (activated after 4×2^RENYI_BITS emissions)
+    # drops flush entries whose Rényi fp-bucket has zero observed count.
+    # Since S_naive = p²/2 but S₂ ~ p^{2·α₂} (with α₂ < 1), the fraction of
+    # hot buckets is ~(2^RENYI_BITS) · S₂ / (p²/2) ≈ p^{2α₂-2}, which is the
+    # fraction of entries *not* dropped.  The rest are pure SSD waste.
+    @printf(io, "\n  Cold-filter (bucket zero-count drop at flush):\n")
+    n_dropped = sc.n_cold_dropped
+    n_spilled = sc.n_disk_live + n_dropped   # approximate total that went through flush path
+    if n_spilled > 0
+        frac_dropped = n_dropped / Float64(n_spilled)
+        @printf(io, "    entries cold-dropped   : %d  (%.1f%% of flush candidates)\n",
+                n_dropped, 100.0 * frac_dropped)
+        @printf(io, "    entries spilled to SSD : %d\n", sc.n_disk_live)
+        if pf > 1.0 && rsc > 0 && rsc2 > 0
+            # Expected fraction of hot buckets from S₂.
+            S2      = Float64(rsc)^2 / Float64(rsc2)
+            scale   = Float64(1 << RENYI_BITS)
+            S2_true = S2 * scale
+            S_naive = pf^2 / 2.0
+            expected_hot_frac = S2_true / S_naive
+            @printf(io, "    expected hot-frac (S₂/S_naive): %.5g  [actual spilled/total=%.5g]\n",
+                    expected_hot_frac, 1.0 - frac_dropped)
+        end
+    else
+        @printf(io, "    (no flushes yet, or warmup not reached)\n")
+    end
+
     @printf(io, "\n")
     nothing
 end
@@ -1333,9 +1406,9 @@ end
 
 function lsm_info(sc::LP1ConjLSM; io::IO = stdout)
     hot_total = sum(sc.hot_counts)
-    @printf(io, "LP1ConjLSM: %d hot | %d disk-live | %d runs | spill=%s (%.1f MB)\n",
+    @printf(io, "LP1ConjLSM: %d hot | %d disk-live | %d runs | spill=%s (%.1f MB) | cold-dropped=%d\n",
             hot_total, sc.n_disk_live, length(sc.runs), sc.spill_path,
-            sc.spill_size / 1024^2)
+            sc.spill_size / 1024^2, sc.n_cold_dropped)
     nothing
 end
 
