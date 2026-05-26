@@ -88,23 +88,9 @@ struct Phase2Tables
     # Group order
     ell            ::BigInt
 
-    # IDEA 4: hot-basin anchor indices from the precompute walk.
-    hot_basin_anchors ::Vector{Int}
-
     # β=0 relation rows and α coefficients from the precompute walk.
-    # Used by phase3 to run cycle_union_solve and enrich atom_log_dict beyond
-    # what the dense RREF recovered (the DSU label-propagation can pin atoms
-    # that are graph-reachable from the RREF seeds even when algebraic rank is low).
     rel_rows_pre   ::Vector{Dict{Int,Int}}
     alpha_vec_pre  ::Vector{BigInt}
-
-    # Empirical LP1-conj mean inter-arrival gap from the β=0 precompute walk,
-    # measured in valid-phi-step units.  Used by phase3 to set burst-band
-    # thresholds relative to the actual closure hazard scale, rather than
-    # hard-coded step counts.
-    # = total_valid_phi_steps / n_lp1_conj_steps  (not emissions — steps).
-    # Set to 0.0 if no LP1-conj steps were observed (disables band scaling).
-    lp1_conj_mean_gap_steps::Float64
 end
 
 # ---------------------------------------------------------------------------
@@ -249,12 +235,11 @@ function phase3_trial_worker(
         k_true           ::Union{Int,Nothing},
         tables           ::Phase2Tables,
         G                ::Div2;
-        step_cap         ::Int   = -1,   # -1 → auto-scaled via phase3_default_step_cap(ell)
-        local_lp_cap     ::Int   = -1,   # -1 → auto-scaled via phase3_local_lp_cap(ell)
+        step_cap         ::Int   = -1,
+        local_lp_cap     ::Int   = -1,
         n_steps_prebuilt ::Int   = 512,
         verbose          ::Bool  = false,
         conj_dict        ::Union{Dict{CanonicalLP1Key, LP1ConjVal}, Nothing} = nothing,
-        hot_anchors      ::Union{Vector{Int}, Nothing} = nothing,
         seeded_rel_rows  ::Union{Vector{Dict{Int,Int}}, Nothing} = nothing,
         seeded_rel_be    ::Union{Vector{Int},           Nothing} = nothing,
         seeded_rel_al    ::Union{Vector{BigInt},        Nothing} = nothing,
@@ -322,18 +307,7 @@ function phase3_trial_worker(
     alpha_cur = rand(1:ellI-1)
     beta_cur  = rand(1:ellI-1)
     D_cur = jac_add(jac_mul(G, alpha_cur, ellI), jac_mul(T, beta_cur, ellI))
-
-    # IDEA 4: The hot-anchor snapshot is created in the parent thread and
-    # passed in as a plain vector.  This keeps worker startup read-only.
-    if hot_anchors !== nothing && !isempty(hot_anchors)
-        hot_len  = length(hot_anchors)
-        hot_pos  = mod(trial_idx - 1, hot_len) + 1
-        basin_idx = hot_anchors[hot_pos]
-        basin_idx = clamp(basin_idx, 1, nF)
-        cur_pt    = fb[basin_idx]
-    else
-        cur_pt    = fb[rand(1:nF)]
-    end
+    cur_pt = fb[rand(1:nF)]
 
     # ── Local birthday fallback tables ────────────────────────────────────────
     # affine: lp_pt → (fb_row, neg_al, neg_be)
@@ -343,91 +317,6 @@ function phase3_trial_worker(
     # The precomputed table uses LP1ConjVal (amortized, neg_be=0 implicit).
     local_lp1_conj   = Dict{CanonicalLP1Key, LP1ConjValFull}()
 
-    # ── Local alog extension ──────────────────────────────────────────────────
-    # When a closure yields a β=0 combined row (c_neg_be == 0), the relation is
-    # a pure G-relation that may let us extend atom logs beyond what phase 2
-    # computed.  We store these in a local overlay rather than mutating the
-    # shared read-only tables.atom_log_dict.
-    #
-    # Helper: look up atom log, checking local extension first.
-
-    # ── IDEA 2 & 4: Phase3 inertia + mini basin memory ────────────────────────
-    # Mirror the phase2 inertia mechanism in phase3 to keep the β≠0 walk near
-    # productive geometric configurations.  Basin steering uses the precomputed
-    # hot_basin_anchors (seeded via warm-start) and a local dry-streak counter.
-    
-    _small_primes_p3 = (2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53)
-
-    # Calculate initial stride using 1-based indexing safety
-    anchor_stride_p3 = if nF > 1
-        prime_target = _small_primes_p3[mod1(trial_idx, length(_small_primes_p3))]
-        mod1(prime_target, nF - 1)
-    else
-        1
-    end
-
-    # Step by 1 within the [1, nF] boundary using standard Base.gcd
-    while nF > 1 && gcd(anchor_stride_p3, nF) != 1
-        anchor_stride_p3 = mod1(anchor_stride_p3 + 1, nF)
-    end
-
-    # Start cursor at the warm-start position if available
-    anchor_cursor_p3 = if isempty(hot_anchors)
-        rand(1:nF)
-    else
-        target_anchor = hot_anchors[mod1(trial_idx, length(hot_anchors))]
-        clamp(target_anchor, 1, nF)
-    end
-
-    inertia_dir_p3 = anchor_stride_p3
-    p3_dry_streak  = 0
-
-    # ── Burst-orbit exploitation ──────────────────────────────────────────────
-    # When a conj closure fires, D_cur is geometrically hot — its neighbourhood
-    # produces conj hits at elevated rate for ~tau* ≈ mu/3 steps.  Rather than
-    # drifting away via the cumulative walk, we save the hot divisor and spend
-    # burst_budget steps probing it with fresh independent offsets each time:
-    #   D_probe = hot_D + step_D[si_burst]   (single fresh step, not accumulated)
-    # D_cur keeps accumulating normally during burst mode so resumption is
-    # seamless when the budget runs out.
-    _burst_budget_default = let mg = tables.lp1_conj_mean_gap_steps
-        mg >= 100.0 ? round(Int, mg / 3.0) : 2000
-    end
-    burst_budget  = 0
-    burst_active  = false
-    hot_D         = D_cur
-    hot_alpha     = alpha_cur
-    hot_beta      = beta_cur
-
-    @inline function p3_record_hit!()
-        hot_D         = D_cur
-        hot_alpha     = alpha_cur
-        hot_beta      = beta_cur
-        burst_budget  = _burst_budget_default
-        burst_active  = true
-        p3_dry_streak = 0
-    end
-
-    # IS: lightweight ε-greedy restart using hot_anchors from precompute.
-    # Phase3 inherits the IS philosophy but has no full reservoir — it just
-    # uses the precomputed hot_anchors list with a small random perturbation.
-    p3_ε_expl   = 0.30   # 30% exploration (phase3 walks shorter so keep high)
-    p3_hot_idx  = 0      # round-robin pointer into hot_anchors
-
-    @inline function p3_next_anchor()
-        if !isempty(hot_anchors) && rand() >= p3_ε_expl
-            # Exploitation: rotate through hot_anchors with jitter.
-            hot_len = length(hot_anchors)
-            p3_hot_idx = mod(p3_hot_idx, hot_len) + 1
-            base = hot_anchors[p3_hot_idx]
-            base = clamp(base, 1, nF)
-            jitter = rand(-3:3)
-            anchor_cursor_p3 = mod(base - 1 + jitter, nF) + 1
-        end
-        pt = fb[anchor_cursor_p3]
-        anchor_cursor_p3 = mod(anchor_cursor_p3 - 1 + inertia_dir_p3, nF) + 1
-        return pt
-    end
     local_alog = Dict{NTuple{2,Int}, Int}()
     @inline alog_get(pt) = get(local_alog, pt, get(alog, pt, -1))
 
@@ -440,9 +329,6 @@ function phase3_trial_worker(
     n_1lp_conj_local = 0   # conj closure against local birthday dict
     n_conj_branch    = 0   # times we entered A1 (i0∈FB, conj residual), before haskey
     n_alog_extended  = 0   # new atom logs derived from β=0 closures
-    n_burst_steps    = 0   # raw burst iterations (pre-gate)
-    n_burst_valid    = 0   # burst iterations that passed all gates (same units as n_steps)
-    n_burst_hits     = 0   # conj closures that fired during burst mode
     k_rec            = nothing
 
     # ── Helper: attempt to extend local_alog from a β=0 combined row ─────────
@@ -759,44 +645,19 @@ function phase3_trial_worker(
             end
         end
         si        = rand(1:n_steps_prebuilt)
-        # Always advance the cumulative walk (keeps D_cur fresh for after burst).
         D_cur     = jac_add(D_cur, step_D[si])
         alpha_cur = mod(alpha_cur + step_a[si], ellI)
         beta_cur  = mod(beta_cur  + step_b[si], ellI)
 
-        # In burst mode: probe the hot divisor with a fresh independent offset.
-        # All three of (D_probe, alpha_probe, beta_probe) must use the same step
-        # index so that D_probe = hot_D + step_D[si_burst] is consistent with
-        # alpha_probe = hot_alpha + step_a[si_burst] and beta_probe = hot_beta + step_b[si_burst].
-        # Using si (the main walk's index) for alpha/beta but rand() for D was the bug.
-        this_step_was_burst = burst_active
-        if burst_active
-            si_burst    = rand(1:n_steps_prebuilt)
-            D_probe     = jac_add(hot_D, step_D[si_burst])
-            alpha_probe = mod(hot_alpha + step_a[si_burst], ellI)
-            beta_probe  = mod(hot_beta  + step_b[si_burst], ellI)
-            n_burst_steps += 1
-            burst_budget  -= 1
-            burst_active   = burst_budget > 0
-        else
-            D_probe     = D_cur
-            alpha_probe = alpha_cur
-            beta_probe  = beta_cur
-        end
-
-        beta_probe == 0 && continue
-        # Use probe values for the rest of this step.
-        D_eff     = D_probe
-        alpha_eff = alpha_probe
-        beta_eff  = beta_probe
+        beta_cur == 0 && continue
 
         # Gate 1: degree-2 divisor
-        fp3_deg(D_eff.u) != 2 && continue
-        u0 = D_eff.u[1]; u1 = D_eff.u[2]
-        v0 = D_eff.v[1]; v1 = D_eff.v[2]
+        fp3_deg(D_cur.u) != 2 && continue
+        u0 = D_cur.u[1]; u1 = D_cur.u[2]
+        v0 = D_cur.v[1]; v1 = D_cur.v[2]
         px, py = cur_pt
 
-        # Gate 2: P0 not in support of D_eff
+        # Gate 2: P0 not in support of D_cur
         fp(fp(px*px) + fp(u1*px) + u0) == 0 && continue
 
         phi_c = build_phi_mumford(px, py, u0, u1, v0, v1)
@@ -807,10 +668,9 @@ function phase3_trial_worker(
         RS_mumford === SENTINEL_MUMFORD && continue
 
         n_steps += 1
-        this_step_was_burst && (n_burst_valid += 1)
 
-        neg_al = mod(ellI - alpha_eff, ellI)
-        neg_be = mod(ellI - beta_eff,  ellI)
+        neg_al = mod(ellI - alpha_cur, ellI)
+        neg_be = mod(ellI - beta_cur,  ellI)
         i0     = get(pt2idx, cur_pt, 0)
 
         # ======================================================================
@@ -832,8 +692,6 @@ function phase3_trial_worker(
                     c_al = mod(neg_al - prev_al, ellI)
                     c_be = neg_be
                     n_1lp_conj_pre += 1
-                    burst_active && (n_burst_hits += 1)
-                    p3_record_hit!()
                     k_rec = try_solve_conj(i0, prev_col, c_al, c_be)
                     k_rec !== nothing && break
 
@@ -844,26 +702,17 @@ function phase3_trial_worker(
                     c_be = mod(neg_be - prev_be, ellI)
                     delete!(local_lp1_conj, lp_key)
                     n_1lp_conj_local += 1
-                    burst_active && (n_burst_hits += 1)
-                    p3_record_hit!()
                     k_rec = try_solve_conj(i0, prev_col, c_al, c_be)
                     k_rec !== nothing && break
                 else
                     if length(local_lp1_conj) < local_lp_cap
-                        # neg_al and neg_be are both in [0, ellI-1] after mod above,
-                        # so UInt64 is safe for ell < 2^64.  Assert to catch any future
-                        # regression where ellI is set wider than 64 bits.
                         @assert neg_al >= 0 && neg_be >= 0 "negative neg_al/neg_be before UInt64 cast"
                         @assert ell < typemax(UInt64) "ell too large for UInt64 LP1ConjValFull fields — widen struct"
                         local_lp1_conj[lp_key] = LP1ConjValFull(UInt16(i0), UInt64(neg_al), UInt64(neg_be))
                     end
-                    p3_dry_streak += 1
                 end
-            else
-                p3_dry_streak += 1
             end
             # A2: i0 not in FB → 2-LP-conj, skip
-            cur_pt = i0 != 0 ? cur_pt : p3_next_anchor()
             continue
         end
 
@@ -884,9 +733,7 @@ function phase3_trial_worker(
             n_0lp += 1
             k_rec = try_solve(fb_row, neg_al, neg_be)
             k_rec !== nothing && break
-            # IDEA 4: 0-LP is productive — reset dry streak.
-            p3_dry_streak = 0
-            cur_pt = p3_next_anchor()
+            cur_pt = fb[rand(1:nF)]
 
         elseif n_lp == 1
             # B1: 1-LP-affine
@@ -927,15 +774,13 @@ function phase3_trial_worker(
                 if length(local_lp1_affine) < local_lp_cap
                     local_lp1_affine[lp_pt] = (copy(fb_row), neg_al, neg_be)
                 end
-                p3_dry_streak += 1
             end
 
-            cur_pt = iR != 0 ? R : iS != 0 ? S : p3_next_anchor()
+            cur_pt = iR != 0 ? R : iS != 0 ? S : fb[rand(1:nF)]
 
         else
             # B2/B3: 2-LP or 3-LP, discard
-            p3_dry_streak += 1
-            cur_pt = p3_next_anchor()
+            cur_pt = fb[rand(1:nF)]
         end
     end
 
@@ -947,16 +792,9 @@ function phase3_trial_worker(
         k_rec_s  = k_rec  === nothing ? "none" : string(k_rec)
         k_true_s = k_true === nothing ? "?"    : string(k_true)
         match_s  = verified ? "ok" : "MISMATCH"
-        burst_hit_rate = n_burst_valid > 0 ? Float64(n_burst_hits) / Float64(n_burst_valid) : 0.0
-        cold_steps     = n_steps - n_burst_valid
-        cold_hits      = (n_1lp_conj_pre + n_1lp_conj_local) - n_burst_hits
-        cold_hit_rate  = cold_steps > 0 ? Float64(cold_hits) / Float64(cold_steps) : 0.0
         @printf("[phase3 trial %d | t=%.3fs] k_rec=%s  k_true=%s  match=%s  steps=%d  0lp=%d  1lp_aff_pre=%d  1lp_aff_local=%d  1lp_conj_pre=%d  1lp_conj_local=%d  conj_branch=%d  linalg_attempts=%d\n",
                 trial_idx, elapsed, k_rec_s, k_true_s, match_s,
                 n_steps, n_0lp, n_1lp_aff_pre, n_1lp_aff_local, n_1lp_conj_pre, n_1lp_conj_local, n_conj_branch, n_local_linalg)
-        @printf("[phase3 trial %d | burst] budget=%d  burst_steps=%d  burst_valid=%d  burst_hits=%d  burst_rate=%.4f  cold_rate=%.4f  lift=%.2f\n",
-                trial_idx, _burst_budget_default, n_burst_steps, n_burst_valid, n_burst_hits, burst_hit_rate, cold_hit_rate,
-                cold_hit_rate > 0 ? burst_hit_rate / cold_hit_rate : 0.0)
         flush(stdout)
     end
 
@@ -1152,9 +990,8 @@ function phase3_solve_targets(
             rref_basis_shared.rank, length(tables.fb), time() - t_rref)
     flush(stdout)
 
-    # Pre-allocate seeded relation vectors and the hot-anchor snapshot in the
-    # main thread before spawning.  Doing this inside the spawned tasks can
-    # create allocator / GC contention and reintroduce launch-time stalls.
+    # Pre-allocate seeded relation vectors in the main thread before spawning.
+    # Doing this inside the spawned tasks can create allocator / GC contention.
     #
     # CRITICAL: seeded_rel_rows must be a DEEP copy — each worker appends to its
     # local_rel_rows (which aliases seeded_rel_rows[i]) and may mutate individual
@@ -1169,7 +1006,7 @@ function phase3_solve_targets(
     flush(stdout)
 
     t_prealloc = time()
-    @printf("   [phase3 prealloc] deep-copying rel_rows (30×%d Dicts)...\n", n_pre_rows)
+    @printf("   [phase3 prealloc] deep-copying rel_rows (%d×%d Dicts)...\n", n, n_pre_rows)
     flush(stdout)
     seeded_rel_rows = [[copy(d) for d in tables.rel_rows_pre] for _ in 1:n]
     @printf("   [phase3 prealloc] rel_rows done (%.2fs)  RSS=%.1f MB  GC-live=%.1f MB\n",
@@ -1182,16 +1019,14 @@ function phase3_solve_targets(
     @printf("   [phase3 prealloc] rel_be done (%.2fs)\n", time()-t_be); flush(stdout)
 
     t_al = time()
-    @printf("   [phase3 prealloc] deep-copying alpha_vec_pre (30×%d BigInts)...\n",
-            length(tables.alpha_vec_pre)); flush(stdout)
+    @printf("   [phase3 prealloc] deep-copying alpha_vec_pre (%d×%d BigInts)...\n",
+            n, length(tables.alpha_vec_pre)); flush(stdout)
     seeded_rel_al   = [copy(tables.alpha_vec_pre)             for _ in 1:n]
     @printf("   [phase3 prealloc] alpha_vec done (%.2fs)  RSS=%.1f MB  GC-live=%.1f MB\n",
             time()-t_al, Sys.maxrss()/1024^2, Base.gc_live_bytes()/1024^2)
     flush(stdout)
 
-    hot_anchor_snap = copy(tables.hot_basin_anchors)
-    @printf("   [phase3 prealloc] total prealloc time: %.2fs  hot_anchors=%d\n",
-            time()-t_prealloc, length(hot_anchor_snap))
+    @printf("   [phase3 prealloc] total prealloc time: %.2fs\n", time()-t_prealloc)
 
     # ── Pre-build step tables in the MAIN thread (sequential, avoids GMP deadlock) ──
     # Building 30×512 jac_mul calls simultaneously in spawned workers causes all
@@ -1235,7 +1070,6 @@ function phase3_solve_targets(
                                               step_cap=eff_step_cap, local_lp_cap=eff_local_cap,
                                               verbose=verbose,
                                               conj_dict=conj_snap,
-                                              hot_anchors=hot_anchor_snap,
                                               seeded_rel_rows=seeded_rel_rows[i],
                                               seeded_rel_be=seeded_rel_be[i],
                                               seeded_rel_al=seeded_rel_al[i],

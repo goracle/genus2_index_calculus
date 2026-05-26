@@ -1261,24 +1261,6 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
         # system [β=0 rows | β≠0 rows] on the fly via local GF(ell) elimination.
         @printf("  skipping RREF pre-solve; phase3 will solve augmented system directly\n")
         flush(stdout)
-        # ── Bundle precompute output into tables ──────────────────────────────
-        # IDEA 4: Collect hot-basin anchor indices from all precompute threads.
-        # Each thread's phase2_worker result carries a basin_hot_anchors vector
-        # of FB indices where LP1-conj events were recorded.  We merge them,
-        # deduplicate, and keep up to 256 entries for phase3 warm-start.
-        all_hot_anchors = Int[]
-        for r in results_pre
-            if r !== nothing && hasproperty(r, :basin_hot_anchors)
-                append!(all_hot_anchors, r.basin_hot_anchors)
-            end
-        end
-        unique!(all_hot_anchors)
-        filter!(x -> 1 <= x <= length(fb_pre), all_hot_anchors)
-        hot_basin_anchors_merged = all_hot_anchors[1:min(256, length(all_hot_anchors))]
-        if !isempty(hot_basin_anchors_merged)
-            @printf("  hot-basin anchors collected: %d unique FB indices from precompute\n",
-                    length(hot_basin_anchors_merged))
-        end
 
         # ── Snapshot conj LSM → close/free it → GC → THEN build Phase2Tables ──
         # The LSM can be ~6 GB.  We must free it before building Phase2Tables
@@ -1302,17 +1284,11 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
 
         # Free the LSM now — the snapshot Dict is the only copy we need going forward.
         lsm_close!(shared_lp1_conj_pre)
-        # Clear all references so the GC can reclaim the hot shards and HDF5 file.
         shared_lp1_conj_pre = nothing
         GC.gc(true)
         @printf("  [MEM] post-LSM-free GC: RSS=%.1f MB  GC-live=%.1f MB\n",
                 Sys.maxrss()/1024^2, Base.gc_live_bytes()/1024^2)
         flush(stdout)
-
-        lp1_conj_mean_gap = let total_valid = sum(r !== nothing ? r.hits_total    : 0 for r in results_pre),
-                                n_lp1_conj  = sum(r !== nothing ? r.hits_lp1_conj : 0 for r in results_pre)
-                n_lp1_conj > 0 ? Float64(total_valid) / Float64(n_lp1_conj) : 0.0
-            end
 
         tables = Phase2Tables(
             fb_pre,
@@ -1323,10 +1299,8 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
             conj_snap_pre,        # plain Dict — LSM already closed above
             shared_lp2_conj_pre,
             BigInt(ell),
-            copy(hot_basin_anchors_merged),
             rel_rows_pre,
-            alpha_vec_pre,
-            lp1_conj_mean_gap)
+            alpha_vec_pre)
 
         @printf("  atom_log_dict empty; phase3 will solve via accumulated β≠0 relations\n")
         @printf("  Phase2Tables ready: FB=%d  atom_logs=%d (verified)  lp1_entries=%d  conj_snap=%d\n",
