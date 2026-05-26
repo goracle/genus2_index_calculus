@@ -37,6 +37,7 @@ include("trial3_config.jl")
 include("lp1_conj_lsm.jl")
 include("trial3_phi.jl")
 include("phi_bias_diag.jl")
+include("lp1_conj_deep_diag.jl")
 
 # ---------------------------------------------------------------------------
 #  mem_checkpoint — fine-grained RSS/GC-live probe with delta tracking
@@ -1208,6 +1209,7 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
         rank_tracker_pre = OnlineRankTracker(ell)
         thread_collectors_pre = [LPResidualCollector() for _ in 1:Threads.nthreads()]
         thread_phi_stats_pre  = [PhiBiasStat(p)        for _ in 1:Threads.nthreads()]
+        thread_deep_stats_pre = [ConjDeepStat()        for _ in 1:Threads.nthreads()]
         results_pre = Vector{Any}(undef, Threads.nthreads())
 
         @printf("  [MEM] before phase2 walk:  RSS=%.1f MB  GC-live=%.1f MB\n",
@@ -1227,7 +1229,8 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
                     shared_lp2_conj_pre, shared_lp2_conj_lock_pre,
                     enable_lp2, enable_lp2_conj, max_lp2_nodes, max_lp2_conj_nodes,
                     thread_collectors_pre[tid], rank_tracker_pre,
-                    thread_phi_stats_pre[tid];
+                    thread_phi_stats_pre[tid],
+                    thread_deep_stats_pre[tid];
                     verbose=true, beta_zero=true, amortized_precompute=true,
                     enable_lp1_aff=enable_lp1_aff)
             end
@@ -1289,6 +1292,10 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
         @printf("  [MEM] post-LSM-free GC: RSS=%.1f MB  GC-live=%.1f MB\n",
                 Sys.maxrss()/1024^2, Base.gc_live_bytes()/1024^2)
         flush(stdout)
+
+        merged_deep_stat_pre = merge_conj_deep_stats(thread_deep_stats_pre)
+        print_conj_deep_report(merged_phi_stat_pre, merged_deep_stat_pre;
+                               conj_snap=conj_snap_pre, p=p)
 
         tables = Phase2Tables(
             fb_pre,

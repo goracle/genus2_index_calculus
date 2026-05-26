@@ -345,7 +345,8 @@ end
         P0              ::NTuple{2,Int},
         phi_bias_stat   ::PhiBiasStat,
         next_anchor_ref ::Ref{Function},
-        a_bucket        ::Int)::NTuple{2,Int} where V
+        a_bucket        ::Int,
+        deep_stat       ::ConjDeepStat)::NTuple{2,Int} where V
 
     si = conj_shard_idx(lp_key)
 
@@ -397,6 +398,7 @@ end
             # Pass lp_key so the CIR fingerprint analysis can correlate
             # temporally-close hits with shared algebraic structure.
             record_lp1_conj_hit!(phi_bias_stat, s.raw_steps, lp_key, a_bucket)
+            record_conj_deep_step!(deep_stat, lp_key, a_bucket, s.raw_steps, true)
             return next_anchor_ref[]()
         end
         # combined_al==0 or i0==prev_col: useless close, fall through to structured jump
@@ -700,7 +702,8 @@ function phase2_worker(G               ::Div2,
                        max_lp2_conj_nodes::Int,
                        lp_col          ::LPResidualCollector,
                        ort             ::OnlineRankTracker,
-                       phi_bias_stat   ::PhiBiasStat;
+                       phi_bias_stat   ::PhiBiasStat,
+                       deep_stat       ::ConjDeepStat;
                        verbose         ::Bool = true,
                        beta_zero       ::Bool = false,
                        amortized_precompute::Bool = false,
@@ -891,7 +894,7 @@ function phase2_worker(G               ::Div2,
                                                alpha_vec, beta_vec, rel_rows, rel_counter,
                                                ort, s, shared_lp1_conj, rank_growth,
                                                combined_scratch, P0, phi_bias_stat, next_anchor_ref,
-                                               _a_bucket)
+                                               _a_bucket, deep_stat)
                 end
             elseif enable_lp2_conj
                 cur_pt = handle_2lp_conj!(P0, RS_mumford::NTuple{4,Int}, neg_al, neg_be, ell,
@@ -1077,7 +1080,8 @@ function phase2_worker(G               ::Div2,
                     end
                     gap_sum / (n - 1)
                 end
-            end)
+            end,
+            deep_stat = deep_stat)
 end
 
 
