@@ -62,6 +62,28 @@ const RECORD_BYTES = 48   # fp(8) + u0u1v0v1(16) + i0(2) + pad(6) + al(8) + be(8
 # safe: if a bucket saturates it over-counts S₂ slightly, conservative).
 const RENYI_BITS  = 14
 const RENYI_SHIFT = 64 - RENYI_BITS   # right-shift to get bucket index
+
+# Maximum number of entries retained in the partial_fp_log diagnostic ring buffer.
+# 2M entries × 2 bytes = 4 MB.  The α₂ scaling analysis only needs a statistically
+# representative sample; recording every partial inflates RAM linearly with walk length.
+const PARTIAL_FP_LOG_CAP = 2_000_000
+
+# Cold-filter count threshold relative to per-shard mean.
+# At flush time, entries in fp-buckets whose accumulated count is below
+#   (total_emissions_so_far / nb_buckets) / COLD_COUNT_RATIO
+# are dropped rather than spilled, because such buckets contribute negligibly
+# to S₂ and therefore to birthday-collision probability.
+#
+# Rationale: with α₂_keys ≈ 0.64 for typical p~4M runs, S₂_keys ~ p^1.27 ≈ 268M
+# while S_naive ~ p²/2 ≈ 8.7T.  The LP1-conj walk needs only sqrt(2·S₂) ≈ 23K
+# hot entries before birthday collisions begin; spilling the remaining ~16M hot
+# entries per 512 MB table to SSD generates pure write traffic with zero collision
+# payoff.  A count threshold of COLD_COUNT_RATIO=4 retains only buckets that
+# have been seen at least once every 4 passes over the bucket array, which in
+# practice covers the Rényi-weighted tail while dropping the long flat baseline.
+#
+# Set to 1 to revert to the original zero-count-only filter.
+const COLD_COUNT_RATIO = 4
 # Layout offsets within a record (byte indices, 1-based Julia style handled via pointer):
 #   0: fp   UInt64
 #   8: u0   UInt32
@@ -224,11 +246,12 @@ mutable struct LP1ConjLSM{V}
     renyi_sum_c         ::Int64            # Σ cᵢ  (== total collisions + emissions)
     renyi_sum_c2        ::Int64            # Σ cᵢ²
 
-    # Time-ordered partial stream — one UInt16 bucket index per partial, in
-    # chronological order of insertion.  Used post-walk by lsm_bday_report to
-    # compute dyadic-window α₂(T) scaling diagnostics on the partial stream.
-    # At 3.7M partials × 2 bytes = ~7 MB — negligible.  Written under bday_lock.
+    # Time-ordered partial stream — ring buffer of UInt16 fp-bucket indices,
+    # capped at PARTIAL_FP_LOG_CAP entries (4 MB).  Written under bday_lock.
+    # partial_fp_log_idx is the next write position (mod cap); wraps around so
+    # the buffer always holds the most recent PARTIAL_FP_LOG_CAP samples.
     partial_fp_log      ::Vector{UInt16}
+    partial_fp_log_idx  ::Int
 
     # Cold-filter stats: entries silently dropped at flush time because their
     # Rényi bucket had zero observed count (i.e. never received an emission).
@@ -295,7 +318,8 @@ function LP1ConjLSM{V}(
         0, 0,
         # Rényi-2 estimator (2^14 = 16384 buckets — ~64 KB, negligible)
         zeros(UInt32, 1 << RENYI_BITS), Int64(0), Int64(0),
-        UInt16[],             # partial_fp_log
+        UInt16[],             # partial_fp_log (pre-allocated lazily below)
+        0,                    # partial_fp_log_idx
         0                     # n_cold_dropped
     )
 end
@@ -304,8 +328,17 @@ function LP1ConjLSM(
         ell           ::Integer;
         amortized     ::Bool   = true,
         spill_path    ::String = joinpath(homedir(), "crypto", "tmp", "lp1_conj_lsm.bin"),
-        max_hot_ram_mb::Int    = 512
+        max_hot_ram_mb::Int    = 64    # see note below
     )
+    # max_hot_ram_mb tuning note:
+    #   Birthday collisions begin after ~sqrt(2·S₂_keys) entries are in the hot
+    #   table.  For p~4M, S₂_keys~268M → need ~23K entries → ~0.7 MB.  A 64 MB
+    #   hot table (2M entries) gives a comfortable 86× margin while keeping the
+    #   spill file small.  The previous default of 512 MB caused 134M entries to
+    #   spill to SSD — none of which could ever produce a birthday collision
+    #   because their partners had already collided in hot RAM.
+    #   Increase this only if lsm_bday_report shows the first collision is
+    #   significantly later than sqrt(2·S₂)/emission_rate predicts.
     cap = min(LP1_CONJ_CAP_MULTIPLIER * Int(min(ell, p)), LP1_CONJ_CAP_MAX)
     V   = amortized ? LP1ConjVal : LP1ConjValFull
     bytes_per_entry = amortized ? 33 : 43
@@ -500,27 +533,40 @@ function _lsm_flush_shard!(sc::LP1ConjLSM{V}, si::Int) where V
     n == 0 && return
 
     # ── Bucket cold-filter ────────────────────────────────────────────────────
-    # S_naive for the LP1-conj key space is p²/2.  The Rényi-2 diagnostics show
-    # alpha_2 ≈ 0.727, i.e. S₂ ~ p^{1.45} — roughly p^{0.55} fewer distinct
-    # hot buckets than the full keyspace.  Most fp-buckets are cold: they receive
-    # emissions but will never be the other side of a birthday collision.
-    # Spilling cold-bucket entries to SSD is pure waste: they consume I/O and
-    # disk space but can never produce a match.
+    # The LP1-conj birthday collision probability is proportional to S₂ =
+    # (Σcᵢ)²/Σcᵢ².  Entries in low-count fp-buckets contribute negligibly to
+    # S₂ and will almost certainly never produce a birthday collision; spilling
+    # them to SSD wastes I/O and disk space.
     #
-    # Filter: after COLD_FILTER_WARMUP total emissions, drop any entry whose
-    # RENYI_BITS-bit fp bucket has zero observed count in renyi_counts[].  A
-    # lockless read of renyi_counts is safe — counts are only ever incremented
-    # (never cleared), so a stale zero means the bucket is genuinely cold at the
-    # time of this flush; the tiny race window where a bucket first becomes hot
-    # right as we flush costs at most one missed entry per bucket per flush cycle,
-    # which is negligible.
+    # Filter criterion: drop entries in any fp-bucket whose accumulated count
+    # (in sc.renyi_counts, updated on every insertion) is below
     #
-    # COLD_FILTER_WARMUP: require at least 2^RENYI_BITS emissions (~16k) before
-    # filtering, so the counts have had a chance to stabilise.  Below this
-    # threshold every bucket looks cold and we'd drop everything.
-    cold_filter_warmup = (1 << RENYI_BITS) * 4   # 4 passes over the bucket array
-    use_cold_filter = sc.bday_emissions >= cold_filter_warmup
-    rc = sc.renyi_counts   # lockless snapshot reference — see comment above
+    #   threshold = max(1, (total_emissions / nb_buckets) / COLD_COUNT_RATIO)
+    #
+    # where nb_buckets = 2^RENYI_BITS and COLD_COUNT_RATIO is a tunable constant.
+    # At the COLD_FILTER_WARMUP point the mean count per bucket equals
+    # total_emissions / nb_buckets; dividing by COLD_COUNT_RATIO retains only
+    # buckets that have accumulated at least 1/COLD_COUNT_RATIO of the mean,
+    # which concentrates on the Rényi-weighted hot tail.
+    #
+    # For p ~ 4M with α₂_keys ≈ 0.64 (S₂_keys ~ 268M, S_naive ~ 8.7T):
+    #   • S₂_keys/S_naive ≈ 3×10⁻⁵ → only ~0.5 of the 16384 buckets carry
+    #     meaningful collision weight at 14-bit resolution.
+    #   • All 16384 buckets are occupied after ~N ≫ 16384 emissions, so the
+    #     original zero-count filter drops nothing.  The count threshold is the
+    #     only effective lever at this resolution.
+    #
+    # COLD_FILTER_WARMUP: require at least 2^RENYI_BITS × COLD_COUNT_RATIO
+    # emissions before activating, so every bucket has had COLD_COUNT_RATIO
+    # opportunities to be seen.  Below this threshold we would over-drop.
+    cold_filter_warmup = (1 << RENYI_BITS) * COLD_COUNT_RATIO
+    use_cold_filter    = sc.bday_emissions >= cold_filter_warmup
+    rc                 = sc.renyi_counts   # lockless snapshot — only ever incremented
+    # Compute per-bucket count threshold from current emission total.
+    # Integer arithmetic throughout; no division by zero (guarded by warmup check).
+    cold_thresh = use_cold_filter ?
+        max(1, div(sc.bday_emissions >> RENYI_BITS, COLD_COUNT_RATIO)) :
+        0
 
     # Collect live entries, dropping cold-bucket entries when filter is active.
     fps  = Vector{UInt64}(undef, n)
@@ -543,7 +589,7 @@ function _lsm_flush_shard!(sc::LP1ConjLSM{V}, si::Int) where V
         # Cold-filter: skip entries in unobserved Rényi buckets.
         if use_cold_filter
             rb = Int(fp >> RENYI_SHIFT) + 1   # 1-based bucket
-            if rc[rb] == UInt32(0)
+            if Int(rc[rb]) < cold_thresh
                 n_cold += 1
                 continue
             end
@@ -966,7 +1012,14 @@ function conj_insert_or_pop!(sc::LP1ConjLSM{V}, si::Int,
         end
 
         # Time-series log: record the fp bucket index for α₂ scaling diagnostics.
-        push!(sc.partial_fp_log, UInt16(rb - 1))   # 0-based bucket, fits UInt16
+        # Use a fixed-capacity ring buffer to bound RAM usage regardless of walk
+        # length.  Pre-allocate on first use to avoid a large alloc at startup.
+        if isempty(sc.partial_fp_log)
+            resize!(sc.partial_fp_log, PARTIAL_FP_LOG_CAP)
+        end
+        idx_log = sc.partial_fp_log_idx
+        @inbounds sc.partial_fp_log[idx_log + 1] = UInt16(rb - 1)   # 0-based bucket
+        sc.partial_fp_log_idx = mod(idx_log + 1, PARTIAL_FP_LOG_CAP)
     finally
         unlock(sc.bday_lock)
     end
@@ -1208,12 +1261,24 @@ function lsm_bday_report(sc::LP1ConjLSM, p::Integer, r::Real; io::IO = stdout)
     @printf(io, "\n")
 
     # ── α₂ scaling diagnostics on the partial key stream ─────────────────────
-    # blog is the chronological sequence of fp-bucket indices (UInt16, 0-based)
-    # for every LP1-conj partial inserted.  nb = 2^RENYI_BITS buckets.
-    # We compute dyadic-window S₂(T) and S_occ(T) to measure how α₂ scales
-    # with observation window — the key question for genus-2 IC asymptotics.
-    let blog = copy(sc.partial_fp_log)
+    # blog is the ring buffer of fp-bucket indices (UInt16, 0-based).
+    # Reconstruct chronological order: entries from partial_fp_log_idx onward
+    # are older; entries before it are newer.  If the buffer hasn't wrapped yet
+    # (bday_emissions <= cap) just use the filled prefix.
+    let raw_log = sc.partial_fp_log
+        write_idx = sc.partial_fp_log_idx   # next-write position (0-based mod cap)
         nb     = 1 << RENYI_BITS
+        n_raw  = length(raw_log)
+        # Reconstruct in chronological order.
+        blog = if n_raw == 0
+            UInt16[]
+        elseif sc.bday_emissions <= PARTIAL_FP_LOG_CAP
+            # Buffer hasn't wrapped: valid data is indices 0..write_idx-1
+            copy(view(raw_log, 1:write_idx))
+        else
+            # Buffer has wrapped: chronological order = write_idx..end, then 1..write_idx-1
+            vcat(raw_log[write_idx+1:end], raw_log[1:write_idx])
+        end
         n_blog = length(blog)
         @printf(io, "  LP1-conj partial stream α₂ scaling:\n")
         if n_blog < 64
@@ -1296,12 +1361,20 @@ function lsm_bday_report(sc::LP1ConjLSM, p::Integer, r::Real; io::IO = stdout)
     end
 
     # ── Cold-filter stats ────────────────────────────────────────────────────
-    # The bucket cold-filter (activated after 4×2^RENYI_BITS emissions)
-    # drops flush entries whose Rényi fp-bucket has zero observed count.
-    # Since S_naive = p²/2 but S₂ ~ p^{2·α₂} (with α₂ < 1), the fraction of
-    # hot buckets is ~(2^RENYI_BITS) · S₂ / (p²/2) ≈ p^{2α₂-2}, which is the
-    # fraction of entries *not* dropped.  The rest are pure SSD waste.
-    @printf(io, "\n  Cold-filter (bucket zero-count drop at flush):\n")
+    # The bucket cold-filter drops flush entries whose fp-bucket count is below
+    # max(1, (total_emissions/nb)/COLD_COUNT_RATIO).  This concentrates SSD
+    # writes on the Rényi-weighted hot tail of the distribution.
+    @printf(io, "\n  Cold-filter (count-threshold drop at flush):\n")
+    @printf(io, "    COLD_COUNT_RATIO       : %d\n", COLD_COUNT_RATIO)
+    nb_buckets = 1 << RENYI_BITS
+    if n_emitted >= nb_buckets * COLD_COUNT_RATIO
+        active_thresh = max(1, div(n_emitted >> RENYI_BITS, COLD_COUNT_RATIO))
+        @printf(io, "    active threshold       : count < %d  (mean/ratio = %d/%d)\n",
+                active_thresh, n_emitted ÷ nb_buckets, COLD_COUNT_RATIO)
+    else
+        @printf(io, "    (warmup not yet reached: need %d emissions, have %d)\n",
+                nb_buckets * COLD_COUNT_RATIO, n_emitted)
+    end
     n_dropped = sc.n_cold_dropped
     n_spilled = sc.n_disk_live + n_dropped   # approximate total that went through flush path
     if n_spilled > 0

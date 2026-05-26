@@ -77,7 +77,7 @@ const LP1_CONJ_CAP_MAX = 200_000_000
 #
 #  N_CONJ_SHARDS must be a power of 2 for the cheap mask in conj_shard_idx.
 # ---------------------------------------------------------------------------
-const N_CONJ_SHARDS   = 64
+const N_CONJ_SHARDS   = 32
 const CONJ_LOAD_NUM   = 4    # max load = LOAD_NUM / LOAD_DENOM = 80%
 const CONJ_LOAD_DENOM = 5
 
