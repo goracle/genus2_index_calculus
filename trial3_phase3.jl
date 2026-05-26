@@ -124,6 +124,102 @@ struct Phase3Result
 end
 
 # ---------------------------------------------------------------------------
+#  PreRREFBasis  —  shared pre-reduced β=0 matrix handed to every worker
+#
+#  Built once in the main thread from rel_rows_pre / alpha_vec_pre.
+#  Each worker copies this block and reduces only its own new β≠0 rows
+#  against the existing pivot structure — O(n_new × nF) instead of O(nF³).
+#
+#  Fields:
+#    A        — RREF-reduced dense matrix, size (rank × nc), nc = nF+2.
+#               Columns 1..nF = atom logs, nF+1 = k coeff (-neg_be mod ell),
+#               nF+2 = RHS (neg_al mod ell).  All entries in [0, ell-1].
+#    pivot_col — pivot_col[r] = column index of the pivot in row r (1-based).
+#    col_pivot — col_pivot[c] = row index whose pivot is in column c, 0 if free.
+#    rank      — number of pivot rows (= length(A, 1))
+#    nF        — factor-base size (= nc - 2)
+#    ellI      — Int(ell)
+# ---------------------------------------------------------------------------
+struct PreRREFBasis
+    A         ::Matrix{Int128}   # (rank × nc), nc = nF+2
+    pivot_col ::Vector{Int}      # pivot_col[r] = column of pivot in row r
+    col_pivot ::Vector{Int}      # col_pivot[c] = pivot row for column c, 0=free
+    rank      ::Int
+    nF        ::Int
+    ellI      ::Int
+end
+
+# ---------------------------------------------------------------------------
+#  precompute_rref_basis
+#
+#  Performs full RREF over GF(ell) on the β=0 seeded rows (neg_be=0 for all).
+#  Returns a PreRREFBasis that workers can copy cheaply and augment with a
+#  small number of β≠0 rows.
+#
+#  Called once in phase3_solve_targets before spawning workers.
+# ---------------------------------------------------------------------------
+function precompute_rref_basis(
+        rel_rows_pre ::Vector{Dict{Int,Int}},
+        alpha_vec_pre::Vector{BigInt},
+        nF           ::Int,
+        ellI         ::Int)::PreRREFBasis
+
+    m  = length(rel_rows_pre)
+    nc = nF + 2   # nF atom cols + k col (0 for β=0 rows) + RHS col
+
+    A = zeros(Int128, m, nc)
+    for ri in 1:m
+        for (j, v) in rel_rows_pre[ri]
+            1 <= j <= nF || continue
+            A[ri, j] = mod(v, ellI)
+        end
+        # k column (nF+1) = 0 for all β=0 rows (neg_be=0 → -neg_be=0)
+        A[ri, nF+2] = Int128(mod(alpha_vec_pre[ri], ellI))
+    end
+
+    # Full RREF over GF(ellI) on columns 1..nF+1.
+    # (The k column is zero for all seeded rows so pivots only land in 1..nF.)
+    pivot_col = zeros(Int, m)
+    pr = 1
+    for c in 1:nF+1
+        piv = 0
+        for r in pr:m
+            A[r, c] != 0 && (piv = r; break)
+        end
+        piv == 0 && continue
+        A[pr, :], A[piv, :] = A[piv, :], A[pr, :]
+        inv_piv = Int128(powermod(Int(A[pr, c]), ellI - 2, ellI))
+        for cc in c:nc
+            A[pr, cc] = mod(A[pr, cc] * inv_piv, ellI)
+        end
+        for r in 1:m
+            r == pr && continue
+            A[r, c] == 0 && continue
+            f = A[r, c]
+            for cc in c:nc
+                A[r, cc] = mod(A[r, cc] - f * A[pr, cc], ellI)
+            end
+        end
+        pivot_col[pr] = c
+        pr += 1
+    end
+
+    rk = pr - 1   # number of pivot rows
+
+    # Trim to pivot rows only — zero rows carry no information.
+    A_trim      = A[1:rk, :]
+    piv_trim    = pivot_col[1:rk]
+
+    # Inverse map: column → pivot row (0 = free column).
+    col_pivot = zeros(Int, nc)
+    for r in 1:rk
+        col_pivot[piv_trim[r]] = r
+    end
+
+    return PreRREFBasis(A_trim, piv_trim, col_pivot, rk, nF, ellI)
+end
+
+# ---------------------------------------------------------------------------
 #  phase3_trial_worker
 #
 #  Runs the β≠0 walk for a single target T and returns a Phase3Result.
@@ -162,9 +258,10 @@ function phase3_trial_worker(
         seeded_rel_rows  ::Union{Vector{Dict{Int,Int}}, Nothing} = nothing,
         seeded_rel_be    ::Union{Vector{Int},           Nothing} = nothing,
         seeded_rel_al    ::Union{Vector{BigInt},        Nothing} = nothing,
-        prebuilt_step_D  ::Union{Vector{Div2}, Nothing} = nothing,
-        prebuilt_step_a  ::Union{Vector{Int},  Nothing} = nothing,
-        prebuilt_step_b  ::Union{Vector{Int},  Nothing} = nothing)::Phase3Result
+        prebuilt_step_D  ::Union{Vector{Div2},    Nothing} = nothing,
+        prebuilt_step_a  ::Union{Vector{Int},     Nothing} = nothing,
+        prebuilt_step_b  ::Union{Vector{Int},     Nothing} = nothing,
+        rref_basis       ::Union{PreRREFBasis,    Nothing} = nothing)::Phase3Result
 
     t0    = time()
     # ── DIAG checkpoint helper (thread-safe: @printf is atomic per-call) ──────
@@ -401,53 +498,114 @@ function phase3_trial_worker(
     n_local_linalg   = 0    # how many times we attempted elimination
     _next_linalg_at  = 1    # attempt when n_local_be_rows reaches this
 
-    # GF(ell) Gaussian elimination on the augmented system.
-    # Columns 1..nF = atom log unknowns; column nF+1 = k; column nF+2 = RHS (neg_al).
-    # Returns k::Int if uniquely determined and group-law verified, else nothing.
+    # GF(ell) solve for k from the accumulated relation system.
+    #
+    # Relation semantics: Σ_j coef[j]·log(fb[j])  =  neg_al + neg_be·k  (mod ell)
+    # As a linear system:  Σ_j coef[j]·x[j]  +  (-neg_be)·k  =  neg_al
+    # Column layout: 1..nF = atom logs, nF+1 = k coeff (-neg_be mod ell), nF+2 = RHS.
+    #
+    # Fast path (rref_basis supplied, normal case):
+    #   The β=0 block is already RREF.  Copy it, append new β≠0 rows, reduce
+    #   each new row against existing pivots in O(n_new × nF).  If a new row
+    #   reduces to [0…0 | coef_k | rhs] with coef_k ≠ 0, k = rhs/coef_k.
+    #
+    # Slow path (rref_basis nothing, or fast path inconclusive):
+    #   Full O(nF³) RREF on the whole augmented system.
     function try_local_linalg_solve()::Union{Int,Nothing}
         n_local_linalg += 1
-        m   = length(local_rel_rows)
-        nc  = nF + 2   # nF atom cols + k col + RHS col
-        @printf("[p3 trial %2d | linalg #%d] m=%d  nc=%d  matrix %.1f MB\n",
-                trial_idx, n_local_linalg, m, nc, m*nc*8/1024^2)
+        m  = length(local_rel_rows)
+        nc = nF + 2
+        @printf("[p3 trial %2d | linalg #%d] m=%d  nc=%d\n",
+                trial_idx, n_local_linalg, m, nc)
         flush(stdout)
-        # Build dense matrix mod ell.
-        # Use Int128 so that products A[r,cc]*f and A[pr,cc]*inv_piv (both ∈ [0,ell-1])
-        # do not overflow; for ell ~ 2^38 the product is ~2^76 > Int64 max.
-        #
-        # Relation semantics: Σ_j coef[j]·log(fb[j])  =  neg_al + neg_be·k  (mod ell)
-        # Rearranged as a linear system with unknowns x[j]=log(fb[j]) and k:
-        #   Σ_j coef[j]·x[j]  +  (-neg_be)·k  =  neg_al
-        # So column nF+1 carries the coefficient of k, which is -neg_be mod ell.
-        # Using +neg_be here would flip the sign of k in the linalg solution,
-        # giving k_try = (neg_al - log_sum)/neg_be instead of (log_sum - neg_al)/neg_be.
+
+        # ── Fast path: use pre-RREF basis ────────────────────────────────────
+        if rref_basis !== nothing
+            basis    = rref_basis
+            rk       = basis.rank
+            n_seeded = length(tables.rel_rows_pre)
+            n_new    = m - n_seeded          # β≠0 rows this worker has added
+            n_new <= 0 && return nothing
+
+            # Allocate working block: rk pre-RREF rows + n_new fresh rows.
+            B = zeros(Int128, rk + n_new, nc)
+            for r in 1:rk, c in 1:nc
+                B[r, c] = basis.A[r, c]
+            end
+            for k_row in 1:n_new
+                ri   = n_seeded + k_row
+                brow = rk + k_row
+                for (j, v) in local_rel_rows[ri]
+                    1 <= j <= nF || continue
+                    B[brow, j] = mod(v, ellI)
+                end
+                B[brow, nF+1] = mod(ellI - local_rel_be[ri], ellI)   # -neg_be
+                B[brow, nF+2] = Int128(mod(local_rel_al[ri], ellI))
+            end
+
+            # Reduce each new row against the existing pivot columns in O(n_new × nF).
+            for k_row in 1:n_new
+                brow = rk + k_row
+                for pr in 1:rk
+                    pc = basis.pivot_col[pr]
+                    B[brow, pc] == 0 && continue
+                    f = B[brow, pc]
+                    for cc in pc:nc
+                        B[brow, cc] = mod(B[brow, cc] - f * B[pr, cc], ellI)
+                    end
+                end
+            end
+
+            # A fully-reduced new row with nonzero k coeff gives k directly.
+            for k_row in 1:n_new
+                brow = rk + k_row
+                B[brow, nF+1] == 0 && continue   # k coeff zero — degenerate
+                # Check atom-log columns are all zero.
+                all_zero = true
+                for c in 1:nF
+                    if B[brow, c] != 0; all_zero = false; break; end
+                end
+                all_zero || continue   # residual atom unknowns → underdetermined
+                inv_k = Int128(powermod(Int(B[brow, nF+1]), ellI - 2, ellI))
+                k_try = Int(mod(B[brow, nF+2] * inv_k, ellI))
+                jac_mul(G, k_try, ell) == T && return k_try
+                @assert false "try_local_linalg_solve (fast): k_try=$(k_try) failed group-law verification — relation accumulator corrupt"
+            end
+
+            # Fast path inconclusive — basis may be rank-deficient.
+            @printf("[p3 trial %2d | linalg #%d] fast-path inconclusive (n_new=%d rk=%d), falling back to full RREF\n",
+                    trial_idx, n_local_linalg, n_new, rk)
+            flush(stdout)
+        end
+
+        # ── Slow path: full RREF on entire augmented system ───────────────────
+        # Int128 throughout: products of two values each in [0,ell-1] need ~76 bits
+        # for ell ~ 2^38, which overflows Int64 but fits Int128 comfortably.
+        @printf("[p3 trial %2d | linalg #%d] full RREF  m=%d  nc=%d  matrix %.1f MB\n",
+                trial_idx, n_local_linalg, m, nc, m*nc*16/1024^2)
+        flush(stdout)
         A = zeros(Int128, m, nc)
         for ri in 1:m
             for (j, v) in local_rel_rows[ri]
                 1 <= j <= nF || continue
                 A[ri, j] = mod(v, ellI)
             end
-            A[ri, nF+1] = mod(ellI - local_rel_be[ri], ellI)    # coefficient of k = -neg_be mod ell
-            A[ri, nF+2] = Int128(mod(local_rel_al[ri], ellI))   # RHS (handle BigInt seed rows)
+            A[ri, nF+1] = mod(ellI - local_rel_be[ri], ellI)   # -neg_be mod ell
+            A[ri, nF+2] = Int128(mod(local_rel_al[ri], ellI))
         end
-        # Forward elimination with partial pivoting over GF(ell).
-        pivot_col = zeros(Int, m)   # pivot_col[r] = column of pivot in row r, 0 if zero row
-        pr = 1   # next pivot row
+        pivot_col = zeros(Int, m)
+        pr = 1
         for c in 1:nF+1
-            # Find pivot in column c at or below row pr.
             piv = 0
             for r in pr:m
                 A[r, c] != 0 && (piv = r; break)
             end
             piv == 0 && continue
-            # Swap rows piv ↔ pr.
             A[pr, :], A[piv, :] = A[piv, :], A[pr, :]
-            # Normalise pivot row so A[pr,c] = 1.
             inv_piv = Int128(powermod(Int(A[pr, c]), ellI - 2, ellI))
             for cc in c:nc
                 A[pr, cc] = mod(A[pr, cc] * inv_piv, ellI)
             end
-            # Eliminate column c in all other rows.
             for r in 1:m
                 r == pr && continue
                 A[r, c] == 0 && continue
@@ -459,17 +617,11 @@ function phase3_trial_worker(
             pivot_col[pr] = c
             pr += 1
         end
-        # Look for a row whose only nonzero variable is k (column nF+1).
         for r in 1:m
             pivot_col[r] == nF+1 || continue
-            # Row reads: k = A[r, nF+2]
             k_try = Int(A[r, nF+2])
             jac_mul(G, k_try, ell) == T && return k_try
-            # Pivot on k but verify failed.  This means a corrupt relation slipped
-            # through (most likely an overflow bug upstream).  Crash loudly rather
-            # than silently discarding the result and continuing — a wrong k that
-            # accidentally passes the group-law check is far worse than a crash.
-            @assert false "try_local_linalg_solve: k_try=$(k_try) failed group-law verification — relation accumulator is corrupt (overflow?)"
+            @assert false "try_local_linalg_solve (full): k_try=$(k_try) failed group-law verification — relation accumulator corrupt"
         end
         return nothing
     end
@@ -987,6 +1139,19 @@ function phase3_solve_targets(
             length(conj_snap))
     flush(stdout)
 
+    # ── Pre-RREF the β=0 seeded block once, shared across all workers ─────────
+    # Each worker previously did a full O(nF³) RREF on a (nF+1) × (nF+2) matrix
+    # that was identical across all workers.  We do it once here in O(nF³) and
+    # hand each worker a PreRREFBasis; per-worker cost drops to O(n_new × nF)
+    # where n_new is the number of β≠0 rows added during the walk (typically 1).
+    t_rref = time()
+    rref_basis_shared = precompute_rref_basis(
+        tables.rel_rows_pre, tables.alpha_vec_pre,
+        length(tables.fb), Int(tables.ell))
+    @printf("   [phase3 pre-RREF] rank=%d / %d  (%.3fs)\n",
+            rref_basis_shared.rank, length(tables.fb), time() - t_rref)
+    flush(stdout)
+
     # Pre-allocate seeded relation vectors and the hot-anchor snapshot in the
     # main thread before spawning.  Doing this inside the spawned tasks can
     # create allocator / GC contention and reintroduce launch-time stalls.
@@ -1076,7 +1241,8 @@ function phase3_solve_targets(
                                               seeded_rel_al=seeded_rel_al[i],
                                               prebuilt_step_D=all_step_D[i],
                                               prebuilt_step_a=all_step_a[i],
-                                              prebuilt_step_b=all_step_b[i])
+                                              prebuilt_step_b=all_step_b[i],
+                                              rref_basis=rref_basis_shared)
             @printf("   [phase3 worker %d] finished: success=%s  steps=%d  elapsed=%.1fs\n",
                     i, string(results[i].success), results[i].n_steps, results[i].elapsed_s)
             flush(stdout)
