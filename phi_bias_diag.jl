@@ -2172,6 +2172,160 @@ function print_phi_bias_report(stat::PhiBiasStat; p::Int = 0)
     end
     println()
 
+    # ── α₂-12: Per-bucket identity autocorrelation Pr(X_{t+h} = X_t) ─────────
+    #
+    #  The existing α₂-4 tracks Cor(Σcᵢ²(window t), Σcᵢ²(window t+τ)) — a scalar
+    #  summary that aggregates all buckets.  This section answers the finer question:
+    #
+    #    P_obs(h)  = Pr(X_{t+h} = X_t)   (empirical same-bucket rate at lag h)
+    #    P_base    = Σᵢ pᵢ²               (baseline under i.i.d. with empirical marginal)
+    #    lift(h)   = P_obs(h) / P_base
+    #
+    #  lift(h) > 1 means the walk returns to the same bucket more often than chance
+    #  at lag h — bucket self-attraction / persistence.
+    #  lift(h) → 1 as h → ∞ is expected for any ergodic chain; the decorrelation
+    #  lag h* where lift first crosses 1+ε is the bucket-level mixing time.
+    #
+    #  We also compute the per-bucket conditional return probability:
+    #    p_return(b, h) = Pr(X_{t+h} = b | X_t = b)
+    #  and report the top-5 stickiest buckets (highest lift_b = p_return / p_b).
+    #  A bucket with lift_b >> 1 is a genuine attractor in the partial stream.
+    #
+    #  Baseline P_base is estimated from the empirical marginal of the full blog
+    #  sequence (not assumed uniform — this correctly handles the factor-base
+    #  non-uniformity already observed in the a-histogram).
+    #
+    #  Computational cost: O(n_blog × max_lag) with a tight inner loop over the
+    #  raw UInt16 stream — no allocation inside the lag loop.
+    @printf("  α₂-12 — Per-bucket identity autocorrelation Pr(X_{{t+h}} = X_t) vs baseline:\n")
+    let
+        # Empirical marginal pᵢ and baseline P_base = Σ pᵢ²
+        marginal = zeros(Float64, nb_a2)
+        @inbounds for b in blog; marginal[Int(b) + 1] += 1.0; end
+        marginal ./= max(1.0, Float64(n_blog))
+        P_base = sum(x^2 for x in marginal)   # Rényi-2 collision probability
+
+        # Lag grid: dense at short lags (where self-attraction is most likely),
+        # then geometric to ~n_blog/4.  We cap at 64 lags total.
+        max_lag_id = min(64, n_blog ÷ 4)
+        lag_grid = Int[]
+        for h in 1:min(20, max_lag_id)
+            push!(lag_grid, h)
+        end
+        h = 24
+        while h <= max_lag_id && length(lag_grid) < 64
+            push!(lag_grid, h)
+            h = max(h + 1, round(Int, h * 1.5))
+        end
+
+        if isempty(lag_grid)
+            @printf("    (need n_blog ≥ 4; got %d)\n", n_blog)
+        else
+            # For each lag h: count matches X_{t+h} == X_t.
+            # Inner loop is a tight scan over the raw UInt16 array — no Dict, no alloc.
+            n_lags = length(lag_grid)
+            P_obs  = zeros(Float64, n_lags)
+            @inbounds for (li, h) in enumerate(lag_grid)
+                n_pairs = n_blog - h
+                n_pairs <= 0 && continue
+                hits = 0
+                for t in 1:n_pairs
+                    hits += (blog[t] == blog[t + h]) ? 1 : 0
+                end
+                P_obs[li] = Float64(hits) / Float64(n_pairs)
+            end
+
+            # Analytic null: for an i.i.d. sequence with empirical marginal pᵢ,
+            # Pr(X_{t+h} = X_t) = Σᵢ pᵢ² = P_base for all h ≥ 1.
+            # A Monte-Carlo shuffle would converge to exactly this; computing it
+            # analytically avoids a 125 MB copy and O(n_blog × n_lags) null scan.
+            P_null = P_base
+
+            @printf("    Baseline P_base (Σpᵢ²)        : %.6e  (analytic i.i.d. null)\n", P_base)
+            @printf("    %-6s  %-12s  %-12s  %-8s  %s\n",
+                    "lag h", "P_obs", "P_null(=P_base)", "lift_obs", "interpretation")
+            decor_lag_id = -1
+            for (li, h) in enumerate(lag_grid)
+                P_base_local = max(1e-30, P_null)
+                lift_obs  = P_obs[li]  / P_base_local
+                flag = if lift_obs > 2.0;  "← STRONG self-attraction"
+                       elseif lift_obs > 1.3; "← moderate self-attraction"
+                       elseif lift_obs > 1.05; "← mild self-attraction"
+                       elseif lift_obs < 0.95; "← AVOIDANCE"
+                       else;                   "(≈ random)"
+                       end
+                @printf("    %-6d  %-12.6e  %-12.6e  %-8.4f  %s\n",
+                        h, P_obs[li], P_null, lift_obs, flag)
+                if decor_lag_id < 0 && lift_obs < 1.05
+                    decor_lag_id = h
+                end
+            end
+            if decor_lag_id > 0
+                @printf("    Decorrelation lag h*           : %d partials (lift first < 1.05)\n",
+                        decor_lag_id)
+            else
+                @printf("    Decorrelation lag h*           : > %d partials (lift never drops below 1.05)\n",
+                        lag_grid[end])
+            end
+            println()
+
+            # Per-bucket conditional return probability p_return(b) = Pr(X_{t+1}=b|X_t=b)
+            # vs marginal pᵢ.  Only at lag h=1 (most diagnostic for stickiness).
+            # lift_b = p_return(b) / p_b.  Top-5 stickiest and bottom-5 most-repelled.
+            @printf("    Per-bucket stickiness at lag h=1 (top-5 attractors / bottom-5 repellers):\n")
+            if n_blog >= 4
+                # Count per-bucket: n_stays[b] = #{t : blog[t]==b AND blog[t+1]==b}
+                #                   n_depart[b] = #{t : blog[t]==b}   (= n_blog*pᵢ approx)
+                n_stays   = zeros(Int, nb_a2)
+                n_depart  = zeros(Int, nb_a2)
+                @inbounds for t in 1:(n_blog - 1)
+                    b = Int(blog[t]) + 1
+                    n_depart[b] += 1
+                    blog[t] == blog[t+1] && (n_stays[b] += 1)
+                end
+                # Only report buckets with ≥10 departures to suppress noise.
+                min_dep = 10
+                p_return_b = [(n_depart[b] >= min_dep) ?
+                               (Float64(n_stays[b]) / Float64(n_depart[b])) : NaN
+                              for b in 1:nb_a2]
+                # lift_b = p_return_b / max(pᵢ, 1/nb_a2)  (guard against 0-marginal buckets)
+                lift_b_vec = [(isnan(p_return_b[b]) || marginal[b] < 1e-12) ? NaN :
+                               p_return_b[b] / marginal[b]
+                              for b in 1:nb_a2]
+
+                # Sort by lift (NaN last)
+                valid_idx = [b for b in 1:nb_a2 if !isnan(lift_b_vec[b])]
+                sort!(valid_idx, by = b -> -lift_b_vec[b])
+
+                @printf("      %5s  %8s  %8s  %8s  %8s\n",
+                        "bucket", "p_i", "p_ret(1)", "lift_b", "n_dep")
+                for b in valid_idx[1:min(5, end)]
+                    @printf("      %5d  %8.5f  %8.5f  %8.3f  %8d\n",
+                            b - 1, marginal[b], p_return_b[b], lift_b_vec[b], n_depart[b])
+                end
+                @printf("      --- bottom 5 ---\n")
+                for b in valid_idx[max(1,end-4):end]
+                    @printf("      %5d  %8.5f  %8.5f  %8.3f  %8d\n",
+                            b - 1, marginal[b], p_return_b[b], lift_b_vec[b], n_depart[b])
+                end
+
+                # Summary statistic: mean lift_b weighted by n_depart (traffic-weighted stickiness)
+                total_dep  = sum(n_depart[b] for b in valid_idx)
+                mean_lift_b = total_dep > 0 ?
+                    sum(lift_b_vec[b] * n_depart[b] for b in valid_idx) / total_dep : NaN
+                flag_sticky = if !isnan(mean_lift_b)
+                    mean_lift_b > 1.3 ? "  ← GLOBALLY STICKY (walk self-traps)" :
+                    mean_lift_b > 1.05 ? "  ← mild global stickiness" :
+                    mean_lift_b < 0.95 ? "  ← GLOBAL AVOIDANCE (anti-persistent)" :
+                                         "  (traffic-weighted stickiness ≈ random)"
+                else "  (insufficient data)" end
+                @printf("      Traffic-weighted mean lift_b   : %.4f%s\n",
+                        isnan(mean_lift_b) ? 0.0 : mean_lift_b, flag_sticky)
+            end
+        end
+    end
+    println()
+
     end  # if n_blog >= 32
 
     @printf("──────────────────────────────────────────────────────────────────────\n")
