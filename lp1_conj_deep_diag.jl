@@ -174,6 +174,12 @@ mutable struct ConjDeepStat
     d12_close_px    ::Vector{Int}
     d12_close_key   ::Vector{UInt128}
 
+    # D14/D15 — φ-coefficient 'a' at each store event, for conditional entropy
+    # and residual support analysis conditioned on px_bucket.
+    # Parallel to d12_store_* vectors (same cap D12_MAX_EVENTS).
+    # -1 sentinel means 'a' was unavailable (caller didn't provide it).
+    d14_store_a     ::Vector{Int}
+
     # D9 — step-opcode conditional entropy H(opcode | recent LP1-conj).
     # opcode_log: one UInt8 per VALID phi step recording the step type:
     #   0 = 0-LP (full relation)
@@ -201,6 +207,7 @@ function ConjDeepStat()
         -1,
         Int[], Int[], UInt128[],   # d12 store
         Int[], Int[], UInt128[],   # d12 close
+        Int[],                     # d14 store_a
         UInt8[], Bool[],
     )
 end
@@ -244,6 +251,13 @@ function merge_conj_deep_stats(stats::Vector{ConjDeepStat})::ConjDeepStat
             append!(dst_px,  src_px[1:n_take])
             append!(dst_key, src_key[1:n_take])
         end
+        # D14: merge store_a (same cap as d12 store; must track same number of events)
+        let n_rem = D12_MAX_EVENTS - length(merged.d14_store_a)
+            if n_rem > 0
+                n_take = min(n_rem, length(s.d14_store_a))
+                append!(merged.d14_store_a, s.d14_store_a[1:n_take])
+            end
+        end
     end
     return merged
 end
@@ -260,13 +274,16 @@ end
                                          lp_key   ::UInt128,
                                          raw_step ::Int,
                                          alpha_cur::Int = -1,
-                                         px       ::Int = -1)
+                                         px       ::Int = -1,
+                                         a_val    ::Int = -1)
     haskey(stat.d8_shadow, lp_key) || (stat.d8_shadow[lp_key] = raw_step)
     # D12: record (alpha, px) at store time, capped.
     if alpha_cur >= 0 && length(stat.d12_store_alpha) < D12_MAX_EVENTS
         push!(stat.d12_store_alpha, alpha_cur)
         push!(stat.d12_store_px,    px)
         push!(stat.d12_store_key,   lp_key)
+        # D14: record raw φ-coefficient a at the same event (sentinel -1 if unavailable).
+        push!(stat.d14_store_a, a_val)
     end
     return nothing
 end
@@ -1516,6 +1533,8 @@ function print_conj_deep_report(phi_stat ::PhiBiasStat,
     #
     #  Tests the hypothesis that the x-support of {alpha·G : alpha ∈ Z_ell}
     #  is small, so LP1-conj closures cluster in (alpha, P0.x) space.
+    #  Also checks whether the anchor x-coordinate itself has memory from store
+    #  to close via a matched-key mutual-information test.
     # ──────────────────────────────────────────────────────────────────────
     @printf("\n  D12 — Alpha/anchor joint support diagnostic\n")
     @printf("  ─────────────────────────────────────────────────────────────────\n")
@@ -1621,6 +1640,104 @@ function print_conj_deep_report(phi_stat ::PhiBiasStat,
             @printf("      ↑ NMI mildly elevated: weak alpha/anchor correlation\n")
         else
             @printf("      (≈ independent: alpha and anchor px are not correlated at store time)\n")
+        end
+
+        # ── Paired MI on matched store→close keys: does anchor-x memory survive? ──
+        # Here we pair the first store and first close event for each key and test
+        # whether the anchor x-coordinate at store predicts the anchor x-coordinate
+        # at close.  This is the cleanest version of the "px vs anchor-x" question
+        # because it removes the alpha coupling and looks directly at x-memory.
+        if n_store >= 4 && n_close >= 4
+            @printf("    Paired mutual information I(px_store_bkt; px_close_bkt) on matched keys:\n")
+
+            store_key_to_px = Dict{UInt128, Int}()
+            @inbounds for i in 1:n_store
+                haskey(store_key_to_px, deep_stat.d12_store_key[i]) ||
+                    (store_key_to_px[deep_stat.d12_store_key[i]] = deep_stat.d12_store_px[i])
+            end
+            close_key_to_px = Dict{UInt128, Int}()
+            @inbounds for i in 1:n_close
+                haskey(close_key_to_px, deep_stat.d12_close_key[i]) ||
+                    (close_key_to_px[deep_stat.d12_close_key[i]] = deep_stat.d12_close_px[i])
+            end
+
+            paired_px_store = Int[]
+            paired_px_close = Int[]
+            @inbounds for (k, p_store) in store_key_to_px
+                p_close = get(close_key_to_px, k, -1)
+                p_close < 0 && continue
+                push!(paired_px_store, p_store)
+                push!(paired_px_close, p_close)
+            end
+
+            n_pair_px = length(paired_px_store)
+            @printf("      paired keys                 : %d\n", n_pair_px)
+            if n_pair_px >= 4
+                px_store_max = max(1, maximum(paired_px_store; init=1))
+                px_close_max = max(1, maximum(paired_px_close; init=1))
+                px_pair_max  = max(px_store_max, px_close_max)
+                n_pxb        = clamp(isqrt(max(1, n_pair_px)), 8, 64)
+
+                function _ppb(px_val::Int)::Int
+                    clamp(1 + (px_val * n_pxb) ÷ (px_pair_max + 1), 1, n_pxb)
+                end
+
+                hist2d_px = zeros(Int, n_pxb, n_pxb)
+                @inbounds for i in 1:n_pair_px
+                    hist2d_px[_ppb(paired_px_store[i]), _ppb(paired_px_close[i])] += 1
+                end
+
+                px_marg_s = [sum(hist2d_px[i, j] for j in 1:n_pxb) for i in 1:n_pxb]
+                px_marg_c = [sum(hist2d_px[i, j] for i in 1:n_pxb) for j in 1:n_pxb]
+                mi_px = 0.0
+                @inbounds for i in 1:n_pxb, j in 1:n_pxb
+                    c = hist2d_px[i, j]
+                    c == 0 && continue
+                    pij = Float64(c) / n_pair_px
+                    pi  = Float64(px_marg_s[i]) / n_pair_px
+                    pj  = Float64(px_marg_c[j]) / n_pair_px
+                    pi > 0 && pj > 0 && (mi_px += pij * log2(pij / (pi * pj)))
+                end
+                h_s = -sum(x/n_pair_px * log2(max(x/n_pair_px, 1e-300)) for x in px_marg_s if x > 0)
+                h_c = -sum(x/n_pair_px * log2(max(x/n_pair_px, 1e-300)) for x in px_marg_c if x > 0)
+                nmi_px = (min(h_s, h_c) > 0) ? mi_px / min(h_s, h_c) : 0.0
+
+                # Deterministic phase-shift baseline: pair the store list with a
+                # cyclically shifted version of the close list to break key-wise
+                # alignment while preserving marginals.
+                shift = max(1, n_pair_px ÷ 3)
+                hist2d_shift = zeros(Int, n_pxb, n_pxb)
+                @inbounds for i in 1:n_pair_px
+                    j = 1 + mod(i - 1 + shift, n_pair_px)
+                    hist2d_shift[_ppb(paired_px_store[i]), _ppb(paired_px_close[j])] += 1
+                end
+                px_marg_s2 = [sum(hist2d_shift[i, j] for j in 1:n_pxb) for i in 1:n_pxb]
+                px_marg_c2 = [sum(hist2d_shift[i, j] for i in 1:n_pxb) for j in 1:n_pxb]
+                mi_shift = 0.0
+                @inbounds for i in 1:n_pxb, j in 1:n_pxb
+                    c = hist2d_shift[i, j]
+                    c == 0 && continue
+                    pij = Float64(c) / n_pair_px
+                    pi  = Float64(px_marg_s2[i]) / n_pair_px
+                    pj  = Float64(px_marg_c2[j]) / n_pair_px
+                    pi > 0 && pj > 0 && (mi_shift += pij * log2(pij / (pi * pj)))
+                end
+                excess_mi = mi_px - mi_shift
+
+                @printf("      I = %.4f bits  H(store_px)=%.4f  H(close_px)=%.4f  NMI=%.4f\n",
+                        mi_px, h_s, h_c, nmi_px)
+                @printf("      shift-baseline I = %.4f bits  excess = %.4f bits\n",
+                        mi_shift, excess_mi)
+                if excess_mi > 0.05
+                    @printf("      ↑ excess MI > 0.05 bits: anchor x carries real memory across store→close\n")
+                elseif excess_mi > 0.01
+                    @printf("      ↑ weak but visible x-memory across store→close\n")
+                else
+                    @printf("      (≈ no detectable x-memory beyond finite-sample bias)\n")
+                end
+            else
+                @printf("      (too few matched store→close keys for px MI)\n")
+            end
         end
 
         # ── Same analysis for close events ────────────────────────────────
@@ -1933,6 +2050,69 @@ function print_conj_deep_report(phi_stat ::PhiBiasStat,
                 end
             end
 
+                # ── Recurrence-trimmed support ────────────────────────────
+                # For each multiplicity threshold r, restrict to keys with
+                # ≥r hits and report: key count, store%, and complexity
+                # exponents κ_key, κ_α, κ_(α,px).  All slices guard against
+                # empty collections so sum() never reduces over an empty range.
+                @printf("\n    Recurrence-trimmed support (tail cut by key multiplicity):\n")
+                @printf("      %5s  %10s  %9s  %10s  %10s  %10s\n",
+                        "r", "keys≥r", "store%", "κ_key", "κ_α", "κ_(α,px)")
+                @printf("      %s\n", "─"^62)
+
+                # Parallel alpha/px slices — may be shorter than n_store if
+                # alpha was unavailable for some events (alpha_cur < 0 guard).
+                have_alpha = length(deep_stat.d12_store_alpha) == n_store
+                have_px    = length(deep_stat.d12_store_px)    == n_store
+
+                # Per-key sets for support cardinality of α and (α,px).
+                key_to_alpha    = Dict{UInt128, Set{Int}}()
+                key_to_alpha_px = Dict{UInt128, Set{Tuple{Int,Int}}}()
+                if have_alpha
+                    sizehint!(key_to_alpha,    n_full)
+                    sizehint!(key_to_alpha_px, n_full)
+                    @inbounds for i in 1:n_store
+                        k  = deep_stat.d12_store_key[i]
+                        al = deep_stat.d12_store_alpha[i]
+                        px = have_px ? deep_stat.d12_store_px[i] : 0
+                        push!(get!(key_to_alpha,    k, Set{Int}()),              al)
+                        push!(get!(key_to_alpha_px, k, Set{Tuple{Int,Int}}()), (al, px))
+                    end
+                end
+
+                for r in (1, 2, 3, 5, 10)
+                    keys_r = [k for (k, c) in key_counts if c >= r]
+                    if isempty(keys_r)
+                        @printf("      %5d  %10d  %9s  %10s  %10s  %10s\n",
+                                r, 0, "-", "-", "-", "-")
+                        continue
+                    end
+                    n_keys_r  = length(keys_r)
+                    n_store_r = sum(key_counts[k] for k in keys_r; init=0)
+                    store_pct = 100.0 * n_store_r / max(n_store, 1)
+                    κ_key_str = @sprintf("%.4f", log(p, n_keys_r))
+
+                    κ_α_str   = "-"
+                    κ_apx_str = "-"
+                    if have_alpha && !isempty(key_to_alpha)
+                        all_alpha    = Set{Int}()
+                        all_alpha_px = Set{Tuple{Int,Int}}()
+                        for k in keys_r
+                            if haskey(key_to_alpha, k)
+                                union!(all_alpha,    key_to_alpha[k])
+                                union!(all_alpha_px, key_to_alpha_px[k])
+                            end
+                        end
+                        n_al  = length(all_alpha)
+                        n_apx = length(all_alpha_px)
+                        κ_α_str   = n_al  > 0 ? @sprintf("%.4f", log(p, n_al))  : "-"
+                        κ_apx_str = n_apx > 0 ? @sprintf("%.4f", log(p, n_apx)) : "-"
+                    end
+
+                    @printf("      %5d  %10d  %9.2f  %10s  %10s  %10s\n",
+                            r, n_keys_r, store_pct, κ_key_str, κ_α_str, κ_apx_str)
+                end
+
             # ── p-adic valuation distributions ───────────────────────────
             # v_p(x) = largest k s.t. p^k | x.  For x=0 we report a
             # sentinel "∞" count separately.  Coords are already mod p
@@ -1972,6 +2152,194 @@ function print_conj_deep_report(phi_stat ::PhiBiasStat,
         end
     end   # let D13
 
-    @printf("\n══ End LP1-conj deep diagnostics ════════════════════════════════════\n")
+    # ──────────────────────────────────────────────────────────────────────
+    #  D14 — Conditional entropy H(a | px_bucket)
+    #
+    #  For each px bucket, builds the distribution of the φ-coefficient `a`
+    #  recorded at each store event and computes Shannon entropy.  A drop
+    #  below log₂(n_abkts) signals that u(px) division collapses the `a`
+    #  distribution — i.e., the anchor constrains which coefficients survive.
+    # ──────────────────────────────────────────────────────────────────────
+    @printf("\n  D14 — Conditional entropy H(a | px_bucket)\n")
+    @printf("  ─────────────────────────────────────────────────────────────────\n")
+    let
+        n_store  = length(deep_stat.d12_store_key)
+        have_a   = length(deep_stat.d14_store_a)  == n_store
+        have_px  = length(deep_stat.d12_store_px) == n_store
+
+        if n_store < 4 || !have_a || !have_px
+            @printf("    (insufficient data: n_store=%d have_a=%s have_px=%s — skipping D14)\n",
+                    n_store, have_a, have_px)
+        elseif p <= 1
+            @printf("    (p not provided — skipping D14)\n")
+        else
+            n_pbkt  = 32
+            n_abkts = 64
+            px_max  = p - 1
+            _pbkt14(px) = clamp(1 + Int(px) * n_pbkt  ÷ max(px_max, 1), 1, n_pbkt)
+            _abkt14(av) = av < 0 ? 1 : clamp(1 + av * n_abkts ÷ max(p, 1), 1, n_abkts)
+
+            px_a_hist = [zeros(Int, n_abkts) for _ in 1:n_pbkt]
+            n_valid = 0
+            @inbounds for i in 1:n_store
+                av = deep_stat.d14_store_a[i]
+                av < 0 && continue
+                pb = _pbkt14(deep_stat.d12_store_px[i])
+                ab = _abkt14(av)
+                px_a_hist[pb][ab] += 1
+                n_valid += 1
+            end
+
+            @printf("    store events with valid a   : %d / %d\n", n_valid, n_store)
+
+            if n_valid < 4
+                @printf("    (too few valid a events — skipping entropy computation)\n")
+            else
+                H_max = log2(Float64(n_abkts))
+                H_vals      = Float64[]
+                px_nonempty = Int[]
+                for pb in 1:n_pbkt
+                    h = px_a_hist[pb]
+                    tot = sum(h)
+                    tot < 4 && continue
+                    ent = -sum(c/tot * log2(max(c/tot, 1e-300)) for c in h if c > 0)
+                    push!(H_vals, ent)
+                    push!(px_nonempty, pb)
+                end
+
+                if isempty(H_vals)
+                    @printf("    (no px bucket had >=4 valid events)\n")
+                else
+                    H_mean           = sum(H_vals) / length(H_vals)
+                    H_min_v, H_min_i = findmin(H_vals)
+                    H_max_v, H_max_i = findmax(H_vals)
+                    ratio            = H_mean / max(1e-10, H_max)
+
+                    @printf("    H_max (uniform over %d a-buckets) : %.4f bits\n", n_abkts, H_max)
+                    @printf("    mean H(a | px)                    : %.4f bits  (%.1f%% of max)\n",
+                            H_mean, 100.0 * ratio)
+                    @printf("    min  H(a | px=b)                  : %.4f bits  px_bkt=%d  <- most constrained\n",
+                            H_min_v, px_nonempty[H_min_i] - 1)
+                    @printf("    max  H(a | px=b)                  : %.4f bits  px_bkt=%d\n",
+                            H_max_v, px_nonempty[H_max_i] - 1)
+
+                    if ratio < 0.7
+                        @printf("    !! mean H < 0.7*H_max: ANCHOR CONSTRAINS phi\n")
+                        @printf("       -> division by u(px) introduces bias; certain anchors collapse 'a'\n")
+                    elseif ratio < 0.9
+                        @printf("    ^ mild phi-restriction (H/H_max = %.3f)\n", ratio)
+                    else
+                        @printf("    (a nearly uniform across anchors — no direct phi-compression from px; %.3f)\n",
+                                ratio)
+                    end
+
+                    order = sortperm(H_vals)
+                    @printf("    5 most-constrained px_buckets:\n")
+                    @printf("      %6s  %8s  %8s\n", "px_bkt", "H(bits)", "H/H_max")
+                    for idx in order[1:min(5, lastindex(order))]
+                        pb   = px_nonempty[idx]
+                        p_lo = (pb-1) * (px_max+1) ÷ n_pbkt
+                        p_hi = pb     * (px_max+1) ÷ n_pbkt - 1
+                        @printf("      px~[%5d,%5d)  H=%.4f  H/H_max=%.4f\n",
+                                p_lo, p_hi, H_vals[idx], H_vals[idx] / H_max)
+                    end
+                end
+            end
+        end
+    end   # let D14
+
+    # ──────────────────────────────────────────────────────────────────────
+    #  D15 — Residual support ratio conditioned on px_bucket
+    #
+    #  For each px bucket, reports:
+    #      support_ratio = #distinct_lp_keys / #samples
+    #  Ratio near 1.0 → every sample is a new key (no local collision).
+    #  Ratio << 1.0   → certain anchors collapse the residual space.
+    #  This is the end-to-end version of D14: D14 tests the transfer function
+    #  (does px restrict a?), D15 tests the final output (does px restrict
+    #  the key space?).
+    # ──────────────────────────────────────────────────────────────────────
+    @printf("\n  D15 — Residual support ratio conditioned on px_bucket\n")
+    @printf("  ─────────────────────────────────────────────────────────────────\n")
+    let
+        n_store = length(deep_stat.d12_store_key)
+        have_px = length(deep_stat.d12_store_px) == n_store
+
+        if n_store < 4 || !have_px
+            @printf("    (insufficient data: n_store=%d have_px=%s — skipping D15)\n",
+                    n_store, have_px)
+        elseif p <= 1
+            @printf("    (p not provided — skipping D15)\n")
+        else
+            n_pbkt  = 32
+            px_max  = p - 1
+            _pbkt15(px) = clamp(1 + Int(px) * n_pbkt ÷ max(px_max, 1), 1, n_pbkt)
+
+            bkt_total    = zeros(Int, n_pbkt)
+            bkt_distinct = [Set{UInt128}() for _ in 1:n_pbkt]
+            @inbounds for i in 1:n_store
+                pb = _pbkt15(deep_stat.d12_store_px[i])
+                bkt_total[pb] += 1
+                push!(bkt_distinct[pb], deep_stat.d12_store_key[i])
+            end
+
+            @printf("    %-24s  %8s  %8s  %8s  %s\n",
+                    "px_bucket", "samples", "distinct", "ratio", "note")
+            @printf("    %s\n", "-"^70)
+
+            ratios_nonempty = Float64[]
+            min_ratio = 1.0;  min_pb = 0
+            max_ratio = 0.0;  max_pb = 0
+            for pb in 1:n_pbkt
+                tot = bkt_total[pb]
+                tot < 4 && continue
+                nd  = length(bkt_distinct[pb])
+                r   = Float64(nd) / tot
+                push!(ratios_nonempty, r)
+                p_lo = (pb-1) * (px_max+1) ÷ n_pbkt
+                p_hi = pb     * (px_max+1) ÷ n_pbkt - 1
+                note = r < 0.5 ? "<- LOCAL COLLAPSE (strong)" :
+                       r < 0.8 ? "<- mild collision clustering" :
+                                 ""
+                @printf("    px~[%5d,%5d)  %8d  %8d  %8.4f  %s\n",
+                        p_lo, p_hi, tot, nd, r, note)
+                if r < min_ratio; min_ratio = r; min_pb = pb; end
+                if r > max_ratio; max_ratio = r; max_pb = pb; end
+            end
+
+            if !isempty(ratios_nonempty)
+                global_distinct = length(Set(deep_stat.d12_store_key))
+                mean_ratio = sum(ratios_nonempty) / length(ratios_nonempty)
+                @printf("\n    Summary:\n")
+                @printf("      global support ratio (all px) : %.4f  (%d distinct / %d stores)\n",
+                        Float64(global_distinct) / n_store, global_distinct, n_store)
+                @printf("      mean conditional ratio        : %.4f\n", mean_ratio)
+                @printf("      min  conditional ratio        : %.4f  px_bkt=%d  <- most collapsed\n",
+                        min_ratio, min_pb - 1)
+                @printf("      max  conditional ratio        : %.4f  px_bkt=%d\n",
+                        max_ratio, max_pb - 1)
+
+                if min_ratio < 0.5
+                    @printf("      !! STRONG local collapse at px_bkt=%d (ratio=%.4f)\n",
+                            min_pb - 1, min_ratio)
+                    @printf("         -> walks anchored there collide far below birthday bound\n")
+                    @printf("         -> steer anchor selection toward this px bucket for faster closure\n")
+                elseif min_ratio < 0.8
+                    @printf("      ^ mild collapse in some buckets — worth investigating anchor bias\n")
+                else
+                    @printf("      (no bucket shows significant local collapse)\n")
+                end
+
+                @printf("\n    D14 x D15 cross-check:\n")
+                @printf("      Pattern A (D14 drops AND D15 drops) -> anchor-dependent compression; walk is steerable\n")
+                @printf("      Pattern B (D14 flat, D15 drops)     -> collapse arises in later steps (div/sqrt/splitting)\n")
+                @printf("      Pattern C (both flat)               -> structure is temporal/trajectory, not static\n")
+            else
+                @printf("    (no px bucket had >=4 store events)\n")
+            end
+        end
+    end   # let D15
+
+    @printf("\n== End LP1-conj deep diagnostics ====================================================\n")
     flush(stdout)
 end

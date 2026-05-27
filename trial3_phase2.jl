@@ -348,7 +348,8 @@ end
         a_bucket        ::Int,
         deep_stat       ::ConjDeepStat,
         al_cur          ::Int = -1,
-        px_anchor       ::Int = -1)::NTuple{2,Int} where V
+        px_anchor       ::Int = -1,
+        a_raw           ::Int = -1)::NTuple{2,Int} where V
 
     si = conj_shard_idx(lp_key)
 
@@ -362,7 +363,7 @@ end
 
     if prev === nothing
         # Miss: key was freshly stored.  Record store-step for D8 closure-depth.
-        record_conj_deep_miss!(deep_stat, lp_key, s.raw_steps, al_cur, px_anchor)
+        record_conj_deep_miss!(deep_stat, lp_key, s.raw_steps, al_cur, px_anchor, a_raw)
     end
 
     if prev !== nothing
@@ -902,7 +903,7 @@ function phase2_worker(G               ::Div2,
                                                alpha_vec, beta_vec, rel_rows, rel_counter,
                                                ort, s, shared_lp1_conj, rank_growth,
                                                combined_scratch, P0, phi_bias_stat, next_anchor_ref,
-                                               _a_bucket, deep_stat, al, P0[1])
+                                               _a_bucket, deep_stat, al, P0[1], Int(a))
                     # D9: record 1LP-conj opcode; is_emission = true iff handle produced an emission
                     record_conj_deep_opcode!(deep_stat, OPCODE_1LP_CONJ,
                                              deep_stat.n_emissions > n_emit_before)
