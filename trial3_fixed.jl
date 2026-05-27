@@ -465,13 +465,24 @@ function index_calculus_walk(G::Div2, T::Div2;
     shared_lp2            = LP2Graph()
     shared_lp2_lock       = ReentrantLock()
     shared_lp_doubled     = Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int}}()
-    shared_lp1_conj       = LP1ConjLSM(ell; amortized=false,
-                                          spill_path=joinpath(homedir(), "crypto", "tmp", "lp1_conj_main.h5"))
-    let _p = shared_lp1_conj.spill_path
-        atexit(() -> begin
-            isfile(_p)            && rm(_p;            force=true)
-            isfile(_p * ".compact") && rm(_p * ".compact"; force=true)
-        end)
+    shared_lp1_conj_arr   = [LP1ConjLSM(ell; amortized=false,
+                                          spill_path=joinpath(homedir(), "crypto", "tmp", "lp1_conj_main_t$(tid).h5"),
+                                          max_hot_ram_mb = 512 ÷ Threads.nthreads())
+                             for tid in 1:Threads.nthreads()]
+    for lsm in shared_lp1_conj_arr
+        let _p = lsm.spill_path
+            atexit(() -> begin
+                isfile(_p)            && rm(_p;            force=true)
+                isfile(_p * ".compact") && rm(_p * ".compact"; force=true)
+            end)
+        end
+    end
+    # Wire shared global bloom and peer list.
+    let gb = BloomFilter(shared_lp1_conj_arr[1].max_entries * length(shared_lp1_conj_arr))
+        for lsm in shared_lp1_conj_arr
+            lsm.global_bloom = gb
+            lsm.peers = shared_lp1_conj_arr
+        end
     end
     shared_lp2_conj       = LP2ConjGraph()
     shared_lp2_conj_lock  = ReentrantLock()
@@ -518,7 +529,7 @@ function index_calculus_walk(G::Div2, T::Div2;
                 shared_lp1, shared_lp1_lock,
                 shared_lp2, shared_lp2_lock,
                 shared_lp_doubled,
-                shared_lp1_conj,
+                shared_lp1_conj_arr[tid],
                 shared_lp2_conj, shared_lp2_conj_lock,
                 enable_lp2, enable_lp2_conj, max_lp2_nodes, max_lp2_conj_nodes,
                 thread_collectors[tid], rank_tracker,
@@ -650,7 +661,7 @@ function index_calculus_walk(G::Div2, T::Div2;
     # Birthday diagnostics: report LP1-conj effective support estimate.
     # r = total throughput (valid phi steps across all threads) / phase2 wall time
     r_est = hits_total / max(1e-9, t_phase2_done)
-    lsm_bday_report(shared_lp1_conj, p, r_est)
+    lsm_bday_report(shared_lp1_conj_arr[1], p, r_est)
 
     if !solve
         return (k=nothing, rel_rows=rel_rows, alpha_vec=alpha_vec,
@@ -659,7 +670,7 @@ function index_calculus_walk(G::Div2, T::Div2;
 
     # ── Pre-solve cleanup ─────────────────────────────────────────────────────
     empty!(shared_lp1); clear_lp2_graph!(shared_lp2); empty!(all_samples)
-    lsm_close!(shared_lp1_conj)
+    for lsm in shared_lp1_conj_arr; lsm_close!(lsm); end
     GC.gc()
     ccall((:flint_set_num_threads, :libflint), Cvoid, (Cint,), 1)  # avoid FLINT/Julia pthread deadlock
 
@@ -1195,12 +1206,25 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
         shared_lp2_pre       = LP2Graph()
         shared_lp2_lock_pre  = ReentrantLock()
         shared_lp_doubled_pre = Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int}}()
-        shared_lp1_conj_pre  = LP1ConjLSM(ell; spill_path=joinpath(homedir(), "crypto", "tmp", "lp1_conj_pre.h5"))
-        let _p = shared_lp1_conj_pre.spill_path
-            atexit(() -> begin
-                isfile(_p)            && rm(_p;            force=true)
-                isfile(_p * ".compact") && rm(_p * ".compact"; force=true)
-            end)
+        shared_lp1_conj_pre_arr = [LP1ConjLSM(ell; spill_path=joinpath(homedir(), "crypto", "tmp", "lp1_conj_pre_t$(tid).h5"),
+                                               max_hot_ram_mb = 512 ÷ Threads.nthreads())
+                                   for tid in 1:Threads.nthreads()]
+        for lsm in shared_lp1_conj_pre_arr
+            let _p = lsm.spill_path
+                atexit(() -> begin
+                    isfile(_p)            && rm(_p;            force=true)
+                    isfile(_p * ".compact") && rm(_p * ".compact"; force=true)
+                end)
+            end
+        end
+        # Wire shared global bloom and peer list so threads probe each other's files.
+        let gb = shared_lp1_conj_pre_arr[1].bloom  # reuse first LSM's bloom as the shared object
+            # Actually allocate a fresh shared bloom sized for total capacity
+            gb = BloomFilter(shared_lp1_conj_pre_arr[1].max_entries * length(shared_lp1_conj_pre_arr))
+            for lsm in shared_lp1_conj_pre_arr
+                lsm.global_bloom = gb
+                lsm.peers = shared_lp1_conj_pre_arr
+            end
         end
         mem_checkpoint("after LP1ConjLSM() (hot_cap=$(N_CONJ_SHARDS * 50_000) entries)")
         shared_lp2_conj_pre  = LP2ConjGraph()
@@ -1225,7 +1249,7 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
                     shared_lp1_pre, shared_lp1_lock_pre,
                     shared_lp2_pre, shared_lp2_lock_pre,
                     shared_lp_doubled_pre,
-                    shared_lp1_conj_pre,
+                    shared_lp1_conj_pre_arr[tid],
                     shared_lp2_conj_pre, shared_lp2_conj_lock_pre,
                     enable_lp2, enable_lp2_conj, max_lp2_nodes, max_lp2_conj_nodes,
                     thread_collectors_pre[tid], rank_tracker_pre,
@@ -1271,23 +1295,27 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
         # (which would double-count it alongside the snapshot Dict).
         # Order: (1) report stats, (2) snapshot to plain Dict, (3) lsm_close!,
         #        (4) GC, (5) build tables with snapshot Dict in the field.
-        let n_conj = conj_total_entries(shared_lp1_conj_pre)
-            @printf("  shared_lp1_conj_pre: %d entries (hot+disk)\n", n_conj)
-            lsm_info(shared_lp1_conj_pre)
+        let n_conj = sum(conj_total_entries(lsm) for lsm in shared_lp1_conj_pre_arr)
+            @printf("  shared_lp1_conj_pre: %d entries (hot+disk, across %d per-thread LSMs)\n",
+                    n_conj, length(shared_lp1_conj_pre_arr))
+            lsm_info(shared_lp1_conj_pre_arr[1])
             r_est_pre = sum(r !== nothing ? r.hits_total : 0 for r in results_pre) /
                         max(1e-9, time() - t_pre)
-            lsm_bday_report(shared_lp1_conj_pre, p, r_est_pre)
+            lsm_bday_report(shared_lp1_conj_pre_arr[1], p, r_est_pre)
         end
 
         t_snap = time()
-        conj_snap_pre = conj_to_dict(shared_lp1_conj_pre)
+        conj_snap_pre = Dict{CanonicalLP1Key, LP1ConjVal}()
+        for lsm in shared_lp1_conj_pre_arr
+            merge!(conj_snap_pre, lsm_to_dict(lsm))
+        end
         @printf("  conj snapshot: %d entries built in %.3fs\n",
                 length(conj_snap_pre), time() - t_snap)
         flush(stdout)
 
-        # Free the LSM now — the snapshot Dict is the only copy we need going forward.
-        lsm_close!(shared_lp1_conj_pre)
-        shared_lp1_conj_pre = nothing
+        # Free the per-thread LSMs — the merged snapshot Dict is all we need going forward.
+        for lsm in shared_lp1_conj_pre_arr; lsm_close!(lsm); end
+        shared_lp1_conj_pre_arr = nothing
         GC.gc(true)
         @printf("  [MEM] post-LSM-free GC: RSS=%.1f MB  GC-live=%.1f MB\n",
                 Sys.maxrss()/1024^2, Base.gc_live_bytes()/1024^2)

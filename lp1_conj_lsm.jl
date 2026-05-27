@@ -51,8 +51,7 @@
 #      lsm_flush_all!, lsm_close!, lsm_info
 # =============================================================================
 
-# No HDF5 dependency — plain IO + mmap only.
-using Mmap
+# No HDF5 dependency — plain IO only (no mmap).
 
 const RECORD_BYTES = 48   # fp(8) + u0u1v0v1(16) + i0(2) + pad(6) + al(8) + be(8)
 
@@ -180,16 +179,26 @@ mutable struct LP1ConjLSM{V}
     hot_thresh  ::Vector{Int}
     shard_locks ::Vector{ReentrantLock}
 
-    # Disk spill — flat binary file + mmap
-    runs        ::Vector{RunMeta}
-    file_lock   ::ReentrantLock
-    spill_path  ::String
-    spill_io    ::Union{IOStream, Nothing}   # open for writing/appending
-    spill_mmap  ::Vector{UInt8}             # current read mmap (empty if no runs)
-    spill_size  ::Int                       # current file size in bytes
+    # Disk spill — flat binary file, pread for lookups (no mmap)
+    runs          ::Vector{RunMeta}
+    file_lock     ::ReentrantLock
+    spill_path    ::String
+    spill_io      ::Union{IOStream, Nothing}   # open for appending (writes)
+    spill_read_io ::Union{IOStream, Nothing}   # open for reading (seeks); separate fd
+    spill_size    ::Int                        # current file size in bytes
 
-    # Bloom filter
+    # Bloom filter — per-LSM (used for set_bloom! writes only)
     bloom       ::BloomFilter
+
+    # Global bloom — union of all peer LSMs' blooms; shared object, bits-only-set.
+    # Reads use this; writes go to both bloom and global_bloom.
+    # Set to bloom itself at construction; wired to the shared object by the caller
+    # after all sibling LSMs are constructed.
+    global_bloom::BloomFilter
+
+    # Peer LSMs (including self) for cross-thread disk probing.
+    # Populated by the caller after construction.  Empty = solo mode (no cross-probe).
+    peers       ::Vector{Any}   # Vector{LP1ConjLSM{V}} — typed as Any to avoid forward-ref
 
     # Bookkeeping
     n_shards    ::Int
@@ -247,7 +256,8 @@ function LP1ConjLSM{V}(
         spill_path   ::String;
         amortized    ::Bool = true,
         load_num     ::Int  = 4,
-        load_denom   ::Int  = 5
+        load_denom   ::Int  = 5,
+        bloom_cap    ::Int  = max_entries
     ) where V
 
     function make_shard(cap_entries::Int)
@@ -284,9 +294,11 @@ function LP1ConjLSM{V}(
         hot_keys, hot_vals, hot_counts, hot_caps, hot_masks, hot_thresh,
         shard_locks,
         RunMeta[], ReentrantLock(), spill_path, spill_io,
-        UInt8[],   # empty mmap until first flush
+        nothing,   # spill_read_io opened lazily on first flush
         0,         # spill_size
-        BloomFilter(max_entries),
+        BloomFilter(bloom_cap),
+        BloomFilter(64),           # global_bloom placeholder — caller replaces with shared object
+        Any[],                     # peers — caller will populate
         n_shards, max_entries, 0,
         amortized,
         # birthday diagnostics
@@ -303,7 +315,7 @@ end
 function LP1ConjLSM(
         ell           ::Integer;
         amortized     ::Bool   = true,
-        spill_path    ::String = joinpath(homedir(), "crypto", "tmp", "lp1_conj_lsm.bin"),
+        spill_path    ::String = joinpath(homedir(), "crypto", "tmp", "lp1_conj_shards"),
         max_hot_ram_mb::Int    = 512
     )
     cap = min(LP1_CONJ_CAP_MULTIPLIER * Int(min(ell, p)), LP1_CONJ_CAP_MAX)
@@ -316,22 +328,57 @@ function LP1ConjLSM(
             hot_shard_entries * N_CONJ_SHARDS, hot_shard_entries, spill_path)
     LP1ConjLSM{V}(
         N_CONJ_SHARDS, hot_shard_entries, cap, spill_path;
-        amortized = amortized
+        amortized = amortized,
+        bloom_cap = max_hot_entries
     )
 end
 
 # ---------------------------------------------------------------------------
-#  Mmap helpers
+#  Read-IO helper — open (or keep open) the read-side fd for disk lookups.
+#  Called after every flush while holding file_lock.
+#  No mmap: all disk reads go through seek+read into a stack buffer so the
+#  spill file never contributes to RSS.
 # ---------------------------------------------------------------------------
-
-# Re-mmap the spill file for reading.  Called after every flush while holding
-# file_lock.  If file is empty, spill_mmap stays as UInt8[].
-function _lsm_remap!(sc::LP1ConjLSM)
+function _lsm_open_read_io!(sc::LP1ConjLSM)
     sc.spill_size == 0 && return
-    # Flush write buffer before mapping
     flush(sc.spill_io)
-    sc.spill_mmap = Mmap.mmap(sc.spill_io, Vector{UInt8}, sc.spill_size)
+    if sc.spill_read_io === nothing
+        sc.spill_read_io = open(sc.spill_path, "r")
+    end
     nothing
+end
+
+# Read exactly RECORD_BYTES from the read-side fd at byte offset `off` (0-based)
+# into a caller-supplied RECORD_BYTES-length buffer.  Caller holds file_lock.
+@inline function _pread_record!(sc::LP1ConjLSM, buf::Vector{UInt8}, off::Int)
+    seek(sc.spill_read_io, off)
+    readbytes!(sc.spill_read_io, buf, RECORD_BYTES)
+    nothing
+end
+
+# Field accessors on a RECORD_BYTES scratch buffer (same layout as before).
+@inline _buf_u64(buf::Vector{UInt8}, off::Int)::UInt64 =
+    UInt64(buf[off+1])        | (UInt64(buf[off+2]) << 8)  |
+    (UInt64(buf[off+3]) << 16) | (UInt64(buf[off+4]) << 24) |
+    (UInt64(buf[off+5]) << 32) | (UInt64(buf[off+6]) << 40) |
+    (UInt64(buf[off+7]) << 48) | (UInt64(buf[off+8]) << 56)
+
+@inline _buf_u32(buf::Vector{UInt8}, off::Int)::UInt32 =
+    UInt32(buf[off+1]) | (UInt32(buf[off+2]) << 8) |
+    (UInt32(buf[off+3]) << 16) | (UInt32(buf[off+4]) << 24)
+
+@inline _buf_u16(buf::Vector{UInt8}, off::Int)::UInt16 =
+    UInt16(buf[off+1]) | (UInt16(buf[off+2]) << 8)
+
+@inline _buf_fp(buf::Vector{UInt8})::UInt64  = _buf_u64(buf, OFF_FP)
+@inline _buf_i0(buf::Vector{UInt8})::UInt16  = _buf_u16(buf, OFF_I0)
+@inline _buf_al(buf::Vector{UInt8})::UInt64  = _buf_u64(buf, OFF_AL)
+@inline _buf_be(buf::Vector{UInt8})::UInt64  = _buf_u64(buf, OFF_BE)
+@inline function _buf_key_match(buf::Vector{UInt8},
+                                 ku0::UInt32, ku1::UInt32,
+                                 kv0::UInt32, kv1::UInt32)::Bool
+    _buf_u32(buf, OFF_U0) == ku0 && _buf_u32(buf, OFF_U1) == ku1 &&
+    _buf_u32(buf, OFF_V0) == kv0 && _buf_u32(buf, OFF_V1) == kv1
 end
 
 # Read a UInt64 from mmap at byte offset `off` (0-based).
@@ -587,9 +634,11 @@ function _lsm_flush_shard!(sc::LP1ConjLSM{V}, si::Int) where V
     write(sc.spill_io, buf)
     sc.spill_size += idx * RECORD_BYTES
 
-    # Update Bloom filter
+    # Update Bloom filters — own bloom and the shared global bloom
     for i in 1:idx
-        set_bloom!(sc.bloom, fps[order[i]])
+        fp_i = fps[order[i]]
+        set_bloom!(sc.bloom, fp_i)
+        set_bloom!(sc.global_bloom, fp_i)
     end
 
     # Register run
@@ -598,8 +647,8 @@ function _lsm_flush_shard!(sc::LP1ConjLSM{V}, si::Int) where V
     push!(sc.runs, RunMeta(length(sc.runs)+1, byte_offset, idx, min_fp, max_fp))
     sc.n_disk_live += idx
 
-    # Remap for reads
-    _lsm_remap!(sc)
+    # Open (or keep open) the read-side fd
+    _lsm_open_read_io!(sc)
 
     # Compact runs if fan-out is getting large.
     # Merging keeps _lsm_disk_find to a single binary search rather than
@@ -669,13 +718,9 @@ end
 function _lsm_compact!(sc::LP1ConjLSM)
     length(sc.runs) <= 1 && return
 
-    # Snapshot the mmap and keep it alive for the entire merge loop.
-    # Without this, _lsm_remap! (called by a flush in another thread, or even
-    # by the GC finalizer reclaiming the previous sc.spill_mmap assignment)
-    # can munmap the pages we are actively reading → SIGBUS.
-    mm         = sc.spill_mmap
     total_live = sc.n_disk_live
     total_live == 0 && return
+    sc.spill_read_io === nothing && return   # no spill file yet
 
     # Per-run cursors: next live position to emit from each run.
     # Advance past any leading tombstones on initialisation.
@@ -693,12 +738,13 @@ function _lsm_compact!(sc::LP1ConjLSM)
     # Seed the min-heap with the first live record from each run.
     heap = Tuple{UInt64,Int,Int}[]   # (fp, ri, pos)
     sizehint!(heap, nruns)
+    rec_buf_seed = zeros(UInt8, RECORD_BYTES)
     for ri in 1:nruns
         rm  = sc.runs[ri]
         pos = cursors[ri]
         pos > rm.len && continue
-        base = _rec_base(rm, pos)
-        fp   = _rec_fp(mm, base)
+        _pread_record!(sc, rec_buf_seed, _rec_base(rm, pos))
+        fp = _buf_fp(rec_buf_seed)
         _heap_push!(heap, (fp, ri, pos))
     end
 
@@ -714,19 +760,19 @@ function _lsm_compact!(sc::LP1ConjLSM)
 
     rec_scratch = Vector{UInt8}(undef, RECORD_BYTES)
 
-    GC.@preserve mm begin
+    rec_buf_merge = zeros(UInt8, RECORD_BYTES)
     while !isempty(heap)
         fp, ri, pos = _heap_pop!(heap)
         rm   = sc.runs[ri]
-        base = _rec_base(rm, pos)
 
-        # Copy record into write buffer, flushing if full.
+        # Read record into scratch, copy to write buffer.
+        _pread_record!(sc, rec_buf_merge, _rec_base(rm, pos))
         if wbuf_pos + RECORD_BYTES > COMPACT_WRITE_BUF_BYTES
             write(tmp_io, view(wbuf, 1:wbuf_pos))
             wbuf_pos = 0
         end
-        @inbounds for b in 0:RECORD_BYTES-1
-            wbuf[wbuf_pos + b + 1] = mm[base + b + 1]
+        @inbounds for b in 1:RECORD_BYTES
+            wbuf[wbuf_pos + b] = rec_buf_merge[b]
         end
         wbuf_pos += RECORD_BYTES
 
@@ -741,12 +787,11 @@ function _lsm_compact!(sc::LP1ConjLSM)
         end
         cursors[ri] = pos
         if pos <= rm.len
-            base2 = _rec_base(rm, pos)
-            fp2   = _rec_fp(mm, base2)
+            _pread_record!(sc, rec_buf_merge, _rec_base(rm, pos))
+            fp2 = _buf_fp(rec_buf_merge)
             _heap_push!(heap, (fp2, ri, pos))
         end
     end
-    end # GC.@preserve mm
 
     # Flush remaining write buffer.
     wbuf_pos > 0 && write(tmp_io, view(wbuf, 1:wbuf_pos))
@@ -763,7 +808,11 @@ function _lsm_compact!(sc::LP1ConjLSM)
     # Rebuild single run meta (no tombstones — all dead records were skipped).
     sc.runs = actual > 0 ? [RunMeta(1, 0, actual, first_fp, last_fp)] : RunMeta[]
 
-    _lsm_remap!(sc)
+    # Reopen read-side fd on the new compacted file.
+    if sc.spill_read_io !== nothing
+        close(sc.spill_read_io)
+    end
+    sc.spill_read_io = open(sc.spill_path, "r")
     nothing
 end
 
@@ -776,48 +825,43 @@ end
 function _lsm_disk_find(sc::LP1ConjLSM,
                          key::CanonicalLP1Key,
                          fp_target::UInt64)::Tuple{Bool,Int,Int,UInt16,UInt64,UInt64}
-    mm = sc.spill_mmap
+    sc.spill_read_io === nothing && return (false, 0, 0, UInt16(0), UInt64(0), UInt64(0))
     ku0 = UInt32(key & 0x00000000ffffffff)
     ku1 = UInt32((key >> 32)  & 0x00000000ffffffff)
     kv0 = UInt32((key >> 64)  & 0x00000000ffffffff)
     kv1 = UInt32((key >> 96)  & 0x00000000ffffffff)
+    buf = zeros(UInt8, RECORD_BYTES)
 
-    GC.@preserve mm begin
     for (ri, rm) in enumerate(sc.runs)
         (fp_target < rm.min_fp || fp_target > rm.max_fp) && continue
 
-        # Binary search on fp within this run's slice of the mmap.
-        # All arithmetic is pure pointer math — no allocations.
+        # Binary search on fp via pread into scratch buffer.
         lo = 1; hi = rm.len
-        @inbounds while lo < hi
+        while lo < hi
             mid = (lo + hi) >>> 1
-            mid_fp = _rec_fp(mm, _rec_base(rm, mid))
-            if mid_fp < fp_target
+            _pread_record!(sc, buf, _rec_base(rm, mid))
+            if _buf_fp(buf) < fp_target
                 lo = mid + 1
             else
                 hi = mid
             end
         end
-        # lo is the first position where fp >= fp_target
         lo > rm.len && continue
-        _rec_fp(mm, _rec_base(rm, lo)) != fp_target && continue
+        _pread_record!(sc, buf, _rec_base(rm, lo))
+        _buf_fp(buf) != fp_target && continue
 
         # Scan matching fingerprints
         pos = lo
-        @inbounds while pos <= rm.len
-            base = _rec_base(rm, pos)
-            _rec_fp(mm, base) != fp_target && break
+        while pos <= rm.len
+            _pread_record!(sc, buf, _rec_base(rm, pos))
+            _buf_fp(buf) != fp_target && break
             if !_run_is_dead(rm, pos) &&
-               _rec_key_match(mm, base, ku0, ku1, kv0, kv1)
-                i0_v = _mmap_u16(mm, base + OFF_I0)
-                al_v = _mmap_u64(mm, base + OFF_AL)
-                be_v = _mmap_u64(mm, base + OFF_BE)
-                return (true, ri, pos, i0_v, al_v, be_v)
+               _buf_key_match(buf, ku0, ku1, kv0, kv1)
+                return (true, ri, pos, _buf_i0(buf), _buf_al(buf), _buf_be(buf))
             end
             pos += 1
         end
     end
-    end # GC.@preserve mm
     (false, 0, 0, UInt16(0), UInt64(0), UInt64(0))
 end
 
@@ -842,21 +886,23 @@ function conj_haskey(sc::LP1ConjLSM, si::Int, key::CanonicalLP1Key)::Bool
     hot_found && return true
     fp = _lsm_fp(key)
     !bloom_maybe_has(sc.bloom, fp) && return false
-    lock(sc.file_lock)
+    lock(sc.shard_locks[si])
     found, _, _, _, _, _ = _lsm_disk_find(sc, key, fp)
-    unlock(sc.file_lock)
+    unlock(sc.shard_locks[si])
     found
 end
 
 function conj_getval(sc::LP1ConjLSM{V}, si::Int, key::CanonicalLP1Key)::V where V
     lock(sc.shard_locks[si])
     slot = _lsm_hot_find(sc, si, key)
-    unlock(sc.shard_locks[si])
-    slot != 0 && return @inbounds sc.hot_vals[si][slot]
+    if slot != 0
+        v = @inbounds sc.hot_vals[si][slot]
+        unlock(sc.shard_locks[si])
+        return v
+    end
     fp = _lsm_fp(key)
-    lock(sc.file_lock)
     found, _, _, i0_v, al_v, be_v = _lsm_disk_find(sc, key, fp)
-    unlock(sc.file_lock)
+    unlock(sc.shard_locks[si])
     found || throw(KeyError(key))
     _conj_make_val(V, i0_v, al_v, be_v)
 end
@@ -870,12 +916,10 @@ function conj_pop!(sc::LP1ConjLSM{V}, si::Int, key::CanonicalLP1Key)::V where V
         unlock(sc.shard_locks[si])
         return result
     end
-    unlock(sc.shard_locks[si])
     fp = _lsm_fp(key)
-    lock(sc.file_lock)
     found, ri, pos, i0_v, al_v, be_v = _lsm_disk_find(sc, key, fp)
     found && _lsm_disk_delete!(sc, ri, pos)
-    unlock(sc.file_lock)
+    unlock(sc.shard_locks[si])
     found || throw(KeyError(key))
     _conj_make_val(V, i0_v, al_v, be_v)
 end
@@ -889,12 +933,10 @@ function conj_pop_safe(sc::LP1ConjLSM{V}, si::Int, key::CanonicalLP1Key)::Union{
         unlock(sc.shard_locks[si])
         return result
     end
-    unlock(sc.shard_locks[si])
     fp = _lsm_fp(key)
-    lock(sc.file_lock)
     found, ri, pos, i0_v, al_v, be_v = _lsm_disk_find(sc, key, fp)
     found && _lsm_disk_delete!(sc, ri, pos)
-    unlock(sc.file_lock)
+    unlock(sc.shard_locks[si])
     found || return nothing
     _conj_make_val(V, i0_v, al_v, be_v)
 end
@@ -902,18 +944,11 @@ end
 function conj_insert!(sc::LP1ConjLSM{V}, si::Int,
                        key::CanonicalLP1Key, val::V)::Bool where V
     lock(sc.shard_locks[si])
-    if sc.hot_counts[si] < sc.hot_thresh[si]
-        _lsm_hot_insert!(sc, si, key, val)
-        unlock(sc.shard_locks[si])
-        return true
+    if sc.hot_counts[si] >= sc.hot_thresh[si]
+        _lsm_flush_shard!(sc, si)   # caller holds shard_locks[si] ✓
     end
-    unlock(sc.shard_locks[si])
-    lock(sc.file_lock)
-    lock(sc.shard_locks[si])
-    sc.hot_counts[si] >= sc.hot_thresh[si] && _lsm_flush_shard!(sc, si)
     _lsm_hot_insert!(sc, si, key, val)
     unlock(sc.shard_locks[si])
-    unlock(sc.file_lock)
     true
 end
 
@@ -974,7 +1009,7 @@ function conj_insert_or_pop!(sc::LP1ConjLSM{V}, si::Int,
 
     # Fast path: Bloom says key is definitely not on disk (or no disk yet).
     # Only need the shard lock — no file_lock contention.
-    if isempty(sc.runs) || !bloom_maybe_has(sc.bloom, fp)
+    if !bloom_maybe_has(sc.global_bloom, fp)
         lock(sc.shard_locks[si])
         slot = _lsm_hot_find(sc, si, key)
         if slot != 0
@@ -1023,7 +1058,7 @@ function conj_insert_or_pop!(sc::LP1ConjLSM{V}, si::Int,
         _bday_record_collision!(sc, now_t)
         return v
     end
-    # Re-check Bloom inside lock in case runs changed since the lockless read above.
+    # Re-check own Bloom inside lock in case runs changed since the lockless read above.
     if !isempty(sc.runs) && bloom_maybe_has(sc.bloom, fp)
         found, ri, pos, i0_v, al_v, be_v = _lsm_disk_find(sc, key, fp)
         if found
@@ -1035,6 +1070,57 @@ function conj_insert_or_pop!(sc::LP1ConjLSM{V}, si::Int,
             return result_v
         end
     end
+    unlock(sc.shard_locks[si])
+    unlock(sc.file_lock)
+
+    # Cross-peer probe: global_bloom fired but key not in our hot table or disk.
+    # Check each peer (excluding self) — probe their hot shard then their disk.
+    for peer in sc.peers
+        peer === sc && continue
+        peer_lsm = peer::LP1ConjLSM{V}
+        # Hot probe first (cheap, no file_lock needed)
+        lock(peer_lsm.shard_locks[si])
+        pslot = _lsm_hot_find(peer_lsm, si, key)
+        if pslot != 0
+            pv = @inbounds peer_lsm.hot_vals[si][pslot]
+            _lsm_hot_delete!(peer_lsm, si, pslot)
+            unlock(peer_lsm.shard_locks[si])
+            _bday_record_collision!(sc, now_t)
+            return pv
+        end
+        unlock(peer_lsm.shard_locks[si])
+        # Disk probe (needs peer's file_lock)
+        !isempty(peer_lsm.runs) || continue
+        bloom_maybe_has(peer_lsm.bloom, fp) || continue
+        lock(peer_lsm.file_lock)
+        lock(peer_lsm.shard_locks[si])
+        pslot2 = _lsm_hot_find(peer_lsm, si, key)
+        if pslot2 != 0
+            pv = @inbounds peer_lsm.hot_vals[si][pslot2]
+            _lsm_hot_delete!(peer_lsm, si, pslot2)
+            unlock(peer_lsm.shard_locks[si])
+            unlock(peer_lsm.file_lock)
+            _bday_record_collision!(sc, now_t)
+            return pv
+        end
+        if !isempty(peer_lsm.runs) && bloom_maybe_has(peer_lsm.bloom, fp)
+            pfound, pri, ppos, pi0_v, pal_v, pbe_v = _lsm_disk_find(peer_lsm, key, fp)
+            if pfound
+                _lsm_disk_delete!(peer_lsm, pri, ppos)
+                result_v = _conj_make_val(V, pi0_v, pal_v, pbe_v)
+                unlock(peer_lsm.shard_locks[si])
+                unlock(peer_lsm.file_lock)
+                _bday_record_collision!(sc, now_t)
+                return result_v
+            end
+        end
+        unlock(peer_lsm.shard_locks[si])
+        unlock(peer_lsm.file_lock)
+    end
+
+    # Not found anywhere — store in own LSM.
+    lock(sc.file_lock)
+    lock(sc.shard_locks[si])
     if sc.hot_counts[si] >= sc.hot_thresh[si]
         _lsm_flush_shard!(sc, si)
     end
@@ -1352,25 +1438,20 @@ function lsm_to_dict(sc::LP1ConjLSM{V})::Dict{CanonicalLP1Key, V} where V
 
     # ── Disk runs ─────────────────────────────────────────────────────────
     lock(sc.file_lock)
-    mm = sc.spill_mmap
-    if !isempty(mm)
-        GC.@preserve mm begin
-            for rm in sc.runs
-                for pos in 1:rm.len
-                    _run_is_dead(rm, pos) && continue
-                    base  = _rec_base(rm, pos)
-                    ku0   = _mmap_u32(mm, base + OFF_U0)
-                    ku1   = _mmap_u32(mm, base + OFF_U1)
-                    kv0   = _mmap_u32(mm, base + OFF_V0)
-                    kv1   = _mmap_u32(mm, base + OFF_V1)
-                    i0_v  = _mmap_u16(mm, base + OFF_I0)
-                    al_v  = _mmap_u64(mm, base + OFF_AL)
-                    be_v  = _mmap_u64(mm, base + OFF_BE)
-                    ck    = UInt128(ku0) | (UInt128(ku1) << 32) |
-                            (UInt128(kv0) << 64) | (UInt128(kv1) << 96)
-                    # Hot-shard entry (more recent) takes priority.
-                    haskey(d, ck) || (d[ck] = _conj_make_val(V, i0_v, al_v, be_v))
-                end
+    if sc.spill_read_io !== nothing
+        buf = zeros(UInt8, RECORD_BYTES)
+        for rm in sc.runs
+            for pos in 1:rm.len
+                _run_is_dead(rm, pos) && continue
+                _pread_record!(sc, buf, _rec_base(rm, pos))
+                ku0  = _buf_u32(buf, OFF_U0)
+                ku1  = _buf_u32(buf, OFF_U1)
+                kv0  = _buf_u32(buf, OFF_V0)
+                kv1  = _buf_u32(buf, OFF_V1)
+                ck   = UInt128(ku0) | (UInt128(ku1) << 32) |
+                       (UInt128(kv0) << 64) | (UInt128(kv1) << 96)
+                # Hot-shard entry (more recent) takes priority.
+                haskey(d, ck) || (d[ck] = _conj_make_val(V, _buf_i0(buf), _buf_al(buf), _buf_be(buf)))
             end
         end
     end
@@ -1383,13 +1464,11 @@ end
 conj_to_dict(sc::LP1ConjLSM{V}) where V = lsm_to_dict(sc)
 
 function lsm_flush_all!(sc::LP1ConjLSM)
-    lock(sc.file_lock)
     for si in 1:sc.n_shards
         lock(sc.shard_locks[si])
         sc.hot_counts[si] > 0 && _lsm_flush_shard!(sc, si)
         unlock(sc.shard_locks[si])
     end
-    unlock(sc.file_lock)
     nothing
 end
 
@@ -1400,15 +1479,21 @@ function lsm_close!(sc::LP1ConjLSM)
         close(sc.spill_io)
         sc.spill_io = nothing
     end
+    if sc.spill_read_io !== nothing
+        close(sc.spill_read_io)
+        sc.spill_read_io = nothing
+    end
     unlock(sc.file_lock)
     nothing
 end
 
 function lsm_info(sc::LP1ConjLSM; io::IO = stdout)
-    hot_total = sum(sc.hot_counts)
+    hot_total   = sum(sc.hot_counts)
+    total_runs  = length(sc.runs)
+    total_spill = sc.spill_size / 1024^2
     @printf(io, "LP1ConjLSM: %d hot | %d disk-live | %d runs | spill=%s (%.1f MB) | cold-dropped=%d\n",
-            hot_total, sc.n_disk_live, length(sc.runs), sc.spill_path,
-            sc.spill_size / 1024^2, sc.n_cold_dropped)
+            hot_total, sc.n_disk_live, total_runs, sc.spill_path,
+            total_spill, sc.n_cold_dropped)
     nothing
 end
 
