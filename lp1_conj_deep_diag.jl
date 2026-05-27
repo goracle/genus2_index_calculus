@@ -64,6 +64,15 @@
 #         • Per-px_bucket alpha entropy H(alpha | px=b): low → anchor constrains
 #           which alpha values can produce a non-split RS pair at that anchor.
 #
+#  D13 — Mumford coordinate support cardinality
+#       For all α·a store events, computes |S| for each marginal coordinate
+#       (u0, u1, v0, v1), the u-poly pair (u0,u1), the v-poly pair (v0,v1),
+#       and the full 4-tuple (distinct LP keys).  Each expressed as
+#       κ = log_p(|S|).  A naive bound gives κ=1; subvariety confinement
+#       gives κ<1, which directly bounds LP1-conj table pressure and complexity.
+#       Also reports key multiplicity (Gini, top-k mass, mean hits per key)
+#       and p-adic valuation fractions (fraction of coords ≡0 mod p).
+#
 #  D8 — Closure-depth distribution
 #       "Branch depth" is the number of raw walk steps between when a conj key
 #       is first stored in the LP1-conj table and when it is subsequently closed
@@ -1753,6 +1762,215 @@ function print_conj_deep_report(phi_stat ::PhiBiasStat,
 
         @label d12_done
     end   # let D12
+
+    # ──────────────────────────────────────────────────────────────────────
+    #  D13 — Mumford coordinate support cardinality
+    #
+    #  Central question: if we write |S| for the number of distinct values
+    #  taken by a coordinate (or tuple of coordinates) across all α·a
+    #  encounters (store events), what is  κ = log_p(|S|)?
+    #
+    #  A naive bound gives κ = 1 for each coordinate (anything in F_p).
+    #  If the walk's non-split residuals are algebraically constrained, the
+    #  actual support is p^κ for κ < 1, and the collision probability —
+    #  hence the effective LP1-conj table pressure — scales as p^(κ-1)
+    #  rather than p^0.  That is the complexity reduction argument.
+    #
+    #  We measure:
+    #    • |{u0}|, |{u1}|, |{v0}|, |{v1}|  (marginal supports)
+    #    • |{(u0,u1)}|  (u-polynomial support — the LP key's first half)
+    #    • |{(v0,v1)}|  (v-polynomial support)
+    #    • |{(u0,u1,v0,v1)}|  (full Mumford support = distinct LP keys)
+    #  All expressed as κ = log(|S|) / log(p).
+    #
+    #  We also report the multiplicity distribution of repeated keys
+    #  (Zipf mass in the top 1%/10% of distinct keys) and the p-adic
+    #  valuation distribution of each coordinate, as additional evidence
+    #  that the support lives on a low-dimensional algebraic subvariety.
+    #
+    #  Source: d12_store_key (UInt128, packed as u0|u1<<32|v0<<64|v1<<96,
+    #  each coordinate already reduced mod p by canonical_lp1_conj_key).
+    # ──────────────────────────────────────────────────────────────────────
+    @printf("\n  D13 — Mumford coordinate support cardinality\n")
+    @printf("  ─────────────────────────────────────────────────────────────────\n")
+    let
+        n_store = length(deep_stat.d12_store_key)
+        @printf("    store events available : %d\n", n_store)
+
+        if n_store < 4
+            @printf("    (too few store events — skipping D13)\n")
+        elseif p <= 1
+            @printf("    (p not provided or ≤1 — cannot compute log_p; pass p= to print_conj_deep_report)\n")
+        else
+            log_p = log(Float64(p))
+
+            # ── Unpack all keys ─────────────────────────────────────────
+            # Each UInt128 key = u0 | u1<<32 | v0<<64 | v1<<96,
+            # coords already mod p, stored as UInt32 limbs.
+            mask32 = UInt128(0xffffffff)
+            u0s = Vector{UInt32}(undef, n_store)
+            u1s = Vector{UInt32}(undef, n_store)
+            v0s = Vector{UInt32}(undef, n_store)
+            v1s = Vector{UInt32}(undef, n_store)
+            @inbounds for i in 1:n_store
+                k = deep_stat.d12_store_key[i]
+                u0s[i] = UInt32(k         & mask32)
+                u1s[i] = UInt32((k >> 32) & mask32)
+                v0s[i] = UInt32((k >> 64) & mask32)
+                v1s[i] = UInt32((k >> 96) & mask32)
+            end
+
+            # ── Marginal and joint support sizes ────────────────────────
+            n_u0   = length(Set(u0s))
+            n_u1   = length(Set(u1s))
+            n_v0   = length(Set(v0s))
+            n_v1   = length(Set(v1s))
+
+            # u-poly pairs (u0,u1)
+            upairs = Set{UInt64}()
+            sizehint!(upairs, n_store)
+            @inbounds for i in 1:n_store
+                push!(upairs, UInt64(u0s[i]) | (UInt64(u1s[i]) << 32))
+            end
+            n_upair = length(upairs)
+
+            # v-poly pairs (v0,v1)
+            vpairs = Set{UInt64}()
+            sizehint!(vpairs, n_store)
+            @inbounds for i in 1:n_store
+                push!(vpairs, UInt64(v0s[i]) | (UInt64(v1s[i]) << 32))
+            end
+            n_vpair = length(vpairs)
+
+            # Full 4-tuple distinct keys
+            n_full = length(Set(deep_stat.d12_store_key))
+
+            function kappa(n::Int)::Float64
+                n <= 1 ? 0.0 : log(Float64(n)) / log_p
+            end
+
+            @printf("    p = %d\n", p)
+            @printf("\n    Support cardinalities and exponents κ = log_p(|S|):\n")
+            @printf("      %-20s  %10s  %8s  %s\n", "set", "|S|", "κ", "interpretation")
+            @printf("      %-20s  %10s  %8s  %s\n", "────────────────────",
+                    "──────────", "────────", "──────────────────────────────────────")
+
+            rows = [
+                ("u0  (marginal)",    n_u0,   "u-poly const term"),
+                ("u1  (marginal)",    n_u1,   "u-poly linear coeff"),
+                ("v0  (marginal)",    n_v0,   "v-poly const term"),
+                ("v1  (marginal)",    n_v1,   "v-poly linear coeff"),
+                ("(u0,u1) pairs",     n_upair,"u-polynomial support"),
+                ("(v0,v1) pairs",     n_vpair,"v-polynomial support"),
+                ("full (u0,u1,v0,v1)",n_full,"distinct LP keys seen"),
+            ]
+            for (label, n, interp) in rows
+                @printf("      %-22s  %10d  %8.4f  %s\n", label, n, kappa(n), interp)
+            end
+
+            # ── Comparison to naive and birthday bounds ──────────────────
+            kappa_full = kappa(n_full)
+            @printf("\n    Complexity exponent summary:\n")
+            @printf("      Naive LP1-conj table pressure  : p^1.00  (all of F_p × F_p × …)\n")
+            @printf("      Observed LP-key support        : p^%.4f  (%d distinct keys from %d stores)\n",
+                    kappa_full, n_full, n_store)
+            @printf("      Observed u-poly support        : p^%.4f  (%d distinct u-polys)\n",
+                    kappa(n_upair), n_upair)
+            reduction = 1.0 - kappa_full
+            if reduction > 0.3
+                @printf("      ↑ STRONG reduction: effective LP key space is p^%.4f below naive\n",
+                        reduction)
+                @printf("        → collision probability scales as p^%.4f, not p^0\n",
+                        kappa_full - 1.0)
+                @printf("        → LP1-conj table saturates at ~p^%.4f entries, not p\n",
+                        kappa_full)
+            elseif reduction > 0.1
+                @printf("      ↑ moderate reduction (%.2f exponent below naive)\n", reduction)
+            else
+                @printf("      (support close to naive — no strong algebraic confinement detected)\n")
+            end
+
+            # ── Saturation check ─────────────────────────────────────────
+            # If n_store >> n_full, most stores are re-hits of existing keys.
+            if n_store >= 2 && n_full >= 1
+                mean_hits = Float64(n_store) / n_full
+                @printf("\n    Key multiplicity (re-hit rate):\n")
+                @printf("      mean hits per distinct key : %.2f\n", mean_hits)
+                @printf("      distinct / total stores    : %.4f  (1.0 = no repeats)\n",
+                        Float64(n_full) / n_store)
+
+                # Build per-key hit counts for Zipf/Gini analysis.
+                key_counts = Dict{UInt128, Int}()
+                sizehint!(key_counts, n_full)
+                @inbounds for k in deep_stat.d12_store_key
+                    key_counts[k] = get(key_counts, k, 0) + 1
+                end
+                counts_sorted = sort(collect(values(key_counts)), rev=true)
+                n_distinct = length(counts_sorted)
+                total_hits  = sum(counts_sorted)
+
+                # Top-1% and top-10% mass fraction.
+                k1pct  = max(1, n_distinct ÷ 100)
+                k10pct = max(1, n_distinct ÷ 10)
+                mass1  = sum(counts_sorted[1:k1pct])  / total_hits
+                mass10 = sum(counts_sorted[1:k10pct]) / total_hits
+                @printf("      top  1%% of keys hold %.1f%% of stores\n", 100.0*mass1)
+                @printf("      top 10%% of keys hold %.1f%% of stores\n", 100.0*mass10)
+
+                # Gini coefficient.
+                n_d = length(counts_sorted)
+                gini = 0.0
+                if n_d > 1
+                    cs = cumsum(sort(counts_sorted))
+                    gini = 1.0 - 2.0 * sum(cs) / (Float64(n_d) * total_hits) + 1.0/n_d
+                end
+                @printf("      Gini coefficient           : %.4f  (0=uniform, 1=monopoly)\n", gini)
+                if gini > 0.7
+                    @printf("      ↑ HIGH Gini: a tiny set of LP keys dominates stores\n")
+                    @printf("        → effective support is smaller than |S| suggests\n")
+                elseif gini > 0.4
+                    @printf("      ↑ moderate Gini: noticeable concentration in key hits\n")
+                end
+            end
+
+            # ── p-adic valuation distributions ───────────────────────────
+            # v_p(x) = largest k s.t. p^k | x.  For x=0 we report a
+            # sentinel "∞" count separately.  Coords are already mod p
+            # so v_p ∈ {0, 1, …, floor(log_p(p-1))} ∪ {∞}.
+            # In practice for a prime p in a genus-2 Jacobian, the
+            # interesting question is whether a non-trivial fraction of
+            # coords are divisible by p (i.e. v_p ≥ 1), which would
+            # mean those points live on a subvariety defined over F_p
+            # rather than F_{p^2}.
+            @printf("\n    p-adic valuation distributions (coords mod p, so v_p ∈ {0,1,…}):\n")
+            @printf("      (v_p(x)=0 means x≢0 mod p; v_p(x)≥1 means p|x)\n")
+
+            function vp_hist(xs::Vector{UInt32})
+                z = count(iszero, xs)
+                nz = length(xs) - z
+                # For non-split Mumford coords mod p, v_p=0 dominates unless
+                # there is special structure.  We just count 0 vs ≥1 here
+                # (higher valuations require knowing p^2, p^3 etc., but coords
+                # are already reduced mod p so v_p ≥ 1 iff coord == 0).
+                return z, nz
+            end
+
+            for (name, xs) in (("u0", u0s), ("u1", u1s), ("v0", v0s), ("v1", v1s))
+                z, nz = vp_hist(xs)
+                frac0 = Float64(z) / n_store
+                @printf("      %s: p∤x (v_p=0): %d (%.1f%%)   p|x (v_p≥1): %d (%.1f%%)\n",
+                        name, nz, 100.0*(1-frac0), z, 100.0*frac0)
+            end
+            n_all_zero = count(1:n_store) do i
+                u0s[i] == 0 && u1s[i] == 0 && v0s[i] == 0 && v1s[i] == 0
+            end
+            @printf("      all-zero (trivial key) events  : %d / %d\n", n_all_zero, n_store)
+            if any(>(0.05), [count(iszero,xs)/n_store for xs in (u0s,u1s,v0s,v1s)])
+                @printf("      ↑ >5%% zero in some coordinate — possible subvariety confinement\n")
+                @printf("        (non-split residuals with p|coord live on a degree-drop locus)\n")
+            end
+        end
+    end   # let D13
 
     @printf("\n══ End LP1-conj deep diagnostics ════════════════════════════════════\n")
     flush(stdout)
