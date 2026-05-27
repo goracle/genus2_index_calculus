@@ -50,6 +50,20 @@
 #       Reports ΔT_solve(N) as a function of precompute size, to quantify
 #       saturation and guide table size decisions.
 #
+#  D12 — Alpha/anchor joint support diagnostic
+#       Tests the hypothesis that the x-support of {alpha·G : alpha ∈ Z_ell} is
+#       small, causing LP1-conj closures to cluster in (alpha, P0.x) space.
+#       At each LP1-conj store and close, records (alpha_cur, px = P0.x).
+#       Post-hoc analysis:
+#         • 2-D histogram (alpha_bucket × px_bucket) for stores and closes,
+#           χ²/dof vs uniform to detect concentration.
+#         • Mutual information I(alpha_bucket; px_bucket) across all events.
+#         • Paired delta-alpha: for each matched (store→close) pair keyed on
+#           lp_key, histogram of |alpha_close − alpha_store| mod ell.  A spike
+#           near 0 confirms closes happen at nearly the same alpha as their store.
+#         • Per-px_bucket alpha entropy H(alpha | px=b): low → anchor constrains
+#           which alpha values can produce a non-split RS pair at that anchor.
+#
 #  D8 — Closure-depth distribution
 #       "Branch depth" is the number of raw walk steps between when a conj key
 #       is first stored in the LP1-conj table and when it is subsequently closed
@@ -98,6 +112,7 @@ const DEEP_DIAG_N_BUCKETS   = 1 << DEEP_DIAG_BUCKET_BITS
 const DEEP_DIAG_MAX_ANCESTRY = 500_000    # cap on ancestry log entries per thread
 const DEEP_DIAG_COND_ENT_LAG = 4         # max lag for conditional collision entropy
 const DEEP_DIAG_MAX_OPCODE_LOG = 2_000_000  # cap on opcode log entries per thread (~2 MB)
+const D12_MAX_EVENTS           = 500_000    # cap on D12 store/close event records per thread (~8 MB)
 
 # ---------------------------------------------------------------------------
 #  ConjDeepStat — per-thread accumulator
@@ -133,6 +148,23 @@ mutable struct ConjDeepStat
     # Depth of the previous closure, for autocorrelation.
     d8_prev_depth   ::Int                  # -1 if no previous closure yet
 
+    # D12 — Alpha/anchor joint support diagnostic.
+    # At each LP1-conj store (miss), record (alpha_cur, px) so we can later
+    # test whether closures cluster in alpha×px space.
+    # d12_store_alpha: alpha_cur (mod ell, stored as Int) at each store event.
+    # d12_store_px:    P0.x at each store event (Int).
+    # d12_store_key:   lp_key (UInt128) at each store, for pairing with closes.
+    # d12_close_alpha: alpha_cur at each close (emission) event.
+    # d12_close_px:    P0.x at each close event.
+    # d12_close_key:   lp_key at each close, for delta-alpha pairing.
+    # Capped at D12_MAX_EVENTS entries each to bound memory (~8 MB at 500k).
+    d12_store_alpha ::Vector{Int}
+    d12_store_px    ::Vector{Int}
+    d12_store_key   ::Vector{UInt128}
+    d12_close_alpha ::Vector{Int}
+    d12_close_px    ::Vector{Int}
+    d12_close_key   ::Vector{UInt128}
+
     # D9 — step-opcode conditional entropy H(opcode | recent LP1-conj).
     # opcode_log: one UInt8 per VALID phi step recording the step type:
     #   0 = 0-LP (full relation)
@@ -158,6 +190,8 @@ function ConjDeepStat()
         Dict{UInt128,Int}(),
         Int[], UInt16[], UInt16[],
         -1,
+        Int[], Int[], UInt128[],   # d12 store
+        Int[], Int[], UInt128[],   # d12 close
         UInt8[], Bool[],
     )
 end
@@ -188,6 +222,19 @@ function merge_conj_deep_stats(stats::Vector{ConjDeepStat})::ConjDeepStat
             append!(merged.opcode_log,     s.opcode_log[1:n_take])
             append!(merged.opcode_is_lp1c, s.opcode_is_lp1c[1:n_take])
         end
+        # D12: merge store/close event logs (cap each to D12_MAX_EVENTS total)
+        for (dst_al, dst_px, dst_key, src_al, src_px, src_key) in (
+                (merged.d12_store_alpha, merged.d12_store_px, merged.d12_store_key,
+                 s.d12_store_alpha,      s.d12_store_px,      s.d12_store_key),
+                (merged.d12_close_alpha, merged.d12_close_px, merged.d12_close_key,
+                 s.d12_close_alpha,      s.d12_close_px,      s.d12_close_key))
+            n_rem = D12_MAX_EVENTS - length(dst_al)
+            n_rem > 0 || continue
+            n_take = min(n_rem, length(src_al))
+            append!(dst_al,  src_al[1:n_take])
+            append!(dst_px,  src_px[1:n_take])
+            append!(dst_key, src_key[1:n_take])
+        end
     end
     return merged
 end
@@ -200,10 +247,18 @@ end
 #  Does nothing if the key is already in the shadow table (duplicate store from
 #  a race or useless close that re-inserts; we keep the first store_step).
 # ---------------------------------------------------------------------------
-@inline function record_conj_deep_miss!(stat    ::ConjDeepStat,
-                                         lp_key  ::UInt128,
-                                         raw_step::Int)
+@inline function record_conj_deep_miss!(stat     ::ConjDeepStat,
+                                         lp_key   ::UInt128,
+                                         raw_step ::Int,
+                                         alpha_cur::Int = -1,
+                                         px       ::Int = -1)
     haskey(stat.d8_shadow, lp_key) || (stat.d8_shadow[lp_key] = raw_step)
+    # D12: record (alpha, px) at store time, capped.
+    if alpha_cur >= 0 && length(stat.d12_store_alpha) < D12_MAX_EVENTS
+        push!(stat.d12_store_alpha, alpha_cur)
+        push!(stat.d12_store_px,    px)
+        push!(stat.d12_store_key,   lp_key)
+    end
     return nothing
 end
 
@@ -218,11 +273,13 @@ end
 #    is_first   — true if this is the first closure for lp_key (consumed a stored
 #                 entry that had not been consumed before in this run)
 # ---------------------------------------------------------------------------
-@inline function record_conj_deep_step!(stat    ::ConjDeepStat,
-                                         lp_key  ::UInt128,
-                                         a_bucket::Int,
-                                         raw_step::Int,
-                                         is_first::Bool)
+@inline function record_conj_deep_step!(stat     ::ConjDeepStat,
+                                         lp_key   ::UInt128,
+                                         a_bucket ::Int,
+                                         raw_step ::Int,
+                                         is_first ::Bool,
+                                         alpha_cur::Int = -1,
+                                         px       ::Int = -1)
     stat.n_emissions += 1
 
     # Coarse bucket for D2 transition matrix: top DEEP_DIAG_BUCKET_BITS of hash.
@@ -254,6 +311,13 @@ end
             push!(stat.d8_close_bkt,  UInt16(bkt))
             push!(stat.d8_close_abkt, UInt16(clamp(a_bucket, 0, 65535)))
         end
+    end
+
+    # D12: record (alpha, px) at close time, capped.
+    if alpha_cur >= 0 && length(stat.d12_close_alpha) < D12_MAX_EVENTS
+        push!(stat.d12_close_alpha, alpha_cur)
+        push!(stat.d12_close_px,    px)
+        push!(stat.d12_close_key,   lp_key)
     end
 
     return nothing
@@ -1437,6 +1501,258 @@ function print_conj_deep_report(phi_stat ::PhiBiasStat,
             @printf("    (key_blog too short for α₂ stationarity: %d partials)\n", n_blog)
         end
     end
+
+    # ──────────────────────────────────────────────────────────────────────
+    #  D12 — Alpha/anchor joint support diagnostic
+    #
+    #  Tests the hypothesis that the x-support of {alpha·G : alpha ∈ Z_ell}
+    #  is small, so LP1-conj closures cluster in (alpha, P0.x) space.
+    # ──────────────────────────────────────────────────────────────────────
+    @printf("\n  D12 — Alpha/anchor joint support diagnostic\n")
+    @printf("  ─────────────────────────────────────────────────────────────────\n")
+    let
+        n_store = length(deep_stat.d12_store_alpha)
+        n_close = length(deep_stat.d12_close_alpha)
+        @printf("    D12 store events recorded      : %d\n", n_store)
+        @printf("    D12 close events recorded      : %d\n", n_close)
+
+        if n_store < 4
+            @printf("    (too few store events for D12 — skipping)\n")
+            @goto d12_done
+        end
+
+        # Number of buckets for each axis.  Use isqrt(n_store) but cap for display.
+        n_abkt = clamp(isqrt(max(1, n_store)), 8, 64)   # alpha buckets
+        n_pbkt = clamp(isqrt(max(1, n_store)), 8, 64)   # px buckets
+
+        # To bucket alpha and px we need their ranges.
+        # alpha is in [0, ell-1]; px is in [0, p-1].
+        # We don't have ell/p here, so infer from the data: use max+1 as the range.
+        # This is correct since alpha_cur is always < ell and px < p.
+        alpha_max = max(1, maximum(deep_stat.d12_store_alpha; init=1))
+        px_max    = max(1, maximum(deep_stat.d12_store_px;    init=1))
+        # Also include close events in the range so buckets are consistent.
+        if n_close > 0
+            alpha_max = max(alpha_max, maximum(deep_stat.d12_close_alpha; init=1))
+            px_max    = max(px_max,    maximum(deep_stat.d12_close_px;    init=1))
+        end
+
+        function _abkt(a::Int)::Int
+            clamp(1 + (a * n_abkt) ÷ (alpha_max + 1), 1, n_abkt)
+        end
+        function _pbkt(px_val::Int)::Int
+            clamp(1 + (px_val * n_pbkt) ÷ (px_max + 1), 1, n_pbkt)
+        end
+
+        # ── 2-D histogram of store events ─────────────────────────────────
+        hist2d_store = zeros(Int, n_abkt, n_pbkt)
+        @inbounds for i in 1:n_store
+            ab = _abkt(deep_stat.d12_store_alpha[i])
+            pb = _pbkt(deep_stat.d12_store_px[i])
+            hist2d_store[ab, pb] += 1
+        end
+        # χ²/dof vs uniform: expected = n_store / (n_abkt*n_pbkt)
+        n_cells  = n_abkt * n_pbkt
+        expected = Float64(n_store) / n_cells
+        chi2_store = expected > 0 ?
+            sum((Float64(hist2d_store[i,j]) - expected)^2 / expected
+                for i in 1:n_abkt, j in 1:n_pbkt) : NaN
+        dof_store = n_cells - 1
+
+        @printf("    2-D histogram (alpha_bkt × px_bkt) of STORE events:\n")
+        @printf("      grid: %d × %d  (α_range=[0,%d], px_range=[0,%d])\n",
+                n_abkt, n_pbkt, alpha_max, px_max)
+        @printf("      χ²/dof (vs uniform): %.3f  (dof=%d; uniform expected ≈ %.1f)\n",
+                chi2_store / dof_store, dof_store, Float64(dof_store))
+        if chi2_store / dof_store > 2.0
+            @printf("      ↑ χ²/dof >> 1: CONCENTRATED — (alpha,px) space is not flat\n")
+        elseif chi2_store / dof_store > 1.3
+            @printf("      ↑ χ²/dof moderately elevated: mild concentration\n")
+        else
+            @printf("      (≈ uniform: no strong 2-D concentration detected)\n")
+        end
+
+        # Top-5 hottest cells.
+        all_cells = vec([(hist2d_store[i,j], i, j) for i in 1:n_abkt, j in 1:n_pbkt])
+        sort!(all_cells, rev=true)
+        @printf("      Top-5 hottest (alpha_bkt, px_bkt, count):\n")
+        for (cnt, ab, pb) in all_cells[1:min(5, end)]
+            a_lo = (ab-1) * (alpha_max+1) ÷ n_abkt
+            a_hi = ab     * (alpha_max+1) ÷ n_abkt - 1
+            p_lo = (pb-1) * (px_max+1)    ÷ n_pbkt
+            p_hi = pb     * (px_max+1)    ÷ n_pbkt - 1
+            @printf("        α∈[%d,%d)  px∈[%d,%d)  count=%d  (expected=%.1f  lift=%.2f)\n",
+                    a_lo, a_hi, p_lo, p_hi, cnt, expected, expected > 0 ? cnt/expected : 0.0)
+        end
+
+        # ── Mutual information I(alpha_bucket; px_bucket) for stores ──────
+        # I(A;B) = Σ p(a,b) log2(p(a,b)/(p(a)p(b)))
+        marginal_a = [sum(hist2d_store[i, j] for j in 1:n_pbkt) for i in 1:n_abkt]
+        marginal_p = [sum(hist2d_store[i, j] for i in 1:n_abkt) for j in 1:n_pbkt]
+        MI = 0.0
+        if n_store > 0
+            for i in 1:n_abkt, j in 1:n_pbkt
+                c = hist2d_store[i, j]
+                c == 0 && continue
+                pij = Float64(c) / n_store
+                pi  = Float64(marginal_a[i]) / n_store
+                pj  = Float64(marginal_p[j]) / n_store
+                pi > 0 && pj > 0 && (MI += pij * log2(pij / (pi * pj)))
+            end
+        end
+        H_a = -sum(x/n_store * log2(max(x/n_store, 1e-300)) for x in marginal_a if x > 0)
+        H_p = -sum(x/n_store * log2(max(x/n_store, 1e-300)) for x in marginal_p if x > 0)
+        norm_MI = (min(H_a, H_p) > 0) ? MI / min(H_a, H_p) : 0.0
+        @printf("    Mutual information I(alpha_bkt; px_bkt) for stores:\n")
+        @printf("      I = %.4f bits  H(alpha)=%.4f  H(px)=%.4f  NMI=%.4f\n",
+                MI, H_a, H_p, norm_MI)
+        if norm_MI > 0.1
+            @printf("      ↑ NMI > 0.1: ALPHA AND ANCHOR ARE CORRELATED — alpha·G x-support is structured\n")
+        elseif norm_MI > 0.02
+            @printf("      ↑ NMI mildly elevated: weak alpha/anchor correlation\n")
+        else
+            @printf("      (≈ independent: alpha and anchor px are not correlated at store time)\n")
+        end
+
+        # ── Same analysis for close events ────────────────────────────────
+        if n_close >= 4
+            hist2d_close = zeros(Int, n_abkt, n_pbkt)
+            @inbounds for i in 1:n_close
+                ab = _abkt(deep_stat.d12_close_alpha[i])
+                pb = _pbkt(deep_stat.d12_close_px[i])
+                hist2d_close[ab, pb] += 1
+            end
+            expected_c = Float64(n_close) / n_cells
+            chi2_close = expected_c > 0 ?
+                sum((Float64(hist2d_close[i,j]) - expected_c)^2 / expected_c
+                    for i in 1:n_abkt, j in 1:n_pbkt) : NaN
+            @printf("    2-D histogram χ²/dof for CLOSE events: %.3f  (uniform expected ≈ %.1f)\n",
+                    chi2_close / dof_store, Float64(dof_store))
+            if chi2_close / dof_store > 2.0
+                @printf("      ↑ CONCENTRATED at close time too — not just a store-side bias\n")
+            end
+        end
+
+        # ── Paired delta-alpha distribution ───────────────────────────────
+        # For each lp_key that appears in both store and close logs, compute
+        # |alpha_close - alpha_store| mod (alpha_max+1).  If the x-support of
+        # alpha·G is small, the effective alpha period is short, and delta-alpha
+        # will cluster near 0 (and near that period).
+        if n_store >= 4 && n_close >= 4
+            @printf("    Paired delta-alpha distribution:\n")
+            store_key_to_alpha = Dict{UInt128, Int}()
+            @inbounds for i in 1:n_store
+                # Keep the first store for each key (matches D8 shadow table logic).
+                haskey(store_key_to_alpha, deep_stat.d12_store_key[i]) ||
+                    (store_key_to_alpha[deep_stat.d12_store_key[i]] = deep_stat.d12_store_alpha[i])
+            end
+            delta_alphas = Int[]
+            @inbounds for i in 1:n_close
+                k = deep_stat.d12_close_key[i]
+                s_alpha = get(store_key_to_alpha, k, -1)
+                s_alpha < 0 && continue
+                c_alpha = deep_stat.d12_close_alpha[i]
+                # delta mod (alpha_max+1): take the smaller of forward/backward distance.
+                raw_d = mod(c_alpha - s_alpha, alpha_max + 1)
+                delta = min(raw_d, alpha_max + 1 - raw_d)
+                push!(delta_alphas, delta)
+            end
+            n_paired = length(delta_alphas)
+            @printf("      paired (store→close) events     : %d\n", n_paired)
+            if n_paired >= 2
+                mu_d    = sum(delta_alphas) / n_paired
+                med_d   = sort(delta_alphas)[n_paired ÷ 2 + 1]
+                frac_lo = count(d -> d < (alpha_max+1) ÷ 16, delta_alphas) / n_paired
+                @printf("      delta-alpha: mean=%.1f  median=%d  frac<ell/16=%.3f\n",
+                        mu_d, med_d, frac_lo)
+                if frac_lo > 0.5
+                    @printf("      ↑ >50%% of closes within ell/16 of store alpha: SMALL EFFECTIVE SUPPORT\n")
+                    @printf("        → confirms hypothesis: alpha·G x-support is algebraically bounded\n")
+                elseif frac_lo > 0.2
+                    @printf("      ↑ >20%% within ell/16: mild alpha concentration at closure\n")
+                else
+                    @printf("      (delta-alpha spread broadly — alpha support appears large)\n")
+                end
+                # Histogram in 8 bins.
+                bin_w  = max(1, (alpha_max ÷ 2) ÷ 8)
+                bins   = zeros(Int, 9)
+                for d in delta_alphas
+                    b = clamp(1 + d ÷ bin_w, 1, 9)
+                    bins[b] += 1
+                end
+                @printf("      delta-alpha histogram (bin_width≈%d, range [0,ell/2]):\n", bin_w)
+                @printf("        %8s  %8s  %8s\n", "bin_lo", "count", "frac%")
+                for b in 1:9
+                    lo = (b-1)*bin_w
+                    @printf("        %8d  %8d  %7.2f%%\n",
+                            lo, bins[b], 100.0*bins[b]/max(1,n_paired))
+                end
+            else
+                @printf("      (too few paired events: %d)\n", n_paired)
+            end
+        end
+
+        # ── Per-px_bucket alpha entropy H(alpha | px=b) ───────────────────
+        # Low entropy for some b means that anchor px=b strongly constrains
+        # which alpha values appear — i.e., alpha·G's residual is non-split
+        # only for a narrow set of alpha when the anchor is in that region.
+        @printf("    Per-px_bucket alpha entropy H(alpha_bkt | px_bkt) for stores:\n")
+        if n_store >= 4
+            # For each px bucket, build alpha-bucket histogram and compute entropy.
+            px_alpha_hist = [zeros(Int, n_abkt) for _ in 1:n_pbkt]
+            @inbounds for i in 1:n_store
+                ab = _abkt(deep_stat.d12_store_alpha[i])
+                pb = _pbkt(deep_stat.d12_store_px[i])
+                px_alpha_hist[pb][ab] += 1
+            end
+            H_alpha_given_px = Float64[]
+            px_nonempty = Int[]
+            for pb in 1:n_pbkt
+                h = px_alpha_hist[pb]
+                tot = sum(h)
+                tot < 4 && continue
+                ent = -sum(c/tot * log2(max(c/tot, 1e-300)) for c in h if c > 0)
+                push!(H_alpha_given_px, ent)
+                push!(px_nonempty, pb)
+            end
+            if !isempty(H_alpha_given_px)
+                H_max   = log2(Float64(n_abkt))
+                H_mean  = sum(H_alpha_given_px) / length(H_alpha_given_px)
+                H_min_v, H_min_i = findmin(H_alpha_given_px)
+                H_max_v, H_max_i = findmax(H_alpha_given_px)
+                @printf("      H_max (uniform over %d alpha_bkts): %.4f bits\n", n_abkt, H_max)
+                @printf("      mean H(alpha|px)                  : %.4f bits (%.1f%% of max)\n",
+                        H_mean, 100.0*H_mean/max(1e-10, H_max))
+                @printf("      min  H(alpha|px=b)                : %.4f bits  px_bkt=%d  ← most constrained\n",
+                        H_min_v, px_nonempty[H_min_i] - 1)
+                @printf("      max  H(alpha|px=b)                : %.4f bits  px_bkt=%d\n",
+                        H_max_v, px_nonempty[H_max_i] - 1)
+                if H_mean / H_max < 0.7
+                    @printf("      ↑ mean H < 0.7×H_max: ANCHOR STRONGLY CONSTRAINS ALPHA\n")
+                    @printf("        → non-split residuals occur only for narrow alpha ranges at each anchor\n")
+                elseif H_mean / H_max < 0.9
+                    @printf("      ↑ mild constraint: alpha somewhat restricted per anchor\n")
+                else
+                    @printf("      (alpha nearly uniform across anchors — no strong constraint)\n")
+                end
+                # List the 5 most-constrained px buckets.
+                order = sortperm(H_alpha_given_px)
+                @printf("      5 most-constrained px_buckets:\n")
+                @printf("        %6s  %8s  %8s\n", "px_bkt", "H(bits)", "H/H_max")
+                for idx in order[1:min(5, end)]
+                    pb = px_nonempty[idx]
+                    p_lo = (pb-1) * (px_max+1) ÷ n_pbkt
+                    p_hi = pb     * (px_max+1) ÷ n_pbkt - 1
+                    @printf("        px∈[%5d,%5d)  H=%.4f  H/H_max=%.4f\n",
+                            p_lo, p_hi, H_alpha_given_px[idx], H_alpha_given_px[idx]/H_max)
+                end
+            else
+                @printf("      (no px bucket had ≥4 store events)\n")
+            end
+        end
+
+        @label d12_done
+    end   # let D12
 
     @printf("\n══ End LP1-conj deep diagnostics ════════════════════════════════════\n")
     flush(stdout)
