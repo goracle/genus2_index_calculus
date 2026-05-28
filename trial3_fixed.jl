@@ -1320,12 +1320,7 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
             flush(stdout)
         end
 
-        # ── Snapshot conj LSM → close/free it → GC → THEN build Phase2Tables ──
-        # The LSM can be ~6 GB.  We must free it before building Phase2Tables
-        # (which would keep it alive) and before spawning phase-3 workers
-        # (which would double-count it alongside the snapshot Dict).
-        # Order: (1) report stats, (2) snapshot to plain Dict, (3) lsm_close!,
-        #        (4) GC, (5) build tables with snapshot Dict in the field.
+        # ── Keep conj LSM live for phase 3 ───────────────────────────────────
         let n_conj = sum(conj_total_entries(lsm) for lsm in shared_lp1_conj_pre_arr)
             @printf("  shared_lp1_conj_pre: %d entries (hot+disk, across %d per-thread LSMs)\n",
                     n_conj, length(shared_lp1_conj_pre_arr))
@@ -1335,39 +1330,32 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
             lsm_bday_report(shared_lp1_conj_pre_arr[1], p, r_est_pre)
         end
 
-        # Stream each LSM directly into the snapshot Dict and free it immediately,
-        # rather than building a full per-thread intermediate Dict first.  This
-        # keeps peak RSS at ~(final Dict size) instead of ~2× that.
-        t_snap = time()
-        conj_snap_pre = lsm_snapshot_and_free!(shared_lp1_conj_pre_arr; verbose=true)
-        shared_lp1_conj_pre_arr = nothing
-        @printf("  conj snapshot: %d entries built in %.3fs\n",
-                length(conj_snap_pre), time() - t_snap)
-        flush(stdout)
+        # No snapshot, no free. Phase 3 will read the live store directly.
         GC.gc(true)
-        @printf("  [MEM] post-LSM-free GC: RSS=%.1f MB  GC-live=%.1f MB\n",
+        @printf("  [MEM] post-GC before phase3: RSS=%.1f MB  GC-live=%.1f MB\n",
                 Sys.maxrss()/1024^2, Base.gc_live_bytes()/1024^2)
         flush(stdout)
 
         merged_deep_stat_pre = merge_conj_deep_stats(thread_deep_stats_pre)
         print_conj_deep_report(merged_phi_stat_pre, merged_deep_stat_pre;
-                               conj_snap=conj_snap_pre, p=p)
+                               conj_snap=shared_lp1_conj_pre_arr, p=p)
 
         tables = Phase2Tables(
             fb_pre,
             pt2idx_pre,
             atom_log_dict,
-            shared_lp1_pre,       # READ ONLY in phase 3
+            shared_lp1_pre,
             shared_lp2_pre,
-            conj_snap_pre,        # plain Dict — LSM already closed above
+            shared_lp1_conj_pre_arr,
             shared_lp2_conj_pre,
             BigInt(ell),
             rel_rows_pre,
             alpha_vec_pre)
 
+
         @printf("  atom_log_dict empty; phase3 will solve via accumulated β≠0 relations\n")
         @printf("  Phase2Tables ready: FB=%d  atom_logs=%d (verified)  lp1_entries=%d  conj_snap=%d\n",
-                length(fb_pre), length(atom_log_dict), length(shared_lp1_pre), length(conj_snap_pre))
+                length(fb_pre), length(atom_log_dict), length(shared_lp1_pre), length(shared_lp1_conj_pre_arr))
         @printf("  total precompute time: %.3fs\n\n", time() - t_pre)
 
         # ── Memory diagnostics ────────────────────────────────────────────────

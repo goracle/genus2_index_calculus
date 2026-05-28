@@ -457,7 +457,7 @@ end
 # ---------------------------------------------------------------------------
 function print_conj_deep_report(phi_stat ::PhiBiasStat,
                                  deep_stat::ConjDeepStat;
-                                 conj_snap::Union{Dict, Nothing} = nothing,
+                                 conj_snap::Union{Dict, AbstractVector, Nothing} = nothing,
                                  p        ::Int = 0)
 
     arrivals  = phi_stat.lp1_conj_arrivals    # Vector{Int} of raw_step at each emission
@@ -999,7 +999,9 @@ function print_conj_deep_report(phi_stat ::PhiBiasStat,
 
         # If conj_snap available, report overall snapshot density.
         if conj_snap !== nothing
-            snap_sz = length(conj_snap)
+            snap_sz = conj_snap isa AbstractVector ?
+                      sum(conj_total_entries(lsm) for lsm in conj_snap; init=0) :
+                      length(conj_snap)
             @printf("    Conj snapshot size             : %d entries\n", snap_sz)
             @printf("    Closures / snapshot entry      : %.4f\n",
                     snap_sz > 0 ? n_first / snap_sz : 0.0)

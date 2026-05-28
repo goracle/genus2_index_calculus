@@ -79,10 +79,12 @@ struct Phase2Tables
     shared_lp2     ::LP2Graph
 
     # Extension-field LP tables (optional; may be empty)
-    # Stored as a plain Dict snapshot — the LSM is closed and freed in main2
-    # before Phase2Tables is constructed, so this field never holds the LSM.
-    # Plain Dict: no locks, zero contention across all phase-3 worker threads.
-    shared_lp1_conj::Dict{CanonicalLP1Key, LP1ConjVal}
+    # Stored as the live conj store produced by phase 2 (LSM or sharded table).
+    # Phase 3 reads it directly; no snapshot/copy is taken here.
+    shared_lp1_conj::Union{Dict{CanonicalLP1Key, LP1ConjVal},
+                           ShardedLP1Conj{<:Any},
+                           LP1ConjLSM{<:Any},
+                           Vector{<:LP1ConjLSM}}
     shared_lp2_conj::LP2ConjGraph
 
     # Group order
@@ -133,6 +135,29 @@ struct PreRREFBasis
     rank      ::Int
     nF        ::Int
     ellI      ::Int
+end
+
+# ---------------------------------------------------------------------------
+#  conj_lookup_or_nothing
+#
+#  Uniform lookup helper for the live extension-field LP store.  Works for the
+#  precompute LSM/sharded table as long as it supports haskey/getindex; plain
+#  Dict uses the fast path.
+# ---------------------------------------------------------------------------
+@inline function conj_lookup_or_nothing(store, key)
+    store isa Dict && return get(store, key, nothing)
+    if store isa AbstractVector
+        for lsm in store
+            v = conj_lookup_or_nothing(lsm, key)
+            v !== nothing && return v
+        end
+        return nothing
+    end
+    try
+        haskey(store, key) ? store[key] : nothing
+    catch
+        return nothing
+    end
 end
 
 # ---------------------------------------------------------------------------
@@ -239,7 +264,7 @@ function phase3_trial_worker(
         local_lp_cap     ::Int   = -1,
         n_steps_prebuilt ::Int   = 512,
         verbose          ::Bool  = false,
-        conj_dict        ::Union{Dict{CanonicalLP1Key, LP1ConjVal}, Nothing} = nothing,
+        conj_store       ::Any = nothing,
         seeded_rel_rows  ::Union{Vector{Dict{Int,Int}}, Nothing} = nothing,
         seeded_rel_be    ::Union{Vector{Int},           Nothing} = nothing,
         seeded_rel_al    ::Union{Vector{BigInt},        Nothing} = nothing,
@@ -273,9 +298,8 @@ function phase3_trial_worker(
     nF            = length(fb)
     alog          = tables.atom_log_dict
     lp1_pre       = tables.shared_lp1        # READ ONLY — affine 1-LP
-    # Use the pre-snapshotted plain Dict for conj lookups — no locks, no file_lock
-    # contention across the 30+ simultaneous phase3 threads.
-    lp1_conj_dict = conj_dict   # Dict{CanonicalLP1Key, LP1ConjVal} or nothing
+    # Use the live conj store directly — no copy, no snapshot.
+    lp1_conj_store = conj_store
 
     # ── Prebuilt step table for the β≠0 walk ─────────────────────────────────
     # If pre-built tables were passed in from the main thread (to avoid 30-way
@@ -683,8 +707,8 @@ function phase3_trial_worker(
                 # A1: 1-LP-conj — P0 is in FB, RS pair is the LP atom
                 n_conj_branch += 1
 
-                # Lockless lookup into the pre-snapshotted plain dict.
-                _conj_v = lp1_conj_dict !== nothing ? get(lp1_conj_dict, lp_key, nothing) : nothing
+                # Lockless lookup into the live conj store.
+                _conj_v = lp1_conj_store !== nothing ? conj_lookup_or_nothing(lp1_conj_store, lp_key) : nothing
                 if _conj_v !== nothing
                     v = _conj_v
                     prev_col = Int(v.i0)
@@ -969,12 +993,12 @@ function phase3_solve_targets(
 
     t0 = time()
 
-    # tables.shared_lp1_conj is already a plain Dict{CanonicalLP1Key, LP1ConjVal}
-    # snapshot — the LSM was closed and freed in main2 before Phase2Tables was
-    # constructed.  No conversion needed here; no lock contention across workers.
-    conj_snap = tables.shared_lp1_conj
-    @printf("   [phase3] conj dict: %d entries (pre-snapshotted, no conversion needed)\n",
-            length(conj_snap))
+    # Phase 3 reads the live conj store directly.
+    conj_store = tables.shared_lp1_conj
+    @printf("   [phase3] conj store: %d entries (live, no snapshot)\n",
+            conj_store isa AbstractVector ?
+            sum(conj_total_entries(lsm) for lsm in conj_store; init=0) :
+            conj_total_entries(conj_store))
     flush(stdout)
 
     # ── Pre-RREF the β=0 seeded block once, shared across all workers ─────────
@@ -1069,7 +1093,7 @@ function phase3_solve_targets(
             results[i] = phase3_trial_worker(i, T_i, k_true_i, tables, G;
                                               step_cap=eff_step_cap, local_lp_cap=eff_local_cap,
                                               verbose=verbose,
-                                              conj_dict=conj_snap,
+                                              conj_store=conj_store,
                                               seeded_rel_rows=seeded_rel_rows[i],
                                               seeded_rel_be=seeded_rel_be[i],
                                               seeded_rel_al=seeded_rel_al[i],
