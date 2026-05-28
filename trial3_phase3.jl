@@ -140,23 +140,45 @@ end
 # ---------------------------------------------------------------------------
 #  conj_lookup_or_nothing
 #
-#  Uniform lookup helper for the live extension-field LP store.  Works for the
-#  precompute LSM/sharded table as long as it supports haskey/getindex; plain
-#  Dict uses the fast path.
+#  Uniform read-only lookup helper for the live extension-field LP store.
+#
+#  The LP1ConjLSM API does NOT implement Base.haskey / Base.getindex — its
+#  public interface is conj_haskey(sc, si, key) / conj_getval(sc, si, key),
+#  both of which require the shard index `si = conj_shard_idx(key)`.  The old
+#  generic `haskey(store, key) ? store[key] : nothing` fallback silently
+#  dispatched to wrong/missing methods and always returned nothing.
+#
+#  NOTE: this is a READ-ONLY lookup — it does not pop the entry from the store.
+#  The precompute conj store is shared read-only across all phase-3 workers; we
+#  must not remove entries from it (unlike phase-2's conj_insert_or_pop!).
 # ---------------------------------------------------------------------------
-@inline function conj_lookup_or_nothing(store, key)
+@inline function conj_lookup_or_nothing(store, key::CanonicalLP1Key)
+    # Plain Dict (used in non-amortized paths / tests)
     store isa Dict && return get(store, key, nothing)
+
+    # Vector of LP1ConjLSM (one per precompute thread) — probe each in order.
     if store isa AbstractVector
+        si = conj_shard_idx(key)
         for lsm in store
-            v = conj_lookup_or_nothing(lsm, key)
+            v = _conj_lsm_lookup_readonly(lsm, si, key)
             v !== nothing && return v
         end
         return nothing
     end
+
+    # Single LP1ConjLSM or ShardedLP1Conj — use the shard-indexed API.
+    si = conj_shard_idx(key)
+    return _conj_lsm_lookup_readonly(store, si, key)
+end
+
+# Read-only lookup into a single LP1ConjLSM (or any store that exposes
+# conj_haskey / conj_getval).  Does NOT pop the entry.
+@inline function _conj_lsm_lookup_readonly(sc, si::Int, key::CanonicalLP1Key)
+    conj_haskey(sc, si, key) || return nothing
     try
-        haskey(store, key) ? store[key] : nothing
+        return conj_getval(sc, si, key)
     catch
-        return nothing
+        return nothing   # race: entry was consumed between haskey and getval
     end
 end
 
@@ -707,14 +729,17 @@ function phase3_trial_worker(
                 # A1: 1-LP-conj — P0 is in FB, RS pair is the LP atom
                 n_conj_branch += 1
 
-                # Lockless lookup into the live conj store.
+                # Read-only lookup into the live precompute conj store.
+                # In the amortized β=0 precompute prev_be is always 0, but we
+                # subtract it correctly here so the formula is right in all modes.
                 _conj_v = lp1_conj_store !== nothing ? conj_lookup_or_nothing(lp1_conj_store, lp_key) : nothing
                 if _conj_v !== nothing
                     v = _conj_v
                     prev_col = Int(v.i0)
                     prev_al  = Int(v.neg_al)
+                    prev_be  = Int(_conj_prev_be(v))   # 0 for LP1ConjVal (amortized), neg_be for LP1ConjValFull
                     c_al = mod(neg_al - prev_al, ellI)
-                    c_be = neg_be
+                    c_be = mod(neg_be - prev_be, ellI)   # was: c_be = neg_be (ignored prev_be)
                     n_1lp_conj_pre += 1
                     k_rec = try_solve_conj(i0, prev_col, c_al, c_be)
                     k_rec !== nothing && break

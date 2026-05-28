@@ -921,6 +921,24 @@ function conj_total_entries(sc::LP1ConjLSM)::Int
     sum(sc.hot_counts) + sc.n_disk_live
 end
 
+# ---------------------------------------------------------------------------
+#  Base.haskey / Base.getindex — thin wrappers so generic code that spells
+#  `haskey(store, key)` / `store[key]` works correctly.
+#
+#  LP1ConjLSM requires a shard index for all operations; we derive it from
+#  the key here so callers don't have to.
+#
+#  NOTE: these are read-only and do NOT pop the entry.  Use conj_pop! or
+#  conj_insert_or_pop! when consumption is required (phase-2 walk).
+# ---------------------------------------------------------------------------
+function Base.haskey(sc::LP1ConjLSM, key::CanonicalLP1Key)::Bool
+    conj_haskey(sc, conj_shard_idx(key), key)
+end
+
+function Base.getindex(sc::LP1ConjLSM{V}, key::CanonicalLP1Key)::V where V
+    conj_getval(sc, conj_shard_idx(key), key)
+end
+
 function conj_haskey(sc::LP1ConjLSM, si::Int, key::CanonicalLP1Key)::Bool
     lock(sc.shard_locks[si])
     try
