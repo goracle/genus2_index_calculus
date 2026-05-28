@@ -61,6 +61,10 @@ const RECORD_BYTES = 48   # fp(8) + u0u1v0v1(16) + i0(2) + pad(6) + al(8) + be(8
 # safe: if a bucket saturates it over-counts S₂ slightly, conservative).
 const RENYI_BITS  = 14
 const RENYI_SHIFT = 64 - RENYI_BITS   # right-shift to get bucket index
+# Circular buffer capacity for the partial fingerprint log.
+# At 2 bytes/entry this costs 2 MB and always reflects the most recent
+# PARTIAL_FP_LOG_CAP emissions regardless of total walk length.
+const PARTIAL_FP_LOG_CAP = 1_000_000
 # Layout offsets within a record (byte indices, 1-based Julia style handled via pointer):
 #   0: fp   UInt64
 #   8: u0   UInt32
@@ -1061,7 +1065,17 @@ function conj_insert_or_pop!(sc::LP1ConjLSM{V}, si::Int,
     sc.renyi_sum_c  += Int64(1)
     sc.renyi_sum_c2 += Int64(2 * old_c + 1)
     old_c == 0 && (sc.occ_unique += 1)
-    length(sc.partial_fp_log) < 1_000_000 && push!(sc.partial_fp_log, UInt16(rb - 1))
+    # Rolling circular buffer: keep the most recent PARTIAL_FP_LOG_CAP entries.
+    # Once at cap, overwrite oldest entry in-place so α₂(T) windows stay current.
+    log_n = length(sc.partial_fp_log)
+    if log_n < PARTIAL_FP_LOG_CAP
+        push!(sc.partial_fp_log, UInt16(rb - 1))
+    else
+        # sc.bday_emissions is already incremented above; use (emissions-1) mod cap
+        # as the circular write index so index 0 is the oldest slot.
+        circ_idx = ((sc.bday_emissions - 1) % PARTIAL_FP_LOG_CAP) + 1
+        @inbounds sc.partial_fp_log[circ_idx] = UInt16(rb - 1)
+    end
 
     # 1. Fast Path: Check own hot table using ONLY the shard lock.
     # Avoids serializing all threads on file_lock for hot RAM hits.
@@ -1696,9 +1710,11 @@ function lsm_mem_report(sc::LP1ConjLSM{V};
         diag_total    = renyi_bytes + log_bytes + readbuf_bytes + admin_bytes
         @printf(io, "  Diagnostic/bookkeeping:\n")
         @printf(io, "    renyi_counts[%d]   : %s\n", length(lsm.renyi_counts), _fmt_mb(renyi_bytes))
-        @printf(io, "    partial_fp_log[%d]: %s  (%.1f%% of 1M cap)\n",
+        log_full   = length(lsm.partial_fp_log) >= PARTIAL_FP_LOG_CAP
+        log_status = log_full ? "circular (rolling)" : @sprintf("filling (%d%%)", round(Int, 100.0 * length(lsm.partial_fp_log) / PARTIAL_FP_LOG_CAP))
+        @printf(io, "    partial_fp_log[%d]: %s  [%s, cap=%d]\n",
                 length(lsm.partial_fp_log), _fmt_mb(log_bytes),
-                100.0 * length(lsm.partial_fp_log) / 1_000_000)
+                log_status, PARTIAL_FP_LOG_CAP)
         @printf(io, "    read_buf scratch    : %s\n", _fmt_mb(readbuf_bytes))
         @printf(io, "    per-shard admin     : %s  (counts/caps/thresh/masks × %d shards)\n",
                 _fmt_mb(admin_bytes), ns)
