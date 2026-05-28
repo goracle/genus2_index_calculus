@@ -124,6 +124,7 @@ const DEEP_DIAG_MAX_OPCODE_LOG = 2_000_000  # cap on opcode log entries per thre
 const D12_MAX_EVENTS           = 500_000    # cap on D12 store/close event records per thread (~8 MB)
 const D7_MAX_CLOSURES          = 500_000    # cap on is_first_closure log per thread (~0.5 MB)
 const D8_MAX_DEPTHS            = 500_000    # cap on d8_depths/close_bkt/close_abkt per thread (~5 MB)
+const D8_MAX_SHADOW       = 500_000    # Cap on shadow dictionary entries per thread
 
 # ---------------------------------------------------------------------------
 #  ConjDeepStat — per-thread accumulator
@@ -285,7 +286,10 @@ end
                                          alpha_cur::Int = -1,
                                          px       ::Int = -1,
                                          a_val    ::Int = -1)
-    haskey(stat.d8_shadow, lp_key) || (stat.d8_shadow[lp_key] = raw_step)
+    # ADDED CAP HERE
+    if !haskey(stat.d8_shadow, lp_key) && length(stat.d8_shadow) < D8_MAX_SHADOW
+        stat.d8_shadow[lp_key] = raw_step
+    end
     # D12: record (alpha, px) at store time, capped.
     if alpha_cur >= 0 && length(stat.d12_store_alpha) < D12_MAX_EVENTS
         push!(stat.d12_store_alpha, alpha_cur)

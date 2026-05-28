@@ -684,6 +684,7 @@ function _lsm_flush_shard!(sc::LP1ConjLSM{V}, si::Int) where V
 
     # Open (or keep open) the read-side fd
     _lsm_open_read_io!(sc)
+    _fadvise_dontneed!(sc)  # <--- ADD THIS HERE
 
     # Compact runs if fan-out is getting large.
     # Merging keeps _lsm_disk_find to a single binary search rather than
@@ -849,6 +850,7 @@ function _lsm_compact!(sc::LP1ConjLSM)
         sc.spill_read_io = nothing
     end
     sc.spill_read_io = _open_direct(sc.spill_path)
+    _fadvise_dontneed!(sc)  # <--- ADD THIS HERE
     nothing
 end
 
