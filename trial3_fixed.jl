@@ -478,10 +478,11 @@ function index_calculus_walk(G::Div2, T::Div2;
         end
     end
     # Wire shared global bloom and peer list.
-    # Bloom sized for total HOT capacity across all LSMs (not max_entries, which
-    # is the full keyspace cap and would blow out RAM at 8×32×p bytes).
-    let n_hot_total = sum(lsm.bloom.n_bits for lsm in shared_lp1_conj_arr)  # bits, reuse per-LSM sizing
-        gb = BloomFilter(n_hot_total ÷ 8; bits_per_entry = 1)               # already in bits, 1 bit/entry
+    # Bloom sized for total DISK capacity across all LSMs (N_CONJ_SHARDS * LP1_CONJ_CAP_MAX
+    # per LSM) so the FPR stays low even when hot entries have been flushed to SSD.
+    # Using 4 bits/entry gives ~11% FPR — enough to gate pread calls without blowing RAM.
+    let global_cap = shared_lp1_conj_arr[1].max_entries
+        gb = BloomFilter(global_cap; bits_per_entry = 4)
         @printf("[LP1ConjLSM] %d LSMs, hot_cap=%d entries/LSM (%d/shard), spill→%s/\n",
                 length(shared_lp1_conj_arr),
                 shared_lp1_conj_arr[1].hot_caps[1] * shared_lp1_conj_arr[1].n_shards,
@@ -1226,10 +1227,11 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
             end
         end
         # Wire shared global bloom and peer list so threads probe each other's files.
-        let n_hot_total = sum(lsm.bloom.n_bits for lsm in shared_lp1_conj_pre_arr)
-            gb = BloomFilter(n_hot_total ÷ 8; bits_per_entry = 1)
-            @printf("[LP1ConjLSM] %d LSMs (pre), hot_cap=%d entries/LSM (%d/shard), spill→%s/\n",
-                    length(shared_lp1_conj_pre_arr),
+        let global_cap = shared_lp1_conj_pre_arr[1].max_entries
+            gb = BloomFilter(global_cap; bits_per_entry = 4)
+            @printf("[LP1ConjLSM] %d LSMs (pre), global bloom configured for %d keys\n",
+                    length(shared_lp1_conj_pre_arr), global_cap)
+            @printf("[LP1ConjLSM]   hot_cap=%d entries/LSM (%d/shard), spill→%s/\n",
                     shared_lp1_conj_pre_arr[1].hot_caps[1] * shared_lp1_conj_pre_arr[1].n_shards,
                     shared_lp1_conj_pre_arr[1].hot_caps[1],
                     dirname(shared_lp1_conj_pre_arr[1].spill_path))

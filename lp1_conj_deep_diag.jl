@@ -122,6 +122,8 @@ const DEEP_DIAG_MAX_ANCESTRY = 500_000    # cap on ancestry log entries per thre
 const DEEP_DIAG_COND_ENT_LAG = 4         # max lag for conditional collision entropy
 const DEEP_DIAG_MAX_OPCODE_LOG = 2_000_000  # cap on opcode log entries per thread (~2 MB)
 const D12_MAX_EVENTS           = 500_000    # cap on D12 store/close event records per thread (~8 MB)
+const D7_MAX_CLOSURES          = 500_000    # cap on is_first_closure log per thread (~0.5 MB)
+const D8_MAX_DEPTHS            = 500_000    # cap on d8_depths/close_bkt/close_abkt per thread (~5 MB)
 
 # ---------------------------------------------------------------------------
 #  ConjDeepStat — per-thread accumulator
@@ -223,14 +225,21 @@ function merge_conj_deep_stats(stats::Vector{ConjDeepStat})::ConjDeepStat
         append!(merged.ancestry_log_a,       s.ancestry_log_a)
         append!(merged.ancestry_log_parity,  s.ancestry_log_parity)
         append!(merged.ancestry_log_keyhash, s.ancestry_log_keyhash)
-        append!(merged.is_first_closure,     s.is_first_closure)
+        let n_rem = D7_MAX_CLOSURES - length(merged.is_first_closure)
+            n_rem > 0 && append!(merged.is_first_closure, s.is_first_closure[1:min(n_rem, length(s.is_first_closure))])
+        end
         merged.n_emissions += s.n_emissions
         # D8: merge parallel depth/bucket vectors; shadow table is not merged
         # (per-thread keys are disjoint in expectation; any residual open entries
         # are simply unclosed and would distort the depth distribution).
-        append!(merged.d8_depths,     s.d8_depths)
-        append!(merged.d8_close_bkt,  s.d8_close_bkt)
-        append!(merged.d8_close_abkt, s.d8_close_abkt)
+        let n_rem = D8_MAX_DEPTHS - length(merged.d8_depths)
+            if n_rem > 0
+                n_take = min(n_rem, length(s.d8_depths))
+                append!(merged.d8_depths,     s.d8_depths[1:n_take])
+                append!(merged.d8_close_bkt,  s.d8_close_bkt[1:n_take])
+                append!(merged.d8_close_abkt, s.d8_close_abkt[1:n_take])
+            end
+        end
         # D9: merge opcode log (cap to DEEP_DIAG_MAX_OPCODE_LOG total)
         n_remaining = DEEP_DIAG_MAX_OPCODE_LOG - length(merged.opcode_log)
         if n_remaining > 0
@@ -325,14 +334,14 @@ end
     end
 
     # D7 closure flag
-    push!(stat.is_first_closure, is_first)
+    length(stat.is_first_closure) < D7_MAX_CLOSURES && push!(stat.is_first_closure, is_first)
 
     # D8 closure depth: consume shadow table entry if present.
     store_step = get(stat.d8_shadow, lp_key, -1)
     if store_step >= 0
         delete!(stat.d8_shadow, lp_key)
         depth = raw_step - store_step
-        if depth >= 0
+        if depth >= 0 && length(stat.d8_depths) < D8_MAX_DEPTHS
             push!(stat.d8_depths,     depth)
             push!(stat.d8_close_bkt,  UInt16(bkt))
             push!(stat.d8_close_abkt, UInt16(clamp(a_bucket, 0, 65535)))

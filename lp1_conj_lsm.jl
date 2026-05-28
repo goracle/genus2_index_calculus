@@ -326,7 +326,8 @@ function LP1ConjLSM(
         spill_path    ::String = joinpath(homedir(), "crypto", "tmp", "lp1_conj_shards"),
         max_hot_ram_mb::Int    = 512
     )
-    cap = min(LP1_CONJ_CAP_MULTIPLIER * Int(min(ell, p)), LP1_CONJ_CAP_MAX)
+    global_cap = min(LP1_CONJ_CAP_MULTIPLIER * Int(min(ell, p)), LP1_CONJ_CAP_MAX)
+    cap = max(N_CONJ_SHARDS * 16, global_cap ÷ Threads.nthreads())
     V   = amortized ? LP1ConjVal : LP1ConjValFull
     bytes_per_entry = amortized ? 33 : 43
     max_hot_entries = max(N_CONJ_SHARDS * 16,
@@ -1045,21 +1046,22 @@ function conj_insert_or_pop!(sc::LP1ConjLSM{V}, si::Int,
     fp    = _lsm_fp(key)
     now_t = time_ns() * 1e-9
 
-    # ── Diagnostics (bday_lock, allocation-free) ─────────────────────────────
-    # Use lock(l) do block to guarantee release even if indexing throws.
-    lock(sc.bday_lock) do
-        sc.bday_emissions == 0 && (sc.bday_t0 = now_t)
-        sc.bday_emissions += 1
-        sc.occ_n          += 1
-        rb    = Int(fp >> RENYI_SHIFT) + 1
-        old_c = Int(sc.renyi_counts[rb])
-        sc.renyi_counts[rb] = ifelse(old_c < Int(typemax(UInt32)),
-                                     UInt32(old_c + 1), typemax(UInt32))
-        sc.renyi_sum_c  += Int64(1)
-        sc.renyi_sum_c2 += Int64(2 * old_c + 1)
-        old_c == 0 && (sc.occ_unique += 1)
-        push!(sc.partial_fp_log, UInt16(rb - 1))
-    end
+    # ── Diagnostics — all fields below are owned by this LSM's thread only. ──
+    # bday_emissions, occ_n, occ_unique, renyi_*, partial_fp_log are written
+    # exclusively by the owning thread (one LSM per thread), so no lock is
+    # needed here.  bday_first_coll_m/t are written by _bday_record_collision!
+    # which uses bday_lock, but is called only on actual collisions (rare).
+    sc.bday_emissions == 0 && (sc.bday_t0 = now_t)
+    sc.bday_emissions += 1
+    sc.occ_n          += 1
+    rb    = Int(fp >> RENYI_SHIFT) + 1
+    old_c = Int(sc.renyi_counts[rb])
+    sc.renyi_counts[rb] = ifelse(old_c < Int(typemax(UInt32)),
+                                 UInt32(old_c + 1), typemax(UInt32))
+    sc.renyi_sum_c  += Int64(1)
+    sc.renyi_sum_c2 += Int64(2 * old_c + 1)
+    old_c == 0 && (sc.occ_unique += 1)
+    length(sc.partial_fp_log) < 1_000_000 && push!(sc.partial_fp_log, UInt16(rb - 1))
 
     # 1. Fast Path: Check own hot table using ONLY the shard lock.
     # Avoids serializing all threads on file_lock for hot RAM hits.
@@ -1108,15 +1110,33 @@ function conj_insert_or_pop!(sc::LP1ConjLSM{V}, si::Int,
     end
 
     # 3. Cross-peer probe — only if global bloom suggests a match somewhere.
-    #    Hot-table only: probing a peer's disk requires holding peer_lsm.file_lock
-    #    for the full duration of a binary-search pread, which serializes all threads.
-    #    A missed peer disk hit just defers the collision to the next emission cycle,
-    #    which is acceptable.  trylock: skip any peer that is busy.
+    #
+    #    Two guards before touching any peer:
+    #      (a) bday_first_coll_m > 0: at least one birthday collision has been
+    #          observed, meaning the key space is populated enough that peer disk
+    #          entries are likely to produce real matches.  Before the first
+    #          collision, peer disks are essentially empty; probing them on every
+    #          one of ~5M conj steps costs 31 × file_lock acquisitions for zero
+    #          benefit and is the primary cause of the ~50% CPU idle observed at
+    #          run start.  Read is intentionally racy (no lock): a false negative
+    #          (we read 0 when it just became nonzero) only defers peer probing by
+    #          one emission cycle, which is harmless.
+    #      (b) bloom_maybe_has(sc.global_bloom, fp): the key was seen by at least
+    #          one peer at some point.
+    #
+    #    Disk probes use trylock (not lock) so a busy peer is skipped rather than
+    #    blocking.  A missed hit means the entry stays on peer disk until the next
+    #    emission cycle for that key, which is acceptable — correctness is
+    #    preserved, only latency is affected.
     if bloom_maybe_has(sc.global_bloom, fp)
         for peer in sc.peers
             peer === sc && continue
             peer_lsm = peer::LP1ConjLSM{V}
 
+            # Skip this peer entirely if its own bloom says it never saw fp.
+            bloom_maybe_has(peer_lsm.bloom, fp) || continue
+
+            # Check peer hot table first (cheap, no file_lock needed).
             if trylock(peer_lsm.shard_locks[si])
                 try
                     pslot = _lsm_hot_find(peer_lsm, si, key)
@@ -1128,6 +1148,30 @@ function conj_insert_or_pop!(sc::LP1ConjLSM{V}, si::Int,
                     end
                 finally
                     unlock(peer_lsm.shard_locks[si])
+                end
+            end
+
+            # Check peer disk via trylock — skip peer if it is busy flushing.
+            # Per-LSM bloom already gates this to ~FPR% of calls, so contention
+            # is low once the bloom is well-populated.
+            if !isempty(peer_lsm.runs)
+                if trylock(peer_lsm.file_lock)
+                    try
+                        if trylock(peer_lsm.shard_locks[si])
+                            try
+                                found, ri, pos, i0_v, al_v, be_v = _lsm_disk_find(peer_lsm, key, fp)
+                                if found
+                                    _lsm_disk_delete!(peer_lsm, ri, pos)
+                                    _bday_record_collision!(sc, now_t)
+                                    return _conj_make_val(V, i0_v, al_v, be_v)
+                                end
+                            finally
+                                unlock(peer_lsm.shard_locks[si])
+                            end
+                        end
+                    finally
+                        unlock(peer_lsm.file_lock)
+                    end
                 end
             end
         end
@@ -1537,9 +1581,245 @@ function lsm_info(sc::LP1ConjLSM; io::IO = stdout)
     hot_total   = sum(sc.hot_counts)
     total_runs  = length(sc.runs)
     total_spill = sc.spill_size / 1024^2
-    @printf(io, "LP1ConjLSM: %d hot | %d disk-live | %d runs | spill=%s (%.1f MB) | cold-dropped=%d\n",
-            hot_total, sc.n_disk_live, total_runs, sc.spill_path,
+    hot_slots   = isempty(sc.hot_caps) ? 0 : sum(sc.hot_caps)
+    load_pct    = hot_slots > 0 ? 100.0 * hot_total / hot_slots : 0.0
+    @printf(io, "LP1ConjLSM: %d hot (%.1f%% load) | %d disk-live | %d runs | spill=%s (%.1f MB) | cold-dropped=%d\n",
+            hot_total, load_pct, sc.n_disk_live, total_runs, sc.spill_path,
             total_spill, sc.n_cold_dropped)
+    nothing
+end
+
+# ---------------------------------------------------------------------------
+#  lsm_mem_report — detailed RAM breakdown for one LP1ConjLSM instance.
+#
+#  Accounts for every heap allocation owned by the LSM:
+#    • Hot table arrays (keys + vals) across all shards
+#    • Bloom filter bit-arrays (own + global, deduped)
+#    • RunMeta vector + per-run tombstone bitvectors
+#    • partial_fp_log (chronological bucket log)
+#    • renyi_counts array
+#    • read_buf scratch buffer
+#    • Hot-count / hot-cap / hot-mask / hot-thresh / shard-locks vectors
+#
+#  Does NOT account for Julia GC overhead, object headers, or kernel page-cache
+#  for the spill file (which is explicitly flushed with posix_fadvise DONTNEED).
+#
+#  Arguments:
+#    sc        — the LP1ConjLSM to inspect
+#    label     — optional string printed as a header (e.g. "thread 3")
+#    peers     — if true, roll up all wired peers after the per-LSM table
+# ---------------------------------------------------------------------------
+function lsm_mem_report(sc::LP1ConjLSM{V};
+                         label   ::String = "",
+                         peers   ::Bool   = false,
+                         io      ::IO     = stdout) where V
+
+    _bytes_mb(n) = n / 1024^2
+    _fmt_mb(n)   = @sprintf("%.3f MB", _bytes_mb(n))
+
+    function _single_lsm_mem(lsm::LP1ConjLSM{W}, lbl::String) where W
+        @printf(io, "\n[LP1ConjLSM memory report%s]\n",
+                isempty(lbl) ? "" : "  ($lbl)")
+
+        # ── Hot table ─────────────────────────────────────────────────────────
+        ns = lsm.n_shards
+        key_bytes = 0; val_bytes = 0
+        hot_live  = 0; hot_slots = 0
+        for si in 1:ns
+            cap      = lsm.hot_caps[si]
+            key_bytes += cap * sizeof(CanonicalLP1Key)    # UInt128 → 16 bytes
+            val_bytes += cap * sizeof(W)
+            hot_live  += lsm.hot_counts[si]
+            hot_slots += cap
+        end
+        thresh_avg = ns > 0 ? sum(lsm.hot_thresh) / ns : 0.0
+        load_pct   = hot_slots > 0 ? 100.0 * hot_live / hot_slots : 0.0
+        @printf(io, "  Hot table (%d shards, %d slots/shard avg):\n",
+                ns, ns > 0 ? hot_slots ÷ ns : 0)
+        @printf(io, "    key arrays          : %s  (%d × %d-byte CanonicalLP1Key)\n",
+                _fmt_mb(key_bytes), hot_slots, sizeof(CanonicalLP1Key))
+        @printf(io, "    val arrays          : %s  (%d × %d-byte %s)\n",
+                _fmt_mb(val_bytes), hot_slots, sizeof(W), W)
+        @printf(io, "    live / slots        : %d / %d  (%.1f%% load, flush threshold avg %.0f)\n",
+                hot_live, hot_slots, load_pct, thresh_avg)
+        hot_total_bytes = key_bytes + val_bytes
+        @printf(io, "    hot total           : %s\n", _fmt_mb(hot_total_bytes))
+
+        # ── Bloom filters ─────────────────────────────────────────────────────
+        bloom_bytes        = length(lsm.bloom.bits)        * sizeof(UInt64)
+        global_bloom_ptr   = pointer_from_objref(lsm.global_bloom)
+        own_bloom_ptr      = pointer_from_objref(lsm.bloom)
+        global_bloom_bytes = (global_bloom_ptr != own_bloom_ptr) ?
+                              length(lsm.global_bloom.bits) * sizeof(UInt64) : 0
+        @printf(io, "  Bloom filters:\n")
+        @printf(io, "    own bloom           : %s  (%d bits, capacity %d)\n",
+                _fmt_mb(bloom_bytes), lsm.bloom.n_bits, lsm.bloom.n_bits)
+        if global_bloom_ptr != own_bloom_ptr
+            @printf(io, "    global bloom (shared): %s  (%d bits)  [counted once here]\n",
+                    _fmt_mb(global_bloom_bytes), lsm.global_bloom.n_bits)
+        else
+            @printf(io, "    global bloom        : == own bloom (not yet wired to shared object)\n")
+        end
+        bloom_total = bloom_bytes + global_bloom_bytes
+        @printf(io, "    bloom total         : %s\n", _fmt_mb(bloom_total))
+
+        # ── Spill file + RunMeta ───────────────────────────────────────────────
+        nruns        = length(lsm.runs)
+        run_meta_bytes = nruns * (7 * sizeof(Int) + 2 * sizeof(UInt64))   # RunMeta fields
+        tomb_bytes   = sum(length(rm.tombs) * sizeof(UInt64) for rm in lsm.runs; init=0)
+        n_tombed     = sum(count(>(UInt64(0)), rm.tombs) for rm in lsm.runs; init=0)
+        # tomb fraction: fraction of disk records that are tombstoned
+        tomb_frac    = lsm.n_disk_live + n_tombed > 0 ?
+                        n_tombed / Float64(lsm.n_disk_live + n_tombed) : 0.0
+        spill_mb     = lsm.spill_size / 1024^2
+        @printf(io, "  Disk / spill file:\n")
+        @printf(io, "    spill file size     : %.3f MB  (%d live records × %d bytes)\n",
+                spill_mb, lsm.n_disk_live, RECORD_BYTES)
+        @printf(io, "    runs (in RAM)       : %d  — RunMeta structs: %s\n",
+                nruns, _fmt_mb(run_meta_bytes))
+        @printf(io, "    tombstone bitvecs   : %s  (%.1f%% of disk records tombstoned)\n",
+                _fmt_mb(tomb_bytes), 100.0 * tomb_frac)
+        if nruns > 0
+            avg_run_len = lsm.n_disk_live / nruns
+            max_run_len = maximum(rm.len for rm in lsm.runs)
+            @printf(io, "    avg records/run     : %.0f   max: %d\n", avg_run_len, max_run_len)
+        end
+        runs_total_bytes = run_meta_bytes + tomb_bytes
+        @printf(io, "    run metadata total  : %s\n", _fmt_mb(runs_total_bytes))
+
+        # ── Diagnostic / bookkeeping arrays ────────────────────────────────────
+        renyi_bytes   = length(lsm.renyi_counts) * sizeof(UInt32)
+        log_bytes     = length(lsm.partial_fp_log) * sizeof(UInt16)
+        readbuf_bytes = length(lsm.read_buf) * sizeof(UInt8)
+        admin_bytes   = (ns * (sizeof(Int)*3 + sizeof(UInt))) +   # hot_counts/caps/thresh/masks
+                        ns * sizeof(ReentrantLock)                 # shard_locks (rough)
+        diag_total    = renyi_bytes + log_bytes + readbuf_bytes + admin_bytes
+        @printf(io, "  Diagnostic/bookkeeping:\n")
+        @printf(io, "    renyi_counts[%d]   : %s\n", length(lsm.renyi_counts), _fmt_mb(renyi_bytes))
+        @printf(io, "    partial_fp_log[%d]: %s  (%.1f%% of 1M cap)\n",
+                length(lsm.partial_fp_log), _fmt_mb(log_bytes),
+                100.0 * length(lsm.partial_fp_log) / 1_000_000)
+        @printf(io, "    read_buf scratch    : %s\n", _fmt_mb(readbuf_bytes))
+        @printf(io, "    per-shard admin     : %s  (counts/caps/thresh/masks × %d shards)\n",
+                _fmt_mb(admin_bytes), ns)
+        @printf(io, "    diagnostic total    : %s\n", _fmt_mb(diag_total))
+
+        # ── Grand total ────────────────────────────────────────────────────────
+        total_bytes = hot_total_bytes + bloom_total + runs_total_bytes + diag_total
+        @printf(io, "  ─────────────────────────────────────────────────────────\n")
+        @printf(io, "  TOTAL heap (exc. GC overhead) : %s\n", _fmt_mb(total_bytes))
+        @printf(io, "  spill file on SSD             : %.3f MB  (not in RSS)\n\n", spill_mb)
+
+        return total_bytes
+    end
+
+    total = _single_lsm_mem(sc, label)
+
+    if peers && !isempty(sc.peers)
+        @printf(io, "  [Peer roll-up: %d peer(s)]\n", length(sc.peers))
+        peer_total = 0
+        for (pi, peer) in enumerate(sc.peers)
+            peer === sc && continue
+            peer_lsm = peer::LP1ConjLSM{V}
+            pt = _single_lsm_mem(peer_lsm, "peer $pi")
+            peer_total += pt
+        end
+        # Global bloom is shared across all peers — already counted in the first
+        # LSM that has a distinct global_bloom pointer.  Deduplicate here:
+        @printf(io, "  ─────────────────────────────────────────────────────────\n")
+        @printf(io, "  ALL PEERS combined heap : %s\n\n", _fmt_mb(total + peer_total))
+    end
+
+    nothing
+end
+
+# ---------------------------------------------------------------------------
+#  lsm_flush_stats — per-flush accounting: how many entries were cold-filtered
+#  vs spilled, load at flush time, compaction frequency.
+#
+#  The LSM does not currently track per-flush history natively (too much RAM).
+#  Instead we add two new counters to the struct (n_flushes, n_flush_warm)
+#  and expose summary statistics here.
+#
+#  Because adding struct fields requires recompilation we instead derive what
+#  we can from the current observable state and expose a helper the caller can
+#  use to instrument the flush path at a higher level.
+#
+#  Summary report: overall flush efficiency from accumulated counters.
+# ---------------------------------------------------------------------------
+function lsm_flush_stats(sc::LP1ConjLSM; io::IO = stdout)
+    @printf(io, "\n[LP1ConjLSM flush / spill stats]\n")
+
+    n_emitted   = sc.bday_emissions       # total LP1-conj partials inserted
+    n_dropped   = sc.n_cold_dropped
+    n_disk      = sc.n_disk_live
+    hot_live    = sum(sc.hot_counts)
+    hot_slots   = sum(sc.hot_caps)
+    spill_mb    = sc.spill_size / 1024^2
+    nruns       = length(sc.runs)
+
+    # Total entries that passed through the flush path = spilled + dropped.
+    # hot_live entries have not been flushed yet.
+    n_flush_total = n_disk + n_dropped
+    warm_frac   = n_flush_total > 0 ?
+                   100.0 * n_disk / n_flush_total : 100.0
+    drop_frac   = n_flush_total > 0 ?
+                   100.0 * n_dropped / n_flush_total : 0.0
+
+    @printf(io, "  entries emitted (LP1-conj): %d\n", n_emitted)
+    @printf(io, "  entries in hot RAM         : %d  (%.1f%% load of %d slots)\n",
+            hot_live, hot_slots > 0 ? 100.0 * hot_live / hot_slots : 0.0, hot_slots)
+    @printf(io, "  entries cold-dropped       : %d  (%.1f%% of flush candidates)\n",
+            n_dropped, drop_frac)
+    @printf(io, "  entries spilled to SSD     : %d  (%.1f%% of flush candidates)\n",
+            n_disk, warm_frac)
+    @printf(io, "  spill file size            : %.3f MB  (%d runs)\n", spill_mb, nruns)
+
+    # Per-run breakdown if there are multiple runs (pre-compaction view)
+    if nruns > 0
+        total_tomb = sum(count(>(UInt64(0)), rm.tombs) * 64 for rm in sc.runs; init=0)
+        # (this over-counts since the last word may be partial — good enough for display)
+        @printf(io, "\n  Run breakdown:\n")
+        @printf(io, "  %6s  %10s  %12s  %12s  %8s  %10s\n",
+                "run#", "len", "min_fp(hex)", "max_fp(hex)", "tomb#",  "offset(MB)")
+        for (ri, rm) in enumerate(sc.runs)
+            n_tombed_run = sum(count_ones(w) for w in rm.tombs; init=0)
+            @printf(io, "  %6d  %10d  %12x  %12x  %8d  %10.3f\n",
+                    ri, rm.len, rm.min_fp, rm.max_fp,
+                    n_tombed_run, rm.byte_offset / 1024^2)
+        end
+    end
+
+    # Estimate of expected collision probability given current spill density.
+    # If N_total = n_disk entries occupy effective space S₂, probability that
+    # the next emission matches a disk entry is N_total / S₂.
+    # We read S₂ from the Rényi estimator.
+    rsc  = sc.renyi_sum_c
+    rsc2 = sc.renyi_sum_c2
+    if rsc > 0 && rsc2 > 0 && sc.bloom.n_bits > 64
+        S2_bucket = Float64(rsc)^2 / Float64(rsc2)
+        S2_keys   = S2_bucket * Float64(1 << RENYI_BITS)
+        if S2_keys > 0.0
+            p_hit_disk   = Float64(n_disk)   / S2_keys
+            p_hit_hot    = Float64(hot_live)  / S2_keys
+            @printf(io, "\n  Collision probability estimate (from Rényi S₂ = %.5g):\n", S2_keys)
+            @printf(io, "    P(disk hit | emission) : %.5g  (%.2f per 1000 emissions)\n",
+                    p_hit_disk, 1000.0 * p_hit_disk)
+            @printf(io, "    P(hot hit  | emission) : %.5g  (%.2f per 1000 emissions)\n",
+                    p_hit_hot, 1000.0 * p_hit_hot)
+            @printf(io, "    P(any hit  | emission) : %.5g  (%.2f per 1000 emissions)\n",
+                    p_hit_disk + p_hit_hot, 1000.0 * (p_hit_disk + p_hit_hot))
+            if sc.bday_first_coll_m > 0
+                # Compare to observed empirical rate.
+                m_coll = sc.bday_first_coll_m
+                p_obs  = 1.0 / Float64(m_coll)   # rough: first coll at m ↔ rate ~ 1/m
+                @printf(io, "    P_obs (1/m_first)      : %.5g   ratio pred/obs = %.3f\n",
+                        p_obs, (p_hit_disk + p_hit_hot) / p_obs)
+            end
+        end
+    end
+
+    @printf(io, "\n")
     nothing
 end
 

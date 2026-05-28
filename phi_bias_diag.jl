@@ -216,6 +216,13 @@ end
 
 const MAX_RUN_LEN = 64   # run-length histogram cap (longer runs fold into bin 64)
 
+# Per-thread vector caps for diagnostic accumulation.
+# lp1_conj_key_blog is the high-volume path (every partial, not just closures);
+# 5M UInt16 entries ≈ 10 MB/thread, ample for all α₂ spectral diagnostics.
+# arrivals/keys/bucket_log are O(closures only) so 2M entries is a generous ceiling.
+const MAX_LP1_CONJ_BLOG     = 5_000_000   # lp1_conj_key_blog cap (UInt16, 10 MB/thread)
+const MAX_LP1_CONJ_ARRIVALS = 2_000_000   # lp1_conj_arrivals / keys / bucket_log cap
+
 function PhiBiasStat(p::Int)
     nbuckets = max(1, isqrt(p))
     PhiBiasStat(
@@ -367,6 +374,7 @@ const _PHI_RENYI_SHIFT = 64 - _PHI_RENYI_BITS
 end
 
 @inline function record_lp1_conj_partial!(stat::PhiBiasStat, lp_key::UInt128)
+    length(stat.lp1_conj_key_blog) >= MAX_LP1_CONJ_BLOG && return nothing
     bkt = UInt16(_phi_fp(lp_key) >> _PHI_RENYI_SHIFT)
     push!(stat.lp1_conj_key_blog, bkt)
     return nothing
@@ -383,12 +391,14 @@ end
 @inline function record_lp1_conj_hit!(stat::PhiBiasStat, raw_step::Int,
                                        lp_key::UInt128 = zero(UInt128),
                                        a_bucket::Int   = 0)
-    push!(stat.lp1_conj_arrivals, raw_step)
-    push!(stat.lp1_conj_keys,     lp_key)
+    if length(stat.lp1_conj_arrivals) < MAX_LP1_CONJ_ARRIVALS
+        push!(stat.lp1_conj_arrivals, raw_step)
+        push!(stat.lp1_conj_keys,     lp_key)
+        push!(stat.lp1_conj_bucket_log, a_bucket > 0 ? a_bucket : 1)
+    end
     if 1 <= a_bucket <= length(stat.lp1_conj_a_hist)
         stat.lp1_conj_a_hist[a_bucket] += 1
     end
-    push!(stat.lp1_conj_bucket_log, a_bucket > 0 ? a_bucket : 1)
     stat._prev_anchor_was_lp = true
     return nothing
 end
@@ -495,8 +505,6 @@ function merge_phi_bias_stats(stats::Vector{PhiBiasStat})::PhiBiasStat
         merged.a_zero_split     += s.a_zero_split
         merged.a_zero_fb        += s.a_zero_fb
         merged.image_collisions += s.image_collisions
-        append!(merged.lp1_conj_arrivals, s.lp1_conj_arrivals)
-        append!(merged.lp1_conj_keys,     s.lp1_conj_keys)
         for i in eachindex(merged.split_hist)
             merged.split_hist[i]       += s.split_hist[i]
             merged.nonsplit_hist[i]    += s.nonsplit_hist[i]
@@ -508,11 +516,22 @@ function merge_phi_bias_stats(stats::Vector{PhiBiasStat})::PhiBiasStat
             merged.run_hist_split[k]    += s.run_hist_split[k]
             merged.run_hist_nonsplit[k] += s.run_hist_nonsplit[k]
         end
-        # α₂ timeseries: concatenate LP1-conj partial stream across threads.
-        # (step_bucket_log / split_step_log / event_hash_log removed — OOM vectors.)
+        # α₂ timeseries: concatenate LP1-conj partial stream across threads, capped.
         merged._event_hash_state ⊻= s._event_hash_state   # fold per-thread digests
-        append!(merged.lp1_conj_bucket_log, s.lp1_conj_bucket_log)
-        append!(merged.lp1_conj_key_blog,    s.lp1_conj_key_blog)
+        let n_rem = MAX_LP1_CONJ_BLOG - length(merged.lp1_conj_key_blog)
+            if n_rem > 0
+                n_take = min(n_rem, length(s.lp1_conj_key_blog))
+                append!(merged.lp1_conj_key_blog, s.lp1_conj_key_blog[1:n_take])
+            end
+        end
+        let n_rem = MAX_LP1_CONJ_ARRIVALS - length(merged.lp1_conj_arrivals)
+            if n_rem > 0
+                n_take = min(n_rem, length(s.lp1_conj_arrivals))
+                append!(merged.lp1_conj_arrivals,  s.lp1_conj_arrivals[1:n_take])
+                append!(merged.lp1_conj_keys,      s.lp1_conj_keys[1:n_take])
+                append!(merged.lp1_conj_bucket_log, s.lp1_conj_bucket_log[1:n_take])
+            end
+        end
     end
     return merged
 end
