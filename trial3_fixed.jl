@@ -478,7 +478,15 @@ function index_calculus_walk(G::Div2, T::Div2;
         end
     end
     # Wire shared global bloom and peer list.
-    let gb = BloomFilter(shared_lp1_conj_arr[1].max_entries * length(shared_lp1_conj_arr))
+    # Bloom sized for total HOT capacity across all LSMs (not max_entries, which
+    # is the full keyspace cap and would blow out RAM at 8×32×p bytes).
+    let n_hot_total = sum(lsm.bloom.n_bits for lsm in shared_lp1_conj_arr)  # bits, reuse per-LSM sizing
+        gb = BloomFilter(n_hot_total ÷ 8; bits_per_entry = 1)               # already in bits, 1 bit/entry
+        @printf("[LP1ConjLSM] %d LSMs, hot_cap=%d entries/LSM (%d/shard), spill→%s/\n",
+                length(shared_lp1_conj_arr),
+                shared_lp1_conj_arr[1].hot_caps[1] * shared_lp1_conj_arr[1].n_shards,
+                shared_lp1_conj_arr[1].hot_caps[1],
+                dirname(shared_lp1_conj_arr[1].spill_path))
         for lsm in shared_lp1_conj_arr
             lsm.global_bloom = gb
             lsm.peers = shared_lp1_conj_arr
@@ -1218,9 +1226,13 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
             end
         end
         # Wire shared global bloom and peer list so threads probe each other's files.
-        let gb = shared_lp1_conj_pre_arr[1].bloom  # reuse first LSM's bloom as the shared object
-            # Actually allocate a fresh shared bloom sized for total capacity
-            gb = BloomFilter(shared_lp1_conj_pre_arr[1].max_entries * length(shared_lp1_conj_pre_arr))
+        let n_hot_total = sum(lsm.bloom.n_bits for lsm in shared_lp1_conj_pre_arr)
+            gb = BloomFilter(n_hot_total ÷ 8; bits_per_entry = 1)
+            @printf("[LP1ConjLSM] %d LSMs (pre), hot_cap=%d entries/LSM (%d/shard), spill→%s/\n",
+                    length(shared_lp1_conj_pre_arr),
+                    shared_lp1_conj_pre_arr[1].hot_caps[1] * shared_lp1_conj_pre_arr[1].n_shards,
+                    shared_lp1_conj_pre_arr[1].hot_caps[1],
+                    dirname(shared_lp1_conj_pre_arr[1].spill_path))
             for lsm in shared_lp1_conj_pre_arr
                 lsm.global_bloom = gb
                 lsm.peers = shared_lp1_conj_pre_arr

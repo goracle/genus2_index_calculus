@@ -184,7 +184,7 @@ mutable struct LP1ConjLSM{V}
     file_lock     ::ReentrantLock
     spill_path    ::String
     spill_io      ::Union{IOStream, Nothing}   # open for appending (writes)
-    spill_read_io ::Union{IOStream, Nothing}   # open for reading (seeks); separate fd
+    spill_read_io ::Union{Cint, Nothing}        # open for reading via pread (O_DIRECT); separate fd
     spill_size    ::Int                        # current file size in bytes
 
     # Bloom filter — per-LSM (used for set_bloom! writes only)
@@ -244,6 +244,11 @@ mutable struct LP1ConjLSM{V}
     # These would be pure SSD waste — they can never produce a birthday collision.
     # Updated under file_lock+shard_lock (same as the flush path).
     n_cold_dropped      ::Int
+
+    # Pre-allocated scratch buffer for _lsm_disk_find pread calls.
+    # Avoids a heap allocation on every disk probe.  Access is safe because
+    # _lsm_disk_find is always called under file_lock (single-writer).
+    read_buf            ::Vector{UInt8}
 end
 
 # ---------------------------------------------------------------------------
@@ -257,6 +262,8 @@ function LP1ConjLSM{V}(
         amortized    ::Bool = true,
         load_num     ::Int  = 4,
         load_denom   ::Int  = 5,
+        flush_num    ::Int  = 1,   # flush when count >= slot_count * flush_num/flush_denom
+        flush_denom  ::Int  = 4,   # default: flush at 25% full (keeps hot RAM low)
         bloom_cap    ::Int  = max_entries
     ) where V
 
@@ -264,7 +271,7 @@ function LP1ConjLSM{V}(
         slot_count = max(16, nextpow(2, cld(cap_entries * load_denom, load_num)))
         keys = fill(CONJ_KEY_EMPTY, slot_count)
         vals = Vector{V}(undef, slot_count)
-        thresh = cld(slot_count * load_num, load_denom)
+        thresh = cld(slot_count * flush_num, flush_denom)
         (keys, vals, slot_count, UInt(slot_count - 1), thresh)
     end
 
@@ -308,7 +315,8 @@ function LP1ConjLSM{V}(
         # Rényi-2 estimator (2^14 = 16384 buckets — ~64 KB, negligible)
         zeros(UInt32, 1 << RENYI_BITS), Int64(0), Int64(0),
         UInt16[],             # partial_fp_log
-        0                     # n_cold_dropped
+        0,                    # n_cold_dropped
+        zeros(UInt8, RECORD_BYTES)  # read_buf — pre-allocated scratch for _lsm_disk_find
     )
 end
 
@@ -324,12 +332,11 @@ function LP1ConjLSM(
     max_hot_entries = max(N_CONJ_SHARDS * 16,
                           (max_hot_ram_mb * 1024 * 1024) ÷ bytes_per_entry)
     hot_shard_entries = max(16, max_hot_entries ÷ N_CONJ_SHARDS)
-    @printf("[LP1ConjLSM] hot_cap=%d entries (%d/shard), spill→%s\n",
-            hot_shard_entries * N_CONJ_SHARDS, hot_shard_entries, spill_path)
     LP1ConjLSM{V}(
         N_CONJ_SHARDS, hot_shard_entries, cap, spill_path;
-        amortized = amortized,
-        bloom_cap = max_hot_entries
+        amortized  = amortized,
+        bloom_cap  = min(cap, 4_000_000)   # size for actual disk occupancy, not hot RAM;
+                                            # 4M × 8 bits = 4 MB/LSM, ~1% FPR at 2M entries
     )
 end
 
@@ -343,16 +350,39 @@ function _lsm_open_read_io!(sc::LP1ConjLSM)
     sc.spill_size == 0 && return
     flush(sc.spill_io)
     if sc.spill_read_io === nothing
-        sc.spill_read_io = open(sc.spill_path, "r")
+        sc.spill_read_io = _open_direct(sc.spill_path)
     end
     nothing
 end
 
 # Read exactly RECORD_BYTES from the read-side fd at byte offset `off` (0-based)
 # into a caller-supplied RECORD_BYTES-length buffer.  Caller holds file_lock.
+# O_DIRECT removed: RECORD_BYTES (48) is not a multiple of 512, so O_DIRECT
+# triggers EINVAL on every pread.  We use posix_fadvise(DONTNEED) after each
+# flush/compact instead to keep the page cache from eating all RAM.
+function _open_direct(path::String)::Cint
+    fd = ccall(:open, Cint, (Cstring, Cint), path, Cint(0))
+    fd < 0 && error("_open_direct: cannot open $(path): $(Base.Libc.strerror())")
+    fd
+end
+
+# Drop all cached pages for the spill file from the kernel page cache.
+# Call this after every flush and compaction (while holding file_lock).
+# POSIX_FADV_DONTNEED = 4 on Linux x86-64.
+@inline function _fadvise_dontneed!(sc::LP1ConjLSM)
+    sc.spill_read_io === nothing && return
+    ccall(:posix_fadvise, Cint, (Cint, Int64, Int64, Cint),
+          sc.spill_read_io, Int64(0), Int64(0), Cint(4))
+    nothing
+end
+
 @inline function _pread_record!(sc::LP1ConjLSM, buf::Vector{UInt8}, off::Int)
-    seek(sc.spill_read_io, off)
-    readbytes!(sc.spill_read_io, buf, RECORD_BYTES)
+    n = ccall(:pread, Cssize_t, (Cint, Ptr{UInt8}, Csize_t, Int64),
+              sc.spill_read_io, buf, RECORD_BYTES, off)
+    if n != RECORD_BYTES
+        err_msg = Base.Libc.strerror()
+        error("_pread_record!: short read ($n) at offset $off. OS Error: $err_msg")
+    end
     nothing
 end
 
@@ -810,9 +840,10 @@ function _lsm_compact!(sc::LP1ConjLSM)
 
     # Reopen read-side fd on the new compacted file.
     if sc.spill_read_io !== nothing
-        close(sc.spill_read_io)
+        ccall(:close, Cint, (Cint,), sc.spill_read_io)
+        sc.spill_read_io = nothing
     end
-    sc.spill_read_io = open(sc.spill_path, "r")
+    sc.spill_read_io = _open_direct(sc.spill_path)
     nothing
 end
 
@@ -830,7 +861,7 @@ function _lsm_disk_find(sc::LP1ConjLSM,
     ku1 = UInt32((key >> 32)  & 0x00000000ffffffff)
     kv0 = UInt32((key >> 64)  & 0x00000000ffffffff)
     kv1 = UInt32((key >> 96)  & 0x00000000ffffffff)
-    buf = zeros(UInt8, RECORD_BYTES)
+    buf = sc.read_buf   # pre-allocated; safe because caller holds file_lock
 
     for (ri, rm) in enumerate(sc.runs)
         (fp_target < rm.min_fp || fp_target > rm.max_fp) && continue
@@ -881,75 +912,128 @@ end
 
 function conj_haskey(sc::LP1ConjLSM, si::Int, key::CanonicalLP1Key)::Bool
     lock(sc.shard_locks[si])
-    hot_found = _lsm_hot_find(sc, si, key) != 0
-    unlock(sc.shard_locks[si])
-    hot_found && return true
+    try
+        _lsm_hot_find(sc, si, key) != 0 && return true
+    finally
+        unlock(sc.shard_locks[si])
+    end
     fp = _lsm_fp(key)
     !bloom_maybe_has(sc.bloom, fp) && return false
-    lock(sc.shard_locks[si])
-    found, _, _, _, _, _ = _lsm_disk_find(sc, key, fp)
-    unlock(sc.shard_locks[si])
-    found
+    lock(sc.file_lock)
+    try
+        lock(sc.shard_locks[si])
+        try
+            found, _, _, _, _, _ = _lsm_disk_find(sc, key, fp)
+            return found
+        finally
+            unlock(sc.shard_locks[si])
+        end
+    finally
+        unlock(sc.file_lock)
+    end
 end
 
 function conj_getval(sc::LP1ConjLSM{V}, si::Int, key::CanonicalLP1Key)::V where V
     lock(sc.shard_locks[si])
-    slot = _lsm_hot_find(sc, si, key)
-    if slot != 0
-        v = @inbounds sc.hot_vals[si][slot]
+    try
+        slot = _lsm_hot_find(sc, si, key)
+        if slot != 0
+            return @inbounds sc.hot_vals[si][slot]
+        end
+    finally
         unlock(sc.shard_locks[si])
-        return v
     end
     fp = _lsm_fp(key)
-    found, _, _, i0_v, al_v, be_v = _lsm_disk_find(sc, key, fp)
-    unlock(sc.shard_locks[si])
-    found || throw(KeyError(key))
-    _conj_make_val(V, i0_v, al_v, be_v)
+    lock(sc.file_lock)
+    try
+        lock(sc.shard_locks[si])
+        try
+            found, _, _, i0_v, al_v, be_v = _lsm_disk_find(sc, key, fp)
+            found || throw(KeyError(key))
+            return _conj_make_val(V, i0_v, al_v, be_v)
+        finally
+            unlock(sc.shard_locks[si])
+        end
+    finally
+        unlock(sc.file_lock)
+    end
 end
 
 function conj_pop!(sc::LP1ConjLSM{V}, si::Int, key::CanonicalLP1Key)::V where V
     lock(sc.shard_locks[si])
-    slot = _lsm_hot_find(sc, si, key)
-    if slot != 0
-        result = @inbounds sc.hot_vals[si][slot]
-        _lsm_hot_delete!(sc, si, slot)
+    try
+        slot = _lsm_hot_find(sc, si, key)
+        if slot != 0
+            result = @inbounds sc.hot_vals[si][slot]
+            _lsm_hot_delete!(sc, si, slot)
+            return result
+        end
+    finally
         unlock(sc.shard_locks[si])
-        return result
     end
     fp = _lsm_fp(key)
-    found, ri, pos, i0_v, al_v, be_v = _lsm_disk_find(sc, key, fp)
-    found && _lsm_disk_delete!(sc, ri, pos)
-    unlock(sc.shard_locks[si])
-    found || throw(KeyError(key))
-    _conj_make_val(V, i0_v, al_v, be_v)
+    lock(sc.file_lock)
+    try
+        lock(sc.shard_locks[si])
+        try
+            found, ri, pos, i0_v, al_v, be_v = _lsm_disk_find(sc, key, fp)
+            found && _lsm_disk_delete!(sc, ri, pos)
+            found || throw(KeyError(key))
+            return _conj_make_val(V, i0_v, al_v, be_v)
+        finally
+            unlock(sc.shard_locks[si])
+        end
+    finally
+        unlock(sc.file_lock)
+    end
 end
 
 function conj_pop_safe(sc::LP1ConjLSM{V}, si::Int, key::CanonicalLP1Key)::Union{V,Nothing} where V
     lock(sc.shard_locks[si])
-    slot = _lsm_hot_find(sc, si, key)
-    if slot != 0
-        result = @inbounds sc.hot_vals[si][slot]
-        _lsm_hot_delete!(sc, si, slot)
+    try
+        slot = _lsm_hot_find(sc, si, key)
+        if slot != 0
+            result = @inbounds sc.hot_vals[si][slot]
+            _lsm_hot_delete!(sc, si, slot)
+            return result
+        end
+    finally
         unlock(sc.shard_locks[si])
-        return result
     end
     fp = _lsm_fp(key)
-    found, ri, pos, i0_v, al_v, be_v = _lsm_disk_find(sc, key, fp)
-    found && _lsm_disk_delete!(sc, ri, pos)
-    unlock(sc.shard_locks[si])
-    found || return nothing
-    _conj_make_val(V, i0_v, al_v, be_v)
+    lock(sc.file_lock)
+    try
+        lock(sc.shard_locks[si])
+        try
+            found, ri, pos, i0_v, al_v, be_v = _lsm_disk_find(sc, key, fp)
+            found && _lsm_disk_delete!(sc, ri, pos)
+            found || return nothing
+            return _conj_make_val(V, i0_v, al_v, be_v)
+        finally
+            unlock(sc.shard_locks[si])
+        end
+    finally
+        unlock(sc.file_lock)
+    end
 end
 
 function conj_insert!(sc::LP1ConjLSM{V}, si::Int,
                        key::CanonicalLP1Key, val::V)::Bool where V
-    lock(sc.shard_locks[si])
-    if sc.hot_counts[si] >= sc.hot_thresh[si]
-        _lsm_flush_shard!(sc, si)   # caller holds shard_locks[si] ✓
+    lock(sc.file_lock)
+    try
+        lock(sc.shard_locks[si])
+        try
+            if sc.hot_counts[si] >= sc.hot_thresh[si]
+                _lsm_flush_shard!(sc, si)   # caller holds file_lock + shard_locks[si] ✓
+            end
+            _lsm_hot_insert!(sc, si, key, val)
+            return true
+        finally
+            unlock(sc.shard_locks[si])
+        end
+    finally
+        unlock(sc.file_lock)
     end
-    _lsm_hot_insert!(sc, si, key, val)
-    unlock(sc.shard_locks[si])
-    true
 end
 
 # ---------------------------------------------------------------------------
@@ -958,176 +1042,130 @@ end
 function conj_insert_or_pop!(sc::LP1ConjLSM{V}, si::Int,
                               key::CanonicalLP1Key, val::V)::Union{V,Nothing} where V
 
-    fp = _lsm_fp(key)
-
-    # --- Birthday / occupancy / Rényi diagnostics: count this emission -------
-    # IMPORTANT: use explicit lock/unlock rather than `lock(f) do...end`.
-    # The closure form allocates a heap object for the captured environment,
-    # which can trigger GC *while the lock is held*.  If the GC then tries to
-    # stop-the-world, any other thread blocked on bday_lock cannot reach a
-    # safepoint (it is spinning on the lock, not at an allocation site), causing
-    # a GC safepoint deadlock that manifests as an intermittent hang on Ctrl-C.
-    #
-    # Explicit lock/unlock is allocation-free on the fast path.  All arithmetic
-    # inside the critical section is kept strictly allocation-free:
-    #   * old_c + 1 stays Int; saturation via ifelse avoids min(UInt32,Int)
-    #     which promotes to Int64 and boxes (ijl_box_int64 in the hang trace).
-    #   * Int64 arithmetic on renyi_sum_c / renyi_sum_c2 is unboxed because
-    #     the struct fields are declared ::Int64.
+    fp    = _lsm_fp(key)
     now_t = time_ns() * 1e-9
-    lock(sc.bday_lock)
-    try
-        if sc.bday_emissions == 0
-            sc.bday_t0 = now_t
-        end
-        sc.bday_emissions += 1
-        sc.occ_n           += 1
 
-        # Rényi-2: increment the fingerprint bucket and update Σcᵢ, Σcᵢ².
-        # We update as:  Σcᵢ² += 2·cᵢ + 1  (because (c+1)² - c² = 2c+1).
-        rb    = Int(fp >> RENYI_SHIFT) + 1          # 1-based bucket index
+    # ── Diagnostics (bday_lock, allocation-free) ─────────────────────────────
+    # Use lock(l) do block to guarantee release even if indexing throws.
+    lock(sc.bday_lock) do
+        sc.bday_emissions == 0 && (sc.bday_t0 = now_t)
+        sc.bday_emissions += 1
+        sc.occ_n          += 1
+        rb    = Int(fp >> RENYI_SHIFT) + 1
         old_c = Int(sc.renyi_counts[rb])
-        # Saturating increment: stay allocation-free by avoiding min(UInt32,Int)
-        # which boxes.  ifelse is a pure integer select with no allocation.
         sc.renyi_counts[rb] = ifelse(old_c < Int(typemax(UInt32)),
                                      UInt32(old_c + 1), typemax(UInt32))
         sc.renyi_sum_c  += Int64(1)
         sc.renyi_sum_c2 += Int64(2 * old_c + 1)
-
-        # Occupancy: a new unique key is one whose bucket was zero before this
-        # emission.
-        if old_c == 0
-            sc.occ_unique += 1
-        end
-
-        # Time-series log: record the fp bucket index for α₂ scaling diagnostics.
-        push!(sc.partial_fp_log, UInt16(rb - 1))   # 0-based bucket, fits UInt16
-    finally
-        unlock(sc.bday_lock)
-    end
-    # -------------------------------------------------------------------------
-
-    # Fast path: Bloom says key is definitely not on disk (or no disk yet).
-    # Only need the shard lock — no file_lock contention.
-    if !bloom_maybe_has(sc.global_bloom, fp)
-        lock(sc.shard_locks[si])
-        slot = _lsm_hot_find(sc, si, key)
-        if slot != 0
-            v = @inbounds sc.hot_vals[si][slot]
-            _lsm_hot_delete!(sc, si, slot)
-            unlock(sc.shard_locks[si])
-            _bday_record_collision!(sc, now_t)
-            return v
-        elseif sc.hot_counts[si] < sc.hot_thresh[si]
-            _lsm_hot_insert!(sc, si, key, val)
-            unlock(sc.shard_locks[si])
-            return nothing
-        end
-        unlock(sc.shard_locks[si])
-        # Shard is full and needs a flush — fall through to slow path.
-        lock(sc.file_lock)
-        lock(sc.shard_locks[si])
-        slot = _lsm_hot_find(sc, si, key)
-        if slot != 0
-            v = @inbounds sc.hot_vals[si][slot]
-            _lsm_hot_delete!(sc, si, slot)
-            unlock(sc.shard_locks[si])
-            unlock(sc.file_lock)
-            _bday_record_collision!(sc, now_t)
-            return v
-        end
-        if sc.hot_counts[si] >= sc.hot_thresh[si]
-            _lsm_flush_shard!(sc, si)
-        end
-        _lsm_hot_insert!(sc, si, key, val)
-        unlock(sc.shard_locks[si])
-        unlock(sc.file_lock)
-        return nothing
+        old_c == 0 && (sc.occ_unique += 1)
+        push!(sc.partial_fp_log, UInt16(rb - 1))
     end
 
-    # Slow path: Bloom says key may be on disk.  Need file_lock for consistent
-    # view of runs + mmap during the disk probe.
-    lock(sc.file_lock)
+    # 1. Fast Path: Check own hot table using ONLY the shard lock.
+    # Avoids serializing all threads on file_lock for hot RAM hits.
     lock(sc.shard_locks[si])
-    slot = _lsm_hot_find(sc, si, key)
-    if slot != 0
-        v = @inbounds sc.hot_vals[si][slot]
-        _lsm_hot_delete!(sc, si, slot)
+    try
+        slot = _lsm_hot_find(sc, si, key)
+        if slot != 0
+            v = @inbounds sc.hot_vals[si][slot]
+            _lsm_hot_delete!(sc, si, slot)
+            _bday_record_collision!(sc, now_t)
+            return v
+        end
+    finally
         unlock(sc.shard_locks[si])
-        unlock(sc.file_lock)
-        _bday_record_collision!(sc, now_t)
-        return v
     end
-    # Re-check own Bloom inside lock in case runs changed since the lockless read above.
-    if !isempty(sc.runs) && bloom_maybe_has(sc.bloom, fp)
-        found, ri, pos, i0_v, al_v, be_v = _lsm_disk_find(sc, key, fp)
-        if found
-            _lsm_disk_delete!(sc, ri, pos)
-            result_v = _conj_make_val(V, i0_v, al_v, be_v)
-            unlock(sc.shard_locks[si])
-            unlock(sc.file_lock)
-            _bday_record_collision!(sc, now_t)
-            return result_v
-        end
-    end
-    unlock(sc.shard_locks[si])
-    unlock(sc.file_lock)
 
-    # Cross-peer probe: global_bloom fired but key not in our hot table or disk.
-    # Check each peer (excluding self) — probe their hot shard then their disk.
-    for peer in sc.peers
-        peer === sc && continue
-        peer_lsm = peer::LP1ConjLSM{V}
-        # Hot probe first (cheap, no file_lock needed)
-        lock(peer_lsm.shard_locks[si])
-        pslot = _lsm_hot_find(peer_lsm, si, key)
-        if pslot != 0
-            pv = @inbounds peer_lsm.hot_vals[si][pslot]
-            _lsm_hot_delete!(peer_lsm, si, pslot)
-            unlock(peer_lsm.shard_locks[si])
-            _bday_record_collision!(sc, now_t)
-            return pv
+    # 2. Check own disk runs (requires file_lock).
+    if !isempty(sc.runs) && bloom_maybe_has(sc.bloom, fp)
+        lock(sc.file_lock)
+        try
+            lock(sc.shard_locks[si])
+            try
+                # TOCTOU double-check: another thread may have inserted into
+                # the hot table while we were waiting for file_lock.
+                slot = _lsm_hot_find(sc, si, key)
+                if slot != 0
+                    v = @inbounds sc.hot_vals[si][slot]
+                    _lsm_hot_delete!(sc, si, slot)
+                    _bday_record_collision!(sc, now_t)
+                    return v
+                end
+
+                found, ri, pos, i0_v, al_v, be_v = _lsm_disk_find(sc, key, fp)
+                if found
+                    _lsm_disk_delete!(sc, ri, pos)
+                    result_v = _conj_make_val(V, i0_v, al_v, be_v)
+                    _bday_record_collision!(sc, now_t)
+                    return result_v
+                end
+            finally
+                unlock(sc.shard_locks[si])
+            end
+        finally
+            unlock(sc.file_lock)
         end
-        unlock(peer_lsm.shard_locks[si])
-        # Disk probe (needs peer's file_lock)
-        !isempty(peer_lsm.runs) || continue
-        bloom_maybe_has(peer_lsm.bloom, fp) || continue
-        lock(peer_lsm.file_lock)
-        lock(peer_lsm.shard_locks[si])
-        pslot2 = _lsm_hot_find(peer_lsm, si, key)
-        if pslot2 != 0
-            pv = @inbounds peer_lsm.hot_vals[si][pslot2]
-            _lsm_hot_delete!(peer_lsm, si, pslot2)
-            unlock(peer_lsm.shard_locks[si])
-            unlock(peer_lsm.file_lock)
-            _bday_record_collision!(sc, now_t)
-            return pv
-        end
-        if !isempty(peer_lsm.runs) && bloom_maybe_has(peer_lsm.bloom, fp)
-            pfound, pri, ppos, pi0_v, pal_v, pbe_v = _lsm_disk_find(peer_lsm, key, fp)
-            if pfound
-                _lsm_disk_delete!(peer_lsm, pri, ppos)
-                result_v = _conj_make_val(V, pi0_v, pal_v, pbe_v)
-                unlock(peer_lsm.shard_locks[si])
-                unlock(peer_lsm.file_lock)
-                _bday_record_collision!(sc, now_t)
-                return result_v
+    end
+
+    # 3. Cross-peer probe — only if global bloom suggests a match somewhere.
+    #    Hot-table only: probing a peer's disk requires holding peer_lsm.file_lock
+    #    for the full duration of a binary-search pread, which serializes all threads.
+    #    A missed peer disk hit just defers the collision to the next emission cycle,
+    #    which is acceptable.  trylock: skip any peer that is busy.
+    if bloom_maybe_has(sc.global_bloom, fp)
+        for peer in sc.peers
+            peer === sc && continue
+            peer_lsm = peer::LP1ConjLSM{V}
+
+            if trylock(peer_lsm.shard_locks[si])
+                try
+                    pslot = _lsm_hot_find(peer_lsm, si, key)
+                    if pslot != 0
+                        pv = @inbounds peer_lsm.hot_vals[si][pslot]
+                        _lsm_hot_delete!(peer_lsm, si, pslot)
+                        _bday_record_collision!(sc, now_t)
+                        return pv
+                    end
+                finally
+                    unlock(peer_lsm.shard_locks[si])
+                end
             end
         end
-        unlock(peer_lsm.shard_locks[si])
-        unlock(peer_lsm.file_lock)
     end
 
-    # Not found anywhere — store in own LSM.
+    # 4. Not found — insert into own LSM, unless we are at cap.
     lock(sc.file_lock)
-    lock(sc.shard_locks[si])
-    if sc.hot_counts[si] >= sc.hot_thresh[si]
-        _lsm_flush_shard!(sc, si)
+    try
+        lock(sc.shard_locks[si])
+        try
+            # TOCTOU final check before insertion.
+            slot = _lsm_hot_find(sc, si, key)
+            if slot != 0
+                v = @inbounds sc.hot_vals[si][slot]
+                _lsm_hot_delete!(sc, si, slot)
+                _bday_record_collision!(sc, now_t)
+                return v
+            end
+
+            # Cap enforcement: drop silently when the LSM is full.
+            # This mirrors ShardedLP1Conj behaviour and prevents unbounded
+            # spill-file growth that would exhaust RAM/disk and kill throughput.
+            if sc.n_disk_live + sum(sc.hot_counts) >= sc.max_entries
+                sc.n_cold_dropped += 1
+                return nothing
+            end
+
+            if sc.hot_counts[si] >= sc.hot_thresh[si]
+                _lsm_flush_shard!(sc, si)
+            end
+            _lsm_hot_insert!(sc, si, key, val)
+            return nothing
+        finally
+            unlock(sc.shard_locks[si])
+        end
+    finally
+        unlock(sc.file_lock)
     end
-    _lsm_hot_insert!(sc, si, key, val)
-    unlock(sc.shard_locks[si])
-    unlock(sc.file_lock)
-    return nothing
 end
 
 # ---------------------------------------------------------------------------
@@ -1464,10 +1502,18 @@ end
 conj_to_dict(sc::LP1ConjLSM{V}) where V = lsm_to_dict(sc)
 
 function lsm_flush_all!(sc::LP1ConjLSM)
-    for si in 1:sc.n_shards
-        lock(sc.shard_locks[si])
-        sc.hot_counts[si] > 0 && _lsm_flush_shard!(sc, si)
-        unlock(sc.shard_locks[si])
+    lock(sc.file_lock)
+    try
+        for si in 1:sc.n_shards
+            lock(sc.shard_locks[si])
+            try
+                sc.hot_counts[si] > 0 && _lsm_flush_shard!(sc, si)
+            finally
+                unlock(sc.shard_locks[si])
+            end
+        end
+    finally
+        unlock(sc.file_lock)
     end
     nothing
 end
@@ -1480,7 +1526,7 @@ function lsm_close!(sc::LP1ConjLSM)
         sc.spill_io = nothing
     end
     if sc.spill_read_io !== nothing
-        close(sc.spill_read_io)
+        ccall(:close, Cint, (Cint,), sc.spill_read_io)
         sc.spill_read_io = nothing
     end
     unlock(sc.file_lock)
