@@ -1303,6 +1303,23 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
         @printf("  skipping RREF pre-solve; phase3 will solve augmented system directly\n")
         flush(stdout)
 
+        # ── Post-walk autotune: shrink over-provisioned hot tables ────────────
+        # The walk may have left hot tables at their initial capacity even if
+        # birthday collisions occurred well before the walk end.  Shrinking now
+        # reduces peak RSS during the snapshot phase below.
+        let m_total = sum(conj_total_entries(lsm) for lsm in shared_lp1_conj_pre_arr; init=0)
+            @printf("  [autotune] post-walk: %d total entries across %d LSMs — running autotune\n",
+                    m_total, length(shared_lp1_conj_pre_arr))
+            flush(stdout)
+            for lsm in shared_lp1_conj_pre_arr
+                lsm_autotune!(lsm; verbose=false)
+            end
+            GC.gc(true)
+            @printf("  [autotune] done: RSS=%.1f MB  GC-live=%.1f MB\n",
+                    Sys.maxrss()/1024^2, Base.gc_live_bytes()/1024^2)
+            flush(stdout)
+        end
+
         # ── Snapshot conj LSM → close/free it → GC → THEN build Phase2Tables ──
         # The LSM can be ~6 GB.  We must free it before building Phase2Tables
         # (which would keep it alive) and before spawning phase-3 workers
@@ -1318,18 +1335,15 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
             lsm_bday_report(shared_lp1_conj_pre_arr[1], p, r_est_pre)
         end
 
+        # Stream each LSM directly into the snapshot Dict and free it immediately,
+        # rather than building a full per-thread intermediate Dict first.  This
+        # keeps peak RSS at ~(final Dict size) instead of ~2× that.
         t_snap = time()
-        conj_snap_pre = Dict{CanonicalLP1Key, LP1ConjVal}()
-        for lsm in shared_lp1_conj_pre_arr
-            merge!(conj_snap_pre, lsm_to_dict(lsm))
-        end
+        conj_snap_pre = lsm_snapshot_and_free!(shared_lp1_conj_pre_arr; verbose=true)
+        shared_lp1_conj_pre_arr = nothing
         @printf("  conj snapshot: %d entries built in %.3fs\n",
                 length(conj_snap_pre), time() - t_snap)
         flush(stdout)
-
-        # Free the per-thread LSMs — the merged snapshot Dict is all we need going forward.
-        for lsm in shared_lp1_conj_pre_arr; lsm_close!(lsm); end
-        shared_lp1_conj_pre_arr = nothing
         GC.gc(true)
         @printf("  [MEM] post-LSM-free GC: RSS=%.1f MB  GC-live=%.1f MB\n",
                 Sys.maxrss()/1024^2, Base.gc_live_bytes()/1024^2)

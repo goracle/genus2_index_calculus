@@ -328,7 +328,9 @@ function LP1ConjLSM(
         ell           ::Integer;
         amortized     ::Bool   = true,
         spill_path    ::String = joinpath(homedir(), "crypto", "tmp", "lp1_conj_shards"),
-        max_hot_ram_mb::Int    = 512
+        max_hot_ram_mb::Int    = 4096,   # bumped from 512 — leverage available RAM headroom
+        flush_num     ::Int    = 3,      # flush when shard >= 75% full (was 1/4 = 25%)
+        flush_denom   ::Int    = 4
     )
     global_cap = min(LP1_CONJ_CAP_MULTIPLIER * Int(min(ell, p)), LP1_CONJ_CAP_MAX)
     cap = max(N_CONJ_SHARDS * 16, global_cap ÷ Threads.nthreads())
@@ -339,9 +341,11 @@ function LP1ConjLSM(
     hot_shard_entries = max(16, max_hot_entries ÷ N_CONJ_SHARDS)
     LP1ConjLSM{V}(
         N_CONJ_SHARDS, hot_shard_entries, cap, spill_path;
-        amortized  = amortized,
-        bloom_cap  = min(cap, 4_000_000)   # size for actual disk occupancy, not hot RAM;
-                                            # 4M × 8 bits = 4 MB/LSM, ~1% FPR at 2M entries
+        amortized   = amortized,
+        flush_num   = flush_num,
+        flush_denom = flush_denom,
+        bloom_cap   = min(cap, 4_000_000)   # size for actual disk occupancy, not hot RAM;
+                                             # 4M × 8 bits = 4 MB/LSM, ~1% FPR at 2M entries
     )
 end
 
@@ -1560,6 +1564,147 @@ end
 
 # Unified dispatch so phase3 can call conj_to_dict on either table type.
 conj_to_dict(sc::LP1ConjLSM{V}) where V = lsm_to_dict(sc)
+
+# ---------------------------------------------------------------------------
+#  lsm_stream_into_dict! — stream one LSM's entries directly into a caller-
+#  supplied Dict, then close and free the LSM.
+#
+#  This is the memory-safe alternative to the pattern:
+#
+#      merge!(d, lsm_to_dict(lsm))   # BAD: allocates a full intermediate Dict
+#      lsm_close!(lsm)                # BAD: both dicts live simultaneously → 2× peak
+#
+#  Here we stream hot shards directly into `d` and immediately drop each
+#  shard's key/val arrays before moving to the next, then do the disk pass,
+#  then call lsm_close!.  Peak additional allocation is one shard at a time
+#  (a few MB at most) rather than a full per-thread snapshot Dict (hundreds of
+#  MB).
+#
+#  Caller semantics:
+#    • `d` must already be sizehint!'d to the combined capacity before the
+#      first call so that successive calls don't each trigger a rehash.
+#    • Hot-shard entries take priority over disk entries: if the same key
+#      appears in both (which can happen if a hot entry was also spilled before
+#      it was tombstoned), the hot value wins because we insert hot first and
+#      the disk pass uses `haskey` to skip duplicates.
+#    • After this call `sc` is closed and must not be used.
+#    • An incremental GC.gc(false) is triggered after the shard arrays are
+#      cleared so the freed hot tables become collectible without a full stop-
+#      the-world pause.
+# ---------------------------------------------------------------------------
+function lsm_stream_into_dict!(d::Dict{CanonicalLP1Key, V},
+                                sc::LP1ConjLSM{V}) where V
+    # ── Hot shards — stream then immediately free each shard's arrays ─────
+    for si in 1:sc.n_shards
+        lock(sc.shard_locks[si])
+        keys = sc.hot_keys[si]
+        vals = sc.hot_vals[si]
+        cap  = sc.hot_caps[si]
+        @inbounds for slot in 1:cap
+            k = keys[slot]
+            k == CONJ_KEY_EMPTY && continue
+            haskey(d, k) || (d[k] = vals[slot])
+        end
+        # Drop the arrays now so GC can reclaim them before we move on.
+        # We replace with length-0 sentinels — the shard is about to be
+        # closed anyway so correctness is not affected.
+        sc.hot_keys[si]   = CanonicalLP1Key[]
+        sc.hot_vals[si]   = V[]
+        sc.hot_counts[si] = 0
+        sc.hot_caps[si]   = 0
+        unlock(sc.shard_locks[si])
+    end
+    # Incremental GC to reclaim the freed shard arrays without a full pause.
+    GC.gc(false)
+
+    # ── Disk runs — pread directly into `d` ──────────────────────────────
+    lock(sc.file_lock)
+    if sc.spill_read_io !== nothing
+        buf = zeros(UInt8, RECORD_BYTES)
+        for rm in sc.runs
+            for pos in 1:rm.len
+                _run_is_dead(rm, pos) && continue
+                _pread_record!(sc, buf, _rec_base(rm, pos))
+                ku0 = _buf_u32(buf, OFF_U0)
+                ku1 = _buf_u32(buf, OFF_U1)
+                kv0 = _buf_u32(buf, OFF_V0)
+                kv1 = _buf_u32(buf, OFF_V1)
+                ck  = UInt128(ku0) | (UInt128(ku1) << 32) |
+                      (UInt128(kv0) << 64) | (UInt128(kv1) << 96)
+                # Hot entry (inserted above) takes priority.
+                haskey(d, ck) || (d[ck] = _conj_make_val(V, _buf_i0(buf), _buf_al(buf), _buf_be(buf)))
+            end
+        end
+    end
+    unlock(sc.file_lock)
+
+    # ── Close the LSM — flushes nothing (hot arrays already cleared) ──────
+    # We bypass lsm_flush_all! here because the hot shards are already zeroed
+    # out above; calling it would be a no-op but would acquire every shard lock
+    # again needlessly.  We just close the file handles.
+    lock(sc.file_lock)
+    if sc.spill_io !== nothing
+        close(sc.spill_io)
+        sc.spill_io = nothing
+    end
+    if sc.spill_read_io !== nothing
+        ccall(:close, Cint, (Cint,), sc.spill_read_io)
+        sc.spill_read_io = nothing
+    end
+    unlock(sc.file_lock)
+
+    nothing
+end
+
+# ---------------------------------------------------------------------------
+#  lsm_snapshot_and_free! — build a merged snapshot Dict from an array of
+#  per-thread LSMs while minimising peak RAM.
+#
+#  Replaces the pattern:
+#
+#      conj_snap = Dict{CanonicalLP1Key, LP1ConjVal}()
+#      for lsm in arr
+#          merge!(conj_snap, lsm_to_dict(lsm))   # 2× peak: both copies live
+#      end
+#      for lsm in arr; lsm_close!(lsm); end       # too late — spike already happened
+#
+#  With:
+#
+#      conj_snap = lsm_snapshot_and_free!(arr)     # streams one LSM at a time
+#
+#  Peak overhead above the final Dict size is ~one hot shard at a time.
+#
+#  After this call every LSM in `arr` is closed and the array reference
+#  should be set to `nothing` by the caller so the GC can reclaim the
+#  LP1ConjLSM objects themselves.
+# ---------------------------------------------------------------------------
+function lsm_snapshot_and_free!(arr::Vector{<:LP1ConjLSM{V}};
+                                 verbose::Bool = true)::Dict{CanonicalLP1Key, V} where V
+    total_est = sum(conj_total_entries(lsm) for lsm in arr; init=0)
+    d = Dict{CanonicalLP1Key, V}()
+    sizehint!(d, total_est + 16)
+
+    t0 = time()
+    for (i, lsm) in enumerate(arr)
+        n_before = length(d)
+        lsm_stream_into_dict!(d, lsm)
+        n_added  = length(d) - n_before
+        if verbose
+            @printf("  [lsm_snapshot] LSM %d/%d streamed: +%d entries  (dict total=%d)  %.3fs\n",
+                    i, length(arr), n_added, length(d), time() - t0)
+            flush(stdout)
+        end
+        # Trigger an incremental GC after each LSM so freed hot tables and
+        # the now-closed spill fd metadata get reclaimed promptly.
+        GC.gc(false)
+    end
+
+    if verbose
+        @printf("  [lsm_snapshot] done: %d entries in %.3fs\n", length(d), time() - t0)
+        flush(stdout)
+    end
+    d
+end
 
 function lsm_flush_all!(sc::LP1ConjLSM)
     lock(sc.file_lock)
