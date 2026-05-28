@@ -149,6 +149,17 @@ function report_worker_progress(tid, elapsed, s::WorkerStats, rel_counter, rel_t
     if tid == 2
         conj_total = conj_total_entries(shared_lp1_conj)
         @printf("           conj_table: %d entries (hot+disk)\n", conj_total)
+
+        # Full LSM diagnostics — only when the conj store is an LP1ConjLSM.
+        if shared_lp1_conj isa LP1ConjLSM
+            # Emission rate for birthday estimator: LP1-conj closures per second.
+            r_conj = s.hits_1lp_conj_emit / max(1.0, elapsed)
+            lsm_flush_stats(shared_lp1_conj)
+            lsm_mem_report(shared_lp1_conj;
+                           label  = "thread $tid (LSM)",
+                           peers  = false)
+            lsm_bday_report(shared_lp1_conj, p, r_conj)
+        end
     end
     flush(stdout)
 end
