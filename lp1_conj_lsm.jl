@@ -1328,7 +1328,9 @@ end
     lock(sc.bday_lock)
     try
         sc.bday_first_coll_m == 0 || return   # already recorded
-        sc.bday_first_coll_m = sc.bday_emissions
+        m = sc.bday_emissions
+        m == 0 && return   # bday_emissions not yet incremented (race); skip — next collision will catch it
+        sc.bday_first_coll_m = m
         sc.bday_first_coll_t = now_t
     finally
         unlock(sc.bday_lock)
