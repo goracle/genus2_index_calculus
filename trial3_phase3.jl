@@ -293,7 +293,8 @@ function phase3_trial_worker(
         prebuilt_step_D  ::Union{Vector{Div2},    Nothing} = nothing,
         prebuilt_step_a  ::Union{Vector{Int},     Nothing} = nothing,
         prebuilt_step_b  ::Union{Vector{Int},     Nothing} = nothing,
-        rref_basis       ::Union{PreRREFBasis,    Nothing} = nothing)::Phase3Result
+        rref_basis       ::Union{PreRREFBasis,    Nothing} = nothing,
+        post_conj_stride ::Int                             = 0)::Phase3Result
 
     t0    = time()
     # ── DIAG checkpoint helper (thread-safe: @printf is atomic per-call) ──────
@@ -353,7 +354,35 @@ function phase3_trial_worker(
     alpha_cur = rand(1:ellI-1)
     beta_cur  = rand(1:ellI-1)
     D_cur = jac_add(jac_mul(G, alpha_cur, ellI), jac_mul(T, beta_cur, ellI))
-    cur_pt = fb[rand(1:nF)]
+
+    # Coprime-stride anchor cursor — same design as phase2_worker, using
+    # trial_idx as the per-worker id so concurrent trials cover FB uniformly.
+    _small_primes_p3 = (2,3,5,7,11,13,17,19,23,29,31,37,41,43,47,53,59,61,67,71)
+    _anchor_stride = nF > 1 ?
+        mod(_small_primes_p3[min(trial_idx, length(_small_primes_p3))], nF - 1) + 1 :
+        1
+    function _p3_gcd(a, b)
+        b == 0 && throw(ArgumentError("_p3_gcd: b is zero"))
+        while b != 0; a, b = b, a % b; end
+        a
+    end
+    if nF > 1
+        _start_stride = _anchor_stride
+        while _p3_gcd(_anchor_stride, nF) != 1
+            _anchor_stride = mod(_anchor_stride, nF) + 1
+            _anchor_stride == _start_stride && throw(ErrorException(
+                "phase3 trial $trial_idx: no anchor_stride coprime to nF=$nF found"))
+        end
+    end
+    _anchor_cursor = mod((trial_idx - 1) * _anchor_stride, max(1, nF)) + 1
+
+    @inline function next_anchor_p3()
+        pt = fb[_anchor_cursor]
+        _anchor_cursor = mod(_anchor_cursor - 1 + _anchor_stride, nF) + 1
+        return pt
+    end
+
+    cur_pt = next_anchor_p3()
 
     # ── Local birthday fallback tables ────────────────────────────────────────
     # affine: lp_pt → (fb_row, neg_al, neg_be)
@@ -762,6 +791,7 @@ function phase3_trial_worker(
                 end
             end
             # A2: i0 not in FB → 2-LP-conj, skip
+            for _ in 1:post_conj_stride; cur_pt = next_anchor_p3(); end
             continue
         end
 
@@ -782,7 +812,7 @@ function phase3_trial_worker(
             n_0lp += 1
             k_rec = try_solve(fb_row, neg_al, neg_be)
             k_rec !== nothing && break
-            cur_pt = fb[rand(1:nF)]
+            cur_pt = next_anchor_p3()
 
         elseif n_lp == 1
             # B1: 1-LP-affine
@@ -825,11 +855,11 @@ function phase3_trial_worker(
                 end
             end
 
-            cur_pt = iR != 0 ? R : iS != 0 ? S : fb[rand(1:nF)]
+            cur_pt = iR != 0 ? R : iS != 0 ? S : next_anchor_p3()
 
         else
             # B2/B3: 2-LP or 3-LP, discard
-            cur_pt = fb[rand(1:nF)]
+            cur_pt = next_anchor_p3()
         end
     end
 
@@ -879,8 +909,9 @@ function phase3_solve_targets(
         tables   ::Phase2Tables,
         targets  ::Vector{<:Tuple{Div2, <:Union{Int,Nothing}}},
         G        ::Div2;
-        step_cap ::Int  = -1,   # -1 → auto-scaled via phase3_default_step_cap(ell)
-        verbose  ::Bool = true)::Vector{Phase3Result}
+        step_cap         ::Int  = -1,
+        verbose          ::Bool = true,
+        post_conj_stride ::Int  = 0)::Vector{Phase3Result}
 
     n = length(targets)
     results = Vector{Phase3Result}(undef, n)
@@ -1125,7 +1156,8 @@ function phase3_solve_targets(
                                               prebuilt_step_D=all_step_D[i],
                                               prebuilt_step_a=all_step_a[i],
                                               prebuilt_step_b=all_step_b[i],
-                                              rref_basis=rref_basis_shared)
+                                              rref_basis=rref_basis_shared,
+                                              post_conj_stride=post_conj_stride)
             @printf("   [phase3 worker %d] finished: success=%s  steps=%d  elapsed=%.1fs\n",
                     i, string(results[i].success), results[i].n_steps, results[i].elapsed_s)
             flush(stdout)

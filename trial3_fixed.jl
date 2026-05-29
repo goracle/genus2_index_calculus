@@ -543,7 +543,8 @@ function index_calculus_walk(G::Div2, T::Div2;
                 enable_lp2, enable_lp2_conj, max_lp2_nodes, max_lp2_conj_nodes,
                 thread_collectors[tid], rank_tracker,
                 thread_phi_stats[tid]; verbose=verbose,
-                enable_lp1_aff=enable_lp1_aff)
+                enable_lp1_aff=enable_lp1_aff,
+                post_conj_stride=post_conj_stride)
         end
     end
     t_phase2_done = time() - t_phase2_start
@@ -928,6 +929,7 @@ function parse_trial3_cli(args::Vector{String})
     table_size         = nothing
     min_ell_bits       = 0    # 0 = no minimum
     rel_multiplier     = 2.0  # β=0 relation target = rel_multiplier × nF
+    post_conj_stride   = 0    # extra anchor advances after every conj branch
 
     for arg in args
         if arg == "--no-lp2"
@@ -957,6 +959,8 @@ function parse_trial3_cli(args::Vector{String})
             min_ell_bits = parse(Int, split(arg, "=", limit=2)[2])
         elseif startswith(arg, "--rel-multiplier=")
             rel_multiplier = parse(Float64, split(arg, "=", limit=2)[2])
+        elseif startswith(arg, "--post-conj-stride=")
+            post_conj_stride = parse(Int, split(arg, "=", limit=2)[2])
         end
     end
     return (fb_size=fb_size, enable_lp2=enable_lp2, enable_lp2_conj=enable_lp2_conj,
@@ -964,7 +968,7 @@ function parse_trial3_cli(args::Vector{String})
             amortized=amortized, use_cycle_union=use_cycle_union,
             enable_lp1_aff=enable_lp1_aff, n_targets=n_targets,
             sqrt_mode=sqrt_mode, table_size=table_size, min_ell_bits=min_ell_bits,
-            rel_multiplier=rel_multiplier)
+            rel_multiplier=rel_multiplier, post_conj_stride=post_conj_stride)
 end
 
 # ---------------------------------------------------------------------------
@@ -1081,7 +1085,8 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
                  sqrt_mode          ::Bool  = false,
                  table_size         ::Union{Nothing,Int} = nothing,
                  min_ell_bits       ::Int   = 0,
-                 rel_multiplier     ::Float64 = 2.0)
+                 rel_multiplier     ::Float64 = 2.0,
+                 post_conj_stride   ::Int   = 0)
     t_main_start = time()
     println("="^70)
     println("  trial3: Markov-walk phi-relation index calculus")
@@ -1270,7 +1275,8 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
                     thread_phi_stats_pre[tid],
                     thread_deep_stats_pre[tid];
                     verbose=true, beta_zero=true, amortized_precompute=true,
-                    enable_lp1_aff=enable_lp1_aff)
+                    enable_lp1_aff=enable_lp1_aff,
+                    post_conj_stride=post_conj_stride)
             end
         end
 
@@ -1379,7 +1385,8 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
         # ── Phase 3: parallel per-target DLP solves ───────────────────────────
         results = phase3_solve_targets(tables, targets, G;
                                         step_cap = 10_000_000,
-                                        verbose  = true)
+                                        verbose  = true,
+                                        post_conj_stride = post_conj_stride)
 
         n_ok = count(r -> r.success, results)
         @printf("\n── Final amortized summary ──────────────────────────────────────────\n")
@@ -1437,7 +1444,8 @@ function main2_from_argv()
           amortized=opts.amortized, use_cycle_union=opts.use_cycle_union,
           enable_lp1_aff=opts.enable_lp1_aff, n_targets=opts.n_targets,
           sqrt_mode=opts.sqrt_mode, table_size=opts.table_size,
-          min_ell_bits=opts.min_ell_bits, rel_multiplier=opts.rel_multiplier)
+          min_ell_bits=opts.min_ell_bits, rel_multiplier=opts.rel_multiplier,
+          post_conj_stride=opts.post_conj_stride)
 end
 
 if abspath(PROGRAM_FILE) == @__FILE__

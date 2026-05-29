@@ -360,7 +360,8 @@ end
         deep_stat       ::ConjDeepStat,
         al_cur          ::Int = -1,
         px_anchor       ::Int = -1,
-        a_raw           ::Int = -1)::NTuple{2,Int} where V
+        a_raw           ::Int = -1,
+        post_conj_stride::Int = 0)::NTuple{2,Int} where V
 
     si = conj_shard_idx(lp_key)
 
@@ -418,11 +419,13 @@ end
             # temporally-close hits with shared algebraic structure.
             record_lp1_conj_hit!(phi_bias_stat, s.raw_steps, lp_key, a_bucket)
             record_conj_deep_step!(deep_stat, lp_key, a_bucket, s.raw_steps, true, al_cur, px_anchor)
+            for _ in 1:post_conj_stride; next_anchor_ref[](); end
             return next_anchor_ref[]()
         end
         # combined_al==0 or i0==prev_col: useless close, fall through to structured jump
     end
     # Miss (inserted) or useless close: advance structured anchor cursor.
+    for _ in 1:post_conj_stride; next_anchor_ref[](); end
     return next_anchor_ref[]()
 end
 
@@ -726,7 +729,8 @@ function phase2_worker(G               ::Div2,
                        verbose         ::Bool = true,
                        beta_zero       ::Bool = false,
                        amortized_precompute::Bool = false,
-                       enable_lp1_aff  ::Bool = true)
+                       enable_lp1_aff  ::Bool = true,
+                       post_conj_stride::Int  = 0)
 
     nF_cur   = length(fb)
     N_STEPS  = length(step_D)
@@ -914,7 +918,8 @@ function phase2_worker(G               ::Div2,
                                                alpha_vec, beta_vec, rel_rows, rel_counter,
                                                ort, s, shared_lp1_conj, rank_growth,
                                                combined_scratch, P0, phi_bias_stat, next_anchor_ref,
-                                               _a_bucket, deep_stat, al, P0[1], Int(a))
+                                               _a_bucket, deep_stat, al, P0[1], Int(a),
+                                               post_conj_stride)
                     # D9: record 1LP-conj opcode; is_emission = true iff handle produced an emission
                     record_conj_deep_opcode!(deep_stat, OPCODE_1LP_CONJ,
                                              deep_stat.n_emissions > n_emit_before)
@@ -937,6 +942,7 @@ function phase2_worker(G               ::Div2,
                 record_random_anchor!(phi_bias_stat)
                 record_conj_deep_opcode!(deep_stat, OPCODE_SKIP, false)
             end
+            for _ in 1:post_conj_stride; cur_pt = next_anchor(); end
             continue
         end
 
