@@ -691,9 +691,14 @@ function _lsm_flush_shard!(sc::LP1ConjLSM{V}, si::Int) where V
     _fadvise_dontneed!(sc)  # <--- ADD THIS HERE
 
     # Compact runs if fan-out is getting large.
-    # Merging keeps _lsm_disk_find to a single binary search rather than
-    # iterating over O(flushes) runs, each with its own binary search.
-    length(sc.runs) >= 16 && _lsm_compact!(sc)
+    # _lsm_compact! manages file_lock itself (acquire for snapshot + commit,
+    # released for the I/O-heavy merge body) so we must NOT hold file_lock
+    # when calling it.  Release here; _lsm_compact! will reacquire as needed.
+    if length(sc.runs) >= 16
+        unlock(sc.file_lock)
+        _lsm_compact!(sc)
+        lock(sc.file_lock)
+    end
 
     nothing
 end
@@ -756,18 +761,38 @@ function _heap_pop!(h::Vector{Tuple{UInt64,Int,Int}})::Tuple{UInt64,Int,Int}
 end
 
 function _lsm_compact!(sc::LP1ConjLSM)
+    # _lsm_compact! is called from _lsm_flush_shard!, which is called from
+    # conj_insert_or_pop! and lsm_flush_all!.
+    #
+    # LOCKING CONTRACT: caller holds file_lock (but NOT any shard_lock when
+    # called from conj_insert_or_pop!, because _lsm_flush_shard! is called
+    # after the shard lock is already released via the hot-reset).
+    # Actually _lsm_flush_shard! is always called while shard_locks[si] IS
+    # held by the caller.  To avoid holding file_lock for the entire I/O-heavy
+    # merge, the caller (_lsm_flush_shard!) releases file_lock before calling
+    # this function, so we can acquire it ourselves only for the brief
+    # metadata-swap at the end.
+    #
+    # See the restructured call site in _lsm_flush_shard!.
+
     length(sc.runs) <= 1 && return
 
     total_live = sc.n_disk_live
     total_live == 0 && return
     sc.spill_read_io === nothing && return   # no spill file yet
 
-    # Per-run cursors: next live position to emit from each run.
-    # Advance past any leading tombstones on initialisation.
-    nruns   = length(sc.runs)
-    cursors = Vector{Int}(undef, nruns)   # next pos (1-based) to read, or rm.len+1 if exhausted
-    for ri in 1:nruns
-        rm  = sc.runs[ri]
+    # ── Phase 1: snapshot run list under a brief file_lock acquisition ───────
+    lock(sc.file_lock)
+    nruns_snap   = length(sc.runs)
+    runs_snap    = sc.runs[1:nruns_snap]      # shallow copy; RunMeta objects are shared refs
+    read_fd_snap = sc.spill_read_io
+    unlock(sc.file_lock)
+
+    # ── Phase 2: I/O-heavy merge (no locks held) ─────────────────────────────
+    # Per-run cursors: advance past leading tombstones.
+    cursors = Vector{Int}(undef, nruns_snap)
+    for ri in 1:nruns_snap
+        rm  = runs_snap[ri]
         pos = 1
         while pos <= rm.len && _run_is_dead(rm, pos)
             pos += 1
@@ -775,38 +800,46 @@ function _lsm_compact!(sc::LP1ConjLSM)
         cursors[ri] = pos
     end
 
-    # Seed the min-heap with the first live record from each run.
-    heap = Tuple{UInt64,Int,Int}[]   # (fp, ri, pos)
-    sizehint!(heap, nruns)
+    # Helper: pread from the snapshot fd directly.
+    local_pread! = function(buf::Vector{UInt8}, off::Int)
+        n = ccall(:pread, Cssize_t, (Cint, Ptr{UInt8}, Csize_t, Int64),
+                  read_fd_snap, buf, RECORD_BYTES, off)
+        if n != RECORD_BYTES
+            err_msg = Base.Libc.strerror()
+            error("_lsm_compact! local_pread: short read ($n) at offset $off: $err_msg")
+        end
+        nothing
+    end
+
+    # Seed the min-heap.
+    heap = Tuple{UInt64,Int,Int}[]
+    sizehint!(heap, nruns_snap)
     rec_buf_seed = zeros(UInt8, RECORD_BYTES)
-    for ri in 1:nruns
-        rm  = sc.runs[ri]
+    for ri in 1:nruns_snap
+        rm  = runs_snap[ri]
         pos = cursors[ri]
         pos > rm.len && continue
-        _pread_record!(sc, rec_buf_seed, _rec_base(rm, pos))
+        local_pread!(rec_buf_seed, _rec_base(rm, pos))
         fp = _buf_fp(rec_buf_seed)
         _heap_push!(heap, (fp, ri, pos))
     end
 
-    # Open temp file; stream merged records into it via a write buffer.
+    # Stream merged records into temp file.
     tmp_path  = sc.spill_path * ".compact"
     tmp_io    = open(tmp_path, "w+")
     wbuf      = Vector{UInt8}(undef, COMPACT_WRITE_BUF_BYTES)
-    wbuf_pos  = 0   # bytes currently in wbuf
+    wbuf_pos  = 0
 
-    actual    = 0
-    first_fp  = UInt64(0)
-    last_fp   = UInt64(0)
-
-    rec_scratch = Vector{UInt8}(undef, RECORD_BYTES)
+    actual   = 0
+    first_fp = UInt64(0)
+    last_fp  = UInt64(0)
 
     rec_buf_merge = zeros(UInt8, RECORD_BYTES)
     while !isempty(heap)
         fp, ri, pos = _heap_pop!(heap)
-        rm   = sc.runs[ri]
+        rm = runs_snap[ri]
 
-        # Read record into scratch, copy to write buffer.
-        _pread_record!(sc, rec_buf_merge, _rec_base(rm, pos))
+        local_pread!(rec_buf_merge, _rec_base(rm, pos))
         if wbuf_pos + RECORD_BYTES > COMPACT_WRITE_BUF_BYTES
             write(tmp_io, view(wbuf, 1:wbuf_pos))
             wbuf_pos = 0
@@ -820,41 +853,77 @@ function _lsm_compact!(sc::LP1ConjLSM)
         last_fp = fp
         actual += 1
 
-        # Advance cursor past next tombstones, push next live record if any.
         pos += 1
         while pos <= rm.len && _run_is_dead(rm, pos)
             pos += 1
         end
         cursors[ri] = pos
         if pos <= rm.len
-            _pread_record!(sc, rec_buf_merge, _rec_base(rm, pos))
+            local_pread!(rec_buf_merge, _rec_base(rm, pos))
             fp2 = _buf_fp(rec_buf_merge)
             _heap_push!(heap, (fp2, ri, pos))
         end
     end
 
-    # Flush remaining write buffer.
     wbuf_pos > 0 && write(tmp_io, view(wbuf, 1:wbuf_pos))
     flush(tmp_io)
     close(tmp_io)
 
-    # Atomically replace spill file.
+    # ── Phase 3: reacquire file_lock and atomically commit ───────────────────
+    lock(sc.file_lock)
+
+    # Any runs appended during phase 2 (indices nruns_snap+1..end) are in the
+    # tail of the old spill file.  Copy them to the temp file, adjusting offsets.
+    new_run_base = actual * RECORD_BYTES
+    if length(sc.runs) > nruns_snap
+        tmp_io2  = open(tmp_path, "a+")
+        tail_buf = zeros(UInt8, RECORD_BYTES)
+        for ri in (nruns_snap+1):length(sc.runs)
+            rm      = sc.runs[ri]
+            new_off = new_run_base
+            for rec_pos in 1:rm.len
+                n = ccall(:pread, Cssize_t, (Cint, Ptr{UInt8}, Csize_t, Int64),
+                          read_fd_snap, tail_buf, RECORD_BYTES,
+                          rm.byte_offset + (rec_pos - 1) * RECORD_BYTES)
+                n == RECORD_BYTES && write(tmp_io2, tail_buf)
+            end
+            old_tombs         = rm.tombs
+            sc.runs[ri]       = RunMeta(rm.id, new_off, rm.len, rm.min_fp, rm.max_fp)
+            sc.runs[ri].tombs = old_tombs
+            new_run_base     += rm.len * RECORD_BYTES
+        end
+        flush(tmp_io2)
+        close(tmp_io2)
+    end
+
     close(sc.spill_io)
     mv(tmp_path, sc.spill_path; force=true)
-    sc.spill_io    = open(sc.spill_path, "a+")
-    sc.spill_size  = actual * RECORD_BYTES
-    sc.n_disk_live = actual
+    sc.spill_io   = open(sc.spill_path, "a+")
+    sc.spill_size = new_run_base
 
-    # Rebuild single run meta (no tombstones — all dead records were skipped).
-    sc.runs = actual > 0 ? [RunMeta(1, 0, actual, first_fp, last_fp)] : RunMeta[]
+    # Recompute n_disk_live.
+    snap_live_old = sum(let _rm = runs_snap[ri]
+                            count(p -> !_run_is_dead(_rm, p), 1:_rm.len)
+                        end for ri in 1:nruns_snap; init=0)
+    sc.n_disk_live = sc.n_disk_live - snap_live_old + actual
 
-    # Reopen read-side fd on the new compacted file.
+    # Replace snapshot runs with single merged run; keep tail runs.
+    remaining_runs = sc.runs[(nruns_snap+1):end]
+    new_compacted  = actual > 0 ? [RunMeta(1, 0, actual, first_fp, last_fp)] : RunMeta[]
+    sc.runs        = vcat(new_compacted, remaining_runs)
+    for (i, rm) in enumerate(sc.runs)
+        old_tombs   = rm.tombs
+        sc.runs[i]  = RunMeta(i, rm.byte_offset, rm.len, rm.min_fp, rm.max_fp)
+        sc.runs[i].tombs = old_tombs
+    end
+
     if sc.spill_read_io !== nothing
         ccall(:close, Cint, (Cint,), sc.spill_read_io)
         sc.spill_read_io = nothing
     end
     sc.spill_read_io = _open_direct(sc.spill_path)
-    _fadvise_dontneed!(sc)  # <--- ADD THIS HERE
+    _fadvise_dontneed!(sc)
+    unlock(sc.file_lock)
     nothing
 end
 
