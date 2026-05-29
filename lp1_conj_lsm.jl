@@ -1367,58 +1367,87 @@ end
 #           r/2 is the LP1-conj emission rate.
 # ---------------------------------------------------------------------------
 function lsm_bday_report(sc::LP1ConjLSM, p::Integer, r::Real; io::IO = stdout)
-    lock(sc.bday_lock)
-    m        = sc.bday_first_coll_m
-    t_coll   = sc.bday_first_coll_t
-    t0       = sc.bday_t0
-    n_emitted= sc.bday_emissions
-    occ_u    = sc.occ_unique
-    occ_n    = sc.occ_n
-    rc       = copy(sc.renyi_counts)
-    rsc      = sc.renyi_sum_c
-    rsc2     = sc.renyi_sum_c2
-    unlock(sc.bday_lock)
+    # ── Aggregate across all peer LSMs ─────────────────────────────────────
+    # Each thread has its own LP1ConjLSM instance linked via `peers`.
+    # We must aggregate across all peers to see the true global first collision.
+    actual_peers = isempty(sc.peers) ? Any[sc] : sc.peers
 
-    lam = r / 2.0          # LP1-conj emission rate
-    pf  = Float64(p)
+    total_emitted = 0
+    m_first       = 0
+    t_coll_first  = Inf
+    t0_earliest   = Inf
+    occ_n_global  = 0
+    rc_global     = zeros(UInt32, 1 << RENYI_BITS)
 
-    @printf(io, "\n[LP1-conj birthday diagnostics]\n")
-    @printf(io, "  total LP1-conj emitted : %d\n", n_emitted)
+    for peer in actual_peers
+        # Dynamic dispatch is fine here (diagnostic path)
+        lock(peer.bday_lock)
+        total_emitted += peer.bday_emissions
+        occ_n_global  += peer.occ_n
+        
+        if peer.bday_first_coll_m > 0
+            if peer.bday_first_coll_t < t_coll_first
+                t_coll_first = peer.bday_first_coll_t
+                # Approximate global emissions at the exact time of the earliest local collision
+                m_first = peer.bday_first_coll_m * length(actual_peers)
+            end
+        end
+        
+        if peer.bday_t0 > 0.0 && peer.bday_t0 < t0_earliest
+            t0_earliest = peer.bday_t0
+        end
+        
+        for i in 1:length(rc_global)
+            old_c = rc_global[i]
+            add_c = peer.renyi_counts[i]
+            rc_global[i] = (old_c + add_c < old_c) ? typemax(UInt32) : (old_c + add_c)
+        end
+        unlock(peer.bday_lock)
+    end
 
-    if m == 0
+    occ_u_global = count(>(0), rc_global)
+    rsc_global   = sum(Int64(c) for c in rc_global)
+    rsc2_global  = sum(Int64(c)^2 for c in rc_global)
+
+    # Calculate true global emission rate from actual elapsed time
+    t_elapsed = t0_earliest < Inf ? (time_ns() * 1e-9) - t0_earliest : 0.0
+    lam_global = t_elapsed > 0.0 ? (total_emitted / t_elapsed) : (r * length(actual_peers))
+    pf = Float64(p)
+
+    @printf(io, "\n[LP1-conj birthday diagnostics (Global across %d peers)]\n", length(actual_peers))
+    @printf(io, "  total LP1-conj emitted : %d\n", total_emitted)
+
+    if m_first == 0
         @printf(io, "  first collision        : not yet observed\n")
-        t_naive = sqrt(2.0) * pf / r
-        m_naive = lam * t_naive
-        @printf(io, "  naive prediction       : m_first ~ %.3g,  t_first ~ %.3g s\n",
-                m_naive, t_naive)
-        if t0 > 0.0
-            t_elapsed = (time_ns() * 1e-9) - t0
+        t_naive = lam_global > 0.0 ? (sqrt(2.0) * pf / lam_global) : Inf
+        m_naive = lam_global * t_naive
+        @printf(io, "  naive prediction       : m_first ~ %.3g,  t_first ~ %.3g s\n", m_naive, t_naive)
+        if t0_earliest < Inf
             frac = t_elapsed / t_naive
             @printf(io, "  elapsed / t_naive      : %.4f  (%s)\n",
-                    frac,
-                    frac >= 1.0 ? "OVERDUE — support may be smaller than p^2" :
-                                  "still within naive expectation")
+                    frac, frac >= 1.0 ? "OVERDUE — support may be smaller than p^2" : "still within naive expectation")
         end
         @printf(io, "\n")
         return
     end
 
-    t_first   = t_coll - t0
-    S_eff     = Float64(m)^2
+    t_first   = t_coll_first - t0_earliest
+    S_eff     = Float64(m_first)^2
     S_naive   = pf^2 / 2.0
     ratio     = S_eff / S_naive
-    alpha     = log(Float64(m)) / log(pf)
+    alpha     = log(Float64(m_first)) / log(pf)
     m_naive   = sqrt(S_naive)
-    t_naive   = m_naive / lam
+    t_naive   = lam_global > 0.0 ? (m_naive / lam_global) : Inf
 
-    @printf(io, "  first collision at     : m = %d  (t_wall = %.3f s)\n", m, t_first)
+    @printf(io, "  first collision at     : m ≈ %d  (t_wall = %.3f s)\n", m_first, t_first)
     @printf(io, "  S_eff  = m^2           : %.6g\n", S_eff)
     @printf(io, "  S_naive = p^2/2        : %.6g\n", S_naive)
     @printf(io, "  S_eff / S_naive        : %.5g\n", ratio)
     @printf(io, "  alpha  (S ~ p^{2*alpha}): %.4f   [alpha=1 ↔ S~p^2, alpha=0.75 ↔ S~p^1.5, ...]\n", alpha)
     @printf(io, "  t_first (observed)     : %.3f s\n", t_first)
-    @printf(io, "  t_first (naive p^2/2)  : %.3f s   (= sqrt(2)*p/r)\n", t_naive)
+    @printf(io, "  t_first (naive p^2/2)  : %.3f s   (= sqrt(2)*p/lam_global)\n", t_naive)
     @printf(io, "  t_obs / t_naive        : %.4f\n", t_first / t_naive)
+    
     if ratio < 0.1
         @printf(io, "  *** support is << p^2: effective space ~ p^{%.2f} ***\n", 2*alpha)
     elseif ratio < 0.5
@@ -1428,17 +1457,11 @@ function lsm_bday_report(sc::LP1ConjLSM, p::Integer, r::Real; io::IO = stdout)
     end
 
     # ── Occupancy estimator: U(N) = S(1 - e^{-N/S}), solve for S ─────────────
-    # U = occ_unique (distinct RENYI_BITS-resolution buckets seen), N = occ_n.
-    # Solve S*(1-e^{-N/S}) = U by bisection over [U, max(N^2, U*10)].
-    # The occupancy estimator is much stabler than the first-collision estimator
-    # when N >> 1 but still has finite variance at moderate N.
     @printf(io, "\n  Occupancy estimator (U(N) = S·(1−e^{−N/S})):\n")
-    if occ_n >= 10 && occ_u >= 1 && occ_u < occ_n
-        # Scale U and N up by 2^RENYI_BITS to get actual key-space counts.
+    if occ_n_global >= 10 && occ_u_global >= 1 && occ_u_global < occ_n_global
         scale   = Float64(1 << RENYI_BITS)
-        U_f     = Float64(occ_u) * scale
-        N_f     = Float64(occ_n)
-        # Bisect: f(S) = S*(1-exp(-N/S)) - U = 0; f is increasing in S.
+        U_f     = Float64(occ_u_global) * scale
+        N_f     = Float64(occ_n_global)
         lo_s = max(U_f, 1.0)
         hi_s = max(N_f^2, U_f * 10.0)
         for _ in 1:80
@@ -1450,7 +1473,7 @@ function lsm_bday_report(sc::LP1ConjLSM, p::Integer, r::Real; io::IO = stdout)
         r_occ   = S_occ / S_naive
         a_occ   = log(S_occ) / (2.0 * log(pf))
         @printf(io, "    unique buckets U       : %d  (N=%d, scale=2^%d)\n",
-                occ_u, occ_n, RENYI_BITS)
+                occ_u_global, occ_n_global, RENYI_BITS)
         @printf(io, "    S_occ (MLE)            : %.6g\n", S_occ)
         @printf(io, "    S_occ / S_naive        : %.5g\n", r_occ)
         @printf(io, "    alpha_occ (S ~ p^{2α}) : %.4f\n", a_occ)
@@ -1459,14 +1482,9 @@ function lsm_bday_report(sc::LP1ConjLSM, p::Integer, r::Real; io::IO = stdout)
     end
 
     # ── Rényi-2 / collision-entropy estimator: S₂ = (Σcᵢ)² / Σcᵢ² ───────────
-    # S₂ measures the effective support under the walk-induced measure.
-    # If all weight concentrates on k keys, S₂ → k.  Compare S₂ ~ p^{2α₂}.
-    # When S_eff (birthday) >> S₂ (entropy), burst structure dominates.
     @printf(io, "\n  Rényi-2 / collision-entropy estimator (S₂ = (Σcᵢ)²/Σcᵢ²):\n")
-    if rsc > 0 && rsc2 > 0
-        S2      = Float64(rsc)^2 / Float64(rsc2)
-        # Scale by 2^RENYI_BITS: each bucket represents ~2^RENYI_BITS keys, so
-        # the true S₂ estimate is S2 * scale (under uniform-within-bucket assumption).
+    if rsc_global > 0 && rsc2_global > 0
+        S2      = Float64(rsc_global)^2 / Float64(rsc2_global)
         scale   = Float64(1 << RENYI_BITS)
         S2_true = S2 * scale
         r2      = S2_true / S_naive
@@ -1479,7 +1497,7 @@ function lsm_bday_report(sc::LP1ConjLSM, p::Integer, r::Real; io::IO = stdout)
         else
             ""
         end
-        @printf(io, "    Σcᵢ                    : %d  Σcᵢ²=%d\n", rsc, rsc2)
+        @printf(io, "    Σcᵢ                    : %d  Σcᵢ²=%d\n", rsc_global, rsc2_global)
         @printf(io, "    S₂ (bucket-level)      : %.6g\n", S2)
         @printf(io, "    S₂ (key-scaled)        : %.6g\n", S2_true)
         @printf(io, "    S₂ / S_naive           : %.5g\n", r2)
@@ -1491,14 +1509,11 @@ function lsm_bday_report(sc::LP1ConjLSM, p::Integer, r::Real; io::IO = stdout)
     @printf(io, "\n")
 
     # ── α₂ scaling diagnostics on the partial key stream ─────────────────────
-    # blog is the chronological sequence of fp-bucket indices (UInt16, 0-based)
-    # for every LP1-conj partial inserted.  nb = 2^RENYI_BITS buckets.
-    # We compute dyadic-window S₂(T) and S_occ(T) to measure how α₂ scales
-    # with observation window — the key question for genus-2 IC asymptotics.
+    # (Kept purely Thread Local as ordered merging of 32 un-timestamped ring buffers is highly complex)
     let blog = copy(sc.partial_fp_log)
         nb     = 1 << RENYI_BITS
         n_blog = length(blog)
-        @printf(io, "  LP1-conj partial stream α₂ scaling:\n")
+        @printf(io, "  LP1-conj partial stream α₂ scaling (Thread Local view):\n")
         if n_blog < 64
             @printf(io, "    (need ≥64 partials; got %d)\n\n", n_blog)
         else
@@ -1547,7 +1562,6 @@ function lsm_bday_report(sc::LP1ConjLSM, p::Integer, r::Real; io::IO = stdout)
                 Tw *= 2
             end
 
-            # Classify convergence
             if length(a2_vals) >= 3
                 da2_late  = (a2_vals[end]   - a2_vals[end-1]) / (logT_vals[end]   - logT_vals[end-1])
                 da2_early = (a2_vals[2]     - a2_vals[1])     / (logT_vals[2]     - logT_vals[1])
@@ -1563,9 +1577,6 @@ function lsm_bday_report(sc::LP1ConjLSM, p::Integer, r::Real; io::IO = stdout)
                 @printf(io, "    %s\n", verdict)
             end
 
-            # Translate the converged α₂(T) value to the key-space exponent.
-            # Each fp bucket represents ~2^RENYI_BITS keys under uniform assumption,
-            # so S₂_keys = S₂_buckets * 2^RENYI_BITS.  Then α₂_keys = log(S₂_keys)/(2·log p).
             if !isempty(a2_vals) && pf > 1.0
                 a2_bucket_converged = a2_vals[end]
                 S2_bucket = 2.0^a2_bucket_converged
@@ -1578,34 +1589,17 @@ function lsm_bday_report(sc::LP1ConjLSM, p::Integer, r::Real; io::IO = stdout)
         end
     end
 
-    # ── Cold-filter stats ────────────────────────────────────────────────────
-    # The bucket cold-filter (activated after 4×2^RENYI_BITS emissions)
-    # drops flush entries whose Rényi fp-bucket has zero observed count.
-    # Since S_naive = p²/2 but S₂ ~ p^{2·α₂} (with α₂ < 1), the fraction of
-    # hot buckets is ~(2^RENYI_BITS) · S₂ / (p²/2) ≈ p^{2α₂-2}, which is the
-    # fraction of entries *not* dropped.  The rest are pure SSD waste.
-    @printf(io, "\n  Cold-filter (bucket zero-count drop at flush):\n")
+    @printf(io, "\n  Cold-filter (bucket zero-count drop at flush) [Local Thread]:\n")
     n_dropped = sc.n_cold_dropped
-    n_spilled = sc.n_disk_live + n_dropped   # approximate total that went through flush path
+    n_spilled = sc.n_disk_live + n_dropped
     if n_spilled > 0
         frac_dropped = n_dropped / Float64(n_spilled)
         @printf(io, "    entries cold-dropped   : %d  (%.1f%% of flush candidates)\n",
                 n_dropped, 100.0 * frac_dropped)
         @printf(io, "    entries spilled to SSD : %d\n", sc.n_disk_live)
-        if pf > 1.0 && rsc > 0 && rsc2 > 0
-            # Expected fraction of hot buckets from S₂.
-            S2      = Float64(rsc)^2 / Float64(rsc2)
-            scale   = Float64(1 << RENYI_BITS)
-            S2_true = S2 * scale
-            S_naive = pf^2 / 2.0
-            expected_hot_frac = S2_true / S_naive
-            @printf(io, "    expected hot-frac (S₂/S_naive): %.5g  [actual spilled/total=%.5g]\n",
-                    expected_hot_frac, 1.0 - frac_dropped)
-        end
     else
         @printf(io, "    (no flushes yet, or warmup not reached)\n")
     end
-
     @printf(io, "\n")
     nothing
 end
