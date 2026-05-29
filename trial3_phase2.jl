@@ -424,8 +424,7 @@ end
         end
         # combined_al==0 or i0==prev_col: useless close, fall through to structured jump
     end
-    # Miss (inserted) or useless close: advance structured anchor cursor.
-    for _ in 1:post_conj_stride; next_anchor_ref[](); end
+    # Miss (inserted) or useless close: advance structured anchor cursor (no stride).
     return next_anchor_ref[]()
 end
 
@@ -942,7 +941,6 @@ function phase2_worker(G               ::Div2,
                 record_random_anchor!(phi_bias_stat)
                 record_conj_deep_opcode!(deep_stat, OPCODE_SKIP, false)
             end
-            for _ in 1:post_conj_stride; cur_pt = next_anchor(); end
             continue
         end
 

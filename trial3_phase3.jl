@@ -770,6 +770,7 @@ function phase3_trial_worker(
                     c_al = mod(neg_al - prev_al, ellI)
                     c_be = mod(neg_be - prev_be, ellI)   # was: c_be = neg_be (ignored prev_be)
                     n_1lp_conj_pre += 1
+                    for _ in 1:post_conj_stride; cur_pt = next_anchor_p3(); end
                     k_rec = try_solve_conj(i0, prev_col, c_al, c_be)
                     k_rec !== nothing && break
 
@@ -780,6 +781,7 @@ function phase3_trial_worker(
                     c_be = mod(neg_be - prev_be, ellI)
                     delete!(local_lp1_conj, lp_key)
                     n_1lp_conj_local += 1
+                    for _ in 1:post_conj_stride; cur_pt = next_anchor_p3(); end
                     k_rec = try_solve_conj(i0, prev_col, c_al, c_be)
                     k_rec !== nothing && break
                 else
@@ -790,8 +792,7 @@ function phase3_trial_worker(
                     end
                 end
             end
-            # A2: i0 not in FB → 2-LP-conj, skip
-            for _ in 1:post_conj_stride; cur_pt = next_anchor_p3(); end
+            # A2: i0 not in FB → 2-LP-conj, skip (no stride on miss/skip)
             continue
         end
 
