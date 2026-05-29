@@ -2347,6 +2347,263 @@ function print_phi_bias_report(stat::PhiBiasStat; p::Int = 0)
 
     end  # if n_blog >= 32
 
+    # ==========================================================================
+    #  CIR-ACF — Post-emission conditional emission probability
+    #
+    #  Diagnostic motivation (per ChatGPT analysis of stride-variant results):
+    #
+    #    The joint picture of Fano factor, birthday α, persistence score, and
+    #    phase-3 quality suggests the walk is NOT a homogeneous rare-event
+    #    process but rather a renewal process with "quiet periods" punctuated by
+    #    "productive episodes."  The key distinguishing observable is:
+    #
+    #      P(emit at t+Δ | emit at t)   as a function of Δ (step lag)
+    #
+    #    Under the Poisson null, this equals the unconditional emission rate λ
+    #    for all Δ ≥ 1.  Positive post-emission correlation → walk enters
+    #    a transiently productive region after each closure; the shape of the
+    #    autocorrelation tail characterises whether that productivity is:
+    #
+    #      • short burst (high lift at Δ=1..10, decays fast)  → hit-only stride
+    #      • long persistence (lift elevated over hundreds of steps)  → baseline
+    #      • bimodal (burst + persistent tail)  → hybrid regime
+    #
+    #    Unifying prediction: if baseline has fewer, longer-lived productive
+    #    pockets while hit-only has more, shorter-lived ones, then:
+    #      baseline  → wide, flat ACF tail (decorrelation lag >> burst width)
+    #      hit-only  → sharp spike at Δ≈1..5 then rapid decay to null
+    #
+    #    This directly explains persistence↓ + Fano↑ + α↑ + phase3-quality↓
+    #    under hit-only stride as a single dynamical story.
+    #
+    #  Method:
+    #    Sort the merged arrivals array.  For each emission at step t[i], binary-
+    #    search for the first arrival > t[i] and count how many arrivals fall in
+    #    (t[i], t[i]+Δ] for each Δ in a lag grid.  Accumulate per-lag hit counts
+    #    and normalise.  Compare to Poisson baseline P_base(Δ) = 1−exp(−λΔ).
+    #
+    #    "lift(Δ) = P_cond(Δ) / P_base(Δ)" measures excess emission probability
+    #    relative to memoryless baseline.  lift > 1 → positive autocorrelation;
+    #    lift < 1 → post-emission refractory period / avoidance.
+    #
+    #    We also compute a lag-weighted AUC of (lift−1) to get a scalar "total
+    #    excess productivity" that integrates both burst intensity and tail length.
+    #
+    #  Output:
+    #    • Table of Δ, P_cond(Δ), P_base(Δ), lift(Δ) for the lag grid.
+    #    • Burst width Δ_burst: smallest Δ where lift first drops below
+    #      0.5*(lift_max + 1.0)  (half-max above null).
+    #    • Tail half-life Δ_tail: smallest Δ where lift first drops below 1.10.
+    #    • Total excess AUC ∫(lift−1)dΔ (trapezoid rule over the grid).
+    #    • Interpretation banner comparing to Poisson / burst / persistent archetypes.
+    # ==========================================================================
+    let
+        arrivals_cir = stat.lp1_conj_arrivals
+        n_cir = length(arrivals_cir)
+
+        @printf("\n  CIR-ACF — Post-emission conditional LP1-conj emission probability P(emit within Δ | emit at t):\n")
+        @printf("  ─────────────────────────────────────────────────────────────────────────────────────────────\n")
+
+        if n_cir < 8
+            @printf("    (need ≥ 8 emissions; got %d — skipping CIR-ACF)\n", n_cir)
+        else
+            # Sort arrivals so binary search works.
+            arr_sorted = sort(arrivals_cir)
+            total_steps_cir = arr_sorted[end] - arr_sorted[1] + 1
+            lambda_cir = (n_cir - 1) / max(1.0, Float64(total_steps_cir))  # emissions per step
+
+            @printf("    Emissions (n)          : %d\n", n_cir)
+            @printf("    Step span              : %d\n", total_steps_cir)
+            @printf("    Mean emission rate λ   : %.6e  (emissions/step)\n", lambda_cir)
+            @printf("    Mean inter-arrival gap : %.1f steps\n", 1.0 / max(lambda_cir, 1e-30))
+            println()
+
+            # Build lag grid: dense at short lags, then geometric out to ~span/4.
+            # We want to capture both the burst regime (Δ ≈ 1..20) and the tail
+            # (Δ up to hundreds or thousands of steps).  Cap at 80 grid points.
+            max_lag_cir = min(total_steps_cir ÷ 4, 100_000)
+            lag_grid_cir = Int[]
+            for d in 1:min(30, max_lag_cir)
+                push!(lag_grid_cir, d)
+            end
+            d = 35
+            while d <= max_lag_cir && length(lag_grid_cir) < 80
+                push!(lag_grid_cir, d)
+                d = max(d + 1, round(Int, d * 1.35))
+            end
+
+            if isempty(lag_grid_cir)
+                @printf("    (step span too small to build lag grid)\n")
+            else
+                n_lags_cir = length(lag_grid_cir)
+                P_cond_cir  = zeros(Float64, n_lags_cir)
+
+                # For each source emission i, compute the binary indicator:
+                # hit_any[li] = #{i : at least one emission in (t[i], t[i]+lag_grid[li]]}.
+                # Method: binary-search for the first arrival after t[i], then walk
+                # the sorted array advancing j2 through the lag grid.
+                # Cost: O(n_cir × mean_events_per_window).
+                max_lag_val = lag_grid_cir[end]
+                hit_any = zeros(Int, n_lags_cir)
+                n_sources2 = 0
+                @inbounds for i in 1:n_cir
+                    t_src = arr_sorted[i]
+                    t_src + max_lag_val > arr_sorted[end] && continue
+                    n_sources2 += 1
+                    lo_j2 = i + 1; hi_j2 = n_cir
+                    j_start2 = n_cir + 1
+                    while lo_j2 <= hi_j2
+                        mid_j2 = (lo_j2 + hi_j2) >> 1
+                        if arr_sorted[mid_j2] > t_src
+                            j_start2 = mid_j2;  hi_j2 = mid_j2 - 1
+                        else;  lo_j2 = mid_j2 + 1;  end
+                    end
+                    j2 = j_start2
+                    @inbounds for li2 in 1:n_lags_cir
+                        lag_val = lag_grid_cir[li2]
+                        # Advance j2 to first arrival beyond this lag threshold.
+                        while j2 <= n_cir && arr_sorted[j2] - t_src <= lag_val
+                            j2 += 1
+                        end
+                        if j2 > j_start2
+                            hit_any[li2] += 1
+                        end
+                    end
+                end
+
+                if n_sources2 == 0
+                    @printf("    (no source events with right-span; step span too small for lag grid)\n")
+                else
+                    for li2 in 1:n_lags_cir
+                        P_cond_cir[li2] = Float64(hit_any[li2]) / Float64(n_sources2)
+                    end
+
+                    # Poisson baseline: P_base(Δ) = 1 − exp(−λ·Δ).
+                    # This is the probability of at least one arrival in a window of size Δ
+                    # for a stationary Poisson process with rate λ.
+                    P_base_cir = [1.0 - exp(-lambda_cir * Float64(lag_grid_cir[li]))
+                                  for li in 1:n_lags_cir]
+
+                    lift_cir = [P_base_cir[li] > 1e-12 ?
+                                P_cond_cir[li] / P_base_cir[li] : NaN
+                                for li in 1:n_lags_cir]
+
+                    # Summary statistics.
+                    valid_lift = [lift_cir[li] for li in 1:n_lags_cir if !isnan(lift_cir[li])]
+                    lift_max   = isempty(valid_lift) ? 1.0 : maximum(valid_lift)
+                    lift_final = isempty(valid_lift) ? 1.0 : valid_lift[end]
+
+                    # Burst width: smallest Δ where lift first drops below half-max above null.
+                    # half-max threshold = 1.0 + 0.5*(lift_max - 1.0)
+                    lift_half_thresh = 1.0 + 0.5 * max(0.0, lift_max - 1.0)
+                    delta_burst = -1
+                    for li in 1:n_lags_cir
+                        isnan(lift_cir[li]) && continue
+                        if lift_cir[li] < lift_half_thresh
+                            delta_burst = lag_grid_cir[li]; break
+                        end
+                    end
+
+                    # Tail half-life: smallest Δ where lift first drops below 1.10.
+                    delta_tail = -1
+                    for li in 1:n_lags_cir
+                        isnan(lift_cir[li]) && continue
+                        if lift_cir[li] < 1.10
+                            delta_tail = lag_grid_cir[li]; break
+                        end
+                    end
+
+                    # Total excess AUC: trapezoid integral of (lift − 1) over the lag grid.
+                    # Measures total excess productivity relative to Poisson null.
+                    auc_excess = 0.0
+                    for li in 2:n_lags_cir
+                        if !isnan(lift_cir[li]) && !isnan(lift_cir[li-1])
+                            dΔ    = Float64(lag_grid_cir[li] - lag_grid_cir[li-1])
+                            avg_l = 0.5 * ((lift_cir[li] - 1.0) + (lift_cir[li-1] - 1.0))
+                            auc_excess += avg_l * dΔ
+                        end
+                    end
+
+                    @printf("    Summary statistics:\n")
+                    @printf("      n_source_events (with right-span) : %d\n", n_sources2)
+                    @printf("      lift_max (peak post-emission lift) : %.4f\n", lift_max)
+                    @printf("      lift at Δ=%d (final lag)          : %.4f\n",
+                            lag_grid_cir[end], lift_final)
+                    if delta_burst > 0
+                        @printf("      Δ_burst (lift < half-max)         : %d steps\n", delta_burst)
+                    else
+                        @printf("      Δ_burst                           : > %d steps (lift never drops to half-max)\n",
+                                lag_grid_cir[end])
+                    end
+                    if delta_tail > 0
+                        @printf("      Δ_tail (lift < 1.10)              : %d steps\n", delta_tail)
+                    else
+                        @printf("      Δ_tail                            : > %d steps (persistent above 1.10 throughout)\n",
+                                lag_grid_cir[end])
+                    end
+                    @printf("      Total excess AUC ∫(lift−1)dΔ     : %.2f step-units\n", auc_excess)
+                    println()
+
+                    # Per-variant interpretation key:
+                    # Archetypes:
+                    #   Poisson    : lift_max ≈ 1, AUC ≈ 0
+                    #   Burst      : lift_max >> 1, Δ_burst small (< 20), Δ_tail < 50
+                    #   Persistent : lift_max moderate, Δ_tail large (>> 50), AUC large
+                    #   Bimodal    : lift_max >> 1 AND Δ_tail large → burst + persistence
+                    archetype = if lift_max < 1.15
+                        "POISSON-LIKE  (no significant post-emission autocorrelation)"
+                    elseif (delta_tail > 0 && delta_tail < 50) || (delta_tail < 0 && lift_max < 1.5)
+                        @sprintf("BURST         (sharp spike, Δ_tail=%s; consistent with hit-triggered stride renewal effect)",
+                                 delta_tail > 0 ? string(delta_tail)*" steps" : ">$(lag_grid_cir[end]) steps")
+                    elseif delta_tail < 0 && lift_max >= 1.5
+                        "PERSISTENT    (long positive tail throughout grid; walk mines productive regions repeatedly)"
+                    elseif delta_tail > 0 && delta_tail >= 50 && lift_max >= 2.0
+                        @sprintf("BURST+PERSIST (high peak AND slow decay; Δ_burst=%s Δ_tail=%d steps; richest structure)",
+                                 delta_burst > 0 ? string(delta_burst)*" steps" : ">$(lag_grid_cir[end])", delta_tail)
+                    else
+                        @sprintf("MODERATE      (lift_max=%.2f, Δ_tail=%s; mild positive autocorrelation)",
+                                 lift_max,
+                                 delta_tail > 0 ? string(delta_tail)*" steps" : ">$(lag_grid_cir[end]) steps")
+                    end
+                    @printf("    Archetype classification  : %s\n", archetype)
+                    println()
+
+                    # Expected cross-variant comparison note:
+                    @printf("    Cross-variant interpretation guide:\n")
+                    @printf("      If baseline:  lift_max moderate, Δ_tail >> 100 → persistent pockets\n")
+                    @printf("      If hit-only:  lift_max >> baseline, Δ_tail << baseline → burst/renewal\n")
+                    @printf("      Persistent ACF explains: higher persistence score, lower Fano, lower birthday α,\n")
+                    @printf("        better phase-3 quality (walk re-mines the same productive geometry)\n")
+                    @printf("      Burst ACF explains:     lower persistence score, higher Fano, higher birthday α,\n")
+                    @printf("        weaker phase-3 quality (transient pockets; less useful graph connectivity)\n")
+                    println()
+
+                    # Full table.
+                    @printf("    %-8s  %-12s  %-12s  %-10s  %s\n",
+                            "Δ (steps)", "P_cond(Δ)", "P_base(Δ)", "lift(Δ)", "interpretation")
+                    @printf("    %s\n", "-"^72)
+                    for li in 1:n_lags_cir
+                        l = isnan(lift_cir[li]) ? NaN : lift_cir[li]
+                        flag_cir = if isnan(l);               "(insufficient baseline)"
+                                   elseif l > 5.0;            "← VERY STRONG burst (>5×)"
+                                   elseif l > 2.0;            "← strong lift (>2×)"
+                                   elseif l > 1.5;            "← moderate lift"
+                                   elseif l > 1.10;           "← mild lift"
+                                   elseif l > 0.90;           "(≈ null)"
+                                   else;                       "← refractory / avoidance"
+                                   end
+                        @printf("    %-8d  %-12.6f  %-12.6f  %-10s  %s\n",
+                                lag_grid_cir[li],
+                                P_cond_cir[li],
+                                P_base_cir[li],
+                                isnan(l) ? "  NaN" : @sprintf("%.4f", l),
+                                flag_cir)
+                    end
+                end
+            end
+        end
+    end   # CIR-ACF let
+
     @printf("──────────────────────────────────────────────────────────────────────\n")
     flush(stdout)
 end
