@@ -1143,31 +1143,36 @@ function conj_insert_or_pop!(sc::LP1ConjLSM{V}, si::Int,
     fp    = _lsm_fp(key)
     now_t = time_ns() * 1e-9
 
-    # ── Diagnostics — all fields below are owned by this LSM's thread only. ──
-    # bday_emissions, occ_n, occ_unique, renyi_*, partial_fp_log are written
-    # exclusively by the owning thread (one LSM per thread), so no lock is
-    # needed here.  bday_first_coll_m/t are written by _bday_record_collision!
-    # which uses bday_lock, but is called only on actual collisions (rare).
-    sc.bday_emissions == 0 && (sc.bday_t0 = now_t)
-    sc.bday_emissions += 1
-    sc.occ_n          += 1
-    rb    = Int(fp >> RENYI_SHIFT) + 1
-    old_c = Int(sc.renyi_counts[rb])
-    sc.renyi_counts[rb] = ifelse(old_c < Int(typemax(UInt32)),
-                                 UInt32(old_c + 1), typemax(UInt32))
-    sc.renyi_sum_c  += Int64(1)
-    sc.renyi_sum_c2 += Int64(2 * old_c + 1)
-    old_c == 0 && (sc.occ_unique += 1)
-    # Rolling circular buffer: keep the most recent PARTIAL_FP_LOG_CAP entries.
-    # Once at cap, overwrite oldest entry in-place so α₂(T) windows stay current.
-    log_n = length(sc.partial_fp_log)
-    if log_n < PARTIAL_FP_LOG_CAP
-        push!(sc.partial_fp_log, UInt16(rb - 1))
-    else
-        # sc.bday_emissions is already incremented above; use (emissions-1) mod cap
-        # as the circular write index so index 0 is the oldest slot.
-        circ_idx = ((sc.bday_emissions - 1) % PARTIAL_FP_LOG_CAP) + 1
-        @inbounds sc.partial_fp_log[circ_idx] = UInt16(rb - 1)
+    # ── Diagnostics — written under bday_lock so all threads see a consistent ──
+    # bday_emissions when _bday_record_collision! reads it.  The LSM is shared
+    # across threads (one shared_lp1_conj passed to every phase2_worker), so the
+    # earlier "owned by this LSM's thread only" assumption was wrong.  bday_lock
+    # is uncontended except on the first collision, so this adds negligible cost.
+    rb = Int(fp >> RENYI_SHIFT) + 1
+    lock(sc.bday_lock)
+    try
+        sc.bday_emissions == 0 && (sc.bday_t0 = now_t)
+        sc.bday_emissions += 1
+        sc.occ_n          += 1
+        old_c = Int(sc.renyi_counts[rb])
+        sc.renyi_counts[rb] = ifelse(old_c < Int(typemax(UInt32)),
+                                     UInt32(old_c + 1), typemax(UInt32))
+        sc.renyi_sum_c  += Int64(1)
+        sc.renyi_sum_c2 += Int64(2 * old_c + 1)
+        old_c == 0 && (sc.occ_unique += 1)
+        # Rolling circular buffer: keep the most recent PARTIAL_FP_LOG_CAP entries.
+        # Once at cap, overwrite oldest entry in-place so α₂(T) windows stay current.
+        log_n = length(sc.partial_fp_log)
+        if log_n < PARTIAL_FP_LOG_CAP
+            push!(sc.partial_fp_log, UInt16(rb - 1))
+        else
+            # sc.bday_emissions is already incremented above; use (emissions-1) mod cap
+            # as the circular write index so index 0 is the oldest slot.
+            circ_idx = ((sc.bday_emissions - 1) % PARTIAL_FP_LOG_CAP) + 1
+            @inbounds sc.partial_fp_log[circ_idx] = UInt16(rb - 1)
+        end
+    finally
+        unlock(sc.bday_lock)
     end
 
     # 1. Fast Path: Check own hot table using ONLY the shard lock.
@@ -1324,13 +1329,14 @@ end
 # ---------------------------------------------------------------------------
 
 # Called on every confirmed LP1-conj collision.  Only records the *first* one.
+# bday_emissions is always >= 1 here because it was incremented under bday_lock
+# earlier in the same conj_insert_or_pop! call, before the probe that triggered
+# this collision.
 @inline function _bday_record_collision!(sc::LP1ConjLSM, now_t::Float64)
     lock(sc.bday_lock)
     try
         sc.bday_first_coll_m == 0 || return   # already recorded
-        m = sc.bday_emissions
-        m == 0 && return   # bday_emissions not yet incremented (race); skip — next collision will catch it
-        sc.bday_first_coll_m = m
+        sc.bday_first_coll_m = sc.bday_emissions
         sc.bday_first_coll_t = now_t
     finally
         unlock(sc.bday_lock)
