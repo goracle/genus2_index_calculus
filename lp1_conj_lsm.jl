@@ -1719,7 +1719,8 @@ function lsm_bday_report(sc::LP1ConjLSM, p::Integer, r::Real; io::IO = stdout)
         # This is the AMS reading we would expect purely from uniform
         # singleton/collision statistics — no genuine Rényi signal required.
         # Comparing observed α₂ against these predictions disambiguates:
-        #   • If observed ≈ Poisson(M=p^{2α₂_obs}): consistent with uniform support of that size.
+        #   • If observed ≈ Poisson(M = N·S₂/(N−S₂)): the AMS estimate is
+        #     internally consistent with a uniform-support Poisson model.
         #   • If observed ≈ Poisson(M=p^2): the signal is a pure birthday/saturation artifact.
         #   • If observed ≫ any Poisson prediction: anomalous concentration.
         @printf(io, "\n  Poisson null-model α₂ predictions (what AMS *should* report for uniform support M):\n")
@@ -1728,17 +1729,35 @@ function lsm_bday_report(sc::LP1ConjLSM, p::Integer, r::Real; io::IO = stdout)
         @printf(io, "    %s\n", "-"^76)
         N_f64 = Float64(N_global)
         logp  = log(pf)   # pf already defined above in lsm_bday_report
-        # Build candidate list: observed exponent first, then standard checkpoints.
-        obs_exp  = 2.0 * ams_stats.alpha2   # S₂ ~ p^{obs_exp}
-        cand_exps = unique(vcat(obs_exp, [1.2, 1.5, 2.0]))
+
+        # Back-solve the Poisson-equivalent support size from the AMS S₂ estimate:
+        #   S₂ = N·M/(N+M)  =>  M = N·S₂/(N−S₂)
+        # This is only meaningful when S₂ < N; otherwise the best Poisson
+        # explanation is simply "support is much larger than N".
+        obs_M = if ams_stats.S2 > 0.0 && ams_stats.S2 < N_f64
+            N_f64 * ams_stats.S2 / (N_f64 - ams_stats.S2)
+        else
+            Inf
+        end
+        obs_exp = isfinite(obs_M) && obs_M > 0.0 ? log(obs_M) / logp : NaN
+
+        # Candidate rows: the AMS-inferred support, then fixed reference checkpoints.
+        cand_exps = [1.2, 1.5, 2.0]
+        if isfinite(obs_exp)
+            pushfirst!(cand_exps, obs_exp)
+        end
+        seen_obs = false
         for exp_cand in cand_exps
-            M_cand    = pf ^ exp_cand
-            lam_cand  = N_f64 / M_cand
-            S2_pois   = N_f64 * M_cand / (M_cand + N_f64)   # = N²/(N + N²/M)
+            M_cand    = isfinite(exp_cand) ? pf ^ exp_cand : Inf
+            lam_cand  = isfinite(M_cand) ? N_f64 / M_cand : 0.0
+            S2_pois   = isfinite(M_cand) ? N_f64 * M_cand / (M_cand + N_f64) : N_f64
             a2_pois   = S2_pois > 0.0 ? log(S2_pois) / (2.0 * logp) : NaN
-            label     = exp_cand ≈ obs_exp ?
-                            @sprintf("p^{%.4f} ← obs", exp_cand) :
-                            @sprintf("p^{%.4f}", exp_cand)
+            label     = if !seen_obs && isfinite(obs_exp) && isfinite(exp_cand) && abs(exp_cand - obs_exp) <= 1e-10
+                seen_obs = true
+                @sprintf("M̂ from AMS (p^{%.4f})", exp_cand)
+            else
+                @sprintf("p^{%.4f}", exp_cand)
+            end
             a2_str    = isnan(a2_pois) ? "         NaN" : @sprintf("%12.4f", a2_pois)
             match_str = if !isnan(a2_pois)
                 diff = abs(a2_pois - ams_stats.alpha2)
@@ -1752,6 +1771,8 @@ function lsm_bday_report(sc::LP1ConjLSM, p::Integer, r::Real; io::IO = stdout)
                 ams_stats.alpha2)
         @printf(io, "    [Poisson model assumes uniform emission over support of size M]\n")
         @printf(io, "    [N≪M → E[S₂]≈N; N≫M → E[S₂]≈M; crossover at N~M]\n")
+
+
     else
         @printf(io, "    (no emissions recorded yet)\n")
     end
