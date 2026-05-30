@@ -1243,8 +1243,26 @@ end
 #  Groups of AMS_WIDTH estimators; mean Z²  within each group; median across
 #  groups.  Returns (F2_estimate, S2_estimate).
 # ---------------------------------------------------------------------------
-function _ams_estimate_S2(Z::Vector{Int64}, N::Int64)::Tuple{Float64, Float64}
-    N == 0 && return (0.0, 0.0)
+@inline function _ams_group_quantile(sorted_vals::Vector{Float64}, q::Float64)::Float64
+    n = length(sorted_vals)
+    n == 0 && return NaN
+    n == 1 && return sorted_vals[1]
+    q_clamped = clamp(q, 0.0, 1.0)
+    pos = 1.0 + q_clamped * Float64(n - 1)
+    lo  = clamp(floor(Int, pos), 1, n)
+    hi  = min(lo + 1, n)
+    t   = pos - Float64(lo)
+    return (1.0 - t) * sorted_vals[lo] + t * sorted_vals[hi]
+end
+
+function _ams_estimate_S2_stats(Z::Vector{Int64}, N::Int64)
+    N == 0 && return (
+        F2=0.0, S2=0.0,
+        F2_lo=0.0, F2_hi=0.0,
+        S2_lo=0.0, S2_hi=0.0,
+        alpha2=0.0, alpha2_lo=0.0, alpha2_hi=0.0
+    )
+
     group_means = Vector{Float64}(undef, AMS_GROUPS)
     @inbounds for g in 1:AMS_GROUPS
         base = (g - 1) * AMS_WIDTH
@@ -1255,15 +1273,40 @@ function _ams_estimate_S2(Z::Vector{Int64}, N::Int64)::Tuple{Float64, Float64}
         group_means[g] = m / AMS_WIDTH
     end
     sort!(group_means)
-    # Median of AMS_GROUPS values
+
+    # Median-of-means point estimate.
     F2 = if iseven(AMS_GROUPS)
         (group_means[AMS_GROUPS ÷ 2] + group_means[AMS_GROUPS ÷ 2 + 1]) / 2.0
     else
         group_means[(AMS_GROUPS + 1) ÷ 2]
     end
     F2 = max(F2, 1.0)
-    S2 = Float64(N)^2 / F2
-    return (F2, S2)
+
+    # Robust spread band from the central 68% of group means.
+    # This is an inter-group error bar, not a formal confidence interval.
+    F2_lo = max(1.0, _ams_group_quantile(group_means, 0.15865525393145707))
+    F2_hi = max(F2_lo, _ams_group_quantile(group_means, 0.8413447460685429))
+
+    S2    = Float64(N)^2 / F2
+    S2_lo = Float64(N)^2 / F2_hi
+    S2_hi = Float64(N)^2 / F2_lo
+
+    logp = log(Float64(p))
+    alpha2    = log(S2) / (2.0 * logp)
+    alpha2_lo = log(S2_lo) / (2.0 * logp)
+    alpha2_hi = log(S2_hi) / (2.0 * logp)
+
+    return (
+        F2=F2, S2=S2,
+        F2_lo=F2_lo, F2_hi=F2_hi,
+        S2_lo=S2_lo, S2_hi=S2_hi,
+        alpha2=alpha2, alpha2_lo=alpha2_lo, alpha2_hi=alpha2_hi
+    )
+end
+
+function _ams_estimate_S2(Z::Vector{Int64}, N::Int64)::Tuple{Float64, Float64}
+    stats = _ams_estimate_S2_stats(Z, N)
+    return (stats.F2, stats.S2)
 end
 
 # ---------------------------------------------------------------------------
@@ -1642,22 +1685,27 @@ function lsm_bday_report(sc::LP1ConjLSM, p::Integer, r::Real; io::IO = stdout)
             AMS_GROUPS, AMS_WIDTH)
     N_global = Int64(total_emitted)
     if N_global >= 2
-        F2_est, S2_est = _ams_estimate_S2(ams_Z_global, N_global)
-        r2  = S2_est / S_naive
-        a2  = log(max(S2_est, 1.0)) / (2.0 * log(pf))
-        burst_flag = if S_eff > 0.0 && S2_est > 0.0
-            ratio_be = S_eff / S2_est
+        ams_stats = _ams_estimate_S2_stats(ams_Z_global, N_global)
+        r2  = ams_stats.S2 / S_naive
+        burst_flag = if S_eff > 0.0 && ams_stats.S2 > 0.0
+            ratio_be = S_eff / ams_stats.S2
             ratio_be > 4.0 ? @sprintf(" ← BURSTS DOMINATE (birthday %.1f× > entropy)", ratio_be) :
             ratio_be < 0.25 ? " ← ENTROPY > BIRTHDAY (unusual)" :
                               " (birthday ≈ entropy, consistent)"
         else
             ""
         end
+        a2_pm = 0.5 * (ams_stats.alpha2_hi - ams_stats.alpha2_lo)
+        s2_pm = 0.5 * (ams_stats.S2_hi - ams_stats.S2_lo)
         @printf(io, "    N (total emissions)    : %d\n", N_global)
-        @printf(io, "    F₂ estimate (AMS)      : %.6g\n", F2_est)
-        @printf(io, "    S₂ = N²/F₂            : %.6g\n", S2_est)
+        @printf(io, "    F₂ estimate (AMS)      : %.6g  [68%% band %.6g .. %.6g]\n",
+                ams_stats.F2, ams_stats.F2_lo, ams_stats.F2_hi)
+        @printf(io, "    S₂ = N²/F₂            : %.6g ± %.6g  [68%% band %.6g .. %.6g]\n",
+                ams_stats.S2, s2_pm, ams_stats.S2_lo, ams_stats.S2_hi)
         @printf(io, "    S₂ / S_naive           : %.5g\n", r2)
-        @printf(io, "    α₂  (S₂ ~ p^{2α₂})    : %.4f%s\n", a2, burst_flag)
+        @printf(io, "    α₂  (S₂ ~ p^{2α₂})    : %.4f ± %.4f  [68%% band %.4f .. %.4f]%s\n",
+                ams_stats.alpha2, a2_pm, ams_stats.alpha2_lo, ams_stats.alpha2_hi, burst_flag)
+        @printf(io, "    [band is the inter-group spread; not a formal CI]\n")
         @printf(io, "    [AMS never saturates; valid for any N]\n")
     else
         @printf(io, "    (no emissions recorded yet)\n")
