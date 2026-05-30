@@ -430,9 +430,13 @@ mutable struct WorkerStats
     # 1-LP conj diagnostics
     conj_roundtrip_fail  ::Int   # insert→haskey immediately returned false (LSM bug)
     conj_toctou_loss     ::Int   # haskey=true but pop returned nothing (race)
-    conj_discard_samecol ::Int   # closed but i0==prev_col
-    conj_discard_zeroalbe::Int   # closed but combined_al==combined_be==0
+    # Trivial-close breakdown (Gemini hypothesis instrumentation):
+    hits_1lp_conj_trivial_same_col  ::Int   # closed but i0==prev_col (filtered by construction)
+    hits_1lp_conj_trivial_zero_dal  ::Int   # closed but Δα=Δβ=0, i0≠prev_col
+    # Same-col sub-breakdown: attractor (same walk path) vs birthday (different path, same anchor):
+    hits_1lp_conj_attractor_exact   ::Int   # same_col AND Δα=0 → genuine walk loop
+    hits_1lp_conj_attractor_birthday::Int   # same_col BUT Δα≠0 → birthday, anchor just happened to match
 
     WorkerStats() = new(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, zeros(Int, 4), 0,
-                        0, 0, 0, 0)
+                        0, 0, 0, 0, 0, 0)
 end

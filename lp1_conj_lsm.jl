@@ -55,14 +55,61 @@
 
 const RECORD_BYTES = 48   # fp(8) + u0u1v0v1(16) + i0(2) + pad(6) + al(8) + be(8)
 
-# Rényi-2 bucket granularity.  We keep 2^RENYI_BITS buckets in a UInt32 array,
-# indexed by the top RENYI_BITS bits of the 64-bit fingerprint.
-# 14 bits → 16384 buckets ≈ 64 KB.  Saturates at 2^32-1 per bucket (overflow
-# safe: if a bucket saturates it over-counts S₂ slightly, conservative).
-const RENYI_BITS  = 14
-const RENYI_SHIFT = 64 - RENYI_BITS   # right-shift to get bucket index
+# ---------------------------------------------------------------------------
+#  Rényi-2 / S₂ estimator — AMS sketch (Alon-Matias-Szegedy)
+#
+#  The old fixed-histogram approach (2^RENYI_BITS buckets) saturated as soon
+#  as N >> n_buckets: every bucket fills up, S2_bucket → n_buckets regardless
+#  of the true distribution, and α₂ collapsed to RENYI_BITS·log2/log(p) — a
+#  pure function of p with no walk signal.  This is now replaced everywhere.
+#
+#  AMS gives an unbiased estimate of F₂ = Σ cᵢ² for any N:
+#    Maintain k independent sign-hash projections  Z_j = Σᵢ hⱼ(xᵢ)
+#    where hⱼ: fingerprint → {-1, +1} via the high bit of a multiply-hash.
+#    Then E[Zⱼ²] = F₂.  We use G groups of W estimators each; within each
+#    group take the mean of Zⱼ², across groups take the median.
+#    Final: S₂ = N² / F₂_estimate,  α₂ = log(S₂) / (2·log(p)).
+#
+#  Parameters:
+#    AMS_GROUPS = 16  (groups for median — controls tail probability)
+#    AMS_WIDTH  = 16  (estimators per group — controls variance within group)
+#    Total sketch: 16×16 = 256 Int64 accumulators = 2 KB.  Never saturates.
+#
+#  Salts: 256 fixed UInt64 constants derived from nothing-up-my-sleeve values.
+# ---------------------------------------------------------------------------
+const AMS_GROUPS = 16
+const AMS_WIDTH  = 16
+const AMS_K      = AMS_GROUPS * AMS_WIDTH   # 256 total hash functions
+
+# Precomputed salts: AMS_K distinct 64-bit constants.
+# Generated as successive applications of xorshift64 from a fixed seed.
+const AMS_SALTS = let
+    s = UInt64(0x9e3779b97f4a7c15)
+    v = Vector{UInt64}(undef, AMS_K)
+    for i in 1:AMS_K
+        s = s ⊻ (s << 13)
+        s = s ⊻ (s >> 7)
+        s = s ⊻ (s << 17)
+        v[i] = s
+    end
+    Tuple(v)
+end
+
+# ---------------------------------------------------------------------------
+#  Cold-filter bitmap — separate from the S₂ estimator.
+#
+#  The flush path needs to know which fingerprint buckets have received at
+#  least one emission (to drop genuinely cold entries from the spill file).
+#  We keep a coarse 2^COLD_BITS-bucket presence bitmap for this purpose only.
+#  This is NOT used for any S₂ or α₂ computation.
+# ---------------------------------------------------------------------------
+const COLD_BITS  = 20                    # 1M buckets, 128 KB bitmap
+const COLD_SHIFT = 64 - COLD_BITS
+const COLD_WORDS = (1 << COLD_BITS) ÷ 64  # 16384 UInt64 words
+
 # Circular buffer capacity for the partial fingerprint log.
-# At 2 bytes/entry this costs 2 MB and always reflects the most recent
+# Stores COLD_BITS-bit bucket indices as UInt32 (20 bits fits in UInt32).
+# At 4 bytes/entry this costs 4 MB and always reflects the most recent
 # PARTIAL_FP_LOG_CAP emissions regardless of total walk length.
 const PARTIAL_FP_LOG_CAP = 1_000_000
 # Layout offsets within a record (byte indices, 1-based Julia style handled via pointer):
@@ -228,20 +275,24 @@ mutable struct LP1ConjLSM{V}
     occ_unique          ::Int          # approximate unique LP1-conj keys seen
     occ_n               ::Int          # total emissions (for occupancy formula)
 
-    # Rényi-2 / collision-entropy estimator — S₂ = (Σ cᵢ)² / Σ cᵢ²
-    # We maintain a count-map from fingerprint bucket → multiplicity.
-    # Buckets are fp >> RENYI_SHIFT (top RENYI_BITS bits of the 64-bit fingerprint)
-    # so the table stays small (2^RENYI_BITS entries) while still tracking
-    # concentration faithfully.  renyi_sum_c is Σcᵢ, renyi_sum_c2 is Σcᵢ².
-    renyi_counts        ::Vector{UInt32}   # length 2^RENYI_BITS; count per bucket
-    renyi_sum_c         ::Int64            # Σ cᵢ  (== total collisions + emissions)
-    renyi_sum_c2        ::Int64            # Σ cᵢ²
+    # Rényi-2 / collision-entropy estimator — AMS sketch.
+    # ams_Z[g*AMS_WIDTH + j] is the running sum Σ h_{g,j}(fp) ∈ ℤ for group g,
+    # estimator j.  h_{g,j}(fp) = (-1)^{high bit of fp*AMS_SALTS[g*W+j]}.
+    # E[ams_Z[i]^2] = F₂ = Σ cᵢ².  S₂ = N² / median_of_means(Z²).
+    # Updated under bday_lock.  Written under bday_lock.
+    ams_Z               ::Vector{Int64}    # length AMS_K = AMS_GROUPS * AMS_WIDTH
 
-    # Time-ordered partial stream — one UInt16 bucket index per partial, in
+    # Cold-filter bitmap — presence bits for COLD_BITS-bucket fp prefixes.
+    # Used only by the flush cold-filter; NOT for S₂ estimation.
+    # Bit (fp >> COLD_SHIFT) is set on first emission to that coarse bucket.
+    # Lockless reads/writes are safe (bits only ever set, never cleared).
+    cold_bitmap         ::Vector{UInt64}   # length COLD_WORDS = 2^COLD_BITS / 64
+
+    # Time-ordered partial stream — one UInt32 cold-bucket index per partial, in
     # chronological order of insertion.  Used post-walk by lsm_bday_report to
     # compute dyadic-window α₂(T) scaling diagnostics on the partial stream.
-    # At 3.7M partials × 2 bytes = ~7 MB — negligible.  Written under bday_lock.
-    partial_fp_log      ::Vector{UInt16}
+    # At 4 bytes/entry × 1M cap = 4 MB.  Written under bday_lock.
+    partial_fp_log      ::Vector{UInt32}
 
     # Cold-filter stats: entries silently dropped at flush time because their
     # Rényi bucket had zero observed count (i.e. never received an emission).
@@ -316,9 +367,11 @@ function LP1ConjLSM{V}(
         0, 0.0, 0, 0.0, ReentrantLock(),
         # occupancy estimator
         0, 0,
-        # Rényi-2 estimator (2^14 = 16384 buckets — ~64 KB, negligible)
-        zeros(UInt32, 1 << RENYI_BITS), Int64(0), Int64(0),
-        UInt16[],             # partial_fp_log
+        # Rényi-2 AMS sketch (256 Int64 accumulators = 2 KB)
+        zeros(Int64, AMS_K),
+        # Cold-filter bitmap (2^COLD_BITS bits = 128 KB)
+        zeros(UInt64, COLD_WORDS),
+        UInt32[],             # partial_fp_log
         0,                    # n_cold_dropped
         zeros(UInt8, RECORD_BYTES)  # read_buf — pre-allocated scratch for _lsm_disk_find
     )
@@ -586,27 +639,21 @@ function _lsm_flush_shard!(sc::LP1ConjLSM{V}, si::Int) where V
     n == 0 && return
 
     # ── Bucket cold-filter ────────────────────────────────────────────────────
-    # S_naive for the LP1-conj key space is p²/2.  The Rényi-2 diagnostics show
-    # alpha_2 ≈ 0.727, i.e. S₂ ~ p^{1.45} — roughly p^{0.55} fewer distinct
-    # hot buckets than the full keyspace.  Most fp-buckets are cold: they receive
-    # emissions but will never be the other side of a birthday collision.
-    # Spilling cold-bucket entries to SSD is pure waste: they consume I/O and
-    # disk space but can never produce a match.
+    # Drop any entry whose COLD_BITS-bit fp bucket has never received an
+    # emission (cold_bitmap bit is zero).  These entries can never produce a
+    # birthday collision because no partial has ever mapped to their coarse
+    # bucket.  Spilling them to SSD is pure I/O waste.
     #
-    # Filter: after COLD_FILTER_WARMUP total emissions, drop any entry whose
-    # RENYI_BITS-bit fp bucket has zero observed count in renyi_counts[].  A
-    # lockless read of renyi_counts is safe — counts are only ever incremented
-    # (never cleared), so a stale zero means the bucket is genuinely cold at the
-    # time of this flush; the tiny race window where a bucket first becomes hot
-    # right as we flush costs at most one missed entry per bucket per flush cycle,
-    # which is negligible.
+    # cold_bitmap reads are lockless (bits only ever set, never cleared), so
+    # a stale zero means the bucket is genuinely cold at flush time.  The tiny
+    # race where a bucket turns hot during this flush costs at most one missed
+    # entry per bucket per flush cycle — negligible.
     #
-    # COLD_FILTER_WARMUP: require at least 2^RENYI_BITS emissions (~16k) before
-    # filtering, so the counts have had a chance to stabilise.  Below this
-    # threshold every bucket looks cold and we'd drop everything.
-    cold_filter_warmup = (1 << RENYI_BITS) * 4   # 4 passes over the bucket array
+    # COLD_FILTER_WARMUP: require at least 4 × 2^COLD_BITS emissions before
+    # filtering so every bucket has had a chance to be observed.
+    cold_filter_warmup = (1 << COLD_BITS) * 4
     use_cold_filter = sc.bday_emissions >= cold_filter_warmup
-    rc = sc.renyi_counts   # lockless snapshot reference — see comment above
+    cb = sc.cold_bitmap   # lockless snapshot reference
 
     # Collect live entries, dropping cold-bucket entries when filter is active.
     fps  = Vector{UInt64}(undef, n)
@@ -626,10 +673,12 @@ function _lsm_flush_shard!(sc::LP1ConjLSM{V}, si::Int) where V
         k = keys[slot]
         k == CONJ_KEY_EMPTY && continue
         fp = _lsm_fp(k)
-        # Cold-filter: skip entries in unobserved Rényi buckets.
+        # Cold-filter: skip entries in unobserved coarse fp buckets.
         if use_cold_filter
-            rb = Int(fp >> RENYI_SHIFT) + 1   # 1-based bucket
-            if rc[rb] == UInt32(0)
+            cb_idx  = Int(fp >> COLD_SHIFT)
+            cb_word = cb_idx >> 6
+            cb_bit  = cb_idx & 63
+            if @inbounds (cb[cb_word + 1] >> cb_bit) & UInt64(1) == UInt64(0)
                 n_cold += 1
                 continue
             end
@@ -1135,45 +1184,108 @@ function conj_insert!(sc::LP1ConjLSM{V}, si::Int,
 end
 
 # ---------------------------------------------------------------------------
-#  conj_insert_or_pop! — atomic check+act, no TOCTOU race
+#  _lsm_record_sample! — update AMS sketch / bday counters for one genuine
+#  key submission.  Called only for true misses (insert) and true cross-col
+#  hits.  Same-col re-inserts are invisible to the estimator so α₂ reflects
+#  the actual walk distribution, not artifact duplicates.
+#
+#  AMS update: for each of the AMS_K hash functions h_j, compute the sign
+#  h_j(fp) = (-1)^{high bit of fp*salt_j} and add it to ams_Z[j].
+#  After N emissions, E[ams_Z[j]^2] = F₂ = Σcᵢ², and S₂ = N²/F₂.
+#
+#  Cold-filter bitmap update: set the COLD_BITS-bit bucket presence bit
+#  for this fingerprint (used by the flush path, not for S₂).
 # ---------------------------------------------------------------------------
-function conj_insert_or_pop!(sc::LP1ConjLSM{V}, si::Int,
-                              key::CanonicalLP1Key, val::V)::Union{V,Nothing} where V
+@inline function _lsm_record_sample!(sc::LP1ConjLSM, fp::UInt64, now_t::Float64)
+    # Cold-filter bitmap — lockless bit-set (bits only ever set, never cleared).
+    cb_idx  = Int(fp >> COLD_SHIFT)          # 0-based bucket index
+    cb_word = cb_idx >> 6                    # which UInt64 word
+    cb_bit  = cb_idx & 63                   # which bit within the word
+    # Capture was_zero BEFORE setting the bit so occ_unique counts correctly.
+    @inbounds was_zero = (sc.cold_bitmap[cb_word + 1] >> cb_bit) & UInt64(1) == UInt64(0)
+    @inbounds sc.cold_bitmap[cb_word + 1] |= UInt64(1) << cb_bit
 
-    fp    = _lsm_fp(key)
-    now_t = time_ns() * 1e-9
-
-    # ── Diagnostics — written under bday_lock so all threads see a consistent ──
-    # bday_emissions when _bday_record_collision! reads it.  The LSM is shared
-    # across threads (one shared_lp1_conj passed to every phase2_worker), so the
-    # earlier "owned by this LSM's thread only" assumption was wrong.  bday_lock
-    # is uncontended except on the first collision, so this adds negligible cost.
-    rb = Int(fp >> RENYI_SHIFT) + 1
     lock(sc.bday_lock)
     try
         sc.bday_emissions == 0 && (sc.bday_t0 = now_t)
         sc.bday_emissions += 1
         sc.occ_n          += 1
-        old_c = Int(sc.renyi_counts[rb])
-        sc.renyi_counts[rb] = ifelse(old_c < Int(typemax(UInt32)),
-                                     UInt32(old_c + 1), typemax(UInt32))
-        sc.renyi_sum_c  += Int64(1)
-        sc.renyi_sum_c2 += Int64(2 * old_c + 1)
-        old_c == 0 && (sc.occ_unique += 1)
-        # Rolling circular buffer: keep the most recent PARTIAL_FP_LOG_CAP entries.
-        # Once at cap, overwrite oldest entry in-place so α₂(T) windows stay current.
+
+        # AMS sketch update: 256 sign-hash projections.
+        # h_j(fp) = +1 if high bit of (fp * salt_j) is 0, else -1.
+        Z = sc.ams_Z
+        @inbounds for j in 1:AMS_K
+            h = fp * AMS_SALTS[j]
+            Z[j] += ifelse((h >> 63) == UInt64(0), Int64(1), Int64(-1))
+        end
+
+        # Occupancy: increment for newly-observed coarse buckets.
+        was_zero && (sc.occ_unique += 1)
+
+        # Partial fp log: record the COLD_BITS-bit bucket index for windowed
+        # α₂ diagnostics.  Uses UInt32 since COLD_BITS = 20 fits easily.
         log_n = length(sc.partial_fp_log)
+        bucket_idx = UInt32(cb_idx)
         if log_n < PARTIAL_FP_LOG_CAP
-            push!(sc.partial_fp_log, UInt16(rb - 1))
+            push!(sc.partial_fp_log, bucket_idx)
         else
-            # sc.bday_emissions is already incremented above; use (emissions-1) mod cap
-            # as the circular write index so index 0 is the oldest slot.
             circ_idx = ((sc.bday_emissions - 1) % PARTIAL_FP_LOG_CAP) + 1
-            @inbounds sc.partial_fp_log[circ_idx] = UInt16(rb - 1)
+            @inbounds sc.partial_fp_log[circ_idx] = bucket_idx
         end
     finally
         unlock(sc.bday_lock)
     end
+end
+
+# ---------------------------------------------------------------------------
+#  _ams_estimate_S2 — compute S₂ from an AMS_K-length Z vector and N.
+#
+#  Groups of AMS_WIDTH estimators; mean Z²  within each group; median across
+#  groups.  Returns (F2_estimate, S2_estimate).
+# ---------------------------------------------------------------------------
+function _ams_estimate_S2(Z::Vector{Int64}, N::Int64)::Tuple{Float64, Float64}
+    N == 0 && return (0.0, 0.0)
+    group_means = Vector{Float64}(undef, AMS_GROUPS)
+    @inbounds for g in 1:AMS_GROUPS
+        base = (g - 1) * AMS_WIDTH
+        m = 0.0
+        for j in 1:AMS_WIDTH
+            m += Float64(Z[base + j])^2
+        end
+        group_means[g] = m / AMS_WIDTH
+    end
+    sort!(group_means)
+    # Median of AMS_GROUPS values
+    F2 = if iseven(AMS_GROUPS)
+        (group_means[AMS_GROUPS ÷ 2] + group_means[AMS_GROUPS ÷ 2 + 1]) / 2.0
+    else
+        group_means[(AMS_GROUPS + 1) ÷ 2]
+    end
+    F2 = max(F2, 1.0)
+    S2 = Float64(N)^2 / F2
+    return (F2, S2)
+end
+
+# ---------------------------------------------------------------------------
+#  conj_insert_or_pop! — atomic check+act, no TOCTOU race.
+#
+#  Returns (prev_val, is_same_col):
+#    (nothing, false)  -- genuine miss; key was inserted.  Renyi updated.
+#    (v,       false)  -- genuine cross-col collision.  Renyi updated.
+#    (nothing, true)   -- same-col hit: stored entry kept, current step
+#                         discarded.  Renyi NOT updated (not an independent
+#                         sample -- would inflate alpha_2 artificially).
+#
+#  The caller uses is_same_col only for the diagnostic counter; the
+#  relation-emission logic treats nothing the same as before.
+# ---------------------------------------------------------------------------
+function conj_insert_or_pop!(sc::LP1ConjLSM{V}, si::Int,
+                              key::CanonicalLP1Key, val::V
+                             )::Tuple{Union{V,Nothing}, Bool} where V
+
+    fp    = _lsm_fp(key)
+    now_t = time_ns() * 1e-9
+    i0_cur = Int(val.i0)
 
     # 1. Fast Path: Check own hot table using ONLY the shard lock.
     # Avoids serializing all threads on file_lock for hot RAM hits.
@@ -1182,9 +1294,15 @@ function conj_insert_or_pop!(sc::LP1ConjLSM{V}, si::Int,
         slot = _lsm_hot_find(sc, si, key)
         if slot != 0
             v = @inbounds sc.hot_vals[si][slot]
+            if Int(v.i0) == i0_cur
+                # Same-col: leave stored entry in place, discard current step.
+                # Do NOT update Renyi -- not an independent sample.
+                return (nothing, true)
+            end
             _lsm_hot_delete!(sc, si, slot)
+            _lsm_record_sample!(sc, fp, now_t)
             _bday_record_collision!(sc, now_t)
-            return v
+            return (v, false)
         end
     finally
         unlock(sc.shard_locks[si])
@@ -1201,17 +1319,30 @@ function conj_insert_or_pop!(sc::LP1ConjLSM{V}, si::Int,
                 slot = _lsm_hot_find(sc, si, key)
                 if slot != 0
                     v = @inbounds sc.hot_vals[si][slot]
+                    if Int(v.i0) == i0_cur
+                        return (nothing, true)
+                    end
                     _lsm_hot_delete!(sc, si, slot)
+                    _lsm_record_sample!(sc, fp, now_t)
                     _bday_record_collision!(sc, now_t)
-                    return v
+                    return (v, false)
                 end
 
                 found, ri, pos, i0_v, al_v, be_v = _lsm_disk_find(sc, key, fp)
                 if found
+                    if Int(i0_v) == i0_cur
+                        # Same-col on disk: leave tombstone (entry is consumed),
+                        # re-write it back so a future cross-col hit can find it.
+                        # Simplest: just re-insert into hot table.
+                        _lsm_disk_delete!(sc, ri, pos)
+                        _lsm_hot_insert!(sc, si, key, _conj_make_val(V, i0_v, al_v, be_v))
+                        return (nothing, true)
+                    end
                     _lsm_disk_delete!(sc, ri, pos)
                     result_v = _conj_make_val(V, i0_v, al_v, be_v)
+                    _lsm_record_sample!(sc, fp, now_t)
                     _bday_record_collision!(sc, now_t)
-                    return result_v
+                    return (result_v, false)
                 end
             finally
                 unlock(sc.shard_locks[si])
@@ -1228,7 +1359,7 @@ function conj_insert_or_pop!(sc::LP1ConjLSM{V}, si::Int,
     #          observed, meaning the key space is populated enough that peer disk
     #          entries are likely to produce real matches.  Before the first
     #          collision, peer disks are essentially empty; probing them on every
-    #          one of ~5M conj steps costs 31 × file_lock acquisitions for zero
+    #          one of ~5M conj steps costs 31 x file_lock acquisitions for zero
     #          benefit and is the primary cause of the ~50% CPU idle observed at
     #          run start.  Read is intentionally racy (no lock): a false negative
     #          (we read 0 when it just became nonzero) only defers peer probing by
@@ -1238,7 +1369,7 @@ function conj_insert_or_pop!(sc::LP1ConjLSM{V}, si::Int,
     #
     #    Disk probes use trylock (not lock) so a busy peer is skipped rather than
     #    blocking.  A missed hit means the entry stays on peer disk until the next
-    #    emission cycle for that key, which is acceptable — correctness is
+    #    emission cycle for that key, which is acceptable -- correctness is
     #    preserved, only latency is affected.
     if bloom_maybe_has(sc.global_bloom, fp)
         for peer in sc.peers
@@ -1254,16 +1385,20 @@ function conj_insert_or_pop!(sc::LP1ConjLSM{V}, si::Int,
                     pslot = _lsm_hot_find(peer_lsm, si, key)
                     if pslot != 0
                         pv = @inbounds peer_lsm.hot_vals[si][pslot]
+                        if Int(pv.i0) == i0_cur
+                            return (nothing, true)
+                        end
                         _lsm_hot_delete!(peer_lsm, si, pslot)
+                        _lsm_record_sample!(sc, fp, now_t)
                         _bday_record_collision!(sc, now_t)
-                        return pv
+                        return (pv, false)
                     end
                 finally
                     unlock(peer_lsm.shard_locks[si])
                 end
             end
 
-            # Check peer disk via trylock — skip peer if it is busy flushing.
+            # Check peer disk via trylock -- skip peer if it is busy flushing.
             # Per-LSM bloom already gates this to ~FPR% of calls, so contention
             # is low once the bloom is well-populated.
             if !isempty(peer_lsm.runs)
@@ -1273,9 +1408,18 @@ function conj_insert_or_pop!(sc::LP1ConjLSM{V}, si::Int,
                             try
                                 found, ri, pos, i0_v, al_v, be_v = _lsm_disk_find(peer_lsm, key, fp)
                                 if found
+                                    if Int(i0_v) == i0_cur
+                                        _lsm_disk_delete!(peer_lsm, ri, pos)
+                                        lock(peer_lsm.shard_locks[si]) do
+                                            _lsm_hot_insert!(peer_lsm, si, key,
+                                                             _conj_make_val(V, i0_v, al_v, be_v))
+                                        end
+                                        return (nothing, true)
+                                    end
                                     _lsm_disk_delete!(peer_lsm, ri, pos)
+                                    _lsm_record_sample!(sc, fp, now_t)
                                     _bday_record_collision!(sc, now_t)
-                                    return _conj_make_val(V, i0_v, al_v, be_v)
+                                    return (_conj_make_val(V, i0_v, al_v, be_v), false)
                                 end
                             finally
                                 unlock(peer_lsm.shard_locks[si])
@@ -1289,7 +1433,7 @@ function conj_insert_or_pop!(sc::LP1ConjLSM{V}, si::Int,
         end
     end
 
-    # 4. Not found — insert into own LSM, unless we are at cap.
+    # 4. Not found -- insert into own LSM, unless we are at cap.
     lock(sc.file_lock)
     try
         lock(sc.shard_locks[si])
@@ -1298,24 +1442,27 @@ function conj_insert_or_pop!(sc::LP1ConjLSM{V}, si::Int,
             slot = _lsm_hot_find(sc, si, key)
             if slot != 0
                 v = @inbounds sc.hot_vals[si][slot]
+                if Int(v.i0) == i0_cur
+                    return (nothing, true)
+                end
                 _lsm_hot_delete!(sc, si, slot)
+                _lsm_record_sample!(sc, fp, now_t)
                 _bday_record_collision!(sc, now_t)
-                return v
+                return (v, false)
             end
 
             # Cap enforcement: drop silently when the LSM is full.
-            # This mirrors ShardedLP1Conj behaviour and prevents unbounded
-            # spill-file growth that would exhaust RAM/disk and kill throughput.
             if sc.n_disk_live + sum(sc.hot_counts) >= sc.max_entries
                 sc.n_cold_dropped += 1
-                return nothing
+                return (nothing, false)
             end
 
             if sc.hot_counts[si] >= sc.hot_thresh[si]
                 _lsm_flush_shard!(sc, si)
             end
             _lsm_hot_insert!(sc, si, key, val)
-            return nothing
+            _lsm_record_sample!(sc, fp, now_t)   # genuine new insertion
+            return (nothing, false)
         finally
             unlock(sc.shard_locks[si])
         end
@@ -1328,10 +1475,9 @@ end
 #  Birthday diagnostics helpers
 # ---------------------------------------------------------------------------
 
-# Called on every confirmed LP1-conj collision.  Only records the *first* one.
-# bday_emissions is always >= 1 here because it was incremented under bday_lock
-# earlier in the same conj_insert_or_pop! call, before the probe that triggered
-# this collision.
+# Called on every confirmed LP1-conj cross-col collision.  Only records the
+# *first* one.  bday_emissions is >= 1 here because _lsm_record_sample! was
+# called just before this in the same hit path.
 @inline function _bday_record_collision!(sc::LP1ConjLSM, now_t::Float64)
     lock(sc.bday_lock)
     try
@@ -1377,7 +1523,7 @@ function lsm_bday_report(sc::LP1ConjLSM, p::Integer, r::Real; io::IO = stdout)
     t_coll_first  = Inf
     t0_earliest   = Inf
     occ_n_global  = 0
-    rc_global     = zeros(UInt32, 1 << RENYI_BITS)
+    ams_Z_global  = zeros(Int64, AMS_K)   # aggregate AMS sketch across all peers
 
     for peer in actual_peers
         # Dynamic dispatch is fine here (diagnostic path)
@@ -1396,18 +1542,28 @@ function lsm_bday_report(sc::LP1ConjLSM, p::Integer, r::Real; io::IO = stdout)
         if peer.bday_t0 > 0.0 && peer.bday_t0 < t0_earliest
             t0_earliest = peer.bday_t0
         end
-        
-        for i in 1:length(rc_global)
-            old_c = rc_global[i]
-            add_c = peer.renyi_counts[i]
-            rc_global[i] = (old_c + add_c < old_c) ? typemax(UInt32) : (old_c + add_c)
+
+        # Aggregate AMS sketch: Z_global[j] = Σ_peers Z_peer[j].
+        # Linearity of expectation: E[(Z_global[j])²] ≠ Σ E[(Z_peer[j])²] in general,
+        # but since each peer sees an independent sub-stream with the same distribution,
+        # and the sign functions are deterministic, summing the Z vectors gives
+        # Z_global[j] = Σ_k c_k · h_j(k) over all emissions across all peers,
+        # which is exactly what we want.
+        for i in 1:AMS_K
+            ams_Z_global[i] += peer.ams_Z[i]
         end
         unlock(peer.bday_lock)
     end
 
-    occ_u_global = count(>(0), rc_global)
-    rsc_global   = sum(Int64(c) for c in rc_global)
-    rsc2_global  = sum(Int64(c)^2 for c in rc_global)
+    # Occupancy from cold_bitmap: count set bits across all peers' cold bitmaps.
+    # Union of peer bitmaps gives the global set of observed coarse buckets.
+    cold_union = zeros(UInt64, COLD_WORDS)
+    for peer in actual_peers
+        for i in 1:COLD_WORDS
+            cold_union[i] |= peer.cold_bitmap[i]
+        end
+    end
+    occ_u_global = sum(count_ones(w) for w in cold_union)  # distinct cold-buckets seen
 
     # Calculate true global emission rate from actual elapsed time
     t_elapsed = t0_earliest < Inf ? (time_ns() * 1e-9) - t0_earliest : 0.0
@@ -1459,7 +1615,7 @@ function lsm_bday_report(sc::LP1ConjLSM, p::Integer, r::Real; io::IO = stdout)
     # ── Occupancy estimator: U(N) = S(1 - e^{-N/S}), solve for S ─────────────
     @printf(io, "\n  Occupancy estimator (U(N) = S·(1−e^{−N/S})):\n")
     if occ_n_global >= 10 && occ_u_global >= 1 && occ_u_global < occ_n_global
-        scale   = Float64(1 << RENYI_BITS)
+        scale   = Float64(1 << COLD_BITS)
         U_f     = Float64(occ_u_global) * scale
         N_f     = Float64(occ_n_global)
         lo_s = max(U_f, 1.0)
@@ -1472,36 +1628,37 @@ function lsm_bday_report(sc::LP1ConjLSM, p::Integer, r::Real; io::IO = stdout)
         S_occ   = (lo_s + hi_s) / 2.0
         r_occ   = S_occ / S_naive
         a_occ   = log(S_occ) / (2.0 * log(pf))
-        @printf(io, "    unique buckets U       : %d  (N=%d, scale=2^%d)\n",
-                occ_u_global, occ_n_global, RENYI_BITS)
+        @printf(io, "    unique cold-buckets U  : %d  (N=%d, scale=2^%d)\n",
+                occ_u_global, occ_n_global, COLD_BITS)
         @printf(io, "    S_occ (MLE)            : %.6g\n", S_occ)
         @printf(io, "    S_occ / S_naive        : %.5g\n", r_occ)
         @printf(io, "    alpha_occ (S ~ p^{2α}) : %.4f\n", a_occ)
     else
-        @printf(io, "    (need ≥10 emissions with some collisions)\n")
+        @printf(io, "    (need ≥10 emissions with some bucket collisions)\n")
     end
 
-    # ── Rényi-2 / collision-entropy estimator: S₂ = (Σcᵢ)² / Σcᵢ² ───────────
-    @printf(io, "\n  Rényi-2 / collision-entropy estimator (S₂ = (Σcᵢ)²/Σcᵢ²):\n")
-    if rsc_global > 0 && rsc2_global > 0
-        S2      = Float64(rsc_global)^2 / Float64(rsc2_global)
-        scale   = Float64(1 << RENYI_BITS)
-        S2_true = S2 * scale
-        r2      = S2_true / S_naive
-        a2      = log(S2_true) / (2.0 * log(pf))
-        burst_flag = if S_eff > 0.0 && S2_true > 0.0
-            ratio_be = S_eff / S2_true
+    # ── Rényi-2 / collision-entropy estimator — AMS sketch ───────────────────
+    @printf(io, "\n  Rényi-2 / collision-entropy estimator (AMS sketch, %d×%d):\n",
+            AMS_GROUPS, AMS_WIDTH)
+    N_global = Int64(total_emitted)
+    if N_global >= 2
+        F2_est, S2_est = _ams_estimate_S2(ams_Z_global, N_global)
+        r2  = S2_est / S_naive
+        a2  = log(max(S2_est, 1.0)) / (2.0 * log(pf))
+        burst_flag = if S_eff > 0.0 && S2_est > 0.0
+            ratio_be = S_eff / S2_est
             ratio_be > 4.0 ? @sprintf(" ← BURSTS DOMINATE (birthday %.1f× > entropy)", ratio_be) :
             ratio_be < 0.25 ? " ← ENTROPY > BIRTHDAY (unusual)" :
                               " (birthday ≈ entropy, consistent)"
         else
             ""
         end
-        @printf(io, "    Σcᵢ                    : %d  Σcᵢ²=%d\n", rsc_global, rsc2_global)
-        @printf(io, "    S₂ (bucket-level)      : %.6g\n", S2)
-        @printf(io, "    S₂ (key-scaled)        : %.6g\n", S2_true)
+        @printf(io, "    N (total emissions)    : %d\n", N_global)
+        @printf(io, "    F₂ estimate (AMS)      : %.6g\n", F2_est)
+        @printf(io, "    S₂ = N²/F₂            : %.6g\n", S2_est)
         @printf(io, "    S₂ / S_naive           : %.5g\n", r2)
-        @printf(io, "    alpha_2 (S₂ ~ p^{2α₂}) : %.4f%s\n", a2, burst_flag)
+        @printf(io, "    α₂  (S₂ ~ p^{2α₂})    : %.4f%s\n", a2, burst_flag)
+        @printf(io, "    [AMS never saturates; valid for any N]\n")
     else
         @printf(io, "    (no emissions recorded yet)\n")
     end
@@ -1509,16 +1666,23 @@ function lsm_bday_report(sc::LP1ConjLSM, p::Integer, r::Real; io::IO = stdout)
     @printf(io, "\n")
 
     # ── α₂ scaling diagnostics on the partial key stream ─────────────────────
-    # (Kept purely Thread Local as ordered merging of 32 un-timestamped ring buffers is highly complex)
+    # (Thread-local view; cross-thread merge of ring buffers is non-trivial.)
+    # The windowed estimator computes α₂ over windows of Tw emissions using
+    # the 2^COLD_BITS coarse bucket index stored in partial_fp_log.
+    # It is unbiased when Tw << 2^COLD_BITS (average < 1 hit/bucket per window),
+    # and saturates when Tw >> 2^COLD_BITS.  We annotate saturated rows.
     let blog = copy(sc.partial_fp_log)
-        nb     = 1 << RENYI_BITS
-        n_blog = length(blog)
-        @printf(io, "  LP1-conj partial stream α₂ scaling (Thread Local view):\n")
+        nb       = 1 << COLD_BITS    # number of coarse buckets
+        n_blog   = length(blog)
+        sat_warn = nb ÷ 4            # warn when Tw > nb/4
+
+        @printf(io, "  LP1-conj partial stream α₂ scaling (Thread Local view, 2^%d buckets):\n",
+                COLD_BITS)
         if n_blog < 64
             @printf(io, "    (need ≥64 partials; got %d)\n\n", n_blog)
         else
             @printf(io, "    nb=%d fp-buckets  N=%d partials\n", nb, n_blog)
-            @printf(io, "    window_T    n_events   α₂(T)    S_occ(T)   ρ=S_occ/S₂  dα₂/dlogT\n")
+            @printf(io, "    window_T    n_events   α₂(T)    S_occ(T)   ρ=S_occ/S₂  dα₂/dlogT  note\n")
 
             T0   = max(32, n_blog ÷ 64)
             Tw   = T0
@@ -1547,20 +1711,25 @@ function lsm_bday_report(sc::LP1ConjLSM, p::Integer, r::Real; io::IO = stdout)
                 end
                 n_valid == 0 && (Tw *= 2; continue)
 
-                a2_T   = s2_acc   / n_valid
-                socc_T = socc_acc / n_valid
-                rho_T  = a2_T > 0.0 ? socc_T / a2_T : NaN
-                logT   = log2(Float64(Tw))
-                da2    = (!isnan(prev_a2) && !isnan(prev_logT) && logT > prev_logT) ?
-                         (a2_T - prev_a2) / (logT - prev_logT) : NaN
-                da_str  = isnan(da2) ? "        —" : @sprintf("%+9.4f", da2)
+                a2_T    = s2_acc   / n_valid
+                socc_T  = socc_acc / n_valid
+                rho_T   = a2_T > 0.0 ? socc_T / a2_T : NaN
+                logT    = log2(Float64(Tw))
+                da2     = (!isnan(prev_a2) && !isnan(prev_logT) && logT > prev_logT) ?
+                          (a2_T - prev_a2) / (logT - prev_logT) : NaN
+                da_str  = isnan(da2)  ? "        —" : @sprintf("%+9.4f", da2)
                 rho_str = isnan(rho_T) ? "         —" : @sprintf("%10.4f", rho_T)
-                @printf(io, "    %9d  %9d  %8.4f  %9.4f  %s  %s\n",
-                        Tw, n_wins * Tw, a2_T, socc_T, rho_str, da_str)
+                note    = Tw > sat_warn ? " [SAT?]" : ""
+                @printf(io, "    %9d  %9d  %8.4f  %9.4f  %s  %s%s\n",
+                        Tw, n_wins * Tw, a2_T, socc_T, rho_str, da_str, note)
                 push!(a2_vals, a2_T); push!(logT_vals, logT)
                 prev_a2 = a2_T; prev_logT = logT
                 Tw *= 2
             end
+
+            # Only use un-saturated rows for the verdict.
+            unsaturated_a2 = [a2_vals[i] for i in eachindex(a2_vals)
+                              if exp2(logT_vals[i]) <= sat_warn]
 
             if length(a2_vals) >= 3
                 da2_late  = (a2_vals[end]   - a2_vals[end-1]) / (logT_vals[end]   - logT_vals[end-1])
@@ -1577,14 +1746,19 @@ function lsm_bday_report(sc::LP1ConjLSM, p::Integer, r::Real; io::IO = stdout)
                 @printf(io, "    %s\n", verdict)
             end
 
-            if !isempty(a2_vals) && pf > 1.0
-                a2_bucket_converged = a2_vals[end]
-                S2_bucket = 2.0^a2_bucket_converged
-                S2_keys   = S2_bucket * Float64(1 << RENYI_BITS)
-                a2_keys   = log(S2_keys) / (2.0 * log(pf))
-                @printf(io, "    converged α₂ (bucket-space)  : %.4f bits\n", a2_bucket_converged)
-                @printf(io, "    S₂_keys (bucket × 2^%d)     : %.5g\n", RENYI_BITS, S2_keys)
-                @printf(io, "    α₂_keys (S₂ ~ p^{2α₂})      : %.4f  [compare birthday α₂ above]\n", a2_keys)
+            # Report the converged windowed α₂ (prefer unsaturated rows).
+            ref_vals = isempty(unsaturated_a2) ? a2_vals : unsaturated_a2
+            if !isempty(ref_vals) && pf > 1.0
+                a2_w = ref_vals[end]
+                # Windowed α₂ is in bucket-entropy bits (log₂ scale).
+                # Convert: S₂_bucket = 2^a2_w, S₂_keys = S₂_bucket × 2^COLD_BITS.
+                S2_w_bucket = exp2(a2_w)
+                S2_w_keys   = S2_w_bucket * Float64(1 << COLD_BITS)
+                a2_w_keys   = log(S2_w_keys) / (2.0 * log(pf))
+                sat_note    = isempty(unsaturated_a2) ? " [all rows saturated — treat as lower bound]" : ""
+                @printf(io, "    converged α₂ (bucket-space)  : %.4f bits%s\n", a2_w, sat_note)
+                @printf(io, "    S₂_keys (bucket × 2^%d)     : %.5g\n", COLD_BITS, S2_w_keys)
+                @printf(io, "    α₂_keys (S₂ ~ p^{2α₂})      : %.4f  [compare AMS α₂ above]\n", a2_w_keys)
             end
         end
     end
@@ -1847,7 +2021,7 @@ end
 #    • Bloom filter bit-arrays (own + global, deduped)
 #    • RunMeta vector + per-run tombstone bitvectors
 #    • partial_fp_log (chronological bucket log)
-#    • renyi_counts array
+#    • AMS sketch (ams_Z) and cold_bitmap
 #    • read_buf scratch buffer
 #    • Hot-count / hot-cap / hot-mask / hot-thresh / shard-locks vectors
 #
@@ -1938,14 +2112,16 @@ function lsm_mem_report(sc::LP1ConjLSM{V};
         @printf(io, "    run metadata total  : %s\n", _fmt_mb(runs_total_bytes))
 
         # ── Diagnostic / bookkeeping arrays ────────────────────────────────────
-        renyi_bytes   = length(lsm.renyi_counts) * sizeof(UInt32)
-        log_bytes     = length(lsm.partial_fp_log) * sizeof(UInt16)
+        ams_bytes     = AMS_K * sizeof(Int64)
+        cold_bytes    = COLD_WORDS * sizeof(UInt64)
+        log_bytes     = length(lsm.partial_fp_log) * sizeof(UInt32)
         readbuf_bytes = length(lsm.read_buf) * sizeof(UInt8)
         admin_bytes   = (ns * (sizeof(Int)*3 + sizeof(UInt))) +   # hot_counts/caps/thresh/masks
                         ns * sizeof(ReentrantLock)                 # shard_locks (rough)
-        diag_total    = renyi_bytes + log_bytes + readbuf_bytes + admin_bytes
+        diag_total    = ams_bytes + cold_bytes + log_bytes + readbuf_bytes + admin_bytes
         @printf(io, "  Diagnostic/bookkeeping:\n")
-        @printf(io, "    renyi_counts[%d]   : %s\n", length(lsm.renyi_counts), _fmt_mb(renyi_bytes))
+        @printf(io, "    AMS sketch [%d×%d]    : %s\n", AMS_GROUPS, AMS_WIDTH, _fmt_mb(ams_bytes))
+        @printf(io, "    cold_bitmap[2^%d]     : %s\n", COLD_BITS, _fmt_mb(cold_bytes))
         log_full   = length(lsm.partial_fp_log) >= PARTIAL_FP_LOG_CAP
         log_status = log_full ? "circular (rolling)" : @sprintf("filling (%d%%)", round(Int, 100.0 * length(lsm.partial_fp_log) / PARTIAL_FP_LOG_CAP))
         @printf(io, "    partial_fp_log[%d]: %s  [%s, cap=%d]\n",
@@ -2045,16 +2221,14 @@ function lsm_flush_stats(sc::LP1ConjLSM; io::IO = stdout)
     # Estimate of expected collision probability given current spill density.
     # If N_total = n_disk entries occupy effective space S₂, probability that
     # the next emission matches a disk entry is N_total / S₂.
-    # We read S₂ from the Rényi estimator.
-    rsc  = sc.renyi_sum_c
-    rsc2 = sc.renyi_sum_c2
-    if rsc > 0 && rsc2 > 0 && sc.bloom.n_bits > 64
-        S2_bucket = Float64(rsc)^2 / Float64(rsc2)
-        S2_keys   = S2_bucket * Float64(1 << RENYI_BITS)
-        if S2_keys > 0.0
-            p_hit_disk   = Float64(n_disk)   / S2_keys
-            p_hit_hot    = Float64(hot_live)  / S2_keys
-            @printf(io, "\n  Collision probability estimate (from Rényi S₂ = %.5g):\n", S2_keys)
+    # We read S₂ from the AMS sketch (never saturates).
+    N_emit = Int64(sc.bday_emissions)
+    if N_emit >= 2 && sc.bloom.n_bits > 64
+        _, S2_est = _ams_estimate_S2(sc.ams_Z, N_emit)
+        if S2_est > 0.0
+            p_hit_disk   = Float64(n_disk)   / S2_est
+            p_hit_hot    = Float64(hot_live)  / S2_est
+            @printf(io, "\n  Collision probability estimate (from AMS S₂ = %.5g):\n", S2_est)
             @printf(io, "    P(disk hit | emission) : %.5g  (%.2f per 1000 emissions)\n",
                     p_hit_disk, 1000.0 * p_hit_disk)
             @printf(io, "    P(hot hit  | emission) : %.5g  (%.2f per 1000 emissions)\n",
@@ -2062,9 +2236,8 @@ function lsm_flush_stats(sc::LP1ConjLSM; io::IO = stdout)
             @printf(io, "    P(any hit  | emission) : %.5g  (%.2f per 1000 emissions)\n",
                     p_hit_disk + p_hit_hot, 1000.0 * (p_hit_disk + p_hit_hot))
             if sc.bday_first_coll_m > 0
-                # Compare to observed empirical rate.
                 m_coll = sc.bday_first_coll_m
-                p_obs  = 1.0 / Float64(m_coll)   # rough: first coll at m ↔ rate ~ 1/m
+                p_obs  = 1.0 / Float64(m_coll)
                 @printf(io, "    P_obs (1/m_first)      : %.5g   ratio pred/obs = %.3f\n",
                         p_obs, (p_hit_disk + p_hit_hot) / p_obs)
             end

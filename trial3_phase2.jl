@@ -142,6 +142,24 @@ function report_worker_progress(tid, elapsed, s::WorkerStats, rel_counter, rel_t
             100.0 * s.hits_1lp_conj_emit / max(1, s.hits_lp1_conj),
             100.0 * s.hits_1lp_emit      / max(1, s.hits_lp1),
             s.evictions_conj)
+    let total_conj_close = s.hits_1lp_conj_emit + s.hits_1lp_conj_trivial_same_col + s.hits_1lp_conj_trivial_zero_dal
+        @printf("           1lp_conj trivial breakdown: same_col=%d (%.1f%%)  zero_dal=%d (%.1f%%)  useful=%d (%.1f%%) of %d closes\n",
+                s.hits_1lp_conj_trivial_same_col,
+                100.0 * s.hits_1lp_conj_trivial_same_col / max(1, total_conj_close),
+                s.hits_1lp_conj_trivial_zero_dal,
+                100.0 * s.hits_1lp_conj_trivial_zero_dal / max(1, total_conj_close),
+                s.hits_1lp_conj_emit,
+                100.0 * s.hits_1lp_conj_emit / max(1, total_conj_close),
+                total_conj_close)
+        if s.hits_1lp_conj_trivial_same_col > 0
+            @printf("             same_col sub-breakdown: attractor_exact(Δα=0)=%d (%.1f%%)  birthday_filtered(Δα≠0)=%d (%.1f%%) of same_col probed=%d\n",
+                    s.hits_1lp_conj_attractor_exact,
+                    100.0 * s.hits_1lp_conj_attractor_exact   / max(1, s.hits_1lp_conj_attractor_exact + s.hits_1lp_conj_attractor_birthday),
+                    s.hits_1lp_conj_attractor_birthday,
+                    100.0 * s.hits_1lp_conj_attractor_birthday / max(1, s.hits_1lp_conj_attractor_exact + s.hits_1lp_conj_attractor_birthday),
+                    s.hits_1lp_conj_attractor_exact + s.hits_1lp_conj_attractor_birthday)
+        end
+    end
     @printf("           smoothness histogram (0-LP, 1-LP, 2-LP, 3-LP): %d %d %d %d\n",
             s.smooth_hist[1], s.smooth_hist[2], s.smooth_hist[3], s.smooth_hist[4])
     # Print conj table occupancy once (from thread 2 only) to avoid redundant summation.
@@ -174,23 +192,30 @@ end
 # ---------------------------------------------------------------------------
 
 # conj_insert_or_pop! for ShardedLP1Conj: same atomic semantics as the LSM
-# version.  Under the shard lock: if key present, pop and return value; else
-# insert and return nothing.
+# version.  Returns (val, is_same_col) matching the LSM signature so
+# handle_1lp_conj! can treat both backends uniformly.
+# Same-col hits re-insert the stored entry and return (nothing, true) so the
+# stored entry survives for a future cross-col visitor.
 @inline function conj_insert_or_pop!(sc::ShardedLP1Conj{V}, si::Int,
-                                      key::CanonicalLP1Key, val::V)::Union{V,Nothing} where V
+                                      key::CanonicalLP1Key, val::V
+                                     )::Tuple{Union{V,Nothing}, Bool} where V
     lock(sc.locks[si]) do
         sh   = sc.shards[si]
         slot = _conj_find(sh, key)
         if slot != 0
             v = @inbounds sh.vals[slot]
+            if Int(v.i0) == Int(val.i0)
+                # Same-col: leave entry in place, discard current step.
+                return (nothing, true)
+            end
             _conj_delete_slot!(sh, slot)
-            v
+            (v, false)
         elseif sh.count < sh.max_entries
             _conj_insert!(sh, key, val)
-            nothing
+            (nothing, false)
         else
-            # At cap: drop silently (same behaviour as old conj_insert! cap-drop).
-            nothing
+            # At cap: drop silently.
+            (nothing, false)
         end
     end
 end
@@ -361,20 +386,44 @@ end
         al_cur          ::Int = -1,
         px_anchor       ::Int = -1,
         a_raw           ::Int = -1,
-        post_conj_stride::Int = 0)::NTuple{2,Int} where V
+        post_conj_stride::Int = 0,
+        anchor_alpha_seen::Union{Dict{Tuple{Int,CanonicalLP1Key},Int}, Nothing} = nothing,
+        anchor_alpha_cap::Int = 200_000)::NTuple{2,Int} where V
 
     si = conj_shard_idx(lp_key)
 
     # Use atomic insert-or-pop to close the haskey/insert TOCTOU race.
-    # Two threads that both miss conj_haskey and both insert end up with
-    # duplicate entries; each later closes against its own entry and gets
-    # combined_al=0 — a useless discard.  conj_insert_or_pop! collapses the
-    # check+act into one shard-lock critical section, eliminating the race.
+    # Returns (prev_or_nothing, is_same_col).  Same-col hits leave the stored
+    # entry in place (re-insert) and return (nothing, true) so the entry
+    # survives for a future cross-col visitor.  Renyi accounting is skipped
+    # for same-col hits in the LSM backend so alpha_2 stays clean.
     val = _conj_make_val(V, UInt16(i0), UInt64(neg_al), UInt64(neg_be))
-    prev = conj_insert_or_pop!(shared_lp1_conj, si, lp_key, val)
+    prev, is_same_col = conj_insert_or_pop!(shared_lp1_conj, si, lp_key, val)
+
+    if is_same_col
+        # Same-col: stored entry was preserved; this step is a no-op.
+        # Update diagnostic counter and attractor probe, then treat as miss.
+        s.hits_1lp_conj_trivial_same_col += 1
+        if anchor_alpha_seen !== nothing
+            akey = (i0, lp_key)
+            if haskey(anchor_alpha_seen, akey)
+                last_al = anchor_alpha_seen[akey]
+                if last_al == neg_al
+                    s.hits_1lp_conj_attractor_exact += 1
+                else
+                    s.hits_1lp_conj_attractor_birthday += 1
+                end
+            end
+            if length(anchor_alpha_seen) < anchor_alpha_cap
+                anchor_alpha_seen[akey] = neg_al
+            end
+        end
+        record_conj_deep_miss!(deep_stat, lp_key, s.raw_steps, al_cur, px_anchor, a_raw)
+        return next_anchor_ref[]()
+    end
 
     if prev === nothing
-        # Miss: key was freshly stored.  Record store-step for D8 closure-depth.
+        # Genuine miss: key was freshly stored.
         record_conj_deep_miss!(deep_stat, lp_key, s.raw_steps, al_cur, px_anchor, a_raw)
     end
 
@@ -387,7 +436,13 @@ end
         combined_al = mod(neg_al - prev_al, Int(ell))
         combined_be = mod(neg_be - prev_be, Int(ell))
 
-        if !(combined_al == 0 && combined_be == 0) && i0 != prev_col
+        # prev_col != i0 is guaranteed here (same-col was handled above).
+        # Only remaining trivial case is Δα=Δβ=0 with different anchors.
+        if combined_al == 0 && combined_be == 0
+            s.hits_1lp_conj_trivial_zero_dal += 1
+        end
+
+        if !(combined_al == 0 && combined_be == 0)
             # Relation: atom(fb[i0]) - atom(fb[prev_col]) = combined_al·G + combined_be·T
             # Reuse combined_scratch to avoid per-closure Dict allocation (weight-2 rows
             # are always exactly 2 entries; scratch is cleared and refilled here).
@@ -422,9 +477,10 @@ end
             for _ in 1:post_conj_stride; next_anchor_ref[](); end
             return next_anchor_ref[]()
         end
-        # combined_al==0 or i0==prev_col: useless close, fall through to structured jump
+        # combined_al==0 && combined_be==0: useless close (Δα=Δβ=0, different anchors).
+        # Fall through to structured anchor jump.
     end
-    # Miss (inserted) or useless close: advance structured anchor cursor (no stride).
+    # Miss (inserted) or zero-Δα close: advance structured anchor cursor (no stride).
     return next_anchor_ref[]()
 end
 
@@ -814,6 +870,15 @@ function phase2_worker(G               ::Div2,
     fb_row_scratch   = sizehint!(Dict{Int,Int}(), 4)
     combined_scratch = sizehint!(Dict{Int,Int}(), 8)
 
+    # --- Attractor detection: for same-col trivial conj closes, check whether
+    #     Δα = 0 too (same walk path revisit) vs Δα ≠ 0 (different path, but
+    #     same anchor+key — still a birthday, just filtered).
+    #     Key = (i0, lp_key); value = last neg_al seen.
+    #     Only populated when a same-col close is first detected; capped to
+    #     avoid OOM on pathological walks.
+    conj_anchor_alpha_seen = Dict{Tuple{Int,CanonicalLP1Key}, Int}()
+    CONJ_ANCHOR_ALPHA_CAP  = 200_000   # entries; ~6.4 MB at 32 bytes/entry
+
     # --- Diagnostics ---
     sample_phase2_rels = Vector{Tuple{Div2,Int,Int,NTuple{2,Int},NTuple{2,Int},NTuple{2,Int}}}()
     rank_growth  = Tuple{Int,Int}[]
@@ -918,7 +983,8 @@ function phase2_worker(G               ::Div2,
                                                ort, s, shared_lp1_conj, rank_growth,
                                                combined_scratch, P0, phi_bias_stat, next_anchor_ref,
                                                _a_bucket, deep_stat, al, P0[1], Int(a),
-                                               post_conj_stride)
+                                               post_conj_stride,
+                                               conj_anchor_alpha_seen, CONJ_ANCHOR_ALPHA_CAP)
                     # D9: record 1LP-conj opcode; is_emission = true iff handle produced an emission
                     record_conj_deep_opcode!(deep_stat, OPCODE_1LP_CONJ,
                                              deep_stat.n_emissions > n_emit_before)
@@ -1066,6 +1132,24 @@ function phase2_worker(G               ::Div2,
                 s.raw_steps / max(1, s.hits_full))
         @printf("           smoothness (0-LP 1-LP 2-LP 3-LP): %d %d %d %d\n",
                 s.smooth_hist[1], s.smooth_hist[2], s.smooth_hist[3], s.smooth_hist[4])
+        let total_conj_close = s.hits_1lp_conj_emit + s.hits_1lp_conj_trivial_same_col + s.hits_1lp_conj_trivial_zero_dal
+            @printf("           1lp_conj trivial breakdown: same_col=%d (%.1f%%)  zero_dal=%d (%.1f%%)  useful=%d (%.1f%%) of %d closes\n",
+                    s.hits_1lp_conj_trivial_same_col,
+                    100.0 * s.hits_1lp_conj_trivial_same_col / max(1, total_conj_close),
+                    s.hits_1lp_conj_trivial_zero_dal,
+                    100.0 * s.hits_1lp_conj_trivial_zero_dal / max(1, total_conj_close),
+                    s.hits_1lp_conj_emit,
+                    100.0 * s.hits_1lp_conj_emit / max(1, total_conj_close),
+                    total_conj_close)
+            if s.hits_1lp_conj_trivial_same_col > 0
+                @printf("             same_col sub-breakdown: attractor_exact(Δα=0)=%d (%.1f%%)  birthday_filtered(Δα≠0)=%d (%.1f%%) of same_col probed=%d\n",
+                        s.hits_1lp_conj_attractor_exact,
+                        100.0 * s.hits_1lp_conj_attractor_exact   / max(1, s.hits_1lp_conj_attractor_exact + s.hits_1lp_conj_attractor_birthday),
+                        s.hits_1lp_conj_attractor_birthday,
+                        100.0 * s.hits_1lp_conj_attractor_birthday / max(1, s.hits_1lp_conj_attractor_exact + s.hits_1lp_conj_attractor_birthday),
+                        s.hits_1lp_conj_attractor_exact + s.hits_1lp_conj_attractor_birthday)
+            end
+        end
         if length(rank_growth) >= 2
             gaps = [rank_growth[i][1] - rank_growth[i-1][1]
                     for i in 2:min(10, length(rank_growth))]
@@ -1086,6 +1170,10 @@ function phase2_worker(G               ::Div2,
             hits_1lp_emit = s.hits_1lp_emit,
             hits_lp1_conj      = s.hits_lp1_conj,
             hits_1lp_conj_emit = s.hits_1lp_conj_emit,
+            hits_1lp_conj_trivial_same_col  = s.hits_1lp_conj_trivial_same_col,
+            hits_1lp_conj_trivial_zero_dal  = s.hits_1lp_conj_trivial_zero_dal,
+            hits_1lp_conj_attractor_exact   = s.hits_1lp_conj_attractor_exact,
+            hits_1lp_conj_attractor_birthday= s.hits_1lp_conj_attractor_birthday,
             hits_lp2seen  = s.hits_lp2seen,
             hits_lp2emit  = s.hits_lp2emit,
             hits_lp2_cross= s.hits_lp2_cross,
