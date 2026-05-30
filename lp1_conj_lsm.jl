@@ -82,9 +82,10 @@ const AMS_WIDTH  = 16
 const AMS_K      = AMS_GROUPS * AMS_WIDTH   # 512 total hash functions
 
 # Precomputed salts: AMS_K distinct 64-bit constants.
-# Generated as successive applications of xorshift64 from a fixed seed.
+# Generated as successive applications of xorshift64 from a random seed so
+# each run uses a fresh independent hash family.
 const AMS_SALTS = let
-    s = UInt64(0x9e3779b97f4a7c15)
+    s = rand(UInt64)
     v = Vector{UInt64}(undef, AMS_K)
     for i in 1:AMS_K
         s = s ⊻ (s << 13)
