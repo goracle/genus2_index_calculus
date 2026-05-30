@@ -71,15 +71,15 @@ const RECORD_BYTES = 48   # fp(8) + u0u1v0v1(16) + i0(2) + pad(6) + al(8) + be(8
 #    Final: S₂ = N² / F₂_estimate,  α₂ = log(S₂) / (2·log(p)).
 #
 #  Parameters:
-#    AMS_GROUPS = 16  (groups for median — controls tail probability)
+#    AMS_GROUPS = 32  (groups for median — controls tail probability)
 #    AMS_WIDTH  = 16  (estimators per group — controls variance within group)
-#    Total sketch: 16×16 = 256 Int64 accumulators = 2 KB.  Never saturates.
+#    Total sketch: 32×16 = 512 Int64 accumulators = 4 KB.  Never saturates.
 #
-#  Salts: 256 fixed UInt64 constants derived from nothing-up-my-sleeve values.
+#  Salts: 512 fixed UInt64 constants derived from nothing-up-my-sleeve values.
 # ---------------------------------------------------------------------------
-const AMS_GROUPS = 16
+const AMS_GROUPS = 32
 const AMS_WIDTH  = 16
-const AMS_K      = AMS_GROUPS * AMS_WIDTH   # 256 total hash functions
+const AMS_K      = AMS_GROUPS * AMS_WIDTH   # 512 total hash functions
 
 # Precomputed salts: AMS_K distinct 64-bit constants.
 # Generated as successive applications of xorshift64 from a fixed seed.
@@ -367,7 +367,7 @@ function LP1ConjLSM{V}(
         0, 0.0, 0, 0.0, ReentrantLock(),
         # occupancy estimator
         0, 0,
-        # Rényi-2 AMS sketch (256 Int64 accumulators = 2 KB)
+        # Rényi-2 AMS sketch (512 Int64 accumulators = 4 KB)
         zeros(Int64, AMS_K),
         # Cold-filter bitmap (2^COLD_BITS bits = 128 KB)
         zeros(UInt64, COLD_WORDS),
@@ -1211,7 +1211,7 @@ end
         sc.bday_emissions += 1
         sc.occ_n          += 1
 
-        # AMS sketch update: 256 sign-hash projections.
+        # AMS sketch update: 512 sign-hash projections.
         # h_j(fp) = +1 if high bit of (fp * salt_j) is 0, else -1.
         Z = sc.ams_Z
         @inbounds for j in 1:AMS_K
