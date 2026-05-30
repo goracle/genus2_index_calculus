@@ -1708,6 +1708,50 @@ function lsm_bday_report(sc::LP1ConjLSM, p::Integer, r::Real; io::IO = stdout)
                 ams_stats.alpha2, a2_pm, ams_stats.alpha2_lo, ams_stats.alpha2_hi, burst_flag)
         @printf(io, "    [band is the inter-group spread; not a formal CI]\n")
         @printf(io, "    [AMS never saturates; valid for any N]\n")
+
+        # ── Poisson null-model comparison ────────────────────────────────────
+        # For a uniform distribution over M keys, Poisson occupancy after N
+        # samples gives E[cᵢ²] = λ + λ² (λ = N/M), so:
+        #   E[F₂] = N + N²/M
+        #   E[S₂_Poisson] = N² / (N + N²/M) = N·M / (M + N)
+        #   α₂_Poisson = log(E[S₂]) / (2·log(p))
+        #
+        # This is the AMS reading we would expect purely from uniform
+        # singleton/collision statistics — no genuine Rényi signal required.
+        # Comparing observed α₂ against these predictions disambiguates:
+        #   • If observed ≈ Poisson(M=p^{2α₂_obs}): consistent with uniform support of that size.
+        #   • If observed ≈ Poisson(M=p^2): the signal is a pure birthday/saturation artifact.
+        #   • If observed ≫ any Poisson prediction: anomalous concentration.
+        @printf(io, "\n  Poisson null-model α₂ predictions (what AMS *should* report for uniform support M):\n")
+        @printf(io, "    %-20s  %12s  %12s  %12s  %12s\n",
+                "candidate M", "M value", "λ = N/M", "E[S₂]", "α₂_Poisson")
+        @printf(io, "    %s\n", "-"^76)
+        N_f64 = Float64(N_global)
+        logp  = log(pf)   # pf already defined above in lsm_bday_report
+        # Build candidate list: observed exponent first, then standard checkpoints.
+        obs_exp  = 2.0 * ams_stats.alpha2   # S₂ ~ p^{obs_exp}
+        cand_exps = unique(vcat(obs_exp, [1.2, 1.5, 2.0]))
+        for exp_cand in cand_exps
+            M_cand    = pf ^ exp_cand
+            lam_cand  = N_f64 / M_cand
+            S2_pois   = N_f64 * M_cand / (M_cand + N_f64)   # = N²/(N + N²/M)
+            a2_pois   = S2_pois > 0.0 ? log(S2_pois) / (2.0 * logp) : NaN
+            label     = exp_cand ≈ obs_exp ?
+                            @sprintf("p^{%.4f} ← obs", exp_cand) :
+                            @sprintf("p^{%.4f}", exp_cand)
+            a2_str    = isnan(a2_pois) ? "         NaN" : @sprintf("%12.4f", a2_pois)
+            match_str = if !isnan(a2_pois)
+                diff = abs(a2_pois - ams_stats.alpha2)
+                diff < 0.02 ? "  ✓ matches observed" :
+                diff < 0.05 ? "  ~ close" : ""
+            else "" end
+            @printf(io, "    %-20s  %12.4g  %12.4g  %12.4g  %s%s\n",
+                    label, M_cand, lam_cand, S2_pois, a2_str, match_str)
+        end
+        @printf(io, "    observed AMS α₂ (above)     :                                  %12.4f\n",
+                ams_stats.alpha2)
+        @printf(io, "    [Poisson model assumes uniform emission over support of size M]\n")
+        @printf(io, "    [N≪M → E[S₂]≈N; N≫M → E[S₂]≈M; crossover at N~M]\n")
     else
         @printf(io, "    (no emissions recorded yet)\n")
     end
