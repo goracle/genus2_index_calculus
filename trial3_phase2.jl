@@ -786,7 +786,8 @@ function phase2_worker(G               ::Div2,
                        beta_zero       ::Bool = false,
                        amortized_precompute::Bool = false,
                        enable_lp1_aff  ::Bool = true,
-                       post_conj_stride::Int  = 0)
+                       post_conj_stride::Int  = 0,
+                       carry_in_deep_stat::Union{ConjDeepStat,Nothing} = nothing)
 
     nF_cur   = length(fb)
     N_STEPS  = length(step_D)
@@ -1159,6 +1160,22 @@ function phase2_worker(G               ::Div2,
         end
         # Basin steer diagnostic report
         flush(stdout)
+    end
+
+    # If a carry-in ConjDeepStat was provided (e.g. from a prior precompute walk
+    # on this thread), merge its D16 histograms into our own so the report covers
+    # all emissions across both walks.  Other fields (ring buffer, opcode log, etc.)
+    # are not merged — they are walk-phase-specific.
+    if carry_in_deep_stat !== nothing
+        cin = carry_in_deep_stat
+        for (k, v) in cin.d16_preburst_hist
+            deep_stat.d16_preburst_hist[k] = get(deep_stat.d16_preburst_hist, k, 0) + v
+        end
+        for (k, v) in cin.d16_baseline_hist
+            deep_stat.d16_baseline_hist[k] = get(deep_stat.d16_baseline_hist, k, 0) + v
+        end
+        deep_stat.d16_n_preburst += cin.d16_n_preburst
+        deep_stat.d16_n_baseline += cin.d16_n_baseline
     end
 
     return (rel_rows      = rel_rows,
