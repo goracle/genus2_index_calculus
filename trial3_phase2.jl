@@ -474,6 +474,7 @@ end
             # temporally-close hits with shared algebraic structure.
             record_lp1_conj_hit!(phi_bias_stat, s.raw_steps, lp_key, a_bucket)
             record_conj_deep_step!(deep_stat, lp_key, a_bucket, s.raw_steps, true, al_cur, px_anchor)
+            record_d16_emission!(deep_stat, lp_key, s.raw_steps, i0)
             for _ in 1:post_conj_stride; next_anchor_ref[](); end
             return next_anchor_ref[]()
         end

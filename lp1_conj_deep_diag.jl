@@ -118,6 +118,29 @@
 # ---------------------------------------------------------------------------
 const DEEP_DIAG_BUCKET_BITS = 10          # 2^10 = 1024 coarse buckets for conditional entropy / return map
 const DEEP_DIAG_N_BUCKETS   = 1 << DEEP_DIAG_BUCKET_BITS
+
+# ---------------------------------------------------------------------------
+#  D16 — Pre-burst state fingerprinting
+#
+#  Whenever a repeat of an LP1-conj coarse key bucket is observed at lag
+#  Δ ∈ [D16_LAG_LO, D16_LAG_HI] in emission-index space, we record the
+#  fingerprint of the *earlier* emission (step_mod, partition_id = i0) as a
+#  "pre-burst" sample.  We also maintain a parallel "baseline" histogram sampled
+#  at the same rate from all emissions, regardless of burst.
+#
+#  Histograms are keyed by (step_mod::UInt8, partition_id::UInt16) packed into
+#  a UInt32, stored as flat Dict{UInt32, Int} counters.  Memory is negligible.
+#
+#  Ring buffer: D16_RING_SIZE entries of 3 UInt16s each
+#    ring_step_mod   — (raw_step % 256) at emission i, as UInt8 stored in UInt16
+#    ring_partition  — i0 (partition_id) at emission i
+#    ring_bkt        — coarse key bucket (DEEP_DIAG_BUCKET_BITS bits) at emission i
+# ---------------------------------------------------------------------------
+const D16_LAG_LO      = 10
+const D16_LAG_HI      = 40
+const D16_RING_SIZE   = D16_LAG_HI + 4      # ring covers at least LAG_HI slots
+const D16_GATE_DENOM  = 64                  # 1/64 random sampling gate
+const D16_MAX_SAMPLES = 50_000             # cap total pre-burst samples
 const DEEP_DIAG_MAX_ANCESTRY = 500_000    # cap on ancestry log entries per thread
 const DEEP_DIAG_COND_ENT_LAG = 4         # max lag for conditional collision entropy
 const DEEP_DIAG_MAX_OPCODE_LOG = 2_000_000  # cap on opcode log entries per thread (~2 MB)
@@ -183,6 +206,17 @@ mutable struct ConjDeepStat
     # -1 sentinel means 'a' was unavailable (caller didn't provide it).
     d14_store_a     ::Vector{Int}
 
+    # D16 — Pre-burst state fingerprinting.
+    # Ring buffer over the last D16_RING_SIZE emissions (wraps by emission index).
+    d16_ring_step_mod   ::Vector{UInt8}    # (raw_step % 256) at each emission slot
+    d16_ring_partition  ::Vector{UInt16}   # i0 (anchor FB column) at each emission slot
+    d16_ring_bkt        ::Vector{UInt16}   # coarse key bucket at each emission slot
+    d16_emission_count  ::Int              # total emissions seen (for ring index)
+    d16_preburst_hist   ::Dict{UInt32, Int}  # key=(step_mod<<16)|partition_id; pre-burst counts
+    d16_baseline_hist   ::Dict{UInt32, Int}  # same key schema; uniformly sampled baseline counts
+    d16_n_preburst      ::Int              # total pre-burst samples recorded (for cap check)
+    d16_n_baseline      ::Int              # total baseline samples recorded
+
     # D9 — step-opcode conditional entropy H(opcode | recent LP1-conj).
     # opcode_log: one UInt8 per VALID phi step recording the step type:
     #   0 = 0-LP (full relation)
@@ -211,6 +245,15 @@ function ConjDeepStat()
         Int[], Int[], UInt128[],   # d12 store
         Int[], Int[], UInt128[],   # d12 close
         Int[],                     # d14 store_a
+        # D16
+        zeros(UInt8,  D16_RING_SIZE),
+        zeros(UInt16, D16_RING_SIZE),
+        zeros(UInt16, D16_RING_SIZE),
+        0,
+        Dict{UInt32,Int}(),
+        Dict{UInt32,Int}(),
+        0,
+        0,
         UInt8[], Bool[],
     )
 end
@@ -268,6 +311,15 @@ function merge_conj_deep_stats(stats::Vector{ConjDeepStat})::ConjDeepStat
                 append!(merged.d14_store_a, s.d14_store_a[1:n_take])
             end
         end
+        # D16: merge histograms; ring buffer is per-thread ephemeral (don't merge)
+        for (k, v) in s.d16_preburst_hist
+            merged.d16_preburst_hist[k] = get(merged.d16_preburst_hist, k, 0) + v
+        end
+        for (k, v) in s.d16_baseline_hist
+            merged.d16_baseline_hist[k] = get(merged.d16_baseline_hist, k, 0) + v
+        end
+        merged.d16_n_preburst += s.d16_n_preburst
+        merged.d16_n_baseline += s.d16_n_baseline
     end
     return merged
 end
@@ -392,6 +444,70 @@ const OPCODE_SKIP     = 0x05
     push!(stat.opcode_is_lp1c, is_emission)
     return nothing
 end
+# ---------------------------------------------------------------------------
+#  record_d16_emission! — D16 pre-burst state fingerprinting.
+#
+#  Call on EVERY LP1-conj emission (close event), passing:
+#    stat         — per-thread ConjDeepStat
+#    lp_key       — CanonicalLP1Key (UInt128) of the emitted key
+#    raw_step     — s.raw_steps at time of emission
+#    partition_id — i0, the anchor FB column index (used as "partition" label)
+#
+#  Hot path cost: one ring slot write + a loop over D16_LAG_HI - D16_LAG_LO + 1
+#  slots + two Dict updates (gated by 1/64).  No group-element arithmetic.
+# ---------------------------------------------------------------------------
+@inline function record_d16_emission!(stat        ::ConjDeepStat,
+                                       lp_key      ::UInt128,
+                                       raw_step    ::Int,
+                                       partition_id::Int)
+    ec   = stat.d16_emission_count
+    ring = ec % D16_RING_SIZE + 1       # 1-based current slot (Julia)
+
+    # Compute coarse bucket for this emission (same hash as elsewhere in deep diag)
+    h64  = UInt64(lp_key & 0xffffffffffffffff) * UInt64(0x9e3779b97f4a7c15) ⊻
+           UInt64(lp_key >> 64)              * UInt64(0x6c62272e07bb0142)
+    h64  ⊻= h64 >> 32; h64 *= UInt64(0x45d9f3b37197344d); h64 ⊻= h64 >> 32
+    cur_bkt = UInt16(h64 >> (64 - DEEP_DIAG_BUCKET_BITS))
+
+    step_mod_cur  = UInt8(raw_step & 0xff)
+    part_cur      = UInt16(clamp(partition_id, 0, 65535))
+
+    # ── Baseline sampling: 1/D16_GATE_DENOM chance, uncapped on baseline ──
+    if (rand(UInt8) & UInt8(D16_GATE_DENOM - 1)) == UInt8(0)
+        bkey = UInt32(step_mod_cur) << 16 | UInt32(part_cur)
+        stat.d16_baseline_hist[bkey] = get(stat.d16_baseline_hist, bkey, 0) + 1
+        stat.d16_n_baseline += 1
+    end
+
+    # ── Pre-burst detection: scan ring for lag-Δ matches in [LAG_LO, LAG_HI] ─
+    if ec >= D16_LAG_LO && stat.d16_n_preburst < D16_MAX_SAMPLES
+        # Only fire with 1/D16_GATE_DENOM gate to cap samples
+        if (rand(UInt8) & UInt8(D16_GATE_DENOM - 1)) == UInt8(0)
+            @inbounds for lag in D16_LAG_LO:D16_LAG_HI
+                past_slot = ((ec - lag) % D16_RING_SIZE) + 1   # 1-based
+                if stat.d16_ring_bkt[past_slot] == cur_bkt
+                    # Found a repeat at this lag — record fingerprint of the past state
+                    sm_past   = stat.d16_ring_step_mod[past_slot]
+                    part_past = stat.d16_ring_partition[past_slot]
+                    bkey      = UInt32(sm_past) << 16 | UInt32(part_past)
+                    stat.d16_preburst_hist[bkey] = get(stat.d16_preburst_hist, bkey, 0) + 1
+                    stat.d16_n_preburst += 1
+                    stat.d16_n_preburst >= D16_MAX_SAMPLES && break
+                end
+            end
+        end
+    end
+
+    # ── Write current emission into ring ───────────────────────────────────
+    @inbounds begin
+        stat.d16_ring_step_mod[ring]  = step_mod_cur
+        stat.d16_ring_partition[ring] = part_cur
+        stat.d16_ring_bkt[ring]       = cur_bkt
+    end
+    stat.d16_emission_count = ec + 1
+    return nothing
+end
+
 @inline function _deep_fp64(key::UInt128)::UInt64
     lo = UInt64(key & 0xffffffffffffffff)
     hi = UInt64(key >> 64)
@@ -2354,6 +2470,126 @@ function print_conj_deep_report(phi_stat ::PhiBiasStat,
             end
         end
     end   # let D15
+
+    # ──────────────────────────────────────────────────────────────────────
+    #  D16 — Pre-burst state fingerprinting
+    # ──────────────────────────────────────────────────────────────────────
+    @printf("\n  D16 — Pre-burst state fingerprinting (lag Δ ∈ [%d, %d])\n",
+            D16_LAG_LO, D16_LAG_HI)
+    @printf("  ─────────────────────────────────────────────────────────────────\n")
+    let
+        n_pb = deep_stat.d16_n_preburst
+        n_bl = deep_stat.d16_n_baseline
+        pb_hist = deep_stat.d16_preburst_hist
+        bl_hist = deep_stat.d16_baseline_hist
+
+        @printf("    Pre-burst samples : %d  (gate 1/%d, cap %d)\n",
+                n_pb, D16_GATE_DENOM, D16_MAX_SAMPLES)
+        @printf("    Baseline samples  : %d\n", n_bl)
+
+        if n_pb < 20 || n_bl < 20
+            @printf("    (insufficient samples — collect more emissions)\n")
+        else
+            # Compute per-bucket ratio = pre_burst_freq / baseline_freq.
+            # Normalise each hist by its total so ratios are comparable.
+            all_keys = union(keys(pb_hist), keys(bl_hist))
+
+            ratios = Dict{UInt32, Float64}()
+            for k in all_keys
+                pb_f = get(pb_hist, k, 0) / n_pb
+                bl_f = get(bl_hist, k, 0) / n_bl
+                bl_f > 0.0 && (ratios[k] = pb_f / bl_f)
+            end
+
+            # Sort by ratio descending — top spiking buckets
+            sorted_keys = sort(collect(keys(ratios)), by=k -> -ratios[k])
+
+            n_show = min(30, length(sorted_keys))
+            @printf("    Top %d (step_mod, partition_id) buckets by pre-burst / baseline ratio:\n", n_show)
+            @printf("    %-10s  %-12s  %10s  %10s  %10s  %s\n",
+                    "step_mod", "partition_id", "pb_count", "bl_count", "ratio", "note")
+            @printf("    %s\n", "-"^75)
+
+            total_pb_top = 0
+            n_spike = 0
+            for i in 1:n_show
+                k       = sorted_keys[i]
+                sm      = (k >> 16) & 0xff
+                pid     = k & 0xffff
+                pb_c    = get(pb_hist, k, 0)
+                bl_c    = get(bl_hist, k, 0)
+                ratio_v = ratios[k]
+                note    = ratio_v >= 5.0 ? "<- STRONG SPIKE" :
+                          ratio_v >= 2.5 ? "<- moderate spike" :
+                          ratio_v >= 1.5 ? "<- mild elevation" : ""
+                @printf("    %-10d  %-12d  %10d  %10d  %10.3f  %s\n",
+                        sm, pid, pb_c, bl_c, ratio_v, note)
+                total_pb_top += pb_c
+                ratio_v >= 2.5 && (n_spike += 1)
+            end
+
+            frac_top = Float64(total_pb_top) / max(1, n_pb)
+            @printf("\n    Top-%d buckets hold %.1f%% of all pre-burst samples\n",
+                    n_show, 100.0 * frac_top)
+            @printf("    Buckets with ratio ≥ 2.5× : %d\n", n_spike)
+
+            if n_spike == 0
+                @printf("    -> Ratios near 1 everywhere: bursts are NOT from a specific walk regime\n")
+                @printf("       (structure is emergent / global, not locally concentrated)\n")
+            elseif n_spike <= 5
+                @printf("    -> Few hot buckets: burst has a LOCAL cause in (step_mod, partition_id)\n")
+                @printf("       Check whether spiking partition_ids correspond to small FB columns\n")
+                @printf("       or periodic step_mod values → may indicate walk attractor or cycling\n")
+            else
+                @printf("    -> Many spiking buckets: broad concentration — may reflect periodic\n")
+                @printf("       structure in step_mod or systematic anchor bias across partitions\n")
+            end
+
+            # Marginal analysis: collapse over step_mod to see partition_id alone
+            pb_part = Dict{Int,Int}()
+            bl_part = Dict{Int,Int}()
+            for (k, v) in pb_hist; pid = Int(k & 0xffff); pb_part[pid] = get(pb_part, pid, 0) + v; end
+            for (k, v) in bl_hist; pid = Int(k & 0xffff); bl_part[pid] = get(bl_part, pid, 0) + v; end
+
+            part_ratios = Dict{Int,Float64}()
+            for pid in union(keys(pb_part), keys(bl_part))
+                pf = get(pb_part, pid, 0) / n_pb
+                bf = get(bl_part, pid, 0) / n_bl
+                bf > 0.0 && (part_ratios[pid] = pf / bf)
+            end
+            top_parts = sort(collect(keys(part_ratios)), by=k -> -part_ratios[k])[1:min(10,length(part_ratios))]
+
+            @printf("\n    Marginal over step_mod — top partition_ids by ratio:\n")
+            @printf("    %-14s  %10s  %10s  %10s\n", "partition_id", "pb_count", "bl_count", "ratio")
+            for pid in top_parts
+                @printf("    %-14d  %10d  %10d  %10.3f\n",
+                        pid,
+                        get(pb_part, pid, 0), get(bl_part, pid, 0), part_ratios[pid])
+            end
+
+            # Marginal analysis: collapse over partition_id to see step_mod alone
+            pb_sm = Dict{Int,Int}()
+            bl_sm = Dict{Int,Int}()
+            for (k, v) in pb_hist; sm = Int((k >> 16) & 0xff); pb_sm[sm] = get(pb_sm, sm, 0) + v; end
+            for (k, v) in bl_hist; sm = Int((k >> 16) & 0xff); bl_sm[sm] = get(bl_sm, sm, 0) + v; end
+
+            sm_ratios = Dict{Int,Float64}()
+            for sm in union(keys(pb_sm), keys(bl_sm))
+                pf = get(pb_sm, sm, 0) / n_pb
+                bf = get(bl_sm, sm, 0) / n_bl
+                bf > 0.0 && (sm_ratios[sm] = pf / bf)
+            end
+            top_sms = sort(collect(keys(sm_ratios)), by=k -> -sm_ratios[k])[1:min(10,length(sm_ratios))]
+
+            @printf("\n    Marginal over partition_id — top step_mod values by ratio:\n")
+            @printf("    %-14s  %10s  %10s  %10s\n", "step_mod", "pb_count", "bl_count", "ratio")
+            for sm in top_sms
+                @printf("    %-14d  %10d  %10d  %10.3f\n",
+                        sm,
+                        get(pb_sm, sm, 0), get(bl_sm, sm, 0), sm_ratios[sm])
+            end
+        end
+    end   # let D16
 
     @printf("\n== End LP1-conj deep diagnostics ====================================================\n")
     flush(stdout)
