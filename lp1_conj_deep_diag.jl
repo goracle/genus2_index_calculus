@@ -2770,6 +2770,216 @@ function print_conj_deep_report(phi_stat ::PhiBiasStat,
         end
     end   # let D17
 
+    # ──────────────────────────────────────────────────────────────────────
+    #  D18 — u1+px Vieta sum cardinality at close events
+    #
+    #  Hypothesis: LP1-conj collisions are not uniformly distributed across
+    #  the Vieta sum hyperplane space.  Specifically, the quantity
+    #
+    #      σ = u1(D_cur) + px   mod p
+    #
+    #  at the moment of close — which equals −c1_rs, the negated linear
+    #  coefficient of the residual u-polynomial stored in the key — may
+    #  concentrate on a small set of values.  If the walk's collision events
+    #  cluster on a thin set of Vieta sums, the effective LP1-conj key space
+    #  is lower-dimensional than the naive p^2 count suggests.
+    #
+    #  The value σ = −c1_rs is encoded directly in lp_key: c1_rs is the
+    #  second UInt32 limb, so σ = mod(p - (key>>32)&0xffffffff, p).
+    #  We compute it for every close event from d12_close_key and d12_close_px,
+    #  and for every store event from d12_store_key and d12_store_px, as
+    #  a baseline.
+    #
+    #  Metrics:
+    #    • |{σ_close}|: distinct σ values across all close events.
+    #    • |{σ_store}|: same for store events (baseline — should be ~min(n,p)).
+    #    • Compression ratio: |{σ_close}| / min(n_close, p).
+    #    • σ entropy H(σ_close) vs H(σ_store) vs log2(p) (uniform bound).
+    #    • Top-10 most frequent σ values at close, with their lift over uniform.
+    #    • Conditional: for each of the top-10 σ values, how many distinct
+    #      keys closed on that σ?  A small number means the same few Jacobian
+    #      elements are being revisited.
+    #    • Cross-check: do the store σ-values and close σ-values overlap?
+    #      Strong overlap = the walk is cycling through the same Vieta planes.
+    # ──────────────────────────────────────────────────────────────────────
+    @printf("\n  D18 — u1+px Vieta sum cardinality at close events\n")
+    @printf("  ─────────────────────────────────────────────────────────────────\n")
+    let
+        n_close = length(deep_stat.d12_close_key)
+        n_store = length(deep_stat.d12_store_key)
+        have_close_px = length(deep_stat.d12_close_px) == n_close
+        have_store_px = length(deep_stat.d12_store_px) == n_store
+
+        @printf("    close events available : %d\n", n_close)
+        @printf("    store events available : %d\n", n_store)
+
+        if n_close < 2
+            @printf("    (need ≥2 close events — skipping D18)\n")
+            @goto d18_done
+        end
+        if !have_close_px
+            @printf("    (d12_close_px not parallel to d12_close_key — check wiring)\n")
+            @goto d18_done
+        end
+        if p <= 1
+            @printf("    (p not provided — pass p= to print_conj_deep_report)\n")
+            @goto d18_done
+        end
+
+        mask32 = UInt128(0xffffffff)
+
+        # ── Compute σ = mod(p - c1_rs, p) for close events ────────────────
+        # c1_rs is the u1 coordinate of the *output* residual divisor RS,
+        # which equals −(u1_input + px) mod p by the Vieta identity.
+        # So σ = u1_input + px = mod(p - c1_rs, p).
+        sigma_close = Vector{Int}(undef, n_close)
+        @inbounds for i in 1:n_close
+            c1_rs = Int((deep_stat.d12_close_key[i] >> 32) & mask32)
+            sigma_close[i] = mod(p - c1_rs, p)
+        end
+
+        # ── Same for store events (baseline) ──────────────────────────────
+        sigma_store = if have_store_px && n_store >= 2
+            sv = Vector{Int}(undef, n_store)
+            @inbounds for i in 1:n_store
+                c1_rs = Int((deep_stat.d12_store_key[i] >> 32) & mask32)
+                sv[i] = mod(p - c1_rs, p)
+            end
+            sv
+        else
+            Int[]
+        end
+
+        # ── Cardinality and entropy ────────────────────────────────────────
+        sigma_close_set = Set(sigma_close)
+        n_sigma_close   = length(sigma_close_set)
+        n_sigma_store   = isempty(sigma_store) ? 0 : length(Set(sigma_store))
+
+        # Expected cardinality under uniformity (birthday coupon): E[|S|] ≈ p(1−e^{−n/p})
+        expected_close = p * (1.0 - exp(-Float64(n_close) / p))
+        expected_store = p * (1.0 - exp(-Float64(n_store) / p))
+
+        compress_close = n_sigma_close / max(1.0, expected_close)
+        compress_store = n_sigma_store > 0 ? n_sigma_store / max(1.0, expected_store) : NaN
+
+        @printf("\n    Vieta sum σ = u1+px = −c1_rs (mod p):\n")
+        @printf("      |{σ}| at close events     : %d  (expected under uniform: %.1f)  ratio=%.4f\n",
+                n_sigma_close, expected_close, compress_close)
+        if !isempty(sigma_store)
+            @printf("      |{σ}| at store events     : %d  (expected under uniform: %.1f)  ratio=%.4f\n",
+                    n_sigma_store, expected_store, compress_store)
+        end
+
+        if compress_close < 0.5
+            @printf("\n      ↑ COMPRESSION DETECTED: close events concentrate on %.1f%% of expected σ-space\n",
+                    100.0 * compress_close)
+            @printf("        → LP1-conj collisions cluster on a thin set of Vieta sum hyperplanes\n")
+            @printf("        → effective key space is lower-dimensional than p^2\n")
+        elseif compress_close < 0.8
+            @printf("\n      ↑ mild compression: close events use %.1f%% of expected σ-space\n",
+                    100.0 * compress_close)
+        else
+            @printf("\n      (σ-space near-uniform: Vieta sums spread broadly at close time)\n")
+        end
+
+        # ── Entropy H(σ) ──────────────────────────────────────────────────
+        function sigma_entropy(vals::Vector{Int})::Float64
+            n = length(vals)
+            n == 0 && return 0.0
+            cnt = Dict{Int,Int}()
+            for v in vals; cnt[v] = get(cnt, v, 0) + 1; end
+            -sum((c/n) * log2(c/n) for c in values(cnt))
+        end
+
+        H_close = sigma_entropy(sigma_close)
+        H_max   = log2(Float64(p))
+        @printf("\n      H(σ | close) = %.4f bits  (H_max = log2(p) = %.4f bits)  ratio=%.4f\n",
+                H_close, H_max, H_close / H_max)
+        if !isempty(sigma_store)
+            H_store = sigma_entropy(sigma_store)
+            @printf("      H(σ | store) = %.4f bits  ratio=%.4f\n", H_store, H_store / H_max)
+            @printf("      ΔH = H_store − H_close = %+.4f bits  %s\n",
+                    H_store - H_close,
+                    H_store - H_close > 0.5 ? "← ENTROPY DROP AT CLOSE: collisions prefer specific σ planes" :
+                    H_store - H_close > 0.1 ? "← mild entropy drop at close" :
+                    "(≈ same distribution at store and close)")
+        end
+
+        # ── Top-10 σ values at close ───────────────────────────────────────
+        sigma_close_cnt = Dict{Int,Int}()
+        for v in sigma_close; sigma_close_cnt[v] = get(sigma_close_cnt, v, 0) + 1; end
+        top_sigma = sort(collect(sigma_close_cnt), by=kv->-kv[2])[1:min(10, length(sigma_close_cnt))]
+
+        uniform_rate = Float64(n_close) / p
+        @printf("\n      Top-10 σ values at close (lift = count / uniform_expected = %.3f):\n",
+                uniform_rate)
+        @printf("      %-12s  %8s  %8s  %8s  %s\n", "σ", "count", "expected", "lift", "note")
+        @printf("      %s\n", "-"^60)
+
+        for (σ_val, cnt) in top_sigma
+            lift = cnt / max(1e-10, uniform_rate)
+            note = lift > 5.0 ? "← STRONG HOT PLANE" :
+                   lift > 2.0 ? "← elevated" : ""
+            @printf("      %-12d  %8d  %8.2f  %8.3f  %s\n",
+                    σ_val, cnt, uniform_rate, lift, note)
+        end
+
+        # ── Per-σ key diversity: how many distinct keys close on each hot σ? ──
+        # Low key diversity at a hot σ means a small number of Jacobian elements
+        # are being revisited repeatedly — direct evidence of walk attractors.
+        @printf("\n      Key diversity on top-10 σ planes (distinct close keys per σ):\n")
+        @printf("      %-12s  %8s  %10s  %8s  %s\n",
+                "σ", "closes", "dist_keys", "fill", "note")
+        @printf("      %s\n", "-"^65)
+
+        sigma_to_keys = Dict{Int, Set{UInt128}}()
+        @inbounds for i in 1:n_close
+            σ_val = sigma_close[i]
+            k = deep_stat.d12_close_key[i]
+            s = get!(sigma_to_keys, σ_val, Set{UInt128}())
+            push!(s, k)
+        end
+
+        for (σ_val, cnt) in top_sigma
+            n_keys = length(get(sigma_to_keys, σ_val, Set{UInt128}()))
+            fill   = n_keys / cnt   # 1.0 = all closes are distinct keys; <1 = key reuse
+            note   = fill < 0.3 ? "← KEY REUSE: few keys dominate this plane" :
+                     fill < 0.7 ? "← moderate reuse" : ""
+            @printf("      %-12d  %8d  %10d  %8.3f  %s\n",
+                    σ_val, cnt, n_keys, fill, note)
+        end
+
+        # ── Store vs close σ overlap ──────────────────────────────────────
+        if !isempty(sigma_store)
+            sigma_store_set = Set(sigma_store)
+            n_overlap       = length(intersect(sigma_close_set, sigma_store_set))
+            frac_close_in_store = n_overlap / max(1, n_sigma_close)
+            @printf("\n      σ-set overlap (close ∩ store) / |close σ-set|: %d / %d = %.4f\n",
+                    n_overlap, n_sigma_close, frac_close_in_store)
+            if frac_close_in_store > 0.9
+                @printf("      (close σ values are a near-subset of store σ values — expected)\n")
+            elseif frac_close_in_store < 0.5
+                @printf("      ↑ LOW OVERLAP: many σ values only appear at close, not store\n")
+                @printf("        → some collision partners were stored in a different epoch/anchor regime\n")
+            end
+        end
+
+        # ── σ mod small primes (periodicity probe) ────────────────────────
+        @printf("\n      σ mod small primes (periodicity / subgroup probe):\n")
+        @printf("      %-6s  %-12s  %8s  %8s\n", "mod", "top residue", "freq", "uniform")
+        for q in (2, 3, 5, 7, 11, 13, 17)
+            res_cnt = Dict{Int,Int}()
+            for v in sigma_close; r = mod(v, q); res_cnt[r] = get(res_cnt, r, 0) + 1; end
+            top_r, top_c = sort(collect(res_cnt), by=kv->-kv[2])[1]
+            freq = top_c / n_close
+            unif = 1.0 / q
+            flag = freq > 2.0 * unif ? " ← $(round(Int, freq/unif))× concentrated" : ""
+            @printf("      %-6d  %-12d  %8.4f  %8.4f%s\n", q, top_r, freq, unif, flag)
+        end
+
+        @label d18_done
+    end   # let D18
+
     @printf("\n== End LP1-conj deep diagnostics ====================================================\n")
     flush(stdout)
 end
