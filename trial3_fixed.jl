@@ -187,11 +187,21 @@ so this is fast even for p ~ 10^6.
 function frobenius_jacobian_order(p_val::Int, min_ell_bits::Int)::Tuple{BigInt,BigInt,BigInt,Int}
     p_try = p_val
     while true
+        # Build the Sage polynomial string from F_POLY so the curve isn't hardcoded here.
+        # F_POLY[i] is the coefficient of x^(i-1), with F_POLY[6]=1 (monic x^5 implicit).
+        sage_f_terms = String[]
+        for (i, c) in enumerate(F_POLY)
+            iszero(c) && continue
+            exp = i - 1
+            term = exp == 0 ? "$c" : (c == 1 ? "x^$exp" : "$c*x^$exp")
+            push!(sage_f_terms, term)
+        end
+        sage_f_str = join(reverse(sage_f_terms), " + ")
         sage_script = """
 p = $(p_try)
 F = GF(p)
 R.<x> = F[]
-f = x^5 + 3*x^3 + 2*x^2 + 5*x + 4
+f = $sage_f_str
 H = HyperellipticCurve(f)
 chi = H.frobenius_polynomial()
 N = ZZ(chi(1))
@@ -1090,7 +1100,16 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
     t_main_start = time()
     println("="^70)
     println("  trial3: Markov-walk phi-relation index calculus")
-    println("  y^2 = x^5+3x^3+2x^2+5x+4  /F_$p,  ell=<auto>")
+    let banner_terms = String[]
+        for (i, c) in enumerate(F_POLY)
+            iszero(c) && continue
+            exp = i - 1
+            term = exp == 0 ? "$c" : (c == 1 ? "x^$exp" : "$(c)x^$exp")
+            push!(banner_terms, term)
+        end
+        curve_str = join(reverse(banner_terms), "+")
+        println("  y^2 = $curve_str  /F_$p,  ell=<auto>")
+    end
     println("  threads = $(Threads.nthreads())  |  start: $(Dates.now())")
     sqrt_mode       && println("  mode: SQRT (birthday LP1 collision — O(√p) time/memory)")
     amortized       && println("  mode: AMORTIZED (α-only precompute + single β≠0 DLP)")

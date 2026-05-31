@@ -48,7 +48,8 @@ global p::Int = let
 end
 ell = 0  # computed automatically at runtime
 # f(x) = x^5 + 3x^3 + 2x^2 + 5x + 4;  F_POLY[i] = coeff of x^(i-1)
-const F_POLY = Int[4, 5, 2, 3, 0, 1]
+#const F_POLY = Int[4, 5, 2, 3, 0, 1] # the OG
+const F_POLY = Int[2, 1, 0, 0, 0, 1] # y^2 = x^5 + x + 2
 
 # ─────────────────────────── Fp arithmetic ────────────────────────────────────
 @inline fp(x::Integer)    = mod(x, p)
