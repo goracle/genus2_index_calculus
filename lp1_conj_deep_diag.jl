@@ -148,6 +148,7 @@ const D12_MAX_EVENTS           = 500_000    # cap on D12 store/close event recor
 const D7_MAX_CLOSURES          = 500_000    # cap on is_first_closure log per thread (~0.5 MB)
 const D8_MAX_DEPTHS            = 500_000    # cap on d8_depths/close_bkt/close_abkt per thread (~5 MB)
 const D8_MAX_SHADOW       = 500_000    # Cap on shadow dictionary entries per thread
+const D17_MAX_TRACKED_KEYS = 200_000   # cap on distinct keys in per-thread lifetime-hit counter (~3 MB)
 
 # ---------------------------------------------------------------------------
 #  ConjDeepStat — per-thread accumulator
@@ -230,6 +231,16 @@ mutable struct ConjDeepStat
     # (i.e. a relation was produced).  Used to find "recent LP1-conj" windows.
     opcode_log      ::Vector{UInt8}
     opcode_is_lp1c  ::Vector{Bool}
+
+    # D17 — per-key lifetime multiplicity counter.
+    # Incremented on every call to record_conj_deep_miss! (i.e. every STORE and
+    # every same-col re-insert), so it counts total visits to conj_insert_or_pop!
+    # for each key across the full walk lifetime — not just within a single
+    # store/close cycle.  This is the quantity the LSM reservoir couldn't see
+    # because insert-or-pop removes the key on close before the next store.
+    # Capped at D17_MAX_TRACKED_KEYS distinct keys; new keys beyond the cap are
+    # silently dropped (fat-tail keys arrive early so the cap only discards rare ones).
+    d17_lifetime_hits ::Dict{UInt128, Int}
 end
 
 function ConjDeepStat()
@@ -255,6 +266,7 @@ function ConjDeepStat()
         0,
         0,
         UInt8[], Bool[],
+        Dict{UInt128,Int}(),   # d17_lifetime_hits
     )
 end
 
@@ -320,6 +332,14 @@ function merge_conj_deep_stats(stats::Vector{ConjDeepStat})::ConjDeepStat
         end
         merged.d16_n_preburst += s.d16_n_preburst
         merged.d16_n_baseline += s.d16_n_baseline
+        # D17: merge per-key lifetime hit counters, capped to D17_MAX_TRACKED_KEYS total.
+        for (k, v) in s.d17_lifetime_hits
+            if haskey(merged.d17_lifetime_hits, k)
+                merged.d17_lifetime_hits[k] += v
+            elseif length(merged.d17_lifetime_hits) < D17_MAX_TRACKED_KEYS
+                merged.d17_lifetime_hits[k] = v
+            end
+        end
     end
     return merged
 end
@@ -341,6 +361,14 @@ end
     # ADDED CAP HERE
     if !haskey(stat.d8_shadow, lp_key) && length(stat.d8_shadow) < D8_MAX_SHADOW
         stat.d8_shadow[lp_key] = raw_step
+    end
+    # D17: lifetime hit counter — increment on every store / same-col re-insert.
+    # New keys are admitted only while the dict is below cap; existing keys are
+    # always incremented regardless (so the count for hot keys stays accurate).
+    if haskey(stat.d17_lifetime_hits, lp_key)
+        stat.d17_lifetime_hits[lp_key] += 1
+    elseif length(stat.d17_lifetime_hits) < D17_MAX_TRACKED_KEYS
+        stat.d17_lifetime_hits[lp_key] = 1
     end
     # D12: record (alpha, px) at store time, capped.
     if alpha_cur >= 0 && length(stat.d12_store_alpha) < D12_MAX_EVENTS
@@ -2593,20 +2621,154 @@ function print_conj_deep_report(phi_stat ::PhiBiasStat,
     end   # let D16
 
     # ──────────────────────────────────────────────────────────────────────
-    #  D17 — LP1-conj store multiplicity analysis (top-K Mumford keys)
-    #  Requires: lsm_peers keyword arg pointing to the Vector{LP1ConjLSM}
+    #  D17 — LP1-conj lifetime multiplicity analysis
+    #
+    #  Uses deep_stat.d17_lifetime_hits — a Dict{UInt128,Int} that counts total
+    #  visits to conj_insert_or_pop! per key across the *full walk lifetime*,
+    #  including re-inserts after close.  This is the multiplicity the LSM
+    #  reservoir could not observe (the LSM's insert-or-pop removes the key on
+    #  close, so every store/close pair looked like a distinct key event with
+    #  count=1).
+    #
+    #  Reports:
+    #    • c_max, mean, CV of the lifetime hit distribution
+    #    • Top-50 keys by hit count with full Mumford coordinate decode and
+    #      discriminant flags (disc_u = u1²-4u0, disc_v = v1²-4v0)
+    #    • Rank-frequency / Zipf log-log slope, Gini, Hill exponent
+    #    • High-multiplicity model fit (power-law tail for c ≥ c_thresh)
     # ──────────────────────────────────────────────────────────────────────
-    if lsm_peers !== nothing && p > 1
-        try
-            lsm_multiplicity_report(lsm_peers, p)
-        catch ex
-            @printf("\n  D17: error during multiplicity report: %s\n", string(ex))
+    @printf("\n  D17 — LP1-conj lifetime multiplicity analysis\n")
+    @printf("  ─────────────────────────────────────────────────────────────────\n")
+    let hits = deep_stat.d17_lifetime_hits
+        n_tracked = length(hits)
+        @printf("    Distinct keys tracked : %d  (cap %d)\n", n_tracked, D17_MAX_TRACKED_KEYS)
+        if n_tracked == 0
+            @printf("    (no lifetime hits recorded — check record_conj_deep_miss! wiring)\n")
+        else
+            counts_vec = collect(values(hits))
+            sort!(counts_vec, rev=true)
+            total_hits = sum(counts_vec)
+            c_max  = counts_vec[1]
+            c_mean = Float64(total_hits) / n_tracked
+            # CV
+            c_var  = sum((Float64(c) - c_mean)^2 for c in counts_vec) / n_tracked
+            c_cv   = sqrt(c_var) / max(1e-30, c_mean)
+
+            @printf("    Total hits            : %d\n", total_hits)
+            @printf("    c_max                 : %d\n", c_max)
+            @printf("    c_mean                : %.3f\n", c_mean)
+            @printf("    CV (σ/μ)              : %.3f\n", c_cv)
+            @printf("    Gini                  : %.4f\n", _gini(counts_vec))
+            @printf("    Hill α̂ (k=50)         : %.3f\n", _hill_exponent(counts_vec; k=50))
+            for frac in (0.01, 0.05, 0.10)
+                @printf("    Top-%.0f%% key mass     : %.1f%%\n",
+                        100.0*frac, 100.0*_top_share(counts_vec, frac))
+            end
+
+            # Zipf log-log slope from top-200 (or all if fewer)
+            n_zipf = min(200, n_tracked)
+            if n_zipf >= 10
+                log_ranks  = [log(Float64(i)) for i in 1:n_zipf]
+                log_counts = [log(Float64(max(1, counts_vec[i]))) for i in 1:n_zipf]
+                lr_mean = sum(log_ranks)  / n_zipf
+                lc_mean = sum(log_counts) / n_zipf
+                cov = sum((log_ranks[i] - lr_mean) * (log_counts[i] - lc_mean) for i in 1:n_zipf)
+                var = sum((log_ranks[i] - lr_mean)^2                            for i in 1:n_zipf)
+                zipf_slope = var > 0 ? cov / var : NaN
+                @printf("    Zipf log-log slope    : %.3f  (from top-%d keys; -1 = pure Zipf)\n",
+                        zipf_slope, n_zipf)
+            end
+
+            # ── Top-50 keys with Mumford decode ───────────────────────────
+            @printf("\n    Top-50 keys by lifetime hit count")
+            p > 1 && @printf(" (p=%d for discriminant residue)", p)
+            @printf(":\n")
+            @printf("    %-8s  %-10s  %-10s  %-10s  %-10s  %5s  %8s  %8s  %s\n",
+                    "rank", "u0", "u1", "v0", "v1", "hits",
+                    "disc_u%p", "disc_v%p", "flags")
+            @printf("    %s\n", "-"^92)
+
+            mask32 = UInt128(0xffffffff)
+            top_pairs = sort(collect(hits), by=kv->-kv[2])[1:min(50, n_tracked)]
+            for (rank, (key, cnt)) in enumerate(top_pairs)
+                u0 = Int(key         & mask32)
+                u1 = Int((key >> 32) & mask32)
+                v0 = Int((key >> 64) & mask32)
+                v1 = Int((key >> 96) & mask32)
+                flag_parts = String[]
+                disc_u_str = "?"
+                disc_v_str = "?"
+                if p > 1
+                    disc_u = mod(u1*u1 - 4*u0, p)
+                    disc_v = mod(v1*v1 - 4*v0, p)
+                    # Quadratic residue test: 0 is split (double root), NR is non-split.
+                    is_qr(d) = d == 0 || powermod(d, (p-1)÷2, p) == 1
+                    disc_u_str = is_qr(disc_u) ? "QR" : "NR"
+                    disc_v_str = is_qr(disc_v) ? "QR" : "NR"
+                    disc_u == 0 && push!(flag_parts, "u-SPLIT!")
+                    disc_v == 0 && push!(flag_parts, "v-SPLIT!")
+                    is_qr(disc_u) && disc_u != 0 && push!(flag_parts, "u-split-gen")
+                    is_qr(disc_v) && disc_v != 0 && push!(flag_parts, "v-SPLIT!")
+                end
+                @printf("    %-8d  %-10d  %-10d  %-10d  %-10d  %5d  %8s  %8s  %s\n",
+                        rank, u0, u1, v0, v1, cnt,
+                        disc_u_str, disc_v_str,
+                        isempty(flag_parts) ? "" : join(flag_parts, " "))
+            end
+
+            # ── High-multiplicity model fit ────────────────────────────────
+            c_thresh = max(2, c_max ÷ 10)
+            hi_counts = filter(c -> c >= c_thresh, counts_vec)
+            @printf("\n    High-multiplicity model (c ≥ %d): %d keys, %.1f%% of total hits\n",
+                    c_thresh, length(hi_counts),
+                    100.0 * sum(hi_counts) / max(1, total_hits))
+            if length(hi_counts) >= 5
+                # Power-law MLE: α̂ = n / Σ log(c_i / (c_thresh-1))
+                log_sum = sum(log(Float64(c) / max(1.0, Float64(c_thresh)-1)) for c in hi_counts)
+                alpha_pl = length(hi_counts) / max(1e-30, log_sum)
+                @printf("    Power-law MLE α̂        : %.3f  (α<2 → infinite-variance; α<1 → divergent mean)\n",
+                        alpha_pl)
+            else
+                @printf("    (fewer than 5 high-mult keys; model fit skipped)\n")
+            end
+
+            # ── Disc-u / disc-v summary over all tracked keys ─────────────
+            if p > 1
+                n_u_qr = 0; n_v_qr = 0; n_u_nr = 0; n_v_nr = 0
+                is_qr_p(d) = d == 0 || powermod(d, (p-1)÷2, p) == 1
+                for (key, _) in hits
+                    u0 = Int(key         & mask32)
+                    u1 = Int((key >> 32) & mask32)
+                    v0 = Int((key >> 64) & mask32)
+                    v1 = Int((key >> 96) & mask32)
+                    is_qr_p(mod(u1*u1 - 4*u0, p)) ? (n_u_qr += 1) : (n_u_nr += 1)
+                    is_qr_p(mod(v1*v1 - 4*v0, p)) ? (n_v_qr += 1) : (n_v_nr += 1)
+                end
+                n_tot = n_u_qr + n_u_nr
+                @printf("\n    disc(u) over all %d tracked keys:\n", n_tot)
+                @printf("      QR (split or zero) : %d  (%.1f%%)\n", n_u_qr, 100.0*n_u_qr/max(1,n_tot))
+                @printf("      NR (non-split)     : %d  (%.1f%%)\n", n_u_nr, 100.0*n_u_nr/max(1,n_tot))
+                @printf("    disc(v) over all %d tracked keys:\n", n_tot)
+                @printf("      QR (split or zero) : %d  (%.1f%%)\n", n_v_qr, 100.0*n_v_qr/max(1,n_tot))
+                @printf("      NR (non-split)     : %d  (%.1f%%)\n", n_v_nr, 100.0*n_v_nr/max(1,n_tot))
+                @printf("\n    Interpretation:\n")
+                frac_u_nr = n_u_nr / max(1, n_tot)
+                frac_v_qr = n_v_qr / max(1, n_tot)
+                if frac_u_nr > 0.80
+                    @printf("      disc(u)=NR dominant (%.0f%%): u-poly irreducible → support points over F_p² \\ F_p\n",
+                            100.0*frac_u_nr)
+                    @printf("      This is consistent with LP1-conj design; NOT a decoding artifact.\n")
+                end
+                if frac_v_qr > 0.30
+                    @printf("      disc(v)=QR elevated (%.0f%%): verify key packing matches canonical_lp1_conj_key.\n",
+                            100.0*frac_v_qr)
+                    @printf("      Expected packing: key = u0 | u1<<32 | v0<<64 | v1<<96 (each coord mod p).\n")
+                    @printf("      If disc(v) remains >30%% QR after packing verification, the v-polynomial\n")
+                    @printf("      of the stored residual may have rational roots — check sign normalization.\n")
+                end
+            end
         end
-    else
-        @printf("\n  D17 — LP1-conj store multiplicity analysis\n")
-        @printf("  ─────────────────────────────────────────────────────────────────\n")
-        @printf("    (pass lsm_peers=shared_lp1_conj_arr to enable D17)\n")
-    end
+    end   # let D17
 
     @printf("\n== End LP1-conj deep diagnostics ====================================================\n")
     flush(stdout)
