@@ -219,6 +219,114 @@ function _run_set_dead!(rm::RunMeta, pos::Int)
 end
 
 # ---------------------------------------------------------------------------
+#  TopKMultiplicity — min-heap reservoir tracking the K keys with highest
+#  observed emission count across all store+close events.
+#
+#  Thread safety: all mutations are under the caller's bday_lock.
+#  The heap invariant is: heap[1] is the key with the LOWEST count among
+#  the top-K (so we can quickly decide whether to evict it).
+#
+#  Entry layout: (count::Int, key::CanonicalLP1Key)
+#  Heap ordered by count ascending (min-heap) so heap[1] has the lowest
+#  count in the top-K set.
+# ---------------------------------------------------------------------------
+const TOPK_K = 200   # track top-200 keys by raw emission count
+
+mutable struct TopKMultiplicity
+    heap    ::Vector{Tuple{Int, CanonicalLP1Key}}   # (count, key), min-heap on count
+    index   ::Dict{CanonicalLP1Key, Int}            # key → heap position (1-based)
+    total_keys_seen ::Int                           # distinct keys ever submitted
+end
+
+function TopKMultiplicity()
+    TopKMultiplicity(
+        sizehint!(Tuple{Int,CanonicalLP1Key}[], TOPK_K + 4),
+        sizehint!(Dict{CanonicalLP1Key,Int}(), TOPK_K * 2),
+        0
+    )
+end
+
+# --- Min-heap helpers (count-keyed) ---
+
+@inline function _topk_parent(i::Int)::Int; i >> 1; end
+@inline function _topk_left(i::Int)::Int;  i << 1; end
+@inline function _topk_right(i::Int)::Int; (i << 1) | 1; end
+
+function _topk_swap!(tk::TopKMultiplicity, i::Int, j::Int)
+    h = tk.heap
+    ki = h[i][2]; kj = h[j][2]
+    h[i], h[j] = h[j], h[i]
+    tk.index[ki] = j
+    tk.index[kj] = i
+    nothing
+end
+
+function _topk_sift_up!(tk::TopKMultiplicity, i::Int)
+    h = tk.heap
+    while i > 1
+        p = _topk_parent(i)
+        h[p][1] <= h[i][1] && break
+        _topk_swap!(tk, p, i)
+        i = p
+    end
+    nothing
+end
+
+function _topk_sift_down!(tk::TopKMultiplicity, i::Int)
+    h = tk.heap; n = length(h)
+    while true
+        lo = i
+        l = _topk_left(i);  l <= n && h[l][1] < h[lo][1] && (lo = l)
+        r = _topk_right(i); r <= n && h[r][1] < h[lo][1] && (lo = r)
+        lo == i && break
+        _topk_swap!(tk, i, lo)
+        i = lo
+    end
+    nothing
+end
+
+# Record one emission of `key`.  Must be called under bday_lock.
+function _topk_record!(tk::TopKMultiplicity, key::CanonicalLP1Key)
+    h = tk.heap
+    pos = get(tk.index, key, 0)
+    if pos != 0
+        # Key already in heap: increment its count and restore heap invariant.
+        old_c, k = h[pos]
+        h[pos]   = (old_c + 1, k)
+        _topk_sift_down!(tk, pos)   # count increased → may need to sift down
+        return nothing
+    end
+    # New key.
+    tk.total_keys_seen += 1
+    if length(h) < TOPK_K
+        # Heap not full yet: just push and sift up.
+        push!(h, (1, key))
+        new_pos = length(h)
+        tk.index[key] = new_pos
+        _topk_sift_up!(tk, new_pos)
+    else
+        # Heap full: only insert if this key would beat the current minimum.
+        # A brand-new key starts at count=1; it only beats the minimum if the
+        # minimum is also 1 (which would be a wash) — we skip it to avoid
+        # churning the heap with singleton keys.
+        # Instead, skip if count=1 and heap min is already ≥ 1 (which is always).
+        # The meaningful case: key was seen before but fell out (not tracked).
+        # We can't recover that, so new keys start at 1 and only enter if min=1.
+        min_c = h[1][1]
+        if 1 > min_c
+            # Evict the minimum.
+            evict_key = h[1][2]
+            delete!(tk.index, evict_key)
+            h[1] = (1, key)
+            tk.index[key] = 1
+            _topk_sift_down!(tk, 1)
+        end
+        # else: skip (new key count=1 ≤ min; not worth tracking)
+    end
+    nothing
+end
+
+# ---------------------------------------------------------------------------
 #  LP1ConjLSM — the main struct
 # ---------------------------------------------------------------------------
 mutable struct LP1ConjLSM{V}
@@ -305,6 +413,10 @@ mutable struct LP1ConjLSM{V}
     # Avoids a heap allocation on every disk probe.  Access is safe because
     # _lsm_disk_find is always called under file_lock (single-writer).
     read_buf            ::Vector{UInt8}
+
+    # Top-K multiplicity reservoir — tracks the K keys with highest emission
+    # count (store + close combined) across the walk.  Updated under bday_lock.
+    topk                ::TopKMultiplicity
 end
 
 # ---------------------------------------------------------------------------
@@ -374,7 +486,8 @@ function LP1ConjLSM{V}(
         zeros(UInt64, COLD_WORDS),
         UInt32[],             # partial_fp_log
         0,                    # n_cold_dropped
-        zeros(UInt8, RECORD_BYTES)  # read_buf — pre-allocated scratch for _lsm_disk_find
+        zeros(UInt8, RECORD_BYTES),  # read_buf — pre-allocated scratch for _lsm_disk_find
+        TopKMultiplicity()           # topk — top-K multiplicity reservoir
     )
 end
 
@@ -1197,7 +1310,7 @@ end
 #  Cold-filter bitmap update: set the COLD_BITS-bit bucket presence bit
 #  for this fingerprint (used by the flush path, not for S₂).
 # ---------------------------------------------------------------------------
-@inline function _lsm_record_sample!(sc::LP1ConjLSM, fp::UInt64, now_t::Float64)
+@inline function _lsm_record_sample!(sc::LP1ConjLSM, fp::UInt64, now_t::Float64, key::CanonicalLP1Key)
     # Cold-filter bitmap — lockless bit-set (bits only ever set, never cleared).
     cb_idx  = Int(fp >> COLD_SHIFT)          # 0-based bucket index
     cb_word = cb_idx >> 6                    # which UInt64 word
@@ -1233,6 +1346,9 @@ end
             circ_idx = ((sc.bday_emissions - 1) % PARTIAL_FP_LOG_CAP) + 1
             @inbounds sc.partial_fp_log[circ_idx] = bucket_idx
         end
+
+        # Top-K multiplicity: record this key emission (under bday_lock).
+        _topk_record!(sc.topk, key)
     finally
         unlock(sc.bday_lock)
     end
@@ -1344,7 +1460,7 @@ function conj_insert_or_pop!(sc::LP1ConjLSM{V}, si::Int,
                 return (nothing, true)
             end
             _lsm_hot_delete!(sc, si, slot)
-            _lsm_record_sample!(sc, fp, now_t)
+            _lsm_record_sample!(sc, fp, now_t, key)
             _bday_record_collision!(sc, now_t)
             return (v, false)
         end
@@ -1367,7 +1483,7 @@ function conj_insert_or_pop!(sc::LP1ConjLSM{V}, si::Int,
                         return (nothing, true)
                     end
                     _lsm_hot_delete!(sc, si, slot)
-                    _lsm_record_sample!(sc, fp, now_t)
+                    _lsm_record_sample!(sc, fp, now_t, key)
                     _bday_record_collision!(sc, now_t)
                     return (v, false)
                 end
@@ -1384,7 +1500,7 @@ function conj_insert_or_pop!(sc::LP1ConjLSM{V}, si::Int,
                     end
                     _lsm_disk_delete!(sc, ri, pos)
                     result_v = _conj_make_val(V, i0_v, al_v, be_v)
-                    _lsm_record_sample!(sc, fp, now_t)
+                    _lsm_record_sample!(sc, fp, now_t, key)
                     _bday_record_collision!(sc, now_t)
                     return (result_v, false)
                 end
@@ -1433,7 +1549,7 @@ function conj_insert_or_pop!(sc::LP1ConjLSM{V}, si::Int,
                             return (nothing, true)
                         end
                         _lsm_hot_delete!(peer_lsm, si, pslot)
-                        _lsm_record_sample!(sc, fp, now_t)
+                        _lsm_record_sample!(sc, fp, now_t, key)
                         _bday_record_collision!(sc, now_t)
                         return (pv, false)
                     end
@@ -1461,7 +1577,7 @@ function conj_insert_or_pop!(sc::LP1ConjLSM{V}, si::Int,
                                         return (nothing, true)
                                     end
                                     _lsm_disk_delete!(peer_lsm, ri, pos)
-                                    _lsm_record_sample!(sc, fp, now_t)
+                                    _lsm_record_sample!(sc, fp, now_t, key)
                                     _bday_record_collision!(sc, now_t)
                                     return (_conj_make_val(V, i0_v, al_v, be_v), false)
                                 end
@@ -1490,7 +1606,7 @@ function conj_insert_or_pop!(sc::LP1ConjLSM{V}, si::Int,
                     return (nothing, true)
                 end
                 _lsm_hot_delete!(sc, si, slot)
-                _lsm_record_sample!(sc, fp, now_t)
+                _lsm_record_sample!(sc, fp, now_t, key)
                 _bday_record_collision!(sc, now_t)
                 return (v, false)
             end
@@ -1505,7 +1621,7 @@ function conj_insert_or_pop!(sc::LP1ConjLSM{V}, si::Int,
                 _lsm_flush_shard!(sc, si)
             end
             _lsm_hot_insert!(sc, si, key, val)
-            _lsm_record_sample!(sc, fp, now_t)   # genuine new insertion
+            _lsm_record_sample!(sc, fp, now_t, key)   # genuine new insertion
             return (nothing, false)
         finally
             unlock(sc.shard_locks[si])
@@ -1826,6 +1942,7 @@ function lsm_bday_report(sc::LP1ConjLSM, p::Integer, r::Real; io::IO = stdout)
     @printf(io, "\n")
     nothing
 end
+
 
 # ---------------------------------------------------------------------------
 #  lsm_to_dict — snapshot all hot+disk entries into a plain Dict for lockless
@@ -2461,4 +2578,286 @@ function lsm_autotune!(sc::LP1ConjLSM;
 
     verbose && @printf("[LP1ConjLSM autotune] resizing: %s\n", reason)
     return lsm_resize_hot!(sc, per_shard; verbose)
+end
+
+# ---------------------------------------------------------------------------
+#  lsm_multiplicity_report — D17: top-K key multiplicity analysis.
+#
+#  Aggregates the TopKMultiplicity heaps from all peer LSMs, then for each
+#  of the top-K keys:
+#    1. Decodes the CanonicalLP1Key back to Mumford (u0,u1,v0,v1).
+#    2. Reports count, rank, and all four Mumford coordinates.
+#    3. Runs geometric analyses:
+#       a. v-polynomial discriminant: disc(v) = v1²-4v0 mod p.  If disc < 0
+#          (non-square) the key corresponds to a truly conjugate pair; if disc
+#          is a square, the pair accidentally split.
+#       b. u-polynomial discriminant: disc(u) = u1²-4u0 mod p.  The roots of
+#          u give the x-coordinates of the Jacobian element's support.
+#       c. Galois orbit: does v1²-4v0 lie in the same coset of QR/NR as the
+#          other top keys?  Consistent non-square → all keys live on the
+#          non-split locus (expected); consistent square → something unusual.
+#       d. Coordinate clustering: do the top keys share common u1 values
+#          (linear coefficient of the u-polynomial)?  This would indicate
+#          that high-multiplicity keys share a common x-coordinate sum
+#          x₁+x₂ = -u1/u0 (Vieta), pinning the Jacobian element to a
+#          codimension-1 subvariety of the surface u1 = const.
+#       e. v0 mod small_primes: systematic divisibility would indicate an
+#          algebraic family.
+#       f. GCD structure: does gcd(u0,v0) accumulate across top keys?
+#    4. Reports a multiplicity histogram (Zipf/Gini) across all peers'
+#       top-K heaps merged.
+#    5. Estimates the exponent implied by the high-multiplicity keys alone:
+#       if n_hot keys each have count c_hot, and N_total emissions, then
+#       their contribution to F₂ is n_hot·c_hot² ≈ F₂_observed.  This gives
+#       n_hot ~ F₂/(c_hot²) and their fractional mass ~ n_hot·c_hot/N.
+#
+#  Arguments:
+#    peers   — vector of LP1ConjLSM instances (all peers)
+#    p       — curve prime
+#    io      — output IO (default stdout)
+# ---------------------------------------------------------------------------
+function lsm_multiplicity_report(peers::Vector{<:LP1ConjLSM},
+                                  p::Integer;
+                                  io::IO = stdout)
+
+    @printf(io, "\n══ D17 — LP1-conj store multiplicity analysis (top-%d keys) ════════\n", TOPK_K)
+
+    # --- Merge top-K heaps across all peers ---
+    # Build a global count Dict by iterating all peers' heaps.
+    global_counts = Dict{CanonicalLP1Key, Int}()
+    total_keys_seen = 0
+    total_N = Int64(0)
+
+    for peer in peers
+        lock(peer.bday_lock)
+        try
+            total_N += peer.bday_emissions
+            total_keys_seen += peer.topk.total_keys_seen
+            for (cnt, k) in peer.topk.heap
+                global_counts[k] = get(global_counts, k, 0) + cnt
+            end
+        finally
+            unlock(peer.bday_lock)
+        end
+    end
+
+    if isempty(global_counts)
+        @printf(io, "  (no entries in top-K reservoir — need more walk emissions)\n")
+        @printf(io, "══ End D17 ═══════════════════════════════════════════════════════════\n")
+        return
+    end
+
+    # Sort by count descending
+    sorted = sort(collect(global_counts), by=x -> -x[2])
+    n_show = min(length(sorted), TOPK_K)
+
+    pf   = Float64(p)
+    logp = log(pf)
+
+    @printf(io, "  Total emissions N          : %d\n", total_N)
+    @printf(io, "  Distinct keys tracked      : %d  (across %d peers, top-%d each)\n",
+            length(global_counts), length(peers), TOPK_K)
+    @printf(io, "  Total distinct keys seen   : %d  (approximate; new keys with count≤min not tracked)\n",
+            total_keys_seen)
+    @printf(io, "\n")
+
+    # --- Zipf / Gini on tracked keys ---
+    counts_sorted = [c for (_, c) in sorted]
+    c_max    = counts_sorted[1]
+    c_median = counts_sorted[max(1, length(counts_sorted) ÷ 2)]
+    c_mean   = total_N > 0 ? Float64(total_N) / max(1, total_keys_seen) : 0.0
+    total_c  = sum(counts_sorted)
+    gini_num = 0.0
+    n_c = length(counts_sorted)
+    for i in 1:n_c, j in 1:n_c
+        gini_num += abs(counts_sorted[i] - counts_sorted[j])
+    end
+    gini = n_c > 1 ? gini_num / (2.0 * n_c * total_c) : 0.0
+
+    cum = 0
+    top1_mass = counts_sorted[1] / Float64(total_c)
+    top10_mass = sum(counts_sorted[1:min(10,n_c)]) / Float64(total_c)
+
+    @printf(io, "  Multiplicity summary (tracked keys only):\n")
+    @printf(io, "    max count            : %d\n", c_max)
+    @printf(io, "    median count         : %d\n", c_median)
+    @printf(io, "    mean count (global)  : %.2f  (= N/total_distinct_seen)\n", c_mean)
+    @printf(io, "    Gini (tracked)       : %.4f\n", gini)
+    @printf(io, "    top-1  mass          : %.4f%%\n", 100.0 * top1_mass)
+    @printf(io, "    top-10 mass          : %.4f%%\n", 100.0 * top10_mass)
+    @printf(io, "\n")
+
+    # --- F₂ and α₂ implied by tracked top-K alone ---
+    # Each tracked key has count c_i; their contribution to F₂ is Σ c_i².
+    # If these dominate, F₂_observed ≈ Σ_{top-K} c_i².
+    f2_topk = Float64(sum(c^2 for c in counts_sorted))
+    s2_topk = total_N > 0 ? Float64(total_N)^2 / f2_topk : 0.0
+    a2_topk = s2_topk > 0.0 ? log(s2_topk) / (2.0 * logp) : 0.0
+    @printf(io, "  F₂ from top-K keys alone   : %.5g\n", f2_topk)
+    @printf(io, "  S₂ from top-K keys alone   : %.5g  (α₂ = %.4f)\n", s2_topk, a2_topk)
+    @printf(io, "  (if α₂_topk ≈ global α₂, top-K keys explain the full collision entropy)\n")
+    @printf(io, "\n")
+
+    # --- Decode and report top keys ---
+    # CanonicalLP1Key packing: u0(32)|u1(32)|v0(32)|v1(32) from low to high bits.
+    function decode_key(k::CanonicalLP1Key)
+        u0 = Int(UInt32(k & 0xffffffff))
+        u1 = Int(UInt32((k >> 32)  & 0xffffffff))
+        v0 = Int(UInt32((k >> 64)  & 0xffffffff))
+        v1 = Int(UInt32((k >> 96)  & 0xffffffff))
+        (u0, u1, v0, v1)
+    end
+
+    # Modular helpers (p is in scope from outer)
+    pi = Int(p)
+    function modsq(a::Int)::Int; mod(a * a, pi); end
+    function modmul(a::Int, b::Int)::Int; mod(a * b, pi); end
+    function modsub(a::Int, b::Int)::Int; mod(a - b, pi); end
+    # Legendre symbol via Euler criterion: a^((p-1)/2) mod p
+    function legendre(a::Int)::Int
+        a = mod(a, pi); a == 0 && return 0
+        r = powermod(a, (pi - 1) ÷ 2, pi)
+        r == 1 ? 1 : -1
+    end
+
+    @printf(io, "  Top-%d high-multiplicity keys (Mumford u,v coordinates):\n", min(n_show, 50))
+    @printf(io, "  %6s  %8s  %10s  %10s  %10s  %10s  %6s  %6s  %s\n",
+            "rank", "count", "u0", "u1", "v0", "v1", "disc_u", "disc_v", "notes")
+    @printf(io, "  %s\n", "-"^95)
+
+    disc_u_vals = Int[]
+    disc_v_vals = Int[]
+    leg_u_vals  = Int[]
+    leg_v_vals  = Int[]
+    u1_vals     = Int[]
+    v1_vals     = Int[]
+
+    for rank in 1:min(n_show, 50)
+        key, cnt = sorted[rank]
+        u0, u1, v0, v1 = decode_key(key)
+
+        # discriminants (as elements of F_p, reduced to [0,p))
+        disc_u = modsub(modsq(u1), modmul(4, u0))   # u1²-4u0 mod p
+        disc_v = modsub(modsq(v1), modmul(4, v0))   # v1²-4v0 mod p
+        leg_u  = legendre(disc_u)
+        leg_v  = legendre(disc_v)
+
+        push!(disc_u_vals, disc_u); push!(disc_v_vals, disc_v)
+        push!(leg_u_vals, leg_u);   push!(leg_v_vals, leg_v)
+        push!(u1_vals, u1); push!(v1_vals, v1)
+
+        leg_u_s = leg_u ==  1 ? "QR" : leg_u == -1 ? "NR" : "0"
+        leg_v_s = leg_v ==  1 ? "QR" : leg_v == -1 ? "NR" : "0"
+
+        notes = String[]
+        leg_u == 1  && push!(notes, "u-splits")
+        leg_v == -1 && push!(notes, "v-non-split✓")
+        leg_v == 1  && push!(notes, "v-SPLIT!")
+        disc_u == 0 && push!(notes, "u-repeated-root")
+        disc_v == 0 && push!(notes, "v-repeated-root")
+
+        @printf(io, "  %6d  %8d  %10d  %10d  %10d  %10d  %6s  %6s  %s\n",
+                rank, cnt, u0, u1, v0, v1, leg_u_s, leg_v_s,
+                isempty(notes) ? "" : join(notes, ", "))
+    end
+
+    @printf(io, "\n")
+
+    # --- Geometric summary across top keys ---
+    n_top = length(leg_v_vals)
+    n_v_nr  = count(==(-1), leg_v_vals)
+    n_v_qr  = count(==(1),  leg_v_vals)
+    n_u_qr  = count(==(1),  leg_u_vals)
+    n_u_nr  = count(==(-1), leg_u_vals)
+
+    @printf(io, "  Geometric summary (top-%d keys):\n", n_top)
+    @printf(io, "    disc(v) = NR (conjugate, expected) : %d / %d  (%.1f%%)\n",
+            n_v_nr, n_top, 100.0 * n_v_nr / n_top)
+    @printf(io, "    disc(v) = QR (accidentally split!) : %d / %d  (%.1f%%)\n",
+            n_v_qr, n_top, 100.0 * n_v_qr / n_top)
+    @printf(io, "    disc(u) = QR (u-poly splits in F_p): %d / %d  (%.1f%%)\n",
+            n_u_qr, n_top, 100.0 * n_u_qr / n_top)
+    @printf(io, "    disc(u) = NR (u-poly non-split)    : %d / %d  (%.1f%%)\n",
+            n_u_nr, n_top, 100.0 * n_u_nr / n_top)
+
+    # u1 clustering: does u1 concentrate?
+    u1_counts = Dict{Int,Int}()
+    for v in u1_vals; u1_counts[v] = get(u1_counts, v, 0) + 1; end
+    top_u1 = sort(collect(u1_counts), by=x -> -x[2])
+    u1_top1_frac = isempty(top_u1) ? 0.0 : top_u1[1][2] / Float64(n_top)
+
+    @printf(io, "\n    u1 (x-sum) clustering:\n")
+    @printf(io, "      distinct u1 values among top-%d keys : %d\n", n_top, length(u1_counts))
+    @printf(io, "      top-1 u1 value appears               : %d / %d  (%.1f%%)\n",
+            isempty(top_u1) ? 0 : top_u1[1][2], n_top, 100.0 * u1_top1_frac)
+    if u1_top1_frac > 0.3
+        @printf(io, "      ↑ CLUSTERING: many top keys share u1=%d\n",
+                isempty(top_u1) ? 0 : top_u1[1][1])
+        @printf(io, "         → x₁+x₂ ≡ -%d (mod %d) for most high-mult keys\n",
+                isempty(top_u1) ? 0 : top_u1[1][1], pi)
+        @printf(io, "         → these keys lie on the hyperplane x₁+x₂ = const in Kummer space\n")
+    else
+        @printf(io, "      u1 values are spread — no common x-sum constraint\n")
+    end
+
+    # v1 clustering
+    v1_counts = Dict{Int,Int}()
+    for v in v1_vals; v1_counts[v] = get(v1_counts, v, 0) + 1; end
+    top_v1 = sort(collect(v1_counts), by=x -> -x[2])
+    v1_top1_frac = isempty(top_v1) ? 0.0 : top_v1[1][2] / Float64(n_top)
+
+    @printf(io, "\n    v1 clustering:\n")
+    @printf(io, "      distinct v1 values among top-%d keys : %d\n", n_top, length(v1_counts))
+    @printf(io, "      top-1 v1 value appears               : %d / %d  (%.1f%%)\n",
+            isempty(top_v1) ? 0 : top_v1[1][2], n_top, 100.0 * v1_top1_frac)
+    if v1_top1_frac > 0.3
+        @printf(io, "      ↑ CLUSTERING: many top keys share v1=%d\n",
+                isempty(top_v1) ? 0 : top_v1[1][1])
+    else
+        @printf(io, "      v1 values are spread\n")
+    end
+
+    # disc_u distribution mod small primes
+    @printf(io, "\n    disc(u) mod small primes (structure probe):\n")
+    for q in (2, 3, 5, 7, 11, 13)
+        res_counts = Dict{Int,Int}()
+        for dv in disc_u_vals
+            r = mod(dv, q); res_counts[r] = get(res_counts, r, 0) + 1
+        end
+        fracs = sort([(r, c / Float64(n_top)) for (r,c) in res_counts], by=x->-x[2])
+        top_r, top_f = fracs[1]
+        exp_f = 1.0 / q
+        note = top_f > 3.0 * exp_f ? " ← CONCENTRATED ($(round(Int, top_f / exp_f))× expected)" : ""
+        @printf(io, "      mod %2d: top residue=%d  freq=%.3f  (uniform=%.3f)%s\n",
+                q, top_r, top_f, exp_f, note)
+    end
+
+    # High-multiplicity model: if top-K hold fraction f of F₂, estimate n_hot
+    @printf(io, "\n    High-multiplicity model:\n")
+    if total_N > 0 && c_max > 1
+        # Estimate: n_hot keys each with count c_max → F₂_model = n_hot * c_max²
+        # n_hot such that n_hot * c_max² = F₂_topk  → n_hot = F₂_topk / c_max²
+        n_hot_est = f2_topk / Float64(c_max)^2
+        mass_hot  = n_hot_est * c_max / Float64(total_N)
+        kappa_est = n_hot_est > 0.0 ? log(n_hot_est) / logp : 0.0
+        @printf(io, "      Effective n_hot (c ~ c_max = %d)  : %.2f  (κ = log_p(n_hot) = %.4f)\n",
+                c_max, n_hot_est, kappa_est)
+        @printf(io, "      Mass fraction from hot keys        : %.4f%%\n", 100.0 * mass_hot)
+        @printf(io, "      S₂ model (n_hot × c_max²)         : %.5g  vs observed S₂ above\n",
+                Float64(total_N)^2 / (n_hot_est * Float64(c_max)^2))
+        if kappa_est > 0.0
+            @printf(io, "      Interpretation: ~p^%.4f keys dominate F₂\n", kappa_est)
+            if kappa_est < 0.3
+                @printf(io, "        → sub-polynomial count: walk is attracted to O(1) Jacobian elements\n")
+            elseif kappa_est < 0.7
+                @printf(io, "        → small algebraic family: these keys may lie on a low-dim subvariety\n")
+            else
+                @printf(io, "        → broad fat tail: no sharp algebraic confinement of hot keys\n")
+            end
+        end
+    end
+
+    @printf(io, "\n══ End D17 ═══════════════════════════════════════════════════════════\n")
+    flush(io)
+    nothing
 end

@@ -574,7 +574,8 @@ end
 function print_conj_deep_report(phi_stat ::PhiBiasStat,
                                  deep_stat::ConjDeepStat;
                                  conj_snap::Union{Dict, AbstractVector, Nothing} = nothing,
-                                 p        ::Int = 0)
+                                 p        ::Int = 0,
+                                 lsm_peers::Union{Vector, Nothing} = nothing)
 
     arrivals  = phi_stat.lp1_conj_arrivals    # Vector{Int} of raw_step at each emission
     keys_u128 = phi_stat.lp1_conj_keys        # Vector{UInt128} parallel to arrivals
@@ -2590,6 +2591,22 @@ function print_conj_deep_report(phi_stat ::PhiBiasStat,
             end
         end
     end   # let D16
+
+    # ──────────────────────────────────────────────────────────────────────
+    #  D17 — LP1-conj store multiplicity analysis (top-K Mumford keys)
+    #  Requires: lsm_peers keyword arg pointing to the Vector{LP1ConjLSM}
+    # ──────────────────────────────────────────────────────────────────────
+    if lsm_peers !== nothing && p > 1
+        try
+            lsm_multiplicity_report(lsm_peers, p)
+        catch ex
+            @printf("\n  D17: error during multiplicity report: %s\n", string(ex))
+        end
+    else
+        @printf("\n  D17 — LP1-conj store multiplicity analysis\n")
+        @printf("  ─────────────────────────────────────────────────────────────────\n")
+        @printf("    (pass lsm_peers=shared_lp1_conj_arr to enable D17)\n")
+    end
 
     @printf("\n== End LP1-conj deep diagnostics ====================================================\n")
     flush(stdout)
