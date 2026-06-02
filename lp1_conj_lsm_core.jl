@@ -1158,6 +1158,17 @@ function lsm_autotune!(sc::LP1ConjLSM;
 end
 
 # ---------------------------------------------------------------------------
+#  _lsm_disk_delete! — tombstone a live record in a flushed run.
+#  Caller holds file_lock.
+# ---------------------------------------------------------------------------
+function _lsm_disk_delete!(sc::LP1ConjLSM, ri::Int, pos::Int)
+    _run_set_dead!(sc.runs[ri], pos)
+    sc.n_disk_live -= 1
+    nothing
+end
+
+
+# ---------------------------------------------------------------------------
 #  lsm_mem_report — heap / spill memory breakdown
 # ---------------------------------------------------------------------------
 function lsm_mem_report(sc::LP1ConjLSM{V};
