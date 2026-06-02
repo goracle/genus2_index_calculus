@@ -386,6 +386,7 @@ end
         al_cur          ::Int = -1,
         px_anchor       ::Int = -1,
         a_raw           ::Int = -1,
+        py_anchor       ::Int = -1,
         post_conj_stride::Int = 0,
         anchor_alpha_seen::Union{Dict{Tuple{Int,CanonicalLP1Key},Int}, Nothing} = nothing,
         anchor_alpha_cap::Int = 200_000)::NTuple{2,Int} where V
@@ -418,13 +419,13 @@ end
                 anchor_alpha_seen[akey] = neg_al
             end
         end
-        record_conj_deep_miss!(deep_stat, lp_key, s.raw_steps, al_cur, px_anchor, a_raw)
+        record_conj_deep_miss!(deep_stat, lp_key, s.raw_steps, al_cur, px_anchor, a_raw, py_anchor)
         return next_anchor_ref[]()
     end
 
     if prev === nothing
         # Genuine miss: key was freshly stored.
-        record_conj_deep_miss!(deep_stat, lp_key, s.raw_steps, al_cur, px_anchor, a_raw)
+        record_conj_deep_miss!(deep_stat, lp_key, s.raw_steps, al_cur, px_anchor, a_raw, py_anchor)
     end
 
     if prev !== nothing
@@ -984,7 +985,7 @@ function phase2_worker(G               ::Div2,
                                                alpha_vec, beta_vec, rel_rows, rel_counter,
                                                ort, s, shared_lp1_conj, rank_growth,
                                                combined_scratch, P0, phi_bias_stat, next_anchor_ref,
-                                               _a_bucket, deep_stat, al, P0[1], Int(a),
+                                               _a_bucket, deep_stat, al, P0[1], Int(a), P0[2],
                                                post_conj_stride,
                                                conj_anchor_alpha_seen, CONJ_ANCHOR_ALPHA_CAP)
                     # D9: record 1LP-conj opcode; is_emission = true iff handle produced an emission

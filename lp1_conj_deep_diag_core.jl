@@ -98,6 +98,11 @@ mutable struct ConjDeepStat
 
     # D17 — per-key lifetime multiplicity counter.
     d17_lifetime_hits ::Dict{UInt128, Int}
+    # D17 metadata: (px, py, a) of the anchor point P0 and φ-coefficient a
+    # at the *first* store event for each key.  Keyed identically to
+    # d17_lifetime_hits; populated only when px >= 0.  Used to annotate the
+    # top-50 table with the walk state that first introduced the key.
+    d17_key_meta      ::Dict{UInt128, NTuple{3,Int}}
 end
 
 function ConjDeepStat()
@@ -123,7 +128,8 @@ function ConjDeepStat()
         0,
         0,
         UInt8[], Bool[],
-        Dict{UInt128,Int}(),       # d17_lifetime_hits
+        Dict{UInt128,Int}(),           # d17_lifetime_hits
+        Dict{UInt128,NTuple{3,Int}}(), # d17_key_meta
     )
 end
 
@@ -204,6 +210,11 @@ function merge_conj_deep_stats(stats::Vector{ConjDeepStat})::ConjDeepStat
                 merged.d17_lifetime_hits[k] = v
             end
         end
+        # D17 metadata: keep first-seen (px, py, a) per key; no cap needed
+        # since d17_key_meta is a subset of d17_lifetime_hits keys.
+        for (k, meta) in s.d17_key_meta
+            haskey(merged.d17_key_meta, k) || (merged.d17_key_meta[k] = meta)
+        end
     end
     return merged
 end
@@ -216,16 +227,19 @@ end
                                          raw_step ::Int,
                                          alpha_cur::Int = -1,
                                          px       ::Int = -1,
-                                         a_val    ::Int = -1)
+                                         a_val    ::Int = -1,
+                                         py       ::Int = -1)
     if !haskey(stat.d8_shadow, lp_key) && length(stat.d8_shadow) < D8_MAX_SHADOW
         stat.d8_shadow[lp_key] = raw_step
     end
 
-    # D17: lifetime hit counter.
+    # D17: lifetime hit counter + first-seen anchor metadata.
     if haskey(stat.d17_lifetime_hits, lp_key)
         stat.d17_lifetime_hits[lp_key] += 1
     elseif length(stat.d17_lifetime_hits) < D17_MAX_TRACKED_KEYS
         stat.d17_lifetime_hits[lp_key] = 1
+        # Record (px, py, a) on the very first store for this key.
+        px >= 0 && (stat.d17_key_meta[lp_key] = (px, py, a_val))
     end
 
     # D12/D14: record (alpha, px, a) at store time.

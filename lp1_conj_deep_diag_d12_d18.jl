@@ -885,12 +885,14 @@ function _report_d12_d18(deep_stat::ConjDeepStat; p::Int = 0)
             @printf("\n    Top-50 keys by lifetime hit count")
             p > 1 && @printf(" (p=%d for discriminant residue)", p)
             @printf(":\n")
-            @printf("    %-8s  %-10s  %-10s  %-10s  %-10s  %5s  %8s  %8s  %s\n",
+            @printf("    %-8s  %-10s  %-10s  %-10s  %-10s  %5s  %-10s  %-10s  %-8s  %8s  %8s  %s\n",
                     "rank", "u0", "u1", "v0", "v1", "hits",
+                    "px", "py", "a",
                     "disc_u%p", "disc_v%p", "flags")
-            @printf("    %s\n", "-"^92)
+            @printf("    %s\n", "-"^112)
 
             mask32 = UInt128(0xffffffff)
+            meta   = deep_stat.d17_key_meta
             top_pairs = sort(collect(hits), by=kv->-kv[2])[1:min(50, n_tracked)]
             for (rank, (key, cnt)) in enumerate(top_pairs)
                 u0 = Int(key         & mask32)
@@ -911,8 +913,13 @@ function _report_d12_d18(deep_stat::ConjDeepStat; p::Int = 0)
                     is_qr(disc_u) && disc_u != 0 && push!(flag_parts, "u-split-gen")
                     is_qr(disc_v) && disc_v != 0 && push!(flag_parts, "v-SPLIT!")
                 end
-                @printf("    %-8d  %-10d  %-10d  %-10d  %-10d  %5d  %8s  %8s  %s\n",
+                km = get(meta, key, nothing)
+                px_str = km !== nothing ? string(km[1]) : "?"
+                py_str = km !== nothing ? string(km[2]) : "?"
+                a_str  = km !== nothing ? string(km[3]) : "?"
+                @printf("    %-8d  %-10d  %-10d  %-10d  %-10d  %5d  %-10s  %-10s  %-8s  %8s  %8s  %s\n",
                         rank, u0, u1, v0, v1, cnt,
+                        px_str, py_str, a_str,
                         disc_u_str, disc_v_str,
                         isempty(flag_parts) ? "" : join(flag_parts, " "))
             end
