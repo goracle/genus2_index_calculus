@@ -833,23 +833,21 @@ function phase2_worker(G               ::Div2,
     next_anchor_ref = Ref{Function}(next_anchor)
 
     # ==========================================================================
-    #  Alpha/beta cursors — golden-ratio low-discrepancy stride per thread.
+    #  Alpha/beta cursors — simple sequential 1,2,3,... iteration.
     # ==========================================================================
-    phi_inv_frac = 0.6180339887498949
-    alpha_stride = max(1, round(Int, ellI * phi_inv_frac))
-    alpha_stride = mod(alpha_stride + (tid - 1) * max(1, ellI ÷ 64), ellI - 1) + 1
-    beta_stride  = max(1, round(Int, ellI * 0.7548776662))
-    beta_stride  = mod(beta_stride  + (tid - 1) * max(1, ellI ÷ 97), ellI)
-
-    alpha_cursor     = mod((tid - 1) * alpha_stride, max(1, ellI - 1)) + 1
-    beta_cursor_init = beta_zero ? 0 : mod((tid - 1) * beta_stride, ellI)
+    # Each call to next_alpha_beta() just increments alpha by 1 (mod ell-1,
+    # staying in [1, ell-1]) and beta by 1 (mod ell).  No golden-ratio stride,
+    # no per-thread offsets — purely deterministic sequential enumeration so we
+    # can observe what happens as alpha and the factor base advance one by one.
+    alpha_cursor     = 1
+    beta_cursor_init = beta_zero ? 0 : 1
 
     @inline function next_alpha_beta()
         a = alpha_cursor
         b = beta_zero ? 0 : beta_cursor_init
-        alpha_cursor = mod(alpha_cursor - 1 + alpha_stride, ellI - 1) + 1
+        alpha_cursor = mod(alpha_cursor, ellI - 1) + 1          # cycles 1..ell-1
         if !beta_zero
-            beta_cursor_init = mod(beta_cursor_init + beta_stride, ellI)
+            beta_cursor_init = mod(beta_cursor_init, ellI - 1) + 1  # cycles 1..ell-1
         end
         return a, b
     end
@@ -888,9 +886,8 @@ function phase2_worker(G               ::Div2,
     t_last_report = time()
     report_interval_secs = 30.0
 
-    lp2_node_cache     = 0
-    lp2_check_interval = 256
-    lp2_check_countdown = 0
+    # Sequential step cursor — iterates 1,2,3,...,N_STEPS,1,2,... deterministically.
+    step_cursor = 1
 
     # ==========================================================================
     #  Main walk loop
@@ -898,8 +895,9 @@ function phase2_worker(G               ::Div2,
     while rel_counter[] < rel_target && s.raw_steps < step_cap && (amortized_precompute || ort_b1(ort) == 0)
         s.raw_steps += 1
 
-        # --- Uniform random step selection ---
-        si        = rand(1:N_STEPS)
+        # --- Sequential step selection ---
+        si          = step_cursor
+        step_cursor = mod(step_cursor, N_STEPS) + 1
         D_cur     = jac_add(D_cur, step_D[si])
         alpha_cur = mod(alpha_cur + step_a_i[si], ellI)
         beta_cur  = beta_zero ? 0 : mod(beta_cur + step_b_i[si], ellI)
