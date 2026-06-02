@@ -36,13 +36,14 @@
 #    lp1_conj_lsm_bloom.jl      — BloomFilter struct and helpers
 #    lp1_conj_lsm_disk.jl       — RunMeta, record encode/decode, pread I/O
 #    lp1_conj_lsm_topk.jl       — TopKMultiplicity min-heap reservoir
-#    lp1_conj_lsm_renyi.jl      — AMS sketch, cold bitmap, Rényi-2 estimators
 #    lp1_conj_lsm_core.jl       — LP1ConjLSM struct, hot-shard layer, public API
+#    lp1_conj_lsm_renyi.jl      — AMS sketch, cold bitmap, Rényi-2 estimators
+#                                  (after core: functions take sc::LP1ConjLSM)
 # =============================================================================
 
 include("lp1_conj_lsm_constants.jl")
 include("lp1_conj_lsm_bloom.jl")
 include("lp1_conj_lsm_disk.jl")
 include("lp1_conj_lsm_topk.jl")
-include("lp1_conj_lsm_renyi.jl")
 include("lp1_conj_lsm_core.jl")
+include("lp1_conj_lsm_renyi.jl")

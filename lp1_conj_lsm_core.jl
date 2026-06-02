@@ -1156,3 +1156,459 @@ function lsm_autotune!(sc::LP1ConjLSM;
     verbose && @printf("[LP1ConjLSM autotune] resizing: %s\n", reason)
     return lsm_resize_hot!(sc, per_shard; verbose)
 end
+
+# ---------------------------------------------------------------------------
+#  lsm_mem_report — heap / spill memory breakdown
+# ---------------------------------------------------------------------------
+function lsm_mem_report(sc::LP1ConjLSM{V};
+                         label   ::String = "",
+                         peers   ::Bool   = false,
+                         io      ::IO     = stdout) where V
+
+    _bytes_mb(n) = n / 1024^2
+    _fmt_mb(n)   = @sprintf("%.3f MB", _bytes_mb(n))
+
+    function _single_lsm_mem(lsm::LP1ConjLSM{W}, lbl::String) where W
+        @printf(io, "\n[LP1ConjLSM memory report%s]\n",
+                isempty(lbl) ? "" : "  ($lbl)")
+
+        # ── Hot table ─────────────────────────────────────────────────────────
+        ns = lsm.n_shards
+        key_bytes = 0; val_bytes = 0
+        hot_live  = 0; hot_slots = 0
+        for si in 1:ns
+            cap      = lsm.hot_caps[si]
+            key_bytes += cap * sizeof(CanonicalLP1Key)    # UInt128 → 16 bytes
+            val_bytes += cap * sizeof(W)
+            hot_live  += lsm.hot_counts[si]
+            hot_slots += cap
+        end
+        thresh_avg = ns > 0 ? sum(lsm.hot_thresh) / ns : 0.0
+        load_pct   = hot_slots > 0 ? 100.0 * hot_live / hot_slots : 0.0
+        @printf(io, "  Hot table (%d shards, %d slots/shard avg):\n",
+                ns, ns > 0 ? hot_slots ÷ ns : 0)
+        @printf(io, "    key arrays          : %s  (%d × %d-byte CanonicalLP1Key)\n",
+                _fmt_mb(key_bytes), hot_slots, sizeof(CanonicalLP1Key))
+        @printf(io, "    val arrays          : %s  (%d × %d-byte %s)\n",
+                _fmt_mb(val_bytes), hot_slots, sizeof(W), W)
+        @printf(io, "    live / slots        : %d / %d  (%.1f%% load, flush threshold avg %.0f)\n",
+                hot_live, hot_slots, load_pct, thresh_avg)
+        hot_total_bytes = key_bytes + val_bytes
+        @printf(io, "    hot total           : %s\n", _fmt_mb(hot_total_bytes))
+
+        # ── Bloom filters ─────────────────────────────────────────────────────
+        bloom_bytes        = length(lsm.bloom.bits)        * sizeof(UInt64)
+        global_bloom_ptr   = pointer_from_objref(lsm.global_bloom)
+        own_bloom_ptr      = pointer_from_objref(lsm.bloom)
+        global_bloom_bytes = (global_bloom_ptr != own_bloom_ptr) ?
+                              length(lsm.global_bloom.bits) * sizeof(UInt64) : 0
+        @printf(io, "  Bloom filters:\n")
+        @printf(io, "    own bloom           : %s  (%d bits, capacity %d)\n",
+                _fmt_mb(bloom_bytes), lsm.bloom.n_bits, lsm.bloom.n_bits)
+        if global_bloom_ptr != own_bloom_ptr
+            @printf(io, "    global bloom (shared): %s  (%d bits)  [counted once here]\n",
+                    _fmt_mb(global_bloom_bytes), lsm.global_bloom.n_bits)
+        else
+            @printf(io, "    global bloom        : == own bloom (not yet wired to shared object)\n")
+        end
+        bloom_total = bloom_bytes + global_bloom_bytes
+        @printf(io, "    bloom total         : %s\n", _fmt_mb(bloom_total))
+
+        # ── Spill file + RunMeta ───────────────────────────────────────────────
+        nruns        = length(lsm.runs)
+        run_meta_bytes = nruns * (7 * sizeof(Int) + 2 * sizeof(UInt64))   # RunMeta fields
+        tomb_bytes   = sum(length(rm.tombs) * sizeof(UInt64) for rm in lsm.runs; init=0)
+        n_tombed     = sum(count(>(UInt64(0)), rm.tombs) for rm in lsm.runs; init=0)
+        # tomb fraction: fraction of disk records that are tombstoned
+        tomb_frac    = lsm.n_disk_live + n_tombed > 0 ?
+                        n_tombed / Float64(lsm.n_disk_live + n_tombed) : 0.0
+        spill_mb     = lsm.spill_size / 1024^2
+        @printf(io, "  Disk / spill file:\n")
+        @printf(io, "    spill file size     : %.3f MB  (%d live records × %d bytes)\n",
+                spill_mb, lsm.n_disk_live, RECORD_BYTES)
+        @printf(io, "    runs (in RAM)       : %d  — RunMeta structs: %s\n",
+                nruns, _fmt_mb(run_meta_bytes))
+        @printf(io, "    tombstone bitvecs   : %s  (%.1f%% of disk records tombstoned)\n",
+                _fmt_mb(tomb_bytes), 100.0 * tomb_frac)
+        if nruns > 0
+            avg_run_len = lsm.n_disk_live / nruns
+            max_run_len = maximum(rm.len for rm in lsm.runs)
+            @printf(io, "    avg records/run     : %.0f   max: %d\n", avg_run_len, max_run_len)
+        end
+        runs_total_bytes = run_meta_bytes + tomb_bytes
+        @printf(io, "    run metadata total  : %s\n", _fmt_mb(runs_total_bytes))
+
+        # ── Diagnostic / bookkeeping arrays ────────────────────────────────────
+        ams_bytes     = AMS_K * sizeof(Int64)
+        cold_bytes    = COLD_WORDS * sizeof(UInt64)
+        log_bytes     = length(lsm.partial_fp_log) * sizeof(UInt32)
+        readbuf_bytes = length(lsm.read_buf) * sizeof(UInt8)
+        admin_bytes   = (ns * (sizeof(Int)*3 + sizeof(UInt))) +   # hot_counts/caps/thresh/masks
+                        ns * sizeof(ReentrantLock)                 # shard_locks (rough)
+        diag_total    = ams_bytes + cold_bytes + log_bytes + readbuf_bytes + admin_bytes
+        @printf(io, "  Diagnostic/bookkeeping:\n")
+        @printf(io, "    AMS sketch [%d×%d]    : %s\n", AMS_GROUPS, AMS_WIDTH, _fmt_mb(ams_bytes))
+        @printf(io, "    cold_bitmap[2^%d]     : %s\n", COLD_BITS, _fmt_mb(cold_bytes))
+        log_full   = length(lsm.partial_fp_log) >= PARTIAL_FP_LOG_CAP
+        log_status = log_full ? "circular (rolling)" : @sprintf("filling (%d%%)", round(Int, 100.0 * length(lsm.partial_fp_log) / PARTIAL_FP_LOG_CAP))
+        @printf(io, "    partial_fp_log[%d]: %s  [%s, cap=%d]\n",
+                length(lsm.partial_fp_log), _fmt_mb(log_bytes),
+                log_status, PARTIAL_FP_LOG_CAP)
+        @printf(io, "    read_buf scratch    : %s\n", _fmt_mb(readbuf_bytes))
+        @printf(io, "    per-shard admin     : %s  (counts/caps/thresh/masks × %d shards)\n",
+                _fmt_mb(admin_bytes), ns)
+        @printf(io, "    diagnostic total    : %s\n", _fmt_mb(diag_total))
+
+        # ── Grand total ────────────────────────────────────────────────────────
+        total_bytes = hot_total_bytes + bloom_total + runs_total_bytes + diag_total
+        @printf(io, "  ─────────────────────────────────────────────────────────\n")
+        @printf(io, "  TOTAL heap (exc. GC overhead) : %s\n", _fmt_mb(total_bytes))
+        @printf(io, "  spill file on SSD             : %.3f MB  (not in RSS)\n\n", spill_mb)
+
+        return total_bytes
+    end
+
+    total = _single_lsm_mem(sc, label)
+
+    if peers && !isempty(sc.peers)
+        @printf(io, "  [Peer roll-up: %d peer(s)]\n", length(sc.peers))
+        peer_total = 0
+        for (pi, peer) in enumerate(sc.peers)
+            peer === sc && continue
+            peer_lsm = peer::LP1ConjLSM{V}
+            pt = _single_lsm_mem(peer_lsm, "peer $pi")
+            peer_total += pt
+        end
+        # Global bloom is shared across all peers — already counted in the first
+        # LSM that has a distinct global_bloom pointer.  Deduplicate here:
+        @printf(io, "  ─────────────────────────────────────────────────────────\n")
+        @printf(io, "  ALL PEERS combined heap : %s\n\n", _fmt_mb(total + peer_total))
+    end
+
+    nothing
+end
+
+# ---------------------------------------------------------------------------
+#  lsm_flush_stats — flush efficiency and spill accounting
+# ---------------------------------------------------------------------------
+function lsm_flush_stats(sc::LP1ConjLSM; io::IO = stdout)
+    @printf(io, "\n[LP1ConjLSM flush / spill stats]\n")
+
+    n_emitted   = sc.bday_emissions       # total LP1-conj partials inserted
+    n_dropped   = sc.n_cold_dropped
+    n_disk      = sc.n_disk_live
+    hot_live    = sum(sc.hot_counts)
+    hot_slots   = sum(sc.hot_caps)
+    spill_mb    = sc.spill_size / 1024^2
+    nruns       = length(sc.runs)
+
+    # Total entries that passed through the flush path = spilled + dropped.
+    # hot_live entries have not been flushed yet.
+    n_flush_total = n_disk + n_dropped
+    warm_frac   = n_flush_total > 0 ?
+                   100.0 * n_disk / n_flush_total : 100.0
+    drop_frac   = n_flush_total > 0 ?
+                   100.0 * n_dropped / n_flush_total : 0.0
+
+    @printf(io, "  entries emitted (LP1-conj): %d\n", n_emitted)
+    @printf(io, "  entries in hot RAM         : %d  (%.1f%% load of %d slots)\n",
+            hot_live, hot_slots > 0 ? 100.0 * hot_live / hot_slots : 0.0, hot_slots)
+    @printf(io, "  entries cold-dropped       : %d  (%.1f%% of flush candidates)\n",
+            n_dropped, drop_frac)
+    @printf(io, "  entries spilled to SSD     : %d  (%.1f%% of flush candidates)\n",
+            n_disk, warm_frac)
+    @printf(io, "  spill file size            : %.3f MB  (%d runs)\n", spill_mb, nruns)
+
+    # Per-run breakdown if there are multiple runs (pre-compaction view)
+    if nruns > 0
+        total_tomb = sum(count(>(UInt64(0)), rm.tombs) * 64 for rm in sc.runs; init=0)
+        # (this over-counts since the last word may be partial — good enough for display)
+        @printf(io, "\n  Run breakdown:\n")
+        @printf(io, "  %6s  %10s  %12s  %12s  %8s  %10s\n",
+                "run#", "len", "min_fp(hex)", "max_fp(hex)", "tomb#",  "offset(MB)")
+        for (ri, rm) in enumerate(sc.runs)
+            n_tombed_run = sum(count_ones(w) for w in rm.tombs; init=0)
+            @printf(io, "  %6d  %10d  %12x  %12x  %8d  %10.3f\n",
+                    ri, rm.len, rm.min_fp, rm.max_fp,
+                    n_tombed_run, rm.byte_offset / 1024^2)
+        end
+    end
+
+    # Estimate of expected collision probability given current spill density.
+    # If N_total = n_disk entries occupy effective space S₂, probability that
+    # the next emission matches a disk entry is N_total / S₂.
+    # We read S₂ from the AMS sketch (never saturates).
+    N_emit = Int64(sc.bday_emissions)
+    if N_emit >= 2 && sc.bloom.n_bits > 64
+        _, S2_est = _ams_estimate_S2(sc.ams_Z, N_emit)
+        if S2_est > 0.0
+            p_hit_disk   = Float64(n_disk)   / S2_est
+            p_hit_hot    = Float64(hot_live)  / S2_est
+            @printf(io, "\n  Collision probability estimate (from AMS S₂ = %.5g):\n", S2_est)
+            @printf(io, "    P(disk hit | emission) : %.5g  (%.2f per 1000 emissions)\n",
+                    p_hit_disk, 1000.0 * p_hit_disk)
+            @printf(io, "    P(hot hit  | emission) : %.5g  (%.2f per 1000 emissions)\n",
+                    p_hit_hot, 1000.0 * p_hit_hot)
+            @printf(io, "    P(any hit  | emission) : %.5g  (%.2f per 1000 emissions)\n",
+                    p_hit_disk + p_hit_hot, 1000.0 * (p_hit_disk + p_hit_hot))
+            if sc.bday_first_coll_m > 0
+                m_coll = sc.bday_first_coll_m
+                p_obs  = 1.0 / Float64(m_coll)
+                @printf(io, "    P_obs (1/m_first)      : %.5g   ratio pred/obs = %.3f\n",
+                        p_obs, (p_hit_disk + p_hit_hot) / p_obs)
+            end
+        end
+    end
+
+    @printf(io, "\n")
+    nothing
+end
+
+# ---------------------------------------------------------------------------
+#  lsm_multiplicity_report — D17 top-K key multiplicity diagnostics
+# ---------------------------------------------------------------------------
+function lsm_multiplicity_report(peers::Vector{<:LP1ConjLSM},
+                                  p::Integer;
+                                  io::IO = stdout)
+
+    @printf(io, "\n══ D17 — LP1-conj store multiplicity analysis (top-%d keys) ════════\n", TOPK_K)
+
+    # --- Merge top-K heaps across all peers ---
+    # Build a global count Dict by iterating all peers' heaps.
+    global_counts = Dict{CanonicalLP1Key, Int}()
+    total_keys_seen = 0
+    total_N = Int64(0)
+
+    for peer in peers
+        lock(peer.bday_lock)
+        try
+            total_N += peer.bday_emissions
+            total_keys_seen += peer.topk.total_keys_seen
+            for (cnt, k) in peer.topk.heap
+                global_counts[k] = get(global_counts, k, 0) + cnt
+            end
+        finally
+            unlock(peer.bday_lock)
+        end
+    end
+
+    if isempty(global_counts)
+        @printf(io, "  (no entries in top-K reservoir — need more walk emissions)\n")
+        @printf(io, "══ End D17 ═══════════════════════════════════════════════════════════\n")
+        return
+    end
+
+    # Sort by count descending
+    sorted = sort(collect(global_counts), by=x -> -x[2])
+    n_show = min(length(sorted), TOPK_K)
+
+    pf   = Float64(p)
+    logp = log(pf)
+
+    @printf(io, "  Total emissions N          : %d\n", total_N)
+    @printf(io, "  Distinct keys tracked      : %d  (across %d peers, top-%d each)\n",
+            length(global_counts), length(peers), TOPK_K)
+    @printf(io, "  Total distinct keys seen   : %d  (approximate; new keys with count≤min not tracked)\n",
+            total_keys_seen)
+    @printf(io, "\n")
+
+    # --- Zipf / Gini on tracked keys ---
+    counts_sorted = [c for (_, c) in sorted]
+    c_max    = counts_sorted[1]
+    c_median = counts_sorted[max(1, length(counts_sorted) ÷ 2)]
+    c_mean   = total_N > 0 ? Float64(total_N) / max(1, total_keys_seen) : 0.0
+    total_c  = sum(counts_sorted)
+    gini_num = 0.0
+    n_c = length(counts_sorted)
+    for i in 1:n_c, j in 1:n_c
+        gini_num += abs(counts_sorted[i] - counts_sorted[j])
+    end
+    gini = n_c > 1 ? gini_num / (2.0 * n_c * total_c) : 0.0
+
+    cum = 0
+    top1_mass = counts_sorted[1] / Float64(total_c)
+    top10_mass = sum(counts_sorted[1:min(10,n_c)]) / Float64(total_c)
+
+    @printf(io, "  Multiplicity summary (tracked keys only):\n")
+    @printf(io, "    max count            : %d\n", c_max)
+    @printf(io, "    median count         : %d\n", c_median)
+    @printf(io, "    mean count (global)  : %.2f  (= N/total_distinct_seen)\n", c_mean)
+    @printf(io, "    Gini (tracked)       : %.4f\n", gini)
+    @printf(io, "    top-1  mass          : %.4f%%\n", 100.0 * top1_mass)
+    @printf(io, "    top-10 mass          : %.4f%%\n", 100.0 * top10_mass)
+    @printf(io, "\n")
+
+    # --- F₂ and α₂ implied by tracked top-K alone ---
+    # Each tracked key has count c_i; their contribution to F₂ is Σ c_i².
+    # If these dominate, F₂_observed ≈ Σ_{top-K} c_i².
+    f2_topk = Float64(sum(c^2 for c in counts_sorted))
+    s2_topk = total_N > 0 ? Float64(total_N)^2 / f2_topk : 0.0
+    a2_topk = s2_topk > 0.0 ? log(s2_topk) / (2.0 * logp) : 0.0
+    @printf(io, "  F₂ from top-K keys alone   : %.5g\n", f2_topk)
+    @printf(io, "  S₂ from top-K keys alone   : %.5g  (α₂ = %.4f)\n", s2_topk, a2_topk)
+    @printf(io, "  (if α₂_topk ≈ global α₂, top-K keys explain the full collision entropy)\n")
+    @printf(io, "\n")
+
+    # --- Decode and report top keys ---
+    # CanonicalLP1Key packing: u0(32)|u1(32)|v0(32)|v1(32) from low to high bits.
+    function decode_key(k::CanonicalLP1Key)
+        u0 = Int(UInt32(k & 0xffffffff))
+        u1 = Int(UInt32((k >> 32)  & 0xffffffff))
+        v0 = Int(UInt32((k >> 64)  & 0xffffffff))
+        v1 = Int(UInt32((k >> 96)  & 0xffffffff))
+        (u0, u1, v0, v1)
+    end
+
+    # Modular helpers (p is in scope from outer)
+    pi = Int(p)
+    function modsq(a::Int)::Int; mod(a * a, pi); end
+    function modmul(a::Int, b::Int)::Int; mod(a * b, pi); end
+    function modsub(a::Int, b::Int)::Int; mod(a - b, pi); end
+    # Legendre symbol via Euler criterion: a^((p-1)/2) mod p
+    function legendre(a::Int)::Int
+        a = mod(a, pi); a == 0 && return 0
+        r = powermod(a, (pi - 1) ÷ 2, pi)
+        r == 1 ? 1 : -1
+    end
+
+    @printf(io, "  Top-%d high-multiplicity keys (Mumford u,v coordinates):\n", min(n_show, 50))
+    @printf(io, "  %6s  %8s  %10s  %10s  %10s  %10s  %6s  %6s  %s\n",
+            "rank", "count", "u0", "u1", "v0", "v1", "disc_u", "disc_v", "notes")
+    @printf(io, "  %s\n", "-"^95)
+
+    disc_u_vals = Int[]
+    disc_v_vals = Int[]
+    leg_u_vals  = Int[]
+    leg_v_vals  = Int[]
+    u1_vals     = Int[]
+    v1_vals     = Int[]
+
+    for rank in 1:min(n_show, 50)
+        key, cnt = sorted[rank]
+        u0, u1, v0, v1 = decode_key(key)
+
+        # discriminants (as elements of F_p, reduced to [0,p))
+        disc_u = modsub(modsq(u1), modmul(4, u0))   # u1²-4u0 mod p
+        disc_v = modsub(modsq(v1), modmul(4, v0))   # v1²-4v0 mod p
+        leg_u  = legendre(disc_u)
+        leg_v  = legendre(disc_v)
+
+        push!(disc_u_vals, disc_u); push!(disc_v_vals, disc_v)
+        push!(leg_u_vals, leg_u);   push!(leg_v_vals, leg_v)
+        push!(u1_vals, u1); push!(v1_vals, v1)
+
+        leg_u_s = leg_u ==  1 ? "QR" : leg_u == -1 ? "NR" : "0"
+        leg_v_s = leg_v ==  1 ? "QR" : leg_v == -1 ? "NR" : "0"
+
+        notes = String[]
+        leg_u == 1  && push!(notes, "u-splits")
+        leg_v == -1 && push!(notes, "v-non-split✓")
+        leg_v == 1  && push!(notes, "v-SPLIT!")
+        disc_u == 0 && push!(notes, "u-repeated-root")
+        disc_v == 0 && push!(notes, "v-repeated-root")
+
+        @printf(io, "  %6d  %8d  %10d  %10d  %10d  %10d  %6s  %6s  %s\n",
+                rank, cnt, u0, u1, v0, v1, leg_u_s, leg_v_s,
+                isempty(notes) ? "" : join(notes, ", "))
+    end
+
+    @printf(io, "\n")
+
+    # --- Geometric summary across top keys ---
+    n_top = length(leg_v_vals)
+    n_v_nr  = count(==(-1), leg_v_vals)
+    n_v_qr  = count(==(1),  leg_v_vals)
+    n_u_qr  = count(==(1),  leg_u_vals)
+    n_u_nr  = count(==(-1), leg_u_vals)
+
+    @printf(io, "  Geometric summary (top-%d keys):\n", n_top)
+    @printf(io, "    disc(v) = NR (conjugate, expected) : %d / %d  (%.1f%%)\n",
+            n_v_nr, n_top, 100.0 * n_v_nr / n_top)
+    @printf(io, "    disc(v) = QR (accidentally split!) : %d / %d  (%.1f%%)\n",
+            n_v_qr, n_top, 100.0 * n_v_qr / n_top)
+    @printf(io, "    disc(u) = QR (u-poly splits in F_p): %d / %d  (%.1f%%)\n",
+            n_u_qr, n_top, 100.0 * n_u_qr / n_top)
+    @printf(io, "    disc(u) = NR (u-poly non-split)    : %d / %d  (%.1f%%)\n",
+            n_u_nr, n_top, 100.0 * n_u_nr / n_top)
+
+    # u1 clustering: does u1 concentrate?
+    u1_counts = Dict{Int,Int}()
+    for v in u1_vals; u1_counts[v] = get(u1_counts, v, 0) + 1; end
+    top_u1 = sort(collect(u1_counts), by=x -> -x[2])
+    u1_top1_frac = isempty(top_u1) ? 0.0 : top_u1[1][2] / Float64(n_top)
+
+    @printf(io, "\n    u1 (x-sum) clustering:\n")
+    @printf(io, "      distinct u1 values among top-%d keys : %d\n", n_top, length(u1_counts))
+    @printf(io, "      top-1 u1 value appears               : %d / %d  (%.1f%%)\n",
+            isempty(top_u1) ? 0 : top_u1[1][2], n_top, 100.0 * u1_top1_frac)
+    if u1_top1_frac > 0.3
+        @printf(io, "      ↑ CLUSTERING: many top keys share u1=%d\n",
+                isempty(top_u1) ? 0 : top_u1[1][1])
+        @printf(io, "         → x₁+x₂ ≡ -%d (mod %d) for most high-mult keys\n",
+                isempty(top_u1) ? 0 : top_u1[1][1], pi)
+        @printf(io, "         → these keys lie on the hyperplane x₁+x₂ = const in Kummer space\n")
+    else
+        @printf(io, "      u1 values are spread — no common x-sum constraint\n")
+    end
+
+    # v1 clustering
+    v1_counts = Dict{Int,Int}()
+    for v in v1_vals; v1_counts[v] = get(v1_counts, v, 0) + 1; end
+    top_v1 = sort(collect(v1_counts), by=x -> -x[2])
+    v1_top1_frac = isempty(top_v1) ? 0.0 : top_v1[1][2] / Float64(n_top)
+
+    @printf(io, "\n    v1 clustering:\n")
+    @printf(io, "      distinct v1 values among top-%d keys : %d\n", n_top, length(v1_counts))
+    @printf(io, "      top-1 v1 value appears               : %d / %d  (%.1f%%)\n",
+            isempty(top_v1) ? 0 : top_v1[1][2], n_top, 100.0 * v1_top1_frac)
+    if v1_top1_frac > 0.3
+        @printf(io, "      ↑ CLUSTERING: many top keys share v1=%d\n",
+                isempty(top_v1) ? 0 : top_v1[1][1])
+    else
+        @printf(io, "      v1 values are spread\n")
+    end
+
+    # disc_u distribution mod small primes
+    @printf(io, "\n    disc(u) mod small primes (structure probe):\n")
+    for q in (2, 3, 5, 7, 11, 13)
+        res_counts = Dict{Int,Int}()
+        for dv in disc_u_vals
+            r = mod(dv, q); res_counts[r] = get(res_counts, r, 0) + 1
+        end
+        fracs = sort([(r, c / Float64(n_top)) for (r,c) in res_counts], by=x->-x[2])
+        top_r, top_f = fracs[1]
+        exp_f = 1.0 / q
+        note = top_f > 3.0 * exp_f ? " ← CONCENTRATED ($(round(Int, top_f / exp_f))× expected)" : ""
+        @printf(io, "      mod %2d: top residue=%d  freq=%.3f  (uniform=%.3f)%s\n",
+                q, top_r, top_f, exp_f, note)
+    end
+
+    # High-multiplicity model: if top-K hold fraction f of F₂, estimate n_hot
+    @printf(io, "\n    High-multiplicity model:\n")
+    if total_N > 0 && c_max > 1
+        # Estimate: n_hot keys each with count c_max → F₂_model = n_hot * c_max²
+        # n_hot such that n_hot * c_max² = F₂_topk  → n_hot = F₂_topk / c_max²
+        n_hot_est = f2_topk / Float64(c_max)^2
+        mass_hot  = n_hot_est * c_max / Float64(total_N)
+        kappa_est = n_hot_est > 0.0 ? log(n_hot_est) / logp : 0.0
+        @printf(io, "      Effective n_hot (c ~ c_max = %d)  : %.2f  (κ = log_p(n_hot) = %.4f)\n",
+                c_max, n_hot_est, kappa_est)
+        @printf(io, "      Mass fraction from hot keys        : %.4f%%\n", 100.0 * mass_hot)
+        @printf(io, "      S₂ model (n_hot × c_max²)         : %.5g  vs observed S₂ above\n",
+                Float64(total_N)^2 / (n_hot_est * Float64(c_max)^2))
+        if kappa_est > 0.0
+            @printf(io, "      Interpretation: ~p^%.4f keys dominate F₂\n", kappa_est)
+            if kappa_est < 0.3
+                @printf(io, "        → sub-polynomial count: walk is attracted to O(1) Jacobian elements\n")
+            elseif kappa_est < 0.7
+                @printf(io, "        → small algebraic family: these keys may lie on a low-dim subvariety\n")
+            else
+                @printf(io, "        → broad fat tail: no sharp algebraic confinement of hot keys\n")
+            end
+        end
+    end
+
+    @printf(io, "\n══ End D17 ═══════════════════════════════════════════════════════════\n")
+    flush(io)
+    nothing
+end

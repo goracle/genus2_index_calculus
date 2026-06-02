@@ -283,3 +283,13 @@ function _compact_heap_pop!(h::Vector{Tuple{UInt64,Int,Int}})::Tuple{UInt64,Int,
     end
     top
 end
+
+# ---------------------------------------------------------------------------
+#  _lsm_disk_delete! — tombstone a live record in a flushed run.
+#  Caller holds file_lock.
+# ---------------------------------------------------------------------------
+function _lsm_disk_delete!(sc::LP1ConjLSM, ri::Int, pos::Int)
+    _run_set_dead!(sc.runs[ri], pos)
+    sc.n_disk_live -= 1
+    nothing
+end
