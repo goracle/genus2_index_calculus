@@ -63,7 +63,7 @@ include("phi_bias_report_seq3_alpha2.jl")
 # ---------------------------------------------------------------------------
 function print_phi_bias_report(stat::PhiBiasStat; p::Int = 0)
     _report_header_and_surfaces!(stat; p = p)
-    _report_seq2!(stat)
+    _report_seq2!(stat; p = p)
     _report_seq3_alpha2!(stat)
 
     @printf("──────────────────────────────────────────────────────────────────────\n")

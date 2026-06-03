@@ -14,7 +14,9 @@ using FFTW   # rfft / plan_rfft used in Welch PSD and multitaper sections
 #  stat     : PhiBiasStat
 #  (no return value; writes to stdout)
 # ---------------------------------------------------------------------------
-function _report_seq2!(stat::PhiBiasStat)
+function _report_seq2!(stat::PhiBiasStat; p::Int = 0)
+    nb = length(stat.split_hist)   # number of a-histogram buckets (inherited from preamble in original)
+
     # --- Seq 2: LP1-conj Fano factor + CIR + Spectral (Welch PSD, spectrogram,
     #           Allan factor) + key fingerprint ---
     @printf("  Seq 2 — LP1-conj temporal analysis:\n")
