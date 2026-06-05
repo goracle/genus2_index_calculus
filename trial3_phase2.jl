@@ -204,10 +204,13 @@ end
         slot = _conj_find(sh, key)
         if slot != 0
             v = @inbounds sh.vals[slot]
-            if Int(v.i0) == Int(val.i0)
-                # Same-col: leave entry in place, discard current step.
+            if Int(v.i0) == Int(val.i0) &&
+               Int(v.neg_al) == Int(val.neg_al) &&
+               _conj_prev_be(v) == _conj_prev_be(val)
+                # Exact duplicate (same col, same α, same β): leave in place, discard.
                 return (nothing, true)
             end
+            # Same col but different α or β: valid collision, fall through to close.
             _conj_delete_slot!(sh, slot)
             (v, false)
         elseif sh.count < sh.max_entries
