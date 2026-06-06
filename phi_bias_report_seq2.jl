@@ -253,11 +253,10 @@ function _report_seq2!(stat::PhiBiasStat; p::Int = 0)
         println()
 
         # ---- Spectral 2: windowed spectrogram (rolling 4-slice) -----------------
-        # Divide arrivals into 4 equal chronological slices; compute per-slice
-        # mean gap and hit density.  Reveals regime switching / intermittency
-        # that global PSD averages away.
+        # Gated at ≥200 hits: with fewer, each slice has ~50 arrivals and density
+        # ratios up to ×3 are consistent with Poisson noise — not regime switching.
         @printf("    Spectrogram (4-slice chronological):\n")
-        if length(arrivals) >= 16
+        if length(arrivals) >= 200
             n_slices  = 4
             slice_len = length(arrivals) ÷ n_slices
             @printf("      slice  hits   span_steps   density(hits/kstep)   mean_gap  cv_gap\n")
@@ -297,7 +296,7 @@ function _report_seq2!(stat::PhiBiasStat; p::Int = 0)
                                          " (density stable across slices)"
             @printf("      max/min slice density  : %.2f×%s\n", ratio_sg, flag_sg)
         else
-            @printf("      (need ≥16 hits for spectrogram)\n")
+            @printf("      (suppressed: need ≥200 hits; Poisson noise dominates slice ratios below this)\n")
         end
         println()
 
@@ -404,65 +403,51 @@ function _report_seq2!(stat::PhiBiasStat; p::Int = 0)
         println()
 
         # ════════════════════════════════════════════════════════════════════
-        # New 1 — Autocorrelation of hit-density over coarse bins
+        # New 1 — Autocorrelation of hit-density over coarse bins (single scale)
         # ════════════════════════════════════════════════════════════════════
-        # Bin arrivals into windows of sizes T ∈ {10⁴, 2·10⁴, …} and compute
-        # normalised lag-k autocorrelations of the count series N_T[w].
-        # Poisson → ACF ≈ 0 at all lags.  Positive ACF → persistent hot/cold
-        # epochs; negative → alternating (anti-persistence).
-        # Parallel over bin-size values; each is independent.
-        @printf("    Density autocorrelation (ACF of coarse hit-count series):\n")
+        # Multi-scale rows removed: ACF standard error ~1/√n_bins means all
+        # values look uncorrelated or noisy at N<100.  We keep one scale —
+        # the bin width closest to mean_gap, where temporal structure (if any)
+        # should be most visible.  ACF(1) > 0.15 at this scale is meaningful.
+        @printf("    Density autocorrelation (ACF at scale ≈ mean_gap):\n")
         if length(arrivals) >= 16
             total_span_acf = arrivals[end] - arrivals[1] + 1
-            # Choose 4 bin sizes geometrically; need ≥20 bins each.
-            acf_bin_sizes = Int[]
-            T_try = max(100, total_span_acf ÷ 200)
-            while T_try <= total_span_acf ÷ 20 && length(acf_bin_sizes) < 5
-                push!(acf_bin_sizes, T_try)
-                T_try = max(T_try + 1, round(Int, T_try * 2.0))
-            end
+            # Target: ~50 bins, each ≈ mean_gap wide (rounded to at least 1).
+            T_acf  = max(1, round(Int, mean_gap))
+            n_bins = max(8, total_span_acf ÷ max(1, T_acf))
+            # Cap at 200 bins for stability; floor at 8 for meaningful ACF.
+            n_bins = clamp(n_bins, 8, 200)
+            T_acf  = total_span_acf ÷ n_bins   # recompute so T × n_bins ≈ span
 
-            # Per bin-size result: (T, n_bins, acf_lag1, acf_lag2, acf_lag3, flag)
-            acf_results = Vector{Any}(undef, length(acf_bin_sizes))
-            Threads.@threads for ti in 1:length(acf_bin_sizes)
-                T       = acf_bin_sizes[ti]
-                n_bins  = total_span_acf ÷ T
-                n_bins < 8 && (acf_results[ti] = (T, n_bins, NaN, NaN, NaN); continue)
-                counts  = zeros(Float64, n_bins)
-                t0      = arrivals[1]
-                for a in arrivals
-                    wi = min(n_bins, (a - t0) ÷ T + 1)
-                    counts[wi] += 1.0
-                end
-                mn   = sum(counts) / n_bins
-                var0 = sum((c - mn)^2 for c in counts) / n_bins
-                if var0 < 1e-30
-                    acf_results[ti] = (T, n_bins, 0.0, 0.0, 0.0)
-                    continue
-                end
-                # ACF at lags 1, 2, 3.
-                acf = ntuple(lag -> begin
-                    cov = sum((counts[w] - mn) * (counts[w + lag] - mn)
-                              for w in 1:(n_bins - lag)) / (n_bins - lag)
-                    cov / var0
-                end, 3)
-                acf_results[ti] = (T, n_bins, acf[1], acf[2], acf[3])
+            counts = zeros(Float64, n_bins)
+            t0_acf = arrivals[1]
+            for a in arrivals
+                wi = min(n_bins, (a - t0_acf) ÷ max(1, T_acf) + 1)
+                counts[wi] += 1.0
             end
-
-            @printf("      T_steps  n_bins   ACF(1)   ACF(2)   ACF(3)   interpretation\n")
-            for r in acf_results
-                T, nb_r = r[1], r[2]
-                if isnan(r[3])
-                    @printf("      %7d  %6d   (too few bins)\n", T, nb_r)
-                    continue
-                end
-                a1, a2, a3 = r[3], r[4], r[5]
+            mn   = sum(counts) / n_bins
+            var0 = sum((c - mn)^2 for c in counts) / n_bins
+            if var0 > 1e-30
+                a1 = sum((counts[w]-mn)*(counts[w+1]-mn) for w in 1:(n_bins-1)) /
+                     ((n_bins-1) * var0)
+                a2 = n_bins > 3 ?
+                     sum((counts[w]-mn)*(counts[w+2]-mn) for w in 1:(n_bins-2)) /
+                     ((n_bins-2) * var0) : NaN
+                a3 = n_bins > 4 ?
+                     sum((counts[w]-mn)*(counts[w+3]-mn) for w in 1:(n_bins-3)) /
+                     ((n_bins-3) * var0) : NaN
                 flag_acf = abs(a1) > 0.15 ?
                            (a1 > 0 ? " ← PERSISTENT (hot/cold epochs)" :
                                      " ← ANTI-PERSISTENT (alternating)") :
                            " (≈ uncorrelated)"
-                @printf("      %7d  %6d   %+6.3f   %+6.3f   %+6.3f  %s\n",
-                        T, nb_r, a1, a2, a3, flag_acf)
+                @printf("      T_steps=%d  n_bins=%d   ACF(1)=%+.3f  ACF(2)=%+.3f  ACF(3)=%+.3f  %s\n",
+                        T_acf, n_bins,
+                        a1,
+                        isnan(a2) ? 0.0 : a2,
+                        isnan(a3) ? 0.0 : a3,
+                        flag_acf)
+            else
+                @printf("      (zero variance in count series — degenerate)\n")
             end
         else
             @printf("      (need ≥16 hits for ACF)\n")

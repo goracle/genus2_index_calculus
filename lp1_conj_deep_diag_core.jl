@@ -44,6 +44,33 @@ const D20_BASELINE_CAP  = 200_000    # baseline opcode samples (reservoir)
 # is seen (whether or not it becomes a close).  Measures refractory length.
 const D21_MAX_GAPS      = 5_000      # per-thread cap on return-time samples
 
+# D22 — Entry-event burst geometry.
+# A "cold entry" is the first emission after a gap ≥ COLD_GAP_THRESH steps.
+# We record a compact fingerprint of the triggering key so we can ask what
+# makes the walk enter a productive micro-configuration.
+# Also tracks full burst-run sizes (consecutive emissions each within BURST_SEP steps).
+const D22_COLD_GAP_FRAC = 2          # denominator: gap ≥ mean/2 = cold entry
+const D22_MAX_ENTRIES   = 10_000     # per-thread cap on cold-entry records
+const D22_BURST_SEP     = 50_000     # steps separating bursts for burst-size counting
+const D22_MAX_BURSTS    = 5_000      # per-thread cap on burst-size records
+
+# D23 — Kill-renewal cascade probe (observational, walk-unmodified).
+# After each emission we count how many additional emissions occur within the
+# next K steps.  This is the "cascade depth" without requiring any stride
+# suppression — it tells us whether bursts are 1-hit or multi-hit.
+# We record (gap_to_prev, cascade_count_in_next_K) pairs.
+const D23_CASCADE_WINDOW = 5_000     # steps after emission to watch for cascade hits
+const D23_MAX_RECORDS    = 5_000     # per-thread cap
+
+# D24 — Cross-thread burst alignment (coarse wall-clock / step-count buckets).
+# Each thread logs the walk-step index of every emission into a shared atomic
+# counter array bucketed to D24_BUCKET_STEPS resolution.  After the walk, the
+# main thread checks how many buckets contain ≥ 2 thread contributions — that
+# is the "same-window co-occurrence" rate.  High rate → global structure.
+# This is purely a post-walk analysis; recording is a single atomic increment.
+const D24_BUCKET_STEPS  = 200_000    # step-count resolution per bucket
+const D24_MAX_BUCKETS   = 2_000      # cap on distinct buckets tracked per thread
+
 # D16 — Pre-burst state fingerprinting ring-buffer constants.
 const D16_LAG_LO      = 10
 const D16_LAG_HI      = 40
@@ -149,6 +176,40 @@ mutable struct ConjDeepStat
     d21_steps_since_emit  ::Int             # -1 = not in refractory tracking
     d21_return_gaps       ::Vector{Int}     # collected return-time samples
     d21_n_emitted         ::Int             # total emissions seen by this thread
+
+    # D22 — Entry-event burst geometry.
+    # For each cold-entry emission (gap ≥ mean/2 from prev emission), we record:
+    #   (key_bucket, a_bucket, burst_size) where burst_size = # of emissions
+    #   occurring within D22_BURST_SEP steps of this one (including itself).
+    # Because burst_size can only be finalised after the burst ends, we track
+    # the current open burst separately and close it when the gap exceeds
+    # D22_BURST_SEP.
+    d22_cold_entries      ::Vector{NTuple{3,Int}}  # (key_bkt, a_bkt, burst_size) — finalised
+    d22_burst_sizes       ::Vector{Int}            # all finalised burst sizes
+    d22_cur_burst_size    ::Int                    # open burst accumulator
+    d22_prev_emit_step    ::Int                    # walk-step of last emission (-1 = none)
+    d22_last_gap          ::Int                    # gap before the current open burst's trigger
+    d22_cur_burst_keybkt  ::Int                    # key_bucket of burst-opening emission
+    d22_cur_burst_abkt    ::Int                    # a_bucket  of burst-opening emission
+    d22_mean_gap_est      ::Float64                # running mean inter-arrival (EWMA, τ=100)
+
+    # D23 — Kill-renewal cascade probe.
+    # After each emission we open a D23_CASCADE_WINDOW-step watch window and
+    # count further emissions within it.  We record the pair
+    #   (steps_since_prev_emit, cascade_count)
+    # where steps_since_prev_emit is the gap preceding this emission (so we can
+    # condition on cold vs warm entries) and cascade_count is the number of
+    # *additional* emissions within the next D23_CASCADE_WINDOW steps.
+    d23_records           ::Vector{NTuple{2,Int}}  # (gap_to_prev, cascade_in_window)
+    d23_watch_steps_left  ::Int                    # steps remaining in current watch window
+    d23_cascade_count     ::Int                    # accumulator for current window
+    d23_pending_gap       ::Int                    # gap recorded at window open (to be stored)
+
+    # D24 — Cross-thread burst alignment.
+    # Each thread records the coarse step-bucket index of every emission.
+    # After the walk, the main thread overlaps all per-thread bucket sets.
+    d24_emission_buckets  ::Dict{Int, Int}         # bucket_idx → count (this thread)
+    d24_total_walk_steps  ::Int                    # total walk steps taken by this thread
 end
 
 function ConjDeepStat()
@@ -194,6 +255,23 @@ function ConjDeepStat()
         -1,                                 # d21_steps_since_emit
         Int[],                              # d21_return_gaps
         0,                                  # d21_n_emitted
+        # D22
+        NTuple{3,Int}[],                    # d22_cold_entries
+        Int[],                              # d22_burst_sizes
+        0,                                  # d22_cur_burst_size
+        -1,                                 # d22_prev_emit_step
+        -1,                                 # d22_last_gap
+        -1,                                 # d22_cur_burst_keybkt
+        -1,                                 # d22_cur_burst_abkt
+        0.0,                                # d22_mean_gap_est
+        # D23
+        NTuple{2,Int}[],                    # d23_records
+        -1,                                 # d23_watch_steps_left
+        0,                                  # d23_cascade_count
+        -1,                                 # d23_pending_gap
+        # D24
+        Dict{Int,Int}(),                    # d24_emission_buckets
+        0,                                  # d24_total_walk_steps
     )
 end
 
@@ -326,6 +404,38 @@ function merge_conj_deep_stats(stats::Vector{ConjDeepStat})::ConjDeepStat
             end
         end
         merged.d21_n_emitted += s.d21_n_emitted
+
+        # D22: merge cold-entry records and burst-size vectors.
+        let n_rem22 = D22_MAX_ENTRIES - length(merged.d22_cold_entries)
+            if n_rem22 > 0
+                n_take = min(n_rem22, length(s.d22_cold_entries))
+                append!(merged.d22_cold_entries, s.d22_cold_entries[1:n_take])
+            end
+        end
+        let n_rem22b = D22_MAX_BURSTS - length(merged.d22_burst_sizes)
+            if n_rem22b > 0
+                n_take = min(n_rem22b, length(s.d22_burst_sizes))
+                append!(merged.d22_burst_sizes, s.d22_burst_sizes[1:n_take])
+            end
+        end
+
+        # D23: merge cascade probe records.
+        let n_rem23 = D23_MAX_RECORDS - length(merged.d23_records)
+            if n_rem23 > 0
+                n_take = min(n_rem23, length(s.d23_records))
+                append!(merged.d23_records, s.d23_records[1:n_take])
+            end
+        end
+
+        # D24: merge per-bucket emission counts and step totals.
+        for (bkt, cnt) in s.d24_emission_buckets
+            if haskey(merged.d24_emission_buckets, bkt)
+                merged.d24_emission_buckets[bkt] += cnt
+            elseif length(merged.d24_emission_buckets) < D24_MAX_BUCKETS
+                merged.d24_emission_buckets[bkt] = cnt
+            end
+        end
+        merged.d24_total_walk_steps += s.d24_total_walk_steps
     end
     return merged
 end
@@ -605,6 +715,145 @@ end
 
     return nothing
 end
+
+# ---------------------------------------------------------------------------
+#  record_d22_d23_d24_emission! — call at every LP1-conj CLOSE (emission).
+#
+#  raw_step   : absolute walk-step counter for this thread.
+#  key_bkt    : 0-based coarse bucket of the LP key (from _deep_bucket).
+#  a_bkt      : 0-based bucket of the φ a-coefficient (clamp(a, 0, 65535)).
+#
+#  D22 logic (entry-event burst geometry):
+#    Maintains an open burst window (consecutive emissions each ≤ D22_BURST_SEP
+#    apart).  When a burst ends we push its size to d22_burst_sizes and, if the
+#    burst was opened by a "cold entry" (gap ≥ mean_gap/2), we also push a
+#    cold-entry fingerprint (key_bkt, a_bkt, burst_size) to d22_cold_entries.
+#    The EWMA mean_gap_est is updated on every emission.
+#
+#  D23 logic (kill-renewal cascade probe, walk-unmodified):
+#    Each emission opens a D23_CASCADE_WINDOW-step watch.  Subsequent emissions
+#    inside the window increment d23_cascade_count.  When the window closes
+#    (either by a new emission or by step expiry in record_d22_d23_d24_step!)
+#    we store (gap_to_prev, cascade_count) in d23_records.  This measures burst
+#    multiplicity without modifying the walk.
+#
+#  D24 logic (cross-thread burst alignment):
+#    Increments a coarse step-bucket counter so that, after the walk, the main
+#    thread can check for same-bucket co-occurrence across threads.
+# ---------------------------------------------------------------------------
+@inline function record_d22_d23_d24_emission!(stat    ::ConjDeepStat,
+                                               raw_step::Int,
+                                               key_bkt ::Int,
+                                               a_bkt   ::Int)
+    prev = stat.d22_prev_emit_step
+    gap  = prev >= 0 ? raw_step - prev : -1
+
+    # ── D22: burst tracking ───────────────────────────────────────────────
+    # Update EWMA of inter-arrival gap.
+    if gap > 0
+        if stat.d22_mean_gap_est <= 0.0
+            stat.d22_mean_gap_est = Float64(gap)
+        else
+            stat.d22_mean_gap_est = 0.99 * stat.d22_mean_gap_est + 0.01 * Float64(gap)
+        end
+    end
+
+    new_burst = (prev < 0) || (gap > D22_BURST_SEP)
+
+    if new_burst
+        # Close previous burst (if any).
+        if stat.d22_cur_burst_size > 0 && length(stat.d22_burst_sizes) < D22_MAX_BURSTS
+            push!(stat.d22_burst_sizes, stat.d22_cur_burst_size)
+            est     = stat.d22_mean_gap_est
+            is_cold = (stat.d22_last_gap < 0) ||
+                      (est <= 0.0) ||
+                      (stat.d22_last_gap >= est / D22_COLD_GAP_FRAC)
+            if is_cold && length(stat.d22_cold_entries) < D22_MAX_ENTRIES
+                push!(stat.d22_cold_entries,
+                      (stat.d22_cur_burst_keybkt,
+                       stat.d22_cur_burst_abkt,
+                       stat.d22_cur_burst_size))
+            end
+        end
+        # Open new burst.
+        stat.d22_cur_burst_size   = 1
+        stat.d22_cur_burst_keybkt = key_bkt
+        stat.d22_cur_burst_abkt   = a_bkt
+        stat.d22_last_gap         = gap
+    else
+        stat.d22_cur_burst_size += 1
+    end
+
+    stat.d22_prev_emit_step = raw_step
+
+    # ── D23: cascade window management ───────────────────────────────────
+    # If we are inside an open watch window, count this emission as cascade.
+    if stat.d23_watch_steps_left > 0
+        stat.d23_cascade_count += 1
+    end
+    # Finalise any open window that we are now closing.
+    if stat.d23_pending_gap >= 0 && stat.d23_watch_steps_left >= 0
+        if length(stat.d23_records) < D23_MAX_RECORDS
+            push!(stat.d23_records, (stat.d23_pending_gap, stat.d23_cascade_count))
+        end
+    end
+    # Open fresh watch window for this emission.
+    stat.d23_watch_steps_left = D23_CASCADE_WINDOW
+    stat.d23_cascade_count    = 0
+    stat.d23_pending_gap      = gap   # -1 if this is the very first emission
+
+    # ── D24: step-bucket tally ────────────────────────────────────────────
+    bkt = raw_step ÷ D24_BUCKET_STEPS
+    if length(stat.d24_emission_buckets) < D24_MAX_BUCKETS || haskey(stat.d24_emission_buckets, bkt)
+        stat.d24_emission_buckets[bkt] = get(stat.d24_emission_buckets, bkt, 0) + 1
+    end
+
+    return nothing
+end
+
+# ---------------------------------------------------------------------------
+#  record_d22_d23_d24_step! — call on EVERY valid phi step.
+#  Advances the D23 cascade window countdown and D24 step counter.
+#  (D22 has no per-step work beyond what record_d22_d23_d24_emission! does.)
+# ---------------------------------------------------------------------------
+@inline function record_d22_d23_d24_step!(stat::ConjDeepStat)
+    stat.d24_total_walk_steps += 1
+    if stat.d23_watch_steps_left > 0
+        stat.d23_watch_steps_left -= 1
+        if stat.d23_watch_steps_left == 0
+            # Window expired naturally — finalise record.
+            if stat.d23_pending_gap >= 0 && length(stat.d23_records) < D23_MAX_RECORDS
+                push!(stat.d23_records, (stat.d23_pending_gap, stat.d23_cascade_count))
+            end
+            stat.d23_watch_steps_left = -1
+            stat.d23_cascade_count    = 0
+            stat.d23_pending_gap      = -1
+        end
+    end
+    return nothing
+end
+
+# ---------------------------------------------------------------------------
+#  flush_d22_open_burst! — call once after the walk loop completes (per thread)
+#  to finalise any burst that was still open when the walk ended.
+# ---------------------------------------------------------------------------
+@inline function flush_d22_open_burst!(stat::ConjDeepStat)
+    stat.d22_cur_burst_size == 0 && return nothing
+    length(stat.d22_burst_sizes) >= D22_MAX_BURSTS && return nothing
+    push!(stat.d22_burst_sizes, stat.d22_cur_burst_size)
+    est     = stat.d22_mean_gap_est
+    is_cold = (stat.d22_last_gap < 0) ||
+              (est <= 0.0) ||
+              (stat.d22_last_gap >= est / D22_COLD_GAP_FRAC)
+    if is_cold && length(stat.d22_cold_entries) < D22_MAX_ENTRIES
+        push!(stat.d22_cold_entries,
+              (stat.d22_cur_burst_keybkt,
+               stat.d22_cur_burst_abkt,
+               stat.d22_cur_burst_size))
+    end
+    return nothing
+end
+
 # ---------------------------------------------------------------------------
 @inline function _deep_fp64(key::UInt128)::UInt64
     lo = UInt64(key & 0xffffffffffffffff)

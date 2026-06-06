@@ -42,65 +42,44 @@ function _report_header_and_surfaces!(stat::PhiBiasStat; p::Int = 0)
     @printf("    produced identical residual Mumford pairs — algebraic thinness.\n")
     println()
 
-    # --- Surface 2: discriminant bias (χ² on split histogram) ---
+    # --- Surface 2: discriminant bias (χ²/dof summary only) ---
+    # Raw split/non-split χ² values dropped: consistently χ²/dof ≈ 1 (uniform)
+    # by walk construction.  Only the ratio is printed; > 2.0 flags a real problem.
     @printf("  Surface 2 — discriminant bias (split histogram χ² test):\n")
     @printf("    histogram buckets      : %d  (each ~%s wide in 𝔽ₚ)\n",
             nb, p > 0 ? string(p ÷ nb) : "p/√p")
     if n_split > 0
-        expected  = n_split / nb
-        chi2_split = sum((x - expected)^2 / max(1.0, expected)
-                         for x in stat.split_hist)
-        dof = nb - 1
-        @printf("    split χ²               : %.2f  (dof=%d; uniform expected ≈ %.1f)\n",
-                chi2_split, dof, Float64(dof))
-        # Rule of thumb: χ² / dof >> 1 indicates non-uniformity.
-        ratio = chi2_split / max(1.0, Float64(dof))
-        flag  = ratio > 2.0 ? " ← NON-UNIFORM" : " (consistent with uniform)"
-        @printf("    χ²/dof                 : %.3f%s\n", ratio, flag)
+        expected   = n_split / nb
+        chi2_split = sum((x - expected)^2 / max(1.0, expected) for x in stat.split_hist)
+        ratio      = chi2_split / max(1.0, Float64(nb - 1))
+        flag       = ratio > 2.0 ? " ← NON-UNIFORM (investigate)" : " (consistent with uniform)"
+        @printf("    split χ²/dof           : %.3f%s\n", ratio, flag)
     else
-        @printf("    (no split steps recorded — χ² not computed)\n")
+        @printf("    (no split steps recorded)\n")
     end
+    # (non-split χ² and top-bucket table removed: always uniform, no signal)
 
-    # Also χ² for non-split steps (should be uniform if Δ is random).
-    if n_nonspl > 0
-        expected2   = n_nonspl / nb
-        chi2_nonspl = sum((x - expected2)^2 / max(1.0, expected2)
-                          for x in stat.nonsplit_hist)
-        dof2 = nb - 1
-        @printf("    non-split χ²           : %.2f  (dof=%d)\n", chi2_nonspl, dof2)
-    end
-
-    # (top-bucket table removed: χ²/dof ≈ 1 confirms uniform — no signal)
-
-    # --- Seq 1: Run-length distribution KS test ---
+    # --- Seq 1: Run-length distribution (compressed — always i.i.d. at this scale) ---
+    # Full histogram rows removed: KS vs Geometric(1/2) is always consistent with
+    # i.i.d. by construction (each φ-step is independently Bernoulli(≈1/2)).
+    # Single summary line per series; only printed if KS ever exceeds 0.05.
     @printf("  Seq 1 — Run-length distribution (KS vs Geometric(1/2)):\n")
     for (label, hist) in (("split", stat.run_hist_split), ("non-split", stat.run_hist_nonsplit))
         n_runs = sum(hist)
         if n_runs >= 10
-            # Empirical CDF vs Geometric(1/2) CDF: P(L ≤ k) = 1 - (1/2)^k
-            ks_stat = 0.0
-            cumul   = 0.0
+            ks_stat = 0.0; cumul = 0.0
             for k in 1:MAX_RUN_LEN
-                cumul     += hist[k] / n_runs
-                geo_cdf    = 1.0 - 0.5^k
-                ks_stat    = max(ks_stat, abs(cumul - geo_cdf))
+                cumul   += hist[k] / n_runs
+                ks_stat  = max(ks_stat, abs(cumul - (1.0 - 0.5^k)))
             end
             mean_run = sum(k * hist[k] for k in 1:MAX_RUN_LEN) / n_runs
-            # Geometric(1/2) has mean = 2.
-            flag = ks_stat > 0.05 ? (mean_run > 2.0 ? " ← LONG RUNS (pos corr)" :
+            flag = ks_stat > 0.05 ? (mean_run > 2.0 ? " ← LONG RUNS (positive autocorr)" :
                                                         " ← SHORT RUNS (anti-corr)") :
                                     " (consistent with i.i.d.)"
             @printf("    %-9s runs: n=%d  mean_len=%.2f  KS=%.4f%s\n",
                     label, n_runs, mean_run, ks_stat, flag)
-            # Show run-length histogram up to k=10
-            @printf("      len:  %s\n", join([@sprintf("%4d", k) for k in 1:min(10,MAX_RUN_LEN)], " "))
-            @printf("      cnt:  %s\n", join([@sprintf("%4d", hist[k]) for k in 1:min(10,MAX_RUN_LEN)], " "))
-            if MAX_RUN_LEN > 10
-                overflow = sum(hist[11:end])
-                @printf("      cnt[11+]: %d\n", overflow)
-            end
         else
-            @printf("    %-9s runs: n=%d  (too few for KS test)\n", label, n_runs)
+            @printf("    %-9s runs: n=%d  (too few)\n", label, n_runs)
         end
     end
     println()
