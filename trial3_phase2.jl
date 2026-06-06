@@ -397,7 +397,8 @@ end
         py_anchor       ::Int = -1,
         post_conj_stride::Int = 0,
         anchor_alpha_seen::Union{Dict{Tuple{Int,CanonicalLP1Key},Int}, Nothing} = nothing,
-        anchor_alpha_cap::Int = 200_000)::NTuple{2,Int} where V
+        anchor_alpha_cap::Int = 200_000,
+        emitted_conj_rels::Union{Set{NTuple{4,Int}}, Nothing} = nothing)::NTuple{2,Int} where V
 
     si = conj_shard_idx(lp_key)
 
@@ -484,19 +485,21 @@ end
         # increments before regenerating K, so combined_al = al_A - al_B is
         # constant across all closures of the same pair.  We catch this with a
         # per-thread set keyed on the canonical (lo,hi,al,be) form of the relation.
-        lo_idx  = min(i0, prev_col)
-        hi_idx  = max(i0, prev_col)
-        # Canonicalize scalar: if i0 > prev_col the stored row sign is flipped;
-        # negate so (lo→hi) and (hi→lo) variants hash to the same key.
-        canon_al = i0 <= prev_col ? combined_al : mod(Int(ell) - combined_al, Int(ell))
-        canon_be = i0 <= prev_col ? combined_be : mod(Int(ell) - combined_be, Int(ell))
-        rel_key  = (lo_idx, hi_idx, canon_al, canon_be)
-        if rel_key in emitted_conj_rels
-            # Duplicate: drop silently; do not increment rel_counter.
-            s.hits_1lp_conj_trivial_zero_dal += 1   # repurposed as dup-dropped counter
-            return next_anchor_ref[]()
+        if emitted_conj_rels !== nothing
+            lo_idx  = min(i0, prev_col)
+            hi_idx  = max(i0, prev_col)
+            # Canonicalize scalar: if i0 > prev_col the stored row sign is flipped;
+            # negate so (lo→hi) and (hi→lo) variants hash to the same key.
+            canon_al = i0 <= prev_col ? combined_al : mod(Int(ell) - combined_al, Int(ell))
+            canon_be = i0 <= prev_col ? combined_be : mod(Int(ell) - combined_be, Int(ell))
+            rel_key  = (lo_idx, hi_idx, canon_al, canon_be)
+            if rel_key in emitted_conj_rels
+                # Duplicate: drop silently; do not increment rel_counter.
+                s.hits_1lp_conj_trivial_zero_dal += 1   # repurposed as dup-dropped counter
+                return next_anchor_ref[]()
+            end
+            push!(emitted_conj_rels, rel_key)
         end
-        push!(emitted_conj_rels, rel_key)
 
         empty!(combined_scratch)
         combined_scratch[i0]       = 1
@@ -865,9 +868,55 @@ function phase2_worker(G               ::Div2,
     anchor_start = (tid - 1) * chunk_size + 1
     anchor_end   = min(tid * chunk_size, nF_cur)
     # Guard against over-allocation when nthreads > nF_cur.
+    #
+    # BUG FIX: the original guard used mod1(tid, nF_cur) which aliases
+    # overflow thread t back to the same i0 range as thread mod1(t,nF_cur).
+    # For example with 32 threads and nF_cur=30: thread 31 → mod1=1, same as
+    # thread 1.  Both threads then own the same i0 values, so cross-thread
+    # visits to the same lp_key with the same (neg_al,neg_be) are wrongly
+    # classified as same-partial instead of valid cross-col closures, and
+    # useful=0 / same_col=100% appears on exactly those aliased threads.
+    #
+    # Fix: excess threads (anchor_start > nF_cur) get an empty range and
+    # immediately idle — they contribute no walk steps but no i0 aliasing.
     if anchor_start > nF_cur
-        anchor_start = mod1(tid, nF_cur)
-        anchor_end   = anchor_start
+        # This thread has no FB elements to walk.  Return empty results immediately
+        # rather than wrapping with mod1 (which aliases i0 ranges and produces
+        # spurious same_col=100% on the wrapped threads).
+        verbose && @printf("[thread %2d | IDLE | no FB slice (nF_cur=%d < chunk start %d)]\n",
+                           tid, nF_cur, anchor_start)
+        return (rel_rows      = Dict{Int,Int}[],
+                alpha_vec     = BigInt[],
+                beta_vec      = BigInt[],
+                hits_total    = 0,
+                hits_full     = 0,
+                hits_0lp      = 0,
+                hits_lp1      = 0,
+                hits_1lp_emit = 0,
+                hits_lp1_conj      = 0,
+                hits_1lp_conj_emit = 0,
+                hits_1lp_conj_trivial_same_col  = 0,
+                hits_1lp_conj_trivial_zero_dal  = 0,
+                hits_1lp_conj_attractor_exact   = 0,
+                hits_1lp_conj_attractor_birthday= 0,
+                hits_lp2seen  = 0,
+                hits_lp2emit  = 0,
+                hits_lp2_cross= 0,
+                hits_lp2_odd  = 0,
+                hits_lp2_cap  = 0,
+                hits_skip     = 0,
+                evictions_conj= 0,
+                sample_rels   = Dict{Int,Int}[],
+                total_steps   = 0,
+                smooth_hist   = zeros(Int, 4),
+                rank_growth   = Tuple{Int,Int}[],
+                lp_col        = Int[],
+                phi_bias_stat = phi_bias_stat,
+                basin_hot_anchors  = Int[],
+                basin_steers_fired = 0,
+                basin_steers_hit   = 0,
+                lp1_conj_mean_gap_steps = 0.0,
+                deep_stat = deep_stat)
     end
     anchor_cursor = anchor_start
 
@@ -1041,7 +1090,8 @@ function phase2_worker(G               ::Div2,
                                                combined_scratch, P0, phi_bias_stat, next_anchor_ref,
                                                _a_bucket, deep_stat, al, P0[1], Int(a), P0[2],
                                                post_conj_stride,
-                                               conj_anchor_alpha_seen, CONJ_ANCHOR_ALPHA_CAP)
+                                               conj_anchor_alpha_seen, CONJ_ANCHOR_ALPHA_CAP,
+                                               emitted_conj_rels)
                     # D9: record 1LP-conj opcode; is_emission = true iff handle produced an emission
                     record_conj_deep_opcode!(deep_stat, OPCODE_1LP_CONJ,
                                              deep_stat.n_emissions > n_emit_before)

@@ -154,14 +154,24 @@ function _report_d19(deep_stat::ConjDeepStat; fb_size::Int = 0)
     @printf("  %-8s  %-10s  %-10s  %-10s  %-10s\n",
             "fb_idx", "total", "as_i0", "as_prev", "asym")
 
-    # Build asymmetry list for elements with >= 10 total hits.
+    # Build asymmetry list for elements with >= adaptive threshold total hits.
+    # Use max(1, total_hits ÷ 10) so the section is never blank when data is
+    # sparse (e.g. total_hits == 21 → threshold == 2 rather than 10).
+    asym_thresh = max(1, div(total_hits, 10))
+    @printf("  (threshold: tot \u2265 %d)\n", asym_thresh)
     asym_list = Tuple{Int, Int, Int, Int, Float64}[]
     for (idx, tot) in fc
-        tot < 10 && continue
+        tot < asym_thresh && continue
         ci0   = get(fc_i, idx, 0)
         cprev = get(fc_p, idx, 0)
         asym  = (ci0 - cprev) / Float64(tot)
         push!(asym_list, (idx, tot, ci0, cprev, asym))
+    end
+
+    if isempty(asym_list)
+        @printf("  (no elements passed threshold=%d — D19-C skipped)\n", asym_thresh)
+        flush(stdout)
+        return nothing
     end
 
     # Most i0-biased (tend to initiate closures).
