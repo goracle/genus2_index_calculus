@@ -324,13 +324,13 @@ function _report_seq2!(stat::PhiBiasStat; p::Int = 0)
             end
 
             function allan_factor(arr::Vector{Int}, T::Int, span::Int)
-                # Partition [arr[1], arr[1]+span] into windows of T steps.
-                # Use ceiling division so arr[end] (which lands at offset=span-1
-                # or span) always falls within the last window rather than one
-                # past it.  floor division loses the final partial window.
-                n_windows = max(1, cld(span, T))
+                # Partition [arr[1], arr[end]] into windows of T steps.
+                # Compute the actual range from arr to be robust against
+                # off-by-one in the caller's span argument.
+                t0       = arr[1]
+                actual_span = arr[end] - t0   # inclusive range, 0-based
+                n_windows = max(1, actual_span ÷ T + 1)
                 counts = zeros(Int, n_windows)
-                t0 = arr[1]
                 for a in arr
                     wi = clamp((a - t0) ÷ T + 1, 1, n_windows)
                     counts[wi] += 1
