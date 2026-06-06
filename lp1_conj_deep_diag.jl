@@ -31,6 +31,7 @@ include("lp1_conj_deep_diag_core.jl")
 include("lp1_conj_deep_diag_d1_d6.jl")
 include("lp1_conj_deep_diag_d7_d11.jl")
 include("lp1_conj_deep_diag_d12_d18.jl")
+include("lp1_conj_deep_diag_d19.jl")
 
 # ---------------------------------------------------------------------------
 #  print_conj_deep_report — top-level dispatcher.
@@ -47,7 +48,8 @@ function print_conj_deep_report(phi_stat ::PhiBiasStat,
                                  deep_stat::ConjDeepStat;
                                  conj_snap::Union{Dict, AbstractVector, Nothing} = nothing,
                                  p        ::Int = 0,
-                                 lsm_peers::Union{Vector, Nothing} = nothing)
+                                 lsm_peers::Union{Vector, Nothing} = nothing,
+                                 fb_size  ::Int = 0)
 
     arrivals  = phi_stat.lp1_conj_arrivals
     keys_u128 = phi_stat.lp1_conj_keys
@@ -62,6 +64,7 @@ function print_conj_deep_report(phi_stat ::PhiBiasStat,
     _report_d1_d6(phi_stat, deep_stat, arrivals, keys_u128, emit_bkt, n_emit)
     _report_d7_d11(phi_stat, deep_stat, n_emit; conj_snap=conj_snap)
     _report_d12_d18(deep_stat; p=p)
+    _report_d19(deep_stat; fb_size=fb_size)
 
     @printf("\n== End LP1-conj deep diagnostics ====================================================\n")
     flush(stdout)

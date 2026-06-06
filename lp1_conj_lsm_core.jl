@@ -225,12 +225,21 @@ end
     vals = sc.hot_vals[si]
     cap  = sc.hot_caps[si]
     mask = sc.hot_masks[si]
-    slot = Int(_lsm_fp(key) & mask) + 1
+    fp   = _lsm_fp(key)
+    slot = Int(fp & mask) + 1
     @inbounds while true
         if keys[slot] == CONJ_KEY_EMPTY
             keys[slot] = key
             vals[slot] = val
             sc.hot_counts[si] += 1
+            # Sampled global-bloom write: advertise this key to peer threads
+            # before the shard is flushed to disk.  1-in-8 sample rate keeps
+            # the global bloom from saturating faster than the disk-flush path
+            # would while still providing coverage for high-frequency keys.
+            # Uses the fingerprint directly — no RNG, no extra state.
+            if (fp & GLOBAL_BLOOM_HOT_SAMPLE_MASK) == 0
+                set_bloom!(sc.global_bloom, fp)
+            end
             return
         end
         slot = slot == cap ? 1 : slot + 1
@@ -702,7 +711,9 @@ function conj_insert_or_pop!(sc::LP1ConjLSM{V}, si::Int,
         slot = _lsm_hot_find(sc, si, key)
         if slot != 0
             v = @inbounds sc.hot_vals[si][slot]
-            if Int(v.i0) == i0_cur
+            if Int(v.i0) == i0_cur &&
+               Int(v.neg_al) == Int(val.neg_al) &&
+               _conj_prev_be(v) == _conj_prev_be(val)
                 return (nothing, true)
             end
             _lsm_hot_delete!(sc, si, slot)
@@ -724,7 +735,9 @@ function conj_insert_or_pop!(sc::LP1ConjLSM{V}, si::Int,
                 slot = _lsm_hot_find(sc, si, key)
                 if slot != 0
                     v = @inbounds sc.hot_vals[si][slot]
-                    if Int(v.i0) == i0_cur
+                    if Int(v.i0) == i0_cur &&
+                       Int(v.neg_al) == Int(val.neg_al) &&
+                       _conj_prev_be(v) == _conj_prev_be(val)
                         return (nothing, true)
                     end
                     _lsm_hot_delete!(sc, si, slot)
@@ -735,7 +748,9 @@ function conj_insert_or_pop!(sc::LP1ConjLSM{V}, si::Int,
 
                 found, ri, pos, i0_v, al_v, be_v = _sc_disk_find(sc, key, fp)
                 if found
-                    if Int(i0_v) == i0_cur
+                    if Int(i0_v) == i0_cur &&
+                       al_v == UInt64(val.neg_al) &&
+                       be_v == UInt64(_conj_prev_be(val))
                         _sc_disk_delete!(sc, ri, pos)
                         _lsm_hot_insert!(sc, si, key, _conj_make_val(V, i0_v, al_v, be_v))
                         return (nothing, true)
@@ -770,7 +785,9 @@ function conj_insert_or_pop!(sc::LP1ConjLSM{V}, si::Int,
                     pslot = _lsm_hot_find(peer_lsm, si, key)
                     if pslot != 0
                         pv = @inbounds peer_lsm.hot_vals[si][pslot]
-                        if Int(pv.i0) == i0_cur
+                        if Int(pv.i0) == i0_cur &&
+                           Int(pv.neg_al) == Int(val.neg_al) &&
+                           _conj_prev_be(pv) == _conj_prev_be(val)
                             return (nothing, true)
                         end
                         _lsm_hot_delete!(peer_lsm, si, pslot)
@@ -795,7 +812,9 @@ function conj_insert_or_pop!(sc::LP1ConjLSM{V}, si::Int,
                                                    peer_lsm.read_buf,
                                                    key, fp)
                                 if found
-                                    if Int(i0_v) == i0_cur
+                                    if Int(i0_v) == i0_cur &&
+                                       al_v == UInt64(val.neg_al) &&
+                                       be_v == UInt64(_conj_prev_be(val))
                                         _run_set_dead!(peer_lsm.runs[ri], pos)
                                         peer_lsm.n_disk_live -= 1
                                         lock(peer_lsm.shard_locks[si]) do
@@ -831,7 +850,9 @@ function conj_insert_or_pop!(sc::LP1ConjLSM{V}, si::Int,
             slot = _lsm_hot_find(sc, si, key)
             if slot != 0
                 v = @inbounds sc.hot_vals[si][slot]
-                if Int(v.i0) == i0_cur
+                if Int(v.i0) == i0_cur &&
+                   Int(v.neg_al) == Int(val.neg_al) &&
+                   _conj_prev_be(v) == _conj_prev_be(val)
                     return (nothing, true)
                 end
                 _lsm_hot_delete!(sc, si, slot)

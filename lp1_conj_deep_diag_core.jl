@@ -28,6 +28,7 @@ const D7_MAX_CLOSURES            = 500_000
 const D8_MAX_DEPTHS              = 500_000
 const D8_MAX_SHADOW              = 500_000
 const D17_MAX_TRACKED_KEYS       = 200_000
+const D19_MAX_PAIRS              = 500_000   # cap on pair co-occurrence dict entries
 
 # D16 — Pre-burst state fingerprinting ring-buffer constants.
 const D16_LAG_LO      = 10
@@ -103,6 +104,22 @@ mutable struct ConjDeepStat
     # d17_lifetime_hits; populated only when px >= 0.  Used to annotate the
     # top-50 table with the walk state that first introduced the key.
     d17_key_meta      ::Dict{UInt128, NTuple{3,Int}}
+
+    # D19 — Factor-base element productivity (closure participation counts).
+    # d19_fb_close_counts    : fb_index → total closures touching this element
+    #                          (i0 side + prev_col side combined).
+    # d19_fb_i0_counts       : fb_index → closures where element appeared as i0.
+    # d19_fb_prev_counts     : fb_index → closures where element appeared as prev_col.
+    # d19_fb_pair_counts     : (lo,hi) sorted pair → co-occurrence count.
+    # d19_anchor_sample_rels : fb_index → up to 5 sample relations as
+    #                          (i0, prev_col, combined_al, combined_be) tuples,
+    #                          stored for both the i0 and prev_col sides so any
+    #                          top anchor will have examples regardless of role.
+    d19_fb_close_counts    ::Dict{Int, Int}
+    d19_fb_i0_counts       ::Dict{Int, Int}
+    d19_fb_prev_counts     ::Dict{Int, Int}
+    d19_fb_pair_counts     ::Dict{NTuple{2,Int}, Int}
+    d19_anchor_sample_rels ::Dict{Int, Vector{NTuple{4,Int}}}
 end
 
 function ConjDeepStat()
@@ -130,6 +147,11 @@ function ConjDeepStat()
         UInt8[], Bool[],
         Dict{UInt128,Int}(),           # d17_lifetime_hits
         Dict{UInt128,NTuple{3,Int}}(), # d17_key_meta
+        Dict{Int,Int}(),               # d19_fb_close_counts
+        Dict{Int,Int}(),               # d19_fb_i0_counts
+        Dict{Int,Int}(),               # d19_fb_prev_counts
+        Dict{NTuple{2,Int},Int}(),     # d19_fb_pair_counts
+        Dict{Int,Vector{NTuple{4,Int}}}(), # d19_anchor_sample_rels
     )
 end
 
@@ -214,6 +236,32 @@ function merge_conj_deep_stats(stats::Vector{ConjDeepStat})::ConjDeepStat
         # since d17_key_meta is a subset of d17_lifetime_hits keys.
         for (k, meta) in s.d17_key_meta
             haskey(merged.d17_key_meta, k) || (merged.d17_key_meta[k] = meta)
+        end
+
+        # D19: merge per-FB-element closure counts.
+        for (k, v) in s.d19_fb_close_counts
+            merged.d19_fb_close_counts[k] = get(merged.d19_fb_close_counts, k, 0) + v
+        end
+        for (k, v) in s.d19_fb_i0_counts
+            merged.d19_fb_i0_counts[k] = get(merged.d19_fb_i0_counts, k, 0) + v
+        end
+        for (k, v) in s.d19_fb_prev_counts
+            merged.d19_fb_prev_counts[k] = get(merged.d19_fb_prev_counts, k, 0) + v
+        end
+        for (k, v) in s.d19_fb_pair_counts
+            if haskey(merged.d19_fb_pair_counts, k)
+                merged.d19_fb_pair_counts[k] += v
+            elseif length(merged.d19_fb_pair_counts) < D19_MAX_PAIRS
+                merged.d19_fb_pair_counts[k] = v
+            end
+        end
+        # D19 sample relations: keep up to 5 per anchor across threads.
+        for (k, rels) in s.d19_anchor_sample_rels
+            dst = get!(merged.d19_anchor_sample_rels, k, NTuple{4,Int}[])
+            for r in rels
+                length(dst) >= 5 && break
+                push!(dst, r)
+            end
         end
     end
     return merged
@@ -364,6 +412,52 @@ end
         stat.d16_ring_bkt[ring]       = cur_bkt
     end
     stat.d16_emission_count = ec + 1
+    return nothing
+end
+
+# ---------------------------------------------------------------------------
+#  record_d19_closure! — call from handle_1lp_conj! at every CLOSE,
+#  passing the current anchor index (i0), the stored anchor (prev_col),
+#  and the relation scalars (combined_al, combined_be).
+# ---------------------------------------------------------------------------
+@inline function record_d19_closure!(stat       ::ConjDeepStat,
+                                      i0         ::Int,
+                                      prev_col   ::Int,
+                                      combined_al::Int,
+                                      combined_be::Int)
+    # Per-element totals.
+    stat.d19_fb_close_counts[i0]       = get(stat.d19_fb_close_counts, i0, 0) + 1
+    stat.d19_fb_close_counts[prev_col] = get(stat.d19_fb_close_counts, prev_col, 0) + 1
+
+    # Directional split.
+    stat.d19_fb_i0_counts[i0]          = get(stat.d19_fb_i0_counts, i0, 0) + 1
+    stat.d19_fb_prev_counts[prev_col]  = get(stat.d19_fb_prev_counts, prev_col, 0) + 1
+
+    # Pair co-occurrence (canonical order: lo ≤ hi).
+    if i0 != prev_col && length(stat.d19_fb_pair_counts) < D19_MAX_PAIRS
+        pkey = i0 < prev_col ? (i0, prev_col) : (prev_col, i0)
+        stat.d19_fb_pair_counts[pkey] = get(stat.d19_fb_pair_counts, pkey, 0) + 1
+    end
+
+    # Sample relations: store up to 5 *distinct* (i0,prev_col) pairs per anchor
+    # on both sides so whichever element ends up in the top-5 will have varied
+    # examples to display.  Dedup is by (i0,prev_col) pair — scalars are
+    # identical for repeated closures of the same pair anyway.
+    rel = (i0, prev_col, combined_al, combined_be)
+    for anchor in (i0, prev_col)
+        dst = get!(stat.d19_anchor_sample_rels, anchor, NTuple{4,Int}[])
+        if length(dst) < 5
+            already = false
+            for r in dst
+                if r[1] == i0 && r[2] == prev_col
+                    already = true
+                    break
+                end
+            end
+            already || push!(dst, rel)
+        end
+    end
+
     return nothing
 end
 

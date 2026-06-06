@@ -48,3 +48,19 @@ function set_bloom!(bf::BloomFilter, fp::UInt64)
     end
     nothing
 end
+
+# ---------------------------------------------------------------------------
+#  Hot-insert sampling rate for global_bloom writes.
+#
+#  set_bloom!(global_bloom, fp) at every hot insert would saturate the shared
+#  bloom ~N_threads times faster than the flush path alone, raising the
+#  false-positive rate.  Instead we gate on (fp & mask) == 0, which passes
+#  1-in-(mask+1) inserts.  GLOBAL_BLOOM_HOT_SAMPLE_MASK = 0x7 → 1-in-8.
+#
+#  Effect on correctness: a key inserted k times across threads will be in the
+#  global bloom with probability 1 - (7/8)^k.  At k=8 that is ~65%; at k=16
+#  it is ~87%; at k=32 it is ~98.5%.  High-frequency keys (the ones we most
+#  want cross-thread matching on) are covered with very high probability.
+#  Low-frequency keys (single insertion) remain invisible, same as before.
+# ---------------------------------------------------------------------------
+const GLOBAL_BLOOM_HOT_SAMPLE_MASK = UInt64(0x7)   # 1-in-8

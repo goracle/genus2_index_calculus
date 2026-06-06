@@ -192,10 +192,15 @@ end
 # ---------------------------------------------------------------------------
 
 # conj_insert_or_pop! for ShardedLP1Conj: same atomic semantics as the LSM
-# version.  Returns (val, is_same_col) matching the LSM signature so
+# version.  Returns (val, is_same_partial) matching the LSM signature so
 # handle_1lp_conj! can treat both backends uniformly.
-# Same-col hits re-insert the stored entry and return (nothing, true) so the
-# stored entry survives for a future cross-col visitor.
+#
+# Same-partial: all three of (i0, neg_al, neg_be) match the stored entry —
+# this is a genuine repeat of the same walk partial and carries no new
+# information.  Leave the stored entry in place and discard the new arrival
+# so it survives for a future cross-col visitor.
+# Any other collision (i0 differs, or same i0 but different α/β) is a valid
+# closure: different walk positions hit the same residual key.
 @inline function conj_insert_or_pop!(sc::ShardedLP1Conj{V}, si::Int,
                                       key::CanonicalLP1Key, val::V
                                      )::Tuple{Union{V,Nothing}, Bool} where V
@@ -207,10 +212,10 @@ end
             if Int(v.i0) == Int(val.i0) &&
                Int(v.neg_al) == Int(val.neg_al) &&
                _conj_prev_be(v) == _conj_prev_be(val)
-                # Exact duplicate (same col, same α, same β): leave in place, discard.
+                # Exact same partial (same anchor col, same α, same β): leave in place, discard.
                 return (nothing, true)
             end
-            # Same col but different α or β: valid collision, fall through to close.
+            # Different partial: valid closure regardless of whether i0 matches.
             _conj_delete_slot!(sh, slot)
             (v, false)
         elseif sh.count < sh.max_entries
@@ -397,15 +402,15 @@ end
     si = conj_shard_idx(lp_key)
 
     # Use atomic insert-or-pop to close the haskey/insert TOCTOU race.
-    # Returns (prev_or_nothing, is_same_col).  Same-col hits leave the stored
-    # entry in place (re-insert) and return (nothing, true) so the entry
-    # survives for a future cross-col visitor.  Renyi accounting is skipped
-    # for same-col hits in the LSM backend so alpha_2 stays clean.
+    # Returns (prev_or_nothing, is_same_partial).  Same-partial hits (i0 matches
+    # stored entry) leave the stored entry in place and return (nothing, true) so
+    # it survives for a genuine cross-col visitor.  Rényi accounting is skipped
+    # for same-partial hits in the LSM backend so alpha_2 stays clean.
     val = _conj_make_val(V, UInt16(i0), UInt64(neg_al), UInt64(neg_be))
-    prev, is_same_col = conj_insert_or_pop!(shared_lp1_conj, si, lp_key, val)
+    prev, is_same_partial = conj_insert_or_pop!(shared_lp1_conj, si, lp_key, val)
 
-    if is_same_col
-        # Same-col: stored entry was preserved; this step is a no-op.
+    if is_same_partial
+        # Same-partial: stored entry was preserved; this step is a no-op.
         # Update diagnostic counter and attractor probe, then treat as miss.
         s.hits_1lp_conj_trivial_same_col += 1
         if anchor_alpha_seen !== nothing
@@ -437,55 +442,96 @@ end
         prev_col = Int(v.i0)
         prev_al  = Int(v.neg_al)
         prev_be  = _conj_prev_be(v)
+        # Sanity: neg_al==0 would mean alpha==ell, which is outside the cursor
+        # range [1, ell-1].  Assert here so a cursor bug surfaces immediately.
+        @assert neg_al != 0 "handle_1lp_conj!: neg_al==0 (alpha==ell) at tid=$(Threads.threadid())"
+        @assert prev_al != 0 "handle_1lp_conj!: stored prev_al==0 (alpha==ell) at tid=$(Threads.threadid())"
+
         combined_al = mod(neg_al - prev_al, Int(ell))
         combined_be = mod(neg_be - prev_be, Int(ell))
 
-        # prev_col != i0 is guaranteed here (same-col was handled above).
-        # Only remaining trivial case is Δα=Δβ=0 with different anchors.
-        if combined_al == 0 && combined_be == 0
-            s.hits_1lp_conj_trivial_zero_dal += 1
+        if i0 == prev_col
+            # Same anchor column reached the close path — means the same-partial
+            # guard passed a non-exact-duplicate through (neg_al or neg_be differed).
+            # combined_al==0 && combined_be==0 is impossible here because neg_al!=prev_al
+            # or neg_be!=prev_be (otherwise same-partial would have blocked it).
+            # This is a zero-weight row with nonzero scalars: alpha·a + beta·b = 0 style.
+            # With true FB slicing per thread this should not occur cross-thread;
+            # within a thread it means the walk revisited the same lp_key from the
+            # same anchor with different α/β — treat as instant DLP solve if
+            # combined_al==0, combined_be==0 is impossible; otherwise it's a
+            # degenerate relation we must not emit.  Assert to catch if it fires.
+            @assert false "handle_1lp_conj!: i0==prev_col=$i0 reached close path — same-partial leak (lp_key=$lp_key neg_al=$neg_al prev_al=$prev_al)"
         end
 
-        if !(combined_al == 0 && combined_be == 0)
-            # Relation: atom(fb[i0]) - atom(fb[prev_col]) = combined_al·G + combined_be·T
-            # Reuse combined_scratch to avoid per-closure Dict allocation (weight-2 rows
-            # are always exactly 2 entries; scratch is cleared and refilled here).
-            empty!(combined_scratch)
-            combined_scratch[i0]       = 1
-            combined_scratch[prev_col] = -1
-            if ASSERT_RELATIONS
-                ok = check_relation_principal(combined_scratch, combined_al, combined_be,
-                                              "α", fb, G, T; tag="RS-CONJ-CLOSE")
-                if !ok
-                    @printf("[RS-CONJ-CLOSE DIAG tid=%d] i0=%d prev_col=%d\n",
-                            Threads.threadid(), i0, prev_col)
-                    @printf("[RS-CONJ-CLOSE DIAG]  neg_al=%s neg_be=%s prev_al=%s prev_be=%s\n",
-                            string(neg_al), string(neg_be), string(prev_al), string(prev_be))
-                    @printf("[RS-CONJ-CLOSE DIAG]  lp_key=(c0=%d,c1=%d,v0=%d,v1=%d) i0=%d\n",
-                            lp_key..., i0)
-                end
-                @assert ok "Conjugate-pair 1-LP closure failed principal divisor check"
-            end
-            push!(alpha_vec, combined_al); push!(beta_vec, combined_be)
-            push!(rel_rows, copy(combined_scratch))
-            ort_add_row!(ort, combined_scratch)
-            length(rank_growth) < MAX_RANK_GROWTH_SAMPLES &&
-                push!(rank_growth, (s.raw_steps, length(rel_rows)))
-            s.hits_full += 1; s.hits_1lp_conj_emit += 1; s.rel_local += 1
-            Threads.atomic_add!(rel_counter, 1)
-            # Record arrival only on actual emission, not on every conj hit.
-            # Pass lp_key so the CIR fingerprint analysis can correlate
-            # temporally-close hits with shared algebraic structure.
-            record_lp1_conj_hit!(phi_bias_stat, s.raw_steps, lp_key, a_bucket)
-            record_conj_deep_step!(deep_stat, lp_key, a_bucket, s.raw_steps, true, al_cur, px_anchor)
-            record_d16_emission!(deep_stat, lp_key, s.raw_steps, i0)
-            for _ in 1:post_conj_stride; next_anchor_ref[](); end
+        # i0 != prev_col guaranteed from here.
+        if combined_al == 0 && combined_be == 0
+            # combined_al==combined_be==0 with i0!=prev_col means fb[i0]=fb[prev_col]
+            # in the Jacobian: a pure FB-only relation with no G/T involvement.
+            # Emitting it pollutes the kernel with a zero-scalar direction that
+            # carries no information about log_G(T).  Drop it.
+            s.hits_1lp_conj_trivial_zero_dal += 1
             return next_anchor_ref[]()
         end
-        # combined_al==0 && combined_be==0: useless close (Δα=Δβ=0, different anchors).
-        # Fall through to structured anchor jump.
+        # i0 != prev_col, combined_al or combined_be nonzero: standard relation.
+        # atom(fb[i0]) - atom(fb[prev_col]) = combined_al·G + combined_be·T
+        # Reuse combined_scratch (weight-2 row; cleared and refilled here).
+
+        # Dedup check: the deterministic step table can regenerate the same lp_key
+        # with the same alpha delta repeatedly, producing identical weight-2 rows.
+        # Root cause: after key K is closed between threads A(i0) and B(prev_col),
+        # both threads advance their alpha cursors by the same cumulative step-table
+        # increments before regenerating K, so combined_al = al_A - al_B is
+        # constant across all closures of the same pair.  We catch this with a
+        # per-thread set keyed on the canonical (lo,hi,al,be) form of the relation.
+        lo_idx  = min(i0, prev_col)
+        hi_idx  = max(i0, prev_col)
+        # Canonicalize scalar: if i0 > prev_col the stored row sign is flipped;
+        # negate so (lo→hi) and (hi→lo) variants hash to the same key.
+        canon_al = i0 <= prev_col ? combined_al : mod(Int(ell) - combined_al, Int(ell))
+        canon_be = i0 <= prev_col ? combined_be : mod(Int(ell) - combined_be, Int(ell))
+        rel_key  = (lo_idx, hi_idx, canon_al, canon_be)
+        if rel_key in emitted_conj_rels
+            # Duplicate: drop silently; do not increment rel_counter.
+            s.hits_1lp_conj_trivial_zero_dal += 1   # repurposed as dup-dropped counter
+            return next_anchor_ref[]()
+        end
+        push!(emitted_conj_rels, rel_key)
+
+        empty!(combined_scratch)
+        combined_scratch[i0]       = 1
+        combined_scratch[prev_col] = -1
+        if ASSERT_RELATIONS
+            ok = check_relation_principal(combined_scratch, combined_al, combined_be,
+                                          "α", fb, G, T; tag="RS-CONJ-CLOSE")
+            if !ok
+                @printf("[RS-CONJ-CLOSE DIAG tid=%d] i0=%d prev_col=%d\n",
+                        Threads.threadid(), i0, prev_col)
+                @printf("[RS-CONJ-CLOSE DIAG]  neg_al=%s neg_be=%s prev_al=%s prev_be=%s\n",
+                        string(neg_al), string(neg_be), string(prev_al), string(prev_be))
+                @printf("[RS-CONJ-CLOSE DIAG]  lp_key=(c0=%d,c1=%d,v0=%d,v1=%d) i0=%d\n",
+                        lp_key..., i0)
+            end
+            @assert ok "Conjugate-pair 1-LP closure failed principal divisor check"
+        end
+        push!(alpha_vec, combined_al); push!(beta_vec, combined_be)
+        push!(rel_rows, copy(combined_scratch))
+        ort_add_row!(ort, combined_scratch)
+        length(rank_growth) < MAX_RANK_GROWTH_SAMPLES &&
+            push!(rank_growth, (s.raw_steps, length(rel_rows)))
+        s.hits_full += 1; s.hits_1lp_conj_emit += 1; s.rel_local += 1
+        Threads.atomic_add!(rel_counter, 1)
+        # Record arrival only on actual emission, not on every conj hit.
+        # Pass lp_key so the CIR fingerprint analysis can correlate
+        # temporally-close hits with shared algebraic structure.
+        record_lp1_conj_hit!(phi_bias_stat, s.raw_steps, lp_key, a_bucket)
+        record_conj_deep_step!(deep_stat, lp_key, a_bucket, s.raw_steps, true, al_cur, px_anchor)
+        record_d16_emission!(deep_stat, lp_key, s.raw_steps, i0)
+        record_d19_closure!(deep_stat, i0, prev_col, combined_al, combined_be)
+        for _ in 1:post_conj_stride; next_anchor_ref[](); end
+        return next_anchor_ref[]()
     end
-    # Miss (inserted) or zero-Δα close: advance structured anchor cursor (no stride).
+    # Miss (inserted): advance structured anchor cursor (no stride).
     return next_anchor_ref[]()
 end
 
@@ -807,30 +853,27 @@ function phase2_worker(G               ::Div2,
     end
 
     # ==========================================================================
-    #  Anchor cursor — coprime stride per thread for uniform FB coverage.
+    #  Anchor cursor — contiguous per-thread slice of the factor base.
+    #
+    #  Each thread owns an exclusive chunk [anchor_start, anchor_end] of fb[].
+    #  This ensures no two threads ever share an i0 value, making the
+    #  (lp_key, i0, neg_al, neg_be) partial triple globally unique by
+    #  construction — threads cannot produce same-partial collisions with each
+    #  other, only within their own walk (which alpha/beta cycling can cause).
     # ==========================================================================
-    _small_primes = (2,3,5,7,11,13,17,19,23,29,31,37,41,43,47,53,59,61,67,71)
-    anchor_stride = nF_cur > 1 ?
-        mod(_small_primes[min(tid, length(_small_primes))], nF_cur - 1) + 1 :
-        1
-    function _gcd(a, b)
-        b == 0 && throw(ArgumentError("_gcd: divisor b is zero (a=$a)"))
-        while b != 0; a, b = b, a % b; end
-        a
+    chunk_size   = cld(nF_cur, Threads.nthreads())
+    anchor_start = (tid - 1) * chunk_size + 1
+    anchor_end   = min(tid * chunk_size, nF_cur)
+    # Guard against over-allocation when nthreads > nF_cur.
+    if anchor_start > nF_cur
+        anchor_start = mod1(tid, nF_cur)
+        anchor_end   = anchor_start
     end
-    if nF_cur > 1
-        start_stride = anchor_stride
-        while _gcd(anchor_stride, nF_cur) != 1
-            anchor_stride = mod(anchor_stride, nF_cur) + 1
-            anchor_stride == start_stride && throw(ErrorException(
-                "phase2_worker tid=$tid: no anchor_stride coprime to nF_cur=$nF_cur found"))
-        end
-    end
-    anchor_cursor = mod((tid - 1) * anchor_stride, max(1, nF_cur)) + 1
+    anchor_cursor = anchor_start
 
     @inline function next_anchor()
         pt = fb[anchor_cursor]
-        anchor_cursor = mod(anchor_cursor - 1 + anchor_stride, nF_cur) + 1
+        anchor_cursor = anchor_cursor < anchor_end ? anchor_cursor + 1 : anchor_start
         return pt
     end
     next_anchor_ref = Ref{Function}(next_anchor)
@@ -873,6 +916,16 @@ function phase2_worker(G               ::Div2,
     # --- Scratch dicts (reused every step to avoid per-step allocation) ---
     fb_row_scratch   = sizehint!(Dict{Int,Int}(), 4)
     combined_scratch = sizehint!(Dict{Int,Int}(), 8)
+
+    # --- Conj relation dedup filter ---
+    # Tracks (lo_idx, hi_idx, combined_al, combined_be) of every conj relation
+    # already emitted by this thread.  Prevents the repeated-closure pathology
+    # where the same deterministic step-table delta regenerates the same key pair
+    # with the same alpha difference, producing an identical weight-2 row.
+    # Key is canonical: lo=min(i0,prev_col) so fb[i]-fb[j] and fb[j]-fb[i]
+    # (which differ only by sign on the row and negation of combined_al) are
+    # treated as the same relation.
+    emitted_conj_rels = Set{NTuple{4,Int}}()
 
     # --- Attractor detection: for same-col trivial conj closes, check whether
     #     Δα = 0 too (same walk path revisit) vs Δα ≠ 0 (different path, but
