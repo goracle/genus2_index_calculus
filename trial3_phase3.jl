@@ -788,7 +788,7 @@ function phase3_trial_worker(
                     if length(local_lp1_conj) < local_lp_cap
                         @assert neg_al >= 0 && neg_be >= 0 "negative neg_al/neg_be before UInt64 cast"
                         @assert ell < typemax(UInt64) "ell too large for UInt64 LP1ConjValFull fields — widen struct"
-                        local_lp1_conj[lp_key] = LP1ConjValFull(UInt16(i0), UInt64(neg_al), UInt64(neg_be))
+                        local_lp1_conj[lp_key] = LP1ConjValFull(UInt16(i0), UInt32(0), UInt64(neg_al), UInt64(neg_be))
                     end
                 end
             end

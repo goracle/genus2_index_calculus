@@ -329,7 +329,13 @@ function _report_seq2!(stat::PhiBiasStat; p::Int = 0)
                 counts = zeros(Int, n_windows)
                 t0 = arr[1]
                 for a in arr
-                    wi = clamp((a - t0) ÷ T + 1, 1, n_windows)
+                    raw_wi = (a - t0) ÷ T + 1
+                    wi = clamp(raw_wi, 1, n_windows)
+                    if raw_wi != wi
+                        @printf("[allan_factor DIAG] OOB: a=%d t0=%d T=%d span=%d n_windows=%d raw_wi=%d arr_len=%d arr[1]=%d arr[end]=%d\n",
+                                a, t0, T, span, n_windows, raw_wi, length(arr), arr[1], arr[end])
+                        flush(stdout)
+                    end
                     counts[wi] += 1
                 end
                 mn = sum(counts) / n_windows
