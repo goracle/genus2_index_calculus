@@ -530,6 +530,7 @@ end
         record_lp1_conj_hit!(phi_bias_stat, s.raw_steps, lp_key, a_bucket)
         record_conj_deep_step!(deep_stat, lp_key, a_bucket, s.raw_steps, true, al_cur, px_anchor)
         record_d16_emission!(deep_stat, lp_key, s.raw_steps, i0)
+        record_d20_emission!(deep_stat)
         record_d19_closure!(deep_stat, i0, prev_col, combined_al, combined_be)
         for _ in 1:post_conj_stride; next_anchor_ref[](); end
         return next_anchor_ref[]()
@@ -864,21 +865,19 @@ function phase2_worker(G               ::Div2,
     #  construction — threads cannot produce same-partial collisions with each
     #  other, only within their own walk (which alpha/beta cycling can cause).
     # ==========================================================================
-    chunk_size   = cld(nF_cur, Threads.nthreads())
-    anchor_start = (tid - 1) * chunk_size + 1
-    anchor_end   = min(tid * chunk_size, nF_cur)
-    # Guard against over-allocation when nthreads > nF_cur.
-    #
-    # BUG FIX: the original guard used mod1(tid, nF_cur) which aliases
-    # overflow thread t back to the same i0 range as thread mod1(t,nF_cur).
-    # For example with 32 threads and nF_cur=30: thread 31 → mod1=1, same as
-    # thread 1.  Both threads then own the same i0 values, so cross-thread
-    # visits to the same lp_key with the same (neg_al,neg_be) are wrongly
-    # classified as same-partial instead of valid cross-col closures, and
-    # useful=0 / same_col=100% appears on exactly those aliased threads.
-    #
-    # Fix: excess threads (anchor_start > nF_cur) get an empty range and
-    # immediately idle — they contribute no walk steps but no i0 aliasing.
+    # Balanced partition: every thread gets either ⌊nF_cur/nthreads⌋ or
+    # ⌊nF_cur/nthreads⌋+1 FB elements.  The first `r` threads each get one
+    # extra element so that all nF_cur elements are covered with no thread idle
+    # (as long as nthreads ≤ nF_cur).  This replaces the old cld-based fixed
+    # chunk, which left up to (nthreads-1) trailing threads with empty ranges
+    # whenever nF_cur % nthreads != 0.
+    nt_            = Threads.nthreads()
+    base_chunk_    = nF_cur ÷ nt_           # minimum slice width
+    r_             = nF_cur % nt_            # first `r_` threads get one extra
+    anchor_start   = (tid - 1) * base_chunk_ + min(tid - 1, r_) + 1
+    anchor_end     = anchor_start + base_chunk_ - 1 + (tid <= r_ ? 1 : 0)
+    # Guard: excess threads (nthreads > nF_cur) still get an empty range and
+    # immediately idle, which is correct and preserves i0 exclusivity.
     if anchor_start > nF_cur
         # This thread has no FB elements to walk.  Return empty results immediately
         # rather than wrapping with mod1 (which aliases i0 ranges and produces
@@ -1095,6 +1094,7 @@ function phase2_worker(G               ::Div2,
                     # D9: record 1LP-conj opcode; is_emission = true iff handle produced an emission
                     record_conj_deep_opcode!(deep_stat, OPCODE_1LP_CONJ,
                                              deep_stat.n_emissions > n_emit_before)
+                    record_d20_step!(deep_stat, OPCODE_1LP_CONJ)
                 end
             elseif enable_lp2_conj
                 cur_pt = handle_2lp_conj!(P0, RS_mumford::NTuple{4,Int}, neg_al, neg_be, ell,
@@ -1109,10 +1109,12 @@ function phase2_worker(G               ::Div2,
                 # conservatively mark as LP for Seq 3 since P0 came from a conj step.
                 phi_bias_stat._prev_anchor_was_lp = true
                 record_conj_deep_opcode!(deep_stat, OPCODE_2LP_CONJ, false)
+                record_d20_step!(deep_stat, OPCODE_2LP_CONJ)
             else
                 cur_pt = next_anchor()
                 record_random_anchor!(phi_bias_stat)
                 record_conj_deep_opcode!(deep_stat, OPCODE_SKIP, false)
+                record_d20_step!(deep_stat, OPCODE_SKIP)
             end
             continue
         end
@@ -1143,6 +1145,7 @@ function phase2_worker(G               ::Div2,
             cur_pt = next_anchor()
             record_random_anchor!(phi_bias_stat)
             record_conj_deep_opcode!(deep_stat, OPCODE_0LP, false)
+            record_d20_step!(deep_stat, OPCODE_0LP)
 
         elseif n_lp == 1
             # ------------------------------------------------------------------
@@ -1153,6 +1156,7 @@ function phase2_worker(G               ::Div2,
                 cur_pt = next_anchor()
                 record_random_anchor!(phi_bias_stat)
                 record_conj_deep_opcode!(deep_stat, OPCODE_SKIP, false)
+                record_d20_step!(deep_stat, OPCODE_SKIP)
             else
             s.hits_lp1 += 1
             lp_pt = i0 == 0 ? P0 : iR == 0 ? R : S
@@ -1176,6 +1180,7 @@ function phase2_worker(G               ::Div2,
             # frequent and folding it in is conservative.
             phi_bias_stat._prev_anchor_was_lp = true
             record_conj_deep_opcode!(deep_stat, OPCODE_1LP_AFF, false)
+            record_d20_step!(deep_stat, OPCODE_1LP_AFF)
             end  # enable_lp1_aff
 
         elseif n_lp == 2
@@ -1187,6 +1192,7 @@ function phase2_worker(G               ::Div2,
                 cur_pt = next_anchor()
                 record_random_anchor!(phi_bias_stat)
                 record_conj_deep_opcode!(deep_stat, OPCODE_SKIP, false)
+                record_d20_step!(deep_stat, OPCODE_SKIP)
             else
                 empty!(fb_row_scratch)
                 for idx in (i0, iR, iS)
@@ -1205,6 +1211,7 @@ function phase2_worker(G               ::Div2,
                                              lp_col, max_lp2_nodes, rank_growth,
                                              combined_scratch, next_anchor_ref)
                 record_conj_deep_opcode!(deep_stat, OPCODE_2LP_AFF, false)
+                record_d20_step!(deep_stat, OPCODE_2LP_AFF)
             end
 
         else
@@ -1216,6 +1223,7 @@ function phase2_worker(G               ::Div2,
             cur_pt = next_anchor()
             record_random_anchor!(phi_bias_stat)
             record_conj_deep_opcode!(deep_stat, OPCODE_SKIP, false)
+            record_d20_step!(deep_stat, OPCODE_SKIP)
         end
     end   # end main walk loop
 

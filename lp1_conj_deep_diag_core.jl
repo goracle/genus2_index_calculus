@@ -30,6 +30,20 @@ const D8_MAX_SHADOW              = 500_000
 const D17_MAX_TRACKED_KEYS       = 200_000
 const D19_MAX_PAIRS              = 500_000   # cap on pair co-occurrence dict entries
 
+# D20 — Pre-emission opcode sequence fingerprint.
+# We keep a ring buffer of the last D20_WINDOW opcodes and snapshot it at
+# every emission.  D20_MAX_SNAPSHOTS caps memory.
+const D20_WINDOW        = 256        # opcodes to look back
+const D20_RING_SIZE     = D20_WINDOW + 4
+const D20_MAX_SNAPSHOTS = 2_000      # per-thread cap on full snapshots
+const D20_HIST_WINDOW   = 16         # short window for opcode-N-before-emission histogram
+const D20_BASELINE_CAP  = 200_000    # baseline opcode samples (reservoir)
+
+# D21 — Refractory / eligible-state return time.
+# After each emission we record how many steps until the *next* 1LP_CONJ opcode
+# is seen (whether or not it becomes a close).  Measures refractory length.
+const D21_MAX_GAPS      = 5_000      # per-thread cap on return-time samples
+
 # D16 — Pre-burst state fingerprinting ring-buffer constants.
 const D16_LAG_LO      = 10
 const D16_LAG_HI      = 40
@@ -120,6 +134,21 @@ mutable struct ConjDeepStat
     d19_fb_prev_counts     ::Dict{Int, Int}
     d19_fb_pair_counts     ::Dict{NTuple{2,Int}, Int}
     d19_anchor_sample_rels ::Dict{Int, Vector{NTuple{4,Int}}}
+
+    # D20 — Pre-emission opcode sequence fingerprint.
+    # Ring buffer of recent opcodes (hot path); snapshots at emission time.
+    d20_opcode_ring            ::Vector{UInt8}    # circular buffer, length D20_RING_SIZE
+    d20_ring_head              ::Int              # next-write index (1-based, mod D20_RING_SIZE)
+    d20_ring_filled            ::Int              # how many valid entries (up to D20_RING_SIZE)
+    d20_pre_snapshots          ::Vector{UInt8}    # n_snapshots × D20_HIST_WINDOW, row-major
+    d20_n_snapshots            ::Int
+    d20_baseline_opcode_counts ::Matrix{UInt32}   # D20_HIST_WINDOW × 6 (opcode type)
+    d20_n_baseline             ::Int
+
+    # D21 — Refractory gap: steps from emission until next 1LP_CONJ opcode.
+    d21_steps_since_emit  ::Int             # -1 = not in refractory tracking
+    d21_return_gaps       ::Vector{Int}     # collected return-time samples
+    d21_n_emitted         ::Int             # total emissions seen by this thread
 end
 
 function ConjDeepStat()
@@ -147,11 +176,24 @@ function ConjDeepStat()
         UInt8[], Bool[],
         Dict{UInt128,Int}(),           # d17_lifetime_hits
         Dict{UInt128,NTuple{3,Int}}(), # d17_key_meta
+        # D19
         Dict{Int,Int}(),               # d19_fb_close_counts
         Dict{Int,Int}(),               # d19_fb_i0_counts
         Dict{Int,Int}(),               # d19_fb_prev_counts
         Dict{NTuple{2,Int},Int}(),     # d19_fb_pair_counts
         Dict{Int,Vector{NTuple{4,Int}}}(), # d19_anchor_sample_rels
+        # D20
+        zeros(UInt8, D20_RING_SIZE),       # d20_opcode_ring
+        1,                                  # d20_ring_head
+        0,                                  # d20_ring_filled
+        UInt8[],                            # d20_pre_snapshots
+        0,                                  # d20_n_snapshots
+        zeros(UInt32, D20_HIST_WINDOW, 6), # d20_baseline_opcode_counts
+        0,                                  # d20_n_baseline
+        # D21
+        -1,                                 # d21_steps_since_emit
+        Int[],                              # d21_return_gaps
+        0,                                  # d21_n_emitted
     )
 end
 
@@ -263,6 +305,27 @@ function merge_conj_deep_stats(stats::Vector{ConjDeepStat})::ConjDeepStat
                 push!(dst, r)
             end
         end
+
+        # D20: merge pre-emission snapshots and baseline counts.
+        n_rem = (D20_MAX_SNAPSHOTS - merged.d20_n_snapshots) * D20_HIST_WINDOW
+        if n_rem > 0 && length(s.d20_pre_snapshots) > 0
+            n_take = min(n_rem, length(s.d20_pre_snapshots))
+            # round down to whole windows
+            n_take = (n_take ÷ D20_HIST_WINDOW) * D20_HIST_WINDOW
+            append!(merged.d20_pre_snapshots, s.d20_pre_snapshots[1:n_take])
+            merged.d20_n_snapshots += n_take ÷ D20_HIST_WINDOW
+        end
+        merged.d20_baseline_opcode_counts .+= s.d20_baseline_opcode_counts
+        merged.d20_n_baseline += s.d20_n_baseline
+
+        # D21: merge return-gap samples.
+        let n_rem21 = D21_MAX_GAPS - length(merged.d21_return_gaps)
+            if n_rem21 > 0
+                n_take = min(n_rem21, length(s.d21_return_gaps))
+                append!(merged.d21_return_gaps, s.d21_return_gaps[1:n_take])
+            end
+        end
+        merged.d21_n_emitted += s.d21_n_emitted
     end
     return merged
 end
@@ -462,7 +525,86 @@ end
 end
 
 # ---------------------------------------------------------------------------
-#  Internal hash helpers
+#  record_d20_step! — call on EVERY valid phi step (hot path, inline).
+#  Updates the opcode ring buffer and (1/baseline_rate) baseline reservoir.
+#  Also advances the D21 refractory counter.
+#
+#  opcode should be one of OPCODE_0LP .. OPCODE_SKIP.
+#  baseline_gate: sample baseline when (rand(UInt16) & 0x1f) == 0  (1/32 rate).
+# ---------------------------------------------------------------------------
+@inline function record_d20_step!(stat  ::ConjDeepStat,
+                                   opcode::UInt8)
+    # ── Ring buffer update ────────────────────────────────────────────────
+    head = stat.d20_ring_head
+    @inbounds stat.d20_opcode_ring[head] = opcode
+    head = head == D20_RING_SIZE ? 1 : head + 1
+    stat.d20_ring_head = head
+    filled = stat.d20_ring_filled
+    stat.d20_ring_filled = filled < D20_RING_SIZE ? filled + 1 : D20_RING_SIZE
+
+    # ── Baseline reservoir (sparse: 1/32 of all steps) ───────────────────
+    if stat.d20_n_baseline < D20_BASELINE_CAP && (rand(UInt8) & 0x1f) == 0x00
+        # Record opcode-at-position[-k] for k=1..D20_HIST_WINDOW as a tally.
+        # We use position 0 = "most recent step before now" = ring[head-1].
+        ring = stat.d20_opcode_ring
+        cur_filled = stat.d20_ring_filled
+        cur_head   = stat.d20_ring_head - 1  # last-written slot (0→D20_RING_SIZE)
+        cur_head   = cur_head == 0 ? D20_RING_SIZE : cur_head
+        n_avail    = min(cur_filled, D20_HIST_WINDOW)
+        for k in 1:n_avail
+            slot = cur_head - k + 1
+            slot = slot <= 0 ? slot + D20_RING_SIZE : slot
+            oc   = Int(ring[slot]) + 1   # 1-based opcode index (1..6)
+            @inbounds stat.d20_baseline_opcode_counts[k, oc] += UInt32(1)
+        end
+        stat.d20_n_baseline += 1
+    end
+
+    # ── D21 refractory tracker ────────────────────────────────────────────
+    if stat.d21_steps_since_emit >= 0
+        stat.d21_steps_since_emit += 1
+        # First time we see a 1LP_CONJ opcode after an emission: record return gap.
+        if opcode == OPCODE_1LP_CONJ
+            if length(stat.d21_return_gaps) < D21_MAX_GAPS
+                push!(stat.d21_return_gaps, stat.d21_steps_since_emit)
+            end
+            stat.d21_steps_since_emit = -1   # stop tracking until next emission
+        end
+    end
+
+    return nothing
+end
+
+# ---------------------------------------------------------------------------
+#  record_d20_emission! — call at every LP1-conj CLOSE (emission).
+#  Snapshots the last D20_HIST_WINDOW opcodes from the ring buffer and
+#  resets the D21 refractory counter.
+# ---------------------------------------------------------------------------
+@inline function record_d20_emission!(stat::ConjDeepStat)
+    # ── D20 snapshot ─────────────────────────────────────────────────────
+    if stat.d20_n_snapshots < D20_MAX_SNAPSHOTS
+        ring      = stat.d20_opcode_ring
+        cur_head  = stat.d20_ring_head - 1
+        cur_head  = cur_head == 0 ? D20_RING_SIZE : cur_head
+        n_avail   = min(stat.d20_ring_filled, D20_HIST_WINDOW)
+        for k in 1:D20_HIST_WINDOW
+            if k <= n_avail
+                slot = cur_head - k + 1
+                slot = slot <= 0 ? slot + D20_RING_SIZE : slot
+                push!(stat.d20_pre_snapshots, stat.d20_opcode_ring[slot])
+            else
+                push!(stat.d20_pre_snapshots, 0xff)  # sentinel: no data
+            end
+        end
+        stat.d20_n_snapshots += 1
+    end
+
+    # ── D21 reset ────────────────────────────────────────────────────────
+    stat.d21_steps_since_emit = 0
+    stat.d21_n_emitted       += 1
+
+    return nothing
+end
 # ---------------------------------------------------------------------------
 @inline function _deep_fp64(key::UInt128)::UInt64
     lo = UInt64(key & 0xffffffffffffffff)

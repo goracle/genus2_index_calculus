@@ -70,17 +70,7 @@ function _report_header_and_surfaces!(stat::PhiBiasStat; p::Int = 0)
         @printf("    non-split χ²           : %.2f  (dof=%d)\n", chi2_nonspl, dof2)
     end
 
-    # --- Top buckets (show the 5 most-populated split buckets) ---
-    if n_split > 0 && nb >= 5
-        indexed  = collect(enumerate(stat.split_hist))
-        top5     = sort(indexed, by=x->-x[2])[1:min(5, end)]
-        @printf("    top split buckets (bucket_idx, count):\n")
-        for (bi, cnt) in top5
-            frac = p > 0 ? @sprintf(" [a ∈ [%d,%d))", (bi-1)*p÷nb, bi*p÷nb) : ""
-            @printf("      bucket %4d%s : %d  (%.2f%% of splits)\n",
-                    bi, frac, cnt, 100.0*cnt/n_split)
-        end
-    end
+    # (top-bucket table removed: χ²/dof ≈ 1 confirms uniform — no signal)
 
     # --- Seq 1: Run-length distribution KS test ---
     @printf("  Seq 1 — Run-length distribution (KS vs Geometric(1/2)):\n")

@@ -243,18 +243,7 @@ function _report_seq2!(stat::PhiBiasStat; p::Int = 0)
                         n_wins_used, win_len, n_bins_half)
                 @printf("      low-freq power lift  : %.3f%s\n", lo_lift, flag_psd)
                 @printf("      high-freq power lift : %.3f\n", hi_lift)
-
-                # Print bins 2..n_show+1 (positive-frequency, skipping DC at bin 1).
-                n_show = min(8, n_bins_half - 1)
-                @printf("      bin (freq×win_len):  %s\n",
-                        join([@sprintf("%6d", k) for k in 1:n_show], " "))
-                @printf("      PSD real:            %s\n",
-                        join([@sprintf("%6.1f", psd_avg[k+1]) for k in 1:n_show], " "))
-                @printf("      PSD shuffled:        %s\n",
-                        join([@sprintf("%6.1f", psd_shuf_avg[k+1]) for k in 1:n_show], " "))
-                @printf("      ratio real/shuf:     %s\n",
-                        join([@sprintf("%6.2f", psd_avg[k+1] / max(1e-30, psd_shuf_avg[k+1]))
-                              for k in 1:n_show], " "))
+                # (per-bin PSD table removed: summary lifts carry the signal)
             else
                 @printf("      (too few windowed hits for Welch PSD)\n")
             end
@@ -566,30 +555,9 @@ function _report_seq2!(stat::PhiBiasStat; p::Int = 0)
         n_lc_tot  = sum(lc_hist)
         n_vis_tot = sum(vis_hist)
         if n_lc_tot >= 10 && n_vis_tot >= 10
-            # Per-bucket lift, clipped to avoid divide-by-zero.
-            lifts = [
-                (lc_hist[i] / max(1e-30, Float64(n_lc_tot))) /
-                (vis_hist[i] / max(1e-30, Float64(n_vis_tot)))
-                for i in eachindex(lc_hist)
-            ]
-            # Sort and report top-5 and bottom-5.
-            order = sortperm(lifts, rev=true)
+            # (per-bucket lift table removed: χ²/dof test is the decisive signal)
             @printf("      total LP1-conj emissions : %d  total split visits: %d\n",
                     n_lc_tot, n_vis_tot)
-            @printf("      TOP-5 hot a-buckets (lift = emission_rate / visit_rate):\n")
-            for rank in 1:min(5, length(order))
-                bi = order[rank]
-                frac_str = p > 0 ? @sprintf(" [a∈[%d,%d))", (bi-1)*p÷nb, bi*p÷nb) : ""
-                @printf("        bucket %4d%s  lift=%.3f  emissions=%d  visits=%d\n",
-                        bi, frac_str, lifts[bi], lc_hist[bi], vis_hist[bi])
-            end
-            @printf("      BOTTOM-5 cold a-buckets:\n")
-            for rank in max(1,length(order)-4):length(order)
-                bi = order[rank]
-                frac_str = p > 0 ? @sprintf(" [a∈[%d,%d))", (bi-1)*p÷nb, bi*p÷nb) : ""
-                @printf("        bucket %4d%s  lift=%.3f  emissions=%d  visits=%d\n",
-                        bi, frac_str, lifts[bi], lc_hist[bi], vis_hist[bi])
-            end
             # χ² test: are emissions distributed proportional to visits?
             expected_lc = [vis_hist[i] * Float64(n_lc_tot) / max(1.0, Float64(n_vis_tot))
                            for i in eachindex(vis_hist)]
@@ -662,14 +630,7 @@ function _report_seq2!(stat::PhiBiasStat; p::Int = 0)
                                            " (≈ white noise, α≈0)"
             @printf("      bins=%d  tapers=%d  fit_bins=%d\n", n_mt_bins, K_tapers, n_fit)
             @printf("      spectral slope α : %.3f%s\n", alpha_mt, flag_alpha)
-
-            # Show first 8 multitaper PSD bins vs Welch (already computed above
-            # if available — just show MT here standalone).
-            n_show_mt = min(8, n_bins_half_mt)
-            @printf("      freq bin:   %s\n",
-                    join([@sprintf("%8d", k) for k in 1:n_show_mt], " "))
-            @printf("      MT PSD:     %s\n",
-                    join([@sprintf("%8.2f", mt_psd[k]) for k in 1:n_show_mt], " "))
+            # (per-bin MT PSD table removed: slope α is the decisive summary)
         else
             @printf("      (need ≥16 hits for multitaper PSD)\n")
         end
