@@ -407,7 +407,7 @@ end
     # stored entry) leave the stored entry in place and return (nothing, true) so
     # it survives for a genuine cross-col visitor.  Rényi accounting is skipped
     # for same-partial hits in the LSM backend so alpha_2 stays clean.
-    val = _conj_make_val(V, UInt16(i0), UInt64(neg_al), UInt64(neg_be))
+    val = _conj_make_val(V, UInt16(i0), UInt32(s.raw_steps), UInt64(neg_al), UInt64(neg_be))
     prev, is_same_partial = conj_insert_or_pop!(shared_lp1_conj, si, lp_key, val)
 
     if is_same_partial
@@ -528,10 +528,12 @@ end
         # Pass lp_key so the CIR fingerprint analysis can correlate
         # temporally-close hits with shared algebraic structure.
         record_lp1_conj_hit!(phi_bias_stat, s.raw_steps, lp_key, a_bucket)
-        record_conj_deep_step!(deep_stat, lp_key, a_bucket, s.raw_steps, true, al_cur, px_anchor)
+        record_conj_deep_step!(deep_stat, lp_key, a_bucket, s.raw_steps, true, al_cur, px_anchor,
+                               Int(v.store_step))
         record_d16_emission!(deep_stat, lp_key, s.raw_steps, i0)
         record_d20_emission!(deep_stat)
         record_d19_closure!(deep_stat, i0, prev_col, combined_al, combined_be)
+        record_d22_d23_d24_emission!(deep_stat, s.raw_steps, _deep_bucket(lp_key), a_bucket)
         for _ in 1:post_conj_stride; next_anchor_ref[](); end
         return next_anchor_ref[]()
     end
@@ -835,7 +837,8 @@ function phase2_worker(G               ::Div2,
                        lp_col          ::LPResidualCollector,
                        ort             ::OnlineRankTracker,
                        phi_bias_stat   ::PhiBiasStat,
-                       deep_stat       ::ConjDeepStat;
+                       deep_stat       ::ConjDeepStat,
+                       n_workers       ::Int = Threads.nthreads();
                        verbose         ::Bool = true,
                        beta_zero       ::Bool = false,
                        amortized_precompute::Bool = false,
@@ -865,13 +868,19 @@ function phase2_worker(G               ::Div2,
     #  construction — threads cannot produce same-partial collisions with each
     #  other, only within their own walk (which alpha/beta cycling can cause).
     # ==========================================================================
-    # Balanced partition: every thread gets either ⌊nF_cur/nthreads⌋ or
-    # ⌊nF_cur/nthreads⌋+1 FB elements.  The first `r` threads each get one
+    # Balanced partition: every thread gets either ⌊nF_cur/n_workers⌋ or
+    # ⌊nF_cur/n_workers⌋+1 FB elements.  The first `r` threads each get one
     # extra element so that all nF_cur elements are covered with no thread idle
-    # (as long as nthreads ≤ nF_cur).  This replaces the old cld-based fixed
-    # chunk, which left up to (nthreads-1) trailing threads with empty ranges
-    # whenever nF_cur % nthreads != 0.
-    nt_            = Threads.nthreads()
+    # (as long as n_workers ≤ nF_cur).  This replaces the old cld-based fixed
+    # chunk, which left up to (n_workers-1) trailing threads with empty ranges
+    # whenever nF_cur % n_workers != 0.
+    #
+    # n_workers is passed in from the coordinator rather than sampled here to
+    # avoid the Julia quirk where Threads.nthreads() can return a different value
+    # inside a @spawn'd task than from the main thread (e.g. 32 vs 33 when the
+    # main thread is tid=1 and workers are tid=2..33), which causes the last
+    # worker's anchor_start to exceed nF_cur and fire a spurious IDLE.
+    nt_            = n_workers
     base_chunk_    = nF_cur ÷ nt_           # minimum slice width
     r_             = nF_cur % nt_            # first `r_` threads get one extra
     anchor_start   = (tid - 1) * base_chunk_ + min(tid - 1, r_) + 1
@@ -1095,6 +1104,7 @@ function phase2_worker(G               ::Div2,
                     record_conj_deep_opcode!(deep_stat, OPCODE_1LP_CONJ,
                                              deep_stat.n_emissions > n_emit_before)
                     record_d20_step!(deep_stat, OPCODE_1LP_CONJ)
+                    record_d22_d23_d24_step!(deep_stat)
                 end
             elseif enable_lp2_conj
                 cur_pt = handle_2lp_conj!(P0, RS_mumford::NTuple{4,Int}, neg_al, neg_be, ell,
@@ -1110,11 +1120,13 @@ function phase2_worker(G               ::Div2,
                 phi_bias_stat._prev_anchor_was_lp = true
                 record_conj_deep_opcode!(deep_stat, OPCODE_2LP_CONJ, false)
                 record_d20_step!(deep_stat, OPCODE_2LP_CONJ)
+                record_d22_d23_d24_step!(deep_stat)
             else
                 cur_pt = next_anchor()
                 record_random_anchor!(phi_bias_stat)
                 record_conj_deep_opcode!(deep_stat, OPCODE_SKIP, false)
                 record_d20_step!(deep_stat, OPCODE_SKIP)
+                record_d22_d23_d24_step!(deep_stat)
             end
             continue
         end
@@ -1146,6 +1158,7 @@ function phase2_worker(G               ::Div2,
             record_random_anchor!(phi_bias_stat)
             record_conj_deep_opcode!(deep_stat, OPCODE_0LP, false)
             record_d20_step!(deep_stat, OPCODE_0LP)
+            record_d22_d23_d24_step!(deep_stat)
 
         elseif n_lp == 1
             # ------------------------------------------------------------------
@@ -1157,6 +1170,7 @@ function phase2_worker(G               ::Div2,
                 record_random_anchor!(phi_bias_stat)
                 record_conj_deep_opcode!(deep_stat, OPCODE_SKIP, false)
                 record_d20_step!(deep_stat, OPCODE_SKIP)
+                record_d22_d23_d24_step!(deep_stat)
             else
             s.hits_lp1 += 1
             lp_pt = i0 == 0 ? P0 : iR == 0 ? R : S
@@ -1181,6 +1195,7 @@ function phase2_worker(G               ::Div2,
             phi_bias_stat._prev_anchor_was_lp = true
             record_conj_deep_opcode!(deep_stat, OPCODE_1LP_AFF, false)
             record_d20_step!(deep_stat, OPCODE_1LP_AFF)
+            record_d22_d23_d24_step!(deep_stat)
             end  # enable_lp1_aff
 
         elseif n_lp == 2
@@ -1193,6 +1208,7 @@ function phase2_worker(G               ::Div2,
                 record_random_anchor!(phi_bias_stat)
                 record_conj_deep_opcode!(deep_stat, OPCODE_SKIP, false)
                 record_d20_step!(deep_stat, OPCODE_SKIP)
+                record_d22_d23_d24_step!(deep_stat)
             else
                 empty!(fb_row_scratch)
                 for idx in (i0, iR, iS)
@@ -1212,6 +1228,7 @@ function phase2_worker(G               ::Div2,
                                              combined_scratch, next_anchor_ref)
                 record_conj_deep_opcode!(deep_stat, OPCODE_2LP_AFF, false)
                 record_d20_step!(deep_stat, OPCODE_2LP_AFF)
+                record_d22_d23_d24_step!(deep_stat)
             end
 
         else
@@ -1224,6 +1241,7 @@ function phase2_worker(G               ::Div2,
             record_random_anchor!(phi_bias_stat)
             record_conj_deep_opcode!(deep_stat, OPCODE_SKIP, false)
             record_d20_step!(deep_stat, OPCODE_SKIP)
+            record_d22_d23_d24_step!(deep_stat)
         end
     end   # end main walk loop
 
@@ -1274,6 +1292,10 @@ function phase2_worker(G               ::Div2,
         # Basin steer diagnostic report
         flush(stdout)
     end
+
+    # Flush any open D22 burst window so the last burst is counted even if it
+    # never reached the inter-burst gap threshold before the walk ended.
+    flush_d22_open_burst!(deep_stat)
 
     # If a carry-in ConjDeepStat was provided (e.g. from a prior precompute walk
     # on this thread), merge its D16 histograms into our own so the report covers

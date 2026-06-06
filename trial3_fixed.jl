@@ -532,19 +532,21 @@ function index_calculus_walk(G::Div2, T::Div2;
     # One collector per thread: no locking needed during walk, merged after.
     thread_collectors = [LPResidualCollector() for _ in 1:Threads.nthreads()]
     thread_phi_stats  = [PhiBiasStat(p)        for _ in 1:Threads.nthreads()]
+    thread_deep_stats = [ConjDeepStat()        for _ in 1:Threads.nthreads()]
     results           = Vector{Any}(undef, Threads.nthreads())
 
     # Instantiate the tracker here so all threads can stream rows into it
     # (Ensure OnlineRankTracker is thread-safe or locked if your code requires it!)
     rank_tracker      = OnlineRankTracker(ell)
 
+    n_workers = Threads.nthreads()  # capture on main thread — avoids nthreads() quirk inside @spawn
     t_phase2_start = time()
-    @sync for tid in 1:Threads.nthreads()
+    @sync for tid in 1:n_workers
         Threads.@spawn begin
             results[tid] = phase2_worker(
                 G, T, fb, BigInt(ell), pt2idx,
                 step_D, step_a, step_b,
-                rel_counter, rel_target, step_cap ÷ Threads.nthreads(),
+                rel_counter, rel_target, step_cap ÷ n_workers,
                 shared_lp1, shared_lp1_lock,
                 shared_lp2, shared_lp2_lock,
                 shared_lp_doubled,
@@ -552,7 +554,8 @@ function index_calculus_walk(G::Div2, T::Div2;
                 shared_lp2_conj, shared_lp2_conj_lock,
                 enable_lp2, enable_lp2_conj, max_lp2_nodes, max_lp2_conj_nodes,
                 thread_collectors[tid], rank_tracker,
-                thread_phi_stats[tid]; verbose=verbose,
+                thread_phi_stats[tid], thread_deep_stats[tid], n_workers;
+                verbose=verbose,
                 enable_lp1_aff=enable_lp1_aff,
                 post_conj_stride=post_conj_stride)
         end
@@ -1278,12 +1281,13 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
                 Sys.maxrss()/1024^2, Base.gc_live_bytes()/1024^2)
         flush(stdout)
 
-        @sync for tid in 1:Threads.nthreads()
+        n_workers_pre = Threads.nthreads()  # capture on main thread — avoids nthreads() quirk inside @spawn
+        @sync for tid in 1:n_workers_pre
             Threads.@spawn begin
                 results_pre[tid] = phase2_worker(
                     G, T_dummy, fb_pre, BigInt(ell), pt2idx_pre,
                     step_D_pre, step_a_pre, step_b_pre,
-                    rel_counter_pre, rel_target_pre, step_cap_pre ÷ Threads.nthreads(),
+                    rel_counter_pre, rel_target_pre, step_cap_pre ÷ n_workers_pre,
                     shared_lp1_pre, shared_lp1_lock_pre,
                     shared_lp2_pre, shared_lp2_lock_pre,
                     shared_lp_doubled_pre,
@@ -1292,7 +1296,7 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
                     enable_lp2, enable_lp2_conj, max_lp2_nodes, max_lp2_conj_nodes,
                     thread_collectors_pre[tid], rank_tracker_pre,
                     thread_phi_stats_pre[tid],
-                    thread_deep_stats_pre[tid];
+                    thread_deep_stats_pre[tid], n_workers_pre;
                     verbose=true, beta_zero=true, amortized_precompute=true,
                     enable_lp1_aff=enable_lp1_aff,
                     post_conj_stride=post_conj_stride)

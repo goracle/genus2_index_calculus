@@ -93,6 +93,7 @@ end
 
 @inline _buf_fp(buf::Vector{UInt8})::UInt64  = _buf_u64(buf, OFF_FP)
 @inline _buf_i0(buf::Vector{UInt8})::UInt16  = _buf_u16(buf, OFF_I0)
+@inline _buf_step(buf::Vector{UInt8})::UInt32 = _buf_u32(buf, OFF_STEP)
 @inline _buf_al(buf::Vector{UInt8})::UInt64  = _buf_u64(buf, OFF_AL)
 @inline _buf_be(buf::Vector{UInt8})::UInt64  = _buf_u64(buf, OFF_BE)
 @inline function _buf_key_match(buf::Vector{UInt8},
@@ -151,7 +152,7 @@ end
 function _write_record!(buf::Vector{UInt8}, off::Int,
                          fp::UInt64, u0::UInt32, u1::UInt32,
                          v0::UInt32, v1::UInt32,
-                         i0::UInt16, al::UInt64, be::UInt64)
+                         i0::UInt16, step::UInt32, al::UInt64, be::UInt64)
     # fp
     buf[off+1] = UInt8(fp & 0xff); buf[off+2] = UInt8((fp>>8)&0xff)
     buf[off+3] = UInt8((fp>>16)&0xff); buf[off+4] = UInt8((fp>>24)&0xff)
@@ -171,9 +172,11 @@ function _write_record!(buf::Vector{UInt8}, off::Int,
     buf[off+23] = UInt8((v1>>16)&0xff); buf[off+24] = UInt8((v1>>24)&0xff)
     # i0
     buf[off+25] = UInt8(i0&0xff); buf[off+26] = UInt8((i0>>8)&0xff)
-    # pad (6 bytes)
-    buf[off+27] = 0; buf[off+28] = 0; buf[off+29] = 0
-    buf[off+30] = 0; buf[off+31] = 0; buf[off+32] = 0
+    # step (D8 store_step, UInt32, bytes 26-29 / off+27..off+30)
+    buf[off+27] = UInt8(step&0xff); buf[off+28] = UInt8((step>>8)&0xff)
+    buf[off+29] = UInt8((step>>16)&0xff); buf[off+30] = UInt8((step>>24)&0xff)
+    # pad (2 bytes)
+    buf[off+31] = 0; buf[off+32] = 0
     # al
     buf[off+33] = UInt8(al&0xff); buf[off+34] = UInt8((al>>8)&0xff)
     buf[off+35] = UInt8((al>>16)&0xff); buf[off+36] = UInt8((al>>24)&0xff)
@@ -200,8 +203,8 @@ function _lsm_disk_find(runs::Vector{RunMeta},
                          buf::Vector{UInt8},
                          key::CanonicalLP1Key,
                          fp_target::UInt64
-                        )::Tuple{Bool,Int,Int,UInt16,UInt64,UInt64}
-    read_fd < 0 && return (false, 0, 0, UInt16(0), UInt64(0), UInt64(0))
+                        )::Tuple{Bool,Int,Int,UInt16,UInt32,UInt64,UInt64}
+    read_fd < 0 && return (false, 0, 0, UInt16(0), UInt32(0), UInt64(0), UInt64(0))
     ku0 = UInt32(key & 0x00000000ffffffff)
     ku1 = UInt32((key >> 32)  & 0x00000000ffffffff)
     kv0 = UInt32((key >> 64)  & 0x00000000ffffffff)
@@ -232,12 +235,12 @@ function _lsm_disk_find(runs::Vector{RunMeta},
             _buf_fp(buf) != fp_target && break
             if !_run_is_dead(rm, pos) &&
                _buf_key_match(buf, ku0, ku1, kv0, kv1)
-                return (true, ri, pos, _buf_i0(buf), _buf_al(buf), _buf_be(buf))
+                return (true, ri, pos, _buf_i0(buf), _buf_step(buf), _buf_al(buf), _buf_be(buf))
             end
             pos += 1
         end
     end
-    (false, 0, 0, UInt16(0), UInt64(0), UInt64(0))
+    (false, 0, 0, UInt16(0), UInt32(0), UInt64(0), UInt64(0))
 end
 
 # ---------------------------------------------------------------------------

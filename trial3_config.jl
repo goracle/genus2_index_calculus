@@ -91,22 +91,30 @@ const CONJ_KEY_EMPTY  = typemax(CanonicalLP1Key)
 #  LP1ConjVal — value stored in the conj 1-LP table.
 #
 #  Amortized mode (beta_zero=true): neg_be is always 0 — drop the field.
-#    LP1ConjVal     (10 bytes): i0::UInt16 + neg_al::UInt64
-#    LP1ConjValFull (18 bytes): i0::UInt16 + neg_al::UInt64 + neg_be::UInt64
+#    LP1ConjVal     (14 bytes): i0::UInt16 + store_step::UInt32 + neg_al::UInt64
+#    LP1ConjValFull (22 bytes): i0::UInt16 + store_step::UInt32 + neg_al::UInt64 + neg_be::UInt64
 #
-#  i0     — FB column index, max ~O(√p) ≈ 10^4 at p=10^8, fits UInt16.
-#  neg_al — exponent mod ell.  ell ≤ #J ≈ p², fits UInt64 for p < 2^32.
-#  neg_be — same range; omitted in amortized mode (always 0).
+#  i0         -- FB column index, max ~O(sqrt(p)) ~= 10^4 at p=10^8, fits UInt16.
+#  store_step -- inserting thread's raw_step truncated to UInt32 (~4B steps max).
+#                Used by D8 closure-depth diagnostic: the closing thread (which
+#                may differ from the inserting thread) reads store_step back from
+#                the popped value rather than looking it up in a per-thread shadow
+#                dict that wouldn't have the entry.  Also serialised into the
+#                OFF_STEP field (bytes 26-29) of the on-disk record layout.
+#  neg_al     -- exponent mod ell.  ell <= #J ~= p^2, fits UInt64 for p < 2^32.
+#  neg_be     -- same range; omitted in amortized mode (always 0).
 # ---------------------------------------------------------------------------
-struct LP1ConjVal          # amortized mode  (10 bytes)
-    i0     ::UInt16
-    neg_al ::UInt64
+struct LP1ConjVal          # amortized mode  (14 bytes)
+    i0         ::UInt16
+    store_step ::UInt32
+    neg_al     ::UInt64
 end
 
-struct LP1ConjValFull      # single-shot mode (18 bytes)
-    i0     ::UInt16
-    neg_al ::UInt64
-    neg_be ::UInt64
+struct LP1ConjValFull      # single-shot mode (22 bytes)
+    i0         ::UInt16
+    store_step ::UInt32
+    neg_al     ::UInt64
+    neg_be     ::UInt64
 end
 
 # ---------------------------------------------------------------------------
@@ -327,8 +335,8 @@ end
 @inline _conj_prev_be(v::LP1ConjVal)     = 0
 @inline _conj_prev_be(v::LP1ConjValFull) = Int(v.neg_be)
 
-@inline _conj_make_val(::Type{LP1ConjVal},     i0::UInt16, al::UInt64, be::UInt64) = LP1ConjVal(i0, al)
-@inline _conj_make_val(::Type{LP1ConjValFull}, i0::UInt16, al::UInt64, be::UInt64) = LP1ConjValFull(i0, al, be)
+@inline _conj_make_val(::Type{LP1ConjVal},     i0::UInt16, step::UInt32, al::UInt64, be::UInt64) = LP1ConjVal(i0, step, al)
+@inline _conj_make_val(::Type{LP1ConjValFull}, i0::UInt16, step::UInt32, al::UInt64, be::UInt64) = LP1ConjValFull(i0, step, al, be)
 
 # ---------------------------------------------------------------------------
 #  conj_to_dict — snapshot a ShardedLP1Conj into a plain Dict for lockless

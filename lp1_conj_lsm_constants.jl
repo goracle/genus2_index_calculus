@@ -2,7 +2,7 @@
 #  lp1_conj_lsm_constants.jl — compile-time constants for LP1ConjLSM
 # =============================================================================
 
-const RECORD_BYTES = 48   # fp(8) + u0u1v0v1(16) + i0(2) + pad(6) + al(8) + be(8)
+const RECORD_BYTES = 48   # fp(8) + u0u1v0v1(16) + i0(2) + step(4) + pad(2) + al(8) + be(8)
 
 # ---------------------------------------------------------------------------
 #  Rényi-2 / S₂ estimator — AMS sketch (Alon-Matias-Szegedy)
@@ -61,20 +61,22 @@ const COMPACT_WRITE_BUF_BYTES = 4 * 1024 * 1024   # 4 MB write buffer
 #  16: v0   UInt32
 #  20: v1   UInt32
 #  24: i0   UInt16
-#  26: pad  UInt16 + UInt32  (6 bytes)
+#  26: step UInt32   ← store_step (D8 diagnostic: raw_step at insert time, truncated to UInt32)
+#  30: pad  UInt16   (2 bytes, zeroed)
 #  32: al   UInt64
 #  40: be   UInt64
 # total: 48
 # ---------------------------------------------------------------------------
-const OFF_FP = 0
-const OFF_U0 = 8
-const OFF_U1 = 12
-const OFF_V0 = 16
-const OFF_V1 = 20
-const OFF_I0 = 24
-# bytes 26-31: padding
-const OFF_AL = 32
-const OFF_BE = 40
+const OFF_FP   = 0
+const OFF_U0   = 8
+const OFF_U1   = 12
+const OFF_V0   = 16
+const OFF_V1   = 20
+const OFF_I0   = 24
+const OFF_STEP = 26   # UInt32 store_step for D8 closure-depth diagnostic
+# bytes 30-31: padding (zeroed)
+const OFF_AL   = 32
+const OFF_BE   = 40
 
 # ---------------------------------------------------------------------------
 #  Fingerprint

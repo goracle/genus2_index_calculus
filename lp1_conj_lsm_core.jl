@@ -5,6 +5,33 @@
 #              lp1_conj_lsm_topk.jl, lp1_conj_lsm_disk.jl,
 #              lp1_conj_lsm_renyi.jl  (for _lsm_record_sample! et al.)
 # =============================================================================
+#
+# ---------------------------------------------------------------------------
+#  REQUIRED CHANGE IN lp1_conj_lsm_topk.jl (LP1ConjVal / LP1ConjValFull):
+#
+#  Add store_step::UInt32 field to both LP1ConjVal and LP1ConjValFull, and
+#  update _conj_make_val to accept and store it as a 5th argument:
+#
+#    struct LP1ConjVal
+#        i0        ::UInt16
+#        store_step::UInt32   # ← NEW: raw_step at insert time (UInt32-truncated)
+#        neg_al    ::UInt64
+#    end
+#    struct LP1ConjValFull
+#        i0        ::UInt16
+#        store_step::UInt32   # ← NEW
+#        neg_al    ::UInt64
+#        neg_be    ::UInt64
+#    end
+#    @inline _conj_make_val(::Type{LP1ConjVal},     i0::UInt16, step::UInt32, al::UInt64, be::UInt64) =
+#        LP1ConjVal(i0, step, al)
+#    @inline _conj_make_val(::Type{LP1ConjValFull}, i0::UInt16, step::UInt32, al::UInt64, be::UInt64) =
+#        LP1ConjValFull(i0, step, al, be)
+#
+#  This stores the inserting thread's raw_step in the hot-table value and
+#  propagates it through the on-disk record (OFF_STEP field, bytes 26-29)
+#  so the closing thread can recover the depth at emit time for D8.
+# ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
 #  LP1ConjLSM — the main struct
@@ -295,6 +322,7 @@ function _lsm_flush_shard!(sc::LP1ConjLSM{V}, si::Int) where V
     v0s  = Vector{UInt32}(undef, n)
     v1s  = Vector{UInt32}(undef, n)
     i0s  = Vector{UInt16}(undef, n)
+    stps = Vector{UInt32}(undef, n)
     als  = Vector{UInt64}(undef, n)
     bes  = Vector{UInt64}(undef, n)
 
@@ -323,6 +351,7 @@ function _lsm_flush_shard!(sc::LP1ConjLSM{V}, si::Int) where V
         v1s[idx] = UInt32((k >> 96)  & 0x00000000ffffffff)
         v = vals[slot]
         i0s[idx] = v.i0
+        stps[idx] = v.store_step
         als[idx] = v.neg_al
         bes[idx] = sc.amortized ? UInt64(0) : UInt64(_conj_prev_be(v))
     end
@@ -342,7 +371,7 @@ function _lsm_flush_shard!(sc::LP1ConjLSM{V}, si::Int) where V
         oi = order[i]
         _write_record!(buf, (i-1)*RECORD_BYTES,
                        fps[oi], u0s[oi], u1s[oi], v0s[oi], v1s[oi],
-                       i0s[oi], als[oi], bes[oi])
+                       i0s[oi], stps[oi], als[oi], bes[oi])
     end
 
     byte_offset = sc.spill_size
@@ -534,9 +563,9 @@ end
 # ---------------------------------------------------------------------------
 function _sc_disk_find(sc::LP1ConjLSM,
                         key::CanonicalLP1Key,
-                        fp_target::UInt64)::Tuple{Bool,Int,Int,UInt16,UInt64,UInt64}
+                        fp_target::UInt64)::Tuple{Bool,Int,Int,UInt16,UInt32,UInt64,UInt64}
     sc.spill_read_io === nothing &&
-        return (false, 0, 0, UInt16(0), UInt64(0), UInt64(0))
+        return (false, 0, 0, UInt16(0), UInt32(0), UInt64(0), UInt64(0))
     _lsm_disk_find(sc.runs, sc.spill_read_io::Cint, sc.read_buf, key, fp_target)
 end
 
@@ -575,7 +604,7 @@ function conj_haskey(sc::LP1ConjLSM, si::Int, key::CanonicalLP1Key)::Bool
     try
         lock(sc.shard_locks[si])
         try
-            found, _, _, _, _, _ = _sc_disk_find(sc, key, fp)
+            found, _, _, _, _, _, _ = _sc_disk_find(sc, key, fp)
             return found
         finally
             unlock(sc.shard_locks[si])
@@ -600,9 +629,9 @@ function conj_getval(sc::LP1ConjLSM{V}, si::Int, key::CanonicalLP1Key)::V where 
     try
         lock(sc.shard_locks[si])
         try
-            found, _, _, i0_v, al_v, be_v = _sc_disk_find(sc, key, fp)
+            found, _, _, i0_v, step_v, al_v, be_v = _sc_disk_find(sc, key, fp)
             found || throw(KeyError(key))
-            return _conj_make_val(V, i0_v, al_v, be_v)
+            return _conj_make_val(V, i0_v, step_v, al_v, be_v)
         finally
             unlock(sc.shard_locks[si])
         end
@@ -628,10 +657,10 @@ function conj_pop!(sc::LP1ConjLSM{V}, si::Int, key::CanonicalLP1Key)::V where V
     try
         lock(sc.shard_locks[si])
         try
-            found, ri, pos, i0_v, al_v, be_v = _sc_disk_find(sc, key, fp)
+            found, ri, pos, i0_v, step_v, al_v, be_v = _sc_disk_find(sc, key, fp)
             found && _sc_disk_delete!(sc, ri, pos)
             found || throw(KeyError(key))
-            return _conj_make_val(V, i0_v, al_v, be_v)
+            return _conj_make_val(V, i0_v, step_v, al_v, be_v)
         finally
             unlock(sc.shard_locks[si])
         end
@@ -657,10 +686,10 @@ function conj_pop_safe(sc::LP1ConjLSM{V}, si::Int, key::CanonicalLP1Key)::Union{
     try
         lock(sc.shard_locks[si])
         try
-            found, ri, pos, i0_v, al_v, be_v = _sc_disk_find(sc, key, fp)
+            found, ri, pos, i0_v, step_v, al_v, be_v = _sc_disk_find(sc, key, fp)
             found && _sc_disk_delete!(sc, ri, pos)
             found || return nothing
-            return _conj_make_val(V, i0_v, al_v, be_v)
+            return _conj_make_val(V, i0_v, step_v, al_v, be_v)
         finally
             unlock(sc.shard_locks[si])
         end
@@ -746,17 +775,17 @@ function conj_insert_or_pop!(sc::LP1ConjLSM{V}, si::Int,
                     return (v, false)
                 end
 
-                found, ri, pos, i0_v, al_v, be_v = _sc_disk_find(sc, key, fp)
+                found, ri, pos, i0_v, step_v, al_v, be_v = _sc_disk_find(sc, key, fp)
                 if found
                     if Int(i0_v) == i0_cur &&
                        al_v == UInt64(val.neg_al) &&
                        be_v == UInt64(_conj_prev_be(val))
                         _sc_disk_delete!(sc, ri, pos)
-                        _lsm_hot_insert!(sc, si, key, _conj_make_val(V, i0_v, al_v, be_v))
+                        _lsm_hot_insert!(sc, si, key, _conj_make_val(V, i0_v, step_v, al_v, be_v))
                         return (nothing, true)
                     end
                     _sc_disk_delete!(sc, ri, pos)
-                    result_v = _conj_make_val(V, i0_v, al_v, be_v)
+                    result_v = _conj_make_val(V, i0_v, step_v, al_v, be_v)
                     _lsm_record_sample!(sc, fp, now_t, key)
                     _bday_record_collision!(sc, now_t)
                     return (result_v, false)
@@ -806,7 +835,7 @@ function conj_insert_or_pop!(sc::LP1ConjLSM{V}, si::Int,
                     try
                         if trylock(peer_lsm.shard_locks[si])
                             try
-                                found, ri, pos, i0_v, al_v, be_v =
+                                found, ri, pos, i0_v, step_v, al_v, be_v =
                                     _lsm_disk_find(peer_lsm.runs,
                                                    peer_lsm.spill_read_io::Cint,
                                                    peer_lsm.read_buf,
@@ -819,7 +848,7 @@ function conj_insert_or_pop!(sc::LP1ConjLSM{V}, si::Int,
                                         peer_lsm.n_disk_live -= 1
                                         lock(peer_lsm.shard_locks[si]) do
                                             _lsm_hot_insert!(peer_lsm, si, key,
-                                                             _conj_make_val(V, i0_v, al_v, be_v))
+                                                             _conj_make_val(V, i0_v, step_v, al_v, be_v))
                                         end
                                         return (nothing, true)
                                     end
@@ -827,7 +856,7 @@ function conj_insert_or_pop!(sc::LP1ConjLSM{V}, si::Int,
                                     peer_lsm.n_disk_live -= 1
                                     _lsm_record_sample!(sc, fp, now_t, key)
                                     _bday_record_collision!(sc, now_t)
-                                    return (_conj_make_val(V, i0_v, al_v, be_v), false)
+                                    return (_conj_make_val(V, i0_v, step_v, al_v, be_v), false)
                                 end
                             finally
                                 unlock(peer_lsm.shard_locks[si])
@@ -963,7 +992,7 @@ function lsm_to_dict(sc::LP1ConjLSM{V})::Dict{CanonicalLP1Key, V} where V
                 kv1  = _buf_u32(buf, OFF_V1)
                 ck   = UInt128(ku0) | (UInt128(ku1) << 32) |
                        (UInt128(kv0) << 64) | (UInt128(kv1) << 96)
-                haskey(d, ck) || (d[ck] = _conj_make_val(V, _buf_i0(buf), _buf_al(buf), _buf_be(buf)))
+                haskey(d, ck) || (d[ck] = _conj_make_val(V, _buf_i0(buf), _buf_step(buf), _buf_al(buf), _buf_be(buf)))
             end
         end
     end
@@ -1009,7 +1038,7 @@ function lsm_stream_into_dict!(d::Dict{CanonicalLP1Key, V},
                 kv1 = _buf_u32(buf, OFF_V1)
                 ck  = UInt128(ku0) | (UInt128(ku1) << 32) |
                       (UInt128(kv0) << 64) | (UInt128(kv1) << 96)
-                haskey(d, ck) || (d[ck] = _conj_make_val(V, _buf_i0(buf), _buf_al(buf), _buf_be(buf)))
+                haskey(d, ck) || (d[ck] = _conj_make_val(V, _buf_i0(buf), _buf_step(buf), _buf_al(buf), _buf_be(buf)))
             end
         end
     end

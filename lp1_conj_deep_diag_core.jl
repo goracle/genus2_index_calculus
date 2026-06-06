@@ -482,7 +482,8 @@ end
                                          raw_step ::Int,
                                          is_first ::Bool,
                                          alpha_cur::Int = -1,
-                                         px       ::Int = -1)
+                                         px       ::Int = -1,
+                                         store_step::Int = -1)
     stat.n_emissions += 1
 
     h64 = _deep_fp64(lp_key)
@@ -503,10 +504,10 @@ end
     # D7 closure flag.
     length(stat.is_first_closure) < D7_MAX_CLOSURES && push!(stat.is_first_closure, is_first)
 
-    # D8 closure depth.
-    store_step = get(stat.d8_shadow, lp_key, -1)
+    # D8 closure depth — store_step supplied directly by caller from LSM value
+    # (avoids the cross-thread d8_shadow miss: the storing thread embeds its
+    # raw_step into the LSM value at insert time via the OFF_STEP padding field).
     if store_step >= 0
-        delete!(stat.d8_shadow, lp_key)
         depth = raw_step - store_step
         if depth >= 0 && length(stat.d8_depths) < D8_MAX_DEPTHS
             push!(stat.d8_depths,     depth)

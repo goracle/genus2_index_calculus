@@ -329,7 +329,7 @@ function _report_seq2!(stat::PhiBiasStat; p::Int = 0)
                 counts = zeros(Int, n_windows)
                 t0 = arr[1]
                 for a in arr
-                    wi = min(n_windows, (a - t0) ÷ T + 1)
+                    wi = clamp((a - t0) ÷ T + 1, 1, n_windows)
                     counts[wi] += 1
                 end
                 mn = sum(counts) / n_windows
