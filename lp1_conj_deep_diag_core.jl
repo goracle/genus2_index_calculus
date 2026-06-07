@@ -71,6 +71,18 @@ const D23_MAX_RECORDS    = 5_000     # per-thread cap
 const D24_BUCKET_STEPS  = 200_000    # step-count resolution per bucket
 const D24_MAX_BUCKETS   = 2_000      # cap on distinct buckets tracked per thread
 
+# D25 — Closure (α,px) cell lift analysis.
+# For each closure we record the closing visit's (al_bkt, px_bkt) in the same
+# 64×64 grid used by D12.  Post-walk we compare the closure cell distribution
+# against the D12 store histogram to find cells with anomalous closure lift.
+# Also records Δal = al_close - al_store (mod ell, bucketed) to test for
+# step-table periodicity driving repeated visits at fixed α offsets.
+# Cap: well above expected closure counts; 10_000 is generous.
+const D25_MAX_CLOSURES   = 10_000    # per-thread cap on closure records
+const D25_GRID_BITS      = 6         # 2^6 = 64 buckets per axis (matches D12)
+const D25_GRID_SIZE      = 1 << D25_GRID_BITS   # 64
+const D25_DAL_BUCKETS    = 128       # Δal histogram buckets (mod ell)
+
 # D16 — Pre-burst state fingerprinting ring-buffer constants.
 const D16_LAG_LO      = 10
 const D16_LAG_HI      = 40
@@ -210,6 +222,30 @@ mutable struct ConjDeepStat
     # After the walk, the main thread overlaps all per-thread bucket sets.
     d24_emission_buckets  ::Dict{Int, Int}         # bucket_idx → count (this thread)
     d24_total_walk_steps  ::Int                    # total walk steps taken by this thread
+
+    # D25 — Closure (α, px) cell lift vs D12 store distribution.
+    #
+    # For each closure we record (al_bkt, px_bkt, depth_bkt, dal_bkt) where:
+    #   al_bkt   = alpha_cur bucketed to [0, D25_GRID_SIZE)  (same grid as D12)
+    #   px_bkt   = px        bucketed to [0, D25_GRID_SIZE)  (same grid as D12)
+    #   depth_bkt= log2(closure depth) coarsened to 8 bands
+    #   dal_bkt  = (al_close - al_store) mod ell, bucketed to D25_DAL_BUCKETS
+    #              (-1 if al_store unavailable, i.e. amortized mode neg_al not passed)
+    #
+    # Post-walk: compare d25_close_grid[al_bkt, px_bkt] / n_closures
+    #            against   d12_store histogram cell / n_stores
+    # to get per-cell closure lift.  A cell with 4× store occupancy but 10×
+    # closure rate → closures concentrate there beyond what store density predicts.
+    #
+    # Δal histogram: d25_dal_hist[dal_bkt] counts closures at that α-offset.
+    # Non-uniform → step-table periodicity; specific offsets dominate birthday hits.
+    #
+    # Cap: D25_MAX_CLOSURES (generous; expected count is O(100s)).
+    d25_close_al    ::Vector{Int}             # al_bkt per closure (capped)
+    d25_close_px    ::Vector{Int}             # px_bkt per closure (capped)
+    d25_close_depth ::Vector{Int}             # log2-depth band per closure
+    d25_dal_hist    ::Vector{Int}             # Δal histogram, length D25_DAL_BUCKETS
+    d25_n_closures  ::Int                     # total closures seen (uncapped counter)
 end
 
 function ConjDeepStat()
@@ -272,6 +308,12 @@ function ConjDeepStat()
         # D24
         Dict{Int,Int}(),                    # d24_emission_buckets
         0,                                  # d24_total_walk_steps
+        # D25
+        Int[],                              # d25_close_al
+        Int[],                              # d25_close_px
+        Int[],                              # d25_close_depth
+        zeros(Int, D25_DAL_BUCKETS),        # d25_dal_hist
+        0,                                  # d25_n_closures
     )
 end
 
@@ -436,6 +478,18 @@ function merge_conj_deep_stats(stats::Vector{ConjDeepStat})::ConjDeepStat
             end
         end
         merged.d24_total_walk_steps += s.d24_total_walk_steps
+
+        # D25: merge closure coordinate logs and Δal histogram.
+        let n_rem25 = D25_MAX_CLOSURES - length(merged.d25_close_al)
+            if n_rem25 > 0
+                n_take = min(n_rem25, length(s.d25_close_al))
+                append!(merged.d25_close_al,    s.d25_close_al[1:n_take])
+                append!(merged.d25_close_px,    s.d25_close_px[1:n_take])
+                append!(merged.d25_close_depth, s.d25_close_depth[1:n_take])
+            end
+        end
+        merged.d25_dal_hist   .+= s.d25_dal_hist
+        merged.d25_n_closures  += s.d25_n_closures
     end
     return merged
 end
@@ -814,8 +868,8 @@ end
 
 # ---------------------------------------------------------------------------
 #  record_d22_d23_d24_step! — call on EVERY valid phi step.
-#  Advances the D23 cascade window countdown and D24 step counter.
-#  (D22 has no per-step work beyond what record_d22_d23_d24_emission! does.)
+#  Advances the D23 cascade window countdown, D24 step counter, and D25
+#  background step counter (steps outside any active burst).
 # ---------------------------------------------------------------------------
 @inline function record_d22_d23_d24_step!(stat::ConjDeepStat)
     stat.d24_total_walk_steps += 1
@@ -851,6 +905,54 @@ end
               (stat.d22_cur_burst_keybkt,
                stat.d22_cur_burst_abkt,
                stat.d22_cur_burst_size))
+    end
+    return nothing
+end
+
+# ---------------------------------------------------------------------------
+#  record_d25_closure! — call from record_conj_deep_step! on every closure.
+#
+#  al_close  : alpha_cur at close time  (-1 if unavailable)
+#  px_close  : px_anchor at close time  (-1 if unavailable)
+#  al_store  : neg_al from the stored LSM value  (-1 if unavailable)
+#  depth     : raw_step - store_step  (-1 if unavailable)
+#  ell       : group order (for Δal mod ell bucketing)
+# ---------------------------------------------------------------------------
+@inline function record_d25_closure!(stat     ::ConjDeepStat,
+                                      al_close ::Int,
+                                      px_close ::Int,
+                                      al_store ::Int,
+                                      depth    ::Int,
+                                      ell      ::Int)
+    stat.d25_n_closures += 1
+    length(stat.d25_close_al) >= D25_MAX_CLOSURES && return nothing
+
+    # (α, px) cell — bucket to [0, D25_GRID_SIZE) on [0, ell) and [0, p).
+    # Use -1 as sentinel when data unavailable; report skips those.
+    al_bkt = al_close >= 0 ? (al_close * D25_GRID_SIZE) ÷ max(1, ell) : -1
+    px_bkt = px_close >= 0 ? min(px_close * D25_GRID_SIZE ÷ 2_500_000, D25_GRID_SIZE - 1) : -1
+
+    # Depth band: coarsen log2(depth) to 8 levels.
+    depth_bkt = if depth <= 0
+        -1
+    else
+        min(7, floor(Int, log2(Float64(depth)) * 8.0 / 23.0))  # 23 ≈ log2(p^1.5)
+    end
+
+    # Δal = (al_close - al_store) mod ell, bucketed.
+    dal_bkt = if al_close >= 0 && al_store >= 0 && ell > 0
+        dal = mod(al_close - al_store, ell)
+        (dal * D25_DAL_BUCKETS) ÷ ell
+    else
+        -1
+    end
+
+    push!(stat.d25_close_al,    al_bkt)
+    push!(stat.d25_close_px,    px_bkt)
+    push!(stat.d25_close_depth, depth_bkt)
+
+    if dal_bkt >= 0
+        @inbounds stat.d25_dal_hist[dal_bkt + 1] += 1
     end
     return nothing
 end

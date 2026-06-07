@@ -530,6 +530,8 @@ end
         record_lp1_conj_hit!(phi_bias_stat, s.raw_steps, lp_key, a_bucket)
         record_conj_deep_step!(deep_stat, lp_key, a_bucket, s.raw_steps, true, al_cur, px_anchor,
                                Int(v.store_step))
+        record_d25_closure!(deep_stat, al_cur, px_anchor, Int(v.neg_al),
+                            s.raw_steps - Int(v.store_step), Int(ell))
         record_d16_emission!(deep_stat, lp_key, s.raw_steps, i0)
         record_d20_emission!(deep_stat)
         record_d19_closure!(deep_stat, i0, prev_col, combined_al, combined_be)
@@ -1293,7 +1295,7 @@ function phase2_worker(G               ::Div2,
         flush(stdout)
     end
 
-    # Flush any open D22 burst window so the last burst is counted even if it
+    # Flush any open D22/D25 burst window so the last burst is counted even if it
     # never reached the inter-burst gap threshold before the walk ended.
     flush_d22_open_burst!(deep_stat)
 

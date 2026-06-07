@@ -324,15 +324,19 @@ function _report_seq2!(stat::PhiBiasStat; p::Int = 0)
             end
 
             function allan_factor(arr::Vector{Int}, T::Int, span::Int)
-                # Partition [arr[1], arr[end]] into windows of T steps.
-                # Compute the actual range from arr to be robust against
-                # off-by-one in the caller's span argument.
-                t0       = arr[1]
-                actual_span = arr[end] - t0   # inclusive range, 0-based
-                n_windows = max(1, actual_span ÷ T + 1)
-                counts = zeros(Int, n_windows)
+                t0          = arr[1]
+                actual_span = arr[end] - t0
+                n_windows   = max(1, actual_span ÷ T + 1)
+                counts      = zeros(Int, n_windows)
                 for a in arr
-                    wi = clamp((a - t0) ÷ T + 1, 1, n_windows)
+                    wi_raw = (a - t0) ÷ T + 1
+                    wi     = clamp(wi_raw, 1, n_windows)
+                    if wi > length(counts)
+                        @printf("[allan_factor BUG] len=%d n_windows=%d wi_raw=%d wi=%d a=%d t0=%d T=%d actual_span=%d\n",
+                                length(counts), n_windows, wi_raw, wi, a, t0, T, actual_span)
+                        flush(stdout)
+                        wi = length(counts)
+                    end
                     counts[wi] += 1
                 end
                 mn = sum(counts) / n_windows
