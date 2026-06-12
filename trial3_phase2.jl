@@ -398,7 +398,8 @@ end
         post_conj_stride::Int = 0,
         anchor_alpha_seen::Union{Dict{Tuple{Int,CanonicalLP1Key},Int}, Nothing} = nothing,
         anchor_alpha_cap::Int = 200_000,
-        emitted_conj_rels::Union{Set{NTuple{4,Int}}, Nothing} = nothing)::NTuple{2,Int} where V
+        emitted_conj_rels::Union{Set{NTuple{4,Int}}, Nothing} = nothing,
+        conj_dataset    ::Union{ConjClosureDataset, Nothing} = nothing)::NTuple{2,Int} where V
 
     si = conj_shard_idx(lp_key)
 
@@ -524,6 +525,15 @@ end
             push!(rank_growth, (s.raw_steps, length(rel_rows)))
         s.hits_full += 1; s.hits_1lp_conj_emit += 1; s.rel_local += 1
         Threads.atomic_add!(rel_counter, 1)
+        # Dataset export: record every LP1-conj closure for ML analysis.
+        if conj_dataset !== nothing
+            record_conj_closure!(conj_dataset,
+                (Int(lp_key[1]), Int(lp_key[2]), Int(lp_key[3]), Int(lp_key[4])),
+                i0, neg_al, neg_be, s.raw_steps,
+                prev_col, prev_al, prev_be, Int(v.store_step),
+                combined_al, combined_be,
+                al_cur, px_anchor, py_anchor, a_raw, a_bucket)
+        end
         # Record arrival only on actual emission, not on every conj hit.
         # Pass lp_key so the CIR fingerprint analysis can correlate
         # temporally-close hits with shared algebraic structure.
@@ -846,7 +856,8 @@ function phase2_worker(G               ::Div2,
                        amortized_precompute::Bool = false,
                        enable_lp1_aff  ::Bool = true,
                        post_conj_stride::Int  = 0,
-                       carry_in_deep_stat::Union{ConjDeepStat,Nothing} = nothing)
+                       carry_in_deep_stat::Union{ConjDeepStat,Nothing} = nothing,
+                       conj_dataset      ::Union{ConjClosureDataset,Nothing} = nothing)
 
     nF_cur   = length(fb)
     N_STEPS  = length(step_D)
@@ -1101,7 +1112,7 @@ function phase2_worker(G               ::Div2,
                                                _a_bucket, deep_stat, al, P0[1], Int(a), P0[2],
                                                post_conj_stride,
                                                conj_anchor_alpha_seen, CONJ_ANCHOR_ALPHA_CAP,
-                                               emitted_conj_rels)
+                                               emitted_conj_rels, conj_dataset)
                     # D9: record 1LP-conj opcode; is_emission = true iff handle produced an emission
                     record_conj_deep_opcode!(deep_stat, OPCODE_1LP_CONJ,
                                              deep_stat.n_emissions > n_emit_before)

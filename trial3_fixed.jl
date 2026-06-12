@@ -38,6 +38,7 @@ include("lp1_conj_lsm.jl")
 include("trial3_phi.jl")
 include("phi_bias_diag.jl")
 include("lp1_conj_deep_diag.jl")
+include("conj_closure_dataset.jl")
 
 # ---------------------------------------------------------------------------
 #  mem_checkpoint — fine-grained RSS/GC-live probe with delta tracking
@@ -405,9 +406,17 @@ function index_calculus_walk(G::Div2, T::Div2;
                              enable_lp2_conj  ::Bool = true,
                              max_lp2_nodes    ::Int  = DEFAULT_MAX_LP2_NODES,
                              max_lp2_conj_nodes::Int = DEFAULT_MAX_LP2_CONJ_NODES,
-                             use_cycle_union  ::Bool = false)
+                             use_cycle_union  ::Bool = false,
+                             conj_dataset_path::Union{Nothing,String} = "conj_closures.bin")
 
     t_walk_start = time()
+
+    # ── Conj-closure dataset writer (optional) ──────────────────────────────
+    conj_dataset = conj_dataset_path === nothing ? nothing : open_conj_dataset(conj_dataset_path)
+    if verbose && conj_dataset !== nothing
+        @printf("  [conj-dataset] recording LP1-conj closures → %s\n", conj_dataset_path)
+        flush(stdout)
+    end
 
     # ── Phase 1: build the factor base ───────────────────────────────────────
     if verbose
@@ -557,10 +566,21 @@ function index_calculus_walk(G::Div2, T::Div2;
                 thread_phi_stats[tid], thread_deep_stats[tid], n_workers;
                 verbose=verbose,
                 enable_lp1_aff=enable_lp1_aff,
-                post_conj_stride=post_conj_stride)
+                post_conj_stride=post_conj_stride,
+                conj_dataset=conj_dataset)
         end
     end
     t_phase2_done = time() - t_phase2_start
+
+    # Close the conj-closure dataset writer now that all walker threads are done.
+    if conj_dataset !== nothing
+        close_conj_dataset(conj_dataset)
+        if verbose
+            @printf("  [conj-dataset] wrote %d closure entries → %s\n",
+                    conj_dataset.n_records[], conj_dataset.path)
+            flush(stdout)
+        end
+    end
 
     # ── Merge results ─────────────────────────────────────────────────────────
     # Seed accumulators with phase-1 banked relations.
