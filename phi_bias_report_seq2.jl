@@ -313,10 +313,10 @@ function _report_seq2!(stat::PhiBiasStat; p::Int = 0)
             max_T  = total_span_af ÷ 4
             af_windows = Int[]
             if min_T < max_T
-                T = min_T
-                while T <= max_T
-                    push!(af_windows, T)
-                    T = max(T + 1, round(Int, T * 2.5))
+                Tcur = min_T
+                while Tcur <= max_T
+                    push!(af_windows, Tcur)
+                    Tcur = max(Tcur + 1, round(Int, Tcur * 2.5))
                 end
             end
             if isempty(af_windows)
@@ -324,21 +324,30 @@ function _report_seq2!(stat::PhiBiasStat; p::Int = 0)
             end
 
             function allan_factor(arr::Vector{Int}, T::Int, span::Int)
-                t0          = arr[1]
+                # T must be a positive Int; guard against accidental Float/zero
+                # T values which previously caused n_windows/counts mismatches
+                # under Threads.@threads (closure-capture corruption manifested
+                # as length(counts) != n_windows).
+                Ti = max(1, Int(T))
+                t0 = arr[1]
                 actual_span = arr[end] - t0
-                n_windows   = max(1, actual_span ÷ T + 1)
-                counts      = zeros(Int, n_windows)
-                for a in arr
-                    wi_raw = (a - t0) ÷ T + 1
-                    wi     = clamp(wi_raw, 1, n_windows)
-                    if wi > length(counts)
-                        @printf("[allan_factor BUG] len=%d n_windows=%d wi_raw=%d wi=%d a=%d t0=%d T=%d actual_span=%d\n",
-                                length(counts), n_windows, wi_raw, wi, a, t0, T, actual_span)
-                        flush(stdout)
-                        wi = length(counts)
-                    end
-                    counts[wi] += 1
+
+                # Compute every window index up front, then size counts to fit
+                # the actual max index seen — this can never under-allocate,
+                # regardless of how n_windows is independently estimated.
+                wis = Vector{Int}(undef, length(arr))
+                @inbounds for (idx, a) in enumerate(arr)
+                    wis[idx] = (a - t0) ÷ Ti + 1
                 end
+                n_windows_est = max(1, actual_span ÷ Ti + 1)
+                n_windows     = max(n_windows_est, maximum(wis))
+
+                counts = zeros(Int, n_windows)
+                @inbounds for wi in wis
+                    wi_c = clamp(wi, 1, n_windows)
+                    counts[wi_c] += 1
+                end
+
                 mn = sum(counts) / n_windows
                 vr = n_windows > 1 ?
                      sum((c - mn)^2 for c in counts) / (n_windows - 1) : 0.0
@@ -369,16 +378,17 @@ function _report_seq2!(stat::PhiBiasStat; p::Int = 0)
             n_af_T       = length(af_windows)
             results_af   = Vector{NTuple{4,Float64}}(undef, n_af_T)  # (T, f_real, f_null, lift)
             Threads.@threads for ti in 1:n_af_T
-                T      = af_windows[ti]
-                f_real, _ = allan_factor(arrivals, T, total_span_af)
-                f_null_sum = 0.0
-                for si in 1:n_af_shuf
-                    fn, _ = allan_factor(null_arrs_af[si], T, total_span_af)
-                    f_null_sum += fn
+                let T = af_windows[ti]
+                    f_real, _ = allan_factor(arrivals, T, total_span_af)
+                    f_null_sum = 0.0
+                    for si in 1:n_af_shuf
+                        fn, _ = allan_factor(null_arrs_af[si], T, total_span_af)
+                        f_null_sum += fn
+                    end
+                    f_null = f_null_sum / n_af_shuf
+                    lift   = f_real / max(1e-30, f_null)
+                    results_af[ti] = (Float64(T), f_real, f_null, lift)
                 end
-                f_null = f_null_sum / n_af_shuf
-                lift   = f_real / max(1e-30, f_null)
-                results_af[ti] = (Float64(T), f_real, f_null, lift)
             end
             for (T_f, f_real, f_null, lift_af) in results_af
                 flag_af = lift_af > 2.0 ? " CLUSTERED" :
