@@ -71,6 +71,17 @@ const D23_MAX_RECORDS    = 5_000     # per-thread cap
 const D24_BUCKET_STEPS  = 200_000    # step-count resolution per bucket
 const D24_MAX_BUCKETS   = 2_000      # cap on distinct buckets tracked per thread
 
+# D26 — Temporal-width vs pair-concentration anticorrelation.
+# For each LP1-conj key k we track:
+#   W(k)      = max(store_step) - min(store_step) across all STORE events
+#   N_pair(k) = number of distinct i0 anchor indices seen at CLOSE time
+#               (approximated via a UInt64 bitmask over i0 % 64; saturates at 64)
+# Post-walk we compute corr(log W(k), log N_pair(k)) across all keys that
+# closed at least once and had W(k) > 0.
+# GPT hypothesis: this correlation should be strongly negative if collision
+# concentration lives in trajectory-time rather than coordinate-space.
+const D26_MAX_TRACKED_KEYS = 200_000   # cap on distinct keys tracked
+
 # D25 — Closure (α,px) cell lift analysis.
 # For each closure we record the closing visit's (al_bkt, px_bkt) in the same
 # 64×64 grid used by D12.  Post-walk we compare the closure cell distribution
@@ -246,6 +257,16 @@ mutable struct ConjDeepStat
     d25_close_depth ::Vector{Int}             # log2-depth band per closure
     d25_dal_hist    ::Vector{Int}             # Δal histogram, length D25_DAL_BUCKETS
     d25_n_closures  ::Int                     # total closures seen (uncapped counter)
+
+    # D26 — Temporal-width vs pair-concentration anticorrelation.
+    # d26_step_range : lp_key → (min_store_step, max_store_step)
+    #   Updated at every STORE.  W(k) = max - min.
+    # d26_partner_mask : lp_key → UInt64 bitmask, bit (i0 % 64) set on each CLOSE.
+    #   count_ones(mask) ≈ distinct partner count N_pair(k), exact up to 64.
+    # d26_close_count : lp_key → number of closures (for filtering keys with ≥1 close)
+    d26_step_range    ::Dict{UInt128, NTuple{2,Int}}  # (min_step, max_step)
+    d26_partner_mask  ::Dict{UInt128, UInt64}         # bloom over i0 % 64
+    d26_close_count   ::Dict{UInt128, Int}            # closures per key
 end
 
 function ConjDeepStat()
@@ -314,6 +335,10 @@ function ConjDeepStat()
         Int[],                              # d25_close_depth
         zeros(Int, D25_DAL_BUCKETS),        # d25_dal_hist
         0,                                  # d25_n_closures
+        # D26
+        Dict{UInt128, NTuple{2,Int}}(),     # d26_step_range
+        Dict{UInt128, UInt64}(),            # d26_partner_mask
+        Dict{UInt128, Int}(),               # d26_close_count
     )
 end
 
@@ -490,6 +515,22 @@ function merge_conj_deep_stats(stats::Vector{ConjDeepStat})::ConjDeepStat
         end
         merged.d25_dal_hist   .+= s.d25_dal_hist
         merged.d25_n_closures  += s.d25_n_closures
+
+        # D26: merge step ranges (union min/max), partner masks (OR), close counts.
+        for (k, (lo, hi)) in s.d26_step_range
+            if haskey(merged.d26_step_range, k)
+                mlo, mhi = merged.d26_step_range[k]
+                merged.d26_step_range[k] = (min(mlo, lo), max(mhi, hi))
+            elseif length(merged.d26_step_range) < D26_MAX_TRACKED_KEYS
+                merged.d26_step_range[k] = (lo, hi)
+            end
+        end
+        for (k, mask) in s.d26_partner_mask
+            merged.d26_partner_mask[k] = get(merged.d26_partner_mask, k, UInt64(0)) | mask
+        end
+        for (k, cnt) in s.d26_close_count
+            merged.d26_close_count[k] = get(merged.d26_close_count, k, 0) + cnt
+        end
     end
     return merged
 end
@@ -524,6 +565,15 @@ end
         push!(stat.d12_store_key,   lp_key)
         push!(stat.d14_store_a,     a_val)
     end
+
+    # D26: update per-key temporal step range.
+    if haskey(stat.d26_step_range, lp_key)
+        mlo, mhi = stat.d26_step_range[lp_key]
+        stat.d26_step_range[lp_key] = (min(mlo, raw_step), max(mhi, raw_step))
+    elseif length(stat.d26_step_range) < D26_MAX_TRACKED_KEYS
+        stat.d26_step_range[lp_key] = (raw_step, raw_step)
+    end
+
     return nothing
 end
 
@@ -537,7 +587,8 @@ end
                                          is_first ::Bool,
                                          alpha_cur::Int = -1,
                                          px       ::Int = -1,
-                                         store_step::Int = -1)
+                                         store_step::Int = -1,
+                                         i0       ::Int = -1)
     stat.n_emissions += 1
 
     h64 = _deep_fp64(lp_key)
@@ -575,6 +626,13 @@ end
         push!(stat.d12_close_alpha, alpha_cur)
         push!(stat.d12_close_px,    px)
         push!(stat.d12_close_key,   lp_key)
+    end
+
+    # D26: update partner bloom mask and close count.
+    if i0 >= 0
+        bit = UInt64(1) << (i0 % 64)
+        stat.d26_partner_mask[lp_key] = get(stat.d26_partner_mask, lp_key, UInt64(0)) | bit
+        stat.d26_close_count[lp_key]  = get(stat.d26_close_count,  lp_key, 0) + 1
     end
 
     return nothing

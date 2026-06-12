@@ -14,6 +14,36 @@ using FFTW   # rfft / plan_rfft used in Welch PSD and multitaper sections
 #  stat     : PhiBiasStat
 #  (no return value; writes to stdout)
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+#  _allan_factor_impl — module-level (not a closure) so Julia cannot box any
+#  of its locals as shared heap references under Threads.@threads.
+#  Returns (F(T), mean_N_T) where F(T) = Var(N_T)/E[N_T].
+# ---------------------------------------------------------------------------
+function _allan_factor_impl(arr::Vector{Int}, T::Int)::NTuple{2,Float64}
+    Ti = max(1, T)
+    t0 = arr[1]
+    n  = length(arr)
+    # Compute window indices and their maximum in one pass — avoids a
+    # separate Vector{Int} allocation and eliminates any assignable local
+    # that could be boxed across concurrent calls.
+    wi_max = 1
+    @inbounds for idx in 1:n
+        wi = (arr[idx] - t0) ÷ Ti + 1
+        wi_max = wi > wi_max ? wi : wi_max
+    end
+    n_win = max(wi_max, max(1, (arr[end] - t0) ÷ Ti + 1))
+
+    counts = zeros(Int, n_win)
+    @inbounds for idx in 1:n
+        wi = (arr[idx] - t0) ÷ Ti + 1
+        counts[clamp(wi, 1, n_win)] += 1
+    end
+
+    mn = sum(counts) / n_win
+    vr = n_win > 1 ? sum((c - mn)^2 for c in counts) / (n_win - 1) : 0.0
+    return vr / max(1e-30, mn), mn
+end
+
 function _report_seq2!(stat::PhiBiasStat; p::Int = 0)
     nb = length(stat.split_hist)   # number of a-histogram buckets (inherited from preamble in original)
 
@@ -323,36 +353,9 @@ function _report_seq2!(stat::PhiBiasStat; p::Int = 0)
                 push!(af_windows, max(10, total_span_af ÷ 8))
             end
 
-            function allan_factor(arr::Vector{Int}, T::Int, span::Int)
-                # T must be a positive Int; guard against accidental Float/zero
-                # T values which previously caused n_windows/counts mismatches
-                # under Threads.@threads (closure-capture corruption manifested
-                # as length(counts) != n_windows).
-                Ti = max(1, Int(T))
-                t0 = arr[1]
-                actual_span = arr[end] - t0
-
-                # Compute every window index up front, then size counts to fit
-                # the actual max index seen — this can never under-allocate,
-                # regardless of how n_windows is independently estimated.
-                wis = Vector{Int}(undef, length(arr))
-                @inbounds for (idx, a) in enumerate(arr)
-                    wis[idx] = (a - t0) ÷ Ti + 1
-                end
-                n_windows_est = max(1, actual_span ÷ Ti + 1)
-                n_windows     = max(n_windows_est, maximum(wis))
-
-                counts = zeros(Int, n_windows)
-                @inbounds for wi in wis
-                    wi_c = clamp(wi, 1, n_windows)
-                    counts[wi_c] += 1
-                end
-
-                mn = sum(counts) / n_windows
-                vr = n_windows > 1 ?
-                     sum((c - mn)^2 for c in counts) / (n_windows - 1) : 0.0
-                return vr / max(1e-30, mn), mn
-            end
+            # _allan_factor_impl is a module-level function (defined above
+            # _report_seq2!) — not a closure — so Julia has no heap-boxed locals
+            # to race on under Threads.@threads.
 
             # Shuffled null for Allan factor — one RNG per iteration slot.
             n_af_shuf    = 10
@@ -379,10 +382,10 @@ function _report_seq2!(stat::PhiBiasStat; p::Int = 0)
             results_af   = Vector{NTuple{4,Float64}}(undef, n_af_T)  # (T, f_real, f_null, lift)
             Threads.@threads for ti in 1:n_af_T
                 let T = af_windows[ti]
-                    f_real, _ = allan_factor(arrivals, T, total_span_af)
+                    f_real, _ = _allan_factor_impl(arrivals, T)
                     f_null_sum = 0.0
                     for si in 1:n_af_shuf
-                        fn, _ = allan_factor(null_arrs_af[si], T, total_span_af)
+                        fn, _ = _allan_factor_impl(null_arrs_af[si], T)
                         f_null_sum += fn
                     end
                     f_null = f_null_sum / n_af_shuf

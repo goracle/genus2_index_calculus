@@ -35,6 +35,7 @@ include("lp1_conj_deep_diag_d19.jl")
 include("lp1_conj_deep_diag_d20_d21.jl")
 include("lp1_conj_deep_diag_d22_d24.jl")
 include("lp1_conj_deep_diag_d25.jl")
+include("lp1_conj_deep_diag_d26.jl")
 
 # ---------------------------------------------------------------------------
 #  print_conj_deep_report — top-level dispatcher.
@@ -73,6 +74,7 @@ function print_conj_deep_report(phi_stat ::PhiBiasStat,
     _report_d20_d21(deep_stat)
     _report_d22_d24(deep_stat; n_threads=n_threads)
     _report_d25(deep_stat, deep_stat.d12_store_alpha, deep_stat.d12_store_px, ell, p)
+    _report_d26(deep_stat)
 
     @printf("\n== End LP1-conj deep diagnostics ====================================================\n")
     flush(stdout)

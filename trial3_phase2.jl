@@ -539,7 +539,7 @@ end
         # temporally-close hits with shared algebraic structure.
         record_lp1_conj_hit!(phi_bias_stat, s.raw_steps, lp_key, a_bucket)
         record_conj_deep_step!(deep_stat, lp_key, a_bucket, s.raw_steps, true, al_cur, px_anchor,
-                               Int(v.store_step))
+                               Int(v.store_step), i0)
         record_d25_closure!(deep_stat, al_cur, px_anchor, Int(v.neg_al),
                             s.raw_steps - Int(v.store_step), Int(ell))
         record_d16_emission!(deep_stat, lp_key, s.raw_steps, i0)
