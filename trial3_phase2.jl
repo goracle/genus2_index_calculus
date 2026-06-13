@@ -949,14 +949,90 @@ function phase2_worker(G               ::Div2,
     next_anchor_ref = Ref{Function}(next_anchor)
 
     # ==========================================================================
-    #  Alpha/beta cursors — simple sequential 1,2,3,... iteration.
+    #  Alpha/beta cursor offsets — disjoint per-thread slice of the cursor
+    #  range [1, ell-1], so that no two threads ever emit the same (alpha,beta).
+    #
+    #  The (alpha_cur, beta_cur) trajectory is a deterministic function of the
+    #  step index n alone:
+    #      alpha_cur(n) = mod(alpha_cursor_0 + Cum_a(n), ell)
+    #  where Cum_a(n) = sum of step_a_i[step_seq[1..n]], and step_seq is the
+    #  fixed 1,2,...,N_STEPS,1,2,... sequence advanced once per while-loop
+    #  iteration *identically for every thread*, regardless of branch outcomes
+    #  (see step_cursor below).  So for any two threads A, B:
+    #      alpha_cur_A(n) - alpha_cur_B(n) == alpha_cursor_0_A - alpha_cursor_0_B
+    #                                          (mod ell)   for ALL n,
+    #  a per-thread CONSTANT shift.  Giving every thread a distinct initial
+    #  offset therefore guarantees alpha_cur_A(n) != alpha_cur_B(n) for every
+    #  step index n — hence (alpha_cur,beta_cur) pairs never collide across
+    #  threads either, since alpha alone already differs.
+    #
+    #  Partition [1, ell-1] (ell-1 values) into n_workers contiguous chunks
+    #  using the same balanced-partition scheme as the anchor cursor above,
+    #  and give thread `tid` the start of its chunk as the additive offset.
+    #  Requires n_workers <= ell-1 ("threads << ell"); if violated, raise
+    #  rather than silently letting two threads share an offset.
     # ==========================================================================
-    # Each call to next_alpha_beta() just increments alpha by 1 (mod ell-1,
-    # staying in [1, ell-1]) and beta by 1 (mod ell).  No golden-ratio stride,
-    # no per-thread offsets — purely deterministic sequential enumeration so we
-    # can observe what happens as alpha and the factor base advance one by one.
-    alpha_cursor     = 1
-    beta_cursor_init = beta_zero ? 0 : 1
+    ellm1 = ellI - 1
+    nt_ > ellm1 && throw(ArgumentError(
+        "phase2_worker: n_workers=$nt_ exceeds ell-1=$ellm1 — cannot give " *
+        "every thread a distinct alpha/beta cursor offset (threads << ell required)"))
+    base_chunk_ab = ellm1 ÷ nt_
+    r_ab          = ellm1 % nt_
+    ab_offset     = (tid - 1) * base_chunk_ab + min(tid - 1, r_ab)   # in [0, ellm1-1]
+
+    alpha_cursor     = 1 + ab_offset                      # in [1, ell-1], distinct per thread
+    beta_cursor_init = beta_zero ? 0 : (1 + ab_offset)    # same offset reused for beta:
+                                                           # alpha alone already guarantees
+                                                           # (alpha,beta) disjointness above
+
+    # ==========================================================================
+    #  Golden-ratio (R2 low-discrepancy) drift — added to alpha_cur/beta_cur
+    #  (and the matching D_cur term) every step, on top of the deterministic
+    #  step table.
+    #
+    #  WHY: a zero_dal closure fires when combined_al==combined_be==0, i.e.
+    #  the CURRENT (alpha_cur,beta_cur) equals the (alpha_cur,beta_cur) that
+    #  was in force when the colliding lp_key was first STORED.  Without a
+    #  drift term, alpha_cur(n)/beta_cur(n) are entirely determined by the
+    #  fixed step table cycling with period N_STEPS: if the table's net
+    #  per-lap drift (sum(step_a_i), sum(step_b_i)) happens to be ≡ 0
+    #  (mod ell), alpha_cur/beta_cur are THEMSELVES periodic with period
+    #  N_STEPS (or a divisor) — so ANY two closures whose step indices land
+    #  on the same table phase (n ≡ m mod N_STEPS) automatically get
+    #  combined_al == combined_be == 0, a structural ~1/N_STEPS-ish collision
+    #  rate independent of how "interesting" the (i0,prev_col) pair is.
+    #  That's the likely source of the high zero_dal fractions you're seeing
+    #  (and why it'd vary thread-to-thread: each thread's closures land at
+    #  different absolute step counts, hence different table-phase mixes).
+    #
+    #  FIX: add a fixed nonzero per-step increment (Δ_a,Δ_b) to alpha_cur/
+    #  beta_cur, taken from the 2D R2 low-discrepancy sequence — the proper
+    #  2D generalisation of "golden ratio striding" (plastic number
+    #  g≈1.3247179572447460..., α1=1/g≈0.7548776662, α2=1/g²≈0.5698402910;
+    #  these two are far better mutually-decorrelated than φ and φ² would be).
+    #  Since ell is prime, any nonzero Δ generates all of (Z/ellZ,+), so
+    #  alpha_cur(n) = mod(alpha_cursor_0 + n*Δ_a + Cum_a^table(n), ell) is now
+    #  dominated by the n*Δ_a term, which is injective for n=1..ell-1.  Two
+    #  closures n≠m now satisfy alpha_cur(n)==alpha_cur(m) only if
+    #  (n-m)*Δ_a ≡ (table-part difference) — a single residue class of (n-m)
+    #  per possible table difference, i.e. collisions drop from ~1/N_STEPS to
+    #  ~O(N_STEPS)/ell.  Requiring BOTH combined_al==0 AND combined_be==0
+    #  (independent Δ_a,Δ_b) pushes zero_dal down to ~O(N_STEPS²)/ell².
+    #
+    #  D_cur is kept consistent (D_cur == alpha_cur*G + beta_cur*T, mod ell in
+    #  the Jacobian) by adding the matching DRIFT_D = Δ_a*G + Δ_b*T every step,
+    #  exactly the way step_D[si] already tracks (step_a_i[si],step_b_i[si]).
+    #  In beta_zero mode, Δ_b=0 and DRIFT_D carries no T-component, so
+    #  beta_cur stays identically 0 as before.
+    # ==========================================================================
+    DELTA_A = Int(div(BigInt(ellI) * BigInt(754877666246692760), BigInt(10)^18))  # ell * 1/g
+    DELTA_B = beta_zero ? 0 :
+              Int(div(BigInt(ellI) * BigInt(569840290998053265), BigInt(10)^18)) # ell * 1/g^2
+    (DELTA_A == 0 || (!beta_zero && DELTA_B == 0)) && throw(ArgumentError(
+        "phase2_worker: ell=$ellI too small for a nonzero golden-ratio drift " *
+        "(DELTA_A=$DELTA_A, DELTA_B=$DELTA_B) — increase ell or disable the drift"))
+    DRIFT_D = beta_zero ? jac_mul(G, BigInt(DELTA_A), ell) :
+                          jac_add(jac_mul(G, BigInt(DELTA_A), ell), jac_mul(T, BigInt(DELTA_B), ell))
 
     @inline function next_alpha_beta()
         a = alpha_cursor
@@ -1024,9 +1100,9 @@ function phase2_worker(G               ::Div2,
         # --- Sequential step selection ---
         si          = step_cursor
         step_cursor = mod(step_cursor, N_STEPS) + 1
-        D_cur     = jac_add(D_cur, step_D[si])
-        alpha_cur = mod(alpha_cur + step_a_i[si], ellI)
-        beta_cur  = beta_zero ? 0 : mod(beta_cur + step_b_i[si], ellI)
+        D_cur     = jac_add(jac_add(D_cur, step_D[si]), DRIFT_D)
+        alpha_cur = mod(alpha_cur + step_a_i[si] + DELTA_A, ellI)
+        beta_cur  = beta_zero ? 0 : mod(beta_cur + step_b_i[si] + DELTA_B, ellI)
 
         # --- Gate 1: D must be a degree-2 divisor (generic Jacobian element) ---
         fp3_deg(D_cur.u) != 2 && continue
