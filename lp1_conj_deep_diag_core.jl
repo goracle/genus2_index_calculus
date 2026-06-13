@@ -516,7 +516,9 @@ function merge_conj_deep_stats(stats::Vector{ConjDeepStat})::ConjDeepStat
         merged.d25_dal_hist   .+= s.d25_dal_hist
         merged.d25_n_closures  += s.d25_n_closures
 
-        # D26: merge step ranges (union min/max), partner masks (OR), close counts.
+        # D26: merge (store_step,close_step) pairs. Each key is written at most
+        # once (one closure per key); min/max is a harmless no-op safety net
+        # in the (should-not-happen) case of duplicate closures.
         for (k, (lo, hi)) in s.d26_step_range
             if haskey(merged.d26_step_range, k)
                 mlo, mhi = merged.d26_step_range[k]
@@ -566,13 +568,8 @@ end
         push!(stat.d14_store_a,     a_val)
     end
 
-    # D26: update per-key temporal step range.
-    if haskey(stat.d26_step_range, lp_key)
-        mlo, mhi = stat.d26_step_range[lp_key]
-        stat.d26_step_range[lp_key] = (min(mlo, raw_step), max(mhi, raw_step))
-    elseif length(stat.d26_step_range) < D26_MAX_TRACKED_KEYS
-        stat.d26_step_range[lp_key] = (raw_step, raw_step)
-    end
+    # D26: step_range is populated at CLOSE time (record_conj_deep_step!),
+    # where both store_step and close_step are available together.
 
     return nothing
 end
@@ -626,6 +623,14 @@ end
         push!(stat.d12_close_alpha, alpha_cur)
         push!(stat.d12_close_px,    px)
         push!(stat.d12_close_key,   lp_key)
+    end
+
+    # D26: record (store_step, close_step) = (X1, X2) pair for this key.
+    # Both timestamps come from this single call: store_step was embedded in
+    # the LSM value at insert time; raw_step is this thread's current step
+    # (the close time). No cross-thread merge needed for this pair.
+    if i0 >= 0 && store_step >= 0 && length(stat.d26_step_range) < D26_MAX_TRACKED_KEYS
+        stat.d26_step_range[lp_key] = (store_step, raw_step)
     end
 
     # D26: update partner bloom mask and close count.
