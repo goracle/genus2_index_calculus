@@ -1125,9 +1125,8 @@ function phase2_worker(G               ::Div2,
     t_last_report = time()
     report_interval_secs = 30.0
 
-    # Sequential step cursor — iterates 1,2,3,...,N_STEPS,1,2,... deterministically.
-    step_cursor = 1
-
+    # Desynchronize the step cursor to break rigid formation
+    step_cursor = mod((tid - 1) * cld(N_STEPS, n_workers), N_STEPS) + 1
     # ==========================================================================
     #  Main walk loop
     # ==========================================================================
@@ -1143,7 +1142,7 @@ function phase2_worker(G               ::Div2,
 
         # Early no-repeat gate: once a residue has been consumed by any thread,
         # skip the rest of the expensive gate/φ/LP work for that alpha.
-        phase2_alpha_first_seen!(alpha_cur, ellI) || continue
+        #phase2_alpha_first_seen!(alpha_cur, ellI) || continue
 
         # --- Gate 1: D must be a degree-2 divisor (generic Jacobian element) ---
         fp3_deg(D_cur.u) != 2 && continue
