@@ -1297,6 +1297,11 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
         thread_deep_stats_pre = [ConjDeepStat()        for _ in 1:Threads.nthreads()]
         results_pre = Vector{Any}(undef, Threads.nthreads())
 
+        # Reset the alpha-seen Bloom filter before the walk so stale bits from
+        # any prior walk (e.g. a failed or restarted run in the same Julia session)
+        # do not suppress valid alpha events.  The filter is 128 MB; fill! is fast.
+        phase2_alpha_bloom_reset!()
+
         @printf("  [MEM] before phase2 walk:  RSS=%.1f MB  GC-live=%.1f MB\n",
                 Sys.maxrss()/1024^2, Base.gc_live_bytes()/1024^2)
         flush(stdout)

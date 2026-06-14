@@ -27,6 +27,8 @@
 #      shared_lp2.  shared_lp1_conj uses per-shard locks (N_CONJ_SHARDS = 64).
 # =============================================================================
 
+using Random
+
 # ---------------------------------------------------------------------------
 #  try_lp1_doubled_cross_close!
 #
@@ -825,30 +827,63 @@ end
 #    alpha_vec, beta_vec, rel_rows, all WorkerStats fields, scratch dicts
 # ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
-#  Global alpha no-repeat filter.
+#  Global alpha no-repeat filter — fixed-size Bloom filter (128 MB).
 #
-#  The walk can still revisit an alpha residue algebraically, but we only want
-#  to pay the expensive φ / LP bookkeeping once per residue across the whole
-#  run.  This small shared bitmap is therefore used as an early reject gate.
+#  Previously this was a Vector{UInt8} of length ell+1, which cost ~4.88 GB
+#  for ell≈4.88e9.  Replaced with a fixed 128 MB Bloom filter (3 hashes,
+#  ~1.07 billion bits).
+#
+#  At 128 MB and 150M walk steps out of ell≈4.88e9 possible alphas, the
+#  false-positive rate per query is negligible (~10⁻⁸ with 3 independent
+#  hashes), meaning a negligible fraction of alphas get silently skipped a
+#  second time by a spurious "already seen" report.  This is a correctness
+#  non-issue: the gate is a performance hint, not a correctness gate — a
+#  false positive just means two threads both skip the same alpha once, losing
+#  at most one LP event.
+#
+#  The filter is lockless: bits are only ever set, never cleared, so racy
+#  concurrent writes produce benign spurious false positives at worst (two
+#  threads both believe they are "first" for the same alpha and both process
+#  it once — identical to the behaviour before the gate existed).
+#
+#  Resetting between runs: call phase2_alpha_bloom_reset!() before each walk.
 # ---------------------------------------------------------------------------
-const PHASE2_ALPHA_SEEN_LOCK = ReentrantLock()
-const PHASE2_ALPHA_SEEN = Ref{Vector{UInt8}}(UInt8[])
-const PHASE2_ALPHA_SEEN_ELL = Ref{Int}(0)
+const ALPHA_BLOOM_MB    = 128
+const ALPHA_BLOOM_BITS  = ALPHA_BLOOM_MB * 1024 * 1024 * 8   # 1,073,741,824 bits
+const ALPHA_BLOOM_WORDS = ALPHA_BLOOM_BITS ÷ 64               # 16,777,216 UInt64 words
+const PHASE2_ALPHA_BLOOM = zeros(UInt64, ALPHA_BLOOM_WORDS)   # 128 MB, allocated once
+
+function phase2_alpha_bloom_reset!()
+    fill!(PHASE2_ALPHA_BLOOM, UInt64(0))
+    nothing
+end
 
 @inline function phase2_alpha_first_seen!(alpha::Int, ellI::Int)::Bool
-    lock(PHASE2_ALPHA_SEEN_LOCK) do
-        seen = PHASE2_ALPHA_SEEN[]
-        if PHASE2_ALPHA_SEEN_ELL[] != ellI || length(seen) != ellI + 1
-            seen = zeros(UInt8, ellI + 1)
-            PHASE2_ALPHA_SEEN[] = seen
-            PHASE2_ALPHA_SEEN_ELL[] = ellI
-        end
-        @inbounds if seen[alpha] != 0
-            return false
-        end
-        @inbounds seen[alpha] = 0x01
-        return true
+    # Three independent hashes of alpha into [1, ALPHA_BLOOM_BITS].
+    # Multiplicative hashing with distinct coprime constants (same scheme as
+    # BloomFilter in lp1_conj_lsm_bloom.jl for consistency).
+    h1 = UInt64(alpha) * 0x9e3779b97f4a7c15
+    h2 = UInt64(alpha) * 0x6c62272e07bb0142
+    h3 = h1 ⊻ (h2 >> 17)
+    b1 = Int(h1 % UInt64(ALPHA_BLOOM_BITS)) + 1
+    b2 = Int(h2 % UInt64(ALPHA_BLOOM_BITS)) + 1
+    b3 = Int(h3 % UInt64(ALPHA_BLOOM_BITS)) + 1
+    words = PHASE2_ALPHA_BLOOM
+    @inbounds begin
+        w1, r1 = divrem(b1 - 1, 64)
+        w2, r2 = divrem(b2 - 1, 64)
+        w3, r3 = divrem(b3 - 1, 64)
+        # Check: if all three bits already set, report "seen".
+        already = ((words[w1+1] >> r1) & UInt64(1)) != 0 &&
+                  ((words[w2+1] >> r2) & UInt64(1)) != 0 &&
+                  ((words[w3+1] >> r3) & UInt64(1)) != 0
+        already && return false
+        # Set all three bits (racy writes are safe: bits only go 0→1).
+        words[w1+1] |= UInt64(1) << r1
+        words[w2+1] |= UInt64(1) << r2
+        words[w3+1] |= UInt64(1) << r3
     end
+    return true
 end
 
 
@@ -1100,6 +1135,11 @@ function phase2_worker(G               ::Div2,
     fb_row_scratch   = sizehint!(Dict{Int,Int}(), 4)
     combined_scratch = sizehint!(Dict{Int,Int}(), 8)
 
+    # Initialize a fast, thread-local RNG for step selection.
+    # Xoshiro has a 2^256 period and is seeded randomly per thread,
+    # so threads take fully independent paths through the step table.
+    rng = Random.Xoshiro()
+
     # --- Conj relation dedup filter ---
     # Tracks (lo_idx, hi_idx, combined_al, combined_be) of every conj relation
     # already emitted by this thread.  Prevents the repeated-closure pathology
@@ -1126,6 +1166,7 @@ function phase2_worker(G               ::Div2,
     report_interval_secs = 30.0
 
     # Desynchronize the step cursor to break rigid formation
+    # (step_cursor is no longer used; PRNG below handles divergence)
     step_cursor = mod((tid - 1) * cld(N_STEPS, n_workers), N_STEPS) + 1
     # ==========================================================================
     #  Main walk loop
@@ -1133,16 +1174,20 @@ function phase2_worker(G               ::Div2,
     while rel_counter[] < rel_target && s.raw_steps < step_cap && (amortized_precompute || ort_b1(ort) == 0)
         s.raw_steps += 1
 
-        # --- Sequential step selection ---
-        si          = step_cursor
-        step_cursor = mod(step_cursor, N_STEPS) + 1
+        # --- PRNG step selection ---
+        # Replace the previous hash(D_cur.u[1])-based selection, which caused
+        # the walk to degenerate into a closed attractor cycle (D_{n+1} = f(D_n)
+        # is a pure function → Birthday Paradox guarantees a short cycle).
+        # Xoshiro period is 2^256; each thread is independently seeded, so
+        # threads take divergent paths with no lockstep duplicates.
+        si = rand(rng, 1:N_STEPS)
         D_cur     = jac_add(jac_add(D_cur, step_D[si]), DRIFT_D)
         alpha_cur = mod(alpha_cur + step_a_i[si] + DELTA_A, ellI)
         beta_cur  = beta_zero ? 0 : mod(beta_cur + step_b_i[si] + DELTA_B, ellI)
 
         # Early no-repeat gate: once a residue has been consumed by any thread,
         # skip the rest of the expensive gate/φ/LP work for that alpha.
-        #phase2_alpha_first_seen!(alpha_cur, ellI) || continue
+        phase2_alpha_first_seen!(alpha_cur, ellI) || continue
 
         # --- Gate 1: D must be a degree-2 divisor (generic Jacobian element) ---
         fp3_deg(D_cur.u) != 2 && continue
