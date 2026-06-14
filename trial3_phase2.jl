@@ -142,12 +142,15 @@ function report_worker_progress(tid, elapsed, s::WorkerStats, rel_counter, rel_t
             100.0 * s.hits_1lp_conj_emit / max(1, s.hits_lp1_conj),
             100.0 * s.hits_1lp_emit      / max(1, s.hits_lp1),
             s.evictions_conj)
-    let total_conj_close = s.hits_1lp_conj_emit + s.hits_1lp_conj_trivial_same_col + s.hits_1lp_conj_trivial_zero_dal
-        @printf("           1lp_conj trivial breakdown: same_col=%d (%.1f%%)  zero_dal=%d (%.1f%%)  useful=%d (%.1f%%) of %d closes\n",
+    let total_conj_close = s.hits_1lp_conj_emit + s.hits_1lp_conj_trivial_same_col +
+                            s.hits_1lp_conj_trivial_zero_dal + s.hits_1lp_conj_trivial_dup
+        @printf("           1lp_conj trivial breakdown: same_col=%d (%.1f%%)  zero_dal=%d (%.1f%%)  dup=%d (%.1f%%)  useful=%d (%.1f%%) of %d closes\n",
                 s.hits_1lp_conj_trivial_same_col,
                 100.0 * s.hits_1lp_conj_trivial_same_col / max(1, total_conj_close),
                 s.hits_1lp_conj_trivial_zero_dal,
                 100.0 * s.hits_1lp_conj_trivial_zero_dal / max(1, total_conj_close),
+                s.hits_1lp_conj_trivial_dup,
+                100.0 * s.hits_1lp_conj_trivial_dup / max(1, total_conj_close),
                 s.hits_1lp_conj_emit,
                 100.0 * s.hits_1lp_conj_emit / max(1, total_conj_close),
                 total_conj_close)
@@ -496,7 +499,7 @@ end
             rel_key  = (lo_idx, hi_idx, canon_al, canon_be)
             if rel_key in emitted_conj_rels
                 # Duplicate: drop silently; do not increment rel_counter.
-                s.hits_1lp_conj_trivial_zero_dal += 1   # repurposed as dup-dropped counter
+                s.hits_1lp_conj_trivial_dup += 1
                 return next_anchor_ref[]()
             end
             push!(emitted_conj_rels, rel_key)
@@ -821,6 +824,33 @@ end
 #  Per-thread (no locking):
 #    alpha_vec, beta_vec, rel_rows, all WorkerStats fields, scratch dicts
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+#  Global alpha no-repeat filter.
+#
+#  The walk can still revisit an alpha residue algebraically, but we only want
+#  to pay the expensive φ / LP bookkeeping once per residue across the whole
+#  run.  This small shared bitmap is therefore used as an early reject gate.
+# ---------------------------------------------------------------------------
+const PHASE2_ALPHA_SEEN_LOCK = ReentrantLock()
+const PHASE2_ALPHA_SEEN = Ref{Vector{UInt8}}(UInt8[])
+const PHASE2_ALPHA_SEEN_ELL = Ref{Int}(0)
+
+@inline function phase2_alpha_first_seen!(alpha::Int, ellI::Int)::Bool
+    lock(PHASE2_ALPHA_SEEN_LOCK) do
+        seen = PHASE2_ALPHA_SEEN[]
+        if PHASE2_ALPHA_SEEN_ELL[] != ellI || length(seen) != ellI + 1
+            seen = zeros(UInt8, ellI + 1)
+            PHASE2_ALPHA_SEEN[] = seen
+            PHASE2_ALPHA_SEEN_ELL[] = ellI
+        end
+        @inbounds if seen[alpha] != 0
+            return false
+        end
+        @inbounds seen[alpha] = 0x01
+        return true
+    end
+end
+
 
 # Top-level struct for the importance-sampling reservoir (must be at module scope).
 function phase2_worker(G               ::Div2,
@@ -918,6 +948,7 @@ function phase2_worker(G               ::Div2,
                 hits_1lp_conj_emit = 0,
                 hits_1lp_conj_trivial_same_col  = 0,
                 hits_1lp_conj_trivial_zero_dal  = 0,
+                hits_1lp_conj_trivial_dup       = 0,
                 hits_1lp_conj_attractor_exact   = 0,
                 hits_1lp_conj_attractor_birthday= 0,
                 hits_lp2seen  = 0,
@@ -949,22 +980,22 @@ function phase2_worker(G               ::Div2,
     next_anchor_ref = Ref{Function}(next_anchor)
 
     # ==========================================================================
-    #  Alpha/beta cursor offsets — disjoint per-thread slice of the cursor
-    #  range [1, ell-1], so that no two threads ever emit the same (alpha,beta).
+    #  Alpha/beta cursor offsets — distinct per-thread seeds, plus a shared
+    #  no-repeat gate that makes the expensive LP bookkeeping global-unique.
     #
-    #  The (alpha_cur, beta_cur) trajectory is a deterministic function of the
-    #  step index n alone:
-    #      alpha_cur(n) = mod(alpha_cursor_0 + Cum_a(n), ell)
-    #  where Cum_a(n) = sum of step_a_i[step_seq[1..n]], and step_seq is the
-    #  fixed 1,2,...,N_STEPS,1,2,... sequence advanced once per while-loop
-    #  iteration *identically for every thread*, regardless of branch outcomes
-    #  (see step_cursor below).  So for any two threads A, B:
-    #      alpha_cur_A(n) - alpha_cur_B(n) == alpha_cursor_0_A - alpha_cursor_0_B
-    #                                          (mod ell)   for ALL n,
-    #  a per-thread CONSTANT shift.  Giving every thread a distinct initial
-    #  offset therefore guarantees alpha_cur_A(n) != alpha_cur_B(n) for every
-    #  step index n — hence (alpha_cur,beta_cur) pairs never collide across
-    #  threads either, since alpha alone already differs.
+    #  The per-thread seeds still keep the deterministic walk phases decorrelated,
+    #  but uniqueness across the whole run is enforced by phase2_alpha_first_seen!
+    #  right after each alpha update.  That lets us avoid doing any further work
+    #  for a residue once some thread has already consumed it.
+    #
+    #  The walk still advances deterministically, but we no longer rely on the
+    #  thread-local seed alone for uniqueness.  Instead, a shared alpha bitmap
+    #  marks each residue the first time any thread reaches it; later visits are
+    #  skipped before the expensive φ / LP machinery runs.
+    #
+    #  The per-thread slice below is still useful as a cheap way to decorrelate
+    #  the first few residues each worker sees, but global uniqueness is now
+    #  enforced by phase2_alpha_first_seen!.
     #
     #  Partition [1, ell-1] (ell-1 values) into n_workers contiguous chunks
     #  using the same balanced-partition scheme as the anchor cursor above,
@@ -1037,9 +1068,15 @@ function phase2_worker(G               ::Div2,
     @inline function next_alpha_beta()
         a = alpha_cursor
         b = beta_zero ? 0 : beta_cursor_init
-        alpha_cursor = mod(alpha_cursor, ellI - 1) + 1          # cycles 1..ell-1
+        alpha_cursor += 1
+        if alpha_cursor > ellI - 1
+            alpha_cursor = 1
+        end
         if !beta_zero
-            beta_cursor_init = mod(beta_cursor_init, ellI - 1) + 1  # cycles 1..ell-1
+            beta_cursor_init += 1
+            if beta_cursor_init > ellI - 1
+                beta_cursor_init = 1
+            end
         end
         return a, b
     end
@@ -1103,6 +1140,10 @@ function phase2_worker(G               ::Div2,
         D_cur     = jac_add(jac_add(D_cur, step_D[si]), DRIFT_D)
         alpha_cur = mod(alpha_cur + step_a_i[si] + DELTA_A, ellI)
         beta_cur  = beta_zero ? 0 : mod(beta_cur + step_b_i[si] + DELTA_B, ellI)
+
+        # Early no-repeat gate: once a residue has been consumed by any thread,
+        # skip the rest of the expensive gate/φ/LP work for that alpha.
+        phase2_alpha_first_seen!(alpha_cur, ellI) || continue
 
         # --- Gate 1: D must be a degree-2 divisor (generic Jacobian element) ---
         fp3_deg(D_cur.u) != 2 && continue
@@ -1354,12 +1395,15 @@ function phase2_worker(G               ::Div2,
                 s.raw_steps / max(1, s.hits_full))
         @printf("           smoothness (0-LP 1-LP 2-LP 3-LP): %d %d %d %d\n",
                 s.smooth_hist[1], s.smooth_hist[2], s.smooth_hist[3], s.smooth_hist[4])
-        let total_conj_close = s.hits_1lp_conj_emit + s.hits_1lp_conj_trivial_same_col + s.hits_1lp_conj_trivial_zero_dal
-            @printf("           1lp_conj trivial breakdown: same_col=%d (%.1f%%)  zero_dal=%d (%.1f%%)  useful=%d (%.1f%%) of %d closes\n",
+        let total_conj_close = s.hits_1lp_conj_emit + s.hits_1lp_conj_trivial_same_col +
+                                s.hits_1lp_conj_trivial_zero_dal + s.hits_1lp_conj_trivial_dup
+            @printf("           1lp_conj trivial breakdown: same_col=%d (%.1f%%)  zero_dal=%d (%.1f%%)  dup=%d (%.1f%%)  useful=%d (%.1f%%) of %d closes\n",
                     s.hits_1lp_conj_trivial_same_col,
                     100.0 * s.hits_1lp_conj_trivial_same_col / max(1, total_conj_close),
                     s.hits_1lp_conj_trivial_zero_dal,
                     100.0 * s.hits_1lp_conj_trivial_zero_dal / max(1, total_conj_close),
+                    s.hits_1lp_conj_trivial_dup,
+                    100.0 * s.hits_1lp_conj_trivial_dup / max(1, total_conj_close),
                     s.hits_1lp_conj_emit,
                     100.0 * s.hits_1lp_conj_emit / max(1, total_conj_close),
                     total_conj_close)
@@ -1414,6 +1458,7 @@ function phase2_worker(G               ::Div2,
             hits_1lp_conj_emit = s.hits_1lp_conj_emit,
             hits_1lp_conj_trivial_same_col  = s.hits_1lp_conj_trivial_same_col,
             hits_1lp_conj_trivial_zero_dal  = s.hits_1lp_conj_trivial_zero_dal,
+            hits_1lp_conj_trivial_dup       = s.hits_1lp_conj_trivial_dup,
             hits_1lp_conj_attractor_exact   = s.hits_1lp_conj_attractor_exact,
             hits_1lp_conj_attractor_birthday= s.hits_1lp_conj_attractor_birthday,
             hits_lp2seen  = s.hits_lp2seen,

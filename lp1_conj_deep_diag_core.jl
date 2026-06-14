@@ -1073,6 +1073,10 @@ function _top_share(counts::Vector{Int}, frac::Float64)::Float64
     total = sum(counts)
     total == 0 && return 0.0
     sorted = sort(counts, rev=true)
-    k = max(1, round(Int, frac * length(sorted)))
+    # `frac` may exceed 1 (e.g. callers asking for "top 5" out of fewer than
+    # 5 tracked items), so clamp k into [1, length(sorted)] to avoid a
+    # BoundsError on the sorted[1:k] slice below.
+    k_raw = round(Int, frac * length(sorted))
+    k = clamp(k_raw, 1, length(sorted))
     sum(sorted[1:k]) / total
 end

@@ -440,11 +440,17 @@ mutable struct WorkerStats
     conj_toctou_loss     ::Int   # haskey=true but pop returned nothing (race)
     # Trivial-close breakdown (Gemini hypothesis instrumentation):
     hits_1lp_conj_trivial_same_col  ::Int   # closed but i0==prev_col (filtered by construction)
-    hits_1lp_conj_trivial_zero_dal  ::Int   # closed but Δα=Δβ=0, i0≠prev_col
+    hits_1lp_conj_trivial_zero_dal  ::Int   # closed but Δα=Δβ=0, i0≠prev_col (should be ~0:
+                                             # excluded by global alpha-uniqueness gate)
+    hits_1lp_conj_trivial_dup       ::Int   # closed, Δα/Δβ nonzero, but (lo,hi,canon_al,canon_be)
+                                             # already emitted by this thread — exact-duplicate
+                                             # weight-2 row, dropped. NOT the same condition as
+                                             # hits_1lp_conj_trivial_zero_dal; was previously
+                                             # double-counted into that field.
     # Same-col sub-breakdown: attractor (same walk path) vs birthday (different path, same anchor):
     hits_1lp_conj_attractor_exact   ::Int   # same_col AND Δα=0 → genuine walk loop
     hits_1lp_conj_attractor_birthday::Int   # same_col BUT Δα≠0 → birthday, anchor just happened to match
 
     WorkerStats() = new(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, zeros(Int, 4), 0,
-                        0, 0, 0, 0, 0, 0)
+                        0, 0, 0, 0, 0, 0, 0)
 end
