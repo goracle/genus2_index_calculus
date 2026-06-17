@@ -21,7 +21,6 @@
 const DEEP_DIAG_BUCKET_BITS      = 10          # 2^10 = 1024 coarse buckets
 const DEEP_DIAG_N_BUCKETS        = 1 << DEEP_DIAG_BUCKET_BITS
 const DEEP_DIAG_MAX_ANCESTRY     = 500_000
-const DEEP_DIAG_COND_ENT_LAG     = 4
 const DEEP_DIAG_MAX_OPCODE_LOG   = 2_000_000
 const D12_MAX_EVENTS             = 500_000
 const D7_MAX_CLOSURES            = 500_000
@@ -115,11 +114,6 @@ const OPCODE_SKIP     = 0x05
 #  ConjDeepStat — per-thread accumulator
 # ---------------------------------------------------------------------------
 mutable struct ConjDeepStat
-    # D2 — transition matrix: n_trans[from_bucket+1, to_bucket+1] = count.
-    # UInt32 keeps memory: 1024×1024×4 B = 4 MB per thread.
-    n_trans         ::Matrix{UInt32}
-    _prev_bucket    ::Int
-
     # D3 — branch ancestry log (capped at DEEP_DIAG_MAX_ANCESTRY).
     ancestry_log_a      ::Vector{UInt16}
     ancestry_log_parity ::Vector{UInt8}
@@ -137,9 +131,20 @@ mutable struct ConjDeepStat
     d8_prev_depth   ::Int
 
     # D12 — Alpha/anchor joint support.
+    #
+    # d12_store_* hold a reservoir sample (Algorithm R) of STORE events, not a
+    # prefix.  d12_n_stores_seen is the total number of store events observed
+    # by this thread (including ones that were never inserted into the
+    # reservoir) — it is what makes each slot's inclusion probability
+    # D12_MAX_EVENTS / d12_n_stores_seen uniform across the whole stream
+    # rather than biased toward the first D12_MAX_EVENTS events.  Without this
+    # counter, any downstream consumer that joins d12_store_key against a
+    # later/uncapped key set (e.g. D27's CLOSE/SINGLETON partition) silently
+    # excludes everything stored after the prefix window.
     d12_store_alpha ::Vector{Int}
     d12_store_px    ::Vector{Int}
     d12_store_key   ::Vector{UInt128}
+    d12_n_stores_seen ::Int
     d12_close_alpha ::Vector{Int}
     d12_close_px    ::Vector{Int}
     d12_close_key   ::Vector{UInt128}
@@ -271,8 +276,6 @@ end
 
 function ConjDeepStat()
     ConjDeepStat(
-        zeros(UInt32, DEEP_DIAG_N_BUCKETS, DEEP_DIAG_N_BUCKETS),
-        -1,
         UInt16[], UInt8[], UInt32[],
         Bool[],
         0,
@@ -280,6 +283,7 @@ function ConjDeepStat()
         Int[], UInt16[], UInt16[],
         -1,
         Int[], Int[], UInt128[],   # d12 store
+        0,                          # d12_n_stores_seen
         Int[], Int[], UInt128[],   # d12 close
         Int[],                     # d14 store_a
         # D16
@@ -349,7 +353,6 @@ function merge_conj_deep_stats(stats::Vector{ConjDeepStat})::ConjDeepStat
     isempty(stats) && error("merge_conj_deep_stats: empty input")
     merged = ConjDeepStat()
     for s in stats
-        merged.n_trans .+= s.n_trans
         append!(merged.ancestry_log_a,       s.ancestry_log_a)
         append!(merged.ancestry_log_parity,  s.ancestry_log_parity)
         append!(merged.ancestry_log_keyhash, s.ancestry_log_keyhash)
@@ -379,27 +382,15 @@ function merge_conj_deep_stats(stats::Vector{ConjDeepStat})::ConjDeepStat
             end
         end
 
-        # D12: merge store/close event logs.
-        for (dst_al, dst_px, dst_key, src_al, src_px, src_key) in (
-                (merged.d12_store_alpha, merged.d12_store_px, merged.d12_store_key,
-                 s.d12_store_alpha,      s.d12_store_px,      s.d12_store_key),
-                (merged.d12_close_alpha, merged.d12_close_px, merged.d12_close_key,
-                 s.d12_close_alpha,      s.d12_close_px,      s.d12_close_key))
-            n_rem = D12_MAX_EVENTS - length(dst_al)
-            n_rem > 0 || continue
-            n_take = min(n_rem, length(src_al))
-            append!(dst_al,  src_al[1:n_take])
-            append!(dst_px,  src_px[1:n_take])
-            append!(dst_key, src_key[1:n_take])
-        end
-
-        # D14: merge store_a.
-        let n_rem = D12_MAX_EVENTS - length(merged.d14_store_a)
-            if n_rem > 0
-                n_take = min(n_rem, length(s.d14_store_a))
-                append!(merged.d14_store_a, s.d14_store_a[1:n_take])
-            end
-        end
+        # D12 close event log is not capped — record everything. (The store
+        # event reservoir is merged separately below, after this loop, via
+        # _merge_d12_store_reservoirs! — that merge needs every thread's
+        # d12_n_stores_seen available up front to allocate cap slots
+        # correctly across threads, so it can't be folded into this
+        # one-thread-at-a-time loop; see that function's docstring.)
+        append!(merged.d12_close_alpha, s.d12_close_alpha)
+        append!(merged.d12_close_px,    s.d12_close_px)
+        append!(merged.d12_close_key,   s.d12_close_key)
 
         # D16: merge histograms; ring buffer is per-thread ephemeral.
         for (k, v) in s.d16_preburst_hist
@@ -534,7 +525,120 @@ function merge_conj_deep_stats(stats::Vector{ConjDeepStat})::ConjDeepStat
             merged.d26_close_count[k] = get(merged.d26_close_count, k, 0) + cnt
         end
     end
+
+    # D12 store-event reservoir: merged separately (needs every thread's
+    # true stream length up front; see _merge_d12_store_reservoirs!).
+    _merge_d12_store_reservoirs!(merged, stats)
+
     return merged
+end
+
+# ---------------------------------------------------------------------------
+#  _merge_d12_store_reservoirs! — combine per-thread D12 reservoir samples
+#  into merged.d12_store_* (and the lockstep d14_store_a) as an exact,
+#  unbiased reservoir sample of size ≤ D12_MAX_EVENTS drawn uniformly from
+#  the union of every thread's true store stream.
+#
+#  Why this can't just be "append everything, then truncate" or "fold items
+#  in one at a time treating each as +1 to a running n_seen": both of those
+#  bias the result toward whichever thread happens to be processed first, or
+#  toward threads with smaller streams (verified empirically — folding
+#  thread B's already-4%-subsampled items into a running counter as if each
+#  was a single fresh draw inflates small threads' apparent weight, because
+#  it ignores how much each item was already pre-thinned by that thread's
+#  own reservoir).
+#
+#  The exact approach (two-stage uniform sampling):
+#    1. If you draw a uniform sample of size `cap` from a population
+#       partitioned into groups of size n_1, n_2, ..., the number of draws
+#       k_s landing in group s follows a multivariate hypergeometric
+#       distribution with population sizes (n_1, n_2, ...).
+#    2. Each thread's reservoir is *already* a uniform sample of size m_s
+#       from its own n_s true events. A uniform random subsample of size
+#       k_s ≤ m_s taken from that reservoir is therefore a uniform sample of
+#       size k_s from the original n_s events (subsampling a uniform sample
+#       stays uniform — standard fact).
+#  So: draw the per-thread allocation (k_1, k_2, ...) via sequential
+#  hypergeometric draws against the running total, then uniformly subsample
+#  k_s items (without replacement) from each thread's reservoir. This was
+#  verified by Monte Carlo simulation to converge exactly to the target
+#  uniform inclusion probability D12_MAX_EVENTS / total_n_seen for every
+#  original event regardless of which thread it came from or thread size
+#  skew.
+# ---------------------------------------------------------------------------
+function _merge_d12_store_reservoirs!(merged::ConjDeepStat, stats::Vector{ConjDeepStat})
+    total_n = sum(s.d12_n_stores_seen for s in stats)
+    merged.d12_n_stores_seen = total_n
+    total_n == 0 && return nothing
+
+    cap = D12_MAX_EVENTS
+    remaining_cap   = min(cap, total_n)
+    remaining_total = total_n
+
+    for (idx, s) in enumerate(stats)
+        n_s = s.d12_n_stores_seen
+        m_s = length(s.d12_store_alpha)   # this thread's reservoir size, ≤ min(n_s, cap)
+
+        is_last = (idx == length(stats))
+        k_s = if is_last
+            remaining_cap   # last group must absorb whatever allocation remains
+        elseif n_s == 0
+            0
+        else
+            _draw_hypergeometric(remaining_total, n_s, remaining_cap)
+        end
+        k_s = min(k_s, m_s)   # can't take more than the thread actually retained
+
+        if k_s > 0
+            idxs = m_s == k_s ? collect(1:m_s) : _sample_without_replacement(m_s, k_s)
+            for i in idxs
+                push!(merged.d12_store_alpha, s.d12_store_alpha[i])
+                push!(merged.d12_store_px,    s.d12_store_px[i])
+                push!(merged.d12_store_key,   s.d12_store_key[i])
+                push!(merged.d14_store_a,     s.d14_store_a[i])
+            end
+        end
+
+        remaining_cap   -= k_s
+        remaining_total -= n_s
+    end
+    return nothing
+end
+
+# ---------------------------------------------------------------------------
+#  _draw_hypergeometric(N, K, n) — exact draw from Hypergeometric(N, K, n):
+#  the number of "marked" items (population size K, out of total N) obtained
+#  when drawing n items without replacement from the population of N.
+#  Implemented as a direct sequential urn simulation (exact, not an
+#  approximation) — cheap and only ever called O(n_threads) times per merge,
+#  never in the hot path.
+# ---------------------------------------------------------------------------
+function _draw_hypergeometric(N::Int, K::Int, n::Int)::Int
+    successes  = 0
+    remaining_N = N
+    remaining_K = K
+    for _ in 1:n
+        remaining_N <= 0 && break
+        if rand(1:remaining_N) <= remaining_K
+            successes += 1
+            remaining_K -= 1
+        end
+        remaining_N -= 1
+    end
+    return successes
+end
+
+# ---------------------------------------------------------------------------
+#  _sample_without_replacement(m, k) — k distinct uniformly random indices
+#  from 1:m, via partial Fisher–Yates. Exact uniform sampling.
+# ---------------------------------------------------------------------------
+function _sample_without_replacement(m::Int, k::Int)::Vector{Int}
+    pool = collect(1:m)
+    @inbounds for i in 1:k
+        j = rand(i:m)
+        pool[i], pool[j] = pool[j], pool[i]
+    end
+    return pool[1:k]
 end
 
 # ---------------------------------------------------------------------------
@@ -560,12 +664,35 @@ end
         px >= 0 && (stat.d17_key_meta[lp_key] = (px, py, a_val))
     end
 
-    # D12/D14: record (alpha, px, a) at store time.
-    if alpha_cur >= 0 && length(stat.d12_store_alpha) < D12_MAX_EVENTS
-        push!(stat.d12_store_alpha, alpha_cur)
-        push!(stat.d12_store_px,    px)
-        push!(stat.d12_store_key,   lp_key)
-        push!(stat.d14_store_a,     a_val)
+    # D12/D14: record (alpha, px, a) at store time via reservoir sampling
+    # (Algorithm R).  This must NOT be a prefix cap: D27's CLOSE/SINGLETON
+    # partition tests d12_store_key membership against an uncapped close-key
+    # set, so if the reservoir only ever kept the first D12_MAX_EVENTS stores,
+    # any key first stored later in the walk could never be classified as
+    # CLOSE even if it closed — biasing the lift statistic toward whatever a
+    # ~500k-store prefix happens to contain. Algorithm R gives every store
+    # event, anywhere in the (arbitrarily long) stream, equal probability
+    # D12_MAX_EVENTS / d12_n_stores_seen of occupying a reservoir slot.
+    if alpha_cur >= 0
+        stat.d12_n_stores_seen += 1
+        n_seen = stat.d12_n_stores_seen
+        if n_seen <= D12_MAX_EVENTS
+            # Reservoir not yet full: unconditional insert.
+            push!(stat.d12_store_alpha, alpha_cur)
+            push!(stat.d12_store_px,    px)
+            push!(stat.d12_store_key,   lp_key)
+            push!(stat.d14_store_a,     a_val)
+        else
+            # Reservoir full: replace a uniformly random existing slot with
+            # probability D12_MAX_EVENTS / n_seen (standard Algorithm R).
+            j = rand(1:n_seen)
+            if j <= D12_MAX_EVENTS
+                @inbounds stat.d12_store_alpha[j] = alpha_cur
+                @inbounds stat.d12_store_px[j]    = px
+                @inbounds stat.d12_store_key[j]   = lp_key
+                @inbounds stat.d14_store_a[j]     = a_val
+            end
+        end
     end
 
     # D26: step_range is populated at CLOSE time (record_conj_deep_step!),
@@ -591,11 +718,6 @@ end
     h64 = _deep_fp64(lp_key)
     bkt = Int(h64 >> (64 - DEEP_DIAG_BUCKET_BITS))   # 0-based ∈ [0, 1023]
 
-    if stat._prev_bucket >= 0
-        @inbounds stat.n_trans[stat._prev_bucket + 1, bkt + 1] += 0x00000001
-    end
-    stat._prev_bucket = bkt
-
     # D3 ancestry log.
     if length(stat.ancestry_log_a) < DEEP_DIAG_MAX_ANCESTRY
         push!(stat.ancestry_log_a,       UInt16(clamp(a_bucket, 0, 65535)))
@@ -618,8 +740,8 @@ end
         end
     end
 
-    # D12 close event.
-    if alpha_cur >= 0 && length(stat.d12_close_alpha) < D12_MAX_EVENTS
+    # D12 close event — no cap; close events are rare enough to record all of them.
+    if alpha_cur >= 0
         push!(stat.d12_close_alpha, alpha_cur)
         push!(stat.d12_close_px,    px)
         push!(stat.d12_close_key,   lp_key)
@@ -1079,4 +1201,23 @@ function _top_share(counts::Vector{Int}, frac::Float64)::Float64
     k_raw = round(Int, frac * length(sorted))
     k = clamp(k_raw, 1, length(sorted))
     sum(sorted[1:k]) / total
+end
+
+"""
+Chao1 non-parametric cardinality estimator for latent population size.
+Predicts total unique states (support capacity) based on rare event frequencies.
+  f1: number of singletons (keys seen exactly once)
+  f2: number of doubletons (keys seen exactly twice)
+  s_obs: total distinct keys discovered so far
+"""
+function _chao1_estimate(f1::Int, f2::Int, s_obs::Int)::Float64
+    s_obs == 0 && return 0.0
+    
+    if f2 > 0
+        # Classic Chao1 formula
+        return Float64(s_obs) + (Float64(f1)^2 / (2.0 * Float64(f2)))
+    else
+        # Bias-corrected variant to gracefully guard against zero doubletons
+        return Float64(s_obs) + (Float64(f1) * Float64(f1 - 1)) / 2.0
+    end
 end

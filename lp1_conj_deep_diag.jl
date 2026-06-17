@@ -36,6 +36,7 @@ include("lp1_conj_deep_diag_d20_d21.jl")
 include("lp1_conj_deep_diag_d22_d24.jl")
 include("lp1_conj_deep_diag_d25.jl")
 include("lp1_conj_deep_diag_d26.jl")
+include("lp1_conj_deep_diag_d27.jl")  # <-- Add this line to include the D27 sub-module
 
 # ---------------------------------------------------------------------------
 #  print_conj_deep_report — top-level dispatcher.
@@ -65,6 +66,38 @@ function print_conj_deep_report(phi_stat ::PhiBiasStat,
     @printf("  Total LP1-conj emissions analyzed : %d\n", n_emit)
     n_emit == 0 && (@printf("  (no emissions — skipping all sections)\n\n"); return)
 
+    # --- Chao1 Latent Cardinality Estimation ---
+    # Tally observed frequencies from the emission keys
+    key_counts = Dict{UInt128, Int}()
+    for k in keys_u128
+        key_counts[k] = get(key_counts, k, 0) + 1
+    end
+
+    s_obs = length(key_counts)
+    f1 = 0
+    f2 = 0
+    for (k, count) in key_counts
+        if count < 1
+            throw(ArgumentError("Malformed state: key count cannot be less than 1."))
+        end
+        if count == 1
+            f1 += 1
+        elseif count == 2
+            f2 += 1
+        end
+    end
+
+    chao_predicted = _chao1_estimate(f1, f2, s_obs)
+
+    @printf("  Unique keys observed (S_obs)      : %d\n", s_obs)
+    @printf("  Singletons (f1) / Doubletons (f2) : %d / %d\n", f1, f2)
+    if chao_predicted > s_obs * 100
+        @printf("  Chao1 Latent Population Estimate  : >100x S_obs (Exploration is wide open)\n")
+    else
+        @printf("  Chao1 Latent Population Estimate  : %.2f total unique states predicted\n", chao_predicted)
+    end
+    @printf("---------------------------------------------------------------------\n")
+
     emit_bkt = [_deep_bucket(k) for k in keys_u128]   # Vector{Int}, 0-based
 
     _report_d1_d6(phi_stat, deep_stat, arrivals, keys_u128, emit_bkt, n_emit)
@@ -75,6 +108,7 @@ function print_conj_deep_report(phi_stat ::PhiBiasStat,
     _report_d22_d24(deep_stat; n_threads=n_threads)
     _report_d25(deep_stat, deep_stat.d12_store_alpha, deep_stat.d12_store_px, ell, p)
     _report_d26(deep_stat)
+    _report_d27(deep_stat; ell=ell, p=p)  # <-- Add this line to run the D27 analysis
 
     @printf("\n== End LP1-conj deep diagnostics ====================================================\n")
     flush(stdout)

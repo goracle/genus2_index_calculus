@@ -115,81 +115,117 @@ function _report_d1_d6(phi_stat ::PhiBiasStat,
     end
 
     # ──────────────────────────────────────────────────────────────────────
-    #  D2 — Conditional collision entropy H₂(X_t | X_{t-1})
+    #  D2 — Consecutive-emission bucket proximity
+    #
+    #  Replaces the old H₂(X_t|X_{t-1}) estimator, which was dominated by
+    #  finite-sample bias: with ~340 emissions over 1024 buckets, nearly every
+    #  row of the transition matrix has exactly one entry, making the
+    #  conditional distribution look deterministic regardless of the true
+    #  process structure.
+    #
+    #  Instead we measure mean L1 bucket distance between consecutive (and
+    #  lag-k) emissions on a coarse 4-bit (16-bucket) grid, compared to a
+    #  shuffle null.  This is estimable with O(100) emissions and has an
+    #  unambiguous interpretation: if consecutive emissions come from nearby
+    #  buckets more often than chance, the walk has spatial persistence in
+    #  key-bucket space.
+    #
+    #  Buckets are the top 4 bits of emit_bkt (which is already the top
+    #  DEEP_DIAG_BUCKET_BITS bits of the key hash), so coarse_bkt ∈ [0,15].
+    #  L1 distance is the circular minimum: min(|a-b|, 16-|a-b|).
     # ──────────────────────────────────────────────────────────────────────
-    @printf("\n  D2 — Conditional collision entropy H₂(X_t | X_{{t-1}})\n")
+    @printf("\n  D2 — Consecutive-emission key-bucket proximity\n")
     @printf("  ─────────────────────────────────────────────────────────────────\n")
     let
-        nb  = DEEP_DIAG_N_BUCKETS
-        T_mat = deep_stat.n_trans
-
-        row_totals = [Int(sum(T_mat[i, :])) for i in 1:nb]
-        grand_total = sum(row_totals)
-
-        if grand_total < 4
-            @printf("    (insufficient transition data: %d transitions)\n", grand_total)
+        # Need at least 2 emissions for lag-1.
+        if n_emit < 2
+            @printf("    (need ≥ 2 emissions; got %d)\n", n_emit)
         else
-            p_marg = [row_totals[i] / grand_total for i in 1:nb]
-            H2_marginal = -log2(max(1e-300, sum(x^2 for x in p_marg)))
+            # Coarsen to 4-bit grid (16 buckets).  emit_bkt is 0-based in
+            # [0, DEEP_DIAG_N_BUCKETS), so shift right by (DEEP_DIAG_BUCKET_BITS-4).
+            coarse_shift = DEEP_DIAG_BUCKET_BITS - 4
+            coarse_nb    = 16
+            coarse_bkt   = [b >> coarse_shift for b in emit_bkt]   # 0-based ∈ [0,15]
 
-            H2_cond_sum = 0.0
-            for i in 1:nb
-                rt = row_totals[i]
-                rt == 0 && continue
-                if rt == 1
-                    H2_cond_sum += p_marg[i] * 1.0
+            # Circular L1 on [0, coarse_nb).
+            circ_l1 = (a, b) -> begin d = abs(a - b); min(d, coarse_nb - d) end
+
+            # Shuffle-null mean distance: average over all ordered pairs (i≠j).
+            # For a discrete uniform on coarse_nb buckets this is analytic, but
+            # use the empirical marginal so it accounts for non-uniform usage.
+            marg_cnt = zeros(Int, coarse_nb)
+            for b in coarse_bkt; marg_cnt[b+1] += 1; end
+            null_dist = 0.0
+            for a in 0:coarse_nb-1, b in 0:coarse_nb-1
+                a == b && continue
+                null_dist += (marg_cnt[a+1] / n_emit) * (marg_cnt[b+1] / n_emit) *
+                             circ_l1(a, b)
+            end
+            # null_dist is already the expected distance for an i.i.d. draw from
+            # the empirical marginal (off-diagonal pairs only; diagonal = 0 so
+            # including them would just scale by (1 - sum p_i^2)).
+
+            @printf("    Emissions                      : %d\n", n_emit)
+            @printf("    Coarse grid                    : %d buckets (4-bit, circular L1)\n", coarse_nb)
+            @printf("    Shuffle-null mean distance     : %.3f buckets\n", null_dist)
+            @printf("\n")
+            @printf("    %4s  %10s  %10s  %8s  interpretation\n",
+                    "lag", "mean_dist", "null_dist", "ratio")
+            @printf("    %s\n", "─"^65)
+
+            max_lag = min(8, n_emit - 1)
+            for lag in 1:max_lag
+                n_pairs = n_emit - lag
+                obs_dist = sum(circ_l1(coarse_bkt[t - lag], coarse_bkt[t])
+                               for t in (lag+1):n_emit) / n_pairs
+                ratio = null_dist > 1e-6 ? obs_dist / null_dist : NaN
+                interp = isnan(ratio)    ? "(null undefined)" :
+                         ratio < 0.70   ? "← CLUSTERED: consecutive emissions nearby" :
+                         ratio < 0.90   ? "← mild proximity" :
+                         ratio > 1.30   ? "← REPULSIVE: emissions avoid same region" :
+                         ratio > 1.10   ? "← mild repulsion" :
+                                          "(≈ i.i.d.)"
+                @printf("    %4d  %10.3f  %10.3f  %8.3f  %s\n",
+                        lag, obs_dist, null_dist, ratio, interp)
+            end
+
+            # Summary: use lag-1 ratio as the headline.
+            n_pairs1  = n_emit - 1
+            obs_dist1 = sum(circ_l1(coarse_bkt[t-1], coarse_bkt[t])
+                            for t in 2:n_emit) / n_pairs1
+            ratio1    = null_dist > 1e-6 ? obs_dist1 / null_dist : NaN
+            @printf("\n")
+            if !isnan(ratio1)
+                if ratio1 < 0.70
+                    @printf("    ↑ lag-1 ratio %.3f: CLUSTERED — consecutive emissions\n", ratio1)
+                    @printf("      come from nearby key-buckets more often than chance.\n")
+                    @printf("      Consistent with walk getting transiently trapped in a\n")
+                    @printf("      narrow region of LP1-conj key space.\n")
+                elseif ratio1 < 0.90
+                    @printf("    ↑ lag-1 ratio %.3f: mild proximity — weak spatial persistence.\n", ratio1)
+                elseif ratio1 > 1.30
+                    @printf("    ↑ lag-1 ratio %.3f: REPULSIVE — consecutive emissions\n", ratio1)
+                    @printf("      avoid the same key-bucket region (anti-clustering).\n")
+                elseif ratio1 > 1.10
+                    @printf("    ↑ lag-1 ratio %.3f: mild repulsion.\n", ratio1)
                 else
-                    row_sq = sum(Float64(T_mat[i, j])^2 for j in 1:nb)
-                    H2_cond_sum += p_marg[i] * (row_sq / (Float64(rt)^2))
+                    @printf("    ↑ lag-1 ratio %.3f: consistent with i.i.d. draws from\n", ratio1)
+                    @printf("      the empirical marginal — no detectable spatial persistence.\n")
                 end
             end
-            H2_conditional = -log2(max(1e-300, H2_cond_sum))
 
-            red = H2_marginal - H2_conditional
-            rel_red = H2_marginal > 0 ? red / H2_marginal : 0.0
-
-            @printf("    Transitions analyzed           : %d\n", grand_total)
-            @printf("    Coarse buckets                 : %d  (%d bits)\n",
-                    nb, DEEP_DIAG_BUCKET_BITS)
-            @printf("    H₂(X)    marginal entropy      : %.4f bits\n", H2_marginal)
-            @printf("    H₂(X|X₋₁) conditional entropy  : %.4f bits\n", H2_conditional)
-            @printf("    Reduction (H₂ − H₂|cond)       : %.4f bits  (%.1f%%)\n",
-                    red, 100 * rel_red)
-            if rel_red > 0.20
-                @printf("    ↑ >20%% reduction: STRONG dynamical state persistence\n")
-                @printf("      → emission process retains predictive information across steps.\n")
-            elseif rel_red > 0.05
-                @printf("    ↑ 5-20%% reduction: moderate persistence (weak algebraic channel)\n")
-            else
-                @printf("    ↑ <5%% reduction: bursts are mostly independent repeats (no channel)\n")
-            end
-
-            if n_emit >= 2 * DEEP_DIAG_COND_ENT_LAG
-                @printf("    Lag-k conditional collision entropy (from full emission sequence):\n")
-                @printf("      %4s  %10s  %10s  %8s\n", "lag", "H₂(X|X₋ₖ)", "H₂(X)", "reduction%")
-                for lag in 1:DEEP_DIAG_COND_ENT_LAG
-                    pairs_by_from = Dict{Int,Vector{Int}}()
-                    for t in (lag+1):n_emit
-                        from_bkt = emit_bkt[t - lag]
-                        v = get!(pairs_by_from, from_bkt, Int[])
-                        push!(v, emit_bkt[t])
-                    end
-                    n_pairs = n_emit - lag
-                    p_from  = Dict(k => length(v)/n_pairs for (k, v) in pairs_by_from)
-                    cond_coll = 0.0
-                    for (from_bkt, tos) in pairs_by_from
-                        ntos = length(tos)
-                        cnt = Dict{Int,Int}()
-                        for b in tos; cnt[b] = get(cnt, b, 0) + 1; end
-                        row_c2 = sum(c^2 for c in values(cnt)) / (ntos^2)
-                        cond_coll += get(p_from, from_bkt, 0.0) * row_c2
-                    end
-                    H2_c = -log2(max(1e-300, cond_coll))
-                    rr   = H2_marginal > 0 ? (H2_marginal - H2_c) / H2_marginal : 0.0
-                    @printf("      %4d  %10.4f  %10.4f  %8.1f%%\n",
-                            lag, H2_c, H2_marginal, 100 * rr)
-                end
-            end
+            # Fraction of consecutive pairs within distance ≤ 1 bucket vs null.
+            n_near_obs  = count(t -> circ_l1(coarse_bkt[t-1], coarse_bkt[t]) <= 1,
+                                2:n_emit)
+            frac_near   = n_near_obs / n_pairs1
+            null_near   = sum((marg_cnt[a+1]/n_emit) * (marg_cnt[b+1]/n_emit)
+                              for a in 0:coarse_nb-1, b in 0:coarse_nb-1
+                              if circ_l1(a,b) <= 1)
+            lift_near   = null_near > 1e-6 ? frac_near / null_near : NaN
+            @printf("    Pairs within dist ≤ 1 bucket   : %d / %d (%.1f%%)  null=%.1f%%  lift=%.2f\n",
+                    n_near_obs, n_pairs1,
+                    100 * frac_near, 100 * null_near,
+                    isnan(lift_near) ? 0.0 : lift_near)
         end
     end
 
