@@ -6,7 +6,7 @@
 #  D25 showed closures are proportional to stores in (α,px) space (χ²/dof≈0.57),
 #  but that test conflates ALL store events.  D27 asks a finer question:
 #
-#    For each cell B = (α_bkt, px_bkt) in a 64×64 grid compute:
+#    For each cell B = (α_bkt, px_bkt) in a 16×16 grid compute:
 #
 #      L(B) = log₂[ P(B | CLOSE) / P(B | SINGLETON) ]
 #
@@ -38,7 +38,7 @@
 #  lp1_conj_deep_diag_core.jl).  Discarding that fully-populated stream in
 #  favor of a near-empty reservoir intersection is why KL(close‖sing) and
 #  χ²/dof in earlier runs were dominated by small-sample noise — two points
-#  spread over 4096 cells make every occupied cell look like a huge, spurious
+#  spread over 256 cells make every occupied cell look like a huge, spurious
 #  lift.
 #
 #  Fix: CLOSE is sourced directly from d12_close_alpha/d12_close_px/
@@ -56,7 +56,7 @@
 #    (b) u0 mod m  for m=16  (coarse Mumford u0 band, 16 classes)
 #    (c) u1 mod m  for m=16
 #
-#  For each conditioning class we re-compute the 64×64 L(B) grid and report:
+#  For each conditioning class we re-compute the 16×16 L(B) grid and report:
 #    • top-10 cells by lift
 #    • χ²/dof of close vs singleton marginal
 #    • KL divergence D_KL( P_close || P_singleton )
@@ -87,8 +87,8 @@
 # ---------------------------------------------------------------------------
 #  Constants
 # ---------------------------------------------------------------------------
-const D27_GRID_BITS  = 6                    # 2^6 = 64 buckets per axis
-const D27_GRID_SIZE  = 1 << D27_GRID_BITS   # 64
+const D27_GRID_BITS  = 4                    # 2^4 = 16 buckets per axis
+const D27_GRID_SIZE  = 1 << D27_GRID_BITS   # 16
 const D27_MOD_M      = 16                   # coarse Mumford band modulus
 const D27_EPS        = 1e-9                 # smoothing for log-lift
 const D27_MIN_CLOSE      = 8                # min CLOSE events to attempt any section
@@ -352,78 +352,104 @@ function _report_d27(deep_stat::ConjDeepStat; ell::Int = 0, p::Int = 0)
 
     @printf("\n── D27: Close vs Singleton Geometry (Log-Lift Heatmap) ─────────────\n")
 
+    # ── Invariant checks ─────────────────────────────────────────────────
+    # d12_close_alpha/px/key (and d12_store_alpha/px/key) are pushed in
+    # lockstep at record time (record_conj_deep_step!/record_conj_deep_miss!
+    # in lp1_conj_deep_diag_core.jl) and appended in lockstep across threads
+    # in merge_conj_deep_stats.  A length mismatch here means the recording
+    # or merge path is broken, not that data is merely sparse — fail loudly
+    # rather than silently misaligning (α,px) pairs against the wrong keys.
+    n_close = length(deep_stat.d12_close_key)
+    if length(deep_stat.d12_close_alpha) != n_close || length(deep_stat.d12_close_px) != n_close
+        throw(DimensionMismatch(
+            "_report_d27: d12_close_alpha/px/key length mismatch " *
+            "($(length(deep_stat.d12_close_alpha)), $(length(deep_stat.d12_close_px)), $n_close) " *
+            "— recording or merge invariant violated"))
+    end
+
     n_store = length(deep_stat.d12_store_key)
-    n_close_ev = length(deep_stat.d12_close_key)
+    if length(deep_stat.d12_store_alpha) != n_store || length(deep_stat.d12_store_px) != n_store
+        throw(DimensionMismatch(
+            "_report_d27: d12_store_alpha/px/key length mismatch " *
+            "($(length(deep_stat.d12_store_alpha)), $(length(deep_stat.d12_store_px)), $n_store) " *
+            "— recording or merge invariant violated"))
+    end
 
     @printf("  Store events available : %d\n", n_store)
-    @printf("  Close events available : %d\n", n_close_ev)
+    @printf("  Close events available : %d\n", n_close)
 
-    if n_store < 32
-        @printf("  (fewer than 32 store events — skipping D27)\n")
+    if n_close < D27_MIN_CLOSE
+        @printf("  (fewer than %d close events — too sparse for lift analysis; skipping D27)\n", D27_MIN_CLOSE)
         return
     end
-    if n_close_ev < 8
-        @printf("  (fewer than 8 close events — too sparse for lift analysis; skipping D27)\n")
+    if n_store < D27_MIN_SINGLETON
+        @printf("  (fewer than %d store events — skipping D27)\n", D27_MIN_SINGLETON)
         return
     end
 
-    # ── Build the CLOSE key set ──────────────────────────────────────────────
-    # A store-event key is "closed" if it appears in d12_close_key.
-    # Note: d12_close_key and d12_store_key are independently capped, so a key
-    # seen at close time might not be in d12_store_key if the store log was full.
-    # We only classify store events, using the close key set as a membership test.
+    # ── Build the CLOSE key set — used ONLY to purify the SINGLETON side.
+    # CLOSE-side (α,px) geometry below comes directly from d12_close_alpha/px
+    # (every closure, uncapped), NOT from intersecting d12_store_* against
+    # this set — that reservoir-intersection approach is the bug this file
+    # fixes (see header comment).
     close_key_set = Set{UInt128}()
-    sizehint!(close_key_set, n_close_ev)
+    sizehint!(close_key_set, n_close)
     @inbounds for k in deep_stat.d12_close_key
         push!(close_key_set, k)
     end
     n_close_keys = length(close_key_set)
 
-    # ── Build is_close mask aligned to store events ──────────────────────────
-    is_close = Vector{Bool}(undef, n_store)
+    sing_mask = falses(n_store)
     @inbounds for i in 1:n_store
-        is_close[i] = deep_stat.d12_store_key[i] in close_key_set
+        sing_mask[i] = !(deep_stat.d12_store_key[i] in close_key_set)
     end
-    n_store_closed  = count(is_close)
-    n_store_singleton = n_store - n_store_closed
+    sing_idx = findall(sing_mask)
+    n_sing   = length(sing_idx)
 
-    @printf("  Distinct close keys    : %d\n", n_close_keys)
-    @printf("  Store events → closed  : %d  (%.1f%%)\n",
-            n_store_closed,  100.0 * n_store_closed  / max(1, n_store))
-    @printf("  Store events → singleton: %d  (%.1f%%)\n",
-            n_store_singleton, 100.0 * n_store_singleton / max(1, n_store))
+    @printf("  Distinct close keys      : %d\n", n_close_keys)
+    @printf("  Store events → singleton : %d  (%.1f%%)\n",
+            n_sing, 100.0 * n_sing / max(1, n_store))
+    @printf("  Store events → closed    : %d  (%.1f%%)  (excluded from singleton background)\n",
+            n_store - n_sing, 100.0 * (n_store - n_sing) / max(1, n_store))
 
-    if n_store_closed == 0
-        @printf("  (no store events matched any close key — check d12_store_key / d12_close_key wiring)\n")
-        return
-    end
-    if n_store_singleton == 0
-        @printf("  (all store events were closed — cannot separate singleton population)\n")
+    if n_sing < D27_MIN_SINGLETON
+        @printf("  (fewer than %d singleton events after exclusion — skipping D27)\n", D27_MIN_SINGLETON)
         return
     end
 
-    # ── Bucket store events into (α, px) grid ───────────────────────────────
-    al_bkts, px_bkts = _d27_alpha_px_buckets(
-        deep_stat.d12_store_alpha, deep_stat.d12_store_px, ell, p)
+    # ── Bucket both populations into (α, px) ────────────────────────────────
+    close_al_bkts, close_px_bkts = _d27_alpha_px_buckets(
+        deep_stat.d12_close_alpha, deep_stat.d12_close_px, ell, p)
+    sing_al_bkts, sing_px_bkts = _d27_alpha_px_buckets(
+        deep_stat.d12_store_alpha[sing_idx], deep_stat.d12_store_px[sing_idx], ell, p)
 
     # Validate: if bucketing failed (ell/p not passed), warn and fall back.
-    n_valid_bkts = count(i -> al_bkts[i] >= 0 && px_bkts[i] >= 0, 1:n_store)
-    if n_valid_bkts < 8
-        @printf("  (fewer than 8 events with valid (α,px) — check ell/p wiring)\n")
-        @printf("  (passing ell=%d  p=%d to print_conj_deep_report fixes this)\n", ell, p)
+    n_valid_close = count(i -> close_al_bkts[i] >= 0 && close_px_bkts[i] >= 0, 1:n_close)
+    n_valid_sing  = count(i -> sing_al_bkts[i]  >= 0 && sing_px_bkts[i]  >= 0, 1:n_sing)
+    if n_valid_close < D27_MIN_CLOSE || n_valid_sing < D27_MIN_SINGLETON
+        @printf("  (insufficient events with valid (α,px) — check al_cur/px_anchor wiring)\n")
+        @printf("  valid close=%d (need %d), valid singleton=%d (need %d)\n",
+                n_valid_close, D27_MIN_CLOSE, n_valid_sing, D27_MIN_SINGLETON)
+        @printf("  (passing ell=%d  p=%d to print_conj_deep_report also affects bucketing)\n", ell, p)
         return
     end
 
     # ── Section 1: Global (α,px) lift heatmap ───────────────────────────────
-    @printf("\n  D27.1 — Global (α,px) log-lift heatmap (all store events)\n")
+    @printf("\n  D27.1 — Global (α,px) log-lift heatmap\n")
+    @printf("    CLOSE     = geometry at the moment of closure (n=%d, uncapped)\n", n_close)
+    @printf("    SINGLETON = store-time geometry of never-closed keys (n=%d)\n", n_sing)
     @printf("  ─────────────────────────────────────────────────────────────────\n")
 
     close_grid_global, sing_grid_global, n_cg, n_sg =
-        _d27_build_grids(al_bkts, px_bkts, is_close)
+        _d27_build_grids(close_al_bkts, close_px_bkts, sing_al_bkts, sing_px_bkts)
 
     kl_global, chi2_global = _d27_report_grid(
         close_grid_global, sing_grid_global, n_cg, n_sg;
         top_n = 15, label = "")
+
+    # ── Per-event conditioning classes (computed once, reused below) ───────
+    close_disc, close_u0, close_u1 = _d27_compute_classes(deep_stat.d12_close_key, p, D27_MOD_M)
+    sing_disc,  sing_u0,  sing_u1  = _d27_compute_classes(deep_stat.d12_store_key[sing_idx], p, D27_MOD_M)
 
     # ── Section 2: Conditioning on disc(v) ──────────────────────────────────
     @printf("\n  D27.2 — (α,px) lift conditioned on disc(v) = v1²−4v0 mod p\n")
@@ -432,26 +458,14 @@ function _report_d27(deep_stat::ConjDeepStat; ell::Int = 0, p::Int = 0)
     if p <= 1
         @printf("    (p not provided — skipping disc(v) conditioning)\n")
     else
-        # Compute disc class per store event.
-        disc_classes = Vector{Int}(undef, n_store)
-        @inbounds for i in 1:n_store
-            u0, u1, v0, v1 = _d27_unpack_key(deep_stat.d12_store_key[i])
-            disc_classes[i] = _d27_disc_class(u0, u1, v0, v1, p)
-        end
-
         for (dc, dc_label) in ((1, "disc(v)=QR (v-split)"), (0, "disc(v)=NR (v-non-split)"))
-            mask_dc = dc_classes_mask = [disc_classes[i] == dc for i in 1:n_store]
-            idx_dc  = findall(mask_dc)
-            n_dc    = length(idx_dc)
-            n_dc < 4 && continue
+            idx_c = findall(==(dc), close_disc)
+            idx_s = findall(==(dc), sing_disc)
+            (length(idx_c) < 2 || length(idx_s) < D27_MIN_SINGLETON) && continue
 
-            @printf("  -- %s  (n_store=%d) --\n", dc_label, n_dc)
-            al_sub  = al_bkts[idx_dc]
-            px_sub  = px_bkts[idx_dc]
-            ic_sub  = is_close[idx_dc]
-
-            cg, sg, nc2, ns2 = _d27_build_grids(al_sub, px_sub, ic_sub)
-            nc2 < 2 && (@printf("    (too few close events in this class)\n"); continue)
+            @printf("  -- %s  (n_close=%d  n_sing=%d) --\n", dc_label, length(idx_c), length(idx_s))
+            cg, sg, nc2, ns2 = _d27_build_grids(close_al_bkts[idx_c], close_px_bkts[idx_c],
+                                                 sing_al_bkts[idx_s],  sing_px_bkts[idx_s])
             _d27_report_grid(cg, sg, nc2, ns2; top_n = 10, label = dc_label)
         end
     end
@@ -460,39 +474,25 @@ function _report_d27(deep_stat::ConjDeepStat; ell::Int = 0, p::Int = 0)
     @printf("\n  D27.3 — (α,px) lift conditioned on u0 mod %d\n", D27_MOD_M)
     @printf("  ─────────────────────────────────────────────────────────────────\n")
 
-    # Compute u0 class per store event.
-    u0_classes = Vector{Int}(undef, n_store)
-    @inbounds for i in 1:n_store
-        u0, u1, v0, v1 = _d27_unpack_key(deep_stat.d12_store_key[i])
-        u0_classes[i] = Int(u0 % UInt32(D27_MOD_M))
-    end
-
-    # Aggregate KL divergence per u0-band to identify most-productive band.
-    u0_kl    = fill(NaN, D27_MOD_M)
-    u0_chi2  = fill(NaN, D27_MOD_M)
-    u0_ncl   = zeros(Int, D27_MOD_M)
+    u0_kl   = fill(NaN, D27_MOD_M)
+    u0_chi2 = fill(NaN, D27_MOD_M)
+    u0_ncl  = zeros(Int, D27_MOD_M)
 
     for bnd in 0:(D27_MOD_M - 1)
-        mask_bnd = [u0_classes[i] == bnd for i in 1:n_store]
-        idx_bnd  = findall(mask_bnd)
-        n_bnd    = length(idx_bnd)
-        n_bnd < 4 && continue
+        idx_c = findall(==(bnd), close_u0)
+        idx_s = findall(==(bnd), sing_u0)
+        u0_ncl[bnd + 1] = length(idx_c)
+        (length(idx_c) < 2 || length(idx_s) < D27_MIN_SINGLETON) && continue
 
-        al_sub = al_bkts[idx_bnd]
-        px_sub = px_bkts[idx_bnd]
-        ic_sub = is_close[idx_bnd]
-
-        cg, sg, nc3, ns3 = _d27_build_grids(al_sub, px_sub, ic_sub)
-        u0_ncl[bnd + 1] = nc3
-        nc3 < 2 && continue
+        cg, sg, nc3, ns3 = _d27_build_grids(close_al_bkts[idx_c], close_px_bkts[idx_c],
+                                             sing_al_bkts[idx_s],  sing_px_bkts[idx_s])
         kl_v, chi2_v = _d27_report_grid(cg, sg, nc3, ns3;
                                           top_n = 5,
-                                          label = "u0 mod $D27_MOD_M = $bnd  (n_store=$n_bnd)")
+                                          label = "u0 mod $D27_MOD_M = $bnd  (n_close=$(length(idx_c))  n_sing=$(length(idx_s)))")
         u0_kl[bnd + 1]   = kl_v
         u0_chi2[bnd + 1] = chi2_v
     end
 
-    # Summary table of u0 bands by KL divergence.
     @printf("\n  D27.3 Summary — u0 mod %d bands ranked by KL(close‖sing):\n", D27_MOD_M)
     @printf("    %-8s  %8s  %8s  %8s\n", "u0_mod", "n_close", "KL(bits)", "χ²/dof")
     u0_order = sortperm(u0_kl, rev=true, lt=(a,b) -> isnan(a) ? false : isnan(b) ? true : a>b)
@@ -506,32 +506,21 @@ function _report_d27(deep_stat::ConjDeepStat; ell::Int = 0, p::Int = 0)
     @printf("\n  D27.4 — (α,px) lift conditioned on u1 mod %d\n", D27_MOD_M)
     @printf("  ─────────────────────────────────────────────────────────────────\n")
 
-    u1_classes = Vector{Int}(undef, n_store)
-    @inbounds for i in 1:n_store
-        u0, u1, v0, v1 = _d27_unpack_key(deep_stat.d12_store_key[i])
-        u1_classes[i] = Int(u1 % UInt32(D27_MOD_M))
-    end
-
     u1_kl   = fill(NaN, D27_MOD_M)
     u1_chi2 = fill(NaN, D27_MOD_M)
     u1_ncl  = zeros(Int, D27_MOD_M)
 
     for bnd in 0:(D27_MOD_M - 1)
-        mask_bnd = [u1_classes[i] == bnd for i in 1:n_store]
-        idx_bnd  = findall(mask_bnd)
-        n_bnd    = length(idx_bnd)
-        n_bnd < 4 && continue
+        idx_c = findall(==(bnd), close_u1)
+        idx_s = findall(==(bnd), sing_u1)
+        u1_ncl[bnd + 1] = length(idx_c)
+        (length(idx_c) < 2 || length(idx_s) < D27_MIN_SINGLETON) && continue
 
-        al_sub = al_bkts[idx_bnd]
-        px_sub = px_bkts[idx_bnd]
-        ic_sub = is_close[idx_bnd]
-
-        cg, sg, nc4, ns4 = _d27_build_grids(al_sub, px_sub, ic_sub)
-        u1_ncl[bnd + 1] = nc4
-        nc4 < 2 && continue
+        cg, sg, nc4, ns4 = _d27_build_grids(close_al_bkts[idx_c], close_px_bkts[idx_c],
+                                             sing_al_bkts[idx_s],  sing_px_bkts[idx_s])
         kl_v, chi2_v = _d27_report_grid(cg, sg, nc4, ns4;
                                           top_n = 5,
-                                          label = "u1 mod $D27_MOD_M = $bnd  (n_store=$n_bnd)")
+                                          label = "u1 mod $D27_MOD_M = $bnd  (n_close=$(length(idx_c))  n_sing=$(length(idx_s)))")
         u1_kl[bnd + 1]   = kl_v
         u1_chi2[bnd + 1] = chi2_v
     end
@@ -552,24 +541,18 @@ function _report_d27(deep_stat::ConjDeepStat; ell::Int = 0, p::Int = 0)
     if p <= 1
         @printf("    (p not provided — skipping joint conditioning)\n")
     else
-        # Collect (KL, disc, u0_band) triples for the top-5 joint cells.
         joint_results = NTuple{4,Float64}[]   # (kl, chi2, dc, bnd)
 
         for dc in (0, 1), bnd in 0:(D27_MOD_M - 1)
-            mask_joint = [disc_classes[i] == dc && u0_classes[i] == bnd for i in 1:n_store]
-            idx_joint  = findall(mask_joint)
-            n_joint    = length(idx_joint)
-            n_joint < 8 && continue
+            idx_c = findall(i -> close_disc[i] == dc && close_u0[i] == bnd, 1:n_close)
+            idx_s = findall(i -> sing_disc[i]  == dc && sing_u0[i]  == bnd, 1:n_sing)
+            (length(idx_c) < 2 || length(idx_s) < D27_MIN_SINGLETON) && continue
 
-            al_sub = al_bkts[idx_joint]
-            px_sub = px_bkts[idx_joint]
-            ic_sub = is_close[idx_joint]
-
-            cg, sg, nc5, ns5 = _d27_build_grids(al_sub, px_sub, ic_sub)
-            nc5 < 2 && continue
+            cg, sg, nc5, ns5 = _d27_build_grids(close_al_bkts[idx_c], close_px_bkts[idx_c],
+                                                 sing_al_bkts[idx_s],  sing_px_bkts[idx_s])
             kl_v, chi2_v = _d27_report_grid(cg, sg, nc5, ns5;
                                               top_n = 5,
-                                              label = "disc=$(dc==1 ? "QR" : "NR")  u0 mod $D27_MOD_M = $bnd  (n_store=$n_joint)")
+                                              label = "disc=$(dc==1 ? "QR" : "NR")  u0 mod $D27_MOD_M = $bnd  (n_close=$(length(idx_c))  n_sing=$(length(idx_s)))")
             push!(joint_results, (kl_v, chi2_v, Float64(dc), Float64(bnd)))
         end
 
