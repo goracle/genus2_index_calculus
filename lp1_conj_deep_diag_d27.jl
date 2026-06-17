@@ -6,13 +6,14 @@
 #  D25 showed closures are proportional to stores in (α,px) space (χ²/dof≈0.57),
 #  but that test conflates ALL store events.  D27 asks a finer question:
 #
-#    Partition every store into:
-#      CLOSE     — the key was eventually closed (appeared in d12_close_key).
-#      SINGLETON — the key was stored but never closed.
-#
-#    Then for each cell B = (α_bkt, px_bkt) in a 64×64 grid compute:
+#    For each cell B = (α_bkt, px_bkt) in a 64×64 grid compute:
 #
 #      L(B) = log₂[ P(B | CLOSE) / P(B | SINGLETON) ]
+#
+#    where CLOSE is the (α,px) geometry recorded at the moment a relation
+#    closes (the incoming walk step's position at closure time) and
+#    SINGLETON is the (α,px) geometry of generic store events whose key
+#    never closed.
 #
 #    A large positive L(B) means closures over-represent that cell relative
 #    to singletons; i.e. that cell is geometrically "productive".
@@ -21,6 +22,33 @@
 #    If islands of L(B) >> 0 emerge → closures come from a thin subspace even
 #    controlling for store density.  This directly explains small α₂.
 #
+#  ── Bug fix: stratified dual-stream sampling ──────────────────────────────
+#  The previous implementation built BOTH the CLOSE and SINGLETON populations
+#  by classifying entries of the d12_store_* reservoir (an Algorithm-R sample
+#  capped at D12_MAX_EVENTS=500_000, drawn from a store stream that is
+#  typically orders of magnitude larger) according to whether each entry's
+#  key later appeared in d12_close_key.
+#
+#  Because closures are extremely rare relative to stores, the intersection
+#  of "landed in the 500k-store reservoir" AND "key later closed" is itself a
+#  vanishingly small, high-variance sample (as few as 1-2 hits even with
+#  hundreds of real closures) — even though d12_close_alpha/d12_close_px/
+#  d12_close_key already capture the (α,px) geometry of every single closure,
+#  uncapped (see "D12 close event — no cap" in record_conj_deep_step!,
+#  lp1_conj_deep_diag_core.jl).  Discarding that fully-populated stream in
+#  favor of a near-empty reservoir intersection is why KL(close‖sing) and
+#  χ²/dof in earlier runs were dominated by small-sample noise — two points
+#  spread over 4096 cells make every occupied cell look like a huge, spurious
+#  lift.
+#
+#  Fix: CLOSE is sourced directly from d12_close_alpha/d12_close_px/
+#  d12_close_key (uncapped, every closure represented).  SINGLETON is sourced
+#  from d12_store_alpha/d12_store_px/d12_store_key filtered to exclude any
+#  key that appears in d12_close_key, so the background population stays
+#  pure.  No new recording hooks are needed — both streams already exist;
+#  this file only changes how they are combined into the CLOSE/SINGLETON
+#  partition.
+#  ───────────────────────────────────────────────────────────────────────
 #  Extended conditioning
 #  ─────────────────────
 #  Beyond (α,px) we also compute the lift split conditioned on:
@@ -40,13 +68,18 @@
 #  ────────────
 #  All data comes from the existing ConjDeepStat fields — no new recording hooks
 #  are needed.  Specifically:
-#    d12_store_key   : UInt128 packing (u0|u1<<32|v0<<64|v1<<96) for stores
-#    d12_store_alpha : α at store time
-#    d12_store_px    : px_anchor at store time
-#    d12_close_key   : same for close events (used to build the CLOSE key set)
-#  The SINGLETON set is d12_store_key \ d12_close_key.
+#    d12_close_alpha, d12_close_px, d12_close_key : (α,px,key) at CLOSE time,
+#                                                    uncapped, one row per closure.
+#                                                    This is the CLOSE population.
+#    d12_store_alpha, d12_store_px, d12_store_key : (α,px,key) reservoir-sampled
+#                                                    at STORE time.  Filtered to
+#                                                    exclude any key that ever
+#                                                    appears in d12_close_key —
+#                                                    that filtered subset is the
+#                                                    SINGLETON population.
 #
-#  Minimum data requirements: ≥8 close events, ≥32 store events.
+#  Minimum data requirements: ≥D27_MIN_CLOSE close events,
+#                              ≥D27_MIN_SINGLETON singleton events.
 #
 #  Included by lp1_conj_deep_diag.jl; do not include directly.
 # =============================================================================
@@ -58,6 +91,8 @@ const D27_GRID_BITS  = 6                    # 2^6 = 64 buckets per axis
 const D27_GRID_SIZE  = 1 << D27_GRID_BITS   # 64
 const D27_MOD_M      = 16                   # coarse Mumford band modulus
 const D27_EPS        = 1e-9                 # smoothing for log-lift
+const D27_MIN_CLOSE      = 8                # min CLOSE events to attempt any section
+const D27_MIN_SINGLETON  = 32               # min SINGLETON (background) events
 
 # ---------------------------------------------------------------------------
 #  _d27_unpack_key — extract (u0,u1,v0,v1) from a packed UInt128 LP key.
@@ -88,26 +123,64 @@ end
 end
 
 # ---------------------------------------------------------------------------
+#  _d27_compute_classes — unpack a vector of packed LP keys into per-event
+#  disc(v) class, u0 mod m, and u1 mod m in a single pass.  Used to derive
+#  conditioning classes for both the CLOSE population (from d12_close_key)
+#  and the SINGLETON population (from the filtered d12_store_key subset)
+#  without duplicating the unpack loop per variant.
+#  disc_classes[i] == -1 when p <= 1 (field characteristic not wired in).
+# ---------------------------------------------------------------------------
+function _d27_compute_classes(keys::AbstractVector{UInt128}, p::Int, mod_m::Int)
+    n = length(keys)
+    disc = Vector{Int}(undef, n)
+    u0c  = Vector{Int}(undef, n)
+    u1c  = Vector{Int}(undef, n)
+    has_p = p > 1
+    @inbounds for i in 1:n
+        u0, u1, v0, v1 = _d27_unpack_key(keys[i])
+        disc[i] = has_p ? _d27_disc_class(u0, u1, v0, v1, p) : -1
+        u0c[i]  = Int(u0 % UInt32(mod_m))
+        u1c[i]  = Int(u1 % UInt32(mod_m))
+    end
+    return disc, u0c, u1c
+end
+
+# ---------------------------------------------------------------------------
 #  _d27_build_grids — core computation shared by all conditioning variants.
 #
-#  Given parallel arrays of (al_bkt, px_bkt, label) where label ∈ {0=singleton,
-#  1=close}, build two D27_GRID_SIZE×D27_GRID_SIZE histograms (close_grid,
-#  sing_grid) and return them along with their totals.
+#  Takes two INDEPENDENT populations — CLOSE-side (al,px) pairs and
+#  SINGLETON-side (al,px) pairs — and bins each into its own
+#  D27_GRID_SIZE×D27_GRID_SIZE histogram.  Unlike the original single-stream
+#  design (a boolean is_close label over one shared array), the two
+#  populations need not be the same length or drawn from the same backing
+#  array: CLOSE comes from the uncapped per-closure log, SINGLETON comes from
+#  the (filtered) store reservoir.
 # ---------------------------------------------------------------------------
-function _d27_build_grids(al_bkts ::AbstractVector{Int},
-                           px_bkts ::AbstractVector{Int},
-                           is_close::AbstractVector{Bool})
+function _d27_build_grids(close_al::AbstractVector{Int}, close_px::AbstractVector{Int},
+                           sing_al ::AbstractVector{Int}, sing_px ::AbstractVector{Int})
+    if length(close_al) != length(close_px)
+        throw(DimensionMismatch(
+            "_d27_build_grids: close_al/close_px length mismatch " *
+            "($(length(close_al)) vs $(length(close_px)))"))
+    end
+    if length(sing_al) != length(sing_px)
+        throw(DimensionMismatch(
+            "_d27_build_grids: sing_al/sing_px length mismatch " *
+            "($(length(sing_al)) vs $(length(sing_px)))"))
+    end
+
     close_grid = zeros(Int, D27_GRID_SIZE, D27_GRID_SIZE)
     sing_grid  = zeros(Int, D27_GRID_SIZE, D27_GRID_SIZE)
-    n = length(al_bkts)
-    @inbounds for i in 1:n
-        ab = al_bkts[i]; pb = px_bkts[i]
+
+    @inbounds for i in eachindex(close_al)
+        ab = close_al[i]; pb = close_px[i]
         (ab < 0 || pb < 0) && continue
-        if is_close[i]
-            close_grid[ab + 1, pb + 1] += 1
-        else
-            sing_grid[ab + 1, pb + 1] += 1
-        end
+        close_grid[ab + 1, pb + 1] += 1
+    end
+    @inbounds for i in eachindex(sing_al)
+        ab = sing_al[i]; pb = sing_px[i]
+        (ab < 0 || pb < 0) && continue
+        sing_grid[ab + 1, pb + 1] += 1
     end
     n_close = sum(close_grid)
     n_sing  = sum(sing_grid)
@@ -239,22 +312,28 @@ function _d27_report_grid(close_grid::Matrix{Int},
 end
 
 # ---------------------------------------------------------------------------
-#  _d27_alpha_px_buckets — bucket the store alpha/px into [0, D27_GRID_SIZE).
-#  Returns (al_bkt, px_bkt) vectors aligned with store index vectors.
+#  _d27_alpha_px_buckets — bucket (alpha,px) pairs into [0, D27_GRID_SIZE).
+#  Generic over source: used for the CLOSE population (d12_close_alpha/px,
+#  uncapped) and the SINGLETON population (filtered d12_store_alpha/px).
 #  ell_val and p_val are the field/group parameters; pass 0 if unavailable.
 # ---------------------------------------------------------------------------
-function _d27_alpha_px_buckets(store_alpha::Vector{Int},
-                                store_px   ::Vector{Int},
-                                ell_val    ::Int,
-                                p_val      ::Int)
-    n = length(store_alpha)
+function _d27_alpha_px_buckets(alpha_vals::AbstractVector{Int},
+                                px_vals   ::AbstractVector{Int},
+                                ell_val   ::Int,
+                                p_val     ::Int)
+    n = length(alpha_vals)
+    if length(px_vals) != n
+        throw(DimensionMismatch(
+            "_d27_alpha_px_buckets: alpha_vals/px_vals length mismatch " *
+            "($n vs $(length(px_vals)))"))
+    end
     al_bkts = Vector{Int}(undef, n)
     px_bkts = Vector{Int}(undef, n)
     ell_eff = max(1, ell_val)
     p_eff   = max(1, p_val)
     @inbounds for i in 1:n
-        al = store_alpha[i]
-        px = store_px[i]
+        al = alpha_vals[i]
+        px = px_vals[i]
         al_bkts[i] = al >= 0 ? clamp((al * D27_GRID_SIZE) ÷ ell_eff, 0, D27_GRID_SIZE - 1) : -1
         px_bkts[i] = px >= 0 ? clamp((px * D27_GRID_SIZE) ÷ p_eff,   0, D27_GRID_SIZE - 1) : -1
     end
