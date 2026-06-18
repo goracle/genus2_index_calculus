@@ -196,10 +196,18 @@ function _d27_report_grid(close_grid::Matrix{Int},
                            n_close   ::Int,
                            n_sing    ::Int;
                            top_n     ::Int = 15,
+                           show_bottom::Bool = true,
+                           silent    ::Bool = false,
                            label     ::String = "")
 
-    n_close == 0 && (@printf("    (no close events — skipping)\n"); return (NaN, NaN))
-    n_sing  == 0 && (@printf("    (no singleton events — skipping)\n"); return (NaN, NaN))
+    if n_close == 0
+        silent || @printf("    (no close events — skipping)\n")
+        return (NaN, NaN)
+    end
+    if n_sing == 0
+        silent || @printf("    (no singleton events — skipping)\n")
+        return (NaN, NaN)
+    end
 
     fc = 1.0 / n_close
     fs = 1.0 / n_sing
@@ -240,7 +248,10 @@ function _d27_report_grid(close_grid::Matrix{Int},
     end
 
     n_active = length(lift_cells)
-    n_active == 0 && (@printf("    (no active cells)\n"); return (NaN, NaN))
+    if n_active == 0
+        silent || @printf("    (no active cells)\n")
+        return (NaN, NaN)
+    end
 
     sort!(lift_cells, by = x -> -x[1])
 
@@ -255,56 +266,61 @@ function _d27_report_grid(close_grid::Matrix{Int},
 
     chi2_dof = df > 1 ? chi2 / (df - 1) : NaN
 
-    isempty(label) || @printf("    [%s]\n", label)
-    @printf("    Active cells       : %d / %d\n", n_active, D27_GRID_SIZE^2)
-    @printf("    Close events       : %d  Singleton events: %d\n", n_close, n_sing)
-    @printf("    log₂ lift stats    : min=%.2f  p10=%.2f  med=%.2f  mean=%.2f  p90=%.2f  max=%.2f\n",
-            lift_min, lift_p10, lift_median, lift_mean, lift_p90, lift_max)
-    @printf("    KL(close‖sing)     : %.4f bits   KL(sing‖close): %.4f bits\n", kl_cs, kl_sc)
-    @printf("    χ²/dof (close vs sing null): %.3f  (dof=%d)\n", chi2_dof, max(0, df-1))
-    if chi2_dof > 3.0
-        @printf("    ↑ CONCENTRATED — closures strongly prefer specific (α,px) cells\n")
-        @printf("      → productive geometry is thin: explains small α₂\n")
-    elseif chi2_dof > 1.5
-        @printf("    ↑ Mild concentration — moderate geometric preference\n")
-    else
-        @printf("    ↑ Consistent with proportional — no strong geometric preference\n")
-    end
+    if !silent
+        isempty(label) || @printf("    [%s]\n", label)
+        @printf("    Active cells       : %d / %d\n", n_active, D27_GRID_SIZE^2)
+        @printf("    Close events       : %d  Singleton events: %d\n", n_close, n_sing)
+        @printf("    log₂ lift stats    : min=%.2f  p10=%.2f  med=%.2f  mean=%.2f  p90=%.2f  max=%.2f\n",
+                lift_min, lift_p10, lift_median, lift_mean, lift_p90, lift_max)
+        @printf("    KL(close‖sing)     : %.4f bits   KL(sing‖close): %.4f bits\n", kl_cs, kl_sc)
+        @printf("    χ²/dof (close vs sing null): %.3f  (dof=%d)\n", chi2_dof, max(0, df-1))
+        if chi2_dof > 3.0
+            @printf("    ↑ CONCENTRATED — closures strongly prefer specific (α,px) cells\n")
+            @printf("      → productive geometry is thin: explains small α₂\n")
+        elseif chi2_dof > 1.5
+            @printf("    ↑ Mild concentration — moderate geometric preference\n")
+        else
+            @printf("    ↑ Consistent with proportional — no strong geometric preference\n")
+        end
 
-    # ── Count cells with |lift| > threshold ─────────────────────────────────
-    n_hot  = count(x -> x[1] > 1.0,  lift_cells)   # >2× in linear
-    n_vhot = count(x -> x[1] > 2.0,  lift_cells)   # >4× in linear
-    n_cold = count(x -> x[1] < -1.0, lift_cells)   # <0.5× (close-depleted)
-    @printf("    Cells: log₂L > 1 (>2×): %d  log₂L > 2 (>4×): %d  log₂L < -1 (<0.5×): %d\n",
-            n_hot, n_vhot, n_cold)
+        # ── Count cells with |lift| > threshold ─────────────────────────────────
+        n_hot  = count(x -> x[1] > 1.0,  lift_cells)   # >2× in linear
+        n_vhot = count(x -> x[1] > 2.0,  lift_cells)   # >4× in linear
+        n_cold = count(x -> x[1] < -1.0, lift_cells)   # <0.5× (close-depleted)
+        @printf("    Cells: log₂L > 1 (>2×): %d  log₂L > 2 (>4×): %d  log₂L < -1 (<0.5×): %d\n",
+                n_hot, n_vhot, n_cold)
 
-    # ── Top cells ────────────────────────────────────────────────────────────
-    @printf("    Top-%d cells by log₂ lift (close over singleton):\n", min(top_n, length(lift_cells)))
-    @printf("      %-6s  %-6s  %8s  %8s  %8s  %8s\n",
-            "al_bkt", "px_bkt", "log₂L", "n_close", "n_sing", "lin_lift")
-    for i in 1:min(top_n, length(lift_cells))
-        ll, ai, pi = lift_cells[i]
-        ai_i = Int(ai); pi_i = Int(pi)
-        cc = close_grid[ai_i + 1, pi_i + 1]
-        sc = sing_grid[ai_i  + 1, pi_i + 1]
-        @printf("      %-6d  %-6d  %8.3f  %8d  %8d  %8.3f\n",
-                ai_i, pi_i, ll, cc, sc, 2.0^ll)
-    end
-
-    # ── Bottom (close-depleted) cells ────────────────────────────────────────
-    if n_cold > 0
-        @printf("    Bottom-%d cells (close-depleted, log₂L < -1):\n", min(top_n, n_cold))
-        @printf("      %-6s  %-6s  %8s  %8s  %8s\n",
-                "al_bkt", "px_bkt", "log₂L", "n_close", "n_sing")
-        cnt = 0
-        for i in length(lift_cells):-1:1
+        # ── Top cells ────────────────────────────────────────────────────────────
+        @printf("    Top-%d cells by log₂ lift (close over singleton):\n", min(top_n, length(lift_cells)))
+        @printf("      %-6s  %-6s  %8s  %8s  %8s  %8s\n",
+                "al_bkt", "px_bkt", "log₂L", "n_close", "n_sing", "lin_lift")
+        for i in 1:min(top_n, length(lift_cells))
             ll, ai, pi = lift_cells[i]
-            ll > -1.0 && break
-            cnt += 1; cnt > top_n && break
             ai_i = Int(ai); pi_i = Int(pi)
             cc = close_grid[ai_i + 1, pi_i + 1]
             sc = sing_grid[ai_i  + 1, pi_i + 1]
-            @printf("      %-6d  %-6d  %8.3f  %8d  %8d\n", ai_i, pi_i, ll, cc, sc)
+            @printf("      %-6d  %-6d  %8.3f  %8d  %8d  %8.3f\n",
+                    ai_i, pi_i, ll, cc, sc, 2.0^ll)
+        end
+
+        # ── Bottom (close-depleted) cells ─────────────────────────────────────
+        if show_bottom
+            n_cold = count(x -> x[1] < -1.0, lift_cells)
+            if n_cold > 0
+                @printf("    Bottom-%d cells (close-depleted, log₂L < -1):\n", min(top_n, n_cold))
+                @printf("      %-6s  %-6s  %8s  %8s  %8s\n",
+                        "al_bkt", "px_bkt", "log₂L", "n_close", "n_sing")
+                cnt = 0
+                for i in length(lift_cells):-1:1
+                    ll, ai, pi = lift_cells[i]
+                    ll > -1.0 && break
+                    cnt += 1; cnt > top_n && break
+                    ai_i = Int(ai); pi_i = Int(pi)
+                    cc = close_grid[ai_i + 1, pi_i + 1]
+                    sc = sing_grid[ai_i  + 1, pi_i + 1]
+                    @printf("      %-6d  %-6d  %8.3f  %8d  %8d\n", ai_i, pi_i, ll, cc, sc)
+                end
+            end
         end
     end
 
@@ -445,7 +461,7 @@ function _report_d27(deep_stat::ConjDeepStat; ell::Int = 0, p::Int = 0)
 
     kl_global, chi2_global = _d27_report_grid(
         close_grid_global, sing_grid_global, n_cg, n_sg;
-        top_n = 15, label = "")
+        top_n = 5, show_bottom = false, label = "")
 
     # ── Per-event conditioning classes (computed once, reused below) ───────
     close_disc, close_u0, close_u1 = _d27_compute_classes(deep_stat.d12_close_key, p, D27_MOD_M)
@@ -466,7 +482,7 @@ function _report_d27(deep_stat::ConjDeepStat; ell::Int = 0, p::Int = 0)
             @printf("  -- %s  (n_close=%d  n_sing=%d) --\n", dc_label, length(idx_c), length(idx_s))
             cg, sg, nc2, ns2 = _d27_build_grids(close_al_bkts[idx_c], close_px_bkts[idx_c],
                                                  sing_al_bkts[idx_s],  sing_px_bkts[idx_s])
-            _d27_report_grid(cg, sg, nc2, ns2; top_n = 10, label = dc_label)
+            _d27_report_grid(cg, sg, nc2, ns2; top_n = 5, show_bottom = false, label = dc_label)
         end
     end
 
@@ -487,7 +503,7 @@ function _report_d27(deep_stat::ConjDeepStat; ell::Int = 0, p::Int = 0)
         cg, sg, nc3, ns3 = _d27_build_grids(close_al_bkts[idx_c], close_px_bkts[idx_c],
                                              sing_al_bkts[idx_s],  sing_px_bkts[idx_s])
         kl_v, chi2_v = _d27_report_grid(cg, sg, nc3, ns3;
-                                          top_n = 5,
+                                          top_n = 5, show_bottom = false, silent = true,
                                           label = "u0 mod $D27_MOD_M = $bnd  (n_close=$(length(idx_c))  n_sing=$(length(idx_s)))")
         u0_kl[bnd + 1]   = kl_v
         u0_chi2[bnd + 1] = chi2_v
@@ -519,7 +535,7 @@ function _report_d27(deep_stat::ConjDeepStat; ell::Int = 0, p::Int = 0)
         cg, sg, nc4, ns4 = _d27_build_grids(close_al_bkts[idx_c], close_px_bkts[idx_c],
                                              sing_al_bkts[idx_s],  sing_px_bkts[idx_s])
         kl_v, chi2_v = _d27_report_grid(cg, sg, nc4, ns4;
-                                          top_n = 5,
+                                          top_n = 5, show_bottom = false, silent = true,
                                           label = "u1 mod $D27_MOD_M = $bnd  (n_close=$(length(idx_c))  n_sing=$(length(idx_s)))")
         u1_kl[bnd + 1]   = kl_v
         u1_chi2[bnd + 1] = chi2_v
@@ -551,7 +567,7 @@ function _report_d27(deep_stat::ConjDeepStat; ell::Int = 0, p::Int = 0)
             cg, sg, nc5, ns5 = _d27_build_grids(close_al_bkts[idx_c], close_px_bkts[idx_c],
                                                  sing_al_bkts[idx_s],  sing_px_bkts[idx_s])
             kl_v, chi2_v = _d27_report_grid(cg, sg, nc5, ns5;
-                                              top_n = 5,
+                                              top_n = 5, show_bottom = false, silent = true,
                                               label = "disc=$(dc==1 ? "QR" : "NR")  u0 mod $D27_MOD_M = $bnd  (n_close=$(length(idx_c))  n_sing=$(length(idx_s)))")
             push!(joint_results, (kl_v, chi2_v, Float64(dc), Float64(bnd)))
         end
