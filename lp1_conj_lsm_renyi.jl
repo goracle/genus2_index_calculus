@@ -18,14 +18,29 @@
 #  distribution rather than artifact duplicates.
 #
 #  AMS update: for each of the AMS_K hash functions h_j, compute the sign
-#  h_j(fp) = (-1)^{high bit of fp*salt_j} and add it to ams_Z[j].
-#  After N emissions, E[ams_Z[j]^2] = F₂ = Σcᵢ², and S₂ = N²/F₂.
+#  σ_j(key) = MSB( lo(key)*AMS_SALTS[j] + hi(key)*AMS_SALTS_HI[j] )
+#  and add it to ams_Z[j].  Using the FULL 128-bit key (not the 64-bit fp
+#  fingerprint) is critical: hashing fp would cause distinct keys that collide
+#  in fp-space to receive identical sign vectors, biasing F₂ upward and α₂
+#  downward.  After N emissions, E[ams_Z[j]²] = F₂ = Σcᵢ², S₂ = N²/F₂.
 #
-#  Cold-filter bitmap update: set the COLD_BITS-bit bucket presence bit
-#  (used by the flush path, not for S₂).
+#  Partial key log: stores a COLD_BITS-bit hash of the full 128-bit key (not
+#  fp >> COLD_SHIFT) for the windowed α₂ diagnostic.
+#
+#  Cold-filter bitmap update: set the COLD_BITS-bit bucket presence bit using
+#  fp (correct: this is a flush-path presence test, not an entropy estimate).
 # ---------------------------------------------------------------------------
 @inline function _lsm_record_sample!(sc::LP1ConjLSM, fp::UInt64, now_t::Float64, key::CanonicalLP1Key)
+    # Split the full 128-bit key into two 64-bit halves for use in the AMS
+    # sketch and the partial-key log.  We must NOT use fp (a lossy 64-bit
+    # projection) for either: distinct keys that collide in fp-space would
+    # receive identical sign vectors, biasing F₂ upward and α₂ downward.
+    k_lo = UInt64(key & 0xffffffffffffffff)
+    k_hi = UInt64(key >> 64)
+
     # Cold-filter bitmap — lockless bit-set (bits only ever set, never cleared).
+    # fp is still correct here: the cold filter is a coarse presence test used
+    # only by the flush path, not for any entropy estimate.
     cb_idx  = Int(fp >> COLD_SHIFT)
     cb_word = cb_idx >> 6
     cb_bit  = cb_idx & 63
@@ -39,21 +54,40 @@
         sc.bday_emissions += 1
         sc.occ_n          += 1
 
-        # AMS sketch update: 512 sign-hash projections.
-        # h_j(fp) = +1 if high bit of (fp * salt_j) is 0, else -1.
+        # AMS sketch update: 512 sign-hash projections over the FULL 128-bit key.
+        #
+        # σ_j(key) = MSB( lo(key)*AMS_SALTS[j] + hi(key)*AMS_SALTS_HI[j] )
+        #
+        # Using both halves with independent salt tables ensures the sign
+        # function separates every pair of distinct keys in expectation,
+        # giving an unbiased estimate of F₂ = Σᵢ fᵢ² over the true key
+        # distribution rather than the fp-fingerprint distribution.
         Z = sc.ams_Z
         @inbounds for j in 1:AMS_K
-            h = fp * AMS_SALTS[j]
+            h = k_lo * AMS_SALTS[j] + k_hi * AMS_SALTS_HI[j]
             Z[j] += ifelse((h >> 63) == UInt64(0), Int64(1), Int64(-1))
         end
 
         # Occupancy: increment for newly-observed coarse buckets.
         was_zero && (sc.occ_unique += 1)
 
-        # Partial fp log: record the COLD_BITS-bit bucket index for windowed
-        # α₂ diagnostics.  Uses UInt32 since COLD_BITS = 20 fits easily.
-        log_n      = length(sc.partial_fp_log)
-        bucket_idx = UInt32(cb_idx)
+        # Partial key log for windowed α₂ diagnostics.
+        #
+        # Store a COLD_BITS-bit hash of the FULL key (not fp >> COLD_SHIFT).
+        # fp >> COLD_SHIFT is the top 20 bits of a 64-bit projection of the
+        # 128-bit key, which discards information and biases the windowed α₂
+        # estimate for the same reason as the AMS bug above.
+        #
+        # We derive a 20-bit bucket index by mixing both halves of the key with
+        # a fixed constant (distinct from the AMS salts), then taking the top
+        # COLD_BITS bits.  The constant 0xc4ceb9fe1a85ec53 is the finaliser
+        # from MurmurHash3_x64_128; using a fixed value (not rand()) ensures
+        # the bucket index is reproducible across diagnostic calls on the same
+        # run, which matters for the windowed scaling analysis.
+        log_n = length(sc.partial_fp_log)
+        h_key = k_lo * 0xc4ceb9fe1a85ec53 + k_hi * 0x94d049bb133111eb
+        h_key = h_key ⊻ (h_key >> 32)
+        bucket_idx = UInt32(h_key >> (64 - COLD_BITS))   # top COLD_BITS bits
         if log_n < PARTIAL_FP_LOG_CAP
             push!(sc.partial_fp_log, bucket_idx)
         else
@@ -180,8 +214,13 @@ function lsm_bday_report(sc::LP1ConjLSM, p::Integer, r::Real; io::IO = stdout)
         if peer.bday_first_coll_m > 0
             if peer.bday_first_coll_t < t_coll_first
                 t_coll_first = peer.bday_first_coll_t
-                # Approximate global emissions at the exact time of the earliest local collision
-                m_first = peer.bday_first_coll_m * length(actual_peers)
+                # m_first is the LOCAL emission count on the peer that saw the
+                # collision.  Multiplying by npeers was a bad approximation that
+                # assumes perfectly equal per-thread emission rates.  Instead we
+                # use total_emitted (accumulated after unlocking all peers below),
+                # which requires a second pass; for now store the local value and
+                # fix it up after the loop.
+                m_first = peer.bday_first_coll_m
             end
         end
         
@@ -216,6 +255,18 @@ function lsm_bday_report(sc::LP1ConjLSM, p::Integer, r::Real; io::IO = stdout)
     lam_global = t_elapsed > 0.0 ? (total_emitted / t_elapsed) : (r * length(actual_peers))
     pf = Float64(p)
 
+    # Fix up m_first: convert from local-peer count to global count.
+    # We know the wall-clock time of the collision (t_coll_first) and the
+    # overall emission rate (lam_global).  The best estimate of how many
+    # emissions had occurred globally at collision time is:
+    #   m_first_global ≈ lam_global * (t_coll_first - t0_earliest)
+    # This is unbiased regardless of per-thread rate variation, unlike the
+    # old "local_m * npeers" approximation.
+    if m_first > 0 && t_coll_first < Inf && t0_earliest < Inf && lam_global > 0.0
+        t_at_coll = t_coll_first - t0_earliest
+        m_first   = max(m_first, round(Int, lam_global * t_at_coll))
+    end
+
     @printf(io, "\n[LP1-conj birthday diagnostics (Global across %d peers)]\n", length(actual_peers))
     @printf(io, "  total LP1-conj emitted : %d\n", total_emitted)
 
@@ -234,15 +285,17 @@ function lsm_bday_report(sc::LP1ConjLSM, p::Integer, r::Real; io::IO = stdout)
     end
 
     t_first   = t_coll_first - t0_earliest
-    S_eff     = Float64(m_first)^2
+    # Birthday paradox: expected first collision at m steps over a space of size
+    # S gives m ≈ sqrt(2S), so S_eff = m²/2.  The old code used m² (off by 2).
+    S_eff     = Float64(m_first)^2 / 2.0
     S_naive   = pf^2 / 2.0
     ratio     = S_eff / S_naive
-    alpha     = log(Float64(m_first)) / log(pf)
+    alpha     = log(Float64(m_first) / sqrt(2.0)) / log(pf)
     m_naive   = sqrt(S_naive)
     t_naive   = lam_global > 0.0 ? (m_naive / lam_global) : Inf
 
     @printf(io, "  first collision at     : m ≈ %d  (t_wall = %.3f s)\n", m_first, t_first)
-    @printf(io, "  S_eff  = m^2           : %.6g\n", S_eff)
+    @printf(io, "  S_eff  = m^2/2         : %.6g\n", S_eff)
     @printf(io, "  S_naive = p^2/2        : %.6g\n", S_naive)
     @printf(io, "  S_eff / S_naive        : %.5g\n", ratio)
     @printf(io, "  alpha  (S ~ p^{2*alpha}): %.4f   [alpha=1 ↔ S~p^2, alpha=0.75 ↔ S~p^1.5, ...]\n", alpha)
@@ -397,19 +450,17 @@ function lsm_bday_report(sc::LP1ConjLSM, p::Integer, r::Real; io::IO = stdout)
                 @printf(io, "    %s\n", verdict)
             end
 
-            # Report the converged windowed α₂ (prefer unsaturated rows).
+            # Report the converged windowed α₂.
+            # Prefer unsaturated rows (Tw ≤ nb/4); fall back to all rows if none.
             ref_vals = isempty(unsaturated_a2) ? a2_vals : unsaturated_a2
             if !isempty(ref_vals) && pf > 1.0
                 a2_w = ref_vals[end]
-                # Windowed α₂ is in bucket-entropy bits (log₂ scale).
-                # Convert: S₂_bucket = 2^a2_w, S₂_keys = S₂_bucket × 2^COLD_BITS.
-                S2_w_bucket = exp2(a2_w)
-                S2_w_keys   = S2_w_bucket * Float64(1 << COLD_BITS)
-                a2_w_keys   = log(S2_w_keys) / (2.0 * log(pf))
-                sat_note    = isempty(unsaturated_a2) ? " [all rows saturated — treat as lower bound]" : ""
-                @printf(io, "    converged α₂ (bucket-space)  : %.4f bits%s\n", a2_w, sat_note)
-                @printf(io, "    S₂_keys (bucket × 2^%d)     : %.5g\n", COLD_BITS, S2_w_keys)
-                @printf(io, "    α₂_keys (S₂ ~ p^{2α₂})      : %.4f  [compare AMS α₂ above]\n", a2_w_keys)
+                sat_note = isempty(unsaturated_a2) ? " [all rows saturated — lower bound only]" : ""
+                @printf(io, "    converged α₂ (bucket-entropy bits) : %.4f%s\n", a2_w, sat_note)
+                @printf(io, "    [This is H₂ in bits over 2^%d buckets, NOT directly comparable\n", COLD_BITS)
+                @printf(io, "     to AMS α₂ above.  Use AMS α₂ for the calibrated exponent.]\n")
+                @printf(io, "    [Windowed diagnostic value: does α₂(T) converge as T grows?\n")
+                @printf(io, "     Flat → single-exponent walk.  Rising → mixing across scales.]\n")
             end
         end
     end

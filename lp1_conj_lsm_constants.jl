@@ -15,10 +15,36 @@ const AMS_GROUPS = 32
 const AMS_WIDTH  = 16
 const AMS_K      = AMS_GROUPS * AMS_WIDTH   # 512 total hash functions
 
-# Precomputed salts: AMS_K distinct 64-bit constants.
-# Generated as successive applications of xorshift64 from a random seed so
-# each run uses a fresh independent hash family.
+# Precomputed salts: AMS_K distinct 64-bit constants, two independent families.
+#
+# AMS_SALTS    — multiplier for the low  64 bits of the CanonicalLP1Key (UInt128).
+# AMS_SALTS_HI — multiplier for the high 64 bits of the CanonicalLP1Key (UInt128).
+#
+# Using two independent families is required for correctness: the AMS sign
+# function must be defined over the FULL 128-bit key, not a 64-bit lossy
+# fingerprint.  If we hashed only _lsm_fp(key) (a UInt64), any two distinct
+# keys that collide in fp-space would receive identical sign vectors across
+# ALL hash functions simultaneously, causing a systematic overestimate of F₂
+# (and therefore a systematic underestimate of S₂ and α₂).
+#
+# With two independent tables the sign for hash function j is:
+#   σ_j(key) = MSB( lo(key) * AMS_SALTS[j]  +  hi(key) * AMS_SALTS_HI[j] )
+# This is a proper linear sketch over GF(2^64) applied to the full 128-bit key.
+# The two tables are seeded from separate rand() calls so they are statistically
+# independent (Julia's global RNG advances between the two let-blocks).
 const AMS_SALTS = let
+    s = rand(UInt64)
+    v = Vector{UInt64}(undef, AMS_K)
+    for i in 1:AMS_K
+        s = s ⊻ (s << 13)
+        s = s ⊻ (s >> 7)
+        s = s ⊻ (s << 17)
+        v[i] = s
+    end
+    Tuple(v)
+end
+
+const AMS_SALTS_HI = let
     s = rand(UInt64)
     v = Vector{UInt64}(undef, AMS_K)
     for i in 1:AMS_K

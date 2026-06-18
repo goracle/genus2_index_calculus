@@ -85,7 +85,9 @@ mutable struct LP1ConjLSM{V}
     occ_n               ::Int          # total emissions (== bday_emissions, separate for atomic snapshot)
 
     # Rényi-2 / collision-entropy estimator — AMS sketch.
-    # ams_Z[g*AMS_WIDTH + j] = Σ h_{g,j}(fp) ∈ ℤ.  Updated under bday_lock.
+    # ams_Z[(g-1)*AMS_WIDTH + j] = Σ σ_{g,j}(key) ∈ ℤ, where
+    #   σ_{g,j}(key) = MSB( lo(key)*AMS_SALTS[idx] + hi(key)*AMS_SALTS_HI[idx] )
+    # with idx = (g-1)*AMS_WIDTH + j.  Updated under bday_lock.
     ams_Z               ::Vector{Int64}    # length AMS_K = AMS_GROUPS * AMS_WIDTH
 
     # Cold-filter bitmap — presence bits for COLD_BITS-bucket fp prefixes.
