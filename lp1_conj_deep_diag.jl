@@ -22,6 +22,14 @@
 #                                   a-coefficient residue bias against
 #                                   small-prime uniform nulls, marginal +
 #                                   joint (mod 3, mod 5) tables
+#  lp1_conj_deep_diag_d34.jl     — report section D34 (_report_d34): x-bucket
+#                                   smoothing-probability (draining hypothesis)
+#  lp1_conj_deep_diag_d35.jl     — report section D35 (_report_d35): closure
+#                                   difference-process concentration —
+#                                   Rényi-2 effective support of Δα/Δβ
+#                                   (combined_al/combined_be) vs ΔP proxy
+#                                   (FB anchor x-difference), plus a
+#                                   co-localization test between the two
 #
 #  Wiring (unchanged from the monolithic version)
 #  ───────────────────────────────────────────────
@@ -48,6 +56,7 @@ include("lp1_conj_deep_diag_d28.jl")
 include("lp1_conj_deep_diag_d32.jl")  # D32 — LP1-conj key recurrence-gap concentration (short-lag focus)
 include("lp1_conj_deep_diag_d33.jl")  # D33 — φ a-coefficient residue bias (small-prime modular structure)
 include("lp1_conj_deep_diag_d34.jl")  # D34 — x-bucket smoothing-probability (draining hypothesis test)
+include("lp1_conj_deep_diag_d35.jl")  # D35 — closure difference-process concentration (Δα/Δβ vs ΔP proxy)
 
 # ---------------------------------------------------------------------------
 #  print_conj_deep_report — top-level dispatcher.
@@ -125,6 +134,7 @@ function print_conj_deep_report(phi_stat ::PhiBiasStat,
     _report_d32(deep_stat)
     _report_d33(deep_stat)
     _report_d34(deep_stat; p=p)
+    _report_d35(deep_stat; p=p, ell=ell)
 
     @printf("\n== End LP1-conj deep diagnostics ====================================================\n")
     flush(stdout)
