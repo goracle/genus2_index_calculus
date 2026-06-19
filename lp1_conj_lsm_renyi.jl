@@ -184,6 +184,81 @@ function _ams_estimate_S2_stats(Z::Vector{Int64}, N::Int64)
     )
 end
 
+# ---------------------------------------------------------------------------
+#  _ams_estimate_S2_stats_ngroups — D31 helper.
+#
+#  Same median-of-means procedure as _ams_estimate_S2_stats, but restricted
+#  to the first n_groups of AMS_GROUPS (i.e. the first n_groups*AMS_WIDTH
+#  accumulators of Z). This reuses the SAME sketch data — no new hashing,
+#  no new accumulators — just asks "what would S2/alpha2 have looked like
+#  if we'd only budgeted n_groups groups instead of AMS_GROUPS?".
+#
+#  Rationale (D31): the full AMS_GROUPS=32 estimate already reports a 68%
+#  band from inter-group spread, but that band only reflects variance
+#  AROUND the 32-group median — it says nothing about whether 32 groups is
+#  enough groups in the first place. If alpha2 computed from a 4- or 8-group
+#  prefix already agrees with the 32-group answer, the estimator has
+#  converged and alpha2's value is a property of the data, not the sketch
+#  resolution. If alpha2 keeps shifting as n_groups grows, the 32-group
+#  estimate hasn't converged either, and the reported alpha2 ~ 0.59-0.60
+#  pinning could still be (partly) a sketch-width artifact rather than a
+#  genuine property of the walk.
+#
+#  p must be the same field characteristic used elsewhere in this file
+#  (closes over the global `p`, exactly like _ams_estimate_S2_stats).
+#  Requires n_groups <= AMS_GROUPS and n_groups >= 1.
+#
+#  Wired into lsm_bday_report below: prints alpha2 at n_groups = 4, 8, 16, 32
+#  (doubling prefixes of the aggregated ams_Z_global) and flags whether the
+#  last doubling step still moves alpha2 by more than ~0.01-0.03.
+# ---------------------------------------------------------------------------
+function _ams_estimate_S2_stats_ngroups(Z::Vector{Int64}, N::Int64, n_groups::Int)
+    n_groups = clamp(n_groups, 1, AMS_GROUPS)
+    N == 0 && return (
+        F2=0.0, S2=0.0,
+        F2_lo=0.0, F2_hi=0.0,
+        S2_lo=0.0, S2_hi=0.0,
+        alpha2=0.0, alpha2_lo=0.0, alpha2_hi=0.0
+    )
+
+    group_means = Vector{Float64}(undef, n_groups)
+    @inbounds for g in 1:n_groups
+        base = (g - 1) * AMS_WIDTH
+        m = 0.0
+        for j in 1:AMS_WIDTH
+            m += Float64(Z[base + j])^2
+        end
+        group_means[g] = m / AMS_WIDTH
+    end
+    sort!(group_means)
+
+    F2 = if iseven(n_groups)
+        (group_means[n_groups ÷ 2] + group_means[n_groups ÷ 2 + 1]) / 2.0
+    else
+        group_means[(n_groups + 1) ÷ 2]
+    end
+    F2 = max(F2, 1.0)
+
+    F2_lo = max(1.0, _ams_group_quantile(group_means, 0.15865525393145707))
+    F2_hi = max(F2_lo, _ams_group_quantile(group_means, 0.8413447460685429))
+
+    S2    = Float64(N)^2 / F2
+    S2_lo = Float64(N)^2 / F2_hi
+    S2_hi = Float64(N)^2 / F2_lo
+
+    logp = log(Float64(p))
+    alpha2    = log(S2)    / (2.0 * logp)
+    alpha2_lo = log(S2_lo) / (2.0 * logp)
+    alpha2_hi = log(S2_hi) / (2.0 * logp)
+
+    return (
+        F2=F2, S2=S2,
+        F2_lo=F2_lo, F2_hi=F2_hi,
+        S2_lo=S2_lo, S2_hi=S2_hi,
+        alpha2=alpha2, alpha2_lo=alpha2_lo, alpha2_hi=alpha2_hi
+    )
+end
+
 function _ams_estimate_S2(Z::Vector{Int64}, N::Int64)::Tuple{Float64, Float64}
     stats = _ams_estimate_S2_stats(Z, N)
     return (stats.F2, stats.S2)
@@ -363,6 +438,68 @@ function lsm_bday_report(sc::LP1ConjLSM, p::Integer, r::Real; io::IO = stdout)
                 ams_stats.alpha2, a2_pm, ams_stats.alpha2_lo, ams_stats.alpha2_hi, burst_flag)
         @printf(io, "    [band is the inter-group spread; not a formal CI]\n")
         @printf(io, "    [AMS never saturates; valid for any N]\n")
+
+        # ── D31: group-budget convergence check ─────────────────────────────
+        # Re-derives alpha2 from doubling PREFIXES of the same sketch (4, 8, 16,
+        # ... groups) using _ams_estimate_S2_stats_ngroups. No new hashing — just
+        # asks whether alpha2 had already settled before the full AMS_GROUPS
+        # budget was spent, or whether it's still moving group-by-group (in
+        # which case the AMS_GROUPS=32 estimate may itself be under-resolved).
+        @printf(io, "\n    [D31] α₂ vs. group budget (prefix of same sketch, no new data):\n")
+        @printf(io, "      n_groups   F₂          S₂          α₂       Δα₂(doubling)\n")
+        prev_ng_a2  = NaN
+        ng          = 4
+        ng_a2_vals  = Float64[]
+        while ng <= AMS_GROUPS
+            ngs = _ams_estimate_S2_stats_ngroups(ams_Z_global, N_global, ng)
+            dstr = isnan(prev_ng_a2) ? "        —" : @sprintf("%+9.4f", ngs.alpha2 - prev_ng_a2)
+            @printf(io, "      %8d   %.6g   %.6g   %7.4f  %s%s\n",
+                    ng, ngs.F2, ngs.S2, ngs.alpha2, dstr,
+                    ng == AMS_GROUPS ? "  (= full budget, above)" : "")
+            push!(ng_a2_vals, ngs.alpha2)
+            prev_ng_a2 = ngs.alpha2
+            ng *= 2
+        end
+        # ── Verdict: look at the SHAPE of the delta sequence, not just the
+        #    last step. A single small last-step can hide a flat-then-jump
+        #    pattern (e.g. 8→16 flat, 16→32 jumps) that's evidence of noise
+        #    re-entering as fresh groups join the pool, not of convergence.
+        #    Genuine asymptotic convergence should show |Δ| roughly
+        #    non-increasing across doublings, not just "small at the end".
+        if length(ng_a2_vals) >= 2
+            deltas = [ng_a2_vals[i+1] - ng_a2_vals[i] for i in 1:length(ng_a2_vals)-1]
+            abs_deltas = abs.(deltas)
+            last_step  = abs_deltas[end]
+            max_step   = maximum(abs_deltas)
+            # "Monotone decay" = each |delta| no more than ~1.5x the previous
+            # one (allows minor noise without calling a 6x rebound "decaying").
+            is_decaying = length(abs_deltas) < 2 ||
+                          all(abs_deltas[i+1] <= 1.5 * max(abs_deltas[i], 1e-6)
+                              for i in 1:length(abs_deltas)-1)
+            @printf(io, "      Δ sequence: %s   (max |Δ|=%.4f, last |Δ|=%.4f)\n",
+                    join([@sprintf("%+.4f", d) for d in deltas], "  "), max_step, last_step)
+            if last_step < 0.01 && is_decaying
+                @printf(io, "      → CONVERGED before full budget: α₂ is a property of the data,\n")
+                @printf(io, "        not the %d-group sketch resolution.\n", AMS_GROUPS)
+            elseif last_step < 0.03 && is_decaying
+                @printf(io, "      → nearly converged (Δ=%.4f on last doubling); weak resolution dependence.\n",
+                        last_step)
+            elseif !is_decaying
+                @printf(io, "      → NON-MONOTONIC: Δ shrinks then rebounds (max |Δ|=%.4f vs last |Δ|=%.4f).\n",
+                        max_step, last_step)
+                @printf(io, "        This looks like inter-group sampling noise re-entering as new groups\n")
+                @printf(io, "        join the median pool, not a stable trend either way. The full-budget\n")
+                @printf(io, "        ±%.4f spread band above is a better-justified uncertainty estimate\n",
+                        a2_pm)
+                @printf(io, "        than this %d-point delta sequence — too few doublings to fit a trend.\n",
+                        length(ng_a2_vals))
+            else
+                @printf(io, "      → STILL MOVING at full budget (Δ=%.4f on last doubling): the\n", last_step)
+                @printf(io, "        α₂ ≈ %.2f estimate above may be (partly) a sketch-width artifact —\n",
+                        ams_stats.alpha2)
+                @printf(io, "        consider raising AMS_GROUPS before trusting the pinning.\n")
+            end
+        end
     else
         @printf(io, "    (no emissions recorded yet)\n")
     end

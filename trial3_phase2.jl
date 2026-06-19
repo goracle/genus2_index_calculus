@@ -1265,6 +1265,7 @@ function phase2_worker(G               ::Div2,
                 let _nb_a2 = length(phi_bias_stat.split_hist)
                     _a_bucket = clamp(1 + (Int(a) * _nb_a2) ÷ p, 1, _nb_a2)
                     n_emit_before = deep_stat.n_emissions
+                    d34_stores_before = deep_stat.d12_n_stores_seen
                     cur_pt = handle_1lp_conj!(lp_key32, i0, neg_al, neg_be, ell,
                                                fb, nF_cur, G, T,
                                                alpha_vec, beta_vec, rel_rows, rel_counter,
@@ -1279,6 +1280,9 @@ function phase2_worker(G               ::Div2,
                                              deep_stat.n_emissions > n_emit_before)
                     record_d20_step!(deep_stat, OPCODE_1LP_CONJ)
                     record_d22_d23_d24_step!(deep_stat)
+                    record_d34_step!(deep_stat, P0[1], p,
+                        deep_stat.d12_n_stores_seen > d34_stores_before ?
+                        D34_OUTCOME_STORE : D34_OUTCOME_OTHER)
                 end
             elseif enable_lp2_conj
                 cur_pt = handle_2lp_conj!(P0, RS_mumford::NTuple{4,Int}, neg_al, neg_be, ell,
@@ -1295,12 +1299,14 @@ function phase2_worker(G               ::Div2,
                 record_conj_deep_opcode!(deep_stat, OPCODE_2LP_CONJ, false)
                 record_d20_step!(deep_stat, OPCODE_2LP_CONJ)
                 record_d22_d23_d24_step!(deep_stat)
+                record_d34_step!(deep_stat, P0[1], p, D34_OUTCOME_OTHER)
             else
                 cur_pt = next_anchor()
                 record_random_anchor!(phi_bias_stat)
                 record_conj_deep_opcode!(deep_stat, OPCODE_SKIP, false)
                 record_d20_step!(deep_stat, OPCODE_SKIP)
                 record_d22_d23_d24_step!(deep_stat)
+                record_d34_step!(deep_stat, P0[1], p, D34_OUTCOME_OTHER)
             end
             continue
         end
@@ -1333,6 +1339,7 @@ function phase2_worker(G               ::Div2,
             record_conj_deep_opcode!(deep_stat, OPCODE_0LP, false)
             record_d20_step!(deep_stat, OPCODE_0LP)
             record_d22_d23_d24_step!(deep_stat)
+            record_d34_step!(deep_stat, P0[1], p, D34_OUTCOME_0LP)
 
         elseif n_lp == 1
             # ------------------------------------------------------------------
@@ -1345,6 +1352,7 @@ function phase2_worker(G               ::Div2,
                 record_conj_deep_opcode!(deep_stat, OPCODE_SKIP, false)
                 record_d20_step!(deep_stat, OPCODE_SKIP)
                 record_d22_d23_d24_step!(deep_stat)
+                record_d34_step!(deep_stat, P0[1], p, D34_OUTCOME_OTHER)
             else
             s.hits_lp1 += 1
             lp_pt = i0 == 0 ? P0 : iR == 0 ? R : S
@@ -1370,6 +1378,7 @@ function phase2_worker(G               ::Div2,
             record_conj_deep_opcode!(deep_stat, OPCODE_1LP_AFF, false)
             record_d28_aff_step!(deep_stat, OPCODE_1LP_AFF, lp_pt[1], lp_pt[2], al)
             record_d22_d23_d24_step!(deep_stat)
+            record_d34_step!(deep_stat, P0[1], p, D34_OUTCOME_OTHER)
             end  # enable_lp1_aff
 
         elseif n_lp == 2
@@ -1383,6 +1392,7 @@ function phase2_worker(G               ::Div2,
                 record_conj_deep_opcode!(deep_stat, OPCODE_SKIP, false)
                 record_d20_step!(deep_stat, OPCODE_SKIP)
                 record_d22_d23_d24_step!(deep_stat)
+                record_d34_step!(deep_stat, P0[1], p, D34_OUTCOME_OTHER)
             else
                 empty!(fb_row_scratch)
                 for idx in (i0, iR, iS)
@@ -1403,6 +1413,7 @@ function phase2_worker(G               ::Div2,
                 record_conj_deep_opcode!(deep_stat, OPCODE_2LP_AFF, false)
                 record_d20_step!(deep_stat, OPCODE_2LP_AFF)
                 record_d22_d23_d24_step!(deep_stat)
+                record_d34_step!(deep_stat, P0[1], p, D34_OUTCOME_OTHER)
             end
 
         else
@@ -1416,6 +1427,7 @@ function phase2_worker(G               ::Div2,
             record_conj_deep_opcode!(deep_stat, OPCODE_SKIP, false)
             record_d20_step!(deep_stat, OPCODE_SKIP)
             record_d22_d23_d24_step!(deep_stat)
+            record_d34_step!(deep_stat, P0[1], p, D34_OUTCOME_OTHER)
         end
     end   # end main walk loop
 

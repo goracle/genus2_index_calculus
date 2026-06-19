@@ -14,7 +14,8 @@
 #  Included by lp1_conj_deep_diag.jl; do not include directly.
 # =============================================================================
 
-function _report_d12_d18(deep_stat::ConjDeepStat; p::Int = 0)
+function _report_d12_d18(deep_stat::ConjDeepStat; p::Int = 0,
+                          fb::Union{Vector{NTuple{2,Int}}, Nothing} = nothing)
 
     # ──────────────────────────────────────────────────────────────────────
     #  D12 — Alpha/anchor joint support diagnostic
@@ -329,6 +330,131 @@ function _report_d12_d18(deep_stat::ConjDeepStat; p::Int = 0)
                 end
             else
                 @printf("      (no px bucket had ≥4 store events)\n")
+            end
+        end
+
+        # ── D12b — Static FB x-distribution vs D12 store-px marginal ────────
+        #
+        # Hypothesis separation (from handoff analysis):
+        #   (1) FB construction artifact: some px buckets contain more FB elements
+        #       by sheer density of the phase1 discovery walk, so round-robin anchor
+        #       cycling delivers equal anchor *counts* but unequal px-bucket *coverage*.
+        #   (2) Real walk geometry: some px regions are more productive (their phi
+        #       orbits more readily land on smooth/split residuals).
+        #
+        # (1) is detectable from the frozen fb array alone — no rerun needed.
+        # If the FB-only px histogram matches D12's store-side px marginal, the
+        # concentration is purely structural (factor-base construction order artifact)
+        # and carries no information about walk dynamics.
+        @printf("    D12b — Static FB px distribution vs D12 store-px marginal:\n")
+        @printf("  ─────────────────────────────────────────────────────────────────\n")
+        if fb === nothing
+            @printf("    (fb not provided — pass fb= to print_conj_deep_report to enable D12b)\n")
+        elseif isempty(fb)
+            @printf("    (fb is empty — skipping D12b)\n")
+        elseif n_store < 4
+            @printf("    (too few store events for comparison — skipping D12b)\n")
+        else
+            n_fb = length(fb)
+            @printf("    FB elements                   : %d\n", n_fb)
+            @printf("    px bucket grid                : %d equal-width bins over [0, %d)\n",
+                    n_pbkt, px_max)
+
+            # Build FB-only px marginal over the same n_pbkt grid used by D12.
+            fb_px_hist = zeros(Int, n_pbkt)
+            @inbounds for i in 1:n_fb
+                px_val = fb[i][1]
+                pb = _pbkt(px_val)
+                fb_px_hist[pb] += 1
+            end
+
+            # Build D12 store-side px marginal (summing over alpha).
+            store_px_marg = zeros(Int, n_pbkt)
+            @inbounds for i in 1:n_store
+                pb = _pbkt(deep_stat.d12_store_px[i])
+                store_px_marg[pb] += 1
+            end
+
+            # Chi² of FB-only histogram against uniform (expected = n_fb / n_pbkt).
+            expected_fb = Float64(n_fb) / n_pbkt
+            chi2_fb = expected_fb > 0 ?
+                sum((Float64(fb_px_hist[j]) - expected_fb)^2 / expected_fb for j in 1:n_pbkt) : NaN
+            dof_px = n_pbkt - 1
+
+            # Normalize both marginals to probability vectors for TV and correlation.
+            fb_frac    = fb_px_hist    ./ max(1, n_fb)
+            store_frac = store_px_marg ./ max(1, n_store)
+
+            # Total variation distance (max absolute difference in probability).
+            tv_dist = 0.5 * sum(abs(fb_frac[j] - store_frac[j]) for j in 1:n_pbkt)
+
+            # Pearson correlation between the two marginal count vectors.
+            mu_fb    = sum(fb_frac)    / n_pbkt    # should be ≈ 1/n_pbkt both
+            mu_store = sum(store_frac) / n_pbkt
+            cov_val  = sum((fb_frac[j] - mu_fb) * (store_frac[j] - mu_store) for j in 1:n_pbkt)
+            std_fb   = sqrt(max(0.0, sum((fb_frac[j] - mu_fb)^2   for j in 1:n_pbkt)))
+            std_st   = sqrt(max(0.0, sum((store_frac[j] - mu_store)^2 for j in 1:n_pbkt)))
+            corr_fb_store = (std_fb > 0 && std_st > 0) ? cov_val / (std_fb * std_st) : NaN
+
+            @printf("    FB-px marginal χ²/dof (vs uniform): %.3f  (dof=%d, uniform_expected=%.2f)\n",
+                    chi2_fb / dof_px, dof_px, expected_fb)
+            @printf("    TV distance (FB vs store-px marginal): %.5f\n", tv_dist)
+            @printf("    Pearson corr  (FB vs store-px marginal): %.4f\n", corr_fb_store)
+
+            # Print side-by-side table of top and bottom 5 buckets by FB density.
+            sorted_by_fb = sortperm(fb_px_hist, rev=true)
+            @printf("    Top-5 FB-densest buckets (FB fraction  vs  store-event fraction):\n")
+            @printf("      %-20s  %8s  %8s  %8s  %8s\n",
+                    "px range", "FB_cnt", "FB_frac", "sto_frac", "lift")
+            for rank in 1:min(5, n_pbkt)
+                pb = sorted_by_fb[rank]
+                p_lo = (pb-1) * (px_max+1) ÷ n_pbkt
+                p_hi = pb     * (px_max+1) ÷ n_pbkt - 1
+                lift = (expected_fb > 0 && store_frac[pb] > 0) ?
+                       (store_frac[pb] / (1.0/n_pbkt)) : 0.0
+                @printf("      px∈[%7d,%7d)  %8d  %8.5f  %8.5f  %8.3f\n",
+                        p_lo, p_hi, fb_px_hist[pb], fb_frac[pb], store_frac[pb], lift)
+            end
+
+            @printf("    Bottom-5 FB-sparsest buckets:\n")
+            @printf("      %-20s  %8s  %8s  %8s  %8s\n",
+                    "px range", "FB_cnt", "FB_frac", "sto_frac", "lift")
+            for rank in (n_pbkt-4):n_pbkt
+                rank < 1 && continue
+                pb = sorted_by_fb[rank]
+                p_lo = (pb-1) * (px_max+1) ÷ n_pbkt
+                p_hi = pb     * (px_max+1) ÷ n_pbkt - 1
+                lift = (expected_fb > 0 && store_frac[pb] > 0) ?
+                       (store_frac[pb] / (1.0/n_pbkt)) : 0.0
+                @printf("      px∈[%7d,%7d)  %8d  %8.5f  %8.5f  %8.3f\n",
+                        p_lo, p_hi, fb_px_hist[pb], fb_frac[pb], store_frac[pb], lift)
+            end
+
+            # Verdict: if corr_fb_store is high and TV distance is low, the store
+            # hotness tracks the FB density closely → hypothesis (1) (structural).
+            # If not, the store px distribution differs from what pure FB density
+            # predicts → hypothesis (2) (dynamic/geometric).
+            @printf("\n    Verdict:\n")
+            if !isnan(corr_fb_store) && corr_fb_store >= 0.85 && tv_dist <= 0.10
+                @printf("      ↑ FB density tracks store-px marginal closely\n")
+                @printf("        (corr=%.3f, TV=%.4f): STRUCTURAL ARTIFACT — store px hotness\n",
+                        corr_fb_store, tv_dist)
+                @printf("        is fully explained by FB x-coordinate non-uniformity.\n")
+                @printf("        Next: check WHY phase1 FB build is x-biased (walk-order correlation?).\n")
+                @printf("        No bearing on walk efficiency or LP1-conj table design.\n")
+            elseif !isnan(corr_fb_store) && corr_fb_store >= 0.60
+                @printf("      ↑ Partial correlation (corr=%.3f, TV=%.4f):\n",
+                        corr_fb_store, tv_dist)
+                @printf("        FB density explains part of store-px hotness but not all.\n")
+                @printf("        MIXED: some structural, some geometric walk effect.\n")
+                @printf("        Next: condition per-anchor store rates on px_bucket to separate.\n")
+            else
+                @printf("      ↑ FB density does NOT explain store-px hotness\n")
+                @printf("        (corr=%.3f, TV=%.4f): GEOMETRIC WALK EFFECT —\n",
+                        isnan(corr_fb_store) ? 0.0 : corr_fb_store, tv_dist)
+                @printf("        some anchor px ranges have genuinely higher phi-orbit productivity.\n")
+                @printf("        Next: condition per-anchor store rates on px_bucket to identify\n")
+                @printf("        whether effect is a few outlier anchors or a smooth px trend.\n")
             end
         end
 

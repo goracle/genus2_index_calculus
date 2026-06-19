@@ -148,6 +148,38 @@ const D33_PRIMES     = (2, 3, 5, 7, 11, 13)   # small primes to test
 const D33_N_PRIMES   = 6
 const D33_MAX_STORES = 10_000_000              # cap on a_val increments (overflow guard)
 
+# D34 — x-bucket smoothing-probability diagnostic.
+#
+# Hypothesis (GPT): FB x-hotspots have elevated smoothing probability, which
+# "drains" residuals from those regions before they can become LP1-conj keys,
+# thereby flattening the LP1-conj distribution and keeping closure geometry
+# near-proportional despite the high ρ=0.98 anchor–FB-x correlation in D12.
+#
+# Test: for each walk step we bucket the current anchor point's x-coordinate
+# into D34_X_BUCKETS equal-width bins over [0, p), then increment one of three
+# outcome counters:
+#   n_steps[bkt]  — total steps with this anchor x-bucket (denominator)
+#   n_0lp[bkt]    — 0-LP (full relation, i0∧iR∧iS all in FB) with this bucket
+#   n_store[bkt]  — 1LP-conj genuine STORE with this bucket
+#
+# Post-walk we compute per-bucket rates:
+#   r_full[bkt]  = n_0lp[bkt]  / n_steps[bkt]   ≈ Pr(full relation | x-bucket)
+#   r_store[bkt] = n_store[bkt] / n_steps[bkt]   ≈ Pr(LP1-conj store | x-bucket)
+#
+# If hot x-buckets (high n_0lp) also have low n_store — i.e.
+# corr(r_full, r_store) < 0 — that confirms the draining hypothesis.
+# If corr > 0, biased FB x feeds forward into closure concentration.
+# If corr ≈ 0, the LP1-conj map T strongly mixes x.
+#
+# We also compute per-bucket relative lift:
+#   lift_store[bkt] = r_store[bkt] / mean(r_store)
+# so the report can show which x-bands over- or under-produce LP1-conj residuals.
+#
+# Recording cost: one Int increment per walk step (D34_X_BUCKETS is small so
+# the bucket index fits in L1), plus one increment in one of three outcome
+# arrays. No allocation on the hot path.
+const D34_X_BUCKETS = 128     # coarse x-axis partition; wide enough to show shape
+
 
 # For each LP1-conj key k we track:
 #   W(k)      = max(store_step) - min(store_step) across all STORE events
@@ -391,6 +423,23 @@ mutable struct ConjDeepStat
     d33_hist_flat   ::Vector{Int}    # length 41: 2+3+5+7+11+13
     d33_joint_3_5   ::Vector{Int}    # length 15: (a mod 3) × (a mod 5)
     d33_n_stores    ::Int            # total store events with a_val >= 0 seen
+
+    # D34 — x-bucket smoothing-probability diagnostic (draining hypothesis).
+    #
+    # Three fixed-size arrays of length D34_X_BUCKETS, indexed by
+    # bkt = clamp(px * D34_X_BUCKETS ÷ p, 0, D34_X_BUCKETS-1) (0-based, +1 for Julia).
+    #
+    # d34_n_steps[bkt]  : total walk steps whose anchor fell in this x-bucket
+    # d34_n_0lp[bkt]    : 0-LP (full relation) events in this x-bucket
+    # d34_n_store[bkt]  : 1LP-conj genuine STORE events in this x-bucket
+    #
+    # All three are incremented on the hot path via record_d34_step!.
+    # The "p" used for bucketing is passed at record time (not stored in stat);
+    # callers must pass the same p they use for the report.  If p is unknown
+    # (px=-1), the call is a no-op.
+    d34_n_steps ::Vector{Int}    # length D34_X_BUCKETS
+    d34_n_0lp   ::Vector{Int}    # length D34_X_BUCKETS
+    d34_n_store ::Vector{Int}    # length D34_X_BUCKETS
 end
 
 function ConjDeepStat()
@@ -478,6 +527,10 @@ function ConjDeepStat()
         zeros(Int, 41),                     # d33_hist_flat (2+3+5+7+11+13 cells)
         zeros(Int, 15),                     # d33_joint_3_5
         0,                                  # d33_n_stores
+        # D34 — x-bucket smoothing-probability diagnostic
+        zeros(Int, D34_X_BUCKETS),          # d34_n_steps
+        zeros(Int, D34_X_BUCKETS),          # d34_n_0lp
+        zeros(Int, D34_X_BUCKETS),          # d34_n_store
     )
 end
 
@@ -691,6 +744,12 @@ function merge_conj_deep_stats(stats::Vector{ConjDeepStat})::ConjDeepStat
         merged.d33_hist_flat .+= s.d33_hist_flat
         merged.d33_joint_3_5 .+= s.d33_joint_3_5
         merged.d33_n_stores  += s.d33_n_stores
+
+        # D34: merge x-bucket step/outcome counts — simple element-wise addition.
+        # All three are fixed-size arrays (D34_X_BUCKETS cells); no cap needed.
+        merged.d34_n_steps .+= s.d34_n_steps
+        merged.d34_n_0lp   .+= s.d34_n_0lp
+        merged.d34_n_store .+= s.d34_n_store
     end
 
     # D12 store-event reservoir: merged separately (needs every thread's
@@ -1443,6 +1502,38 @@ end
 end
 
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+#  record_d34_step! — call from the main walk loop on every valid phi step.
+#
+#  Arguments:
+#    stat    — per-thread ConjDeepStat
+#    px      — x-coordinate of current anchor point P0  (-1 if unavailable)
+#    p       — field characteristic (for bucketing; must be > 0)
+#    outcome — one of D34_OUTCOME_OTHER (0), D34_OUTCOME_0LP (1),
+#              D34_OUTCOME_STORE (2).  Pass D34_OUTCOME_STORE only on genuine
+#              new-key STORE events (not same-partial hits or closes).
+#
+#  Hot-path cost: one clamp + one division + three array increments; no alloc.
+# ---------------------------------------------------------------------------
+const D34_OUTCOME_OTHER = 0
+const D34_OUTCOME_0LP   = 1
+const D34_OUTCOME_STORE = 2
+
+@inline function record_d34_step!(stat   ::ConjDeepStat,
+                                   px     ::Int,
+                                   p      ::Int,
+                                   outcome::Int)
+    (px < 0 || p <= 0) && return nothing
+    bkt = clamp(px * D34_X_BUCKETS ÷ p, 0, D34_X_BUCKETS - 1) + 1  # 1-based
+    @inbounds stat.d34_n_steps[bkt] += 1
+    if outcome == D34_OUTCOME_0LP
+        @inbounds stat.d34_n_0lp[bkt]   += 1
+    elseif outcome == D34_OUTCOME_STORE
+        @inbounds stat.d34_n_store[bkt] += 1
+    end
+    return nothing
+end
+
 @inline function _deep_fp64(key::UInt128)::UInt64
     lo = UInt64(key & 0xffffffffffffffff)
     hi = UInt64(key >> 64)

@@ -47,6 +47,7 @@ include("lp1_conj_deep_diag_d27.jl")  # <-- Add this line to include the D27 sub
 include("lp1_conj_deep_diag_d28.jl")
 include("lp1_conj_deep_diag_d32.jl")  # D32 — LP1-conj key recurrence-gap concentration (short-lag focus)
 include("lp1_conj_deep_diag_d33.jl")  # D33 — φ a-coefficient residue bias (small-prime modular structure)
+include("lp1_conj_deep_diag_d34.jl")  # D34 — x-bucket smoothing-probability (draining hypothesis test)
 
 # ---------------------------------------------------------------------------
 #  print_conj_deep_report — top-level dispatcher.
@@ -66,7 +67,8 @@ function print_conj_deep_report(phi_stat ::PhiBiasStat,
                                  ell      ::Int = 0,
                                  lsm_peers::Union{Vector, Nothing} = nothing,
                                  fb_size  ::Int = 0,
-                                 n_threads::Int = 1)
+                                 n_threads::Int = 1,
+                                 fb       ::Union{Vector{NTuple{2,Int}}, Nothing} = nothing)
 
     arrivals  = phi_stat.lp1_conj_arrivals
     keys_u128 = phi_stat.lp1_conj_keys
@@ -112,7 +114,7 @@ function print_conj_deep_report(phi_stat ::PhiBiasStat,
 
     _report_d1_d6(phi_stat, deep_stat, arrivals, keys_u128, emit_bkt, n_emit)
     _report_d7_d11(phi_stat, deep_stat, n_emit; conj_snap=conj_snap)
-    _report_d12_d18(deep_stat; p=p)
+    _report_d12_d18(deep_stat; p=p, fb=fb)
     _report_d19(deep_stat; fb_size=fb_size)
     _report_d20_d21(deep_stat)
     _report_d22_d24(deep_stat; n_threads=n_threads)
@@ -122,6 +124,7 @@ function print_conj_deep_report(phi_stat ::PhiBiasStat,
     _report_d28(deep_stat; p=p, ell=ell)
     _report_d32(deep_stat)
     _report_d33(deep_stat)
+    _report_d34(deep_stat; p=p)
 
     @printf("\n== End LP1-conj deep diagnostics ====================================================\n")
     flush(stdout)

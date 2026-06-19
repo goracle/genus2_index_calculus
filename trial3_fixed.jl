@@ -1394,7 +1394,8 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
         print_conj_deep_report(merged_phi_stat_pre, merged_deep_stat_pre;
                                conj_snap=shared_lp1_conj_pre_arr, p=p,
                                ell=Int(ell),
-                               lsm_peers=shared_lp1_conj_pre_arr)
+                               lsm_peers=shared_lp1_conj_pre_arr,
+                               fb=fb_pre)
 
         tables = Phase2Tables(
             fb_pre,
