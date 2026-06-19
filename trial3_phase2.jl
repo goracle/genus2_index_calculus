@@ -1368,7 +1368,7 @@ function phase2_worker(G               ::Div2,
             # frequent and folding it in is conservative.
             phi_bias_stat._prev_anchor_was_lp = true
             record_conj_deep_opcode!(deep_stat, OPCODE_1LP_AFF, false)
-            record_d20_step!(deep_stat, OPCODE_1LP_AFF)
+            record_d28_aff_step!(deep_stat, OPCODE_1LP_AFF, lp_pt[1], lp_pt[2], al)
             record_d22_d23_d24_step!(deep_stat)
             end  # enable_lp1_aff
 

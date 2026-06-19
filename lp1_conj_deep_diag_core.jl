@@ -70,7 +70,85 @@ const D23_MAX_RECORDS    = 5_000     # per-thread cap
 const D24_BUCKET_STEPS  = 200_000    # step-count resolution per bucket
 const D24_MAX_BUCKETS   = 2_000      # cap on distinct buckets tracked per thread
 
-# D26 — Temporal-width vs pair-concentration anticorrelation.
+# D28 — LP-aff anchor state at lag-k before LP1-conj emission.
+# Parallel to the D20 opcode ring: at every 1LP-aff step we record the
+# (px, py, al) of the affine LP point into a ring buffer of the same size
+# and indexing as d20_opcode_ring.  At emission time we snapshot lags
+# 1..D20_HIST_WINDOW from this ring alongside the opcode snapshot, giving
+# per-lag px/al distributions conditioned on "emission happened k steps later".
+# Non-1LP-aff steps write a sentinel (-1, -1, -1) into the ring so the lag
+# index is always aligned with the D20 opcode ring.
+# Baseline: reservoir of (px, al) from ALL 1LP-aff steps (not just those
+# preceding emissions), sampled at 1/32 rate to keep memory bounded.
+const D28_BASELINE_CAP  = 50_000    # per-thread cap on baseline aff-step records
+
+# D32 — LP1-conj key recurrence-gap concentration (revised framing).
+#
+# The original D32 ("u-polynomial return map", u^(t+1) = u^(t) under varying
+# anchor) doesn't directly apply to this codebase: the walk's own Jacobian
+# divisor D_cur (driven by jac_add steps) is not fed back from the φ
+# residual RS_mumford, so there is no single feedback map to test for fixed
+# points in that sense.
+#
+# What IS directly testable — and what the CIR-ACF burst result (peak lift
+# 15.18× at Δ=3 steps, decaying to baseline by Δ≈30-60 steps) actually
+# motivates — is whether the LP1-conj STORE→CLOSE recurrence gap itself
+# (depth = close_step - store_step, already computed for D8) is
+# concentrated at short lags beyond what a memoryless process would
+# predict at the same mean. CIR-ACF showed emissions cluster in time;
+# D32 asks the complementary question: when a key DOES recur, how far back
+# does it typically reach? A geometric/memoryless walk would predict
+# P(depth <= k) = 1 - (1-q)^k for the empirical mean; if the real
+# distribution puts excess mass at depth <= ~30 relative to that null, the
+# walk has short-range key recurrence consistent with the φ map briefly
+# re-visiting the same residual Mumford key — i.e. literal short cycles in
+# practice, even without exact fixed points in u-space.
+#
+# d32_depth_log_hist : log2-bucketed histogram of (close_step - store_step)
+#                      over ALL closures (not just the short-lag regime),
+#                      so the report can show the full shape. Bucket b
+#                      covers depth in [2^b, 2^(b+1)-1]; bucket 0 covers
+#                      depth in [0,1]. D32_LOG_BUCKETS buckets total, with
+#                      an overflow bucket for depth >= 2^(D32_LOG_BUCKETS-1).
+# d32_short_lag_hist : LINEAR per-step histogram of depth for depth in
+#                      [1, D32_SHORT_LAG_MAX], i.e. fine-grained resolution
+#                      exactly in the CIR-ACF burst window. This is the
+#                      direct test instrument; the log-hist above is context.
+# d32_n_closures     : total closures counted (= sum of both histograms'
+#                      contributing events; short_lag_hist only gets the
+#                      depth <= D32_SHORT_LAG_MAX subset).
+# d32_depth_sum      : running sum of depth over all closures, for the mean
+#                      (needed to fit the geometric null in the report).
+const D32_LOG_BUCKETS     = 32              # covers depth up to 2^31 (walk steps fit in Int)
+const D32_SHORT_LAG_MAX   = 128             # linear resolution out to 128 steps (covers the burst window)
+
+# D33 — φ a-coefficient residue bias (small-prime modular structure).
+#
+# The φ a-coefficient a = (v1·px + v0 - py) / u(px) is the single scalar
+# that fully determines the next Mumford key u_RS.  If the walk's collision
+# concentration (α₂ = 0.59 vs naive 1.0) originates in the algebraic
+# structure of the curve rather than temporal clustering, it should be visible
+# as a non-uniform distribution of 'a' modulo small primes — residue bias
+# that a 64-bucket histogram (D14) is too coarse to detect.
+#
+# We accumulate exact remainder histograms for every prime in D33_PRIMES on
+# all 1LP-conj STORE events where a_val >= 0.  The test statistic is χ²/dof
+# vs the uniform distribution over {0, …, q-1} for each prime q.  A value
+# >> 1 for any prime directly implicates that prime in the attractor geometry.
+#
+# We also accumulate the joint (a mod 3, a mod 5) 15-cell table to detect
+# correlated residue structure that marginal tests would miss.  By CRT,
+# (a mod 3, a mod 5) determines a mod 15 — so this is equivalent to an
+# a mod 15 test but displayed as a cross-table for readability.
+#
+# All histograms are plain Int arrays; no reservoir needed — one increment
+# per store event, O(1) hot-path cost.  Capped at D33_MAX_STORES to avoid
+# wrapping issues (in practice 10M >> walk size).
+const D33_PRIMES     = (2, 3, 5, 7, 11, 13)   # small primes to test
+const D33_N_PRIMES   = 6
+const D33_MAX_STORES = 10_000_000              # cap on a_val increments (overflow guard)
+
+
 # For each LP1-conj key k we track:
 #   W(k)      = max(store_step) - min(store_step) across all STORE events
 #   N_pair(k) = number of distinct i0 anchor indices seen at CLOSE time
@@ -272,6 +350,47 @@ mutable struct ConjDeepStat
     d26_step_range    ::Dict{UInt128, NTuple{2,Int}}  # (min_step, max_step)
     d26_partner_mask  ::Dict{UInt128, UInt64}         # bloom over i0 % 64
     d26_close_count   ::Dict{UInt128, Int}            # closures per key
+
+    # D28 — LP-aff anchor (px, py, al) ring buffer + emission snapshots.
+    #
+    # d28_aff_ring  : circular buffer, same indexing as d20_opcode_ring.
+    #   Each slot holds (px, py, al) when the corresponding opcode was 1LP_AFF,
+    #   or (-1, -1, -1) as a sentinel for all other opcode types.
+    #   Written by record_d28_aff_step! on every valid phi step.
+    #
+    # d28_pre_snapshots : per-emission snapshot of lags 1..D20_HIST_WINDOW from
+    #   d28_aff_ring, stored row-major (D20_HIST_WINDOW NTuple{3,Int} per emission).
+    #   Filled in record_d20_emission! alongside the opcode snapshot so the two
+    #   arrays are always aligned: snapshot[i] corresponds to lag i before emission.
+    #
+    # d28_baseline_px / d28_baseline_al : reservoir sample of px and al values
+    #   from ALL 1LP-aff steps (regardless of whether an emission follows),
+    #   sampled at 1/32 rate.  Used as the null distribution in the D28 report.
+    d28_aff_ring         ::Vector{NTuple{3,Int}}    # length D20_RING_SIZE; sentinel (-1,-1,-1)
+    d28_pre_snapshots    ::Vector{NTuple{3,Int}}    # n_snapshots × D20_HIST_WINDOW, row-major
+    d28_n_snapshots      ::Int                      # mirrors d20_n_snapshots
+    d28_baseline_px      ::Vector{Int}              # reservoir of px at all 1LP-aff steps
+    d28_baseline_al      ::Vector{Int}              # reservoir of al at all 1LP-aff steps
+    d28_n_baseline       ::Int                      # total 1LP-aff steps seen (for reservoir)
+
+    # D32 — LP1-conj key recurrence-gap concentration (short-lag focus).
+    #
+    # See constants block above for the revised framing and rationale.
+    d32_depth_log_hist ::Vector{Int}   # length D32_LOG_BUCKETS, log2-bucketed depth histogram
+    d32_short_lag_hist ::Vector{Int}   # length D32_SHORT_LAG_MAX, depth=1..D32_SHORT_LAG_MAX (1-based: index k = depth k)
+    d32_n_closures     ::Int           # total closures contributing to d32_depth_log_hist
+    d32_depth_sum      ::Int           # running sum of depth, for empirical mean
+
+    # D33 — φ a-coefficient residue histograms (small-prime modular structure).
+    #
+    # d33_hist_flat  : concatenated histograms [mod-2 | mod-3 | mod-5 | mod-7 | mod-11 | mod-13]
+    #                  lengths 2+3+5+7+11+13 = 41 cells total; offsets are [1,3,6,11,18,29].
+    # d33_joint_3_5  : 15-cell joint table for (a mod 3, a mod 5).
+    #                  Index: (a mod 3)*5 + (a mod 5) + 1  (1-based, row-major)
+    # d33_n_stores   : total store events with a_val >= 0 counted (capped at D33_MAX_STORES).
+    d33_hist_flat   ::Vector{Int}    # length 41: 2+3+5+7+11+13
+    d33_joint_3_5   ::Vector{Int}    # length 15: (a mod 3) × (a mod 5)
+    d33_n_stores    ::Int            # total store events with a_val >= 0 seen
 end
 
 function ConjDeepStat()
@@ -343,6 +462,22 @@ function ConjDeepStat()
         Dict{UInt128, NTuple{2,Int}}(),     # d26_step_range
         Dict{UInt128, UInt64}(),            # d26_partner_mask
         Dict{UInt128, Int}(),               # d26_close_count
+        # D28
+        fill((-1,-1,-1), D20_RING_SIZE),    # d28_aff_ring
+        NTuple{3,Int}[],                    # d28_pre_snapshots
+        0,                                  # d28_n_snapshots
+        Int[],                              # d28_baseline_px
+        Int[],                              # d28_baseline_al
+        0,                                  # d28_n_baseline
+        # D32 — LP1-conj key recurrence-gap concentration
+        zeros(Int, D32_LOG_BUCKETS),        # d32_depth_log_hist
+        zeros(Int, D32_SHORT_LAG_MAX),      # d32_short_lag_hist
+        0,                                  # d32_n_closures
+        0,                                  # d32_depth_sum
+        # D33 — φ a-coefficient residue histograms
+        zeros(Int, 41),                     # d33_hist_flat (2+3+5+7+11+13 cells)
+        zeros(Int, 15),                     # d33_joint_3_5
+        0,                                  # d33_n_stores
     )
 end
 
@@ -524,6 +659,38 @@ function merge_conj_deep_stats(stats::Vector{ConjDeepStat})::ConjDeepStat
         for (k, cnt) in s.d26_close_count
             merged.d26_close_count[k] = get(merged.d26_close_count, k, 0) + cnt
         end
+
+        # D28: merge emission snapshots and baseline reservoir.
+        n_rem28 = (D20_MAX_SNAPSHOTS - merged.d28_n_snapshots) * D20_HIST_WINDOW
+        if n_rem28 > 0 && length(s.d28_pre_snapshots) > 0
+            n_take = min(n_rem28, length(s.d28_pre_snapshots))
+            n_take = (n_take ÷ D20_HIST_WINDOW) * D20_HIST_WINDOW
+            append!(merged.d28_pre_snapshots, s.d28_pre_snapshots[1:n_take])
+            merged.d28_n_snapshots += n_take ÷ D20_HIST_WINDOW
+        end
+        # Baseline: simple cap-and-append; exact reservoir merge not needed
+        # since we only care about marginal px/al distributions.
+        let n_rem28b = D28_BASELINE_CAP - length(merged.d28_baseline_px)
+            if n_rem28b > 0
+                n_take = min(n_rem28b, length(s.d28_baseline_px))
+                append!(merged.d28_baseline_px, s.d28_baseline_px[1:n_take])
+                append!(merged.d28_baseline_al, s.d28_baseline_al[1:n_take])
+            end
+        end
+        merged.d28_n_baseline += s.d28_n_baseline
+
+        # D32: merge recurrence-gap histograms — simple element-wise addition.
+        # Both histograms are fixed-size arrays; no cap needed.
+        merged.d32_depth_log_hist .+= s.d32_depth_log_hist
+        merged.d32_short_lag_hist .+= s.d32_short_lag_hist
+        merged.d32_n_closures     += s.d32_n_closures
+        merged.d32_depth_sum      += s.d32_depth_sum
+
+        # D33: merge residue histograms — simple element-wise addition.
+        # Histograms are fixed-size arrays (41 and 15 cells); no cap needed.
+        merged.d33_hist_flat .+= s.d33_hist_flat
+        merged.d33_joint_3_5 .+= s.d33_joint_3_5
+        merged.d33_n_stores  += s.d33_n_stores
     end
 
     # D12 store-event reservoir: merged separately (needs every thread's
@@ -642,6 +809,42 @@ function _sample_without_replacement(m::Int, k::Int)::Vector{Int}
 end
 
 # ---------------------------------------------------------------------------
+#  record_d33_store! — called on every 1LP-conj STORE where a_val >= 0.
+#
+#  Increments the residue histogram for each prime in D33_PRIMES and the
+#  joint (a mod 3, a mod 5) cross-table.  Hot-path cost: 6 mod + 6 array
+#  increments + 2 more for joint = 8 additions total, no allocation.
+#
+#  d33_hist_flat layout (offsets are 1-based):
+#    prime 2  → cells [1 .. 2]
+#    prime 3  → cells [3 .. 5]
+#    prime 5  → cells [6 .. 10]
+#    prime 7  → cells [11 .. 17]
+#    prime 11 → cells [18 .. 28]
+#    prime 13 → cells [29 .. 41]
+# ---------------------------------------------------------------------------
+const D33_HIST_OFFSETS = (1, 3, 6, 11, 18, 29)   # 1-based start of each prime's block
+
+@inline function record_d33_store!(stat ::ConjDeepStat, a_val::Int)
+    stat.d33_n_stores >= D33_MAX_STORES && return nothing
+    stat.d33_n_stores += 1
+
+    # Residue histograms for each prime.
+    # We unroll manually (D33_PRIMES is a compile-time tuple) for inlining.
+    r2  = a_val % 2;  @inbounds stat.d33_hist_flat[D33_HIST_OFFSETS[1] + r2]  += 1
+    r3  = a_val % 3;  @inbounds stat.d33_hist_flat[D33_HIST_OFFSETS[2] + r3]  += 1
+    r5  = a_val % 5;  @inbounds stat.d33_hist_flat[D33_HIST_OFFSETS[3] + r5]  += 1
+    r7  = a_val % 7;  @inbounds stat.d33_hist_flat[D33_HIST_OFFSETS[4] + r7]  += 1
+    r11 = a_val % 11; @inbounds stat.d33_hist_flat[D33_HIST_OFFSETS[5] + r11] += 1
+    r13 = a_val % 13; @inbounds stat.d33_hist_flat[D33_HIST_OFFSETS[6] + r13] += 1
+
+    # Joint (a mod 3, a mod 5) cross-table.
+    @inbounds stat.d33_joint_3_5[r3 * 5 + r5 + 1] += 1
+
+    return nothing
+end
+
+# ---------------------------------------------------------------------------
 #  record_conj_deep_miss! — call at every STORE (miss path in handle_1lp_conj!).
 # ---------------------------------------------------------------------------
 @inline function record_conj_deep_miss!(stat     ::ConjDeepStat,
@@ -698,6 +901,12 @@ end
     # D26: step_range is populated at CLOSE time (record_conj_deep_step!),
     # where both store_step and close_step are available together.
 
+    # D33: φ a-coefficient residue histograms. Runs over the FULL store
+    # stream (not reservoir-sampled) since this is an O(1) increment-only
+    # accumulator and we want maximum statistical power on the residue
+    # tables — unlike D12/D14, there's no per-event storage cost to cap.
+    a_val >= 0 && record_d33_store!(stat, a_val)
+
     return nothing
 end
 
@@ -737,6 +946,24 @@ end
             push!(stat.d8_depths,     depth)
             push!(stat.d8_close_bkt,  UInt16(bkt))
             push!(stat.d8_close_abkt, UInt16(clamp(a_bucket, 0, 65535)))
+        end
+
+        # D32: recurrence-gap concentration. Unlike D8_MAX_DEPTHS (capped,
+        # prefix sample), this is an O(1) increment-only accumulator over
+        # ALL closures, so it never saturates and stays unbiased over
+        # arbitrarily long walks — important since the question is about
+        # the tail/short-lag SHAPE of the distribution, which a truncated
+        # prefix sample could distort if depth and closure order correlate.
+        if depth >= 0
+            stat.d32_n_closures += 1
+            stat.d32_depth_sum  += depth
+            # Bucket 0 covers depth in [0,1]; bucket b (b>=1) covers depth
+            # in [2^b, 2^(b+1)-1], i.e. bit-length(depth) - 1 for depth >= 2.
+            log_bkt = depth <= 1 ? 0 : min(D32_LOG_BUCKETS - 1, (64 - leading_zeros(depth)) - 1)
+            @inbounds stat.d32_depth_log_hist[log_bkt + 1] += 1
+            if 1 <= depth <= D32_SHORT_LAG_MAX
+                @inbounds stat.d32_short_lag_hist[depth] += 1
+            end
         end
     end
 
@@ -878,6 +1105,7 @@ end
 #  record_d20_step! — call on EVERY valid phi step (hot path, inline).
 #  Updates the opcode ring buffer and (1/baseline_rate) baseline reservoir.
 #  Also advances the D21 refractory counter.
+#  Also writes a (-1,-1,-1) sentinel into the D28 aff ring for non-aff steps.
 #
 #  opcode should be one of OPCODE_0LP .. OPCODE_SKIP.
 #  baseline_gate: sample baseline when (rand(UInt16) & 0x1f) == 0  (1/32 rate).
@@ -887,6 +1115,7 @@ end
     # ── Ring buffer update ────────────────────────────────────────────────
     head = stat.d20_ring_head
     @inbounds stat.d20_opcode_ring[head] = opcode
+    @inbounds stat.d28_aff_ring[head]    = (-1, -1, -1)   # D28 sentinel
     head = head == D20_RING_SIZE ? 1 : head + 1
     stat.d20_ring_head = head
     filled = stat.d20_ring_filled
@@ -926,14 +1155,82 @@ end
 end
 
 # ---------------------------------------------------------------------------
+#  record_d28_aff_step! — call in place of record_d20_step! at 1LP-aff sites.
+#  Writes the affine LP point (px, py) and current alpha into the D28 ring
+#  at the same head position as the opcode ring, then delegates the rest of
+#  the D20/D21 bookkeeping to record_d20_step!.
+#  Also samples (px, al) into the D28 baseline reservoir at 1/32 rate.
+# ---------------------------------------------------------------------------
+@inline function record_d28_aff_step!(stat  ::ConjDeepStat,
+                                       opcode::UInt8,
+                                       px    ::Int,
+                                       py    ::Int,
+                                       al    ::Int)
+    # Write the aff payload *before* record_d20_step! advances the head.
+    head = stat.d20_ring_head
+    @inbounds stat.d28_aff_ring[head] = (px, py, al)
+
+    # D28 baseline reservoir: sample at 1/32 rate.
+    stat.d28_n_baseline += 1
+    if length(stat.d28_baseline_px) < D28_BASELINE_CAP && (rand(UInt8) & 0x1f) == 0x00
+        push!(stat.d28_baseline_px, px)
+        push!(stat.d28_baseline_al, al)
+    end
+
+    # Delegate opcode ring + D20 baseline + D21 tracking.
+    # record_d20_step! will overwrite d28_aff_ring[head] with sentinel (-1,-1,-1),
+    # so we must write our payload first and then prevent the overwrite.
+    # We do this inline: copy the D20 logic but skip the sentinel write.
+    @inbounds stat.d20_opcode_ring[head] = opcode
+    # (d28_aff_ring[head] already set above — do not overwrite with sentinel)
+    local new_head = head == D20_RING_SIZE ? 1 : head + 1
+    stat.d20_ring_head = new_head
+    local filled = stat.d20_ring_filled
+    stat.d20_ring_filled = filled < D20_RING_SIZE ? filled + 1 : D20_RING_SIZE
+
+    # D20 baseline opcode tally (1/32 rate, same gate as record_d20_step!).
+    if stat.d20_n_baseline < D20_BASELINE_CAP && (rand(UInt8) & 0x1f) == 0x00
+        ring = stat.d20_opcode_ring
+        cur_filled = stat.d20_ring_filled
+        cur_head2  = stat.d20_ring_head - 1
+        cur_head2  = cur_head2 == 0 ? D20_RING_SIZE : cur_head2
+        n_avail    = min(cur_filled, D20_HIST_WINDOW)
+        for k in 1:n_avail
+            slot = cur_head2 - k + 1
+            slot = slot <= 0 ? slot + D20_RING_SIZE : slot
+            oc   = Int(ring[slot]) + 1
+            @inbounds stat.d20_baseline_opcode_counts[k, oc] += UInt32(1)
+        end
+        stat.d20_n_baseline += 1
+    end
+
+    # D21 refractory tracker.
+    if stat.d21_steps_since_emit >= 0
+        stat.d21_steps_since_emit += 1
+        if opcode == OPCODE_1LP_CONJ
+            if length(stat.d21_return_gaps) < D21_MAX_GAPS
+                push!(stat.d21_return_gaps, stat.d21_steps_since_emit)
+            end
+            stat.d21_steps_since_emit = -1
+        end
+    end
+
+    return nothing
+end
+
+# ---------------------------------------------------------------------------
 #  record_d20_emission! — call at every LP1-conj CLOSE (emission).
-#  Snapshots the last D20_HIST_WINDOW opcodes from the ring buffer and
-#  resets the D21 refractory counter.
+#  Snapshots the last D20_HIST_WINDOW opcodes from the opcode ring buffer,
+#  snapshots the last D20_HIST_WINDOW (px,py,al) tuples from the D28 aff ring,
+#  and resets the D21 refractory counter.
+#  The two snapshot arrays (d20_pre_snapshots and d28_pre_snapshots) are always
+#  kept aligned: element k of each corresponds to lag k before this emission.
 # ---------------------------------------------------------------------------
 @inline function record_d20_emission!(stat::ConjDeepStat)
-    # ── D20 snapshot ─────────────────────────────────────────────────────
+    # ── D20 + D28 snapshots ───────────────────────────────────────────────
     if stat.d20_n_snapshots < D20_MAX_SNAPSHOTS
         ring      = stat.d20_opcode_ring
+        aff_ring  = stat.d28_aff_ring
         cur_head  = stat.d20_ring_head - 1
         cur_head  = cur_head == 0 ? D20_RING_SIZE : cur_head
         n_avail   = min(stat.d20_ring_filled, D20_HIST_WINDOW)
@@ -942,11 +1239,14 @@ end
                 slot = cur_head - k + 1
                 slot = slot <= 0 ? slot + D20_RING_SIZE : slot
                 push!(stat.d20_pre_snapshots, stat.d20_opcode_ring[slot])
+                push!(stat.d28_pre_snapshots, stat.d28_aff_ring[slot])
             else
-                push!(stat.d20_pre_snapshots, 0xff)  # sentinel: no data
+                push!(stat.d20_pre_snapshots, 0xff)        # sentinel: no data
+                push!(stat.d28_pre_snapshots, (-1, -1, -1))  # sentinel: no data
             end
         end
         stat.d20_n_snapshots += 1
+        stat.d28_n_snapshots  = stat.d20_n_snapshots   # always equal
     end
 
     # ── D21 reset ────────────────────────────────────────────────────────

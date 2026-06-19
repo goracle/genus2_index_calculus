@@ -15,6 +15,13 @@
 #  lp1_conj_deep_diag_d1_d6.jl   — report sections D1 – D6  (_report_d1_d6)
 #  lp1_conj_deep_diag_d7_d11.jl  — report sections D7 – D11 (_report_d7_d11)
 #  lp1_conj_deep_diag_d12_d18.jl — report sections D12 – D18 (_report_d12_d18)
+#  lp1_conj_deep_diag_d32.jl     — report section D32 (_report_d32): LP1-conj
+#                                   key recurrence-gap (store→close depth)
+#                                   short-lag concentration vs geometric null
+#  lp1_conj_deep_diag_d33.jl     — report section D33 (_report_d33): φ
+#                                   a-coefficient residue bias against
+#                                   small-prime uniform nulls, marginal +
+#                                   joint (mod 3, mod 5) tables
 #
 #  Wiring (unchanged from the monolithic version)
 #  ───────────────────────────────────────────────
@@ -37,6 +44,9 @@ include("lp1_conj_deep_diag_d22_d24.jl")
 include("lp1_conj_deep_diag_d25.jl")
 include("lp1_conj_deep_diag_d26.jl")
 include("lp1_conj_deep_diag_d27.jl")  # <-- Add this line to include the D27 sub-module
+include("lp1_conj_deep_diag_d28.jl")
+include("lp1_conj_deep_diag_d32.jl")  # D32 — LP1-conj key recurrence-gap concentration (short-lag focus)
+include("lp1_conj_deep_diag_d33.jl")  # D33 — φ a-coefficient residue bias (small-prime modular structure)
 
 # ---------------------------------------------------------------------------
 #  print_conj_deep_report — top-level dispatcher.
@@ -109,6 +119,9 @@ function print_conj_deep_report(phi_stat ::PhiBiasStat,
     _report_d25(deep_stat, deep_stat.d12_store_alpha, deep_stat.d12_store_px, ell, p)
     _report_d26(deep_stat)
     _report_d27(deep_stat; ell=ell, p=p)  # <-- Add this line to run the D27 analysis
+    _report_d28(deep_stat; p=p, ell=ell)
+    _report_d32(deep_stat)
+    _report_d33(deep_stat)
 
     @printf("\n== End LP1-conj deep diagnostics ====================================================\n")
     flush(stdout)
