@@ -1122,6 +1122,13 @@ function phase2_worker(G               ::Div2,
 
     # --- Walk state ---
     cur_pt    = next_anchor()
+    # D29 artifact filter: tracks whether cur_pt's MOST RECENT assignment came
+    # from a genuine LP resolution (handle_1lp_affine!/handle_1lp_conj!/
+    # handle_2lp_affine! storing or closing) vs a bare next_anchor() round-robin
+    # advance. Read at next iteration's record_d29_step! call (it describes P0,
+    # i.e. last step's cur_pt), then overwritten by this step's own assignment.
+    # Initial value is false: the seed cur_pt came from next_anchor() above.
+    cur_pt_from_lp = false
     alpha_cur, beta_cur = next_alpha_beta()
     D_cur     = beta_zero ? jac_mul(G, BigInt(alpha_cur), ell) :
                             jac_add(jac_mul(G, BigInt(alpha_cur), ell), jac_mul(T, BigInt(beta_cur), ell))
@@ -1237,7 +1244,9 @@ function phase2_worker(G               ::Div2,
         # D29 — wide-lag burst-memory trackers: log (alpha_cur, px) once per
         # valid step, before the LP1/LP2 branch, regardless of outcome. See
         # lp1_conj_deep_diag_core.jl's D29 constants-block docstring.
-        record_d29_step!(deep_stat, al, P0[1])
+        # from_lp describes P0 = cur_pt as set at the END of the PREVIOUS
+        # step (i.e. read before this step's own branch reassigns cur_pt).
+        record_d29_step!(deep_stat, al, P0[1], cur_pt_from_lp)
 
         rs_split   = res_R !== SENTINEL_PT
         R          = res_R   # NTuple{2,Int} always; SENTINEL_PT if conjugate
@@ -1284,6 +1293,11 @@ function phase2_worker(G               ::Div2,
                                                post_conj_stride,
                                                conj_anchor_alpha_seen, CONJ_ANCHOR_ALPHA_CAP,
                                                emitted_conj_rels, conj_dataset)
+                    # D29: handle_1lp_conj! returns next_anchor_ref[]() on every
+                    # path (miss, same-partial, AND emission/closure — see its
+                    # source, every `return` is next_anchor_ref[]()). It never
+                    # returns the LP point itself, so this is always cursor-derived.
+                    cur_pt_from_lp = false
                     # D9: record 1LP-conj opcode; is_emission = true iff handle produced an emission
                     record_conj_deep_opcode!(deep_stat, OPCODE_1LP_CONJ,
                                              deep_stat.n_emissions > n_emit_before)
@@ -1302,6 +1316,10 @@ function phase2_worker(G               ::Div2,
                                            shared_lp2_conj, shared_lp2_conj_lock,
                                            max_lp2_conj_nodes, rank_growth,
                                            combined_scratch, next_anchor_ref)
+                # D29: handle_2lp_conj! returns next_anchor_ref[]() on every path
+                # (cap, no-edge, even_cycle, odd_cycle both sub-branches) — never
+                # the LP point itself. Always cursor-derived.
+                cur_pt_from_lp = false
                 # 2-LP-conj: the returned anchor may or may not be LP-derived;
                 # conservatively mark as LP for Seq 3 since P0 came from a conj step.
                 phi_bias_stat._prev_anchor_was_lp = true
@@ -1311,6 +1329,7 @@ function phase2_worker(G               ::Div2,
                 record_d34_step!(deep_stat, P0[1], p, D34_OUTCOME_OTHER)
             else
                 cur_pt = next_anchor()
+                cur_pt_from_lp = false  # D29: next_anchor() round-robin advance, not LP-derived
                 record_random_anchor!(phi_bias_stat)
                 record_conj_deep_opcode!(deep_stat, OPCODE_SKIP, false)
                 record_d20_step!(deep_stat, OPCODE_SKIP)
@@ -1344,6 +1363,7 @@ function phase2_worker(G               ::Div2,
             end
             # IDEA 4: 0-LP is a full relation but NOT a LP1-conj event.
             cur_pt = next_anchor()
+            cur_pt_from_lp = false  # D29: next_anchor() round-robin advance, not LP-derived
             record_random_anchor!(phi_bias_stat)
             record_conj_deep_opcode!(deep_stat, OPCODE_0LP, false)
             record_d20_step!(deep_stat, OPCODE_0LP)
@@ -1357,6 +1377,7 @@ function phase2_worker(G               ::Div2,
             if !enable_lp1_aff
                 s.hits_skip += 1
                 cur_pt = next_anchor()
+                cur_pt_from_lp = false  # D29: next_anchor() round-robin advance, not LP-derived
                 record_random_anchor!(phi_bias_stat)
                 record_conj_deep_opcode!(deep_stat, OPCODE_SKIP, false)
                 record_d20_step!(deep_stat, OPCODE_SKIP)
@@ -1378,6 +1399,16 @@ function phase2_worker(G               ::Div2,
                                          shared_lp1, shared_lp1_lock, shared_lp_doubled,
                                          lp_col, rank_growth, combined_scratch,
                                          iR, iS, R, S, P0, next_anchor_ref)
+            # NOTE (D29 audit): handle_1lp_affine! in fact returns
+            # next_anchor_ref[]() unconditionally on every path (store, close,
+            # drop-when-full) — see its source, the only `return` is at the
+            # bottom of the function after the lock block. It does NOT return
+            # the LP point. The comment below (_prev_anchor_was_lp = true) is a
+            # pre-existing, separate Seq-3 diagnostic convention that treats this
+            # site as "conservatively LP" regardless; left as-is here since that's
+            # out of scope for the D29 fix. For D29 specifically we use the true
+            # provenance, which is always cursor-derived at this site.
+            cur_pt_from_lp = false
             # 1-LP affine: handle_1lp_affine! returns the LP point as the next
             # anchor when it stores/conjugates, otherwise a structured cursor step.
             # We mark LP-derived here since the LP point is the structurally
@@ -1397,6 +1428,7 @@ function phase2_worker(G               ::Div2,
             if !enable_lp2
                 s.hits_skip += 1
                 cur_pt = next_anchor()
+                cur_pt_from_lp = false  # D29: next_anchor() round-robin advance, not LP-derived
                 record_random_anchor!(phi_bias_stat)
                 record_conj_deep_opcode!(deep_stat, OPCODE_SKIP, false)
                 record_d20_step!(deep_stat, OPCODE_SKIP)
@@ -1419,6 +1451,13 @@ function phase2_worker(G               ::Div2,
                                              shared_lp_doubled,
                                              lp_col, max_lp2_nodes, rank_growth,
                                              combined_scratch, next_anchor_ref)
+                # D29: handle_2lp_affine! is the ONLY handle_*! that can return
+                # a real (non-cursor) point — it returns whichever of P0/R/S is
+                # in the FB (i0!=0 → P0, elseif iR!=0 → R, elseif iS!=0 → S),
+                # falling back to next_anchor_ref[]() only when none of the three
+                # are in the FB. Mirror that exact dispatch here using i0/iR/iS,
+                # which are already computed above for this branch.
+                cur_pt_from_lp = (i0 != 0) || (iR != 0) || (iS != 0)
                 record_conj_deep_opcode!(deep_stat, OPCODE_2LP_AFF, false)
                 record_d20_step!(deep_stat, OPCODE_2LP_AFF)
                 record_d22_d23_d24_step!(deep_stat)
@@ -1432,6 +1471,7 @@ function phase2_worker(G               ::Div2,
             s.hits_skip += 1
             # at the hits_total site above; no separate increment needed here.
             cur_pt = next_anchor()
+            cur_pt_from_lp = false  # D29: next_anchor() round-robin advance, not LP-derived
             record_random_anchor!(phi_bias_stat)
             record_conj_deep_opcode!(deep_stat, OPCODE_SKIP, false)
             record_d20_step!(deep_stat, OPCODE_SKIP)

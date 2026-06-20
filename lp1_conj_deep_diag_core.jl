@@ -739,6 +739,15 @@ mutable struct ConjDeepStat
     d29_alpha     ::Vector{Int}   # alpha_cur at each sampled step (raw, unreduced)
     d29_px        ::Vector{Int}   # px (P0[1]) at each sampled step, index-aligned with d29_alpha
     d29_n_samples ::Int           # uncapped running total — denominator for "capped at" reporting
+    # D29 artifact filter: true iff this step's P0 (= cur_pt carried in from the
+    # PREVIOUS step) came from a genuine handle_1lp_affine!/handle_1lp_conj!/
+    # handle_2lp_affine! resolution rather than a bare next_anchor() round-robin
+    # advance (0-LP, skip, 2-LP-conj no-emit, or the LP1-aff/conj "structured
+    # cursor step" fallback). next_anchor() is a deterministic fixed-period ramp
+    # over fb[anchor_start:anchor_end]; mixing it into the px stream produces a
+    # spurious near-1.0 spatial autocorrelation at lag = period (see D29 §2
+    # writeup). Index-aligned with d29_alpha/d29_px, same cap/merge discipline.
+    d29_from_lp   ::Vector{Bool}
 end
 
 function ConjDeepStat()
@@ -851,6 +860,7 @@ function ConjDeepStat()
         Int[],                              # d29_alpha
         Int[],                              # d29_px
         0,                                  # d29_n_samples
+        Bool[],                             # d29_from_lp
     )
 end
 
@@ -1115,8 +1125,9 @@ function merge_conj_deep_stats(stats::Vector{ConjDeepStat})::ConjDeepStat
         let n_rem29 = D29_MAX_SAMPLES - length(merged.d29_alpha)
             if n_rem29 > 0
                 n_take = min(n_rem29, length(s.d29_alpha))
-                append!(merged.d29_alpha, s.d29_alpha[1:n_take])
-                append!(merged.d29_px,    s.d29_px[1:n_take])
+                append!(merged.d29_alpha,   s.d29_alpha[1:n_take])
+                append!(merged.d29_px,      s.d29_px[1:n_take])
+                append!(merged.d29_from_lp, s.d29_from_lp[1:n_take])
             end
         end
         merged.d29_n_samples += s.d29_n_samples
@@ -1126,15 +1137,17 @@ function merge_conj_deep_stats(stats::Vector{ConjDeepStat})::ConjDeepStat
     # true stream length up front; see _merge_d12_store_reservoirs!).
     _merge_d12_store_reservoirs!(merged, stats)
 
-    # D29 invariant: d29_alpha and d29_px must stay index-aligned (every
-    # write site pushes both together). A length mismatch here means a
-    # bug in record_d29_step! or the merge above corrupted alignment —
+    # D29 invariant: d29_alpha, d29_px, and d29_from_lp must stay index-aligned
+    # (every write site pushes all three together). A length mismatch here
+    # means a bug in record_d29_step! or the merge above corrupted alignment —
     # silently truncating to the shorter vector would produce a plausible-
     # looking but WRONG ACF/CCF report, so we raise instead.
-    if length(merged.d29_alpha) != length(merged.d29_px)
-        throw(AssertionError("merge_conj_deep_stats: D29 alpha/px length " *
-            "mismatch ($(length(merged.d29_alpha)) vs $(length(merged.d29_px))) " *
-            "— record_d29_step! or its merge logic is corrupting alignment"))
+    if length(merged.d29_alpha) != length(merged.d29_px) ||
+       length(merged.d29_alpha) != length(merged.d29_from_lp)
+        throw(AssertionError("merge_conj_deep_stats: D29 alpha/px/from_lp length " *
+            "mismatch ($(length(merged.d29_alpha)) vs $(length(merged.d29_px)) vs " *
+            "$(length(merged.d29_from_lp))) — record_d29_step! or its merge logic " *
+            "is corrupting alignment"))
     end
 
     return merged
@@ -1668,17 +1681,27 @@ end
 #  occasional growth) — safe for the hot path. Unlike record_d34_step!,
 #  this does NOT need to be duplicated at every branch exit: D34 needs
 #  outcome-conditioned counters (which bucket got a 0-LP vs a STORE), but
-#  D29 only needs the raw (α,p_x) pair itself, which is already fully
-#  determined before the branch runs.
+#  D29 only needs the raw (α,p_x) pair itself.
 #
-#  See the D29 constants-block docstring in this file for the full
-#  hypothesis writeup (α mod-q phase-locking, p_x spatial autocorrelation,
-#  (α,p_x) rolling cross-MI).
+#  from_lp: provenance of the CURRENT cur_pt (i.e. P0, captured BEFORE this
+#  step's own branch runs) — true iff it was returned by
+#  handle_1lp_affine!/handle_1lp_conj!/handle_2lp_affine! as a stored/closed
+#  LP point, false if it came from a bare next_anchor() round-robin advance
+#  (set at the END of the PREVIOUS step). next_anchor() cycles deterministically
+#  over fb[anchor_start:anchor_end] with a fixed period, so px samples with
+#  from_lp=false are NOT independent walk-state observations — they are a
+#  sawtooth ramp. _report_d29's spatial-ACF section must restrict to
+#  from_lp=true samples (or explicitly report both) to avoid re-discovering
+#  the cursor's own periodicity instead of genuine basin-trapping. See the
+#  D29 constants-block docstring in this file for the full hypothesis writeup
+#  (α mod-q phase-locking, p_x spatial autocorrelation, (α,p_x) rolling
+#  cross-MI), and the D29 §2 artifact writeup for how this was diagnosed.
 # ---------------------------------------------------------------------------
-@inline function record_d29_step!(stat::ConjDeepStat, alpha_cur::Int, px::Int)
+@inline function record_d29_step!(stat::ConjDeepStat, alpha_cur::Int, px::Int, from_lp::Bool)
     if stat.d29_n_samples < D29_MAX_SAMPLES
-        push!(stat.d29_alpha, alpha_cur)
-        push!(stat.d29_px,    px)
+        push!(stat.d29_alpha,   alpha_cur)
+        push!(stat.d29_px,      px)
+        push!(stat.d29_from_lp, from_lp)
     end
     stat.d29_n_samples += 1
     return nothing

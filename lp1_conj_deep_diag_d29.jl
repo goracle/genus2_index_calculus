@@ -158,6 +158,40 @@ function _d29_lag_grid()::Vector{Int}
 end
 
 # ---------------------------------------------------------------------------
+#  _d29_px_acf_summary — peak |Pearson ACF| and significant-lag count for a
+#  p_x series over the standard D29 px_lags grid. Shared by the RAW and
+#  LP-FILTERED passes in section 2 of _report_d29 (see the artifact note
+#  there for why two passes exist). Returns the significant-lag count, or
+#  `nothing` if the series was too short to test (skips printing the verdict
+#  comparison rather than asserting a false 0).
+# ---------------------------------------------------------------------------
+function _d29_px_acf_summary(series::Vector{Float64}, px_lags::Vector{Int},
+                              min_required::Int, label::String)
+    nloc = length(series)
+    if nloc < min_required
+        @printf("      [%s] too few samples (%d < %d) — skipped\n", label, nloc, min_required)
+        return nothing
+    end
+    best_lag = -1; best_abs = -1.0; best_val = 0.0; best_z = 0.0; n_sig = 0
+    for lag in px_lags
+        lag >= nloc && continue
+        n_eff = nloc - lag
+        val = _d29_pearson_acf(series, lag)
+        z   = _d29_pearson_acf_z(val, n_eff)
+        if abs(val) > best_abs
+            best_abs = abs(val); best_val = val; best_lag = lag; best_z = z
+        end
+        abs(z) >= D29_Z_SIG && (n_sig += 1)
+    end
+    @printf("      [%s] n=%d  peak |ACF|=%.5f at lag=%d  (z=%.2f)%s\n",
+            label, nloc, best_abs, best_lag, best_z,
+            abs(best_z) >= D29_Z_SIG ? "  ← SIGNIFICANT vs i.i.d. null" : "")
+    @printf("      [%s] lags with |z|>=%.1f out of %d tested: %d\n",
+            label, D29_Z_SIG, length(px_lags), n_sig)
+    return n_sig
+end
+
+# ---------------------------------------------------------------------------
 #  _report_d29 — α mod-q ACF, p_x spatial ACF, (α,p_x) rolling cross-MI.
 # ---------------------------------------------------------------------------
 function _report_d29(deep_stat::ConjDeepStat; p::Int = 0, ell::Int = 0)
@@ -237,37 +271,45 @@ function _report_d29(deep_stat::ConjDeepStat; p::Int = 0, ell::Int = 0)
     @printf("\n    2. p_x spatial autocorrelation (basin trapping), lags [%d,%d]\n",
             D29_PX_LAG_LO, D29_PX_LAG_HI)
     @printf("    -----------------------------------------------------------------\n")
+
+    # ARTIFACT NOTE: most px samples are next_anchor()'s own deterministic
+    # round-robin cursor over fb[anchor_start:anchor_end], NOT the algebraic
+    # walk. handle_1lp_affine!, handle_1lp_conj!, and handle_2lp_conj! all
+    # return next_anchor_ref[]() unconditionally on every path (store, close,
+    # miss, same-partial, even/odd cycle — none of them ever return the LP
+    # point). handle_2lp_affine! is the only handler that can return a real
+    # in-FB point (P0/R/S), and only when one of the three is actually in the
+    # FB; otherwise it too falls back to next_anchor(). So the raw px stream
+    # is overwhelmingly a fixed-period ramp, and its spatial "ACF" mostly
+    # measures that period (anchor_end - anchor_start + 1), not basin
+    # geometry. We report both series below; the raw one is kept for
+    # continuity with earlier runs but should not be read as evidence of
+    # trapping on its own.
+    from_lp_v = deep_stat.d29_from_lp
+    if length(from_lp_v) != n
+        throw(AssertionError("_report_d29: d29_from_lp length mismatch " *
+            "($(length(from_lp_v)) vs $n) — recording or merge invariant violated"))
+    end
+
     px_f = Float64.(px_v)
     px_lags = collect(D29_PX_LAG_LO:D29_PX_LAG_STRIDE:D29_PX_LAG_HI)
 
-    best_px_lag = -1
-    best_px_abs = -1.0
-    best_px_val = 0.0
-    best_px_z   = 0.0
-    n_sig_px    = 0
-    for lag in px_lags
-        n_eff = n - lag
-        val = _d29_pearson_acf(px_f, lag)
-        z   = _d29_pearson_acf_z(val, n_eff)
-        if abs(val) > best_px_abs
-            best_px_abs = abs(val)
-            best_px_val = val
-            best_px_lag = lag
-            best_px_z   = z
-        end
-        abs(z) >= D29_Z_SIG && (n_sig_px += 1)
-    end
+    n_sig_px_raw = _d29_px_acf_summary(px_f, px_lags, min_required, "RAW, cursor-contaminated")
 
-    @printf("      peak |ACF|=%.5f at lag=%d  (z=%.2f)%s\n",
-            best_px_abs, best_px_lag, best_px_z,
-            abs(best_px_z) >= D29_Z_SIG ? "  ← SIGNIFICANT vs i.i.d. null" : "")
-    @printf("      lags with |z|>=%.1f out of %d tested: %d\n", D29_Z_SIG, length(px_lags), n_sig_px)
-    if n_sig_px > 0
-        @printf("      ↑ positive long-range p_x autocorrelation: consistent with basin trapping\n")
-        @printf("        (φ-transition graph has dense components the walk needs many steps to escape)\n")
-    else
-        @printf("      ↓ no significant p_x autocorrelation at lags %d..%d: no basin trapping at this scale\n",
-                D29_PX_LAG_LO, D29_PX_LAG_HI)
+    n_lp = count(from_lp_v)
+    @printf("      LP-derived samples (handle_2lp_affine! returning P0/R/S): %d / %d (%.2f%%)\n",
+            n_lp, n, 100.0 * n_lp / max(1, n))
+    px_lp_f = Float64.(px_v[from_lp_v])
+    n_sig_px_lp = _d29_px_acf_summary(px_lp_f, px_lags, min_required, "LP-FILTERED")
+
+    if n_sig_px_raw !== nothing && n_sig_px_raw > 0
+        if n_sig_px_lp === nothing || n_sig_px_lp == 0
+            @printf("      → RAW series shows the cursor-periodicity artifact; LP-FILTERED series is\n")
+            @printf("        clean (or has too few samples). No basin-trapping evidence survives the filter.\n")
+        else
+            @printf("      → Both RAW and LP-FILTERED series show significant autocorrelation: this is\n")
+            @printf("        more likely genuine basin-trapping, not just cursor periodicity.\n")
+        end
     end
 
     # ── 3. (α mod q, p_x) rolling cross-correlation / mutual information ──
