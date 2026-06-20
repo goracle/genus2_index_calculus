@@ -547,6 +547,11 @@ end
                                Int(v.store_step), i0)
         record_d25_closure!(deep_stat, al_cur, px_anchor, Int(v.neg_al),
                             s.raw_steps - Int(v.store_step), Int(ell))
+        # D37: closure-indexed spatial ACF, sidestepping the D29 cursor
+        # artifact entirely — px_anchor and fb[prev_col][1] are both genuine
+        # walk state, never next_anchor()-derived. See D37 constants-block
+        # docstring in lp1_conj_deep_diag_core.jl.
+        record_d37_closure!(deep_stat, px_anchor, fb[prev_col][1], al_cur, s.raw_steps)
         record_d16_emission!(deep_stat, lp_key, s.raw_steps, i0)
         record_d20_emission!(deep_stat)
         record_d19_closure!(deep_stat, i0, prev_col, combined_al, combined_be)

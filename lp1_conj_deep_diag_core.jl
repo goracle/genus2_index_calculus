@@ -416,6 +416,26 @@ const D29_MI_GRID_SIZE  = 1 << D29_MI_GRID_BITS
 const D29_MI_LAG_STRIDE = 250         # CCF/MI: lag stride for the rolling (α mod q ; p_x) joint-histogram sweep, 0..D29_ACF_MAX_LAG
 const D29_Z_SIG         = 3.0         # |z| threshold for flagging a lag as significantly non-null in the report
 
+# D37 — LP1-conj closure-indexed spatial ACF (px_close, px_store, al_close).
+# Built specifically to answer "is the α₂≈0.60 autocorrelation coming from
+# the spatial (px) component of LP1-conj keys, or just the algebraic/key
+# structure?" — D29 section 2 was supposed to answer this but its px sample
+# is dominated by next_anchor()'s own deterministic cursor (see that
+# constants-block docstring); with 2-LP-affine disabled, NO code path ever
+# returns a real walk-state point as cur_pt, so D29's px stream is 100%
+# cursor, 0% signal, in this configuration. D37 sidesteps the cursor
+# entirely: it samples directly at the point in handle_1lp_conj! where a
+# CLOSURE actually happens (right where D25/D35/D30 already sample), using
+# px_anchor (= fb[i0][1], the closing FB anchor) and fb[prev_col][1] (the
+# stored FB anchor) — both genuine walk-state, never cursor-derived. The
+# sample stream is indexed by CLOSURE ORDER, not raw step count, so "lag"
+# here means "lag in closures," not "lag in steps." This trades resolution
+# (closures are rarer than raw steps) for correctness (no artifact).
+const D37_MAX_CLOSURES   = 2_000_000  # per-thread cap, same order as D29's raw cap
+const D37_ACF_LAG_LO     = 1          # closure-indexed ACF: smallest lag tested (1 closure apart)
+const D37_ACF_LAG_HI     = 2000       # closure-indexed ACF: largest lag tested, in CLOSURES not steps
+const D37_ACF_LAG_STRIDE = 1          # dense by default; closures are already a sparse/expensive event
+
 
 # For each LP1-conj key k we track:
 #   W(k)      = max(store_step) - min(store_step) across all STORE events
@@ -748,6 +768,25 @@ mutable struct ConjDeepStat
     # spurious near-1.0 spatial autocorrelation at lag = period (see D29 §2
     # writeup). Index-aligned with d29_alpha/d29_px, same cap/merge discipline.
     d29_from_lp   ::Vector{Bool}
+
+    # D37 — LP1-conj closure-indexed spatial ACF. See constants block above
+    # for why this exists alongside (not instead of) D29: D29's px sample is
+    # cursor-contaminated when 2-LP-affine is disabled (the only path that
+    # could return a real point), so this samples directly at confirmed
+    # LP1-conj closures instead. During the walk, each thread accumulates its
+    # OWN closure-ordered sequence in d37_px_close/d37_px_store/d37_al_close/
+    # d37_raw_step (index-aligned, one entry per closure, in closure order).
+    # At merge time these are NOT concatenated across threads (see
+    # merge_conj_deep_stats D37 comment for why — closures are too sparse to
+    # splice safely); instead each thread's chain is pushed whole into
+    # d37_chains, and _report_d37 computes ACF within each chain separately.
+    d37_px_close   ::Vector{Int}   # px_anchor at close time = fb[i0][1] (the closing FB anchor)
+    d37_px_store   ::Vector{Int}   # fb[prev_col][1] (the stored FB anchor this closure matched against)
+    d37_al_close   ::Vector{Int}   # alpha_cur at close time (raw, unreduced)
+    d37_raw_step   ::Vector{Int}   # s.raw_steps at close time — for converting closure-lag back to step-time if needed
+    d37_n_closures ::Int           # uncapped running total across all threads — denominator for "capped at" reporting
+    d37_chains     ::Vector{NamedTuple{(:px_close,:px_store,:al_close,:raw_step),
+                                        NTuple{4,Vector{Int}}}}  # one entry per thread, populated only at merge time
 end
 
 function ConjDeepStat()
@@ -861,6 +900,13 @@ function ConjDeepStat()
         Int[],                              # d29_px
         0,                                  # d29_n_samples
         Bool[],                             # d29_from_lp
+        # D37 — LP1-conj closure-indexed spatial ACF
+        Int[],                              # d37_px_close
+        Int[],                              # d37_px_store
+        Int[],                              # d37_al_close
+        Int[],                              # d37_raw_step
+        0,                                  # d37_n_closures
+        NamedTuple{(:px_close,:px_store,:al_close,:raw_step),NTuple{4,Vector{Int}}}[],  # d37_chains
     )
 end
 
@@ -1131,6 +1177,28 @@ function merge_conj_deep_stats(stats::Vector{ConjDeepStat})::ConjDeepStat
             end
         end
         merged.d29_n_samples += s.d29_n_samples
+
+        # D37: per-thread closure-indexed spatial samples. UNLIKE D35/D25/D29,
+        # we do NOT concatenate across threads here. Closures are comparatively
+        # rare (vs. every-step sampling in D29), so splicing thread A's tail
+        # directly against thread B's head would inject spurious "closure k
+        # lags closure k+L" pairs that cross a thread boundary — i.e. compare
+        # two closures that have no temporal relationship to each other at
+        # all. D29 has this same structural issue but it's negligible there
+        # (millions of samples per thread, a handful of boundary points each).
+        # For D37, with far fewer points per thread and the same number of
+        # boundaries, the contamination fraction is too large to ignore,
+        # especially at lags approaching D37_ACF_LAG_HI. So merged.d37_chains
+        # holds ONE closure-ordered chain per thread; _report_d37 computes
+        # ACF within each chain separately and pools the resulting z-scores,
+        # rather than computing one ACF over a falsely-concatenated series.
+        if length(s.d37_px_close) > 0
+            push!(merged.d37_chains, (px_close = copy(s.d37_px_close),
+                                       px_store = copy(s.d37_px_store),
+                                       al_close = copy(s.d37_al_close),
+                                       raw_step = copy(s.d37_raw_step)))
+        end
+        merged.d37_n_closures += s.d37_n_closures
     end
 
     # D12 store-event reservoir: merged separately (needs every thread's
@@ -1928,6 +1996,32 @@ end
     if dal_bkt >= 0
         @inbounds stat.d25_dal_hist[dal_bkt + 1] += 1
     end
+    return nothing
+end
+
+# ---------------------------------------------------------------------------
+#  record_d37_closure! — call from handle_1lp_conj! at every CLOSE, alongside
+#  record_d25_closure!/record_d35_closure!. Appends raw (unbucketed) values
+#  to this THREAD's own closure-ordered chain; cross-thread combination
+#  happens at merge time by chain, not by concatenation (see D37 comment in
+#  merge_conj_deep_stats for why).
+#
+#  px_close : px_anchor at close time = fb[i0][1] (the closing FB anchor)
+#  px_store : fb[prev_col][1] (the FB anchor whose stored entry this closed against)
+#  al_close : alpha_cur at close time (raw, unreduced)
+#  raw_step : s.raw_steps at close time
+# ---------------------------------------------------------------------------
+@inline function record_d37_closure!(stat    ::ConjDeepStat,
+                                      px_close::Int,
+                                      px_store::Int,
+                                      al_close::Int,
+                                      raw_step::Int)
+    stat.d37_n_closures += 1
+    length(stat.d37_px_close) >= D37_MAX_CLOSURES && return nothing
+    push!(stat.d37_px_close, px_close)
+    push!(stat.d37_px_store, px_store)
+    push!(stat.d37_al_close, al_close)
+    push!(stat.d37_raw_step, raw_step)
     return nothing
 end
 

@@ -92,6 +92,7 @@ include("lp1_conj_deep_diag_d34.jl")  # D34 — x-bucket smoothing-probability (
 include("lp1_conj_deep_diag_d35.jl")  # D35 — closure difference-process concentration (Δα/Δβ vs ΔP proxy)
 include("lp1_conj_deep_diag_d36.jl")  # D36 — next_anchor() short-range autocorrelation (FB-index distance)
 include("lp1_conj_deep_diag_d29.jl")  # D29 — wide-lag burst-memory trackers (α-ACF, p_x spatial ACF, α/p_x CCF)
+include("lp1_conj_deep_diag_d37.jl")  # D37 — LP1-conj closure-indexed spatial ACF (sidesteps the D29 cursor artifact)
 
 # ---------------------------------------------------------------------------
 #  print_conj_deep_report — top-level dispatcher.
@@ -173,6 +174,7 @@ function print_conj_deep_report(phi_stat ::PhiBiasStat,
     _report_d35(deep_stat; p=p, ell=ell)
     _report_d36(deep_stat)
     _report_d29(deep_stat; p=p, ell=ell)
+    _report_d37(deep_stat; p=p, ell=ell)
 
     @printf("\n== End LP1-conj deep diagnostics ====================================================\n")
     flush(stdout)
