@@ -945,7 +945,8 @@ function phase2_worker(G               ::Div2,
                        enable_lp1_aff  ::Bool = true,
                        post_conj_stride::Int  = 0,
                        carry_in_deep_stat::Union{ConjDeepStat,Nothing} = nothing,
-                       conj_dataset      ::Union{ConjClosureDataset,Nothing} = nothing)
+                       conj_dataset      ::Union{ConjClosureDataset,Nothing} = nothing,
+                       d38_stat          ::Union{D38Stat,Nothing} = nothing)
 
     nF_cur   = length(fb)
     N_STEPS  = length(step_D)
@@ -1026,7 +1027,8 @@ function phase2_worker(G               ::Div2,
                 basin_steers_fired = 0,
                 basin_steers_hit   = 0,
                 lp1_conj_mean_gap_steps = 0.0,
-                deep_stat = deep_stat)
+                deep_stat = deep_stat,
+                d38_stat = d38_stat)
     end
     anchor_cursor = anchor_start
 
@@ -1234,6 +1236,13 @@ function phase2_worker(G               ::Div2,
         phi_c = build_phi_mumford(px, py, u0, u1, v0, v1)
         phi_c === nothing && continue
         a, b, c, _ = phi_c
+
+        # D38 — φ a-coefficient sequential autocorrelation: log every
+        # successful φ step's raw a value, regardless of split/non-split
+        # outcome (mirrors D29's "log every valid step" discipline; see
+        # lp1_conj_deep_diag_d38.jl docstring). No-op if d38_stat wasn't
+        # passed in (keeps this call backward-compatible).
+        d38_stat !== nothing && record_d38_step!(d38_stat, Int(a))
 
         res_R, res_S, RS_mumford = phi_residual_mumford(a, b, c, px, u0, u1)
         RS_mumford === SENTINEL_MUMFORD && continue   # division failed
@@ -1615,7 +1624,8 @@ function phase2_worker(G               ::Div2,
                     gap_sum / (n - 1)
                 end
             end,
-            deep_stat = deep_stat)
+            deep_stat = deep_stat,
+            d38_stat = d38_stat)
 end
 
 

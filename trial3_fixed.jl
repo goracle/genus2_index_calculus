@@ -542,6 +542,11 @@ function index_calculus_walk(G::Div2, T::Div2;
     thread_collectors = [LPResidualCollector() for _ in 1:Threads.nthreads()]
     thread_phi_stats  = [PhiBiasStat(p)        for _ in 1:Threads.nthreads()]
     thread_deep_stats = [ConjDeepStat()        for _ in 1:Threads.nthreads()]
+    # D38 disabled — see lp1_conj_deep_diag_d38.jl docstring. It returned
+    # cleanly negative (peak |z|=2.98 < 3.0 sig threshold, 0/248 lags
+    # significant) and its 2M-sample-per-thread cap was a meaningful memory
+    # cost for a diagnostic that's done its job. Not passing d38_stat makes
+    # record_d38_step! a no-op at the call site (defaults to nothing).
     results           = Vector{Any}(undef, Threads.nthreads())
 
     # Instantiate the tracker here so all threads can stream rows into it
@@ -1309,6 +1314,7 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
         thread_collectors_pre = [LPResidualCollector() for _ in 1:Threads.nthreads()]
         thread_phi_stats_pre  = [PhiBiasStat(p)        for _ in 1:Threads.nthreads()]
         thread_deep_stats_pre = [ConjDeepStat()        for _ in 1:Threads.nthreads()]
+        # D38 disabled — see note at main-path allocation above.
         results_pre = Vector{Any}(undef, Threads.nthreads())
 
         # Reset the alpha-seen Bloom filter before the walk so stale bits from

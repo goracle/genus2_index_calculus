@@ -93,6 +93,7 @@ include("lp1_conj_deep_diag_d35.jl")  # D35 — closure difference-process conce
 include("lp1_conj_deep_diag_d36.jl")  # D36 — next_anchor() short-range autocorrelation (FB-index distance)
 include("lp1_conj_deep_diag_d29.jl")  # D29 — wide-lag burst-memory trackers (α-ACF, p_x spatial ACF, α/p_x CCF)
 include("lp1_conj_deep_diag_d37.jl")  # D37 — LP1-conj closure-indexed spatial ACF (sidesteps the D29 cursor artifact)
+include("lp1_conj_deep_diag_d38.jl")  # D38 — φ a-coefficient sequential autocorrelation (step-indexed)
 
 # ---------------------------------------------------------------------------
 #  print_conj_deep_report — top-level dispatcher.
@@ -113,7 +114,8 @@ function print_conj_deep_report(phi_stat ::PhiBiasStat,
                                  lsm_peers::Union{Vector, Nothing} = nothing,
                                  fb_size  ::Int = 0,
                                  n_threads::Int = 1,
-                                 fb       ::Union{Vector{NTuple{2,Int}}, Nothing} = nothing)
+                                 fb       ::Union{Vector{NTuple{2,Int}}, Nothing} = nothing,
+                                 d38_stat ::Union{D38Stat, Nothing} = nothing)
 
     arrivals  = phi_stat.lp1_conj_arrivals
     keys_u128 = phi_stat.lp1_conj_keys
@@ -175,6 +177,7 @@ function print_conj_deep_report(phi_stat ::PhiBiasStat,
     _report_d36(deep_stat)
     _report_d29(deep_stat; p=p, ell=ell)
     _report_d37(deep_stat; p=p, ell=ell)
+    d38_stat !== nothing && _report_d38(d38_stat; p=p)
 
     @printf("\n== End LP1-conj deep diagnostics ====================================================\n")
     flush(stdout)
