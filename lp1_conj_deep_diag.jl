@@ -15,6 +15,19 @@
 #  lp1_conj_deep_diag_d1_d6.jl   — report sections D1 – D6  (_report_d1_d6)
 #  lp1_conj_deep_diag_d7_d11.jl  — report sections D7 – D11 (_report_d7_d11)
 #  lp1_conj_deep_diag_d12_d18.jl — report sections D12 – D18 (_report_d12_d18)
+#  lp1_conj_deep_diag_d28.jl     — report section D28 (_report_d28): pre-
+#                                   emission LP-aff anchor distribution at
+#                                   lag-k
+#  lp1_conj_deep_diag_d30.jl     — report section D30 (_report_d30): closure
+#                                   FB-point geometric (x-coordinate)
+#                                   short-range adjacency — circular mod-p
+#                                   distance min(Δx,p-Δx) between the
+#                                   closing and storing FB anchor points,
+#                                   vs an exact circular-uniform null.
+#                                   Coordinate-space analogue of D36 (tests
+#                                   geometric adjacency directly rather than
+#                                   relying on FB-array-index order as a
+#                                   proxy for it).
 #  lp1_conj_deep_diag_d32.jl     — report section D32 (_report_d32): LP1-conj
 #                                   key recurrence-gap (store→close depth)
 #                                   short-lag concentration vs geometric null
@@ -38,6 +51,8 @@
 #                                   null. Direct follow-up to D32's closing
 #                                   pointer ("consider next_anchor()'s
 #                                   short-range autocorrelation directly").
+#                                   See D30 for the coordinate-space (rather
+#                                   than index-space) version of this test.
 #
 #  Wiring (unchanged from the monolithic version)
 #  ───────────────────────────────────────────────
@@ -61,6 +76,7 @@ include("lp1_conj_deep_diag_d25.jl")
 include("lp1_conj_deep_diag_d26.jl")
 include("lp1_conj_deep_diag_d27.jl")  # <-- Add this line to include the D27 sub-module
 include("lp1_conj_deep_diag_d28.jl")
+include("lp1_conj_deep_diag_d30.jl")  # D30 — closure FB-point geometric (x-coordinate) short-range adjacency
 include("lp1_conj_deep_diag_d32.jl")  # D32 — LP1-conj key recurrence-gap concentration (short-lag focus)
 include("lp1_conj_deep_diag_d33.jl")  # D33 — φ a-coefficient residue bias (small-prime modular structure)
 include("lp1_conj_deep_diag_d34.jl")  # D34 — x-bucket smoothing-probability (draining hypothesis test)
@@ -140,6 +156,7 @@ function print_conj_deep_report(phi_stat ::PhiBiasStat,
     _report_d26(deep_stat)
     _report_d27(deep_stat; ell=ell, p=p)  # <-- Add this line to run the D27 analysis
     _report_d28(deep_stat; p=p, ell=ell)
+    _report_d30(deep_stat; p=p)
     _report_d32(deep_stat)
     _report_d33(deep_stat)
     _report_d34(deep_stat; p=p)

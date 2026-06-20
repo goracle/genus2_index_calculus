@@ -228,6 +228,75 @@ const D34_X_BUCKETS = 128     # coarse x-axis partition; wide enough to show sha
 const D35_MAX_CLOSURES = 50_000
 
 # -----------------------------------------------------------------------
+# D30 — closure FB-point geometric (x-coordinate) short-range adjacency.
+#
+# Direct follow-up to D36 (below), itself a follow-up to D32. D36 tested
+# whether closures preferentially pair anchor-cursor positions that are
+# close in FB-ARRAY-INDEX — i.e. close in the order next_anchor() happens
+# to visit them — and found no excess. But index-adjacency only coincides
+# with geometric adjacency if the FB array happens to be sorted by
+# coordinate, which is not something this diagnostic layer can assume (the
+# FB is built in phase 1, not visible from this file). D30 asks the
+# question D36 could only approximate: are closures preferentially pairing
+# FB points that are close in the curve's own COORDINATE space, regardless
+# of where those points happen to sit in the fb[] array?
+#
+# Proxy: as everywhere else in this file (D34, D35), full Jacobian
+# group-law distance is not used — it would require jac_add/jac_sub group
+# operations per closure (BigInt-scale, not the O(1) int ops the rest of
+# this diagnostic layer is built on) and those primitives are not even
+# defined in this file. We use the same x-coordinate proxy D35 already
+# uses for its Δpx quantity: Δx = mod(x_close - x_store, p), where
+# x_close = fb[i0][1] and x_store = fb[prev_col][1].
+#
+# Relationship to D35: D35 already computes this exact Δx quantity, but
+# only feeds it into a GLOBAL concentration test (Rényi-2 effective
+# support / Gini / Hill exponent across the whole closure population).
+# D30 is the SHORT-RANGE complement: it asks specifically whether Δx (mod
+# p, wraparound-aware — two curve points with nearby x on either side of
+# the p-1/0 boundary are geometrically adjacent even though their raw
+# difference is large) has excess mass near 0 beyond what pairing two
+# independent Uniform(0,p) draws predicts, mirroring D32's and D36's
+# observed-vs-null short-lag test structure exactly. A global Δx
+# distribution can look perfectly uniform (as D35 found) while still
+# having a short-range excess that a Rényi-2/Gini summary, which is
+# sensitive to OVERALL concentration rather than LOCAL structure near
+# zero, would not surface — the same "marginal looks boring, conditional
+# structure doesn't" point D35's own docstring makes about Δα.
+#
+# Wraparound: Δx is taken mod p (a circular quantity, since x ranges over
+# F_p), so "distance near 0" must consider both d and p-d as short-range.
+# The report computes dist = min(Δx, p - Δx), so the short-lag histogram
+# and its null are framed in terms of a true circular distance rather
+# than the one-sided mod-p residue.
+#
+# WHY THIS CANNOT BE BUCKETED AT RECORD TIME (unlike D32/D36): the
+# wraparound computation needs p, and p (field characteristic) is NOT in
+# scope inside handle_1lp_conj! — only ell (group order) is threaded
+# through that call chain (see trial3_phase2.jl). Rather than add a new
+# p::BigInt argument across handle_1lp_conj!'s entire (already 25+ arg)
+# signature and every call site for the sake of one diagnostic, D30
+# follows D35's pattern instead: store the raw, un-reduced x_close/x_store
+# pair at record time (capped, like D25/D35) and defer ALL mod-p
+# reduction, wraparound-distance computation, and histogram binning into
+# _report_d30 — where p is already a confirmed-available kwarg (see
+# _report_d34's p kwarg for precedent).
+#
+# d30_x_close    : fb[i0][1] at each closure (capped at D30_MAX_CLOSURES).
+# d30_x_store    : fb[prev_col][1] at each closure, index-aligned with
+#                  d30_x_close (same closure, same position).
+# d30_n_closures : uncapped running total — denominator for "capped at"
+#                  reporting, same convention as d35_n_closures.
+#
+# Cap: D30_MAX_CLOSURES, same generous size as D35 (cheap per-closure cost:
+# two Ints).
+const D30_MAX_CLOSURES = 50_000
+# Histogram/null shape constants, used only inside _report_d30 (binning
+# happens entirely in the report, not at record time — see above):
+const D30_LOG_BUCKETS  = 32              # covers distance up to 2^31 (p is well under this)
+const D30_SHORT_MAX    = 128             # linear resolution out to 128, matching D32/D36
+
+# -----------------------------------------------------------------------
 # D36 — next_anchor() short-range autocorrelation at closure (raw FB-index
 # distance between the closing and storing anchor cursors).
 #
@@ -573,6 +642,22 @@ mutable struct ConjDeepStat
     d35_py_store  ::Vector{Int}
     d35_n_closures::Int   # uncapped running total (denominator for "capped at" reporting)
 
+    # D30 — closure FB-point geometric (x-coordinate) short-range adjacency.
+    # See constants block above for the full hypothesis writeup.
+    #
+    # Unlike D32/D36 (which bucket into a histogram at record time), D30
+    # cannot do that: the distance is circular mod p (min(Δx, p-Δx)), and
+    # p (field characteristic) is NOT in scope inside handle_1lp_conj! —
+    # only ell (group order) is threaded through that call chain. So D30
+    # follows D35's pattern instead: store raw, un-reduced x_close/x_store
+    # pairs at record time (capped, like D25/D35), and defer all mod-p
+    # reduction, wraparound-distance computation, and histogram binning to
+    # _report_d30, where p is already a confirmed-available kwarg (see
+    # _report_d34's p kwarg for precedent).
+    d30_x_close    ::Vector{Int}   # fb[i0][1] at each closure (capped)
+    d30_x_store    ::Vector{Int}   # fb[prev_col][1] at each closure (capped)
+    d30_n_closures ::Int           # uncapped running total (denominator for "capped at" reporting)
+
     # D36 — next_anchor() short-range autocorrelation at closure.
     # See constants block above for the full hypothesis writeup. Unlike
     # D25/D35 (capped, vector-of-tuples), this is an O(1) increment-only
@@ -682,6 +767,10 @@ function ConjDeepStat()
         Int[],                              # d35_px_store
         Int[],                              # d35_py_store
         0,                                  # d35_n_closures
+        # D30 — closure FB-point geometric (x-coordinate) short-range adjacency
+        Int[],                              # d30_x_close
+        Int[],                              # d30_x_store
+        0,                                  # d30_n_closures
         # D36 — next_anchor() short-range autocorrelation at closure
         zeros(Int, D36_LOG_BUCKETS),        # d36_dist_hist
         zeros(Int, D36_SHORT_MAX),          # d36_short_hist
@@ -923,6 +1012,18 @@ function merge_conj_deep_stats(stats::Vector{ConjDeepStat})::ConjDeepStat
             end
         end
         merged.d35_n_closures += s.d35_n_closures
+
+        # D30: merge raw (x_close, x_store) pairs — capped append, same
+        # pattern as D35 (two parallel vectors must stay aligned, so take
+        # an identical prefix slice of each).
+        let n_rem30 = D30_MAX_CLOSURES - length(merged.d30_x_close)
+            if n_rem30 > 0
+                n_take = min(n_rem30, length(s.d30_x_close))
+                append!(merged.d30_x_close, s.d30_x_close[1:n_take])
+                append!(merged.d30_x_store, s.d30_x_store[1:n_take])
+            end
+        end
+        merged.d30_n_closures += s.d30_n_closures
 
         # D36: merge histograms — increment-only accumulators, same pattern
         # as D32 (no cap, no truncation; the question is about tail SHAPE).
@@ -1713,6 +1814,39 @@ end
     push!(stat.d35_py_close, py_close)
     push!(stat.d35_px_store, px_store)
     push!(stat.d35_py_store, py_store)
+    return nothing
+end
+
+# ---------------------------------------------------------------------------
+#  record_d30_closure! — call from handle_1lp_conj! at every CLOSE, alongside
+#  record_d19_closure!/record_d25_closure!/record_d35_closure!.
+#
+#  Arguments:
+#    stat     — per-thread ConjDeepStat
+#    x_close  — fb[i0][1]        (closing FB anchor x-coordinate)
+#    x_store  — fb[prev_col][1]  (storing FB anchor x-coordinate)
+#
+#  Stores the raw, un-reduced x-coordinate pair only. All mod-p reduction,
+#  circular-distance computation, and histogram binning happen in
+#  _report_d30 (lp1_conj_deep_diag_d30.jl) — see the D30 constants-block
+#  docstring in this file for why this cannot be done at record time (p is
+#  not in scope inside handle_1lp_conj!).
+#
+#  O(1) push per closure; capped append, same pattern as D35 (closures are
+#  rare enough that a generous cap is cheap and a representative sample is
+#  sufficient — unlike D32/D36, which need the FULL tail to characterize
+#  short-lag excess against a fitted null; D30's null is fit from p, which
+#  is known exactly regardless of sample size, so a cap does not bias the
+#  null the way truncating D32/D36's mean estimate would).
+# ---------------------------------------------------------------------------
+@inline function record_d30_closure!(stat   ::ConjDeepStat,
+                                      x_close::Int,
+                                      x_store::Int)
+    stat.d30_n_closures += 1
+    length(stat.d30_x_close) >= D30_MAX_CLOSURES && return nothing
+
+    push!(stat.d30_x_close, x_close)
+    push!(stat.d30_x_store, x_store)
     return nothing
 end
 
