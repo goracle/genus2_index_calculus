@@ -1,23 +1,24 @@
 # =============================================================================
 #  conj_closure_dataset.jl  —  LP1-conj closure dataset writer
 #
-#  Records one 64-byte entry per LP1-conj closure.  The resulting flat binary
-#  file plus a companion JSON schema can be loaded directly into numpy/PyTorch:
+#  Records one CONJ_RECORD_BYTES-byte entry (176 bytes = 22 × Int64) per
+#  LP1-conj closure.  The resulting flat binary file plus a companion JSON
+#  schema can be loaded directly into numpy/PyTorch:
 #
 #    import numpy as np
 #    dt = np.dtype([
-#        ('c0',         np.int32), ('c1',         np.int32),
-#        ('v0',         np.int32), ('v1',         np.int32),
-#        ('i0',         np.int32), ('neg_al',      np.int32),
-#        ('neg_be',     np.int32), ('raw_steps',   np.int32),
-#        ('prev_col',   np.int32), ('prev_al',     np.int32),
-#        ('prev_be',    np.int32), ('store_step',  np.int32),
-#        ('combined_al',np.int32), ('combined_be', np.int32),
-#        ('step_gap',   np.int32),
-#        ('al_cur',     np.int32), ('px_anchor',   np.int32),
-#        ('py_anchor',  np.int32), ('a_raw',       np.int32),
-#        ('a_bucket',   np.int32), ('tid',         np.int32),
-#        ('_pad',       np.int32),   # reserved, always 0
+#        ('c0',         np.int64), ('c1',         np.int64),
+#        ('v0',         np.int64), ('v1',         np.int64),
+#        ('i0',         np.int64), ('neg_al',      np.int64),
+#        ('neg_be',     np.int64), ('raw_steps',   np.int64),
+#        ('prev_col',   np.int64), ('prev_al',     np.int64),
+#        ('prev_be',    np.int64), ('store_step',  np.int64),
+#        ('combined_al',np.int64), ('combined_be', np.int64),
+#        ('step_gap',   np.int64),
+#        ('al_cur',     np.int64), ('px_anchor',   np.int64),
+#        ('py_anchor',  np.int64), ('a_raw',       np.int64),
+#        ('a_bucket',   np.int64), ('tid',         np.int64),
+#        ('_pad',       np.int64),   # reserved, always 0
 #    ])
 #    data = np.fromfile("conj_closures.bin", dtype=dt)
 #    # data.shape == (N,); access e.g. data['combined_al']
@@ -32,7 +33,9 @@
 #      fb[i0] − fb[prev_col] = combined_al·G + combined_be·T  (mod ell)
 #
 #  LP key (Mumford coordinates of the shared non-split residual):
-#    c0, c1, v0, v1  — Int32; see canonical_lp1_conj_key in trial3_config.jl
+#    c0, c1, v0, v1  — Int64; see canonical_lp1_conj_key in trial3_config.jl
+#    (each is u/v mod p, unpacked from the packed UInt128 CanonicalLP1Key —
+#    not bounded by Int32 since p can exceed 2^31 for large --min-ell-bits runs)
 #
 #  Incoming partial (the walk step that triggered the closure):
 #    i0         — FB column index of this step's P0 anchor
@@ -49,7 +52,7 @@
 #  Derived scalar outputs:
 #    combined_al — mod(neg_al − prev_al, ell)   (coefficient of G in relation)
 #    combined_be — mod(neg_be − prev_be, ell)   (coefficient of T in relation)
-#    step_gap    — raw_steps − store_step        (birthday gap; clamped to Int32)
+#    step_gap    — raw_steps − store_step        (birthday gap)
 #
 #  Walk context at the moment of closure (incoming thread):
 #    al_cur      — raw α cursor value (before mod ell)
@@ -62,23 +65,30 @@
 #    tid         — Julia thread id of the arriving thread
 #    _pad        — reserved / always 0
 #
-#  Each record is exactly CONJ_RECORD_BYTES = 88 bytes (22 × Int32).
+#  Each record is exactly CONJ_RECORD_BYTES = 176 bytes (22 × Int64).
 #  The file begins with a 16-byte magic + version header so a reader can
 #  sanity-check endianness and layout:
 #
 #    bytes 0..7   : magic = 0x434F4E4A434C4F53  ("CONJCLOS" in ASCII)
-#    bytes 8..11  : version = Int32(1)
+#    bytes 8..11  : version = Int32(2)
 #    bytes 12..15 : record_bytes = Int32(CONJ_RECORD_BYTES)
-#    bytes 16..   : packed Int32[22] records, one per closure
+#    bytes 16..   : packed Int64[22] records, one per closure
+#
+#  v1→v2: all 22 fields widened Int32→Int64. v1 used Int32 and silently
+#  clamped raw_steps/store_step/step_gap to typemax(Int32), and would
+#  outright crash (InexactError) on c0/c1/v0/v1/al/be fields once p or ell
+#  exceeded 2^31 — neither is bounded by Int32 in general. v1 files are NOT
+#  binary-compatible with v2 readers; check the version field before parsing.
 #
 #  Thread safety: all writes go through a single ReentrantLock; this is
 #  fine because dataset writes are rare compared to walk steps.
 # =============================================================================
 
 const CONJ_MAGIC        = 0x434F4E4A434C4F53  # "CONJCLOS"
-const CONJ_VERSION      = Int32(1)
+const CONJ_VERSION      = Int32(2)  # v2: widened all fields Int32→Int64 (p/ell/raw_steps
+                                     # are not bounded by Int32 in general — see record_conj_closure!)
 const CONJ_N_FIELDS     = 22
-const CONJ_RECORD_BYTES = CONJ_N_FIELDS * sizeof(Int32)   # 88 bytes
+const CONJ_RECORD_BYTES = CONJ_N_FIELDS * sizeof(Int64)   # 176 bytes
 
 # Field names in order — kept here as the single source of truth.
 const CONJ_FIELD_NAMES = [
@@ -134,9 +144,9 @@ end
                          al_cur, px_anchor, py_anchor, a_raw, a_bucket)
 
 Append one closure record to the dataset.  Safe to call from any thread.
-All integer arguments are plain Julia Ints; values are truncated to Int32
-before writing (any value larger than typemax(Int32) is clamped to
-typemax(Int32) so the record is never silently corrupted).
+All integer arguments are plain Julia Ints, written as Int64 — the same
+width as Julia's native Int, so no truncation, clamping, or overflow is
+possible for any value this function can receive.
 """
 @inline function record_conj_closure!(
         ds          ::ConjClosureDataset,
@@ -160,29 +170,34 @@ typemax(Int32) so the record is never silently corrupted).
     step_gap = raw_steps - store_step
 
     # Pack all 22 fields into a stack-allocated buffer.
+    # Int64, not Int32: u0/u1/v0/v1 are mod p, and al/be/combined_al/combined_be
+    # are mod ell — neither p nor ell is bounded by Int32's signed range in
+    # general (both grow with --min-ell-bits / problem size). raw_steps/
+    # store_step/step_gap are step counters that can also exceed Int32 on long
+    # runs. Int64 matches Julia's native Int width, so no clamping is needed.
     buf = (
-        Int32(lp_key[1]),      # c0
-        Int32(lp_key[2]),      # c1
-        Int32(lp_key[3]),      # v0
-        Int32(lp_key[4]),      # v1
-        Int32(i0),             # i0
-        Int32(neg_al),         # neg_al
-        Int32(neg_be),         # neg_be
-        Int32(clamp(raw_steps,  0, typemax(Int32))),  # raw_steps
-        Int32(prev_col),       # prev_col
-        Int32(prev_al),        # prev_al
-        Int32(prev_be),        # prev_be
-        Int32(clamp(store_step, 0, typemax(Int32))),  # store_step
-        Int32(combined_al),    # combined_al
-        Int32(combined_be),    # combined_be
-        Int32(clamp(step_gap,   0, typemax(Int32))),  # step_gap
-        Int32(al_cur),         # al_cur
-        Int32(px_anchor),      # px_anchor
-        Int32(py_anchor),      # py_anchor
-        Int32(a_raw),          # a_raw
-        Int32(a_bucket),       # a_bucket
-        Int32(Threads.threadid()), # tid
-        Int32(0),              # _pad
+        Int64(lp_key[1]),      # c0
+        Int64(lp_key[2]),      # c1
+        Int64(lp_key[3]),      # v0
+        Int64(lp_key[4]),      # v1
+        Int64(i0),             # i0
+        Int64(neg_al),         # neg_al
+        Int64(neg_be),         # neg_be
+        Int64(raw_steps),      # raw_steps
+        Int64(prev_col),       # prev_col
+        Int64(prev_al),        # prev_al
+        Int64(prev_be),        # prev_be
+        Int64(store_step),     # store_step
+        Int64(combined_al),    # combined_al
+        Int64(combined_be),    # combined_be
+        Int64(step_gap),       # step_gap
+        Int64(al_cur),         # al_cur
+        Int64(px_anchor),      # px_anchor
+        Int64(py_anchor),      # py_anchor
+        Int64(a_raw),          # a_raw
+        Int64(a_bucket),       # a_bucket
+        Int64(Threads.threadid()), # tid
+        Int64(0),              # _pad
     )
 
     lock(ds.lock) do
@@ -203,16 +218,16 @@ function _write_conj_schema(bin_path::String)
     open(schema_path, "w") do io
         println(io, "{")
         println(io, "  \"magic\": \"CONJCLOS\",")
-        println(io, "  \"version\": 1,")
+        println(io, "  \"version\": 2,")
         println(io, "  \"header_bytes\": 16,")
         println(io, "  \"record_bytes\": ", CONJ_RECORD_BYTES, ",")
-        println(io, "  \"dtype\": \"int32\",")
+        println(io, "  \"dtype\": \"int64\",")
         println(io, "  \"endian\": \"little\",")
         println(io, "  \"n_fields\": ", CONJ_N_FIELDS, ",")
         println(io, "  \"fields\": [")
         for (k, name) in enumerate(CONJ_FIELD_NAMES)
             comma = k < length(CONJ_FIELD_NAMES) ? "," : ""
-            println(io, "    {\"name\": \"", name, "\", \"dtype\": \"int32\", \"offset\": ", (k-1)*4, "}", comma)
+            println(io, "    {\"name\": \"", name, "\", \"dtype\": \"int64\", \"offset\": ", (k-1)*8, "}", comma)
         end
         println(io, "  ],")
         println(io, "  \"field_notes\": {")

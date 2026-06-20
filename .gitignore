@@ -1,4 +1,5 @@
 *.~*
+*.bin
 tmp/*
 *.h5
 *.sage.py
