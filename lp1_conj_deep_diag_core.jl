@@ -227,6 +227,64 @@ const D34_X_BUCKETS = 128     # coarse x-axis partition; wide enough to show sha
 # benefits from more samples and the per-closure cost here is six Ints).
 const D35_MAX_CLOSURES = 50_000
 
+# -----------------------------------------------------------------------
+# D36 — next_anchor() short-range autocorrelation at closure (raw FB-index
+# distance between the closing and storing anchor cursors).
+#
+# Motivation: D32's own closing interpretation, having found the
+# store→close recurrence GAP (in walk-step time) to be memoryless, points
+# at a different mechanism for the CIR-ACF burst: "correlated NEW key
+# arrivals (anchor-sequence structure)... consider checking next_anchor()'s
+# short-range autocorrelation directly." This is that check.
+#
+# next_anchor() is fully deterministic: within a thread it is a round-robin
+# cursor over a fixed contiguous FB-index slice [anchor_start, anchor_end],
+# advancing by exactly 1 per call and wrapping at the end. There is no
+# randomness to test in the generator itself — the only thing that CAN
+# vary is which FB index the cursor happens to be sitting on at the
+# moment a given key is stored vs. the (later) moment it closes. Both of
+# those indices are already available at every closure as i0 (close-time
+# anchor) and prev_col (store-time anchor) — see record_d19_closure! and
+# record_d35_closure!, which already receive exactly these two values.
+#
+# Hypothesis under test: if the anchor cursor's position is short-range
+# autocorrelated with closure likelihood — e.g. because nearby FB indices
+# correspond to nearby curve points whose φ-images are more likely to
+# collide — then |i0 - prev_col| (raw FB-index distance) should show
+# excess mass at small values relative to what two cursor positions
+# landing independently/uniformly over the FB would produce. This is the
+# direct index-space analogue of D32's walk-step-time analogue: D32 asked
+# "is the recurrence gap in TIME short-range correlated", found no; D36
+# asks "is the recurrence gap in FB-INDEX (i.e. in the deterministic
+# anchor sequence) short-range correlated".
+#
+# Because each thread owns a disjoint contiguous FB slice (see
+# trial3_phase2.jl's anchor_start/anchor_end partition), most closures
+# pair an i0 and prev_col from the SAME thread's slice (the partner was
+# necessarily stored by some thread, but the closing thread's own i0 is
+# only ever drawn from its own slice — prev_col can be any thread's slice).
+# We do not attempt to reconstruct thread boundaries here (n_threads/
+# fb_size are not reliably threaded through to the report call site at
+# present); instead we test the index-distance distribution directly
+# against the uniform-pair null over [1, fb_size], which is agnostic to
+# how the FB happens to be partitioned across threads and is exactly the
+# "autocorrelation of the anchor sequence" question as posed.
+#
+# d36_dist_hist   : log2-bucketed histogram of d = |i0 - prev_col|, same
+#                   bucketing convention as D32 (bucket 0 = d in [0,1],
+#                   bucket b>=1 = d in [2^b, 2^(b+1)-1]).
+# d36_short_hist  : LINEAR per-distance histogram for d = 1..D36_SHORT_MAX,
+#                   the direct short-range test instrument (mirrors D32's
+#                   d32_short_lag_hist).
+# d36_n_closures  : total closures contributing (i0 != prev_col always
+#                   holds by construction at the close path, so d >= 1
+#                   for every closure; see handle_1lp_conj!'s i0==prev_col
+#                   assertion).
+# d36_dist_sum    : running sum of d, for the empirical mean (used to fit
+#                   the uniform-pair null's effective scale in the report).
+const D36_LOG_BUCKETS = 32              # covers distance up to 2^31
+const D36_SHORT_MAX   = 128             # linear resolution out to 128 FB-index steps
+
 
 # For each LP1-conj key k we track:
 #   W(k)      = max(store_step) - min(store_step) across all STORE events
@@ -514,6 +572,17 @@ mutable struct ConjDeepStat
     d35_px_store  ::Vector{Int}
     d35_py_store  ::Vector{Int}
     d35_n_closures::Int   # uncapped running total (denominator for "capped at" reporting)
+
+    # D36 — next_anchor() short-range autocorrelation at closure.
+    # See constants block above for the full hypothesis writeup. Unlike
+    # D25/D35 (capped, vector-of-tuples), this is an O(1) increment-only
+    # histogram accumulator over ALL closures, mirroring D32's design —
+    # the question is about distribution SHAPE in the tail, which a
+    # capped/truncated sample could distort.
+    d36_dist_hist  ::Vector{Int}   # length D36_LOG_BUCKETS, log2-bucketed |i0-prev_col|
+    d36_short_hist ::Vector{Int}   # length D36_SHORT_MAX, linear d=1..D36_SHORT_MAX
+    d36_n_closures ::Int           # total closures contributing
+    d36_dist_sum   ::Int           # running sum of d, for empirical mean
 end
 
 function ConjDeepStat()
@@ -613,6 +682,11 @@ function ConjDeepStat()
         Int[],                              # d35_px_store
         Int[],                              # d35_py_store
         0,                                  # d35_n_closures
+        # D36 — next_anchor() short-range autocorrelation at closure
+        zeros(Int, D36_LOG_BUCKETS),        # d36_dist_hist
+        zeros(Int, D36_SHORT_MAX),          # d36_short_hist
+        0,                                  # d36_n_closures
+        0,                                  # d36_dist_sum
     )
 end
 
@@ -849,6 +923,13 @@ function merge_conj_deep_stats(stats::Vector{ConjDeepStat})::ConjDeepStat
             end
         end
         merged.d35_n_closures += s.d35_n_closures
+
+        # D36: merge histograms — increment-only accumulators, same pattern
+        # as D32 (no cap, no truncation; the question is about tail SHAPE).
+        merged.d36_dist_hist  .+= s.d36_dist_hist
+        merged.d36_short_hist .+= s.d36_short_hist
+        merged.d36_n_closures += s.d36_n_closures
+        merged.d36_dist_sum   += s.d36_dist_sum
     end
 
     # D12 store-event reservoir: merged separately (needs every thread's
@@ -1632,6 +1713,47 @@ end
     push!(stat.d35_py_close, py_close)
     push!(stat.d35_px_store, px_store)
     push!(stat.d35_py_store, py_store)
+    return nothing
+end
+
+# ---------------------------------------------------------------------------
+#  record_d36_closure! — call from handle_1lp_conj! at every CLOSE, alongside
+#  record_d19_closure!/record_d25_closure!/record_d35_closure!.
+#
+#  Arguments:
+#    stat     — per-thread ConjDeepStat
+#    i0       — closing FB anchor index (current anchor_cursor position)
+#    prev_col — storing FB anchor index (anchor_cursor position when the
+#               partner key was originally stored)
+#
+#  Records d = |i0 - prev_col|, the raw FB-index distance between the two
+#  anchor-cursor positions paired at this closure. See the D36 constants-
+#  block docstring in this file for the full hypothesis writeup, and
+#  _report_d36 in lp1_conj_deep_diag_d36.jl for the report.
+#
+#  d >= 1 always: handle_1lp_conj! asserts i0 != prev_col before reaching
+#  the close path (see the "same-partial leak" assertion), so there is no
+#  d == 0 case to special-case here.
+#
+#  O(1) increment-only, no allocation, no cap — mirrors record_d8/d32's
+#  unbounded-accumulator design rather than D25/D35's capped-vector design,
+#  since (as with D32) the question is about tail SHAPE over the full
+#  closure population, not a representative sample of raw tuples.
+# ---------------------------------------------------------------------------
+@inline function record_d36_closure!(stat    ::ConjDeepStat,
+                                      i0      ::Int,
+                                      prev_col::Int)
+    d = abs(i0 - prev_col)
+    d == 0 && return nothing   # defensive; should be unreachable (see docstring)
+
+    stat.d36_n_closures += 1
+    stat.d36_dist_sum   += d
+
+    log_bkt = d <= 1 ? 0 : min(D36_LOG_BUCKETS - 1, (64 - leading_zeros(d)) - 1)
+    @inbounds stat.d36_dist_hist[log_bkt + 1] += 1
+    if 1 <= d <= D36_SHORT_MAX
+        @inbounds stat.d36_short_hist[d] += 1
+    end
     return nothing
 end
 

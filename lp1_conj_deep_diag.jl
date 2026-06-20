@@ -30,6 +30,14 @@
 #                                   (combined_al/combined_be) vs ΔP proxy
 #                                   (FB anchor x-difference), plus a
 #                                   co-localization test between the two
+#  lp1_conj_deep_diag_d36.jl     — report section D36 (_report_d36):
+#                                   next_anchor() short-range autocorrelation
+#                                   at closure — raw FB-index distance
+#                                   |i0-prev_col| between the closing and
+#                                   storing anchor cursors, vs a uniform-pair
+#                                   null. Direct follow-up to D32's closing
+#                                   pointer ("consider next_anchor()'s
+#                                   short-range autocorrelation directly").
 #
 #  Wiring (unchanged from the monolithic version)
 #  ───────────────────────────────────────────────
@@ -57,6 +65,7 @@ include("lp1_conj_deep_diag_d32.jl")  # D32 — LP1-conj key recurrence-gap conc
 include("lp1_conj_deep_diag_d33.jl")  # D33 — φ a-coefficient residue bias (small-prime modular structure)
 include("lp1_conj_deep_diag_d34.jl")  # D34 — x-bucket smoothing-probability (draining hypothesis test)
 include("lp1_conj_deep_diag_d35.jl")  # D35 — closure difference-process concentration (Δα/Δβ vs ΔP proxy)
+include("lp1_conj_deep_diag_d36.jl")  # D36 — next_anchor() short-range autocorrelation (FB-index distance)
 
 # ---------------------------------------------------------------------------
 #  print_conj_deep_report — top-level dispatcher.
@@ -135,6 +144,7 @@ function print_conj_deep_report(phi_stat ::PhiBiasStat,
     _report_d33(deep_stat)
     _report_d34(deep_stat; p=p)
     _report_d35(deep_stat; p=p, ell=ell)
+    _report_d36(deep_stat)
 
     @printf("\n== End LP1-conj deep diagnostics ====================================================\n")
     flush(stdout)
