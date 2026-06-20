@@ -532,8 +532,21 @@ end
         Threads.atomic_add!(rel_counter, 1)
         # Dataset export: record every LP1-conj closure for ML analysis.
         if conj_dataset !== nothing
+            # lp_key is packed by canonical_lp1_conj_key (trial3_config.jl) as:
+            #   bits   0..31  = u0 mod p
+            #   bits  32..63  = u1 mod p
+            #   bits  64..95  = v0 mod p
+            #   bits  96..127 = v1 mod p
+            # It is NOT a 4-tuple — lp_key[1] etc. hit Julia's scalar-iteration
+            # fallback and return the whole 128-bit value, which then overflows
+            # Int(...). Unpack the real limbs via the exact inverse of the
+            # packing instead.
+            lp_key_bits = UInt128(lp_key)
             record_conj_closure!(conj_dataset,
-                (Int(lp_key[1]), Int(lp_key[2]), Int(lp_key[3]), Int(lp_key[4])),
+                (Int(lp_key_bits % UInt32),
+                 Int((lp_key_bits >> 32) % UInt32),
+                 Int((lp_key_bits >> 64) % UInt32),
+                 Int((lp_key_bits >> 96) % UInt32)),
                 i0, neg_al, neg_be, s.raw_steps,
                 prev_col, prev_al, prev_be, Int(v.store_step),
                 combined_al, combined_be,

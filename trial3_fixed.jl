@@ -963,6 +963,7 @@ function parse_trial3_cli(args::Vector{String})
     min_ell_bits       = 0    # 0 = no minimum
     rel_multiplier     = 2.0  # β=0 relation target = rel_multiplier × nF
     post_conj_stride   = 0    # extra anchor advances after every conj branch
+    conj_dataset_path  = "conj_closures.bin"  # set to "" via --no-conj-dataset to disable
 
     for arg in args
         if arg == "--no-lp2"
@@ -994,6 +995,10 @@ function parse_trial3_cli(args::Vector{String})
             rel_multiplier = parse(Float64, split(arg, "=", limit=2)[2])
         elseif startswith(arg, "--post-conj-stride=")
             post_conj_stride = parse(Int, split(arg, "=", limit=2)[2])
+        elseif arg == "--no-conj-dataset"
+            conj_dataset_path = ""
+        elseif startswith(arg, "--conj-dataset-path=")
+            conj_dataset_path = split(arg, "=", limit=2)[2]
         end
     end
     return (fb_size=fb_size, enable_lp2=enable_lp2, enable_lp2_conj=enable_lp2_conj,
@@ -1001,7 +1006,8 @@ function parse_trial3_cli(args::Vector{String})
             amortized=amortized, use_cycle_union=use_cycle_union,
             enable_lp1_aff=enable_lp1_aff, n_targets=n_targets,
             sqrt_mode=sqrt_mode, table_size=table_size, min_ell_bits=min_ell_bits,
-            rel_multiplier=rel_multiplier, post_conj_stride=post_conj_stride)
+            rel_multiplier=rel_multiplier, post_conj_stride=post_conj_stride,
+            conj_dataset_path=(conj_dataset_path == "" ? nothing : conj_dataset_path))
 end
 
 # ---------------------------------------------------------------------------
@@ -1119,7 +1125,8 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
                  table_size         ::Union{Nothing,Int} = nothing,
                  min_ell_bits       ::Int   = 0,
                  rel_multiplier     ::Float64 = 2.0,
-                 post_conj_stride   ::Int   = 0)
+                 post_conj_stride   ::Int   = 0,
+                 conj_dataset_path  ::Union{Nothing,String} = "conj_closures.bin")
     t_main_start = time()
     println("="^70)
     println("  trial3: Markov-walk phi-relation index calculus")
@@ -1213,6 +1220,13 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
         fb_run = fb_size === nothing ? clamp(round(Int, p^(1/2)), 200, 20_000) : fb_size
         @printf("── Amortised precomputation (β=0 walk, FB=%d) ───────────────────────\n", fb_run)
         t_pre = time()
+
+        # ── Conj-closure dataset writer (optional) ──────────────────────────────
+        conj_dataset = conj_dataset_path === nothing ? nothing : open_conj_dataset(conj_dataset_path)
+        if conj_dataset !== nothing
+            @printf("  [conj-dataset] recording LP1-conj closures → %s\n", conj_dataset_path)
+            flush(stdout)
+        end
 
         # ── Phase 1 (β=0) ────────────────────────────────────────────────────
         # T is a dummy here — not used since beta_zero=true.  We still need a
@@ -1324,8 +1338,17 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
                     thread_deep_stats_pre[tid], n_workers_pre;
                     verbose=true, beta_zero=true, amortized_precompute=true,
                     enable_lp1_aff=enable_lp1_aff,
-                    post_conj_stride=post_conj_stride)
+                    post_conj_stride=post_conj_stride,
+                    conj_dataset=conj_dataset)
             end
+        end
+
+        # Close the conj-closure dataset writer now that all walker threads are done.
+        if conj_dataset !== nothing
+            close_conj_dataset(conj_dataset)
+            @printf("  [conj-dataset] wrote %d closure entries → %s\n",
+                    conj_dataset.n_records[], conj_dataset.path)
+            flush(stdout)
         end
 
         @printf("  [MEM] after  phase2 walk:  RSS=%.1f MB  GC-live=%.1f MB\n",
@@ -1470,7 +1493,8 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
                                   enable_lp2_conj=enable_lp2_conj,
                                   max_lp2_nodes=max_lp2_nodes,
                                   max_lp2_conj_nodes=max_lp2_conj_nodes,
-                                  use_cycle_union=use_cycle_union)
+                                  use_cycle_union=use_cycle_union,
+                                  conj_dataset_path=conj_dataset_path)
     t_walk_done = time() - t_walk
     k_rec = wres === nothing ? nothing : wres.k
 
@@ -1496,7 +1520,8 @@ function main2_from_argv()
           enable_lp1_aff=opts.enable_lp1_aff, n_targets=opts.n_targets,
           sqrt_mode=opts.sqrt_mode, table_size=opts.table_size,
           min_ell_bits=opts.min_ell_bits, rel_multiplier=opts.rel_multiplier,
-          post_conj_stride=opts.post_conj_stride)
+          post_conj_stride=opts.post_conj_stride,
+          conj_dataset_path=opts.conj_dataset_path)
 end
 
 if abspath(PROGRAM_FILE) == @__FILE__
