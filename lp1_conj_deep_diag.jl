@@ -53,6 +53,15 @@
 #                                   short-range autocorrelation directly").
 #                                   See D30 for the coordinate-space (rather
 #                                   than index-space) version of this test.
+#  lp1_conj_deep_diag_d29.jl     — report section D29 (_report_d29):
+#                                   wide-lag burst-memory trackers — α mod-q
+#                                   circular autocorrelation (phase-locking,
+#                                   esp. q=7 per D33's χ²/dof spike), p_x
+#                                   spatial autocorrelation (basin trapping)
+#                                   over lags [500,5000], and rolling
+#                                   (α mod q, p_x) mutual information
+#                                   (dynamic steering) — direct follow-up to
+#                                   the CIR-ACF burst result (τ* ≈ 4128).
 #
 #  Wiring (unchanged from the monolithic version)
 #  ───────────────────────────────────────────────
@@ -82,6 +91,7 @@ include("lp1_conj_deep_diag_d33.jl")  # D33 — φ a-coefficient residue bias (s
 include("lp1_conj_deep_diag_d34.jl")  # D34 — x-bucket smoothing-probability (draining hypothesis test)
 include("lp1_conj_deep_diag_d35.jl")  # D35 — closure difference-process concentration (Δα/Δβ vs ΔP proxy)
 include("lp1_conj_deep_diag_d36.jl")  # D36 — next_anchor() short-range autocorrelation (FB-index distance)
+include("lp1_conj_deep_diag_d29.jl")  # D29 — wide-lag burst-memory trackers (α-ACF, p_x spatial ACF, α/p_x CCF)
 
 # ---------------------------------------------------------------------------
 #  print_conj_deep_report — top-level dispatcher.
@@ -162,6 +172,7 @@ function print_conj_deep_report(phi_stat ::PhiBiasStat,
     _report_d34(deep_stat; p=p)
     _report_d35(deep_stat; p=p, ell=ell)
     _report_d36(deep_stat)
+    _report_d29(deep_stat; p=p, ell=ell)
 
     @printf("\n== End LP1-conj deep diagnostics ====================================================\n")
     flush(stdout)

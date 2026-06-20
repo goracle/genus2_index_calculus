@@ -354,6 +354,68 @@ const D30_SHORT_MAX    = 128             # linear resolution out to 128, matchin
 const D36_LOG_BUCKETS = 32              # covers distance up to 2^31
 const D36_SHORT_MAX   = 128             # linear resolution out to 128 FB-index steps
 
+# -----------------------------------------------------------------------
+# D29 — wide-lag burst-memory trackers: α mod-q autocorrelation (phase-
+# locking), p_x spatial autocorrelation (basin trapping), and (α,p_x)
+# cross-correlation / rolling mutual information (dynamic steering).
+#
+# Motivation (GPT, CIR-ACF burst follow-up): the CIR-ACF diagnostic found
+# a massive Fano factor and a decorrelation length τ* ≈ 4128 steps — the
+# walk has "hot" and "cold" epochs at a timescale FAR wider than anything
+# D30/D32/D36 tested (all ≤128-step short-range). Since the LP1-conj
+# output residual is fully determined by the divisor state (α) and the
+# chosen anchor P0=(p_x,p_y), any bursty memory in the key stream must be
+# inherited from autocorrelation in the (α, p_x) trajectory itself:
+#   1. α mod-q phase-locking: if the φ-map acts as an algebraic funnel
+#      onto a sub-variety, α^(n) mod q (esp. q=7, already flagged by
+#      D33's χ²/dof residue-bias spike) may show non-decaying circular
+#      autocorrelation rather than mixing freely under the golden-ratio
+#      drift.
+#   2. p_x basin trapping: if the φ-transition graph has disconnected
+#      dense components, p_x should show positive autocorrelation out to
+#      thousands of steps as the walk takes that long to escape a local
+#      anchor neighborhood — wider than D30/D36's short-lag tests.
+#   3. (α,p_x) dynamic steering: if specific α regimes systematically
+#      route the walk toward specific p_x anchors at long lead times, a
+#      ROLLING mutual information I(α^(n) mod q ; p_x^(n+k)) swept across
+#      wide lags k would be nonzero even though D12's single-lag (k=0)
+#      store-time MI test already found near-zero coupling
+#      (I=0.0057 bits, NMI=0.0010 — see D12 report) — D12 never tested
+#      k != 0, so a lagged steering effect would be invisible to it.
+#
+# Recording: a CONTIGUOUS sample of (alpha_cur, px) taken at ONE site per
+# valid walk step — after gates pass and before the LP1/LP2 branch (see
+# trial3_phase2.jl, immediately after P0 = cur_pt) — regardless of which
+# opcode the step resolves to. This is a single call site, unlike D34
+# which is duplicated at every branch exit because it needs outcome-
+# conditioned counters; D29 only needs the raw (α,p_x) pair once per step.
+# Unlike D20/D28's baseline reservoirs (1/32-sparse, i.i.d. sampling is
+# fine for marginal distributions), ACF/CCF estimation needs an UNBROKEN
+# time series — a sparse sample would corrupt lag alignment — so this
+# follows D9's full-rate opcode_log convention instead: a length-capped
+# (not probability-thinned) contiguous prefix per thread.
+#
+# Cap: D29_MAX_SAMPLES, same order of magnitude as DEEP_DIAG_MAX_OPCODE_LOG
+# (which already logs one byte/step at this exact granularity) — the
+# incremental memory cost here is two Ints (16 bytes) per logged step
+# instead of one byte, i.e. ~16x the opcode log's footprint at the same cap.
+#
+# All ACF/CCF/MI arithmetic (mod-q reduction, circular autocorrelation,
+# joint-histogram binning) is deferred entirely to _report_d29, exactly as
+# D30/D35 defer mod-p reduction — alpha_cur and px are stored raw/unreduced.
+const D29_MAX_SAMPLES   = 2_000_000   # per-thread cap on the contiguous (alpha,px) stream
+const D29_PRIMES        = (7, 3, 5)   # small-prime moduli for α phase-locking; q=7 is primary (D33 χ²/dof spike), 3/5 are cross-checks
+const D29_ACF_DENSE_LAG = 200         # α-ACF: dense (every-lag) resolution out to this many steps
+const D29_ACF_MAX_LAG   = 5000        # α-ACF / p_x-ACF / CCF outer lag boundary (matches the requested 5000-pair window)
+const D29_ACF_STRIDE    = 100         # α-ACF: lag stride beyond D29_ACF_DENSE_LAG, out to D29_ACF_MAX_LAG
+const D29_PX_LAG_LO     = 500         # p_x spatial ACF: lower bound of the wide-lag window (short lags already covered by D30/D36)
+const D29_PX_LAG_HI     = D29_ACF_MAX_LAG  # p_x spatial ACF: upper bound
+const D29_PX_LAG_STRIDE = 100         # p_x spatial ACF: lag stride within [D29_PX_LAG_LO, D29_PX_LAG_HI]
+const D29_MI_GRID_BITS  = 6           # 2^6 = 64 p_x buckets for the cross-MI joint histogram (matches D12/D25 grid)
+const D29_MI_GRID_SIZE  = 1 << D29_MI_GRID_BITS
+const D29_MI_LAG_STRIDE = 250         # CCF/MI: lag stride for the rolling (α mod q ; p_x) joint-histogram sweep, 0..D29_ACF_MAX_LAG
+const D29_Z_SIG         = 3.0         # |z| threshold for flagging a lag as significantly non-null in the report
+
 
 # For each LP1-conj key k we track:
 #   W(k)      = max(store_step) - min(store_step) across all STORE events
@@ -668,6 +730,15 @@ mutable struct ConjDeepStat
     d36_short_hist ::Vector{Int}   # length D36_SHORT_MAX, linear d=1..D36_SHORT_MAX
     d36_n_closures ::Int           # total closures contributing
     d36_dist_sum   ::Int           # running sum of d, for empirical mean
+
+    # D29 — wide-lag burst-memory trackers: contiguous (alpha_cur, px)
+    # sample taken at every valid walk step. See constants block above for
+    # the full hypothesis writeup (α mod-q phase-locking, p_x spatial
+    # autocorrelation, (α,p_x) rolling cross-MI). All ACF/CCF/MI math is
+    # deferred to _report_d29; alpha_cur and px are stored raw/unreduced.
+    d29_alpha     ::Vector{Int}   # alpha_cur at each sampled step (raw, unreduced)
+    d29_px        ::Vector{Int}   # px (P0[1]) at each sampled step, index-aligned with d29_alpha
+    d29_n_samples ::Int           # uncapped running total — denominator for "capped at" reporting
 end
 
 function ConjDeepStat()
@@ -776,6 +847,10 @@ function ConjDeepStat()
         zeros(Int, D36_SHORT_MAX),          # d36_short_hist
         0,                                  # d36_n_closures
         0,                                  # d36_dist_sum
+        # D29 — wide-lag burst-memory trackers (α-ACF, p_x spatial ACF, α/p_x CCF)
+        Int[],                              # d29_alpha
+        Int[],                              # d29_px
+        0,                                  # d29_n_samples
     )
 end
 
@@ -1031,11 +1106,36 @@ function merge_conj_deep_stats(stats::Vector{ConjDeepStat})::ConjDeepStat
         merged.d36_short_hist .+= s.d36_short_hist
         merged.d36_n_closures += s.d36_n_closures
         merged.d36_dist_sum   += s.d36_dist_sum
+
+        # D29: merge (alpha, px) contiguous samples — capped append, full-
+        # rate per-step log (NOT a reservoir; see struct docstring — ACF/CCF
+        # estimation needs an unbroken time series, so we take an identical
+        # prefix slice of both parallel vectors rather than randomly
+        # subsampling, exactly mirroring D9's opcode_log merge).
+        let n_rem29 = D29_MAX_SAMPLES - length(merged.d29_alpha)
+            if n_rem29 > 0
+                n_take = min(n_rem29, length(s.d29_alpha))
+                append!(merged.d29_alpha, s.d29_alpha[1:n_take])
+                append!(merged.d29_px,    s.d29_px[1:n_take])
+            end
+        end
+        merged.d29_n_samples += s.d29_n_samples
     end
 
     # D12 store-event reservoir: merged separately (needs every thread's
     # true stream length up front; see _merge_d12_store_reservoirs!).
     _merge_d12_store_reservoirs!(merged, stats)
+
+    # D29 invariant: d29_alpha and d29_px must stay index-aligned (every
+    # write site pushes both together). A length mismatch here means a
+    # bug in record_d29_step! or the merge above corrupted alignment —
+    # silently truncating to the shorter vector would produce a plausible-
+    # looking but WRONG ACF/CCF report, so we raise instead.
+    if length(merged.d29_alpha) != length(merged.d29_px)
+        throw(AssertionError("merge_conj_deep_stats: D29 alpha/px length " *
+            "mismatch ($(length(merged.d29_alpha)) vs $(length(merged.d29_px))) " *
+            "— record_d29_step! or its merge logic is corrupting alignment"))
+    end
 
     return merged
 end
@@ -1555,6 +1655,32 @@ end
         end
     end
 
+    return nothing
+end
+
+# ---------------------------------------------------------------------------
+#  record_d29_step! — call ONCE per valid walk step, at the single site
+#  right after P0 = cur_pt (after gates pass, before the LP1/LP2 branch),
+#  regardless of which opcode the step ultimately resolves to.
+#
+#  Appends (alpha_cur, px) to the contiguous per-thread sample, capped at
+#  D29_MAX_SAMPLES. O(1) amortized (Vector push, no allocation beyond
+#  occasional growth) — safe for the hot path. Unlike record_d34_step!,
+#  this does NOT need to be duplicated at every branch exit: D34 needs
+#  outcome-conditioned counters (which bucket got a 0-LP vs a STORE), but
+#  D29 only needs the raw (α,p_x) pair itself, which is already fully
+#  determined before the branch runs.
+#
+#  See the D29 constants-block docstring in this file for the full
+#  hypothesis writeup (α mod-q phase-locking, p_x spatial autocorrelation,
+#  (α,p_x) rolling cross-MI).
+# ---------------------------------------------------------------------------
+@inline function record_d29_step!(stat::ConjDeepStat, alpha_cur::Int, px::Int)
+    if stat.d29_n_samples < D29_MAX_SAMPLES
+        push!(stat.d29_alpha, alpha_cur)
+        push!(stat.d29_px,    px)
+    end
+    stat.d29_n_samples += 1
     return nothing
 end
 

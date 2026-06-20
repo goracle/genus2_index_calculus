@@ -1234,6 +1234,11 @@ function phase2_worker(G               ::Div2,
         P0     = cur_pt
         i0     = get(pt2idx, P0, 0)
 
+        # D29 — wide-lag burst-memory trackers: log (alpha_cur, px) once per
+        # valid step, before the LP1/LP2 branch, regardless of outcome. See
+        # lp1_conj_deep_diag_core.jl's D29 constants-block docstring.
+        record_d29_step!(deep_stat, al, P0[1])
+
         rs_split   = res_R !== SENTINEL_PT
         R          = res_R   # NTuple{2,Int} always; SENTINEL_PT if conjugate
         S          = res_S   # NTuple{2,Int} always; SENTINEL_PT if conjugate
