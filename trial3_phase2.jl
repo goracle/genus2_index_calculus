@@ -549,6 +549,7 @@ end
                  Int((lp_key_bits >> 96) % UInt32)),
                 i0, neg_al, neg_be, s.raw_steps,
                 prev_col, prev_al, prev_be, Int(v.store_step),
+                fb[prev_col][1], fb[prev_col][2],
                 combined_al, combined_be,
                 al_cur, px_anchor, py_anchor, a_raw, a_bucket)
         end

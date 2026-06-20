@@ -1,7 +1,7 @@
 # =============================================================================
 #  conj_closure_dataset.jl  —  LP1-conj closure dataset writer
 #
-#  Records one CONJ_RECORD_BYTES-byte entry (176 bytes = 22 × Int64) per
+#  Records one CONJ_RECORD_BYTES-byte entry (192 bytes = 24 × Int64) per
 #  LP1-conj closure.  The resulting flat binary file plus a companion JSON
 #  schema can be loaded directly into numpy/PyTorch:
 #
@@ -13,6 +13,7 @@
 #        ('neg_be',     np.int64), ('raw_steps',   np.int64),
 #        ('prev_col',   np.int64), ('prev_al',     np.int64),
 #        ('prev_be',    np.int64), ('store_step',  np.int64),
+#        ('px_store',   np.int64), ('py_store',    np.int64),
 #        ('combined_al',np.int64), ('combined_be', np.int64),
 #        ('step_gap',   np.int64),
 #        ('al_cur',     np.int64), ('px_anchor',   np.int64),
@@ -48,6 +49,10 @@
 #    prev_al    — neg_al stored in the waiting entry
 #    prev_be    — neg_be stored in the waiting entry
 #    store_step — raw_steps value when the stored entry was inserted
+#    px_store   — fb[prev_col][1], the stored anchor's actual x-coordinate
+#    py_store   — fb[prev_col][2], the stored anchor's actual y-coordinate
+#    (v1 had prev_col but not its coordinate — recovering px_store required
+#    joining against a separately-saved fb[] array. v3 records it directly.)
 #
 #  Derived scalar outputs:
 #    combined_al — mod(neg_al − prev_al, ell)   (coefficient of G in relation)
@@ -65,36 +70,44 @@
 #    tid         — Julia thread id of the arriving thread
 #    _pad        — reserved / always 0
 #
-#  Each record is exactly CONJ_RECORD_BYTES = 176 bytes (22 × Int64).
+#  Each record is exactly CONJ_RECORD_BYTES = 192 bytes (24 × Int64).
 #  The file begins with a 16-byte magic + version header so a reader can
 #  sanity-check endianness and layout:
 #
 #    bytes 0..7   : magic = 0x434F4E4A434C4F53  ("CONJCLOS" in ASCII)
-#    bytes 8..11  : version = Int32(2)
+#    bytes 8..11  : version = Int32(3)
 #    bytes 12..15 : record_bytes = Int32(CONJ_RECORD_BYTES)
-#    bytes 16..   : packed Int64[22] records, one per closure
+#    bytes 16..   : packed Int64[24] records, one per closure
 #
+#  v2→v3: added px_store/py_store (fb[prev_col][1:2]) — v2 only recorded the
+#  stored anchor's FB INDEX (prev_col), not its actual coordinates, which
+#  meant analysis needed a separate join against fb[] to get px_store.
 #  v1→v2: all 22 fields widened Int32→Int64. v1 used Int32 and silently
 #  clamped raw_steps/store_step/step_gap to typemax(Int32), and would
 #  outright crash (InexactError) on c0/c1/v0/v1/al/be fields once p or ell
-#  exceeded 2^31 — neither is bounded by Int32 in general. v1 files are NOT
-#  binary-compatible with v2 readers; check the version field before parsing.
+#  exceeded 2^31 — neither is bounded by Int32 in general. Files are NOT
+#  binary-compatible across versions; check the version field before parsing.
 #
 #  Thread safety: all writes go through a single ReentrantLock; this is
 #  fine because dataset writes are rare compared to walk steps.
 # =============================================================================
 
 const CONJ_MAGIC        = 0x434F4E4A434C4F53  # "CONJCLOS"
-const CONJ_VERSION      = Int32(2)  # v2: widened all fields Int32→Int64 (p/ell/raw_steps
-                                     # are not bounded by Int32 in general — see record_conj_closure!)
-const CONJ_N_FIELDS     = 22
-const CONJ_RECORD_BYTES = CONJ_N_FIELDS * sizeof(Int64)   # 176 bytes
+const CONJ_VERSION      = Int32(3)  # v3: added px_store/py_store (the stored anchor's
+                                     # actual FB coordinates — fb[prev_col][1:2] — were
+                                     # previously absent; only the FB INDEX prev_col was
+                                     # recorded, not its coordinate. v2: widened all
+                                     # fields Int32→Int64 (p/ell/raw_steps are not
+                                     # bounded by Int32 in general).
+const CONJ_N_FIELDS     = 24
+const CONJ_RECORD_BYTES = CONJ_N_FIELDS * sizeof(Int64)   # 192 bytes
 
 # Field names in order — kept here as the single source of truth.
 const CONJ_FIELD_NAMES = [
     "c0", "c1", "v0", "v1",            # LP key (Mumford coords)
     "i0", "neg_al", "neg_be", "raw_steps",        # incoming partial
     "prev_col", "prev_al", "prev_be", "store_step", # stored partial
+    "px_store", "py_store",            # stored anchor's actual FB coords (fb[prev_col])
     "combined_al", "combined_be", "step_gap",     # derived relation
     "al_cur", "px_anchor", "py_anchor", "a_raw", "a_bucket", # walk context
     "tid",                                         # bookkeeping
@@ -140,6 +153,7 @@ end
 """
     record_conj_closure!(ds, lp_key, i0, neg_al, neg_be, raw_steps,
                          prev_col, prev_al, prev_be, store_step,
+                         px_store, py_store,
                          combined_al, combined_be, ell,
                          al_cur, px_anchor, py_anchor, a_raw, a_bucket)
 
@@ -159,6 +173,8 @@ possible for any value this function can receive.
         prev_al     ::Int,
         prev_be     ::Int,
         store_step  ::Int,
+        px_store    ::Int,             # fb[prev_col][1] — stored anchor's x-coordinate
+        py_store    ::Int,             # fb[prev_col][2] — stored anchor's y-coordinate
         combined_al ::Int,
         combined_be ::Int,
         al_cur      ::Int,
@@ -169,7 +185,7 @@ possible for any value this function can receive.
 
     step_gap = raw_steps - store_step
 
-    # Pack all 22 fields into a stack-allocated buffer.
+    # Pack all 24 fields into a stack-allocated buffer.
     # Int64, not Int32: u0/u1/v0/v1 are mod p, and al/be/combined_al/combined_be
     # are mod ell — neither p nor ell is bounded by Int32's signed range in
     # general (both grow with --min-ell-bits / problem size). raw_steps/
@@ -188,6 +204,8 @@ possible for any value this function can receive.
         Int64(prev_al),        # prev_al
         Int64(prev_be),        # prev_be
         Int64(store_step),     # store_step
+        Int64(px_store),       # px_store
+        Int64(py_store),       # py_store
         Int64(combined_al),    # combined_al
         Int64(combined_be),    # combined_be
         Int64(step_gap),       # step_gap
@@ -218,7 +236,7 @@ function _write_conj_schema(bin_path::String)
     open(schema_path, "w") do io
         println(io, "{")
         println(io, "  \"magic\": \"CONJCLOS\",")
-        println(io, "  \"version\": 2,")
+        println(io, "  \"version\": 3,")
         println(io, "  \"header_bytes\": 16,")
         println(io, "  \"record_bytes\": ", CONJ_RECORD_BYTES, ",")
         println(io, "  \"dtype\": \"int64\",")
@@ -240,6 +258,8 @@ function _write_conj_schema(bin_path::String)
         println(io, "    \"prev_al\":      \"neg_al stored in the waiting entry\",")
         println(io, "    \"prev_be\":      \"neg_be stored in the waiting entry\",")
         println(io, "    \"store_step\":   \"step counter when the waiting entry was inserted\",")
+        println(io, "    \"px_store\":     \"fb[prev_col][1] -- stored anchor's actual x-coordinate\",")
+        println(io, "    \"py_store\":     \"fb[prev_col][2] -- stored anchor's actual y-coordinate\",")
         println(io, "    \"combined_al\":  \"mod(neg_al - prev_al, ell) = coefficient of G in emitted relation\",")
         println(io, "    \"combined_be\":  \"mod(neg_be - prev_be, ell) = coefficient of T in emitted relation\",")
         println(io, "    \"step_gap\":     \"raw_steps - store_step (birthday gap)\",")
