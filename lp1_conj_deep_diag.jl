@@ -62,6 +62,14 @@
 #                                   (α mod q, p_x) mutual information
 #                                   (dynamic steering) — direct follow-up to
 #                                   the CIR-ACF burst result (τ* ≈ 4128).
+#  lp1_conj_deep_diag_d39.jl     — report section D39 (_report_d39):
+#                                   closure-indexed sequential autocorrelation
+#                                   of neg_al (proxy for α·a), px_anchor
+#                                   (proxy for P_fb), and combined_al (Δα,
+#                                   the difference process) — direct test of
+#                                   the closure identity atom(R)+atom(S) ==
+#                                   neg_al·G - atom(P_fb); see core file
+#                                   constants block for full writeup.
 #
 #  Wiring (unchanged from the monolithic version)
 #  ───────────────────────────────────────────────
@@ -94,6 +102,7 @@ include("lp1_conj_deep_diag_d36.jl")  # D36 — next_anchor() short-range autoco
 include("lp1_conj_deep_diag_d29.jl")  # D29 — wide-lag burst-memory trackers (α-ACF, p_x spatial ACF, α/p_x CCF)
 include("lp1_conj_deep_diag_d37.jl")  # D37 — LP1-conj closure-indexed spatial ACF (sidesteps the D29 cursor artifact)
 include("lp1_conj_deep_diag_d38.jl")  # D38 — φ a-coefficient sequential autocorrelation (step-indexed)
+include("lp1_conj_deep_diag_d39.jl")  # D39 — closure-indexed sequential autocorrelation (α, P_fb, Δα)
 
 # ---------------------------------------------------------------------------
 #  print_conj_deep_report — top-level dispatcher.
@@ -178,6 +187,7 @@ function print_conj_deep_report(phi_stat ::PhiBiasStat,
     _report_d29(deep_stat; p=p, ell=ell)
     _report_d37(deep_stat; p=p, ell=ell)
     d38_stat !== nothing && _report_d38(d38_stat; p=p)
+    _report_d39(deep_stat)
 
     @printf("\n== End LP1-conj deep diagnostics ====================================================\n")
     flush(stdout)

@@ -436,6 +436,134 @@ const D37_ACF_LAG_LO     = 1          # closure-indexed ACF: smallest lag tested
 const D37_ACF_LAG_HI     = 2000       # closure-indexed ACF: largest lag tested, in CLOSURES not steps
 const D37_ACF_LAG_STRIDE = 1          # dense by default; closures are already a sparse/expensive event
 
+# -----------------------------------------------------------------------
+# D39 — closure-indexed sequential autocorrelation of α, P, and the
+# combined identity residual α·a − P.
+#
+# Motivating identity (see trial3_phi.jl check_lp1_stored / the Jacobian
+# group-law assert used to validate every closure):
+#
+#     atom(P_fb) + atom(R) + atom(S) - 2·∞  ==  neg_al·G + neg_be·T     (in Jac)
+#
+# i.e. with β-tracking disabled (T-term zero / dead, as confirmed by D35's
+# "Δβ degenerate — single value" readout) the closure identity reduces to
+#
+#     atom(R) + atom(S)  ==  neg_al·G  -  atom(P_fb)                    (*)
+#
+# Claire's hypothesis: the α₂≈0.59–0.60 collision-entropy pinning is
+# explained by non-trivial sequential autocorrelation in the LP1-conj
+# *keys* (which encode atom(R)+atom(S)), and by (*) that should show up
+# as autocorrelation in the RHS, neg_al·G − atom(P_fb), decomposed into
+# its two pieces:
+#
+#   (a) autocorrelation in the scalar neg_al alone (proxy for neg_al·G:
+#       G is a FIXED generator divisor for the whole run, so the closure-
+#       indexed sequence neg_al[1], neg_al[2], ... and the sequence
+#       neg_al[1]·G, neg_al[2]·G, ... are related by a fixed bijective
+#       relabeling — scalar multiplication by a constant. Note this does
+#       NOT imply their autocorrelation FUNCTIONS are identical in general
+#       (mod-ell scalar multiplication is not an isometry of the integers
+#       under addition, so e.g. "neg_al values cluster near each other"
+#       does not imply "neg_al·G values cluster near each other" in the
+#       group's own geometry). What IS exact: any autocorrelation visible
+#       in the raw scalar sequence is real structure in the walk's α
+#       trajectory, and is the cheapest, most direct test available at
+#       this layer — full BigInt Jacobian scalar multiplication per
+#       closure is not something this O(1)-per-event diagnostic file does
+#       (see D30/D34 constants-block precedent for the same tradeoff).
+#
+#   (b) autocorrelation in P_fb directly, via its FB-anchor coordinate
+#       proxy px_anchor (= fb[i0][1] at close time) — exactly the
+#       px_close series D37 already collects, reused here so the same
+#       closure-ordered chain backs both the α-series and the P-series
+#       ACF, making the two directly comparable lag-for-lag.
+#
+# D39 therefore reports THREE closure-indexed ACFs over the same chains:
+#   1. neg_al        (α at close; proxy for α·a)
+#   2. px_anchor      (P_fb at close; = D37's px_close)
+#   3. combined_al    (Δα = neg_al − prev_al; the *difference* process,
+#                      complementary to D35's global concentration test —
+#                      D35 asks "is the SUPPORT of Δα narrow?", D39 asks
+#                      "is the SEQUENCE of Δα autocorrelated?")
+#
+# Sampling/merge discipline mirrors D37 exactly and for the same reason:
+# closures are sparse (low hundreds per run at current scale), so cross-
+# thread concatenation would splice unrelated closures together at thread
+# boundaries and contaminate the lag structure. Each thread's three
+# series are kept as one aligned chain; merge_conj_deep_stats pushes
+# whole chains (not elements) into d39_chains, and _report_d39 computes
+# ACF within each chain separately, then pools z-scores across chains —
+# identical structure to _report_d37 (not included in this upload; D39's
+# report function is self-contained and does not depend on it).
+# -----------------------------------------------------------------------
+const D39_MAX_CLOSURES   = 2_000_000  # per-thread cap, same order as D37
+const D39_ACF_LAG_LO     = 1          # smallest lag tested (1 closure apart)
+const D39_ACF_LAG_HI     = 2000       # largest lag tested, in CLOSURES not steps
+const D39_ACF_LAG_STRIDE = 1          # dense by default, mirrors D37
+
+# -----------------------------------------------------------------------
+# D39b — phase-locked closure diagnostic (addendum to D39).
+#
+# D39's first run found significant closure-indexed sequential
+# autocorrelation in neg_al (peak |z|=8.88 @ lag 2), px_anchor (peak
+# |z|=4.70 @ lag 3), and combined_al (peak |z|=4.96 @ lag 1) at n=303
+# closures. Before treating this as evidence of genuine algebraic/spatial
+# structure worth steering the walk toward, we need to rule out the
+# mechanism the golden-ratio-drift docstring (see next_alpha_beta() above)
+# already warns about: if closures land preferentially on a repeating
+# step-table SLOT, they inherit that slot's fixed (step_a_i[si],
+# step_D[si]) increment, which would manufacture sequential structure in
+# α (and, via D_cur, in the closing point) that has nothing to do with the
+# walk's actual exploration of the Jacobian — pure table-resonance, not
+# signal.
+#
+# IMPORTANT: the step-table walk no longer uses a deterministic cursor
+# (see "Desynchronize the step cursor" comment at the main loop's
+# step_cursor declaration — it's dead code, replaced by si = rand(rng,
+# 1:N_STEPS)). So "phase" can NOT mean "step count mod N_STEPS" the way
+# the original golden-ratio-drift docstring framed it (that warning
+# predates the PRNG-based step selection). The only phase concept that
+# still makes sense is the table SLOT ITSELF (si, 1..N_STEPS): two
+# closures "share a phase" iff the steps that produced them happened to
+# draw the same si, which is what actually determines the fixed
+# per-step increment they received. Phase is now recorded directly
+# (d39_phase, one value per chain entry, index-aligned with
+# neg_al/px_anchor/combined_al) rather than derived from raw_step.
+#
+# Two tests, both computed in _report_d39 (no new accumulator structure
+# needed beyond d39_phase — everything else is post-hoc over the chains):
+#
+#   1. I((α_t, P_t, Δα_t); phase_{t+1} | phase_t) — does knowing this
+#      closure's table slot, on top of the previous closure's table slot,
+#      tell you anything extra about THIS closure's (α, P_fb, Δα)? If the
+#      D39 autocorrelation is pure table-resonance, this conditional MI
+#      should be near the phase_t-only baseline (i.e. phase_t alone
+#      already explains most of what phase_{t+1} would add). Implemented
+#      as a binned/discretized MI estimate (phase already discrete in
+#      [1,N_STEPS]; α/P/Δα coarsely bucketed) against a phase-shuffle null
+#      — see _mi_conditional in lp1_conj_deep_diag_d39.jl.
+#
+#   2. corr(Δα_t, Δα_{t+1}) stratified by phase class — split closures
+#      into "same phase as previous closure in chain" (si_t == si_{t-1})
+#      vs "different phase," and recompute the lag-1 Δα ACF separately in
+#      each stratum. If the D39 result is phase-resonance, the same-phase
+#      stratum should show inflated |r|/|z| relative to the different-
+#      phase stratum (which should look close to null). If both strata
+#      show comparable autocorrelation, the effect is NOT explained by
+#      table resonance and the original interpretation (real algebraic/
+#      spatial structure) survives this check.
+#
+# Sample-size caveat: at n≈303 total closures pooled over ~31 chains
+# (median chain length 10), the same-phase stratum will be sparse —
+# Pr[si_t == si_{t-1}] ≈ 1/N_STEPS per step, so with N_STEPS=512 (per the
+# phase-3 log's "512 steps each" step-table size) expect on the order of
+# n/N_STEPS ≈ 0.6 same-phase pairs per chain. This test is therefore run
+# pooled across ALL chains' consecutive pairs (not per-chain), and the
+# report explicitly states the same-phase sample count so the result
+# isn't over-read at low n — rerun once closure count has grown.
+# -----------------------------------------------------------------------
+
+
 
 # For each LP1-conj key k we track:
 #   W(k)      = max(store_step) - min(store_step) across all STORE events
@@ -787,6 +915,32 @@ mutable struct ConjDeepStat
     d37_n_closures ::Int           # uncapped running total across all threads — denominator for "capped at" reporting
     d37_chains     ::Vector{NamedTuple{(:px_close,:px_store,:al_close,:raw_step),
                                         NTuple{4,Vector{Int}}}}  # one entry per thread, populated only at merge time
+
+    # D39 — closure-indexed sequential autocorrelation of α (proxy for
+    # α·a), P_fb (px_anchor, reusing D37's px_close quantity), and the
+    # difference process combined_al (Δα). See constants block above for
+    # the full hypothesis writeup and the relationship to D35/D37.
+    #
+    # Same per-thread-chain discipline as D37 (closures are sparse; cross-
+    # thread concatenation would inject spurious lag relationships at
+    # thread boundaries). d39_neg_al/d39_px_anchor/d39_combined_al are the
+    # THIS-thread accumulators (index-aligned, one entry per closure, in
+    # closure order); d39_chains holds one whole chain per thread,
+    # populated only at merge time, mirroring d37_chains exactly.
+    d39_neg_al        ::Vector{Int}   # neg_al at close time (proxy series for α·a)
+    d39_px_anchor     ::Vector{Int}   # px_anchor at close time = fb[i0][1] (proxy series for P_fb)
+    d39_combined_al   ::Vector{Int}   # Δα = neg_al - prev_al at close time (difference-process series)
+    d39_phase         ::Vector{Int}   # step-table slot index `si` drawn on the step that produced
+                                        # this closure (1..N_STEPS). See D39b constants-block addendum
+                                        # below: with step selection now PRNG-driven (si = rand(rng,
+                                        # 1:N_STEPS), not a deterministic n mod N_STEPS cursor), "phase"
+                                        # is redefined as the table SLOT drawn, not a step-count residue —
+                                        # two closures share a phase iff they happened to draw the same
+                                        # slot, which still carries the fixed (step_a_i[si], step_D[si])
+                                        # increment the golden-ratio-drift docstring warns about.
+    d39_n_closures    ::Int           # uncapped running total across all threads
+    d39_chains        ::Vector{NamedTuple{(:neg_al,:px_anchor,:combined_al,:phase),
+                                           NTuple{4,Vector{Int}}}}  # one entry per thread, populated only at merge time
 end
 
 function ConjDeepStat()
@@ -907,6 +1061,13 @@ function ConjDeepStat()
         Int[],                              # d37_raw_step
         0,                                  # d37_n_closures
         NamedTuple{(:px_close,:px_store,:al_close,:raw_step),NTuple{4,Vector{Int}}}[],  # d37_chains
+        # D39 — closure-indexed sequential autocorrelation of α / P_fb / Δα
+        Int[],                              # d39_neg_al
+        Int[],                              # d39_px_anchor
+        Int[],                              # d39_combined_al
+        Int[],                              # d39_phase
+        0,                                  # d39_n_closures
+        NamedTuple{(:neg_al,:px_anchor,:combined_al,:phase),NTuple{4,Vector{Int}}}[],  # d39_chains
     )
 end
 
@@ -1199,6 +1360,18 @@ function merge_conj_deep_stats(stats::Vector{ConjDeepStat})::ConjDeepStat
                                        raw_step = copy(s.d37_raw_step)))
         end
         merged.d37_n_closures += s.d37_n_closures
+
+        # D39: per-thread closure-indexed (α, P_fb, Δα) chains. Same
+        # rationale as D37 immediately above — closures are sparse, so we
+        # push each thread's whole chain rather than concatenating, and
+        # _report_d39 computes ACF within each chain separately.
+        if length(s.d39_neg_al) > 0
+            push!(merged.d39_chains, (neg_al      = copy(s.d39_neg_al),
+                                       px_anchor   = copy(s.d39_px_anchor),
+                                       combined_al = copy(s.d39_combined_al),
+                                       phase       = copy(s.d39_phase)))
+        end
+        merged.d39_n_closures += s.d39_n_closures
     end
 
     # D12 store-event reservoir: merged separately (needs every thread's
@@ -2022,6 +2195,48 @@ end
     push!(stat.d37_px_store, px_store)
     push!(stat.d37_al_close, al_close)
     push!(stat.d37_raw_step, raw_step)
+    return nothing
+end
+
+# ---------------------------------------------------------------------------
+#  record_d39_closure! — call from handle_1lp_conj! at every CLOSE, alongside
+#  record_d37_closure!/record_d35_closure!. Appends raw (unbucketed) values
+#  to this THREAD's own closure-ordered chain; cross-thread combination
+#  happens at merge time by chain, not by concatenation (see D39 comment in
+#  merge_conj_deep_stats, mirroring D37's, for why).
+#
+#  neg_al      : neg_al at close time (raw scalar; proxy series for α·a,
+#                since G is fixed for the whole run — see D39 constants-
+#                block docstring in this file for the precise caveat on
+#                what this proxy does and does not establish)
+#  px_anchor   : px_anchor at close time = fb[i0][1] (the closing FB
+#                anchor; this is P_fb in the (*) identity, the same
+#                quantity D37 stores as px_close — reproduced here so the
+#                α-series and P-series share one aligned chain index)
+#  combined_al : Δα = neg_al - prev_al at close time, exact mod ell
+#                (the difference-process series; complements D35's global
+#                concentration test with a sequential-structure test)
+#  phase       : step-table slot `si` (1..N_STEPS) drawn on the step that
+#                produced this closure. See D39b constants-block addendum
+#                for why "phase" means table SLOT here, not n mod N_STEPS —
+#                step selection is PRNG-driven (si = rand(rng, 1:N_STEPS)),
+#                so there is no deterministic step-count residue to use;
+#                the slot itself is what carries a fixed (step_a_i[si],
+#                step_D[si]) increment, so it is the correct phase proxy
+#                for testing table-resonance as an explanation for D39's
+#                lag-1/2 autocorrelation result.
+# ---------------------------------------------------------------------------
+@inline function record_d39_closure!(stat       ::ConjDeepStat,
+                                      neg_al     ::Int,
+                                      px_anchor  ::Int,
+                                      combined_al::Int,
+                                      phase      ::Int)
+    stat.d39_n_closures += 1
+    length(stat.d39_neg_al) >= D39_MAX_CLOSURES && return nothing
+    push!(stat.d39_neg_al,      neg_al)
+    push!(stat.d39_px_anchor,   px_anchor)
+    push!(stat.d39_combined_al, combined_al)
+    push!(stat.d39_phase,       phase)
     return nothing
 end
 

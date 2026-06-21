@@ -404,7 +404,8 @@ end
         anchor_alpha_seen::Union{Dict{Tuple{Int,CanonicalLP1Key},Int}, Nothing} = nothing,
         anchor_alpha_cap::Int = 200_000,
         emitted_conj_rels::Union{Set{NTuple{4,Int}}, Nothing} = nothing,
-        conj_dataset    ::Union{ConjClosureDataset, Nothing} = nothing)::NTuple{2,Int} where V
+        conj_dataset    ::Union{ConjClosureDataset, Nothing} = nothing,
+        step_phase      ::Int = -1)::NTuple{2,Int} where V
 
     si = conj_shard_idx(lp_key)
 
@@ -566,6 +567,13 @@ end
         # walk state, never next_anchor()-derived. See D37 constants-block
         # docstring in lp1_conj_deep_diag_core.jl.
         record_d37_closure!(deep_stat, px_anchor, fb[prev_col][1], al_cur, s.raw_steps)
+        # D39: closure-indexed sequential autocorrelation of α (proxy for
+        # α·a), P_fb (px_anchor, same quantity D37 stores as px_close), and
+        # the difference process Δα = combined_al. See lp1_conj_deep_diag_core.jl
+        # D39 constants-block docstring for the full hypothesis writeup —
+        # this directly tests Claire's "non-trivial autocorrelation in
+        # neg_al·G - atom(P_fb)" hypothesis via its two tractable proxies.
+        record_d39_closure!(deep_stat, neg_al, px_anchor, combined_al, step_phase)
         record_d16_emission!(deep_stat, lp_key, s.raw_steps, i0)
         record_d20_emission!(deep_stat)
         record_d19_closure!(deep_stat, i0, prev_col, combined_al, combined_be)
@@ -1320,7 +1328,8 @@ function phase2_worker(G               ::Div2,
                                                _a_bucket, deep_stat, al, P0[1], Int(a), P0[2],
                                                post_conj_stride,
                                                conj_anchor_alpha_seen, CONJ_ANCHOR_ALPHA_CAP,
-                                               emitted_conj_rels, conj_dataset)
+                                               emitted_conj_rels, conj_dataset,
+                                               si)
                     # D29: handle_1lp_conj! returns next_anchor_ref[]() on every
                     # path (miss, same-partial, AND emission/closure — see its
                     # source, every `return` is next_anchor_ref[]()). It never
