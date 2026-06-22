@@ -393,6 +393,58 @@ function phase1_walk(G::Div2, T::Div2, fb_cap::Int; verbose::Bool = true,
 end
 
 # ---------------------------------------------------------------------------
+#  random_fb_walk — --random-fb mode: skip the phi-walk entirely and build
+#  the factor base from independently-sampled random affine F_p points.
+#
+#  sample_curve_points(n) is a deterministic low-x scan (used elsewhere only
+#  to seed a walk / find a generator) — it returns the same first-n points on
+#  every call, so it's unusable here.  Instead we draw x uniformly at random
+#  from F_p, evaluate the curve, and keep x when f(x) is a QR (coin-flipping
+#  which of the two roots ±y to take so the FB isn't biased toward one root).
+#
+#  No φ-relations are produced (there's no walk to bank them from), so the
+#  alpha/beta/rel_rows outputs are empty — phase 2 picks up the full relation
+#  load.  Return shape mirrors phase1_walk so call sites need no branching.
+#
+#  Returns (fb, pt2idx, alpha_vec, beta_vec, rel_rows).
+# ---------------------------------------------------------------------------
+function random_fb_walk(fb_cap::Int; verbose::Bool = true)
+    fb     = sizehint!(NTuple{2,Int}[], fb_cap)
+    pt2idx = sizehint!(Dict{NTuple{2,Int},Int}(), fb_cap)
+
+    alpha_vec = BigInt[]
+    beta_vec  = BigInt[]
+    rel_rows  = Vector{Dict{Int,Int}}()
+
+    t0 = time()
+    draws = 0
+    while length(fb) < fb_cap
+        x = rand(0:p-1)
+        draws += 1
+        y = sqrt_fp(eval_f(x))
+        y === nothing && continue   # non-residue — x not on the curve, redraw
+
+        rand(Bool) && y != 0 && (y = fp(-y))   # coin-flip the root to avoid bias
+
+        pt = (x, y)
+        haskey(pt2idx, pt) && continue   # duplicate x draw — redraw
+        push!(fb, pt)
+        pt2idx[pt] = length(fb)
+    end
+
+    if verbose
+        @printf("── Phase 1 SKIPPED (--random-fb) ───────────────────────────────────\n")
+        @printf("  FB built:         %d / %d cap  (random F_p points, no walk)\n", length(fb), fb_cap)
+        @printf("  x-draws:          %d  (hit rate %.1f%%)\n", draws, 100.0 * fb_cap / max(1, draws))
+        @printf("  relations banked: 0  (phase 2 carries the full relation load)\n")
+        @printf("  wall time:        %.3fs\n", time() - t0)
+        flush(stdout)
+    end
+
+    return fb, pt2idx, alpha_vec, beta_vec, rel_rows
+end
+
+# ---------------------------------------------------------------------------
 #  index_calculus_walk — orchestrates phase 1, phase 2, and LA solve
 # ---------------------------------------------------------------------------
 function index_calculus_walk(G::Div2, T::Div2;
@@ -407,7 +459,8 @@ function index_calculus_walk(G::Div2, T::Div2;
                              max_lp2_nodes    ::Int  = DEFAULT_MAX_LP2_NODES,
                              max_lp2_conj_nodes::Int = DEFAULT_MAX_LP2_CONJ_NODES,
                              use_cycle_union  ::Bool = false,
-                             conj_dataset_path::Union{Nothing,String} = "conj_closures.bin")
+                             conj_dataset_path::Union{Nothing,String} = "conj_closures.bin",
+                             random_fb        ::Bool = false)
 
     t_walk_start = time()
 
@@ -421,13 +474,18 @@ function index_calculus_walk(G::Div2, T::Div2;
     # ── Phase 1: build the factor base ───────────────────────────────────────
     if verbose
         println()
-        @printf("── Phase 1: building factor base ───────────────────────────────────\n")
+        if random_fb
+            @printf("── Phase 1: SKIPPED — building random factor base ─────────────────\n")
+        else
+            @printf("── Phase 1: building factor base ───────────────────────────────────\n")
+        end
         @printf("  FB cap:    %d  (walk until full)\n", fb_size)
         flush(stdout)
     end
 
     fb, pt2idx, p1_alpha, p1_beta, p1_rows =
-        phase1_walk(G, T, fb_size; verbose=verbose)
+        random_fb ? random_fb_walk(fb_size; verbose=verbose) :
+                     phase1_walk(G, T, fb_size; verbose=verbose)
 
     nF    = length(fb)
     n_all = p   # Hasse bound: #E(F_p) ≈ p; avoids full curve enumeration
@@ -449,7 +507,7 @@ function index_calculus_walk(G::Div2, T::Div2;
 
     # ── Precompute walk steps ─────────────────────────────────────────────────
     t_step_build = time()
-    N_STEPS = 256
+    N_STEPS = 5120
     step_D  = Vector{Div2}(undef, N_STEPS)
     step_a  = Vector{BigInt}(undef, N_STEPS)
     step_b  = Vector{BigInt}(undef, N_STEPS)
@@ -959,6 +1017,9 @@ function parse_trial3_cli(args::Vector{String})
     #                        precompute where lp1 table is unused anyway, or to
     #                        test pure 0-LP + conj-LP throughput)
     #   --n-targets=N        number of DLP targets when --amortized is set
+    #   --random-fb          skip phase 1 entirely; build FB from independently
+    #                        sampled random affine F_p points instead of the
+    #                        phi-walk (no phase-1 relations are banked)
     amortized          = false
     use_cycle_union    = false
     enable_lp1_aff     = true
@@ -969,6 +1030,7 @@ function parse_trial3_cli(args::Vector{String})
     rel_multiplier     = 2.0  # β=0 relation target = rel_multiplier × nF
     post_conj_stride   = 0    # extra anchor advances after every conj branch
     conj_dataset_path  = "conj_closures.bin"  # set to "" via --no-conj-dataset to disable
+    random_fb          = false  # --random-fb: skip phase 1 walk, FB = random F_p points
 
     for arg in args
         if arg == "--no-lp2"
@@ -1004,6 +1066,8 @@ function parse_trial3_cli(args::Vector{String})
             conj_dataset_path = ""
         elseif startswith(arg, "--conj-dataset-path=")
             conj_dataset_path = split(arg, "=", limit=2)[2]
+        elseif arg == "--random-fb"
+            random_fb = true
         end
     end
     return (fb_size=fb_size, enable_lp2=enable_lp2, enable_lp2_conj=enable_lp2_conj,
@@ -1012,7 +1076,8 @@ function parse_trial3_cli(args::Vector{String})
             enable_lp1_aff=enable_lp1_aff, n_targets=n_targets,
             sqrt_mode=sqrt_mode, table_size=table_size, min_ell_bits=min_ell_bits,
             rel_multiplier=rel_multiplier, post_conj_stride=post_conj_stride,
-            conj_dataset_path=(conj_dataset_path == "" ? nothing : conj_dataset_path))
+            conj_dataset_path=(conj_dataset_path == "" ? nothing : conj_dataset_path),
+            random_fb=random_fb)
 end
 
 # ---------------------------------------------------------------------------
@@ -1131,7 +1196,8 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
                  min_ell_bits       ::Int   = 0,
                  rel_multiplier     ::Float64 = 2.0,
                  post_conj_stride   ::Int   = 0,
-                 conj_dataset_path  ::Union{Nothing,String} = "conj_closures.bin")
+                 conj_dataset_path  ::Union{Nothing,String} = "conj_closures.bin",
+                 random_fb          ::Bool  = false)
     t_main_start = time()
     println("="^70)
     println("  trial3: Markov-walk phi-relation index calculus")
@@ -1150,6 +1216,7 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
     amortized       && println("  mode: AMORTIZED (α-only precompute + single β≠0 DLP)")
     !amortized && !sqrt_mode && println("  LA mode: chain-path O(nF) solver (always) + cycle-union (if --cycle-union)")
     !enable_lp1_aff && !sqrt_mode && println("  1-LP affine: DISABLED (--no-lp1-aff)")
+    random_fb && println("  factor base: RANDOM (--random-fb — phase 1 walk skipped)")
     println("="^70, "\n")
 
     t_pts = time()
@@ -1238,7 +1305,8 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
         # valid Div2 to satisfy the type signature; use G itself.
         T_dummy = G
         fb_pre, pt2idx_pre, p1_alpha_pre, p1_beta_pre, p1_rows_pre =
-            phase1_walk(G, T_dummy, fb_run; verbose=true, beta_zero=true)
+            random_fb ? random_fb_walk(fb_run; verbose=true) :
+                         phase1_walk(G, T_dummy, fb_run; verbose=true, beta_zero=true)
         nF_pre = length(fb_pre)
         mem_checkpoint("after phase1_walk (amortized)")
 
@@ -1500,7 +1568,8 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
                                   max_lp2_nodes=max_lp2_nodes,
                                   max_lp2_conj_nodes=max_lp2_conj_nodes,
                                   use_cycle_union=use_cycle_union,
-                                  conj_dataset_path=conj_dataset_path)
+                                  conj_dataset_path=conj_dataset_path,
+                                  random_fb=random_fb)
     t_walk_done = time() - t_walk
     k_rec = wres === nothing ? nothing : wres.k
 
@@ -1527,7 +1596,8 @@ function main2_from_argv()
           sqrt_mode=opts.sqrt_mode, table_size=opts.table_size,
           min_ell_bits=opts.min_ell_bits, rel_multiplier=opts.rel_multiplier,
           post_conj_stride=opts.post_conj_stride,
-          conj_dataset_path=opts.conj_dataset_path)
+          conj_dataset_path=opts.conj_dataset_path,
+          random_fb=opts.random_fb)
 end
 
 if abspath(PROGRAM_FILE) == @__FILE__
