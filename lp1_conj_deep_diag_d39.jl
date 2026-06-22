@@ -803,15 +803,48 @@ function _report_d39c(deep_stat::ConjDeepStat)
     lag1_idx = get(lag_to_idx, 1, nothing)
     if lag1_idx !== nothing
         ab1 = zAB[lag1_idx]; ba1 = zBA[lag1_idx]
+        aa1 = zAA[lag1_idx]; bb1 = zBB[lag1_idx]
         if !isnan(ab1) && !isnan(ba1)
+            # Whether negative cross-terms amplify or cancel depends on the sign
+            # of the auto-term sum. The decomposition is:
+            #   implied_z(Z,Z) = zAA + zBB - zAB - zBA
+            # Subtracting a negative cross-term adds a positive value. That
+            # drives the sum *away from zero* only when (zAA+zBB) is itself
+            # positive (persistent auto-structure). When (zAA+zBB) < 0 (both
+            # sequences are anti-persistent / alternating), the positive
+            # contribution from the subtracted negative cross-term pushes the
+            # implied z *toward* zero — partial cancellation, not amplification.
+            auto_sum = (isnan(aa1) ? 0.0 : aa1) + (isnan(bb1) ? 0.0 : bb1)
+            auto_persistent = auto_sum > 0.0   # true → both series tend to persist
             if ab1 > 3.0 || ba1 > 3.0
-                @printf("  → Cross-terms are POSITIVE: α and P_fb move together at lag 1.\n")
-                @printf("    This means Cov(X,Y) + Cov(Y,X) partially cancels the auto terms;\n")
-                @printf("    Z_res persistence will be WEAKER than either constituent alone.\n")
+                # Positive cross-terms: Cov(X,Y)+Cov(Y,X) > 0, subtracted → reduces implied z.
+                if auto_persistent
+                    @printf("  → Cross-terms are POSITIVE: α and P_fb move together at lag 1.\n")
+                    @printf("    Subtracting positive cross-terms from a positive auto sum\n")
+                    @printf("    partially cancels the persistence; Z_res persistence will be\n")
+                    @printf("    WEAKER than the individual auto-covariances alone suggest.\n")
+                else
+                    @printf("  → Cross-terms are POSITIVE: α and P_fb move together at lag 1.\n")
+                    @printf("    Auto-terms are anti-persistent (zAA+zBB=%.2f < 0); subtracting\n", auto_sum)
+                    @printf("    positive cross-terms drives the implied z further negative,\n")
+                    @printf("    AMPLIFYING the anti-persistence in Z_res.\n")
+                end
             elseif ab1 < -3.0 || ba1 < -3.0
-                @printf("  → Cross-terms are NEGATIVE: α and P_fb are anti-correlated at lag 1.\n")
-                @printf("    Cov(X,Y)+Cov(Y,X) < 0, so the decomposition sum is AMPLIFIED;\n")
-                @printf("    Z_res persistence will be STRONGER than either constituent alone.\n")
+                # Negative cross-terms: Cov(X,Y)+Cov(Y,X) < 0, subtracted → adds positive value.
+                if auto_persistent
+                    @printf("  → Cross-terms are NEGATIVE: α and P_fb are anti-correlated at lag 1.\n")
+                    @printf("    Auto-terms are persistent (zAA+zBB=%.2f > 0); subtracting\n", auto_sum)
+                    @printf("    negative cross-terms adds a positive contribution, AMPLIFYING\n")
+                    @printf("    the persistence. Z_res persistence will be STRONGER than\n")
+                    @printf("    either constituent alone.\n")
+                else
+                    @printf("  → Cross-terms are NEGATIVE: α and P_fb are anti-correlated at lag 1.\n")
+                    @printf("    Auto-terms are anti-persistent (zAA+zBB=%.2f < 0); subtracting\n", auto_sum)
+                    @printf("    negative cross-terms adds a positive value that drives the implied\n")
+                    @printf("    z toward zero — PARTIAL CANCELLATION, not amplification.\n")
+                    @printf("    Z_res persistence will be WEAKER in magnitude than the\n")
+                    @printf("    individual auto-covariances alone suggest.\n")
+                end
             else
                 @printf("  → Cross-terms not significant at lag 1 (z(X→Y)=%.2f, z(Y→X)=%.2f);\n",
                         ab1, ba1)

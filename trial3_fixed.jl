@@ -322,9 +322,16 @@ function phase1_walk(G::Div2, T::Div2, fb_cap::Int; verbose::Bool = true,
     hits_banked = 0
     t0 = time()
 
+    # Sequential alpha sweep: start at 1 and increment each valid step.
+    # This couples fb-index growth to alpha direction the same way phase 2
+    # does, to probe whether that alignment changes the D39 cross-covariance.
+    # Beta remains random (or zero in beta_zero mode) as before.
+    phase1_alpha_cursor = 1
+
     while true
         raw_steps += 1
-        α = rand(1:ell-1)
+        α = phase1_alpha_cursor
+        phase1_alpha_cursor = phase1_alpha_cursor < ell - 1 ? phase1_alpha_cursor + 1 : 1
         β = beta_zero ? 0 : rand(0:ell-1)
         D = beta_zero ? jac_mul(G, α, ell) :
                         jac_add(jac_mul(G, α, ell), jac_mul(T, β, ell))
