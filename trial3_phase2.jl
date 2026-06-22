@@ -1124,21 +1124,36 @@ function phase2_worker(G               ::Div2,
     #  In beta_zero mode, Δ_b=0 and DRIFT_D carries no T-component, so
     #  beta_cur stays identically 0 as before.
     # ==========================================================================
-    DELTA_A = Int(div(BigInt(ellI) * BigInt(754877666246692760), BigInt(10)^18))  # ell * 1/g
+    # Reversed-alpha experiment: phase-2 alpha cursor decrements instead of
+    # incrementing, and the golden-ratio drift runs in the same reversed direction.
+    # Together with sequential-alpha phase 1 (which bakes in a low-index↔low-alpha
+    # correlation into the FB), this puts the two sweeps in opposite orientations,
+    # so the (fb_index, alpha) coupling from phase 1 fights the phase-2 traversal
+    # rather than aligning with it.  Goal: observe D39c cross-term sign flip and
+    # assess whether sweep-coupling accounts for the apparent key autocorrelation.
+    #
+    # DELTA_A is negated so the drift also decrements; DRIFT_D is recomputed to
+    # match (D_cur must stay consistent with alpha_cur*G + beta_cur*T mod ell).
+    # DELTA_B and beta are left forward — only alpha orientation is under test.
+    DELTA_A = -Int(div(BigInt(ellI) * BigInt(754877666246692760), BigInt(10)^18))  # -(ell * 1/g)
     DELTA_B = beta_zero ? 0 :
-              Int(div(BigInt(ellI) * BigInt(569840290998053265), BigInt(10)^18)) # ell * 1/g^2
+               Int(div(BigInt(ellI) * BigInt(569840290998053265), BigInt(10)^18)) # ell * 1/g^2
     (DELTA_A == 0 || (!beta_zero && DELTA_B == 0)) && throw(ArgumentError(
         "phase2_worker: ell=$ellI too small for a nonzero golden-ratio drift " *
         "(DELTA_A=$DELTA_A, DELTA_B=$DELTA_B) — increase ell or disable the drift"))
-    DRIFT_D = beta_zero ? jac_mul(G, BigInt(DELTA_A), ell) :
-                          jac_add(jac_mul(G, BigInt(DELTA_A), ell), jac_mul(T, BigInt(DELTA_B), ell))
+    # DRIFT_D carries the negated DELTA_A: jac_mul with a negative scalar mod ell
+    # is jac_mul(G, ell + DELTA_A, ell) since DELTA_A < 0 here.
+    DRIFT_D = beta_zero ? jac_mul(G, BigInt(mod(DELTA_A, ellI)), ell) :
+                          jac_add(jac_mul(G, BigInt(mod(DELTA_A, ellI)), ell),
+                                  jac_mul(T, BigInt(DELTA_B), ell))
 
     @inline function next_alpha_beta()
         a = alpha_cursor
         b = beta_zero ? 0 : beta_cursor_init
-        alpha_cursor += 1
-        if alpha_cursor > ellI - 1
-            alpha_cursor = 1
+        # Decrement: alpha sweeps downward, wrapping from 1 back to ell-1.
+        alpha_cursor -= 1
+        if alpha_cursor < 1
+            alpha_cursor = ellI - 1
         end
         if !beta_zero
             beta_cursor_init += 1
