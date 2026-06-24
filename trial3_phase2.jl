@@ -952,6 +952,7 @@ function phase2_worker(G               ::Div2,
                        amortized_precompute::Bool = false,
                        enable_lp1_aff  ::Bool = true,
                        post_conj_stride::Int  = 0,
+                       anchor_tuple_size::Int = 1,
                        carry_in_deep_stat::Union{ConjDeepStat,Nothing} = nothing,
                        conj_dataset      ::Union{ConjClosureDataset,Nothing} = nothing,
                        d38_stat          ::Union{D38Stat,Nothing} = nothing)
@@ -1040,10 +1041,73 @@ function phase2_worker(G               ::Div2,
     end
     anchor_cursor = anchor_start
 
+    # ==========================================================================
+    #  Anchor tuple cursor — round-robin over all multiset k-tuples drawn from
+    #  this thread's FB slice, in lexicographic index order.
+    #
+    #  For anchor_tuple_size == 1 (classic): identical to the old behaviour —
+    #  we just cycle through fb[anchor_start..anchor_end] one point at a time.
+    #
+    #  For anchor_tuple_size == K > 1: we enumerate all K-element multiset
+    #  selections from {anchor_start..anchor_end} (i.e. combinations with
+    #  repetition, ordered by lex index).  A K-tuple with a repeated element
+    #  requests a tangency (order-2 vanishing) at that point; `build_phi_general`
+    #  handles the derivative row automatically.
+    #
+    #  State: a length-K index vector `tuple_cursor[1..K]` where each entry is
+    #  an FB index in [anchor_start, anchor_end], non-decreasing.  Advancing
+    #  increments the last position and carries like a restricted odometer.
+    #
+    #  Total tuple count = C(slice_size + K - 1, K)  (stars-and-bars).
+    #  For K=1 this is exactly slice_size, recovering the old cycle.
+    # ==========================================================================
+    slice_size   = anchor_end - anchor_start + 1
+    K_anc        = anchor_tuple_size
+
+    # Initialise tuple cursor to (anchor_start, anchor_start, ...) — the
+    # lexicographically smallest K-tuple.
+    tuple_cursor = fill(anchor_start, K_anc)
+
+    # Advance tuple_cursor by one step and return the current tuple as a
+    # Vector{NTuple{2,Int}}.  Thread-local, no allocation on the fast path
+    # (we reuse `cur_anchors`).
+    cur_anchors  = Vector{NTuple{2,Int}}(undef, K_anc)
+
+    @inline function next_anchor_tuple()
+        # Snapshot current cursor into cur_anchors
+        @inbounds for i in 1:K_anc
+            cur_anchors[i] = fb[tuple_cursor[i]]
+        end
+        # Advance: increment last position, carry right-to-left.
+        # Each position tc[i] ∈ [anchor_start, anchor_end], and must satisfy
+        # tc[i] >= tc[i-1] (non-decreasing).  The carry bound for position i
+        # is anchor_end (it can go up to anchor_end regardless of position).
+        @inbounds begin
+            pos = K_anc
+            while pos >= 1
+                if tuple_cursor[pos] < anchor_end
+                    tuple_cursor[pos] += 1
+                    # Reset all positions to the right to the new value (non-decreasing)
+                    for j in pos+1:K_anc
+                        tuple_cursor[j] = tuple_cursor[pos]
+                    end
+                    break
+                end
+                pos -= 1
+            end
+            if pos == 0
+                # Wrap: reset to all-anchor_start
+                fill!(tuple_cursor, anchor_start)
+            end
+        end
+        return cur_anchors
+    end
+
+    # Compatibility shim: next_anchor() returns just the first element of the
+    # tuple (used for single-anchor diagnostics, px_anchor fields, etc.).
     @inline function next_anchor()
-        pt = fb[anchor_cursor]
-        anchor_cursor = anchor_cursor < anchor_end ? anchor_cursor + 1 : anchor_start
-        return pt
+        t = next_anchor_tuple()
+        return t[1]
     end
     next_anchor_ref = Ref{Function}(next_anchor)
 
@@ -1165,7 +1229,13 @@ function phase2_worker(G               ::Div2,
     end
 
     # --- Walk state ---
-    cur_pt    = next_anchor()
+    # For K_anc == 1: cur_pt is the sole anchor (classic behaviour).
+    # For K_anc >  1: cur_anchors holds the full K-tuple; cur_pt = cur_anchors[1]
+    #                 is used for diagnostics, pt2idx lookups, and the handle_*
+    #                 LP helpers (which remain single-anchor).
+    _init_anchors = next_anchor_tuple()
+    cur_pt        = _init_anchors[1]
+    cur_anchors   = copy(_init_anchors)   # mutable working copy for multi-anchor steps
     # D29 artifact filter: tracks whether cur_pt's MOST RECENT assignment came
     # from a genuine LP resolution (handle_1lp_affine!/handle_1lp_conj!/
     # handle_2lp_affine! storing or closing) vs a bare next_anchor() round-robin
@@ -1249,26 +1319,79 @@ function phase2_worker(G               ::Div2,
 
         u0 = D_cur.u[1]; u1 = D_cur.u[2]
         v0 = D_cur.v[1]; v1 = D_cur.v[2]
-        px, py = cur_pt
+        px, py = cur_pt   # cur_pt is set by the previous iteration's branch-end
 
-        # --- Gate 2: P0 must not be in the support of D ---
-        upx = fp(fp(px*px) + fp(u1*px) + u0)
-        upx == 0 && continue
+        # --- Gate 2: all anchor points must not be in the support of D ---
+        # (build_phi_general also checks each anchor; we do a fast pre-check here.)
+        let _skip = false
+            for _anc in cur_anchors
+                _apx = _anc[1]
+                _upx = fp(fp(_apx*_apx) + fp(u1*_apx) + u0)
+                if _upx == 0; _skip = true; break; end
+            end
+            _skip && continue
+        end
 
-        # --- Build φ and recover residual ---
-        phi_c = build_phi_mumford(px, py, u0, u1, v0, v1)
-        phi_c === nothing && continue
-        a, b, c, _ = phi_c
+        # --- Build φ and recover residual (K-aware) ---
+        local res_R::NTuple{2,Int}, res_S::NTuple{2,Int}, RS_mumford::NTuple{4,Int}
+        local a::Int  # φ leading x²-coefficient (used by D38 and phi_bias_stat)
 
-        # D38 — φ a-coefficient sequential autocorrelation: log every
-        # successful φ step's raw a value, regardless of split/non-split
-        # outcome (mirrors D29's "log every valid step" discipline; see
-        # lp1_conj_deep_diag_d38.jl docstring). No-op if d38_stat wasn't
-        # passed in (keeps this call backward-compatible).
-        d38_stat !== nothing && record_d38_step!(d38_stat, Int(a))
+        if K_anc == 1
+            # Fast path: closed-form single-anchor φ
+            phi_c = build_phi_mumford(px, py, u0, u1, v0, v1)
+            phi_c === nothing && continue
+            a, b_phi, c_phi, _ = phi_c
 
-        res_R, res_S, RS_mumford = phi_residual_mumford(a, b, c, px, u0, u1)
-        RS_mumford === SENTINEL_MUMFORD && continue   # division failed
+            # D38 — φ a-coefficient sequential autocorrelation.
+            d38_stat !== nothing && record_d38_step!(d38_stat, Int(a))
+
+            res_R, res_S, RS_mumford = phi_residual_mumford(a, b_phi, c_phi, px, u0, u1)
+            RS_mumford === SENTINEL_MUMFORD && continue   # division failed
+        else
+            # General K-anchor path via step_phi_k.
+            result_k = step_phi_k(cur_anchors, u0, u1, v0, v1)
+            result_k === nothing && continue
+
+            coeffs_k, basis_k, roots_k, u_RS_k, v_RS_k = result_k
+
+            # Extract up to 2 residual affine points as res_R, res_S.
+            if length(roots_k) >= 2
+                res_R = roots_k[1]
+                res_S = roots_k[2]
+            elseif length(roots_k) == 1
+                res_R = roots_k[1]
+                res_S = SENTINEL_PT
+            else
+                res_R = SENTINEL_PT
+                res_S = SENTINEL_PT
+            end
+
+            # Build RS_mumford from u_RS / v_RS for the conjugate branch.
+            # u_RS_k is ascending monic (length deg+1); we need (c0, c1, v0_rs, v1_rs).
+            # For the conjugate-LP key we only need the degree-2 part of u_RS
+            # (higher-degree residuals are not handled by the current LP1-conj
+            # machinery — skip them cleanly by falling through to the split branch
+            # or marking as SENTINEL).
+            if length(u_RS_k) == 3   # degree 2 — standard conjugate pair
+                u0_rs = u_RS_k[1]; u1_rs = u_RS_k[2]
+                v0_rs = isempty(v_RS_k) ? 0 : v_RS_k[1]
+                v1_rs = length(v_RS_k) >= 2 ? v_RS_k[2] : 0
+                RS_mumford = (u0_rs, u1_rs, v0_rs, v1_rs)
+            else
+                # Residual degree ≠ 2: no conjugate LP key available.
+                # If we have split points use them; otherwise skip the step.
+                RS_mumford = SENTINEL_MUMFORD
+                res_R === SENTINEL_PT && res_S === SENTINEL_PT && continue
+            end
+
+            # Approximate a as the leading pure-x² coefficient for D38/diagnostics.
+            # In the general basis, find the coeff of the x² monomial (pole order 4).
+            a = 0
+            for (_ki, (_bi, _bj)) in enumerate(basis_k)
+                if _bi == 2 && _bj == 0; a = coeffs_k[_ki]; break; end
+            end
+            d38_stat !== nothing && record_d38_step!(d38_stat, Int(a))
+        end
 
         s.hits_total += 1
 

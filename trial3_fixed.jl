@@ -637,6 +637,7 @@ function index_calculus_walk(G::Div2, T::Div2;
                 verbose=verbose,
                 enable_lp1_aff=enable_lp1_aff,
                 post_conj_stride=post_conj_stride,
+                anchor_tuple_size=anchor_tuple_size,
                 conj_dataset=conj_dataset)
         end
     end
@@ -1027,6 +1028,15 @@ function parse_trial3_cli(args::Vector{String})
     #   --random-fb          skip phase 1 entirely; build FB from independently
     #                        sampled random affine F_p points instead of the
     #                        phi-walk (no phase-1 relations are banked)
+    #   --anchor-tuple-size=K  use the K-anchor general phi construction
+    #                        (trial3_phi_general.jl / step_phi_k) instead of
+    #                        the classic single-anchor fast path. K=1 (default)
+    #                        is identical to the original behaviour. K>1 walks
+    #                        round-robin over all K-element multisets of each
+    #                        thread's FB slice (repeated points request a
+    #                        tangency, capped at multiplicity 2 per point —
+    #                        e.g. {P,P,Q,R} imposes a single tangency at P and
+    #                        simple zeros at Q,R).
     amortized          = false
     use_cycle_union    = false
     enable_lp1_aff     = true
@@ -1038,6 +1048,7 @@ function parse_trial3_cli(args::Vector{String})
     post_conj_stride   = 0    # extra anchor advances after every conj branch
     conj_dataset_path  = "conj_closures.bin"  # set to "" via --no-conj-dataset to disable
     random_fb          = false  # --random-fb: skip phase 1 walk, FB = random F_p points
+    anchor_tuple_size  = 1    # --anchor-tuple-size=K: K-anchor phi_general walk (K=1 classic)
 
     for arg in args
         if arg == "--no-lp2"
@@ -1075,6 +1086,9 @@ function parse_trial3_cli(args::Vector{String})
             conj_dataset_path = split(arg, "=", limit=2)[2]
         elseif arg == "--random-fb"
             random_fb = true
+        elseif startswith(arg, "--anchor-tuple-size=")
+            anchor_tuple_size = parse(Int, split(arg, "=", limit=2)[2])
+            anchor_tuple_size < 1 && error("--anchor-tuple-size must be >= 1, got $anchor_tuple_size")
         end
     end
     return (fb_size=fb_size, enable_lp2=enable_lp2, enable_lp2_conj=enable_lp2_conj,
@@ -1084,7 +1098,7 @@ function parse_trial3_cli(args::Vector{String})
             sqrt_mode=sqrt_mode, table_size=table_size, min_ell_bits=min_ell_bits,
             rel_multiplier=rel_multiplier, post_conj_stride=post_conj_stride,
             conj_dataset_path=(conj_dataset_path == "" ? nothing : conj_dataset_path),
-            random_fb=random_fb)
+            random_fb=random_fb, anchor_tuple_size=anchor_tuple_size)
 end
 
 # ---------------------------------------------------------------------------
@@ -1204,7 +1218,8 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
                  rel_multiplier     ::Float64 = 2.0,
                  post_conj_stride   ::Int   = 0,
                  conj_dataset_path  ::Union{Nothing,String} = "conj_closures.bin",
-                 random_fb          ::Bool  = false)
+                 random_fb          ::Bool  = false,
+                 anchor_tuple_size  ::Int   = 1)
     t_main_start = time()
     println("="^70)
     println("  trial3: Markov-walk phi-relation index calculus")
@@ -1224,6 +1239,7 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
     !amortized && !sqrt_mode && println("  LA mode: chain-path O(nF) solver (always) + cycle-union (if --cycle-union)")
     !enable_lp1_aff && !sqrt_mode && println("  1-LP affine: DISABLED (--no-lp1-aff)")
     random_fb && println("  factor base: RANDOM (--random-fb — phase 1 walk skipped)")
+    anchor_tuple_size > 1 && println("  anchor mode: K-tuple (K=$anchor_tuple_size, general phi, tangency-capped at mult=2)")
     println("="^70, "\n")
 
     t_pts = time()
@@ -1420,6 +1436,7 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
                     verbose=true, beta_zero=true, amortized_precompute=true,
                     enable_lp1_aff=enable_lp1_aff,
                     post_conj_stride=post_conj_stride,
+                    anchor_tuple_size=anchor_tuple_size,
                     conj_dataset=conj_dataset)
             end
         end
@@ -1604,7 +1621,8 @@ function main2_from_argv()
           min_ell_bits=opts.min_ell_bits, rel_multiplier=opts.rel_multiplier,
           post_conj_stride=opts.post_conj_stride,
           conj_dataset_path=opts.conj_dataset_path,
-          random_fb=opts.random_fb)
+          random_fb=opts.random_fb,
+          anchor_tuple_size=opts.anchor_tuple_size)
 end
 
 if abspath(PROGRAM_FILE) == @__FILE__
