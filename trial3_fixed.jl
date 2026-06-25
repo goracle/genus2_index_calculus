@@ -36,6 +36,7 @@ include("early_solve_monitor.jl") # online b₁ / 2-core / DSU diagnostics
 include("trial3_config.jl")
 include("lp1_conj_lsm.jl")
 include("trial3_phi.jl")
+include("trial3_phi_general.jl")  # step_phi_k: K-anchor general phi construction
 include("phi_bias_diag.jl")
 include("lp1_conj_deep_diag.jl")
 include("conj_closure_dataset.jl")
@@ -1312,8 +1313,8 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
 
     # ── Amortised mode: β=0 precompute via normal phase1+phase2, then one β≠0 per target ──
     if amortized
-        fb_run = fb_size === nothing ? clamp(round(Int, p^(1/2)), 200, 20_000) : fb_size
-        @printf("── Amortised precomputation (β=0 walk, FB=%d) ───────────────────────\n", fb_run)
+        fb_run = fb_size === nothing ? clamp(round(Int, p^(2/(anchor_tuple_size+3))), 200, 20_000) : fb_size
+        @printf("── Amortised precomputation (β=0 walk, FB=%d, exp=2/%d) ─────────────\n", fb_run, anchor_tuple_size+3)
         t_pre = time()
 
         # ── Conj-closure dataset writer (optional) ──────────────────────────────
@@ -1572,9 +1573,12 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
     T      = jac_mul(G, k_true, ell)
     @printf("Secret k = %d  (%.1f bits)\n\n", k_true, log2(k_true + 1))
 
-    # Auto FB size: p^(1/2) is the standard smoothness bound for genus-2 index calculus.
-    fb_auto = clamp(round(Int, p^(1/2)), 200, 20_000)
-    @printf("Auto FB size: %d  (= ceil(p^(1/2)) clamped to [200,20000])\n", fb_auto)
+    # Auto FB size: p^(2/(m+3)) where m = anchor_tuple_size.
+    # m=1 (classic) → p^(2/4) = p^(1/2); m=2 → p^(2/5); m=3 → p^(2/6) = p^(1/3); etc.
+    fb_exp  = 2 / (anchor_tuple_size + 3)
+    fb_auto = clamp(round(Int, p^fb_exp), 200, 20_000)
+    @printf("Auto FB size: %d  (= p^(2/(m+3)) = p^(2/%d) ≈ p^%.4f, m=%d, clamped to [200,20000])\n",
+            fb_auto, anchor_tuple_size + 3, fb_exp, anchor_tuple_size)
     @printf("  target relations: %d + excess\n", fb_auto + 1)
     @printf("  expected smoothness prob per step: ~(fb_auto/p)^2 ~ %.2e\n",
             (fb_auto / p)^2)

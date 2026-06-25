@@ -766,14 +766,16 @@ function compute_vRS(E::Vector{Int}, Y::Vector{Int},
 end
 
 # Reduce polynomial a mod polynomial m (both ascending coefficients).
+# m need not be monic; leading coefficient is divided out via fpinv.
 function poly_reduce_mod(a::Vector{Int}, m::Vector{Int})::Vector{Int}
     r = copy(a)
     dm = length(m) - 1
+    lc_m_inv = fpinv(m[end])   # precompute inverse of leading coeff of m
     while length(r) - 1 >= dm && (length(r) > 1 || r[1] != 0)
         deg_r = length(r) - 1
         if r[end] == 0; pop!(r); continue; end
-        # Leading coeff of r divided by leading coeff of m (monic)
-        c = r[end]
+        # Scale factor: r[end] / lc(m)
+        c = fpmul(r[end], lc_m_inv)
         shift = deg_r - dm
         for i in 1:length(m)
             idx = i + shift
