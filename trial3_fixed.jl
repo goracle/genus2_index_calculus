@@ -619,6 +619,7 @@ function index_calculus_walk(G::Div2, T::Div2;
     # (Ensure OnlineRankTracker is thread-safe or locked if your code requires it!)
     rank_tracker      = OnlineRankTracker(ell)
 
+
     n_workers = Threads.nthreads()  # capture on main thread — avoids nthreads() quirk inside @spawn
     t_phase2_start = time()
     @sync for tid in 1:n_workers
@@ -1242,6 +1243,14 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
     random_fb && println("  factor base: RANDOM (--random-fb — phase 1 walk skipped)")
     anchor_tuple_size > 1 && println("  anchor mode: K-tuple (K=$anchor_tuple_size, general phi, tangency-capped at mult=2)")
     println("="^70, "\n")
+
+
+    # Initialise phi_general module-level caches (F_POLY_DESC and RR_BASIS_CACHE)
+    # on the main thread before any workers are spawned.  F_POLY and p are both
+    # module-level constants available here.  anchor_tuple_size is the max k used;
+    # pre-warming RR_BASIS_CACHE for k=1..anchor_tuple_size means workers will
+    # never race on the Dict insertion paths inside rr_basis_cached.
+    init_phi_general_caches!(anchor_tuple_size)
 
     t_pts = time()
     pts   = sample_curve_points(100)

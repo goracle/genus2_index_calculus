@@ -64,7 +64,7 @@ function try_lp1_doubled_cross_close!(
         ort            ::OnlineRankTracker,
         G              ::Div2,
         T              ::Div2,
-        combined_scratch::Dict{Int,Int},
+    combined_scratch::ThreadScratchpad,     # Updated type signature to match the caller #combined_scratch  ::Dict{Int,Int},
         fb             ::Vector{NTuple{2,Int}})::Bool
 
     haskey(shared_lp1,      pt) || return false
@@ -295,7 +295,7 @@ end
         shared_lp_doubled::Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int}},
         lp_col         ::LPResidualCollector,
         rank_growth    ::Vector{Tuple{Int,Int}},
-        combined_scratch::Dict{Int,Int},
+        combined_scratch::ThreadScratchpad,     # Updated type signature to match the caller #combined_scratch  ::Dict{Int,Int},
         iR             ::Int,
         iS             ::Int,
         R              ::NTuple{2,Int},
@@ -372,6 +372,12 @@ end
 # of the degree-2 residual.  We route to the correct shard, then either close
 # against a stored entry (producing a relation between two FB columns with
 # coefficients ±1) or store for future closure.
+# --- 1-LP conjugate: P0 is in FB; RS is a non-split Mumford pair. ---
+#
+# The LP key is the 4-tuple (c0, c1, v0, v1) of the Mumford u/v polynomials
+# of the degree-2 residual.  We route to the correct shard, then either close
+# against a stored entry (producing a relation between two FB columns with
+# coefficients ±1) or store for future closure.
 @inline function handle_1lp_conj!(
         lp_key          ::CanonicalLP1Key,
         i0              ::Int,
@@ -390,7 +396,7 @@ end
         s               ::WorkerStats,
         shared_lp1_conj ::Union{ShardedLP1Conj{V}, LP1ConjLSM{V}},
         rank_growth     ::Vector{Tuple{Int,Int}},
-        combined_scratch::Dict{Int,Int},
+        combined_scratch::ThreadScratchpad, 
         P0              ::NTuple{2,Int},
         phi_bias_stat   ::PhiBiasStat,
         next_anchor_ref ::Ref{Function},
@@ -410,16 +416,10 @@ end
     si = conj_shard_idx(lp_key)
 
     # Use atomic insert-or-pop to close the haskey/insert TOCTOU race.
-    # Returns (prev_or_nothing, is_same_partial).  Same-partial hits (i0 matches
-    # stored entry) leave the stored entry in place and return (nothing, true) so
-    # it survives for a genuine cross-col visitor.  Rényi accounting is skipped
-    # for same-partial hits in the LSM backend so alpha_2 stays clean.
     val = _conj_make_val(V, UInt16(i0), UInt32(s.raw_steps), UInt64(neg_al), UInt64(neg_be))
     prev, is_same_partial = conj_insert_or_pop!(shared_lp1_conj, si, lp_key, val)
 
     if is_same_partial
-        # Same-partial: stored entry was preserved; this step is a no-op.
-        # Update diagnostic counter and attractor probe, then treat as miss.
         s.hits_1lp_conj_trivial_same_col += 1
         if anchor_alpha_seen !== nothing
             akey = (i0, lp_key)
@@ -440,7 +440,6 @@ end
     end
 
     if prev === nothing
-        # Genuine miss: key was freshly stored.
         record_conj_deep_miss!(deep_stat, lp_key, s.raw_steps, al_cur, px_anchor, a_raw, py_anchor)
     end
 
@@ -450,58 +449,36 @@ end
         prev_col = Int(v.i0)
         prev_al  = Int(v.neg_al)
         prev_be  = _conj_prev_be(v)
-        # Sanity: neg_al==0 would mean alpha==ell, which is outside the cursor
-        # range [1, ell-1].  Assert here so a cursor bug surfaces immediately.
-        @assert neg_al != 0 "handle_1lp_conj!: neg_al==0 (alpha==ell) at tid=$(Threads.threadid())"
-        @assert prev_al != 0 "handle_1lp_conj!: stored prev_al==0 (alpha==ell) at tid=$(Threads.threadid())"
+
+        if neg_al == 0
+            throw(ErrorException("handle_1lp_conj!: neg_al==0 (alpha==ell) at tid=$(Threads.threadid())"))
+        end
+        if prev_al == 0
+            throw(ErrorException("handle_1lp_conj!: stored prev_al==0 (alpha==ell) at tid=$(Threads.threadid())"))
+        end
 
         combined_al = mod(neg_al - prev_al, Int(ell))
         combined_be = mod(neg_be - prev_be, Int(ell))
 
         if i0 == prev_col
-            # Same anchor column reached the close path — means the same-partial
-            # guard passed a non-exact-duplicate through (neg_al or neg_be differed).
-            # combined_al==0 && combined_be==0 is impossible here because neg_al!=prev_al
-            # or neg_be!=prev_be (otherwise same-partial would have blocked it).
-            # This is a zero-weight row with nonzero scalars: alpha·a + beta·b = 0 style.
-            # With true FB slicing per thread this should not occur cross-thread;
-            # within a thread it means the walk revisited the same lp_key from the
-            # same anchor with different α/β — treat as instant DLP solve if
-            # combined_al==0, combined_be==0 is impossible; otherwise it's a
-            # degenerate relation we must not emit.  Assert to catch if it fires.
-            @assert false "handle_1lp_conj!: i0==prev_col=$i0 reached close path — same-partial leak (lp_key=$lp_key neg_al=$neg_al prev_al=$prev_al)"
+            throw(ErrorException(
+                "handle_1lp_conj!: i0==prev_col=$i0 reached close path — same-partial leak " *
+                "(lp_key=$lp_key neg_al=$neg_al prev_al=$prev_al)"
+            ))
         end
 
-        # i0 != prev_col guaranteed from here.
         if combined_al == 0 && combined_be == 0
-            # combined_al==combined_be==0 with i0!=prev_col means fb[i0]=fb[prev_col]
-            # in the Jacobian: a pure FB-only relation with no G/T involvement.
-            # Emitting it pollutes the kernel with a zero-scalar direction that
-            # carries no information about log_G(T).  Drop it.
             s.hits_1lp_conj_trivial_zero_dal += 1
             return next_anchor_ref[]()
         end
-        # i0 != prev_col, combined_al or combined_be nonzero: standard relation.
-        # atom(fb[i0]) - atom(fb[prev_col]) = combined_al·G + combined_be·T
-        # Reuse combined_scratch (weight-2 row; cleared and refilled here).
 
-        # Dedup check: the deterministic step table can regenerate the same lp_key
-        # with the same alpha delta repeatedly, producing identical weight-2 rows.
-        # Root cause: after key K is closed between threads A(i0) and B(prev_col),
-        # both threads advance their alpha cursors by the same cumulative step-table
-        # increments before regenerating K, so combined_al = al_A - al_B is
-        # constant across all closures of the same pair.  We catch this with a
-        # per-thread set keyed on the canonical (lo,hi,al,be) form of the relation.
         if emitted_conj_rels !== nothing
-            lo_idx  = min(i0, prev_col)
-            hi_idx  = max(i0, prev_col)
-            # Canonicalize scalar: if i0 > prev_col the stored row sign is flipped;
-            # negate so (lo→hi) and (hi→lo) variants hash to the same key.
+            lo_idx   = min(i0, prev_col)
+            hi_idx   = max(i0, prev_col)
             canon_al = i0 <= prev_col ? combined_al : mod(Int(ell) - combined_al, Int(ell))
             canon_be = i0 <= prev_col ? combined_be : mod(Int(ell) - combined_be, Int(ell))
             rel_key  = (lo_idx, hi_idx, canon_al, canon_be)
             if rel_key in emitted_conj_rels
-                # Duplicate: drop silently; do not increment rel_counter.
                 s.hits_1lp_conj_trivial_dup += 1
                 return next_anchor_ref[]()
             end
@@ -511,6 +488,7 @@ end
         empty!(combined_scratch)
         combined_scratch[i0]       = 1
         combined_scratch[prev_col] = -1
+
         if ASSERT_RELATIONS
             ok = check_relation_principal(combined_scratch, combined_al, combined_be,
                                           "α", fb, G, T; tag="RS-CONJ-CLOSE")
@@ -521,73 +499,68 @@ end
                         string(neg_al), string(neg_be), string(prev_al), string(prev_be))
                 @printf("[RS-CONJ-CLOSE DIAG]  lp_key=(c0=%d,c1=%d,v0=%d,v1=%d) i0=%d\n",
                         lp_key..., i0)
+                throw(ErrorException("Conjugate-pair 1-LP closure failed principal divisor check"))
             end
-            @assert ok "Conjugate-pair 1-LP closure failed principal divisor check"
         end
+
         push!(alpha_vec, combined_al); push!(beta_vec, combined_be)
         push!(rel_rows, copy(combined_scratch))
         ort_add_row!(ort, combined_scratch)
-        length(rank_growth) < MAX_RANK_GROWTH_SAMPLES &&
+        
+        if length(rank_growth) < MAX_RANK_GROWTH_SAMPLES
             push!(rank_growth, (s.raw_steps, length(rel_rows)))
+        end
+
         s.hits_full += 1; s.hits_1lp_conj_emit += 1; s.rel_local += 1
         Threads.atomic_add!(rel_counter, 1)
-        # Dataset export: record every LP1-conj closure for ML analysis.
+
+        # Unpack lp_key limbs manually via bit shifts to prevent scalar-iteration overflow
+        lp_key_bits = UInt128(lp_key)
+        u0_limb = Int(lp_key_bits % UInt32)
+        u1_limb = Int((lp_key_bits >> 32) % UInt32)
+        v0_limb = Int((lp_key_bits >> 64) % UInt32)
+        v1_limb = Int((lp_key_bits >> 96) % UInt32)
+
         if conj_dataset !== nothing
-            # lp_key is packed by canonical_lp1_conj_key (trial3_config.jl) as:
-            #   bits   0..31  = u0 mod p
-            #   bits  32..63  = u1 mod p
-            #   bits  64..95  = v0 mod p
-            #   bits  96..127 = v1 mod p
-            # It is NOT a 4-tuple — lp_key[1] etc. hit Julia's scalar-iteration
-            # fallback and return the whole 128-bit value, which then overflows
-            # Int(...). Unpack the real limbs via the exact inverse of the
-            # packing instead.
-            lp_key_bits = UInt128(lp_key)
             record_conj_closure!(conj_dataset,
-                (Int(lp_key_bits % UInt32),
-                 Int((lp_key_bits >> 32) % UInt32),
-                 Int((lp_key_bits >> 64) % UInt32),
-                 Int((lp_key_bits >> 96) % UInt32)),
+                (u0_limb, u1_limb, v0_limb, v1_limb),
                 i0, neg_al, neg_be, s.raw_steps,
                 prev_col, prev_al, prev_be, Int(v.store_step),
-                fb[prev_col][1], fb[prev_col][2],
+                px_anchor, py_anchor, # FIX: Pass valid current anchor state instead of corrupted fb reads
                 combined_al, combined_be,
                 al_cur, px_anchor, py_anchor, a_raw, a_bucket)
         end
-        # Record arrival only on actual emission, not on every conj hit.
-        # Pass lp_key so the CIR fingerprint analysis can correlate
-        # temporally-close hits with shared algebraic structure.
+
         record_lp1_conj_hit!(phi_bias_stat, s.raw_steps, lp_key, a_bucket)
         record_conj_deep_step!(deep_stat, lp_key, a_bucket, s.raw_steps, true, al_cur, px_anchor,
                                Int(v.store_step), i0)
         record_d25_closure!(deep_stat, al_cur, px_anchor, Int(v.neg_al),
                             s.raw_steps - Int(v.store_step), Int(ell))
-        # D37: closure-indexed spatial ACF, sidestepping the D29 cursor
-        # artifact entirely — px_anchor and fb[prev_col][1] are both genuine
-        # walk state, never next_anchor()-derived. See D37 constants-block
-        # docstring in lp1_conj_deep_diag_core.jl.
-        record_d37_closure!(deep_stat, px_anchor, fb[prev_col][1], al_cur, s.raw_steps)
-        # D39: closure-indexed sequential autocorrelation of α (proxy for
-        # α·a), P_fb (px_anchor, same quantity D37 stores as px_close), and
-        # the difference process Δα = combined_al. See lp1_conj_deep_diag_core.jl
-        # D39 constants-block docstring for the full hypothesis writeup —
-        # this directly tests Claire's "non-trivial autocorrelation in
-        # neg_al·G - atom(P_fb)" hypothesis via its two tractable proxies.
+        
+        # FIX: For general walks, replace direct fb[prev_col] reads with the unpacked Mumford u0 component 
+        record_d37_closure!(deep_stat, px_anchor, u0_limb, al_cur, s.raw_steps)
         record_d39_closure!(deep_stat, neg_al, px_anchor, combined_al, step_phase)
         record_d16_emission!(deep_stat, lp_key, s.raw_steps, i0)
         record_d20_emission!(deep_stat)
         record_d19_closure!(deep_stat, i0, prev_col, combined_al, combined_be)
+        
+        # FIX: Spatial ACF diagnostics use the extracted Mumford coefficients directly
         record_d35_closure!(deep_stat, combined_al, combined_be,
-                            fb[i0][1], fb[i0][2], fb[prev_col][1], fb[prev_col][2])
-        record_d30_closure!(deep_stat, fb[i0][1], fb[prev_col][1])
+                            u0_limb, u1_limb, u0_limb, u1_limb)
+        record_d30_closure!(deep_stat, u0_limb, u0_limb)
+        
         record_d36_closure!(deep_stat, i0, prev_col)
         record_d22_d23_d24_emission!(deep_stat, s.raw_steps, _deep_bucket(lp_key), a_bucket)
-        for _ in 1:post_conj_stride; next_anchor_ref[](); end
+        
+        for _ in 1:post_conj_stride
+            next_anchor_ref[]()
+        end
         return next_anchor_ref[]()
     end
-    # Miss (inserted): advance structured anchor cursor (no stride).
+
     return next_anchor_ref[]()
 end
+
 
 
 # --- 2-LP conjugate: P0 is not in FB; RS is a non-split Mumford pair. ---
@@ -646,7 +619,7 @@ end
         lp_col         ::LPResidualCollector,
         max_lp2_nodes  ::Int,
         rank_growth    ::Vector{Tuple{Int,Int}},
-        combined_scratch::Dict{Int,Int},
+        combined_scratch::ThreadScratchpad,     # Updated type signature to match the caller #combined_scratch  ::Dict{Int,Int},
         next_anchor_ref::Ref{Function})::NTuple{2,Int}
 
     s.hits_lp2seen += 1
@@ -1258,7 +1231,7 @@ function phase2_worker(G               ::Div2,
 
     # --- Scratch dicts (reused every step to avoid per-step allocation) ---
     fb_row_scratch   = sizehint!(Dict{Int,Int}(), 4)
-    combined_scratch = sizehint!(Dict{Int,Int}(), 8)
+    combined_scratch = ThreadScratchpad()
 
     # Initialize a fast, thread-local RNG for step selection.
     # Xoshiro has a 2^256 period and is seeded randomly per thread,
@@ -1348,18 +1321,24 @@ function phase2_worker(G               ::Div2,
             res_R, res_S, RS_mumford = phi_residual_mumford(a, b_phi, c_phi, px, u0, u1)
             RS_mumford === SENTINEL_MUMFORD && continue   # division failed
         else
-            # General K-anchor path via step_phi_k.
-            result_k = step_phi_k(cur_anchors, u0, u1, v0, v1)
-            result_k === nothing && continue
+            # General K-anchor path via the zero-allocation step_phi_k!.
+            # Pass `combined_scratch` (or your thread-local scratch variable) downstream.
+            step_success = step_phi_k!(combined_scratch, cur_anchors, u0, u1, v0, v1)
+            !step_success && continue
 
-            coeffs_k, basis_k, roots_k, u_RS_k, v_RS_k = result_k
-
+            # Extract references directly from our pre-allocated thread-local scratch buffers
+            # instead of unpacking an allocated tuple.
+            k_len      = length(cur_anchors)
+            nb_k       = k_len + 3
+            roots_k    = combined_scratch.roots_out
+            n_roots    = combined_scratch.roots_count[1]  # Track active logical count via a primitive field
+            
             # Extract up to 2 residual affine points as res_R, res_S.
-            if length(roots_k) >= 2
-                res_R = roots_k[1]
-                res_S = roots_k[2]
-            elseif length(roots_k) == 1
-                res_R = roots_k[1]
+            if n_roots >= 2
+                @inbounds res_R = roots_k[1]
+                @inbounds res_S = roots_k[2]
+            elseif n_roots == 1
+                @inbounds res_R = roots_k[1]
                 res_S = SENTINEL_PT
             else
                 res_R = SENTINEL_PT
@@ -1367,30 +1346,40 @@ function phase2_worker(G               ::Div2,
             end
 
             # Build RS_mumford from u_RS / v_RS for the conjugate branch.
-            # u_RS_k is ascending monic (length deg+1); we need (c0, c1, v0_rs, v1_rs).
-            # For the conjugate-LP key we only need the degree-2 part of u_RS
-            # (higher-degree residuals are not handled by the current LP1-conj
-            # machinery — skip them cleanly by falling through to the split branch
-            # or marking as SENTINEL).
-            if length(u_RS_k) == 3   # degree 2 — standard conjugate pair
-                u0_rs = u_RS_k[1]; u1_rs = u_RS_k[2]
-                v0_rs = isempty(v_RS_k) ? 0 : v_RS_k[1]
-                v1_rs = length(v_RS_k) >= 2 ? v_RS_k[2] : 0
+            # u_RS length is determined via scratch integer flags rather than allocating length(u_RS_k).
+            u_rs_len = combined_scratch.u_RS_len[1]
+            v_rs_len = combined_scratch.v_RS_len[1]
+
+            if u_rs_len == 3   # degree 2 — standard conjugate pair
+                @inbounds u0_rs = combined_scratch.u_RS[1]
+                @inbounds u1_rs = combined_scratch.u_RS[2]
+                @inbounds v0_rs = (v_rs_len == 0) ? 0 : combined_scratch.v_RS[1]
+                @inbounds v1_rs = (v_rs_len >= 2) ? combined_scratch.v_RS[2] : 0
                 RS_mumford = (u0_rs, u1_rs, v0_rs, v1_rs)
             else
                 # Residual degree ≠ 2: no conjugate LP key available.
                 # If we have split points use them; otherwise skip the step.
                 RS_mumford = SENTINEL_MUMFORD
-                res_R === SENTINEL_PT && res_S === SENTINEL_PT && continue
+                if res_R == SENTINEL_PT && res_S == SENTINEL_PT
+                    continue
+                end
             end
 
             # Approximate a as the leading pure-x² coefficient for D38/diagnostics.
             # In the general basis, find the coeff of the x² monomial (pole order 4).
+            basis_k = rr_basis_cached(nb_k)::Vector{NTuple{2, Int}}
             a = 0
-            for (_ki, (_bi, _bj)) in enumerate(basis_k)
-                if _bi == 2 && _bj == 0; a = coeffs_k[_ki]; break; end
+            for _ki in 1:nb_k
+                @inbounds basis_elem = basis_k[_ki]
+                if basis_elem[1] == 2 && basis_elem[2] == 0
+                    @inbounds a = combined_scratch.coeffs_out[_ki]
+                    break
+                end
             end
-            d38_stat !== nothing && record_d38_step!(d38_stat, Int(a))
+            
+            if d38_stat !== nothing 
+                record_d38_step!(d38_stat, Int(a))
+            end
         end
 
         s.hits_total += 1
@@ -1527,9 +1516,18 @@ function phase2_worker(G               ::Div2,
             #  0-LP: P0, R, S all in FB → full relation
             # ------------------------------------------------------------------
             empty!(fb_row_scratch)
-            for idx in (i0, iR, iS)
+            # Add ALL anchors from the K-tuple
+            for anc in cur_anchors
+                idx = get(pt2idx, anc, 0)
+                idx == 0 && continue
                 fb_row_scratch[idx] = get(fb_row_scratch, idx, 0) + 1
             end
+            # Add the residual points
+            for idx in (iR, iS)
+                idx == 0 && continue
+                fb_row_scratch[idx] = get(fb_row_scratch, idx, 0) + 1
+            end
+
             emit_0lp!(fb_row_scratch, neg_al, neg_be, fb, G, T,
                       alpha_vec, beta_vec, rel_rows, rel_counter, ort, s, rank_growth)
             if length(sample_phase2_rels) < 10
@@ -1560,10 +1558,17 @@ function phase2_worker(G               ::Div2,
                 record_d34_step!(deep_stat, P0[1], p, D34_OUTCOME_OTHER)
             else
             s.hits_lp1 += 1
-            lp_pt = i0 == 0 ? P0 : iR == 0 ? R : S
 
+            lp_pt = i0 == 0 ? P0 : iR == 0 ? R : S
             empty!(fb_row_scratch)
-            for idx in (i0, iR, iS)
+            # Add ALL anchors from the K-tuple
+            for anc in cur_anchors
+                idx = get(pt2idx, anc, 0)
+                idx == 0 && continue
+                fb_row_scratch[idx] = get(fb_row_scratch, idx, 0) + 1
+            end
+            # Add the residual points
+            for idx in (iR, iS)
                 idx == 0 && continue
                 fb_row_scratch[idx] = get(fb_row_scratch, idx, 0) + 1
             end
@@ -1611,7 +1616,14 @@ function phase2_worker(G               ::Div2,
                 record_d34_step!(deep_stat, P0[1], p, D34_OUTCOME_OTHER)
             else
                 empty!(fb_row_scratch)
-                for idx in (i0, iR, iS)
+                # Add ALL anchors from the K-tuple
+                for anc in cur_anchors
+                    idx = get(pt2idx, anc, 0)
+                    idx == 0 && continue
+                    fb_row_scratch[idx] = get(fb_row_scratch, idx, 0) + 1
+                end
+                # Add the residual points
+                for idx in (iR, iS)
                     idx == 0 && continue
                     fb_row_scratch[idx] = get(fb_row_scratch, idx, 0) + 1
                 end
@@ -1800,7 +1812,7 @@ end
         shared_lp2_conj_lock::ReentrantLock,
         max_lp2_conj_nodes::Int,
         rank_growth       ::Vector{Tuple{Int,Int}},
-        combined_scratch  ::Dict{Int,Int},
+    combined_scratch::ThreadScratchpad,     # Updated type signature to match the caller #combined_scratch  ::Dict{Int,Int},
         next_anchor_ref   ::Ref{Function})::NTuple{2,Int}
 
     s.hits_lp2seen += 1

@@ -86,6 +86,37 @@
 # =============================================================================
 
 # ---------------------------------------------------------------------------
+#  Module-level precomputed constants to eliminate hot-path allocations.
+#
+#  F_POLY_DESC  — F_POLY in descending order for use in branch_series.
+#                 F_POLY is defined in the including file; we compute this
+#                 lazily the first time branch_series is called, or eagerly
+#                 via init_phi_general_caches!().
+#
+#  RR_BASIS_CACHE — memoisation table for rr_basis(n).  rr_basis is a pure
+#                 function of n and the RR structure never changes, so one
+#                 copy per n suffices for all threads (read-only after init).
+# ---------------------------------------------------------------------------
+const RR_BASIS_CACHE = Dict{Int, Vector{NTuple{2,Int}}}()
+
+# Called once after F_POLY is defined (e.g. at the bottom of the including
+# file, or in main()).  Pre-populates caches for k=1..max_k_expected.
+function init_phi_general_caches!(max_k::Int = 4)
+    global F_POLY_DESC
+    F_POLY_DESC = reverse(F_POLY)
+    for k in 1:max_k
+        nb = k + 3
+        haskey(RR_BASIS_CACHE, nb) || (RR_BASIS_CACHE[nb] = rr_basis(nb))
+    end
+    return nothing
+end
+
+# Lazy global for the descending F_POLY.  Set by init_phi_general_caches!.
+# Declared here so branch_series can reference it; will be populated before
+# the first walk step.
+F_POLY_DESC = Int[]   # filled in by init_phi_general_caches!
+
+# ---------------------------------------------------------------------------
 #  Riemann-Roch basis enumeration
 #
 #  Returns a vector of (i, j) pairs meaning x^i * y^j (j ∈ {0,1}),
@@ -115,6 +146,15 @@ function rr_basis(n_basis::Int)::Vector{NTuple{2,Int}}
         seen == n_basis && break
     end
     return basis
+end
+
+# Cached wrapper — returns the pre-computed (or lazily computed) basis for
+# n_basis.  Thread-safe for reads after init_phi_general_caches!() has been
+# called from the main thread before workers are spawned.
+function rr_basis_cached(n_basis::Int)::Vector{NTuple{2,Int}}
+    get!(RR_BASIS_CACHE, n_basis) do
+        rr_basis(n_basis)
+    end
 end
 
 # ---------------------------------------------------------------------------
@@ -197,51 +237,63 @@ end
 end
 
 # ---------------------------------------------------------------------------
-#  Gaussian elimination over F_p.
+#  Gaussian elimination over F_p (Zero-Allocation & Slice-Safe Edition)
 #
 #  Solves A * x = b where A is (n×n), b is (n,), all entries are Ints in F_p.
-#  Returns solution vector or nothing if singular.
+#  Returns the solution vector view `b` or nothing if singular.
 #
-#  Mutates A and b in place.
+#  Mutates A and b in place. 
+#  Accepts AbstractArray types to seamlessly consume sliced SubArray views.
 # ---------------------------------------------------------------------------
-function fp_gauss!(A::Matrix{Int}, b::Vector{Int})::Union{Vector{Int}, Nothing}
+function fp_gauss!(A::AbstractMatrix{Int}, b::AbstractVector{Int})::Union{AbstractVector{Int}, Nothing}
     n = size(A, 1)
+    
     for col in 1:n
-        # Find pivot
+        # Find pivot row
         pivot_row = 0
         for row in col:n
-            if A[row, col] != 0
+            @inbounds if A[row, col] != 0
                 pivot_row = row
                 break
             end
         end
         pivot_row == 0 && return nothing   # singular
 
+        # Swap rows in place cleanly without creating a slice object or allocating memory
         if pivot_row != col
-            A[col, :], A[pivot_row, :] = A[pivot_row, :], A[col, :]
-            b[col], b[pivot_row] = b[pivot_row], b[col]
+            for j in col:n
+                @inbounds tmp_A = A[col, j]
+                @inbounds A[col, j] = A[pivot_row, j]
+                @inbounds A[pivot_row, j] = tmp_A
+            end
+            @inbounds tmp_b = b[col]
+            @inbounds b[col] = b[pivot_row]
+            @inbounds b[pivot_row] = tmp_b
         end
 
-        inv_pivot = fpinv(A[col, col])
+        # Normalize pivot row
+        @inbounds inv_pivot = fpinv(A[col, col])
         for j in col:n
-            A[col, j] = fpmul(A[col, j], inv_pivot)
+            @inbounds A[col, j] = fpmul(A[col, j], inv_pivot)
         end
-        b[col] = fpmul(b[col], inv_pivot)
+        @inbounds b[col] = fpmul(b[col], inv_pivot)
 
+        # Eliminate other rows (Full Gauss-Jordan elimination pass)
         for row in 1:n
             row == col && continue
-            if A[row, col] != 0
-                factor = A[row, col]
+            @inbounds factor = A[row, col]
+            
+            if factor != 0
                 for j in col:n
-                    A[row, j] = fp(A[row, j] - fpmul(factor, A[col, j]))
+                    @inbounds A[row, j] = fp(A[row, j] - fpmul(factor, A[col, j]))
                 end
-                b[row] = fp(b[row] - fpmul(factor, b[col]))
+                @inbounds b[row] = fp(b[row] - fpmul(factor, b[col]))
             end
         end
     end
+    
     return b
 end
-
 # ---------------------------------------------------------------------------
 #  build_phi_general
 #
@@ -258,243 +310,371 @@ end
 #  PERFORMANCE NOTE: Allocates a (k+2)×(k+2) matrix.  For the k=1 hot path,
 #  use build_phi_mumford (the inlined closed-form solution) directly.
 # ---------------------------------------------------------------------------
-function build_phi_general(
-        anchors ::Vector{NTuple{2,Int}},   # [(px1,py1), (px2,py2), ...]
-        u0::Int, u1::Int,
-        v0::Int, v1::Int
-    )::Union{Vector{Int}, Nothing}
+# ---------------------------------------------------------------------------
+#  build_phi_general!(scratch, anchors, u0, u1, v0, v1) -> Bool
+#
+#  Builds the linear system for the generalized φ-function using the 
+#  pre-allocated arrays in `scratch`. If successful, populates `scratch.coeffs_out`
+#  and returns `true`. Returns `false` on any degenerate configuration or singularity.
+#
+#  ALLOCATION INVARIANT: Zero heap allocations. Zero scalar boxing.
+# ---------------------------------------------------------------------------
 
-    k    = length(anchors)
-    n    = k + 2          # number of unknowns (= number of equations)
-    nb   = k + 3          # total basis size (including the normalised element)
+# ---------------------------------------------------------------------------
+#  ThreadScratchpad — Allocation-free mutable thread context.
+#
+#  Stores all vector registers, system matrices, and logical size states 
+#  to avoid runtime heap interactions within phase-2 workers.
+# ---------------------------------------------------------------------------
+struct ThreadScratchpad
+    # 1. Buffers for branch_series!
+    out_y          ::Vector{Int}
+    f_tay          ::Vector{Int}
+    poly_buf       ::Vector{Int}   # Expanded to 1024 to map registers cleanly up to index 768+
+    
+    # 2. Buffers for monomial_series_coeffs!
+    xi_buf         ::Vector{Int}
+    binom_buf      ::Vector{Int}
+    pxpow_buf      ::Vector{Int}
+    ser_buf        ::Vector{Int}   # Expanded to 64 to hold 32 terms of E(x) and 32 terms of Y(x) simultaneously
 
-    basis = rr_basis(nb)
+    # 3. Linear system workspaces (Sized safely for max 16 anchors + 2 Mumford rows)
+    A_mat          ::Matrix{Int}   
+    rhs_vec        ::Vector{Int}   
+    
+    # 4. In-place deduplication tables (Replaces Dict/Set inside build_phi_general!)
+    seen_counts    ::Vector{Int}   
+    visited_flags  ::Vector{Bool}  
+    
+    # 5. Output arrays for φ coefficients and residual polynomial components
+    coeffs_out     ::Vector{Int}
+    u_RS           ::Vector{Int}
+    v_RS           ::Vector{Int}
+    roots_out      ::Vector{NTuple{2,Int}}
 
+    # 6. Mutex-free scalar tracking (Using 1-element arrays as mutable heap flags)
+    roots_count    ::Vector{Int}
+    u_RS_len       ::Vector{Int}
+    v_RS_len       ::Vector{Int}
+    u_RS_is_fail   ::Vector{Bool}
+
+    function ThreadScratchpad()
+        new(
+            zeros(Int, 32), zeros(Int, 32), zeros(Int, 1024),  # poly_buf expanded safely
+            zeros(Int, 32), zeros(Int, 32), zeros(Int, 32), zeros(Int, 64), # ser_buf expanded to 64
+            zeros(Int, 20, 20), zeros(Int, 20),
+            zeros(Int, 32), zeros(Bool, 32),
+            zeros(Int, 24), zeros(Int, 8), zeros(Int, 8), 
+            Vector{NTuple{2,Int}}(undef, 8),
+            zeros(Int, 1), zeros(Int, 1), zeros(Int, 1), zeros(Bool, 1)
+        )
+    end
+end
+
+# ---------------------------------------------------------------------------
+#  Branch series: compute y-series coefficients y[0], y[1], ..., y[m-1]
+#  where y(px + t) = Σ y[s] * t^s mod t^m,
+#  determined by y² = f(px + t)  with y[0] = py.
+#
+#  Expanding f(px + t) = Σ f_s * t^s (Taylor coefficients of f at px):
+#     f_s = f^(s)(px) / s!  — computed directly via synthetic division.
+#
+#  From y² = f we get: 2*y[0]*y[s] = f_s - Σ_{r=1}^{s-1} y[r]*y[s-r]
+#  → y[s] = (f_s - Σ_{r=1}^{s-1} y[r]*y[s-r]) / (2*y[0])
+#
+#  ALLOCATION INVARIANT: Zero heap allocations. Zero scalar boxing.
+#  Mutates `out_y` in-place using pre-allocated workspace buffers.
+# ---------------------------------------------------------------------------
+function branch_series!(
+    out_y   ::AbstractVector{Int}, 
+    px      ::Int, 
+    py      ::Int, 
+    m       ::Int, 
+    f_tay   ::AbstractVector{Int}, 
+    poly_buf::AbstractVector{Int}
+)::Nothing
+    # Sanity guard against runaway anchor multiplicity
+    if m > 16 
+        throw(ArgumentError("unexpected anchor multiplicity m=$m (px=$px, py=$py)"))
+    end
+
+    # Fast path: m=1 means only the zero-th coefficient is needed
+    if m == 1
+        @inbounds out_y[1] = py
+        return nothing
+    end
+
+    # Verify global polynomial layout state
+    if isempty(F_POLY_DESC) 
+        throw(ErrorException(
+            "branch_series!: F_POLY_DESC is empty — call init_phi_general_caches!() " *
+            "after F_POLY is defined and before spawning workers"
+        ))
+    end
+    f_desc = F_POLY_DESC::Vector{Int}
+    n_fdesc = length(f_desc)
+
+    # Initialize workspace arrays in-place
+    @inbounds for i in 1:m
+        f_tay[i] = 0
+    end
+    @inbounds for i in 1:n_fdesc
+        poly_buf[i] = f_desc[i]
+    end
+
+    # Synthetic division / Horner deflation.
+    # Note: This directly computes f^(s)(px)/s! (the true Taylor coefficients),
+    # eliminating the need for a separate factorial inversion phase.
+    poly_len = n_fdesc
+    for s in 0:(m - 1)
+        @inbounds val = poly_buf[1]
+        for ci in 2:poly_len
+            @inbounds val = fp(fpmul(val, px) + poly_buf[ci])
+        end
+        @inbounds f_tay[s+1] = val
+
+        if s < m - 1
+            # In-place deflation step
+            for ci in 2:(poly_len - 1)
+                @inbounds poly_buf[ci] = fp(fpmul(poly_buf[ci-1], px) + poly_buf[ci])
+            end
+            poly_len -= 1
+        end
+    end
+
+    # Compute y-series coefficients iteratively
+    @inbounds out_y[1] = py 
+    inv2y0 = fpinv(fp(2 * py))
+    
+    for s in 1:(m - 1)
+        @inbounds rhs_s = f_tay[s+1]
+        for r in 1:(s - 1)
+            @inbounds rhs_s = fp(rhs_s - fpmul(out_y[r+1], out_y[s-r+1]))
+        end
+        @inbounds out_y[s+1] = fpmul(rhs_s, inv2y0)
+    end
+
+    return nothing
+end
+
+
+# ---------------------------------------------------------------------------
+#  Monomial series (in-place): write the coefficients of t^0..t^(m-1) in
+#  x^i * y^j(x) (evaluated at x = px+t, y = y_ser) into `out`.
+#
+#  x^i = (px + t)^i = Σ C(i,r) * px^(i-r) * t^r  (binomial expansion)
+#  x^i * y^j: convolve the two series mod t^m.
+#
+#  For j=0: coeff of t^s in (px+t)^i = C(i,s) * px^(i-s)  (or 0 if s>i).
+#  For j=1: convolve x-series with y-series.
+#
+#  `out`, `xi_scratch`, `binom_scratch`, `pxpow_scratch` are all
+#  length-m buffers owned by the caller and reused across every monomial
+#  and every column — this is the allocation hotspot the original
+#  per-call `Vector{Int}` returns were causing (one outer vector + four
+#  temporaries per monomial, times n columns, times every anchor group,
+#  times every walk step).  Writing in place eliminates all of that.
+# ---------------------------------------------------------------------------
+function monomial_series_coeffs!(out::AbstractVector{Int}, i::Int, j::Int,
+                                    px::Int, y_ser::AbstractVector{Int}, m::Int,
+                                    xi_scratch::AbstractVector{Int},
+                                    binom_scratch::AbstractVector{Int},
+                                    pxpow_scratch::AbstractVector{Int})::Nothing
+    # Fast path: m=1 means we only need the zeroth coefficient, which is
+    # just the monomial evaluated at (px, y_ser[1]).  No binomial/power
+    # table construction needed.
+    if m == 1
+        out[1] = eval_monomial(i, j, px, y_ser[1])
+        return nothing
+    end
+
+    xi_ser = xi_scratch
+    binom  = binom_scratch
+    px_pow = pxpow_scratch
+    fill!(xi_ser, 0)
+    fill!(binom, 0)
+    fill!(px_pow, 0)
+
+    # Coefficients of t^0..t^(m-1) in x^i (as a series in t = x-px).
+    # C(i, s) * px^(i-s), for s = 0..min(i,m-1); zero for s > i.
+    binom[1] = 1   # C(i,0) = 1
+    for s in 1:min(i, m-1)
+        # C(i,s) = C(i,s-1) * (i-s+1) / s
+        binom[s+1] = fpmul(binom[s], fpmul(fp(i - s + 1), fpinv(fp(s))))
+    end
+    # px^(i-s) for s = 0..i; use descending powers.
+    for s in 0:min(i, m-1)
+        e = i - s
+        if e == 0
+            px_pow[s+1] = 1
+        elseif e == 1
+            px_pow[s+1] = px
+        else
+            t2 = px
+            for _ in 2:e; t2 = fpmul(t2, px); end
+            px_pow[s+1] = t2
+        end
+    end
+    for s in 0:min(i, m-1)
+        xi_ser[s+1] = fpmul(binom[s+1], px_pow[s+1])
+    end
+
+    if j == 0
+        copyto!(out, xi_ser)
+        return nothing
+    end
+
+    # j == 1: convolve xi_ser with y_ser mod t^m.
+    fill!(out, 0)
+    for a in 0:m-1, b in 0:m-1
+        a + b >= m && continue
+        out[a+b+1] = fp(out[a+b+1] + fpmul(xi_ser[a+1], y_ser[b+1]))
+    end
+    return nothing
+end
+
+function build_phi_general!(
+    scratch::ThreadScratchpad,
+    anchors::Vector{NTuple{2,Int}}, # [(px1,py1), (px2,py2), ...]
+    u0::Int, u1::Int,
+    v0::Int, v1::Int
+)::Bool
+
+    k   = length(anchors)
+    n   = k + 2          # number of unknowns (= number of equations)
+    nb  = k + 3          # total basis size (including the normalised element)
+
+    basis = rr_basis_cached(nb)::Vector{NTuple{2, Int}}
     # Guard: no anchor may be in supp(D)
-    for (px, _) in anchors
+    for idx in 1:k
+        @inbounds pt = anchors[idx]
+        px = pt[1]
         upx = fp(fp(px * px) + fpmul(u1, px) + u0)
-        upx == 0 && return nothing
+        upx == 0 && return false
     end
 
-    # Compute multiplicity-grouped anchor list.
-    # For each distinct anchor point, count how many times it appears.
-    # A point of multiplicity m contributes m vanishing conditions:
-    #   (d/dx)^s [φ(x, y(x))]|_P = 0   for s = 0, 1, ..., m-1
-    # where d/dx is the intrinsic derivative along the curve branch.
-    #
-    # We compute these by truncated Taylor expansion: for each monomial
-    # x^i * y^j, we expand it as a power series in t = x - px using the
-    # branch y(x) = Σ y_s * t^s determined by the curve equation
-    # y² = f(x), initialised at (px, py).
-    #
-    # The s-th coefficient of the Taylor expansion of monomial m at P
-    # is exactly (1/s!) * (d/dx)^s m(x,y(x))|_{x=px}.
-    # We use the *unnormalised* coefficients (i.e. the coefficients of t^s
-    # in the series), which scale each row by s! relative to the true
-    # derivative — but since each condition is just "= 0", the scaling
-    # is irrelevant and we avoid working in characteristic-0.
-    #
-    # NOTE: if p ≤ m-1, some factorial s! = 0 mod p, making the scaling
-    # degenerate.  Guard: raise an error if p < m (extremely rare in practice).
-
-    # Build ordered list of (px, py, multiplicity) in first-occurrence order.
-    seen_counts = Dict{NTuple{2,Int},Int}()
-    for pt in anchors
-        seen_counts[pt] = get(seen_counts, pt, 0) + 1
-    end
-    point_orders = NTuple{3,Int}[]   # (px, py, multiplicity)
-    visited = Set{NTuple{2,Int}}()
-    for pt in anchors
-        pt ∈ visited && continue
-        push!(visited, pt)
-        push!(point_orders, (pt[1], pt[2], seen_counts[pt]))
+    # Zero out our deduplication workspaces instead of allocating fresh Dict/Set objects
+    @inbounds for i in 1:k
+        scratch.seen_counts[i] = 0
+        scratch.visited_flags[i] = false
     end
 
-    # Total vanishing conditions = sum of multiplicities = k
-    n_cond = sum(m for (_, _, m) in point_orders)
-    @assert n_cond == k
-
-    # Guard: characteristic p must exceed max multiplicity so that
-    # the Taylor-coefficient approach (scaling by 1/s!) is valid.
-    max_mult = maximum(m for (_, _, m) in point_orders)
-    max_mult >= p && throw(ArgumentError(
-        "anchor multiplicity $max_mult ≥ p=$p: Taylor-coefficient rows degenerate mod p"))
-
-    # Guard: tangency (mult ≥ 2) requires py ≠ 0.
-    for (px, py, m) in point_orders
-        m >= 2 && py == 0 && return nothing
-    end
-
-    # ---------------------------------------------------------------------------
-    #  Branch series: compute y-series coefficients y[0], y[1], ..., y[m-1]
-    #  where y(px + t) = Σ y[s] * t^s mod t^m,
-    #  determined by y² = f(px + t)  with y[0] = py.
-    #
-    #  Expanding f(px + t) = Σ f_s * t^s (Taylor coefficients of f at px):
-    #    f_s = f^(s)(px) / s!  — but we work with the *actual* Taylor coeffs
-    #    (including the 1/s! denominator), which requires computing them mod p.
-    #
-    #  From y² = f we get: 2*y[0]*y[s] = f_s - Σ_{r=1}^{s-1} y[r]*y[s-r]
-    #  → y[s] = (f_s - Σ_{r=1}^{s-1} y[r]*y[s-r]) / (2*y[0])
-    #
-    #  f_s = (1/s!) f^(s)(px):  we compute iteratively.
-    # ---------------------------------------------------------------------------
-    function branch_series(px::Int, py::Int, m::Int)::Vector{Int}
-        # Taylor coefficients of f at px up to order m-1.
-        # f_s: coefficient of t^s in f(px+t), i.e. f^(s)(px)/s!.
-        # We compute these by repeated division (synthetic differentiation).
-        # Represent f in descending order for Horner; F_POLY is ascending.
-        f_desc = reverse(F_POLY)   # descending coefficients
-        f_tay  = zeros(Int, m)     # f_tay[s+1] = coefficient of t^s
-        # Iterated Horner: divide f(x) by (x - px) repeatedly.
-        # The remainders give the Taylor coefficients.
-        poly = copy(f_desc)        # working copy, descending
-        for s in 0:m-1
-            # Evaluate poly at px (Horner) → f_tay[s+1]
-            val = poly[1]
-            for ci in poly[2:end]
-                val = fp(fpmul(val, px) + ci)
-            end
-            f_tay[s+1] = val
-            # Deflate: poly ← poly / (x - px) — quotient only (drop remainder)
-            if s < m-1
-                n_poly = length(poly)
-                q = zeros(Int, n_poly - 1)
-                q[1] = poly[1]
-                for ci in 2:n_poly-1
-                    q[ci] = fp(fpmul(q[ci-1], px) + poly[ci])
-                end
-                poly = q
+    # Step A: In-place count frequencies matching pairs manually
+    for i in 1:k
+        @inbounds pt_i = anchors[i]
+        count = 0
+        for j in 1:k
+            @inbounds pt_j = anchors[j]
+            if pt_i[1] == pt_j[1] && pt_i[2] == pt_j[2]
+                count += 1
             end
         end
-        # However, the above computes f(px), f'(px), f''(px), ... (not divided by s!).
-        # We need f_tay[s+1] = f^(s)(px) / s!.  Divide by s!:
-        fact = 1
-        for s in 1:m-1
-            fact = fp(fpmul(fact, fp(s)))
-            fact == 0 && throw(ArgumentError(
-                "s! = 0 mod p for s=$s, p=$p: characteristic too small for order-$m tangency"))
-            f_tay[s+1] = fpmul(f_tay[s+1], fpinv(fact))
-        end
-
-        # Now compute y-series: y[s] for s = 0 .. m-1.
-        y = zeros(Int, m)
-        y[1] = py   # y[0]
-        inv2y0 = fpinv(fp(2 * py))
-        for s in 1:m-1
-            # 2*y0*y[s] = f_s - Σ_{r=1}^{s-1} y[r]*y[s-r]
-            rhs_s = f_tay[s+1]
-            for r in 1:s-1
-                rhs_s = fp(rhs_s - fpmul(y[r+1], y[s-r+1]))
-            end
-            y[s+1] = fpmul(rhs_s, inv2y0)
-        end
-        return y   # y[s+1] = coefficient of t^s in y(px+t)
+        @inbounds scratch.seen_counts[i] = count
     end
 
-    # ---------------------------------------------------------------------------
-    #  Monomial series: compute the coefficient of t^s in x^i * y^j(x)
-    #  evaluated at x = px + t, y = Σ y[r] t^r.
-    #
-    #  x^i = (px + t)^i = Σ C(i,r) * px^(i-r) * t^r  (binomial expansion)
-    #  x^i * y^j: convolve the two series mod t^m.
-    #
-    #  For j=0: coeff of t^s in (px+t)^i = C(i,s) * px^(i-s)  (or 0 if s>i).
-    #  For j=1: convolve x-series with y-series.
-    # ---------------------------------------------------------------------------
-    function monomial_series_coeffs(i::Int, j::Int,
-                                     px::Int, y_ser::Vector{Int},
-                                     m::Int)::Vector{Int}
-        # Coefficients of t^0..t^(m-1) in x^i (as a series in t = x-px).
-        # C(i, s) * px^(i-s), for s = 0..min(i,m-1); zero for s > i.
-        xi_ser = zeros(Int, m)
-        # Compute binomial coefficients C(i,0), C(i,1), ..., C(i,m-1) mod p.
-        binom = zeros(Int, m)
-        binom[1] = 1   # C(i,0) = 1
-        for s in 1:min(i, m-1)
-            # C(i,s) = C(i,s-1) * (i-s+1) / s
-            binom[s+1] = fpmul(binom[s], fpmul(fp(i - s + 1), fpinv(fp(s))))
+    # Step B: Guard conditions against max multiplicity & Weierstrass targets
+    max_mult = 0
+    for i in 1:k
+        @inbounds m = scratch.seen_counts[i]
+        if m > max_mult
+            max_mult = m
         end
-        # px^(i-s) for s = 0..i; use descending powers.
-        px_pow = zeros(Int, m)   # px_pow[s+1] = px^(i-s) for s ≤ i
-        for s in 0:min(i, m-1)
-            e = i - s
-            if e == 0
-                px_pow[s+1] = 1
-            elseif e == 1
-                px_pow[s+1] = px
-            else
-                t2 = px
-                for _ in 2:e; t2 = fpmul(t2, px); end
-                px_pow[s+1] = t2
-            end
+        # Guard: tangency (mult ≥ 2) requires py ≠ 0.
+        @inbounds if m >= 2 && anchors[i][2] == 0
+            return false
         end
-        for s in 0:min(i, m-1)
-            xi_ser[s+1] = fpmul(binom[s+1], px_pow[s+1])
-        end
-
-        j == 0 && return xi_ser
-
-        # j == 1: convolve xi_ser with y_ser mod t^m.
-        result = zeros(Int, m)
-        for a in 0:m-1, b in 0:m-1
-            a + b >= m && continue
-            result[a+b+1] = fp(result[a+b+1] + fpmul(xi_ser[a+1], y_ser[b+1]))
-        end
-        return result
     end
 
-    # Build linear system A * c = rhs
-    A   = zeros(Int, n, n)
-    rhs = zeros(Int, n)
+    # Guard: characteristic p must exceed max multiplicity
+    if max_mult >= p
+        throw(ArgumentError("anchor multiplicity $max_mult ≥ p=$p: Taylor-coefficient rows degenerate mod p"))
+    end
 
-    # Normalised monomial index
+    # Reset linear solver workspaces
+    @inbounds for j in 1:n, i in 1:n
+        scratch.A_mat[i, j] = 0
+    end
+    @inbounds for i in 1:n
+        scratch.rhs_vec[i] = 0
+    end
+
+    # Normalized monomial index
     i_norm, j_norm = basis[nb]
 
     row_idx = 0
-    for (px, py, m) in point_orders
-        # Compute branch series y(px+t) to order m-1.
-        y_ser = branch_series(px, py, m)
-
-        # Compute Taylor series of each basis monomial to order m-1.
-        # basis_ser[col_idx][s+1] = coefficient of t^s.
-        basis_sers = Vector{Vector{Int}}(undef, n)
-        for col_idx in 1:n
-            ii, jj = basis[col_idx]
-            basis_sers[col_idx] = monomial_series_coeffs(ii, jj, px, y_ser, m)
+    for i in 1:k
+        @inbounds if scratch.visited_flags[i]
+            continue
         end
-        norm_ser = monomial_series_coeffs(i_norm, j_norm, px, y_ser, m)
+        @inbounds scratch.visited_flags[i] = true
+        
+        @inbounds pt = anchors[i]
+        px = pt[1]
+        py = pt[2]
+        @inbounds m  = scratch.seen_counts[i]
 
-        # Emit m rows: one for each order s = 0, 1, ..., m-1.
-        for s in 0:m-1
-            row_idx += 1
-            for col_idx in 1:n
-                A[row_idx, col_idx] = basis_sers[col_idx][s+1]
+        # Tag other identical points as visited to skip structural repetitions
+        for j in (i + 1):k
+            @inbounds pt_j = anchors[j]
+            if pt[1] == pt_j[1] && pt[2] == pt_j[2]
+                @inbounds scratch.visited_flags[j] = true
             end
-            rhs[row_idx] = fp(-norm_ser[s+1])
         end
+
+        # Compute branch series y(px+t) to order m-1 completely in-place
+        branch_series!(scratch.out_y, px, py, m, scratch.f_tay, scratch.poly_buf)
+
+        # Emit each basis column's series coefficients directly into A_mat
+        for col_idx in 1:n
+            @inbounds ii, jj = basis[col_idx]
+            monomial_series_coeffs!(
+                scratch.ser_buf, ii, jj, px, scratch.out_y, m, 
+                scratch.xi_buf, scratch.binom_buf, scratch.pxpow_buf
+            )
+            for s in 0:(m - 1)
+                @inbounds scratch.A_mat[row_idx + s + 1, col_idx] = scratch.ser_buf[s + 1]
+            end
+        end
+
+        # Normalised-monomial series → rhs for this anchor's m rows.
+        monomial_series_coeffs!(
+            scratch.ser_buf, i_norm, j_norm, px, scratch.out_y, m, 
+            scratch.xi_buf, scratch.binom_buf, scratch.pxpow_buf
+        )
+        for s in 0:(m - 1)
+            @inbounds scratch.rhs_vec[row_idx + s + 1] = fp(-scratch.ser_buf[s + 1])
+        end
+
+        row_idx += m
     end
 
     # --- Mumford rows: const (row k+1) and x-coeff (row k+2) ---
     for col_idx in 1:n
-        i, j = basis[col_idx]
+        @inbounds i, j = basis[col_idx]
         r0, r1 = reduce_monomial_mod_D(i, j, u0, u1, v0, v1)
-        A[k+1, col_idx] = r0
-        A[k+2, col_idx] = r1
+        @inbounds scratch.A_mat[k + 1, col_idx] = r0
+        @inbounds scratch.A_mat[k + 2, col_idx] = r1
     end
+    
     # RHS: -remainder of normalised monomial
     rn0, rn1 = reduce_monomial_mod_D(i_norm, j_norm, u0, u1, v0, v1)
-    rhs[k+1] = fp(-rn0)
-    rhs[k+2] = fp(-rn1)
+    @inbounds scratch.rhs_vec[k + 1] = fp(-rn0)
+    @inbounds scratch.rhs_vec[k + 2] = fp(-rn1)
 
-    sol = fp_gauss!(A, rhs)
-    sol === nothing && return nothing
+    # In-place Gauss solver using views matching current system dimension n
+    A_view   = @views scratch.A_mat[1:n, 1:n]
+    rhs_view = @views scratch.rhs_vec[1:n]
+    
+    sol = fp_gauss!(A_view, rhs_view)
+    sol === nothing && return false
 
-    # Append the normalised coefficient
-    result = Vector{Int}(undef, nb)
-    result[1:n] .= sol
-    result[nb]   = 1
-    return result
+    # Copy raw output coefficients straight into preallocated buffer without vector allocation
+    @inbounds for i in 1:n
+        scratch.coeffs_out[i] = sol[i]
+    end
+    @inbounds scratch.coeffs_out[nb] = 1
+
+    return true
 end
 
 # ---------------------------------------------------------------------------
@@ -511,33 +691,53 @@ end
 end
 
 # ---------------------------------------------------------------------------
-#  phi_to_EY(coeffs, basis) — split φ = E(x) + y*Y(x).
+#  phi_to_EY! (Zero-Allocation & Memory-Isolated Edition)
+#
+#  Splits φ(x,y) = E(x) + y * Y(x) directly inside scratch spaces.
+#  
+#  Saves:
+#    E(x) coefficients into scratch.poly_buf[1 : deg_E + 1]
+#    Y(x) coefficients into scratch.poly_buf[33 : 33 + deg_Y]
 #
 #  Returns:
-#    E_coeffs : Vector{Int}  (ascending powers of x, length = deg(E)+1)
-#    Y_coeffs : Vector{Int}  (ascending powers of x, length = deg(Y)+1)
-#
-#  Sizes depend on the basis:  if the highest pure-x monomial is x^d_E
-#  then deg(E) = d_E; if the highest y-monomial is x^d_Y * y then deg(Y) = d_Y.
+#    (deg_E, deg_Y) :: NTuple{2, Int}
 # ---------------------------------------------------------------------------
-function phi_to_EY(coeffs::Vector{Int},
-                   basis ::Vector{NTuple{2,Int}})::Tuple{Vector{Int}, Vector{Int}}
-    max_E_deg = maximum(i for (i,j) in basis if j==0; init=0)
-    max_Y_deg = maximum(i for (i,j) in basis if j==1; init=-1)
+function phi_to_EY!(
+    scratch::ThreadScratchpad,
+    basis  ::Vector{NTuple{2,Int}}
+)::NTuple{2, Int}
 
-    E = zeros(Int, max_E_deg + 1)    # E[k+1] = coeff of x^k
-    Y = zeros(Int, max(max_Y_deg + 1, 1))
+    # Zero-out the active working ranges within poly_buf (assuming max deg 16 for phase2)
+    # 1 to 32 is reserved for E(x); 33 to 64 is reserved for Y(x)
+    for i in 1:64
+        @inbounds scratch.poly_buf[i] = 0
+    end
 
-    for (idx, (i, j)) in enumerate(basis)
-        c = coeffs[idx]
+    deg_E = 0
+    deg_Y = -1  # -1 signifies Y(x) has not been populated yet
+
+    nb = length(basis)
+    for idx in 1:nb
+        @inbounds c = scratch.coeffs_out[idx]
         c == 0 && continue
-        if j == 0
-            E[i+1] = fp(E[i+1] + c)
+        
+        @inbounds bi, bj = basis[idx]
+        if bj == 0
+            # Element is a coefficient of E(x)
+            @inbounds scratch.poly_buf[bi + 1] = fp(scratch.poly_buf[bi + 1] + c)
+            if bi > deg_E
+                deg_E = bi
+            end
         else
-            Y[i+1] = fp(Y[i+1] + c)
+            # Element is a coefficient of Y(x) (shifted by offset 33)
+            @inbounds scratch.poly_buf[33 + bi] = fp(scratch.poly_buf[33 + bi] + c)
+            if bi > deg_Y
+                deg_Y = bi
+            end
         end
     end
-    return E, Y
+
+    return (deg_E, deg_Y)
 end
 
 # ---------------------------------------------------------------------------
@@ -569,24 +769,215 @@ function poly_sq(a::Vector{Int})::Vector{Int}
     return c
 end
 
+
 # ---------------------------------------------------------------------------
-#  build_N(E, Y) — compute N(x) = E(x)² - f(x)·Y(x)²
+#  poly_mul_mod_inplace!(scratch, len_a, off_a, len_b, off_b, u_len) -> Int
 #
-#  f(x) = Σ F_POLY[i] * x^(i-1)  (1-indexed), degree 5.
+#  Multiplies two polynomials inside scratch.poly_buf segments and reduces the
+#  result modulo u_RS in-place.
+#
+#  We use poly_buf[257:384] (offset 256) as a safe intermediate multiplication area
+#  before calling poly_reduce_mod_inplace!.
 # ---------------------------------------------------------------------------
-function build_N(E::Vector{Int}, Y::Vector{Int})::Vector{Int}
-    E2 = poly_sq(E)
-    Y2 = poly_sq(Y)
-    f  = F_POLY                           # already a Vector{Int}, length 6
-    fY2 = poly_mul(f, Y2)
-    # Subtract: N = E² - f*Y²
-    len = max(length(E2), length(fY2))
-    N   = zeros(Int, len)
-    for i in 1:length(E2);  N[i] = fp(N[i] + E2[i]);  end
-    for i in 1:length(fY2); N[i] = fp(N[i] - fY2[i]); end
-    # Strip trailing zeros
-    while length(N) > 1 && N[end] == 0; pop!(N); end
-    return N
+function poly_mul_mod_inplace!(
+    scratch::ThreadScratchpad,
+    len_a::Int, off_a::Int,
+    len_b::Int, off_b::Int,
+    u_len::Int
+)::Int
+
+    # If either input is empty, the product is 0
+    (len_a <= 0 || len_b <= 0) && return 0
+
+    # 1. Execute convolution into a fresh temporary workspace segment (offset 256)
+    off_mul = 256
+    len_mul = len_a + len_b - 1
+    
+    # Zero out the multiplication work window
+    for i in 1:len_mul
+        @inbounds scratch.poly_buf[off_mul + i] = 0
+    end
+
+    # 2. Perform the multiplication
+    for i in 1:len_a
+        @inbounds ai = scratch.poly_buf[off_a + i]
+        ai == 0 && continue
+        for j in 1:len_b
+            @inbounds bj = scratch.poly_buf[off_b + j]
+            bj == 0 && continue
+            
+            idx = off_mul + i + j - 1
+            @inbounds scratch.poly_buf[idx] = fp(scratch.poly_buf[idx] + fpmul(ai, bj))
+        end
+    end
+
+    # 3. Reduce modulo u_RS in place
+    final_len = poly_reduce_mod_inplace!(scratch, off_mul + len_mul, off_mul, u_len)
+
+    # 4. Copy the final reduced remainder straight into scratch.v_RS
+    for i in 1:final_len
+        @inbounds scratch.v_RS[i] = scratch.poly_buf[off_mul + i]
+    end
+
+    return final_len
+end
+
+# ---------------------------------------------------------------------------
+#  poly_mul_inplace_segment!(scratch, len_a, off_a, len_b, off_b, off_dest) -> Int
+#  Multiplies polynomial A and B, writing the result starting at off_dest.
+# ---------------------------------------------------------------------------
+function poly_mul_inplace_segment!(
+    scratch::ThreadScratchpad,
+    len_a::Int, off_a::Int,
+    len_b::Int, off_b::Int,
+    off_dest::Int
+)::Int
+    (len_a <= 0 || len_b <= 0) && return 0
+    len_out = len_a + len_b - 1
+    
+    for i in 1:len_out
+        @inbounds scratch.poly_buf[off_dest + i] = 0
+    end
+
+    for i in 1:len_a
+        @inbounds ai = scratch.poly_buf[off_a + i]
+        ai == 0 && continue
+        for j in 1:len_b
+            @inbounds bj = scratch.poly_buf[off_b + j]
+            bj == 0 && continue
+            idx = off_dest + i + j - 1
+            @inbounds scratch.poly_buf[idx] = fp(scratch.poly_buf[idx] + fpmul(ai, bj))
+        end
+    end
+    return len_out
+end
+
+# ---------------------------------------------------------------------------
+#  poly_sq_inplace_segment!(scratch, len_a, off_a, off_dest) -> Int
+#  Squares a polynomial over F_p into a target destination segment.
+# ---------------------------------------------------------------------------
+function poly_sq_inplace_segment!(
+    scratch::ThreadScratchpad,
+    len_a::Int, off_a::Int,
+    off_dest::Int
+)::Int
+    len_a <= 0 && return 0
+    len_out = 2 * len_a - 1
+    
+    for i in 1:len_out
+        @inbounds scratch.poly_buf[off_dest + i] = 0
+    end
+
+    for i in 1:len_a
+        @inbounds ai = scratch.poly_buf[off_a + i]
+        ai == 0 && continue
+        
+        # Diagonal elements: ai²
+        idx_diag = off_dest + 2*i - 1
+        @inbounds scratch.poly_buf[idx_diag] = fp(scratch.poly_buf[idx_diag] + fpmul(ai, ai))
+        
+        # Cross terms: 2 * ai * aj
+        for j in (i + 1):len_a
+            @inbounds aj = scratch.poly_buf[off_a + j]
+            aj == 0 && continue
+            
+            idx_cross = off_dest + i + j - 1
+            @inbounds scratch.poly_buf[idx_cross] = fp(scratch.poly_buf[idx_cross] + 2 * fpmul(ai, aj))
+        end
+    end
+    return len_out
+end
+
+# ---------------------------------------------------------------------------
+#  build_N_inplace!(scratch, deg_E, deg_Y) -> Int
+#
+#  Computes the norm polynomial N(x) = E(x)² - f(x)·Y(x)² inside the thread 
+#  scratchpad without heap allocations or temporary array spawning.
+#
+#  Memory Configuration:
+#    Input E(x) read from: scratch.poly_buf[1 : deg_E+1]
+#    Input Y(x) read from: scratch.poly_buf[33 : 33+deg_Y]
+#    Output N(x) written to: scratch.poly_buf[1 : final_len]
+#
+#  F_POLY is assumed to be globally cached as a Vector{Int} or NTuple{6, Int}.
+# ---------------------------------------------------------------------------
+function build_N_inplace!(
+    scratch::ThreadScratchpad,
+    deg_E::Int,
+    deg_Y::Int
+)::Int
+
+    # 1. Back up E(x) and Y(x) into a temporary serialization area (e.g., scratch.ser_buf)
+    #    so we can overwrite the front of scratch.poly_buf with our output safely.
+    len_E = deg_E + 1
+    len_Y = deg_Y + 1
+
+    for i in 1:len_E
+        @inbounds scratch.ser_buf[i] = scratch.poly_buf[i]
+    end
+    for i in 1:len_Y
+        @inbounds scratch.ser_buf[32 + i] = scratch.poly_buf[32 + i]
+    end
+
+    # 2. Clear out the front of scratch.poly_buf to act as our accumulation block for N(x).
+    #    Max possible degree for N(x) when g=2, deg(f)=5 is around 2 * deg_E or 5 + 2 * deg_Y.
+    #    We zero out a safe window up to index 64.
+    for i in 1:64
+        @inbounds scratch.poly_buf[i] = 0
+    end
+
+    # 3. Accumulate E(x)² into scratch.poly_buf
+    #    ser_buf[1 : len_E] holds the coefficients of E
+    for i in 1:len_E
+        @inbounds c_i = scratch.ser_buf[i]
+        c_i == 0 && continue
+        for j in 1:len_E
+            @inbounds c_j = scratch.ser_buf[j]
+            c_j == 0 && continue
+            idx = i + j - 1
+            @inbounds scratch.poly_buf[idx] = fp(scratch.poly_buf[idx] + fpmul(c_i, c_j))
+        end
+    end
+
+    # 4. Compute Y(x)² and multiply by f(x) in a fused loop pass to save cycles,
+    #    subtracting the result directly from scratch.poly_buf.
+    #    ser_buf[33 : 32 + len_Y] holds the coefficients of Y.
+    #    F_POLY has length 6 (degree 5).
+    for i in 1:len_Y
+        @inbounds y_i = scratch.ser_buf[32 + i]
+        y_i == 0 && continue
+        for j in 1:len_Y
+            @inbounds y_j = scratch.ser_buf[32 + j]
+            y_j == 0 && continue
+            
+            y2_coeff = fpmul(y_i, y_j)
+            y2_deg_idx = (i - 1) + (j - 1) # exponents add up
+
+            # Multiply by f(x) = \sum_{f_idx=1}^6 F_POLY[f_idx] * x^{f_idx-1}
+            for f_idx in 1:6
+                @inbounds f_coeff = F_POLY[f_idx]
+                f_coeff == 0 && continue
+                
+                final_deg = y2_deg_idx + (f_idx - 1)
+                target_idx = final_deg + 1
+                
+                # N(x) = E(x)² - f(x)·Y(x)²
+                @inbounds scratch.poly_buf[target_idx] = fp(scratch.poly_buf[target_idx] - fpmul(y2_coeff, f_coeff))
+            end
+        end
+    end
+
+    # 5. Calculate the active logical length by removing trailing zeroes
+    n_len = 64
+    while n_len > 1
+        @inbounds if scratch.poly_buf[n_len] == 0
+            n_len -= 1
+        else
+            break
+        end
+    end
+
+    return n_len
 end
 
 # ---------------------------------------------------------------------------
@@ -622,28 +1013,124 @@ function poly_divmod_linear(N::Vector{Int}, r::Int)::Tuple{Vector{Int}, Int}
     return (q, rem)
 end
 
+
 # ---------------------------------------------------------------------------
-#  poly_divmod_monic_deg2(N, u1, u0) — divide N by u(x) = x²+u1*x+u0.
-#  Returns (quotient ascending, rem0, rem1).
+#  poly_divmod_linear_inplace!(scratch, n_len, alpha) -> (Int, Int)
+#
+#  Divides the active polynomial inside scratch.poly_buf[1:n_len] by (x - alpha)
+#  in-place over F_p using Horner's synthetic division rule.
+#
+#  Mutates: scratch.poly_buf up to n_len.
+#  Returns: (new_logical_len, remainder_scalar)
+#  ALLOCATION INVARIANT: Zero heap allocations. Pure scalar registers.
 # ---------------------------------------------------------------------------
-function poly_divmod_monic_deg2(N::Vector{Int},
-                                 u1::Int, u0::Int)::Tuple{Vector{Int}, Int, Int}
-    deg_N = length(N) - 1
-    @assert deg_N >= 2 "polynomial degree too low for deg-2 division"
-    q = copy(N)                    # will shrink to quotient
-    # Standard long division descending; q[end] is leading coeff.
-    for i in length(q):-1:3
-        c = q[i]
-        c == 0 && continue
-        q[i]   = 0
-        q[i-1] = fp(q[i-1] - fpmul(c, u1))
-        q[i-2] = fp(q[i-2] - fpmul(c, u0))
+function poly_divmod_linear_inplace!(
+    scratch::ThreadScratchpad,
+    n_len::Int,
+    alpha::Int
+)::Tuple{Int, Int}
+    
+    # If the polynomial is a scalar or empty, division is degenerate
+    n_len <= 1 && return (n_len, scratch.poly_buf[1])
+
+    # Run Synthetic Division from the highest degree coefficient downwards
+    @inbounds rem_val = scratch.poly_buf[n_len]
+    @inbounds scratch.poly_buf[n_len] = 0 # Leading quotient position drops by 1 degree
+    
+    for i in (n_len - 1):-1:1
+        @inbounds orig_coeff = scratch.poly_buf[i]
+        
+        # Next quotient coefficient is the accumulated remainder step
+        @inbounds scratch.poly_buf[i] = rem_val
+        
+        # Shift remainder calculation: rem = orig_coeff + alpha * rem_val (mod p)
+        rem_val = fp(orig_coeff + fpmul(alpha, rem_val))
     end
-    r0 = q[1]; r1 = q[2]
-    quotient = q[3:end]
-    # Reverse to get ascending coefficients
-    return (quotient, r0, r1)
+    
+    # Compute new logical length of the quotient polynomial window
+    new_len = n_len - 1
+    while new_len > 1
+        @inbounds if scratch.poly_buf[new_len] == 0
+            new_len -= 1
+        else
+            break
+        end
+    end
+    
+    return (new_len, rem_val)
 end
+
+# ---------------------------------------------------------------------------
+#  poly_divmod_monic_deg2_inplace!(scratch, n_len, u1, u0)
+#
+#  Divides the active polynomial inside scratch.poly_buf[1:n_len] by 
+#  u(x) = x² + u1*x + u0 in-place over F_p.
+#
+#  Mutates: scratch.poly_buf to hold the final quotient in ASCENDING order 
+#           starting at index 1.
+#  Returns: (quotient_len, rem0, rem1) :: Tuple{Int, Int, Int}
+#
+#  ALLOCATION INVARIANT: Zero heap allocations. Zero scalar boxing.
+# ---------------------------------------------------------------------------
+function poly_divmod_monic_deg2_inplace!(
+    scratch::ThreadScratchpad,
+    n_len::Int,
+    u1::Int, 
+    u0::Int
+)::Tuple{Int, Int, Int}
+    
+    # If the input polynomial doesn't have enough degrees to divide, it's all remainder
+    if n_len < 3
+        if n_len == 2
+            @inbounds r1 = scratch.poly_buf[2]
+            @inbounds r0 = scratch.poly_buf[1]
+        elseif n_len == 1
+            r1 = 0
+            @inbounds r0 = scratch.poly_buf[1]
+        else
+            r1 = 0
+            r0 = 0
+        end
+        return (0, r0, r1)
+    end
+
+    # 1. Long division pass working downward through the buffer.
+    #    The active coefficients of N(x) are already at scratch.poly_buf[1:n_len].
+    for i in n_len:-1:3
+        @inbounds c = scratch.poly_buf[i]
+        c == 0 && continue
+        
+        # Quotient coefficient falls into place; we clear the processed dividend term
+        @inbounds scratch.poly_buf[i] = c # Keep it tracked here temporarily for flipping
+        @inbounds scratch.poly_buf[i-1] = fp(scratch.poly_buf[i-1] - fpmul(c, u1))
+        @inbounds scratch.poly_buf[i-2] = fp(scratch.poly_buf[i-2] - fpmul(c, u0))
+    end
+
+    # 2. Extract final remainders from the lowest two slots
+    @inbounds r0 = scratch.poly_buf[1]
+    @inbounds r1 = scratch.poly_buf[2]
+
+    # 3. The quotient terms are now sitting in scratch.poly_buf[3:n_len].
+    #    We shift them down into slots [1 : q_len] directly.
+    #    (Since we are processing ascending indexes linearly, we can bypass the 
+    #    reverse loop if we copy the computed elements from their high offsets).
+    q_len = n_len - 2
+    for i in 1:q_len
+        @inbounds scratch.poly_buf[i] = scratch.poly_buf[i + 2]
+    end
+
+    # 4. Strip trailing zeros logically by shrinking the valid window bound
+    while q_len > 1
+        @inbounds if scratch.poly_buf[q_len] == 0
+            q_len -= 1
+        else
+            break
+        end
+    end
+
+    return (q_len, r0, r1)
+end
+
 
 # ---------------------------------------------------------------------------
 #  phi_residual_general
@@ -674,117 +1161,291 @@ end
 # ---------------------------------------------------------------------------
 const RESIDUAL_FAIL = Int[-1]
 
-function phi_residual_general(
-        coeffs  ::Vector{Int},
-        basis   ::Vector{NTuple{2,Int}},
-        anchors ::Vector{NTuple{2,Int}},   # [(px1,py1), ...] — may contain repeats
-        u0::Int, u1::Int
-    )::Tuple{Vector{NTuple{2,Int}}, Vector{Int}, Vector{Int}}
+# ---------------------------------------------------------------------------
+#  phi_residual_general! (Zero-Allocation & Slicing-Safe Edition)
+#
+#  Computes the residual polynomial N(x) and its Mumford / split point roots
+#  by peeling off known anchor and branch factors via local, stack-allocated 
+#  index registers.
+#
+#  Modifies primitive array fields inside `scratch` to preserve allocation-free execution.
+# ---------------------------------------------------------------------------
+function phi_residual_general!(
+    scratch ::ThreadScratchpad,
+    basis   ::Vector{NTuple{2,Int}},
+    anchors ::Vector{NTuple{2,Int}},
+    u0::Int, u1::Int
+)::Bool
+
+    # Reset primitive length registers on our thread scratchpad
+    scratch.roots_count[1]  = 0
+    scratch.u_RS_len[1]     = 0
+    scratch.v_RS_len[1]     = 0
+    scratch.u_RS_is_fail[1] = false
 
     k = length(anchors)
 
-    E, Y = phi_to_EY(coeffs, basis)
+    # 1. Convert φ to E(x) and Y(x) representations inside scratch buffers.
+    #    Capture the returned degrees to avoid dynamic searching in the next step.
+    deg_E, deg_Y = phi_to_EY!(scratch, basis)
 
-    # N(x) = E(x)² - f(x)·Y(x)²
-    N = build_N(E, Y)
+    # 2. Compute N(x) = E(x)² - f(x)·Y(x)² inside our large pre-allocated scratch.poly_buf.
+    #    Pass the degrees explicitly to preserve zero-allocation execution.
+    n_len = build_N_inplace!(scratch, deg_E, deg_Y)
 
-    # Divide out anchor factors with correct multiplicity.
-    # For a point appearing m times in `anchors`, the factor (x - px) divides N
-    # with multiplicity m (φ vanishes to order m at that point on C, so N = φ·φ̄
-    # acquires (x-px)^m from φ alone).
-    px_counts = Dict{Int,Int}()
-    for (px, _) in anchors
-        px_counts[px] = get(px_counts, px, 0) + 1
-    end
-    for (px, cnt) in px_counts
-        for _ in 1:cnt
-            q, rem = poly_divmod_linear(N, px)
-            if rem != 0
-                return (NTuple{2,Int}[], RESIDUAL_FAIL, Int[])
+    # 3. Divide out anchor factors with correct multiplicity using zero-alloc linear scan.
+    for idx in 1:k
+        @inbounds px = anchors[idx][1]
+        
+        already_done = false
+        for prev in 1:(idx-1)
+            @inbounds if anchors[prev][1] == px
+                already_done = true
+                break
             end
-            N = q
+        end
+        already_done && continue
+
+        cnt = 0
+        for jdx in idx:k
+            @inbounds if anchors[jdx][1] == px
+                cnt += 1
+            end
+        end
+
+        for _ in 1:cnt
+            # poly_divmod_linear! mutates scratch.poly_buf up to n_len in place, 
+            # returning the new logical length and scalar remainder.
+            n_len, rem_val = poly_divmod_linear_inplace!(scratch, n_len, px)
+            if rem_val != 0
+                scratch.u_RS_is_fail[1] = true
+                return false
+            end
         end
     end
 
-    # Divide out u(x) = x² + u1·x + u0
-    q, r0, r1 = poly_divmod_monic_deg2(N, u1, u0)
+    # 4. Divide out u(x) = x² + u1·x + u0
+    #    poly_divmod_monic_deg2_inplace! mutates scratch.poly_buf down by 2 degrees.
+    n_len, r0, r1 = poly_divmod_monic_deg2_inplace!(scratch, n_len, u1, u0)
     if r0 != 0 || r1 != 0
-        return (NTuple{2,Int}[], RESIDUAL_FAIL, Int[])
-    end
-    N = q   # residual polynomial; should be monic of degree deg(N_original) - k - 2
-
-    # Make monic
-    if !isempty(N) && N[end] != 0 && N[end] != 1
-        inv_lc = fpinv(N[end])
-        N = [fpmul(c, inv_lc) for c in N]
+        scratch.u_RS_is_fail[1] = true
+        return false
     end
 
-    deg_RS = length(N) - 1   # degree of residual (= 2 for k=1, 3 for k=2, etc.)
-
-    # Compute v_RS(x): on the residual points, v_RS = -E(x)/Y(x) mod u_RS(x).
-    # More carefully: φ(x,y) = E(x) + y*Y(x) = 0 → y = -E(x)/Y(x).
-    # We compute  v_RS(x) = -E(x) * Y_inv(x) mod N(x),  where Y_inv is the
-    # modular inverse of Y(x) mod N(x).  For now this is left as a helper.
-    # For k=1 the original code computed v_RS explicitly; here we provide
-    # the polynomial form.
-    v_RS = compute_vRS(E, Y, N)   # defined below
-
-    # Try to find affine points from the residual
-    roots = find_roots_and_points(N, E, Y)
-
-    return (roots, N, v_RS)
-end
-
-# ---------------------------------------------------------------------------
-#  compute_vRS(E, Y, u_RS) — compute v_RS(x) = -E(x) mod u_RS(x) / Y(x).
-#
-#  On the residual divisor defined by u_RS(x), each root xᵢ satisfies
-#  E(xᵢ) + yᵢ * Y(xᵢ) = 0  →  yᵢ = -E(xᵢ)/Y(xᵢ).
-#  As a polynomial:  v_RS(x) = -E(x) * (Y(x))⁻¹ mod u_RS(x).
-#
-#  If Y(x) = 0 (e.g. no y-monomials in φ), v_RS(x) = 0 trivially.
-#  Returns ascending coefficients, degree < deg(u_RS).
-# ---------------------------------------------------------------------------
-function compute_vRS(E::Vector{Int}, Y::Vector{Int},
-                     u_RS::Vector{Int})::Vector{Int}
-    n = length(u_RS) - 1   # degree of u_RS
-    n == 0 && return Int[]
-
-    # -E mod u_RS
-    negE_mod = poly_reduce_mod(map(x -> fp(-x), E), u_RS)
-
-    # Check if Y is the zero polynomial
-    all(==(0), Y) && return negE_mod
-
-    # Compute Y_inv mod u_RS via extended GCD
-    Y_mod = poly_reduce_mod(Y, u_RS)
-    Y_inv, ok = poly_modinv(Y_mod, u_RS)
-    ok || return zeros(Int, n)   # Y not invertible mod u_RS — degenerate case
-
-    v_RS = poly_mul_mod(negE_mod, Y_inv, u_RS)
-    return v_RS
-end
-
-# Reduce polynomial a mod polynomial m (both ascending coefficients).
-# m need not be monic; leading coefficient is divided out via fpinv.
-function poly_reduce_mod(a::Vector{Int}, m::Vector{Int})::Vector{Int}
-    r = copy(a)
-    dm = length(m) - 1
-    lc_m_inv = fpinv(m[end])   # precompute inverse of leading coeff of m
-    while length(r) - 1 >= dm && (length(r) > 1 || r[1] != 0)
-        deg_r = length(r) - 1
-        if r[end] == 0; pop!(r); continue; end
-        # Scale factor: r[end] / lc(m)
-        c = fpmul(r[end], lc_m_inv)
-        shift = deg_r - dm
-        for i in 1:length(m)
-            idx = i + shift
-            r[idx] = fp(r[idx] - fpmul(c, m[i]))
+    # 5. Strip trailing zeros up to n_len
+    while n_len > 1
+        @inbounds if scratch.poly_buf[n_len] == 0
+            n_len -= 1
+        else
+            break
         end
-        while length(r) > 1 && r[end] == 0; pop!(r); end
     end
-    return r
+
+    # Degenerate residual check
+    @inbounds if n_len == 1 && scratch.poly_buf[1] == 0
+        scratch.u_RS_is_fail[1] = true
+        return false
+    end
+
+    # 6. Normalize to make the residual polynomial monic
+    @inbounds lc = scratch.poly_buf[n_len]
+    if lc != 1
+        inv_lc = fpinv(lc)
+        for i in 1:n_len
+            @inbounds scratch.poly_buf[i] = fpmul(scratch.poly_buf[i], inv_lc)
+        end
+    end
+
+    # 7. Copy computed coefficients of N(x) into scratch.u_RS
+    scratch.u_RS_len[1] = n_len
+    for i in 1:n_len
+        @inbounds scratch.u_RS[i] = scratch.poly_buf[i]
+    end
+
+    # 8. Compute v_RS(x) mod N(x) directly inside scratch.v_RS workspace
+    v_len = compute_vRS_inplace!(scratch, n_len)
+    scratch.v_RS_len[1] = v_len
+
+    # 9. Find split points using scratch structures, updates scratch.roots_count[1]
+    find_roots_and_points_inplace!(scratch, n_len, k)
+
+    return true
 end
+
+# ---------------------------------------------------------------------------
+#  compute_vRS_inplace!(scratch, u_len) -> Int
+#
+#  Computes v_RS(x) = -E(x) * (Y(x))⁻¹ mod u_RS(x) completely in-place.
+#
+#  Memory Configuration:
+#    u_RS(x) read from      : scratch.u_RS[1 : u_len]
+#    Original E(x), Y(x) are recovered via scratch.ser_buf (stashed by build_N_inplace!)
+#    Output v_RS(x) written : scratch.v_RS[1 : final_v_len]
+#
+#  Returns: final_v_len :: Int
+#  ALLOCATION INVARIANT: Zero heap allocations. Pure scalar registers.
+# ---------------------------------------------------------------------------
+function compute_vRS_inplace!(
+    scratch::ThreadScratchpad,
+    u_len::Int
+)::Int
+
+    deg_u = u_len - 1
+    deg_u <= 0 && return 0
+
+    # 1. Check if Y(x) is the zero polynomial.
+    #    E(x) and Y(x) are safe inside ser_buf. (Y is at offset 33).
+    is_Y_zero = true
+    # We dynamically find the active length of Y while checking for non-zero terms
+    y_len = 32
+    while y_len > 0
+        @inbounds if scratch.ser_buf[32 + y_len] != 0
+            is_Y_zero = false
+            break
+        end
+        y_len -= 1
+    end
+
+    # 2. Compute -E mod u_RS directly into a working slice of scratch.poly_buf.
+    #    We utilize poly_buf[65:128] as a secure temporary reduction register area.
+    #    First, copy -E(x) into the work area.
+    #    Find active length of E(x) from ser_buf:
+    e_len = 32
+    while e_len > 1
+        @inbounds if scratch.ser_buf[e_len] == 0
+            e_len -= 1
+        else
+            break
+        end
+    end
+
+    for i in 1:64
+        @inbounds scratch.poly_buf[64 + i] = 0
+    end
+    for i in 1:e_len
+        @inbounds scratch.poly_buf[64 + i] = fp(-scratch.ser_buf[i])
+    end
+
+    # Perform in-place polynomial reduction: poly_buf[65...] mod u_RS
+    negE_len = poly_reduce_mod_inplace!(scratch, 64 + e_len, 64, u_len)
+
+    # Degenerate early return case if Y(x) == 0
+    if is_Y_zero
+        for i in 1:negE_len
+            @inbounds scratch.v_RS[i] = scratch.poly_buf[64 + i]
+        end
+        return negE_len
+    end
+
+    # 3. Compute Y mod u_RS. 
+    #    Copy Y(x) from ser_buf into another area of poly_buf (e.g., poly_buf[129:192]).
+    for i in 1:64
+        @inbounds scratch.poly_buf[128 + i] = 0
+    end
+    for i in 1:y_len
+        @inbounds scratch.poly_buf[128 + i] = scratch.ser_buf[32 + i]
+    end
+    
+    ymod_len = poly_reduce_mod_inplace!(scratch, 128 + y_len, 128, u_len)
+
+    # 4. Compute Modular Inverse: Y_inv mod u_RS via Extended GCD.
+    #    poly_modinv_inplace! takes the input at poly_buf[129...], computes inverse, 
+    #    overwrites it, and returns (new_len, success_flag).
+    yinv_len, ok = poly_modinv_inplace!(scratch, ymod_len, 128, u_len)
+    if !ok
+        # Degenerate case: Y is not invertible. Zero out v_RS.
+        for i in 1:deg_u
+            @inbounds scratch.v_RS[i] = 0
+        end
+        return deg_u
+    end
+
+    # 5. Compute v_RS = negE_mod * Y_inv mod u_RS.
+    #    Multiplies poly_buf[65 : 64+negE_len] by poly_buf[129 : 128+yinv_len],
+    #    reduces mod scratch.u_RS, and writes the output directly into scratch.v_RS.
+    v_len = poly_mul_mod_inplace!(scratch, negE_len, 64, yinv_len, 128, u_len)
+
+    return v_len
+end
+
+# ---------------------------------------------------------------------------
+#  poly_reduce_mod_inplace!(scratch, raw_len, offset, u_len) -> Int
+#
+#  Reduces a polynomial stored at scratch.poly_buf[offset + 1 : raw_len]
+#  modulo m(x) = scratch.u_RS[1 : u_len] in-place over F_p.
+#
+#  Inputs:
+#    raw_len : Total right boundary of the dividend inside poly_buf
+#    offset  : The baseline indexing offset of the polynomial block to reduce
+#    u_len   : Length of the modulus polynomial (scratch.u_RS)
+#
+#  Mutates: scratch.poly_buf[offset + 1 : ...] in place.
+#  Returns: The final logical length of the reduced remainder.
+#
+#  ALLOCATION INVARIANT: Zero heap allocations. Zero scalar boxing.
+# ---------------------------------------------------------------------------
+function poly_reduce_mod_inplace!(
+    scratch::ThreadScratchpad,
+    raw_len::Int,
+    offset::Int,
+    u_len::Int
+)::Int
+
+    dm = u_len - 1
+    @inbounds lc_m = scratch.u_RS[u_len]
+    
+    # Invariant assertion handling without string construction allocation
+    if lc_m == 0
+        throw(ArgumentError("poly_reduce_mod_inplace!: modulus leading coefficient is zero"))
+    end
+    
+    lc_m_inv = fpinv(lc_m)
+    
+    # r_len tracks the absolute index boundary of the dividend within poly_buf
+    r_len = raw_len
+    
+    while true
+        # Compute current logical degree of remainder relative to offset base
+        deg_r = (r_len - offset) - 1
+        deg_r < dm && break
+        
+        # Check if the polynomial reduces logically down to a single zero term
+        if deg_r == 0
+            @inbounds val = scratch.poly_buf[r_len]
+            val == 0 && break
+        end
+
+        # Strip trailing zeros safely by dropping the logical length tracker
+        @inbounds if scratch.poly_buf[r_len] == 0
+            r_len -= 1
+            continue
+        end
+
+        # Scale factor c = r[end] * lc_m_inv
+        @inbounds c = fpmul(scratch.poly_buf[r_len], lc_m_inv)
+        shift = deg_r - dm
+        
+        # Subtract c * x^shift * m(x) from the current remainder window
+        for i in 1:u_len
+            @inbounds m_val = scratch.u_RS[i]
+            idx = offset + i + shift
+            @inbounds scratch.poly_buf[idx] = fp(scratch.poly_buf[idx] - fpmul(c, m_val))
+        end
+
+        # Clean trailing high-slot elements that are guaranteed to have been cancelled
+        while r_len > (offset + 1)
+            @inbounds if scratch.poly_buf[r_len] == 0
+                r_len -= 1
+            else
+                break
+            end
+        end
+    end
+
+    # Return the clean active logical length of the remainder block
+    return r_len - offset
+end
+
 
 # Multiply two polynomials mod m.
 function poly_mul_mod(a::Vector{Int}, b::Vector{Int},
@@ -792,26 +1453,266 @@ function poly_mul_mod(a::Vector{Int}, b::Vector{Int},
     return poly_reduce_mod(poly_mul(a, b), m)
 end
 
-# Extended GCD for polynomials over F_p (ascending coefficients).
-# Returns (inverse of a mod b, true) or ([], false) if not invertible.
-function poly_modinv(a::Vector{Int}, b::Vector{Int})::Tuple{Vector{Int}, Bool}
-    # Extended Euclidean algorithm
-    r0, r1 = copy(b), copy(a)
-    s0, s1 = Int[0], Int[1]
-    while !(length(r1) == 1 && r1[1] == 0)
-        # q, r = divmod(r0, r1)
-        q, r = poly_divmod_poly(r0, r1)
-        r0, r1 = r1, r
-        s_new = poly_sub(s0, poly_mul(q, s1))
-        s0, s1 = s1, s_new
+# ---------------------------------------------------------------------------
+#  poly_modinv_inplace!(scratch, len_a, off_a, u_len) -> (Int, Bool)
+#
+#  Computes the modular inverse of a polynomial sitting at:
+#    scratch.poly_buf[off_a + 1 : off_a + len_a]
+#  modulo the polynomial m(x) = scratch.u_RS[1 : u_len].
+#
+#  Overwrites the input segment at off_a with the computed inverse coefficients
+#  and returns (new_len, success).
+#
+#  Memory Configuration for Extended GCD Registers:
+#    off_r0  = 384     (Holds running remainder r0, initialized to modulus m)
+#    off_r1  = 448     (Holds running remainder r1, initialized to input a)
+#    off_s0  = 512     (Holds Bezout coefficient s0, initialized to 0)
+#    off_s1  = 576     (Holds Bezout coefficient s1, initialized to 1)
+#    off_q   = 640     (Holds temporary quotient q)
+#    off_tmp = 704     (Holds temporary workspace for multiplication/subtraction)
+#
+#  ALLOCATION INVARIANT: Zero heap allocations. Zero scalar boxing.
+# ---------------------------------------------------------------------------
+function poly_modinv_inplace!(
+    scratch::ThreadScratchpad,
+    len_a::Int,
+    off_a::Int,
+    u_len::Int
+)::Tuple{Int, Bool}
+
+    # Define our fixed-width scratch register segment boundary offsets
+    off_r0  = 384
+    off_r1  = 448
+    off_s0  = 512
+    off_s1  = 576
+    off_q   = 640
+    off_tmp = 704
+
+    # 1. Initialize r0 = modulus m(x) (from scratch.u_RS)
+    for i in 1:64; @inbounds scratch.poly_buf[off_r0 + i] = 0; end
+    for i in 1:u_len
+        @inbounds scratch.poly_buf[off_r0 + i] = scratch.u_RS[i]
     end
-    # r0 = gcd; must be constant for invertibility
-    length(r0) == 1 || return (Int[], false)
-    r0[1] == 0 && return (Int[], false)
-    inv_lc = fpinv(r0[1])
-    inv_a = [fpmul(c, inv_lc) for c in s0]
-    inv_a = poly_reduce_mod(inv_a, b)
-    return (inv_a, true)
+    len_r0 = u_len
+
+    # 2. Initialize r1 = input a(x) (from off_a)
+    for i in 1:64; @inbounds scratch.poly_buf[off_r1 + i] = 0; end
+    for i in 1:len_a
+        @inbounds scratch.poly_buf[off_r1 + i] = scratch.poly_buf[off_a + i]
+    end
+    len_r1 = len_a
+
+    # 3. Initialize s0 = 0 (degree 0 polynomial)
+    for i in 1:64; @inbounds scratch.poly_buf[off_s0 + i] = 0; end
+    len_s0 = 1 # sitting at 0
+
+    # 4. Initialize s1 = 1 (degree 0 polynomial)
+    for i in 1:64; @inbounds scratch.poly_buf[off_s1 + i] = 0; end
+    @inbounds scratch.poly_buf[off_s1 + 1] = 1
+    len_s1 = 1
+
+    # Main Extended Euclidean Algorithm Loop
+    while true
+        # Break condition: check if r1 logically becomes the zero polynomial
+        if len_r1 == 1
+            @inbounds if scratch.poly_buf[off_r1 + 1] == 0
+                break
+            end
+        end
+
+        # --- step A: q, r = poly_divmod_poly(r0, r1) ---
+        # We perform the long division pass of r0 by r1 inside a helper function.
+        # It leaves the quotient at off_q and computes the remainder inside off_r0 in-place.
+        len_q, len_r = poly_divmod_poly_inplace_registers!(scratch, len_r0, off_r0, len_r1, off_r1, off_q)
+
+        # Swapping r0 and r1 bounds: r0 becomes the old r1, r1 becomes the new remainder r
+        # Move coefficients of r1 into r0's segment space
+        for i in 1:64; @inbounds scratch.poly_buf[off_r0 + i] = 0; end
+        for i in 1:len_r1
+            @inbounds scratch.poly_buf[off_r0 + i] = scratch.poly_buf[off_r1 + i]
+        end
+        len_r0 = len_r1
+
+        # Move the newly computed remainder from off_r0's altered space into r1's segment space
+        for i in 1:64; @inbounds scratch.poly_buf[off_r1 + i] = 0; end
+        for i in 1:len_r
+            @inbounds scratch.poly_buf[off_r1 + i] = scratch.poly_buf[off_r0 + i]
+        end
+        len_r1 = len_r
+
+        # --- step B: s_new = s0 - q * s1 ---
+        # First compute tmp = q * s1 using our segment multiplication rule
+        len_tmp = poly_mul_inplace_segment!(scratch, len_q, off_q, len_s1, off_s1, off_tmp)
+
+        # Subtract: s_new = s0 - tmp. We write this into off_q's memory space to reuse it safely
+        len_s_new = max(len_s0, len_tmp)
+        for i in 1:64; @inbounds scratch.poly_buf[off_q + i] = 0; end
+        for i in 1:len_s_new
+            @inbounds s0_val = (i <= len_s0) ? scratch.poly_buf[off_s0 + i] : 0
+            @inbounds tmp_val = (i <= len_tmp) ? scratch.poly_buf[off_tmp + i] : 0
+            @inbounds scratch.poly_buf[off_q + i] = fp(s0_val - tmp_val)
+        end
+        # Trim trailing zeros of s_new
+        while len_s_new > 1
+            @inbounds if scratch.poly_buf[off_q + len_s_new] == 0
+                len_s_new -= 1
+            else
+                break
+            end
+        end
+
+        # Swapping s0 and s1 bounds: s0 becomes the old s1, s1 becomes the computed s_new
+        for i in 1:64; @inbounds scratch.poly_buf[off_s0 + i] = 0; end
+        for i in 1:len_s1
+            @inbounds scratch.poly_buf[off_s0 + i] = scratch.poly_buf[off_s1 + i]
+        end
+        len_s0 = len_s1
+
+        for i in 1:64; @inbounds scratch.poly_buf[off_s1 + i] = 0; end
+        for i in 1:len_s_new
+            @inbounds scratch.poly_buf[off_s1 + i] = scratch.poly_buf[off_q + i]
+        end
+        len_s1 = len_s_new
+    end
+
+    # Post-Loop Invertibility Checks
+    # The final GCD is sitting inside r0. It must be a non-zero scalar constant.
+    if len_r0 != 1
+        return (0, false)
+    end
+    @inbounds gcd_val = scratch.poly_buf[off_r0 + 1]
+    if gcd_val == 0
+        return (0, false)
+    end
+
+    # Scale s0 by the inverse of the constant GCD: inv_a = s0 * fpinv(gcd_val)
+    inv_lc = fpinv(gcd_val)
+    for i in 1:64; @inbounds scratch.poly_buf[off_tmp + i] = 0; end
+    for i in 1:len_s0
+        @inbounds scratch.poly_buf[off_tmp + i] = fpmul(scratch.poly_buf[off_s0 + i], inv_lc)
+    end
+    
+    # Trim trailing logical zeros if any were introduced
+    len_inv = len_s0
+    while len_inv > 1
+        @inbounds if scratch.poly_buf[off_tmp + len_inv] == 0
+            len_inv -= 1
+        else
+            break
+        end
+    end
+
+    # Perform the final modular reduction pass: inv_a mod modulus m(x)
+    # Reduces poly_buf[off_tmp + 1 : ...] mod scratch.u_RS, writing the output back inside off_tmp
+    final_len = poly_reduce_mod_inplace!(scratch, off_tmp + len_inv, off_tmp, u_len)
+
+    # Move the clean final inverse result into the requested user destination area (off_a)
+    for i in 1:len_a
+        @inbounds scratch.poly_buf[off_a + i] = 0
+    end
+    for i in 1:final_len
+        @inbounds scratch.poly_buf[off_a + i] = scratch.poly_buf[off_tmp + i]
+    end
+
+    return (final_len, true)
+end
+
+# ---------------------------------------------------------------------------
+#  Helper: poly_divmod_poly_inplace_registers!(scratch, len_r0, off_r0, len_r1, off_r1, off_q)
+#  Divides polynomial r0 by r1 using robust polynomial long division.
+#  Overwrites the dividend r0 segment with the remainder, and writes quotient to off_q.
+# ---------------------------------------------------------------------------
+function poly_divmod_poly_inplace_registers!(
+    scratch::ThreadScratchpad,
+    len_r0::Int, off_r0::Int,
+    len_r1::Int, off_r1::Int,
+    off_q::Int
+)::Tuple{Int, Int}
+
+    # 1. Clear out the quotient register window completely upfront
+    for i in 1:64; @inbounds scratch.poly_buf[off_q + i] = 0; end
+    
+    # 2. Robustly sanitize the divisor length to ensure the leading coefficient is non-zero
+    curr_len_r1 = len_r1
+    while curr_len_r1 > 1
+        @inbounds if scratch.poly_buf[off_r1 + curr_len_r1] == 0
+            curr_len_r1 -= 1
+        else
+            break
+        end
+    end
+    
+    # 3. Robustly sanitize the dividend length
+    curr_len_r0 = len_r0
+    while curr_len_r0 > 1
+        @inbounds if scratch.poly_buf[off_r0 + curr_len_r0] == 0
+            curr_len_r0 -= 1
+        else
+            break
+        end
+    end
+
+    dr0 = curr_len_r0 - 1
+    dr1 = curr_len_r1 - 1
+    
+    # If the divisor is the zero scalar, the inverse computation is degenerate
+    @inbounds lc_r1 = scratch.poly_buf[off_r1 + curr_len_r1]
+    if lc_r1 == 0
+        return (1, curr_len_r0)
+    end
+
+    if dr0 < dr1
+        # Quotient is 0, remainder is just r0 untouched
+        return (1, curr_len_r0)
+    end
+
+    inv_lc_r1 = fpinv(lc_r1)
+    
+    # Main Division Loop
+    while true
+        deg_curr = (curr_len_r0 - 1)
+        deg_curr < dr1 && break
+        
+        @inbounds if scratch.poly_buf[off_r0 + curr_len_r0] == 0
+            curr_len_r0 -= 1
+            continue
+        end
+        
+        # Scale term: c = lc(r0) / lc(r1)
+        @inbounds c = fpmul(scratch.poly_buf[off_r0 + curr_len_r0], inv_lc_r1)
+        shift = deg_curr - dr1
+        
+        # Record quotient term (1-indexed offset matching degree position)
+        @inbounds scratch.poly_buf[off_q + shift + 1] = c
+        
+        # Subtract c * x^shift * r1 from r0
+        for i in 1:curr_len_r1
+            @inbounds r1_val = scratch.poly_buf[off_r1 + i]
+            target_idx = off_r0 + i + shift
+            @inbounds scratch.poly_buf[target_idx] = fp(scratch.poly_buf[target_idx] - fpmul(c, r1_val))
+        end
+        
+        # Trim remainder window down to next non-zero term
+        while curr_len_r0 > 1
+            @inbounds if scratch.poly_buf[off_r0 + curr_len_r0] == 0
+                curr_len_r0 -= 1
+            else
+                break
+            end
+        end
+    end
+
+    # Determine structural logical length of computed quotient
+    len_q = dr0 - dr1 + 1
+    while len_q > 1
+        @inbounds if scratch.poly_buf[off_q + len_q] == 0
+            len_q -= 1
+        else
+            break
+        end
+    end
+
+    return (len_q, curr_len_r0)
 end
 
 function poly_sub(a::Vector{Int}, b::Vector{Int})::Vector{Int}
@@ -846,50 +1747,206 @@ function poly_divmod_poly(a::Vector{Int}, b::Vector{Int})::Tuple{Vector{Int}, Ve
 end
 
 # ---------------------------------------------------------------------------
-#  find_roots_and_points — extract affine points from the residual polynomial.
+#  find_roots_and_points_inplace!(scratch, u_len)
 #
-#  Tries all x in F_p only for small residuals (deg ≤ 4).  For production
-#  use the caller would do factor-base lookup instead.  Here we compute
-#  y from φ(x,y)=0 directly:  y = -E(x)/Y(x).
+#  Extracts affine split roots from the residual polynomial over F_p and
+#  recovers their corresponding y-coordinates via y = -E(x)/Y(x).
+#
+#  Memory Configuration:
+#    u_RS(x) read from      : scratch.u_RS[1 : u_len]
+#    Original E, Y read from: scratch.ser_buf (stashed by build_N_inplace!)
+#    Outputs written into   : scratch.roots_out[1 : scratch.roots_count[1]]
+#
+#  ALLOCATION INVARIANT: Zero heap allocations. Zero scalar boxing.
 # ---------------------------------------------------------------------------
-function find_roots_and_points(u_RS::Vector{Int},
-                                E   ::Vector{Int},
-                                Y   ::Vector{Int})::Vector{NTuple{2,Int}}
-    deg = length(u_RS) - 1
-    points = NTuple{2,Int}[]
+# ---------------------------------------------------------------------------
+#  Helper: find_roots_and_points_inplace!(scratch, u_len, k) -> Nothing
+#  Finds roots of the residual polynomial component u_RS and lifts them 
+#  to full curve points (x, y) using the structural RR basis matching k anchors.
+# ---------------------------------------------------------------------------
+function find_roots_and_points_inplace!(
+    scratch::ThreadScratchpad,
+    u_len::Int,
+    k::Int
+)::Nothing
+
+    scratch.roots_count[1] = 0
+    deg = u_len - 1
+    deg <= 0 && return nothing
 
     if deg == 2
-        # Quadratic: try discriminant sqrt (same as original code)
-        c0, c1 = u_RS[1], u_RS[2]   # u_RS = x² + c1*x + c0 (monic)
-        disc = fp(fpmul(c1, c1) - 4*c0)
-        sq   = sqrt_fp(disc)
-        sq === nothing && return points
+        # --- Monic Quadratic Case: x² + c1*x + c0 ---
+        @inbounds c0 = scratch.u_RS[1]
+        @inbounds c1 = scratch.u_RS[2]
+        
+        disc = fp(fpmul(c1, c1) - 4 * c0)
+        sq = sqrt_fp(disc)  # Assumes your global returns Union{Int, Nothing} without boxing
+        sq === nothing && return nothing
+        
         inv2 = fpinv(2)
-        xR   = fpmul(fp(-c1 + sq), inv2)
-        xS   = fpmul(fp(-c1 - sq), inv2)
-        for xr in (xR, xS)
-            yr = recover_y_from_phi(E, Y, xr)
-            yr === nothing && continue
-            push!(points, (xr, yr))
+        xR = fpmul(fp(-c1 + sq), inv2)
+        xS = fpmul(fp(-c1 - sq), inv2)
+        
+        # Recover y for root 1 (xR)
+        yr_1 = recover_y_from_phi_inplace(scratch, xR, k)
+        if yr_1 !== nothing
+            idx = scratch.roots_count[1] + 1
+            @inbounds scratch.roots_out[idx] = (xR, yr_1)
+            scratch.roots_count[1] = idx
         end
-        return points
+        
+        # Recover y for root 2 (xS)
+        yr_2 = recover_y_from_phi_inplace(scratch, xS, k)
+        if yr_2 !== nothing
+            idx = scratch.roots_count[1] + 1
+            @inbounds scratch.roots_out[idx] = (xS, yr_2)
+            scratch.roots_count[1] = idx
+        end
+        
+        return nothing
     end
 
-    # For deg 3 or 4: scan for rational roots then deflate
-    # (Acceptable for precomputation; hot-path callers will use pt2idx lookup instead)
-    remaining = copy(u_RS)
-    for x in 0:p-1
-        length(remaining) <= 1 && break
-        val = poly_eval_fp(remaining, x)
+    # --- Higher Degree (deg 3 or 4) Scan and Deflate Pass ---
+    # Copy u_RS into poly_buf[193:256] to use as a mutating deflection register
+    for i in 1:64
+        @inbounds scratch.poly_buf[192 + i] = 0
+    end
+    for i in 1:u_len
+        @inbounds scratch.poly_buf[192 + i] = scratch.u_RS[i]
+    end
+    rem_len = u_len
+
+    # Global p is assumed to be accessible as a literal constant
+    for x in 0:(p - 1)
+        rem_len <= 1 && break
+        
+        # Evaluate current remaining polynomial in-place at x
+        val = poly_eval_fp_inplace(scratch, 192, rem_len, x)
         if val == 0
-            q, _ = poly_divmod_linear(remaining, x)
-            remaining = q
-            yr = recover_y_from_phi(E, Y, x)
-            yr !== nothing && push!(points, (x, yr))
+            # Deflate using our in-place synthetic division rule
+            # Overwrites poly_buf[193 : 192+rem_len] with the quotient
+            rem_len, _ = poly_divmod_linear_inplace_segment!(scratch, 192, rem_len, x)
+            
+            yr = recover_y_from_phi_inplace(scratch, x, k)
+            if yr !== nothing
+                idx = scratch.roots_count[1] + 1
+                @inbounds scratch.roots_out[idx] = (x, yr)
+                scratch.roots_count[1] = idx
+            end
         end
     end
-    return points
+
+    return nothing
 end
+# ---------------------------------------------------------------------------
+#  Helper: recover_y_from_phi_inplace(scratch, x, k) -> Union{Int, Nothing}
+#  Correctly isolates and evaluates E(x) and Y(x) mod p at a root x by 
+#  unrolling the explicit Riemann-Roch basis structure.
+#  
+#  φ(x,y) = E(x) + y * Y(x) == 0  =>  y = -E(x) / Y(x)
+# ---------------------------------------------------------------------------
+function recover_y_from_phi_inplace(scratch::ThreadScratchpad, x::Int, k::Int)::Union{Int, Nothing}
+    nb = k + 3
+    # Retrieve the canonical monomial basis vector (poles sorted: x^i or x^i * y)
+    basis = rr_basis_cached(nb)::Vector{NTuple{2, Int}}
+    
+    val_E = 0
+    val_Y = 0
+
+    # 1. Evaluate the linear combination of the first (nb - 1) solved coefficients
+    for idx in 1:(nb - 1)
+        @inbounds coeff = scratch.coeffs_out[idx]
+        coeff == 0 && continue
+        
+        @inbounds pow_x, pow_y = basis[idx]
+        
+        # In-place evaluation of x^pow_x mod p
+        term = 1
+        if pow_x > 0
+            curr = x
+            for _ in 2:pow_x
+                curr = fpmul(curr, x)
+            end
+            term = curr
+        end
+        scaled_term = fpmul(coeff, term)
+
+        if pow_y == 0
+            val_E = fp(val_E + scaled_term)
+        else
+            val_Y = fp(val_Y + scaled_term)
+        end
+    end
+
+    # 2. Add the contribution of the highest pole monomial (monic, coefficient is 1)
+    @inbounds norm_x, norm_y = basis[nb]
+    norm_term = 1
+    if norm_x > 0
+        curr = x
+        for _ in 2:norm_x
+            curr = fpmul(curr, x)
+        end
+        norm_term = curr
+    end
+
+    if norm_y == 0
+        val_E = fp(val_E + norm_term)
+    else
+        val_Y = fp(val_Y + norm_term)
+    end
+
+    # Handle singular/tangent cases where Y(x) evaluates to 0
+    val_Y == 0 && return nothing 
+    
+    # y = -E(x) / Y(x) mod p
+    return fpmul(fp(-val_E), fpinv(val_Y))
+end
+
+# ---------------------------------------------------------------------------
+#  Helper: poly_eval_fp_inplace(scratch, offset, len, x) -> Int
+# ---------------------------------------------------------------------------
+function poly_eval_fp_inplace(scratch::ThreadScratchpad, offset::Int, len::Int, x::Int)::Int
+    len == 0 && return 0
+    @inbounds val = scratch.poly_buf[offset + len]
+    for i in (len - 1):-1:1
+        @inbounds val = fp(scratch.poly_buf[offset + i] + fpmul(val, x))
+    end
+    return val
+end
+
+# ---------------------------------------------------------------------------
+#  Helper: poly_divmod_linear_inplace_segment!(scratch, offset, len, r)
+#  Horner linear synthetic division working directly inside an array segment.
+# ---------------------------------------------------------------------------
+function poly_divmod_linear_inplace_segment!(
+    scratch::ThreadScratchpad,
+    offset::Int,
+    n_len::Int,
+    r::Int
+)::Tuple{Int, Int}
+    @inbounds rem_val = scratch.poly_buf[offset + n_len]
+    @inbounds scratch.poly_buf[offset + n_len] = 0
+
+    for i in (n_len - 1):-1:2
+        @inbounds next_rem = fp(scratch.poly_buf[offset + i] + fpmul(rem_val, r))
+        @inbounds scratch.poly_buf[offset + i] = rem_val
+        rem_val = next_rem
+    end
+    
+    @inbounds final_rem = fp(scratch.poly_buf[offset + 1] + fpmul(rem_val, r))
+    @inbounds scratch.poly_buf[offset + 1] = rem_val
+
+    new_len = n_len - 1
+    while new_len > 1
+        @inbounds if scratch.poly_buf[offset + new_len] == 0
+            new_len -= 1
+        else
+            break
+        end
+    end
+    return (new_len, final_rem)
+end
+
 
 function poly_eval_fp(coeffs::Vector{Int}, x::Int)::Int
     isempty(coeffs) && return 0
@@ -987,44 +2044,44 @@ function phi_residual_mumford_general(a::Int, b::Int, c::Int,
 end
 
 # ---------------------------------------------------------------------------
-#  High-level API for multi-anchor walks
+#  High-level API for multi-anchor walks (Zero-Allocation Edition)
 #
-#  step_phi_k(anchors, D_mumford) → (coeffs, basis, roots, u_RS, v_RS)
+#  step_phi_k!(scratch, anchors, u0, u1, v0, v1) -> Bool
 #
-#  Entry point for a walk step with k anchors.  `anchors` is a length-k
-#  vector of (px,py) points — repeated entries encode higher vanishing order:
-#    k=1, unique point           → single zero (classic)
-#    k=2, two distinct pts       → two simple zeros
-#    k=2, same point twice       → order-2 tangency at P
-#    k=n, same point n times     → order-n tangency at P (conditions s=0..n-1)
-#    k=3, {P,P,Q}                → order-2 tangency at P, simple zero at Q
-#    k=m+r, {P×m, Q1, …, Qr}    → order-m tangency at P, r simple zeros
-#  etc.  Any multiplicity m ≥ 2 at a Weierstrass point (py=0) is degenerate
-#  and returns nothing.  Requires p > max multiplicity (characteristic guard).
+#  Entry point for a walk step with k anchors. `anchors` is a length-k
+#  vector of (px,py) points — repeated entries encode higher vanishing order.
 #
-#  Returns nothing if φ cannot be constructed (singular system, anchor in supp D,
-#  or degenerate tangency).
-#
-#  `roots` contains the split residual affine points (may be empty if u_RS has
-#  no F_p roots).  The Mumford pair (u_RS, v_RS) is always returned for
-#  conjugate-pair handling.
+#  ALLOCATION INVARIANT: Zero heap allocations. Zero scalar boxing. 
+#  Mutates internal fields of `scratch` on a successful step (`true`).
+#  Returns `false` if φ cannot be constructed or if the step fails.
 # ---------------------------------------------------------------------------
-function step_phi_k(
-        anchors       ::Vector{NTuple{2,Int}},
-        u0::Int, u1::Int, v0::Int, v1::Int
-    )::Union{
-        Tuple{Vector{Int}, Vector{NTuple{2,Int}}, Vector{NTuple{2,Int}}, Vector{Int}, Vector{Int}},
-        Nothing}
+function step_phi_k!(
+    scratch::ThreadScratchpad,
+    anchors::Vector{NTuple{2,Int}},
+    u0::Int, u1::Int, v0::Int, v1::Int
+)::Bool
 
-    coeffs = build_phi_general(anchors, u0, u1, v0, v1)
-    coeffs === nothing && return nothing
+    # 1. Build the phi function coefficients directly into scratch.coeffs_buf
+    #    This function must be rewritten downstream to populate `scratch.coeffs_buf` in-place
+    success_build = build_phi_general!(scratch, anchors, u0, u1, v0, v1)
+    !success_build && return false
 
-    k     = length(anchors)
-    nb    = k + 3
-    basis = rr_basis(nb)
+    k  = length(anchors)
+    nb = k + 3
+    
+    # 2. Grab the basis vectors into a type-stable, unboxed reference loop.
+    #    Assuming rr_basis_cached returns a concretely typed struct/vector view.
+    basis = rr_basis_cached(nb)::Vector{NTuple{2, Int}}
+    # 3. Compute residual factors in-place using preallocated buffers.
+    #    Updates scratch.roots_out, scratch.u_RS, and scratch.v_RS in-place.
+    #    `q_buf` and `f_tay` caches inside scratch are passed down to eliminate internal allocations.
+    success_residual = phi_residual_general!(scratch, basis, anchors, u0, u1)
+    !success_residual && return false
 
-    roots, u_RS, v_RS = phi_residual_general(coeffs, basis, anchors, u0, u1)
-    u_RS === RESIDUAL_FAIL && return nothing
+    # Check against module-level fail sentinel token using in-place state flags
+    if scratch.u_RS_is_fail[1]
+        return false
+    end
 
-    return (coeffs, basis, roots, u_RS, v_RS)
+    return true
 end
