@@ -55,11 +55,20 @@ function sparse_add!(dst::Dict{Int,Int}, src::Dict{Int,Int}; sign::Int = 1)
     return dst
 end
 
-function sparse_copy!(dst::Dict{Int,Int}, src::Dict{Int,Int})
+# Fast path for raw dictionaries
+function sparse_copy!(dst::Dict{Int64, Int64}, src::Dict{Int64, Int64})
     empty!(dst)
     sizehint!(dst, length(src))
-    for (k, v) in src; dst[k] = v; end
+    for (k, v) in src
+        dst[k] = v
+    end
     return dst
+end
+
+# Passthrough to handle a ThreadScratchpad wrapper automatically
+function sparse_copy!(scratch::ThreadScratchpad, src::Dict{Int64, Int64})
+    # Replace .combined_scratch with the exact name of the Dict field in your struct
+    return sparse_copy!(scratch.combined_scratch, src)
 end
 
 # ---------------------------------------------------------------------------
