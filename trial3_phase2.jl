@@ -145,14 +145,17 @@ function report_worker_progress(tid, elapsed, s::WorkerStats, rel_counter, rel_t
             100.0 * s.hits_1lp_emit      / max(1, s.hits_lp1),
             s.evictions_conj)
     let total_conj_close = s.hits_1lp_conj_emit + s.hits_1lp_conj_trivial_same_col +
-                            s.hits_1lp_conj_trivial_zero_dal + s.hits_1lp_conj_trivial_dup
-        @printf("           1lp_conj trivial breakdown: same_col=%d (%.1f%%)  zero_dal=%d (%.1f%%)  dup=%d (%.1f%%)  useful=%d (%.1f%%) of %d closes\n",
+                            s.hits_1lp_conj_trivial_zero_dal + s.hits_1lp_conj_trivial_dup +
+                            s.hits_1lp_conj_row_missing
+        @printf("           1lp_conj trivial breakdown: same_col=%d (%.1f%%)  zero_dal=%d (%.1f%%)  dup=%d (%.1f%%)  row_missing=%d (%.1f%%)  useful=%d (%.1f%%) of %d closes\n",
                 s.hits_1lp_conj_trivial_same_col,
                 100.0 * s.hits_1lp_conj_trivial_same_col / max(1, total_conj_close),
                 s.hits_1lp_conj_trivial_zero_dal,
                 100.0 * s.hits_1lp_conj_trivial_zero_dal / max(1, total_conj_close),
                 s.hits_1lp_conj_trivial_dup,
                 100.0 * s.hits_1lp_conj_trivial_dup / max(1, total_conj_close),
+                s.hits_1lp_conj_row_missing,
+                100.0 * s.hits_1lp_conj_row_missing / max(1, total_conj_close),
                 s.hits_1lp_conj_emit,
                 100.0 * s.hits_1lp_conj_emit / max(1, total_conj_close),
                 total_conj_close)
@@ -463,14 +466,14 @@ end
             r = get(conj_row_store, lp_key, nothing)
             if r === nothing && shared_lp1_conj isa LP1ConjLSM
                 # Disk hit with no recoverable row — cannot form a valid relation.
-                s.hits_1lp_conj_trivial_zero_dal += 1
+                s.hits_1lp_conj_row_missing += 1
                 return next_anchor_ref[]()
             end
             r
         end
         if prev_fb_row === nothing
             # Row is genuinely missing (shouldn't happen for ShardedLP1Conj, but be safe).
-            s.hits_1lp_conj_trivial_zero_dal += 1
+            s.hits_1lp_conj_row_missing += 1
             return next_anchor_ref[]()
         end
         # prev_col: representative single anchor index from the stored row
@@ -524,8 +527,15 @@ end
                 @printf("\n============================================================\n")
                 @printf("[!!!] HARD STOP: RS-CONJ-CLOSE CRITICAL MISMATCH\n")
                 @printf("============================================================\n")
+                @printf("  lp_key=%s\n", string(lp_key))
                 @printf("  neg_al=%s, prev_al=%s -> combined_al=%s\n", string(neg_al), string(prev_al), string(combined_al))
                 @printf("  Is Inverse Sign Match? %s\n", string(jac_isid(jac_add(D_sum, RHS))))
+                @printf("  fb_row (current):     %s\n", string(sort(collect(fb_row))))
+                @printf("  prev_fb_row (stored): %s\n", string(sort(collect(prev_fb_row))))
+                @printf("  cs (combined):        %s\n", string(sort(collect(cs))))
+                @printf("  row_w=%d  source=%s\n", sum(abs(v) for v in values(cs)),
+                        prev_row_lsm !== nothing ? "hot_rows" : "conj_row_store")
+                @printf("  lp_key=%s\n", string(lp_key))
                 @printf("============================================================\n\n")
                 Base.flush(stdout)
                 ccall(:exit, Cvoid, (Cint,), 1)
@@ -588,7 +598,6 @@ end
     end
 
     # --- THIS IS THE STORE BRANCH (where prev was nothing) ---
-    # Put the fix right here, just before the final return of the function!
     if !is_same_partial
         conj_row_store[lp_key] = copy(fb_row)
     end
@@ -1024,6 +1033,7 @@ function phase2_worker(G               ::Div2,
                 hits_1lp_conj_trivial_same_col  = 0,
                 hits_1lp_conj_trivial_zero_dal  = 0,
                 hits_1lp_conj_trivial_dup       = 0,
+                hits_1lp_conj_row_missing       = 0,
                 hits_1lp_conj_attractor_exact   = 0,
                 hits_1lp_conj_attractor_birthday= 0,
                 hits_lp2seen  = 0,
@@ -1738,14 +1748,17 @@ function phase2_worker(G               ::Div2,
         @printf("           smoothness (0-LP 1-LP 2-LP 3-LP): %d %d %d %d\n",
                 s.smooth_hist[1], s.smooth_hist[2], s.smooth_hist[3], s.smooth_hist[4])
         let total_conj_close = s.hits_1lp_conj_emit + s.hits_1lp_conj_trivial_same_col +
-                                s.hits_1lp_conj_trivial_zero_dal + s.hits_1lp_conj_trivial_dup
-            @printf("           1lp_conj trivial breakdown: same_col=%d (%.1f%%)  zero_dal=%d (%.1f%%)  dup=%d (%.1f%%)  useful=%d (%.1f%%) of %d closes\n",
+                                s.hits_1lp_conj_trivial_zero_dal + s.hits_1lp_conj_trivial_dup +
+                                s.hits_1lp_conj_row_missing
+            @printf("           1lp_conj trivial breakdown: same_col=%d (%.1f%%)  zero_dal=%d (%.1f%%)  dup=%d (%.1f%%)  row_missing=%d (%.1f%%)  useful=%d (%.1f%%) of %d closes\n",
                     s.hits_1lp_conj_trivial_same_col,
                     100.0 * s.hits_1lp_conj_trivial_same_col / max(1, total_conj_close),
                     s.hits_1lp_conj_trivial_zero_dal,
                     100.0 * s.hits_1lp_conj_trivial_zero_dal / max(1, total_conj_close),
                     s.hits_1lp_conj_trivial_dup,
                     100.0 * s.hits_1lp_conj_trivial_dup / max(1, total_conj_close),
+                    s.hits_1lp_conj_row_missing,
+                    100.0 * s.hits_1lp_conj_row_missing / max(1, total_conj_close),
                     s.hits_1lp_conj_emit,
                     100.0 * s.hits_1lp_conj_emit / max(1, total_conj_close),
                     total_conj_close)
@@ -1801,6 +1814,7 @@ function phase2_worker(G               ::Div2,
             hits_1lp_conj_trivial_same_col  = s.hits_1lp_conj_trivial_same_col,
             hits_1lp_conj_trivial_zero_dal  = s.hits_1lp_conj_trivial_zero_dal,
             hits_1lp_conj_trivial_dup       = s.hits_1lp_conj_trivial_dup,
+            hits_1lp_conj_row_missing       = s.hits_1lp_conj_row_missing,
             hits_1lp_conj_attractor_exact   = s.hits_1lp_conj_attractor_exact,
             hits_1lp_conj_attractor_birthday= s.hits_1lp_conj_attractor_birthday,
             hits_lp2seen  = s.hits_lp2seen,

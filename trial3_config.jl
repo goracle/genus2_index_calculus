@@ -451,10 +451,14 @@ mutable struct WorkerStats
                                              # weight-2 row, dropped. NOT the same condition as
                                              # hits_1lp_conj_trivial_zero_dal; was previously
                                              # double-counted into that field.
+    hits_1lp_conj_row_missing       ::Int   # closed (hot or disk hit), but prev fb_row unrecoverable
+                                             # (disk-spilled entry with no hot_rows record, or
+                                             #  cross-thread close against already-evicted row).
+                                             # Close is dropped; NOT a Δα=0 event.
     # Same-col sub-breakdown: attractor (same walk path) vs birthday (different path, same anchor):
     hits_1lp_conj_attractor_exact   ::Int   # same_col AND Δα=0 → genuine walk loop
     hits_1lp_conj_attractor_birthday::Int   # same_col BUT Δα≠0 → birthday, anchor just happened to match
 
     WorkerStats() = new(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, zeros(Int, 4), 0,
-                        0, 0, 0, 0, 0, 0, 0)
+                        0, 0, 0, 0, 0, 0, 0, 0)
 end

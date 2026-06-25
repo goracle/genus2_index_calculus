@@ -280,8 +280,13 @@ end
                 set_bloom!(sc.global_bloom, fp)
             end
             # Side-channel: record fb_row so closes can reconstruct the row.
+            # Must copy — caller may reuse the same scratch dict on every step.
             if fb_row !== nothing
-                sc.hot_rows[si][key] = fb_row
+                if haskey(sc.hot_rows[si], key)
+                    error("_lsm_hot_insert!: duplicate key $(key) in hot_rows[$(si)] — " *
+                          "existing row=$(sc.hot_rows[si][key])  new row=$(fb_row)")
+                end
+                sc.hot_rows[si][key] = copy(fb_row)
             end
             return
         end

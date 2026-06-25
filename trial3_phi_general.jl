@@ -171,53 +171,38 @@ end
 end
 
 # ---------------------------------------------------------------------------
-#  Reduce x^i * v(x) mod u(x) = x² + u1*x + u0
-#  Returns (r0, r1) = const + r1*x  (the linear remainder).
+#  Reduce x^i mod u(x) = x² + u1*x + u0  →  (r0, r1)  [zero-allocation]
 #
-#  We work with the full polynomial x^i * v(x) reduced mod u(x).
-#  v(x) = v0 + v1*x is degree 1, so x^i*v(x) is degree i+1.
-#  We reduce the degree-i+1 poly mod u(x) iteratively.
+#  Uses the two-register recurrence derived from x² ≡ -u1·x - u0:
+#    x · (r0 + r1·x) = r0·x + r1·x²
+#                    ≡ r0·x + r1·(-u1·x - u0)
+#                    = -r1·u0  +  (r0 - r1·u1)·x
+#  so  (r0, r1)  →  (-r1·u0,  r0 - r1·u1)  on each multiply-by-x step.
+#  No heap allocation; O(i) scalar ops, O(1) space.
 # ---------------------------------------------------------------------------
-function reduce_xiv_mod_u(i::Int, v0::Int, v1::Int,
-                           u0::Int, u1::Int)::NTuple{2,Int}
-    # Build coefficients of x^i * v(x):  coeff[k] = coeff of x^k
-    # x^i * (v0 + v1*x) = v0*x^i + v1*x^(i+1)
-    # Represent as vector indexed 0..i+1
-    deg = i + 1
-    coeffs = zeros(Int, deg + 1)  # 1-indexed: coeffs[k+1] = coeff of x^k
-    coeffs[i+1]   = fp(v0)        # x^i coefficient
-    coeffs[i+2]   = fp(v1)        # x^(i+1) coefficient
-    # Reduce mod u(x) = x^2 + u1*x + u0, i.e. x^2 ≡ -u1*x - u0
-    for d in deg:-1:2
-        if coeffs[d+1] != 0
-            c = coeffs[d+1]
-            coeffs[d+1] = 0
-            coeffs[d]   = fp(coeffs[d]   - fpmul(c, u1))
-            coeffs[d-1] = fp(coeffs[d-1] - fpmul(c, u0))
-        end
+@inline function reduce_xi_mod_u(i::Int, u0::Int, u1::Int)::NTuple{2,Int}
+    i == 0 && return (1, 0)
+    i == 1 && return (0, 1)
+    r0 = 0; r1 = 1          # start at x^1
+    for _ in 2:i
+        r0, r1 = fp(-fpmul(r1, u0)), fp(r0 - fpmul(r1, u1))
     end
-    return (coeffs[1], coeffs[2])
+    return (r0, r1)
 end
 
 # ---------------------------------------------------------------------------
-#  Reduce x^i mod u(x) → (r0, r1).
+#  Reduce x^i * v(x) mod u(x)  →  (r0, r1)  [zero-allocation]
+#
+#  v(x) = v0 + v1·x, so  x^i·v(x) = v0·x^i + v1·x^(i+1).
+#  Reduce each power separately with reduce_xi_mod_u (two calls, O(i) total)
+#  then combine linearly.  No heap allocation.
 # ---------------------------------------------------------------------------
-function reduce_xi_mod_u(i::Int, u0::Int, u1::Int)::NTuple{2,Int}
-    if i == 0; return (1, 0); end
-    if i == 1; return (0, 1); end
-    # Build coefficient vector of x^i
-    deg = i
-    coeffs = zeros(Int, deg + 1)
-    coeffs[deg+1] = 1
-    for d in deg:-1:2
-        if coeffs[d+1] != 0
-            c = coeffs[d+1]
-            coeffs[d+1] = 0
-            coeffs[d]   = fp(coeffs[d]   - fpmul(c, u1))
-            coeffs[d-1] = fp(coeffs[d-1] - fpmul(c, u0))
-        end
-    end
-    return (coeffs[1], coeffs[2])
+@inline function reduce_xiv_mod_u(i::Int, v0::Int, v1::Int,
+                                   u0::Int, u1::Int)::NTuple{2,Int}
+    a0, a1 = reduce_xi_mod_u(i,     u0, u1)   # x^i   mod u
+    b0, b1 = reduce_xi_mod_u(i + 1, u0, u1)   # x^(i+1) mod u
+    return (fp(fpmul(v0, a0) + fpmul(v1, b0)),
+            fp(fpmul(v0, a1) + fpmul(v1, b1)))
 end
 
 # ---------------------------------------------------------------------------
@@ -1290,6 +1275,11 @@ end
 #  Returns: final_v_len :: Int
 #  ALLOCATION INVARIANT: Zero heap allocations. Pure scalar registers.
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+#  compute_vRS_inplace!(scratch, u_len) -> Int
+#
+#  Computes v_RS(x) = -E(x) * (Y(x))⁻¹ mod u_RS(x) completely in-place.
+# ---------------------------------------------------------------------------
 function compute_vRS_inplace!(
     scratch::ThreadScratchpad,
     u_len::Int
@@ -1312,8 +1302,6 @@ function compute_vRS_inplace!(
     end
 
     # 2. Compute -E mod u_RS directly into a working slice of scratch.poly_buf.
-    #    We utilize poly_buf[65:128] as a secure temporary reduction register area.
-    #    First, copy -E(x) into the work area.
     #    Find active length of E(x) from ser_buf:
     e_len = 32
     while e_len > 1
@@ -1336,14 +1324,12 @@ function compute_vRS_inplace!(
 
     # Degenerate early return case if Y(x) == 0
     if is_Y_zero
-        for i in 1:negE_len
-            @inbounds scratch.v_RS[i] = scratch.poly_buf[64 + i]
-        end
-        return negE_len
+        # We MUST fail the step. The residual is vertical/degenerate.
+        scratch.u_RS_is_fail[1] = true
+        return 0
     end
 
-    # 3. Compute Y mod u_RS. 
-    #    Copy Y(x) from ser_buf into another area of poly_buf (e.g., poly_buf[129:192]).
+    # 3. Compute Y mod u_RS.
     for i in 1:64
         @inbounds scratch.poly_buf[128 + i] = 0
     end
@@ -1354,20 +1340,15 @@ function compute_vRS_inplace!(
     ymod_len = poly_reduce_mod_inplace!(scratch, 128 + y_len, 128, u_len)
 
     # 4. Compute Modular Inverse: Y_inv mod u_RS via Extended GCD.
-    #    poly_modinv_inplace! takes the input at poly_buf[129...], computes inverse, 
-    #    overwrites it, and returns (new_len, success_flag).
     yinv_len, ok = poly_modinv_inplace!(scratch, ymod_len, 128, u_len)
     if !ok
-        # Degenerate case: Y is not invertible. Zero out v_RS.
-        for i in 1:deg_u
-            @inbounds scratch.v_RS[i] = 0
-        end
-        return deg_u
+        # Degenerate case: Y is not invertible.
+        # We MUST fail the step to prevent false collisions on v=0.
+        scratch.u_RS_is_fail[1] = true
+        return 0
     end
 
     # 5. Compute v_RS = negE_mod * Y_inv mod u_RS.
-    #    Multiplies poly_buf[65 : 64+negE_len] by poly_buf[129 : 128+yinv_len],
-    #    reduces mod scratch.u_RS, and writes the output directly into scratch.v_RS.
     v_len = poly_mul_mod_inplace!(scratch, negE_len, 64, yinv_len, 128, u_len)
 
     return v_len
