@@ -91,27 +91,30 @@ const CONJ_KEY_EMPTY  = typemax(CanonicalLP1Key)
 #  LP1ConjVal — value stored in the conj 1-LP table.
 #
 #  Amortized mode (beta_zero=true): neg_be is always 0 — drop the field.
-#    LP1ConjVal     (14 bytes): i0::UInt16 + store_step::UInt32 + neg_al::UInt64
-#    LP1ConjValFull (22 bytes): i0::UInt16 + store_step::UInt32 + neg_al::UInt64 + neg_be::UInt64
+#    LP1ConjVal     (12 bytes): store_step::UInt32 + neg_al::UInt64
+#    LP1ConjValFull (20 bytes): store_step::UInt32 + neg_al::UInt64 + neg_be::UInt64
 #
-#  i0         -- FB column index, max ~O(sqrt(p)) ~= 10^4 at p=10^8, fits UInt16.
-#  store_step -- inserting thread's raw_step truncated to UInt32 (~4B steps max).
-#                Used by D8 closure-depth diagnostic: the closing thread (which
-#                may differ from the inserting thread) reads store_step back from
-#                the popped value rather than looking it up in a per-thread shadow
-#                dict that wouldn't have the entry.  Also serialised into the
-#                OFF_STEP field (bytes 26-29) of the on-disk record layout.
-#  neg_al     -- exponent mod ell.  ell <= #J ~= p^2, fits UInt64 for p < 2^32.
+#  The anchor FB row (fb_row) is NOT stored in the val struct.  For K>1
+#  anchors the row is variable-length and cannot be embedded in the flat
+#  on-disk record layout.  Instead it lives in a per-shard side-channel
+#  Dict (LP1ConjLSM.hot_rows) that is maintained in parallel with the hot
+#  table.  Entries evicted/spilled to disk lose their row; closes against
+#  disk-resident entries are dropped (they become misses).  Same-thread
+#  closes always succeed via hot_rows; cross-thread closes succeed whenever
+#  the stored entry is still hot in the peer's table.
+#
+#  store_step -- inserting thread's raw_step truncated to UInt32 (~4B steps
+#                max).  Used by D8 closure-depth diagnostic.  Serialised
+#                into the OFF_STEP field of the on-disk record.
+#  neg_al     -- exponent mod ell.  ell <= #J ~= p^2, fits UInt64 for p<2^32.
 #  neg_be     -- same range; omitted in amortized mode (always 0).
 # ---------------------------------------------------------------------------
-struct LP1ConjVal          # amortized mode  (14 bytes)
-    i0         ::UInt16
+struct LP1ConjVal          # amortized mode
     store_step ::UInt32
     neg_al     ::UInt64
 end
 
-struct LP1ConjValFull      # single-shot mode (22 bytes)
-    i0         ::UInt16
+struct LP1ConjValFull      # single-shot mode
     store_step ::UInt32
     neg_al     ::UInt64
     neg_be     ::UInt64
@@ -335,9 +338,10 @@ end
 @inline _conj_prev_be(v::LP1ConjVal)     = 0
 @inline _conj_prev_be(v::LP1ConjValFull) = Int(v.neg_be)
 
-@inline _conj_make_val(::Type{LP1ConjVal},     i0::UInt16, step::UInt32, al::UInt64, be::UInt64) = LP1ConjVal(i0, step, al)
-@inline _conj_make_val(::Type{LP1ConjValFull}, i0::UInt16, step::UInt32, al::UInt64, be::UInt64) = LP1ConjValFull(i0, step, al, be)
-
+# fb_row is accepted for call-site compatibility but is NOT stored in the val.
+# The row is managed by the LP1ConjLSM hot_rows side-channel instead.
+@inline _conj_make_val(::Type{LP1ConjVal},     fb_row::Dict{Int,Int}, step::UInt32, al::UInt64, be::UInt64) = LP1ConjVal(step, al)
+@inline _conj_make_val(::Type{LP1ConjValFull}, fb_row::Dict{Int,Int}, step::UInt32, al::UInt64, be::UInt64) = LP1ConjValFull(step, al, be)
 # ---------------------------------------------------------------------------
 #  conj_to_dict — snapshot a ShardedLP1Conj into a plain Dict for lockless
 #  read-only use in phase3 workers.  Call once before spawning workers.
@@ -439,8 +443,8 @@ mutable struct WorkerStats
     conj_roundtrip_fail  ::Int   # insert→haskey immediately returned false (LSM bug)
     conj_toctou_loss     ::Int   # haskey=true but pop returned nothing (race)
     # Trivial-close breakdown (Gemini hypothesis instrumentation):
-    hits_1lp_conj_trivial_same_col  ::Int   # closed but i0==prev_col (filtered by construction)
-    hits_1lp_conj_trivial_zero_dal  ::Int   # closed but Δα=Δβ=0, i0≠prev_col (should be ~0:
+    hits_1lp_conj_trivial_same_col  ::Int   # closed but fb_row matches stored (filtered by construction)
+    hits_1lp_conj_trivial_zero_dal  ::Int   # closed but Δα=Δβ=0, fb_row differs (should be ~0:
                                              # excluded by global alpha-uniqueness gate)
     hits_1lp_conj_trivial_dup       ::Int   # closed, Δα/Δβ nonzero, but (lo,hi,canon_al,canon_be)
                                              # already emitted by this thread — exact-duplicate

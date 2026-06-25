@@ -197,8 +197,9 @@ end
 # ---------------------------------------------------------------------------
 
 # conj_insert_or_pop! for ShardedLP1Conj: same atomic semantics as the LSM
-# version.  Returns (val, is_same_partial) matching the LSM signature so
-# handle_1lp_conj! can treat both backends uniformly.
+# version.  Returns (val, is_same_partial, prev_row) matching the LSM signature
+# so handle_1lp_conj! can treat both backends uniformly.  prev_row is always
+# nothing for ShardedLP1Conj; the caller falls back to conj_row_store.
 #
 # Same-partial: all three of (i0, neg_al, neg_be) match the stored entry —
 # this is a genuine repeat of the same walk partial and carries no new
@@ -207,28 +208,29 @@ end
 # Any other collision (i0 differs, or same i0 but different α/β) is a valid
 # closure: different walk positions hit the same residual key.
 @inline function conj_insert_or_pop!(sc::ShardedLP1Conj{V}, si::Int,
-                                      key::CanonicalLP1Key, val::V
-                                     )::Tuple{Union{V,Nothing}, Bool} where V
+                                      key::CanonicalLP1Key, val::V,
+                                      fb_row::Dict{Int,Int} = Dict{Int,Int}()
+                                     )::Tuple{Union{V,Nothing}, Bool, Union{Dict{Int,Int},Nothing}} where V
     lock(sc.locks[si]) do
         sh   = sc.shards[si]
         slot = _conj_find(sh, key)
         if slot != 0
             v = @inbounds sh.vals[slot]
-            if Int(v.i0) == Int(val.i0) &&
-               Int(v.neg_al) == Int(val.neg_al) &&
+            if Int(v.neg_al) == Int(val.neg_al) &&
                _conj_prev_be(v) == _conj_prev_be(val)
-                # Exact same partial (same anchor col, same α, same β): leave in place, discard.
-                return (nothing, true)
+                # Exact same partial (same α, same β): leave in place, discard.
+                return (nothing, true, nothing)
             end
-            # Different partial: valid closure regardless of whether i0 matches.
+            # Different partial: valid closure.  Row must be recovered from
+            # conj_row_store by the caller (ShardedLP1Conj has no side-channel).
             _conj_delete_slot!(sh, slot)
-            (v, false)
+            (v, false, nothing)
         elseif sh.count < sh.max_entries
             _conj_insert!(sh, key, val)
-            (nothing, false)
+            (nothing, false, nothing)
         else
             # At cap: drop silently.
-            (nothing, false)
+            (nothing, false, nothing)
         end
     end
 end
@@ -424,8 +426,8 @@ end
     si = conj_shard_idx(lp_key)
 
     # Use atomic insert-or-pop to close the haskey/insert TOCTOU race.
-    val = _conj_make_val(V, UInt16(i0), UInt32(s.raw_steps), UInt64(neg_al), UInt64(neg_be))
-    prev, is_same_partial = conj_insert_or_pop!(shared_lp1_conj, si, lp_key, val)
+    val = _conj_make_val(V, copy(fb_row), UInt32(s.raw_steps), UInt64(neg_al), UInt64(neg_be))
+    prev, is_same_partial, prev_row_lsm = conj_insert_or_pop!(shared_lp1_conj, si, lp_key, val, fb_row)
 
     if is_same_partial
         s.hits_1lp_conj_trivial_same_col += 1
@@ -449,14 +451,32 @@ end
 
     if prev !== nothing
         # --- Close against shared global entry ---
-        v        = prev
-        prev_col = Int(v.i0)
+        v = prev
         
-        # Pull the absolute historical factor-base row from the shared entry.
-        # If your shared structure stores the full row under v.fb_row, extract it directly.
-        # If you are passing a deep object, adapt the property name accordingly.
-        prev_fb_row = v.fb_row 
-        
+        # Retrieve the stored entry's FB row.
+        # LP1ConjLSM returns it via prev_row_lsm (hot_rows side-channel).
+        # ShardedLP1Conj returns nothing; fall back to conj_row_store.
+        # If the row is unavailable (disk-resident entry in LSM), drop the close.
+        prev_fb_row = if prev_row_lsm !== nothing
+            prev_row_lsm
+        else
+            r = get(conj_row_store, lp_key, nothing)
+            if r === nothing && shared_lp1_conj isa LP1ConjLSM
+                # Disk hit with no recoverable row — cannot form a valid relation.
+                s.hits_1lp_conj_trivial_zero_dal += 1
+                return next_anchor_ref[]()
+            end
+            r
+        end
+        if prev_fb_row === nothing
+            # Row is genuinely missing (shouldn't happen for ShardedLP1Conj, but be safe).
+            s.hits_1lp_conj_trivial_zero_dal += 1
+            return next_anchor_ref[]()
+        end
+        # prev_col: representative single anchor index from the stored row
+        # (used by diagnostics that expect a single Int; minimum key is stable)
+        prev_col = isempty(prev_fb_row) ? 0 : minimum(keys(prev_fb_row))
+
         prev_al  = Int(v.neg_al)
         prev_be  = _conj_prev_be(v)
 
@@ -464,30 +484,15 @@ end
             throw(ErrorException("CRITICAL PANIC: alpha accumulation hit zero boundary at tid=$(Threads.threadid())"))
         end
 
-        # UNIFICATION: Use the stable affine tracking orientation to fix the sign flips
+        # Unification: Use the stable affine tracking orientation to fix the sign flips
         combined_al = mod(neg_al - prev_al, Int(ell))
         combined_be = mod(neg_be - prev_be, Int(ell))
 
-        if i0 == prev_col
-            throw(ErrorException("CRITICAL PANIC: Same-column leak detected on lp_key=$lp_key"))
-        end
-
         if combined_al == 0 && combined_be == 0
             s.hits_1lp_conj_trivial_zero_dal += 1
+            # Clean up the row store on a trivial zero step before leaving
+            delete!(conj_row_store, lp_key)
             return next_anchor_ref[]()
-        end
-
-        if emitted_conj_rels !== nothing
-            lo_idx   = min(i0, prev_col)
-            hi_idx   = max(i0, prev_col)
-            canon_al = i0 <= prev_col ? combined_al : mod(Int(ell) - combined_al, Int(ell))
-            canon_be = i0 <= prev_col ? combined_be : mod(Int(ell) - combined_be, Int(ell))
-            rel_key  = (lo_idx, hi_idx, canon_al, canon_be)
-            if rel_key in emitted_conj_rels
-                s.hits_1lp_conj_trivial_dup += 1
-                return next_anchor_ref[]()
-            end
-            push!(emitted_conj_rels, rel_key)
         end
 
         # Construct the true sparse combined relation row
@@ -495,12 +500,20 @@ end
         sparse_copy!(cs, fb_row)
         lp2_subtract_rows(cs, prev_fb_row)
 
+        # Remove the relation from the row store now that it is successfully closed
+        delete!(conj_row_store, lp_key)
+
+        # An empty combined row means the two closures carried identical FB support —
+        # the anchor contributions cancelled exactly.  This is not a usable relation
+        # (it would assert 0 = Δα·G with Δα≠0, contradicting ord(G)=ell).  Drop it.
+        if isempty(cs)
+            s.hits_1lp_conj_trivial_zero_dal += 1
+            return next_anchor_ref[]()
+        end
+
         if ASSERT_RELATIONS
-            # Validate against the unified sign convention
-            ok = check_relation_principal(cs, combined_al, combined_be,
-                                          "α", fb, G, T; tag="RS-CONJ-CLOSE")
+            ok = check_relation_principal(cs, combined_al, combined_be, "α", fb, G, T; tag="RS-CONJ-CLOSE")
             if !ok
-                # Fallback check to immediately identify if a nested tracking drift remains
                 D_sum = JacID
                 for (idx, val_coeff) in cs
                     D_fb = mumford1(fb[idx][1], fb[idx][2])
@@ -511,15 +524,14 @@ end
                 @printf("\n============================================================\n")
                 @printf("[!!!] HARD STOP: RS-CONJ-CLOSE CRITICAL MISMATCH\n")
                 @printf("============================================================\n")
-                @printf("  i0=%d, prev_col=%d\n", i0, prev_col)
                 @printf("  neg_al=%s, prev_al=%s -> combined_al=%s\n", string(neg_al), string(prev_al), string(combined_al))
                 @printf("  Is Inverse Sign Match? %s\n", string(jac_isid(jac_add(D_sum, RHS))))
                 @printf("============================================================\n\n")
-                
                 Base.flush(stdout)
                 ccall(:exit, Cvoid, (Cint,), 1)
             end
         end
+
 
         # Bank the validated relation row
         push!(alpha_vec, combined_al); push!(beta_vec, combined_be)
@@ -573,6 +585,12 @@ end
             next_anchor_ref[]()
         end
         return next_anchor_ref[]()
+    end
+
+    # --- THIS IS THE STORE BRANCH (where prev was nothing) ---
+    # Put the fix right here, just before the final return of the function!
+    if !is_same_partial
+        conj_row_store[lp_key] = copy(fb_row)
     end
 
     return next_anchor_ref[]()
@@ -1152,7 +1170,7 @@ function phase2_worker(G               ::Div2,
     #  N_STEPS (or a divisor) — so ANY two closures whose step indices land
     #  on the same table phase (n ≡ m mod N_STEPS) automatically get
     #  combined_al == combined_be == 0, a structural ~1/N_STEPS-ish collision
-    #  rate independent of how "interesting" the (i0,prev_col) pair is.
+    #  rate independent of how "interesting" the (fb_row, prev_fb_row) pair is.
     #  That's the likely source of the high zero_dal fractions you're seeing
     #  (and why it'd vary thread-to-thread: each thread's closures land at
     #  different absolute step counts, hence different table-phase mixes).
@@ -1222,9 +1240,8 @@ function phase2_worker(G               ::Div2,
     # For K_anc >  1: cur_anchors holds the full K-tuple; cur_pt = cur_anchors[1]
     #                 is used for diagnostics, pt2idx lookups, and the handle_*
     #                 LP helpers (which remain single-anchor).
-    _init_anchors = next_anchor_tuple()
-    cur_pt        = _init_anchors[1]
-    cur_anchors   = copy(_init_anchors)   # mutable working copy for multi-anchor steps
+    next_anchor_tuple()
+    cur_pt = cur_anchors[1]      # initial cur_pt from the seeded tuple
     # D29 artifact filter: tracks whether cur_pt's MOST RECENT assignment came
     # from a genuine LP resolution (handle_1lp_affine!/handle_1lp_conj!/
     # handle_2lp_affine! storing or closing) vs a bare next_anchor() round-robin
@@ -1265,9 +1282,8 @@ function phase2_worker(G               ::Div2,
     # already emitted by this thread.  Prevents the repeated-closure pathology
     # where the same deterministic step-table delta regenerates the same key pair
     # with the same alpha difference, producing an identical weight-2 row.
-    # Key is canonical: lo=min(i0,prev_col) so fb[i]-fb[j] and fb[j]-fb[i]
-    # (which differ only by sign on the row and negation of combined_al) are
-    # treated as the same relation.
+    # Key is canonical: (lo_row_hash, hi_row_hash, combined_al, combined_be)
+    # so equivalent relation pairs from the same anchor pair are deduplicated.
     emitted_conj_rels = Set{NTuple{4,Int}}()
 
     # --- Attractor detection: for same-col trivial conj closes, check whether
@@ -1463,14 +1479,17 @@ function phase2_worker(G               ::Div2,
         # ==========================================================================
         if !rs_split
             lp_key32 = canonical_lp1_conj_key(RS_mumford::NTuple{4,Int})
-            if i0 != 0
+            # For LP1-conj ALL anchors in the k-tuple must be in the FB.
+            # If any anchor is off-FB the step has ≥2 large primes (RS pair + the
+            # off-FB anchor) and belongs in the 2-LP-conj path, not here.
+            all_anchors_in_fb = all(get(pt2idx, anc, 0) != 0 for anc in cur_anchors)
+            if i0 != 0 && all_anchors_in_fb
                 s.hits_lp1_conj += 1
                 # Build the FB row for the anchor k-tuple.  No residual points
                 # are added — the RS pair is off-FB by construction in this branch.
                 empty!(fb_row_scratch)
                 for anc in cur_anchors
                     idx = get(pt2idx, anc, 0)
-                    idx == 0 && continue
                     fb_row_scratch[idx] = get(fb_row_scratch, idx, 0) + 1
                 end
                 let _nb_a2 = length(phi_bias_stat.split_hist)

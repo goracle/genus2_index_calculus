@@ -46,6 +46,13 @@ mutable struct LP1ConjLSM{V}
     hot_thresh  ::Vector{Int}
     shard_locks ::Vector{ReentrantLock}
 
+    # Side-channel row store: maps lp_key → fb_row for each live hot entry.
+    # One Dict per shard, protected by the corresponding shard_locks entry.
+    # Entries are inserted alongside hot_keys/_vals and deleted on pop or
+    # flush-to-disk.  Disk-resident entries have NO row here; closes against
+    # them return nothing and are dropped by the caller.
+    hot_rows    ::Vector{Dict{CanonicalLP1Key, Dict{Int,Int}}}
+
     # Disk spill — flat binary file, pread for lookups (no mmap)
     runs          ::Vector{RunMeta}
     file_lock     ::ReentrantLock
@@ -142,6 +149,7 @@ function LP1ConjLSM{V}(
     hot_masks   = zeros(UInt, n_shards)
     hot_thresh  = zeros(Int, n_shards)
     shard_locks = [ReentrantLock() for _ in 1:n_shards]
+    hot_rows    = [Dict{CanonicalLP1Key, Dict{Int,Int}}() for _ in 1:n_shards]
 
     for i in 1:n_shards
         ks, vs, cap, mask, thresh = make_shard(cap_per_shard)
@@ -159,6 +167,7 @@ function LP1ConjLSM{V}(
     LP1ConjLSM{V}(
         hot_keys, hot_vals, hot_counts, hot_caps, hot_masks, hot_thresh,
         shard_locks,
+        hot_rows,
         RunMeta[], ReentrantLock(), spill_path, spill_io,
         nothing,   # spill_read_io opened lazily on first flush
         0,         # spill_size
@@ -249,7 +258,8 @@ end
 end
 
 @inline function _lsm_hot_insert!(sc::LP1ConjLSM{V}, si::Int,
-                                   key::CanonicalLP1Key, val::V) where V
+                                   key::CanonicalLP1Key, val::V,
+                                   fb_row::Union{Dict{Int,Int},Nothing} = nothing) where V
     keys = sc.hot_keys[si]
     vals = sc.hot_vals[si]
     cap  = sc.hot_caps[si]
@@ -269,6 +279,10 @@ end
             if (fp & GLOBAL_BLOOM_HOT_SAMPLE_MASK) == 0
                 set_bloom!(sc.global_bloom, fp)
             end
+            # Side-channel: record fb_row so closes can reconstruct the row.
+            if fb_row !== nothing
+                sc.hot_rows[si][key] = fb_row
+            end
             return
         end
         slot = slot == cap ? 1 : slot + 1
@@ -281,6 +295,8 @@ end
     cap  = sc.hot_caps[si]
     mask = sc.hot_masks[si]
     @inbounds begin
+        dead_key = keys[slot]
+        delete!(sc.hot_rows[si], dead_key)
         keys[slot] = CONJ_KEY_EMPTY
         sc.hot_counts[si] -= 1
         gap  = slot
@@ -323,7 +339,6 @@ function _lsm_flush_shard!(sc::LP1ConjLSM{V}, si::Int) where V
     u1s  = Vector{UInt32}(undef, n)
     v0s  = Vector{UInt32}(undef, n)
     v1s  = Vector{UInt32}(undef, n)
-    i0s  = Vector{UInt16}(undef, n)
     stps = Vector{UInt32}(undef, n)
     als  = Vector{UInt64}(undef, n)
     bes  = Vector{UInt64}(undef, n)
@@ -352,7 +367,6 @@ function _lsm_flush_shard!(sc::LP1ConjLSM{V}, si::Int) where V
         v0s[idx] = UInt32((k >> 64)  & 0x00000000ffffffff)
         v1s[idx] = UInt32((k >> 96)  & 0x00000000ffffffff)
         v = vals[slot]
-        i0s[idx] = v.i0
         stps[idx] = v.store_step
         als[idx] = v.neg_al
         bes[idx] = sc.amortized ? UInt64(0) : UInt64(_conj_prev_be(v))
@@ -362,6 +376,9 @@ function _lsm_flush_shard!(sc::LP1ConjLSM{V}, si::Int) where V
     fill!(sc.hot_keys[si], CONJ_KEY_EMPTY)
     sc.hot_counts[si] = 0
     sc.n_cold_dropped += n_cold
+    # Rows for spilled entries are no longer recoverable — clear the side-channel.
+    # Closes against disk-resident entries will be treated as misses.
+    empty!(sc.hot_rows[si])
 
     idx == 0 && return
 
@@ -373,7 +390,7 @@ function _lsm_flush_shard!(sc::LP1ConjLSM{V}, si::Int) where V
         oi = order[i]
         _write_record!(buf, (i-1)*RECORD_BYTES,
                        fps[oi], u0s[oi], u1s[oi], v0s[oi], v1s[oi],
-                       i0s[oi], stps[oi], als[oi], bes[oi])
+                       stps[oi], als[oi], bes[oi])
     end
 
     byte_offset = sc.spill_size
@@ -633,7 +650,7 @@ function conj_getval(sc::LP1ConjLSM{V}, si::Int, key::CanonicalLP1Key)::V where 
         try
             found, _, _, i0_v, step_v, al_v, be_v = _sc_disk_find(sc, key, fp)
             found || throw(KeyError(key))
-            return _conj_make_val(V, i0_v, step_v, al_v, be_v)
+            return _conj_make_val(V, Dict{Int,Int}(Int(i0_v) => 1), step_v, al_v, be_v)
         finally
             unlock(sc.shard_locks[si])
         end
@@ -662,7 +679,7 @@ function conj_pop!(sc::LP1ConjLSM{V}, si::Int, key::CanonicalLP1Key)::V where V
             found, ri, pos, i0_v, step_v, al_v, be_v = _sc_disk_find(sc, key, fp)
             found && _sc_disk_delete!(sc, ri, pos)
             found || throw(KeyError(key))
-            return _conj_make_val(V, i0_v, step_v, al_v, be_v)
+            return _conj_make_val(V, Dict{Int,Int}(Int(i0_v) => 1), step_v, al_v, be_v)
         finally
             unlock(sc.shard_locks[si])
         end
@@ -691,7 +708,7 @@ function conj_pop_safe(sc::LP1ConjLSM{V}, si::Int, key::CanonicalLP1Key)::Union{
             found, ri, pos, i0_v, step_v, al_v, be_v = _sc_disk_find(sc, key, fp)
             found && _sc_disk_delete!(sc, ri, pos)
             found || return nothing
-            return _conj_make_val(V, i0_v, step_v, al_v, be_v)
+            return _conj_make_val(V, Dict{Int,Int}(Int(i0_v) => 1), step_v, al_v, be_v)
         finally
             unlock(sc.shard_locks[si])
         end
@@ -722,19 +739,24 @@ end
 # ---------------------------------------------------------------------------
 #  conj_insert_or_pop! — atomic check+act, no TOCTOU race.
 #
-#  Returns (prev_val, is_same_col):
-#    (nothing, false)  -- genuine miss; key was inserted.  Rényi updated.
-#    (v,       false)  -- genuine cross-col collision.  Rényi updated.
-#    (nothing, true)   -- same-col hit: stored entry kept, current discarded.
-#                         Rényi NOT updated (not an independent sample).
+#  Returns (prev_val, is_same_col, prev_row):
+#    (nothing, false, nothing)   -- genuine miss; key was inserted.
+#    (v,       false, row)       -- genuine cross-col collision, hot hit.
+#                                   row is the stored entry's fb_row (always valid).
+#    (v,       false, nothing)   -- genuine cross-col collision, disk hit.
+#                                   row is nothing; caller must drop the close.
+#    (nothing, true,  nothing)   -- same-col hit: stored entry kept, current discarded.
+#
+#  Same-partial detection uses only neg_al + neg_be (fb_row is no longer in
+#  the val struct; the side-channel row is not consulted for this check).
 # ---------------------------------------------------------------------------
 function conj_insert_or_pop!(sc::LP1ConjLSM{V}, si::Int,
-                              key::CanonicalLP1Key, val::V
-                             )::Tuple{Union{V,Nothing}, Bool} where V
+                              key::CanonicalLP1Key, val::V,
+                              fb_row::Dict{Int,Int}
+                             )::Tuple{Union{V,Nothing}, Bool, Union{Dict{Int,Int},Nothing}} where V
 
     fp    = _lsm_fp(key)
     now_t = time_ns() * 1e-9
-    i0_cur = Int(val.i0)
 
     # 1. Fast Path: own hot table, shard lock only.
     lock(sc.shard_locks[si])
@@ -742,15 +764,15 @@ function conj_insert_or_pop!(sc::LP1ConjLSM{V}, si::Int,
         slot = _lsm_hot_find(sc, si, key)
         if slot != 0
             v = @inbounds sc.hot_vals[si][slot]
-            if Int(v.i0) == i0_cur &&
-               Int(v.neg_al) == Int(val.neg_al) &&
+            if Int(v.neg_al) == Int(val.neg_al) &&
                _conj_prev_be(v) == _conj_prev_be(val)
-                return (nothing, true)
+                return (nothing, true, nothing)
             end
+            prev_row = get(sc.hot_rows[si], key, nothing)
             _lsm_hot_delete!(sc, si, slot)
             _lsm_record_sample!(sc, fp, now_t, key)
             _bday_record_collision!(sc, now_t)
-            return (v, false)
+            return (v, false, prev_row)
         end
     finally
         unlock(sc.shard_locks[si])
@@ -766,31 +788,33 @@ function conj_insert_or_pop!(sc::LP1ConjLSM{V}, si::Int,
                 slot = _lsm_hot_find(sc, si, key)
                 if slot != 0
                     v = @inbounds sc.hot_vals[si][slot]
-                    if Int(v.i0) == i0_cur &&
-                       Int(v.neg_al) == Int(val.neg_al) &&
+                    if Int(v.neg_al) == Int(val.neg_al) &&
                        _conj_prev_be(v) == _conj_prev_be(val)
-                        return (nothing, true)
+                        return (nothing, true, nothing)
                     end
+                    prev_row = get(sc.hot_rows[si], key, nothing)
                     _lsm_hot_delete!(sc, si, slot)
                     _lsm_record_sample!(sc, fp, now_t, key)
                     _bday_record_collision!(sc, now_t)
-                    return (v, false)
+                    return (v, false, prev_row)
                 end
 
                 found, ri, pos, i0_v, step_v, al_v, be_v = _sc_disk_find(sc, key, fp)
                 if found
-                    if Int(i0_v) == i0_cur &&
-                       al_v == UInt64(val.neg_al) &&
+                    if al_v == UInt64(val.neg_al) &&
                        be_v == UInt64(_conj_prev_be(val))
+                        # Same-partial by scalars: re-insert to hot and discard.
                         _sc_disk_delete!(sc, ri, pos)
-                        _lsm_hot_insert!(sc, si, key, _conj_make_val(V, i0_v, step_v, al_v, be_v))
-                        return (nothing, true)
+                        disk_val = _conj_make_val(V, Dict{Int,Int}(), step_v, al_v, be_v)
+                        _lsm_hot_insert!(sc, si, key, disk_val)  # no row — was on disk
+                        return (nothing, true, nothing)
                     end
                     _sc_disk_delete!(sc, ri, pos)
-                    result_v = _conj_make_val(V, i0_v, step_v, al_v, be_v)
+                    result_v = _conj_make_val(V, Dict{Int,Int}(), step_v, al_v, be_v)
                     _lsm_record_sample!(sc, fp, now_t, key)
                     _bday_record_collision!(sc, now_t)
-                    return (result_v, false)
+                    # Disk hit: row is gone (spilled), caller must drop this close.
+                    return (result_v, false, nothing)
                 end
             finally
                 unlock(sc.shard_locks[si])
@@ -801,8 +825,6 @@ function conj_insert_or_pop!(sc::LP1ConjLSM{V}, si::Int,
     end
 
     # 3. Cross-peer probe.
-    #    Guard: only probe after first collision (avoids serialising all threads
-    #    on empty peer disks at walk start) and when global bloom says fp exists.
     if bloom_maybe_has(sc.global_bloom, fp)
         for peer in sc.peers
             peer === sc && continue
@@ -816,15 +838,15 @@ function conj_insert_or_pop!(sc::LP1ConjLSM{V}, si::Int,
                     pslot = _lsm_hot_find(peer_lsm, si, key)
                     if pslot != 0
                         pv = @inbounds peer_lsm.hot_vals[si][pslot]
-                        if Int(pv.i0) == i0_cur &&
-                           Int(pv.neg_al) == Int(val.neg_al) &&
+                        if Int(pv.neg_al) == Int(val.neg_al) &&
                            _conj_prev_be(pv) == _conj_prev_be(val)
-                            return (nothing, true)
+                            return (nothing, true, nothing)
                         end
+                        prev_row = get(peer_lsm.hot_rows[si], key, nothing)
                         _lsm_hot_delete!(peer_lsm, si, pslot)
                         _lsm_record_sample!(sc, fp, now_t, key)
                         _bday_record_collision!(sc, now_t)
-                        return (pv, false)
+                        return (pv, false, prev_row)
                     end
                 finally
                     unlock(peer_lsm.shard_locks[si])
@@ -843,22 +865,23 @@ function conj_insert_or_pop!(sc::LP1ConjLSM{V}, si::Int,
                                                    peer_lsm.read_buf,
                                                    key, fp)
                                 if found
-                                    if Int(i0_v) == i0_cur &&
-                                       al_v == UInt64(val.neg_al) &&
+                                    if al_v == UInt64(val.neg_al) &&
                                        be_v == UInt64(_conj_prev_be(val))
                                         _run_set_dead!(peer_lsm.runs[ri], pos)
                                         peer_lsm.n_disk_live -= 1
+                                        disk_val = _conj_make_val(V, Dict{Int,Int}(), step_v, al_v, be_v)
                                         lock(peer_lsm.shard_locks[si]) do
-                                            _lsm_hot_insert!(peer_lsm, si, key,
-                                                             _conj_make_val(V, i0_v, step_v, al_v, be_v))
+                                            _lsm_hot_insert!(peer_lsm, si, key, disk_val)
                                         end
-                                        return (nothing, true)
+                                        return (nothing, true, nothing)
                                     end
                                     _run_set_dead!(peer_lsm.runs[ri], pos)
                                     peer_lsm.n_disk_live -= 1
                                     _lsm_record_sample!(sc, fp, now_t, key)
                                     _bday_record_collision!(sc, now_t)
-                                    return (_conj_make_val(V, i0_v, step_v, al_v, be_v), false)
+                                    result_v = _conj_make_val(V, Dict{Int,Int}(), step_v, al_v, be_v)
+                                    # Disk hit: row gone, caller drops this close.
+                                    return (result_v, false, nothing)
                                 end
                             finally
                                 unlock(peer_lsm.shard_locks[si])
@@ -881,29 +904,29 @@ function conj_insert_or_pop!(sc::LP1ConjLSM{V}, si::Int,
             slot = _lsm_hot_find(sc, si, key)
             if slot != 0
                 v = @inbounds sc.hot_vals[si][slot]
-                if Int(v.i0) == i0_cur &&
-                   Int(v.neg_al) == Int(val.neg_al) &&
+                if Int(v.neg_al) == Int(val.neg_al) &&
                    _conj_prev_be(v) == _conj_prev_be(val)
-                    return (nothing, true)
+                    return (nothing, true, nothing)
                 end
+                prev_row = get(sc.hot_rows[si], key, nothing)
                 _lsm_hot_delete!(sc, si, slot)
                 _lsm_record_sample!(sc, fp, now_t, key)
                 _bday_record_collision!(sc, now_t)
-                return (v, false)
+                return (v, false, prev_row)
             end
 
             # Cap enforcement.
             if sc.n_disk_live + sum(sc.hot_counts) >= sc.max_entries
                 sc.n_cold_dropped += 1
-                return (nothing, false)
+                return (nothing, false, nothing)
             end
 
             if sc.hot_counts[si] >= sc.hot_thresh[si]
                 _lsm_flush_shard!(sc, si)
             end
-            _lsm_hot_insert!(sc, si, key, val)
+            _lsm_hot_insert!(sc, si, key, val, fb_row)
             _lsm_record_sample!(sc, fp, now_t, key)
-            return (nothing, false)
+            return (nothing, false, nothing)
         finally
             unlock(sc.shard_locks[si])
         end
@@ -994,7 +1017,7 @@ function lsm_to_dict(sc::LP1ConjLSM{V})::Dict{CanonicalLP1Key, V} where V
                 kv1  = _buf_u32(buf, OFF_V1)
                 ck   = UInt128(ku0) | (UInt128(ku1) << 32) |
                        (UInt128(kv0) << 64) | (UInt128(kv1) << 96)
-                haskey(d, ck) || (d[ck] = _conj_make_val(V, _buf_i0(buf), _buf_step(buf), _buf_al(buf), _buf_be(buf)))
+                haskey(d, ck) || (d[ck] = _conj_make_val(V, Dict{Int,Int}(Int(_buf_i0(buf)) => 1), _buf_step(buf), _buf_al(buf), _buf_be(buf)))
             end
         end
     end
@@ -1040,7 +1063,7 @@ function lsm_stream_into_dict!(d::Dict{CanonicalLP1Key, V},
                 kv1 = _buf_u32(buf, OFF_V1)
                 ck  = UInt128(ku0) | (UInt128(ku1) << 32) |
                       (UInt128(kv0) << 64) | (UInt128(kv1) << 96)
-                haskey(d, ck) || (d[ck] = _conj_make_val(V, _buf_i0(buf), _buf_step(buf), _buf_al(buf), _buf_be(buf)))
+                haskey(d, ck) || (d[ck] = _conj_make_val(V, Dict{Int,Int}(Int(_buf_i0(buf)) => 1), _buf_step(buf), _buf_al(buf), _buf_be(buf)))
             end
         end
     end
