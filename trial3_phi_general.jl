@@ -171,38 +171,53 @@ end
 end
 
 # ---------------------------------------------------------------------------
-#  Reduce x^i mod u(x) = x² + u1*x + u0  →  (r0, r1)  [zero-allocation]
+#  Reduce x^i * v(x) mod u(x) = x² + u1*x + u0
+#  Returns (r0, r1) = const + r1*x  (the linear remainder).
 #
-#  Uses the two-register recurrence derived from x² ≡ -u1·x - u0:
-#    x · (r0 + r1·x) = r0·x + r1·x²
-#                    ≡ r0·x + r1·(-u1·x - u0)
-#                    = -r1·u0  +  (r0 - r1·u1)·x
-#  so  (r0, r1)  →  (-r1·u0,  r0 - r1·u1)  on each multiply-by-x step.
-#  No heap allocation; O(i) scalar ops, O(1) space.
+#  We work with the full polynomial x^i * v(x) reduced mod u(x).
+#  v(x) = v0 + v1*x is degree 1, so x^i*v(x) is degree i+1.
+#  We reduce the degree-i+1 poly mod u(x) iteratively.
 # ---------------------------------------------------------------------------
-@inline function reduce_xi_mod_u(i::Int, u0::Int, u1::Int)::NTuple{2,Int}
-    i == 0 && return (1, 0)
-    i == 1 && return (0, 1)
-    r0 = 0; r1 = 1          # start at x^1
-    for _ in 2:i
-        r0, r1 = fp(-fpmul(r1, u0)), fp(r0 - fpmul(r1, u1))
+function reduce_xiv_mod_u(i::Int, v0::Int, v1::Int,
+                           u0::Int, u1::Int)::NTuple{2,Int}
+    # Build coefficients of x^i * v(x):  coeff[k] = coeff of x^k
+    # x^i * (v0 + v1*x) = v0*x^i + v1*x^(i+1)
+    # Represent as vector indexed 0..i+1
+    deg = i + 1
+    coeffs = zeros(Int, deg + 1)  # 1-indexed: coeffs[k+1] = coeff of x^k
+    coeffs[i+1]   = fp(v0)        # x^i coefficient
+    coeffs[i+2]   = fp(v1)        # x^(i+1) coefficient
+    # Reduce mod u(x) = x^2 + u1*x + u0, i.e. x^2 ≡ -u1*x - u0
+    for d in deg:-1:2
+        if coeffs[d+1] != 0
+            c = coeffs[d+1]
+            coeffs[d+1] = 0
+            coeffs[d]   = fp(coeffs[d]   - fpmul(c, u1))
+            coeffs[d-1] = fp(coeffs[d-1] - fpmul(c, u0))
+        end
     end
-    return (r0, r1)
+    return (coeffs[1], coeffs[2])
 end
 
 # ---------------------------------------------------------------------------
-#  Reduce x^i * v(x) mod u(x)  →  (r0, r1)  [zero-allocation]
-#
-#  v(x) = v0 + v1·x, so  x^i·v(x) = v0·x^i + v1·x^(i+1).
-#  Reduce each power separately with reduce_xi_mod_u (two calls, O(i) total)
-#  then combine linearly.  No heap allocation.
+#  Reduce x^i mod u(x) → (r0, r1).
 # ---------------------------------------------------------------------------
-@inline function reduce_xiv_mod_u(i::Int, v0::Int, v1::Int,
-                                   u0::Int, u1::Int)::NTuple{2,Int}
-    a0, a1 = reduce_xi_mod_u(i,     u0, u1)   # x^i   mod u
-    b0, b1 = reduce_xi_mod_u(i + 1, u0, u1)   # x^(i+1) mod u
-    return (fp(fpmul(v0, a0) + fpmul(v1, b0)),
-            fp(fpmul(v0, a1) + fpmul(v1, b1)))
+function reduce_xi_mod_u(i::Int, u0::Int, u1::Int)::NTuple{2,Int}
+    if i == 0; return (1, 0); end
+    if i == 1; return (0, 1); end
+    # Build coefficient vector of x^i
+    deg = i
+    coeffs = zeros(Int, deg + 1)
+    coeffs[deg+1] = 1
+    for d in deg:-1:2
+        if coeffs[d+1] != 0
+            c = coeffs[d+1]
+            coeffs[d+1] = 0
+            coeffs[d]   = fp(coeffs[d]   - fpmul(c, u1))
+            coeffs[d-1] = fp(coeffs[d-1] - fpmul(c, u0))
+        end
+    end
+    return (coeffs[1], coeffs[2])
 end
 
 # ---------------------------------------------------------------------------
@@ -1766,8 +1781,8 @@ function find_roots_and_points_inplace!(
         @inbounds c1 = scratch.u_RS[2]
         
         disc = fp(fpmul(c1, c1) - 4 * c0)
-        sq = sqrt_fp(disc)  # Assumes your global returns Union{Int, Nothing} without boxing
-        sq === nothing && return nothing
+        sq = sqrt_fp(disc)  # returns SQRT_FP_NONSQUARE (== -1) for non-residues; no boxing
+        sq < 0 && return nothing
         
         inv2 = fpinv(2)
         xR = fpmul(fp(-c1 + sq), inv2)
@@ -1775,7 +1790,7 @@ function find_roots_and_points_inplace!(
         
         # Recover y for root 1 (xR)
         yr_1 = recover_y_from_phi_inplace(scratch, xR, k)
-        if yr_1 !== nothing
+        if yr_1 >= 0
             idx = scratch.roots_count[1] + 1
             @inbounds scratch.roots_out[idx] = (xR, yr_1)
             scratch.roots_count[1] = idx
@@ -1783,7 +1798,7 @@ function find_roots_and_points_inplace!(
         
         # Recover y for root 2 (xS)
         yr_2 = recover_y_from_phi_inplace(scratch, xS, k)
-        if yr_2 !== nothing
+        if yr_2 >= 0
             idx = scratch.roots_count[1] + 1
             @inbounds scratch.roots_out[idx] = (xS, yr_2)
             scratch.roots_count[1] = idx
@@ -1814,7 +1829,7 @@ function find_roots_and_points_inplace!(
             rem_len, _ = poly_divmod_linear_inplace_segment!(scratch, 192, rem_len, x)
             
             yr = recover_y_from_phi_inplace(scratch, x, k)
-            if yr !== nothing
+            if yr >= 0
                 idx = scratch.roots_count[1] + 1
                 @inbounds scratch.roots_out[idx] = (x, yr)
                 scratch.roots_count[1] = idx
@@ -1831,7 +1846,7 @@ end
 #  
 #  φ(x,y) = E(x) + y * Y(x) == 0  =>  y = -E(x) / Y(x)
 # ---------------------------------------------------------------------------
-function recover_y_from_phi_inplace(scratch::ThreadScratchpad, x::Int, k::Int)::Union{Int, Nothing}
+function recover_y_from_phi_inplace(scratch::ThreadScratchpad, x::Int, k::Int)::Int
     nb = k + 3
     # Retrieve the canonical monomial basis vector (poles sorted: x^i or x^i * y)
     basis = rr_basis_cached(nb)::Vector{NTuple{2, Int}}
@@ -1882,8 +1897,8 @@ function recover_y_from_phi_inplace(scratch::ThreadScratchpad, x::Int, k::Int)::
     end
 
     # Handle singular/tangent cases where Y(x) evaluates to 0
-    val_Y == 0 && return nothing 
-    
+    val_Y == 0 && return SQRT_FP_NONSQUARE   # sentinel: no valid y
+
     # y = -E(x) / Y(x) mod p
     return fpmul(fp(-val_E), fpinv(val_Y))
 end
@@ -2015,7 +2030,7 @@ function phi_residual_mumford_general(a::Int, b::Int, c::Int,
     disc = fp(fpmul(c1_rs, c1_rs) - 4*c0_rs)
     sq   = sqrt_fp(disc)
 
-    if sq === nothing
+    if sq < 0
         return (SENTINEL_PT, SENTINEL_PT, mumford_key)
     end
 
