@@ -381,6 +381,7 @@ end
 @inline function handle_1lp_conj!(
         lp_key          ::CanonicalLP1Key,
         i0              ::Int,
+        fb_row          ::Dict{Int,Int},
         neg_al          ::Int,
         neg_be          ::Int,
         ell             ::BigInt,
@@ -396,7 +397,8 @@ end
         s               ::WorkerStats,
         shared_lp1_conj ::Union{ShardedLP1Conj{V}, LP1ConjLSM{V}},
         rank_growth     ::Vector{Tuple{Int,Int}},
-        combined_scratch::ThreadScratchpad, 
+        combined_scratch::ThreadScratchpad,
+        conj_row_store  ::Dict{CanonicalLP1Key, Dict{Int,Int}},
         P0              ::NTuple{2,Int},
         phi_bias_stat   ::PhiBiasStat,
         next_anchor_ref ::Ref{Function},
@@ -440,6 +442,9 @@ end
     end
 
     if prev === nothing
+        # Park the full k-anchor FB row so the close path can do a proper
+        # sparse subtraction instead of the old weight-2 synthetic {i0=>1, prev=>-1}.
+        conj_row_store[lp_key] = copy(fb_row)
         record_conj_deep_miss!(deep_stat, lp_key, s.raw_steps, al_cur, px_anchor, a_raw, py_anchor)
     end
 
@@ -457,8 +462,12 @@ end
             throw(ErrorException("handle_1lp_conj!: stored prev_al==0 (alpha==ell) at tid=$(Threads.threadid())"))
         end
 
-        combined_al = mod(neg_al - prev_al, Int(ell))
-        combined_be = mod(neg_be - prev_be, Int(ell))
+        # conj close: sum(anchors_cur) - sum(anchors_prev) = (alpha_cur - alpha_prev)·G
+        # alpha = ell - neg_al, so alpha_cur - alpha_prev = neg_al_prev - neg_al_cur.
+        # This is the OPPOSITE sign from affine 1-LP where the lp_pt cancels and
+        # the FB rows carry neg_al directly.
+        combined_al = mod(prev_al - neg_al, Int(ell))
+        combined_be = mod(prev_be - neg_be, Int(ell))
 
         if i0 == prev_col
             throw(ErrorException(
@@ -469,6 +478,7 @@ end
 
         if combined_al == 0 && combined_be == 0
             s.hits_1lp_conj_trivial_zero_dal += 1
+            delete!(conj_row_store, lp_key)
             return next_anchor_ref[]()
         end
 
@@ -480,17 +490,32 @@ end
             rel_key  = (lo_idx, hi_idx, canon_al, canon_be)
             if rel_key in emitted_conj_rels
                 s.hits_1lp_conj_trivial_dup += 1
+                delete!(conj_row_store, lp_key)
                 return next_anchor_ref[]()
             end
             push!(emitted_conj_rels, rel_key)
         end
 
-        empty!(combined_scratch)
-        combined_scratch[i0]       = 1
-        combined_scratch[prev_col] = -1
+        # Combined row: cur_fb_row - prev_fb_row.
+        # cur_fb_row is fb_row (built at call site from cur_anchors).
+        # prev_fb_row was saved in conj_row_store when the first entry was parked.
+        # If missing (cross-thread close or pre-fix run), fall back to the weight-2
+        # synthetic row — alpha arithmetic is still valid but the relation is wrong,
+        # so skip the assert in that case.
+        cs = combined_scratch.combined_scratch
+        prev_fb_row = pop!(conj_row_store, lp_key, nothing)
+        row_is_full = prev_fb_row !== nothing
+        if row_is_full
+            sparse_copy!(cs, fb_row)
+            lp2_subtract_rows(cs, prev_fb_row)
+        else
+            empty!(cs)
+            cs[i0]       = 1
+            cs[prev_col] = -1
+        end
 
-        if ASSERT_RELATIONS
-            ok = check_relation_principal(combined_scratch, combined_al, combined_be,
+        if ASSERT_RELATIONS && row_is_full
+            ok = check_relation_principal(cs, combined_al, combined_be,
                                           "α", fb, G, T; tag="RS-CONJ-CLOSE")
             if !ok
                 @printf("[RS-CONJ-CLOSE DIAG tid=%d] i0=%d prev_col=%d\n",
@@ -504,8 +529,8 @@ end
         end
 
         push!(alpha_vec, combined_al); push!(beta_vec, combined_be)
-        push!(rel_rows, copy(combined_scratch))
-        ort_add_row!(ort, combined_scratch)
+        push!(rel_rows, copy(cs))
+        ort_add_row!(ort, cs)
         
         if length(rank_growth) < MAX_RANK_GROWTH_SAMPLES
             push!(rank_growth, (s.raw_steps, length(rel_rows)))
@@ -1233,6 +1258,12 @@ function phase2_worker(G               ::Div2,
     fb_row_scratch   = sizehint!(Dict{Int,Int}(), 4)
     combined_scratch = ThreadScratchpad()
 
+    # Side-store for FB rows paired with conj LP1 entries.  Thread-local; entries
+    # are set on store and pop!'d on close.  Cross-thread closes (thread A stores,
+    # thread B closes) will miss here and fall back to the weight-2 synthetic row,
+    # but the alpha sign fix still makes those correct for k=1.
+    conj_row_store = Dict{CanonicalLP1Key, Dict{Int,Int}}()
+
     # Initialize a fast, thread-local RNG for step selection.
     # Xoshiro has a 2^256 period and is seeded randomly per thread,
     # so threads take fully independent paths through the step table.
@@ -1443,15 +1474,24 @@ function phase2_worker(G               ::Div2,
             lp_key32 = canonical_lp1_conj_key(RS_mumford::NTuple{4,Int})
             if i0 != 0
                 s.hits_lp1_conj += 1
+                # Build the FB row for the anchor k-tuple.  No residual points
+                # are added — the RS pair is off-FB by construction in this branch.
+                empty!(fb_row_scratch)
+                for anc in cur_anchors
+                    idx = get(pt2idx, anc, 0)
+                    idx == 0 && continue
+                    fb_row_scratch[idx] = get(fb_row_scratch, idx, 0) + 1
+                end
                 let _nb_a2 = length(phi_bias_stat.split_hist)
                     _a_bucket = clamp(1 + (Int(a) * _nb_a2) ÷ p, 1, _nb_a2)
                     n_emit_before = deep_stat.n_emissions
                     d34_stores_before = deep_stat.d12_n_stores_seen
-                    cur_pt = handle_1lp_conj!(lp_key32, i0, neg_al, neg_be, ell,
+                    cur_pt = handle_1lp_conj!(lp_key32, i0, fb_row_scratch, neg_al, neg_be, ell,
                                                fb, nF_cur, G, T,
                                                alpha_vec, beta_vec, rel_rows, rel_counter,
                                                ort, s, shared_lp1_conj, rank_growth,
-                                               combined_scratch, P0, phi_bias_stat, next_anchor_ref,
+                                               combined_scratch, conj_row_store,
+                                               P0, phi_bias_stat, next_anchor_ref,
                                                _a_bucket, deep_stat, al, P0[1], Int(a), P0[2],
                                                post_conj_stride,
                                                conj_anchor_alpha_seen, CONJ_ANCHOR_ALPHA_CAP,

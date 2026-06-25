@@ -65,9 +65,8 @@ function sparse_copy!(dst::Dict{Int64, Int64}, src::Dict{Int64, Int64})
     return dst
 end
 
-# Passthrough to handle a ThreadScratchpad wrapper automatically
+# Passthrough: dispatch on ThreadScratchpad, delegate to the inner dict.
 function sparse_copy!(scratch::ThreadScratchpad, src::Dict{Int64, Int64})
-    # Replace .combined_scratch with the exact name of the Dict field in your struct
     return sparse_copy!(scratch.combined_scratch, src)
 end
 

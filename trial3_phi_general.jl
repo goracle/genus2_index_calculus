@@ -358,6 +358,10 @@ struct ThreadScratchpad
     v_RS_len       ::Vector{Int}
     u_RS_is_fail   ::Vector{Bool}
 
+    # 7. Sparse relation row workspace (replaces the old standalone Dict{Int,Int}
+    #    that callers previously passed as `combined_scratch`).
+    combined_scratch::Dict{Int,Int}
+
     function ThreadScratchpad()
         new(
             zeros(Int, 32), zeros(Int, 32), zeros(Int, 1024),  # poly_buf expanded safely
@@ -366,7 +370,8 @@ struct ThreadScratchpad
             zeros(Int, 32), zeros(Bool, 32),
             zeros(Int, 24), zeros(Int, 8), zeros(Int, 8), 
             Vector{NTuple{2,Int}}(undef, 8),
-            zeros(Int, 1), zeros(Int, 1), zeros(Int, 1), zeros(Bool, 1)
+            zeros(Int, 1), zeros(Int, 1), zeros(Int, 1), zeros(Bool, 1),
+            sizehint!(Dict{Int,Int}(), 8)
         )
     end
 end
