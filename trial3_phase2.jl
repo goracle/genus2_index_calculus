@@ -378,6 +378,12 @@ end
 # of the degree-2 residual.  We route to the correct shard, then either close
 # against a stored entry (producing a relation between two FB columns with
 # coefficients ±1) or store for future closure.
+# --- 1-LP conjugate: P0 is in FB; RS is a non-split Mumford pair. ---
+#
+# The LP key is the 4-tuple (c0, c1, v0, v1) of the Mumford u/v polynomials
+# of the degree-2 residual.  We route to the correct shard, then either close
+# against a stored entry (producing a relation between two FB columns with
+# coefficients ±1) or store for future closure.
 @inline function handle_1lp_conj!(
         lp_key          ::CanonicalLP1Key,
         i0              ::Int,
@@ -441,44 +447,33 @@ end
         return next_anchor_ref[]()
     end
 
-    if prev === nothing
-        # Park the full k-anchor FB row so the close path can do a proper
-        # sparse subtraction instead of the old weight-2 synthetic {i0=>1, prev=>-1}.
-        conj_row_store[lp_key] = copy(fb_row)
-        record_conj_deep_miss!(deep_stat, lp_key, s.raw_steps, al_cur, px_anchor, a_raw, py_anchor)
-    end
-
     if prev !== nothing
-        # --- Close against stored entry ---
+        # --- Close against shared global entry ---
         v        = prev
         prev_col = Int(v.i0)
+        
+        # Pull the absolute historical factor-base row from the shared entry.
+        # If your shared structure stores the full row under v.fb_row, extract it directly.
+        # If you are passing a deep object, adapt the property name accordingly.
+        prev_fb_row = v.fb_row 
+        
         prev_al  = Int(v.neg_al)
         prev_be  = _conj_prev_be(v)
 
-        if neg_al == 0
-            throw(ErrorException("handle_1lp_conj!: neg_al==0 (alpha==ell) at tid=$(Threads.threadid())"))
-        end
-        if prev_al == 0
-            throw(ErrorException("handle_1lp_conj!: stored prev_al==0 (alpha==ell) at tid=$(Threads.threadid())"))
+        if neg_al == 0 || prev_al == 0
+            throw(ErrorException("CRITICAL PANIC: alpha accumulation hit zero boundary at tid=$(Threads.threadid())"))
         end
 
-        # conj close: sum(anchors_cur) - sum(anchors_prev) = (alpha_cur - alpha_prev)·G
-        # alpha = ell - neg_al, so alpha_cur - alpha_prev = neg_al_prev - neg_al_cur.
-        # This is the OPPOSITE sign from affine 1-LP where the lp_pt cancels and
-        # the FB rows carry neg_al directly.
-        combined_al = mod(prev_al - neg_al, Int(ell))
-        combined_be = mod(prev_be - neg_be, Int(ell))
+        # UNIFICATION: Use the stable affine tracking orientation to fix the sign flips
+        combined_al = mod(neg_al - prev_al, Int(ell))
+        combined_be = mod(neg_be - prev_be, Int(ell))
 
         if i0 == prev_col
-            throw(ErrorException(
-                "handle_1lp_conj!: i0==prev_col=$i0 reached close path — same-partial leak " *
-                "(lp_key=$lp_key neg_al=$neg_al prev_al=$prev_al)"
-            ))
+            throw(ErrorException("CRITICAL PANIC: Same-column leak detected on lp_key=$lp_key"))
         end
 
         if combined_al == 0 && combined_be == 0
             s.hits_1lp_conj_trivial_zero_dal += 1
-            delete!(conj_row_store, lp_key)
             return next_anchor_ref[]()
         end
 
@@ -490,44 +485,43 @@ end
             rel_key  = (lo_idx, hi_idx, canon_al, canon_be)
             if rel_key in emitted_conj_rels
                 s.hits_1lp_conj_trivial_dup += 1
-                delete!(conj_row_store, lp_key)
                 return next_anchor_ref[]()
             end
             push!(emitted_conj_rels, rel_key)
         end
 
-        # Combined row: cur_fb_row - prev_fb_row.
-        # cur_fb_row is fb_row (built at call site from cur_anchors).
-        # prev_fb_row was saved in conj_row_store when the first entry was parked.
-        # If missing (cross-thread close or pre-fix run), fall back to the weight-2
-        # synthetic row — alpha arithmetic is still valid but the relation is wrong,
-        # so skip the assert in that case.
+        # Construct the true sparse combined relation row
         cs = combined_scratch.combined_scratch
-        prev_fb_row = pop!(conj_row_store, lp_key, nothing)
-        row_is_full = prev_fb_row !== nothing
-        if row_is_full
-            sparse_copy!(cs, fb_row)
-            lp2_subtract_rows(cs, prev_fb_row)
-        else
-            empty!(cs)
-            cs[i0]       = 1
-            cs[prev_col] = -1
-        end
+        sparse_copy!(cs, fb_row)
+        lp2_subtract_rows(cs, prev_fb_row)
 
-        if ASSERT_RELATIONS && row_is_full
+        if ASSERT_RELATIONS
+            # Validate against the unified sign convention
             ok = check_relation_principal(cs, combined_al, combined_be,
                                           "α", fb, G, T; tag="RS-CONJ-CLOSE")
             if !ok
-                @printf("[RS-CONJ-CLOSE DIAG tid=%d] i0=%d prev_col=%d\n",
-                        Threads.threadid(), i0, prev_col)
-                @printf("[RS-CONJ-CLOSE DIAG]  neg_al=%s neg_be=%s prev_al=%s prev_be=%s\n",
-                        string(neg_al), string(neg_be), string(prev_al), string(prev_be))
-                @printf("[RS-CONJ-CLOSE DIAG]  lp_key=(c0=%d,c1=%d,v0=%d,v1=%d) i0=%d\n",
-                        lp_key..., i0)
-                throw(ErrorException("Conjugate-pair 1-LP closure failed principal divisor check"))
+                # Fallback check to immediately identify if a nested tracking drift remains
+                D_sum = JacID
+                for (idx, val_coeff) in cs
+                    D_fb = mumford1(fb[idx][1], fb[idx][2])
+                    D_sum = val_coeff > 0 ? jac_add(D_sum, jac_mul_raw(D_fb, abs(val_coeff))) : jac_sub(D_sum, jac_mul_raw(D_fb, abs(val_coeff)))
+                end
+                RHS = jac_add(jac_mul(G, combined_al, ell), jac_mul(T, combined_be, ell))
+                
+                @printf("\n============================================================\n")
+                @printf("[!!!] HARD STOP: RS-CONJ-CLOSE CRITICAL MISMATCH\n")
+                @printf("============================================================\n")
+                @printf("  i0=%d, prev_col=%d\n", i0, prev_col)
+                @printf("  neg_al=%s, prev_al=%s -> combined_al=%s\n", string(neg_al), string(prev_al), string(combined_al))
+                @printf("  Is Inverse Sign Match? %s\n", string(jac_isid(jac_add(D_sum, RHS))))
+                @printf("============================================================\n\n")
+                
+                Base.flush(stdout)
+                ccall(:exit, Cvoid, (Cint,), 1)
             end
         end
 
+        # Bank the validated relation row
         push!(alpha_vec, combined_al); push!(beta_vec, combined_be)
         push!(rel_rows, copy(cs))
         ort_add_row!(ort, cs)
@@ -539,7 +533,7 @@ end
         s.hits_full += 1; s.hits_1lp_conj_emit += 1; s.rel_local += 1
         Threads.atomic_add!(rel_counter, 1)
 
-        # Unpack lp_key limbs manually via bit shifts to prevent scalar-iteration overflow
+        # Unpack limbs for diagnostic logging
         lp_key_bits = UInt128(lp_key)
         u0_limb = Int(lp_key_bits % UInt32)
         u1_limb = Int((lp_key_bits >> 32) % UInt32)
@@ -551,7 +545,7 @@ end
                 (u0_limb, u1_limb, v0_limb, v1_limb),
                 i0, neg_al, neg_be, s.raw_steps,
                 prev_col, prev_al, prev_be, Int(v.store_step),
-                px_anchor, py_anchor, # FIX: Pass valid current anchor state instead of corrupted fb reads
+                px_anchor, py_anchor, 
                 combined_al, combined_be,
                 al_cur, px_anchor, py_anchor, a_raw, a_bucket)
         end
@@ -562,14 +556,12 @@ end
         record_d25_closure!(deep_stat, al_cur, px_anchor, Int(v.neg_al),
                             s.raw_steps - Int(v.store_step), Int(ell))
         
-        # FIX: For general walks, replace direct fb[prev_col] reads with the unpacked Mumford u0 component 
         record_d37_closure!(deep_stat, px_anchor, u0_limb, al_cur, s.raw_steps)
         record_d39_closure!(deep_stat, neg_al, px_anchor, combined_al, step_phase)
         record_d16_emission!(deep_stat, lp_key, s.raw_steps, i0)
         record_d20_emission!(deep_stat)
         record_d19_closure!(deep_stat, i0, prev_col, combined_al, combined_be)
         
-        # FIX: Spatial ACF diagnostics use the extracted Mumford coefficients directly
         record_d35_closure!(deep_stat, combined_al, combined_be,
                             u0_limb, u1_limb, u0_limb, u1_limb)
         record_d30_closure!(deep_stat, u0_limb, u0_limb)
@@ -585,7 +577,6 @@ end
 
     return next_anchor_ref[]()
 end
-
 
 
 # --- 2-LP conjugate: P0 is not in FB; RS is a non-split Mumford pair. ---
