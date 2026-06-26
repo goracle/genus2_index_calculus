@@ -424,7 +424,8 @@ end
         anchor_alpha_cap::Int = 200_000,
         emitted_conj_rels::Union{Set{NTuple{4,Int}}, Nothing} = nothing,
         conj_dataset    ::Union{ConjClosureDataset, Nothing} = nothing,
-        step_phase      ::Int = -1)::NTuple{2,Int} where V
+        step_phase      ::Int = -1,
+        conj_row_store_cap::Int = CONJ_ROW_STORE_CAP_BASE)::NTuple{2,Int} where V
 
     si = conj_shard_idx(lp_key)
 
@@ -599,7 +600,15 @@ end
 
     # --- THIS IS THE STORE BRANCH (where prev was nothing) ---
     if !is_same_partial
-        conj_row_store[lp_key] = copy(fb_row)
+        if length(conj_row_store) >= conj_row_store_cap
+            # Row store is full: skip storing the fb_row for this partial.
+            # The key is still inserted into the LSM so a future same-partial
+            # detection works, but a closure attempt will return row_missing
+            # (existing path) and be discarded.  Count as a cap eviction.
+            s.evictions_conj += 1
+        else
+            conj_row_store[lp_key] = copy(fb_row)
+        end
     end
 
     return next_anchor_ref[]()
@@ -1582,7 +1591,8 @@ function phase2_worker(G               ::Div2,
                                                post_conj_stride,
                                                conj_anchor_alpha_seen, CONJ_ANCHOR_ALPHA_CAP,
                                                emitted_conj_rels, conj_dataset,
-                                               si)
+                                               si,
+                                               max(1, CONJ_ROW_STORE_CAP_BASE ÷ K_anc))
                     # D29: handle_1lp_conj! returns next_anchor_ref[]() on every
                     # path (miss, same-partial, AND emission/closure — see its
                     # source, every `return` is next_anchor_ref[]()). It never

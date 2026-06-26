@@ -192,32 +192,19 @@ function LP1ConjLSM{V}(
 end
 
 function LP1ConjLSM(
-        ell               ::Integer;
-        amortized         ::Bool   = true,
-        spill_path        ::String = joinpath(homedir(), "crypto", "tmp", "lp1_conj_shards"),
-        max_hot_ram_mb    ::Int    = 4096,
-        flush_num         ::Int    = 3,
-        flush_denom       ::Int    = 4,
-        anchor_tuple_size ::Int    = 1
+        ell           ::Integer;
+        amortized     ::Bool   = true,
+        spill_path    ::String = joinpath(homedir(), "crypto", "tmp", "lp1_conj_shards"),
+        max_hot_ram_mb::Int    = 4096,
+        flush_num     ::Int    = 3,
+        flush_denom   ::Int    = 4
     )
-    # With K-tuple anchors each walk step emits one conj partial whose key
-    # encodes K anchor indices.  The effective number of distinct keys in
-    # flight at any moment scales as 1/K relative to K=1 (higher structure ⇒
-    # faster closure ⇒ lower steady-state occupancy), so we shrink the hot
-    # table proportionally.  Without this the hot layer RAM is K× too large
-    # and the process OOMs before the walk even begins.
-    K = max(1, anchor_tuple_size)
     global_cap = min(LP1_CONJ_CAP_MULTIPLIER * Int(min(ell, p)), LP1_CONJ_CAP_MAX)
-    # Scale global cap down by K — the number of distinct conj keys we need
-    # to track before closure is O(√p / K) with K-tuple structured walks.
-    global_cap = max(N_CONJ_SHARDS * 16, global_cap ÷ K)
     cap = max(N_CONJ_SHARDS * 16, global_cap ÷ Threads.nthreads())
     V   = amortized ? LP1ConjVal : LP1ConjValFull
     bytes_per_entry = amortized ? 33 : 43
-    # Scale hot RAM budget down by K so total hot footprint = max_hot_ram_mb/K.
-    effective_hot_ram_mb = max(1, max_hot_ram_mb ÷ K)
     max_hot_entries = max(N_CONJ_SHARDS * 16,
-                          (effective_hot_ram_mb * 1024 * 1024) ÷ bytes_per_entry)
+                          (max_hot_ram_mb * 1024 * 1024) ÷ bytes_per_entry)
     hot_shard_entries = max(16, max_hot_entries ÷ N_CONJ_SHARDS)
     LP1ConjLSM{V}(
         N_CONJ_SHARDS, hot_shard_entries, cap, spill_path;
@@ -294,7 +281,9 @@ end
             end
             # Side-channel: record fb_row so closes can reconstruct the row.
             # Must copy — caller may reuse the same scratch dict on every step.
-            if fb_row !== nothing
+            # Capped at HOT_ROWS_CAP_PER_SHARD to bound memory: beyond the cap
+            # the row is silently dropped and a closure returns row_missing.
+            if fb_row !== nothing && length(sc.hot_rows[si]) < HOT_ROWS_CAP_PER_SHARD
                 if haskey(sc.hot_rows[si], key)
                     error("_lsm_hot_insert!: duplicate key $(key) in hot_rows[$(si)] — " *
                           "existing row=$(sc.hot_rows[si][key])  new row=$(fb_row)")

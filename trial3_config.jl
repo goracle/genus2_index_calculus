@@ -30,6 +30,32 @@ const ASSERT_RELATIONS = true
 const MAX_LP1_ENTRIES         = 50_000_000
 const MAX_LP1_DOUBLED_ENTRIES = 100_000
 
+# Per-thread cap on conj_row_store (the Dict that holds fb_rows for live LP1-conj
+# partials so closes can reconstruct the combined relation row).
+#
+# Without a cap this dict grows unboundedly: at ~250K conj steps/thread/30s and a
+# ~0.001% closure rate, virtually no entries are ever deleted, so the store fills
+# with ~250K small Dict{Int,Int} objects per thread.  At ~200 bytes/entry that is
+# ~50 MB/thread × 32 threads = ~1.6 GB just from row_stores — on top of the LSM
+# hot tables, Oscar, Sage residuals, etc., pushing a 16 GB system into OOM.
+#
+# When the cap is hit we skip the store and increment s.evictions_conj (already
+# printed as conj_cap_drops in the 30s status line).  The entry is still inserted
+# into the LSM; only the fb_row is dropped.  A subsequent closure attempt finds
+# row_missing (existing path) and is discarded, same as cross-thread closes today.
+#
+# K-scaling: with K-tuple anchors the fb_row has K entries instead of 1, so each
+# stored Dict{Int,Int} is slightly larger, but more importantly the effective
+# keyspace grows with K (more distinct Mumford residuals reachable), meaning the
+# store fills faster per unit time.  We divide by K so the per-thread memory
+# budget stays constant regardless of anchor tuple size:
+#   effective_cap = CONJ_ROW_STORE_CAP_BASE ÷ K
+#
+# Sizing (K=1 base): 50_000 × ~200 B × 32 threads ≈ 320 MB total.
+# K=2 → 25_000/thread ≈ 160 MB total.  The cap is a safety bound against the
+# unbounded-growth failure mode; steady-state occupancy is typically far below it.
+const CONJ_ROW_STORE_CAP_BASE = 50_000
+
 # MAX_LP1_CONJ_ENTRIES is no longer a fixed constant — it is computed at
 # ShardedLP1Conj(ell) construction time.
 #

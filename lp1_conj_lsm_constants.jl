@@ -76,6 +76,23 @@ const PARTIAL_FP_LOG_CAP = 1_000_000
 # Top-K multiplicity tracker capacity.
 const TOPK_K = 200   # track top-200 keys by raw emission count
 
+# Per-shard cap on hot_rows (the Dict{CanonicalLP1Key,Dict{Int,Int}} side-channel
+# that stores fb_rows for live hot entries so closes can reconstruct relations).
+#
+# Without a cap, hot_rows grows with every insertion and is only trimmed on
+# closure (rare: ~0.001% rate) or shard flush (only happens when the hot table
+# reaches ~75% load).  At 278K entries/LSM × 32 LSMs × ~200B/entry the hot_rows
+# alone consume ~1.8 GB, and they grow continuously throughout the walk.
+#
+# When the per-shard cap is hit we skip storing the fb_row.  The key/val are
+# still inserted into the hot table so same-partial detection keeps working; a
+# subsequent closure attempt returns row_missing (existing path) and is discarded.
+#
+# Sizing: 500 rows/shard × 64 shards × 32 LSMs × ~200B = ~200 MB total.
+# The cap is purely a safety bound; in practice closures are so rare that the
+# shard row-dict stays small and the cap is rarely hit at steady state.
+const HOT_ROWS_CAP_PER_SHARD = 500
+
 # Compaction write buffer.
 const COMPACT_WRITE_BUF_BYTES = 4 * 1024 * 1024   # 4 MB write buffer
 
