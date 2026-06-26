@@ -76,8 +76,9 @@ const PARTIAL_FP_LOG_CAP = 1_000_000
 # Top-K multiplicity tracker capacity.
 const TOPK_K = 200   # track top-200 keys by raw emission count
 
-# Per-shard cap on hot_rows (the Dict{CanonicalLP1Key,Dict{Int,Int}} side-channel
-# that stores fb_rows for live hot entries so closes can reconstruct relations).
+# Per-shard base cap on hot_rows (the Dict{CanonicalLP1Key,Dict{Int,Int}}
+# side-channel that stores fb_rows for live hot entries so closes can
+# reconstruct relations).
 #
 # Without a cap, hot_rows grows with every insertion and is only trimmed on
 # closure (rare: ~0.001% rate) or shard flush (only happens when the hot table
@@ -88,10 +89,22 @@ const TOPK_K = 200   # track top-200 keys by raw emission count
 # still inserted into the hot table so same-partial detection keeps working; a
 # subsequent closure attempt returns row_missing (existing path) and is discarded.
 #
-# Sizing: 500 rows/shard × 64 shards × 32 LSMs × ~200B = ~200 MB total.
-# The cap is purely a safety bound; in practice closures are so rare that the
-# shard row-dict stays small and the cap is rarely hit at steady state.
-const HOT_ROWS_CAP_PER_SHARD = 500
+# K-scaling: with K-tuple anchors the fb_row Dict has K entries instead of 1,
+# so each stored Dict{Int,Int} is ~K× larger.  More importantly the effective
+# keyspace grows with K (more distinct Mumford residuals reachable), so the
+# store fills faster per unit time.  The effective per-shard cap is therefore
+# HOT_ROWS_CAP_BASE_PER_SHARD ÷ K, matching the CONJ_ROW_STORE_CAP_BASE ÷ K
+# scaling used for the (now-defunct) per-thread conj_row_store.
+#
+# This value is the BASE (K=1) cap per shard.  The runtime cap is computed at
+# LP1ConjLSM construction time (see LP1ConjLSM{V} inner constructor) and stored
+# in the hot_rows_cap field of the struct.  The constant here must NOT be used
+# directly in hot-path code — always use sc.hot_rows_cap instead.
+#
+# Sizing (K=1): 500 rows/shard × 64 shards × 32 LSMs × ~200B ≈ 200 MB total.
+# K=2 → 250/shard ≈ 100 MB total.  The cap is a safety bound; in practice
+# closures are so rare that the shard row-dict stays small.
+const HOT_ROWS_CAP_BASE_PER_SHARD = 500
 
 # Compaction write buffer.
 const COMPACT_WRITE_BUF_BYTES = 4 * 1024 * 1024   # 4 MB write buffer

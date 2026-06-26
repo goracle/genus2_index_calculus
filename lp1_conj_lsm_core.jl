@@ -75,10 +75,13 @@ mutable struct LP1ConjLSM{V}
     peers       ::Vector{Any}   # Vector{LP1ConjLSM{V}} — typed as Any to avoid forward-ref
 
     # Bookkeeping
-    n_shards    ::Int
-    max_entries ::Int
-    n_disk_live ::Int
-    amortized   ::Bool
+    n_shards      ::Int
+    max_entries   ::Int
+    n_disk_live   ::Int
+    amortized     ::Bool
+    # Per-shard cap on hot_rows: HOT_ROWS_CAP_BASE_PER_SHARD ÷ K, clamped to ≥1.
+    # Set at construction time from anchor_tuple_size; used in _lsm_hot_insert!.
+    hot_rows_cap  ::Int
 
     # Birthday diagnostics — LP1-conj first-collision estimator
     bday_emissions      ::Int          # total LP1-conj partials emitted so far
@@ -131,8 +134,11 @@ function LP1ConjLSM{V}(
         load_denom   ::Int  = 5,
         flush_num    ::Int  = 1,
         flush_denom  ::Int  = 4,
-        bloom_cap    ::Int  = max_entries
+        bloom_cap    ::Int  = max_entries,
+        anchor_tuple_size::Int = 1
     ) where V
+
+    hot_rows_cap = max(1, HOT_ROWS_CAP_BASE_PER_SHARD ÷ anchor_tuple_size)
 
     function make_shard(cap_entries::Int)
         slot_count = max(16, nextpow(2, cld(cap_entries * load_denom, load_num)))
@@ -176,6 +182,7 @@ function LP1ConjLSM{V}(
         Any[],                     # peers — caller populates
         n_shards, max_entries, 0,
         amortized,
+        hot_rows_cap,
         # birthday diagnostics
         0, 0.0, 0, 0.0, ReentrantLock(),
         # occupancy estimator
@@ -197,7 +204,8 @@ function LP1ConjLSM(
         spill_path    ::String = joinpath(homedir(), "crypto", "tmp", "lp1_conj_shards"),
         max_hot_ram_mb::Int    = 4096,
         flush_num     ::Int    = 3,
-        flush_denom   ::Int    = 4
+        flush_denom   ::Int    = 4,
+        anchor_tuple_size::Int = 1
     )
     global_cap = min(LP1_CONJ_CAP_MULTIPLIER * Int(min(ell, p)), LP1_CONJ_CAP_MAX)
     cap = max(N_CONJ_SHARDS * 16, global_cap ÷ Threads.nthreads())
@@ -208,10 +216,11 @@ function LP1ConjLSM(
     hot_shard_entries = max(16, max_hot_entries ÷ N_CONJ_SHARDS)
     LP1ConjLSM{V}(
         N_CONJ_SHARDS, hot_shard_entries, cap, spill_path;
-        amortized   = amortized,
-        flush_num   = flush_num,
-        flush_denom = flush_denom,
-        bloom_cap   = min(cap, 4_000_000)
+        amortized         = amortized,
+        flush_num         = flush_num,
+        flush_denom       = flush_denom,
+        bloom_cap         = min(cap, 4_000_000),
+        anchor_tuple_size = anchor_tuple_size
     )
 end
 
@@ -281,9 +290,10 @@ end
             end
             # Side-channel: record fb_row so closes can reconstruct the row.
             # Must copy — caller may reuse the same scratch dict on every step.
-            # Capped at HOT_ROWS_CAP_PER_SHARD to bound memory: beyond the cap
+            # Capped at sc.hot_rows_cap (= HOT_ROWS_CAP_BASE_PER_SHARD ÷ K) to
+            # bound memory: beyond the cap
             # the row is silently dropped and a closure returns row_missing.
-            if fb_row !== nothing && length(sc.hot_rows[si]) < HOT_ROWS_CAP_PER_SHARD
+            if fb_row !== nothing && length(sc.hot_rows[si]) < sc.hot_rows_cap
                 if haskey(sc.hot_rows[si], key)
                     error("_lsm_hot_insert!: duplicate key $(key) in hot_rows[$(si)] — " *
                           "existing row=$(sc.hot_rows[si][key])  new row=$(fb_row)")
