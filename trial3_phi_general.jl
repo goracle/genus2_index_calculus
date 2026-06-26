@@ -282,7 +282,6 @@ end
 #  Accepts AbstractArray types to seamlessly consume sliced SubArray views.
 # ---------------------------------------------------------------------------
 function fp_gauss!(A::Matrix{Int}, b::Vector{Int}, n::Int)::Bool
-    
     for col in 1:n
         # Find pivot row
         pivot_row = 0
@@ -294,7 +293,7 @@ function fp_gauss!(A::Matrix{Int}, b::Vector{Int}, n::Int)::Bool
         end
         pivot_row == 0 && return false   # singular
 
-        # Swap rows in place cleanly without creating a slice object or allocating memory
+        # Swap rows in place cleanly
         if pivot_row != col
             for j in col:n
                 @inbounds tmp_A = A[col, j]
@@ -313,22 +312,24 @@ function fp_gauss!(A::Matrix{Int}, b::Vector{Int}, n::Int)::Bool
         end
         @inbounds b[col] = fpmul(b[col], inv_pivot)
 
-        # Eliminate other rows (Full Gauss-Jordan elimination pass)
+        # Eliminate other rows safely using explicit widening
         for row in 1:n
             row == col && continue
             @inbounds factor = A[row, col]
             
             if factor != 0
                 for j in col:n
-                    @inbounds A[row, j] = fp(A[row, j] - fpmul(factor, A[col, j]))
+                    # Enforce strict positive modulo boundary using widening to avoid signed % artifacts
+                    @inbounds A[row, j] = mod(A[row, j] - fpmul(factor, A[col, j]), p)
                 end
-                @inbounds b[row] = fp(b[row] - fpmul(factor, b[col]))
+                @inbounds b[row] = mod(b[row] - fpmul(factor, b[col]), p)
             end
         end
     end
     
     return true
 end
+
 # ---------------------------------------------------------------------------
 #  build_phi_general
 #
@@ -569,62 +570,46 @@ end
 #  times every walk step).  Writing in place eliminates all of that.
 # ---------------------------------------------------------------------------
 function monomial_series_coeffs!(out::AbstractVector{Int}, i::Int, j::Int,
-                                    px::Int, y_ser::AbstractVector{Int}, m::Int,
-                                    xi_scratch::AbstractVector{Int},
-                                    binom_scratch::AbstractVector{Int},
-                                    pxpow_scratch::AbstractVector{Int},
-                                    small_inv::AbstractVector{Int})::Nothing
-    # Fast path: m=1 means we only need the zeroth coefficient, which is
-    # just the monomial evaluated at (px, y_ser[1]).  No binomial/power
-    # table construction needed.
+                                 px::Int, y_ser::AbstractVector{Int}, m::Int,
+                                 xi_scratch::AbstractVector{Int},
+                                 binom_scratch::AbstractVector{Int},
+                                 pxpow_scratch::AbstractVector{Int},
+                                 small_inv::AbstractVector{Int})::Nothing
     if m == 1
         out[1] = eval_monomial(i, j, px, y_ser[1])
         return nothing
     end
 
-    xi_ser = xi_scratch
-    binom  = binom_scratch
-    px_pow = pxpow_scratch
-    fill!(xi_ser, 0)
-    fill!(binom, 0)
-    fill!(px_pow, 0)
+    fill!(xi_scratch, 0)
+    fill!(binom_scratch, 0)
 
-    # Coefficients of t^0..t^(m-1) in x^i (as a series in t = x-px).
-    # C(i, s) * px^(i-s), for s = 0..min(i,m-1); zero for s > i.
-    binom[1] = 1   # C(i,0) = 1
+    # Binomial expansion coefficients
+    binom_scratch[1] = 1
     for s in 1:min(i, m-1)
-        # C(i,s) = C(i,s-1) * (i-s+1) / s
-        # small_inv[s] = fpinv(s) precomputed — avoids ~19 multiplications per call
-        binom[s+1] = fpmul(binom[s], fpmul(fp(i - s + 1), small_inv[s]))
+        binom_scratch[s+1] = fpmul(binom_scratch[s], fpmul(fp(i - s + 1), small_inv[s]))
     end
-    # px^(i-s) for s = 0..min(i, m-1).
-    # Single ascending pass: pxpow_scratch[e+1] = px^e for e = 0..i.
-    # Then px_pow[s+1] = px^(i-s) = pxpow_scratch[i-s+1] — read directly below.
-    # (px_pow aliases pxpow_scratch, so no copy needed.)
+
+    # Precompute ascending powers of px
     pxpow_scratch[1] = 1
     for e in 1:i
         @inbounds pxpow_scratch[e+1] = fpmul(pxpow_scratch[e], px)
     end
-    # px_pow[s+1] = pxpow_scratch[(i-s)+1] for s = 0..min(i,m-1)
-    let max_s = min(i, m-1)
-        for s in 0:max_s
-            @inbounds px_pow[s+1] = pxpow_scratch[i - s + 1]
-        end
-    end
+
+    # Read descending directly from pxpow_scratch, completely avoiding self-aliasing corruption
     for s in 0:min(i, m-1)
-        xi_ser[s+1] = fpmul(binom[s+1], px_pow[s+1])
+        @inbounds p_val = pxpow_scratch[i - s + 1]
+        @inbounds xi_scratch[s+1] = fpmul(binom_scratch[s+1], p_val)
     end
 
     if j == 0
-        copyto!(out, xi_ser)
+        copyto!(out, xi_scratch)
         return nothing
     end
 
-    # j == 1: convolve xi_ser with y_ser mod t^m.
     fill!(out, 0)
     for a in 0:m-1, b in 0:m-1
         a + b >= m && continue
-        out[a+b+1] = fp(out[a+b+1] + fpmul(xi_ser[a+1], y_ser[b+1]))
+        out[a+b+1] = fp(out[a+b+1] + fpmul(xi_scratch[a+1], y_ser[b+1]))
     end
     return nothing
 end
@@ -1012,8 +997,12 @@ function build_N_inplace!(
     deg_Y::Int
 )::Int
 
-    # 1. Back up E(x) and Y(x) into a temporary serialization area (e.g., scratch.ser_buf)
-    #    so we can overwrite the front of scratch.poly_buf with our output safely.
+    # 1. Clear out the serialization area completely so compute_vRS_inplace! 
+    # doesn't scan backwards into stale garbage from previous steps.
+    for i in 1:64
+        @inbounds scratch.ser_buf[i] = 0
+    end
+
     len_E = deg_E + 1
     len_Y = deg_Y + 1
 
@@ -1025,15 +1014,11 @@ function build_N_inplace!(
     end
 
     # 2. Clear out the front of scratch.poly_buf to act as our accumulation block for N(x).
-    #    Max possible degree for N(x) when g=2, deg(f)=5 is around 2 * deg_E or 5 + 2 * deg_Y.
-    #    We zero out a safe window up to index 64.
     for i in 1:64
         @inbounds scratch.poly_buf[i] = 0
     end
 
-    # 3. Accumulate E(x)² into scratch.poly_buf using squaring shortcut:
-    #    diagonal terms a[i]² contribute once; cross terms 2*a[i]*a[j] (i<j) contribute twice.
-    #    Halves the multiply count vs. the naive double loop.
+    # 3. Accumulate E(x)² into scratch.poly_buf
     for i in 1:len_E
         @inbounds c_i = scratch.ser_buf[i]
         c_i == 0 && continue
@@ -1051,12 +1036,7 @@ function build_N_inplace!(
         end
     end
 
-    # 4. Compute Y(x)² and multiply by f(x), subtracting from scratch.poly_buf.
-    #    ser_buf[33 : 32 + len_Y] holds the coefficients of Y.
-    #    F_POLY has length 6 (degree 5).
-    #
-    #    Squaring shortcut: diagonal terms y_i² contribute once; cross terms
-    #    2*y_i*y_j (i<j) contribute twice — halves the multiply count vs full double loop.
+    # 4. Compute Y(x)² and multiply by f(x), subtracting from scratch.poly_buf
     for i in 1:len_Y
         @inbounds y_i = scratch.ser_buf[32 + i]
         y_i == 0 && continue
