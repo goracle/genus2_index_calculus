@@ -986,6 +986,13 @@ function lsm_to_dict(sc::LP1ConjLSM{V})::Dict{CanonicalLP1Key, V} where V
                 ck   = UInt128(ku0) | (UInt128(ku1) << 32) |
                        (UInt128(kv0) << 64) | (UInt128(kv1) << 96)
                 haskey(d, ck) || (d[ck] = _conj_make_val(V, _unpack_anchor_row(_buf_anchor_indices(buf)), _buf_step(buf), _buf_al(buf), _buf_be(buf)))
+            end
+        end
+    end
+    unlock(sc.file_lock)
+
+    d
+end
 
 conj_to_dict(sc::LP1ConjLSM{V}) where V = lsm_to_dict(sc)
 

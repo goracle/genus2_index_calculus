@@ -655,8 +655,9 @@ function phase3_trial_worker(
                     v = _conj_v
                     si = conj_shard_idx(lp_key)
                     
-                    # Instead of parsing missing legacy .i0, extract the valid row directly
-                    prev_row = conj_hot_row_lookup(lp1_conj_store, si, lp_key)
+                    # anchor_indices now live directly in the val (hot_rows side-channel
+                    # was eliminated); reconstruct the row from it.
+                    prev_row = _unpack_anchor_row(v.anchor_indices)
                     
                     if prev_row !== nothing
                         prev_al  = Int(v.neg_al)
@@ -709,7 +710,7 @@ function phase3_trial_worker(
                         end
                         # Store the valid row into the local struct tuple
                         row_cur = Dict{Int,Int}(i0 => 1)
-                        local_lp1_conj[lp_key] = (row_cur, LP1ConjValFull(UInt32(0), UInt64(neg_al), UInt64(neg_be)))
+                        local_lp1_conj[lp_key] = (row_cur, LP1ConjValFull(_pack_anchor_indices(row_cur), UInt32(0), UInt64(neg_al), UInt64(neg_be)))
                     end
                 end
             end
