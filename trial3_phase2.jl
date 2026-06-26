@@ -1090,11 +1090,44 @@ function phase2_worker(G               ::Div2,
     # (we reuse `cur_anchors`).
     cur_anchors  = Vector{NTuple{2,Int}}(undef, K_anc)
 
-    @inline function next_anchor_tuple()
-        # Snapshot current cursor into cur_anchors
-        @inbounds for i in 1:K_anc
-            cur_anchors[i] = fb[tuple_cursor[i]]
+    # Defensive check: if K_anc >= 2 and this thread's entire anchor slice
+    # [anchor_start, anchor_end] is Weierstrass points (py == 0), every
+    # possible K-tuple is poisoned and next_anchor_tuple()'s rejection loop
+    # below would spin forever with no valid tuple to land on. This is a
+    # pre-existing structural possibility of the per-thread chunking, not
+    # something introduced by the rejection loop itself, so fail loudly
+    # rather than hang silently.
+    if K_anc >= 2
+        n_weierstrass_in_slice = count(i -> fb[i][2] == 0, anchor_start:anchor_end)
+        if n_weierstrass_in_slice == slice_size
+            error("Thread $tid: anchor slice [$anchor_start, $anchor_end] is " *
+                  "entirely Weierstrass points; no valid $(K_anc)-tuple exists. " *
+                  "Reduce --anchor-tuple-size, increase factor base size, or " *
+                  "rebalance chunking to mix Weierstrass and non-Weierstrass points " *
+                  "into every thread's slice.")
         end
+    end
+
+    # Structural validity check: true iff `tup` contains no Weierstrass
+    # point (py == 0) repeated >= 2 times.  Mirrors the guard in
+    # build_phi_general! (step B) exactly, so a tuple rejected here is
+    # never returned to the caller and never reaches the φ-builder at all.
+    @inline function _anchor_tuple_valid(tup)::Bool
+        @inbounds for i in 1:K_anc
+            if tup[i][2] == 0
+                cnt = 0
+                for j in 1:K_anc
+                    if tup[j] == tup[i]
+                        cnt += 1
+                    end
+                end
+                cnt >= 2 && return false
+            end
+        end
+        return true
+    end
+
+    @inline function _advance_tuple_cursor!()
         # Advance: increment last position, carry right-to-left.
         # Each position tc[i] ∈ [anchor_start, anchor_end], and must satisfy
         # tc[i] >= tc[i-1] (non-decreasing).  The carry bound for position i
@@ -1117,6 +1150,29 @@ function phase2_worker(G               ::Div2,
                 fill!(tuple_cursor, anchor_start)
             end
         end
+    end
+
+    @inline function next_anchor_tuple()
+        # Snapshot current cursor into cur_anchors (preserves original
+        # semantics: the very first call returns the seed tuple unadvanced).
+        @inbounds for i in 1:K_anc
+            cur_anchors[i] = fb[tuple_cursor[i]]
+        end
+
+        # Structurally reject poisoned tuples (a Weierstrass point repeated
+        # >= 2 times) by advancing past them here, instead of returning them
+        # to the caller and relying on a `continue` that never re-advances
+        # the cursor.  A cursor slice containing a Weierstrass point's FB
+        # index would otherwise deterministically re-land on this exact
+        # tuple every wrap cycle, spinning the worker thread forever.
+        while !_anchor_tuple_valid(cur_anchors)
+            _advance_tuple_cursor!()
+            @inbounds for i in 1:K_anc
+                cur_anchors[i] = fb[tuple_cursor[i]]
+            end
+        end
+
+        _advance_tuple_cursor!()
         return cur_anchors
     end
 
@@ -1228,7 +1284,7 @@ function phase2_worker(G               ::Div2,
                           jac_add(jac_mul(G, BigInt(mod(DELTA_A, ellI)), ell),
                                   jac_mul(T, BigInt(DELTA_B), ell))
 
-    @inline function next_alpha_beta()
+    @inline function next_alpha_beta()::Tuple{Int,Int}
         a = alpha_cursor
         b = beta_zero ? 0 : beta_cursor_init
         # Decrement: alpha sweeps downward, wrapping from 1 back to ell-1.
@@ -1242,7 +1298,7 @@ function phase2_worker(G               ::Div2,
                 beta_cursor_init = 1
             end
         end
-        return a, b
+        return a::Int, b::Int
     end
 
     # --- Walk state ---
@@ -1259,7 +1315,7 @@ function phase2_worker(G               ::Div2,
     # i.e. last step's cur_pt), then overwritten by this step's own assignment.
     # Initial value is false: the seed cur_pt came from next_anchor() above.
     cur_pt_from_lp = false
-    alpha_cur, beta_cur = next_alpha_beta()
+    alpha_cur::Int, beta_cur::Int = next_alpha_beta()
     D_cur     = beta_zero ? jac_mul(G, BigInt(alpha_cur), ell) :
                             jac_add(jac_mul(G, BigInt(alpha_cur), ell), jac_mul(T, BigInt(beta_cur), ell))
 
@@ -1320,6 +1376,22 @@ function phase2_worker(G               ::Div2,
     while rel_counter[] < rel_target && s.raw_steps < step_cap && (amortized_precompute || ort_b1(ort) == 0)
         s.raw_steps += 1
 
+        # --- Periodic progress report (moved to top of loop) ---
+        # Every other gate/skip below this point uses `continue`, which would
+        # bypass a reporter placed later in the loop body. Keeping this check
+        # first guarantees visibility into the walk even when a thread is
+        # dropping the overwhelming majority of its steps (bloom-filter hits,
+        # degenerate tuples, gate misses, etc.) — that situation is exactly
+        # when seeing live progress matters most for diagnosing a stall.
+        if verbose
+            now_t = time()
+            if (now_t - t_last_report) >= report_interval_secs
+                report_worker_progress(tid, now_t - t_start, s, rel_counter, rel_target,
+                                       shared_lp1_conj)
+                t_last_report = now_t
+            end
+        end
+
         # --- PRNG step selection ---
         # Replace the previous hash(D_cur.u[1])-based selection, which caused
         # the walk to degenerate into a closed attractor cycle (D_{n+1} = f(D_n)
@@ -1328,8 +1400,8 @@ function phase2_worker(G               ::Div2,
         # threads take divergent paths with no lockstep duplicates.
         si = rand(rng, 1:N_STEPS)
         D_cur     = jac_add(jac_add(D_cur, step_D[si]), DRIFT_D)
-        alpha_cur = mod(alpha_cur + step_a_i[si] + DELTA_A, ellI)
-        beta_cur  = beta_zero ? 0 : mod(beta_cur + step_b_i[si] + DELTA_B, ellI)
+        alpha_cur = mod(alpha_cur + step_a_i[si] + DELTA_A, ellI)::Int
+        beta_cur  = (beta_zero ? 0 : mod(beta_cur + step_b_i[si] + DELTA_B, ellI))::Int
 
         # Early no-repeat gate: once a residue has been consumed by any thread,
         # skip the rest of the expensive gate/φ/LP work for that alpha.
@@ -1382,12 +1454,17 @@ function phase2_worker(G               ::Div2,
             n_roots    = combined_scratch.roots_count[1]  # Track active logical count via a primitive field
             
             # Extract up to 2 residual affine points as res_R, res_S.
+            # A single recovered root (n_roots == 1) is not a usable affine
+            # pair — e.g. one of the two x-roots existed but its y-lift
+            # failed (SQRT_FP_NONSQUARE) — so it must be discarded exactly
+            # like n_roots == 0, not padded out with SENTINEL_PT.  Letting
+            # SENTINEL_PT stand in for the missing point let it leak into
+            # Branch B's pt2idx lookups as a spurious off-FB "large prime"
+            # (get(pt2idx, SENTINEL_PT, 0) is always 0), and lp_pt could
+            # resolve directly to SENTINEL_PT itself.
             if n_roots >= 2
                 @inbounds res_R = roots_k[1]
                 @inbounds res_S = roots_k[2]
-            elseif n_roots == 1
-                @inbounds res_R = roots_k[1]
-                res_S = SENTINEL_PT
             else
                 res_R = SENTINEL_PT
                 res_S = SENTINEL_PT
@@ -1431,17 +1508,6 @@ function phase2_worker(G               ::Div2,
         end
 
         s.hits_total += 1
-
-        # --- Periodic progress report ---
-        if verbose
-            now_t = time()
-            if (now_t - t_last_report) >= report_interval_secs
-                s.raw_steps = s.raw_steps   # flush to struct (it's already there)
-                report_worker_progress(tid, now_t - t_start, s, rel_counter, rel_target,
-                                       shared_lp1_conj)
-                t_last_report = now_t
-            end
-        end
 
         al     = alpha_cur
         be     = beta_cur

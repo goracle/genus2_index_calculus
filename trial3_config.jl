@@ -43,14 +43,25 @@ const MAX_LP1_DOUBLED_ENTRIES = 100_000
 # composite #J): using p as the cap allocates 209M-entry capacity that is
 # never needed and OOMs the process.  Using min(ell, p) keeps the cap tight.
 #
-# Empirical: at p≈131K, ell≈p, steady-state ≈ 8·min(ell,p).  Multiplier 16
-# gives comfortable headroom in both regimes:
+# Empirical (ORIGINAL calibration, multiplier=16): at p≈131K, ell≈p,
+# steady-state ≈ 8·min(ell,p). These numbers were measured before four
+# upstream pipeline bugs were fixed (anchor-tuple cursor hang, EEA remainder
+# clobber, EEA zero-length-remainder underflow, negative-coordinate/SENTINEL_PT
+# leaks) — at the time, phi_val was ~0% and the walk essentially never reached
+# the LP1-conj emission path, so true steady-state occupancy under a working
+# walk was never actually observed. With those bugs fixed (phi_val≈99.9%),
+# a real run emits ~5.75M LP1-conj candidates in 30s against this table,
+# vastly exceeding what multiplier=16 provisions — 100% of post-cap inserts
+# were silently dropped (not spilled) once the cap was hit. Multiplier raised
+# to 256 to give real headroom against the fixed pipeline's actual throughput;
+# LP1_CONJ_CAP_MAX below is untouched and remains the real backstop. The
+# regimes table is left as historical reference, not a current guarantee:
 #   ell≈p=16K   → cap ≈  262K entries ≈    4 MB  (was ~5 MB with Dict)
 #   ell≈p=131K  → cap ≈  2.1M entries ≈   27 MB  (was ~36 MB)
 #   ell≈p=1.3M  → cap ≈   21M entries ≈  273 MB  (was ~360 MB)
 #   ell=196K, p=13M → cap ≈ 3.1M entries ≈   40 MB  (was ~53 MB, was 209M → OOM)
 #
-const LP1_CONJ_CAP_MULTIPLIER = 16
+const LP1_CONJ_CAP_MULTIPLIER = 256
 # Hard ceiling regardless of p/ell — prevents catastrophic over-allocation.
 const LP1_CONJ_CAP_MAX = 200_000_000
 

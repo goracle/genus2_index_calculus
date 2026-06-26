@@ -117,6 +117,61 @@ end
 F_POLY_DESC = Int[]   # filled in by init_phi_general_caches!
 
 # ---------------------------------------------------------------------------
+#  Zero-allocation sqrt wrapper for the hot walk path.
+#
+#  trial1's sqrt_fp returns Union{Int,Nothing}, which Julia boxes on every
+#  call.  We wrap it here with a sentinel so the hot path in
+#  find_roots_and_points_inplace! and step_phi_k! stays allocation-free.
+#  trial1 is untouched.
+# ---------------------------------------------------------------------------
+const SQRT_FP_NONSQUARE = -1   # sentinel: caller checks sq < 0
+
+@inline function sqrt_fp_hot(a::Int)::Int
+    r = sqrt_fp(a)
+    r === nothing ? SQRT_FP_NONSQUARE : r::Int
+end
+
+# ---------------------------------------------------------------------------
+#  Fast Fp arithmetic for the hot walk path — Int64-only, no Int128.
+#
+#  trial1's fpmul uses widemul(Int64,Int64) → Int128, then mod(Int128,Int64),
+#  which calls __divti3 (128-bit division) on every multiplication.  For
+#  p < 2^31 (our range, p ~ 3.7×10^5) we have p² < 2^62, so the product
+#  fits in Int64 and we can use the plain % operator — one native DIV
+#  instruction instead of a libgcc soft-division call.
+#
+#  fpinv uses invmod → gcdx, which allocates BigInt intermediates.  For
+#  small p we use Fermat: a^(p-2) mod p via a simple square-and-multiply
+#  that stays entirely in Int64.
+#
+#  These shadow trial1's fp/fpmul/fpinv for all functions defined in this
+#  file.  trial1 is untouched; its own definitions remain in effect for
+#  code defined there (jac_add, etc.).
+# ---------------------------------------------------------------------------
+@inline function fp(x::Int)::Int
+    r = x % p
+    return r < 0 ? r + p : r
+end
+
+@inline function fpmul(a::Int, b::Int)::Int
+    r = (a * b) % p
+    return r < 0 ? r + p : r
+end
+
+@inline function fpinv(a::Int)::Int
+    # Fermat: a^(p-2) mod p.  Pure Int64 square-and-multiply.
+    a = fp(a)
+    a == 0 && throw(DomainError(a, "fpinv: zero mod p"))
+    r = 1; b = a; e = p - 2
+    while e > 0
+        isodd(e) && (r = fpmul(r, b))
+        b = fpmul(b, b)
+        e >>= 1
+    end
+    return r
+end
+
+# ---------------------------------------------------------------------------
 #  Riemann-Roch basis enumeration
 #
 #  Returns a vector of (i, j) pairs meaning x^i * y^j (j ∈ {0,1}),
@@ -171,53 +226,34 @@ end
 end
 
 # ---------------------------------------------------------------------------
-#  Reduce x^i * v(x) mod u(x) = x² + u1*x + u0
-#  Returns (r0, r1) = const + r1*x  (the linear remainder).
+#  Reduce x^i mod u(x) = x² + u1*x + u0  →  (r0, r1)  [zero-allocation]
 #
-#  We work with the full polynomial x^i * v(x) reduced mod u(x).
-#  v(x) = v0 + v1*x is degree 1, so x^i*v(x) is degree i+1.
-#  We reduce the degree-i+1 poly mod u(x) iteratively.
+#  Two-register recurrence from x² ≡ -u1·x - u0:
+#    x·(r0 + r1·x) ≡ -r1·u0 + (r0 - r1·u1)·x
+#  so each multiply-by-x step: (r0,r1) → (-r1·u0, r0 - r1·u1)
 # ---------------------------------------------------------------------------
-function reduce_xiv_mod_u(i::Int, v0::Int, v1::Int,
-                           u0::Int, u1::Int)::NTuple{2,Int}
-    # Build coefficients of x^i * v(x):  coeff[k] = coeff of x^k
-    # x^i * (v0 + v1*x) = v0*x^i + v1*x^(i+1)
-    # Represent as vector indexed 0..i+1
-    deg = i + 1
-    coeffs = zeros(Int, deg + 1)  # 1-indexed: coeffs[k+1] = coeff of x^k
-    coeffs[i+1]   = fp(v0)        # x^i coefficient
-    coeffs[i+2]   = fp(v1)        # x^(i+1) coefficient
-    # Reduce mod u(x) = x^2 + u1*x + u0, i.e. x^2 ≡ -u1*x - u0
-    for d in deg:-1:2
-        if coeffs[d+1] != 0
-            c = coeffs[d+1]
-            coeffs[d+1] = 0
-            coeffs[d]   = fp(coeffs[d]   - fpmul(c, u1))
-            coeffs[d-1] = fp(coeffs[d-1] - fpmul(c, u0))
-        end
+@inline function reduce_xi_mod_u(i::Int, u0::Int, u1::Int)::NTuple{2,Int}
+    i == 0 && return (1, 0)
+    i == 1 && return (0, 1)
+    r0 = 0; r1 = 1          # represents x^1
+    for _ in 2:i
+        r0, r1 = fp(-fpmul(r1, u0)), fp(r0 - fpmul(r1, u1))
     end
-    return (coeffs[1], coeffs[2])
+    return (r0, r1)
 end
 
 # ---------------------------------------------------------------------------
-#  Reduce x^i mod u(x) → (r0, r1).
+#  Reduce x^i * v(x) mod u(x)  →  (r0, r1)  [zero-allocation]
+#
+#  v(x) = v0 + v1·x  ⟹  x^i·v = v0·x^i + v1·x^(i+1)
+#  Reduce each power with the recurrence above then combine linearly.
 # ---------------------------------------------------------------------------
-function reduce_xi_mod_u(i::Int, u0::Int, u1::Int)::NTuple{2,Int}
-    if i == 0; return (1, 0); end
-    if i == 1; return (0, 1); end
-    # Build coefficient vector of x^i
-    deg = i
-    coeffs = zeros(Int, deg + 1)
-    coeffs[deg+1] = 1
-    for d in deg:-1:2
-        if coeffs[d+1] != 0
-            c = coeffs[d+1]
-            coeffs[d+1] = 0
-            coeffs[d]   = fp(coeffs[d]   - fpmul(c, u1))
-            coeffs[d-1] = fp(coeffs[d-1] - fpmul(c, u0))
-        end
-    end
-    return (coeffs[1], coeffs[2])
+@inline function reduce_xiv_mod_u(i::Int, v0::Int, v1::Int,
+                                   u0::Int, u1::Int)::NTuple{2,Int}
+    a0, a1 = reduce_xi_mod_u(i,     u0, u1)
+    b0, b1 = reduce_xi_mod_u(i + 1, u0, u1)
+    return (fp(fpmul(v0, a0) + fpmul(v1, b0)),
+            fp(fpmul(v0, a1) + fpmul(v1, b1)))
 end
 
 # ---------------------------------------------------------------------------
@@ -245,8 +281,7 @@ end
 #  Mutates A and b in place. 
 #  Accepts AbstractArray types to seamlessly consume sliced SubArray views.
 # ---------------------------------------------------------------------------
-function fp_gauss!(A::AbstractMatrix{Int}, b::AbstractVector{Int})::Union{AbstractVector{Int}, Nothing}
-    n = size(A, 1)
+function fp_gauss!(A::Matrix{Int}, b::Vector{Int}, n::Int)::Bool
     
     for col in 1:n
         # Find pivot row
@@ -257,7 +292,7 @@ function fp_gauss!(A::AbstractMatrix{Int}, b::AbstractVector{Int})::Union{Abstra
                 break
             end
         end
-        pivot_row == 0 && return nothing   # singular
+        pivot_row == 0 && return false   # singular
 
         # Swap rows in place cleanly without creating a slice object or allocating memory
         if pivot_row != col
@@ -292,7 +327,7 @@ function fp_gauss!(A::AbstractMatrix{Int}, b::AbstractVector{Int})::Union{Abstra
         end
     end
     
-    return b
+    return true
 end
 # ---------------------------------------------------------------------------
 #  build_phi_general
@@ -666,16 +701,13 @@ function build_phi_general!(
     @inbounds scratch.rhs_vec[k + 1] = fp(-rn0)
     @inbounds scratch.rhs_vec[k + 2] = fp(-rn1)
 
-    # In-place Gauss solver using views matching current system dimension n
-    A_view   = @views scratch.A_mat[1:n, 1:n]
-    rhs_view = @views scratch.rhs_vec[1:n]
-    
-    sol = fp_gauss!(A_view, rhs_view)
-    sol === nothing && return false
+    # In-place Gauss solver on the live n×n submatrix of the preallocated buffers.
+    # Passing the full Matrix/Vector + explicit n avoids @views SubArray allocation.
+    fp_gauss!(scratch.A_mat, scratch.rhs_vec, n) || return false
 
-    # Copy raw output coefficients straight into preallocated buffer without vector allocation
+    # Solution is now in scratch.rhs_vec[1:n]; copy out.
     @inbounds for i in 1:n
-        scratch.coeffs_out[i] = sol[i]
+        scratch.coeffs_out[i] = scratch.rhs_vec[i]
     end
     @inbounds scratch.coeffs_out[nb] = 1
 
@@ -1514,9 +1546,13 @@ function poly_modinv_inplace!(
 
     # Main Extended Euclidean Algorithm Loop
     while true
-        # Break condition: check if r1 logically becomes the zero polynomial
-        if len_r1 == 1
-            @inbounds if scratch.poly_buf[off_r1 + 1] == 0
+        # Break condition: check if r1 logically becomes the zero polynomial.
+        # len_r1 <= 0 is treated the same as the canonical zero-length-1
+        # representation: it should never occur after the divmod fix below,
+        # but breaking here instead of dividing by a degenerate length-0
+        # "polynomial" is strictly safer.
+        if len_r1 <= 1
+            @inbounds if len_r1 <= 0 || scratch.poly_buf[off_r1 + 1] == 0
                 break
             end
         end
@@ -1527,6 +1563,19 @@ function poly_modinv_inplace!(
         len_q, len_r = poly_divmod_poly_inplace_registers!(scratch, len_r0, off_r0, len_r1, off_r1, off_q)
 
         # Swapping r0 and r1 bounds: r0 becomes the old r1, r1 becomes the new remainder r
+        # The new remainder r currently lives in off_r0 (written in-place by
+        # poly_divmod_poly_inplace_registers! above). Stash it in off_tmp
+        # FIRST — off_tmp is unused until step B below — otherwise the very
+        # next line (zeroing off_r0 to receive the old r1) destroys it before
+        # it's ever copied into r1's segment, leaving both r0 and r1 holding
+        # the old r1 value. That makes the GCD loop converge one step early
+        # on a non-scalar "GCD" (the old r1), poly_modinv_inplace! returns
+        # false on every call, and every walk step gets discarded.
+        for i in 1:64; @inbounds scratch.poly_buf[off_tmp + i] = 0; end
+        for i in 1:len_r
+            @inbounds scratch.poly_buf[off_tmp + i] = scratch.poly_buf[off_r0 + i]
+        end
+
         # Move coefficients of r1 into r0's segment space
         for i in 1:64; @inbounds scratch.poly_buf[off_r0 + i] = 0; end
         for i in 1:len_r1
@@ -1534,10 +1583,10 @@ function poly_modinv_inplace!(
         end
         len_r0 = len_r1
 
-        # Move the newly computed remainder from off_r0's altered space into r1's segment space
+        # Move the newly computed remainder from off_tmp into r1's segment space
         for i in 1:64; @inbounds scratch.poly_buf[off_r1 + i] = 0; end
         for i in 1:len_r
-            @inbounds scratch.poly_buf[off_r1 + i] = scratch.poly_buf[off_r0 + i]
+            @inbounds scratch.poly_buf[off_r1 + i] = scratch.poly_buf[off_tmp + i]
         end
         len_r1 = len_r
 
@@ -1675,6 +1724,14 @@ function poly_divmod_poly_inplace_registers!(
         deg_curr < dr1 && break
         
         @inbounds if scratch.poly_buf[off_r0 + curr_len_r0] == 0
+            # Floor: curr_len_r0 == 1 means r0 has reduced to the zero
+            # polynomial, which is represented as length 1 (value 0), not 0.
+            # Without this check, the decrement below walks curr_len_r0 to 0
+            # and then negative on subsequent iterations (deg_curr < dr1 no
+            # longer reliably triggers once dr1 can itself go negative from a
+            # length-0 divisor elsewhere), corrupting every later poly_buf
+            # index derived from off_r0 + curr_len_r0.
+            curr_len_r0 == 1 && break
             curr_len_r0 -= 1
             continue
         end
@@ -1781,7 +1838,7 @@ function find_roots_and_points_inplace!(
         @inbounds c1 = scratch.u_RS[2]
         
         disc = fp(fpmul(c1, c1) - 4 * c0)
-        sq = sqrt_fp(disc)  # returns SQRT_FP_NONSQUARE (== -1) for non-residues; no boxing
+        sq = sqrt_fp_hot(disc)  # sentinel -1 for non-residues; no Union boxing
         sq < 0 && return nothing
         
         inv2 = fpinv(2)
@@ -2028,7 +2085,7 @@ function phi_residual_mumford_general(a::Int, b::Int, c::Int,
     mumford_key = (c0_rs, c1_rs, v0_rs, v1_rs)
 
     disc = fp(fpmul(c1_rs, c1_rs) - 4*c0_rs)
-    sq   = sqrt_fp(disc)
+    sq   = sqrt_fp_hot(disc)
 
     if sq < 0
         return (SENTINEL_PT, SENTINEL_PT, mumford_key)
