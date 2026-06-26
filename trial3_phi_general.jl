@@ -397,6 +397,27 @@ struct ThreadScratchpad
     #    that callers previously passed as `combined_scratch`).
     combined_scratch::Dict{Int,Int}
 
+    # 8. Cached Oscar ring for deg≥3 root-finding — built once per thread at init,
+    #    reused on every find_roots_and_points_inplace! call.
+    #    Wrapped in a Ref so the struct can remain isbitstype-friendly for the
+    #    other fields while still holding the heap-allocated Oscar objects.
+    oscar_Fp        ::Base.RefValue{Any}   # GF(p) — FqField
+    oscar_Rx        ::Base.RefValue{Any}   # polynomial_ring over Fp — FqPolyRing
+    oscar_ready     ::Vector{Bool}         # oscar_ready[1] = true once init'd
+
+    # 9. Precomputed fpinv table for small positive integers 1..SMALL_INV_MAX.
+    #    Used by monomial_series_coeffs! (binomial denominators s=1..m-1, m≤16)
+    #    and by find_roots_and_points_inplace! (inv2 = small_inv[2]).
+    #    Populated once by init_scratch_caches!(scratch, p) before walk starts.
+    small_inv       ::Vector{Int}          # small_inv[s] = fpinv(s), s=1..32
+
+    # 10. Preallocated buffer for Oscar polynomial coefficient construction in
+    #     find_roots_and_points_inplace!.  Degree of residual is at most K_MAX+1=4,
+    #     so u_len ≤ 5.  We use a length-8 buffer and reuse it across every call
+    #     to avoid the [Fp(u_RS[i]) for i in 1:u_len] heap allocation.
+    #     Wrapped in a Ref{Any} so the struct stays concrete for other fields.
+    oscar_coeff_buf ::Base.RefValue{Any}   # Vector{FqFieldElem}, populated at init
+
     function ThreadScratchpad()
         new(
             zeros(Int, 32), zeros(Int, 32), zeros(Int, 1024),  # poly_buf expanded safely
@@ -406,9 +427,41 @@ struct ThreadScratchpad
             zeros(Int, 24), zeros(Int, 8), zeros(Int, 8), 
             Vector{NTuple{2,Int}}(undef, 8),
             zeros(Int, 1), zeros(Int, 1), zeros(Int, 1), zeros(Bool, 1),
-            sizehint!(Dict{Int,Int}(), 8)
+            sizehint!(Dict{Int,Int}(), 8),
+            Ref{Any}(nothing), Ref{Any}(nothing), zeros(Bool, 1),
+            zeros(Int, 32),
+            Ref{Any}(nothing)
         )
     end
+end
+
+# ---------------------------------------------------------------------------
+#  init_scratch_caches!(scratch, p_val)
+#
+#  Populates the per-thread caches that depend on the runtime prime p:
+#    • small_inv[1..32]  — fpinv table for denominators s=1..32
+#    • oscar_Fp / oscar_Rx — GF(p) and its polynomial ring for deg≥3 root-finding
+#
+#  Call this once per ThreadScratchpad after p is known, before spawning walkers.
+# ---------------------------------------------------------------------------
+function init_scratch_caches!(scratch::ThreadScratchpad, p_val::Int)
+    # Precomputed modular inverses for small positive integers.
+    for s in 1:32
+        scratch.small_inv[s] = fpinv(s)
+    end
+
+    # Oscar polynomial ring over GF(p) — built once, reused forever per thread.
+    Fp = GF(p_val)
+    Rx, _ = polynomial_ring(Fp, :x)
+    scratch.oscar_Fp[] = Fp
+    scratch.oscar_Rx[] = Rx
+    scratch.oscar_ready[1] = true
+
+    # Preallocate the Oscar coefficient buffer (length 8 covers deg≤7, more than K_MAX+1=4).
+    # We store FqFieldElem objects; they'll be mutated via setindex! in find_roots_and_points_inplace!.
+    scratch.oscar_coeff_buf[] = [Fp(0) for _ in 1:8]
+
+    return nothing
 end
 
 # ---------------------------------------------------------------------------
@@ -519,7 +572,8 @@ function monomial_series_coeffs!(out::AbstractVector{Int}, i::Int, j::Int,
                                     px::Int, y_ser::AbstractVector{Int}, m::Int,
                                     xi_scratch::AbstractVector{Int},
                                     binom_scratch::AbstractVector{Int},
-                                    pxpow_scratch::AbstractVector{Int})::Nothing
+                                    pxpow_scratch::AbstractVector{Int},
+                                    small_inv::AbstractVector{Int})::Nothing
     # Fast path: m=1 means we only need the zeroth coefficient, which is
     # just the monomial evaluated at (px, y_ser[1]).  No binomial/power
     # table construction needed.
@@ -540,19 +594,21 @@ function monomial_series_coeffs!(out::AbstractVector{Int}, i::Int, j::Int,
     binom[1] = 1   # C(i,0) = 1
     for s in 1:min(i, m-1)
         # C(i,s) = C(i,s-1) * (i-s+1) / s
-        binom[s+1] = fpmul(binom[s], fpmul(fp(i - s + 1), fpinv(fp(s))))
+        # small_inv[s] = fpinv(s) precomputed — avoids ~19 multiplications per call
+        binom[s+1] = fpmul(binom[s], fpmul(fp(i - s + 1), small_inv[s]))
     end
-    # px^(i-s) for s = 0..i; use descending powers.
-    for s in 0:min(i, m-1)
-        e = i - s
-        if e == 0
-            px_pow[s+1] = 1
-        elseif e == 1
-            px_pow[s+1] = px
-        else
-            t2 = px
-            for _ in 2:e; t2 = fpmul(t2, px); end
-            px_pow[s+1] = t2
+    # px^(i-s) for s = 0..min(i, m-1).
+    # Single ascending pass: pxpow_scratch[e+1] = px^e for e = 0..i.
+    # Then px_pow[s+1] = px^(i-s) = pxpow_scratch[i-s+1] — read directly below.
+    # (px_pow aliases pxpow_scratch, so no copy needed.)
+    pxpow_scratch[1] = 1
+    for e in 1:i
+        @inbounds pxpow_scratch[e+1] = fpmul(pxpow_scratch[e], px)
+    end
+    # px_pow[s+1] = pxpow_scratch[(i-s)+1] for s = 0..min(i,m-1)
+    let max_s = min(i, m-1)
+        for s in 0:max_s
+            @inbounds px_pow[s+1] = pxpow_scratch[i - s + 1]
         end
     end
     for s in 0:min(i, m-1)
@@ -669,7 +725,8 @@ function build_phi_general!(
             @inbounds ii, jj = basis[col_idx]
             monomial_series_coeffs!(
                 scratch.ser_buf, ii, jj, px, scratch.out_y, m, 
-                scratch.xi_buf, scratch.binom_buf, scratch.pxpow_buf
+                scratch.xi_buf, scratch.binom_buf, scratch.pxpow_buf,
+                scratch.small_inv
             )
             for s in 0:(m - 1)
                 @inbounds scratch.A_mat[row_idx + s + 1, col_idx] = scratch.ser_buf[s + 1]
@@ -679,7 +736,8 @@ function build_phi_general!(
         # Normalised-monomial series → rhs for this anchor's m rows.
         monomial_series_coeffs!(
             scratch.ser_buf, i_norm, j_norm, px, scratch.out_y, m, 
-            scratch.xi_buf, scratch.binom_buf, scratch.pxpow_buf
+            scratch.xi_buf, scratch.binom_buf, scratch.pxpow_buf,
+            scratch.small_inv
         )
         for s in 0:(m - 1)
             @inbounds scratch.rhs_vec[row_idx + s + 1] = fp(-scratch.ser_buf[s + 1])
@@ -744,10 +802,20 @@ function phi_to_EY!(
     basis  ::Vector{NTuple{2,Int}}
 )::NTuple{2, Int}
 
-    # Zero-out the active working ranges within poly_buf (assuming max deg 16 for phase2)
-    # 1 to 32 is reserved for E(x); 33 to 64 is reserved for Y(x)
-    for i in 1:64
+    # Zero-out the active working ranges within poly_buf.
+    # E(x) occupies slots 1..32; Y(x) occupies slots 33..64.
+    # For K_MAX=3 the basis has nb=k+3≤6 elements and the highest x-power
+    # for E is basis[nb-1][1] ≤ 4 and for Y ≤ 2, so we only need ≤ 32+32=64
+    # slots in the worst case — but clearing exactly what we need saves ~2x.
+    # We clear 1..nb+2 for E and 33..33+nb for Y (generous safe bound).
+    nb_local = length(basis)
+    clear_e = nb_local + 2     # enough for any E(x) coefficient index
+    clear_y = nb_local + 2     # enough for any Y(x) coefficient index
+    for i in 1:clear_e
         @inbounds scratch.poly_buf[i] = 0
+    end
+    for i in 1:clear_y
+        @inbounds scratch.poly_buf[32 + i] = 0
     end
 
     deg_E = 0
@@ -963,43 +1031,58 @@ function build_N_inplace!(
         @inbounds scratch.poly_buf[i] = 0
     end
 
-    # 3. Accumulate E(x)² into scratch.poly_buf
-    #    ser_buf[1 : len_E] holds the coefficients of E
+    # 3. Accumulate E(x)² into scratch.poly_buf using squaring shortcut:
+    #    diagonal terms a[i]² contribute once; cross terms 2*a[i]*a[j] (i<j) contribute twice.
+    #    Halves the multiply count vs. the naive double loop.
     for i in 1:len_E
         @inbounds c_i = scratch.ser_buf[i]
         c_i == 0 && continue
-        for j in 1:len_E
+
+        # Diagonal: c_i²
+        idx_diag = 2*i - 1
+        @inbounds scratch.poly_buf[idx_diag] = fp(scratch.poly_buf[idx_diag] + fpmul(c_i, c_i))
+
+        # Cross: 2 * c_i * c_j for j > i
+        for j in (i+1):len_E
             @inbounds c_j = scratch.ser_buf[j]
             c_j == 0 && continue
             idx = i + j - 1
-            @inbounds scratch.poly_buf[idx] = fp(scratch.poly_buf[idx] + fpmul(c_i, c_j))
+            @inbounds scratch.poly_buf[idx] = fp(scratch.poly_buf[idx] + 2 * fpmul(c_i, c_j))
         end
     end
 
-    # 4. Compute Y(x)² and multiply by f(x) in a fused loop pass to save cycles,
-    #    subtracting the result directly from scratch.poly_buf.
+    # 4. Compute Y(x)² and multiply by f(x), subtracting from scratch.poly_buf.
     #    ser_buf[33 : 32 + len_Y] holds the coefficients of Y.
     #    F_POLY has length 6 (degree 5).
+    #
+    #    Squaring shortcut: diagonal terms y_i² contribute once; cross terms
+    #    2*y_i*y_j (i<j) contribute twice — halves the multiply count vs full double loop.
     for i in 1:len_Y
         @inbounds y_i = scratch.ser_buf[32 + i]
         y_i == 0 && continue
-        for j in 1:len_Y
+
+        # Diagonal: y_i²
+        y2_coeff_d = fpmul(y_i, y_i)
+        y2_deg_d   = 2 * (i - 1)
+        for f_idx in 1:6
+            @inbounds f_coeff = F_POLY[f_idx]
+            f_coeff == 0 && continue
+            target_idx = y2_deg_d + f_idx
+            @inbounds scratch.poly_buf[target_idx] = fp(scratch.poly_buf[target_idx] - fpmul(y2_coeff_d, f_coeff))
+        end
+
+        # Cross: 2 * y_i * y_j for j > i
+        for j in (i+1):len_Y
             @inbounds y_j = scratch.ser_buf[32 + j]
             y_j == 0 && continue
-            
-            y2_coeff = fpmul(y_i, y_j)
-            y2_deg_idx = (i - 1) + (j - 1) # exponents add up
 
-            # Multiply by f(x) = \sum_{f_idx=1}^6 F_POLY[f_idx] * x^{f_idx-1}
+            y2_coeff_c = 2 * fpmul(y_i, y_j)
+            y2_deg_c   = (i - 1) + (j - 1)
             for f_idx in 1:6
                 @inbounds f_coeff = F_POLY[f_idx]
                 f_coeff == 0 && continue
-                
-                final_deg = y2_deg_idx + (f_idx - 1)
-                target_idx = final_deg + 1
-                
-                # N(x) = E(x)² - f(x)·Y(x)²
-                @inbounds scratch.poly_buf[target_idx] = fp(scratch.poly_buf[target_idx] - fpmul(y2_coeff, f_coeff))
+                target_idx = y2_deg_c + f_idx
+                @inbounds scratch.poly_buf[target_idx] = fp(scratch.poly_buf[target_idx] - fpmul(y2_coeff_c, f_coeff))
             end
         end
     end
@@ -1359,7 +1442,11 @@ function compute_vRS_inplace!(
         end
     end
 
-    for i in 1:64
+    # Clear only as many slots as e_len needs (u_len+4 is always safe since
+    # after reduction the length is ≤ u_len, and e_len ≤ 32 but for K_MAX=3
+    # it's ≤ 5).  u_len + 4 ≤ 9 for K_MAX=3; use max(e_len, u_len) + 2.
+    clear_e = max(e_len, u_len) + 2
+    for i in 1:clear_e
         @inbounds scratch.poly_buf[64 + i] = 0
     end
     for i in 1:e_len
@@ -1377,7 +1464,8 @@ function compute_vRS_inplace!(
     end
 
     # 3. Compute Y mod u_RS.
-    for i in 1:64
+    clear_y = max(y_len, u_len) + 2
+    for i in 1:clear_y
         @inbounds scratch.poly_buf[128 + i] = 0
     end
     for i in 1:y_len
@@ -1521,26 +1609,31 @@ function poly_modinv_inplace!(
     off_q   = 640
     off_tmp = 704
 
+    # Max sizes we ever need to clear: polynomials here are ≤ deg(u_RS) which is u_len-1.
+    # We use u_len + 4 as a safe upper bound (quotient can briefly be one more degree).
+    # This replaces the old `for i in 1:64` zeros which cleared 64 slots for ≤5 entries.
+    clear_n = u_len + 4
+
     # 1. Initialize r0 = modulus m(x) (from scratch.u_RS)
-    for i in 1:64; @inbounds scratch.poly_buf[off_r0 + i] = 0; end
+    for i in 1:clear_n; @inbounds scratch.poly_buf[off_r0 + i] = 0; end
     for i in 1:u_len
         @inbounds scratch.poly_buf[off_r0 + i] = scratch.u_RS[i]
     end
     len_r0 = u_len
 
     # 2. Initialize r1 = input a(x) (from off_a)
-    for i in 1:64; @inbounds scratch.poly_buf[off_r1 + i] = 0; end
+    for i in 1:clear_n; @inbounds scratch.poly_buf[off_r1 + i] = 0; end
     for i in 1:len_a
         @inbounds scratch.poly_buf[off_r1 + i] = scratch.poly_buf[off_a + i]
     end
     len_r1 = len_a
 
     # 3. Initialize s0 = 0 (degree 0 polynomial)
-    for i in 1:64; @inbounds scratch.poly_buf[off_s0 + i] = 0; end
+    for i in 1:clear_n; @inbounds scratch.poly_buf[off_s0 + i] = 0; end
     len_s0 = 1 # sitting at 0
 
     # 4. Initialize s1 = 1 (degree 0 polynomial)
-    for i in 1:64; @inbounds scratch.poly_buf[off_s1 + i] = 0; end
+    for i in 1:clear_n; @inbounds scratch.poly_buf[off_s1 + i] = 0; end
     @inbounds scratch.poly_buf[off_s1 + 1] = 1
     len_s1 = 1
 
@@ -1571,20 +1664,20 @@ function poly_modinv_inplace!(
         # the old r1 value. That makes the GCD loop converge one step early
         # on a non-scalar "GCD" (the old r1), poly_modinv_inplace! returns
         # false on every call, and every walk step gets discarded.
-        for i in 1:64; @inbounds scratch.poly_buf[off_tmp + i] = 0; end
+        for i in 1:clear_n; @inbounds scratch.poly_buf[off_tmp + i] = 0; end
         for i in 1:len_r
             @inbounds scratch.poly_buf[off_tmp + i] = scratch.poly_buf[off_r0 + i]
         end
 
         # Move coefficients of r1 into r0's segment space
-        for i in 1:64; @inbounds scratch.poly_buf[off_r0 + i] = 0; end
+        for i in 1:clear_n; @inbounds scratch.poly_buf[off_r0 + i] = 0; end
         for i in 1:len_r1
             @inbounds scratch.poly_buf[off_r0 + i] = scratch.poly_buf[off_r1 + i]
         end
         len_r0 = len_r1
 
         # Move the newly computed remainder from off_tmp into r1's segment space
-        for i in 1:64; @inbounds scratch.poly_buf[off_r1 + i] = 0; end
+        for i in 1:clear_n; @inbounds scratch.poly_buf[off_r1 + i] = 0; end
         for i in 1:len_r
             @inbounds scratch.poly_buf[off_r1 + i] = scratch.poly_buf[off_tmp + i]
         end
@@ -1596,7 +1689,7 @@ function poly_modinv_inplace!(
 
         # Subtract: s_new = s0 - tmp. We write this into off_q's memory space to reuse it safely
         len_s_new = max(len_s0, len_tmp)
-        for i in 1:64; @inbounds scratch.poly_buf[off_q + i] = 0; end
+        for i in 1:clear_n; @inbounds scratch.poly_buf[off_q + i] = 0; end
         for i in 1:len_s_new
             @inbounds s0_val = (i <= len_s0) ? scratch.poly_buf[off_s0 + i] : 0
             @inbounds tmp_val = (i <= len_tmp) ? scratch.poly_buf[off_tmp + i] : 0
@@ -1612,13 +1705,13 @@ function poly_modinv_inplace!(
         end
 
         # Swapping s0 and s1 bounds: s0 becomes the old s1, s1 becomes the computed s_new
-        for i in 1:64; @inbounds scratch.poly_buf[off_s0 + i] = 0; end
+        for i in 1:clear_n; @inbounds scratch.poly_buf[off_s0 + i] = 0; end
         for i in 1:len_s1
             @inbounds scratch.poly_buf[off_s0 + i] = scratch.poly_buf[off_s1 + i]
         end
         len_s0 = len_s1
 
-        for i in 1:64; @inbounds scratch.poly_buf[off_s1 + i] = 0; end
+        for i in 1:clear_n; @inbounds scratch.poly_buf[off_s1 + i] = 0; end
         for i in 1:len_s_new
             @inbounds scratch.poly_buf[off_s1 + i] = scratch.poly_buf[off_q + i]
         end
@@ -1637,7 +1730,7 @@ function poly_modinv_inplace!(
 
     # Scale s0 by the inverse of the constant GCD: inv_a = s0 * fpinv(gcd_val)
     inv_lc = fpinv(gcd_val)
-    for i in 1:64; @inbounds scratch.poly_buf[off_tmp + i] = 0; end
+    for i in 1:clear_n; @inbounds scratch.poly_buf[off_tmp + i] = 0; end
     for i in 1:len_s0
         @inbounds scratch.poly_buf[off_tmp + i] = fpmul(scratch.poly_buf[off_s0 + i], inv_lc)
     end
@@ -1679,8 +1772,10 @@ function poly_divmod_poly_inplace_registers!(
     off_q::Int
 )::Tuple{Int, Int}
 
-    # 1. Clear out the quotient register window completely upfront
-    for i in 1:64; @inbounds scratch.poly_buf[off_q + i] = 0; end
+    # 1. Clear out the quotient register window.
+    #    Quotient degree = deg(r0) - deg(r1); for our polynomials that's at most u_len-1.
+    #    Use len_r0 as the safe bound rather than a hardcoded 64.
+    for i in 1:len_r0; @inbounds scratch.poly_buf[off_q + i] = 0; end
     
     # 2. Robustly sanitize the divisor length to ensure the leading coefficient is non-zero
     curr_len_r1 = len_r1
@@ -1836,67 +1931,64 @@ function find_roots_and_points_inplace!(
         # --- Monic Quadratic Case: x² + c1*x + c0 ---
         @inbounds c0 = scratch.u_RS[1]
         @inbounds c1 = scratch.u_RS[2]
-        
+
         disc = fp(fpmul(c1, c1) - 4 * c0)
-        sq = sqrt_fp_hot(disc)  # sentinel -1 for non-residues; no Union boxing
+        sq = sqrt_fp_hot(disc)
         sq < 0 && return nothing
-        
-        inv2 = fpinv(2)
+
+        # small_inv[2] = fpinv(2) — precomputed, no Fermat needed here
+        inv2 = scratch.small_inv[2]
         xR = fpmul(fp(-c1 + sq), inv2)
         xS = fpmul(fp(-c1 - sq), inv2)
-        
-        # Recover y for root 1 (xR)
+
         yr_1 = recover_y_from_phi_inplace(scratch, xR, k)
         if yr_1 >= 0
             idx = scratch.roots_count[1] + 1
             @inbounds scratch.roots_out[idx] = (xR, yr_1)
             scratch.roots_count[1] = idx
         end
-        
-        # Recover y for root 2 (xS)
+
         yr_2 = recover_y_from_phi_inplace(scratch, xS, k)
         if yr_2 >= 0
             idx = scratch.roots_count[1] + 1
             @inbounds scratch.roots_out[idx] = (xS, yr_2)
             scratch.roots_count[1] = idx
         end
-        
+
         return nothing
     end
 
-    # --- Higher Degree (deg 3 or 4) Scan and Deflate Pass ---
-    # Copy u_RS into poly_buf[193:256] to use as a mutating deflection register
-    for i in 1:64
-        @inbounds scratch.poly_buf[192 + i] = 0
-    end
-    for i in 1:u_len
-        @inbounds scratch.poly_buf[192 + i] = scratch.u_RS[i]
-    end
-    rem_len = u_len
+    # --- Degree 3 or 4: use Oscar's roots() over GF(p) ---
+    # GF(p) and polynomial_ring are cached in scratch at init time — zero re-allocation.
+    Fp  = scratch.oscar_Fp[]::FqField
+    Rx  = scratch.oscar_Rx[]::FqPolyRing
 
-    # Global p is assumed to be accessible as a literal constant
-    for x in 0:(p - 1)
-        rem_len <= 1 && break
-        
-        # Evaluate current remaining polynomial in-place at x
-        val = poly_eval_fp_inplace(scratch, 192, rem_len, x)
-        if val == 0
-            # Deflate using our in-place synthetic division rule
-            # Overwrites poly_buf[193 : 192+rem_len] with the quotient
-            rem_len, _ = poly_divmod_linear_inplace_segment!(scratch, 192, rem_len, x)
-            
-            yr = recover_y_from_phi_inplace(scratch, x, k)
-            if yr >= 0
-                idx = scratch.roots_count[1] + 1
-                @inbounds scratch.roots_out[idx] = (x, yr)
-                scratch.roots_count[1] = idx
-            end
+    # Reuse the preallocated FqFieldElem buffer — avoids [Fp(x) for ...] heap allocation.
+    # oscar_coeff_buf[] is a Vector{FqFieldElem} of length ≥ 8; we fill the first u_len slots.
+    coeff_buf = scratch.oscar_coeff_buf[]::Vector{FqFieldElem}
+    for i in 1:u_len
+        @inbounds coeff_buf[i] = Fp(scratch.u_RS[i])
+    end
+    # @view avoids the Vector copy that coeff_buf[1:u_len] would create.
+    f_oscar = Rx(@view coeff_buf[1:u_len])
+
+    rs = roots(f_oscar)  # Vector of FqFieldElem
+
+    for r in rs
+        x_int = Int(lift(ZZ, r))
+        yr = recover_y_from_phi_inplace(scratch, x_int, k)
+        if yr >= 0
+            idx = scratch.roots_count[1] + 1
+            @inbounds scratch.roots_out[idx] = (x_int, yr)
+            scratch.roots_count[1] = idx
         end
     end
 
     return nothing
 end
+
 # ---------------------------------------------------------------------------
+
 #  Helper: recover_y_from_phi_inplace(scratch, x, k) -> Union{Int, Nothing}
 #  Correctly isolates and evaluates E(x) and Y(x) mod p at a root x by 
 #  unrolling the explicit Riemann-Roch basis structure.
@@ -1907,7 +1999,21 @@ function recover_y_from_phi_inplace(scratch::ThreadScratchpad, x::Int, k::Int)::
     nb = k + 3
     # Retrieve the canonical monomial basis vector (poles sorted: x^i or x^i * y)
     basis = rr_basis_cached(nb)::Vector{NTuple{2, Int}}
-    
+
+    # Precompute x^0, x^1, ..., x^(max_pow) in one ascending pass.
+    # For K_MAX=3, nb=6, max x-power in basis is 3 (basis: 1,x,x²,y,x³,xy).
+    # Uses pxpow_buf (length 32) from scratch — borrowing it here; it's not live
+    # during root recovery (find_roots_and_points calls us after residual is done).
+    max_pow = 0
+    for idx in 1:nb
+        @inbounds pi, _ = basis[idx]
+        pi > max_pow && (max_pow = pi)
+    end
+    scratch.pxpow_buf[1] = 1
+    for e in 1:max_pow
+        @inbounds scratch.pxpow_buf[e+1] = fpmul(scratch.pxpow_buf[e], x)
+    end
+
     val_E = 0
     val_Y = 0
 
@@ -1917,16 +2023,7 @@ function recover_y_from_phi_inplace(scratch::ThreadScratchpad, x::Int, k::Int)::
         coeff == 0 && continue
         
         @inbounds pow_x, pow_y = basis[idx]
-        
-        # In-place evaluation of x^pow_x mod p
-        term = 1
-        if pow_x > 0
-            curr = x
-            for _ in 2:pow_x
-                curr = fpmul(curr, x)
-            end
-            term = curr
-        end
+        @inbounds term = scratch.pxpow_buf[pow_x + 1]
         scaled_term = fpmul(coeff, term)
 
         if pow_y == 0
@@ -1938,14 +2035,7 @@ function recover_y_from_phi_inplace(scratch::ThreadScratchpad, x::Int, k::Int)::
 
     # 2. Add the contribution of the highest pole monomial (monic, coefficient is 1)
     @inbounds norm_x, norm_y = basis[nb]
-    norm_term = 1
-    if norm_x > 0
-        curr = x
-        for _ in 2:norm_x
-            curr = fpmul(curr, x)
-        end
-        norm_term = curr
-    end
+    @inbounds norm_term = scratch.pxpow_buf[norm_x + 1]
 
     if norm_y == 0
         val_E = fp(val_E + norm_term)
