@@ -312,24 +312,22 @@ function fp_gauss!(A::Matrix{Int}, b::Vector{Int}, n::Int)::Bool
         end
         @inbounds b[col] = fpmul(b[col], inv_pivot)
 
-        # Eliminate other rows safely using explicit widening
+        # Eliminate other rows safely using explicit widening via your field wrapper
         for row in 1:n
             row == col && continue
             @inbounds factor = A[row, col]
             
             if factor != 0
                 for j in col:n
-                    # Enforce strict positive modulo boundary using widening to avoid signed % artifacts
-                    @inbounds A[row, j] = mod(A[row, j] - fpmul(factor, A[col, j]), p)
+                    @inbounds A[row, j] = fp(A[row, j] - fpmul(factor, A[col, j]))
                 end
-                @inbounds b[row] = mod(b[row] - fpmul(factor, b[col]), p)
+                @inbounds b[row] = fp(b[row] - fpmul(factor, b[col]))
             end
         end
     end
     
     return true
 end
-
 # ---------------------------------------------------------------------------
 #  build_phi_general
 #
@@ -586,7 +584,7 @@ function monomial_series_coeffs!(out::AbstractVector{Int}, i::Int, j::Int,
     # Binomial expansion coefficients
     binom_scratch[1] = 1
     for s in 1:min(i, m-1)
-        binom_scratch[s+1] = fpmul(binom_scratch[s], fpmul(fp(i - s + 1), small_inv[s]))
+        @inbounds binom_scratch[s+1] = fpmul(binom_scratch[s], fpmul(fp(i - s + 1), small_inv[s]))
     end
 
     # Precompute ascending powers of px
@@ -597,8 +595,8 @@ function monomial_series_coeffs!(out::AbstractVector{Int}, i::Int, j::Int,
 
     # Read descending directly from pxpow_scratch, completely avoiding self-aliasing corruption
     for s in 0:min(i, m-1)
-        @inbounds p_val = pxpow_scratch[i - s + 1]
-        @inbounds xi_scratch[s+1] = fpmul(binom_scratch[s+1], p_val)
+        @inbounds px_descending_pow = pxpow_scratch[i - s + 1]
+        @inbounds xi_scratch[s+1] = fpmul(binom_scratch[s+1], px_descending_pow)
     end
 
     if j == 0
@@ -609,10 +607,11 @@ function monomial_series_coeffs!(out::AbstractVector{Int}, i::Int, j::Int,
     fill!(out, 0)
     for a in 0:m-1, b in 0:m-1
         a + b >= m && continue
-        out[a+b+1] = fp(out[a+b+1] + fpmul(xi_scratch[a+1], y_ser[b+1]))
+        @inbounds out[a+b+1] = fp(out[a+b+1] + fpmul(xi_scratch[a+1], y_ser[b+1]))
     end
     return nothing
 end
+
 
 function build_phi_general!(
     scratch::ThreadScratchpad,
@@ -997,8 +996,7 @@ function build_N_inplace!(
     deg_Y::Int
 )::Int
 
-    # 1. Clear out the serialization area completely so compute_vRS_inplace! 
-    # doesn't scan backwards into stale garbage from previous steps.
+    # 1. Clear out the serialization area completely
     for i in 1:64
         @inbounds scratch.ser_buf[i] = 0
     end
@@ -1013,7 +1011,7 @@ function build_N_inplace!(
         @inbounds scratch.ser_buf[32 + i] = scratch.poly_buf[32 + i]
     end
 
-    # 2. Clear out the front of scratch.poly_buf to act as our accumulation block for N(x).
+    # 2. Clear out the front of scratch.poly_buf
     for i in 1:64
         @inbounds scratch.poly_buf[i] = 0
     end
@@ -1027,16 +1025,17 @@ function build_N_inplace!(
         idx_diag = 2*i - 1
         @inbounds scratch.poly_buf[idx_diag] = fp(scratch.poly_buf[idx_diag] + fpmul(c_i, c_i))
 
-        # Cross: 2 * c_i * c_j for j > i
+        # Cross: 2 * c_i * c_j
         for j in (i+1):len_E
             @inbounds c_j = scratch.ser_buf[j]
             c_j == 0 && continue
             idx = i + j - 1
-            @inbounds scratch.poly_buf[idx] = fp(scratch.poly_buf[idx] + 2 * fpmul(c_i, c_j))
+            term = fpmul(c_i, c_j)
+            @inbounds scratch.poly_buf[idx] = fp(scratch.poly_buf[idx] + fp(term + term))
         end
     end
 
-    # 4. Compute Y(x)² and multiply by f(x), subtracting from scratch.poly_buf
+    # 4. Compute Y(x)² * f(x) and subtract
     for i in 1:len_Y
         @inbounds y_i = scratch.ser_buf[32 + i]
         y_i == 0 && continue
@@ -1051,12 +1050,13 @@ function build_N_inplace!(
             @inbounds scratch.poly_buf[target_idx] = fp(scratch.poly_buf[target_idx] - fpmul(y2_coeff_d, f_coeff))
         end
 
-        # Cross: 2 * y_i * y_j for j > i
+        # Cross: 2 * y_i * y_j
         for j in (i+1):len_Y
             @inbounds y_j = scratch.ser_buf[32 + j]
             y_j == 0 && continue
 
-            y2_coeff_c = 2 * fpmul(y_i, y_j)
+            prod_y = fpmul(y_i, y_j)
+            y2_coeff_c = fp(prod_y + prod_y)
             y2_deg_c   = (i - 1) + (j - 1)
             for f_idx in 1:6
                 @inbounds f_coeff = F_POLY[f_idx]
@@ -1067,17 +1067,15 @@ function build_N_inplace!(
         end
     end
 
-    # 5. Calculate the active logical length by removing trailing zeroes
-    n_len = 64
-    while n_len > 1
-        @inbounds if scratch.poly_buf[n_len] == 0
-            n_len -= 1
-        else
+    deg_N = 63
+    while deg_N >= 0
+        @inbounds if scratch.poly_buf[deg_N + 1] != 0
             break
         end
+        deg_N -= 1
     end
 
-    return n_len
+    return deg_N + 1 # Fix: Return length instead of degree
 end
 
 # ---------------------------------------------------------------------------

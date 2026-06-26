@@ -1304,6 +1304,8 @@ function phase2_worker(G               ::Div2,
     # --- Scratch dicts (reused every step to avoid per-step allocation) ---
     fb_row_scratch   = sizehint!(Dict{Int,Int}(), 4)
     combined_scratch = ThreadScratchpad()
+    # Initialize runtime prime-dependent caches (fpinv tables, Oscar rings)
+    init_scratch_caches!(combined_scratch, p)
 
     # Initialize a fast, thread-local RNG for step selection.
     # Xoshiro has a 2^256 period and is seeded randomly per thread,
