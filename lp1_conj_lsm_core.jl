@@ -397,7 +397,7 @@ function _lsm_flush_shard!(sc::LP1ConjLSM{V}, si::Int) where V
         oi = order[i]
         _write_record!(buf, (i-1)*RECORD_BYTES,
                        fps[oi], u0s[oi], u1s[oi], v0s[oi], v1s[oi],
-                       stps[oi], als[oi], bes[oi])
+                       UInt16(0), stps[oi], als[oi], bes[oi])
     end
 
     byte_offset = sc.spill_size
