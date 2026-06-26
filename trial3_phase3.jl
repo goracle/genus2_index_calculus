@@ -138,6 +138,30 @@ struct PreRREFBasis
 end
 
 # ---------------------------------------------------------------------------
+#  conj_hot_row_lookup
+#
+#  Helper to retrieve the variable-length fb_row from the LSM side-channel
+#  since it was stripped from the 12-byte amortized LP1ConjVal struct.
+# ---------------------------------------------------------------------------
+@inline function conj_hot_row_lookup(store, si::Int, key::CanonicalLP1Key)
+    if store isa AbstractVector
+        for lsm in store
+            if hasproperty(lsm, :hot_rows)
+                row = get(lsm.hot_rows[si], key, nothing)
+                row !== nothing && return row
+            end
+        end
+        return nothing
+    elseif hasproperty(store, :hot_rows)
+        return get(store.hot_rows[si], key, nothing)
+    elseif store isa Dict
+        v = get(store, key, nothing)
+        v isa Tuple && return v[1]
+    end
+    return nothing
+end
+
+# ---------------------------------------------------------------------------
 #  conj_lookup_or_nothing
 #
 #  Uniform read-only lookup helper for the live extension-field LP store.
@@ -276,6 +300,9 @@ end
 #    B2. n_lp == 2 → 2-LP: skip.
 #    B3. n_lp == 3 → discard.
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+#  phase3_trial_worker
+# ---------------------------------------------------------------------------
 function phase3_trial_worker(
         trial_idx        ::Int,
         T                ::Div2,
@@ -297,7 +324,6 @@ function phase3_trial_worker(
         post_conj_stride ::Int                             = 0)::Phase3Result
 
     t0    = time()
-    # ── DIAG checkpoint helper (thread-safe: @printf is atomic per-call) ──────
     _cp(tag) = (@printf("[p3 trial %2d | %+8.3fs | %s]\n", trial_idx, time()-t0, tag); flush(stdout))
 
     @printf("[p3 trial %2d] worker entered on thread %d  seeded_rows=%d  seeded_al=%d\n",
@@ -308,25 +334,19 @@ function phase3_trial_worker(
 
     ell   = tables.ell
     ellI  = Int(ell)
-    # mulmod: multiply two values that may each be O(ell) and reduce mod ellI.
-    # For ell ~ 2^38 the product is ~2^76, which overflows Int64 (max 2^63-1).
-    # widemul(Int64, Int64) -> Int128 is exact; the final mod fits back in Int64.
+    
     @inline mulmod(a::Int, b::Int) = Int(mod(widemul(a, b), ellI))
-    # step_cap and local_lp_cap are pre-computed in the main thread before spawning
-    # to avoid 30 workers simultaneously calling isqrt(BigInt(ell)) via GMP.
+    
     step_cap     = step_cap     < 0 ? phase3_default_step_cap(ell) : step_cap
     local_lp_cap = local_lp_cap < 0 ? phase3_local_lp_cap(ell)    : local_lp_cap
     pt2idx        = tables.pt2idx
     fb            = tables.fb
     nF            = length(fb)
     alog          = tables.atom_log_dict
-    lp1_pre       = tables.shared_lp1        # READ ONLY — affine 1-LP
-    # Use the live conj store directly — no copy, no snapshot.
+    lp1_pre       = tables.shared_lp1        
     lp1_conj_store = conj_store
 
     # ── Prebuilt step table for the β≠0 walk ─────────────────────────────────
-    # If pre-built tables were passed in from the main thread (to avoid 30-way
-    # GMP contention), use them directly.  Otherwise build locally (fallback).
     local step_D::Vector{Div2}
     local step_a::Vector{Int}
     local step_b::Vector{Int}
@@ -334,11 +354,11 @@ function phase3_trial_worker(
         step_D = prebuilt_step_D
         step_a = prebuilt_step_a
         step_b = prebuilt_step_b
-        @printf("[p3 trial %2d] using pre-built step table (%d steps)\n",
-                trial_idx, length(step_D)); flush(stdout)
+        @printf("[p3 trial %2d] using pre-built step table (%d steps)\n", trial_idx, length(step_D))
+        flush(stdout)
     else
-        @printf("[p3 trial %2d] building step table (n_steps_prebuilt=%d)...\n",
-                trial_idx, n_steps_prebuilt); flush(stdout)
+        @printf("[p3 trial %2d] building step table (n_steps_prebuilt=%d)...\n", trial_idx, n_steps_prebuilt)
+        flush(stdout)
         step_D = Vector{Div2}(undef, n_steps_prebuilt)
         step_a = Vector{Int}(undef,  n_steps_prebuilt)
         step_b = Vector{Int}(undef,  n_steps_prebuilt)
@@ -347,7 +367,8 @@ function phase3_trial_worker(
             step_D[i] = jac_add(jac_mul(G, a, ellI), jac_mul(T, b, ellI))
             step_a[i] = a; step_b[i] = b
         end
-        @printf("[p3 trial %2d] step table built (%.2fs)\n", trial_idx, time()-t0); flush(stdout)
+        @printf("[p3 trial %2d] step table built (%.2fs)\n", trial_idx, time()-t0)
+        flush(stdout)
     end
 
     # ── Walk state ────────────────────────────────────────────────────────────
@@ -355,23 +376,20 @@ function phase3_trial_worker(
     beta_cur  = rand(1:ellI-1)
     D_cur = jac_add(jac_mul(G, alpha_cur, ellI), jac_mul(T, beta_cur, ellI))
 
-    # Coprime-stride anchor cursor — same design as phase2_worker, using
-    # trial_idx as the per-worker id so concurrent trials cover FB uniformly.
     _small_primes_p3 = (2,3,5,7,11,13,17,19,23,29,31,37,41,43,47,53,59,61,67,71)
-    _anchor_stride = nF > 1 ?
-        mod(_small_primes_p3[min(trial_idx, length(_small_primes_p3))], nF - 1) + 1 :
-        1
+    _anchor_stride = nF > 1 ? mod(_small_primes_p3[min(trial_idx, length(_small_primes_p3))], nF - 1) + 1 : 1
+    
     function _p3_gcd(a, b)
         b == 0 && throw(ArgumentError("_p3_gcd: b is zero"))
         while b != 0; a, b = b, a % b; end
         a
     end
+    
     if nF > 1
         _start_stride = _anchor_stride
         while _p3_gcd(_anchor_stride, nF) != 1
             _anchor_stride = mod(_anchor_stride, nF) + 1
-            _anchor_stride == _start_stride && throw(ErrorException(
-                "phase3 trial $trial_idx: no anchor_stride coprime to nF=$nF found"))
+            _anchor_stride == _start_stride && throw(ErrorException("phase3 trial $trial_idx: no anchor_stride coprime to nF=$nF found"))
         end
     end
     _anchor_cursor = mod((trial_idx - 1) * _anchor_stride, max(1, nF)) + 1
@@ -385,12 +403,10 @@ function phase3_trial_worker(
     cur_pt = next_anchor_p3()
 
     # ── Local birthday fallback tables ────────────────────────────────────────
-    # affine: lp_pt → (fb_row, neg_al, neg_be)
     local_lp1_affine = Dict{NTuple{2,Int},   Tuple{Dict{Int,Int}, Int, Int}}()
-    # conj:   lp_key → LP1ConjValFull
-    # Local birthday dict runs β≠0, so we need to store neg_be.
-    # The precomputed table uses LP1ConjVal (amortized, neg_be=0 implicit).
-    local_lp1_conj   = Dict{CanonicalLP1Key, LP1ConjValFull}()
+    
+    # NEW: The local birthday dict now natively stores the fb_row Tuple alongside the LP1ConjValFull
+    local_lp1_conj   = Dict{CanonicalLP1Key, Tuple{Dict{Int,Int}, LP1ConjValFull}}()
 
     local_alog = Dict{NTuple{2,Int}, Int}()
     @inline alog_get(pt) = get(local_alog, pt, get(alog, pt, -1))
@@ -398,18 +414,15 @@ function phase3_trial_worker(
     # Counters ──────────────────────────────────────────────────────────────
     n_steps          = 0
     n_0lp            = 0
-    n_1lp_aff_pre    = 0   # affine closure against shared_lp1_pre
-    n_1lp_aff_local  = 0   # affine closure against local birthday dict
-    n_1lp_conj_pre   = 0   # conj closure against shared_lp1_conj_pre
-    n_1lp_conj_local = 0   # conj closure against local birthday dict
-    n_conj_branch    = 0   # times we entered A1 (i0∈FB, conj residual), before haskey
-    n_alog_extended  = 0   # new atom logs derived from β=0 closures
+    n_1lp_aff_pre    = 0
+    n_1lp_aff_local  = 0
+    n_1lp_conj_pre   = 0
+    n_1lp_conj_local = 0
+    n_conj_branch    = 0
+    n_alog_extended  = 0
     k_rec            = nothing
 
     # ── Helper: attempt to extend local_alog from a β=0 combined row ─────────
-    # combined_row maps FB index → coefficient.  The relation is:
-    #   Σ coeff[j] · log(fb[j])  ≡  neg_al   (mod ell)   with neg_be == 0
-    # If exactly one atom is unknown we can solve for it.
     function try_extend_alog!(combined_row::Dict{Int,Int}, neg_al::Int)
         unknown_idx = 0
         unknown_coeff = 0
@@ -418,7 +431,7 @@ function phase3_trial_worker(
             l = alog_get(fb[j])
             if l == -1
                 if unknown_idx != 0
-                    return   # two unknowns — can't solve
+                    return 
                 end
                 unknown_idx   = j
                 unknown_coeff = coeff
@@ -426,69 +439,39 @@ function phase3_trial_worker(
                 known_sum = mod(known_sum + coeff * l, ellI)
             end
         end
-        unknown_idx == 0 && return   # fully determined row — nothing new to store
-        # Solve: unknown_coeff · log(fb[unknown_idx]) ≡ neg_al - known_sum (mod ell)
+        unknown_idx == 0 && return 
+        
         rhs = mod(neg_al - known_sum, ellI)
-        # unknown_coeff must be invertible mod ell (ell is prime)
-        @assert gcd(unknown_coeff, ellI) == 1 "non-invertible coefficient in try_extend_alog!"
+        gcd(unknown_coeff, ellI) == 1 || throw(ErrorException("non-invertible coefficient in try_extend_alog!"))
         log_new = mulmod(rhs, Int(powermod(unknown_coeff, ell - 2, ell)))
         local_alog[fb[unknown_idx]] = log_new
         n_alog_extended += 1
     end
 
     # ── Local relation accumulator for self-contained GF(ell) solve ──────────
-    # Each relation row contributes one equation to the system:
-    #   Σ_j coef[j]·log(fb[j])  +  neg_be·k  ≡  neg_al   (mod ell)
-    # Unknowns: atom logs (columns 1..nF) and k (column nF+1).
-    # β=0 rows (neg_be=0) constrain atom logs only; β≠0 rows pin k.
-    # Seeded with the precomputed β=0 relation set so the null space is
-    # already constrained before the walk adds β≠0 rows.
-    # Use pre-allocated seeded vectors built in the main thread before spawning.
-    # Building these inside the worker (esp. the BigInt copies) causes all 30
-    # threads to contend on the GMP allocator simultaneously → deadlock.
     local_rel_rows  = seeded_rel_rows !== nothing ? seeded_rel_rows : copy(tables.rel_rows_pre)
     local_rel_be    = seeded_rel_be   !== nothing ? seeded_rel_be   : zeros(Int, length(tables.rel_rows_pre))
     local_rel_al    = seeded_rel_al   !== nothing ? seeded_rel_al   : copy(tables.alpha_vec_pre)
-    # The β=0 rows already seeded (~nF of them from phase1+phase2) constrain the
-    # atom log subspace; each β≠0 row adds one equation involving k.  The system
-    # has nF+1 unknowns total, so once the seeded β=0 rows already span rank ~nF
-    # we need only O(1) β≠0 rows to pin k.  Attempt solve after every new β≠0
-    # row (with a small backoff on failure to avoid spending time on under-determined
-    # prefixes); never wait for nF more rows.
-    n_local_be_rows  = 0    # count of β≠0 rows added during the walk
-    n_local_linalg   = 0    # how many times we attempted elimination
-    _next_linalg_at  = 1    # attempt when n_local_be_rows reaches this
+    
+    n_local_be_rows  = 0
+    n_local_linalg   = 0
+    _next_linalg_at  = 1
 
-    # GF(ell) solve for k from the accumulated relation system.
-    #
-    # Relation semantics: Σ_j coef[j]·log(fb[j])  =  neg_al + neg_be·k  (mod ell)
-    # As a linear system:  Σ_j coef[j]·x[j]  +  (-neg_be)·k  =  neg_al
-    # Column layout: 1..nF = atom logs, nF+1 = k coeff (-neg_be mod ell), nF+2 = RHS.
-    #
-    # Fast path (rref_basis supplied, normal case):
-    #   The β=0 block is already RREF.  Copy it, append new β≠0 rows, reduce
-    #   each new row against existing pivots in O(n_new × nF).  If a new row
-    #   reduces to [0…0 | coef_k | rhs] with coef_k ≠ 0, k = rhs/coef_k.
-    #
-    # Slow path (rref_basis nothing, or fast path inconclusive):
-    #   Full O(nF³) RREF on the whole augmented system.
     function try_local_linalg_solve()::Union{Int,Nothing}
         n_local_linalg += 1
         m  = length(local_rel_rows)
         nc = nF + 2
-        @printf("[p3 trial %2d | linalg #%d] m=%d  nc=%d\n",
-                trial_idx, n_local_linalg, m, nc)
+        @printf("[p3 trial %2d | linalg #%d] m=%d  nc=%d\n", trial_idx, n_local_linalg, m, nc)
         flush(stdout)
 
-        # ── Fast path: use pre-RREF basis ────────────────────────────────────
         if rref_basis !== nothing
             basis    = rref_basis
             rk       = basis.rank
             n_seeded = length(tables.rel_rows_pre)
-            n_new    = m - n_seeded          # β≠0 rows this worker has added
+            n_new    = m - n_seeded
+           
             n_new <= 0 && return nothing
 
-            # Allocate working block: rk pre-RREF rows + n_new fresh rows.
             B = zeros(Int128, rk + n_new, nc)
             for r in 1:rk, c in 1:nc
                 B[r, c] = basis.A[r, c]
@@ -500,11 +483,10 @@ function phase3_trial_worker(
                     1 <= j <= nF || continue
                     B[brow, j] = mod(v, ellI)
                 end
-                B[brow, nF+1] = mod(ellI - local_rel_be[ri], ellI)   # -neg_be
+                B[brow, nF+1] = mod(ellI - local_rel_be[ri], ellI)
                 B[brow, nF+2] = Int128(mod(local_rel_al[ri], ellI))
             end
 
-            # Reduce each new row against the existing pivot columns in O(n_new × nF).
             for k_row in 1:n_new
                 brow = rk + k_row
                 for pr in 1:rk
@@ -517,31 +499,26 @@ function phase3_trial_worker(
                 end
             end
 
-            # A fully-reduced new row with nonzero k coeff gives k directly.
             for k_row in 1:n_new
                 brow = rk + k_row
-                B[brow, nF+1] == 0 && continue   # k coeff zero — degenerate
-                # Check atom-log columns are all zero.
+                B[brow, nF+1] == 0 && continue
                 all_zero = true
                 for c in 1:nF
                     if B[brow, c] != 0; all_zero = false; break; end
                 end
-                all_zero || continue   # residual atom unknowns → underdetermined
+                all_zero || continue
                 inv_k = Int128(powermod(Int(B[brow, nF+1]), ellI - 2, ellI))
                 k_try = Int(mod(B[brow, nF+2] * inv_k, ellI))
+                
                 jac_mul(G, k_try, ell) == T && return k_try
-                @assert false "try_local_linalg_solve (fast): k_try=$(k_try) failed group-law verification — relation accumulator corrupt"
+                throw(ErrorException("try_local_linalg_solve (fast): k_try=$(k_try) failed group-law verification — relation accumulator corrupt"))
             end
 
-            # Fast path inconclusive — basis may be rank-deficient.
             @printf("[p3 trial %2d | linalg #%d] fast-path inconclusive (n_new=%d rk=%d), falling back to full RREF\n",
                     trial_idx, n_local_linalg, n_new, rk)
             flush(stdout)
         end
 
-        # ── Slow path: full RREF on entire augmented system ───────────────────
-        # Int128 throughout: products of two values each in [0,ell-1] need ~76 bits
-        # for ell ~ 2^38, which overflows Int64 but fits Int128 comfortably.
         @printf("[p3 trial %2d | linalg #%d] full RREF  m=%d  nc=%d  matrix %.1f MB\n",
                 trial_idx, n_local_linalg, m, nc, m*nc*16/1024^2)
         flush(stdout)
@@ -551,7 +528,7 @@ function phase3_trial_worker(
                 1 <= j <= nF || continue
                 A[ri, j] = mod(v, ellI)
             end
-            A[ri, nF+1] = mod(ellI - local_rel_be[ri], ellI)   # -neg_be mod ell
+            A[ri, nF+1] = mod(ellI - local_rel_be[ri], ellI)
             A[ri, nF+2] = Int128(mod(local_rel_al[ri], ellI))
         end
         pivot_col = zeros(Int, m)
@@ -581,23 +558,19 @@ function phase3_trial_worker(
         for r in 1:m
             pivot_col[r] == nF+1 || continue
             k_try = Int(A[r, nF+2])
+            
             jac_mul(G, k_try, ell) == T && return k_try
-            @assert false "try_local_linalg_solve (full): k_try=$(k_try) failed group-law verification — relation accumulator corrupt"
+            throw(ErrorException("try_local_linalg_solve (full): k_try=$(k_try) failed group-law verification — relation accumulator corrupt"))
         end
         return nothing
     end
 
     # ── Helper: solve k from a pure-FB row ───────────────────────────────────
-    # First tries direct solve from alog_get (fast path when atom logs are known).
-    # Falls back to accumulating the relation for local GF(ell) elimination.
-    # β=0 rows go to try_extend_alog! instead.
     @inline function try_solve(fb_row::Dict{Int,Int}, neg_al::Int, neg_be::Int)::Union{Int,Nothing}
         if neg_be == 0
-            # β=0 relation: pure G row, try to extend alog rather than solve for k.
             try_extend_alog!(fb_row, neg_al)
             return nothing
         end
-        # Fast path: all atom logs already known.
         log_sum = 0
         all_known = true
         for (j, v) in fb_row
@@ -613,95 +586,16 @@ function phase3_trial_worker(
             if jac_mul(G, k_try, ell) == T
                 return k_try
             end
-            @assert false "try_solve: bad relation — all atom logs present, β≠0, but k_try=$(k_try) failed verification (neg_al=$(neg_al), neg_be=$(neg_be))"
+            throw(ErrorException("try_solve: bad relation — all atom logs present, β≠0, but k_try=$(k_try) failed verification (neg_al=$(neg_al), neg_be=$(neg_be))"))
         end
-        # Slow path: accumulate relation and attempt local linalg solve.
+        
         push!(local_rel_rows, fb_row)
         push!(local_rel_be,   neg_be)
         push!(local_rel_al,   neg_al)
         n_local_be_rows += 1
         n_local_be_rows >= _next_linalg_at || return nothing
-        _next_linalg_at += 10   # backoff: try again after 10 more β≠0 rows
+        _next_linalg_at += 10
         return try_local_linalg_solve()
-    end
-
-    # ── Helper: solve k from a conj closure ──────────────────────────────────
-    # A conj closure gives:  atom(fb[i0_cur]) - atom(fb[i0_pre]) ≡ c_al·G + c_be·T
-    # Both atoms are in atom_log_dict (or local_alog), so:
-    #   c_al + c_be·k  ≡  alog[fb[i0_cur]] - alog[fb[i0_pre]]  (mod ell)
-    # Returns k::Int on success, nothing on soft inapplicable (missing logs, β=0).
-    # Asserts on internal inconsistency (all logs present, β≠0, k fails verify).
-
-    function try_solve_conj(i0_cur::Int, i0_pre::Int, c_al::Int, c_be::Int)::Union{Int,Nothing}
-        # Self-closure: same atom on both sides → row cancels.
-        # The relation collapses to 0 = c_al·G + c_be·T, which is a pure
-        # scalar equation giving k = -c_al · c_be⁻¹ mod ell directly.
-        # No atom logs needed — just verify and return.
-        if i0_cur == i0_pre
-            c_be == 0 && return nothing   # 0 = c_al·G, degenerate
-            k_try = mulmod(mod(-c_al, ellI), Int(powermod(c_be, ell - 2, ell)))
-            if jac_mul(G, k_try, ell) == T
-                return k_try
-            end
-            @assert false "try_solve_conj: self-closure bad relation — k_try=$(k_try) failed verification (c_al=$(c_al), c_be=$(c_be))"
-        end
-
-        if c_be == 0
-            # β=0 self-opposite conj closure: pure G relation between two atoms.
-            # Attempt to extend alog: atom(fb[i0_cur]) - atom(fb[i0_pre]) ≡ c_al·G
-            l_pre = alog_get(fb[i0_pre])
-            l_cur = alog_get(fb[i0_cur])
-            if l_pre != -1 && l_cur == -1
-                local_alog[fb[i0_cur]] = mod(c_al + l_pre, ellI)
-                n_alog_extended += 1
-            elseif l_cur != -1 && l_pre == -1
-                local_alog[fb[i0_pre]] = mod(l_cur - c_al, ellI)
-                n_alog_extended += 1
-            end
-            return nothing
-        end
-
-        pt_cur = fb[i0_cur]
-        pt_pre = fb[i0_pre]
-        l_cur  = alog_get(pt_cur)
-        l_pre  = alog_get(pt_pre)
-
-        if l_cur == -1 || l_pre == -1
-            # Atom logs missing: express as a 2-atom relation and accumulate.
-            # atom(fb[i0_cur]) - atom(fb[i0_pre]) ≡ c_al·G + c_be·T  (mod ell)
-            # → 1·log(fb[i0_cur]) + (-1)·log(fb[i0_pre]) ≡ c_al + c_be·k  (mod ell)
-            # Stored as (row_conj, c_be, al_adj): linalg puts -c_be in column nF+1.
-            row_conj = Dict{Int,Int}(i0_cur => 1)
-            i0_cur != i0_pre && (row_conj[i0_pre] = get(row_conj, i0_pre, 0) - 1)
-            # If l_cur or l_pre is known, fold it into c_al to reduce unknowns.
-            al_adj = c_al
-            if l_cur != -1
-                al_adj = mod(al_adj - l_cur, ellI)
-                delete!(row_conj, i0_cur)
-            end
-            if l_pre != -1
-                al_adj = mod(al_adj + l_pre, ellI)
-                # remove pre contribution (was -1 coef)
-                nv = get(row_conj, i0_pre, 0) + 1
-                nv == 0 ? delete!(row_conj, i0_pre) : (row_conj[i0_pre] = nv)
-            end
-            push!(local_rel_rows, row_conj)
-            push!(local_rel_be,   c_be)
-            push!(local_rel_al,   al_adj)
-            n_local_be_rows += 1
-            n_local_be_rows >= _next_linalg_at || return nothing
-            _next_linalg_at += 5
-            return try_local_linalg_solve()
-        end
-
-        lhs   = mod(l_cur - l_pre, ellI)
-        k_try = mulmod(mod(lhs - c_al, ellI), Int(powermod(c_be, ell - 2, ell)))
-
-        if jac_mul(G, k_try, ell) == T
-            return k_try
-        end
-        # Both atom logs present, β≠0, but k failed to verify — internal inconsistency.
-        @assert false "try_solve_conj: bad relation — all atom logs present, β≠0, but k_try=$(k_try) failed verification (i0_cur=$(i0_cur), i0_pre=$(i0_pre), c_al=$(c_al), c_be=$(c_be), lhs=$(lhs))"
     end
 
     # ── Main walk loop ────────────────────────────────────────────────────────
@@ -710,7 +604,7 @@ function phase3_trial_worker(
     flush(stdout)
 
     for _raw_step in 1:step_cap
-        if _raw_step & 0xffff == 0   # every 65536 raw steps
+        if _raw_step & 0xffff == 0
             now = time()
             if now - t_last_heartbeat >= 30.0
                 @printf("[phase3 trial %d | heartbeat] raw_step=%d  n_steps=%d  n_conj_branch=%d  n_linalg=%d  elapsed=%.1fs\n",
@@ -719,6 +613,7 @@ function phase3_trial_worker(
                 t_last_heartbeat = now
             end
         end
+        
         si        = rand(1:n_steps_prebuilt)
         D_cur     = jac_add(D_cur, step_D[si])
         alpha_cur = mod(alpha_cur + step_a[si], ellI)
@@ -726,13 +621,11 @@ function phase3_trial_worker(
 
         beta_cur == 0 && continue
 
-        # Gate 1: degree-2 divisor
         fp3_deg(D_cur.u) != 2 && continue
         u0 = D_cur.u[1]; u1 = D_cur.u[2]
         v0 = D_cur.v[1]; v1 = D_cur.v[2]
         px, py = cur_pt
 
-        # Gate 2: P0 not in support of D_cur
         fp(fp(px*px) + fp(u1*px) + u0) == 0 && continue
 
         phi_c = build_phi_mumford(px, py, u0, u1, v0, v1)
@@ -755,44 +648,71 @@ function phase3_trial_worker(
             lp_key = canonical_lp1_conj_key(RS_mumford::NTuple{4,Int})
 
             if i0 != 0
-                # A1: 1-LP-conj — P0 is in FB, RS pair is the LP atom
                 n_conj_branch += 1
 
-                # Read-only lookup into the live precompute conj store.
-                # In the amortized β=0 precompute prev_be is always 0, but we
-                # subtract it correctly here so the formula is right in all modes.
                 _conj_v = lp1_conj_store !== nothing ? conj_lookup_or_nothing(lp1_conj_store, lp_key) : nothing
                 if _conj_v !== nothing
                     v = _conj_v
-                    prev_col = Int(v.i0)
-                    prev_al  = Int(v.neg_al)
-                    prev_be  = Int(_conj_prev_be(v))   # 0 for LP1ConjVal (amortized), neg_be for LP1ConjValFull
-                    c_al = mod(neg_al - prev_al, ellI)
-                    c_be = mod(neg_be - prev_be, ellI)   # was: c_be = neg_be (ignored prev_be)
-                    n_1lp_conj_pre += 1
-                    for _ in 1:post_conj_stride; cur_pt = next_anchor_p3(); end
-                    k_rec = try_solve_conj(i0, prev_col, c_al, c_be)
-                    k_rec !== nothing && break
+                    si = conj_shard_idx(lp_key)
+                    
+                    # Instead of parsing missing legacy .i0, extract the valid row directly
+                    prev_row = conj_hot_row_lookup(lp1_conj_store, si, lp_key)
+                    
+                    if prev_row !== nothing
+                        prev_al  = Int(v.neg_al)
+                        prev_be  = Int(_conj_prev_be(v))
+                        c_al = mod(neg_al - prev_al, ellI)
+                        c_be = mod(neg_be - prev_be, ellI)
+                        
+                        n_1lp_conj_pre += 1
+                        for _ in 1:post_conj_stride; cur_pt = next_anchor_p3(); end
+                        
+                        # Generate the diff vector between current steps and previous step
+                        row_cur = Dict{Int,Int}(i0 => 1) 
+                        combined = copy(row_cur)
+                        for (j, coef) in prev_row
+                            nv = get(combined, j, 0) - coef
+                            nv == 0 ? delete!(combined, j) : (combined[j] = nv)
+                        end
+                        
+                        k_rec = try_solve(combined, c_al, c_be)
+                        k_rec !== nothing && break
+                    end
 
                 elseif haskey(local_lp1_conj, lp_key)
-                    v = local_lp1_conj[lp_key]
-                    prev_col, prev_al, prev_be = Int(v.i0), Int(v.neg_al), Int(v.neg_be)
+                    prev_row, v = local_lp1_conj[lp_key]
+                    prev_al, prev_be = Int(v.neg_al), Int(v.neg_be)
+                    
                     c_al = mod(neg_al - prev_al, ellI)
                     c_be = mod(neg_be - prev_be, ellI)
                     delete!(local_lp1_conj, lp_key)
+                    
                     n_1lp_conj_local += 1
                     for _ in 1:post_conj_stride; cur_pt = next_anchor_p3(); end
-                    k_rec = try_solve_conj(i0, prev_col, c_al, c_be)
+                    
+                    row_cur = Dict{Int,Int}(i0 => 1)
+                    combined = copy(row_cur)
+                    for (j, coef) in prev_row
+                        nv = get(combined, j, 0) - coef
+                        nv == 0 ? delete!(combined, j) : (combined[j] = nv)
+                    end
+                    
+                    k_rec = try_solve(combined, c_al, c_be)
                     k_rec !== nothing && break
                 else
                     if length(local_lp1_conj) < local_lp_cap
-                        @assert neg_al >= 0 && neg_be >= 0 "negative neg_al/neg_be before UInt64 cast"
-                        @assert ell < typemax(UInt64) "ell too large for UInt64 LP1ConjValFull fields — widen struct"
-                        local_lp1_conj[lp_key] = LP1ConjValFull(UInt32(0), UInt64(neg_al), UInt64(neg_be))
+                        if neg_al < 0 || neg_be < 0
+                            throw(ErrorException("negative neg_al/neg_be before UInt64 cast"))
+                        end
+                        if ell >= typemax(UInt64)
+                            throw(ErrorException("ell too large for UInt64 LP1ConjValFull fields — widen struct"))
+                        end
+                        # Store the valid row into the local struct tuple
+                        row_cur = Dict{Int,Int}(i0 => 1)
+                        local_lp1_conj[lp_key] = (row_cur, LP1ConjValFull(UInt32(0), UInt64(neg_al), UInt64(neg_be)))
                     end
                 end
             end
-            # A2: i0 not in FB → 2-LP-conj, skip (no stride on miss/skip)
             continue
         end
 
@@ -805,7 +725,6 @@ function phase3_trial_worker(
         n_lp = (i0 == 0 ? 1 : 0) + (iR == 0 ? 1 : 0) + (iS == 0 ? 1 : 0)
 
         if n_lp == 0
-            # B0: 0-LP direct solve
             fb_row = Dict{Int,Int}()
             for idx in (i0, iR, iS)
                 fb_row[idx] = get(fb_row, idx, 0) + 1
@@ -816,7 +735,6 @@ function phase3_trial_worker(
             cur_pt = next_anchor_p3()
 
         elseif n_lp == 1
-            # B1: 1-LP-affine
             lp_pt  = i0 == 0 ? cur_pt : iR == 0 ? R : S
             fb_row = Dict{Int,Int}()
             for idx in (i0, iR, iS)
@@ -859,7 +777,6 @@ function phase3_trial_worker(
             cur_pt = iR != 0 ? R : iS != 0 ? S : next_anchor_p3()
 
         else
-            # B2/B3: 2-LP or 3-LP, discard
             cur_pt = next_anchor_p3()
         end
     end
@@ -870,7 +787,7 @@ function phase3_trial_worker(
 
     if verbose
         k_rec_s  = k_rec  === nothing ? "none" : string(k_rec)
-        k_true_s = k_true === nothing ? "?"    : string(k_true)
+        k_true_s = k_true === nothing ? "?" : string(k_true)
         match_s  = verified ? "ok" : "MISMATCH"
         @printf("[phase3 trial %d | t=%.3fs] k_rec=%s  k_true=%s  match=%s  steps=%d  0lp=%d  1lp_aff_pre=%d  1lp_aff_local=%d  1lp_conj_pre=%d  1lp_conj_local=%d  conj_branch=%d  linalg_attempts=%d\n",
                 trial_idx, elapsed, k_rec_s, k_true_s, match_s,
@@ -879,16 +796,10 @@ function phase3_trial_worker(
     end
 
     return Phase3Result(
-        trial_idx,
-        k_rec,
-        k_true,
-        n_steps,
-        n_0lp,
+        trial_idx, k_rec, k_true, n_steps, n_0lp,
         n_1lp_aff_pre + n_1lp_conj_pre,
         n_1lp_aff_local + n_1lp_conj_local,
-        n_alog_extended,
-        elapsed,
-        success && verified)
+        n_alog_extended, elapsed, success && verified)
 end
 
 # ---------------------------------------------------------------------------
