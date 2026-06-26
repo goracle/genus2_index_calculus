@@ -92,7 +92,9 @@ end
     UInt16(buf[off+1]) | (UInt16(buf[off+2]) << 8)
 
 @inline _buf_fp(buf::Vector{UInt8})::UInt64  = _buf_u64(buf, OFF_FP)
-@inline _buf_i0(buf::Vector{UInt8})::UInt16  = _buf_u16(buf, OFF_I0)
+@inline function _buf_anchor_indices(buf::Vector{UInt8})::NTuple{K_MAX,UInt16}
+    ntuple(j -> _buf_u16(buf, OFF_I0 + 2*(j-1)), K_MAX)
+end
 @inline _buf_step(buf::Vector{UInt8})::UInt32 = _buf_u32(buf, OFF_STEP)
 @inline _buf_al(buf::Vector{UInt8})::UInt64  = _buf_u64(buf, OFF_AL)
 @inline _buf_be(buf::Vector{UInt8})::UInt64  = _buf_u64(buf, OFF_BE)
@@ -152,7 +154,7 @@ end
 function _write_record!(buf::Vector{UInt8}, off::Int,
                          fp::UInt64, u0::UInt32, u1::UInt32,
                          v0::UInt32, v1::UInt32,
-                         i0::UInt16, step::UInt32, al::UInt64, be::UInt64)
+                         ai::NTuple{K_MAX,UInt16}, step::UInt32, al::UInt64, be::UInt64)
     # fp
     buf[off+1] = UInt8(fp & 0xff); buf[off+2] = UInt8((fp>>8)&0xff)
     buf[off+3] = UInt8((fp>>16)&0xff); buf[off+4] = UInt8((fp>>24)&0xff)
@@ -170,30 +172,35 @@ function _write_record!(buf::Vector{UInt8}, off::Int,
     # v1
     buf[off+21] = UInt8(v1&0xff); buf[off+22] = UInt8((v1>>8)&0xff)
     buf[off+23] = UInt8((v1>>16)&0xff); buf[off+24] = UInt8((v1>>24)&0xff)
-    # i0
-    buf[off+25] = UInt8(i0&0xff); buf[off+26] = UInt8((i0>>8)&0xff)
-    # step (D8 store_step, UInt32, bytes 26-29 / off+27..off+30)
-    buf[off+27] = UInt8(step&0xff); buf[off+28] = UInt8((step>>8)&0xff)
-    buf[off+29] = UInt8((step>>16)&0xff); buf[off+30] = UInt8((step>>24)&0xff)
-    # pad (2 bytes)
-    buf[off+31] = 0; buf[off+32] = 0
-    # al
-    buf[off+33] = UInt8(al&0xff); buf[off+34] = UInt8((al>>8)&0xff)
-    buf[off+35] = UInt8((al>>16)&0xff); buf[off+36] = UInt8((al>>24)&0xff)
-    buf[off+37] = UInt8((al>>32)&0xff); buf[off+38] = UInt8((al>>40)&0xff)
-    buf[off+39] = UInt8((al>>48)&0xff); buf[off+40] = UInt8((al>>56)&0xff)
-    # be
-    buf[off+41] = UInt8(be&0xff); buf[off+42] = UInt8((be>>8)&0xff)
-    buf[off+43] = UInt8((be>>16)&0xff); buf[off+44] = UInt8((be>>24)&0xff)
-    buf[off+45] = UInt8((be>>32)&0xff); buf[off+46] = UInt8((be>>40)&0xff)
-    buf[off+47] = UInt8((be>>48)&0xff); buf[off+48] = UInt8((be>>56)&0xff)
+    # anchor indices: K_MAX contiguous UInt16 slots starting at OFF_I0 (=24)
+    @inbounds for j in 1:K_MAX
+        b = off + OFF_I0 + 2*(j-1)
+        iv = ai[j]
+        buf[b+1] = UInt8(iv & 0xff); buf[b+2] = UInt8((iv >> 8) & 0xff)
+    end
+    # step (UInt32 at OFF_STEP)
+    sb = off + OFF_STEP
+    buf[sb+1] = UInt8(step&0xff); buf[sb+2] = UInt8((step>>8)&0xff)
+    buf[sb+3] = UInt8((step>>16)&0xff); buf[sb+4] = UInt8((step>>24)&0xff)
+    # al (UInt64 at OFF_AL)
+    ab = off + OFF_AL
+    buf[ab+1] = UInt8(al&0xff); buf[ab+2] = UInt8((al>>8)&0xff)
+    buf[ab+3] = UInt8((al>>16)&0xff); buf[ab+4] = UInt8((al>>24)&0xff)
+    buf[ab+5] = UInt8((al>>32)&0xff); buf[ab+6] = UInt8((al>>40)&0xff)
+    buf[ab+7] = UInt8((al>>48)&0xff); buf[ab+8] = UInt8((al>>56)&0xff)
+    # be (UInt64 at OFF_BE)
+    bb = off + OFF_BE
+    buf[bb+1] = UInt8(be&0xff); buf[bb+2] = UInt8((be>>8)&0xff)
+    buf[bb+3] = UInt8((be>>16)&0xff); buf[bb+4] = UInt8((be>>24)&0xff)
+    buf[bb+5] = UInt8((be>>32)&0xff); buf[bb+6] = UInt8((be>>40)&0xff)
+    buf[bb+7] = UInt8((be>>48)&0xff); buf[bb+8] = UInt8((be>>56)&0xff)
     nothing
 end
 
 # ---------------------------------------------------------------------------
 #  Cold (disk) lookup
 #
-#  Returns (found, run_idx, pos_in_run, i0_v, al_v, be_v).
+#  Returns (found, run_idx, pos_in_run, anchor_indices, step_v, al_v, be_v).
 #  Caller must hold sc.file_lock.  `read_fd` and `buf` are the LSM's
 #  spill_read_io and read_buf fields passed in directly so this function
 #  remains free of LP1ConjLSM-type references (defined later in core).
@@ -203,8 +210,9 @@ function _lsm_disk_find(runs::Vector{RunMeta},
                          buf::Vector{UInt8},
                          key::CanonicalLP1Key,
                          fp_target::UInt64
-                        )::Tuple{Bool,Int,Int,UInt16,UInt32,UInt64,UInt64}
-    read_fd < 0 && return (false, 0, 0, UInt16(0), UInt32(0), UInt64(0), UInt64(0))
+                        )::Tuple{Bool,Int,Int,NTuple{K_MAX,UInt16},UInt32,UInt64,UInt64}
+    none_tuple = ntuple(_ -> ANCHOR_IDX_NONE, K_MAX)
+    read_fd < 0 && return (false, 0, 0, none_tuple, UInt32(0), UInt64(0), UInt64(0))
     ku0 = UInt32(key & 0x00000000ffffffff)
     ku1 = UInt32((key >> 32)  & 0x00000000ffffffff)
     kv0 = UInt32((key >> 64)  & 0x00000000ffffffff)
@@ -235,12 +243,12 @@ function _lsm_disk_find(runs::Vector{RunMeta},
             _buf_fp(buf) != fp_target && break
             if !_run_is_dead(rm, pos) &&
                _buf_key_match(buf, ku0, ku1, kv0, kv1)
-                return (true, ri, pos, _buf_i0(buf), _buf_step(buf), _buf_al(buf), _buf_be(buf))
+                return (true, ri, pos, _buf_anchor_indices(buf), _buf_step(buf), _buf_al(buf), _buf_be(buf))
             end
             pos += 1
         end
     end
-    (false, 0, 0, UInt16(0), UInt32(0), UInt64(0), UInt64(0))
+    (false, 0, 0, none_tuple, UInt32(0), UInt64(0), UInt64(0))
 end
 
 # ---------------------------------------------------------------------------

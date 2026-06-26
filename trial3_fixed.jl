@@ -456,19 +456,22 @@ end
 #  index_calculus_walk — orchestrates phase 1, phase 2, and LA solve
 # ---------------------------------------------------------------------------
 function index_calculus_walk(G::Div2, T::Div2;
-                             fb_size          ::Int  = 650,
-                             verbose          ::Bool = true,
-                             analyze_matrix   ::Bool = true,
-                             asymptotic       ::Bool = true,
-                             solve            ::Bool = true,
-                             guided           ::Bool = true,
-                             enable_lp2       ::Bool = true,
-                             enable_lp2_conj  ::Bool = true,
-                             max_lp2_nodes    ::Int  = DEFAULT_MAX_LP2_NODES,
-                             max_lp2_conj_nodes::Int = DEFAULT_MAX_LP2_CONJ_NODES,
-                             use_cycle_union  ::Bool = false,
-                             conj_dataset_path::Union{Nothing,String} = "conj_closures.bin",
-                             random_fb        ::Bool = false)
+                             fb_size           ::Int  = 650,
+                             verbose           ::Bool = true,
+                             analyze_matrix    ::Bool = true,
+                             asymptotic        ::Bool = true,
+                             solve             ::Bool = true,
+                             guided            ::Bool = true,
+                             enable_lp2        ::Bool = true,
+                             enable_lp2_conj   ::Bool = true,
+                             max_lp2_nodes     ::Int  = DEFAULT_MAX_LP2_NODES,
+                             max_lp2_conj_nodes::Int  = DEFAULT_MAX_LP2_CONJ_NODES,
+                             use_cycle_union   ::Bool = false,
+                             conj_dataset_path ::Union{Nothing,String} = "conj_closures.bin",
+                             random_fb         ::Bool = false,
+                             anchor_tuple_size ::Int  = 1,
+                             enable_lp1_aff    ::Bool = true,
+                             post_conj_stride  ::Int  = 0)
 
     t_walk_start = time()
 
@@ -552,7 +555,8 @@ function index_calculus_walk(G::Div2, T::Div2;
     shared_lp_doubled     = Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int}}()
     shared_lp1_conj_arr   = [LP1ConjLSM(ell; amortized=false,
                                           spill_path=joinpath(homedir(), "crypto", "tmp", "lp1_conj_main_t$(tid).h5"),
-                                          max_hot_ram_mb = 512 ÷ Threads.nthreads())
+                                          max_hot_ram_mb = 512 ÷ Threads.nthreads(),
+                                          anchor_tuple_size = anchor_tuple_size)
                              for tid in 1:Threads.nthreads()]
     for lsm in shared_lp1_conj_arr
         let _p = lsm.spill_path
@@ -1606,7 +1610,10 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
                                   max_lp2_conj_nodes=max_lp2_conj_nodes,
                                   use_cycle_union=use_cycle_union,
                                   conj_dataset_path=conj_dataset_path,
-                                  random_fb=random_fb)
+                                  random_fb=random_fb,
+                                  anchor_tuple_size=anchor_tuple_size,
+                                  enable_lp1_aff=enable_lp1_aff,
+                                  post_conj_stride=post_conj_stride)
     t_walk_done = time() - t_walk
     k_rec = wres === nothing ? nothing : wres.k
 

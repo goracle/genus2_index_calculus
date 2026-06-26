@@ -201,15 +201,12 @@ end
 
 # conj_insert_or_pop! for ShardedLP1Conj: same atomic semantics as the LSM
 # version.  Returns (val, is_same_partial, prev_row) matching the LSM signature
-# so handle_1lp_conj! can treat both backends uniformly.  prev_row is always
-# nothing for ShardedLP1Conj; the caller falls back to conj_row_store.
+# so handle_1lp_conj! can treat both backends uniformly.  prev_row is
+# reconstructed from v.anchor_indices — never nothing for a real collision.
 #
-# Same-partial: all three of (i0, neg_al, neg_be) match the stored entry —
-# this is a genuine repeat of the same walk partial and carries no new
-# information.  Leave the stored entry in place and discard the new arrival
-# so it survives for a future cross-col visitor.
-# Any other collision (i0 differs, or same i0 but different α/β) is a valid
-# closure: different walk positions hit the same residual key.
+# Same-partial: (neg_al, neg_be) match the stored entry — genuine repeat,
+# leave stored entry in place and discard the new arrival.
+# Any other collision is a valid closure.
 @inline function conj_insert_or_pop!(sc::ShardedLP1Conj{V}, si::Int,
                                       key::CanonicalLP1Key, val::V,
                                       fb_row::Dict{Int,Int} = Dict{Int,Int}()
@@ -224,10 +221,10 @@ end
                 # Exact same partial (same α, same β): leave in place, discard.
                 return (nothing, true, nothing)
             end
-            # Different partial: valid closure.  Row must be recovered from
-            # conj_row_store by the caller (ShardedLP1Conj has no side-channel).
+            # Different partial: valid closure.  Reconstruct row from anchor_indices.
+            prev_row = _unpack_anchor_row(v.anchor_indices)
             _conj_delete_slot!(sh, slot)
-            (v, false, nothing)
+            (v, false, prev_row)
         elseif sh.count < sh.max_entries
             _conj_insert!(sh, key, val)
             (nothing, false, nothing)
@@ -409,7 +406,6 @@ end
         shared_lp1_conj ::Union{ShardedLP1Conj{V}, LP1ConjLSM{V}},
         rank_growth     ::Vector{Tuple{Int,Int}},
         combined_scratch::ThreadScratchpad,
-        conj_row_store  ::Dict{CanonicalLP1Key, Dict{Int,Int}},
         P0              ::NTuple{2,Int},
         phi_bias_stat   ::PhiBiasStat,
         next_anchor_ref ::Ref{Function},
@@ -424,14 +420,13 @@ end
         anchor_alpha_cap::Int = 200_000,
         emitted_conj_rels::Union{Set{NTuple{4,Int}}, Nothing} = nothing,
         conj_dataset    ::Union{ConjClosureDataset, Nothing} = nothing,
-        step_phase      ::Int = -1,
-        conj_row_store_cap::Int = CONJ_ROW_STORE_CAP_BASE)::NTuple{2,Int} where V
+        step_phase      ::Int = -1)::NTuple{2,Int} where V
 
     si = conj_shard_idx(lp_key)
 
     # Use atomic insert-or-pop to close the haskey/insert TOCTOU race.
     val = _conj_make_val(V, copy(fb_row), UInt32(s.raw_steps), UInt64(neg_al), UInt64(neg_be))
-    prev, is_same_partial, prev_row_lsm = conj_insert_or_pop!(shared_lp1_conj, si, lp_key, val, fb_row)
+    prev, is_same_partial, _ = conj_insert_or_pop!(shared_lp1_conj, si, lp_key, val, fb_row)
 
     if is_same_partial
         s.hits_1lp_conj_trivial_same_col += 1
@@ -456,27 +451,10 @@ end
     if prev !== nothing
         # --- Close against shared global entry ---
         v = prev
-        
-        # Retrieve the stored entry's FB row.
-        # LP1ConjLSM returns it via prev_row_lsm (hot_rows side-channel).
-        # ShardedLP1Conj returns nothing; fall back to conj_row_store.
-        # If the row is unavailable (disk-resident entry in LSM), drop the close.
-        prev_fb_row = if prev_row_lsm !== nothing
-            prev_row_lsm
-        else
-            r = get(conj_row_store, lp_key, nothing)
-            if r === nothing && shared_lp1_conj isa LP1ConjLSM
-                # Disk hit with no recoverable row — cannot form a valid relation.
-                s.hits_1lp_conj_row_missing += 1
-                return next_anchor_ref[]()
-            end
-            r
-        end
-        if prev_fb_row === nothing
-            # Row is genuinely missing (shouldn't happen for ShardedLP1Conj, but be safe).
-            s.hits_1lp_conj_row_missing += 1
-            return next_anchor_ref[]()
-        end
+
+        # Reconstruct the stored entry's FB row from anchor_indices packed in the val.
+        # Works for both hot and disk hits — no side-channel or row store needed.
+        prev_fb_row = _unpack_anchor_row(v.anchor_indices)
         # prev_col: representative single anchor index from the stored row
         # (used by diagnostics that expect a single Int; minimum key is stable)
         prev_col = isempty(prev_fb_row) ? 0 : minimum(keys(prev_fb_row))
@@ -494,8 +472,6 @@ end
 
         if combined_al == 0 && combined_be == 0
             s.hits_1lp_conj_trivial_zero_dal += 1
-            # Clean up the row store on a trivial zero step before leaving
-            delete!(conj_row_store, lp_key)
             return next_anchor_ref[]()
         end
 
@@ -503,9 +479,6 @@ end
         cs = combined_scratch.combined_scratch
         sparse_copy!(cs, fb_row)
         lp2_subtract_rows(cs, prev_fb_row)
-
-        # Remove the relation from the row store now that it is successfully closed
-        delete!(conj_row_store, lp_key)
 
         # An empty combined row means the two closures carried identical FB support —
         # the anchor contributions cancelled exactly.  This is not a usable relation
@@ -535,7 +508,7 @@ end
                 @printf("  prev_fb_row (stored): %s\n", string(sort(collect(prev_fb_row))))
                 @printf("  cs (combined):        %s\n", string(sort(collect(cs))))
                 @printf("  row_w=%d  source=%s\n", sum(abs(v) for v in values(cs)),
-                        prev_row_lsm !== nothing ? "hot_rows" : "conj_row_store")
+                        "anchor_indices")
                 @printf("  lp_key=%s\n", string(lp_key))
                 @printf("============================================================\n\n")
                 Base.flush(stdout)
@@ -598,18 +571,9 @@ end
         return next_anchor_ref[]()
     end
 
-    # --- THIS IS THE STORE BRANCH (where prev was nothing) ---
-    if !is_same_partial
-        if length(conj_row_store) >= conj_row_store_cap
-            # Row store is full: skip storing the fb_row for this partial.
-            # The key is still inserted into the LSM so a future same-partial
-            # detection works, but a closure attempt will return row_missing
-            # (existing path) and be discarded.  Count as a cap eviction.
-            s.evictions_conj += 1
-        else
-            conj_row_store[lp_key] = copy(fb_row)
-        end
-    end
+    # --- STORE BRANCH ---
+    # The val already carries anchor_indices packed by _conj_make_val above;
+    # no separate row store entry is needed.
 
     return next_anchor_ref[]()
 end
@@ -1341,12 +1305,6 @@ function phase2_worker(G               ::Div2,
     fb_row_scratch   = sizehint!(Dict{Int,Int}(), 4)
     combined_scratch = ThreadScratchpad()
 
-    # Side-store for FB rows paired with conj LP1 entries.  Thread-local; entries
-    # are set on store and pop!'d on close.  Cross-thread closes (thread A stores,
-    # thread B closes) will miss here and fall back to the weight-2 synthetic row,
-    # but the alpha sign fix still makes those correct for k=1.
-    conj_row_store = Dict{CanonicalLP1Key, Dict{Int,Int}}()
-
     # Initialize a fast, thread-local RNG for step selection.
     # Xoshiro has a 2^256 period and is seeded randomly per thread,
     # so threads take fully independent paths through the step table.
@@ -1585,14 +1543,13 @@ function phase2_worker(G               ::Div2,
                                                fb, nF_cur, G, T,
                                                alpha_vec, beta_vec, rel_rows, rel_counter,
                                                ort, s, shared_lp1_conj, rank_growth,
-                                               combined_scratch, conj_row_store,
+                                               combined_scratch,
                                                P0, phi_bias_stat, next_anchor_ref,
                                                _a_bucket, deep_stat, al, P0[1], Int(a), P0[2],
                                                post_conj_stride,
                                                conj_anchor_alpha_seen, CONJ_ANCHOR_ALPHA_CAP,
                                                emitted_conj_rels, conj_dataset,
-                                               si,
-                                               max(1, CONJ_ROW_STORE_CAP_BASE ÷ K_anc))
+                                               si)
                     # D29: handle_1lp_conj! returns next_anchor_ref[]() on every
                     # path (miss, same-partial, AND emission/closure — see its
                     # source, every `return` is next_anchor_ref[]()). It never

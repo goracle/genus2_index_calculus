@@ -30,31 +30,11 @@ const ASSERT_RELATIONS = true
 const MAX_LP1_ENTRIES         = 50_000_000
 const MAX_LP1_DOUBLED_ENTRIES = 100_000
 
-# Per-thread cap on conj_row_store (the Dict that holds fb_rows for live LP1-conj
-# partials so closes can reconstruct the combined relation row).
-#
-# Without a cap this dict grows unboundedly: at ~250K conj steps/thread/30s and a
-# ~0.001% closure rate, virtually no entries are ever deleted, so the store fills
-# with ~250K small Dict{Int,Int} objects per thread.  At ~200 bytes/entry that is
-# ~50 MB/thread × 32 threads = ~1.6 GB just from row_stores — on top of the LSM
-# hot tables, Oscar, Sage residuals, etc., pushing a 16 GB system into OOM.
-#
-# When the cap is hit we skip the store and increment s.evictions_conj (already
-# printed as conj_cap_drops in the 30s status line).  The entry is still inserted
-# into the LSM; only the fb_row is dropped.  A subsequent closure attempt finds
-# row_missing (existing path) and is discarded, same as cross-thread closes today.
-#
-# K-scaling: with K-tuple anchors the fb_row has K entries instead of 1, so each
-# stored Dict{Int,Int} is slightly larger, but more importantly the effective
-# keyspace grows with K (more distinct Mumford residuals reachable), meaning the
-# store fills faster per unit time.  We divide by K so the per-thread memory
-# budget stays constant regardless of anchor tuple size:
-#   effective_cap = CONJ_ROW_STORE_CAP_BASE ÷ K
-#
-# Sizing (K=1 base): 50_000 × ~200 B × 32 threads ≈ 320 MB total.
-# K=2 → 25_000/thread ≈ 160 MB total.  The cap is a safety bound against the
-# unbounded-growth failure mode; steady-state occupancy is typically far below it.
-const CONJ_ROW_STORE_CAP_BASE = 50_000
+# CONJ_ROW_STORE_CAP_BASE — REMOVED.
+# The per-thread conj_row_store Dict has been eliminated.  Anchor FB indices
+# are now stored directly in LP1ConjVal.anchor_indices (NTuple{K_MAX,UInt16}) and
+# reconstructed at close time via _unpack_anchor_row(), so no side-channel is
+# needed and row_missing drops no longer occur.
 
 # MAX_LP1_CONJ_ENTRIES is no longer a fixed constant — it is computed at
 # ShardedLP1Conj(ell) construction time.
@@ -128,17 +108,24 @@ const CONJ_KEY_EMPTY  = typemax(CanonicalLP1Key)
 #  LP1ConjVal — value stored in the conj 1-LP table.
 #
 #  Amortized mode (beta_zero=true): neg_be is always 0 — drop the field.
-#    LP1ConjVal     (12 bytes): store_step::UInt32 + neg_al::UInt64
-#    LP1ConjValFull (20 bytes): store_step::UInt32 + neg_al::UInt64 + neg_be::UInt64
+#    LP1ConjVal     (16 bytes): anchor_indices(4) + store_step(4) + neg_al(8)
+#    LP1ConjValFull (24 bytes): anchor_indices(4) + store_step(4) + neg_al(8) + neg_be(8)
 #
-#  The anchor FB row (fb_row) is NOT stored in the val struct.  For K>1
-#  anchors the row is variable-length and cannot be embedded in the flat
-#  on-disk record layout.  Instead it lives in a per-shard side-channel
-#  Dict (LP1ConjLSM.hot_rows) that is maintained in parallel with the hot
-#  table.  Entries evicted/spilled to disk lose their row; closes against
-#  disk-resident entries are dropped (they become misses).  Same-thread
-#  closes always succeed via hot_rows; cross-thread closes succeed whenever
-#  the stored entry is still hot in the peer's table.
+#  anchor_indices — NTuple{K_MAX,UInt16} holding the FB indices of the K
+#    anchor points used to build the φ function for this partial, one slot
+#    per multiplicity unit (a tangency with count m fills m slots with the
+#    same index).  Unused trailing slots hold ANCHOR_IDX_NONE (0xffff).
+#    FB size is bounded by 20_000 < 65535 so UInt16 is always sufficient.
+#
+#    Storing the anchors IN the val eliminates both the hot_rows side-channel
+#    (LP1ConjLSM) and the per-thread conj_row_store (phase2_worker).  The
+#    stored fb_row is reconstructed at close time from anchor_indices without
+#    any additional Dict lookups, and disk-resident entries can be closed just
+#    as well as hot entries — no more row_missing drops.
+#
+#    The K_MAX UInt16 slots are also serialised into the on-disk record as
+#    K_MAX consecutive 2-byte fields starting at OFF_I0 (see
+#    lp1_conj_lsm_constants.jl for the full layout).
 #
 #  store_step -- inserting thread's raw_step truncated to UInt32 (~4B steps
 #                max).  Used by D8 closure-depth diagnostic.  Serialised
@@ -146,15 +133,33 @@ const CONJ_KEY_EMPTY  = typemax(CanonicalLP1Key)
 #  neg_al     -- exponent mod ell.  ell <= #J ~= p^2, fits UInt64 for p<2^32.
 #  neg_be     -- same range; omitted in amortized mode (always 0).
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+#  K_MAX — maximum number of anchor FB indices stored per LP1-conj partial.
+#
+#  Set this to the largest K you intend to use (i.e. the largest anchor tuple
+#  size passed to step_phi_k / handle_1lp_conj!).  Increasing K_MAX by 1
+#  costs 2 bytes per on-disk record and 2 bytes per hot-table value entry;
+#  there is no other overhead.  Recompile after changing.
+#
+#  Supported range: K_MAX ≥ 1.  K=1 (single anchor) is the default and most
+#  common case.  K=2 covers two-anchor φ construction.  Higher K is supported
+#  without any code change — just increase this constant.
+# ---------------------------------------------------------------------------
+const K_MAX = 2   # ← user-configurable; set to max K you will use
+
+const ANCHOR_IDX_NONE = UInt16(0xffff)   # sentinel: unused slot in anchor_indices
+
 struct LP1ConjVal          # amortized mode
-    store_step ::UInt32
-    neg_al     ::UInt64
+    anchor_indices ::NTuple{K_MAX,UInt16}
+    store_step     ::UInt32
+    neg_al         ::UInt64
 end
 
 struct LP1ConjValFull      # single-shot mode
-    store_step ::UInt32
-    neg_al     ::UInt64
-    neg_be     ::UInt64
+    anchor_indices ::NTuple{K_MAX,UInt16}
+    store_step     ::UInt32
+    neg_al         ::UInt64
+    neg_be         ::UInt64
 end
 
 # ---------------------------------------------------------------------------
@@ -375,10 +380,46 @@ end
 @inline _conj_prev_be(v::LP1ConjVal)     = 0
 @inline _conj_prev_be(v::LP1ConjValFull) = Int(v.neg_be)
 
-# fb_row is accepted for call-site compatibility but is NOT stored in the val.
-# The row is managed by the LP1ConjLSM hot_rows side-channel instead.
-@inline _conj_make_val(::Type{LP1ConjVal},     fb_row::Dict{Int,Int}, step::UInt32, al::UInt64, be::UInt64) = LP1ConjVal(step, al)
-@inline _conj_make_val(::Type{LP1ConjValFull}, fb_row::Dict{Int,Int}, step::UInt32, al::UInt64, be::UInt64) = LP1ConjValFull(step, al, be)
+# Pack fb_row (Dict{Int,Int}, key=FB index, value=multiplicity) into a
+# NTuple{K_MAX,UInt16}.  One slot is filled per multiplicity unit — a
+# tangency with count m fills m consecutive slots with the same index.
+# Slots are filled in ascending key order for a canonical encoding.
+# Remaining slots (if total multiplicity < K_MAX) are padded with
+# ANCHOR_IDX_NONE.  Total multiplicity must not exceed K_MAX (caller's
+# K choice must respect K_MAX).
+@inline function _pack_anchor_indices(fb_row::Dict{Int,Int})::NTuple{K_MAX,UInt16}
+    isempty(fb_row) && return ntuple(_ -> ANCHOR_IDX_NONE, K_MAX)
+    buf = fill(ANCHOR_IDX_NONE, K_MAX)
+    pos = 1
+    for k in sort!(collect(keys(fb_row)))
+        m = fb_row[k]
+        @assert pos + m - 1 <= K_MAX "total anchor multiplicity exceeds K_MAX=$K_MAX"
+        uk = UInt16(k)
+        for _ in 1:m
+            buf[pos] = uk
+            pos += 1
+        end
+    end
+    return NTuple{K_MAX,UInt16}(buf)
+end
+
+# Reconstruct the fb_row Dict from stored anchor_indices.  Walks the tuple
+# until it hits the first ANCHOR_IDX_NONE (slots are always filled
+# contiguously from the front by _pack_anchor_indices, so the first NONE
+# marks the end), accumulating per-index counts.
+@inline function _unpack_anchor_row(ai::NTuple{K_MAX,UInt16})::Dict{Int,Int}
+    row = Dict{Int,Int}()
+    for a in ai
+        a == ANCHOR_IDX_NONE && break
+        row[Int(a)] = get(row, Int(a), 0) + 1
+    end
+    return row
+end
+
+@inline _conj_make_val(::Type{LP1ConjVal},     fb_row::Dict{Int,Int}, step::UInt32, al::UInt64, be::UInt64) =
+    LP1ConjVal(_pack_anchor_indices(fb_row), step, al)
+@inline _conj_make_val(::Type{LP1ConjValFull}, fb_row::Dict{Int,Int}, step::UInt32, al::UInt64, be::UInt64) =
+    LP1ConjValFull(_pack_anchor_indices(fb_row), step, al, be)
 # ---------------------------------------------------------------------------
 #  conj_to_dict — snapshot a ShardedLP1Conj into a plain Dict for lockless
 #  read-only use in phase3 workers.  Call once before spawning workers.

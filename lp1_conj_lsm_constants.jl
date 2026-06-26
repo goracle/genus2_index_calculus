@@ -2,7 +2,32 @@
 #  lp1_conj_lsm_constants.jl — compile-time constants for LP1ConjLSM
 # =============================================================================
 
-const RECORD_BYTES = 48   # fp(8) + u0u1v0v1(16) + i0(2) + step(4) + pad(2) + al(8) + be(8)
+# ---------------------------------------------------------------------------
+#  Record field offsets within a record (0-based byte offsets from record start):
+#    0: fp      UInt64
+#    8: u0      UInt32
+#   12: u1      UInt32
+#   16: v0      UInt32
+#   20: v1      UInt32
+#   24: i[1..K_MAX]   K_MAX × UInt16  ← anchor_indices, one slot per
+#                      multiplicity unit; unused trailing slots are
+#                      ANCHOR_IDX_NONE (0xffff)
+#   24+2*K_MAX: step  UInt32   ← store_step (D8 closure-depth diagnostic)
+#   28+2*K_MAX: al    UInt64
+#   36+2*K_MAX: be    UInt64
+#  total: 44 + 2*K_MAX bytes
+# ---------------------------------------------------------------------------
+const OFF_FP   = 0
+const OFF_U0   = 8
+const OFF_U1   = 12
+const OFF_V0   = 16
+const OFF_V1   = 20
+const OFF_I0   = 24                     # start of the K_MAX anchor-index slots
+const OFF_STEP = 24 + 2*K_MAX
+const OFF_AL   = 28 + 2*K_MAX
+const OFF_BE   = 36 + 2*K_MAX
+
+const RECORD_BYTES = 44 + 2*K_MAX   # fp(8) + u0u1v0v1(16) + i[1..K_MAX](2*K_MAX) + step(4) + al(8) + be(8)
 
 # ---------------------------------------------------------------------------
 #  Rényi-2 / S₂ estimator — AMS sketch (Alon-Matias-Szegedy)
@@ -76,63 +101,12 @@ const PARTIAL_FP_LOG_CAP = 1_000_000
 # Top-K multiplicity tracker capacity.
 const TOPK_K = 200   # track top-200 keys by raw emission count
 
-# Per-shard base cap on hot_rows (the Dict{CanonicalLP1Key,Dict{Int,Int}}
-# side-channel that stores fb_rows for live hot entries so closes can
-# reconstruct relations).
-#
-# Without a cap, hot_rows grows with every insertion and is only trimmed on
-# closure (rare: ~0.001% rate) or shard flush (only happens when the hot table
-# reaches ~75% load).  At 278K entries/LSM × 32 LSMs × ~200B/entry the hot_rows
-# alone consume ~1.8 GB, and they grow continuously throughout the walk.
-#
-# When the per-shard cap is hit we skip storing the fb_row.  The key/val are
-# still inserted into the hot table so same-partial detection keeps working; a
-# subsequent closure attempt returns row_missing (existing path) and is discarded.
-#
-# K-scaling: with K-tuple anchors the fb_row Dict has K entries instead of 1,
-# so each stored Dict{Int,Int} is ~K× larger.  More importantly the effective
-# keyspace grows with K (more distinct Mumford residuals reachable), so the
-# store fills faster per unit time.  The effective per-shard cap is therefore
-# HOT_ROWS_CAP_BASE_PER_SHARD ÷ K, matching the CONJ_ROW_STORE_CAP_BASE ÷ K
-# scaling used for the (now-defunct) per-thread conj_row_store.
-#
-# This value is the BASE (K=1) cap per shard.  The runtime cap is computed at
-# LP1ConjLSM construction time (see LP1ConjLSM{V} inner constructor) and stored
-# in the hot_rows_cap field of the struct.  The constant here must NOT be used
-# directly in hot-path code — always use sc.hot_rows_cap instead.
-#
-# Sizing (K=1): 500 rows/shard × 64 shards × 32 LSMs × ~200B ≈ 200 MB total.
-# K=2 → 250/shard ≈ 100 MB total.  The cap is a safety bound; in practice
-# closures are so rare that the shard row-dict stays small.
-const HOT_ROWS_CAP_BASE_PER_SHARD = 5000
+# HOT_ROWS_CAP_PER_SHARD — REMOVED.
+# Anchor FB indices are now stored in LP1ConjVal.anchor_indices; the hot_rows
+# side-channel Dict has been eliminated from LP1ConjLSM entirely.
 
 # Compaction write buffer.
 const COMPACT_WRITE_BUF_BYTES = 4 * 1024 * 1024   # 4 MB write buffer
-
-# ---------------------------------------------------------------------------
-#  Record field offsets within a record (0-based byte offsets from record start):
-#   0: fp   UInt64
-#   8: u0   UInt32
-#  12: u1   UInt32
-#  16: v0   UInt32
-#  20: v1   UInt32
-#  24: i0   UInt16
-#  26: step UInt32   ← store_step (D8 diagnostic: raw_step at insert time, truncated to UInt32)
-#  30: pad  UInt16   (2 bytes, zeroed)
-#  32: al   UInt64
-#  40: be   UInt64
-# total: 48
-# ---------------------------------------------------------------------------
-const OFF_FP   = 0
-const OFF_U0   = 8
-const OFF_U1   = 12
-const OFF_V0   = 16
-const OFF_V1   = 20
-const OFF_I0   = 24
-const OFF_STEP = 26   # UInt32 store_step for D8 closure-depth diagnostic
-# bytes 30-31: padding (zeroed)
-const OFF_AL   = 32
-const OFF_BE   = 40
 
 # ---------------------------------------------------------------------------
 #  Fingerprint
