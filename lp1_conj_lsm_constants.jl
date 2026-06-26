@@ -104,7 +104,7 @@ const TOPK_K = 200   # track top-200 keys by raw emission count
 # Sizing (K=1): 500 rows/shard × 64 shards × 32 LSMs × ~200B ≈ 200 MB total.
 # K=2 → 250/shard ≈ 100 MB total.  The cap is a safety bound; in practice
 # closures are so rare that the shard row-dict stays small.
-const HOT_ROWS_CAP_BASE_PER_SHARD = 500
+const HOT_ROWS_CAP_BASE_PER_SHARD = 5000
 
 # Compaction write buffer.
 const COMPACT_WRITE_BUF_BYTES = 4 * 1024 * 1024   # 4 MB write buffer
