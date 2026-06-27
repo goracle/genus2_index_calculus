@@ -64,7 +64,7 @@ function try_lp1_doubled_cross_close!(
         ort            ::OnlineRankTracker,
         G              ::Div2,
         T              ::Div2,
-    combined_scratch::ThreadScratchpad,     # Updated type signature to match the caller #combined_scratch  ::Dict{Int,Int},
+    combined_scratch::ThreadScratchpad{K_MAX},     # Updated type signature to match the caller #combined_scratch  ::Dict{Int,Int},
         fb             ::Vector{NTuple{2,Int}})::Bool
 
     haskey(shared_lp1,      pt) || return false
@@ -297,7 +297,7 @@ end
         shared_lp_doubled::Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int}},
         lp_col         ::LPResidualCollector,
         rank_growth    ::Vector{Tuple{Int,Int}},
-        combined_scratch::ThreadScratchpad,     # Updated type signature to match the caller #combined_scratch  ::Dict{Int,Int},
+        combined_scratch::ThreadScratchpad{K_MAX},     # Updated type signature to match the caller #combined_scratch  ::Dict{Int,Int},
         iR             ::Int,
         iS             ::Int,
         R              ::NTuple{2,Int},
@@ -310,15 +310,15 @@ end
     closed = false
     lock(shared_lp1_lock)
     try
-        if haskey(shared_lp1, lp_pt)
+        prev_lp1 = pop!(shared_lp1, lp_pt, nothing)
+        if prev_lp1 !== nothing
             # --- Close against stored entry ---
-            prev_row, prev_al, prev_be, prev_step = shared_lp1[lp_pt]
+            prev_row, prev_al, prev_be, prev_step = prev_lp1
             combined    = sparse_copy!(combined_scratch, fb_row)
             lp2_subtract_rows(combined, prev_row)
             ellI_loc    = Int(ell)
             combined_al = mod(neg_al - prev_al, ellI_loc)
             combined_be = mod(neg_be - prev_be, ellI_loc)
-            delete!(shared_lp1, lp_pt)
             record_closure!(lp_col, s.raw_steps, prev_step)
 
             if !isempty(combined) && !(combined_al == 0 && combined_be == 0)
@@ -405,7 +405,7 @@ end
         s               ::WorkerStats,
         shared_lp1_conj ::Union{ShardedLP1Conj{V}, LP1ConjLSM{V}},
         rank_growth     ::Vector{Tuple{Int,Int}},
-        combined_scratch::ThreadScratchpad,
+        combined_scratch::ThreadScratchpad{K_MAX},
         P0              ::NTuple{2,Int},
         phi_bias_stat   ::PhiBiasStat,
         next_anchor_ref ::Ref{Function},
@@ -635,7 +635,7 @@ end
         lp_col         ::LPResidualCollector,
         max_lp2_nodes  ::Int,
         rank_growth    ::Vector{Tuple{Int,Int}},
-        combined_scratch::ThreadScratchpad,     # Updated type signature to match the caller #combined_scratch  ::Dict{Int,Int},
+        combined_scratch::ThreadScratchpad{K_MAX},     # Updated type signature to match the caller #combined_scratch  ::Dict{Int,Int},
         next_anchor_ref::Ref{Function})::NTuple{2,Int}
 
     s.hits_lp2seen += 1
@@ -706,8 +706,9 @@ end
             lock(shared_lp1_lock)
             try
                 root = emitted_rel.root
-                if haskey(shared_lp_doubled, root)
-                    prev_row, prev_al, prev_be = shared_lp_doubled[root]
+                prev_doubled = pop!(shared_lp_doubled, root, nothing)
+                if prev_doubled !== nothing
+                    prev_row, prev_al, prev_be = prev_doubled
                     combined    = sparse_copy!(combined_scratch, emitted_rel.row)
                     for (j, v) in prev_row
                         nv = get(combined, j, 0) - v
@@ -715,7 +716,6 @@ end
                     end
                     combined_al = mod(emitted_rel.alpha - prev_al, ell)
                     combined_be = mod(emitted_rel.beta  - prev_be, ell)
-                    delete!(shared_lp_doubled, root)
                     if !isempty(combined) && !(combined_al == 0 && combined_be == 0)
                         push!(alpha_vec, combined_al); push!(beta_vec, combined_be)
                         push!(rel_rows, copy(combined))
@@ -749,68 +749,68 @@ end
     lock(shared_lp1_lock)
     try
         for (lp_known, lp_other) in ((lp2_a, lp2_b), (lp2_b, lp2_a))
-            haskey(shared_lp1, lp_known) || continue
+            if haskey(shared_lp1, lp_known)
+                r_known, na_known, nb_known, _step_known = shared_lp1[lp_known]
+                new_row    = copy(fb_row_scratch)
+                for (j, v) in r_known
+                    nv = get(new_row, j, 0) - v
+                    nv == 0 ? delete!(new_row, j) : (new_row[j] = nv)
+                end
+                ellI_loc   = Int(ell)
+                new_neg_al = mod(neg_al - na_known, ellI_loc)
+                new_neg_be = mod(neg_be - nb_known, ellI_loc)
 
-            r_known, na_known, nb_known, _step_known = shared_lp1[lp_known]
-            new_row    = copy(fb_row_scratch)
-            for (j, v) in r_known
-                nv = get(new_row, j, 0) - v
-                nv == 0 ? delete!(new_row, j) : (new_row[j] = nv)
-            end
-            ellI_loc   = Int(ell)
-            new_neg_al = mod(neg_al - na_known, ellI_loc)
-            new_neg_be = mod(neg_be - nb_known, ellI_loc)
+                s.hits_lp2_cross += 1
 
-            s.hits_lp2_cross += 1
-
-            if haskey(shared_lp1, lp_other)
-                prev_row, prev_al, prev_be, prev_step = shared_lp1[lp_other]
-                combined    = copy(new_row)
-                lp2_subtract_rows(combined, prev_row)
-                combined_al = mod(new_neg_al - prev_al, ellI_loc)
-                combined_be = mod(new_neg_be - prev_be, ellI_loc)
-                delete!(shared_lp1, lp_other)
-                record_closure!(lp_col, s.raw_steps, prev_step)
-                if !isempty(combined) && !(combined_al == 0 && combined_be == 0)
+                prev_other = pop!(shared_lp1, lp_other, nothing)
+                if prev_other !== nothing
+                    prev_row, prev_al, prev_be, prev_step = prev_other
+                    combined    = copy(new_row)
+                    lp2_subtract_rows(combined, prev_row)
+                    combined_al = mod(new_neg_al - prev_al, ellI_loc)
+                    combined_be = mod(new_neg_be - prev_be, ellI_loc)
+                    record_closure!(lp_col, s.raw_steps, prev_step)
+                    if !isempty(combined) && !(combined_al == 0 && combined_be == 0)
+                        if ASSERT_RELATIONS
+                            @assert check_relation_principal(combined, combined_al, combined_be,
+                                                             "α", fb, G, T; tag="2LP-CROSS-CLOSE")
+                        end
+                        push!(alpha_vec, combined_al); push!(beta_vec, combined_be)
+                        push!(rel_rows, combined)
+                        ort_add_row!(ort, combined)
+                        length(rank_growth) < MAX_RANK_GROWTH_SAMPLES &&
+                            push!(rank_growth, (s.raw_steps, length(rel_rows)))
+                        s.hits_full += 1; s.hits_1lp_emit += 1; s.rel_local += 1
+                        Threads.atomic_add!(rel_counter, 1)
+                    end
+                else
                     if ASSERT_RELATIONS
-                        @assert check_relation_principal(combined, combined_al, combined_be,
-                                                         "α", fb, G, T; tag="2LP-CROSS-CLOSE")
+                        ok = check_lp1_stored(lp_other, new_row, new_neg_al, new_neg_be,
+                                              fb, G, T; tag="2LP-CROSS-STORE")
+                        if !ok
+                            @printf("[2LP-CROSS-STORE DIAG tid=%d] lp_known=%s  lp_other=%s\n",
+                                    Threads.threadid(), string(lp_known), string(lp_other))
+                            @printf("[2LP-CROSS-STORE DIAG]  r_known=%s  na=%d  nb=%d\n",
+                                    string(r_known), na_known, nb_known)
+                            @printf("[2LP-CROSS-STORE DIAG]  fb_row=%s  new_row=%s  neg_al=%d neg_be=%d\n",
+                                    string(fb_row_scratch), string(new_row), neg_al, neg_be)
+                        end
+                        @assert ok "2-LP cross-store: derived 1-LP row inconsistent"
                     end
-                    push!(alpha_vec, combined_al); push!(beta_vec, combined_be)
-                    push!(rel_rows, combined)
-                    ort_add_row!(ort, combined)
-                    length(rank_growth) < MAX_RANK_GROWTH_SAMPLES &&
-                        push!(rank_growth, (s.raw_steps, length(rel_rows)))
-                    s.hits_full += 1; s.hits_1lp_emit += 1; s.rel_local += 1
-                    Threads.atomic_add!(rel_counter, 1)
-                end
-            else
-                if ASSERT_RELATIONS
-                    ok = check_lp1_stored(lp_other, new_row, new_neg_al, new_neg_be,
-                                          fb, G, T; tag="2LP-CROSS-STORE")
-                    if !ok
-                        @printf("[2LP-CROSS-STORE DIAG tid=%d] lp_known=%s  lp_other=%s\n",
-                                Threads.threadid(), string(lp_known), string(lp_other))
-                        @printf("[2LP-CROSS-STORE DIAG]  r_known=%s  na=%d  nb=%d\n",
-                                string(r_known), na_known, nb_known)
-                        @printf("[2LP-CROSS-STORE DIAG]  fb_row=%s  new_row=%s  neg_al=%d neg_be=%d\n",
-                                string(fb_row_scratch), string(new_row), neg_al, neg_be)
+                    if length(shared_lp1) >= MAX_LP1_ENTRIES
+                        for evict_key in keys(shared_lp1)
+                            delete!(shared_lp1, evict_key); break
+                        end
                     end
-                    @assert ok "2-LP cross-store: derived 1-LP row inconsistent"
-                end
-                if length(shared_lp1) >= MAX_LP1_ENTRIES
-                    for evict_key in keys(shared_lp1)
-                        delete!(shared_lp1, evict_key); break
+                    shared_lp1[lp_other] = (new_row, new_neg_al, new_neg_be, s.raw_steps)
+                    if try_lp1_doubled_cross_close!(lp_other, shared_lp1, shared_lp_doubled,
+                                                    ell, alpha_vec, beta_vec, rel_rows,
+                                                    rank_growth, s.raw_steps, rel_counter,
+                                                    ort, G, T, combined_scratch, fb)
+                        s.hits_full += 1; s.hits_lp2emit += 1; s.rel_local += 1
                     end
                 end
-                shared_lp1[lp_other] = (new_row, new_neg_al, new_neg_be, s.raw_steps)
-                if try_lp1_doubled_cross_close!(lp_other, shared_lp1, shared_lp_doubled,
-                                                ell, alpha_vec, beta_vec, rel_rows,
-                                                rank_growth, s.raw_steps, rel_counter,
-                                                ort, G, T, combined_scratch, fb)
-                    s.hits_full += 1; s.hits_lp2emit += 1; s.rel_local += 1
-                end
-            end
+            end  # if haskey(shared_lp1, lp_known)
             break   # only act on the first match
         end
     finally
@@ -890,9 +890,13 @@ end
     b3 = Int(h3 % UInt64(ALPHA_BLOOM_BITS)) + 1
     words = PHASE2_ALPHA_BLOOM
     @inbounds begin
-        w1, r1 = divrem(b1 - 1, 64)
-        w2, r2 = divrem(b2 - 1, 64)
-        w3, r3 = divrem(b3 - 1, 64)
+        # Force bitwise lowering: signed divrem(b-1, 64) would let LLVM insert
+        # a signed-divide fallback if it can't prove non-negativity at compile
+        # time.  Casting to UInt64 first guarantees a single right-shift and
+        # bitwise-AND regardless of the value of b1/b2/b3.
+        idx1 = (b1 - 1) % UInt64;  w1 = idx1 >> 6;  r1 = idx1 & 63
+        idx2 = (b2 - 1) % UInt64;  w2 = idx2 >> 6;  r2 = idx2 & 63
+        idx3 = (b3 - 1) % UInt64;  w3 = idx3 >> 6;  r3 = idx3 & 63
         # Check: if all three bits already set, report "seen".
         already = ((words[w1+1] >> r1) & UInt64(1)) != 0 &&
                   ((words[w2+1] >> r2) & UInt64(1)) != 0 &&
@@ -1303,7 +1307,12 @@ function phase2_worker(G               ::Div2,
 
     # --- Scratch dicts (reused every step to avoid per-step allocation) ---
     fb_row_scratch   = sizehint!(Dict{Int,Int}(), 4)
-    combined_scratch = ThreadScratchpad()
+    # K_MAX is the compile-time anchor tuple size from trial3_config.jl.
+    # The user contract guarantees anchor_tuple_size == K_MAX for this run.
+    # ThreadScratchpad{K_MAX} allocates A_mat as (K_MAX+2)×(K_MAX+2) and bakes
+    # K into every downstream type so fp_gauss! and anchor loops compile to
+    # fully unrolled straight-line code.
+    combined_scratch = ThreadScratchpad{K_MAX}()
     # Initialize runtime prime-dependent caches (fpinv tables, Oscar rings)
     init_scratch_caches!(combined_scratch, p)
 
@@ -1911,7 +1920,7 @@ end
         shared_lp2_conj_lock::ReentrantLock,
         max_lp2_conj_nodes::Int,
         rank_growth       ::Vector{Tuple{Int,Int}},
-    combined_scratch::ThreadScratchpad,     # Updated type signature to match the caller #combined_scratch  ::Dict{Int,Int},
+    combined_scratch::ThreadScratchpad{K_MAX},     # Updated type signature to match the caller #combined_scratch  ::Dict{Int,Int},
         next_anchor_ref   ::Ref{Function})::NTuple{2,Int}
 
     s.hits_lp2seen += 1
@@ -1958,10 +1967,11 @@ end
             root_affine = root_key::NTuple{2,Int}
             lock(shared_lp1_lock)
             try
-                if haskey(shared_lp_doubled, root_affine)
+                prev_doubled2 = pop!(shared_lp_doubled, root_affine, nothing)
+                if prev_doubled2 !== nothing
                     # A previous odd cycle already stored 2·atom(root).
                     # Combine: subtract the two doubled rows.
-                    prev_row, prev_al, prev_be = shared_lp_doubled[root_affine]
+                    prev_row, prev_al, prev_be = prev_doubled2
                     combined    = copy(emitted_conj.row)
                     for (j, v) in prev_row
                         nv = get(combined, j, 0) - v
@@ -1969,7 +1979,6 @@ end
                     end
                     combined_al = mod(emitted_conj.alpha - prev_al, ell)
                     combined_be = mod(emitted_conj.beta  - prev_be, ell)
-                    delete!(shared_lp_doubled, root_affine)
                     if !isempty(combined) && !(combined_al == 0 && combined_be == 0)
                         push!(alpha_vec, combined_al); push!(beta_vec, combined_be)
                         push!(rel_rows, combined)

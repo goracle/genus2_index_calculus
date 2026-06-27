@@ -469,6 +469,45 @@ end
     return true
 end
 # ---------------------------------------------------------------------------
+#  fp_gauss_val! — Val{N}-dispatched wrapper around fp_gauss!
+#
+#  Calling fp_gauss!(A, b, n, buf) with a runtime n prevents LLVM from
+#  unrolling the forward/backward elimination loops, even though n is always
+#  a small constant (k+2 ∈ {3,4,5,6} for k ∈ {1,2,3,4}) fixed at startup.
+#
+#  fp_gauss_val!(A, b, Val(n), buf) forces Julia to compile a separate native
+#  specialisation per n value.  Each specialisation's n is a compile-time
+#  constant, so LLVM unrolls all three nested loops (pivot search, forward
+#  elimination, backward elimination) into straight-line code — no loop
+#  overhead, no branch-on-n, no trip-count uncertainty.
+#
+#  The call site in build_phi_general! uses a small dispatch table:
+#    n == 3 → Val{3}, n == 4 → Val{4}, ..., else fall back to the general path.
+#  This covers every realistic anchor_tuple_size without introducing a new
+#  dependency or changing the algorithm in any way.
+# ---------------------------------------------------------------------------
+@inline function fp_gauss_val!(A::Matrix{Int}, b::Vector{Int}, ::Val{N},
+                                prefix_buf::Vector{Int})::Bool where {N}
+    fp_gauss!(A, b, N, prefix_buf)
+end
+
+# Dispatch shim: routes to the Val{n} specialisation for n ≤ 6.
+@inline function fp_gauss_dispatch!(A::Matrix{Int}, b::Vector{Int}, n::Int,
+                                     prefix_buf::Vector{Int})::Bool
+    if n == 3
+        return fp_gauss_val!(A, b, Val(3), prefix_buf)
+    elseif n == 4
+        return fp_gauss_val!(A, b, Val(4), prefix_buf)
+    elseif n == 5
+        return fp_gauss_val!(A, b, Val(5), prefix_buf)
+    elseif n == 6
+        return fp_gauss_val!(A, b, Val(6), prefix_buf)
+    else
+        return fp_gauss!(A, b, n, prefix_buf)
+    end
+end
+
+# ---------------------------------------------------------------------------
 #  build_phi_general
 #
 #  Given k anchor points `anchors` and a degree-2 Mumford divisor (u0,u1,v0,v1),
@@ -500,7 +539,11 @@ end
 #  Stores all vector registers, system matrices, and logical size states 
 #  to avoid runtime heap interactions within phase-2 workers.
 # ---------------------------------------------------------------------------
-struct ThreadScratchpad
+# ThreadScratchpad{K} — K is the anchor tuple size (= K_MAX from trial3_config.jl).
+# Parametrizing on K lets the compiler know the exact system size at every
+# call site: fp_gauss! gets Val(K+2), anchor loops unroll, and A_mat is
+# allocated at the right size rather than a 20×20 worst-case allocation.
+struct ThreadScratchpad{K}
     # 1. Buffers for branch_series!
     out_y          ::Vector{Int}
     f_tay          ::Vector{Int}
@@ -512,11 +555,14 @@ struct ThreadScratchpad
     pxpow_buf      ::Vector{Int}
     ser_buf        ::Vector{Int}   # Expanded to 64 to hold 32 terms of E(x) and 32 terms of Y(x) simultaneously
 
-    # 3. Linear system workspaces (Sized safely for max 16 anchors + 2 Mumford rows)
+    # 3. Linear system workspaces — sized exactly to K+2 (known at construction).
+    #    A_mat is (K+2)×(K+2); using the exact size rather than 20×20 keeps the
+    #    matrix in L1 cache and lets fp_gauss_val!(…, Val(K+2), …) emit fully
+    #    unrolled straight-line code for the elimination passes.
     A_mat          ::Matrix{Int}   
     rhs_vec        ::Vector{Int}   
     
-    # 4. In-place deduplication tables (Replaces Dict/Set inside build_phi_general!)
+    # 4. In-place deduplication tables — sized exactly to K (no over-allocation).
     seen_counts    ::Vector{Int}   
     visited_flags  ::Vector{Bool}  
     
@@ -592,12 +638,13 @@ struct ThreadScratchpad
     y_batch_E       ::Vector{Int}   # length 8
     y_batch_Y       ::Vector{Int}   # length 8
 
-    function ThreadScratchpad()
+    function ThreadScratchpad{K}() where K
+        n = K + 2  # linear system size: K anchor eqns + 2 Mumford eqns
         new(
             zeros(Int, 32), zeros(Int, 32), zeros(Int, 1024),  # poly_buf expanded safely
             zeros(Int, 32), zeros(Int, 32), zeros(Int, 32), zeros(Int, 64), # ser_buf expanded to 64
-            zeros(Int, 20, 20), zeros(Int, 20),
-            zeros(Int, 32), zeros(Bool, 32),
+            zeros(Int, n, n), zeros(Int, n),  # A_mat exactly (K+2)×(K+2), rhs_vec exactly K+2
+            zeros(Int, K), zeros(Bool, K),     # seen_counts and visited_flags exactly K slots
             zeros(Int, 24), zeros(Int, 8), zeros(Int, 8), 
             Vector{NTuple{2,Int}}(undef, 8),
             zeros(Int, 1), zeros(Int, 1), zeros(Int, 1), zeros(Bool, 1),
@@ -627,7 +674,7 @@ end
 # ---------------------------------------------------------------------------
 @inline function reduce_monomial_mod_D_cached(i::Int, j::Int,
                                                v0::Int, v1::Int,
-                                               scratch::ThreadScratchpad)::NTuple{2,Int}
+                                               scratch::ThreadScratchpad{<:Any})::NTuple{2,Int}
     @inbounds a0 = scratch.x_pow_mod_u_r0[i + 1]
     @inbounds a1 = scratch.x_pow_mod_u_r1[i + 1]
     if j == 0
@@ -650,7 +697,7 @@ end
 #
 #  Call this once per ThreadScratchpad after p is known, before spawning walkers.
 # ---------------------------------------------------------------------------
-function init_scratch_caches!(scratch::ThreadScratchpad, p_val::Int)
+function init_scratch_caches!(scratch::ThreadScratchpad{K}, p_val::Int) where K
     # Precomputed modular inverses for small positive integers.
     for s in 1:32
         scratch.small_inv[s] = fpinv(s)
@@ -821,16 +868,18 @@ end
 
 
 function build_phi_general!(
-    scratch::ThreadScratchpad,
-    anchors::Vector{NTuple{2,Int}}, # [(px1,py1), (px2,py2), ...]
+    scratch ::ThreadScratchpad{K},
+    anchors ::NTuple{K,NTuple{2,Int}},   # compile-time-sized K-tuple of anchor points
     u0::Int, u1::Int,
     v0::Int, v1::Int;
     backend::FpArith = StandardArith(p)
-)::Bool
+)::Bool where K
 
-    k   = length(anchors)
-    n   = k + 2          # number of unknowns (= number of equations)
-    nb  = k + 3          # total basis size (including the normalised element)
+    # K is in the type — n and nb are compile-time constants from the type parameter.
+    # The compiler can propagate them into every loop bound and unroll accordingly.
+    k   = K
+    n   = K + 2          # number of unknowns (= number of equations)
+    nb  = K + 3          # total basis size (including the normalised element)
 
     basis = rr_basis_cached(nb)::Vector{NTuple{2, Int}}
 
@@ -916,9 +965,15 @@ function build_phi_general!(
         throw(ArgumentError("anchor multiplicity $max_mult ≥ p=$p: Taylor-coefficient rows degenerate mod p"))
     end
 
-    # Reset linear solver workspaces
-    @inbounds for j in 1:n, i in 1:n
-        scratch.A_mat[i, j] = 0
+    # Reset linear solver workspaces.
+    # Julia matrices are stored column-major, so iterate (i, j) with j in the
+    # OUTER loop and i in the INNER loop to keep sequential memory access —
+    # the previous (j in 1:n, i in 1:n) order (row-major) caused one cache
+    # miss per inner step for n > ~4 (when rows span different cache lines).
+    @inbounds for j in 1:n
+        for i in 1:n
+            scratch.A_mat[i, j] = 0
+        end
     end
     @inbounds for i in 1:n
         scratch.rhs_vec[i] = 0
@@ -997,7 +1052,10 @@ function build_phi_general!(
     # its last write was inside monomial_series_coeffs! calls above, all of which
     # have completed by this point, so there's no aliasing/data-race risk within
     # this single-threaded function body.
-    fp_gauss!(scratch.A_mat, scratch.rhs_vec, n, scratch.xi_buf) || return false
+    # K is a compile-time type parameter → n = K+2 is known statically.
+    # Call fp_gauss_val! directly with Val(K+2) — no runtime dispatch table needed.
+    # LLVM fully unrolls both elimination passes into straight-line register code.
+    fp_gauss_val!(scratch.A_mat, scratch.rhs_vec, Val(K+2), scratch.xi_buf) || return false
 
     # Solution is now in scratch.rhs_vec[1:n]; copy out.
     @inbounds for i in 1:n
@@ -1034,7 +1092,7 @@ end
 #    (deg_E, deg_Y) :: NTuple{2, Int}
 # ---------------------------------------------------------------------------
 function phi_to_EY!(
-    scratch::ThreadScratchpad,
+    scratch::ThreadScratchpad{<:Any},
     basis  ::Vector{NTuple{2,Int}}
 )::NTuple{2, Int}
 
@@ -1121,7 +1179,7 @@ end
 #  before calling poly_reduce_mod_inplace!.
 # ---------------------------------------------------------------------------
 function poly_mul_mod_inplace!(
-    scratch::ThreadScratchpad,
+    scratch::ThreadScratchpad{<:Any},
     len_a::Int, off_a::Int,
     len_b::Int, off_b::Int,
     u_len::Int
@@ -1168,7 +1226,7 @@ end
 #  Multiplies polynomial A and B, writing the result starting at off_dest.
 # ---------------------------------------------------------------------------
 function poly_mul_inplace_segment!(
-    scratch::ThreadScratchpad,
+    scratch::ThreadScratchpad{<:Any},
     len_a::Int, off_a::Int,
     len_b::Int, off_b::Int,
     off_dest::Int
@@ -1198,7 +1256,7 @@ end
 #  Squares a polynomial over F_p into a target destination segment.
 # ---------------------------------------------------------------------------
 function poly_sq_inplace_segment!(
-    scratch::ThreadScratchpad,
+    scratch::ThreadScratchpad{<:Any},
     len_a::Int, off_a::Int,
     off_dest::Int
 )::Int
@@ -1243,7 +1301,7 @@ end
 #  F_POLY is assumed to be globally cached as a Vector{Int} or NTuple{6, Int}.
 # ---------------------------------------------------------------------------
 function build_N_inplace!(
-    scratch::ThreadScratchpad,
+    scratch::ThreadScratchpad{<:Any},
     deg_E::Int,
     deg_Y::Int
 )::Int
@@ -1378,7 +1436,7 @@ end
 #  ALLOCATION INVARIANT: Zero heap allocations. Pure scalar registers.
 # ---------------------------------------------------------------------------
 function poly_divmod_linear_inplace!(
-    scratch::ThreadScratchpad,
+    scratch::ThreadScratchpad{<:Any},
     n_len::Int,
     alpha::Int
 )::Tuple{Int, Int}
@@ -1426,7 +1484,7 @@ end
 #  ALLOCATION INVARIANT: Zero heap allocations. Zero scalar boxing.
 # ---------------------------------------------------------------------------
 function poly_divmod_monic_deg2_inplace!(
-    scratch::ThreadScratchpad,
+    scratch::ThreadScratchpad{<:Any},
     n_len::Int,
     u1::Int, 
     u0::Int
@@ -1524,11 +1582,11 @@ const RESIDUAL_FAIL = Int[-1]
 #  Modifies primitive array fields inside `scratch` to preserve allocation-free execution.
 # ---------------------------------------------------------------------------
 function phi_residual_general!(
-    scratch ::ThreadScratchpad,
+    scratch ::ThreadScratchpad{K},
     basis   ::Vector{NTuple{2,Int}},
-    anchors ::Vector{NTuple{2,Int}},
+    anchors ::NTuple{K,NTuple{2,Int}},
     u0::Int, u1::Int
-)::Bool
+)::Bool where K
 
     # Reset primitive length registers on our thread scratchpad
     scratch.roots_count[1]  = 0
@@ -1536,7 +1594,7 @@ function phi_residual_general!(
     scratch.v_RS_len[1]     = 0
     scratch.u_RS_is_fail[1] = false
 
-    k = length(anchors)
+    k = K  # compile-time constant from type parameter
 
     # 1. Convert φ to E(x) and Y(x) representations inside scratch buffers.
     #    Capture the returned degrees to avoid dynamic searching in the next step.
@@ -1620,7 +1678,7 @@ function phi_residual_general!(
     scratch.v_RS_len[1] = v_len
 
     # 9. Find split points using scratch structures, updates scratch.roots_count[1]
-    find_roots_and_points_inplace!(scratch, n_len, k)
+    find_roots_and_points_inplace!(scratch, n_len, Val(K))
 
     return true
 end
@@ -1644,7 +1702,7 @@ end
 #  Computes v_RS(x) = -E(x) * (Y(x))⁻¹ mod u_RS(x) completely in-place.
 # ---------------------------------------------------------------------------
 function compute_vRS_inplace!(
-    scratch::ThreadScratchpad,
+    scratch::ThreadScratchpad{<:Any},
     u_len::Int
 )::Int
 
@@ -1754,7 +1812,7 @@ end
 #  ALLOCATION INVARIANT: Zero heap allocations. Zero scalar boxing.
 # ---------------------------------------------------------------------------
 function poly_reduce_mod_inplace!(
-    scratch::ThreadScratchpad,
+    scratch::ThreadScratchpad{<:Any},
     raw_len::Int,
     offset::Int,
     u_len::Int
@@ -1768,7 +1826,12 @@ function poly_reduce_mod_inplace!(
         throw(ArgumentError("poly_reduce_mod_inplace!: modulus leading coefficient is zero"))
     end
     
-    lc_m_inv = fpinv(lc_m)
+    # u_RS is normalised to monic in phi_residual_general! step 6 before any
+    # poly_reduce_mod_inplace! call, so lc_m == 1 is a proven invariant.
+    # Skip the Fermat-ladder fpinv call (which hits the `a==1 && return 1`
+    # fast path anyway but still costs a branch+call on each of ~4 reductions
+    # per walk step). Fall back to fpinv only in the degenerate non-monic case.
+    lc_m_inv = (lc_m == 1) ? 1 : fpinv(lc_m)
     
     # r_len tracks the absolute index boundary of the dividend within poly_buf
     r_len = raw_len
@@ -1791,7 +1854,10 @@ function poly_reduce_mod_inplace!(
         end
 
         # Scale factor c = r[end] * lc_m_inv
-        @inbounds c = fpmul(scratch.poly_buf[r_len], lc_m_inv)
+        # lc_m_inv == 1 by the monic invariant: skip the multiply.
+        # The branch here costs essentially nothing since lc_m_inv was already
+        # evaluated once above the loop; the `== 1` path is always taken.
+        @inbounds c = (lc_m_inv == 1) ? scratch.poly_buf[r_len] : fpmul(scratch.poly_buf[r_len], lc_m_inv)
         shift = deg_r - dm
         
         # Subtract c * x^shift * m(x) from the current remainder window
@@ -1863,7 +1929,7 @@ end
 #  (final_len, true) on success or (0, false) if a is not invertible (D=0).
 # ---------------------------------------------------------------------------
 @inline function poly_modinv_deg2_closed_form!(
-    scratch::ThreadScratchpad,
+    scratch::ThreadScratchpad{<:Any},
     len_a::Int,
     off_a::Int,
     u0::Int, u1::Int
@@ -1920,7 +1986,7 @@ end
 #  ALLOCATION INVARIANT: Zero heap allocations. Zero scalar boxing.
 # ---------------------------------------------------------------------------
 function poly_modinv_inplace!(
-    scratch::ThreadScratchpad,
+    scratch::ThreadScratchpad{<:Any},
     len_a::Int,
     off_a::Int,
     u_len::Int
@@ -2091,7 +2157,7 @@ end
 #  Overwrites the dividend r0 segment with the remainder, and writes quotient to off_q.
 # ---------------------------------------------------------------------------
 function poly_divmod_poly_inplace_registers!(
-    scratch::ThreadScratchpad,
+    scratch::ThreadScratchpad{<:Any},
     len_r0::Int, off_r0::Int,
     len_r1::Int, off_r1::Int,
     off_q::Int
@@ -2252,10 +2318,10 @@ end
 #  scratch.y_batch_x / y_batch_E / y_batch_Y hold the per-root intermediates.
 # ---------------------------------------------------------------------------
 function find_roots_and_points_inplace!(
-    scratch::ThreadScratchpad,
+    scratch::ThreadScratchpad{K},
     u_len::Int,
-    k::Int
-)::Nothing
+    ::Val{K}  # explicit Val{K} so Julia specialises on K without a separate arg
+)::Nothing where K
 
     scratch.roots_count[1] = 0
     deg = u_len - 1
@@ -2306,7 +2372,7 @@ function find_roots_and_points_inplace!(
     #  Uses the same pxpow_buf approach as recover_y_from_phi_inplace but amortises
     #  the basis/max_pow setup across all candidates.
     # ---------------------------------------------------------------------------
-    nb = k + 3
+    nb = K + 3  # compile-time constant
     basis = rr_basis_cached(nb)::Vector{NTuple{2, Int}}
 
     max_pow = 0
@@ -2436,8 +2502,8 @@ end
 #  
 #  φ(x,y) = E(x) + y * Y(x) == 0  =>  y = -E(x) / Y(x)
 # ---------------------------------------------------------------------------
-function recover_y_from_phi_inplace(scratch::ThreadScratchpad, x::Int, k::Int)::Int
-    nb = k + 3
+function recover_y_from_phi_inplace(scratch::ThreadScratchpad{K}, x::Int, ::Val{K} = Val(K))::Int where K
+    nb = K + 3  # compile-time constant
     # Retrieve the canonical monomial basis vector (poles sorted: x^i or x^i * y)
     basis = rr_basis_cached(nb)::Vector{NTuple{2, Int}}
 
@@ -2494,7 +2560,7 @@ end
 # ---------------------------------------------------------------------------
 #  Helper: poly_eval_fp_inplace(scratch, offset, len, x) -> Int
 # ---------------------------------------------------------------------------
-function poly_eval_fp_inplace(scratch::ThreadScratchpad, offset::Int, len::Int, x::Int)::Int
+function poly_eval_fp_inplace(scratch::ThreadScratchpad{<:Any}, offset::Int, len::Int, x::Int)::Int
     len == 0 && return 0
     @inbounds val = scratch.poly_buf[offset + len]
     for i in (len - 1):-1:1
@@ -2508,7 +2574,7 @@ end
 #  Horner linear synthetic division working directly inside an array segment.
 # ---------------------------------------------------------------------------
 function poly_divmod_linear_inplace_segment!(
-    scratch::ThreadScratchpad,
+    scratch::ThreadScratchpad{<:Any},
     offset::Int,
     n_len::Int,
     r::Int
@@ -2558,6 +2624,23 @@ function recover_y_from_phi(E::Vector{Int}, Y::Vector{Int}, x::Int)::Union{Int,N
     # y = -E(x) / Y(x)
     return fpmul(fp(-ex), fpinv(yx))
 end
+
+# Vector-dispatch shim for step_phi_k!: converts cur_anchors (a Vector of length K_anc,
+# which equals K_MAX by the user's contract) into a NTuple{K_MAX,...} so the hot path
+# above gets a compile-time K.  ntuple with Val(K_anc) is zero-cost — the compiler
+# resolves K_anc as a constant when K_anc is derived from anchor_tuple_size (passed in
+# from the CLI as a constant for the duration of the run).
+@inline function step_phi_k!(
+    scratch ::ThreadScratchpad{K},
+    anchors ::Vector{NTuple{2,Int}},
+    u0::Int, u1::Int, v0::Int, v1::Int;
+    backend::FpArith = StandardArith(p)
+)::Bool where K
+    # Convert to NTuple{K,...} — zero allocation, compiler inlines the ntuple.
+    anc_tup = ntuple(i -> anchors[i], Val(K))
+    step_phi_k!(scratch, anc_tup, u0, u1, v0, v1; backend=backend)
+end
+
 
 # ---------------------------------------------------------------------------
 #  Compatibility shim:  build_phi_mumford_general(anchors, u0, u1, v0, v1)
@@ -2644,12 +2727,15 @@ end
 #  Mutates internal fields of `scratch` on a successful step (`true`).
 #  Returns `false` if φ cannot be constructed or if the step fails.
 # ---------------------------------------------------------------------------
+# Tuple-dispatch entry point (hot path).
+# anchors::NTuple{K,NTuple{2,Int}} — compile-time K from ThreadScratchpad{K}.
+# The Vector-accepting overload below converts and calls this one.
 function step_phi_k!(
-    scratch::ThreadScratchpad,
-    anchors::Vector{NTuple{2,Int}},
+    scratch ::ThreadScratchpad{K},
+    anchors ::NTuple{K,NTuple{2,Int}},
     u0::Int, u1::Int, v0::Int, v1::Int;
     backend::FpArith = StandardArith(p)
-)::Bool
+)::Bool where K
 
     # ---------------------------------------------------------------------------
     #  REPRESENTATION BOUNDARY (entry)
@@ -2695,8 +2781,8 @@ function step_phi_k!(
     success_build = build_phi_general!(scratch, anchors, u0, u1, v0, v1; backend=backend)
     !success_build && return false
 
-    k  = length(anchors)
-    nb = k + 3
+    k  = K  # compile-time constant
+    nb = K + 3
     
     # 2. Grab the basis vectors into a type-stable, unboxed reference loop.
     basis = rr_basis_cached(nb)::Vector{NTuple{2, Int}}
