@@ -132,17 +132,34 @@ const SQRT_FP_NONSQUARE = -1   # sentinel: caller checks sq < 0
 end
 
 # ---------------------------------------------------------------------------
-#  Fast Fp arithmetic for the hot walk path — Int64-only, no Int128.
+#  Fast Fp arithmetic for the hot walk path.
 #
-#  trial1's fpmul uses widemul(Int64,Int64) → Int128, then mod(Int128,Int64),
-#  which calls __divti3 (128-bit division) on every multiplication.  For
-#  p < 2^31 (our range, p ~ 3.7×10^5) we have p² < 2^62, so the product
-#  fits in Int64 and we can use the plain % operator — one native DIV
-#  instruction instead of a libgcc soft-division call.
+#  CORRECTNESS FIX (round-off bug, manifesting at ell>=45 bits):
+#  The previous version of fpmul computed `(a * b) % p` using plain Int64
+#  (Int) multiplication. That is only safe when p² < 2^63, i.e. roughly
+#  p < 2^31.5 (~31 bits). For any p beyond that — and definitely by the
+#  time p reaches 45 bits, where p² ~ 2^90 — `a * b` silently overflows
+#  Int64's two's-complement range. Julia's default Int arithmetic does
+#  NOT check for overflow or throw; it just wraps mod 2^64. Since 2^64
+#  is generally not ≡ 0 mod p, the wrapped product is congruent to the
+#  true product *plus some nonzero multiple of (2^64 mod p)* — i.e. a
+#  flat-out wrong field element, not a rounding artifact in the
+#  floating-point sense, but it shows up downstream exactly like
+#  "round-off": small, inconsistent-looking numerical errors that
+#  appear only at larger p and otherwise pass silently because Int
+#  overflow is unchecked.
 #
-#  fpinv uses invmod → gcdx, which allocates BigInt intermediates.  For
-#  small p we use Fermat: a^(p-2) mod p via a simple square-and-multiply
-#  that stays entirely in Int64.
+#  This is exactly the failure mode trial1's original fpmul avoided via
+#  widemul(Int64,Int64) → Int128 → mod → back to Int64. We restore that
+#  widening here. It costs one 128-bit reduction per multiply instead of
+#  a native 64-bit DIV, but it is the minimum correct approach for any
+#  p that isn't known in advance to be < ~31 bits. Given this module is
+#  now being run at ell=45 bits, the old "fits in Int64" precondition is
+#  simply false, so the fast path was never valid at this scale.
+#
+#  fpinv still uses Fermat (a^(p-2) mod p via square-and-multiply) rather
+#  than invmod/gcdx — that choice is independent of the overflow bug and
+#  remains correct as long as fpmul itself is correct, which it now is.
 #
 #  These shadow trial1's fp/fpmul/fpinv for all functions defined in this
 #  file.  trial1 is untouched; its own definitions remain in effect for
@@ -154,8 +171,14 @@ end
 end
 
 @inline function fpmul(a::Int, b::Int)::Int
-    r = (a * b) % p
-    return r < 0 ? r + p : r
+    # Widen to Int128 BEFORE multiplying so the product can never overflow,
+    # regardless of how large p (and hence a, b ∈ [0, p)) gets at ell=45+
+    # bits. p up to ~63 bits still gives a product comfortably inside
+    # Int128's ±2^127 range (p² < 2^126), so this is safe well past any
+    # bit-length this codebase is realistically run at.
+    r = (widen(a) * widen(b)) % p
+    r = r < 0 ? r + p : r
+    return r % Int   # narrow back to Int64; safe since 0 <= r < p < 2^63
 end
 
 @inline function fpinv(a::Int)::Int
@@ -629,7 +652,11 @@ function build_phi_general!(
     for idx in 1:k
         @inbounds pt = anchors[idx]
         px = pt[1]
-        upx = fp(fp(px * px) + fpmul(u1, px) + u0)
+        # NOTE: was `fp(fp(px * px) + ...)` — a raw px*px multiply that
+        # bypassed fpmul entirely and overflows Int64 under the same
+        # ell>=45-bit conditions as the fpmul bug above. Routed through
+        # fpmul so it gets the Int128 widening too.
+        upx = fp(fpmul(px, px) + fpmul(u1, px) + u0)
         upx == 0 && return false
     end
 
