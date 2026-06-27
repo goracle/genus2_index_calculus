@@ -557,6 +557,41 @@ struct ThreadScratchpad
     #     Wrapped in a Ref{Any} so the struct stays concrete for other fields.
     oscar_coeff_buf ::Base.RefValue{Any}   # Vector{FqFieldElem}, populated at init
 
+    # 11. Memoised x^i mod u(x) table for the Mumford rows in build_phi_general!.
+    #
+    #     reduce_xi_mod_u(i, u0, u1) re-runs the two-register recurrence from 0
+    #     up to i on every call, and is invoked once per basis column (n = k+2
+    #     columns) for the Mumford rows, plus once for the normalised monomial —
+    #     that's n+1 redundant re-runs per walk step, each re-deriving overlapping
+    #     prefix computations.
+    #
+    #     Instead, build_phi_general! fills these two length-32 arrays once per
+    #     step (one ascending recurrence pass) and reduce_monomial_mod_D_cached
+    #     does an O(1) lookup.  Max i in the RR basis for K_MAX=4 is ≤ 6;
+    #     length 32 is safe past any realistic K_MAX.
+    #
+    #     x_pow_mod_u_r0[i+1] = const coeff of x^i mod u(x)
+    #     x_pow_mod_u_r1[i+1] = x     coeff of x^i mod u(x)
+    x_pow_mod_u_r0  ::Vector{Int}   # length 32
+    x_pow_mod_u_r1  ::Vector{Int}   # length 32
+
+    # 12. Batch y-recovery workspace for find_roots_and_points_inplace!.
+    #
+    #     Recovering y = -E(x)/Y(x) for each residual root requires one fpinv
+    #     per root.  At K=2 the residual is degree 3 (up to 3 roots); at K=3
+    #     degree 4 (up to 4 roots).  Batch-inverting all Y(x) values with the
+    #     same Montgomery trick used in fp_gauss_batch_invert_diag! reduces r
+    #     Fermat ladders to exactly 1, regardless of how many roots split.
+    #
+    #     y_batch_x[i]  — x-coordinate of the i-th candidate root
+    #     y_batch_E[i]  — val_E = E(x_i) evaluated at that root
+    #     y_batch_Y[i]  — val_Y = Y(x_i) (to be batch-inverted)
+    #
+    #     Length 8 covers any residual degree we'll ever encounter (deg ≤ K+1 ≤ 5).
+    y_batch_x       ::Vector{Int}   # length 8
+    y_batch_E       ::Vector{Int}   # length 8
+    y_batch_Y       ::Vector{Int}   # length 8
+
     function ThreadScratchpad()
         new(
             zeros(Int, 32), zeros(Int, 32), zeros(Int, 1024),  # poly_buf expanded safely
@@ -569,8 +604,40 @@ struct ThreadScratchpad
             sizehint!(Dict{Int,Int}(), 8),
             Ref{Any}(nothing), Ref{Any}(nothing), zeros(Bool, 1),
             zeros(Int, 32),
-            Ref{Any}(nothing)
+            Ref{Any}(nothing),
+            zeros(Int, 32), zeros(Int, 32),   # x_pow_mod_u_r0, x_pow_mod_u_r1
+            zeros(Int, 8), zeros(Int, 8), zeros(Int, 8)  # y_batch_x, y_batch_E, y_batch_Y
         )
+    end
+end
+
+# ---------------------------------------------------------------------------
+#  reduce_monomial_mod_D_cached — O(1) lookup version for the hot path.
+#
+#  Requires that build_phi_general! has already populated:
+#    scratch.x_pow_mod_u_r0[i+1] = const coeff of x^i mod u(x)
+#    scratch.x_pow_mod_u_r1[i+1] = x     coeff of x^i mod u(x)
+#  for i = 0 .. max_basis_degree.
+#
+#  For j=0 (pure x-power): direct lookup.
+#  For j=1 (x^i * y, reduced via y ≡ v(x) mod u(x)):
+#    x^i * v(x) = v0 * x^i + v1 * x^(i+1)
+#    → v0 * table[i] + v1 * table[i+1]   (two lookups, four multiplies)
+#  This replaces the i-iteration recurrence with a fixed 4-multiply expression.
+# ---------------------------------------------------------------------------
+@inline function reduce_monomial_mod_D_cached(i::Int, j::Int,
+                                               v0::Int, v1::Int,
+                                               scratch::ThreadScratchpad)::NTuple{2,Int}
+    @inbounds a0 = scratch.x_pow_mod_u_r0[i + 1]
+    @inbounds a1 = scratch.x_pow_mod_u_r1[i + 1]
+    if j == 0
+        return (a0, a1)
+    else
+        # x^(i+1) mod u: next entry in table
+        @inbounds b0 = scratch.x_pow_mod_u_r0[i + 2]
+        @inbounds b1 = scratch.x_pow_mod_u_r1[i + 2]
+        return (fp(fpmul(v0, a0) + fpmul(v1, b0)),
+                fp(fpmul(v0, a1) + fpmul(v1, b1)))
     end
 end
 
@@ -766,6 +833,40 @@ function build_phi_general!(
     nb  = k + 3          # total basis size (including the normalised element)
 
     basis = rr_basis_cached(nb)::Vector{NTuple{2, Int}}
+
+    # ---------------------------------------------------------------------------
+    #  Populate the x^i mod u(x) cache for this walk step.
+    #
+    #  We need reductions for i = 0 .. max_basis_i, where max_basis_i is the
+    #  largest x-power index in the RR basis (including the normalised element).
+    #  For the j=1 monomials we also need i+1, so we compute one extra entry.
+    #  A single ascending recurrence pass:
+    #    x^0 mod u = (1, 0)
+    #    x^1 mod u = (0, 1)
+    #    x^(i+1) mod u = (-r1*u0, r0 - r1*u1)  from x^i = (r0, r1)
+    #  This replaces n+1 separate calls to reduce_xi_mod_u, each of which ran
+    #  from scratch up to its own i, with a single shared O(max_i) pass.
+    # ---------------------------------------------------------------------------
+    max_basis_i = 0
+    for idx in 1:nb
+        @inbounds bi, _ = basis[idx]
+        bi > max_basis_i && (max_basis_i = bi)
+    end
+    # +1 extra for j=1 monomials needing x^(i+1)
+    cache_len = max_basis_i + 2
+
+    @inbounds scratch.x_pow_mod_u_r0[1] = 1   # x^0 mod u = 1
+    @inbounds scratch.x_pow_mod_u_r1[1] = 0
+    if cache_len >= 2
+        @inbounds scratch.x_pow_mod_u_r0[2] = 0   # x^1 mod u = x
+        @inbounds scratch.x_pow_mod_u_r1[2] = 1
+    end
+    for i in 2:(cache_len - 1)
+        @inbounds r0 = scratch.x_pow_mod_u_r0[i]
+        @inbounds r1 = scratch.x_pow_mod_u_r1[i]
+        @inbounds scratch.x_pow_mod_u_r0[i + 1] = fp(-fpmul(r1, u0))
+        @inbounds scratch.x_pow_mod_u_r1[i + 1] = fp(r0 - fpmul(r1, u1))
+    end
     # Guard: no anchor may be in supp(D)
     for idx in 1:k
         @inbounds pt = anchors[idx]
@@ -876,15 +977,17 @@ function build_phi_general!(
     end
 
     # --- Mumford rows: const (row k+1) and x-coeff (row k+2) ---
+    # Use cached x^i mod u table populated above — O(1) lookup per column
+    # instead of re-running the recurrence from scratch for each basis element.
     for col_idx in 1:n
         @inbounds i, j = basis[col_idx]
-        r0, r1 = reduce_monomial_mod_D(i, j, u0, u1, v0, v1)
+        r0, r1 = reduce_monomial_mod_D_cached(i, j, v0, v1, scratch)
         @inbounds scratch.A_mat[k + 1, col_idx] = r0
         @inbounds scratch.A_mat[k + 2, col_idx] = r1
     end
     
-    # RHS: -remainder of normalised monomial
-    rn0, rn1 = reduce_monomial_mod_D(i_norm, j_norm, u0, u1, v0, v1)
+    # RHS: -remainder of normalised monomial (also uses cache)
+    rn0, rn1 = reduce_monomial_mod_D_cached(i_norm, j_norm, v0, v1, scratch)
     @inbounds scratch.rhs_vec[k + 1] = fp(-rn0)
     @inbounds scratch.rhs_vec[k + 2] = fp(-rn1)
 
@@ -2138,6 +2241,15 @@ end
 #  Helper: find_roots_and_points_inplace!(scratch, u_len, k) -> Nothing
 #  Finds roots of the residual polynomial component u_RS and lifts them 
 #  to full curve points (x, y) using the structural RR basis matching k anchors.
+#
+#  BATCH Y-INVERSION:
+#  Recovering y = -E(x)/Y(x) for each root requires one fpinv per root.
+#  At K=2 the residual is degree 3 (≤3 roots); at K=3 degree 4 (≤4 roots).
+#  We collect all (val_E, val_Y) pairs first, then invert all non-zero val_Y
+#  values with a single fpinv call using the same Montgomery batch-inversion
+#  trick as fp_gauss_batch_invert_diag!, dropping r Fermat ladders to 1.
+#
+#  scratch.y_batch_x / y_batch_E / y_batch_Y hold the per-root intermediates.
 # ---------------------------------------------------------------------------
 function find_roots_and_points_inplace!(
     scratch::ThreadScratchpad,
@@ -2149,6 +2261,9 @@ function find_roots_and_points_inplace!(
     deg = u_len - 1
     deg <= 0 && return nothing
 
+    # Collect all x-roots into y_batch_x, with count in n_cands.
+    n_cands = 0
+
     if deg == 2
         # --- Monic Quadratic Case: x² + c1*x + c0 ---
         @inbounds c0 = scratch.u_RS[1]
@@ -2158,54 +2273,158 @@ function find_roots_and_points_inplace!(
         sq = sqrt_fp_hot(disc)
         sq < 0 && return nothing
 
-        # small_inv[2] = fpinv(2) — precomputed, no Fermat needed here
         inv2 = scratch.small_inv[2]
         xR = fpmul(fp(-c1 + sq), inv2)
         xS = fpmul(fp(-c1 - sq), inv2)
 
-        yr_1 = recover_y_from_phi_inplace(scratch, xR, k)
-        if yr_1 >= 0
-            idx = scratch.roots_count[1] + 1
-            @inbounds scratch.roots_out[idx] = (xR, yr_1)
-            scratch.roots_count[1] = idx
+        @inbounds scratch.y_batch_x[1] = xR
+        @inbounds scratch.y_batch_x[2] = xS
+        n_cands = 2
+
+    else
+        # --- Degree 3 or 4: use Oscar's roots() over GF(p) ---
+        Fp  = scratch.oscar_Fp[]::FqField
+        Rx  = scratch.oscar_Rx[]::FqPolyRing
+
+        coeff_buf = scratch.oscar_coeff_buf[]::Vector{FqFieldElem}
+        for i in 1:u_len
+            @inbounds coeff_buf[i] = Fp(scratch.u_RS[i])
+        end
+        f_oscar = Rx(@view coeff_buf[1:u_len])
+        rs = roots(f_oscar)
+
+        for r in rs
+            n_cands += 1
+            @inbounds scratch.y_batch_x[n_cands] = Int(lift(ZZ, r))
+        end
+    end
+
+    n_cands == 0 && return nothing
+
+    # ---------------------------------------------------------------------------
+    #  Evaluate E(x) and Y(x) at each candidate root.
+    #  Uses the same pxpow_buf approach as recover_y_from_phi_inplace but amortises
+    #  the basis/max_pow setup across all candidates.
+    # ---------------------------------------------------------------------------
+    nb = k + 3
+    basis = rr_basis_cached(nb)::Vector{NTuple{2, Int}}
+
+    max_pow = 0
+    for idx in 1:nb
+        @inbounds pi, _ = basis[idx]
+        pi > max_pow && (max_pow = pi)
+    end
+
+    @inbounds norm_x, norm_y = basis[nb]
+
+    for ci in 1:n_cands
+        @inbounds x = scratch.y_batch_x[ci]
+
+        # Build x^0 .. x^max_pow
+        scratch.pxpow_buf[1] = 1
+        for e in 1:max_pow
+            @inbounds scratch.pxpow_buf[e + 1] = fpmul(scratch.pxpow_buf[e], x)
         end
 
-        yr_2 = recover_y_from_phi_inplace(scratch, xS, k)
-        if yr_2 >= 0
-            idx = scratch.roots_count[1] + 1
-            @inbounds scratch.roots_out[idx] = (xS, yr_2)
-            scratch.roots_count[1] = idx
+        val_E = 0
+        val_Y = 0
+
+        for idx in 1:(nb - 1)
+            @inbounds coeff = scratch.coeffs_out[idx]
+            coeff == 0 && continue
+            @inbounds pow_x, pow_y = basis[idx]
+            @inbounds term = scratch.pxpow_buf[pow_x + 1]
+            scaled = fpmul(coeff, term)
+            if pow_y == 0
+                val_E = fp(val_E + scaled)
+            else
+                val_Y = fp(val_Y + scaled)
+            end
         end
 
+        # Normalised monomial (coefficient = 1)
+        @inbounds norm_term = scratch.pxpow_buf[norm_x + 1]
+        if norm_y == 0
+            val_E = fp(val_E + norm_term)
+        else
+            val_Y = fp(val_Y + norm_term)
+        end
+
+        @inbounds scratch.y_batch_E[ci] = val_E
+        @inbounds scratch.y_batch_Y[ci] = val_Y
+    end
+
+    # ---------------------------------------------------------------------------
+    #  Batch-invert all val_Y values with one fpinv call.
+    #
+    #  Any root where val_Y == 0 is degenerate (φ vanishes regardless of y).
+    #  We skip those.  For the rest, Montgomery's batch-inversion trick:
+    #    prefix[1] = Y[1]
+    #    prefix[i] = prefix[i-1] * Y[i]
+    #    inv_all   = fpinv(prefix[n_valid])          ← THE ONLY fpinv CALL
+    #    running   = inv_all
+    #    for i = n_valid downto 2:
+    #      inv[i]  = running * prefix[i-1]
+    #      running = running * Y[i]
+    #    inv[1]    = running
+    #
+    #  We reuse scratch.xi_buf (length 32) for the prefix products; it's not
+    #  live here (its last write was inside build_phi_general!, which completed
+    #  before phi_residual_general! called us).
+    #
+    #  CORRECTNESS: roots where val_Y == 0 are excluded from the batch by
+    #  packing valid candidates contiguously into a local stack array (≤8 deep).
+    # ---------------------------------------------------------------------------
+
+    # Pack valid roots (val_Y != 0) into contiguous slots, reusing y_batch_* in place.
+    n_valid = 0
+    for ci in 1:n_cands
+        @inbounds if scratch.y_batch_Y[ci] != 0
+            n_valid += 1
+            if n_valid != ci
+                @inbounds scratch.y_batch_x[n_valid] = scratch.y_batch_x[ci]
+                @inbounds scratch.y_batch_E[n_valid] = scratch.y_batch_E[ci]
+                @inbounds scratch.y_batch_Y[n_valid] = scratch.y_batch_Y[ci]
+            end
+        end
+    end
+
+    n_valid == 0 && return nothing
+
+    if n_valid == 1
+        # Fast path: single root, no batch machinery needed.
+        @inbounds val_E = scratch.y_batch_E[1]
+        @inbounds val_Y = scratch.y_batch_Y[1]
+        y = fpmul(fp(-val_E), fpinv(val_Y))
+        @inbounds scratch.roots_out[1] = (scratch.y_batch_x[1], y)
+        scratch.roots_count[1] = 1
         return nothing
     end
 
-    # --- Degree 3 or 4: use Oscar's roots() over GF(p) ---
-    # GF(p) and polynomial_ring are cached in scratch at init time — zero re-allocation.
-    Fp  = scratch.oscar_Fp[]::FqField
-    Rx  = scratch.oscar_Rx[]::FqPolyRing
-
-    # Reuse the preallocated FqFieldElem buffer — avoids [Fp(x) for ...] heap allocation.
-    # oscar_coeff_buf[] is a Vector{FqFieldElem} of length ≥ 8; we fill the first u_len slots.
-    coeff_buf = scratch.oscar_coeff_buf[]::Vector{FqFieldElem}
-    for i in 1:u_len
-        @inbounds coeff_buf[i] = Fp(scratch.u_RS[i])
-    end
-    # @view avoids the Vector copy that coeff_buf[1:u_len] would create.
-    f_oscar = Rx(@view coeff_buf[1:u_len])
-
-    rs = roots(f_oscar)  # Vector of FqFieldElem
-
-    for r in rs
-        x_int = Int(lift(ZZ, r))
-        yr = recover_y_from_phi_inplace(scratch, x_int, k)
-        if yr >= 0
-            idx = scratch.roots_count[1] + 1
-            @inbounds scratch.roots_out[idx] = (x_int, yr)
-            scratch.roots_count[1] = idx
-        end
+    # Build prefix products into xi_buf.
+    @inbounds scratch.xi_buf[1] = scratch.y_batch_Y[1]
+    for i in 2:n_valid
+        @inbounds scratch.xi_buf[i] = fpmul(scratch.xi_buf[i - 1], scratch.y_batch_Y[i])
     end
 
+    # Single fpinv on the full product.
+    @inbounds running = fpinv(scratch.xi_buf[n_valid])
+
+    # Back-substitute to recover individual inverses and write results.
+    n_out = 0
+    for i in n_valid:-1:2
+        @inbounds inv_i = fpmul(running, scratch.xi_buf[i - 1])
+        @inbounds running = fpmul(running, scratch.y_batch_Y[i])
+        @inbounds y = fpmul(fp(-scratch.y_batch_E[i]), inv_i)
+        n_out += 1
+        @inbounds scratch.roots_out[n_out] = (scratch.y_batch_x[i], y)
+    end
+    # i == 1: running now holds inv(Y[1])
+    @inbounds y = fpmul(fp(-scratch.y_batch_E[1]), running)
+    n_out += 1
+    @inbounds scratch.roots_out[n_out] = (scratch.y_batch_x[1], y)
+
+    scratch.roots_count[1] = n_out
     return nothing
 end
 
