@@ -75,7 +75,7 @@ struct Phase2Tables
     # LP tables from the β=0 walk (READ ONLY in phase 3)
     # shared_lp1 entry: lp_pt → (fb_row::Dict{Int,Int}, neg_al::Int, neg_be::Int, step::Int)
     # Here neg_be is always 0 (β=0 walk), but we keep the full tuple for uniformity.
-    shared_lp1     ::Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int, Int}}
+    shared_lp1     ::ShardedLP1Affine
     shared_lp2     ::LP2Graph
 
     # Extension-field LP tables (optional; may be empty)
@@ -743,8 +743,9 @@ function phase3_trial_worker(
                 fb_row[idx] = get(fb_row, idx, 0) + 1
             end
 
-            if haskey(lp1_pre, lp_pt)
-                pre_row, pre_neg_al, pre_neg_be, _ = lp1_pre[lp_pt]
+            pre_entry = lp1a_get(lp1_pre, lp_pt)
+            if pre_entry !== nothing
+                pre_row, pre_neg_al, pre_neg_be, _ = pre_entry
                 combined = copy(fb_row)
                 for (j, v) in pre_row
                     nv = get(combined, j, 0) - v
@@ -834,7 +835,7 @@ function phase3_solve_targets(
     eff_local_cap = phase3_local_lp_cap(tables.ell)
     @printf("   targets=%d  threads=%d  FB=%d  lp1_pre_entries=%d  step_cap=%d (%.1f×√ell)  local_lp_cap=%d\n",
             n, Threads.nthreads(), length(tables.fb),
-            length(tables.shared_lp1), eff_step_cap,
+            lp1a_length(tables.shared_lp1), eff_step_cap,
             eff_step_cap / sqrt(Float64(tables.ell)), eff_local_cap)
     @printf("   RSS at phase3 start: %.1f MB  |  GC live: %.1f MB\n",
             Sys.maxrss() / 1024^2, Base.gc_live_bytes() / 1024^2)

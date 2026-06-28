@@ -548,11 +548,9 @@ function index_calculus_walk(G::Div2, T::Div2;
                          Threads.nthreads()
 
     # ── Shared walk state ─────────────────────────────────────────────────────
-    shared_lp1            = Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int, Int}}()
-    shared_lp1_lock       = ReentrantLock()
+    shared_lp1            = ShardedLP1Affine()
     shared_lp2            = LP2Graph()
     shared_lp2_lock       = ReentrantLock()
-    shared_lp_doubled     = Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int}}()
     shared_lp1_conj_arr   = [LP1ConjLSM(ell; amortized=false,
                                           spill_path=joinpath(homedir(), "crypto", "tmp", "lp1_conj_main_t$(tid).h5"),
                                           max_hot_ram_mb = 512 ÷ Threads.nthreads(),
@@ -632,9 +630,9 @@ function index_calculus_walk(G::Div2, T::Div2;
                 G, T, fb, BigInt(ell), pt2idx,
                 step_D, step_a, step_b,
                 rel_counter, rel_target, step_cap ÷ n_workers,
-                shared_lp1, shared_lp1_lock,
+                shared_lp1, nothing,
                 shared_lp2, shared_lp2_lock,
-                shared_lp_doubled,
+                nothing,
                 shared_lp1_conj_arr[tid],
                 shared_lp2_conj, shared_lp2_conj_lock,
                 enable_lp2, enable_lp2_conj, max_lp2_nodes, max_lp2_conj_nodes,
@@ -724,7 +722,7 @@ function index_calculus_walk(G::Div2, T::Div2;
         @printf("    parity-pruned:       %d\n",  shared_lp2.n_parity_pruned)
         @printf("    odd-cycle stored:    %d\n",  shared_lp2.n_odd_stored)
         @printf("    LP nodes in graph:   %d\n",  lp2_graph_node_count(shared_lp2))
-        @printf("    lp_doubled residual: %d entries\n", length(shared_lp_doubled))
+        @printf("    lp_doubled residual: %d entries\n", lp1a_length_doubled(shared_lp1))
         @printf("  2-LP graph stats (QLP/conj):\n")
         @printf("    edges inserted:      %d\n",  shared_lp2_conj.n_edges_inserted)
         @printf("    cycles found:        %d\n",  shared_lp2_conj.n_cycles_found)
@@ -746,7 +744,7 @@ function index_calculus_walk(G::Div2, T::Div2;
                 hits_full / max(1e-9, t_phase2_done))
         @printf("  steps per full relation:     %.1f\n",
                 sum(thread_steps) / max(1, hits_full))
-        @printf("  1-LP table size (residual):  %d entries\n", length(shared_lp1))
+        @printf("  1-LP table size (residual):  %d entries\n", lp1a_length(shared_lp1))
         @printf("  1-LP pair rate:              %.4f  (LP-closures / LP-steps)\n",
                 hits_1lp_emit / max(1, hits_lp1))
         println()
@@ -789,7 +787,7 @@ function index_calculus_walk(G::Div2, T::Div2;
     end
 
     # ── Pre-solve cleanup ─────────────────────────────────────────────────────
-    empty!(shared_lp1); clear_lp2_graph!(shared_lp2); empty!(all_samples)
+    foreach(empty!, shared_lp1.lp1_shards); foreach(empty!, shared_lp1.doubled_shards); clear_lp2_graph!(shared_lp2); empty!(all_samples)
     for lsm in shared_lp1_conj_arr; lsm_close!(lsm); end
     GC.gc()
     ccall((:flint_set_num_threads, :libflint), Cvoid, (Cint,), 1)  # avoid FLINT/Julia pthread deadlock
@@ -1127,7 +1125,7 @@ function mem_report_phase2tables(tables::Phase2Tables,
     live_mb = Base.gc_live_bytes() / 1024^2
 
     nF      = length(tables.fb)
-    n_lp1   = length(tables.shared_lp1)
+    n_lp1   = lp1a_length(tables.shared_lp1)
     n_alog  = length(tables.atom_log_dict)
 
     # shared_lp1_conj is a plain Dict{CanonicalLP1Key, LP1ConjVal} snapshot
@@ -1137,10 +1135,16 @@ function mem_report_phase2tables(tables::Phase2Tables,
     avg_row_weight = if n_lp1 > 0
         sample_n = min(100, n_lp1)
         s = 0
-        for (_, v) in Iterators.take(tables.shared_lp1, sample_n)
-            s += length(v[1])   # v[1] is the fb_row Dict{Int,Int}
+        n_seen = 0
+        for shard in tables.shared_lp1.lp1_shards
+            for (_, v) in shard
+                n_seen >= sample_n && break
+                s += length(v[1])   # v[1] is the fb_row Dict{Int,Int}
+                n_seen += 1
+            end
+            n_seen >= sample_n && break
         end
-        s / sample_n
+        n_seen > 0 ? s / n_seen : 0.0
     else
         0.0
     end
@@ -1381,11 +1385,9 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
         step_cap_pre      = round(Int, rel_target_pre * 10.0 / max(1e-8, cov_pre^2) /
                                   Threads.nthreads()) * Threads.nthreads()
 
-        shared_lp1_pre       = Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int, Int}}()
-        shared_lp1_lock_pre  = ReentrantLock()
+        shared_lp1_pre       = ShardedLP1Affine()
         shared_lp2_pre       = LP2Graph()
         shared_lp2_lock_pre  = ReentrantLock()
-        shared_lp_doubled_pre = Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int}}()
         shared_lp1_conj_pre_arr = [LP1ConjLSM(ell; spill_path=joinpath(homedir(), "crypto", "tmp", "lp1_conj_pre_t$(tid).h5"),
                                                max_hot_ram_mb = 512 ÷ Threads.nthreads())
                                    for tid in 1:Threads.nthreads()]
@@ -1438,9 +1440,9 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
                     G, T_dummy, fb_pre, BigInt(ell), pt2idx_pre,
                     step_D_pre, step_a_pre, step_b_pre,
                     rel_counter_pre, rel_target_pre, step_cap_pre ÷ n_workers_pre,
-                    shared_lp1_pre, shared_lp1_lock_pre,
+                    shared_lp1_pre, nothing,
                     shared_lp2_pre, shared_lp2_lock_pre,
-                    shared_lp_doubled_pre,
+                    nothing,
                     shared_lp1_conj_pre_arr[tid],
                     shared_lp2_conj_pre, shared_lp2_conj_lock_pre,
                     enable_lp2, enable_lp2_conj, max_lp2_nodes, max_lp2_conj_nodes,
@@ -1547,7 +1549,7 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
 
         @printf("  atom_log_dict empty; phase3 will solve via accumulated β≠0 relations\n")
         @printf("  Phase2Tables ready: FB=%d  atom_logs=%d (verified)  lp1_entries=%d  conj_snap=%d\n",
-                length(fb_pre), length(atom_log_dict), length(shared_lp1_pre), length(shared_lp1_conj_pre_arr))
+                length(fb_pre), length(atom_log_dict), lp1a_length(shared_lp1_pre), length(shared_lp1_conj_pre_arr))
         @printf("  total precompute time: %.3fs\n\n", time() - t_pre)
 
         # ── Memory diagnostics ────────────────────────────────────────────────

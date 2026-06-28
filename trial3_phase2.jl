@@ -28,6 +28,117 @@
 # =============================================================================
 
 using Random
+using StaticArrays: MVector
+
+# ---------------------------------------------------------------------------
+#  ShardedLP1Affine — sharded affine 1-LP table with per-shard locks.
+#
+#  Replaces the single Dict + single ReentrantLock for shared_lp1 and
+#  shared_lp_doubled with N_LP1_SHARDS independent shard pairs, each
+#  guarded by its own lock.  The shard index is determined by the lower
+#  bits of the affine X-coordinate, which is highly uniform over F_p.
+#
+#  With N_LP1_SHARDS = 64 and 32 walk threads, contention per shard drops
+#  by ~64x vs the single-lock design, virtually eliminating the spinlock
+#  storm observed at thread counts above ~8.
+#
+#  INTERFACE:
+#    lp1a_shard_idx(pt)           -> Int  (shard for point pt)
+#    lp1a_lock!(s, si, f)         -> call f() under shard si's lock
+#    lp1a_get(s, pt)              -> entry or nothing
+#    lp1a_pop!(s, pt)             -> entry or nothing (removes)
+#    lp1a_set!(s, pt, val)        -> store
+#    lp1a_delete!(s, pt)          -> remove
+#    lp1a_length(s)               -> total entries across all shards
+#    lp1a_length_doubled(s)       -> total doubled entries
+#    doubled_get(s, pt)           -> entry or nothing
+#    doubled_pop!(s, pt)          -> entry or nothing (removes)
+#    doubled_set!(s, pt, val)     -> store
+#    doubled_delete!(s, pt)       -> remove
+# ---------------------------------------------------------------------------
+const N_LP1_SHARDS = 64   # power of 2 — enables bitmask shard selection
+
+struct ShardedLP1Affine
+    lp1_shards     ::Vector{Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int, Int}}}
+    doubled_shards ::Vector{Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int}}}
+    locks          ::Vector{ReentrantLock}
+
+    function ShardedLP1Affine()
+        new(
+            [Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int, Int}}() for _ in 1:N_LP1_SHARDS],
+            [Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int}}()      for _ in 1:N_LP1_SHARDS],
+            [ReentrantLock() for _ in 1:N_LP1_SHARDS],
+        )
+    end
+end
+
+@inline function lp1a_shard_idx(pt::NTuple{2,Int})::Int
+    # Lower 6 bits of the x-coordinate — uniformly distributed over F_p.
+    (pt[1] & (N_LP1_SHARDS - 1)) + 1
+end
+
+@inline function lp1a_lock!(f::F, s::ShardedLP1Affine, si::Int) where F
+    lock(s.locks[si]) do; f(); end
+end
+
+@inline function lp1a_get(s::ShardedLP1Affine, pt::NTuple{2,Int})
+    si = lp1a_shard_idx(pt)
+    get(s.lp1_shards[si], pt, nothing)
+end
+
+@inline function lp1a_pop!(s::ShardedLP1Affine, pt::NTuple{2,Int})
+    si = lp1a_shard_idx(pt)
+    pop!(s.lp1_shards[si], pt, nothing)
+end
+
+@inline function lp1a_set!(s::ShardedLP1Affine, pt::NTuple{2,Int}, val)
+    si = lp1a_shard_idx(pt)
+    s.lp1_shards[si][pt] = val
+end
+
+@inline function lp1a_delete!(s::ShardedLP1Affine, pt::NTuple{2,Int})
+    si = lp1a_shard_idx(pt)
+    delete!(s.lp1_shards[si], pt)
+end
+
+@inline function lp1a_haskey(s::ShardedLP1Affine, pt::NTuple{2,Int})::Bool
+    si = lp1a_shard_idx(pt)
+    haskey(s.lp1_shards[si], pt)
+end
+
+@inline function lp1a_length(s::ShardedLP1Affine)::Int
+    sum(length(sh) for sh in s.lp1_shards)
+end
+
+@inline function doubled_get(s::ShardedLP1Affine, pt::NTuple{2,Int})
+    si = lp1a_shard_idx(pt)
+    get(s.doubled_shards[si], pt, nothing)
+end
+
+@inline function doubled_pop!(s::ShardedLP1Affine, pt::NTuple{2,Int})
+    si = lp1a_shard_idx(pt)
+    pop!(s.doubled_shards[si], pt, nothing)
+end
+
+@inline function doubled_set!(s::ShardedLP1Affine, pt::NTuple{2,Int}, val)
+    si = lp1a_shard_idx(pt)
+    s.doubled_shards[si][pt] = val
+end
+
+@inline function doubled_delete!(s::ShardedLP1Affine, pt::NTuple{2,Int})
+    si = lp1a_shard_idx(pt)
+    delete!(s.doubled_shards[si], pt)
+end
+
+@inline function doubled_haskey(s::ShardedLP1Affine, pt::NTuple{2,Int})::Bool
+    si = lp1a_shard_idx(pt)
+    haskey(s.doubled_shards[si], pt)
+end
+
+@inline function lp1a_length_doubled(s::ShardedLP1Affine)::Int
+    sum(length(sh) for sh in s.doubled_shards)
+end
+
 
 # ---------------------------------------------------------------------------
 #  try_lp1_doubled_cross_close!
@@ -50,6 +161,81 @@ using Random
 #
 #  Returns true if a relation was emitted.
 # ---------------------------------------------------------------------------
+# Shard-level inner implementation — called while ALREADY holding shard lock si.
+# Takes the shard Dicts directly to avoid re-hashing the point.
+@inline function _try_lp1_doubled_cross_close_inner!(
+        pt             ::NTuple{2,Int},
+        lp1_shard      ::Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int, Int}},
+        doubled_shard  ::Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int}},
+        ell            ::BigInt,
+        alpha_vec      ::Vector{BigInt},
+        beta_vec       ::Vector{BigInt},
+        rel_rows       ::Vector{Dict{Int,Int}},
+        rank_growth    ::Vector{Tuple{Int,Int}},
+        raw_steps      ::Int,
+        rel_counter    ::Threads.Atomic{Int},
+        ort            ::OnlineRankTracker,
+        G              ::Div2,
+        T              ::Div2,
+        fb             ::Vector{NTuple{2,Int}})::Bool
+
+    haskey(lp1_shard, pt)     || return false
+    haskey(doubled_shard, pt) || return false
+
+    row_1, neg_al_1, neg_be_1, _ = lp1_shard[pt]
+    row_d, al_d,     be_d        = doubled_shard[pt]
+
+    # Combine: result = 2*row_1 - row_d
+    combined = copy(row_1)
+    for (j, v) in combined; combined[j] = 2*v; end
+    for (j, v) in row_d
+        nv = get(combined, j, 0) - v
+        nv == 0 ? delete!(combined, j) : (combined[j] = nv)
+    end
+    c_al = mod(2*neg_al_1 - al_d, Int(ell))
+    c_be = mod(2*neg_be_1 - be_d, Int(ell))
+
+    delete!(lp1_shard,     pt)
+    delete!(doubled_shard, pt)
+
+    (isempty(combined) || (c_al == 0 && c_be == 0)) && return false
+
+    push!(alpha_vec, c_al); push!(beta_vec, c_be); push!(rel_rows, copy(combined))
+    ort_add_row!(ort, combined)
+    length(rank_growth) < MAX_RANK_GROWTH_SAMPLES &&
+        push!(rank_growth, (raw_steps, length(rel_rows)))
+    Threads.atomic_add!(rel_counter, 1)
+    return true
+end
+
+# ShardedLP1Affine overload — acquires the per-shard lock internally.
+function try_lp1_doubled_cross_close!(
+        pt             ::NTuple{2,Int},
+        shared_lp1     ::ShardedLP1Affine,
+        ell            ::BigInt,
+        alpha_vec      ::Vector{BigInt},
+        beta_vec       ::Vector{BigInt},
+        rel_rows       ::Vector{Dict{Int,Int}},
+        rank_growth    ::Vector{Tuple{Int,Int}},
+        raw_steps      ::Int,
+        rel_counter    ::Threads.Atomic{Int},
+        ort            ::OnlineRankTracker,
+        G              ::Div2,
+        T              ::Div2,
+        fb             ::Vector{NTuple{2,Int}})::Bool
+
+    si = lp1a_shard_idx(pt)
+    result = false
+    lock(shared_lp1.locks[si]) do
+        result = _try_lp1_doubled_cross_close_inner!(
+            pt, shared_lp1.lp1_shards[si], shared_lp1.doubled_shards[si],
+            ell, alpha_vec, beta_vec, rel_rows, rank_growth, raw_steps,
+            rel_counter, ort, G, T, fb)
+    end
+    return result
+end
+
+# Legacy Dict overload — kept for callers that manage their own lock externally.
 function try_lp1_doubled_cross_close!(
         pt             ::NTuple{2,Int},
         shared_lp1     ::Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int, Int}},
@@ -64,7 +250,7 @@ function try_lp1_doubled_cross_close!(
         ort            ::OnlineRankTracker,
         G              ::Div2,
         T              ::Div2,
-    combined_scratch::ThreadScratchpad{K_MAX},     # Updated type signature to match the caller #combined_scratch  ::Dict{Int,Int},
+    combined_scratch::ThreadScratchpad{<:Any},
         fb             ::Vector{NTuple{2,Int}})::Bool
 
     haskey(shared_lp1,      pt) || return false
@@ -292,12 +478,12 @@ end
         rel_counter    ::Threads.Atomic{Int},
         ort            ::OnlineRankTracker,
         s              ::WorkerStats,
-        shared_lp1     ::Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int, Int}},
-        shared_lp1_lock::ReentrantLock,
-        shared_lp_doubled::Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int}},
+        shared_lp1     ::ShardedLP1Affine,       # sharded — per-shard locking below
+        shared_lp1_lock::Nothing,                 # unused sentinel (sharding handles locking)
+        shared_lp_doubled::Nothing,               # unused sentinel (inside ShardedLP1Affine)
         lp_col         ::LPResidualCollector,
         rank_growth    ::Vector{Tuple{Int,Int}},
-        combined_scratch::ThreadScratchpad{K_MAX},     # Updated type signature to match the caller #combined_scratch  ::Dict{Int,Int},
+        combined_scratch::ThreadScratchpad{<:Any},
         iR             ::Int,
         iS             ::Int,
         R              ::NTuple{2,Int},
@@ -307,10 +493,11 @@ end
 
     record_lp1!(lp_col, lp_pt, Int(al), Int(be), s.raw_steps)
 
+    si = lp1a_shard_idx(lp_pt)
     closed = false
-    lock(shared_lp1_lock)
+    lock(shared_lp1.locks[si])
     try
-        prev_lp1 = pop!(shared_lp1, lp_pt, nothing)
+        prev_lp1 = pop!(shared_lp1.lp1_shards[si], lp_pt, nothing)
         if prev_lp1 !== nothing
             # --- Close against stored entry ---
             prev_row, prev_al, prev_be, prev_step = prev_lp1
@@ -347,21 +534,21 @@ end
             # same keys, and produces duplicate relations.  A full table of
             # stable unmatched entries is strictly better — closures drain it
             # naturally.
-            if length(shared_lp1) >= MAX_LP1_ENTRIES
+            if lp1a_length(shared_lp1) >= MAX_LP1_ENTRIES
                 # drop silently; doubled cross-close check is skipped too
             else
-                shared_lp1[lp_pt] = (copy(fb_row), neg_al, neg_be, s.raw_steps)
-                # Check whether the complementary doubled entry already exists.
-                if try_lp1_doubled_cross_close!(lp_pt, shared_lp1, shared_lp_doubled,
-                                                ell, alpha_vec, beta_vec, rel_rows,
-                                                rank_growth, s.raw_steps, rel_counter, ort,
-                                                G, T, combined_scratch, fb)
+                shared_lp1.lp1_shards[si][lp_pt] = (copy(fb_row), neg_al, neg_be, s.raw_steps)
+                # Check whether the complementary doubled entry already exists (same shard, same lock).
+                if _try_lp1_doubled_cross_close_inner!(
+                        lp_pt, shared_lp1.lp1_shards[si], shared_lp1.doubled_shards[si],
+                        ell, alpha_vec, beta_vec, rel_rows, rank_growth, s.raw_steps,
+                        rel_counter, ort, G, T, fb)
                     s.hits_full += 1; s.hits_lp2emit += 1; s.rel_local += 1; closed = true
                 end
             end
         end
     finally
-        unlock(shared_lp1_lock)
+        unlock(shared_lp1.locks[si])
     end
 
     # Next anchor: advance the structured cursor (breaks attractor feedback).
@@ -627,15 +814,15 @@ end
         rel_counter    ::Threads.Atomic{Int},
         ort            ::OnlineRankTracker,
         s              ::WorkerStats,
-        shared_lp1     ::Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int, Int}},
-        shared_lp1_lock::ReentrantLock,
+        shared_lp1     ::ShardedLP1Affine,
+        shared_lp1_lock::Nothing,                 # unused — sharding handles locking
         shared_lp2     ::LP2Graph,
         shared_lp2_lock::ReentrantLock,
-        shared_lp_doubled::Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int}},
+        shared_lp_doubled::Nothing,               # unused — inside ShardedLP1Affine
         lp_col         ::LPResidualCollector,
         max_lp2_nodes  ::Int,
         rank_growth    ::Vector{Tuple{Int,Int}},
-        combined_scratch::ThreadScratchpad{K_MAX},     # Updated type signature to match the caller #combined_scratch  ::Dict{Int,Int},
+        combined_scratch::ThreadScratchpad{<:Any},
         next_anchor_ref::Ref{Function})::NTuple{2,Int}
 
     s.hits_lp2seen += 1
@@ -703,10 +890,11 @@ end
 
         elseif emitted_rel !== nothing && emitted_rel.type === :odd_cycle
             s.hits_lp2_odd += 1
-            lock(shared_lp1_lock)
+            si_root = lp1a_shard_idx(root)
+            lock(shared_lp1.locks[si_root])
             try
                 root = emitted_rel.root
-                prev_doubled = pop!(shared_lp_doubled, root, nothing)
+                prev_doubled = doubled_pop!(shared_lp1, root)
                 if prev_doubled !== nothing
                     prev_row, prev_al, prev_be = prev_doubled
                     combined    = sparse_copy!(combined_scratch, emitted_rel.row)
@@ -726,31 +914,33 @@ end
                         Threads.atomic_add!(rel_counter, 1)
                     end
                 else
-                    shared_lp_doubled[root] = (emitted_rel.row, Int(emitted_rel.alpha), Int(emitted_rel.beta))
-                    if length(shared_lp_doubled) > MAX_LP1_DOUBLED_ENTRIES
-                        for evict_key in keys(shared_lp_doubled)
-                            delete!(shared_lp_doubled, evict_key); break
+                    if lp1a_length_doubled(shared_lp1) <= MAX_LP1_DOUBLED_ENTRIES
+                        doubled_set!(shared_lp1, root, (emitted_rel.row, Int(emitted_rel.alpha), Int(emitted_rel.beta)))
+                        if _try_lp1_doubled_cross_close_inner!(
+                                root, shared_lp1.lp1_shards[si_root], shared_lp1.doubled_shards[si_root],
+                                ell, alpha_vec, beta_vec, rel_rows, rank_growth, s.raw_steps,
+                                rel_counter, ort, G, T, fb)
+                            s.hits_full += 1; s.hits_lp2emit += 1; s.rel_local += 1
                         end
-                    end
-                    if try_lp1_doubled_cross_close!(root, shared_lp1, shared_lp_doubled,
-                                                    ell, alpha_vec, beta_vec, rel_rows,
-                                                    rank_growth, s.raw_steps, rel_counter,
-                                                    ort, G, T, combined_scratch, fb)
-                        s.hits_full += 1; s.hits_lp2emit += 1; s.rel_local += 1
                     end
                 end
             finally
-                unlock(shared_lp1_lock)
+                unlock(shared_lp1.locks[lp1a_shard_idx(root)])
             end
         end
     end   # end LP2 graph insertion block
 
     # --- Cross-close with existing 1-LP entries ---
-    lock(shared_lp1_lock)
+    # Acquire shard locks for both LP atoms (in canonical order to prevent deadlock).
+    si_a = lp1a_shard_idx(lp2_a); si_b = lp1a_shard_idx(lp2_b)
+    si_lo, si_hi = minmax(si_a, si_b)
+    lock(shared_lp1.locks[si_lo])
+    si_lo != si_hi && lock(shared_lp1.locks[si_hi])
     try
         for (lp_known, lp_other) in ((lp2_a, lp2_b), (lp2_b, lp2_a))
-            if haskey(shared_lp1, lp_known)
-                r_known, na_known, nb_known, _step_known = shared_lp1[lp_known]
+            si_known = lp1a_shard_idx(lp_known)
+            if haskey(shared_lp1.lp1_shards[si_known], lp_known)
+                r_known, na_known, nb_known, _step_known = shared_lp1.lp1_shards[si_known][lp_known]
                 new_row    = copy(fb_row_scratch)
                 for (j, v) in r_known
                     nv = get(new_row, j, 0) - v
@@ -762,7 +952,8 @@ end
 
                 s.hits_lp2_cross += 1
 
-                prev_other = pop!(shared_lp1, lp_other, nothing)
+                si_other = lp1a_shard_idx(lp_other)
+                prev_other = pop!(shared_lp1.lp1_shards[si_other], lp_other, nothing)
                 if prev_other !== nothing
                     prev_row, prev_al, prev_be, prev_step = prev_other
                     combined    = copy(new_row)
@@ -797,24 +988,24 @@ end
                         end
                         @assert ok "2-LP cross-store: derived 1-LP row inconsistent"
                     end
-                    if length(shared_lp1) >= MAX_LP1_ENTRIES
-                        for evict_key in keys(shared_lp1)
-                            delete!(shared_lp1, evict_key); break
+                    if lp1a_length(shared_lp1) >= MAX_LP1_ENTRIES
+                        # drop — no eviction (see handle_1lp_affine! reasoning)
+                    else
+                        shared_lp1.lp1_shards[si_other][lp_other] = (new_row, new_neg_al, new_neg_be, s.raw_steps)
+                        if _try_lp1_doubled_cross_close_inner!(
+                                lp_other, shared_lp1.lp1_shards[si_other], shared_lp1.doubled_shards[si_other],
+                                ell, alpha_vec, beta_vec, rel_rows, rank_growth, s.raw_steps,
+                                rel_counter, ort, G, T, fb)
+                            s.hits_full += 1; s.hits_lp2emit += 1; s.rel_local += 1
                         end
-                    end
-                    shared_lp1[lp_other] = (new_row, new_neg_al, new_neg_be, s.raw_steps)
-                    if try_lp1_doubled_cross_close!(lp_other, shared_lp1, shared_lp_doubled,
-                                                    ell, alpha_vec, beta_vec, rel_rows,
-                                                    rank_growth, s.raw_steps, rel_counter,
-                                                    ort, G, T, combined_scratch, fb)
-                        s.hits_full += 1; s.hits_lp2emit += 1; s.rel_local += 1
                     end
                 end
             end  # if haskey(shared_lp1, lp_known)
             break   # only act on the first match
         end
     finally
-        unlock(shared_lp1_lock)
+        si_lo != si_hi && unlock(shared_lp1.locks[si_hi])
+        unlock(shared_lp1.locks[si_lo])
     end
 
     if i0 != 0;  return P0
@@ -923,11 +1114,11 @@ function phase2_worker(G               ::Div2,
                        rel_counter     ::Threads.Atomic{Int},
                        rel_target      ::Int,
                        step_cap        ::Int,
-                       shared_lp1      ::Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int, Int}},
-                       shared_lp1_lock ::ReentrantLock,
+                       shared_lp1      ::ShardedLP1Affine,   # sharded; lock-per-shard
+                       shared_lp1_lock ::Nothing,            # unused sentinel
                        shared_lp2      ::LP2Graph,
                        shared_lp2_lock ::ReentrantLock,
-                       shared_lp_doubled::Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int}},
+                       shared_lp_doubled::Nothing,           # unused sentinel; inside ShardedLP1Affine
                        shared_lp1_conj ::Union{ShardedLP1Conj{<:Any}, LP1ConjLSM{<:Any}},
                        shared_lp2_conj ::LP2ConjGraph,
                        shared_lp2_conj_lock::ReentrantLock,
@@ -1065,7 +1256,11 @@ function phase2_worker(G               ::Div2,
     # Advance tuple_cursor by one step and return the current tuple as a
     # Vector{NTuple{2,Int}}.  Thread-local, no allocation on the fast path
     # (we reuse `cur_anchors`).
-    cur_anchors  = Vector{NTuple{2,Int}}(undef, K_anc)
+    # Use MVector for cur_anchors so the ntuple() shim at step_phi_k!'s
+    # boundary sees a StaticArray: escape analysis can prove all bounds and
+    # lifetimes statically, enabling stack allocation of the NTuple.
+    # K_anc == K_MAX is guaranteed by the argument validation above.
+    cur_anchors  = MVector{K_MAX, NTuple{2,Int}}(ntuple(_ -> (0,0), Val(K_MAX)))
 
     # Defensive check: if K_anc >= 2 and this thread's entire anchor slice
     # [anchor_start, anchor_end] is Weierstrass points (py == 0), every
@@ -1313,8 +1508,11 @@ function phase2_worker(G               ::Div2,
     # K into every downstream type so fp_gauss! and anchor loops compile to
     # fully unrolled straight-line code.
     combined_scratch = ThreadScratchpad{K_MAX}()
-    # Initialize runtime prime-dependent caches (fpinv tables, Oscar rings)
-    init_scratch_caches!(combined_scratch, p)
+    # Initialize runtime prime-dependent caches (fpinv tables, Oscar rings).
+    # init_scratch_caches! returns a NEW, fully-typed ThreadScratchpad with
+    # concrete FpT/RxT/BufT type params instead of Nothing placeholders,
+    # eliminating dynamic dispatch on every Oscar dereference in find_roots_and_points_inplace!.
+    combined_scratch = init_scratch_caches!(combined_scratch, p)
 
     # Initialize a fast, thread-local RNG for step selection.
     # Xoshiro has a 2^256 period and is seeded randomly per thread,
@@ -1579,8 +1777,8 @@ function phase2_worker(G               ::Div2,
                 cur_pt = handle_2lp_conj!(P0, RS_mumford::NTuple{4,Int}, neg_al, neg_be, ell,
                                            fb, nF_cur, G, T,
                                            alpha_vec, beta_vec, rel_rows, rel_counter,
-                                           ort, s, shared_lp1, shared_lp1_lock,
-                                           shared_lp_doubled,
+                                           ort, s, shared_lp1, nothing,
+                                           nothing,
                                            shared_lp2_conj, shared_lp2_conj_lock,
                                            max_lp2_conj_nodes, rank_growth,
                                            combined_scratch, next_anchor_ref)
@@ -1680,7 +1878,7 @@ function phase2_worker(G               ::Div2,
             cur_pt = handle_1lp_affine!(lp_pt, fb_row_scratch, al, be, neg_al, neg_be,
                                          ell, fb, nF_cur, G, T,
                                          alpha_vec, beta_vec, rel_rows, rel_counter, ort, s,
-                                         shared_lp1, shared_lp1_lock, shared_lp_doubled,
+                                         shared_lp1, nothing, nothing,
                                          lp_col, rank_growth, combined_scratch,
                                          iR, iS, R, S, P0, next_anchor_ref)
             # NOTE (D29 audit): handle_1lp_affine! in fact returns
@@ -1737,9 +1935,9 @@ function phase2_worker(G               ::Div2,
                                              fb_row_scratch, neg_al, neg_be,
                                              ell, fb, nF_cur, G, T,
                                              alpha_vec, beta_vec, rel_rows, rel_counter, ort, s,
-                                             shared_lp1, shared_lp1_lock,
+                                             shared_lp1, nothing,
                                              shared_lp2, shared_lp2_lock,
-                                             shared_lp_doubled,
+                                             nothing,
                                              lp_col, max_lp2_nodes, rank_growth,
                                              combined_scratch, next_anchor_ref)
                 # D29: handle_2lp_affine! is the ONLY handle_*! that can return
@@ -1913,14 +2111,14 @@ end
         rel_counter       ::Threads.Atomic{Int},
         ort               ::OnlineRankTracker,
         s                 ::WorkerStats,
-        shared_lp1        ::Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int, Int}},
-        shared_lp1_lock   ::ReentrantLock,
-        shared_lp_doubled ::Dict{NTuple{2,Int}, Tuple{Dict{Int,Int}, Int, Int}},
+        shared_lp1        ::ShardedLP1Affine,
+        shared_lp1_lock   ::Nothing,           # unused sentinel
+        shared_lp_doubled ::Nothing,           # unused sentinel; inside ShardedLP1Affine
         shared_lp2_conj   ::LP2ConjGraph,
         shared_lp2_conj_lock::ReentrantLock,
         max_lp2_conj_nodes::Int,
         rank_growth       ::Vector{Tuple{Int,Int}},
-    combined_scratch::ThreadScratchpad{K_MAX},     # Updated type signature to match the caller #combined_scratch  ::Dict{Int,Int},
+        combined_scratch  ::ThreadScratchpad{<:Any},
         next_anchor_ref   ::Ref{Function})::NTuple{2,Int}
 
     s.hits_lp2seen += 1
@@ -1965,9 +2163,10 @@ end
         root_key = emitted_conj.root
         if root_key isa NTuple{2,Int}
             root_affine = root_key::NTuple{2,Int}
-            lock(shared_lp1_lock)
+            si_root2 = lp1a_shard_idx(root_affine)
+            lock(shared_lp1.locks[si_root2])
             try
-                prev_doubled2 = pop!(shared_lp_doubled, root_affine, nothing)
+                prev_doubled2 = doubled_pop!(shared_lp1, root_affine)
                 if prev_doubled2 !== nothing
                     # A previous odd cycle already stored 2·atom(root).
                     # Combine: subtract the two doubled rows.
@@ -1990,19 +2189,18 @@ end
                     end
                 else
                     # Park: store 2·atom(root) for a future 1-LP entry to consume.
-                    # Skip if full rather than evicting — same reasoning as lp1/lp1_conj.
-                    if length(shared_lp_doubled) <= MAX_LP1_DOUBLED_ENTRIES
-                        shared_lp_doubled[root_affine] = (emitted_conj.row, Int(emitted_conj.alpha), Int(emitted_conj.beta))
-                        if try_lp1_doubled_cross_close!(root_affine, shared_lp1, shared_lp_doubled,
-                                                        ell, alpha_vec, beta_vec, rel_rows,
-                                                        rank_growth, s.raw_steps, rel_counter,
-                                                        ort, G, T, combined_scratch, fb)
+                    if lp1a_length_doubled(shared_lp1) <= MAX_LP1_DOUBLED_ENTRIES
+                        doubled_set!(shared_lp1, root_affine, (emitted_conj.row, Int(emitted_conj.alpha), Int(emitted_conj.beta)))
+                        if _try_lp1_doubled_cross_close_inner!(
+                                root_affine, shared_lp1.lp1_shards[si_root2], shared_lp1.doubled_shards[si_root2],
+                                ell, alpha_vec, beta_vec, rel_rows, rank_growth, s.raw_steps,
+                                rel_counter, ort, G, T, fb)
                             s.hits_full += 1; s.hits_lp2emit += 1; s.rel_local += 1
                         end
                     end
                 end  # else (haskey branch)
             finally
-                unlock(shared_lp1_lock)
+                unlock(shared_lp1.locks[si_root2])
             end
         end
         return next_anchor_ref[]()

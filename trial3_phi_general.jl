@@ -104,6 +104,9 @@
 #  Include before first use of FpArith, StandardArith, to_repr, from_repr.
 # ---------------------------------------------------------------------------
 include("trial3_fp_backend.jl")
+using StaticArrays   # MMatrix, MVector — stack-allocated mutable arrays for
+                     # the Gaussian elimination workspace and small fixed-size
+                     # scratch vectors in ThreadScratchpad{K}.
 
 const RR_BASIS_CACHE = Dict{Int, Vector{NTuple{2,Int}}}()
 
@@ -375,7 +378,19 @@ end
 #  random trials (n = 2..8, p ~ 2^45) with zero mismatches before being
 #  ported to Julia.
 # ---------------------------------------------------------------------------
-function fp_gauss!(A::Matrix{Int}, b::Vector{Int}, n::Int, prefix_buf::Vector{Int})::Bool
+# ---------------------------------------------------------------------------
+#  fp_gauss! — StaticArrays edition.
+#
+#  A::MMatrix{N,N,Int} and b::MVector{N,Int} are stack-allocated; N is a
+#  compile-time constant in the type parameter so every loop bound is literal.
+#  LLVM fully unrolls both passes for N ≤ 6 into straight-line register code.
+#
+#  prefix_buf::MVector{N,Int} — stack-allocated prefix-product scratch for
+#  fp_gauss_batch_invert_diag!.  Caller supplies scratch.prefix_buf.
+# ---------------------------------------------------------------------------
+function fp_gauss!(A::MMatrix{N,N,Int}, b::MVector{N,Int},
+                   prefix_buf::MVector{N,Int})::Bool where N
+    n = N   # compile-time constant; loop bounds become literals
     # --- Forward pass: eliminate below the diagonal, cross-multiply only ---
     for col in 1:n
         pivot_row = 0
@@ -426,7 +441,7 @@ function fp_gauss!(A::Matrix{Int}, b::Vector{Int}, n::Int, prefix_buf::Vector{In
     # call total (see fp_gauss_batch_invert_diag! below) instead of doing it
     # inline here, so the prefix-product scratch space can be supplied by
     # the caller and the zero-heap-allocation invariant is preserved.
-    return fp_gauss_batch_invert_diag!(A, b, n, prefix_buf)
+    return fp_gauss_batch_invert_diag!(A, b, prefix_buf)
 end
 
 # ---------------------------------------------------------------------------
@@ -437,15 +452,16 @@ end
 #  (Montgomery's batch-inversion trick) and writes x[i] = b[i] * A[i,i]^-1
 #  back into b in place.
 #
-#  `prefix_buf` is a caller-supplied scratch Vector{Int} of length >= n,
-#  used to hold the running prefix products. The caller passes
-#  scratch.xi_buf (a ThreadScratchpad field already confirmed dead at the
-#  point fp_gauss! runs within build_phi_general! — its last use is inside
-#  monomial_series_coeffs! calls that all complete before fp_gauss! is
-#  invoked) so no new heap allocation or new struct field is needed.
+#  `prefix_buf` is a caller-supplied MVector{N,Int} — scratch.prefix_buf from ThreadScratchpad.
+#  Dedicated field, separate from xi_buf which is used for monomial expansion.
+#  No aliasing risk: prefix_buf is only written here; xi_buf is only written inside
+#  monomial_series_coeffs!, which completes before fp_gauss! is called.
+#  
+#  
 # ---------------------------------------------------------------------------
-@inline function fp_gauss_batch_invert_diag!(A::Matrix{Int}, b::Vector{Int}, n::Int,
-                                              prefix_buf::Vector{Int})::Bool
+@inline function fp_gauss_batch_invert_diag!(A::MMatrix{N,N,Int}, b::MVector{N,Int},
+                                              prefix_buf::MVector{N,Int})::Bool where N
+    n = N
     @inbounds d1 = A[1, 1]
     d1 == 0 && return false
     @inbounds prefix_buf[1] = d1
@@ -468,44 +484,8 @@ end
 
     return true
 end
-# ---------------------------------------------------------------------------
-#  fp_gauss_val! — Val{N}-dispatched wrapper around fp_gauss!
-#
-#  Calling fp_gauss!(A, b, n, buf) with a runtime n prevents LLVM from
-#  unrolling the forward/backward elimination loops, even though n is always
-#  a small constant (k+2 ∈ {3,4,5,6} for k ∈ {1,2,3,4}) fixed at startup.
-#
-#  fp_gauss_val!(A, b, Val(n), buf) forces Julia to compile a separate native
-#  specialisation per n value.  Each specialisation's n is a compile-time
-#  constant, so LLVM unrolls all three nested loops (pivot search, forward
-#  elimination, backward elimination) into straight-line code — no loop
-#  overhead, no branch-on-n, no trip-count uncertainty.
-#
-#  The call site in build_phi_general! uses a small dispatch table:
-#    n == 3 → Val{3}, n == 4 → Val{4}, ..., else fall back to the general path.
-#  This covers every realistic anchor_tuple_size without introducing a new
-#  dependency or changing the algorithm in any way.
-# ---------------------------------------------------------------------------
-@inline function fp_gauss_val!(A::Matrix{Int}, b::Vector{Int}, ::Val{N},
-                                prefix_buf::Vector{Int})::Bool where {N}
-    fp_gauss!(A, b, N, prefix_buf)
-end
-
-# Dispatch shim: routes to the Val{n} specialisation for n ≤ 6.
-@inline function fp_gauss_dispatch!(A::Matrix{Int}, b::Vector{Int}, n::Int,
-                                     prefix_buf::Vector{Int})::Bool
-    if n == 3
-        return fp_gauss_val!(A, b, Val(3), prefix_buf)
-    elseif n == 4
-        return fp_gauss_val!(A, b, Val(4), prefix_buf)
-    elseif n == 5
-        return fp_gauss_val!(A, b, Val(5), prefix_buf)
-    elseif n == 6
-        return fp_gauss_val!(A, b, Val(6), prefix_buf)
-    else
-        return fp_gauss!(A, b, n, prefix_buf)
-    end
-end
+# fp_gauss_val! and fp_gauss_dispatch! removed — fp_gauss! now takes MMatrix/MVector
+# with N in the type, so LLVM sees all loop bounds as literals automatically.
 
 # ---------------------------------------------------------------------------
 #  build_phi_general
@@ -543,31 +523,46 @@ end
 # Parametrizing on K lets the compiler know the exact system size at every
 # call site: fp_gauss! gets Val(K+2), anchor loops unroll, and A_mat is
 # allocated at the right size rather than a 20×20 worst-case allocation.
-struct ThreadScratchpad{K}
+mutable struct ThreadScratchpad{K, N2, N3, L}
+    # N2 = K+2, N3 = K+3  (pre-computed derived sizes as type params to avoid
+    # TypeVar arithmetic in field type declarations, which Julia forbids)
     # 1. Buffers for branch_series!
     out_y          ::Vector{Int}
     f_tay          ::Vector{Int}
     poly_buf       ::Vector{Int}   # Expanded to 1024 to map registers cleanly up to index 768+
     
     # 2. Buffers for monomial_series_coeffs!
-    xi_buf         ::Vector{Int}
+    xi_buf         ::Vector{Int}   # length 32 — used for binomial expansion scratch (indices up to ~16)
+    prefix_buf     ::MVector{N2, Int}  # stack-allocated prefix-product scratch for batch inversion
+                                       # (replaces the xi_buf reuse in fp_gauss_batch_invert_diag!)
     binom_buf      ::Vector{Int}
     pxpow_buf      ::Vector{Int}
     ser_buf        ::Vector{Int}   # Expanded to 64 to hold 32 terms of E(x) and 32 terms of Y(x) simultaneously
 
-    # 3. Linear system workspaces — sized exactly to K+2 (known at construction).
-    #    A_mat is (K+2)×(K+2); using the exact size rather than 20×20 keeps the
-    #    matrix in L1 cache and lets fp_gauss_val!(…, Val(K+2), …) emit fully
-    #    unrolled straight-line code for the elimination passes.
-    A_mat          ::Matrix{Int}   
-    rhs_vec        ::Vector{Int}   
-    
-    # 4. In-place deduplication tables — sized exactly to K (no over-allocation).
-    seen_counts    ::Vector{Int}   
-    visited_flags  ::Vector{Bool}  
-    
-    # 5. Output arrays for φ coefficients and residual polynomial components
-    coeffs_out     ::Vector{Int}
+    # 3. Linear system workspaces — fully stack-allocated via StaticArrays.
+    #
+    #    MMatrix{N,N,Int} / MVector{N,Int} live on the stack (or in registers for
+    #    small N): no heap pointer, no GC pressure, no cache-miss on access.
+    #    For K=1: N=3, 9 Int slots = 72 bytes — fits in two cache lines.
+    #    For K=2: N=4, 16 Int slots = 128 bytes — one cache line each.
+    #    For K=3: N=5, 25 Int slots = 200 bytes.
+    #
+    #    LLVM sees the matrix as a flat value type; it can keep the entire
+    #    elimination in registers and emit straight-line multiply/subtract chains
+    #    with zero loop overhead and zero memory traffic.
+    #
+    #    N2 = K + 2 (linear system size: K anchor rows + 2 Mumford rows)
+    #    N3 = K + 3 (full basis size incl. normalised element)
+    A_mat          ::MMatrix{N2, N2, Int, L}  # L = N2*N2 explicit — avoids abstract field
+    rhs_vec        ::MVector{N2, Int}
+
+    # 4. In-place deduplication tables — stack-allocated, K slots.
+    seen_counts    ::MVector{K, Int}
+    visited_flags  ::MVector{K, Bool}
+
+    # 5. Output arrays for φ coefficients and residual polynomial components.
+    #    coeffs_out has N3 = K+3 entries (K+2 solved + 1 normalised).
+    coeffs_out     ::MVector{N3, Int}
     u_RS           ::Vector{Int}
     v_RS           ::Vector{Int}
     roots_out      ::Vector{NTuple{2,Int}}
@@ -634,18 +629,22 @@ struct ThreadScratchpad{K}
     #     y_batch_Y[i]  — val_Y = Y(x_i) (to be batch-inverted)
     #
     #     Length 8 covers any residual degree we'll ever encounter (deg ≤ K+1 ≤ 5).
-    y_batch_x       ::Vector{Int}   # length 8
-    y_batch_E       ::Vector{Int}   # length 8
-    y_batch_Y       ::Vector{Int}   # length 8
+    y_batch_x       ::MVector{N2, Int}  # ≤ K+1 roots + 1 slack; stack-allocated
+    y_batch_E       ::MVector{N2, Int}
+    y_batch_Y       ::MVector{N2, Int}
 
     function ThreadScratchpad{K}() where K
-        n = K + 2  # linear system size: K anchor eqns + 2 Mumford eqns
-        new(
-            zeros(Int, 32), zeros(Int, 32), zeros(Int, 1024),  # poly_buf expanded safely
-            zeros(Int, 32), zeros(Int, 32), zeros(Int, 32), zeros(Int, 64), # ser_buf expanded to 64
-            zeros(Int, n, n), zeros(Int, n),  # A_mat exactly (K+2)×(K+2), rhs_vec exactly K+2
-            zeros(Int, K), zeros(Bool, K),     # seen_counts and visited_flags exactly K slots
-            zeros(Int, 24), zeros(Int, 8), zeros(Int, 8), 
+        N2 = K + 2
+        N3 = K + 3
+        L  = N2 * N2
+        new{K, N2, N3, L}(
+            zeros(Int, 32), zeros(Int, 32), zeros(Int, 1024),  # out_y, f_tay, poly_buf
+            zeros(Int, 32), MVector{N2,Int}(zeros(Int, N2)), zeros(Int, 32), zeros(Int, 32), zeros(Int, 64),  # xi_buf, prefix_buf, binom_buf, pxpow_buf, ser_buf
+            MMatrix{N2,N2,Int,L}(zeros(Int, N2, N2)),
+            MVector{N2,Int}(zeros(Int, N2)),
+            MVector{K,Int}(zeros(Int, K)),
+            MVector{K,Bool}(zeros(Bool, K)),
+            MVector{N3,Int}(zeros(Int, N3)), zeros(Int, 8), zeros(Int, 8),
             Vector{NTuple{2,Int}}(undef, 8),
             zeros(Int, 1), zeros(Int, 1), zeros(Int, 1), zeros(Bool, 1),
             sizehint!(Dict{Int,Int}(), 8),
@@ -653,7 +652,7 @@ struct ThreadScratchpad{K}
             zeros(Int, 32),
             Ref{Any}(nothing),
             zeros(Int, 32), zeros(Int, 32),   # x_pow_mod_u_r0, x_pow_mod_u_r1
-            zeros(Int, 8), zeros(Int, 8), zeros(Int, 8)  # y_batch_x, y_batch_E, y_batch_Y
+            MVector{N2,Int}(zeros(Int,N2)), MVector{N2,Int}(zeros(Int,N2)), MVector{N2,Int}(zeros(Int,N2))  # y_batch_x, y_batch_E, y_batch_Y
         )
     end
 end
@@ -714,7 +713,7 @@ function init_scratch_caches!(scratch::ThreadScratchpad{K}, p_val::Int) where K
     # We store FqFieldElem objects; they'll be mutated via setindex! in find_roots_and_points_inplace!.
     scratch.oscar_coeff_buf[] = [Fp(0) for _ in 1:8]
 
-    return nothing
+    return scratch
 end
 
 # ---------------------------------------------------------------------------
@@ -928,11 +927,9 @@ function build_phi_general!(
         upx == 0 && return false
     end
 
-    # Zero out our deduplication workspaces instead of allocating fresh Dict/Set objects
-    @inbounds for i in 1:k
-        scratch.seen_counts[i] = 0
-        scratch.visited_flags[i] = false
-    end
+    # Zero out dedup workspaces — fill! on MVector is a single memset.
+    fill!(scratch.seen_counts, 0)
+    fill!(scratch.visited_flags, false)
 
     # Step A: In-place count frequencies matching pairs manually
     for i in 1:k
@@ -966,18 +963,10 @@ function build_phi_general!(
     end
 
     # Reset linear solver workspaces.
-    # Julia matrices are stored column-major, so iterate (i, j) with j in the
-    # OUTER loop and i in the INNER loop to keep sequential memory access —
-    # the previous (j in 1:n, i in 1:n) order (row-major) caused one cache
-    # miss per inner step for n > ~4 (when rows span different cache lines).
-    @inbounds for j in 1:n
-        for i in 1:n
-            scratch.A_mat[i, j] = 0
-        end
-    end
-    @inbounds for i in 1:n
-        scratch.rhs_vec[i] = 0
-    end
+    # fill! on MMatrix/MVector is a single memset of stack-resident memory —
+    # no heap pointer, no loop overhead, single instruction on modern CPUs.
+    fill!(scratch.A_mat, 0)
+    fill!(scratch.rhs_vec, 0)
 
     # Normalized monomial index
     i_norm, j_norm = basis[nb]
@@ -1048,14 +1037,14 @@ function build_phi_general!(
 
     # In-place Gauss solver on the live n×n submatrix of the preallocated buffers.
     # Passing the full Matrix/Vector + explicit n avoids @views SubArray allocation.
-    # scratch.xi_buf is reused as the batch-inversion prefix-product scratch space —
-    # its last write was inside monomial_series_coeffs! calls above, all of which
-    # have completed by this point, so there's no aliasing/data-race risk within
-    # this single-threaded function body.
-    # K is a compile-time type parameter → n = K+2 is known statically.
-    # Call fp_gauss_val! directly with Val(K+2) — no runtime dispatch table needed.
-    # LLVM fully unrolls both elimination passes into straight-line register code.
-    fp_gauss_val!(scratch.A_mat, scratch.rhs_vec, Val(K+2), scratch.xi_buf) || return false
+    # scratch.prefix_buf (MVector{K+2,Int}) is the batch-inversion prefix-product scratch —
+    # dedicated field, no aliasing risk with xi_buf (which is still used for binomial
+    # expansion in monomial_series_coeffs! above).
+
+    # A_mat::MMatrix{K+2,K+2,Int} and rhs_vec::MVector{K+2,Int} are stack-allocated.
+    # fp_gauss! gets N=K+2 from the type — no runtime dispatch, no Val{} indirection.
+    # prefix_buf::MVector{K+2,Int} (scratch.prefix_buf) replaces the xi_buf reuse.
+    fp_gauss!(scratch.A_mat, scratch.rhs_vec, scratch.prefix_buf) || return false
 
     # Solution is now in scratch.rhs_vec[1:n]; copy out.
     @inbounds for i in 1:n
@@ -2637,6 +2626,17 @@ end
     backend::FpArith = StandardArith(p)
 )::Bool where K
     # Convert to NTuple{K,...} — zero allocation, compiler inlines the ntuple.
+    anc_tup = ntuple(i -> anchors[i], Val(K))
+    step_phi_k!(scratch, anc_tup, u0, u1, v0, v1; backend=backend)
+end
+
+@inline function step_phi_k!(
+    scratch ::ThreadScratchpad{K},
+    anchors ::MVector{<:Any, NTuple{2,Int}},
+    u0::Int, u1::Int, v0::Int, v1::Int;
+    backend::FpArith = StandardArith(p)
+)::Bool where K
+    # Convert MVector to NTuple{K,...} — zero allocation, compiler inlines the ntuple.
     anc_tup = ntuple(i -> anchors[i], Val(K))
     step_phi_k!(scratch, anc_tup, u0, u1, v0, v1; backend=backend)
 end
