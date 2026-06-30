@@ -1095,6 +1095,7 @@ function parse_trial3_cli(args::Vector{String})
             anchor_tuple_size < 1 && error("--anchor-tuple-size must be >= 1, got $anchor_tuple_size")
         end
     end
+    @assert anchor_tuple_size == K_MAX "FATAL: --anchor-tuple-size=$anchor_tuple_size does not match K_MAX=$K_MAX (trial3_config.jl). These must be equal — fix the CLI flag or K_MAX. Refusing to proceed."
     return (fb_size=fb_size, enable_lp2=enable_lp2, enable_lp2_conj=enable_lp2_conj,
             max_lp2_nodes=max_lp2_nodes, max_lp2_conj_nodes=max_lp2_conj_nodes,
             amortized=amortized, use_cycle_union=use_cycle_union,

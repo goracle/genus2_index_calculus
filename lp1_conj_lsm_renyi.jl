@@ -17,10 +17,15 @@
 #  Same-col re-inserts are invisible so α₂ reflects the actual walk
 #  distribution rather than artifact duplicates.
 #
-#  AMS update: for each of the AMS_K hash functions h_j, compute the sign
-#  σ_j(key) = MSB( lo(key)*AMS_SALTS[j] + hi(key)*AMS_SALTS_HI[j] )
-#  and add it to ams_Z[j].  Using the FULL 128-bit key (not the 64-bit fp
-#  fingerprint) is critical: hashing fp would cause distinct keys that collide
+#  AMS update: the 128-bit key is first mixed down to a single GF(p61) field
+#  element x = _ams_mix_to_field(k_lo, k_hi), then for each of the AMS_K hash
+#  functions, σ_j(x) = sign(degree-3 polynomial h_j over GF(p61)) is computed
+#  via _ams_sign(j, x) and added to ams_Z[j]. This degree-3 construction is
+#  4-wise independent (see lp1_conj_lsm_constants.jl), which is what the AMS
+#  per-group variance bound formally requires — the prior degree-1
+#  multiply-shift sign function was only 2-universal (pairwise independent).
+#  Using the FULL 128-bit key (compressed via a collision-resistant mixer,
+#  not fp) is critical: hashing fp would cause distinct keys that collide
 #  in fp-space to receive identical sign vectors, biasing F₂ upward and α₂
 #  downward.  After N emissions, E[ams_Z[j]²] = F₂ = Σcᵢ², S₂ = N²/F₂.
 #
@@ -56,16 +61,18 @@
 
         # AMS sketch update: 512 sign-hash projections over the FULL 128-bit key.
         #
-        # σ_j(key) = MSB( lo(key)*AMS_SALTS[j] + hi(key)*AMS_SALTS_HI[j] )
+        # x = _ams_mix_to_field(k_lo, k_hi)   — collision-resistant compression
+        # σ_j(x) = _ams_sign(j, x)            — 4-wise independent (degree-3
+        #                                        polynomial over GF(p61))
         #
-        # Using both halves with independent salt tables ensures the sign
-        # function separates every pair of distinct keys in expectation,
-        # giving an unbiased estimate of F₂ = Σᵢ fᵢ² over the true key
-        # distribution rather than the fp-fingerprint distribution.
+        # Mixing both halves of the key into a single field element before
+        # hashing ensures the sign function separates every pair of distinct
+        # keys in expectation, giving an unbiased estimate of F₂ = Σᵢ fᵢ² over
+        # the true key distribution rather than the fp-fingerprint distribution.
         Z = sc.ams_Z
+        x = _ams_mix_to_field(k_lo, k_hi)
         @inbounds for j in 1:AMS_K
-            h = k_lo * AMS_SALTS[j] + k_hi * AMS_SALTS_HI[j]
-            Z[j] += ifelse((h >> 63) == UInt64(0), Int64(1), Int64(-1))
+            Z[j] += _ams_sign(j, x)
         end
 
         # Occupancy: increment for newly-observed coarse buckets.
@@ -212,13 +219,52 @@ end
 #  (doubling prefixes of the aggregated ams_Z_global) and flags whether the
 #  last doubling step still moves alpha2 by more than ~0.01-0.03.
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+#  _ams_estimate_S2_stats_ngroups — single source of truth for the AMS
+#  median-of-means F₂/S₂/α₂ estimator, restricted to the first n_groups of
+#  the sketch (n_groups == AMS_GROUPS reproduces the full-budget estimate;
+#  this is also the D31 helper, reusing the SAME Z data with no new hashing).
+#
+#  Bias note (Jensen correction):
+#    α₂ = log(S₂) / (2 log p) is a *nonlinear* (concave-log) transform of
+#    S₂ = N²/F₂, and F₂_hat (median-of-means) is unbiased for F₂ in
+#    expectation but its log is not unbiased for log(F₂) — by Jensen's
+#    inequality, E[log F̂₂] ≤ log E[F̂₂], so the naive α₂ above is biased
+#    LOW (S₂ biased high, since S₂ = N²/F₂ inverts the direction) by an
+#    amount that shrinks as the group-mean sample variance shrinks.
+#
+#    First-order (delta-method) correction, using f(x) = log(x):
+#      E[log F̂₂] ≈ log(E[F̂₂]) - Var(F̂₂) / (2 E[F̂₂]²)
+#    so the bias-corrected estimate of log(F₂) is
+#      log(F₂)_corrected ≈ log(F̂₂) + Var(F̂₂) / (2 F̂₂²)
+#    where Var(F̂₂) is estimated here as the sample variance of the
+#    per-group means (group_means), divided by n_groups (variance of the
+#    mean-of-groups statistic) — NOT the variance of the raw group means
+#    themselves, and NOT a substitute for the median's own variance, which
+#    has no closed form. This correction targets the MEAN-of-groups
+#    estimator; since the median and mean coincide asymptotically and
+#    track each other closely in practice for n_groups ~ 32, we apply the
+#    same correction to the (more robust) median-based F2 point estimate.
+#    This is an approximation, not an exact correction for the median —
+#    flagged via `alpha2_bias_est` below so it can be audited rather than
+#    silently trusted.
+#
+#  This bias is DISTINCT from the inter-group spread (alpha2_lo/hi band):
+#    - the spread band reflects VARIANCE (how much the estimate would move
+#      under a fresh batch of independent groups)
+#    - the Jensen term reflects BIAS (a systematic offset from log/ratio
+#      nonlinearity that does not average away with more groups at fixed
+#      n_groups, only shrinks as n_groups/AMS_WIDTH grows)
+#    Both should be inspected; neither one alone tells the full story.
+# ---------------------------------------------------------------------------
 function _ams_estimate_S2_stats_ngroups(Z::Vector{Int64}, N::Int64, n_groups::Int)
     n_groups = clamp(n_groups, 1, AMS_GROUPS)
     N == 0 && return (
         F2=0.0, S2=0.0,
         F2_lo=0.0, F2_hi=0.0,
         S2_lo=0.0, S2_hi=0.0,
-        alpha2=0.0, alpha2_lo=0.0, alpha2_hi=0.0
+        alpha2=0.0, alpha2_lo=0.0, alpha2_hi=0.0,
+        alpha2_bias_est=0.0, alpha2_corrected=0.0
     )
 
     group_means = Vector{Float64}(undef, n_groups)
@@ -251,12 +297,45 @@ function _ams_estimate_S2_stats_ngroups(Z::Vector{Int64}, N::Int64, n_groups::In
     alpha2_lo = log(S2_lo) / (2.0 * logp)
     alpha2_hi = log(S2_hi) / (2.0 * logp)
 
+    # Jensen bias correction (delta method, applied to mean-of-groups
+    # estimator as an approximation for the median; see docstring above).
+    # Sample variance of the group means (ddof=1), then divide by n_groups
+    # to get Var of the mean-of-groups statistic.
+    alpha2_bias_est = 0.0
+    if n_groups >= 2
+        gm_mean = sum(group_means) / n_groups
+        ss = 0.0
+        @inbounds for g in 1:n_groups
+            d = group_means[g] - gm_mean
+            ss += d * d
+        end
+        var_gm_of_mean = (ss / (n_groups - 1)) / n_groups
+        # bias in log(F2_hat) ≈ -Var(F2_hat) / (2 F2_hat^2)  (Jensen, downward)
+        # bias in log(S2_hat) = -bias in log(F2_hat) since S2 = N^2/F2
+        log_F2_bias = var_gm_of_mean / (2.0 * F2 * F2)
+        # propagate into alpha2 = log(S2)/(2 log p); S2 bias has opposite
+        # sign to F2 bias since S2 = N^2/F2.
+        alpha2_bias_est = log_F2_bias / (2.0 * logp)
+    end
+    alpha2_corrected = alpha2 + alpha2_bias_est
+
     return (
         F2=F2, S2=S2,
         F2_lo=F2_lo, F2_hi=F2_hi,
         S2_lo=S2_lo, S2_hi=S2_hi,
-        alpha2=alpha2, alpha2_lo=alpha2_lo, alpha2_hi=alpha2_hi
+        alpha2=alpha2, alpha2_lo=alpha2_lo, alpha2_hi=alpha2_hi,
+        alpha2_bias_est=alpha2_bias_est, alpha2_corrected=alpha2_corrected
     )
+end
+
+# ---------------------------------------------------------------------------
+#  _ams_estimate_S2_stats — full-budget (AMS_GROUPS) wrapper. Kept as a
+#  separate name (rather than inlining call sites to *_ngroups directly)
+#  since it's part of the public-ish API of this file and several call
+#  sites depend on the name.
+# ---------------------------------------------------------------------------
+function _ams_estimate_S2_stats(Z::Vector{Int64}, N::Int64)
+    return _ams_estimate_S2_stats_ngroups(Z, N, AMS_GROUPS)
 end
 
 function _ams_estimate_S2(Z::Vector{Int64}, N::Int64)::Tuple{Float64, Float64}
@@ -436,8 +515,15 @@ function lsm_bday_report(sc::LP1ConjLSM, p::Integer, r::Real; io::IO = stdout)
         @printf(io, "    S₂ / S_naive           : %.5g\n", r2)
         @printf(io, "    α₂  (S₂ ~ p^{2α₂})    : %.4f ± %.4f  [68%% band %.4f .. %.4f]%s\n",
                 ams_stats.alpha2, a2_pm, ams_stats.alpha2_lo, ams_stats.alpha2_hi, burst_flag)
-        @printf(io, "    [band is the inter-group spread; not a formal CI]\n")
+        @printf(io, "    [band is the inter-group spread (VARIANCE); not a formal CI]\n")
         @printf(io, "    [AMS never saturates; valid for any N]\n")
+        @printf(io, "    α₂ Jensen-bias estimate: %+.5f  → bias-corrected α₂ ≈ %.4f\n",
+                ams_stats.alpha2_bias_est, ams_stats.alpha2_corrected)
+        @printf(io, "    [bias is a SEPARATE effect from the spread band above — see\n")
+        @printf(io, "     _ams_estimate_S2_stats_ngroups docstring. Correction is a\n")
+        @printf(io, "     delta-method approximation (exact for mean-of-groups, applied\n")
+        @printf(io, "     here to the median-of-groups estimator); treat as directional,\n")
+        @printf(io, "     not exact, especially if |bias_est| approaches a_pm in size.]\n")
 
         # ── D31: group-budget convergence check ─────────────────────────────
         # Re-derives alpha2 from doubling PREFIXES of the same sketch (4, 8, 16,
@@ -446,20 +532,26 @@ function lsm_bday_report(sc::LP1ConjLSM, p::Integer, r::Real; io::IO = stdout)
         # budget was spent, or whether it's still moving group-by-group (in
         # which case the AMS_GROUPS=32 estimate may itself be under-resolved).
         @printf(io, "\n    [D31] α₂ vs. group budget (prefix of same sketch, no new data):\n")
-        @printf(io, "      n_groups   F₂          S₂          α₂       Δα₂(doubling)\n")
+        @printf(io, "      n_groups   F₂          S₂          α₂       Δα₂(doubling)  bias_est   α₂_corr\n")
         prev_ng_a2  = NaN
         ng          = 4
         ng_a2_vals  = Float64[]
         while ng <= AMS_GROUPS
             ngs = _ams_estimate_S2_stats_ngroups(ams_Z_global, N_global, ng)
             dstr = isnan(prev_ng_a2) ? "        —" : @sprintf("%+9.4f", ngs.alpha2 - prev_ng_a2)
-            @printf(io, "      %8d   %.6g   %.6g   %7.4f  %s%s\n",
+            @printf(io, "      %8d   %.6g   %.6g   %7.4f  %s%s  %+8.5f   %7.4f\n",
                     ng, ngs.F2, ngs.S2, ngs.alpha2, dstr,
-                    ng == AMS_GROUPS ? "  (= full budget, above)" : "")
+                    ng == AMS_GROUPS ? "  (= full budget, above)" : "",
+                    ngs.alpha2_bias_est, ngs.alpha2_corrected)
             push!(ng_a2_vals, ngs.alpha2)
             prev_ng_a2 = ngs.alpha2
             ng *= 2
         end
+        @printf(io, "      [bias_est should shrink faster than the raw α₂ spread as\n")
+        @printf(io, "       n_groups grows (bias ~1/(groups·width), variance ~1/groups);\n")
+        @printf(io, "       if α₂_corr is markedly flatter across doublings than the raw\n")
+        @printf(io, "       α₂ column, that's evidence some of the apparent drift above\n")
+        @printf(io, "       was Jensen bias decaying, not the walk distribution resolving.]\n")
         # ── Verdict: look at the SHAPE of the delta sequence, not just the
         #    last step. A single small last-step can hide a flat-then-jump
         #    pattern (e.g. 8→16 flat, 16→32 jumps) that's evidence of noise
