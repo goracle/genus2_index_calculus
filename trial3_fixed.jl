@@ -668,9 +668,11 @@ function index_calculus_walk(G::Div2, T::Div2;
     hits_lp1      = 0; hits_1lp_emit = 0
     hits_lp2seen  = 0; hits_lp2emit  = 0
     hits_lp2_odd  = 0; hits_skip     = 0
+    phi_attempts  = 0   # steps that cleared gates 1&2 and actually attempted a phi build
 
     thread_hits  = Int[]; thread_full  = Int[]
     thread_lp1   = Int[]; thread_steps = Int[]
+    thread_attempts = Int[]
 
     for r in results
         append!(alpha_vec, r.alpha_vec)
@@ -681,9 +683,11 @@ function index_calculus_walk(G::Div2, T::Div2;
         hits_1lp_emit += r.hits_1lp_emit
         hits_lp2seen  += r.hits_lp2seen; hits_lp2emit += r.hits_lp2emit
         hits_lp2_odd  += r.hits_lp2_odd; hits_skip    += r.hits_skip
+        phi_attempts  += r.phi_attempts
         append!(all_samples, r.sample_rels)
         push!(thread_hits, r.hits_total); push!(thread_full, r.hits_full)
         push!(thread_lp1,  r.hits_lp1);  push!(thread_steps, r.total_steps)
+        push!(thread_attempts, r.phi_attempts)
     end
     nrel = length(rel_rows)
 
@@ -694,8 +698,20 @@ function index_calculus_walk(G::Div2, T::Div2;
         @printf("  phase-2 wall time:     %.3fs\n", t_phase2_done)
         @printf("  total raw steps:       %d  (across all threads)\n", sum(thread_steps))
         @printf("  valid phi steps:       %d\n", hits_total)
-        @printf("  phi validity rate:     %.4f%%\n",
-                100.0 * hits_total / max(1, sum(thread_steps)))
+        @printf("  phi validity rate:     %.4f%%  (hits_total/raw_steps — includes\n", 100.0 * hits_total / max(1, sum(thread_steps)))
+        @printf("                          phase2_alpha_first_seen! Bloom-filter gate rejections)\n")
+        @printf("  phi build rate:        %.4f%%  (hits_total/phi_attempts — gates-cleared\n",
+                100.0 * hits_total / max(1, phi_attempts))
+        @printf("                          steps only; the TRUE phi-construction success rate)\n")
+        @printf("  phi attempts:          %d  (%.4f%% of raw steps were gate-rejected before reaching phi)\n",
+                phi_attempts,
+                100.0 * (sum(thread_steps) - phi_attempts) / max(1, sum(thread_steps)))
+        println()
+        @printf("  NOTE: if 'phi validity rate' declines over a run but 'phi build rate'\n")
+        @printf("  stays flat, the decline is the alpha-dedup Bloom filter saturating\n")
+        @printf("  (expected, unrelated to phi correctness). If 'phi build rate' itself\n")
+        @printf("  declines, check the jac_add invariant-violation counter — see\n")
+        @printf("  jac_add_invariant_violations() in trial1_autoell_p10.jl.\n")
         println()
         @printf("  smoothness breakdown:\n")
         @printf("    0-LP (pure FB):      %d  (%.2f%% of valid steps)\n",
@@ -750,9 +766,10 @@ function index_calculus_walk(G::Div2, T::Div2;
         println()
         @printf("  per-thread breakdown:\n")
         for tid in 1:length(thread_hits)
-            @printf("    thread %d: steps=%d  valid=%d  full=%d  1-LP=%d\n",
-                    tid, thread_steps[tid], thread_hits[tid],
-                    thread_full[tid], thread_lp1[tid])
+            @printf("    thread %d: steps=%d  attempts=%d  valid=%d  full=%d  1-LP=%d  phi_build=%.3f%%\n",
+                    tid, thread_steps[tid], thread_attempts[tid], thread_hits[tid],
+                    thread_full[tid], thread_lp1[tid],
+                    100.0 * thread_hits[tid] / max(1, thread_attempts[tid]))
         end
         flush(stdout)
     end

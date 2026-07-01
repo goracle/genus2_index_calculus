@@ -500,6 +500,16 @@ const MAX_RANK_GROWTH_SAMPLES = 10_000
 #  WorkerStats — per-thread counters, zeroed at construction.
 # ---------------------------------------------------------------------------
 mutable struct WorkerStats
+    # phi_attempts counts steps that cleared gate 1 (D degree-2) and gate 2
+    # (no anchor in supp(D)) and therefore actually invoked build_phi_mumford/
+    # step_phi_k!.  hits_total/phi_attempts is the TRUE phi-construction
+    # success rate.  hits_total/raw_steps (the old "phi-valid rate") also
+    # bakes in rejections from the alpha-dedup Bloom filter gate
+    # (phase2_alpha_first_seen!), which grows monotonically over a run's
+    # duration independent of anything phi-related. Diffing the two rates
+    # isolates real phi/jac_add-side degradation from that expected,
+    # unrelated gate effect.
+    phi_attempts       ::Int
     hits_total         ::Int
     hits_full          ::Int
     hits_0lp           ::Int
@@ -537,6 +547,7 @@ mutable struct WorkerStats
     hits_1lp_conj_attractor_exact   ::Int   # same_col AND Δα=0 → genuine walk loop
     hits_1lp_conj_attractor_birthday::Int   # same_col BUT Δα≠0 → birthday, anchor just happened to match
 
-    WorkerStats() = new(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, zeros(Int, 4), 0,
+    # Leading 0 is the new phi_attempts field.
+    WorkerStats() = new(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, zeros(Int, 4), 0,
                         0, 0, 0, 0, 0, 0, 0, 0)
 end

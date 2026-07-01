@@ -404,6 +404,40 @@ end
 const JacID = Div2(Fp3(1,0,0), Fp2(0,0))
 @inline jac_isid(D::Div2) = D.u[2] == 0 && D.u[3] == 0   # degree 0
 
+# ─────────────────────────── jac_add invariant diagnostics ────────────────────
+#  jac_add's hot-path synthetic division of g(x)=f(x)-V_raw(x)² by U(x)=u1·u2
+#  (below) only computes the quotient coefficients qq0,qq1,qq2 and assumes the
+#  remainder is exactly zero, which is guaranteed by the Cantor identity *only
+#  when D1 and D2 are both genuine, valid genus-2 divisors*.  If that ever
+#  fails to hold (an edge case slipping past the D==0/qq2==0 degenerate
+#  checks, or a caller passing in an already-corrupted Div2), the old code
+#  silently returned whatever qq0/qq1 happened to be — a Div2 that looks
+#  valid (right degree, right types) but does not actually satisfy the curve
+#  relation, and which would then corrupt every subsequent jac_add call built
+#  on top of it for the rest of the walk.
+#
+#  This counter is incremented whenever the (now-checked) remainder is
+#  nonzero, so a run can be inspected after the fact for whether silent
+#  invariant violations are occurring and, if so, whether their rate climbs
+#  over the course of a walk (i.e. it "gets worse" — the signature we're
+#  chasing in the round-off/phi-validity investigation).
+const JAC_ADD_INVARIANT_VIOLATIONS = Threads.Atomic{Int}(0)
+
+"""
+    jac_add_invariant_violations() -> Int
+
+Number of times jac_add's fast Cantor-reduction path detected a nonzero
+remainder (Cantor invariant violated) and fell back to the slow,
+general-purpose `_jac_add_degenerate` path instead of returning a
+potentially-corrupted result. Should be 0 for a healthy run; a nonzero and/or
+climbing count points at genuine divisor corruption rather than at the
+alpha-dedup gate (see trial3_phase2.jl's phi_attempts counter for the
+gate-side half of this comparison).
+"""
+jac_add_invariant_violations() = JAC_ADD_INVARIANT_VIOLATIONS[]
+
+jac_add_invariant_violations_reset!() = (JAC_ADD_INVARIANT_VIOLATIONS[] = 0; nothing)
+
 # ── Generic (degenerate) Cantor via heap polys — called only when gcd(u1,u2)≠1
 function _jac_add_degenerate(D1::Div2, D2::Div2)::Div2
     u1 = fp3_to_vec(D1.u); v1 = fp2_to_vec(D1.v)
@@ -634,7 +668,28 @@ function jac_add(D1::Div2, D2::Div2)::Div2
     rr1  = fp(g1  - fpmul(qq1,ub0))
 
     qq0 = rr4b
-    # Remainder rr3c..rr0 not needed (zero when Cantor invariant holds).
+
+    # ── Invariant check: the remainder of g(x) ÷ U(x) must be exactly zero.
+    #
+    #  Previously this was assumed ("Remainder rr3c..rr0 not needed — zero
+    #  when Cantor invariant holds") and never actually computed. That is a
+    #  true mathematical identity for genuine curve divisors, but it silently
+    #  trusted every input — including a D1/D2 that had *already* drifted off
+    #  the curve due to some earlier, unrelated corruption. This finishes the
+    #  division and checks the remainder explicitly; a nonzero remainder means
+    #  D1/D2 did not actually satisfy the Cantor invariant, and the fast-path
+    #  qq0/qq1/qq2 above cannot be trusted. Route to the general (heap) path
+    #  instead of returning a bogus-but-valid-looking Div2 that would then
+    #  poison every jac_add call downstream for the rest of the walk.
+    rem3 = fp(rr3b - fpmul(qq0,ub3))
+    rem2 = fp(rr2b - fpmul(qq0,ub2))
+    rem1 = fp(rr1  - fpmul(qq0,ub1))
+    rem0 = fp(g0   - fpmul(qq0,ub0))
+    if rem3 != 0 || rem2 != 0 || rem1 != 0 || rem0 != 0
+        Threads.atomic_add!(JAC_ADD_INVARIANT_VIOLATIONS, 1)
+        return _jac_add_degenerate(D1, D2)
+    end
+
     # U1 = quotient [qq0, qq1, qq2], make monic:
     if qq2 == 0
         return _jac_add_degenerate(D1, D2)

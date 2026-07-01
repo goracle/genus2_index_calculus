@@ -326,6 +326,19 @@ function report_worker_progress(tid, elapsed, s::WorkerStats, rel_counter, rel_t
             100.0 * s.hits_lp2seen     / max(1, s.hits_total),
             100.0 * s.hits_lp2emit     / max(1, s.hits_total),
             100.0 * s.hits_skip        / max(1, s.hits_total))
+    # phi_val above is hits_total/raw_steps and includes phase2_alpha_first_seen!
+    # gate rejections (Bloom filter, monotonically fills over the run).
+    # phi_build below is hits_total/phi_attempts — only counts steps that
+    # actually reached build_phi_mumford!/step_phi_k!, i.e. the TRUE
+    # phi-construction success rate. If phi_val declines over a run but
+    # phi_build stays flat, the decline is the alpha-dedup gate, not phi
+    # construction or jac_add. If phi_build itself declines, that points to
+    # real corruption (see jac_add invariant-check counter in trial1).
+    @printf("           phi_build (gates-cleared only) = %.3f%%  |  attempts=%d  |  gate-rejected=%d (%.3f%% of raw)\n",
+            100.0 * s.hits_total / max(1, s.phi_attempts),
+            s.phi_attempts,
+            s.raw_steps - s.phi_attempts,
+            100.0 * (s.raw_steps - s.phi_attempts) / max(1, s.raw_steps))
     @printf("           1lp_conj closure rate: %.3f%%  |  1lp_aff closure rate: %.3f%%  |  conj_cap_drops=%d\n",
             100.0 * s.hits_1lp_conj_emit / max(1, s.hits_lp1_conj),
             100.0 * s.hits_1lp_emit      / max(1, s.hits_lp1),
@@ -1191,6 +1204,7 @@ function phase2_worker(G               ::Div2,
         return (rel_rows      = Dict{Int,Int}[],
                 alpha_vec     = BigInt[],
                 beta_vec      = BigInt[],
+                phi_attempts  = 0,
                 hits_total    = 0,
                 hits_full     = 0,
                 hits_0lp      = 0,
@@ -1601,6 +1615,13 @@ function phase2_worker(G               ::Div2,
             _skip && continue
         end
 
+        # This step has cleared gate 1 (D degree-2) and gate 2 (no anchor in
+        # supp(D)) and is about to actually attempt a phi build below.
+        # hits_total/phi_attempts is the TRUE phi-construction success rate,
+        # uncontaminated by phase2_alpha_first_seen! rejections upstream
+        # (those are counted in raw_steps but never reach this line).
+        s.phi_attempts += 1
+
         # --- Build φ and recover residual (K-aware) ---
         local res_R::NTuple{2,Int}, res_S::NTuple{2,Int}, RS_mumford::NTuple{4,Int}
         local a::Int  # φ leading x²-coefficient (used by D38 and phi_bias_stat)
@@ -1987,6 +2008,14 @@ function phase2_worker(G               ::Div2,
                 100.0 * s.hits_total / max(1, s.raw_steps),
                 100.0 * s.hits_full  / max(1, s.hits_total),
                 s.raw_steps / max(1, s.hits_full))
+        # See report_worker_progress for the phi_val vs phi_build distinction.
+        # phi_build isolates the actual build_phi_mumford!/step_phi_k! success
+        # rate from phase2_alpha_first_seen! gate rejections.
+        @printf("           phi-build rate (gates-cleared only): %.4f%%  |  attempts=%d  |  gate-rejected=%d (%.4f%% of raw)\n",
+                100.0 * s.hits_total / max(1, s.phi_attempts),
+                s.phi_attempts,
+                s.raw_steps - s.phi_attempts,
+                100.0 * (s.raw_steps - s.phi_attempts) / max(1, s.raw_steps))
         @printf("           smoothness (0-LP 1-LP 2-LP 3-LP): %d %d %d %d\n",
                 s.smooth_hist[1], s.smooth_hist[2], s.smooth_hist[3], s.smooth_hist[4])
         let total_conj_close = s.hits_1lp_conj_emit + s.hits_1lp_conj_trivial_same_col +
@@ -2046,6 +2075,7 @@ function phase2_worker(G               ::Div2,
     return (rel_rows      = rel_rows,
             alpha_vec     = alpha_vec,
             beta_vec      = beta_vec,
+            phi_attempts  = s.phi_attempts,
             hits_total    = s.hits_total,
             hits_full     = s.hits_full,
             hits_0lp      = s.hits_0lp,
