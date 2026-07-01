@@ -86,8 +86,13 @@ mutable struct LP1ConjLSM{V}
     # never produce a birthday collision → SSD waste to spill).
     n_cold_dropped      ::Int
 
-    # Pre-allocated scratch buffer for disk find pread calls.
-    # Access safe because _lsm_disk_find is always called under file_lock.
+    # LEGACY scratch buffer. No longer used for actual pread(2) calls — every
+    # call site now allocates its own RECORD_BYTES (48-byte) buffer per call
+    # instead of sharing this one, specifically so concurrent threads never
+    # hold file_lock across disk I/O latency (see _sc_disk_find / step 2 and
+    # step 3 of conj_insert_or_pop! in this file for the rationale). Kept only
+    # so the memory-accounting report below still has a field to size; safe
+    # to delete entirely in a future pass along with that one printout line.
     read_buf            ::Vector{UInt8}
 
     # Top-K multiplicity reservoir — tracks the K keys with highest emission
@@ -554,7 +559,16 @@ function _sc_disk_find(sc::LP1ConjLSM,
                         fp_target::UInt64)::Tuple{Bool,Int,Int,NTuple{K_MAX,UInt16},UInt32,UInt64,UInt64}
     sc.spill_read_io === nothing &&
         return (false, 0, 0, ntuple(_ -> ANCHOR_IDX_NONE, K_MAX), UInt32(0), UInt64(0), UInt64(0))
-    _lsm_disk_find(sc.runs, sc.spill_read_io::Cint, sc.read_buf, key, fp_target)
+    # NOTE: previously passed the shared sc.read_buf scratch buffer here, which
+    # is why every caller had to hold sc.file_lock across the pread(2) syscalls
+    # inside _lsm_disk_find — two threads sharing one 48-byte buffer mid-read
+    # is a real data race. RECORD_BYTES (48) is cheap to allocate per call, so
+    # each call now gets its own buffer and no longer needs a lock to stay
+    # safe. sc.read_buf itself is left in the struct only for the memory
+    # accounting printout (see readbuf_bytes below) — it is intentionally
+    # dead as far as I/O goes now.
+    _lsm_disk_find(sc.runs, sc.spill_read_io::Cint, Vector{UInt8}(undef, RECORD_BYTES),
+                    key, fp_target)
 end
 
 function _sc_disk_delete!(sc::LP1ConjLSM, ri::Int, pos::Int)
@@ -750,48 +764,105 @@ function conj_insert_or_pop!(sc::LP1ConjLSM{V}, si::Int,
     end
 
     # 2. Own disk runs.
+    #
+    # Previously this whole step ran under sc.file_lock + sc.shard_locks[si]
+    # for the entire duration, including the synchronous pread(2) calls
+    # inside _sc_disk_find. That meant every thread hitting this path serialized
+    # behind whichever thread currently held file_lock and was blocked in the
+    # kernel on disk I/O — the lock was held across syscall latency, not just
+    # across a few instructions. That is the actual contention source (see the
+    # deadlock-looking pileup in handle_1lp_conj! at conj_insert_or_pop!:867).
+    #
+    # Fix: split into an unlocked SPECULATIVE probe (no lock held during the
+    # pread — pread(2) is positional/thread-safe on Linux, so concurrent reads
+    # on the same fd from different threads are fine as long as they don't
+    # share a scratch buffer, which they no longer do — see _sc_disk_find)
+    # followed by a lock-guarded CONFIRM+MUTATE step that only runs if the
+    # speculative probe actually found something. The confirm step redoes the
+    # lookup from scratch under lock — cheap, since the page cache is now warm
+    # from the speculative read a few instructions ago — and is the sole
+    # source of truth for anything that mutates state (tombstone, hot-insert).
+    #
+    # This preserves the exact TOCTOU-safety of the original code (the confirm
+    # step re-checks the hot table and re-does the disk find while holding
+    # both locks, exactly as before) while removing lock-holds around I/O
+    # latency entirely. It also skips taking file_lock/shard_locks[si] at all
+    # on a bloom false-positive (speculative probe finds nothing), which the
+    # old code could not do since it always locked first and asked questions
+    # second.
+    #
+    # Note on staleness: there is a narrow window where the speculative probe
+    # can miss a record that another thread flushes to disk between our
+    # runs-snapshot and our pread. This is not a new failure mode — the
+    # original code already released file_lock between step 2 and step 4
+    # (insert), so a flush landing in that gap could already produce the same
+    # duplicate-on-disk-and-in-hot-table outcome. The same-col/collision
+    # TOCTOU checks throughout this function exist precisely to reconcile that
+    # kind of miss when it's later discovered, and the cross-peer probe below
+    # already accepts an equivalent class of miss via trylock-skip. So this is
+    # consistent with the existing tolerance level of the algorithm, not a new
+    # correctness hole.
     if !isempty(sc.runs) && bloom_maybe_has(sc.bloom, fp)
         lock(sc.file_lock)
-        try
-            lock(sc.shard_locks[si])
-            try
-                # TOCTOU double-check.
-                slot = _lsm_hot_find(sc, si, key)
-                if slot != 0
-                    v = @inbounds sc.hot_vals[si][slot]
-                    if Int(v.neg_al) == Int(val.neg_al) &&
-                       _conj_prev_be(v) == _conj_prev_be(val)
-                        return (nothing, true, nothing)
-                    end
-                    prev_row = _unpack_anchor_row(v.anchor_indices)
-                    _lsm_hot_delete!(sc, si, slot)
-                    _lsm_record_sample!(sc, fp, now_t, key)
-                    _bday_record_collision!(sc, now_t)
-                    return (v, false, prev_row)
-                end
+        runs_snap = sc.runs
+        fd_snap   = sc.spill_read_io
+        unlock(sc.file_lock)
 
-                found, ri, pos, ai_v, step_v, al_v, be_v = _sc_disk_find(sc, key, fp)
-                if found
-                    if al_v == UInt64(val.neg_al) &&
-                       be_v == UInt64(_conj_prev_be(val))
-                        # Same-partial by scalars: re-insert to hot with anchor_indices
-                        # recovered from disk so future closes work.
-                        _sc_disk_delete!(sc, ri, pos)
-                        disk_val = _conj_make_val(V, _unpack_anchor_row(ai_v), step_v, al_v, be_v)
-                        _lsm_hot_insert!(sc, si, key, disk_val)
-                        return (nothing, true, nothing)
+        if fd_snap !== nothing
+            spec_buf = Vector{UInt8}(undef, RECORD_BYTES)
+            spec_found, _, _, _, _, _, _ =
+                _lsm_disk_find(runs_snap, fd_snap::Cint, spec_buf, key, fp)
+
+            if spec_found
+                lock(sc.file_lock)
+                try
+                    lock(sc.shard_locks[si])
+                    try
+                        # TOCTOU double-check against the hot table — a
+                        # concurrent thread may have inserted or closed this
+                        # exact key while we were reading disk.
+                        slot = _lsm_hot_find(sc, si, key)
+                        if slot != 0
+                            v = @inbounds sc.hot_vals[si][slot]
+                            if Int(v.neg_al) == Int(val.neg_al) &&
+                               _conj_prev_be(v) == _conj_prev_be(val)
+                                return (nothing, true, nothing)
+                            end
+                            prev_row = _unpack_anchor_row(v.anchor_indices)
+                            _lsm_hot_delete!(sc, si, slot)
+                            _lsm_record_sample!(sc, fp, now_t, key)
+                            _bday_record_collision!(sc, now_t)
+                            return (v, false, prev_row)
+                        end
+
+                        # Authoritative re-find under lock. May legitimately
+                        # come back empty if the speculative hit above was
+                        # tombstoned/compacted away in the meantime — that's
+                        # a stale-hit, not an error; fall through below.
+                        found, ri, pos, ai_v, step_v, al_v, be_v = _sc_disk_find(sc, key, fp)
+                        if found
+                            if al_v == UInt64(val.neg_al) &&
+                               be_v == UInt64(_conj_prev_be(val))
+                                # Same-partial by scalars: re-insert to hot with anchor_indices
+                                # recovered from disk so future closes work.
+                                _sc_disk_delete!(sc, ri, pos)
+                                disk_val = _conj_make_val(V, _unpack_anchor_row(ai_v), step_v, al_v, be_v)
+                                _lsm_hot_insert!(sc, si, key, disk_val)
+                                return (nothing, true, nothing)
+                            end
+                            _sc_disk_delete!(sc, ri, pos)
+                            result_v = _conj_make_val(V, _unpack_anchor_row(ai_v), step_v, al_v, be_v)
+                            _lsm_record_sample!(sc, fp, now_t, key)
+                            _bday_record_collision!(sc, now_t)
+                            return (result_v, false, _unpack_anchor_row(ai_v))
+                        end
+                    finally
+                        unlock(sc.shard_locks[si])
                     end
-                    _sc_disk_delete!(sc, ri, pos)
-                    result_v = _conj_make_val(V, _unpack_anchor_row(ai_v), step_v, al_v, be_v)
-                    _lsm_record_sample!(sc, fp, now_t, key)
-                    _bday_record_collision!(sc, now_t)
-                    return (result_v, false, _unpack_anchor_row(ai_v))
+                finally
+                    unlock(sc.file_lock)
                 end
-            finally
-                unlock(sc.shard_locks[si])
             end
-        finally
-            unlock(sc.file_lock)
         end
     end
 
@@ -824,39 +895,72 @@ function conj_insert_or_pop!(sc::LP1ConjLSM{V}, si::Int,
                 end
             end
 
-            # Check peer disk via trylock — skip peer if busy flushing.
+            # Check peer disk — speculative unlocked probe first, then a
+            # trylock-guarded confirm+mutate. This used to hold BOTH
+            # peer_lsm.file_lock and peer_lsm.shard_locks[si] for the
+            # duration of the pread — meaning a cross-peer probe from thread A
+            # could stall peer B's OWN step 2/4 progress on B's own LSM for
+            # the full duration of A's disk read, on top of blocking every
+            # other thread that wanted peer_lsm.file_lock. The speculative
+            # probe below never touches peer_lsm's locks at all; only the
+            # (rare, since it requires an actual disk hit) confirm+mutate
+            # step does, and it does so with the same trylock-and-skip policy
+            # as the hot-table check above — a busy peer is skipped exactly
+            # as it was before, we just no longer make peer B pay for A's
+            # I/O latency while we decide whether there's anything to confirm.
             if !isempty(peer_lsm.runs)
+                runs_snap = nothing
+                fd_snap   = nothing
                 if trylock(peer_lsm.file_lock)
                     try
-                        if trylock(peer_lsm.shard_locks[si])
-                            try
-                                found, ri, pos, ai_v, step_v, al_v, be_v =
-                                    _lsm_disk_find(peer_lsm.runs,
-                                                   peer_lsm.spill_read_io::Cint,
-                                                   peer_lsm.read_buf,
-                                                   key, fp)
-                                if found
-                                    if al_v == UInt64(val.neg_al) &&
-                                       be_v == UInt64(_conj_prev_be(val))
-                                        _run_set_dead!(peer_lsm.runs[ri], pos)
-                                        peer_lsm.n_disk_live -= 1
-                                        disk_val = _conj_make_val(V, _unpack_anchor_row(ai_v), step_v, al_v, be_v)
-                                        _lsm_hot_insert!(peer_lsm, si, key, disk_val)
-                                        return (nothing, true, nothing)
-                                    end
-                                    _run_set_dead!(peer_lsm.runs[ri], pos)
-                                    peer_lsm.n_disk_live -= 1
-                                    _lsm_record_sample!(sc, fp, now_t, key)
-                                    _bday_record_collision!(sc, now_t)
-                                    result_v = _conj_make_val(V, _unpack_anchor_row(ai_v), step_v, al_v, be_v)
-                                    return (result_v, false, _unpack_anchor_row(ai_v))
-                                end
-                            finally
-                                unlock(peer_lsm.shard_locks[si])
-                            end
-                        end
+                        runs_snap = peer_lsm.runs
+                        fd_snap   = peer_lsm.spill_read_io
                     finally
                         unlock(peer_lsm.file_lock)
+                    end
+                end
+
+                if runs_snap !== nothing && fd_snap !== nothing
+                    spec_buf = Vector{UInt8}(undef, RECORD_BYTES)
+                    spec_found, _, _, _, _, _, _ =
+                        _lsm_disk_find(runs_snap, fd_snap::Cint, spec_buf, key, fp)
+
+                    if spec_found && trylock(peer_lsm.file_lock)
+                        try
+                            if trylock(peer_lsm.shard_locks[si])
+                                try
+                                    # Authoritative re-find under lock; may
+                                    # come back empty if the speculative hit
+                                    # was tombstoned/compacted away since —
+                                    # stale-hit, not an error.
+                                    found, ri, pos, ai_v, step_v, al_v, be_v =
+                                        _lsm_disk_find(peer_lsm.runs,
+                                                       peer_lsm.spill_read_io::Cint,
+                                                       Vector{UInt8}(undef, RECORD_BYTES),
+                                                       key, fp)
+                                    if found
+                                        if al_v == UInt64(val.neg_al) &&
+                                           be_v == UInt64(_conj_prev_be(val))
+                                            _run_set_dead!(peer_lsm.runs[ri], pos)
+                                            peer_lsm.n_disk_live -= 1
+                                            disk_val = _conj_make_val(V, _unpack_anchor_row(ai_v), step_v, al_v, be_v)
+                                            _lsm_hot_insert!(peer_lsm, si, key, disk_val)
+                                            return (nothing, true, nothing)
+                                        end
+                                        _run_set_dead!(peer_lsm.runs[ri], pos)
+                                        peer_lsm.n_disk_live -= 1
+                                        _lsm_record_sample!(sc, fp, now_t, key)
+                                        _bday_record_collision!(sc, now_t)
+                                        result_v = _conj_make_val(V, _unpack_anchor_row(ai_v), step_v, al_v, be_v)
+                                        return (result_v, false, _unpack_anchor_row(ai_v))
+                                    end
+                                finally
+                                    unlock(peer_lsm.shard_locks[si])
+                                end
+                            end
+                        finally
+                            unlock(peer_lsm.file_lock)
+                        end
                     end
                 end
             end

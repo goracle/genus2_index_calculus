@@ -2614,11 +2614,14 @@ function recover_y_from_phi(E::Vector{Int}, Y::Vector{Int}, x::Int)::Union{Int,N
     return fpmul(fp(-ex), fpinv(yx))
 end
 
-# Vector-dispatch shim for step_phi_k!: converts cur_anchors (a Vector of length K_anc,
-# which equals K_MAX by the user's contract) into a NTuple{K_MAX,...} so the hot path
-# above gets a compile-time K.  ntuple with Val(K_anc) is zero-cost — the compiler
-# resolves K_anc as a constant when K_anc is derived from anchor_tuple_size (passed in
-# from the CLI as a constant for the duration of the run).
+# Vector-dispatch shim for step_phi_k!: converts anchors (a Vector or MVector
+# whose length may exceed K, e.g. the K_MAX-sized cur_anchors buffer shared
+# across all round-robin tuple lengths) into a NTuple{K,...} so the hot path
+# above gets a compile-time K, reading only the first K entries.  ntuple with
+# Val(K) is zero-cost — K is a type parameter of `scratch`, so the caller
+# selects K by choosing which ThreadScratchpad{K} to pass in (see
+# step_phi_dispatch!, which picks the right one for the current round-robin
+# tuple length at runtime).
 @inline function step_phi_k!(
     scratch ::ThreadScratchpad{K},
     anchors ::Vector{NTuple{2,Int}},
@@ -2832,4 +2835,55 @@ function step_phi_k!(
     end
 
     return true
+end
+
+# ---------------------------------------------------------------------------
+#  step_phi_dispatch! — runtime-k entry point for the round-robin walk.
+#
+#  Once anchor tuple length k varies step-to-step (round-robin over
+#  1..K_ceil rather than a single fixed K), the scratch buffer needed for
+#  the general step_phi_k! path must vary with it too: ThreadScratchpad{K}
+#  bakes K into every field size (A_mat is (K+2)x(K+2), seen_counts has K
+#  slots, etc.), so one scratchpad instance can only ever serve one K.
+#
+#  The caller (phase2 worker) therefore holds a heterogeneous tuple
+#  `scratch_by_k` with one concretely-typed ThreadScratchpad{k} per length
+#  k = 1..K_ceil (built once at worker init via
+#  `ntuple(k -> init_scratch_caches!(ThreadScratchpad{k}(), p), Val(K_ceil))`).
+#  Indexing that tuple with a *runtime* k directly (`scratch_by_k[k_cur]`)
+#  is type-unstable — its element type is a Union across all K, which the
+#  compiler can't specialize away. Instead we dispatch through a manually
+#  unrolled if/elseif chain built once via @generated from the tuple's
+#  *type* (so its length adapts automatically if K_ceil/K_MAX changes —
+#  no hand-editing needed here when the run's ceiling grows or shrinks).
+#  Each branch below binds `scratch_by_k[$i]` with a literal index known at
+#  generation time, so inside that branch the compiler sees a concrete
+#  ThreadScratchpad{i} and step_phi_k! compiles monomorphically just as it
+#  always did for the old fixed-K case — the runtime cost is exactly one
+#  chain of integer comparisons (k_cur == 1, == 2, ...) to pick the branch,
+#  which is negligible next to the φ-construction work each branch does.
+#
+#  Returns (success::Bool, scratch) so the caller can read roots_out /
+#  u_RS / v_RS / coeffs_out etc. off the SAME scratch instance that was
+#  actually used for this step, without a second runtime-k lookup.
+# ---------------------------------------------------------------------------
+@generated function step_phi_dispatch!(
+    scratch_by_k ::T,
+    k_cur        ::Int,
+    anchors,
+    u0::Int, u1::Int, v0::Int, v1::Int
+) where {T<:Tuple}
+    n = length(T.parameters)
+    ex = :(error("step_phi_dispatch!: k_cur=", k_cur, " out of range 1:", $n))
+    for i in n:-1:1
+        ex = quote
+            if k_cur == $i
+                (step_phi_k!(scratch_by_k[$i], anchors, u0, u1, v0, v1),
+                 scratch_by_k[$i])
+            else
+                $ex
+            end
+        end
+    end
+    return ex
 end

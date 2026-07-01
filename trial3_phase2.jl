@@ -605,7 +605,7 @@ end
         s               ::WorkerStats,
         shared_lp1_conj ::Union{ShardedLP1Conj{V}, LP1ConjLSM{V}},
         rank_growth     ::Vector{Tuple{Int,Int}},
-        combined_scratch::ThreadScratchpad{K_MAX},
+        combined_scratch::ThreadScratchpad{<:Any},
         P0              ::NTuple{2,Int},
         phi_bias_stat   ::PhiBiasStat,
         next_anchor_ref ::Ref{Function},
@@ -1241,68 +1241,86 @@ function phase2_worker(G               ::Div2,
     anchor_cursor = anchor_start
 
     # ==========================================================================
-    #  Anchor tuple cursor — round-robin over all multiset k-tuples drawn from
-    #  this thread's FB slice, in lexicographic index order.
+    #  Anchor tuple cursor — round-robin over BOTH tuple length k = 1..K_ceil
+    #  AND, within each length, all multiset k-tuples drawn from this thread's
+    #  FB slice, in lexicographic index order.
     #
-    #  For anchor_tuple_size == 1 (classic): identical to the old behaviour —
-    #  we just cycle through fb[anchor_start..anchor_end] one point at a time.
+    #  K_MAX (trial3_config.jl) is the hard compile-time ceiling — it fixes
+    #  the size of cur_anchors and bounds every ThreadScratchpad{k} we can
+    #  build.  anchor_tuple_size (K_ceil below) is the *effective* ceiling for
+    #  this run: we cycle the tuple length k over 1..K_ceil, never just K_ceil
+    #  itself, so every call to next_anchor_tuple() advances to the next k in
+    #  sequence (1 -> 2 -> ... -> K_ceil -> 1 -> ...) instead of only ever
+    #  emitting length-K_ceil tuples. K_ceil == 1 recovers the old classic
+    #  single-anchor cycle exactly (the round-robin is a no-op over one value).
     #
-    #  For anchor_tuple_size == K > 1: we enumerate all K-element multiset
-    #  selections from {anchor_start..anchor_end} (i.e. combinations with
-    #  repetition, ordered by lex index).  A K-tuple with a repeated element
-    #  requests a tangency (order-2 vanishing) at that point; `build_phi_general`
-    #  handles the derivative row automatically.
+    #  Each length k keeps its OWN independent cursor over {anchor_start..
+    #  anchor_end} (combinations with repetition, ordered by lex index), so
+    #  advancing through the k=2 tuples doesn't disturb where we are in the
+    #  k=3 enumeration, etc. A k-tuple with a repeated element requests a
+    #  tangency (order-2 vanishing) at that point; `build_phi_general` handles
+    #  the derivative row automatically.
     #
-    #  State: a length-K index vector `tuple_cursor[1..K]` where each entry is
-    #  an FB index in [anchor_start, anchor_end], non-decreasing.  Advancing
-    #  increments the last position and carries like a restricted odometer.
+    #  State: tuple_cursors[k][1..k] is a length-k index vector, each entry an
+    #  FB index in [anchor_start, anchor_end], non-decreasing.  Advancing a
+    #  given length's cursor increments its last position and carries like a
+    #  restricted odometer, exactly as before — just replicated per k.
     #
-    #  Total tuple count = C(slice_size + K - 1, K)  (stars-and-bars).
-    #  For K=1 this is exactly slice_size, recovering the old cycle.
+    #  Total tuple count for a given k = C(slice_size + k - 1, k) (stars-and-
+    #  bars); for k=1 this is exactly slice_size, recovering the old cycle.
     # ==========================================================================
     slice_size   = anchor_end - anchor_start + 1
-    K_anc        = anchor_tuple_size
+    K_ceil        = anchor_tuple_size   # effective ceiling; K_ceil <= K_MAX (CLI-validated)
 
-    # Initialise tuple cursor to (anchor_start, anchor_start, ...) — the
-    # lexicographically smallest K-tuple.
-    tuple_cursor = fill(anchor_start, K_anc)
+    # One independent lexicographic cursor per tuple length k = 1..K_ceil.
+    # Initialised to (anchor_start, anchor_start, ...) — the lexicographically
+    # smallest k-tuple for each length.
+    tuple_cursors = [fill(anchor_start, k) for k in 1:K_ceil]
 
-    # Advance tuple_cursor by one step and return the current tuple as a
-    # Vector{NTuple{2,Int}}.  Thread-local, no allocation on the fast path
-    # (we reuse `cur_anchors`).
-    # Use MVector for cur_anchors so the ntuple() shim at step_phi_k!'s
-    # boundary sees a StaticArray: escape analysis can prove all bounds and
-    # lifetimes statically, enabling stack allocation of the NTuple.
-    # K_anc == K_MAX is guaranteed by the argument validation above.
+    # cur_anchors is sized to the hard compile-time ceiling K_MAX so it can
+    # hold any length up to K_MAX, but only the first k_cur_ref[] slots are
+    # meaningful after any given next_anchor_tuple() call — every caller must
+    # iterate `1:k_cur_ref[]`, never the whole vector, once k_cur_ref[] < K_MAX.
+    # Use MVector so the ntuple() shim at step_phi_k!'s boundary sees a
+    # StaticArray: escape analysis can prove all bounds and lifetimes
+    # statically, enabling stack allocation of the NTuple.
     cur_anchors  = MVector{K_MAX, NTuple{2,Int}}(ntuple(_ -> (0,0), Val(K_MAX)))
 
-    # Defensive check: if K_anc >= 2 and this thread's entire anchor slice
+    # Tracks the tuple length k produced by the most recent next_anchor_tuple()
+    # call. Wrapped in a Ref (not a plain local) so it can be mutated from
+    # inside the closures below without Julia boxing the outer binding —
+    # mirrors the existing next_anchor_ref convention just below. Starts at 0
+    # so the very first call yields k=1 (round-robin's natural starting point).
+    k_cur_ref = Ref{Int}(0)
+
+    # Defensive check: if K_ceil >= 2 and this thread's entire anchor slice
     # [anchor_start, anchor_end] is Weierstrass points (py == 0), every
-    # possible K-tuple is poisoned and next_anchor_tuple()'s rejection loop
-    # below would spin forever with no valid tuple to land on. This is a
-    # pre-existing structural possibility of the per-thread chunking, not
-    # something introduced by the rejection loop itself, so fail loudly
-    # rather than hang silently.
-    if K_anc >= 2
+    # possible k-tuple with k>=2 is poisoned and next_anchor_tuple()'s
+    # rejection loop below would spin forever with no valid tuple to land on
+    # whenever the round-robin reaches such a k. This is a pre-existing
+    # structural possibility of the per-thread chunking, not something
+    # introduced by the rejection loop itself, so fail loudly rather than
+    # hang silently.
+    if K_ceil >= 2
         n_weierstrass_in_slice = count(i -> fb[i][2] == 0, anchor_start:anchor_end)
         if n_weierstrass_in_slice == slice_size
             error("Thread $tid: anchor slice [$anchor_start, $anchor_end] is " *
-                  "entirely Weierstrass points; no valid $(K_anc)-tuple exists. " *
+                  "entirely Weierstrass points; no valid k-tuple with k>=2 exists. " *
                   "Reduce --anchor-tuple-size, increase factor base size, or " *
                   "rebalance chunking to mix Weierstrass and non-Weierstrass points " *
                   "into every thread's slice.")
         end
     end
 
-    # Structural validity check: true iff `tup` contains no Weierstrass
-    # point (py == 0) repeated >= 2 times.  Mirrors the guard in
-    # build_phi_general! (step B) exactly, so a tuple rejected here is
-    # never returned to the caller and never reaches the φ-builder at all.
-    @inline function _anchor_tuple_valid(tup)::Bool
-        @inbounds for i in 1:K_anc
+    # Structural validity check: true iff the first `k` entries of `tup`
+    # contain no Weierstrass point (py == 0) repeated >= 2 times. Mirrors the
+    # guard in build_phi_general! (step B) exactly, so a tuple rejected here
+    # is never returned to the caller and never reaches the φ-builder at all.
+    @inline function _anchor_tuple_valid(tup, k::Int)::Bool
+        @inbounds for i in 1:k
             if tup[i][2] == 0
                 cnt = 0
-                for j in 1:K_anc
+                for j in 1:k
                     if tup[j] == tup[i]
                         cnt += 1
                     end
@@ -1313,19 +1331,21 @@ function phase2_worker(G               ::Div2,
         return true
     end
 
-    @inline function _advance_tuple_cursor!()
-        # Advance: increment last position, carry right-to-left.
-        # Each position tc[i] ∈ [anchor_start, anchor_end], and must satisfy
-        # tc[i] >= tc[i-1] (non-decreasing).  The carry bound for position i
-        # is anchor_end (it can go up to anchor_end regardless of position).
+    @inline function _advance_tuple_cursor!(k::Int)
+        # Advance the length-k cursor: increment last position, carry
+        # right-to-left. Each position tc[i] ∈ [anchor_start, anchor_end], and
+        # must satisfy tc[i] >= tc[i-1] (non-decreasing). The carry bound for
+        # position i is anchor_end (it can go up to anchor_end regardless of
+        # position).
+        tc = tuple_cursors[k]
         @inbounds begin
-            pos = K_anc
+            pos = k
             while pos >= 1
-                if tuple_cursor[pos] < anchor_end
-                    tuple_cursor[pos] += 1
+                if tc[pos] < anchor_end
+                    tc[pos] += 1
                     # Reset all positions to the right to the new value (non-decreasing)
-                    for j in pos+1:K_anc
-                        tuple_cursor[j] = tuple_cursor[pos]
+                    for j in pos+1:k
+                        tc[j] = tc[pos]
                     end
                     break
                 end
@@ -1333,16 +1353,24 @@ function phase2_worker(G               ::Div2,
             end
             if pos == 0
                 # Wrap: reset to all-anchor_start
-                fill!(tuple_cursor, anchor_start)
+                fill!(tc, anchor_start)
             end
         end
     end
 
     @inline function next_anchor_tuple()
-        # Snapshot current cursor into cur_anchors (preserves original
-        # semantics: the very first call returns the seed tuple unadvanced).
-        @inbounds for i in 1:K_anc
-            cur_anchors[i] = fb[tuple_cursor[i]]
+        # Round-robin the tuple length itself: 1 -> 2 -> ... -> K_ceil -> 1 ->
+        # ..., so consecutive calls emit different lengths (mod K_ceil == 1,
+        # which just recovers the old fixed-K behaviour unchanged).
+        k = k_cur_ref[] >= K_ceil ? 1 : k_cur_ref[] + 1
+        k_cur_ref[] = k
+        tc = tuple_cursors[k]
+
+        # Snapshot this length's current cursor into cur_anchors[1:k]
+        # (preserves original semantics: the first time length k comes up, it
+        # returns that length's seed tuple unadvanced).
+        @inbounds for i in 1:k
+            cur_anchors[i] = fb[tc[i]]
         end
 
         # Structurally reject poisoned tuples (a Weierstrass point repeated
@@ -1351,14 +1379,14 @@ function phase2_worker(G               ::Div2,
         # the cursor.  A cursor slice containing a Weierstrass point's FB
         # index would otherwise deterministically re-land on this exact
         # tuple every wrap cycle, spinning the worker thread forever.
-        while !_anchor_tuple_valid(cur_anchors)
-            _advance_tuple_cursor!()
-            @inbounds for i in 1:K_anc
-                cur_anchors[i] = fb[tuple_cursor[i]]
+        while !_anchor_tuple_valid(cur_anchors, k)
+            _advance_tuple_cursor!(k)
+            @inbounds for i in 1:k
+                cur_anchors[i] = fb[tc[i]]
             end
         end
 
-        _advance_tuple_cursor!()
+        _advance_tuple_cursor!(k)
         return cur_anchors
     end
 
@@ -1488,10 +1516,12 @@ function phase2_worker(G               ::Div2,
     end
 
     # --- Walk state ---
-    # For K_anc == 1: cur_pt is the sole anchor (classic behaviour).
-    # For K_anc >  1: cur_anchors holds the full K-tuple; cur_pt = cur_anchors[1]
-    #                 is used for diagnostics, pt2idx lookups, and the handle_*
-    #                 LP helpers (which remain single-anchor).
+    # For k_cur_ref[] == 1: cur_pt is the sole anchor (classic behaviour).
+    # For k_cur_ref[] >  1: cur_anchors[1:k_cur_ref[]] holds the full k-tuple;
+    #                 cur_pt = cur_anchors[1] is used for diagnostics, pt2idx
+    #                 lookups, and the handle_* LP helpers (which remain
+    #                 single-anchor). k_cur_ref[] itself varies step-to-step
+    #                 now that tuple length round-robins over 1..K_ceil.
     next_anchor_tuple()
     cur_pt = cur_anchors[1]      # initial cur_pt from the seeded tuple
     # D29 artifact filter: tracks whether cur_pt's MOST RECENT assignment came
@@ -1516,17 +1546,31 @@ function phase2_worker(G               ::Div2,
 
     # --- Scratch dicts (reused every step to avoid per-step allocation) ---
     fb_row_scratch   = sizehint!(Dict{Int,Int}(), 4)
-    # K_MAX is the compile-time anchor tuple size from trial3_config.jl.
-    # The user contract guarantees anchor_tuple_size == K_MAX for this run.
-    # ThreadScratchpad{K_MAX} allocates A_mat as (K_MAX+2)×(K_MAX+2) and bakes
-    # K into every downstream type so fp_gauss! and anchor loops compile to
-    # fully unrolled straight-line code.
-    combined_scratch = ThreadScratchpad{K_MAX}()
-    # Initialize runtime prime-dependent caches (fpinv tables, Oscar rings).
+    # anchor_tuple_size (K_ceil) is now the round-robin CEILING, not a single
+    # fixed tuple length — the walk visits every length k = 1..K_ceil in
+    # rotation, and each length needs its OWN ThreadScratchpad{k}, since
+    # ThreadScratchpad{K} bakes K into every field size (A_mat is
+    # (K+2)x(K+2), seen_counts has K slots, etc.). We build one instance per
+    # length up front (each still allocated once per thread, exactly as the
+    # old single ThreadScratchpad{K_MAX} was) and hold them in a
+    # heterogeneous tuple so every element keeps its own concrete type —
+    # no abstract-type boxing, no dynamic dispatch inside the hot loop.
+    # k=1 never actually reaches into this tuple (see the K==1 fast path in
+    # the main loop below, which calls the closed-form build_phi_mumford
+    # instead), but we still build slot 1 so scratch_by_k stays uniformly
+    # 1-indexed by k; the extra allocation is negligible and happens once.
     # init_scratch_caches! returns a NEW, fully-typed ThreadScratchpad with
     # concrete FpT/RxT/BufT type params instead of Nothing placeholders,
-    # eliminating dynamic dispatch on every Oscar dereference in find_roots_and_points_inplace!.
-    combined_scratch = init_scratch_caches!(combined_scratch, p)
+    # eliminating dynamic dispatch on every Oscar dereference in
+    # find_roots_and_points_inplace!.
+    scratch_by_k = ntuple(k -> init_scratch_caches!(ThreadScratchpad{k}(), p), Val(K_ceil))
+    # Kept for the handful of call sites (handle_1lp_conj!, sparse_copy!,
+    # etc.) that only ever touch the K-independent `.combined_scratch` Dict
+    # field and accept ThreadScratchpad{<:Any} — any one instance will do,
+    # so we default to the k=1 slot. The main loop below always passes the
+    # step's OWN active scratch (returned by step_phi_dispatch!) wherever the
+    # callee's behaviour actually depends on K.
+    combined_scratch = scratch_by_k[1]
 
     # Initialize a fast, thread-local RNG for step selection.
     # Xoshiro has a 2^256 period and is seeded randomly per thread,
@@ -1604,10 +1648,19 @@ function phase2_worker(G               ::Div2,
         v0 = D_cur.v[1]; v1 = D_cur.v[2]
         px, py = cur_pt   # cur_pt is set by the previous iteration's branch-end
 
+        # k_cur: the tuple length that seeded cur_anchors this step (set by
+        # the most recent next_anchor_tuple() call, either the initial seed
+        # above the loop or the previous iteration's branch-end advance).
+        # Only cur_anchors[1:k_cur] are meaningful — every loop over the
+        # active anchor tuple below is bounded by k_cur, never the whole
+        # (K_MAX-sized) cur_anchors vector.
+        k_cur = k_cur_ref[]
+
         # --- Gate 2: all anchor points must not be in the support of D ---
         # (build_phi_general also checks each anchor; we do a fast pre-check here.)
         let _skip = false
-            for _anc in cur_anchors
+            for _i in 1:k_cur
+                _anc = cur_anchors[_i]
                 _apx = _anc[1]
                 _upx = fp(fp(_apx*_apx) + fp(u1*_apx) + u0)
                 if _upx == 0; _skip = true; break; end
@@ -1622,11 +1675,11 @@ function phase2_worker(G               ::Div2,
         # (those are counted in raw_steps but never reach this line).
         s.phi_attempts += 1
 
-        # --- Build φ and recover residual (K-aware) ---
+        # --- Build φ and recover residual (k-aware) ---
         local res_R::NTuple{2,Int}, res_S::NTuple{2,Int}, RS_mumford::NTuple{4,Int}
         local a::Int  # φ leading x²-coefficient (used by D38 and phi_bias_stat)
 
-        if K_anc == 1
+        if k_cur == 1
             # Fast path: closed-form single-anchor φ
             phi_c = build_phi_mumford(px, py, u0, u1, v0, v1)
             phi_c === nothing && continue
@@ -1638,17 +1691,19 @@ function phase2_worker(G               ::Div2,
             res_R, res_S, RS_mumford = phi_residual_mumford(a, b_phi, c_phi, px, u0, u1)
             RS_mumford === SENTINEL_MUMFORD && continue   # division failed
         else
-            # General K-anchor path via the zero-allocation step_phi_k!.
-            # Pass `combined_scratch` (or your thread-local scratch variable) downstream.
-            step_success = step_phi_k!(combined_scratch, cur_anchors, u0, u1, v0, v1)
+            # General k-anchor path via the zero-allocation step_phi_k!,
+            # dispatched to the ThreadScratchpad{k_cur} instance out of
+            # scratch_by_k (see step_phi_dispatch! in trial3_phi_general.jl).
+            step_success, scratch_k = step_phi_dispatch!(scratch_by_k, k_cur, cur_anchors, u0, u1, v0, v1)
             !step_success && continue
 
-            # Extract references directly from our pre-allocated thread-local scratch buffers
-            # instead of unpacking an allocated tuple.
-            k_len      = length(cur_anchors)
+            # Extract references directly from the pre-allocated thread-local
+            # scratch buffers of the ACTIVE (k_cur-sized) scratch instead of
+            # unpacking an allocated tuple.
+            k_len      = k_cur
             nb_k       = k_len + 3
-            roots_k    = combined_scratch.roots_out
-            n_roots    = combined_scratch.roots_count[1]  # Track active logical count via a primitive field
+            roots_k    = scratch_k.roots_out
+            n_roots    = scratch_k.roots_count[1]  # Track active logical count via a primitive field
             
             # Extract up to 2 residual affine points as res_R, res_S.
             # A single recovered root (n_roots == 1) is not a usable affine
@@ -1669,14 +1724,14 @@ function phase2_worker(G               ::Div2,
 
             # Build RS_mumford from u_RS / v_RS for the conjugate branch.
             # u_RS length is determined via scratch integer flags rather than allocating length(u_RS_k).
-            u_rs_len = combined_scratch.u_RS_len[1]
-            v_rs_len = combined_scratch.v_RS_len[1]
+            u_rs_len = scratch_k.u_RS_len[1]
+            v_rs_len = scratch_k.v_RS_len[1]
 
             if u_rs_len == 3   # degree 2 — standard conjugate pair
-                @inbounds u0_rs = combined_scratch.u_RS[1]
-                @inbounds u1_rs = combined_scratch.u_RS[2]
-                @inbounds v0_rs = (v_rs_len == 0) ? 0 : combined_scratch.v_RS[1]
-                @inbounds v1_rs = (v_rs_len >= 2) ? combined_scratch.v_RS[2] : 0
+                @inbounds u0_rs = scratch_k.u_RS[1]
+                @inbounds u1_rs = scratch_k.u_RS[2]
+                @inbounds v0_rs = (v_rs_len == 0) ? 0 : scratch_k.v_RS[1]
+                @inbounds v1_rs = (v_rs_len >= 2) ? scratch_k.v_RS[2] : 0
                 RS_mumford = (u0_rs, u1_rs, v0_rs, v1_rs)
             else
                 # Residual degree ≠ 2: no conjugate LP key available.
@@ -1694,7 +1749,7 @@ function phase2_worker(G               ::Div2,
             for _ki in 1:nb_k
                 @inbounds basis_elem = basis_k[_ki]
                 if basis_elem[1] == 2 && basis_elem[2] == 0
-                    @inbounds a = combined_scratch.coeffs_out[_ki]
+                    @inbounds a = scratch_k.coeffs_out[_ki]
                     break
                 end
             end
@@ -1755,14 +1810,14 @@ function phase2_worker(G               ::Div2,
             # For LP1-conj ALL anchors in the k-tuple must be in the FB.
             # If any anchor is off-FB the step has ≥2 large primes (RS pair + the
             # off-FB anchor) and belongs in the 2-LP-conj path, not here.
-            all_anchors_in_fb = all(get(pt2idx, anc, 0) != 0 for anc in cur_anchors)
+            all_anchors_in_fb = all(get(pt2idx, cur_anchors[_i], 0) != 0 for _i in 1:k_cur)
             if i0 != 0 && all_anchors_in_fb
                 s.hits_lp1_conj += 1
                 # Build the FB row for the anchor k-tuple.  No residual points
                 # are added — the RS pair is off-FB by construction in this branch.
                 empty!(fb_row_scratch)
-                for anc in cur_anchors
-                    idx = get(pt2idx, anc, 0)
+                for _i in 1:k_cur
+                    idx = get(pt2idx, cur_anchors[_i], 0)
                     fb_row_scratch[idx] = get(fb_row_scratch, idx, 0) + 1
                 end
                 let _nb_a2 = length(phi_bias_stat.split_hist)
@@ -1839,9 +1894,10 @@ function phase2_worker(G               ::Div2,
             #  0-LP: P0, R, S all in FB → full relation
             # ------------------------------------------------------------------
             empty!(fb_row_scratch)
-            # Add ALL anchors from the K-tuple
-            for anc in cur_anchors
-                idx = get(pt2idx, anc, 0)
+            # Add ALL anchors from the k-tuple (bounded by k_cur, not the
+            # K_MAX-sized cur_anchors buffer)
+            for _i in 1:k_cur
+                idx = get(pt2idx, cur_anchors[_i], 0)
                 idx == 0 && continue
                 fb_row_scratch[idx] = get(fb_row_scratch, idx, 0) + 1
             end
@@ -1884,9 +1940,10 @@ function phase2_worker(G               ::Div2,
 
             lp_pt = i0 == 0 ? P0 : iR == 0 ? R : S
             empty!(fb_row_scratch)
-            # Add ALL anchors from the K-tuple
-            for anc in cur_anchors
-                idx = get(pt2idx, anc, 0)
+            # Add ALL anchors from the k-tuple (bounded by k_cur, not the
+            # K_MAX-sized cur_anchors buffer)
+            for _i in 1:k_cur
+                idx = get(pt2idx, cur_anchors[_i], 0)
                 idx == 0 && continue
                 fb_row_scratch[idx] = get(fb_row_scratch, idx, 0) + 1
             end
@@ -1939,9 +1996,10 @@ function phase2_worker(G               ::Div2,
                 record_d34_step!(deep_stat, P0[1], p, D34_OUTCOME_OTHER)
             else
                 empty!(fb_row_scratch)
-                # Add ALL anchors from the K-tuple
-                for anc in cur_anchors
-                    idx = get(pt2idx, anc, 0)
+                # Add ALL anchors from the k-tuple (bounded by k_cur, not the
+                # K_MAX-sized cur_anchors buffer)
+                for _i in 1:k_cur
+                    idx = get(pt2idx, cur_anchors[_i], 0)
                     idx == 0 && continue
                     fb_row_scratch[idx] = get(fb_row_scratch, idx, 0) + 1
                 end

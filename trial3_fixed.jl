@@ -569,7 +569,7 @@ function index_calculus_walk(G::Div2, T::Div2;
     # per LSM) so the FPR stays low even when hot entries have been flushed to SSD.
     # Using 4 bits/entry gives ~11% FPR — enough to gate pread calls without blowing RAM.
     let global_cap = shared_lp1_conj_arr[1].max_entries
-        gb = BloomFilter(global_cap; bits_per_entry = 4)
+        gb = BloomFilter(global_cap; bits_per_entry = 8) # changed it from 4 to 8 to prevent false positives.
         @printf("[LP1ConjLSM] %d LSMs, hot_cap=%d entries/LSM (%d/shard), spill→%s/\n",
                 length(shared_lp1_conj_arr),
                 shared_lp1_conj_arr[1].hot_caps[1] * shared_lp1_conj_arr[1].n_shards,
@@ -1112,7 +1112,13 @@ function parse_trial3_cli(args::Vector{String})
             anchor_tuple_size < 1 && error("--anchor-tuple-size must be >= 1, got $anchor_tuple_size")
         end
     end
-    @assert anchor_tuple_size == K_MAX "FATAL: --anchor-tuple-size=$anchor_tuple_size does not match K_MAX=$K_MAX (trial3_config.jl). These must be equal — fix the CLI flag or K_MAX. Refusing to proceed."
+    # anchor_tuple_size is now the round-robin CEILING: the walk cycles
+    # through every tuple length k = 1..anchor_tuple_size in rotation
+    # (see phase2_worker in trial3_phase2.jl), instead of only ever
+    # constructing length-K_MAX tuples. It must not exceed K_MAX, since
+    # K_MAX is the hard compile-time bound on cur_anchors and on every
+    # ThreadScratchpad{k} the walk can allocate.
+    @assert anchor_tuple_size <= K_MAX "FATAL: --anchor-tuple-size=$anchor_tuple_size exceeds K_MAX=$K_MAX (trial3_config.jl). anchor_tuple_size is the ceiling for round-robin tuple lengths 1..anchor_tuple_size and cannot exceed the compile-time K_MAX. Lower --anchor-tuple-size or raise K_MAX. Refusing to proceed."
     return (fb_size=fb_size, enable_lp2=enable_lp2, enable_lp2_conj=enable_lp2_conj,
             max_lp2_nodes=max_lp2_nodes, max_lp2_conj_nodes=max_lp2_conj_nodes,
             amortized=amortized, use_cycle_union=use_cycle_union,
@@ -1267,7 +1273,7 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
     !amortized && !sqrt_mode && println("  LA mode: chain-path O(nF) solver (always) + cycle-union (if --cycle-union)")
     !enable_lp1_aff && !sqrt_mode && println("  1-LP affine: DISABLED (--no-lp1-aff)")
     random_fb && println("  factor base: RANDOM (--random-fb — phase 1 walk skipped)")
-    anchor_tuple_size > 1 && println("  anchor mode: K-tuple (K=$anchor_tuple_size, general phi, tangency-capped at mult=2)")
+    anchor_tuple_size > 1 && println("  anchor mode: round-robin k-tuple (k=1..$anchor_tuple_size, general phi, tangency-capped at mult=2)")
     println("="^70, "\n")
 
 
@@ -1419,7 +1425,7 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
         end
         # Wire shared global bloom and peer list so threads probe each other's files.
         let global_cap = shared_lp1_conj_pre_arr[1].max_entries
-            gb = BloomFilter(global_cap; bits_per_entry = 4)
+            gb = BloomFilter(global_cap; bits_per_entry = 8) # changed it from 4 to 8 to prevent false positives.
             @printf("[LP1ConjLSM] %d LSMs (pre), global bloom configured for %d keys\n",
                     length(shared_lp1_conj_pre_arr), global_cap)
             @printf("[LP1ConjLSM]   hot_cap=%d entries/LSM (%d/shard), spill→%s/\n",

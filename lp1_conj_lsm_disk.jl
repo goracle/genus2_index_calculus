@@ -201,9 +201,27 @@ end
 #  Cold (disk) lookup
 #
 #  Returns (found, run_idx, pos_in_run, anchor_indices, step_v, al_v, be_v).
-#  Caller must hold sc.file_lock.  `read_fd` and `buf` are the LSM's
-#  spill_read_io and read_buf fields passed in directly so this function
-#  remains free of LP1ConjLSM-type references (defined later in core).
+#
+#  Locking: this function itself takes no lock and requires none to be held
+#  by the caller — pread(2) is positional and safe to call concurrently from
+#  multiple threads on the same fd, and `runs`/`buf` are passed in by value
+#  (a Vector *reference*, not shared mutable scratch) rather than read from
+#  a struct field, so two concurrent calls never interfere as long as they
+#  don't pass the same `buf` object.
+#
+#  Callers fall into two categories:
+#    - SPECULATIVE probes (no lock held): pass a runs snapshot taken under a
+#      brief lock (just a reference copy, not the read itself) and a fresh
+#      per-call `buf`. Used to check "is this worth taking the lock for at
+#      all" without blocking anyone else on I/O latency.
+#    - CONFIRM/mutate calls (lock held): pass sc.runs directly along with a
+#      fresh per-call `buf` while sc.file_lock (+ shard lock) is held, as the
+#      authoritative source of truth immediately before a tombstone/insert.
+#      The lock here is protecting the subsequent *mutation*, not the read.
+#
+#  `read_fd` and `buf` are passed in directly (rather than read from sc)
+#  so this function remains free of LP1ConjLSM-type references (defined
+#  later in core).
 # ---------------------------------------------------------------------------
 function _lsm_disk_find(runs::Vector{RunMeta},
                          read_fd::Cint,
