@@ -1096,13 +1096,30 @@ end
 
 # Construct once per run (or per amortized sub-run), BEFORE spawning workers,
 # and share the single instance across all threads — mirrors how
-# PHASE2_ALPHA_BLOOM used to be a single shared global. `step_cap_total`
-# should be the aggregate step budget across all threads (e.g. the
-# `step_cap` passed into the @sync spawn loop in trial3_fixed.jl, before
-# dividing by n_workers), so the Bloom fallback (if ever triggered) is sized
-# from what this run will actually do, not a guess.
+# PHASE2_ALPHA_BLOOM used to be a single shared global.
+#
+# `step_cap_total` is passed through to the Bloom fallback ONLY as a coarse
+# upper bound on n_expected — it is NOT a reliable estimate of how many
+# alphas will actually be inserted. step_cap is a pessimistic safety-valve
+# ("never run forever"), derived as rel_target / prob_per_step; when the
+# factor base is small relative to p (e.g. an amortized β=0 precompute pass
+# with FB≈50 against p≈4e7), prob_per_step is tiny and step_cap balloons to
+# absurd values (tens of billions) that the walk will never actually reach.
+# Sizing Bloom memory directly off that number tries to allocate hundreds of
+# GB and OOMs before the walk even starts — this bit us in practice.
+#
+# So: for the Bloom fallback, memory is capped to `bloom_max_bytes` FIRST
+# (hard ceiling, independent of step_cap_total), and we report whatever
+# false-positive rate that budget actually buys given n_expected, rather
+# than solving for a fixed target_fp and letting the allocation size run
+# away. This can never OOM regardless of how large ellI or step_cap get —
+# worst case is a high (but bounded, logged) false-positive rate, which is
+# the same "performance hint, not correctness gate" tradeoff the original
+# Bloom filter always had, now just made explicit instead of silently
+# assumed to be negligible.
 function phase2_alpha_gate_init!(ellI::Int, step_cap_total::Int;
-                                  target_fp::Float64 = 1e-6)::AlphaGate
+                                  target_fp::Float64 = 1e-6,
+                                  bloom_max_bytes::Int = ALPHA_EXACT_MAX_BYTES)::AlphaGate
     exact_bytes = cld(ellI, 8)
     if exact_bytes <= ALPHA_EXACT_MAX_BYTES
         gate = AlphaGate(zeros(UInt64, cld(ellI, 64)), true, ellI, 0)
@@ -1110,15 +1127,33 @@ function phase2_alpha_gate_init!(ellI::Int, step_cap_total::Int;
                 ellI, exact_bytes / 1e6)
         return gate
     end
-    # Fallback: size a Bloom filter from the run's actual expected insertion
-    # count (bounded by both the step budget and ellI itself — you can never
-    # insert more than ellI distinct alpha values), using the standard
-    # m = -n·ln(p)/(ln2)² sizing formula for target false-positive rate p.
-    n_expected = min(ellI, step_cap_total)
-    m_bits = ceil(Int, -n_expected * log(target_fp) / (log(2)^2))
-    k_hash = max(1, round(Int, (m_bits / n_expected) * log(2)))
-    @printf("[alpha-gate] ellI=%d too large for exact bitset (%.1f GB); using sized Bloom: %.1f MB, k=%d hashes, target_fp=%.1e, n_expected=%d\n",
-            ellI, exact_bytes / 1e9, m_bits / 8 / 1e6, k_hash, target_fp, n_expected)
+
+    # n_expected is a rough ceiling, not a forecast: step_cap_total can be a
+    # wild overestimate (see note above), so it only ever pushes m_bits DOWN
+    # relative to what we'd want (bloom_max_bytes still wins if smaller) —
+    # it never pushes the allocation up past the memory budget.
+    n_expected     = min(ellI, step_cap_total)
+    m_bits_wanted  = ceil(Int, -n_expected * log(target_fp) / (log(2)^2))
+    m_bits_budget  = bloom_max_bytes * 8
+    m_bits         = min(m_bits_wanted, m_bits_budget)
+    memory_bound   = m_bits == m_bits_budget && m_bits_wanted > m_bits_budget
+
+    # Optimal-k formula (m/n)·ln2 only makes sense when m/n is reasonably
+    # large; when we're memory-bound and m << n_expected, more hashes just
+    # means more chances to collide with an already-set bit, so clamp hard.
+    k_hash = clamp(round(Int, (m_bits / max(1, n_expected)) * log(2)), 1, 30)
+
+    achieved_fp = (1.0 - exp(-k_hash * n_expected / max(1.0, m_bits)))^k_hash
+
+    if memory_bound
+        @printf("[alpha-gate] ellI=%d too large for exact bitset (%.1f GB); Bloom is MEMORY-BOUND at %.1f MB budget (wanted %.1f MB for target_fp=%.1e off n_expected=%d, which is a loose step_cap-derived ceiling, not a real forecast)\n",
+                ellI, exact_bytes / 1e9, bloom_max_bytes / 1e6, m_bits_wanted / 8 / 1e6, target_fp, n_expected)
+        @printf("[alpha-gate]   k=%d hashes, achieved_fp≈%.3e AT n_expected — actual fp will be far lower if the walk finishes in far fewer than %d steps (likely, since step_cap is a pessimistic ceiling)\n",
+                k_hash, achieved_fp, n_expected)
+    else
+        @printf("[alpha-gate] ellI=%d too large for exact bitset (%.1f GB); sized Bloom: %.1f MB, k=%d hashes, target_fp=%.1e, n_expected=%d\n",
+                ellI, exact_bytes / 1e9, m_bits / 8 / 1e6, k_hash, target_fp, n_expected)
+    end
     return AlphaGate(zeros(UInt64, cld(m_bits, 64)), false, m_bits, k_hash)
 end
 
