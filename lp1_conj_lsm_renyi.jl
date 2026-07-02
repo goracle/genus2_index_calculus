@@ -424,6 +424,22 @@ function lsm_bday_report(sc::LP1ConjLSM, p::Integer, r::Real; io::IO = stdout)
     @printf(io, "\n[LP1-conj birthday diagnostics (Global across %d peers)]\n", length(actual_peers))
     @printf(io, "  total LP1-conj emitted : %d\n", total_emitted)
 
+    # Expected number of collisions so far, E[#collisions] ≈ N²/(2S).
+    # Before a collision is observed we have no empirical estimate of the
+    # effective space, so we fall back to the naive S = p²/2 (the ambient
+    # Mumford-key space size — this is a fixed structural fact, not
+    # something inferred from the run). Once a collision has actually been
+    # seen, S_best is re-estimated from m_first (m ≈ sqrt(2S)) exactly as
+    # the ratio/alpha diagnostics below do, so this number gets more
+    # accurate as the run progresses.
+    S_naive_top = pf^2 / 2.0
+    S_naive_top > 0.0 || throw(ArgumentError("lsm_bday_report: p=$p gives non-positive S_naive=$S_naive_top — misconfigured modulus"))
+    S_best      = m_first > 0 ? Float64(m_first)^2 / 2.0 : S_naive_top
+    expected_collisions = Float64(total_emitted)^2 / (2.0 * S_best)
+    @printf(io, "  expected # collisions  : %.3g  (N^2/(2S), S≈%.3g%s)\n",
+            expected_collisions, S_best,
+            m_first > 0 ? ", S from observed first collision" : ", S = naive p^2/2 — no collision observed yet")
+
     if m_first == 0
         @printf(io, "  first collision        : not yet observed\n")
         t_naive = lam_global > 0.0 ? (sqrt(2.0) * pf / lam_global) : Inf
@@ -431,8 +447,28 @@ function lsm_bday_report(sc::LP1ConjLSM, p::Integer, r::Real; io::IO = stdout)
         @printf(io, "  naive prediction       : m_first ~ %.3g,  t_first ~ %.3g s\n", m_naive, t_naive)
         if t0_earliest < Inf
             frac = t_elapsed / t_naive
-            @printf(io, "  elapsed / t_naive      : %.4f  (%s)\n",
-                    frac, frac >= 1.0 ? "OVERDUE — support may be smaller than p^2" : "still within naive expectation")
+            @printf(io, "  elapsed / t_naive      : %.4f\n", frac)
+            if frac < 1.0
+                @printf(io, "  still within naive expectation — no signal either way yet\n")
+            else
+                # NOTE: running past t_naive with no collision is NOT evidence
+                # that the effective support is smaller than p^2 — that's
+                # backwards. Birthday collision time scales as sqrt(S), so a
+                # SMALLER S means the first collision arrives SOONER, not
+                # later. Running long past t_naive without a hit is, if
+                # anything, mildly consistent with a support at least as
+                # large as the naive p^2 model — not evidence of collapse.
+                #
+                # It's also not strong evidence of anything: this is a single
+                # "no collision by time t" observation, which has wide
+                # variance under a birthday/geometric-ish process even when
+                # S really is ~p^2. One overdue run proves nothing on its
+                # own. Don't infer a support size here — wait for an actual
+                # m_first and use the ratio/alpha estimate further down,
+                # which is the only place in this function with enough
+                # signal to say anything about effective support.
+                @printf(io, "  past naive t_first with no collision yet — not informative about support size on its own; waiting for an actual collision for a real estimate\n")
+            end
         end
         @printf(io, "\n")
         return
@@ -441,8 +477,11 @@ function lsm_bday_report(sc::LP1ConjLSM, p::Integer, r::Real; io::IO = stdout)
     t_first   = t_coll_first - t0_earliest
     # Birthday paradox: expected first collision at m steps over a space of size
     # S gives m ≈ sqrt(2S), so S_eff = m²/2.  The old code used m² (off by 2).
-    S_eff     = Float64(m_first)^2 / 2.0
-    S_naive   = pf^2 / 2.0
+    # (Same quantities as S_best/S_naive_top above — m_first > 0 is guaranteed
+    # here since the m_first == 0 branch returned already — reused rather
+    # than recomputed so there's one source of truth.)
+    S_eff     = S_best
+    S_naive   = S_naive_top
     ratio     = S_eff / S_naive
     alpha     = log(Float64(m_first) / sqrt(2.0)) / log(pf)
     m_naive   = sqrt(S_naive)

@@ -1264,39 +1264,122 @@ function phase2_worker(G               ::Div2,
     end
 
     # ==========================================================================
-    #  Anchor cursor — contiguous per-thread slice of the factor base.
+    #  Anchor tuple cursor — the TUPLE SPACE is sliced across threads, not the
+    #  factor base.  Each thread owns an exclusive contiguous chunk of the
+    #  GLOBAL lexicographic index space of k-multisets drawn from the FULL
+    #  factor base fb[1..nF_cur] — independently for every tuple length
+    #  k = 1..K_ceil.
     #
-    #  Each thread owns an exclusive chunk [anchor_start, anchor_end] of fb[].
-    #  This ensures no two threads ever share an i0 value, making the
-    #  (lp_key, i0, neg_al, neg_be) partial triple globally unique by
-    #  construction — threads cannot produce same-partial collisions with each
-    #  other, only within their own walk (which alpha/beta cycling can cause).
+    #  WHY THE CHANGE: the old scheme partitioned fb[] itself into contiguous
+    #  FB-index slices [anchor_start, anchor_end] and only ever formed
+    #  k-tuples out of entries drawn from a single thread's own slice. That
+    #  is exactly right for k=1 (a 1-tuple IS a single FB index, so slicing
+    #  the FB and slicing the tuple space are the same partition), but for
+    #  k>=2 it is far too restrictive: the true k-tuple space is every
+    #  non-decreasing k-multiset over the WHOLE factor base — size
+    #  C(nF_cur+k-1, k) — while FB-slicing only let a thread draw entries
+    #  from within its own ~nF_cur/n_workers-sized slice, a subspace of size
+    #  C(slice_size+k-1, k). With n_workers=32 that subspace shrinks by
+    #  roughly 32^(k-1) relative to the true tuple space, so almost the
+    #  entire k>=2 combinatorial space was never visited by any thread.
+    #
+    #  NEW SCHEME: for each k, compute Nk = multichoose(nF_cur, k) =
+    #  C(nF_cur+k-1, k) — the exact count of non-decreasing k-tuples over the
+    #  full FB — partition [0, Nk-1] into n_workers balanced contiguous
+    #  chunks using the SAME floor(Nk/n_workers)-or-+1 balancing as before,
+    #  and give thread `tid` its chunk [start_idx_k, end_idx_k]. The chunk's
+    #  starting tuple is obtained once, at setup, by UNRANKING start_idx_k
+    #  (standard combinatorial unranking of multisets — see
+    #  `_unrank_multicombination` below). From there the same odometer
+    #  advance as before (`_advance_tuple_cursor!`) walks forward in lex
+    #  order, except the carry bound is now the GLOBAL nF_cur (an entry may
+    #  be any FB index, not just one inside a slice), and instead of relying
+    #  on hitting a slice boundary to wrap, we count steps taken and wrap
+    #  back to this thread's own start tuple once its chunk has been fully
+    #  cycled — so threads never re-enter each other's assigned ranges.
+    #
+    #  For k=1, Nk == nF_cur exactly and this reduces to precisely the old
+    #  FB-slicing scheme (start_idx_1 + 1 == old anchor_start, chunk_size_1
+    #  == old slice_size), so k=1 behaviour — including the i0-exclusivity
+    #  guarantee across threads that same-partial collision detection relies
+    #  on — is unchanged.
     # ==========================================================================
-    # Balanced partition: every thread gets either ⌊nF_cur/n_workers⌋ or
-    # ⌊nF_cur/n_workers⌋+1 FB elements.  The first `r` threads each get one
-    # extra element so that all nF_cur elements are covered with no thread idle
-    # (as long as n_workers ≤ nF_cur).  This replaces the old cld-based fixed
-    # chunk, which left up to (n_workers-1) trailing threads with empty ranges
-    # whenever nF_cur % n_workers != 0.
-    #
-    # n_workers is passed in from the coordinator rather than sampled here to
-    # avoid the Julia quirk where Threads.nthreads() can return a different value
-    # inside a @spawn'd task than from the main thread (e.g. 32 vs 33 when the
-    # main thread is tid=1 and workers are tid=2..33), which causes the last
-    # worker's anchor_start to exceed nF_cur and fire a spurious IDLE.
-    nt_            = n_workers
-    base_chunk_    = nF_cur ÷ nt_           # minimum slice width
-    r_             = nF_cur % nt_            # first `r_` threads get one extra
-    anchor_start   = (tid - 1) * base_chunk_ + min(tid - 1, r_) + 1
-    anchor_end     = anchor_start + base_chunk_ - 1 + (tid <= r_ ? 1 : 0)
-    # Guard: excess threads (nthreads > nF_cur) still get an empty range and
-    # immediately idle, which is correct and preserves i0 exclusivity.
-    if anchor_start > nF_cur
-        # This thread has no FB elements to walk.  Return empty results immediately
-        # rather than wrapping with mod1 (which aliases i0 ranges and produces
-        # spurious same_col=100% on the wrapped threads).
-        verbose && @printf("[thread %2d | IDLE | no FB slice (nF_cur=%d < chunk start %d)]\n",
-                           tid, nF_cur, anchor_start)
+    nt_    = n_workers
+    K_ceil = anchor_tuple_size   # effective ceiling; K_ceil <= K_MAX (CLI-validated)
+
+    # multichoose(n, k) = C(n+k-1, k): count of non-decreasing k-tuples
+    # (multisets of size k) drawable from n distinct values. BigInt
+    # throughout — Nk grows combinatorially in k and can exceed Int64 for
+    # realistic (nF_cur, K_ceil) once K_ceil gets past ~4-5.
+    @inline function _multichoose_big(n::Integer, k::Integer)::BigInt
+        k == 0 && return BigInt(1)
+        n <= 0  && return BigInt(0)
+        return binomial(BigInt(n) + BigInt(k) - 1, BigInt(k))
+    end
+
+    # Unrank position `rank` (0-indexed, BigInt) in the lex order of
+    # non-decreasing k-tuples with entries in [1,n] — the SAME order
+    # produced by _advance_tuple_cursor! below (first coordinate
+    # slowest-changing, last coordinate fastest-changing). Standard greedy
+    # unranking: at each position, walk candidate values upward, skipping
+    # past however many completions each candidate value would cover.
+    @inline function _unrank_multicombination(rank::BigInt, n::Int, k::Int)::Vector{Int}
+        result = Vector{Int}(undef, k)
+        lo  = 1
+        rem = rank
+        for i in 1:k
+            v = lo
+            while true
+                cnt = _multichoose_big(n - v + 1, k - i)
+                if rem < cnt
+                    result[i] = v
+                    lo = v
+                    break
+                else
+                    rem -= cnt
+                    v += 1
+                end
+            end
+        end
+        return result
+    end
+
+    # Per-thread balanced chunk of the global tuple-index space, one entry
+    # per tuple length k = 1..K_ceil, computed once at thread setup.
+    chunk_size_k  = Vector{Int}(undef, K_ceil)      # capped at typemax(Int)
+    start_tuple_k = Vector{Vector{Int}}(undef, K_ceil)
+
+    idle = false
+    for k in 1:K_ceil
+        Nk         = _multichoose_big(nF_cur, k)
+        base_chunk = Nk ÷ nt_
+        r_k        = Nk % nt_
+        start_idx  = BigInt(tid - 1) * base_chunk + min(BigInt(tid - 1), r_k)
+        end_idx    = start_idx + base_chunk - 1 + (tid <= r_k ? 1 : 0)
+
+        if start_idx >= Nk
+            # This thread has no tuples of length k. Since Nk is
+            # non-decreasing in k, this can only happen at k=1 — i.e.
+            # n_workers > nF_cur, the same "excess threads" case the old
+            # code guarded against.
+            k == 1 && (idle = true)
+            chunk_size_k[k]  = 0
+            start_tuple_k[k] = fill(1, k)   # placeholder; never read (idle)
+            continue
+        end
+
+        chunk_big       = end_idx - start_idx + 1
+        chunk_size_k[k] = chunk_big > typemax(Int) ? typemax(Int) : Int(chunk_big)
+        start_tuple_k[k] = _unrank_multicombination(start_idx, nF_cur, k)
+    end
+
+    if idle
+        # This thread has no FB elements to walk at all (n_workers > nF_cur).
+        # Return empty results immediately rather than wrapping with mod1
+        # (which aliases i0 ranges and produces spurious same_col=100% on
+        # the wrapped threads).
+        verbose && @printf("[thread %2d | IDLE | no tuple-space slice (nF_cur=%d < n_workers=%d)]\n",
+                           tid, nF_cur, nt_)
         return (rel_rows      = Dict{Int,Int}[],
                 alpha_vec     = BigInt[],
                 beta_vec      = BigInt[],
@@ -1334,44 +1417,22 @@ function phase2_worker(G               ::Div2,
                 deep_stat = deep_stat,
                 d38_stat = d38_stat)
     end
-    anchor_cursor = anchor_start
 
-    # ==========================================================================
-    #  Anchor tuple cursor — round-robin over BOTH tuple length k = 1..K_ceil
-    #  AND, within each length, all multiset k-tuples drawn from this thread's
-    #  FB slice, in lexicographic index order.
-    #
-    #  K_MAX (trial3_config.jl) is the hard compile-time ceiling — it fixes
-    #  the size of cur_anchors and bounds every ThreadScratchpad{k} we can
-    #  build.  anchor_tuple_size (K_ceil below) is the *effective* ceiling for
-    #  this run: we cycle the tuple length k over 1..K_ceil, never just K_ceil
-    #  itself, so every call to next_anchor_tuple() advances to the next k in
-    #  sequence (1 -> 2 -> ... -> K_ceil -> 1 -> ...) instead of only ever
-    #  emitting length-K_ceil tuples. K_ceil == 1 recovers the old classic
-    #  single-anchor cycle exactly (the round-robin is a no-op over one value).
-    #
-    #  Each length k keeps its OWN independent cursor over {anchor_start..
-    #  anchor_end} (combinations with repetition, ordered by lex index), so
-    #  advancing through the k=2 tuples doesn't disturb where we are in the
-    #  k=3 enumeration, etc. A k-tuple with a repeated element requests a
-    #  tangency (order-2 vanishing) at that point; `build_phi_general` handles
-    #  the derivative row automatically.
-    #
-    #  State: tuple_cursors[k][1..k] is a length-k index vector, each entry an
-    #  FB index in [anchor_start, anchor_end], non-decreasing.  Advancing a
-    #  given length's cursor increments its last position and carries like a
-    #  restricted odometer, exactly as before — just replicated per k.
-    #
-    #  Total tuple count for a given k = C(slice_size + k - 1, k) (stars-and-
-    #  bars); for k=1 this is exactly slice_size, recovering the old cycle.
-    # ==========================================================================
-    slice_size   = anchor_end - anchor_start + 1
-    K_ceil        = anchor_tuple_size   # effective ceiling; K_ceil <= K_MAX (CLI-validated)
+    verbose && tid == 1 && K_ceil >= 2 && @printf(
+        "[thread %2d | tuple-space slicing: nF_cur=%d, K_ceil=%d, chunk sizes per k = %s]\n",
+        tid, nF_cur, K_ceil, string(chunk_size_k))
 
-    # One independent lexicographic cursor per tuple length k = 1..K_ceil.
-    # Initialised to (anchor_start, anchor_start, ...) — the lexicographically
-    # smallest k-tuple for each length.
-    tuple_cursors = [fill(anchor_start, k) for k in 1:K_ceil]
+    # tuple_cursors[k] holds the CURRENT length-k tuple (as FB indices,
+    # non-decreasing) for this thread's walk over its length-k chunk.
+    # Seeded to this thread's own start tuple for each k.
+    tuple_cursors = [copy(start_tuple_k[k]) for k in 1:K_ceil]
+
+    # Steps taken so far within the current cycle of this thread's chunk,
+    # per k — used to wrap back to start_tuple_k[k] once the whole chunk has
+    # been walked, instead of relying on the odometer hitting a slice
+    # boundary (there is no boundary now: entries range over the full
+    # [1, nF_cur], not a per-thread slice).
+    step_in_chunk_k = zeros(Int, K_ceil)
 
     # cur_anchors is sized to the hard compile-time ceiling K_MAX so it can
     # hold any length up to K_MAX, but only the first k_cur_ref[] slots are
@@ -1434,22 +1495,20 @@ function phase2_worker(G               ::Div2,
         return best
     end
 
-    # Defensive check: if K_ceil >= 2 and this thread's entire anchor slice
-    # [anchor_start, anchor_end] is Weierstrass points (py == 0), every
-    # possible k-tuple with k>=2 is poisoned and next_anchor_tuple()'s
-    # rejection loop below would spin forever with no valid tuple to land on
-    # whenever the round-robin reaches such a k. This is a pre-existing
-    # structural possibility of the per-thread chunking, not something
-    # introduced by the rejection loop itself, so fail loudly rather than
-    # hang silently.
+    # Defensive check: if K_ceil >= 2 and the ENTIRE factor base is
+    # Weierstrass points (py == 0), every possible k-tuple with k>=2 that
+    # repeats any single FB index is structurally poisoned, and — since
+    # every thread's tuples are now drawn from the full FB, not a
+    # per-thread slice — this is a GLOBAL property of fb[] rather than
+    # something that can differ thread-to-thread as it could under the old
+    # per-slice scheme. Checked once against the whole factor base.
     if K_ceil >= 2
-        n_weierstrass_in_slice = count(i -> fb[i][2] == 0, anchor_start:anchor_end)
-        if n_weierstrass_in_slice == slice_size
-            error("Thread $tid: anchor slice [$anchor_start, $anchor_end] is " *
-                  "entirely Weierstrass points; no valid k-tuple with k>=2 exists. " *
-                  "Reduce --anchor-tuple-size, increase factor base size, or " *
-                  "rebalance chunking to mix Weierstrass and non-Weierstrass points " *
-                  "into every thread's slice.")
+        n_weierstrass_total = count(i -> fb[i][2] == 0, 1:nF_cur)
+        if n_weierstrass_total == nF_cur
+            error("Thread $tid: the entire factor base ($nF_cur points) is " *
+                  "Weierstrass; no valid k-tuple with k>=2 exists. Reduce " *
+                  "--anchor-tuple-size, or increase factor base size / mix " *
+                  "in non-Weierstrass points.")
         end
     end
 
@@ -1473,16 +1532,25 @@ function phase2_worker(G               ::Div2,
     end
 
     @inline function _advance_tuple_cursor!(k::Int)
-        # Advance the length-k cursor: increment last position, carry
-        # right-to-left. Each position tc[i] ∈ [anchor_start, anchor_end], and
-        # must satisfy tc[i] >= tc[i-1] (non-decreasing). The carry bound for
-        # position i is anchor_end (it can go up to anchor_end regardless of
-        # position).
+        # Advance the length-k cursor by one step in the GLOBAL lex order
+        # (entries range over the full [1, nF_cur], not a per-thread FB
+        # slice): increment last position, carry right-to-left, bounded by
+        # nF_cur. Once this thread has taken chunk_size_k[k] steps — i.e. it
+        # has cycled all the way through its own assigned chunk of the
+        # tuple-index space — wrap back to this thread's own start tuple
+        # (start_tuple_k[k]), NOT to global index 1, so threads never
+        # re-enter each other's assigned ranges.
+        step_in_chunk_k[k] += 1
         tc = tuple_cursors[k]
+        if step_in_chunk_k[k] >= chunk_size_k[k]
+            step_in_chunk_k[k] = 0
+            copyto!(tc, start_tuple_k[k])
+            return
+        end
         @inbounds begin
             pos = k
             while pos >= 1
-                if tc[pos] < anchor_end
+                if tc[pos] < nF_cur
                     tc[pos] += 1
                     # Reset all positions to the right to the new value (non-decreasing)
                     for j in pos+1:k
@@ -1493,8 +1561,13 @@ function phase2_worker(G               ::Div2,
                 pos -= 1
             end
             if pos == 0
-                # Wrap: reset to all-anchor_start
-                fill!(tc, anchor_start)
+                # Should be unreachable while step_in_chunk_k[k] < chunk_size_k[k]
+                # (the step-count wrap above always intercepts before the
+                # odometer would need to carry past the last global tuple) —
+                # kept as a defensive guard against off-by-one drift, wrapping
+                # to this thread's own start tuple rather than corrupting state.
+                copyto!(tc, start_tuple_k[k])
+                step_in_chunk_k[k] = 0
             end
         end
     end
@@ -1518,13 +1591,21 @@ function phase2_worker(G               ::Div2,
         # Structurally reject poisoned tuples (a Weierstrass point repeated
         # >= 2 times) by advancing past them here, instead of returning them
         # to the caller and relying on a `continue` that never re-advances
-        # the cursor.  A cursor slice containing a Weierstrass point's FB
-        # index would otherwise deterministically re-land on this exact
-        # tuple every wrap cycle, spinning the worker thread forever.
+        # the cursor. Bounded by this thread's own chunk_size_k[k] so a
+        # chunk that is entirely poisoned raises loudly instead of spinning
+        # forever.
+        rejects = 0
         while !_anchor_tuple_valid(cur_anchors, k)
             _advance_tuple_cursor!(k)
             @inbounds for i in 1:k
                 cur_anchors[i] = fb[tc[i]]
+            end
+            rejects += 1
+            if rejects > chunk_size_k[k]
+                error("Thread $tid: every tuple in this thread's length-$k chunk " *
+                      "($(chunk_size_k[k]) tuples) is structurally poisoned " *
+                      "(repeated Weierstrass point). Reduce --anchor-tuple-size " *
+                      "or increase factor base size.")
             end
         end
 

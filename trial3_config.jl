@@ -24,8 +24,8 @@ const ASSERT_RELATIONS = true
 #    Previously uncapped; cross-close is rare so a small bound suffices.
 #
 #  MAX_LP1_CONJ_ENTRIES: cap for the conjugate-pair 1-LP table.  The keyspace
-#    is ~p^2 so closures are rare; steady-state occupancy is O(min(ell,p)).
-#    Cap is computed at construction as LP1_CONJ_CAP_MULTIPLIER * min(ell,p).
+#    is ~p^2 so closures are rare; steady-state occupancy is O(ell).
+#    Cap is computed at construction as LP1_CONJ_CAP_MULTIPLIER * ell.
 # ---------------------------------------------------------------------------
 const MAX_LP1_ENTRIES         = 50_000_000
 const MAX_LP1_DOUBLED_ENTRIES = 100_000
@@ -43,14 +43,27 @@ const MAX_LP1_DOUBLED_ENTRIES = 100_000
 # representation of a degree-2 residual over F_p².  Although the full Mumford
 # keyspace has size O(p²), the walk only produces residuals whose group order
 # divides ell (the large prime factor of #J).  The number of distinct conj LP
-# keys the walk can encounter is therefore O(min(ell, p)), not O(p).
+# keys the walk can encounter is therefore O(ell) — bounded by the size of
+# the order-ell subgroup itself, independent of p.
 #
-# This matters critically when ell ≪ p (e.g. p=13M, ell=196K from a highly
-# composite #J): using p as the cap allocates 209M-entry capacity that is
-# never needed and OOMs the process.  Using min(ell, p) keeps the cap tight.
+# CORRECTED (was min(ell, p), which is basic-genus-2-theory wrong): an
+# order-ell subgroup element doesn't care how big p is. The old min(ell, p)
+# bound only happened to work when ell ≲ p (e.g. p=13M, ell=196K from a
+# highly composite #J, where using p as the cap would have allocated a
+# needless 209M-entry table). But whenever ell exceeds p — the common case
+# for a near-prime #J ≈ p² — min(ell, p) silently truncates the cap to p,
+# which is far below the true O(ell) reachable keyspace. That under-cap
+# causes exactly the "early productivity then hard stagnation" failure
+# mode: the table fills to its (wrongly small) cap, and every insert past
+# that point is silently dropped rather than spilled, freezing the birthday
+# paradox that index-calculus relation-finding depends on. Using ell keeps
+# the cap correct in both regimes; LP1_CONJ_CAP_MAX below remains the real
+# backstop against OOM.
 #
 # Empirical (ORIGINAL calibration, multiplier=16): at p≈131K, ell≈p,
-# steady-state ≈ 8·min(ell,p). These numbers were measured before four
+# steady-state ≈ 8·ell (ell≈p here, so the old and corrected formulas
+# coincide numerically for this measurement). These numbers were measured
+# before four
 # upstream pipeline bugs were fixed (anchor-tuple cursor hang, EEA remainder
 # clobber, EEA zero-length-remainder underflow, negative-coordinate/SENTINEL_PT
 # leaks) — at the time, phi_val was ~0% and the walk essentially never reached
@@ -300,7 +313,7 @@ struct ShardedLP1Conj{V}
 end
 
 function ShardedLP1Conj(ell::Integer; amortized::Bool = true)
-    cap = min(LP1_CONJ_CAP_MULTIPLIER * Int(min(ell, p)), LP1_CONJ_CAP_MAX)
+    cap = min(LP1_CONJ_CAP_MULTIPLIER * Int(ell), LP1_CONJ_CAP_MAX)
     cap_per_shard = max(16, cld(cap, N_CONJ_SHARDS))
     if amortized
         shards = ntuple(_ -> ConjShard{LP1ConjVal}(cap_per_shard),    N_CONJ_SHARDS)

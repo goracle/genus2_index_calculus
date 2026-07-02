@@ -180,7 +180,7 @@ function LP1ConjLSM(
         flush_denom   ::Int    = 4,
         anchor_tuple_size::Int = 1   # kept for call-site compat; no longer used
     )
-    global_cap = min(LP1_CONJ_CAP_MULTIPLIER * Int(min(ell, p)), LP1_CONJ_CAP_MAX)
+    global_cap = min(LP1_CONJ_CAP_MULTIPLIER * Int(ell), LP1_CONJ_CAP_MAX)
     cap = max(N_CONJ_SHARDS * 16, global_cap ÷ Threads.nthreads())
     V   = amortized ? LP1ConjVal : LP1ConjValFull
     bytes_per_entry = amortized ? 33 : 43
