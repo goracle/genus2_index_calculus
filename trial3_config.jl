@@ -145,7 +145,7 @@ const CONJ_KEY_EMPTY  = typemax(CanonicalLP1Key)
 #  common case.  K=2 covers two-anchor φ construction.  Higher K is supported
 #  without any code change — just increase this constant.
 # ---------------------------------------------------------------------------
-const K_MAX = 2   # ← user-configurable; set to max K you will use
+const K_MAX = 6   # ← user-configurable; set to max K you will use
 
 const ANCHOR_IDX_NONE = UInt16(0xffff)   # sentinel: unused slot in anchor_indices
 

@@ -1051,65 +1051,114 @@ end
 #    alpha_vec, beta_vec, rel_rows, all WorkerStats fields, scratch dicts
 # ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
-#  Global alpha no-repeat filter — fixed-size Bloom filter (128 MB).
+#  Global alpha no-repeat filter — EXACT one-bit-per-alpha bitset, with a
+#  properly-sized Bloom fallback for pathologically large ellI.
 #
-#  Previously this was a Vector{UInt8} of length ell+1, which cost ~4.88 GB
-#  for ell≈4.88e9.  Replaced with a fixed 128 MB Bloom filter (3 hashes,
-#  ~1.07 billion bits).
+#  HISTORY / WHY THIS CHANGED:
+#  This used to be a fixed 128 MB / 3-hash Bloom filter, sized under the
+#  assumption of ~150M total walk steps against ell≈4.88e9 (FP rate ~1e-8
+#  per query at that scale). Real runs now do orders of magnitude more raw
+#  steps (billions per thread, tens of billions aggregate, over many hours).
+#  Bloom bits are set-only — never cleared — so the filter saturates well
+#  before the walk finishes: once total insertions approach the bit count,
+#  per-query false-positive rate climbs toward 100%. Past that point the
+#  gate isn't "skip a duplicate" anymore, it's "reject alphas that were
+#  never actually seen" — which is exactly the runaway gate-rejected%
+#  (97%+, still climbing) seen in long runs, and it hits hardest right when
+#  a run is closing in on rel_target and needs the last few genuinely novel
+#  alphas most.
 #
-#  At 128 MB and 150M walk steps out of ell≈4.88e9 possible alphas, the
-#  false-positive rate per query is negligible (~10⁻⁸ with 3 independent
-#  hashes), meaning a negligible fraction of alphas get silently skipped a
-#  second time by a spurious "already seen" report.  This is a correctness
-#  non-issue: the gate is a performance hint, not a correctness gate — a
-#  false positive just means two threads both skip the same alpha once, losing
-#  at most one LP event.
+#  FIX: ellI is known exactly before any worker starts and is bounded (order
+#  1e9-1e10 for problems we actually run), so default to an EXACT
+#  one-bit-per-alpha array — zero false positives, ever, independent of run
+#  length or step count. Cost: ellI/8 bytes (~610 MB @ ellI≈4.88e9 — 8x
+#  cheaper than the original Vector{UInt8}-per-alpha approach, and unlike
+#  the Bloom filter, correctness doesn't decay as the run gets longer). Only
+#  falls back to a Bloom filter — sized from the ACTUAL run's ellI/step_cap,
+#  not a fixed constant — if the exact bitset would exceed a memory budget.
 #
-#  The filter is lockless: bits are only ever set, never cleared, so racy
-#  concurrent writes produce benign spurious false positives at worst (two
-#  threads both believe they are "first" for the same alpha and both process
-#  it once — identical to the behaviour before the gate existed).
+#  The gate is still lockless: bits are only ever set, never cleared, so
+#  racy concurrent writes are benign (two threads both believe they're
+#  "first" for the same alpha and both process it once).
 #
-#  Resetting between runs: call phase2_alpha_bloom_reset!() before each walk.
+#  Resetting between runs: call phase2_alpha_gate_reset!(gate) before each
+#  walk phase that must start with a clean gate (e.g. the amortized
+#  pre-run in trial3_fixed.jl).
 # ---------------------------------------------------------------------------
-const ALPHA_BLOOM_MB    = 128
-const ALPHA_BLOOM_BITS  = ALPHA_BLOOM_MB * 1024 * 1024 * 8   # 1,073,741,824 bits
-const ALPHA_BLOOM_WORDS = ALPHA_BLOOM_BITS ÷ 64               # 16,777,216 UInt64 words
-const PHASE2_ALPHA_BLOOM = zeros(UInt64, ALPHA_BLOOM_WORDS)   # 128 MB, allocated once
+const ALPHA_EXACT_MAX_BYTES = 2_000_000_000   # 2 GB ceiling before falling back to Bloom
 
-function phase2_alpha_bloom_reset!()
-    fill!(PHASE2_ALPHA_BLOOM, UInt64(0))
+struct AlphaGate
+    words ::Vector{UInt64}
+    exact ::Bool   # true: words indexed directly by alpha, no hashing, no FPs
+    nbits ::Int    # ellI for exact mode; Bloom bit count otherwise
+    nhash ::Int    # unused when exact=true
+end
+
+# Construct once per run (or per amortized sub-run), BEFORE spawning workers,
+# and share the single instance across all threads — mirrors how
+# PHASE2_ALPHA_BLOOM used to be a single shared global. `step_cap_total`
+# should be the aggregate step budget across all threads (e.g. the
+# `step_cap` passed into the @sync spawn loop in trial3_fixed.jl, before
+# dividing by n_workers), so the Bloom fallback (if ever triggered) is sized
+# from what this run will actually do, not a guess.
+function phase2_alpha_gate_init!(ellI::Int, step_cap_total::Int;
+                                  target_fp::Float64 = 1e-6)::AlphaGate
+    exact_bytes = cld(ellI, 8)
+    if exact_bytes <= ALPHA_EXACT_MAX_BYTES
+        gate = AlphaGate(zeros(UInt64, cld(ellI, 64)), true, ellI, 0)
+        @printf("[alpha-gate] exact bitset: ellI=%d (%.1f MB), zero false positives\n",
+                ellI, exact_bytes / 1e6)
+        return gate
+    end
+    # Fallback: size a Bloom filter from the run's actual expected insertion
+    # count (bounded by both the step budget and ellI itself — you can never
+    # insert more than ellI distinct alpha values), using the standard
+    # m = -n·ln(p)/(ln2)² sizing formula for target false-positive rate p.
+    n_expected = min(ellI, step_cap_total)
+    m_bits = ceil(Int, -n_expected * log(target_fp) / (log(2)^2))
+    k_hash = max(1, round(Int, (m_bits / n_expected) * log(2)))
+    @printf("[alpha-gate] ellI=%d too large for exact bitset (%.1f GB); using sized Bloom: %.1f MB, k=%d hashes, target_fp=%.1e, n_expected=%d\n",
+            ellI, exact_bytes / 1e9, m_bits / 8 / 1e6, k_hash, target_fp, n_expected)
+    return AlphaGate(zeros(UInt64, cld(m_bits, 64)), false, m_bits, k_hash)
+end
+
+function phase2_alpha_gate_reset!(gate::AlphaGate)
+    fill!(gate.words, UInt64(0))
     nothing
 end
 
-@inline function phase2_alpha_first_seen!(alpha::Int, ellI::Int)::Bool
-    # Three independent hashes of alpha into [1, ALPHA_BLOOM_BITS].
-    # Multiplicative hashing with distinct coprime constants (same scheme as
-    # BloomFilter in lp1_conj_lsm_bloom.jl for consistency).
-    h1 = UInt64(alpha) * 0x9e3779b97f4a7c15
-    h2 = UInt64(alpha) * 0x6c62272e07bb0142
-    h3 = h1 ⊻ (h2 >> 17)
-    b1 = Int(h1 % UInt64(ALPHA_BLOOM_BITS)) + 1
-    b2 = Int(h2 % UInt64(ALPHA_BLOOM_BITS)) + 1
-    b3 = Int(h3 % UInt64(ALPHA_BLOOM_BITS)) + 1
-    words = PHASE2_ALPHA_BLOOM
-    @inbounds begin
-        # Force bitwise lowering: signed divrem(b-1, 64) would let LLVM insert
-        # a signed-divide fallback if it can't prove non-negativity at compile
-        # time.  Casting to UInt64 first guarantees a single right-shift and
-        # bitwise-AND regardless of the value of b1/b2/b3.
-        idx1 = (b1 - 1) % UInt64;  w1 = idx1 >> 6;  r1 = idx1 & 63
-        idx2 = (b2 - 1) % UInt64;  w2 = idx2 >> 6;  r2 = idx2 & 63
-        idx3 = (b3 - 1) % UInt64;  w3 = idx3 >> 6;  r3 = idx3 & 63
-        # Check: if all three bits already set, report "seen".
-        already = ((words[w1+1] >> r1) & UInt64(1)) != 0 &&
-                  ((words[w2+1] >> r2) & UInt64(1)) != 0 &&
-                  ((words[w3+1] >> r3) & UInt64(1)) != 0
-        already && return false
-        # Set all three bits (racy writes are safe: bits only go 0→1).
-        words[w1+1] |= UInt64(1) << r1
-        words[w2+1] |= UInt64(1) << r2
-        words[w3+1] |= UInt64(1) << r3
+@inline function phase2_alpha_first_seen!(gate::AlphaGate, alpha::Int)::Bool
+    if gate.exact
+        # Direct index — no hashing, no collisions, no false positives ever.
+        @inbounds begin
+            w = alpha >> 6; r = alpha & 63
+            bit = UInt64(1) << r
+            (gate.words[w+1] & bit) != 0 && return false
+            gate.words[w+1] |= bit
+        end
+        return true
+    end
+
+    # Bloom fallback path (only reached when ellI exceeds ALPHA_EXACT_MAX_BYTES
+    # in bit-per-alpha terms). Double hashing (Kirsch-Mitzenmacher) over
+    # gate.nhash slots derived at construction time from the real run size,
+    # instead of a hardcoded 3-hash / 128 MB constant.
+    h    = UInt64(alpha) * 0x9e3779b97f4a7c15
+    step = UInt64(alpha) * 0x6c62272e07bb0142
+    already = true
+    @inbounds for j in 0:gate.nhash-1
+        b = Int((h + j*step) % UInt64(gate.nbits))
+        w = b >> 6; r = b & 63
+        if (gate.words[w+1] >> r) & UInt64(1) == 0
+            already = false
+            break
+        end
+    end
+    already && return false
+    @inbounds for j in 0:gate.nhash-1
+        b = Int((h + j*step) % UInt64(gate.nbits))
+        w = b >> 6; r = b & 63
+        gate.words[w+1] |= UInt64(1) << r
     end
     return true
 end
@@ -1152,7 +1201,16 @@ function phase2_worker(G               ::Div2,
                        anchor_tuple_size::Int = 1,
                        carry_in_deep_stat::Union{ConjDeepStat,Nothing} = nothing,
                        conj_dataset      ::Union{ConjClosureDataset,Nothing} = nothing,
-                       d38_stat          ::Union{D38Stat,Nothing} = nothing)
+                       d38_stat          ::Union{D38Stat,Nothing} = nothing,
+                       # Shared alpha no-repeat gate (see phase2_alpha_gate_init!
+                       # above). Must be constructed ONCE before spawning workers
+                       # and passed the same instance to every thread — it is the
+                       # replacement for the old module-level PHASE2_ALPHA_BLOOM
+                       # global. Kept `nothing`-defaultable only so any stray old
+                       # call site fails loudly instead of silently reusing a
+                       # stale global; a real run must always pass one in.
+                       alpha_gate        ::Union{AlphaGate,Nothing} = nothing,
+                       anchor_tuple_weight_decay::Float64 = 2.0)
 
     nF_cur   = length(fb)
     N_STEPS  = length(step_D)
@@ -1160,6 +1218,9 @@ function phase2_worker(G               ::Div2,
     t_start  = time()
 
     ellI = Int(ell)
+    alpha_gate === nothing && error("phase2_worker: alpha_gate must be constructed once " *
+        "via phase2_alpha_gate_init!(ellI, step_cap_total) and passed in by the caller " *
+        "before spawning workers — see trial3_fixed.jl.")
     step_a_i = Vector{Int}(undef, length(step_a))
     step_b_i = Vector{Int}(undef, length(step_b))
     @inbounds for i in eachindex(step_a)
@@ -1293,6 +1354,51 @@ function phase2_worker(G               ::Div2,
     # so the very first call yields k=1 (round-robin's natural starting point).
     k_cur_ref = Ref{Int}(0)
 
+    # ==========================================================================
+    #  Weighted round-robin over tuple length k = 1..K_ceil.
+    #
+    #  Previously this was a *flat* round-robin (k=1,2,...,K_ceil,1,2,...):
+    #  every length got exactly 1/K_ceil of all next_anchor_tuple() calls,
+    #  regardless of how the k-tuple space (and its closure yield) scales
+    #  with k. At K_ceil=6 that means 1/6 of all wall-clock walk effort goes
+    #  into 6-anchor tuples, whose combinatorial space is astronomically
+    #  larger than k=1's and whose closure probability is correspondingly far
+    #  lower — i.e. the walk can burn most of a run chasing rare fat
+    #  relations before the cheap small-k ones are anywhere near exhausted.
+    #
+    #  Fix: bias the schedule toward small k with a SMOOTH weighted
+    #  round-robin (the scheme nginx uses for weighted load balancing): each
+    #  length k carries a static weight w_k; each call picks whichever k has
+    #  accumulated the most "credit" (credit[i] += w_i every call), then
+    #  debits the winner by the total weight. This reproduces the ratio
+    #  w_k / sum(w) over the long run WITHOUT clustering — it interleaves
+    #  k=1's and k=6's rather than doing a block of one length before moving
+    #  to the next — and degenerates exactly to the old flat round-robin when
+    #  all weights are equal (anchor_tuple_weight_decay = 1.0).
+    #
+    #  Default weight_k = anchor_tuple_weight_decay^(K_ceil - k): geometric
+    #  decay, so k=1 is `decay^(K_ceil-1)` times as frequent as k=K_ceil.
+    #  decay=2.0, K_ceil=6 -> weights [32,16,8,4,2,1] for k=1..6 (k=1 is 32x
+    #  as frequent as k=6). Raise anchor_tuple_weight_decay to push harder
+    #  toward small k; set to 1.0 to recover the old flat behaviour exactly.
+    # ==========================================================================
+    k_weight     = [anchor_tuple_weight_decay^(K_ceil - k) for k in 1:K_ceil]
+    k_weight_tot = sum(k_weight)
+    k_cur_weight = zeros(Float64, K_ceil)   # SWRR running credit, one per k
+
+    @inline function _next_k()::Int
+        K_ceil == 1 && return 1
+        @inbounds for i in 1:K_ceil
+            k_cur_weight[i] += k_weight[i]
+        end
+        best = 1
+        @inbounds for i in 2:K_ceil
+            k_cur_weight[i] > k_cur_weight[best] && (best = i)
+        end
+        @inbounds k_cur_weight[best] -= k_weight_tot
+        return best
+    end
+
     # Defensive check: if K_ceil >= 2 and this thread's entire anchor slice
     # [anchor_start, anchor_end] is Weierstrass points (py == 0), every
     # possible k-tuple with k>=2 is poisoned and next_anchor_tuple()'s
@@ -1359,10 +1465,11 @@ function phase2_worker(G               ::Div2,
     end
 
     @inline function next_anchor_tuple()
-        # Round-robin the tuple length itself: 1 -> 2 -> ... -> K_ceil -> 1 ->
-        # ..., so consecutive calls emit different lengths (mod K_ceil == 1,
-        # which just recovers the old fixed-K behaviour unchanged).
-        k = k_cur_ref[] >= K_ceil ? 1 : k_cur_ref[] + 1
+        # Weighted round-robin the tuple length itself (see _next_k above):
+        # small k is visited more often than large k by anchor_tuple_weight_decay.
+        # With decay=1.0 this is exactly the old flat 1->2->...->K_ceil->1->...
+        # cycle.
+        k = _next_k()
         k_cur_ref[] = k
         tc = tuple_cursors[k]
 
@@ -1639,7 +1746,7 @@ function phase2_worker(G               ::Div2,
 
         # Early no-repeat gate: once a residue has been consumed by any thread,
         # skip the rest of the expensive gate/φ/LP work for that alpha.
-        phase2_alpha_first_seen!(alpha_cur, ellI) || continue
+        phase2_alpha_first_seen!(alpha_gate, alpha_cur) || continue
 
         # --- Gate 1: D must be a degree-2 divisor (generic Jacobian element) ---
         fp3_deg(D_cur.u) != 2 && continue

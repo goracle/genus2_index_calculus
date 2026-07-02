@@ -470,6 +470,12 @@ function index_calculus_walk(G::Div2, T::Div2;
                              conj_dataset_path ::Union{Nothing,String} = "conj_closures.bin",
                              random_fb         ::Bool = false,
                              anchor_tuple_size ::Int  = 1,
+                             # Bias the tuple-length round-robin toward small k. See
+                             # phase2_worker's _next_k / k_weight for the mechanics.
+                             # 1.0 = old flat round-robin; higher = stronger bias
+                             # toward small k, i.e. exhaust cheap relations before
+                             # spending budget chasing rare fat ones.
+                             anchor_tuple_weight_decay::Float64 = 2.0,
                              enable_lp1_aff    ::Bool = true,
                              post_conj_stride  ::Int  = 0)
 
@@ -623,6 +629,16 @@ function index_calculus_walk(G::Div2, T::Div2;
 
 
     n_workers = Threads.nthreads()  # capture on main thread — avoids nthreads() quirk inside @spawn
+
+    # Shared alpha no-repeat gate — constructed ONCE here (main thread, before
+    # any worker spawns) and handed the SAME instance to every thread, exactly
+    # like the old PHASE2_ALPHA_BLOOM global was shared. Sized from the real
+    # ellI and the real aggregate step_cap for this run — see
+    # phase2_alpha_gate_init! in trial3_phase2.jl for why this replaced the
+    # fixed 128 MB Bloom filter (it saturated on runs this size and started
+    # falsely rejecting never-before-seen alphas).
+    alpha_gate = phase2_alpha_gate_init!(Int(ell), step_cap)
+
     t_phase2_start = time()
     @sync for tid in 1:n_workers
         Threads.@spawn begin
@@ -642,6 +658,8 @@ function index_calculus_walk(G::Div2, T::Div2;
                 enable_lp1_aff=enable_lp1_aff,
                 post_conj_stride=post_conj_stride,
                 anchor_tuple_size=anchor_tuple_size,
+                anchor_tuple_weight_decay=anchor_tuple_weight_decay,
+                alpha_gate=alpha_gate,
                 conj_dataset=conj_dataset)
         end
     end
@@ -1070,6 +1088,11 @@ function parse_trial3_cli(args::Vector{String})
     conj_dataset_path  = "conj_closures.bin"  # set to "" via --no-conj-dataset to disable
     random_fb          = false  # --random-fb: skip phase 1 walk, FB = random F_p points
     anchor_tuple_size  = 1    # --anchor-tuple-size=K: K-anchor phi_general walk (K=1 classic)
+    # --anchor-tuple-weight-decay=D: bias the k=1..anchor_tuple_size round-robin
+    # toward small k. weight_k = D^(anchor_tuple_size - k), so k=1 is
+    # D^(anchor_tuple_size-1) times as frequent as k=anchor_tuple_size.
+    # D=1.0 recovers the old flat round-robin (equal share for every k).
+    anchor_tuple_weight_decay = 2.0
 
     for arg in args
         if arg == "--no-lp2"
@@ -1110,6 +1133,9 @@ function parse_trial3_cli(args::Vector{String})
         elseif startswith(arg, "--anchor-tuple-size=")
             anchor_tuple_size = parse(Int, split(arg, "=", limit=2)[2])
             anchor_tuple_size < 1 && error("--anchor-tuple-size must be >= 1, got $anchor_tuple_size")
+        elseif startswith(arg, "--anchor-tuple-weight-decay=")
+            anchor_tuple_weight_decay = parse(Float64, split(arg, "=", limit=2)[2])
+            anchor_tuple_weight_decay < 1.0 && error("--anchor-tuple-weight-decay must be >= 1.0, got $anchor_tuple_weight_decay")
         end
     end
     # anchor_tuple_size is now the round-robin CEILING: the walk cycles
@@ -1126,7 +1152,8 @@ function parse_trial3_cli(args::Vector{String})
             sqrt_mode=sqrt_mode, table_size=table_size, min_ell_bits=min_ell_bits,
             rel_multiplier=rel_multiplier, post_conj_stride=post_conj_stride,
             conj_dataset_path=(conj_dataset_path == "" ? nothing : conj_dataset_path),
-            random_fb=random_fb, anchor_tuple_size=anchor_tuple_size)
+            random_fb=random_fb, anchor_tuple_size=anchor_tuple_size,
+            anchor_tuple_weight_decay=anchor_tuple_weight_decay)
 end
 
 # ---------------------------------------------------------------------------
@@ -1253,7 +1280,8 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
                  post_conj_stride   ::Int   = 0,
                  conj_dataset_path  ::Union{Nothing,String} = "conj_closures.bin",
                  random_fb          ::Bool  = false,
-                 anchor_tuple_size  ::Int   = 1)
+                 anchor_tuple_size  ::Int   = 1,
+                 anchor_tuple_weight_decay::Float64 = 2.0)
     t_main_start = time()
     println("="^70)
     println("  trial3: Markov-walk phi-relation index calculus")
@@ -1448,10 +1476,11 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
         # D38 disabled — see note at main-path allocation above.
         results_pre = Vector{Any}(undef, Threads.nthreads())
 
-        # Reset the alpha-seen Bloom filter before the walk so stale bits from
-        # any prior walk (e.g. a failed or restarted run in the same Julia session)
-        # do not suppress valid alpha events.  The filter is 128 MB; fill! is fast.
-        phase2_alpha_bloom_reset!()
+        # Fresh alpha-seen gate for this pre-run, sized for its own ellI/step
+        # budget (step_cap_pre, not the main run's step_cap) — a stale gate
+        # from a prior walk in the same session must never suppress valid
+        # alpha events here. See phase2_alpha_gate_init! in trial3_phase2.jl.
+        alpha_gate_pre = phase2_alpha_gate_init!(Int(ell), step_cap_pre)
 
         @printf("  [MEM] before phase2 walk:  RSS=%.1f MB  GC-live=%.1f MB\n",
                 Sys.maxrss()/1024^2, Base.gc_live_bytes()/1024^2)
@@ -1477,6 +1506,8 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
                     enable_lp1_aff=enable_lp1_aff,
                     post_conj_stride=post_conj_stride,
                     anchor_tuple_size=anchor_tuple_size,
+                    anchor_tuple_weight_decay=anchor_tuple_weight_decay,
+                    alpha_gate=alpha_gate_pre,
                     conj_dataset=conj_dataset)
             end
         end
@@ -1638,6 +1669,7 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
                                   conj_dataset_path=conj_dataset_path,
                                   random_fb=random_fb,
                                   anchor_tuple_size=anchor_tuple_size,
+                                  anchor_tuple_weight_decay=anchor_tuple_weight_decay,
                                   enable_lp1_aff=enable_lp1_aff,
                                   post_conj_stride=post_conj_stride)
     t_walk_done = time() - t_walk
@@ -1668,7 +1700,8 @@ function main2_from_argv()
           post_conj_stride=opts.post_conj_stride,
           conj_dataset_path=opts.conj_dataset_path,
           random_fb=opts.random_fb,
-          anchor_tuple_size=opts.anchor_tuple_size)
+          anchor_tuple_size=opts.anchor_tuple_size,
+          anchor_tuple_weight_decay=opts.anchor_tuple_weight_decay)
 end
 
 if abspath(PROGRAM_FILE) == @__FILE__

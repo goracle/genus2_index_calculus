@@ -112,9 +112,25 @@ const RR_BASIS_CACHE = Dict{Int, Vector{NTuple{2,Int}}}()
 
 # Called once after F_POLY is defined (e.g. at the bottom of the including
 # file, or in main()).  Pre-populates caches for k=1..max_k_expected.
-function init_phi_general_caches!(max_k::Int = 4)
+#
+# max_k defaults to K_MAX (trial3_config.jl) rather than an independent
+# literal. K_MAX is the single source of truth for the largest anchor-tuple
+# size used anywhere in the run (ThreadScratchpad{K_MAX}, LP1ConjVal's
+# anchor_indices::NTuple{K_MAX,UInt16}, scratch_by_k's K_ceil, etc.) — a
+# smaller local default here silently under-populates RR_BASIS_CACHE for
+# k > default.  That's not just a missed optimization: rr_basis_cached
+# falls back to a lazy `get!` on a plain (non-thread-safe) Dict for any nb
+# not pre-populated, so the first time multiple walker threads hit an
+# uncached k concurrently (e.g. k=5,6 with the old default=4 but K_MAX=6),
+# it's a genuine data race on RR_BASIS_CACHE, not merely a slow path.
+function init_phi_general_caches!(max_k::Int = K_MAX, backend::FpArith = StandardArith(p))
     global F_POLY_DESC
-    F_POLY_DESC = reverse(F_POLY)
+    # F_POLY_DESC must be in the SAME representation build_phi_general! (via
+    # branch_series!) will combine it with — i.e. whatever `backend` uses.
+    # For StandardArith, to_repr is identity: bit-identical to the old
+    # `reverse(F_POLY)`. For MontgomeryArith, each coefficient is converted
+    # once here rather than per-call.
+    F_POLY_DESC = [to_repr(backend, c) for c in reverse(F_POLY)]
     for k in 1:max_k
         nb = k + 3
         haskey(RR_BASIS_CACHE, nb) || (RR_BASIS_CACHE[nb] = rr_basis(nb))
@@ -263,14 +279,17 @@ end
 # ---------------------------------------------------------------------------
 #  Evaluate a monomial x^i * y^j at an affine point (px, py).
 # ---------------------------------------------------------------------------
-@inline function eval_monomial(i::Int, j::Int, px::Int, py::Int)::Int
-    xi = i == 0 ? 1 : begin
+@inline function eval_monomial(i::Int, j::Int, px::Int, py::Int,
+                                backend::FpArith = StandardArith(p))::Int
+    # x^0 = 1 must be the backend's own representation of 1 (to_repr(backend,1)),
+    # not the literal Int 1 — for MontgomeryArith those differ (R mod p vs 1).
+    xi = i == 0 ? to_repr(backend, 1) : begin
         r = px
-        for _ in 2:i; r = fpmul(r, px); end
+        for _ in 2:i; r = fpmul_b(backend, r, px); end
         r
     end
-    j == 0 && return fp(xi)
-    return fpmul(xi, py)
+    j == 0 && return fp_b(backend, xi)
+    return fpmul_b(backend, xi, py)
 end
 
 # ---------------------------------------------------------------------------
@@ -389,13 +408,14 @@ end
 #  fp_gauss_batch_invert_diag!.  Caller supplies scratch.prefix_buf.
 # ---------------------------------------------------------------------------
 function fp_gauss!(A::MMatrix{N,N,Int}, b::MVector{N,Int},
-                   prefix_buf::MVector{N,Int})::Bool where N
+                   prefix_buf::MVector{N,Int},
+                   backend::FpArith = StandardArith(p))::Bool where N
     n = N   # compile-time constant; loop bounds become literals
     # --- Forward pass: eliminate below the diagonal, cross-multiply only ---
     for col in 1:n
         pivot_row = 0
         for row in col:n
-            @inbounds if A[row, col] != 0
+            @inbounds if A[row, col] != 0   # zero is representation-invariant
                 pivot_row = row
                 break
             end
@@ -418,9 +438,11 @@ function fp_gauss!(A::MMatrix{N,N,Int}, b::MVector{N,Int},
             @inbounds factor = A[row, col]
             factor == 0 && continue
             for j in col:n
-                @inbounds A[row, j] = fp(fpmul(pivot, A[row, j]) - fpmul(factor, A[col, j]))
+                @inbounds A[row, j] = fpsub_b(backend, fpmul_b(backend, pivot, A[row, j]),
+                                                        fpmul_b(backend, factor, A[col, j]))
             end
-            @inbounds b[row] = fp(fpmul(pivot, b[row]) - fpmul(factor, b[col]))
+            @inbounds b[row] = fpsub_b(backend, fpmul_b(backend, pivot, b[row]),
+                                                 fpmul_b(backend, factor, b[col]))
         end
     end
 
@@ -431,9 +453,11 @@ function fp_gauss!(A::MMatrix{N,N,Int}, b::MVector{N,Int},
             @inbounds factor = A[row, col]
             factor == 0 && continue
             for j in 1:n
-                @inbounds A[row, j] = fp(fpmul(pivot, A[row, j]) - fpmul(factor, A[col, j]))
+                @inbounds A[row, j] = fpsub_b(backend, fpmul_b(backend, pivot, A[row, j]),
+                                                        fpmul_b(backend, factor, A[col, j]))
             end
-            @inbounds b[row] = fp(fpmul(pivot, b[row]) - fpmul(factor, b[col]))
+            @inbounds b[row] = fpsub_b(backend, fpmul_b(backend, pivot, b[row]),
+                                                 fpmul_b(backend, factor, b[col]))
         end
     end
 
@@ -441,7 +465,7 @@ function fp_gauss!(A::MMatrix{N,N,Int}, b::MVector{N,Int},
     # call total (see fp_gauss_batch_invert_diag! below) instead of doing it
     # inline here, so the prefix-product scratch space can be supplied by
     # the caller and the zero-heap-allocation invariant is preserved.
-    return fp_gauss_batch_invert_diag!(A, b, prefix_buf)
+    return fp_gauss_batch_invert_diag!(A, b, prefix_buf, backend)
 end
 
 # ---------------------------------------------------------------------------
@@ -460,27 +484,28 @@ end
 #  
 # ---------------------------------------------------------------------------
 @inline function fp_gauss_batch_invert_diag!(A::MMatrix{N,N,Int}, b::MVector{N,Int},
-                                              prefix_buf::MVector{N,Int})::Bool where N
+                                              prefix_buf::MVector{N,Int},
+                                              backend::FpArith = StandardArith(p))::Bool where N
     n = N
     @inbounds d1 = A[1, 1]
-    d1 == 0 && return false
+    d1 == 0 && return false   # zero is representation-invariant
     @inbounds prefix_buf[1] = d1
 
     for i in 2:n
         @inbounds di = A[i, i]
         di == 0 && return false
-        @inbounds prefix_buf[i] = fpmul(prefix_buf[i-1], di)
+        @inbounds prefix_buf[i] = fpmul_b(backend, prefix_buf[i-1], di)
     end
 
-    @inbounds running = fpinv(prefix_buf[n])   # the ONLY fpinv call in the whole solve
+    @inbounds running = fpinv_b(backend, prefix_buf[n])   # the ONLY fpinv call in the whole solve
 
     for i in n:-1:2
         @inbounds di = A[i, i]
-        @inbounds inv_i = fpmul(running, prefix_buf[i-1])
-        @inbounds b[i] = fpmul(b[i], inv_i)
-        running = fpmul(running, di)
+        @inbounds inv_i = fpmul_b(backend, running, prefix_buf[i-1])
+        @inbounds b[i] = fpmul_b(backend, b[i], inv_i)
+        running = fpmul_b(backend, running, di)
     end
-    @inbounds b[1] = fpmul(b[1], running)
+    @inbounds b[1] = fpmul_b(backend, b[1], running)
 
     return true
 end
@@ -592,9 +617,13 @@ mutable struct ThreadScratchpad{K, N2, N3, L}
     small_inv       ::Vector{Int}          # small_inv[s] = fpinv(s), s=1..32
 
     # 10. Preallocated buffer for Oscar polynomial coefficient construction in
-    #     find_roots_and_points_inplace!.  Degree of residual is at most K_MAX+1=4,
-    #     so u_len ≤ 5.  We use a length-8 buffer and reuse it across every call
-    #     to avoid the [Fp(u_RS[i]) for i in 1:u_len] heap allocation.
+    #     find_roots_and_points_inplace!.  Residual degree is a fixed invariant
+    #     of the RR-basis construction — always 2 (u_len ≤ 3), independent of K
+    #     or K_MAX — since deg(N)-(k+2) collapses to 2 for every k (verified for
+    #     k=1..11; see phi_residual_general! header).  Length 8 is generous
+    #     headroom, not a K_MAX-dependent bound.  We use a length-8 buffer and
+    #     reuse it across every call to avoid the [Fp(u_RS[i]) for i in 1:u_len]
+    #     heap allocation.
     #     Wrapped in a Ref{Any} so the struct stays concrete for other fields.
     oscar_coeff_buf ::Base.RefValue{Any}   # Vector{FqFieldElem}, populated at init
 
@@ -608,8 +637,8 @@ mutable struct ThreadScratchpad{K, N2, N3, L}
     #
     #     Instead, build_phi_general! fills these two length-32 arrays once per
     #     step (one ascending recurrence pass) and reduce_monomial_mod_D_cached
-    #     does an O(1) lookup.  Max i in the RR basis for K_MAX=4 is ≤ 6;
-    #     length 32 is safe past any realistic K_MAX.
+    #     does an O(1) lookup.  Max basis x-power grows ~K_MAX/2 (see rr_basis);
+    #     length 32 is safe past any realistic K_MAX (covers K_MAX up to ~60).
     #
     #     x_pow_mod_u_r0[i+1] = const coeff of x^i mod u(x)
     #     x_pow_mod_u_r1[i+1] = x     coeff of x^i mod u(x)
@@ -673,7 +702,12 @@ end
 # ---------------------------------------------------------------------------
 @inline function reduce_monomial_mod_D_cached(i::Int, j::Int,
                                                v0::Int, v1::Int,
-                                               scratch::ThreadScratchpad{<:Any})::NTuple{2,Int}
+                                               scratch::ThreadScratchpad{<:Any},
+                                               backend::FpArith = StandardArith(p))::NTuple{2,Int}
+    # v0, v1, and the cached x_pow_mod_u_r0/r1 table must all be in `backend`'s
+    # representation (build_phi_general! populates the table with backend
+    # already). Raw + before a single fp_b reduction is safe here for the same
+    # reason it is in branch_series! — Montgomery form is additive-homomorphic.
     @inbounds a0 = scratch.x_pow_mod_u_r0[i + 1]
     @inbounds a1 = scratch.x_pow_mod_u_r1[i + 1]
     if j == 0
@@ -682,8 +716,8 @@ end
         # x^(i+1) mod u: next entry in table
         @inbounds b0 = scratch.x_pow_mod_u_r0[i + 2]
         @inbounds b1 = scratch.x_pow_mod_u_r1[i + 2]
-        return (fp(fpmul(v0, a0) + fpmul(v1, b0)),
-                fp(fpmul(v0, a1) + fpmul(v1, b1)))
+        return (fp_b(backend, fpmul_b(backend, v0, a0) + fpmul_b(backend, v1, b0)),
+                fp_b(backend, fpmul_b(backend, v0, a1) + fpmul_b(backend, v1, b1)))
     end
 end
 
@@ -696,10 +730,19 @@ end
 #
 #  Call this once per ThreadScratchpad after p is known, before spawning walkers.
 # ---------------------------------------------------------------------------
-function init_scratch_caches!(scratch::ThreadScratchpad{K}, p_val::Int) where K
-    # Precomputed modular inverses for small positive integers.
+function init_scratch_caches!(scratch::ThreadScratchpad{K}, p_val::Int,
+                               backend::FpArith = StandardArith(p_val)) where K
+    # Precomputed modular inverses for small positive integers, stored in
+    # `backend`'s representation. build_phi_general! (via monomial_series_coeffs!)
+    # combines small_inv[s] with backend-form binomial coefficients using
+    # fpmul_b — both operands must be in the SAME representation, so this
+    # table has to be built with the same backend the walk will actually run
+    # with. Passing a different backend at call time than was used here is a
+    # representation-mismatch bug that phi_residual_general!'s remainder
+    # check won't reliably catch quickly (see validate_backend note in
+    # trial3_fp_backend.jl).
     for s in 1:32
-        scratch.small_inv[s] = fpinv(s)
+        scratch.small_inv[s] = to_repr(backend, fpinv(s))
     end
 
     # Oscar polynomial ring over GF(p) — built once, reused forever per thread.
@@ -709,7 +752,8 @@ function init_scratch_caches!(scratch::ThreadScratchpad{K}, p_val::Int) where K
     scratch.oscar_Rx[] = Rx
     scratch.oscar_ready[1] = true
 
-    # Preallocate the Oscar coefficient buffer (length 8 covers deg≤7, more than K_MAX+1=4).
+    # Preallocate the Oscar coefficient buffer (length 8; residual degree is a fixed
+    # invariant = 2 regardless of K_MAX, so u_len ≤ 3 — length 8 is generous headroom).
     # We store FqFieldElem objects; they'll be mutated via setindex! in find_roots_and_points_inplace!.
     scratch.oscar_coeff_buf[] = [Fp(0) for _ in 1:8]
 
@@ -736,7 +780,8 @@ function branch_series!(
     py      ::Int, 
     m       ::Int, 
     f_tay   ::AbstractVector{Int}, 
-    poly_buf::AbstractVector{Int}
+    poly_buf::AbstractVector{Int},
+    backend ::FpArith = StandardArith(p)
 )::Nothing
     # Sanity guard against runaway anchor multiplicity
     if m > 16 
@@ -756,6 +801,9 @@ function branch_series!(
             "after F_POLY is defined and before spawning workers"
         ))
     end
+    # F_POLY_DESC is cached in whatever representation `backend` uses (see
+    # init_phi_general_caches!) — combining it with backend-form px/py below
+    # requires that cache to have been built with the SAME backend passed here.
     f_desc = F_POLY_DESC::Vector{Int}
     n_fdesc = length(f_desc)
 
@@ -770,18 +818,22 @@ function branch_series!(
     # Synthetic division / Horner deflation.
     # Note: This directly computes f^(s)(px)/s! (the true Taylor coefficients),
     # eliminating the need for a separate factorial inversion phase.
+    #
+    # Raw `+`/`-` between backend-form values before a single fp_b/fpsub_b
+    # reduction is safe: Montgomery form is a ring homomorphism for +/-, so
+    # it commutes with the R-scaling exactly like it does for StandardArith.
     poly_len = n_fdesc
     for s in 0:(m - 1)
         @inbounds val = poly_buf[1]
         for ci in 2:poly_len
-            @inbounds val = fp(fpmul(val, px) + poly_buf[ci])
+            @inbounds val = fp_b(backend, fpmul_b(backend, val, px) + poly_buf[ci])
         end
         @inbounds f_tay[s+1] = val
 
         if s < m - 1
             # In-place deflation step
             for ci in 2:(poly_len - 1)
-                @inbounds poly_buf[ci] = fp(fpmul(poly_buf[ci-1], px) + poly_buf[ci])
+                @inbounds poly_buf[ci] = fp_b(backend, fpmul_b(backend, poly_buf[ci-1], px) + poly_buf[ci])
             end
             poly_len -= 1
         end
@@ -789,14 +841,14 @@ function branch_series!(
 
     # Compute y-series coefficients iteratively
     @inbounds out_y[1] = py 
-    inv2y0 = fpinv(fp(2 * py))
+    inv2y0 = fpinv_b(backend, fp_b(backend, 2 * py))
     
     for s in 1:(m - 1)
         @inbounds rhs_s = f_tay[s+1]
         for r in 1:(s - 1)
-            @inbounds rhs_s = fp(rhs_s - fpmul(out_y[r+1], out_y[s-r+1]))
+            @inbounds rhs_s = fp_b(backend, rhs_s - fpmul_b(backend, out_y[r+1], out_y[s-r+1]))
         end
-        @inbounds out_y[s+1] = fpmul(rhs_s, inv2y0)
+        @inbounds out_y[s+1] = fpmul_b(backend, rhs_s, inv2y0)
     end
 
     return nothing
@@ -825,31 +877,40 @@ function monomial_series_coeffs!(out::AbstractVector{Int}, i::Int, j::Int,
                                  xi_scratch::AbstractVector{Int},
                                  binom_scratch::AbstractVector{Int},
                                  pxpow_scratch::AbstractVector{Int},
-                                 small_inv::AbstractVector{Int})::Nothing
+                                 small_inv::AbstractVector{Int},
+                                 backend::FpArith = StandardArith(p))::Nothing
     if m == 1
-        out[1] = eval_monomial(i, j, px, y_ser[1])
+        out[1] = eval_monomial(i, j, px, y_ser[1], backend)
         return nothing
     end
 
     fill!(xi_scratch, 0)
     fill!(binom_scratch, 0)
 
+    one_b = to_repr(backend, 1)   # backend's own representation of 1 — NOT the literal Int 1
+                                   # (differs from it for MontgomeryArith: R mod p vs 1)
+
     # Binomial expansion coefficients
-    binom_scratch[1] = 1
+    binom_scratch[1] = one_b
     for s in 1:min(i, m-1)
-        @inbounds binom_scratch[s+1] = fpmul(binom_scratch[s], fpmul(fp(i - s + 1), small_inv[s]))
+        # (i-s+1) is a raw small integer, not yet in any field representation — reduce it
+        # mod p in standard form first, THEN lift to backend form via to_repr, before
+        # combining with small_inv[s] (already backend-form, see init_scratch_caches!).
+        @inbounds coef_std = fp(i - s + 1)
+        @inbounds coef_b   = to_repr(backend, coef_std)
+        @inbounds binom_scratch[s+1] = fpmul_b(backend, binom_scratch[s], fpmul_b(backend, coef_b, small_inv[s]))
     end
 
     # Precompute ascending powers of px
-    pxpow_scratch[1] = 1
+    pxpow_scratch[1] = one_b
     for e in 1:i
-        @inbounds pxpow_scratch[e+1] = fpmul(pxpow_scratch[e], px)
+        @inbounds pxpow_scratch[e+1] = fpmul_b(backend, pxpow_scratch[e], px)
     end
 
     # Read descending directly from pxpow_scratch, completely avoiding self-aliasing corruption
     for s in 0:min(i, m-1)
         @inbounds px_descending_pow = pxpow_scratch[i - s + 1]
-        @inbounds xi_scratch[s+1] = fpmul(binom_scratch[s+1], px_descending_pow)
+        @inbounds xi_scratch[s+1] = fpmul_b(backend, binom_scratch[s+1], px_descending_pow)
     end
 
     if j == 0
@@ -860,7 +921,7 @@ function monomial_series_coeffs!(out::AbstractVector{Int}, i::Int, j::Int,
     fill!(out, 0)
     for a in 0:m-1, b in 0:m-1
         a + b >= m && continue
-        @inbounds out[a+b+1] = fp(out[a+b+1] + fpmul(xi_scratch[a+1], y_ser[b+1]))
+        @inbounds out[a+b+1] = fp_b(backend, out[a+b+1] + fpmul_b(backend, xi_scratch[a+1], y_ser[b+1]))
     end
     return nothing
 end
@@ -883,6 +944,29 @@ function build_phi_general!(
     basis = rr_basis_cached(nb)::Vector{NTuple{2, Int}}
 
     # ---------------------------------------------------------------------------
+    #  REPRESENTATION BOUNDARY — build_phi_general! is a self-contained island.
+    #
+    #  Everything from here down to the coeffs_out copy-out at the bottom of
+    #  this function operates in `backend`'s representation. Callers (step_phi_k!,
+    #  phi_residual_general!) never see backend form: u0,u1,v0,v1 and anchors
+    #  arrive standard-form (unchanged external contract) and coeffs_out is
+    #  converted back to standard form before this function returns. This
+    #  keeps the boundary at a single, auditable point instead of threading a
+    #  live representation through step_phi_k! and everything downstream of
+    #  it (phi_residual_general!, poly_divmod_*, etc. — the ~150+ call sites
+    #  flagged as out of scope for this pass).
+    #
+    #  The anchor-in-supp(D) guard below runs BEFORE conversion, on the raw
+    #  standard-form inputs — it's O(k), not hot, and zero/nonzero is
+    #  representation-invariant either way, so there's no reason to pay a
+    #  to_repr just to run it in backend form.
+    # ---------------------------------------------------------------------------
+    u0_b = to_repr(backend, u0); u1_b = to_repr(backend, u1)
+    v0_b = to_repr(backend, v0); v1_b = to_repr(backend, v1)
+    anchors_b = ntuple(idx -> (to_repr(backend, anchors[idx][1]),
+                                to_repr(backend, anchors[idx][2])), Val(K))
+
+    # ---------------------------------------------------------------------------
     #  Populate the x^i mod u(x) cache for this walk step.
     #
     #  We need reductions for i = 0 .. max_basis_i, where max_basis_i is the
@@ -903,17 +987,20 @@ function build_phi_general!(
     # +1 extra for j=1 monomials needing x^(i+1)
     cache_len = max_basis_i + 2
 
-    @inbounds scratch.x_pow_mod_u_r0[1] = 1   # x^0 mod u = 1
-    @inbounds scratch.x_pow_mod_u_r1[1] = 0
+    # Identity/zero constants below use to_repr — for MontgomeryArith, "1" is
+    # R mod p, not the literal Int 1 (same fix as eval_monomial's x^0 case).
+    one_b = to_repr(backend, 1)
+    @inbounds scratch.x_pow_mod_u_r0[1] = one_b   # x^0 mod u = 1
+    @inbounds scratch.x_pow_mod_u_r1[1] = 0        # 0 is representation-invariant
     if cache_len >= 2
-        @inbounds scratch.x_pow_mod_u_r0[2] = 0   # x^1 mod u = x
-        @inbounds scratch.x_pow_mod_u_r1[2] = 1
+        @inbounds scratch.x_pow_mod_u_r0[2] = 0    # x^1 mod u = x
+        @inbounds scratch.x_pow_mod_u_r1[2] = one_b
     end
     for i in 2:(cache_len - 1)
         @inbounds r0 = scratch.x_pow_mod_u_r0[i]
         @inbounds r1 = scratch.x_pow_mod_u_r1[i]
-        @inbounds scratch.x_pow_mod_u_r0[i + 1] = fp(-fpmul(r1, u0))
-        @inbounds scratch.x_pow_mod_u_r1[i + 1] = fp(r0 - fpmul(r1, u1))
+        @inbounds scratch.x_pow_mod_u_r0[i + 1] = fpsub_b(backend, 0, fpmul_b(backend, r1, u0_b))
+        @inbounds scratch.x_pow_mod_u_r1[i + 1] = fpsub_b(backend, r0, fpmul_b(backend, r1, u1_b))
     end
     # Guard: no anchor may be in supp(D)
     for idx in 1:k
@@ -978,9 +1065,13 @@ function build_phi_general!(
         end
         @inbounds scratch.visited_flags[i] = true
         
+        # Dedup/visited bookkeeping stays on the original standard-form anchors
+        # tuple (equality is representation-invariant since to_repr is a
+        # bijection — two points are equal iff their backend-form images are).
         @inbounds pt = anchors[i]
-        px = pt[1]
-        py = pt[2]
+        @inbounds pt_b = anchors_b[i]
+        px = pt_b[1]
+        py = pt_b[2]
         @inbounds m  = scratch.seen_counts[i]
 
         # Tag other identical points as visited to skip structural repetitions
@@ -992,7 +1083,7 @@ function build_phi_general!(
         end
 
         # Compute branch series y(px+t) to order m-1 completely in-place
-        branch_series!(scratch.out_y, px, py, m, scratch.f_tay, scratch.poly_buf)
+        branch_series!(scratch.out_y, px, py, m, scratch.f_tay, scratch.poly_buf, backend)
 
         # Emit each basis column's series coefficients directly into A_mat
         for col_idx in 1:n
@@ -1000,7 +1091,7 @@ function build_phi_general!(
             monomial_series_coeffs!(
                 scratch.ser_buf, ii, jj, px, scratch.out_y, m, 
                 scratch.xi_buf, scratch.binom_buf, scratch.pxpow_buf,
-                scratch.small_inv
+                scratch.small_inv, backend
             )
             for s in 0:(m - 1)
                 @inbounds scratch.A_mat[row_idx + s + 1, col_idx] = scratch.ser_buf[s + 1]
@@ -1011,10 +1102,10 @@ function build_phi_general!(
         monomial_series_coeffs!(
             scratch.ser_buf, i_norm, j_norm, px, scratch.out_y, m, 
             scratch.xi_buf, scratch.binom_buf, scratch.pxpow_buf,
-            scratch.small_inv
+            scratch.small_inv, backend
         )
         for s in 0:(m - 1)
-            @inbounds scratch.rhs_vec[row_idx + s + 1] = fp(-scratch.ser_buf[s + 1])
+            @inbounds scratch.rhs_vec[row_idx + s + 1] = fpsub_b(backend, 0, scratch.ser_buf[s + 1])
         end
 
         row_idx += m
@@ -1025,15 +1116,15 @@ function build_phi_general!(
     # instead of re-running the recurrence from scratch for each basis element.
     for col_idx in 1:n
         @inbounds i, j = basis[col_idx]
-        r0, r1 = reduce_monomial_mod_D_cached(i, j, v0, v1, scratch)
+        r0, r1 = reduce_monomial_mod_D_cached(i, j, v0_b, v1_b, scratch, backend)
         @inbounds scratch.A_mat[k + 1, col_idx] = r0
         @inbounds scratch.A_mat[k + 2, col_idx] = r1
     end
     
     # RHS: -remainder of normalised monomial (also uses cache)
-    rn0, rn1 = reduce_monomial_mod_D_cached(i_norm, j_norm, v0, v1, scratch)
-    @inbounds scratch.rhs_vec[k + 1] = fp(-rn0)
-    @inbounds scratch.rhs_vec[k + 2] = fp(-rn1)
+    rn0, rn1 = reduce_monomial_mod_D_cached(i_norm, j_norm, v0_b, v1_b, scratch, backend)
+    @inbounds scratch.rhs_vec[k + 1] = fpsub_b(backend, 0, rn0)
+    @inbounds scratch.rhs_vec[k + 2] = fpsub_b(backend, 0, rn1)
 
     # In-place Gauss solver on the live n×n submatrix of the preallocated buffers.
     # Passing the full Matrix/Vector + explicit n avoids @views SubArray allocation.
@@ -1044,11 +1135,15 @@ function build_phi_general!(
     # A_mat::MMatrix{K+2,K+2,Int} and rhs_vec::MVector{K+2,Int} are stack-allocated.
     # fp_gauss! gets N=K+2 from the type — no runtime dispatch, no Val{} indirection.
     # prefix_buf::MVector{K+2,Int} (scratch.prefix_buf) replaces the xi_buf reuse.
-    fp_gauss!(scratch.A_mat, scratch.rhs_vec, scratch.prefix_buf) || return false
+    fp_gauss!(scratch.A_mat, scratch.rhs_vec, scratch.prefix_buf, backend) || return false
 
-    # Solution is now in scratch.rhs_vec[1:n]; copy out.
+    # Solution is in scratch.rhs_vec[1:n], still in backend form — convert
+    # back to standard form here so coeffs_out matches build_phi_general!'s
+    # external contract (phi_residual_general! and everything downstream of
+    # it operates in standard form only; this is the exit side of the
+    # representation-boundary island described above).
     @inbounds for i in 1:n
-        scratch.coeffs_out[i] = scratch.rhs_vec[i]
+        scratch.coeffs_out[i] = from_repr(backend, scratch.rhs_vec[i])
     end
     @inbounds scratch.coeffs_out[nb] = 1
 
@@ -1087,10 +1182,11 @@ function phi_to_EY!(
 
     # Zero-out the active working ranges within poly_buf.
     # E(x) occupies slots 1..32; Y(x) occupies slots 33..64.
-    # For K_MAX=3 the basis has nb=k+3≤6 elements and the highest x-power
-    # for E is basis[nb-1][1] ≤ 4 and for Y ≤ 2, so we only need ≤ 32+32=64
-    # slots in the worst case — but clearing exactly what we need saves ~2x.
-    # We clear 1..nb+2 for E and 33..33+nb for Y (generous safe bound).
+    # deg_E and deg_Y both grow roughly linearly with nb (deg_E ~ nb/2), so the
+    # nb+2 bound below scales with whatever K_MAX is configured to — it is not
+    # tied to any specific K_MAX value. We clear 1..nb+2 for E and 33..33+nb
+    # for Y (generous safe bound) rather than the full 32+32 slots, since
+    # clearing exactly what we need saves ~2x.
     nb_local = length(basis)
     clear_e = nb_local + 2     # enough for any E(x) coefficient index
     clear_y = nb_local + 2     # enough for any Y(x) coefficient index
@@ -1723,8 +1819,9 @@ function compute_vRS_inplace!(
     end
 
     # Clear only as many slots as e_len needs (u_len+4 is always safe since
-    # after reduction the length is ≤ u_len, and e_len ≤ 32 but for K_MAX=3
-    # it's ≤ 5).  u_len + 4 ≤ 9 for K_MAX=3; use max(e_len, u_len) + 2.
+    # after reduction the length is ≤ u_len (u_len ≤ 3, a fixed invariant
+    # independent of K_MAX — see phi_residual_general! header). e_len can grow
+    # with K_MAX; use max(e_len, u_len) + 2.
     clear_e = max(e_len, u_len) + 2
     for i in 1:clear_e
         @inbounds scratch.poly_buf[64 + i] = 0
@@ -2497,7 +2594,8 @@ function recover_y_from_phi_inplace(scratch::ThreadScratchpad{K}, x::Int, ::Val{
     basis = rr_basis_cached(nb)::Vector{NTuple{2, Int}}
 
     # Precompute x^0, x^1, ..., x^(max_pow) in one ascending pass.
-    # For K_MAX=3, nb=6, max x-power in basis is 3 (basis: 1,x,x²,y,x³,xy).
+    # Max x-power in basis grows with K_MAX (e.g. K_MAX=3 → nb=6, basis:
+    # 1,x,x²,y,x³,xy, max x-power 3); scales per rr_basis, not a fixed bound.
     # Uses pxpow_buf (length 32) from scratch — borrowing it here; it's not live
     # during root recovery (find_roots_and_points calls us after residual is done).
     max_pow = 0
@@ -2741,46 +2839,26 @@ function step_phi_k!(
 )::Bool where K
 
     # ---------------------------------------------------------------------------
-    #  REPRESENTATION BOUNDARY (entry)
+    #  REPRESENTATION BOUNDARY
     #
-    #  For StandardArith, to_repr is identity — zero cost, zero behavior change.
-    #  For MontgomeryArith, convert every field element entering the arithmetic
-    #  layer into Montgomery form (a·R mod p).  The interior arithmetic
-    #  (build_phi_general!, phi_residual_general!, fp_gauss!, etc.) operates
-    #  entirely in whatever representation it receives; from_repr is called at
-    #  exit below before anything leaves the arithmetic layer (mumford keys,
-    #  roots_out coords, sqrt_fp_hot inputs).
-    #
-    #  NOTE: anchor x-coords appear as roots of u(x) check inside
-    #  build_phi_general! — that check uses the module-level fpmul which
-    #  operates in standard form.  For MontgomeryArith this means the check
-    #  runs on Montgomery-form inputs, which is incorrect.  We therefore pass
-    #  STANDARD-FORM anchors to build_phi_general! and only convert u0,u1,v0,v1
-    #  (the Mumford arithmetic params actually used in fp_gauss! rows).
-    #  The anchor branch-series evaluations in build_phi_general! use the
-    #  module-level fpmul (standard path), so anchor coords must remain
-    #  in standard form there too.
-    #
-    #  Concretely: for this first-pass implementation, backend conversion applies
-    #  to u0,u1,v0,v1 (Mumford rows in the linear system) and to root extraction
-    #  outputs.  Anchor coords stay standard-form throughout build_phi_general!
-    #  since the branch_series / monomial_series path uses module-level fpmul.
-    #  This is safe and correct for StandardArith (no-op).  For MontgomeryArith,
-    #  it means the Gauss rows for the Mumford equations carry Montgomery-form
-    #  coefficients while anchor rows carry standard-form coefficients — which
-    #  would mix representations and give wrong results.  Therefore for
-    #  MontgomeryArith in this first-pass, we still pass standard-form values
-    #  to build_phi_general! (the interior isn't Montgomery-accelerated yet),
-    #  and use the backend only at the output boundary.  See KNOWN LIMITATION
-    #  note in trial3_fp_backend.jl.
-    #
-    #  BOTTOM LINE for first pass: backend is wired in and validated at the
-    #  boundary; interior arithmetic is unchanged (StandardArith path).
-    #  Switching MontgomeryArith to accelerate the interior is the next step.
+    #  build_phi_general! is now a self-contained representation island: it
+    #  converts anchors/u0/u1/v0/v1 to `backend` form on entry, runs the whole
+    #  hot loop (branch_series!, monomial_series_coeffs!, the x^i mod u(x)
+    #  cache, fp_gauss!) in that representation, and converts coeffs_out back
+    #  to standard form before returning. step_phi_k! therefore passes
+    #  standard-form values straight through and gets standard-form coeffs_out
+    #  back — no conversion needed at this level. Everything downstream of
+    #  build_phi_general! (phi_residual_general!, poly_divmod_*, sqrt_fp_hot,
+    #  root/mumford extraction) is untouched and operates purely in standard
+    #  form, exactly as before backend threading — it never sees backend form,
+    #  so there's nothing to convert back at the exit of this function either.
+    #  For StandardArith this whole boundary is a no-op (to_repr/from_repr are
+    #  identity); for MontgomeryArith it's where the actual REDC speedup lives.
+    #  See trial3_fp_backend.jl's KNOWN LIMITATION note for what's still out
+    #  of scope (phi_residual_general! and the poly_* helpers).
     # ---------------------------------------------------------------------------
 
     # 1. Build the phi function coefficients directly into scratch.coeffs_buf.
-    #    Pass standard-form values (see boundary note above).
     success_build = build_phi_general!(scratch, anchors, u0, u1, v0, v1; backend=backend)
     !success_build && return false
 
@@ -2798,42 +2876,14 @@ function step_phi_k!(
         return false
     end
 
-    # ---------------------------------------------------------------------------
-    #  REPRESENTATION BOUNDARY (exit)
-    #
-    #  roots_out coords and u_RS/v_RS coefficients were computed in whatever
-    #  representation the interior used.  For StandardArith this is a no-op.
-    #  For MontgomeryArith (future: once interior is Montgomery-accelerated),
-    #  call from_repr on each component before returning.
-    #
-    #  sqrt_fp_hot is called INSIDE find_roots_and_points_inplace! (for the
-    #  deg-2 quadratic case), which in turn is called from phi_residual_general!
-    #  above.  That path uses the module-level sqrt_fp_hot directly (standard
-    #  form).  For MontgomeryArith acceleration of the interior, replace those
-    #  calls with sqrt_fp_hot_b(backend, disc_r) — disc_r in Montgomery form,
-    #  sqrt_fp_hot_b converts to standard before calling sqrt_fp.
-    #
-    #  For now: roots_out is already in standard form (interior uses standard
-    #  arithmetic), so no conversion is needed.  The from_repr calls below are
-    #  present as no-ops that document where the boundary lives and that will
-    #  become active when interior arithmetic is promoted to MontgomeryArith.
-    # ---------------------------------------------------------------------------
-    n_roots = scratch.roots_count[1]
-    for i in 1:n_roots
-        xr, yr = scratch.roots_out[i]
-        scratch.roots_out[i] = (from_repr(backend, xr), from_repr(backend, yr))
-    end
-
-    u_len = scratch.u_RS_len[1]
-    for i in 1:u_len
-        @inbounds scratch.u_RS[i] = from_repr(backend, scratch.u_RS[i])
-    end
-
-    v_len = scratch.v_RS_len[1]
-    for i in 1:v_len
-        @inbounds scratch.v_RS[i] = from_repr(backend, scratch.v_RS[i])
-    end
-
+    # roots_out, u_RS, v_RS are produced entirely by phi_residual_general!
+    # above, which is untouched standard-form code operating on the
+    # standard-form coeffs_out that build_phi_general! already converted back
+    # for it. They never entered `backend`'s representation, so there is
+    # nothing to convert here — calling from_repr on them would actually
+    # corrupt correct standard-form values under MontgomeryArith (from_repr
+    # assumes its input is x·R mod p; these aren't). See the representation
+    # boundary note above build_phi_general!'s call, a few lines up.
     return true
 end
 
