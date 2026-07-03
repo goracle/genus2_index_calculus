@@ -1413,9 +1413,8 @@ function build_phi_general!(
     end
 
     # --- Mumford rows: const (row k+1) and x-coeff (row k+2) ---
-    # Use cached x^i mod u table populated above — O(1) lookup per column
-    # instead of re-running the recurrence from scratch for each basis element.
     _t_mumford_start = PHI_TIMING_ENABLED[] ? time_ns() : 0
+    @assert row_idx == k
     for col_idx in 1:n
         @inbounds i, j = basis[col_idx]
         r0, r1 = reduce_monomial_mod_D_cached(i, j, v0_b, v1_b, scratch, backend)
@@ -1425,85 +1424,61 @@ function build_phi_general!(
     
     # RHS: -remainder of normalised monomial (also uses cache)
     rn0, rn1 = reduce_monomial_mod_D_cached(i_norm, j_norm, v0_b, v1_b, scratch, backend)
+    
     @inbounds scratch.rhs_vec[k + 1] = fpsub_b(backend, 0, rn0)
     @inbounds scratch.rhs_vec[k + 2] = fpsub_b(backend, 0, rn1)
 
-    if PHI_TIMING_ENABLED[]
-        _t_mumford_end = time_ns()
-        st0 = phi_timing_stats()
-        st0.ns_ser_branch  += _ns_ser_branch_acc
-        st0.ns_ser_cols    += _ns_ser_cols_acc
-        st0.ns_ser_rhs     += _ns_ser_rhs_acc
-        st0.ns_ser_mumford += _t_mumford_end - _t_mumford_start
+    # ==========================================================
+    # ASSERTION PREP: Backup A and b before mutation
+    # ==========================================================
+    n_rows = k + 2
+    A_bak = [scratch.A_mat[r, c] for r in 1:n_rows, c in 1:n]
+    b_bak = [scratch.rhs_vec[r] for r in 1:n_rows]
+
+    # Solve the (k+2) x (k+2) system in backend representation
+    success = fp_gauss!(scratch.A_mat, scratch.rhs_vec, scratch.prefix_buf, backend)
+    if !success
+        PHI_TIMING_ENABLED[] && (phi_timing_stats().n_fail_build += 1)
+        return false
     end
 
-    # In-place Gauss solver on the live n×n submatrix of the preallocated buffers.
-    # Passing the full Matrix/Vector + explicit n avoids @views SubArray allocation.
-    # scratch.prefix_buf (MVector{K+2,Int}) is the batch-inversion prefix-product scratch —
-    # dedicated field, no aliasing risk with xi_buf (which is still used for binomial
-    # expansion in monomial_series_coeffs! above).
-
-    # A_mat::MMatrix{K+2,K+2,Int} and rhs_vec::MVector{K+2,Int} are stack-allocated.
-    # fp_gauss! gets N=K+2 from the type — no runtime dispatch, no Val{} indirection.
-    # prefix_buf::MVector{K+2,Int} (scratch.prefix_buf) replaces the xi_buf reuse.
-    # Snapshot the pre-elimination system: fp_gauss! mutates A_mat/rhs_vec
-    # in place, so this is the only point we can check "does the returned
-    # solution actually satisfy the equations we wrote" separately from
-    # "did fp_gauss! solve correctly" — if the residual check right after
-    # the solve fails, fp_gauss! itself is suspect; if it passes but
-    # phi_build_invariant (later, at the step_phi_k! call site) still
-    # fails, the bug is in how A_mat/rhs_vec were POPULATED above (wrong
-    # monomial series, wrong Mumford-row reduction, wrong RHS sign, a
-    # basis/column mismatch) — not in the solver.
-    A_snap   = copy(scratch.A_mat)
-    rhs_snap = copy(scratch.rhs_vec)
-
-    if PHI_TIMING_ENABLED[]
-        _t_gauss_start = time_ns()
-        st = phi_timing_stats()
-        st.ns_series += _t_gauss_start - _t_series_start
-        gauss_ok = fp_gauss!(scratch.A_mat, scratch.rhs_vec, scratch.prefix_buf, backend)
-        st.ns_gauss += time_ns() - _t_gauss_start
-        if !gauss_ok
-            st.n_fail_build += 1
-            return false
+    # ==========================================================
+    # ASSERTION CHECK: Did the solver actually solve A*x = b?
+    # ==========================================================
+    for r in 1:n_rows
+        row_sum = 0
+        for c in 1:n
+            # Montgomery dot product: A[r,c] * x[c]
+            term = fpmul_b(backend, A_bak[r, c], scratch.rhs_vec[c])
+            row_sum = fpadd_b(backend, row_sum, term)
         end
-    else
-        fp_gauss!(scratch.A_mat, scratch.rhs_vec, scratch.prefix_buf, backend) || return false
-    end
-
-    # solution is scratch.rhs_vec[1:n] (post-solve, backend form) — check
-    # A_snap * sol == rhs_snap, row by row, still in backend form (no
-    # from_repr needed yet since both sides are backend-consistent).
-    let
-        for row in 1:n
-            acc = 0
-            for col in 1:n
-                @inbounds acc = fpadd_b(backend, acc, fpmul_b(backend, A_snap[row, col], scratch.rhs_vec[col]))
-            end
-            @inbounds if acc != rhs_snap[row]
-                @printf("\n[FATAL gauss_solve_invariant tid=%d] row=%d: A*x=%d != rhs=%d  k=%d  anchors=%s  u0=%d u1=%d v0=%d v1=%d  n=%d\n",
-                        Threads.threadid(), row, from_repr(backend, acc), from_repr(backend, rhs_snap[row]),
-                        K, string(anchors), u0, u1, v0, v1, n)
-                Base.flush(stdout)
-                ccall(:exit, Cvoid, (Cint,), 1)
-            end
+        if row_sum != b_bak[r]
+            error("""
+            [ASSERTION FAILED] fp_gauss! produced an invalid solution!
+            Row $r mismatch in Montgomery space.
+            Expected: $(b_bak[r])
+            Got:      $row_sum
+            This means your custom Gaussian elimination or back-substitution is mathematically broken.
+            """)
         end
     end
 
-    # Solution is in scratch.rhs_vec[1:n], still in backend form — convert
-    # back to standard form here so coeffs_out matches build_phi_general!'s
-    # external contract (phi_residual_general! and everything downstream of
-    # it operates in standard form only; this is the exit side of the
-    # representation-boundary island described above).
-    @inbounds for i in 1:n
-        scratch.coeffs_out[i] = from_repr(backend, scratch.rhs_vec[i])
+    # Explicitly map the solved backend representation coefficients back to standard form
+    for col_idx in 1:n
+        @inbounds scratch.coeffs_out[col_idx] = from_repr(backend, scratch.rhs_vec[col_idx])
     end
+    
+    # The normalisation coefficient is exactly 1 in standard representation.
     @inbounds scratch.coeffs_out[nb] = 1
 
-    return true
-end
+    if PHI_TIMING_ENABLED[]
+        _t_end = time_ns()
+        phi_timing_stats().ns_gauss += (_t_end - _t_mumford_start)
+    end
 
+    return true
+
+end
 # ---------------------------------------------------------------------------
 #  phi_eval(coeffs, basis, px, py) — evaluate φ at (px, py).
 # ---------------------------------------------------------------------------
