@@ -1,12 +1,15 @@
 # =============================================================================
-#  trial3_sqrt.jl  --  √p-time DLP solver via birthday collision on LP1 keys
+#  trial3_sqrt.jl  --  O(p)-time DLP solver via birthday collision on LP1 keys
+#                       (equivalently O(√ell), since ell ~ p² for genus 2 — see
+#                       WHY THIS WORKS below. Do NOT read this as O(√p); that
+#                       was a theory bug in earlier revisions.)
 #
 #  ALGORITHM (no factor base, no linalg, no RREF, no DSU)
 #  ─────────────────────────────────────────────────────
 #  Pick a single frozen anchor P (a random affine F_p point).
 #
 #  Phase 2  (β = 0, precompute table):
-#    Repeat until √p entries stored:
+#    Repeat until O(p) entries stored (≈ isqrt(ell)):
 #      α  ← rand(1..ell-1)
 #      D  ← α·G                              (β=0 ⟹ pure G-multiple)
 #      build φ through P and D
@@ -28,9 +31,27 @@
 #
 #  WHY THIS WORKS
 #  ──────────────
-#  The space of LP1 keys arising from (P, α·G) has size ~p (one per α).
+#  The LP1 key is (a representation of) the residual degree-2 divisor R+S,
+#  which is a general point of J(C/F_p) — NOT a size-~p object indexed by a
+#  single coordinate. By Hasse-Weil for a genus-2 curve, #J(F_p) ~ p², so the
+#  space of distinct keys reachable has size ~p² (this was the theory bug in
+#  earlier revisions of this file, which assumed ~p "one per α" — wrong: α
+#  itself already ranges over ell ~ p² values, and there is no collapse to a
+#  p-sized key space along the way).
+#
+#  The number of D=α·G values actually visited is bounded by |⟨G⟩| = ell, and
+#  since ell is chosen as (close to) the largest prime factor of #J(F_p), we
+#  have ell = Θ(p²) for a good curve — so the *effective* key space size is
+#  min(ell, ~p²) = Θ(p²) either way. Birthday paradox needs O(√N) samples
+#  for a collision in a space of size N, so here that's O(√(p²)) = O(p)
+#  entries — NOT O(√p). This is exactly why table_cap below defaults to
+#  isqrt(ell)+1 rather than isqrt(p)+1: isqrt(ell) ~ isqrt(p²) ~ p already
+#  gives the right O(p) sizing. (If ell ever has a large cofactor and is NOT
+#  close to #J(F_p), isqrt(ell) degrades gracefully to the true bound
+#  min(ell, p²), since the walk can never visit more than ell distinct D's.)
+#
 #  Both phase-2 and phase-3 keys are drawn from this same pool (the R+S residual
-#  when the anchor is the same frozen P).  After √p entries in the table the
+#  when the anchor is the same frozen P).  After O(p) entries in the table the
 #  birthday paradox guarantees ~O(1) expected collisions per further step.
 #  On a match, the relation
 #       P + R + S - 2·∞  ≡  α·G           (phase-2 entry)
@@ -471,7 +492,7 @@ function sqrt_dlp_main(;
         n_targets  ::Int  = 1)
 
     println("="^70)
-    println("  trial3_sqrt.jl — √p-time DLP via birthday LP1 collision")
+    println("  trial3_sqrt.jl — O(p)-time DLP via birthday LP1 collision (≈ √ell)")
     println("="^70)
 
     # Bootstrap G and ell

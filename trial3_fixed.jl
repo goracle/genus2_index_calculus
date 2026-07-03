@@ -1379,7 +1379,7 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
         println("  y^2 = $curve_str  /F_$p,  ell=<auto>")
     end
     println("  threads = $(Threads.nthreads())  |  start: $(Dates.now())")
-    sqrt_mode       && println("  mode: SQRT (birthday LP1 collision — O(√p) time/memory)")
+    sqrt_mode       && println("  mode: SQRT (birthday LP1 collision — O(p) time/memory, ≈ √ell)")
     amortized       && println("  mode: AMORTIZED (α-only precompute + single β≠0 DLP)")
     !amortized && !sqrt_mode && println("  LA mode: chain-path O(nF) solver (always) + cycle-union (if --cycle-union)")
     !enable_lp1_aff && !sqrt_mode && println("  1-LP affine: DISABLED (--no-lp1-aff)")
@@ -1412,11 +1412,19 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
     @printf("  G.u = %s\n  G.v = %s\n", G.u, G.v)
     @printf("  ell = %d  (%.1f bits)\n", ell, log2(ell))
     @printf("  ell/p ratio = %.6f\n", ell / p)
+    # Sanity check for the sqrt-mode birthday bound: table_cap = isqrt(ell)+1
+    # is only O(p)-sized (as intended) if ell tracks the Hasse-Weil bound
+    # #J(F_p) ~ p² for this genus-2 curve. ell_over_p2 → 1 means ell is close
+    # to the full group order (good); a small value means ell has a large
+    # cofactor and the birthday table is smaller than a naive O(p) guess.
+    ell_over_p2 = ell / (BigInt(p)^2)
+    @printf("  ell/p² ratio = %.6f  (→1 means ell ~ #J(F_p), i.e. genuinely O(p²))\n",
+            Float64(ell_over_p2))
 
     @assert jac_isid(jac_mul_raw(G, ell)) "G does not have order ell"
     println("  Confirmed: ell*G = identity\n")
 
-    # ── √p birthday mode ─────────────────────────────────────────────────────
+    # ── O(p) birthday mode (≈ √ell, since ell ~ p² for genus 2) ──────────────
     # Phase 2 is T-independent, so the table is built once and amortized over
     # all n_targets.  Each target is solved independently in phase 3.
     if sqrt_mode
