@@ -37,6 +37,11 @@ include("trial3_config.jl")
 include("lp1_conj_lsm.jl")
 include("trial3_phi.jl")
 include("trial3_phi_general.jl")  # step_phi_k: K-anchor general phi construction
+include("trial3_anchor_sweep_diag.jl")  # SweepCollector / run_anchor_sweep_experiment — needs
+                                         # ThreadScratchpad et al from phi_general.jl above, and
+                                         # must itself precede trial3_phase2.jl below: phase2_worker's
+                                         # sweep_collector::Union{SweepCollector,Nothing} kwarg type
+                                         # is resolved at include-time, not call-time.
 include("phi_bias_diag.jl")
 include("lp1_conj_deep_diag.jl")
 include("conj_closure_dataset.jl")
@@ -477,7 +482,10 @@ function index_calculus_walk(G::Div2, T::Div2;
                              # spending budget chasing rare fat ones.
                              anchor_tuple_weight_decay::Float64 = 2.0,
                              enable_lp1_aff    ::Bool = true,
-                             post_conj_stride  ::Int  = 0)
+                             post_conj_stride  ::Int  = 0,
+                             phi_timing        ::Bool = false,
+                             sweep_diag        ::Int  = 0,
+                             sweep_diag_candidates::Int = 200)
 
     t_walk_start = time()
 
@@ -639,6 +647,23 @@ function index_calculus_walk(G::Div2, T::Div2;
     # falsely rejecting never-before-seen alphas).
     alpha_gate = phase2_alpha_gate_init!(Int(ell), step_cap)
 
+    # ── Optional diagnostics: PHI_TIMING and the anchor-sweep collector ──────
+    # Both must be armed here, before any worker spawns — see
+    # trial3_phi_general.jl's PhiTimingStats and trial3_anchor_sweep_diag.jl's
+    # SweepCollector docstrings for why (per-thread accumulator sizing, and
+    # every thread sharing one collector instance, respectively).
+    if phi_timing
+        init_phi_timing!(n_workers)
+        PHI_TIMING_ENABLED[] = true
+        verbose && (@printf("  [phi-timing] enabled — report prints every ~30s from tid==2\n"); flush(stdout))
+    end
+    sweep_collector = sweep_diag > 0 ? SweepCollector(sweep_diag, anchor_tuple_size) : nothing
+    if sweep_collector !== nothing && verbose
+        @printf("  [sweep-diag] collecting %d base tuples at k=%d, then sweeping slot=%d over %d candidates\n",
+                sweep_diag, anchor_tuple_size, anchor_tuple_size, sweep_diag_candidates)
+        flush(stdout)
+    end
+
     t_phase2_start = time()
     @sync for tid in 1:n_workers
         Threads.@spawn begin
@@ -660,10 +685,35 @@ function index_calculus_walk(G::Div2, T::Div2;
                 anchor_tuple_size=anchor_tuple_size,
                 anchor_tuple_weight_decay=anchor_tuple_weight_decay,
                 alpha_gate=alpha_gate,
-                conj_dataset=conj_dataset)
+                conj_dataset=conj_dataset,
+                sweep_collector=sweep_collector)
         end
     end
     t_phase2_done = time() - t_phase2_start
+
+    # ── Anchor-sweep: run once, after all threads are done filling the
+    #    collector, using the same pt2idx/fb already in scope here. ─────────
+    if sweep_collector !== nothing
+        n_captured = length(sweep_collector.tuples)
+        if n_captured == 0
+            @printf("  [sweep-diag] captured 0 base tuples (walk never reached k=%d — is anchor_tuple_size actually being hit? try a smaller --anchor-tuple-weight-decay) — skipping sweep\n",
+                    anchor_tuple_size)
+            flush(stdout)
+        else
+            @printf("\n── Anchor-sweep independence experiment ────────────────────────────\n")
+            @printf("  captured %d/%d base tuples at k=%d\n", n_captured, sweep_diag, anchor_tuple_size)
+            flush(stdout)
+            base_tuples = anchor_sweep_base_tuples(sweep_collector)
+            # ThreadScratchpad{anchor_tuple_size} — anchor_tuple_size is a runtime
+            # Int here (unlike scratch_by_k's Val-unrolled construction above),
+            # so this is a dynamically-dispatched type instantiation. That's fine:
+            # it happens once, off the hot path, after the walk is already done.
+            scratch_sweep = init_scratch_caches!(ThreadScratchpad{anchor_tuple_size}(), p)
+            n_cand = min(sweep_diag_candidates, length(fb))
+            candidates = shuffle(fb)[1:n_cand]
+            run_anchor_sweep_experiment(scratch_sweep, base_tuples, anchor_tuple_size, candidates, pt2idx)
+        end
+    end
 
     # Close the conj-closure dataset writer now that all walker threads are done.
     if conj_dataset !== nothing
@@ -1093,6 +1143,25 @@ function parse_trial3_cli(args::Vector{String})
     # D^(anchor_tuple_size-1) times as frequent as k=anchor_tuple_size.
     # D=1.0 recovers the old flat round-robin (equal share for every k).
     anchor_tuple_weight_decay = 2.0
+    #   --phi-timing         enable PhiTimingStats (series/gauss/residual split
+    #                        for step_phi_k!, see trial3_phi_general.jl). Off by
+    #                        default (single Bool check when disabled). Printed
+    #                        every ~30s from tid==2 as a [PHI-TIMING t=Xs] line
+    #                        alongside the normal worker progress report.
+    #   --sweep-diag=N       collect N real (anchors,u0,u1,v0,v1) base tuples
+    #                        live from the walk (captured the moment k_cur ==
+    #                        anchor_tuple_size, across all threads racing to
+    #                        fill one shared SweepCollector) and, once phase 2
+    #                        finishes, run the anchor-neighborhood independence
+    #                        sweep (trial3_anchor_sweep_diag.jl) over them.
+    #                        0 = disabled (default). Requires anchor_tuple_size
+    #                        >= 2 (K=1 never reaches the general step_phi_k!
+    #                        path this hooks into).
+    #   --sweep-diag-candidates=M  candidate pool size per base tuple for
+    #                        --sweep-diag (random sample of fb). Default 200.
+    phi_timing              = false
+    sweep_diag               = 0    # --sweep-diag=N: 0 = disabled
+    sweep_diag_candidates    = 200
 
     for arg in args
         if arg == "--no-lp2"
@@ -1136,6 +1205,14 @@ function parse_trial3_cli(args::Vector{String})
         elseif startswith(arg, "--anchor-tuple-weight-decay=")
             anchor_tuple_weight_decay = parse(Float64, split(arg, "=", limit=2)[2])
             anchor_tuple_weight_decay < 1.0 && error("--anchor-tuple-weight-decay must be >= 1.0, got $anchor_tuple_weight_decay")
+        elseif arg == "--phi-timing"
+            phi_timing = true
+        elseif startswith(arg, "--sweep-diag=")
+            sweep_diag = parse(Int, split(arg, "=", limit=2)[2])
+            sweep_diag < 0 && error("--sweep-diag must be >= 0, got $sweep_diag")
+        elseif startswith(arg, "--sweep-diag-candidates=")
+            sweep_diag_candidates = parse(Int, split(arg, "=", limit=2)[2])
+            sweep_diag_candidates < 1 && error("--sweep-diag-candidates must be >= 1, got $sweep_diag_candidates")
         end
     end
     # anchor_tuple_size is now the round-robin CEILING: the walk cycles
@@ -1145,6 +1222,7 @@ function parse_trial3_cli(args::Vector{String})
     # K_MAX is the hard compile-time bound on cur_anchors and on every
     # ThreadScratchpad{k} the walk can allocate.
     @assert anchor_tuple_size <= K_MAX "FATAL: --anchor-tuple-size=$anchor_tuple_size exceeds K_MAX=$K_MAX (trial3_config.jl). anchor_tuple_size is the ceiling for round-robin tuple lengths 1..anchor_tuple_size and cannot exceed the compile-time K_MAX. Lower --anchor-tuple-size or raise K_MAX. Refusing to proceed."
+    sweep_diag > 0 && anchor_tuple_size < 2 && error("--sweep-diag=$sweep_diag requires --anchor-tuple-size >= 2 (K=1 never reaches step_phi_k!, which is what the collector hooks into). Got anchor_tuple_size=$anchor_tuple_size.")
     return (fb_size=fb_size, enable_lp2=enable_lp2, enable_lp2_conj=enable_lp2_conj,
             max_lp2_nodes=max_lp2_nodes, max_lp2_conj_nodes=max_lp2_conj_nodes,
             amortized=amortized, use_cycle_union=use_cycle_union,
@@ -1153,7 +1231,9 @@ function parse_trial3_cli(args::Vector{String})
             rel_multiplier=rel_multiplier, post_conj_stride=post_conj_stride,
             conj_dataset_path=(conj_dataset_path == "" ? nothing : conj_dataset_path),
             random_fb=random_fb, anchor_tuple_size=anchor_tuple_size,
-            anchor_tuple_weight_decay=anchor_tuple_weight_decay)
+            anchor_tuple_weight_decay=anchor_tuple_weight_decay,
+            phi_timing=phi_timing, sweep_diag=sweep_diag,
+            sweep_diag_candidates=sweep_diag_candidates)
 end
 
 # ---------------------------------------------------------------------------
@@ -1281,7 +1361,10 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
                  conj_dataset_path  ::Union{Nothing,String} = "conj_closures.bin",
                  random_fb          ::Bool  = false,
                  anchor_tuple_size  ::Int   = 1,
-                 anchor_tuple_weight_decay::Float64 = 2.0)
+                 anchor_tuple_weight_decay::Float64 = 2.0,
+                 phi_timing         ::Bool  = false,
+                 sweep_diag         ::Int   = 0,
+                 sweep_diag_candidates::Int = 200)
     t_main_start = time()
     println("="^70)
     println("  trial3: Markov-walk phi-relation index calculus")
@@ -1482,6 +1565,22 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
         # alpha events here. See phase2_alpha_gate_init! in trial3_phase2.jl.
         alpha_gate_pre = phase2_alpha_gate_init!(Int(ell), step_cap_pre)
 
+        # ── Optional diagnostics (amortized branch's own spawn site — see the
+        #    identical block in index_calculus_walk; --amortized never calls
+        #    that function, so this had to be wired separately here too). ────
+        if phi_timing
+            init_phi_timing!(n_workers_pre)
+            PHI_TIMING_ENABLED[] = true
+            @printf("  [phi-timing] enabled — report prints every ~30s from tid==2\n")
+            flush(stdout)
+        end
+        sweep_collector_pre = sweep_diag > 0 ? SweepCollector(sweep_diag, anchor_tuple_size) : nothing
+        if sweep_collector_pre !== nothing
+            @printf("  [sweep-diag] collecting %d base tuples at k=%d, then sweeping slot=%d over %d candidates\n",
+                    sweep_diag, anchor_tuple_size, anchor_tuple_size, sweep_diag_candidates)
+            flush(stdout)
+        end
+
         @printf("  [MEM] before phase2 walk:  RSS=%.1f MB  GC-live=%.1f MB\n",
                 Sys.maxrss()/1024^2, Base.gc_live_bytes()/1024^2)
         flush(stdout)
@@ -1508,7 +1607,26 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
                     anchor_tuple_size=anchor_tuple_size,
                     anchor_tuple_weight_decay=anchor_tuple_weight_decay,
                     alpha_gate=alpha_gate_pre,
-                    conj_dataset=conj_dataset)
+                    conj_dataset=conj_dataset,
+                    sweep_collector=sweep_collector_pre)
+            end
+        end
+
+        if sweep_collector_pre !== nothing
+            n_captured_pre = length(sweep_collector_pre.tuples)
+            if n_captured_pre == 0
+                @printf("  [sweep-diag] captured 0 base tuples (walk never reached k=%d) — skipping sweep\n",
+                        anchor_tuple_size)
+                flush(stdout)
+            else
+                @printf("\n── Anchor-sweep independence experiment (amortized β=0 walk) ───────\n")
+                @printf("  captured %d/%d base tuples at k=%d\n", n_captured_pre, sweep_diag, anchor_tuple_size)
+                flush(stdout)
+                base_tuples_pre = anchor_sweep_base_tuples(sweep_collector_pre)
+                scratch_sweep_pre = init_scratch_caches!(ThreadScratchpad{anchor_tuple_size}(), p)
+                n_cand_pre = min(sweep_diag_candidates, length(fb_pre))
+                candidates_pre = shuffle(fb_pre)[1:n_cand_pre]
+                run_anchor_sweep_experiment(scratch_sweep_pre, base_tuples_pre, anchor_tuple_size, candidates_pre, pt2idx_pre)
             end
         end
 
@@ -1671,7 +1789,10 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
                                   anchor_tuple_size=anchor_tuple_size,
                                   anchor_tuple_weight_decay=anchor_tuple_weight_decay,
                                   enable_lp1_aff=enable_lp1_aff,
-                                  post_conj_stride=post_conj_stride)
+                                  post_conj_stride=post_conj_stride,
+                                  phi_timing=phi_timing,
+                                  sweep_diag=sweep_diag,
+                                  sweep_diag_candidates=sweep_diag_candidates)
     t_walk_done = time() - t_walk
     k_rec = wres === nothing ? nothing : wres.k
 
@@ -1701,7 +1822,9 @@ function main2_from_argv()
           conj_dataset_path=opts.conj_dataset_path,
           random_fb=opts.random_fb,
           anchor_tuple_size=opts.anchor_tuple_size,
-          anchor_tuple_weight_decay=opts.anchor_tuple_weight_decay)
+          anchor_tuple_weight_decay=opts.anchor_tuple_weight_decay,
+          phi_timing=opts.phi_timing, sweep_diag=opts.sweep_diag,
+          sweep_diag_candidates=opts.sweep_diag_candidates)
 end
 
 if abspath(PROGRAM_FILE) == @__FILE__

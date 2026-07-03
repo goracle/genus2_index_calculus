@@ -56,6 +56,74 @@ using Printf
 # all already defined) — same convention as conj_closure_dataset.jl.
 
 # ---------------------------------------------------------------------------
+#  SweepCollector — thread-shared sink for real (anchors,u0,u1,v0,v1) base
+#  tuples, pulled live out of phase2_worker's main loop (see the capture
+#  call site in trial3_phase2.jl right after step_phi_dispatch! succeeds).
+#
+#  Deliberately NOT parameterized on K: phase2_worker's k_cur is a runtime
+#  Int (round-robin over 1..anchor_tuple_size), so the capture call site
+#  can't know K at compile time either. Anchors are stashed as a plain
+#  Vector{NTuple{2,Int}} of length k_cur; run_anchor_sweep_experiment (which
+#  DOES need a static K) converts back via ntuple(...,Val(K)) once, after
+#  collection is done — see anchor_sweep_base_tuples below.
+#
+#  `k_fixed` pins collection to a single tuple length (the caller should set
+#  it to anchor_tuple_size, i.e. the round-robin ceiling) so every entry in
+#  `tuples` shares one K and can feed run_anchor_sweep_experiment directly
+#  without a mixed-K filter step. Steps at other k_cur values are ignored,
+#  not queued — this is deliberate, not a bug, per the docstring above on
+#  run_anchor_sweep_experiment's base_tuples type constraint.
+# ---------------------------------------------------------------------------
+mutable struct SweepCollector
+    k_fixed  ::Int
+    target_n ::Int
+    lock     ::ReentrantLock
+    tuples   ::Vector{Tuple{Vector{NTuple{2,Int}},Int,Int,Int,Int}}
+end
+
+SweepCollector(target_n::Int, k_fixed::Int) =
+    SweepCollector(k_fixed, target_n, ReentrantLock(),
+                   Vector{Tuple{Vector{NTuple{2,Int}},Int,Int,Int,Int}}())
+
+# try_capture! — called from every thread's hot loop. Cheap no-lock bailout
+# once full or at the wrong k, so steady-state cost after collection
+# finishes is a single field read, same spirit as PHI_TIMING_ENABLED[].
+@inline function try_capture!(c::SweepCollector, cur_anchors, k_cur::Int,
+                               u0::Int, u1::Int, v0::Int, v1::Int)
+    k_cur != c.k_fixed && return nothing
+    length(c.tuples) >= c.target_n && return nothing
+    lock(c.lock) do
+        length(c.tuples) >= c.target_n && return nothing
+        anc = Vector{NTuple{2,Int}}(undef, k_cur)
+        @inbounds for i in 1:k_cur
+            anc[i] = cur_anchors[i]
+        end
+        push!(c.tuples, (anc, u0, u1, v0, v1))
+        return nothing
+    end
+    return nothing
+end
+
+# anchor_sweep_base_tuples — function barrier converting a filled collector's
+# Vector{NTuple{2,Int}} entries into the NTuple{K,...}-typed base_tuples
+# vector run_anchor_sweep_experiment requires, with K resolved once via
+# Val(c.k_fixed) instead of per-entry dynamic dispatch.
+function anchor_sweep_base_tuples(c::SweepCollector)
+    K = c.k_fixed
+    return _anchor_sweep_base_tuples_barrier(c.tuples, Val(K))
+end
+
+function _anchor_sweep_base_tuples_barrier(
+    tuples::Vector{Tuple{Vector{NTuple{2,Int}},Int,Int,Int,Int}}, ::Val{K}
+) where K
+    out = Vector{Tuple{NTuple{K,NTuple{2,Int}},Int,Int,Int,Int}}(undef, length(tuples))
+    @inbounds for (i, (anc, u0, u1, v0, v1)) in enumerate(tuples)
+        out[i] = (ntuple(j -> anc[j], Val(K)), u0, u1, v0, v1)
+    end
+    return out
+end
+
+# ---------------------------------------------------------------------------
 #  SweepOutcome — one record per candidate anchor replacement.
 # ---------------------------------------------------------------------------
 struct SweepOutcome

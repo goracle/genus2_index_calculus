@@ -1254,7 +1254,16 @@ function phase2_worker(G               ::Div2,
                        # call site fails loudly instead of silently reusing a
                        # stale global; a real run must always pass one in.
                        alpha_gate        ::Union{AlphaGate,Nothing} = nothing,
-                       anchor_tuple_weight_decay::Float64 = 2.0)
+                       anchor_tuple_weight_decay::Float64 = 2.0,
+                       # Anchor-sweep base-tuple collector (see
+                       # trial3_anchor_sweep_diag.jl). nothing = disabled (default,
+                       # zero cost: the capture call site below is a single nothing
+                       # check). When set, every thread races to fill it with real
+                       # (cur_anchors, u0,u1,v0,v1) states pulled from its own live
+                       # walk the moment k_cur == anchor_tuple_size — no synthetic
+                       # base tuples, exactly what the diagnostic's docstring asks
+                       # for. Same instance must be shared across all threads.
+                       sweep_collector   ::Union{SweepCollector,Nothing} = nothing)
 
     nF_cur   = length(fb)
     N_STEPS  = length(step_D)
@@ -1928,6 +1937,15 @@ function phase2_worker(G               ::Div2,
             # scratch_by_k (see step_phi_dispatch! in trial3_phi_general.jl).
             step_success, scratch_k = step_phi_dispatch!(scratch_by_k, k_cur, cur_anchors, u0, u1, v0, v1)
             !step_success && continue
+
+            # Anchor-sweep capture: grab this real, live-walk (anchors,u0,u1,v0,v1)
+            # state as a base tuple for the independence experiment, iff a
+            # collector is armed AND this step's tuple length matches the
+            # collector's fixed K (base_tuples must share one K — see
+            # trial3_anchor_sweep_diag.jl's run_anchor_sweep_experiment). No-op
+            # (single field check, no lock) once disabled or already full.
+            sweep_collector !== nothing &&
+                try_capture!(sweep_collector, cur_anchors, k_cur, u0, u1, v0, v1)
 
             # Extract references directly from the pre-allocated thread-local
             # scratch buffers of the ACTIVE (k_cur-sized) scratch instead of
