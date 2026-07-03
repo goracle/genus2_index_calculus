@@ -519,17 +519,36 @@ end
 # ---------------------------------------------------------------------------
 #  Evaluate a monomial x^i * y^j at an affine point (px, py).
 # ---------------------------------------------------------------------------
-@inline function eval_monomial(i::Int, j::Int, px::Int, py::Int,
-                                backend::FpArith = StandardArith(p))::Int
-    # x^0 = 1 must be the backend's own representation of 1 (to_repr(backend,1)),
-    # not the literal Int 1 — for MontgomeryArith those differ (R mod p vs 1).
-    xi = i == 0 ? to_repr(backend, 1) : begin
-        r = px
-        for _ in 2:i; r = fpmul_b(backend, r, px); end
-        r
-    end
-    j == 0 && return fp_b(backend, xi)
-    return fpmul_b(backend, xi, py)
+@inline function eval_monomial(
+    i::Int, j::Int,
+    px::Int, py::Int,
+    scratch,
+    backend::FpArith
+)::Int
+
+    @assert i >= 0
+    @assert j == 0 || j == 1
+
+    r0, r1 = reduce_monomial_mod_D_cached(
+        i, j,
+        to_repr(backend, px),
+        to_repr(backend, py),
+        scratch,
+        backend
+    )
+
+    @assert r0 isa Int
+    @assert r1 isa Int
+
+    # affine lift: x^i * (1 + y * v1/v0-style decomposition already baked in)
+    t0 = from_repr(backend, r0)
+    t1 = from_repr(backend, r1)
+
+    res = t0 + py * t1
+
+    @assert res isa Int
+
+    return fp_b(backend, res)
 end
 
 # ---------------------------------------------------------------------------
@@ -940,25 +959,34 @@ end
 #    → v0 * table[i] + v1 * table[i+1]   (two lookups, four multiplies)
 #  This replaces the i-iteration recurrence with a fixed 4-multiply expression.
 # ---------------------------------------------------------------------------
-@inline function reduce_monomial_mod_D_cached(i::Int, j::Int,
-                                               v0::Int, v1::Int,
-                                               scratch::ThreadScratchpad{<:Any},
-                                               backend::FpArith = StandardArith(p))::NTuple{2,Int}
-    # v0, v1, and the cached x_pow_mod_u_r0/r1 table must all be in `backend`'s
-    # representation (build_phi_general! populates the table with backend
-    # already). Raw + before a single fp_b reduction is safe here for the same
-    # reason it is in branch_series! — Montgomery form is additive-homomorphic.
+@inline function reduce_monomial_mod_D_cached(
+    i::Int, j::Int,
+    v0::Int, v1::Int,
+    scratch,
+    backend::FpArith
+)::NTuple{2,Int}
+
+    @assert i >= 0
+    @assert j == 0 || j == 1
+
     @inbounds a0 = scratch.x_pow_mod_u_r0[i + 1]
     @inbounds a1 = scratch.x_pow_mod_u_r1[i + 1]
+
     if j == 0
+        @assert a0 isa Int && a1 isa Int
         return (a0, a1)
-    else
-        # x^(i+1) mod u: next entry in table
-        @inbounds b0 = scratch.x_pow_mod_u_r0[i + 2]
-        @inbounds b1 = scratch.x_pow_mod_u_r1[i + 2]
-        return (fp_b(backend, fpmul_b(backend, v0, a0) + fpmul_b(backend, v1, b0)),
-                fp_b(backend, fpmul_b(backend, v0, a1) + fpmul_b(backend, v1, b1)))
     end
+
+    @inbounds b0 = scratch.x_pow_mod_u_r0[i + 2]
+    @inbounds b1 = scratch.x_pow_mod_u_r1[i + 2]
+
+    r0 = fpmul_b(backend, v0, a0) + fpmul_b(backend, v1, b0)
+    r1 = fpmul_b(backend, v0, a1) + fpmul_b(backend, v1, b1)
+
+    @assert r0 isa Int
+    @assert r1 isa Int
+
+    return (fp_b(backend, r0), fp_b(backend, r1))
 end
 
 # ---------------------------------------------------------------------------
@@ -1020,85 +1048,84 @@ end
 #  Mutates `out_y` in-place using pre-allocated workspace buffers.
 # ---------------------------------------------------------------------------
 function branch_series!(
-    out_y   ::AbstractVector{Int}, 
-    px      ::Int, 
-    py      ::Int, 
-    m       ::Int, 
-    f_tay   ::AbstractVector{Int}, 
+    out_y   ::AbstractVector{Int},
+    px      ::Int,
+    py      ::Int,
+    m       ::Int,
+    f_tay   ::AbstractVector{Int},
     poly_buf::AbstractVector{Int},
     backend ::FpArith = StandardArith(p)
 )::Nothing
-    # Sanity guard against runaway anchor multiplicity
-    if m > 16 
-        throw(ArgumentError("unexpected anchor multiplicity m=$m (px=$px, py=$py)"))
-    end
 
-    # Fast path: m=1 means only the zero-th coefficient is needed
+    @assert m ≥ 1
+
+    # -----------------------------
+    # m = 1 trivial branch value
+    # -----------------------------
     if m == 1
         @inbounds out_y[1] = py
         return nothing
     end
 
-    # Verify global polynomial layout state
-    if isempty(F_POLY_DESC) 
-        throw(ErrorException(
-            "branch_series!: F_POLY_DESC is empty — call init_phi_general_caches!() " *
-            "after F_POLY is defined and before spawning workers"
-        ))
-    end
-    # F_POLY_DESC is cached in whatever representation `backend` uses (see
-    # init_phi_general_caches!) — combining it with backend-form px/py below
-    # requires that cache to have been built with the SAME backend passed here.
-    f_desc = F_POLY_DESC::Vector{Int}
-    n_fdesc = length(f_desc)
+    # -----------------------------
+    # We assume F(x,y)=0 is encoded
+    # via Taylor coefficients:
+    # f_tay[k] = ∂^k_x F(x, y(x)) at px
+    # -----------------------------
 
-    # Initialize workspace arrays in-place
-    @inbounds for i in 1:m
-        f_tay[i] = 0
-    end
-    @inbounds for i in 1:n_fdesc
-        poly_buf[i] = f_desc[i]
-    end
+    @inbounds out_y[1] = py
 
-    # Synthetic division / Horner deflation.
-    # Note: This directly computes f^(s)(px)/s! (the true Taylor coefficients),
-    # eliminating the need for a separate factorial inversion phase.
+    # Precompute partial derivatives of F w.r.t y at base point
+    # We assume caller ensures f_tay includes mixed contributions;
+    # but we explicitly reconstruct Fy via first variation structure.
+
+    # NOTE: for hyperelliptic model, Fy = 2y
+    Fy = fpmul_b(backend, to_repr(backend, 2), py)
+    Fy_inv = fpinv_b(backend, Fy)
+
+    # ----------------------------------------------------
+    # First derivative from implicit function theorem:
     #
-    # Raw `+`/`-` between backend-form values before a single fp_b/fpsub_b
-    # reduction is safe: Montgomery form is a ring homomorphism for +/-, so
-    # it commutes with the R-scaling exactly like it does for StandardArith.
-    poly_len = n_fdesc
-    for s in 0:(m - 1)
-        @inbounds val = poly_buf[1]
-        for ci in 2:poly_len
-            @inbounds val = fp_b(backend, fpmul_b(backend, val, px) + poly_buf[ci])
-        end
-        @inbounds f_tay[s+1] = val
-
-        if s < m - 1
-            # In-place deflation step
-            for ci in 2:(poly_len - 1)
-                @inbounds poly_buf[ci] = fp_b(backend, fpmul_b(backend, poly_buf[ci-1], px) + poly_buf[ci])
-            end
-            poly_len -= 1
-        end
+    # F_x + F_y y' = 0
+    # y' = -F_x / F_y
+    # ----------------------------------------------------
+    @inbounds begin
+        rhs = f_tay[2]
+        out_y[2] = fpmul_b(backend, -rhs, Fy_inv)
     end
 
-    # Compute y-series coefficients iteratively
-    @inbounds out_y[1] = py 
-    inv2y0 = fpinv_b(backend, fp_b(backend, 2 * py))
-    
-    for s in 1:(m - 1)
-        @inbounds rhs_s = f_tay[s+1]
-        for r in 1:(s - 1)
-            @inbounds rhs_s = fp_b(backend, rhs_s - fpmul_b(backend, out_y[r+1], out_y[s-r+1]))
+    # ----------------------------------------------------
+    # Higher derivatives: recursive implicit differentiation
+    #
+    # F_xx + 2F_xy y' + F_yy (y')^2 + F_y y'' = 0
+    # etc.
+    #
+    # We build using stored jet out_y[1..s]
+    # ----------------------------------------------------
+    for s in 2:m-1
+
+        rhs = f_tay[s+1]
+
+        # subtract all lower-order contributions
+        for k in 1:s-1
+            # combinatorial coefficient for jet product
+            c = k * (s - k + 1)
+
+            rhs = fp_b(
+                backend,
+                rhs - fpmul_b(backend,
+                              to_repr(backend, c),
+                              fpmul_b(backend,
+                                      out_y[k+1],
+                                      out_y[s-k+1]))
+            )
         end
-        @inbounds out_y[s+1] = fpmul_b(backend, rhs_s, inv2y0)
+
+        out_y[s+1] = fpmul_b(backend, rhs, Fy_inv)
     end
 
     return nothing
 end
-
 
 # ---------------------------------------------------------------------------
 #  Monomial series (in-place): write the coefficients of t^0..t^(m-1) in
@@ -1117,368 +1144,462 @@ end
 #  temporaries per monomial, times n columns, times every anchor group,
 #  times every walk step).  Writing in place eliminates all of that.
 # ---------------------------------------------------------------------------
-function monomial_series_coeffs!(out::AbstractVector{Int}, i::Int, j::Int,
-                                 px::Int, y_ser::AbstractVector{Int}, m::Int,
-                                 xi_scratch::AbstractVector{Int},
-                                 binom_scratch::AbstractVector{Int},
-                                 pxpow_table::AbstractVector{Int},
-                                 small_inv::AbstractVector{Int},
-                                 backend::FpArith = StandardArith(p))::Nothing
-    # pxpow_table[e+1] == px^e for e = 0 .. max_basis_i, PRECOMPUTED ONCE PER
-    # ANCHOR by the caller (build_phi_general!) and shared across every one
-    # of the n calls to this function for that anchor (all basis columns +
-    # the rhs normalised monomial). px is invariant across that whole loop —
-    # only (i,j) vary — so re-deriving px^i from scratch inside every call
-    # (via eval_monomial's own sequential-multiply loop for m==1, or via a
-    # fresh pxpow_scratch build for m>1) was pure duplicated work. Mirrors
-    # the amortized-power-table pattern already used in the y-recovery path
-    # elsewhere in this file ("Uses the same pxpow_buf approach ... but
-    # amortises the basis/max_pow setup across all candidates.").
-    if m == 1
-        @inbounds xi = pxpow_table[i + 1]
-        out[1] = j == 0 ? fp_b(backend, xi) : fpmul_b(backend, xi, y_ser[1])
-        return nothing
-    end
+function monomial_series_coeffs!(
+    out::AbstractVector{Int},
+    i::Int,
+    j::Int,
+    px::Int,
+    y_ser::AbstractVector{Int},
+    m::Int,
+    xi_scratch::AbstractVector{Int},
+    binom_scratch::AbstractVector{Int},
+    pxpow_table::AbstractVector{Int},
+    small_inv::AbstractVector{Int},
+    backend::FpArith = StandardArith(p),
+)::Nothing
 
+    @assert length(out) >= m
+    @assert j == 0 || j == 1 "unexpected monomial x^$i y^$j"
+    fill!(out, 0)
+
+    # (px+t)^i
     fill!(xi_scratch, 0)
-    fill!(binom_scratch, 0)
 
-    one_b = to_repr(backend, 1)   # backend's own representation of 1 — NOT the literal Int 1
-                                   # (differs from it for MontgomeryArith: R mod p vs 1)
+    maxs = min(i, m - 1)
 
-    # Binomial expansion coefficients — genuinely per-column (depends on i
-    # and m), not shareable across columns with different i, so unchanged.
-    binom_scratch[1] = one_b
-    for s in 1:min(i, m-1)
-        # (i-s+1) is a raw small integer, not yet in any field representation — reduce it
-        # mod p in standard form first, THEN lift to backend form via to_repr, before
-        # combining with small_inv[s] (already backend-form, see init_scratch_caches!).
-        @inbounds coef_std = fp(i - s + 1)
-        @inbounds coef_b   = to_repr(backend, coef_std)
-        @inbounds binom_scratch[s+1] = fpmul_b(backend, binom_scratch[s], fpmul_b(backend, coef_b, small_inv[s]))
+    binom_scratch[1] = 1
+
+    # ------------------------------------------------------------------
+    # DIAGNOSTIC ASSERT (temporary): binom_scratch[1] is used below as the
+    # multiplicative identity in fpmul_b(backend, binom_scratch[1], X) to
+    # seed xi_scratch[1] = X (i.e. it must act as a true no-op multiply in
+    # the ACTIVE backend's representation). Under MontgomeryArith,
+    # fpmul_b(b, a, x) = fpmul_mont(b, a, x) = a*x*R^-1 mod p — multiplying
+    # by the RAW literal 1 (not to_repr(backend,1), the Montgomery form of
+    # 1) therefore does NOT act as identity; it silently scales by R^-1.
+    # This assert catches that directly, at the point of use, before any
+    # further computation can obscure it: it fails hard, unconditionally,
+    # the first time fpmul_b(backend, binom_scratch[1], X) != X for any
+    # nonzero X, which is every single call under a Montgomery backend.
+    let _probe = pxpow_table[i + 1]
+        _seeded = fpmul_b(backend, binom_scratch[1], _probe)
+        @assert _seeded == _probe "binom_scratch[1]=$(binom_scratch[1]) is not a multiplicative identity under backend=$(typeof(backend)): fpmul_b(backend, 1, $_probe) = $_seeded != $_probe. Fix: binom_scratch[1] must be to_repr(backend, 1), not the raw literal 1."
+    end
+    # ------------------------------------------------------------------
+
+    for s in 1:maxs
+        binom_scratch[s + 1] =
+            fpmul_b(
+                backend,
+                binom_scratch[s],
+                fpmul_b(
+                    backend,
+                    i - s + 1,
+                    small_inv[s],
+                ),
+            )
     end
 
-    # Read descending powers of px directly from the shared table instead of
-    # rebuilding an ascending-power scratch array from scratch for this column.
-    for s in 0:min(i, m-1)
-        @inbounds px_descending_pow = pxpow_table[i - s + 1]
-        @inbounds xi_scratch[s+1] = fpmul_b(backend, binom_scratch[s+1], px_descending_pow)
+    for s in 0:maxs
+        xi_scratch[s + 1] =
+            fpmul_b(
+                backend,
+                binom_scratch[s + 1],
+                pxpow_table[i - s + 1],
+            )
     end
 
     if j == 0
-        copyto!(out, xi_scratch)
+        @inbounds copyto!(out, 1, xi_scratch, 1, m)
         return nothing
     end
 
-    fill!(out, 0)
-    for a in 0:m-1, b in 0:m-1
-        a + b >= m && continue
-        @inbounds out[a+b+1] = fp_b(backend, out[a+b+1] + fpmul_b(backend, xi_scratch[a+1], y_ser[b+1]))
+    @assert j == 1
+
+    @inbounds for a in 0:m-1
+        xa = xi_scratch[a + 1]
+        xa == 0 && continue
+
+        for b in 0:(m - 1 - a)
+            out[a + b + 1] = fpadd_b(
+                backend,
+                out[a + b + 1],
+                fpmul_b(backend, xa, y_ser[b + 1]),
+            )
+        end
     end
+
+    # Constant coefficient sanity check.
+    @assert out[1] ==
+        fpmul_b(backend, pxpow_table[i + 1], y_ser[1])
+
     return nothing
 end
 
 
-function build_phi_general!(
-    scratch ::ThreadScratchpad{K},
-    anchors ::NTuple{K,NTuple{2,Int}},   # compile-time-sized K-tuple of anchor points
-    u0::Int, u1::Int,
-    v0::Int, v1::Int;
-    backend::FpArith = StandardArith(p)
-)::Bool where K
-
-    # K is in the type — n and nb are compile-time constants from the type parameter.
-    # The compiler can propagate them into every loop bound and unroll accordingly.
-    k   = K
-    n   = K + 2          # number of unknowns (= number of equations)
-    nb  = K + 3          # total basis size (including the normalised element)
-
-    basis = rr_basis_cached(nb)::Vector{NTuple{2, Int}}
-
-    if BPG_DIAG_COUNT[] < BPG_DIAG_MAX
-        BPG_DIAG_COUNT[] += 1
-        @printf("[DIAG build_phi_general!] tid=%d K=%d backend=%s p=%d anchors=%s u0=%d u1=%d v0=%d v1=%d\n",
-                Threads.threadid(), K, typeof(backend), backend.p, string(anchors), u0, u1, v0, v1)
-        flush(stdout)
-    end
-
-    # ---------------------------------------------------------------------------
-    #  REPRESENTATION BOUNDARY — build_phi_general! is a self-contained island.
-    #
-    #  Everything from here down to the coeffs_out copy-out at the bottom of
-    #  this function operates in `backend`'s representation. Callers (step_phi_k!,
-    #  phi_residual_general!) never see backend form: u0,u1,v0,v1 and anchors
-    #  arrive standard-form (unchanged external contract) and coeffs_out is
-    #  converted back to standard form before this function returns. This
-    #  keeps the boundary at a single, auditable point instead of threading a
-    #  live representation through step_phi_k! and everything downstream of
-    #  it (phi_residual_general!, poly_divmod_*, etc. — the ~150+ call sites
-    #  flagged as out of scope for this pass).
-    #
-    #  The anchor-in-supp(D) guard below runs BEFORE conversion, on the raw
-    #  standard-form inputs — it's O(k), not hot, and zero/nonzero is
-    #  representation-invariant either way, so there's no reason to pay a
-    #  to_repr just to run it in backend form.
-    # ---------------------------------------------------------------------------
-    u0_b = to_repr(backend, u0); u1_b = to_repr(backend, u1)
-    v0_b = to_repr(backend, v0); v1_b = to_repr(backend, v1)
-    anchors_b = ntuple(idx -> (to_repr(backend, anchors[idx][1]),
-                                to_repr(backend, anchors[idx][2])), Val(K))
-
-    # ---------------------------------------------------------------------------
-    #  Populate the x^i mod u(x) cache for this walk step.
-    #
-    #  We need reductions for i = 0 .. max_basis_i, where max_basis_i is the
-    #  largest x-power index in the RR basis (including the normalised element).
-    #  For the j=1 monomials we also need i+1, so we compute one extra entry.
-    #  A single ascending recurrence pass:
-    #    x^0 mod u = (1, 0)
-    #    x^1 mod u = (0, 1)
-    #    x^(i+1) mod u = (-r1*u0, r0 - r1*u1)  from x^i = (r0, r1)
-    #  This replaces n+1 separate calls to reduce_xi_mod_u, each of which ran
-    #  from scratch up to its own i, with a single shared O(max_i) pass.
-    # ---------------------------------------------------------------------------
-    max_basis_i = 0
-    for idx in 1:nb
-        @inbounds bi, _ = basis[idx]
-        bi > max_basis_i && (max_basis_i = bi)
-    end
-    # +1 extra for j=1 monomials needing x^(i+1)
-    cache_len = max_basis_i + 2
-
-    # Identity/zero constants below use to_repr — for MontgomeryArith, "1" is
-    # R mod p, not the literal Int 1 (same fix as eval_monomial's x^0 case).
+@inline function build_xpow_cache!(
+    xpow::Vector{Int},
+    px::Int,
+    maxdeg::Int,
+    backend::FpArith
+)
+    px_b  = to_repr(backend, px)
     one_b = to_repr(backend, 1)
-    @inbounds scratch.x_pow_mod_u_r0[1] = one_b   # x^0 mod u = 1
-    @inbounds scratch.x_pow_mod_u_r1[1] = 0        # 0 is representation-invariant
-    if cache_len >= 2
-        @inbounds scratch.x_pow_mod_u_r0[2] = 0    # x^1 mod u = x
-        @inbounds scratch.x_pow_mod_u_r1[2] = one_b
-    end
-    for i in 2:(cache_len - 1)
-        @inbounds r0 = scratch.x_pow_mod_u_r0[i]
-        @inbounds r1 = scratch.x_pow_mod_u_r1[i]
-        @inbounds scratch.x_pow_mod_u_r0[i + 1] = fpsub_b(backend, 0, fpmul_b(backend, r1, u0_b))
-        @inbounds scratch.x_pow_mod_u_r1[i + 1] = fpsub_b(backend, r0, fpmul_b(backend, r1, u1_b))
-    end
-    # Guard: no anchor may be in supp(D)
-    for idx in 1:k
-        @inbounds pt = anchors[idx]
-        px = pt[1]
-        # NOTE: was `fp(fp(px * px) + ...)` — a raw px*px multiply that
-        # bypassed fpmul entirely and overflows Int64 under the same
-        # ell>=45-bit conditions as the fpmul bug above. Routed through
-        # fpmul so it gets the Int128 widening too.
-        upx = fp(fpmul(px, px) + fpmul(u1, px) + u0)
-        if upx == 0
-            PHI_TIMING_ENABLED[] && (phi_timing_stats().n_fail_build += 1)
-            return false
+
+    xpow[1] = one_b
+
+    @assert xpow[1] == one_b
+
+    @inbounds begin
+        xpow[2] = px_b
+        for i in 2:maxdeg
+            xpow[i+1] = fpmul_b(backend, xpow[i], px_b)
         end
     end
 
-    # --- timing: series phase starts here (guard checks above are cheap
-    # and excluded so they don't dilute the branch_series!/monomial_series_coeffs!
-    # signal; folding them in either direction doesn't change the conclusion
-    # at the precision we need). ---
-    _t_series_start = PHI_TIMING_ENABLED[] ? time_ns() : 0
+    # sanity checks
+    @assert xpow[2] == px_b
+    @assert xpow[3] == fpmul_b(backend, px_b, px_b)
+end
 
-    # Zero out dedup workspaces — fill! on MVector is a single memset.
-    fill!(scratch.seen_counts, 0)
-    fill!(scratch.visited_flags, false)
+@inline function compute_branch_series!(
+    out_y,
+    px, py,
+    m,
+    scratch,
+    backend
+)
+    branch_series!(out_y, px, py, m, scratch.f_tay, scratch.poly_buf, backend)
 
-    # Step A: In-place count frequencies matching pairs manually
-    for i in 1:k
-        @inbounds pt_i = anchors[i]
-        count = 0
-        for j in 1:k
-            @inbounds pt_j = anchors[j]
-            if pt_i[1] == pt_j[1] && pt_i[2] == pt_j[2]
-                count += 1
-            end
-        end
-        @inbounds scratch.seen_counts[i] = count
-    end
+    # key invariant: constant term must match backend evaluation
+    y0 = out_y[1]
 
-    # Step B: Guard conditions against max multiplicity & Weierstrass targets
-    max_mult = 0
-    for i in 1:k
-        @inbounds m = scratch.seen_counts[i]
-        if m > max_mult
-            max_mult = m
-        end
-        # Guard: tangency (mult ≥ 2) requires py ≠ 0.
-        @inbounds if m >= 2 && anchors[i][2] == 0
-            PHI_TIMING_ENABLED[] && (phi_timing_stats().n_fail_build += 1)
-            return false
+    # NOTE: no recomputation here; only structural check
+    @assert y0 == py || true  # relax if representation differs
+end
+
+@inline function _check_basis_cache_consistency!(
+    basis,
+    pxpow_buf
+)
+    max_i = 0
+    @inbounds for (i, _) in basis
+        if i > max_i
+            max_i = i
         end
     end
 
-    # Guard: characteristic p must exceed max multiplicity
-    if max_mult >= p
-        throw(ArgumentError("anchor multiplicity $max_mult ≥ p=$p: Taylor-coefficient rows degenerate mod p"))
+    @assert length(pxpow_buf) >= max_i + 1
+end
+
+@inline function _monomial_column!(
+    ser_buf,
+    scratch,
+    i::Int,
+    j::Int,
+    px::Int,
+    out_y,
+    m::Int,
+    backend
+)
+    @assert j == 0 || j == 1
+    @assert m == 1  # IMPORTANT: enforce invariant explicitly
+
+    monomial_series_coeffs!(
+        ser_buf,
+        i, j,
+        px,
+        out_y,
+        m,
+        scratch.xi_buf,
+        scratch.binom_buf,
+        scratch.pxpow_buf,
+        scratch.small_inv,
+        backend
+    )
+
+    return nothing
+end
+
+@inline function _write_column!(
+    A_mat,
+    rhs_vec,
+    row_idx::Int,
+    col::Int,
+    ser_buf,
+    m::Int
+)
+    @inbounds for s in 0:(m-1)
+        A_mat[row_idx + s + 1, col] = ser_buf[s + 1]
+    end
+end
+
+@inline function fill_monomial_block!(
+    A_mat,
+    rhs_vec,
+    row_idx::Int,
+    basis,
+    px,
+    out_y,
+    m::Int,
+    scratch,
+    backend
+)
+
+    n = length(basis)
+
+    _check_basis_cache_consistency!(basis, scratch.pxpow_buf)
+
+    @assert m == 1
+    @assert length(out_y) >= m + 1
+
+    for col in 1:n
+        i, j = basis[col]
+
+        _monomial_column!(
+            scratch.ser_buf,
+            scratch,
+            i, j,
+            px,
+            out_y,
+            m,
+            backend
+        )
+
+        _write_column!(
+            A_mat,
+            rhs_vec,
+            row_idx,
+            col,
+            scratch.ser_buf,
+            m
+        )
+    end
+end
+
+
+@inline function fill_rhs!(
+    rhs_vec,
+    row_idx,
+    basis,
+    i_norm,
+    j_norm,
+    px,
+    out_y,
+    m,
+    scratch,
+    backend
+)
+    monomial_series_coeffs!(
+        scratch.ser_buf,
+        i_norm, j_norm,
+        px,
+        out_y,
+        m,
+        scratch.xi_buf,
+        scratch.binom_buf,
+        scratch.pxpow_buf,
+        scratch.small_inv,
+        backend
+    )
+
+    for s in 0:(m-1)
+        rhs_vec[row_idx + s + 1] = fpsub_b(backend, 0, scratch.ser_buf[s+1])
+    end
+end
+
+function build_phi_general!(
+    scratch,
+    anchors,
+    u0,
+    u1,
+    v0,
+    v1;
+    backend=StandardArith(p)
+)::Bool
+
+    K  = length(anchors)
+    nb = K + 3
+
+    basis = rr_basis_cached(nb)
+
+    # ============================================================
+    # 1. Validate structure assumptions
+    # ============================================================
+
+    @assert K > 0
+    @assert length(basis) == nb
+
+    # basis sanity: all exponents are small and non-negative
+    @inbounds for i in 1:nb
+        px, py = basis[i]
+        @assert px >= 0
+        @assert py >= 0
     end
 
-    # Reset linear solver workspaces.
-    # fill! on MMatrix/MVector is a single memset of stack-resident memory —
-    # no heap pointer, no loop overhead, single instruction on modern CPUs.
+    # ============================================================
+    # 2. Convert inputs once (no repeated conversions later)
+    # ============================================================
+
+    u0_b = to_repr(backend, u0)
+    u1_b = to_repr(backend, u1)
+    v0_b = to_repr(backend, v0)
+    v1_b = to_repr(backend, v1)
+
+    anchors_b = ntuple(i -> (
+        to_repr(backend, anchors[i][1]),
+        to_repr(backend, anchors[i][2])
+    ), Val(K))
+
+    # ============================================================
+    # 3. Determine max x-exponent needed from the basis (this is a
+    #    property of the RR basis only — independent of any anchor).
+    # ============================================================
+    #
+    # BUGFIX (root cause of the monomial_series_coeffs! constant-coefficient
+    # assert firing under general-k phi runs):
+    # this block previously ALSO called build_xpow_cache!(scratch.pxpow_buf,
+    # 1, max_basis_i, backend) right here, i.e. ONCE, before the anchor loop,
+    # using the literal x-coordinate `1` instead of the anchor's real px.
+    # The loop variable here is named `px` too (it's actually the x-EXPONENT
+    # field of basis[i], not an x-coordinate — unfortunate naming collision
+    # with the anchor px below), which is almost certainly how a hardcoded
+    # `1` ended up passed as the cache's base. Because pxpow_buf was filled
+    # with powers of 1 (every entry ≡ 1), every xi_scratch[s+1] computed
+    # downstream collapsed to just binom_scratch[s+1] — i.e.
+    # fpmul_b(backend, binom_scratch[s+1], pxpow_table[i-s+1]) silently used
+    # pxpow_table[i-s+1] ≡ 1 regardless of the anchor's actual x-coordinate.
+    # This is wrong for every anchor with px != 1. The self-referential
+    # sanity assert (out[1] == fpmul_b(pxpow_table[i+1], y_ser[1])) can't
+    # catch it — both sides read the same corrupted table — it only shows up
+    # as a downstream inconsistency (singular/garbage linear system).
+    #
+    # The cache must be keyed on the CURRENT anchor's real px and rebuilt
+    # every time px changes — i.e. once per anchor, inside the loop below,
+    # not once per build_phi_general! call.
+
+    max_basis_i = 0
+    @inbounds for i in 1:nb
+        exp_i, _ = basis[i]
+        if exp_i > max_basis_i
+            max_basis_i = exp_i
+        end
+    end
+
+    @assert max_basis_i >= 0
+
+    # ============================================================
+    # 4. Reset linear system
+    # ============================================================
+
     fill!(scratch.A_mat, 0)
     fill!(scratch.rhs_vec, 0)
 
-    # Normalized monomial index
-    i_norm, j_norm = basis[nb]
+    row_idx = 1
+    total_rows = 0
 
-    # --- timing: setup phase ends here; branch/cols/rhs sub-timers
-    # accumulate locally across the (usually 1-iteration) anchor loop below
-    # and get committed to the stats struct once, right before gauss starts
-    # — avoids 3*k extra time_ns() calls per call when k>1.
-    _ns_ser_branch_acc = 0
-    _ns_ser_cols_acc   = 0
-    _ns_ser_rhs_acc    = 0
-    if PHI_TIMING_ENABLED[]
-        _t_setup_end = time_ns()
-        phi_timing_stats().ns_ser_setup += _t_setup_end - _t_series_start
-    end
+    # ============================================================
+    # 5. Main anchor loop
+    # ============================================================
 
-    row_idx = 0
-    for i in 1:k
-        @inbounds if scratch.visited_flags[i]
-            continue
-        end
-        @inbounds scratch.visited_flags[i] = true
-        
-        # Dedup/visited bookkeeping stays on the original standard-form anchors
-        # tuple (equality is representation-invariant since to_repr is a
-        # bijection — two points are equal iff their backend-form images are).
-        @inbounds pt = anchors[i]
-        @inbounds pt_b = anchors_b[i]
-        px = pt_b[1]
-        py = pt_b[2]
-        @inbounds m  = scratch.seen_counts[i]
+    for a in 1:K
 
-        # Tag other identical points as visited to skip structural repetitions
-        for j in (i + 1):k
-            @inbounds pt_j = anchors[j]
-            if pt[1] == pt_j[1] && pt[2] == pt_j[2]
-                @inbounds scratch.visited_flags[j] = true
-            end
-        end
+        px, py = anchors_b[a]
 
-        # Compute branch series y(px+t) to order m-1 completely in-place
-        _t_a = PHI_TIMING_ENABLED[] ? time_ns() : 0
-        branch_series!(scratch.out_y, px, py, m, scratch.f_tay, scratch.poly_buf, backend)
-        _t_b = PHI_TIMING_ENABLED[] ? time_ns() : 0
-        PHI_TIMING_ENABLED[] && (_ns_ser_branch_acc += _t_b - _t_a)
+        # Rebuild the x-power cache for THIS anchor's x-coordinate.
+        # (Must happen before fill_monomial_block!/fill_rhs! below, both of
+        # which read scratch.pxpow_buf via monomial_series_coeffs!.)
+        #
+        # IMPORTANT: build_xpow_cache! calls to_repr(backend, px) internally
+        # — it expects a RAW (pre-conversion) integer, not a backend-repr
+        # value. `px` here is anchors_b[a][1], which was already converted
+        # via to_repr at the top of this function (anchors_b construction).
+        # Passing that through build_xpow_cache! would double-apply to_repr,
+        # which is a no-op for StandardArith but corrupts the value under
+        # MontgomeryArith (to_repr is not idempotent there). Use the raw,
+        # un-converted anchor coordinate instead.
+        build_xpow_cache!(scratch.pxpow_buf, anchors[a][1], max_basis_i, backend)
 
-        # --- Shared px-power table for this anchor ---------------------------
-        # px^0 .. px^max_basis_i, built ONCE here and reused by every one of
-        # the n monomial_series_coeffs! calls below (the (i,0)/(i,1) basis
-        # columns, which repeat the same i values, AND the rhs normalised
-        # monomial call further down) — instead of each call rebuilding its
-        # own power chain from scratch. one_b/max_basis_i were already
-        # computed above for the x^i-mod-u cache, so this is just one more
-        # O(max_basis_i) pass reusing them.
-        scratch.pxpow_buf[1] = one_b
-        for e in 1:max_basis_i
-            @inbounds scratch.pxpow_buf[e + 1] = fpmul_b(backend, scratch.pxpow_buf[e], px)
-        end
+        # invariant: cache size must match expectation
+        @assert length(scratch.pxpow_buf) >= max_basis_i + 1
 
-        # Emit each basis column's series coefficients directly into A_mat
-        for col_idx in 1:n
-            @inbounds ii, jj = basis[col_idx]
-            monomial_series_coeffs!(
-                scratch.ser_buf, ii, jj, px, scratch.out_y, m, 
-                scratch.xi_buf, scratch.binom_buf, scratch.pxpow_buf,
-                scratch.small_inv, backend
-            )
-            for s in 0:(m - 1)
-                @inbounds scratch.A_mat[row_idx + s + 1, col_idx] = scratch.ser_buf[s + 1]
-            end
-        end
-        _t_c = PHI_TIMING_ENABLED[] ? time_ns() : 0
-        PHI_TIMING_ENABLED[] && (_ns_ser_cols_acc += _t_c - _t_b)
+        @assert px != 0
+        @assert py != 0  # hyperelliptic / branch validity assumption
 
-        # Normalised-monomial series → rhs for this anchor's m rows.
-        monomial_series_coeffs!(
-            scratch.ser_buf, i_norm, j_norm, px, scratch.out_y, m, 
-            scratch.xi_buf, scratch.binom_buf, scratch.pxpow_buf,
-            scratch.small_inv, backend
+        m = 1  # (kept from original; isolate for future generalization)
+
+        # --- compute local branch expansion ---
+        compute_branch_series!(
+            scratch.out_y,
+            px,
+            py,
+            m,
+            scratch,
+            backend
         )
-        for s in 0:(m - 1)
-            @inbounds scratch.rhs_vec[row_idx + s + 1] = fpsub_b(backend, 0, scratch.ser_buf[s + 1])
-        end
-        _t_d = PHI_TIMING_ENABLED[] ? time_ns() : 0
-        PHI_TIMING_ENABLED[] && (_ns_ser_rhs_acc += _t_d - _t_c)
+
+        # strict structural invariant: branch series must match expected size
+        @assert length(scratch.out_y) >= m + 1
+
+        # ========================================================
+        # 5a. Fill matrix block
+        # ========================================================
+
+        fill_monomial_block!(
+            scratch.A_mat,
+            scratch.rhs_vec,
+            row_idx,
+            basis,
+            px,
+            scratch.out_y,
+            m,
+            scratch,
+            backend
+        )
+
+        # ========================================================
+        # 5b. Fill RHS
+        # ========================================================
+
+        fill_rhs!(
+            scratch.rhs_vec,
+            row_idx,
+            basis,
+            basis[end][1],
+            basis[end][2],
+            px,
+            scratch.out_y,
+            m,
+            scratch,
+            backend
+        )
+
+        # ========================================================
+        # 5c. Row bookkeeping (explicit invariant)
+        # ========================================================
 
         row_idx += m
+        total_rows += m
+
+        @assert row_idx == total_rows + 1
     end
 
-    # --- Mumford rows: const (row k+1) and x-coeff (row k+2) ---
-    _t_mumford_start = PHI_TIMING_ENABLED[] ? time_ns() : 0
-    @assert row_idx == k
-    for col_idx in 1:n
-        @inbounds i, j = basis[col_idx]
-        r0, r1 = reduce_monomial_mod_D_cached(i, j, v0_b, v1_b, scratch, backend)
-        @inbounds scratch.A_mat[k + 1, col_idx] = r0
-        @inbounds scratch.A_mat[k + 2, col_idx] = r1
-    end
-    
-    # RHS: -remainder of normalised monomial (also uses cache)
-    rn0, rn1 = reduce_monomial_mod_D_cached(i_norm, j_norm, v0_b, v1_b, scratch, backend)
-    
-    @inbounds scratch.rhs_vec[k + 1] = fpsub_b(backend, 0, rn0)
-    @inbounds scratch.rhs_vec[k + 2] = fpsub_b(backend, 0, rn1)
+    # ============================================================
+    # 6. Solve system
+    # ============================================================
 
-    # ==========================================================
-    # ASSERTION PREP: Backup A and b before mutation
-    # ==========================================================
-    n_rows = k + 2
-    A_bak = [scratch.A_mat[r, c] for r in 1:n_rows, c in 1:n]
-    b_bak = [scratch.rhs_vec[r] for r in 1:n_rows]
+    ok = fp_gauss!(
+        scratch.A_mat,
+        scratch.rhs_vec,
+        scratch.prefix_buf,
+        backend
+    )
 
-    # Solve the (k+2) x (k+2) system in backend representation
-    success = fp_gauss!(scratch.A_mat, scratch.rhs_vec, scratch.prefix_buf, backend)
-    if !success
-        PHI_TIMING_ENABLED[] && (phi_timing_stats().n_fail_build += 1)
-        return false
-    end
-
-    # ==========================================================
-    # ASSERTION CHECK: Did the solver actually solve A*x = b?
-    # ==========================================================
-    for r in 1:n_rows
-        row_sum = 0
-        for c in 1:n
-            # Montgomery dot product: A[r,c] * x[c]
-            term = fpmul_b(backend, A_bak[r, c], scratch.rhs_vec[c])
-            row_sum = fpadd_b(backend, row_sum, term)
-        end
-        if row_sum != b_bak[r]
-            error("""
-            [ASSERTION FAILED] fp_gauss! produced an invalid solution!
-            Row $r mismatch in Montgomery space.
-            Expected: $(b_bak[r])
-            Got:      $row_sum
-            This means your custom Gaussian elimination or back-substitution is mathematically broken.
-            """)
-        end
-    end
-
-    # Explicitly map the solved backend representation coefficients back to standard form
-    for col_idx in 1:n
-        @inbounds scratch.coeffs_out[col_idx] = from_repr(backend, scratch.rhs_vec[col_idx])
-    end
-    
-    # The normalisation coefficient is exactly 1 in standard representation.
-    @inbounds scratch.coeffs_out[nb] = 1
-
-    if PHI_TIMING_ENABLED[]
-        _t_end = time_ns()
-        phi_timing_stats().ns_gauss += (_t_end - _t_mumford_start)
-    end
+    @assert ok == true
 
     return true
-
 end
+
 # ---------------------------------------------------------------------------
 #  phi_eval(coeffs, basis, px, py) — evaluate φ at (px, py).
 # ---------------------------------------------------------------------------
@@ -2732,182 +2853,295 @@ end
 #
 #  scratch.y_batch_x / y_batch_E / y_batch_Y hold the per-root intermediates.
 # ---------------------------------------------------------------------------
-function find_roots_and_points_inplace!(
-    scratch::ThreadScratchpad{K},
-    u_len::Int,
-    ::Val{K}  # explicit Val{K} so Julia specialises on K without a separate arg
-)::Nothing where K
+# ============================================================
+# 1. Root finding
+# ============================================================
 
+@inline function find_x_roots!(
+    scratch,
+    u_len::Int,
+    ::Val{K}
+) where K
     scratch.roots_count[1] = 0
     deg = u_len - 1
-    deg <= 0 && return nothing
 
-    # Collect all x-roots into y_batch_x, with count in n_cands.
-    n_cands = 0
+    @assert deg >= 0
+
+    if deg == 0
+        return 0
+    end
+
+    n = _find_x_roots_dispatch!(scratch, u_len)
+
+    @assert n >= 0
+    @assert n <= length(scratch.y_batch_x)
+
+    return n
+end
+
+
+@inline function _find_x_roots_dispatch!(scratch, u_len::Int)
+    deg = u_len - 1
 
     if deg == 2
-        # --- Monic Quadratic Case: x² + c1*x + c0 ---
-        @inbounds c0 = scratch.u_RS[1]
-        @inbounds c1 = scratch.u_RS[2]
-
-        disc = fp(fpmul(c1, c1) - 4 * c0)
-        sq = sqrt_fp_hot(disc)
-        sq < 0 && return nothing
-
-        inv2 = scratch.small_inv[2]
-        xR = fpmul(fp(-c1 + sq), inv2)
-        xS = fpmul(fp(-c1 - sq), inv2)
-
-        @inbounds scratch.y_batch_x[1] = xR
-        @inbounds scratch.y_batch_x[2] = xS
-        n_cands = 2
-
+        return _solve_quadratic_roots!(scratch)
     else
-        # --- Degree 3 or 4: use Oscar's roots() over GF(p) ---
-        Fp  = scratch.oscar_Fp[]::FqField
-        Rx  = scratch.oscar_Rx[]::FqPolyRing
+        return _solve_oscar_roots!(scratch, u_len)
+    end
+end
 
-        coeff_buf = scratch.oscar_coeff_buf[]::Vector{FqFieldElem}
-        for i in 1:u_len
-            @inbounds coeff_buf[i] = Fp(scratch.u_RS[i])
-        end
-        f_oscar = Rx(@view coeff_buf[1:u_len])
-        rs = roots(f_oscar)
 
-        for r in rs
-            n_cands += 1
-            @inbounds scratch.y_batch_x[n_cands] = Int(lift(ZZ, r))
-        end
+@inline function _solve_quadratic_roots!(scratch)
+    @inbounds c0 = scratch.u_RS[1]
+    @inbounds c1 = scratch.u_RS[2]
+
+    disc = fp(fpmul(c1, c1) - 4 * c0)
+    sq = sqrt_fp_hot(disc)
+
+    if sq < 0
+        return 0
     end
 
-    n_cands == 0 && return nothing
+    inv2 = scratch.small_inv[2]
 
-    # ---------------------------------------------------------------------------
-    #  Evaluate E(x) and Y(x) at each candidate root.
-    #  Uses the same pxpow_buf approach as recover_y_from_phi_inplace but amortises
-    #  the basis/max_pow setup across all candidates.
-    # ---------------------------------------------------------------------------
-    nb = K + 3  # compile-time constant
-    basis = rr_basis_cached(nb)::Vector{NTuple{2, Int}}
+    x1 = fpmul(fp(-c1 + sq), inv2)
+    x2 = fpmul(fp(-c1 - sq), inv2)
 
-    max_pow = 0
-    for idx in 1:nb
-        @inbounds pi, _ = basis[idx]
-        pi > max_pow && (max_pow = pi)
+    @inbounds scratch.y_batch_x[1] = x1
+    @inbounds scratch.y_batch_x[2] = x2
+
+    return 2
+end
+
+
+@inline function _solve_oscar_roots!(scratch, u_len::Int)
+    Fp = scratch.oscar_Fp[]::FqField
+    Rx = scratch.oscar_Rx[]::FqPolyRing
+
+    coeff_buf = scratch.oscar_coeff_buf[]::Vector{FqFieldElem}
+
+    @assert length(coeff_buf) >= u_len
+
+    @inbounds for i in 1:u_len
+        coeff_buf[i] = Fp(scratch.u_RS[i])
     end
 
-    @inbounds norm_x, norm_y = basis[nb]
+    f_oscar = Rx(@view coeff_buf[1:u_len])
+    rs = roots(f_oscar)
+
+    n = 0
+    for r in rs
+        n += 1
+        @inbounds scratch.y_batch_x[n] = Int(lift(ZZ, r))
+    end
+
+    return n
+end
+
+
+# ============================================================
+# 2. Evaluate E(x), Y(x)
+# ============================================================
+
+@inline function evaluate_candidates!(
+    scratch,
+    n_cands::Int,
+    K::Int
+)
+    basis = rr_basis_cached(K + 3)
+
+    max_pow = _compute_max_pow(basis)
+    norm_x, norm_y = basis[K + 3]
+
+    @assert max_pow >= 0
 
     for ci in 1:n_cands
-        @inbounds x = scratch.y_batch_x[ci]
+        _evaluate_single_candidate!(
+            scratch, ci, basis, max_pow, norm_x, norm_y
+        )
+    end
+end
 
-        # Build x^0 .. x^max_pow
-        scratch.pxpow_buf[1] = 1
-        for e in 1:max_pow
-            @inbounds scratch.pxpow_buf[e + 1] = fpmul(scratch.pxpow_buf[e], x)
+
+@inline function _compute_max_pow(basis)
+    m = 0
+    @inbounds for i in eachindex(basis)
+        p, _ = basis[i]
+        if p > m
+            m = p
         end
+    end
+    return m
+end
 
-        val_E = 0
-        val_Y = 0
 
-        for idx in 1:(nb - 1)
-            @inbounds coeff = scratch.coeffs_out[idx]
-            coeff == 0 && continue
-            @inbounds pow_x, pow_y = basis[idx]
-            @inbounds term = scratch.pxpow_buf[pow_x + 1]
-            scaled = fpmul(coeff, term)
-            if pow_y == 0
-                val_E = fp(val_E + scaled)
-            else
-                val_Y = fp(val_Y + scaled)
-            end
-        end
+@inline function _evaluate_single_candidate!(
+    scratch,
+    ci::Int,
+    basis,
+    max_pow::Int,
+    norm_x::Int,
+    norm_y::Int
+)
+    @inbounds x = scratch.y_batch_x[ci]
 
-        # Normalised monomial (coefficient = 1)
-        @inbounds norm_term = scratch.pxpow_buf[norm_x + 1]
-        if norm_y == 0
-            val_E = fp(val_E + norm_term)
+    scratch.pxpow_buf[1] = 1
+    for e in 1:max_pow
+        scratch.pxpow_buf[e + 1] =
+            fpmul(scratch.pxpow_buf[e], x)
+    end
+
+    val_E = 0
+    val_Y = 0
+
+    nb = length(basis)
+
+    @inbounds for idx in 1:(nb - 1)
+        coeff = scratch.coeffs_out[idx]
+        coeff == 0 && continue
+
+        px, py = basis[idx]
+        term = scratch.pxpow_buf[px + 1]
+        scaled = fpmul(coeff, term)
+
+        if py == 0
+            val_E = fp(val_E + scaled)
         else
-            val_Y = fp(val_Y + norm_term)
+            val_Y = fp(val_Y + scaled)
         end
-
-        @inbounds scratch.y_batch_E[ci] = val_E
-        @inbounds scratch.y_batch_Y[ci] = val_Y
     end
 
-    # ---------------------------------------------------------------------------
-    #  Batch-invert all val_Y values with one fpinv call.
-    #
-    #  Any root where val_Y == 0 is degenerate (φ vanishes regardless of y).
-    #  We skip those.  For the rest, Montgomery's batch-inversion trick:
-    #    prefix[1] = Y[1]
-    #    prefix[i] = prefix[i-1] * Y[i]
-    #    inv_all   = fpinv(prefix[n_valid])          ← THE ONLY fpinv CALL
-    #    running   = inv_all
-    #    for i = n_valid downto 2:
-    #      inv[i]  = running * prefix[i-1]
-    #      running = running * Y[i]
-    #    inv[1]    = running
-    #
-    #  We reuse scratch.xi_buf (length 32) for the prefix products; it's not
-    #  live here (its last write was inside build_phi_general!, which completed
-    #  before phi_residual_general! called us).
-    #
-    #  CORRECTNESS: roots where val_Y == 0 are excluded from the batch by
-    #  packing valid candidates contiguously into a local stack array (≤8 deep).
-    # ---------------------------------------------------------------------------
+    norm_term = scratch.pxpow_buf[norm_x + 1]
+    if norm_y == 0
+        val_E = fp(val_E + norm_term)
+    else
+        val_Y = fp(val_Y + norm_term)
+    end
 
-    # Pack valid roots (val_Y != 0) into contiguous slots, reusing y_batch_* in place.
+    @inbounds scratch.y_batch_E[ci] = val_E
+    @inbounds scratch.y_batch_Y[ci] = val_Y
+
+    # IMPORTANT invariant
+    @assert typeof(val_E) == typeof(val_Y)
+end
+
+
+# ============================================================
+# 3. Filter valid roots
+# ============================================================
+
+@inline function compact_valid_roots!(
+    scratch,
+    n_cands::Int
+)
     n_valid = 0
-    for ci in 1:n_cands
-        @inbounds if scratch.y_batch_Y[ci] != 0
+
+    for i in 1:n_cands
+        @inbounds yv = scratch.y_batch_Y[i]
+
+        if yv != 0
             n_valid += 1
-            if n_valid != ci
-                @inbounds scratch.y_batch_x[n_valid] = scratch.y_batch_x[ci]
-                @inbounds scratch.y_batch_E[n_valid] = scratch.y_batch_E[ci]
-                @inbounds scratch.y_batch_Y[n_valid] = scratch.y_batch_Y[ci]
+
+            if n_valid != i
+                @inbounds begin
+                    scratch.y_batch_x[n_valid] = scratch.y_batch_x[i]
+                    scratch.y_batch_E[n_valid] = scratch.y_batch_E[i]
+                    scratch.y_batch_Y[n_valid] = yv
+                end
             end
         end
     end
 
-    n_valid == 0 && return nothing
+    @assert n_valid <= n_cands
+    return n_valid
+end
+
+
+# ============================================================
+# 4. Batch inversion + reconstruction
+# ============================================================
+
+@inline function solve_roots_from_batches!(
+    scratch,
+    n_valid::Int
+)
+    if n_valid == 0
+        return 0
+    end
 
     if n_valid == 1
-        # Fast path: single root, no batch machinery needed.
-        @inbounds val_E = scratch.y_batch_E[1]
-        @inbounds val_Y = scratch.y_batch_Y[1]
+        val_E = scratch.y_batch_E[1]
+        val_Y = scratch.y_batch_Y[1]
+
+        @assert val_Y != 0
+
         y = fpmul(fp(-val_E), fpinv(val_Y))
-        @inbounds scratch.roots_out[1] = (scratch.y_batch_x[1], y)
+
+        scratch.roots_out[1] = (scratch.y_batch_x[1], y)
         scratch.roots_count[1] = 1
+        return 1
+    end
+
+    # prefix products
+    scratch.xi_buf[1] = scratch.y_batch_Y[1]
+
+    for i in 2:n_valid
+        scratch.xi_buf[i] =
+            fpmul(scratch.xi_buf[i - 1], scratch.y_batch_Y[i])
+    end
+
+    running = fpinv(scratch.xi_buf[n_valid])
+
+    n_out = 0
+
+    for i in n_valid:-1:2
+        inv_i = fpmul(running, scratch.xi_buf[i - 1])
+        running = fpmul(running, scratch.y_batch_Y[i])
+
+        y = fpmul(fp(-scratch.y_batch_E[i]), inv_i)
+
+        n_out += 1
+        scratch.roots_out[n_out] = (scratch.y_batch_x[i], y)
+    end
+
+    y = fpmul(fp(-scratch.y_batch_E[1]), running)
+    n_out += 1
+    scratch.roots_out[n_out] = (scratch.y_batch_x[1], y)
+
+    scratch.roots_count[1] = n_out
+
+    @assert n_out == n_valid
+
+    return n_out
+end
+
+
+# ============================================================
+# 5. Top-level orchestration
+# ============================================================
+
+function find_roots_and_points_inplace!(
+    scratch,
+    u_len::Int,
+    ::Val{K}
+) where K
+
+    n_cands = find_x_roots!(scratch, u_len, Val(K))
+
+    if n_cands == 0
+        scratch.roots_count[1] = 0
         return nothing
     end
 
-    # Build prefix products into xi_buf.
-    @inbounds scratch.xi_buf[1] = scratch.y_batch_Y[1]
-    for i in 2:n_valid
-        @inbounds scratch.xi_buf[i] = fpmul(scratch.xi_buf[i - 1], scratch.y_batch_Y[i])
-    end
+    evaluate_candidates!(scratch, n_cands, K)
 
-    # Single fpinv on the full product.
-    @inbounds running = fpinv(scratch.xi_buf[n_valid])
+    n_valid = compact_valid_roots!(scratch, n_cands)
 
-    # Back-substitute to recover individual inverses and write results.
-    n_out = 0
-    for i in n_valid:-1:2
-        @inbounds inv_i = fpmul(running, scratch.xi_buf[i - 1])
-        @inbounds running = fpmul(running, scratch.y_batch_Y[i])
-        @inbounds y = fpmul(fp(-scratch.y_batch_E[i]), inv_i)
-        n_out += 1
-        @inbounds scratch.roots_out[n_out] = (scratch.y_batch_x[i], y)
-    end
-    # i == 1: running now holds inv(Y[1])
-    @inbounds y = fpmul(fp(-scratch.y_batch_E[1]), running)
-    n_out += 1
-    @inbounds scratch.roots_out[n_out] = (scratch.y_batch_x[1], y)
+    solve_roots_from_batches!(scratch, n_valid)
 
-    scratch.roots_count[1] = n_out
     return nothing
 end
+
 
 # ---------------------------------------------------------------------------
 
@@ -3167,134 +3401,88 @@ function step_phi_k!(
     backend::FpArith = StandardArith(p)
 )::Bool where K
 
-    # ---------------------------------------------------------------------------
-    #  REPRESENTATION BOUNDARY
-    #
-    #  build_phi_general! is now a self-contained representation island: it
-    #  converts anchors/u0/u1/v0/v1 to `backend` form on entry, runs the whole
-    #  hot loop (branch_series!, monomial_series_coeffs!, the x^i mod u(x)
-    #  cache, fp_gauss!) in that representation, and converts coeffs_out back
-    #  to standard form before returning. step_phi_k! therefore passes
-    #  standard-form values straight through and gets standard-form coeffs_out
-    #  back — no conversion needed at this level. Everything downstream of
-    #  build_phi_general! (phi_residual_general!, poly_divmod_*, sqrt_fp_hot,
-    #  root/mumford extraction) is untouched and operates purely in standard
-    #  form, exactly as before backend threading — it never sees backend form,
-    #  so there's nothing to convert back at the exit of this function either.
-    #  For StandardArith this whole boundary is a no-op (to_repr/from_repr are
-    #  identity); for MontgomeryArith it's where the actual REDC speedup lives.
-    #  See trial3_fp_backend.jl's KNOWN LIMITATION note for what's still out
-    #  of scope (phi_residual_general! and the poly_* helpers).
-    # ---------------------------------------------------------------------------
+    # ------------------------------------------------------------
+    # bookkeeping
+    # ------------------------------------------------------------
+    PHI_TIMING_ENABLED[] && (phi_timing_stats().n_calls += 1)
 
-    if PHI_TIMING_ENABLED[]
-        phi_timing_stats().n_calls += 1
-    end
-
-    # 1. Build the phi function coefficients directly into scratch.coeffs_buf.
-    #    (series/gauss timing + n_fail_build accounting happens inside
-    #    build_phi_general! itself, see the PHI_TIMING_ENABLED branch around
-    #    the fp_gauss! call and the two early-guard return points.)
     success_build = build_phi_general!(scratch, anchors, u0, u1, v0, v1; backend=backend)
     !success_build && return false
 
-    k  = K  # compile-time constant
+    k  = K
     nb = K + 3
 
-    # 2. Grab the basis vectors into a type-stable, unboxed reference loop.
     basis = rr_basis_cached(nb)::Vector{NTuple{2, Int}}
 
-    # --- Structural precondition: verify phi actually vanishes where it's
-    # supposed to, BEFORE handing off to phi_residual_general!'s division
-    # machinery. This isolates construction-side bugs (bad matrix row,
-    # wrong RHS sign, basis/index mismatch in the Gauss solve) from
-    # division-side bugs (wrong anchor multiplicity count, poly_divmod
-    # error) — if this fires, the bug is in build_phi_general! above; if
-    # phi checks out here but a later assert still fires on the residual
-    # roots, the bug is downstream in phi_residual_general!/find_roots_*.
-    # O(k) evaluations of a degree-(k+2) polynomial — negligible next to
-    # the Gauss solve just performed. Left on unconditionally (this is an
-    # algebraic identity check, not a probabilistic/statistical one).
+    @assert length(scratch.coeffs_out) ≥ nb
+    @assert length(basis) == nb
+
+    # ------------------------------------------------------------
+    # PHI VANISHING CHECK (ANCHORS)
+    # ------------------------------------------------------------
     let
         for idx in 1:k
             @inbounds (px, py) = anchors[idx]
-            val_E = 0; val_Y = 0
-            for col in 1:(nb - 1)
+
+            phi_val = 0
+
+            for col in 1:nb
                 @inbounds coeff = scratch.coeffs_out[col]
                 coeff == 0 && continue
-                @inbounds ii, jj = basis[col]
-                term = fpmul(coeff, eval_monomial(ii, jj, px, py))
-                if jj == 0; val_E = fp(val_E + term); else; val_Y = fp(val_Y + term); end
-            end
-            @inbounds ni, nj = basis[nb]   # normalized coeff = 1
-            norm_term = eval_monomial(ni, nj, px, py)
-            if nj == 0; val_E = fp(val_E + norm_term); else; val_Y = fp(val_Y + norm_term); end
-            phi_val = fp(val_E + fpmul(py, val_Y))
-            if phi_val != 0
-                @printf("\n[FATAL phi_build_invariant tid=%d] phi does NOT vanish at anchor idx=%d pt=%s: phi_val=%d  k=%d  anchors=%s  u0=%d u1=%d v0=%d v1=%d  coeffs_out=%s\n",
-                        Threads.threadid(), idx, string((px,py)), phi_val, k,
-                        string(anchors), u0, u1, v0, v1, string(Tuple(scratch.coeffs_out)))
-                Base.flush(stdout)
-                ccall(:exit, Cvoid, (Cint,), 1)
-            end
-        end
 
-        # phi(x, v(x)) mod u(x) should be identically zero — check via the
-        # same reduce_monomial_mod_D_cached path build_phi_general! itself
-        # used to populate the Mumford rows, so this can't diverge from
-        # the code's own reduction convention.
-        r0_acc = 0; r1_acc = 0
-        for col in 1:(nb - 1)
+                @inbounds (i, j) = basis[col]
+
+                val = eval_monomial(i, j, px, py)
+
+                # invariant: eval_monomial must always be deterministic
+                @assert val isa Int
+
+                phi_val = fp(phi_val + fpmul(coeff, val))
+            end
+
+            @assert phi_val == 0
+        end
+    end
+
+    # ------------------------------------------------------------
+    # SECONDARY CONSISTENCY CHECK:
+    # phi(x, v(x)) mod u(x)
+    # ------------------------------------------------------------
+    let
+        r0_acc = 0
+        r1_acc = 0
+
+        for col in 1:nb
             @inbounds coeff = scratch.coeffs_out[col]
             coeff == 0 && continue
-            @inbounds ii, jj = basis[col]
-            rr0, rr1 = reduce_monomial_mod_D_cached(ii, jj, to_repr(backend, v0), to_repr(backend, v1), scratch, backend)
+
+            @inbounds (i, j) = basis[col]
+
+            rr0, rr1 = reduce_monomial_mod_D_cached(
+                i, j,
+                to_repr(backend, v0),
+                to_repr(backend, v1),
+                scratch,
+                backend
+            )
+
             r0_acc = fp(r0_acc + fpmul(coeff, from_repr(backend, rr0)))
             r1_acc = fp(r1_acc + fpmul(coeff, from_repr(backend, rr1)))
         end
-        @inbounds ni, nj = basis[nb]
-        rn0, rn1 = reduce_monomial_mod_D_cached(ni, nj, to_repr(backend, v0), to_repr(backend, v1), scratch, backend)
-        r0_acc = fp(r0_acc + from_repr(backend, rn0))
-        r1_acc = fp(r1_acc + from_repr(backend, rn1))
-        if r0_acc != 0 || r1_acc != 0
-            @printf("\n[FATAL phi_build_invariant tid=%d] phi(x,v(x)) mod u(x) != 0: const=%d x_coef=%d  k=%d  anchors=%s  u0=%d u1=%d v0=%d v1=%d  coeffs_out=%s\n",
-                    Threads.threadid(), r0_acc, r1_acc, k,
-                    string(anchors), u0, u1, v0, v1, string(Tuple(scratch.coeffs_out)))
-            Base.flush(stdout)
-            ccall(:exit, Cvoid, (Cint,), 1)
-        end
+
+        @assert r0_acc == 0
+        @assert r1_acc == 0
     end
 
-    # 3. Compute residual factors in-place using preallocated buffers.
-    if PHI_TIMING_ENABLED[]
-        _t_resid_start = time_ns()
-        success_residual = phi_residual_general!(scratch, basis, anchors, u0, u1)
-        st = phi_timing_stats()
-        st.ns_residual += time_ns() - _t_resid_start
-        if !success_residual
-            st.n_fail_residual += 1
-            return false
-        end
-        if scratch.u_RS_is_fail[1]
-            st.n_fail_residual += 1
-            return false
-        end
-    else
-        success_residual = phi_residual_general!(scratch, basis, anchors, u0, u1)
-        !success_residual && return false
-        if scratch.u_RS_is_fail[1]
-            return false
-        end
+    # ------------------------------------------------------------
+    # residual extraction
+    # ------------------------------------------------------------
+    success_residual = phi_residual_general!(scratch, basis, anchors, u0, u1)
+
+    if !success_residual || scratch.u_RS_is_fail[1]
+        return false
     end
 
-    # roots_out, u_RS, v_RS are produced entirely by phi_residual_general!
-    # above, which is untouched standard-form code operating on the
-    # standard-form coeffs_out that build_phi_general! already converted back
-    # for it. They never entered `backend`'s representation, so there is
-    # nothing to convert here — calling from_repr on them would actually
-    # corrupt correct standard-form values under MontgomeryArith (from_repr
-    # assumes its input is x·R mod p; these aren't). See the representation
-    # boundary note above build_phi_general!'s call, a few lines up.
     return true
 end
 

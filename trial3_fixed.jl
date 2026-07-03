@@ -1452,11 +1452,22 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
     flush(stdout)
 
     # Initialise phi_general module-level caches (F_POLY_DESC and RR_BASIS_CACHE)
-    # on the main thread before any workers are spawned. anchor_tuple_size is
-    # the max k used; pre-warming RR_BASIS_CACHE for k=1..anchor_tuple_size
-    # means workers will never race on the Dict insertion paths inside
-    # rr_basis_cached.
-    init_phi_general_caches!(anchor_tuple_size, FP_BACKEND)
+    # on the main thread before any workers are spawned.
+    #
+    # BUGFIX: this used to pre-warm only k=1..anchor_tuple_size (the CLI
+    # value), not k=1..K_MAX (the compile-time constant from
+    # trial3_config.jl). RR_BASIS_CACHE is a plain, non-thread-safe Dict;
+    # rr_basis_cached falls back to a lazy `get!` for any nb not already
+    # cached. anchor_tuple_size is validated above to be <= K_MAX, so on
+    # THIS run they may coincide — but whenever anchor_tuple_size < K_MAX,
+    # any code path that ends up requesting a k in (anchor_tuple_size,
+    # K_MAX] (e.g. ThreadScratchpad{K_MAX} construction, or any future
+    # caller keyed on K_MAX rather than anchor_tuple_size) would leave
+    # multiple walker threads racing on the same uncached-nb `get!` the
+    # first time they hit it concurrently — a genuine data race, not just
+    # a slow path. Always warm the full K_MAX range so no run-time value
+    # of anchor_tuple_size can leave a gap.
+    init_phi_general_caches!(K_MAX, FP_BACKEND)
 
 
     # ── O(p) birthday mode (≈ √ell, since ell ~ p² for genus 2) ──────────────
