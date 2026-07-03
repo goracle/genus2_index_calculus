@@ -27,6 +27,32 @@
 #    atom(lp_pt) + Σ_j row[j]·atom(fb[j])  ==  neg_al·G + neg_be·T
 # ---------------------------------------------------------------------------
 
+#  fatal_assert: hard-stop wrapper around the relation-integrity checkers.
+#
+#  cond is expected to already be the *result* of a check_relation_principal /
+#  check_lp1_stored call (or an inline invariant), which prints its own
+#  [ASSERT ...]/[DIAG ...] banner on failure. fatal_assert does not re-derive
+#  or re-print any of that — it only decides what happens once cond is known:
+#  on failure, flush stdout/stderr so the diagnostic banner above isn't lost
+#  to buffering/interleaving from other threads, then hard-exit the process.
+#
+#  This is intentionally NOT a Julia `@assert` / `error()`, which would only
+#  throw on the calling thread and get swallowed into a TaskFailedException
+#  wrapper (with sibling tasks racing to print their own garbage on the way
+#  down — see err.txt: "...and 23 more exceptions"). A corrupted
+#  relation-collection invariant is not recoverable: any relation banked
+#  after this point is potentially poisoned, so we take the whole run down
+#  immediately rather than let the other worker threads keep grinding for
+#  however long it takes the exception to propagate up through the task tree.
+@inline function fatal_assert(cond::Bool, tag::AbstractString)::Nothing
+    cond && return nothing
+    @printf("\n[FATAL %s tid=%d] invariant check failed — see [ASSERT]/[DIAG] output above.\n",
+            tag, Threads.threadid())
+    Base.flush(stdout)
+    Base.flush(stderr)
+    ccall(:exit, Cvoid, (Cint,), 1)
+end
+
 function check_relation_principal(
         row        ::Dict{Int,Int},
         al         ::Integer,
@@ -71,7 +97,23 @@ function check_lp1_stored(
         fb     ::Vector{NTuple{2,Int}},
         G      ::Div2,
         T      ::Div2;
-        tag    ::String = "")::Bool
+        tag    ::String = "",
+        # --- diagnostic-only context (see handle_1lp_affine! call site) ---
+        # Accepted (not just tolerated) so a store-path failure can print
+        # exactly which anchor tuple / residual pair produced the bad row,
+        # instead of only the row's final numeric content. Bug caught by
+        # this extension: the call site was already passing these kwargs
+        # and this method previously didn't accept them, so any real
+        # ASSERT_RELATIONS failure on the store path would itself throw
+        # (MethodError) before ever printing the FAIL banner below.
+        k_cur       ::Int = -1,
+        anchors     ::Union{Vector{NTuple{2,Int}}, Nothing} = nothing,
+        i0          ::Int = -1,
+        iR          ::Int = -1,
+        iS          ::Int = -1,
+        R           ::Union{NTuple{2,Int}, Nothing} = nothing,
+        S           ::Union{NTuple{2,Int}, Nothing} = nothing,
+        P0          ::Union{NTuple{2,Int}, Nothing} = nothing)::Bool
 
     D_fb = JacID
     for (idx, v) in row
@@ -97,6 +139,9 @@ function check_lp1_stored(
     @printf("[DIAG %s tid=%d] D_fb=%s  D_lp=atom(lp_pt)=%s  D_lhs=%s  D_rhs=%s  row=%s  fb_pts=%s\n",
             tag, Threads.threadid(), string(D_fb), string(D_lp), string(D_lhs), string(D_rhs),
             string(row), string([fb[idx] for idx in keys(row)]))
+    @printf("[DIAG %s tid=%d] context: k_cur=%d  i0=%d  iR=%d  iS=%d  P0=%s  R=%s  S=%s  anchors=%s\n",
+            tag, Threads.threadid(), k_cur, i0, iR, iS,
+            string(P0), string(R), string(S), string(anchors))
     return false
 end
 

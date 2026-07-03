@@ -2069,6 +2069,29 @@ function phase2_worker(G               ::Div2,
         R          = res_R   # NTuple{2,Int} always; SENTINEL_PT if conjugate
         S          = res_S   # NTuple{2,Int} always; SENTINEL_PT if conjugate
 
+        # Structural precondition: step_phi_k!/build_phi_mumford are supposed
+        # to divide out the FULL anchor multiplicity (including tangencies,
+        # via the multiplicity-aware vanishing-condition code) before handing
+        # back the residual roots. If a residual root still equals one of the
+        # k_cur anchors, that mass was double-counted — the row-building loop
+        # below adds +1 for the anchor AND +1 for iR/iS at the same fb index,
+        # silently fabricating an extra factor of atom(P0) in the banked
+        # relation. This is the earliest point all of {P0,R,S,cur_anchors}
+        # are known and is O(k_cur); left on unconditionally since it is
+        # index/multiplicity bookkeeping, not floating Jacobian arithmetic.
+        if rs_split
+            for _i in 1:k_cur
+                _anc = cur_anchors[_i]
+                if R == _anc || S == _anc
+                    @printf("\n[FATAL residual_anchor_collision tid=%d] φ-residual root coincides with anchor _i=%d: anc=%s  R=%s  S=%s  k_cur=%d  anchors=%s  (u0=%d u1=%d v0=%d v1=%d)\n",
+                            Threads.threadid(), _i, string(_anc), string(R), string(S), k_cur,
+                            string(ntuple(_j -> cur_anchors[_j], k_cur)), u0, u1, v0, v1)
+                    Base.flush(stdout)
+                    ccall(:exit, Cvoid, (Cint,), 1)
+                end
+            end
+        end
+
         # --- φ a-parameter bias diagnostics ---
         # RS_mumford = (c0_rs, c1_rs, v0_rs, v1_rs); we use indices 1 and 2.
         # For split steps we do a cheap pt2idx lookup so the a=0 FB-smooth
@@ -2227,11 +2250,32 @@ function phase2_worker(G               ::Div2,
             s.hits_lp1 += 1
 
             lp_pt = i0 == 0 ? P0 : iR == 0 ? R : S
-            @printf("[DIAG lp1_affine] tid=%d lp_pt=%s k_cur=%d anchors=%s dup=%s\n",
-                    Threads.threadid(), string(lp_pt), k_cur,
-                    string(ntuple(_i -> cur_anchors[_i], k_cur)),
-                    string(length(unique(ntuple(_i -> cur_anchors[_i], k_cur)))))
-            flush(stdout)
+
+            # Cheap structural check on the n_lp==1 invariant this whole
+            # branch assumes, BEFORE any Jacobian arithmetic or locking.
+            # This is index bookkeeping (i0/iR/iS vs pt2idx), not group-law
+            # correctness, so it's O(1) and safe to leave on unconditionally
+            # rather than gating behind ASSERT_RELATIONS — it's what should
+            # have caught a mis-tupled anchor/residual set at the source,
+            # instead of surfacing 70 lines later as a Jacobian-identity
+            # mismatch (or, worse, silently banking a bad relation when
+            # ASSERT_RELATIONS is off).
+            let n_missing = (i0 == 0 ? 1 : 0) + (iR == 0 ? 1 : 0) + (iS == 0 ? 1 : 0)
+                if n_missing != 1
+                    @printf("\n[FATAL n_lp_invariant tid=%d] n_lp==1 branch entered with n_missing=%d (i0=%d iR=%d iS=%d)  P0=%s R=%s S=%s k_cur=%d\n",
+                            Threads.threadid(), n_missing, i0, iR, iS,
+                            string(P0), string(R), string(S), k_cur)
+                    Base.flush(stdout)
+                    ccall(:exit, Cvoid, (Cint,), 1)
+                end
+                if get(pt2idx, lp_pt, 0) != 0
+                    @printf("\n[FATAL n_lp_invariant tid=%d] lp_pt=%s selected as the missing atom but IS present in pt2idx (idx=%d) — i0=%d iR=%d iS=%d\n",
+                            Threads.threadid(), string(lp_pt), pt2idx[lp_pt], i0, iR, iS)
+                    Base.flush(stdout)
+                    ccall(:exit, Cvoid, (Cint,), 1)
+                end
+            end
+
             empty!(fb_row_scratch)
             # Add ALL anchors from the k-tuple (bounded by k_cur, not the
             # K_MAX-sized cur_anchors buffer)

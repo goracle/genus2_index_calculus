@@ -110,9 +110,20 @@ using StaticArrays   # MMatrix, MVector — stack-allocated mutable arrays for
 
 const RR_BASIS_CACHE = Dict{Int, Vector{NTuple{2,Int}}}()
 
+# --- setup/hot-path diagnostic spam, OFF by default ---
+# init_scratch_caches! fires once per (thread, K) — harmless in volume but
+# pure setup noise. build_phi_general! fires on every K>=2 walk step and
+# used to burn its whole print budget (BPG_DIAG_MAX) in well under a second
+# of wall-clock time, before any correctness issue had a chance to surface.
+# Neither one contributed to catching the 1LP-STORE / residual-anchor-
+# collision bug — the real signal was downstream (check_lp1_stored FAIL,
+# and now the earlier residual_anchor_collision assert in trial3_phase2.jl).
+# Set JULIA_TRIAL3_SETUP_DIAG=1 in the environment to re-enable.
+const SETUP_DIAG_VERBOSE = get(ENV, "JULIA_TRIAL3_SETUP_DIAG", "0") == "1"
+
 # --- quick-and-dirty diag throttle, just so we don't drown in prints ---
 const BPG_DIAG_COUNT = Threads.Atomic{Int}(0)
-const BPG_DIAG_MAX   = 200
+const BPG_DIAG_MAX   = SETUP_DIAG_VERBOSE ? 200 : 0
 
 # ---------------------------------------------------------------------------
 #  PhiTimingStats — per-thread cumulative timers splitting a step_phi_k! call
@@ -970,9 +981,11 @@ function init_scratch_caches!(scratch::ThreadScratchpad{K}, p_val::Int,
     # representation-mismatch bug that phi_residual_general!'s remainder
     # check won't reliably catch quickly (see validate_backend note in
     # trial3_fp_backend.jl).
-    @printf("[DIAG init_scratch_caches!] tid=%d K=%d backend=%s p=%d\n",
-            Threads.threadid(), K, typeof(backend), backend.p)
-    flush(stdout)
+    if SETUP_DIAG_VERBOSE
+        @printf("[DIAG init_scratch_caches!] tid=%d K=%d backend=%s p=%d\n",
+                Threads.threadid(), K, typeof(backend), backend.p)
+        flush(stdout)
+    end
     for s in 1:32
         scratch.small_inv[s] = to_repr(backend, fpinv(s))
     end
@@ -1433,6 +1446,18 @@ function build_phi_general!(
     # A_mat::MMatrix{K+2,K+2,Int} and rhs_vec::MVector{K+2,Int} are stack-allocated.
     # fp_gauss! gets N=K+2 from the type — no runtime dispatch, no Val{} indirection.
     # prefix_buf::MVector{K+2,Int} (scratch.prefix_buf) replaces the xi_buf reuse.
+    # Snapshot the pre-elimination system: fp_gauss! mutates A_mat/rhs_vec
+    # in place, so this is the only point we can check "does the returned
+    # solution actually satisfy the equations we wrote" separately from
+    # "did fp_gauss! solve correctly" — if the residual check right after
+    # the solve fails, fp_gauss! itself is suspect; if it passes but
+    # phi_build_invariant (later, at the step_phi_k! call site) still
+    # fails, the bug is in how A_mat/rhs_vec were POPULATED above (wrong
+    # monomial series, wrong Mumford-row reduction, wrong RHS sign, a
+    # basis/column mismatch) — not in the solver.
+    A_snap   = copy(scratch.A_mat)
+    rhs_snap = copy(scratch.rhs_vec)
+
     if PHI_TIMING_ENABLED[]
         _t_gauss_start = time_ns()
         st = phi_timing_stats()
@@ -1445,6 +1470,25 @@ function build_phi_general!(
         end
     else
         fp_gauss!(scratch.A_mat, scratch.rhs_vec, scratch.prefix_buf, backend) || return false
+    end
+
+    # solution is scratch.rhs_vec[1:n] (post-solve, backend form) — check
+    # A_snap * sol == rhs_snap, row by row, still in backend form (no
+    # from_repr needed yet since both sides are backend-consistent).
+    let
+        for row in 1:n
+            acc = 0
+            for col in 1:n
+                @inbounds acc = fpadd_b(backend, acc, fpmul_b(backend, A_snap[row, col], scratch.rhs_vec[col]))
+            end
+            @inbounds if acc != rhs_snap[row]
+                @printf("\n[FATAL gauss_solve_invariant tid=%d] row=%d: A*x=%d != rhs=%d  k=%d  anchors=%s  u0=%d u1=%d v0=%d v1=%d  n=%d\n",
+                        Threads.threadid(), row, from_repr(backend, acc), from_repr(backend, rhs_snap[row]),
+                        K, string(anchors), u0, u1, v0, v1, n)
+                Base.flush(stdout)
+                ccall(:exit, Cvoid, (Cint,), 1)
+            end
+        end
     end
 
     # Solution is in scratch.rhs_vec[1:n], still in backend form — convert
@@ -3181,9 +3225,70 @@ function step_phi_k!(
 
     k  = K  # compile-time constant
     nb = K + 3
-    
+
     # 2. Grab the basis vectors into a type-stable, unboxed reference loop.
     basis = rr_basis_cached(nb)::Vector{NTuple{2, Int}}
+
+    # --- Structural precondition: verify phi actually vanishes where it's
+    # supposed to, BEFORE handing off to phi_residual_general!'s division
+    # machinery. This isolates construction-side bugs (bad matrix row,
+    # wrong RHS sign, basis/index mismatch in the Gauss solve) from
+    # division-side bugs (wrong anchor multiplicity count, poly_divmod
+    # error) — if this fires, the bug is in build_phi_general! above; if
+    # phi checks out here but a later assert still fires on the residual
+    # roots, the bug is downstream in phi_residual_general!/find_roots_*.
+    # O(k) evaluations of a degree-(k+2) polynomial — negligible next to
+    # the Gauss solve just performed. Left on unconditionally (this is an
+    # algebraic identity check, not a probabilistic/statistical one).
+    let
+        for idx in 1:k
+            @inbounds (px, py) = anchors[idx]
+            val_E = 0; val_Y = 0
+            for col in 1:(nb - 1)
+                @inbounds coeff = scratch.coeffs_out[col]
+                coeff == 0 && continue
+                @inbounds ii, jj = basis[col]
+                term = fpmul(coeff, eval_monomial(ii, jj, px, py))
+                if jj == 0; val_E = fp(val_E + term); else; val_Y = fp(val_Y + term); end
+            end
+            @inbounds ni, nj = basis[nb]   # normalized coeff = 1
+            norm_term = eval_monomial(ni, nj, px, py)
+            if nj == 0; val_E = fp(val_E + norm_term); else; val_Y = fp(val_Y + norm_term); end
+            phi_val = fp(val_E + fpmul(py, val_Y))
+            if phi_val != 0
+                @printf("\n[FATAL phi_build_invariant tid=%d] phi does NOT vanish at anchor idx=%d pt=%s: phi_val=%d  k=%d  anchors=%s  u0=%d u1=%d v0=%d v1=%d  coeffs_out=%s\n",
+                        Threads.threadid(), idx, string((px,py)), phi_val, k,
+                        string(anchors), u0, u1, v0, v1, string(Tuple(scratch.coeffs_out)))
+                Base.flush(stdout)
+                ccall(:exit, Cvoid, (Cint,), 1)
+            end
+        end
+
+        # phi(x, v(x)) mod u(x) should be identically zero — check via the
+        # same reduce_monomial_mod_D_cached path build_phi_general! itself
+        # used to populate the Mumford rows, so this can't diverge from
+        # the code's own reduction convention.
+        r0_acc = 0; r1_acc = 0
+        for col in 1:(nb - 1)
+            @inbounds coeff = scratch.coeffs_out[col]
+            coeff == 0 && continue
+            @inbounds ii, jj = basis[col]
+            rr0, rr1 = reduce_monomial_mod_D_cached(ii, jj, to_repr(backend, v0), to_repr(backend, v1), scratch, backend)
+            r0_acc = fp(r0_acc + fpmul(coeff, from_repr(backend, rr0)))
+            r1_acc = fp(r1_acc + fpmul(coeff, from_repr(backend, rr1)))
+        end
+        @inbounds ni, nj = basis[nb]
+        rn0, rn1 = reduce_monomial_mod_D_cached(ni, nj, to_repr(backend, v0), to_repr(backend, v1), scratch, backend)
+        r0_acc = fp(r0_acc + from_repr(backend, rn0))
+        r1_acc = fp(r1_acc + from_repr(backend, rn1))
+        if r0_acc != 0 || r1_acc != 0
+            @printf("\n[FATAL phi_build_invariant tid=%d] phi(x,v(x)) mod u(x) != 0: const=%d x_coef=%d  k=%d  anchors=%s  u0=%d u1=%d v0=%d v1=%d  coeffs_out=%s\n",
+                    Threads.threadid(), r0_acc, r1_acc, k,
+                    string(anchors), u0, u1, v0, v1, string(Tuple(scratch.coeffs_out)))
+            Base.flush(stdout)
+            ccall(:exit, Cvoid, (Cint,), 1)
+        end
+    end
 
     # 3. Compute residual factors in-place using preallocated buffers.
     if PHI_TIMING_ENABLED[]
