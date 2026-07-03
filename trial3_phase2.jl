@@ -288,7 +288,7 @@ function try_lp1_doubled_cross_close!(
             @printf("  Coefficients: al=%s, be=%s, weight=%d\n", string(c_al), string(c_be), length(combined))
             @printf("  row_1 (%d terms): %s\n", length(row_1), string(row_1))
             @printf("  row_d (%d terms): %s\n", length(row_d), string(row_d))
-            @assert false "try_lp1_doubled_cross_close!: principal divisor check failed"
+            fatal_assert(false, "try_lp1_doubled_cross_close!: principal divisor check failed")
         end
     end
 
@@ -458,7 +458,9 @@ end
                            s          ::WorkerStats,
                            rank_growth::Vector{Tuple{Int,Int}})
     if ASSERT_RELATIONS
-        @assert check_relation_principal(fb_row, neg_al, neg_be, "α", fb, G, T; tag="0LP-EMIT")
+        fatal_assert(
+            check_relation_principal(fb_row, neg_al, neg_be, "α", fb, G, T; tag="0LP-EMIT"),
+            "0LP-EMIT")
     end
     row_copy = copy(fb_row)
     push!(alpha_vec, neg_al); push!(beta_vec, neg_be); push!(rel_rows, row_copy)
@@ -511,7 +513,12 @@ end
         R              ::NTuple{2,Int},
         S              ::NTuple{2,Int},
         P0             ::NTuple{2,Int},
-        next_anchor_ref::Ref{Function})::NTuple{2,Int}
+        next_anchor_ref::Ref{Function};
+        # --- diagnostic-only context, passed through to check_lp1_stored on
+        #     failure so the bookkeeping cross-check has what it needs ---
+        k_cur          ::Int = -1,
+        anchors_diag   ::Union{Vector{NTuple{2,Int}}, Nothing} = nothing,
+        i0_diag        ::Int = -1)::NTuple{2,Int}
 
     record_lp1!(lp_col, lp_pt, Int(al), Int(be), s.raw_steps)
 
@@ -532,8 +539,10 @@ end
 
             if !isempty(combined) && !(combined_al == 0 && combined_be == 0)
                 if ASSERT_RELATIONS
-                    @assert check_relation_principal(combined, combined_al, combined_be,
-                                                     "α", fb, G, T; tag="1LP-CLOSE")
+                    fatal_assert(
+                        check_relation_principal(combined, combined_al, combined_be,
+                                                 "α", fb, G, T; tag="1LP-CLOSE"),
+                        "1LP-CLOSE")
                 end
                 row_copy = copy(combined)
                 push!(alpha_vec, combined_al); push!(beta_vec, combined_be)
@@ -548,7 +557,11 @@ end
         else
             # --- Store this entry ---
             if ASSERT_RELATIONS
-                @assert check_lp1_stored(lp_pt, fb_row, neg_al, neg_be, fb, G, T; tag="1LP-STORE")
+                fatal_assert(
+                    check_lp1_stored(lp_pt, fb_row, neg_al, neg_be, fb, G, T;
+                                      tag="1LP-STORE", k_cur=k_cur, anchors=anchors_diag,
+                                      i0=i0_diag, iR=iR, iS=iS, R=R, S=S, P0=P0),
+                    "1LP-STORE")
             end
             # Skip (do not store) if the table is full.  Evicting a random
             # existing entry is counter-productive: it destroys an unmatched
@@ -985,8 +998,10 @@ end
                     record_closure!(lp_col, s.raw_steps, prev_step)
                     if !isempty(combined) && !(combined_al == 0 && combined_be == 0)
                         if ASSERT_RELATIONS
-                            @assert check_relation_principal(combined, combined_al, combined_be,
-                                                             "α", fb, G, T; tag="2LP-CROSS-CLOSE")
+                            fatal_assert(
+                                check_relation_principal(combined, combined_al, combined_be,
+                                                         "α", fb, G, T; tag="2LP-CROSS-CLOSE"),
+                                "2LP-CROSS-CLOSE")
                         end
                         push!(alpha_vec, combined_al); push!(beta_vec, combined_be)
                         push!(rel_rows, combined)
@@ -1008,7 +1023,7 @@ end
                             @printf("[2LP-CROSS-STORE DIAG]  fb_row=%s  new_row=%s  neg_al=%d neg_be=%d\n",
                                     string(fb_row_scratch), string(new_row), neg_al, neg_be)
                         end
-                        @assert ok "2-LP cross-store: derived 1-LP row inconsistent"
+                        fatal_assert(ok, "2-LP cross-store: derived 1-LP row inconsistent")
                     end
                     if lp1a_length(shared_lp1) >= MAX_LP1_ENTRIES
                         # drop — no eviction (see handle_1lp_affine! reasoning)
@@ -2212,6 +2227,11 @@ function phase2_worker(G               ::Div2,
             s.hits_lp1 += 1
 
             lp_pt = i0 == 0 ? P0 : iR == 0 ? R : S
+            @printf("[DIAG lp1_affine] tid=%d lp_pt=%s k_cur=%d anchors=%s dup=%s\n",
+                    Threads.threadid(), string(lp_pt), k_cur,
+                    string(ntuple(_i -> cur_anchors[_i], k_cur)),
+                    string(length(unique(ntuple(_i -> cur_anchors[_i], k_cur)))))
+            flush(stdout)
             empty!(fb_row_scratch)
             # Add ALL anchors from the k-tuple (bounded by k_cur, not the
             # K_MAX-sized cur_anchors buffer)
@@ -2231,7 +2251,10 @@ function phase2_worker(G               ::Div2,
                                          alpha_vec, beta_vec, rel_rows, rel_counter, ort, s,
                                          shared_lp1, nothing, nothing,
                                          lp_col, rank_growth, combined_scratch,
-                                         iR, iS, R, S, P0, next_anchor_ref)
+                                         iR, iS, R, S, P0, next_anchor_ref;
+                                         k_cur=k_cur,
+                                         anchors_diag=[cur_anchors[_i] for _i in 1:k_cur],
+                                         i0_diag=i0)
             # NOTE (D29 audit): handle_1lp_affine! in fact returns
             # next_anchor_ref[]() unconditionally on every path (store, close,
             # drop-when-full) — see its source, the only `return` is at the

@@ -110,6 +110,10 @@ using StaticArrays   # MMatrix, MVector — stack-allocated mutable arrays for
 
 const RR_BASIS_CACHE = Dict{Int, Vector{NTuple{2,Int}}}()
 
+# --- quick-and-dirty diag throttle, just so we don't drown in prints ---
+const BPG_DIAG_COUNT = Threads.Atomic{Int}(0)
+const BPG_DIAG_MAX   = 200
+
 # ---------------------------------------------------------------------------
 #  PhiTimingStats — per-thread cumulative timers splitting a step_phi_k! call
 #  into its three cost centers:
@@ -966,6 +970,9 @@ function init_scratch_caches!(scratch::ThreadScratchpad{K}, p_val::Int,
     # representation-mismatch bug that phi_residual_general!'s remainder
     # check won't reliably catch quickly (see validate_backend note in
     # trial3_fp_backend.jl).
+    @printf("[DIAG init_scratch_caches!] tid=%d K=%d backend=%s p=%d\n",
+            Threads.threadid(), K, typeof(backend), backend.p)
+    flush(stdout)
     for s in 1:32
         scratch.small_inv[s] = to_repr(backend, fpinv(s))
     end
@@ -1101,11 +1108,22 @@ function monomial_series_coeffs!(out::AbstractVector{Int}, i::Int, j::Int,
                                  px::Int, y_ser::AbstractVector{Int}, m::Int,
                                  xi_scratch::AbstractVector{Int},
                                  binom_scratch::AbstractVector{Int},
-                                 pxpow_scratch::AbstractVector{Int},
+                                 pxpow_table::AbstractVector{Int},
                                  small_inv::AbstractVector{Int},
                                  backend::FpArith = StandardArith(p))::Nothing
+    # pxpow_table[e+1] == px^e for e = 0 .. max_basis_i, PRECOMPUTED ONCE PER
+    # ANCHOR by the caller (build_phi_general!) and shared across every one
+    # of the n calls to this function for that anchor (all basis columns +
+    # the rhs normalised monomial). px is invariant across that whole loop —
+    # only (i,j) vary — so re-deriving px^i from scratch inside every call
+    # (via eval_monomial's own sequential-multiply loop for m==1, or via a
+    # fresh pxpow_scratch build for m>1) was pure duplicated work. Mirrors
+    # the amortized-power-table pattern already used in the y-recovery path
+    # elsewhere in this file ("Uses the same pxpow_buf approach ... but
+    # amortises the basis/max_pow setup across all candidates.").
     if m == 1
-        out[1] = eval_monomial(i, j, px, y_ser[1], backend)
+        @inbounds xi = pxpow_table[i + 1]
+        out[1] = j == 0 ? fp_b(backend, xi) : fpmul_b(backend, xi, y_ser[1])
         return nothing
     end
 
@@ -1115,7 +1133,8 @@ function monomial_series_coeffs!(out::AbstractVector{Int}, i::Int, j::Int,
     one_b = to_repr(backend, 1)   # backend's own representation of 1 — NOT the literal Int 1
                                    # (differs from it for MontgomeryArith: R mod p vs 1)
 
-    # Binomial expansion coefficients
+    # Binomial expansion coefficients — genuinely per-column (depends on i
+    # and m), not shareable across columns with different i, so unchanged.
     binom_scratch[1] = one_b
     for s in 1:min(i, m-1)
         # (i-s+1) is a raw small integer, not yet in any field representation — reduce it
@@ -1126,15 +1145,10 @@ function monomial_series_coeffs!(out::AbstractVector{Int}, i::Int, j::Int,
         @inbounds binom_scratch[s+1] = fpmul_b(backend, binom_scratch[s], fpmul_b(backend, coef_b, small_inv[s]))
     end
 
-    # Precompute ascending powers of px
-    pxpow_scratch[1] = one_b
-    for e in 1:i
-        @inbounds pxpow_scratch[e+1] = fpmul_b(backend, pxpow_scratch[e], px)
-    end
-
-    # Read descending directly from pxpow_scratch, completely avoiding self-aliasing corruption
+    # Read descending powers of px directly from the shared table instead of
+    # rebuilding an ascending-power scratch array from scratch for this column.
     for s in 0:min(i, m-1)
-        @inbounds px_descending_pow = pxpow_scratch[i - s + 1]
+        @inbounds px_descending_pow = pxpow_table[i - s + 1]
         @inbounds xi_scratch[s+1] = fpmul_b(backend, binom_scratch[s+1], px_descending_pow)
     end
 
@@ -1167,6 +1181,13 @@ function build_phi_general!(
     nb  = K + 3          # total basis size (including the normalised element)
 
     basis = rr_basis_cached(nb)::Vector{NTuple{2, Int}}
+
+    if BPG_DIAG_COUNT[] < BPG_DIAG_MAX
+        BPG_DIAG_COUNT[] += 1
+        @printf("[DIAG build_phi_general!] tid=%d K=%d backend=%s p=%d anchors=%s u0=%d u1=%d v0=%d v1=%d\n",
+                Threads.threadid(), K, typeof(backend), backend.p, string(anchors), u0, u1, v0, v1)
+        flush(stdout)
+    end
 
     # ---------------------------------------------------------------------------
     #  REPRESENTATION BOUNDARY — build_phi_general! is a self-contained island.
@@ -1334,6 +1355,19 @@ function build_phi_general!(
         branch_series!(scratch.out_y, px, py, m, scratch.f_tay, scratch.poly_buf, backend)
         _t_b = PHI_TIMING_ENABLED[] ? time_ns() : 0
         PHI_TIMING_ENABLED[] && (_ns_ser_branch_acc += _t_b - _t_a)
+
+        # --- Shared px-power table for this anchor ---------------------------
+        # px^0 .. px^max_basis_i, built ONCE here and reused by every one of
+        # the n monomial_series_coeffs! calls below (the (i,0)/(i,1) basis
+        # columns, which repeat the same i values, AND the rhs normalised
+        # monomial call further down) — instead of each call rebuilding its
+        # own power chain from scratch. one_b/max_basis_i were already
+        # computed above for the x^i-mod-u cache, so this is just one more
+        # O(max_basis_i) pass reusing them.
+        scratch.pxpow_buf[1] = one_b
+        for e in 1:max_basis_i
+            @inbounds scratch.pxpow_buf[e + 1] = fpmul_b(backend, scratch.pxpow_buf[e], px)
+        end
 
         # Emit each basis column's series coefficients directly into A_mat
         for col_idx in 1:n

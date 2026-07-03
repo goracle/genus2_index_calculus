@@ -104,10 +104,24 @@ function MontgomeryArith(p::Int)
     p > 0 || throw(ArgumentError("MontgomeryArith: p must be positive, got $p"))
     isodd(p) || throw(ArgumentError("MontgomeryArith: p must be odd (Montgomery requires gcd(p,R)=1), got $p"))
 
-    # p_inv = p⁻¹ mod 2^64.  Julia's invmod handles UInt64 correctly.
-    p64     = UInt64(p)
-    p_inv   = invmod(p64, typemax(UInt64))   # p * p_inv ≡ 1 mod 2^64
-    p_inv_neg = UInt64(0) - p_inv            # negate mod 2^64 to get -p⁻¹
+    # p_inv = p⁻¹ mod 2^64 — NOT mod typemax(UInt64) = 2^64-1. Those are two
+    # different moduli (2^64-1 isn't even prime; p⁻¹ mod it is meaningless
+    # for REDC, which needs the inverse mod R = 2^64 exactly). Julia's
+    # invmod(::UInt64,::UInt64) can't directly target 2^64 since it doesn't
+    # fit in a UInt64 argument, so we use Newton's iteration for the inverse
+    # mod a power of two instead — the standard REDC technique:
+    #   x_{n+1} = x_n * (2 - p*x_n) mod 2^64
+    # x=1 is already correct mod 2 (p is odd ⇒ p*1 ≡ 1 mod 2), and each
+    # Newton step doubles the number of correct low bits: 1→2→4→8→16→32→64,
+    # so 6 iterations suffice. All arithmetic here is UInt64, so wraparound
+    # on overflow IS reduction mod 2^64 — no explicit masking needed.
+    p64   = UInt64(p)
+    x     = UInt64(1)
+    for _ in 1:6   # 1 correct bit → 64 correct bits in 6 doublings
+        x = x * (UInt64(2) - p64 * x)
+    end
+    p_inv     = x                      # p64 * p_inv ≡ 1 (mod 2^64)
+    p_inv_neg = UInt64(0) - p_inv      # negate mod 2^64 to get -p⁻¹
 
     # r2 = R² mod p = (2^64 mod p)² mod p.
     # Compute via Int128 to avoid overflow.

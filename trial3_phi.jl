@@ -94,6 +94,9 @@ function check_lp1_stored(
     end
     @printf("[ASSERT %s tid=%d] FAIL on 1-LP store: fb_sum+atom(lp_pt) != neg_al·G+neg_be·T  lp_pt=%s  neg_al=%d neg_be=%d row_w=%d\n",
             tag, Threads.threadid(), string(lp_pt), neg_al, neg_be, length(row))
+    @printf("[DIAG %s tid=%d] D_fb=%s  D_lp=atom(lp_pt)=%s  D_lhs=%s  D_rhs=%s  row=%s  fb_pts=%s\n",
+            tag, Threads.threadid(), string(D_fb), string(D_lp), string(D_lhs), string(D_rhs),
+            string(row), string([fb[idx] for idx in keys(row)]))
     return false
 end
 

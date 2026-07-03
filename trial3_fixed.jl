@@ -34,6 +34,10 @@ include("kernel_phase_diag.jl")   # phase-transition instrumentation
 include("early_solve_monitor.jl") # online b₁ / 2-core / DSU diagnostics
 
 include("trial3_config.jl")
+include("trial3_fp_backend.jl")   # FpArith / StandardArith / MontgomeryArith —
+                                   # must precede trial3_phi_general.jl below,
+                                   # whose default args (backend::FpArith =
+                                   # StandardArith(p)) are resolved at include-time.
 include("lp1_conj_lsm.jl")
 include("trial3_phi.jl")
 include("trial3_phi_general.jl")  # step_phi_k: K-anchor general phi construction
@@ -485,7 +489,8 @@ function index_calculus_walk(G::Div2, T::Div2;
                              post_conj_stride  ::Int  = 0,
                              phi_timing        ::Bool = false,
                              sweep_diag        ::Int  = 0,
-                             sweep_diag_candidates::Int = 200)
+                             sweep_diag_candidates::Int = 200,
+                             backend           ::FpArith = MontgomeryArith(p))
 
     t_walk_start = time()
 
@@ -686,7 +691,8 @@ function index_calculus_walk(G::Div2, T::Div2;
                 anchor_tuple_weight_decay=anchor_tuple_weight_decay,
                 alpha_gate=alpha_gate,
                 conj_dataset=conj_dataset,
-                sweep_collector=sweep_collector)
+                sweep_collector=sweep_collector,
+                backend=backend)
         end
     end
     t_phase2_done = time() - t_phase2_start
@@ -708,7 +714,7 @@ function index_calculus_walk(G::Div2, T::Div2;
             # Int here (unlike scratch_by_k's Val-unrolled construction above),
             # so this is a dynamically-dispatched type instantiation. That's fine:
             # it happens once, off the hot path, after the walk is already done.
-            scratch_sweep = init_scratch_caches!(ThreadScratchpad{anchor_tuple_size}(), p)
+            scratch_sweep = init_scratch_caches!(ThreadScratchpad{anchor_tuple_size}(), p, backend)
             n_cand = min(sweep_diag_candidates, length(fb))
             candidates = shuffle(fb)[1:n_cand]
             run_anchor_sweep_experiment(scratch_sweep, base_tuples, anchor_tuple_size, candidates, pt2idx)
@@ -1388,13 +1394,6 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
     println("="^70, "\n")
 
 
-    # Initialise phi_general module-level caches (F_POLY_DESC and RR_BASIS_CACHE)
-    # on the main thread before any workers are spawned.  F_POLY and p are both
-    # module-level constants available here.  anchor_tuple_size is the max k used;
-    # pre-warming RR_BASIS_CACHE for k=1..anchor_tuple_size means workers will
-    # never race on the Dict insertion paths inside rr_basis_cached.
-    init_phi_general_caches!(anchor_tuple_size)
-
     t_pts = time()
     pts   = sample_curve_points(100)
     t_pts_done = time() - t_pts
@@ -1423,6 +1422,42 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
 
     @assert jac_isid(jac_mul_raw(G, ell)) "G does not have order ell"
     println("  Confirmed: ell*G = identity\n")
+
+    # F_p arithmetic backend, wired to Montgomery form for the whole run.
+    # This is THE ONE place the backend is chosen — every worker, cache init,
+    # and scratch init downstream takes `FP_BACKEND` explicitly instead of
+    # falling back to each function's own StandardArith(p) default.
+    #
+    # MUST be built here, AFTER frobenius_find_ell_generator returns — NOT
+    # earlier. frobenius_jacobian_order (called from frobenius_find_ell_generator
+    # above) can advance the global p via `global p = p_try` to satisfy
+    # --min-ell-bits, and does so silently (only a printed "advanced to p="
+    # note, no exception). Building FP_BACKEND before that point captures a
+    # stale p: MontgomeryArith(p).p_inv_neg and .r2 would be computed for the
+    # WRONG modulus, and F_POLY_DESC (built from FP_BACKEND right below) would
+    # be converted via to_repr under the wrong prime too. validate_backend
+    # would still pass in that scenario — it only checks the backend against
+    # itself internally consistently, it has no way to know p is stale — so
+    # this class of bug is otherwise silent until the residual check fails
+    # deep in the walk.
+    FP_BACKEND = MontgomeryArith(p)
+    # Cross-check every Montgomery op against StandardArith before any worker
+    # touches it — throws AssertionError immediately on mismatch rather than
+    # letting a REDC bug silently corrupt relations deep into a multi-hour walk.
+    @printf("[DIAG main2] FP_BACKEND = %s  p=%d  objectid=%s\n",
+            FP_BACKEND, FP_BACKEND.p, string(objectid(FP_BACKEND)))
+    flush(stdout)
+    validate_backend(FP_BACKEND)
+    @printf("  [backend] MontgomeryArith(p) validated OK — using Montgomery REDC arithmetic\n")
+    flush(stdout)
+
+    # Initialise phi_general module-level caches (F_POLY_DESC and RR_BASIS_CACHE)
+    # on the main thread before any workers are spawned. anchor_tuple_size is
+    # the max k used; pre-warming RR_BASIS_CACHE for k=1..anchor_tuple_size
+    # means workers will never race on the Dict insertion paths inside
+    # rr_basis_cached.
+    init_phi_general_caches!(anchor_tuple_size, FP_BACKEND)
+
 
     # ── O(p) birthday mode (≈ √ell, since ell ~ p² for genus 2) ──────────────
     # Phase 2 is T-independent, so the table is built once and amortized over
@@ -1594,6 +1629,9 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
                 Sys.maxrss()/1024^2, Base.gc_live_bytes()/1024^2)
         flush(stdout)
 
+        @printf("[DIAG main2] about to spawn phase2_worker (amortized) with FP_BACKEND=%s objectid=%s\n",
+                FP_BACKEND, string(objectid(FP_BACKEND)))
+        flush(stdout)
         @sync for tid in 1:n_workers_pre
             Threads.@spawn begin
                 results_pre[tid] = phase2_worker(
@@ -1616,7 +1654,8 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
                     anchor_tuple_weight_decay=anchor_tuple_weight_decay,
                     alpha_gate=alpha_gate_pre,
                     conj_dataset=conj_dataset,
-                    sweep_collector=sweep_collector_pre)
+                    sweep_collector=sweep_collector_pre,
+                    backend=FP_BACKEND)
             end
         end
 
@@ -1631,7 +1670,7 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
                 @printf("  captured %d/%d base tuples at k=%d\n", n_captured_pre, sweep_diag, anchor_tuple_size)
                 flush(stdout)
                 base_tuples_pre = anchor_sweep_base_tuples(sweep_collector_pre)
-                scratch_sweep_pre = init_scratch_caches!(ThreadScratchpad{anchor_tuple_size}(), p)
+                scratch_sweep_pre = init_scratch_caches!(ThreadScratchpad{anchor_tuple_size}(), p, FP_BACKEND)
                 n_cand_pre = min(sweep_diag_candidates, length(fb_pre))
                 candidates_pre = shuffle(fb_pre)[1:n_cand_pre]
                 run_anchor_sweep_experiment(scratch_sweep_pre, base_tuples_pre, anchor_tuple_size, candidates_pre, pt2idx_pre)
@@ -1789,6 +1828,7 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
                                   solve=true, guided=true,
                                   enable_lp2=enable_lp2,
                                   enable_lp2_conj=enable_lp2_conj,
+                                  backend=FP_BACKEND,
                                   max_lp2_nodes=max_lp2_nodes,
                                   max_lp2_conj_nodes=max_lp2_conj_nodes,
                                   use_cycle_union=use_cycle_union,
