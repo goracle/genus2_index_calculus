@@ -142,8 +142,27 @@ mutable struct PhiTimingStats
     ns_residual      ::Int64
     n_fail_build     ::Int64   # build_phi_general! returned false (incl. guard rejects)
     n_fail_residual  ::Int64   # phi_residual_general! returned false, or u_RS_is_fail
+    # --- fine-grained sub-timers inside the "series" bucket ---
+    # These are a BREAKDOWN of ns_series, not additional time: for any
+    # given call, ns_series == ns_ser_setup + ns_ser_branch + ns_ser_cols
+    # + ns_ser_rhs (modulo the early-exit guard paths, which only bump
+    # ns_ser_setup since nothing past the guard runs). Added to find out
+    # which piece inside build_phi_general!'s pre-gauss work actually
+    # costs the ~2154ns/call the top-level series timer was reporting,
+    # since no single component looked obviously large enough on
+    # inspection alone (see conversation: the pxpow-precompute attempt at
+    # eliminating eval_monomial's per-column re-derivation of px^i netted
+    # ~0% because max_basis_i is tiny at K=1 — the real cost is somewhere
+    # else in this bucket and needs to be measured, not guessed).
+    ns_ser_setup     ::Int64   # fill!(seen_counts/visited_flags), dedup double-loop, guard checks
+    ns_ser_branch    ::Int64   # branch_series! calls (all anchors)
+    ns_ser_cols      ::Int64   # the for col_idx in 1:n / monomial_series_coeffs! + A_mat write loop
+    ns_ser_rhs       ::Int64   # normalized-monomial monomial_series_coeffs! + rhs_vec write
+    ns_ser_mumford   ::Int64   # Mumford rows (reduce_monomial_mod_D_cached x (n+1)) — runs AFTER
+                                # the anchor loop, still inside the series-timed region. Missed
+                                # on the first pass at this instrumentation; added once noticed.
 end
-PhiTimingStats() = PhiTimingStats(0, 0, 0, 0, 0, 0)
+PhiTimingStats() = PhiTimingStats(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
 
 const PHI_TIMING = Ref{Vector{PhiTimingStats}}(PhiTimingStats[])
 
@@ -162,6 +181,8 @@ function reset_phi_timing!()
     for s in PHI_TIMING[]
         s.n_calls = 0; s.ns_series = 0; s.ns_gauss = 0; s.ns_residual = 0
         s.n_fail_build = 0; s.n_fail_residual = 0
+        s.ns_ser_setup = 0; s.ns_ser_branch = 0; s.ns_ser_cols = 0; s.ns_ser_rhs = 0
+        s.ns_ser_mumford = 0
     end
     return nothing
 end
@@ -178,6 +199,11 @@ function print_phi_timing_report(; label::String = "")
         agg.ns_residual      += s.ns_residual
         agg.n_fail_build     += s.n_fail_build
         agg.n_fail_residual  += s.n_fail_residual
+        agg.ns_ser_setup     += s.ns_ser_setup
+        agg.ns_ser_branch    += s.ns_ser_branch
+        agg.ns_ser_cols      += s.ns_ser_cols
+        agg.ns_ser_rhs       += s.ns_ser_rhs
+        agg.ns_ser_mumford   += s.ns_ser_mumford
     end
     total_ns = agg.ns_series + agg.ns_gauss + agg.ns_residual
     if total_ns == 0
@@ -200,6 +226,28 @@ function print_phi_timing_report(; label::String = "")
             agg.ns_gauss    / max(1, agg.n_calls),
             agg.ns_residual / max(1, agg.n_calls),
             total_ns        / max(1, agg.n_calls))
+    # Sub-breakdown of the series bucket. ns_ser_* should sum to ~ns_series
+    # (small discrepancy possible from the guard early-exit paths and
+    # time_ns() call overhead itself, ~20-40ns per call site — 4 extra
+    # time_ns() calls were added for this breakdown, on top of the 4
+    # already used for series/gauss/residual, so expect total_ns's
+    # absolute per-call numbers to creep up slightly vs pre-breakdown
+    # reports; the RATIOS below are what matters).
+    ser_sum = max(1, agg.ns_ser_setup + agg.ns_ser_branch + agg.ns_ser_cols + agg.ns_ser_rhs + agg.ns_ser_mumford)
+    @printf("[PHI-TIMING%s] series breakdown:  setup=%.1f%%  branch_series=%.1f%%  cols_loop=%.1f%%  rhs=%.1f%%  mumford=%.1f%%  (of series total)\n",
+            tag,
+            100.0 * agg.ns_ser_setup    / ser_sum,
+            100.0 * agg.ns_ser_branch   / ser_sum,
+            100.0 * agg.ns_ser_cols     / ser_sum,
+            100.0 * agg.ns_ser_rhs      / ser_sum,
+            100.0 * agg.ns_ser_mumford  / ser_sum)
+    @printf("[PHI-TIMING%s] series breakdown mean (ns):  setup=%.0f  branch_series=%.0f  cols_loop=%.0f  rhs=%.0f  mumford=%.0f\n",
+            tag,
+            agg.ns_ser_setup    / max(1, agg.n_calls),
+            agg.ns_ser_branch   / max(1, agg.n_calls),
+            agg.ns_ser_cols     / max(1, agg.n_calls),
+            agg.ns_ser_rhs      / max(1, agg.n_calls),
+            agg.ns_ser_mumford  / max(1, agg.n_calls))
     @printf("[PHI-TIMING%s] --> ceiling on any linear-solve speedup (rank-1/SMW/Cramer): a Xx speedup on gauss\n",
             tag)
     @printf("[PHI-TIMING%s]     buys at most %.1f%% off the series+gauss+residual total (gauss share above).\n",
@@ -465,34 +513,6 @@ end
         for _ in 2:i; r = fpmul_b(backend, r, px); end
         r
     end
-    j == 0 && return fp_b(backend, xi)
-    return fpmul_b(backend, xi, py)
-end
-
-# ---------------------------------------------------------------------------
-#  eval_monomial with a precomputed px^e table — O(1) lookup instead of
-#  re-deriving px^i from px^1 on every call.
-#
-#  PERFORMANCE NOTE: this is a SEPARATE METHOD (multiple dispatch), not a
-#  Union{AbstractVector{Int},Nothing}-typed optional argument on the method
-#  above. An earlier version tried the Union-default approach and made
-#  things WORSE (series time went from ~2155ns to ~3375ns per call):
-#  `pxpow !== nothing` is a runtime branch the compiler can't specialize
-#  away since callers pass either a real table or `nothing` depending on a
-#  runtime `m` value, so every call paid dynamic-dispatch overhead that
-#  dwarfed the one small multiply-loop being eliminated. Multiple dispatch
-#  on two concrete methods lets the compiler pick the right specialization
-#  at the CALL SITE (build_phi_general! always calls this exact method with
-#  a concrete AbstractVector{Int}, never a Union), so there's no runtime
-#  branch here at all.
-#
-#  `pxpow[e+1]` must equal px^e in `backend`'s representation, for
-#  e = 0 .. i — see build_phi_general!'s per-anchor precompute.
-# ---------------------------------------------------------------------------
-@inline function eval_monomial(i::Int, j::Int, px::Int, py::Int,
-                                backend::FpArith,
-                                pxpow  ::AbstractVector{Int})::Int
-    @inbounds xi = pxpow[i + 1]
     j == 0 && return fp_b(backend, xi)
     return fpmul_b(backend, xi, py)
 end
@@ -1083,10 +1103,9 @@ function monomial_series_coeffs!(out::AbstractVector{Int}, i::Int, j::Int,
                                  binom_scratch::AbstractVector{Int},
                                  pxpow_scratch::AbstractVector{Int},
                                  small_inv::AbstractVector{Int},
-                                 backend::FpArith,
-                                 pxpow_precomp::AbstractVector{Int})::Nothing
+                                 backend::FpArith = StandardArith(p))::Nothing
     if m == 1
-        out[1] = eval_monomial(i, j, px, y_ser[1], backend, pxpow_precomp)
+        out[1] = eval_monomial(i, j, px, y_ser[1], backend)
         return nothing
     end
 
@@ -1274,6 +1293,18 @@ function build_phi_general!(
     # Normalized monomial index
     i_norm, j_norm = basis[nb]
 
+    # --- timing: setup phase ends here; branch/cols/rhs sub-timers
+    # accumulate locally across the (usually 1-iteration) anchor loop below
+    # and get committed to the stats struct once, right before gauss starts
+    # — avoids 3*k extra time_ns() calls per call when k>1.
+    _ns_ser_branch_acc = 0
+    _ns_ser_cols_acc   = 0
+    _ns_ser_rhs_acc    = 0
+    if PHI_TIMING_ENABLED[]
+        _t_setup_end = time_ns()
+        phi_timing_stats().ns_ser_setup += _t_setup_end - _t_series_start
+    end
+
     row_idx = 0
     for i in 1:k
         @inbounds if scratch.visited_flags[i]
@@ -1299,46 +1330,10 @@ function build_phi_general!(
         end
 
         # Compute branch series y(px+t) to order m-1 completely in-place
+        _t_a = PHI_TIMING_ENABLED[] ? time_ns() : 0
         branch_series!(scratch.out_y, px, py, m, scratch.f_tay, scratch.poly_buf, backend)
-
-        # ---------------------------------------------------------------
-        # Precompute px^0 .. px^max_basis_i ONCE per anchor, reused across
-        # every basis column below via eval_monomial's m==1 fast path.
-        # Without this, eval_monomial recomputed px^i from px^1 with a
-        # fresh loop on EVERY one of the nb=K+3 column calls even though
-        # px is identical across all of them for this anchor — this is
-        # the redundant work behind the "series" bucket in PHI-TIMING.
-        # Borrows poly_buf[901:901+max_basis_i] as scratch — well clear of
-        # poly_buf's live range during this call (F_POLY deflation only
-        # touches indices 1..n_fdesc, n_fdesc = length(F_POLY) = 6 for the
-        # current genus-2 quintic; offset 900 leaves generous headroom even
-        # if F_POLY's degree changes later).
-        #
-        # CORRECTNESS/PERFORMANCE FIX: this table used to be conditionally
-        # `nothing` when m>1, with monomial_series_coeffs!'s pxpow_precomp
-        # parameter typed Union{AbstractVector{Int},Nothing}. That Union
-        # made eval_monomial (called nb times per anchor) type-unstable —
-        # the compiler couldn't specialize through the nothing-vs-view
-        # branch since `m` is a runtime value, so every call paid dynamic
-        # dispatch overhead FAR exceeding the one small multiply-loop this
-        # was meant to remove (measured regression: series went from
-        # ~2155ns to ~3375ns per call — worse than before this "fix").
-        # Fixed by always building a concrete AbstractVector{Int} table
-        # (m>1 is the rare tangency case anyway, and its code path never
-        # reads this table, so building it unconditionally costs only the
-        # cheap O(max_basis_i) loop below with zero downstream dispatch
-        # cost) and dropping Union{...,Nothing} from the signature entirely.
-        # ---------------------------------------------------------------
-        if 901 + max_basis_i > length(scratch.poly_buf)
-            throw(ArgumentError("build_phi_general!: max_basis_i=$max_basis_i too large " *
-                "for the poly_buf[901:...] pxpow_anchor scratch range — K_MAX grew past " *
-                "what this optimization was sized for; widen poly_buf or move the offset"))
-        end
-        @inbounds scratch.poly_buf[901] = to_repr(backend, 1)   # px^0
-        for e in 1:max_basis_i
-            @inbounds scratch.poly_buf[901 + e] = fpmul_b(backend, scratch.poly_buf[900 + e], px)
-        end
-        pxpow_anchor = @view scratch.poly_buf[901:901 + max_basis_i]
+        _t_b = PHI_TIMING_ENABLED[] ? time_ns() : 0
+        PHI_TIMING_ENABLED[] && (_ns_ser_branch_acc += _t_b - _t_a)
 
         # Emit each basis column's series coefficients directly into A_mat
         for col_idx in 1:n
@@ -1346,22 +1341,26 @@ function build_phi_general!(
             monomial_series_coeffs!(
                 scratch.ser_buf, ii, jj, px, scratch.out_y, m, 
                 scratch.xi_buf, scratch.binom_buf, scratch.pxpow_buf,
-                scratch.small_inv, backend, pxpow_anchor
+                scratch.small_inv, backend
             )
             for s in 0:(m - 1)
                 @inbounds scratch.A_mat[row_idx + s + 1, col_idx] = scratch.ser_buf[s + 1]
             end
         end
+        _t_c = PHI_TIMING_ENABLED[] ? time_ns() : 0
+        PHI_TIMING_ENABLED[] && (_ns_ser_cols_acc += _t_c - _t_b)
 
         # Normalised-monomial series → rhs for this anchor's m rows.
         monomial_series_coeffs!(
             scratch.ser_buf, i_norm, j_norm, px, scratch.out_y, m, 
             scratch.xi_buf, scratch.binom_buf, scratch.pxpow_buf,
-            scratch.small_inv, backend, pxpow_anchor
+            scratch.small_inv, backend
         )
         for s in 0:(m - 1)
             @inbounds scratch.rhs_vec[row_idx + s + 1] = fpsub_b(backend, 0, scratch.ser_buf[s + 1])
         end
+        _t_d = PHI_TIMING_ENABLED[] ? time_ns() : 0
+        PHI_TIMING_ENABLED[] && (_ns_ser_rhs_acc += _t_d - _t_c)
 
         row_idx += m
     end
@@ -1369,6 +1368,7 @@ function build_phi_general!(
     # --- Mumford rows: const (row k+1) and x-coeff (row k+2) ---
     # Use cached x^i mod u table populated above — O(1) lookup per column
     # instead of re-running the recurrence from scratch for each basis element.
+    _t_mumford_start = PHI_TIMING_ENABLED[] ? time_ns() : 0
     for col_idx in 1:n
         @inbounds i, j = basis[col_idx]
         r0, r1 = reduce_monomial_mod_D_cached(i, j, v0_b, v1_b, scratch, backend)
@@ -1380,6 +1380,15 @@ function build_phi_general!(
     rn0, rn1 = reduce_monomial_mod_D_cached(i_norm, j_norm, v0_b, v1_b, scratch, backend)
     @inbounds scratch.rhs_vec[k + 1] = fpsub_b(backend, 0, rn0)
     @inbounds scratch.rhs_vec[k + 2] = fpsub_b(backend, 0, rn1)
+
+    if PHI_TIMING_ENABLED[]
+        _t_mumford_end = time_ns()
+        st0 = phi_timing_stats()
+        st0.ns_ser_branch  += _ns_ser_branch_acc
+        st0.ns_ser_cols    += _ns_ser_cols_acc
+        st0.ns_ser_rhs     += _ns_ser_rhs_acc
+        st0.ns_ser_mumford += _t_mumford_end - _t_mumford_start
+    end
 
     # In-place Gauss solver on the live n×n submatrix of the preallocated buffers.
     # Passing the full Matrix/Vector + explicit n avoids @views SubArray allocation.
