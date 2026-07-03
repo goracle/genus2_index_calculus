@@ -110,6 +110,103 @@ using StaticArrays   # MMatrix, MVector — stack-allocated mutable arrays for
 
 const RR_BASIS_CACHE = Dict{Int, Vector{NTuple{2,Int}}}()
 
+# ---------------------------------------------------------------------------
+#  PhiTimingStats — per-thread cumulative timers splitting a step_phi_k! call
+#  into its three cost centers:
+#
+#    series   — build_phi_general!'s anchor-row construction: branch_series!
+#                + monomial_series_coeffs! for each anchor (everything before
+#                the linear solve; also covers the guard checks and the
+#                x^i mod u(x) cache fill, which are cheap relative to these).
+#    gauss    — fp_gauss! only (the (K+2)x(K+2) elimination itself).
+#    residual — phi_residual_general! (E,Y,N construction, divmod, root-
+#                finding). Everything after build_phi_general! returns.
+#
+#  Purpose: answer "what fraction of a walk step is the linear solve?"
+#  before investing in rank-1/SMW/Cramer-style updates to fp_gauss! — that
+#  work only pays off in proportion to gauss/(series+gauss+residual).
+#
+#  Zero-alloc, opt-in: gated behind PHI_TIMING_ENABLED so normal runs pay a
+#  single Bool check (no time_ns() calls, no accumulation) when disabled.
+#  One PhiTimingStats per thread, indexed by threadid() — each thread only
+#  ever touches its own slot, so no locks/atomics are needed.
+# ---------------------------------------------------------------------------
+using Printf
+
+const PHI_TIMING_ENABLED = Ref(false)
+
+mutable struct PhiTimingStats
+    n_calls          ::Int64   # step_phi_k! invocations observed (success or fail)
+    ns_series        ::Int64
+    ns_gauss         ::Int64
+    ns_residual      ::Int64
+    n_fail_build     ::Int64   # build_phi_general! returned false (incl. guard rejects)
+    n_fail_residual  ::Int64   # phi_residual_general! returned false, or u_RS_is_fail
+end
+PhiTimingStats() = PhiTimingStats(0, 0, 0, 0, 0, 0)
+
+const PHI_TIMING = Ref{Vector{PhiTimingStats}}(PhiTimingStats[])
+
+# Call once at worker startup (after Threads.nthreads() is known), same
+# spot init_scratch_caches!/scratch_by_k get built.
+function init_phi_timing!(nthreads::Int = Threads.nthreads())
+    PHI_TIMING[] = [PhiTimingStats() for _ in 1:nthreads]
+    return nothing
+end
+
+@inline function phi_timing_stats()::PhiTimingStats
+    @inbounds PHI_TIMING[][Threads.threadid()]
+end
+
+function reset_phi_timing!()
+    for s in PHI_TIMING[]
+        s.n_calls = 0; s.ns_series = 0; s.ns_gauss = 0; s.ns_residual = 0
+        s.n_fail_build = 0; s.n_fail_residual = 0
+    end
+    return nothing
+end
+
+# Prints the aggregate split + per-call means. Call this from the same
+# periodic report_worker_progress cadence, or on demand from the REPL.
+function print_phi_timing_report(; label::String = "")
+    isempty(PHI_TIMING[]) && (@printf("[PHI-TIMING] not initialized — call init_phi_timing!() first\n"); return)
+    agg = PhiTimingStats()
+    for s in PHI_TIMING[]
+        agg.n_calls         += s.n_calls
+        agg.ns_series        += s.ns_series
+        agg.ns_gauss         += s.ns_gauss
+        agg.ns_residual      += s.ns_residual
+        agg.n_fail_build     += s.n_fail_build
+        agg.n_fail_residual  += s.n_fail_residual
+    end
+    total_ns = agg.ns_series + agg.ns_gauss + agg.ns_residual
+    if total_ns == 0
+        @printf("[PHI-TIMING%s] no samples (is PHI_TIMING_ENABLED[] set?)\n", isempty(label) ? "" : " $label")
+        return
+    end
+    tag = isempty(label) ? "" : " $label"
+    @printf("[PHI-TIMING%s] n=%d  build_fail=%d (%.2f%%)  resid_fail=%d (%.2f%%)\n",
+            tag, agg.n_calls,
+            agg.n_fail_build,    100.0 * agg.n_fail_build    / max(1, agg.n_calls),
+            agg.n_fail_residual, 100.0 * agg.n_fail_residual / max(1, agg.n_calls))
+    @printf("[PHI-TIMING%s] share of solve+residual time:  series=%.1f%%  gauss=%.1f%%  residual=%.1f%%\n",
+            tag,
+            100.0 * agg.ns_series   / total_ns,
+            100.0 * agg.ns_gauss    / total_ns,
+            100.0 * agg.ns_residual / total_ns)
+    @printf("[PHI-TIMING%s] mean per call (ns):  series=%.0f  gauss=%.0f  residual=%.0f  total=%.0f\n",
+            tag,
+            agg.ns_series   / max(1, agg.n_calls),
+            agg.ns_gauss    / max(1, agg.n_calls),
+            agg.ns_residual / max(1, agg.n_calls),
+            total_ns        / max(1, agg.n_calls))
+    @printf("[PHI-TIMING%s] --> ceiling on any linear-solve speedup (rank-1/SMW/Cramer): a Xx speedup on gauss\n",
+            tag)
+    @printf("[PHI-TIMING%s]     buys at most %.1f%% off the series+gauss+residual total (gauss share above).\n",
+            tag, 100.0 * agg.ns_gauss / total_ns)
+    flush(stdout)
+end
+
 # Called once after F_POLY is defined (e.g. at the bottom of the including
 # file, or in main()).  Pre-populates caches for k=1..max_k_expected.
 #
@@ -1011,8 +1108,17 @@ function build_phi_general!(
         # ell>=45-bit conditions as the fpmul bug above. Routed through
         # fpmul so it gets the Int128 widening too.
         upx = fp(fpmul(px, px) + fpmul(u1, px) + u0)
-        upx == 0 && return false
+        if upx == 0
+            PHI_TIMING_ENABLED[] && (phi_timing_stats().n_fail_build += 1)
+            return false
+        end
     end
+
+    # --- timing: series phase starts here (guard checks above are cheap
+    # and excluded so they don't dilute the branch_series!/monomial_series_coeffs!
+    # signal; folding them in either direction doesn't change the conclusion
+    # at the precision we need). ---
+    _t_series_start = PHI_TIMING_ENABLED[] ? time_ns() : 0
 
     # Zero out dedup workspaces — fill! on MVector is a single memset.
     fill!(scratch.seen_counts, 0)
@@ -1040,6 +1146,7 @@ function build_phi_general!(
         end
         # Guard: tangency (mult ≥ 2) requires py ≠ 0.
         @inbounds if m >= 2 && anchors[i][2] == 0
+            PHI_TIMING_ENABLED[] && (phi_timing_stats().n_fail_build += 1)
             return false
         end
     end
@@ -1135,7 +1242,19 @@ function build_phi_general!(
     # A_mat::MMatrix{K+2,K+2,Int} and rhs_vec::MVector{K+2,Int} are stack-allocated.
     # fp_gauss! gets N=K+2 from the type — no runtime dispatch, no Val{} indirection.
     # prefix_buf::MVector{K+2,Int} (scratch.prefix_buf) replaces the xi_buf reuse.
-    fp_gauss!(scratch.A_mat, scratch.rhs_vec, scratch.prefix_buf, backend) || return false
+    if PHI_TIMING_ENABLED[]
+        _t_gauss_start = time_ns()
+        st = phi_timing_stats()
+        st.ns_series += _t_gauss_start - _t_series_start
+        gauss_ok = fp_gauss!(scratch.A_mat, scratch.rhs_vec, scratch.prefix_buf, backend)
+        st.ns_gauss += time_ns() - _t_gauss_start
+        if !gauss_ok
+            st.n_fail_build += 1
+            return false
+        end
+    else
+        fp_gauss!(scratch.A_mat, scratch.rhs_vec, scratch.prefix_buf, backend) || return false
+    end
 
     # Solution is in scratch.rhs_vec[1:n], still in backend form — convert
     # back to standard form here so coeffs_out matches build_phi_general!'s
@@ -2858,7 +2977,14 @@ function step_phi_k!(
     #  of scope (phi_residual_general! and the poly_* helpers).
     # ---------------------------------------------------------------------------
 
+    if PHI_TIMING_ENABLED[]
+        phi_timing_stats().n_calls += 1
+    end
+
     # 1. Build the phi function coefficients directly into scratch.coeffs_buf.
+    #    (series/gauss timing + n_fail_build accounting happens inside
+    #    build_phi_general! itself, see the PHI_TIMING_ENABLED branch around
+    #    the fp_gauss! call and the two early-guard return points.)
     success_build = build_phi_general!(scratch, anchors, u0, u1, v0, v1; backend=backend)
     !success_build && return false
 
@@ -2869,11 +2995,25 @@ function step_phi_k!(
     basis = rr_basis_cached(nb)::Vector{NTuple{2, Int}}
 
     # 3. Compute residual factors in-place using preallocated buffers.
-    success_residual = phi_residual_general!(scratch, basis, anchors, u0, u1)
-    !success_residual && return false
-
-    if scratch.u_RS_is_fail[1]
-        return false
+    if PHI_TIMING_ENABLED[]
+        _t_resid_start = time_ns()
+        success_residual = phi_residual_general!(scratch, basis, anchors, u0, u1)
+        st = phi_timing_stats()
+        st.ns_residual += time_ns() - _t_resid_start
+        if !success_residual
+            st.n_fail_residual += 1
+            return false
+        end
+        if scratch.u_RS_is_fail[1]
+            st.n_fail_residual += 1
+            return false
+        end
+    else
+        success_residual = phi_residual_general!(scratch, basis, anchors, u0, u1)
+        !success_residual && return false
+        if scratch.u_RS_is_fail[1]
+            return false
+        end
     end
 
     # roots_out, u_RS, v_RS are produced entirely by phi_residual_general!

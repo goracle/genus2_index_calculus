@@ -386,6 +386,15 @@ function report_worker_progress(tid, elapsed, s::WorkerStats, rel_counter, rel_t
             lsm_bday_report(shared_lp1_conj, p, r_conj)
         end
     end
+    # PHI-TIMING: series/gauss/residual split for step_phi_k! — see
+    # trial3_phi_general.jl's PhiTimingStats. No-op unless PHI_TIMING_ENABLED[]
+    # was flipped on (set it once before spawning workers, e.g. right after
+    # init_scratch_caches!/scratch_by_k setup, and call init_phi_timing!()
+    # with the run's actual thread count). Printed once (tid==2) same as the
+    # conj-table occupancy line above, since this is a cross-thread aggregate,
+    # not per-thread — the underlying PHI_TIMING vector already sums every
+    # thread's slot in print_phi_timing_report.
+    tid == 2 && PHI_TIMING_ENABLED[] && print_phi_timing_report(label = "t=$(round(elapsed, digits=1))s")
     flush(stdout)
 end
 
