@@ -251,8 +251,88 @@ F_POLY_DESC = Int[]   # filled in by init_phi_general_caches!
 const SQRT_FP_NONSQUARE = -1   # sentinel: caller checks sq < 0
 
 @inline function sqrt_fp_hot(a::Int)::Int
-    r = sqrt_fp(a)
+    r = sqrt_fp_fast(a)
     r === nothing ? SQRT_FP_NONSQUARE : r::Int
+end
+
+# ---------------------------------------------------------------------------
+#  sqrt_fp_fast(a) -> Union{Int,Nothing}
+#
+#  Drop-in replacement for trial1's sqrt_fp, used only on the hot walk path
+#  (find_roots_and_points_inplace!, phi_residual_mumford_general). trial1's
+#  sqrt_fp itself is UNTOUCHED (battle-tested, never modify) — this is a
+#  separate function living in trial3_phi_general.jl.
+#
+#  MOTIVATION (from PHI-TIMING output showing residual at 57.7% of solve+
+#  gauss+residual time): for p ≡ 3 (mod 4) — the common case — trial1's
+#  sqrt_fp does TWO full modular exponentiations:
+#    1. powermod(a, (p-1)/2, p) == 1   [Euler criterion: is a a QR?]
+#    2. powermod(a, (p+1)/4, p)        [the actual candidate root r]
+#  and then verifies r² == a. Since deg==2 residuals dominate every k=1
+#  walk step (the most heavily-weighted tuple length under the geometric
+#  round-robin decay), this sqrt is called on essentially every step, so
+#  its cost is not incidental.
+#
+#  THE REDUNDANCY: with r = a^((p+1)/4) mod p,
+#      r² = a^((p+1)/2) = a · a^((p-1)/2) mod p.
+#    - If a is a QR:      a^((p-1)/2) = 1   ⟹  r² = a
+#    - If a is a non-QR:  a^((p-1)/2) = -1  ⟹  r² = -a  (≠ a, since a≠0)
+#  So the verification step "r² == a" ALREADY implies the Euler criterion —
+#  computing it separately beforehand is pure duplicated work. Verified
+#  both algebraically and against 2000 random trials across a range of
+#  p ≡ 3 (mod 4) primes (see planning session) before landing this.
+#
+#  This eliminates one full powermod call (~half the p≡3 mod 4 sqrt cost)
+#  on the dominant residual code path. The p ≡ 1 (mod 4) Tonelli-Shanks
+#  branch is copied over unchanged (its main loop already uses fpmul
+#  chains rather than repeated powermod calls, so there's no analogous
+#  redundancy to remove there — see NOTE below).
+#
+#  NOTE on p ≡ 1 mod 4: still calls powermod 3 times up front (for z's
+#  Euler check inside the "find a non-residue" loop, plus c, t, r) — those
+#  are NOT redundant with each other (z, a, and the exponents Q/(Q+1)/2
+#  are all different bases/exponents), so no analogous simplification
+#  applies there without a deeper algorithmic change. If p ≡ 1 mod 4 in
+#  your run, this function is bit-identical in cost to trial1's sqrt_fp;
+#  the win here is specific to p ≡ 3 mod 4.
+# ---------------------------------------------------------------------------
+function sqrt_fp_fast(a::Int)::Union{Int,Nothing}
+    a = fp(a);  a == 0 && return 0
+    if p % 4 == 3
+        r = powermod(a, (p + 1) >> 2, p)
+        return fpmul(r, r) == a ? r : nothing
+    end
+    # p ≡ 1 (mod 4): Tonelli-Shanks, unchanged from trial1's sqrt_fp.
+    #
+    # BUG FIX: the Euler criterion check (a^((p-1)/2) == 1) that trial1's
+    # sqrt_fp runs BEFORE dispatching to either branch was only reproduced
+    # here for the p≡3 branch (folded into the r²==a self-check). It was
+    # missing entirely from this p≡1 branch. Tonelli-Shanks' inner loop
+    # (`t==1 && return r` / the order-finding while loop below it) assumes
+    # `a` IS a quadratic residue; for a non-residue that assumption breaks
+    # and `t` can fail to ever reach 1, making the loop run forever. This
+    # is what caused the observed hang — every worker thread parked inside
+    # sqrt_fp_fast with p ≡ 1 (mod 4) and a non-residue `a`. Restored the
+    # check.
+    powermod(a, (p - 1) >> 1, p) == 1 || return nothing
+    Q, S = p - 1, 0
+    while Q % 2 == 0; Q >>= 1; S += 1; end
+    z = 2
+    while powermod(z, (p - 1) >> 1, p) != p - 1; z += 1; end
+    M2 = S
+    c = powermod(z, Q, p)
+    t = powermod(a, Q, p)
+    r = powermod(a, (Q + 1) >> 1, p)
+    while true
+        t == 1 && return r
+        i, tmp = 1, fpmul(t, t)
+        while tmp != 1; tmp = fpmul(tmp, tmp); i += 1; end
+        b = powermod(c, Int128(1) << (M2 - i - 1), p)
+        M2 = i
+        c = fpmul(b, b)
+        t = fpmul(t, c)
+        r = fpmul(r, b)
+    end
 end
 
 # Backend-aware wrapper: converts from backend representation to standard form
@@ -377,10 +457,25 @@ end
 #  Evaluate a monomial x^i * y^j at an affine point (px, py).
 # ---------------------------------------------------------------------------
 @inline function eval_monomial(i::Int, j::Int, px::Int, py::Int,
-                                backend::FpArith = StandardArith(p))::Int
+                                backend::FpArith = StandardArith(p),
+                                pxpow  ::Union{AbstractVector{Int},Nothing} = nothing)::Int
     # x^0 = 1 must be the backend's own representation of 1 (to_repr(backend,1)),
     # not the literal Int 1 — for MontgomeryArith those differ (R mod p vs 1).
-    xi = i == 0 ? to_repr(backend, 1) : begin
+    #
+    # OPTIMIZATION: when `pxpow` is supplied (pxpow[e+1] = px^e in backend
+    # form, precomputed once per anchor by the caller — see build_phi_general!),
+    # look up px^i instead of re-deriving it with a fresh `for _ in 2:i` loop.
+    # Without this, every one of the nb=K+3 basis-column calls per anchor
+    # recomputed px^i from px^1 independently, even though px is identical
+    # across all of them within one build_phi_general! call — pure duplicated
+    # work (this is the "series" bucket the PHI-TIMING report flags at ~12%
+    # of solve+gauss+residual time; the win is call-local, NOT a persistent
+    # cache across walk steps, since px changes every step).
+    xi = if pxpow !== nothing
+        @inbounds pxpow[i + 1]
+    elseif i == 0
+        to_repr(backend, 1)
+    else
         r = px
         for _ in 2:i; r = fpmul_b(backend, r, px); end
         r
@@ -975,9 +1070,10 @@ function monomial_series_coeffs!(out::AbstractVector{Int}, i::Int, j::Int,
                                  binom_scratch::AbstractVector{Int},
                                  pxpow_scratch::AbstractVector{Int},
                                  small_inv::AbstractVector{Int},
-                                 backend::FpArith = StandardArith(p))::Nothing
+                                 backend::FpArith = StandardArith(p),
+                                 pxpow_precomp::Union{AbstractVector{Int},Nothing} = nothing)::Nothing
     if m == 1
-        out[1] = eval_monomial(i, j, px, y_ser[1], backend)
+        out[1] = eval_monomial(i, j, px, y_ser[1], backend, pxpow_precomp)
         return nothing
     end
 
@@ -1192,13 +1288,50 @@ function build_phi_general!(
         # Compute branch series y(px+t) to order m-1 completely in-place
         branch_series!(scratch.out_y, px, py, m, scratch.f_tay, scratch.poly_buf, backend)
 
+        # ---------------------------------------------------------------
+        # Precompute px^0 .. px^max_basis_i ONCE per anchor, reused across
+        # every basis column below via eval_monomial's m==1 fast path.
+        # Without this, eval_monomial recomputed px^i from px^1 with a
+        # fresh loop on EVERY one of the nb=K+3 column calls even though
+        # px is identical across all of them for this anchor — this is
+        # the redundant work behind the "series" bucket in PHI-TIMING.
+        # Borrows poly_buf[901:901+max_basis_i] as scratch — well clear of
+        # poly_buf's live range during this call (F_POLY deflation only
+        # touches indices 1..n_fdesc, n_fdesc = length(F_POLY) = 6 for the
+        # current genus-2 quintic; offset 900 leaves generous headroom even
+        # if F_POLY's degree changes later).  Only built when m==1 (the
+        # dominant case — no tangency); the m>1 path already has its own
+        # pxpow_scratch handling inside monomial_series_coeffs! and doesn't
+        # need this table.
+        # ---------------------------------------------------------------
+        local pxpow_anchor
+        if m == 1
+            # Defensive bound: poly_buf is length 1024 and this table is
+            # borrowed at offset 901. 901 + max_basis_i must stay within
+            # bounds — matches the existing x_pow_mod_u_r0/r1 comment's
+            # "safe past any realistic K_MAX (up to ~60)" margin with
+            # significant headroom (this allows max_basis_i up to 122).
+            if 901 + max_basis_i > length(scratch.poly_buf)
+                throw(ArgumentError("build_phi_general!: max_basis_i=$max_basis_i too large " *
+                    "for the poly_buf[901:...] pxpow_anchor scratch range — K_MAX grew past " *
+                    "what this optimization was sized for; widen poly_buf or move the offset"))
+            end
+            @inbounds scratch.poly_buf[901] = to_repr(backend, 1)   # px^0
+            for e in 1:max_basis_i
+                @inbounds scratch.poly_buf[901 + e] = fpmul_b(backend, scratch.poly_buf[900 + e], px)
+            end
+            pxpow_anchor = @view scratch.poly_buf[901:901 + max_basis_i]
+        else
+            pxpow_anchor = nothing
+        end
+
         # Emit each basis column's series coefficients directly into A_mat
         for col_idx in 1:n
             @inbounds ii, jj = basis[col_idx]
             monomial_series_coeffs!(
                 scratch.ser_buf, ii, jj, px, scratch.out_y, m, 
                 scratch.xi_buf, scratch.binom_buf, scratch.pxpow_buf,
-                scratch.small_inv, backend
+                scratch.small_inv, backend, pxpow_anchor
             )
             for s in 0:(m - 1)
                 @inbounds scratch.A_mat[row_idx + s + 1, col_idx] = scratch.ser_buf[s + 1]
@@ -1209,7 +1342,7 @@ function build_phi_general!(
         monomial_series_coeffs!(
             scratch.ser_buf, i_norm, j_norm, px, scratch.out_y, m, 
             scratch.xi_buf, scratch.binom_buf, scratch.pxpow_buf,
-            scratch.small_inv, backend
+            scratch.small_inv, backend, pxpow_anchor
         )
         for s in 0:(m - 1)
             @inbounds scratch.rhs_vec[row_idx + s + 1] = fpsub_b(backend, 0, scratch.ser_buf[s + 1])
@@ -3057,18 +3190,41 @@ end
 #  u_RS / v_RS / coeffs_out etc. off the SAME scratch instance that was
 #  actually used for this step, without a second runtime-k lookup.
 # ---------------------------------------------------------------------------
-@generated function step_phi_dispatch!(
+#  NOTE ON `backend`: this used to be a bare @generated function with no
+#  `backend` parameter at all, so every call silently fell through to
+#  step_phi_k!'s own default (StandardArith(p)) no matter what the caller
+#  wanted. Since step_phi_dispatch! is the ONLY call site phase2_worker
+#  uses for k>=2 steps (see trial3_phase2.jl), that made MontgomeryArith
+#  completely unreachable from the actual walk loop even though the
+#  interior functions (build_phi_general!, fp_gauss!, etc.) were already
+#  backend-parametrized. Fixed by splitting into a thin runtime wrapper
+#  that accepts `backend` as an ordinary keyword and an inner @generated
+#  function that forwards it into every unrolled branch — code generation
+#  still only depends on the TYPE of scratch_by_k, so specialization is
+#  unaffected; `backend` is just plumbed through as an extra positional arg.
+function step_phi_dispatch!(
+    scratch_by_k ::Tuple,
+    k_cur        ::Int,
+    anchors,
+    u0::Int, u1::Int, v0::Int, v1::Int;
+    backend::FpArith = StandardArith(p)
+)
+    return _step_phi_dispatch_gen!(scratch_by_k, k_cur, anchors, u0, u1, v0, v1, backend)
+end
+
+@generated function _step_phi_dispatch_gen!(
     scratch_by_k ::T,
     k_cur        ::Int,
     anchors,
-    u0::Int, u1::Int, v0::Int, v1::Int
+    u0::Int, u1::Int, v0::Int, v1::Int,
+    backend      ::FpArith
 ) where {T<:Tuple}
     n = length(T.parameters)
     ex = :(error("step_phi_dispatch!: k_cur=", k_cur, " out of range 1:", $n))
     for i in n:-1:1
         ex = quote
             if k_cur == $i
-                (step_phi_k!(scratch_by_k[$i], anchors, u0, u1, v0, v1),
+                (step_phi_k!(scratch_by_k[$i], anchors, u0, u1, v0, v1; backend=backend),
                  scratch_by_k[$i])
             else
                 $ex

@@ -1568,6 +1568,7 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
         # ── Optional diagnostics (amortized branch's own spawn site — see the
         #    identical block in index_calculus_walk; --amortized never calls
         #    that function, so this had to be wired separately here too). ────
+        n_workers_pre = Threads.nthreads()  # capture on main thread — avoids nthreads() quirk inside @spawn
         if phi_timing
             init_phi_timing!(n_workers_pre)
             PHI_TIMING_ENABLED[] = true
@@ -1585,7 +1586,6 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
                 Sys.maxrss()/1024^2, Base.gc_live_bytes()/1024^2)
         flush(stdout)
 
-        n_workers_pre = Threads.nthreads()  # capture on main thread — avoids nthreads() quirk inside @spawn
         @sync for tid in 1:n_workers_pre
             Threads.@spawn begin
                 results_pre[tid] = phase2_worker(

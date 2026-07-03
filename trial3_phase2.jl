@@ -1263,7 +1263,18 @@ function phase2_worker(G               ::Div2,
                        # walk the moment k_cur == anchor_tuple_size — no synthetic
                        # base tuples, exactly what the diagnostic's docstring asks
                        # for. Same instance must be shared across all threads.
-                       sweep_collector   ::Union{SweepCollector,Nothing} = nothing)
+                       sweep_collector   ::Union{SweepCollector,Nothing} = nothing,
+                       # F_p arithmetic backend — StandardArith(p) (default) is
+                       # bit-identical to the old hardcoded fpmul/fpinv path.
+                       # Pass MontgomeryArith(p) to switch the k>=2 general-φ hot
+                       # path (build_phi_general!, fp_gauss!, the x^i mod u(x)
+                       # cache) over to REDC multiplication. Must be the SAME
+                       # instance used to build scratch_by_k's small_inv table
+                       # below — see init_scratch_caches! in
+                       # trial3_phi_general.jl and the KNOWN LIMITATION note in
+                       # trial3_fp_backend.jl. Caller should have already run
+                       # validate_backend(backend) once before spawning workers.
+                       backend           ::FpArith = StandardArith(p))
 
     nF_cur   = length(fb)
     N_STEPS  = length(step_D)
@@ -1804,7 +1815,19 @@ function phase2_worker(G               ::Div2,
     # concrete FpT/RxT/BufT type params instead of Nothing placeholders,
     # eliminating dynamic dispatch on every Oscar dereference in
     # find_roots_and_points_inplace!.
-    scratch_by_k = ntuple(k -> init_scratch_caches!(ThreadScratchpad{k}(), p), Val(K_ceil))
+    # IMPORTANT — representation-consistency invariant (see KNOWN LIMITATION
+    # in trial3_fp_backend.jl): F_POLY_DESC is a module-level global filled
+    # once by init_phi_general_caches!(max_k, backend) and is combined inside
+    # branch_series! with backend-form px/py via fpmul_b. `backend` here must
+    # be the SAME instance (or at least the same kind + same p) as the one
+    # passed to init_phi_general_caches! by the driver before any worker was
+    # spawned — a mismatch silently mixes representations and is not
+    # reliably caught by phi_residual_general!'s remainder check. The driver
+    # should construct `backend` once, call
+    # init_phi_general_caches!(K_MAX, backend) and validate_backend(backend)
+    # before spawning threads, then pass that same `backend` into every
+    # phase2_worker(...; backend=backend) call.
+    scratch_by_k = ntuple(k -> init_scratch_caches!(ThreadScratchpad{k}(), p, backend), Val(K_ceil))
     # Kept for the handful of call sites (handle_1lp_conj!, sparse_copy!,
     # etc.) that only ever touch the K-independent `.combined_scratch` Dict
     # field and accept ThreadScratchpad{<:Any} — any one instance will do,
@@ -1935,7 +1958,7 @@ function phase2_worker(G               ::Div2,
             # General k-anchor path via the zero-allocation step_phi_k!,
             # dispatched to the ThreadScratchpad{k_cur} instance out of
             # scratch_by_k (see step_phi_dispatch! in trial3_phi_general.jl).
-            step_success, scratch_k = step_phi_dispatch!(scratch_by_k, k_cur, cur_anchors, u0, u1, v0, v1)
+            step_success, scratch_k = step_phi_dispatch!(scratch_by_k, k_cur, cur_anchors, u0, u1, v0, v1; backend=backend)
             !step_success && continue
 
             # Anchor-sweep capture: grab this real, live-walk (anchors,u0,u1,v0,v1)
