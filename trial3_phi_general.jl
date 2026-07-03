@@ -457,29 +457,42 @@ end
 #  Evaluate a monomial x^i * y^j at an affine point (px, py).
 # ---------------------------------------------------------------------------
 @inline function eval_monomial(i::Int, j::Int, px::Int, py::Int,
-                                backend::FpArith = StandardArith(p),
-                                pxpow  ::Union{AbstractVector{Int},Nothing} = nothing)::Int
+                                backend::FpArith = StandardArith(p))::Int
     # x^0 = 1 must be the backend's own representation of 1 (to_repr(backend,1)),
     # not the literal Int 1 — for MontgomeryArith those differ (R mod p vs 1).
-    #
-    # OPTIMIZATION: when `pxpow` is supplied (pxpow[e+1] = px^e in backend
-    # form, precomputed once per anchor by the caller — see build_phi_general!),
-    # look up px^i instead of re-deriving it with a fresh `for _ in 2:i` loop.
-    # Without this, every one of the nb=K+3 basis-column calls per anchor
-    # recomputed px^i from px^1 independently, even though px is identical
-    # across all of them within one build_phi_general! call — pure duplicated
-    # work (this is the "series" bucket the PHI-TIMING report flags at ~12%
-    # of solve+gauss+residual time; the win is call-local, NOT a persistent
-    # cache across walk steps, since px changes every step).
-    xi = if pxpow !== nothing
-        @inbounds pxpow[i + 1]
-    elseif i == 0
-        to_repr(backend, 1)
-    else
+    xi = i == 0 ? to_repr(backend, 1) : begin
         r = px
         for _ in 2:i; r = fpmul_b(backend, r, px); end
         r
     end
+    j == 0 && return fp_b(backend, xi)
+    return fpmul_b(backend, xi, py)
+end
+
+# ---------------------------------------------------------------------------
+#  eval_monomial with a precomputed px^e table — O(1) lookup instead of
+#  re-deriving px^i from px^1 on every call.
+#
+#  PERFORMANCE NOTE: this is a SEPARATE METHOD (multiple dispatch), not a
+#  Union{AbstractVector{Int},Nothing}-typed optional argument on the method
+#  above. An earlier version tried the Union-default approach and made
+#  things WORSE (series time went from ~2155ns to ~3375ns per call):
+#  `pxpow !== nothing` is a runtime branch the compiler can't specialize
+#  away since callers pass either a real table or `nothing` depending on a
+#  runtime `m` value, so every call paid dynamic-dispatch overhead that
+#  dwarfed the one small multiply-loop being eliminated. Multiple dispatch
+#  on two concrete methods lets the compiler pick the right specialization
+#  at the CALL SITE (build_phi_general! always calls this exact method with
+#  a concrete AbstractVector{Int}, never a Union), so there's no runtime
+#  branch here at all.
+#
+#  `pxpow[e+1]` must equal px^e in `backend`'s representation, for
+#  e = 0 .. i — see build_phi_general!'s per-anchor precompute.
+# ---------------------------------------------------------------------------
+@inline function eval_monomial(i::Int, j::Int, px::Int, py::Int,
+                                backend::FpArith,
+                                pxpow  ::AbstractVector{Int})::Int
+    @inbounds xi = pxpow[i + 1]
     j == 0 && return fp_b(backend, xi)
     return fpmul_b(backend, xi, py)
 end
@@ -1070,8 +1083,8 @@ function monomial_series_coeffs!(out::AbstractVector{Int}, i::Int, j::Int,
                                  binom_scratch::AbstractVector{Int},
                                  pxpow_scratch::AbstractVector{Int},
                                  small_inv::AbstractVector{Int},
-                                 backend::FpArith = StandardArith(p),
-                                 pxpow_precomp::Union{AbstractVector{Int},Nothing} = nothing)::Nothing
+                                 backend::FpArith,
+                                 pxpow_precomp::AbstractVector{Int})::Nothing
     if m == 1
         out[1] = eval_monomial(i, j, px, y_ser[1], backend, pxpow_precomp)
         return nothing
@@ -1299,31 +1312,33 @@ function build_phi_general!(
         # poly_buf's live range during this call (F_POLY deflation only
         # touches indices 1..n_fdesc, n_fdesc = length(F_POLY) = 6 for the
         # current genus-2 quintic; offset 900 leaves generous headroom even
-        # if F_POLY's degree changes later).  Only built when m==1 (the
-        # dominant case — no tangency); the m>1 path already has its own
-        # pxpow_scratch handling inside monomial_series_coeffs! and doesn't
-        # need this table.
+        # if F_POLY's degree changes later).
+        #
+        # CORRECTNESS/PERFORMANCE FIX: this table used to be conditionally
+        # `nothing` when m>1, with monomial_series_coeffs!'s pxpow_precomp
+        # parameter typed Union{AbstractVector{Int},Nothing}. That Union
+        # made eval_monomial (called nb times per anchor) type-unstable —
+        # the compiler couldn't specialize through the nothing-vs-view
+        # branch since `m` is a runtime value, so every call paid dynamic
+        # dispatch overhead FAR exceeding the one small multiply-loop this
+        # was meant to remove (measured regression: series went from
+        # ~2155ns to ~3375ns per call — worse than before this "fix").
+        # Fixed by always building a concrete AbstractVector{Int} table
+        # (m>1 is the rare tangency case anyway, and its code path never
+        # reads this table, so building it unconditionally costs only the
+        # cheap O(max_basis_i) loop below with zero downstream dispatch
+        # cost) and dropping Union{...,Nothing} from the signature entirely.
         # ---------------------------------------------------------------
-        local pxpow_anchor
-        if m == 1
-            # Defensive bound: poly_buf is length 1024 and this table is
-            # borrowed at offset 901. 901 + max_basis_i must stay within
-            # bounds — matches the existing x_pow_mod_u_r0/r1 comment's
-            # "safe past any realistic K_MAX (up to ~60)" margin with
-            # significant headroom (this allows max_basis_i up to 122).
-            if 901 + max_basis_i > length(scratch.poly_buf)
-                throw(ArgumentError("build_phi_general!: max_basis_i=$max_basis_i too large " *
-                    "for the poly_buf[901:...] pxpow_anchor scratch range — K_MAX grew past " *
-                    "what this optimization was sized for; widen poly_buf or move the offset"))
-            end
-            @inbounds scratch.poly_buf[901] = to_repr(backend, 1)   # px^0
-            for e in 1:max_basis_i
-                @inbounds scratch.poly_buf[901 + e] = fpmul_b(backend, scratch.poly_buf[900 + e], px)
-            end
-            pxpow_anchor = @view scratch.poly_buf[901:901 + max_basis_i]
-        else
-            pxpow_anchor = nothing
+        if 901 + max_basis_i > length(scratch.poly_buf)
+            throw(ArgumentError("build_phi_general!: max_basis_i=$max_basis_i too large " *
+                "for the poly_buf[901:...] pxpow_anchor scratch range — K_MAX grew past " *
+                "what this optimization was sized for; widen poly_buf or move the offset"))
         end
+        @inbounds scratch.poly_buf[901] = to_repr(backend, 1)   # px^0
+        for e in 1:max_basis_i
+            @inbounds scratch.poly_buf[901 + e] = fpmul_b(backend, scratch.poly_buf[900 + e], px)
+        end
+        pxpow_anchor = @view scratch.poly_buf[901:901 + max_basis_i]
 
         # Emit each basis column's series coefficients directly into A_mat
         for col_idx in 1:n
