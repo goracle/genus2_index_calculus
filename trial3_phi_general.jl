@@ -125,6 +125,18 @@ const SETUP_DIAG_VERBOSE = get(ENV, "JULIA_TRIAL3_SETUP_DIAG", "0") == "1"
 const BPG_DIAG_COUNT = Threads.Atomic{Int}(0)
 const BPG_DIAG_MAX   = SETUP_DIAG_VERBOSE ? 200 : 0
 
+# compute_branch_series!'s tangent-slope identity check (2*py*y' == f'(px))
+# independently re-derives f'(px) from F_POLY_DESC via its own Horner pass,
+# duplicating the exact work fill_f_tay! just did, on EVERY m>=2 call —
+# i.e. every anchor, every walk step, for the entire run. That duplication
+# was deliberate while fill_f_tay!/branch_series! were under active
+# development (see their bugfix comments) and is worth keeping available,
+# but it should not tax every production run once both are trusted. Set
+# JULIA_TRIAL3_BRANCH_SERIES_CHECK=1 to re-enable it for debugging; the
+# cheap constant-term check (out_y[1] == py) in compute_branch_series!
+# always runs regardless, since it costs one comparison, not a Horner pass.
+const BRANCH_SERIES_TANGENT_CHECK = get(ENV, "JULIA_TRIAL3_BRANCH_SERIES_CHECK", "0") == "1"
+
 # ---------------------------------------------------------------------------
 #  PhiTimingStats — per-thread cumulative timers splitting a step_phi_k! call
 #  into its three cost centers:
@@ -1234,6 +1246,22 @@ mutable struct ThreadScratchpad{K, N2, N3, L}
     #    Populated once by init_scratch_caches!(scratch, p) before walk starts.
     small_inv       ::Vector{Int}          # small_inv[s] = fpinv(s), s=1..32
 
+    # 9b. Precomputed backend-repr(power) table for fill_f_tay!'s derivative
+    #     Horner loop: deriv_power_cache[power+1] = to_repr(backend, power)
+    #     for power = 0..deg. fill_f_tay! needs to_repr(backend, power) for
+    #     every power = deg, deg-1, ..., 1 on EVERY call (every anchor, every
+    #     walk step) but the set of powers themselves is fixed by F_POLY_DESC
+    #     alone — deg only depends on the curve, not on px — so recomputing
+    #     to_repr(backend, power) fresh each call is pure waste under
+    #     MontgomeryArith (a real multiply into Montgomery form) and even
+    #     under StandardArith (an avoidable no-op call). Populated once by
+    #     init_scratch_caches! right after F_POLY_DESC is known, same as
+    #     small_inv above. Sized to hold every power in F_POLY_DESC's degree
+    #     range; index is power+1 so power=0 (the constant term, never
+    #     actually looked up by fill_f_tay! since it `break`s at power==0,
+    #     but kept for a clean 1-indexed table) has a slot too.
+    deriv_power_cache::Vector{Int}
+
     # 10. Preallocated buffer for Oscar polynomial coefficient construction in
     #     find_roots_and_points_inplace!.  Residual degree is a fixed invariant
     #     of the RR-basis construction — always 2 (u_len ≤ 3), independent of K
@@ -1297,6 +1325,7 @@ mutable struct ThreadScratchpad{K, N2, N3, L}
             sizehint!(Dict{Int,Int}(), 8),
             Ref{Any}(nothing), Ref{Any}(nothing), zeros(Bool, 1),
             zeros(Int, 32),
+            zeros(Int, 32),   # deriv_power_cache — populated by init_scratch_caches!, same lifetime/sizing as small_inv just above
             Ref{Any}(nothing),
             zeros(Int, 32), zeros(Int, 32),   # x_pow_mod_u_r0, x_pow_mod_u_r1
             MVector{N2,Int}(zeros(Int,N2)), MVector{N2,Int}(zeros(Int,N2)), MVector{N2,Int}(zeros(Int,N2))  # y_batch_x, y_batch_E, y_batch_Y
@@ -1421,6 +1450,24 @@ function init_scratch_caches!(scratch::ThreadScratchpad{K}, p_val::Int,
     end
     for s in 1:32
         scratch.small_inv[s] = to_repr(backend, fpinv(s))
+    end
+
+    # deriv_power_cache: precompute to_repr(backend, power) for every power
+    # fill_f_tay!'s derivative Horner loop will ever need (power = 1..deg,
+    # deg = length(F_POLY_DESC)-1), so that hot loop becomes pure
+    # fpmul_b/fpadd_b with zero to_repr calls per invocation. Requires
+    # F_POLY_DESC already populated — same ordering requirement fill_f_tay!
+    # itself asserts on every call, checked here too so an init-ordering
+    # regression (init_scratch_caches! run before init_phi_general_caches!)
+    # fails loudly at setup time with a clear message, rather than silently
+    # caching an empty/stale table that fill_f_tay! would then read wrong
+    # derivative coefficients from without any assert catching it (a plain
+    # zeros(Int,32) cache and a genuinely-empty-curve cache look identical).
+    @assert !isempty(F_POLY_DESC) "init_scratch_caches!: F_POLY_DESC is empty — init_phi_general_caches!(K_MAX, backend) must be called by the driver before init_scratch_caches! (see the ordering note at scratch_by_k's construction site in trial3_phase2.jl)"
+    deg = length(F_POLY_DESC) - 1
+    @assert length(scratch.deriv_power_cache) >= deg + 1 "init_scratch_caches!: deriv_power_cache (length $(length(scratch.deriv_power_cache))) too small for deg=$deg — bump its fixed allocation size in the ThreadScratchpad constructor"
+    for power in 0:deg
+        scratch.deriv_power_cache[power + 1] = to_repr(backend, power)
     end
 
     # Oscar polynomial ring over GF(p) — built once, reused forever per thread.
@@ -1671,8 +1718,8 @@ end
 end
 
 # ---------------------------------------------------------------------------
-#  fill_f_tay!(f_tay, px, backend) — populate the F_x(px) entry branch_series!
-#  needs for its m=2 (single-tangency) path.
+#  fill_f_tay!(f_tay, px, deriv_power_cache, backend) — populate the F_x(px)
+#  entry branch_series! needs for its m=2 (single-tangency) path.
 #
 #  For the hyperelliptic model F(x,y) = y^2 - f(x), the pure-x partial
 #  derivative is F_x(x,y) = -f'(x) — independent of y, since f(x) contributes
@@ -1688,10 +1735,24 @@ end
 #  using Horner's method entirely in backend representation so this composes
 #  correctly with the Montgomery-vs-Standard backend already threaded
 #  through every other hot-path function in this file.
+#
+#  PERFORMANCE: this runs on every m>=2 branch_series! call — every anchor,
+#  every phi construction, every walk step, for the whole run — so it's one
+#  of the hottest loops in the pipeline (see the "branch_series" bucket in
+#  PhiTimingStats). The set of `power` values here (deg, deg-1, ..., 1) is
+#  fixed by F_POLY_DESC's degree alone, independent of px, so
+#  to_repr(backend, power) was pure repeated work: under MontgomeryArith a
+#  real multiply into Montgomery form on every iteration of every call;
+#  even under StandardArith (to_repr = identity) an avoidable function-call
+#  no-op at this call volume. deriv_power_cache is precomputed once per
+#  thread by init_scratch_caches! (scratch.deriv_power_cache[power+1] =
+#  to_repr(backend, power)) and passed in here, turning this loop into pure
+#  fpmul_b/fpadd_b with zero to_repr calls.
 # ---------------------------------------------------------------------------
 @inline function fill_f_tay!(
     f_tay::AbstractVector{Int},
     px::Int,
+    deriv_power_cache::AbstractVector{Int},
     backend::FpArith
 )
     @assert length(f_tay) >= 2 "fill_f_tay!: f_tay buffer (length $(length(f_tay))) too small to hold f_tay[2] (F_x(px))"
@@ -1713,20 +1774,25 @@ end
     px_b = px
     deg  = length(F_POLY_DESC) - 1   # F_POLY_DESC has deg+1 coefficients, descending
 
+    @assert length(deriv_power_cache) >= deg + 1 "fill_f_tay!: deriv_power_cache (length $(length(deriv_power_cache))) too small for deg=$deg — was init_scratch_caches! run against a different F_POLY_DESC than this call is using?"
+
     # Derivative coefficients (descending): d/dx of c_k * x^k is k*c_k*x^(k-1).
     # Horner-evaluate sum_{k=1}^{deg} k*c_k*px^(k-1) directly, without
     # materializing a separate derivative-coefficient array — same
-    # zero-allocation discipline as the rest of the hot path.
-    acc = to_repr(backend, 0)
+    # zero-allocation discipline as the rest of the hot path. zero_b is the
+    # k=0 slot of the same cache (deriv_power_cache[1] = to_repr(backend,0)),
+    # reused here instead of a fresh to_repr(backend, 0) call.
+    @inbounds zero_b = deriv_power_cache[1]
+    acc = zero_b
     @inbounds for idx in 1:deg   # idx corresponds to F_POLY_DESC[idx], power = deg-idx+1
         power = deg - idx + 1
         power == 0 && break     # constant term has zero derivative; nothing left to add
-        coeff_k = fpmul_b(backend, to_repr(backend, power), F_POLY_DESC[idx])
+        coeff_k = fpmul_b(backend, deriv_power_cache[power + 1], F_POLY_DESC[idx])
         acc = fpadd_b(backend, fpmul_b(backend, acc, px_b), coeff_k)
     end
 
     # F_x(px) = -f'(px)
-    @inbounds f_tay[2] = fpsub_b(backend, to_repr(backend, 0), acc)
+    @inbounds f_tay[2] = fpsub_b(backend, zero_b, acc)
 
     return nothing
 end
@@ -1738,7 +1804,7 @@ end
     scratch,
     backend
 )
-    m >= 2 && fill_f_tay!(scratch.f_tay, px, backend)
+    m >= 2 && fill_f_tay!(scratch.f_tay, px, scratch.deriv_power_cache, backend)
     branch_series!(out_y, px, py, m, scratch.f_tay, scratch.poly_buf, backend)
 
     # key invariant: constant term must match backend evaluation
@@ -1759,7 +1825,20 @@ end
     # WHICH of the many moving pieces (f_tay's sign, Fy's sign, the
     # column-fill for x^i's derivative coefficient, the RHS derivative
     # row) is actually wrong.
-    if m >= 2
+    #
+    # PERFORMANCE: this re-derives f'(px) via the exact same O(deg) Horner
+    # pass fill_f_tay! just ran two lines above — on every m>=2 call, i.e.
+    # every anchor of every phi construction of every walk step for the
+    # whole run. That duplication earned its keep while fill_f_tay! and
+    # branch_series! were under active development (see their own bugfix
+    # comments — this assert is what would have caught those bugs at the
+    # source rather than downstream). Now that both are trusted, gate the
+    # duplicate work behind BRANCH_SERIES_TANGENT_CHECK so production runs
+    # don't pay for it; set JULIA_TRIAL3_BRANCH_SERIES_CHECK=1 to bring it
+    # back for debugging a fill_f_tay!/branch_series! regression. The
+    # constant-term check above (y0 == py_raw) always runs — it's one
+    # comparison, not a Horner pass, so there's nothing to gate there.
+    if BRANCH_SERIES_TANGENT_CHECK && m >= 2
         px_raw = from_repr(backend, px)
         deg = length(F_POLY_DESC) - 1
         fprime_acc = to_repr(backend, 0)

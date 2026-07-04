@@ -38,6 +38,30 @@ mutable struct LP1ConjLSM{V}
     spill_read_io ::Union{Cint, Nothing}        # open for reading via pread; separate fd
     spill_size    ::Int                        # current file size in bytes
 
+    # Reference count of in-flight UNLOCKED pread(2) calls against the fd
+    # currently stored in spill_read_io — see the "speculative probe" fd
+    # snapshots in conj_insert_or_pop! (own-disk and cross-peer paths) and
+    # _sc_disk_find. Those paths intentionally read spill_read_io once under
+    # file_lock, then unlock and issue pread(2) WITHOUT holding any lock
+    # (that's the whole point — don't stall other threads on this thread's
+    # disk latency). That's safe as long as the fd value they captured stays
+    # open and pointing at the same file for the duration of their read.
+    # _lsm_compact!'s Phase 3 is the ONE place that ever closes spill_read_io
+    # while the LSM is live (to atomically swap in the post-compaction file);
+    # without this refcount it could close the fd — and immediately have the
+    # OS hand that exact integer to an unrelated newly-opened file elsewhere
+    # in the process — while a speculative pread snapshotted from before the
+    # swap was still in flight on the old fd number. That produced exactly
+    # the "Bad file descriptor" crash (EBADF) seen in production once in a
+    # while: a genuine cross-thread race, not a transient disk hiccup.
+    # Protocol: every unlocked-fd-snapshot site increments this (while still
+    # holding file_lock, right after reading spill_read_io) and decrements it
+    # in a finally after its pread(s) complete. _lsm_compact!'s Phase 3 holds
+    # file_lock (so no NEW snapshot can be taken) and spin-waits for this to
+    # hit zero (draining any snapshots taken just before it reacquired the
+    # lock) before closing the old fd. See _sc_spill_read_drain_and_close!.
+    spill_read_refcount ::Threads.Atomic{Int}
+
     # Bloom filter — per-LSM (used for set_bloom! writes only)
     bloom       ::BloomFilter
 
@@ -151,6 +175,7 @@ function LP1ConjLSM{V}(
         RunMeta[], ReentrantLock(), spill_path, spill_io,
         nothing,   # spill_read_io opened lazily on first flush
         0,         # spill_size
+        Threads.Atomic{Int}(0),   # spill_read_refcount
         BloomFilter(bloom_cap),
         BloomFilter(64),           # global_bloom placeholder — caller replaces
         Any[],                     # peers — caller populates
@@ -399,6 +424,68 @@ function _lsm_flush_shard!(sc::LP1ConjLSM{V}, si::Int) where V
 end
 
 # ---------------------------------------------------------------------------
+#  Read-refcount protocol for spill_read_io (see the field's doc comment on
+#  the struct for the full race this closes).
+#
+#  _sc_snapshot_read_fd(sc) — the ONLY sanctioned way to grab (runs, fd) for
+#  an UNLOCKED speculative pread. Takes file_lock just long enough to copy
+#  the two fields and bump the refcount, then returns unlocked. Pair with
+#  _sc_release_read_fd!(sc) in a finally once the pread(s) are done.
+#
+#  _sc_spill_read_drain_and_close!(sc) — used only by _lsm_compact!'s Phase
+#  3, which already holds file_lock at the call site. Because file_lock is
+#  held, no NEW call to _sc_snapshot_read_fd can proceed (it needs the same
+#  lock) — so the refcount can only be draining, never growing, while this
+#  spins. Once it hits zero, every previously-snapshotted fd value is
+#  guaranteed to have finished its pread(s), so the old fd is safe to close.
+# ---------------------------------------------------------------------------
+@inline function _sc_snapshot_read_fd(sc::LP1ConjLSM)
+    lock(sc.file_lock)
+    runs_snap = sc.runs
+    fd_snap   = sc.spill_read_io
+    fd_snap !== nothing && Threads.atomic_add!(sc.spill_read_refcount, 1)
+    unlock(sc.file_lock)
+    (runs_snap, fd_snap)
+end
+
+# Non-blocking variant for cross-peer probing, where the whole point is to
+# never stall on a busy peer's lock (see the cross-peer probe comment in
+# conj_insert_or_pop!). Returns (nothing, nothing) if the trylock fails —
+# callers already treat that the same as "peer has no runs / no fd yet".
+@inline function _sc_try_snapshot_read_fd(sc::LP1ConjLSM)
+    trylock(sc.file_lock) || return (nothing, nothing)
+    try
+        runs_snap = sc.runs
+        fd_snap   = sc.spill_read_io
+        fd_snap !== nothing && Threads.atomic_add!(sc.spill_read_refcount, 1)
+        return (runs_snap, fd_snap)
+    finally
+        unlock(sc.file_lock)
+    end
+end
+
+@inline function _sc_release_read_fd!(sc::LP1ConjLSM)
+    Threads.atomic_sub!(sc.spill_read_refcount, 1)
+    nothing
+end
+
+function _sc_spill_read_drain_and_close!(sc::LP1ConjLSM)
+    # Caller must already hold sc.file_lock (both call sites below do).
+    old_fd = sc.spill_read_io
+    old_fd === nothing && return
+    # Spin-wait for every reader that snapshotted `old_fd` before we took
+    # file_lock to finish its pread(s). Bounded in practice: a single 48-byte
+    # pread completes in microseconds, and no new snapshot can be taken while
+    # we hold file_lock, so this drains monotonically to zero.
+    while sc.spill_read_refcount[] > 0
+        yield()
+    end
+    ccall(:close, Cint, (Cint,), old_fd::Cint)
+    sc.spill_read_io = nothing
+    nothing
+end
+
+# ---------------------------------------------------------------------------
 #  Compact all runs into a single sorted run via k-way merge.
 #
 #  LOCKING CONTRACT: caller must NOT hold file_lock.  This function
@@ -541,10 +628,18 @@ function _lsm_compact!(sc::LP1ConjLSM)
         sc.runs[i].tombs = old_tombs
     end
 
-    if sc.spill_read_io !== nothing
-        ccall(:close, Cint, (Cint,), sc.spill_read_io::Cint)
-        sc.spill_read_io = nothing
-    end
+    # BUGFIX (the "Bad file descriptor" / EBADF race): don't just close
+    # spill_read_io and reopen — another thread may have snapshotted this
+    # exact fd value via _sc_snapshot_read_fd a moment ago (for one of the
+    # UNLOCKED speculative pread paths in conj_insert_or_pop!/_sc_disk_find)
+    # and still be mid-pread on it. Closing out from under that read either
+    # hard-crashes it with EBADF (if the fd number goes unused) or, worse,
+    # silently redirects it into whatever unrelated file the OS immediately
+    # reassigns that same fd number to. _sc_spill_read_drain_and_close!
+    # spin-waits (while still holding file_lock, so no NEW snapshot can be
+    # taken) until every in-flight snapshot's refcount has been released,
+    # THEN closes — see spill_read_refcount's doc comment on the struct.
+    _sc_spill_read_drain_and_close!(sc)
     sc.spill_read_io = _open_direct(sc.spill_path)
     _sc_fadvise_dontneed!(sc)
     unlock(sc.file_lock)
@@ -802,16 +897,25 @@ function conj_insert_or_pop!(sc::LP1ConjLSM{V}, si::Int,
     # already accepts an equivalent class of miss via trylock-skip. So this is
     # consistent with the existing tolerance level of the algorithm, not a new
     # correctness hole.
+    #
+    # BUGFIX (EBADF race): fd_snap must be obtained via
+    # _sc_snapshot_read_fd (which bumps sc.spill_read_refcount before
+    # unlocking) and released via _sc_release_read_fd! once the speculative
+    # pread(s) below are done — otherwise _lsm_compact!'s Phase 3 can close
+    # this exact fd out from under the in-flight pread. See
+    # spill_read_refcount's doc comment on the struct for the full race.
     if !isempty(sc.runs) && bloom_maybe_has(sc.bloom, fp)
-        lock(sc.file_lock)
-        runs_snap = sc.runs
-        fd_snap   = sc.spill_read_io
-        unlock(sc.file_lock)
+        runs_snap, fd_snap = _sc_snapshot_read_fd(sc)
 
         if fd_snap !== nothing
             spec_buf = Vector{UInt8}(undef, RECORD_BYTES)
-            spec_found, _, _, _, _, _, _ =
-                _lsm_disk_find(runs_snap, fd_snap::Cint, spec_buf, key, fp)
+            local spec_found
+            try
+                spec_found, _, _, _, _, _, _ =
+                    _lsm_disk_find(runs_snap, fd_snap::Cint, spec_buf, key, fp)
+            finally
+                _sc_release_read_fd!(sc)
+            end
 
             if spec_found
                 lock(sc.file_lock)
@@ -908,22 +1012,26 @@ function conj_insert_or_pop!(sc::LP1ConjLSM{V}, si::Int,
             # as the hot-table check above — a busy peer is skipped exactly
             # as it was before, we just no longer make peer B pay for A's
             # I/O latency while we decide whether there's anything to confirm.
+            #
+            # BUGFIX (EBADF race): same fix as the own-disk probe above —
+            # fd_snap must come from _sc_try_snapshot_read_fd (bumps
+            # peer_lsm.spill_read_refcount) and be released via
+            # _sc_release_read_fd! once this thread's unlocked pread(s) on it
+            # are done, so peer_lsm's own _lsm_compact! can't close this fd
+            # while we're still reading it. Non-blocking (trylock, not lock)
+            # to preserve the "never stall on a busy peer" property.
             if !isempty(peer_lsm.runs)
-                runs_snap = nothing
-                fd_snap   = nothing
-                if trylock(peer_lsm.file_lock)
-                    try
-                        runs_snap = peer_lsm.runs
-                        fd_snap   = peer_lsm.spill_read_io
-                    finally
-                        unlock(peer_lsm.file_lock)
-                    end
-                end
+                runs_snap, fd_snap = _sc_try_snapshot_read_fd(peer_lsm)
 
                 if runs_snap !== nothing && fd_snap !== nothing
                     spec_buf = Vector{UInt8}(undef, RECORD_BYTES)
-                    spec_found, _, _, _, _, _, _ =
-                        _lsm_disk_find(runs_snap, fd_snap::Cint, spec_buf, key, fp)
+                    local spec_found
+                    try
+                        spec_found, _, _, _, _, _, _ =
+                            _lsm_disk_find(runs_snap, fd_snap::Cint, spec_buf, key, fp)
+                    finally
+                        _sc_release_read_fd!(peer_lsm)
+                    end
 
                     if spec_found && trylock(peer_lsm.file_lock)
                         try
