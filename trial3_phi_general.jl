@@ -649,7 +649,28 @@ function rr_basis_cached(n_basis::Int)::Vector{NTuple{2,Int}}
 end
 
 # ---------------------------------------------------------------------------
-#  Evaluate a monomial x^i * y^j at an affine point (px, py).
+#  eval_monomial(i, j, px, py, scratch, backend) — NOT a generic point
+#  evaluator, despite the name/old doc comment. This evaluates x^i*y^j via
+#  reduce_monomial_mod_D_cached, i.e. by reducing x^i MODULO THE DIVISOR
+#  u(x) currently cached in scratch.x_pow_mod_u_r0/r1 (populated by
+#  build_phi_general!'s build_xmodu_cache! call for THIS walk step's
+#  (u0,u1)), then combining with py. This is mathematically equivalent to
+#  evaluating x^i*y^j at (px,py) ONLY WHEN px IS A ROOT OF THAT SPECIFIC
+#  u(x) — e.g. when (px,py) is one of the two points the current Mumford
+#  divisor D=(u,v) represents. It is NOT a substitute for direct
+#  evaluation at an arbitrary point (an anchor, say) that has no required
+#  relationship to u(x).
+#
+#  CAUGHT BUG: step_phi_k!'s "PHI VANISHING CHECK (ANCHORS)" used to call
+#  this to check phi(anchor)==0 for the walk's factor-base anchor points —
+#  points with no relationship to u(x) — which is exactly the misuse this
+#  comment warns against. That check now evaluates directly via powermod
+#  instead. This function currently has no callers; if you're about to add
+#  one, first ask whether px is actually guaranteed to be a root of
+#  whatever u(x) is cached in scratch at that point in the call — if not,
+#  use a direct powermod-based evaluation instead (see step_phi_k!'s PHI
+#  VANISHING CHECK or build_phi_general!'s self-verification loop for the
+#  pattern), not this function.
 # ---------------------------------------------------------------------------
 @inline function eval_monomial(
     i::Int, j::Int,
@@ -802,6 +823,34 @@ function fp_gauss!(A::MMatrix{N,N,Int}, b::MVector{N,Int},
                    prefix_buf::MVector{N,Int},
                    backend::FpArith = StandardArith(p))::Bool where N
     n = N   # compile-time constant; loop bounds become literals
+
+    # DIAGNOSTIC SNAPSHOT: capture A/b exactly as build_phi_general! handed
+    # them to us, BEFORE any forward-elimination mutation. Without this,
+    # the failure assert below can only print `A` at the moment pivot
+    # search fails — by which point columns 1..col-1 have ALREADY been
+    # triangularized in place. That conflates two very different failure
+    # modes that look identical in the post-elimination printout:
+    #   (a) FILL BUG: build_phi_general! never wrote a nonzero into column
+    #       `col` for ANY row, even before elimination touched anything —
+    #       a genuine bug in fill_monomial_block!/fill_mumford_block!.
+    #   (b) RANK DEFICIENCY: the raw system has a perfectly normal-looking
+    #       column `col`, but the n rows are linearly dependent, so
+    #       ordinary elimination legitimately zeroes out that pivot
+    #       candidate by the time it's checked. This points at an
+    #       incorrect dimension/basis-size assumption upstream (e.g. nb
+    #       doesn't actually match the true dimension of the RR space this
+    #       system is supposed to pin down), NOT a column-fill bug.
+    # These require completely different fixes, and up to now nothing in
+    # this function could tell them apart — the assert message guessed at
+    # "structural bug in how build_phi_general! fills column X" even
+    # though the evidence (post-elimination A) can't actually distinguish
+    # (a) from (b). Snapshot A0/b0 now so the failure message can show
+    # both the raw and post-elimination states side by side and make that
+    # distinction explicit instead of asserting a specific culprit that
+    # the available evidence doesn't actually support.
+    A0 = copy(A)
+    b0 = copy(b)
+
     # --- Forward pass: eliminate below the diagonal, cross-multiply only ---
     for col in 1:n
         pivot_row = 0
@@ -840,7 +889,18 @@ function fp_gauss!(A::MMatrix{N,N,Int}, b::MVector{N,Int},
                fails_this_col / s.n_gauss_fail_forward_pivot > 0.9
                 col_vals = [A[row, col] for row in col:n]
                 full_matrix_rows = [ntuple(j -> A[row, j], n) for row in 1:n]
-                @assert false "fp_gauss!: N=$n system's column $col has been ALL-ZERO for rows $col:$n in $fails_this_col of $(s.n_gauss_fail_forward_pivot) forward-pivot failures so far (>90%, threshold 50+) — this is not 'special position anchors', this is a structural bug in how build_phi_general! fills column $col of the ($n)x($n) matrix for this K. col $col entries checked (rows $col:$n) = $col_vals. Full matrix at failure = $full_matrix_rows. b vector = $(ntuple(i->b[i], n)). If col==$n or col==$(n-1) this points at the two Mumford rows never writing a nonzero into this column for K>=2; if col<=K it points at anchor row $col's fill being structurally zero in this column for every anchor tried."
+
+                # DIAGNOSTIC: classify against the RAW (pre-elimination)
+                # snapshot, not the mutated A — this is the actual new
+                # information this assert needed and previously lacked.
+                raw_col_vals = [A0[row, col] for row in 1:n]
+                raw_all_zero = all(==(0), raw_col_vals)
+                raw_matrix_rows = [ntuple(j -> A0[row, j], n) for row in 1:n]
+                diagnosis = raw_all_zero ?
+                    "RAW FILL BUG: column $col was ALL-ZERO across all $n rows BEFORE elimination even ran (raw values = $raw_col_vals). This is a genuine bug in fill_monomial_block!/fill_mumford_block! never writing a nonzero into this column — not a rank/dimension issue." :
+                    "RANK DEFICIENCY, NOT A FILL BUG: column $col had nonzero RAW values ($raw_col_vals) before elimination, but forward elimination legitimately cancelled them all by the time pivot search reached row $col. The individual column fill is fine; the $n rows are linearly DEPENDENT. This points at an incorrect dimension/basis-size assumption upstream (nb=K+3 may not match the true dimension of the RR space this (K+2)x(K+2) system is supposed to pin down) rather than a column-fill bug."
+
+                @assert false "fp_gauss!: N=$n system's column $col has been ALL-ZERO for rows $col:$n in $fails_this_col of $(s.n_gauss_fail_forward_pivot) forward-pivot failures so far (>90%, threshold 50+) — $diagnosis. POST-ELIMINATION state at failure: col $col entries (rows $col:$n) = $col_vals; full matrix = $full_matrix_rows; b = $(ntuple(i->b[i], n)). RAW (pre-elimination) state: full matrix = $raw_matrix_rows; b0 = $(ntuple(i->b0[i], n))."
             end
             return false   # singular (below the hard-assert threshold — rare/expected case)
         end
@@ -1311,7 +1371,8 @@ function branch_series!(
     # ----------------------------------------------------
     @inbounds begin
         rhs = f_tay[2]
-        out_y[2] = fpmul_b(backend, -rhs, Fy_inv)
+        neg_rhs = fpsub_b(backend, to_repr(backend, 0), rhs)
+        out_y[2] = fpmul_b(backend, neg_rhs, Fy_inv)
     end
 
     # ----------------------------------------------------
@@ -1484,6 +1545,67 @@ end
     @assert xpow[3] == fpmul_b(backend, px_b, px_b)
 end
 
+# ---------------------------------------------------------------------------
+#  fill_f_tay!(f_tay, px, backend) — populate the F_x(px) entry branch_series!
+#  needs for its m=2 (single-tangency) path.
+#
+#  For the hyperelliptic model F(x,y) = y^2 - f(x), the pure-x partial
+#  derivative is F_x(x,y) = -f'(x) — independent of y, since f(x) contributes
+#  no y-dependence and the y^2 term contributes nothing to an x-derivative.
+#  branch_series! only reads f_tay[2] on the m==2 path (the `for s in 2:m-1`
+#  higher-jet loop is empty when m==2), so only the first derivative is
+#  needed here; a future m>=3 (higher-tangency) caller would need this
+#  extended to f_tay[3..] = -f''(px), -f'''(px), etc.
+#
+#  f'(x) is evaluated via the standard derivative-coefficient rule on
+#  F_POLY_DESC (descending powers: F_POLY_DESC[1] is the coefficient of the
+#  highest-degree term, matching init_phi_general_caches!'s construction),
+#  using Horner's method entirely in backend representation so this composes
+#  correctly with the Montgomery-vs-Standard backend already threaded
+#  through every other hot-path function in this file.
+# ---------------------------------------------------------------------------
+@inline function fill_f_tay!(
+    f_tay::AbstractVector{Int},
+    px::Int,
+    backend::FpArith
+)
+    @assert length(f_tay) >= 2 "fill_f_tay!: f_tay buffer (length $(length(f_tay))) too small to hold f_tay[2] (F_x(px))"
+    @assert !isempty(F_POLY_DESC) "fill_f_tay!: F_POLY_DESC is empty — init_phi_general_caches! must run before any m>1 (tangency) branch_series! call"
+
+    # CONTRACT: px arrives ALREADY in backend representation. Every call
+    # site (compute_branch_series! <- build_phi_general!'s anchor loop)
+    # passes anchors_b[a][1], which was converted via to_repr once, up
+    # front, at anchors_b construction time (see build_phi_general!,
+    # "Convert inputs once (no repeated conversions later)"). Do NOT
+    # call to_repr(backend, px) here — under StandardArith that's a
+    # harmless no-op (to_repr = identity), but under MontgomeryArith
+    # to_repr is NOT idempotent (to_repr(x) = x*R mod p), so re-applying
+    # it produces x*R^2 mod p instead of x*R mod p: a silently-wrong
+    # value that only manifests with the Montgomery backend. This is the
+    # same double-conversion hazard already called out at
+    # build_xpow_cache!'s call site above — fill_f_tay! just didn't get
+    # the same fix.
+    px_b = px
+    deg  = length(F_POLY_DESC) - 1   # F_POLY_DESC has deg+1 coefficients, descending
+
+    # Derivative coefficients (descending): d/dx of c_k * x^k is k*c_k*x^(k-1).
+    # Horner-evaluate sum_{k=1}^{deg} k*c_k*px^(k-1) directly, without
+    # materializing a separate derivative-coefficient array — same
+    # zero-allocation discipline as the rest of the hot path.
+    acc = to_repr(backend, 0)
+    @inbounds for idx in 1:deg   # idx corresponds to F_POLY_DESC[idx], power = deg-idx+1
+        power = deg - idx + 1
+        power == 0 && break     # constant term has zero derivative; nothing left to add
+        coeff_k = fpmul_b(backend, to_repr(backend, power), F_POLY_DESC[idx])
+        acc = fpadd_b(backend, fpmul_b(backend, acc, px_b), coeff_k)
+    end
+
+    # F_x(px) = -f'(px)
+    @inbounds f_tay[2] = fpsub_b(backend, to_repr(backend, 0), acc)
+
+    return nothing
+end
+
 @inline function compute_branch_series!(
     out_y,
     px, py,
@@ -1491,13 +1613,40 @@ end
     scratch,
     backend
 )
+    m >= 2 && fill_f_tay!(scratch.f_tay, px, backend)
     branch_series!(out_y, px, py, m, scratch.f_tay, scratch.poly_buf, backend)
 
     # key invariant: constant term must match backend evaluation
-    y0 = out_y[1]
+    y0 = from_repr(backend, out_y[1])
+    py_raw = from_repr(backend, py)
+    @assert y0 == py_raw "compute_branch_series!: out_y[1]=$y0 != anchor py=$py_raw — branch series constant term must equal the anchor's own y-coordinate"
 
-    # NOTE: no recomputation here; only structural check
-    @assert y0 == py || true  # relax if representation differs
+    # DEFENSIVE ASSERT (tangency correctness): independently verify the
+    # implicit-differentiation identity 2*py*y' == f'(px) directly against
+    # a FRESH, standalone evaluation of f'(px) — computed here via its own
+    # Horner pass over F_POLY_DESC, deliberately NOT by calling
+    # fill_f_tay! again or reusing scratch.f_tay. The point is to catch a
+    # sign/indexing bug in fill_f_tay! or in branch_series!'s use of it
+    # (e.g. f_tay populated with the wrong sign, or branch_series!
+    # combining it with Fy_inv incorrectly) at the exact place it would
+    # first manifest, rather than three call-frames later as an opaque
+    # "phi_val == 0" failure in step_phi_k! that gives no hint about
+    # WHICH of the many moving pieces (f_tay's sign, Fy's sign, the
+    # column-fill for x^i's derivative coefficient, the RHS derivative
+    # row) is actually wrong.
+    if m >= 2
+        px_raw = from_repr(backend, px)
+        deg = length(F_POLY_DESC) - 1
+        fprime_acc = to_repr(backend, 0)
+        @inbounds for idx in 1:deg
+            power = deg - idx + 1
+            power == 0 && break
+            coeff_k = fpmul_b(backend, to_repr(backend, power), F_POLY_DESC[idx])
+            fprime_acc = fpadd_b(backend, fpmul_b(backend, fprime_acc, px), coeff_k)
+        end
+        lhs = fpmul_b(backend, fpmul_b(backend, to_repr(backend, 2), py), out_y[2])
+        @assert lhs == fprime_acc "compute_branch_series!: tangent-slope identity 2*py*y' == f'(px) FAILED at px=$px_raw py=$py_raw — got 2*py*y'=$(from_repr(backend,lhs)), f'(px)=$(from_repr(backend,fprime_acc)) (backend repr: lhs=$lhs rhs=$fprime_acc, out_y[2]=$(out_y[2]), f_tay[2]=$(scratch.f_tay[2])). This means fill_f_tay!'s sign/value or branch_series!'s use of f_tay[2] is wrong, NOT a downstream row/column bookkeeping bug — check those two before anything else."
+    end
 end
 
 @inline function _check_basis_cache_consistency!(
@@ -1525,7 +1674,7 @@ end
     backend
 )
     @assert j == 0 || j == 1
-    @assert m == 1  # IMPORTANT: enforce invariant explicitly
+    @assert m == 1 || m == 2 "_monomial_column!: m=$m unsupported — only m=1 (plain evaluation) and m=2 (single tangency, requires f_tay[2]=F_x(px) to be populated) are implemented; higher-order tangency (m>=3) needs fill_f_tay! extended to f_tay[3..] and branch_series!'s F_yy cross-term handled explicitly"
 
     monomial_series_coeffs!(
         ser_buf,
@@ -1554,11 +1703,52 @@ end
     # WILLY-NILLY ASSERT: A_mat is a stack-allocated MMatrix{N,N,Int} — an
     # @inbounds write past N here is not a bounds error, it's memory
     # corruption / segfault territory. Check before the @inbounds loop.
-    @assert row_idx + m <= size(A_mat, 1) "_write_column!: row_idx=$row_idx m=$m would write row $(row_idx+m) past A_mat's $(size(A_mat,1)) rows"
+    @assert row_idx + m - 1 <= size(A_mat, 1) "_write_column!: row_idx=$row_idx m=$m would write row $(row_idx+m-1) past A_mat's $(size(A_mat,1)) rows"
     @assert col >= 1 && col <= size(A_mat, 2) "_write_column!: col=$col out of range 1:$(size(A_mat,2))"
     @assert length(ser_buf) >= m
+
+    # ACTUAL FIX: this previously wrote to A_mat[row_idx + s + 1, col],
+    # i.e. row_idx+1 for the (m=1)-only case this file actually uses. The
+    # caller's contract (see build_phi_general!'s anchor loop: row_idx
+    # starts at 1 for the FIRST anchor, and is advanced by exactly `m`
+    # per anchor so it lands on K+1 for the Mumford block) is unambiguous:
+    # the write for a given anchor belongs at row_idx itself, not
+    # row_idx+1. The extra +1 silently skipped row_idx entirely for every
+    # single anchor — for K=2 this left row 1 (anchor #1's equation)
+    # completely unwritten (all-zero, matrix AND rhs, since fill_rhs! had
+    # the identical off-by-one — see below), while anchor #1's real values
+    # landed one row down, in what should have been anchor #2's row.
+    # Anchor K's write similarly landed in row K+1 — the Mumford block's
+    # first row — and was then silently clobbered by fill_mumford_block!,
+    # which correctly writes to row_idx (no +1). Net effect for K=2:
+    # anchor #1 lost entirely (row 1 all-zero), anchor #2's equation
+    # placed in row 2, and anchor #2's write ALSO landed in row 3
+    # (K+1=3), immediately overwritten by the Mumford block — so only ONE
+    # real anchor constraint (anchor #2, relocated to row 2) ever made it
+    # into the system, alongside 2 valid Mumford rows and 1 dangling
+    # all-zero row. A 4-unknown system with only 3 independent equations
+    # (1 anchor + 2 Mumford) is singular by construction — not a rare
+    # "special position" coincidence, and not a rank issue with the
+    # Mumford block or the RR dimension: exactly the ~100% failure rate
+    # observed in the field trace, and exactly consistent with the raw
+    # (pre-elimination) snapshot fp_gauss! now captures (row 1 = all
+    # zero including its own RHS entry).
+    #
+    # For K=1 this bug was invisible: the single anchor's row_idx=1 write
+    # landed at row 2 = K+1 = the Mumford block's row0, which
+    # fill_mumford_block! then immediately overwrote with the CORRECT
+    # Mumford row0 values anyway — so the off-by-one's only symptom for
+    # K=1 was silently discarding the (only) anchor's equation and
+    # ending up with a 3x3 system built from 0 anchor rows + 2 Mumford
+    # rows... which is only 2 independent equations for 3 unknowns, i.e.
+    # should ALSO have been singular. That it apparently wasn't (K=1 ran
+    # successfully before this fix) needs re-checking once this lands —
+    # it's possible build_phi_mumford's closed-form path (trial3_phi.jl)
+    # was actually what ran for K=1's hot path rather than this general
+    # code, in which case this bug may have been entirely latent until
+    # K=2 was reached for the first time.
     @inbounds for s in 0:(m-1)
-        A_mat[row_idx + s + 1, col] = ser_buf[s + 1]
+        A_mat[row_idx + s, col] = ser_buf[s + 1]
     end
 end
 
@@ -1579,7 +1769,7 @@ end
 
     _check_basis_cache_consistency!(basis, scratch.pxpow_buf)
 
-    @assert m == 1
+    @assert m == 1 || m == 2 "fill_monomial_block!: m=$m unsupported — only m=1 (plain evaluation) and m=2 (single tangency) are implemented"
     @assert length(out_y) >= m + 1
 
     # DEFENSIVE ASSERT: y_idx must be a real, in-range basis index, and it
@@ -1674,9 +1864,17 @@ end
         backend
     )
 
-    @assert row_idx + m <= length(rhs_vec) "fill_rhs!: row_idx=$row_idx m=$m would write past rhs_vec length $(length(rhs_vec))"
+    # ACTUAL FIX: matching off-by-one to _write_column!'s — this wrote to
+    # rhs_vec[row_idx + s + 1], skipping row_idx itself. See _write_column!
+    # for the full analysis; the two bugs combined to leave anchor rows'
+    # RHS entries at row_idx+1 instead of row_idx, which is why the
+    # all-zero row in the field trace was all-zero in BOTH the matrix AND
+    # its own b0 entry (b0[1]=0) — this fix and _write_column!'s must land
+    # together, or the matrix and RHS rows disagree about which row is
+    # which.
+    @assert row_idx + m - 1 <= length(rhs_vec) "fill_rhs!: row_idx=$row_idx m=$m would write past rhs_vec length $(length(rhs_vec))"
     for s in 0:(m-1)
-        rhs_vec[row_idx + s + 1] = fpsub_b(backend, 0, scratch.ser_buf[s+1])
+        rhs_vec[row_idx + s] = fpsub_b(backend, 0, scratch.ser_buf[s+1])
     end
 end
 
@@ -1883,6 +2081,21 @@ function build_phi_general!(
     backend=StandardArith(p)
 )::Bool
 
+    # TIMING INSTRUMENTATION (series phase start): the PhiTimingStats
+    # struct/report machinery above has existed for a while but ns_series/
+    # ns_gauss/ns_residual were never actually written anywhere in this
+    # file -- only read back out in print_phi_timing_report, which is why
+    # --phi-timing has always printed "no samples" regardless of whether
+    # PHI_TIMING_ENABLED[] was set (n_calls WAS being bumped in
+    # step_phi_k!, but nothing ever timed anything). Wiring it in here:
+    # "series" covers everything from function entry through the Mumford-
+    # block fill (basis lookup, anchor loop / branch_series! calls,
+    # monomial column fills, RHS fill) -- i.e. all setup work BEFORE the
+    # linear solve. Gated on PHI_TIMING_ENABLED[] exactly like n_calls, so
+    # normal (disabled) runs pay one Bool check and skip the time_ns()
+    # call entirely, per this file's original zero-alloc/opt-in design.
+    _pt_series_t0 = PHI_TIMING_ENABLED[] ? time_ns() : UInt64(0)
+
     K  = length(anchors)
     nb = K + 3
 
@@ -2027,6 +2240,64 @@ function build_phi_general!(
 
         px, py = anchors_b[a]
 
+        # UPSTREAM INVARIANT (catch double/missing to_repr at the source,
+        # not 3 frames down in fill_f_tay!): px, py here MUST be
+        # backend-repr values, i.e. exactly to_repr(backend, <raw coord>)
+        # as constructed in anchors_b above — never the raw anchor coords
+        # and never re-converted. Verify by round-tripping: converting a
+        # backend-repr value's raw form back to repr must reproduce it
+        # exactly. This is a no-op check under StandardArith (to_repr =
+        # from_repr = identity, so it can't catch anything there — the
+        # earlier build_xpow_cache! comment block explains why this bug
+        # class is Montgomery-only), but under MontgomeryArith it directly
+        # catches: (a) a caller passing raw coords straight through
+        # (px would then be mistaken for R-form and mis-decoded), and
+        # (b) a caller double-applying to_repr before reaching here
+        # (the same failure mode fill_f_tay! had).
+        @assert to_repr(backend, from_repr(backend, px)) == px "build_phi_general!: anchor $a's px=$px failed the backend-repr round-trip check — this means px is NOT in the backend representation anchors_b is supposed to produce (either a raw coordinate leaked through, or to_repr was applied more than once upstream). Check anchors_b's construction and every call in this loop that receives px before assuming the bug is downstream in fill_f_tay!/compute_branch_series!."
+        @assert to_repr(backend, from_repr(backend, py)) == py "build_phi_general!: anchor $a's py=$py failed the backend-repr round-trip check — same double/missing to_repr hazard as px above, check anchors_b's construction first."
+
+        # ------------------------------------------------------------
+        # TANGENCY DETECTION: if this anchor's (raw, un-converted) point
+        # already occurred earlier in the tuple, this occurrence does NOT
+        # get its own row. Its constraint was already absorbed into the
+        # earlier occurrence's row via a bumped `m` (see below) — that's
+        # what "vanishing order 2 at P" means: one evaluation row (t^0
+        # coefficient) plus one derivative row (t^1 coefficient), not two
+        # separate evaluation rows at the same point (which is exactly
+        # the guaranteed-singular duplicate-row bug this replaces).
+        #
+        # This must run BEFORE anything below computes/writes a row for
+        # anchor `a`, and must key off `anchors` (raw coordinates), not
+        # `anchors_b` (backend-repr) — repr equality and raw equality
+        # agree for both StandardArith (to_repr is identity) and
+        # MontgomeryArith (to_repr is injective), so either would work,
+        # but `anchors` avoids relying on that injectivity assumption.
+        is_repeat_of_earlier = false
+        @inbounds for prev in 1:a-1
+            if anchors[prev] == anchors[a]
+                is_repeat_of_earlier = true
+                break
+            end
+        end
+
+        if is_repeat_of_earlier
+            # Row-budget bookkeeping only: no row written for this anchor.
+            continue
+        end
+
+        # How many times does THIS anchor's point occur at or after
+        # position a? (i.e. this occurrence plus any later repeats it
+        # will absorb.) Only 1 or 2 is supported — see fill_f_tay!'s
+        # docstring for what m>=3 (triple-or-higher tangency) would need.
+        occ_count = 0
+        @inbounds for later in a:K
+            anchors[later] == anchors[a] && (occ_count += 1)
+        end
+        @assert occ_count == 1 || occ_count == 2 "build_phi_general!: anchor $(anchors[a]) occurs $occ_count times in this $K-tuple — only single points (m=1) and simple tangency (m=2, occurring exactly twice) are implemented. A point repeated 3+ times needs fill_f_tay! extended to f_tay[3..] and is not yet supported; _anchor_tuple_valid upstream should not be constructing tuples like this."
+
+        m = occ_count
+
         # Rebuild the x-power cache for THIS anchor's x-coordinate.
         # (Must happen before fill_monomial_block!/fill_rhs! below, both of
         # which read scratch.pxpow_buf via monomial_series_coeffs!.)
@@ -2046,8 +2317,6 @@ function build_phi_general!(
 
         @assert px != 0
         @assert py != 0  # hyperelliptic / branch validity assumption
-
-        m = 1  # (kept from original; isolate for future generalization)
 
         # --- compute local branch expansion ---
         compute_branch_series!(
@@ -2078,6 +2347,43 @@ function build_phi_general!(
             scratch,
             backend
         )
+
+        # DEFENSIVE ASSERT (tangency row cross-check): when m==2, independently
+        # recompute what the derivative row (row_idx+1) SHOULD contain for
+        # every column and compare against what fill_monomial_block! just
+        # wrote into A_mat. For a pure-x column (i,0), the t^1 coefficient of
+        # (px+t)^i is i*px^(i-1) — a completely independent formula from
+        # monomial_series_coeffs!'s binomial-recurrence path, computed here
+        # via direct exponentiation, so a bug in the recurrence (wrong
+        # small_inv indexing, wrong binom_scratch seed, off-by-one in maxs,
+        # etc.) is caught at the exact column it corrupts, rather than
+        # surfacing as an opaque whole-row "phi_val == 0" failure two
+        # functions later with no indication of WHICH column is wrong.
+        # (Columns with j==1, i.e. x^i*y, are skipped here — their t^1
+        # coefficient depends on out_y[2] too, which is already
+        # independently checked by compute_branch_series!'s tangent-slope
+        # assert above; re-deriving the full product rule here would just
+        # duplicate that check rather than add new coverage.)
+        if m == 2
+            col_chk = 0
+            @inbounds for bidx in 1:length(basis)
+                bidx == y_idx && continue
+                col_chk += 1
+                (bi, bj) = basis[bidx]
+                bj == 1 && continue   # see comment above: skip y-mixed columns here
+                bi == 0 && continue   # constant column: derivative is identically 0, trivially consistent
+                # pxpow_buf[k+1] = px^k in backend representation (see
+                # build_xpow_cache!), so pxpow_buf[bi] = px^(bi-1) already in
+                # backend repr — use it directly, don't from_repr/to_repr it.
+                expected_deriv_b = fpmul_b(
+                    backend,
+                    to_repr(backend, bi),
+                    scratch.pxpow_buf[bi]
+                )
+                actual_deriv = scratch.A_mat[row_idx + 1, col_chk]
+                @assert expected_deriv_b == actual_deriv "build_phi_general!: tangency derivative-row MISMATCH at anchor px=$(from_repr(backend,px)) column $col_chk (basis[$bidx]=($bi,$bj)) — fill_monomial_block! wrote A_mat[$(row_idx+1),$col_chk]=$actual_deriv but the independently-recomputed derivative i*px^(i-1) gives $expected_deriv_b. This points at monomial_series_coeffs!'s binomial-recurrence path (small_inv/binom_scratch/pxpow_table indexing) for THIS specific column, not at branch_series!/fill_f_tay! (already checked separately) or at row/column bookkeeping (row_idx placement already asserted correct)."
+            end
+        end
 
         # ========================================================
         # 5b. Fill RHS
@@ -2154,12 +2460,23 @@ function build_phi_general!(
     # 6. Solve system
     # ============================================================
 
+    if PHI_TIMING_ENABLED[]
+        s = phi_timing_stats()
+        s.ns_series += time_ns() - _pt_series_t0
+    end
+
+    _pt_gauss_t0 = PHI_TIMING_ENABLED[] ? time_ns() : UInt64(0)
+
     ok = fp_gauss!(
         scratch.A_mat,
         scratch.rhs_vec,
         scratch.prefix_buf,
         backend
     )
+
+    if PHI_TIMING_ENABLED[]
+        phi_timing_stats().ns_gauss += time_ns() - _pt_gauss_t0
+    end
 
     # FIX: fp_gauss! returning false means the linear system was singular —
     # a legitimate, expected outcome for some anchor-tuple/divisor
@@ -2247,20 +2564,34 @@ function build_phi_general!(
     @assert col == n_cols "build_phi_general!: coeffs_out write-back consumed $col of rhs_vec's $n_cols entries — skip-y_idx=$y_idx traversal over 1:$nb did not visit exactly n_cols non-y indices, so coeffs_out is now inconsistent with the solved system."
     @assert length(scratch.coeffs_out) == nb "build_phi_general!: coeffs_out length $(length(scratch.coeffs_out)) != nb=$nb after write-back — every basis position 1:nb should have received exactly one coefficient (either solved or the fixed y-normalisation)."
 
-    return true
-end
-
-# ---------------------------------------------------------------------------
-#  phi_eval(coeffs, basis, px, py) — evaluate φ at (px, py).
-# ---------------------------------------------------------------------------
-@inline function phi_eval(coeffs::Vector{Int},
-                           basis ::Vector{NTuple{2,Int}},
-                           px::Int, py::Int)::Int
-    s = 0
-    for (k, (i, j)) in enumerate(basis)
-        s = fp(s + fpmul(coeffs[k], eval_monomial(i, j, px, py)))
+    # DEFENSIVE ASSERT (self-verification, ALL anchors, not just repeats):
+    # re-evaluate phi(px,py) for every anchor in this tuple using a
+    # completely independent evaluation path — plain powermod over the
+    # PLAIN (non-backend) coeffs_out, deliberately NOT eval_monomial's
+    # cached-table machinery (scratch.pxpow_buf, x_pow_mod_u caches, etc.),
+    # which by this point in the call may hold state left over from
+    # whichever anchor the loop above processed LAST, not necessarily the
+    # anchor being checked. This runs for K=1 too (trivially, one anchor),
+    # so if this exact check has never fired before on a real K=2 run, its
+    # first failure here — WITH full build_phi_general! context (K, nb,
+    # y_idx, which anchors were treated as repeats) still in scope — is the
+    # most direct evidence available for whether plain (non-tangent) K=2
+    # evaluation itself has a latent bug, independent of anything the
+    # tangency work touched.
+    @inbounds for a in 1:K
+        (chk_px, chk_py) = anchors[a]
+        chk_val = 0
+        for bidx in 1:nb
+            coeff = scratch.coeffs_out[bidx]
+            coeff == 0 && continue
+            (bi, bj) = basis[bidx]
+            mono = bj == 0 ? powermod(chk_px, bi, p) : fpmul(powermod(chk_px, bi, p), chk_py)
+            chk_val = fp(chk_val + fpmul(coeff, mono))
+        end
+        @assert chk_val == 0 "build_phi_general!: SELF-VERIFICATION failed inside build_phi_general! itself (before returning to step_phi_k!) — anchor a=$a (px,py)=($chk_px,$chk_py) of $K, phi_val=$chk_val (expected 0). K=$K nb=$nb y_idx=$y_idx anchors=$anchors coeffs_out=$(scratch.coeffs_out[1:nb]) basis=$basis. This is evaluated via plain powermod, independent of eval_monomial/scratch.pxpow_buf, so a failure here rules out stale-scratch-state as the cause and points at either the linear solve itself (fp_gauss!) or the row/column construction (fill_monomial_block!/fill_rhs!/fill_mumford_block!) producing a self-inconsistent system that fp_gauss! nonetheless solved without reporting singularity."
     end
-    return s
+
+    return true
 end
 
 # ---------------------------------------------------------------------------
@@ -3666,8 +3997,25 @@ end
         coeff_buf[i] = Fp(scratch.u_RS[i])
     end
 
-    f_oscar = Rx(@view coeff_buf[1:u_len])
+    f_oscar = Rx(coeff_buf[1:u_len])
     rs = roots(f_oscar)
+
+    # UPSTREAM ASSERT (polynomial construction sanity): confirm f_oscar
+    # actually came out as a degree-(u_len-1) polynomial, not silently
+    # something else. Two concrete ways this could go wrong even though
+    # Rx(...) "succeeds": (a) a future edit reintroduces a SubArray/view
+    # or otherwise-wrong-shaped argument that Nemo happens to accept via
+    # some other method overload instead of erroring like the SubArray
+    # case did; (b) coeff_buf[u_len] (the leading coefficient) is zero
+    # mod p, in which case Nemo normalizes the polynomial and degree(f_oscar)
+    # comes back LOWER than u_len-1 — silently desyncing this function's
+    # polynomial from the "degree u_len-1" assumption the caller's n_len
+    # bookkeeping is built on. Catching that here, right after
+    # construction, is more actionable than letting it surface as a
+    # root-count mismatch in the loop below (which only checks an upper
+    # bound, not that the count matches what a genuine degree-(u_len-1)
+    # polynomial should produce).
+    @assert degree(f_oscar) == u_len - 1 "_solve_oscar_roots!: f_oscar has degree $(degree(f_oscar)), expected u_len-1=$(u_len-1) — either coeff_buf[$u_len] (the leading coefficient) is zero mod p and Nemo normalized the polynomial down, or Rx(coeff_buf[1:u_len]) did not build the polynomial this function assumes it built. u_RS(1:$u_len)=$(scratch.u_RS[1:u_len])"
 
     # CRITICAL BOUNDS ASSERT: scratch.y_batch_x is a fixed-size MVector{N2}
     # (N2 = K+2, at most 8 for K up to 6). A degree-(u_len-1) polynomial has
@@ -4194,6 +4542,30 @@ function step_phi_k!(
     # ------------------------------------------------------------
     # PHI VANISHING CHECK (ANCHORS)
     # ------------------------------------------------------------
+    #
+    # ROOT-CAUSE FIX: this previously called eval_monomial(i,j,px,py,...),
+    # which evaluates x^i*y^j via reduce_monomial_mod_D_cached — i.e. by
+    # reducing x^i MOD THE WALK STEP'S DIVISOR u(x) (cached into
+    # scratch.x_pow_mod_u_r0/r1 by build_phi_general!'s call to
+    # build_xmodu_cache!) and only THEN combining with py. That reduction
+    # is mathematically equivalent to a direct evaluation of x^i at px
+    # ONLY WHEN px IS A ROOT OF u(x) — true for the SECONDARY CONSISTENCY
+    # CHECK below (which deliberately evaluates phi at u(x)'s roots via
+    # (v0,v1)), but false here: this check verifies phi at the walk's
+    # ANCHOR points, which have no required relationship to whatever
+    # divisor u(x) the walk happens to be stepping through right now.
+    # eval_monomial's own doc comment ("evaluate ... at an affine point")
+    # promises unconditional evaluation but the implementation silently
+    # assumes the mod-u(x) precondition — a latent bug that was invisible
+    # for K=1 (where this pipeline was never actually reached before the
+    # earlier coeffs_out-never-populated bug was fixed) and only surfaced
+    # now that K=2 anchors are real, non-degenerate points independent of
+    # the current u(x).
+    #
+    # Fixed by evaluating directly: plain powermod against p, combined
+    # with coeffs_out (already in plain, non-backend representation) —
+    # exactly mirroring build_phi_general!'s own self-verification loop
+    # (added earlier), which uses this same direct formula and passes.
     let
         for idx in 1:k
             @inbounds (px, py) = anchors[idx]
@@ -4206,15 +4578,94 @@ function step_phi_k!(
 
                 @inbounds (i, j) = basis[col]
 
-                val = eval_monomial(i, j, px, py)
-
-                # invariant: eval_monomial must always be deterministic
-                @assert val isa Int
+                val = j == 0 ? powermod(px, i, p) : fpmul(powermod(px, i, p), py)
 
                 phi_val = fp(phi_val + fpmul(coeff, val))
             end
 
-            @assert phi_val == 0
+            # DEFENSIVE ASSERT: was a bare `@assert phi_val == 0` with no
+            # message — meaning a failure here gave no way to tell whether
+            # the failing anchor was a repeated/tangent point (pointing at
+            # the m=2 machinery) or an ordinary distinct point (pointing at
+            # something wrong in plain K>1 evaluation that predates and is
+            # unrelated to the tangency work). Dump everything needed to
+            # distinguish those two cases, plus the actual coeffs_out
+            # (basis-position-indexed) and basis itself, so a failure here
+            # is immediately actionable instead of requiring another
+            # instrumentation round-trip.
+            is_repeat_anchor = false
+            @inbounds for other in 1:k
+                other != idx && anchors[other] == anchors[idx] && (is_repeat_anchor = true; break)
+            end
+            @assert phi_val == 0 "step_phi_k!: PHI VANISHING CHECK failed at anchor idx=$idx (px,py)=($px,$py), k=$k, is_repeat_anchor=$is_repeat_anchor — phi_val=$phi_val (expected 0). coeffs_out(basis-indexed)=$(scratch.coeffs_out[1:nb]), basis=$basis. If is_repeat_anchor=false, this is a PLAIN (non-tangent) evaluation failure — unrelated to the m=2 tangency machinery (none of compute_branch_series!'s tangent-slope assert, build_phi_general!'s derivative-row cross-check, or step_phi_k!'s own tangency-derivative check fired before this, which only happens if this anchor never went through the m=2 path at all). If is_repeat_anchor=true, check those three tangency-specific assert sites' output first — this one alone doesn't say which column is wrong."
+        end
+    end
+
+    # ------------------------------------------------------------
+    # PHI TANGENCY CHECK (repeated anchors only):
+    # for any anchor point that occurs more than once in this tuple,
+    # independently verify d/dt[phi(px+t, py+y'*t)]|_{t=0} == 0, using the
+    # ACTUAL SOLVED coefficients (coeffs_out) and a completely fresh
+    # computation of f'(px) and y' — deliberately not reusing scratch.out_y
+    # or scratch.f_tay, since by this point in step_phi_k! those scratch
+    # buffers reflect whichever anchor build_phi_general!'s loop processed
+    # LAST, not necessarily the repeated anchor being checked here. This is
+    # the definitive end-to-end check for the m=2 tangency implementation:
+    # if the plain PHI VANISHING CHECK above passes but THIS fails, the bug
+    # is specifically in the derivative machinery (fill_f_tay!,
+    # branch_series!'s m=2 path, or monomial_series_coeffs!'s per-column
+    # derivative), not in ordinary evaluation or row/column bookkeeping.
+    # ------------------------------------------------------------
+    let
+        for idx in 1:k
+            @inbounds (px, py) = anchors[idx]
+
+            is_repeat = false
+            @inbounds for other in 1:k
+                other != idx && anchors[other] == anchors[idx] && (is_repeat = true; break)
+            end
+            !is_repeat && continue
+
+            @assert py != 0 "step_phi_k!: tangency check hit a repeated Weierstrass anchor ($px,$py) — this should have been rejected upstream by _anchor_tuple_valid"
+
+            # Fresh f'(px) via Horner, in PLAIN (non-backend) representation
+            # — coeffs_out and eval_monomial both operate in plain repr, so
+            # this check must too, matching the PHI VANISHING CHECK above.
+            deg = length(F_POLY_DESC) - 1
+            # F_POLY_DESC is stored in backend repr (see
+            # init_phi_general_caches!); convert each coefficient back to
+            # plain repr before using it in this plain-repr computation.
+            fprime_px = 0
+            @inbounds for pidx in 1:deg
+                power = deg - pidx + 1
+                power == 0 && break
+                c_plain = from_repr(backend, F_POLY_DESC[pidx])
+                fprime_px = fp(fpmul(fprime_px, px) + fpmul(power, c_plain))
+            end
+            yprime = fpmul(fprime_px, fpinv(fp(2 * py)))
+
+            # d/dt[phi(px+t, py+y'*t)]|_{t=0} = sum_col coeff[col] * d/dt[monomial_col(px+t,py+y'*t)]|_0
+            #   monomial (i,0): d/dt[(px+t)^i]|_0 = i*px^(i-1)
+            #   monomial (i,1): d/dt[(px+t)^i*(py+y'*t)]|_0 = i*px^(i-1)*py + px^i*y'
+            dphi_val = 0
+            for col in 1:nb
+                @inbounds coeff = scratch.coeffs_out[col]
+                coeff == 0 && continue
+                @inbounds (i, j) = basis[col]
+
+                if j == 0
+                    i == 0 && continue   # constant column: derivative 0
+                    dmono = fpmul(i, powermod(px, i - 1, p))
+                else
+                    term1 = i == 0 ? 0 : fpmul(fpmul(i, powermod(px, i - 1, p)), py)
+                    term2 = fpmul(powermod(px, i, p), yprime)
+                    dmono = fp(term1 + term2)
+                end
+
+                dphi_val = fp(dphi_val + fpmul(coeff, dmono))
+            end
+
+            @assert dphi_val == 0 "step_phi_k!: TANGENCY DERIVATIVE CHECK FAILED at repeated anchor (px,py)=($px,$py) — d/dt[phi] at t=0 = $dphi_val, expected 0 (plain vanishing DID pass, so this isolates the bug to the derivative/tangency machinery specifically: fill_f_tay!'s sign or value, branch_series!'s m=2 combination of f_tay with Fy_inv, or monomial_series_coeffs!'s per-column t^1 coefficient — check compute_branch_series!'s own tangent-slope assert output from THIS SAME anchor earlier in the log, and the per-column derivative-row cross-check in build_phi_general!'s anchor loop, to narrow further)."
         end
     end
 
@@ -4251,7 +4702,11 @@ function step_phi_k!(
     # ------------------------------------------------------------
     # residual extraction
     # ------------------------------------------------------------
+    _pt_resid_t0 = PHI_TIMING_ENABLED[] ? time_ns() : UInt64(0)
     success_residual = phi_residual_general!(scratch, basis, anchors, u0, u1)
+    if PHI_TIMING_ENABLED[]
+        phi_timing_stats().ns_residual += time_ns() - _pt_resid_t0
+    end
 
     if !success_residual || scratch.u_RS_is_fail[1]
         return false

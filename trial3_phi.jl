@@ -221,6 +221,30 @@ const SENTINEL_MUMFORD = (-1, -1, -1, -1)::NTuple{4,Int}
     rem1  = fp(N[1] + fpmul(q4_0,px))
     rem1 != 0 && return (SENTINEL_PT, SENTINEL_PT, SENTINEL_MUMFORD)
 
+    # DEGENERATE-STEP CHECK (repeated root at px / accidental tangency):
+    # N(x) = phi(x,y)^2 - f(x) has px as a root by construction (phi
+    # vanishes at the anchor P0), and Step 1 above strips exactly one such
+    # factor via synthetic division. But for this k==1 fast path, phi is
+    # built from a SINGLE anchor P0 plus the (unrelated, data-dependent)
+    # divisor D -- unlike the general k>=2 path, nothing here deliberately
+    # requests a tangency. If it turns out phi is ALSO tangent to the
+    # curve at P0 for this particular (P0, D) pair -- i.e. px is a
+    # REPEATED root of N(x) -- that's a data-dependent degeneracy of this
+    # specific step, not a multiplicity the caller asked for. Treating it
+    # as valid would misattribute intersection multiplicity that
+    # rightfully belongs to P0 to one of the returned residual points
+    # instead (R or S would come back equal to the anchor itself, which
+    # is exactly the "residual_anchor_collision" FATAL previously seen
+    # here). The correct handling matches the other failure modes in this
+    # function (rem1!=0 above, res0/res1!=0 below): reject the step via
+    # SENTINEL_MUMFORD and let the caller retry with a fresh walk step,
+    # rather than attempting to strip a second factor of (x-px) -- doing
+    # that would silently absorb one unit of D's intersection multiplicity
+    # into P0's count instead of leaving it with R/S, corrupting the
+    # relation's exponent bookkeeping even though no assert would fire.
+    q4_at_px = fp(q4_0 + fpmul(px, fp(q4_1 + fpmul(px, fp(q4_2 + fpmul(px, fp(q4_3 + fpmul(px, q4_4))))))))
+    q4_at_px == 0 && return (SENTINEL_PT, SENTINEL_PT, SENTINEL_MUMFORD)
+
     # --- Step 2: divide Q4(x) = q4_4·x^4+…+q4_0 by u(x) = x²+u1·x+u0 ---
     s2  = q4_4
     r3  = fp(q4_3 - fpmul(s2,u1))

@@ -1557,20 +1557,34 @@ function phase2_worker(G               ::Div2,
     end
 
     # Structural validity check: true iff the first `k` entries of `tup`
-    # contain no Weierstrass point (py == 0) repeated >= 2 times. Mirrors the
-    # guard in build_phi_general! (step B) exactly, so a tuple rejected here
-    # is never returned to the caller and never reaches the φ-builder at all.
+    # are compatible with what build_phi_general! can actually construct:
+    #   - a Weierstrass point (py == 0) must not repeat at all (branch_series!
+    #     divides by Fy = 2*py, which is 0 at a Weierstrass point regardless
+    #     of multiplicity — even a single such anchor already relies on
+    #     that division inside compute_branch_series!'s m=1 path... actually
+    #     m=1 never calls branch_series!'s divide-by-Fy branch (see its
+    #     early `if m==1` return), so a lone Weierstrass anchor is fine; a
+    #     REPEATED one would need m=2, which does hit that division, hence
+    #     the special-case rejection here).
+    #   - any other point may repeat AT MOST twice (single tangency, m=2,
+    #     implemented via fill_f_tay!/branch_series!'s m=2 path in
+    #     build_phi_general!'s anchor loop). A point occurring 3+ times
+    #     would need m=3 (double tangency / higher jet), which fill_f_tay!
+    #     does not populate (it only fills f_tay[2] = F_x(px); a
+    #     hypothetical f_tay[3] = F_xx(px) is not computed anywhere) — see
+    #     build_phi_general!'s own occ_count assert, which this mirrors so
+    #     a bad tuple is rejected here, before it ever reaches the
+    #     φ-builder, rather than assert-failing deep inside it.
     @inline function _anchor_tuple_valid(tup, k::Int)::Bool
         @inbounds for i in 1:k
-            if tup[i][2] == 0
-                cnt = 0
-                for j in 1:k
-                    if tup[j] == tup[i]
-                        cnt += 1
-                    end
+            cnt = 0
+            for j in 1:k
+                if tup[j] == tup[i]
+                    cnt += 1
                 end
-                cnt >= 2 && return false
             end
+            tup[i][2] == 0 && cnt >= 2 && return false   # Weierstrass: no repeats at all
+            cnt >= 3 && return false                      # anyone: at most double (m=2)
         end
         return true
     end
@@ -2002,7 +2016,12 @@ function phase2_worker(G               ::Div2,
 
         if k_cur == 1
             # Fast path: closed-form single-anchor φ
+            PHI_TIMING_ENABLED[] && (phi_timing_stats().n_calls += 1)
+            _pt_k1_series_t0 = PHI_TIMING_ENABLED[] ? time_ns() : UInt64(0)
             phi_c = build_phi_mumford(px, py, u0, u1, v0, v1)
+            if PHI_TIMING_ENABLED[]
+                phi_timing_stats().ns_series += time_ns() - _pt_k1_series_t0
+            end
             if phi_c === nothing
                 # build_phi_mumford's internal failure modes are opaque from
                 # here (it's defined outside these three files, so we can't
@@ -2028,7 +2047,11 @@ function phase2_worker(G               ::Div2,
             # D38 — φ a-coefficient sequential autocorrelation.
             d38_stat !== nothing && record_d38_step!(d38_stat, Int(a))
 
+            _pt_k1_resid_t0 = PHI_TIMING_ENABLED[] ? time_ns() : UInt64(0)
             res_R, res_S, RS_mumford = phi_residual_mumford(a, b_phi, c_phi, px, u0, u1)
+            if PHI_TIMING_ENABLED[]
+                phi_timing_stats().ns_residual += time_ns() - _pt_k1_resid_t0
+            end
             if RS_mumford === SENTINEL_MUMFORD
                 # division failed — same opacity caveat as above applies to
                 # phi_residual_mumford's internal failure sites.
