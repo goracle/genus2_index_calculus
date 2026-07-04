@@ -1188,6 +1188,23 @@ mutable struct ThreadScratchpad{K, N2, N3, L}
     
     # 2. Buffers for monomial_series_coeffs!
     xi_buf         ::Vector{Int}   # length 32 — used for binomial expansion scratch (indices up to ~16)
+    # Single-slot memo for the (px+t)^i expansion computed inside
+    # monomial_series_coeffs! (the "xi_scratch" part) — see
+    # _xi_series_cached! below. rr_basis interleaves (i,0) and (i,1) pairs
+    # by pole order (see rr_basis's own comment), so for K>=3 the SAME i
+    # appears as two separate basis columns (once with j=0, once with
+    # j=1) within a single fill_monomial_block! call — and that part of
+    # the computation depends only on (i, px, m), never on j. Caching the
+    # last (i, px, m) this thread computed xi_scratch for, and its result,
+    # turns the second of each such pair into a cache hit instead of
+    # redoing the full binomial recurrence. Reset is automatic: any (i,
+    # px, m) mismatch is a cache miss, so a stale entry from a previous
+    # anchor/step just causes one harmless recompute, never a wrong
+    # answer — see _xi_series_cached!'s invalidation check.
+    xi_cache_i     ::Vector{Int}   # xi_cache_i[1] = last i memoized (-1 = empty/invalid)
+    xi_cache_px    ::Vector{Int}   # xi_cache_px[1] = last px memoized for
+    xi_cache_m     ::Vector{Int}   # xi_cache_m[1] = last m memoized for
+    xi_cache_buf   ::Vector{Int}   # length 32 — memoized xi_scratch contents
     prefix_buf     ::MVector{N2, Int}  # stack-allocated prefix-product scratch for batch inversion
                                        # (replaces the xi_buf reuse in fp_gauss_batch_invert_diag!)
     binom_buf      ::Vector{Int}
@@ -1314,7 +1331,9 @@ mutable struct ThreadScratchpad{K, N2, N3, L}
         L  = N2 * N2
         new{K, N2, N3, L}(
             zeros(Int, 32), zeros(Int, 32), zeros(Int, 1024),  # out_y, f_tay, poly_buf
-            zeros(Int, 32), MVector{N2,Int}(zeros(Int, N2)), zeros(Int, 32), zeros(Int, 32), zeros(Int, 64),  # xi_buf, prefix_buf, binom_buf, pxpow_buf, ser_buf
+            zeros(Int, 32),                                     # xi_buf
+            [-1], [-1], [-1], zeros(Int, 32),                   # xi_cache_i, xi_cache_px, xi_cache_m (all invalid/-1 initially), xi_cache_buf
+            MVector{N2,Int}(zeros(Int, N2)), zeros(Int, 32), zeros(Int, 32), zeros(Int, 64),  # prefix_buf, binom_buf, pxpow_buf, ser_buf
             MMatrix{N2,N2,Int,L}(zeros(Int, N2, N2)),
             MVector{N2,Int}(zeros(Int, N2)),
             MVector{K,Int}(zeros(Int, K)),
@@ -1597,27 +1616,49 @@ end
 #  temporaries per monomial, times n columns, times every anchor group,
 #  times every walk step).  Writing in place eliminates all of that.
 # ---------------------------------------------------------------------------
-function monomial_series_coeffs!(
-    out::AbstractVector{Int},
-    i::Int,
-    j::Int,
-    px::Int,
-    y_ser::AbstractVector{Int},
-    m::Int,
+# ---------------------------------------------------------------------------
+#  _xi_series_cached!(xi_scratch, i, px, m, binom_scratch, pxpow_table,
+#                      small_inv, xi_cache_i, xi_cache_px, xi_cache_m,
+#                      xi_cache_buf, backend)
+#
+#  Computes the (px+t)^i binomial expansion (coeffs of t^0..t^(m-1)) into
+#  xi_scratch — this is exactly the part of the old monomial_series_coeffs!
+#  body that depended only on (i, px, m), never on j or y_ser.
+#
+#  PERFORMANCE: rr_basis interleaves (i,0) and (i,1) basis entries by pole
+#  order (see rr_basis's own header comment), so for K>=3 the SAME i shows
+#  up as TWO separate basis columns within one fill_monomial_block! call —
+#  one with j=0, one with j=1 — and both used to redo this exact binomial
+#  recurrence from scratch, wastefully, since it's j-independent. This
+#  single-slot memo (xi_cache_i/px/m + xi_cache_buf, all owned by the
+#  caller's ThreadScratchpad) turns the second call of each such pair into
+#  a cache hit: a plain copy instead of the full recurrence. Any mismatch
+#  in (i, px, m) against the cached triple — including the very first call
+#  ever, since xi_cache_i starts at -1, an i value rr_basis never
+#  produces — is treated as a miss and recomputes+re-stores, so a stale
+#  entry from a previous anchor or walk step can never produce a wrong
+#  answer, only one avoidable-but-harmless recompute.
+# ---------------------------------------------------------------------------
+@inline function _xi_series_cached!(
     xi_scratch::AbstractVector{Int},
+    i::Int,
+    px::Int,
+    m::Int,
     binom_scratch::AbstractVector{Int},
     pxpow_table::AbstractVector{Int},
     small_inv::AbstractVector{Int},
-    backend::FpArith = StandardArith(p),
+    xi_cache_i::AbstractVector{Int},
+    xi_cache_px::AbstractVector{Int},
+    xi_cache_m::AbstractVector{Int},
+    xi_cache_buf::AbstractVector{Int},
+    backend::FpArith,
 )::Nothing
+    @inbounds if xi_cache_i[1] == i && xi_cache_px[1] == px && xi_cache_m[1] == m
+        @inbounds copyto!(xi_scratch, 1, xi_cache_buf, 1, m)
+        return nothing
+    end
 
-    @assert length(out) >= m
-    @assert j == 0 || j == 1 "unexpected monomial x^$i y^$j"
-    fill!(out, 0)
-
-    # (px+t)^i
     fill!(xi_scratch, 0)
-
     maxs = min(i, m - 1)
 
     # FIX (root cause of the monomial_series_coeffs! constant-coefficient
@@ -1654,7 +1695,6 @@ function monomial_series_coeffs!(
             )
     end
 
-
     for s in 0:maxs
         xi_scratch[s + 1] =
             fpmul_b(
@@ -1662,6 +1702,86 @@ function monomial_series_coeffs!(
                 binom_scratch[s + 1],
                 pxpow_table[i - s + 1],
             )
+    end
+
+    @inbounds begin
+        xi_cache_i[1]  = i
+        xi_cache_px[1] = px
+        xi_cache_m[1]  = m
+        copyto!(xi_cache_buf, 1, xi_scratch, 1, m)
+    end
+
+    return nothing
+end
+
+# ---------------------------------------------------------------------------
+#  Monomial series (in-place): write the coefficients of t^0..t^(m-1) in
+#  x^i * y^j(x) (evaluated at x = px+t, y = y_ser) into `out`.
+#
+#  x^i = (px + t)^i = Σ C(i,r) * px^(i-r) * t^r  (binomial expansion)
+#  x^i * y^j: convolve the two series mod t^m.
+#
+#  For j=0: coeff of t^s in (px+t)^i = C(i,s) * px^(i-s)  (or 0 if s>i).
+#  For j=1: convolve x-series with y-series.
+#
+#  `out`, `xi_scratch`, `binom_scratch`, `pxpow_scratch` are all
+#  length-m buffers owned by the caller and reused across every monomial
+#  and every column — this is the allocation hotspot the original
+#  per-call `Vector{Int}` returns were causing (one outer vector + four
+#  temporaries per monomial, times n columns, times every anchor group,
+#  times every walk step).  Writing in place eliminates all of that.
+#
+#  The i-dependent (px+t)^i expansion itself is now delegated to
+#  _xi_series_cached! (see above), which memoizes it across the two basis
+#  columns (j=0 and j=1) that rr_basis can produce for the same i.
+# ---------------------------------------------------------------------------
+function monomial_series_coeffs!(
+    out::AbstractVector{Int},
+    i::Int,
+    j::Int,
+    px::Int,
+    y_ser::AbstractVector{Int},
+    m::Int,
+    xi_scratch::AbstractVector{Int},
+    binom_scratch::AbstractVector{Int},
+    pxpow_table::AbstractVector{Int},
+    small_inv::AbstractVector{Int},
+    backend::FpArith = StandardArith(p);
+    xi_cache_i::Union{AbstractVector{Int},Nothing} = nothing,
+    xi_cache_px::Union{AbstractVector{Int},Nothing} = nothing,
+    xi_cache_m::Union{AbstractVector{Int},Nothing} = nothing,
+    xi_cache_buf::Union{AbstractVector{Int},Nothing} = nothing,
+)::Nothing
+
+    @assert length(out) >= m
+    @assert j == 0 || j == 1 "unexpected monomial x^$i y^$j"
+    fill!(out, 0)
+
+    maxs = min(i, m - 1)
+
+    # Memoized path used whenever the caller supplies the four cache
+    # buffers (every real call site does, via fill_monomial_block! ->
+    # _monomial_column! -> here, threaded from scratch). The keyword
+    # defaults to `nothing` rather than making this non-optional so any
+    # older/external caller that only ever passes the original positional
+    # arguments still gets correct (just unmemoized) behaviour instead of
+    # a MethodError — a deliberately soft migration path, not a permanent
+    # feature.
+    if xi_cache_i !== nothing
+        _xi_series_cached!(xi_scratch, i, px, m, binom_scratch, pxpow_table,
+                            small_inv, xi_cache_i, xi_cache_px, xi_cache_m,
+                            xi_cache_buf, backend)
+    else
+        fill!(xi_scratch, 0)
+        binom_scratch[1] = to_repr(backend, 1)
+        for s in 1:maxs
+            binom_scratch[s + 1] =
+                fpmul_b(backend, binom_scratch[s],
+                        fpmul_b(backend, to_repr(backend, i - s + 1), small_inv[s]))
+        end
+        for s in 0:maxs
+            xi_scratch[s + 1] = fpmul_b(backend, binom_scratch[s + 1], pxpow_table[i - s + 1])
+        end
     end
 
     if j == 0
@@ -1890,7 +2010,11 @@ end
         scratch.binom_buf,
         scratch.pxpow_buf,
         scratch.small_inv,
-        backend
+        backend;
+        xi_cache_i   = scratch.xi_cache_i,
+        xi_cache_px  = scratch.xi_cache_px,
+        xi_cache_m   = scratch.xi_cache_m,
+        xi_cache_buf = scratch.xi_cache_buf,
     )
 
     return nothing
@@ -2065,7 +2189,11 @@ end
         scratch.binom_buf,
         scratch.pxpow_buf,
         scratch.small_inv,
-        backend
+        backend;
+        xi_cache_i   = scratch.xi_cache_i,
+        xi_cache_px  = scratch.xi_cache_px,
+        xi_cache_m   = scratch.xi_cache_m,
+        xi_cache_buf = scratch.xi_cache_buf
     )
 
     # ACTUAL FIX: matching off-by-one to _write_column!'s — this wrote to
