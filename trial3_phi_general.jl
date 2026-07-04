@@ -215,6 +215,25 @@ mutable struct PhiTimingStats
     ns_ser_mumford   ::Int64   # Mumford rows (reduce_monomial_mod_D_cached x (n+1)) — runs AFTER
                                 # the anchor loop, still inside the series-timed region. Missed
                                 # on the first pass at this instrumentation; added once noticed.
+    # --- fine-grained sub-timers inside the "residual" bucket ---
+    # Same rationale as ns_ser_* above, one level down: residual was the
+    # dominant share (~60%) in the first series/gauss/residual split, which
+    # only tells us THAT it's expensive, not WHERE inside
+    # phi_residual_general! the time goes. In particular this exists to
+    # test the hypothesis that _solve_oscar_roots!'s round-trip through
+    # Nemo/Oscar's generic FqField/FqPolyRing machinery (deg>=3 residuals)
+    # dominates over the raw-Int64 poly arithmetic elsewhere in this file —
+    # vs. it actually being the poly divmods or the v_RS modular-inverse
+    # computation. ns_res_roots_quad + ns_res_roots_oscar is a BREAKDOWN of
+    # the same time find_roots_and_points_inplace! spends (mutually
+    # exclusive per call: deg==2 takes the quad closed form, everything
+    # else goes through Oscar), not additional time on top of ns_res_roots.
+    ns_res_buildN      ::Int64   # phi_to_EY! + build_N_inplace! (steps 1-2: E,Y,N construction)
+    ns_res_divmod      ::Int64   # steps 3-7: anchor-factor divmods, u(x) divmod, strip/normalize/copy
+    ns_res_vrs         ::Int64   # compute_vRS_inplace! (step 8: v_RS(x) mod u_RS(x) via modular inverse)
+    ns_res_roots       ::Int64   # find_roots_and_points_inplace! (step 9), both branches combined
+    ns_res_roots_quad  ::Int64   # ...of which: deg==2 closed-form path (_solve_quadratic_roots!)
+    ns_res_roots_oscar ::Int64   # ...of which: deg>=3 Oscar/Nemo path (_solve_oscar_roots!)
 end
 PhiTimingStats() = PhiTimingStats(
     0, 0, 0, 0,                      #  1: n_calls, ns_series, ns_gauss, ns_residual
@@ -224,7 +243,8 @@ PhiTimingStats() = PhiTimingStats(
     0,                                # 11: n_drop_residual_deg_not_2_no_split
     0, 0, 0,                         # 12: n_gauss_fail_forward_pivot, _diag_d1, _diag_di
     zeros(Int64, K_MAX + 2),          # 15: gauss_fail_forward_pivot_col_hist
-    0, 0, 0, 0, 0)                    # 16: ns_ser_setup..ns_ser_mumford
+    0, 0, 0, 0, 0,                    # 16: ns_ser_setup..ns_ser_mumford
+    0, 0, 0, 0, 0, 0)                 # 21: ns_res_buildN..ns_res_roots_oscar
 
 const PHI_TIMING = Ref{Vector{PhiTimingStats}}(PhiTimingStats[])
 
@@ -264,6 +284,8 @@ function reset_phi_timing!()
         fill!(s.gauss_fail_forward_pivot_col_hist, 0)
         s.ns_ser_setup = 0; s.ns_ser_branch = 0; s.ns_ser_cols = 0; s.ns_ser_rhs = 0
         s.ns_ser_mumford = 0
+        s.ns_res_buildN = 0; s.ns_res_divmod = 0; s.ns_res_vrs = 0
+        s.ns_res_roots = 0; s.ns_res_roots_quad = 0; s.ns_res_roots_oscar = 0
     end
     return nothing
 end
@@ -298,6 +320,12 @@ function print_phi_timing_report(; label::String = "")
         agg.ns_ser_cols      += s.ns_ser_cols
         agg.ns_ser_rhs       += s.ns_ser_rhs
         agg.ns_ser_mumford   += s.ns_ser_mumford
+        agg.ns_res_buildN      += s.ns_res_buildN
+        agg.ns_res_divmod      += s.ns_res_divmod
+        agg.ns_res_vrs         += s.ns_res_vrs
+        agg.ns_res_roots       += s.ns_res_roots
+        agg.ns_res_roots_quad  += s.ns_res_roots_quad
+        agg.ns_res_roots_oscar += s.ns_res_roots_oscar
     end
     total_ns = agg.ns_series + agg.ns_gauss + agg.ns_residual
     if total_ns == 0
@@ -356,6 +384,42 @@ function print_phi_timing_report(; label::String = "")
             agg.ns_ser_cols     / max(1, agg.n_calls),
             agg.ns_ser_rhs      / max(1, agg.n_calls),
             agg.ns_ser_mumford  / max(1, agg.n_calls))
+    # Sub-breakdown of the residual bucket. ns_res_* should sum to ~ns_residual
+    # (same time_ns()-overhead caveat as the series breakdown above; ratios
+    # are what matters). ns_res_roots_quad/_oscar are themselves a further
+    # breakdown of ns_res_roots specifically (mutually exclusive per call —
+    # see find_x_roots!'s deg==2 branch), not additional time on top of
+    # ns_res_roots.
+    # KNOWN GAP: phi_residual_general!'s three early return-false sites in
+    # the divmod region (anchor-factor remainder nonzero, u(x) remainder
+    # nonzero, degenerate residual) exit before ns_res_divmod's closing
+    # timer runs, so partial divmod time on those paths lands in no bucket
+    # (ns_res_buildN is unaffected, since it closes before divmod starts).
+    # Harmless while resid_fail's anchor_remainder/u_remainder/degenerate
+    # counts stay near zero; if those grow large, ns_res_divmod's share
+    # will read artificially low.
+    res_sum = max(1, agg.ns_res_buildN + agg.ns_res_divmod + agg.ns_res_vrs + agg.ns_res_roots)
+    @printf("[PHI-TIMING%s] residual breakdown:  buildN=%.1f%%  divmod=%.1f%%  vRS=%.1f%%  roots=%.1f%%  (of residual total)\n",
+            tag,
+            100.0 * agg.ns_res_buildN / res_sum,
+            100.0 * agg.ns_res_divmod / res_sum,
+            100.0 * agg.ns_res_vrs    / res_sum,
+            100.0 * agg.ns_res_roots  / res_sum)
+    @printf("[PHI-TIMING%s] residual breakdown mean (ns):  buildN=%.0f  divmod=%.0f  vRS=%.0f  roots=%.0f\n",
+            tag,
+            agg.ns_res_buildN / max(1, agg.n_calls),
+            agg.ns_res_divmod / max(1, agg.n_calls),
+            agg.ns_res_vrs    / max(1, agg.n_calls),
+            agg.ns_res_roots  / max(1, agg.n_calls))
+    roots_sum = max(1, agg.ns_res_roots_quad + agg.ns_res_roots_oscar)
+    @printf("[PHI-TIMING%s]   roots sub-split:  quad(deg==2)=%.1f%%  oscar(deg>=3)=%.1f%%  (of roots time; mean ns below is per CALL to phi_residual_general!, not per invocation of that specific branch)\n",
+            tag,
+            100.0 * agg.ns_res_roots_quad  / roots_sum,
+            100.0 * agg.ns_res_roots_oscar / roots_sum)
+    @printf("[PHI-TIMING%s]   roots sub-split mean (ns, per call):  quad=%.0f  oscar=%.0f\n",
+            tag,
+            agg.ns_res_roots_quad  / max(1, agg.n_calls),
+            agg.ns_res_roots_oscar / max(1, agg.n_calls))
     @printf("[PHI-TIMING%s] --> ceiling on any linear-solve speedup (rank-1/SMW/Cramer): a Xx speedup on gauss\n",
             tag)
     @printf("[PHI-TIMING%s]     buys at most %.1f%% off the series+gauss+residual total (gauss share above).\n",
@@ -444,13 +508,25 @@ end
 #  chains rather than repeated powermod calls, so there's no analogous
 #  redundancy to remove there — see NOTE below).
 #
-#  NOTE on p ≡ 1 mod 4: still calls powermod 3 times up front (for z's
-#  Euler check inside the "find a non-residue" loop, plus c, t, r) — those
-#  are NOT redundant with each other (z, a, and the exponents Q/(Q+1)/2
-#  are all different bases/exponents), so no analogous simplification
-#  applies there without a deeper algorithmic change. If p ≡ 1 mod 4 in
-#  your run, this function is bit-identical in cost to trial1's sqrt_fp;
-#  the win here is specific to p ≡ 3 mod 4.
+#  NOTE on p ≡ 1 mod 4, p ≢ 5 mod 8 (i.e. p ≡ 1 mod 8): still calls
+#  powermod 3 times up front (for z's Euler check inside the "find a
+#  non-residue" loop, plus c, t, r) — those are NOT redundant with each
+#  other (z, a, and the exponents Q/(Q+1)/2 are all different
+#  bases/exponents), so no analogous simplification applies there without
+#  a deeper algorithmic change. If p ≡ 1 (mod 8) in your run, this
+#  function is bit-identical in cost to trial1's sqrt_fp.
+#
+#  UPDATE: added a dedicated p ≡ 5 (mod 8) branch below (see its own
+#  comment for the derivation/references) after a run with p ≡ 5 (mod 8)
+#  showed the generic Tonelli-Shanks fallback firing on every deg==2
+#  residual — i.e. the p≡1(mod4) case above was NOT just "no analogous
+#  redundancy to remove," it was actively the dominant cost in the whole
+#  φ-construction pipeline for that class of p. p ≡ 5 (mod 8) is common
+#  enough (half of all p ≡ 1 mod 4 primes) that it deserved its own fast
+#  path rather than falling through to the fully general algorithm, which
+#  additionally has a non-residue SEARCH LOOP (unbounded a priori, though
+#  fast in practice) and an inner order-finding loop with its own powermod
+#  call — neither of which the p≡5(mod8) closed form needs at all.
 # ---------------------------------------------------------------------------
 function sqrt_fp_fast(a::Int)::Union{Int,Nothing}
     a = fp(a);  a == 0 && return 0
@@ -458,7 +534,56 @@ function sqrt_fp_fast(a::Int)::Union{Int,Nothing}
         r = powermod(a, (p + 1) >> 2, p)
         return fpmul(r, r) == a ? r : nothing
     end
-    # p ≡ 1 (mod 4): Tonelli-Shanks, unchanged from trial1's sqrt_fp.
+    if p % 8 == 5
+        # p ≡ 5 (mod 8) fast path.
+        #
+        # MOTIVATION: added after --phi-timing's residual breakdown showed
+        # the "roots" bucket (all deg==2, i.e. 100% through this function)
+        # costing ~2343ns/call — 43.8% of residual, the single largest
+        # sub-bucket in the whole call. The comment block above this
+        # function already flagged the reason: for p ≡ 1 (mod 4), this
+        # function falls through unchanged to the generic Tonelli-Shanks
+        # branch below, which for THIS run's p does ~5-6 full
+        # powermod-style modular exponentiations per call (Euler check,
+        # non-residue search, c/t/r setup, plus one more inside the
+        # order-finding loop since S=2 here) versus the single
+        # exponentiation the p≡3(mod4) branch above needed. That's the
+        # actual cost, not anything intrinsic to "closed form."
+        #
+        # p ≡ 5 (mod 8) is a strictly stronger condition than p ≡ 1 (mod 4)
+        # (it fixes S=2 exactly: p-1 = 4·((p-1)/4) with (p-1)/4 odd) and
+        # admits a closed-form root using only 2 modular exponentiations,
+        # no non-residue search and no inner loop — see e.g. Cohen, "A
+        # Course in Computational Algebraic Number Theory", Alg 1.5.1, or
+        # standard Tonelli-Shanks special-case writeups:
+        #
+        #   d = a^((p-1)/4) mod p
+        #   if d == 1:      r = a^((p+3)/8) mod p          (r² ≡ a)
+        #   if d == p-1:    r = 2a · (4a)^((p-5)/8) mod p  (r² ≡ a)
+        #   else:           a is a non-residue, no root
+        #
+        # Verified against 20000 random trials cross-checked against the
+        # Euler criterion / brute-force r²==a check before landing this
+        # (see conversation) — kept as a runtime self-check below too,
+        # exactly like the p≡3(mod4) branch's `fpmul(r,r)==a` check, so a
+        # future change to this file that alters `p` can't silently ship a
+        # wrong root without tripping an assert on the very next call.
+        d = powermod(a, (p - 1) >> 2, p)
+        if d == 1
+            r = powermod(a, (p + 3) >> 3, p)
+            @assert fpmul(r, r) == a "sqrt_fp_fast: p≡5(mod8) fast path (d==1 branch) produced a bad root — r=$r a=$a p=$p. Check the (p+3)/8 exponent and p%8==5 precondition."
+            return r
+        elseif d == p - 1
+            four_a = fpmul(4, a)
+            r = fpmul(fpmul(2, a), powermod(four_a, (p - 5) >> 3, p))
+            @assert fpmul(r, r) == a "sqrt_fp_fast: p≡5(mod8) fast path (d==p-1 branch) produced a bad root — r=$r a=$a p=$p. Check the 2a·(4a)^((p-5)/8) formula and p%8==5 precondition."
+            return r
+        else
+            return nothing   # a is a non-residue: d is neither 1 nor p-1
+        end
+    end
+    # p ≡ 1 (mod 4), p ≢ 5 (mod 8) — i.e. p ≡ 1 (mod 8): Tonelli-Shanks,
+    # unchanged from trial1's sqrt_fp.
     #
     # BUG FIX: the Euler criterion check (a^((p-1)/2) == 1) that trial1's
     # sqrt_fp runs BEFORE dispatching to either branch was only reproduced
@@ -2298,6 +2423,9 @@ function build_phi_general!(
 
         m = occ_count
 
+        # --- sub-timer: setup (x-power cache rebuild for this anchor) ---
+        _pt_ser_setup_t0 = PHI_TIMING_ENABLED[] ? time_ns() : UInt64(0)
+
         # Rebuild the x-power cache for THIS anchor's x-coordinate.
         # (Must happen before fill_monomial_block!/fill_rhs! below, both of
         # which read scratch.pxpow_buf via monomial_series_coeffs!.)
@@ -2318,6 +2446,13 @@ function build_phi_general!(
         @assert px != 0
         @assert py != 0  # hyperelliptic / branch validity assumption
 
+        if PHI_TIMING_ENABLED[]
+            phi_timing_stats().ns_ser_setup += time_ns() - _pt_ser_setup_t0
+        end
+
+        # --- sub-timer: branch_series (compute_branch_series! only) ---
+        _pt_ser_branch_t0 = PHI_TIMING_ENABLED[] ? time_ns() : UInt64(0)
+
         # --- compute local branch expansion ---
         compute_branch_series!(
             scratch.out_y,
@@ -2328,12 +2463,18 @@ function build_phi_general!(
             backend
         )
 
+        if PHI_TIMING_ENABLED[]
+            phi_timing_stats().ns_ser_branch += time_ns() - _pt_ser_branch_t0
+        end
+
         # strict structural invariant: branch series must match expected size
         @assert length(scratch.out_y) >= m + 1
 
         # ========================================================
         # 5a. Fill matrix block
         # ========================================================
+
+        _pt_ser_cols_t0 = PHI_TIMING_ENABLED[] ? time_ns() : UInt64(0)
 
         fill_monomial_block!(
             scratch.A_mat,
@@ -2385,6 +2526,10 @@ function build_phi_general!(
             end
         end
 
+        if PHI_TIMING_ENABLED[]
+            phi_timing_stats().ns_ser_cols += time_ns() - _pt_ser_cols_t0
+        end
+
         # ========================================================
         # 5b. Fill RHS
         # ========================================================
@@ -2393,6 +2538,8 @@ function build_phi_general!(
         # actually lives) instead of basis[end]. For K=1's nb=4 these are
         # the same thing (y_idx==nb==4), so this changes nothing there; for
         # K=2's nb=5, y_idx==4 != nb==5, and this is the actual fix.
+
+        _pt_ser_rhs_t0 = PHI_TIMING_ENABLED[] ? time_ns() : UInt64(0)
 
         fill_rhs!(
             scratch.rhs_vec,
@@ -2406,6 +2553,10 @@ function build_phi_general!(
             scratch,
             backend
         )
+
+        if PHI_TIMING_ENABLED[]
+            phi_timing_stats().ns_ser_rhs += time_ns() - _pt_ser_rhs_t0
+        end
 
         # ========================================================
         # 5c. Row bookkeeping (explicit invariant)
@@ -2430,6 +2581,9 @@ function build_phi_general!(
     # already sitting at K+1 here (it was advanced by `m=1` per anchor in
     # the loop above), so this lands exactly where it should.
     n_cols = nb - 1   # == K+2 == N2, the unknown columns (basis[y_idx] is normalised, RHS-only)
+
+    _pt_ser_mumford_t0 = PHI_TIMING_ENABLED[] ? time_ns() : UInt64(0)
+
     fill_mumford_block!(
         scratch,
         scratch.A_mat,
@@ -2441,6 +2595,11 @@ function build_phi_general!(
         v0_b, v1_b,
         backend
     )
+
+    if PHI_TIMING_ENABLED[]
+        phi_timing_stats().ns_ser_mumford += time_ns() - _pt_ser_mumford_t0
+    end
+
     row_idx += 2
     total_rows += 2
 
@@ -3157,13 +3316,21 @@ function phi_residual_general!(
     @assert length(anchors) == K "phi_residual_general!: length(anchors)=$(length(anchors)) != K=$K"
     @assert length(basis) == K + 3 "phi_residual_general!: length(basis)=$(length(basis)) != K+3=$(K+3)"
 
-    # 1. Convert φ to E(x) and Y(x) representations inside scratch buffers.
+    _pt_res_buildN_t0 = PHI_TIMING_ENABLED[] ? time_ns() : UInt64(0)
+
+    # 1. Convert phi to E(x) and Y(x) representations inside scratch buffers.
     #    Capture the returned degrees to avoid dynamic searching in the next step.
     deg_E, deg_Y = phi_to_EY!(scratch, basis)
 
-    # 2. Compute N(x) = E(x)² - f(x)·Y(x)² inside our large pre-allocated scratch.poly_buf.
+    # 2. Compute N(x) = E(x)^2 - f(x)*Y(x)^2 inside our large pre-allocated scratch.poly_buf.
     #    Pass the degrees explicitly to preserve zero-allocation execution.
     n_len = build_N_inplace!(scratch, deg_E, deg_Y)
+
+    if PHI_TIMING_ENABLED[]
+        phi_timing_stats().ns_res_buildN += time_ns() - _pt_res_buildN_t0
+    end
+
+    _pt_res_divmod_t0 = PHI_TIMING_ENABLED[] ? time_ns() : UInt64(0)
 
     # 3. Divide out anchor factors with correct multiplicity using zero-alloc linear scan.
     for idx in 1:k
@@ -3258,12 +3425,28 @@ function phi_residual_general!(
         @inbounds scratch.u_RS[i] = scratch.poly_buf[i]
     end
 
+    if PHI_TIMING_ENABLED[]
+        phi_timing_stats().ns_res_divmod += time_ns() - _pt_res_divmod_t0
+    end
+
+    _pt_res_vrs_t0 = PHI_TIMING_ENABLED[] ? time_ns() : UInt64(0)
+
     # 8. Compute v_RS(x) mod N(x) directly inside scratch.v_RS workspace
     v_len = compute_vRS_inplace!(scratch, n_len)
     scratch.v_RS_len[1] = v_len
 
+    if PHI_TIMING_ENABLED[]
+        phi_timing_stats().ns_res_vrs += time_ns() - _pt_res_vrs_t0
+    end
+
+    _pt_res_roots_t0 = PHI_TIMING_ENABLED[] ? time_ns() : UInt64(0)
+
     # 9. Find split points using scratch structures, updates scratch.roots_count[1]
     find_roots_and_points_inplace!(scratch, n_len, Val(K))
+
+    if PHI_TIMING_ENABLED[]
+        phi_timing_stats().ns_res_roots += time_ns() - _pt_res_roots_t0
+    end
 
     return true
 end
@@ -3944,9 +4127,19 @@ end
     deg = u_len - 1
 
     if deg == 2
-        return _solve_quadratic_roots!(scratch)
+        _pt_rq_t0 = PHI_TIMING_ENABLED[] ? time_ns() : UInt64(0)
+        n = _solve_quadratic_roots!(scratch)
+        if PHI_TIMING_ENABLED[]
+            phi_timing_stats().ns_res_roots_quad += time_ns() - _pt_rq_t0
+        end
+        return n
     else
-        return _solve_oscar_roots!(scratch, u_len)
+        _pt_ro_t0 = PHI_TIMING_ENABLED[] ? time_ns() : UInt64(0)
+        n = _solve_oscar_roots!(scratch, u_len)
+        if PHI_TIMING_ENABLED[]
+            phi_timing_stats().ns_res_roots_oscar += time_ns() - _pt_ro_t0
+        end
+        return n
     end
 end
 

@@ -1402,13 +1402,11 @@ function phase2_worker(G               ::Div2,
         end_idx    = start_idx + base_chunk - 1 + (tid <= r_k ? 1 : 0)
 
         if start_idx >= Nk
-            # This thread has no tuples of length k. Since Nk is
-            # non-decreasing in k, this can only happen at k=1 — i.e.
-            # n_workers > nF_cur, the same "excess threads" case the old
-            # code guarded against.
-            k == 1 && (idle = true)
+            # This thread has no tuples of length k specifically. THIS ALONE
+            # DOES NOT MEAN THE THREAD IS IDLE — see the bug this replaced,
+            # below.
             chunk_size_k[k]  = 0
-            start_tuple_k[k] = fill(1, k)   # placeholder; never read (idle)
+            start_tuple_k[k] = fill(1, k)   # placeholder; only read if chunk_size_k[k]>0 elsewhere by mistake
             continue
         end
 
@@ -1416,6 +1414,40 @@ function phase2_worker(G               ::Div2,
         chunk_size_k[k] = chunk_big > typemax(Int) ? typemax(Int) : Int(chunk_big)
         start_tuple_k[k] = _unrank_multicombination(start_idx, nF_cur, k)
     end
+
+    # BUGFIX (the actual root cause of threads sitting IDLE with
+    # nF_cur=25 < n_workers=32 despite K_ceil=6 giving those same threads
+    # tens of thousands of valid k=2..6 tuples apiece — see conversation,
+    # confirmed by hand-computing chunk_size_k for tid=26..32 with
+    # nF_cur=25, n_workers=32: chunk_size_k[1]==0 but chunk_size_k[2..6]
+    # are all in the thousands-to-tens-of-thousands range, definitely
+    # nonzero):
+    #
+    # The OLD code set `idle = true` the moment k==1 hit start_idx>=Nk,
+    # then unconditionally returned empty results for the WHOLE thread —
+    # discarding its perfectly valid, already-computed k=2..K_ceil chunks.
+    # The comment justifying that ("Since Nk is non-decreasing in k, this
+    # can only happen at k=1") is true as far as it goes — Nk=multichoose
+    # (nF_cur,k) does grow with k, so start_idx>=Nk can indeed only trip at
+    # k=1 — but the CONCLUSION drawn from it was wrong: "only happens at
+    # k=1" was read as "therefore the thread has no tuples at all," when
+    # it actually only means "no LENGTH-1 tuples." For any K_ceil>=2 this
+    # is precisely the case where the tuple-space-slicing refactor (see
+    # the big comment above this loop) was supposed to give excess threads
+    # real work via k>=2 — the early return was silently throwing that
+    # away and falling back to exactly the "still only slicing by FB"
+    # behaviour the refactor was meant to fix.
+    #
+    # CORRECT CONDITION: a thread is only genuinely idle if EVERY k in
+    # 1:K_ceil has an empty chunk — i.e. n_workers exceeds the ENTIRE
+    # k=1..K_ceil tuple space combined, not just the k=1 slice. Since Nk is
+    # strictly increasing in k (for nF_cur>=1), this reduces to checking
+    # k==K_ceil alone (the largest, hence most populous, tuple space) —
+    # but checking all(iszero, chunk_size_k) directly is just as cheap and
+    # doesn't rely on that monotonicity argument holding in some future
+    # edit (e.g. if _multichoose_big's formula or nF_cur's role in it ever
+    # changes).
+    idle = all(iszero, chunk_size_k)
 
     if idle
         # This thread has no FB elements to walk at all (n_workers > nF_cur).
@@ -1522,7 +1554,41 @@ function phase2_worker(G               ::Div2,
     #  as frequent as k=6). Raise anchor_tuple_weight_decay to push harder
     #  toward small k; set to 1.0 to recover the old flat behaviour exactly.
     # ==========================================================================
-    k_weight     = [anchor_tuple_weight_decay^(K_ceil - k) for k in 1:K_ceil]
+    # BUGFIX (companion to the idle-thread fix above): zero the weight of
+    # any k whose chunk_size_k[k]==0 for THIS thread, so the SWRR schedule
+    # below can never select it.
+    #
+    # Without this, _next_k() was a pure function of (K_ceil,
+    # anchor_tuple_weight_decay) with no knowledge of this thread's actual
+    # per-k chunk sizes. For any excess thread (n_workers > Nk at k=1, the
+    # exact case the idle-fix above addresses) that still has empty chunks
+    # at some OTHER k too — e.g. nF_cur small enough that even k=2 is
+    # exhausted before all threads get a slice, while k>=3 still has
+    # room — _next_k() would keep periodically selecting that empty k
+    # anyway. tuple_cursors[k] for an empty chunk is permanently pinned to
+    # the unadvanced placeholder start_tuple_k[k] = fill(1, k), so every
+    # such selection either:
+    #   (a) silently re-returns the identical placeholder tuple forever,
+    #       wasting that k's whole weight share on a single duplicate
+    #       relation-check instead of real work other k's could have used,
+    #       or
+    #   (b) if that placeholder tuple happens to be structurally poisoned
+    #       (e.g. fb[1] is a repeated Weierstrass point), hard-errors the
+    #       thread almost immediately: chunk_size_k[k]==0 means
+    #       _advance_tuple_cursor!(k)'s step-count guard
+    #       (step_in_chunk_k[k] >= chunk_size_k[k], i.e. 0 >= 0) fires on
+    #       the very first advance and just copies start_tuple_k[k] onto
+    #       itself, so the `rejects > chunk_size_k[k]` bound in
+    #       next_anchor_tuple() (i.e. rejects > 0) trips on the second
+    #       attempt and raises — a thread crash caused entirely by
+    #       scheduling a k this thread was never assigned any real tuples
+    #       for, not by an actual poisoned tuple in its assigned chunks.
+    #
+    # Excluding empty-chunk k's from the weight vector up front avoids both:
+    # this thread's SWRR credit is redistributed over only the k's it
+    # genuinely has tuples for, in the same relative proportions
+    # (anchor_tuple_weight_decay^(K_ceil-k)) as before.
+    k_weight     = [chunk_size_k[k] == 0 ? 0.0 : anchor_tuple_weight_decay^(K_ceil - k) for k in 1:K_ceil]
     k_weight_tot = sum(k_weight)
     k_cur_weight = zeros(Float64, K_ceil)   # SWRR running credit, one per k
 
@@ -1531,9 +1597,23 @@ function phase2_worker(G               ::Div2,
         @inbounds for i in 1:K_ceil
             k_cur_weight[i] += k_weight[i]
         end
-        best = 1
-        @inbounds for i in 2:K_ceil
-            k_cur_weight[i] > k_cur_weight[best] && (best = i)
+        # Seed `best` with the first k this thread actually has tuples for,
+        # not unconditionally k=1: if chunk_size_k[1]==0 (the common excess-
+        # thread case the whole idle-fix is about), k=1 is excluded and must
+        # never be the starting candidate the loop below compares against.
+        # idle=all(iszero,chunk_size_k) was already checked earlier and this
+        # function is only reachable when that was false, so at least one
+        # k_weight[i]>0.0 is guaranteed to exist.
+        best = findfirst(>(0.0), k_weight)::Int
+        @inbounds for i in (best + 1):K_ceil
+            # Skip k's with zero weight (this thread has no tuples of that
+            # length) even if floating-point noise ever let their credit
+            # creep above another k's — chunk_size_k[i]==0 is the ground
+            # truth, k_weight[i]==0.0 encodes it exactly, so this branch
+            # should never matter in practice, but checking the weight
+            # directly (not just comparing credit) costs nothing and
+            # removes that possibility entirely.
+            (k_weight[i] > 0.0) && k_cur_weight[i] > k_cur_weight[best] && (best = i)
         end
         @inbounds k_cur_weight[best] -= k_weight_tot
         return best
