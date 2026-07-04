@@ -780,9 +780,11 @@ end
         record_d20_emission!(deep_stat)
         record_d19_closure!(deep_stat, i0, prev_col, combined_al, combined_be)
         
-        record_d35_closure!(deep_stat, combined_al, combined_be,
-                            u0_limb, u1_limb, u0_limb, u1_limb)
-        record_d30_closure!(deep_stat, u0_limb, u0_limb)
+        if prev_col >= 1
+            record_d35_closure!(deep_stat, combined_al, combined_be,
+                                fb[i0][1], fb[i0][2], fb[prev_col][1], fb[prev_col][2])
+            record_d30_closure!(deep_stat, fb[i0][1], fb[prev_col][1])
+        end
         
         record_d36_closure!(deep_stat, i0, prev_col)
         record_d22_d23_d24_emission!(deep_stat, s.raw_steps, _deep_bucket(lp_key), a_bucket)
