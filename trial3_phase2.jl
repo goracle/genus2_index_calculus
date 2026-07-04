@@ -1886,8 +1886,50 @@ function phase2_worker(G               ::Div2,
     # ==========================================================================
     #  Main walk loop
     # ==========================================================================
+    # WILLY-NILLY ASSERT SUPPORT: stall canary. "one valid phi then nothing
+    # for millions of steps" is exactly the symptom that a plain counter
+    # dump can't diagnose (it just confirms the stall after the fact) — this
+    # converts it into an immediate, loud failure the moment it happens,
+    # instead of a multi-minute silent run the human has to notice and Ctrl-C.
+    steps_since_hit = 0
+    last_hit_k      = 0
+    STALL_ASSERT_STEPS = 500_000
+
     while rel_counter[] < rel_target && s.raw_steps < step_cap && (amortized_precompute || ort_b1(ort) == 0)
         s.raw_steps += 1
+        steps_since_hit += 1
+        if steps_since_hit >= STALL_ASSERT_STEPS
+            # Pull this thread's own phi-failure-reason counters (always
+            # tracked now — see phi_timing_stats()'s lazy-init fallback in
+            # trial3_phi_general.jl — independent of --phi-timing) so the
+            # assert message names WHICH continue site inside
+            # step_phi_dispatch!/build_phi_general!/phi_residual_general!/
+            # phase2_worker's own post-processing is eating every attempt,
+            # instead of just reporting that one exists.
+            pts = phi_timing_stats()
+            accounted = pts.n_fail_build + pts.n_fail_residual +
+                        pts.n_drop_residual_deg_not_2_no_split + s.hits_total
+            unaccounted = s.phi_attempts - accounted
+            msg = "phase2_worker tid=$tid: $steps_since_hit raw steps since last phi hit (limit $STALL_ASSERT_STEPS) — " *
+                  "raw_steps=$(s.raw_steps) phi_attempts=$(s.phi_attempts) hits_total=$(s.hits_total) hits_skip=$(s.hits_skip) " *
+                  "k_cur=$(k_cur_ref[]) last_hit_k=$last_hit_k.  " *
+                  "phi_fail_build=$(pts.n_fail_build) (gauss_singular=$(pts.n_fail_build_gauss_singular))  " *
+                  "phi_fail_residual=$(pts.n_fail_residual) (anchor_remainder=$(pts.n_fail_resid_anchor_remainder), " *
+                  "u_remainder=$(pts.n_fail_resid_u_remainder), degenerate=$(pts.n_fail_resid_degenerate))  " *
+                  "post_success_drop_deg_not_2=$(pts.n_drop_residual_deg_not_2_no_split).  " *
+                  "unaccounted=$unaccounted (phi_attempts - all_tracked_failures - hits_total; should be 0 for " *
+                  "k_cur>=2 steps — k_cur==1's build_phi_mumford/phi_residual_mumford failures are NOT split into " *
+                  "these buckets, only lumped into n_fail_build/n_fail_residual, since that fast-path function " *
+                  "isn't in a file available for editing here)."
+            # Raise unconditionally rather than only on the round-number
+            # threshold: an unaccounted gap means there is a 5th silent
+            # continue site this instrumentation pass didn't find (or a
+            # cross-thread PHI_TIMING[] aliasing bug), and per Claire's
+            # standing preference this must fail loudly, not degrade into
+            # "well the buckets mostly add up."
+            @assert unaccounted == 0 "$msg  ← ACCOUNTING GAP: a phi-attempt was silently dropped somewhere this instrumentation doesn't yet cover."
+            @assert steps_since_hit < STALL_ASSERT_STEPS msg
+        end
 
         # --- Periodic progress report (moved to top of loop) ---
         # Every other gate/skip below this point uses `continue`, which would
@@ -1961,14 +2003,39 @@ function phase2_worker(G               ::Div2,
         if k_cur == 1
             # Fast path: closed-form single-anchor φ
             phi_c = build_phi_mumford(px, py, u0, u1, v0, v1)
-            phi_c === nothing && continue
+            if phi_c === nothing
+                # build_phi_mumford's internal failure modes are opaque from
+                # here (it's defined outside these three files, so we can't
+                # instrument its own return sites) — but we CAN at least
+                # count "k==1 build step failed" at this call site so a
+                # future stall assert can tell k==1-vs-k>=2 apart instead of
+                # only ever reporting the k>=2 general-path breakdown.
+                # Deliberately NOT touching `s` (hits_skip etc.) here: `s`'s
+                # mutable struct is defined in a file we don't have, and
+                # guessing at unseen field names/types would be worse than
+                # this separate, self-contained counter.
+                pts_k1 = phi_timing_stats()
+                pts_k1.n_fail_build += 1
+                # No finer-grained bucket exists for k==1 (unlike gauss_singular
+                # for the k>=2 path) since build_phi_mumford's internals aren't
+                # visible here; if this dominates a future stall, the fix is to
+                # add matching n_fail_* counters at build_phi_mumford's own
+                # return sites, analogous to build_phi_general!'s gauss_singular one.
+                continue
+            end
             a, b_phi, c_phi, _ = phi_c
 
             # D38 — φ a-coefficient sequential autocorrelation.
             d38_stat !== nothing && record_d38_step!(d38_stat, Int(a))
 
             res_R, res_S, RS_mumford = phi_residual_mumford(a, b_phi, c_phi, px, u0, u1)
-            RS_mumford === SENTINEL_MUMFORD && continue   # division failed
+            if RS_mumford === SENTINEL_MUMFORD
+                # division failed — same opacity caveat as above applies to
+                # phi_residual_mumford's internal failure sites.
+                pts_k1 = phi_timing_stats()
+                pts_k1.n_fail_residual += 1
+                continue
+            end
         else
             # General k-anchor path via the zero-allocation step_phi_k!,
             # dispatched to the ThreadScratchpad{k_cur} instance out of
@@ -1992,6 +2059,8 @@ function phase2_worker(G               ::Div2,
             nb_k       = k_len + 3
             roots_k    = scratch_k.roots_out
             n_roots    = scratch_k.roots_count[1]  # Track active logical count via a primitive field
+            @assert n_roots >= 0 "phase2_worker: n_roots=$n_roots must be >= 0 (k_cur=$k_cur)"
+            @assert n_roots <= length(roots_k) "phase2_worker: n_roots=$n_roots exceeds roots_k capacity $(length(roots_k)) (k_cur=$k_cur)"
             
             # Extract up to 2 residual affine points as res_R, res_S.
             # A single recovered root (n_roots == 1) is not a usable affine
@@ -2005,6 +2074,8 @@ function phase2_worker(G               ::Div2,
             if n_roots >= 2
                 @inbounds res_R = roots_k[1]
                 @inbounds res_S = roots_k[2]
+                @assert res_R !== SENTINEL_PT "phase2_worker: res_R came out as SENTINEL_PT despite n_roots=$n_roots >= 2 (k_cur=$k_cur)"
+                @assert res_S !== SENTINEL_PT "phase2_worker: res_S came out as SENTINEL_PT despite n_roots=$n_roots >= 2 (k_cur=$k_cur)"
             else
                 res_R = SENTINEL_PT
                 res_S = SENTINEL_PT
@@ -2014,6 +2085,10 @@ function phase2_worker(G               ::Div2,
             # u_RS length is determined via scratch integer flags rather than allocating length(u_RS_k).
             u_rs_len = scratch_k.u_RS_len[1]
             v_rs_len = scratch_k.v_RS_len[1]
+            @assert u_rs_len >= 0 "phase2_worker: u_rs_len=$u_rs_len must be >= 0 (k_cur=$k_cur)"
+            @assert v_rs_len >= 0 "phase2_worker: v_rs_len=$v_rs_len must be >= 0 (k_cur=$k_cur)"
+            @assert u_rs_len <= length(scratch_k.u_RS) "phase2_worker: u_rs_len=$u_rs_len exceeds u_RS capacity $(length(scratch_k.u_RS))"
+            @assert v_rs_len <= length(scratch_k.v_RS) "phase2_worker: v_rs_len=$v_rs_len exceeds v_RS capacity $(length(scratch_k.v_RS))"
 
             if u_rs_len == 3   # degree 2 — standard conjugate pair
                 @inbounds u0_rs = scratch_k.u_RS[1]
@@ -2021,11 +2096,15 @@ function phase2_worker(G               ::Div2,
                 @inbounds v0_rs = (v_rs_len == 0) ? 0 : scratch_k.v_RS[1]
                 @inbounds v1_rs = (v_rs_len >= 2) ? scratch_k.v_RS[2] : 0
                 RS_mumford = (u0_rs, u1_rs, v0_rs, v1_rs)
+                @assert all(x -> x isa Int, RS_mumford) "phase2_worker: RS_mumford has a non-Int component: $RS_mumford (k_cur=$k_cur)"
+                @assert RS_mumford != SENTINEL_MUMFORD "phase2_worker: RS_mumford accidentally equals SENTINEL_MUMFORD despite u_rs_len==3 (k_cur=$k_cur, u_RS=$(scratch_k.u_RS[1:u_rs_len]))"
             else
                 # Residual degree ≠ 2: no conjugate LP key available.
                 # If we have split points use them; otherwise skip the step.
                 RS_mumford = SENTINEL_MUMFORD
                 if res_R == SENTINEL_PT && res_S == SENTINEL_PT
+                    pts_drop = phi_timing_stats()
+                    pts_drop.n_drop_residual_deg_not_2_no_split += 1
                     continue
                 end
             end
@@ -2048,6 +2127,8 @@ function phase2_worker(G               ::Div2,
         end
 
         s.hits_total += 1
+        steps_since_hit = 0
+        last_hit_k      = k_cur
 
         al     = alpha_cur
         be     = beta_cur

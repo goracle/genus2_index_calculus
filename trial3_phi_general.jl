@@ -157,6 +157,45 @@ mutable struct PhiTimingStats
     ns_residual      ::Int64
     n_fail_build     ::Int64   # build_phi_general! returned false (incl. guard rejects)
     n_fail_residual  ::Int64   # phi_residual_general! returned false, or u_RS_is_fail
+    # --- fine-grained breakdown of the two buckets above ---
+    # n_fail_build == n_fail_build_gauss_singular (build_phi_general! has
+    # exactly one `return false` site as of this writing: fp_gauss! failing).
+    # Kept as a separate field anyway so a future second failure path in
+    # build_phi_general! doesn't have to touch call sites elsewhere.
+    n_fail_build_gauss_singular ::Int64
+    # n_fail_residual splits across phi_residual_general!'s four
+    # `u_RS_is_fail[1] = true; return false` sites, in source order:
+    n_fail_resid_anchor_remainder ::Int64  # step 3: anchor-factor divide left nonzero remainder
+    n_fail_resid_u_remainder      ::Int64  # step 4: u(x) divide left nonzero remainder
+    n_fail_resid_degenerate       ::Int64  # step 5/degenerate check: residual collapsed to 0
+    # NOT a phi_residual_general! failure — step_phi_dispatch! returned
+    # success=true here, but phase2_worker's own post-processing found
+    # u_rs_len != 3 (residual degree != 2, so no conjugate LP key exists)
+    # AND no usable split points (res_R/res_S both SENTINEL_PT), so the
+    # step is dropped anyway. Tracked separately because incrementing
+    # n_fail_residual here would be misleading — phi_residual_general!
+    # itself succeeded; this is phase2_worker discarding a structurally
+    # valid-but-unusable residual shape.
+    n_drop_residual_deg_not_2_no_split ::Int64
+    # --- fp_gauss! itself has THREE distinct singularity return sites,
+    # previously ALL collapsed into the single n_fail_build_gauss_singular
+    # counter above with zero indication of which one, or at what matrix
+    # column/row. Split out so a structural bug in the (K+2)x(K+2) fill
+    # (e.g. two anchor rows becoming linearly dependent, or the Mumford
+    # rows not actually adding independent constraints for K>=2) shows up
+    # as "column N never has a pivot" instead of a bare boolean. ---
+    n_gauss_fail_forward_pivot   ::Int64  # forward pass: no nonzero pivot_row found for some column
+    n_gauss_fail_diag_d1         ::Int64  # batch-invert: A[1,1] == 0 after full elimination
+    n_gauss_fail_diag_di         ::Int64  # batch-invert: A[i,i] == 0 for some i>1 after full elimination
+    # Per-column tally of WHICH column the forward-pass pivot search failed
+    # on, across the life of the run (indexed 1:K_MAX+2, the largest
+    # (K+2)x(K+2) system size any k_cur in 1:K_MAX can produce; unused
+    # trailing entries for smaller k_cur stay 0). This is the single most
+    # actionable diagnostic for a "gauss always singular at k=2" stall:
+    # if column 1 (the first anchor row) fails every time, the bug is in
+    # how THAT row is filled; if it's always the last column (the
+    # normalized-basis-element RHS move), the bug is there instead.
+    gauss_fail_forward_pivot_col_hist ::Vector{Int64}
     # --- fine-grained sub-timers inside the "series" bucket ---
     # These are a BREAKDOWN of ns_series, not additional time: for any
     # given call, ns_series == ns_ser_setup + ns_ser_branch + ns_ser_cols
@@ -177,7 +216,15 @@ mutable struct PhiTimingStats
                                 # the anchor loop, still inside the series-timed region. Missed
                                 # on the first pass at this instrumentation; added once noticed.
 end
-PhiTimingStats() = PhiTimingStats(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+PhiTimingStats() = PhiTimingStats(
+    0, 0, 0, 0,                      #  1: n_calls, ns_series, ns_gauss, ns_residual
+    0, 0,                            #  5: n_fail_build, n_fail_residual
+    0,                                #  7: n_fail_build_gauss_singular
+    0, 0, 0,                         #  8: n_fail_resid_anchor_remainder, _u_remainder, _degenerate
+    0,                                # 11: n_drop_residual_deg_not_2_no_split
+    0, 0, 0,                         # 12: n_gauss_fail_forward_pivot, _diag_d1, _diag_di
+    zeros(Int64, K_MAX + 2),          # 15: gauss_fail_forward_pivot_col_hist
+    0, 0, 0, 0, 0)                    # 16: ns_ser_setup..ns_ser_mumford
 
 const PHI_TIMING = Ref{Vector{PhiTimingStats}}(PhiTimingStats[])
 
@@ -189,13 +236,32 @@ function init_phi_timing!(nthreads::Int = Threads.nthreads())
 end
 
 @inline function phi_timing_stats()::PhiTimingStats
-    @inbounds PHI_TIMING[][Threads.threadid()]
+    # Lazily grow PHI_TIMING[] if a thread ID we haven't seen shows up
+    # before init_phi_timing! was called with the final nthreads() count,
+    # or if it was never called at all (fail-reason counters below must
+    # work unconditionally, independent of --phi-timing / PHI_TIMING_ENABLED,
+    # since they're the only visibility into "which continue is silently
+    # eating every step" — see phase2_worker's STALL_ASSERT_STEPS assert).
+    tid = Threads.threadid()
+    if isempty(PHI_TIMING[]) || tid > length(PHI_TIMING[])
+        init_phi_timing!(max(tid, Threads.nthreads()))
+    end
+    @inbounds PHI_TIMING[][tid]
 end
 
 function reset_phi_timing!()
     for s in PHI_TIMING[]
         s.n_calls = 0; s.ns_series = 0; s.ns_gauss = 0; s.ns_residual = 0
         s.n_fail_build = 0; s.n_fail_residual = 0
+        s.n_fail_build_gauss_singular = 0
+        s.n_fail_resid_anchor_remainder = 0
+        s.n_fail_resid_u_remainder = 0
+        s.n_fail_resid_degenerate = 0
+        s.n_drop_residual_deg_not_2_no_split = 0
+        s.n_gauss_fail_forward_pivot = 0
+        s.n_gauss_fail_diag_d1 = 0
+        s.n_gauss_fail_diag_di = 0
+        fill!(s.gauss_fail_forward_pivot_col_hist, 0)
         s.ns_ser_setup = 0; s.ns_ser_branch = 0; s.ns_ser_cols = 0; s.ns_ser_rhs = 0
         s.ns_ser_mumford = 0
     end
@@ -214,6 +280,19 @@ function print_phi_timing_report(; label::String = "")
         agg.ns_residual      += s.ns_residual
         agg.n_fail_build     += s.n_fail_build
         agg.n_fail_residual  += s.n_fail_residual
+        agg.n_fail_build_gauss_singular += s.n_fail_build_gauss_singular
+        agg.n_fail_resid_anchor_remainder += s.n_fail_resid_anchor_remainder
+        agg.n_fail_resid_u_remainder      += s.n_fail_resid_u_remainder
+        agg.n_fail_resid_degenerate       += s.n_fail_resid_degenerate
+        agg.n_drop_residual_deg_not_2_no_split += s.n_drop_residual_deg_not_2_no_split
+        agg.n_gauss_fail_forward_pivot += s.n_gauss_fail_forward_pivot
+        agg.n_gauss_fail_diag_d1       += s.n_gauss_fail_diag_d1
+        agg.n_gauss_fail_diag_di       += s.n_gauss_fail_diag_di
+        # Element-wise: both vectors are K_MAX+2 long (agg's came from the
+        # PhiTimingStats() constructor above, s's from init_phi_timing!'s
+        # per-thread PhiTimingStats() calls — same K_MAX in scope either way).
+        @assert length(agg.gauss_fail_forward_pivot_col_hist) == length(s.gauss_fail_forward_pivot_col_hist) "print_phi_timing_report: histogram length mismatch ($(length(agg.gauss_fail_forward_pivot_col_hist)) vs $(length(s.gauss_fail_forward_pivot_col_hist))) — K_MAX must have changed between agg's and this thread's PhiTimingStats() construction"
+        agg.gauss_fail_forward_pivot_col_hist .+= s.gauss_fail_forward_pivot_col_hist
         agg.ns_ser_setup     += s.ns_ser_setup
         agg.ns_ser_branch    += s.ns_ser_branch
         agg.ns_ser_cols      += s.ns_ser_cols
@@ -230,6 +309,20 @@ function print_phi_timing_report(; label::String = "")
             tag, agg.n_calls,
             agg.n_fail_build,    100.0 * agg.n_fail_build    / max(1, agg.n_calls),
             agg.n_fail_residual, 100.0 * agg.n_fail_residual / max(1, agg.n_calls))
+    @printf("[PHI-TIMING%s]   build_fail breakdown:  gauss_singular=%d\n",
+            tag, agg.n_fail_build_gauss_singular)
+    @printf("[PHI-TIMING%s]     gauss_singular breakdown:  forward_pivot=%d  diag_d1=%d  diag_di=%d\n",
+            tag, agg.n_gauss_fail_forward_pivot, agg.n_gauss_fail_diag_d1, agg.n_gauss_fail_diag_di)
+    if agg.n_gauss_fail_forward_pivot > 0
+        nz_cols = [(col, cnt) for (col, cnt) in enumerate(agg.gauss_fail_forward_pivot_col_hist) if cnt > 0]
+        @printf("[PHI-TIMING%s]     forward_pivot failing column histogram (1-indexed, only nonzero shown): %s\n",
+                tag, string(nz_cols))
+    end
+    @printf("[PHI-TIMING%s]   resid_fail breakdown:  anchor_remainder=%d  u_remainder=%d  degenerate=%d\n",
+            tag, agg.n_fail_resid_anchor_remainder, agg.n_fail_resid_u_remainder,
+            agg.n_fail_resid_degenerate)
+    @printf("[PHI-TIMING%s]   post-success drop (deg!=2, no split points): %d\n",
+            tag, agg.n_drop_residual_deg_not_2_no_split)
     @printf("[PHI-TIMING%s] share of solve+residual time:  series=%.1f%%  gauss=%.1f%%  residual=%.1f%%\n",
             tag,
             100.0 * agg.ns_series   / total_ns,
@@ -511,9 +604,48 @@ end
 # n_basis.  Thread-safe for reads after init_phi_general_caches!() has been
 # called from the main thread before workers are spawned.
 function rr_basis_cached(n_basis::Int)::Vector{NTuple{2,Int}}
-    get!(RR_BASIS_CACHE, n_basis) do
+    b = get!(RR_BASIS_CACHE, n_basis) do
         rr_basis(n_basis)
     end
+
+    # HARD ASSERT: this used to require basis[end]==(0,1) — i.e. "y always
+    # sorts last" — because every caller in this file used to treat
+    # basis[end] as "the element whose coefficient gets normalized to 1".
+    # That assumption is WRONG in general (rr_basis's pole-order sort only
+    # puts y last for n_basis=4/K=1; for n_basis=5/K=2 it puts x³ last
+    # instead — see the K=2 field failure this assert was added to catch),
+    # and demanding basis[end]==(0,1) here would either (a) still be wrong
+    # for n_basis=5 forever, since rr_basis's pole-order enumeration is
+    # correct and should NOT be bent to put y last (doing so would silently
+    # evict a real basis element and change which RR space L(D_pole) this
+    # computes — see the CAUTION below), or (b) require rr_basis itself to
+    # change, which is a much bigger and riskier edit than fixing the
+    # consumers.
+    #
+    # The consumers (build_phi_general!, fill_monomial_block!,
+    # fill_mumford_block!, the coeffs_out write-back) have since been fixed
+    # to explicitly locate the y-monomial's real index via `findfirst` and
+    # normalize THAT index, rather than assuming it's basis[end] — so the
+    # only invariant this cache-choke-point assert needs to guarantee for
+    # every caller is "a y-monomial actually EXISTS in this basis
+    # somewhere", not "it's specifically last". Every RR basis this file
+    # ever needs a φ-construction from MUST contain (0,1): the reference
+    # convention (build_phi_mumford in trial3_phi.jl, φ=a·x²+b·x+c+d·y,
+    # d=1 ALWAYS) hard-codes a y-term, so a basis missing (0,1) entirely
+    # would mean rr_basis's enumeration itself is broken for this n_basis
+    # (a real bug), independent of the basis[end] question this assert
+    # used to (wrongly) conflate with it.
+    @assert !isempty(b) "rr_basis_cached($n_basis): rr_basis returned an empty basis"
+    @assert any(bi -> bi == (0, 1), b) "rr_basis_cached($n_basis): no y-monomial (0,1) found ANYWHERE in the basis — full basis = $b. Every φ-construction in this file (build_phi_general!, and the reference build_phi_mumford in trial3_phi.jl) hard-codes a y-term (d=1, always present) — a basis without one means rr_basis's pole-order enumeration is broken for n_basis=$n_basis, not just a normalization-index bookkeeping issue."
+    # DEFENSIVE (not required for correctness, but flags drift early): warn
+    # -equivalent hard info for whoever's watching the trace — this does
+    # NOT assert basis[end]==(0,1) (that's no longer a requirement, see
+    # above), it only records, in the label the caller-side error strings
+    # can reference, whether this particular n_basis is one of the ones
+    # where the old y-sorts-last coincidence happens to hold.
+    y_sorts_last = b[end] == (0, 1)
+
+    return b
 end
 
 # ---------------------------------------------------------------------------
@@ -679,7 +811,39 @@ function fp_gauss!(A::MMatrix{N,N,Int}, b::MVector{N,Int},
                 break
             end
         end
-        pivot_row == 0 && return false   # singular
+        if pivot_row == 0
+            s = phi_timing_stats()
+            s.n_fail_build_gauss_singular += 1
+            s.n_gauss_fail_forward_pivot += 1
+            @assert col <= length(s.gauss_fail_forward_pivot_col_hist) "fp_gauss!: col=$col exceeds gauss_fail_forward_pivot_col_hist capacity $(length(s.gauss_fail_forward_pivot_col_hist))"
+            @inbounds s.gauss_fail_forward_pivot_col_hist[col] += 1
+
+            # HARD ASSERT, not a silent return: for N=2 (k_cur=1, a 3x3
+            # system) or N=3 (k_cur=2, a 4x4 system) a genuinely singular
+            # A is possible for special-position anchors, but it should be
+            # a small minority of draws, not ~100% of them. The comment
+            # this replaced ("legitimate expected outcome... not a
+            # correctness bug") is exactly the reasoning that let a
+            # structural bug hide behind a false-negative rate of
+            # 499845/499846. Raise the instant this column's failure count
+            # crosses a threshold no correct anchor-independence argument
+            # should ever produce, and dump the actual singular
+            # column/matrix so the fill bug (not just its symptom) is
+            # visible in the trace. Uses ONLY this function's own counters
+            # (gauss_fail_forward_pivot_col_hist, n_gauss_fail_forward_pivot)
+            # rather than n_calls/n_fail_residual, which live in a
+            # different function's bookkeeping and may be stale/zero if
+            # this path is reached without --phi-timing's other counters
+            # having incremented in lockstep.
+            fails_this_col = s.gauss_fail_forward_pivot_col_hist[col]
+            if fails_this_col >= 50 && s.n_gauss_fail_forward_pivot >= 50 &&
+               fails_this_col / s.n_gauss_fail_forward_pivot > 0.9
+                col_vals = [A[row, col] for row in col:n]
+                full_matrix_rows = [ntuple(j -> A[row, j], n) for row in 1:n]
+                @assert false "fp_gauss!: N=$n system's column $col has been ALL-ZERO for rows $col:$n in $fails_this_col of $(s.n_gauss_fail_forward_pivot) forward-pivot failures so far (>90%, threshold 50+) — this is not 'special position anchors', this is a structural bug in how build_phi_general! fills column $col of the ($n)x($n) matrix for this K. col $col entries checked (rows $col:$n) = $col_vals. Full matrix at failure = $full_matrix_rows. b vector = $(ntuple(i->b[i], n)). If col==$n or col==$(n-1) this points at the two Mumford rows never writing a nonzero into this column for K>=2; if col<=K it points at anchor row $col's fill being structurally zero in this column for every anchor tried."
+            end
+            return false   # singular (below the hard-assert threshold — rare/expected case)
+        end
 
         if pivot_row != col
             for j in col:n
@@ -747,12 +911,22 @@ end
                                               backend::FpArith = StandardArith(p))::Bool where N
     n = N
     @inbounds d1 = A[1, 1]
-    d1 == 0 && return false   # zero is representation-invariant
+    if d1 == 0
+        s = phi_timing_stats()
+        s.n_fail_build_gauss_singular += 1
+        s.n_gauss_fail_diag_d1 += 1
+        return false   # zero is representation-invariant
+    end
     @inbounds prefix_buf[1] = d1
 
     for i in 2:n
         @inbounds di = A[i, i]
-        di == 0 && return false
+        if di == 0
+            s = phi_timing_stats()
+            s.n_fail_build_gauss_singular += 1
+            s.n_gauss_fail_diag_di += 1
+            return false
+        end
         @inbounds prefix_buf[i] = fpmul_b(backend, prefix_buf[i-1], di)
     end
 
@@ -968,9 +1142,31 @@ end
 
     @assert i >= 0
     @assert j == 0 || j == 1
+    # NOTE (updated — was previously stale): x_pow_mod_u_r0/r1 are now
+    # actually populated by build_xmodu_cache!, called once per
+    # build_phi_general! invocation (see there) before either the Mumford
+    # rows or this function's callers run. The asserts below are kept as a
+    # permanent bounds/sanity net — e.g. against a future caller that
+    # invokes this with a different (u0,u1) than what the cache was last
+    # built for, or a K for which max_basis_i+1 wasn't covered.
+    @assert i + 1 <= length(scratch.x_pow_mod_u_r0) "reduce_monomial_mod_D_cached: i=$i out of range for x_pow_mod_u_r0 (len $(length(scratch.x_pow_mod_u_r0))) — is this table actually being populated for this K?"
+    @assert i + 2 <= length(scratch.x_pow_mod_u_r0) || j == 0 "reduce_monomial_mod_D_cached: j=1 branch needs index i+2=$(i+2), out of range (len $(length(scratch.x_pow_mod_u_r0)))"
 
     @inbounds a0 = scratch.x_pow_mod_u_r0[i + 1]
     @inbounds a1 = scratch.x_pow_mod_u_r1[i + 1]
+
+    # HARD ASSERT: catch a stale/never-written cache slot at the READ site,
+    # not several function calls downstream in fp_gauss! where it shows up
+    # as an inscrutable singular matrix. (a0,a1) is x^i mod u(x); for a
+    # non-degenerate monic degree-2 u(x) (u0 != 0) this pair is (0,0) only
+    # at a genuine algebraic coincidence, which build_xmodu_cache!'s own
+    # recurrence now separately asserts against — so seeing (0,0) HERE
+    # instead means build_xmodu_cache! was never called for this i before
+    # this read, i.e. a cache-lifetime/ordering bug between the two
+    # functions, not a numerical one.
+    if j == 0 && a0 == 0 && a1 == 0
+        @assert false "reduce_monomial_mod_D_cached: table entry for x^$i mod u(x) at index $(i+1) is (0,0) on a j==0 read — either build_xmodu_cache! was never invoked for this max_i before this call (cache/ordering bug), or it wrote a genuine degenerate zero that its own internal assert should have already caught upstream. scratch.x_pow_mod_u_r0[$(i+1)]=$a0, scratch.x_pow_mod_u_r1[$(i+1)]=$a1."
+    end
 
     if j == 0
         @assert a0 isa Int && a1 isa Int
@@ -980,13 +1176,37 @@ end
     @inbounds b0 = scratch.x_pow_mod_u_r0[i + 2]
     @inbounds b1 = scratch.x_pow_mod_u_r1[i + 2]
 
+    if b0 == 0 && b1 == 0
+        @assert false "reduce_monomial_mod_D_cached: table entry for x^$(i+1) mod u(x) at index $(i+2) is (0,0) on a j==1 read (needed for the x-coefficient combination) — same cache/ordering concern as the j==0 case above, at the NEXT table slot. scratch.x_pow_mod_u_r0[$(i+2)]=$b0, scratch.x_pow_mod_u_r1[$(i+2)]=$b1."
+    end
+
     r0 = fpmul_b(backend, v0, a0) + fpmul_b(backend, v1, b0)
     r1 = fpmul_b(backend, v0, a1) + fpmul_b(backend, v1, b1)
 
     @assert r0 isa Int
     @assert r1 isa Int
 
-    return (fp_b(backend, r0), fp_b(backend, r1))
+    r0_final = fp_b(backend, r0)
+    r1_final = fp_b(backend, r1)
+
+    # HARD ASSERT: this is the EXACT value fill_mumford_block! writes into
+    # A_mat[row1, col] (the x-term Mumford row) for basis[col]. If this
+    # comes out (0,0) for basis[col]'s specific (i,j), that column
+    # contributes nothing to row1 — and if EVERY column does this for a
+    # given call, row1 is the all-zero row fp_gauss! is choking on. v0/v1
+    # (the divisor's v(x) coefficients, i.e. this specific step's D_cur,
+    # NOT a cache artifact) are the one input here that varies per-step and
+    # per-thread, so if this fires it's telling us the (v0,v1) for this
+    # particular D combined with THIS basis element structurally cancels —
+    # worth knowing whether that's basis-element-specific (a real
+    # coincidence, rare) or happens for literally every basis column on
+    # literally every step (structural, which is what the field trace
+    # suggests: row 4 was ALL zero, all 4 columns, in 50/50 failures).
+    if r0_final == 0 && r1_final == 0
+        @assert false "reduce_monomial_mod_D_cached: j==1 combination (v0*a0+v1*b0, v0*a1+v1*b1) reduced to (0,0) for i=$i (v0=$v0, v1=$v1, a0=$a0, a1=$a1, b0=$b0, b1=$b1) — this is precisely the value fill_mumford_block! writes into the x-term Mumford row (A_mat row K+2) for this basis column. If this fires on every column of every call, the x-term Mumford row is structurally all-zero, which is the singular-matrix symptom already observed (row 4 = (0,0,0,0), b[4]=0) for K=2."
+    end
+
+    return (r0_final, r1_final)
 end
 
 # ---------------------------------------------------------------------------
@@ -1167,25 +1387,21 @@ function monomial_series_coeffs!(
 
     maxs = min(i, m - 1)
 
-    binom_scratch[1] = 1
-
-    # ------------------------------------------------------------------
-    # DIAGNOSTIC ASSERT (temporary): binom_scratch[1] is used below as the
-    # multiplicative identity in fpmul_b(backend, binom_scratch[1], X) to
-    # seed xi_scratch[1] = X (i.e. it must act as a true no-op multiply in
-    # the ACTIVE backend's representation). Under MontgomeryArith,
-    # fpmul_b(b, a, x) = fpmul_mont(b, a, x) = a*x*R^-1 mod p — multiplying
-    # by the RAW literal 1 (not to_repr(backend,1), the Montgomery form of
-    # 1) therefore does NOT act as identity; it silently scales by R^-1.
-    # This assert catches that directly, at the point of use, before any
-    # further computation can obscure it: it fails hard, unconditionally,
-    # the first time fpmul_b(backend, binom_scratch[1], X) != X for any
-    # nonzero X, which is every single call under a Montgomery backend.
-    let _probe = pxpow_table[i + 1]
-        _seeded = fpmul_b(backend, binom_scratch[1], _probe)
-        @assert _seeded == _probe "binom_scratch[1]=$(binom_scratch[1]) is not a multiplicative identity under backend=$(typeof(backend)): fpmul_b(backend, 1, $_probe) = $_seeded != $_probe. Fix: binom_scratch[1] must be to_repr(backend, 1), not the raw literal 1."
-    end
-    # ------------------------------------------------------------------
+    # FIX (root cause of the monomial_series_coeffs! constant-coefficient
+    # assert under MontgomeryArith): fpmul_b(backend, a, x) for
+    # MontgomeryArith computes a*x*R^-1 mod p, the REDC product. This is
+    # only the correct field-multiplication result when BOTH a and x are
+    # already in backend (Montgomery) representation — one bare R factor
+    # from each operand, cancelled by the single R^-1 in REDC. Passing a
+    # raw (non-Montgomery) integer as either operand leaves the product off
+    # by a factor of R^-1 mod p, silently.
+    #
+    # binom_scratch[1] was previously seeded with the raw literal `1`, then
+    # used as an operand to fpmul_b — under Montgomery arithmetic that is
+    # NOT the multiplicative identity (only to_repr(backend, 1) = R mod p
+    # is). Must be converted via to_repr, same as every other operand that
+    # participates in fpmul_b in this function.
+    binom_scratch[1] = to_repr(backend, 1)
 
     for s in 1:maxs
         binom_scratch[s + 1] =
@@ -1194,11 +1410,17 @@ function monomial_series_coeffs!(
                 binom_scratch[s],
                 fpmul_b(
                     backend,
-                    i - s + 1,
+                    to_repr(backend, i - s + 1),   # was: raw `i - s + 1` — same
+                                                    # bug as binom_scratch[1] above;
+                                                    # small_inv[s] is backend-repr
+                                                    # (see init_scratch_caches!),
+                                                    # so its fpmul_b partner must
+                                                    # be backend-repr too.
                     small_inv[s],
                 ),
             )
     end
+
 
     for s in 0:maxs
         xi_scratch[s + 1] =
@@ -1329,6 +1551,12 @@ end
     ser_buf,
     m::Int
 )
+    # WILLY-NILLY ASSERT: A_mat is a stack-allocated MMatrix{N,N,Int} — an
+    # @inbounds write past N here is not a bounds error, it's memory
+    # corruption / segfault territory. Check before the @inbounds loop.
+    @assert row_idx + m <= size(A_mat, 1) "_write_column!: row_idx=$row_idx m=$m would write row $(row_idx+m) past A_mat's $(size(A_mat,1)) rows"
+    @assert col >= 1 && col <= size(A_mat, 2) "_write_column!: col=$col out of range 1:$(size(A_mat,2))"
+    @assert length(ser_buf) >= m
     @inbounds for s in 0:(m-1)
         A_mat[row_idx + s + 1, col] = ser_buf[s + 1]
     end
@@ -1339,6 +1567,7 @@ end
     rhs_vec,
     row_idx::Int,
     basis,
+    y_idx::Int,
     px,
     out_y,
     m::Int,
@@ -1346,15 +1575,49 @@ end
     backend
 )
 
-    n = length(basis)
+    n = length(basis)   # n == nb == N2 + 1 (N2 unknowns + 1 normalised element)
 
     _check_basis_cache_consistency!(basis, scratch.pxpow_buf)
 
     @assert m == 1
     @assert length(out_y) >= m + 1
 
-    for col in 1:n
-        i, j = basis[col]
+    # DEFENSIVE ASSERT: y_idx must be a real, in-range basis index, and it
+    # must actually point at the y-monomial (0,1) — this is the ONLY
+    # element this function is allowed to skip when mapping basis indices
+    # to A_mat columns. Checking `basis[y_idx] == (0,1)` here (not just
+    # `1 <= y_idx <= n`) means a caller that passes a stale/wrong y_idx
+    # (e.g. computed against a differently-ordered basis, or against the
+    # wrong nb) gets caught at the point of use instead of silently
+    # normalizing/skipping the wrong monomial — which is exactly the class
+    # of bug (basis[end] assumed to be y when it wasn't) that caused the
+    # original K=2 failure.
+    @assert 1 <= y_idx <= n "fill_monomial_block!: y_idx=$y_idx out of range 1:$n"
+    @assert basis[y_idx] == (0, 1) "fill_monomial_block!: basis[y_idx=$y_idx]=$(basis[y_idx]) is not the y-monomial (0,1) — caller passed the wrong normalization index for this basis ($basis)"
+
+    # ACTUAL FIX: A_mat has N2 = K+2 = n-1 columns, one per UNKNOWN
+    # coefficient — every basis element EXCEPT the y-monomial at y_idx
+    # (wherever pole-order sorting actually placed it), not "every basis
+    # element except basis[end]". The old code always skipped basis[end],
+    # which is only correct when y happens to sort last (true for K=1's
+    # nb=4, false for K=2's nb=5 — see rr_basis_cached's hard assert for
+    # the full explanation of why basis[end] and "the normalized element"
+    # are NOT interchangeable in general).
+    #
+    # Column assignment: basis indices 1..n except y_idx map, in order, to
+    # A_mat columns 1..n_cols. This preserves the previous column order for
+    # every index before y_idx, and shifts everything after y_idx down by
+    # one column — so for the common K=1 case (y_idx==n) this is byte-for-
+    # byte identical to the old "col in 1:n_cols, basis[col]" loop.
+    n_cols = n - 1
+    @assert n_cols == size(A_mat, 2) "fill_monomial_block!: computed n_cols=$n_cols (basis length $n minus the normalised element) but A_mat has $(size(A_mat,2)) columns"
+
+    col = 0
+    for bidx in 1:n
+        bidx == y_idx && continue
+        col += 1
+
+        i, j = basis[bidx]
 
         _monomial_column!(
             scratch.ser_buf,
@@ -1375,6 +1638,14 @@ end
             m
         )
     end
+
+    # DEFENSIVE ASSERT: we must have written exactly n_cols columns — i.e.
+    # the skip-y_idx loop above visited every OTHER basis index exactly
+    # once. This is really just `n - 1 == n_cols`, but stated as a
+    # post-loop invariant on `col` (not just an arithmetic identity on `n`)
+    # so a future refactor that changes the loop body without updating
+    # this check fails loudly instead of leaving a hole in A_mat's columns.
+    @assert col == n_cols "fill_monomial_block!: wrote $col columns but expected n_cols=$n_cols — the skip-y_idx=$y_idx loop over 1:$n did not visit exactly n_cols indices"
 end
 
 
@@ -1403,9 +1674,203 @@ end
         backend
     )
 
+    @assert row_idx + m <= length(rhs_vec) "fill_rhs!: row_idx=$row_idx m=$m would write past rhs_vec length $(length(rhs_vec))"
     for s in 0:(m-1)
         rhs_vec[row_idx + s + 1] = fpsub_b(backend, 0, scratch.ser_buf[s+1])
     end
+end
+
+# ---------------------------------------------------------------------------
+#  build_xmodu_cache!(r0_buf, r1_buf, u0, u1, max_i, backend)
+#
+#  ACTUAL FIX (previously-missing piece): ThreadScratchpad's field comments
+#  (section 11) document x_pow_mod_u_r0/r1 as "filled once per step" by
+#  build_phi_general! so reduce_monomial_mod_D_cached can do O(1) lookups —
+#  but nothing anywhere in this file ever wrote them; every caller was
+#  reading zero-initialized (or stale, leftover-from-a-different-(u0,u1))
+#  garbage. This function is the actual fill, in the SAME backend
+#  representation as the rest of A_mat/rhs_vec (so Mumford rows built from
+#  it are numerically consistent with the anchor rows built via fpmul_b).
+#
+#  r0_buf[i+1], r1_buf[i+1] = (x^i mod u(x)) as a linear poly a0 + a1*x,
+#  for i = 0..max_i, using the same two-register recurrence as
+#  reduce_xi_mod_u but entirely in backend representation.
+# ---------------------------------------------------------------------------
+@inline function build_xmodu_cache!(
+    r0_buf, r1_buf,
+    u0::Int, u1::Int,
+    max_i::Int,
+    backend::FpArith
+)
+    @assert max_i >= 0 "build_xmodu_cache!: max_i=$max_i must be >= 0"
+    @assert max_i + 1 <= length(r0_buf) "build_xmodu_cache!: max_i+1=$(max_i+1) exceeds r0_buf length $(length(r0_buf))"
+    @assert max_i + 1 <= length(r1_buf) "build_xmodu_cache!: max_i+1=$(max_i+1) exceeds r1_buf length $(length(r1_buf))"
+    @assert length(r0_buf) == length(r1_buf) "build_xmodu_cache!: r0_buf/r1_buf length mismatch ($(length(r0_buf)) vs $(length(r1_buf)))"
+
+    u0_b = to_repr(backend, u0)
+    u1_b = to_repr(backend, u1)
+    zero_b = to_repr(backend, 0)
+    one_b  = to_repr(backend, 1)
+
+    @inbounds r0_buf[1] = one_b;  r1_buf[1] = zero_b   # x^0 = 1
+
+    max_i == 0 && return nothing
+
+    @inbounds r0_buf[2] = zero_b; r1_buf[2] = one_b    # x^1 = x
+
+    @inbounds for i in 2:max_i
+        prev_r0 = r0_buf[i]
+        prev_r1 = r1_buf[i]
+        # x * (prev_r0 + prev_r1*x) ≡ -prev_r1*u0 + (prev_r0 - prev_r1*u1)*x
+        r0_buf[i+1] = fpsub_b(backend, zero_b, fpmul_b(backend, prev_r1, u0_b))
+        r1_buf[i+1] = fpsub_b(backend, prev_r0, fpmul_b(backend, prev_r1, u1_b))
+        # HARD ASSERT: (r0,r1) representing x^(i) mod u(x) must never both be
+        # zero for a monic degree-2 u(x) with u0 != 0 (x^i ≡ 0 mod u(x) with
+        # u0 != 0 would force x | u(x)'s inverse chain to degenerate, which
+        # can't happen for i < ell — this is a finite field, u(x) has no
+        # repeated root at x=0 unless u0==0). This is exactly the failure
+        # mode that would make fill_mumford_block! silently write a
+        # legitimate-looking-but-actually-zero row into A_mat: if this table
+        # entry is (0,0) here, reduce_monomial_mod_D_cached returns (0,0)
+        # downstream with NOTHING further catching it, and that zero
+        # propagates into a whole Mumford row looking like a real (but
+        # trivial) linear constraint instead of the cache-fill bug it is.
+        if u0_b != zero_b
+            @assert !(r0_buf[i+1] == zero_b && r1_buf[i+1] == zero_b) "build_xmodu_cache!: x^$(i) mod u(x) came out identically (0,0) at table index $(i+1) (u0=$u0, u1=$u1, u0_b=$u0_b, u1_b=$u1_b, prev_r0=$prev_r0, prev_r1=$prev_r1) — this is the exact silent-zero-row failure mode fill_mumford_block! depends on this cache NOT producing. Either the recurrence above has a sign/index bug for this (u0,u1), or u(x) is genuinely degenerate (shares a factor with x) and the caller should have rejected this D before reaching here."
+        end
+    end
+
+    # HARD ASSERT: verify every index 1:max_i+1 that build_phi_general! is
+    # about to hand to reduce_monomial_mod_D_cached was ACTUALLY written by
+    # the loop above, not left at whatever garbage/zero the scratch buffer
+    # held from a previous call at a different (u0,u1). A stale/uninitialized
+    # tail here is indistinguishable from a genuine (0,0) reduction unless
+    # checked explicitly against a sentinel BEFORE the loop runs — since we
+    # don't have a pre-loop sentinel poke available without touching the
+    # ThreadScratchpad struct (defined in a file not available here), this
+    # at least confirms internal self-consistency: index 1 and (if max_i>=1)
+    # index 2 must hold the fixed algebraic identities checked below, and
+    # every subsequent index up to max_i+1 must have been actually assigned
+    # in the loop above (Julia semantics guarantee this for a completed
+    # `for i in 2:max_i` loop with max_i>=1, but if max_i==0 the loop body
+    # above never executed at all — assert that case is handled correctly
+    # by the early return, not silently falling through with r0_buf[2:]
+    # unset yet still read by a caller that assumed max_i was larger).
+    @assert max_i + 1 <= length(r0_buf) "build_xmodu_cache!: post-loop check — max_i+1=$(max_i+1) exceeds r0_buf length $(length(r0_buf)) (should have been caught by the pre-loop assert; if this fires instead, max_i changed mid-function, which should be impossible for a local variable)."
+
+    # sanity: x^0 and x^1 rows must be exactly the algebraic identities above
+    @assert r0_buf[1] == one_b && r1_buf[1] == zero_b
+    max_i >= 1 && @assert r0_buf[2] == zero_b && r1_buf[2] == one_b
+
+    return nothing
+end
+
+# ---------------------------------------------------------------------------
+#  fill_mumford_block!(scratch, A_mat, rhs_vec, row_idx, basis, y_idx, n_cols,
+#                       v0_b, v1_b, backend) -> nothing
+#
+#  ACTUAL FIX: writes the 2 Mumford rows — φ(x, v(x)) ≡ 0 mod u(x) split
+#  into its constant-term and x-term equations — that build_phi_general!'s
+#  docstring, N2=K+2 sizing, and x_pow_mod_u_r0/r1 caching comments all
+#  document as part of this construction, but which no code in this file
+#  ever actually wrote. Without these two rows the (K+2)x(K+2) system had
+#  its last 2 rows silently all-zero, which fp_gauss! does correctly detect
+#  as singular (returns false) — so the practical effect of the missing
+#  rows was "build_phi_general! never succeeds for K>=1 whenever it reaches
+#  this point", not a crash by itself; the crash upstream was the separate
+#  off-by-one column bug in fill_monomial_block!.
+#
+#  y_idx is the basis index of the y-monomial (0,1) — the element whose
+#  coefficient is normalised to 1 (fixed by the reference convention in
+#  trial3_phi.jl: φ=a·x²+b·x+c+d·y, d=1 always), NOT necessarily basis[end].
+#  Column assignment walks basis indices 1..length(basis) IN ORDER, SKIPPING
+#  y_idx, and maps the remaining n_cols indices onto A_mat columns 1..n_cols
+#  in that same order — this must exactly match fill_monomial_block!'s
+#  column assignment or the two blocks disagree about which coefficient
+#  lives in which column.
+#
+#  For each unknown column (basis index bidx != y_idx, mapped to column j):
+#    (r0_j, r1_j) = basis[bidx]-monomial evaluated at (x, v(x)) mod u(x)
+#    A_mat[K+1, j] = r0_j        A_mat[K+2, j] = r1_j
+#  RHS (from the normalised basis[y_idx] element, coefficient fixed = 1):
+#    rhs_vec[K+1] = -r0_norm     rhs_vec[K+2] = -r1_norm
+# ---------------------------------------------------------------------------
+@inline function fill_mumford_block!(
+    scratch,
+    A_mat,
+    rhs_vec,
+    row_idx::Int,
+    basis,
+    y_idx::Int,
+    n_cols::Int,
+    v0_b::Int,
+    v1_b::Int,
+    backend::FpArith
+)
+    @assert row_idx + 1 <= size(A_mat, 1) "fill_mumford_block!: row_idx=$row_idx needs 2 rows (row_idx, row_idx+1), A_mat only has $(size(A_mat,1)) rows"
+    @assert n_cols == size(A_mat, 2) "fill_mumford_block!: n_cols=$n_cols != A_mat column count $(size(A_mat,2))"
+    @assert length(basis) == n_cols + 1 "fill_mumford_block!: expected basis to hold n_cols unknowns + 1 normalised element ($(n_cols+1) total), got length(basis)=$(length(basis))"
+    @assert row_idx + 1 <= length(rhs_vec) "fill_mumford_block!: row_idx=$row_idx needs 2 rhs_vec slots, only have $(length(rhs_vec))"
+
+    # DEFENSIVE ASSERT: same y_idx validity check as fill_monomial_block! —
+    # this function must skip the SAME basis index that fill_monomial_block!
+    # skipped, or the two blocks' columns silently disagree about which
+    # coefficient lives in which A_mat column (a corruption that would not
+    # throw anywhere — it would just solve the wrong linear system and hand
+    # back plausible-looking garbage coefficients).
+    n = length(basis)
+    @assert 1 <= y_idx <= n "fill_mumford_block!: y_idx=$y_idx out of range 1:$n"
+    @assert basis[y_idx] == (0, 1) "fill_mumford_block!: basis[y_idx=$y_idx]=$(basis[y_idx]) is not the y-monomial (0,1) — caller passed the wrong normalization index for this basis ($basis)"
+
+    row0 = row_idx        # constant-term equation
+    row1 = row_idx + 1     # x-term equation
+
+    row0_all_zero = true
+    row1_all_zero = true
+    col = 0
+    @inbounds for bidx in 1:n
+        bidx == y_idx && continue
+        col += 1
+        i, j = basis[bidx]
+        r0, r1 = reduce_monomial_mod_D_cached(i, j, v0_b, v1_b, scratch, backend)
+        @assert r0 isa Int && r1 isa Int
+        A_mat[row0, col] = r0
+        A_mat[row1, col] = r1
+        r0 != 0 && (row0_all_zero = false)
+        r1 != 0 && (row1_all_zero = false)
+    end
+    # DEFENSIVE ASSERT: mirror of fill_monomial_block!'s post-loop column
+    # count check — both functions must agree on n_cols via the same
+    # skip-y_idx traversal, or A_mat ends up with a column silently unwritten
+    # by one block and double-written by the other.
+    @assert col == n_cols "fill_mumford_block!: wrote $col columns but expected n_cols=$n_cols — the skip-y_idx=$y_idx loop over 1:$n did not visit exactly n_cols indices"
+
+    norm_i, norm_j = basis[y_idx]
+    r0n, r1n = reduce_monomial_mod_D_cached(norm_i, norm_j, v0_b, v1_b, scratch, backend)
+    @inbounds rhs_vec[row0] = fpsub_b(backend, 0, r0n)
+    @inbounds rhs_vec[row1] = fpsub_b(backend, 0, r1n)
+
+    # HARD ASSERT, at the write site: this is the earliest point in the
+    # call chain that has visibility into "did this Mumford row come out
+    # entirely zero across ALL n_cols columns" — exactly the field-observed
+    # failure (row 4 = (0,0,0,0), b[4]=0, for K=2). Every individual (r0,r1)
+    # pair is already asserted non-degenerate by reduce_monomial_mod_D_cached
+    # above; this catches the case where each individual pair passes (isn't
+    # itself a NaN-like (0,0) coincidence) but the row STILL ends up zero
+    # because, e.g., r1 is zero for every basis column specifically (as
+    # opposed to both r0,r1 being zero together) — a narrower, column-wide
+    # cancellation that the per-call assert above can't see since it only
+    # checks (r0,r1) jointly, not r1 in isolation across the whole column
+    # range. rhs_vec[row1]==0 is also checked: if BOTH the row and its own
+    # RHS are zero, that's exactly the observed field trace's row 4.
+    if row1_all_zero && rhs_vec[row1] == 0
+        @assert false "fill_mumford_block!: x-term Mumford row (row=$row1) came out ALL-ZERO across all $n_cols columns AND rhs_vec[$row1]=0 — this is the exact structural failure fp_gauss! reported (an entire row of zeros, including its own RHS entry, is unconditionally singular, not a rare special-position coincidence). v0_b=$v0_b, v1_b=$v1_b. This means reduce_monomial_mod_D_cached's j==1 branch returned r1==0 for EVERY basis column 1:$n_cols. Check whether v1_b==0 (this step's divisor D_cur has v1==0, degenerating the x-term equation to nothing) or whether x_pow_mod_u_r1's cache values are structurally zero for this u(x)."
+    end
+    if row0_all_zero && rhs_vec[row0] == 0
+        @assert false "fill_mumford_block!: constant-term Mumford row (row=$row0) came out ALL-ZERO across all $n_cols columns AND rhs_vec[$row0]=0 — same structural-singularity concern as the row1 case above, for the constant-term equation instead. v0_b=$v0_b, v1_b=$v1_b."
+    end
+
+    return nothing
 end
 
 function build_phi_general!(
@@ -1428,7 +1893,12 @@ function build_phi_general!(
     # ============================================================
 
     @assert K > 0
+    @assert K <= K_MAX "build_phi_general!: K=$K exceeds K_MAX=$K_MAX — scratch's static buffers were sized for K_MAX and will not have room for this many anchors"
+    @assert length(anchors) == K "build_phi_general!: length(anchors)=$(length(anchors)) != K=$K"
     @assert length(basis) == nb
+    @assert length(scratch.coeffs_out) == K + 3 "build_phi_general!: scratch.coeffs_out length $(length(scratch.coeffs_out)) != K+3=$(K+3) — scratch was built for a different K"
+    @assert length(scratch.seen_counts) == K
+    @assert length(scratch.visited_flags) == K
 
     # basis sanity: all exponents are small and non-negative
     @inbounds for i in 1:nb
@@ -1436,6 +1906,43 @@ function build_phi_general!(
         @assert px >= 0
         @assert py >= 0
     end
+
+    # ============================================================
+    # 1b. Locate the y-monomial normalization index.
+    # ============================================================
+    #
+    # ACTUAL FIX (root cause of the K=2 "column 4 structurally singular"
+    # failure): the normalization convention fixed by the reference
+    # implementation (build_phi_mumford in trial3_phi.jl: φ = a·x²+b·x+c+d·y
+    # with d=1 ALWAYS) is "the y-monomial's coefficient is 1" — a statement
+    # about WHICH MONOMIAL, not about WHICH BASIS POSITION. rr_basis orders
+    # by pole order, and only for nb=4 (K=1) does that ordering happen to
+    # put y last; for nb=5 (K=2) it puts x³ last instead, and y sorts to
+    # index nb-1. This function finds y explicitly and uses its real index
+    # everywhere a "normalization index" is needed, instead of assuming
+    # it's basis[end]/basis[nb].
+    #
+    # y_idx == nb is NOT expected to hold in general — do not assert it.
+    # rr_basis_cached only guarantees "a y-monomial exists somewhere in the
+    # basis" (see its own assert), not "it's last"; that guarantee was
+    # deliberately weakened once fill_monomial_block!/fill_mumford_block!/
+    # the coeffs_out write-back were fixed to use y_idx directly rather
+    # than basis[end]. y_idx varying with nb (4→y_idx=4, 5→y_idx=4, 6→? )
+    # is the CORRECT, now-fully-supported behavior, not a warning sign.
+    y_idx = findfirst(bi -> bi == (0, 1), basis)
+    @assert y_idx !== nothing "build_phi_general!: K=$K, nb=$nb — RR basis contains no y-monomial (0,1) at all: basis=$basis. The reference φ construction always includes a y-term (d=1 fixed); a basis without one means rr_basis's pole-order enumeration is broken for this nb."
+    @assert 1 <= y_idx <= nb "build_phi_general!: y_idx=$y_idx out of range 1:$nb (basis length $(length(basis)))"
+    # DEFENSIVE ASSERT: y must appear EXACTLY once. findfirst only checks
+    # existence-and-first-position; if rr_basis's enumeration ever produced
+    # a duplicate (0,1) entry (e.g. a future edit to the candidate-stream
+    # construction introducing an off-by-one that double-counts i=0,j=1),
+    # findfirst would silently return the first occurrence and every
+    # column-mapping loop below would then have a genuine second (0,1)
+    # column masquerading as an ordinary solved-for unknown — a subtle
+    # dimension-counting bug that wouldn't necessarily make fp_gauss! fail
+    # (two identical-looking (0,1) rows/columns can still be technically
+    # distinct columns in the matrix) but WOULD make the solved φ wrong.
+    @assert count(bi -> bi == (0, 1), basis) == 1 "build_phi_general!: K=$K, nb=$nb — basis contains $(count(bi -> bi == (0,1), basis)) copies of the y-monomial (0,1), expected exactly 1: basis=$basis. rr_basis's candidate enumeration is producing a duplicate; findfirst above silently picked the first one, which would corrupt the column-index mapping used by fill_monomial_block!/fill_mumford_block!/coeffs_out."
 
     # ============================================================
     # 2. Convert inputs once (no repeated conversions later)
@@ -1487,6 +1994,20 @@ function build_phi_general!(
     end
 
     @assert max_basis_i >= 0
+
+    # ACTUAL FIX: populate the x_pow_mod_u_r0/r1 cache that
+    # reduce_monomial_mod_D_cached depends on (used both by
+    # fill_mumford_block! below and by step_phi_k!'s secondary consistency
+    # check). This only depends on u0/u1, which are constant for the whole
+    # call — unlike pxpow_buf, which is rebuilt per-anchor — so one fill
+    # here suffices. Needs entries up to exponent max_basis_i+1: the j==1
+    # branch of reduce_monomial_mod_D_cached looks up index i+2, i.e.
+    # exponent i+1, for the largest i in the basis (max_basis_i).
+    build_xmodu_cache!(
+        scratch.x_pow_mod_u_r0, scratch.x_pow_mod_u_r1,
+        u0, u1, max_basis_i + 1, backend
+    )
+    @assert max_basis_i + 2 <= length(scratch.x_pow_mod_u_r0) "build_phi_general!: x_pow_mod_u cache filled up to exponent $(max_basis_i+1) (index $(max_basis_i+2)) but reduce_monomial_mod_D_cached's j=1 branch will need that index"
 
     # ============================================================
     # 4. Reset linear system
@@ -1550,6 +2071,7 @@ function build_phi_general!(
             scratch.rhs_vec,
             row_idx,
             basis,
+            y_idx,
             px,
             scratch.out_y,
             m,
@@ -1560,13 +2082,18 @@ function build_phi_general!(
         # ========================================================
         # 5b. Fill RHS
         # ========================================================
+        #
+        # ACTUAL FIX: pass basis[y_idx] (the y-monomial, wherever it
+        # actually lives) instead of basis[end]. For K=1's nb=4 these are
+        # the same thing (y_idx==nb==4), so this changes nothing there; for
+        # K=2's nb=5, y_idx==4 != nb==5, and this is the actual fix.
 
         fill_rhs!(
             scratch.rhs_vec,
             row_idx,
             basis,
-            basis[end][1],
-            basis[end][2],
+            basis[y_idx][1],
+            basis[y_idx][2],
             px,
             scratch.out_y,
             m,
@@ -1584,6 +2111,45 @@ function build_phi_general!(
         @assert row_idx == total_rows + 1
     end
 
+    # WILLY-NILLY ASSERT: fill_mumford_block! assumes the anchor loop above
+    # wrote exactly K rows (rows 1..K) and left row_idx sitting at K+1. If a
+    # future change to the anchor loop (e.g. supporting m>1 tangency orders)
+    # advances row_idx by something other than 1 per anchor, this fires
+    # before silently writing the Mumford rows into the wrong place.
+    @assert row_idx == K + 1 "build_phi_general!: expected row_idx==K+1=$(K+1) before Mumford block, got row_idx=$row_idx (total_rows=$total_rows)"
+    @assert total_rows == K "build_phi_general!: expected total_rows==K=$K before Mumford block, got $total_rows"
+
+    # ACTUAL FIX: write the 2 Mumford rows (φ(x,v(x)) ≡ 0 mod u(x), split
+    # into constant-term / x-term equations) into rows K+1, K+2. row_idx is
+    # already sitting at K+1 here (it was advanced by `m=1` per anchor in
+    # the loop above), so this lands exactly where it should.
+    n_cols = nb - 1   # == K+2 == N2, the unknown columns (basis[y_idx] is normalised, RHS-only)
+    fill_mumford_block!(
+        scratch,
+        scratch.A_mat,
+        scratch.rhs_vec,
+        row_idx,
+        basis,
+        y_idx,
+        n_cols,
+        v0_b, v1_b,
+        backend
+    )
+    row_idx += 2
+    total_rows += 2
+
+    # WILLY-NILLY ASSERT: verify the fix actually produced a fully-
+    # constrained (K+2)x(K+2) system now, instead of the previous silent
+    # 2-all-zero-trailing-rows situation. Kept as a permanent net: if a
+    # future refactor breaks fill_mumford_block!'s row bookkeeping again,
+    # this fires immediately instead of degrading into "build_phi_general!
+    # mysteriously always returns false" or worse.
+    @assert total_rows == K + 2 "build_phi_general!: expected K+2=$(K+2) rows written (K anchor rows + 2 Mumford rows) but only wrote $total_rows"
+    @assert row_idx == total_rows + 1 "build_phi_general!: row_idx=$row_idx inconsistent with total_rows=$total_rows after Mumford block"
+    @assert size(scratch.A_mat, 1) == K + 2
+    @assert size(scratch.A_mat, 2) == K + 2
+    @assert length(scratch.rhs_vec) == K + 2
+
     # ============================================================
     # 6. Solve system
     # ============================================================
@@ -1595,7 +2161,91 @@ function build_phi_general!(
         backend
     )
 
-    @assert ok == true
+    # FIX: fp_gauss! returning false means the linear system was singular —
+    # a legitimate, expected outcome for some anchor-tuple/divisor
+    # configurations (e.g. anchors in special position), not a correctness
+    # bug. Every other degenerate case in this function (anchor in supp(D),
+    # etc.) returns false rather than asserting; this one must too, or a
+    # single ordinary singular system takes down the entire worker task.
+    if !ok
+        # NOTE: do NOT also bump n_fail_build_gauss_singular here — fp_gauss!
+        # and fp_gauss_batch_invert_diag! now increment that (plus their own
+        # finer forward_pivot/diag_d1/diag_di sub-counters) at their actual
+        # return-false sites, since only they know WHICH of the three
+        # singularity checks fired. Double-incrementing here would silently
+        # inflate n_fail_build_gauss_singular past n_fail_build and break the
+        # phase2_worker stall-assert's `unaccounted == 0` reconciliation.
+        s = phi_timing_stats()
+        s.n_fail_build += 1
+        return false
+    end
+
+    # ------------------------------------------------------------------
+    # BUGFIX: scratch.coeffs_out was never populated anywhere in this
+    # codebase. fp_gauss! solves the system in place into scratch.rhs_vec
+    # (N2 = K+2 entries) and returns only a success Bool — nothing ever
+    # copied that solution into coeffs_out (N3 = K+3 entries: the K+2
+    # solved coefficients for basis[1..N2], plus 1 normalised entry for
+    # basis[end], whose coefficient was fixed to 1 by construction when
+    # fill_rhs! moved basis[end]'s monomial to the RHS above).
+    #
+    # Every downstream reader of coeffs_out — phi_to_EY!, the two
+    # "PHI VANISHING CHECK" asserts in step_phi_k!, phi_residual_general!
+    # — was therefore always reading all-zero coefficients (coeffs_out's
+    # zeros(...) initializer, untouched). Every `coeff == 0 && continue`
+    # skip fired on every basis column, every "phi_val == 0" / "r0_acc ==
+    # r1_acc == 0" assert trivially passed for the wrong reason (nothing
+    # was ever summed), and build_N_inplace!/phi_residual_general! ran on
+    # a degenerate all-zero E(x)/Y(x) (deg_E=0, deg_Y=-1) on every K>1
+    # call ever made — this pipeline has never actually executed on real
+    # data before. That also explains why fixing the earlier Montgomery
+    # representation bug didn't converge: it let execution reach this
+    # point (past the old assert), only to fall through into this
+    # separate, pre-existing gap and immediately run brand-new code
+    # (degree/root-finding against fixed-size length-8 buffers) for the
+    # first time ever, on data whose "degree" bookkeeping was never
+    # validated against a genuine nonzero polynomial.
+    #
+    # Representation: rhs_vec is in backend (Montgomery) form, since
+    # fp_gauss! computes entirely via fpmul_b. coeffs_out is consumed
+    # downstream (phi_to_EY!, build_N_inplace!, the vanishing checks,
+    # phi_residual_general!, ...) exclusively via the plain, non-backend
+    # fp/fpmul/fpinv functions, so it must be converted to raw
+    # representation via from_repr before being stored.
+    #
+    # ACTUAL FIX (part 2): rhs_vec's solved entries are indexed by A_MAT
+    # COLUMN — i.e. by position in the skip-y_idx traversal that
+    # fill_monomial_block!/fill_mumford_block! used (bidx 1..nb, skipping
+    # y_idx, mapped in order onto columns 1..n_cols) — NOT by basis index
+    # directly. coeffs_out, by contrast, is indexed by BASIS POSITION
+    # (coeffs_out[bidx] == coefficient of basis[bidx]), since that's the
+    # ordering every downstream reader (phi_to_EY!, phi_eval, the
+    # "PHI VANISHING CHECK" asserts, phi_residual_general!) assumes.
+    #
+    # For K=1 (y_idx==nb==4) these two orderings coincide for every
+    # bidx < nb, and the old direct `coeffs_out[idx] = rhs_vec[idx]` copy
+    # was consequently correct BY COINCIDENCE. Doing the mapping explicitly
+    # here (skip y_idx, advance a separate column counter) means this is no
+    # longer coincidental — it is correct for whatever index y actually
+    # occupies, e.g. K=2's y_idx=4 != nb=5.
+    col = 0
+    @inbounds for bidx in 1:nb
+        if bidx == y_idx
+            scratch.coeffs_out[bidx] = 1   # normalised: coefficient of y is fixed to 1
+        else
+            col += 1
+            scratch.coeffs_out[bidx] = from_repr(backend, scratch.rhs_vec[col])
+        end
+    end
+    # DEFENSIVE ASSERT: the traversal above must have consumed every one of
+    # rhs_vec's n_cols solved entries exactly once — mirrors the analogous
+    # post-loop checks in fill_monomial_block!/fill_mumford_block!, so a
+    # future edit that changes nb, y_idx, or the loop bounds independently
+    # in only one of these three places fails loudly here instead of
+    # silently dropping or duplicating a coefficient.
+    n_cols = length(scratch.rhs_vec)
+    @assert col == n_cols "build_phi_general!: coeffs_out write-back consumed $col of rhs_vec's $n_cols entries — skip-y_idx=$y_idx traversal over 1:$nb did not visit exactly n_cols non-y indices, so coeffs_out is now inconsistent with the solved system."
+    @assert length(scratch.coeffs_out) == nb "build_phi_general!: coeffs_out length $(length(scratch.coeffs_out)) != nb=$nb after write-back — every basis position 1:nb should have received exactly one coefficient (either solved or the fixed y-normalisation)."
 
     return true
 end
@@ -1651,19 +2301,23 @@ function phi_to_EY!(
     deg_Y = -1  # -1 signifies Y(x) has not been populated yet
 
     nb = length(basis)
+    @assert nb <= 32 "phi_to_EY!: nb=$nb exceeds the 32-slot E(x)/Y(x) half-buffer layout (poly_buf[1:32]=E, poly_buf[33:64]=Y) — basis grew beyond what this fixed layout assumes"
     for idx in 1:nb
         @inbounds c = scratch.coeffs_out[idx]
         c == 0 && continue
-        
+
         @inbounds bi, bj = basis[idx]
+        @assert bi >= 0 "phi_to_EY!: basis[$idx] has negative x-exponent bi=$bi"
         if bj == 0
             # Element is a coefficient of E(x)
+            @assert bi + 1 <= 32 "phi_to_EY!: E(x) coefficient index bi+1=$(bi+1) exceeds poly_buf's E-half (slots 1..32); bi=$bi from basis[$idx]=$(basis[idx])"
             @inbounds scratch.poly_buf[bi + 1] = fp(scratch.poly_buf[bi + 1] + c)
             if bi > deg_E
                 deg_E = bi
             end
         else
             # Element is a coefficient of Y(x) (shifted by offset 33)
+            @assert 33 + bi <= 64 "phi_to_EY!: Y(x) coefficient index 33+bi=$(33+bi) exceeds poly_buf's Y-half (slots 33..64); bi=$bi from basis[$idx]=$(basis[idx])"
             @inbounds scratch.poly_buf[33 + bi] = fp(scratch.poly_buf[33 + bi] + c)
             if bi > deg_Y
                 deg_Y = bi
@@ -1749,6 +2403,15 @@ function poly_mul_mod_inplace!(
     final_len = poly_reduce_mod_inplace!(scratch, off_mul + len_mul, off_mul, u_len)
 
     # 4. Copy the final reduced remainder straight into scratch.v_RS
+    #
+    # CRITICAL BOUNDS ASSERT: scratch.v_RS is a fixed length-8 Vector{Int}
+    # (see ThreadScratchpad{K}() constructor), same as scratch.u_RS. Same
+    # risk as the u_RS copy in phi_residual_general!: final_len depends on
+    # poly_reduce_mod_inplace!'s degree bookkeeping, now running for the
+    # first time on genuinely nonzero coefficients (see coeffs_out bugfix
+    # in build_phi_general!). An @inbounds overrun here is silent until it
+    # corrupts something else's memory.
+    @assert final_len <= length(scratch.v_RS) "poly_mul_mod_inplace!: final_len=$final_len exceeds scratch.v_RS's fixed capacity ($(length(scratch.v_RS))) — would silently overrun v_RS via @inbounds. len_a=$len_a, len_b=$len_b, u_len=$u_len."
     for i in 1:final_len
         @inbounds scratch.v_RS[i] = scratch.poly_buf[off_mul + i]
     end
@@ -1768,7 +2431,15 @@ function poly_mul_inplace_segment!(
 )::Int
     (len_a <= 0 || len_b <= 0) && return 0
     len_out = len_a + len_b - 1
-    
+
+    # WILLY-NILLY ASSERT: poly_buf has 1024 slots total; off_dest is a raw
+    # caller-supplied offset with no length check anywhere in this
+    # function. A bad offset/length pair here writes silently past the
+    # buffer via @inbounds.
+    @assert off_dest + len_out <= length(scratch.poly_buf) "poly_mul_mod_inplace! (segment mul): off_dest=$off_dest len_out=$len_out would write past poly_buf length $(length(scratch.poly_buf))"
+    @assert off_a + len_a <= length(scratch.poly_buf) "poly_mul_mod_inplace!: off_a=$off_a len_a=$len_a reads past poly_buf"
+    @assert off_b + len_b <= length(scratch.poly_buf) "poly_mul_mod_inplace!: off_b=$off_b len_b=$len_b reads past poly_buf"
+
     for i in 1:len_out
         @inbounds scratch.poly_buf[off_dest + i] = 0
     end
@@ -1797,7 +2468,10 @@ function poly_sq_inplace_segment!(
 )::Int
     len_a <= 0 && return 0
     len_out = 2 * len_a - 1
-    
+
+    @assert off_dest + len_out <= length(scratch.poly_buf) "poly_sq_inplace_segment!: off_dest=$off_dest len_out=$len_out would write past poly_buf length $(length(scratch.poly_buf))"
+    @assert off_a + len_a <= length(scratch.poly_buf) "poly_sq_inplace_segment!: off_a=$off_a len_a=$len_a reads past poly_buf"
+
     for i in 1:len_out
         @inbounds scratch.poly_buf[off_dest + i] = 0
     end
@@ -1841,6 +2515,10 @@ function build_N_inplace!(
     deg_Y::Int
 )::Int
 
+    @assert length(F_POLY) == 6 "build_N_inplace!: F_POLY has length $(length(F_POLY)), expected 6 (curve y²=x⁵+x+2 has 6 coefficients x⁰..x⁵) — F_POLY[f_idx] for f_idx in 1:6 below assumes this"
+    @assert deg_E >= 0 "build_N_inplace!: deg_E=$deg_E must be >= 0 (phi_to_EY! always sets deg_E>=0)"
+    @assert deg_Y >= -1 "build_N_inplace!: deg_Y=$deg_Y must be >= -1 (sentinel for 'no Y term')"
+
     # 1. Clear out the serialization area completely
     for i in 1:64
         @inbounds scratch.ser_buf[i] = 0
@@ -1848,6 +2526,11 @@ function build_N_inplace!(
 
     len_E = deg_E + 1
     len_Y = deg_Y + 1
+
+    @assert len_E >= 1 "build_N_inplace!: len_E=$len_E must be >= 1"
+    @assert len_Y >= 0 "build_N_inplace!: len_Y=$len_Y must be >= 0"
+    @assert len_E <= 32 "build_N_inplace!: len_E=$len_E exceeds ser_buf's E-half (slots 1..32)"
+    @assert len_Y <= 32 "build_N_inplace!: len_Y=$len_Y exceeds ser_buf's Y-half (slots 33..64)"
 
     for i in 1:len_E
         @inbounds scratch.ser_buf[i] = scratch.poly_buf[i]
@@ -1868,6 +2551,7 @@ function build_N_inplace!(
 
         # Diagonal: c_i²
         idx_diag = 2*i - 1
+        @assert 1 <= idx_diag <= 64 "build_N_inplace!: E² diagonal write idx_diag=$idx_diag (i=$i) out of poly_buf[1:64] range"
         @inbounds scratch.poly_buf[idx_diag] = fp(scratch.poly_buf[idx_diag] + fpmul(c_i, c_i))
 
         # Cross: 2 * c_i * c_j
@@ -1875,6 +2559,7 @@ function build_N_inplace!(
             @inbounds c_j = scratch.ser_buf[j]
             c_j == 0 && continue
             idx = i + j - 1
+            @assert 1 <= idx <= 64 "build_N_inplace!: E² cross write idx=$idx (i=$i,j=$j) out of poly_buf[1:64] range"
             term = fpmul(c_i, c_j)
             # 2*term < 2p, comfortably inside Int64 — no need to pre-reduce
             # before the final fp() on the accumulator add (matches the style
@@ -1895,6 +2580,7 @@ function build_N_inplace!(
             @inbounds f_coeff = F_POLY[f_idx]
             f_coeff == 0 && continue
             target_idx = y2_deg_d + f_idx
+            @assert 1 <= target_idx <= 64 "build_N_inplace!: Y² diagonal write target_idx=$target_idx (i=$i,f_idx=$f_idx,y2_deg_d=$y2_deg_d) out of poly_buf[1:64] range"
             @inbounds scratch.poly_buf[target_idx] = fp(scratch.poly_buf[target_idx] - fpmul(y2_coeff_d, f_coeff))
         end
 
@@ -1910,6 +2596,7 @@ function build_N_inplace!(
                 @inbounds f_coeff = F_POLY[f_idx]
                 f_coeff == 0 && continue
                 target_idx = y2_deg_c + f_idx
+                @assert 1 <= target_idx <= 64 "build_N_inplace!: Y² cross write target_idx=$target_idx (i=$i,j=$j,f_idx=$f_idx,y2_deg_c=$y2_deg_c) out of poly_buf[1:64] range"
                 @inbounds scratch.poly_buf[target_idx] = fp(scratch.poly_buf[target_idx] - fpmul(y2_coeff_c, f_coeff))
             end
         end
@@ -2131,6 +2818,14 @@ function phi_residual_general!(
 
     k = K  # compile-time constant from type parameter
 
+    # WILLY-NILLY ASSERT: catch a mismatched (scratch, anchors, basis)
+    # triple early — this function silently trusts that anchors has length
+    # K (the type param) and basis has length K+3; a caller bug here would
+    # otherwise show up as an obscure downstream indexing error deep in
+    # build_N_inplace!/find_roots_and_points_inplace! instead of here.
+    @assert length(anchors) == K "phi_residual_general!: length(anchors)=$(length(anchors)) != K=$K"
+    @assert length(basis) == K + 3 "phi_residual_general!: length(basis)=$(length(basis)) != K+3=$(K+3)"
+
     # 1. Convert φ to E(x) and Y(x) representations inside scratch buffers.
     #    Capture the returned degrees to avoid dynamic searching in the next step.
     deg_E, deg_Y = phi_to_EY!(scratch, basis)
@@ -2165,6 +2860,9 @@ function phi_residual_general!(
             n_len, rem_val = poly_divmod_linear_inplace!(scratch, n_len, px)
             if rem_val != 0
                 scratch.u_RS_is_fail[1] = true
+                s = phi_timing_stats()
+                s.n_fail_residual += 1
+                s.n_fail_resid_anchor_remainder += 1
                 return false
             end
         end
@@ -2175,6 +2873,9 @@ function phi_residual_general!(
     n_len, r0, r1 = poly_divmod_monic_deg2_inplace!(scratch, n_len, u1, u0)
     if r0 != 0 || r1 != 0
         scratch.u_RS_is_fail[1] = true
+        s = phi_timing_stats()
+        s.n_fail_residual += 1
+        s.n_fail_resid_u_remainder += 1
         return false
     end
 
@@ -2190,6 +2891,9 @@ function phi_residual_general!(
     # Degenerate residual check
     @inbounds if n_len == 1 && scratch.poly_buf[1] == 0
         scratch.u_RS_is_fail[1] = true
+        s = phi_timing_stats()
+        s.n_fail_residual += 1
+        s.n_fail_resid_degenerate += 1
         return false
     end
 
@@ -2203,6 +2907,21 @@ function phi_residual_general!(
     end
 
     # 7. Copy computed coefficients of N(x) into scratch.u_RS
+    #
+    # CRITICAL BOUNDS ASSERT: scratch.u_RS is a fixed length-8 Vector{Int}
+    # (see ThreadScratchpad{K}() constructor). n_len at this point is the
+    # residual polynomial's length after build_N_inplace! (degree tracking,
+    # never exercised on real nonzero data until scratch.coeffs_out was
+    # actually populated) followed by several in-place divisions
+    # (poly_divmod_linear_inplace! per anchor multiplicity,
+    # poly_divmod_monic_deg2_inplace! for u(x)). If n_len exceeds 8 here —
+    # from a degree-tracking bug anywhere upstream, or simply a K/anchor
+    # configuration this fixed-8 assumption doesn't actually cover — the
+    # @inbounds copy loop below silently writes past the end of u_RS's
+    # backing array, corrupting adjacent heap memory (the classic silent
+    # segfault-later pattern, since @inbounds skips the bounds check that
+    # would otherwise throw here immediately).
+    @assert n_len <= length(scratch.u_RS) "phi_residual_general!: residual length n_len=$n_len exceeds scratch.u_RS's fixed capacity ($(length(scratch.u_RS))) — would silently overrun u_RS via @inbounds. K=$k, deg_E=$deg_E, deg_Y=$deg_Y."
     scratch.u_RS_len[1] = n_len
     for i in 1:n_len
         @inbounds scratch.u_RS[i] = scratch.poly_buf[i]
@@ -2540,6 +3259,16 @@ function poly_modinv_inplace!(
     # We use u_len + 4 as a safe upper bound (quotient can briefly be one more degree).
     # This replaces the old `for i in 1:64` zeros which cleared 64 slots for ≤5 entries.
     clear_n = u_len + 4
+
+    # WILLY-NILLY ASSERT: off_tmp=704 is the highest fixed register offset
+    # this function uses; off_tmp + clear_n must stay inside poly_buf's 1024
+    # slots. u_len is nominally <= 8 (residual degree), but this function
+    # has no assert tying that assumption to the actual runtime value —
+    # given this exact EEA loop has already had at least one silent-
+    # corruption bug (see comment below re: destructive swap), check here.
+    @assert off_tmp + clear_n <= length(scratch.poly_buf) "poly_modinv_inplace!: u_len=$u_len gives clear_n=$clear_n, off_tmp+clear_n=$(off_tmp+clear_n) exceeds poly_buf length $(length(scratch.poly_buf))"
+    @assert len_a >= 1 "poly_modinv_inplace!: len_a=$len_a must be >= 1"
+    @assert off_a + len_a <= length(scratch.poly_buf) "poly_modinv_inplace!: off_a=$off_a len_a=$len_a reads past poly_buf"
 
     # 1. Initialize r0 = modulus m(x) (from scratch.u_RS)
     for i in 1:clear_n; @inbounds scratch.poly_buf[off_r0 + i] = 0; end
@@ -2902,7 +3631,18 @@ end
         return 0
     end
 
-    inv2 = scratch.small_inv[2]
+    # FIX: scratch.small_inv[s] is stored in BACKEND (Montgomery) representation
+    # (see init_scratch_caches!: small_inv[s] = to_repr(backend, fpinv(s))).
+    # Everywhere else in this function (c0, c1, sq, and the plain `fpmul` used
+    # throughout) operates in RAW representation — the same convention as
+    # scratch.u_RS/coeffs_out established after the phi_to_EY!/build_N_inplace!
+    # fix. Using scratch.small_inv[2] directly with the plain (non-backend)
+    # fpmul mixes a Montgomery-form operand into a raw-representation multiply
+    # — identical bug class to the earlier binom_scratch[1]/small_inv[s] issue
+    # in monomial_series_coeffs!. Use the raw inverse of 2 instead; this
+    # function has no backend argument to convert with, so recompute directly
+    # rather than threading backend through just for this one call.
+    inv2 = fpinv(2)
 
     x1 = fpmul(fp(-c1 + sq), inv2)
     x2 = fpmul(fp(-c1 - sq), inv2)
@@ -2929,9 +3669,18 @@ end
     f_oscar = Rx(@view coeff_buf[1:u_len])
     rs = roots(f_oscar)
 
+    # CRITICAL BOUNDS ASSERT: scratch.y_batch_x is a fixed-size MVector{N2}
+    # (N2 = K+2, at most 8 for K up to 6). A degree-(u_len-1) polynomial has
+    # at most u_len-1 roots, which should never exceed N2 given how n_len is
+    # derived upstream — but every upstream degree computation in this call
+    # chain (build_N_inplace!, the divmod pipeline) is only now running on
+    # genuinely nonzero data for the first time. Assert explicitly here
+    # rather than silently indexing past y_batch_x's end if any of those
+    # upstream degree invariants turn out to be violated.
     n = 0
     for r in rs
         n += 1
+        @assert n <= length(scratch.y_batch_x) "_solve_oscar_roots!: root count n=$n exceeds y_batch_x capacity ($(length(scratch.y_batch_x))) for u_len=$u_len (degree $(u_len-1)) — degree/root-count invariant violated upstream."
         @inbounds scratch.y_batch_x[n] = Int(lift(ZZ, r))
     end
 
@@ -2954,6 +3703,14 @@ end
     norm_x, norm_y = basis[K + 3]
 
     @assert max_pow >= 0
+    # WILLY-NILLY ASSERT: y_batch_x/E/Y are MVector{N2,Int} with N2=K+2 slots.
+    # n_cands comes from root-finding on the residual polynomial; if its
+    # degree ever exceeds N2 (e.g. a bug upstream in degree bookkeeping,
+    # or simply this fixed-N2 assumption not covering some K), this loop's
+    # @inbounds writes below in _evaluate_single_candidate! would silently
+    # overrun the stack-allocated MVector.
+    @assert n_cands <= length(scratch.y_batch_x) "evaluate_candidates!: n_cands=$n_cands exceeds y_batch_x capacity $(length(scratch.y_batch_x)) (K=$K)"
+    @assert max_pow + 1 <= length(scratch.pxpow_buf) "evaluate_candidates!: max_pow=$max_pow needs pxpow_buf length >= $(max_pow+1), have $(length(scratch.pxpow_buf))"
 
     for ci in 1:n_cands
         _evaluate_single_candidate!(
@@ -3069,6 +3826,16 @@ end
         return 0
     end
 
+    # WILLY-NILLY ASSERT: roots_out is a fixed length-8 Vector (see
+    # ThreadScratchpad{K}() constructor) regardless of K. n_valid comes from
+    # compact_valid_roots!, ultimately bounded by the residual polynomial's
+    # degree — if that ever exceeds 8 for some K, the @inbounds-free but
+    # unchecked writes below (scratch.roots_out[n_out] = ...) would throw a
+    # normal BoundsError at best, or silently corrupt if this ever gets
+    # wrapped in @inbounds later. Check explicitly, loudly, here.
+    @assert n_valid <= length(scratch.roots_out) "solve_roots_from_batches!: n_valid=$n_valid exceeds roots_out's fixed capacity $(length(scratch.roots_out))"
+    @assert n_valid <= length(scratch.xi_buf) "solve_roots_from_batches!: n_valid=$n_valid exceeds xi_buf length $(length(scratch.xi_buf)) (used here for prefix products)"
+
     if n_valid == 1
         val_E = scratch.y_batch_E[1]
         val_Y = scratch.y_batch_Y[1]
@@ -3166,6 +3933,7 @@ function recover_y_from_phi_inplace(scratch::ThreadScratchpad{K}, x::Int, ::Val{
         @inbounds pi, _ = basis[idx]
         pi > max_pow && (max_pow = pi)
     end
+    @assert max_pow + 1 <= length(scratch.pxpow_buf) "recover_y_from_phi_inplace: max_pow=$max_pow needs pxpow_buf length >= $(max_pow+1), have $(length(scratch.pxpow_buf))"
     scratch.pxpow_buf[1] = 1
     for e in 1:max_pow
         @inbounds scratch.pxpow_buf[e+1] = fpmul(scratch.pxpow_buf[e], x)
@@ -3289,6 +4057,9 @@ end
     u0::Int, u1::Int, v0::Int, v1::Int;
     backend::FpArith = StandardArith(p)
 )::Bool where K
+    # WILLY-NILLY ASSERT: comment above says anchors's length "may exceed K"
+    # (K_MAX-sized shared buffer) — but never checks it's at least K.
+    @assert length(anchors) >= K "step_phi_k! (Vector shim): anchors has length $(length(anchors)) < K=$K, ntuple slice would read past the end"
     # Convert to NTuple{K,...} — zero allocation, compiler inlines the ntuple.
     anc_tup = ntuple(i -> anchors[i], Val(K))
     step_phi_k!(scratch, anc_tup, u0, u1, v0, v1; backend=backend)
@@ -3300,6 +4071,7 @@ end
     u0::Int, u1::Int, v0::Int, v1::Int;
     backend::FpArith = StandardArith(p)
 )::Bool where K
+    @assert length(anchors) >= K "step_phi_k! (MVector shim): anchors has length $(length(anchors)) < K=$K, ntuple slice would read past the end"
     # Convert MVector to NTuple{K,...} — zero allocation, compiler inlines the ntuple.
     anc_tup = ntuple(i -> anchors[i], Val(K))
     step_phi_k!(scratch, anc_tup, u0, u1, v0, v1; backend=backend)
@@ -3411,6 +4183,8 @@ function step_phi_k!(
 
     k  = K
     nb = K + 3
+
+    @assert k == K && k == length(anchors) "step_phi_k!: k=$k, K=$K, length(anchors)=$(length(anchors)) must all agree"
 
     basis = rr_basis_cached(nb)::Vector{NTuple{2, Int}}
 
@@ -3535,6 +4309,8 @@ function step_phi_dispatch!(
     u0::Int, u1::Int, v0::Int, v1::Int;
     backend::FpArith = StandardArith(p)
 )
+    @assert k_cur >= 1 "step_phi_dispatch!: k_cur=$k_cur must be >= 1"
+    @assert k_cur <= length(scratch_by_k) "step_phi_dispatch!: k_cur=$k_cur exceeds scratch_by_k length $(length(scratch_by_k))"
     return _step_phi_dispatch_gen!(scratch_by_k, k_cur, anchors, u0, u1, v0, v1, backend)
 end
 
