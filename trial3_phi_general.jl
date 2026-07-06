@@ -5624,14 +5624,23 @@ function run_symbolic_crosscheck!(F_POLY_ASC::Vector{Int}, p::Int;
     for (tid, buf) in enumerate(SYMBOLIC_SAMPLES[])
         for (i, samp) in enumerate(buf)
             i > max_per_thread && break
-            
-            # Guard: Skip samples where fixed anchors coincide (multiplicity m >= 2 not supported by symbolic backend)
-            if length(unique(samp.fixed_anchors)) != length(samp.fixed_anchors)
-                println(io, "[SYMBOLIC-CROSSCHECK] thread $tid sample $i: SKIPPED (coinciding fixed anchors)")
+
+            t0, y0 = samp.last_anchor
+
+            # Guard: Skip samples where ANY two anchors coincide -- either among the
+            # fixed anchors themselves, OR between a fixed anchor and the symbolic
+            # last anchor (t0,y0). Multiplicity m >= 2 is not supported by the
+            # symbolic backend; checking only fixed_anchors-vs-fixed_anchors (as
+            # before) misses the fixed-vs-symbolic collision case, which throws an
+            # unguarded AssertionError out of cross_check_phi_symbolic! and kills
+            # the whole process -- including every check still queued behind it
+            # (run_symbolic_crosscheck2! in particular never gets to run).
+            full_anchors = push!(copy(samp.fixed_anchors), (t0, y0))
+            if length(unique(full_anchors)) != length(full_anchors)
+                println(io, "[SYMBOLIC-CROSSCHECK] thread $tid sample $i: SKIPPED (coinciding anchors, K=$(samp.K), last anchor=($t0,$y0))")
                 continue
             end
 
-            t0, y0 = samp.last_anchor
             cross_check_phi_symbolic!(samp.K, samp.fixed_anchors, samp.u0, samp.u1, samp.v0, samp.v1,
                                        F_POLY_ASC, p, t0, y0)
             println(io, "[SYMBOLIC-CROSSCHECK] thread $tid sample $i: OK (K=$(samp.K), last anchor=($t0,$y0))")
@@ -5655,15 +5664,23 @@ function run_symbolic_crosscheck2!(F_POLY_ASC::Vector{Int}, p::Int;
     for (tid, buf) in enumerate(SYMBOLIC_SAMPLES2[])
         for (i, samp) in enumerate(buf)
             i > max_per_thread && break
-            
-            # Guard: Skip samples where fixed anchors coincide (multiplicity m >= 2 not supported by symbolic backend)
-            if length(unique(samp.fixed_anchors)) != length(samp.fixed_anchors)
-                println(io, "[SYMBOLIC2-CROSSCHECK] thread $tid sample $i: SKIPPED (coinciding fixed anchors)")
-                continue
-            end
 
             t1_0, y1_0 = samp.anchor_Km1
             t2_0, y2_0 = samp.anchor_K
+
+            # Guard: Skip samples where ANY two anchors coincide -- among the
+            # fixed anchors, between a fixed anchor and either symbolic anchor, or
+            # between the two symbolic anchors themselves. Same rationale as
+            # run_symbolic_crosscheck!'s guard above: checking only
+            # fixed-vs-fixed misses fixed-vs-symbolic and symbolic-vs-symbolic
+            # collisions, either of which throws an unguarded AssertionError out
+            # of cross_check_phi_symbolic2! and kills the process.
+            full_anchors = push!(copy(samp.fixed_anchors), (t1_0, y1_0), (t2_0, y2_0))
+            if length(unique(full_anchors)) != length(full_anchors)
+                println(io, "[SYMBOLIC2-CROSSCHECK] thread $tid sample $i: SKIPPED (coinciding anchors, K=$(samp.K), last anchors=($t1_0,$y1_0),($t2_0,$y2_0))")
+                continue
+            end
+
             cross_check_phi_symbolic2!(samp.K, samp.fixed_anchors, samp.u0, samp.u1, samp.v0, samp.v1,
                                         F_POLY_ASC, p, t1_0, y1_0, t2_0, y2_0)
             println(io, "[SYMBOLIC2-CROSSCHECK] thread $tid sample $i: OK (K=$(samp.K), last anchors=($t1_0,$y1_0),($t2_0,$y2_0))")
