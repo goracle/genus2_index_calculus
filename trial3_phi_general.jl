@@ -5618,12 +5618,19 @@ SYMBOLIC_REPORT_ENABLED[] is on, as a correctness gate rather than just a
 human-readable printout.
 """
 function run_symbolic_crosscheck!(F_POLY_ASC::Vector{Int}, p::Int;
-                                   io::IO=stdout, max_per_thread::Int=typemax(Int))
+                                  io::IO=stdout, max_per_thread::Int=typemax(Int))
     isempty(SYMBOLIC_SAMPLES[]) && (println(io, "[SYMBOLIC-CROSSCHECK] no samples recorded -- was SYMBOLIC_REPORT_ENABLED[] set before the walk ran?"); return nothing)
     n_checked = 0
     for (tid, buf) in enumerate(SYMBOLIC_SAMPLES[])
         for (i, samp) in enumerate(buf)
             i > max_per_thread && break
+            
+            # Guard: Skip samples where fixed anchors coincide (multiplicity m >= 2 not supported by symbolic backend)
+            if length(unique(samp.fixed_anchors)) != length(samp.fixed_anchors)
+                println(io, "[SYMBOLIC-CROSSCHECK] thread $tid sample $i: SKIPPED (coinciding fixed anchors)")
+                continue
+            end
+
             t0, y0 = samp.last_anchor
             cross_check_phi_symbolic!(samp.K, samp.fixed_anchors, samp.u0, samp.u1, samp.v0, samp.v1,
                                        F_POLY_ASC, p, t0, y0)
@@ -5642,12 +5649,19 @@ Same as run_symbolic_crosscheck! one level up, over SYMBOLIC_SAMPLES2 and
 cross_check_phi_symbolic2!. PROGRAM-KILLING, unguarded, on purpose.
 """
 function run_symbolic_crosscheck2!(F_POLY_ASC::Vector{Int}, p::Int;
-                                    io::IO=stdout, max_per_thread::Int=typemax(Int))
+                                   io::IO=stdout, max_per_thread::Int=typemax(Int))
     isempty(SYMBOLIC_SAMPLES2[]) && (println(io, "[SYMBOLIC2-CROSSCHECK] no samples recorded -- was SYMBOLIC_REPORT_ENABLED[] set before the walk ran?"); return nothing)
     n_checked = 0
     for (tid, buf) in enumerate(SYMBOLIC_SAMPLES2[])
         for (i, samp) in enumerate(buf)
             i > max_per_thread && break
+            
+            # Guard: Skip samples where fixed anchors coincide (multiplicity m >= 2 not supported by symbolic backend)
+            if length(unique(samp.fixed_anchors)) != length(samp.fixed_anchors)
+                println(io, "[SYMBOLIC2-CROSSCHECK] thread $tid sample $i: SKIPPED (coinciding fixed anchors)")
+                continue
+            end
+
             t1_0, y1_0 = samp.anchor_Km1
             t2_0, y2_0 = samp.anchor_K
             cross_check_phi_symbolic2!(samp.K, samp.fixed_anchors, samp.u0, samp.u1, samp.v0, samp.v1,

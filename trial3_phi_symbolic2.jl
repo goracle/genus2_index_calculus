@@ -227,7 +227,7 @@ function symbolic_residual2(K::Int, fixed_anchors::Vector{Tuple{Int,Int}}, u0::I
 
     K2x, X = polynomial_ring(K2, "X")
 
-    # 3. Setup Linear System
+    # 3. Setup Linear System over the pure fraction field F_t
     nb = K + 3
     basis = rr_basis2(nb)
     y_idx = findfirst(bi -> bi == (0,1), basis)
@@ -238,32 +238,37 @@ function symbolic_residual2(K::Int, fixed_anchors::Vector{Tuple{Int,Int}}, u0::I
     n_unknowns = K + 2
     other_idx = [idx for idx in 1:nb if idx != y_idx]
 
-    A = zero_matrix(K2, n_unknowns, n_unknowns)
-    rhs = zero_matrix(K2, n_unknowns, 1)
-
-    # Ensure explicit coercion paths up the algebraic tower hierarchy
-    t1_K2 = K2(K1(F_t(t1)))
-    w1_K2 = K2(w1)
-    t2_K2 = K2(K1(F_t(t2)))
-    w2_K2 = w2
-
-    anchor_pts = Vector{Tuple{elem_type(K2),elem_type(K2)}}(undef, K)
-    for a in 1:(K-2)
-        px_raw, py_raw = fixed_anchors[a]
-        anchor_pts[a] = (K2(px_raw), K2(py_raw))
-    end
-    anchor_pts[K-1] = (t1_K2, w1_K2)
-    anchor_pts[K]   = (t2_K2, w2_K2)
+    # Initialize matrix and split RHS vectors over F_t
+    A_Ft = zero_matrix(F_t, n_unknowns, n_unknowns)
+    rhs_const = zero_matrix(F_t, n_unknowns, 1)
+    rhs_w1    = zero_matrix(F_t, n_unknowns, 1)
+    rhs_w2    = zero_matrix(F_t, n_unknowns, 1)
 
     # Rows 1..K (Anchors)
     for a in 1:K
-        px, py = anchor_pts[a]
+        # Populate columns of A (purely functions of x-coordinates in F_t)
         for (col, bidx) in enumerate(other_idx)
             bi, bj = basis[bidx]
-            A[a, col] = (px^bi) * (bj == 1 ? py : K2(1))
+            if a <= K-2
+                px_raw, _ = fixed_anchors[a]
+                A_Ft[a, col] = F_t(px_raw)^bi
+            elseif a == K-1
+                A_Ft[a, col] = t1^bi
+            else # a == K
+                A_Ft[a, col] = t2^bi
+            end
         end
-        bi_n, bj_n = basis[y_idx]
-        rhs[a, 1] = -((px^bi_n) * (bj_n == 1 ? py : K2(1)))
+
+        # Populate RHS split components (y-coordinates)
+        # bi_n = 0, bj_n = 1 for the fixed y monomial
+        if a <= K-2
+            _, py_raw = fixed_anchors[a]
+            rhs_const[a, 1] = F_t(-py_raw)
+        elseif a == K-1
+            rhs_w1[a, 1] = F_t(-1) # coefficient of w1
+        else # a == K
+            rhs_w2[a, 1] = F_t(-1) # coefficient of w2
+        end
     end
 
     # Rows K+1, K+2 (Mumford condition mod u)
@@ -274,27 +279,34 @@ function symbolic_residual2(K::Int, fixed_anchors::Vector{Tuple{Int,Int}}, u0::I
     for (col, bidx) in enumerate(other_idx)
         bi, bj = basis[bidx]
         rr0, rr1 = reduce_monomial_mod_u2(bi, bj, u0, u1, v0, v1, r0tab, r1tab, p)
-        A[row0, col] = K2(rr0)
-        A[row1, col] = K2(rr1)
+        A_Ft[row0, col] = F_t(rr0)
+        A_Ft[row1, col] = F_t(rr1)
     end
+    
     bi_n, bj_n = basis[y_idx]
     rn0, rn1 = reduce_monomial_mod_u2(bi_n, bj_n, u0, u1, v0, v1, r0tab, r1tab, p)
-    rhs[row0, 1] = K2(mod(-rn0, p))
-    rhs[row1, 1] = K2(mod(-rn1, p))
+    rhs_const[row0, 1] = F_t(mod(-rn0, p))
+    rhs_const[row1, 1] = F_t(mod(-rn1, p))
 
-    # 4. Solve the matrix
+    # 4. Solve the matrix systems over F_t and reassemble into K2
     local c_sol
     try
-        c_sol = solve(A, rhs)
+        sol_const = solve(A_Ft, rhs_const)
+        sol_w1    = solve(A_Ft, rhs_w1)
+        sol_w2    = solve(A_Ft, rhs_w2)
+
+        # Reconstruct the solution vector elements back into the K2 tower
+        c_sol = zero_matrix(K2, n_unknowns, 1)
+        for row in 1:n_unknowns
+            c_sol[row, 1] = K2(K1(sol_const[row, 1])) + 
+                            K2(K1(sol_w1[row, 1])) * w1 + 
+                            K2(K1(sol_w2[row, 1])) * w2
+        end
     catch e
+        # If a legitimate linear dependence occurs, catch it here safely
+        @error "Linear system resolution failed over F_t" exception=e
         return SymbolicResidualResult2(K, Any[], Any[], -1, -1, 0)
     end
-
-    coeffs_out = Vector{elem_type(K2)}(undef, nb)
-    for (col, bidx) in enumerate(other_idx)
-        coeffs_out[bidx] = c_sol[col, 1]
-    end
-    coeffs_out[y_idx] = K2(1)
 
     # 5. Extract E(x) and Y(x)
     E_poly = K2x(0)

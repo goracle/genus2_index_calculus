@@ -441,24 +441,24 @@ end
 #  PART 6: Output Helpers
 # =============================================================================
 
-function print_symbolic_residual(res::SymbolicResidualResult)
-    println("Symbolic Residual Result (K = $(res.K)):")
-    println("  deg_E = $(res.deg_E), deg_Y = $(res.deg_Y)")
-    println("  n_len_before_divide = $(res.n_len_before_divide)")
-    println("  u_RS(x; t):")
+function print_symbolic_residual(res::SymbolicResidualResult; io::IO = stdout)
+    println(io, "Symbolic Residual Result (K = $(res.K)):")
+    println(io, "  deg_E = $(res.deg_E), deg_Y = $(res.deg_Y)")
+    println(io, "  n_len_before_divide = $(res.n_len_before_divide)")
+    println(io, "  u_RS(x; t):")
     for (i, c) in enumerate(res.u_RS)
-        println("    x^$(i-1): $(pretty(c))")
+        println(io, "    x^$(i-1): $(pretty(c))")
     end
-    println("  v_RS(x; t):")
+    println(io, "  v_RS(x; t):")
     for (i, c) in enumerate(res.v_RS)
-        println("    x^$(i-1): $(pretty(c))")
+        println(io, "    x^$(i-1): $(pretty(c))")
     end
 end
 
-function print_symbolic_residual_concrete(u_concrete::Vector{Int}, v_concrete::Vector{Int})
-    println("Concrete Residual Result:")
-    println("  u_RS_concrete(x): ", join(["($(c))*x^$(i-1)" for (i, c) in enumerate(u_concrete)], " + "))
-    println("  v_RS_concrete(x): ", join(["($(c))*x^$(i-1)" for (i, c) in enumerate(v_concrete)], " + "))
+function print_symbolic_residual_concrete(u_concrete::Vector{Int}, v_concrete::Vector{Int}; io::IO = stdout)
+    println(io, "Concrete Residual Result:")
+    println(io, "  u_RS_concrete(x): ", join(["($(c))*x^$(i-1)" for (i, c) in enumerate(u_concrete)], " + "))
+    println(io, "  v_RS_concrete(x): ", join(["($(c))*x^$(i-1)" for (i, c) in enumerate(v_concrete)], " + "))
 end
 
 end # module
