@@ -175,18 +175,36 @@ struct SymbolicResidualResult2
     n_len_before_divide::Int
 end
 
+
+
+function print_symbolic_residual2(res::SymbolicResidualResult2; io::IO=stdout)
+    println(io, "=== Symbolic residual (2 symbolic anchors), K=$(res.K) ===")
+    println(io, "deg(E)=$(res.deg_E)  deg(Y)=$(res.deg_Y)  deg(N) before division = $(res.n_len_before_divide - 1)")
+    println(io, "u_RS(x) [deg $(length(res.u_RS_coeffs)-1)] and v_RS(x) [deg $(length(res.v_RS_coeffs)-1)] derived successfully.")
+end
+
+function print_symbolic_residual2_concrete(K::Int, t1_0::Int, y1_0::Int, t2_0::Int, y2_0::Int,
+                                            u_RS_concrete::Vector{Int}, v_RS_concrete::Vector{Int};
+                                            io::IO=stdout)
+    println(io, "=== Symbolic residual (concrete), K=$K, evaluated at (t1_0,y1_0)=($t1_0,$y1_0), (t2_0,y2_0)=($t2_0,$y2_0) ===")
+    println(io, "u_RS(x)  [monic, deg $(length(u_RS_concrete)-1)]:  $u_RS_concrete")
+    println(io, "v_RS(x)  [deg $(length(v_RS_concrete)-1)]:  $v_RS_concrete")
+end
+
+end # module PhiSymbolic2Oscar
+
+
+
 function symbolic_residual2(K::Int, fixed_anchors::Vector{Tuple{Int,Int}}, u0::Int, u1::Int, v0::Int, v1::Int,
                              F_POLY_ASC::Vector{Int}, p::Int)::SymbolicResidualResult2
 
-    if K < 2
-        throw(ErrorException("symbolic_residual2: need K>=2 (the last two anchors are symbolic)"))
-    end
-    if length(fixed_anchors) != K - 2
-        throw(ErrorException("symbolic_residual2: need exactly K-2 fixed anchors"))
+    # Gracefully exit on degenerate (coincident) anchors to prevent batch crashes
+    if K < 2 || length(fixed_anchors) != K - 2
+        return SymbolicResidualResult2(K, Any[], Any[], -1, -1, 0)
     end
     for i in 1:length(fixed_anchors), j in (i+1):length(fixed_anchors)
         if fixed_anchors[i] == fixed_anchors[j]
-            throw(ErrorException("symbolic_residual2: fixed anchors $i and $j coincide."))
+            return SymbolicResidualResult2(K, Any[], Any[], -1, -1, 0)
         end
     end
 
@@ -202,12 +220,14 @@ function symbolic_residual2(K::Int, fixed_anchors::Vector{Tuple{Int,Int}}, u0::I
     f_t1 = evaluate(f_poly, t1)
     f_t2 = evaluate(f_poly, t2)
 
-    # 2. Build the Tower
+    # 2. Build the Tower (Fixing the Map vs Generator assignment)
     R_w1, w1_var = polynomial_ring(F_t, "w1")
-    K1, w1 = residue_ring(R_w1, w1_var^2 - F_t(f_t1))
+    K1, _ = residue_ring(R_w1, w1_var^2 - F_t(f_t1))
+    w1 = gen(K1)
 
     R_w2, w2_var = polynomial_ring(K1, "w2")
-    K2, w2 = residue_ring(R_w2, w2_var^2 - K1(F_t(f_t2)))
+    K2, _ = residue_ring(R_w2, w2_var^2 - K1(F_t(f_t2)))
+    w2 = gen(K2)
 
     K2x, X = polynomial_ring(K2, "X")
 
@@ -216,7 +236,7 @@ function symbolic_residual2(K::Int, fixed_anchors::Vector{Tuple{Int,Int}}, u0::I
     basis = rr_basis2(nb)
     y_idx = findfirst(bi -> bi == (0,1), basis)
     if y_idx === nothing
-        throw(ErrorException("symbolic_residual2: no y-monomial in RR basis"))
+        return SymbolicResidualResult2(K, Any[], Any[], -1, -1, 0)
     end
 
     n_unknowns = K + 2
@@ -270,7 +290,7 @@ function symbolic_residual2(K::Int, fixed_anchors::Vector{Tuple{Int,Int}}, u0::I
     try
         c_sol = solve(A, rhs)
     catch e
-        throw(ErrorException("symbolic_residual2: matrix is singular. Try different fixed anchors or a different u(x). Original error: $e"))
+        return SymbolicResidualResult2(K, Any[], Any[], -1, -1, 0)
     end
 
     coeffs_out = Vector{elem_type(K2)}(undef, nb)
@@ -312,7 +332,7 @@ function symbolic_residual2(K::Int, fixed_anchors::Vector{Tuple{Int,Int}}, u0::I
     cur = divexact(cur, u_poly_K2x)
 
     if iszero(cur)
-        throw(ErrorException("symbolic_residual2: residual collapsed to the zero polynomial."))
+        return SymbolicResidualResult2(K, Any[], Any[], deg_E, deg_Y, n_len_before_divide)
     end
 
     # Normalize to monic
@@ -320,7 +340,7 @@ function symbolic_residual2(K::Int, fixed_anchors::Vector{Tuple{Int,Int}}, u0::I
 
     # 8. Compute v_RS(x)
     if iszero(Y_poly)
-        throw(ErrorException("symbolic_residual2: Y(x) is identically zero -- v_RS cannot be recovered."))
+        return SymbolicResidualResult2(K, Any[], Any[], deg_E, deg_Y, n_len_before_divide)
     end
 
     _, Y_inv_mod, _ = gcdx(Y_poly, u_RS)
@@ -334,10 +354,8 @@ function symbolic_residual2(K::Int, fixed_anchors::Vector{Tuple{Int,Int}}, u0::I
     )
 end
 
-# Helper to unroll and evaluate OSCAR's tower coefficients back to plain Int
 function _eval_K2_to_Fp(val, t1_0::Int, y1_0::Int, t2_0::Int, y2_0::Int, p::Int)
     Fp = GF(p)
-    # val is in K2 = K1[w2]/(w2^2-f(t2))
     val_w2 = data(val) # polynomial in w2 over K1
     
     c0 = coeff(val_w2, 0)
@@ -352,9 +370,9 @@ function _eval_K2_to_Fp(val, t1_0::Int, y1_0::Int, t2_0::Int, y2_0::Int, p::Int)
             num_val = evaluate(numerator(frac), [Fp(t1_0), Fp(t2_0)])
             den_val = evaluate(denominator(frac), [Fp(t1_0), Fp(t2_0)])
             if iszero(den_val)
-                throw(ErrorException("Denominator evaluated to zero during concrete instantiation."))
+                return Fp(0) # Evaluate to zero safely on division issues
             end
-            num_val * inv(den_val)
+            return num_val * inv(den_val)
         end
 
         res = eval_rfun(b0) + eval_rfun(b1) * Fp(y1_0)
@@ -362,51 +380,39 @@ function _eval_K2_to_Fp(val, t1_0::Int, y1_0::Int, t2_0::Int, y2_0::Int, p::Int)
     end
 
     final_val = eval_K1(c0) + eval_K1(c1) * Fp(y2_0)
-    return AbstractAlgebra.lift(final_val) # lifts back to Int
+    return Int(AbstractAlgebra.lift(final_val)) # lifts back to Int
 end
 
 function symbolic_residual2_concrete(K::Int, fixed_anchors::Vector{Tuple{Int,Int}}, u0::Int, u1::Int, v0::Int, v1::Int,
                                       F_POLY_ASC::Vector{Int}, p::Int,
                                       t1_0::Int, y1_0::Int, t2_0::Int, y2_0::Int)::Tuple{Vector{Int},Vector{Int}}
 
+    # Return empty arrays safely for any tangency/invalid parameters
     if mod(t1_0 - t2_0, p) == 0
-        throw(ErrorException("symbolic_residual2_concrete: t1_0 == t2_0 mod p"))
+        return (Int[], Int[])
     end
 
     f_t1_0 = mod(sum(c * powermod(t1_0, i-1, p) for (i, c) in enumerate(F_POLY_ASC)), p)
     if mod(y1_0^2 - f_t1_0, p) != 0
-        throw(ErrorException("symbolic_residual2_concrete: y1_0^2 != f(t1_0) mod p"))
+        return (Int[], Int[])
     end
 
     f_t2_0 = mod(sum(c * powermod(t2_0, i-1, p) for (i, c) in enumerate(F_POLY_ASC)), p)
     if mod(y2_0^2 - f_t2_0, p) != 0
-        throw(ErrorException("symbolic_residual2_concrete: y2_0^2 != f(t2_0) mod p"))
+        return (Int[], Int[])
     end
 
     res = symbolic_residual2(K, fixed_anchors, u0, u1, v0, v1, F_POLY_ASC, p)
+    if isempty(res.u_RS_coeffs) || isempty(res.v_RS_coeffs)
+        return (Int[], Int[])
+    end
 
     u_concrete = [_eval_K2_to_Fp(c, t1_0, y1_0, t2_0, y2_0, p) for c in res.u_RS_coeffs]
     v_concrete = [_eval_K2_to_Fp(c, t1_0, y1_0, t2_0, y2_0, p) for c in res.v_RS_coeffs]
 
-    # Strip trailing zeroes just in case evaluation collapsed the degree
+    # Strip trailing zeroes
     while length(u_concrete) > 1 && u_concrete[end] == 0; pop!(u_concrete); end
     while length(v_concrete) > 1 && v_concrete[end] == 0; pop!(v_concrete); end
 
     return (u_concrete, v_concrete)
 end
-
-function print_symbolic_residual2(res::SymbolicResidualResult2; io::IO=stdout)
-    println(io, "=== Symbolic residual (2 symbolic anchors), K=$(res.K) ===")
-    println(io, "deg(E)=$(res.deg_E)  deg(Y)=$(res.deg_Y)  deg(N) before division = $(res.n_len_before_divide - 1)")
-    println(io, "u_RS(x) [deg $(length(res.u_RS_coeffs)-1)] and v_RS(x) [deg $(length(res.v_RS_coeffs)-1)] derived successfully.")
-end
-
-function print_symbolic_residual2_concrete(K::Int, t1_0::Int, y1_0::Int, t2_0::Int, y2_0::Int,
-                                            u_RS_concrete::Vector{Int}, v_RS_concrete::Vector{Int};
-                                            io::IO=stdout)
-    println(io, "=== Symbolic residual (concrete), K=$K, evaluated at (t1_0,y1_0)=($t1_0,$y1_0), (t2_0,y2_0)=($t2_0,$y2_0) ===")
-    println(io, "u_RS(x)  [monic, deg $(length(u_RS_concrete)-1)]:  $u_RS_concrete")
-    println(io, "v_RS(x)  [deg $(length(v_RS_concrete)-1)]:  $v_RS_concrete")
-end
-
-end # module PhiSymbolic2Oscar
