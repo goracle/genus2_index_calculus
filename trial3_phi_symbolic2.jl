@@ -177,20 +177,32 @@ end
 
 
 
-function print_symbolic_residual2(res::SymbolicResidualResult2; io::IO=stdout)
-    println(io, "=== Symbolic residual (2 symbolic anchors), K=$(res.K) ===")
-    println(io, "deg(E)=$(res.deg_E)  deg(Y)=$(res.deg_Y)  deg(N) before division = $(res.n_len_before_divide - 1)")
-    println(io, "u_RS(x) [deg $(length(res.u_RS_coeffs)-1)] and v_RS(x) [deg $(length(res.v_RS_coeffs)-1)] derived successfully.")
+function print_symbolic_residual2(K::Int, res; io::IO=stdout)
+    println(io, "Symbolic Residual Result (K = $K):")
+    println(io, "  u_RS(x; t1, t2):")
+    for (i, coeff) in enumerate(res.u_RS_coeffs)
+        # Using string representation from Oscar/AbstractAlgebra
+        println(io, "    x^$(i-1): $(string(coeff))")
+    end
+    
+    println(io, "  v_RS(x; t1, t2):")
+    for (i, coeff) in enumerate(res.v_RS_coeffs)
+        println(io, "    x^$(i-1): $(string(coeff))")
+    end
 end
+
 
 function print_symbolic_residual2_concrete(K::Int, t1_0::Int, y1_0::Int, t2_0::Int, y2_0::Int,
                                             u_RS_concrete::Vector{Int}, v_RS_concrete::Vector{Int};
                                             io::IO=stdout)
+    if isempty(u_RS_concrete) || isempty(v_RS_concrete)
+        throw(ArgumentError("Cannot print empty concrete residuals. Check for anchor convergence or geometric degeneracy upstream."))
+    end
+
     println(io, "=== Symbolic residual (concrete), K=$K, evaluated at (t1_0,y1_0)=($t1_0,$y1_0), (t2_0,y2_0)=($t2_0,$y2_0) ===")
     println(io, "u_RS(x)  [monic, deg $(length(u_RS_concrete)-1)]:  $u_RS_concrete")
     println(io, "v_RS(x)  [deg $(length(v_RS_concrete)-1)]:  $v_RS_concrete")
 end
-
 
 
 
@@ -389,30 +401,29 @@ function symbolic_residual2_concrete(K::Int, fixed_anchors::Vector{Tuple{Int,Int
                                       F_POLY_ASC::Vector{Int}, p::Int,
                                       t1_0::Int, y1_0::Int, t2_0::Int, y2_0::Int)::Tuple{Vector{Int},Vector{Int}}
 
-    # Return empty arrays safely for any tangency/invalid parameters
+    # Throw a hard exception on degenerate (coincident) evaluation points
     if mod(t1_0 - t2_0, p) == 0
-        return (Int[], Int[])
+        throw(ArgumentError("Evaluation failed: Coincident symbolic anchors evaluated at the same point mod p: t1_0 ($t1_0) == t2_0 ($t2_0). Anchors must be pairwise distinct."))
     end
 
     f_t1_0 = mod(sum(c * powermod(t1_0, i-1, p) for (i, c) in enumerate(F_POLY_ASC)), p)
     if mod(y1_0^2 - f_t1_0, p) != 0
-        return (Int[], Int[])
+        throw(DomainError(y1_0, "Point (t1_0, y1_0) does not lie on the curve mod p."))
     end
 
     f_t2_0 = mod(sum(c * powermod(t2_0, i-1, p) for (i, c) in enumerate(F_POLY_ASC)), p)
     if mod(y2_0^2 - f_t2_0, p) != 0
-        return (Int[], Int[])
+        throw(DomainError(y2_0, "Point (t2_0, y2_0) does not lie on the curve mod p."))
     end
 
     res = symbolic_residual2(K, fixed_anchors, u0, u1, v0, v1, F_POLY_ASC, p)
     if isempty(res.u_RS_coeffs) || isempty(res.v_RS_coeffs)
-        return (Int[], Int[])
+        throw(ErrorException("Symbolic calculation yielded empty equations unexpectedly."))
     end
 
     u_concrete = [_eval_K2_to_Fp(c, t1_0, y1_0, t2_0, y2_0, p) for c in res.u_RS_coeffs]
     v_concrete = [_eval_K2_to_Fp(c, t1_0, y1_0, t2_0, y2_0, p) for c in res.v_RS_coeffs]
 
-    # Strip trailing zeroes
     while length(u_concrete) > 1 && u_concrete[end] == 0; pop!(u_concrete); end
     while length(v_concrete) > 1 && v_concrete[end] == 0; pop!(v_concrete); end
 

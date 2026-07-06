@@ -455,10 +455,16 @@ function print_symbolic_residual(res::SymbolicResidualResult; io::IO = stdout)
     end
 end
 
-function print_symbolic_residual_concrete(u_concrete::Vector{Int}, v_concrete::Vector{Int}; io::IO = stdout)
-    println(io, "Concrete Residual Result:")
-    println(io, "  u_RS_concrete(x): ", join(["($(c))*x^$(i-1)" for (i, c) in enumerate(u_concrete)], " + "))
-    println(io, "  v_RS_concrete(x): ", join(["($(c))*x^$(i-1)" for (i, c) in enumerate(v_concrete)], " + "))
+function print_symbolic_residual_concrete(K::Int, t_0::Int, y_0::Int,
+                                           u_RS_concrete::Vector{Int}, v_RS_concrete::Vector{Int};
+                                           io::IO=stdout)
+    if K < 1
+        throw(ArgumentError("K must be a positive integer, got $K"))
+    end
+    
+    println(io, "=== Symbolic residual (concrete), K=$K, evaluated at (t_0,y_0)=($t_0,$y_0) ===")
+    println(io, "u_RS(x)  [monic, deg $(length(u_RS_concrete)-1)]:  $u_RS_concrete")
+    println(io, "v_RS(x)  [deg $(length(v_RS_concrete)-1)]:  $v_RS_concrete")
 end
 
 end # module

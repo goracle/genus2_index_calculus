@@ -5436,7 +5436,7 @@ function run_symbolic_report2!(F_POLY_ASC::Vector{Int}, p::Int;
                 res = PhiSymbolic2.symbolic_residual2(samp.K, samp.fixed_anchors,
                                                        samp.u0, samp.u1, samp.v0, samp.v1,
                                                        F_POLY_ASC, p)
-                PhiSymbolic2.print_symbolic_residual2(res; io=io)
+                PhiSymbolic2.print_symbolic_residual2(samp.K, res; io=io)
 
                 t1_0, y1_0 = samp.anchor_Km1
                 t2_0, y2_0 = samp.anchor_K
