@@ -171,7 +171,13 @@ def eval_monomial_ft2(px,py,i,j):
     if j==1: v = ft2_mul(v,py)
     return v
 
-def symbolic_residual(K, fixed_anchors, u0,u1,v0,v1, f_asc):
+def symbolic_residual_ft2(K, fixed_anchors, u0,u1,v0,v1, f_asc):
+    """
+    Raw (non-collapsing) version: returns u_RS, v_RS as lists of Ft2
+    (a(t) + b(t)*w pairs), with NO assertion that b(t)==0. This is the
+    honest object -- see symbolic_residual() below for the correct way
+    to use it with a real anchor.
+    """
     nb=K+3
     basis=rr_basis(nb)
     y_idx=[idx for idx,bb in enumerate(basis) if bb==(0,1)][0]
@@ -244,13 +250,32 @@ def symbolic_residual(K, fixed_anchors, u0,u1,v0,v1, f_asc):
     fY2 = ft2_pmul(Ysq, f_ft2)
     Nx = ft2_psub(Esq, fY2)
 
+    # NOTE (fixed per Claire, 2026-07-05): N(x) does NOT generally collapse
+    # to pure F_p(t) (w-part == 0). That was verified false numerically:
+    # w -> -w sends each phi-coefficient (a,b) -> (a,-b) exactly (real
+    # Galois conjugation of the anchor's field), but N(x) formed from the
+    # w-negated (E,Y) is not the w-negated N(x) -- its b-part is a
+    # different nonzero rational function, not the negative of the
+    # original. N(x) IS guaranteed polynomial in x (that's the y -> -y
+    # norm baked into E(x)^2-f(x)Y(x)^2 regardless of E,Y) -- it is simply
+    # not guaranteed to descend to the subfield F_p(t). So N(x), and hence
+    # u_RS, v_RS below, are carried as genuine Ft2 objects throughout; only
+    # symbolic_residual() (evaluating at a concrete t0,y0) collapses to F_p.
     N_ft2 = Nx
     while len(N_ft2)>1 and ft2_is_zero(N_ft2[-1]): N_ft2.pop()
 
+    # Divide out ALL K anchor factors, not just the K-1 fixed ones: the
+    # concrete pipeline (build_phi_and_residual) divides out every anchor
+    # including the last (see its `for a in range(K)` loop over ALL
+    # anchors) because every anchor -- symbolic or not -- is a root of
+    # phi, hence of N(x) = phi(x,y)*phi(x,-y). The symbolic K-th anchor's
+    # factor is (x - t), i.e. divide by the Ft2 constant `t` itself.
+    # Missing this step was a real bug: it left N(x) one degree too high
+    # after division (confirmed by comparing deg(u_RS) against the
+    # concrete pipeline's build_phi_and_residual for the same K,u,v,f).
     cur = N_ft2
-    for a in range(K-1):
-        px_raw,_ = fixed_anchors[a]
-        r = ft2c(RFun.const(px_raw), fT)
+    anchor_factors = [ft2c(RFun.const(px_raw), fT) for px_raw,_ in fixed_anchors] + [t]
+    for a, r in enumerate(anchor_factors):
         n_=len(cur)
         if n_==1:
             rem=cur[0]; q=[ft2c(RFun.zero(),fT)]
@@ -260,7 +285,7 @@ def symbolic_residual(K, fixed_anchors, u0,u1,v0,v1, f_asc):
                 q[i]=acc
                 acc=ft2_add(cur[i], ft2_mul(r,acc))
             rem=acc
-        assert ft2_is_zero(rem), f"remainder dividing out fixed anchor {a}"
+        assert ft2_is_zero(rem), f"remainder dividing out anchor {a}"
         cur=q
         while len(cur)>1 and ft2_is_zero(cur[-1]): cur.pop()
 
@@ -342,7 +367,40 @@ def symbolic_residual(K, fixed_anchors, u0,u1,v0,v1, f_asc):
     for i,x in enumerate(negE_mod):
         for j,y in enumerate(Y_inv_mod):
             cprod[i+j]=ft2_add(cprod[i+j], ft2_mul(x,y))
-    v_RS = ft2_pmod_ft2mod(cprod, u_RS)
-    while len(v_RS)>1 and ft2_is_zero(v_RS[-1]): v_RS.pop()
+    v_RS_ft2 = ft2_pmod_ft2mod(cprod, u_RS)
+    while len(v_RS_ft2)>1 and ft2_is_zero(v_RS_ft2[-1]): v_RS_ft2.pop()
 
-    return u_RS, v_RS
+    # u_RS, v_RS are genuine Ft2 objects (a(t)+b(t)*w pairs) -- see the note
+    # above symbolic_residual_ft2's N(x) construction. No collapse here;
+    # only symbolic_residual() below (evaluating at a concrete t0,y0)
+    # produces a plain F_p result.
+    return u_RS, v_RS_ft2
+
+
+def symbolic_residual(K, fixed_anchors, u0, u1, v0, v1, f_asc, t0, y0):
+    """
+    Correct way to use the symbolic construction for a REAL anchor point
+    (t0, y0) with y0^2 == f(t0) mod p: evaluate the raw a(t),b(t) rational
+    functions from symbolic_residual_ft2 at t0, then recombine with the
+    KNOWN y0 -- a(t0) + b(t0)*y0. For a genuine affine F_p point this lands
+    back in F_p automatically (real + real*real = real); b(t) itself is NOT
+    required to be identically zero (and generically isn't) -- that would be
+    a much stronger claim (branch-independence), which is false in general:
+    using the "wrong" root -y0 instead of y0 corresponds to a genuinely
+    different point of the Jacobian and generically gives a different
+    (still real) residual.
+    """
+    u_RS_ft2, v_RS_ft2 = symbolic_residual_ft2(K, fixed_anchors, u0, u1, v0, v1, f_asc)
+
+    def combine(coeffs):
+        out = []
+        for c in coeffs:
+            a_val = rf_eval(c.a, t0)
+            b_val = rf_eval(c.b, t0)
+            out.append(fp((a_val + b_val * y0)))
+        # strip trailing zeros like sanity_check.strip
+        while len(out) > 1 and out[-1] == 0:
+            out.pop()
+        return out
+
+    return combine(u_RS_ft2), combine(v_RS_ft2)

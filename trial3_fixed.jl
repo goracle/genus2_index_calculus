@@ -41,6 +41,17 @@ include("trial3_fp_backend.jl")   # FpArith / StandardArith / MontgomeryArith �
 include("lp1_conj_lsm.jl")
 include("trial3_phi.jl")
 include("trial3_phi_general.jl")  # step_phi_k: K-anchor general phi construction
+include("trial3_phi_symbolic.jl") # PhiSymbolic module — symbolic (last-anchor-free) phi
+                                   # construction, consumed by run_symbolic_report! below.
+                                   # Must follow trial3_phi_general.jl (record_symbolic_sample!/
+                                   # run_symbolic_report! are defined there and reference
+                                   # PhiSymbolic.* by qualified name) but has no other ordering
+                                   # requirement — PhiSymbolic itself doesn't touch any trial3
+                                   # types. `using .PhiSymbolic` below brings symbolic_residual /
+                                   # symbolic_residual_concrete / print_symbolic_residual /
+                                   # print_symbolic_residual_concrete into scope for
+                                   # run_symbolic_report!'s qualified calls to resolve.
+using .PhiSymbolic
 include("trial3_anchor_sweep_diag.jl")  # SweepCollector / run_anchor_sweep_experiment — needs
                                          # ThreadScratchpad et al from phi_general.jl above, and
                                          # must itself precede trial3_phase2.jl below: phase2_worker's
@@ -490,6 +501,9 @@ function index_calculus_walk(G::Div2, T::Div2;
                              phi_timing        ::Bool = false,
                              sweep_diag        ::Int  = 0,
                              sweep_diag_candidates::Int = 200,
+                             symbolic_report        ::Bool = false,
+                             symbolic_report_samples::Int  = 8,
+                             symbolic_crosscheck    ::Bool = false,
                              backend           ::FpArith = MontgomeryArith(p))
 
     t_walk_start = time()
@@ -668,6 +682,13 @@ function index_calculus_walk(G::Div2, T::Div2;
                 sweep_diag, anchor_tuple_size, anchor_tuple_size, sweep_diag_candidates)
         flush(stdout)
     end
+    if symbolic_report
+        init_symbolic_report!(n_workers)
+        init_symbolic_report2!(n_workers)
+        SYMBOLIC_REPORT_ENABLED[] = true
+        verbose && (@printf("  [symbolic-report] enabled — up to %d sample(s)/thread, 1- and 2-anchor reports run after the walk\n",
+                             symbolic_report_samples); flush(stdout))
+    end
 
     t_phase2_start = time()
     @sync for tid in 1:n_workers
@@ -718,6 +739,23 @@ function index_calculus_walk(G::Div2, T::Div2;
             n_cand = min(sweep_diag_candidates, length(fb))
             candidates = shuffle(fb)[1:n_cand]
             run_anchor_sweep_experiment(scratch_sweep, base_tuples, anchor_tuple_size, candidates, pt2idx)
+        end
+    end
+
+    # SYMBOLIC-REPORT: off the hot path, after all threads are done — see
+    # trial3_phi_general.jl's run_symbolic_report! docstring. F_POLY and p
+    # are the driver's own globals (see include-order comment at the top of
+    # this file), so this can be called straight from here.
+    if symbolic_report
+        verbose && (@printf("\n── Symbolic residual report (1 symbolic anchor) ─────────────────────\n"); flush(stdout))
+        run_symbolic_report!(F_POLY, p; max_per_thread=symbolic_report_samples)
+        verbose && (@printf("\n── Symbolic residual report (2 symbolic anchors) ────────────────────\n"); flush(stdout))
+        run_symbolic_report2!(F_POLY, p; max_per_thread=symbolic_report_samples)
+        if symbolic_crosscheck
+            verbose && (@printf("\n── Symbolic crosscheck (1 symbolic anchor, hard pass/fail) ──────────\n"); flush(stdout))
+            run_symbolic_crosscheck!(F_POLY, p; max_per_thread=symbolic_report_samples)
+            verbose && (@printf("\n── Symbolic crosscheck (2 symbolic anchors, hard pass/fail) ─────────\n"); flush(stdout))
+            run_symbolic_crosscheck2!(F_POLY, p; max_per_thread=symbolic_report_samples)
         end
     end
 
@@ -1165,6 +1203,24 @@ function parse_trial3_cli(args::Vector{String})
     #                        path this hooks into).
     #   --sweep-diag-candidates=M  candidate pool size per base tuple for
     #                        --sweep-diag (random sample of fb). Default 200.
+    #   --symbolic-report[=N]  enable the SYMBOLIC RESIDUAL REPORT (see
+    #                        trial3_phi_general.jl's "SYMBOLIC RESIDUAL REPORT"
+    #                        section and trial3_phi_symbolic.jl's PhiSymbolic
+    #                        module). Off by default (single Bool check on the
+    #                        hot path when disabled, same cost discipline as
+    #                        --phi-timing). Samples a bounded number of real
+    #                        (K, anchors, u0,u1,v0,v1) tuples per thread
+    #                        (default SYMBOLIC_REPORT_MAX_SAMPLES=8, override
+    #                        via the optional =N) live from the walk, then —
+    #                        once phase 2 finishes — runs PhiSymbolic's
+    #                        expensive F_p(t)/Ft2 rational-function arithmetic
+    #                        on the sampled tuples off the hot path and prints
+    #                        the symbolic residual (u_RS(x;t), v_RS(x;t)) for
+    #                        each, plus a concrete cross-check collapse at the
+    #                        real sampled anchor.
+    symbolic_report          = false
+    symbolic_report_samples  = 8    # per thread — mirrors SYMBOLIC_REPORT_MAX_SAMPLES's default
+    symbolic_crosscheck      = false
     phi_timing              = false
     sweep_diag               = 0    # --sweep-diag=N: 0 = disabled
     sweep_diag_candidates    = 200
@@ -1213,6 +1269,14 @@ function parse_trial3_cli(args::Vector{String})
             anchor_tuple_weight_decay < 1.0 && error("--anchor-tuple-weight-decay must be >= 1.0, got $anchor_tuple_weight_decay")
         elseif arg == "--phi-timing"
             phi_timing = true
+        elseif arg == "--symbolic-report"
+            symbolic_report = true
+        elseif startswith(arg, "--symbolic-report=")
+            symbolic_report = true
+            symbolic_report_samples = parse(Int, split(arg, "=", limit=2)[2])
+            symbolic_report_samples < 1 && error("--symbolic-report=N must be >= 1, got $symbolic_report_samples")
+        elseif arg == "--symbolic-crosscheck"
+            symbolic_crosscheck = true
         elseif startswith(arg, "--sweep-diag=")
             sweep_diag = parse(Int, split(arg, "=", limit=2)[2])
             sweep_diag < 0 && error("--sweep-diag must be >= 0, got $sweep_diag")
@@ -1229,6 +1293,7 @@ function parse_trial3_cli(args::Vector{String})
     # ThreadScratchpad{k} the walk can allocate.
     @assert anchor_tuple_size <= K_MAX "FATAL: --anchor-tuple-size=$anchor_tuple_size exceeds K_MAX=$K_MAX (trial3_config.jl). anchor_tuple_size is the ceiling for round-robin tuple lengths 1..anchor_tuple_size and cannot exceed the compile-time K_MAX. Lower --anchor-tuple-size or raise K_MAX. Refusing to proceed."
     sweep_diag > 0 && anchor_tuple_size < 2 && error("--sweep-diag=$sweep_diag requires --anchor-tuple-size >= 2 (K=1 never reaches step_phi_k!, which is what the collector hooks into). Got anchor_tuple_size=$anchor_tuple_size.")
+    symbolic_crosscheck && !symbolic_report && error("--symbolic-crosscheck requires --symbolic-report (it consumes the same sample buffers, populated only when symbolic_report is enabled).")
     return (fb_size=fb_size, enable_lp2=enable_lp2, enable_lp2_conj=enable_lp2_conj,
             max_lp2_nodes=max_lp2_nodes, max_lp2_conj_nodes=max_lp2_conj_nodes,
             amortized=amortized, use_cycle_union=use_cycle_union,
@@ -1239,7 +1304,9 @@ function parse_trial3_cli(args::Vector{String})
             random_fb=random_fb, anchor_tuple_size=anchor_tuple_size,
             anchor_tuple_weight_decay=anchor_tuple_weight_decay,
             phi_timing=phi_timing, sweep_diag=sweep_diag,
-            sweep_diag_candidates=sweep_diag_candidates)
+            sweep_diag_candidates=sweep_diag_candidates,
+            symbolic_report=symbolic_report, symbolic_report_samples=symbolic_report_samples,
+            symbolic_crosscheck=symbolic_crosscheck)
 end
 
 # ---------------------------------------------------------------------------
@@ -1370,7 +1437,10 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
                  anchor_tuple_weight_decay::Float64 = 2.0,
                  phi_timing         ::Bool  = false,
                  sweep_diag         ::Int   = 0,
-                 sweep_diag_candidates::Int = 200)
+                 sweep_diag_candidates::Int = 200,
+                 symbolic_report        ::Bool = false,
+                 symbolic_report_samples::Int  = 8,
+                 symbolic_crosscheck    ::Bool = false)
     t_main_start = time()
     println("="^70)
     println("  trial3: Markov-walk phi-relation index calculus")
@@ -1635,6 +1705,14 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
                     sweep_diag, anchor_tuple_size, anchor_tuple_size, sweep_diag_candidates)
             flush(stdout)
         end
+        if symbolic_report
+            init_symbolic_report!(n_workers_pre)
+            init_symbolic_report2!(n_workers_pre)
+            SYMBOLIC_REPORT_ENABLED[] = true
+            @printf("  [symbolic-report] enabled — up to %d sample(s)/thread, 1- and 2-anchor reports run after the walk\n",
+                    symbolic_report_samples)
+            flush(stdout)
+        end
 
         @printf("  [MEM] before phase2 walk:  RSS=%.1f MB  GC-live=%.1f MB\n",
                 Sys.maxrss()/1024^2, Base.gc_live_bytes()/1024^2)
@@ -1685,6 +1763,27 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
                 n_cand_pre = min(sweep_diag_candidates, length(fb_pre))
                 candidates_pre = shuffle(fb_pre)[1:n_cand_pre]
                 run_anchor_sweep_experiment(scratch_sweep_pre, base_tuples_pre, anchor_tuple_size, candidates_pre, pt2idx_pre)
+            end
+        end
+
+        # SYMBOLIC-REPORT: off the hot path, after all threads are done — see
+        # trial3_phi_general.jl's run_symbolic_report! docstring. F_POLY and p
+        # are the driver's own globals (see include-order comment above), so
+        # this can be called straight from here.
+        if symbolic_report
+            @printf("\n── Symbolic residual report (amortized β=0 walk, 1 symbolic anchor) ─\n")
+            flush(stdout)
+            run_symbolic_report!(F_POLY, p; max_per_thread=symbolic_report_samples)
+            @printf("\n── Symbolic residual report (amortized β=0 walk, 2 symbolic anchors) \n")
+            flush(stdout)
+            run_symbolic_report2!(F_POLY, p; max_per_thread=symbolic_report_samples)
+            if symbolic_crosscheck
+                @printf("\n── Symbolic crosscheck (amortized, 1 symbolic anchor, hard pass/fail) \n")
+                flush(stdout)
+                run_symbolic_crosscheck!(F_POLY, p; max_per_thread=symbolic_report_samples)
+                @printf("\n── Symbolic crosscheck (amortized, 2 symbolic anchors, hard pass/fail) \n")
+                flush(stdout)
+                run_symbolic_crosscheck2!(F_POLY, p; max_per_thread=symbolic_report_samples)
             end
         end
 
@@ -1851,7 +1950,10 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
                                   post_conj_stride=post_conj_stride,
                                   phi_timing=phi_timing,
                                   sweep_diag=sweep_diag,
-                                  sweep_diag_candidates=sweep_diag_candidates)
+                                  sweep_diag_candidates=sweep_diag_candidates,
+                                  symbolic_report=symbolic_report,
+                                  symbolic_report_samples=symbolic_report_samples,
+                                  symbolic_crosscheck=symbolic_crosscheck)
     t_walk_done = time() - t_walk
     k_rec = wres === nothing ? nothing : wres.k
 
@@ -1883,7 +1985,10 @@ function main2_from_argv()
           anchor_tuple_size=opts.anchor_tuple_size,
           anchor_tuple_weight_decay=opts.anchor_tuple_weight_decay,
           phi_timing=opts.phi_timing, sweep_diag=opts.sweep_diag,
-          sweep_diag_candidates=opts.sweep_diag_candidates)
+          sweep_diag_candidates=opts.sweep_diag_candidates,
+          symbolic_report=opts.symbolic_report,
+          symbolic_report_samples=opts.symbolic_report_samples,
+          symbolic_crosscheck=opts.symbolic_crosscheck)
 end
 
 if abspath(PROGRAM_FILE) == @__FILE__

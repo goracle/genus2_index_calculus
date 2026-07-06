@@ -395,6 +395,14 @@ function report_worker_progress(tid, elapsed, s::WorkerStats, rel_counter, rel_t
     # not per-thread — the underlying PHI_TIMING vector already sums every
     # thread's slot in print_phi_timing_report.
     tid == 2 && PHI_TIMING_ENABLED[] && print_phi_timing_report(label = "t=$(round(elapsed, digits=1))s")
+    # SYMBOLIC-REPORT: unlike PHI-TIMING above, run_symbolic_report! is NOT
+    # called from here — it needs F_POLY_ASC and p, which are the
+    # including driver's globals, not visible inside this file. Samples
+    # accumulate in the background via record_symbolic_sample! (see the
+    # hook at s.hits_total += 1 below); call
+    # run_symbolic_report!(F_POLY_ASC, p) from the driver whenever you want
+    # the report (e.g. after the walk finishes, or periodically from the
+    # same place that calls this function, which does have F_POLY in scope).
     flush(stdout)
 end
 
@@ -2234,6 +2242,26 @@ function phase2_worker(G               ::Div2,
         s.hits_total += 1
         steps_since_hit = 0
         last_hit_k      = k_cur
+
+        # SYMBOLIC-REPORT sampling: cheap, gated hook (see trial3_phi_general.jl's
+        # "SYMBOLIC RESIDUAL REPORT" section) that copies this step's
+        # (cur_anchors[1:k_cur], u0,u1,v0,v1) into a bounded per-thread buffer
+        # for later, off-hot-path analysis via run_symbolic_report! (treats
+        # the LAST anchor, cur_anchors[k_cur], as the one to make symbolic).
+        # No-op unless SYMBOLIC_REPORT_ENABLED[] is set — same cost discipline
+        # as PHI_TIMING_ENABLED[] elsewhere in this loop (one Ref{Bool} check).
+        record_symbolic_sample!(cur_anchors, k_cur, u0, u1, v0, v1)
+
+        # SYMBOLIC2-REPORT sampling: same cost discipline, one level up (see
+        # trial3_phi_general.jl's "SYMBOLIC2 RESIDUAL REPORT" section) --
+        # copies this step's (cur_anchors[1:k_cur], u0,u1,v0,v1) into a
+        # bounded per-thread buffer, treating the LAST TWO anchors
+        # (cur_anchors[k_cur-1], cur_anchors[k_cur]) as the ones to make
+        # symbolic. No-op unless SYMBOLIC_REPORT_ENABLED[] is set, and a
+        # further no-op below k_cur=2 (need two anchors to leave two
+        # symbolic) -- gated by the SAME flag as record_symbolic_sample!
+        # above, deliberately not a second independent toggle.
+        record_symbolic_sample2!(cur_anchors, k_cur, u0, u1, v0, v1)
 
         al     = alpha_cur
         be     = beta_cur

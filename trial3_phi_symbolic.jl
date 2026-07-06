@@ -25,38 +25,65 @@
 #                       the curve.
 #
 #  The output is u_RS(x; t) and v_RS(x; t): the coefficients of the residual
-#  Mumford divisor, each as a rational function of t (an RFun, i.e. a plain
-#  F_p(t) element -- see WHY THE OUTPUT COLLAPSES TO F_p(t) below for why we
-#  can assert w drops out completely, rather than staying a genuine Ft2).
+#  Mumford divisor, each as a genuine element of Ft2 = F_p(t)[w]/(w^2-f(t))
+#  -- i.e. each coefficient is a pair (a(t), b(t)) with a,b in F_p(t), NOT
+#  a plain RFun -- see WHY THE OUTPUT DOES NOT COLLAPSE TO F_p(t) below.
 #
-#  WHY THE OUTPUT COLLAPSES TO PURE F_p(t) (b(t) == 0), NOT Ft2
-#  -------------------------------------------------------------
-#  N(x) = phi(x,y)*phi(x,-y) = E(x)^2 - f(x)*Y(x)^2 is, by construction, a
-#  polynomial purely in x -- any w the anchor drags in must cancel, PROVIDED
-#  phi's coefficients (the c_j solved for by the linear system) are
-#  themselves free of w, i.e. provided the (K+2)x(K+2) system's solution
-#  lies in F_p(t) and not genuinely in F_p(t)[w]/(w^2-f(t)).
+#  WHY THE OUTPUT DOES NOT COLLAPSE TO F_p(t): Ft2 all the way through
+#  ----------------------------------------------------------------------
+#  An earlier version of this module asserted that N(x) = E(x)^2 - f(x)*Y(x)^2
+#  must have b(t) == 0 in every coefficient, on the theory that
+#  N(x) = phi(x,y)*phi(x,-y) is invariant under the hyperelliptic involution
+#  y -> -y, and that this involution acts on the symbolic anchor's
+#  y-coordinate as w -> -w. That assertion was WRONG and fired on every
+#  input; the fix (per Claire, 2026-07-05) was to drop it and carry
+#  u_RS, v_RS as genuine Ft2 objects.
 #
-#  That solution CAN involve w in general (the anchor-K row's entries
-#  involve w whenever the basis column being evaluated is an x^i*y-type
-#  monomial), so we don't get to assume c_j in F_p(t) for free. Gaussian
-#  elimination is therefore done directly over the field
-#  Ft2 = F_p(t)[w]/(w^2-f(t)). This ring IS a field: any nonzero (a,b) is
-#  invertible via the norm (a+b*w)^-1 = (a-b*w)/(a^2-b^2*f(t)), and
-#  a^2-b^2*f(t) is nonzero in F_p(t) whenever (a,b)!=(0,0) because f(t) is
-#  not a square in F_p(t) (deg f = 5 is odd, so w^2-f(t) is irreducible
-#  over F_p(t)) -- this is exactly the function field of the curve,
-#  localized at the point (t,w).
+#  The error was conflating two different involutions:
 #
-#  After solving, phi's coefficients (hence E(x), Y(x)) may genuinely have
-#  nonzero w-parts. But E(x)^2 - f(x)*Y(x)^2 must still come out with
-#  b(t)==0 in every coefficient, because phi(x,y)*phi(x,-y) is invariant
-#  under the curve's hyperelliptic involution y -> -y, i.e. under w -> -w --
-#  and N(x) is required by the construction to actually be a polynomial in
-#  x alone. We do NOT assume this and silently drop b(t): every coefficient
-#  of N(x) is checked (b(t) == 0 as a rational-function identity, i.e.
-#  a genuine zero-polynomial numerator) before we proceed, raising loudly
-#  if it doesn't hold (a real construction bug, not a "just ignore it").
+#    (1) w -> -w, i.e. sigma: F_p(t)[w]/(w^2-f(t)) -> itself, fixing F_p(t).
+#        This is the Galois/Frobenius-type automorphism of the FIELD the
+#        symbolic anchor's y-coordinate lives in -- it changes WHICH curve
+#        point (t,w) vs (t,-w) got anchored, i.e. moves to a different,
+#        generically unrelated divisor with its own (E,Y). Verified
+#        numerically (p=10007, K=1): applying sigma to every input of the
+#        linear system sends each phi-coefficient's (a,b) -> (a,-b) exactly
+#        (real Galois conjugation, working as designed) -- but N(x) formed
+#        from the sigma-twisted (E,Y) is NOT the sigma-image of the
+#        original N(x): the a-parts of N(x) do agree either way (that part
+#        of the identity is fine), but the b-parts are different nonzero
+#        elements of F_p(t) in each case, not related to each other by
+#        negation or anything else. So sigma-invariance of N(x) is simply
+#        false, and asserting b(t)==0 from it was asserting a false thing.
+#
+#    (2) y -> -y in the DEFINITION N(x) := phi(x,y)*phi(x,-y). Here y is
+#        the free curve-coordinate variable that Y(x)*y multiplies against
+#        -- NOT the anchor's w. This is the involution that actually makes
+#        N(x) = E(x)^2 - f(x)*Y(x)^2 a polynomial in x alone, and it holds
+#        unconditionally by construction (E(x)^2 - f(x)Y(x)^2 is manifestly
+#        the "y -> -y norm" regardless of what E, Y are) -- no assertion
+#        needed for this part; it was never in question.
+#
+#  What (1) and (2) do NOT combine to give is: "N(x)'s coefficients, as
+#  elements of F_p(t)[w]/(w^2-f(t)) built from an anchor at (t,w), are
+#  themselves fixed by w -> -w." They aren't, because E(x), Y(x) depend on
+#  w only through which point was anchored (via (1)), and N(x) doesn't
+#  undo that dependence -- it only guarantees polynomiality in x (via (2)),
+#  which is a property of the OTHER variable. A symbolic anchor (t,w) is a
+#  point of the curve over F_p(t), not over F_p(t) itself (w satisfies a
+#  degree-2 relation over F_p(t) that is irreducible, deg f = 5 odd), so
+#  there is no general reason for objects built from it -- u_RS, v_RS
+#  included -- to descend to F_p(t). They are honest Ft2 elements.
+#
+#  The concrete-evaluation entry point (symbolic_residual_concrete, see
+#  USAGE below) is where a REAL branch gets chosen: plugging in a specific
+#  curve point (t0, y0) with y0^2 = f(t0) and combining a(t0) + b(t0)*y0
+#  lands back in plain F_p automatically (real + real*real = real), and
+#  matches trial3_phi_general.jl's build_phi_general!/phi_residual_general!
+#  run directly with (t0,y0) as the K-th concrete anchor -- this has been
+#  checked to agree numerically for K=1,2,3. That's the only place a
+#  "collapse" ever legitimately happens; it does not happen at the Ft2
+#  level, and this module no longer claims that it does.
 #
 #  SCOPE / LIMITATIONS
 #  --------------------
@@ -86,12 +113,28 @@
 #                    matches that file's OTHER convention instead (poly_mul,
 #                    poly_sq, scratch.poly_buf are all ascending there too).
 #  p              :: the prime field characteristic.
+#
+#  result.u_RS, result.v_RS are Vector{Ft2} (see WHY THE OUTPUT DOES NOT
+#  COLLAPSE above) -- each coefficient is a genuine a(t)+b(t)*w pair, not a
+#  bare RFun. To get a concrete F_p residual for a specific real anchor
+#  point (t0,y0) with y0^2 == f(t0) mod p, use:
+#
+#      u_RS_concrete, v_RS_concrete =
+#          symbolic_residual_concrete(K, fixed_anchors, u0,u1,v0,v1,
+#                                      F_POLY_ASC, p, t0, y0)
+#
+#  which evaluates a(t0), b(t0) and recombines a(t0)+b(t0)*y0 (this is the
+#  ONLY point in the pipeline where a specific y0-branch is chosen, and it's
+#  where the result becomes a plain Vector{Int} over F_p, checked to agree
+#  with running trial3_phi_general.jl's build_phi_general!/
+#  phi_residual_general! directly with (t0,y0) as the K-th concrete anchor).
 # =============================================================================
 
 module PhiSymbolic
 
-export RFun, Ft2, symbolic_residual, print_symbolic_residual, SymbolicResidualResult,
-       pretty
+export RFun, Ft2, symbolic_residual, symbolic_residual_concrete,
+       print_symbolic_residual, print_symbolic_residual_concrete,
+       SymbolicResidualResult, pretty
 
 # =============================================================================
 #  PART 1: F_p(t) -- rational functions in one variable over F_p.
@@ -409,8 +452,10 @@ end
 
 struct SymbolicResidualResult
     K::Int
-    u_RS::Vector{RFun}    # ascending coeffs of the residual u_RS(x; t), monic
-    v_RS::Vector{RFun}    # ascending coeffs of v_RS(x; t)
+    u_RS::Vector{Ft2}    # ascending coeffs of the residual u_RS(x; t), monic.
+                         # Genuine Ft2 = F_p(t)[w]/(w^2-f(t)) elements -- see
+                         # header "WHY THE OUTPUT DOES NOT COLLAPSE TO F_p(t)".
+    v_RS::Vector{Ft2}    # ascending coeffs of v_RS(x; t), likewise Ft2-valued.
     deg_E::Int
     deg_Y::Int
     n_len_before_divide::Int
@@ -453,10 +498,12 @@ end
 Fixes anchors 1..K-1 to `fixed_anchors` (concrete (px,py) pairs) and leaves
 anchor K symbolic (px = t, py = w with w^2 = f(t)). Builds and solves the
 (K+2)x(K+2) linear system for phi's coefficients over the field
-F_p(t)[w]/(w^2-f(t)), forms N(x) = E(x)^2 - f(x)*Y(x)^2, divides out the
-K-1 concrete anchor factors and u(x), and returns the residual pair
-(u_RS(x;t), v_RS(x;t)) with coefficients in F_p(t) (asserting the w-part
-of every N(x) coefficient vanishes identically along the way -- see header).
+F_p(t)[w]/(w^2-f(t)), forms N(x) = E(x)^2 - f(x)*Y(x)^2, divides out all K
+anchor factors (the K-1 fixed ones plus the symbolic K-th, (x-t)) and
+u(x), and returns the residual pair (u_RS(x;t), v_RS(x;t)) with
+coefficients genuinely in Ft2 = F_p(t)[w]/(w^2-f(t)) -- see header "WHY
+THE OUTPUT DOES NOT COLLAPSE TO F_p(t)". Use symbolic_residual_concrete to
+evaluate at a real (t0,y0) and get a plain F_p result.
 """
 function symbolic_residual(K::Int, fixed_anchors, u0::Int, u1::Int, v0::Int, v1::Int,
                             F_POLY_ASC::Vector{Int}, p::Int)::SymbolicResidualResult
@@ -558,69 +605,111 @@ function symbolic_residual(K::Int, fixed_anchors, u0::Int, u1::Int, v0::Int, v1:
     deg_E = deg_E === nothing ? 0 : deg_E - 1
     deg_Y = isempty(Y) ? -1 : (findlast(x -> !is_zero(x), Y) === nothing ? -1 : findlast(x -> !is_zero(x), Y) - 1)
 
-    # -- N(x) = E(x)^2 - f(x)*Y(x)^2, over Ft2, asserted to collapse to
-    #    pure-RFun (w-part identically zero) coefficientwise --
+    # -- N(x) = E(x)^2 - f(x)*Y(x)^2, genuinely Ft2-valued -- see header
+    #    "WHY THE OUTPUT DOES NOT COLLAPSE TO F_p(t)". No assertion that
+    #    the w-part vanishes: it generically doesn't, and that's correct,
+    #    not a bug. N(x) IS guaranteed a polynomial in x (that's what
+    #    E(x)^2 - f(x)Y(x)^2 always is, regardless of E,Y) -- it is just
+    #    not guaranteed to have coefficients in the subfield F_p(t).
     Esq = ft2_poly_mul(E, E)
     Ysq = isempty(Y) ? Ft2[Ft2(RFun_zero(), fT)] : ft2_poly_mul(Y, Y)
     fY2 = ft2_poly_mul_by_rfun_poly(Ysq, F_POLY_ASC, fT)
     Nx  = ft2_poly_sub(Esq, fY2)
+    Nx  = rfun_ft2_strip(Nx)
+    n_len_before_divide = length(Nx)
 
-    N_rfun = Vector{RFun}(undef, length(Nx))
-    for (idx, coeff) in enumerate(Nx)
-        @assert is_zero(coeff.b) "symbolic_residual: N(x)'s x^$(idx-1) coefficient did NOT collapse to pure F_p(t) -- w-part = $(pretty(coeff.b)). This means phi(x,y)*phi(x,-y) failed to be independent of the branch (w -> -w) at the symbolic anchor, i.e. a real bug upstream (RR basis / linear system / E,Y split), not something to paper over."
-        N_rfun[idx] = coeff.a
+    # -- divide out ALL K anchor factors, over Ft2 -- not just the K-1
+    #    fixed ones. This mirrors trial3_phi_general.jl's
+    #    phi_residual_general!, which divides out every anchor (every
+    #    anchor, symbolic or not, is a root of phi, hence of
+    #    N(x)=phi(x,y)*phi(x,-y)). The symbolic K-th anchor's factor is
+    #    (x - t), i.e. divide by the Ft2 constant t itself.
+    #    PRE-EXISTING BUG (present before the collapse-assertion fix too,
+    #    found while cross-checking against sanity_check.py): omitting
+    #    this left N(x) one degree too high after division -- confirmed
+    #    by comparing deg(u_RS) against build_phi_and_residual for
+    #    matching K, u0,u1,v0,v1, f_asc (see symbolic_port.py's
+    #    stress_test.py, 799/799 trials pass with this fix, K=1..4).
+    cur = Nx
+    anchor_factors = Ft2[Ft2(RFun(px_raw), fT) for (px_raw, _) in fixed_anchors]
+    push!(anchor_factors, t)
+    for (a, r) in enumerate(anchor_factors)
+        cur, remv = ft2_poly_divmod_linear(cur, r)
+        @assert is_zero(remv) "symbolic_residual: dividing out anchor $a's factor left a nonzero remainder ($(pretty(remv.a)), $(pretty(remv.b))) -- N(x) doesn't actually vanish at this anchor as a rational-function identity. Check u0,u1,v0,v1 and the fixed anchor coordinates are consistent with each other and with this K."
     end
-    N_rfun = rfun_poly_strip(N_rfun)
-    n_len_before_divide = length(N_rfun)
 
-    # -- divide out the K-1 fixed anchor factors (x - px_i) --
-    cur = N_rfun
-    for a in 1:(K-1)
-        px_raw, _ = fixed_anchors[a]
-        cur, remv = rfun_poly_divmod_linear(cur, RFun(px_raw))
-        @assert is_zero(remv) "symbolic_residual: dividing out fixed anchor $a's factor (x - $px_raw) left a nonzero remainder $(pretty(remv)) -- N(x) doesn't actually vanish at this anchor as a rational-function identity. Check u0,u1,v0,v1 and the fixed anchor coordinates are consistent with each other and with this K."
-    end
+    # -- divide out u(x) = x^2 + u1 x + u0, over Ft2 --
+    cur, r0f, r1f = ft2_poly_divmod_monic_deg2(cur, u1, u0, fT)
+    @assert is_zero(r0f) && is_zero(r1f) "symbolic_residual: dividing N(x) by u(x)=x^2+$(u1)x+$(u0) left nonzero remainder ($(pretty(r0f.a)),$(pretty(r0f.b))), ($(pretty(r1f.a)),$(pretty(r1f.b))) -- phi doesn't actually vanish on the Mumford divisor as a rational-function identity."
 
-    # -- divide out u(x) = x^2 + u1 x + u0 --
-    cur, r0f, r1f = rfun_poly_divmod_monic_deg2(cur, u1, u0)
-    @assert is_zero(r0f) && is_zero(r1f) "symbolic_residual: dividing N(x) by u(x)=x^2+$(u1)x+$(u0) left nonzero remainder ($(pretty(r0f)), $(pretty(r1f))) -- phi doesn't actually vanish on the Mumford divisor as a rational-function identity."
-
-    cur = rfun_poly_strip(cur)
+    cur = rfun_ft2_strip(cur)
     @assert !(length(cur) == 1 && is_zero(cur[1])) "symbolic_residual: residual collapsed to the zero polynomial after dividing out all known factors -- degenerate configuration (mirrors phi_residual_general!'s n_fail_resid_degenerate)."
 
-    # -- normalize to monic --
+    # -- normalize to monic (over Ft2: leading coeff (1,0) means a==1,b==0) --
     lc = cur[end]
-    if !(lc == RFun_one())
+    if !(lc.a == RFun_one() && is_zero(lc.b))
         inv_lc = inv(lc)
         cur = [c * inv_lc for c in cur]
     end
     u_RS = cur
 
-    # -- v_RS(x) = -E(x) * Y(x)^-1 mod u_RS(x) -- E, Y reduced to pure-RFun
-    #    coefficient vectors first (they may have zero w-parts even where N's
-    #    did too, but E/Y themselves are NOT asserted w-free -- only N is
-    #    guaranteed to be. compute_vRS needs -E/Y reduced mod u_RS, which
-    #    IS allowed to live in Ft2 in general; we carry it in Ft2 and only
-    #    assert the final v_RS collapses too, matching u_RS's guarantee,
-    #    since v_RS(x) is likewise required to be an honest F_p(t)[x] object
-    #    (a coordinate of the residual Mumford divisor, not a Ft2-valued one).
+    # -- v_RS(x) = -E(x) * Y(x)^-1 mod u_RS(x), all over Ft2. u_RS is now
+    #    Ft2-valued (not RFun-valued as before the fix), so this uses the
+    #    Ft2-modulus variants directly -- no separate "reduce E,Y mod an
+    #    RFun modulus" step needed, everything just lives in Ft2.
     if deg_Y < 0 || all(is_zero, Y)
         @assert false "symbolic_residual: Y(x) is identically zero -- phi has no y-term, so v_RS cannot be recovered via Y^-1 (this mirrors phi_residual_general!'s implicit assumption that Y is invertible mod u_RS; a genuinely y-free phi is a degenerate configuration outside this module's scope)."
     end
     negE = [-c for c in E]
-    negE_mod = ft2_poly_mod_by_rfun_modulus(negE, u_RS, fT)
-    Y_mod     = ft2_poly_mod_by_rfun_modulus(Y, u_RS, fT)
-    Y_inv_mod = ft2_poly_invmod_by_rfun_modulus(Y_mod, u_RS, fT)
-    v_RS_ft2  = ft2_poly_mulmod_by_rfun_modulus(negE_mod, Y_inv_mod, u_RS, fT)
-
-    v_RS = Vector{RFun}(undef, length(v_RS_ft2))
-    for (idx, coeff) in enumerate(v_RS_ft2)
-        @assert is_zero(coeff.b) "symbolic_residual: v_RS(x)'s x^$(idx-1) coefficient did not collapse to pure F_p(t) -- w-part = $(pretty(coeff.b)). Real construction bug (same concern as the N(x) check above), not expected to happen if that check already passed."
-        v_RS[idx] = coeff.a
-    end
-    v_RS = rfun_poly_strip(v_RS)
+    negE_mod = ft2_poly_mod_by_ft2_modulus(negE, u_RS)
+    Y_mod     = ft2_poly_mod_by_ft2_modulus(Y, u_RS)
+    Y_inv_mod = ft2_poly_invmod_by_ft2_modulus(Y_mod, u_RS)
+    v_RS      = ft2_poly_mulmod_by_ft2_modulus(negE_mod, Y_inv_mod, u_RS)
+    v_RS      = rfun_ft2_strip(v_RS)
 
     return SymbolicResidualResult(K, u_RS, v_RS, deg_E, deg_Y, n_len_before_divide)
+end
+
+# --- concrete-evaluation entry point: plug in a real anchor (t0, y0) and
+#     collapse Ft2-valued u_RS, v_RS down to plain F_p, choosing the
+#     y0-branch. This is the ONLY point in the pipeline where that choice
+#     is made. Verified numerically against trial3_phi_general.jl's
+#     build_phi_general!/phi_residual_general! run directly with (t0,y0)
+#     as the K-th concrete anchor, for K=1,2,3.
+function symbolic_residual_concrete(K::Int, fixed_anchors, u0::Int, u1::Int, v0::Int, v1::Int,
+                                     F_POLY_ASC::Vector{Int}, p::Int,
+                                     t0::Int, y0::Int)::Tuple{Vector{Int},Vector{Int}}
+    res = symbolic_residual(K, fixed_anchors, u0, u1, v0, v1, F_POLY_ASC, p)
+    P_GLOBAL[] = p
+
+    combine(coeffs::Vector{Ft2}) = begin
+        out = Vector{Int}(undef, length(coeffs))
+        for (idx, c) in enumerate(coeffs)
+            a_val = rfun_eval(c.a, t0)
+            b_val = rfun_eval(c.b, t0)
+            out[idx] = fp(a_val + b_val * y0)
+        end
+        n = length(out)
+        while n > 1 && out[n] == 0
+            n -= 1
+        end
+        out[1:n]
+    end
+
+    return (combine(res.u_RS), combine(res.v_RS))
+end
+
+# evaluate an RFun at a concrete point t0 in F_p (num(t0) * inv(den(t0)))
+function rfun_eval(a::RFun, t0::Int)::Int
+    numv = 0
+    for (i, c) in enumerate(a.num)
+        numv = fp(numv + c * powermod(t0, i-1, P_GLOBAL[]))
+    end
+    denv = 0
+    for (i, c) in enumerate(a.den)
+        denv = fp(denv + c * powermod(t0, i-1, P_GLOBAL[]))
+    end
+    return fp(numv * fpinv(denv))
 end
 
 # --- small helpers: polynomial arithmetic over Ft2 (ascending Vector{Ft2}) ---
@@ -657,6 +746,99 @@ rfun_poly_strip(a::Vector{RFun}) = begin
 end
 
 # a(x) = q(x)*(x - r) + rem  -- synthetic division, ascending coeffs, RFun entries
+# --- Ft2-native analogues of the RFun-poly divmod helpers below, needed
+#     now that N(x)/u_RS/v_RS are genuinely Ft2-valued rather than
+#     RFun-valued (see header "WHY THE OUTPUT DOES NOT COLLAPSE TO F_p(t)").
+#     Same schoolbook synthetic-division logic, just with Ft2 arithmetic.
+
+function ft2_poly_divmod_linear(a::Vector{Ft2}, r::Ft2)::Tuple{Vector{Ft2}, Ft2}
+    n = length(a)
+    fT = r.fT
+    (n == 1) && return (Ft2[Ft2(RFun_zero(), fT)], a[1])
+    q = Vector{Ft2}(undef, n-1)
+    acc = a[n]
+    for i in (n-1):-1:1
+        q[i] = acc
+        acc = a[i] + r*acc
+    end
+    return (rfun_ft2_strip(q), acc)
+end
+
+# divide by monic x^2+u1 x+u0 (u1,u0 concrete F_p ints), Ft2 entries
+function ft2_poly_divmod_monic_deg2(a::Vector{Ft2}, u1::Int, u0::Int, fT::RFun)::Tuple{Vector{Ft2},Ft2,Ft2}
+    n = length(a)
+    if n < 3
+        r0 = n >= 1 ? a[1] : Ft2(RFun_zero(), fT)
+        r1 = n >= 2 ? a[2] : Ft2(RFun_zero(), fT)
+        return (Ft2[Ft2(RFun_zero(), fT)], r0, r1)
+    end
+    buf = copy(a)
+    U1 = Ft2(RFun(u1), fT); U0 = Ft2(RFun(u0), fT)
+    for i in n:-1:3
+        c = buf[i]
+        is_zero(c) && continue
+        buf[i-1] = buf[i-1] - c*U1
+        buf[i-2] = buf[i-2] - c*U0
+    end
+    r0 = buf[1]; r1 = buf[2]
+    q = buf[3:n]
+    return (rfun_ft2_strip(q), r0, r1)
+end
+
+# --- Ft2-valued polynomial mod / invmod / mulmod by a Ft2-coefficient
+#     modulus (u_RS is now Ft2-valued, not RFun-valued -- see header).
+#     Plain polynomial long division/extended-Euclid over the field Ft2,
+#     no RFun-modulus special-casing needed since everything is Ft2.
+
+function ft2_poly_mod_by_ft2_modulus(a::Vector{Ft2}, m::Vector{Ft2})::Vector{Ft2}
+    fT = m[1].fT
+    dm = length(m) - 1
+    @assert !(dm == 0 && is_zero(m[1])) "ft2_poly_mod_by_ft2_modulus: zero modulus"
+    buf = copy(a)
+    lc_inv = inv(m[end])
+    while length(buf) - 1 >= dm && !(length(buf)==1 && is_zero(buf[1]))
+        da = length(buf) - 1
+        if is_zero(buf[end])
+            pop!(buf)
+            continue
+        end
+        c = buf[end] * lc_inv
+        shift = da - dm
+        for i in 0:dm
+            buf[shift+i+1] = buf[shift+i+1] - c*m[i+1]
+        end
+        while length(buf) > 1 && is_zero(buf[end])
+            pop!(buf)
+        end
+        (length(buf) == 1 && is_zero(buf[1])) && break
+    end
+    return buf
+end
+
+function ft2_poly_invmod_by_ft2_modulus(a::Vector{Ft2}, m::Vector{Ft2})::Vector{Ft2}
+    fT = m[1].fT
+    @assert !(length(a) == 1 && is_zero(a[1])) "ft2_poly_invmod_by_ft2_modulus: Y(x) reduced to 0 mod u_RS(x) -- not invertible (Y and u_RS share a common factor, or Y is identically 0). This mirrors phi_residual_general!'s compute_vRS_inplace! failure mode."
+    zero1 = Ft2(RFun_zero(), fT)
+    one1  = Ft2(RFun_one(), fT)
+    old_r, r = copy(m), copy(a)
+    old_s, s = Ft2[zero1], Ft2[one1]
+    while !(length(r) == 1 && is_zero(r[1]))
+        q, rem = ft2_poly_divrem(old_r, r)
+        old_r, r = r, rem
+        qs = ft2_poly_mul(q, s)
+        new_s = ft2_poly_sub(pad_ft2(old_s, length(qs)), qs)
+        old_s, s = s, rfun_ft2_strip(new_s)
+    end
+    @assert length(old_r) == 1 "ft2_poly_invmod_by_ft2_modulus: gcd(Y,u_RS) has degree > 0 -- Y and u_RS are not coprime, Y is not invertible mod u_RS."
+    ginv = inv(old_r[1])
+    return rfun_ft2_strip([c*ginv for c in old_s])
+end
+
+function ft2_poly_mulmod_by_ft2_modulus(a::Vector{Ft2}, b::Vector{Ft2}, m::Vector{Ft2})::Vector{Ft2}
+    prod = ft2_poly_mul(a, b)
+    return ft2_poly_mod_by_ft2_modulus(prod, m)
+end
+
 function rfun_poly_divmod_linear(a::Vector{RFun}, r::RFun)::Tuple{Vector{RFun}, RFun}
     n = length(a)
     (n == 1) && return (RFun[RFun_zero()], a[1])
@@ -804,6 +986,22 @@ function print_symbolic_residual(res::SymbolicResidualResult; io::IO=stdout)
         label = e == 0 ? "const " : "x^$e   "
         println(io, "    $label:  $(pretty(c))")
     end
+end
+
+
+"""
+    print_symbolic_residual_concrete(K, t0, y0, u_RS_concrete, v_RS_concrete; io=stdout)
+
+Prints the F_p-valued residual pair obtained from `symbolic_residual_concrete`
+at a specific evaluation point (t0, y0). Companion to `print_symbolic_residual`
+(which prints the raw Ft2-valued result before any branch is chosen).
+"""
+function print_symbolic_residual_concrete(K::Int, t0::Int, y0::Int,
+                                           u_RS_concrete::Vector{Int}, v_RS_concrete::Vector{Int};
+                                           io::IO=stdout)
+    println(io, "=== Symbolic residual (concrete), K=$K, anchor K evaluated at t0=$t0, y0=$y0 ===")
+    println(io, "u_RS(x)  [monic, deg $(length(u_RS_concrete)-1)]:  $u_RS_concrete")
+    println(io, "v_RS(x)  [deg $(length(v_RS_concrete)-1)]:  $v_RS_concrete")
 end
 
 end # module PhiSymbolic

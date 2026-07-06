@@ -5190,3 +5190,472 @@ end
     end
     return ex
 end
+
+# =============================================================================
+#  SYMBOLIC RESIDUAL REPORT -- wiring into trial3_phi_symbolic.jl
+#  ---------------------------------------------------------------------------
+#  Companion to the PHI_TIMING_ENABLED[] instrumentation above. Same shape,
+#  different purpose: instead of timing successful phi builds, this samples
+#  a bounded number of them (per thread) so the SYMBOLIC (last-anchor-free)
+#  construction in trial3_phi_symbolic.jl can be run on real, concrete
+#  (anchors, u0,u1,v0,v1) tuples pulled straight out of the live walk,
+#  producing a human-readable report of what the residual Mumford divisor
+#  looks like as a function of the last anchor's x-coordinate, symbolically.
+#
+#  COST DISCIPLINE (same rationale as PHI_TIMING_ENABLED[]): the walk's
+#  inner loop (phase2_worker) is zero-allocation by design. PhiSymbolic's
+#  RFun/Ft2 arithmetic is NOT zero-allocation (rational functions over
+#  F_p(t) with growing-degree polynomial num/den) and must never run on
+#  every hit. So this is split in two:
+#
+#    1. record_symbolic_sample! -- called from the hot loop, gated by
+#       SYMBOLIC_REPORT_ENABLED[] (default false, like PHI_TIMING_ENABLED[]).
+#       Cost when disabled: one branch on a Ref{Bool}, nothing else -- same
+#       as every other PHI_TIMING_ENABLED[] check already in this file.
+#       When enabled, cost is a bounded-size copy of (K, anchors, u0,u1,v0,v1)
+#       into a per-thread ring buffer (capped at SYMBOLIC_REPORT_MAX_SAMPLES)
+#       -- still cheap, still no RFun/Ft2 arithmetic.
+#
+#    2. run_symbolic_report! -- NOT called from the hot loop. Call this from
+#       the driver (e.g. alongside print_phi_timing_report's periodic call,
+#       or once at the end of a run) to actually invoke
+#       PhiSymbolic.symbolic_residual on the sampled tuples and print the
+#       result. This is where the expensive rational-function arithmetic
+#       happens, entirely off the walk's critical path.
+#
+#  Requires PhiSymbolic (trial3_phi_symbolic.jl) to be `include`d by the
+#  same driver before run_symbolic_report! is called; record_symbolic_sample!
+#  itself has no dependency on PhiSymbolic (it only copies plain Ints), so
+#  the hot-path file doesn't need PhiSymbolic loaded just to build/run.
+# =============================================================================
+
+const SYMBOLIC_REPORT_ENABLED    = Ref(false)
+const SYMBOLIC_REPORT_MAX_SAMPLES = 8   # per thread -- small, since each one
+                                          # drives a full PhiSymbolic solve later
+
+# One sampled walk-step, cheap to copy (all plain Int / small tuples --
+# NO RFun/Ft2 objects are constructed on the hot path).
+struct SymbolicSample
+    K              ::Int
+    fixed_anchors  ::Vector{NTuple{2,Int}}   # length K-1: anchors[1:K-1]
+    last_anchor    ::NTuple{2,Int}           # anchors[K] -- the one this
+                                              # sample will later treat as
+                                              # symbolic (its px becomes t)
+    u0::Int; u1::Int; v0::Int; v1::Int
+end
+
+const SYMBOLIC_SAMPLES = Ref{Vector{Vector{SymbolicSample}}}(Vector{SymbolicSample}[])
+
+function init_symbolic_report!(nthreads::Int = Threads.nthreads())
+    SYMBOLIC_SAMPLES[] = [SymbolicSample[] for _ in 1:nthreads]
+    return nothing
+end
+
+@inline function _symbolic_samples_for_thread()::Vector{SymbolicSample}
+    tid = Threads.threadid()
+    if isempty(SYMBOLIC_SAMPLES[]) || tid > length(SYMBOLIC_SAMPLES[])
+        init_symbolic_report!(max(tid, Threads.nthreads()))
+    end
+    @inbounds SYMBOLIC_SAMPLES[][tid]
+end
+
+"""
+    record_symbolic_sample!(anchors, k_cur, u0, u1, v0, v1)
+
+Cheap hot-path hook: copies this step's (anchors[1:k_cur], u0,u1,v0,v1) into
+a bounded per-thread sample buffer, treating the LAST anchor (anchors[k_cur])
+as the one that will be made symbolic later by run_symbolic_report!. No-op
+(single Ref{Bool} check) unless SYMBOLIC_REPORT_ENABLED[] is set AND this
+thread's buffer hasn't yet reached SYMBOLIC_REPORT_MAX_SAMPLES -- after that
+it's also a no-op, so a long-running walk doesn't grow this unboundedly.
+
+`anchors` may be any indexable container of (Int,Int) pairs at least
+`k_cur` long (an NTuple{k_cur,...} from the hot loop, or a Vector) --
+only anchors[1:k_cur] are read.
+"""
+@inline function record_symbolic_sample!(anchors, k_cur::Int,
+                                          u0::Int, u1::Int, v0::Int, v1::Int)
+    SYMBOLIC_REPORT_ENABLED[] || return nothing
+    buf = _symbolic_samples_for_thread()
+    length(buf) >= SYMBOLIC_REPORT_MAX_SAMPLES && return nothing
+    fixed = NTuple{2,Int}[(anchors[i][1], anchors[i][2]) for i in 1:(k_cur-1)]
+    last_anchor = (anchors[k_cur][1], anchors[k_cur][2])
+    push!(buf, SymbolicSample(k_cur, fixed, last_anchor, u0, u1, v0, v1))
+    return nothing
+end
+
+"""
+    run_symbolic_report!(F_POLY_ASC, p; io=stdout, max_per_thread=typemax(Int))
+
+NOT for the hot loop. Runs PhiSymbolic.symbolic_residual on every sampled
+(K, fixed_anchors, u0,u1,v0,v1) tuple recorded so far via
+record_symbolic_sample!, printing each result (the Ft2-valued residual
+u_RS(x;t), v_RS(x;t), see trial3_phi_symbolic.jl's header) plus, since the
+sample also carries the REAL last anchor's (px,py), the corresponding
+concrete collapse via symbolic_residual_concrete for cross-checking --
+the concrete result should match phi_residual_general! having been run
+directly on that same (anchors,u0,u1,v0,v1) live-walk tuple, since that's
+literally where it came from.
+
+F_POLY_ASC must be F_POLY in ASCENDING order (trial3_phi_symbolic.jl's
+convention) -- if the including driver's F_POLY global is already
+ascending (as build_N_inplace! assumes), pass it straight through.
+
+Requires `using .PhiSymbolic` (or equivalent) to already be in scope at
+the call site -- this function calls PhiSymbolic.symbolic_residual /
+PhiSymbolic.symbolic_residual_concrete / PhiSymbolic.print_symbolic_residual
+/ PhiSymbolic.print_symbolic_residual_concrete, but does not itself
+`using` or `import` PhiSymbolic, so trial3_phi_general.jl has no hard
+dependency on trial3_phi_symbolic.jl merely for building/running the walk.
+"""
+function run_symbolic_report!(F_POLY_ASC::Vector{Int}, p::Int;
+                               io::IO=stdout, max_per_thread::Int=typemax(Int))
+    isempty(SYMBOLIC_SAMPLES[]) && (println(io, "[SYMBOLIC-REPORT] no samples recorded -- was SYMBOLIC_REPORT_ENABLED[] set before the walk ran?"); return nothing)
+
+    n_printed = 0
+    for (tid, buf) in enumerate(SYMBOLIC_SAMPLES[])
+        for (i, samp) in enumerate(buf)
+            i > max_per_thread && break
+            println(io, "\n### thread $tid, sample $i: K=$(samp.K), last anchor (symbolic) = $(samp.last_anchor), u0,u1=$(samp.u0),$(samp.u1) v0,v1=$(samp.v0),$(samp.v1) ###")
+            try
+                res = PhiSymbolic.symbolic_residual(samp.K, samp.fixed_anchors,
+                                                     samp.u0, samp.u1, samp.v0, samp.v1,
+                                                     F_POLY_ASC, p)
+                PhiSymbolic.print_symbolic_residual(res; io=io)
+
+                t0, y0 = samp.last_anchor
+                u_c, v_c = PhiSymbolic.symbolic_residual_concrete(samp.K, samp.fixed_anchors,
+                                                                   samp.u0, samp.u1, samp.v0, samp.v1,
+                                                                   F_POLY_ASC, p, t0, y0)
+                PhiSymbolic.print_symbolic_residual_concrete(samp.K, t0, y0, u_c, v_c; io=io)
+            catch e
+                println(io, "  [SYMBOLIC-REPORT] sample failed: $e")
+            end
+            n_printed += 1
+        end
+    end
+    println(io, "\n[SYMBOLIC-REPORT] printed $n_printed sample(s).")
+    return nothing
+end
+
+function reset_symbolic_report!()
+    for buf in SYMBOLIC_SAMPLES[]
+        empty!(buf)
+    end
+    return nothing
+end
+
+# =============================================================================
+#  SYMBOLIC2 RESIDUAL REPORT -- wiring into trial3_phi_symbolic2.jl
+#  ---------------------------------------------------------------------------
+#  Exact same shape as the "SYMBOLIC RESIDUAL REPORT" section above, one
+#  level up: trial3_phi_symbolic2.jl leaves the LAST TWO anchors (K-1, K)
+#  symbolic instead of just the last one. record_symbolic_sample2! is called
+#  from the same hot-loop call site as record_symbolic_sample! (see
+#  trial3_phase2.jl, right after the record_symbolic_sample! call), gated by
+#  the SAME SYMBOLIC_REPORT_ENABLED[] flag -- there is deliberately no second
+#  flag to flip, since both samplers are equally cheap (bounded Int copies)
+#  and a driver wanting one almost always wants the other too.
+#
+#  Requires PhiSymbolic2 (trial3_phi_symbolic2.jl) to be `include`d by the
+#  same driver before run_symbolic_report2!/run_symbolic_crosscheck2! are
+#  called -- same non-dependency discipline as PhiSymbolic above.
+# =============================================================================
+
+# One sampled walk-step for the two-symbolic-anchor case. k_cur must be >= 2
+# for this to mean anything (need two anchors to make the last two of them
+# symbolic) -- record_symbolic_sample2! below is a no-op for k_cur < 2.
+struct SymbolicSample2
+    K              ::Int
+    fixed_anchors  ::Vector{NTuple{2,Int}}   # length K-2: anchors[1:K-2]
+    anchor_Km1     ::NTuple{2,Int}           # anchors[K-1] -- symbolic anchor #1 (becomes (t1,w1))
+    anchor_K       ::NTuple{2,Int}           # anchors[K]   -- symbolic anchor #2 (becomes (t2,w2))
+    u0::Int; u1::Int; v0::Int; v1::Int
+end
+
+const SYMBOLIC_SAMPLES2 = Ref{Vector{Vector{SymbolicSample2}}}(Vector{SymbolicSample2}[])
+
+function init_symbolic_report2!(nthreads::Int = Threads.nthreads())
+    SYMBOLIC_SAMPLES2[] = [SymbolicSample2[] for _ in 1:nthreads]
+    return nothing
+end
+
+@inline function _symbolic_samples2_for_thread()::Vector{SymbolicSample2}
+    tid = Threads.threadid()
+    if isempty(SYMBOLIC_SAMPLES2[]) || tid > length(SYMBOLIC_SAMPLES2[])
+        init_symbolic_report2!(max(tid, Threads.nthreads()))
+    end
+    @inbounds SYMBOLIC_SAMPLES2[][tid]
+end
+
+"""
+    record_symbolic_sample2!(anchors, k_cur, u0, u1, v0, v1)
+
+Same cost discipline as record_symbolic_sample!: a no-op (single Ref{Bool}
+check, then a k_cur<2 check) unless SYMBOLIC_REPORT_ENABLED[] is set and
+k_cur>=2, in which case it copies (anchors[1:k_cur-2], anchors[k_cur-1],
+anchors[k_cur], u0,u1,v0,v1) into a bounded per-thread buffer -- the LAST
+TWO anchors are the ones run_symbolic_report2!/run_symbolic_crosscheck2!
+will later treat as symbolic.
+"""
+@inline function record_symbolic_sample2!(anchors, k_cur::Int,
+                                           u0::Int, u1::Int, v0::Int, v1::Int)
+    SYMBOLIC_REPORT_ENABLED[] || return nothing
+    k_cur < 2 && return nothing
+    buf = _symbolic_samples2_for_thread()
+    length(buf) >= SYMBOLIC_REPORT_MAX_SAMPLES && return nothing
+    fixed = NTuple{2,Int}[(anchors[i][1], anchors[i][2]) for i in 1:(k_cur-2)]
+    a_km1 = (anchors[k_cur-1][1], anchors[k_cur-1][2])
+    a_k   = (anchors[k_cur][1],   anchors[k_cur][2])
+    push!(buf, SymbolicSample2(k_cur, fixed, a_km1, a_k, u0, u1, v0, v1))
+    return nothing
+end
+
+"""
+    run_symbolic_report2!(F_POLY_ASC, p; io=stdout, max_per_thread=typemax(Int))
+
+Same shape as run_symbolic_report!, one level up: runs
+PhiSymbolic2.symbolic_residual2 on every sampled (K, fixed_anchors,
+u0,u1,v0,v1) tuple, printing the Level2-valued residual plus, via
+symbolic_residual2_concrete on the sample's REAL (anchor_Km1, anchor_K), the
+concrete collapse for eyeballing. Soft/printing only -- failures are caught
+and printed, not propagated. For a hard pass/fail against
+build_phi_general!/phi_residual_general!, use run_symbolic_crosscheck2!
+instead.
+"""
+function run_symbolic_report2!(F_POLY_ASC::Vector{Int}, p::Int;
+                                io::IO=stdout, max_per_thread::Int=typemax(Int))
+    isempty(SYMBOLIC_SAMPLES2[]) && (println(io, "[SYMBOLIC2-REPORT] no samples recorded -- was SYMBOLIC_REPORT_ENABLED[] set before the walk ran?"); return nothing)
+
+    n_printed = 0
+    for (tid, buf) in enumerate(SYMBOLIC_SAMPLES2[])
+        for (i, samp) in enumerate(buf)
+            i > max_per_thread && break
+            println(io, "\n### thread $tid, sample $i: K=$(samp.K), last two anchors (symbolic) = $(samp.anchor_Km1), $(samp.anchor_K), u0,u1=$(samp.u0),$(samp.u1) v0,v1=$(samp.v0),$(samp.v1) ###")
+            try
+                res = PhiSymbolic2.symbolic_residual2(samp.K, samp.fixed_anchors,
+                                                       samp.u0, samp.u1, samp.v0, samp.v1,
+                                                       F_POLY_ASC, p)
+                PhiSymbolic2.print_symbolic_residual2(res; io=io)
+
+                t1_0, y1_0 = samp.anchor_Km1
+                t2_0, y2_0 = samp.anchor_K
+                u_c, v_c = PhiSymbolic2.symbolic_residual2_concrete(samp.K, samp.fixed_anchors,
+                                                                     samp.u0, samp.u1, samp.v0, samp.v1,
+                                                                     F_POLY_ASC, p, t1_0, y1_0, t2_0, y2_0)
+                PhiSymbolic2.print_symbolic_residual2_concrete(samp.K, t1_0, y1_0, t2_0, y2_0, u_c, v_c; io=io)
+            catch e
+                println(io, "  [SYMBOLIC2-REPORT] sample failed: $e")
+            end
+            n_printed += 1
+        end
+    end
+    println(io, "\n[SYMBOLIC2-REPORT] printed $n_printed sample(s).")
+    return nothing
+end
+
+function reset_symbolic_report2!()
+    for buf in SYMBOLIC_SAMPLES2[]
+        empty!(buf)
+    end
+    return nothing
+end
+
+# =============================================================================
+#  HARD CROSS-CHECKS: symbolic-then-substitute vs. concrete-from-the-start.
+#  ---------------------------------------------------------------------------
+#  Unlike run_symbolic_report!/run_symbolic_report2! above (which print
+#  whatever comes out, catching and reporting failures so a bad sample
+#  doesn't stop the driver from looking at the rest), the two functions
+#  below -- cross_check_phi_symbolic! and cross_check_phi_symbolic2! -- are
+#  DELIBERATELY NOT wrapped in try/catch anywhere in this section. They are
+#  meant to be run in a debug/CI harness whose whole job is to answer one
+#  question ("do these two independently-written pipelines agree, bit for
+#  bit, on this input?") where a silent "close enough" is worse than a loud
+#  crash. Any @assert failure, or any exception from either pipeline
+#  (PhiSymbolic/PhiSymbolic2's own internal asserts, or build_phi_general!'s/
+#  phi_residual_general!'s), is meant to propagate all the way up and kill
+#  the process. That is the point: "program killing" here means exactly
+#  what it says.
+#
+#  The comparison performed:
+#    Path 1 (symbolic-then-substitute): fix anchors 1..K-c concrete, leave
+#      the last c anchors (c=1 or c=2) symbolic as (t,w)/(t1,w1),(t2,w2),
+#      solve the (K+2)x(K+2) linear system once over Ft2/Level2, THEN plug
+#      in the real (t0,y0)/(t1_0,y1_0,t2_0,y2_0) at the very end.
+#    Path 2 (concrete-from-the-start): build the SAME (K+2)x(K+2) linear
+#      system with every anchor -- including the last c -- already fixed to
+#      its real concrete value, via the production build_phi_general!/
+#      phi_residual_general! pipeline, and solve THAT.
+#  These are mathematically required to produce the same u_RS(x), v_RS(x)
+#  (same linear system, same solution, just reached by substituting before
+#  vs. after solving) -- rational function evaluation and linear-system
+#  solving commute here because every entry of the system is a polynomial
+#  (not merely a rational function with a pole) in the symbolic anchor's
+#  coordinates at any point where u_RS/v_RS are actually defined. A
+#  mismatch means one of the two pipelines has a bug: basis ordering,
+#  off-by-one in matrix assembly, a sign error in the QuadExt/Ft2 tower
+#  arithmetic, etc.
+# =============================================================================
+
+"""
+    cross_check_phi_symbolic!(K, fixed_anchors, u0,u1,v0,v1, F_POLY_ASC, p, t0, y0)
+
+PROGRAM-KILLING. See section header above. Cross-checks
+trial3_phi_symbolic.jl's one-symbolic-anchor construction against
+build_phi_general!/phi_residual_general! for a single concrete instantiation
+(t0,y0) of the symbolic last anchor. `fixed_anchors` must have length K-1
+(anchors 1..K-1); (t0,y0) becomes anchor K, on both paths.
+
+Requires init_phi_general_caches!(K_MAX_or_more, backend) to already have
+been called by the driver for this p/F_POLY (so F_POLY_DESC is populated and
+RR_BASIS_CACHE covers nb=K+3) -- same precondition build_phi_general! itself
+has via init_scratch_caches!.
+"""
+function cross_check_phi_symbolic!(K::Int, fixed_anchors, u0::Int, u1::Int, v0::Int, v1::Int,
+                                    F_POLY_ASC::Vector{Int}, p::Int, t0::Int, y0::Int)
+    @assert length(fixed_anchors) == K - 1 "cross_check_phi_symbolic!: need K-1=$(K-1) fixed anchors, got $(length(fixed_anchors))"
+    @assert !isempty(F_POLY_DESC) "cross_check_phi_symbolic!: F_POLY_DESC is empty -- init_phi_general_caches!(K_MAX, backend) must be called before cross-checking, same precondition init_scratch_caches! asserts."
+    @isdefined(F_POLY) && @assert F_POLY_ASC == F_POLY "cross_check_phi_symbolic!: F_POLY_ASC passed in ($F_POLY_ASC) does not match the global F_POLY ($F_POLY) that init_phi_general_caches! last built F_POLY_DESC from -- Path 1 (symbolic) and Path 2 (concrete, which reads F_POLY_DESC/F_POLY internally) would then silently be running against two different curves. Pass the same ascending-order F_POLY the driver used."
+
+    # -- Path 1: symbolic construction, substitute (t0,y0) at the very end --
+    u_c, v_c = PhiSymbolic.symbolic_residual_concrete(K, fixed_anchors, u0, u1, v0, v1,
+                                                       F_POLY_ASC, p, t0, y0)
+
+    # -- Path 2: concrete from the start, via the production pipeline --
+    anchors_vec = NTuple{2,Int}[fixed_anchors...; (t0, y0)]
+    @assert length(anchors_vec) == K "cross_check_phi_symbolic!: internal bug -- assembled anchors_vec has length $(length(anchors_vec)) != K=$K"
+    anchors = ntuple(i -> anchors_vec[i], K)
+
+    backend = StandardArith(p)
+    scratch = ThreadScratchpad{K}()
+    init_scratch_caches!(scratch, p, backend)
+
+    ok = build_phi_general!(scratch, anchors, u0, u1, v0, v1; backend=backend)
+    @assert ok "cross_check_phi_symbolic!: build_phi_general! returned false (a degenerate/singular configuration) for K=$K, anchors=$anchors, u0=$u0,u1=$u1,v0=$v0,v1=$v1 -- can't cross-check the symbolic path's answer against a concrete solve that didn't happen."
+
+    basis = rr_basis_cached(K + 3)
+    ok2 = phi_residual_general!(scratch, basis, anchors, u0, u1)
+    @assert ok2 "cross_check_phi_symbolic!: phi_residual_general! returned false (degenerate residual, or a nonzero anchor/u(x) remainder) for K=$K, anchors=$anchors -- can't cross-check against a residual that wasn't actually produced. See phi_timing_stats()'s n_fail_resid_* counters for which check tripped."
+
+    u_len_g = scratch.u_RS_len[1]
+    v_len_g = scratch.v_RS_len[1]
+    u_g = scratch.u_RS[1:u_len_g]
+    v_g = scratch.v_RS[1:v_len_g]
+
+    @assert length(u_c) == length(u_g) "cross_check_phi_symbolic!: u_RS DEGREE MISMATCH -- symbolic-then-substitute gives deg $(length(u_c)-1) ($u_c), concrete-from-the-start gives deg $(length(u_g)-1) ($u_g). K=$K, fixed_anchors=$fixed_anchors, u0=$u0,u1=$u1,v0=$v0,v1=$v1, last anchor=($t0,$y0)."
+    @assert u_c == u_g "cross_check_phi_symbolic!: u_RS COEFFICIENT MISMATCH -- symbolic-then-substitute gives $u_c, concrete-from-the-start gives $u_g. K=$K, fixed_anchors=$fixed_anchors, u0=$u0,u1=$u1,v0=$v0,v1=$v1, last anchor=($t0,$y0)."
+    @assert length(v_c) == length(v_g) "cross_check_phi_symbolic!: v_RS DEGREE MISMATCH -- symbolic-then-substitute gives deg $(length(v_c)-1) ($v_c), concrete-from-the-start gives deg $(length(v_g)-1) ($v_g). K=$K, fixed_anchors=$fixed_anchors, u0=$u0,u1=$u1,v0=$v0,v1=$v1, last anchor=($t0,$y0)."
+    @assert v_c == v_g "cross_check_phi_symbolic!: v_RS COEFFICIENT MISMATCH -- symbolic-then-substitute gives $v_c, concrete-from-the-start gives $v_g. K=$K, fixed_anchors=$fixed_anchors, u0=$u0,u1=$u1,v0=$v0,v1=$v1, last anchor=($t0,$y0)."
+
+    return true
+end
+
+"""
+    cross_check_phi_symbolic2!(K, fixed_anchors, u0,u1,v0,v1, F_POLY_ASC, p,
+                                t1_0, y1_0, t2_0, y2_0)
+
+PROGRAM-KILLING, exactly the same idea as cross_check_phi_symbolic! one level
+up: cross-checks trial3_phi_symbolic2.jl's two-symbolic-anchor construction
+against build_phi_general!/phi_residual_general! for a single concrete
+instantiation (t1_0,y1_0),(t2_0,y2_0) of the two symbolic anchors.
+`fixed_anchors` must have length K-2 (anchors 1..K-2); (t1_0,y1_0) becomes
+anchor K-1 and (t2_0,y2_0) becomes anchor K, on both paths.
+
+This is the check trial3_phi_symbolic2.jl's own header asks for (see its
+"NOT YET RUN" note) -- run this before trusting that module for real work.
+"""
+function cross_check_phi_symbolic2!(K::Int, fixed_anchors, u0::Int, u1::Int, v0::Int, v1::Int,
+                                     F_POLY_ASC::Vector{Int}, p::Int,
+                                     t1_0::Int, y1_0::Int, t2_0::Int, y2_0::Int)
+    @assert length(fixed_anchors) == K - 2 "cross_check_phi_symbolic2!: need K-2=$(K-2) fixed anchors, got $(length(fixed_anchors))"
+    @assert !isempty(F_POLY_DESC) "cross_check_phi_symbolic2!: F_POLY_DESC is empty -- init_phi_general_caches!(K_MAX, backend) must be called before cross-checking, same precondition init_scratch_caches! asserts."
+    @isdefined(F_POLY) && @assert F_POLY_ASC == F_POLY "cross_check_phi_symbolic2!: F_POLY_ASC passed in ($F_POLY_ASC) does not match the global F_POLY ($F_POLY) that init_phi_general_caches! last built F_POLY_DESC from -- Path 1 (symbolic2) and Path 2 (concrete) would then silently be running against two different curves. Pass the same ascending-order F_POLY the driver used."
+
+    # -- Path 1: symbolic construction, substitute both anchors at the end --
+    u_c, v_c = PhiSymbolic2.symbolic_residual2_concrete(K, fixed_anchors, u0, u1, v0, v1,
+                                                         F_POLY_ASC, p, t1_0, y1_0, t2_0, y2_0)
+
+    # -- Path 2: concrete from the start, via the production pipeline --
+    anchors_vec = NTuple{2,Int}[fixed_anchors...; (t1_0, y1_0); (t2_0, y2_0)]
+    @assert length(anchors_vec) == K "cross_check_phi_symbolic2!: internal bug -- assembled anchors_vec has length $(length(anchors_vec)) != K=$K"
+    anchors = ntuple(i -> anchors_vec[i], K)
+
+    backend = StandardArith(p)
+    scratch = ThreadScratchpad{K}()
+    init_scratch_caches!(scratch, p, backend)
+
+    ok = build_phi_general!(scratch, anchors, u0, u1, v0, v1; backend=backend)
+    @assert ok "cross_check_phi_symbolic2!: build_phi_general! returned false (a degenerate/singular configuration) for K=$K, anchors=$anchors, u0=$u0,u1=$u1,v0=$v0,v1=$v1 -- can't cross-check the symbolic path's answer against a concrete solve that didn't happen."
+
+    basis = rr_basis_cached(K + 3)
+    ok2 = phi_residual_general!(scratch, basis, anchors, u0, u1)
+    @assert ok2 "cross_check_phi_symbolic2!: phi_residual_general! returned false (degenerate residual, or a nonzero anchor/u(x) remainder) for K=$K, anchors=$anchors -- can't cross-check against a residual that wasn't actually produced. See phi_timing_stats()'s n_fail_resid_* counters for which check tripped."
+
+    u_len_g = scratch.u_RS_len[1]
+    v_len_g = scratch.v_RS_len[1]
+    u_g = scratch.u_RS[1:u_len_g]
+    v_g = scratch.v_RS[1:v_len_g]
+
+    @assert length(u_c) == length(u_g) "cross_check_phi_symbolic2!: u_RS DEGREE MISMATCH -- symbolic-then-substitute gives deg $(length(u_c)-1) ($u_c), concrete-from-the-start gives deg $(length(u_g)-1) ($u_g). K=$K, fixed_anchors=$fixed_anchors, u0=$u0,u1=$u1,v0=$v0,v1=$v1, last anchors=($t1_0,$y1_0),($t2_0,$y2_0)."
+    @assert u_c == u_g "cross_check_phi_symbolic2!: u_RS COEFFICIENT MISMATCH -- symbolic-then-substitute gives $u_c, concrete-from-the-start gives $u_g. K=$K, fixed_anchors=$fixed_anchors, u0=$u0,u1=$u1,v0=$v0,v1=$v1, last anchors=($t1_0,$y1_0),($t2_0,$y2_0)."
+    @assert length(v_c) == length(v_g) "cross_check_phi_symbolic2!: v_RS DEGREE MISMATCH -- symbolic-then-substitute gives deg $(length(v_c)-1) ($v_c), concrete-from-the-start gives deg $(length(v_g)-1) ($v_g). K=$K, fixed_anchors=$fixed_anchors, u0=$u0,u1=$u1,v0=$v0,v1=$v1, last anchors=($t1_0,$y1_0),($t2_0,$y2_0)."
+    @assert v_c == v_g "cross_check_phi_symbolic2!: v_RS COEFFICIENT MISMATCH -- symbolic-then-substitute gives $v_c, concrete-from-the-start gives $v_g. K=$K, fixed_anchors=$fixed_anchors, u0=$u0,u1=$u1,v0=$v0,v1=$v1, last anchors=($t1_0,$y1_0),($t2_0,$y2_0)."
+
+    return true
+end
+
+"""
+    run_symbolic_crosscheck!(F_POLY_ASC, p; io=stdout, max_per_thread=typemax(Int))
+
+PROGRAM-KILLING driver over the samples record_symbolic_sample! collected:
+runs cross_check_phi_symbolic! on every one, UNGUARDED (no try/catch) --
+the first sample that disagrees between the symbolic and concrete pipelines
+throws, and the process stops right there with a message identifying the
+exact (K, fixed_anchors, u0,u1,v0,v1, last anchor) that broke. Run this
+periodically (or once at the end of a debug run) whenever
+SYMBOLIC_REPORT_ENABLED[] is on, as a correctness gate rather than just a
+human-readable printout.
+"""
+function run_symbolic_crosscheck!(F_POLY_ASC::Vector{Int}, p::Int;
+                                   io::IO=stdout, max_per_thread::Int=typemax(Int))
+    isempty(SYMBOLIC_SAMPLES[]) && (println(io, "[SYMBOLIC-CROSSCHECK] no samples recorded -- was SYMBOLIC_REPORT_ENABLED[] set before the walk ran?"); return nothing)
+    n_checked = 0
+    for (tid, buf) in enumerate(SYMBOLIC_SAMPLES[])
+        for (i, samp) in enumerate(buf)
+            i > max_per_thread && break
+            t0, y0 = samp.last_anchor
+            cross_check_phi_symbolic!(samp.K, samp.fixed_anchors, samp.u0, samp.u1, samp.v0, samp.v1,
+                                       F_POLY_ASC, p, t0, y0)
+            println(io, "[SYMBOLIC-CROSSCHECK] thread $tid sample $i: OK (K=$(samp.K), last anchor=($t0,$y0))")
+            n_checked += 1
+        end
+    end
+    println(io, "\n[SYMBOLIC-CROSSCHECK] $n_checked sample(s) verified bit-for-bit against build_phi_general!/phi_residual_general!.")
+    return nothing
+end
+
+"""
+    run_symbolic_crosscheck2!(F_POLY_ASC, p; io=stdout, max_per_thread=typemax(Int))
+
+Same as run_symbolic_crosscheck! one level up, over SYMBOLIC_SAMPLES2 and
+cross_check_phi_symbolic2!. PROGRAM-KILLING, unguarded, on purpose.
+"""
+function run_symbolic_crosscheck2!(F_POLY_ASC::Vector{Int}, p::Int;
+                                    io::IO=stdout, max_per_thread::Int=typemax(Int))
+    isempty(SYMBOLIC_SAMPLES2[]) && (println(io, "[SYMBOLIC2-CROSSCHECK] no samples recorded -- was SYMBOLIC_REPORT_ENABLED[] set before the walk ran?"); return nothing)
+    n_checked = 0
+    for (tid, buf) in enumerate(SYMBOLIC_SAMPLES2[])
+        for (i, samp) in enumerate(buf)
+            i > max_per_thread && break
+            t1_0, y1_0 = samp.anchor_Km1
+            t2_0, y2_0 = samp.anchor_K
+            cross_check_phi_symbolic2!(samp.K, samp.fixed_anchors, samp.u0, samp.u1, samp.v0, samp.v1,
+                                        F_POLY_ASC, p, t1_0, y1_0, t2_0, y2_0)
+            println(io, "[SYMBOLIC2-CROSSCHECK] thread $tid sample $i: OK (K=$(samp.K), last anchors=($t1_0,$y1_0),($t2_0,$y2_0))")
+            n_checked += 1
+        end
+    end
+    println(io, "\n[SYMBOLIC2-CROSSCHECK] $n_checked sample(s) verified bit-for-bit against build_phi_general!/phi_residual_general!.")
+    return nothing
+end
