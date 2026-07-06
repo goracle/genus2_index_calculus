@@ -52,6 +52,12 @@ include("trial3_phi_symbolic.jl") # PhiSymbolic module — symbolic (last-anchor
                                    # print_symbolic_residual_concrete into scope for
                                    # run_symbolic_report!'s qualified calls to resolve.
 using .PhiSymbolic
+include("trial3_phi_symbolic2.jl") # PhiSymbolic2 module — symbolic construction leaving the
+                                   # LAST TWO anchors free, consumed by run_symbolic_report2!/
+                                   # run_symbolic_crosscheck2! below. Same ordering constraint
+                                   # as trial3_phi_symbolic.jl above (must follow
+                                   # trial3_phi_general.jl) and no other requirement.
+using .PhiSymbolic2
 include("trial3_anchor_sweep_diag.jl")  # SweepCollector / run_anchor_sweep_experiment — needs
                                          # ThreadScratchpad et al from phi_general.jl above, and
                                          # must itself precede trial3_phase2.jl below: phase2_worker's
