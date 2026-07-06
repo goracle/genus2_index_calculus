@@ -235,6 +235,17 @@ function print_symbolic_residual2(res::SymbolicResidualResult2; io::IO=stdout)
     end
 end
 
+# Compatibility overload: the batch driver calls this as
+# print_symbolic_residual2(K, res; io=...) -- i.e. with K passed explicitly
+# as a leading positional argument, the same convention it uses for
+# print_symbolic_residual2_concrete below. res.K already carries this same
+# value, so K is accepted here only to match that calling convention and is
+# not otherwise used.
+function print_symbolic_residual2(K::Int, res::SymbolicResidualResult2; io::IO=stdout)
+    @assert K == res.K "print_symbolic_residual2: K argument ($K) does not match res.K ($(res.K))"
+    print_symbolic_residual2(res; io=io)
+end
+
 function print_symbolic_residual2_concrete(K::Int, t1_0::Int, y1_0::Int, t2_0::Int, y2_0::Int,
                                             u_RS_concrete::Vector{Int}, v_RS_concrete::Vector{Int};
                                             io::IO=stdout)
