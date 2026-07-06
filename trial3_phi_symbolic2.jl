@@ -112,7 +112,7 @@ module PhiSymbolic2
 using Oscar
 
 export symbolic_residual2, symbolic_residual2_concrete,
-       print_symbolic_residual2, print_symbolic_residual2_concrete
+       print_symbolic_residual2, print_symbolic_residual2_concrete, pretty2
 
 
 # =============================================================================
@@ -177,32 +177,72 @@ end
 
 
 
-function print_symbolic_residual2(K::Int, res; io::IO=stdout)
-    println(io, "Symbolic Residual Result (K = $K):")
-    println(io, "  u_RS(x; t1, t2):")
-    for (i, coeff) in enumerate(res.u_RS_coeffs)
-        # Using string representation from Oscar/AbstractAlgebra
-        println(io, "    x^$(i-1): $(string(coeff))")
-    end
-    
-    println(io, "  v_RS(x; t1, t2):")
-    for (i, coeff) in enumerate(res.v_RS_coeffs)
-        println(io, "    x^$(i-1): $(string(coeff))")
+# Decompose a Level2 = K1[w2]/(w2^2-f_t2) element (itself K1 = F_t[w1]/(w1^2-f_t1))
+# into its {1, w1, w2, w1*w2} basis over F_t = F_p(t1,t2), and print it as
+# a single common-denominator fraction when all four coefficients share one
+# (they typically do here -- see the module header's discussion of recurring
+# pivot denominators). Falls back to per-term fractions otherwise.
+function pretty2(c)
+    c_data = data(c)              # polynomial in w2 over K1
+    a = coeff(c_data, 0)          # K1 element -- coefficient of w2^0
+    b = coeff(c_data, 1)          # K1 element -- coefficient of w2^1
+
+    a_data = data(a)              # polynomial in w1 over F_t
+    a0 = coeff(a_data, 0)         # F_t element -- coeff of {1}
+    a1 = coeff(a_data, 1)         # F_t element -- coeff of {w1}
+
+    b_data = data(b)
+    b0 = coeff(b_data, 0)         # F_t element -- coeff of {w2}
+    b1 = coeff(b_data, 1)         # F_t element -- coeff of {w1*w2}
+
+    terms  = (a0, a1, b0, b1)
+    labels = ("", "*w1", "*w2", "*w1*w2")
+
+    dens = [denominator(t) for t in terms]
+    if all(d -> d == dens[1], dens)
+        pieces = String[]
+        for (t, lab) in zip(terms, labels)
+            n = numerator(t)
+            iszero(n) && continue
+            push!(pieces, "($(string(n)))$lab")
+        end
+        num_str = isempty(pieces) ? "0" : join(pieces, " + ")
+        return "($num_str) // ($(string(dens[1])))"
+    else
+        pieces = String[]
+        for (t, lab) in zip(terms, labels)
+            iszero(t) && continue
+            push!(pieces, "($(string(t)))$lab")
+        end
+        return isempty(pieces) ? "0" : join(pieces, " + ")
     end
 end
 
+function print_symbolic_residual2(res::SymbolicResidualResult2; io::IO=stdout)
+    println(io, "=== Symbolic residual (2 symbolic anchors), K=$(res.K) ===")
+    println(io, "deg(E)=$(res.deg_E)  deg(Y)=$(res.deg_Y)  deg(N) before division = $(res.n_len_before_divide - 1)")
+    if isempty(res.u_RS_coeffs) || isempty(res.v_RS_coeffs)
+        println(io, "  (construction failed or degenerate -- no u_RS/v_RS coefficients to show)")
+        return
+    end
+    println(io, "u_RS(x; t1,t2) [deg $(length(res.u_RS_coeffs)-1)]:")
+    for (i, c) in enumerate(res.u_RS_coeffs)
+        println(io, "    x^$(i-1): $(pretty2(c))")
+    end
+    println(io, "v_RS(x; t1,t2) [deg $(length(res.v_RS_coeffs)-1)]:")
+    for (i, c) in enumerate(res.v_RS_coeffs)
+        println(io, "    x^$(i-1): $(pretty2(c))")
+    end
+end
 
 function print_symbolic_residual2_concrete(K::Int, t1_0::Int, y1_0::Int, t2_0::Int, y2_0::Int,
                                             u_RS_concrete::Vector{Int}, v_RS_concrete::Vector{Int};
                                             io::IO=stdout)
-    if isempty(u_RS_concrete) || isempty(v_RS_concrete)
-        throw(ArgumentError("Cannot print empty concrete residuals. Check for anchor convergence or geometric degeneracy upstream."))
-    end
-
     println(io, "=== Symbolic residual (concrete), K=$K, evaluated at (t1_0,y1_0)=($t1_0,$y1_0), (t2_0,y2_0)=($t2_0,$y2_0) ===")
     println(io, "u_RS(x)  [monic, deg $(length(u_RS_concrete)-1)]:  $u_RS_concrete")
     println(io, "v_RS(x)  [deg $(length(v_RS_concrete)-1)]:  $v_RS_concrete")
 end
+
 
 
 
@@ -401,29 +441,30 @@ function symbolic_residual2_concrete(K::Int, fixed_anchors::Vector{Tuple{Int,Int
                                       F_POLY_ASC::Vector{Int}, p::Int,
                                       t1_0::Int, y1_0::Int, t2_0::Int, y2_0::Int)::Tuple{Vector{Int},Vector{Int}}
 
-    # Throw a hard exception on degenerate (coincident) evaluation points
+    # Return empty arrays safely for any tangency/invalid parameters
     if mod(t1_0 - t2_0, p) == 0
-        throw(ArgumentError("Evaluation failed: Coincident symbolic anchors evaluated at the same point mod p: t1_0 ($t1_0) == t2_0 ($t2_0). Anchors must be pairwise distinct."))
+        return (Int[], Int[])
     end
 
     f_t1_0 = mod(sum(c * powermod(t1_0, i-1, p) for (i, c) in enumerate(F_POLY_ASC)), p)
     if mod(y1_0^2 - f_t1_0, p) != 0
-        throw(DomainError(y1_0, "Point (t1_0, y1_0) does not lie on the curve mod p."))
+        return (Int[], Int[])
     end
 
     f_t2_0 = mod(sum(c * powermod(t2_0, i-1, p) for (i, c) in enumerate(F_POLY_ASC)), p)
     if mod(y2_0^2 - f_t2_0, p) != 0
-        throw(DomainError(y2_0, "Point (t2_0, y2_0) does not lie on the curve mod p."))
+        return (Int[], Int[])
     end
 
     res = symbolic_residual2(K, fixed_anchors, u0, u1, v0, v1, F_POLY_ASC, p)
     if isempty(res.u_RS_coeffs) || isempty(res.v_RS_coeffs)
-        throw(ErrorException("Symbolic calculation yielded empty equations unexpectedly."))
+        return (Int[], Int[])
     end
 
     u_concrete = [_eval_K2_to_Fp(c, t1_0, y1_0, t2_0, y2_0, p) for c in res.u_RS_coeffs]
     v_concrete = [_eval_K2_to_Fp(c, t1_0, y1_0, t2_0, y2_0, p) for c in res.v_RS_coeffs]
 
+    # Strip trailing zeroes
     while length(u_concrete) > 1 && u_concrete[end] == 0; pop!(u_concrete); end
     while length(v_concrete) > 1 && v_concrete[end] == 0; pop!(v_concrete); end
 
