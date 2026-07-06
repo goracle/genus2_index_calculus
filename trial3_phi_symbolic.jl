@@ -272,7 +272,9 @@ function symbolic_residual(K::Int, fixed_anchors, u0::Int, u1::Int, v0::Int, v1:
     @assert length(fixed_anchors) == K - 1 "symbolic_residual: need exactly K-1 fixed anchors"
 
     for i in 1:length(fixed_anchors), j in (i+1):length(fixed_anchors)
-        @assert fixed_anchors[i] != fixed_anchors[j] "symbolic_residual: fixed anchors coincide (m=2 not supported)"
+        if fixed_anchors[i] == fixed_anchors[j]
+            throw(ArgumentError("symbolic_residual: fixed anchors coincide (m=2 not supported)"))
+        end
     end
 
     nb = K + 3
@@ -290,9 +292,10 @@ function symbolic_residual(K::Int, fixed_anchors, u0::Int, u1::Int, v0::Int, v1:
         f_t += Fp(c) * t^(i-1)
     end
 
-    Q = residue_ring(Kt, w_poly^2 - f_t)
+    # Unpack the 2-tuple (Ring, Map) returned by OSCAR's residue_ring
+    Q, _ = residue_ring(Kt, w_poly^2 - f_t)
     w = Q(w_poly)
-    t_Q = Q(t)
+    t_Q = Q(Kt(t))
 
     n_unknowns = K + 2
     other_idx = [idx for idx in 1:nb if idx != y_idx]

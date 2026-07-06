@@ -191,7 +191,6 @@ function print_symbolic_residual2_concrete(K::Int, t1_0::Int, y1_0::Int, t2_0::I
     println(io, "v_RS(x)  [deg $(length(v_RS_concrete)-1)]:  $v_RS_concrete")
 end
 
-end # module PhiSymbolic2Oscar
 
 
 
@@ -213,20 +212,17 @@ function symbolic_residual2(K::Int, fixed_anchors::Vector{Tuple{Int,Int}}, u0::I
     R_t, (t1, t2) = polynomial_ring(Fp, ["t1", "t2"])
     F_t = fraction_field(R_t)
 
-    # Reconstruct f(x)
-    Rx, x_var = polynomial_ring(Fp, "x")
-    f_poly = sum(Fp(c) * x_var^(i-1) for (i, c) in enumerate(F_POLY_ASC))
+    # Construct f(t1) and f(t2) directly inside F_t to bypass univariate evaluation mismatch
+    f_t1 = sum(F_t(Fp(c)) * t1^(i-1) for (i, c) in enumerate(F_POLY_ASC))
+    f_t2 = sum(F_t(Fp(c)) * t2^(i-1) for (i, c) in enumerate(F_POLY_ASC))
 
-    f_t1 = evaluate(f_poly, t1)
-    f_t2 = evaluate(f_poly, t2)
-
-    # 2. Build the Tower (Fixing the Map vs Generator assignment)
+    # 2. Build the Tower (Unpacking the 2-tuple (Ring, Map) returned by residue_ring)
     R_w1, w1_var = polynomial_ring(F_t, "w1")
-    K1, _ = residue_ring(R_w1, w1_var^2 - F_t(f_t1))
+    K1, _ = residue_ring(R_w1, w1_var^2 - R_w1(f_t1))
     w1 = gen(K1)
 
     R_w2, w2_var = polynomial_ring(K1, "w2")
-    K2, _ = residue_ring(R_w2, w2_var^2 - K1(F_t(f_t2)))
+    K2, _ = residue_ring(R_w2, w2_var^2 - R_w2(K1(f_t2)))
     w2 = gen(K2)
 
     K2x, X = polynomial_ring(K2, "X")
@@ -245,6 +241,7 @@ function symbolic_residual2(K::Int, fixed_anchors::Vector{Tuple{Int,Int}}, u0::I
     A = zero_matrix(K2, n_unknowns, n_unknowns)
     rhs = zero_matrix(K2, n_unknowns, 1)
 
+    # Ensure explicit coercion paths up the algebraic tower hierarchy
     t1_K2 = K2(K1(F_t(t1)))
     w1_K2 = K2(w1)
     t2_K2 = K2(K1(F_t(t2)))
@@ -416,3 +413,5 @@ function symbolic_residual2_concrete(K::Int, fixed_anchors::Vector{Tuple{Int,Int
 
     return (u_concrete, v_concrete)
 end
+
+end # module PhiSymbolic2
