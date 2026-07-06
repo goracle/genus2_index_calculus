@@ -212,22 +212,28 @@ function symbolic_residual2(K::Int, fixed_anchors::Vector{Tuple{Int,Int}}, u0::I
     R_t, (t1, t2) = polynomial_ring(Fp, ["t1", "t2"])
     F_t = fraction_field(R_t)
 
-    # Construct f(t1) and f(t2) directly inside F_t to bypass univariate evaluation mismatch
+    # Construct f(t1) and f(t2) directly inside F_t
     f_t1 = sum(F_t(Fp(c)) * t1^(i-1) for (i, c) in enumerate(F_POLY_ASC))
     f_t2 = sum(F_t(Fp(c)) * t2^(i-1) for (i, c) in enumerate(F_POLY_ASC))
 
-    # 2. Build the Tower (Unpacking the 2-tuple (Ring, Map) returned by residue_ring)
+    # 2. Build the Tower
     R_w1, w1_var = polynomial_ring(F_t, "w1")
-    K1, _ = residue_ring(R_w1, w1_var^2 - R_w1(f_t1))
+    K1, _ = residue_ring(R_w1, w1_var^2 - f_t1)
     w1 = gen(K1)
 
     R_w2, w2_var = polynomial_ring(K1, "w2")
-    K2, _ = residue_ring(R_w2, w2_var^2 - R_w2(K1(f_t2)))
+    K2, _ = residue_ring(R_w2, w2_var^2 - K1(f_t2))
     w2 = gen(K2)
 
     K2x, X = polynomial_ring(K2, "X")
 
-    # 3. Setup Linear System over the pure fraction field F_t
+    # Define explicit tower images for exact divisions later
+    t1_K2 = K2(K1(t1))
+    w1_K2 = K2(w1)
+    t2_K2 = K2(K1(t2))
+    w2_K2 = w2
+
+    # 3. Setup Linear System directly over K2
     nb = K + 3
     basis = rr_basis2(nb)
     y_idx = findfirst(bi -> bi == (0,1), basis)
@@ -238,37 +244,27 @@ function symbolic_residual2(K::Int, fixed_anchors::Vector{Tuple{Int,Int}}, u0::I
     n_unknowns = K + 2
     other_idx = [idx for idx in 1:nb if idx != y_idx]
 
-    # Initialize matrix and split RHS vectors over F_t
-    A_Ft = zero_matrix(F_t, n_unknowns, n_unknowns)
-    rhs_const = zero_matrix(F_t, n_unknowns, 1)
-    rhs_w1    = zero_matrix(F_t, n_unknowns, 1)
-    rhs_w2    = zero_matrix(F_t, n_unknowns, 1)
+    A = zero_matrix(K2, n_unknowns, n_unknowns)
+    rhs = zero_matrix(K2, n_unknowns, 1)
 
-    # Rows 1..K (Anchors)
+    # Consolidate all anchor points into a single K2-valued vector
+    anchor_pts = Vector{Tuple{elem_type(K2), elem_type(K2)}}(undef, K)
+    for a in 1:(K-2)
+        px_raw, py_raw = fixed_anchors[a]
+        anchor_pts[a] = (K2(px_raw), K2(py_raw))
+    end
+    anchor_pts[K-1] = (t1_K2, w1_K2)
+    anchor_pts[K]   = (t2_K2, w2_K2)
+
+    # Rows 1..K (Anchors evaluated over K2)
     for a in 1:K
-        # Populate columns of A (purely functions of x-coordinates in F_t)
+        px, py = anchor_pts[a]
         for (col, bidx) in enumerate(other_idx)
             bi, bj = basis[bidx]
-            if a <= K-2
-                px_raw, _ = fixed_anchors[a]
-                A_Ft[a, col] = F_t(px_raw)^bi
-            elseif a == K-1
-                A_Ft[a, col] = t1^bi
-            else # a == K
-                A_Ft[a, col] = t2^bi
-            end
+            A[a, col] = (px^bi) * (bj == 1 ? py : K2(1))
         end
-
-        # Populate RHS split components (y-coordinates)
-        # bi_n = 0, bj_n = 1 for the fixed y monomial
-        if a <= K-2
-            _, py_raw = fixed_anchors[a]
-            rhs_const[a, 1] = F_t(-py_raw)
-        elseif a == K-1
-            rhs_w1[a, 1] = F_t(-1) # coefficient of w1
-        else # a == K
-            rhs_w2[a, 1] = F_t(-1) # coefficient of w2
-        end
+        bi_n, bj_n = basis[y_idx]
+        rhs[a, 1] = -((px^bi_n) * (bj_n == 1 ? py : K2(1)))
     end
 
     # Rows K+1, K+2 (Mumford condition mod u)
@@ -279,34 +275,30 @@ function symbolic_residual2(K::Int, fixed_anchors::Vector{Tuple{Int,Int}}, u0::I
     for (col, bidx) in enumerate(other_idx)
         bi, bj = basis[bidx]
         rr0, rr1 = reduce_monomial_mod_u2(bi, bj, u0, u1, v0, v1, r0tab, r1tab, p)
-        A_Ft[row0, col] = F_t(rr0)
-        A_Ft[row1, col] = F_t(rr1)
+        A[row0, col] = K2(rr0)
+        A[row1, col] = K2(rr1)
     end
     
     bi_n, bj_n = basis[y_idx]
     rn0, rn1 = reduce_monomial_mod_u2(bi_n, bj_n, u0, u1, v0, v1, r0tab, r1tab, p)
-    rhs_const[row0, 1] = F_t(mod(-rn0, p))
-    rhs_const[row1, 1] = F_t(mod(-rn1, p))
+    rhs[row0, 1] = K2(mod(-rn0, p))
+    rhs[row1, 1] = K2(mod(-rn1, p))
 
-    # 4. Solve the matrix systems over F_t and reassemble into K2
+    # 4. Solve the matrix system directly over K2
     local c_sol
     try
-        sol_const = solve(A_Ft, rhs_const)
-        sol_w1    = solve(A_Ft, rhs_w1)
-        sol_w2    = solve(A_Ft, rhs_w2)
-
-        # Reconstruct the solution vector elements back into the K2 tower
-        c_sol = zero_matrix(K2, n_unknowns, 1)
-        for row in 1:n_unknowns
-            c_sol[row, 1] = K2(K1(sol_const[row, 1])) + 
-                            K2(K1(sol_w1[row, 1])) * w1 + 
-                            K2(K1(sol_w2[row, 1])) * w2
-        end
+        c_sol = solve(A, rhs; side = :right)
     catch e
-        # If a legitimate linear dependence occurs, catch it here safely
-        @error "Linear system resolution failed over F_t" exception=e
+        @error "Linear system resolution failed over K2" exception=e
         return SymbolicResidualResult2(K, Any[], Any[], -1, -1, 0)
     end
+
+    # Reconstruct the full coefficients vector (restoring the y-monomial)
+    coeffs_out = Vector{elem_type(K2)}(undef, nb)
+    for (col, bidx) in enumerate(other_idx)
+        coeffs_out[bidx] = c_sol[col, 1]
+    end
+    coeffs_out[y_idx] = K2(1)
 
     # 5. Extract E(x) and Y(x)
     E_poly = K2x(0)
@@ -363,6 +355,7 @@ function symbolic_residual2(K::Int, fixed_anchors::Vector{Tuple{Int,Int}}, u0::I
     )
 end
 
+
 function _eval_K2_to_Fp(val, t1_0::Int, y1_0::Int, t2_0::Int, y2_0::Int, p::Int)
     Fp = GF(p)
     val_w2 = data(val) # polynomial in w2 over K1
@@ -389,7 +382,7 @@ function _eval_K2_to_Fp(val, t1_0::Int, y1_0::Int, t2_0::Int, y2_0::Int, p::Int)
     end
 
     final_val = eval_K1(c0) + eval_K1(c1) * Fp(y2_0)
-    return Int(AbstractAlgebra.lift(final_val)) # lifts back to Int
+    return Int(lift(ZZ, final_val)) # lifts back to Int (matches trial3_phi_symbolic.jl / trial3_phi_general.jl convention)
 end
 
 function symbolic_residual2_concrete(K::Int, fixed_anchors::Vector{Tuple{Int,Int}}, u0::Int, u1::Int, v0::Int, v1::Int,
