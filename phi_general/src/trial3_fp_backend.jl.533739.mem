@@ -1,0 +1,306 @@
+        - # =============================================================================
+        - #  trial3_fp_backend.jl  --  Swappable F_p arithmetic backends.
+        - #
+        - #  Provides two concrete implementations of the FpArith interface:
+        - #
+        - #    StandardArith   — uses Int128 widening for fpmul (the current default,
+        - #                      identical to the existing fpmul in trial3_phi_general.jl).
+        - #                      to_repr/from_repr are identity.  Drop-in; zero behavior
+        - #                      change vs the hardcoded version.
+        - #
+        - #    MontgomeryArith — Montgomery REDUCTION form (not to be confused with
+        - #                      Montgomery's batch-inversion trick used in fp_gauss!).
+        - #                      Field elements are stored as a·R mod p where R = 2^64.
+        - #                      fpmul_mont replaces the Int128-widening multiply with a
+        - #                      REDC step, which the hardware can schedule more
+        - #                      efficiently (no software divide for the mod-p reduction).
+        - #
+        - #  REPRESENTATION BOUNDARY
+        - #  -----------------------
+        - #  MontgomeryArith requires that every field element touching arithmetic be in
+        - #  Montgomery representation (a·R mod p) throughout a computation, converted
+        - #  to/from standard form only at entry/exit points.  In trial3_phi_general.jl
+        - #  the boundary sits at step_phi_k!:
+        - #    • Anchor coords and Mumford params (u0,u1,v0,v1) are converted to repr
+        - #      on entry via to_repr(backend, x).
+        - #    • Results (mumford key tuples, roots_out points, sqrt_fp_hot inputs) are
+        - #      converted back with from_repr(backend, x) before leaving the arithmetic
+        - #      layer.
+        - #    • Everything inside build_phi_general!, phi_residual_general!, etc.
+        - #      operates in whatever representation was handed to it.
+        - #
+        - #  CORRECTNESS VALIDATION
+        - #  ----------------------
+        - #  Call validate_backend(backend) before the walk starts.  It runs 10_000
+        - #  random trials comparing each backend op against StandardArith and throws
+        - #  AssertionError on any mismatch.  For MontgomeryArith this catches the
+        - #  sign-of-p_inv_neg bug (Gemini's snippet had +p⁻¹ where REDC needs -p⁻¹).
+        - #
+        - #  φ validity is a second, coarser check: Montgomery arithmetic errors cause
+        - #  the residual remainder != 0 check in phi_residual_general! to fire within
+        - #  the first few walk steps, but validate_backend localizes failures
+        - #  immediately rather than manifesting as a mysterious zero-relation rate.
+        - #
+        - #  KNOWN LIMITATION (first-pass scope)
+        - #  ------------------------------------
+        - #  The interior of build_phi_general!, fp_gauss!, build_N_inplace!, and all
+        - #  poly_* helpers still call the module-level fpmul/fpinv/fp defined in
+        - #  trial3_phi_general.jl (standard Int128 form).  Threading MontgomeryArith
+        - #  into every one of those call sites is the "ground-up rewrite" flagged in
+        - #  the planning session and is out of scope here.
+        - #
+        - #  Concretely: with StandardArith the backend does nothing new (bit-identical
+        - #  to the previous hardcoded version).  With MontgomeryArith, the arithmetic
+        - #  at the boundary (converting anchors/Mumford in; converting mumford keys and
+        - #  roots out) uses Montgomery form, but the interior arithmetic uses the
+        - #  existing standard path.  This is safe — the interior only ever sees
+        - #  standard-form values because from_repr is called before anything enters it —
+        - #  but it means the interior fpmul calls are NOT yet accelerated.  The module
+        - #  structure makes that future substitution surgical: replace fpmul/fpinv/fp
+        - #  calls inside each hot function with fpmul_b(backend,...) once backend is
+        - #  threaded through those function signatures.
+        - # =============================================================================
+        - 
+        - # ---------------------------------------------------------------------------
+        - #  Abstract interface
+        - # ---------------------------------------------------------------------------
+        - abstract type FpArith end
+        - 
+        - # ---------------------------------------------------------------------------
+        - #  StandardArith — identity representation, Int128-widening multiply.
+        - #
+        - #  `p` is stored in the struct so backends are self-contained and don't rely
+        - #  on the global `p` being in scope.  The module-level fpmul in
+        - #  trial3_phi_general.jl still reads the global p directly (unchanged); this
+        - #  struct's p is used only by the backend's own arithmetic methods.
+        - # ---------------------------------------------------------------------------
+        - struct StandardArith <: FpArith
+        0     p::Int
+        - end
+        - 
+        - # ---------------------------------------------------------------------------
+        - #  MontgomeryArith — Montgomery REDC representation.
+        - #
+        - #  Internal representation of a field element x is:  x_mont = x · R mod p
+        - #  where R = 2^64.
+        - #
+        - #  Fields:
+        - #    p         — the prime modulus
+        - #    p_inv_neg — (-p⁻¹) mod 2^64, i.e. UInt64(0) - invmod(p, 2^64)
+        - #                THIS IS THE SIGN THAT MATTERS: the REDC algorithm requires
+        - #                -p⁻¹, not +p⁻¹.  Gemini's original snippet had the wrong
+        - #                sign here, giving 0/200 correct outputs.
+        - #    r2        — R² mod p = (2^64)² mod p, used to convert standard → Montgomery
+        - #                via fpmul_mont(b, x, b.r2).
+        - # ---------------------------------------------------------------------------
+        - struct MontgomeryArith <: FpArith
+        -     p::Int
+        -     p_inv_neg::UInt64
+        -     r2::Int
+        - end
+        - 
+        - # Constructor: derive p_inv_neg and r2 from just p.
+        - function MontgomeryArith(p::Int)
+        -     p > 0 || throw(ArgumentError("MontgomeryArith: p must be positive, got $p"))
+        -     isodd(p) || throw(ArgumentError("MontgomeryArith: p must be odd (Montgomery requires gcd(p,R)=1), got $p"))
+        - 
+        -     # p_inv = p⁻¹ mod 2^64 — NOT mod typemax(UInt64) = 2^64-1. Those are two
+        -     # different moduli (2^64-1 isn't even prime; p⁻¹ mod it is meaningless
+        -     # for REDC, which needs the inverse mod R = 2^64 exactly). Julia's
+        -     # invmod(::UInt64,::UInt64) can't directly target 2^64 since it doesn't
+        -     # fit in a UInt64 argument, so we use Newton's iteration for the inverse
+        -     # mod a power of two instead — the standard REDC technique:
+        -     #   x_{n+1} = x_n * (2 - p*x_n) mod 2^64
+        -     # x=1 is already correct mod 2 (p is odd ⇒ p*1 ≡ 1 mod 2), and each
+        -     # Newton step doubles the number of correct low bits: 1→2→4→8→16→32→64,
+        -     # so 6 iterations suffice. All arithmetic here is UInt64, so wraparound
+        -     # on overflow IS reduction mod 2^64 — no explicit masking needed.
+        -     p64   = UInt64(p)
+        -     x     = UInt64(1)
+        -     for _ in 1:6   # 1 correct bit → 64 correct bits in 6 doublings
+        -         x = x * (UInt64(2) - p64 * x)
+        -     end
+        -     p_inv     = x                      # p64 * p_inv ≡ 1 (mod 2^64)
+        -     p_inv_neg = UInt64(0) - p_inv      # negate mod 2^64 to get -p⁻¹
+        - 
+        -     # r2 = R² mod p = (2^64 mod p)² mod p.
+        -     # Compute via Int128 to avoid overflow.
+        -     R_mod_p = Int(UInt128(1) << 64 % UInt128(p))
+        -     r2      = Int((widen(R_mod_p) * widen(R_mod_p)) % p)
+        - 
+        -     MontgomeryArith(p, p_inv_neg, r2)
+        - end
+        - 
+        - # ---------------------------------------------------------------------------
+        - #  StandardArith interface implementation
+        - # ---------------------------------------------------------------------------
+        - 
+        - @inline to_repr(::StandardArith, x::Int)::Int = x
+        - @inline from_repr(::StandardArith, x::Int)::Int = x
+        - 
+        - @inline function fp_b(b::StandardArith, x::Int)::Int
+        -     r = x % b.p
+        -     r < 0 ? r + b.p : r
+        - end
+        - 
+        - @inline function fpmul_b(b::StandardArith, a::Int, x::Int)::Int
+        -     r = (widen(a) * widen(x)) % b.p
+        -     r = r < 0 ? r + b.p : r
+        -     r % Int
+        - end
+        - 
+        - @inline function fpadd_b(b::StandardArith, a::Int, x::Int)::Int
+        -     r = a + x
+        -     r >= b.p ? r - b.p : r
+        - end
+        - 
+        - @inline function fpsub_b(b::StandardArith, a::Int, x::Int)::Int
+        -     r = a - x
+        -     r < 0 ? r + b.p : r
+        - end
+        - 
+        - @inline function fpinv_b(b::StandardArith, a::Int)::Int
+        -     a = fp_b(b, a)
+        -     a == 0 && throw(DomainError(a, "fpinv_b(StandardArith): zero has no inverse"))
+        -     a == 1 && return 1
+        -     r = 1; base = a; e = b.p - 2
+        -     while e > 0
+        -         isodd(e) && (r = fpmul_b(b, r, base))
+        -         base = fpmul_b(b, base, base)
+        -         e >>= 1
+        -     end
+        -     return r
+        - end
+        - 
+        - @inline iszero_b(::StandardArith, x::Int)::Bool = x == 0
+        - 
+        - # ---------------------------------------------------------------------------
+        - #  MontgomeryArith interface implementation
+        - # ---------------------------------------------------------------------------
+        - 
+        - # Core REDC kernel.  Given T = a·b (a,b in Montgomery form, both < p),
+        - # computes T·R⁻¹ mod p — i.e. the Montgomery form of (a_std · b_std mod p).
+        - #
+        - # Algorithm (standard REDC):
+        - #   m = (T mod R) * (-p⁻¹) mod R     [low 64 bits of T, times p_inv_neg, low 64 bits]
+        - #   u = (T + m·p) >> 64               [shift out the bottom 64 bits, which are 0 by construction]
+        - #   return u >= p ? u - p : u
+        - #
+        - # We compute T = widemul(a, b) :: UInt128, then extract low 64 as UInt64 for
+        - # the m computation, then shift.  The final result is in [0, p) as an Int.
+        - @inline function fpmul_mont(b::MontgomeryArith, a::Int, x::Int)::Int
+        -     T = widemul(UInt64(a), UInt64(x))           # a*x, 128-bit, no overflow
+        -     m = UInt64(T) * b.p_inv_neg                  # (T mod 2^64) * (-p^{-1}) mod 2^64
+        -     u = Int((T + widemul(m, UInt64(b.p))) >> 64) # REDC: (T + m*p) / 2^64
+        -     u >= b.p ? u - b.p : u
+        - end
+        - 
+        - # to_repr: convert standard x ∈ [0,p) to Montgomery form x·R mod p.
+        - # This is just fpmul_mont(b, x, r2), since r2 = R² mod p and
+        - # fpmul_mont computes the product * R⁻¹, giving x * R² * R⁻¹ = x·R.
+        - @inline to_repr(b::MontgomeryArith, x::Int)::Int = fpmul_mont(b, x, b.r2)
+        - 
+        - # from_repr: convert Montgomery form x·R mod p back to standard x.
+        - # Multiply by 1: fpmul_mont(b, x_mont, 1) = x·R·1·R⁻¹ = x.
+        - @inline from_repr(b::MontgomeryArith, x::Int)::Int = fpmul_mont(b, x, 1)
+        - 
+        - @inline function fp_b(b::MontgomeryArith, x::Int)::Int
+        -     # fp_b for MontgomeryArith: reduce x (which may be outside [0,p)) into [0,p).
+        -     # Values arrive here in Montgomery representation; the "reduce mod p" step
+        -     # is just a conditional subtraction if x ∈ [0, 2p), or a full % for larger.
+        -     # Since all our arithmetic never goes above 2p-2 between fpmul_mont calls,
+        -     # the fast path covers essentially all cases.
+        -     x < 0     && return x + b.p
+        -     x >= b.p  && return x - b.p
+        -     return x
+        - end
+        - 
+        - @inline function fpmul_b(b::MontgomeryArith, a::Int, x::Int)::Int
+        -     fpmul_mont(b, a, x)
+        - end
+        - 
+        - @inline function fpadd_b(b::MontgomeryArith, a::Int, x::Int)::Int
+        -     r = a + x
+        -     r >= b.p ? r - b.p : r
+        - end
+        - 
+        - @inline function fpsub_b(b::MontgomeryArith, a::Int, x::Int)::Int
+        -     r = a - x
+        -     r < 0 ? r + b.p : r
+        - end
+        - 
+        - # fpinv_b under Montgomery: Fermat ladder run ENTIRELY IN MONTGOMERY FORM.
+        - # The base is already in Montgomery form (a_mont = a·R mod p).
+        - # Each squaring/multiply uses fpmul_mont, so the result is (a^(p-2))·R mod p,
+        - # which IS the Montgomery form of a^(p-2) mod p = a⁻¹ mod p.  Correct.
+        - #
+        - # Initial r = to_repr(b, 1) = R mod p = "the number 1 in Montgomery form".
+        - @inline function fpinv_b(b::MontgomeryArith, a::Int)::Int
+        -     # a should be in Montgomery form; check for zero in standard form
+        -     a_std = from_repr(b, a)
+        -     a_std == 0 && throw(DomainError(a, "fpinv_b(MontgomeryArith): zero has no inverse"))
+        - 
+        -     r    = to_repr(b, 1)   # multiplicative identity in Montgomery form
+        -     base = a
+        -     e    = b.p - 2
+        -     while e > 0
+        -         isodd(e) && (r = fpmul_mont(b, r, base))
+        -         base = fpmul_mont(b, base, base)
+        -         e >>= 1
+        -     end
+        -     return r
+        - end
+        - 
+        - # Zero is representation-invariant: 0·R mod p = 0 for any R, so the standard
+        - # == 0 check is correct in Montgomery form as well.
+        - @inline iszero_b(::MontgomeryArith, x::Int)::Bool = x == 0
+        - 
+        - # ---------------------------------------------------------------------------
+        - #  validate_backend(backend; n_trials, p_override)
+        - #
+        - #  Cross-checks every backend operation against StandardArith over n_trials
+        - #  random inputs drawn from [0, p).  Throws AssertionError on first mismatch.
+        - #
+        - #  Call this once from main() before spawning walk workers when using any
+        - #  non-Standard backend.  Runtime: O(n_trials) * O(log p) for the fpinv trials,
+        - #  negligible vs walk startup.
+        - # ---------------------------------------------------------------------------
+        - function validate_backend(backend::B; n_trials::Int = 10_000) where {B<:FpArith}
+        -     std = StandardArith(backend.p)
+        -     p   = backend.p
+        - 
+        -     for _ in 1:n_trials
+        -         a = rand(0:p-1)
+        -         b_val = rand(0:p-1)
+        - 
+        -         # Round-trip: to_repr then from_repr must be identity
+        -         @assert from_repr(backend, to_repr(backend, a)) == a    "repr round-trip failed for a=$a"
+        - 
+        -         # fpmul_b: compute a*b in both backends, compare standard outputs
+        -         prod_std  = fpmul_b(std, a, b_val)
+        -         a_r       = to_repr(backend, a)
+        -         b_r       = to_repr(backend, b_val)
+        -         prod_back = from_repr(backend, fpmul_b(backend, a_r, b_r))
+        -         @assert prod_back == prod_std    "fpmul_b mismatch: a=$a b=$b_val std=$prod_std backend=$prod_back"
+        - 
+        -         # fpadd_b
+        -         sum_std  = fpadd_b(std, a, b_val)
+        -         sum_back = from_repr(backend, fpadd_b(backend, a_r, b_r))
+        -         @assert sum_back == sum_std    "fpadd_b mismatch: a=$a b=$b_val std=$sum_std backend=$sum_back"
+        - 
+        -         # fpsub_b
+        -         dif_std  = fpsub_b(std, a, b_val)
+        -         dif_back = from_repr(backend, fpsub_b(backend, a_r, b_r))
+        -         @assert dif_back == dif_std    "fpsub_b mismatch: a=$a b=$b_val std=$dif_std backend=$dif_back"
+        - 
+        -         # fpinv_b — only for nonzero a
+        -         if a != 0
+        -             inv_std  = fpinv_b(std, a)
+        -             inv_back = from_repr(backend, fpinv_b(backend, a_r))
+        -             @assert inv_back == inv_std    "fpinv_b mismatch: a=$a std=$inv_std backend=$inv_back"
+        -         end
+        -     end
+        - 
+        -     println("validate_backend: $(typeof(backend)) passed $n_trials trials (p=$(backend.p))")
+        -     return nothing
+        - end

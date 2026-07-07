@@ -1,0 +1,678 @@
+        - # ==============================================================================
+        - # 06_monomial_columns.jl
+        - # Split fragment of trial3_phi_general.jl (lines 1738-2405 of original).
+        - # NOT standalone-includable yet -- wiring/includes to be sorted out separately.
+        - # ==============================================================================
+        - 
+        - function monomial_series_coeffs!(
+        -     out::AbstractVector{Int},
+        -     i::Int,
+        -     j::Int,
+        -     px::Int,
+        -     y_ser::AbstractVector{Int},
+        -     m::Int,
+        -     xi_scratch::AbstractVector{Int},
+        -     binom_scratch::AbstractVector{Int},
+        -     pxpow_table::AbstractVector{Int},
+        -     small_inv::AbstractVector{Int},
+        -     backend::B = StandardArith(p);
+        -     xi_cache_i::Union{AbstractVector{Int},Nothing} = nothing,
+        -     xi_cache_px::Union{AbstractVector{Int},Nothing} = nothing,
+        -     xi_cache_m::Union{AbstractVector{Int},Nothing} = nothing,
+        -     xi_cache_buf::Union{AbstractVector{Int},Nothing} = nothing,
+        - )::Nothing where {B<:FpArith}
+        - 
+        0     @assert length(out) >= m
+        0     @assert j == 0 || j == 1 "unexpected monomial x^$i y^$j"
+        0     fill!(out, 0)
+        - 
+        -     maxs = min(i, m - 1)
+        - 
+        -     # Memoized path used whenever the caller supplies the four cache
+        -     # buffers (every real call site does, via fill_monomial_block! ->
+        -     # _monomial_column! -> here, threaded from scratch). The keyword
+        -     # defaults to `nothing` rather than making this non-optional so any
+        -     # older/external caller that only ever passes the original positional
+        -     # arguments still gets correct (just unmemoized) behaviour instead of
+        -     # a MethodError — a deliberately soft migration path, not a permanent
+        -     # feature.
+        -     if xi_cache_i !== nothing
+        0         _xi_series_cached!(xi_scratch, i, px, m, binom_scratch, pxpow_table,
+        -                             small_inv, xi_cache_i, xi_cache_px, xi_cache_m,
+        -                             xi_cache_buf, backend)
+        -     else
+        -         fill!(xi_scratch, 0)
+        -         binom_scratch[1] = to_repr(backend, 1)
+        -         for s in 1:maxs
+        -             binom_scratch[s + 1] =
+        -                 fpmul_b(backend, binom_scratch[s],
+        -                         fpmul_b(backend, to_repr(backend, i - s + 1), small_inv[s]))
+        -         end
+        -         for s in 0:maxs
+        -             xi_scratch[s + 1] = fpmul_b(backend, binom_scratch[s + 1], pxpow_table[i - s + 1])
+        -         end
+        -     end
+        - 
+        0     if j == 0
+        0         @inbounds copyto!(out, 1, xi_scratch, 1, m)
+        0         return nothing
+        -     end
+        - 
+        0     @assert j == 1
+        - 
+        0     @inbounds for a in 0:m-1
+        0         xa = xi_scratch[a + 1]
+        0         xa == 0 && continue
+        - 
+        0         for b in 0:(m - 1 - a)
+        0             out[a + b + 1] = fpadd_b(
+        -                 backend,
+        -                 out[a + b + 1],
+        -                 fpmul_b(backend, xa, y_ser[b + 1]),
+        -             )
+        0         end
+        0     end
+        - 
+        -     # Constant coefficient sanity check.
+        0     @assert out[1] ==
+        -         fpmul_b(backend, pxpow_table[i + 1], y_ser[1])
+        - 
+        0     return nothing
+        - end
+        - 
+        - 
+        - @inline function build_xpow_cache!(
+        -     xpow::Vector{Int},
+        -     px::Int,
+        -     maxdeg::Int,
+        -     backend::B
+        - ) where {B<:FpArith}
+        -     px_b  = to_repr(backend, px)
+        -     one_b = to_repr(backend, 1)
+        - 
+        -     xpow[1] = one_b
+        - 
+        -     @assert xpow[1] == one_b
+        - 
+        -     @inbounds begin
+        -         xpow[2] = px_b
+        -         for i in 2:maxdeg
+        -             xpow[i+1] = fpmul_b(backend, xpow[i], px_b)
+        -         end
+        -     end
+        - 
+        -     # sanity checks
+        -     @assert xpow[2] == px_b
+        -     @assert xpow[3] == fpmul_b(backend, px_b, px_b)
+        - end
+        - 
+        - # ---------------------------------------------------------------------------
+        - #  fill_f_tay!(f_tay, px, deriv_power_cache, backend) — populate the F_x(px)
+        - #  entry branch_series! needs for its m=2 (single-tangency) path.
+        - #
+        - #  For the hyperelliptic model F(x,y) = y^2 - f(x), the pure-x partial
+        - #  derivative is F_x(x,y) = -f'(x) — independent of y, since f(x) contributes
+        - #  no y-dependence and the y^2 term contributes nothing to an x-derivative.
+        - #  branch_series! only reads f_tay[2] on the m==2 path (the `for s in 2:m-1`
+        - #  higher-jet loop is empty when m==2), so only the first derivative is
+        - #  needed here; a future m>=3 (higher-tangency) caller would need this
+        - #  extended to f_tay[3..] = -f''(px), -f'''(px), etc.
+        - #
+        - #  f'(x) is evaluated via the standard derivative-coefficient rule on
+        - #  F_POLY_DESC (descending powers: F_POLY_DESC[1] is the coefficient of the
+        - #  highest-degree term, matching init_phi_general_caches!'s construction),
+        - #  using Horner's method entirely in backend representation so this composes
+        - #  correctly with the Montgomery-vs-Standard backend already threaded
+        - #  through every other hot-path function in this file.
+        - #
+        - #  PERFORMANCE: this runs on every m>=2 branch_series! call — every anchor,
+        - #  every phi construction, every walk step, for the whole run — so it's one
+        - #  of the hottest loops in the pipeline (see the "branch_series" bucket in
+        - #  PhiTimingStats). The set of `power` values here (deg, deg-1, ..., 1) is
+        - #  fixed by F_POLY_DESC's degree alone, independent of px, so
+        - #  to_repr(backend, power) was pure repeated work: under MontgomeryArith a
+        - #  real multiply into Montgomery form on every iteration of every call;
+        - #  even under StandardArith (to_repr = identity) an avoidable function-call
+        - #  no-op at this call volume. deriv_power_cache is precomputed once per
+        - #  thread by init_scratch_caches! (scratch.deriv_power_cache[power+1] =
+        - #  to_repr(backend, power)) and passed in here, turning this loop into pure
+        - #  fpmul_b/fpadd_b with zero to_repr calls.
+        - # ---------------------------------------------------------------------------
+        - @inline function fill_f_tay!(
+        -     f_tay::AbstractVector{Int},
+        -     px::Int,
+        -     deriv_power_cache::AbstractVector{Int},
+        -     backend::B
+        - ) where {B<:FpArith}
+        -     @assert length(f_tay) >= 2 "fill_f_tay!: f_tay buffer (length $(length(f_tay))) too small to hold f_tay[2] (F_x(px))"
+        -     @assert !isempty(F_POLY_DESC) "fill_f_tay!: F_POLY_DESC is empty — init_phi_general_caches! must run before any m>1 (tangency) branch_series! call"
+        - 
+        -     # CONTRACT: px arrives ALREADY in backend representation. Every call
+        -     # site (compute_branch_series! <- build_phi_general!'s anchor loop)
+        -     # passes anchors_b[a][1], which was converted via to_repr once, up
+        -     # front, at anchors_b construction time (see build_phi_general!,
+        -     # "Convert inputs once (no repeated conversions later)"). Do NOT
+        -     # call to_repr(backend, px) here — under StandardArith that's a
+        -     # harmless no-op (to_repr = identity), but under MontgomeryArith
+        -     # to_repr is NOT idempotent (to_repr(x) = x*R mod p), so re-applying
+        -     # it produces x*R^2 mod p instead of x*R mod p: a silently-wrong
+        -     # value that only manifests with the Montgomery backend. This is the
+        -     # same double-conversion hazard already called out at
+        -     # build_xpow_cache!'s call site above — fill_f_tay! just didn't get
+        -     # the same fix.
+        -     px_b = px
+        -     deg  = length(F_POLY_DESC) - 1   # F_POLY_DESC has deg+1 coefficients, descending
+        - 
+        -     @assert length(deriv_power_cache) >= deg + 1 "fill_f_tay!: deriv_power_cache (length $(length(deriv_power_cache))) too small for deg=$deg — was init_scratch_caches! run against a different F_POLY_DESC than this call is using?"
+        - 
+        -     # Derivative coefficients (descending): d/dx of c_k * x^k is k*c_k*x^(k-1).
+        -     # Horner-evaluate sum_{k=1}^{deg} k*c_k*px^(k-1) directly, without
+        -     # materializing a separate derivative-coefficient array — same
+        -     # zero-allocation discipline as the rest of the hot path. zero_b is the
+        -     # k=0 slot of the same cache (deriv_power_cache[1] = to_repr(backend,0)),
+        -     # reused here instead of a fresh to_repr(backend, 0) call.
+        -     @inbounds zero_b = deriv_power_cache[1]
+        -     acc = zero_b
+        -     @inbounds for idx in 1:deg   # idx corresponds to F_POLY_DESC[idx], power = deg-idx+1
+        -         power = deg - idx + 1
+        -         power == 0 && break     # constant term has zero derivative; nothing left to add
+        -         coeff_k = fpmul_b(backend, deriv_power_cache[power + 1], F_POLY_DESC[idx])
+        -         acc = fpadd_b(backend, fpmul_b(backend, acc, px_b), coeff_k)
+        -     end
+        - 
+        -     # F_x(px) = -f'(px)
+        -     @inbounds f_tay[2] = fpsub_b(backend, zero_b, acc)
+        - 
+        -     return nothing
+        - end
+        - 
+        - @inline function compute_branch_series!(
+        -     out_y,
+        -     px, py,
+        -     m,
+        -     scratch,
+        -     backend::B
+        - ) where {B<:FpArith}
+        - 
+        - 
+        -     m >= 2 && fill_f_tay!(scratch.f_tay, px, scratch.deriv_power_cache, backend)
+        -     branch_series!(out_y, px, py, m, scratch.f_tay, scratch.poly_buf, backend)
+        - 
+        -     # key invariant: constant term must match backend evaluation
+        -     y0 = from_repr(backend, out_y[1])
+        -     py_raw = from_repr(backend, py)
+        -     @assert y0 == py_raw "compute_branch_series!: out_y[1]=$y0 != anchor py=$py_raw — branch series constant term must equal the anchor's own y-coordinate"
+        - 
+        -     # DEFENSIVE ASSERT (tangency correctness): independently verify the
+        -     # implicit-differentiation identity 2*py*y' == f'(px) directly against
+        -     # a FRESH, standalone evaluation of f'(px) — computed here via its own
+        -     # Horner pass over F_POLY_DESC, deliberately NOT by calling
+        -     # fill_f_tay! again or reusing scratch.f_tay. The point is to catch a
+        -     # sign/indexing bug in fill_f_tay! or in branch_series!'s use of it
+        -     # (e.g. f_tay populated with the wrong sign, or branch_series!
+        -     # combining it with Fy_inv incorrectly) at the exact place it would
+        -     # first manifest, rather than three call-frames later as an opaque
+        -     # "phi_val == 0" failure in step_phi_k! that gives no hint about
+        -     # WHICH of the many moving pieces (f_tay's sign, Fy's sign, the
+        -     # column-fill for x^i's derivative coefficient, the RHS derivative
+        -     # row) is actually wrong.
+        -     #
+        -     # PERFORMANCE: this re-derives f'(px) via the exact same O(deg) Horner
+        -     # pass fill_f_tay! just ran two lines above — on every m>=2 call, i.e.
+        -     # every anchor of every phi construction of every walk step for the
+        -     # whole run. That duplication earned its keep while fill_f_tay! and
+        -     # branch_series! were under active development (see their own bugfix
+        -     # comments — this assert is what would have caught those bugs at the
+        -     # source rather than downstream). Now that both are trusted, gate the
+        -     # duplicate work behind BRANCH_SERIES_TANGENT_CHECK so production runs
+        -     # don't pay for it; set JULIA_TRIAL3_BRANCH_SERIES_CHECK=1 to bring it
+        -     # back for debugging a fill_f_tay!/branch_series! regression. The
+        -     # constant-term check above (y0 == py_raw) always runs — it's one
+        -     # comparison, not a Horner pass, so there's nothing to gate there.
+        -     if BRANCH_SERIES_TANGENT_CHECK && m >= 2
+        -         px_raw = from_repr(backend, px)
+        -         deg = length(F_POLY_DESC) - 1
+        -         fprime_acc = to_repr(backend, 0)
+        -         @inbounds for idx in 1:deg
+        -             power = deg - idx + 1
+        -             power == 0 && break
+        -             coeff_k = fpmul_b(backend, to_repr(backend, power), F_POLY_DESC[idx])
+        -             fprime_acc = fpadd_b(backend, fpmul_b(backend, fprime_acc, px), coeff_k)
+        -         end
+        -         lhs = fpmul_b(backend, fpmul_b(backend, to_repr(backend, 2), py), out_y[2])
+        -         @assert lhs == fprime_acc "compute_branch_series!: tangent-slope identity 2*py*y' == f'(px) FAILED at px=$px_raw py=$py_raw — got 2*py*y'=$(from_repr(backend,lhs)), f'(px)=$(from_repr(backend,fprime_acc)) (backend repr: lhs=$lhs rhs=$fprime_acc, out_y[2]=$(out_y[2]), f_tay[2]=$(scratch.f_tay[2])). This means fill_f_tay!'s sign/value or branch_series!'s use of f_tay[2] is wrong, NOT a downstream row/column bookkeeping bug — check those two before anything else."
+        -     end
+        - end
+        - 
+        - @inline function _check_basis_cache_consistency!(
+        -     basis,
+        -     pxpow_buf
+        - )
+        -     max_i = 0
+        -     @inbounds for (i, _) in basis
+        -         if i > max_i
+        -             max_i = i
+        -         end
+        -     end
+        - 
+        -     @assert length(pxpow_buf) >= max_i + 1
+        - end
+        - 
+        - @inline function _monomial_column!(
+        -     ser_buf,
+        -     scratch,
+        -     i::Int,
+        -     j::Int,
+        -     px::Int,
+        -     out_y,
+        -     m::Int,
+        -     backend::B
+        - ) where {B<:FpArith}
+        - 
+        -     @assert j == 0 || j == 1
+        -     @assert m == 1 || m == 2 "_monomial_column!: m=$m unsupported — only m=1 (plain evaluation) and m=2 (single tangency, requires f_tay[2]=F_x(px) to be populated) are implemented; higher-order tangency (m>=3) needs fill_f_tay! extended to f_tay[3..] and branch_series!'s F_yy cross-term handled explicitly"
+        - 
+        -     monomial_series_coeffs!(
+        -         ser_buf,
+        -         i, j,
+        -         px,
+        -         out_y,
+        -         m,
+        -         scratch.xi_buf,
+        -         scratch.binom_buf,
+        -         scratch.pxpow_buf,
+        -         scratch.small_inv,
+        -         backend;
+        -         xi_cache_i   = scratch.xi_cache_i,
+        -         xi_cache_px  = scratch.xi_cache_px,
+        -         xi_cache_m   = scratch.xi_cache_m,
+        -         xi_cache_buf = scratch.xi_cache_buf,
+        -     )
+        - 
+        -     return nothing
+        - end
+        - 
+        - @inline function _write_column!(
+        -     A_mat,
+        -     rhs_vec,
+        -     row_idx::Int,
+        -     col::Int,
+        -     ser_buf,
+        -     m::Int
+        - )
+        -     # WILLY-NILLY ASSERT: A_mat is a stack-allocated MMatrix{N,N,Int} — an
+        -     # @inbounds write past N here is not a bounds error, it's memory
+        -     # corruption / segfault territory. Check before the @inbounds loop.
+        -     @assert row_idx + m - 1 <= size(A_mat, 1) "_write_column!: row_idx=$row_idx m=$m would write row $(row_idx+m-1) past A_mat's $(size(A_mat,1)) rows"
+        -     @assert col >= 1 && col <= size(A_mat, 2) "_write_column!: col=$col out of range 1:$(size(A_mat,2))"
+        -     @assert length(ser_buf) >= m
+        - 
+        -     # ACTUAL FIX: this previously wrote to A_mat[row_idx + s + 1, col],
+        -     # i.e. row_idx+1 for the (m=1)-only case this file actually uses. The
+        -     # caller's contract (see build_phi_general!'s anchor loop: row_idx
+        -     # starts at 1 for the FIRST anchor, and is advanced by exactly `m`
+        -     # per anchor so it lands on K+1 for the Mumford block) is unambiguous:
+        -     # the write for a given anchor belongs at row_idx itself, not
+        -     # row_idx+1. The extra +1 silently skipped row_idx entirely for every
+        -     # single anchor — for K=2 this left row 1 (anchor #1's equation)
+        -     # completely unwritten (all-zero, matrix AND rhs, since fill_rhs! had
+        -     # the identical off-by-one — see below), while anchor #1's real values
+        -     # landed one row down, in what should have been anchor #2's row.
+        -     # Anchor K's write similarly landed in row K+1 — the Mumford block's
+        -     # first row — and was then silently clobbered by fill_mumford_block!,
+        -     # which correctly writes to row_idx (no +1). Net effect for K=2:
+        -     # anchor #1 lost entirely (row 1 all-zero), anchor #2's equation
+        -     # placed in row 2, and anchor #2's write ALSO landed in row 3
+        -     # (K+1=3), immediately overwritten by the Mumford block — so only ONE
+        -     # real anchor constraint (anchor #2, relocated to row 2) ever made it
+        -     # into the system, alongside 2 valid Mumford rows and 1 dangling
+        -     # all-zero row. A 4-unknown system with only 3 independent equations
+        -     # (1 anchor + 2 Mumford) is singular by construction — not a rare
+        -     # "special position" coincidence, and not a rank issue with the
+        -     # Mumford block or the RR dimension: exactly the ~100% failure rate
+        -     # observed in the field trace, and exactly consistent with the raw
+        -     # (pre-elimination) snapshot fp_gauss! now captures (row 1 = all
+        -     # zero including its own RHS entry).
+        -     #
+        -     # For K=1 this bug was invisible: the single anchor's row_idx=1 write
+        -     # landed at row 2 = K+1 = the Mumford block's row0, which
+        -     # fill_mumford_block! then immediately overwrote with the CORRECT
+        -     # Mumford row0 values anyway — so the off-by-one's only symptom for
+        -     # K=1 was silently discarding the (only) anchor's equation and
+        -     # ending up with a 3x3 system built from 0 anchor rows + 2 Mumford
+        -     # rows... which is only 2 independent equations for 3 unknowns, i.e.
+        -     # should ALSO have been singular. That it apparently wasn't (K=1 ran
+        -     # successfully before this fix) needs re-checking once this lands —
+        -     # it's possible build_phi_mumford's closed-form path (trial3_phi.jl)
+        -     # was actually what ran for K=1's hot path rather than this general
+        -     # code, in which case this bug may have been entirely latent until
+        -     # K=2 was reached for the first time.
+        -     @inbounds for s in 0:(m-1)
+        -         A_mat[row_idx + s, col] = ser_buf[s + 1]
+        -     end
+        - end
+        - 
+        - @inline function fill_monomial_block!(
+        -     A_mat,
+        -     rhs_vec,
+        -     row_idx::Int,
+        -     basis,
+        -     y_idx::Int,
+        -     px,
+        -     out_y,
+        -     m::Int,
+        -     scratch,
+        -     backend::B
+        -     ) where {B<:FpArith}
+        - 
+        -     n = length(basis)   # n == nb == N2 + 1 (N2 unknowns + 1 normalised element)
+        - 
+        -     _check_basis_cache_consistency!(basis, scratch.pxpow_buf)
+        - 
+        -     @assert m == 1 || m == 2 "fill_monomial_block!: m=$m unsupported — only m=1 (plain evaluation) and m=2 (single tangency) are implemented"
+        -     @assert length(out_y) >= m + 1
+        - 
+        -     # DEFENSIVE ASSERT: y_idx must be a real, in-range basis index, and it
+        -     # must actually point at the y-monomial (0,1) — this is the ONLY
+        -     # element this function is allowed to skip when mapping basis indices
+        -     # to A_mat columns. Checking `basis[y_idx] == (0,1)` here (not just
+        -     # `1 <= y_idx <= n`) means a caller that passes a stale/wrong y_idx
+        -     # (e.g. computed against a differently-ordered basis, or against the
+        -     # wrong nb) gets caught at the point of use instead of silently
+        -     # normalizing/skipping the wrong monomial — which is exactly the class
+        -     # of bug (basis[end] assumed to be y when it wasn't) that caused the
+        -     # original K=2 failure.
+        -     @assert 1 <= y_idx <= n "fill_monomial_block!: y_idx=$y_idx out of range 1:$n"
+        -     @assert basis[y_idx] == (0, 1) "fill_monomial_block!: basis[y_idx=$y_idx]=$(basis[y_idx]) is not the y-monomial (0,1) — caller passed the wrong normalization index for this basis ($basis)"
+        - 
+        -     # ACTUAL FIX: A_mat has N2 = K+2 = n-1 columns, one per UNKNOWN
+        -     # coefficient — every basis element EXCEPT the y-monomial at y_idx
+        -     # (wherever pole-order sorting actually placed it), not "every basis
+        -     # element except basis[end]". The old code always skipped basis[end],
+        -     # which is only correct when y happens to sort last (true for K=1's
+        -     # nb=4, false for K=2's nb=5 — see rr_basis_cached's hard assert for
+        -     # the full explanation of why basis[end] and "the normalized element"
+        -     # are NOT interchangeable in general).
+        -     #
+        -     # Column assignment: basis indices 1..n except y_idx map, in order, to
+        -     # A_mat columns 1..n_cols. This preserves the previous column order for
+        -     # every index before y_idx, and shifts everything after y_idx down by
+        -     # one column — so for the common K=1 case (y_idx==n) this is byte-for-
+        -     # byte identical to the old "col in 1:n_cols, basis[col]" loop.
+        -     n_cols = n - 1
+        -     @assert n_cols == size(A_mat, 2) "fill_monomial_block!: computed n_cols=$n_cols (basis length $n minus the normalised element) but A_mat has $(size(A_mat,2)) columns"
+        - 
+        -     col = 0
+        -     for bidx in 1:n
+        -         bidx == y_idx && continue
+        -         col += 1
+        - 
+        -         i, j = basis[bidx]
+        - 
+        -         _monomial_column!(
+        -             scratch.ser_buf,
+        -             scratch,
+        -             i, j,
+        -             px,
+        -             out_y,
+        -             m,
+        -             backend
+        -         )
+        - 
+        -         _write_column!(
+        -             A_mat,
+        -             rhs_vec,
+        -             row_idx,
+        -             col,
+        -             scratch.ser_buf,
+        -             m
+        -         )
+        -     end
+        - 
+        -     # DEFENSIVE ASSERT: we must have written exactly n_cols columns — i.e.
+        -     # the skip-y_idx loop above visited every OTHER basis index exactly
+        -     # once. This is really just `n - 1 == n_cols`, but stated as a
+        -     # post-loop invariant on `col` (not just an arithmetic identity on `n`)
+        -     # so a future refactor that changes the loop body without updating
+        -     # this check fails loudly instead of leaving a hole in A_mat's columns.
+        -     @assert col == n_cols "fill_monomial_block!: wrote $col columns but expected n_cols=$n_cols — the skip-y_idx=$y_idx loop over 1:$n did not visit exactly n_cols indices"
+        - end
+        - 
+        - 
+        - @inline function fill_rhs!(
+        -     rhs_vec,
+        -     row_idx,
+        -     basis,
+        -     i_norm,
+        -     j_norm,
+        -     px,
+        -     out_y,
+        -     m,
+        -     scratch,
+        -     backend::B
+        - ) where {B<:FpArith}
+        - 
+        -     monomial_series_coeffs!(
+        -         scratch.ser_buf,
+        -         i_norm, j_norm,
+        -         px,
+        -         out_y,
+        -         m,
+        -         scratch.xi_buf,
+        -         scratch.binom_buf,
+        -         scratch.pxpow_buf,
+        -         scratch.small_inv,
+        -         backend;
+        -         xi_cache_i   = scratch.xi_cache_i,
+        -         xi_cache_px  = scratch.xi_cache_px,
+        -         xi_cache_m   = scratch.xi_cache_m,
+        -         xi_cache_buf = scratch.xi_cache_buf
+        -     )
+        - 
+        -     # ACTUAL FIX: matching off-by-one to _write_column!'s — this wrote to
+        -     # rhs_vec[row_idx + s + 1], skipping row_idx itself. See _write_column!
+        -     # for the full analysis; the two bugs combined to leave anchor rows'
+        -     # RHS entries at row_idx+1 instead of row_idx, which is why the
+        -     # all-zero row in the field trace was all-zero in BOTH the matrix AND
+        -     # its own b0 entry (b0[1]=0) — this fix and _write_column!'s must land
+        -     # together, or the matrix and RHS rows disagree about which row is
+        -     # which.
+        -     @assert row_idx + m - 1 <= length(rhs_vec) "fill_rhs!: row_idx=$row_idx m=$m would write past rhs_vec length $(length(rhs_vec))"
+        -     for s in 0:(m-1)
+        -         rhs_vec[row_idx + s] = fpsub_b(backend, 0, scratch.ser_buf[s+1])
+        -     end
+        - end
+        - 
+        - # ---------------------------------------------------------------------------
+        - #  build_xmodu_cache!(r0_buf, r1_buf, u0, u1, max_i, backend)
+        - #
+        - #  ACTUAL FIX (previously-missing piece): ThreadScratchpad's field comments
+        - #  (section 11) document x_pow_mod_u_r0/r1 as "filled once per step" by
+        - #  build_phi_general! so reduce_monomial_mod_D_cached can do O(1) lookups —
+        - #  but nothing anywhere in this file ever wrote them; every caller was
+        - #  reading zero-initialized (or stale, leftover-from-a-different-(u0,u1))
+        - #  garbage. This function is the actual fill, in the SAME backend
+        - #  representation as the rest of A_mat/rhs_vec (so Mumford rows built from
+        - #  it are numerically consistent with the anchor rows built via fpmul_b).
+        - #
+        - #  r0_buf[i+1], r1_buf[i+1] = (x^i mod u(x)) as a linear poly a0 + a1*x,
+        - #  for i = 0..max_i, using the same two-register recurrence as
+        - #  reduce_xi_mod_u but entirely in backend representation.
+        - # ---------------------------------------------------------------------------
+        - @inline function build_xmodu_cache!(
+        -     r0_buf, r1_buf,
+        -     u0::Int, u1::Int,
+        -     max_i::Int,
+        -     backend::B
+        - ) where {B<:FpArith}
+        -     @assert max_i >= 0 "build_xmodu_cache!: max_i=$max_i must be >= 0"
+        -     @assert max_i + 1 <= length(r0_buf) "build_xmodu_cache!: max_i+1=$(max_i+1) exceeds r0_buf length $(length(r0_buf))"
+        -     @assert max_i + 1 <= length(r1_buf) "build_xmodu_cache!: max_i+1=$(max_i+1) exceeds r1_buf length $(length(r1_buf))"
+        -     @assert length(r0_buf) == length(r1_buf) "build_xmodu_cache!: r0_buf/r1_buf length mismatch ($(length(r0_buf)) vs $(length(r1_buf)))"
+        - 
+        -     u0_b = to_repr(backend, u0)
+        -     u1_b = to_repr(backend, u1)
+        -     zero_b = to_repr(backend, 0)
+        -     one_b  = to_repr(backend, 1)
+        - 
+        -     @inbounds r0_buf[1] = one_b;  r1_buf[1] = zero_b   # x^0 = 1
+        - 
+        -     max_i == 0 && return nothing
+        - 
+        -     @inbounds r0_buf[2] = zero_b; r1_buf[2] = one_b    # x^1 = x
+        - 
+        -     @inbounds for i in 2:max_i
+        -         prev_r0 = r0_buf[i]
+        -         prev_r1 = r1_buf[i]
+        -         # x * (prev_r0 + prev_r1*x) ≡ -prev_r1*u0 + (prev_r0 - prev_r1*u1)*x
+        -         r0_buf[i+1] = fpsub_b(backend, zero_b, fpmul_b(backend, prev_r1, u0_b))
+        -         r1_buf[i+1] = fpsub_b(backend, prev_r0, fpmul_b(backend, prev_r1, u1_b))
+        -         # HARD ASSERT: (r0,r1) representing x^(i) mod u(x) must never both be
+        -         # zero for a monic degree-2 u(x) with u0 != 0 (x^i ≡ 0 mod u(x) with
+        -         # u0 != 0 would force x | u(x)'s inverse chain to degenerate, which
+        -         # can't happen for i < ell — this is a finite field, u(x) has no
+        -         # repeated root at x=0 unless u0==0). This is exactly the failure
+        -         # mode that would make fill_mumford_block! silently write a
+        -         # legitimate-looking-but-actually-zero row into A_mat: if this table
+        -         # entry is (0,0) here, reduce_monomial_mod_D_cached returns (0,0)
+        -         # downstream with NOTHING further catching it, and that zero
+        -         # propagates into a whole Mumford row looking like a real (but
+        -         # trivial) linear constraint instead of the cache-fill bug it is.
+        -         if u0_b != zero_b
+        -             @assert !(r0_buf[i+1] == zero_b && r1_buf[i+1] == zero_b) "build_xmodu_cache!: x^$(i) mod u(x) came out identically (0,0) at table index $(i+1) (u0=$u0, u1=$u1, u0_b=$u0_b, u1_b=$u1_b, prev_r0=$prev_r0, prev_r1=$prev_r1) — this is the exact silent-zero-row failure mode fill_mumford_block! depends on this cache NOT producing. Either the recurrence above has a sign/index bug for this (u0,u1), or u(x) is genuinely degenerate (shares a factor with x) and the caller should have rejected this D before reaching here."
+        -         end
+        -     end
+        - 
+        -     # HARD ASSERT: verify every index 1:max_i+1 that build_phi_general! is
+        -     # about to hand to reduce_monomial_mod_D_cached was ACTUALLY written by
+        -     # the loop above, not left at whatever garbage/zero the scratch buffer
+        -     # held from a previous call at a different (u0,u1). A stale/uninitialized
+        -     # tail here is indistinguishable from a genuine (0,0) reduction unless
+        -     # checked explicitly against a sentinel BEFORE the loop runs — since we
+        -     # don't have a pre-loop sentinel poke available without touching the
+        -     # ThreadScratchpad struct (defined in a file not available here), this
+        -     # at least confirms internal self-consistency: index 1 and (if max_i>=1)
+        -     # index 2 must hold the fixed algebraic identities checked below, and
+        -     # every subsequent index up to max_i+1 must have been actually assigned
+        -     # in the loop above (Julia semantics guarantee this for a completed
+        -     # `for i in 2:max_i` loop with max_i>=1, but if max_i==0 the loop body
+        -     # above never executed at all — assert that case is handled correctly
+        -     # by the early return, not silently falling through with r0_buf[2:]
+        -     # unset yet still read by a caller that assumed max_i was larger).
+        -     @assert max_i + 1 <= length(r0_buf) "build_xmodu_cache!: post-loop check — max_i+1=$(max_i+1) exceeds r0_buf length $(length(r0_buf)) (should have been caught by the pre-loop assert; if this fires instead, max_i changed mid-function, which should be impossible for a local variable)."
+        - 
+        -     # sanity: x^0 and x^1 rows must be exactly the algebraic identities above
+        -     @assert r0_buf[1] == one_b && r1_buf[1] == zero_b
+        -     max_i >= 1 && @assert r0_buf[2] == zero_b && r1_buf[2] == one_b
+        - 
+        -     return nothing
+        - end
+        - 
+        - # ---------------------------------------------------------------------------
+        - #  fill_mumford_block!(scratch, A_mat, rhs_vec, row_idx, basis, y_idx, n_cols,
+        - #                       v0_b, v1_b, backend) -> nothing
+        - #
+        - #  ACTUAL FIX: writes the 2 Mumford rows — φ(x, v(x)) ≡ 0 mod u(x) split
+        - #  into its constant-term and x-term equations — that build_phi_general!'s
+        - #  docstring, N2=K+2 sizing, and x_pow_mod_u_r0/r1 caching comments all
+        - #  document as part of this construction, but which no code in this file
+        - #  ever actually wrote. Without these two rows the (K+2)x(K+2) system had
+        - #  its last 2 rows silently all-zero, which fp_gauss! does correctly detect
+        - #  as singular (returns false) — so the practical effect of the missing
+        - #  rows was "build_phi_general! never succeeds for K>=1 whenever it reaches
+        - #  this point", not a crash by itself; the crash upstream was the separate
+        - #  off-by-one column bug in fill_monomial_block!.
+        - #
+        - #  y_idx is the basis index of the y-monomial (0,1) — the element whose
+        - #  coefficient is normalised to 1 (fixed by the reference convention in
+        - #  trial3_phi.jl: φ=a·x²+b·x+c+d·y, d=1 always), NOT necessarily basis[end].
+        - #  Column assignment walks basis indices 1..length(basis) IN ORDER, SKIPPING
+        - #  y_idx, and maps the remaining n_cols indices onto A_mat columns 1..n_cols
+        - #  in that same order — this must exactly match fill_monomial_block!'s
+        - #  column assignment or the two blocks disagree about which coefficient
+        - #  lives in which column.
+        - #
+        - #  For each unknown column (basis index bidx != y_idx, mapped to column j):
+        - #    (r0_j, r1_j) = basis[bidx]-monomial evaluated at (x, v(x)) mod u(x)
+        - #    A_mat[K+1, j] = r0_j        A_mat[K+2, j] = r1_j
+        - #  RHS (from the normalised basis[y_idx] element, coefficient fixed = 1):
+        - #    rhs_vec[K+1] = -r0_norm     rhs_vec[K+2] = -r1_norm
+        - # ---------------------------------------------------------------------------
+        - @inline function fill_mumford_block!(
+        -     scratch,
+        -     A_mat,
+        -     rhs_vec,
+        -     row_idx::Int,
+        -     basis,
+        -     y_idx::Int,
+        -     n_cols::Int,
+        -     v0_b::Int,
+        -     v1_b::Int,
+        -     backend::B
+        - ) where {B<:FpArith}
+        -     @assert row_idx + 1 <= size(A_mat, 1) "fill_mumford_block!: row_idx=$row_idx needs 2 rows (row_idx, row_idx+1), A_mat only has $(size(A_mat,1)) rows"
+        -     @assert n_cols == size(A_mat, 2) "fill_mumford_block!: n_cols=$n_cols != A_mat column count $(size(A_mat,2))"
+        -     @assert length(basis) == n_cols + 1 "fill_mumford_block!: expected basis to hold n_cols unknowns + 1 normalised element ($(n_cols+1) total), got length(basis)=$(length(basis))"
+        -     @assert row_idx + 1 <= length(rhs_vec) "fill_mumford_block!: row_idx=$row_idx needs 2 rhs_vec slots, only have $(length(rhs_vec))"
+        - 
+        -     # DEFENSIVE ASSERT: same y_idx validity check as fill_monomial_block! —
+        -     # this function must skip the SAME basis index that fill_monomial_block!
+        -     # skipped, or the two blocks' columns silently disagree about which
+        -     # coefficient lives in which A_mat column (a corruption that would not
+        -     # throw anywhere — it would just solve the wrong linear system and hand
+        -     # back plausible-looking garbage coefficients).
+        -     n = length(basis)
+        -     @assert 1 <= y_idx <= n "fill_mumford_block!: y_idx=$y_idx out of range 1:$n"
+        -     @assert basis[y_idx] == (0, 1) "fill_mumford_block!: basis[y_idx=$y_idx]=$(basis[y_idx]) is not the y-monomial (0,1) — caller passed the wrong normalization index for this basis ($basis)"
+        - 
+        -     row0 = row_idx        # constant-term equation
+        -     row1 = row_idx + 1     # x-term equation
+        - 
+        -     row0_all_zero = true
+        -     row1_all_zero = true
+        -     col = 0
+        -     @inbounds for bidx in 1:n
+        -         bidx == y_idx && continue
+        -         col += 1
+        -         i, j = basis[bidx]
+        -         r0, r1 = reduce_monomial_mod_D_cached(i, j, v0_b, v1_b, scratch, backend)
+        -         @assert r0 isa Int && r1 isa Int
+        -         A_mat[row0, col] = r0
+        -         A_mat[row1, col] = r1
+        -         r0 != 0 && (row0_all_zero = false)
+        -         r1 != 0 && (row1_all_zero = false)
+        -     end
+        -     # DEFENSIVE ASSERT: mirror of fill_monomial_block!'s post-loop column
+        -     # count check — both functions must agree on n_cols via the same
+        -     # skip-y_idx traversal, or A_mat ends up with a column silently unwritten
+        -     # by one block and double-written by the other.
+        -     @assert col == n_cols "fill_mumford_block!: wrote $col columns but expected n_cols=$n_cols — the skip-y_idx=$y_idx loop over 1:$n did not visit exactly n_cols indices"
+        - 
+        -     norm_i, norm_j = basis[y_idx]
+        -     r0n, r1n = reduce_monomial_mod_D_cached(norm_i, norm_j, v0_b, v1_b, scratch, backend)
+        -     @inbounds rhs_vec[row0] = fpsub_b(backend, 0, r0n)
+        -     @inbounds rhs_vec[row1] = fpsub_b(backend, 0, r1n)
+        - 
+        -     # HARD ASSERT, at the write site: this is the earliest point in the
+        -     # call chain that has visibility into "did this Mumford row come out
+        -     # entirely zero across ALL n_cols columns" — exactly the field-observed
+        -     # failure (row 4 = (0,0,0,0), b[4]=0, for K=2). Every individual (r0,r1)
+        -     # pair is already asserted non-degenerate by reduce_monomial_mod_D_cached
+        -     # above; this catches the case where each individual pair passes (isn't
+        -     # itself a NaN-like (0,0) coincidence) but the row STILL ends up zero
+        -     # because, e.g., r1 is zero for every basis column specifically (as
+        -     # opposed to both r0,r1 being zero together) — a narrower, column-wide
+        -     # cancellation that the per-call assert above can't see since it only
+        -     # checks (r0,r1) jointly, not r1 in isolation across the whole column
+        -     # range. rhs_vec[row1]==0 is also checked: if BOTH the row and its own
+        -     # RHS are zero, that's exactly the observed field trace's row 4.
+        -     if row1_all_zero && rhs_vec[row1] == 0
+        -         @assert false "fill_mumford_block!: x-term Mumford row (row=$row1) came out ALL-ZERO across all $n_cols columns AND rhs_vec[$row1]=0 — this is the exact structural failure fp_gauss! reported (an entire row of zeros, including its own RHS entry, is unconditionally singular, not a rare special-position coincidence). v0_b=$v0_b, v1_b=$v1_b. This means reduce_monomial_mod_D_cached's j==1 branch returned r1==0 for EVERY basis column 1:$n_cols. Check whether v1_b==0 (this step's divisor D_cur has v1==0, degenerating the x-term equation to nothing) or whether x_pow_mod_u_r1's cache values are structurally zero for this u(x)."
+        -     end
+        -     if row0_all_zero && rhs_vec[row0] == 0
+        -         @assert false "fill_mumford_block!: constant-term Mumford row (row=$row0) came out ALL-ZERO across all $n_cols columns AND rhs_vec[$row0]=0 — same structural-singularity concern as the row1 case above, for the constant-term equation instead. v0_b=$v0_b, v1_b=$v1_b."
+        -     end
+        - 
+        -     return nothing
+        - end
+        - 

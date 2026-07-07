@@ -101,8 +101,6 @@ function fp_gauss!(A::MMatrix{N,N,Int}, b::MVector{N,Int},
     # both the raw and post-elimination states side by side and make that
     # distinction explicit instead of asserting a specific culprit that
     # the available evidence doesn't actually support.
-    A0 = copy(A)
-    b0 = copy(b)
 
     # --- Forward pass: eliminate below the diagonal, cross-multiply only ---
     for col in 1:n
@@ -114,6 +112,8 @@ function fp_gauss!(A::MMatrix{N,N,Int}, b::MVector{N,Int},
             end
         end
         if pivot_row == 0
+            A0 = copy(A)
+            b0 = copy(b)
             s = phi_timing_stats()
             s.n_fail_build_gauss_singular += 1
             s.n_gauss_fail_forward_pivot += 1

@@ -33,10 +33,10 @@ export init_phi_timing!, init_symbolic_report!, init_symbolic_report2!
 export phi_timing_stats, rr_basis_cached, print_phi_timing_report, run_symbolic_report!, run_symbolic_report2!
 export run_symbolic_crosscheck!, run_symbolic_crosscheck2!
 
-global F_POLY = nothing
-global K_MAX = nothing
-global p = nothing
-global ell = nothing
+global F_POLY::Vector{Int} = Int[]
+global K_MAX::Int = 0
+global p::Int = 0
+global ell::Int = 0
 
 function set_curve_context!(f_poly, k_max, p_loc, ell_loc)
     global F_POLY = f_poly
