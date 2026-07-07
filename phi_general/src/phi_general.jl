@@ -20,6 +20,8 @@ include("09_residual_and_modinv.jl")
 include("10_root_finding.jl")
 include("11_step_phi.jl")
 include("12_symbolic_report.jl")
+include("trial3_phi_symbolic_unified.jl")
+using .PhiSymbolic   # now visible inside phi_general
 
 # ------------------------------------------------------------------
 # 2. Exports 

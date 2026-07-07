@@ -68,8 +68,8 @@ using phi_general
                                    # trial3_phi_general.jl) and no other requirement.
 #using .PhiSymbolic2
 # Add this:
-include("trial3_phi_symbolic_unified.jl")
-using .PhiSymbolic
+#include("trial3_phi_symbolic_unified.jl")
+#using .PhiSymbolic
 
 
 include("trial3_anchor_sweep_diag.jl")  # SweepCollector / run_anchor_sweep_experiment — needs
