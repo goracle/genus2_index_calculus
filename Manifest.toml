@@ -1,0 +1,45 @@
+# This file is machine-generated - editing it directly is not advised
+
+julia_version = "1.12.6"
+manifest_format = "2.0"
+project_hash = "f2346e00edfb2aed43edf0b8a0253c1bc7fe4b93"
+
+[[deps.LP1ConjDeepDiag]]
+deps = ["LP1ConjLSM", "PhiBiasTypes", "Printf", "Random", "TrialConfig"]
+path = "LP1ConjDeepDiag"
+uuid = "d4a4e4d3-4e4d-4f1a-c14d-0004d4d4d4d4"
+version = "0.1.0"
+
+[[deps.LP1ConjLSM]]
+deps = ["Printf", "TrialConfig"]
+path = "LP1ConjLSM"
+uuid = "c3f3d3c2-3d3c-4e0f-b03c-0003c3c3c3c3"
+version = "0.1.0"
+
+[[deps.PhiBiasTypes]]
+path = "PhiBiasTypes"
+uuid = "a1e1c1a0-1b1a-4c9e-9f1a-0001a1a1a1a1"
+version = "0.1.0"
+
+[[deps.Printf]]
+deps = ["Unicode"]
+uuid = "de0858da-6303-5e67-8744-51eddeeeb8d7"
+version = "1.11.0"
+
+[[deps.Random]]
+deps = ["SHA"]
+uuid = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
+version = "1.11.0"
+
+[[deps.SHA]]
+uuid = "ea8e919c-243c-51af-8825-aaa63cd721ce"
+version = "0.7.0"
+
+[[deps.TrialConfig]]
+path = "TrialConfig"
+uuid = "b2e2c2b1-2c2b-4d9f-af2b-0002b2b2b2b2"
+version = "0.1.0"
+
+[[deps.Unicode]]
+uuid = "4ec0a83e-493e-50e2-b9ac-8f72acf5a8f5"
+version = "1.11.0"

@@ -1,0 +1,7 @@
+name = "PhiBiasTypes"
+uuid = "a1e1c1a0-1b1a-4c9e-9f1a-0001a1a1a1a1"
+authors = ["Claire"]
+version = "0.1.0"
+
+[compat]
+julia = "1.9"

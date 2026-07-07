@@ -33,12 +33,17 @@ include("lp_residual_stats.jl")   # LP residual diagnostics
 include("kernel_phase_diag.jl")   # phase-transition instrumentation
 include("early_solve_monitor.jl") # online b₁ / 2-core / DSU diagnostics
 
-include("trial3_config.jl")
+for _pkg in ("TrialConfig", "PhiBiasTypes", "LP1ConjLSM", "LP1ConjDeepDiag")
+    _pkgpath = joinpath(@__DIR__, _pkg)
+    (_pkgpath in LOAD_PATH) || push!(LOAD_PATH, _pkgpath)
+end
+using TrialConfig
+using PhiBiasTypes
+using LP1ConjLSM
 #include("trial3_fp_backend.jl")   # FpArith / StandardArith / MontgomeryArith —
                                    # must precede trial3_phi_general.jl below,
                                    # whose default args (backend::FpArith =
                                    # StandardArith(p)) are resolved at include-time.
-include("lp1_conj_lsm.jl")
 include("trial3_phi.jl")
 
 
@@ -78,7 +83,7 @@ include("trial3_anchor_sweep_diag.jl")  # SweepCollector / run_anchor_sweep_expe
                                          # sweep_collector::Union{SweepCollector,Nothing} kwarg type
                                          # is resolved at include-time, not call-time.
 include("phi_bias_diag.jl")
-include("lp1_conj_deep_diag.jl")
+using LP1ConjDeepDiag
 include("conj_closure_dataset.jl")
 
 # ---------------------------------------------------------------------------
@@ -604,7 +609,7 @@ function index_calculus_walk(G::Div2, T::Div2;
     shared_lp1            = ShardedLP1Affine()
     shared_lp2            = LP2Graph()
     shared_lp2_lock       = ReentrantLock()
-    shared_lp1_conj_arr   = [LP1ConjLSM(ell; amortized=false,
+    shared_lp1_conj_arr   = [LP1ConjLSMStore(ell; amortized=false,
                                           spill_path=joinpath(homedir(), "crypto", "tmp", "lp1_conj_main_t$(tid).h5"),
                                           max_hot_ram_mb = 512 ÷ Threads.nthreads(),
                                           anchor_tuple_size = anchor_tuple_size)
@@ -1514,6 +1519,8 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
 
     # Inside main2() in trial3_fixed.jl, after p is stabilized:
     phi_general.set_curve_context!(F_POLY, K_MAX, p, ell)
+    TrialConfig.set_curve_context!(F_POLY, p, ell)
+    LP1ConjLSM.set_curve_context!(F_POLY, p, ell)
 
 
     # F_p arithmetic backend, wired to Montgomery form for the whole run.
@@ -1670,7 +1677,7 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
         shared_lp1_pre       = ShardedLP1Affine()
         shared_lp2_pre       = LP2Graph()
         shared_lp2_lock_pre  = ReentrantLock()
-        shared_lp1_conj_pre_arr = [LP1ConjLSM(ell; spill_path=joinpath(homedir(), "crypto", "tmp", "lp1_conj_pre_t$(tid).h5"),
+        shared_lp1_conj_pre_arr = [LP1ConjLSMStore(ell; spill_path=joinpath(homedir(), "crypto", "tmp", "lp1_conj_pre_t$(tid).h5"),
                                                max_hot_ram_mb = 512 ÷ Threads.nthreads())
                                    for tid in 1:Threads.nthreads()]
         for lsm in shared_lp1_conj_pre_arr

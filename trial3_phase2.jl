@@ -29,6 +29,10 @@
 
 using Random
 using StaticArrays: MVector
+using TrialConfig
+using PhiBiasTypes
+using LP1ConjLSM
+using LP1ConjDeepDiag
 
 # ---------------------------------------------------------------------------
 #  ShardedLP1Affine — sharded affine 1-LP table with per-shard locks.
@@ -310,7 +314,7 @@ end
 #  report_worker_progress — periodic per-thread status line
 # ---------------------------------------------------------------------------
 function report_worker_progress(tid, elapsed, s::WorkerStats, rel_counter, rel_target,
-                                shared_lp1_conj::Union{ShardedLP1Conj{<:Any}, LP1ConjLSM{<:Any}})
+                                shared_lp1_conj::Union{ShardedLP1Conj{<:Any}, LP1ConjLSMStore{<:Any}})
     lp1_total = s.hits_lp1 + s.hits_lp1_conj
     @printf("[thread %2d | t=%6.1fs] raw=%d valid=%d 0lp=%d  1lp_aff(step=%d emit=%d) 1lp_conj(step=%d emit=%d)  2lp_seen=%d 2lp_emit=%d skip=%d  rels_local=%d  global=%d/%d\n",
             tid, elapsed, s.raw_steps, s.hits_total, s.hits_0lp,
@@ -376,7 +380,7 @@ function report_worker_progress(tid, elapsed, s::WorkerStats, rel_counter, rel_t
         @printf("           conj_table: %d entries (hot+disk)\n", conj_total)
 
         # Full LSM diagnostics — only when the conj store is an LP1ConjLSM.
-        if shared_lp1_conj isa LP1ConjLSM
+        if shared_lp1_conj isa LP1ConjLSMStore
             # Emission rate for birthday estimator: LP1-conj closures per second.
             r_conj = s.hits_1lp_conj_emit / max(1.0, elapsed)
             lsm_flush_stats(shared_lp1_conj)
@@ -423,10 +427,9 @@ end
 # Same-partial: (neg_al, neg_be) match the stored entry — genuine repeat,
 # leave stored entry in place and discard the new arrival.
 # Any other collision is a valid closure.
-@inline function conj_insert_or_pop!(sc::ShardedLP1Conj{V}, si::Int,
-                                      key::CanonicalLP1Key, val::V,
-                                      fb_row::Dict{Int,Int} = Dict{Int,Int}()
-                                     )::Tuple{Union{V,Nothing}, Bool, Union{Dict{Int,Int},Nothing}} where V
+@inline function TrialConfig.conj_insert_or_pop!(sc::ShardedLP1Conj{V}, si::Int,
+                                                   key::CanonicalLP1Key, val::V,
+                                                   fb_row::Dict{Int,Int}) where V
     lock(sc.locks[si]) do
         sh   = sc.shards[si]
         slot = _conj_find(sh, key)
@@ -633,7 +636,7 @@ end
         rel_counter     ::Threads.Atomic{Int},
         ort             ::OnlineRankTracker,
         s               ::WorkerStats,
-        shared_lp1_conj ::Union{ShardedLP1Conj{V}, LP1ConjLSM{V}},
+        shared_lp1_conj ::Union{ShardedLP1Conj{V}, LP1ConjLSMStore{V}},
         rank_growth     ::Vector{Tuple{Int,Int}},
         combined_scratch::ThreadScratchpad{<:Any},
         P0              ::NTuple{2,Int},
@@ -1250,7 +1253,7 @@ function phase2_worker(G               ::Div2,
                        shared_lp2      ::LP2Graph,
                        shared_lp2_lock ::ReentrantLock,
                        shared_lp_doubled::Nothing,           # unused sentinel; inside ShardedLP1Affine
-                       shared_lp1_conj ::Union{ShardedLP1Conj{<:Any}, LP1ConjLSM{<:Any}},
+                       shared_lp1_conj ::Union{ShardedLP1Conj{<:Any}, LP1ConjLSMStore{<:Any}},
                        shared_lp2_conj ::LP2ConjGraph,
                        shared_lp2_conj_lock::ReentrantLock,
                        enable_lp2      ::Bool,

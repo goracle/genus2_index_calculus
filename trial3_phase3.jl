@@ -83,8 +83,8 @@ struct Phase2Tables
     # Phase 3 reads it directly; no snapshot/copy is taken here.
     shared_lp1_conj::Union{Dict{CanonicalLP1Key, LP1ConjVal},
                            ShardedLP1Conj{<:Any},
-                           LP1ConjLSM{<:Any},
-                           Vector{<:LP1ConjLSM}}
+                           LP1ConjLSMStore{<:Any},
+                           Vector{<:LP1ConjLSMStore}}
     shared_lp2_conj::LP2ConjGraph
 
     # Group order
@@ -166,7 +166,7 @@ end
 #
 #  Uniform read-only lookup helper for the live extension-field LP store.
 #
-#  The LP1ConjLSM API does NOT implement Base.haskey / Base.getindex — its
+#  The LP1ConjLSMStore API does NOT implement Base.haskey / Base.getindex — its
 #  public interface is conj_haskey(sc, si, key) / conj_getval(sc, si, key),
 #  both of which require the shard index `si = conj_shard_idx(key)`.  The old
 #  generic `haskey(store, key) ? store[key] : nothing` fallback silently
@@ -180,7 +180,7 @@ end
     # Plain Dict (used in non-amortized paths / tests)
     store isa Dict && return get(store, key, nothing)
 
-    # Vector of LP1ConjLSM (one per precompute thread) — probe each in order.
+    # Vector of LP1ConjLSMStore (one per precompute thread) — probe each in order.
     if store isa AbstractVector
         si = conj_shard_idx(key)
         for lsm in store
@@ -190,12 +190,12 @@ end
         return nothing
     end
 
-    # Single LP1ConjLSM or ShardedLP1Conj — use the shard-indexed API.
+    # Single LP1ConjLSMStore or ShardedLP1Conj — use the shard-indexed API.
     si = conj_shard_idx(key)
     return _conj_lsm_lookup_readonly(store, si, key)
 end
 
-# Read-only lookup into a single LP1ConjLSM (or any store that exposes
+# Read-only lookup into a single LP1ConjLSMStore (or any store that exposes
 # conj_haskey / conj_getval).  Does NOT pop the entry.
 @inline function _conj_lsm_lookup_readonly(sc, si::Int, key::CanonicalLP1Key)
     conj_haskey(sc, si, key) || return nothing

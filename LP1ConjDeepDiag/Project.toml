@@ -1,0 +1,14 @@
+name = "LP1ConjDeepDiag"
+uuid = "d4a4e4d3-4e4d-4f1a-c14d-0004d4d4d4d4"
+authors = ["Claire"]
+version = "0.1.0"
+
+[deps]
+Printf = "de0858da-6303-5e67-8744-51eddeeeb8d7"
+Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
+TrialConfig = "b2e2c2b1-2c2b-4d9f-af2b-0002b2b2b2b2"
+PhiBiasTypes = "a1e1c1a0-1b1a-4c9e-9f1a-0001a1a1a1a1"
+LP1ConjLSM = "c3f3d3c2-3d3c-4e0f-b03c-0003c3c3c3c3"
+
+[compat]
+julia = "1.9"

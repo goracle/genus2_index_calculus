@@ -1,0 +1,7 @@
+name = "TrialConfig"
+uuid = "b2e2c2b1-2c2b-4d9f-af2b-0002b2b2b2b2"
+authors = ["Claire"]
+version = "0.1.0"
+
+[compat]
+julia = "1.9"

@@ -1,0 +1,11 @@
+name = "LP1ConjLSM"
+uuid = "c3f3d3c2-3d3c-4e0f-b03c-0003c3c3c3c3"
+authors = ["Claire"]
+version = "0.1.0"
+
+[deps]
+Printf = "de0858da-6303-5e67-8744-51eddeeeb8d7"
+TrialConfig = "b2e2c2b1-2c2b-4d9f-af2b-0002b2b2b2b2"
+
+[compat]
+julia = "1.9"

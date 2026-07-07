@@ -1,0 +1,5 @@
+[deps]
+LP1ConjDeepDiag = "d4a4e4d3-4e4d-4f1a-c14d-0004d4d4d4d4"
+LP1ConjLSM = "c3f3d3c2-3d3c-4e0f-b03c-0003c3c3c3c3"
+PhiBiasTypes = "a1e1c1a0-1b1a-4c9e-9f1a-0001a1a1a1a1"
+TrialConfig = "b2e2c2b1-2c2b-4d9f-af2b-0002b2b2b2b2"
