@@ -30,7 +30,7 @@ export step_phi_dispatch!, ThreadScratchpad
 export record_symbolic_sample!, record_symbolic_sample2!
 export PHI_TIMING_ENABLED, SYMBOLIC_REPORT_ENABLED
 export init_phi_timing!, init_symbolic_report!, init_symbolic_report2!
-export phi_timing_stats, rr_basis_cached, print_phi_timing_report, run_symbolic_report!
+export phi_timing_stats, rr_basis_cached, print_phi_timing_report, run_symbolic_report!, run_symbolic_report2!
 
 global F_POLY = nothing
 global K_MAX = nothing

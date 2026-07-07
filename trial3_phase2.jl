@@ -2156,6 +2156,24 @@ function phase2_worker(G               ::Div2,
             step_success, res_R, res_S, RS_mumford, a = step_phi_dispatch!(scratch_by_k, k_cur, cur_anchors, u0, u1, v0, v1; backend=backend)
             !step_success && continue
 
+            # Restored guard (was dropped when the manual extraction block in
+            # phase2_worker got replaced by step_phi_dispatch!/extract_step_results):
+            # a residual that is neither degree-2 (RS_mumford real) NOR split
+            # (res_R/res_S real) carries no usable information — it must be
+            # discarded here exactly like the k_cur==1 branch above does via
+            # its `RS_mumford === SENTINEL_MUMFORD` check. Without this guard,
+            # RS_mumford stays as SENTINEL_MUMFORD = (-1,-1,-1,-1) and falls
+            # through to canonical_lp1_conj_key(RS_mumford) below as if it were
+            # a real Mumford key — a fabricated key (mod p wrap of -1 in each
+            # coordinate) that can collide with genuine LP1-conj entries from
+            # unrelated steps, producing false closures that fail the
+            # RS-CONJ-CLOSE relation-integrity assertion downstream.
+            if RS_mumford === SENTINEL_MUMFORD && res_R === SENTINEL_PT
+                pts_drop = phi_timing_stats()
+                pts_drop.n_drop_residual_deg_not_2_no_split += 1
+                continue
+            end
+
             # Anchor-sweep capture: grab this real, live-walk (anchors,u0,u1,v0,v1)
             # state as a base tuple for the independence experiment, iff a
             # collector is armed AND this step's tuple length matches the
