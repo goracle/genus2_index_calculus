@@ -5412,7 +5412,8 @@ will later treat as symbolic.
 end
 
 """
-    run_symbolic_report2!(F_POLY_ASC, p; io=stdout, max_per_thread=typemax(Int))
+    run_symbolic_report2!(F_POLY_ASC, p; io=stdout, max_per_thread=typemax(Int),
+                          single_thread=true)
 
 Same shape as run_symbolic_report!, one level up: runs
 PhiSymbolic2.symbolic_residual2 on every sampled (K, fixed_anchors,
@@ -5422,13 +5423,29 @@ concrete collapse for eyeballing. Soft/printing only -- failures are caught
 and printed, not propagated. For a hard pass/fail against
 build_phi_general!/phi_residual_general!, use run_symbolic_crosscheck2!
 instead.
+
+`single_thread` (default true): the printed residuals here are 2-symbolic-
+anchor polynomials, which can be large (each sample can print a huge
+multivariate expression) -- with N threads all recording, printing every
+thread's buffer floods the log with N x max_per_thread near-duplicate-looking
+blocks that don't add diagnostic value over a single thread's worth. When
+true, only the FIRST thread with a non-empty buffer is printed; every other
+thread's samples are still recorded (untouched -- record_symbolic_sample2!
+in the hot loop doesn't know about this flag) and still available for
+run_symbolic_crosscheck2!, which is unaffected by this flag and still checks
+every thread's samples. Pass single_thread=false to restore the old
+print-every-thread behavior.
 """
 function run_symbolic_report2!(F_POLY_ASC::Vector{Int}, p::Int;
-                                io::IO=stdout, max_per_thread::Int=typemax(Int))
+                                io::IO=stdout, max_per_thread::Int=typemax(Int),
+                                single_thread::Bool=true)
     isempty(SYMBOLIC_SAMPLES2[]) && (println(io, "[SYMBOLIC2-REPORT] no samples recorded -- was SYMBOLIC_REPORT_ENABLED[] set before the walk ran?"); return nothing)
 
     n_printed = 0
     for (tid, buf) in enumerate(SYMBOLIC_SAMPLES2[])
+        if single_thread && isempty(buf)
+            continue
+        end
         for (i, samp) in enumerate(buf)
             i > max_per_thread && break
             println(io, "\n### thread $tid, sample $i: K=$(samp.K), last two anchors (symbolic) = $(samp.anchor_Km1), $(samp.anchor_K), u0,u1=$(samp.u0),$(samp.u1) v0,v1=$(samp.v0),$(samp.v1) ###")
@@ -5449,8 +5466,13 @@ function run_symbolic_report2!(F_POLY_ASC::Vector{Int}, p::Int;
             end
             n_printed += 1
         end
+        # Once we've printed the first non-empty thread's buffer, stop -- the
+        # rest of this loop only exists (in single_thread mode) to find that
+        # first non-empty buffer if tid==1 happened to record nothing.
+        single_thread && n_printed > 0 && break
     end
-    println(io, "\n[SYMBOLIC2-REPORT] printed $n_printed sample(s).")
+    suffix = single_thread ? " (single_thread=true -- other threads' samples were recorded but not printed here; they are still covered by run_symbolic_crosscheck2!)." : "."
+    println(io, "\n[SYMBOLIC2-REPORT] printed $n_printed sample(s)$suffix")
     return nothing
 end
 
