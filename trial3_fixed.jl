@@ -34,14 +34,24 @@ include("kernel_phase_diag.jl")   # phase-transition instrumentation
 include("early_solve_monitor.jl") # online b₁ / 2-core / DSU diagnostics
 
 include("trial3_config.jl")
-include("trial3_fp_backend.jl")   # FpArith / StandardArith / MontgomeryArith —
+#include("trial3_fp_backend.jl")   # FpArith / StandardArith / MontgomeryArith —
                                    # must precede trial3_phi_general.jl below,
                                    # whose default args (backend::FpArith =
                                    # StandardArith(p)) are resolved at include-time.
 include("lp1_conj_lsm.jl")
 include("trial3_phi.jl")
-include("trial3_phi_general.jl")  # step_phi_k: K-anchor general phi construction
-include("trial3_phi_symbolic.jl") # PhiSymbolic module — symbolic (last-anchor-free) phi
+
+
+# ---------------------------------------------------------------------------
+#  Load local phi_general package
+# ---------------------------------------------------------------------------
+if !(joinpath(@__DIR__, "phi_general") in LOAD_PATH)
+    push!(LOAD_PATH, joinpath(@__DIR__, "phi_general"))
+end
+using phi_general
+
+#include("trial3_phi_general.jl")  # step_phi_k: K-anchor general phi construction
+#include("trial3_phi_symbolic.jl") # PhiSymbolic module — symbolic (last-anchor-free) phi
                                    # construction, consumed by run_symbolic_report! below.
                                    # Must follow trial3_phi_general.jl (record_symbolic_sample!/
                                    # run_symbolic_report! are defined there and reference
@@ -51,13 +61,17 @@ include("trial3_phi_symbolic.jl") # PhiSymbolic module — symbolic (last-anchor
                                    # symbolic_residual_concrete / print_symbolic_residual /
                                    # print_symbolic_residual_concrete into scope for
                                    # run_symbolic_report!'s qualified calls to resolve.
-using .PhiSymbolic
-include("trial3_phi_symbolic2.jl") # PhiSymbolic2 module — symbolic construction leaving the
+#include("trial3_phi_symbolic2.jl") # PhiSymbolic2 module — symbolic construction leaving the
                                    # LAST TWO anchors free, consumed by run_symbolic_report2!/
                                    # run_symbolic_crosscheck2! below. Same ordering constraint
                                    # as trial3_phi_symbolic.jl above (must follow
                                    # trial3_phi_general.jl) and no other requirement.
-using .PhiSymbolic2
+#using .PhiSymbolic2
+# Add this:
+include("trial3_phi_symbolic_unified.jl")
+using .PhiSymbolic
+
+
 include("trial3_anchor_sweep_diag.jl")  # SweepCollector / run_anchor_sweep_experiment — needs
                                          # ThreadScratchpad et al from phi_general.jl above, and
                                          # must itself precede trial3_phase2.jl below: phase2_worker's
@@ -1469,7 +1483,6 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
     anchor_tuple_size > 1 && println("  anchor mode: round-robin k-tuple (k=1..$anchor_tuple_size, general phi, tangency-capped at mult=2)")
     println("="^70, "\n")
 
-
     t_pts = time()
     pts   = sample_curve_points(100)
     t_pts_done = time() - t_pts
@@ -1498,6 +1511,10 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
 
     @assert jac_isid(jac_mul_raw(G, ell)) "G does not have order ell"
     println("  Confirmed: ell*G = identity\n")
+
+    # Inside main2() in trial3_fixed.jl, after p is stabilized:
+    phi_general.set_curve_context!(F_POLY, K_MAX, p)
+
 
     # F_p arithmetic backend, wired to Montgomery form for the whole run.
     # This is THE ONE place the backend is chosen — every worker, cache init,

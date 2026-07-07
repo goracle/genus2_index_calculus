@@ -1,0 +1,346 @@
+# ==============================================================================
+# 04_scratchpad.jl
+# Split fragment of trial3_phi_general.jl (lines 1181-1520 of original).
+# NOT standalone-includable yet -- wiring/includes to be sorted out separately.
+# ==============================================================================
+
+mutable struct ThreadScratchpad{K, N2, N3, L}
+    # N2 = K+2, N3 = K+3  (pre-computed derived sizes as type params to avoid
+    # TypeVar arithmetic in field type declarations, which Julia forbids)
+    # 1. Buffers for branch_series!
+    out_y          ::Vector{Int}
+    f_tay          ::Vector{Int}
+    poly_buf       ::Vector{Int}   # Expanded to 1024 to map registers cleanly up to index 768+
+    
+    # 2. Buffers for monomial_series_coeffs!
+    xi_buf         ::Vector{Int}   # length 32 — used for binomial expansion scratch (indices up to ~16)
+    # Single-slot memo for the (px+t)^i expansion computed inside
+    # monomial_series_coeffs! (the "xi_scratch" part) — see
+    # _xi_series_cached! below. rr_basis interleaves (i,0) and (i,1) pairs
+    # by pole order (see rr_basis's own comment), so for K>=3 the SAME i
+    # appears as two separate basis columns (once with j=0, once with
+    # j=1) within a single fill_monomial_block! call — and that part of
+    # the computation depends only on (i, px, m), never on j. Caching the
+    # last (i, px, m) this thread computed xi_scratch for, and its result,
+    # turns the second of each such pair into a cache hit instead of
+    # redoing the full binomial recurrence. Reset is automatic: any (i,
+    # px, m) mismatch is a cache miss, so a stale entry from a previous
+    # anchor/step just causes one harmless recompute, never a wrong
+    # answer — see _xi_series_cached!'s invalidation check.
+    xi_cache_i     ::Vector{Int}   # xi_cache_i[1] = last i memoized (-1 = empty/invalid)
+    xi_cache_px    ::Vector{Int}   # xi_cache_px[1] = last px memoized for
+    xi_cache_m     ::Vector{Int}   # xi_cache_m[1] = last m memoized for
+    xi_cache_buf   ::Vector{Int}   # length 32 — memoized xi_scratch contents
+    prefix_buf     ::MVector{N2, Int}  # stack-allocated prefix-product scratch for batch inversion
+                                       # (replaces the xi_buf reuse in fp_gauss_batch_invert_diag!)
+    binom_buf      ::Vector{Int}
+    pxpow_buf      ::Vector{Int}
+    ser_buf        ::Vector{Int}   # Expanded to 64 to hold 32 terms of E(x) and 32 terms of Y(x) simultaneously
+
+    # 3. Linear system workspaces — fully stack-allocated via StaticArrays.
+    #
+    #    MMatrix{N,N,Int} / MVector{N,Int} live on the stack (or in registers for
+    #    small N): no heap pointer, no GC pressure, no cache-miss on access.
+    #    For K=1: N=3, 9 Int slots = 72 bytes — fits in two cache lines.
+    #    For K=2: N=4, 16 Int slots = 128 bytes — one cache line each.
+    #    For K=3: N=5, 25 Int slots = 200 bytes.
+    #
+    #    LLVM sees the matrix as a flat value type; it can keep the entire
+    #    elimination in registers and emit straight-line multiply/subtract chains
+    #    with zero loop overhead and zero memory traffic.
+    #
+    #    N2 = K + 2 (linear system size: K anchor rows + 2 Mumford rows)
+    #    N3 = K + 3 (full basis size incl. normalised element)
+    A_mat          ::MMatrix{N2, N2, Int, L}  # L = N2*N2 explicit — avoids abstract field
+    rhs_vec        ::MVector{N2, Int}
+
+    # 4. In-place deduplication tables — stack-allocated, K slots.
+    seen_counts    ::MVector{K, Int}
+    visited_flags  ::MVector{K, Bool}
+
+    # 5. Output arrays for φ coefficients and residual polynomial components.
+    #    coeffs_out has N3 = K+3 entries (K+2 solved + 1 normalised).
+    coeffs_out     ::MVector{N3, Int}
+    u_RS           ::Vector{Int}
+    v_RS           ::Vector{Int}
+    roots_out      ::Vector{NTuple{2,Int}}
+
+    # 6. Mutex-free scalar tracking (Using 1-element arrays as mutable heap flags)
+    roots_count    ::Vector{Int}
+    u_RS_len       ::Vector{Int}
+    v_RS_len       ::Vector{Int}
+    u_RS_is_fail   ::Vector{Bool}
+
+    # 7. Sparse relation row workspace (replaces the old standalone Dict{Int,Int}
+    #    that callers previously passed as `combined_scratch`).
+    combined_scratch::Dict{Int,Int}
+
+    # 8. Cached Oscar ring for deg≥3 root-finding — built once per thread at init,
+    #    reused on every find_roots_and_points_inplace! call.
+    #    Wrapped in a Ref so the struct can remain isbitstype-friendly for the
+    #    other fields while still holding the heap-allocated Oscar objects.
+    oscar_Fp        ::Base.RefValue{Any}   # GF(p) — FqField
+    oscar_Rx        ::Base.RefValue{Any}   # polynomial_ring over Fp — FqPolyRing
+    oscar_ready     ::Vector{Bool}         # oscar_ready[1] = true once init'd
+
+    # 9. Precomputed fpinv table for small positive integers 1..SMALL_INV_MAX.
+    #    Used by monomial_series_coeffs! (binomial denominators s=1..m-1, m≤16)
+    #    and by find_roots_and_points_inplace! (inv2 = small_inv[2]).
+    #    Populated once by init_scratch_caches!(scratch, p) before walk starts.
+    small_inv       ::Vector{Int}          # small_inv[s] = fpinv(s), s=1..32
+
+    # 9b. Precomputed backend-repr(power) table for fill_f_tay!'s derivative
+    #     Horner loop: deriv_power_cache[power+1] = to_repr(backend, power)
+    #     for power = 0..deg. fill_f_tay! needs to_repr(backend, power) for
+    #     every power = deg, deg-1, ..., 1 on EVERY call (every anchor, every
+    #     walk step) but the set of powers themselves is fixed by F_POLY_DESC
+    #     alone — deg only depends on the curve, not on px — so recomputing
+    #     to_repr(backend, power) fresh each call is pure waste under
+    #     MontgomeryArith (a real multiply into Montgomery form) and even
+    #     under StandardArith (an avoidable no-op call). Populated once by
+    #     init_scratch_caches! right after F_POLY_DESC is known, same as
+    #     small_inv above. Sized to hold every power in F_POLY_DESC's degree
+    #     range; index is power+1 so power=0 (the constant term, never
+    #     actually looked up by fill_f_tay! since it `break`s at power==0,
+    #     but kept for a clean 1-indexed table) has a slot too.
+    deriv_power_cache::Vector{Int}
+
+    # 10. Preallocated buffer for Oscar polynomial coefficient construction in
+    #     find_roots_and_points_inplace!.  Residual degree is a fixed invariant
+    #     of the RR-basis construction — always 2 (u_len ≤ 3), independent of K
+    #     or K_MAX — since deg(N)-(k+2) collapses to 2 for every k (verified for
+    #     k=1..11; see phi_residual_general! header).  Length 8 is generous
+    #     headroom, not a K_MAX-dependent bound.  We use a length-8 buffer and
+    #     reuse it across every call to avoid the [Fp(u_RS[i]) for i in 1:u_len]
+    #     heap allocation.
+    #     Wrapped in a Ref{Any} so the struct stays concrete for other fields.
+    oscar_coeff_buf ::Base.RefValue{Any}   # Vector{FqFieldElem}, populated at init
+
+    # 11. Memoised x^i mod u(x) table for the Mumford rows in build_phi_general!.
+    #
+    #     reduce_xi_mod_u(i, u0, u1) re-runs the two-register recurrence from 0
+    #     up to i on every call, and is invoked once per basis column (n = k+2
+    #     columns) for the Mumford rows, plus once for the normalised monomial —
+    #     that's n+1 redundant re-runs per walk step, each re-deriving overlapping
+    #     prefix computations.
+    #
+    #     Instead, build_phi_general! fills these two length-32 arrays once per
+    #     step (one ascending recurrence pass) and reduce_monomial_mod_D_cached
+    #     does an O(1) lookup.  Max basis x-power grows ~K_MAX/2 (see rr_basis);
+    #     length 32 is safe past any realistic K_MAX (covers K_MAX up to ~60).
+    #
+    #     x_pow_mod_u_r0[i+1] = const coeff of x^i mod u(x)
+    #     x_pow_mod_u_r1[i+1] = x     coeff of x^i mod u(x)
+    x_pow_mod_u_r0  ::Vector{Int}   # length 32
+    x_pow_mod_u_r1  ::Vector{Int}   # length 32
+
+    # 12. Batch y-recovery workspace for find_roots_and_points_inplace!.
+    #
+    #     Recovering y = -E(x)/Y(x) for each residual root requires one fpinv
+    #     per root.  At K=2 the residual is degree 3 (up to 3 roots); at K=3
+    #     degree 4 (up to 4 roots).  Batch-inverting all Y(x) values with the
+    #     same Montgomery trick used in fp_gauss_batch_invert_diag! reduces r
+    #     Fermat ladders to exactly 1, regardless of how many roots split.
+    #
+    #     y_batch_x[i]  — x-coordinate of the i-th candidate root
+    #     y_batch_E[i]  — val_E = E(x_i) evaluated at that root
+    #     y_batch_Y[i]  — val_Y = Y(x_i) (to be batch-inverted)
+    #
+    #     Length 8 covers any residual degree we'll ever encounter (deg ≤ K+1 ≤ 5).
+    y_batch_x       ::MVector{N2, Int}  # ≤ K+1 roots + 1 slack; stack-allocated
+    y_batch_E       ::MVector{N2, Int}
+    y_batch_Y       ::MVector{N2, Int}
+
+    function ThreadScratchpad{K}() where K
+        N2 = K + 2
+        N3 = K + 3
+        L  = N2 * N2
+        new{K, N2, N3, L}(
+            zeros(Int, 32), zeros(Int, 32), zeros(Int, 1024),  # out_y, f_tay, poly_buf
+            zeros(Int, 32),                                     # xi_buf
+            [-1], [-1], [-1], zeros(Int, 32),                   # xi_cache_i, xi_cache_px, xi_cache_m (all invalid/-1 initially), xi_cache_buf
+            MVector{N2,Int}(zeros(Int, N2)), zeros(Int, 32), zeros(Int, 32), zeros(Int, 64),  # prefix_buf, binom_buf, pxpow_buf, ser_buf
+            MMatrix{N2,N2,Int,L}(zeros(Int, N2, N2)),
+            MVector{N2,Int}(zeros(Int, N2)),
+            MVector{K,Int}(zeros(Int, K)),
+            MVector{K,Bool}(zeros(Bool, K)),
+            MVector{N3,Int}(zeros(Int, N3)), zeros(Int, 8), zeros(Int, 8),
+            Vector{NTuple{2,Int}}(undef, 8),
+            zeros(Int, 1), zeros(Int, 1), zeros(Int, 1), zeros(Bool, 1),
+            sizehint!(Dict{Int,Int}(), 8),
+            Ref{Any}(nothing), Ref{Any}(nothing), zeros(Bool, 1),
+            zeros(Int, 32),
+            zeros(Int, 32),   # deriv_power_cache — populated by init_scratch_caches!, same lifetime/sizing as small_inv just above
+            Ref{Any}(nothing),
+            zeros(Int, 32), zeros(Int, 32),   # x_pow_mod_u_r0, x_pow_mod_u_r1
+            MVector{N2,Int}(zeros(Int,N2)), MVector{N2,Int}(zeros(Int,N2)), MVector{N2,Int}(zeros(Int,N2))  # y_batch_x, y_batch_E, y_batch_Y
+        )
+    end
+end
+
+# ---------------------------------------------------------------------------
+#  reduce_monomial_mod_D_cached — O(1) lookup version for the hot path.
+#
+#  Requires that build_phi_general! has already populated:
+#    scratch.x_pow_mod_u_r0[i+1] = const coeff of x^i mod u(x)
+#    scratch.x_pow_mod_u_r1[i+1] = x     coeff of x^i mod u(x)
+#  for i = 0 .. max_basis_degree.
+#
+#  For j=0 (pure x-power): direct lookup.
+#  For j=1 (x^i * y, reduced via y ≡ v(x) mod u(x)):
+#    x^i * v(x) = v0 * x^i + v1 * x^(i+1)
+#    → v0 * table[i] + v1 * table[i+1]   (two lookups, four multiplies)
+#  This replaces the i-iteration recurrence with a fixed 4-multiply expression.
+# ---------------------------------------------------------------------------
+@inline function reduce_monomial_mod_D_cached(
+    i::Int, j::Int,
+    v0::Int, v1::Int,
+    scratch,
+    backend::FpArith
+)::NTuple{2,Int}
+
+    @assert i >= 0
+    @assert j == 0 || j == 1
+    # NOTE (updated — was previously stale): x_pow_mod_u_r0/r1 are now
+    # actually populated by build_xmodu_cache!, called once per
+    # build_phi_general! invocation (see there) before either the Mumford
+    # rows or this function's callers run. The asserts below are kept as a
+    # permanent bounds/sanity net — e.g. against a future caller that
+    # invokes this with a different (u0,u1) than what the cache was last
+    # built for, or a K for which max_basis_i+1 wasn't covered.
+    @assert i + 1 <= length(scratch.x_pow_mod_u_r0) "reduce_monomial_mod_D_cached: i=$i out of range for x_pow_mod_u_r0 (len $(length(scratch.x_pow_mod_u_r0))) — is this table actually being populated for this K?"
+    @assert i + 2 <= length(scratch.x_pow_mod_u_r0) || j == 0 "reduce_monomial_mod_D_cached: j=1 branch needs index i+2=$(i+2), out of range (len $(length(scratch.x_pow_mod_u_r0)))"
+
+    @inbounds a0 = scratch.x_pow_mod_u_r0[i + 1]
+    @inbounds a1 = scratch.x_pow_mod_u_r1[i + 1]
+
+    # HARD ASSERT: catch a stale/never-written cache slot at the READ site,
+    # not several function calls downstream in fp_gauss! where it shows up
+    # as an inscrutable singular matrix. (a0,a1) is x^i mod u(x); for a
+    # non-degenerate monic degree-2 u(x) (u0 != 0) this pair is (0,0) only
+    # at a genuine algebraic coincidence, which build_xmodu_cache!'s own
+    # recurrence now separately asserts against — so seeing (0,0) HERE
+    # instead means build_xmodu_cache! was never called for this i before
+    # this read, i.e. a cache-lifetime/ordering bug between the two
+    # functions, not a numerical one.
+    if j == 0 && a0 == 0 && a1 == 0
+        @assert false "reduce_monomial_mod_D_cached: table entry for x^$i mod u(x) at index $(i+1) is (0,0) on a j==0 read — either build_xmodu_cache! was never invoked for this max_i before this call (cache/ordering bug), or it wrote a genuine degenerate zero that its own internal assert should have already caught upstream. scratch.x_pow_mod_u_r0[$(i+1)]=$a0, scratch.x_pow_mod_u_r1[$(i+1)]=$a1."
+    end
+
+    if j == 0
+        @assert a0 isa Int && a1 isa Int
+        return (a0, a1)
+    end
+
+    @inbounds b0 = scratch.x_pow_mod_u_r0[i + 2]
+    @inbounds b1 = scratch.x_pow_mod_u_r1[i + 2]
+
+    if b0 == 0 && b1 == 0
+        @assert false "reduce_monomial_mod_D_cached: table entry for x^$(i+1) mod u(x) at index $(i+2) is (0,0) on a j==1 read (needed for the x-coefficient combination) — same cache/ordering concern as the j==0 case above, at the NEXT table slot. scratch.x_pow_mod_u_r0[$(i+2)]=$b0, scratch.x_pow_mod_u_r1[$(i+2)]=$b1."
+    end
+
+    r0 = fpmul_b(backend, v0, a0) + fpmul_b(backend, v1, b0)
+    r1 = fpmul_b(backend, v0, a1) + fpmul_b(backend, v1, b1)
+
+    @assert r0 isa Int
+    @assert r1 isa Int
+
+    r0_final = fp_b(backend, r0)
+    r1_final = fp_b(backend, r1)
+
+    # HARD ASSERT: this is the EXACT value fill_mumford_block! writes into
+    # A_mat[row1, col] (the x-term Mumford row) for basis[col]. If this
+    # comes out (0,0) for basis[col]'s specific (i,j), that column
+    # contributes nothing to row1 — and if EVERY column does this for a
+    # given call, row1 is the all-zero row fp_gauss! is choking on. v0/v1
+    # (the divisor's v(x) coefficients, i.e. this specific step's D_cur,
+    # NOT a cache artifact) are the one input here that varies per-step and
+    # per-thread, so if this fires it's telling us the (v0,v1) for this
+    # particular D combined with THIS basis element structurally cancels —
+    # worth knowing whether that's basis-element-specific (a real
+    # coincidence, rare) or happens for literally every basis column on
+    # literally every step (structural, which is what the field trace
+    # suggests: row 4 was ALL zero, all 4 columns, in 50/50 failures).
+    if r0_final == 0 && r1_final == 0
+        @assert false "reduce_monomial_mod_D_cached: j==1 combination (v0*a0+v1*b0, v0*a1+v1*b1) reduced to (0,0) for i=$i (v0=$v0, v1=$v1, a0=$a0, a1=$a1, b0=$b0, b1=$b1) — this is precisely the value fill_mumford_block! writes into the x-term Mumford row (A_mat row K+2) for this basis column. If this fires on every column of every call, the x-term Mumford row is structurally all-zero, which is the singular-matrix symptom already observed (row 4 = (0,0,0,0), b[4]=0) for K=2."
+    end
+
+    return (r0_final, r1_final)
+end
+
+# ---------------------------------------------------------------------------
+#  init_scratch_caches!(scratch, p_val)
+#
+#  Populates the per-thread caches that depend on the runtime prime p:
+#    • small_inv[1..32]  — fpinv table for denominators s=1..32
+#    • oscar_Fp / oscar_Rx — GF(p) and its polynomial ring for deg≥3 root-finding
+#
+#  Call this once per ThreadScratchpad after p is known, before spawning walkers.
+# ---------------------------------------------------------------------------
+function init_scratch_caches!(scratch::ThreadScratchpad{K}, p_val::Int,
+                               backend::FpArith = StandardArith(p_val)) where K
+    # Precomputed modular inverses for small positive integers, stored in
+    # `backend`'s representation. build_phi_general! (via monomial_series_coeffs!)
+    # combines small_inv[s] with backend-form binomial coefficients using
+    # fpmul_b — both operands must be in the SAME representation, so this
+    # table has to be built with the same backend the walk will actually run
+    # with. Passing a different backend at call time than was used here is a
+    # representation-mismatch bug that phi_residual_general!'s remainder
+    # check won't reliably catch quickly (see validate_backend note in
+    # trial3_fp_backend.jl).
+    if SETUP_DIAG_VERBOSE
+        @printf("[DIAG init_scratch_caches!] tid=%d K=%d backend=%s p=%d\n",
+                Threads.threadid(), K, typeof(backend), backend.p)
+        flush(stdout)
+    end
+    for s in 1:32
+        scratch.small_inv[s] = to_repr(backend, fpinv(s))
+    end
+
+    # deriv_power_cache: precompute to_repr(backend, power) for every power
+    # fill_f_tay!'s derivative Horner loop will ever need (power = 1..deg,
+    # deg = length(F_POLY_DESC)-1), so that hot loop becomes pure
+    # fpmul_b/fpadd_b with zero to_repr calls per invocation. Requires
+    # F_POLY_DESC already populated — same ordering requirement fill_f_tay!
+    # itself asserts on every call, checked here too so an init-ordering
+    # regression (init_scratch_caches! run before init_phi_general_caches!)
+    # fails loudly at setup time with a clear message, rather than silently
+    # caching an empty/stale table that fill_f_tay! would then read wrong
+    # derivative coefficients from without any assert catching it (a plain
+    # zeros(Int,32) cache and a genuinely-empty-curve cache look identical).
+    @assert !isempty(F_POLY_DESC) "init_scratch_caches!: F_POLY_DESC is empty — init_phi_general_caches!(K_MAX, backend) must be called by the driver before init_scratch_caches! (see the ordering note at scratch_by_k's construction site in trial3_phase2.jl)"
+    deg = length(F_POLY_DESC) - 1
+    @assert length(scratch.deriv_power_cache) >= deg + 1 "init_scratch_caches!: deriv_power_cache (length $(length(scratch.deriv_power_cache))) too small for deg=$deg — bump its fixed allocation size in the ThreadScratchpad constructor"
+    for power in 0:deg
+        scratch.deriv_power_cache[power + 1] = to_repr(backend, power)
+    end
+
+    # Oscar polynomial ring over GF(p) — built once, reused forever per thread.
+    Fp = GF(p_val)
+    Rx, _ = polynomial_ring(Fp, :x)
+    scratch.oscar_Fp[] = Fp
+    scratch.oscar_Rx[] = Rx
+    scratch.oscar_ready[1] = true
+
+    # Preallocate the Oscar coefficient buffer (length 8; residual degree is a fixed
+    # invariant = 2 regardless of K_MAX, so u_len ≤ 3 — length 8 is generous headroom).
+    # We store FqFieldElem objects; they'll be mutated via setindex! in find_roots_and_points_inplace!.
+    scratch.oscar_coeff_buf[] = [Fp(0) for _ in 1:8]
+
+    return scratch
+end
+
+# ---------------------------------------------------------------------------
+#  Branch series: compute y-series coefficients y[0], y[1], ..., y[m-1]
+#  where y(px + t) = Σ y[s] * t^s mod t^m,
+#  determined by y² = f(px + t)  with y[0] = py.
+#
+#  Expanding f(px + t) = Σ f_s * t^s (Taylor coefficients of f at px):
+#     f_s = f^(s)(px) / s!  — computed directly via synthetic division.
+#
+#  From y² = f we get: 2*y[0]*y[s] = f_s - Σ_{r=1}^{s-1} y[r]*y[s-r]
+#  → y[s] = (f_s - Σ_{r=1}^{s-1} y[r]*y[s-r]) / (2*y[0])
+#
+#  ALLOCATION INVARIANT: Zero heap allocations. Zero scalar boxing.
+#  Mutates `out_y` in-place using pre-allocated workspace buffers.
+# ---------------------------------------------------------------------------

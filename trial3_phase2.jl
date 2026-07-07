@@ -2153,7 +2153,7 @@ function phase2_worker(G               ::Div2,
             # General k-anchor path via the zero-allocation step_phi_k!,
             # dispatched to the ThreadScratchpad{k_cur} instance out of
             # scratch_by_k (see step_phi_dispatch! in trial3_phi_general.jl).
-            step_success, scratch_k = step_phi_dispatch!(scratch_by_k, k_cur, cur_anchors, u0, u1, v0, v1; backend=backend)
+            step_success, res_R, res_S, RS_mumford, a = step_phi_dispatch!(scratch_by_k, k_cur, cur_anchors, u0, u1, v0, v1; backend=backend)
             !step_success && continue
 
             # Anchor-sweep capture: grab this real, live-walk (anchors,u0,u1,v0,v1)
@@ -2165,74 +2165,6 @@ function phase2_worker(G               ::Div2,
             sweep_collector !== nothing &&
                 try_capture!(sweep_collector, cur_anchors, k_cur, u0, u1, v0, v1)
 
-            # Extract references directly from the pre-allocated thread-local
-            # scratch buffers of the ACTIVE (k_cur-sized) scratch instead of
-            # unpacking an allocated tuple.
-            k_len      = k_cur
-            nb_k       = k_len + 3
-            roots_k    = scratch_k.roots_out
-            n_roots    = scratch_k.roots_count[1]  # Track active logical count via a primitive field
-            @assert n_roots >= 0 "phase2_worker: n_roots=$n_roots must be >= 0 (k_cur=$k_cur)"
-            @assert n_roots <= length(roots_k) "phase2_worker: n_roots=$n_roots exceeds roots_k capacity $(length(roots_k)) (k_cur=$k_cur)"
-            
-            # Extract up to 2 residual affine points as res_R, res_S.
-            # A single recovered root (n_roots == 1) is not a usable affine
-            # pair — e.g. one of the two x-roots existed but its y-lift
-            # failed (SQRT_FP_NONSQUARE) — so it must be discarded exactly
-            # like n_roots == 0, not padded out with SENTINEL_PT.  Letting
-            # SENTINEL_PT stand in for the missing point let it leak into
-            # Branch B's pt2idx lookups as a spurious off-FB "large prime"
-            # (get(pt2idx, SENTINEL_PT, 0) is always 0), and lp_pt could
-            # resolve directly to SENTINEL_PT itself.
-            if n_roots >= 2
-                @inbounds res_R = roots_k[1]
-                @inbounds res_S = roots_k[2]
-                @assert res_R !== SENTINEL_PT "phase2_worker: res_R came out as SENTINEL_PT despite n_roots=$n_roots >= 2 (k_cur=$k_cur)"
-                @assert res_S !== SENTINEL_PT "phase2_worker: res_S came out as SENTINEL_PT despite n_roots=$n_roots >= 2 (k_cur=$k_cur)"
-            else
-                res_R = SENTINEL_PT
-                res_S = SENTINEL_PT
-            end
-
-            # Build RS_mumford from u_RS / v_RS for the conjugate branch.
-            # u_RS length is determined via scratch integer flags rather than allocating length(u_RS_k).
-            u_rs_len = scratch_k.u_RS_len[1]
-            v_rs_len = scratch_k.v_RS_len[1]
-            @assert u_rs_len >= 0 "phase2_worker: u_rs_len=$u_rs_len must be >= 0 (k_cur=$k_cur)"
-            @assert v_rs_len >= 0 "phase2_worker: v_rs_len=$v_rs_len must be >= 0 (k_cur=$k_cur)"
-            @assert u_rs_len <= length(scratch_k.u_RS) "phase2_worker: u_rs_len=$u_rs_len exceeds u_RS capacity $(length(scratch_k.u_RS))"
-            @assert v_rs_len <= length(scratch_k.v_RS) "phase2_worker: v_rs_len=$v_rs_len exceeds v_RS capacity $(length(scratch_k.v_RS))"
-
-            if u_rs_len == 3   # degree 2 — standard conjugate pair
-                @inbounds u0_rs = scratch_k.u_RS[1]
-                @inbounds u1_rs = scratch_k.u_RS[2]
-                @inbounds v0_rs = (v_rs_len == 0) ? 0 : scratch_k.v_RS[1]
-                @inbounds v1_rs = (v_rs_len >= 2) ? scratch_k.v_RS[2] : 0
-                RS_mumford = (u0_rs, u1_rs, v0_rs, v1_rs)
-                @assert all(x -> x isa Int, RS_mumford) "phase2_worker: RS_mumford has a non-Int component: $RS_mumford (k_cur=$k_cur)"
-                @assert RS_mumford != SENTINEL_MUMFORD "phase2_worker: RS_mumford accidentally equals SENTINEL_MUMFORD despite u_rs_len==3 (k_cur=$k_cur, u_RS=$(scratch_k.u_RS[1:u_rs_len]))"
-            else
-                # Residual degree ≠ 2: no conjugate LP key available.
-                # If we have split points use them; otherwise skip the step.
-                RS_mumford = SENTINEL_MUMFORD
-                if res_R == SENTINEL_PT && res_S == SENTINEL_PT
-                    pts_drop = phi_timing_stats()
-                    pts_drop.n_drop_residual_deg_not_2_no_split += 1
-                    continue
-                end
-            end
-
-            # Approximate a as the leading pure-x² coefficient for D38/diagnostics.
-            # In the general basis, find the coeff of the x² monomial (pole order 4).
-            basis_k = rr_basis_cached(nb_k)::Vector{NTuple{2, Int}}
-            a = 0
-            for _ki in 1:nb_k
-                @inbounds basis_elem = basis_k[_ki]
-                if basis_elem[1] == 2 && basis_elem[2] == 0
-                    @inbounds a = scratch_k.coeffs_out[_ki]
-                    break
-                end
-            end
             
             if d38_stat !== nothing 
                 record_d38_step!(d38_stat, Int(a))

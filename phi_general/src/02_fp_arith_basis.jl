@@ -1,0 +1,421 @@
+# ==============================================================================
+# 02_fp_arith_basis.jl
+# Split fragment of trial3_phi_general.jl (lines 476-890 of original).
+# NOT standalone-includable yet -- wiring/includes to be sorted out separately.
+# ==============================================================================
+
+#  Zero-allocation sqrt wrapper for the hot walk path.
+#
+#  trial1's sqrt_fp returns Union{Int,Nothing}, which Julia boxes on every
+#  call.  We wrap it here with a sentinel so the hot path in
+#  find_roots_and_points_inplace! and step_phi_k! stays allocation-free.
+#  trial1 is untouched.
+# ---------------------------------------------------------------------------
+const SQRT_FP_NONSQUARE = -1   # sentinel: caller checks sq < 0
+
+@inline function sqrt_fp_hot(a::Int)::Int
+    r = sqrt_fp_fast(a)
+    r === nothing ? SQRT_FP_NONSQUARE : r::Int
+end
+
+# ---------------------------------------------------------------------------
+#  sqrt_fp_fast(a) -> Union{Int,Nothing}
+#
+#  Drop-in replacement for trial1's sqrt_fp, used only on the hot walk path
+#  (find_roots_and_points_inplace!, phi_residual_mumford_general). trial1's
+#  sqrt_fp itself is UNTOUCHED (battle-tested, never modify) — this is a
+#  separate function living in trial3_phi_general.jl.
+#
+#  MOTIVATION (from PHI-TIMING output showing residual at 57.7% of solve+
+#  gauss+residual time): for p ≡ 3 (mod 4) — the common case — trial1's
+#  sqrt_fp does TWO full modular exponentiations:
+#    1. powermod(a, (p-1)/2, p) == 1   [Euler criterion: is a a QR?]
+#    2. powermod(a, (p+1)/4, p)        [the actual candidate root r]
+#  and then verifies r² == a. Since deg==2 residuals dominate every k=1
+#  walk step (the most heavily-weighted tuple length under the geometric
+#  round-robin decay), this sqrt is called on essentially every step, so
+#  its cost is not incidental.
+#
+#  THE REDUNDANCY: with r = a^((p+1)/4) mod p,
+#      r² = a^((p+1)/2) = a · a^((p-1)/2) mod p.
+#    - If a is a QR:      a^((p-1)/2) = 1   ⟹  r² = a
+#    - If a is a non-QR:  a^((p-1)/2) = -1  ⟹  r² = -a  (≠ a, since a≠0)
+#  So the verification step "r² == a" ALREADY implies the Euler criterion —
+#  computing it separately beforehand is pure duplicated work. Verified
+#  both algebraically and against 2000 random trials across a range of
+#  p ≡ 3 (mod 4) primes (see planning session) before landing this.
+#
+#  This eliminates one full powermod call (~half the p≡3 mod 4 sqrt cost)
+#  on the dominant residual code path. The p ≡ 1 (mod 4) Tonelli-Shanks
+#  branch is copied over unchanged (its main loop already uses fpmul
+#  chains rather than repeated powermod calls, so there's no analogous
+#  redundancy to remove there — see NOTE below).
+#
+#  NOTE on p ≡ 1 mod 4, p ≢ 5 mod 8 (i.e. p ≡ 1 mod 8): still calls
+#  powermod 3 times up front (for z's Euler check inside the "find a
+#  non-residue" loop, plus c, t, r) — those are NOT redundant with each
+#  other (z, a, and the exponents Q/(Q+1)/2 are all different
+#  bases/exponents), so no analogous simplification applies there without
+#  a deeper algorithmic change. If p ≡ 1 (mod 8) in your run, this
+#  function is bit-identical in cost to trial1's sqrt_fp.
+#
+#  UPDATE: added a dedicated p ≡ 5 (mod 8) branch below (see its own
+#  comment for the derivation/references) after a run with p ≡ 5 (mod 8)
+#  showed the generic Tonelli-Shanks fallback firing on every deg==2
+#  residual — i.e. the p≡1(mod4) case above was NOT just "no analogous
+#  redundancy to remove," it was actively the dominant cost in the whole
+#  φ-construction pipeline for that class of p. p ≡ 5 (mod 8) is common
+#  enough (half of all p ≡ 1 mod 4 primes) that it deserved its own fast
+#  path rather than falling through to the fully general algorithm, which
+#  additionally has a non-residue SEARCH LOOP (unbounded a priori, though
+#  fast in practice) and an inner order-finding loop with its own powermod
+#  call — neither of which the p≡5(mod8) closed form needs at all.
+# ---------------------------------------------------------------------------
+function sqrt_fp_fast(a::Int)::Union{Int,Nothing}
+    a = fp(a);  a == 0 && return 0
+    if p % 4 == 3
+        r = powermod(a, (p + 1) >> 2, p)
+        return fpmul(r, r) == a ? r : nothing
+    end
+    if p % 8 == 5
+        # p ≡ 5 (mod 8) fast path.
+        #
+        # MOTIVATION: added after --phi-timing's residual breakdown showed
+        # the "roots" bucket (all deg==2, i.e. 100% through this function)
+        # costing ~2343ns/call — 43.8% of residual, the single largest
+        # sub-bucket in the whole call. The comment block above this
+        # function already flagged the reason: for p ≡ 1 (mod 4), this
+        # function falls through unchanged to the generic Tonelli-Shanks
+        # branch below, which for THIS run's p does ~5-6 full
+        # powermod-style modular exponentiations per call (Euler check,
+        # non-residue search, c/t/r setup, plus one more inside the
+        # order-finding loop since S=2 here) versus the single
+        # exponentiation the p≡3(mod4) branch above needed. That's the
+        # actual cost, not anything intrinsic to "closed form."
+        #
+        # p ≡ 5 (mod 8) is a strictly stronger condition than p ≡ 1 (mod 4)
+        # (it fixes S=2 exactly: p-1 = 4·((p-1)/4) with (p-1)/4 odd) and
+        # admits a closed-form root using only 2 modular exponentiations,
+        # no non-residue search and no inner loop — see e.g. Cohen, "A
+        # Course in Computational Algebraic Number Theory", Alg 1.5.1, or
+        # standard Tonelli-Shanks special-case writeups:
+        #
+        #   d = a^((p-1)/4) mod p
+        #   if d == 1:      r = a^((p+3)/8) mod p          (r² ≡ a)
+        #   if d == p-1:    r = 2a · (4a)^((p-5)/8) mod p  (r² ≡ a)
+        #   else:           a is a non-residue, no root
+        #
+        # Verified against 20000 random trials cross-checked against the
+        # Euler criterion / brute-force r²==a check before landing this
+        # (see conversation) — kept as a runtime self-check below too,
+        # exactly like the p≡3(mod4) branch's `fpmul(r,r)==a` check, so a
+        # future change to this file that alters `p` can't silently ship a
+        # wrong root without tripping an assert on the very next call.
+        d = powermod(a, (p - 1) >> 2, p)
+        if d == 1
+            r = powermod(a, (p + 3) >> 3, p)
+            @assert fpmul(r, r) == a "sqrt_fp_fast: p≡5(mod8) fast path (d==1 branch) produced a bad root — r=$r a=$a p=$p. Check the (p+3)/8 exponent and p%8==5 precondition."
+            return r
+        elseif d == p - 1
+            four_a = fpmul(4, a)
+            r = fpmul(fpmul(2, a), powermod(four_a, (p - 5) >> 3, p))
+            @assert fpmul(r, r) == a "sqrt_fp_fast: p≡5(mod8) fast path (d==p-1 branch) produced a bad root — r=$r a=$a p=$p. Check the 2a·(4a)^((p-5)/8) formula and p%8==5 precondition."
+            return r
+        else
+            return nothing   # a is a non-residue: d is neither 1 nor p-1
+        end
+    end
+    # p ≡ 1 (mod 4), p ≢ 5 (mod 8) — i.e. p ≡ 1 (mod 8): Tonelli-Shanks,
+    # unchanged from trial1's sqrt_fp.
+    #
+    # BUG FIX: the Euler criterion check (a^((p-1)/2) == 1) that trial1's
+    # sqrt_fp runs BEFORE dispatching to either branch was only reproduced
+    # here for the p≡3 branch (folded into the r²==a self-check). It was
+    # missing entirely from this p≡1 branch. Tonelli-Shanks' inner loop
+    # (`t==1 && return r` / the order-finding while loop below it) assumes
+    # `a` IS a quadratic residue; for a non-residue that assumption breaks
+    # and `t` can fail to ever reach 1, making the loop run forever. This
+    # is what caused the observed hang — every worker thread parked inside
+    # sqrt_fp_fast with p ≡ 1 (mod 4) and a non-residue `a`. Restored the
+    # check.
+    powermod(a, (p - 1) >> 1, p) == 1 || return nothing
+    Q, S = p - 1, 0
+    while Q % 2 == 0; Q >>= 1; S += 1; end
+    z = 2
+    while powermod(z, (p - 1) >> 1, p) != p - 1; z += 1; end
+    M2 = S
+    c = powermod(z, Q, p)
+    t = powermod(a, Q, p)
+    r = powermod(a, (Q + 1) >> 1, p)
+    while true
+        t == 1 && return r
+        i, tmp = 1, fpmul(t, t)
+        while tmp != 1; tmp = fpmul(tmp, tmp); i += 1; end
+        b = powermod(c, Int128(1) << (M2 - i - 1), p)
+        M2 = i
+        c = fpmul(b, b)
+        t = fpmul(t, c)
+        r = fpmul(r, b)
+    end
+end
+
+# Backend-aware wrapper: converts from backend representation to standard form
+# before calling sqrt_fp_hot, since sqrt_fp (defined in trial1) assumes
+# standard F_p elements.  For StandardArith this is a no-op (from_repr = id).
+@inline function sqrt_fp_hot_b(backend::FpArith, a::Int)::Int
+    sqrt_fp_hot(from_repr(backend, a))
+end
+
+# ---------------------------------------------------------------------------
+#  Fast Fp arithmetic for the hot walk path.
+#
+#  CORRECTNESS FIX (round-off bug, manifesting at ell>=45 bits):
+#  The previous version of fpmul computed `(a * b) % p` using plain Int64
+#  (Int) multiplication. That is only safe when p² < 2^63, i.e. roughly
+#  p < 2^31.5 (~31 bits). For any p beyond that — and definitely by the
+#  time p reaches 45 bits, where p² ~ 2^90 — `a * b` silently overflows
+#  Int64's two's-complement range. Julia's default Int arithmetic does
+#  NOT check for overflow or throw; it just wraps mod 2^64. Since 2^64
+#  is generally not ≡ 0 mod p, the wrapped product is congruent to the
+#  true product *plus some nonzero multiple of (2^64 mod p)* — i.e. a
+#  flat-out wrong field element, not a rounding artifact in the
+#  floating-point sense, but it shows up downstream exactly like
+#  "round-off": small, inconsistent-looking numerical errors that
+#  appear only at larger p and otherwise pass silently because Int
+#  overflow is unchecked.
+#
+#  This is exactly the failure mode trial1's original fpmul avoided via
+#  widemul(Int64,Int64) → Int128 → mod → back to Int64. We restore that
+#  widening here. It costs one 128-bit reduction per multiply instead of
+#  a native 64-bit DIV, but it is the minimum correct approach for any
+#  p that isn't known in advance to be < ~31 bits. Given this module is
+#  now being run at ell=45 bits, the old "fits in Int64" precondition is
+#  simply false, so the fast path was never valid at this scale.
+#
+#  fpinv still uses Fermat (a^(p-2) mod p via square-and-multiply) rather
+#  than invmod/gcdx — that choice is independent of the overflow bug and
+#  remains correct as long as fpmul itself is correct, which it now is.
+#
+#  These shadow trial1's fp/fpmul/fpinv for all functions defined in this
+#  file.  trial1 is untouched; its own definitions remain in effect for
+#  code defined there (jac_add, etc.).
+# ---------------------------------------------------------------------------
+@inline function fp(x::Int)::Int
+    r = x % p
+    return r < 0 ? r + p : r
+end
+
+@inline function fpmul(a::Int, b::Int)::Int
+    # Widen to Int128 BEFORE multiplying so the product can never overflow,
+    # regardless of how large p (and hence a, b ∈ [0, p)) gets at ell=45+
+    # bits. p up to ~63 bits still gives a product comfortably inside
+    # Int128's ±2^127 range (p² < 2^126), so this is safe well past any
+    # bit-length this codebase is realistically run at.
+    r = (widen(a) * widen(b)) % p
+    r = r < 0 ? r + p : r
+    return r % Int   # narrow back to Int64; safe since 0 <= r < p < 2^63
+end
+
+@inline function fpinv(a::Int)::Int
+    # Fermat: a^(p-2) mod p.  Pure Int64 square-and-multiply.
+    a = fp(a)
+    a == 0 && throw(DomainError(a, "fpinv: zero mod p"))
+    # FAST PATH: a==1 is extremely common on this hot path — poly_reduce_mod_inplace!
+    # always reduces against scratch.u_RS, whose leading coefficient is forced to 1
+    # by the monic-normalization step in phi_residual_general! (step 6) before
+    # u_RS is ever written into scratch.u_RS. Without this check, every one of the
+    # 4 poly_reduce_mod_inplace! calls per walk step burns a full ~log2(p)-squaring
+    # Fermat ladder (≈45 multiplications at ell=45 bits) just to compute 1^(p-2)=1.
+    a == 1 && return 1
+    r = 1; b = a; e = p - 2
+    while e > 0
+        isodd(e) && (r = fpmul(r, b))
+        b = fpmul(b, b)
+        e >>= 1
+    end
+    return r
+end
+
+# ---------------------------------------------------------------------------
+#  Riemann-Roch basis enumeration
+#
+#  Returns a vector of (i, j) pairs meaning x^i * y^j (j ∈ {0,1}),
+#  in increasing pole-order, of length n_basis.
+#
+#  Pole order: (i, 0) → 2i;   (i, 1) → 2i+5.
+# ---------------------------------------------------------------------------
+function rr_basis(n_basis::Int)::Vector{NTuple{2,Int}}
+    basis = NTuple{2,Int}[]
+    # Enumerate in order of pole order.  Max pole order we need:
+    # interleaved x^i (order 2i) and x^i*y (order 2i+5), starting from i=0.
+    # Orders: 0(x⁰), 2(x¹), 4(x²), 5(y), 6(x³), 7(xy), 8(x⁴), 9(x²y), ...
+    # After the first four (i=0,1,2 pure-x and i=0 y-term), each consecutive
+    # pair has pole orders 2k and 2k+5 interleaved.  We just stream pairs
+    # (i,0) and (i-3,1) by walking pole order ≤ max_order.
+    max_order = 2 * n_basis + 10   # generous upper bound
+    candidates = Tuple{Int,Int,Int}[]  # (pole_order, i, j)
+    for i in 0:max_order÷2
+        push!(candidates, (2i,   i, 0))
+        push!(candidates, (2i+5, i, 1))
+    end
+    sort!(candidates, by=x->x[1])
+    seen = 0
+    for (_, i, j) in candidates
+        seen += 1
+        push!(basis, (i, j))
+        seen == n_basis && break
+    end
+    return basis
+end
+
+# Cached wrapper — returns the pre-computed (or lazily computed) basis for
+# n_basis.  Thread-safe for reads after init_phi_general_caches!() has been
+# called from the main thread before workers are spawned.
+function rr_basis_cached(n_basis::Int)::Vector{NTuple{2,Int}}
+    b = get!(RR_BASIS_CACHE, n_basis) do
+        rr_basis(n_basis)
+    end
+
+    # HARD ASSERT: this used to require basis[end]==(0,1) — i.e. "y always
+    # sorts last" — because every caller in this file used to treat
+    # basis[end] as "the element whose coefficient gets normalized to 1".
+    # That assumption is WRONG in general (rr_basis's pole-order sort only
+    # puts y last for n_basis=4/K=1; for n_basis=5/K=2 it puts x³ last
+    # instead — see the K=2 field failure this assert was added to catch),
+    # and demanding basis[end]==(0,1) here would either (a) still be wrong
+    # for n_basis=5 forever, since rr_basis's pole-order enumeration is
+    # correct and should NOT be bent to put y last (doing so would silently
+    # evict a real basis element and change which RR space L(D_pole) this
+    # computes — see the CAUTION below), or (b) require rr_basis itself to
+    # change, which is a much bigger and riskier edit than fixing the
+    # consumers.
+    #
+    # The consumers (build_phi_general!, fill_monomial_block!,
+    # fill_mumford_block!, the coeffs_out write-back) have since been fixed
+    # to explicitly locate the y-monomial's real index via `findfirst` and
+    # normalize THAT index, rather than assuming it's basis[end] — so the
+    # only invariant this cache-choke-point assert needs to guarantee for
+    # every caller is "a y-monomial actually EXISTS in this basis
+    # somewhere", not "it's specifically last". Every RR basis this file
+    # ever needs a φ-construction from MUST contain (0,1): the reference
+    # convention (build_phi_mumford in trial3_phi.jl, φ=a·x²+b·x+c+d·y,
+    # d=1 ALWAYS) hard-codes a y-term, so a basis missing (0,1) entirely
+    # would mean rr_basis's enumeration itself is broken for this n_basis
+    # (a real bug), independent of the basis[end] question this assert
+    # used to (wrongly) conflate with it.
+    @assert !isempty(b) "rr_basis_cached($n_basis): rr_basis returned an empty basis"
+    @assert any(bi -> bi == (0, 1), b) "rr_basis_cached($n_basis): no y-monomial (0,1) found ANYWHERE in the basis — full basis = $b. Every φ-construction in this file (build_phi_general!, and the reference build_phi_mumford in trial3_phi.jl) hard-codes a y-term (d=1, always present) — a basis without one means rr_basis's pole-order enumeration is broken for n_basis=$n_basis, not just a normalization-index bookkeeping issue."
+    # DEFENSIVE (not required for correctness, but flags drift early): warn
+    # -equivalent hard info for whoever's watching the trace — this does
+    # NOT assert basis[end]==(0,1) (that's no longer a requirement, see
+    # above), it only records, in the label the caller-side error strings
+    # can reference, whether this particular n_basis is one of the ones
+    # where the old y-sorts-last coincidence happens to hold.
+    y_sorts_last = b[end] == (0, 1)
+
+    return b
+end
+
+# ---------------------------------------------------------------------------
+#  eval_monomial(i, j, px, py, scratch, backend) — NOT a generic point
+#  evaluator, despite the name/old doc comment. This evaluates x^i*y^j via
+#  reduce_monomial_mod_D_cached, i.e. by reducing x^i MODULO THE DIVISOR
+#  u(x) currently cached in scratch.x_pow_mod_u_r0/r1 (populated by
+#  build_phi_general!'s build_xmodu_cache! call for THIS walk step's
+#  (u0,u1)), then combining with py. This is mathematically equivalent to
+#  evaluating x^i*y^j at (px,py) ONLY WHEN px IS A ROOT OF THAT SPECIFIC
+#  u(x) — e.g. when (px,py) is one of the two points the current Mumford
+#  divisor D=(u,v) represents. It is NOT a substitute for direct
+#  evaluation at an arbitrary point (an anchor, say) that has no required
+#  relationship to u(x).
+#
+#  CAUGHT BUG: step_phi_k!'s "PHI VANISHING CHECK (ANCHORS)" used to call
+#  this to check phi(anchor)==0 for the walk's factor-base anchor points —
+#  points with no relationship to u(x) — which is exactly the misuse this
+#  comment warns against. That check now evaluates directly via powermod
+#  instead. This function currently has no callers; if you're about to add
+#  one, first ask whether px is actually guaranteed to be a root of
+#  whatever u(x) is cached in scratch at that point in the call — if not,
+#  use a direct powermod-based evaluation instead (see step_phi_k!'s PHI
+#  VANISHING CHECK or build_phi_general!'s self-verification loop for the
+#  pattern), not this function.
+# ---------------------------------------------------------------------------
+@inline function eval_monomial(
+    i::Int, j::Int,
+    px::Int, py::Int,
+    scratch,
+    backend::FpArith
+)::Int
+
+    @assert i >= 0
+    @assert j == 0 || j == 1
+
+    r0, r1 = reduce_monomial_mod_D_cached(
+        i, j,
+        to_repr(backend, px),
+        to_repr(backend, py),
+        scratch,
+        backend
+    )
+
+    @assert r0 isa Int
+    @assert r1 isa Int
+
+    # affine lift: x^i * (1 + y * v1/v0-style decomposition already baked in)
+    t0 = from_repr(backend, r0)
+    t1 = from_repr(backend, r1)
+
+    res = t0 + py * t1
+
+    @assert res isa Int
+
+    return fp_b(backend, res)
+end
+
+# ---------------------------------------------------------------------------
+#  Reduce x^i mod u(x) = x² + u1*x + u0  →  (r0, r1)  [zero-allocation]
+#
+#  Two-register recurrence from x² ≡ -u1·x - u0:
+#    x·(r0 + r1·x) ≡ -r1·u0 + (r0 - r1·u1)·x
+#  so each multiply-by-x step: (r0,r1) → (-r1·u0, r0 - r1·u1)
+# ---------------------------------------------------------------------------
+@inline function reduce_xi_mod_u(i::Int, u0::Int, u1::Int)::NTuple{2,Int}
+    i == 0 && return (1, 0)
+    i == 1 && return (0, 1)
+    r0 = 0; r1 = 1          # represents x^1
+    for _ in 2:i
+        r0, r1 = fp(-fpmul(r1, u0)), fp(r0 - fpmul(r1, u1))
+    end
+    return (r0, r1)
+end
+
+# ---------------------------------------------------------------------------
+#  Reduce x^i * v(x) mod u(x)  →  (r0, r1)  [zero-allocation]
+#
+#  v(x) = v0 + v1·x  ⟹  x^i·v = v0·x^i + v1·x^(i+1)
+#  Reduce each power with the recurrence above then combine linearly.
+# ---------------------------------------------------------------------------
+@inline function reduce_xiv_mod_u(i::Int, v0::Int, v1::Int,
+                                   u0::Int, u1::Int)::NTuple{2,Int}
+    a0, a1 = reduce_xi_mod_u(i,     u0, u1)
+    b0, b1 = reduce_xi_mod_u(i + 1, u0, u1)
+    return (fp(fpmul(v0, a0) + fpmul(v1, b0)),
+            fp(fpmul(v0, a1) + fpmul(v1, b1)))
+end
+
+# ---------------------------------------------------------------------------
+#  Reduce monomial x^i * y^j mod the divisor D = [u(x), v(x)].
+#  On the curve y = v(x) mod u(x), so x^i*y^j → x^i * v(x)^j mod u(x).
+#  j ∈ {0,1} for the monomials we use.
+#  Returns (r0, r1): the linear remainder a0 + a1*x.
+# ---------------------------------------------------------------------------
+@inline function reduce_monomial_mod_D(i::Int, j::Int,
+                                        u0::Int, u1::Int,
+                                        v0::Int, v1::Int)::NTuple{2,Int}
+    if j == 0
+        return reduce_xi_mod_u(i, u0, u1)
+    else
+        return reduce_xiv_mod_u(i, v0, v1, u0, u1)
+    end
+end
+
