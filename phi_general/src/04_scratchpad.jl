@@ -209,8 +209,8 @@ end
     i::Int, j::Int,
     v0::Int, v1::Int,
     scratch,
-    backend::FpArith
-)::NTuple{2,Int}
+    backend::B
+)::NTuple{2,Int} where {B<:FpArith}
 
     @assert i >= 0
     @assert j == 0 || j == 1
@@ -291,7 +291,7 @@ end
 #  Call this once per ThreadScratchpad after p is known, before spawning walkers.
 # ---------------------------------------------------------------------------
 function init_scratch_caches!(scratch::ThreadScratchpad{K}, p_val::Int,
-                               backend::FpArith = StandardArith(p_val)) where K
+                               backend::B = StandardArith(p_val)) where {K, B<:FpArith}
     # Precomputed modular inverses for small positive integers, stored in
     # `backend`'s representation. build_phi_general! (via monomial_series_coeffs!)
     # combines small_inv[s] with backend-form binomial coefficients using

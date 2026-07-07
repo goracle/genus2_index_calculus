@@ -11,8 +11,8 @@ function branch_series!(
     m       ::Int,
     f_tay   ::AbstractVector{Int},
     poly_buf::AbstractVector{Int},
-    backend ::FpArith = StandardArith(p)
-)::Nothing
+    backend ::B = StandardArith(p)
+)::Nothing where {B<:FpArith}
 
     @assert m ≥ 1
 
@@ -137,8 +137,8 @@ end
     xi_cache_px::AbstractVector{Int},
     xi_cache_m::AbstractVector{Int},
     xi_cache_buf::AbstractVector{Int},
-    backend::FpArith,
-)::Nothing
+    backend::B,
+)::Nothing where {B<:FpArith}
     @inbounds if xi_cache_i[1] == i && xi_cache_px[1] == px && xi_cache_m[1] == m
         @inbounds copyto!(xi_scratch, 1, xi_cache_buf, 1, m)
         return nothing

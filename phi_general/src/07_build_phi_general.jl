@@ -11,8 +11,8 @@ function build_phi_general!(
     u1,
     v0,
     v1;
-    backend=StandardArith(p)
-)::Bool
+    backend::B=StandardArith(p)
+    )::Bool where {B<:FpArith}
 
     # TIMING INSTRUMENTATION (series phase start): the PhiTimingStats
     # struct/report machinery above has existed for a while but ns_series/

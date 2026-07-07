@@ -265,7 +265,7 @@ end
 #  non-Standard backend.  Runtime: O(n_trials) * O(log p) for the fpinv trials,
 #  negligible vs walk startup.
 # ---------------------------------------------------------------------------
-function validate_backend(backend::FpArith; n_trials::Int = 10_000)
+function validate_backend(backend::B; n_trials::Int = 10_000) where {B<:FpArith}
     std = StandardArith(backend.p)
     p   = backend.p
 

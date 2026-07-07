@@ -74,7 +74,7 @@
 # ---------------------------------------------------------------------------
 function fp_gauss!(A::MMatrix{N,N,Int}, b::MVector{N,Int},
                    prefix_buf::MVector{N,Int},
-                   backend::FpArith = StandardArith(p))::Bool where N
+                   backend::B = StandardArith(p))::Bool where {N, B<:FpArith}
     n = N   # compile-time constant; loop bounds become literals
 
     # DIAGNOSTIC SNAPSHOT: capture A/b exactly as build_phi_general! handed
@@ -221,7 +221,7 @@ end
 # ---------------------------------------------------------------------------
 @inline function fp_gauss_batch_invert_diag!(A::MMatrix{N,N,Int}, b::MVector{N,Int},
                                               prefix_buf::MVector{N,Int},
-                                              backend::FpArith = StandardArith(p))::Bool where N
+                                              backend::B = StandardArith(p))::Bool where {N, B<:FpArith}
     n = N
     @inbounds d1 = A[1, 1]
     if d1 == 0

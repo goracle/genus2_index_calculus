@@ -459,7 +459,7 @@ end
 # not pre-populated, so the first time multiple walker threads hit an
 # uncached k concurrently (e.g. k=5,6 with the old default=4 but K_MAX=6),
 # it's a genuine data race on RR_BASIS_CACHE, not merely a slow path.
-function init_phi_general_caches!(max_k::Int = K_MAX, backend::FpArith = StandardArith(p))
+function init_phi_general_caches!(max_k::Int = K_MAX, backend::B = StandardArith(p)) where {B<:FpArith}
     global F_POLY_DESC
     # F_POLY_DESC must be in the SAME representation build_phi_general! (via
     # branch_series!) will combine it with — i.e. whatever `backend` uses.

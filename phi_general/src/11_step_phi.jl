@@ -95,8 +95,8 @@ function step_phi_k!(
     scratch ::ThreadScratchpad{K},
     anchors ::NTuple{K,NTuple{2,Int}},
     u0::Int, u1::Int, v0::Int, v1::Int;
-    backend::FpArith = StandardArith(p)
-)::Bool where K
+    backend::B = StandardArith(p)
+)::Bool where {K, B<:FpArith}
 
     # ------------------------------------------------------------
     # bookkeeping
@@ -339,8 +339,8 @@ function step_phi_dispatch!(
     k_cur        ::Int,
     anchors,
     u0::Int, u1::Int, v0::Int, v1::Int;
-    backend::FpArith = StandardArith(p)
-)
+    backend::B = StandardArith(p)
+) where {B<:FpArith}
     @assert k_cur >= 1 "step_phi_dispatch!: k_cur=$k_cur must be >= 1"
     @assert k_cur <= length(scratch_by_k) "step_phi_dispatch!: k_cur=$k_cur exceeds scratch_by_k length $(length(scratch_by_k))"
     return _step_phi_dispatch_gen!(scratch_by_k, k_cur, anchors, u0, u1, v0, v1, backend)

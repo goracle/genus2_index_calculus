@@ -506,8 +506,8 @@ end
     scratch ::ThreadScratchpad{K},
     anchors ::Vector{NTuple{2,Int}},
     u0::Int, u1::Int, v0::Int, v1::Int;
-    backend::FpArith = StandardArith(p)
-)::Bool where K
+    backend::B = StandardArith(p)
+)::Bool where {K, B<:FpArith}
     # WILLY-NILLY ASSERT: comment above says anchors's length "may exceed K"
     # (K_MAX-sized shared buffer) — but never checks it's at least K.
     @assert length(anchors) >= K "step_phi_k! (Vector shim): anchors has length $(length(anchors)) < K=$K, ntuple slice would read past the end"
@@ -520,8 +520,8 @@ end
     scratch ::ThreadScratchpad{K},
     anchors ::MVector{<:Any, NTuple{2,Int}},
     u0::Int, u1::Int, v0::Int, v1::Int;
-    backend::FpArith = StandardArith(p)
-)::Bool where K
+    backend::B = StandardArith(p)
+)::Bool where {K, B<:FpArith}
     @assert length(anchors) >= K "step_phi_k! (MVector shim): anchors has length $(length(anchors)) < K=$K, ntuple slice would read past the end"
     # Convert MVector to NTuple{K,...} — zero allocation, compiler inlines the ntuple.
     anc_tup = ntuple(i -> anchors[i], Val(K))

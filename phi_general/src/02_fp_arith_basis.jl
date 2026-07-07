@@ -162,7 +162,7 @@ end
 # Backend-aware wrapper: converts from backend representation to standard form
 # before calling sqrt_fp_hot, since sqrt_fp (defined in trial1) assumes
 # standard F_p elements.  For StandardArith this is a no-op (from_repr = id).
-@inline function sqrt_fp_hot_b(backend::FpArith, a::Int)::Int
+@inline function sqrt_fp_hot_b(backend::B, a::Int)::Int where {B<:FpArith}
     sqrt_fp_hot(from_repr(backend, a))
 end
 
@@ -272,9 +272,7 @@ end
 # n_basis.  Thread-safe for reads after init_phi_general_caches!() has been
 # called from the main thread before workers are spawned.
 function rr_basis_cached(n_basis::Int)::Vector{NTuple{2,Int}}
-    b = get!(RR_BASIS_CACHE, n_basis) do
-        rr_basis(n_basis)
-    end
+    b = haskey(RR_BASIS_CACHE, n_basis) ? RR_BASIS_CACHE[n_basis] : (RR_BASIS_CACHE[n_basis] = rr_basis(n_basis))
 
     # HARD ASSERT: this used to require basis[end]==(0,1) — i.e. "y always
     # sorts last" — because every caller in this file used to treat
@@ -344,8 +342,8 @@ end
     i::Int, j::Int,
     px::Int, py::Int,
     scratch,
-    backend::FpArith
-)::Int
+    backend::B
+)::Int where {B<:FpArith}
 
     @assert i >= 0
     @assert j == 0 || j == 1

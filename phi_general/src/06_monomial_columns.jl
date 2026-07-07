@@ -15,12 +15,12 @@ function monomial_series_coeffs!(
     binom_scratch::AbstractVector{Int},
     pxpow_table::AbstractVector{Int},
     small_inv::AbstractVector{Int},
-    backend::FpArith = StandardArith(p);
+    backend::B = StandardArith(p);
     xi_cache_i::Union{AbstractVector{Int},Nothing} = nothing,
     xi_cache_px::Union{AbstractVector{Int},Nothing} = nothing,
     xi_cache_m::Union{AbstractVector{Int},Nothing} = nothing,
     xi_cache_buf::Union{AbstractVector{Int},Nothing} = nothing,
-)::Nothing
+)::Nothing where {B<:FpArith}
 
     @assert length(out) >= m
     @assert j == 0 || j == 1 "unexpected monomial x^$i y^$j"
@@ -85,8 +85,8 @@ end
     xpow::Vector{Int},
     px::Int,
     maxdeg::Int,
-    backend::FpArith
-)
+    backend::B
+) where {B<:FpArith}
     px_b  = to_repr(backend, px)
     one_b = to_repr(backend, 1)
 
@@ -142,8 +142,8 @@ end
     f_tay::AbstractVector{Int},
     px::Int,
     deriv_power_cache::AbstractVector{Int},
-    backend::FpArith
-)
+    backend::B
+) where {B<:FpArith}
     @assert length(f_tay) >= 2 "fill_f_tay!: f_tay buffer (length $(length(f_tay))) too small to hold f_tay[2] (F_x(px))"
     @assert !isempty(F_POLY_DESC) "fill_f_tay!: F_POLY_DESC is empty — init_phi_general_caches! must run before any m>1 (tangency) branch_series! call"
 
@@ -191,8 +191,10 @@ end
     px, py,
     m,
     scratch,
-    backend
-)
+    backend::B
+) where {B<:FpArith}
+
+
     m >= 2 && fill_f_tay!(scratch.f_tay, px, scratch.deriv_power_cache, backend)
     branch_series!(out_y, px, py, m, scratch.f_tay, scratch.poly_buf, backend)
 
@@ -264,8 +266,9 @@ end
     px::Int,
     out_y,
     m::Int,
-    backend
-)
+    backend::B
+) where {B<:FpArith}
+
     @assert j == 0 || j == 1
     @assert m == 1 || m == 2 "_monomial_column!: m=$m unsupported — only m=1 (plain evaluation) and m=2 (single tangency, requires f_tay[2]=F_x(px) to be populated) are implemented; higher-order tangency (m>=3) needs fill_f_tay! extended to f_tay[3..] and branch_series!'s F_yy cross-term handled explicitly"
 
@@ -359,8 +362,8 @@ end
     out_y,
     m::Int,
     scratch,
-    backend
-)
+    backend::B
+    ) where {B<:FpArith}
 
     n = length(basis)   # n == nb == N2 + 1 (N2 unknowns + 1 normalised element)
 
@@ -446,8 +449,9 @@ end
     out_y,
     m,
     scratch,
-    backend
-)
+    backend::B
+) where {B<:FpArith}
+
     monomial_series_coeffs!(
         scratch.ser_buf,
         i_norm, j_norm,
@@ -499,8 +503,8 @@ end
     r0_buf, r1_buf,
     u0::Int, u1::Int,
     max_i::Int,
-    backend::FpArith
-)
+    backend::B
+) where {B<:FpArith}
     @assert max_i >= 0 "build_xmodu_cache!: max_i=$max_i must be >= 0"
     @assert max_i + 1 <= length(r0_buf) "build_xmodu_cache!: max_i+1=$(max_i+1) exceeds r0_buf length $(length(r0_buf))"
     @assert max_i + 1 <= length(r1_buf) "build_xmodu_cache!: max_i+1=$(max_i+1) exceeds r1_buf length $(length(r1_buf))"
@@ -604,8 +608,8 @@ end
     n_cols::Int,
     v0_b::Int,
     v1_b::Int,
-    backend::FpArith
-)
+    backend::B
+) where {B<:FpArith}
     @assert row_idx + 1 <= size(A_mat, 1) "fill_mumford_block!: row_idx=$row_idx needs 2 rows (row_idx, row_idx+1), A_mat only has $(size(A_mat,1)) rows"
     @assert n_cols == size(A_mat, 2) "fill_mumford_block!: n_cols=$n_cols != A_mat column count $(size(A_mat,2))"
     @assert length(basis) == n_cols + 1 "fill_mumford_block!: expected basis to hold n_cols unknowns + 1 normalised element ($(n_cols+1) total), got length(basis)=$(length(basis))"
