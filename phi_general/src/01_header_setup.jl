@@ -116,6 +116,7 @@ using StaticArrays   # MMatrix, MVector — stack-allocated mutable arrays for
 
 const RR_BASIS_CACHE = Dict{Int, Vector{NTuple{2,Int}}}()
 const SENTINEL_PT      = (-1, -1)::NTuple{2,Int}
+const SENTINEL_MUMFORD = (-1, -1, -1, -1)::NTuple{4,Int}
 # --- setup/hot-path diagnostic spam, OFF by default ---
 # init_scratch_caches! fires once per (thread, K) — harmless in volume but
 # pure setup noise. build_phi_general! fires on every K>=2 walk step and

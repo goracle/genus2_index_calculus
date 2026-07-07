@@ -84,10 +84,11 @@ mutable struct ThreadScratchpad{K, N2, N3, L}
     oscar_ready     ::Vector{Bool}         # oscar_ready[1] = true once init'd
 
     # 9. Precomputed fpinv table for small positive integers 1..SMALL_INV_MAX.
-    #    Used by monomial_series_coeffs! (binomial denominators s=1..m-1, m≤16)
-    #    and by find_roots_and_points_inplace! (inv2 = small_inv[2]).
+    #    Used by monomial_series_coeffs! (binomial denominators s=1..m-1, m≤16),
+    #    stored in BACKEND (Montgomery) representation to match the backend-form
+    #    binomial coefficients it's combined with there via fpmul_b.
     #    Populated once by init_scratch_caches!(scratch, p) before walk starts.
-    small_inv       ::Vector{Int}          # small_inv[s] = fpinv(s), s=1..32
+    small_inv       ::Vector{Int}          # small_inv[s] = to_repr(backend, fpinv(s)), s=1..32
 
     # 9b. Precomputed backend-repr(power) table for fill_f_tay!'s derivative
     #     Horner loop: deriv_power_cache[power+1] = to_repr(backend, power)
@@ -151,6 +152,17 @@ mutable struct ThreadScratchpad{K, N2, N3, L}
     y_batch_E       ::MVector{N2, Int}
     y_batch_Y       ::MVector{N2, Int}
 
+    # 10. RAW-representation fpinv(2), cached once. _solve_quadratic_roots!
+    #     (10_root_finding.jl) works entirely in raw representation (c0, c1,
+    #     sq, and its plain `fpmul` calls) and needs 1/2 mod p, but small_inv[2]
+    #     above is backend (Montgomery) form and not usable there without a
+    #     conversion. Previously this was "fixed" by recomputing fpinv(2) —
+    #     a full ~log2(p)-step Fermat ladder — on EVERY quadratic-root call:
+    #     the actual cause of the ~12.7us/call `roots` cost (94% of `residual`,
+    #     which is itself 94.5% of total time — see PHI-TIMING reports).
+    #     Cached once here instead, at the same setup point as small_inv.
+    inv2_raw        ::Base.RefValue{Int}
+
     function ThreadScratchpad{K}() where K
         N2 = K + 2
         N3 = K + 3
@@ -173,7 +185,8 @@ mutable struct ThreadScratchpad{K, N2, N3, L}
             zeros(Int, 32),   # deriv_power_cache — populated by init_scratch_caches!, same lifetime/sizing as small_inv just above
             Ref{Any}(nothing),
             zeros(Int, 32), zeros(Int, 32),   # x_pow_mod_u_r0, x_pow_mod_u_r1
-            MVector{N2,Int}(zeros(Int,N2)), MVector{N2,Int}(zeros(Int,N2)), MVector{N2,Int}(zeros(Int,N2))  # y_batch_x, y_batch_E, y_batch_Y
+            MVector{N2,Int}(zeros(Int,N2)), MVector{N2,Int}(zeros(Int,N2)), MVector{N2,Int}(zeros(Int,N2)),  # y_batch_x, y_batch_E, y_batch_Y
+            Ref{Int}(0)   # inv2_raw — populated by init_scratch_caches!
         )
     end
 end
@@ -296,6 +309,11 @@ function init_scratch_caches!(scratch::ThreadScratchpad{K}, p_val::Int,
     for s in 1:32
         scratch.small_inv[s] = to_repr(backend, fpinv(s))
     end
+    # Raw-representation 1/2 mod p, cached once for _solve_quadratic_roots!
+    # (which works in raw representation, unlike small_inv above). See the
+    # inv2_raw field comment in the ThreadScratchpad struct for why this
+    # exists as a separate cache rather than reusing small_inv[2].
+    scratch.inv2_raw[] = fpinv(2)
 
     # deriv_power_cache: precompute to_repr(backend, power) for every power
     # fill_f_tay!'s derivative Horner loop will ever need (power = 1..deg,

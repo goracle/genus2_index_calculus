@@ -1513,7 +1513,7 @@ function main2(; fb_size            ::Union{Nothing,Int} = nothing,
     println("  Confirmed: ell*G = identity\n")
 
     # Inside main2() in trial3_fixed.jl, after p is stabilized:
-    phi_general.set_curve_context!(F_POLY, K_MAX, p)
+    phi_general.set_curve_context!(F_POLY, K_MAX, p, ell)
 
 
     # F_p arithmetic backend, wired to Montgomery form for the whole run.

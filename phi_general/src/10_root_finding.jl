@@ -63,18 +63,20 @@ end
         return 0
     end
 
-    # FIX: scratch.small_inv[s] is stored in BACKEND (Montgomery) representation
-    # (see init_scratch_caches!: small_inv[s] = to_repr(backend, fpinv(s))).
-    # Everywhere else in this function (c0, c1, sq, and the plain `fpmul` used
-    # throughout) operates in RAW representation — the same convention as
-    # scratch.u_RS/coeffs_out established after the phi_to_EY!/build_N_inplace!
-    # fix. Using scratch.small_inv[2] directly with the plain (non-backend)
-    # fpmul mixes a Montgomery-form operand into a raw-representation multiply
-    # — identical bug class to the earlier binom_scratch[1]/small_inv[s] issue
-    # in monomial_series_coeffs!. Use the raw inverse of 2 instead; this
-    # function has no backend argument to convert with, so recompute directly
-    # rather than threading backend through just for this one call.
-    inv2 = fpinv(2)
+    # scratch.small_inv[s] is stored in BACKEND (Montgomery) representation
+    # (see init_scratch_caches!: small_inv[s] = to_repr(backend, fpinv(s))),
+    # while everywhere else in this function (c0, c1, sq, and the plain
+    # `fpmul` used throughout) operates in RAW representation — the same
+    # convention as scratch.u_RS/coeffs_out established after the
+    # phi_to_EY!/build_N_inplace! fix. Using scratch.small_inv[2] directly
+    # with the plain (non-backend) fpmul would mix a Montgomery-form operand
+    # into a raw-representation multiply — identical bug class to the
+    # earlier binom_scratch[1]/small_inv[s] issue in monomial_series_coeffs!.
+    # Use the raw inverse of 2 instead — cached once per thread in
+    # scratch.inv2_raw by init_scratch_caches! rather than recomputed via a
+    # full Fermat ladder on every call (that recompute was the dominant cost
+    # in this function: ~12.7us/call, see the PHI-TIMING roots breakdown).
+    inv2 = scratch.inv2_raw[]
 
     x1 = fpmul(fp(-c1 + sq), inv2)
     x2 = fpmul(fp(-c1 - sq), inv2)

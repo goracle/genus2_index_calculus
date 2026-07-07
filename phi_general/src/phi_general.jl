@@ -35,11 +35,13 @@ export phi_timing_stats, rr_basis_cached, print_phi_timing_report, run_symbolic_
 global F_POLY = nothing
 global K_MAX = nothing
 global p = nothing
+global ell = nothing
 
-function set_curve_context!(f_poly, k_max, p_loc)
+function set_curve_context!(f_poly, k_max, p_loc, ell_loc)
     global F_POLY = f_poly
     global K_MAX = k_max
     global p = p_loc
+    global ell = ell_loc
 end
 
 end # module phi_general
