@@ -397,7 +397,7 @@ end
     for i in n:-1:1
         ex = quote
             if k_cur == $i
-                success = @code_warntype step_phi_k!(scratch_by_k[$i], anchors, u0, u1, v0, v1; backend=backend)
+                success = step_phi_k!(scratch_by_k[$i], anchors, u0, u1, v0, v1; backend=backend)
                 if !success
                     return (false, SENTINEL_PT, SENTINEL_PT, SENTINEL_MUMFORD, 0)
                 end

@@ -2153,7 +2153,7 @@ function phase2_worker(G               ::Div2,
             # General k-anchor path via the zero-allocation step_phi_k!,
             # dispatched to the ThreadScratchpad{k_cur} instance out of
             # scratch_by_k (see step_phi_dispatch! in trial3_phi_general.jl).
-            step_success, res_R, res_S, RS_mumford, a = step_phi_dispatch!(scratch_by_k, k_cur, cur_anchors, u0, u1, v0, v1; backend=backend)
+            step_success, res_R, res_S, RS_mumford, a = @code_warntype step_phi_dispatch!(scratch_by_k, k_cur, cur_anchors, u0, u1, v0, v1; backend=backend)
             !step_success && continue
 
             # Restored guard (was dropped when the manual extraction block in
