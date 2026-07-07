@@ -19,3 +19,4 @@ log.txt
 *.jsonl
 err*.txt
 filtered*.txt
+*.mem
