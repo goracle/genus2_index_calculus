@@ -152,6 +152,29 @@ curve_b2 = wb2^2 - (b2^5 + b2 + 2)
 # a (numerator, denominator) pair of honest polynomials in R.
 ################################################################################
 
+# Reduce a (num, den) pair by their gcd. This is the key fix motivated by
+# diag_norm.jl: the raw denominators coming out of the tower (built from
+# det(A) of the internal linear system) were confirmed to factor almost
+# entirely into powers of things that are SUPPOSED to cancel --
+# (u_poly(t_i))^k, (t_i - t_j)^k for two symbolic anchors, and
+# (t_i - fixed_anchor)^k -- i.e. spurious multiplicity from Cramer's-rule
+# denominators that symbolic_residual's own divexact steps already divide
+# out algebraically, but which coeff_equal's raw cross-multiplication
+# re-introduces and compounds if left unreduced. Reducing by gcd at each
+# step keeps num/den in lowest terms throughout, instead of letting that
+# multiplicity accumulate across two tower layers and then across the
+# final cross-sample cross-multiplication (which is what produced the
+# degree-128, ~7.46M-term Fu0/Fu1 originally).
+function _reduce_frac(num, den)
+    iszero(num) && return (num, one(den))
+    g = gcd(num, den)
+    if !isone(g)
+        num = divexact(num, g)
+        den = divexact(den, g)
+    end
+    return (num, den)
+end
+
 # Evaluate a rational_function_field element (a fraction of multivariate
 # polys in t1,t2) into R, substituting t_gens for [t1,t2].
 function _base_frac_to_ring(val, t_gens::Vector)
@@ -162,7 +185,7 @@ function _base_frac_to_ring(val, t_gens::Vector)
     # in our shared ring R (as elements of R, e.g. [a1,a2] or [b1,b2]).
     num_R = evaluate(num, t_gens)
     den_R = evaluate(den, t_gens)
-    return (num_R, den_R)
+    return _reduce_frac(num_R, den_R)
 end
 
 # level: how many w-layers remain to strip before we hit the base
@@ -185,7 +208,7 @@ function _tower_to_ring(val, level::Int, t_gens::Vector, w_gens::Vector)
     # val = c0 + c1*w  =  n0/d0 + (n1/d1)*w  =  (n0*d1 + n1*d0*w) / (d0*d1)
     num = n0 * d1 + n1 * d0 * wv
     den = d0 * d1
-    return (num, den)
+    return _reduce_frac(num, den)
 end
 
 # Convenience wrapper: coefficients coming out of symbolic_residual for a
