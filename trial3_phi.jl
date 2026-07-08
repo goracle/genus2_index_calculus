@@ -198,7 +198,24 @@ const SENTINEL_MUMFORD = (-1, -1, -1, -1)::NTuple{4,Int}
 
 @inline function phi_residual_mumford(a::Int, b::Int, c::Int,
                                px::Int,
-                               u0::Int, u1::Int)::Tuple{NTuple{2,Int}, NTuple{2,Int}, NTuple{4,Int}}
+                               u0::Int, u1::Int;
+                               inv2::Int = fpinv(2),
+                               # s2 (== q4_4 below) is fp(-F_POLY[6]), the fixed
+                               # leading-coefficient constant of this curve's
+                               # defining polynomial (set once per run via
+                               # set_curve_context!, never touched per-step —
+                               # see 01_header_setup.jl). That makes inv_s2
+                               # identical on EVERY call to this function for
+                               # the whole run, yet it was being recomputed via
+                               # a full Fermat-ladder fpinv() unconditionally
+                               # on every non-degenerate step (i.e. after both
+                               # early-return checks below, so it always fires
+                               # when this function does any real work at all).
+                               # Callers should pass fpinv(fp(-F_POLY[6])),
+                               # computed ONCE, instead of relying on this
+                               # default (which still does the ladder itself
+                               # for callers that don't have it cached yet).
+                               inv_s2_const::Int = fpinv(fp(-F_POLY[6])))::Tuple{NTuple{2,Int}, NTuple{2,Int}, NTuple{4,Int}}
     # --- Build N(x) = (a·x²+b·x+c)² - f(x)  (coefficients ascending) ---
     N0 = fpmul(c,c)
     N1 = fp(2*fpmul(b,c))
@@ -258,7 +275,14 @@ const SENTINEL_MUMFORD = (-1, -1, -1, -1)::NTuple{4,Int}
     (res0 != 0 || res1 != 0) && return (SENTINEL_PT, SENTINEL_PT, SENTINEL_MUMFORD)
 
     # --- Make quotient s(x) = s2·x²+s1·x+s0 monic ---
-    inv_s2 = fpinv(s2)
+    # s2 == fp(-F_POLY[6]) always (see param doc above) — this assert is the
+    # cheap invariant check that lets us trust the precomputed inv_s2_const
+    # instead of paying for a fresh fpinv(s2) ladder on every call. If this
+    # ever fires, the curve-constant assumption broke (e.g. F_POLY changed
+    # without re-deriving inv_s2_const) and inv_s2_const must be recomputed
+    # from the current s2, not silently reused.
+    @assert s2 == fp(-F_POLY[6]) "phi_residual_mumford: s2 != fp(-F_POLY[6]); inv_s2_const is stale for this curve"
+    inv_s2 = inv_s2_const
     c1_rs  = fpmul(s1, inv_s2)
     c0_rs  = fpmul(s0, inv_s2)
 
@@ -268,7 +292,7 @@ const SENTINEL_MUMFORD = (-1, -1, -1, -1)::NTuple{4,Int}
 
     # --- Try to split u_RS over F_p ---
     disc = fp(fpmul(c1_rs, c1_rs) - 4*c0_rs)
-    sq   = sqrt_fp(disc)
+    sq   = sqrt_fp_fast(disc)
 
     mumford_key = (c0_rs, c1_rs, v0_rs, v1_rs)
 
@@ -276,7 +300,6 @@ const SENTINEL_MUMFORD = (-1, -1, -1, -1)::NTuple{4,Int}
         return (SENTINEL_PT, SENTINEL_PT, mumford_key)
     end
 
-    inv2 = fpinv(2)
     xR   = fpmul(fp(-c1_rs + sq), inv2)
     xS   = fpmul(fp(-c1_rs - sq), inv2)
 

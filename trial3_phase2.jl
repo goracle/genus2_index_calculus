@@ -1320,6 +1320,21 @@ function phase2_worker(G               ::Div2,
         step_b_i[i] = Int(step_b[i])
     end
 
+    # Cached once per worker (p is fixed) and threaded through to the k==1
+    # phi_residual_mumford call below via its `inv2` kwarg, so that path
+    # stops recomputing fpinv(2) via a full Fermat ladder on every k==1 step
+    # — the same fix already applied on the k>=2 path via scratch.inv2_raw[]
+    # (see 10_root_finding.jl:76-79). k==1 is ~50% of all steps, so this was
+    # actually the higher-traffic, previously-unfixed instance of that bug.
+    inv2_cached = fpinv(2)
+    # Likewise: phi_residual_mumford's internal s2 is always fp(-F_POLY[6]),
+    # a fixed curve constant (set once via set_curve_context!, never touched
+    # per-step), so its inverse is identical on every call — cache it once
+    # per worker instead of a fresh fpinv() ladder per k==1 step. This one
+    # fires unconditionally on every non-degenerate k==1 step (no early
+    # return skips it), so it's likely the bigger win of the two.
+    inv_s2_cached = fpinv(fp(-F_POLY[6]))
+
     # ==========================================================================
     #  Anchor tuple cursor — the TUPLE SPACE is sliced across threads, not the
     #  factor base.  Each thread owns an exclusive contiguous chunk of the
@@ -2141,7 +2156,7 @@ function phase2_worker(G               ::Div2,
             d38_stat !== nothing && record_d38_step!(d38_stat, Int(a))
 
             _pt_k1_resid_t0 = PHI_TIMING_ENABLED[] ? time_ns() : UInt64(0)
-            res_R, res_S, RS_mumford = phi_residual_mumford(a, b_phi, c_phi, px, u0, u1)
+            res_R, res_S, RS_mumford = phi_residual_mumford(a, b_phi, c_phi, px, u0, u1; inv2 = inv2_cached, inv_s2_const = inv_s2_cached)
             if PHI_TIMING_ENABLED[]
                 phi_timing_stats().ns_residual += time_ns() - _pt_k1_resid_t0
             end

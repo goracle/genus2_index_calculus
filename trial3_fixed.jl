@@ -368,6 +368,18 @@ function phase1_walk(G::Div2, T::Div2, fb_cap::Int; verbose::Bool = true,
     hits_banked = 0
     t0 = time()
 
+    # Cached once here (p is fixed for the whole walk) and threaded through
+    # to phi_residual_mumford below via its `inv2` kwarg, instead of letting
+    # it default to a fresh fpinv(2) Fermat-ladder call on every step. Same
+    # fix already applied on the k>=2 path via scratch.inv2_raw[]; see that
+    # comment (10_root_finding.jl:76-79) for why this was the dominant cost.
+    inv2_cached = fpinv(2)
+    # Likewise: s2 inside phi_residual_mumford is always fp(-F_POLY[6]), a
+    # fixed curve constant, so its inverse is the same on every call — cache
+    # it once instead of a fresh fpinv() ladder per call (see phi_residual_mumford's
+    # inv_s2_const param doc in trial3_phi.jl for the full rationale).
+    inv_s2_cached = fpinv(fp(-F_POLY[6]))
+
     # Sequential alpha sweep: start at 1 and increment each valid step.
     # This couples fb-index growth to alpha direction the same way phase 2
     # does, to probe whether that alignment changes the D39 cross-covariance.
@@ -395,7 +407,7 @@ function phase1_walk(G::Div2, T::Div2, fb_cap::Int; verbose::Bool = true,
         phi_c === nothing && continue
         a, b, c, _ = phi_c
 
-        R, S, rs_mumford = phi_residual_mumford(a, b, c, px, u0, u1)
+        R, S, rs_mumford = phi_residual_mumford(a, b, c, px, u0, u1; inv2 = inv2_cached, inv_s2_const = inv_s2_cached)
         rs_mumford === SENTINEL_MUMFORD && continue
         R === SENTINEL_PT && continue   # conjugate pair — skip in phase 1
 

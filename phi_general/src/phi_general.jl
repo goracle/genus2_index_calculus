@@ -34,6 +34,7 @@ export PHI_TIMING_ENABLED, SYMBOLIC_REPORT_ENABLED
 export init_phi_timing!, init_symbolic_report!, init_symbolic_report2!
 export phi_timing_stats, rr_basis_cached, print_phi_timing_report, run_symbolic_report!, run_symbolic_report2!
 export run_symbolic_crosscheck!, run_symbolic_crosscheck2!
+export sqrt_fp_fast
 
 global F_POLY::Vector{Int} = Int[]
 global K_MAX::Int = 0
