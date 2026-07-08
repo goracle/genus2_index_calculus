@@ -69,33 +69,25 @@ F = GF(p)
 # out of the printed report before.
 #
 #   ### thread 2, sample 1: K=2, c=2,
-#       symbolic anchors = [(188, 742048), (604427, 1379775)],
-#       u0,u1=504865,2268335  v0,v1=373079,1770452 ###
+#       fixed anchors = [], symbolic anchors = [(196, 793353), (1171057, 2268951)],
+#       u0,u1=468873,956582  v0,v1=2168176,2288437 ###
 #
 #   ### thread 2, sample 2: K=3, c=2,
-#       symbolic anchors = [(418921, 2256042), (2022978, 334251)],
-#       u0,u1=1974853,360394  v0,v1=1287699,528456 ###
+#       fixed anchors = [(196, 793353)], symbolic anchors = [(1664320, 277399), (691604, 1848341)],
+#       u0,u1=2112189,375309  v0,v1=801778,2048138 ###
 ################################################################################
 
 const K1, c1 = 2, 2
 const fixed1 = Tuple{Int,Int}[]
-const u0_1, u1_1, v0_1, v1_1 = 504865, 2268335, 373079, 1770452
+const u0_1, u1_1, v0_1, v1_1 = 468873, 956582, 2168176, 2288437
 
 const K2, c2 = 3, 2
-# K-c = 1, so this sample needs ONE fixed anchor -- the printed err.txt
-# report only shows the `c` *symbolic* anchors, never the fixed one(s),
-# so this value is NOT recoverable from the log excerpt we have. Fill in
-# the real (t,w) pair from a fresh run (see the patched 12_symbolic_report.jl
-# which now prints fixed_anchors too), then delete this guard.
-const fixed2 = Tuple{Int,Int}[]  # PLACEHOLDER -- must be length K2-c2 = 1
+const fixed2 = [(196, 793353)]
 if length(fixed2) != K2 - c2
     error("elim2.jl: sample 2 (K=$K2, c=$c2) needs exactly $(K2-c2) fixed anchor(s), " *
-          "got $(length(fixed2)). The err.txt report never printed this K=3,c=2 " *
-          "sample's fixed anchor -- re-run with the patched 12_symbolic_report.jl " *
-          "(prints fixed_anchors alongside symbolic anchors) and fill in the real " *
-          "(t,w) pair here before running elim2.jl again.")
+          "got $(length(fixed2)).")
 end
-const u0_2, u1_2, v0_2, v1_2 = 1974853, 360394, 1287699, 528456
+const u0_2, u1_2, v0_2, v1_2 = 2112189, 375309, 801778, 2048138
 
 println("Calling PhiSymbolic.symbolic_residual for sample 1 (K=$K1, c=$c1)...")
 res1 = PhiSymbolic.symbolic_residual(K1, c1, fixed1, u0_1, u1_1, v0_1, v1_1, F_POLY_ASC, p)
