@@ -193,8 +193,13 @@ end
 tower_to_ring(val, t_gens::Vector, w_gens::Vector) = _tower_to_ring(val, 2, t_gens, w_gens)
 
 ################################################################################
-# Map both samples' coefficient vectors into R.
+# Map both samples' coefficient vectors into R -- in parallel across
+# available threads (each coefficient's tower walk is independent, so this
+# is embarrassingly parallel). Run with `julia -t N elim2.jl` to use N
+# threads; check Threads.nthreads() below to confirm they're picked up.
 ################################################################################
+
+println("Threads.nthreads() = ", Threads.nthreads())
 
 t_gens_1 = [a1, a2]
 w_gens_1 = [wa1, wa2]
@@ -205,29 +210,20 @@ w_gens_2 = [wb1, wb2]
 # res.u_RS_coeffs[i] is the coefficient of x^(i-1) (ascending order),
 # same convention print_symbolic_residual uses.
 
-u1_num = Vector{Any}(undef, length(res1.u_RS_coeffs))
-u1_den = Vector{Any}(undef, length(res1.u_RS_coeffs))
-for (i, cf) in enumerate(res1.u_RS_coeffs)
-    u1_num[i], u1_den[i] = tower_to_ring(cf, t_gens_1, w_gens_1)
+function map_coeffs_threaded(coeffs, t_gens, w_gens)
+    n = length(coeffs)
+    nums = Vector{Any}(undef, n)
+    dens = Vector{Any}(undef, n)
+    Threads.@threads for i in 1:n
+        nums[i], dens[i] = tower_to_ring(coeffs[i], t_gens, w_gens)
+    end
+    return nums, dens
 end
 
-v1_num = Vector{Any}(undef, length(res1.v_RS_coeffs))
-v1_den = Vector{Any}(undef, length(res1.v_RS_coeffs))
-for (i, cf) in enumerate(res1.v_RS_coeffs)
-    v1_num[i], v1_den[i] = tower_to_ring(cf, t_gens_1, w_gens_1)
-end
-
-u2_num = Vector{Any}(undef, length(res2.u_RS_coeffs))
-u2_den = Vector{Any}(undef, length(res2.u_RS_coeffs))
-for (i, cf) in enumerate(res2.u_RS_coeffs)
-    u2_num[i], u2_den[i] = tower_to_ring(cf, t_gens_2, w_gens_2)
-end
-
-v2_num = Vector{Any}(undef, length(res2.v_RS_coeffs))
-v2_den = Vector{Any}(undef, length(res2.v_RS_coeffs))
-for (i, cf) in enumerate(res2.v_RS_coeffs)
-    v2_num[i], v2_den[i] = tower_to_ring(cf, t_gens_2, w_gens_2)
-end
+u1_num, u1_den = map_coeffs_threaded(res1.u_RS_coeffs, t_gens_1, w_gens_1)
+v1_num, v1_den = map_coeffs_threaded(res1.v_RS_coeffs, t_gens_1, w_gens_1)
+u2_num, u2_den = map_coeffs_threaded(res2.u_RS_coeffs, t_gens_2, w_gens_2)
+v2_num, v2_den = map_coeffs_threaded(res2.v_RS_coeffs, t_gens_2, w_gens_2)
 
 println()
 println("Mapped both samples' u_RS/v_RS coefficients into the shared ring.")
@@ -246,6 +242,14 @@ if length(v1_num) != length(v2_num)
           "matching only makes sense if both v_RS have the same degree")
 end
 
+# The top (leading) u_RS coefficient is always 1 on both sides -- symbolic_residual
+# normalizes u_RS to monic before returning it (see "Normalize to monic" in
+# trial3_phi_symbolic_unified.jl). Matching x^deg is therefore the trivial
+# equation 1==1 and contributes nothing to the ideal; including it just wastes
+# a coeff_equal cross-multiplication. Only match coefficients x^0 .. x^(deg-1).
+const U_DEG_TOP = length(u1_num)   # index of the (trivial) leading coefficient
+const N_U_MATCH = U_DEG_TOP - 1    # how many real u-coefficients to match
+
 ################################################################################
 # Equality equations -- same coeff_equal pattern as elim.jl, applied
 # coefficient-by-coefficient.
@@ -255,10 +259,19 @@ function coeff_equal(num1, den1, num2, den2)
     return num1 * den2 - num2 * den1
 end
 
-Fu = [coeff_equal(u1_num[i], u1_den[i], u2_num[i], u2_den[i]) for i in 1:length(u1_num)]
-Fv = [coeff_equal(v1_num[i], v1_den[i], v2_num[i], v2_den[i]) for i in 1:length(v1_num)]
+Fu = Vector{Any}(undef, N_U_MATCH)
+Threads.@threads for i in 1:N_U_MATCH
+    Fu[i] = coeff_equal(u1_num[i], u1_den[i], u2_num[i], u2_den[i])
+end
 
-println("Built ", length(Fu), " u-matching equation(s) and ", length(Fv), " v-matching equation(s).")
+Fv = Vector{Any}(undef, length(v1_num))
+Threads.@threads for i in 1:length(v1_num)
+    Fv[i] = coeff_equal(v1_num[i], v1_den[i], v2_num[i], v2_den[i])
+end
+
+println("Built ", length(Fu), " u-matching equation(s) (x^0..x^$(N_U_MATCH-1); ",
+        "trivial leading x^$(U_DEG_TOP-1) coefficient 1==1 skipped) and ",
+        length(Fv), " v-matching equation(s).")
 for (i, g) in enumerate(Fu)
     println("  Fu$(i-1): degree=", total_degree(g), "  terms=", length(terms(g)))
 end
@@ -268,18 +281,154 @@ end
 println()
 
 ################################################################################
+# Factor each equation before building the ideal.
+#
+# The raw cross-multiplied Fu/Fv can be enormous (observed: degree 128,
+# ~7.46M terms) because coeff_equal(num1,den1,num2,den2) = num1*den2 -
+# num2*den1 is built from maximally-expanded tower denominators. If the
+# underlying algebra has nested/factored structure (confirmed by hand via
+# Mathematica FullSimplify on one of these), some of that bulk is very
+# likely spurious multiplicity -- e.g. den1, den2 individually appearing
+# as extraneous factors introduced by the cross-multiplication itself,
+# or shared factors with the curve equations (which would mean part of
+# the "equation" is automatically zero on the curve and contributes
+# nothing to the elimination).
+#
+# factor() is run in parallel across threads since each equation's
+# factorization is independent and this is by far the most expensive
+# single step before groebner_basis. Results are reported so we can see
+# the actual multiplicity/degree structure -- and, in particular, whether
+# any irreducible factor recurs across Fu0/Fu1/Fv0/Fv1 or matches a curve
+# equation, before anything is handed to groebner_basis.
+################################################################################
+
+println("===========================================================")
+println("Factoring Fu/Fv equations (parallel across threads)")
+println("===========================================================")
+println()
+println("NOTE: factor() thread-safety across independent Oscar/Nemo objects")
+println("is assumed but not verified against this specific Oscar version.")
+println("If this crashes, segfaults, or gives inconsistent results between")
+println("runs, switch the Threads.@threads loop below to a plain serial")
+println("for loop (same code otherwise) and file that as an Oscar version")
+println("issue rather than trusting parallel factor() results silently.")
+println()
+
+all_eqs = vcat(Fu, Fv)
+eq_labels = vcat(["Fu$(i-1)" for i in 1:length(Fu)], ["Fv$(i-1)" for i in 1:length(Fv)])
+factorizations = Vector{Any}(undef, length(all_eqs))
+
+Threads.@threads for i in 1:length(all_eqs)
+    factorizations[i] = factor(all_eqs[i])
+end
+
+for (label, fac) in zip(eq_labels, factorizations)
+    println("$label factors into $(length(fac)) irreducible piece(s):")
+    for (factor_poly, mult) in fac
+        println("    [mult=$mult] degree=", total_degree(factor_poly),
+                "  terms=", length(terms(factor_poly)))
+    end
+    println()
+end
+
+# Check for irreducible factors shared across equations, or matching a
+# curve equation exactly (up to unit) -- either signals part of the
+# "equation" is not real elimination content.
+println("Checking for repeated/shared irreducible factors across equations...")
+seen_factors = Dict{Any,Vector{String}}()
+for (label, fac) in zip(eq_labels, factorizations)
+    for (factor_poly, _) in fac
+        # normalize by leading coefficient so unit multiples compare equal
+        key = leading_coefficient(factor_poly) == 0 ? factor_poly :
+              factor_poly * inv(leading_coefficient(factor_poly))
+        push!(get!(seen_factors, key, String[]), label)
+    end
+end
+any_shared = false
+for (fp, labels) in seen_factors
+    if length(unique(labels)) > 1
+        global any_shared = true
+        println("  SHARED factor (degree=$(total_degree(fp))) appears in: ", unique(labels))
+    end
+end
+if !any_shared
+    println("  No irreducible factor shared across equations.")
+end
+
+for (label, fp) in [("curve_a1", curve_a1), ("curve_a2", curve_a2),
+                     ("curve_b1", curve_b1), ("curve_b2", curve_b2)]
+    fp_norm = fp * inv(leading_coefficient(fp))
+    if haskey(seen_factors, fp_norm)
+        println("  Curve equation $label appears as a factor in: ", seen_factors[fp_norm])
+    end
+end
+println()
+
+# Build the ideal from square-free, factor-deduplicated generators: for
+# each equation, take each *distinct* irreducible factor once (drop
+# multiplicity -- repeated factors don't add new variety components) and
+# drop any factor that is a bare unit/constant (contributes nothing).
+# This is the standard "radical-ish" cleanup before a Groebner basis call
+# on a polynomial that's this large; it does not change the variety, only
+# removes redundant generators.
+function squarefree_generators(g)
+    fac = factor(g)
+    gens_out = Any[]
+    for (factor_poly, _) in fac
+        total_degree(factor_poly) == 0 && continue  # skip unit/constant factors
+        push!(gens_out, factor_poly)
+    end
+    return gens_out
+end
+
+println("Reducing each equation to its distinct irreducible factors...")
+Fu_reduced = Any[]
+for (i, g) in enumerate(Fu)
+    fs = squarefree_generators(g)
+    println("  Fu$(i-1) -> ", length(fs), " distinct irreducible factor(s), degrees=", total_degree.(fs))
+    append!(Fu_reduced, fs)
+end
+Fv_reduced = Any[]
+for (i, g) in enumerate(Fv)
+    fs = squarefree_generators(g)
+    println("  Fv$(i-1) -> ", length(fs), " distinct irreducible factor(s), degrees=", total_degree.(fs))
+    append!(Fv_reduced, fs)
+end
+println()
+
+################################################################################
 # Build ideals
+#
+# NOTE: using Fu_reduced/Fv_reduced (distinct irreducible factors of each
+# coeff_equal expression, with unit-multiple duplicates against each other
+# AND against the curve equations already collapsed above) instead of the
+# raw Fu/Fv. This is a genuine mathematical simplification, not a cosmetic
+# one: V(g) = V(g1) ∪ V(g2) ∪ ... for g = g1^{e1} * g2^{e2} * ..., so
+# generating the ideal from {g1,g2,...} instead of {g} changes what
+# variety we compute (a union of components rather than one polynomial's
+# full -- possibly non-radical -- vanishing locus), and dropping a factor
+# that's a unit multiple of a curve equation removes a generator that
+# was already implied by curve_a1/curve_a2/curve_b1/curve_b2. If the
+# "Checking for repeated/shared irreducible factors" report above showed
+# nothing shared and no curve-equation matches, Fu_reduced/Fv_reduced is
+# just Fu/Fv split into pieces and this changes nothing mathematically,
+# only what groebner_basis has to chew on internally. If anything WAS
+# shared, look at that report before trusting the final variety here --
+# in particular decide whether a shared/curve-matching factor should have
+# been dropped (as done here) or whether its presence is itself
+# meaningful and should be investigated instead of discarded.
 ################################################################################
 
 #
 # U-only system.
 #
-Iu = ideal(R, vcat(Fu, [curve_a1, curve_a2, curve_b1, curve_b2]))
+Iu = ideal(R, vcat(Fu_reduced, [curve_a1, curve_a2, curve_b1, curve_b2]))
+
 
 #
 # Full Mumford system (u AND v matching).
 #
-Iuv = ideal(R, vcat(Fu, Fv, [curve_a1, curve_a2, curve_b1, curve_b2]))
+Iuv = ideal(R, vcat(Fu_reduced, Fv_reduced, [curve_a1, curve_a2, curve_b1, curve_b2]))
 
 println()
 println("Constructed symbolic systems.")
