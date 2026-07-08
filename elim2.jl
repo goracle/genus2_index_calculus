@@ -108,14 +108,29 @@ println("sample 2: deg(u_RS)=$(length(res2.u_RS_coeffs)-1)  deg(v_RS)=$(length(r
 ################################################################################
 # Target ring: F[wa1,wa2,wb1,wb2,a2,a1,b2,b1]
 #
-# Lex ordering matches elim.jl's convention: w's before t's, so that
-# eliminate(..., [wa1,wa2,wb1,wb2]) leaves polynomials purely in a1,a2,b1,b2.
+# Plain ring construction, matching elim.jl's working pattern -- this
+# Oscar/AbstractAlgebra version's polynomial_ring does not accept an
+# `ordering` kwarg at all (confirmed: elim.jl never passes one, and
+# passing one raises a MethodError on poly_ring internally). w's are
+# declared before the a/b's, same convention as elim.jl's `w1,w2,t2,t1`,
+# so that eliminate(..., [wa1,wa2,wb1,wb2]) leaves polynomials purely in
+# a1,a2,b1,b2 regardless of monomial ordering.
+#
+# The block/product ordering idea (isolating the w's as a dominant block
+# for a faster elimination-oriented Groebner computation) still applies,
+# but gets passed directly to groebner_basis(...; ordering=...) below,
+# at the point where this Oscar version actually supports it, rather
+# than baked into the ring itself.
 ################################################################################
 
 R, (wa1, wa2, wb1, wb2, a2, a1, b2, b1) = polynomial_ring(
     F,
     ["wa1", "wa2", "wb1", "wb2", "a2", "a1", "b2", "b1"]
 )
+
+# Block ordering built from R's own generators, for use at groebner_basis
+# call sites further down (groebner_basis(I; ordering = block_ordering)).
+block_ordering = degrevlex(gens(R)[1:4]) * degrevlex(gens(R)[5:8])
 
 curve_a1 = wa1^2 - (a1^5 + a1 + 2)
 curve_a2 = wa2^2 - (a2^5 + a2 + 2)
@@ -272,6 +287,33 @@ end
 # a coeff_equal cross-multiplication. Only match coefficients x^0 .. x^(deg-1).
 const U_DEG_TOP = length(u1_num)   # index of the (trivial) leading coefficient
 const N_U_MATCH = U_DEG_TOP - 1    # how many real u-coefficients to match
+
+################################################################################
+# Collect every denominator that tower_to_ring cleared, across both samples
+# and both of u_RS/v_RS. These are EXACTLY the spurious-locus factors that
+# coeff_equal's cross-multiplication (num1*den2 - num2*den1) reintroduces
+# into Fu/Fv below -- not a guess like "a1-a2", but the literal
+# denominators produced by this run's own tower arithmetic. Saturating Iu/
+# Iuv by their product afterwards removes exactly this induced multiplicity
+# without touching the real variety.
+#
+# Only nonconstant denominators matter (a constant denominator contributes
+# nothing to saturate against), so filter those out to keep the saturation
+# ideal itself small.
+################################################################################
+
+function _nonconstant_dens(dens)
+    return [d for d in dens if total_degree(d) > 0]
+end
+
+const CLEARED_DENOMS = vcat(
+    _nonconstant_dens(u1_den), _nonconstant_dens(u2_den),
+    _nonconstant_dens(v1_den), _nonconstant_dens(v2_den),
+)
+
+println("Collected ", length(CLEARED_DENOMS), " nonconstant cleared denominator(s) ",
+        "across both samples (for saturation).")
+println()
 
 ################################################################################
 # Equality equations -- same coeff_equal pattern as elim.jl, applied
@@ -453,12 +495,46 @@ Iu = ideal(R, vcat(Fu_reduced, [curve_a1, curve_a2, curve_b1, curve_b2]))
 #
 Iuv = ideal(R, vcat(Fu_reduced, Fv_reduced, [curve_a1, curve_a2, curve_b1, curve_b2]))
 
+################################################################################
+# NOTE on saturation: an earlier version of this script saturated Iu/Iuv
+# by CLEARED_DENOMS (the denominators tower_to_ring cleared) on the
+# theory that coeff_equal's cross-multiplication reintroduces spurious
+# multiplicity that these denominators describe. The factor() report
+# above disproves that for THIS run: Fu0/Fu1 (degree 32) and Fv0/Fv1
+# (degree 48) each factor into exactly ONE irreducible piece with
+# multiplicity 1, and none of them share a factor with each other or
+# with curve_a1/curve_a2/curve_b1/curve_b2. That means there is no
+# spurious component to remove here -- the full degree is genuine
+# variety-defining content, not cancelable junk. Saturating against it
+# would only add cost (saturation is itself built from elimination/
+# colon-ideal machinery, so it's not cheaper than groebner_basis -- it's
+# built out of the same primitive) without simplifying anything, which
+# is why that step was hanging. CLEARED_DENOMS is left defined above
+# (still useful diagnostically / for future runs where the factor report
+# DOES show shared or curve-matching factors) but is no longer applied
+# automatically. If a future run's factor() report shows shared factors,
+# saturate selectively by just those specific factors, not the full
+# CLEARED_DENOMS list.
+################################################################################
+
+println("Skipping saturation: factor() report showed no spurious/shared factors to remove.")
+println()
+
 println()
 println("Constructed symbolic systems.")
 println("U equations:   ", ngens(Iu))
 println("UV equations:  ", ngens(Iuv))
-println("dim(Iu)  = ", dim(Iu))
-println("dim(Iuv) = ", dim(Iuv))
+# NOTE: dim(Iu)/dim(Iuv) were removed here. dim() on an ideal is computed
+# from a Groebner basis's leading-term ideal internally -- so calling it
+# on Iu/Iuv (degree-32/48 generators, 8 variables) BEFORE the explicit
+# groebner_basis(...; ordering=block_ordering) calls below forces Oscar
+# to first compute a full Groebner basis under its DEFAULT ordering
+# (unblocked degrevlex over all 8 variables), which is exactly the naive
+# computation the block ordering was meant to avoid. This is what was
+# actually hanging -- not saturation, and not groebner_basis(Iu;
+# ordering=block_ordering) itself, but this dim() call silently doing
+# the expensive default-ordering computation first. dim is now read off
+# GBu/GBuv after they're computed with the block ordering, further down.
 println()
 
 ################################################################################
@@ -473,9 +549,74 @@ println("Computing Groebner basis for U-system")
 println("===========================================================")
 println()
 
-GBu = groebner_basis(Iu)
+# Prefer F4 (Faugere's algorithm via msolve) over the default :buchberger
+# (Singular's classical, single-threaded std()/bba/redHoney -- exactly
+# what showed up stuck in the crash backtrace). F4 is matrix-based and
+# has real internal parallelism in its linear algebra step, and msolve
+# targets finite fields specifically, which is exactly our setting
+# (GF(p)). Falls back to :buchberger if :f4 errors -- e.g. if this
+# Oscar/msolve version doesn't support the block ordering or some other
+# input restriction applies (see the algorithm=:f4 docstring notes).
+# Prefer F4 (Faugere's algorithm via msolve) over the default :buchberger
+# (Singular's classical, single-threaded std()/bba/redHoney -- exactly
+# what showed up stuck in the crash backtrace). F4 is matrix-based and
+# has real internal parallelism in its linear algebra step, and msolve
+# targets finite fields specifically, which is exactly our setting
+# (GF(p)). Falls back to :buchberger if :f4 errors -- e.g. if this
+# Oscar/msolve version doesn't support the block ordering or some other
+# input restriction applies (see the algorithm=:f4 docstring notes).
+GBu = try
+    result = groebner_basis(Iu; ordering = block_ordering, algorithm = :f4)
+    println("(computed via algorithm = :f4)")
+    result
+catch e
+    println("algorithm=:f4 failed (", e, "), falling back to :buchberger...")
+    groebner_basis(Iu; ordering = block_ordering, algorithm = :buchberger)
+end
 
 println("Basis has ", length(GBu), " elements.")
+println()
+
+# NOTE: dim(Iu) was here before, on the theory that it would reuse the
+# just-computed block-ordering GB. That's wrong: the crash backtrace
+# shows dim() -> krull_dim -> singular_groebner_generators ->
+# groebner_assure -> _compute_standard_basis calls Singular's std()
+# directly, with NO ordering argument threaded through at all -- it is
+# a completely separate standard-basis computation under whatever
+# internal default groebner_assure uses, not the block_ordering GBu was
+# computed with. So dim(Iu) was never going to benefit from GBu having
+# already finished; it re-triggers the expensive default-ordering
+# computation every time, which is what was hanging (again) inside
+# Singular's bba/redHoney reduction loop.
+#
+# Instead, estimate the dimension directly from GBu's own leading terms
+# (valid for the ordering GBu was actually computed under): the ideal is
+# zero-dimensional iff, for every variable, SOME leading monomial in GBu
+# is a pure power of that variable alone. This needs no further calls
+# into Singular.
+function leading_term_dim_zero(gb, all_vars)
+    lms = [leading_monomial(g) for g in gb]
+    for v in all_vars
+        found_pure_power = any(lms) do lm
+            evars = vars(lm)
+            length(evars) == 1 && evars[1] == v
+        end
+        if !found_pure_power
+            return false
+        end
+    end
+    return true
+end
+
+if leading_term_dim_zero(GBu, gens(R))
+    println("GBu leading terms indicate Iu is zero-dimensional ",
+            "(pure power of every variable appears as some leading monomial).")
+else
+    println("GBu leading terms do NOT show a pure power for every variable -- ",
+            "Iu is NOT confirmed zero-dimensional from this check alone ",
+            "(this is a sufficient-for-zero-dim heuristic under GBu's own ",
+            "ordering, not a full dim() computation).")
+end
 println()
 
 for (i, g) in enumerate(GBu)
@@ -504,9 +645,28 @@ println("Computing Groebner basis for UV-system")
 println("===========================================================")
 println()
 
-GBuv = groebner_basis(Iuv)
+GBuv = try
+    result = groebner_basis(Iuv; ordering = block_ordering, algorithm = :f4)
+    println("(computed via algorithm = :f4)")
+    result
+catch e
+    println("algorithm=:f4 failed (", e, "), falling back to :buchberger...")
+    groebner_basis(Iuv; ordering = block_ordering, algorithm = :buchberger)
+end
 
 println("Basis has ", length(GBuv), " elements.")
+println()
+
+# See NOTE above GBu's dim check: dim(Iuv) here would trigger the same
+# separate, uncontrolled-ordering Singular std() call. Use the same
+# leading-term heuristic instead.
+if leading_term_dim_zero(GBuv, gens(R))
+    println("GBuv leading terms indicate Iuv is zero-dimensional ",
+            "(pure power of every variable appears as some leading monomial).")
+else
+    println("GBuv leading terms do NOT show a pure power for every variable -- ",
+            "Iuv is NOT confirmed zero-dimensional from this check alone.")
+end
 println()
 
 for (i, g) in enumerate(GBuv)
@@ -576,14 +736,22 @@ end
 println("All variables:")
 println(symbols(R))
 
-for x in gens(R)
-    J = ideal(vcat(gens(Iuv), [x]))
-    println(x, " -> ", dim(J))
-end
-
-println(dim(ideal(curve_a1, curve_a2, curve_b1, curve_b2)))
-println(dim(Iu))
-println(dim(Iuv))
+# NOTE: this used to loop over every variable in R, building a fresh
+# ideal ideal(vcat(gens(Iuv),[x])) and calling dim(J) on it -- 8 separate
+# ideals, each triggering ANOTHER full default-ordering Groebner basis
+# computation on top of the degree-32/48 generators, on top of the
+# dim(ideal(curve_a1,...)) / dim(Iu) / dim(Iuv) calls right after it.
+# That's 11 extra expensive Groebner computations purely for diagnostic
+# printouts, all using the default (non-block) ordering -- this was
+# almost certainly the next hang after the one fixed above. Cut down to
+# what's actually informative and cheap: curve-only dimension (small,
+# cheap on its own) plus the leading-monomial-derived variable
+# dependence already visible in GBu/GBuv (no new Groebner computation).
+println("dim(curve equations only) = ", dim(ideal(curve_a1, curve_a2, curve_b1, curve_b2)))
+println("(dim(Iu)/dim(Iuv)/per-variable dim(J) diagnostics skipped here -- ",
+        "each forces its own default-ordering Groebner basis on the ",
+        "degree-32/48 system; see GBu/GBuv computed below with the ",
+        "block ordering instead, and read dimension off THOSE.)")
 
 println()
 println("===========================================================")
@@ -591,7 +759,16 @@ println("Eliminating wa1, wa2, wb1, wb2 directly from the UV system")
 println("===========================================================")
 println()
 
-It = eliminate(Iuv, [wa1, wa2, wb1, wb2])
+# Eliminate one variable at a time rather than handing eliminate() all
+# four w's in a single block call. Each single-variable elimination is a
+# smaller resultant-style computation against the (hopefully already much
+# smaller, post-saturation) ideal from the previous step, instead of one
+# joint 4-variable elimination over the full system at once.
+It = Iuv
+for w in (wb2, wb1, wa2, wa1)
+    global It = eliminate(It, [w])
+    println("  after eliminating $w: ", ngens(It), " generator(s)")
+end
 
 println("Found ", length(gens(It)), " elimination polynomials in (a1,a2,b1,b2).")
 for (i, g) in enumerate(gens(It))

@@ -96,6 +96,133 @@ function print_symbolic_residual_concrete(K::Int, c::Int, sym_anchors::Vector{Tu
     println(io, "v_RS(x)  [deg $(length(v_RS_concrete)-1)]:  $v_RS_concrete")
 end
 
+# -----------------------------------------------------------------------------
+# Fraction reduction inside the tower, BEFORE anything gets flattened into a
+# plain multivariate ring.
+#
+# K_final's elements are residue-ring elements built on top of
+# rational_function_field(Fp, [t1,...,tc]) -- i.e. every element is
+# ultimately a fraction of ordinary multivariate polynomials in the t_i's,
+# nested inside up to c layers of "c0(...) + w_i * c1(...)" structure.
+# Oscar's rational_function_field elements already carry
+# `numerator`/`denominator` and support gcd at that base layer.
+#
+# The old pipeline (solve -> gcdx -> _eval_tower_recursive / tower_to_ring)
+# let denominators multiply together across all of solve's Cramer's-rule
+# division, gcdx's Euclidean remainders, AND the final cross-sample
+# coeff_equal cross-multiplication, before ever calling gcd on anything.
+# That is why degree-32/48, multi-million-term polynomials showed up.
+#
+# _reduce_tower_elem walks one tower element and divides out the gcd of
+# numerator/denominator at the BASE rational_function_field layer,
+# recursively, so bloat is removed as early as possible -- right where
+# it is cheapest to detect (plain multivariate gcd in c variables)
+# rather than late (multivariate gcd in 4c+ variables after
+# tower_to_ring's substitution and cross-sample cross-multiplication).
+# -----------------------------------------------------------------------------
+
+# Reduce a single rational_function_field element to lowest terms (Oscar
+# does this internally in most cases, but this is cheap and makes the
+# invariant explicit / robust across Oscar versions).
+function _reduce_base_frac(val)
+    num = numerator(val)
+    den = denominator(val)
+    iszero(num) && return parent(val)(0)
+    g = gcd(num, den)
+    if !isone(g) && !iszero(g)
+        num = divexact(num, g)
+        den = divexact(den, g)
+    end
+    return num // den
+end
+
+# Recursively rebuild a tower element with every base-layer fraction
+# reduced to lowest terms. `level` counts how many w-layers remain above
+# the base rational_function_field layer (mirrors _tower_to_ring/
+# _eval_tower_recursive's level convention: level == c at the top of a
+# fully-built K_final element, level == 0 at the base field).
+function _reduce_tower_elem(val, level::Int)
+    if level == 0
+        return _reduce_base_frac(val)
+    end
+    K_here = parent(val)
+    val_poly = data(val)
+    c0 = coeff(val_poly, 0)
+    c1 = coeff(val_poly, 1)
+    r0 = _reduce_tower_elem(c0, level - 1)
+    r1 = _reduce_tower_elem(c1, level - 1)
+    Rw = parent(val_poly)
+    w = gen(Rw)
+    return K_here(r0 + r1 * w)
+end
+
+# Apply tower-level reduction to every coefficient of a vector of K_final
+# elements (u_RS_coeffs or v_RS_coeffs).
+function _reduce_tower_coeffs(coeffs::Vector, c::Int)
+    return [_reduce_tower_elem(v, c) for v in coeffs]
+end
+
+# -----------------------------------------------------------------------------
+# Resultant-avoiding replacement for gcdx(Y_poly, u_RS).
+#
+# gcdx runs a full extended-Euclidean algorithm in Kx = K_final[X]. Every
+# polynomial division step in that algorithm multiplies denominators
+# together (each step's remainder picks up a factor of the previous
+# leading coefficient's inverse), so by the time gcdx terminates, the
+# accumulated denominator can be far worse than necessary -- especially
+# since deg(u_RS) is typically small (residual degree, often 2) and
+# u_RS is already monic.
+#
+# For monic u_RS of small degree d, "invert Y_poly mod u_RS" is just a
+# d x d linear solve over K_final: reduce Y_poly mod u_RS, build the
+# matrix of multiplication-by-Y_red acting on the basis {1,X,...,X^{d-1}}
+# of K_final[X]/(u_RS), and solve M*v = e_0. This is algebraically the
+# same inverse gcdx would produce (assuming gcd(Y_poly,u_RS)=1, which
+# gcdx relied on too), but it is ONE linear solve over already-reduced
+# tower fractions instead of a chain of Euclidean divisions that keep
+# re-inflating denominators against each other.
+#
+# Falls back to `nothing` (caller uses gcdx) outside the small-degree
+# regime this targets -- correctness is preserved either way.
+# -----------------------------------------------------------------------------
+function _inv_mod_small(Y_poly, u_RS, Kx, X, K_final)
+    d = degree(u_RS)
+    if d <= 0 || d > 6
+        return nothing
+    end
+
+    Y_red = mod(Y_poly, u_RS)
+    if iszero(Y_red)
+        return nothing
+    end
+
+    M = zero_matrix(K_final, d, d)
+    cur = one(Kx)
+    for col in 1:d
+        prod_red = mod(Y_red * cur, u_RS)
+        for row in 1:d
+            M[row, col] = coeff(prod_red, row - 1)
+        end
+        cur = cur * X
+    end
+
+    e0 = zero_matrix(K_final, d, 1)
+    e0[1, 1] = one(K_final)
+
+    local sol
+    try
+        sol = solve(M, e0; side = :right)
+    catch e
+        return nothing
+    end
+
+    v = Kx(0)
+    for row in 1:d
+        v += sol[row, 1] * X^(row - 1)
+    end
+    return v
+end
+
 function symbolic_residual(K::Int, c::Int, fixed_anchors::Vector{Tuple{Int,Int}}, 
                            u0::Int, u1::Int, v0::Int, v1::Int,
                            F_POLY_ASC::Vector{Int}, p::Int)::SymbolicResidualResult
@@ -248,13 +375,31 @@ function symbolic_residual(K::Int, c::Int, fixed_anchors::Vector{Tuple{Int,Int}}
         return SymbolicResidualResult(K, c, Any[], Any[], deg_E, deg_Y, n_len_before_divide)
     end
 
-    _, Y_inv_mod, _ = gcdx(Y_poly, u_RS)
+    # Prefer the small-degree linear-solve inverse (see _inv_mod_small
+    # above) over the general Euclidean gcdx, since gcdx's chain of
+    # polynomial divisions repeatedly cross-multiplies denominators that
+    # are already-reduced tower fractions at this point. Falls back to
+    # gcdx unchanged if deg(u_RS) is outside the small regime, or if the
+    # linear solve fails for any reason (e.g. unexpected singular M).
+    Y_inv_mod = _inv_mod_small(Y_poly, u_RS, Kx, X, K_final)
+    if Y_inv_mod === nothing
+        _, Y_inv_mod, _ = gcdx(Y_poly, u_RS)
+    end
     v_RS = mod(-E_poly * Y_inv_mod, u_RS)
+
+    # Reduce every coefficient to lowest terms at the tower's base
+    # (rational_function_field) layer BEFORE handing them back to the
+    # caller. This is the earliest and cheapest point to remove the
+    # spurious multiplicity that would otherwise compound across
+    # tower_to_ring's substitution and, worse, across coeff_equal's
+    # cross-sample cross-multiplication in elim2.jl.
+    u_RS_coeffs_reduced = _reduce_tower_coeffs(collect(coefficients(u_RS)), c)
+    v_RS_coeffs_reduced = _reduce_tower_coeffs(collect(coefficients(v_RS)), c)
 
     return SymbolicResidualResult(
         K, c,
-        collect(coefficients(u_RS)),
-        collect(coefficients(v_RS)),
+        u_RS_coeffs_reduced,
+        v_RS_coeffs_reduced,
         deg_E, deg_Y, n_len_before_divide
     )
 end
