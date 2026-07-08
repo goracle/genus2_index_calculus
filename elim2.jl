@@ -46,7 +46,7 @@ using Oscar
 # directory that was unzipped from phi_general.zip.
 ################################################################################
 
-const PHI_GENERAL_SRC = joinpath(@__DIR__, "phi_general", "phi_general", "src")
+const PHI_GENERAL_SRC = joinpath(@__DIR__, "phi_general", "src")
 
 include(joinpath(PHI_GENERAL_SRC, "trial3_phi_symbolic_unified.jl"))
 using .PhiSymbolic
@@ -82,7 +82,19 @@ const fixed1 = Tuple{Int,Int}[]
 const u0_1, u1_1, v0_1, v1_1 = 504865, 2268335, 373079, 1770452
 
 const K2, c2 = 3, 2
-const fixed2 = Tuple{Int,Int}[]
+# K-c = 1, so this sample needs ONE fixed anchor -- the printed err.txt
+# report only shows the `c` *symbolic* anchors, never the fixed one(s),
+# so this value is NOT recoverable from the log excerpt we have. Fill in
+# the real (t,w) pair from a fresh run (see the patched 12_symbolic_report.jl
+# which now prints fixed_anchors too), then delete this guard.
+const fixed2 = Tuple{Int,Int}[]  # PLACEHOLDER -- must be length K2-c2 = 1
+if length(fixed2) != K2 - c2
+    error("elim2.jl: sample 2 (K=$K2, c=$c2) needs exactly $(K2-c2) fixed anchor(s), " *
+          "got $(length(fixed2)). The err.txt report never printed this K=3,c=2 " *
+          "sample's fixed anchor -- re-run with the patched 12_symbolic_report.jl " *
+          "(prints fixed_anchors alongside symbolic anchors) and fill in the real " *
+          "(t,w) pair here before running elim2.jl again.")
+end
 const u0_2, u1_2, v0_2, v1_2 = 1974853, 360394, 1287699, 528456
 
 println("Calling PhiSymbolic.symbolic_residual for sample 1 (K=$K1, c=$c1)...")

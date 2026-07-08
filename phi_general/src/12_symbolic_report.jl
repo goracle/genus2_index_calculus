@@ -84,7 +84,7 @@ function _run_report!(c::Int, F_POLY_ASC::Vector{Int}, p::Int;
         for (i, samp) in enumerate(buf)
             i > max_per_thread && break
             
-            println(io, "\n### thread $tid, sample $i: K=$(samp.K), c=$(samp.c), symbolic anchors = $(samp.sym_anchors), u0,u1=$(samp.u0),$(samp.u1) v0,v1=$(samp.v0),$(samp.v1) ###")
+            println(io, "\n### thread $tid, sample $i: K=$(samp.K), c=$(samp.c), fixed anchors = $(samp.fixed_anchors), symbolic anchors = $(samp.sym_anchors), u0,u1=$(samp.u0),$(samp.u1) v0,v1=$(samp.v0),$(samp.v1) ###")
             try
                 res = PhiSymbolic.symbolic_residual(samp.K, samp.c, samp.fixed_anchors,
                                                     samp.u0, samp.u1, samp.v0, samp.v1, F_POLY_ASC, p)
