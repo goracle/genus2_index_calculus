@@ -2153,6 +2153,29 @@ push!(final_equations, evaluate(clean_sample_2[2], [zero(R_final), zero(R_final)
 push!(final_equations, evaluate(clean_sample_2[3], [zero(R_final), zero(R_final), b1_f, b2_f, V0_f]))
 push!(final_equations, evaluate(clean_sample_2[4], [zero(R_final), zero(R_final), b1_f, b2_f, V1_f]))
 
+
+if false # too slow, oom's
+println("  Eliminating U0 independently...")
+I_U0 = ideal(R_final, [final_equations[1], final_equations[5]])
+final_U0_ideal = eliminate(I_U0, [U0_f])
+
+println("  Eliminating U1 independently...")
+I_U1 = ideal(R_final, [final_equations[2], final_equations[6]])
+final_U1_ideal = eliminate(I_U1, [U1_f])
+
+println("  Eliminating V0 independently...")
+I_V0 = ideal(R_final, [final_equations[3], final_equations[7]])
+final_V0_ideal = eliminate(I_V0, [V0_f])
+
+println("  Eliminating V1 independently...")
+I_V1 = ideal(R_final, [final_equations[4], final_equations[8]])
+final_V1_ideal = eliminate(I_V1, [V1_f])
+
+# The final relation ideal in just a_i and b_i is the sum of these independent results
+final_polys = vcat(gens(final_U0_ideal), gens(final_U1_ideal), gens(final_V0_ideal), gens(final_V1_ideal))
+end
+
+if false # too slow, OOM's.
 # 4. Throw them all into the final sandbox
 I_final = ideal(R_final, final_equations)
 
@@ -2161,6 +2184,8 @@ println("  Smashing them together and eliminating U and V variables...")
 final_result_ideal = eliminate(I_final, [U0_f, U1_f, V0_f, V1_f])
 
 final_polys = gens(final_result_ideal)
+end
+
 println("\n🎉 WE DID IT! Final un-coupled polynomials linking a and b:")
 println("Found ", length(final_polys), " final equation(s)!")
 for (i, p) in enumerate(final_polys)
