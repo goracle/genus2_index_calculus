@@ -2067,3 +2067,103 @@ end
 test_result = process_sample_1_coeff(res1.u_RS_coeffs[1], "U0")
 println("Factory Test Successful! Resulting polynomial has degree: ", total_degree(test_result))
 println()
+
+
+# ==============================================================================
+# Factory for Sample 2 (Uses 'b' variables instead of 'a')
+# ==============================================================================
+function process_sample_2_coeff(raw_coeff, target_name)
+    println("  Spinning up sandbox (Sample 2) for: ", target_name)
+    
+    # 1. Build the 5-variable sandbox for Sample 2
+    R_small, (w1, w2, b1, b2, T) = polynomial_ring(F, ["wb1", "wb2", "b1", "b2", target_name])
+    
+    # 2. Convert the raw tower fraction directly into our new sandbox
+    t_gens = [b1, b2]
+    w_gens = [w1, w2]
+    num_s, den_s = tower_to_ring(raw_coeff, t_gens, w_gens)
+    
+    # 3. Build the graph equation
+    h_s = T * den_s - num_s
+    
+    # 4. Add the curve equations (using b)
+    curve1 = w1^2 - (b1^5 + b1 + 2)
+    curve2 = w2^2 - (b2^5 + b2 + 2)
+    
+    # 5. Eliminate the w's!
+    I_small = ideal(R_small, [h_s, curve1, curve2])
+    eliminated_ideal = eliminate(I_small, [w1, w2])
+    
+    return gens(eliminated_ideal)[1]
+end
+
+println("===========================================================")
+println("PART J: The Assembly Line (Processing All Coefficients)")
+println("===========================================================")
+
+# These arrays will hold our final, clean polynomials
+clean_sample_1 = Any[]
+clean_sample_2 = Any[]
+
+# 1. Loop through the 'u' coefficients
+# (We skip the very last one because it's just a trivial leading "1")
+num_u_coeffs = length(res1.u_RS_coeffs) - 1
+
+for i in 1:num_u_coeffs
+    target = "U$(i-1)"
+    push!(clean_sample_1, process_sample_1_coeff(res1.u_RS_coeffs[i], target))
+    push!(clean_sample_2, process_sample_2_coeff(res2.u_RS_coeffs[i], target))
+end
+
+# 2. Loop through the 'v' coefficients
+num_v_coeffs = length(res1.v_RS_coeffs)
+
+for i in 1:num_v_coeffs
+    target = "V$(i-1)"
+    push!(clean_sample_1, process_sample_1_coeff(res1.v_RS_coeffs[i], target))
+    push!(clean_sample_2, process_sample_2_coeff(res2.v_RS_coeffs[i], target))
+end
+
+println("\nAssembly Line Finished!")
+println("Sample 1 produced ", length(clean_sample_1), " clean polynomials.")
+println("Sample 2 produced ", length(clean_sample_2), " clean polynomials.")
+
+println()
+println("===========================================================")
+println("PART K: The Final Collision (Eliminating the Middlemen)")
+println("===========================================================")
+
+# 1. Build the shared, final universe (Notice: NO 'w' variables allowed!)
+R_final, (a1_f, a2_f, b1_f, b2_f, U0_f, U1_f, V0_f, V1_f) = polynomial_ring(F, ["a1", "a2", "b1", "b2", "U0", "U1", "V0", "V1"])
+
+final_equations = Any[]
+
+println("  Mapping Sample 1 into the final universe...")
+# 2. Map Sample 1's clean polynomials into the final ring. 
+# (The zeros represent the w variables, which we already eliminated!)
+push!(final_equations, evaluate(clean_sample_1[1], [zero(R_final), zero(R_final), a1_f, a2_f, U0_f]))
+push!(final_equations, evaluate(clean_sample_1[2], [zero(R_final), zero(R_final), a1_f, a2_f, U1_f]))
+push!(final_equations, evaluate(clean_sample_1[3], [zero(R_final), zero(R_final), a1_f, a2_f, V0_f]))
+push!(final_equations, evaluate(clean_sample_1[4], [zero(R_final), zero(R_final), a1_f, a2_f, V1_f]))
+
+println("  Mapping Sample 2 into the final universe...")
+# 3. Map Sample 2's clean polynomials into the final ring.
+push!(final_equations, evaluate(clean_sample_2[1], [zero(R_final), zero(R_final), b1_f, b2_f, U0_f]))
+push!(final_equations, evaluate(clean_sample_2[2], [zero(R_final), zero(R_final), b1_f, b2_f, U1_f]))
+push!(final_equations, evaluate(clean_sample_2[3], [zero(R_final), zero(R_final), b1_f, b2_f, V0_f]))
+push!(final_equations, evaluate(clean_sample_2[4], [zero(R_final), zero(R_final), b1_f, b2_f, V1_f]))
+
+# 4. Throw them all into the final sandbox
+I_final = ideal(R_final, final_equations)
+
+# 5. Tell the computer to eliminate the middlemen!
+println("  Smashing them together and eliminating U and V variables...")
+final_result_ideal = eliminate(I_final, [U0_f, U1_f, V0_f, V1_f])
+
+final_polys = gens(final_result_ideal)
+println("\n🎉 WE DID IT! Final un-coupled polynomials linking a and b:")
+println("Found ", length(final_polys), " final equation(s)!")
+for (i, p) in enumerate(final_polys)
+    println("  Final Eq $i: degree=", total_degree(p), " terms=", length(terms(p)))
+end
+println()
