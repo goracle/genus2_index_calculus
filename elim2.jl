@@ -271,6 +271,79 @@ println("v_RS^(K=$K1) has $(length(v1_num)) coefficient(s) (x^0..x^$(length(v1_n
 println("v_RS^(K=$K2) has $(length(v2_num)) coefficient(s) (x^0..x^$(length(v2_num)-1))")
 println()
 
+# Per-sample (un-cross-multiplied) size diagnostics. This is the premise
+# the "decoupling via target variables" approach depends on: it's only a
+# win if each SAMPLE's own num/den (5-variable, single-sample) is much
+# smaller than the cross-multiplied Fu/Fv (8-variable, both samples'
+# variables mixed via coeff_equal's num1*den2 - num2*den1). Printed here
+# so that premise is checked against real numbers rather than assumed.
+println("Per-sample (uncrossed) generator sizes -- checked BEFORE deciding ",
+        "whether decoupling via target variables is worth it:")
+for (label, nums, dens) in [
+        ("u1", u1_num, u1_den), ("u2", u2_num, u2_den),
+        ("v1", v1_num, v1_den), ("v2", v2_num, v2_den),
+    ]
+    for (i, (n, d)) in enumerate(zip(nums, dens))
+        println("  $label num[$i]: degree=", total_degree(n), " terms=", length(terms(n)),
+                "   $label den[$i]: degree=", total_degree(d), " terms=", length(terms(d)))
+    end
+end
+println()
+
+################################################################################
+# Symmetry check: is u_RS/v_RS actually invariant under swapping the two
+# symbolic anchors within a sample (a1<->a2, wa1<->wa2 for sample 1;
+# b1<->b2, wb1<->wb2 for sample 2)?
+#
+# This is a factual question about symbolic_residual's construction, not
+# something to assume. If it holds, reformulating the target ring in
+# terms of elementary symmetric polynomials (s1=a1+a2, s2=a1*a2, and
+# likewise for b) is a legitimate and potentially big structural win --
+# the Groebner basis engine currently has no way to know the ideal is
+# invariant under this swap and may be wasting significant work
+# exploring symmetric-but-distinct branches. If it does NOT hold, that
+# reformulation is invalid and shouldn't be attempted -- so check first.
+################################################################################
+
+function check_swap_symmetry(nums, dens, from_gens, to_gens, label)
+    all_invariant = true
+    for (i, (n, d)) in enumerate(zip(nums, dens))
+        n_swapped = evaluate(n, from_gens, to_gens)
+        d_swapped = evaluate(d, from_gens, to_gens)
+        # Compare n_swapped/d_swapped to n/d as fractions: n*d_swapped == n_swapped*d
+        # (avoids needing a common denominator or field-of-fractions machinery)
+        lhs = n * d_swapped
+        rhs = n_swapped * d
+        invariant = iszero(lhs - rhs)
+        println("  $label [$i]: invariant under swap = ", invariant)
+        all_invariant &= invariant
+    end
+    return all_invariant
+end
+
+println("Checking a1<->a2 (and wa1<->wa2) symmetry of sample 1's u_RS/v_RS...")
+u1_symmetric = check_swap_symmetry(u1_num, u1_den, [a1, a2, wa1, wa2], [a2, a1, wa2, wa1], "u1")
+v1_symmetric = check_swap_symmetry(v1_num, v1_den, [a1, a2, wa1, wa2], [a2, a1, wa2, wa1], "v1")
+
+println("Checking b1<->b2 (and wb1<->wb2) symmetry of sample 2's u_RS/v_RS...")
+u2_symmetric = check_swap_symmetry(u2_num, u2_den, [b1, b2, wb1, wb2], [b2, b1, wb2, wb1], "u2")
+v2_symmetric = check_swap_symmetry(v2_num, v2_den, [b1, b2, wb1, wb2], [b2, b1, wb2, wb1], "v2")
+
+if u1_symmetric && v1_symmetric && u2_symmetric && v2_symmetric
+    println()
+    println("CONFIRMED: full a1<->a2/b1<->b2 swap symmetry holds. Reformulating in")
+    println("terms of elementary symmetric polynomials (s1=a1+a2, s2=a1*a2, and")
+    println("likewise for b) is mathematically valid here and worth pursuing --")
+    println("see Gemini's symmetric-polynomial suggestion.")
+else
+    println()
+    println("NOT fully symmetric under this swap (see per-coefficient results above).")
+    println("Do NOT reformulate the target ring in terms of elementary symmetric")
+    println("polynomials alone -- that reformulation assumes full invariance and")
+    println("would silently discard real solutions/change the variety if the")
+    println("system isn't actually symmetric this way.")
+end
+println()
 if length(u1_num) != length(u2_num)
     error("u_RS degree mismatch between samples: $(length(u1_num)-1) vs $(length(u2_num)-1) -- " *
           "matching only makes sense if both u_RS have the same degree")
@@ -344,6 +417,126 @@ for (i, g) in enumerate(Fv)
     println("  Fv$(i-1): degree=", total_degree(g), "  terms=", length(terms(g)))
 end
 println()
+
+################################################################################
+# ALTERNATIVE: decoupled construction via target variables.
+#
+# coeff_equal(num1,den1,num2,den2) = num1*den2 - num2*den1 forces BOTH
+# samples' variables (a1,a2,wa1,wa2,b1,b2,wb1,wb2 -- 8 variables total)
+# into a single generator, cross-multiplied together. That's the direct
+# cause of the degree-32/48, tens-of-thousands-of-terms blowup: each
+# cross-multiplied generator already mixes everything before
+# groebner_basis/F4 gets a chance to work with anything smaller.
+#
+# Decoupling introduces one target variable per matched coefficient
+# (U0,U1 for u_RS's x^0,x^1 coefficients; V0,V1 for v_RS's) and replaces
+# each single 8-variable degree-32/48 equation with TWO equations, each
+# touching only ONE sample's variables (5 variables: that sample's
+# a/b-pair, its w-pair, and the shared target variable) at whatever
+# degree that sample's own num/den carry individually (checked above in
+# the per-sample size diagnostics -- confirm those are actually smaller
+# before trusting this is a win, rather than assuming it).
+#
+# This does NOT change the underlying variety: U_i is just forced to
+# equal both samples' i-th coefficient (in lowest terms), which is
+# exactly what Fu/Fv's cross-multiplication was already asserting -- it
+# only changes how that assertion is phrased algebraically, trading one
+# dense 8-variable equation for two sparser 5-variable ones plus an
+# extra variable to eliminate later (along with the w's).
+#
+# NOTE: unlike the "w-linearity/norm" idea some outside analysis
+# suggested, this does not depend on any assumption about the degree of
+# these polynomials in the w variables, so there's no risk of silently
+# dropping terms -- it's a straightforward, always-valid algebraic
+# substitution (introduce a variable, equate it to both sides).
+################################################################################
+
+R_dec, dec_gens = polynomial_ring(
+    F,
+    vcat(["wa1", "wa2", "wb1", "wb2", "a2", "a1", "b2", "b1"],
+         ["U$i" for i in 0:(N_U_MATCH-1)],
+         ["V$i" for i in 0:(length(v1_num)-1)])
+)
+wa1_d, wa2_d, wb1_d, wb2_d, a2_d, a1_d, b2_d, b1_d = dec_gens[1:8]
+U_vars = dec_gens[9:(8+N_U_MATCH)]
+V_vars = dec_gens[(9+N_U_MATCH):(8+N_U_MATCH+length(v1_num))]
+
+curve_a1_d = wa1_d^2 - (a1_d^5 + a1_d + 2)
+curve_a2_d = wa2_d^2 - (a2_d^5 + a2_d + 2)
+curve_b1_d = wb1_d^2 - (b1_d^5 + b1_d + 2)
+curve_b2_d = wb2_d^2 - (b2_d^5 + b2_d + 2)
+
+# Re-map each sample's num/den (currently elements of R, built from
+# t_gens_1=[a1,a2]/w_gens_1=[wa1,wa2] and t_gens_2=[b1,b2]/w_gens_2=
+# [wb1,wb2]) into R_dec. Since R and R_dec share the same variable
+# NAMES for wa1,wa2,wb1,wb2,a2,a1,b2,b1 (just with U0,U1,V0,V1 appended),
+# this is a straightforward generator-for-generator substitution.
+old_to_new = Dict(
+    wa1 => wa1_d, wa2 => wa2_d, wb1 => wb1_d, wb2 => wb2_d,
+    a2 => a2_d, a1 => a1_d, b2 => b2_d, b1 => b1_d,
+)
+remap(f) = evaluate(f, [old_to_new[g] for g in gens(R)])
+
+u1_num_d = [remap(f) for f in u1_num]
+u1_den_d = [remap(f) for f in u1_den]
+u2_num_d = [remap(f) for f in u2_num]
+u2_den_d = [remap(f) for f in u2_den]
+v1_num_d = [remap(f) for f in v1_num]
+v1_den_d = [remap(f) for f in v1_den]
+v2_num_d = [remap(f) for f in v2_num]
+v2_den_d = [remap(f) for f in v2_den]
+
+# U_i * den == num, for each sample separately, for each matched
+# coefficient i. (V_i likewise for v_RS.) This is what "num/den == U_i"
+# means algebraically -- same content as coeff_equal, just not
+# cross-multiplied against the other sample directly.
+Fu_decoupled = Any[]
+for (i, Uvar) in enumerate(U_vars)
+    push!(Fu_decoupled, u1_num_d[i] - Uvar * u1_den_d[i])
+    push!(Fu_decoupled, u2_num_d[i] - Uvar * u2_den_d[i])
+end
+
+Fv_decoupled = Any[]
+for (i, Vvar) in enumerate(V_vars)
+    push!(Fv_decoupled, v1_num_d[i] - Vvar * v1_den_d[i])
+    push!(Fv_decoupled, v2_num_d[i] - Vvar * v2_den_d[i])
+end
+
+println("Decoupled construction (target variables U0,U1,V0,V1):")
+for (i, g) in enumerate(Fu_decoupled)
+    println("  Fu_decoupled[$i]: degree=", total_degree(g), "  terms=", length(terms(g)))
+end
+for (i, g) in enumerate(Fv_decoupled)
+    println("  Fv_decoupled[$i]: degree=", total_degree(g), "  terms=", length(terms(g)))
+end
+println()
+
+Iu_decoupled = ideal(R_dec, vcat(Fu_decoupled, [curve_a1_d, curve_a2_d, curve_b1_d, curve_b2_d]))
+Iuv_decoupled = ideal(R_dec, vcat(Fu_decoupled, Fv_decoupled,
+                                  [curve_a1_d, curve_a2_d, curve_b1_d, curve_b2_d]))
+
+block_ordering_dec = degrevlex(dec_gens[1:4]) * degrevlex(dec_gens[5:end])
+
+println("Attempting groebner_basis on the DECOUPLED U-system first ",
+        "(smaller, sparser generators -- try this before the original ",
+        "8-variable Iu/Iuv if that OOM'd).")
+GBu_decoupled = try
+    result = groebner_basis(Iu_decoupled; ordering = block_ordering_dec, algorithm = :f4)
+    println("(decoupled Iu computed via algorithm = :f4)")
+    result
+catch e
+    println("algorithm=:f4 failed on decoupled Iu (", e, "), falling back to :buchberger...")
+    groebner_basis(Iu_decoupled; ordering = block_ordering_dec, algorithm = :buchberger)
+end
+println("Decoupled GBu has ", length(GBu_decoupled), " elements.")
+println()
+
+# NOTE: U0,U1 (and V0,V1, if you go on to try Iuv_decoupled the same
+# way) still need to be eliminated afterwards, same as the w's -- they
+# were introduced purely to decouple the two samples, not because you
+# care about their values. eliminate(Iu_decoupled, [U0,U1,wa1_d,...])
+# once GBu_decoupled confirms this route is actually tractable.
+################################################################################
 
 ################################################################################
 # Factor each equation before building the ideal.
