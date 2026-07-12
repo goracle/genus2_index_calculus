@@ -2154,41 +2154,112 @@ push!(final_equations, evaluate(clean_sample_2[3], [zero(R_final), zero(R_final)
 push!(final_equations, evaluate(clean_sample_2[4], [zero(R_final), zero(R_final), b1_f, b2_f, V1_f]))
 
 
-if false # too slow, oom's
-println("  Eliminating U0 independently...")
-I_U0 = ideal(R_final, [final_equations[1], final_equations[5]])
-final_U0_ideal = eliminate(I_U0, [U0_f])
+################################################################################
+# PART K, take 3: direct resultant instead of eliminate() on an ideal.
+#
+# Both earlier attempts (ideal-based eliminate() per target variable, and
+# ideal-based eliminate() on all four at once) OOM'd with zero diagnostic
+# output -- we don't even know what degree/term count killed the process.
+# Root cause hypothesis (see chat): eliminate(ideal(g1,g2), [T]) computes a
+# full Groebner basis of <g1,g2> under an elimination ordering, which is
+# far more general (and far more expensive) machinery than this problem
+# needs. final_equations[i] and final_equations[i+4] are individual
+# polynomials, each degree <=1 in T_i (T_i was introduced as
+# "T_i * den - num", degree 1 in T_i by construction). Eliminating a
+# SINGLE variable that appears at most linearly in TWO polynomials is
+# exactly what resultant() computes directly, in one shot, no GB:
+#
+#   Res_{T_i}(g1, g2) vanishes iff g1, g2 have a common root in T_i
+#
+# For two polynomials each degree <=1 in T_i, resultant is (worst case) a
+# single Sylvester-matrix determinant, not a GB search. This also sidesteps
+# eliminate()'s internal elimination-ordering choice (see PART E -- that
+# ordering is opaque and not tunable through eliminate()).
+#
+# Instrumentation: print degree/terms of each final_equations[i] BEFORE
+# calling resultant (neither OOM'd attempt above ever did this), and write
+# each result to disk immediately after, so a crash on (say) V1 doesn't
+# destroy the U0/U1/V0 results that already finished.
+################################################################################
 
-println("  Eliminating U1 independently...")
-I_U1 = ideal(R_final, [final_equations[2], final_equations[6]])
-final_U1_ideal = eliminate(I_U1, [U1_f])
+const RESULTS_DIR = joinpath(@__DIR__, "part_k_results")
+mkpath(RESULTS_DIR)
 
-println("  Eliminating V0 independently...")
-I_V0 = ideal(R_final, [final_equations[3], final_equations[7]])
-final_V0_ideal = eliminate(I_V0, [V0_f])
-
-println("  Eliminating V1 independently...")
-I_V1 = ideal(R_final, [final_equations[4], final_equations[8]])
-final_V1_ideal = eliminate(I_V1, [V1_f])
-
-# The final relation ideal in just a_i and b_i is the sum of these independent results
-final_polys = vcat(gens(final_U0_ideal), gens(final_U1_ideal), gens(final_V0_ideal), gens(final_V1_ideal))
+function save_poly(label::String, g)
+    path = joinpath(RESULTS_DIR, "$label.txt")
+    open(path, "w") do io
+        println(io, "# $label  degree=", total_degree(g), "  terms=", length(terms(g)))
+        println(io, g)
+    end
+    println("    wrote ", path)
 end
 
-if false # too slow, OOM's.
-# 4. Throw them all into the final sandbox
-I_final = ideal(R_final, final_equations)
+# One target variable at a time: [name, sample1_eq_index, sample2_eq_index, T_gen]
+const TARGETS = [
+    ("U0", 1, 5, U0_f),
+    ("U1", 2, 6, U1_f),
+    ("V0", 3, 7, V0_f),
+    ("V1", 4, 8, V1_f),
+]
 
-# 5. Tell the computer to eliminate the middlemen!
-println("  Smashing them together and eliminating U and V variables...")
-final_result_ideal = eliminate(I_final, [U0_f, U1_f, V0_f, V1_f])
+final_polys = Any[]
 
-final_polys = gens(final_result_ideal)
+for (name, i1, i2, Tvar) in TARGETS
+    g1 = final_equations[i1]
+    g2 = final_equations[i2]
+
+    d1T = degree(g1, Tvar)
+    d2T = degree(g2, Tvar)
+    println("  --- $name ---")
+    println("    g1 (sample 1 side): total_degree=", total_degree(g1),
+            "  terms=", length(terms(g1)), "  degree-in-$name=", d1T)
+    println("    g2 (sample 2 side): total_degree=", total_degree(g2),
+            "  terms=", length(terms(g2)), "  degree-in-$name=", d2T)
+
+    if d1T == 0 || d2T == 0
+        println("    *** WARNING: $name does not actually appear in one side; ",
+                "resultant would be degenerate. Skipping -- inspect final_equations ",
+                "construction before proceeding. ***")
+        continue
+    end
+
+    println("    computing resultant(g1, g2, $name)...")
+    flush(stdout)
+    t0 = time()
+    # Oscar's multivariate resultant(f, g, x) signature has varied across
+    # versions. Try the direct 3-arg form; if it's not available in this
+    # Oscar build, fail loudly with a clear pointer rather than silently
+    # falling back to something that might compute the wrong thing.
+    local r
+    try
+        r = resultant(g1, g2, Tvar)
+    catch e
+        error("resultant(g1, g2, $name) failed under the 3-arg form -- " *
+              "this Oscar build may expose a different resultant() signature. " *
+              "Run `methods(resultant)` in this session to find the right call, " *
+              "then fix this line before re-running. Original error: $e")
+    end
+    elapsed = time() - t0
+
+    println("    done in ", round(elapsed, digits=3), "s: degree=", total_degree(r),
+            "  terms=", length(terms(r)), "  vars=", vars(r))
+
+    if iszero(r)
+        println("    *** WARNING: resultant is IDENTICALLY ZERO -- g1,g2 share a ",
+                "common factor involving $name, or a construction bug. Inspect ",
+                "before trusting downstream results. ***")
+    end
+
+    save_poly(name, r)
+    push!(final_polys, r)
+    println()
 end
 
-println("\n🎉 WE DID IT! Final un-coupled polynomials linking a and b:")
-println("Found ", length(final_polys), " final equation(s)!")
+println("\nFinal un-coupled polynomials linking a and b:")
+println("Found ", length(final_polys), " final equation(s) (", length(TARGETS) - length(final_polys),
+        " skipped -- see warnings above if nonzero).")
 for (i, p) in enumerate(final_polys)
     println("  Final Eq $i: degree=", total_degree(p), " terms=", length(terms(p)))
 end
+println("\nResults also written to ", RESULTS_DIR, "/ as each one finished.")
 println()
