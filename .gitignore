@@ -21,3 +21,4 @@ log.txt
 err*.txt
 filtered*.txt
 *.mem
+part_k_results/*

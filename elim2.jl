@@ -2101,28 +2101,79 @@ println("===========================================================")
 println("PART J: The Assembly Line (Processing All Coefficients)")
 println("===========================================================")
 
-# These arrays will hold our final, clean polynomials
+# ------------------------------------------------------------------------
+# PARALLELIZED via separate OS processes, NOT Threads.@spawn.
+#
+# Part H already documented why: two eliminate()/Singular calls running
+# concurrently *in the same process* raced on Singular's global omalloc
+# allocator and crashed (omInsertBinPage/omAllocBinFromFullPage), because
+# Threads.@spawn cannot preempt or truly isolate a blocking Singular C
+# call. Each sandbox below is dispatched to its own `julia
+# part_j_worker.jl` subprocess instead, so every eliminate() call gets
+# its own address space / allocator state, and the crash mode Part H
+# hit simply can't occur here. Results come back via Oscar's save/load
+# through a temp file per job.
+#
+# All 8 sandboxes (4 targets x 2 samples) are independent -- none of the
+# process_sample_*_coeff calls depend on each other -- so all 8 are
+# launched at once and we just wait for them.
+# ------------------------------------------------------------------------
+
+num_u_coeffs = length(res1.u_RS_coeffs) - 1   # skip trivial leading "1"
+num_v_coeffs = length(res1.v_RS_coeffs)
+
+part_j_jobs = NamedTuple{(:sample, :target), Tuple{Int,String}}[]
+for i in 1:num_u_coeffs
+    push!(part_j_jobs, (sample = 1, target = "U$(i-1)"))
+    push!(part_j_jobs, (sample = 2, target = "U$(i-1)"))
+end
+for i in 1:num_v_coeffs
+    push!(part_j_jobs, (sample = 1, target = "V$(i-1)"))
+    push!(part_j_jobs, (sample = 2, target = "V$(i-1)"))
+end
+
+part_j_tmpdir = mktempdir()
+part_j_worker_path = joinpath(@__DIR__, "part_j_worker.jl")
+
+println("  Launching ", length(part_j_jobs), " sandboxes in parallel (one OS process each)...")
+
+part_j_procs = map(part_j_jobs) do job
+    outfile = joinpath(part_j_tmpdir, "sample$(job.sample)_$(job.target).oscar")
+    println("  Spinning up sandbox", job.sample == 2 ? " (Sample 2)" : "", " for: ", job.target)
+    cmd = `julia $part_j_worker_path $(job.sample) $(job.target) $outfile`
+    proc = run(pipeline(cmd; stdout=stdout, stderr=stderr); wait=false)
+    (job = job, outfile = outfile, proc = proc)
+end
+
+for pj in part_j_procs
+    wait(pj.proc)
+    if !success(pj.proc)
+        error("Part J worker failed for sample=$(pj.job.sample) target=$(pj.job.target) " *
+              "(exit code $(pj.proc.exitcode)). See its output above for the Singular/Oscar backtrace.")
+    end
+end
+
+println("  All ", length(part_j_procs), " sandboxes finished. Loading results back in...")
+
+# These arrays will hold our final, clean polynomials, same order as the
+# original sequential loop: U0,U1,...,V0,V1,... interleaved sample1/sample2.
 clean_sample_1 = Any[]
 clean_sample_2 = Any[]
 
-# 1. Loop through the 'u' coefficients
-# (We skip the very last one because it's just a trivial leading "1")
-num_u_coeffs = length(res1.u_RS_coeffs) - 1
-
-for i in 1:num_u_coeffs
-    target = "U$(i-1)"
-    push!(clean_sample_1, process_sample_1_coeff(res1.u_RS_coeffs[i], target))
-    push!(clean_sample_2, process_sample_2_coeff(res2.u_RS_coeffs[i], target))
+for pj in part_j_procs
+    # load() needs the *target* ring's context; each worker built its own
+    # fresh 5-variable ring per job, so we just load whatever ring/element
+    # Oscar serialized -- no shared parent required here since Part K
+    # remaps everything into a common ring anyway via remap_to_final().
+    result = load(pj.outfile)
+    if pj.job.sample == 1
+        push!(clean_sample_1, result)
+    else
+        push!(clean_sample_2, result)
+    end
 end
 
-# 2. Loop through the 'v' coefficients
-num_v_coeffs = length(res1.v_RS_coeffs)
-
-for i in 1:num_v_coeffs
-    target = "V$(i-1)"
-    push!(clean_sample_1, process_sample_1_coeff(res1.v_RS_coeffs[i], target))
-    push!(clean_sample_2, process_sample_2_coeff(res2.v_RS_coeffs[i], target))
-end
+rm(part_j_tmpdir; recursive=true, force=true)
 
 println("\nAssembly Line Finished!")
 println("Sample 1 produced ", length(clean_sample_1), " clean polynomials.")
@@ -2288,165 +2339,339 @@ end
 # destroy the U0/U1/V0 results that already finished.
 ################################################################################
 
-const RESULTS_DIR = joinpath(@__DIR__, "part_k_results")
-mkpath(RESULTS_DIR)
+################################################################################
+# PART K, take 4: ONE ELEMENT of the Sylvester matrix determinant, U0 only.
+#
+# Not the full resultant. resultant(g1_fp, g2_fp, T_fp) computes the
+# determinant of the (d1T+d2T)x(d1T+d2T) Sylvester matrix built from
+# g1_fp, g2_fp's coefficients-in-T_fp -- that's the OOM'ing computation
+# (an 8x8 determinant whose entries are themselves degree-32-ish
+# polynomials in a1,a2,b1,b2). Today's task: build that same Sylvester
+# matrix explicitly, by hand, and evaluate exactly ONE summand of its
+# Leibniz determinant expansion -- one signed product of 8 matrix
+# entries, for one permutation -- instead of all 8! of them.
+#
+# Restricting to U0 only (target #1 in TARGETS), since that's the one
+# whose degree-in-T=4/4 shape (giving an 8x8 Sylvester matrix) is
+# spelled out in err2.txt's crash trace.
+################################################################################
 
-function save_poly(label::String, g)
-    path = joinpath(RESULTS_DIR, "$label.txt")
-    open(path, "w") do io
-        println(io, "# $label  degree=", total_degree(g), "  terms=", length(terms(g)))
-        println(io, g)
-    end
-    println("    wrote ", path)
+const name  = "U0"
+const i1    = 1
+const i2    = 5
+const Tvar  = U0_f
+
+g1 = final_equations[i1]
+g2 = final_equations[i2]
+
+d1T = degree(g1, Tvar)
+d2T = degree(g2, Tvar)
+println("  --- $name ---")
+println("    g1 (sample 1 side): total_degree=", total_degree(g1),
+        "  terms=", length(terms(g1)), "  degree-in-$name=", d1T)
+println("    g2 (sample 2 side): total_degree=", total_degree(g2),
+        "  terms=", length(terms(g2)), "  degree-in-$name=", d2T)
+
+if d1T == 0 || d2T == 0
+    error("$name does not actually appear in one side; Sylvester matrix " *
+          "would be degenerate. Inspect final_equations construction.")
 end
 
-# One target variable at a time: [name, sample1_eq_index, sample2_eq_index, T_gen]
-const TARGETS = [
-    ("U0", 1, 5, U0_f),
-    ("U1", 2, 6, U1_f),
-    ("V0", 3, 7, V0_f),
-    ("V1", 4, 8, V1_f),
-]
+println("    building the fiber-product ring/generators for $name...")
+flush(stdout)
 
-final_polys = Any[]
+# Same 5-variable fiber-product ring as before: only (a1,a2,b1,b2,T) --
+# g1 only involves (a1,a2,T), g2 only involves (b1,b2,T).
+Rfp, (a1_fp, a2_fp, b1_fp, b2_fp, T_fp) =
+    polynomial_ring(F, ["a1", "a2", "b1", "b2", string(name)])
+rfp_gens = [a1_fp, a2_fp, b1_fp, b2_fp, T_fp]
 
-for (name, i1, i2, Tvar) in TARGETS
-    g1 = final_equations[i1]
-    g2 = final_equations[i2]
+i2_local = i2 - length(clean_sample_1)
+g1_fp = remap_to_final(clean_sample_1[i1], rfp_gens,
+                        [0, 0, 1, 2, 5])   # wa1,wa2->0; a1->1; a2->2; T->5
+g2_fp = remap_to_final(clean_sample_2[i2_local], rfp_gens,
+                        [0, 0, 3, 4, 5])   # wb1,wb2->0; b1->3; b2->4; T->5
 
-    d1T = degree(g1, Tvar)
-    d2T = degree(g2, Tvar)
-    println("  --- $name ---")
-    println("    g1 (sample 1 side): total_degree=", total_degree(g1),
-            "  terms=", length(terms(g1)), "  degree-in-$name=", d1T)
-    println("    g2 (sample 2 side): total_degree=", total_degree(g2),
-            "  terms=", length(terms(g2)), "  degree-in-$name=", d2T)
+println("      g1 remapped into 5-var fiber-product ring: degree=",
+        total_degree(g1_fp), " terms=", length(terms(g1_fp)),
+        "  degree-in-T=", degree(g1_fp, T_fp))
+println("      g2 remapped into 5-var fiber-product ring: degree=",
+        total_degree(g2_fp), " terms=", length(terms(g2_fp)),
+        "  degree-in-T=", degree(g2_fp, T_fp))
 
-    if d1T == 0 || d2T == 0
-        println("    *** WARNING: $name does not actually appear in one side; ",
-                "resultant would be degenerate. Skipping -- inspect final_equations ",
-                "construction before proceeding. ***")
-        continue
+################################################################################
+# Build the Sylvester matrix of g1_fp, g2_fp with respect to T_fp.
+#
+# Write g1_fp = sum_{k=0}^{d1T} syl_c1[k] * T^k,  g2_fp = sum_{k=0}^{d2T} syl_c2[k] * T^k
+# (syl_c1[k], syl_c2[k] live in the 4-variable ring F[a1,a2,b1,b2] -- T-free, since
+# we've isolated T's coefficients). The classical Sylvester matrix for
+# (g1_fp, g2_fp, T_fp) is (d1T+d2T) x (d1T+d2T): d2T rows of shifted g1_fp
+# coefficients, then d1T rows of shifted g2_fp coefficients, each row
+# padded with the base ring's zero. resultant(g1_fp,g2_fp,T_fp) is
+# det(Sylvester) -- computing that determinant is exactly what OOM'd.
+################################################################################
+
+function poly_coeffs_in(g, T, maxdeg)
+    # Extract [c0, c1, ..., c_maxdeg], each a polynomial free of T, s.t.
+    # g == sum_k c_k * T^k. Uses coefficients()/exponent_vectors() so it
+    # never touches ring-homomorphism machinery.
+    Rg = parent(g)
+    gensR = gens(Rg)
+    Tidx = findfirst(==(T), gensR)
+    coeff_polys = [MPolyBuildCtx(Rg) for _ in 0:maxdeg]
+    for (c, exps) in zip(coefficients(g), AbstractAlgebra.exponent_vectors(g))
+        k = exps[Tidx]
+        new_exps = copy(exps)
+        new_exps[Tidx] = 0
+        push_term!(coeff_polys[k+1], c, new_exps)
     end
+    return [finish(ctx) for ctx in coeff_polys]
+end
 
-    println("    computing $name via fiber-product elimination (small ring)...")
+syl_c1 = poly_coeffs_in(g1_fp, T_fp, d1T)   # syl_c1[k+1] is coeff of T^k in g1_fp, k=0..d1T
+syl_c2 = poly_coeffs_in(g2_fp, T_fp, d2T)   # syl_c2[k+1] is coeff of T^k in g2_fp, k=0..d2T
+# (renamed from c1/c2 -- those names are already `const` globals from the
+# PhiSymbolic tower setup near the top of the file: `const K1, c1 = 2, 2`
+# and `const K2, c2 = 3, 2`. Reassigning c1/c2 here would hit
+# "invalid assignment to constant".)
+
+n = d1T + d2T
+println("    Sylvester matrix size: $n x $n")
+
+Rzero = Rfp(0)
+Syl = Matrix{typeof(Rzero)}(undef, n, n)
+fill!(Syl, Rzero)
+
+# d2T rows built from g1_fp's coefficients (highest degree first, per the
+# classical convention), each successive row shifted one column to the right.
+for row in 0:(d2T-1)
+    for k in 0:d1T
+        col = row + (d1T - k)   # place syl_c1[k+1] (coeff of T^k) so top-degree term lands in column `row`
+        Syl[row+1, col+1] = syl_c1[k+1]
+    end
+end
+# d1T rows built from g2_fp's coefficients, same shifting convention.
+for row in 0:(d1T-1)
+    for k in 0:d2T
+        col = row + (d2T - k)
+        Syl[d2T+row+1, col+1] = syl_c2[k+1]
+    end
+end
+
+println("    Sylvester matrix built ($n x $n, entries in F[a1,a2,b1,b2]).")
+# Keep the nonzero-column set per row -- besides the printout, this is the
+# same information that lets us skip Leibniz summands that are guaranteed
+# to be the zero polynomial (see "structural zero" note below), so build
+# it once here as a Vector{Set{Int}} instead of just printing and discarding.
+syl_nzcols = Vector{Set{Int}}(undef, n)
+for i in 1:n
+    nzcols = [j for j in 1:n if !iszero(Syl[i,j])]
+    syl_nzcols[i] = Set(nzcols)
+    println("      row $i nonzero cols: ", nzcols)
+end
+
+# Serialize the matrix ONCE so each summand subprocess below can just
+# load it instead of re-deriving the entire pipeline (res1/res2 ->
+# Part J's 8 sandboxes -> Part K's remap -> fiber-product ring) per
+# permutation, which would be far more expensive than the summand itself.
+const SYLVESTER_MATRIX_FILE = joinpath(@__DIR__, "part_k_results", "$(name)_sylvester_matrix.oscar")
+mkpath(dirname(SYLVESTER_MATRIX_FILE))
+save(SYLVESTER_MATRIX_FILE, Syl)
+println("    saved Sylvester matrix -> ", SYLVESTER_MATRIX_FILE)
+
+################################################################################
+# PART K, take 5: keep computing Leibniz summands, ONE PER SUBPROCESS,
+# until one dies -- to find out where.
+#
+# Take 4 above computed exactly one summand (sigma = identity) in-process
+# and got as far as printing degree=256/terms=17850625 before the whole
+# 20-thread julia process was OOM-killed -- almost certainly while trying
+# to materialize/stringify that 17.85M-term polynomial for the
+# `println(io, term)` disk write (build + string-conversion of an MPoly
+# with that many terms plausibly needs tens of GB).
+#
+# To "keep computing summands and see where it dies" safely, each
+# candidate permutation gets its OWN subprocess (same reasoning as Part
+# J's parallelization: isolate anything that might crash/OOM so it can't
+# take the rest of the exploration down with it, and so we get a clean
+# per-summand exit code instead of one big process falling over). Workers
+# are launched ONE AT A TIME here (not in parallel like Part J) since the
+# whole point is finding the memory ceiling -- running several at once
+# would make several summands compete for RAM and muddy which one
+# actually died.
+#
+# Each worker: builds the same Rfp/g1_fp/g2_fp/Syl matrix, computes ONE
+# summand for a given permutation, and reports size stats (degree, term
+# count) to stdout and a small stats file BEFORE attempting to write the
+# full polynomial to disk -- so even if the write itself OOMs, we still
+# learn the term count that killed it.
+################################################################################
+
+# Tiny self-contained permutation generator (avoids depending on the
+# Combinatorics package, which nothing else in this file uses/assumes is
+# installed). next_permutation! advances `v` in-place to the next
+# permutation in lexicographic order, returning false once none remain
+# (standard "next_permutation" algorithm).
+function next_permutation!(v::Vector{Int})
+    n = length(v)
+    i = n - 1
+    while i >= 1 && v[i] >= v[i+1]
+        i -= 1
+    end
+    i < 1 && return false
+    j = n
+    while v[j] <= v[i]
+        j -= 1
+    end
+    v[i], v[j] = v[j], v[i]
+    reverse!(@view v[i+1:end])
+    return true
+end
+
+function first_k_permutations(n::Int, k::Int)
+    result = Vector{Vector{Int}}()
+    cur = collect(1:n)
+    push!(result, copy(cur))
+    while length(result) < k && next_permutation!(cur)
+        push!(result, copy(cur))
+    end
+    return result
+end
+
+# A Leibniz summand for permutation sigma is prod_i Syl[i, sigma[i]]. If
+# ANY factor Syl[i, sigma[i]] is the structural zero entry of the matrix
+# (i.e. sigma[i] not in row i's nonzero-column set), the whole product is
+# identically the zero polynomial -- no cancellation needed, it's zero
+# before any arithmetic happens. This is exactly what the err2.txt survey
+# was hitting: degree=-1/terms=0 on almost every non-identity permutation,
+# because this Sylvester matrix is banded (each row's nonzero-column set
+# has only 5 entries out of n=8) and only a small fraction of all n!
+# permutations manage to land inside the band on every row.
+#
+# first_k_permutations walks ALL permutations in lex order regardless of
+# the matrix's sparsity, so a "first 20" sample mostly reports zeros. This
+# variant instead only counts (and returns) permutations that are
+# nonzero-compatible with the matrix, so every subprocess launched is
+# actually informative for the "find the memory ceiling" survey.
+function first_k_nonzero_permutations(n::Int, k::Int, nzcols::Vector{Set{Int}})
+    result = Vector{Vector{Int}}()
+    cur = collect(1:n)
+    is_nonzero_compatible(p) = all(p[i] in nzcols[i] for i in 1:n)
+    if is_nonzero_compatible(cur)
+        push!(result, copy(cur))
+    end
+    while length(result) < k && next_permutation!(cur)
+        if is_nonzero_compatible(cur)
+            push!(result, copy(cur))
+        end
+    end
+    return result
+end
+
+# Total count of nonzero-compatible permutations (not capped at k) -- purely
+# informational, so the survey printout can report e.g. "608 of 40320
+# permutations are nonzero-compatible" instead of leaving it a mystery why
+# a length-20 sample can be exhausted so quickly relative to n!.
+function count_nonzero_permutations(n::Int, nzcols::Vector{Set{Int}})
+    cur = collect(1:n)
+    is_nonzero_compatible(p) = all(p[i] in nzcols[i] for i in 1:n)
+    total = is_nonzero_compatible(cur) ? 1 : 0
+    while next_permutation!(cur)
+        if is_nonzero_compatible(cur)
+            total += 1
+        end
+    end
+    return total
+end
+
+const PART_K_RESULTS_DIR = joinpath(@__DIR__, "part_k_results")
+mkpath(PART_K_RESULTS_DIR)
+const summand_worker_path = joinpath(@__DIR__, "part_k_summand_worker.jl")
+
+# Explore permutations in Leibniz order, starting with identity (already
+# done above but recomputed fresh in-subprocess for a clean, isolated
+# measurement). Change `max_summands` to explore more/fewer before giving
+# up -- there are n! = 40320 total for n=8, so this is necessarily a
+# sample, not the full sum.
+#
+# IMPORTANT: this Sylvester matrix is banded (see syl_nzcols above --
+# each row has only a handful of nonzero columns out of n), so most
+# permutations sigma give prod_i Syl[i,sigma[i]] == 0 identically, with
+# no cancellation involved. Sampling in raw lex order over ALL n!
+# permutations (the old first_k_permutations) mostly samples these
+# guaranteed zeros, which is why the err2.txt run reported degree=-1/
+# terms=0 for nearly everything after the identity permutation -- that
+# was never a bug, just an uninformative sample. Use the sparsity-aware
+# generator instead so every subprocess we launch is actually a nonzero
+# summand worth timing/sizing.
+max_summands = 2000
+perms_to_try = first_k_nonzero_permutations(n, max_summands, syl_nzcols)
+n_nonzero_total = count_nonzero_permutations(n, syl_nzcols)
+
+println("\n    $(n_nonzero_total) of $(factorial(n)) permutations are ",
+        "nonzero-compatible with this Sylvester matrix's band structure.")
+println("    Exploring up to ", length(perms_to_try),
+        " Sylvester-determinant summands (all nonzero-compatible), ",
+        "one isolated subprocess each...")
+
+summand_log = joinpath(PART_K_RESULTS_DIR, "$(name)_summand_survey.csv")
+open(summand_log, "w") do io
+    println(io, "perm_index,sigma,sign,status,elapsed_s,degree,terms,exitcode")
+end
+
+died_at = nothing
+for (pi_idx, sigma_perm) in enumerate(perms_to_try)
+    stats_file = joinpath(PART_K_RESULTS_DIR, "$(name)_summand_$(pi_idx).stats")
+    sigma_str = join(sigma_perm, "-")
+    println("    [$pi_idx/$(length(perms_to_try))] sigma = ", sigma_str, " ...")
     flush(stdout)
+
+    cmd = `julia $summand_worker_path $SYLVESTER_MATRIX_FILE $sigma_str $stats_file`
     t0 = time()
+    proc = run(pipeline(cmd; stdout=stdout, stderr=stderr); wait=false)
+    wait(proc)
+    elapsed = time() - t0
 
-    # FIBER-PRODUCT FIX (replaces both earlier attempts):
-    #   1. eliminate(ideal(g1,g2), [T]) directly in the full 8-var R_final
-    #      OOM'd with no diagnostics (see comment above) -- too many
-    #      irrelevant variables (a2,b1,b2 etc. that g1 doesn't even use)
-    #      dragging the Groebner computation's ambient ring along for
-    #      the ride.
-    #   2. resultant(g1, g2, U0) assumed g1,g2 were degree<=1 in U0
-    #      (true of h_s = T*den-num at CONSTRUCTION time in Part I/J's
-    #      process_sample_*_coeff) but that assumption doesn't survive
-    #      eliminate(I_small, [w1,w2])'s own Groebner computation --
-    #      w1,w2 satisfy degree-2 relations that couple back into T, so
-    #      the RETURNED generator can be (and is: degree-in-U0=4) higher
-    #      degree in T than the input h_s was. So resultant(g1,g2,U0) is
-    #      an honest 8x8 Sylvester determinant, not a cheap 2x2 one --
-    #      exactly the swell estimated in chat before this fix.
-    #
-    #   Fix: g1 only involves (a1,a2,T); g2 only involves (b1,b2,T) --
-    #   confirmed by PART A's "vars-used" printout on the analogous
-    #   Fu_decoupled generators. So build a genuinely small ring with
-    #   ONLY those 5 variables (not all 8 of R_final) and eliminate T
-    #   there via a Groebner ideal -- the exact same shape that
-    #   succeeded in PART H (5-variable ring, eliminate 2 unknowns from
-    #   a 3-generator ideal, ~1-8s). Here we eliminate 1 unknown (T)
-    #   from a 2-generator ideal in a 5-variable ring, which is strictly
-    #   smaller/easier than anything PART H already proved safe.
-    Rfp, (a1_fp, a2_fp, b1_fp, b2_fp, T_fp) =
-        polynomial_ring(F, ["a1", "a2", "b1", "b2", string(name)])
-
-    # clean_sample_1[i1] lives in its OWN 5-variable ring [wa1,wa2,a1,a2,T]
-    # (per process_sample_1_coeff's polynomial_ring call) -- eliminate()
-    # does not shrink the generator list, it just zeroes out wa1,wa2's
-    # degree in the returned polynomial (confirmed directly in PART H's
-    # own printed "parent ring = ...5 variables..." after eliminating 2
-    # of those 5). So the correct gen_map sends wa1,wa2 (indices 1,2) to
-    # 0 -- remap_to_final's own assertion will fail loudly if that's
-    # wrong, i.e. if wa1/wa2 turn out to have nonzero exponent somewhere,
-    # rather than silently dropping real content -- and a1,a2,T to their
-    # Rfp positions.
-    #
-    # BUG FIX: remap_to_final's n_out is length(final_gens) -- it needs
-    # the TARGET ring's FULL generator list (all 5 of Rfp's gens, in
-    # Rfp's own order [a1_fp,a2_fp,b1_fp,b2_fp,T_fp]), not just the 3
-    # generators this particular source polynomial happens to use. Using
-    # a 3-element final_gens made n_out=3 while T_fp's real position in
-    # the 5-variable Rfp is index 5, producing a 3-long exponent vector
-    # pushed into a 5-variable ring -- exactly the crash seen. gen_map
-    # must likewise index into that same full 5-slot target list.
-    rfp_gens = [a1_fp, a2_fp, b1_fp, b2_fp, T_fp]
-    # BUG FIX #2: TARGETS' i1/i2 are indices into final_equations (the
-    # 8-element array = [remap(clean_sample_1[1..4]); remap(clean_sample_2[1..4])]),
-    # NOT direct indices into clean_sample_1/clean_sample_2 (each only 4
-    # elements). i1 (1-4) happens to line up 1:1 with clean_sample_1, but
-    # i2 (5-8) is clean_sample_2's index PLUS 4 (see final_equations'
-    # construction loop above: sample 2's results are pushed after all
-    # of sample 1's). Using i2 directly against clean_sample_2 was an
-    # out-of-bounds/off-by-4 error -- confirmed by the crash (4-element
-    # Vector{Any} at index [5]). Subtract the sample-1 offset (4) back out.
-    i2_local = i2 - length(clean_sample_1)
-    g1_fp = remap_to_final(clean_sample_1[i1], rfp_gens,
-                            [0, 0, 1, 2, 5])   # wa1,wa2->0; a1->1; a2->2; T->5
-    g2_fp = remap_to_final(clean_sample_2[i2_local], rfp_gens,
-                            [0, 0, 3, 4, 5])   # wb1,wb2->0; b1->3; b2->4; T->5
-
-    println("      g1 remapped into 5-var fiber-product ring: degree=",
-            total_degree(g1_fp), " terms=", length(terms(g1_fp)))
-    println("      g2 remapped into 5-var fiber-product ring: degree=",
-            total_degree(g2_fp), " terms=", length(terms(g2_fp)))
-
-    Ifp = ideal(Rfp, [g1_fp, g2_fp])
-
-    local r, elapsed
-    resultFP, statusFP, elapsedFP = run_with_timeout(SUBIDEAL_TIMEOUT_SECS) do
-        eliminate(Ifp, [T_fp])
+    if success(proc)
+        # worker wrote "status,degree,terms" as the stats file's one data line
+        deg, nterms = if isfile(stats_file)
+            parts = split(readchomp(stats_file), ",")
+            (parts[1], parts[2])
+        else
+            ("?", "?")
+        end
+        println("      ok in ", round(elapsed, digits=3), "s  degree=$deg terms=$nterms")
+        open(summand_log, "a") do io
+            println(io, "$pi_idx,$sigma_str,?,ok,$(round(elapsed,digits=3)),$deg,$nterms,0")
+        end
+    else
+        println("      DIED (exit code ", proc.exitcode, ") after ",
+                round(elapsed, digits=3), "s -- this is where it dies.")
+        # even on death, the worker may have managed to write partial
+        # stats (degree/terms) before the fatal step -- salvage them.
+        deg, nterms = if isfile(stats_file)
+            parts = split(readchomp(stats_file), ",")
+            length(parts) >= 2 ? (parts[1], parts[2]) : ("?", "?")
+        else
+            ("?", "?")
+        end
+        open(summand_log, "a") do io
+            println(io, "$pi_idx,$sigma_str,?,DIED,$(round(elapsed,digits=3)),$deg,$nterms,$(proc.exitcode)")
+        end
+        global died_at = (index = pi_idx, sigma = sigma_perm, elapsed = elapsed,
+                           degree = deg, terms = nterms, exitcode = proc.exitcode)
+        break
     end
-
-    if statusFP != :ok
-        error("fiber-product eliminate() for $name failed: status=$statusFP " *
-              "after $(round(elapsedFP, digits=3))s. Inspect g1_fp/g2_fp above " *
-              "(degree/terms) before re-running -- if these are much larger " *
-              "than PART A's Fu_decoupled sizes (degree 17, 306 terms), the " *
-              "swell happened upstream in process_sample_*_coeff's own " *
-              "eliminate() call, not here.")
-    end
-
-    gFP = gens(resultFP)
-    if length(gFP) == 0
-        error("fiber-product eliminate() for $name returned ZERO generators " *
-              "-- g1_fp, g2_fp share no common consequence after eliminating " *
-              "$name, which likely means a construction bug (wrong variable " *
-              "remap) rather than a genuine mathematical outcome. Inspect " *
-              "gen_map values above before trusting this.")
-    end
-    r = gFP[1]
-    elapsed = elapsedFP
-
-    println("    done in ", round(elapsed, digits=3), "s: degree=", total_degree(r),
-            "  terms=", length(terms(r)), "  vars=", vars(r))
-
-    if iszero(r)
-        println("    *** WARNING: fiber-product elimination result is IDENTICALLY ",
-                "ZERO -- g1_fp,g2_fp share a common factor involving $name, or a ",
-                "construction bug. Inspect before trusting downstream results. ***")
-    end
-
-    save_poly(name, r)
-    push!(final_polys, r)
-    println()
 end
 
-println("\nFinal un-coupled polynomials linking a and b:")
-println("Found ", length(final_polys), " final equation(s) (", length(TARGETS) - length(final_polys),
-        " skipped -- see warnings above if nonzero).")
-for (i, p) in enumerate(final_polys)
-    println("  Final Eq $i: degree=", total_degree(p), " terms=", length(terms(p)))
-end
-println("\nResults also written to ", RESULTS_DIR, "/ as each one finished.")
 println()
+if died_at === nothing
+    println("    All ", length(perms_to_try), " sampled summands survived. ",
+            "See ", summand_log, " for the full per-summand size/timing table.")
+else
+    println("    Died on summand #", died_at.index, " (sigma = ",
+            join(died_at.sigma, "-"), ") after ", round(died_at.elapsed, digits=3),
+            "s, exit code ", died_at.exitcode,
+            died_at.degree == "?" ? "" : " -- last known size before death: degree=$(died_at.degree) terms=$(died_at.terms)")
+    println("    See ", summand_log, " for the full survey up to that point.")
+end
