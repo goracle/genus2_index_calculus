@@ -2381,9 +2381,19 @@ for (name, i1, i2, Tvar) in TARGETS
     # pushed into a 5-variable ring -- exactly the crash seen. gen_map
     # must likewise index into that same full 5-slot target list.
     rfp_gens = [a1_fp, a2_fp, b1_fp, b2_fp, T_fp]
+    # BUG FIX #2: TARGETS' i1/i2 are indices into final_equations (the
+    # 8-element array = [remap(clean_sample_1[1..4]); remap(clean_sample_2[1..4])]),
+    # NOT direct indices into clean_sample_1/clean_sample_2 (each only 4
+    # elements). i1 (1-4) happens to line up 1:1 with clean_sample_1, but
+    # i2 (5-8) is clean_sample_2's index PLUS 4 (see final_equations'
+    # construction loop above: sample 2's results are pushed after all
+    # of sample 1's). Using i2 directly against clean_sample_2 was an
+    # out-of-bounds/off-by-4 error -- confirmed by the crash (4-element
+    # Vector{Any} at index [5]). Subtract the sample-1 offset (4) back out.
+    i2_local = i2 - length(clean_sample_1)
     g1_fp = remap_to_final(clean_sample_1[i1], rfp_gens,
                             [0, 0, 1, 2, 5])   # wa1,wa2->0; a1->1; a2->2; T->5
-    g2_fp = remap_to_final(clean_sample_2[i2], rfp_gens,
+    g2_fp = remap_to_final(clean_sample_2[i2_local], rfp_gens,
                             [0, 0, 3, 4, 5])   # wb1,wb2->0; b1->3; b2->4; T->5
 
     println("      g1 remapped into 5-var fiber-product ring: degree=",
