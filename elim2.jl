@@ -2112,12 +2112,21 @@ println("===========================================================")
 # part_j_worker.jl` subprocess instead, so every eliminate() call gets
 # its own address space / allocator state, and the crash mode Part H
 # hit simply can't occur here. Results come back via Oscar's save/load
-# through a temp file per job.
+# through a persistent output file per job.
 #
-# All 8 sandboxes (4 targets x 2 samples) are independent -- none of the
-# process_sample_*_coeff calls depend on each other -- so all 8 are
-# launched at once and we just wait for them.
+# All 8 jobs (4 targets x 2 samples) are independent -- none of the
+# process_sample_*_coeff calls depend on each other -- but launching all
+# 8 at once nearly OOM's (each Singular/Oscar subprocess is heavy), so
+# they're run through a bounded worker pool instead, PART_J_MAX_WORKERS
+# in flight at a time.
+#
+# Output files live in PART_J_OUTPUT_DIR (./tmp, next to this script),
+# NOT the system /tmp -- and PERSIST across runs (no cleanup at the end)
+# so that a re-run can skip any job whose output file already exists,
+# rather than recomputing it.
 # ------------------------------------------------------------------------
+
+const PART_J_MAX_WORKERS = 4
 
 num_u_coeffs = length(res1.u_RS_coeffs) - 1   # skip trivial leading "1"
 num_v_coeffs = length(res1.v_RS_coeffs)
@@ -2132,48 +2141,96 @@ for i in 1:num_v_coeffs
     push!(part_j_jobs, (sample = 2, target = "V$(i-1)"))
 end
 
-part_j_tmpdir = mktempdir()
+const PART_J_OUTPUT_DIR = joinpath(@__DIR__, "tmp")
+mkpath(PART_J_OUTPUT_DIR)
 part_j_worker_path = joinpath(@__DIR__, "part_j_worker.jl")
 
-println("  Launching ", length(part_j_jobs), " sandboxes in parallel (one OS process each)...")
-
-part_j_procs = map(part_j_jobs) do job
-    outfile = joinpath(part_j_tmpdir, "sample$(job.sample)_$(job.target).oscar")
-    println("  Spinning up sandbox", job.sample == 2 ? " (Sample 2)" : "", " for: ", job.target)
-    cmd = `julia $part_j_worker_path $(job.sample) $(job.target) $outfile`
-    proc = run(pipeline(cmd; stdout=stdout, stderr=stderr); wait=false)
-    (job = job, outfile = outfile, proc = proc)
+# Attach each job's persistent output path up front, so the
+# already-done check and the launch step agree on the filename.
+part_j_jobs_full = map(part_j_jobs) do job
+    outfile = joinpath(PART_J_OUTPUT_DIR, "sample$(job.sample)_$(job.target).oscar")
+    (job = job, outfile = outfile)
 end
 
-for pj in part_j_procs
-    wait(pj.proc)
-    if !success(pj.proc)
-        error("Part J worker failed for sample=$(pj.job.sample) target=$(pj.job.target) " *
-              "(exit code $(pj.proc.exitcode)). See its output above for the Singular/Oscar backtrace.")
+part_j_todo = filter(jf -> !isfile(jf.outfile), part_j_jobs_full)
+part_j_skipped = filter(jf -> isfile(jf.outfile), part_j_jobs_full)
+
+if !isempty(part_j_skipped)
+    println("  Skipping ", length(part_j_skipped), " job(s) with existing output file(s):")
+    for jf in part_j_skipped
+        println("    already have: ", jf.outfile)
     end
 end
+println("  Running ", length(part_j_todo), " of ", length(part_j_jobs_full),
+        " sandboxes (up to ", PART_J_MAX_WORKERS, " concurrent worker(s))...")
 
-println("  All ", length(part_j_procs), " sandboxes finished. Loading results back in...")
+# Bounded worker pool: keep at most PART_J_MAX_WORKERS subprocesses alive
+# at once. Jobs are handed out in order; as each running slot's process
+# exits it is checked for success/failure and the next queued job (if
+# any) is launched in its place.
+part_j_queue = collect(part_j_todo)
+part_j_running = Vector{NamedTuple}()   # (job, outfile, proc)
+part_j_next_idx = 1
+
+function part_j_launch_next!()
+    global part_j_next_idx
+    part_j_next_idx > length(part_j_queue) && return nothing
+    jf = part_j_queue[part_j_next_idx]
+    part_j_next_idx += 1
+    println("  Spinning up sandbox", jf.job.sample == 2 ? " (Sample 2)" : "", " for: ", jf.job.target)
+    cmd = `julia $part_j_worker_path $(jf.job.sample) $(jf.job.target) $(jf.outfile)`
+    proc = run(pipeline(cmd; stdout=stdout, stderr=stderr); wait=false)
+    push!(part_j_running, (job = jf.job, outfile = jf.outfile, proc = proc))
+    return nothing
+end
+
+for _ in 1:min(PART_J_MAX_WORKERS, length(part_j_queue))
+    part_j_launch_next!()
+end
+
+while !isempty(part_j_running)
+    # Poll for any finished process, harvest it, and backfill its slot.
+    finished_idx = nothing
+    while finished_idx === nothing
+        for (idx, pr) in enumerate(part_j_running)
+            if process_exited(pr.proc)
+                finished_idx = idx
+                break
+            end
+        end
+        finished_idx === nothing && sleep(0.5)
+    end
+    pr = popat!(part_j_running, finished_idx)
+    if !success(pr.proc)
+        error("Part J worker failed for sample=$(pr.job.sample) target=$(pr.job.target) " *
+              "(exit code $(pr.proc.exitcode)). See its output above for the Singular/Oscar backtrace.")
+    end
+    part_j_launch_next!()
+end
+
+println("  All Part J sandboxes finished. Loading results back in...")
 
 # These arrays will hold our final, clean polynomials, same order as the
 # original sequential loop: U0,U1,...,V0,V1,... interleaved sample1/sample2.
 clean_sample_1 = Any[]
 clean_sample_2 = Any[]
 
-for pj in part_j_procs
+for jf in part_j_jobs_full
+    if !isfile(jf.outfile)
+        error("Part J: expected output file missing for sample=$(jf.job.sample) " *
+              "target=$(jf.job.target): $(jf.outfile)")
+    end
     # load() needs the *target* ring's context; each worker built its own
     # fresh 5-variable ring per job, so we just load whatever ring/element
     # Oscar serialized -- no shared parent required here since Part K
     # remaps everything into a common ring anyway via remap_to_final().
-    result = load(pj.outfile)
-    if pj.job.sample == 1
+    result = load(jf.outfile)
+    if jf.job.sample == 1
         push!(clean_sample_1, result)
     else
         push!(clean_sample_2, result)
     end
 end
-
-rm(part_j_tmpdir; recursive=true, force=true)
 
 println("\nAssembly Line Finished!")
 println("Sample 1 produced ", length(clean_sample_1), " clean polynomials.")
@@ -2619,48 +2676,165 @@ open(summand_log, "w") do io
     println(io, "perm_index,sigma,sign,status,elapsed_s,degree,terms,exitcode")
 end
 
-died_at = nothing
-for (pi_idx, sigma_perm) in enumerate(perms_to_try)
+# ------------------------------------------------------------------------
+# PARALLELIZED across up to PART_K_MAX_WORKERS (4) concurrent subprocesses.
+#
+# The whole point of this survey is to find the EARLIEST (smallest
+# pi_idx, i.e. earliest in Leibniz order) summand that dies, so results
+# still have to be interpreted in strict pi_idx order even though workers
+# now run out of order. Approach: keep up to 4 subprocesses in flight at
+# once, but only ever report/act on a death once every summand with a
+# SMALLER pi_idx has already come back "ok" -- if a later summand dies
+# while an earlier one is still running, that earlier one still might
+# die too (or die "more informatively"), so we let all in-flight
+# earlier-index jobs finish before trusting a later death as *the*
+# answer. Once we know the true earliest death (or that everything
+# survived), we stop launching new jobs.
+# ------------------------------------------------------------------------
+
+const PART_K_MAX_WORKERS = 4
+
+# A summand is "already completed" -- safe to skip relaunching -- only if
+# BOTH:
+#   (1) the .stats file exists and parses as a clean "degree,terms" line
+#       (exactly 2 comma-separated fields, both parseable as integers), and
+#   (2) the companion "<stats_file>.term.oscar" file exists.
+#
+# Why both: the worker writes the stats line BEFORE the (potentially
+# OOM-killing) full-term save, specifically so that a death mid-save still
+# leaves a stats file behind (see part_k_summand_worker.jl). That means a
+# stats file alone is NOT sufficient evidence of success -- it's exactly
+# the signature a DIED case can also leave. The .term.oscar file only
+# gets written after the save completes, so its presence is what actually
+# distinguishes "fully done" from "died right after writing stats". We
+# don't persist exit codes anywhere, so this file-presence check is the
+# only way to safely tell the two apart on a re-run.
+function part_k_summand_complete(stats_file)
+    isfile(stats_file) || return false
+    isfile(stats_file * ".term.oscar") || return false
+    parts = split(readchomp(stats_file), ",")
+    length(parts) == 2 || return false
+    deg = tryparse(Int, parts[1])
+    nterms = tryparse(Int, parts[2])
+    return deg !== nothing && nterms !== nothing
+end
+
+function part_k_launch(pi_idx, sigma_perm)
     stats_file = joinpath(PART_K_RESULTS_DIR, "$(name)_summand_$(pi_idx).stats")
     sigma_str = join(sigma_perm, "-")
-    println("    [$pi_idx/$(length(perms_to_try))] sigma = ", sigma_str, " ...")
+    if part_k_summand_complete(stats_file)
+        println("    [$pi_idx/$(length(perms_to_try))] sigma = ", sigma_str,
+                " already completed -- skipping relaunch, will harvest from disk.")
+        flush(stdout)
+        return (pi_idx = pi_idx, sigma = sigma_perm, sigma_str = sigma_str,
+                stats_file = stats_file, proc = nothing, t0 = time(), skipped = true)
+    end
+    println("    [$pi_idx/$(length(perms_to_try))] launching sigma = ", sigma_str, " ...")
     flush(stdout)
-
     cmd = `julia $summand_worker_path $SYLVESTER_MATRIX_FILE $sigma_str $stats_file`
-    t0 = time()
     proc = run(pipeline(cmd; stdout=stdout, stderr=stderr); wait=false)
-    wait(proc)
-    elapsed = time() - t0
+    return (pi_idx = pi_idx, sigma = sigma_perm, sigma_str = sigma_str,
+            stats_file = stats_file, proc = proc, t0 = time(), skipped = false)
+end
 
-    if success(proc)
-        # worker wrote "status,degree,terms" as the stats file's one data line
-        deg, nterms = if isfile(stats_file)
-            parts = split(readchomp(stats_file), ",")
+function part_k_harvest(pk)
+    elapsed = time() - pk.t0
+    if pk.skipped
+        # Already completed on a previous run -- just read the stats back,
+        # no process to check exit status on.
+        parts = split(readchomp(pk.stats_file), ",")
+        deg, nterms = (parts[1], parts[2])
+        println("      [$(pk.pi_idx)] skipped (already done)  degree=$deg terms=$nterms")
+        open(summand_log, "a") do io
+            println(io, "$(pk.pi_idx),$(pk.sigma_str),?,skipped,0.0,$deg,$nterms,0")
+        end
+        return (index = pk.pi_idx, sigma = pk.sigma, elapsed = 0.0,
+                died = false, degree = deg, terms = nterms, exitcode = 0)
+    elseif success(pk.proc)
+        deg, nterms = if isfile(pk.stats_file)
+            parts = split(readchomp(pk.stats_file), ",")
             (parts[1], parts[2])
         else
             ("?", "?")
         end
-        println("      ok in ", round(elapsed, digits=3), "s  degree=$deg terms=$nterms")
+        println("      [$(pk.pi_idx)] ok in ", round(elapsed, digits=3), "s  degree=$deg terms=$nterms")
         open(summand_log, "a") do io
-            println(io, "$pi_idx,$sigma_str,?,ok,$(round(elapsed,digits=3)),$deg,$nterms,0")
+            println(io, "$(pk.pi_idx),$(pk.sigma_str),?,ok,$(round(elapsed,digits=3)),$deg,$nterms,0")
         end
+        return (index = pk.pi_idx, sigma = pk.sigma, elapsed = elapsed,
+                died = false, degree = deg, terms = nterms, exitcode = 0)
     else
-        println("      DIED (exit code ", proc.exitcode, ") after ",
-                round(elapsed, digits=3), "s -- this is where it dies.")
+        println("      [$(pk.pi_idx)] DIED (exit code ", pk.proc.exitcode, ") after ",
+                round(elapsed, digits=3), "s")
         # even on death, the worker may have managed to write partial
         # stats (degree/terms) before the fatal step -- salvage them.
-        deg, nterms = if isfile(stats_file)
-            parts = split(readchomp(stats_file), ",")
+        deg, nterms = if isfile(pk.stats_file)
+            parts = split(readchomp(pk.stats_file), ",")
             length(parts) >= 2 ? (parts[1], parts[2]) : ("?", "?")
         else
             ("?", "?")
         end
         open(summand_log, "a") do io
-            println(io, "$pi_idx,$sigma_str,?,DIED,$(round(elapsed,digits=3)),$deg,$nterms,$(proc.exitcode)")
+            println(io, "$(pk.pi_idx),$(pk.sigma_str),?,DIED,$(round(elapsed,digits=3)),$deg,$nterms,$(pk.proc.exitcode)")
         end
-        global died_at = (index = pi_idx, sigma = sigma_perm, elapsed = elapsed,
-                           degree = deg, terms = nterms, exitcode = proc.exitcode)
+        return (index = pk.pi_idx, sigma = pk.sigma, elapsed = elapsed,
+                died = true, degree = deg, terms = nterms, exitcode = pk.proc.exitcode)
+    end
+end
+
+died_at = nothing
+results_by_idx = Dict{Int,Any}()
+next_launch_idx = 1
+running = Vector{NamedTuple}()
+
+for _ in 1:min(PART_K_MAX_WORKERS, length(perms_to_try))
+    global next_launch_idx
+    push!(running, part_k_launch(next_launch_idx, perms_to_try[next_launch_idx]))
+    next_launch_idx += 1
+end
+
+while !isempty(running)
+    global next_launch_idx, died_at
+    finished_slot = nothing
+    while finished_slot === nothing
+        for (slot, pk) in enumerate(running)
+            if pk.skipped || process_exited(pk.proc)
+                finished_slot = slot
+                break
+            end
+        end
+        finished_slot === nothing && sleep(0.5)
+    end
+    pk = popat!(running, finished_slot)
+    result = part_k_harvest(pk)
+    results_by_idx[result.index] = result
+
+    # Only trust a death once every smaller pi_idx is accounted for --
+    # i.e. once results_by_idx has a contiguous run 1..m and index m is
+    # either the earliest death or the last successful one before an
+    # already-recorded later death.
+    contiguous_through = 0
+    idx = 1
+    while haskey(results_by_idx, idx)
+        contiguous_through = idx
+        results_by_idx[idx].died && break
+        idx += 1
+    end
+    if contiguous_through > 0 && results_by_idx[contiguous_through].died
+        died_at = results_by_idx[contiguous_through]
+        # Any still-running workers were launched for later (now
+        # irrelevant) pi_idx values -- kill them rather than leaving
+        # orphaned Julia/Singular processes behind.
+        for pk in running
+            !pk.skipped && process_running(pk.proc) && kill(pk.proc)
+        end
+        empty!(running)   # stop waiting on/launching further jobs
         break
+    end
+
+    if next_launch_idx <= length(perms_to_try)
+        push!(running, part_k_launch(next_launch_idx, perms_to_try[next_launch_idx]))
+        next_launch_idx += 1
     end
 end
 
