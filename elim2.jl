@@ -2139,19 +2139,125 @@ R_final, (a1_f, a2_f, b1_f, b2_f, U0_f, U1_f, V0_f, V1_f) = polynomial_ring(F, [
 final_equations = Any[]
 
 println("  Mapping Sample 1 into the final universe...")
-# 2. Map Sample 1's clean polynomials into the final ring. 
-# (The zeros represent the w variables, which we already eliminated!)
-push!(final_equations, evaluate(clean_sample_1[1], [zero(R_final), zero(R_final), a1_f, a2_f, U0_f]))
-push!(final_equations, evaluate(clean_sample_1[2], [zero(R_final), zero(R_final), a1_f, a2_f, U1_f]))
-push!(final_equations, evaluate(clean_sample_1[3], [zero(R_final), zero(R_final), a1_f, a2_f, V0_f]))
-push!(final_equations, evaluate(clean_sample_1[4], [zero(R_final), zero(R_final), a1_f, a2_f, V1_f]))
 
-println("  Mapping Sample 2 into the final universe...")
-# 3. Map Sample 2's clean polynomials into the final ring.
-push!(final_equations, evaluate(clean_sample_2[1], [zero(R_final), zero(R_final), b1_f, b2_f, U0_f]))
-push!(final_equations, evaluate(clean_sample_2[2], [zero(R_final), zero(R_final), b1_f, b2_f, U1_f]))
-push!(final_equations, evaluate(clean_sample_2[3], [zero(R_final), zero(R_final), b1_f, b2_f, V0_f]))
-push!(final_equations, evaluate(clean_sample_2[4], [zero(R_final), zero(R_final), b1_f, b2_f, V1_f]))
+
+################################################################################
+# PART K FIX: manual term-by-term remap, replacing the generic evaluate()
+# call that dies on the very first invocation.
+#
+# Root-cause hypothesis (see chat): clean_sample_1[i] lives in R_small =
+# F[wa1,wa2,a1,a2,Ti] (5 vars), already eliminated of wa1,wa2 by
+# process_sample_1_coeff's own eliminate() call -- so as a polynomial it
+# should contain NO wa1/wa2 monomials at all (every exponent on those two
+# generators is 0). evaluate(f, images) across two UNRELATED polynomial
+# ring objects (R_small -> R_final) is not a cheap "rename the
+# generators" operation in general -- Oscar's generic evaluate()
+# reconstructs the whole expression through ring-homomorphism arithmetic,
+# which can be far more expensive than the term count of the input or
+# output would suggest, especially across rings that were never declared
+# to have any relationship to each other.
+#
+# Fix: read clean_sample_1[i] apart into (coefficient, exponent_vector)
+# pairs directly (using coefficients()/exponent_vectors(), both
+# documented O(1)-per-term iterators, no ring-homomorphism machinery
+# involved), and push each term straight into an MPolyBuildCtx for
+# R_final. This is linear in the number of terms of the input polynomial
+# and never constructs anything in an intermediate/unrelated ring.
+#
+# gen_map: for each generator index of R_small (in R_small's own
+# declared order), an Int index into R_final's generator list (1-based),
+# or `0` if that generator must be zero in the image (i.e. the wa1/wa2
+# slots -- which we can also just assert are always-zero-exponent as a
+# cheap sanity check while we're at it, rather than silently trusting
+# that eliminate() actually removed them).
+################################################################################
+
+function remap_to_final(f, final_gens::Vector, gen_map::Vector{Int})
+    # Using MPolyBuildCtx + push_term! + finish, the documented,
+    # empirically-linear-in-term-count pattern for rebuilding a polynomial
+    # term-by-term into a different ring (see Oscar/AbstractAlgebra docs'
+    # swap_vars example -- confirmed by their own benchmark to scale
+    # linearly, e.g. 0.0001s to 0.004s for a 40x growth in term count).
+    # This avoids the likely O(n^2)-ish behavior of accumulating via
+    # repeated `result += coeff*monomial` polynomial addition, which
+    # re-normalizes/re-sorts the whole accumulator on every term, and it
+    # avoids evaluate()'s generic cross-ring homomorphism machinery
+    # entirely -- we go straight from (coefficient, exponent_vector) pairs
+    # to push_term! calls in the TARGET ring, with no ring-homomorphism
+    # evaluation step at all.
+    R_out = parent(final_gens[1])
+    n_out = length(final_gens)
+    B = MPolyBuildCtx(R_out)
+
+    for (c, exps) in zip(coefficients(f), AbstractAlgebra.exponent_vectors(f))
+        new_exps = zeros(Int, n_out)
+        for (k, e) in enumerate(exps)
+            e == 0 && continue
+            tgt = gen_map[k]
+            if tgt == 0
+                # Sanity check: a generator mapped to "must be zero" (the
+                # eliminated w-slots) has a nonzero exponent here --
+                # eliminate() did NOT fully remove this variable. Fail
+                # loudly rather than silently drop real content.
+                error("remap_to_final: generator index $k (mapped to zero) " *
+                      "has nonzero exponent $e in a term of the input " *
+                      "polynomial -- eliminate() did NOT fully remove this " *
+                      "variable, zeroing it here would silently drop real " *
+                      "content. Inspect the input polynomial before proceeding.")
+            end
+            new_exps[tgt] += e
+        end
+        push_term!(B, c, new_exps)
+    end
+
+    return finish(B)
+end
+
+################################################################################
+# Usage, replacing the dying block at elim2.jl lines 2141-2154:
+#
+#   R_small (per process_sample_1_coeff) has generator order:
+#     [wa1, wa2, a1, a2, T]     <- T is whatever target name was passed
+#
+#   R_final has generator order:
+#     [a1_f, a2_f, b1_f, b2_f, U0_f, U1_f, V0_f, V1_f]
+#
+# So for sample 1 targeting U0 (target index 1 in the loop below):
+#   gen_map = [0, 0, 1, 2, 5]     (wa1->0, wa2->0, a1->a1_f(idx1), a2->a2_f(idx2), T->U0_f(idx5))
+#
+# and similarly for U1 (T->U1_f, idx6), V0 (T->V0_f, idx7), V1 (T->V1_f, idx8).
+#
+# For sample 2 (R_small has [wb1,wb2,b1,b2,T]):
+#   gen_map = [0, 0, 3, 4, <target_idx>]   (b1->b1_f(idx3), b2->b2_f(idx4))
+################################################################################
+
+println("Remapping sample 1 into the final universe (manual term-by-term)...")
+
+final_gens = [a1_f, a2_f, b1_f, b2_f, U0_f, U1_f, V0_f, V1_f]
+
+# sample 1: a-variables map to final indices 1,2; target T maps to final index 5,6,7,8 resp.
+sample1_target_final_idx = [5, 6, 7, 8]   # U0, U1, V0, V1
+for (i, tgt_idx) in enumerate(sample1_target_final_idx)
+    gen_map = [0, 0, 1, 2, tgt_idx]
+    t0 = time()
+    g = remap_to_final(clean_sample_1[i], final_gens, gen_map)
+    println("  clean_sample_1[$i] remapped in ", round(time()-t0, digits=3),
+            "s: degree=", total_degree(g), " terms=", length(terms(g)))
+    push!(final_equations, g)
+end
+
+println("Remapping sample 2 into the final universe (manual term-by-term)...")
+
+# sample 2: b-variables map to final indices 3,4; target T maps to final index 5,6,7,8 resp.
+sample2_target_final_idx = [5, 6, 7, 8]   # U0, U1, V0, V1
+for (i, tgt_idx) in enumerate(sample2_target_final_idx)
+    gen_map = [0, 0, 3, 4, tgt_idx]
+    t0 = time()
+    g = remap_to_final(clean_sample_2[i], final_gens, gen_map)
+    println("  clean_sample_2[$i] remapped in ", round(time()-t0, digits=3),
+            "s: degree=", total_degree(g), " terms=", length(terms(g)))
+    push!(final_equations, g)
+end
 
 
 ################################################################################
@@ -2226,20 +2332,27 @@ for (name, i1, i2, Tvar) in TARGETS
     println("    computing resultant(g1, g2, $name)...")
     flush(stdout)
     t0 = time()
-    # Oscar's multivariate resultant(f, g, x) signature has varied across
-    # versions. Try the direct 3-arg form; if it's not available in this
-    # Oscar build, fail loudly with a clear pointer rather than silently
-    # falling back to something that might compute the wrong thing.
+    # The 3-arg resultant(f, g, x) does NOT accept a generator object here --
+    # per MethodError, the actual method wants resultant(::MPolyRingElem,
+    # ::MPolyRingElem, ::Int64), i.e. the 1-based index of the eliminated
+    # variable within parent(g1)'s generator list, not the generator itself
+    # (unlike degree(g1, Tvar) above, which does accept the generator).
+    # g1 and g2 both live in R_final (same parent as Tvar / final_gens), so
+    # find Tvar's index there directly rather than hardcoding it.
+    tvar_idx = findfirst(==(Tvar), gens(parent(g1)))
+    tvar_idx === nothing && error("resultant setup: $name (Tvar) not found " *
+        "among gens(parent(g1)) -- g1 is not in the ring Tvar belongs to. " *
+        "Inspect final_equations construction before proceeding.")
     local r
     try
-        r = resultant(g1, g2, Tvar)
+        r = resultant(g1, g2, tvar_idx)
     catch e
-        error("resultant(g1, g2, $name) failed under the 3-arg form -- " *
+        error("resultant(g1, g2, $name) failed using variable index $tvar_idx -- " *
               "this Oscar build may expose a different resultant() signature. " *
               "Run `methods(resultant)` in this session to find the right call, " *
               "then fix this line before re-running. Original error: $e")
     end
-    elapsed = time() - t0
+    local elapsed = time() - t0
 
     println("    done in ", round(elapsed, digits=3), "s: degree=", total_degree(r),
             "  terms=", length(terms(r)), "  vars=", vars(r))
