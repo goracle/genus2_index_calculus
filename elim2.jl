@@ -2329,38 +2329,102 @@ for (name, i1, i2, Tvar) in TARGETS
         continue
     end
 
-    println("    computing resultant(g1, g2, $name)...")
+    println("    computing $name via fiber-product elimination (small ring)...")
     flush(stdout)
     t0 = time()
-    # The 3-arg resultant(f, g, x) does NOT accept a generator object here --
-    # per MethodError, the actual method wants resultant(::MPolyRingElem,
-    # ::MPolyRingElem, ::Int64), i.e. the 1-based index of the eliminated
-    # variable within parent(g1)'s generator list, not the generator itself
-    # (unlike degree(g1, Tvar) above, which does accept the generator).
-    # g1 and g2 both live in R_final (same parent as Tvar / final_gens), so
-    # find Tvar's index there directly rather than hardcoding it.
-    tvar_idx = findfirst(==(Tvar), gens(parent(g1)))
-    tvar_idx === nothing && error("resultant setup: $name (Tvar) not found " *
-        "among gens(parent(g1)) -- g1 is not in the ring Tvar belongs to. " *
-        "Inspect final_equations construction before proceeding.")
-    local r
-    try
-        r = resultant(g1, g2, tvar_idx)
-    catch e
-        error("resultant(g1, g2, $name) failed using variable index $tvar_idx -- " *
-              "this Oscar build may expose a different resultant() signature. " *
-              "Run `methods(resultant)` in this session to find the right call, " *
-              "then fix this line before re-running. Original error: $e")
+
+    # FIBER-PRODUCT FIX (replaces both earlier attempts):
+    #   1. eliminate(ideal(g1,g2), [T]) directly in the full 8-var R_final
+    #      OOM'd with no diagnostics (see comment above) -- too many
+    #      irrelevant variables (a2,b1,b2 etc. that g1 doesn't even use)
+    #      dragging the Groebner computation's ambient ring along for
+    #      the ride.
+    #   2. resultant(g1, g2, U0) assumed g1,g2 were degree<=1 in U0
+    #      (true of h_s = T*den-num at CONSTRUCTION time in Part I/J's
+    #      process_sample_*_coeff) but that assumption doesn't survive
+    #      eliminate(I_small, [w1,w2])'s own Groebner computation --
+    #      w1,w2 satisfy degree-2 relations that couple back into T, so
+    #      the RETURNED generator can be (and is: degree-in-U0=4) higher
+    #      degree in T than the input h_s was. So resultant(g1,g2,U0) is
+    #      an honest 8x8 Sylvester determinant, not a cheap 2x2 one --
+    #      exactly the swell estimated in chat before this fix.
+    #
+    #   Fix: g1 only involves (a1,a2,T); g2 only involves (b1,b2,T) --
+    #   confirmed by PART A's "vars-used" printout on the analogous
+    #   Fu_decoupled generators. So build a genuinely small ring with
+    #   ONLY those 5 variables (not all 8 of R_final) and eliminate T
+    #   there via a Groebner ideal -- the exact same shape that
+    #   succeeded in PART H (5-variable ring, eliminate 2 unknowns from
+    #   a 3-generator ideal, ~1-8s). Here we eliminate 1 unknown (T)
+    #   from a 2-generator ideal in a 5-variable ring, which is strictly
+    #   smaller/easier than anything PART H already proved safe.
+    Rfp, (a1_fp, a2_fp, b1_fp, b2_fp, T_fp) =
+        polynomial_ring(F, ["a1", "a2", "b1", "b2", string(name)])
+
+    # clean_sample_1[i1] lives in its OWN 5-variable ring [wa1,wa2,a1,a2,T]
+    # (per process_sample_1_coeff's polynomial_ring call) -- eliminate()
+    # does not shrink the generator list, it just zeroes out wa1,wa2's
+    # degree in the returned polynomial (confirmed directly in PART H's
+    # own printed "parent ring = ...5 variables..." after eliminating 2
+    # of those 5). So the correct gen_map sends wa1,wa2 (indices 1,2) to
+    # 0 -- remap_to_final's own assertion will fail loudly if that's
+    # wrong, i.e. if wa1/wa2 turn out to have nonzero exponent somewhere,
+    # rather than silently dropping real content -- and a1,a2,T to their
+    # Rfp positions.
+    #
+    # BUG FIX: remap_to_final's n_out is length(final_gens) -- it needs
+    # the TARGET ring's FULL generator list (all 5 of Rfp's gens, in
+    # Rfp's own order [a1_fp,a2_fp,b1_fp,b2_fp,T_fp]), not just the 3
+    # generators this particular source polynomial happens to use. Using
+    # a 3-element final_gens made n_out=3 while T_fp's real position in
+    # the 5-variable Rfp is index 5, producing a 3-long exponent vector
+    # pushed into a 5-variable ring -- exactly the crash seen. gen_map
+    # must likewise index into that same full 5-slot target list.
+    rfp_gens = [a1_fp, a2_fp, b1_fp, b2_fp, T_fp]
+    g1_fp = remap_to_final(clean_sample_1[i1], rfp_gens,
+                            [0, 0, 1, 2, 5])   # wa1,wa2->0; a1->1; a2->2; T->5
+    g2_fp = remap_to_final(clean_sample_2[i2], rfp_gens,
+                            [0, 0, 3, 4, 5])   # wb1,wb2->0; b1->3; b2->4; T->5
+
+    println("      g1 remapped into 5-var fiber-product ring: degree=",
+            total_degree(g1_fp), " terms=", length(terms(g1_fp)))
+    println("      g2 remapped into 5-var fiber-product ring: degree=",
+            total_degree(g2_fp), " terms=", length(terms(g2_fp)))
+
+    Ifp = ideal(Rfp, [g1_fp, g2_fp])
+
+    local r, elapsed
+    resultFP, statusFP, elapsedFP = run_with_timeout(SUBIDEAL_TIMEOUT_SECS) do
+        eliminate(Ifp, [T_fp])
     end
-    local elapsed = time() - t0
+
+    if statusFP != :ok
+        error("fiber-product eliminate() for $name failed: status=$statusFP " *
+              "after $(round(elapsedFP, digits=3))s. Inspect g1_fp/g2_fp above " *
+              "(degree/terms) before re-running -- if these are much larger " *
+              "than PART A's Fu_decoupled sizes (degree 17, 306 terms), the " *
+              "swell happened upstream in process_sample_*_coeff's own " *
+              "eliminate() call, not here.")
+    end
+
+    gFP = gens(resultFP)
+    if length(gFP) == 0
+        error("fiber-product eliminate() for $name returned ZERO generators " *
+              "-- g1_fp, g2_fp share no common consequence after eliminating " *
+              "$name, which likely means a construction bug (wrong variable " *
+              "remap) rather than a genuine mathematical outcome. Inspect " *
+              "gen_map values above before trusting this.")
+    end
+    r = gFP[1]
+    elapsed = elapsedFP
 
     println("    done in ", round(elapsed, digits=3), "s: degree=", total_degree(r),
             "  terms=", length(terms(r)), "  vars=", vars(r))
 
     if iszero(r)
-        println("    *** WARNING: resultant is IDENTICALLY ZERO -- g1,g2 share a ",
-                "common factor involving $name, or a construction bug. Inspect ",
-                "before trusting downstream results. ***")
+        println("    *** WARNING: fiber-product elimination result is IDENTICALLY ",
+                "ZERO -- g1_fp,g2_fp share a common factor involving $name, or a ",
+                "construction bug. Inspect before trusting downstream results. ***")
     end
 
     save_poly(name, r)
