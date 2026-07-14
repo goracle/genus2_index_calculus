@@ -3901,6 +3901,462 @@ else
             d1T, ", ", d2T, ")")
 end
 
+################################################################################
+# PARTS A-E: deep structural diagnostic pass, requested BEFORE any resultant
+# (Sylvester or Bezout-determinant or PRS) is actually run to completion.
+#
+# Goal: figure out WHY the Bezout entries came back at ~83,521 terms /
+# degree 64 each (~1.3M terms total across the 16 entries) -- is that
+# swell inherent to the true resultant's algebraic complexity, or is it
+# an artifact of (a) hidden factorable structure in g1/g2, (b) carrying
+# redundant non-symmetric variables when a1<->a2, b1<->b2 symmetry is
+# available, or (c) a bad representation choice. Nothing below computes
+# det(B) or the full resultant -- this is pure structure inspection.
+################################################################################
+global all_a_sym = true
+global all_b_sym = true
+
+if d1T == 4 && d2T == 4
+    println()
+    println("=" ^ 70)
+    println("PARTS A-E: deep diagnostic (no resultant computed) -- $name")
+    println("=" ^ 70)
+    flush(stdout)
+
+    # ------------------------------------------------------------------
+    # shared helper: try factor(), fall back gracefully if it errors or
+    # times out conceptually (Oscar's factor() has no built-in timeout,
+    # so we just wrap in try/catch -- if factor() itself hangs, that is
+    # itself diagnostic information worth seeing separately, but we do
+    # not want a factor() hang to mask the rest of this report).
+    # ------------------------------------------------------------------
+    function safe_factor_report(f; label::String="", indent::String="        ")
+        d = total_degree(f)
+        t = length(terms(f))
+        println(indent, label, "degree=", d, "  terms=", t)
+        if iszero(f)
+            println(indent, "  (zero polynomial)")
+            return
+        end
+        try
+            t0f = time()
+            fac = factor(f)
+            elf = time() - t0f
+            nfac = length(fac)
+            println(indent, "  factor() in ", round(elf, digits=3), "s -> ",
+                    nfac, " distinct irreducible factor(s):")
+            for (fp, e) in fac
+                println(indent, "    exponent=", e, "  degree=", total_degree(fp),
+                        "  terms=", length(terms(fp)))
+            end
+        catch err
+            println(indent, "  factor() FAILED/skipped: ", sprint(showerror, err))
+        end
+        flush(stdout)
+    end
+
+    # ------------------------------------------------------------------
+    # PART A: coefficient-vector analysis of g1, g2 as polynomials in T
+    # ------------------------------------------------------------------
+    println()
+    println("--- PART A: coefficient-vector analysis ---")
+    flush(stdout)
+
+    # p_coef, q_coef, bracket_num already defined above (Bezout block);
+    # reuse p_coef[k+1]=p_k, q_coef[k+1]=q_k directly -- these are Kcoef
+    # elements, take numerator (denominator already unit-checked at
+    # construction time via bracket_num's pattern; check again here per
+    # coefficient since these are used standalone, not just in brackets).
+    function coef_as_poly(c)
+        den = denominator(c)
+        if !is_unit(den)
+            println("      WARNING: coefficient has non-unit denominator (degree=",
+                    total_degree(den), ") -- reporting numerator only.")
+        end
+        return Rcoef(numerator(c))
+    end
+
+    g1_coefs_poly = [coef_as_poly(p_coef[k+1]) for k in 0:4]  # index k+1 <-> T^k
+    g2_coefs_poly = [coef_as_poly(q_coef[k+1]) for k in 0:4]
+
+    for (gname, cs) in (("g1", g1_coefs_poly), ("g2", g2_coefs_poly))
+        println("  $gname:")
+        for k in 4:-1:0
+            safe_factor_report(cs[k+1]; label="coeff of T^$k: ")
+        end
+    end
+
+    # structural tests
+    println("  structural tests:")
+    for (gname, cs) in (("g1", g1_coefs_poly), ("g2", g2_coefs_poly))
+        c4, c3, c2, c1, c0 = cs[5], cs[4], cs[3], cs[2], cs[1]
+        println("    $gname: T^3 coeff zero? ", iszero(c3),
+                "   T^1 coeff zero? ", iszero(c1))
+        if iszero(c3) && iszero(c1)
+            println("      -> $gname has NO odd-T terms: candidate form ",
+                    "T^4 + a*T^2 + c (biquadratic in T) or T^4 + c if also c2==0.")
+            if iszero(c2)
+                println("      -> $gname coeff-of-T^2 ALSO zero: candidate pure form T^4 + c.")
+            end
+        end
+        # palindromic test: c0 vs c4, c1 vs c3 (up to a possible overall
+        # scalar/unit factor -- report the ratio's structure rather than
+        # assuming it must be exactly 1)
+        if !iszero(c0) && !iszero(c4)
+            println("      $gname palindromic check: deg(c0)=", total_degree(c0),
+                    " vs deg(c4)=", total_degree(c4),
+                    "   deg(c1)=", total_degree(c1),
+                    " vs deg(c3)=", total_degree(c3))
+        end
+        # common factor among "odd slot" coefficients c3, c1 (both should
+        # be zero or share a factor if there's hidden even/odd splitting)
+        if !iszero(c3) && !iszero(c1)
+            g_odd = gcd(c3, c1)
+            println("      $gname gcd(c3,c1): degree=", total_degree(g_odd),
+                    "  terms=", length(terms(g_odd)),
+                    (total_degree(g_odd) > 0 ? "  <-- NONTRIVIAL" : "  (trivial/unit)"))
+        end
+    end
+    flush(stdout)
+
+    # ------------------------------------------------------------------
+    # PART B: GCD structure among T-coefficients of each quartic
+    # ------------------------------------------------------------------
+    println()
+    println("--- PART B: GCD structure among T-coefficients ---")
+    flush(stdout)
+
+    function report_gcd_pair(cs, gname, i::Int, j::Int)
+        ci, cj = cs[i+1], cs[j+1]
+        if iszero(ci) || iszero(cj)
+            println("    $gname gcd(c$i,c$j): one side is zero -- skipping gcd (undefined/trivial)")
+            return
+        end
+        g = gcd(ci, cj)
+        dg = total_degree(g)
+        tg = length(terms(g))
+        println("    $gname gcd(c$i,c$j): degree=", dg, "  terms=", tg,
+                dg > 0 ? "  <-- NONTRIVIAL FACTOR" : "  (unit)")
+        if dg > 0
+            qi, ri = divrem(ci, g)
+            qj, rj = divrem(cj, g)
+            ok_i = iszero(ri); ok_j = iszero(rj)
+            println("      c$i before=", length(terms(ci)), " terms; after /gcd=",
+                    length(terms(qi)), " terms  (exact div? ", ok_i, ")")
+            println("      c$j before=", length(terms(cj)), " terms; after /gcd=",
+                    length(terms(qj)), " terms  (exact div? ", ok_j, ")")
+        end
+    end
+
+    for (gname, cs) in (("g1", g1_coefs_poly), ("g2", g2_coefs_poly))
+        report_gcd_pair(cs, gname, 4, 3)
+        report_gcd_pair(cs, gname, 4, 2)
+        report_gcd_pair(cs, gname, 4, 1)
+        report_gcd_pair(cs, gname, 4, 0)
+
+        nonzero_cs = [c for c in cs if !iszero(c)]
+        if length(nonzero_cs) >= 2
+            g_all = reduce(gcd, nonzero_cs)
+            dg_all = total_degree(g_all)
+            tg_all = length(terms(g_all))
+            println("    $gname gcd(all nonzero coefficients): degree=", dg_all,
+                    "  terms=", tg_all,
+                    dg_all > 0 ? "  <-- NONTRIVIAL, content should be pulled out" : "  (unit, no common content)")
+        else
+            println("    $gname gcd(all coefficients): fewer than 2 nonzero coefficients, skipping")
+        end
+    end
+    flush(stdout)
+
+    # ------------------------------------------------------------------
+    # PART C: symmetry reduction test (a1<->a2, b1<->b2 -> sa,pa,sb,pb)
+    # ------------------------------------------------------------------
+    println()
+    println("--- PART C: symmetry reduction test ---")
+    flush(stdout)
+
+    # Build the swap automorphisms of Rcoef directly from its own
+    # generators (a1_c,a2_c,b1_c,b2_c already in scope from Step 1
+    # above) -- swap a1<->a2 only, and swap b1<->b2 only.
+    swap_a = hom(Rcoef, Rcoef, [a2_c, a1_c, b1_c, b2_c])
+    swap_b = hom(Rcoef, Rcoef, [a1_c, a2_c, b2_c, b1_c])
+
+    function is_symmetric_under(f, phi)
+        return iszero(f - phi(f))
+    end
+
+    all_coefs = vcat(
+        [("g1", k, g1_coefs_poly[k+1]) for k in 0:4],
+        [("g2", k, g2_coefs_poly[k+1]) for k in 0:4]
+    )
+
+    global all_a_sym = true
+    global all_b_sym = true
+    for (gname, k, f) in all_coefs
+        if iszero(f)
+            continue
+        end
+        global all_a_sym
+        global all_b_sym
+        sym_a = is_symmetric_under(f, swap_a)
+        sym_b = is_symmetric_under(f, swap_b)
+        all_a_sym &= sym_a
+        all_b_sym &= sym_b
+        println("    $gname coeff of T^$k: symmetric under a1<->a2? ", sym_a,
+                "   symmetric under b1<->b2? ", sym_b)
+    end
+    flush(stdout)
+
+    if all_a_sym && all_b_sym
+        println("  CONFIRMED: every quartic coefficient is symmetric under both ",
+                "a1<->a2 and b1<->b2.")
+        println("  Attempting conversion into elementary symmetric basis ",
+                "(sa=a1+a2, pa=a1*a2, sb=b1+b2, pb=b1*b2)...")
+        flush(stdout)
+
+        # Symmetric-basis ring
+        Rsym, (sa, pa, sb, pb) = polynomial_ring(F, ["sa", "pa", "sb", "pb"])
+
+        # Rewrite f(a1,a2,b1,b2), known symmetric in (a1,a2) and (b1,b2)
+        # separately, in terms of (sa,pa,sb,pb) via Newton's identities /
+        # direct substitution: express as a polynomial in a1 with
+        # coefficients depending on a2 is not what we want -- instead
+        # use the standard trick of representing symmetric functions of
+        # (a1,a2) via a1=  (sa + d)/2, a2 = (sa-d)/2 is unnecessary; the
+        # clean way in a CAS is: build the map by matching monomials.
+        # Given full symmetry is already confirmed, every monomial
+        # a1^i*a2^j*b1^k*b2^l appears paired with a1^j*a2^i*b1^l*b2^k
+        # with equal coefficient (for i!=j or k!=l); we rewrite via
+        # repeated elimination: a1^2 -> sa*a1 - pa (since a1,a2 are
+        # roots of X^2 - sa*X + pa), reducing every monomial's a-degree
+        # in a1,a2 down to at most degree 1 in each of a1,a2 individually
+        # then expressing the surviving symmetric combination in sa,pa.
+        # For a DIAGNOSTIC term-count measurement (not a full rewrite),
+        # we instead use Oscar's msolve/symmetric-function machinery if
+        # available, and fall back to a direct evaluate-and-interpolate
+        # sanity count if not. Wrapped in try/catch since this is
+        # explicitly a "measure savings, don't fully commit" step.
+        function try_symmetric_rewrite(f)
+            # Fallback strategy: since f is symmetric in (a1,a2) and
+            # (b1,b2) separately, and total_degree/term-count are the
+            # quantities we actually want, estimate the reduced term
+            # count via the standard bound: a symmetric polynomial in
+            # (a1,a2) of degree d has a symmetric-basis representation
+            # with at most ~ (number of monomials sa^i pa^j with
+            # 2j+i <= d_a) terms per "half" -- rather than guess, do the
+            # actual rewrite using elimination substitution a1^2 ->
+            # sa*a1 - pa repeatedly via divrem in a fresh ring where sa,
+            # pa are already available as extra generators, then confirm
+            # the a1-degree has dropped to <=1 and a2 no longer appears
+            # (by construction) before reading off a monomial count in
+            # (sa,pa,b-analog).
+            try
+                # Extended ring carrying both original and symmetric
+                # generators simultaneously so we can do the elimination
+                # substitution as ordinary polynomial arithmetic.
+                Rext, (a1e,a2e,b1e,b2e,sae,pae,sbe,pbe) = polynomial_ring(
+                    F, ["a1","a2","b1","b2","sa","pa","sb","pb"])
+                incl = hom(Rcoef, Rext, [a1e,a2e,b1e,b2e])
+                fe = incl(f)
+                # Reduce a2-degree to 0 using a2 = sa - a1 (exact,
+                # since a1+a2=sa), then reduce resulting a1-degree using
+                # a1^2 = sae*a1e - pae (from a1,a2 roots of X^2-sa X+pa).
+                # Substitute a2e -> (sae - a1e) directly via evaluate.
+                fe2 = evaluate(fe, [a1e, sae - a1e, b1e, b2e, sae, pae, sbe, pbe])
+                # Now repeatedly knock down a1e powers >=2 using
+                # a1e^2 == sae*a1e - pae, via divrem against that
+                # relation treated as a univariate reduction in a1e.
+                Runiv, a1u = polynomial_ring(fraction_field(Rext), "a1u")
+                # This nested-ring gymnastics is more machinery than a
+                # pure diagnostic needs; instead do plain polynomial
+                # division of fe2 (as element of Rext) by the relation
+                # a1e^2 - sae*a1e + pae, using Oscar's built-in divrem
+                # in the multivariate ring directly (works because the
+                # relation is monic in a1e).
+                relation_a = a1e^2 - sae*a1e + pae
+                q, r = divrem(fe2, relation_a)
+                fe3 = r   # r should now have a1e-degree <= 1
+                # Same treatment for b1e/b2e -> sb,pb
+                fe4 = evaluate(fe3, [a1e, a2e, b1e, sbe - b1e, sae, pae, sbe, pbe])
+                relation_b = b1e^2 - sbe*b1e + pbe
+                q2, r2 = divrem(fe4, relation_b)
+                fe5 = r2
+                # fe5 should now be expressible with a1e,b1e-degree <=1;
+                # since f was confirmed FULLY symmetric (not just
+                # individually in each pair), the surviving a1e,b1e
+                # degree-1 terms must actually cancel to degree 0 -- if
+                # they don't, symmetry detection or the reduction has a
+                # bug, and we report that rather than silently trusting it.
+                deg_a1_remaining = degree(fe5, a1e)
+                deg_b1_remaining = degree(fe5, b1e)
+                if deg_a1_remaining > 0 || deg_b1_remaining > 0
+                    return (nothing, "residual a1/b1-degree after reduction " *
+                            "(a1:$deg_a1_remaining, b1:$deg_b1_remaining) -- " *
+                            "symmetric rewrite incomplete, reporting raw reduced form")
+                end
+                # Project down to Rsym by dropping a1e,a2e,b1e,b2e
+                # (they should not appear at all at this point).
+                Bctx = MPolyBuildCtx(Rsym)
+                for (c, exps) in zip(coefficients(fe5), AbstractAlgebra.exponent_vectors(fe5))
+                    # exps = [e_a1,e_a2,e_b1,e_b2,e_sa,e_pa,e_sb,e_pb]
+                    if exps[1] != 0 || exps[2] != 0 || exps[3] != 0 || exps[4] != 0
+                        return (nothing, "unexpected leftover a/b generator in reduced form")
+                    end
+                    push_term!(Bctx, c, exps[5:8])
+                end
+                fsym = finish(Bctx)
+                return (fsym, nothing)
+            catch err
+                return (nothing, sprint(showerror, err))
+            end
+        end
+
+        for (gname, k, f) in all_coefs
+            if iszero(f)
+                println("    $gname coeff of T^$k: zero, skipping symmetric rewrite")
+                continue
+            end
+            before_terms = length(terms(f))
+            before_deg = total_degree(f)
+            fsym, err = try_symmetric_rewrite(f)
+            if fsym === nothing
+                println("    $gname coeff of T^$k: rewrite skipped/failed (", err, ")")
+            else
+                after_terms = length(terms(fsym))
+                after_deg = total_degree(fsym)
+                pct = before_terms == 0 ? 0.0 : 100.0 * (1 - after_terms/before_terms)
+                println("    $gname coeff of T^$k: degree $before_deg -> $after_deg,  ",
+                        "terms $before_terms -> $after_terms  ",
+                        "(", round(pct, digits=1), "% reduction)")
+            end
+            flush(stdout)
+        end
+    else
+        println("  NOT fully symmetric under both swaps for every coefficient -- ",
+                "skipping symmetric-basis rewrite (would be unsound).")
+    end
+    flush(stdout)
+
+    # ------------------------------------------------------------------
+    # PART D: Bezout entry sparsity / factoring analysis
+    # ------------------------------------------------------------------
+    println()
+    println("--- PART D: Bezout entry sparsity analysis ---")
+    flush(stdout)
+
+    function monomial_support_report(f; indent::String="        ")
+        # variables actually appearing (nonzero exponent in at least one term)
+        nv = nvars(parent(f))
+        appears = falses(nv)
+        for exps in AbstractAlgebra.exponent_vectors(f)
+            for (idx, e) in enumerate(exps)
+                if e != 0
+                    appears[idx] = true
+                end
+            end
+        end
+        vnames = [string(g) for g in gens(parent(f))]
+        present = [vnames[i] for i in 1:nv if appears[i]]
+        println(indent, "variables appearing: ", present)
+    end
+
+    for i in 0:3, j in i:3   # symmetric, only report each distinct entry once
+        f = B[(i,j)]
+        println("  B[$i,$j]:")
+        println("    total_degree=", total_degree(f), "  terms=", length(terms(f)))
+        monomial_support_report(f)
+        # common-factor check: gcd across the polynomial's own terms is
+        # not directly a builtin op (terms don't individually gcd against
+        # each other in the usual sense) -- what's meaningful here is
+        # whether factor() finds this entry has a nontrivial factorization
+        # (i.e. gcd of its irreducible factors' multiplicities > trivial),
+        # which safe_factor_report already reports. Run it once per
+        # entry as requested.
+        safe_factor_report(f; label="", indent="    ")
+        flush(stdout)
+    end
+
+    # ------------------------------------------------------------------
+    # PART E: PRS growth prediction -- single pseudo-remainder step only
+    # ------------------------------------------------------------------
+    println()
+    println("--- PART E: PRS growth prediction (ONE pseudo-remainder step only) ---")
+    flush(stdout)
+
+    try
+        t0e = time()
+        r_prem = pseudorem(g1_T, g2_T)
+        el_e = time() - t0e
+        println("  prem(g1_T, g2_T) computed in ", round(el_e, digits=3), "s")
+        if iszero(r_prem)
+            println("  r is IDENTICALLY ZERO (g2_T | g1_T over Kcoef) -- degenerate case, inspect inputs.")
+        else
+            deg_r = degree(r_prem)
+            println("  degree in T of r: ", deg_r)
+            max_terms = 0
+            local max_deg = 0
+            for k in 0:deg_r
+                ck = coeff(r_prem, k)
+                ck_num = coef_as_poly(ck)
+                tk = length(terms(ck_num))
+                dk = total_degree(ck_num)
+                max_terms = max(max_terms, tk)
+                max_deg = max(max_deg, dk)
+                println("    coeff of T^$k in r: degree=", dk, "  terms=", tk)
+            end
+            println("  --- summary: max coeff term count=", max_terms,
+                    "  max coeff total_degree=", max_deg, " ---")
+            # gcd across r's coefficients, same content check as Part B
+            r_coefs_nonzero = [coef_as_poly(coeff(r_prem, k)) for k in 0:deg_r
+                                if !iszero(coeff(r_prem, k))]
+            if length(r_coefs_nonzero) >= 2
+                g_r = reduce(gcd, r_coefs_nonzero)
+                println("  gcd(all coefficients of r): degree=", total_degree(g_r),
+                        "  terms=", length(terms(g_r)),
+                        total_degree(g_r) > 0 ? "  <-- NONTRIVIAL" : "  (unit)")
+            end
+        end
+    catch err
+        println("  prem() FAILED/skipped: ", sprint(showerror, err))
+    end
+    flush(stdout)
+
+    println()
+    println("=" ^ 70)
+    println("PARTS A-E DIAGNOSTIC COMPLETE -- $name")
+    println("Answering:")
+    println("  1. Hidden factors in g1/g2?      -> see PART A/B factor() and gcd reports")
+    println("  2. Redundant symmetric variables? -> see PART C term-count reduction %")
+    println("  3. PRS cheaper than Bezout?       -> compare PART E single-step sizes")
+    println("     against the PART D Bezout entry sizes above (~83k terms/entry)")
+    println("  4. Representation change feasible? -> see PART C (symmetric basis) and")
+    println("     PART B (content extraction) results together")
+    println("=" ^ 70)
+    flush(stdout)
+end
+
+################################################################################
+# RESULTANT COMPUTATION -- gated behind an explicit flag.
+#
+# Per the diagnostic-first request, the actual resultant(g1_T,g2_T) call
+# (subresultant PRS over Kcoef, previously ran unconditionally and was
+# the call that hung for ~an hour) is NOT run automatically anymore.
+# Set RUN_FULL_RESULTANT = true below (or via ENV) once PARTS A-E above
+# have been read and a decision has been made on which algorithm/
+# representation to actually commit to.
+################################################################################
+
+const RUN_FULL_RESULTANT = get(ENV, "ELIM2_RUN_FULL_RESULTANT", "false") == "true"
+
+if !RUN_FULL_RESULTANT
+    println()
+    println("Skipping full resultant(g1_T, g2_T) computation (RUN_FULL_RESULTANT=false).")
+    println("Set ENV[\"ELIM2_RUN_FULL_RESULTANT\"] = \"true\" to run it after reviewing ",
+            "the PARTS A-E diagnostic above.")
+    flush(stdout)
+    exit(0)
+end
+
 println("    computing resultant via subresultant PRS (degree-in-T = $d1T, $d2T)...")
 flush(stdout)
 t0 = time()
