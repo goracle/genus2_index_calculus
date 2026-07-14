@@ -2537,12 +2537,35 @@ function factor_stage_trace(Res1, Res2, gA; label::AbstractString="")
             println("  ", r.label, ": inflation occurs ENTIRELY during the FIRST resultant (Res1) -- ",
                     "already at exponent ", r.exp_Res1, " by Res1, unchanged through Res2 and matches Groebner-vs-Res2 gap of 0.")
         elseif r.delta_1_to_2 == 0 && r.delta_2_to_A != 0
+            verb = r.delta_2_to_A > 0 ? "inflation" : "deflation"
             println("  ", r.label, ": Res1 and Res2 AGREE (exponent ", r.exp_Res1,
-                    ") -- all inflation relative to Groebner is a Res2-vs-Groebner gap, not introduced by either resultant step relative to each other.")
-        else
+                    ") -- all ", verb, " relative to Groebner is a Res2-vs-Groebner gap, not introduced by either resultant step relative to each other.")
+        elseif sign(r.delta_1_to_2) == sign(r.delta_2_to_A) && r.delta_1_to_2 != 0
+            # Same-sign deltas: the two steps genuinely compound rather than
+            # cancel, so "accumulates" is the right word here.
+            verb = r.delta_1_to_2 > 0 ? "inflation ACCUMULATES" : "deflation ACCUMULATES"
             println("  ", r.label, ": exponent CHANGES at both steps (Res1=", r.exp_Res1,
                     " -> Res2=", r.exp_Res2, " -> Groebner=", r.exp_Groebner,
-                    ") -- inflation ACCUMULATES across both resultant steps.")
+                    ") -- ", verb, " across both resultant steps.")
+        else
+            # Opposite-sign deltas: the two steps move the exponent in
+            # different directions. If they land back where they started
+            # (net == 0) this is a round trip, not accumulation -- e.g.
+            # inflated by the second resultant, then fully cancelled by
+            # Groebner. Report the net change explicitly rather than
+            # calling this "accumulation," which would be backwards.
+            net = r.exp_Groebner - r.exp_Res1
+            if net == 0
+                println("  ", r.label, ": exponent CHANGES at both steps but NETS TO ZERO (Res1=", r.exp_Res1,
+                        " -> Res2=", r.exp_Res2, " -> Groebner=", r.exp_Groebner,
+                        ") -- Res2 inflates/deflates this factor and Groebner exactly cancels it back out; ",
+                        "no net inflation relative to Res1, so Res1 alone already reflects the true multiplicity.")
+            else
+                dir = net > 0 ? "net INFLATION" : "net DEFLATION"
+                println("  ", r.label, ": exponent CHANGES at both steps in OPPOSING directions (Res1=", r.exp_Res1,
+                        " -> Res2=", r.exp_Res2, " -> Groebner=", r.exp_Groebner,
+                        ") -- partial cancellation, with a ", dir, " of ", abs(net), " surviving overall.")
+            end
         end
     end
 
@@ -2657,8 +2680,12 @@ function identify_inflating_factor(F_infl_poly, candidates::Dict{String,<:Any}; 
 
         g = gcd(F_infl_poly, cand)
         g_deg = is_zero(g) ? -1 : total_degree(g)
-        f_divides_cand = is_zero(cand % F_infl_poly)          # F_infl | candidate
-        cand_divides_f = !is_zero(cand) && is_zero(F_infl_poly % cand)  # candidate | F_infl
+        # Multivariate polynomials over a field have no generic rem()/%
+        # in this Oscar/AbstractAlgebra stack -- exact divisibility here
+        # is tested via divides(), which returns (flag, quotient) and is
+        # the correct primitive for FqMPolyRingElem.
+        f_divides_cand, _ = divides(cand, F_infl_poly)          # F_infl | candidate
+        cand_divides_f, _ = divides(F_infl_poly, cand)          # candidate | F_infl
         equal_up_to_unit = false
         if total_degree(cand) == total_degree(F_infl_poly) && f_divides_cand && cand_divides_f
             equal_up_to_unit = true
@@ -2729,8 +2756,9 @@ function jacobian_2x2(f1, f2, v1, v2)
     return derivative(f1, v1) * derivative(f2, v2) - derivative(f1, v2) * derivative(f2, v1)
 end
 
-println("Call:  identify_inflating_factor(F_infl_poly, candidates_dict; label=\"...\")")
-println("Helper builders: discriminant_of_curve(curve, w), leading_coeff_in(f, w), jacobian_2x2(f1, f2, v1, v2), map_into_ring(f, target_ring, var_index_map)")
+println("identify_inflating_factor + helper builders (discriminant_of_curve, leading_coeff_in, ",
+        "jacobian_2x2, map_into_ring) loaded. Actual call site is inside _run_bench, right after ",
+        "factor_stage_trace, where curve1/curve2/step1/gA are in scope.")
 
 
 #!/usr/bin/env julia
@@ -3006,7 +3034,59 @@ function _run_bench(raw_coeff, target_name::String, t_names::Vector{String}, w_n
     results["h_s_terms"] = length(terms(h_s))
     results["h_s_degree"] = iszero(h_s) ? -1 : total_degree(h_s)
     squarefree_multiplicity_diagnostic(gA, gB; label="U0 (a-vars)")
-    factor_stage_trace(step1, step2, gA; label="U0 (a-vars)")
+    trace = factor_stage_trace(step1, step2, gA; label="U0 (a-vars)")
+
+    # ------------------------------------------------------------------
+    # Pick out the inflating factor and actually run identify_inflating_factor
+    # on it, rather than just printing a reminder of how to call it.
+    #
+    # "Inflating" here means the row with the largest |delta| relative to
+    # Res1 that survives to the Groebner stage (exp_Groebner != 0) --
+    # this is deliberately the same notion of "worst offender" that
+    # factor_stage_trace's own localization commentary already reports
+    # per-row, just reduced to a single pick so we have one concrete
+    # F_infl_poly to hand to identify_inflating_factor.
+    # ------------------------------------------------------------------
+    surviving_rows = filter(r -> r.exp_Groebner != 0, trace.rows)
+    if isempty(surviving_rows)
+        println("  (no surviving factor with nonzero Groebner exponent -- skipping identify_inflating_factor)")
+    else
+        worst = argmax(r -> abs(r.delta_1_to_2) + abs(r.delta_2_to_A), surviving_rows)
+
+        # facA is the Groebner-stage factor list (key => (poly, exponent)
+        # info lives in `facA` from factor_multiset(gA) inside factor_stage_trace;
+        # re-derive it here directly from gA so we have the actual polynomial
+        # object, not just its canonical key string.
+        facA_local = factor(gA)
+        F_infl_poly = nothing
+        for (f, _e) in facA_local
+            if canonical_factor_key(f) == worst.key
+                F_infl_poly = f
+                break
+            end
+        end
+
+        if F_infl_poly === nothing
+            println("  (could not recover the polynomial object for factor ", worst.label,
+                    " from factor(gA) -- skipping identify_inflating_factor)")
+        else
+            # Build the standard candidate set directly from the system
+            # polynomials in scope here (h_s, curve1, curve2, step1), all
+            # already living in R_small = parent(gA), so no map_into_ring
+            # lift is needed for these.
+            candidates = Dict{String,Any}(
+                "disc_w(curve1)"      => discriminant_of_curve(curve1, w1),
+                "disc_w(curve2)"      => discriminant_of_curve(curve2, w2),
+                "lc_w1(h_s)"          => leading_coeff_in(h_s, w1),
+                "lc_w2(h_s)"          => leading_coeff_in(h_s, w2),
+                "jacobian(h_s,curve1; t1,w1)" => jacobian_2x2(h_s, curve1, t1, w1),
+                "jacobian(h_s,curve2; t2,w2)" => jacobian_2x2(h_s, curve2, t2, w2),
+                "step1 (Res_w1)"      => step1,
+            )
+            identify_inflating_factor(F_infl_poly, candidates; label="U0 (a-vars), factor $(worst.label)")
+        end
+    end
+
     return results
 end
 
@@ -3684,6 +3764,142 @@ Rt, T = polynomial_ring(Kcoef, string(name))
 
 g1_T = sum(c1_lifted[k+1] * T^k for k in 0:d1T)
 g2_T = sum(c2_lifted[k+1] * T^k for k in 0:d2T)
+
+################################################################################
+# BEZOUT MATRIX ENTRY DIAGNOSTIC (no determinant computed here)
+#
+# Question being asked, per Claire's request: before writing/running any
+# Bareiss elimination, just BUILD the 4x4 Bezoutian of g1_T, g2_T (both
+# degree 4 in T, coefficients in Rcoef = F[a1,a2,b1,b2]) and report
+# degree / term count / sparsity for each of the 16 entries. This alone
+# tells us whether Bezout construction is cheap (bottleneck genuinely
+# was the PRS recursion) or whether it's already expensive (bottleneck
+# just moved one step earlier, and Bezout buys nothing by itself).
+#
+# Construction (only valid for two EXACT degree-4 polynomials, which is
+# confirmed here since d1T == d2T == 4):
+#
+#   g1(T) = sum_{i=0}^4 p_i T^i,   g2(T) = sum_{i=0}^4 q_i T^i
+#   [p,q]_{m,n} := p_m*q_n - p_n*q_m   (antisymmetric bracket)
+#
+#   B00 = [p,q]_{0,1}
+#   B01 = [p,q]_{0,2}
+#   B02 = [p,q]_{0,3}
+#   B03 = [p,q]_{0,4}
+#   B11 = [p,q]_{0,3} + [p,q]_{1,2}
+#   B12 = [p,q]_{0,4} + [p,q]_{1,3}
+#   B13 = [p,q]_{1,4}
+#   B22 = [p,q]_{1,4} + [p,q]_{2,3}
+#   B23 = [p,q]_{2,4}
+#   B33 = [p,q]_{3,4}
+#   (B symmetric: Bji = Bij)
+#
+# c1_lifted / c2_lifted are already the T^0..T^4 coefficients (p_i, q_i)
+# as elements of Kcoef = Frac(F[a1,a2,b1,b2]). We expect these
+# denominators to be units (same assumption the resultant step below
+# already relies on) -- checked explicitly per-entry rather than assumed.
+################################################################################
+
+if d1T == 4 && d2T == 4
+    println("    --- Bezout matrix entry diagnostic ($name) ---")
+    println("    (constructing B only -- NOT computing det(B) / resultant here)")
+    flush(stdout)
+
+    p_coef = c1_lifted   # p_coef[k+1] = p_k, k = 0..4
+    q_coef = c2_lifted   # q_coef[k+1] = q_k, k = 0..4
+
+    # bracket_num(m, n): numerator polynomial of p_m*q_n - p_n*q_m in
+    # Rcoef, after checking both denominators are units. Kept as plain
+    # Rcoef elements (not Kcoef fractions) so degree/terms/sparsity are
+    # ordinary polynomial-ring queries, matching how res_num is reported
+    # further down.
+    function bracket_num(m::Int, n::Int)
+        pm, qn = p_coef[m+1], q_coef[n+1]
+        pn, qm = p_coef[n+1], q_coef[m+1]
+        val = pm * qn - pn * qm   # Kcoef arithmetic
+        den = denominator(val)
+        if !is_unit(den)
+            println("      WARNING: [p,q]_{$m,$n} has non-unit denominator " *
+                    "(degree=", total_degree(den), ") -- coefficient lift " *
+                    "may not be a clean polynomial here; reporting numerator only.")
+        end
+        return Rcoef(numerator(val))
+    end
+
+    # Bracket cache: only distinct (m,n), m<n, are ever needed; brackets
+    # are antisymmetric so [p,q]_{n,m} = -[p,q]_{m,n} and have identical
+    # degree/term-count/sparsity to their (m,n) counterpart -- computed
+    # once per pair.
+    bracket_cache = Dict{Tuple{Int,Int}, Any}()
+    function bracket(m::Int, n::Int)
+        key = m < n ? (m, n) : (n, m)
+        if !haskey(bracket_cache, key)
+            bracket_cache[key] = bracket_num(key[1], key[2])
+        end
+        return m < n ? bracket_cache[key] : -bracket_cache[key]
+    end
+
+    # Assemble the 10 distinct symmetric entries per the formula above.
+    B = Dict{Tuple{Int,Int}, Any}()
+    B[(0,0)] = bracket(0,1)
+    B[(0,1)] = bracket(0,2)
+    B[(0,2)] = bracket(0,3)
+    B[(0,3)] = bracket(0,4)
+    B[(1,1)] = bracket(0,3) + bracket(1,2)
+    B[(1,2)] = bracket(0,4) + bracket(1,3)
+    B[(1,3)] = bracket(1,4)
+    B[(2,2)] = bracket(1,4) + bracket(2,3)
+    B[(2,3)] = bracket(2,4)
+    B[(3,3)] = bracket(3,4)
+    # symmetric completions
+    B[(1,0)] = B[(0,1)]
+    B[(2,0)] = B[(0,2)]
+    B[(3,0)] = B[(0,3)]
+    B[(2,1)] = B[(1,2)]
+    B[(3,1)] = B[(1,3)]
+    B[(3,2)] = B[(2,3)]
+
+    # Total possible monomials in 4 vars (a1,a2,b1,b2) up to an entry's
+    # own total_degree, as a crude density denominator for a sparsity
+    # ratio: terms / C(deg+4,4). This is a loose upper bound (actual
+    # monomial count of THAT specific degree, not <= degree, would be
+    # tighter/more standard, but this is enough to flag "dense vs
+    # sparse" at a glance without extra machinery).
+    nvars_coef = 4
+    function sparsity_ratio(f)
+        d = total_degree(f)
+        t = length(terms(f))
+        # C(d+nvars_coef, nvars_coef) = max monomials of total degree <= d
+        max_mono = binomial(d + nvars_coef, nvars_coef)
+        return max_mono == 0 ? NaN : t / max_mono
+    end
+
+    println("      entry   degree   terms      sparsity(terms/maxmono<=deg)")
+    for i in 0:3, j in 0:3
+        f = B[(i,j)]
+        d = total_degree(f)
+        t = length(terms(f))
+        s = sparsity_ratio(f)
+        println("      B[$i,$j]   ", d, "        ", t, "        ",
+                round(s, sigdigits=4))
+    end
+    flush(stdout)
+
+    total_terms = sum(length(terms(B[(i,j)])) for i in 0:3, j in 0:3)
+    max_deg = maximum(total_degree(B[(i,j)]) for i in 0:3, j in 0:3)
+    println("      --- summary: max entry degree=$max_deg, " *
+            "total terms across all 16 entries=$total_terms ---")
+    println("      Reading this: if entries look like degree~64 with ")
+    println("      O(1000) terms each, Bezout construction is cheap and ")
+    println("      Bareiss elimination is worth writing next. If entries ")
+    println("      already look like degree~64 with O(100000+) terms, ")
+    println("      the bottleneck has simply moved from the PRS recursion ")
+    println("      into Bezout construction itself, and Bareiss won't help.")
+    flush(stdout)
+else
+    println("    (skipping Bezout diagnostic: expected d1T==d2T==4, got ",
+            d1T, ", ", d2T, ")")
+end
 
 println("    computing resultant via subresultant PRS (degree-in-T = $d1T, $d2T)...")
 flush(stdout)
