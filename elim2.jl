@@ -4267,10 +4267,27 @@ if d1T == 4 && d2T == 4
         F, ["a1", "a2", "b1", "b2", "sa", "pa", "sb", "pb"])
     incl_c5 = hom(Rcoef, Rext_c5, [a1c5, a2c5, b1c5, b2c5])
 
+    # Target rings for the two partial-rewrite directions. Note these
+    # are genuinely 4-variable rings (NOT the same as Rsym from PART C,
+    # which is only reached when BOTH pairs are simultaneously
+    # symmetric): symmetrize_b_only keeps a1,a2 untouched and only
+    # eliminates b1,b2 -> sb,pb; symmetrize_a_only is the mirror image.
+    Rb_only, (a1b, a2b, sbb, pbb) = polynomial_ring(F, ["a1", "a2", "sb", "pb"])
+    Ra_only, (saa, paa, b1a, b2a) = polynomial_ring(F, ["sa", "pa", "b1", "b2"])
+
     # Rewrite f, KNOWN symmetric in (b1,b2) only, into (a1,a2,sb,pb):
     # substitute b2 -> sb - b1, then knock b1-degree down to <=1 via
     # b1^2 = sb*b1 - pb (b1,b2 are roots of X^2 - sb*X + pb). a1,a2 are
-    # left completely untouched.
+    # left completely untouched. Since f is symmetric ONLY in (b1,b2)
+    # (not also in (a1,a2)), the degree-<=1-in-b1 residual is expected
+    # to be genuinely zero in b1 -- if f is really (b1,b2)-symmetric,
+    # every monomial b1^i*b2^j pairs with b1^j*b2^i at equal
+    # coefficient, and this pairing is exactly what collapses to a
+    # pure sb,pb expression with NO leftover b1^1 term (this is the
+    # standard elementary-symmetric-polynomial fact, distinct from the
+    # "both pairs symmetric" case in PART C where a1/b1 residues must
+    # cancel across BOTH substitutions at once). We verify this
+    # directly below instead of assuming it.
     function symmetrize_b_only(f)
         fe = incl_c5(f)
         fe2 = evaluate(fe, [a1c5, a2c5, b1c5, sbc5 - b1c5, sac5, pac5, sbc5, pbc5])
@@ -4281,7 +4298,22 @@ if d1T == 4 && d2T == 4
             return (nothing, "residual b1-degree=$deg_b1_remaining after reduction " *
                     "-- f was not actually (b1,b2)-symmetric, or reduction bug")
         end
-        return (r, nothing)   # r lives in a1c5,a2c5,sbc5,pbc5 only
+        # Project r (now free of b1c5, still possibly mentioning a1c5,
+        # a2c5, sbc5, pbc5) down into the clean 4-variable Rb_only ring.
+        Bctx = MPolyBuildCtx(Rb_only)
+        for (c, exps) in zip(coefficients(r), AbstractAlgebra.exponent_vectors(r))
+            # exps = [e_a1,e_a2,e_b1,e_b2,e_sa,e_pa,e_sb,e_pb]
+            if exps[3] != 0 || exps[4] != 0
+                return (nothing, "unexpected leftover b1/b2 exponent after reduction " *
+                        "(exps=$exps) -- reduction did not fully eliminate b1,b2")
+            end
+            if exps[5] != 0 || exps[6] != 0
+                return (nothing, "unexpected sa/pa dependence in a b-only rewrite " *
+                        "(exps=$exps) -- sa,pa should never appear here")
+            end
+            push_term!(Bctx, c, [exps[1], exps[2], exps[7], exps[8]])
+        end
+        return (finish(Bctx), nothing)   # lives in Rb_only: (a1,a2,sb,pb)
     end
 
     # Mirror image: f known symmetric in (a1,a2) only, rewritten into
@@ -4296,7 +4328,20 @@ if d1T == 4 && d2T == 4
             return (nothing, "residual a1-degree=$deg_a1_remaining after reduction " *
                     "-- f was not actually (a1,a2)-symmetric, or reduction bug")
         end
-        return (r, nothing)   # r lives in sac5,pac5,b1c5,b2c5 only
+        Bctx = MPolyBuildCtx(Ra_only)
+        for (c, exps) in zip(coefficients(r), AbstractAlgebra.exponent_vectors(r))
+            # exps = [e_a1,e_a2,e_b1,e_b2,e_sa,e_pa,e_sb,e_pb]
+            if exps[1] != 0 || exps[2] != 0
+                return (nothing, "unexpected leftover a1/a2 exponent after reduction " *
+                        "(exps=$exps) -- reduction did not fully eliminate a1,a2")
+            end
+            if exps[7] != 0 || exps[8] != 0
+                return (nothing, "unexpected sb/pb dependence in an a-only rewrite " *
+                        "(exps=$exps) -- sb,pb should never appear here")
+            end
+            push_term!(Bctx, c, [exps[5], exps[6], exps[3], exps[4]])
+        end
+        return (finish(Bctx), nothing)   # lives in Ra_only: (sa,pa,b1,b2)
     end
 
     println()
