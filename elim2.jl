@@ -5102,7 +5102,7 @@ if d1T == 4 && d2T == 4
             global max_term_size_idx = i
         end
 
-        detB_concrete = detB_concrete === nothing ? t_val : detB_concrete + t_val
+        global detB_concrete = detB_concrete === nothing ? t_val : detB_concrete + t_val
         t_val = nothing   # drop the reference explicitly before checkpointing
 
         # Checkpoint: write to a temp file, then atomically rename over
