@@ -2236,6 +2236,318 @@ println("\nAssembly Line Finished!")
 println("Sample 1 produced ", length(clean_sample_1), " clean polynomials.")
 println("Sample 2 produced ", length(clean_sample_2), " clean polynomials.")
 
+
+
+
+
+
+
+
+
+#!/usr/bin/env julia
+################################################################################
+# part_i_eliminate_vs_resultant_bench.jl
+#
+# Controlled experiment: does eliminate(I_small, [w1,w2]) inside
+# process_sample_1_coeff / process_sample_2_coeff (elim2.jl, Part I) cause
+# the symbolic blow-up, or does it already exist before that call?
+#
+# HOW TO RUN
+# -----------------------------------------------------------------------
+# This does NOT modify elim2.jl. It is meant to be run in the SAME Julia
+# session as elim2.jl, after res1 (and, for the sample-2 path, res2) exist
+# -- i.e. after elim2.jl's setup block (through line ~106) has executed --
+# but it never calls process_sample_1_coeff/process_sample_2_coeff itself,
+# so it does not depend on Part I/J/K having run. Load it with:
+#
+#     julia> include("elim2.jl")   # let it run, or Ctrl-C after res1/res2
+#                                    # exist if you don't want the rest of
+#                                    # the script to execute yet
+#     julia> include("part_i_eliminate_vs_resultant_bench.jl")
+#     julia> bench_report_1 = run_bench_sample1("U0", res1.u_RS_coeffs[1])
+#
+# or, more simply, just include this file AFTER elim2.jl's full run --
+# res1/res2/tower_to_ring will all still be in Main.
+#
+# WHAT IT DOES
+# -----------------------------------------------------------------------
+# For a chosen raw tower coefficient (e.g. res1.u_RS_coeffs[1]), builds
+# the identical 5-variable sandbox process_sample_1_coeff builds, then
+# runs TWO elimination paths side by side from the SAME h_s/curve1/curve2:
+#
+#   Path A (original):  eliminate(ideal(R_small,[h_s,curve1,curve2]),[w1,w2])
+#   Path B (candidate):  step1 = resultant(h_s,   curve1, w1)
+#                         step2 = resultant(step1, curve2, w2)
+#
+# Both paths are timed and measured (elapsed time, total_degree, term
+# count, degree in every remaining variable) at every intermediate
+# object, matching the requested log format:
+#
+#     h_s
+#     Res_{w1}
+#     Res_{w2}
+#     Groebner eliminant
+#
+# Then it verifies equivalence: are Path A's output and Path B's output
+# (a) identical, (b) equal up to a unit scalar, (c) generators of the
+# same ideal (mutual ideal-membership check), and checks whether either
+# one factors nontrivially.
+#
+# Nothing here alters process_sample_1_coeff/process_sample_2_coeff --
+# both are left completely untouched in elim2.jl. This is read-only
+# instrumentation bolted on next to them.
+################################################################################
+
+using Oscar
+
+# ------------------------------------------------------------------------
+# Small measurement helper -- prints elapsed time, total_degree, term
+# count, and per-variable degree for one polynomial object, tagged with
+# a label matching the requested log format.
+# ------------------------------------------------------------------------
+function _measure(label::String, g, elapsed::Float64; vars_of_interest=nothing)
+    R = parent(g)
+    varnames = vars_of_interest === nothing ? symbols(R) : vars_of_interest
+    degs_str = join(["deg($(vn))=$(degree(g, gen(R, i)))"
+                      for (i, vn) in enumerate(symbols(R))], ", ")
+    td = iszero(g) ? -1 : total_degree(g)
+    nt = length(terms(g))
+    println("    $label")
+    println("      elapsed        = ", round(elapsed, digits=4), " s")
+    println("      total_degree   = ", td)
+    println("      terms          = ", nt)
+    println("      per-var degree = ", degs_str)
+    flush(stdout)
+    return (label=label, elapsed=elapsed, total_degree=td, terms=nt)
+end
+
+# ------------------------------------------------------------------------
+# Core A/B routine, parameterized so it works for both sample 1 (a1,a2)
+# and sample 2 (b1,b2) variable naming, mirroring
+# process_sample_1_coeff / process_sample_2_coeff exactly.
+# ------------------------------------------------------------------------
+function _run_bench(raw_coeff, target_name::String, t_names::Vector{String}, w_names::Vector{String})
+    println("="^70)
+    println("BENCH: target=$target_name  t_vars=$t_names  w_vars=$w_names")
+    println("="^70)
+
+    # 1. Build the identical 5-variable sandbox process_sample_*_coeff builds.
+    R_small, gens_small = polynomial_ring(F, vcat(w_names, t_names, [target_name]))
+    w1, w2, t1, t2, T = gens_small
+
+    t0 = time()
+    t_gens = [t1, t2]
+    w_gens = [w1, w2]
+    num_s, den_s = tower_to_ring(raw_coeff, t_gens, w_gens)
+    t_tower = time() - t0
+    println("  [setup] tower_to_ring: elapsed=", round(t_tower, digits=4), "s  ",
+            "num terms=", length(terms(num_s)), "  den terms=", length(terms(den_s)),
+            "  num total_degree=", (iszero(num_s) ? -1 : total_degree(num_s)),
+            "  den total_degree=", (iszero(den_s) ? -1 : total_degree(den_s)))
+    flush(stdout)
+
+    t0 = time()
+    h_s = T * den_s - num_s
+    t_hs = time() - t0
+
+    curve1 = w1^2 - (t1^5 + t1 + 2)
+    curve2 = w2^2 - (t2^5 + t2 + 2)
+
+    println()
+    println("  --- shared input ---")
+    _measure("h_s", h_s, t_hs)
+    _measure("curve1", curve1, 0.0)
+    _measure("curve2", curve2, 0.0)
+    println()
+
+    results = Dict{String,Any}()
+
+    # ----------------------------------------------------------------
+    # PATH A (original): eliminate(I_small, [w1, w2])
+    # ----------------------------------------------------------------
+    println("  --- PATH A: eliminate(ideal(R_small,[h_s,curve1,curve2]), [w1,w2]) ---")
+    I_small = ideal(R_small, [h_s, curve1, curve2])
+    t0 = time()
+    eliminated_ideal = eliminate(I_small, [w1, w2])
+    t_gb = time() - t0
+    gb_gens = gens(eliminated_ideal)
+    println("    Groebner eliminate() returned ", length(gb_gens), " generator(s).")
+    if length(gb_gens) == 0
+        error("PATH A: eliminate() returned an EMPTY generator set -- elimination ideal " *
+              "is trivial or zero. Something upstream (h_s/curve1/curve2) is degenerate. " *
+              "Stopping rather than continuing blindly.")
+    end
+    gA = gb_gens[1]
+    if length(gb_gens) > 1
+        println("    NOTE: eliminate() returned >1 generator; using generator [1] for " *
+                "comparison, but this itself is worth flagging -- the eliminant may not " *
+                "be principal, unlike the resultant path's single output.")
+        for (i, g) in enumerate(gb_gens)
+            _measure("Groebner eliminant [gen $i]", g, (i == 1 ? t_gb : 0.0))
+        end
+    else
+        _measure("Groebner eliminant", gA, t_gb)
+    end
+    results["A_gens"] = gb_gens
+    results["A_time"] = t_gb
+    println()
+
+    # ----------------------------------------------------------------
+    # PATH B (candidate): sequential univariate resultants
+    #   step1 = Res_{w1}(h_s, curve1)   -- eliminates w1
+    #   step2 = Res_{w2}(step1, curve2) -- eliminates w2
+    # ----------------------------------------------------------------
+    println("  --- PATH B: sequential resultant(h_s, curve1, w1) then resultant(_, curve2, w2) ---")
+    t0 = time()
+    step1 = resultant(h_s, curve1, w1)
+    t_r1 = time() - t0
+    if iszero(step1)
+        error("PATH B: resultant(h_s, curve1, w1) is IDENTICALLY ZERO after eliminating w1 -- " *
+              "h_s and curve1 share a common factor involving w1, or curve1 does not actually " *
+              "constrain w1 the way expected. Stopping: this means Res_w1 is degenerate, not " *
+              "that the pipeline can proceed to step2 meaningfully.")
+    end
+    _measure("Res_{w1}", step1, t_r1)
+
+    t0 = time()
+    step2 = resultant(step1, curve2, w2)
+    t_r2 = time() - t0
+    if iszero(step2)
+        error("PATH B: resultant(step1, curve2, w2) is IDENTICALLY ZERO after eliminating w2 -- " *
+              "degenerate result. Stopping rather than continuing to a comparison against a " *
+              "zero polynomial.")
+    end
+    _measure("Res_{w2}", step2, t_r2)
+    results["B_result"] = step2
+    results["B_time"] = t_r1 + t_r2
+    println()
+
+    # ----------------------------------------------------------------
+    # EQUIVALENCE CHECKS -- do NOT assume; verify.
+    # ----------------------------------------------------------------
+    println("  --- equivalence checks: PATH A (Groebner) vs PATH B (resultant) ---")
+
+    gB = step2
+    # A and B may live in R_small still (both were built from R_small's
+    # h_s/curve1/curve2), so they should already share a parent. Confirm.
+    if parent(gA) !== parent(gB)
+        println("    NOTE: parent rings differ (", parent(gA), " vs ", parent(gB),
+                "); this itself is diagnostic -- eliminate() may return elements of a " *
+                "different (sub)ring object than resultant() does, even over the same " *
+                "variable set. Attempting a direct term-level comparison anyway only if " *
+                "generator sets match; otherwise this is reported as UNVERIFIED, not equal.")
+    end
+
+    same_parent = parent(gA) === parent(gB)
+
+    # (a) identical?
+    identical = same_parent && (gA == gB)
+    println("    (a) identical (==)?              ", identical)
+
+    # (b) equal up to a unit (nonzero scalar in F, since R_small's base
+    #     ring is a field GF(p))?
+    equal_up_to_unit = false
+    unit_ratio = nothing
+    if same_parent && !identical
+        # Over a field-coefficient polynomial ring, "equal up to unit" means
+        # gA == c*gB for some nonzero c in F. Compare via leading-term ratio,
+        # then verify across ALL terms (not just leading), since a matching
+        # leading-term ratio alone doesn't prove global proportionality.
+        if !iszero(gA) && !iszero(gB) && length(terms(gA)) == length(terms(gB))
+            lcA = leading_coefficient(gA)
+            lcB = leading_coefficient(gB)
+            if !iszero(lcB)
+                candidate_ratio = lcA // lcB
+                equal_up_to_unit = (gA == candidate_ratio * gB)
+                if equal_up_to_unit
+                    unit_ratio = candidate_ratio
+                end
+            end
+        end
+    end
+    println("    (b) equal up to unit scalar?     ", equal_up_to_unit,
+            unit_ratio === nothing ? "" : "  (ratio gA = $unit_ratio * gB)")
+
+    # (c) same elimination ideal? Mutual ideal-membership check: gA in
+    #     ideal(gB) and gB in ideal(gA) within the SAME ring. This is the
+    #     correct test when they might differ by more than a unit (e.g. a
+    #     genuinely different-but-associate generator, or A having several
+    #     generators).
+    same_ideal = false
+    if same_parent
+        try
+            ideal_A = length(gb_gens) > 1 ? ideal(R_small, gb_gens) : ideal(R_small, [gA])
+            ideal_B = ideal(R_small, [gB])
+            same_ideal = (ideal_A == ideal_B)
+        catch e
+            println("    (c) ideal equality check raised an error -- reporting as UNVERIFIED: ", e)
+        end
+    end
+    println("    (c) same elimination ideal (ideal(A) == ideal(B))?  ", same_ideal)
+
+    # (d) does one factor while the other doesn't?
+    println("    (d) factorization check:")
+    for (nm, g) in (("PATH A gen[1]", gA), ("PATH B (gB)", gB))
+        t0 = time()
+        fac = factor(g)
+        t_fac = time() - t0
+        nfac = length(fac)
+        println("        $nm: ", nfac, " irreducible factor(s)  (factor() elapsed=",
+                round(t_fac, digits=4), "s)")
+        for (f, e) in fac
+            println("            factor: total_degree=", total_degree(f),
+                    "  terms=", length(terms(f)), "  exponent=", e)
+        end
+    end
+    println()
+
+    # ----------------------------------------------------------------
+    # SIZE / COST COMPARISON
+    # ----------------------------------------------------------------
+    println("  --- size/cost comparison ---")
+    println("    PATH A (Groebner eliminate): time=", round(t_gb, digits=4),
+            "s  total_degree=", total_degree(gA), "  terms=", length(terms(gA)))
+    println("    PATH B (resultant chain)   : time=", round(t_r1 + t_r2, digits=4),
+            "s  total_degree=", total_degree(gB), "  terms=", length(terms(gB)))
+    ratio_terms = length(terms(gA)) / max(1, length(terms(gB)))
+    ratio_time  = t_gb / max(1e-9, (t_r1 + t_r2))
+    println("    term-count ratio  (A/B) = ", round(ratio_terms, digits=2))
+    println("    time ratio        (A/B) = ", round(ratio_time, digits=2))
+    println()
+
+    results["identical"] = identical
+    results["equal_up_to_unit"] = equal_up_to_unit
+    results["same_ideal"] = same_ideal
+    results["gA"] = gA
+    results["gB"] = gB
+    results["h_s_terms"] = length(terms(h_s))
+    results["h_s_degree"] = iszero(h_s) ? -1 : total_degree(h_s)
+
+    return results
+end
+
+# ------------------------------------------------------------------------
+# Public entry points mirroring process_sample_1_coeff / process_sample_2_coeff
+# ------------------------------------------------------------------------
+run_bench_sample1(target_name::String, raw_coeff) =
+    _run_bench(raw_coeff, target_name, ["a1", "a2"], ["wa1", "wa2"])
+
+run_bench_sample2(target_name::String, raw_coeff) =
+    _run_bench(raw_coeff, target_name, ["b1", "b2"], ["wb1", "wb2"])
+
+println("part_i_eliminate_vs_resultant_bench.jl loaded.")
+println("Run e.g.:  run_bench_sample1(\"U0\", res1.u_RS_coeffs[1])")
+println("      or:  run_bench_sample2(\"U0\", res2.u_RS_coeffs[1])")
+
+
+run_bench_sample1("U0", res1.u_RS_coeffs[1])
+
+
+run_bench_sample2("U0", res2.u_RS_coeffs[1])
+
+
+
+
 println()
 println("===========================================================")
 println("PART K: The Final Collision (Eliminating the Middlemen)")
@@ -2397,20 +2709,11 @@ end
 ################################################################################
 
 ################################################################################
-# PART K, take 4: ONE ELEMENT of the Sylvester matrix determinant, U0 only.
-#
-# Not the full resultant. resultant(g1_fp, g2_fp, T_fp) computes the
-# determinant of the (d1T+d2T)x(d1T+d2T) Sylvester matrix built from
-# g1_fp, g2_fp's coefficients-in-T_fp -- that's the OOM'ing computation
-# (an 8x8 determinant whose entries are themselves degree-32-ish
-# polynomials in a1,a2,b1,b2). Today's task: build that same Sylvester
-# matrix explicitly, by hand, and evaluate exactly ONE summand of its
-# Leibniz determinant expansion -- one signed product of 8 matrix
-# entries, for one permutation -- instead of all 8! of them.
-#
-# Restricting to U0 only (target #1 in TARGETS), since that's the one
-# whose degree-in-T=4/4 shape (giving an 8x8 Sylvester matrix) is
-# spelled out in err2.txt's crash trace.
+# PART K setup: pick the target, build the 5-variable fiber-product ring,
+# and extract each side's coefficients as polynomials in T. This is the
+# part of the old "take 4" code that's still needed -- only the
+# Sylvester-matrix-building and Leibniz-summand-enumeration that used to
+# follow it has been replaced below.
 ################################################################################
 
 const name  = "U0"
@@ -2430,7 +2733,7 @@ println("    g2 (sample 2 side): total_degree=", total_degree(g2),
         "  terms=", length(terms(g2)), "  degree-in-$name=", d2T)
 
 if d1T == 0 || d2T == 0
-    error("$name does not actually appear in one side; Sylvester matrix " *
+    error("$name does not actually appear in one side; resultant " *
           "would be degenerate. Inspect final_equations construction.")
 end
 
@@ -2456,22 +2759,10 @@ println("      g2 remapped into 5-var fiber-product ring: degree=",
         total_degree(g2_fp), " terms=", length(terms(g2_fp)),
         "  degree-in-T=", degree(g2_fp, T_fp))
 
-################################################################################
-# Build the Sylvester matrix of g1_fp, g2_fp with respect to T_fp.
-#
-# Write g1_fp = sum_{k=0}^{d1T} syl_c1[k] * T^k,  g2_fp = sum_{k=0}^{d2T} syl_c2[k] * T^k
-# (syl_c1[k], syl_c2[k] live in the 4-variable ring F[a1,a2,b1,b2] -- T-free, since
-# we've isolated T's coefficients). The classical Sylvester matrix for
-# (g1_fp, g2_fp, T_fp) is (d1T+d2T) x (d1T+d2T): d2T rows of shifted g1_fp
-# coefficients, then d1T rows of shifted g2_fp coefficients, each row
-# padded with the base ring's zero. resultant(g1_fp,g2_fp,T_fp) is
-# det(Sylvester) -- computing that determinant is exactly what OOM'd.
-################################################################################
-
+# Extract [c0, c1, ..., c_maxdeg] (each T-free) such that
+# g == sum_k c_k * T^k, using coefficients()/exponent_vectors() so it
+# never touches ring-homomorphism machinery.
 function poly_coeffs_in(g, T, maxdeg)
-    # Extract [c0, c1, ..., c_maxdeg], each a polynomial free of T, s.t.
-    # g == sum_k c_k * T^k. Uses coefficients()/exponent_vectors() so it
-    # never touches ring-homomorphism machinery.
     Rg = parent(g)
     gensR = gens(Rg)
     Tidx = findfirst(==(T), gensR)
@@ -2487,365 +2778,474 @@ end
 
 syl_c1 = poly_coeffs_in(g1_fp, T_fp, d1T)   # syl_c1[k+1] is coeff of T^k in g1_fp, k=0..d1T
 syl_c2 = poly_coeffs_in(g2_fp, T_fp, d2T)   # syl_c2[k+1] is coeff of T^k in g2_fp, k=0..d2T
-# (renamed from c1/c2 -- those names are already `const` globals from the
-# PhiSymbolic tower setup near the top of the file: `const K1, c1 = 2, 2`
-# and `const K2, c2 = 3, 2`. Reassigning c1/c2 here would hit
-# "invalid assignment to constant".)
 
-n = d1T + d2T
-println("    Sylvester matrix size: $n x $n")
 
-Rzero = Rfp(0)
-Syl = Matrix{typeof(Rzero)}(undef, n, n)
-fill!(Syl, Rzero)
 
-# d2T rows built from g1_fp's coefficients (highest degree first, per the
-# classical convention), each successive row shifted one column to the right.
-for row in 0:(d2T-1)
-    for k in 0:d1T
-        col = row + (d1T - k)   # place syl_c1[k+1] (coeff of T^k) so top-degree term lands in column `row`
-        Syl[row+1, col+1] = syl_c1[k+1]
-    end
-end
-# d1T rows built from g2_fp's coefficients, same shifting convention.
-for row in 0:(d1T-1)
-    for k in 0:d2T
-        col = row + (d2T - k)
-        Syl[d2T+row+1, col+1] = syl_c2[k+1]
-    end
-end
 
-println("    Sylvester matrix built ($n x $n, entries in F[a1,a2,b1,b2]).")
-# Keep the nonzero-column set per row -- besides the printout, this is the
-# same information that lets us skip Leibniz summands that are guaranteed
-# to be the zero polynomial (see "structural zero" note below), so build
-# it once here as a Vector{Set{Int}} instead of just printing and discarding.
-syl_nzcols = Vector{Set{Int}}(undef, n)
-for i in 1:n
-    nzcols = [j for j in 1:n if !iszero(Syl[i,j])]
-    syl_nzcols[i] = Set(nzcols)
-    println("      row $i nonzero cols: ", nzcols)
-end
 
-# Serialize the matrix ONCE so each summand subprocess below can just
-# load it instead of re-deriving the entire pipeline (res1/res2 ->
-# Part J's 8 sandboxes -> Part K's remap -> fiber-product ring) per
-# permutation, which would be far more expensive than the summand itself.
-const SYLVESTER_MATRIX_FILE = joinpath(@__DIR__, "part_k_results", "$(name)_sylvester_matrix.oscar")
-mkpath(dirname(SYLVESTER_MATRIX_FILE))
-save(SYLVESTER_MATRIX_FILE, Syl)
-println("    saved Sylvester matrix -> ", SYLVESTER_MATRIX_FILE)
+
 
 ################################################################################
-# PART K, take 5: keep computing Leibniz summands, ONE PER SUBPROCESS,
-# until one dies -- to find out where.
+# part_k_diagnostic.jl
 #
-# Take 4 above computed exactly one summand (sigma = identity) in-process
-# and got as far as printing degree=256/terms=17850625 before the whole
-# 20-thread julia process was OOM-killed -- almost certainly while trying
-# to materialize/stringify that 17.85M-term polynomial for the
-# `println(io, term)` disk write (build + string-conversion of an MPoly
-# with that many terms plausibly needs tens of GB).
+# Standalone structural diagnostic for the U0 quartic-in-T resultant problem
+# (elim2.jl Part K, "redesigned" subresultant-PRS version).
 #
-# To "keep computing summands and see where it dies" safely, each
-# candidate permutation gets its OWN subprocess (same reasoning as Part
-# J's parallelization: isolate anything that might crash/OOM so it can't
-# take the rest of the exploration down with it, and so we get a clean
-# per-summand exit code instead of one big process falling over). Workers
-# are launched ONE AT A TIME here (not in parallel like Part J) since the
-# whole point is finding the memory ceiling -- running several at once
-# would make several summands compete for RAM and muddy which one
-# actually died.
+# WHY THIS SCRIPT EXISTS
+# -----------------------------------------------------------------------
+# GPT's diagnosis of the PRS slowness: degree-in-T is only 4 on each side,
+# so a subresultant PRS is nominally O(d1T*d2T) = O(16) pseudo-division
+# steps -- cheap. The observed cost instead comes from the *coefficient
+# ring* arithmetic: each of those 4+1 coefficients (elements of
+# F[a1,a2,b1,b2], or its fraction field) is itself a large polynomial
+# (elim2.jl's own PART H readout: 1445-term, degree-36 objects appear at
+# this stage), and every pseudo-division step does full multivariate
+# multiply/divide on objects of that size. The PRS algorithm is right;
+# the coefficients feeding it are the bottleneck.
 #
-# Each worker: builds the same Rfp/g1_fp/g2_fp/Syl matrix, computes ONE
-# summand for a given permutation, and reports size stats (degree, term
-# count) to stdout and a small stats file BEFORE attempting to write the
-# full polynomial to disk -- so even if the write itself OOMs, we still
-# learn the term count that killed it.
+# GPT's ranked ideas, and what this script checks for each:
+#   1. Do the quartics factor (e.g. as two quadratics, or have a
+#      rational root / GF(p)-rational factor)?          -> Section A, B
+#   2. Are the coefficients themselves reducible / do they share
+#      common factors that could be pulled out before the PRS runs?
+#                                                          -> Section C
+#   3. Is the quartic secretly quadratic-in-T^2, reciprocal, or
+#      palindromic (structural symmetry that would collapse degree)?
+#                                                          -> Section D
+#   4. How much does substituting explicit anchor values (dropping to
+#      GF(p) coefficients) shrink term counts -- i.e. is the "1445
+#      terms" figure inherent to the math, or an artifact of carrying
+#      a1,a2,b1,b2 symbolically this late?                -> Section E
+#
+# This script does NOT re-run or interfere with the resultant(g1_T, g2_T)
+# call in elim2.jl Part K -- it is read-only with respect to g1_T/g2_T
+# and only inspects syl_c1/syl_c2 (the per-power-of-T coefficient slices
+# built by poly_coeffs_in, already sitting in memory once elim2.jl reaches
+# the "computing resultant via subresultant PRS" print). Run this in the
+# SAME Julia session/REPL as elim2.jl, either:
+#   (a) after Part K finishes (to sanity-check the result), or
+#   (b) in a second REPL that has independently re-run elim2.jl only as
+#       far as the syl_c1/syl_c2 construction (before the resultant()
+#       call), if you want answers *while* the original resultant is
+#       still crunching in the first REPL.
+#
+# It assumes elim2.jl's Part K setup has already run and the following
+# names exist in Main: F, Rfp, T_fp, g1_fp, g2_fp, d1T, d2T, syl_c1,
+# syl_c2, Rcoef, Kcoef, a1_c, a2_c, b1_c, b2_c, coef_gens,
+# drop_T_to_coef_ring, poly_coeffs_in.
 ################################################################################
 
-# Tiny self-contained permutation generator (avoids depending on the
-# Combinatorics package, which nothing else in this file uses/assumes is
-# installed). next_permutation! advances `v` in-place to the next
-# permutation in lexicographic order, returning false once none remain
-# (standard "next_permutation" algorithm).
-function next_permutation!(v::Vector{Int})
-    n = length(v)
-    i = n - 1
-    while i >= 1 && v[i] >= v[i+1]
-        i -= 1
-    end
-    i < 1 && return false
-    j = n
-    while v[j] <= v[i]
-        j -= 1
-    end
-    v[i], v[j] = v[j], v[i]
-    reverse!(@view v[i+1:end])
-    return true
+using Oscar
+
+println("="^70)
+println("PART K DIAGNOSTIC: quartic-in-T structure probe")
+println("="^70)
+
+@assert isdefined(Main, :syl_c1) && isdefined(Main, :syl_c2) """
+    syl_c1/syl_c2 not found in Main. Run elim2.jl at least through the
+    'computing resultant via subresultant PRS' print (i.e. through the
+    poly_coeffs_in(g1_fp,...)/poly_coeffs_in(g2_fp,...) calls) before
+    loading this diagnostic.
+    """
+
+# ------------------------------------------------------------------------
+# Section A: per-coefficient size report (term counts / degrees), so we
+# can see exactly which T^k slice(s) are driving the PRS cost.
+# ------------------------------------------------------------------------
+println("\n--- Section A: coefficient-of-T^k size report ---")
+println("side 1 (g1_fp, degree-in-T=", d1T, "):")
+for (k, c) in enumerate(syl_c1)
+    kk = k - 1
+    println("  [a1,a2,b1,b2]-coeff of T^$kk : total_degree=", total_degree(c),
+            "  terms=", length(terms(c)))
 end
-
-function first_k_permutations(n::Int, k::Int)
-    result = Vector{Vector{Int}}()
-    cur = collect(1:n)
-    push!(result, copy(cur))
-    while length(result) < k && next_permutation!(cur)
-        push!(result, copy(cur))
-    end
-    return result
-end
-
-# A Leibniz summand for permutation sigma is prod_i Syl[i, sigma[i]]. If
-# ANY factor Syl[i, sigma[i]] is the structural zero entry of the matrix
-# (i.e. sigma[i] not in row i's nonzero-column set), the whole product is
-# identically the zero polynomial -- no cancellation needed, it's zero
-# before any arithmetic happens. This is exactly what the err2.txt survey
-# was hitting: degree=-1/terms=0 on almost every non-identity permutation,
-# because this Sylvester matrix is banded (each row's nonzero-column set
-# has only 5 entries out of n=8) and only a small fraction of all n!
-# permutations manage to land inside the band on every row.
-#
-# first_k_permutations walks ALL permutations in lex order regardless of
-# the matrix's sparsity, so a "first 20" sample mostly reports zeros. This
-# variant instead only counts (and returns) permutations that are
-# nonzero-compatible with the matrix, so every subprocess launched is
-# actually informative for the "find the memory ceiling" survey.
-function first_k_nonzero_permutations(n::Int, k::Int, nzcols::Vector{Set{Int}})
-    result = Vector{Vector{Int}}()
-    cur = collect(1:n)
-    is_nonzero_compatible(p) = all(p[i] in nzcols[i] for i in 1:n)
-    if is_nonzero_compatible(cur)
-        push!(result, copy(cur))
-    end
-    while length(result) < k && next_permutation!(cur)
-        if is_nonzero_compatible(cur)
-            push!(result, copy(cur))
-        end
-    end
-    return result
-end
-
-# Total count of nonzero-compatible permutations (not capped at k) -- purely
-# informational, so the survey printout can report e.g. "608 of 40320
-# permutations are nonzero-compatible" instead of leaving it a mystery why
-# a length-20 sample can be exhausted so quickly relative to n!.
-function count_nonzero_permutations(n::Int, nzcols::Vector{Set{Int}})
-    cur = collect(1:n)
-    is_nonzero_compatible(p) = all(p[i] in nzcols[i] for i in 1:n)
-    total = is_nonzero_compatible(cur) ? 1 : 0
-    while next_permutation!(cur)
-        if is_nonzero_compatible(cur)
-            total += 1
-        end
-    end
-    return total
-end
-
-const PART_K_RESULTS_DIR = joinpath(@__DIR__, "part_k_results")
-mkpath(PART_K_RESULTS_DIR)
-const summand_worker_path = joinpath(@__DIR__, "part_k_summand_worker.jl")
-
-# Explore permutations in Leibniz order, starting with identity (already
-# done above but recomputed fresh in-subprocess for a clean, isolated
-# measurement). Change `max_summands` to explore more/fewer before giving
-# up -- there are n! = 40320 total for n=8, so this is necessarily a
-# sample, not the full sum.
-#
-# IMPORTANT: this Sylvester matrix is banded (see syl_nzcols above --
-# each row has only a handful of nonzero columns out of n), so most
-# permutations sigma give prod_i Syl[i,sigma[i]] == 0 identically, with
-# no cancellation involved. Sampling in raw lex order over ALL n!
-# permutations (the old first_k_permutations) mostly samples these
-# guaranteed zeros, which is why the err2.txt run reported degree=-1/
-# terms=0 for nearly everything after the identity permutation -- that
-# was never a bug, just an uninformative sample. Use the sparsity-aware
-# generator instead so every subprocess we launch is actually a nonzero
-# summand worth timing/sizing.
-max_summands = 2000
-perms_to_try = first_k_nonzero_permutations(n, max_summands, syl_nzcols)
-n_nonzero_total = count_nonzero_permutations(n, syl_nzcols)
-
-println("\n    $(n_nonzero_total) of $(factorial(n)) permutations are ",
-        "nonzero-compatible with this Sylvester matrix's band structure.")
-println("    Exploring up to ", length(perms_to_try),
-        " Sylvester-determinant summands (all nonzero-compatible), ",
-        "one isolated subprocess each...")
-
-summand_log = joinpath(PART_K_RESULTS_DIR, "$(name)_summand_survey.csv")
-open(summand_log, "w") do io
-    println(io, "perm_index,sigma,sign,status,elapsed_s,degree,terms,exitcode")
+println("side 2 (g2_fp, degree-in-T=", d2T, "):")
+for (k, c) in enumerate(syl_c2)
+    kk = k - 1
+    println("  [a1,a2,b1,b2]-coeff of T^$kk : total_degree=", total_degree(c),
+            "  terms=", length(terms(c)))
 end
 
 # ------------------------------------------------------------------------
-# PARALLELIZED across up to PART_K_MAX_WORKERS (4) concurrent subprocesses.
-#
-# The whole point of this survey is to find the EARLIEST (smallest
-# pi_idx, i.e. earliest in Leibniz order) summand that dies, so results
-# still have to be interpreted in strict pi_idx order even though workers
-# now run out of order. Approach: keep up to 4 subprocesses in flight at
-# once, but only ever report/act on a death once every summand with a
-# SMALLER pi_idx has already come back "ok" -- if a later summand dies
-# while an earlier one is still running, that earlier one still might
-# die too (or die "more informatively"), so we let all in-flight
-# earlier-index jobs finish before trusting a later death as *the*
-# answer. Once we know the true earliest death (or that everything
-# survived), we stop launching new jobs.
+# Section B: does g1_fp / g2_fp factor over its own ring, treated as a
+# univariate-in-T polynomial with those large coefficients? Cheapest
+# possible test first: leading/trailing coefficient GCD (a necessary
+# condition for a nontrivial factorization T^4+...  = (T^2+AT+B)(T^2+CT+D)
+# is that no single irreducible factor of the coefficient ring divides
+# every T^k-coefficient in a way that's inconsistent with such a split;
+# full factorization of a degree-4 univariate poly over a fraction field
+# is what we actually want, so try factor() directly and time-box it).
 # ------------------------------------------------------------------------
+println("\n--- Section B: factorization of g1_T / g2_T over Kcoef(T) ---")
 
-const PART_K_MAX_WORKERS = 4
-
-# A summand is "already completed" -- safe to skip relaunching -- only if
-# BOTH:
-#   (1) the .stats file exists and parses as a clean "degree,terms" line
-#       (exactly 2 comma-separated fields, both parseable as integers), and
-#   (2) the companion "<stats_file>.term.oscar" file exists.
-#
-# Why both: the worker writes the stats line BEFORE the (potentially
-# OOM-killing) full-term save, specifically so that a death mid-save still
-# leaves a stats file behind (see part_k_summand_worker.jl). That means a
-# stats file alone is NOT sufficient evidence of success -- it's exactly
-# the signature a DIED case can also leave. The .term.oscar file only
-# gets written after the save completes, so its presence is what actually
-# distinguishes "fully done" from "died right after writing stats". We
-# don't persist exit codes anywhere, so this file-presence check is the
-# only way to safely tell the two apart on a re-run.
-function part_k_summand_complete(stats_file)
-    isfile(stats_file) || return false
-    isfile(stats_file * ".term.oscar") || return false
-    parts = split(readchomp(stats_file), ",")
-    length(parts) == 2 || return false
-    deg = tryparse(Int, parts[1])
-    nterms = tryparse(Int, parts[2])
-    return deg !== nothing && nterms !== nothing
-end
-
-function part_k_launch(pi_idx, sigma_perm)
-    stats_file = joinpath(PART_K_RESULTS_DIR, "$(name)_summand_$(pi_idx).stats")
-    sigma_str = join(sigma_perm, "-")
-    if part_k_summand_complete(stats_file)
-        println("    [$pi_idx/$(length(perms_to_try))] sigma = ", sigma_str,
-                " already completed -- skipping relaunch, will harvest from disk.")
-        flush(stdout)
-        return (pi_idx = pi_idx, sigma = sigma_perm, sigma_str = sigma_str,
-                stats_file = stats_file, proc = nothing, t0 = time(), skipped = true)
-    end
-    println("    [$pi_idx/$(length(perms_to_try))] launching sigma = ", sigma_str, " ...")
-    flush(stdout)
-    cmd = `julia $summand_worker_path $SYLVESTER_MATRIX_FILE $sigma_str $stats_file`
-    proc = run(pipeline(cmd; stdout=stdout, stderr=stderr); wait=false)
-    return (pi_idx = pi_idx, sigma = sigma_perm, sigma_str = sigma_str,
-            stats_file = stats_file, proc = proc, t0 = time(), skipped = false)
-end
-
-function part_k_harvest(pk)
-    elapsed = time() - pk.t0
-    if pk.skipped
-        # Already completed on a previous run -- just read the stats back,
-        # no process to check exit status on.
-        parts = split(readchomp(pk.stats_file), ",")
-        deg, nterms = (parts[1], parts[2])
-        println("      [$(pk.pi_idx)] skipped (already done)  degree=$deg terms=$nterms")
-        open(summand_log, "a") do io
-            println(io, "$(pk.pi_idx),$(pk.sigma_str),?,skipped,0.0,$deg,$nterms,0")
+function try_factor_with_timeout(label, g, limit_secs)
+    # Reuse elim2.jl's own run_with_timeout (~line 1403) rather than a
+    # hand-rolled @async wrapper. NOTE the same caveat elim2.jl documents
+    # for that helper: it uses Threads.@spawn, so a genuinely hung/
+    # non-yielding Singular call inside factor() won't actually be
+    # killed -- run_with_timeout will correctly report :timeout at the
+    # wall-clock deadline and let the REST of this diagnostic proceed,
+    # but the abandoned factor() call keeps running in the background
+    # (same tradeoff elim2.jl already accepted for its own PART B sweep,
+    # and the same reason elim2.jl's comments say a true kill needs an
+    # OS-level `timeout N julia ...` wrapper around the whole process).
+    if isdefined(Main, :run_with_timeout)
+        val, status, elapsed = Main.run_with_timeout(() -> factor(g), limit_secs)
+        if status != :ok
+            println("  $label: factor() did not complete (status=$status, ",
+                    round(elapsed, digits=1), "s elapsed) -- skipping. ",
+                    "Background task may still be running; a fresh REPL ",
+                    "is the only way to fully reclaim it.")
+            return nothing
         end
-        return (index = pk.pi_idx, sigma = pk.sigma, elapsed = 0.0,
-                died = false, degree = deg, terms = nterms, exitcode = 0)
-    elseif success(pk.proc)
-        deg, nterms = if isfile(pk.stats_file)
-            parts = split(readchomp(pk.stats_file), ",")
-            (parts[1], parts[2])
-        else
-            ("?", "?")
-        end
-        println("      [$(pk.pi_idx)] ok in ", round(elapsed, digits=3), "s  degree=$deg terms=$nterms")
-        open(summand_log, "a") do io
-            println(io, "$(pk.pi_idx),$(pk.sigma_str),?,ok,$(round(elapsed,digits=3)),$deg,$nterms,0")
-        end
-        return (index = pk.pi_idx, sigma = pk.sigma, elapsed = elapsed,
-                died = false, degree = deg, terms = nterms, exitcode = 0)
+        fac = val
     else
-        println("      [$(pk.pi_idx)] DIED (exit code ", pk.proc.exitcode, ") after ",
-                round(elapsed, digits=3), "s")
-        # even on death, the worker may have managed to write partial
-        # stats (degree/terms) before the fatal step -- salvage them.
-        deg, nterms = if isfile(pk.stats_file)
-            parts = split(readchomp(pk.stats_file), ",")
-            length(parts) >= 2 ? (parts[1], parts[2]) : ("?", "?")
-        else
-            ("?", "?")
-        end
-        open(summand_log, "a") do io
-            println(io, "$(pk.pi_idx),$(pk.sigma_str),?,DIED,$(round(elapsed,digits=3)),$deg,$nterms,$(pk.proc.exitcode)")
-        end
-        return (index = pk.pi_idx, sigma = pk.sigma, elapsed = elapsed,
-                died = true, degree = deg, terms = nterms, exitcode = pk.proc.exitcode)
+        println("  $label: run_with_timeout not found in Main (load elim2.jl ",
+                "first) -- running factor() with NO timeout. This may hang ",
+                "for a long time if the polynomial is large; interrupt ",
+                "(Ctrl-C) if needed.")
+        fac = factor(g)
+    end
+    n = length(fac)
+    println("  $label: ", n, " irreducible factor(s):")
+    for (f, e) in fac
+        Tgen = gens(parent(f))[end]
+        println("    degree-in-T=", degree(f, Tgen),
+                " (exponent ", e, "), total_degree=", total_degree(f),
+                " terms=", length(terms(f)))
+    end
+    return fac
+end
+
+if isdefined(Main, :g1_T) && isdefined(Main, :g2_T)
+    fac1 = try_factor_with_timeout("g1_T", Main.g1_T, 60.0)
+    fac2 = try_factor_with_timeout("g2_T", Main.g2_T, 60.0)
+else
+    println("  g1_T/g2_T not yet built in this session (Part K hasn't ",
+            "reached that line) -- skipping live factorization test. ",
+            "Rebuilding just enough to test factor() on g1_fp/g2_fp as ",
+            "plain multivariate polys instead (factor(), not resultant()):")
+    fac1 = try_factor_with_timeout("g1_fp", Main.g1_fp, 60.0)
+    fac2 = try_factor_with_timeout("g2_fp", Main.g2_fp, 60.0)
+end
+
+# ------------------------------------------------------------------------
+# Section C: do the T^k coefficients across k=0..4 share a common
+# multivariate factor? If gcd(syl_c1...) is nontrivial, it can be pulled
+# out of g1_fp entirely before the PRS ever runs, shrinking every pseudo-
+# division step proportionally. Same check for side 2.
+# ------------------------------------------------------------------------
+println("\n--- Section C: common-factor (GCD) check across T^k coefficients ---")
+
+function gcd_report(label, coeffs)
+    nz = filter(!iszero, coeffs)
+    if length(nz) < 2
+        println("  $label: fewer than 2 nonzero coefficients, nothing to GCD.")
+        return
+    end
+    g = nz[1]
+    for c in nz[2:end]
+        g = gcd(g, c)
+    end
+    if is_unit(g)
+        println("  $label: gcd across all T^k coefficients is a unit -- ",
+                "no common factor to pull out.")
+    else
+        println("  $label: NONTRIVIAL common factor found! degree=",
+                total_degree(g), " terms=", length(terms(g)),
+                " -- pulling this out before building g*_T could shrink ",
+                "every coefficient the PRS touches.")
     end
 end
 
-died_at = nothing
-results_by_idx = Dict{Int,Any}()
-next_launch_idx = 1
-running = Vector{NamedTuple}()
+gcd_report("side 1 (syl_c1)", syl_c1)
+gcd_report("side 2 (syl_c2)", syl_c2)
 
-for _ in 1:min(PART_K_MAX_WORKERS, length(perms_to_try))
-    global next_launch_idx
-    push!(running, part_k_launch(next_launch_idx, perms_to_try[next_launch_idx]))
-    next_launch_idx += 1
-end
+# ------------------------------------------------------------------------
+# Section D: structural symmetry checks on g1_fp / g2_fp as polynomials
+# in T -- is it quadratic-in-T^2 (only even powers present), palindromic/
+# reciprocal (c_k == c_{d-k} up to a unit), or otherwise reducible in a
+# way that would let us solve two quadratics instead of one quartic?
+# ------------------------------------------------------------------------
+println("\n--- Section D: symmetry checks (even-power-only / palindromic) ---")
 
-while !isempty(running)
-    global next_launch_idx, died_at
-    finished_slot = nothing
-    while finished_slot === nothing
-        for (slot, pk) in enumerate(running)
-            if pk.skipped || process_exited(pk.proc)
-                finished_slot = slot
+function symmetry_report(label, coeffs, d)
+    # coeffs[k+1] = coefficient of T^k, k = 0..d
+    odd_nonzero = any(!iszero(coeffs[k+1]) for k in 1:2:d)
+    println("  $label: only even powers of T present? ", !odd_nonzero,
+            odd_nonzero ? "" : "  --> reduces to a QUADRATIC in T^2, " *
+            "halving the effective degree for root-finding / factoring.")
+
+    if d >= 1
+        is_palindromic = true
+        for k in 0:d
+            ck = coeffs[k+1]
+            cdk = coeffs[d-k+1]
+            # palindromic up to scalar: c_k == lambda * c_{d-k} for fixed lambda
+            if iszero(ck) != iszero(cdk)
+                is_palindromic = false
                 break
             end
         end
-        finished_slot === nothing && sleep(0.5)
+        println("  $label: leading/trailing coefficient zero-pattern is ",
+                is_palindromic ? "consistent with" : "NOT consistent with",
+                " a palindromic (reciprocal) polynomial.")
     end
-    pk = popat!(running, finished_slot)
-    result = part_k_harvest(pk)
-    results_by_idx[result.index] = result
+end
 
-    # Only trust a death once every smaller pi_idx is accounted for --
-    # i.e. once results_by_idx has a contiguous run 1..m and index m is
-    # either the earliest death or the last successful one before an
-    # already-recorded later death.
-    contiguous_through = 0
-    idx = 1
-    while haskey(results_by_idx, idx)
-        contiguous_through = idx
-        results_by_idx[idx].died && break
-        idx += 1
-    end
-    if contiguous_through > 0 && results_by_idx[contiguous_through].died
-        died_at = results_by_idx[contiguous_through]
-        # Any still-running workers were launched for later (now
-        # irrelevant) pi_idx values -- kill them rather than leaving
-        # orphaned Julia/Singular processes behind.
-        for pk in running
-            !pk.skipped && process_running(pk.proc) && kill(pk.proc)
+symmetry_report("side 1 (syl_c1)", syl_c1, d1T)
+symmetry_report("side 2 (syl_c2)", syl_c2, d2T)
+
+# ------------------------------------------------------------------------
+# Section E: numeric substitution test. Plug in a handful of random
+# GF(p)-rational values for (a1,a2,b1,b2) (respecting the curve
+# constraints if F is exposed as such -- here we just use random field
+# elements, which is fine for a *size* diagnostic even if not every
+# substitution lands on the actual curve) and see how much the term
+# count of g1_fp/g2_fp collapses. This tells us whether "1445 terms" is
+# inherent to the degree-36 geometry, or mostly bookkeeping overhead from
+# carrying 4 symbolic anchor variables through the tower this late.
+# ------------------------------------------------------------------------
+println("\n--- Section E: random specialization size test ---")
+
+function specialize_and_report(label, g, gens_to_kill)
+    # Uses the same evaluate(f, full_image_list) pattern already used
+    # throughout elim2.jl (e.g. `remap(f) = evaluate(f, [...])` at line
+    # 645 / 1208). g1_fp/g2_fp are only 5-variable, so this full-ring
+    # evaluate() is cheap and safe here -- it's the large final-universe
+    # objects elsewhere in elim2.jl where evaluate() was the problem
+    # (the ring-remapping bug already fixed upstream via
+    # MPolyBuildCtx/push_term!/finish, i.e. remap_to_final).
+    Rg = parent(g)
+    all_gens = gens(Rg)
+    images = Vector{Any}(undef, length(all_gens))
+    for (i, v) in enumerate(all_gens)
+        if v in gens_to_kill
+            images[i] = rand(F)
+        else
+            images[i] = v   # leave T (and any other free generator) symbolic
         end
-        empty!(running)   # stop waiting on/launching further jobs
-        break
     end
-
-    if next_launch_idx <= length(perms_to_try)
-        push!(running, part_k_launch(next_launch_idx, perms_to_try[next_launch_idx]))
-        next_launch_idx += 1
-    end
+    g_spec = evaluate(g, images)
+    Tpos = findfirst(v -> !(v in gens_to_kill), all_gens)
+    println("  $label: before terms=", length(terms(g)),
+            "  after random (a*,b*) specialization terms=",
+            length(terms(g_spec)), "  degree-in-T unchanged=",
+            degree(g_spec, all_gens[Tpos]))
 end
 
-println()
-if died_at === nothing
-    println("    All ", length(perms_to_try), " sampled summands survived. ",
-            "See ", summand_log, " for the full per-summand size/timing table.")
-else
-    println("    Died on summand #", died_at.index, " (sigma = ",
-            join(died_at.sigma, "-"), ") after ", round(died_at.elapsed, digits=3),
-            "s, exit code ", died_at.exitcode,
-            died_at.degree == "?" ? "" : " -- last known size before death: degree=$(died_at.degree) terms=$(died_at.terms)")
-    println("    See ", summand_log, " for the full survey up to that point.")
+specialize_and_report("g1_fp", g1_fp, [a1_fp, a2_fp])
+specialize_and_report("g2_fp", g2_fp, [b1_fp, b2_fp])
+
+println("\n" * "="^70)
+println("PART K DIAGNOSTIC COMPLETE")
+println("="^70)
+println("""
+Reading the results:
+  Section A tells you WHICH T^k coefficient(s) are large -- if it's
+    lopsided (e.g. only the T^4/T^0 coefficients are big and T^1..T^3
+    are small), that's a strong hint the quartic is close to a binomial
+    T^4 + c and worth testing for radical/Kummer structure directly.
+  Section B is the direct test of GPT idea #1 (does it factor).
+  Section C is GPT idea #2/#3 combined (pull out common structure /
+    keep coefficients factored) -- a nontrivial GCD here is the
+    highest-leverage win if found, since it shrinks EVERY pseudo-
+    division step in the PRS proportionally, for free.
+  Section D is the quadratic-in-T^2 / palindromic test.
+  Section E answers whether 1445 terms is inherent to the degree-36
+    geometry or partly an artifact of carrying (a1,a2,b1,b2) symbolic.
+""")
+
+
+
+
+
+
+################################################################################
+# PART K, REDESIGNED: resultant via a univariate-in-T ring over the
+# multivariate coefficient ring F[a1,a2,b1,b2] (or its fraction field),
+# instead of a hand-built Sylvester matrix + Leibniz summand enumeration.
+#
+# -----------------------------------------------------------------------
+# WHY THE OLD APPROACH WAS DOOMED, INDEPENDENT OF PARALLELIZATION
+# -----------------------------------------------------------------------
+# The old "take 5" strategy enumerated permutations sigma of {1..n} and
+# formed prod_i Syl[i, sigma[i]] one at a time, banking on the matrix's
+# bandedness to skip permutations that are structurally zero. That part
+# is correct and does cut 40320 down to a few hundred -- but it attacks
+# the wrong axis of the blowup. The evidence is right there in the
+# comments: the IDENTITY permutation alone (a single Leibniz summand)
+# already produced a degree-256, 17.85-million-term polynomial before
+# OOM-killing the process. Bandedness controls *how many* summands are
+# nonzero; it says nothing about *how large* each individual summand's
+# raw polynomial product is. Multiplying out entries drawn from a
+# degree ~32-ish polynomial ring 8 times over, with no cancellation
+# available until every one of the (few hundred) surviving summands has
+# been formed and added together, is a textbook case of intermediate
+# expression swell: the final resultant is typically MUCH smaller than
+# any single term in its Leibniz expansion, because the sum cancels
+# enormously. Leibniz expansion pays the full swell cost per term and
+# only gets the benefit of cancellation at the very end -- if it ever
+# gets there.
+#
+# The original resultant(g1_fp, g2_fp, T_fp) call (Part K, take 3) is
+# what actually OOM'd first, and the fallback to hand-rolled Sylvester +
+# Leibniz was a strict downgrade, not a fix: it replaced one bad
+# algorithm with an even worse one. The real problem was almost
+# certainly that g1_fp, g2_fp live in a *plain* 5-variable ring
+# F[a1,a2,b1,b2,T], so resultant(...,T) has no structural reason to
+# treat T specially -- generic dispatch on a flat multivariate ring can
+# fall back to exactly the Sylvester-determinant-by-expansion strategy
+# that blew up by hand above, just hidden one call deeper.
+#
+# -----------------------------------------------------------------------
+# THE FIX: change the RING, not the algorithm-by-hand
+# -----------------------------------------------------------------------
+# g1_fp and g2_fp are each low degree in T (d1T = d2T = 4) with dense
+# coefficients in (a1,a2,b1,b2). The right object to compute in is the
+# univariate polynomial ring in T *over* the coefficient ring
+# F[a1,a2,b1,b2] (equivalently, over its fraction field):
+#
+#     Rcoef, (a1,a2,b1,b2) = polynomial_ring(F, ["a1","a2","b1","b2"])
+#     Rcoef_frac = fraction_field(Rcoef)          # exact division allowed
+#     Rt, T = polynomial_ring(Rcoef_frac, "T")
+#
+# In this tower, resultant(g1_T, g2_T) for univariate polynomials over a
+# field-like coefficient ring dispatches to the SUBRESULTANT PRS
+# algorithm (Euclidean-style pseudo-remainder sequence, fraction-free /
+# Bareiss-type at each step) rather than Leibniz determinant expansion.
+# This is the standard replacement for Sylvester-determinant-by-cofactor
+# or -by-Leibniz whenever the eliminated variable's degree is small on
+# both sides -- exactly this case (degree 4 and 4).
+#
+# Why this specific algorithm matches this specific matrix:
+#   * It is an O(d1T * d2T) sequence of pseudo-division steps (here,
+#     4*4 = 16 "slots" worst case, actually far fewer since the PRS
+#     degree-drops are usually much faster than unit steps) instead of
+#     an O(n!) or even O(n^3) determinant computation on an 8x8 matrix
+#     whose entries are already huge.
+#   * Every intermediate pseudo-remainder in a subresultant PRS is
+#     ITSELF a signed subdeterminant (minor) of the Sylvester matrix,
+#     so subresultant theory gives a hard a priori bound on how large
+#     each intermediate object can get -- bounded by the same Hadamard-
+#     type bound that bounds the FINAL resultant, not by n! times the
+#     size of the biggest raw entry. That is precisely "no intermediate
+#     expression swell" in the precise technical sense.
+#   * It stays exact / symbolic the whole way (fraction-free variants
+#     never introduce anything outside the original coefficient ring's
+#     fraction field), so priority 4 (exact symbolic arithmetic) holds
+#     automatically -- there's no floating point or numerical resultant
+#     involved anywhere.
+#   * It needs no permutation search, no bandedness bookkeeping, no
+#     "nonzero-compatible sigma" enumeration, and no per-summand
+#     subprocess harness -- Part K's entire OOM-recovery/subprocess
+#     survey machinery becomes unnecessary and can be deleted outright.
+#
+# Expected complexity: O(d1T * d2T) coefficient-ring pseudo-division
+# steps = O(16) worst case here, each step operating on polynomials in
+# F[a1,a2,b1,b2] whose size is controlled by the subresultant bound
+# rather than growing combinatorially -- versus the old approach's
+# O(few hundred surviving permutations) x O(8-factor products of
+# degree-32-ish polynomials each), which is precisely what produced a
+# single 17.85-million-term intermediate object.
+################################################################################
+
+println("  --- $name (redesigned: subresultant PRS, no Sylvester expansion) ---")
+
+# ------------------------------------------------------------------------
+# Step 1: coefficient ring F[a1,a2,b1,b2], and its fraction field so
+# pseudo-division has exact inverses available. We reuse g1_fp/g2_fp's
+# own coefficient extraction (poly_coeffs_in, already present above) to
+# avoid re-deriving anything from clean_sample_1/2 -- syl_c1, syl_c2 are
+# already exactly "coefficients of g1_fp, g2_fp as polynomials in T",
+# living in the 4-variable ring Rfp restricted to (a1,a2,b1,b2). We just
+# need to hand them to Oscar's univariate resultant instead of building
+# a Sylvester matrix by hand.
+# ------------------------------------------------------------------------
+
+Rcoef, (a1_c, a2_c, b1_c, b2_c) = polynomial_ring(F, ["a1", "a2", "b1", "b2"])
+Kcoef = fraction_field(Rcoef)
+
+# syl_c1[k+1], syl_c2[k+1] (k = 0..d1T / 0..d2T) currently live in Rfp,
+# the 5-variable ring that still nominally contains T_fp as a generator
+# (even though these coefficient slices are T-free by construction). Map
+# each one down into Rcoef via the same term-by-term MPolyBuildCtx
+# technique already used by remap_to_final / poly_coeffs_in elsewhere in
+# this file -- linear in term count, no ring-homomorphism machinery.
+function drop_T_to_coef_ring(f, coef_gens::Vector)
+    B = MPolyBuildCtx(parent(coef_gens[1]))
+    for (c, exps) in zip(coefficients(f), AbstractAlgebra.exponent_vectors(f))
+        # exps is [e_a1, e_a2, e_b1, e_b2, e_T]; e_T must be 0 here.
+        push_term!(B, c, exps[1:4])
+    end
+    return finish(B)
 end
+
+coef_gens = [a1_c, a2_c, b1_c, b2_c]
+c1_lifted = [Kcoef(drop_T_to_coef_ring(c, coef_gens)) for c in syl_c1]
+c2_lifted = [Kcoef(drop_T_to_coef_ring(c, coef_gens)) for c in syl_c2]
+
+# ------------------------------------------------------------------------
+# Step 2: univariate ring in T over Kcoef = Frac(F[a1,a2,b1,b2]), then
+# reassemble g1_T, g2_T from their already-extracted coefficient slices
+# (syl_c1/syl_c2), and let Oscar's univariate resultant do subresultant
+# PRS elimination -- this is the call that replaces the ENTIRE Sylvester-
+# matrix-plus-Leibniz-survey apparatus below.
+# ------------------------------------------------------------------------
+
+Rt, T = polynomial_ring(Kcoef, string(name))
+
+g1_T = sum(c1_lifted[k+1] * T^k for k in 0:d1T)
+g2_T = sum(c2_lifted[k+1] * T^k for k in 0:d2T)
+
+println("    computing resultant via subresultant PRS (degree-in-T = $d1T, $d2T)...")
+flush(stdout)
+t0 = time()
+res_frac = resultant(g1_T, g2_T)
+elapsed = time() - t0
+println("    resultant computed in ", round(elapsed, digits=3), "s")
+
+# res_frac lives in Kcoef = Frac(F[a1,a2,b1,b2]); the true resultant of
+# two polynomials with polynomial (not just rational) coefficients is
+# itself a polynomial (no cryptographically-relevant denominator can
+# survive -- Sylvester-matrix entries were already polynomials, and the
+# determinant of a polynomial matrix is a polynomial), so we expect
+# denominator(res_frac) to be a unit. Confirm rather than assume: if
+# it's not a unit, something upstream (e.g. an unintended common factor
+# introduced during the coefficient lift) needs inspection, but the
+# resultant computation itself is already done at this point regardless.
+res_num = numerator(res_frac)
+res_den = denominator(res_frac)
+
+if !is_unit(res_den)
+    println("    WARNING: resultant denominator is not a unit (degree=",
+            total_degree(res_den), "); this should not happen for a "
+            * "genuine polynomial-coefficient resultant -- inspect "
+            * "coefficient lift for spurious common factors.")
+end
+
+result_poly = Rcoef(res_num) // Rcoef(res_den)   # keep as exact fraction; typically res_den is a unit and this collapses to a polynomial
+
+println("    $name resultant: total_degree=", total_degree(res_num),
+        "  terms=", length(terms(res_num)))
+
+# Save straight into the same place the old per-summand harness would
+# have written its final assembled term, so downstream code that reads
+# "the U0 resultant" doesn't need to change.
+const RESULTANT_FILE = joinpath(@__DIR__, "part_k_results", "$(name)_resultant.oscar")
+mkpath(dirname(RESULTANT_FILE))
+save(RESULTANT_FILE, res_num)
+println("    saved resultant -> ", RESULTANT_FILE)
+
+################################################################################
+# Everything below this point in the old file -- next_permutation!,
+# first_k_permutations, first_k_nonzero_permutations,
+# count_nonzero_permutations, the PART_K_MAX_WORKERS subprocess pool,
+# part_k_launch/part_k_harvest/part_k_summand_complete, and the entire
+# "keep computing summands until one dies" driver loop -- is now
+# unnecessary and should be deleted. None of that machinery is wrong,
+# exactly -- it correctly identifies which Leibniz summands are nonzero
+# and safely isolates OOM crashes -- it is just solving a problem
+# (surviving Leibniz expansion of an 8x8 determinant with huge entries)
+# that a proper resultant algorithm avoids needing to solve at all.
+################################################################################
