@@ -4328,16 +4328,65 @@ if d1T == 4 && d2T == 4
     function symmetrize_b_only(f; debug::Bool=false)
         debug && println("      [DBG b_only] input f: terms=", length(terms(f)),
                           "  degree=", total_degree(f))
+        # --- NEW DIAGNOSTIC: check raw f's dependence on b1_c/b2_c BEFORE
+        # any ring games, using both element-form and index-form degree(),
+        # so any divergence between the two call conventions is exposed
+        # directly instead of silently producing a wrong (possibly always
+        # 0) answer downstream.
+        if debug
+            println("      [DBG b_only] === RAW f DIAGNOSTIC (in Rcoef) ===")
+            println("      [DBG b_only] degree(f, b1_c)              = ", degree(f, b1_c))
+            println("      [DBG b_only] degree(f, b2_c)              = ", degree(f, b2_c))
+            println("      [DBG b_only] var_index(b1_c)              = ", var_index(b1_c))
+            println("      [DBG b_only] var_index(b2_c)              = ", var_index(b2_c))
+            println("      [DBG b_only] degree(f, var_index(b1_c))   = ", degree(f, var_index(b1_c)))
+            println("      [DBG b_only] vars(f) (generators actually appearing) = ", vars(f))
+        end
         fe = incl_c5(f)
         debug && println("      [DBG b_only] after incl_c5: terms=", length(terms(fe)))
+        if debug
+            println("      [DBG b_only] === fe DIAGNOSTIC (in Rext_c5, pre-substitution) ===")
+            println("      [DBG b_only] degree(fe, b1c5)             = ", degree(fe, b1c5))
+            println("      [DBG b_only] degree(fe, b2c5)             = ", degree(fe, b2c5))
+            println("      [DBG b_only] var_index(b1c5)              = ", var_index(b1c5))
+            println("      [DBG b_only] var_index(b2c5)              = ", var_index(b2c5))
+            println("      [DBG b_only] vars(fe) (generators appearing) = ", vars(fe))
+        end
         fe2 = evaluate(fe, [a1c5, a2c5, b1c5, sbc5 - b1c5, sac5, pac5, sbc5, pbc5])
         debug && println("      [DBG b_only] after b2->sb-b1 substitution: terms=",
                           length(terms(fe2)), "  degree=", total_degree(fe2))
         d = degree(fe2, b1c5)
-        debug && println("      [DBG b_only] degree(fe2, b1c5) = ", d)
+        debug && println("      [DBG b_only] degree(fe2, b1c5) [element-form] = ", d)
+        if debug
+            d_idx = degree(fe2, var_index(b1c5))
+            println("      [DBG b_only] degree(fe2, var_index(b1c5)) [index-form] = ", d_idx,
+                    d_idx != d ? "   <<<< MISMATCH between element-form and index-form degree()!" : "   (match)")
+            println("      [DBG b_only] vars(fe2) (generators appearing after substitution) = ", vars(fe2))
+            println("      [DBG b_only] degree(fe2, sbc5) [should be >0 if sb actually entered] = ", degree(fe2, sbc5))
+            # Direct algebraic sanity check: fe2 should NOT equal fe if the
+            # substitution actually did anything (unless f happens to be
+            # independent of b2c5, which contradicts Section-1 classification).
+            println("      [DBG b_only] fe2 == fe (substitution was a no-op)? ", fe2 == fe)
+        end
         coeffs_by_deg = Dict{Int,Any}()
+        # --- NEW: cross-check element-form coeff(f, [var_element], [exp])
+        # against the documented index-form coeff(f, vars::Vector{Int},
+        # exps::Vector{Int}) API for every degree 0:d, so a call-convention
+        # bug is caught mechanically rather than assumed away.
+        if debug
+            b1_idx = var_index(b1c5)
+            for k in 0:d
+                ck_elem = coeff(fe2, [b1c5], [k])
+                ck_idx  = coeff(fe2, [b1_idx], [k])
+                same = ck_elem == ck_idx
+                println("      [DBG b_only] k=$k: coeff(fe2,[b1c5],[k]) terms=",
+                        length(terms(ck_elem)), "   coeff(fe2,[b1_idx=$b1_idx],[k]) terms=",
+                        length(terms(ck_idx)),
+                        same ? "   (match)" : "   <<<< MISMATCH between element-form and index-form coeff()!")
+            end
+        end
         for k in 0:d
-            ck = coeff(fe2, [b1c5], [k])
+            ck = coeff(fe2, [var_index(b1c5)], [k])
             if !iszero(ck)
                 coeffs_by_deg[k] = ck
                 debug && println("      [DBG b_only] coeff of b1^", k, ": terms=",
@@ -4394,15 +4443,48 @@ if d1T == 4 && d2T == 4
     function symmetrize_a_only(f; debug::Bool=false)
         debug && println("      [DBG a_only] input f: terms=", length(terms(f)),
                           "  degree=", total_degree(f))
+        if debug
+            println("      [DBG a_only] === RAW f DIAGNOSTIC (in Rcoef) ===")
+            println("      [DBG a_only] degree(f, a1_c)              = ", degree(f, a1_c))
+            println("      [DBG a_only] degree(f, a2_c)              = ", degree(f, a2_c))
+            println("      [DBG a_only] var_index(a1_c)              = ", var_index(a1_c))
+            println("      [DBG a_only] vars(f) (generators actually appearing) = ", vars(f))
+        end
         fe = incl_c5(f)
+        if debug
+            println("      [DBG a_only] === fe DIAGNOSTIC (in Rext_c5, pre-substitution) ===")
+            println("      [DBG a_only] degree(fe, a1c5)             = ", degree(fe, a1c5))
+            println("      [DBG a_only] degree(fe, a2c5)             = ", degree(fe, a2c5))
+            println("      [DBG a_only] vars(fe) (generators appearing) = ", vars(fe))
+        end
         fe2 = evaluate(fe, [a1c5, sac5 - a1c5, b1c5, b2c5, sac5, pac5, sbc5, pbc5])
         debug && println("      [DBG a_only] after a2->sa-a1 substitution: terms=",
                           length(terms(fe2)), "  degree=", total_degree(fe2))
         d = degree(fe2, a1c5)
-        debug && println("      [DBG a_only] degree(fe2, a1c5) = ", d)
+        debug && println("      [DBG a_only] degree(fe2, a1c5) [element-form] = ", d)
+        if debug
+            d_idx = degree(fe2, var_index(a1c5))
+            println("      [DBG a_only] degree(fe2, var_index(a1c5)) [index-form] = ", d_idx,
+                    d_idx != d ? "   <<<< MISMATCH between element-form and index-form degree()!" : "   (match)")
+            println("      [DBG a_only] vars(fe2) (generators appearing after substitution) = ", vars(fe2))
+            println("      [DBG a_only] degree(fe2, sac5) [should be >0 if sa actually entered] = ", degree(fe2, sac5))
+            println("      [DBG a_only] fe2 == fe (substitution was a no-op)? ", fe2 == fe)
+        end
         coeffs_by_deg = Dict{Int,Any}()
+        if debug
+            a1_idx = var_index(a1c5)
+            for k in 0:d
+                ck_elem = coeff(fe2, [a1c5], [k])
+                ck_idx  = coeff(fe2, [a1_idx], [k])
+                same = ck_elem == ck_idx
+                println("      [DBG a_only] k=$k: coeff(fe2,[a1c5],[k]) terms=",
+                        length(terms(ck_elem)), "   coeff(fe2,[a1_idx=$a1_idx],[k]) terms=",
+                        length(terms(ck_idx)),
+                        same ? "   (match)" : "   <<<< MISMATCH between element-form and index-form coeff()!")
+            end
+        end
         for k in 0:d
-            ck = coeff(fe2, [a1c5], [k])
+            ck = coeff(fe2, [var_index(a1c5)], [k])
             if !iszero(ck)
                 coeffs_by_deg[k] = ck
                 debug && println("      [DBG a_only] coeff of a1^", k, ": terms=",
