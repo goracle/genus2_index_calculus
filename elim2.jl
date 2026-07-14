@@ -5085,7 +5085,22 @@ if d1T == 4 && d2T == 4
             println("  resuming: ", n_already_done, "/", n_terms,
                     " terms already folded into the accumulator from a",
                     " previous run.")
-            detB_concrete = load(accum_file)
+            loaded = load(accum_file)
+            # save()/load() does not guarantee returning a polynomial in
+            # the IDENTICAL Rcoef parent object (even though it's the
+            # same ring mathematically) -- Nemo's coercion, R(other_poly),
+            # is stricter than that and throws "Unable to coerce
+            # polynomial" here. Sidestep coercion entirely: rebuild the
+            # loaded polynomial term-by-term straight into Rcoef's own
+            # generators, the same MPolyBuildCtx/push_term!/finish
+            # pattern used by remap_to_final elsewhere in this file.
+            # Generator order is identity here (both rings are Rcoef's
+            # own [a1,a2,b1,b2] declared order), so no gen_map is needed.
+            rebuild_ctx = MPolyBuildCtx(Rcoef)
+            for (c, exps) in zip(coefficients(loaded), AbstractAlgebra.exponent_vectors(loaded))
+                push_term!(rebuild_ctx, F(c), exps)
+            end
+            detB_concrete = finish(rebuild_ctx)
         end
     end
 
