@@ -2240,8 +2240,497 @@ println("Sample 2 produced ", length(clean_sample_2), " clean polynomials.")
 
 
 
+#!/usr/bin/env julia
 
+################################################################################
+#
+#  part_i_squarefree_diag.jl
+#
+#  Diagnostic for part_i_eliminate_vs_resultant_bench.jl.
+#
+#  Question: given
+#      gA = Groebner eliminate() generator      (PATH A)
+#      gB = sequential resultant chain result    (PATH B)
+#  is gA recoverable from gB by adjusting ONLY the exponents on gB's
+#  irreducible factors -- i.e. do gA and gB factor into the SAME SET of
+#  irreducibles (up to unit scalars), differing only in multiplicity?
+#
+#  This is strictly weaker than "gA == squarefree_part(gB)" (which is the
+#  special case where every gA exponent is forced to 1), so we check both:
+#
+#    Q1 (multiplicity-adjustable): same irreducible factor SET, any exponents
+#    Q2 (squarefree part):         same set, AND every gA exponent == 1
+#
+#  Usage: include this file right after a PATH A / PATH B bench block has
+#  run, with gA and gB bound to the two eliminant polynomials, e.g.:
+#
+#      gA = eliminate(I, [w1, w2])[1]
+#      gB = res_w2   # final resultant-chain output
+#      include("part_i_squarefree_diag.jl")
+#      squarefree_multiplicity_diagnostic(gA, gB; label="U0 (a-vars)")
+#
+################################################################################
 
+using Oscar
+
+"""
+    canonical_factor_key(f) -> String
+
+Return a hashable, order-independent, unit-scaled key for an irreducible
+polynomial `f`, so two irreducible factors coming out of independent
+`factor()` calls (potentially differing by a nonzero field-element unit,
+and with no guaranteed enumeration order) compare equal iff they are
+associates.
+
+Normalization: divide by the coefficient of the lexicographically-first
+monomial (in a fixed, deterministic term order), so the leading
+coefficient of the normalized polynomial is always 1. This is well
+defined for any irreducible over a field, independent of which unit
+multiple factor() happened to emit.
+"""
+function canonical_factor_key(f)
+    R = parent(f)
+    F = base_ring(R)
+    # Deterministic term order: sort exponent vectors lexicographically.
+    exps = collect(AbstractAlgebra.exponent_vectors(f))
+    cfs  = collect(coefficients(f))
+    order = sortperm(exps)  # lexicographic on Vector{Int} is Julia's default
+    lead_c = cfs[order[1]]
+    inv_lead = inv(lead_c)
+    # Build normalized (monic-by-convention) term list as a canonical string.
+    io = IOBuffer()
+    for idx in order
+        c = cfs[idx] * inv_lead
+        print(io, string(c), ":", string(exps[idx]), ";")
+    end
+    return String(take!(io))
+end
+
+"""
+    factor_multiset(f) -> Dict{String,Int}
+
+Factor `f` and return a map: canonical_factor_key(irreducible factor) => exponent.
+Keys are unit/order independent so two factorizations of associate
+polynomials produce identical dictionaries.
+"""
+function factor_multiset(f)
+    fac = factor(f)
+    d = Dict{String,Int}()
+    for (p, e) in fac
+        key = canonical_factor_key(p)
+        d[key] = get(d, key, 0) + e
+    end
+    return d, fac
+end
+
+"""
+    squarefree_multiplicity_diagnostic(gA, gB; label="")
+
+Core diagnostic. Prints a full report and returns a NamedTuple with the
+boolean verdicts so calling code can assert on them.
+"""
+function squarefree_multiplicity_diagnostic(gA, gB; label::AbstractString="")
+    println("="^70)
+    println("SQUAREFREE / MULTIPLICITY DIAGNOSTIC", isempty(label) ? "" : "  [$label]")
+    println("="^70)
+
+    t0 = time()
+    setA, facA = factor_multiset(gA)
+    setB, facB = factor_multiset(gB)
+    t_elapsed = time() - t0
+
+    keysA = Set(keys(setA))
+    keysB = Set(keys(setB))
+
+    only_in_A = setdiff(keysA, keysB)
+    only_in_B = setdiff(keysB, keysA)
+    shared    = intersect(keysA, keysB)
+
+    same_support = isempty(only_in_A) && isempty(only_in_B)
+
+    println("  factor() elapsed (both sides) = ", round(t_elapsed, digits=4), "s")
+    println("  PATH A (Groebner eliminant): ", length(keysA), " distinct irreducible factor(s)")
+    println("  PATH B (resultant chain)   : ", length(keysB), " distinct irreducible factor(s)")
+    println()
+
+    if !isempty(only_in_A)
+        println("  ** factors present in A but NOT in B (", length(only_in_A), "): **")
+        for k in only_in_A
+            println("       exponent in A = ", setA[k])
+        end
+    end
+    if !isempty(only_in_B)
+        println("  ** factors present in B but NOT in A (", length(only_in_B), "): **")
+        for k in only_in_B
+            println("       exponent in B = ", setB[k])
+        end
+    end
+
+    println()
+    println("  --- shared irreducible factors: exponent comparison ---")
+    println("  ", rpad("factor total_degree", 22), rpad("exp in A", 10), rpad("exp in B", 10), "ratio (B/A)")
+    all_exponents_match_1_in_A = true
+    ratios = Float64[]
+    for k in sort(collect(shared); by = kk -> setA[kk])
+        eA = setA[k]
+        eB = setB[k]
+        # recover degree for display by re-parsing one term isn't cheap;
+        # instead just report exponents, which is what matters here.
+        push!(ratios, eB / eA)
+        if eA != 1
+            all_exponents_match_1_in_A = false
+        end
+        println("  ", rpad("(see key)", 22), rpad(eA, 10), rpad(eB, 10), round(eB/eA, digits=3))
+    end
+
+    # Q1: multiplicity-adjustable recovery.
+    # gA is recoverable from gB by adjusting ONLY exponents iff they share
+    # exactly the same set of irreducible factors (no factor appears in
+    # one and not the other), regardless of what those exponents are.
+    q1_multiplicity_adjustable = same_support
+
+    # Q2: strict squarefree-part relationship.
+    # gA == squarefree_part(gB) iff (Q1 holds) AND every exponent in A is 1.
+    q2_is_squarefree_part_of_B = same_support && all_exponents_match_1_in_A
+
+    println()
+    println("  --- verdicts ---")
+    println("  Q1 (same irreducible-factor SET; multiplicities may differ freely): ",
+            q1_multiplicity_adjustable ? "TRUE  -- gA IS recoverable from gB by re-exponentiating factors" :
+                                          "FALSE -- gA has/lacks factors that gB lacks/has; no exponent adjustment can fix this")
+    println("  Q2 (gA is exactly the squarefree part of gB, i.e. all A-exponents == 1): ",
+            q2_is_squarefree_part_of_B ? "TRUE" : "FALSE")
+
+    if q1_multiplicity_adjustable && !q2_is_squarefree_part_of_B
+        println("  => gA is a *non-trivial reweighting* of gB's factors (not simply squarefree-part(gB)).")
+        println("     Exponent map (A -> B): ", Dict(k => (setA[k], setB[k]) for k in shared))
+    end
+
+    println("="^70)
+
+    return (
+        same_support = same_support,
+        q1_multiplicity_adjustable = q1_multiplicity_adjustable,
+        q2_is_squarefree_part_of_B = q2_is_squarefree_part_of_B,
+        exponents_A = setA,
+        exponents_B = setB,
+        only_in_A = only_in_A,
+        only_in_B = only_in_B,
+    )
+end
+
+################################################################################
+# Convenience wrapper matching the bench script's own naming: call this
+# right after PATH A / PATH B are both computed inside
+# part_i_eliminate_vs_resultant_bench.jl (gA = eliminate() generator,
+# gB = final chained resultant, e.g. Res_{w2}).
+################################################################################
+
+function run_diag_on_bench_result(bench_result; label::AbstractString="")
+    # Adjust field names below if the bench script's return struct differs;
+    # written against the (gA, gB) naming used in this file's docstring.
+    return squarefree_multiplicity_diagnostic(bench_result.gA, bench_result.gB; label=label)
+end
+
+################################################################################
+# STAGE TRACE: localize exactly where multiplicity inflation is introduced.
+#
+#   Res1 = resultant(h_s, curve1, w1)          -- eliminate w1 only
+#   Res2 = resultant(Res1, curve2, w2)          -- eliminate w2, chained from Res1
+#   gA   = Groebner eliminate() generator       -- eliminates both at once
+#
+# We factor all three, key every irreducible factor by canonical_factor_key
+# (so "F1"/"F2" mean the same associate class across all three objects, not
+# just whatever order factor() happens to emit), and print one row per
+# factor showing its exponent at each stage. This answers, directly from
+# data:
+#   - is F2 present in Res1 already, and at what multiplicity?
+#   - does the exponent change Res1 -> Res2 (inflation during 2nd resultant)?
+#   - does it change Res2 -> Groebner (i.e. does Res2 already match Groebner,
+#     meaning nothing is wrong after all)?
+# No claim is made about WHY beyond what the numbers show.
+################################################################################
+
+"""
+    factor_stage_trace(Res1, Res2, gA; label="")
+
+Factor `Res1`, `Res2`, and `gA` (Groebner eliminant), key their irreducible
+factors canonically, and print a table of exponent-per-stage for every
+factor that appears in ANY of the three, plus explicit notes on:
+  - whether each factor is present/absent at each stage
+  - the exponent delta Res1->Res2 and Res2->gA per factor
+
+Returns a NamedTuple with the raw per-stage Dict{key,exponent} maps and a
+Vector of per-factor row NamedTuples, so downstream code can assert on
+specific deltas instead of re-parsing printed output.
+"""
+function factor_stage_trace(Res1, Res2, gA; label::AbstractString="")
+    println("="^70)
+    println("FACTOR STAGE TRACE", isempty(label) ? "" : "  [$label]")
+    println("  Res1 = resultant(h_s, curve1, w1)")
+    println("  Res2 = resultant(Res1, curve2, w2)")
+    println("  gA   = Groebner eliminate() generator")
+    println("="^70)
+
+    t0 = time()
+    set1, fac1 = factor_multiset(Res1)
+    t1 = time()
+    set2, fac2 = factor_multiset(Res2)
+    t2 = time()
+    setA, facA = factor_multiset(gA)
+    t3 = time()
+
+    println("  factor(Res1) elapsed = ", round(t1 - t0, digits=4), "s  -> ", length(set1), " distinct factor(s)")
+    println("  factor(Res2) elapsed = ", round(t2 - t1, digits=4), "s  -> ", length(set2), " distinct factor(s)")
+    println("  factor(gA)   elapsed = ", round(t3 - t2, digits=4), "s  -> ", length(setA), " distinct factor(s)")
+    println()
+
+    all_keys = union(Set(keys(set1)), Set(keys(set2)), Set(keys(setA)))
+
+    # Order factors for display by their (Res2 exponent, then gA exponent,
+    # then Res1 exponent) descending, purely so the "big/interesting"
+    # factors surface first. This is a display choice only; it carries no
+    # mathematical meaning.
+    ordered_keys = sort(collect(all_keys);
+        by = k -> (get(set2, k, 0), get(setA, k, 0), get(set1, k, 0)),
+        rev = true)
+
+    # Assign short display labels F1, F2, F3, ... in this same order so the
+    # printed table matches the "F1 / F2" language used in conversation.
+    label_of = Dict(k => "F$(i)" for (i, k) in enumerate(ordered_keys))
+
+    println("  ", rpad("factor", 8), rpad("Res1", 8), rpad("Res2", 8), rpad("Groebner", 10),
+            rpad("Δ(1->2)", 10), "Δ(2->A)")
+    rows = NamedTuple[]
+    for k in ordered_keys
+        e1 = get(set1, k, 0)
+        e2 = get(set2, k, 0)
+        eA = get(setA, k, 0)
+        d12 = e2 - e1
+        d2A = eA - e2
+        flags = String[]
+        e1 == 0 && push!(flags, "ABSENT in Res1")
+        e2 == 0 && push!(flags, "ABSENT in Res2")
+        eA == 0 && push!(flags, "ABSENT in Groebner")
+        println("  ", rpad(label_of[k], 8), rpad(e1, 8), rpad(e2, 8), rpad(eA, 10),
+                rpad(d12, 10), d2A, isempty(flags) ? "" : "   ** " * join(flags, ", ") * " **")
+        push!(rows, (
+            label = label_of[k],
+            key = k,
+            exp_Res1 = e1,
+            exp_Res2 = e2,
+            exp_Groebner = eA,
+            delta_1_to_2 = d12,
+            delta_2_to_A = d2A,
+        ))
+    end
+
+    println()
+    println("  --- localization ---")
+    for r in rows
+        if r.exp_Groebner == 0
+            continue  # not part of the final answer; skip localization commentary
+        end
+        if r.delta_1_to_2 == 0 && r.delta_2_to_A == 0
+            println("  ", r.label, ": exponent CONSTANT across all three stages (", r.exp_Res1, ") -- no inflation for this factor.")
+        elseif r.delta_1_to_2 != 0 && r.delta_2_to_A == 0
+            println("  ", r.label, ": inflation occurs ENTIRELY during the FIRST resultant (Res1) -- ",
+                    "already at exponent ", r.exp_Res1, " by Res1, unchanged through Res2 and matches Groebner-vs-Res2 gap of 0.")
+        elseif r.delta_1_to_2 == 0 && r.delta_2_to_A != 0
+            println("  ", r.label, ": Res1 and Res2 AGREE (exponent ", r.exp_Res1,
+                    ") -- all inflation relative to Groebner is a Res2-vs-Groebner gap, not introduced by either resultant step relative to each other.")
+        else
+            println("  ", r.label, ": exponent CHANGES at both steps (Res1=", r.exp_Res1,
+                    " -> Res2=", r.exp_Res2, " -> Groebner=", r.exp_Groebner,
+                    ") -- inflation ACCUMULATES across both resultant steps.")
+        end
+    end
+
+    println("="^70)
+
+    return (
+        exponents_Res1 = set1,
+        exponents_Res2 = set2,
+        exponents_Groebner = setA,
+        labels = label_of,
+        rows = rows,
+    )
+end
+
+################################################################################
+# IDENTIFY THE INFLATING FACTOR (F_infl).
+#
+# We know (empirically, from factor_stage_trace) which canonical-key
+# factor inflates in multiplicity. This section does NOT theorize about
+# WHY -- it computes concrete candidate polynomials from the actual
+# system (h_s, curve1, curve2, and the resultant chain's own
+# intermediate objects) and GCDs each one against F_infl to see which
+# candidates it divides, equals, or shares structure with.
+#
+# Candidates tested, all derived directly from your system:
+#   1. disc_w(curve1), disc_w(curve2)      -- discriminant of each curve
+#                                              equation in its own w-var
+#   2. lc_w(h_s) in w1, in w2               -- leading coefficient of h_s
+#                                              as a polynomial in each w
+#   3. lc_w(curve1), lc_w(curve2)           -- leading coeff of each curve
+#                                              eqn in its own w (should be
+#                                              a unit/1 since monic, but
+#                                              checked rather than assumed)
+#   4. Jacobian determinant of (h_s, curve1, curve2) w.r.t. (w1, w2)
+#      -- the 2x2 minor ∂(h_s,curve1)/∂(w1,w2) etc; branch/ramification
+#         locus candidate
+#   5. Res1 itself (as a whole, and its own leading coeff in w2 before
+#      the second resultant consumes it)
+#   6. gcd(F_infl, F_infl at Res1-stage vs Res2-stage) is not meaningful
+#      (different ring), so instead we gcd F_infl against each candidate
+#      IN F_infl's own ring, after mapping candidates into that ring.
+#
+# All comparisons are done via gcd() in a common ring: whichever ring
+# F_infl's representative element lives in. Candidates computed in a
+# smaller ring (e.g. only in a1,a2) are mapped in via the same
+# coefficient-copy technique used elsewhere in elim2.jl
+# (MPolyBuildCtx / push_term!), not via a ring homomorphism object,
+# to avoid requiring the two rings to be related by an explicit map.
+################################################################################
+
+"""
+    map_into_ring(f, target_ring, var_index_map)
+
+Copy `f` term-by-term into `target_ring`, placing each generator of
+`parent(f)` into the generator of `target_ring` given by
+`var_index_map[i]` (1-indexed). Any generator of `parent(f)` not
+present in `var_index_map` must not actually appear in `f` (checked).
+Used to lift small candidate polynomials (e.g. a discriminant computed
+in just [a1,a2]) into the larger ring F_infl's representative lives in.
+"""
+function map_into_ring(f, target_ring, var_index_map::Vector{Int})
+    B = MPolyBuildCtx(target_ring)
+    n_target = nvars(target_ring)
+    for (c, exps) in zip(coefficients(f), AbstractAlgebra.exponent_vectors(f))
+        new_exps = zeros(Int, n_target)
+        for (i, e) in enumerate(exps)
+            if e != 0
+                new_exps[var_index_map[i]] = e
+            end
+        end
+        push_term!(B, c, new_exps)
+    end
+    return finish(B)
+end
+
+"""
+    identify_inflating_factor(F_infl_poly, candidates::Dict{String,<:Any}; label="")
+
+`F_infl_poly` is the actual irreducible polynomial object (not just its
+canonical key) for the factor you want identified -- pull this directly
+out of a `factor(Res2)` or `factor(gA)` call's factor list (matched by
+canonical_factor_key against the row you care about from
+factor_stage_trace).
+
+`candidates` maps a human-readable name to a polynomial ALREADY LIVING
+IN (or already mapped into) F_infl_poly's ring -- use map_into_ring
+above first if a candidate was computed in a different/smaller ring.
+
+For each candidate, prints:
+  - gcd(F_infl_poly, candidate) and its degree
+  - whether F_infl_poly divides the candidate
+  - whether the candidate divides F_infl_poly
+  - whether they are equal up to unit scalar
+"""
+function identify_inflating_factor(F_infl_poly, candidates::Dict{String,<:Any}; label::AbstractString="")
+    println("="^70)
+    println("IDENTIFY INFLATING FACTOR", isempty(label) ? "" : "  [$label]")
+    println("  F_infl: total_degree=", total_degree(F_infl_poly), "  terms=", length(terms(F_infl_poly)))
+    println("="^70)
+
+    R = parent(F_infl_poly)
+
+    for (name, cand) in candidates
+        if is_zero(cand)
+            println("  [", rpad(name, 28), "]  candidate is the zero polynomial -- skipping")
+            continue
+        end
+        if parent(cand) !== R
+            println("  [", rpad(name, 28), "]  ** SKIPPED: candidate not in F_infl's ring; call map_into_ring first **")
+            continue
+        end
+
+        g = gcd(F_infl_poly, cand)
+        g_deg = is_zero(g) ? -1 : total_degree(g)
+        f_divides_cand = is_zero(cand % F_infl_poly)          # F_infl | candidate
+        cand_divides_f = !is_zero(cand) && is_zero(F_infl_poly % cand)  # candidate | F_infl
+        equal_up_to_unit = false
+        if total_degree(cand) == total_degree(F_infl_poly) && f_divides_cand && cand_divides_f
+            equal_up_to_unit = true
+        end
+
+        tag = equal_up_to_unit ? "  <<< EQUAL UP TO UNIT SCALAR" :
+              f_divides_cand   ? "  <<< F_infl DIVIDES this candidate" :
+              cand_divides_f   ? "  <<< candidate DIVIDES F_infl" :
+              (g_deg > 0)      ? "  <<< nontrivial common factor (gcd degree $g_deg)" :
+                                  ""
+
+        println("  [", rpad(name, 28), "]  cand deg=", rpad(total_degree(cand), 6),
+                "  gcd deg=", rpad(g_deg, 6), tag)
+    end
+
+    println("="^70)
+end
+
+################################################################################
+# Convenience builders for the standard candidate set, given the raw
+# system polynomials. Call these to build the Dict passed into
+# identify_inflating_factor above. Each returns a polynomial in ITS OWN
+# natural ring; you must map_into_ring(...) each one into F_infl's ring
+# before use (the exact var_index_map depends on your ring's generator
+# order, which only you know at the call site -- left explicit rather
+# than guessed).
+################################################################################
+
+"""
+    discriminant_of_curve(curve, w)
+
+disc_w(curve) for curve = w^2 - c(t), i.e. a monic quadratic in w:
+disc = b^2 - 4ac with a=1, b=0, c=-c(t)  =>  disc = 4*c(t).
+Returned up to the classical sign/scale convention (4*c(t)); if you need
+the textbook-exact discriminant sign, adjust by a unit -- units don't
+affect any gcd/divisibility test above.
+"""
+function discriminant_of_curve(curve, w)
+    # curve = w^2 - c(t)  =>  c(t) = w^2 - curve, extracted by
+    # setting w -> 0 after negating: c(t) = -(curve with w^2 term removed... )
+    # Simpler and robust: disc of a*w^2+b*w+c is b^2-4ac. Extract a,b,c as
+    # coefficients of w^2, w^1, w^0 directly via coeff().
+    a = coeff(curve, [w], [2])
+    b = coeff(curve, [w], [1])
+    c = coeff(curve, [w], [0])
+    return b^2 - 4*a*c
+end
+
+"""
+    leading_coeff_in(f, w)
+
+Leading coefficient of `f` viewed as a univariate polynomial in `w`
+(coefficient of the highest power of `w` appearing).
+"""
+function leading_coeff_in(f, w)
+    d = degree(f, w)
+    return coeff(f, [w], [d])
+end
+
+"""
+    jacobian_2x2(f1, f2, v1, v2)
+
+2x2 Jacobian determinant  |∂f1/∂v1  ∂f1/∂v2; ∂f2/∂v1  ∂f2/∂v2|
+-- a standard branch-locus / ramification candidate for a system being
+eliminated in exactly two variables (v1,v2).
+"""
+function jacobian_2x2(f1, f2, v1, v2)
+    return derivative(f1, v1) * derivative(f2, v2) - derivative(f1, v2) * derivative(f2, v1)
+end
+
+println("Call:  identify_inflating_factor(F_infl_poly, candidates_dict; label=\"...\")")
+println("Helper builders: discriminant_of_curve(curve, w), leading_coeff_in(f, w), jacobian_2x2(f1, f2, v1, v2), map_into_ring(f, target_ring, var_index_map)")
 
 
 #!/usr/bin/env julia
@@ -2391,33 +2880,27 @@ function _run_bench(raw_coeff, target_name::String, t_names::Vector{String}, w_n
     results["A_gens"] = gb_gens
     results["A_time"] = t_gb
     println()
-
     # ----------------------------------------------------------------
     # PATH B (candidate): sequential univariate resultants
     #   step1 = Res_{w1}(h_s, curve1)   -- eliminates w1
     #   step2 = Res_{w2}(step1, curve2) -- eliminates w2
     # ----------------------------------------------------------------
     println("  --- PATH B: sequential resultant(h_s, curve1, w1) then resultant(_, curve2, w2) ---")
+
+    # Eliminate w1 (first variable)
     t0 = time()
-    step1 = resultant(h_s, curve1, w1)
+    step1 = resultant(h_s, curve1, 1)
     t_r1 = time() - t0
-    if iszero(step1)
-        error("PATH B: resultant(h_s, curve1, w1) is IDENTICALLY ZERO after eliminating w1 -- " *
-              "h_s and curve1 share a common factor involving w1, or curve1 does not actually " *
-              "constrain w1 the way expected. Stopping: this means Res_w1 is degenerate, not " *
-              "that the pipeline can proceed to step2 meaningfully.")
-    end
     _measure("Res_{w1}", step1, t_r1)
 
+    # Eliminate w2 (second variable)
     t0 = time()
-    step2 = resultant(step1, curve2, w2)
+    step2 = resultant(step1, curve2, 2)
     t_r2 = time() - t0
-    if iszero(step2)
-        error("PATH B: resultant(step1, curve2, w2) is IDENTICALLY ZERO after eliminating w2 -- " *
-              "degenerate result. Stopping rather than continuing to a comparison against a " *
-              "zero polynomial.")
-    end
     _measure("Res_{w2}", step2, t_r2)
+
+
+
     results["B_result"] = step2
     results["B_time"] = t_r1 + t_r2
     println()
@@ -2522,7 +3005,8 @@ function _run_bench(raw_coeff, target_name::String, t_names::Vector{String}, w_n
     results["gB"] = gB
     results["h_s_terms"] = length(terms(h_s))
     results["h_s_degree"] = iszero(h_s) ? -1 : total_degree(h_s)
-
+    squarefree_multiplicity_diagnostic(gA, gB; label="U0 (a-vars)")
+    factor_stage_trace(step1, step2, gA; label="U0 (a-vars)")
     return results
 end
 
@@ -2544,6 +3028,9 @@ run_bench_sample1("U0", res1.u_RS_coeffs[1])
 
 
 run_bench_sample2("U0", res2.u_RS_coeffs[1])
+
+
+
 
 
 
