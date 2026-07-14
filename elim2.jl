@@ -5047,32 +5047,53 @@ if d1T == 4 && d2T == 4
 
     PARTF_SCRATCH_DIR = joinpath(@__DIR__, "part_f_scratch", name)
     mkpath(PARTF_SCRATCH_DIR)
-    term_file(i) = joinpath(PARTF_SCRATCH_DIR, "term_$(lpad(i, 5, '0')).oscar")
-    merge_file(tag) = joinpath(PARTF_SCRATCH_DIR, "merge_$(tag).oscar")
+    accum_file    = joinpath(PARTF_SCRATCH_DIR, "accum.oscar")
+    accum_tmpfile = joinpath(PARTF_SCRATCH_DIR, "accum.oscar.tmp")
+    progress_file = joinpath(PARTF_SCRATCH_DIR, "progress.txt")
     manifest_file = joinpath(PARTF_SCRATCH_DIR, "manifest.txt")
 
     detB_terms = collect(terms(detB_abstract))
     n_terms = length(detB_terms)
-    println("  det(Bpq) has ", n_terms, " monomials to substitute individually; ",
-            "writing each to ", PARTF_SCRATCH_DIR)
+    println("  det(Bpq) has ", n_terms, " monomials to substitute; streaming each",
+            " straight into a single running-sum file in ", PARTF_SCRATCH_DIR,
+            " (no per-term files kept, so disk usage stays at ~2 polynomials'",
+            " worth instead of growing with ", n_terms, ").")
     flush(stdout)
 
-    # Step 1: substitute EACH monomial of detB_abstract individually and
-    # save it to its own file, one at a time -- peak RAM here is bounded
-    # by a single substituted term (worst case ~289^4 monomials before
-    # collection, still far smaller than holding all 219 simultaneously),
-    # and each save() immediately frees that term from the need to be
-    # kept live for anything but the merge step below. Terms already
-    # present on disk from a prior partial run are skipped, so this loop
-    # is resumable after an OOM/crash.
+    # Streamed substitute-and-accumulate: for each monomial of
+    # detB_abstract, substitute it (bounded RAM: worst case ~289^4
+    # monomials before collection for a single term, same as before) and
+    # immediately fold it into a running-sum polynomial that is
+    # checkpointed to disk after every term. At no point do we keep more
+    # than the current accumulator + the current term's substituted value
+    # resident in RAM -- and on disk we keep at most the accumulator (one
+    # file) plus a temp file that exists only for the duration of the
+    # atomic rename below, instead of one file per term plus a full tree
+    # of pairwise-merge files.
+    #
+    # Resumability: progress_file records how many of the n_terms
+    # monomials (in the fixed order given by detB_terms) are already
+    # folded into accum_file. On restart we load the existing accumulator
+    # (if any) and skip exactly that many leading terms, rather than
+    # re-substituting everything or tracking a directory full of files.
     t0terms = time()
-    n_done_this_run = 0
+    n_already_done = 0
+    detB_concrete = nothing
+    if isfile(accum_file) && isfile(progress_file)
+        n_already_done = parse(Int, strip(read(progress_file, String)))
+        if n_already_done > 0
+            println("  resuming: ", n_already_done, "/", n_terms,
+                    " terms already folded into the accumulator from a",
+                    " previous run.")
+            detB_concrete = load(accum_file)
+        end
+    end
+
     max_term_size_seen = 0
     max_term_size_idx = 0
     for (i, t) in enumerate(detB_terms)
-        outfile = term_file(i)
-        if isfile(outfile)
-            continue   # already substituted in a previous (crashed/partial) run
+        if i <= n_already_done
+            continue   # already folded into detB_concrete in a previous run
         end
         t_val = evaluate(t, subst_vals)   # single monomial: bounded, cheap-ish substitution
         this_size = length(terms(t_val))
@@ -5080,94 +5101,49 @@ if d1T == 4 && d2T == 4
             global max_term_size_seen = this_size
             global max_term_size_idx = i
         end
-        save(outfile, t_val)
-        global n_done_this_run += 1
-        if n_done_this_run % 10 == 0 || i == n_terms
-            println("    substituted term ", i, "/", n_terms,
-                    " (", n_done_this_run, " done this run, this term=", this_size,
-                    " terms, largest so far=term ", max_term_size_idx, " w/ ",
-                    max_term_size_seen, " terms) -- ",
+
+        detB_concrete = detB_concrete === nothing ? t_val : detB_concrete + t_val
+        t_val = nothing   # drop the reference explicitly before checkpointing
+
+        # Checkpoint: write to a temp file, then atomically rename over
+        # the real accumulator file, then update the progress counter.
+        # A crash mid-write leaves the OLD accum_file (and old
+        # progress_file, still saying i-1) intact -- never a half-written
+        # accumulator that progress_file claims is complete. Only one
+        # accumulator's worth of data ever sits on disk at a time.
+        save(accum_tmpfile, detB_concrete)
+        mv(accum_tmpfile, accum_file; force=true)
+        open(progress_file, "w") do io
+            print(io, i)
+        end
+
+        if i % 10 == 0 || i == n_terms
+            println("    folded term ", i, "/", n_terms,
+                    " (this term=", this_size, " terms, largest so far=term ",
+                    max_term_size_idx, " w/ ", max_term_size_seen, " terms,",
+                    " running total=", length(terms(detB_concrete)), " terms) -- ",
                     round(time() - t0terms, digits=1), "s elapsed")
             flush(stdout)
         end
-        t_val = nothing   # drop the reference explicitly before the next iteration
     end
-    println("  all ", n_terms, " terms substituted and saved to disk (",
-            round(time() - t0terms, digits=1), "s total this run).")
+    el_sub = time() - t0terms
+    println("  all ", n_terms, " terms substituted and accumulated (disk-backed,",
+            " streamed, one checkpoint file) in ", round(el_sub, digits=1),
+            "s this run.")
     flush(stdout)
 
-    # Step 2: disk-based pairwise reduction ("merge sort"-style summation)
-    # of the n_terms saved files into one final polynomial, so that at
-    # no point do we need all n_terms substituted terms resident in RAM
-    # simultaneously -- only two operands (the current pair being merged)
-    # are ever loaded at once, and each merge's result is immediately
-    # written back to disk and the two inputs' file handles released.
-    # This also means a crash during the merge phase only loses the
-    # current in-flight pairwise sum, not the term-substitution work from
-    # Step 1 (which is untouched on disk).
-    function disk_pairwise_sum(files::Vector{String}, tag_prefix::String)
-        current_files = copy(files)
-        round_idx = 0
-        while length(current_files) > 1
-            round_idx += 1
-            next_files = String[]
-            println("    merge round ", round_idx, ": ", length(current_files),
-                    " file(s) -> ", cld(length(current_files), 2), " file(s)")
-            flush(stdout)
-            i = 1
-            pair_idx = 0
-            while i <= length(current_files)
-                pair_idx += 1
-                out = merge_file("$(tag_prefix)_r$(round_idx)_p$(pair_idx)")
-                if isfile(out)
-                    push!(next_files, out)   # resumable: this pair already merged
-                    i += 2
-                    continue
-                end
-                if i == length(current_files)
-                    # odd one out this round -- carry forward unchanged
-                    a = load(current_files[i])
-                    save(out, a)
-                    a = nothing
-                else
-                    a = load(current_files[i])
-                    b = load(current_files[i+1])
-                    s = a + b
-                    save(out, s)
-                    a = nothing; b = nothing; s = nothing
-                end
-                push!(next_files, out)
-                i += 2
-            end
-            current_files = next_files
-        end
-        return current_files[1]
-    end
-
-    println("  Merging ", n_terms, " substituted terms via disk-based pairwise sum",
-            " (never holding more than 2 terms in RAM at once)...")
-    flush(stdout)
-    t0merge = time()
-    all_term_files = [term_file(i) for i in 1:n_terms]
-    final_file = disk_pairwise_sum(all_term_files, "detB")
-    el_merge = time() - t0merge
-    println("  merge complete in ", round(el_merge, digits=1), "s -- loading final result...")
-    flush(stdout)
-
-    detB_concrete = load(final_file)
-    el_sub = (time() - t0terms)
-    println("  substitution done (disk-backed): degree=",
+    println("  substitution done (disk-backed, streamed): degree=",
             total_degree(detB_concrete), "  terms=", length(terms(detB_concrete)),
-            "  (", round(el_sub, digits=1), "s total: term-substitution + merge)")
+            "  (", round(el_sub, digits=1), "s total this run)")
     flush(stdout)
 
     # Record the manifest so a subsequent run (or a human) can tell at a
     # glance that this result came from the disk-backed path and where
-    # the intermediate files live, without needing to re-derive it.
+    # the checkpoint file lives, without needing to re-derive it.
     open(manifest_file, "w") do io
         println(io, "PART F disk-backed substitution manifest for $name")
         println(io, "n_terms = $n_terms")
-        println(io, "final result file = $final_file")
+        println(io, "final result file = $accum_file")
         println(io, "final degree = ", total_degree(detB_concrete))
         println(io, "final terms  = ", length(terms(detB_concrete)))
     end
