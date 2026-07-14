@@ -22,3 +22,4 @@ err*.txt
 filtered*.txt
 *.mem
 part_k_results/*
+part_f_scratch/*

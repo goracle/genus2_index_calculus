@@ -4539,7 +4539,20 @@ if d1T == 4 && d2T == 4
     println("  (independent of PART C's all-coefficients-at-once verdict above)")
     flush(stdout)
 
-    # classification[gname][k] in {:both, :a_only, :b_only, :neither, :zero}
+    # classification[gname][k] in {:both, :a_only, :b_only, :neither, :zero,
+    #                               :indep_of_both, :indep_of_a, :indep_of_b}
+    #
+    # IMPORTANT: is_symmetric_under(f, swap_a) is VACUOUSLY true whenever f
+    # does not depend on a1,a2 at all (swapping variables that don't appear
+    # is a no-op) -- and likewise for swap_b. Section 2's "symmetrize"
+    # rewrite then has nothing real to reduce, which is exactly why it was
+    # reporting a flat 0.0% reduction on every coefficient: g1's
+    # coefficients are genuinely independent of b1,b2 (not merely
+    # b-symmetric), and g2's are genuinely independent of a1,a2. So
+    # dependence is checked explicitly via degree() BEFORE trusting the
+    # swap-symmetry test, and the vacuous cases are given their own labels
+    # so Section 2 can skip them (there is nothing to symmetrize) instead
+    # of "succeeding" at a no-op.
     c5_class = Dict{Tuple{String,Int},Symbol}()
     for (gname, k, f) in all_coefs
         if iszero(f)
@@ -4547,10 +4560,18 @@ if d1T == 4 && d2T == 4
             println("    $gname coeff of T^$k: zero, skipping")
             continue
         end
+        depends_on_a = degree(f, a1_c) > 0 || degree(f, a2_c) > 0
+        depends_on_b = degree(f, b1_c) > 0 || degree(f, b2_c) > 0
         sym_a = is_symmetric_under(f, swap_a)
         sym_b = is_symmetric_under(f, swap_b)
         local cls
-        if sym_a && sym_b
+        if !depends_on_a && !depends_on_b
+            cls = :indep_of_both   # constant in all four -- shouldn't happen given degree=32, but handle it
+        elseif !depends_on_b
+            cls = :indep_of_b      # vacuously b-symmetric; genuinely a1,a2-only, not reducible via b-swap
+        elseif !depends_on_a
+            cls = :indep_of_a      # vacuously a-symmetric; genuinely b1,b2-only, not reducible via a-swap
+        elseif sym_a && sym_b
             cls = :both
         elseif sym_a
             cls = :a_only
@@ -4561,16 +4582,24 @@ if d1T == 4 && d2T == 4
         end
         c5_class[(gname,k)] = cls
         println("    $gname coeff of T^$k: class=", cls,
-                "  (a1<->a2? ", sym_a, ", b1<->b2? ", sym_b, ")")
+                "  (a1<->a2? ", sym_a, ", b1<->b2? ", sym_b,
+                ", depends_on_a=", depends_on_a, ", depends_on_b=", depends_on_b, ")")
     end
     flush(stdout)
 
     println()
     println("  Section 2: partial rewrite term/degree reduction, per coefficient")
-    println("  (only attempted where Section 1 found a1-only or b1-only symmetry;")
-    println("  'both' coefficients are already handled by PART C above and are")
-    println("  skipped here to avoid double-reporting; 'neither' cannot be")
-    println("  partially symmetrized at all and is reported as such.)")
+    println("  (only attempted where Section 1 found GENUINE a1-only or b1-only")
+    println("  symmetry -- i.e. the coefficient actually depends on both members")
+    println("  of that pair, and is truly symmetric under swapping them. 'both'")
+    println("  coefficients are handled by PART C above and skipped here to avoid")
+    println("  double-reporting. 'neither' cannot be partially symmetrized at all.")
+    println("  'indep_of_a'/'indep_of_b' are the VACUOUS case caught by the")
+    println("  Section-1 fix: the coefficient simply does not depend on that pair")
+    println("  at all, so is_symmetric_under() was trivially true and there is")
+    println("  nothing to symmetrize -- reported honestly instead of run through")
+    println("  the rewrite as a no-op, which is what previously produced the flat")
+    println("  0.0% reduction on every coefficient.)")
     flush(stdout)
 
     c5_rewritten = Dict{Tuple{String,Int},Any}()   # stores (poly, which_pair)
@@ -4586,7 +4615,25 @@ if d1T == 4 && d2T == 4
             println("    $gname coeff of T^$k: symmetric under NEITHER swap -- ",
                     "no partial symmetrization possible")
             continue
+        elseif cls == :indep_of_both
+            println("    $gname coeff of T^$k: independent of a1,a2,b1,b2 entirely -- ",
+                    "already minimal, no symmetrization applicable")
+            continue
+        elseif cls == :indep_of_b
+            println("    $gname coeff of T^$k: VACUOUS b-symmetry -- coefficient does ",
+                    "not depend on b1,b2 at all (only a1,a2); swap-symmetry was trivially ",
+                    "true and there is nothing to symmetrize. Already minimal in b.")
+            continue
+        elseif cls == :indep_of_a
+            println("    $gname coeff of T^$k: VACUOUS a-symmetry -- coefficient does ",
+                    "not depend on a1,a2 at all (only b1,b2); swap-symmetry was trivially ",
+                    "true and there is nothing to symmetrize. Already minimal in a.")
+            continue
         end
+        # From here on, cls is genuinely :a_only or :b_only -- the
+        # coefficient really depends on both members of that pair AND is
+        # really symmetric under swapping them, so the rewrite has actual
+        # work to do.
 
         before_terms = length(terms(f))
         before_deg = total_degree(f)
@@ -4698,9 +4745,30 @@ if d1T == 4 && d2T == 4
         println("    step still needs route (i) or (ii). This should be treated as an")
         println("    open sub-problem, not assumed solved by Section 2's reduction.")
     else
-        println("    Did not find the expected g1:(b-only) / g2:(a-only) asymmetric ",
-                "pattern in this run's classification (see Section 1) -- re-check ",
-                "before relying on the analysis below.")
+        g1_indep_b = any(get(c5_class, ("g1",k), nothing) == :indep_of_b for k in 0:4)
+        g2_indep_a = any(get(c5_class, ("g2",k), nothing) == :indep_of_a for k in 0:4)
+        if g1_indep_b && g2_indep_a
+            println("    Did NOT find genuine b-only/a-only partial symmetry -- instead,")
+            println("    Section 1 found g1's coefficients are entirely INDEPENDENT of")
+            println("    b1,b2 (they only ever involved a1,a2 to begin with), and g2's")
+            println("    coefficients are entirely INDEPENDENT of a1,a2 (only b1,b2).")
+            println("    This is a stronger, better situation than partial symmetrization:")
+            println("    g1 already lives in the smaller ring (a1,a2) and g2 already lives")
+            println("    in (b1,b2) -- no rewrite, no quadratic-relation reduction, and no")
+            println("    sqrt-desymmetrization is needed to get there, because they were")
+            println("    never coupled to the other pair in the first place. The routes")
+            println("    (i)/(ii)/(iii) discussion above does not apply to this case: the")
+            println("    combination step should instead be analyzed directly as a")
+            println("    resultant/Bezout construction between a genuinely-(a1,a2)-only")
+            println("    polynomial and a genuinely-(b1,b2)-only polynomial, which may be")
+            println("    a materially easier structure than the general 4-variable case")
+            println("    assumed by PART D/E above -- worth re-deriving those diagnostics")
+            println("    with this narrower variable dependence taken into account.")
+        else
+            println("    Did not find the previously-assumed g1:(b-only) / g2:(a-only) ",
+                    "asymmetric pattern in this run's classification (see Section 1) -- ",
+                    "re-check before relying on the analysis below.")
+        end
     end
     flush(stdout)
 
@@ -4844,6 +4912,331 @@ if d1T == 4 && d2T == 4
     println("     PART B (content extraction) results together")
     println("=" ^ 70)
     flush(stdout)
+
+    ############################################################################
+    # PART F: exploit p_i in F[a1,a2] / q_j in F[b1,b2] separability.
+    #
+    # Section 1's fix established that g1's T-coefficients (p_0..p_4) are
+    # PURELY (a1,a2)-polynomials and g2's T-coefficients (q_0..q_4) are
+    # PURELY (b1,b2)-polynomials -- they were never coupled to the other
+    # pair to begin with. PART D's Bezout entries came back at EXACTLY
+    # 289*289 = 83521 terms, which is not incidental: since p_m and q_n
+    # share no variables, p_m*q_n as a flattened polynomial has exactly
+    # (#terms of p_m)*(#terms of q_n) terms with zero possible collisions
+    # -- i.e. every Bezout entry [p,q]_{m,n} = p_m*q_n - p_n*q_m is really
+    # a RANK-<=2 object (a difference of two outer products of coefficient
+    # vectors), not a dense 4-variable polynomial. Flattening it into
+    # Rcoef immediately (as bracket_num does) throws that structure away
+    # and forces every downstream factor()/gcd()/prem() call to pay the
+    # dense 4-variable cost.
+    #
+    # The fix: introduce an ABSTRACT 10-variable ring F[P0..P4,Q0..Q4]
+    # (one symbol per T-coefficient of g1 and g2), build the SAME 4x4
+    # Bezout matrix entirely in terms of these abstract symbols (a cheap,
+    # low-degree computation -- each entry is degree 2 in the P's/Q's
+    # jointly, det(B) is degree <=8 total), and substitute the real
+    # (a1,a2)-polynomials for P_i / (b1,b2)-polynomials for Q_j only ONCE,
+    # at the very end, via a single ring homomorphism evaluate() call.
+    # This defers the expensive flattening to the last possible step
+    # instead of paying it at every intermediate Bezout/PRS stage.
+    ############################################################################
+    println()
+    println("--- PART F: abstract-variable (P,Q)-separated Bezout/resultant ---")
+    println("  (exploits p_i in F[a1,a2] / q_j in F[b1,b2] confirmed by the")
+    println("  Section-1 fix above; see PART D's exact 289*289=83521 entry")
+    println("  term counts for the empirical signature that motivated this.)")
+    flush(stdout)
+
+    # Abstract ring: one symbol per T-coefficient of g1 (P0..P4) and g2
+    # (Q0..Q4). Total degree stays tiny here (det(B) is degree <=8) no
+    # matter how large the eventual a1,a2,b1,b2-substitutions are.
+    Rpq, pq_gens = polynomial_ring(F, ["P0","P1","P2","P3","P4","Q0","Q1","Q2","Q3","Q4"])
+    P0,P1,P2,P3,P4,Q0,Q1,Q2,Q3,Q4 = pq_gens
+    Pvec = [P0,P1,P2,P3,P4]
+    Qvec = [Q0,Q1,Q2,Q3,Q4]
+
+    # Abstract bracket: [P,Q]_{m,n} := P_m*Q_n - P_n*Q_m, cheap (degree 2,
+    # <=4 terms) since it's built from single symbols, not the actual
+    # 289-term a/b-polynomials.
+    abstract_bracket_cache = Dict{Tuple{Int,Int}, Any}()
+    function abstract_bracket(m::Int, n::Int)
+        key = m < n ? (m, n) : (n, m)
+        if !haskey(abstract_bracket_cache, key)
+            i, j = key
+            abstract_bracket_cache[key] = Pvec[i+1]*Qvec[j+1] - Pvec[j+1]*Qvec[i+1]
+        end
+        return m < n ? abstract_bracket_cache[key] : -abstract_bracket_cache[key]
+    end
+
+    # Same 10 distinct symmetric entries as the concrete Bezout block
+    # above, but now built from the cheap abstract brackets.
+    Bpq = Dict{Tuple{Int,Int}, Any}()
+    Bpq[(0,0)] = abstract_bracket(0,1)
+    Bpq[(0,1)] = abstract_bracket(0,2)
+    Bpq[(0,2)] = abstract_bracket(0,3)
+    Bpq[(0,3)] = abstract_bracket(0,4)
+    Bpq[(1,1)] = abstract_bracket(0,3) + abstract_bracket(1,2)
+    Bpq[(1,2)] = abstract_bracket(0,4) + abstract_bracket(1,3)
+    Bpq[(1,3)] = abstract_bracket(1,4)
+    Bpq[(2,2)] = abstract_bracket(1,4) + abstract_bracket(2,3)
+    Bpq[(2,3)] = abstract_bracket(2,4)
+    Bpq[(3,3)] = abstract_bracket(3,4)
+    Bpq[(1,0)] = Bpq[(0,1)]
+    Bpq[(2,0)] = Bpq[(0,2)]
+    Bpq[(3,0)] = Bpq[(0,3)]
+    Bpq[(2,1)] = Bpq[(1,2)]
+    Bpq[(3,1)] = Bpq[(1,3)]
+    Bpq[(3,2)] = Bpq[(2,3)]
+
+    println("  Abstract Bezout entries (in F[P0..P4,Q0..Q4], BEFORE substitution):")
+    for i in 0:3, j in 0:3
+        f = Bpq[(i,j)]
+        println("    Bpq[$i,$j]: degree=", total_degree(f), "  terms=", length(terms(f)))
+    end
+    flush(stdout)
+
+    # Assemble the abstract 4x4 matrix and compute its determinant --
+    # this is the entire "resultant via Bezout" computation, but done
+    # while every entry is still degree <=2 in 10 variables, so det()
+    # only ever has to expand a determinant of small-degree polynomials,
+    # never the 83521-term flattened entries.
+    println("  Assembling abstract 4x4 matrix and computing det()...")
+    flush(stdout)
+    t0f = time()
+    Bpq_mat = matrix(Rpq, [Bpq[(i,j)] for i in 0:3, j in 0:3])
+    detB_abstract = det(Bpq_mat)
+    el_f = time() - t0f
+    println("  det(Bpq) computed in ", round(el_f, digits=3), "s: degree=",
+            total_degree(detB_abstract), "  terms=", length(terms(detB_abstract)))
+    flush(stdout)
+
+    # Substitution homomorphism: P_i -> actual (a1,a2)-polynomial
+    # g1_coefs_poly[i+1], Q_j -> actual (b1,b2)-polynomial
+    # g2_coefs_poly[j+1]. This is the ONE place the real, large
+    # coefficients ever enter the computation -- everything above this
+    # line was cheap regardless of how large g1_coefs_poly/g2_coefs_poly
+    # are, because it only ever manipulated the 10 abstract placeholders.
+    # ------------------------------------------------------------------
+    # Substitution strategy: DISK-BACKED, term-by-term.
+    #
+    # The single evaluate(detB_abstract, subst_vals) call OOM'd: even
+    # though det(Bpq) is only 219 terms in the abstract (P,Q) symbols,
+    # each term substitutes in as a product of up to 4 of the 289-term
+    # p_i's (all living in the SAME 2-variable ring F[a1,a2], degree<=32
+    # each) times up to 4 of the 289-term q_j's (same, in F[b1,b2]).
+    # Because the p_i's share variables with each other, their product
+    # doesn't blow up combinatorially the way cross-ring products do --
+    # a product of 4 degree-32-in-2-variables polynomials is still only
+    # a degree-<=128-in-2-variables polynomial, capped at C(128+2,2) =
+    # 8385 monomials -- but the (a1,a2)-part times the (b1,b2)-part IS a
+    # cross-ring product (disjoint variables, no collisions), so a single
+    # substituted det() term can still have up to ~8385*8385 ~= 70
+    # million monomials before any further collection. evaluate() was
+    # trying to build and sum all 219 such terms simultaneously in one
+    # in-memory polynomial, which is what actually exhausted RAM.
+    # ------------------------------------------------------------------
+    println("  Substituting real (a1,a2)/(b1,b2) coefficients into det(Bpq),",
+            " term-by-term with disk-backed accumulation",
+            " (single in-memory evaluate() OOM'd here previously)...")
+    flush(stdout)
+
+    subst_vals = vcat(
+        g1_coefs_poly,   # P0..P4 -> p_0..p_4, already Rcoef elements (pure F[a1,a2])
+        g2_coefs_poly,   # Q0..Q4 -> q_0..q_4, already Rcoef elements (pure F[b1,b2])
+    )
+
+    PARTF_SCRATCH_DIR = joinpath(@__DIR__, "part_f_scratch", name)
+    mkpath(PARTF_SCRATCH_DIR)
+    term_file(i) = joinpath(PARTF_SCRATCH_DIR, "term_$(lpad(i, 5, '0')).oscar")
+    merge_file(tag) = joinpath(PARTF_SCRATCH_DIR, "merge_$(tag).oscar")
+    manifest_file = joinpath(PARTF_SCRATCH_DIR, "manifest.txt")
+
+    detB_terms = collect(terms(detB_abstract))
+    n_terms = length(detB_terms)
+    println("  det(Bpq) has ", n_terms, " monomials to substitute individually; ",
+            "writing each to ", PARTF_SCRATCH_DIR)
+    flush(stdout)
+
+    # Step 1: substitute EACH monomial of detB_abstract individually and
+    # save it to its own file, one at a time -- peak RAM here is bounded
+    # by a single substituted term (worst case ~289^4 monomials before
+    # collection, still far smaller than holding all 219 simultaneously),
+    # and each save() immediately frees that term from the need to be
+    # kept live for anything but the merge step below. Terms already
+    # present on disk from a prior partial run are skipped, so this loop
+    # is resumable after an OOM/crash.
+    t0terms = time()
+    n_done_this_run = 0
+    max_term_size_seen = 0
+    max_term_size_idx = 0
+    for (i, t) in enumerate(detB_terms)
+        outfile = term_file(i)
+        if isfile(outfile)
+            continue   # already substituted in a previous (crashed/partial) run
+        end
+        t_val = evaluate(t, subst_vals)   # single monomial: bounded, cheap-ish substitution
+        this_size = length(terms(t_val))
+        if this_size > max_term_size_seen
+            global max_term_size_seen = this_size
+            global max_term_size_idx = i
+        end
+        save(outfile, t_val)
+        global n_done_this_run += 1
+        if n_done_this_run % 10 == 0 || i == n_terms
+            println("    substituted term ", i, "/", n_terms,
+                    " (", n_done_this_run, " done this run, this term=", this_size,
+                    " terms, largest so far=term ", max_term_size_idx, " w/ ",
+                    max_term_size_seen, " terms) -- ",
+                    round(time() - t0terms, digits=1), "s elapsed")
+            flush(stdout)
+        end
+        t_val = nothing   # drop the reference explicitly before the next iteration
+    end
+    println("  all ", n_terms, " terms substituted and saved to disk (",
+            round(time() - t0terms, digits=1), "s total this run).")
+    flush(stdout)
+
+    # Step 2: disk-based pairwise reduction ("merge sort"-style summation)
+    # of the n_terms saved files into one final polynomial, so that at
+    # no point do we need all n_terms substituted terms resident in RAM
+    # simultaneously -- only two operands (the current pair being merged)
+    # are ever loaded at once, and each merge's result is immediately
+    # written back to disk and the two inputs' file handles released.
+    # This also means a crash during the merge phase only loses the
+    # current in-flight pairwise sum, not the term-substitution work from
+    # Step 1 (which is untouched on disk).
+    function disk_pairwise_sum(files::Vector{String}, tag_prefix::String)
+        current_files = copy(files)
+        round_idx = 0
+        while length(current_files) > 1
+            round_idx += 1
+            next_files = String[]
+            println("    merge round ", round_idx, ": ", length(current_files),
+                    " file(s) -> ", cld(length(current_files), 2), " file(s)")
+            flush(stdout)
+            i = 1
+            pair_idx = 0
+            while i <= length(current_files)
+                pair_idx += 1
+                out = merge_file("$(tag_prefix)_r$(round_idx)_p$(pair_idx)")
+                if isfile(out)
+                    push!(next_files, out)   # resumable: this pair already merged
+                    i += 2
+                    continue
+                end
+                if i == length(current_files)
+                    # odd one out this round -- carry forward unchanged
+                    a = load(current_files[i])
+                    save(out, a)
+                    a = nothing
+                else
+                    a = load(current_files[i])
+                    b = load(current_files[i+1])
+                    s = a + b
+                    save(out, s)
+                    a = nothing; b = nothing; s = nothing
+                end
+                push!(next_files, out)
+                i += 2
+            end
+            current_files = next_files
+        end
+        return current_files[1]
+    end
+
+    println("  Merging ", n_terms, " substituted terms via disk-based pairwise sum",
+            " (never holding more than 2 terms in RAM at once)...")
+    flush(stdout)
+    t0merge = time()
+    all_term_files = [term_file(i) for i in 1:n_terms]
+    final_file = disk_pairwise_sum(all_term_files, "detB")
+    el_merge = time() - t0merge
+    println("  merge complete in ", round(el_merge, digits=1), "s -- loading final result...")
+    flush(stdout)
+
+    detB_concrete = load(final_file)
+    el_sub = (time() - t0terms)
+    println("  substitution done (disk-backed): degree=",
+            total_degree(detB_concrete), "  terms=", length(terms(detB_concrete)),
+            "  (", round(el_sub, digits=1), "s total: term-substitution + merge)")
+    flush(stdout)
+
+    # Record the manifest so a subsequent run (or a human) can tell at a
+    # glance that this result came from the disk-backed path and where
+    # the intermediate files live, without needing to re-derive it.
+    open(manifest_file, "w") do io
+        println(io, "PART F disk-backed substitution manifest for $name")
+        println(io, "n_terms = $n_terms")
+        println(io, "final result file = $final_file")
+        println(io, "final degree = ", total_degree(detB_concrete))
+        println(io, "final terms  = ", length(terms(detB_concrete)))
+    end
+
+    # Cross-check against the concrete (already-flattened) Bezout matrix
+    # built above: det(B) via the abstract route should agree exactly
+    # with det() computed directly on the concrete B, since it's the
+    # same matrix. HOWEVER: det(B_mat_concrete) is exactly the dense,
+    # single-shot computation that OOM'd in the first place (it has to
+    # internally build and sum the same huge products the disk-backed
+    # path above was written to avoid) -- so it is NOT run by default.
+    # Gate it behind an explicit opt-in, same pattern as
+    # RUN_FULL_RESULTANT below, so re-confirming correctness on a
+    # machine with enough RAM is a deliberate choice, not something that
+    # silently reproduces the crash every run.
+    RUN_PARTF_DIRECT_CROSSCHECK = get(ENV, "ELIM2_PARTF_DIRECT_CROSSCHECK", "false") == "true"
+    if @isdefined(B) && RUN_PARTF_DIRECT_CROSSCHECK
+        println("  Cross-checking against det() of the concrete (pre-flattened) B...")
+        println("  (ELIM2_PARTF_DIRECT_CROSSCHECK=true -- this repeats the dense,",
+                " single-shot computation the disk-backed path exists to avoid;",
+                " only run this with enough RAM headroom.)")
+        flush(stdout)
+        t0chk = time()
+        B_mat_concrete = matrix(Rcoef, [B[(i,j)] for i in 0:3, j in 0:3])
+        detB_direct = det(B_mat_concrete)
+        el_chk = time() - t0chk
+        agrees = detB_concrete == detB_direct
+        println("  det(B) computed directly in ", round(el_chk, digits=3), "s: degree=",
+                total_degree(detB_direct), "  terms=", length(terms(detB_direct)))
+        println("  AGREES with abstract-route result? ", agrees,
+                agrees ? "" : "   <<<< MISMATCH -- reordering bug, do not trust PART F result")
+        flush(stdout)
+    elseif @isdefined(B)
+        # Cheap partial correctness signal instead: re-derive a handful
+        # of individual concrete Bezout entries (already computed as B[..]
+        # above, at ~83521 terms each -- NOT re-flattening the whole
+        # determinant) via the abstract-bracket substitution route, and
+        # confirm they agree entry-by-entry. This is orders of magnitude
+        # cheaper than det() on the full matrix (it's just re-checking
+        # the entries, which were already built and paid for above),
+        # while still directly testing whether evaluate() on a single
+        # abstract bracket matches the concrete bracket_num() path.
+        println("  Skipping full det(B) cross-check (set ",
+                "ELIM2_PARTF_DIRECT_CROSSCHECK=true to enable -- expensive,",
+                " dense, same computation that OOM'd before). Running a",
+                " cheaper per-entry spot-check instead:")
+        flush(stdout)
+        n_mismatch = 0
+        for (i, j) in [(0,0), (1,2), (2,3), (3,3)]
+            abstract_entry_concrete = evaluate(Bpq[(i,j)], subst_vals)
+            same = abstract_entry_concrete == B[(i,j)]
+            global n_mismatch += !same
+            println("    entry ($i,$j): abstract-route == concrete B[$i,$j]? ", same)
+        end
+        println("    spot-check: ", n_mismatch == 0 ? "all entries agree" :
+                "$n_mismatch MISMATCH(es) -- investigate before trusting PART F result")
+        flush(stdout)
+    else
+        println("  (concrete B not available for cross-check in this branch)")
+    end
+
+    println("  PART F summary: det(Bpq) computed as a degree<=8 polynomial in",
+            " 10 abstract symbols, THEN substituted once, instead of building")
+    println("  and manipulating dense ", nvars(Rcoef), "-variable ", 83521,
+            "-term entries at every intermediate step.")
+    flush(stdout)
+    ############################################################################
+    # END PART F
+    ############################################################################
 end
 
 ################################################################################
