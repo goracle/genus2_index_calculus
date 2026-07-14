@@ -5078,7 +5078,10 @@ if d1T == 4 && d2T == 4
     # re-substituting everything or tracking a directory full of files.
     t0terms = time()
     n_already_done = 0
-    detB_concrete = nothing
+    detB_concrete = zero(Rcoef)   # preallocated accumulator -- never replaced by
+                                   # a fresh object after this; add! mutates it
+                                   # in place every iteration instead of + allocating
+                                   # a brand-new ~17.8M-term polynomial each time.
     if isfile(accum_file) && isfile(progress_file)
         n_already_done = parse(Int, strip(read(progress_file, String)))
         if n_already_done > 0
@@ -5086,23 +5089,111 @@ if d1T == 4 && d2T == 4
                     " terms already folded into the accumulator from a",
                     " previous run.")
             loaded = load(accum_file)
-            # save()/load() does not guarantee returning a polynomial in
-            # the IDENTICAL Rcoef parent object (even though it's the
-            # same ring mathematically) -- Nemo's coercion, R(other_poly),
-            # is stricter than that and throws "Unable to coerce
-            # polynomial" here. Sidestep coercion entirely: rebuild the
-            # loaded polynomial term-by-term straight into Rcoef's own
-            # generators, the same MPolyBuildCtx/push_term!/finish
-            # pattern used by remap_to_final elsewhere in this file.
-            # Generator order is identity here (both rings are Rcoef's
-            # own [a1,a2,b1,b2] declared order), so no gen_map is needed.
-            rebuild_ctx = MPolyBuildCtx(Rcoef)
-            for (c, exps) in zip(coefficients(loaded), AbstractAlgebra.exponent_vectors(loaded))
-                push_term!(rebuild_ctx, F(c), exps)
+            loaded_n_terms = length(loaded)
+            println("  loaded checkpoint has ", loaded_n_terms, " terms;",
+                    " attempting cheap coercion into Rcoef first...")
+            flush(stdout)
+            t0resume = time()
+
+            # Try the cheap path first: Rcoef(loaded) is a single C-level
+            # FLINT call and is FAST if the parent rings happen to be
+            # compatible this time (this is not guaranteed to fail --
+            # it's environment/version dependent, see comment below).
+            # Only fall back to the slow, one-term-at-a-time Julia loop
+            # (which was silently costing MINUTES for a multi-million-term
+            # accumulator with zero progress output, and looked exactly
+            # like a hang) if the fast coercion actually throws.
+            local rebuilt
+            try
+                rebuilt = Rcoef(loaded)
+                println("  cheap coercion succeeded in ",
+                        round(time() - t0resume, digits=1), "s.")
+            catch e
+                println("  cheap coercion failed (", typeof(e), ") -- falling back",
+                        " to term-by-term rebuild. This is the SLOW path: it makes",
+                        " one push_term! call per term (", loaded_n_terms, " total",
+                        " here), each a separate FFI call into FLINT with no",
+                        " batching -- for a multi-million-term polynomial this can",
+                        " legitimately take minutes with NO progress output,",
+                        " which is exactly what looked like a hang before this",
+                        " message was added. Printing progress every 500k terms",
+                        " so it's visible instead of silent:")
+                flush(stdout)
+                # save()/load() does not guarantee returning a polynomial in
+                # the IDENTICAL Rcoef parent object (even though it's the
+                # same ring mathematically) -- Nemo's coercion, R(other_poly),
+                # is stricter than that and can throw "Unable to coerce
+                # polynomial". Sidestep coercion entirely: rebuild the
+                # loaded polynomial term-by-term straight into Rcoef's own
+                # generators, the same MPolyBuildCtx/push_term!/finish
+                # pattern used by remap_to_final elsewhere in this file.
+                # Generator order is identity here (both rings are Rcoef's
+                # own [a1,a2,b1,b2] declared order), so no gen_map is needed.
+                rebuild_ctx = MPolyBuildCtx(Rcoef)
+                n_pushed = 0
+                t0rebuild = time()
+                for (c, exps) in zip(coefficients(loaded), AbstractAlgebra.exponent_vectors(loaded))
+                    push_term!(rebuild_ctx, F(c), exps)
+                    n_pushed += 1
+                    if n_pushed % 500_000 == 0
+                        println("    rebuilt ", n_pushed, "/", loaded_n_terms,
+                                " terms (", round(time() - t0rebuild, digits=1), "s elapsed)")
+                        flush(stdout)
+                    end
+                end
+                rebuilt = finish(rebuild_ctx)
+                println("  term-by-term rebuild complete: ", n_pushed, " terms in ",
+                        round(time() - t0rebuild, digits=1), "s.")
             end
-            detB_concrete = finish(rebuild_ctx)
+            flush(stdout)
+
+            # Rebuild directly into detB_concrete's ring (Rcoef). This
+            # runs once (not per-term), so there's no performance reason
+            # to use add! here -- detB_concrete is still zero(Rcoef) at
+            # this point, so plain assignment is exact and unambiguous.
+            detB_concrete = rebuilt
+            println("  resume rebuild total: ", round(time() - t0resume, digits=1), "s.")
         end
     end
+
+    # Detect once, outside the hot loop, whether this Nemo/AbstractAlgebra
+    # install actually supports in-place add! on Rcoef elements (some
+    # versions/ring types silently fall back to allocating regardless, in
+    # which case applicable() below will just be false and we use plain +
+    # -- correctness never depends on this, only speed).
+    #
+    # Separately verify SELF-ALIASED add!(a, a, c) actually produces the
+    # right numeric result, not just that the method exists -- some
+    # AbstractAlgebra in-place implementations only support add!(a, b, c)
+    # for a distinct from b/c, and silently misbehave (not error) if a
+    # aliases one of its inputs. This is checked ONCE with tiny throwaway
+    # values, never against the real 17.8M-term accumulator, so it's
+    # cheap and safe to always run.
+    HAVE_INPLACE_ADD = applicable(add!, detB_concrete, detB_concrete, detB_concrete)
+    HAVE_SAFE_SELF_ALIAS_ADD = false
+    if HAVE_INPLACE_ADD
+        _probe = Rcoef(gens(Rcoef)[1])          # tiny throwaway: just "a1"
+        _probe_expected = _probe + _probe        # == 2*a1, via plain +
+        _probe_copy = deepcopy(_probe)
+        add!(_probe_copy, _probe_copy, _probe)
+        HAVE_SAFE_SELF_ALIAS_ADD = (_probe_copy == _probe_expected)
+    end
+
+    if HAVE_SAFE_SELF_ALIAS_ADD
+        println("  in-place add! (self-aliased) verified correct for Rcoef",
+                " elements -- accumulator will be mutated in place each",
+                " term (no full reallocation).")
+    elseif HAVE_INPLACE_ADD
+        println("  add! exists but self-aliased add!(a,a,c) did NOT match",
+                " plain + on a probe value -- NOT safe to use here.",
+                " Falling back to + (correct, but each fold reallocates",
+                " the full accumulator).")
+    else
+        println("  in-place add! NOT available for Rcoef elements on this",
+                " Nemo/AbstractAlgebra version -- falling back to +",
+                " (correct, but each fold reallocates the full accumulator).")
+    end
+    flush(stdout)
 
     max_term_size_seen = 0
     max_term_size_idx = 0
@@ -5110,15 +5201,41 @@ if d1T == 4 && d2T == 4
         if i <= n_already_done
             continue   # already folded into detB_concrete in a previous run
         end
+        t0iter = time()
+
+        t0eval = time()
         t_val = evaluate(t, subst_vals)   # single monomial: bounded, cheap-ish substitution
+        el_eval = time() - t0eval
         this_size = length(terms(t_val))
         if this_size > max_term_size_seen
             global max_term_size_seen = this_size
             global max_term_size_idx = i
         end
 
-        global detB_concrete = detB_concrete === nothing ? t_val : detB_concrete + t_val
+        t0fold = time()
+        if HAVE_SAFE_SELF_ALIAS_ADD
+            # Mutate detB_concrete in place: detB_concrete = detB_concrete + t_val,
+            # but reusing detB_concrete's own storage where the underlying
+            # FLINT/Nemo type supports it, instead of allocating a brand
+            # new ~17.8M-term result and letting the old one become
+            # garbage every single iteration.
+            add!(detB_concrete, detB_concrete, t_val)
+        else
+            global detB_concrete = detB_concrete + t_val
+        end
+        el_fold = time() - t0fold
         t_val = nothing   # drop the reference explicitly before checkpointing
+
+        # Force one full collection here, now that t_val (the ~17.8M-term
+        # substituted term) and, pre-add!, the old detB_concrete are both
+        # unreachable. This turns what would otherwise be unpredictable
+        # incremental GC pauses scattered through the NEXT iteration's
+        # evaluate()/add! calls into one accounted-for sweep here, timed
+        # separately so it shows up explicitly instead of as
+        # "unaccounted" wall-clock.
+        t0gc = time()
+        GC.gc(false)   # false = not full/aggressive; just reclaim what's already dead
+        el_gc = time() - t0gc
 
         # Checkpoint: write to a temp file, then atomically rename over
         # the real accumulator file, then update the progress counter.
@@ -5126,10 +5243,45 @@ if d1T == 4 && d2T == 4
         # progress_file, still saying i-1) intact -- never a half-written
         # accumulator that progress_file claims is complete. Only one
         # accumulator's worth of data ever sits on disk at a time.
+        #
+        # Each sub-step timed separately -- in particular mv() is only a
+        # fast atomic rename if accum_tmpfile and accum_file are on the
+        # SAME filesystem; if PARTF_SCRATCH_DIR straddles a filesystem
+        # boundary (e.g. tmp on one mount, scratch dir on another), Julia
+        # silently falls back to a full copy+delete for mv(), which for a
+        # large accumulator can take much longer than the save() itself
+        # and would otherwise show up as unexplained missing time.
+        t0write = time()
         save(accum_tmpfile, detB_concrete)
+        el_write = time() - t0write
+
+        t0mv = time()
         mv(accum_tmpfile, accum_file; force=true)
+        el_mv = time() - t0mv
+
+        t0prog = time()
         open(progress_file, "w") do io
             print(io, i)
+        end
+        el_prog = time() - t0prog
+
+        el_save = el_write + el_mv + el_prog
+        el_iter_measured = el_eval + el_fold + el_gc + el_save
+        el_iter_actual = time() - t0iter
+        el_unaccounted = el_iter_actual - el_iter_measured
+
+        if el_eval > 2.0 || el_fold > 2.0 || el_gc > 2.0 || el_save > 2.0 || el_unaccounted > 2.0 || i <= 3
+            println("      term ", i, " breakdown -- evaluate: ", round(el_eval, digits=1),
+                    "s  fold(add!): ", round(el_fold, digits=1),
+                    "s  gc: ", round(el_gc, digits=1),
+                    "s  save(write): ", round(el_write, digits=1),
+                    "s  mv(rename): ", round(el_mv, digits=1),
+                    "s  progress-write: ", round(el_prog, digits=1),
+                    "s  || measured total: ", round(el_iter_measured, digits=1),
+                    "s  actual wall-clock: ", round(el_iter_actual, digits=1),
+                    "s  UNACCOUNTED: ", round(el_unaccounted, digits=1), "s",
+                    el_unaccounted > 2.0 ? "  <<<< still-unexplained gap" : "")
+            flush(stdout)
         end
 
         if i % 10 == 0 || i == n_terms
