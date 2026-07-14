@@ -4238,6 +4238,265 @@ if d1T == 4 && d2T == 4
     flush(stdout)
 
     # ------------------------------------------------------------------
+    # PART C.5: PARTIAL symmetrization diagnostic.
+    #
+    # Motivation: PART C above only acts when a coefficient is symmetric
+    # under BOTH a1<->a2 AND b1<->b2 simultaneously. In practice g1 is
+    # typically symmetric only in (b1,b2) and g2 only in (a1,a2) (see
+    # the per-coefficient printout above) -- PART C correctly refuses to
+    # touch these ("NOT fully symmetric... skipping"), but that leaves a
+    # real, one-sided reduction on the table: a coefficient symmetric in
+    # (b1,b2) alone can still be rewritten in (a1,a2,sb,pb), dropping b1,b2
+    # individually without touching a1,a2. This block does exactly that
+    # rewrite, per coefficient, for whichever single pair is symmetric,
+    # and separately stress-tests the "combine g1 and g2 afterwards"
+    # step, since g1 and g2 end up partially symmetrized in DIFFERENT
+    # variable pairs and are not obviously combinable without further
+    # work (see PART C.5 SECTION 3 below).
+    # ------------------------------------------------------------------
+    println()
+    println("--- PART C.5: partial symmetrization diagnostic ---")
+    flush(stdout)
+
+    # Ring carrying both original vars and both symmetric-pair
+    # substitutes at once, so a "symmetrize (a1,a2) only" or
+    # "symmetrize (b1,b2) only" rewrite is ordinary polynomial
+    # arithmetic (same technique PART C uses above, just applied to
+    # one pair instead of both at once).
+    Rext_c5, (a1c5, a2c5, b1c5, b2c5, sac5, pac5, sbc5, pbc5) = polynomial_ring(
+        F, ["a1", "a2", "b1", "b2", "sa", "pa", "sb", "pb"])
+    incl_c5 = hom(Rcoef, Rext_c5, [a1c5, a2c5, b1c5, b2c5])
+
+    # Rewrite f, KNOWN symmetric in (b1,b2) only, into (a1,a2,sb,pb):
+    # substitute b2 -> sb - b1, then knock b1-degree down to <=1 via
+    # b1^2 = sb*b1 - pb (b1,b2 are roots of X^2 - sb*X + pb). a1,a2 are
+    # left completely untouched.
+    function symmetrize_b_only(f)
+        fe = incl_c5(f)
+        fe2 = evaluate(fe, [a1c5, a2c5, b1c5, sbc5 - b1c5, sac5, pac5, sbc5, pbc5])
+        relation_b = b1c5^2 - sbc5*b1c5 + pbc5
+        q, r = divrem(fe2, relation_b)
+        deg_b1_remaining = degree(r, b1c5)
+        if deg_b1_remaining > 0
+            return (nothing, "residual b1-degree=$deg_b1_remaining after reduction " *
+                    "-- f was not actually (b1,b2)-symmetric, or reduction bug")
+        end
+        return (r, nothing)   # r lives in a1c5,a2c5,sbc5,pbc5 only
+    end
+
+    # Mirror image: f known symmetric in (a1,a2) only, rewritten into
+    # (sa,pa,b1,b2), leaving b1,b2 untouched.
+    function symmetrize_a_only(f)
+        fe = incl_c5(f)
+        fe2 = evaluate(fe, [a1c5, sac5 - a1c5, b1c5, b2c5, sac5, pac5, sbc5, pbc5])
+        relation_a = a1c5^2 - sac5*a1c5 + pac5
+        q, r = divrem(fe2, relation_a)
+        deg_a1_remaining = degree(r, a1c5)
+        if deg_a1_remaining > 0
+            return (nothing, "residual a1-degree=$deg_a1_remaining after reduction " *
+                    "-- f was not actually (a1,a2)-symmetric, or reduction bug")
+        end
+        return (r, nothing)   # r lives in sac5,pac5,b1c5,b2c5 only
+    end
+
+    println()
+    println("  Section 1: per-coefficient single-pair symmetry classification")
+    println("  (independent of PART C's all-coefficients-at-once verdict above)")
+    flush(stdout)
+
+    # classification[gname][k] in {:both, :a_only, :b_only, :neither, :zero}
+    c5_class = Dict{Tuple{String,Int},Symbol}()
+    for (gname, k, f) in all_coefs
+        if iszero(f)
+            c5_class[(gname,k)] = :zero
+            println("    $gname coeff of T^$k: zero, skipping")
+            continue
+        end
+        sym_a = is_symmetric_under(f, swap_a)
+        sym_b = is_symmetric_under(f, swap_b)
+        local cls
+        if sym_a && sym_b
+            cls = :both
+        elseif sym_a
+            cls = :a_only
+        elseif sym_b
+            cls = :b_only
+        else
+            cls = :neither
+        end
+        c5_class[(gname,k)] = cls
+        println("    $gname coeff of T^$k: class=", cls,
+                "  (a1<->a2? ", sym_a, ", b1<->b2? ", sym_b, ")")
+    end
+    flush(stdout)
+
+    println()
+    println("  Section 2: partial rewrite term/degree reduction, per coefficient")
+    println("  (only attempted where Section 1 found a1-only or b1-only symmetry;")
+    println("  'both' coefficients are already handled by PART C above and are")
+    println("  skipped here to avoid double-reporting; 'neither' cannot be")
+    println("  partially symmetrized at all and is reported as such.)")
+    flush(stdout)
+
+    c5_rewritten = Dict{Tuple{String,Int},Any}()   # stores (poly, which_pair)
+    for (gname, k, f) in all_coefs
+        cls = c5_class[(gname,k)]
+        if cls == :zero
+            continue
+        elseif cls == :both
+            println("    $gname coeff of T^$k: fully symmetric (both pairs) -- ",
+                    "see PART C above, not repeated here")
+            continue
+        elseif cls == :neither
+            println("    $gname coeff of T^$k: symmetric under NEITHER swap -- ",
+                    "no partial symmetrization possible")
+            continue
+        end
+
+        before_terms = length(terms(f))
+        before_deg = total_degree(f)
+
+        if cls == :b_only
+            fsym, err = symmetrize_b_only(f)
+            pairname = "b"
+        else # :a_only
+            fsym, err = symmetrize_a_only(f)
+            pairname = "a"
+        end
+
+        if fsym === nothing
+            println("    $gname coeff of T^$k: rewrite FAILED (", err, ")")
+        else
+            after_terms = length(terms(fsym))
+            after_deg = total_degree(fsym)
+            pct = before_terms == 0 ? 0.0 : 100.0 * (1 - after_terms/before_terms)
+            println("    $gname coeff of T^$k: symmetrized ($pairname-pair only)  ",
+                    "degree $before_deg -> $after_deg,  terms $before_terms -> $after_terms  ",
+                    "(", round(pct, digits=1), "% reduction)")
+            c5_rewritten[(gname,k)] = (fsym, cls)
+        end
+        flush(stdout)
+    end
+
+    println()
+    println("  Section 2 summary: aggregate term counts, symmetrized vs raw")
+    let
+        raw_total = 0
+        sym_total = 0
+        n_rewritten = 0
+        for (gname, k, f) in all_coefs
+            cls = c5_class[(gname,k)]
+            if cls == :a_only || cls == :b_only
+                haskey(c5_rewritten, (gname,k)) || continue
+                raw_total += length(terms(f))
+                sym_total += length(terms(c5_rewritten[(gname,k)][1]))
+                n_rewritten += 1
+            end
+        end
+        if n_rewritten > 0
+            pct = 100.0 * (1 - sym_total/raw_total)
+            println("    $n_rewritten coefficient(s) partially symmetrized: ",
+                    "total terms $raw_total -> $sym_total  (", round(pct, digits=1), "% reduction)")
+        else
+            println("    no coefficients were eligible for partial symmetrization ",
+                    "(all were :both, :neither, or :zero)")
+        end
+    end
+    flush(stdout)
+
+    println()
+    println("  Section 3: cross-ring combination check")
+    println("  (the actual hazard flagged for Task 2: g1 is typically rewritten")
+    println("  in (a1,a2,sb,pb) and g2 in (sa,pa,b1,b2) -- these are DIFFERENT")
+    println("  rings and cannot be combined [resultant/GCD/matching] directly.")
+    println("  This section checks, computationally, whether that combination")
+    println("  requires reintroducing the eliminated pair, i.e. whether the")
+    println("  partial rewrite is a dead end for the downstream matching step")
+    println("  as currently structured.)")
+    flush(stdout)
+
+    g1_b_only_present = any(c5_class[("g1",k)] == :b_only for k in 0:4 if haskey(c5_class,("g1",k)))
+    g2_a_only_present = any(c5_class[("g2",k)] == :a_only for k in 0:4 if haskey(c5_class,("g2",k)))
+
+    if g1_b_only_present && g2_a_only_present
+        println("    g1 has (b1,b2)-symmetric coefficient(s); g2 has (a1,a2)-symmetric ",
+                "coefficient(s) -- this is the expected asymmetric case from the log.")
+        println("    g1's natural target ring after rewrite: (a1,a2,sb,pb)")
+        println("    g2's natural target ring after rewrite: (sa,pa,b1,b2)")
+        println("    Common ring containing BOTH without reintroducing any variable ",
+                "individually: NONE -- (a1,a2,sb,pb) has a1,a2 unreduced while ",
+                "(sa,pa,b1,b2) has b1,b2 unreduced, and neither is a subring of the other.")
+        println("    Only combination routes available, in order of cost:")
+        println("      (i)   map BOTH into the raw ring (a1,a2,b1,b2) -- discards all")
+        println("            symmetrization savings before the combination step, i.e.")
+        println("            the win from Section 2 does not survive into PART K's")
+        println("            final collision step as currently structured.")
+        println("      (ii)  desymmetrize the OTHER pair back out of each side via the")
+        println("            quadratic formula (b1,b2 = (sb +/- sqrt(sb^2-4pb))/2, and")
+        println("            symmetrically for a1,a2) before combining -- reintroduces")
+        println("            a degree-2 field extension per desymmetrized pair, so this")
+        println("            is not free either, and needs explicit sign-branch handling.")
+        println("      (iii) fully symmetrize BOTH g1 and g2 in BOTH pairs -- only valid")
+        println("            if g1 is ALSO (a1,a2)-symmetric and g2 ALSO (b1,b2)-symmetric,")
+        println("            which PART C above already tests; per the log this is FALSE,")
+        println("            so route (iii) is not available for this construction.")
+        println("    VERDICT: partial symmetrization, as currently scoped, reduces the")
+        println("    SIZE of g1 and g2 individually (Section 2 numbers above are real)")
+        println("    but does NOT by itself simplify the PART K combination step -- that")
+        println("    step still needs route (i) or (ii). This should be treated as an")
+        println("    open sub-problem, not assumed solved by Section 2's reduction.")
+    else
+        println("    Did not find the expected g1:(b-only) / g2:(a-only) asymmetric ",
+                "pattern in this run's classification (see Section 1) -- re-check ",
+                "before relying on the analysis below.")
+    end
+    flush(stdout)
+
+    println()
+    println("  Section 4: partially-symmetrized Bezout-entry-style size probe")
+    println("  (compares the combined term count of g1[T^0]+g2[T^0] in raw form")
+    println("  against their partially symmetrized intermediate form, so the")
+    println("  effect of Section 2's reduction can be read off directly before")
+    println("  any remapping-back-to-raw-ring cost from Section 3 is paid.)")
+    flush(stdout)
+
+    if haskey(c5_rewritten, ("g1",0)) && haskey(c5_rewritten, ("g2",0))
+        f1sym, cls1 = c5_rewritten[("g1",0)]
+        f2sym, cls2 = c5_rewritten[("g2",0)]
+        raw_terms = length(terms(g1_coefs_poly[1])) + length(terms(g2_coefs_poly[1]))
+        sym_terms = length(terms(f1sym)) + length(terms(f2sym))
+        println("    g1[T^0] + g2[T^0] combined term count:")
+        println("      raw (a1,a2,b1,b2) form:          ", raw_terms)
+        println("      partially symmetrized form:      ", sym_terms,
+                "  (", round(100.0*(1-sym_terms/raw_terms), digits=1), "% smaller)")
+        println("    NOTE: this measures the SYMMETRIZED INTERMEDIATE size only --")
+        println("    per Section 3, recombining these into one Bezout-style entry")
+        println("    still requires mapping back to the raw ring (route (i)) or a")
+        println("    sqrt-desymmetrization (route (ii)), so this number bounds the")
+        println("    best case, not the as-implemented case, until Section 3's open")
+        println("    sub-problem is resolved.")
+    else
+        println("    g1[T^0]/g2[T^0] not both eligible for partial symmetrization in ",
+                "this run -- skipping Section 4 size probe (see Section 1 above).")
+    end
+    flush(stdout)
+
+    println()
+    println("PART C.5 COMPLETE")
+    println("Answering (per Task 2 questions):")
+    println("  - meaningful term-count reduction from partial symmetrization?")
+    println("    -> see Section 2 summary (aggregate) and per-coefficient lines.")
+    println("  - hidden pitfalls combining partially-symmetrized rings?")
+    println("    -> see Section 3 (this is a real, currently-open blocker, not")
+    println("       merely a theoretical concern -- routes (i)/(ii)/(iii) are the")
+    println("       only options and none is free).")
+    println("  - does it help the actual Bezout/PRS combination step, not just")
+    println("    the standalone coefficient size?")
+    println("    -> see Section 4 (currently: reduces intermediate size only;")
+    println("       benefit at the combination step is NOT yet demonstrated).")
+    flush(stdout)
+
+    # ------------------------------------------------------------------
     # PART D: Bezout entry sparsity / factoring analysis
     # ------------------------------------------------------------------
     println()
