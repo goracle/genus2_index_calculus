@@ -4253,95 +4253,203 @@ if d1T == 4 && d2T == 4
     # step, since g1 and g2 end up partially symmetrized in DIFFERENT
     # variable pairs and are not obviously combinable without further
     # work (see PART C.5 SECTION 3 below).
+    #
+    # IMPLEMENTATION NOTE (important, learned the hard way): the first
+    # version of this diagnostic used `divrem(f, b1^2 - sb*b1 + pb)` in
+    # the ambient multivariate ring to perform the b1-degree reduction.
+    # That is WRONG in general: multivariate divrem reduces against the
+    # divisor's leading term under the ring's *global* monomial order
+    # (degrevlex here), not against "the b1^2 term specifically" -- and
+    # since sb*b1 and b1^2 are the same total degree, degrevlex's
+    # tie-break (on variable position) can pick sb*b1 as the leading
+    # term instead of b1^2, so the "reduction" silently does nothing.
+    # That bug produced a suspicious flat 0.0% reduction on every
+    # coefficient, which is what exposed it.
+    #
+    # Fixed approach: extract f's coefficients EXPLICITLY as a
+    # polynomial in the single variable being eliminated (via coeff(f,
+    # [var], [d]) for each degree d present -- ordering-independent,
+    # already used elsewhere in this file, e.g. leading_coeff_in), then
+    # perform the b1^2 -> sb*b1 - pb (or a1^2 -> sa*a1 - pa) reduction
+    # by explicit degree-by-degree substitution, which has no
+    # dependence on any monomial order at all.
     # ------------------------------------------------------------------
     println()
     println("--- PART C.5: partial symmetrization diagnostic ---")
     flush(stdout)
 
-    # Ring carrying both original vars and both symmetric-pair
-    # substitutes at once, so a "symmetrize (a1,a2) only" or
-    # "symmetrize (b1,b2) only" rewrite is ordinary polynomial
-    # arithmetic (same technique PART C uses above, just applied to
-    # one pair instead of both at once).
+    # Target rings for the two partial-rewrite directions.
+    Rb_only, (a1b, a2b, sbb, pbb) = polynomial_ring(F, ["a1", "a2", "sb", "pb"])
+    Ra_only, (saa, paa, b1a, b2a) = polynomial_ring(F, ["sa", "pa", "b1", "b2"])
+
+    # Scratch ring: original vars plus both symmetric-pair substitutes,
+    # used only as a common home for intermediate coefficient-polynomial
+    # arithmetic (additions/multiplications of coefficient-of-b1^k
+    # pieces, which themselves still depend on a1,a2 and, after
+    # reduction, on sb,pb). No divrem against a 2-term relation is done
+    # in this ring -- see note above.
     Rext_c5, (a1c5, a2c5, b1c5, b2c5, sac5, pac5, sbc5, pbc5) = polynomial_ring(
         F, ["a1", "a2", "b1", "b2", "sa", "pa", "sb", "pb"])
     incl_c5 = hom(Rcoef, Rext_c5, [a1c5, a2c5, b1c5, b2c5])
 
-    # Target rings for the two partial-rewrite directions. Note these
-    # are genuinely 4-variable rings (NOT the same as Rsym from PART C,
-    # which is only reached when BOTH pairs are simultaneously
-    # symmetric): symmetrize_b_only keeps a1,a2 untouched and only
-    # eliminates b1,b2 -> sb,pb; symmetrize_a_only is the mirror image.
-    Rb_only, (a1b, a2b, sbb, pbb) = polynomial_ring(F, ["a1", "a2", "sb", "pb"])
-    Ra_only, (saa, paa, b1a, b2a) = polynomial_ring(F, ["sa", "pa", "b1", "b2"])
+    # Ordering-independent reduction of a univariate-in-`var` polynomial
+    # (given as a Dict degree => coefficient-polynomial, coefficients
+    # living in Rext_c5) modulo relation var^2 = lin*var + const, i.e.
+    # standard "reduce a degree-d polynomial in a quadratic-algebraic
+    # element down to degree <=1" via repeated top-down substitution:
+    # var^k = lin*var^(k-1) + const*var^(k-2) for k>=2, applied
+    # degree-by-degree starting from the top so every step only ever
+    # touches two adjacent coefficient slots.
+    function reduce_quadratic!(coeffs_by_deg::Dict{Int,Any}, lin, const_term)
+        maxd = maximum(keys(coeffs_by_deg))
+        for d in maxd:-1:2
+            c = get(coeffs_by_deg, d, nothing)
+            if c === nothing || iszero(c)
+                delete!(coeffs_by_deg, d)
+                continue
+            end
+            delete!(coeffs_by_deg, d)
+            # var^d = var^(d-2) * (lin*var + const)
+            #       = lin*var^(d-1) + const*var^(d-2)
+            coeffs_by_deg[d-1] = get(coeffs_by_deg, d-1, zero(c)) + lin*c
+            coeffs_by_deg[d-2] = get(coeffs_by_deg, d-2, zero(c)) + const_term*c
+        end
+        return coeffs_by_deg   # now only keys 0 and/or 1 remain
+    end
 
     # Rewrite f, KNOWN symmetric in (b1,b2) only, into (a1,a2,sb,pb):
-    # substitute b2 -> sb - b1, then knock b1-degree down to <=1 via
-    # b1^2 = sb*b1 - pb (b1,b2 are roots of X^2 - sb*X + pb). a1,a2 are
-    # left completely untouched. Since f is symmetric ONLY in (b1,b2)
-    # (not also in (a1,a2)), the degree-<=1-in-b1 residual is expected
-    # to be genuinely zero in b1 -- if f is really (b1,b2)-symmetric,
-    # every monomial b1^i*b2^j pairs with b1^j*b2^i at equal
-    # coefficient, and this pairing is exactly what collapses to a
-    # pure sb,pb expression with NO leftover b1^1 term (this is the
-    # standard elementary-symmetric-polynomial fact, distinct from the
-    # "both pairs symmetric" case in PART C where a1/b1 residues must
-    # cancel across BOTH substitutions at once). We verify this
-    # directly below instead of assuming it.
-    function symmetrize_b_only(f)
+    # substitute b2 -> sb - b1 (exact, since b1+b2=sb), extract the
+    # resulting polynomial's coefficients in b1 explicitly via coeff(),
+    # reduce those degree-by-degree via reduce_quadratic! using
+    # b1^2 = sb*b1 - pb, and verify the degree-1-in-b1 slot vanishes
+    # (as it must, since f depends on b1,b2 ONLY through symmetric
+    # combinations -- this is the standard elementary-symmetric-
+    # polynomial fact, and is checked rather than assumed).
+    function symmetrize_b_only(f; debug::Bool=false)
+        debug && println("      [DBG b_only] input f: terms=", length(terms(f)),
+                          "  degree=", total_degree(f))
         fe = incl_c5(f)
+        debug && println("      [DBG b_only] after incl_c5: terms=", length(terms(fe)))
         fe2 = evaluate(fe, [a1c5, a2c5, b1c5, sbc5 - b1c5, sac5, pac5, sbc5, pbc5])
-        relation_b = b1c5^2 - sbc5*b1c5 + pbc5
-        q, r = divrem(fe2, relation_b)
-        deg_b1_remaining = degree(r, b1c5)
-        if deg_b1_remaining > 0
-            return (nothing, "residual b1-degree=$deg_b1_remaining after reduction " *
-                    "-- f was not actually (b1,b2)-symmetric, or reduction bug")
+        debug && println("      [DBG b_only] after b2->sb-b1 substitution: terms=",
+                          length(terms(fe2)), "  degree=", total_degree(fe2))
+        d = degree(fe2, b1c5)
+        debug && println("      [DBG b_only] degree(fe2, b1c5) = ", d)
+        coeffs_by_deg = Dict{Int,Any}()
+        for k in 0:d
+            ck = coeff(fe2, [b1c5], [k])
+            if !iszero(ck)
+                coeffs_by_deg[k] = ck
+                debug && println("      [DBG b_only] coeff of b1^", k, ": terms=",
+                                  length(terms(ck)))
+            end
         end
-        # Project r (now free of b1c5, still possibly mentioning a1c5,
-        # a2c5, sbc5, pbc5) down into the clean 4-variable Rb_only ring.
+        if isempty(coeffs_by_deg)
+            coeffs_by_deg[0] = zero(fe2)
+        end
+        debug && println("      [DBG b_only] sum of per-degree term counts BEFORE reduce = ",
+                          sum(length(terms(v)) for v in values(coeffs_by_deg)),
+                          "  (compare to fe2's ", length(terms(fe2)), " -- should roughly match",
+                          " if coeff() extraction is complete and non-overlapping)")
+        reduce_quadratic!(coeffs_by_deg, sbc5, -pbc5)
+        debug && println("      [DBG b_only] AFTER reduce_quadratic!: remaining keys=",
+                          sort(collect(keys(coeffs_by_deg))),
+                          "  term counts=", Dict(k=>length(terms(v)) for (k,v) in coeffs_by_deg))
+        if haskey(coeffs_by_deg, 1) && !iszero(coeffs_by_deg[1])
+            debug && println("      [DBG b_only] FAILED: nonzero b1^1 residual, terms=",
+                              length(terms(coeffs_by_deg[1])))
+            return (nothing, "residual b1-degree=1 term did not vanish after " *
+                    "reduction -- f was not actually (b1,b2)-symmetric, or " *
+                    "reduction bug")
+        end
+        r = get(coeffs_by_deg, 0, zero(fe2))
+        debug && println("      [DBG b_only] r (post-reduction, pre-projection): terms=",
+                          length(terms(r)), "  degree=", total_degree(r))
         Bctx = MPolyBuildCtx(Rb_only)
+        n_pushed = 0
         for (c, exps) in zip(coefficients(r), AbstractAlgebra.exponent_vectors(r))
             # exps = [e_a1,e_a2,e_b1,e_b2,e_sa,e_pa,e_sb,e_pb]
             if exps[3] != 0 || exps[4] != 0
+                debug && println("      [DBG b_only] FAILED at projection: leftover b1/b2 exps=", exps)
                 return (nothing, "unexpected leftover b1/b2 exponent after reduction " *
                         "(exps=$exps) -- reduction did not fully eliminate b1,b2")
             end
             if exps[5] != 0 || exps[6] != 0
+                debug && println("      [DBG b_only] FAILED at projection: leftover sa/pa exps=", exps)
                 return (nothing, "unexpected sa/pa dependence in a b-only rewrite " *
                         "(exps=$exps) -- sa,pa should never appear here")
             end
             push_term!(Bctx, c, [exps[1], exps[2], exps[7], exps[8]])
+            n_pushed += 1
         end
-        return (finish(Bctx), nothing)   # lives in Rb_only: (a1,a2,sb,pb)
+        fsym = finish(Bctx)
+        debug && println("      [DBG b_only] pushed ", n_pushed, " terms into Bctx; ",
+                          "finish(Bctx) reports terms=", length(terms(fsym)),
+                          "  degree=", total_degree(fsym))
+        return (fsym, nothing)   # lives in Rb_only: (a1,a2,sb,pb)
     end
 
     # Mirror image: f known symmetric in (a1,a2) only, rewritten into
     # (sa,pa,b1,b2), leaving b1,b2 untouched.
-    function symmetrize_a_only(f)
+    function symmetrize_a_only(f; debug::Bool=false)
+        debug && println("      [DBG a_only] input f: terms=", length(terms(f)),
+                          "  degree=", total_degree(f))
         fe = incl_c5(f)
         fe2 = evaluate(fe, [a1c5, sac5 - a1c5, b1c5, b2c5, sac5, pac5, sbc5, pbc5])
-        relation_a = a1c5^2 - sac5*a1c5 + pac5
-        q, r = divrem(fe2, relation_a)
-        deg_a1_remaining = degree(r, a1c5)
-        if deg_a1_remaining > 0
-            return (nothing, "residual a1-degree=$deg_a1_remaining after reduction " *
-                    "-- f was not actually (a1,a2)-symmetric, or reduction bug")
+        debug && println("      [DBG a_only] after a2->sa-a1 substitution: terms=",
+                          length(terms(fe2)), "  degree=", total_degree(fe2))
+        d = degree(fe2, a1c5)
+        debug && println("      [DBG a_only] degree(fe2, a1c5) = ", d)
+        coeffs_by_deg = Dict{Int,Any}()
+        for k in 0:d
+            ck = coeff(fe2, [a1c5], [k])
+            if !iszero(ck)
+                coeffs_by_deg[k] = ck
+                debug && println("      [DBG a_only] coeff of a1^", k, ": terms=",
+                                  length(terms(ck)))
+            end
         end
+        if isempty(coeffs_by_deg)
+            coeffs_by_deg[0] = zero(fe2)
+        end
+        debug && println("      [DBG a_only] sum of per-degree term counts BEFORE reduce = ",
+                          sum(length(terms(v)) for v in values(coeffs_by_deg)))
+        reduce_quadratic!(coeffs_by_deg, sac5, -pac5)
+        debug && println("      [DBG a_only] AFTER reduce_quadratic!: remaining keys=",
+                          sort(collect(keys(coeffs_by_deg))),
+                          "  term counts=", Dict(k=>length(terms(v)) for (k,v) in coeffs_by_deg))
+        if haskey(coeffs_by_deg, 1) && !iszero(coeffs_by_deg[1])
+            debug && println("      [DBG a_only] FAILED: nonzero a1^1 residual, terms=",
+                              length(terms(coeffs_by_deg[1])))
+            return (nothing, "residual a1-degree=1 term did not vanish after " *
+                    "reduction -- f was not actually (a1,a2)-symmetric, or " *
+                    "reduction bug")
+        end
+        r = get(coeffs_by_deg, 0, zero(fe2))
+        debug && println("      [DBG a_only] r (post-reduction, pre-projection): terms=",
+                          length(terms(r)), "  degree=", total_degree(r))
         Bctx = MPolyBuildCtx(Ra_only)
+        n_pushed = 0
         for (c, exps) in zip(coefficients(r), AbstractAlgebra.exponent_vectors(r))
             # exps = [e_a1,e_a2,e_b1,e_b2,e_sa,e_pa,e_sb,e_pb]
             if exps[1] != 0 || exps[2] != 0
+                debug && println("      [DBG a_only] FAILED at projection: leftover a1/a2 exps=", exps)
                 return (nothing, "unexpected leftover a1/a2 exponent after reduction " *
                         "(exps=$exps) -- reduction did not fully eliminate a1,a2")
             end
             if exps[7] != 0 || exps[8] != 0
+                debug && println("      [DBG a_only] FAILED at projection: leftover sb/pb exps=", exps)
                 return (nothing, "unexpected sb/pb dependence in an a-only rewrite " *
                         "(exps=$exps) -- sb,pb should never appear here")
             end
             push_term!(Bctx, c, [exps[5], exps[6], exps[3], exps[4]])
+            n_pushed += 1
         end
-        return (finish(Bctx), nothing)   # lives in Ra_only: (sa,pa,b1,b2)
+        fsym = finish(Bctx)
+        debug && println("      [DBG a_only] pushed ", n_pushed, " terms into Bctx; ",
+                          "finish(Bctx) reports terms=", length(terms(fsym)),
+                          "  degree=", total_degree(fsym))
+        return (fsym, nothing)   # lives in Ra_only: (sa,pa,b1,b2)
     end
 
     println()
@@ -4401,11 +4509,28 @@ if d1T == 4 && d2T == 4
         before_terms = length(terms(f))
         before_deg = total_degree(f)
 
+        # Full stage-by-stage trace on just the FIRST coefficient we hit
+        # for each rewrite direction (b_only / a_only) -- enough to
+        # diagnose where the pipeline diverges without flooding output
+        # for all ten coefficients.
+        global _c5_debug_done_b = @isdefined(_c5_debug_done_b) ? _c5_debug_done_b : false
+        global _c5_debug_done_a = @isdefined(_c5_debug_done_a) ? _c5_debug_done_a : false
+
         if cls == :b_only
-            fsym, err = symmetrize_b_only(f)
+            do_dbg = !_c5_debug_done_b
+            if do_dbg
+                println("    [entering full debug trace for $gname coeff of T^$k, class=b_only]")
+                global _c5_debug_done_b = true
+            end
+            fsym, err = symmetrize_b_only(f; debug=do_dbg)
             pairname = "b"
         else # :a_only
-            fsym, err = symmetrize_a_only(f)
+            do_dbg = !_c5_debug_done_a
+            if do_dbg
+                println("    [entering full debug trace for $gname coeff of T^$k, class=a_only]")
+                global _c5_debug_done_a = true
+            end
+            fsym, err = symmetrize_a_only(f; debug=do_dbg)
             pairname = "a"
         end
 
