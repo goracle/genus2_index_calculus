@@ -5202,6 +5202,13 @@ if d1T == 4 && d2T == 4
             continue   # already folded into detB_concrete in a previous run
         end
         t0iter = time()
+        gc_num_before = Base.gc_num()   # ground truth from the Julia runtime
+                                         # itself: total bytes allocated and total
+                                         # time spent in GC so far, process-wide.
+                                         # Unlike time() wrapped around individual
+                                         # calls, this can't miss GC that runs
+                                         # concurrently with / inside a call we
+                                         # thought we were timing cleanly.
 
         t0eval = time()
         t_val = evaluate(t, subst_vals)   # single monomial: bounded, cheap-ish substitution
@@ -5236,6 +5243,19 @@ if d1T == 4 && d2T == 4
         t0gc = time()
         GC.gc(false)   # false = not full/aggressive; just reclaim what's already dead
         el_gc = time() - t0gc
+
+        # Ground-truth GC/allocation numbers for this whole iteration, read
+        # from the Julia runtime rather than inferred from our own time()
+        # calls. gc_num_delta.total_time is in NANOSECONDS and covers ALL
+        # GC activity during this iteration -- including any GC that ran
+        # concurrently with evaluate()/add! rather than only at the
+        # explicit GC.gc(false) call site above. If el_gc (our manual
+        # timing) is small but this is large, that confirms GC is
+        # happening DURING evaluate()/add!, not just at our checkpoint.
+        gc_num_after = Base.gc_num()
+        gc_bytes_allocd = gc_num_after.allocd - gc_num_before.allocd
+        gc_time_ns = gc_num_after.total_time - gc_num_before.total_time
+        gc_time_s = gc_time_ns / 1e9
 
         # Checkpoint: write to a temp file, then atomically rename over
         # the real accumulator file, then update the progress counter.
@@ -5273,7 +5293,7 @@ if d1T == 4 && d2T == 4
         if el_eval > 2.0 || el_fold > 2.0 || el_gc > 2.0 || el_save > 2.0 || el_unaccounted > 2.0 || i <= 3
             println("      term ", i, " breakdown -- evaluate: ", round(el_eval, digits=1),
                     "s  fold(add!): ", round(el_fold, digits=1),
-                    "s  gc: ", round(el_gc, digits=1),
+                    "s  gc(explicit): ", round(el_gc, digits=1),
                     "s  save(write): ", round(el_write, digits=1),
                     "s  mv(rename): ", round(el_mv, digits=1),
                     "s  progress-write: ", round(el_prog, digits=1),
@@ -5281,6 +5301,26 @@ if d1T == 4 && d2T == 4
                     "s  actual wall-clock: ", round(el_iter_actual, digits=1),
                     "s  UNACCOUNTED: ", round(el_unaccounted, digits=1), "s",
                     el_unaccounted > 2.0 ? "  <<<< still-unexplained gap" : "")
+            println("        RUNTIME GROUND TRUTH -- total GC time this iteration",
+                    " (from Julia's own counters, covers ALL gc activity",
+                    " including any that ran DURING evaluate()/add!, not just at",
+                    " our explicit GC.gc() checkpoint): ", round(gc_time_s, digits=1),
+                    "s  |  bytes allocated this iteration: ",
+                    round(gc_bytes_allocd / 1e9, digits=2), " GB")
+            if gc_time_s > el_unaccounted * 0.5
+                println("        -> runtime-reported GC time accounts for most/all",
+                        " of the unaccounted gap: this IS GC, just not GC that",
+                        " our GC.gc(false) checkpoint call captured (it's running",
+                        " concurrently inside evaluate()/add!, not only at the",
+                        " checkpoint). The fix has to reduce ALLOCATION VOLUME,",
+                        " not move the collection point around.")
+            else
+                println("        -> runtime-reported GC time does NOT explain the",
+                        " gap -- something other than GC is consuming this time",
+                        " (possible culprits: FLINT-internal work not visible to",
+                        " Julia's profiler, disk cache pressure from the large",
+                        " save() calls, or system-level contention).")
+            end
             flush(stdout)
         end
 
