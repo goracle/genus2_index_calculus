@@ -2581,6 +2581,296 @@ function factor_stage_trace(Res1, Res2, gA; label::AbstractString="")
 end
 
 ################################################################################
+# PART H2: INFLATION-VS-DIVISION DIAGNOSTIC (investigation only).
+#
+# Question: is the exponent inflation seen by factor_stage_trace (Res1 ->
+# Res2 -> Groebner) universal across every benchmark target, or an
+# accident of one degree-8 factor in one target? And when a factor
+# inflates (exp(Res2) > exp(Groebner)), does DIVIDING Res2 by the excess
+# power of that factor exactly reproduce the Groebner eliminant (up to
+# ideal equality / a unit)?
+#
+# This does NOT change the elimination algorithm. It only factors the
+# three already-computed objects (Res1, Res2, gA), matches factors
+# exactly as factor_stage_trace already does, and -- for every factor
+# whose exponent drops going from Res2 to Groebner -- performs an exact
+# polynomial division and checks whether the quotient reproduces gA.
+################################################################################
+
+"""
+    inflating_factor_division_diagnostic(Res1, Res2, gA; label="")
+
+Automated per-benchmark diagnostic. Steps:
+
+  1. Factor Res1, Res2, gA (timed).
+  2. Match irreducible factors exactly via `canonical_factor_key`
+     (same matching used by `factor_stage_trace`).
+  3. Print one table row per matched factor: degree, term count, and
+     exponent at each stage, plus deltas/ratio.
+  4. Identify "inflating factors": exp(Res2) > exp(Groebner).
+  5. For each inflating factor F, compute
+         Q = Res2 / F^(exp(Res2) - exp(Groebner))
+     via exact polynomial division, then check `ideal(Q) == ideal(gA)`
+     and whether `Q == unit * gA` for some nonzero field-element unit.
+  6. Print total timing of factor(Res2) + division + verification, for
+     comparison against the Groebner elimination time already recorded
+     by the caller.
+  7. Print a concise per-target summary block.
+
+Returns a NamedTuple with the raw per-factor rows and per-inflating-
+factor verification results, so calling code can aggregate across all
+eight benchmarks without re-parsing printed output.
+"""
+function inflating_factor_division_diagnostic(Res1, Res2, gA; label::AbstractString="")
+    println("="^70)
+    println("INFLATION-VS-DIVISION DIAGNOSTIC", isempty(label) ? "" : "  [$label]")
+    println("  Res1 = resultant(h_s, curve1, w1)")
+    println("  Res2 = resultant(Res1, curve2, w2)")
+    println("  gA   = Groebner eliminate() generator")
+    println("="^70)
+
+    # ---- 1. Factor all three (timed individually; Res2's own timing is
+    #         also reported separately below for the "replacement
+    #         algorithm" cost comparison in step 6). ----
+    t0 = time()
+    set1, fac1 = factor_multiset(Res1)
+    t1 = time()
+    set2, fac2 = factor_multiset(Res2)
+    t_factor_res2 = time() - t1
+    t2 = time()
+    setA, facA = factor_multiset(gA)
+    t3 = time()
+
+    println("  factor(Res1) elapsed = ", round(t1 - t0, digits=4), "s  -> ", length(set1), " distinct factor(s)")
+    println("  factor(Res2) elapsed = ", round(t_factor_res2, digits=4), "s  -> ", length(set2), " distinct factor(s)")
+    println("  factor(gA)   elapsed = ", round(t3 - t2, digits=4), "s  -> ", length(setA), " distinct factor(s)")
+    println()
+
+    # Build key -> actual polynomial object maps (needed for division,
+    # unlike factor_stage_trace which only needs the exponent dicts).
+    poly_of_1 = Dict{String,Any}(canonical_factor_key(p) => p for (p, _e) in fac1)
+    poly_of_2 = Dict{String,Any}(canonical_factor_key(p) => p for (p, _e) in fac2)
+    poly_of_A = Dict{String,Any}(canonical_factor_key(p) => p for (p, _e) in facA)
+
+    # ---- 2. Match factors exactly as factor_stage_trace does. ----
+    all_keys = union(Set(keys(set1)), Set(keys(set2)), Set(keys(setA)))
+    ordered_keys = sort(collect(all_keys);
+        by = k -> (get(set2, k, 0), get(setA, k, 0), get(set1, k, 0)),
+        rev = true)
+    label_of = Dict(k => "F$(i)" for (i, k) in enumerate(ordered_keys))
+
+    # ---- 3. Print the requested table. ----
+    println("  --- per-factor table ---")
+    println("  ", rpad("factor", 6), rpad("degree", 8), rpad("terms", 8),
+            rpad("exp(Res1)", 11), rpad("exp(Res2)", 11), rpad("exp(gA)", 9),
+            rpad("d12", 6), rpad("d2A", 6), "ratio12")
+    rows = NamedTuple[]
+    for k in ordered_keys
+        # Prefer the Res2 representative for degree/term-count display
+        # (that's the object the division step will actually use); fall
+        # back to Res1's or gA's representative if absent from Res2.
+        rep = get(poly_of_2, k, get(poly_of_1, k, get(poly_of_A, k, nothing)))
+        deg = rep === nothing ? -1 : total_degree(rep)
+        nterms = rep === nothing ? -1 : length(terms(rep))
+
+        e1 = get(set1, k, 0)
+        e2 = get(set2, k, 0)
+        eA = get(setA, k, 0)
+        d12 = e2 - e1
+        d2A = eA - e2
+        ratio12 = e1 == 0 ? NaN : e2 / e1
+
+        println("  ", rpad(label_of[k], 6), rpad(deg, 8), rpad(nterms, 8),
+                rpad(e1, 11), rpad(e2, 11), rpad(eA, 9),
+                rpad(d12, 6), rpad(d2A, 6),
+                isnan(ratio12) ? "n/a" : round(ratio12, digits=3))
+
+        push!(rows, (
+            label = label_of[k],
+            key = k,
+            degree = deg,
+            terms = nterms,
+            exp_Res1 = e1,
+            exp_Res2 = e2,
+            exp_Groebner = eA,
+            delta12 = d12,
+            delta2G = d2A,
+            ratio12 = ratio12,
+        ))
+    end
+    println()
+
+    # ---- 4. Identify inflating factors: exp(Res2) > exp(Groebner). ----
+    inflating = filter(r -> r.exp_Res2 > r.exp_Groebner, rows)
+    println("  --- inflating factors (exp(Res2) > exp(Groebner)): ", length(inflating), " found ---")
+    for r in inflating
+        println("    ", r.label, ": exp(Res2)=", r.exp_Res2, "  exp(Groebner)=", r.exp_Groebner,
+                "  excess=", r.exp_Res2 - r.exp_Groebner)
+    end
+    println()
+
+    # ---- 5. For each inflating factor: exact division + verification. ----
+    verif_results = NamedTuple[]
+    t_division_total = 0.0
+    t_verification_total = 0.0
+
+    R_gA = parent(gA)
+    ideal_gA = nothing
+    try
+        ideal_gA = ideal(R_gA, [gA])
+    catch e
+        println("  ** could not build ideal(gA) for verification -- ", sprint(showerror, e), " **")
+    end
+
+    for r in inflating
+        println("  --- dividing out inflating factor ", r.label, " (excess exponent ",
+                r.exp_Res2 - r.exp_Groebner, ") ---")
+        F = get(poly_of_2, r.key, nothing)
+        if F === nothing
+            println("    ** could not recover polynomial object for ", r.label, " from factor(Res2) -- skipping **")
+            continue
+        end
+
+        excess = r.exp_Res2 - r.exp_Groebner
+        t0d = time()
+        Fpow = F^excess
+        Q = nothing
+        divides_exactly = false
+        try
+            q, rem = divrem(Res2, Fpow)
+            if iszero(rem)
+                divides_exactly = true
+                Q = q
+            else
+                # Fall back to Oscar's divides() for a definitive exact
+                # test in case divrem's remainder convention differs.
+                ok, q2 = divides(Res2, Fpow)
+                if ok
+                    divides_exactly = true
+                    Q = q2
+                end
+            end
+        catch e
+            println("    ** exact division raised an error -- ", sprint(showerror, e), " **")
+        end
+        t_div = time() - t0d
+        t_division_total += t_div
+
+        if !divides_exactly || Q === nothing
+            println("    exact division Res2 / F^", excess, " did NOT divide evenly -- ",
+                    "F^", excess, " is not actually a factor of Res2 at this exponent (inconsistent with factor()'s own exponent; reporting as-is).")
+            push!(verif_results, (
+                label = r.label, key = r.key, excess = excess,
+                division_exact = false, ideal_match = false, unit_match = false, unit_ratio = nothing,
+                t_division = t_div, t_verification = 0.0,
+            ))
+            println()
+            continue
+        end
+
+        println("    division elapsed = ", round(t_div, digits=4), "s  -> Q: total_degree=",
+                (iszero(Q) ? -1 : total_degree(Q)), "  terms=", length(terms(Q)))
+
+        # ---- verify ideal(Q) == ideal(gA) ----
+        t0v = time()
+        ideal_match = false
+        if ideal_gA !== nothing && parent(Q) === R_gA
+            try
+                ideal_match = (ideal(R_gA, [Q]) == ideal_gA)
+            catch e
+                println("    ** ideal(Q)==ideal(gA) check raised an error -- ", sprint(showerror, e), " **")
+            end
+        elseif parent(Q) !== R_gA
+            println("    NOTE: parent(Q) != parent(gA) -- skipping ideal-equality check (reported as false).")
+        end
+
+        # ---- verify Q == unit * gA ----
+        unit_match = false
+        unit_ratio = nothing
+        if parent(Q) === R_gA && !iszero(Q) && !iszero(gA) && length(terms(Q)) == length(terms(gA))
+            lcQ = leading_coefficient(Q)
+            lcA = leading_coefficient(gA)
+            if !iszero(lcA)
+                candidate_ratio = lcQ // lcA
+                if Q == candidate_ratio * gA
+                    unit_match = true
+                    unit_ratio = candidate_ratio
+                end
+            end
+        end
+        t_verif = time() - t0v
+        t_verification_total += t_verif
+
+        if ideal_match
+            println("    *** ideal(Q) == ideal(gA):  YES -- exact division reproduces the Groebner elimination ideal ***")
+        else
+            println("    ideal(Q) == ideal(gA):  NO")
+        end
+        if unit_match
+            println("    *** Q == unit * gA:  YES  (unit = $unit_ratio) -- division reproduces gA up to a scalar ***")
+        else
+            println("    Q == unit * gA:  NO")
+        end
+        println("    verification elapsed = ", round(t_verif, digits=4), "s")
+
+        push!(verif_results, (
+            label = r.label, key = r.key, excess = excess,
+            division_exact = true, ideal_match = ideal_match, unit_match = unit_match,
+            unit_ratio = unit_ratio, t_division = t_div, t_verification = t_verif,
+        ))
+        println()
+    end
+
+    # ---- 6. Timing summary (factor(Res2) + division + verification). ----
+    t_total_pipeline = t_factor_res2 + t_division_total + t_verification_total
+    println("  --- timing: factor(Res2) + division + verification ---")
+    println("    factor(Res2)  = ", round(t_factor_res2, digits=4), "s")
+    println("    division      = ", round(t_division_total, digits=4), "s  (summed over ", length(inflating), " inflating factor(s))")
+    println("    verification  = ", round(t_verification_total, digits=4), "s")
+    println("    TOTAL         = ", round(t_total_pipeline, digits=4), "s")
+    println("    (compare against the Groebner eliminate() time recorded separately by the caller " *
+            "to see whether factor+divide is consistently cheaper -- a possible replacement for " *
+            "Gröbner elimination after the resultant chain.)")
+    println()
+
+    # ---- 7. Concise summary block. ----
+    any_reproduces = any(v -> v.division_exact && (v.ideal_match || v.unit_match), verif_results)
+    println("  --- summary ---")
+    println("  target ", label)
+    println("  inflating factors: ", length(inflating))
+    for (i, r) in enumerate(inflating)
+        v = i <= length(verif_results) ? verif_results[i] : nothing
+        println("    factor ", i, ":")
+        println("      degree: ", r.degree)
+        println("      Res1 exponent: ", r.exp_Res1)
+        println("      Res2 exponent: ", r.exp_Res2)
+        println("      Groebner exponent: ", r.exp_Groebner)
+        println("      removed exponent: ", r.exp_Res2 - r.exp_Groebner)
+        if v === nothing
+            println("      division reproduces Groebner: NO (verification not run)")
+        else
+            reproduces = v.division_exact && (v.ideal_match || v.unit_match)
+            println("      division reproduces Groebner: ", reproduces ? "YES" : "NO")
+        end
+    end
+    if isempty(inflating)
+        println("    (no inflating factors for this target -- exp(Res2) <= exp(Groebner) everywhere)")
+    end
+    println("="^70)
+
+    return (
+        rows = rows,
+        inflating = inflating,
+        verification = verif_results,
+        t_factor_res2 = t_factor_res2,
+        t_division_total = t_division_total,
+        t_verification_total = t_verification_total,
+        t_total_pipeline = t_total_pipeline,
+        any_reproduces = any_reproduces,
+    )
+end
+
+################################################################################
 # IDENTIFY THE INFLATING FACTOR (F_infl).
 #
 # We know (empirically, from factor_stage_trace) which canonical-key
@@ -2848,6 +3138,14 @@ function _run_bench(raw_coeff, target_name::String, t_names::Vector{String}, w_n
     println("BENCH: target=$target_name  t_vars=$t_names  w_vars=$w_names")
     println("="^70)
 
+    # Human-readable "which sample" tag used throughout this bench's
+    # labels/diagnostics, derived from t_names rather than hardcoded, so
+    # this same function correctly self-labels for both sample 1 (a-vars)
+    # and sample 2 (b-vars) benchmarks.
+    sample_tag = (t_names == ["a1", "a2"]) ? "a-vars" :
+                 (t_names == ["b1", "b2"]) ? "b-vars" : join(t_names, ",")
+    bench_label = "$target_name ($sample_tag)"
+
     # 1. Build the identical 5-variable sandbox process_sample_*_coeff builds.
     R_small, gens_small = polynomial_ring(F, vcat(w_names, t_names, [target_name]))
     w1, w2, t1, t2, T = gens_small
@@ -3033,8 +3331,21 @@ function _run_bench(raw_coeff, target_name::String, t_names::Vector{String}, w_n
     results["gB"] = gB
     results["h_s_terms"] = length(terms(h_s))
     results["h_s_degree"] = iszero(h_s) ? -1 : total_degree(h_s)
-    squarefree_multiplicity_diagnostic(gA, gB; label="U0 (a-vars)")
-    trace = factor_stage_trace(step1, step2, gA; label="U0 (a-vars)")
+    squarefree_multiplicity_diagnostic(gA, gB; label=bench_label)
+    trace = factor_stage_trace(step1, step2, gA; label=bench_label)
+
+    # ------------------------------------------------------------------
+    # PART H2: universal inflation-vs-division diagnostic.
+    #
+    # Investigates whether the exponent-inflation pattern seen at the
+    # factor_stage_trace stage (Res1 -> Res2 -> Groebner) is universal
+    # across all benchmark targets, and whether exact polynomial
+    # division by the inflating factor's excess power recovers the
+    # Groebner eliminant (up to ideal equality / unit). Purely
+    # observational -- does not alter step1/step2/gA or any upstream
+    # algorithm.
+    # ------------------------------------------------------------------
+    infl_report = inflating_factor_division_diagnostic(step1, step2, gA; label=bench_label)
 
     # ------------------------------------------------------------------
     # Pick out the inflating factor and actually run identify_inflating_factor
@@ -3083,9 +3394,11 @@ function _run_bench(raw_coeff, target_name::String, t_names::Vector{String}, w_n
                 "jacobian(h_s,curve2; t2,w2)" => jacobian_2x2(h_s, curve2, t2, w2),
                 "step1 (Res_w1)"      => step1,
             )
-            identify_inflating_factor(F_infl_poly, candidates; label="U0 (a-vars), factor $(worst.label)")
+            identify_inflating_factor(F_infl_poly, candidates; label="$bench_label, factor $(worst.label)")
         end
     end
+
+    results["infl_report"] = infl_report
 
     return results
 end
@@ -3104,10 +3417,104 @@ println("Run e.g.:  run_bench_sample1(\"U0\", res1.u_RS_coeffs[1])")
 println("      or:  run_bench_sample2(\"U0\", res2.u_RS_coeffs[1])")
 
 
-run_bench_sample1("U0", res1.u_RS_coeffs[1])
+# ------------------------------------------------------------------------
+# AUTOMATED DRIVER: run all eight benchmark cases (U0, U1, V0, V1) x
+# (sample 1 / sample 2) so the inflation-vs-division question is answered
+# universally rather than by inspecting one target by hand.
+#
+#   U0 <- u_RS_coeffs[1] (x^0 coefficient of u_RS)
+#   U1 <- u_RS_coeffs[2] (x^1 coefficient of u_RS)
+#   V0 <- v_RS_coeffs[1] (x^0 coefficient of v_RS)
+#   V1 <- v_RS_coeffs[2] (x^1 coefficient of v_RS)
+#
+# Each case is run through _run_bench (both PATH A/B, the existing
+# squarefree/factor_stage_trace diagnostics, and the new
+# inflating_factor_division_diagnostic). A single crashing case does not
+# abort the sweep -- it is caught, reported, and the loop continues, so a
+# hang/error on (say) V1 doesn't destroy the results already collected
+# for U0/U1/V0.
+# ------------------------------------------------------------------------
 
+bench_cases = [
+    ("U0", 1, res1.u_RS_coeffs[1], res2.u_RS_coeffs[1]),
+    ("U1", 2, res1.u_RS_coeffs[2], res2.u_RS_coeffs[2]),
+    ("V0", 1, res1.v_RS_coeffs[1], res2.v_RS_coeffs[1]),
+    ("V1", 2, res1.v_RS_coeffs[2], res2.v_RS_coeffs[2]),
+]
 
-run_bench_sample2("U0", res2.u_RS_coeffs[1])
+all_bench_results = Dict{String,Any}()
+
+for (target_name, _idx, raw1, raw2) in bench_cases
+    for (sample_num, run_fn, raw_coeff) in ((1, run_bench_sample1, raw1), (2, run_bench_sample2, raw2))
+        case_key = "$(target_name)_sample$(sample_num)"
+        println()
+        println("#"^70)
+        println("# RUNNING BENCH CASE: ", case_key)
+        println("#"^70)
+        try
+            all_bench_results[case_key] = run_fn(target_name, raw_coeff)
+        catch e
+            println("  ** BENCH CASE ", case_key, " FAILED -- ", sprint(showerror, e), " **")
+            println("  ** continuing with remaining benchmark cases **")
+            all_bench_results[case_key] = Dict{String,Any}("error" => sprint(showerror, e))
+        end
+    end
+end
+
+# ------------------------------------------------------------------------
+# CROSS-BENCHMARK SUMMARY: is inflation universal? Does division
+# consistently reproduce the Groebner eliminant? Is factor+divide
+# consistently cheaper than Groebner elimination?
+# ------------------------------------------------------------------------
+println()
+println("="^70)
+println("CROSS-BENCHMARK SUMMARY (all ", length(bench_cases) * 2, " cases)")
+println("="^70)
+
+n_with_inflation = 0
+n_division_always_reproduces = 0
+n_cases_run = 0
+
+for (target_name, _idx, _r1, _r2) in bench_cases
+    for sample_num in (1, 2)
+        case_key = "$(target_name)_sample$(sample_num)"
+        res = get(all_bench_results, case_key, nothing)
+        if res === nothing || (res isa Dict && haskey(res, "error"))
+            println("  ", case_key, ": ERROR -- ", res === nothing ? "no result" : res["error"])
+            continue
+        end
+        global n_cases_run += 1
+        infl = res["infl_report"]
+        n_infl = length(infl.inflating)
+        n_infl > 0 && (global n_with_inflation += 1)
+        all_reproduce = n_infl > 0 && all(v -> v.division_exact && (v.ideal_match || v.unit_match), infl.verification)
+        n_infl > 0 && all_reproduce && (global n_division_always_reproduces += 1)
+        println("  ", rpad(case_key, 14),
+                " inflating=", rpad(n_infl, 3),
+                " division_reproduces_all=", rpad(n_infl == 0 ? "n/a" : (all_reproduce ? "YES" : "NO"), 5),
+                " factor(Res2)+div+verif=", round(infl.t_total_pipeline, digits=3), "s",
+                "  vs  Groebner=", round(get(res, "A_time", NaN), digits=3), "s")
+    end
+end
+
+println()
+println("  cases with at least one inflating factor: ", n_with_inflation, " / ", n_cases_run)
+println("  cases where division reproduces Groebner for ALL inflating factors: ",
+        n_division_always_reproduces, " / ", n_with_inflation, " (of the inflating cases)")
+if n_with_inflation > 0 && n_division_always_reproduces == n_with_inflation
+    println("  => VERDICT: inflation is universal across observed cases, and exact division ",
+            "consistently reproduces the Groebner eliminant -- factor(Res2)+division may be ",
+            "a viable replacement for Groebner elimination after the resultant chain, PENDING ",
+            "a timing comparison per the table above.")
+elseif n_with_inflation > 0
+    println("  => VERDICT: inflation occurs in some cases, but division does NOT consistently ",
+            "reproduce the Groebner eliminant -- NOT a safe universal replacement without further ",
+            "investigation of the cases where it fails.")
+else
+    println("  => VERDICT: no inflating factors observed in any case (exp(Res2) <= exp(Groebner) ",
+            "everywhere) -- the original degree-8 U0 finding may have been accidental/case-specific.")
+end
+println("="^70)
 
 
 
