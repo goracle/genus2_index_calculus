@@ -2123,10 +2123,20 @@ Returns a NamedTuple:
 This function never calls eliminate()/groebner_basis() -- it is safe to
 run unconditionally in default (CHECK_GROEBNER=false) benchmark mode.
 """
-function correct_multiplicity(Res1, Res2; label::AbstractString="")
+function correct_multiplicity(Res1, Res2; label::AbstractString="", Tvar=nothing)
     println("-"^70)
     println("MULTIPLICITY CORRECTION (Gröbner-free)", isempty(label) ? "" : "  [$label]")
     println("-"^70)
+
+    # Instrumentation helper: degree in the target variable, or "n/a" if
+    # Tvar wasn't supplied by the caller.
+    degT(f) = Tvar === nothing ? nothing : (iszero(f) ? -1 : degree(f, Tvar))
+    degT_str(f) = (d = degT(f)) === nothing ? "n/a" : string(d)
+
+    if Tvar !== nothing
+        println("  [instrumentation] degree(Res1, T) = ", degT_str(Res1),
+                "   degree(Res2, T) = ", degT_str(Res2))
+    end
 
     t0 = time()
     set1, fac1 = factor_multiset(Res1)
@@ -2156,7 +2166,8 @@ function correct_multiplicity(Res1, Res2; label::AbstractString="")
     for c in candidates
         rep = poly_of_2[c.key]
         println("    degree=", total_degree(rep), "  terms=", length(terms(rep)),
-                "  exp(Res1)=", c.exp_Res1, "  exp(Res2)=", c.exp_Res2, "  excess=", c.excess)
+                "  exp(Res1)=", c.exp_Res1, "  exp(Res2)=", c.exp_Res2, "  excess=", c.excess,
+                Tvar === nothing ? "" : "  degree(candidate,T)=$(degT_str(rep))")
     end
 
     t0 = time()
@@ -2168,6 +2179,7 @@ function correct_multiplicity(Res1, Res2; label::AbstractString="")
         Fpow = Fp^c.excess
         divides_exactly = false
         q = nothing
+        degT_before = degT(corrected)
         try
             qtmp, rem = divrem(corrected, Fpow)
             if iszero(rem)
@@ -2184,11 +2196,37 @@ function correct_multiplicity(Res1, Res2; label::AbstractString="")
             println("    ** division by F^", c.excess, " raised an error -- ", sprint(showerror, e), " **")
         end
         if divides_exactly
+            # Explicit exactness re-verification, independent of the
+            # divrem/divides branch taken above: reconstruct q*Fpow and
+            # compare to the pre-division polynomial directly.
+            reexpand = q * Fpow
+            exact_reverify = (reexpand == corrected)
+
             corrected = q
+            degT_after = degT(corrected)
+            fp_degT = degT(Fp)
+
             push!(applied, (key = c.key, excess = c.excess))
             println("  divided out excess exponent ", c.excess, " of one factor -> ",
                     "degree=", (iszero(corrected) ? -1 : total_degree(corrected)),
                     "  terms=", length(terms(corrected)))
+            if Tvar !== nothing
+                println("    [instrumentation] degree(candidate,T)=", degT_str(Fp),
+                        "   degree(dividend,T) before=", degT_before === nothing ? "n/a" : degT_before,
+                        " -> after=", degT_after === nothing ? "n/a" : degT_after,
+                        "   exact_reverify(q*F^e == dividend)=", exact_reverify)
+                if degT_before !== nothing && degT_after !== nothing && degT_after < degT_before
+                    expected_drop = fp_degT === nothing ? nothing : fp_degT * c.excess
+                    consistent = expected_drop !== nothing && expected_drop == (degT_before - degT_after)
+                    println("    [instrumentation] degree(T) dropped by ",
+                            degT_before - degT_after,
+                            "; candidate's own degree(T)*excess = ",
+                            expected_drop === nothing ? "n/a" : expected_drop,
+                            consistent ?
+                                "  (consistent: candidate itself carries all the removed T-degree)" :
+                                "  (MISMATCH: drop not explained by candidate's own T-degree alone -- inspect further)")
+                end
+            end
         else
             all_exact = false
             println("  ** excess exponent ", c.excess, " did NOT divide evenly -- ",
@@ -2196,6 +2234,10 @@ function correct_multiplicity(Res1, Res2; label::AbstractString="")
         end
     end
     t_correct = time() - t0
+
+    if Tvar !== nothing
+        println("  [instrumentation] FINAL degree(corrected, T) = ", degT_str(corrected))
+    end
 
     if isempty(candidates)
         println("  (no candidate inflated factors -- Res2 already matches Res1's ",
