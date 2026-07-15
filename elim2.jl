@@ -5195,6 +5195,31 @@ if d1T == 4 && d2T == 4
     end
     flush(stdout)
 
+    # NOTE on GC instrumentation: Base.gc_num() was tried here first and
+    # proved UNRELIABLE for this workload -- it reported NEGATIVE bytes
+    # allocated in a live run (-0.52 GB, -0.35 GB), which happens because
+    # FLINT/Nemo mpoly data lives in C-allocated memory that Julia's GC
+    # does not track at all; gc_num() only sees the thin Julia-side
+    # wrapper, not the actual multi-GB polynomial backing storage. Since
+    # GC time was also negligible (0.3-1.2s) while ~40s/iteration stayed
+    # unaccounted, GC is RULED OUT. Replaced with direct RSS (resident
+    # set size) sampling from /proc/self/status, which reflects actual
+    # process memory regardless of which allocator (Julia GC or FLINT's
+    # own malloc) is responsible -- this will show whether the missing
+    # time correlates with memory growth (consistent with FLINT
+    # allocating/copying large buffers) or not (pointing elsewhere, e.g.
+    # disk cache eviction pressure from the save() calls).
+    function read_rss_mb()
+        for line in eachline("/proc/self/status")
+            if startswith(line, "VmRSS:")
+                # format: "VmRSS:	 1234567 kB"
+                parts = split(line)
+                return parse(Int, parts[2]) / 1024.0   # kB -> MB
+            end
+        end
+        return -1.0
+    end
+
     max_term_size_seen = 0
     max_term_size_idx = 0
     for (i, t) in enumerate(detB_terms)
@@ -5202,17 +5227,12 @@ if d1T == 4 && d2T == 4
             continue   # already folded into detB_concrete in a previous run
         end
         t0iter = time()
-        gc_num_before = Base.gc_num()   # ground truth from the Julia runtime
-                                         # itself: total bytes allocated and total
-                                         # time spent in GC so far, process-wide.
-                                         # Unlike time() wrapped around individual
-                                         # calls, this can't miss GC that runs
-                                         # concurrently with / inside a call we
-                                         # thought we were timing cleanly.
+        rss_before = read_rss_mb()
 
         t0eval = time()
         t_val = evaluate(t, subst_vals)   # single monomial: bounded, cheap-ish substitution
         el_eval = time() - t0eval
+        rss_after_eval = read_rss_mb()
         this_size = length(terms(t_val))
         if this_size > max_term_size_seen
             global max_term_size_seen = this_size
@@ -5231,6 +5251,7 @@ if d1T == 4 && d2T == 4
             global detB_concrete = detB_concrete + t_val
         end
         el_fold = time() - t0fold
+        rss_after_fold = read_rss_mb()
         t_val = nothing   # drop the reference explicitly before checkpointing
 
         # Force one full collection here, now that t_val (the ~17.8M-term
@@ -5243,19 +5264,7 @@ if d1T == 4 && d2T == 4
         t0gc = time()
         GC.gc(false)   # false = not full/aggressive; just reclaim what's already dead
         el_gc = time() - t0gc
-
-        # Ground-truth GC/allocation numbers for this whole iteration, read
-        # from the Julia runtime rather than inferred from our own time()
-        # calls. gc_num_delta.total_time is in NANOSECONDS and covers ALL
-        # GC activity during this iteration -- including any GC that ran
-        # concurrently with evaluate()/add! rather than only at the
-        # explicit GC.gc(false) call site above. If el_gc (our manual
-        # timing) is small but this is large, that confirms GC is
-        # happening DURING evaluate()/add!, not just at our checkpoint.
-        gc_num_after = Base.gc_num()
-        gc_bytes_allocd = gc_num_after.allocd - gc_num_before.allocd
-        gc_time_ns = gc_num_after.total_time - gc_num_before.total_time
-        gc_time_s = gc_time_ns / 1e9
+        rss_after_gc = read_rss_mb()
 
         # Checkpoint: write to a temp file, then atomically rename over
         # the real accumulator file, then update the progress counter.
@@ -5285,6 +5294,8 @@ if d1T == 4 && d2T == 4
         end
         el_prog = time() - t0prog
 
+        rss_after_save = read_rss_mb()
+
         el_save = el_write + el_mv + el_prog
         el_iter_measured = el_eval + el_fold + el_gc + el_save
         el_iter_actual = time() - t0iter
@@ -5301,26 +5312,23 @@ if d1T == 4 && d2T == 4
                     "s  actual wall-clock: ", round(el_iter_actual, digits=1),
                     "s  UNACCOUNTED: ", round(el_unaccounted, digits=1), "s",
                     el_unaccounted > 2.0 ? "  <<<< still-unexplained gap" : "")
-            println("        RUNTIME GROUND TRUTH -- total GC time this iteration",
-                    " (from Julia's own counters, covers ALL gc activity",
-                    " including any that ran DURING evaluate()/add!, not just at",
-                    " our explicit GC.gc() checkpoint): ", round(gc_time_s, digits=1),
-                    "s  |  bytes allocated this iteration: ",
-                    round(gc_bytes_allocd / 1e9, digits=2), " GB")
-            if gc_time_s > el_unaccounted * 0.5
-                println("        -> runtime-reported GC time accounts for most/all",
-                        " of the unaccounted gap: this IS GC, just not GC that",
-                        " our GC.gc(false) checkpoint call captured (it's running",
-                        " concurrently inside evaluate()/add!, not only at the",
-                        " checkpoint). The fix has to reduce ALLOCATION VOLUME,",
-                        " not move the collection point around.")
-            else
-                println("        -> runtime-reported GC time does NOT explain the",
-                        " gap -- something other than GC is consuming this time",
-                        " (possible culprits: FLINT-internal work not visible to",
-                        " Julia's profiler, disk cache pressure from the large",
-                        " save() calls, or system-level contention).")
-            end
+            println("        RSS (resident memory, MB) -- before iter: ", round(rss_before, digits=0),
+                    "  after evaluate: ", round(rss_after_eval, digits=0),
+                    " (Δ", round(rss_after_eval - rss_before, digits=0), ")",
+                    "  after fold: ", round(rss_after_fold, digits=0),
+                    " (Δ", round(rss_after_fold - rss_after_eval, digits=0), ")",
+                    "  after gc: ", round(rss_after_gc, digits=0),
+                    " (Δ", round(rss_after_gc - rss_after_fold, digits=0), ")",
+                    "  after save: ", round(rss_after_save, digits=0),
+                    " (Δ", round(rss_after_save - rss_after_gc, digits=0), ")")
+            println("        (Note: Base.gc_num()-based instrumentation was tried",
+                    " and abandoned -- it reported NEGATIVE bytes allocated for",
+                    " this workload because FLINT/Nemo mpoly data lives in",
+                    " C-allocated memory outside Julia's GC accounting. RSS",
+                    " above reflects the OS's view of actual process memory",
+                    " regardless of which allocator is responsible, and is the",
+                    " ground truth for where the unaccounted time correlates",
+                    " with memory growth.)")
             flush(stdout)
         end
 
