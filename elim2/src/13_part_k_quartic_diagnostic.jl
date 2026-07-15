@@ -49,8 +49,8 @@ function try_factor_with_timeout(label, g, limit_secs)
     # (same tradeoff elim2.jl already accepted for its own PART B sweep,
     # and the same reason elim2.jl's comments say a true kill needs an
     # OS-level `timeout N julia ...` wrapper around the whole process).
-    if isdefined(Main, :run_with_timeout)
-        val, status, elapsed = Main.run_with_timeout(() -> factor(g), limit_secs)
+    if isdefined(@__MODULE__, :run_with_timeout)
+        val, status, elapsed = run_with_timeout(() -> factor(g), limit_secs)
         if status != :ok
             println("  $label: factor() did not complete (status=$status, ",
                     round(elapsed, digits=1), "s elapsed) -- skipping. ",
@@ -60,7 +60,7 @@ function try_factor_with_timeout(label, g, limit_secs)
         end
         fac = val
     else
-        println("  $label: run_with_timeout not found in Main (load elim2.jl ",
+        println("  $label: run_with_timeout not found (load elim2.jl ",
                 "first) -- running factor() with NO timeout. This may hang ",
                 "for a long time if the polynomial is large; interrupt ",
                 "(Ctrl-C) if needed.")
@@ -77,16 +77,16 @@ function try_factor_with_timeout(label, g, limit_secs)
     return fac
 end
 
-if isdefined(Main, :g1_T) && isdefined(Main, :g2_T)
-    fac1 = try_factor_with_timeout("g1_T", Main.g1_T, 60.0)
-    fac2 = try_factor_with_timeout("g2_T", Main.g2_T, 60.0)
+if isdefined(@__MODULE__, :g1_T) && isdefined(@__MODULE__, :g2_T)
+    fac1 = try_factor_with_timeout("g1_T", g1_T, 60.0)
+    fac2 = try_factor_with_timeout("g2_T", g2_T, 60.0)
 else
     println("  g1_T/g2_T not yet built in this session (Part K hasn't ",
             "reached that line) -- skipping live factorization test. ",
             "Rebuilding just enough to test factor() on g1_fp/g2_fp as ",
             "plain multivariate polys instead (factor(), not resultant()):")
-    fac1 = try_factor_with_timeout("g1_fp", Main.g1_fp, 60.0)
-    fac2 = try_factor_with_timeout("g2_fp", Main.g2_fp, 60.0)
+    fac1 = try_factor_with_timeout("g1_fp", g1_fp, 60.0)
+    fac2 = try_factor_with_timeout("g2_fp", g2_fp, 60.0)
 end
 
 # ------------------------------------------------------------------------

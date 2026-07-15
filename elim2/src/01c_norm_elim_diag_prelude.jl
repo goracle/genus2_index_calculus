@@ -82,12 +82,12 @@ curve_a1 = wa1^2 - (a1^5 + a1 + 2)
 curve_a2 = wa2^2 - (a2^5 + a2 + 2)
 
 ################################################################################
-# Tower -> ring flattening -- copied verbatim from elim2.jl's _tower_to_ring
-# / _base_frac_to_ring / _reduce_frac, restricted to a single sample.
+# Tower -> ring flattening -- uses tower_to_ring / _base_frac_to_ring /
+# _reduce_frac as already defined in 01a_header_and_ring_map.jl (same
+# module scope, included before this file). Not redefined here: the
+# earlier copy was byte-identical and Julia's precompiler rejects
+# redefining a method during module precompilation.
 ################################################################################
-
-
-tower_to_ring(val, t_gens::Vector, w_gens::Vector) = _tower_to_ring(val, 2, t_gens, w_gens)
 
 t_gens_1 = [a1, a2]
 w_gens_1 = [wa1, wa2]
@@ -237,11 +237,18 @@ function reduce_mod_curves(g, wa1, a1, wa2, a2)
     return g
 end
 
-function split_linear(g, w)
+function split_linear_reduced(g, w)
     # g is degree <=1 in w AFTER reduce_mod_curves has been applied.
     # Return (P,Q) with g = P + Q*w, P,Q free of w. Exact -- no
     # approximation -- but only valid post-reduction; calling this on an
     # unreduced g is exactly the bug the sanity check caught.
+    #
+    # NOTE: named split_linear_reduced (not split_linear) because it is
+    # NOT interchangeable with 01b_wdegree_diagnostic.jl's split_linear --
+    # that version assumes g is already degree <=1 in w with no reduction
+    # step required, so it uses evaluate/divexact instead of coeff-based
+    # extraction. Reusing the same name caused a method-overwrite error
+    # during module precompilation.
     d = degree(g, w)
     @assert d <= 1 "expected degree <=1 in $w after curve reduction, got $d " *
                     "-- reduce_mod_curves did not fully linearize; check its loop bound (k up to 6) " *
@@ -257,7 +264,7 @@ function norm_eliminate_step(g, w, a_anchor, wa1, a1, wa2, a2)
     # squaring step can reintroduce even powers of the OTHER w variable
     # too, via cross terms in P^2/Q^2).
     g = reduce_mod_curves(g, wa1, a1, wa2, a2)
-    P, Q = split_linear(g, w)
+    P, Q = split_linear_reduced(g, w)
     result = P^2 - Q^2 * f_of(a_anchor)
     return reduce_mod_curves(result, wa1, a1, wa2, a2)
 end

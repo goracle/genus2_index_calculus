@@ -173,55 +173,11 @@ println("Sample 2 produced ", length(clean_sample_2), " clean polynomials.")
 
 using Oscar
 
-"""
-    canonical_factor_key(f) -> String
-
-Return a hashable, order-independent, unit-scaled key for an irreducible
-polynomial `f`, so two irreducible factors coming out of independent
-`factor()` calls (potentially differing by a nonzero field-element unit,
-and with no guaranteed enumeration order) compare equal iff they are
-associates.
-
-Normalization: divide by the coefficient of the lexicographically-first
-monomial (in a fixed, deterministic term order), so the leading
-coefficient of the normalized polynomial is always 1. This is well
-defined for any irreducible over a field, independent of which unit
-multiple factor() happened to emit.
-"""
-function canonical_factor_key(f)
-    R = parent(f)
-    F = base_ring(R)
-    # Deterministic term order: sort exponent vectors lexicographically.
-    exps = collect(AbstractAlgebra.exponent_vectors(f))
-    cfs  = collect(coefficients(f))
-    order = sortperm(exps)  # lexicographic on Vector{Int} is Julia's default
-    lead_c = cfs[order[1]]
-    inv_lead = inv(lead_c)
-    # Build normalized (monic-by-convention) term list as a canonical string.
-    io = IOBuffer()
-    for idx in order
-        c = cfs[idx] * inv_lead
-        print(io, string(c), ":", string(exps[idx]), ";")
-    end
-    return String(take!(io))
-end
-
-"""
-    factor_multiset(f) -> Dict{String,Int}
-
-Factor `f` and return a map: canonical_factor_key(irreducible factor) => exponent.
-Keys are unit/order independent so two factorizations of associate
-polynomials produce identical dictionaries.
-"""
-function factor_multiset(f)
-    fac = factor(f)
-    d = Dict{String,Int}()
-    for (p, e) in fac
-        key = canonical_factor_key(p)
-        d[key] = get(d, key, 0) + e
-    end
-    return d, fac
-end
+# canonical_factor_key(f) and factor_multiset(f) are already defined in
+# 09_part_i_sandbox_factory.jl (included before this file, same module
+# scope) -- both copies here were byte-identical, so they've been
+# removed rather than redefined. See that file's docstrings for their
+# documentation.
 
 """
     squarefree_multiplicity_diagnostic(gA, gB; label="")
