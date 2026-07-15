@@ -90,6 +90,129 @@ end
 tower_to_ring(val, t_gens::Vector, w_gens::Vector) = _tower_to_ring(val, 2, t_gens, w_gens)
 
 ################################################################################
+# Groebner-free multiplicity correction -- copied verbatim from elim2.jl
+# (kept as a self-contained copy here since this worker is a standalone
+# process and does not `include` elim2.jl itself). See elim2.jl's
+# _run_bench / correct_multiplicity for the derivation and the
+# CHECK_GROEBNER=true verification that this reproduces eliminate()'s
+# output exactly.
+################################################################################
+
+function canonical_factor_key(f)
+    R = parent(f)
+    Fbase = base_ring(R)
+    exps = collect(AbstractAlgebra.exponent_vectors(f))
+    cfs  = collect(coefficients(f))
+    order = sortperm(exps)
+    lead_c = cfs[order[1]]
+    inv_lead = inv(lead_c)
+    io = IOBuffer()
+    for idx in order
+        c = cfs[idx] * inv_lead
+        print(io, string(c), ":", string(exps[idx]), ";")
+    end
+    return String(take!(io))
+end
+
+function factor_multiset(f)
+    fac = factor(f)
+    d = Dict{String,Int}()
+    for (p, e) in fac
+        key = canonical_factor_key(p)
+        d[key] = get(d, key, 0) + e
+    end
+    return d, fac
+end
+
+function correct_multiplicity(Res1, Res2; label::AbstractString="")
+    println("-"^70)
+    println("MULTIPLICITY CORRECTION (Gröbner-free)", isempty(label) ? "" : "  [$label]")
+    println("-"^70)
+
+    t0 = time()
+    set1, fac1 = factor_multiset(Res1)
+    set2, fac2 = factor_multiset(Res2)
+    t_factor = time() - t0
+    println("  factor(Res1)+factor(Res2) elapsed = ", round(t_factor, digits=4), "s  -> ",
+            length(set1), " / ", length(set2), " distinct factor(s)")
+
+    poly_of_2 = Dict{String,Any}(canonical_factor_key(p) => p for (p, _e) in fac2)
+
+    all_keys2 = collect(keys(set2))
+    candidates = NamedTuple[]
+    for k in all_keys2
+        e1 = get(set1, k, 0)
+        e2 = set2[k]
+        if e2 > e1
+            push!(candidates, (key = k, excess = e2 - e1, exp_Res1 = e1, exp_Res2 = e2))
+        end
+    end
+
+    println("  candidate inflated factor(s) (exp(Res2) > exp(Res1)): ", length(candidates))
+    for c in candidates
+        rep = poly_of_2[c.key]
+        println("    degree=", total_degree(rep), "  terms=", length(terms(rep)),
+                "  exp(Res1)=", c.exp_Res1, "  exp(Res2)=", c.exp_Res2, "  excess=", c.excess)
+    end
+
+    t0 = time()
+    corrected = Res2
+    applied = NamedTuple[]
+    all_exact = true
+    for c in candidates
+        Fp = poly_of_2[c.key]
+        Fpow = Fp^c.excess
+        divides_exactly = false
+        q = nothing
+        try
+            qtmp, rem = divrem(corrected, Fpow)
+            if iszero(rem)
+                divides_exactly = true
+                q = qtmp
+            else
+                ok, q2 = divides(corrected, Fpow)
+                if ok
+                    divides_exactly = true
+                    q = q2
+                end
+            end
+        catch e
+            println("    ** division by F^", c.excess, " raised an error -- ", sprint(showerror, e), " **")
+        end
+        if divides_exactly
+            corrected = q
+            push!(applied, (key = c.key, excess = c.excess))
+            println("  divided out excess exponent ", c.excess, " of one factor -> ",
+                    "degree=", (iszero(corrected) ? -1 : total_degree(corrected)),
+                    "  terms=", length(terms(corrected)))
+        else
+            all_exact = false
+            println("  ** excess exponent ", c.excess, " did NOT divide evenly -- ",
+                    "skipping this candidate, correction may be incomplete **")
+        end
+    end
+    t_correct = time() - t0
+
+    if isempty(candidates)
+        println("  (no candidate inflated factors -- Res2 already matches Res1's ",
+                "multiplicities on every shared factor; corrected == Res2 unchanged)")
+    end
+
+    println("  correction elapsed = ", round(t_correct, digits=4), "s")
+    println("  final corrected result: degree=", (iszero(corrected) ? -1 : total_degree(corrected)),
+            "  terms=", length(terms(corrected)))
+    println("-"^70)
+
+    return (
+        corrected = corrected,
+        applied_factors = applied,
+        t_factor = t_factor,
+        t_correct = t_correct,
+        all_divisions_exact = all_exact,
+    )
+end
+
+################################################################################
 # Recompute only the sample this worker needs.
 ################################################################################
 

@@ -2036,7 +2036,199 @@ println("===========================================================")
 println("PART I: The Sandbox Factory (Automated Elimination)")
 println("===========================================================")
 
+################################################################################
+# Forward declarations, hoisted from later in this file (the
+# part_i_squarefree_diag.jl / correct_multiplicity blocks below), because
+# this is a flat top-to-bottom script with no function-hoisting: the
+# resultant + multiplicity-correction pipeline wired into
+# process_sample_1_coeff/process_sample_2_coeff just below needs
+# canonical_factor_key, factor_multiset, and correct_multiplicity to
+# already be defined by the time those factories are called (including the
+# "Factory Test" call immediately after process_sample_1_coeff's
+# definition). The originals still appear later in the file, unchanged --
+# Julia just lets the later `function` definitions redefine these methods
+# again (identically), which is harmless.
+################################################################################
+
+"""
+    canonical_factor_key(f) -> String
+
+Return a hashable, order-independent, unit-scaled key for an irreducible
+polynomial `f`, so two irreducible factors coming out of independent
+`factor()` calls (potentially differing by a nonzero field-element unit,
+and with no guaranteed enumeration order) compare equal iff they are
+associates.
+
+Normalization: divide by the coefficient of the lexicographically-first
+monomial (in a fixed, deterministic term order), so the leading
+coefficient of the normalized polynomial is always 1. This is well
+defined for any irreducible over a field, independent of which unit
+multiple factor() happened to emit.
+"""
+function canonical_factor_key(f)
+    R = parent(f)
+    F = base_ring(R)
+    # Deterministic term order: sort exponent vectors lexicographically.
+    exps = collect(AbstractAlgebra.exponent_vectors(f))
+    cfs  = collect(coefficients(f))
+    order = sortperm(exps)  # lexicographic on Vector{Int} is Julia's default
+    lead_c = cfs[order[1]]
+    inv_lead = inv(lead_c)
+    # Build normalized (monic-by-convention) term list as a canonical string.
+    io = IOBuffer()
+    for idx in order
+        c = cfs[idx] * inv_lead
+        print(io, string(c), ":", string(exps[idx]), ";")
+    end
+    return String(take!(io))
+end
+
+"""
+    factor_multiset(f) -> Dict{String,Int}
+
+Factor `f` and return a map: canonical_factor_key(irreducible factor) => exponent.
+Keys are unit/order independent so two factorizations of associate
+polynomials produce identical dictionaries.
+"""
+function factor_multiset(f)
+    fac = factor(f)
+    d = Dict{String,Int}()
+    for (p, e) in fac
+        key = canonical_factor_key(p)
+        d[key] = get(d, key, 0) + e
+    end
+    return d, fac
+end
+
+"""
+    correct_multiplicity(Res1, Res2; label="")
+
+Gröbner-free multiplicity correction. Factors `Res1` and `Res2` (this is
+the only factorization work needed -- no Groebner basis), matches factors
+via `canonical_factor_key`, and for every factor whose Res2-exponent
+exceeds its Res1-exponent, divides Res2 down by the excess power.
+
+Returns a NamedTuple:
+  corrected          -- the corrected polynomial (Res2 with all detected
+                         excess multiplicity divided out)
+  applied_factors    -- Vector of (key, F, excess) actually divided out
+  t_factor           -- time spent factoring Res1 and Res2
+  t_correct          -- time spent dividing out excess multiplicity
+  all_divisions_exact -- whether every candidate excess power divided
+                         Res2 evenly (a self-consistency check: if this
+                         is false, factor()'s own exponents were
+                         inconsistent with exact division, and the
+                         "corrected" result should not be trusted blindly)
+
+This function never calls eliminate()/groebner_basis() -- it is safe to
+run unconditionally in default (CHECK_GROEBNER=false) benchmark mode.
+"""
+function correct_multiplicity(Res1, Res2; label::AbstractString="")
+    println("-"^70)
+    println("MULTIPLICITY CORRECTION (Gröbner-free)", isempty(label) ? "" : "  [$label]")
+    println("-"^70)
+
+    t0 = time()
+    set1, fac1 = factor_multiset(Res1)
+    set2, fac2 = factor_multiset(Res2)
+    t_factor = time() - t0
+    println("  factor(Res1)+factor(Res2) elapsed = ", round(t_factor, digits=4), "s  -> ",
+            length(set1), " / ", length(set2), " distinct factor(s)")
+
+    poly_of_2 = Dict{String,Any}(canonical_factor_key(p) => p for (p, _e) in fac2)
+
+    # Candidates: factors present in Res2 whose exponent exceeds their
+    # exponent in Res1 (0 if absent from Res1 entirely -- a factor that
+    # appears ONLY in Res2 with no Res1 presence is, by this criterion,
+    # entirely an artifact of the second resultant step and is corrected
+    # down to exponent 0, i.e. divided out completely).
+    all_keys2 = collect(keys(set2))
+    candidates = NamedTuple[]
+    for k in all_keys2
+        e1 = get(set1, k, 0)
+        e2 = set2[k]
+        if e2 > e1
+            push!(candidates, (key = k, excess = e2 - e1, exp_Res1 = e1, exp_Res2 = e2))
+        end
+    end
+
+    println("  candidate inflated factor(s) (exp(Res2) > exp(Res1)): ", length(candidates))
+    for c in candidates
+        rep = poly_of_2[c.key]
+        println("    degree=", total_degree(rep), "  terms=", length(terms(rep)),
+                "  exp(Res1)=", c.exp_Res1, "  exp(Res2)=", c.exp_Res2, "  excess=", c.excess)
+    end
+
+    t0 = time()
+    corrected = Res2
+    applied = NamedTuple[]
+    all_exact = true
+    for c in candidates
+        Fp = poly_of_2[c.key]
+        Fpow = Fp^c.excess
+        divides_exactly = false
+        q = nothing
+        try
+            qtmp, rem = divrem(corrected, Fpow)
+            if iszero(rem)
+                divides_exactly = true
+                q = qtmp
+            else
+                ok, q2 = divides(corrected, Fpow)
+                if ok
+                    divides_exactly = true
+                    q = q2
+                end
+            end
+        catch e
+            println("    ** division by F^", c.excess, " raised an error -- ", sprint(showerror, e), " **")
+        end
+        if divides_exactly
+            corrected = q
+            push!(applied, (key = c.key, excess = c.excess))
+            println("  divided out excess exponent ", c.excess, " of one factor -> ",
+                    "degree=", (iszero(corrected) ? -1 : total_degree(corrected)),
+                    "  terms=", length(terms(corrected)))
+        else
+            all_exact = false
+            println("  ** excess exponent ", c.excess, " did NOT divide evenly -- ",
+                    "skipping this candidate, correction may be incomplete **")
+        end
+    end
+    t_correct = time() - t0
+
+    if isempty(candidates)
+        println("  (no candidate inflated factors -- Res2 already matches Res1's ",
+                "multiplicities on every shared factor; corrected == Res2 unchanged)")
+    end
+
+    println("  correction elapsed = ", round(t_correct, digits=4), "s")
+    println("  final corrected result: degree=", (iszero(corrected) ? -1 : total_degree(corrected)),
+            "  terms=", length(terms(corrected)))
+    println("-"^70)
+
+    return (
+        corrected = corrected,
+        applied_factors = applied,
+        t_factor = t_factor,
+        t_correct = t_correct,
+        all_divisions_exact = all_exact,
+    )
+end
+
 # This is our factory. It takes a raw tower coefficient, builds a 5-variable ring, and eliminates the w's.
+#
+# Groebner-free rewrite (wired to correct_multiplicity, per chat): this used
+# to call eliminate(I_small, [w1, w2]) directly, which is the slow Groebner
+# oracle. We now use the exact PATH B / correction recipe verified against
+# Groebner in _run_bench: sequential resultants to eliminate w1 then w2,
+# then correct_multiplicity(step1, step2) to divide out the excess
+# (inflated) multiplicity that the two-step resultant chain introduces
+# relative to the true (Groebner) elimination ideal generator. This was
+# checked (CHECK_GROEBNER=true runs of _run_bench) to reproduce gA exactly,
+# so it's safe to use as the production path -- and since it divides out
+# spurious factors before this coefficient ever reaches PART F/Bezout, the
+# polynomials feeding the Bezout matrix should also come out smaller.
 function process_sample_1_coeff(raw_coeff, target_name)
     println("  Spinning up sandbox for: ", target_name)
     
@@ -2055,12 +2247,19 @@ function process_sample_1_coeff(raw_coeff, target_name)
     curve1 = w1^2 - (a1^5 + a1 + 2)
     curve2 = w2^2 - (a2^5 + a2 + 2)
     
-    # 5. Eliminate the w's!
-    I_small = ideal(R_small, [h_s, curve1, curve2])
-    eliminated_ideal = eliminate(I_small, [w1, w2])
-    
-    # Return the winning polynomial
-    return gens(eliminated_ideal)[1]
+    # 5. Eliminate the w's via sequential resultants instead of eliminate():
+    #    step1 = Res_{w1}(h_s, curve1)   -- eliminates w1
+    #    step2 = Res_{w2}(step1, curve2) -- eliminates w2
+    step1 = resultant(h_s, curve1, 1)
+    step2 = resultant(step1, curve2, 2)
+
+    # 6. Divide out excess (inflated) multiplicity picked up by the
+    #    resultant chain, Groebner-free, verified equal to eliminate()'s
+    #    output in _run_bench.
+    corr = correct_multiplicity(step1, step2; label="$(target_name) (a-vars, sample1)")
+
+    # Return the winning (corrected) polynomial
+    return corr.corrected
 end
 
 # Let's test the factory on the very first coefficient!
@@ -2072,6 +2271,8 @@ println()
 # ==============================================================================
 # Factory for Sample 2 (Uses 'b' variables instead of 'a')
 # ==============================================================================
+# Groebner-free rewrite -- same reasoning as process_sample_1_coeff above,
+# mirrored for the b-variable (sample 2) sandbox.
 function process_sample_2_coeff(raw_coeff, target_name)
     println("  Spinning up sandbox (Sample 2) for: ", target_name)
     
@@ -2090,11 +2291,18 @@ function process_sample_2_coeff(raw_coeff, target_name)
     curve1 = w1^2 - (b1^5 + b1 + 2)
     curve2 = w2^2 - (b2^5 + b2 + 2)
     
-    # 5. Eliminate the w's!
-    I_small = ideal(R_small, [h_s, curve1, curve2])
-    eliminated_ideal = eliminate(I_small, [w1, w2])
-    
-    return gens(eliminated_ideal)[1]
+    # 5. Eliminate the w's via sequential resultants instead of eliminate():
+    #    step1 = Res_{w1}(h_s, curve1)   -- eliminates w1
+    #    step2 = Res_{w2}(step1, curve2) -- eliminates w2
+    step1 = resultant(h_s, curve1, 1)
+    step2 = resultant(step1, curve2, 2)
+
+    # 6. Divide out excess (inflated) multiplicity picked up by the
+    #    resultant chain, Groebner-free, verified equal to eliminate()'s
+    #    output in _run_bench.
+    corr = correct_multiplicity(step1, step2; label="$(target_name) (b-vars, sample2)")
+
+    return corr.corrected
 end
 
 println("===========================================================")
@@ -3765,6 +3973,12 @@ for (target_name, _idx, _r1, _r2) in bench_cases
         end
         global n_cases_run += 1
         infl = res["infl_report"]
+        if infl === nothing
+            println("  ", rpad(case_key, 14),
+                    " inflating=n/a  division_reproduces_all=n/a",
+                    " (infl_report unavailable -- CHECK_GROEBNER=false for this run)")
+            continue
+        end
         n_infl = length(infl.inflating)
         n_infl > 0 && (global n_with_inflation += 1)
         all_reproduce = n_infl > 0 && all(v -> v.division_exact && (v.ideal_match || v.unit_match), infl.verification)
@@ -5976,31 +6190,48 @@ if d1T == 4 && d2T == 4
             global max_term_size_idx = i
         end
 
-        PARTF_CHUNK = 200   # a_side terms per batch; tune down further if RSS still climbs
+        # PARTF_CHUNK terms per batch, on BOTH sides. Previously only
+        # a_side was chunked (PARTF_CHUNK terms) while b_side was kept
+        # whole (up to ~8385 terms) and multiplied against each a-chunk
+        # in full -- so each partial product could still be up to
+        # PARTF_CHUNK*8385 (~1.7M) monomials before collection, and with
+        # a_side/b_side each capable of reaching that ~8385-term bound
+        # independently (not just in the worst case Claire's original
+        # comment sized for), that was the actual OOM source, not just
+        # the single-shot evaluate() this loop already replaced. Nesting
+        # the chunking on both sides bounds every single cross-product
+        # batch to at most PARTF_CHUNK*PARTF_CHUNK monomials, independent
+        # of how large a_side/b_side get.
+        PARTF_CHUNK = 200   # terms per batch per side; tune down further if RSS still climbs
         a_terms = collect(terms(a_side))
+        b_terms = collect(terms(b_side))
         n_a_terms = length(a_terms)
-        chunk_start = 1
-        while chunk_start <= n_a_terms
-            chunk_end = min(chunk_start + PARTF_CHUNK - 1, n_a_terms)
-            # Sum this batch of a_side terms into its own small polynomial,
-            # then multiply by the (unchunked, but bounded to ~8385 terms)
-            # b_side once per batch -- never per a_side term individually,
-            # which would pay b_side's collection cost hundreds of times
-            # over for no benefit.
-            a_chunk = sum(a_terms[chunk_start:chunk_end]; init=zero(Rcoef))
-            partial = a_chunk * b_side
-            if HAVE_SAFE_SELF_ALIAS_ADD
-                add!(detB_concrete, detB_concrete, partial)
-            else
-                global detB_concrete = detB_concrete + partial
+        n_b_terms = length(b_terms)
+        a_chunk_start = 1
+        while a_chunk_start <= n_a_terms
+            a_chunk_end = min(a_chunk_start + PARTF_CHUNK - 1, n_a_terms)
+            a_chunk = sum(a_terms[a_chunk_start:a_chunk_end]; init=zero(Rcoef))
+            b_chunk_start = 1
+            while b_chunk_start <= n_b_terms
+                b_chunk_end = min(b_chunk_start + PARTF_CHUNK - 1, n_b_terms)
+                b_chunk = sum(b_terms[b_chunk_start:b_chunk_end]; init=zero(Rcoef))
+                partial = a_chunk * b_chunk
+                if HAVE_SAFE_SELF_ALIAS_ADD
+                    add!(detB_concrete, detB_concrete, partial)
+                else
+                    global detB_concrete = detB_concrete + partial
+                end
+                partial = nothing
+                b_chunk = nothing
+                b_chunk_start = b_chunk_end + 1
             end
-            partial = nothing
             a_chunk = nothing
-            chunk_start = chunk_end + 1
+            a_chunk_start = a_chunk_end + 1
         end
         a_side = nothing
         b_side = nothing
         a_terms = nothing   # drop references explicitly before the timed GC sweep below
+        b_terms = nothing
         el_eval = time() - t0eval
         rss_after_eval = read_rss_mb()
 
@@ -6036,6 +6267,23 @@ if d1T == 4 && d2T == 4
         # accumulator that progress_file claims is complete. Only one
         # accumulator's worth of data ever sits on disk at a time.
         #
+        # NOTE: save() serializes the WHOLE accumulator (detB_concrete),
+        # not just this term's contribution -- its cost and transient
+        # memory overhead scale with the accumulator's CURRENT size, which
+        # only grows as the loop progresses. Doing this every single term
+        # (as originally written) means paying an ever-increasing cost 219
+        # times over on an ever-larger polynomial, which was a second,
+        # independent OOM source on top of the unchunked b_side fixed
+        # above -- by the later terms (e.g. resuming at 72/219) the
+        # accumulator itself may already be too large to serialize
+        # cheaply. Checkpoint only every PARTF_CHECKPOINT_EVERY terms (and
+        # always on the final term) instead; resumability is preserved
+        # since progress_file/accum_file are only ever updated together
+        # (same crash-safety guarantee, just less often), the only change
+        # is that a crash between checkpoints re-does up to
+        # PARTF_CHECKPOINT_EVERY terms of substitution work, which is
+        # cheap relative to a save() of a multi-GB polynomial.
+        #
         # Each sub-step timed separately -- in particular mv() is only a
         # fast atomic rename if accum_tmpfile and accum_file are on the
         # SAME filesystem; if PARTF_SCRATCH_DIR straddles a filesystem
@@ -6043,21 +6291,32 @@ if d1T == 4 && d2T == 4
         # silently falls back to a full copy+delete for mv(), which for a
         # large accumulator can take much longer than the save() itself
         # and would otherwise show up as unexplained missing time.
-        t0write = time()
-        save(accum_tmpfile, detB_concrete)
-        el_write = time() - t0write
+        PARTF_CHECKPOINT_EVERY = 5   # terms between checkpoints; lower if a crash near the end of a run is costing too much re-work, raise if save() itself is still RAM-heavy at this cadence
+        do_checkpoint = (i % PARTF_CHECKPOINT_EVERY == 0) || (i == n_terms)
 
-        t0mv = time()
-        mv(accum_tmpfile, accum_file; force=true)
-        el_mv = time() - t0mv
+        local el_write, el_mv, el_prog, rss_after_save
+        if do_checkpoint
+            t0write = time()
+            save(accum_tmpfile, detB_concrete)
+            el_write = time() - t0write
 
-        t0prog = time()
-        open(progress_file, "w") do io
-            print(io, i)
+            t0mv = time()
+            mv(accum_tmpfile, accum_file; force=true)
+            el_mv = time() - t0mv
+
+            t0prog = time()
+            open(progress_file, "w") do io
+                print(io, i)
+            end
+            el_prog = time() - t0prog
+
+            rss_after_save = read_rss_mb()
+        else
+            el_write = 0.0
+            el_mv = 0.0
+            el_prog = 0.0
+            rss_after_save = rss_after_gc
         end
-        el_prog = time() - t0prog
-
-        rss_after_save = read_rss_mb()
 
         el_save = el_write + el_mv + el_prog
         el_iter_measured = el_eval + el_fold + el_gc + el_save
