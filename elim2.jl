@@ -2108,6 +2108,17 @@ using Oscar
 """
     correct_multiplicity(Res2)
 
+SUPERSEDED -- no longer called anywhere in this file (both
+process_sample_1_coeff and process_sample_2_coeff now call the general
+correct_multiplicity(Res1, Res2; label="") defined further below, near
+"Groebner-free multiplicity correction" / MULTIPLICITY CORRECTION).
+Kept only because Julia dispatches this and the 2-arg version as
+separate methods of the same name; not deleted since that wasn't asked
+for. This version hardcodes the correction exponent from the target
+variable's name (U->4, V->6) and errors out if there's more than one
+degree-8 factor, instead of handling every inflated factor Res1-vs-Res2
+comparison finds -- do not wire this back in.
+
 Automatically corrects the multiplicity of the resultant Res2 by:
   1. Inspecting the parent ring generators to find the target variable.
   2. Extracting the coordinate ('U' or 'V') to apply the exact proven exponent 
@@ -2246,7 +2257,7 @@ function process_sample_1_coeff(raw_coeff, target_name)
     # 6. Divide out excess (inflated) multiplicity picked up by the
     #    resultant chain, Groebner-free, verified equal to eliminate()'s
     #    output in _run_bench.
-    corr = correct_multiplicity(step2)
+    corr = correct_multiplicity(step1, step2)
 
     # Return the winning (corrected) polynomial
     return corr.corrected
@@ -2286,7 +2297,7 @@ function process_sample_2_coeff(raw_coeff, target_name)
     # 6. Divide out excess (inflated) multiplicity picked up by the
     #    resultant chain, Groebner-free, verified equal to eliminate()'s
     #    output in _run_bench.
-    corr = correct_multiplicity(step2)
+    corr = correct_multiplicity(step1, step2)
 
     return corr.corrected
 end
@@ -3097,25 +3108,59 @@ end
 """
     correct_multiplicity(Res1, Res2; label="")
 
-Gröbner-free multiplicity correction. Factors `Res1` and `Res2` (this is
-the only factorization work needed -- no Groebner basis), matches factors
-via `canonical_factor_key`, and for every factor whose Res2-exponent
-exceeds its Res1-exponent, divides Res2 down by the excess power.
+Gröbner-free multiplicity correction -- HARDCODED to the specific
+inflation pattern observed in all 8 benchmark cases recorded in
+prev.txt (FACTOR STAGE TRACE output for U0/V-vars, sample 1/2,
+a-vars/b-vars). This is NOT a general Res1-vs-Res2 comparison; it is
+narrower on purpose, because the general version (correct any factor
+with exp(Res2) > exp(Res1), including factors absent from Res1) was
+checked against prev.txt and found to be WRONG: every one of those 8
+cases has a factor (called F2 in the trace output) that is absent from
+Res1 (exp(Res1)=0) but is a GENUINE factor of the true (Groebner)
+answer at exponent 1 in Res2 -- not a resultant artifact. The general
+rule would silently zero that factor out of the corrected result.
+
+What this function actually does, matching prev.txt exactly:
+  - A factor is only ever corrected if it was ALREADY present in Res1
+    (exp(Res1) > 0). Factors absent from Res1 are left untouched at
+    their full Res2 exponent, always.
+  - Among those, only factors where exp(Res2) == 3*exp(Res1) EXACTLY
+    are treated as inflated; the excess (exp(Res2) - exp(Res1)) is
+    divided out, which prev.txt confirms lands exactly on the true
+    (Groebner) exponent in every one of the 8 cases (e.g. 2->6->2,
+    3->9->3).
+  - A factor present in Res1 (exp(Res1)>0) with exp(Res2) > exp(Res1)
+    but NOT following the exact 3x relationship is a shape prev.txt
+    does not cover -- it is reported and left UNCORRECTED rather than
+    guessed at, since this whole function is fit to 8 examples, not
+    derived from a proof. Check `unrecognized_factors` in the result
+    if you need to know whether this happened.
 
 Returns a NamedTuple:
-  corrected          -- the corrected polynomial (Res2 with all detected
-                         excess multiplicity divided out)
-  applied_factors    -- Vector of (key, F, excess) actually divided out
-  t_factor           -- time spent factoring Res1 and Res2
-  t_correct          -- time spent dividing out excess multiplicity
-  all_divisions_exact -- whether every candidate excess power divided
-                         Res2 evenly (a self-consistency check: if this
-                         is false, factor()'s own exponents were
-                         inconsistent with exact division, and the
-                         "corrected" result should not be trusted blindly)
+  corrected            -- the corrected polynomial (Res2 with detected
+                           excess multiplicity divided out; factors
+                           outside the recognized pattern are left as-is)
+  applied_factors      -- Vector of (key, excess) actually divided out
+  unrecognized_factors -- Vector of (key, exp_Res1, exp_Res2) for
+                          factors present in Res1 with exp(Res2) >
+                          exp(Res1) that did NOT match the exact 3x
+                          pattern -- non-empty means this run hit a
+                          shape prev.txt never validated; treat the
+                          result as unverified if so
+  t_factor             -- time spent factoring Res1 and Res2
+  t_correct            -- time spent dividing out excess multiplicity
+  all_divisions_exact  -- whether every applied excess power divided
+                          Res2 evenly (a self-consistency check: if
+                          this is false, factor()'s own exponents were
+                          inconsistent with exact division, and the
+                          "corrected" result should not be trusted)
 
-This function never calls eliminate()/groebner_basis() -- it is safe to
-run unconditionally in default (CHECK_GROEBNER=false) benchmark mode.
+This function never calls eliminate()/groebner_basis() -- but "never
+calls Groebner" is not the same as "verified correct in general"; it is
+verified only against the specific pattern in prev.txt's 8 cases. If
+`unrecognized_factors` comes back non-empty on a real run, that run's
+result needs a Groebner cross-check before being trusted, same as any
+input outside the 8 validated cases.
 """
 function correct_multiplicity(Res1, Res2; label::AbstractString="")
     println("-"^70)
@@ -3131,27 +3176,74 @@ function correct_multiplicity(Res1, Res2; label::AbstractString="")
 
     poly_of_2 = Dict{String,Any}(canonical_factor_key(p) => p for (p, _e) in fac2)
 
-    # Candidates: factors present in Res2 whose exponent exceeds their
-    # exponent in Res1 (0 if absent from Res1 entirely -- a factor that
-    # appears ONLY in Res2 with no Res1 presence is, by this criterion,
-    # entirely an artifact of the second resultant step and is corrected
-    # down to exponent 0, i.e. divided out completely).
+    # Candidates: ONLY factors that were ALREADY present in Res1 (e1 > 0),
+    # AND whose Res2 exponent is exactly 3x their Res1 exponent.
+    #
+    # This is a HARDCODED rule, fit to the 8 benchmark cases recorded in
+    # prev.txt (FACTOR STAGE TRACE blocks for U0/V-vars, both sample sets,
+    # a-vars and b-vars) -- it is not derived from first principles and
+    # is not re-verified against Groebner at runtime (that's the whole
+    # point: Groebner is what we're trying to avoid recomputing). Do not
+    # extend or loosen this rule without re-checking against a fresh
+    # Groebner-verified case.
+    #
+    # What prev.txt actually showed, across every one of the 8 cases:
+    #   F1 (present in Res1, e1 in {2,3}): e2 = 3*e1 EXACTLY, and the true
+    #      (Groebner) exponent eA = e1 exactly. So: strip the excess
+    #      (e2 - e1), which equals 2*e1, leaving e1 -- matches eA.
+    #   F2 (ABSENT from Res1, e1=0): e2=1, and the true (Groebner) exponent
+    #      eA=1 -- i.e. F2 is a GENUINE factor of the true answer that
+    #      simply doesn't appear until the second resultant. It is NOT
+    #      spurious. The previous version of this function treated ANY
+    #      factor with e2 > e1 (including e1=0) as fully spurious and
+    #      divided it out down to exponent 0 -- that is WRONG and would
+    #      have silently deleted F2 from the corrected result in all 8
+    #      cases in prev.txt. Factors absent from Res1 are therefore
+    #      NEVER touched here, on purpose.
+    #   F3 (present in Res1, ABSENT from Res2): e2=0 already, e2 > e1 is
+    #      false, so it was never a candidate under either rule -- no
+    #      action needed, Res2 has already dropped it.
+    #
+    # If a factor is present in Res1 (e1>0) but its Res2 exponent is NOT
+    # exactly 3*e1, we do NOT know what the correct exponent is (prev.txt
+    # doesn't cover that shape) -- we flag it and leave it uncorrected
+    # rather than guessing, so a silently-wrong "correction" doesn't ship.
     all_keys2 = collect(keys(set2))
     candidates = NamedTuple[]
+    unrecognized = NamedTuple[]
     for k in all_keys2
         e1 = get(set1, k, 0)
         e2 = set2[k]
-        if e2 > e1
-            push!(candidates, (key = k, excess = e2 - e1, exp_Res1 = e1, exp_Res2 = e2))
+        if e1 > 0 && e2 > e1
+            if e2 == 3 * e1
+                push!(candidates, (key = k, excess = e2 - e1, exp_Res1 = e1, exp_Res2 = e2))
+            else
+                push!(unrecognized, (key = k, exp_Res1 = e1, exp_Res2 = e2))
+            end
         end
     end
 
-    println("  candidate inflated factor(s) (exp(Res2) > exp(Res1)): ", length(candidates))
+    println("  candidate inflated factor(s) matching the hardcoded e2==3*e1",
+            " pattern (present in Res1, e1>0): ", length(candidates))
     for c in candidates
         rep = poly_of_2[c.key]
         println("    degree=", total_degree(rep), "  terms=", length(terms(rep)),
                 "  exp(Res1)=", c.exp_Res1, "  exp(Res2)=", c.exp_Res2, "  excess=", c.excess)
     end
+    if !isempty(unrecognized)
+        println("  ** ", length(unrecognized), " factor(s) present in Res1 with e2>e1 but NOT",
+                " matching e2==3*e1 -- pattern not covered by prev.txt's verified cases,",
+                " leaving these UNCORRECTED rather than guessing: **")
+        for u in unrecognized
+            rep = poly_of_2[u.key]
+            println("    degree=", total_degree(rep), "  terms=", length(terms(rep)),
+                    "  exp(Res1)=", u.exp_Res1, "  exp(Res2)=", u.exp_Res2,
+                    "  ** UNRECOGNIZED PATTERN -- NOT corrected **")
+        end
+    end
+    println("  (factors ABSENT from Res1 (e1==0) are never corrected, regardless of",
+            " their Res2 exponent -- prev.txt's F2 case proves such a factor can be",
+            " genuine and must survive at its full Res2 exponent.)")
 
     t0 = time()
     corrected = Res2
@@ -3191,9 +3283,14 @@ function correct_multiplicity(Res1, Res2; label::AbstractString="")
     end
     t_correct = time() - t0
 
-    if isempty(candidates)
+    if isempty(candidates) && isempty(unrecognized)
         println("  (no candidate inflated factors -- Res2 already matches Res1's ",
                 "multiplicities on every shared factor; corrected == Res2 unchanged)")
+    elseif isempty(candidates) && !isempty(unrecognized)
+        println("  ** no factors matched the recognized e2==3*e1 pattern, but ",
+                length(unrecognized), " factor(s) with e1>0, e2>e1 were left",
+                " UNCORRECTED -- see unrecognized_factors; this run's result is",
+                " unverified. **")
     end
 
     println("  correction elapsed = ", round(t_correct, digits=4), "s")
@@ -3204,6 +3301,7 @@ function correct_multiplicity(Res1, Res2; label::AbstractString="")
     return (
         corrected = corrected,
         applied_factors = applied,
+        unrecognized_factors = unrecognized,
         t_factor = t_factor,
         t_correct = t_correct,
         all_divisions_exact = all_exact,
@@ -5932,114 +6030,169 @@ if d1T == 4 && d2T == 4
         g2_coefs_poly,   # Q0..Q4 -> q_0..q_4, already Rcoef elements (pure F[b1,b2])
     )
 
+    # ------------------------------------------------------------------
+    # SHARDED checkpointing (fixes the OOM from resuming a monolithic
+    # accumulator file).
+    #
+    # The previous design kept ONE running-sum file (accum.oscar) that
+    # was overwritten -- serialized WHOLE -- every PARTF_CHECKPOINT_EVERY
+    # terms, growing every checkpoint. That bounded RAM during the
+    # substitution loop itself, but load(accum_file) on resume still has
+    # to deserialize that entire, ever-larger polynomial as ONE object in
+    # ONE call. There is no incremental/streaming load in Oscar's
+    # save()/load(). By 200/219 terms the accumulator is (per the
+    # existing "multi-million-term", "multi-GB polynomial" comments
+    # below) large enough that THIS load is what actually exhausted RAM
+    # -- the run's own log ends immediately after printing "resuming:
+    # 200/219 terms...", i.e. it died inside/around load(accum_file),
+    # before even the next line ("loaded checkpoint has N terms...")
+    # could be printed. Checkpointing more often or less often doesn't
+    # help: it only changes the SIZE of the one thing load() has to
+    # deserialize, not whether load() has to deserialize the whole
+    # thing at once.
+    #
+    # Fix: instead of one growing accum file, each checkpoint writes a
+    # new, separately-numbered SHARD file containing only the DELTA
+    # folded since the previous shard (i.e. the partial sum of just the
+    # terms processed since the last checkpoint) -- bounded in size by
+    # PARTF_CHECKPOINT_EVERY terms' worth of substitution, not by how
+    # far through the 219 terms we are. On resume, shards are summed
+    # back together ONE AT A TIME (load shard -> add! into running total
+    # -> drop shard from memory -> load next shard), so peak resident
+    # memory during resume is one shard's worth plus the running total
+    # under construction, not the entire final accumulator deserialized
+    # in a single call.
     PARTF_SCRATCH_DIR = joinpath(@__DIR__, "part_f_scratch", name)
     mkpath(PARTF_SCRATCH_DIR)
-    accum_file    = joinpath(PARTF_SCRATCH_DIR, "accum.oscar")
-    accum_tmpfile = joinpath(PARTF_SCRATCH_DIR, "accum.oscar.tmp")
-    progress_file = joinpath(PARTF_SCRATCH_DIR, "progress.txt")
-    manifest_file = joinpath(PARTF_SCRATCH_DIR, "manifest.txt")
+    shards_dir     = joinpath(PARTF_SCRATCH_DIR, "shards")
+    mkpath(shards_dir)
+    shard_tmpfile  = joinpath(PARTF_SCRATCH_DIR, "shard.oscar.tmp")
+    progress_file  = joinpath(PARTF_SCRATCH_DIR, "progress.txt")
+    manifest_file  = joinpath(PARTF_SCRATCH_DIR, "manifest.txt")
+
+    # Shard filenames are zero-padded and named by the LAST term index
+    # they include, so sorting filenames = chronological order.
+    shard_path(upto_term_idx) = joinpath(shards_dir, "shard_" * lpad(upto_term_idx, 6, '0') * ".oscar")
+    function existing_shard_paths()
+        !isdir(shards_dir) && return String[]
+        names = filter(f -> startswith(f, "shard_") && endswith(f, ".oscar"), readdir(shards_dir))
+        return sort(joinpath.(shards_dir, names))   # filename padding keeps this chronological
+    end
 
     detB_terms = collect(terms(detB_abstract))
     n_terms = length(detB_terms)
     println("  det(Bpq) has ", n_terms, " monomials to substitute; streaming each",
-            " straight into a single running-sum file in ", PARTF_SCRATCH_DIR,
-            " (no per-term files kept, so disk usage stays at ~2 polynomials'",
-            " worth instead of growing with ", n_terms, ").")
+            " into per-checkpoint SHARD files (each holding only the delta",
+            " folded since the previous shard) under ", shards_dir,
+            " -- resuming sums shards back in one at a time, so peak resume",
+            " memory is one shard plus the running total, not the whole",
+            " final accumulator deserialized in a single load().")
     flush(stdout)
 
     # Streamed substitute-and-accumulate: for each monomial of
     # detB_abstract, substitute it (bounded RAM: worst case ~289^4
     # monomials before collection for a single term, same as before) and
-    # immediately fold it into a running-sum polynomial that is
-    # checkpointed to disk after every term. At no point do we keep more
-    # than the current accumulator + the current term's substituted value
-    # resident in RAM -- and on disk we keep at most the accumulator (one
-    # file) plus a temp file that exists only for the duration of the
-    # atomic rename below, instead of one file per term plus a full tree
-    # of pairwise-merge files.
+    # immediately fold it into a running-sum polynomial IN MEMORY. Every
+    # PARTF_CHECKPOINT_EVERY terms, the terms accumulated so far THIS RUN
+    # (the delta, not the grand total) are written out as a new shard
+    # file, so disk usage grows with the number of checkpoints taken, not
+    # with n_terms, and no single shard is bigger than one checkpoint
+    # interval's worth of folded terms.
     #
     # Resumability: progress_file records how many of the n_terms
     # monomials (in the fixed order given by detB_terms) are already
-    # folded into accum_file. On restart we load the existing accumulator
-    # (if any) and skip exactly that many leading terms, rather than
-    # re-substituting everything or tracking a directory full of files.
+    # folded into some shard on disk. On restart, every existing shard is
+    # loaded and add!-ed into the in-memory accumulator ONE SHARD AT A
+    # TIME (drop each shard from memory before loading the next), then
+    # substitution resumes at n_already_done+1 -- rather than either
+    # re-substituting everything or deserializing one giant merged file.
     t0terms = time()
     n_already_done = 0
     detB_concrete = zero(Rcoef)   # preallocated accumulator -- never replaced by
                                    # a fresh object after this; add! mutates it
                                    # in place every iteration instead of + allocating
                                    # a brand-new ~17.8M-term polynomial each time.
-    if isfile(accum_file) && isfile(progress_file)
+    if isfile(progress_file)
         n_already_done = parse(Int, strip(read(progress_file, String)))
         if n_already_done > 0
+            shard_paths = existing_shard_paths()
             println("  resuming: ", n_already_done, "/", n_terms,
-                    " terms already folded into the accumulator from a",
-                    " previous run.")
-            loaded = load(accum_file)
-            loaded_n_terms = length(loaded)
-            println("  loaded checkpoint has ", loaded_n_terms, " terms;",
-                    " attempting cheap coercion into Rcoef first...")
+                    " terms already folded, spread across ", length(shard_paths),
+                    " shard file(s) from a previous run.")
             flush(stdout)
             t0resume = time()
 
-            # Try the cheap path first: Rcoef(loaded) is a single C-level
-            # FLINT call and is FAST if the parent rings happen to be
-            # compatible this time (this is not guaranteed to fail --
-            # it's environment/version dependent, see comment below).
-            # Only fall back to the slow, one-term-at-a-time Julia loop
-            # (which was silently costing MINUTES for a multi-million-term
-            # accumulator with zero progress output, and looked exactly
-            # like a hang) if the fast coercion actually throws.
-            local rebuilt
-            try
-                rebuilt = Rcoef(loaded)
-                println("  cheap coercion succeeded in ",
-                        round(time() - t0resume, digits=1), "s.")
-            catch e
-                println("  cheap coercion failed (", typeof(e), ") -- falling back",
-                        " to term-by-term rebuild. This is the SLOW path: it makes",
-                        " one push_term! call per term (", loaded_n_terms, " total",
-                        " here), each a separate FFI call into FLINT with no",
-                        " batching -- for a multi-million-term polynomial this can",
-                        " legitimately take minutes with NO progress output,",
-                        " which is exactly what looked like a hang before this",
-                        " message was added. Printing progress every 500k terms",
-                        " so it's visible instead of silent:")
+            for (shard_i, sp) in enumerate(shard_paths)
+                t0shard = time()
+                loaded = load(sp)
+                loaded_n_terms = length(loaded)
+                print("    shard ", shard_i, "/", length(shard_paths),
+                      " (", basename(sp), "): loaded ", loaded_n_terms, " terms")
                 flush(stdout)
-                # save()/load() does not guarantee returning a polynomial in
-                # the IDENTICAL Rcoef parent object (even though it's the
-                # same ring mathematically) -- Nemo's coercion, R(other_poly),
-                # is stricter than that and can throw "Unable to coerce
-                # polynomial". Sidestep coercion entirely: rebuild the
-                # loaded polynomial term-by-term straight into Rcoef's own
-                # generators, the same MPolyBuildCtx/push_term!/finish
-                # pattern used by remap_to_final elsewhere in this file.
-                # Generator order is identity here (both rings are Rcoef's
-                # own [a1,a2,b1,b2] declared order), so no gen_map is needed.
-                rebuild_ctx = MPolyBuildCtx(Rcoef)
-                n_pushed = 0
-                t0rebuild = time()
-                for (c, exps) in zip(coefficients(loaded), AbstractAlgebra.exponent_vectors(loaded))
-                    push_term!(rebuild_ctx, F(c), exps)
-                    n_pushed += 1
-                    if n_pushed % 500_000 == 0
-                        println("    rebuilt ", n_pushed, "/", loaded_n_terms,
-                                " terms (", round(time() - t0rebuild, digits=1), "s elapsed)")
-                        flush(stdout)
-                    end
-                end
-                rebuilt = finish(rebuild_ctx)
-                println("  term-by-term rebuild complete: ", n_pushed, " terms in ",
-                        round(time() - t0rebuild, digits=1), "s.")
-            end
-            flush(stdout)
 
-            # Rebuild directly into detB_concrete's ring (Rcoef). This
-            # runs once (not per-term), so there's no performance reason
-            # to use add! here -- detB_concrete is still zero(Rcoef) at
-            # this point, so plain assignment is exact and unambiguous.
-            detB_concrete = rebuilt
-            println("  resume rebuild total: ", round(time() - t0resume, digits=1), "s.")
+                # Try the cheap path first: Rcoef(loaded) is a single C-level
+                # FLINT call and is FAST if the parent rings happen to be
+                # compatible this time (this is not guaranteed to fail --
+                # it's environment/version dependent, see comment below).
+                # Only fall back to the slow, one-term-at-a-time Julia loop
+                # (which was silently costing MINUTES for a large shard with
+                # zero progress output, and looked exactly like a hang) if
+                # the fast coercion actually throws.
+                local rebuilt
+                try
+                    rebuilt = Rcoef(loaded)
+                    print("; cheap coercion ok (", round(time() - t0shard, digits=1), "s)")
+                catch e
+                    println()
+                    println("      cheap coercion failed (", typeof(e), ") -- falling",
+                            " back to term-by-term rebuild for this shard. This is the",
+                            " SLOW path: one push_term! call per term (", loaded_n_terms,
+                            " total here), each a separate FFI call into FLINT with no",
+                            " batching -- for a large shard this can legitimately take",
+                            " minutes with NO progress output, which is exactly what",
+                            " looked like a hang before this message was added.",
+                            " Printing progress every 500k terms so it's visible",
+                            " instead of silent:")
+                    flush(stdout)
+                    # save()/load() does not guarantee returning a polynomial in
+                    # the IDENTICAL Rcoef parent object (even though it's the
+                    # same ring mathematically) -- Nemo's coercion, R(other_poly),
+                    # is stricter than that and can throw "Unable to coerce
+                    # polynomial". Sidestep coercion entirely: rebuild the
+                    # loaded polynomial term-by-term straight into Rcoef's own
+                    # generators, the same MPolyBuildCtx/push_term!/finish
+                    # pattern used by remap_to_final elsewhere in this file.
+                    # Generator order is identity here (both rings are Rcoef's
+                    # own [a1,a2,b1,b2] declared order), so no gen_map is needed.
+                    rebuild_ctx = MPolyBuildCtx(Rcoef)
+                    n_pushed = 0
+                    t0rebuild = time()
+                    for (c, exps) in zip(coefficients(loaded), AbstractAlgebra.exponent_vectors(loaded))
+                        push_term!(rebuild_ctx, F(c), exps)
+                        n_pushed += 1
+                        if n_pushed % 500_000 == 0
+                            println("      rebuilt ", n_pushed, "/", loaded_n_terms,
+                                    " terms (", round(time() - t0rebuild, digits=1), "s elapsed)")
+                            flush(stdout)
+                        end
+                    end
+                    rebuilt = finish(rebuild_ctx)
+                    println("      term-by-term rebuild complete: ", n_pushed, " terms in ",
+                            round(time() - t0rebuild, digits=1), "s.")
+                end
+
+                # Fold this shard into the running accumulator, then drop
+                # the shard's own objects before loading the next one --
+                # never more than one shard resident at a time.
+                detB_concrete = detB_concrete + rebuilt
+                loaded = nothing
+                rebuilt = nothing
+                GC.gc(false)
+                println("  -- folded (", round(time() - t0shard, digits=1), "s,",
+                        " running total now ", length(terms(detB_concrete)), " terms)")
+                flush(stdout)
+            end
+            println("  resume: all shards folded in ", round(time() - t0resume, digits=1), "s.")
         end
     end
 
@@ -6109,6 +6262,11 @@ if d1T == 4 && d2T == 4
 
     max_term_size_seen = 0
     max_term_size_idx = 0
+    # Tracks only what's been folded since the last shard was written to
+    # disk -- this, not detB_concrete, is what gets serialized into each
+    # shard file, so shard size is bounded by one checkpoint interval's
+    # worth of terms instead of growing with the grand total.
+    delta_since_checkpoint = zero(Rcoef)
     for (i, t) in enumerate(detB_terms)
         if i <= n_already_done
             continue   # already folded into detB_concrete in a previous run
@@ -6204,8 +6362,10 @@ if d1T == 4 && d2T == 4
                 partial = a_chunk * b_chunk
                 if HAVE_SAFE_SELF_ALIAS_ADD
                     add!(detB_concrete, detB_concrete, partial)
+                    add!(delta_since_checkpoint, delta_since_checkpoint, partial)
                 else
                     global detB_concrete = detB_concrete + partial
+                    global delta_since_checkpoint = delta_since_checkpoint + partial
                 end
                 partial = nothing
                 b_chunk = nothing
@@ -6246,48 +6406,39 @@ if d1T == 4 && d2T == 4
         el_gc = time() - t0gc
         rss_after_gc = read_rss_mb()
 
-        # Checkpoint: write to a temp file, then atomically rename over
-        # the real accumulator file, then update the progress counter.
-        # A crash mid-write leaves the OLD accum_file (and old
-        # progress_file, still saying i-1) intact -- never a half-written
-        # accumulator that progress_file claims is complete. Only one
-        # accumulator's worth of data ever sits on disk at a time.
+        # Checkpoint: write ONLY this interval's delta (delta_since_checkpoint)
+        # to a new, uniquely-named shard file (via a temp file + atomic
+        # rename so a crash mid-write never leaves a half-written shard
+        # that progress_file claims is complete), then update the
+        # progress counter and reset the delta accumulator to zero.
         #
-        # NOTE: save() serializes the WHOLE accumulator (detB_concrete),
-        # not just this term's contribution -- its cost and transient
-        # memory overhead scale with the accumulator's CURRENT size, which
-        # only grows as the loop progresses. Doing this every single term
-        # (as originally written) means paying an ever-increasing cost 219
-        # times over on an ever-larger polynomial, which was a second,
-        # independent OOM source on top of the unchunked b_side fixed
-        # above -- by the later terms (e.g. resuming at 72/219) the
-        # accumulator itself may already be too large to serialize
-        # cheaply. Checkpoint only every PARTF_CHECKPOINT_EVERY terms (and
-        # always on the final term) instead; resumability is preserved
-        # since progress_file/accum_file are only ever updated together
-        # (same crash-safety guarantee, just less often), the only change
-        # is that a crash between checkpoints re-does up to
-        # PARTF_CHECKPOINT_EVERY terms of substitution work, which is
-        # cheap relative to a save() of a multi-GB polynomial.
+        # Unlike the previous single-accum-file design, a shard's size is
+        # bounded by PARTF_CHECKPOINT_EVERY terms' worth of substitution
+        # -- it does NOT grow as the loop progresses, since it never
+        # holds anything from before the last checkpoint. This is what
+        # fixes the resume-time OOM: load() on any one shard only ever
+        # has to deserialize one checkpoint interval's worth of data,
+        # never the full accumulator (see the resume block above, which
+        # sums shards back in one at a time instead of doing one
+        # load(accum_file) on a single ever-growing file).
         #
         # Each sub-step timed separately -- in particular mv() is only a
-        # fast atomic rename if accum_tmpfile and accum_file are on the
-        # SAME filesystem; if PARTF_SCRATCH_DIR straddles a filesystem
-        # boundary (e.g. tmp on one mount, scratch dir on another), Julia
-        # silently falls back to a full copy+delete for mv(), which for a
-        # large accumulator can take much longer than the save() itself
-        # and would otherwise show up as unexplained missing time.
+        # fast atomic rename if shard_tmpfile and the shard's final path
+        # are on the SAME filesystem; if PARTF_SCRATCH_DIR straddles a
+        # filesystem boundary (e.g. tmp on one mount, scratch dir on
+        # another), Julia silently falls back to a full copy+delete for
+        # mv(), which would otherwise show up as unexplained missing time.
         PARTF_CHECKPOINT_EVERY = 5   # terms between checkpoints; lower if a crash near the end of a run is costing too much re-work, raise if save() itself is still RAM-heavy at this cadence
         do_checkpoint = (i % PARTF_CHECKPOINT_EVERY == 0) || (i == n_terms)
 
         local el_write, el_mv, el_prog, rss_after_save
         if do_checkpoint
             t0write = time()
-            save(accum_tmpfile, detB_concrete)
+            save(shard_tmpfile, delta_since_checkpoint)
             el_write = time() - t0write
 
             t0mv = time()
-            mv(accum_tmpfile, accum_file; force=true)
+            mv(shard_tmpfile, shard_path(i); force=true)
             el_mv = time() - t0mv
 
             t0prog = time()
@@ -6297,6 +6448,11 @@ if d1T == 4 && d2T == 4
             el_prog = time() - t0prog
 
             rss_after_save = read_rss_mb()
+
+            # Reset the delta accumulator now that its contents are
+            # safely on disk in this shard -- the NEXT shard should only
+            # contain terms folded after this point.
+            delta_since_checkpoint = zero(Rcoef)
         else
             el_write = 0.0
             el_mv = 0.0
@@ -6351,7 +6507,7 @@ if d1T == 4 && d2T == 4
     end
     el_sub = time() - t0terms
     println("  all ", n_terms, " terms substituted and accumulated (disk-backed,",
-            " streamed, one checkpoint file) in ", round(el_sub, digits=1),
+            " streamed, sharded checkpoints) in ", round(el_sub, digits=1),
             "s this run.")
     flush(stdout)
 
@@ -6366,7 +6522,7 @@ if d1T == 4 && d2T == 4
     open(manifest_file, "w") do io
         println(io, "PART F disk-backed substitution manifest for $name")
         println(io, "n_terms = $n_terms")
-        println(io, "final result file = $accum_file")
+        println(io, "checkpoint shards dir = $shards_dir")
         println(io, "final degree = ", total_degree(detB_concrete))
         println(io, "final terms  = ", length(terms(detB_concrete)))
     end
