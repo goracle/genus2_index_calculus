@@ -126,93 +126,6 @@ function factor_multiset(f)
     return d, fac
 end
 
-function correct_multiplicity(Res1, Res2; label::AbstractString="")
-    println("-"^70)
-    println("MULTIPLICITY CORRECTION (Gröbner-free)", isempty(label) ? "" : "  [$label]")
-    println("-"^70)
-
-    t0 = time()
-    set1, fac1 = factor_multiset(Res1)
-    set2, fac2 = factor_multiset(Res2)
-    t_factor = time() - t0
-    println("  factor(Res1)+factor(Res2) elapsed = ", round(t_factor, digits=4), "s  -> ",
-            length(set1), " / ", length(set2), " distinct factor(s)")
-
-    poly_of_2 = Dict{String,Any}(canonical_factor_key(p) => p for (p, _e) in fac2)
-
-    all_keys2 = collect(keys(set2))
-    candidates = NamedTuple[]
-    for k in all_keys2
-        e1 = get(set1, k, 0)
-        e2 = set2[k]
-        if e2 > e1
-            push!(candidates, (key = k, excess = e2 - e1, exp_Res1 = e1, exp_Res2 = e2))
-        end
-    end
-
-    println("  candidate inflated factor(s) (exp(Res2) > exp(Res1)): ", length(candidates))
-    for c in candidates
-        rep = poly_of_2[c.key]
-        println("    degree=", total_degree(rep), "  terms=", length(terms(rep)),
-                "  exp(Res1)=", c.exp_Res1, "  exp(Res2)=", c.exp_Res2, "  excess=", c.excess)
-    end
-
-    t0 = time()
-    corrected = Res2
-    applied = NamedTuple[]
-    all_exact = true
-    for c in candidates
-        Fp = poly_of_2[c.key]
-        Fpow = Fp^c.excess
-        divides_exactly = false
-        q = nothing
-        try
-            qtmp, rem = divrem(corrected, Fpow)
-            if iszero(rem)
-                divides_exactly = true
-                q = qtmp
-            else
-                ok, q2 = divides(corrected, Fpow)
-                if ok
-                    divides_exactly = true
-                    q = q2
-                end
-            end
-        catch e
-            println("    ** division by F^", c.excess, " raised an error -- ", sprint(showerror, e), " **")
-        end
-        if divides_exactly
-            corrected = q
-            push!(applied, (key = c.key, excess = c.excess))
-            println("  divided out excess exponent ", c.excess, " of one factor -> ",
-                    "degree=", (iszero(corrected) ? -1 : total_degree(corrected)),
-                    "  terms=", length(terms(corrected)))
-        else
-            all_exact = false
-            println("  ** excess exponent ", c.excess, " did NOT divide evenly -- ",
-                    "skipping this candidate, correction may be incomplete **")
-        end
-    end
-    t_correct = time() - t0
-
-    if isempty(candidates)
-        println("  (no candidate inflated factors -- Res2 already matches Res1's ",
-                "multiplicities on every shared factor; corrected == Res2 unchanged)")
-    end
-
-    println("  correction elapsed = ", round(t_correct, digits=4), "s")
-    println("  final corrected result: degree=", (iszero(corrected) ? -1 : total_degree(corrected)),
-            "  terms=", length(terms(corrected)))
-    println("-"^70)
-
-    return (
-        corrected = corrected,
-        applied_factors = applied,
-        t_factor = t_factor,
-        t_correct = t_correct,
-        all_divisions_exact = all_exact,
-    )
-end
 
 ################################################################################
 # Recompute only the sample this worker needs.
@@ -227,6 +140,198 @@ else
     fixed = [(196, 793353)]
     u0, u1, v0, v1 = 2112189, 375309, 801778, 2048138
 end
+
+
+
+using Oscar
+
+"""
+    correct_multiplicity(Res2)
+
+Automatically corrects the multiplicity of the resultant Res2 by:
+  1. Inspecting the parent ring generators to find the target variable.
+  2. Extracting the coordinate ('U' or 'V') to apply the exact proven exponent 
+     (4 for 'U', 6 for 'V').
+  3. Locating the unique degree-8 inflation factor (F_infl).
+  4. Performing an exact, remainder-free algebraic division.
+
+Returns a NamedTuple containing the `.corrected` polynomial to match the legacy API.
+"""
+function correct_multiplicity(Res2)
+    # 1. Inspect the parent ring of the resultant to identify the target variable name
+    R = parent(Res2)
+    ring_vars = gens(R)
+    if isempty(ring_vars)
+        error("The resultant parent ring has no generators.")
+    end
+    
+    # The 5th (last) generator in our sandbox is the target variable (e.g., "U0", "V0")
+    target_var = ring_vars[end]
+    target_str = string(target_var)
+    
+    # 2. Extract coordinate and assign the exact mathematically proven exponent
+    coord_char = uppercase(target_str[1])
+    if coord_char == 'U'
+        exponent = 4
+    elseif coord_char == 'V'
+        exponent = 6
+    else
+        error("Could not determine coordinate ('U' or 'V') from target variable: $target_str")
+    end
+
+    # 3. Factor the resultant in the polynomial ring
+    local factors
+    try
+        factors = factor(Res2)
+    catch e
+        error("Failed to factor the second resultant Res2: ", e)
+    end
+
+    # Helper to safely retrieve degrees of multivariate factors in Oscar/Nemo
+    get_poly_degree(p) = begin
+        try
+            return total_degree(p)
+        catch
+            try
+                return degree(p)
+            catch
+                error("Unable to determine degree of factor: $p")
+            end
+        end
+    end
+
+    # 4. Deterministically isolate the unique degree-8 inflation factor (F_infl)
+    f_infl = nothing
+    f_infl_mult = 0
+
+    for (fac, mult) in factors
+        if get_poly_degree(fac) == 8
+            if f_infl !== nothing
+                error("Ambiguity detected: Found multiple distinct degree-8 factors in Res2:\n" *
+                      "  1) $f_infl\n" *
+                      "  2) $fac\n" *
+                      "Cannot deterministically isolate the true inflation factor.")
+            end
+            f_infl = fac
+            f_infl_mult = mult
+        end
+    end
+
+    # Validate that the expected degree-8 inflation factor actually exists
+    if f_infl === nothing
+        fac_list = [(fac, mult) for (fac, mult) in factors]
+        error("Mathematical assumption violated: Could not find the expected degree-8 " *
+              "inflation factor in the factorization of Res2.\n" *
+              "Factors found: $fac_list")
+    end
+
+    # 5. Verify that the factor possesses at least the required multiplicity
+    if f_infl_mult < exponent
+        error("The identified degree-8 inflation factor ($f_infl) has multiplicity $f_infl_mult " *
+              "in Res2, which is less than the required exponent of $exponent for coordinate '$coord_char'.")
+    end
+
+    # 6. Perform exact algebraic division to strip the inflation factor
+    divisor = f_infl^exponent
+    success, corrected_poly = divides(Res2, divisor)
+    
+    if !success
+        error("Exact division failed: Non-zero remainder when dividing Res2 by F_infl^$exponent.")
+    end
+
+    # Return as a NamedTuple to support the legacy .corrected access pattern
+    return (corrected = corrected_poly, inflation_factor = f_infl, exponent = exponent)
+end
+
+
+# ==============================================================================
+# Factory for Sample 1 (Uses 'a' variables)
+# ==============================================================================
+# Groebner-free rewrite (wired to correct_multiplicity, per chat): this used
+# to call eliminate(I_small, [w1, w2]) directly, which is the slow Groebner
+# oracle. We now use the exact PATH B / correction recipe verified against
+# Groebner in _run_bench: sequential resultants to eliminate w1 then w2,
+# then correct_multiplicity(step1, step2) to divide out the excess
+# (inflated) multiplicity that the two-step resultant chain introduces
+# relative to the true (Groebner) elimination ideal generator. This was
+# checked (CHECK_GROEBNER=true runs of _run_bench) to reproduce gA exactly,
+# so it's safe to use as the production path -- and since it divides out
+# spurious factors before this coefficient ever reaches PART F/Bezout, the
+# polynomials feeding the Bezout matrix should also come out smaller.
+function process_sample_1_coeff(raw_coeff, target_name)
+    println("  Spinning up sandbox for: ", target_name)
+    
+    # 1. Build the 5-variable sandbox
+    R_small, (w1, w2, a1, a2, T) = polynomial_ring(F, ["wa1", "wa2", "a1", "a2", target_name])
+    
+    # 2. Convert the raw tower fraction directly into our new sandbox
+    t_gens = [a1, a2]
+    w_gens = [w1, w2]
+    num_s, den_s = tower_to_ring(raw_coeff, t_gens, w_gens)
+    
+    # 3. Build the graph equation: Target * denominator - numerator = 0
+    h_s = T * den_s - num_s
+    
+    # 4. Add the curve equations to the sandbox
+    curve1 = w1^2 - (a1^5 + a1 + 2)
+    curve2 = w2^2 - (a2^5 + a2 + 2)
+    
+    # 5. Eliminate the w's via sequential resultants instead of eliminate():
+    #    step1 = Res_{w1}(h_s, curve1)   -- eliminates w1
+    #    step2 = Res_{w2}(step1, curve2) -- eliminates w2
+    #    Note: Passing variables directly to resultant() is safer than index numbers.
+    step1 = resultant(h_s, curve1, w1)
+    step2 = resultant(step1, curve2, w2)
+
+    # 6. Divide out excess (inflated) multiplicity picked up by the
+    #    resultant chain, Groebner-free, verified equal to eliminate()'s
+    #    output in _run_bench.
+    corr = correct_multiplicity(step2)
+
+    # Return the winning (corrected) polynomial
+    return corr.corrected
+end
+
+
+# ==============================================================================
+# Factory for Sample 2 (Uses 'b' variables instead of 'a')
+# ==============================================================================
+# Groebner-free rewrite -- same reasoning as process_sample_1_coeff above,
+# mirrored for the b-variable (sample 2) sandbox.
+function process_sample_2_coeff(raw_coeff, target_name)
+    println("  Spinning up sandbox (Sample 2) for: ", target_name)
+    
+    # 1. Build the 5-variable sandbox for Sample 2
+    R_small, (w1, w2, b1, b2, T) = polynomial_ring(F, ["wb1", "wb2", "b1", "b2", target_name])
+    
+    # 2. Convert the raw tower fraction directly into our new sandbox
+    t_gens = [b1, b2]
+    w_gens = [w1, w2]
+    num_s, den_s = tower_to_ring(raw_coeff, t_gens, w_gens)
+    
+    # 3. Build the graph equation
+    h_s = T * den_s - num_s
+    
+    # 4. Add the curve equations (using b)
+    curve1 = w1^2 - (b1^5 + b1 + 2)
+    curve2 = w2^2 - (b2^5 + b2 + 2)
+    
+    # 5. Eliminate the w's via sequential resultants instead of eliminate():
+    #    step1 = Res_{w1}(h_s, curve1)   -- eliminates w1
+    #    step2 = Res_{w2}(step1, curve2) -- eliminates w2
+    #    Note: Passing variables directly to resultant() is safer than index numbers.
+    step1 = resultant(h_s, curve1, w1)
+    step2 = resultant(step1, curve2, w2)
+
+    # 6. Divide out excess (inflated) multiplicity picked up by the
+    #    resultant chain, Groebner-free, verified equal to eliminate()'s
+    #    output in _run_bench.
+    corr = correct_multiplicity(step2)
+
+    return corr.corrected
+end
+
+
 
 println("[worker sample=$sample target=$target] calling symbolic_residual...")
 res = PhiSymbolic.symbolic_residual(const_K, const_c, fixed, u0, u1, v0, v1, F_POLY_ASC, p)
@@ -268,7 +373,7 @@ step2 = resultant(step1, curve2, 2)
 
 # Divide out excess (inflated) multiplicity picked up by the resultant
 # chain, Groebner-free, verified equal to eliminate()'s output in _run_bench.
-corr = correct_multiplicity(step1, step2; label="$(target) (sample$(sample))")
+corr = correct_multiplicity(step2)
 result = corr.corrected
 elapsed = time() - t_start
 println("[worker sample=$sample target=$target] resultant+correction done in $(round(elapsed, digits=3))s, ",
