@@ -6184,7 +6184,7 @@ if d1T == 4 && d2T == 4
                 # Fold this shard into the running accumulator, then drop
                 # the shard's own objects before loading the next one --
                 # never more than one shard resident at a time.
-                detB_concrete = detB_concrete + rebuilt
+                global detB_concrete = detB_concrete + rebuilt
                 loaded = nothing
                 rebuilt = nothing
                 GC.gc(false)
@@ -6266,7 +6266,7 @@ if d1T == 4 && d2T == 4
     # disk -- this, not detB_concrete, is what gets serialized into each
     # shard file, so shard size is bounded by one checkpoint interval's
     # worth of terms instead of growing with the grand total.
-    delta_since_checkpoint = zero(Rcoef)
+    global delta_since_checkpoint = zero(Rcoef)
     for (i, t) in enumerate(detB_terms)
         if i <= n_already_done
             continue   # already folded into detB_concrete in a previous run
@@ -6452,7 +6452,7 @@ if d1T == 4 && d2T == 4
             # Reset the delta accumulator now that its contents are
             # safely on disk in this shard -- the NEXT shard should only
             # contain terms folded after this point.
-            delta_since_checkpoint = zero(Rcoef)
+            global delta_since_checkpoint = zero(Rcoef)
         else
             el_write = 0.0
             el_mv = 0.0

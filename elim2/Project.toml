@@ -1,0 +1,7 @@
+name = "elim2"
+uuid = "480bb9d5-23c2-4b2c-95e4-76214478f0d5"
+authors = ["Claire"]
+version = "0.1.0"
+
+[deps]
+Oscar = "f1435218-dba5-11e9-1e4d-f1a5fab5fc13"
