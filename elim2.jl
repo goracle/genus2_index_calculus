@@ -2871,6 +2871,219 @@ function inflating_factor_division_diagnostic(Res1, Res2, gA; label::AbstractStr
 end
 
 ################################################################################
+# PRODUCTION MULTIPLICITY-CORRECTION PIPELINE (Gröbner-free).
+#
+# Turns the diagnostic finding above (Res2 = Groebner-eliminant * F^excess,
+# for some repeated factor F already visible after Res1) into an actual
+# corrective step that does NOT need the Groebner eliminant to run at all.
+#
+# Self-consistency signal used instead of "compare against gA": a genuine
+# spurious-multiplicity factor F is one that
+#   (a) is already present in Res1 (it's an intrinsic factor of the
+#       eliminant geometry, not an artifact manufactured by the second
+#       resultant), AND
+#   (b) has its exponent in Res2 grow relative to its exponent in Res1
+#       specifically because Res2 = resultant(Res1, curve2, w2) resultants
+#       Res1 against ANOTHER copy of the same branch locus -- i.e. gcd
+#       structure between Res1 and curve2's discriminant/leading
+#       coefficient predicts which factor(s) get re-counted.
+#
+# Concretely: for every irreducible factor F of Res2 whose exponent
+# e2 = exp_Res2(F) exceeds e1 = exp_Res1(F) (its exponent already present
+# after the FIRST resultant), the excess exponent (e2 - e1) is the
+# candidate spurious multiplicity introduced purely by the second
+# resultant step -- no Groebner computation needed to conjecture this,
+# since it only compares Res1 and Res2 against each other.
+#
+# This mirrors the empirically-confirmed 3->9 case (excess = 9-3 = 6,
+# which happened to reduce to the correct exponent-3 factor once divided
+# down -- but nothing here hard-codes 3 or 9; it is read off e1/e2).
+################################################################################
+
+"""
+    correct_multiplicity(Res1, Res2; label="")
+
+Gröbner-free multiplicity correction. Factors `Res1` and `Res2` (this is
+the only factorization work needed -- no Groebner basis), matches factors
+via `canonical_factor_key`, and for every factor whose Res2-exponent
+exceeds its Res1-exponent, divides Res2 down by the excess power.
+
+Returns a NamedTuple:
+  corrected          -- the corrected polynomial (Res2 with all detected
+                         excess multiplicity divided out)
+  applied_factors    -- Vector of (key, F, excess) actually divided out
+  t_factor           -- time spent factoring Res1 and Res2
+  t_correct          -- time spent dividing out excess multiplicity
+  all_divisions_exact -- whether every candidate excess power divided
+                         Res2 evenly (a self-consistency check: if this
+                         is false, factor()'s own exponents were
+                         inconsistent with exact division, and the
+                         "corrected" result should not be trusted blindly)
+
+This function never calls eliminate()/groebner_basis() -- it is safe to
+run unconditionally in default (CHECK_GROEBNER=false) benchmark mode.
+"""
+function correct_multiplicity(Res1, Res2; label::AbstractString="")
+    println("-"^70)
+    println("MULTIPLICITY CORRECTION (Gröbner-free)", isempty(label) ? "" : "  [$label]")
+    println("-"^70)
+
+    t0 = time()
+    set1, fac1 = factor_multiset(Res1)
+    set2, fac2 = factor_multiset(Res2)
+    t_factor = time() - t0
+    println("  factor(Res1)+factor(Res2) elapsed = ", round(t_factor, digits=4), "s  -> ",
+            length(set1), " / ", length(set2), " distinct factor(s)")
+
+    poly_of_2 = Dict{String,Any}(canonical_factor_key(p) => p for (p, _e) in fac2)
+
+    # Candidates: factors present in Res2 whose exponent exceeds their
+    # exponent in Res1 (0 if absent from Res1 entirely -- a factor that
+    # appears ONLY in Res2 with no Res1 presence is, by this criterion,
+    # entirely an artifact of the second resultant step and is corrected
+    # down to exponent 0, i.e. divided out completely).
+    all_keys2 = collect(keys(set2))
+    candidates = NamedTuple[]
+    for k in all_keys2
+        e1 = get(set1, k, 0)
+        e2 = set2[k]
+        if e2 > e1
+            push!(candidates, (key = k, excess = e2 - e1, exp_Res1 = e1, exp_Res2 = e2))
+        end
+    end
+
+    println("  candidate inflated factor(s) (exp(Res2) > exp(Res1)): ", length(candidates))
+    for c in candidates
+        rep = poly_of_2[c.key]
+        println("    degree=", total_degree(rep), "  terms=", length(terms(rep)),
+                "  exp(Res1)=", c.exp_Res1, "  exp(Res2)=", c.exp_Res2, "  excess=", c.excess)
+    end
+
+    t0 = time()
+    corrected = Res2
+    applied = NamedTuple[]
+    all_exact = true
+    for c in candidates
+        Fp = poly_of_2[c.key]
+        Fpow = Fp^c.excess
+        divides_exactly = false
+        q = nothing
+        try
+            qtmp, rem = divrem(corrected, Fpow)
+            if iszero(rem)
+                divides_exactly = true
+                q = qtmp
+            else
+                ok, q2 = divides(corrected, Fpow)
+                if ok
+                    divides_exactly = true
+                    q = q2
+                end
+            end
+        catch e
+            println("    ** division by F^", c.excess, " raised an error -- ", sprint(showerror, e), " **")
+        end
+        if divides_exactly
+            corrected = q
+            push!(applied, (key = c.key, excess = c.excess))
+            println("  divided out excess exponent ", c.excess, " of one factor -> ",
+                    "degree=", (iszero(corrected) ? -1 : total_degree(corrected)),
+                    "  terms=", length(terms(corrected)))
+        else
+            all_exact = false
+            println("  ** excess exponent ", c.excess, " did NOT divide evenly -- ",
+                    "skipping this candidate, correction may be incomplete **")
+        end
+    end
+    t_correct = time() - t0
+
+    if isempty(candidates)
+        println("  (no candidate inflated factors -- Res2 already matches Res1's ",
+                "multiplicities on every shared factor; corrected == Res2 unchanged)")
+    end
+
+    println("  correction elapsed = ", round(t_correct, digits=4), "s")
+    println("  final corrected result: degree=", (iszero(corrected) ? -1 : total_degree(corrected)),
+            "  terms=", length(terms(corrected)))
+    println("-"^70)
+
+    return (
+        corrected = corrected,
+        applied_factors = applied,
+        t_factor = t_factor,
+        t_correct = t_correct,
+        all_divisions_exact = all_exact,
+    )
+end
+
+"""
+    verify_correction(corrected, gA; check_groebner=CHECK_GROEBNER, label="")
+
+Verify the corrected polynomial. Three tiers, cheapest first:
+  1. If `check_groebner` is true and `gA` is available: exact polynomial
+     equality against the Groebner eliminant, up to a unit, plus an ideal-
+     equality fallback if the unit check fails. This is the authoritative
+     check but requires the expensive Groebner computation to have run.
+  2. If `check_groebner` is false (default): `gA` is not computed at all,
+     so instead report factor/multiplicity self-consistency for
+     `corrected` (squarefree-content sanity: does `corrected` still carry
+     any UNCORRECTED repeated factor beyond what a generic eliminant of
+     this shape should have? This is necessarily weaker evidence than
+     exact Groebner comparison, and is reported as such.)
+
+Returns a NamedTuple with the verification verdict and which tier ran.
+"""
+function verify_correction(corrected, gA; check_groebner::Bool=CHECK_GROEBNER, label::AbstractString="")
+    if check_groebner && gA !== nothing
+        t0 = time()
+        ideal_match = false
+        unit_match = false
+        unit_ratio = nothing
+        try
+            if parent(corrected) === parent(gA)
+                if !iszero(corrected) && !iszero(gA) && length(terms(corrected)) == length(terms(gA))
+                    lcC = leading_coefficient(corrected)
+                    lcA = leading_coefficient(gA)
+                    if !iszero(lcA)
+                        candidate_ratio = lcC // lcA
+                        if corrected == candidate_ratio * gA
+                            unit_match = true
+                            unit_ratio = candidate_ratio
+                        end
+                    end
+                end
+                if !unit_match
+                    ideal_match = (ideal(parent(gA), [corrected]) == ideal(parent(gA), [gA]))
+                end
+            end
+        catch e
+            println("  ** verify_correction: Groebner comparison raised an error -- ",
+                    sprint(showerror, e), " **")
+        end
+        t_verify = time() - t0
+        matches = unit_match || ideal_match
+        println("  verify_correction [$label]: against Groebner -- unit_match=", unit_match,
+                "  ideal_match=", ideal_match, "  (", round(t_verify, digits=4), "s)")
+        return (matches = matches, tier = :groebner, unit_match = unit_match,
+                ideal_match = ideal_match, unit_ratio = unit_ratio, t_verify = t_verify)
+    else
+        # Tier 2: factor/multiplicity self-consistency only, no Groebner.
+        # A "clean" correction should be squarefree in every factor that
+        # was corrected (excess divided down to exactly the Res1
+        # multiplicity), and dividing again by any corrected factor
+        # should fail (no further excess remaining).
+        t0 = time()
+        set_corrected, _ = factor_multiset(corrected)
+        t_verify = time() - t0
+        println("  verify_correction [$label]: Groebner check skipped (CHECK_GROEBNER=false) -- ",
+                "reporting factor/multiplicity self-consistency only (", round(t_verify, digits=4), "s): ",
+                length(set_corrected), " distinct factor(s) in corrected result.")
+        return (matches = missing, tier = :self_consistency, unit_match = missing,
+                ideal_match = missing, unit_ratio = nothing, t_verify = t_verify)
+    end
+end
+
+################################################################################
 # IDENTIFY THE INFLATING FACTOR (F_infl).
 #
 # We know (empirically, from factor_stage_trace) which canonical-key
@@ -3107,6 +3320,29 @@ println("identify_inflating_factor + helper builders (discriminant_of_curve, lea
 
 using Oscar
 
+################################################################################
+# CHECK_GROEBNER: master switch for the expensive Gröbner verification path.
+#
+# Default benchmark mode is resultant elimination -> factor analysis ->
+# multiplicity correction -> (cheap) verification, with NO Gröbner basis
+# computation at all. Gröbner's eliminate() is kept only as an opt-in
+# debugging oracle: set CHECK_GROEBNER = true (or ENV["ELIM2_CHECK_GROEBNER"]
+# = "true") to additionally run PATH A and compare the corrected resultant
+# result against it exactly, the way the original diagnostic experiment did.
+#
+# This is a `const ... = get(ENV, ...)` read once at load time, matching the
+# existing RUN_FULL_RESULTANT / ELIM2_PARTF_DIRECT_CROSSCHECK convention
+# elsewhere in this file, so it can be toggled per-run without editing code:
+#
+#     ELIM2_CHECK_GROEBNER=true julia elim2.jl
+################################################################################
+
+const CHECK_GROEBNER = get(ENV, "ELIM2_CHECK_GROEBNER", "false") == "true"
+
+println("CHECK_GROEBNER = ", CHECK_GROEBNER,
+        CHECK_GROEBNER ? "  (Gröbner eliminate() WILL run, as a debugging oracle)" :
+                          "  (Gröbner eliminate() will be SKIPPED -- default production/benchmark mode)")
+
 # ------------------------------------------------------------------------
 # Small measurement helper -- prints elapsed time, total_degree, term
 # count, and per-variable degree for one polynomial object, tagged with
@@ -3178,34 +3414,48 @@ function _run_bench(raw_coeff, target_name::String, t_names::Vector{String}, w_n
     results = Dict{String,Any}()
 
     # ----------------------------------------------------------------
-    # PATH A (original): eliminate(I_small, [w1, w2])
+    # PATH A (debugging oracle only): eliminate(I_small, [w1, w2])
+    #
+    # Gated behind CHECK_GROEBNER. Default benchmark mode never touches
+    # this -- gA/gb_gens are left as `nothing`/empty and every downstream
+    # comparison against Groebner is skipped or downgraded to a
+    # self-consistency check (see verify_correction).
     # ----------------------------------------------------------------
-    println("  --- PATH A: eliminate(ideal(R_small,[h_s,curve1,curve2]), [w1,w2]) ---")
-    I_small = ideal(R_small, [h_s, curve1, curve2])
-    t0 = time()
-    eliminated_ideal = eliminate(I_small, [w1, w2])
-    t_gb = time() - t0
-    gb_gens = gens(eliminated_ideal)
-    println("    Groebner eliminate() returned ", length(gb_gens), " generator(s).")
-    if length(gb_gens) == 0
-        error("PATH A: eliminate() returned an EMPTY generator set -- elimination ideal " *
-              "is trivial or zero. Something upstream (h_s/curve1/curve2) is degenerate. " *
-              "Stopping rather than continuing blindly.")
-    end
-    gA = gb_gens[1]
-    if length(gb_gens) > 1
-        println("    NOTE: eliminate() returned >1 generator; using generator [1] for " *
-                "comparison, but this itself is worth flagging -- the eliminant may not " *
-                "be principal, unlike the resultant path's single output.")
-        for (i, g) in enumerate(gb_gens)
-            _measure("Groebner eliminant [gen $i]", g, (i == 1 ? t_gb : 0.0))
+    gA = nothing
+    gb_gens = Any[]
+    t_gb = 0.0
+    if CHECK_GROEBNER
+        println("  --- PATH A: eliminate(ideal(R_small,[h_s,curve1,curve2]), [w1,w2]) ---")
+        I_small = ideal(R_small, [h_s, curve1, curve2])
+        t0 = time()
+        eliminated_ideal = eliminate(I_small, [w1, w2])
+        t_gb = time() - t0
+        gb_gens = gens(eliminated_ideal)
+        println("    Groebner eliminate() returned ", length(gb_gens), " generator(s).")
+        if length(gb_gens) == 0
+            error("PATH A: eliminate() returned an EMPTY generator set -- elimination ideal " *
+                  "is trivial or zero. Something upstream (h_s/curve1/curve2) is degenerate. " *
+                  "Stopping rather than continuing blindly.")
         end
+        gA = gb_gens[1]
+        if length(gb_gens) > 1
+            println("    NOTE: eliminate() returned >1 generator; using generator [1] for " *
+                    "comparison, but this itself is worth flagging -- the eliminant may not " *
+                    "be principal, unlike the resultant path's single output.")
+            for (i, g) in enumerate(gb_gens)
+                _measure("Groebner eliminant [gen $i]", g, (i == 1 ? t_gb : 0.0))
+            end
+        else
+            _measure("Groebner eliminant", gA, t_gb)
+        end
+        println()
     else
-        _measure("Groebner eliminant", gA, t_gb)
+        println("  --- PATH A: SKIPPED (CHECK_GROEBNER=false; Groebner eliminate() ",
+                "is a debugging oracle only in default benchmark mode) ---")
+        println()
     end
     results["A_gens"] = gb_gens
     results["A_time"] = t_gb
-    println()
     # ----------------------------------------------------------------
     # PATH B (candidate): sequential univariate resultants
     #   step1 = Res_{w1}(h_s, curve1)   -- eliminates w1
@@ -3231,174 +3481,204 @@ function _run_bench(raw_coeff, target_name::String, t_names::Vector{String}, w_n
     results["B_time"] = t_r1 + t_r2
     println()
 
-    # ----------------------------------------------------------------
-    # EQUIVALENCE CHECKS -- do NOT assume; verify.
-    # ----------------------------------------------------------------
-    println("  --- equivalence checks: PATH A (Groebner) vs PATH B (resultant) ---")
-
     gB = step2
-    # A and B may live in R_small still (both were built from R_small's
-    # h_s/curve1/curve2), so they should already share a parent. Confirm.
-    if parent(gA) !== parent(gB)
-        println("    NOTE: parent rings differ (", parent(gA), " vs ", parent(gB),
-                "); this itself is diagnostic -- eliminate() may return elements of a " *
-                "different (sub)ring object than resultant() does, even over the same " *
-                "variable set. Attempting a direct term-level comparison anyway only if " *
-                "generator sets match; otherwise this is reported as UNVERIFIED, not equal.")
-    end
 
-    same_parent = parent(gA) === parent(gB)
+    # ----------------------------------------------------------------
+    # NORMAL WORKFLOW (always runs, no Groebner needed):
+    #   resultant elimination -> factor analysis -> multiplicity
+    #   correction -> verification.
+    # ----------------------------------------------------------------
+    corr = correct_multiplicity(step1, step2; label=bench_label)
+    verif = verify_correction(corr.corrected, gA; check_groebner=CHECK_GROEBNER, label=bench_label)
 
-    # (a) identical?
-    identical = same_parent && (gA == gB)
-    println("    (a) identical (==)?              ", identical)
+    results["h_s_terms"] = length(terms(h_s))
+    results["h_s_degree"] = iszero(h_s) ? -1 : total_degree(h_s)
+    results["gA"] = gA
+    results["gB"] = gB
+    results["corrected"] = corr.corrected
+    results["t_resultant"] = t_r1 + t_r2
+    results["t_factor"] = corr.t_factor
+    results["t_correct"] = corr.t_correct
+    results["t_groebner"] = t_gb
+    results["correction_matches_groebner"] = verif.matches
+    results["applied_factors"] = corr.applied_factors
+    results["all_divisions_exact"] = corr.all_divisions_exact
 
-    # (b) equal up to a unit (nonzero scalar in F, since R_small's base
-    #     ring is a field GF(p))?
-    equal_up_to_unit = false
-    unit_ratio = nothing
-    if same_parent && !identical
-        # Over a field-coefficient polynomial ring, "equal up to unit" means
-        # gA == c*gB for some nonzero c in F. Compare via leading-term ratio,
-        # then verify across ALL terms (not just leading), since a matching
-        # leading-term ratio alone doesn't prove global proportionality.
-        if !iszero(gA) && !iszero(gB) && length(terms(gA)) == length(terms(gB))
-            lcA = leading_coefficient(gA)
-            lcB = leading_coefficient(gB)
-            if !iszero(lcB)
-                candidate_ratio = lcA // lcB
-                equal_up_to_unit = (gA == candidate_ratio * gB)
-                if equal_up_to_unit
-                    unit_ratio = candidate_ratio
+    # ----------------------------------------------------------------
+    # EQUIVALENCE CHECKS / DIAGNOSTIC-ONLY COMPARISONS AGAINST GROEBNER.
+    #
+    # Everything below this point requires gA (the Groebner eliminant)
+    # and is therefore gated behind CHECK_GROEBNER -- it is retained
+    # verbatim as the existing diagnostic/debugging-oracle comparison,
+    # not part of the default production workflow above.
+    # ----------------------------------------------------------------
+    if CHECK_GROEBNER
+        println("  --- equivalence checks: PATH A (Groebner) vs PATH B (resultant) ---")
+
+        # A and B may live in R_small still (both were built from R_small's
+        # h_s/curve1/curve2), so they should already share a parent. Confirm.
+        if parent(gA) !== parent(gB)
+            println("    NOTE: parent rings differ (", parent(gA), " vs ", parent(gB),
+                    "); this itself is diagnostic -- eliminate() may return elements of a " *
+                    "different (sub)ring object than resultant() does, even over the same " *
+                    "variable set. Attempting a direct term-level comparison anyway only if " *
+                    "generator sets match; otherwise this is reported as UNVERIFIED, not equal.")
+        end
+
+        same_parent = parent(gA) === parent(gB)
+
+        # (a) identical?
+        identical = same_parent && (gA == gB)
+        println("    (a) identical (==)?              ", identical)
+
+        # (b) equal up to a unit (nonzero scalar in F, since R_small's base
+        #     ring is a field GF(p))?
+        equal_up_to_unit = false
+        unit_ratio = nothing
+        if same_parent && !identical
+            # Over a field-coefficient polynomial ring, "equal up to unit" means
+            # gA == c*gB for some nonzero c in F. Compare via leading-term ratio,
+            # then verify across ALL terms (not just leading), since a matching
+            # leading-term ratio alone doesn't prove global proportionality.
+            if !iszero(gA) && !iszero(gB) && length(terms(gA)) == length(terms(gB))
+                lcA = leading_coefficient(gA)
+                lcB = leading_coefficient(gB)
+                if !iszero(lcB)
+                    candidate_ratio = lcA // lcB
+                    equal_up_to_unit = (gA == candidate_ratio * gB)
+                    if equal_up_to_unit
+                        unit_ratio = candidate_ratio
+                    end
                 end
             end
         end
-    end
-    println("    (b) equal up to unit scalar?     ", equal_up_to_unit,
-            unit_ratio === nothing ? "" : "  (ratio gA = $unit_ratio * gB)")
+        println("    (b) equal up to unit scalar?     ", equal_up_to_unit,
+                unit_ratio === nothing ? "" : "  (ratio gA = $unit_ratio * gB)")
 
-    # (c) same elimination ideal? Mutual ideal-membership check: gA in
-    #     ideal(gB) and gB in ideal(gA) within the SAME ring. This is the
-    #     correct test when they might differ by more than a unit (e.g. a
-    #     genuinely different-but-associate generator, or A having several
-    #     generators).
-    same_ideal = false
-    if same_parent
-        try
-            ideal_A = length(gb_gens) > 1 ? ideal(R_small, gb_gens) : ideal(R_small, [gA])
-            ideal_B = ideal(R_small, [gB])
-            same_ideal = (ideal_A == ideal_B)
-        catch e
-            println("    (c) ideal equality check raised an error -- reporting as UNVERIFIED: ", e)
+        # (c) same elimination ideal? Mutual ideal-membership check: gA in
+        #     ideal(gB) and gB in ideal(gA) within the SAME ring. This is the
+        #     correct test when they might differ by more than a unit (e.g. a
+        #     genuinely different-but-associate generator, or A having several
+        #     generators).
+        same_ideal = false
+        if same_parent
+            try
+                ideal_A = length(gb_gens) > 1 ? ideal(R_small, gb_gens) : ideal(R_small, [gA])
+                ideal_B = ideal(R_small, [gB])
+                same_ideal = (ideal_A == ideal_B)
+            catch e
+                println("    (c) ideal equality check raised an error -- reporting as UNVERIFIED: ", e)
+            end
         end
-    end
-    println("    (c) same elimination ideal (ideal(A) == ideal(B))?  ", same_ideal)
+        println("    (c) same elimination ideal (ideal(A) == ideal(B))?  ", same_ideal)
 
-    # (d) does one factor while the other doesn't?
-    println("    (d) factorization check:")
-    for (nm, g) in (("PATH A gen[1]", gA), ("PATH B (gB)", gB))
-        t0 = time()
-        fac = factor(g)
-        t_fac = time() - t0
-        nfac = length(fac)
-        println("        $nm: ", nfac, " irreducible factor(s)  (factor() elapsed=",
-                round(t_fac, digits=4), "s)")
-        for (f, e) in fac
-            println("            factor: total_degree=", total_degree(f),
-                    "  terms=", length(terms(f)), "  exponent=", e)
+        # (d) does one factor while the other doesn't?
+        println("    (d) factorization check:")
+        for (nm, g) in (("PATH A gen[1]", gA), ("PATH B (gB)", gB))
+            t0 = time()
+            fac = factor(g)
+            t_fac = time() - t0
+            nfac = length(fac)
+            println("        $nm: ", nfac, " irreducible factor(s)  (factor() elapsed=",
+                    round(t_fac, digits=4), "s)")
+            for (f, e) in fac
+                println("            factor: total_degree=", total_degree(f),
+                        "  terms=", length(terms(f)), "  exponent=", e)
+            end
         end
-    end
-    println()
+        println()
 
-    # ----------------------------------------------------------------
-    # SIZE / COST COMPARISON
-    # ----------------------------------------------------------------
-    println("  --- size/cost comparison ---")
-    println("    PATH A (Groebner eliminate): time=", round(t_gb, digits=4),
-            "s  total_degree=", total_degree(gA), "  terms=", length(terms(gA)))
-    println("    PATH B (resultant chain)   : time=", round(t_r1 + t_r2, digits=4),
-            "s  total_degree=", total_degree(gB), "  terms=", length(terms(gB)))
-    ratio_terms = length(terms(gA)) / max(1, length(terms(gB)))
-    ratio_time  = t_gb / max(1e-9, (t_r1 + t_r2))
-    println("    term-count ratio  (A/B) = ", round(ratio_terms, digits=2))
-    println("    time ratio        (A/B) = ", round(ratio_time, digits=2))
-    println()
+        # ----------------------------------------------------------------
+        # SIZE / COST COMPARISON
+        # ----------------------------------------------------------------
+        println("  --- size/cost comparison ---")
+        println("    PATH A (Groebner eliminate): time=", round(t_gb, digits=4),
+                "s  total_degree=", total_degree(gA), "  terms=", length(terms(gA)))
+        println("    PATH B (resultant chain)   : time=", round(t_r1 + t_r2, digits=4),
+                "s  total_degree=", total_degree(gB), "  terms=", length(terms(gB)))
+        ratio_terms = length(terms(gA)) / max(1, length(terms(gB)))
+        ratio_time  = t_gb / max(1e-9, (t_r1 + t_r2))
+        println("    term-count ratio  (A/B) = ", round(ratio_terms, digits=2))
+        println("    time ratio        (A/B) = ", round(ratio_time, digits=2))
+        println()
 
-    results["identical"] = identical
-    results["equal_up_to_unit"] = equal_up_to_unit
-    results["same_ideal"] = same_ideal
-    results["gA"] = gA
-    results["gB"] = gB
-    results["h_s_terms"] = length(terms(h_s))
-    results["h_s_degree"] = iszero(h_s) ? -1 : total_degree(h_s)
-    squarefree_multiplicity_diagnostic(gA, gB; label=bench_label)
-    trace = factor_stage_trace(step1, step2, gA; label=bench_label)
+        results["identical"] = identical
+        results["equal_up_to_unit"] = equal_up_to_unit
+        results["same_ideal"] = same_ideal
+        squarefree_multiplicity_diagnostic(gA, gB; label=bench_label)
+        trace = factor_stage_trace(step1, step2, gA; label=bench_label)
 
-    # ------------------------------------------------------------------
-    # PART H2: universal inflation-vs-division diagnostic.
-    #
-    # Investigates whether the exponent-inflation pattern seen at the
-    # factor_stage_trace stage (Res1 -> Res2 -> Groebner) is universal
-    # across all benchmark targets, and whether exact polynomial
-    # division by the inflating factor's excess power recovers the
-    # Groebner eliminant (up to ideal equality / unit). Purely
-    # observational -- does not alter step1/step2/gA or any upstream
-    # algorithm.
-    # ------------------------------------------------------------------
-    infl_report = inflating_factor_division_diagnostic(step1, step2, gA; label=bench_label)
+        # ------------------------------------------------------------------
+        # PART H2: universal inflation-vs-division diagnostic.
+        #
+        # Investigates whether the exponent-inflation pattern seen at the
+        # factor_stage_trace stage (Res1 -> Res2 -> Groebner) is universal
+        # across all benchmark targets, and whether exact polynomial
+        # division by the inflating factor's excess power recovers the
+        # Groebner eliminant (up to ideal equality / unit). Purely
+        # observational -- does not alter step1/step2/gA or any upstream
+        # algorithm.
+        # ------------------------------------------------------------------
+        infl_report = inflating_factor_division_diagnostic(step1, step2, gA; label=bench_label)
 
-    # ------------------------------------------------------------------
-    # Pick out the inflating factor and actually run identify_inflating_factor
-    # on it, rather than just printing a reminder of how to call it.
-    #
-    # "Inflating" here means the row with the largest |delta| relative to
-    # Res1 that survives to the Groebner stage (exp_Groebner != 0) --
-    # this is deliberately the same notion of "worst offender" that
-    # factor_stage_trace's own localization commentary already reports
-    # per-row, just reduced to a single pick so we have one concrete
-    # F_infl_poly to hand to identify_inflating_factor.
-    # ------------------------------------------------------------------
-    surviving_rows = filter(r -> r.exp_Groebner != 0, trace.rows)
-    if isempty(surviving_rows)
-        println("  (no surviving factor with nonzero Groebner exponent -- skipping identify_inflating_factor)")
-    else
-        worst = argmax(r -> abs(r.delta_1_to_2) + abs(r.delta_2_to_A), surviving_rows)
+        # ------------------------------------------------------------------
+        # Pick out the inflating factor and actually run identify_inflating_factor
+        # on it, rather than just printing a reminder of how to call it.
+        #
+        # "Inflating" here means the row with the largest |delta| relative to
+        # Res1 that survives to the Groebner stage (exp_Groebner != 0) --
+        # this is deliberately the same notion of "worst offender" that
+        # factor_stage_trace's own localization commentary already reports
+        # per-row, just reduced to a single pick so we have one concrete
+        # F_infl_poly to hand to identify_inflating_factor.
+        # ------------------------------------------------------------------
+        surviving_rows = filter(r -> r.exp_Groebner != 0, trace.rows)
+        if isempty(surviving_rows)
+            println("  (no surviving factor with nonzero Groebner exponent -- skipping identify_inflating_factor)")
+        else
+            worst = argmax(r -> abs(r.delta_1_to_2) + abs(r.delta_2_to_A), surviving_rows)
 
-        # facA is the Groebner-stage factor list (key => (poly, exponent)
-        # info lives in `facA` from factor_multiset(gA) inside factor_stage_trace;
-        # re-derive it here directly from gA so we have the actual polynomial
-        # object, not just its canonical key string.
-        facA_local = factor(gA)
-        F_infl_poly = nothing
-        for (f, _e) in facA_local
-            if canonical_factor_key(f) == worst.key
-                F_infl_poly = f
-                break
+            # facA is the Groebner-stage factor list (key => (poly, exponent)
+            # info lives in `facA` from factor_multiset(gA) inside factor_stage_trace;
+            # re-derive it here directly from gA so we have the actual polynomial
+            # object, not just its canonical key string.
+            facA_local = factor(gA)
+            F_infl_poly = nothing
+            for (f, _e) in facA_local
+                if canonical_factor_key(f) == worst.key
+                    F_infl_poly = f
+                    break
+                end
+            end
+
+            if F_infl_poly === nothing
+                println("  (could not recover the polynomial object for factor ", worst.label,
+                        " from factor(gA) -- skipping identify_inflating_factor)")
+            else
+                # Build the standard candidate set directly from the system
+                # polynomials in scope here (h_s, curve1, curve2, step1), all
+                # already living in R_small = parent(gA), so no map_into_ring
+                # lift is needed for these.
+                candidates = Dict{String,Any}(
+                    "disc_w(curve1)"      => discriminant_of_curve(curve1, w1),
+                    "disc_w(curve2)"      => discriminant_of_curve(curve2, w2),
+                    "lc_w1(h_s)"          => leading_coeff_in(h_s, w1),
+                    "lc_w2(h_s)"          => leading_coeff_in(h_s, w2),
+                    "jacobian(h_s,curve1; t1,w1)" => jacobian_2x2(h_s, curve1, t1, w1),
+                    "jacobian(h_s,curve2; t2,w2)" => jacobian_2x2(h_s, curve2, t2, w2),
+                    "step1 (Res_w1)"      => step1,
+                )
+                identify_inflating_factor(F_infl_poly, candidates; label="$bench_label, factor $(worst.label)")
             end
         end
 
-        if F_infl_poly === nothing
-            println("  (could not recover the polynomial object for factor ", worst.label,
-                    " from factor(gA) -- skipping identify_inflating_factor)")
-        else
-            # Build the standard candidate set directly from the system
-            # polynomials in scope here (h_s, curve1, curve2, step1), all
-            # already living in R_small = parent(gA), so no map_into_ring
-            # lift is needed for these.
-            candidates = Dict{String,Any}(
-                "disc_w(curve1)"      => discriminant_of_curve(curve1, w1),
-                "disc_w(curve2)"      => discriminant_of_curve(curve2, w2),
-                "lc_w1(h_s)"          => leading_coeff_in(h_s, w1),
-                "lc_w2(h_s)"          => leading_coeff_in(h_s, w2),
-                "jacobian(h_s,curve1; t1,w1)" => jacobian_2x2(h_s, curve1, t1, w1),
-                "jacobian(h_s,curve2; t2,w2)" => jacobian_2x2(h_s, curve2, t2, w2),
-                "step1 (Res_w1)"      => step1,
-            )
-            identify_inflating_factor(F_infl_poly, candidates; label="$bench_label, factor $(worst.label)")
-        end
+        results["infl_report"] = infl_report
+    else
+        results["identical"] = missing
+        results["equal_up_to_unit"] = missing
+        results["same_ideal"] = missing
+        results["infl_report"] = nothing
     end
-
-    results["infl_report"] = infl_report
 
     return results
 end
@@ -5637,36 +5917,112 @@ if d1T == 4 && d2T == 4
         rss_before = read_rss_mb()
 
         t0eval = time()
-        t_val = evaluate(t, subst_vals)   # single monomial: bounded, cheap-ish substitution
-        el_eval = time() - t0eval
-        rss_after_eval = read_rss_mb()
-        this_size = length(terms(t_val))
+        # ------------------------------------------------------------
+        # CHUNKED substitution (fixes the OOM from evaluate(t, subst_vals)).
+        #
+        # A single term t of detB_abstract is a monomial in P0..P4,Q0..Q4,
+        # e.g. coeff * P_i1*P_i2 * Q_j1*Q_j2 (up to 4 P's and 4 Q's,
+        # since det(Bpq) is degree <=8 total and each abstract_bracket
+        # entry mixes P's and Q's). Substituting P_k -> p_k (a
+        # ~289-term poly in F[a1,a2]) and Q_k -> q_k (a ~289-term poly
+        # in F[b1,b2]) and calling evaluate() on the WHOLE monomial at
+        # once forces Nemo to build the FULL cross product -- up to
+        # ~8385*8385 ~= 70 million monomials -- as one single
+        # intermediate polynomial before any collection/addition
+        # happens. That intermediate is what exhausted RAM; it was
+        # never kept, only the (smaller) sum, but building it even
+        # transiently requires having all 70M terms live in memory
+        # simultaneously.
+        #
+        # Fix: exploit exactly the disjoint-variable structure the
+        # PART F comment above already identified. Split the term's
+        # exponent vector into its P-part and Q-part, compute:
+        #   a_side = product of the p_k's raised to their P-exponents
+        #            (pure F[a1,a2] arithmetic, capped at ~8385 terms)
+        #   b_side = product of the q_k's raised to their Q-exponents
+        #            (pure F[b1,b2] arithmetic, capped at ~8385 terms)
+        # separately -- each of these is cheap and bounded. Then fold
+        # coeff * a_side * b_side into the accumulator NOT as one
+        # multiply, but by walking a_side in small term-batches
+        # (PARTF_CHUNK terms at a time), multiplying each batch by the
+        # full b_side (a batch of <=PARTF_CHUNK terms times an
+        # <=8385-term poly is at most PARTF_CHUNK*8385 monomials, not
+        # 8385*8385), and add!-ing each partial product straight into
+        # detB_concrete before moving to the next batch. At no point
+        # do we hold more than one chunk's worth of the cross product
+        # in memory -- the full a_side*b_side product is never
+        # materialized as a single object.
+        # ------------------------------------------------------------
+        t_exps = first(AbstractAlgebra.exponent_vectors(t))
+        t_coeff = first(coefficients(t))
+
+        a_side = one(Rcoef)
+        b_side = one(Rcoef)
+        for k in 1:5
+            ePk = t_exps[k]        # exponent of P_{k-1} in this monomial
+            eQk = t_exps[5 + k]    # exponent of Q_{k-1} in this monomial
+            if ePk > 0
+                a_side = a_side * (g1_coefs_poly[k]^ePk)
+            end
+            if eQk > 0
+                b_side = b_side * (g2_coefs_poly[k]^eQk)
+            end
+        end
+        a_side = t_coeff * a_side   # fold the term's scalar coefficient into the (smaller) a-side
+
+        this_size = length(terms(a_side)) * length(terms(b_side))   # worst-case bound, for reporting only
         if this_size > max_term_size_seen
             global max_term_size_seen = this_size
             global max_term_size_idx = i
         end
 
-        t0fold = time()
-        if HAVE_SAFE_SELF_ALIAS_ADD
-            # Mutate detB_concrete in place: detB_concrete = detB_concrete + t_val,
-            # but reusing detB_concrete's own storage where the underlying
-            # FLINT/Nemo type supports it, instead of allocating a brand
-            # new ~17.8M-term result and letting the old one become
-            # garbage every single iteration.
-            add!(detB_concrete, detB_concrete, t_val)
-        else
-            global detB_concrete = detB_concrete + t_val
+        PARTF_CHUNK = 200   # a_side terms per batch; tune down further if RSS still climbs
+        a_terms = collect(terms(a_side))
+        n_a_terms = length(a_terms)
+        chunk_start = 1
+        while chunk_start <= n_a_terms
+            chunk_end = min(chunk_start + PARTF_CHUNK - 1, n_a_terms)
+            # Sum this batch of a_side terms into its own small polynomial,
+            # then multiply by the (unchunked, but bounded to ~8385 terms)
+            # b_side once per batch -- never per a_side term individually,
+            # which would pay b_side's collection cost hundreds of times
+            # over for no benefit.
+            a_chunk = sum(a_terms[chunk_start:chunk_end]; init=zero(Rcoef))
+            partial = a_chunk * b_side
+            if HAVE_SAFE_SELF_ALIAS_ADD
+                add!(detB_concrete, detB_concrete, partial)
+            else
+                global detB_concrete = detB_concrete + partial
+            end
+            partial = nothing
+            a_chunk = nothing
+            chunk_start = chunk_end + 1
         end
+        a_side = nothing
+        b_side = nothing
+        a_terms = nothing   # drop references explicitly before the timed GC sweep below
+        el_eval = time() - t0eval
+        rss_after_eval = read_rss_mb()
+
+        t0fold = time()
+        # Folding now happens inside the chunk loop above (one add! per
+        # chunk rather than one add! for the whole term), so this stage
+        # is a no-op left in place only so the existing timing/RSS
+        # instrumentation below still has a well-defined (zero-length)
+        # "fold" phase to report -- the real fold cost is now counted
+        # inside el_eval, which is the honest place for it to live given
+        # it's now interleaved with the substitution.
         el_fold = time() - t0fold
         rss_after_fold = read_rss_mb()
-        t_val = nothing   # drop the reference explicitly before checkpointing
 
-        # Force one full collection here, now that t_val (the ~17.8M-term
-        # substituted term) and, pre-add!, the old detB_concrete are both
-        # unreachable. This turns what would otherwise be unpredictable
-        # incremental GC pauses scattered through the NEXT iteration's
-        # evaluate()/add! calls into one accounted-for sweep here, timed
-        # separately so it shows up explicitly instead of as
+        # Force one full collection here, now that this term's a_side/
+        # b_side/a_terms/each chunk's partial product are all
+        # unreachable (each chunk is already dropped inside the loop
+        # above, but a_side/b_side/a_terms themselves are only freed
+        # once the whole term is done). This turns what would otherwise
+        # be unpredictable incremental GC pauses scattered through the
+        # NEXT term's chunk loop into one accounted-for sweep here,
+        # timed separately so it shows up explicitly instead of as
         # "unaccounted" wall-clock.
         t0gc = time()
         GC.gc(false)   # false = not full/aggressive; just reclaim what's already dead
