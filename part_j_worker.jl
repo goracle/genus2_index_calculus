@@ -16,10 +16,12 @@
 #      julia part_j_worker.jl <sample:1|2> <target:U0|U1|V0|V1> <outfile>
 #
 #  Recomputes symbolic_residual for the requested sample (cheap relative
-#  to eliminate()) rather than trying to serialize a live Oscar tower
-#  ring element across the process boundary, extracts the one raw
-#  coefficient it needs, builds the 5-variable sandbox, runs eliminate(),
-#  and saves the resulting polynomial to `outfile` with Oscar's save().
+#  to the resultant+correction pipeline) rather than trying to serialize
+#  a live Oscar tower ring element across the process boundary, extracts
+#  the one raw coefficient it needs, builds the 5-variable sandbox, runs
+#  the resultant + correct_multiplicity pipeline (Groebner-free, in place
+#  of eliminate()), and saves the resulting polynomial to `outfile` with
+#  Oscar's save().
 ################################################################################
 
 using Oscar
@@ -234,8 +236,9 @@ idx <= length(coeffs) || error("target $target out of range for sample $sample (
 raw_coeff = coeffs[idx]
 
 ################################################################################
-# Build the 5-variable sandbox and eliminate -- identical logic to
-# process_sample_1_coeff / process_sample_2_coeff in elim2.jl.
+# Build the 5-variable sandbox and run the resultant+correction pipeline
+# -- identical logic to process_sample_1_coeff / process_sample_2_coeff
+# in elim2.jl.
 ################################################################################
 
 if sample == 1
@@ -255,14 +258,21 @@ end
 num_s, den_s = tower_to_ring(raw_coeff, t_gens, w_gens)
 h_s = T * den_s - num_s
 
-println("[worker sample=$sample target=$target] running eliminate()...")
+println("[worker sample=$sample target=$target] running resultant + correct_multiplicity...")
 t_start = time()
-I_small = ideal(R_small, [h_s, curve1, curve2])
-eliminated_ideal = eliminate(I_small, [w1, w2])
-result = gens(eliminated_ideal)[1]
+# Eliminate the w's via sequential resultants instead of eliminate():
+#   step1 = Res_{w1}(h_s, curve1)   -- eliminates w1
+#   step2 = Res_{w2}(step1, curve2) -- eliminates w2
+step1 = resultant(h_s, curve1, 1)
+step2 = resultant(step1, curve2, 2)
+
+# Divide out excess (inflated) multiplicity picked up by the resultant
+# chain, Groebner-free, verified equal to eliminate()'s output in _run_bench.
+corr = correct_multiplicity(step1, step2; label="$(target) (sample$(sample))")
+result = corr.corrected
 elapsed = time() - t_start
-println("[worker sample=$sample target=$target] eliminate() done in $(round(elapsed, digits=3))s, ",
-        "degree=", total_degree(result), " terms=", length(terms(result)))
+println("[worker sample=$sample target=$target] resultant+correction done in $(round(elapsed, digits=3))s, ",
+        "degree=", (iszero(result) ? -1 : total_degree(result)), " terms=", length(terms(result)))
 
 save(outfile, result)
 println("[worker sample=$sample target=$target] saved -> $outfile")
