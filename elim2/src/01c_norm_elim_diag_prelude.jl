@@ -87,21 +87,6 @@ curve_a2 = wa2^2 - (a2^5 + a2 + 2)
 ################################################################################
 
 
-function _tower_to_ring(val, level::Int, t_gens::Vector, w_gens::Vector)
-    if level == 0
-        return _base_frac_to_ring(val, t_gens)
-    end
-    val_poly = data(val)
-    c0 = coeff(val_poly, 0)
-    c1 = coeff(val_poly, 1)
-    n0, d0 = _tower_to_ring(c0, level - 1, t_gens, w_gens)
-    n1, d1 = _tower_to_ring(c1, level - 1, t_gens, w_gens)
-    wv = w_gens[level]
-    num = n0 * d1 + n1 * d0 * wv
-    den = d0 * d1
-    return _reduce_frac(num, den)
-end
-
 tower_to_ring(val, t_gens::Vector, w_gens::Vector) = _tower_to_ring(val, 2, t_gens, w_gens)
 
 t_gens_1 = [a1, a2]
