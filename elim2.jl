@@ -3780,7 +3780,7 @@ function _run_bench(raw_coeff, target_name::String, t_names::Vector{String}, w_n
     #   resultant elimination -> factor analysis -> multiplicity
     #   correction -> verification.
     # ----------------------------------------------------------------
-    corr = correct_multiplicity(step2; label=bench_label)
+    corr = correct_multiplicity(step1, step2; label=bench_label)
     verif = verify_correction(corr.corrected, gA; check_groebner=CHECK_GROEBNER, label=bench_label)
 
     results["h_s_terms"] = length(terms(h_s))
@@ -6020,8 +6020,101 @@ if d1T == 4 && d2T == 4
     # trying to build and sum all 219 such terms simultaneously in one
     # in-memory polynomial, which is what actually exhausted RAM.
     # ------------------------------------------------------------------
-    println("  Substituting real (a1,a2)/(b1,b2) coefficients into det(Bpq),",
-            " term-by-term with disk-backed accumulation",
+    # ------------------------------------------------------------------
+    # STAGE 1 (P-only substitution, Q left abstract).
+    #
+    # Both g1_coefs_poly (P0..P4 images) and g2_coefs_poly (Q0..Q4
+    # images) already live in the full 4-variable Rcoef = F[a1,a2,b1,b2]
+    # (they only ever involve a1/a2 or b1/b2 respectively, but the ring
+    # object itself is the big one). Substituting BOTH into
+    # detB_abstract at once (as the single-stage version did) forces
+    # every one of det(Bpq)'s 219 terms to immediately become a
+    # 4-variable Rcoef element, throwing away the P/Q tensor-product
+    # structure before any collection across terms with the same Q
+    # part can happen.
+    #
+    # Fix: substitute only P_i -> p_i(a1,a2), in a SMALL 2-variable ring
+    # Ra = F[a1,a2], and leave Q0..Q4 as abstract generators of a tower
+    # ring Rmid = Ra[Q0..Q4]. Since det(Bpq) is homogeneous of degree 4
+    # in the five Q's, Rmid represents the result NATURALLY as
+    # coefficients (Ra elements, i.e. polynomials in a1,a2 only) indexed
+    # by one of only binomial(4+5-1,4) = 70 possible Q-monomials -- no
+    # separate "group by Q monomial" pass is needed, that's just how a
+    # tower-ring polynomial is already stored. This is the R[P][Q]-style
+    # representation requested: Stage 1 never touches b1,b2 at all.
+    # ------------------------------------------------------------------
+    println("  --- STAGE 1: substituting P_i -> p_i(a1,a2) only,",
+            " Q left abstract (R[P][Q]-style intermediate) ---")
+    flush(stdout)
+
+    t0stage1 = time()
+
+    # Ra = F[a1,a2]: the natural home for the P-substitution values,
+    # reusing the coefficient field F already used to build Rcoef.
+    Ra, (a1_r, a2_r) = polynomial_ring(F, ["a1", "a2"])
+
+    # Lift g1_coefs_poly (Rcoef elements involving only a1_c,a2_c) down
+    # into Ra, term-by-term (same MPolyBuildCtx/push_term!/finish
+    # pattern as remap_to_final elsewhere in this file, rather than a
+    # generic evaluate() homomorphism call). Any term with a nonzero
+    # b1_c/b2_c exponent would mean g1_coefs_poly wasn't actually
+    # (a1,a2)-only as PART A's diagnostic established -- fail loudly
+    # rather than silently drop it.
+    function lift_to_Ra(f)
+        ctx = MPolyBuildCtx(Ra)
+        for (c, exps) in zip(coefficients(f), AbstractAlgebra.exponent_vectors(f))
+            ea1, ea2, eb1, eb2 = exps
+            if eb1 != 0 || eb2 != 0
+                error("lift_to_Ra: term has nonzero b1/b2 exponent ($eb1,$eb2) -- ",
+                      "this P-coefficient was not purely (a1,a2) as PART A's ",
+                      "diagnostic assumed. Refusing to silently drop content.")
+            end
+            push_term!(ctx, c, [ea1, ea2])
+        end
+        return finish(ctx)
+    end
+    g1_coefs_Ra = [lift_to_Ra(p) for p in g1_coefs_poly]
+
+    # Rmid = Ra[Q0..Q4]: a genuine tower ring (coefficient ring Ra, not
+    # the base field F) -- this is exactly the "R[P][Q]" structure asked
+    # for. Every element of Rmid is stored internally as Ra-coefficients
+    # attached to Q-monomials, so once detB_abstract is mapped in here,
+    # coefficients-grouped-by-Q-monomial is just Rmid's native
+    # representation, not something that needs to be built separately.
+    Rmid, Qmid_gens = polynomial_ring(Ra, ["Q0", "Q1", "Q2", "Q3", "Q4"])
+
+    # Substitution homomorphism into Rmid: P_i -> g1_coefs_Ra[i] (lifted
+    # into Rmid as a constant, i.e. an Ra-coefficient with all-zero
+    # Q-exponents), Q_i -> Rmid's own i-th generator (identity on the Q
+    # side -- this is precisely "leave Q abstract").
+    stage1_images = vcat(
+        [Rmid(c) for c in g1_coefs_Ra],   # P0..P4 -> p_i(a1,a2), lifted as Rmid constants
+        Qmid_gens,                         # Q0..Q4 -> Q0..Q4 (unchanged)
+    )
+    detB_mid = evaluate(detB_abstract, stage1_images)
+
+    el_stage1 = time() - t0stage1
+    mid_terms_list = collect(terms(detB_mid))
+    println("  STAGE 1 complete in ", round(el_stage1, digits=3), "s: intermediate is a",
+            " polynomial in Rmid = F[a1,a2][Q0..Q4] with ", length(mid_terms_list),
+            " Q-monomial terms (<=", binomial(4 + 5 - 1, 4),
+            " possible for degree-4-in-5-vars), each carrying an Ra=F[a1,a2]",
+            " coefficient -- b1,b2 not introduced yet.")
+    flush(stdout)
+
+    # ------------------------------------------------------------------
+    # STAGE 2 (Q-only substitution, into the final 4-variable ring).
+    #
+    # Only now, after Stage 1 has already collapsed all P-dependence and
+    # collected terms by Q-monomial, do we substitute Q_i -> q_i(b1,b2)
+    # and introduce Rcoef = F[a1,a2,b1,b2]. This is the ONE place b1,b2
+    # enter the computation, matching the original single-stage
+    # version's "substitute once, at the very end" intent -- just now
+    # applied to <=70 Q-monomial terms instead of needing to redo a
+    # fresh P/Q exponent split on all 219 abstract terms every time.
+    # ------------------------------------------------------------------
+    println("  Substituting real (b1,b2) coefficients into the Stage-1",
+            " intermediate, term-by-term with disk-backed accumulation",
             " (single in-memory evaluate() OOM'd here previously)...")
     flush(stdout)
 
@@ -6056,12 +6149,26 @@ if d1T == 4 && d2T == 4
     # folded since the previous shard (i.e. the partial sum of just the
     # terms processed since the last checkpoint) -- bounded in size by
     # PARTF_CHECKPOINT_EVERY terms' worth of substitution, not by how
-    # far through the 219 terms we are. On resume, shards are summed
-    # back together ONE AT A TIME (load shard -> add! into running total
-    # -> drop shard from memory -> load next shard), so peak resident
-    # memory during resume is one shard's worth plus the running total
-    # under construction, not the entire final accumulator deserialized
-    # in a single call.
+    # far through the 219 terms we are.
+    #
+    # CORRECTION (this is the actual bug that produced err2.txt): an
+    # earlier version of this fix still reconstructed the full running
+    # total at RESUME time, by loading every existing shard and add!-ing
+    # it into a live `detB_concrete` before the substitution loop even
+    # restarted. That reconstruction is exactly the same ever-growing
+    # object the sharding was meant to keep off the heap -- so resuming
+    # got more memory-hungry the further a previous run had gotten, and
+    # with 35/219 terms already folded it died inside load() on the very
+    # first shard (the log stops right after "resuming: 35/219 terms...",
+    # before any "shard 1/7 ... loaded N terms" line, which only prints
+    # after load() returns).
+    #
+    # Real fix: resuming now reads ONLY the progress counter (how many
+    # terms are already safely on disk) and never touches the shard
+    # files themselves. Shards are deserialized exactly ONCE, in a
+    # single final merge pass after the substitution loop finishes all
+    # n_terms -- not once per restart -- so restarting a partially-done
+    # run is cheap regardless of how far it had gotten.
     PARTF_SCRATCH_DIR = joinpath(@__DIR__, "part_f_scratch", name)
     mkpath(PARTF_SCRATCH_DIR)
     shards_dir     = joinpath(PARTF_SCRATCH_DIR, "shards")
@@ -6079,9 +6186,15 @@ if d1T == 4 && d2T == 4
         return sort(joinpath.(shards_dir, names))   # filename padding keeps this chronological
     end
 
-    detB_terms = collect(terms(detB_abstract))
+    # STAGE 2 term source: detB_mid's terms (already collected above as
+    # mid_terms_list), NOT detB_abstract's 219 raw (P,Q) terms. Each term
+    # of detB_mid is (Ra-coefficient) * (Q-monomial) -- the P-substitution
+    # is already done (Stage 1), so this loop now only has to substitute
+    # the Q-side and lift the already-small Ra-coefficient into Rcoef,
+    # for at most 70 terms instead of 219.
+    detB_terms = mid_terms_list
     n_terms = length(detB_terms)
-    println("  det(Bpq) has ", n_terms, " monomials to substitute; streaming each",
+    println("  Stage-1 intermediate has ", n_terms, " Q-monomial terms to substitute; streaming each",
             " into per-checkpoint SHARD files (each holding only the delta",
             " folded since the previous shard) under ", shards_dir,
             " -- resuming sums shards back in one at a time, so peak resume",
@@ -6089,8 +6202,10 @@ if d1T == 4 && d2T == 4
             " final accumulator deserialized in a single load().")
     flush(stdout)
 
-    # Streamed substitute-and-accumulate: for each monomial of
-    # detB_abstract, substitute it (bounded RAM: worst case ~289^4
+    # Streamed substitute-and-accumulate: for each (Ra-coefficient,
+    # Q-monomial) term of detB_mid (Stage 2's input -- P already
+    # substituted in Stage 1), substitute the Q-side and lift the
+    # Ra-coefficient into Rcoef (bounded RAM: worst case ~289^4
     # monomials before collection for a single term, same as before) and
     # immediately fold it into a running-sum polynomial IN MEMORY. Every
     # PARTF_CHECKPOINT_EVERY terms, the terms accumulated so far THIS RUN
@@ -6108,92 +6223,91 @@ if d1T == 4 && d2T == 4
     # re-substituting everything or deserializing one giant merged file.
     t0terms = time()
     n_already_done = 0
-    detB_concrete = zero(Rcoef)   # preallocated accumulator -- never replaced by
-                                   # a fresh object after this; add! mutates it
-                                   # in place every iteration instead of + allocating
-                                   # a brand-new ~17.8M-term polynomial each time.
+
+    # ------------------------------------------------------------------
+    # Lightweight resume: read ONLY the progress counter, never the
+    # shard files. No accumulator is built here at all -- there is
+    # nothing left in this block that scales with how much of the
+    # computation is already done, so restarting near term 218 costs
+    # the same (near-nothing) as restarting near term 1. The shards
+    # themselves are only ever deserialized in the single final merge
+    # pass after the substitution loop below finishes all n_terms.
+    # ------------------------------------------------------------------
     if isfile(progress_file)
         n_already_done = parse(Int, strip(read(progress_file, String)))
         if n_already_done > 0
             shard_paths = existing_shard_paths()
             println("  resuming: ", n_already_done, "/", n_terms,
                     " terms already folded, spread across ", length(shard_paths),
-                    " shard file(s) from a previous run.")
+                    " shard file(s) from a previous run. Shards are not",
+                    " loaded now -- they'll be merged once, at the end,",
+                    " after the remaining terms are folded.")
             flush(stdout)
-            t0resume = time()
-
-            for (shard_i, sp) in enumerate(shard_paths)
-                t0shard = time()
-                loaded = load(sp)
-                loaded_n_terms = length(loaded)
-                print("    shard ", shard_i, "/", length(shard_paths),
-                      " (", basename(sp), "): loaded ", loaded_n_terms, " terms")
-                flush(stdout)
-
-                # Try the cheap path first: Rcoef(loaded) is a single C-level
-                # FLINT call and is FAST if the parent rings happen to be
-                # compatible this time (this is not guaranteed to fail --
-                # it's environment/version dependent, see comment below).
-                # Only fall back to the slow, one-term-at-a-time Julia loop
-                # (which was silently costing MINUTES for a large shard with
-                # zero progress output, and looked exactly like a hang) if
-                # the fast coercion actually throws.
-                local rebuilt
-                try
-                    rebuilt = Rcoef(loaded)
-                    print("; cheap coercion ok (", round(time() - t0shard, digits=1), "s)")
-                catch e
-                    println()
-                    println("      cheap coercion failed (", typeof(e), ") -- falling",
-                            " back to term-by-term rebuild for this shard. This is the",
-                            " SLOW path: one push_term! call per term (", loaded_n_terms,
-                            " total here), each a separate FFI call into FLINT with no",
-                            " batching -- for a large shard this can legitimately take",
-                            " minutes with NO progress output, which is exactly what",
-                            " looked like a hang before this message was added.",
-                            " Printing progress every 500k terms so it's visible",
-                            " instead of silent:")
-                    flush(stdout)
-                    # save()/load() does not guarantee returning a polynomial in
-                    # the IDENTICAL Rcoef parent object (even though it's the
-                    # same ring mathematically) -- Nemo's coercion, R(other_poly),
-                    # is stricter than that and can throw "Unable to coerce
-                    # polynomial". Sidestep coercion entirely: rebuild the
-                    # loaded polynomial term-by-term straight into Rcoef's own
-                    # generators, the same MPolyBuildCtx/push_term!/finish
-                    # pattern used by remap_to_final elsewhere in this file.
-                    # Generator order is identity here (both rings are Rcoef's
-                    # own [a1,a2,b1,b2] declared order), so no gen_map is needed.
-                    rebuild_ctx = MPolyBuildCtx(Rcoef)
-                    n_pushed = 0
-                    t0rebuild = time()
-                    for (c, exps) in zip(coefficients(loaded), AbstractAlgebra.exponent_vectors(loaded))
-                        push_term!(rebuild_ctx, F(c), exps)
-                        n_pushed += 1
-                        if n_pushed % 500_000 == 0
-                            println("      rebuilt ", n_pushed, "/", loaded_n_terms,
-                                    " terms (", round(time() - t0rebuild, digits=1), "s elapsed)")
-                            flush(stdout)
-                        end
-                    end
-                    rebuilt = finish(rebuild_ctx)
-                    println("      term-by-term rebuild complete: ", n_pushed, " terms in ",
-                            round(time() - t0rebuild, digits=1), "s.")
-                end
-
-                # Fold this shard into the running accumulator, then drop
-                # the shard's own objects before loading the next one --
-                # never more than one shard resident at a time.
-                global detB_concrete = detB_concrete + rebuilt
-                loaded = nothing
-                rebuilt = nothing
-                GC.gc(false)
-                println("  -- folded (", round(time() - t0shard, digits=1), "s,",
-                        " running total now ", length(terms(detB_concrete)), " terms)")
-                flush(stdout)
-            end
-            println("  resume: all shards folded in ", round(time() - t0resume, digits=1), "s.")
         end
+    end
+
+    # Reusable shard loader (used only by the final merge pass, once,
+    # after the loop finishes -- see below). Kept as a function so the
+    # cheap-coercion / term-by-term-rebuild fallback logic is written
+    # once instead of duplicated at every call site.
+    function load_shard_rebuilt(sp)
+        loaded = load(sp)
+        loaded_n_terms = length(loaded)
+        print("    ", basename(sp), ": loaded ", loaded_n_terms, " terms")
+        flush(stdout)
+
+        # Try the cheap path first: Rcoef(loaded) is a single C-level
+        # FLINT call and is FAST if the parent rings happen to be
+        # compatible this time (this is not guaranteed to fail -- it's
+        # environment/version dependent, see comment below). Only fall
+        # back to the slow, one-term-at-a-time Julia loop (which was
+        # silently costing MINUTES for a large shard with zero progress
+        # output, and looked exactly like a hang) if the fast coercion
+        # actually throws.
+        local rebuilt
+        try
+            rebuilt = Rcoef(loaded)
+            print("; cheap coercion ok\n")
+        catch e
+            println()
+            println("      cheap coercion failed (", typeof(e), ") -- falling",
+                    " back to term-by-term rebuild for this shard. This is the",
+                    " SLOW path: one push_term! call per term (", loaded_n_terms,
+                    " total here), each a separate FFI call into FLINT with no",
+                    " batching -- for a large shard this can legitimately take",
+                    " minutes with NO progress output, which is exactly what",
+                    " looked like a hang before this message was added.",
+                    " Printing progress every 500k terms so it's visible",
+                    " instead of silent:")
+            flush(stdout)
+            # save()/load() does not guarantee returning a polynomial in
+            # the IDENTICAL Rcoef parent object (even though it's the
+            # same ring mathematically) -- Nemo's coercion, R(other_poly),
+            # is stricter than that and can throw "Unable to coerce
+            # polynomial". Sidestep coercion entirely: rebuild the loaded
+            # polynomial term-by-term straight into Rcoef's own
+            # generators, the same MPolyBuildCtx/push_term!/finish
+            # pattern used by remap_to_final elsewhere in this file.
+            # Generator order is identity here (both rings are Rcoef's
+            # own [a1,a2,b1,b2] declared order), so no gen_map is needed.
+            rebuild_ctx = MPolyBuildCtx(Rcoef)
+            n_pushed = 0
+            t0rebuild = time()
+            for (c, exps) in zip(coefficients(loaded), AbstractAlgebra.exponent_vectors(loaded))
+                push_term!(rebuild_ctx, F(c), exps)
+                n_pushed += 1
+                if n_pushed % 500_000 == 0
+                    println("      rebuilt ", n_pushed, "/", loaded_n_terms,
+                            " terms (", round(time() - t0rebuild, digits=1), "s elapsed)")
+                    flush(stdout)
+                end
+            end
+            rebuilt = finish(rebuild_ctx)
+            println("      term-by-term rebuild complete: ", n_pushed, " terms in ",
+                    round(time() - t0rebuild, digits=1), "s.")
+        end
+        loaded = nothing
+        return rebuilt
     end
 
     # Detect once, outside the hot loop, whether this Nemo/AbstractAlgebra
@@ -6209,6 +6323,18 @@ if d1T == 4 && d2T == 4
     # aliases one of its inputs. This is checked ONCE with tiny throwaway
     # values, never against the real 17.8M-term accumulator, so it's
     # cheap and safe to always run.
+    # The lightweight-resume rewrite above deliberately stopped
+    # reconstructing detB_concrete from existing shards at startup (that
+    # reconstruction was the actual OOM in err2.txt). But it also
+    # removed the one line that unconditionally has to run regardless of
+    # resume state: detB_concrete itself still needs to exist as the
+    # in-memory running total for terms folded THIS run (n_already_done+1
+    # .. n_terms). Those newly-folded terms are what get written into
+    # fresh shards; the previously-folded terms living in old shards on
+    # disk are only ever merged in ONCE, in the final merge pass after
+    # the loop -- never into this variable during the loop itself.
+    global detB_concrete = zero(Rcoef)
+
     HAVE_INPLACE_ADD = applicable(add!, detB_concrete, detB_concrete, detB_concrete)
     HAVE_SAFE_SELF_ALIAS_ADD = false
     if HAVE_INPLACE_ADD
@@ -6260,6 +6386,65 @@ if d1T == 4 && d2T == 4
         return -1.0
     end
 
+    # ------------------------------------------------------------------
+    # Q-MONOMIAL MEMOIZATION (GPT-suggested optimization).
+    #
+    # There are only binomial(4+5-1,4) = 70 possible Q-monomials (total
+    # degree <=4 in Q0..Q4), but up to n_terms (<=70, one per Stage-1
+    # Q-monomial term by construction -- see mid_terms_list) iterations
+    # of this loop each independently recomputed
+    #     b_side = prod_k g2_coefs_poly[k]^eQk
+    # from scratch via repeated multiplication. Since detB_mid was
+    # already collected by Q-monomial in Stage 1 (Rmid is a genuine
+    # tower ring, so each Rmid term has a UNIQUE exponent vector -- see
+    # the Stage 1 comments above), t_exps is guaranteed distinct across
+    # iterations of this loop, so a cache keyed on t_exps will never
+    # actually hit inside a single run of THIS loop today. It exists
+    # for two reasons: (1) it makes that uniqueness assumption an
+    # explicit, checked invariant instead of a silent one -- if Stage 1
+    # is ever changed to emit duplicate Q-monomials (e.g. a future
+    # refactor that skips the Rmid collection step), this cache will
+    # silently paper over the resulting O(duplicate-count) waste, so we
+    # raise instead if a duplicate is ever seen; and (2) it factors the
+    # per-variable power g2_coefs_poly[k]^eQk into its OWN cache, keyed
+    # on (k, eQk) -- THAT cache genuinely does get reused across
+    # iterations whenever two different Q-monomials share a
+    # single-variable factor (e.g. Q0^2*Q1*Q4 and Q0^2*Q2*Q3 both need
+    # g2_coefs_poly[1]^2), which is the actual source of redundant
+    # `evaluate`-equivalent work GPT's analysis identified.
+    q_monomial_cache = Dict{NTuple{5,Int}, Any}()
+    q_power_cache = Dict{Tuple{Int,Int}, Any}()
+
+    function cached_q_power(k::Int, e::Int)
+        e <= 0 && throw(ArgumentError("cached_q_power: exponent must be positive, got $e for k=$k"))
+        key = (k, e)
+        cached = get(q_power_cache, key, nothing)
+        cached !== nothing && return cached
+        val = g2_coefs_poly[k]^e
+        q_power_cache[key] = val
+        return val
+    end
+
+    function cached_b_side(t_exps)
+        key = NTuple{5,Int}(t_exps)
+        if haskey(q_monomial_cache, key)
+            # Should be unreachable given Rmid's per-Q-monomial term
+            # collection in Stage 1 (see comment above) -- raise loudly
+            # rather than silently reusing a value whose provenance we
+            # can no longer verify came from an equivalent computation.
+            throw(AssertionError("cached_b_side: duplicate Q-monomial exponent vector $key encountered -- Stage 1's Rmid collection was expected to make these unique per detB_terms entry; investigate before trusting the cache"))
+        end
+        val = one(Rcoef)
+        for k in 1:5
+            eQk = t_exps[k]
+            if eQk > 0
+                val = val * cached_q_power(k, eQk)
+            end
+        end
+        q_monomial_cache[key] = val
+        return val
+    end
+
     max_term_size_seen = 0
     max_term_size_idx = 0
     # Tracks only what's been folded since the last shard was written to
@@ -6292,41 +6477,56 @@ if d1T == 4 && d2T == 4
         # transiently requires having all 70M terms live in memory
         # simultaneously.
         #
-        # Fix: exploit exactly the disjoint-variable structure the
-        # PART F comment above already identified. Split the term's
-        # exponent vector into its P-part and Q-part, compute:
-        #   a_side = product of the p_k's raised to their P-exponents
-        #            (pure F[a1,a2] arithmetic, capped at ~8385 terms)
+        # Fix (Stage 2 version): t is now a term of detB_mid, i.e. an
+        # (Ra-coefficient) * (Q-monomial) pair in Rmid = Ra[Q0..Q4] --
+        # the P-substitution already happened in Stage 1, so there is no
+        # P-exponent product left to compute here at all. Only two
+        # things remain:
+        #   a_side = this term's Ra-coefficient (already a small,
+        #            <=~8385-term F[a1,a2] polynomial from Stage 1),
+        #            lifted into Rcoef via the same term-by-term
+        #            MPolyBuildCtx technique as remap_to_final elsewhere
+        #            in this file (cheap: Ra has 2 vars, Rcoef has 4, and
+        #            no cross-ring products are involved, just a
+        #            variable-index remap).
         #   b_side = product of the q_k's raised to their Q-exponents
-        #            (pure F[b1,b2] arithmetic, capped at ~8385 terms)
-        # separately -- each of these is cheap and bounded. Then fold
-        # coeff * a_side * b_side into the accumulator NOT as one
-        # multiply, but by walking a_side in small term-batches
-        # (PARTF_CHUNK terms at a time), multiplying each batch by the
-        # full b_side (a batch of <=PARTF_CHUNK terms times an
-        # <=8385-term poly is at most PARTF_CHUNK*8385 monomials, not
-        # 8385*8385), and add!-ing each partial product straight into
-        # detB_concrete before moving to the next batch. At no point
-        # do we hold more than one chunk's worth of the cross product
-        # in memory -- the full a_side*b_side product is never
-        # materialized as a single object.
+        #            (pure F[b1,b2] arithmetic, capped at ~8385 terms),
+        #            exactly as before -- Stage 1 never touched the Q
+        #            side, so this part of the original logic is
+        #            unchanged.
+        # Then fold a_side * b_side into the accumulator by walking
+        # a_side in small term-batches (PARTF_CHUNK terms at a time),
+        # multiplying each batch by the full b_side (a batch of
+        # <=PARTF_CHUNK terms times an <=8385-term poly is at most
+        # PARTF_CHUNK*8385 monomials, not 8385*8385), and add!-ing each
+        # partial product straight into detB_concrete before moving to
+        # the next batch. At no point do we hold more than one chunk's
+        # worth of the cross product in memory -- the full
+        # a_side*b_side product is never materialized as a single
+        # object.
         # ------------------------------------------------------------
-        t_exps = first(AbstractAlgebra.exponent_vectors(t))
-        t_coeff = first(coefficients(t))
+        t_exps = first(AbstractAlgebra.exponent_vectors(t))   # 5 entries: Q0..Q4 exponents only
+        t_ra_coeff = first(coefficients(t))                   # an Ra = F[a1,a2] element
 
-        a_side = one(Rcoef)
-        b_side = one(Rcoef)
-        for k in 1:5
-            ePk = t_exps[k]        # exponent of P_{k-1} in this monomial
-            eQk = t_exps[5 + k]    # exponent of Q_{k-1} in this monomial
-            if ePk > 0
-                a_side = a_side * (g1_coefs_poly[k]^ePk)
-            end
-            if eQk > 0
-                b_side = b_side * (g2_coefs_poly[k]^eQk)
-            end
-        end
-        a_side = t_coeff * a_side   # fold the term's scalar coefficient into the (smaller) a-side
+        # Lift the Ra-coefficient into Rcoef (variable 1 -> a1_c, 2 ->
+        # a2_c; Rcoef's b1_c/b2_c exponents are all zero here since this
+        # coefficient never involved b1,b2 to begin with).
+        a_side = remap_to_final(t_ra_coeff, [a1_c, a2_c, b1_c, b2_c], [1, 2])
+
+        # Memoized: see cached_b_side/cached_q_power definitions above.
+        # This replaces the old from-scratch
+        #     b_side = prod_k g2_coefs_poly[k]^eQk
+        # loop -- the per-variable powers g2_coefs_poly[k]^eQk are now
+        # computed at most once per distinct (k, eQk) pair across the
+        # WHOLE substitution loop (not once per term), which is where
+        # GPT's analysis pinned the ~1min/term `evaluate`-dominated cost:
+        # repeated FLINT expansion of the same power for different terms
+        # that happen to share a factor.
+        b_side = cached_b_side(t_exps)
+        # (No separate scalar-coefficient multiply needed here: unlike a
+        # detB_abstract monomial, t_ra_coeff already IS this term's full
+        # coefficient -- an Ra = F[a1,a2] polynomial, not a bare scalar --
+        # and remap_to_final above lifted it whole into a_side.)
 
         this_size = length(terms(a_side)) * length(terms(b_side))   # worst-case bound, for reporting only
         if this_size > max_term_size_seen
@@ -6511,9 +6711,57 @@ if d1T == 4 && d2T == 4
             "s this run.")
     flush(stdout)
 
+    # ------------------------------------------------------------------
+    # FINAL MERGE PASS (this was described in the comments above but
+    # never actually implemented -- the real bug behind err2.txt is not
+    # just that detB_concrete was undefined, it's that even once
+    # defined/zero-initialized, detB_concrete as built by the loop above
+    # ONLY contains terms folded THIS run. Any terms already safely on
+    # disk in shards from a PREVIOUS run (e.g. "35/219 terms already
+    # folded" in err2.txt) were never brought back in, so the reported
+    # "final" degree/terms/manifest would have silently been wrong --
+    # missing every term folded before the most recent resume.
+    #
+    # Fix: after the loop finishes all n_terms (i.e. every term is now
+    # either freshly folded into detB_concrete above, or already safely
+    # captured in an on-disk shard from a prior run), load every
+    # existing shard exactly once here and add! each into detB_concrete,
+    # one at a time, dropping each shard from memory before loading the
+    # next -- matching the "peak resume memory is one shard plus the
+    # running total" guarantee described above, just performed once at
+    # the end instead of at every restart.
+    # ------------------------------------------------------------------
+    if n_already_done > 0
+        shard_paths_to_merge = existing_shard_paths()
+        println("  Final merge: folding ", length(shard_paths_to_merge),
+                " shard(s) from previous run(s) into this run's accumulator",
+                " (", n_already_done, "/", n_terms, " terms' worth)...")
+        flush(stdout)
+        for (si, sp) in enumerate(shard_paths_to_merge)
+            t0shard = time()
+            shard_poly = load_shard_rebuilt(sp)
+            if HAVE_SAFE_SELF_ALIAS_ADD
+                add!(detB_concrete, detB_concrete, shard_poly)
+            else
+                global detB_concrete = detB_concrete + shard_poly
+            end
+            shard_poly = nothing
+            GC.gc(false)
+            println("    shard ", si, "/", length(shard_paths_to_merge), " (",
+                    basename(sp), ") merged in ", round(time() - t0shard, digits=1), "s")
+            flush(stdout)
+        end
+        println("  Final merge complete: detB_concrete now reflects all ", n_terms,
+                " terms (", n_already_done, " from prior shards + ",
+                n_terms - n_already_done, " folded this run).")
+        flush(stdout)
+    end
+
     println("  substitution done (disk-backed, streamed): degree=",
             total_degree(detB_concrete), "  terms=", length(terms(detB_concrete)),
-            "  (", round(el_sub, digits=1), "s total this run)")
+            "  (", round(el_sub, digits=1), "s substitution this run; ",
+            "totals above include ", n_already_done, " terms merged in from",
+            " prior-run shards)")
     flush(stdout)
 
     # Record the manifest so a subsequent run (or a human) can tell at a
