@@ -1,6 +1,7 @@
 #!/usr/bin/env julia
 
 using Oscar
+using Serialization
 
 ################################################################################
 #
@@ -6173,16 +6174,26 @@ if d1T == 4 && d2T == 4
     mkpath(PARTF_SCRATCH_DIR)
     shards_dir     = joinpath(PARTF_SCRATCH_DIR, "shards")
     mkpath(shards_dir)
-    shard_tmpfile  = joinpath(PARTF_SCRATCH_DIR, "shard.oscar.tmp")
+    # .oscar.tmp / .native.tmp both live here; native is the only format
+    # NEW shards are written in (see save_shard_native below) -- .oscar
+    # support in shard_tmpfile/shard_path is kept only so this file stays
+    # meaningful if someone reverts save_shard_native to save() locally.
+    shard_tmpfile  = joinpath(PARTF_SCRATCH_DIR, "shard.native.tmp")
     progress_file  = joinpath(PARTF_SCRATCH_DIR, "progress.txt")
     manifest_file  = joinpath(PARTF_SCRATCH_DIR, "manifest.txt")
 
     # Shard filenames are zero-padded and named by the LAST term index
-    # they include, so sorting filenames = chronological order.
-    shard_path(upto_term_idx) = joinpath(shards_dir, "shard_" * lpad(upto_term_idx, 6, '0') * ".oscar")
+    # they include, so sorting filenames = chronological order. New
+    # shards get ".native" (Serialization format); ".oscar" is kept only
+    # to locate shards written by older runs (e.g. the 14 shards already
+    # on disk from the run in err2.txt), which load_shard_rebuilt()
+    # below can still read.
+    shard_path(upto_term_idx) = joinpath(shards_dir, "shard_" * lpad(upto_term_idx, 6, '0') * ".native")
     function existing_shard_paths()
         !isdir(shards_dir) && return String[]
-        names = filter(f -> startswith(f, "shard_") && endswith(f, ".oscar"), readdir(shards_dir))
+        names = filter(readdir(shards_dir)) do f
+            startswith(f, "shard_") && (endswith(f, ".native") || endswith(f, ".oscar"))
+        end
         return sort(joinpath.(shards_dir, names))   # filename padding keeps this chronological
     end
 
@@ -6246,10 +6257,87 @@ if d1T == 4 && d2T == 4
         end
     end
 
-    # Reusable shard loader (used only by the final merge pass, once,
-    # after the loop finishes -- see below). Kept as a function so the
-    # cheap-coercion / term-by-term-rebuild fallback logic is written
-    # once instead of duplicated at every call site.
+    # Native-format shard I/O -- bypasses Oscar's save()/load() entirely.
+    #
+    # ROOT CAUSE of the OOM in err2.txt: Oscar.save()/load() serialize
+    # through a generic JSON-based type-tree representation, which is
+    # allocation-heavy independent of term count. Each shard here only
+    # ever holds PARTF_CHECKPOINT_EVERY=5 terms' worth of *substitution*
+    # into Rcoef=F[a1,a2,b1,b2], but each of those raw B[i,j] entries is
+    # itself degree=64/terms=83521 (see PART D above) -- so a single
+    # "small" 5-term shard can still be a tens-of-thousands-of-term
+    # polynomial in Rcoef, and Oscar's save/load overhead on THAT is what
+    # exhausted memory on the very first load() call of the final merge
+    # (the log dies before printing "shard 1/14 loaded ...", i.e. inside
+    # load(), not in the merge loop itself).
+    #
+    # Fix: serialize shards as plain (coeffs::Vector{elem_type(F)},
+    # exps::Vector{Vector{Int}}) via Julia's native Serialization module,
+    # and rebuild with MPolyBuildCtx/push_term! -- the same cheap
+    # reconstruction path already used as load_shard_rebuilt's fallback,
+    # now used unconditionally so no shard ever round-trips through
+    # Oscar's heavier format.
+    function save_shard_native(path, poly)
+        coeffs_out = collect(coefficients(poly))
+        exps_out   = collect(AbstractAlgebra.exponent_vectors(poly))
+        length(coeffs_out) != length(exps_out) &&
+            error("save_shard_native: coeffs/exps length mismatch " *
+                  "($(length(coeffs_out)) vs $(length(exps_out))) for $path -- " *
+                  "refusing to write a shard that can't be reconstructed")
+        open(path, "w") do io
+            serialize(io, (coeffs_out, exps_out))
+        end
+        return nothing
+    end
+
+    function load_shard_native(sp)
+        t0 = time()
+        coeffs_in, exps_in = open(sp, "r") do io
+            deserialize(io)
+        end
+        length(coeffs_in) != length(exps_in) &&
+            error("load_shard_native: corrupt shard $sp -- coeffs/exps " *
+                  "length mismatch ($(length(coeffs_in)) vs $(length(exps_in)))")
+        n_terms = length(coeffs_in)
+        println("    ", basename(sp), ": deserialized ", n_terms, " terms in ",
+                round(time() - t0, digits=1), "s; rebuilding polynomial",
+                " (single-threaded -- MPolyBuildCtx/push_term! has no thread-",
+                "parallel path, this is expected to pin one core regardless",
+                " of -t)...")
+        flush(stdout)
+        t1 = time()
+        rebuild_ctx = MPolyBuildCtx(Rcoef)
+        # Progress print every 2M terms -- without this, a slow-but-alive
+        # single-core push_term! loop over ~18M terms is indistinguishable
+        # from a genuine hang from the outside (this is exactly what
+        # happened: `ps` showed one core at ~100%, meaning it was working
+        # the whole time, but nothing printed for 4000+s).
+        for (i, (c, exps)) in enumerate(zip(coeffs_in, exps_in))
+            push_term!(rebuild_ctx, F(c), exps)
+            if i % 2_000_000 == 0
+                el = time() - t1
+                rate = i / el
+                eta = (n_terms - i) / rate
+                println("      rebuilt ", i, "/", n_terms, " terms (",
+                        round(rate, digits=0), " terms/s, ETA ",
+                        round(eta, digits=0), "s)...")
+                flush(stdout)
+            end
+        end
+        rebuilt = finish(rebuild_ctx)
+        println("    ", basename(sp), ": rebuilt ok in ",
+                round(time() - t1, digits=1), "s (total incl. deserialize: ",
+                round(time() - t0, digits=1), "s)")
+        flush(stdout)
+        return rebuilt
+    end
+
+    # Legacy Oscar-format shard loader -- kept ONLY for reading shards
+    # written by older runs before this fix (e.g. the 14 shards already
+    # on disk from the run in err2.txt use Oscar's save() format, not
+    # the native one above). New shards are written with
+    # save_shard_native(); this function is the read-path fallback for
+    # pre-existing .oscar shard files only.
     function load_shard_rebuilt(sp)
         loaded = load(sp)
         loaded_n_terms = length(loaded)
@@ -6546,7 +6634,25 @@ if d1T == 4 && d2T == 4
         # the chunking on both sides bounds every single cross-product
         # batch to at most PARTF_CHUNK*PARTF_CHUNK monomials, independent
         # of how large a_side/b_side get.
-        PARTF_CHUNK = 200   # terms per batch per side; tune down further if RSS still climbs
+        # PARTF_CHUNK: reverted to 200 (2026-07-16). It was briefly
+        # raised to 1000 based on a "16GB RAM, only ~4.5GB observed
+        # peak RSS" read of the log -- but the actual run in question
+        # died from OOM, which directly contradicts that premise (either
+        # the 16GB figure or the "plenty of headroom" reading of the RSS
+        # numbers was wrong, and I didn't catch the contradiction before
+        # making the change). Since OOM is the confirmed real failure
+        # mode here, a LARGER chunk size (up to 1000x1000 = 1,000,000
+        # monomials transient per chunk-pair, vs 200x200 = 40,000) is
+        # the wrong direction -- it increases peak transient memory, not
+        # decreases it. Back to the original, previously-working value
+        # until real memory headroom is confirmed on an actual
+        # non-crashing run; do not raise this again without first
+        # explaining the OOM (was it this loop, the final shard merge,
+        # something else concurrently running, etc.) rather than
+        # inferring headroom from RSS numbers taken from a run that
+        # didn't actually survive to completion.
+        PARTF_CHUNK = 200   # terms per batch per side; reverted from 1000, see comment above
+
         a_terms = collect(terms(a_side))
         b_terms = collect(terms(b_side))
         n_a_terms = length(a_terms)
@@ -6634,7 +6740,7 @@ if d1T == 4 && d2T == 4
         local el_write, el_mv, el_prog, rss_after_save
         if do_checkpoint
             t0write = time()
-            save(shard_tmpfile, delta_since_checkpoint)
+            save_shard_native(shard_tmpfile, delta_since_checkpoint)
             el_write = time() - t0write
 
             t0mv = time()
@@ -6739,7 +6845,12 @@ if d1T == 4 && d2T == 4
         flush(stdout)
         for (si, sp) in enumerate(shard_paths_to_merge)
             t0shard = time()
-            shard_poly = load_shard_rebuilt(sp)
+            # Dispatch by extension: .native shards (written by this
+            # fixed version of the script) use the cheap Serialization
+            # round-trip; .oscar shards (written by older runs, e.g. the
+            # 14 shards on disk from err2.txt) fall back to the original
+            # Oscar-format loader so they don't need to be regenerated.
+            shard_poly = endswith(sp, ".native") ? load_shard_native(sp) : load_shard_rebuilt(sp)
             if HAVE_SAFE_SELF_ALIAS_ADD
                 add!(detB_concrete, detB_concrete, shard_poly)
             else
