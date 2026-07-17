@@ -4400,11 +4400,11 @@ println("="^70)
 println("PART K DIAGNOSTIC: quartic-in-T structure probe")
 println("="^70)
 
-@assert isdefined(Main, :syl_c1) && isdefined(Main, :syl_c2) """
-    syl_c1/syl_c2 not found in Main. Run elim2.jl at least through the
+@assert @isdefined(syl_c1) && @isdefined(syl_c2) """
+    syl_c1/syl_c2 not found. Run elim2.jl at least through the
     'computing resultant via subresultant PRS' print (i.e. through the
     poly_coeffs_in(g1_fp,...)/poly_coeffs_in(g2_fp,...) calls) before
-    loading this diagnostic.
+    reaching this diagnostic.
     """
 
 # ------------------------------------------------------------------------
@@ -4476,16 +4476,16 @@ function try_factor_with_timeout(label, g, limit_secs)
     return fac
 end
 
-if isdefined(Main, :g1_T) && isdefined(Main, :g2_T)
-    fac1 = try_factor_with_timeout("g1_T", Main.g1_T, 60.0)
-    fac2 = try_factor_with_timeout("g2_T", Main.g2_T, 60.0)
+if @isdefined(g1_T) && @isdefined(g2_T)
+    fac1 = try_factor_with_timeout("g1_T", g1_T, 60.0)
+    fac2 = try_factor_with_timeout("g2_T", g2_T, 60.0)
 else
     println("  g1_T/g2_T not yet built in this session (Part K hasn't ",
             "reached that line) -- skipping live factorization test. ",
             "Rebuilding just enough to test factor() on g1_fp/g2_fp as ",
             "plain multivariate polys instead (factor(), not resultant()):")
-    fac1 = try_factor_with_timeout("g1_fp", Main.g1_fp, 60.0)
-    fac2 = try_factor_with_timeout("g2_fp", Main.g2_fp, 60.0)
+    fac1 = try_factor_with_timeout("g1_fp", g1_fp, 60.0)
+    fac2 = try_factor_with_timeout("g2_fp", g2_fp, 60.0)
 end
 
 # ------------------------------------------------------------------------
@@ -4905,8 +4905,8 @@ end
 # available, or (c) a bad representation choice. Nothing below computes
 # det(B) or the full resultant -- this is pure structure inspection.
 ################################################################################
-global all_a_sym = true
-global all_b_sym = true
+all_a_sym = true
+all_b_sym = true
 
 if d1T == 4 && d2T == 4
     println()
@@ -5082,14 +5082,14 @@ if d1T == 4 && d2T == 4
         [("g2", k, g2_coefs_poly[k+1]) for k in 0:4]
     )
 
-    global all_a_sym = true
-    global all_b_sym = true
+    all_a_sym = true
+    all_b_sym = true
     for (gname, k, f) in all_coefs
         if iszero(f)
             continue
         end
-        global all_a_sym
-        global all_b_sym
+        all_a_sym
+        all_b_sym
         sym_a = is_symmetric_under(f, swap_a)
         sym_b = is_symmetric_under(f, swap_b)
         all_a_sym &= sym_a
@@ -5634,14 +5634,14 @@ if d1T == 4 && d2T == 4
         # for each rewrite direction (b_only / a_only) -- enough to
         # diagnose where the pipeline diverges without flooding output
         # for all ten coefficients.
-        global _c5_debug_done_b = @isdefined(_c5_debug_done_b) ? _c5_debug_done_b : false
-        global _c5_debug_done_a = @isdefined(_c5_debug_done_a) ? _c5_debug_done_a : false
+        _c5_debug_done_b = @isdefined(_c5_debug_done_b) ? _c5_debug_done_b : false
+        _c5_debug_done_a = @isdefined(_c5_debug_done_a) ? _c5_debug_done_a : false
 
         if cls == :b_only
             do_dbg = !_c5_debug_done_b
             if do_dbg
                 println("    [entering full debug trace for $gname coeff of T^$k, class=b_only]")
-                global _c5_debug_done_b = true
+                _c5_debug_done_b = true
             end
             fsym, err = symmetrize_b_only(f; debug=do_dbg)
             pairname = "b"
@@ -5649,7 +5649,7 @@ if d1T == 4 && d2T == 4
             do_dbg = !_c5_debug_done_a
             if do_dbg
                 println("    [entering full debug trace for $gname coeff of T^$k, class=a_only]")
-                global _c5_debug_done_a = true
+                _c5_debug_done_a = true
             end
             fsym, err = symmetrize_a_only(f; debug=do_dbg)
             pairname = "a"
@@ -6292,9 +6292,9 @@ if d1T == 4 && d2T == 4
     # thread-parallel path), so this fixes the I/O bottleneck, not the
     # single-core rebuild loop itself -- but I/O was consuming a large
     # share of the "still totally silent" wall time and this removes it.
-    const SHARD_COEFF_TYPE = UInt32
-    const SHARD_EXP_TYPE   = Int32
-    const SHARD_FORMAT_MAGIC = UInt64(0xF1A7B10C_00000002)   # "FLATBLOC" v2, distinguishes
+    SHARD_COEFF_TYPE = UInt32
+    SHARD_EXP_TYPE   = Int32
+    SHARD_FORMAT_MAGIC = UInt64(0xF1A7B10C_00000002)   # "FLATBLOC" v2, distinguishes
                                                               # this flat-binary format from the
                                                               # earlier Serialization-based .native
                                                               # shards, which have no such header
@@ -6510,7 +6510,7 @@ if d1T == 4 && d2T == 4
     # fresh shards; the previously-folded terms living in old shards on
     # disk are only ever merged in ONCE, in the final merge pass after
     # the loop -- never into this variable during the loop itself.
-    global detB_concrete = zero(Rcoef)
+    detB_concrete = zero(Rcoef)
 
     HAVE_INPLACE_ADD = applicable(add!, detB_concrete, detB_concrete, detB_concrete)
     HAVE_SAFE_SELF_ALIAS_ADD = false
@@ -6628,7 +6628,7 @@ if d1T == 4 && d2T == 4
     # disk -- this, not detB_concrete, is what gets serialized into each
     # shard file, so shard size is bounded by one checkpoint interval's
     # worth of terms instead of growing with the grand total.
-    global delta_since_checkpoint = zero(Rcoef)
+    delta_since_checkpoint = zero(Rcoef)
     for (i, t) in enumerate(detB_terms)
         if i <= n_already_done
             continue   # already folded into detB_concrete in a previous run
@@ -6707,8 +6707,8 @@ if d1T == 4 && d2T == 4
 
         this_size = length(terms(a_side)) * length(terms(b_side))   # worst-case bound, for reporting only
         if this_size > max_term_size_seen
-            global max_term_size_seen = this_size
-            global max_term_size_idx = i
+            max_term_size_seen = this_size
+            max_term_size_idx = i
         end
 
         # PARTF_CHUNK terms per batch, on BOTH sides. Previously only
@@ -6759,8 +6759,8 @@ if d1T == 4 && d2T == 4
                     add!(detB_concrete, detB_concrete, partial)
                     add!(delta_since_checkpoint, delta_since_checkpoint, partial)
                 else
-                    global detB_concrete = detB_concrete + partial
-                    global delta_since_checkpoint = delta_since_checkpoint + partial
+                    detB_concrete = detB_concrete + partial
+                    delta_since_checkpoint = delta_since_checkpoint + partial
                 end
                 partial = nothing
                 b_chunk = nothing
@@ -6847,7 +6847,7 @@ if d1T == 4 && d2T == 4
             # Reset the delta accumulator now that its contents are
             # safely on disk in this shard -- the NEXT shard should only
             # contain terms folded after this point.
-            global delta_since_checkpoint = zero(Rcoef)
+            delta_since_checkpoint = zero(Rcoef)
         else
             el_write = 0.0
             el_mv = 0.0
@@ -6943,7 +6943,7 @@ if d1T == 4 && d2T == 4
             if HAVE_SAFE_SELF_ALIAS_ADD
                 add!(detB_concrete, detB_concrete, shard_poly)
             else
-                global detB_concrete = detB_concrete + shard_poly
+                detB_concrete = detB_concrete + shard_poly
             end
             shard_poly = nothing
             GC.gc(false)
@@ -7123,7 +7123,7 @@ if d1T == 4 && d2T == 4
         for (i, j) in [(0,0), (1,2), (2,3), (3,3)]
             abstract_entry_concrete = evaluate(Bpq[(i,j)], subst_vals)
             same = abstract_entry_concrete == B[(i,j)]
-            global n_mismatch += !same
+            n_mismatch += !same
             println("    entry ($i,$j): abstract-route == concrete B[$i,$j]? ", same)
         end
         println("    spot-check: ", n_mismatch == 0 ? "all entries agree" :
