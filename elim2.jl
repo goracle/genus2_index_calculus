@@ -6257,53 +6257,127 @@ if d1T == 4 && d2T == 4
         end
     end
 
-    # Native-format shard I/O -- bypasses Oscar's save()/load() entirely.
+    # Native-format shard I/O -- bypasses Oscar's save()/load() entirely,
+    # AND bypasses Serialization's per-object overhead too.
     #
-    # ROOT CAUSE of the OOM in err2.txt: Oscar.save()/load() serialize
+    # ROOT CAUSE #1 (OOM in err2.txt): Oscar.save()/load() serialize
     # through a generic JSON-based type-tree representation, which is
-    # allocation-heavy independent of term count. Each shard here only
-    # ever holds PARTF_CHECKPOINT_EVERY=5 terms' worth of *substitution*
-    # into Rcoef=F[a1,a2,b1,b2], but each of those raw B[i,j] entries is
-    # itself degree=64/terms=83521 (see PART D above) -- so a single
-    # "small" 5-term shard can still be a tens-of-thousands-of-term
-    # polynomial in Rcoef, and Oscar's save/load overhead on THAT is what
-    # exhausted memory on the very first load() call of the final merge
-    # (the log dies before printing "shard 1/14 loaded ...", i.e. inside
-    # load(), not in the merge loop itself).
+    # allocation-heavy independent of term count.
     #
-    # Fix: serialize shards as plain (coeffs::Vector{elem_type(F)},
-    # exps::Vector{Vector{Int}}) via Julia's native Serialization module,
-    # and rebuild with MPolyBuildCtx/push_term! -- the same cheap
-    # reconstruction path already used as load_shard_rebuilt's fallback,
-    # now used unconditionally so no shard ever round-trips through
-    # Oscar's heavier format.
+    # ROOT CAUSE #2 (slow-but-not-hung, confirmed via `ps` showing one
+    # core at ~100% for a long time with no OOM): even after switching to
+    # Serialization, a shard's (coeffs::Vector{elem_type(F)},
+    # exps::Vector{Vector{Int}}) representation is ~17.8M separate small
+    # heap objects PER ARRAY -- each FqFieldElem and each inner
+    # Vector{Int} is its own allocation with its own GC header. Building
+    # or reconstructing 30-40M small objects is inherently slow
+    # regardless of format, and deserialize() has no way to batch it.
+    #
+    # Fix: store coefficients and exponents as FLAT, UNBOXED, fixed-width
+    # binary arrays instead of nested Julia collections:
+    #   - coeffs as Vector{UInt32}  (p=2371157 fits with room to spare;
+    #     safe unless the field characteristic changes -- checked below)
+    #   - exponents as ONE flat Vector{Int32} of length 4*n_terms,
+    #     row-major (term i's 4 exponents at indices 4i+1..4i+4)
+    # Each array is written/read with a single raw write()/read() call --
+    # this is a bulk memcpy-equivalent, not 17.8M individual object
+    # allocations. push_term! still has to run 17.8M times on the
+    # rebuild side (FLINT's mpoly builder has no bulk-insert API and no
+    # thread-parallel path), so this fixes the I/O bottleneck, not the
+    # single-core rebuild loop itself -- but I/O was consuming a large
+    # share of the "still totally silent" wall time and this removes it.
+    const SHARD_COEFF_TYPE = UInt32
+    const SHARD_EXP_TYPE   = Int32
+    const SHARD_FORMAT_MAGIC = UInt64(0xF1A7B10C_00000002)   # "FLATBLOC" v2, distinguishes
+                                                              # this flat-binary format from the
+                                                              # earlier Serialization-based .native
+                                                              # shards, which have no such header
+    p > typemax(SHARD_COEFF_TYPE) &&
+        error("save_shard_native: field characteristic p=$p does not fit in " *
+              "$(SHARD_COEFF_TYPE) (max $(typemax(SHARD_COEFF_TYPE))) -- " *
+              "widen SHARD_COEFF_TYPE before writing shards, or every " *
+              "coefficient write below will silently truncate")
+
     function save_shard_native(path, poly)
-        coeffs_out = collect(coefficients(poly))
-        exps_out   = collect(AbstractAlgebra.exponent_vectors(poly))
-        length(coeffs_out) != length(exps_out) &&
+        coeffs_raw = collect(coefficients(poly))
+        exps_raw   = collect(AbstractAlgebra.exponent_vectors(poly))
+        n_terms = length(coeffs_raw)
+        n_terms != length(exps_raw) &&
             error("save_shard_native: coeffs/exps length mismatch " *
-                  "($(length(coeffs_out)) vs $(length(exps_out))) for $path -- " *
+                  "($(n_terms) vs $(length(exps_raw))) for $path -- " *
                   "refusing to write a shard that can't be reconstructed")
+
+        coeffs_flat = Vector{SHARD_COEFF_TYPE}(undef, n_terms)
+        exps_flat   = Vector{SHARD_EXP_TYPE}(undef, 4 * n_terms)
+        for i in 1:n_terms
+            cv = lift(ZZ, coeffs_raw[i])   # FqFieldElem -> ZZRingElem -> Int, exact for a prime field
+            (cv < 0 || cv > typemax(SHARD_COEFF_TYPE)) &&
+                error("save_shard_native: coefficient $cv at term $i out of " *
+                      "range for $(SHARD_COEFF_TYPE) in $path -- refusing to " *
+                      "write a shard that would silently corrupt data")
+            coeffs_flat[i] = SHARD_COEFF_TYPE(cv)
+            exps_i = exps_raw[i]
+            length(exps_i) != 4 &&
+                error("save_shard_native: expected 4 exponents (a1,a2,b1,b2), " *
+                      "got $(length(exps_i)) at term $i in $path")
+            for j in 1:4
+                exps_flat[4 * (i - 1) + j] = SHARD_EXP_TYPE(exps_i[j])
+            end
+        end
+        coeffs_raw = nothing
+        exps_raw = nothing
+
+        # Magic number identifies this as the FLAT BINARY format
+        # (v2) -- distinct from the Serialization-based .native shards
+        # written by an earlier version of this script. Without this,
+        # an old-format .native shard would be silently misread as flat
+        # binary (wrong n_terms from misinterpreted bytes, garbage
+        # coefficients/exponents) instead of failing loudly. Any shard
+        # written before this fix must be deleted and regenerated --
+        # there is no cheap way to distinguish the two formats other
+        # than this header, which old shards don't have.
         open(path, "w") do io
-            serialize(io, (coeffs_out, exps_out))
+            write(io, SHARD_FORMAT_MAGIC)
+            write(io, Int64(n_terms))
+            write(io, coeffs_flat)
+            write(io, exps_flat)
         end
         return nothing
     end
 
     function load_shard_native(sp)
         t0 = time()
-        coeffs_in, exps_in = open(sp, "r") do io
-            deserialize(io)
+        fsize_mb = filesize(sp) / 1024 / 1024
+        println("    ", basename(sp), ": starting bulk read (", round(fsize_mb, digits=0),
+                " MB on disk)...")
+        flush(stdout)
+        n_terms, coeffs_in, exps_in = open(sp, "r") do io
+            magic = read(io, UInt64)
+            magic != SHARD_FORMAT_MAGIC &&
+                error("load_shard_native: $sp does not have the expected flat-" *
+                      "binary format header (got magic=$(magic), expected " *
+                      "$(SHARD_FORMAT_MAGIC)) -- this is almost certainly an " *
+                      "OLD-format .native shard written by an earlier version " *
+                      "of this script (Serialization-based, not flat binary). " *
+                      "Delete all .native shards under this scratch dir and " *
+                      "let them regenerate, or restore from .oscar shards if " *
+                      "available.")
+            nt = read(io, Int64)
+            cf = Vector{SHARD_COEFF_TYPE}(undef, nt)
+            ex = Vector{SHARD_EXP_TYPE}(undef, 4 * nt)
+            read!(io, cf)
+            read!(io, ex)
+            (nt, cf, ex)
         end
-        length(coeffs_in) != length(exps_in) &&
-            error("load_shard_native: corrupt shard $sp -- coeffs/exps " *
-                  "length mismatch ($(length(coeffs_in)) vs $(length(exps_in)))")
-        n_terms = length(coeffs_in)
-        println("    ", basename(sp), ": deserialized ", n_terms, " terms in ",
-                round(time() - t0, digits=1), "s; rebuilding polynomial",
-                " (single-threaded -- MPolyBuildCtx/push_term! has no thread-",
-                "parallel path, this is expected to pin one core regardless",
-                " of -t)...")
+        length(exps_in) != 4 * n_terms &&
+            error("load_shard_native: corrupt shard $sp -- exponent array " *
+                  "length $(length(exps_in)) is not 4x the term count " *
+                  "$n_terms ($(4 * n_terms) expected)")
+        println("    ", basename(sp), ": read ", n_terms, " terms in ",
+                round(time() - t0, digits=1), "s (bulk array read, no per-term",
+                " allocation); rebuilding polynomial (single-threaded --",
+                " MPolyBuildCtx/push_term! has no thread-parallel path, this",
+                " is expected to pin one core regardless of -t)...")
         flush(stdout)
         t1 = time()
         rebuild_ctx = MPolyBuildCtx(Rcoef)
@@ -6311,9 +6385,18 @@ if d1T == 4 && d2T == 4
         # single-core push_term! loop over ~18M terms is indistinguishable
         # from a genuine hang from the outside (this is exactly what
         # happened: `ps` showed one core at ~100%, meaning it was working
-        # the whole time, but nothing printed for 4000+s).
-        for (i, (c, exps)) in enumerate(zip(coeffs_in, exps_in))
-            push_term!(rebuild_ctx, F(c), exps)
+        # the whole time, but nothing printed for a long time).
+        exps_buf = Vector{Int}(undef, 4)   # reused each iteration -- avoids
+                                            # allocating a fresh Vector{Int}
+                                            # per term just to satisfy
+                                            # push_term!'s expected type
+        for i in 1:n_terms
+            base = 4 * (i - 1)
+            exps_buf[1] = Int(exps_in[base + 1])
+            exps_buf[2] = Int(exps_in[base + 2])
+            exps_buf[3] = Int(exps_in[base + 3])
+            exps_buf[4] = Int(exps_in[base + 4])
+            push_term!(rebuild_ctx, F(Int(coeffs_in[i])), exps_buf)
             if i % 2_000_000 == 0
                 el = time() - t1
                 rate = i / el
