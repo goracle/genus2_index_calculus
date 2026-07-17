@@ -4269,10 +4269,16 @@ end
 # follow it has been replaced below.
 ################################################################################
 
-const name  = "U0"
-const i1    = 1
-const i2    = 5
-const Tvar  = U0_f
+target_specs = [
+    ("U0", 1, 5, U0_f),
+    ("U1", 2, 6, U1_f),
+    ("V0", 3, 7, V0_f),
+    ("V1", 4, 8, V1_f),
+]
+
+for (name, i1, i2, Tvar) in target_specs
+
+RESULTANT_FILE = joinpath(@__DIR__, "part_k_results", "$(name)_resultant.oscar")
 
 g1 = final_equations[i1]
 g2 = final_equations[i2]
@@ -6958,6 +6964,100 @@ if d1T == 4 && d2T == 4
             " prior-run shards)")
     flush(stdout)
 
+    # ------------------------------------------------------------------
+    # FINAL-SUM STATISTICS.
+    #
+    # Purpose: give a clear read on complexity BEFORE deciding whether to
+    # spend the coding/runtime budget on the full resultant(g1_T, g2_T)
+    # call below. total_degree()/length(terms()) alone don't say much
+    # about how the coefficient magnitudes or per-variable degrees are
+    # distributed, which is what actually determines whether the
+    # Sylvester-matrix resultant route is tractable at this size.
+    #
+    # Everything here is read-only against detB_concrete (already fully
+    # built above) -- no new shard I/O, no additional substitution.
+    # ------------------------------------------------------------------
+    println("  ---- PART F final-sum statistics ----")
+    flush(stdout)
+
+    stats_t0 = time()
+    n_final_terms = length(terms(detB_concrete))
+    n_final_terms == 0 &&
+        error("PART F final-sum stats: detB_concrete has zero terms after ",
+              "merge -- this should be structurally impossible for a ",
+              "genus-2 Bezoutian determinant and indicates upstream data ",
+              "loss (empty/corrupt shard, or the merge loop above silently ",
+              "skipped every shard). Refusing to report statistics on an ",
+              "empty polynomial as if it were a real result.")
+
+    # Per-variable degree range (a1,a2,b1,b2) -- cheap: one pass over
+    # exponent_vectors(), no coefficient work.
+    var_names = ["a1", "a2", "b1", "b2"]
+    nv = nvars(Rcoef)
+    length(var_names) != nv &&
+        error("PART F final-sum stats: var_names has ", length(var_names),
+              " entries but Rcoef has ", nv, " variables -- update ",
+              "var_names before trusting the per-variable degree table ",
+              "below (it would otherwise silently mislabel or truncate ",
+              "columns).")
+    min_deg_per_var = fill(typemax(Int), nv)
+    max_deg_per_var = fill(0, nv)
+    max_total_degree_seen = 0
+    min_total_degree_seen = typemax(Int)
+    # Coefficient-value extremes (as ZZ lifts) -- these matter directly
+    # for the resultant call below: Sylvester-matrix entries are built
+    # FROM these coefficients, so a huge coefficient range here is a
+    # direct predictor of how expensive/whether-feasible the dense
+    # resultant() call will be, not just an idle statistic.
+    min_coeff_zz = nothing
+    max_coeff_zz = nothing
+    for (c, exps) in zip(coefficients(detB_concrete), AbstractAlgebra.exponent_vectors(detB_concrete))
+        length(exps) != nv &&
+            error("PART F final-sum stats: term with ", length(exps),
+                  " exponents encountered but Rcoef has ", nv,
+                  " variables -- detB_concrete is malformed (likely a ",
+                  "shard merged from a differently-shaped run); refusing ",
+                  "to report statistics computed against inconsistent ",
+                  "exponent vectors.")
+        td = sum(exps)
+        td > max_total_degree_seen && (max_total_degree_seen = td)
+        td < min_total_degree_seen && (min_total_degree_seen = td)
+        for k in 1:nv
+            e = exps[k]
+            e > max_deg_per_var[k] && (max_deg_per_var[k] = e)
+            e < min_deg_per_var[k] && (min_deg_per_var[k] = e)
+        end
+        cv = lift(ZZ, c)
+        if min_coeff_zz === nothing || cv < min_coeff_zz
+            min_coeff_zz = cv
+        end
+        if max_coeff_zz === nothing || cv > max_coeff_zz
+            max_coeff_zz = cv
+        end
+    end
+    stats_elapsed = time() - stats_t0
+
+    println("    term count        : ", n_final_terms)
+    println("    total degree      : min=", min_total_degree_seen,
+            "  max=", max_total_degree_seen)
+    for k in 1:nv
+        println("    degree in ", var_names[k], "        : min=", min_deg_per_var[k],
+                "  max=", max_deg_per_var[k])
+    end
+    println("    coefficient range : min=", min_coeff_zz, "  max=", max_coeff_zz,
+            "  (field characteristic p=", p, ")")
+    # Rough on-disk footprint this polynomial WOULD take in the flat
+    # binary shard format (SHARD_COEFF_TYPE + 4*SHARD_EXP_TYPE per term)
+    # -- a direct, checkable estimate for "how much space does the full
+    # resultant computation's intermediate data need", not a guess.
+    bytes_per_term_flat = sizeof(SHARD_COEFF_TYPE) + 4 * sizeof(SHARD_EXP_TYPE)
+    est_mb_flat = n_final_terms * bytes_per_term_flat / 1024 / 1024
+    println("    est. flat-shard size at this term count: ",
+            round(est_mb_flat, digits=1), " MB (", bytes_per_term_flat,
+            " bytes/term)")
+    println("    stats computed in ", round(stats_elapsed, digits=1), "s")
+    flush(stdout)
+
     # Record the manifest so a subsequent run (or a human) can tell at a
     # glance that this result came from the disk-backed path and where
     # the checkpoint file lives, without needing to re-derive it.
@@ -6966,7 +7066,14 @@ if d1T == 4 && d2T == 4
         println(io, "n_terms = $n_terms")
         println(io, "checkpoint shards dir = $shards_dir")
         println(io, "final degree = ", total_degree(detB_concrete))
-        println(io, "final terms  = ", length(terms(detB_concrete)))
+        println(io, "final terms  = ", n_final_terms)
+        println(io, "total degree range = ", min_total_degree_seen, "..", max_total_degree_seen)
+        for k in 1:nv
+            println(io, "degree in ", var_names[k], " range = ", min_deg_per_var[k], "..", max_deg_per_var[k])
+        end
+        println(io, "coefficient range (ZZ lift) = ", min_coeff_zz, "..", max_coeff_zz)
+        println(io, "field characteristic p = ", p)
+        println(io, "est. flat-shard size at this term count (MB) = ", round(est_mb_flat, digits=1))
     end
 
     # Cross-check against the concrete (already-flattened) Bezout matrix
@@ -7031,9 +7138,425 @@ if d1T == 4 && d2T == 4
     println("  and manipulating dense ", nvars(Rcoef), "-variable ", 83521,
             "-term entries at every intermediate step.")
     flush(stdout)
+
+    # ------------------------------------------------------------------
+    # PERSIST THE RESULT.
+    #
+    # detB_concrete IS this target's resultant numerator (res_num) --
+    # PART F's whole point was to compute it via the abstract-bracket/
+    # Bezout route instead of the single opaque resultant() call. Save
+    # it now, before shard cleanup, so "sum, then clean up shards, then
+    # write the sum to disk" holds for every target in this loop, not
+    # just relying on a separate downstream block that may not run.
+    # ------------------------------------------------------------------
+    res_num = detB_concrete
+    mkpath(dirname(RESULTANT_FILE))
+    save(RESULTANT_FILE, res_num)
+    println("  saved resultant -> ", RESULTANT_FILE)
+    flush(stdout)
+
+    # ------------------------------------------------------------------
+    # SHARD CLEANUP.
+    #
+    # We don't have disk budget to keep every checkpoint shard around for
+    # the rest of the resultant computation below (which needs its own
+    # scratch space). detB_concrete is now the complete, durable result
+    # (all n_terms folded in, per the final-merge assertion above), and
+    # it has ALREADY been persisted to disk twice over by this point:
+    #   1. manifest_file (stats/shape, written above) plus
+    #   2. RESULTANT_FILE, written immediately above within PART F
+    #      itself, which is what downstream code actually reads back in.
+    # The shards themselves are now pure redundant intermediate state --
+    # deleting them does not lose the result, only the ability to
+    # re-merge from checkpoints if this run's process dies AFTER this
+    # point.
+    #
+    # Gating (all must hold, or shards are kept and cleanup is skipped
+    # with an explanatory message -- never delete on a correctness
+    # question mark):
+    #   - n_final_terms > 0 (already asserted above -- detB_concrete is
+    #     not empty)
+    #   - if a spot-check or full crosscheck ran, it must have reported
+    #     zero mismatches (n_mismatch, or `agrees` for the full check)
+    #   - ELIM2_PARTF_KEEP_SHARDS is not set to "true" (escape hatch for
+    #     a human who wants to inspect/re-merge shards manually)
+    # ------------------------------------------------------------------
+    keep_shards_override = get(ENV, "ELIM2_PARTF_KEEP_SHARDS", "false") == "true"
+    crosscheck_ok = true
+    crosscheck_note = "no crosscheck/spot-check ran this branch"
+    if @isdefined(agrees)
+        crosscheck_ok = agrees
+        crosscheck_note = "full det(B) crosscheck: agrees=$agrees"
+    elseif @isdefined(n_mismatch)
+        crosscheck_ok = (n_mismatch == 0)
+        crosscheck_note = "spot-check: n_mismatch=$n_mismatch"
+    end
+
+    if keep_shards_override
+        println("  Shard cleanup skipped: ELIM2_PARTF_KEEP_SHARDS=true.",
+                " Shards remain under ", shards_dir, ".")
+        flush(stdout)
+    elseif !crosscheck_ok
+        println("  Shard cleanup SKIPPED: correctness check did not pass",
+                " clean (", crosscheck_note, ") -- keeping shards under ",
+                shards_dir, " so the result can be re-derived/inspected.",
+                " Investigate before re-running with cleanup enabled.")
+        flush(stdout)
+    else
+        cleanup_shard_paths = existing_shard_paths()
+        println("  Shard cleanup: ", crosscheck_note, " -- removing ",
+                length(cleanup_shard_paths), " shard file(s) under ",
+                shards_dir, " (result is durably saved in manifest_file",
+                " and in RESULTANT_FILE, both written above)...")
+        flush(stdout)
+        n_removed = 0
+        n_failed = 0
+        bytes_freed = 0
+        for sp in cleanup_shard_paths
+            try
+                sz = filesize(sp)
+                rm(sp; force=false)   # force=false: fail loudly if a shard
+                                       # can't actually be removed (e.g.
+                                       # permissions, already gone) rather
+                                       # than silently pretending cleanup
+                                       # succeeded
+                n_removed += 1
+                bytes_freed += sz
+            catch e
+                n_failed += 1
+                println("    WARNING: failed to remove shard ", sp, ": ", e)
+            end
+        end
+        # progress_file is only meaningful while shards exist to resume
+        # from -- with the shards gone, a stale progress_file would make
+        # a future run believe N terms are "already folded" when there
+        # is nothing left to merge them from. Remove it too, but only
+        # after shard removal above actually succeeded for everything.
+        if n_failed == 0 && isfile(progress_file)
+            rm(progress_file; force=false)
+        end
+        println("    removed ", n_removed, "/", length(cleanup_shard_paths),
+                " shard file(s), freed ", round(bytes_freed / 1024 / 1024, digits=1),
+                " MB", n_failed > 0 ? "  ($n_failed FAILED -- see warnings above, shards_dir not fully clean)" : "")
+        n_failed > 0 &&
+            error("PART F shard cleanup: ", n_failed, " shard file(s) under ",
+                  shards_dir, " could not be removed -- disk space was not",
+                  " fully reclaimed. Inspect the warnings above (likely a",
+                  " permissions issue or a file held open) before assuming",
+                  " the scratch dir is clear for the resultant computation below.")
+        flush(stdout)
+    end
     ############################################################################
     # END PART F
     ############################################################################
+end
+
+    println("  === $name complete: resultant numerator saved to ", RESULTANT_FILE, " ===")
+    flush(stdout)
+end # for (name, i1, i2, Tvar) in target_specs
+
+################################################################################
+# PART G REMOVED.
+#
+# The manual disk-sharded pseudo-remainder-sequence cross-check (and the
+# separate gated resultant(g1_T, g2_T) call after it) used to live here.
+# Both were redundant verification of what PART F already computes and
+# saves directly (res_num = detB_concrete, written to RESULTANT_FILE
+# inside the loop above, once per target) -- PART G never ran by default
+# (RUN_PART_G_PRS defaulted false) and the gated resultant() call below
+# it unconditionally exit(0)'d after the first target, which is what was
+# blocking U1/V0/V1 from ever running. Removed rather than left as dead
+# code now that the loop above is the single source of truth for all
+# four targets' results.
+################################################################################
+
+#=
+# PART G: manually-driven, disk-sharded pseudo-remainder sequence (PRS).
+#
+# Motivation: the single opaque resultant(g1_T, g2_T) call below (kept,
+# gated behind RUN_FULL_RESULTANT, as the reference/fallback path) is a
+# black box -- when it hangs or OOMs there is no visibility into which
+# PRS step is the problem, and no way to checkpoint partway through. PART
+# F already independently computed the resultant's numerator (res_num,
+# via the Bezout determinant, disk-sharded and fully verified against
+# the concrete B by spot-check), so this PRS pass is NOT the only way to
+# get the answer -- it exists as an independent, transparent, resumable
+# computation of the SAME resultant via a different classical algorithm,
+# specifically so a hang/crash mid-PRS is debuggable (which step, which
+# degree, how big were the coefficients) instead of opaque.
+#
+# Algorithm: standard pseudo-remainder sequence for two univariate
+# polynomials g1_T, g2_T in Rt = Kcoef[T] (Kcoef = Frac(Rcoef), Rcoef =
+# F[a1,a2,b1,b2]). At each step, r_{k+1} = pseudorem(r_{k-1}, r_k); the
+# sequence terminates when some r_k has degree 0 (or is zero). Since
+# deg(g1_T)=deg(g2_T)=4 (checked below), there are at most 4 steps
+# before the degree hits 0. This is the FULL resultant algorithm --
+# Oscar's resultant() does exactly this internally -- but done here one
+# step at a time, with each step's cost (time, coefficient size, degree
+# drop) printed immediately, and with the potentially-large numerator of
+# each remainder written to a flat disk shard (same format PART F uses)
+# rather than kept as a second copy in memory once it's been consumed by
+# the next step.
+#
+# This does NOT re-derive the final resultant value from the remainder
+# sequence's bookkeeping (that requires tracking the correct signs and
+# powers of leading coefficients through each pseudo-division, i.e.
+# actually implementing the subresultant algorithm's scaling rules) --
+# it stops once it has confirmed how the degree sequence and coefficient
+# growth actually behave in practice. That confirmation is what decides
+# whether finishing the sign/power bookkeeping (cheap, pure arithmetic
+# once every r_k is already on disk) is worth doing next, or whether
+# PART F's already-verified res_num should just be treated as the
+# answer. Gated behind its own flag so it's an explicit, deliberate run.
+################################################################################
+
+const RUN_PART_G_PRS = get(ENV, "ELIM2_RUN_PART_G_PRS", "false") == "true"
+
+if !RUN_PART_G_PRS
+    println()
+    println("Skipping PART G manual sharded PRS (RUN_PART_G_PRS=false).")
+    println("Set ENV[\"ELIM2_RUN_PART_G_PRS\"] = \"true\" to run it -- an",
+            " independent, step-by-step, disk-sharded computation of the",
+            " same resultant PART F already produced (res_num), useful",
+            " when the single resultant(g1_T,g2_T) call below hangs/OOMs",
+            " and you need to see WHICH PRS step is the problem.")
+    flush(stdout)
+else
+    println()
+    println("=" ^ 70)
+    println("PART G: manual disk-sharded pseudo-remainder sequence -- $name")
+    println("=" ^ 70)
+    println("  deg(g1_T)=", degree(g1_T), "  deg(g2_T)=", degree(g2_T),
+            "  (over Kcoef = Frac(F[a1,a2,b1,b2]), F = GF(", p, "))")
+    flush(stdout)
+
+    PARTG_SCRATCH_DIR = joinpath(@__DIR__, "part_g_scratch", name)
+    mkpath(PARTG_SCRATCH_DIR)
+    println("  scratch dir: ", PARTG_SCRATCH_DIR)
+    flush(stdout)
+
+    # Same flat-binary shard format PART F uses (magic-tagged, 4
+    # exponents/term for Rcoef = F[a1,a2,b1,b2]) -- redefined here as a
+    # standalone copy rather than reused from PART F's local closures,
+    # since those closures went out of scope when PART F's `if` block
+    # ended above. Kept byte-for-byte compatible with PART F's format so
+    # the same magic number correctly rejects any accidental cross-use.
+    const PARTG_SHARD_COEFF_TYPE = UInt32
+    const PARTG_SHARD_EXP_TYPE   = Int32
+    const PARTG_SHARD_MAGIC      = UInt64(0xF1A7B10C_00000002)   # same "FLATBLOC" v2 tag as PART F
+
+    p > typemax(PARTG_SHARD_COEFF_TYPE) &&
+        error("PART G: field characteristic p=$p exceeds ",
+              "$(PARTG_SHARD_COEFF_TYPE) range -- widen PARTG_SHARD_COEFF_TYPE",
+              " before writing any PRS shards.")
+
+    function partg_save_shard(path, poly)
+        coeffs_raw = collect(coefficients(poly))
+        exps_raw   = collect(AbstractAlgebra.exponent_vectors(poly))
+        n_terms = length(coeffs_raw)
+        n_terms != length(exps_raw) &&
+            error("partg_save_shard: coeffs/exps length mismatch ",
+                  "($(n_terms) vs $(length(exps_raw))) for $path -- refusing",
+                  " to write a shard that can't be reconstructed")
+        coeffs_flat = Vector{PARTG_SHARD_COEFF_TYPE}(undef, n_terms)
+        exps_flat   = Vector{PARTG_SHARD_EXP_TYPE}(undef, 4 * n_terms)
+        for i in 1:n_terms
+            cv = lift(ZZ, coeffs_raw[i])
+            (cv < 0 || cv > typemax(PARTG_SHARD_COEFF_TYPE)) &&
+                error("partg_save_shard: coefficient $cv at term $i out of ",
+                      "range for $(PARTG_SHARD_COEFF_TYPE) in $path")
+            coeffs_flat[i] = PARTG_SHARD_COEFF_TYPE(cv)
+            exps_i = exps_raw[i]
+            length(exps_i) != 4 &&
+                error("partg_save_shard: expected 4 exponents (a1,a2,b1,b2),",
+                      " got $(length(exps_i)) at term $i in $path")
+            for j in 1:4
+                exps_flat[4 * (i - 1) + j] = PARTG_SHARD_EXP_TYPE(exps_i[j])
+            end
+        end
+        open(path, "w") do io
+            write(io, PARTG_SHARD_MAGIC)
+            write(io, Int64(n_terms))
+            write(io, coeffs_flat)
+            write(io, exps_flat)
+        end
+        return n_terms
+    end
+
+    function partg_load_shard(path)
+        n_terms, coeffs_in, exps_in = open(path, "r") do io
+            magic = read(io, UInt64)
+            magic != PARTG_SHARD_MAGIC &&
+                error("partg_load_shard: $path does not have the expected",
+                      " PART G/F flat-binary header (got magic=$(magic))")
+            nt = read(io, Int64)
+            cf = Vector{PARTG_SHARD_COEFF_TYPE}(undef, nt)
+            ex = Vector{PARTG_SHARD_EXP_TYPE}(undef, 4 * nt)
+            read!(io, cf)
+            read!(io, ex)
+            (nt, cf, ex)
+        end
+        ctx = MPolyBuildCtx(Rcoef)
+        exps_buf = Vector{Int}(undef, 4)
+        for i in 1:n_terms
+            base = 4 * (i - 1)
+            exps_buf[1] = Int(exps_in[base + 1])
+            exps_buf[2] = Int(exps_in[base + 2])
+            exps_buf[3] = Int(exps_in[base + 3])
+            exps_buf[4] = Int(exps_in[base + 4])
+            push_term!(ctx, F(Int(coeffs_in[i])), exps_buf)
+        end
+        return finish(ctx)
+    end
+
+    # coef_as_poly equivalent (PART F's original was a local closure --
+    # redefine standalone here): numerator of a Kcoef element, as an
+    # Rcoef element, warning loudly (never silently) if the denominator
+    # isn't a unit.
+    function partg_numer_as_poly(c)
+        den = denominator(c)
+        if !is_unit(den)
+            println("      WARNING (PART G): coefficient has non-unit ",
+                    "denominator (degree=", total_degree(den), ") -- ",
+                    "reporting/storing numerator only.")
+        end
+        return Rcoef(numerator(c))
+    end
+
+    # Report every T^k coefficient of a Kcoef[T] polynomial: degree,
+    # term count in Rcoef, and (for the largest one) whether it's worth
+    # a gcd-across-coefficients check. Printed at EVERY PRS step so a
+    # stall is immediately attributable to "which step, which
+    # coefficient" rather than a silent hang.
+    function partg_report_poly(label::String, g)
+        if iszero(g)
+            println("    ", label, ": IDENTICALLY ZERO")
+            return
+        end
+        dg = degree(g)
+        println("    ", label, ": degree in T = ", dg)
+        max_terms = 0
+        max_deg = 0
+        for k in 0:dg
+            ck = coeff(g, k)
+            if iszero(ck)
+                println("      T^$k coeff: 0")
+                continue
+            end
+            ck_poly = partg_numer_as_poly(ck)
+            tk = length(terms(ck_poly))
+            dk = total_degree(ck_poly)
+            max_terms = max(max_terms, tk)
+            max_deg = max(max_deg, dk)
+            println("      T^$k coeff: degree=", dk, "  terms=", tk)
+        end
+        println("      -> ", label, " summary: max coeff degree=", max_deg,
+                "  max coeff terms=", max_terms)
+        flush(stdout)
+        return nothing
+    end
+
+    println()
+    println("  --- initial polynomials ---")
+    partg_report_poly("g1_T (r_{-1})", g1_T)
+    partg_report_poly("g2_T (r_0)",    g2_T)
+
+    # Manual PRS loop. r_prev, r_cur are kept as Rt = Kcoef[T] elements
+    # (same ring pseudorem() already operates in elsewhere in this
+    # file); each step's remainder is ALSO written to a numbered shard
+    # file (one shard per T^k coefficient's Rcoef numerator, flattened
+    # per-coefficient rather than per-polynomial since that's the unit
+    # PART F's format already handles) purely as a checkpoint/audit
+    # trail -- the loop itself still drives off the in-memory r_cur,
+    # since each pseudorem() call needs the actual Rt element, not a
+    # deserialized numerator.
+    r_prev = g1_T
+    r_cur  = g2_T
+    step = 0
+    max_steps = degree(g1_T) + 2   # generous bound: degree strictly drops each step
+    prs_degrees = Int[degree(g1_T), degree(g2_T)]
+    prs_shard_paths = String[]
+
+    println()
+    println("  --- PRS loop (pseudorem, one step at a time) ---")
+    flush(stdout)
+
+    while !iszero(r_cur) && degree(r_cur) > 0 && step < max_steps
+        step += 1
+        println()
+        println("  ** PRS step $step: pseudorem(r_{$(step-2)}, r_{$(step-1)}) -> r_{$step} **")
+        println("     deg(r_{$(step-2)})=", degree(r_prev), "   deg(r_{$(step-1)})=", degree(r_cur))
+        flush(stdout)
+
+        t0step = time()
+        r_next = pseudorem(r_prev, r_cur)
+        el_step = time() - t0step
+        println("     pseudorem() finished in ", round(el_step, digits=3), "s")
+        flush(stdout)
+
+        partg_report_poly("r_{$step}", r_next)
+
+        if !iszero(r_next)
+            # Checkpoint: write each T^k coefficient's Rcoef numerator to
+            # its own shard, named by (step, k), so a crash on a LATER
+            # step still leaves every earlier step's remainder inspectable
+            # on disk without re-running anything.
+            dgn = degree(r_next)
+            for k in 0:dgn
+                ck = coeff(r_next, k)
+                iszero(ck) && continue
+                ck_poly = partg_numer_as_poly(ck)
+                sp = joinpath(PARTG_SCRATCH_DIR, "r$(step)_T$(k).partg")
+                t0save = time()
+                nt = partg_save_shard(sp, ck_poly)
+                println("       saved r_{$step} coeff of T^$k -> ", basename(sp),
+                        " (", nt, " terms, ", round(time() - t0save, digits=2), "s)")
+                push!(prs_shard_paths, sp)
+            end
+            flush(stdout)
+        end
+
+        push!(prs_degrees, iszero(r_next) ? -1 : degree(r_next))
+
+        r_prev = r_cur
+        r_cur = r_next
+
+        println("     RSS after step $step (MB): ",
+                round(Sys.maxrss() / 1024 / 1024, digits=1))
+        flush(stdout)
+    end
+
+    println()
+    println("  --- PRS loop finished ---")
+    println("  degree sequence (g1_T, g2_T, r_1, r_2, ...): ", prs_degrees)
+    println("  total steps run: ", step, "  (bound was ", max_steps, ")")
+    if iszero(r_cur)
+        println("  terminated because remainder became IDENTICALLY ZERO",
+                " at step ", step, " -- gcd(g1_T,g2_T) has positive degree",
+                " over Kcoef; inspect r_{$(step-1)} (previous nonzero",
+                " remainder) as the resultant-relevant common factor",
+                " before trusting a nonzero resultant elsewhere.")
+    elseif degree(r_cur) == 0
+        println("  terminated because remainder reached degree 0 (a",
+                " constant in Kcoef, i.e. an Rcoef/Rcoef fraction) at",
+                " step ", step, " -- this is the expected non-degenerate",
+                " termination for a genuine resultant computation.")
+        partg_report_poly("final degree-0 remainder r_{$step}", r_cur)
+    else
+        println("  WARNING: loop exited via the step bound (", max_steps,
+                ") without reaching degree 0 or zero -- this should not",
+                " happen for two degree-4 polynomials in 4 or fewer",
+                " steps; investigate before trusting prs_degrees above.")
+    end
+    println("  shard files written this run: ", length(prs_shard_paths),
+            " under ", PARTG_SCRATCH_DIR)
+    println("  NOTE: this loop reports degree/coefficient growth through",
+            " the PRS but does NOT (yet) reassemble the final resultant",
+            " value from the remainder sequence's sign/leading-coefficient",
+            " bookkeeping -- PART F's res_num (already computed and spot-",
+            " checked above) is the trusted resultant value unless/until",
+            " that bookkeeping is added here and cross-checked against it.")
+    flush(stdout)
 end
 
 ################################################################################
@@ -7092,10 +7615,11 @@ println("    $name resultant: total_degree=", total_degree(res_num),
 # Save straight into the same place the old per-summand harness would
 # have written its final assembled term, so downstream code that reads
 # "the U0 resultant" doesn't need to change.
-const RESULTANT_FILE = joinpath(@__DIR__, "part_k_results", "$(name)_resultant.oscar")
-mkpath(dirname(RESULTANT_FILE))
-save(RESULTANT_FILE, res_num)
-println("    saved resultant -> ", RESULTANT_FILE)
+const RESULTANT_FILE_LEGACY = joinpath(@__DIR__, "part_k_results", "$(name)_resultant.oscar")
+mkpath(dirname(RESULTANT_FILE_LEGACY))
+save(RESULTANT_FILE_LEGACY, res_num)
+println("    saved resultant -> ", RESULTANT_FILE_LEGACY)
+=#
 
 ################################################################################
 # Everything below this point in the old file -- next_permutation!,
