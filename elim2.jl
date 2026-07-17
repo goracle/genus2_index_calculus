@@ -4280,6 +4280,37 @@ for (name, i1, i2, Tvar) in target_specs
 
 RESULTANT_FILE = joinpath(@__DIR__, "part_k_results", "$(name)_resultant.oscar")
 
+# ------------------------------------------------------------------
+# SKIP-IF-ALREADY-DONE.
+#
+# RESULTANT_FILE (part_k_results/$(name)_resultant.oscar) was, until
+# now, only ever WRITTEN (see the save(RESULTANT_FILE, res_num) call
+# near the end of this loop body) -- nothing checked whether it
+# already existed before starting the (expensive, hours-long per
+# target) PART F computation for this target. That meant re-running
+# the script after U0/U1 had already completed and been saved to disk
+# (e.g. to pick up this session's PART F performance fix, or after a
+# crash partway through V0/V1) unconditionally redid U0 and U1 from
+# scratch before ever reaching the targets that actually still needed
+# work.
+#
+# Fix: if a resultant file for this target already exists on disk, treat
+# it as done and move on to the next target instead of recomputing.
+# This assumes RESULTANT_FILE is only ever written once its target's
+# computation has fully completed (true today: the save() call happens
+# after the final-merge assertion and correctness spot-check/crosscheck
+# above have already passed) -- if that ever changes to a
+# partially-written/atomic-rename-less save, this check would need to
+# move to checking for a separate "done" marker instead of the presence
+# of RESULTANT_FILE itself.
+if isfile(RESULTANT_FILE)
+    println("  --- $name --- already complete (found ", RESULTANT_FILE,
+            "), skipping recomputation. Delete this file (or set an",
+            " override) if you need to force a redo.")
+    flush(stdout)
+    continue
+end
+
 g1 = final_equations[i1]
 g2 = final_equations[i2]
 
@@ -6512,6 +6543,35 @@ if d1T == 4 && d2T == 4
     # the loop -- never into this variable during the loop itself.
     detB_concrete = zero(Rcoef)
 
+    # NOTE on threading (re: the O(n^2)-ish add! cost fixed below):
+    # Threading the outer `for (i, t) in enumerate(detB_terms)` loop
+    # across terms was considered instead of (or in addition to) the
+    # this_term_sum change below, but it does not address the root
+    # cause and adds real risk here:
+    #   - detB_concrete and delta_since_checkpoint are single shared
+    #     Nemo/FLINT mpoly accumulators, mutated in place via add!.
+    #     FLINT's mpoly arithmetic is not documented/guaranteed
+    #     thread-safe for concurrent mutation of the SAME object, so
+    #     naive @threads over terms would need a lock around every
+    #     add! into these two accumulators anyway -- which serializes
+    #     exactly the operation that's expensive, i.e. no speedup on
+    #     the actual bottleneck, only added lock overhead.
+    #   - RSS is already within ~1.3GB of growth per term at 200-chunk
+    #     size (see the term 1/2 RSS deltas in err2.txt); running
+    #     several terms' chunk expansion concurrently multiplies peak
+    #     transient memory by the thread count, which is the OOM this
+    #     whole chunking/sharding design exists to avoid.
+    #   - The measured cost (el_eval, ~100% of wall time per the log)
+    #     was the repeated add! into a big, ever-growing accumulator,
+    #     not CPU-bound work that parallelizes cleanly across terms.
+    # this_term_sum below fixes that directly by cutting big-accumulator
+    # add! calls from ~3528/term to 2/term, with no change in peak
+    # transient memory. Worth reconsidering threading only after
+    # confirming (from a run with this fix) whether the remaining
+    # per-term cost is dominated by chunk multiplication itself (CPU-
+    # bound, safely parallelizable per-term with a per-thread
+    # this_term_sum merged with a single lock at the end) rather than
+    # accumulator growth.
     HAVE_INPLACE_ADD = applicable(add!, detB_concrete, detB_concrete, detB_concrete)
     HAVE_SAFE_SELF_ALIAS_ADD = false
     if HAVE_INPLACE_ADD
@@ -6746,6 +6806,38 @@ if d1T == 4 && d2T == 4
         b_terms = collect(terms(b_side))
         n_a_terms = length(a_terms)
         n_b_terms = length(b_terms)
+
+        # TERM-LOCAL accumulator (this_term_sum): every chunk-pair partial
+        # for THIS term is add!-ed here first, not into detB_concrete /
+        # delta_since_checkpoint directly.
+        #
+        # Why: with PARTF_CHUNK=200 and a_side/b_side each up to ~8385
+        # terms, a single term needs up to ceil(8385/200)^2 ~= 1764
+        # chunk-pair partials. The previous version called add! into
+        # BOTH detB_concrete and delta_since_checkpoint for every one of
+        # those partials -- ~3528 add! calls per term, each one touching
+        # an accumulator that already holds hundreds of thousands of
+        # terms. Nemo/FLINT add! on a multivariate poly is not O(1) in
+        # the accumulator's size (it has to merge-and-resort), so cost
+        # per add! grows with how much has already been folded in --
+        # this is the O(n^2)-ish behavior that produced 689.5s for term 1
+        # and 1344.1s for term 2 (all of it inside el_eval, per the log;
+        # fold/gc/save reported ~0s).
+        #
+        # Fix: sum this term's own partials into a small object
+        # (this_term_sum starts at zero and only ever holds ONE term's
+        # worth of contribution, capped by that term's own a_side*b_side
+        # size -- never the grand total), then add! the finished
+        # this_term_sum into detB_concrete and delta_since_checkpoint
+        # exactly ONCE at the end. This does not change peak transient
+        # memory (each chunk-pair product is still bounded by
+        # PARTF_CHUNK*PARTF_CHUNK monomials before collection, same as
+        # before -- this_term_sum grows the same way detB_concrete used
+        # to, just capped at one term's contribution instead of the
+        # running grand total), so it should not reintroduce the OOM
+        # this chunking was built to avoid. It just moves from ~3528
+        # expensive (big-accumulator) add! calls per term down to 2.
+        this_term_sum = zero(Rcoef)
         a_chunk_start = 1
         while a_chunk_start <= n_a_terms
             a_chunk_end = min(a_chunk_start + PARTF_CHUNK - 1, n_a_terms)
@@ -6756,11 +6848,9 @@ if d1T == 4 && d2T == 4
                 b_chunk = sum(b_terms[b_chunk_start:b_chunk_end]; init=zero(Rcoef))
                 partial = a_chunk * b_chunk
                 if HAVE_SAFE_SELF_ALIAS_ADD
-                    add!(detB_concrete, detB_concrete, partial)
-                    add!(delta_since_checkpoint, delta_since_checkpoint, partial)
+                    add!(this_term_sum, this_term_sum, partial)
                 else
-                    detB_concrete = detB_concrete + partial
-                    delta_since_checkpoint = delta_since_checkpoint + partial
+                    this_term_sum = this_term_sum + partial
                 end
                 partial = nothing
                 b_chunk = nothing
@@ -6769,6 +6859,18 @@ if d1T == 4 && d2T == 4
             a_chunk = nothing
             a_chunk_start = a_chunk_end + 1
         end
+
+        # The two big, ever-growing accumulators are only touched here --
+        # once per term, not once per chunk-pair.
+        if HAVE_SAFE_SELF_ALIAS_ADD
+            add!(detB_concrete, detB_concrete, this_term_sum)
+            add!(delta_since_checkpoint, delta_since_checkpoint, this_term_sum)
+        else
+            detB_concrete = detB_concrete + this_term_sum
+            delta_since_checkpoint = delta_since_checkpoint + this_term_sum
+        end
+        this_term_sum = nothing
+
         a_side = nothing
         b_side = nothing
         a_terms = nothing   # drop references explicitly before the timed GC sweep below
