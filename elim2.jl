@@ -6133,11 +6133,8 @@ if d1T == 4 && d2T == 4
 
     el_stage1 = time() - t0stage1
     mid_terms_list = collect(terms(detB_mid))
-    println("  STAGE 1 complete in ", round(el_stage1, digits=3), "s: intermediate is a",
-            " polynomial in Rmid = F[a1,a2][Q0..Q4] with ", length(mid_terms_list),
-            " Q-monomial terms (<=", binomial(4 + 5 - 1, 4),
-            " possible for degree-4-in-5-vars), each carrying an Ra=F[a1,a2]",
-            " coefficient -- b1,b2 not introduced yet.")
+    println("  STAGE 1 complete in ", round(el_stage1, digits=3),
+            "s: ", length(mid_terms_list), " Q-monomial terms")
     flush(stdout)
 
     # ------------------------------------------------------------------
@@ -6151,11 +6148,6 @@ if d1T == 4 && d2T == 4
     # applied to <=70 Q-monomial terms instead of needing to redo a
     # fresh P/Q exponent split on all 219 abstract terms every time.
     # ------------------------------------------------------------------
-    println("  Substituting real (b1,b2) coefficients into the Stage-1",
-            " intermediate, term-by-term with disk-backed accumulation",
-            " (single in-memory evaluate() OOM'd here previously)...")
-    flush(stdout)
-
     subst_vals = vcat(
         g1_coefs_poly,   # P0..P4 -> p_0..p_4, already Rcoef elements (pure F[a1,a2])
         g2_coefs_poly,   # Q0..Q4 -> q_0..q_4, already Rcoef elements (pure F[b1,b2])
@@ -6242,12 +6234,7 @@ if d1T == 4 && d2T == 4
     # for at most 70 terms instead of 219.
     detB_terms = mid_terms_list
     n_terms = length(detB_terms)
-    println("  Stage-1 intermediate has ", n_terms, " Q-monomial terms to substitute; streaming each",
-            " into per-checkpoint SHARD files (each holding only the delta",
-            " folded since the previous shard) under ", shards_dir,
-            " -- resuming sums shards back in one at a time, so peak resume",
-            " memory is one shard plus the running total, not the whole",
-            " final accumulator deserialized in a single load().")
+    println("  substituting ", n_terms, " terms -> ", shards_dir)
     flush(stdout)
 
     # Streamed substitute-and-accumulate: for each (Ra-coefficient,
@@ -6286,10 +6273,7 @@ if d1T == 4 && d2T == 4
         if n_already_done > 0
             shard_paths = existing_shard_paths()
             println("  resuming: ", n_already_done, "/", n_terms,
-                    " terms already folded, spread across ", length(shard_paths),
-                    " shard file(s) from a previous run. Shards are not",
-                    " loaded now -- they'll be merged once, at the end,",
-                    " after the remaining terms are folded.")
+                    " terms, ", length(shard_paths), " shard(s)")
             flush(stdout)
         end
     end
@@ -6583,18 +6567,11 @@ if d1T == 4 && d2T == 4
     end
 
     if HAVE_SAFE_SELF_ALIAS_ADD
-        println("  in-place add! (self-aliased) verified correct for Rcoef",
-                " elements -- accumulator will be mutated in place each",
-                " term (no full reallocation).")
+        println("  using in-place add!")
     elseif HAVE_INPLACE_ADD
-        println("  add! exists but self-aliased add!(a,a,c) did NOT match",
-                " plain + on a probe value -- NOT safe to use here.",
-                " Falling back to + (correct, but each fold reallocates",
-                " the full accumulator).")
+        println("  add! unsafe here, falling back to +")
     else
-        println("  in-place add! NOT available for Rcoef elements on this",
-                " Nemo/AbstractAlgebra version -- falling back to +",
-                " (correct, but each fold reallocates the full accumulator).")
+        println("  add! unavailable, falling back to +")
     end
     flush(stdout)
 
@@ -6982,14 +6959,6 @@ if d1T == 4 && d2T == 4
                     " (Δ", round(rss_after_gc - rss_after_fold, digits=0), ")",
                     "  after save: ", round(rss_after_save, digits=0),
                     " (Δ", round(rss_after_save - rss_after_gc, digits=0), ")")
-            println("        (Note: Base.gc_num()-based instrumentation was tried",
-                    " and abandoned -- it reported NEGATIVE bytes allocated for",
-                    " this workload because FLINT/Nemo mpoly data lives in",
-                    " C-allocated memory outside Julia's GC accounting. RSS",
-                    " above reflects the OS's view of actual process memory",
-                    " regardless of which allocator is responsible, and is the",
-                    " ground truth for where the unaccounted time correlates",
-                    " with memory growth.)")
             flush(stdout)
         end
 
