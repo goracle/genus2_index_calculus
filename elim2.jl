@@ -6748,72 +6748,47 @@ if d1T == 4 && d2T == 4
             max_term_size_idx = i
         end
 
-        # PARTF_CHUNK terms per batch, on BOTH sides. Previously only
-        # a_side was chunked (PARTF_CHUNK terms) while b_side was kept
-        # whole (up to ~8385 terms) and multiplied against each a-chunk
-        # in full -- so each partial product could still be up to
-        # PARTF_CHUNK*8385 (~1.7M) monomials before collection, and with
-        # a_side/b_side each capable of reaching that ~8385-term bound
-        # independently (not just in the worst case Claire's original
-        # comment sized for), that was the actual OOM source, not just
-        # the single-shot evaluate() this loop already replaced. Nesting
-        # the chunking on both sides bounds every single cross-product
-        # batch to at most PARTF_CHUNK*PARTF_CHUNK monomials, independent
-        # of how large a_side/b_side get.
-        # PARTF_CHUNK: reverted to 200 (2026-07-16). It was briefly
-        # raised to 1000 based on a "16GB RAM, only ~4.5GB observed
-        # peak RSS" read of the log -- but the actual run in question
-        # died from OOM, which directly contradicts that premise (either
-        # the 16GB figure or the "plenty of headroom" reading of the RSS
-        # numbers was wrong, and I didn't catch the contradiction before
-        # making the change). Since OOM is the confirmed real failure
-        # mode here, a LARGER chunk size (up to 1000x1000 = 1,000,000
-        # monomials transient per chunk-pair, vs 200x200 = 40,000) is
-        # the wrong direction -- it increases peak transient memory, not
-        # decreases it. Back to the original, previously-working value
-        # until real memory headroom is confirmed on an actual
-        # non-crashing run; do not raise this again without first
-        # explaining the OOM (was it this loop, the final shard merge,
-        # something else concurrently running, etc.) rather than
-        # inferring headroom from RSS numbers taken from a run that
-        # didn't actually survive to completion.
-        PARTF_CHUNK = 200   # terms per batch per side; reverted from 1000, see comment above
+        # Both sides are chunked (not just a_side) so every cross-product
+        # batch is bounded by PARTF_CHUNK*PARTF_CHUNK monomials,
+        # independent of how large a_side/b_side get.
+        #
+        # PARTF_CHUNK is adaptive: sized down as this_size (a_side's term
+        # count times b_side's term count, computed above) grows past the
+        # ~8385^2 regime the original fixed CHUNK=200 default was
+        # validated against, so a chunk-pair product's peak transient
+        # size stays roughly constant instead of growing with how big
+        # this particular term's coefficients happen to be.
+        BASELINE_SIDE_TERMS = 8385   # the regime CHUNK=200 (200^2=40,000) was validated against
+        size_ratio = this_size / (BASELINE_SIDE_TERMS^2)
+        PARTF_CHUNK = size_ratio > 1 ?
+            max(20, round(Int, 200 / sqrt(size_ratio))) :
+            200
+        if size_ratio > 1
+            println("      term ", i, ": this_size=", this_size,
+                    " (", round(size_ratio, digits=1), "x baseline) -> PARTF_CHUNK=", PARTF_CHUNK)
+            flush(stdout)
+        end
 
         a_terms = collect(terms(a_side))
         b_terms = collect(terms(b_side))
         n_a_terms = length(a_terms)
         n_b_terms = length(b_terms)
 
-        # TERM-LOCAL accumulator (this_term_sum): every chunk-pair partial
-        # for THIS term is add!-ed here first, not into detB_concrete /
-        # delta_since_checkpoint directly.
+        # this_term_sum holds one term's running contribution -- add!-ed
+        # into detB_concrete/delta_since_checkpoint once at the end
+        # instead of once per chunk-pair (was ~3528 big-accumulator add!
+        # calls/term; see git history for the O(n^2)-ish cost that fixed).
         #
-        # Why: with PARTF_CHUNK=200 and a_side/b_side each up to ~8385
-        # terms, a single term needs up to ceil(8385/200)^2 ~= 1764
-        # chunk-pair partials. The previous version called add! into
-        # BOTH detB_concrete and delta_since_checkpoint for every one of
-        # those partials -- ~3528 add! calls per term, each one touching
-        # an accumulator that already holds hundreds of thousands of
-        # terms. Nemo/FLINT add! on a multivariate poly is not O(1) in
-        # the accumulator's size (it has to merge-and-resort), so cost
-        # per add! grows with how much has already been folded in --
-        # this is the O(n^2)-ish behavior that produced 689.5s for term 1
-        # and 1344.1s for term 2 (all of it inside el_eval, per the log;
-        # fold/gc/save reported ~0s).
-        #
-        # Fix: sum this term's own partials into a small object
-        # (this_term_sum starts at zero and only ever holds ONE term's
-        # worth of contribution, capped by that term's own a_side*b_side
-        # size -- never the grand total), then add! the finished
-        # this_term_sum into detB_concrete and delta_since_checkpoint
-        # exactly ONCE at the end. This does not change peak transient
-        # memory (each chunk-pair product is still bounded by
-        # PARTF_CHUNK*PARTF_CHUNK monomials before collection, same as
-        # before -- this_term_sum grows the same way detB_concrete used
-        # to, just capped at one term's contribution instead of the
-        # running grand total), so it should not reintroduce the OOM
-        # this chunking was built to avoid. It just moves from ~3528
-        # expensive (big-accumulator) add! calls per term down to 2.
+        # Tradeoff: this_term_sum itself grows across the chunk-pair loop
+        # the same way detB_concrete used to, so for a large term (V0's
+        # regime) it can become a sizeable live object before the
+        # once-per-term GC.gc() below runs. The periodic GC.gc() added
+        # below reclaims dead chunk garbage but not this_term_sum's own
+        # growth -- the adaptive PARTF_CHUNK above is the actual lever
+        # for that.
+        PARTF_CHUNK_GC_EVERY = 25   # chunk-pairs between periodic collections
+        n_chunk_pairs_done = 0
+
         this_term_sum = zero(Rcoef)
         a_chunk_start = 1
         while a_chunk_start <= n_a_terms
@@ -6832,6 +6807,12 @@ if d1T == 4 && d2T == 4
                 partial = nothing
                 b_chunk = nothing
                 b_chunk_start = b_chunk_end + 1
+
+                n_chunk_pairs_done += 1
+                if n_chunk_pairs_done % PARTF_CHUNK_GC_EVERY == 0
+                    GC.gc(true)
+                    ccall(:malloc_trim, Cvoid, (Cint,), 0)
+                end
             end
             a_chunk = nothing
             a_chunk_start = a_chunk_end + 1
@@ -6876,7 +6857,10 @@ if d1T == 4 && d2T == 4
         # timed separately so it shows up explicitly instead of as
         # "unaccounted" wall-clock.
         t0gc = time()
-        GC.gc(false)   # false = not full/aggressive; just reclaim what's already dead
+        GC.gc(true)   # full mark-and-sweep -- GC.gc(false) was letting large,
+                       # already-surviving-a-cycle objects (this_term_sum,
+                       # a_side/b_side from prior terms) skip collection
+        ccall(:malloc_trim, Cvoid, (Cint,), 0)   # return freed glibc heap to the OS
         el_gc = time() - t0gc
         rss_after_gc = read_rss_mb()
 
@@ -7017,7 +7001,8 @@ if d1T == 4 && d2T == 4
                 detB_concrete = detB_concrete + shard_poly
             end
             shard_poly = nothing
-            GC.gc(false)
+            GC.gc(true)
+            ccall(:malloc_trim, Cvoid, (Cint,), 0)
             println("    shard ", si, "/", length(shard_paths_to_merge), " (",
                     basename(sp), ") merged in ", round(time() - t0shard, digits=1), "s")
             flush(stdout)
