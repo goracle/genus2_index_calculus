@@ -6879,6 +6879,9 @@ if d1T == 4 && d2T == 4
         # for that.
         PARTF_CHUNK_GC_EVERY = 25   # chunk-pairs between periodic collections
         n_chunk_pairs_done = 0
+        n_chunk_pairs_total = cld(n_a_terms, PARTF_CHUNK) * cld(n_b_terms, PARTF_CHUNK)
+        rss_peak_this_term = read_rss_mb()
+        rss_peak_chunk_pair = 0
 
         this_term_sum = zero(Rcoef)
         a_chunk_start = 1
@@ -6900,6 +6903,30 @@ if d1T == 4 && d2T == 4
                 b_chunk_start = b_chunk_end + 1
 
                 n_chunk_pairs_done += 1
+                # Fine-grained RSS sampling: cheap (a syscall-backed read,
+                # not a GC or allocation) so sampling every chunk-pair is
+                # affordable, and this is the ONLY way to tell, on the next
+                # run, whether the blowup is a smooth ramp across all
+                # ~2300 chunk-pairs in this term (this_term_sum itself
+                # growing unbounded, never chunked) versus a sudden spike
+                # at one specific chunk-pair (e.g. a pathological a_chunk*
+                # b_chunk product for one particular chunk despite
+                # PARTF_CHUNK being fixed) versus something outside this
+                # loop entirely. Two prior attempts guessed at this
+                # (cached_q_power, then cached_b_side) and both were wrong
+                # -- this instruments the ACTUAL loop instead of guessing
+                # a third time.
+                if n_chunk_pairs_done % 50 == 0 || n_chunk_pairs_done == n_chunk_pairs_total
+                    rss_now = read_rss_mb()
+                    if rss_now > rss_peak_this_term
+                        rss_peak_this_term = rss_now
+                        rss_peak_chunk_pair = n_chunk_pairs_done
+                    end
+                    println("        [term ", i, "] chunk-pair ", n_chunk_pairs_done, "/",
+                            n_chunk_pairs_total, ": RSS=", rss_now, "MB  this_term_sum terms=",
+                            length(terms(this_term_sum)))
+                    flush(stdout)
+                end
                 if n_chunk_pairs_done % PARTF_CHUNK_GC_EVERY == 0
                     GC.gc(true)
                     ccall(:malloc_trim, Cvoid, (Cint,), 0)
@@ -6908,6 +6935,9 @@ if d1T == 4 && d2T == 4
             a_chunk = nothing
             a_chunk_start = a_chunk_end + 1
         end
+        println("      term ", i, ": peak RSS during chunk loop=", rss_peak_this_term,
+                "MB at chunk-pair ", rss_peak_chunk_pair, "/", n_chunk_pairs_total)
+        flush(stdout)
 
         # The two big, ever-growing accumulators are only touched here --
         # once per term, not once per chunk-pair.
