@@ -6629,12 +6629,85 @@ if d1T == 4 && d2T == 4
     q_monomial_cache = Dict{NTuple{5,Int}, Any}()
     q_power_cache = Dict{Tuple{Int,Int}, Any}()
 
+    # ------------------------------------------------------------------
+    # CHUNKED POWER (fixes the OOM in cached_q_power below).
+    #
+    # g2_coefs_poly[k]^e via Nemo's built-in `^` does a naive sequence of
+    # FULL dense multiplications with no bound on the transient
+    # intermediate term count -- exactly the same class of blowup that
+    # evaluate() had (see the big comment above the STAGE-2 chunked
+    # substitution loop), just relocated to the power operator instead
+    # of evaluate(). A ~289-term base poly squared/cubed/etc. can produce
+    # an intermediate with far more terms than either operand before
+    # collection ever happens, and unlike the a_side*b_side multiply
+    # below, nothing here was chunking it. That is what killed term 5:
+    # the crash happened during `evaluate` (i.e. b_side construction),
+    # upstream of the chunked multiply loop, which only ever bounds the
+    # *already-built* a_side*b_side product.
+    #
+    # Fix: repeated squaring, where every individual multiply --
+    # including base*base and every squaring step -- is itself done via
+    # the same bounded-chunk term-batch x term-batch pattern used for
+    # a_side*b_side below, so no single multiplication is ever allowed
+    # to materialize an unbounded cross product.
+    # ------------------------------------------------------------------
+    function chunked_poly_mul(x, y; chunk::Int=200)
+        x_terms = collect(terms(x))
+        y_terms = collect(terms(y))
+        nx = length(x_terms)
+        ny = length(y_terms)
+        result = zero(Rcoef)
+        xi = 1
+        while xi <= nx
+            xe = min(xi + chunk - 1, nx)
+            x_chunk = sum(x_terms[xi:xe]; init=zero(Rcoef))
+            yi = 1
+            while yi <= ny
+                ye = min(yi + chunk - 1, ny)
+                y_chunk = sum(y_terms[yi:ye]; init=zero(Rcoef))
+                partial = x_chunk * y_chunk
+                if HAVE_SAFE_SELF_ALIAS_ADD
+                    add!(result, result, partial)
+                else
+                    result = result + partial
+                end
+                partial = nothing
+                y_chunk = nothing
+                yi = ye + 1
+            end
+            x_chunk = nothing
+            xi = xe + 1
+        end
+        return result
+    end
+
+    function chunked_pow(base, e::Int; chunk::Int=200)
+        e < 0 && throw(ArgumentError("chunked_pow: exponent must be non-negative, got $e"))
+        e == 0 && return one(Rcoef)
+        # Adaptive chunk size mirrors the a_side/b_side sizing below: as
+        # the running power's term count grows, shrink the chunk so each
+        # multiply's transient stays roughly bounded instead of growing
+        # with the accumulated power.
+        result = base
+        remaining = e - 1
+        while remaining > 0
+            n_result_terms = length(terms(result))
+            n_base_terms = length(terms(base))
+            this_chunk = n_result_terms * n_base_terms > (200^2) ?
+                max(20, round(Int, chunk / sqrt((n_result_terms * n_base_terms) / (200.0^2)))) :
+                chunk
+            result = chunked_poly_mul(result, base; chunk=this_chunk)
+            remaining -= 1
+        end
+        return result
+    end
+
     function cached_q_power(k::Int, e::Int)
         e <= 0 && throw(ArgumentError("cached_q_power: exponent must be positive, got $e for k=$k"))
         key = (k, e)
         cached = get(q_power_cache, key, nothing)
         cached !== nothing && return cached
-        val = g2_coefs_poly[k]^e
+        val = chunked_pow(g2_coefs_poly[k], e)
         q_power_cache[key] = val
         return val
     end
@@ -6648,11 +6721,29 @@ if d1T == 4 && d2T == 4
             # can no longer verify came from an equivalent computation.
             throw(AssertionError("cached_b_side: duplicate Q-monomial exponent vector $key encountered -- Stage 1's Rmid collection was expected to make these unique per detB_terms entry; investigate before trusting the cache"))
         end
+        # ------------------------------------------------------------
+        # CHUNKED accumulation (this, not cached_q_power's `^`, turned
+        # out to be the surviving OOM source: chunked_pow bounded the
+        # transient inside each single power, but this loop multiplies
+        # up to 4 of those already-large powers together via a raw `*`
+        # with no bound on ITS transient -- val * cached_q_power(k,eQk)
+        # can itself be a multi-thousand-term x multi-thousand-term
+        # product materialized in one shot. Route every accumulation
+        # step through the same bounded chunked_poly_mul used
+        # everywhere else, so no single multiplication in the whole
+        # b_side construction is ever unchunked.
+        # ------------------------------------------------------------
         val = one(Rcoef)
         for k in 1:5
             eQk = t_exps[k]
             if eQk > 0
-                val = val * cached_q_power(k, eQk)
+                factor = cached_q_power(k, eQk)
+                n_val_terms = length(terms(val))
+                n_factor_terms = length(terms(factor))
+                this_chunk = n_val_terms * n_factor_terms > (200^2) ?
+                    max(20, round(Int, 200 / sqrt((n_val_terms * n_factor_terms) / (200.0^2)))) :
+                    200
+                val = chunked_poly_mul(val, factor; chunk=this_chunk)
             end
         end
         q_monomial_cache[key] = val
