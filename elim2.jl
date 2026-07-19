@@ -6320,48 +6320,80 @@ if d1T == 4 && d2T == 4
               "coefficient write below will silently truncate")
 
     function save_shard_native(path, poly)
-        coeffs_raw = collect(coefficients(poly))
-        exps_raw   = collect(AbstractAlgebra.exponent_vectors(poly))
-        n_terms = length(coeffs_raw)
-        n_terms != length(exps_raw) &&
-            error("save_shard_native: coeffs/exps length mismatch " *
-                  "($(n_terms) vs $(length(exps_raw))) for $path -- " *
-                  "refusing to write a shard that can't be reconstructed")
-
-        coeffs_flat = Vector{SHARD_COEFF_TYPE}(undef, n_terms)
-        exps_flat   = Vector{SHARD_EXP_TYPE}(undef, 4 * n_terms)
-        for i in 1:n_terms
-            cv = lift(ZZ, coeffs_raw[i])   # FqFieldElem -> ZZRingElem -> Int, exact for a prime field
-            (cv < 0 || cv > typemax(SHARD_COEFF_TYPE)) &&
-                error("save_shard_native: coefficient $cv at term $i out of " *
-                      "range for $(SHARD_COEFF_TYPE) in $path -- refusing to " *
-                      "write a shard that would silently corrupt data")
-            coeffs_flat[i] = SHARD_COEFF_TYPE(cv)
-            exps_i = exps_raw[i]
-            length(exps_i) != 4 &&
-                error("save_shard_native: expected 4 exponents (a1,a2,b1,b2), " *
-                      "got $(length(exps_i)) at term $i in $path")
-            for j in 1:4
-                exps_flat[4 * (i - 1) + j] = SHARD_EXP_TYPE(exps_i[j])
-            end
-        end
-        coeffs_raw = nothing
-        exps_raw = nothing
-
-        # Magic number identifies this as the FLAT BINARY format
-        # (v2) -- distinct from the Serialization-based .native shards
-        # written by an earlier version of this script. Without this,
-        # an old-format .native shard would be silently misread as flat
-        # binary (wrong n_terms from misinterpreted bytes, garbage
-        # coefficients/exponents) instead of failing loudly. Any shard
-        # written before this fix must be deleted and regenerated --
-        # there is no cheap way to distinguish the two formats other
-        # than this header, which old shards don't have.
+        # ------------------------------------------------------------
+        # STREAMED write. The old version did:
+        #     coeffs_raw = collect(coefficients(poly))
+        #     exps_raw   = collect(AbstractAlgebra.exponent_vectors(poly))
+        # then built coeffs_flat/exps_flat from those. That's FOUR
+        # full-length materializations of poly's term data alive at
+        # once (coeffs_raw, exps_raw, coeffs_flat, exps_flat), on top
+        # of poly's own internal representation -- and this function is
+        # only ever called on delta_since_checkpoint at a checkpoint,
+        # i.e. the ONE moment in the whole run where the accumulator
+        # holds PARTF_CHECKPOINT_EVERY terms' worth of summed
+        # contribution instead of one term's worth. That's exactly why
+        # every OOM so far has landed on the checkpoint term (i%5==0)
+        # and nowhere else -- the per-term chunk loop above was never
+        # the problem; this was, and only shows up once every 5 terms.
+        #
+        # Fix: iterate poly's (coefficient, exponent_vector) pairs
+        # ONCE via zip, write each term's bytes immediately to the
+        # data section, and never hold more than the current term's
+        # few scalars plus the output IO buffer. No intermediate
+        # Vector the size of poly is ever allocated.
+        #
+        # n_terms is not assumed from any length()-on-poly API (not
+        # otherwise used elsewhere in this file, so not a verified
+        # pattern here) -- it's written as a placeholder, filled in
+        # for real once the streaming loop has counted it by actually
+        # writing, then patched into the header via seek(). This means
+        # the term count in the file is always exactly what was
+        # written, by construction, not a separately-computed number
+        # that could silently disagree with it.
+        # ------------------------------------------------------------
+        println("      save_shard_native: starting streamed write to ", path,
+                " (RSS=", read_rss_mb(), "MB, poly has an unknown-until-iterated term count)")
+        flush(stdout)
         open(path, "w") do io
             write(io, SHARD_FORMAT_MAGIC)
-            write(io, Int64(n_terms))
-            write(io, coeffs_flat)
-            write(io, exps_flat)
+            n_terms_pos = position(io)
+            write(io, Int64(0))   # placeholder, patched below once the real count is known
+            term_idx = 0
+            for (cf, ev) in zip(coefficients(poly), AbstractAlgebra.exponent_vectors(poly))
+                term_idx += 1
+                cv = lift(ZZ, cf)   # FqFieldElem -> ZZRingElem -> Int, exact for a prime field
+                (cv < 0 || cv > typemax(SHARD_COEFF_TYPE)) &&
+                    error("save_shard_native: coefficient $cv at term $term_idx out of " *
+                          "range for $(SHARD_COEFF_TYPE) in $path -- refusing to " *
+                          "write a shard that would silently corrupt data")
+                write(io, SHARD_COEFF_TYPE(cv))
+                length(ev) != 4 &&
+                    error("save_shard_native: expected 4 exponents (a1,a2,b1,b2), " *
+                          "got $(length(ev)) at term $term_idx in $path")
+                for j in 1:4
+                    write(io, SHARD_EXP_TYPE(ev[j]))
+                end
+                # Progress + RSS every 200k terms: cheap (a syscall read
+                # and a stdout write, not an allocation) relative to the
+                # per-term work, and this is the only place in the
+                # program that can tell us how far a checkpoint write
+                # got before dying, since the old logging only recorded
+                # timings/RSS AFTER save_shard_native returned -- which
+                # is exactly the information a mid-write OOM never lets
+                # you see.
+                if term_idx % 200_000 == 0
+                    println("        save_shard_native: ", term_idx,
+                            " terms written, RSS=", read_rss_mb(), "MB")
+                    flush(stdout)
+                end
+            end
+            end_pos = position(io)
+            seek(io, n_terms_pos)
+            write(io, Int64(term_idx))
+            seek(io, end_pos)   # leave the stream positioned at EOF, matching normal write() behavior
+            println("      save_shard_native: finished, ", term_idx,
+                    " terms written, RSS=", read_rss_mb(), "MB")
+            flush(stdout)
         end
         return nothing
     end
@@ -6879,9 +6911,6 @@ if d1T == 4 && d2T == 4
         # for that.
         PARTF_CHUNK_GC_EVERY = 25   # chunk-pairs between periodic collections
         n_chunk_pairs_done = 0
-        n_chunk_pairs_total = cld(n_a_terms, PARTF_CHUNK) * cld(n_b_terms, PARTF_CHUNK)
-        rss_peak_this_term = read_rss_mb()
-        rss_peak_chunk_pair = 0
 
         this_term_sum = zero(Rcoef)
         a_chunk_start = 1
@@ -6903,30 +6932,6 @@ if d1T == 4 && d2T == 4
                 b_chunk_start = b_chunk_end + 1
 
                 n_chunk_pairs_done += 1
-                # Fine-grained RSS sampling: cheap (a syscall-backed read,
-                # not a GC or allocation) so sampling every chunk-pair is
-                # affordable, and this is the ONLY way to tell, on the next
-                # run, whether the blowup is a smooth ramp across all
-                # ~2300 chunk-pairs in this term (this_term_sum itself
-                # growing unbounded, never chunked) versus a sudden spike
-                # at one specific chunk-pair (e.g. a pathological a_chunk*
-                # b_chunk product for one particular chunk despite
-                # PARTF_CHUNK being fixed) versus something outside this
-                # loop entirely. Two prior attempts guessed at this
-                # (cached_q_power, then cached_b_side) and both were wrong
-                # -- this instruments the ACTUAL loop instead of guessing
-                # a third time.
-                if n_chunk_pairs_done % 50 == 0 || n_chunk_pairs_done == n_chunk_pairs_total
-                    rss_now = read_rss_mb()
-                    if rss_now > rss_peak_this_term
-                        rss_peak_this_term = rss_now
-                        rss_peak_chunk_pair = n_chunk_pairs_done
-                    end
-                    println("        [term ", i, "] chunk-pair ", n_chunk_pairs_done, "/",
-                            n_chunk_pairs_total, ": RSS=", rss_now, "MB  this_term_sum terms=",
-                            length(terms(this_term_sum)))
-                    flush(stdout)
-                end
                 if n_chunk_pairs_done % PARTF_CHUNK_GC_EVERY == 0
                     GC.gc(true)
                     ccall(:malloc_trim, Cvoid, (Cint,), 0)
@@ -6935,9 +6940,6 @@ if d1T == 4 && d2T == 4
             a_chunk = nothing
             a_chunk_start = a_chunk_end + 1
         end
-        println("      term ", i, ": peak RSS during chunk loop=", rss_peak_this_term,
-                "MB at chunk-pair ", rss_peak_chunk_pair, "/", n_chunk_pairs_total)
-        flush(stdout)
 
         # The two big, ever-growing accumulators are only touched here --
         # once per term, not once per chunk-pair.
@@ -7012,6 +7014,9 @@ if d1T == 4 && d2T == 4
 
         local el_write, el_mv, el_prog, rss_after_save
         if do_checkpoint
+            println("      checkpoint at term ", i, ": delta_since_checkpoint has ",
+                    length(terms(delta_since_checkpoint)), " terms, RSS=", read_rss_mb(), "MB")
+            flush(stdout)
             t0write = time()
             save_shard_native(shard_tmpfile, delta_since_checkpoint)
             el_write = time() - t0write
