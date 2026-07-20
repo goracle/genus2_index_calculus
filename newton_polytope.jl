@@ -71,14 +71,28 @@ end
 # resulting flat binary file with `load_native_support` below instead of
 # ever calling `support(poly)` on a loaded polynomial.
 #
-# Matches convert_to_native.jl's "NEWTPOLY" v1 format exactly:
+# Matches convert_to_native.jl's "NEWTPOL1" v1 format exactly:
 #   magic       :: UInt64
 #   ambient_dim :: Int64
 #   n_terms     :: Int64
 #   exps        :: Int32, ambient_dim * n_terms values, row-major
+#
+# convert_to_native.jl can also write a "NEWTPOL2" v2 format (same header
+# plus a UInt64 prime and a trailing UInt64-per-term coefficient block) when
+# a prime modulus was given at conversion time -- that's for the numerical
+# evaluation-interpolation approach, which needs actual coefficient values,
+# not just monomial support. `load_native_support` below only ever reads the
+# exponent block and works unchanged against either file (v2's extra prime
+# field and trailing coefficient block are simply never read, since v2's
+# header is byte-identical to v1's up through the exponent block, just with
+# a different magic and one extra UInt64 -- the prime -- immediately after
+# n_terms). `load_native_support_with_coeffs` is the v2-aware counterpart
+# that also returns coefficients and the prime.
 
-const NATIVE_SUPPORT_MAGIC = UInt64(0x4E455754504F4C31)  # "NEWTPOLY", must match convert_to_native.jl
+const NATIVE_SUPPORT_MAGIC = UInt64(0x4E455754504F4C31)     # "NEWTPOL1", must match convert_to_native.jl
+const NATIVE_SUPPORT_MAGIC_V2 = UInt64(0x4E455754504F4C32)  # "NEWTPOL2", must match convert_to_native.jl
 const NATIVE_SUPPORT_EXP_TYPE = Int32
+const NATIVE_SUPPORT_COEFF_TYPE = UInt64
 
 """
     load_native_support(path) -> (support::Vector{Vector{Int}}, ambient_dim::Int)
@@ -102,11 +116,13 @@ function load_native_support(path::String)
 
     (ambient_dim, n_terms, flat) = open(path, "r") do io
         magic = read(io, UInt64)
-        magic == NATIVE_SUPPORT_MAGIC ||
+        magic == NATIVE_SUPPORT_MAGIC || magic == NATIVE_SUPPORT_MAGIC_V2 ||
             error("load_native_support: $path does not have the expected " *
-                  "NEWTPOLY native-format header (got magic=$(magic), expected " *
-                  "$(NATIVE_SUPPORT_MAGIC)) -- this is not a file produced by " *
-                  "convert_to_native.jl, or it is corrupt")
+                  "NEWTPOL1/NEWTPOL2 native-format header (got magic=$(magic), " *
+                  "expected $(NATIVE_SUPPORT_MAGIC) or $(NATIVE_SUPPORT_MAGIC_V2)) " *
+                  "-- this is not a file produced by convert_to_native.jl, or it " *
+                  "is corrupt")
+        is_v2 = magic == NATIVE_SUPPORT_MAGIC_V2
         adim = read(io, Int64)
         adim > 0 ||
             error("load_native_support: $path has ambient_dim=$adim in its " *
@@ -115,8 +131,15 @@ function load_native_support(path::String)
         nt > 0 ||
             error("load_native_support: $path has n_terms=$nt in its header, " *
                   "expected a positive integer")
+        # v2 has one extra UInt64 (the prime) between n_terms and the
+        # exponent block -- skip past it, since this function only wants the
+        # support (use load_native_support_with_coeffs for the coefficients).
+        is_v2 && read(io, UInt64)
         flat_exps = Vector{NATIVE_SUPPORT_EXP_TYPE}(undef, adim * nt)
         read!(io, flat_exps)
+        # v2 also has a trailing coefficient block after the exponent block,
+        # but since this is the last thing read from the file and we never
+        # read it, it's simply left unread -- no need to skip past it.
         (adim, nt, flat_exps)
     end
 
@@ -133,6 +156,78 @@ function load_native_support(path::String)
 
     println("  load_native_support: loaded ", n_terms, " terms, ambient_dim=", ambient_dim)
     return (supp, ambient_dim)
+end
+
+"""
+    load_native_support_with_coeffs(path) ->
+        (support::Vector{Vector{Int}}, coeffs::Vector{UInt64}, ambient_dim::Int, prime::UInt64)
+
+Bulk-read a "NEWTPOL2" v2 native binary file (as produced by
+`convert_to_native.jl` when given a prime modulus) and return both the
+support and the coefficients (as canonical residues mod `prime`, in the
+same term order), ready for numerical evaluation/interpolation.
+
+Raises if `path` is a v1 ("NEWTPOL1") file -- those were never written with
+coefficients, so there is nothing here to return; use `load_native_support`
+for that case instead.
+"""
+function load_native_support_with_coeffs(path::String)
+    isfile(path) ||
+        error("load_native_support_with_coeffs: no such file: $path")
+
+    fsize_mb = filesize(path) / 1024 / 1024
+    println("  load_native_support_with_coeffs: reading ", path, " (",
+            round(fsize_mb, digits=1), " MB on disk)...")
+    flush(stdout)
+
+    (ambient_dim, n_terms, prime, flat_exps, flat_coeffs) = open(path, "r") do io
+        magic = read(io, UInt64)
+        magic == NATIVE_SUPPORT_MAGIC_V2 ||
+            error("load_native_support_with_coeffs: $path does not have the " *
+                  "expected NEWTPOL2 native-format header (got magic=$(magic), " *
+                  "expected $(NATIVE_SUPPORT_MAGIC_V2)) -- this converter only " *
+                  "wrote coefficients for files converted with a prime given " *
+                  "on the command line; if this is a NEWTPOL1 (v1, magic=" *
+                  "$(NATIVE_SUPPORT_MAGIC)) file, re-run convert_to_native.jl " *
+                  "with a prime argument to get coefficients, or use " *
+                  "load_native_support if you only need the support")
+        adim = read(io, Int64)
+        adim > 0 ||
+            error("load_native_support_with_coeffs: $path has ambient_dim=$adim " *
+                  "in its header, expected a positive integer")
+        nt = read(io, Int64)
+        nt > 0 ||
+            error("load_native_support_with_coeffs: $path has n_terms=$nt in " *
+                  "its header, expected a positive integer")
+        p = read(io, UInt64)
+        p > 1 ||
+            error("load_native_support_with_coeffs: $path has prime=$p in its " *
+                  "header, expected a modulus > 1")
+        flat_exps = Vector{NATIVE_SUPPORT_EXP_TYPE}(undef, adim * nt)
+        read!(io, flat_exps)
+        flat_coeffs = Vector{NATIVE_SUPPORT_COEFF_TYPE}(undef, nt)
+        read!(io, flat_coeffs)
+        (adim, nt, p, flat_exps, flat_coeffs)
+    end
+
+    length(flat_exps) == ambient_dim * n_terms ||
+        error("load_native_support_with_coeffs: corrupt file $path -- flat " *
+              "exponent array has length $(length(flat_exps)), expected " *
+              "ambient_dim*n_terms = $ambient_dim*$n_terms = $(ambient_dim * n_terms)")
+    length(flat_coeffs) == n_terms ||
+        error("load_native_support_with_coeffs: corrupt file $path -- " *
+              "coefficient array has length $(length(flat_coeffs)), expected " *
+              "n_terms = $n_terms")
+
+    supp = Vector{Vector{Int}}(undef, n_terms)
+    @inbounds for i in 1:n_terms
+        base = (i - 1) * ambient_dim
+        supp[i] = Int[flat_exps[base + j] for j in 1:ambient_dim]
+    end
+
+    println("  load_native_support_with_coeffs: loaded ", n_terms,
+            " terms, ambient_dim=", ambient_dim, ", prime=", prime)
+    return (supp, flat_coeffs, ambient_dim, prime)
 end
 
 # ---------------------------------------------------------------------------
