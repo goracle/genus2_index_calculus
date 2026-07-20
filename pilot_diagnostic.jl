@@ -6,13 +6,21 @@
 # benchmark: both lex Groebner and grevlex+FGLM were hanging on real
 # specialized samples, and before spending time optimizing Groebner
 # computations, the goal is to characterize the specialized bivariate
-# systems g0(x2,x3), g1(x2,x3) themselves -- degree, sparsity,
-# squarefreeness, common factors, Newton polygon shape, and ideal-theoretic
-# invariants that are cheap to get -- to find out whether these systems are
-# genuinely close to the worst-case Bezout bound, or whether there is
-# hidden algebraic structure (a common factor, a non-generic Newton
-# polygon, degeneracy in one variable, etc.) that a generic Groebner
-# algorithm is failing to exploit.
+# systems themselves -- degree, sparsity, squarefreeness, common factors,
+# Newton polygon shape, and ideal-theoretic invariants that are cheap to
+# get -- to find out whether these systems are genuinely close to the
+# worst-case Bezout bound, or whether there is hidden algebraic structure
+# (a common factor, a non-generic Newton polygon, degeneracy in one
+# variable, etc.) that a generic Groebner algorithm is failing to exploit.
+#
+# U and V are treated completely symmetrically: both pairs are streamed
+# and specialized term-by-term straight off disk (see
+# stream_specialize_native_to_poly) at each sample point, and both then go
+# through the exact same sections 1-8 diagnostics. There is no
+# numerical_resultant strategy any more -- that was a premature U+V
+# cross-pair Sylvester check written before V's own per-pair diagnostics
+# (grevlex_analysis, resultant_x2, common-factor test, etc.) had ever
+# actually been looked at.
 #
 # The only EXPENSIVE, potentially-hanging computations left are in section
 # 8 (timed elimination with a hard timeout), and those now run each
@@ -21,57 +29,40 @@
 # timeout would NOT actually work here.
 #
 # Usage:
-#   julia pilot_diagnostic.jl <U0.native> <U1.native> <V0.native> <V1.native> <prime> [n_samples] [seed] [timeout_secs] [numerical_resultant_timeout_secs]
+#   julia pilot_diagnostic.jl <U0.native> <U1.native> <V0.native> <V1.native> <prime> [n_samples] [seed] [timeout_secs]
 #
-#   U0.native, U1.native : NEWTPOL2 v2 native files (with coefficients),
+#   U0.native, U1.native,
+#   V0.native, V1.native : NEWTPOL2 v2 native files (with coefficients),
 #                           as produced by convert_to_native.jl <input> <output> <ambient_dim> <prime>.
-#                           These are loaded up front as raw (support,
-#                           coeffs) arrays only (see load_raw_polynomial) --
-#                           NOT reconstructed as Oscar MPolyRingElem objects,
-#                           since specialize() (below) works directly off
-#                           the raw arrays. See the comment on
-#                           load_raw_polynomial for why.
-#   V0.native, V1.native : NEWTPOL2 v2 native files for the second equation
-#                           pair. Unlike U0/U1, these are NEVER fully loaded
-#                           into an Oscar ring object -- they're only used by
-#                           the numerical_resultant strategy, which streams
-#                           and specializes them term-by-term straight off
-#                           disk into a dense raw array, once per (alpha,
-#                           beta) sample (see stream_specialize_native_to_dense).
-#   prime                : the F_p modulus -- must match what the native
+#                           None of these four files is ever bulk-loaded
+#                           into memory as a whole (neither as raw flat
+#                           arrays nor as an Oscar MPolyRingElem): each is
+#                           streamed and specialized term-by-term straight
+#                           off disk, once per (alpha,beta) sample, via
+#                           stream_specialize_native_to_poly -- read a
+#                           chunk of terms, fold alpha^e1*beta^e4*coeff
+#                           into a small accumulator keyed by (e2,e3), move
+#                           to the next chunk. Only the much smaller
+#                           resulting specialized bivariate polynomial
+#                           (thousands of terms, not 17.8M) is ever fully
+#                           materialized.
+#   prime                 : the F_p modulus -- must match what the native
 #                           files were converted with (checked against the
 #                           file's own stored prime; mismatch is an error)
 #   n_samples             : number of random (x1,x4) specialization points
 #                           to run diagnostics on (default 10)
 #   seed                  : RNG seed for reproducible sample points (default 0)
-#   timeout_secs          : per-strategy hard timeout in section 8 for
-#                           grevlex_analysis and resultant_x2, in seconds
-#                           (default 30) -- does NOT apply to
-#                           numerical_resultant, see next arg
-#   numerical_resultant_timeout_secs : separate, much larger timeout just for
-#                           numerical_resultant (default 1200 = 20 minutes).
-#                           Its gamma-loop cost is driven by the larger of
-#                           the U-pair and V-pair Sylvester dimensions; at
-#                           V's individual degree 96 that's a 192x192
-#                           determinant at each of ~18433 sample points,
-#                           which is minutes per sample, not seconds -- so
-#                           it needs its own budget rather than sharing
-#                           section 8's general timeout_secs.
+#   timeout_secs          : per-strategy hard timeout in section 8, in
+#                           seconds (default 30), applied to both
+#                           grevlex_analysis and resultant_x2, for both the
+#                           U pair and the V pair
 #
 # Variable convention (matches interpolate_elimination.jl and the decision
 # to eliminate (x2,x3), leaving F(x1,x4)): ambient_dim=4, exponent order in
 # the native file is (x1,x2,x3,x4), i.e. index 1..4 = x1,x2,x3,x4. We fix
 # x1=alpha, x4=beta and eliminate x2 (keeping x3), matching the request's
-# R_{alpha,beta}(x3) = Res_{x2}(U0(alpha,x2,x3,beta), U1(alpha,x2,x3,beta)).
-#
-# Memory note: this script reconstructs U0 and U1 as actual Oscar
-# multivariate polynomial ring elements over F_p (via the coefficients now
-# stored in the v2 native format) ONCE at startup, and reuses those two
-# polynomial objects for every specialization -- it substitutes numeric
-# values for x1,x4 via evaluate/specialization, never re-parsing the
-# native files per sample. With U0 and U1 both loaded simultaneously this
-# is exactly the "only the U files fit in memory together" case Claire
-# already identified -- V0/V1 are NOT touched by this script at all.
+# R_{alpha,beta}(x3) = Res_{x2}(U0(alpha,x2,x3,beta), U1(alpha,x2,x3,beta))
+# -- and, symmetrically, Res_{x2}(V0(alpha,x2,x3,beta), V1(alpha,x2,x3,beta)).
 
 using Oscar
 
@@ -80,10 +71,10 @@ include(joinpath(@__DIR__, "newton_polytope.jl"))  # for load_native_support_wit
 
 # ---------------------------------------------------------------------------
 # Raw modular arithmetic helpers (no ring objects, no Oscar/Nemo types) --
-# used exclusively by the numerical_resultant strategy's hot paths (the
-# streaming V-file specializer and the Horner/Sylvester/determinant inner
-# loop), where the whole point is to avoid the overhead of symbolic
-# polynomial ring elements.
+# used by stream_specialize_native_to_poly's hot per-term loop (for both
+# U0/U1 and V0/V1 alike), where the whole point is to avoid the overhead of
+# symbolic polynomial ring elements while folding 17.8M terms into a
+# specialized polynomial.
 # ---------------------------------------------------------------------------
 
 # a*b mod p for a,b,p < 2^64: promote to UInt128 for the multiply so this
@@ -104,8 +95,7 @@ end
 end
 
 # Fast modular exponentiation (square-and-multiply), used to compute
-# alpha^e1 and beta^e4 (and, in the Horner loop, gamma^k implicitly via
-# repeated multiplication rather than modpow -- see the loop itself).
+# alpha^e1 and beta^e4 in stream_specialize_native_to_poly's per-term loop.
 function modpow(base::UInt64, exp::Integer, p::UInt64)
     result = UInt64(1) % p
     b = base % p
@@ -130,11 +120,12 @@ end
 # ---------------------------------------------------------------------------
 # True streaming specialization of a NEWTPOL2 native file at x1=alpha,
 # x4=beta, straight off disk into an actual Oscar bivariate polynomial over
-# Fp[x2,x3] -- the same output shape specialize() produces for U0/U1, so
-# V0/V1 can be fed through the exact same sections 1-7 diagnostics. This
-# NEVER holds the file's full support/coeffs arrays in memory (unlike
-# load_native_support_with_coeffs, which bulk-reads everything with a
-# single `read!` into full-length arrays): it reads the NEWTPOL2 header
+# Fp[x2,x3]. This is the ONLY specialization path in this file -- used
+# identically for U0/U1 and V0/V1, so both pairs are fed through the exact
+# same sections 1-8 diagnostics. This NEVER holds the file's full
+# support/coeffs arrays in memory (unlike load_native_support_with_coeffs,
+# which bulk-reads everything with a single `read!` into full-length
+# arrays): it reads the NEWTPOL2 header
 # directly, then streams the exponent block and coefficient block in
 # fixed-size chunks, computing alpha^e1 * beta^e4 * coeff mod p and
 # accumulating into a Dict{(e2,e3), UInt64} as each chunk is read -- only
@@ -255,36 +246,6 @@ function stream_specialize_native_to_poly(path::String, expected_prime::UInt64,
     flush(stdout)
     return poly
 end
-                e1 = Int(exp_view[base + 1])
-                e2 = Int(exp_view[base + 2])
-                e3 = Int(exp_view[base + 3])
-                e4 = Int(exp_view[base + 4])
-                c = coeff_view[i] % p
-
-                a_pow = cached_pow(alpha_pow_cache, alpha_r, e1, p)
-                b_pow = cached_pow(beta_pow_cache, beta_r, e4, p)
-                scale = modmul(a_pow, b_pow, p)
-                term = modmul(c, scale, p)
-
-                acc[e2 + 1, e3 + 1] = modadd(acc[e2 + 1, e3 + 1], term, p)
-            end
-
-            terms_done += this_chunk
-            if terms_done % 5_000_000 == 0 || terms_done == n_terms
-                println("      pass 2/2: ", terms_done, "/", n_terms,
-                        " terms streamed+specialized (", round(time() - t0, digits=1), "s)")
-                flush(stdout)
-            end
-        end
-
-        println("    stream_specialize_native_to_dense: done in ",
-                round(time() - t0, digits=1), "s")
-        flush(stdout)
-        return acc
-    finally
-        close(io)
-    end
-end
 
 # ---------------------------------------------------------------------------
 # Reconstruct an Oscar polynomial from a v2 native file's (support, coeffs)
@@ -335,225 +296,21 @@ function load_polynomial(path::String, R, Fp, expected_prime::UInt64)
     return reconstruct_polynomial(R, supp, coeffs, Fp)
 end
 
-# Loads a v2 native file's RAW (support, coeffs) arrays only -- no
-# MPolyBuildCtx reconstruction into an Oscar MPolyRingElem. Used for
-# U0/U1: specialize() (below) was rewritten to work directly off these
-# flat arrays rather than an Oscar polynomial object, since iterating an
-# already-built MPolyRingElem's term stream via
-# AbstractAlgebra.exponent_vectors/coefficients at 17.8M terms is what
-# caused the apparent hang on Sample 1 -- that iterator protocol isn't
-# guaranteed O(1) per step, and at this term count a non-constant-time
-# iterate() turns an intended O(n) specialize() pass into something far
-# worse. Skipping the Oscar reconstruction entirely for U0/U1 also saves
-# the ~5s MPolyBuildCtx build step and the memory of holding a giant
-# Oscar polynomial object that, per the earlier code audit, was never
-# actually used for anything except being handed straight to specialize().
-function load_raw_polynomial(path::String, expected_prime::UInt64)
-    (supp, coeffs, ambient_dim, file_prime) = load_native_support_with_coeffs(path)
-    ambient_dim == 4 ||
-        error("load_raw_polynomial: $path has ambient_dim=$ambient_dim, expected 4 " *
-              "(x1,x2,x3,x4) -- this pilot script is hard-coded for the 4-variable case")
-    file_prime == expected_prime ||
-        error("load_raw_polynomial: $path was converted with prime=$file_prime, but " *
-              "$expected_prime was given on the command line -- these must match " *
-              "or the specialized coefficients would be silently wrong")
-    return (supp, coeffs)
-end
-
 # ---------------------------------------------------------------------------
 # Specialization: substitute x1=alpha, x4=beta into a 4-variable polynomial,
 # yielding a bivariate polynomial in (x2,x3) over the SAME field.
-# ---------------------------------------------------------------------------
-
-# Rebuilds the specialized polynomial term-by-term into a fresh bivariate
-# ring S = Fp[x2,x3], rather than using Oscar's generic `evaluate` (which,
-# per this project's established pattern -- see memory: "MPolyBuildCtx-based
-# ring remapping to replace failing evaluate() calls" -- has been unreliable
-# for this kind of partial substitution at this project's scale). This is
-# still an O(n_terms) pass but with cheap scalar Fp arithmetic per term
-# (two Fp exponentiations to compute alpha^e1 * beta^e4), not a symbolic
-# operation.
 #
-# IMPORTANT: this now takes the RAW (supp, coeffs) arrays from
-# load_raw_polynomial directly, NOT an Oscar polynomial object -- see the
-# comment on load_raw_polynomial for why iterating an already-built
-# MPolyRingElem's term stream at 17.8M terms was the actual hang.
-function specialize(supp::Vector{Vector{Int}}, coeffs::Vector{UInt64}, S2, alpha, beta, prime::UInt64)
-    p = prime
-    alpha_u = coeff_to_u64(alpha) % p  # only 2 calls total (alpha, beta) -- try/catch cost is irrelevant here
-    beta_u = coeff_to_u64(beta) % p
-
-    n = length(supp)
-    length(coeffs) == n ||
-        error("specialize: support has $n terms, coeffs has $(length(coeffs)) -- length mismatch")
-
-    # Memoizing power caches -- e1,e4 range only up to the individual
-    # degree of f in x1,x4 (small), so this avoids a fresh modpow per term
-    # for repeated exponents, same pattern as
-    # stream_specialize_native_to_dense.
-    alpha_pow_cache = Dict{Int,UInt64}(0 => UInt64(1) % p)
-    beta_pow_cache = Dict{Int,UInt64}(0 => UInt64(1) % p)
-    function cached_pow(cache::Dict{Int,UInt64}, base::UInt64, e::Int)
-        v = get(cache, e, nothing)
-        v !== nothing && return v
-        val = modpow(base, e, p)
-        cache[e] = val
-        return val
-    end
-
-    # Accumulate into a raw UInt64 (mod p) dict keyed by (e2,e3). This
-    # iterates the RAW arrays returned by load_raw_polynomial -- plain
-    # Vector indexing, guaranteed O(1) per step -- rather than
-    # AbstractAlgebra.exponent_vectors(f)/coefficients(f) on an already-
-    # built Oscar MPolyRingElem, which is what actually caused the
-    # apparent hang on Sample 1: that iterator protocol isn't guaranteed
-    # O(1) per step, and at 17.8M terms a non-constant iterate() turns an
-    # intended O(n) pass into something far worse. No FqFieldElem ring
-    # arithmetic anywhere in this loop either (each ^ and * on a ring
-    # element allocates; across 17.8M terms x 2 polys x 10 samples that
-    # raw allocation volume was also contributing to the driver process's
-    # earlier OOM crash). Only the final nonzero terms get converted back
-    # to Fp at the end, in `finish`.
-    acc = Dict{Tuple{Int,Int}, UInt64}()
-    @inbounds for i in 1:n
-        e1, e2, e3, e4 = supp[i]
-        a_pow = cached_pow(alpha_pow_cache, alpha_u, e1)
-        b_pow = cached_pow(beta_pow_cache, beta_u, e4)
-        scale = modmul(a_pow, b_pow, p)
-        c_u = coeffs[i] % p
-        term = modmul(c_u, scale, p)
-        key = (e2, e3)
-        acc[key] = haskey(acc, key) ? modadd(acc[key], term, p) : term
-    end
-
-    ctx = MPolyBuildCtx(S2)
-    Fp = base_ring(S2)
-    for (key, c_u) in acc
-        iszero(c_u) && continue
-        push_term!(ctx, Fp(c_u), [key[1], key[2]])
-    end
-    return finish(ctx)
-end
-
+# NOTE: the only specialization path left in this file is
+# stream_specialize_native_to_poly (above), which loads and specializes
+# term-by-term straight off disk -- read a chunk, fold it into the
+# accumulator, move to the next chunk -- so the full (support, coeffs)
+# arrays for a file never exist in memory at once, for EITHER U or V. An
+# earlier version of this file had a separate load_raw_polynomial +
+# specialize() two-step (bulk-read the whole file into flat arrays, then
+# process those arrays) used only for U; that bulk-load step is exactly
+# what's being avoided now that V is treated identically to U, so both
+# functions were removed rather than kept as a second, unused code path.
 # ---------------------------------------------------------------------------
-# Dense raw-array machinery for the numerical_resultant strategy: given a
-# bivariate polynomial as a dense (dx2+1) x (dx3+1) UInt64 coefficient
-# matrix (indices [e2+1, e3+1], mod p), reduce it to a univariate
-# coefficient vector at x3=gamma via Horner's method, build a concrete
-# Sylvester matrix from two such vectors, and compute its determinant via
-# in-place modular Gaussian elimination -- all on raw UInt64 arrays, no
-# Oscar/Nemo ring objects anywhere in these functions.
-# ---------------------------------------------------------------------------
-
-# Horner-reduce a dense bivariate coefficient matrix M (indices
-# [e2+1, e3+1], row e2 holds the x3-coefficients of the x2^e2 term) at
-# x3=gamma, returning a length-(size(M,1)) vector where entry e2+1 is the
-# coefficient of x2^e2 in M(x2, gamma). For each row (fixed e2), this is
-# exactly univariate Horner evaluation of that row's polynomial-in-x3 at
-# gamma: c[dx3]*gamma^dx3 + ... + c[0] evaluated as
-# (((c[dx3])*gamma + c[dx3-1])*gamma + ...)*gamma + c[0].
-function horner_reduce_x3(M::Matrix{UInt64}, gamma::UInt64, p::UInt64)
-    dx2p1, dx3p1 = size(M)
-    out = Vector{UInt64}(undef, dx2p1)
-    @inbounds for e2 in 1:dx2p1
-        acc = UInt64(0)
-        for e3 in dx3p1:-1:1
-            acc = modadd(modmul(acc, gamma, p), M[e2, e3], p)
-        end
-        out[e2] = acc
-    end
-    return out
-end
-
-# Builds the (da+db) x (db) ... standard (da+db) x (da+db) Sylvester matrix
-# over raw Fp (as a Matrix{UInt64}) for two univariate polynomials given as
-# coefficient vectors a (length da+1, a[k+1] = coeff of x^k) and b (length
-# db+1), via the classical shifted-row construction -- same layout as the
-# earlier symbolic sylvester_matrix_fp, just over raw UInt64 instead of Fp
-# ring elements.
-function sylvester_matrix_raw(a::Vector{UInt64}, da::Int, b::Vector{UInt64}, db::Int, p::UInt64)
-    n = da + db
-    M = zeros(UInt64, n, n)
-    @inbounds for i in 1:db
-        for k in 0:da
-            M[i, i + (da - k)] = a[k + 1]
-        end
-    end
-    @inbounds for i in 1:da
-        for k in 0:db
-            M[db + i, i + (db - k)] = b[k + 1]
-        end
-    end
-    return M
-end
-
-# In-place modular determinant via Gaussian elimination with partial
-# pivoting (search for any nonzero pivot in the column -- "partial" here
-# meaning "first nonzero found", since over a finite field there is no
-# magnitude to compare, only zero/nonzero) over raw UInt64 mod p. Destroys
-# M (operates in place on a copy the caller provides). Returns the
-# determinant as a UInt64 residue mod p, or UInt64(0) if M is singular.
-#
-# This is the "low-overhead, concrete row-reduction determinant check"
-# requested in place of a generic library det() call on a symbolic-ring
-# matrix, since library det() on Fp-typed AbstractAlgebra matrices carries
-# ring-element dispatch overhead per arithmetic operation that a raw
-# UInt64 loop avoids.
-function det_mod_p!(M::Matrix{UInt64}, p::UInt64)
-    n = size(M, 1)
-    n == size(M, 2) || error("det_mod_p!: matrix is not square ($(size(M)))")
-    det_val = UInt64(1) % p
-    @inbounds for col in 1:n
-        # Find a nonzero pivot in this column at or below row `col`.
-        pivot_row = 0
-        for row in col:n
-            if !iszero(M[row, col])
-                pivot_row = row
-                break
-            end
-        end
-        if pivot_row == 0
-            return UInt64(0)  # singular
-        end
-        if pivot_row != col
-            # Swap rows; each swap flips the sign of the determinant.
-            for k in 1:n
-                M[pivot_row, k], M[col, k] = M[col, k], M[pivot_row, k]
-            end
-            det_val = modsub(p, det_val, p)  # negate: det_val = p - det_val, i.e. -det_val mod p
-            iszero(det_val) && (det_val = UInt64(0))  # guard the p-0 edge case
-        end
-        pivot = M[col, col]
-        det_val = modmul(det_val, pivot, p)
-        inv_pivot = modinv(pivot, p)
-        for row in (col + 1):n
-            factor = modmul(M[row, col], inv_pivot, p)
-            iszero(factor) && continue
-            for k in col:n
-                M[row, k] = modsub(M[row, k], modmul(factor, M[col, k], p), p)
-            end
-        end
-    end
-    return det_val
-end
-
-# Converts an already-specialized bivariate Oscar polynomial g (in x2,x3
-# over Fp, as produced by the existing `specialize` function) into a dense
-# (deg_x2+1) x (deg_x3+1) raw UInt64 matrix, indices [e2+1, e3+1]. This is
-# a one-time O(n_terms) extraction per polynomial per outer sample (n_terms
-# here is at most a few thousand -- g0/g1 have 4225 terms per the pilot
-# run -- not the 17.8M-term scale of the original U/V files), used so the
-# numerical_resultant strategy's hot gamma-loop never touches ring objects.
-function oscar_poly_to_dense(g, deg_x2::Int, deg_x3::Int, p::UInt64)
-    M = zeros(UInt64, deg_x2 + 1, deg_x3 + 1)
-    for (exps, c) in zip(AbstractAlgebra.exponent_vectors(g), AbstractAlgebra.coefficients(g))
-        e2, e3 = exps[1], exps[2]
-        M[e2 + 1, e3 + 1] = coeff_to_u64(c) % p
-    end
-    return M
-end
-
-
 
 # Small helper: run `f()`, returning (value, nothing) on success or
 # (nothing, "unavailable: <msg>") on any exception. Used throughout this
@@ -801,17 +558,13 @@ function coeff_to_u64(c)
     end
 end
 
-function serialize_pair_for_worker(path, g0, g1, prime::UInt64;
-                                    v0_path::Union{String,Nothing}=nothing,
-                                    v1_path::Union{String,Nothing}=nothing,
-                                    alpha_raw::Union{UInt64,Nothing}=nothing,
-                                    beta_raw::Union{UInt64,Nothing}=nothing)
+function serialize_pair_for_worker(path, g0, g1, prime::UInt64)
     supp0 = collect(AbstractAlgebra.exponent_vectors(g0))
     coef0 = UInt64[coeff_to_u64(c) for c in AbstractAlgebra.coefficients(g0)]
     supp1 = collect(AbstractAlgebra.exponent_vectors(g1))
     coef1 = UInt64[coeff_to_u64(c) for c in AbstractAlgebra.coefficients(g1)]
     open(path, "w") do io
-        serialize(io, (prime, supp0, coef0, supp1, coef1, v0_path, v1_path, alpha_raw, beta_raw))
+        serialize(io, (prime, supp0, coef0, supp1, coef1))
     end
 end
 
@@ -820,8 +573,11 @@ end
 # file. status is one of :ok, :error. This branch only runs when this
 # script is invoked as `julia pilot_diagnostic.jl --diagnostic-worker
 # <infile> <outfile> <strategy>` (see dispatch at the bottom of the file).
+# Works on whichever (g0,g1) pair it's handed -- the driver calls this once
+# per (U-pair, V-pair) x sample, so this function has no notion of "U" or
+# "V" at all, just "a bivariate pair".
 function run_worker(infile::String, outfile::String, strategy::String)
-    (prime, supp0, coef0, supp1, coef1, v0_path, v1_path, alpha_raw, beta_raw) = open(deserialize, infile)
+    (prime, supp0, coef0, supp1, coef1) = open(deserialize, infile)
     Fp = GF(prime)
     S2, (x2s, x3s) = polynomial_ring(Fp, [:x2, :x3])
 
@@ -867,227 +623,6 @@ function run_worker(infile::String, outfile::String, strategy::String)
             info = iszero(R_x3) ? "resultant is IDENTICALLY ZERO (common factor in x2)" :
                                   "resultant degree in x3 = $deg"
             (:ok, elapsed, deg, info)
-        elseif strategy == "numerical_resultant"
-            # Double Specialization (Numerical Resultant) strategy -- dense
-            # raw-array rewrite, now covering all four equations (U0,U1,
-            # V0,V1), not just U0,U1.
-            #
-            # Background / why all four equations: U0=U1 and V0=V1 are the
-            # two independent constraints (Mumford u(x) match, Mumford v(x)
-            # match) that cut the 4-variable ambient space (x1,x2,x3,x4)
-            # down to a 2-dimensional variety. This worker already receives
-            # U0,U1 pre-specialized at x1=alpha,x4=beta (as g0,g1, bivariate
-            # in x2,x3) from the driver. Since x1,x4 are already fixed, what
-            # remains at THIS (alpha,beta) sample is a slice of that 2D
-            # variety -- generically a FINITE set of (x2,x3) points, not a
-            # curve. Using only U0,U1 (as the original numerical_resultant
-            # did) computes Res_x2(U0,U1) = R_U(x3), which is generically a
-            # nonzero degree-~8192 curve in x3 -- that's expected, since it
-            # ignores the V constraints entirely. The actual finite solution
-            # set requires BOTH pairs: it's exactly the common roots (in x3)
-            # of R_U(x3) = Res_x2(U0,U1) and R_V(x3) = Res_x2(V0,V1).
-            #
-            # V0,V1 are NOT already loaded (unlike U0,U1) -- both U files
-            # together already use the available RAM, and there isn't room
-            # to also hold a full V file's term arrays, let alone two. So
-            # V0 and V1 are each streamed straight from disk via
-            # stream_specialize_native_to_dense (term-by-term, accumulating
-            # directly into a dense mod-p array, never materializing the
-            # full support/coeffs arrays or any Oscar ring object), once
-            # per OUTER (alpha,beta) sample -- i.e. once per call to this
-            # worker, not once per inner gamma point. The inner gamma-loop
-            # below only ever touches the four resulting dense arrays.
-            #
-            # Per-step outline (dense-array / raw-arithmetic only, no
-            # symbolic ring objects anywhere in the gamma-loop):
-            #   1. Convert g0,g1 (already-specialized Oscar polys) into
-            #      dense (deg+1)x(deg+1) raw UInt64 (mod p) coefficient
-            #      matrices -- 65x65 for U0/U1 (individual degree 64).
-            #   2. Stream-load and specialize V0, V1 directly into their
-            #      own dense raw matrices (fresh disk read each worker
-            #      call, per Claire's memory-budget constraint -- U's fit
-            #      comfortably and are left alone, V's don't and are
-            #      reloaded+respecialized every time). V0/V1 have
-            #      individual degree 96 (97x97), NOT the same as U's 64 --
-            #      the U-side and V-side dense arrays, Horner vectors, and
-            #      Sylvester matrices are all sized independently off each
-            #      pair's own actual degree (see d0x2/d1x2/d0x3/d1x3 for U
-            #      and d0x2_v/d1x2_v/d0x3_v/d1x3_v for V below), never
-            #      assumed equal.
-            #   3. For each gamma in [0, Dbound]: Horner-reduce all four
-            #      dense matrices at x3=gamma into univariate coefficient
-            #      vectors, build TWO concrete Sylvester matrices sized off
-            #      each pair's own degree sum (128x128 for U0,U1; 192x192
-            #      for V0,V1, given individual degree 64 and 96
-            #      respectively), and compute both determinants via
-            #      in-place modular Gaussian elimination -- giving
-            #      point-values R_U(gamma), R_V(gamma). Dbound is likewise
-            #      pair-specific: 8192 for U (64*64+64*64), 18432 for V
-            #      (96*96+96*96) -- the sweep below samples enough points
-            #      to cover the LARGER of the two, so it's driven by V's
-            #      18432 bound, not U's 8192.
-            #   4. After the sweep: gamma values where BOTH R_U and R_V
-            #      vanish are candidate x3 solutions of the full 4-equation
-            #      system. For each such gamma, recover x2 via gcd of the
-            #      univariate specializations U0(x2,gamma), U1(x2,gamma)
-            #      (computed once more, off the hot loop, via Oscar's
-            #      symbolic gcd on the reconstructed univariate polys --
-            #      this only runs for the rare common-root candidates, not
-            #      all 8193 points, so the earlier "no ring objects in the
-            #      loop" constraint doesn't apply here). If no common root
-            #      exists at all, the sample is reported INCONSISTENT (the
-            #      slice of the 2D variety at this (alpha,beta) is empty).
-            info_parts = String[]
-            t0 = time()
-
-            v0_path === nothing && error("numerical_resultant: v0_path was not provided -- " *
-                                          "the driver must pass V0's native file path for this strategy")
-            v1_path === nothing && error("numerical_resultant: v1_path was not provided -- " *
-                                          "the driver must pass V1's native file path for this strategy")
-            alpha_raw === nothing && error("numerical_resultant: alpha_raw was not provided")
-            beta_raw === nothing && error("numerical_resultant: beta_raw was not provided")
-
-            d0x2, d1x2 = degree(g0, x2s), degree(g1, x2s)
-            d0x3, d1x3 = degree(g0, x3s), degree(g1, x3s)
-            d_bound_u = d0x2 * d1x3 + d1x2 * d0x3
-            syl_dim_u = d0x2 + d1x2
-
-            # 1. Dense-array conversion of the already-specialized U0,U1.
-            g0_dense = oscar_poly_to_dense(g0, d0x2, d0x3, prime)
-            g1_dense = oscar_poly_to_dense(g1, d1x2, d1x3, prime)
-
-            # 2. Stream-load and specialize V0, V1 fresh from disk, this
-            #    call only -- see the long comment above for why this is
-            #    NOT cached/reused across gamma points or across worker
-            #    invocations.
-            println("    numerical_resultant: streaming V0 and V1 for this sample (alpha=",
-                    alpha_raw, ", beta=", beta_raw, ")...")
-            flush(stdout)
-            h0_dense = stream_specialize_native_to_dense(v0_path, prime, alpha_raw, beta_raw)
-            h1_dense = stream_specialize_native_to_dense(v1_path, prime, alpha_raw, beta_raw)
-
-            # Individual x2/x3 degrees of the specialized V polys, read off
-            # the dense arrays' actual nonzero extent (rather than assumed
-            # equal to U's 64/64, in case V's structure differs).
-            function dense_degree_x2(M::Matrix{UInt64})
-                for e2 in size(M,1):-1:1
-                    any(!iszero, @view M[e2, :]) && return e2 - 1
-                end
-                return -1  # zero polynomial
-            end
-            function dense_degree_x3(M::Matrix{UInt64})
-                for e3 in size(M,2):-1:1
-                    any(!iszero, @view M[:, e3]) && return e3 - 1
-                end
-                return -1
-            end
-            d0x2_v = dense_degree_x2(h0_dense)
-            d1x2_v = dense_degree_x2(h1_dense)
-            d0x3_v = dense_degree_x3(h0_dense)
-            d1x3_v = dense_degree_x3(h1_dense)
-            (d0x2_v < 0 || d1x2_v < 0) &&
-                error("numerical_resultant: a specialized V polynomial is identically zero " *
-                      "at this sample point (d0x2_v=$d0x2_v, d1x2_v=$d1x2_v) -- cannot form " *
-                      "a Sylvester matrix from a zero polynomial")
-            d_bound_v = d0x2_v * d1x3_v + d1x2_v * d0x3_v
-            syl_dim_v = d0x2_v + d1x2_v
-
-            # The two resultants R_U(x3), R_V(x3) have (in general) DIFFERENT
-            # degree bounds, so sample enough points to cover the larger of
-            # the two -- using the same sample points for both sweeps (so
-            # "common root at gamma" is a direct comparison, not requiring
-            # separate interpolation grids).
-            d_bound = max(d_bound_u, d_bound_v)
-            n_points = d_bound + 1
-
-            push!(info_parts, "Dbound_U=$d_bound_u (syl_dim=$syl_dim_u), " *
-                               "Dbound_V=$d_bound_v (syl_dim=$syl_dim_v), sampling $n_points points")
-
-            ru_zero_gammas = Int[]
-            rv_zero_gammas = Int[]
-            common_root_gammas = Int[]
-
-            for i in 0:(n_points - 1)
-                gamma = UInt64(i) % prime
-                try
-                    ru_val = UInt64(0)
-                    rv_val = UInt64(0)
-
-                    # R_U(gamma): only defined/needed while i is within the
-                    # U-pair's own sample range; reuse the same gamma value
-                    # otherwise (Res is a polynomial, well-defined at any
-                    # scalar, so evaluating past d_bound_u is still valid,
-                    # just samples more points than strictly required for
-                    # U alone -- harmless, just extra work already paid for
-                    # by needing n_points for V).
-                    a_u = horner_reduce_x3(g0_dense, gamma, prime)
-                    b_u = horner_reduce_x3(g1_dense, gamma, prime)
-                    Mu = sylvester_matrix_raw(a_u, d0x2, b_u, d1x2, prime)
-                    ru_val = det_mod_p!(Mu, prime)
-
-                    a_v = horner_reduce_x3(h0_dense, gamma, prime)
-                    b_v = horner_reduce_x3(h1_dense, gamma, prime)
-                    Mv = sylvester_matrix_raw(a_v, d0x2_v, b_v, d1x2_v, prime)
-                    rv_val = det_mod_p!(Mv, prime)
-
-                    ru_is_zero = iszero(ru_val)
-                    rv_is_zero = iszero(rv_val)
-                    ru_is_zero && push!(ru_zero_gammas, i)
-                    rv_is_zero && push!(rv_zero_gammas, i)
-                    (ru_is_zero && rv_is_zero) && push!(common_root_gammas, i)
-                catch e
-                    # Per the project's error-handling convention: catch
-                    # cleanly, do not swallow -- re-raise with a
-                    # descriptive message so it is reported through the
-                    # worker's (:error, ...) result rather than silently
-                    # miscounted.
-                    error("numerical_resultant: evaluation failed at sample point " *
-                          "index=$i, gamma=$gamma: $(sprint(showerror, e))")
-                end
-            end
-
-            push!(info_parts, "R_U zero at $(length(ru_zero_gammas))/$n_points sampled points, " *
-                               "R_V zero at $(length(rv_zero_gammas))/$n_points sampled points")
-
-            deg_report = -1
-            if isempty(common_root_gammas)
-                push!(info_parts, "NO COMMON ROOTS FOUND -- the system (U0=U1=V0=V1=0) is " *
-                                   "INCONSISTENT at this (alpha,beta) sample; the slice of the " *
-                                   "2D variety at this point is empty over the $n_points sampled " *
-                                   "x3 values (note: this is a sampled check, not an exhaustive " *
-                                   "one if n_points < p -- see Dbound above for the sample count " *
-                                   "actually used)")
-            else
-                # For each common-root gamma, recover x2 via gcd of the
-                # univariate specializations of U0,U1 at that x3 value --
-                # this DOES use Oscar ring objects, but only for the (small,
-                # generically very few) common-root candidates, not for all
-                # n_points sampled gammas, so it stays cheap.
-                solutions = Tuple{Int,Any}[]
-                for gi in common_root_gammas
-                    gamma_fp = Fp(gi)
-                    Ux, _ = polynomial_ring(Fp, "x")
-                    a_u = horner_reduce_x3(g0_dense, UInt64(gi) % prime, prime)
-                    b_u = horner_reduce_x3(g1_dense, UInt64(gi) % prime, prime)
-                    pu = Ux([Fp(c) for c in a_u])
-                    qu = Ux([Fp(c) for c in b_u])
-                    g_gcd, gcd_err = try_diag() do
-                        gcd(pu, qu)
-                    end
-                    if gcd_err === nothing && !is_unit(g_gcd) && !iszero(g_gcd)
-                        push!(solutions, (gi, "x2 root(s) of gcd, degree=$(degree(g_gcd))"))
-                    else
-                        push!(solutions, (gi, "gcd step " * (gcd_err === nothing ? "gave unit/zero (no shared x2 root found numerically)" : gcd_err)))
-                    end
-                end
-                push!(info_parts, "COMMON ROOTS FOUND at $(length(common_root_gammas)) sampled " *
-                                   "gamma value(s): " *
-                                   join(["x3=$gi ($desc)" for (gi, desc) in solutions], "; "))
-                deg_report = length(common_root_gammas)
-            end
-
-            elapsed = time() - t0
-            (:ok, elapsed, deg_report, join(info_parts, " | "))
         elseif strategy == "grevlex_analysis"
             # Per the pilot diagnostic finding: grevlex Groebner bases are
             # cheap (~2.4s) while lex times out. This strategy stays in
@@ -1227,17 +762,11 @@ end
 # Driver-side: spawns the worker subprocess for one strategy, enforces the
 # hard wall-clock timeout, and returns (elapsed, deg, info) where elapsed
 # is NaN and info == "TIMEOUT" if the deadline was hit.
-function run_with_timeout(g0, g1, prime::UInt64, strategy::String, timeout_secs::Real, script_path::String;
-                           v0_path::Union{String,Nothing}=nothing,
-                           v1_path::Union{String,Nothing}=nothing,
-                           alpha_raw::Union{UInt64,Nothing}=nothing,
-                           beta_raw::Union{UInt64,Nothing}=nothing)
+function run_with_timeout(g0, g1, prime::UInt64, strategy::String, timeout_secs::Real, script_path::String)
     tmpdir = mktempdir()
     infile = joinpath(tmpdir, "in.jls")
     outfile = joinpath(tmpdir, "out.jls")
-    serialize_pair_for_worker(infile, g0, g1, prime;
-                               v0_path=v0_path, v1_path=v1_path,
-                               alpha_raw=alpha_raw, beta_raw=beta_raw)
+    serialize_pair_for_worker(infile, g0, g1, prime)
 
     cmd = `julia --startup-file=no $script_path $WORKER_FLAG $infile $outfile $strategy`
     proc = run(pipeline(cmd; stdout=devnull, stderr=devnull); wait=false)
@@ -1284,7 +813,7 @@ function main()
     length(ARGS) >= 5 ||
         error("pilot_diagnostic.jl: usage: julia pilot_diagnostic.jl " *
               "<U0.native> <U1.native> <V0.native> <V1.native> <prime> " *
-              "[n_samples] [seed] [timeout_secs] [numerical_resultant_timeout_secs]")
+              "[n_samples] [seed] [timeout_secs]")
 
     u0_path = ARGS[1]
     u1_path = ARGS[2]
@@ -1294,14 +823,6 @@ function main()
     n_samples = length(ARGS) >= 6 ? parse(Int, ARGS[6]) : 10
     seed = length(ARGS) >= 7 ? parse(Int, ARGS[7]) : 0
     timeout_secs = length(ARGS) >= 8 ? parse(Float64, ARGS[8]) : 30.0
-    # numerical_resultant's gamma-loop cost is driven by the LARGER of the
-    # U-pair and V-pair degree sums -- with V at individual degree 96 (vs
-    # U's 64), its Sylvester determinants are 192x192 (vs 128x128) and the
-    # sweep needs ~18433 sample points (vs U alone's 8193), which is on the
-    # order of minutes per sample, not seconds. It gets its own, much
-    # larger default timeout rather than sharing section 8's general 30s
-    # budget (which is sized for the cheap grevlex-based strategies).
-    numerical_resultant_timeout_secs = length(ARGS) >= 9 ? parse(Float64, ARGS[9]) : 1200.0
 
     isfile(u0_path) || error("pilot_diagnostic.jl: no such file: $u0_path")
     isfile(u1_path) || error("pilot_diagnostic.jl: no such file: $u1_path")
@@ -1319,18 +840,25 @@ function main()
     println("V1 file:      ", v1_path)
     println("prime:        ", prime)
     println("samples:      ", n_samples, " (seed=", seed, ")")
-    println("timeout:      ", timeout_secs, "s per strategy in section 8 " *
-                              "(numerical_resultant uses its own ", numerical_resultant_timeout_secs, "s)")
+    println("timeout:      ", timeout_secs, "s per strategy in section 8")
     println()
 
     Fp = GF(prime)
     S2, (y2, y3) = polynomial_ring(Fp, [:x2, :x3])
+    vars = (y2, y3)
 
-    println("Loading U0 (raw arrays, no Oscar reconstruction)...")
-    (supp0, coeffs0) = load_raw_polynomial(u0_path, prime)
-    println("Loading U1 (raw arrays, no Oscar reconstruction)...")
-    (supp1, coeffs1) = load_raw_polynomial(u1_path, prime)
-    println()
+    # U and V are treated identically now -- there is no U-specific or
+    # V-specific code path any more. Neither pair is bulk-loaded into
+    # memory: each sample streams each of the four files term-by-term
+    # straight off disk via stream_specialize_native_to_poly, specializing
+    # as it goes (read a chunk of terms, fold alpha^e1*beta^e4*coeff into
+    # the accumulator, move to the next chunk) so the full support/coeffs
+    # arrays never exist in memory for either U or V -- only the much
+    # smaller specialized bivariate polynomial does, once per sample.
+    pairs = [
+        ("U", u0_path, u1_path),
+        ("V", v0_path, v1_path),
+    ]
 
     # Reproducible sample points: a simple LCG-free approach using Julia's
     # Random with an explicit seed, avoiding alpha=0 or beta=0 (those are
@@ -1356,13 +884,19 @@ function main()
     # basis, no analysis) is kept too since it's nearly free once
     # grevlex_analysis is already being timed, and resultant_x2 is kept with
     # its fixed API call (variable index instead of variable element) as an
-    # independent cross-check on the same fiber degree.
+    # independent cross-check on the same fiber degree. numerical_resultant
+    # is gone: it was a premature cross-pair (U+V) Sylvester check written
+    # before V's own grevlex_analysis/resultant_x2 behavior (run below, per
+    # pair) had ever actually been looked at.
     timed_strategies = [
         ("grevlex_analysis",    "grevlex_analysis"),
-        ("numerical_resultant", "numerical_resultant"),
         ("resultant_x2",        "resultant"),
     ]
-    timed_results = Dict(name => Vector{Tuple{Float64,Int,String}}() for (name, _) in timed_strategies)
+    # Keyed by (pair_label, strategy_name) so U and V results are tracked
+    # separately in the summary.
+    pair_labels = [label for (label, _, _) in pairs]
+    timed_results = Dict((label, name) => Vector{Tuple{Float64,Int,String}}()
+                          for (name, _) in timed_strategies for label in pair_labels)
 
     for (i, (a, b)) in enumerate(samples)
         println("=" ^ 70)
@@ -1370,114 +904,104 @@ function main()
         println("=" ^ 70)
         flush(stdout)
 
-        println("  specializing U0, U1 at this point...")
-        t0 = time()
-        g0 = specialize(supp0, coeffs0, S2, a, b, prime)
-        g1 = specialize(supp1, coeffs1, S2, a, b, prime)
-        println("  specialized in ", round(time() - t0, digits=2), "s ",
-                 "(g0 has ", length(g0), " terms, g1 has ", length(g1), " terms)")
-        flush(stdout)
-        vars = (y2, y3)
-
-        println()
-        println("  --- 1. Degree information ---")
-        diag_degrees(g0, "g0", vars)
-        diag_degrees(g1, "g1", vars)
-        flush(stdout)
-
-        println()
-        println("  --- 2. Sparsity ---")
-        diag_sparsity(g0, "g0")
-        diag_sparsity(g1, "g1")
-        flush(stdout)
-
-        println()
-        println("  --- 3. Squarefreeness ---")
-        diag_squarefree(g0, "g0", vars)
-        diag_squarefree(g1, "g1", vars)
-        flush(stdout)
-
-        println()
-        println("  --- 4. Common factor test (gcd(g0,g1)) ---")
-        diag_common_factor(g0, g1)
-        flush(stdout)
-
-        println()
-        println("  --- 5. Resultant metadata only (no resultant computed here) ---")
-        diag_resultant_metadata(g0, g1, vars)
-        flush(stdout)
-
-        println()
-        println("  --- 6. Newton polygons ---")
-        diag_newton_polygon(g0, "g0")
-        diag_newton_polygon(g1, "g1")
-        flush(stdout)
-
-        println()
-        println("  --- 7. Projection / ideal diagnostics ---")
-        diag_projection(g0, g1)
-        flush(stdout)
-
-        println()
-        println("  --- 8. Timed elimination (hard timeout=", timeout_secs, "s for grevlex/resultant, ",
-                 numerical_resultant_timeout_secs, "s for numerical_resultant, subprocess-isolated) ---")
-        for (name, strategy) in timed_strategies
-            print("    [", name, "] running in subprocess... ")
+        for (label, path0, path1) in pairs
+            println("  streaming+specializing ", label, "0, ", label, "1 at this point...")
+            t0 = time()
+            g0 = stream_specialize_native_to_poly(path0, prime, a, b, S2)
+            g1 = stream_specialize_native_to_poly(path1, prime, a, b, S2)
+            println("  specialized in ", round(time() - t0, digits=2), "s ",
+                     "(", label, "0 has ", length(g0), " terms, ", label, "1 has ", length(g1), " terms)")
             flush(stdout)
-            # Only numerical_resultant needs V-file paths and raw alpha/beta
-            # (to stream-specialize V0,V1 on the worker side); other
-            # strategies work purely off the already-specialized g0,g1 and
-            # shouldn't pay for passing this extra data through. It also
-            # gets its own, much larger timeout -- see the definition of
-            # numerical_resultant_timeout_secs above for why.
-            if strategy == "numerical_resultant"
-                (elapsed, deg, info) = run_with_timeout(g0, g1, prime, strategy, numerical_resultant_timeout_secs, script_path;
-                                                         v0_path=v0_path, v1_path=v1_path,
-                                                         alpha_raw=coeff_to_u64(a), beta_raw=coeff_to_u64(b))
-            else
+
+            println()
+            println("  --- [", label, "] 1. Degree information ---")
+            diag_degrees(g0, "$(label)0", vars)
+            diag_degrees(g1, "$(label)1", vars)
+            flush(stdout)
+
+            println()
+            println("  --- [", label, "] 2. Sparsity ---")
+            diag_sparsity(g0, "$(label)0")
+            diag_sparsity(g1, "$(label)1")
+            flush(stdout)
+
+            println()
+            println("  --- [", label, "] 3. Squarefreeness ---")
+            diag_squarefree(g0, "$(label)0", vars)
+            diag_squarefree(g1, "$(label)1", vars)
+            flush(stdout)
+
+            println()
+            println("  --- [", label, "] 4. Common factor test (gcd) ---")
+            diag_common_factor(g0, g1)
+            flush(stdout)
+
+            println()
+            println("  --- [", label, "] 5. Resultant metadata only (no resultant computed here) ---")
+            diag_resultant_metadata(g0, g1, vars)
+            flush(stdout)
+
+            println()
+            println("  --- [", label, "] 6. Newton polygons ---")
+            diag_newton_polygon(g0, "$(label)0")
+            diag_newton_polygon(g1, "$(label)1")
+            flush(stdout)
+
+            println()
+            println("  --- [", label, "] 7. Projection / ideal diagnostics ---")
+            diag_projection(g0, g1)
+            flush(stdout)
+
+            println()
+            println("  --- [", label, "] 8. Timed elimination (hard timeout=", timeout_secs, "s, subprocess-isolated) ---")
+            for (name, strategy) in timed_strategies
+                print("    [", name, "] running in subprocess... ")
+                flush(stdout)
                 (elapsed, deg, info) = run_with_timeout(g0, g1, prime, strategy, timeout_secs, script_path)
+                if info == "TIMEOUT" || startswith(info, "TIMEOUT")
+                    println("TIMEOUT")
+                elseif startswith(info, "ERROR")
+                    println("FAILED")
+                else
+                    println("done in ", round(elapsed, digits=3), "s, fiber_degree=", deg)
+                end
+                println("        ", info)
+                push!(timed_results[(label, name)], (elapsed, deg, info))
+                flush(stdout)
             end
-            if info == "TIMEOUT" || startswith(info, "TIMEOUT")
-                println("TIMEOUT")
-            elseif startswith(info, "ERROR")
-                println("FAILED")
-            else
-                println("done in ", round(elapsed, digits=3), "s, fiber_degree=", deg)
-            end
-            println("        ", info)
-            push!(timed_results[name], (elapsed, deg, info))
-            flush(stdout)
+            println()
         end
-        println()
     end
 
     println("=" ^ 70)
     println("Summary (section 8 timed strategies only -- sections 1-7 are")
     println("per-sample diagnostics, see above)")
     println("=" ^ 70)
-    for (name, _) in timed_strategies
-        rows = timed_results[name]
-        times = [r[1] for r in rows if !isnan(r[1])]
-        degs = [r[2] for r in rows if r[2] >= 0]
-        n_timeout = count(r -> occursin("TIMEOUT", r[3]), rows)
-        n_error = count(r -> startswith(r[3], "ERROR"), rows)
-        println(name, ":")
-        println("  completed: ", length(times), "/", n_samples,
-                 "   timed out: ", n_timeout, "/", n_samples,
-                 "   errored: ", n_error, "/", n_samples)
-        if !isempty(times)
-            println("  time (completed only): min=", round(minimum(times), digits=3), "s  ",
-                     "median=", round(sort(times)[cld(length(times), 2)], digits=3), "s  ",
-                     "max=", round(maximum(times), digits=3), "s")
-        end
-        if !isempty(degs)
-            if all(==(degs[1]), degs)
-                println("  fiber degree: CONSISTENT at ", degs[1], " across completed samples")
-            else
-                println("  fiber degree: INCONSISTENT across samples: ", degs)
+    for label in pair_labels
+        for (name, _) in timed_strategies
+            rows = timed_results[(label, name)]
+            times = [r[1] for r in rows if !isnan(r[1])]
+            degs = [r[2] for r in rows if r[2] >= 0]
+            n_timeout = count(r -> occursin("TIMEOUT", r[3]), rows)
+            n_error = count(r -> startswith(r[3], "ERROR"), rows)
+            println("[", label, "] ", name, ":")
+            println("  completed: ", length(times), "/", n_samples,
+                     "   timed out: ", n_timeout, "/", n_samples,
+                     "   errored: ", n_error, "/", n_samples)
+            if !isempty(times)
+                println("  time (completed only): min=", round(minimum(times), digits=3), "s  ",
+                         "median=", round(sort(times)[cld(length(times), 2)], digits=3), "s  ",
+                         "max=", round(maximum(times), digits=3), "s")
             end
+            if !isempty(degs)
+                if all(==(degs[1]), degs)
+                    println("  fiber degree: CONSISTENT at ", degs[1], " across completed samples")
+                else
+                    println("  fiber degree: INCONSISTENT across samples: ", degs)
+                end
+            end
+            println()
         end
-        println()
     end
 
     println("This is a diagnostic pass, not an optimization pass. Use sections 1-7")
