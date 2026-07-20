@@ -848,8 +848,562 @@ function diag_projection(g0, g1)
 end
 
 # ---------------------------------------------------------------------------
+# Section 8 (NEW): resultant-then-gcd effective fiber degree estimator.
+#
+# This replaces the timed Groebner/FGLM section as the PRIMARY effective-
+# degree estimator. It deliberately does NOT use groebner_basis, fglm,
+# hilbert_series, or a lex ordering conversion anywhere -- those are exactly
+# the calls that were timing out. Instead, for a bivariate pair (g0,g1) in
+# Fp[x3,x4], it:
+#
+#   1. Eliminates x3 via a single resultant call, giving R(x4) =
+#      Res_{x3}(g0,g1) -- a UNIVARIATE polynomial in x4 (see resultant_x3).
+#   2. Factors R(x4) over Fp and keeps only the linear factors, each of
+#      which gives one candidate value b with R(b) = 0 (see
+#      candidate_roots_from_resultant).
+#   3. For each candidate b, specializes g0(x3,b) and g1(x3,b) down to
+#      univariate polynomials in x3 and takes their gcd h_b(x3) (see
+#      specialize_and_gcd) -- any common root of g0(x3,b) and g1(x3,b) must
+#      be a root of h_b, so h_b's degree (and, if it splits completely over
+#      Fp, its root count) is the candidate-point count at that b.
+#
+# This is a genuine algorithmic trade relative to Groebner elimination, not
+# just a faster path to the same number: a resultant only detects points
+# where the two curves actually meet (finitely many x3-roots existing at
+# that x4), and factoring only recovers Fp-RATIONAL roots of R, not roots
+# in an extension field. So the candidate/point counts reported here are a
+# computable, exact proxy for the Fp-RATIONAL part of the fiber -- not a
+# certified count of the full fiber over the algebraic closure the way a
+# Groebner+FGLM computation would give. That tradeoff (exact but partial,
+# vs. complete but hanging) is the whole point: it is what stays cheap.
+# ---------------------------------------------------------------------------
 
-# Section 8: timed elimination with a HARD timeout.
+# Rebuilds a bivariate Fp[x3,x4] element as a univariate polynomial in ONE
+# of the two variables, over a base ring that is Fp[the other variable] --
+# e.g. rebuild_univariate_over_polyring(g, x3s, x4s, T, y) turns g(x3,x4)
+# into an element of T = (Fp[x4])[x3], i.e. a polynomial in x3 whose
+# coefficients are elements of Fp[x4].
+#
+# This exists because the classical resultant-of-two-univariate-polynomials
+# is only defined once g0/g1 are viewed as univariate in x3 over the base
+# ring Fp[x4] -- Oscar's `resultant` on two elements of the same bivariate
+# MPolyRing does not itself do that reinterpretation. Doing the
+# reinterpretation with a naive term-by-term Oscar `evaluate` call in a
+# loop would be exactly the kind of slow generic evaluation this task asked
+# to avoid, so instead this walks the (already materialized, small)
+# exponent/coefficient arrays once and accumulates directly into plain
+# Dicts before building the ring elements.
+#
+# elim_var and keep_var are the actual ring generators (elements of
+# parent(g)) -- used only to identify which exponent slot is which; T is
+# the target univariate-over-Fp[keep_var] ring and y is T's generator.
+function rebuild_univariate_over_polyring(g, elim_var, keep_var, T, y)
+    Fp = base_ring(parent(g))
+    Tbase = base_ring(T)                 # Fp[keep_var]
+    keep_gen = gen(Tbase)
+
+    # elim_idx / keep_idx: which exponent-vector slot (1 or 2) belongs to
+    # elim_var and which to keep_var, determined once from the ring's own
+    # generator list rather than assumed, since callers use this helper
+    # with the elim/keep roles swapped (x3 eliminated vs x4 kept, or the
+    # reverse in specialize_and_gcd's sibling logic).
+    gens_list = gens(parent(g))
+    elim_idx = findfirst(==(elim_var), gens_list)
+    keep_idx = findfirst(==(keep_var), gens_list)
+    (elim_idx === nothing || keep_idx === nothing) &&
+        error("rebuild_univariate_over_polyring: could not locate elim_var/keep_var " *
+              "among parent(g)'s generators -- ring generator mismatch")
+
+    # Accumulate coefficients of x_elim^d (d = 0..deg_elim) as elements of
+    # Fp[keep_var]: a Dict{Int,Dict{Int,elem_type(Fp)}} mapping elim-exponent
+    # to a partially-built Fp[keep_var] polynomial, represented as its own
+    # Dict of keep-exponent => Fp coefficient, then converted once at the end.
+    by_elim_deg = Dict{Int, Dict{Int, elem_type(Fp)}}()
+
+    for (e, c) in zip(AbstractAlgebra.exponent_vectors(g), AbstractAlgebra.coefficients(g))
+        d_elim = e[elim_idx]
+        d_keep = e[keep_idx]
+        inner = get!(by_elim_deg, d_elim) do
+            Dict{Int, elem_type(Fp)}()
+        end
+        inner[d_keep] = haskey(inner, d_keep) ? inner[d_keep] + c : c
+    end
+
+    result = zero(T)
+    for (d_elim, inner) in by_elim_deg
+        # Build the Fp[keep_var] coefficient polynomial directly via + and
+        # keep_gen^d_keep -- exact, no generic evaluate() call.
+        coeff_poly = zero(Tbase)
+        for (d_keep, c) in inner
+            is_zero(c) && continue
+            coeff_poly += c * keep_gen^d_keep
+        end
+        is_zero(coeff_poly) && continue
+        result += coeff_poly * y^d_elim
+    end
+
+    return result
+end
+
+# Computes R(x4) = resultant_{x3}(g0, g1) as an element of Fp[x4] (a plain
+# univariate polynomial, NOT wrapped in the Fp[x4][x3] ring), by first
+# rebuilding g0,g1 as elements of T = (Fp[x4])[x3] via
+# rebuild_univariate_over_polyring and then calling the univariate
+# `resultant`. Falls back cleanly (returns (nothing, nothing, msg)) if
+# either the ring construction or the resultant call itself fails or is
+# unavailable in this Oscar version, per the task's requirement to report
+# unavailability rather than silently switching strategy.
+function resultant_x3(g0, g1, vars)
+    x3s, x4s = vars
+    Fp = base_ring(parent(g0))
+
+    val, err = try_diag() do
+        Tbase, _ = polynomial_ring(Fp, :x4)   # Fp[x4], fresh generator
+        T, y = polynomial_ring(Tbase, :x3)    # (Fp[x4])[x3]
+
+        h0 = rebuild_univariate_over_polyring(g0, x3s, x4s, T, y)
+        h1 = rebuild_univariate_over_polyring(g1, x3s, x4s, T, y)
+
+        R_raw = resultant(h0, h1)   # element of Fp[x4] (T's base ring) --
+                                     # or, when the resultant happens to be
+                                     # constant, sometimes a bare Fp scalar
+                                     # (FqFieldElem) instead of a degree-0
+                                     # Tbase element; coerce explicitly below
+                                     # rather than relying on that ever being
+                                     # a Tbase-typed value on the nose.
+        R_wrapped = Tbase(R_raw)
+        (R_wrapped, Tbase)
+    end
+
+    if err !== nothing
+        return (nothing, nothing, "resultant_x3: unavailable or failed: $err")
+    end
+
+    (R_wrapped, Tbase) = val
+    return (R_wrapped, Tbase, nothing)
+end
+
+# Finds all Fp-RATIONAL roots of a univariate polynomial R (over Fp, i.e.
+# an element of some Fp[t] ring) WITHOUT calling factor().
+#
+# Why this exists rather than just calling factor(R) and keeping the
+# degree-1 factors: on this project's Fp = GF(prime) field type,
+# factor(R) for large-degree R can hit an internal Nemo bug (a bare
+# FqFieldElem getting passed through Base.convert instead of the proper
+# FqPolyRingElem constructor, deep inside factor()'s root-extraction code)
+# and crash outright rather than returning a result -- see the
+# resultant_x3 comment above R_wrapped = Tbase(R_raw) for the same failure
+# mode hit one level up. Rather than working around a bug inside a black-box
+# library call, this sidesteps factor() entirely for the "just get me the
+# Fp-rational roots" case, using the standard exact identity:
+#
+#   the product of ALL distinct linear factors (x - r) of R, over r in Fp
+#   that are roots of R, equals gcd(R(x), x^p - x)
+#
+# (x^p - x factors as the product of (x-r) over every r in Fp, by Fermat's
+# little theorem -- x^p = x for every element of Fp). So:
+#
+#   1. g = gcd(R, x^p - x)  -- squarefree, degree = number of distinct
+#      Fp-rational roots of R.
+#   2. g's own degree is small in every case this fast path actually calls
+#      this helper on (it only runs after a resultant/gcd step has already
+#      cut things down), so its roots are extracted via gcd-based
+#      Cantor-Zassenhaus-style splitting rather than by evaluating at every
+#      element of Fp (p can be ~10^6-10^7 here, too slow to trial-evaluate
+#      per candidate root).
+#
+# Computing x^p - x itself would need a degree-p exponentiation, exactly as
+# expensive as what's being avoided -- but x^p MOD R (not x^p - x directly)
+# is cheap via square-and-multiply: O(log p) polynomial multiplications,
+# each reduced mod R so degree never exceeds ~2*deg(R). This is the
+# standard "distinct-degree factorization, stage 1" building block.
+function rational_roots_via_frobenius_gcd(R, p::UInt64)
+    Ux = parent(R)
+    x = gen(Ux)
+    Fp_field = base_ring(Ux)
+
+    deg_R = degree(R)
+    deg_R <= 0 && return elem_type(Fp_field)[]  # nothing to do; caller checks constant/zero separately
+
+    # Compute x^p mod R via square-and-multiply, reducing mod R after every
+    # multiplication so intermediate degree never exceeds ~2*deg(R).
+    xp_mod_R = powermod(x, p, R)
+
+    g = gcd(xp_mod_R - x, R)
+    deg_g = iszero(g) ? -1 : degree(g)
+    deg_g <= 0 && return elem_type(Fp_field)[]
+
+    # g is now squarefree of (typically small) degree deg_g, with every
+    # root being Fp-rational. Peel off roots one at a time via gcd with a
+    # random linear shift (Cantor-Zassenhaus-style splitting), which stays
+    # correct (not just probabilistically fast) because g is guaranteed
+    # fully split over Fp already -- each gcd(g, (x+s)^((p-1)/2) - 1) is
+    # exact, not a Monte Carlo guess about g's factorization type.
+    roots = elem_type(Fp_field)[]
+    remaining = g
+
+    attempts_since_progress = 0
+    while degree(remaining) >= 1
+        if degree(remaining) == 1
+            c1 = coeff(remaining, 1)
+            c0 = coeff(remaining, 0)
+            push!(roots, -c0 * inv(c1))
+            remaining = one(Ux)
+            break
+        end
+
+        s = Fp_field(rand(0:(p - 1)))
+        shifted = remaining(x + s)   # remaining(x + s)
+        half_pow = powermod(shifted, div(p - 1, 2), remaining)
+        split_candidate = gcd(half_pow - one(Ux), remaining)
+
+        if degree(split_candidate) >= 1 && degree(split_candidate) < degree(remaining)
+            factor1 = split_candidate
+            factor2 = divexact(remaining, split_candidate)
+            # Extract linear roots from whichever side has degree 1,
+            # recurse (via the same loop) on whatever's left by just
+            # continuing to split the smaller nontrivial piece.
+            for part in (factor1, factor2)
+                d = degree(part)
+                if d == 1
+                    c1 = coeff(part, 1)
+                    c0 = coeff(part, 0)
+                    push!(roots, -c0 * inv(c1))
+                elseif d >= 2
+                    append!(roots, rational_roots_via_frobenius_gcd_split(part, p))
+                end
+            end
+            remaining = one(Ux)
+            break
+        else
+            attempts_since_progress += 1
+            attempts_since_progress > 200 &&
+                error("rational_roots_via_frobenius_gcd: splitting stalled after 200 " *
+                      "attempts on a degree-$(degree(remaining)) squarefree-and-fully-split " *
+                      "factor -- unexpected for a prime field of this size")
+        end
+    end
+
+    return roots
+end
+
+# Helper used by the recursive-split branch above: identical splitting
+# logic, factored out so rational_roots_via_frobenius_gcd's main loop
+# doesn't need to recurse into itself with different argument shapes.
+# Returns plain Fp scalars, same as rational_roots_via_frobenius_gcd.
+function rational_roots_via_frobenius_gcd_split(remaining, p::UInt64)
+    Ux = parent(remaining)
+    x = gen(Ux)
+    Fp_field = base_ring(Ux)
+    roots = elem_type(Fp_field)[]
+
+    stack = [remaining]
+    attempts_since_progress = 0
+    while !isempty(stack)
+        cur = pop!(stack)
+        d = degree(cur)
+        if d <= 0
+            continue
+        elseif d == 1
+            c1 = coeff(cur, 1)
+            c0 = coeff(cur, 0)
+            push!(roots, -c0 * inv(c1))
+            continue
+        end
+
+        s = Fp_field(rand(0:(p - 1)))
+        shifted = cur(x + s)
+        half_pow = powermod(shifted, div(p - 1, 2), cur)
+        split_candidate = gcd(half_pow - one(Ux), cur)
+
+        if degree(split_candidate) >= 1 && degree(split_candidate) < d
+            attempts_since_progress = 0
+            push!(stack, split_candidate)
+            push!(stack, divexact(cur, split_candidate))
+        else
+            attempts_since_progress += 1
+            attempts_since_progress > 200 &&
+                error("rational_roots_via_frobenius_gcd_split: splitting stalled after " *
+                      "200 attempts on a degree-$d factor")
+            push!(stack, cur)
+        end
+    end
+
+    return roots
+end
+
+# Factors R(x4) over Fp and returns the list of Fp-rational roots coming
+# from R's LINEAR factors only (a degree>=2 irreducible factor over Fp
+# contributes roots only in an extension field, which this fast path does
+# not chase -- see the module docstring above on why that is an accepted
+# tradeoff here). Returns (roots, nothing) on success or (nothing, msg) if
+# R is zero, or (empty_vector, nothing) if R is a nonzero constant, or
+# (nothing, msg) if root-finding itself is unavailable/fails.
+#
+# NOTE: this deliberately does NOT call factor(R) -- see
+# rational_roots_via_frobenius_gcd's docstring for why (a Nemo bug on this
+# project's Fp = GF(prime) field type crashes factor() on large-degree
+# polynomials). gcd/powermod-based root finding sidesteps that entirely
+# and is also, incidentally, cheaper: it never attempts to find the
+# irreducible factorization of the non-Fp-rational part of R at all.
+function candidate_roots_from_resultant(R, Tbase)
+    if R === nothing
+        return (nothing, "candidate_roots_from_resultant: no resultant available")
+    end
+    if iszero(R)
+        return (nothing, "candidate_roots_from_resultant: resultant is identically zero " *
+                "(g0,g1 have infinitely many common x3-roots as x4 varies, or share a " *
+                "common factor -- see the common-factor diagnostic in section 4)")
+    end
+    if is_constant(R)
+        return (elem_type(base_ring(Tbase))[], nothing)  # no roots -- R is a nonzero constant
+    end
+
+    val, err = try_diag() do
+        Fp = base_ring(Tbase)
+        p = UInt64(characteristic(Fp))
+        rational_roots_via_frobenius_gcd(R, p)
+    end
+
+    if err !== nothing
+        return (nothing, "candidate_roots_from_resultant: root-finding failed: $err")
+    end
+    return (val, nothing)
+end
+
+# Specializes x4 = b into g0 and g1 (both elements of Fp[x3,x4]), producing
+# two univariate polynomials in x3 (over Fp), and returns their gcd h_b
+# together with its degree and (if h_b splits completely over Fp) its
+# roots. Uses the same exponent/coefficient-array-walk strategy as
+# rebuild_univariate_over_polyring rather than a generic evaluate() call,
+# since this runs once per candidate root and needs to stay cheap.
+function specialize_and_gcd(g0, g1, vars, b)
+    x3s, x4s = vars
+    Fp = base_ring(parent(g0))
+
+    val, err = try_diag() do
+        Ux3, x3u = polynomial_ring(Fp, :x3)
+
+        function specialize_to_x3(g)
+            gens_list = gens(parent(g))
+            idx3 = findfirst(==(x3s), gens_list)
+            idx4 = findfirst(==(x4s), gens_list)
+            (idx3 === nothing || idx4 === nothing) &&
+                error("specialize_and_gcd: could not locate x3/x4 generators")
+
+            acc = Dict{Int, elem_type(Fp)}()
+            for (e, c) in zip(AbstractAlgebra.exponent_vectors(g), AbstractAlgebra.coefficients(g))
+                d3 = e[idx3]
+                d4 = e[idx4]
+                term = c * b^d4
+                acc[d3] = haskey(acc, d3) ? acc[d3] + term : term
+            end
+
+            p = zero(Ux3)
+            for (d3, c) in acc
+                is_zero(c) && continue
+                p += c * x3u^d3
+            end
+            return p
+        end
+
+        p0 = specialize_to_x3(g0)
+        p1 = specialize_to_x3(g1)
+
+        if iszero(p0) || iszero(p1)
+            return (p0, p1, nothing, -1, nothing, false)
+        end
+
+        h = gcd(p0, p1)
+        deg_h = iszero(h) ? -1 : degree(h)
+
+        splits_completely = false
+        roots_h = nothing
+        if deg_h >= 1
+            rval, rerr = try_diag() do
+                p = UInt64(characteristic(Fp))
+                rs = rational_roots_via_frobenius_gcd(h, p)
+                (rs, length(rs) == deg_h)
+            end
+            if rerr === nothing
+                roots_h, splits_completely = rval
+            end
+        end
+
+        (p0, p1, h, deg_h, roots_h, splits_completely)
+    end
+
+    if err !== nothing
+        return (nothing, "specialize_and_gcd: failed at x4=$b: $err")
+    end
+    return (val, nothing)
+end
+
+# Orchestrates steps 1-3 of the resultant-then-gcd strategy for one pair
+# (g0,g1), reporting the diagnostics requested in the task: degree of the
+# resultant in x4, number of Fp-rational roots, per-root gcd degree /
+# splitting behaviour, and the total candidate (x3,x4) point count found.
+# Never raises on a failed resultant/factorization -- reports the failure
+# in the returned NamedTuple's `notes` field and continues with whatever
+# partial information is available, per the "no silent fallback" /
+# "report cleanly and continue" requirements.
+function solve_pair_via_resultant(g0, g1, vars, label::String)
+    notes = String[]
+    R, Tbase, err = resultant_x3(g0, g1, vars)
+
+    if err !== nothing
+        push!(notes, err)
+        return (label=label, resultant_degree=-1, n_roots=0,
+                candidates=Tuple{Any,Any}[], per_root=NamedTuple[], notes=notes)
+    end
+
+    resultant_degree = iszero(R) ? -1 : (is_constant(R) ? 0 : degree(R))
+
+    roots, rerr = candidate_roots_from_resultant(R, Tbase)
+    if rerr !== nothing
+        push!(notes, rerr)
+        return (label=label, resultant_degree=resultant_degree, n_roots=0,
+                candidates=Tuple{Any,Any}[], per_root=NamedTuple[], notes=notes)
+    end
+
+    per_root = NamedTuple[]
+    candidates = Tuple{Any,Any}[]
+
+    for b in roots
+        sg, serr = specialize_and_gcd(g0, g1, vars, b)
+        if serr !== nothing
+            push!(notes, serr)
+            push!(per_root, (x4=b, gcd_degree=-1, splits_completely=false,
+                              n_points=0, note=serr))
+            continue
+        end
+
+        (p0, p1, h, deg_h, roots_h, splits_completely) = sg
+
+        if deg_h <= 0
+            push!(per_root, (x4=b, gcd_degree=deg_h, splits_completely=false,
+                              n_points=0, note=nothing))
+            continue
+        end
+
+        if splits_completely && roots_h !== nothing
+            n_points = length(roots_h)
+            for a in roots_h
+                push!(candidates, (a, b))
+            end
+        else
+            # gcd is nonconstant but does not split completely over Fp (or
+            # factoring it failed) -- its degree is recorded above as the
+            # best proxy for the number of common roots (with multiplicity,
+            # over the algebraic closure), but no Fp-rational points are
+            # fabricated for it here.
+            n_points = 0
+        end
+
+        push!(per_root, (x4=b, gcd_degree=deg_h, splits_completely=splits_completely,
+                          n_points=n_points, note=nothing))
+    end
+
+    return (label=label, resultant_degree=resultant_degree, n_roots=length(roots),
+            candidates=candidates, per_root=per_root, notes=notes)
+end
+
+# Small formatting helper for solve_pair_via_resultant's return value,
+# kept separate from summarize_effective_fiber_degree so the per-pair
+# report layout is easy to change without touching the U/V orchestration.
+function print_pair_summary(r)
+    if r.resultant_degree < 0
+        println("      degree_x4(resultant) = (resultant unavailable or identically zero)")
+    else
+        println("      degree_x4(resultant) = ", r.resultant_degree)
+    end
+    println("      Fp-rational roots of resultant: ", r.n_roots)
+
+    for pr in r.per_root
+        if pr.note !== nothing
+            println("        x4=", pr.x4, ": ", pr.note)
+        else
+            splits_str = pr.gcd_degree <= 0 ? "n/a" : string(pr.splits_completely)
+            println("        x4=", pr.x4,
+                    ": gcd_degree(x3)=", pr.gcd_degree,
+                    ", splits completely over Fp? ", splits_str,
+                    ", Fp-rational points here=", pr.n_points)
+        end
+    end
+
+    println("      total candidate (x3,x4) points over Fp: ", length(r.candidates))
+
+    if !isempty(r.notes)
+        println("      notes:")
+        for n in r.notes
+            println("        - ", n)
+        end
+    end
+end
+
+# Reports the diagnostics for both U and V (and, if U produced any
+# candidate points, a cross-pair consistency count: how many of U's
+# candidate (x3,x4) points also satisfy V0=V1=0 there -- the "combined
+# four-polynomial consistency check" from the task). Returns the effective
+# fiber degree estimates (U, V, and the combined count) to fold into the
+# run-level summary. This is what section 8 now calls as the PRIMARY
+# effective-degree estimator, in place of the timed Groebner/FGLM
+# strategies below (which are still run, but only as a secondary
+# cross-check -- see the note above the old Section 8 block).
+function summarize_effective_fiber_degree(u0, u1, v0, v1, vars)
+    println("    [U] resultant-then-gcd (eliminating x3, over Fp[x4]):")
+    u_result = solve_pair_via_resultant(u0, u1, vars, "U")
+    print_pair_summary(u_result)
+
+    println()
+    println("    [V] resultant-then-gcd (eliminating x3, over Fp[x4]):")
+    v_result = solve_pair_via_resultant(v0, v1, vars, "V")
+    print_pair_summary(v_result)
+
+    combined_n = -1
+    if isempty(u_result.candidates)
+        combined_n = 0
+        println()
+        println("    [U+V] combined four-polynomial consistency check: skipped ",
+                "(no U-candidate points to check against V)")
+    else
+        println()
+        println("    [U+V] combined four-polynomial consistency check:")
+        combined_points = Tuple{Any,Any}[]
+        for (a, b) in u_result.candidates
+            ok, cerr = try_diag() do
+                iszero(evaluate(v0, [a, b])) && iszero(evaluate(v1, [a, b]))
+            end
+            if cerr !== nothing
+                println("      point (", a, ",", b, "): could not check against V (", cerr, ")")
+                continue
+            end
+            if ok
+                push!(combined_points, (a, b))
+            end
+        end
+        combined_n = length(combined_points)
+        println("      ", length(u_result.candidates),
+                " U-candidate point(s) checked against V0,V1; ",
+                combined_n, " also satisfy V0=V1=0")
+    end
+
+    println()
+    println("    Effective fiber degree estimate (Fp-rational candidate points): ",
+            "U=", length(u_result.candidates),
+            ", V=", length(v_result.candidates),
+            ", U∩V=", combined_n)
+
+    return (U=u_result, V=v_result, combined_n=combined_n)
+end
+
+# ---------------------------------------------------------------------------
+
+# Section 8 (OLD): timed Groebner/FGLM elimination with a HARD timeout.
+# No longer the primary estimator (see summarize_effective_fiber_degree
+# above) -- kept as an optional secondary cross-check, still run per
+# sample and reported in its own summary block, but the resultant-then-gcd
+# path above is what main() now leads with.
 
 # ---------------------------------------------------------------------------
 
@@ -1156,6 +1710,11 @@ function main()
     timed_results = Dict(name => Vector{Tuple{Float64,Int,String}}()
                          for (name, _) in timed_strategies)
 
+    # U/V/combined effective-fiber-degree counts from the resultant-then-gcd
+    # estimator, one entry per sample -- used for the CONSISTENT/INCONSISTENT
+    # style summary at the end, same as the old timed-strategy degrees.
+    resultant_fiber_degrees = (U=Int[], V=Int[], combined=Int[])
+
     for (i, (a, b)) in enumerate(samples)
         println("=" ^ 70)
         println("Sample ", i, "/", n_samples, ": x1=", a, ", x2=", b)
@@ -1224,7 +1783,17 @@ function main()
         end
 
         println()
-        println("  --- [FULL SYSTEM] 8. Timed elimination on <U0,U1,V0,V1> ---")
+        println("  --- [FULL SYSTEM] 8a. Effective fiber degree via resultant-then-gcd ---")
+        println("  (PRIMARY estimator -- no Groebner basis, FGLM, Hilbert series, or lex")
+        println("   conversion is used anywhere in this section)")
+        fiber_result = summarize_effective_fiber_degree(u0, u1, v0, v1, vars)
+        push!(resultant_fiber_degrees.U, length(fiber_result.U.candidates))
+        push!(resultant_fiber_degrees.V, length(fiber_result.V.candidates))
+        push!(resultant_fiber_degrees.combined, max(fiber_result.combined_n, 0))
+        flush(stdout)
+
+        println()
+        println("  --- [FULL SYSTEM] 8b. (secondary cross-check) Timed elimination on <U0,U1,V0,V1> ---")
         for (name, strategy) in timed_strategies
             print("    [", name, "] running in subprocess... ")
             flush(stdout)
@@ -1250,9 +1819,24 @@ function main()
     end
 
     println("=" ^ 70)
-    println("Summary (section 8 timed strategies only -- sections 1-7 are")
-    println("per-sample diagnostics, see above)")
+    println("Summary (section 8 only -- sections 1-7 are per-sample diagnostics,")
+    println("see above)")
     println("=" ^ 70)
+
+    println("resultant_then_gcd (PRIMARY estimator, section 8a):")
+    for (key, degs) in pairs(resultant_fiber_degrees)
+        if isempty(degs)
+            println("  ", key, ": no samples")
+        elseif all(==(degs[1]), degs)
+            println("  ", key, ": CONSISTENT at ", degs[1],
+                    " Fp-rational candidate point(s) across ", length(degs), " sample(s)")
+        else
+            println("  ", key, ": INCONSISTENT across samples: ", degs)
+        end
+    end
+    println()
+
+    println("timed Groebner/FGLM (secondary cross-check, section 8b):")
     for (name, _) in timed_strategies
         rows = timed_results[name]
         times = [r[1] for r in rows if !isnan(r[1])]
