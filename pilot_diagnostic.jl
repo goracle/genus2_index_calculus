@@ -186,11 +186,7 @@ function stream_specialize_native_to_poly(path::String, expected_prime::UInt64,
         read(coeff_io, UInt64)
 
         exp_offset = position(exp_io)
-
-        coeff_offset =
-            exp_offset +
-            ambient_dim * n_terms * sizeof(NATIVE_SUPPORT_EXP_TYPE)
-
+        coeff_offset = exp_offset + ambient_dim * n_terms * sizeof(NATIVE_SUPPORT_EXP_TYPE)
         seek(coeff_io, coeff_offset)
 
         alpha_pow_cache = Dict{Int,UInt64}(0 => UInt64(1))
@@ -223,13 +219,15 @@ function stream_specialize_native_to_poly(path::String, expected_prime::UInt64,
 
                 c = UInt64(coeff_buf[i]) % p
 
+                # Specialize x1 = alpha and x2 = beta.
                 a_pow = cached_pow(alpha_pow_cache, alpha_r, e1)
-                b_pow = cached_pow(beta_pow_cache, beta_r, e4)
+                b_pow = cached_pow(beta_pow_cache,  beta_r,  e2)
 
                 scale = modmul(a_pow, b_pow, p)
                 term  = modmul(c, scale, p)
 
-                key = (e2, e3)
+                # Keep x3, x4.
+                key = (e3, e4)
                 acc[key] = haskey(acc, key) ? modadd(acc[key], term, p) : term
             end
 
@@ -251,9 +249,9 @@ function stream_specialize_native_to_poly(path::String, expected_prime::UInt64,
     ctx = MPolyBuildCtx(S2)
     Fp = base_ring(S2)
 
-    for ((e2, e3), c_u) in acc
+    for ((e3, e4), c_u) in acc
         iszero(c_u) && continue
-        push_term!(ctx, Fp(c_u), [e2, e3])
+        push_term!(ctx, Fp(c_u), [e3, e4])
     end
 
     poly = finish(ctx)
@@ -265,6 +263,7 @@ function stream_specialize_native_to_poly(path::String, expected_prime::UInt64,
 
     return poly
 end
+
 # ---------------------------------------------------------------------------
 # Reconstruct an Oscar polynomial from a v2 native file's (support, coeffs)
 # ---------------------------------------------------------------------------
@@ -279,7 +278,7 @@ end
 function reconstruct_polynomial(R, supp::Vector{Vector{Int}}, coeffs::Vector{UInt64}, Fp)
     length(supp) == length(coeffs) ||
         error("reconstruct_polynomial: support has $(length(supp)) terms, " *
-              "coeffs has $(length(coeffs)) -- length mismatch")
+        "coeffs has $(length(coeffs)) -- length mismatch")
     n = length(supp)
     ctx = MPolyBuildCtx(R)
     println("    reconstructing polynomial from ", n, " terms...")
@@ -306,11 +305,11 @@ function load_polynomial(path::String, R, Fp, expected_prime::UInt64)
     (supp, coeffs, ambient_dim, file_prime) = load_native_support_with_coeffs(path)
     ambient_dim == 4 ||
         error("load_polynomial: $path has ambient_dim=$ambient_dim, expected 4 " *
-              "(x1,x2,x3,x4) -- this pilot script is hard-coded for the 4-variable case")
+        "(x1,x2,x3,x4) -- this pilot script is hard-coded for the 4-variable case")
     file_prime == expected_prime ||
         error("load_polynomial: $path was converted with prime=$file_prime, but " *
-              "$expected_prime was given on the command line -- these must match " *
-              "or the reconstructed polynomial's coefficients would be silently wrong")
+        "$expected_prime was given on the command line -- these must match " *
+        "or the reconstructed polynomial's coefficients would be silently wrong")
     return reconstruct_polynomial(R, supp, coeffs, Fp)
 end
 
@@ -373,7 +372,7 @@ function diag_sparsity(g, varname::String)
 
     println("    $varname: ", n_monomials, " monomials")
     println("      exponent bounding box: x2 in [$lo2,$hi2], x3 in [$lo3,$hi3] ",
-             "(box holds $box_size lattice points)")
+            "(box holds $box_size lattice points)")
     println("      full rectangle (every pair in box occurs)? ", is_full_rectangle)
     if !is_full_rectangle
         missing_pairs = Tuple{Int,Int}[]
@@ -382,7 +381,7 @@ function diag_sparsity(g, varname::String)
             length(missing_pairs) >= 12 && break
         end
         println("      missing from box: ", n_missing, " pairs",
-                 n_missing > 0 ? " (first few: $missing_pairs" * (n_missing > 12 ? ", ..." : "") * ")" : "")
+                n_missing > 0 ? " (first few: $missing_pairs" * (n_missing > 12 ? ", ..." : "") * ")" : "")
     end
 end
 
@@ -423,12 +422,12 @@ function diag_common_factor(g0, g1)
     end
     h = val
     println("    gcd(g0,g1): degree=", iszero(h) ? "undefined (one input is zero)" : total_degree(h),
-             ", monomials=", length(h), ", constant? ", is_unit(h))
+            ", monomials=", length(h), ", constant? ", is_unit(h))
     if !is_unit(h) && !iszero(h)
         println("    *** NONTRIVIAL COMMON FACTOR DETECTED -- g0 and g1 share a ",
-                 "component at this specialization point. This alone can explain ",
-                 "elimination blowup; consider dividing it out before eliminating, ",
-                 "or treat this sample point as non-generic. ***")
+                "component at this specialization point. This alone can explain ",
+                "elimination blowup; consider dividing it out before eliminating, ",
+                "or treat this sample point as non-generic. ***")
     end
 end
 
@@ -457,13 +456,13 @@ function diag_resultant_metadata(g0, g1, vars)
     deg_bound = d0x2 * d1x3 + d1x2 * d0x3
     println("    degree(g0,x2)=", d0x2, ", degree(g1,x2)=", d1x2)
     println("    Sylvester matrix dimension (eliminating x2): ", syl_dim, " x ", syl_dim,
-             " (", syl_dim^2, " entries if fully dense)")
+            " (", syl_dim^2, " entries if fully dense)")
     println("    classical bound on deg_x3(resultant): d0x2*d1x3 + d1x2*d0x3 = ",
-             d0x2, "*", d1x3, " + ", d1x2, "*", d0x3, " = ", deg_bound)
+            d0x2, "*", d1x3, " + ", d1x2, "*", d0x3, " = ", deg_bound)
     println("    Oscar has no public API (as far as this script can tell) to inspect ",
-             "the Sylvester matrix or a resultant degree estimate without either ",
-             "constructing the matrix or computing the resultant outright -- the ",
-             "bound above is a hand-computed classical estimate, not something Oscar reports.")
+            "the Sylvester matrix or a resultant degree estimate without either ",
+            "constructing the matrix or computing the resultant outright -- the ",
+            "bound above is a hand-computed classical estimate, not something Oscar reports.")
 end
 
 # --- [U] 6. Newton polygons ---
@@ -503,7 +502,7 @@ function diag_newton_polygon(g, varname::String)
     # otherwise it's straightforwardly not a rectangle.
     is_rect = n_verts == 4
     println("      complete rectangle? ", is_rect,
-             is_rect ? "" : " (has $n_verts vertices, not 4)")
+            is_rect ? "" : " (has $n_verts vertices, not 4)")
 end
 # --- 7. Projection / ideal diagnostics -------------------------------------
 
@@ -517,9 +516,9 @@ end
 # invariant.
 function diag_projection(g0, g1)
     println("    dimension / degree of <g0,g1> / Hilbert polynomial: SKIPPED -- ",
-             "Oscar computes all of these via a Groebner basis internally, so ",
-             "computing them here would just be the same hang moved earlier. ",
-             "See section 8 for the actual timed Groebner/resultant attempts.")
+            "Oscar computes all of these via a Groebner basis internally, so ",
+            "computing them here would just be the same hang moved earlier. ",
+            "See section 8 for the actual timed Groebner/resultant attempts.")
 end
 
 # ---------------------------------------------------------------------------
@@ -613,188 +612,6 @@ end
 # Works on whichever (g0,g1) pair it's handed -- the driver calls this once
 # per (U-pair, V-pair) x sample, so this function has no notion of "U" or
 # "V" at all, just "a bivariate pair".
-function run_worker(infile::String, outfile::String, strategy::String)
-    data = open(deserialize, infile)
-
-    prime = data[1]
-
-    Fp = GF(prime)
-    S2, (x2s, x3s) = polynomial_ring(Fp, [:x2, :x3])
-
-    function rebuild(supp, coef)
-        ctx = MPolyBuildCtx(S2)
-        for (e, c) in zip(supp, coef)
-            push_term!(ctx, Fp(c), e)
-        end
-        finish(ctx)
-    end
-
-    polys = MPolyRingElem[]
-    for i in 2:2:length(data)
-        push!(polys, rebuild(data[i], data[i+1]))
-    end
-
-    result = try
-
-        if strategy == "lex"
-            t0 = time()
-            I = ideal(S2, polys)
-            G = groebner_basis(I; ordering=lex(S2))
-            elapsed = time() - t0
-
-            univ = [g for g in G if degree(g, x2s) == 0]
-            deg = isempty(univ) ? -1 : maximum(total_degree(g) for g in univ)
-
-            (:ok,
-             elapsed,
-             deg,
-             "lex basis size=$(length(G)), generators=$(length(polys)), univariate-in-x3 generators=$(length(univ))")
-
-        elseif strategy == "grevlex"
-
-            t0 = time()
-            I = ideal(S2, polys)
-            G = groebner_basis(I; ordering=degrevlex(S2))
-            elapsed = time() - t0
-
-            (:ok,
-             elapsed,
-             -1,
-             "grevlex basis size=$(length(G)), generators=$(length(polys))")
-
-        elseif strategy == "grevlex_analysis"
-
-            fglm_cutoff = 20000
-
-            t0 = time()
-            I = ideal(S2, polys)
-            G = groebner_basis(I; ordering=degrevlex(S2))
-            gb_elapsed = time() - t0
-
-            lms = [leading_monomial(g; ordering=degrevlex(S2)) for g in G]
-            lm_exps = [collect(AbstractAlgebra.exponent_vectors(m))[1] for m in lms]
-
-            gen_reports = String[]
-            for (idx, g) in enumerate(G)
-                (ge2, ge3) = lm_exps[idx]
-                push!(gen_reports,
-                    "#$idx: deg=$(total_degree(g)), LM=(x2^$ge2*x3^$ge3), terms=$(length(g))")
-            end
-
-            max_deg_bound = maximum(total_degree(g) for g in G; init=0)
-            max_input_deg = maximum(total_degree(g) for g in polys)
-
-            search_bound = max(2 * max_deg_bound, 2 * max_input_deg)
-
-            function divides_some_lm(e2, e3)
-                for (a, b) in lm_exps
-                    if e2 >= a && e3 >= b
-                        return true
-                    end
-                end
-                return false
-            end
-
-            standard_monomials = Tuple{Int,Int}[]
-            box_exceeded = false
-
-            for e2 in 0:search_bound
-                for e3 in 0:search_bound
-                    if !divides_some_lm(e2, e3)
-                        push!(standard_monomials, (e2, e3))
-                        if length(standard_monomials) > fglm_cutoff
-                            box_exceeded = true
-                            break
-                        end
-                    end
-                end
-                box_exceeded && break
-            end
-
-            quotient_dim = box_exceeded ? -1 : length(standard_monomials)
-
-            hilbert_val, hilbert_err = try_diag() do
-                hilbert_series(I)
-            end
-
-            elapsed = time() - t0
-
-            info_parts = String[]
-            push!(info_parts,
-                "grevlex basis size=$(length(G)) (computed in $(round(gb_elapsed,digits=3))s)")
-            push!(info_parts,
-                "input generators=$(length(polys))")
-            push!(info_parts,
-                "leading monomial exponents=$(lm_exps)")
-            push!(info_parts,
-                "per-generator report: " * join(gen_reports, "; "))
-
-            if box_exceeded
-                push!(info_parts,
-                    "quotient dimension exceeded cutoff")
-            else
-                push!(info_parts,
-                    "quotient dimension=$quotient_dim")
-            end
-
-            if hilbert_err === nothing
-                push!(info_parts,
-                    "hilbert_series=$hilbert_val")
-            else
-                push!(info_parts,
-                    "hilbert_series: $hilbert_err")
-            end
-
-            if !box_exceeded &&
-               quotient_dim > 0 &&
-               quotient_dim <= fglm_cutoff
-
-                fglm_t0 = time()
-
-                fglm_result, fglm_err = try_diag() do
-                    fglm(I;
-                         start_ordering=degrevlex(S2),
-                         destination_ordering=lex(S2))
-                end
-
-                fglm_elapsed = time() - fglm_t0
-
-                if fglm_err === nothing
-                    univ = [g for g in fglm_result if degree(g, x2s) == 0]
-                    fglm_deg = isempty(univ) ? -1 :
-                        maximum(total_degree(g) for g in univ)
-
-                    push!(info_parts,
-                        "FGLM succeeded in $(round(fglm_elapsed,digits=3))s, " *
-                        "lex basis size=$(length(fglm_result)), " *
-                        "fiber_degree=$fglm_deg")
-                else
-                    push!(info_parts,
-                        "FGLM failed: $fglm_err")
-                end
-            else
-                push!(info_parts, "FGLM skipped")
-            end
-
-            deg_report = box_exceeded ? -1 : quotient_dim
-
-            (:ok,
-             elapsed,
-             deg_report,
-             join(info_parts, " | "))
-
-        else
-            error("run_worker: unknown strategy $strategy")
-        end
-
-    catch e
-        (:error, NaN, -1, sprint(showerror, e))
-    end
-
-    open(outfile, "w") do io
-        serialize(io, result)
-    end
-end
 
 
 
@@ -855,11 +672,441 @@ end
 # Main
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Entry point dispatch: this file is either run normally (main()) or, when
+# invoked with the WORKER_FLAG by run_with_timeout() above, as a one-shot
+# subprocess worker that runs a single elimination strategy and exits.
+# ---------------------------------------------------------------------------
+
+
+
+# ---------------------------------------------------------------------------
+
+# Small helper: run `f()`, returning (value, nothing) on success or
+
+# (nothing, "unavailable: <msg>") on any exception. Used throughout this
+
+# section so one missing/renamed Oscar function doesn't abort the others.
+
+# ---------------------------------------------------------------------------
+
+function try_diag(f)
+    try
+        return (f(), nothing)
+    catch e
+        return (nothing, "unavailable: $(sprint(showerror, e))")
+    end
+end
+
+# --- 1. Degree information -------------------------------------------------
+
+function diag_degrees(g, varname::String, vars)
+    println("    degree($varname, x3) = ", degree(g, vars[1]))
+    println("    degree($varname, x4) = ", degree(g, vars[2]))
+    println("    total_degree($varname) = ", total_degree(g))
+end
+
+# --- 2. Sparsity ------------------------------------------------------------
+
+function diag_sparsity(g, varname::String)
+    n_monomials = length(g)
+    exps = collect(AbstractAlgebra.exponent_vectors(g))
+    if isempty(exps)
+        println("    $varname is the zero polynomial -- no sparsity data")
+        return
+    end
+
+
+    e3s = [e[1] for e in exps]
+    e4s = [e[2] for e in exps]
+    lo3, hi3 = extrema(e3s)
+    lo4, hi4 = extrema(e4s)
+    box_size = (hi3 - lo3 + 1) * (hi4 - lo4 + 1)
+    present = Set{Tuple{Int,Int}}((e[1], e[2]) for e in exps)
+    n_missing = box_size - length(present)
+    is_full_rectangle = n_missing == 0
+
+    println("    $varname: ", n_monomials, " monomials")
+    println("      exponent bounding box: x3 in [$lo3,$hi3], x4 in [$lo4,$hi4] ",
+            "(box holds $box_size lattice points)")
+    println("      full rectangle (every pair in box occurs)? ", is_full_rectangle)
+    if !is_full_rectangle
+        missing_pairs = Tuple{Int,Int}[]
+        for e3 in lo3:hi3, e4 in lo4:hi4
+            (e3, e4) in present || push!(missing_pairs, (e3, e4))
+            length(missing_pairs) >= 12 && break
+        end
+        println("      missing from box: ", n_missing, " pairs",
+                n_missing > 0 ? " (first few: $missing_pairs" *
+                    (n_missing > 12 ? ", ..." : "") * ")" : "")
+    end
+
+
+end
+
+# --- 3. Squarefreeness ------------------------------------------------------
+
+function diag_squarefree(g, varname::String, vars)
+    val, err = try_diag() do
+        dg3 = derivative(g, vars[1])
+        dg4 = derivative(g, vars[2])
+        h = gcd(g, dg3)
+        h = gcd(h, dg4)
+        is_unit(h)
+    end
+    if err !== nothing
+        println("    $varname squarefree? ", err)
+    else
+        println("    $varname squarefree? ", val)
+    end
+end
+
+# --- 4. Common factor test --------------------------------------------------
+
+function diag_common_factor(g0, g1)
+    val, err = try_diag() do
+        gcd(g0, g1)
+    end
+    if err !== nothing
+        println("    gcd(g0,g1): ", err)
+        return
+    end
+    h = val
+    println("    gcd(g0,g1): degree=", iszero(h) ? "undefined (one input is zero)" : total_degree(h),
+            ", monomials=", length(h), ", constant? ", is_unit(h))
+    if !is_unit(h) && !iszero(h)
+        println("    *** NONTRIVIAL COMMON FACTOR DETECTED -- g0 and g1 share a ",
+                "component at this specialization point. This alone can explain ",
+                "elimination blowup; consider dividing it out before eliminating, ",
+                "or treat this sample point as non-generic. ***")
+    end
+end
+
+# --- 5. Resultant metadata only --------------------------------------------
+
+function diag_resultant_metadata(g0, g1, vars)
+    x3s, x4s = vars
+    d0x3, d1x3 = degree(g0, x3s), degree(g1, x3s)
+    d0x4, d1x4 = degree(g0, x4s), degree(g1, x4s)
+    syl_dim = d0x3 + d1x3
+    deg_bound = d0x3 * d1x4 + d1x3 * d0x4
+
+
+    println("    degree(g0,x3)=", d0x3, ", degree(g1,x3)=", d1x3)
+    println("    Sylvester matrix dimension (eliminating x3): ", syl_dim, " x ", syl_dim,
+            " (", syl_dim^2, " entries if fully dense)")
+    println("    classical bound on deg_x4(resultant): d0x3*d1x4 + d1x3*d0x4 = ",
+            d0x3, "*", d1x4, " + ", d1x3, "*", d0x4, " = ", deg_bound)
+    println("    Oscar has no public API (as far as this script can tell) to inspect ",
+            "the Sylvester matrix or a resultant degree estimate without either ",
+            "constructing the matrix or computing the resultant outright -- the ",
+            "bound above is a hand-computed classical estimate, not something Oscar reports.")
+
+
+end
+
+# --- 6. Newton polygons -----------------------------------------------------
+
+function diag_newton_polygon(g, varname::String)
+    val, err = try_diag() do
+        supp = support(g)
+        NP = newton_polytope(supp, 2; prefilter=true)
+        verts = vertices_of(NP)
+        nv = normalized_volume_of(NP)
+        lp_count = lattice_points_of(NP; method=:ehrhart)
+        (NP, verts, nv, lp_count)
+    end
+
+
+    if err !== nothing
+        println("    $varname Newton polygon: ", err)
+        return
+    end
+
+    (NP, verts, nv, lp_count) = val
+    n_verts = length(verts)
+
+    println("    $varname Newton polygon:")
+    println("      vertices (", n_verts, "): ", verts)
+    println("      normalized area: ", nv)
+    println("      lattice points: ", lp_count)
+
+    is_rect = n_verts == 4
+    println("      complete rectangle? ", is_rect,
+            is_rect ? "" : " (has $n_verts vertices, not 4)")
+
+
+end
+
+# --- 7. Projection / ideal diagnostics -------------------------------------
+
+function diag_projection(g0, g1)
+    println("    dimension / degree of <g0,g1> / Hilbert polynomial: SKIPPED -- ",
+            "Oscar computes all of these via a Groebner basis internally, so ",
+            "computing them here would just be the same hang moved earlier. ",
+            "See section 8 for the actual timed Groebner attempts.")
+end
+
+# ---------------------------------------------------------------------------
+
+# Section 8: timed elimination with a HARD timeout.
+
+# ---------------------------------------------------------------------------
+
+using Serialization
+
+const WORKER_FLAG = "--diagnostic-worker"
+
+function coeff_to_u64(c)
+    try
+        return UInt64(Int(c))
+    catch
+        return UInt64(lift(ZZ, c))
+    end
+end
+
+function serialize_system_for_worker(path, polys::AbstractVector, prime::UInt64)
+    data = Any[prime]
+
+
+    for g in polys
+        supp = collect(AbstractAlgebra.exponent_vectors(g))
+        coef = UInt64[coeff_to_u64(c) for c in AbstractAlgebra.coefficients(g)]
+        push!(data, supp)
+        push!(data, coef)
+    end
+
+    open(path, "w") do io
+        serialize(io, Tuple(data))
+    end
+
+
+end
+
+function run_worker(infile::String, outfile::String, strategy::String)
+    data = open(deserialize, infile)
+
+
+    prime = data[1]
+    Fp = GF(prime)
+    S2, (x3s, x4s) = polynomial_ring(Fp, [:x3, :x4])
+
+    function rebuild(supp, coef)
+        ctx = MPolyBuildCtx(S2)
+        for (e, c) in zip(supp, coef)
+            push_term!(ctx, Fp(c), e)
+        end
+        finish(ctx)
+    end
+
+    polys = MPolyRingElem[]
+    for i in 2:2:length(data)
+        push!(polys, rebuild(data[i], data[i+1]))
+    end
+
+    result = try
+        if strategy == "lex"
+            t0 = time()
+            I = ideal(S2, polys)
+            G = groebner_basis(I; ordering=lex(S2))
+            elapsed = time() - t0
+
+            univ = [g for g in G if degree(g, x3s) == 0]
+            deg = isempty(univ) ? -1 : maximum(total_degree(g) for g in univ)
+
+            (:ok,
+             elapsed,
+             deg,
+             "lex basis size=$(length(G)), generators=$(length(polys)), univariate-in-x4 generators=$(length(univ))")
+
+        elseif strategy == "grevlex_analysis"
+            fglm_cutoff = 20000
+
+            t0 = time()
+            I = ideal(S2, polys)
+            G = groebner_basis(I; ordering=degrevlex(S2))
+            gb_elapsed = time() - t0
+
+            lms = [leading_monomial(g; ordering=degrevlex(S2)) for g in G]
+            lm_exps = [collect(AbstractAlgebra.exponent_vectors(m))[1] for m in lms]
+
+            gen_reports = String[]
+            for (idx, g) in enumerate(G)
+                (ge3, ge4) = lm_exps[idx]
+                push!(gen_reports,
+                      "#$idx: deg=$(total_degree(g)), LM=(x3^$ge3*x4^$ge4), terms=$(length(g))")
+            end
+
+            max_deg_bound = maximum(total_degree(g) for g in G; init=0)
+            max_input_deg = maximum(total_degree(g) for g in polys)
+            search_bound = max(2 * max_deg_bound, 2 * max_input_deg)
+
+            function divides_some_lm(e3, e4)
+                for (a, b) in lm_exps
+                    if e3 >= a && e4 >= b
+                        return true
+                    end
+                end
+                return false
+            end
+
+            standard_monomials = Tuple{Int,Int}[]
+            box_exceeded = false
+
+            for e3 in 0:search_bound
+                for e4 in 0:search_bound
+                    if !divides_some_lm(e3, e4)
+                        push!(standard_monomials, (e3, e4))
+                        if length(standard_monomials) > fglm_cutoff
+                            box_exceeded = true
+                            break
+                        end
+                    end
+                end
+                box_exceeded && break
+            end
+
+            quotient_dim = box_exceeded ? -1 : length(standard_monomials)
+
+            hilbert_val, hilbert_err = try_diag() do
+                hilbert_series(I)
+            end
+
+            elapsed = time() - t0
+
+            info_parts = String[]
+            push!(info_parts,
+                  "grevlex basis size=$(length(G)) (computed in $(round(gb_elapsed,digits=3))s)")
+            push!(info_parts,
+                  "input generators=$(length(polys))")
+            push!(info_parts,
+                  "leading monomial exponents=$(lm_exps)")
+            push!(info_parts,
+                  "per-generator report: " * join(gen_reports, "; "))
+
+            if box_exceeded
+                push!(info_parts, "quotient dimension exceeded cutoff")
+            else
+                push!(info_parts, "quotient dimension=$quotient_dim")
+            end
+
+            if hilbert_err === nothing
+                push!(info_parts, "hilbert_series=$hilbert_val")
+            else
+                push!(info_parts, "hilbert_series: $hilbert_err")
+            end
+
+            if !box_exceeded &&
+                quotient_dim > 0 &&
+                quotient_dim <= fglm_cutoff
+
+                fglm_t0 = time()
+
+                fglm_result, fglm_err = try_diag() do
+                    fglm(I;
+                         start_ordering=degrevlex(S2),
+                         destination_ordering=lex(S2))
+                end
+
+                fglm_elapsed = time() - fglm_t0
+
+                if fglm_err === nothing
+                    univ = [g for g in fglm_result if degree(g, x3s) == 0]
+                    fglm_deg = isempty(univ) ? -1 :
+                        maximum(total_degree(g) for g in univ)
+
+                    push!(info_parts,
+                          "FGLM succeeded in $(round(fglm_elapsed,digits=3))s, " *
+                              "lex basis size=$(length(fglm_result)), " *
+                              "fiber_degree=$fglm_deg")
+                else
+                    push!(info_parts, "FGLM failed: $fglm_err")
+                end
+            else
+                push!(info_parts, "FGLM skipped")
+            end
+
+            deg_report = box_exceeded ? -1 : quotient_dim
+
+            (:ok,
+             elapsed,
+             deg_report,
+             join(info_parts, " | "))
+
+        else
+            error("run_worker: unknown strategy $strategy")
+        end
+    catch e
+        (:error, NaN, -1, sprint(showerror, e))
+    end
+
+    open(outfile, "w") do io
+        serialize(io, result)
+    end
+
+end
+
+function run_with_timeout(polys::AbstractVector,
+                          prime::UInt64,
+                          strategy::String,
+                          timeout_secs::Real,
+                          script_path::String)
+
+    tmpdir = mktempdir()
+    infile = joinpath(tmpdir, "in.jls")
+    outfile = joinpath(tmpdir, "out.jls")
+
+    try
+        serialize_system_for_worker(infile, polys, prime)
+
+        cmd = `julia --startup-file=no $script_path $WORKER_FLAG $infile $outfile $strategy`
+        proc = run(pipeline(cmd; stdout=devnull, stderr=devnull); wait=false)
+
+        deadline = time() + timeout_secs
+        while process_running(proc) && time() < deadline
+            sleep(0.2)
+        end
+
+        if process_running(proc)
+            try
+                kill(proc, Base.SIGKILL)
+            catch
+            end
+            try
+                wait(proc)
+            catch
+            end
+            return (NaN, -1, "TIMEOUT (exceeded $(timeout_secs)s, subprocess killed)")
+        end
+
+        if !isfile(outfile)
+            return (NaN, -1,
+                    "worker exited without producing a result (crashed or killed externally)")
+        end
+
+        status, elapsed, deg, info = open(deserialize, outfile)
+        if status == :error
+            return (NaN, -1, "ERROR: $info")
+        end
+
+        return (elapsed, deg, info)
+    finally
+        rm(tmpdir; recursive=true, force=true)
+    end
+
+end
+
+# ---------------------------------------------------------------------------
+
+# Main
+
+# ---------------------------------------------------------------------------
+
 function main()
     length(ARGS) >= 5 ||
         error("pilot_diagnostic.jl: usage: julia pilot_diagnostic.jl " *
-              "<U0.native> <U1.native> <V0.native> <V1.native> <prime> " *
-              "[n_samples] [seed] [timeout_secs]")
+        "<U0.native> <U1.native> <V0.native> <V1.native> <prime> " *
+        "[n_samples] [seed] [timeout_secs]")
 
     u0_path = ARGS[1]
     u1_path = ARGS[2]
@@ -890,8 +1137,8 @@ function main()
     println()
 
     Fp = GF(prime)
-    S2, (y2, y3) = polynomial_ring(Fp, [:x2, :x3])
-    vars = (y2, y3)
+    S2, (y3, y4) = polynomial_ring(Fp, [:x3, :x4])
+    vars = (y3, y4)
 
     rng = Random.MersenneTwister(seed)
     samples = Tuple{elem_type(Fp), elem_type(Fp)}[]
@@ -903,7 +1150,7 @@ function main()
 
     timed_strategies = [
         ("grevlex_analysis", "grevlex_analysis"),
-        ("resultant_x2",     "resultant"),
+        ("lex",              "lex"),
     ]
 
     timed_results = Dict(name => Vector{Tuple{Float64,Int,String}}()
@@ -911,7 +1158,7 @@ function main()
 
     for (i, (a, b)) in enumerate(samples)
         println("=" ^ 70)
-        println("Sample ", i, "/", n_samples, ": x1=", a, ", x4=", b)
+        println("Sample ", i, "/", n_samples, ": x1=", a, ", x2=", b)
         println("=" ^ 70)
         flush(stdout)
 
@@ -1038,16 +1285,39 @@ function main()
     println("(especially #4, the common-factor test) to look for structural reasons")
     println("elimination might be harder than a generic system of these degrees,")
     println("before concluding the systems are simply at/near the Bezout bound.")
+
 end
+
 # ---------------------------------------------------------------------------
-# Entry point dispatch: this file is either run normally (main()) or, when
-# invoked with the WORKER_FLAG by run_with_timeout() above, as a one-shot
-# subprocess worker that runs a single elimination strategy and exits.
+
+# Entry point dispatch
+
 # ---------------------------------------------------------------------------
 
 if length(ARGS) >= 1 && ARGS[1] == WORKER_FLAG
-    # ARGS = ["--diagnostic-worker", infile, outfile, strategy]
     run_worker(ARGS[2], ARGS[3], ARGS[4])
 else
     main()
 end
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
