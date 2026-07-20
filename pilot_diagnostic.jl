@@ -459,6 +459,158 @@ function run_worker(infile::String, outfile::String, strategy::String)
             info = iszero(R_x3) ? "resultant is IDENTICALLY ZERO (common factor in x2)" :
                                   "resultant degree in x3 = $deg"
             (:ok, elapsed, deg, info)
+        elseif strategy == "numerical_resultant"
+            # Double Specialization (Numerical Resultant) strategy.
+            #
+            # Rationale: g0, g1 are dense bivariate degree-64 polynomials,
+            # so both a symbolic resultant and a lex Groebner basis suffer
+            # catastrophic expression swell (see "resultant"/"lex" above,
+            # which time out or blow up). Instead of ever forming R(x3) =
+            # Res_x2(g0,g1) as a symbolic polynomial, this strategy treats
+            # it as a black-box function: for each scalar test point
+            # gamma in Fp, specialize x3=gamma, form the CONCRETE Sylvester
+            # matrix (entries are scalars in Fp, not polynomials) for the
+            # two resulting univariate-in-x2 polynomials, and take its
+            # determinant mod p. det(Syl(g0(x2,gamma), g1(x2,gamma))) =
+            # R(gamma), so this recovers point-values of the resultant at
+            # O(D^3) cost per point instead of ever building R symbolically.
+            #
+            # IMPORTANT SCOPE NOTE: this branch, as specified, reports
+            # whether R(x3) is identically zero across the sampled points
+            # and how long the scalar evaluations take -- it does NOT
+            # interpolate the D_bound+1 (gamma, R(gamma)) pairs back into
+            # the resultant polynomial itself. Interpolation (e.g. Lagrange
+            # interpolation over Fp, or a structured evaluation/interp
+            # scheme) is the natural next step if the actual resultant
+            # polynomial or its exact degree is wanted -- it is NOT
+            # implemented here since it wasn't part of the requested
+            # sub-tasks, and doing it carelessly on 8193 points would
+            # reintroduce real cost. If R turns out nonzero at points, this
+            # strategy confirms that and times the evaluation, nothing more.
+            d0x2, d1x2 = degree(g0, x2s), degree(g1, x2s)
+            d0x3, d1x3 = degree(g0, x3s), degree(g1, x3s)
+            d_bound = d0x2 * d1x3 + d1x2 * d0x3
+            syl_dim = d0x2 + d1x2  # 64+64 = 128 for the systems seen so far
+
+            n_points = d_bound + 1
+            t0 = time()
+
+            # Univariate polynomial ring over Fp, used to hold
+            # g_i(x2, gamma) as an actual univariate poly so its
+            # coefficients can be read off directly for the Sylvester
+            # matrix rows, rather than hand-rolling coefficient extraction
+            # against S2's bivariate representation.
+            Ux, xvar = polynomial_ring(Fp, "x")
+
+            # Builds the (d0+d1) x (d0+d1) Sylvester matrix over Fp for two
+            # univariate polynomials a (degree da) and b (degree db) in x2,
+            # via the standard shifted-row construction.
+            function sylvester_matrix_fp(a, da::Int, b, db::Int)
+                n = da + db
+                M = zero_matrix(Fp, n, n)
+                ca = [coeff(a, k) for k in 0:da]  # ca[1] = coeff of x^0, ..., ca[da+1] = leading
+                cb = [coeff(b, k) for k in 0:db]
+                # Row i (1..db): shifted copy of a's coefficients (highest
+                # degree first), offset by (i-1).
+                for i in 1:db
+                    for k in 0:da
+                        M[i, i + (da - k)] = ca[k + 1]
+                    end
+                end
+                # Row db+i (1..da): shifted copy of b's coefficients.
+                for i in 1:da
+                    for k in 0:db
+                        M[db + i, i + (db - k)] = cb[k + 1]
+                    end
+                end
+                return M
+            end
+
+            zero_count = 0
+            nonzero_count = 0
+            first_nonzero = nothing
+            eval_errors = 0
+            first_error = nothing
+
+            # Explicit, version-independent specialization of a bivariate
+            # g (in x2,x3) at x3=gamma into a univariate polynomial in x2
+            # over Fp: walk g's terms, accumulate coeff * gamma^e3 into
+            # the x2^e2 slot of a dense coefficient vector, then build the
+            # univariate poly from that vector. Deliberately avoids
+            # relying on any particular evaluate()/specialize() method
+            # signature across Oscar/AbstractAlgebra versions -- see the
+            # note above this branch for why.
+            function specialize_x3_to_univariate(g, deg_x2::Int, gamma)
+                coeffs_by_e2 = [Fp(0) for _ in 0:deg_x2]
+                for (exps, c) in zip(AbstractAlgebra.exponent_vectors(g), AbstractAlgebra.coefficients(g))
+                    e2, e3 = exps[1], exps[2]
+                    coeffs_by_e2[e2 + 1] += c * gamma^e3
+                end
+                return Ux(coeffs_by_e2)
+            end
+
+            for i in 0:(n_points - 1)
+                gamma = Fp(i)
+                try
+                    # 1. Evaluate g0, g1 at x3=gamma, yielding univariate
+                    #    polys in x2 over Fp.
+                    g0_at = specialize_x3_to_univariate(g0, d0x2, gamma)
+                    g1_at = specialize_x3_to_univariate(g1, d1x2, gamma)
+
+                    # 2. Construct the concrete syl_dim x syl_dim Sylvester
+                    #    matrix over Fp.
+                    M = sylvester_matrix_fp(g0_at, d0x2, g1_at, d1x2)
+                    size(M, 1) == syl_dim || error("Sylvester matrix dimension mismatch: " *
+                                                    "got $(size(M,1)), expected $syl_dim")
+
+                    # 3. Scalar determinant mod p.
+                    dval = det(M)
+
+                    if iszero(dval)
+                        zero_count += 1
+                    else
+                        nonzero_count += 1
+                        if first_nonzero === nothing
+                            first_nonzero = (i, gamma)
+                        end
+                    end
+                catch e
+                    # Per the project's error-handling convention: catch
+                    # cleanly here, but do NOT swallow the error silently
+                    # -- record it and re-raise (via the outer `try` around
+                    # the whole strategy dispatch) so it is reported
+                    # through the worker's (:error, ...) result rather than
+                    # being counted as an ordinary zero/nonzero point,
+                    # which would misrepresent the diagnostic.
+                    eval_errors += 1
+                    if first_error === nothing
+                        first_error = sprint(showerror, e)
+                    end
+                    error("numerical_resultant: evaluation failed at sample point " *
+                          "index=$i, gamma=$gamma: $(sprint(showerror, e))")
+                end
+            end
+            elapsed = time() - t0
+
+            if nonzero_count == 0
+                info = "ALL $n_points sampled determinants are IDENTICALLY ZERO -- " *
+                       "potential structural base-field component (R(x3) may vanish " *
+                       "identically, or g0/g1 share a factor not caught by the earlier " *
+                       "gcd check at this specialization); see section 4 (common factor " *
+                       "test) for this sample point"
+                (:ok, elapsed, -1, info)
+            else
+                fn_str = first_nonzero === nothing ? "n/a" :
+                         "index=$(first_nonzero[1]), gamma=$(first_nonzero[2])"
+                info = "numerical Sylvester evaluation succeeded: $n_points points sampled " *
+                       "($syl_dim x $syl_dim scalar determinants over Fp), " *
+                       "nonzero=$nonzero_count, zero=$zero_count, first nonzero at $fn_str " *
+                       "-- NOTE: this confirms R(x3) is not identically zero and times the " *
+                       "scalar evaluation; it does NOT interpolate these point-values back " *
+                       "into the resultant polynomial or its degree (see comment above this " *
+                       "branch for why interpolation is a separate follow-up step)"
+                (:ok, elapsed, -1, info)
+            end
         elseif strategy == "grevlex_analysis"
             # Per the pilot diagnostic finding: grevlex Groebner bases are
             # cheap (~2.4s) while lex times out. This strategy stays in
@@ -708,9 +860,9 @@ function main()
     # its fixed API call (variable index instead of variable element) as an
     # independent cross-check on the same fiber degree.
     timed_strategies = [
-        ("grevlex_analysis", "grevlex_analysis"),
-        ("grevlex",           "grevlex"),
-        ("resultant_x2",       "resultant"),
+        ("grevlex_analysis",    "grevlex_analysis"),
+        ("numerical_resultant", "numerical_resultant"),
+        ("resultant_x2",        "resultant"),
     ]
     timed_results = Dict(name => Vector{Tuple{Float64,Int,String}}() for (name, _) in timed_strategies)
 
