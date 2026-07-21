@@ -1,5 +1,6 @@
 *.~*
 *.zip
+*.log
 *.bin
 tmp/*
 *.h5
