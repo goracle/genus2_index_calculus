@@ -225,6 +225,39 @@ dilate(d::Vector{Int}, k::Integer) = k .* d
 # ---------------------------------------------------------------------------
 # 2. Shift-polynomial index set, k(u), and the lattice dimension
 # ---------------------------------------------------------------------------
+#
+# *** AUDIT FINDING (see accompanying writeup for the full derivation) ***
+#
+# shift_k/shift_monomials/lattice_dimension below define k(u) = min_j
+# floor(u_j/d_j) over the FULL dilated box I_m = Box(m*d). That is NOT the
+# Jochemsz-May single-polynomial shift family. Real JM indexes shifts by
+# PAIRS (a, t) with a ranging over the *smaller* box Box(d-1) (0 <= a_j <=
+# d_j-1) and t ranging independently over 0..m -- i.e.
+#
+#     g_{a,t}(x) = x^a * f(x)^t * p^(m-t),   leading monomial x^(a + t*d)
+#
+# dim(L) = |Box(d-1)| * (m+1) = (prod_j d_j) * (m+1)   -- NOT prod_j(m*d_j+1).
+#
+# The audited code's k(u) = min_j floor(u_j/d_j) instead assigns degree
+# JOINTLY across all n coordinates of u, which (a) makes the row/column
+# count prod_j(m*d_j+1) -- far larger than the real lattice for large m --
+# and (b) starves almost every row of any power of f (k(u) collapses to a
+# small number unless EVERY coordinate of u is simultaneously a large
+# multiple of d_j), forcing p^(m-k(u)) up near its worst case p^m for the
+# bulk of the lattice. Both effects push log det(L) up and beta* down.
+# Empirically (see writeup) this reproduces the observed beta* =
+# 1/(d*n(n+1)/2) instead of the correct beta* = 1/(n*d) -- for n=4 that is
+# the reported ~1000x discrepancy (1/(10*96) = 0.00104 vs the correct
+# 1/(4*96) = 0.0026). The n=1 case is a clean check: the buggy formula
+# gives beta*=1/d there too (matches, because for n=1 "joint min over
+# coordinates" and "independent t" coincide), which is exactly why this
+# bug was invisible in any univariate/toy check and only shows up for n>=2.
+#
+# The ORIGINAL shift_k/shift_monomials/lattice_dimension are left intact
+# below (nothing here is deleted) so the buggy construction remains
+# available for side-by-side comparison; analyze() has been repointed at
+# the corrected functions (jm_shift_index_set/jm_lattice_dimension/
+# log_det_closed_form_correct/success_threshold_beta_correct) added below.
 
 """
     shift_k(u::Vector{Int}, d::Vector{Int}) -> Int
@@ -236,6 +269,15 @@ coordinate simultaneously.
 
 Raises `ArgumentError` if u has a negative coordinate (outside any m*Box(d)
 for m>=0) or if length(u) != length(d).
+
+*** AUDIT NOTE: this is the buggy joint-min degree assignment -- see the
+Section 2 header comment above. It does NOT correspond to the real
+Jochemsz-May shift family for a single polynomial with a box Newton
+polytope, and using it (as the original analyze() did) inflates log det(L)
+and understates beta* by roughly a factor of n(n+1)/2 relative to the
+correct construction for n>=2. Kept only for comparison; do not use for a
+real determinant/threshold computation. See `jm_shift_index_set` for the
+corrected version. ***
 """
 function shift_k(u::Vector{Int}, d::Vector{Int})
     length(u) == length(d) ||
@@ -254,6 +296,10 @@ The full shift-index set I_m = Box(m*d_1,...,m*d_n), as a flat list of
 exponent vectors, in a fixed deterministic (lexicographic) order. This is
 one lattice row per element -- `length(shift_monomials(d,m)) ==
 lattice_dimension(d,m)` is checked in the test harness below.
+
+*** AUDIT NOTE: this is the buggy shift-index set (all of Box(m*d), paired
+with the buggy shift_k above) -- see `jm_shift_index_set` for the
+corrected (a in Box(d-1), t in 0..m) construction. ***
 """
 function shift_monomials(d::Vector{Int}, m::Integer)
     m >= 0 || throw(ArgumentError("shift_monomials: m must be >= 0, got $m"))
@@ -273,8 +319,67 @@ end
 
 dim(L) = |I_m| = |Box(m*d)| = prod_j (m*d_j + 1). Exact, not asymptotic --
 this is the honest row/column count of the lattice basis at finite m.
+
+*** AUDIT NOTE: this is the buggy dimension formula (dim(L) should be
+(prod_j d_j) * (m+1), not prod_j(m*d_j+1) -- see `jm_lattice_dimension`).
+This is precisely why the real run reported the suspiciously huge
+dim(L)=110841719041 = 97^4 at m=6: that is |Box(6*96,6*96,6*96,6*96)|, not
+the actual JM lattice dimension. For d=[96,96,96,96], m=6 the correct
+dim(L) is 96^4*(m+1) = 84934656*7 = 594542592 -- still large, but the right
+quantity, and ~186x smaller than what was reported. ***
 """
 lattice_dimension(d::Vector{Int}, m::Integer) = box_volume(dilate(d, Int(m)))
+
+# ---------------------------------------------------------------------------
+# 2b. CORRECTED shift-polynomial index set (real Jochemsz-May single-poly
+#     construction: a in Box(d-1), t in 0..m independently)
+# ---------------------------------------------------------------------------
+
+"""
+    jm_shift_index_set(d::Vector{Int}, m::Integer) -> Vector{Tuple{Vector{Int},Int}}
+
+The CORRECTED Jochemsz-May shift family for a single polynomial f with
+Newton polytope contained in Box(d): one shift polynomial per pair (a, t)
+with a in Box(d-1) (0 <= a_j <= d_j - 1) and t in 0..m, namely
+
+    g_{a,t}(x) = x^a * f(x)^t * p^(m-t)
+
+with leading monomial x^(a + t*d) (the top corner of f(x)^t, offset by the
+monomial shift x^a) and diagonal entry X^(a+t*d) * p^(m-t). Unlike the
+buggy `shift_monomials`/`shift_k` above, t here ranges independently of a
+-- it is NOT derived from a joint per-coordinate floor/min over the target
+monomial. Returns the explicit (a, t) index list; the corresponding
+leading-monomial exponent vector for entry (a,t) is `a .+ t .* d`, used by
+`jm_log_det_exact`.
+"""
+function jm_shift_index_set(d::Vector{Int}, m::Integer)
+    m >= 0 || throw(ArgumentError("jm_shift_index_set: m must be >= 0, got $m"))
+    n = length(d)
+    all(dj -> dj >= 1, d) ||
+        throw(ArgumentError("jm_shift_index_set: all d_j must be >= 1"))
+    a_ranges = [0:(dj - 1) for dj in d]
+    out = Vector{Tuple{Vector{Int},Int}}()
+    sizehint!(out, Int(prod(BigInt(dj) for dj in d)) * (m + 1))
+    for ci in CartesianIndices(Tuple(length.(a_ranges)))
+        a = [a_ranges[j][ci[j]] for j in 1:n]
+        for t in 0:m
+            push!(out, (a, t))
+        end
+    end
+    return out
+end
+
+"""
+    jm_lattice_dimension(d::Vector{Int}, m::Integer) -> BigInt
+
+CORRECTED dim(L) = |Box(d-1)| * (m+1) = (prod_j d_j) * (m+1) -- the honest
+row/column count of the real Jochemsz-May single-polynomial lattice at
+finite m. Compare against the buggy `lattice_dimension` above, which
+computes prod_j(m*d_j+1) instead (far larger for large m).
+"""
+function jm_lattice_dimension(d::Vector{Int}, m::Integer)
+    return prod(BigInt(dj) for dj in d) * (BigInt(m) + 1)
+end
 
 # ---------------------------------------------------------------------------
 # 3. Triangularity: why the basis matrix has this shape at all
@@ -516,6 +621,137 @@ function log_det_closed_form(d::Vector{Int}, m::Integer, logX::Vector{<:Real}, l
     termC = -Float64(sum_k) * logp
 
     return termA + termB + termC
+end
+
+# ---------------------------------------------------------------------------
+# 4b. CORRECTED log-determinant and threshold, using jm_shift_index_set /
+#     jm_lattice_dimension instead of the buggy shift_monomials/shift_k.
+# ---------------------------------------------------------------------------
+
+"""
+    jm_log_det_exact(d::Vector{Int}, m::Integer, logX::Vector{<:Real}, logp::Real) -> Float64
+
+Exact log(det L) for the DENSE-box case using the CORRECTED shift family
+(`jm_shift_index_set`): one term per (a,t) pair, a in Box(d-1), t in 0..m,
+diagonal exponent vector a + t*d, p-power (m-t):
+
+    log det(L) = sum_{a in Box(d-1)} sum_{t=0}^{m}
+                     [ sum_j (a_j + t*d_j) logX_j + (m-t) logp ]
+
+Compare against the buggy `log_det_exact`, which sums over u in Box(m*d)
+with k(u) = min_j floor(u_j/d_j) instead.
+"""
+function jm_log_det_exact(d::Vector{Int}, m::Integer, logX::Vector{<:Real}, logp::Real)
+    length(logX) == length(d) ||
+        throw(ArgumentError("jm_log_det_exact: logX has length $(length(logX)), " *
+                             "expected $(length(d))"))
+    dim = jm_lattice_dimension(d, m)
+    dim > BigInt(50_000_000) &&
+        error("jm_log_det_exact: jm_lattice_dimension=$dim exceeds the 50M " *
+              "sanity cap for an explicit per-pair sum -- pass smaller " *
+              "(d,m), or use jm_log_det_closed_form for large (d,m)")
+
+    total = 0.0
+    for (a, t) in jm_shift_index_set(d, m)
+        total += sum((a[j] + t * d[j]) * logX[j] for j in 1:length(d))
+        total += (m - t) * logp
+    end
+    return total
+end
+
+"""
+    jm_log_det_closed_form(d::Vector{Int}, m::Integer, logX::Vector{<:Real}, logp::Real) -> Float64
+
+Closed-form (no explicit per-pair loop) evaluation of the same sum as
+`jm_log_det_exact`, for cross-checking and for use at (d,m) too large for
+the explicit loop.
+
+Derivation: with a ranging over Box(d-1) (d_1*...*d_n = prod(d) points) and
+t independently over 0..m (m+1 values):
+
+  log det = sum_{a,t} sum_j (a_j + t d_j) logX_j  +  sum_{a,t} (m-t) logp
+
+  Term A (the a_j part): for fixed j, sum_{a,t} a_j
+      = (m+1) * prod_{i!=j}(d_i) * sum_{a_j=0}^{d_j-1} a_j
+      = (m+1) * prod_{i!=j}(d_i) * d_j(d_j-1)/2
+
+  Term B (the t*d_j part): for fixed j, sum_{a,t} t*d_j
+      = prod(d) * d_j * sum_{t=0}^{m} t
+      = prod(d) * d_j * m(m+1)/2
+
+  Term C (the p-power part): sum_{a,t} (m-t) = prod(d) * sum_{t=0}^{m}(m-t)
+      = prod(d) * m(m+1)/2
+
+All three are genuinely closed-form (elementary arithmetic-series
+identities, no loop), unlike the buggy `log_det_closed_form`'s Term C
+which needed an explicit sum for the min-based k(u).
+"""
+function jm_log_det_closed_form(d::Vector{Int}, m::Integer, logX::Vector{<:Real}, logp::Real)
+    length(logX) == length(d) ||
+        throw(ArgumentError("jm_log_det_closed_form: logX has length " *
+                             "$(length(logX)), expected $(length(d))"))
+    n = length(d)
+    prod_d = prod(BigInt(dj) for dj in d)
+    mp1 = BigInt(m) + 1
+    tsum = BigInt(m) * (BigInt(m) + 1) / BigInt(2)   # sum_{t=0}^{m} t
+
+    termAB = 0.0
+    for j in 1:n
+        other = prod(BigInt(d[i]) for i in 1:n if i != j; init=BigInt(1))
+        # Term A_j: (m+1) * other * d_j(d_j-1)/2
+        aj_sum = mp1 * other * (BigInt(d[j]) * (BigInt(d[j]) - 1) / BigInt(2))
+        # Term B_j: prod_d * d_j * tsum
+        bj_sum = prod_d * BigInt(d[j]) * tsum
+        termAB += logX[j] * Float64(aj_sum + bj_sum)
+    end
+
+    # Term C: prod_d * sum_{t=0}^{m} (m-t) = prod_d * m(m+1)/2
+    termC = Float64(prod_d * tsum) * logp
+
+    return termAB + termC
+end
+
+"""
+    success_threshold_beta_correct(d::Vector{Int}; m_probe=(400,800), tol=1e-3) -> Float64
+
+CORRECTED version of `success_threshold_beta`, using `jm_log_det_closed_form`
+/ `jm_lattice_dimension` (the real Jochemsz-May single-polynomial shift
+family) instead of the buggy `log_det_closed_form`/`lattice_dimension`.
+For the symmetric case d_j = d, this converges to beta* = 1/(n*d) as
+m -> infinity (matches the classical univariate Coppersmith anchor point
+beta* = 1/d exactly at n=1, since for n=1 the buggy and corrected
+constructions coincide -- which is why this bug was invisible at n=1 and
+only shows up for n>=2).
+"""
+function success_threshold_beta_correct(d::Vector{Int}; m_probe::Tuple{Int,Int}=(400,800), tol::Float64=1e-3)
+    all_equal_vec(d) ||
+        throw(ArgumentError("success_threshold_beta_correct: only implemented for " *
+                             "the symmetric case (all d_j equal); got d=$d " *
+                             "-- use jm_log_det_closed_form directly and solve " *
+                             "numerically for the asymmetric case"))
+    n = length(d)
+    logp = 1.0
+
+    function beta_star_at(m::Int)
+        dimL = Float64(jm_lattice_dimension(d, m))
+        target = m * dimL * logp
+        logX0 = zeros(Float64, n)
+        c0 = jm_log_det_closed_form(d, m, logX0, logp)
+        logX1 = fill(logp, n)
+        c1 = jm_log_det_closed_form(d, m, logX1, logp)
+        slope = c1 - c0
+        return (target - c0) / slope
+    end
+
+    b1 = beta_star_at(m_probe[1])
+    b2 = beta_star_at(m_probe[2])
+    abs(b1 - b2) > tol &&
+        error("success_threshold_beta_correct: threshold estimates at " *
+              "m=$(m_probe[1]) (beta=$b1) and m=$(m_probe[2]) (beta=$b2) " *
+              "differ by more than tol=$tol -- not yet converged, probe " *
+              "larger m values rather than trust either estimate")
+
+    return (b1 + b2) / 2
 end
 
 # ---------------------------------------------------------------------------

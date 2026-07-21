@@ -13,16 +13,25 @@
 # result into analyze().
 #
 # Usage:
-#   julia run_jm_determinant.jl <path-to-.native-file> [m_report]
+#   julia run_jm_determinant.jl <path-to-.native-file> [m_report] [prefilter]
 #
 #   m_report: the m value used for the exact-vs-closed-form log-det
 #   cross-check in analyze() (Section 4). Default 6, same default as
 #   analyze()'s own keyword default.
 #
+#   prefilter: pass the literal string "prefilter" as the 3rd argument to
+#   enable prefilter_extreme_candidates before convex_hull, exactly as
+#   run_newton_native.jl does. REQUIRED in practice for supports of tens of
+#   millions of points -- polymake's exact hull algorithm is not designed
+#   for that scale and will OOM/hang rather than merely being slow (see
+#   prefilter_extreme_candidates's docstring in newton_polytope.jl for the
+#   exactness caveats of this fast path before trusting box-structure
+#   results from a prefiltered run).
+#
 # Typical two-step workflow (same native-file convention as run_newton.jl):
 #   julia convert_to_native.jl part_k_results/V1_resultant.oscar \
 #                               part_k_results/V1_resultant.native
-#   julia run_jm_determinant.jl part_k_results/V1_resultant.native
+#   julia run_jm_determinant.jl part_k_results/V1_resultant.native 6 prefilter
 #
 # This requires Oscar (via newton_polytope.jl's polytope/convex-hull
 # machinery) to build the polytope from the support and to run
@@ -44,17 +53,19 @@ function main()
         error("run_jm_determinant.jl: expected at least 1 argument (path to " *
               "a native binary support file produced by convert_to_native.jl), " *
               "got $(length(ARGS)) -- usage: julia run_jm_determinant.jl " *
-              "<path-to-.native-file> [m_report]")
+              "<path-to-.native-file> [m_report] [prefilter]")
 
     path = ARGS[1]
     isfile(path) ||
         error("run_jm_determinant.jl: no such file: $path")
 
     m_report = length(ARGS) >= 2 ? parse(Int, ARGS[2]) : 6
+    use_prefilter = length(ARGS) >= 3 && ARGS[3] == "prefilter"
 
     println("Building Newton polytope from native support file: ", path)
+    use_prefilter && println("  (prefilter_extreme_candidates ENABLED -- see docstring caveats)")
     t0 = time()
-    A = NewtonAnalyzer(path)
+    A = NewtonAnalyzer(path; prefilter=use_prefilter)
     println("  built in ", round(time() - t0, digits=1), "s")
     println()
 
