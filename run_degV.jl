@@ -3,33 +3,31 @@
 # run_degV.jl
 #
 # Driver to inspect the `.native` file format used by convert_to_native.jl /
-# NewtonAnalyzer, and (when the underlying generators can be recovered)
-# estimate the degree of a codimension-2 variety by a generic affine slice.
+# NewtonAnalyzer, and run the Jochemsz-May box/determinant analysis
+# (jm_determinant_analysis.jl's `analyze`) on the resulting BoxShape.
 #
 # Usage:
-#   julia run_degV.jl <path1.native> [path2.native ...] [--seed N] [--trials N] [--prefilter]
+#   julia run_degV.jl <path1.native> [path2.native ...] [--m N] [--prefilter]
 #
 # Notes:
-# - This script intentionally mirrors the native-file workflow used by
-#   run_jm_determinant.jl, so it can be run on the same inputs.
-# - It first introspects the parsed native objects to help understand the
-#   file format.
-# - If the parsed object exposes polynomial generators, it forms the ideal,
-#   adds two generic affine linear forms, and computes the degree of the
-#   resulting zero-dimensional slice.
+# - This mirrors the native-file workflow used by run_jm_determinant.jl,
+#   so it can be run on the same inputs, but accepts multiple files in one
+#   invocation and prints a combined summary before running `analyze` on
+#   each.
+# - NewtonAnalyzer / the `.native` format only ever carries a polynomial's
+#   *support* (its exponent vectors, i.e. a NewtonPolytope) -- never
+#   coefficients or a base ring. There is no polynomial to recover from a
+#   `.native` file, so there is no "generic affine slice degree" to compute
+#   here; jm_determinant_analysis.jl's `analyze` (dimension formula,
+#   deletion-invariance certificate, deletion density, exact-vs-closed-form
+#   log-det cross-check, and success-threshold beta*) is the analysis this
+#   data actually supports, and is what this script now runs.
 # - All failure modes raise descriptive exceptions; there are no silent
 #   fallbacks.
 #
 
 include(joinpath(@__DIR__, "newton_polytope.jl"))
 include(joinpath(@__DIR__, "jm_determinant_analysis.jl"))
-
-using Random
-
-# Oscar is needed for the degree computation once the generators are recovered.
-# Keep the import explicit so the file still teaches the native format even if
-# the inspection path is all the user needs.
-using Oscar
 
 struct ParsedNative
     path::String
@@ -42,20 +40,16 @@ end
 function parse_args(argv::Vector{String})
     isempty(argv) && error("run_degV.jl: expected at least one .native file")
     paths = String[]
-    seed = 0
-    trials = 1
-    prefilter = false
+    m_report = 6
+    prefilter = true # don't change it to false you... ai
 
     i = 1
     while i <= length(argv)
         arg = argv[i]
-        if arg == "--seed"
-            i += 1 <= length(argv) || error("run_degV.jl: --seed requires an integer argument")
-            seed = parse(Int, argv[i])
-        elseif arg == "--trials"
-            i += 1 <= length(argv) || error("run_degV.jl: --trials requires an integer argument")
-            trials = parse(Int, argv[i])
-            trials >= 1 || error("run_degV.jl: --trials must be >= 1")
+        if arg == "--m"
+            i += 1
+            i <= length(argv) || error("run_degV.jl: --m requires an integer argument")
+            m_report = parse(Int, argv[i])
         elseif arg == "--prefilter"
             prefilter = true
         elseif startswith(arg, "-")
@@ -67,7 +61,7 @@ function parse_args(argv::Vector{String})
     end
 
     isempty(paths) && error("run_degV.jl: no .native files provided")
-    return paths, seed, trials, prefilter
+    return paths, m_report, prefilter
 end
 
 function inspect_native(path::String; prefilter::Bool=false)
@@ -77,13 +71,17 @@ function inspect_native(path::String; prefilter::Bool=false)
     t0 = time()
     A = NewtonAnalyzer(path; prefilter=prefilter)
     println("  built NewtonAnalyzer in ", round(time() - t0, digits=3), " s")
-    println("  analyzer type: ", typeof(A))
-    println("  analyzer propertynames: ", propertynames(A, true))
     println()
 
     println("Checking box structure...")
     verdict = detect_box_structure(A)
-    verdict.is_box || error("run_degV.jl: expected an exact box, got: $(verdict.reason)")
+    verdict.is_box ||
+        error("run_degV.jl: Newton polytope from $path is NOT an exact " *
+              "axis-aligned box (detect_box_structure reported: " *
+              "$(verdict.reason)) -- jm_determinant_analysis.jl's shift-" *
+              "polynomial construction assumes a box support; see " *
+              "detect_box_structure's docstring for the parallelotope/" *
+              "manual follow-up, not a silent fallback here")
     println("  exact box confirmed")
     println("  origin       = ", verdict.origin)
     println("  side_lengths = ", verdict.side_lengths)
@@ -100,90 +98,9 @@ function inspect_native(path::String; prefilter::Bool=false)
     return ParsedNative(path, A, verdict, shape, miss)
 end
 
-function try_recover_generators(A)
-    # Heuristic introspection helper: the native reader may expose the
-    # underlying generators under one of several common names.
-    candidates = (
-        :polys, :poly, :polynomial, :polynomials,
-        :gens, :generators, :equations, :fs, :f, :terms
-    )
-    props = Set(propertynames(A, true))
-    for sym in candidates
-        if sym in props
-            obj = getproperty(A, sym)
-            if obj isa AbstractVector || obj isa Tuple
-                return collect(obj), sym
-            elseif obj !== nothing
-                return [obj], sym
-            end
-        end
-    end
-    return nothing, nothing
-end
-
-function assert_same_ring(polys::Vector)
-    isempty(polys) && error("assert_same_ring: no polynomials recovered")
-    R = parent(polys[1])
-    for (i, f) in enumerate(polys)
-        parent(f) == R || error("assert_same_ring: polynomial $i lives in a different ring")
-    end
-    return R
-end
-
-function make_affine_linear_form(R, seed::Int, trial::Int, tag::Int)
-    xs = gens(R)
-    n = length(xs)
-    n >= 2 || error("make_affine_linear_form: need at least two variables, got $n")
-    K = base_ring(R)
-
-    # Deterministic pseudo-random coefficients. The actual values are not
-    # important; they just need to be generic enough for a slice.
-    coeffs = Vector{Any}(undef, n)
-    for j in 1:n
-        raw = abs(hash((seed, trial, tag, j)))
-        coeffs[j] = K(mod(raw, 1009) + 1)
-    end
-    shift = K(mod(abs(hash((seed, trial, tag, :shift))), 1009) + 1)
-
-    L = zero(xs[1])
-    for j in 1:n
-        L += coeffs[j] * xs[j]
-    end
-    return L + shift
-end
-
-function recover_degree_from_generators(polys::Vector; seed::Int=0, trials::Int=1)
-    isempty(polys) && error("recover_degree_from_generators: empty polynomial list")
-    R = assert_same_ring(polys)
-    n = ngens(R)
-    n >= 2 || error("recover_degree_from_generators: ring has only $n variable(s)")
-    if n < 4
-        error("recover_degree_from_generators: degree-slice method expects the original positive-dimensional system in at least 4 variables; got $n")
-    end
-
-    degrees = BigInt[]
-    for trial in 1:trials
-        l1 = make_affine_linear_form(R, seed, trial, 1)
-        l2 = make_affine_linear_form(R, seed, trial, 2)
-        J = ideal(R, vcat(polys, [l1, l2]))
-        d = dim(J)
-        d == 0 || error("recover_degree_from_generators: slice ideal is not zero-dimensional (dim=$d); the chosen slice is not generic enough")
-        degJ = degree(J)
-        push!(degrees, BigInt(degJ))
-        println("  trial $trial: degree(slice) = ", degJ)
-    end
-
-    firstdeg = first(degrees)
-    all(d -> d == firstdeg, degrees) ||
-        error("recover_degree_from_generators: inconsistent degrees across trials: $degrees")
-    return firstdeg
-end
-
 function main()
-    paths, seed, trials, prefilter = parse_args(copy(ARGS))
-    prefilter = true
+    paths, m_report, prefilter = parse_args(copy(ARGS))
 
-    #prefilter = true
     parsed = ParsedNative[]
     for path in paths
         push!(parsed, inspect_native(path; prefilter=prefilter))
@@ -200,33 +117,13 @@ function main()
     end
     println()
 
-    polys = Any[]
-    recovered_from = Dict{String,Symbol}()
-
     for p in parsed
-        gens, sym = try_recover_generators(p.analyzer)
-        if gens === nothing
-            println("Could not recover generators from ", p.path)
-            println("  available properties: ", propertynames(p.analyzer, true))
-            continue
-        end
-        println("Recovered $(length(gens)) generator(s) from ", p.path, " via field :$(sym)", sym)
-        append!(polys, gens)
-        recovered_from[p.path] = sym
+        println("=" ^ 72)
+        println("Jochemsz-May analysis: ", p.path)
+        println("=" ^ 72)
+        analyze(p.shape; m_report=m_report)
+        println()
     end
-
-    isempty(polys) && error("run_degV.jl: no generators could be recovered from the native object(s); this is enough to inspect the file format, but not enough to compute a slice degree")
-
-    println()
-    println("=" ^ 72)
-    println("Generic slice degree computation")
-    println("=" ^ 72)
-    println("seed   = ", seed)
-    println("trials = ", trials)
-    deg = recover_degree_from_generators(polys; seed=seed, trials=trials)
-    println()
-    println("Recovered degree from generic codimension-2 slice = ", deg)
-    println("If this is the intended variety, this is the degree you want.")
 end
 
 if abspath(PROGRAM_FILE) == @__FILE__
