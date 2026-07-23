@@ -121,7 +121,19 @@
 #   timeout_secs       : hard timeout, in seconds, for the per-sample
 #                        bivariate Groebner computation, run in a killable
 #                        subprocess exactly like pilot_diagnostic.jl's
-#                        run_with_timeout (default 60).
+#                        run_with_timeout (default 1800 = 30 min -- raised
+#                        from an earlier 60s default that was never enough
+#                        time: V0/V1 collapse to ~97x97-term dense bivariate
+#                        polynomials at a generic sample point, and a
+#                        degrevlex GB of a system that dense in 2 variables
+#                        is routinely a multi-minute-to-hour computation, not
+#                        a 60s one. 60s was killing the GB step itself before
+#                        it ever reached the staircase count. There is no
+#                        principled formula for the right number here --
+#                        1800s is a starting point, not a guarantee; if
+#                        sample 1 times out again, that alone tells you
+#                        1800s wasn't enough, raise it further and rerun
+#                        rather than assuming something else is wrong).
 #   chunk_terms        : streaming chunk size in terms, same meaning as
 #                        pilot_diagnostic.jl's stream_specialize_native_to_poly
 #                        (default 1_000_000).
@@ -191,11 +203,150 @@ function coeff_to_u64(c)
 end
 
 # ---------------------------------------------------------------------------
+# Load-once-keep-resident path for U0/U1 ONLY.
+#
+# U0/U1 are 408.6 MB on disk each (17.85M raw terms), vs V0/V1's 2026.3 MB
+# each (88.5M raw terms) -- U0+U1 together (~820MB, well under the "only one
+# V fits" 13GB-class constraint that motivated streaming in the first
+# place) can be held as flat exponent/coefficient arrays in memory for the
+# WHOLE run, not re-opened and re-read from disk on every one of the
+# n_samples sample points. Only the O(1) cheap modular-arithmetic
+# specialization step (the @inbounds loop below) needs to repeat per
+# sample -- the 408.6MB disk read does not.
+#
+# V0/V1 are NOT handled this way: keeping both resident at once would put
+# two of the four generators' full 4-variable term arrays in memory
+# simultaneously, exactly what the one-V-at-a-time discipline forbids.
+# raw_load_native reads a file's header + raw exponent/coefficient arrays
+# into memory ONCE; specialize_from_raw does the per-sample fixed-slot
+# substitution against those already-resident arrays with no disk I/O.
+struct RawNative
+    ambient_dim::Int
+    n_terms::Int
+    exps::Vector{NATIVE_SUPPORT_EXP_TYPE}    # ambient_dim * n_terms, flat
+    coeffs::Vector{NATIVE_SUPPORT_COEFF_TYPE} # n_terms
+end
+
+function raw_load_native(path::String, expected_prime::UInt64)
+    isfile(path) ||
+        error("raw_load_native: no such file: $path")
+
+    fsize_mb = filesize(path) / 1024 / 1024
+    println("      loading (once, resident for whole run) ", path,
+            " (", round(fsize_mb, digits=1), " MB on disk)...")
+    flush(stdout)
+    t0 = time()
+
+    io = open(path, "r")
+    local ambient_dim, n_terms
+    try
+        magic = read(io, UInt64)
+        magic == NATIVE_SUPPORT_MAGIC_V2 ||
+            error("raw_load_native: $path does not have the expected NEWTPOL2 " *
+                  "header (got $(magic)) -- requires v2 files WITH coefficients, " *
+                  "produced by convert_to_native.jl <in> <out> <ambient_dim> <prime>")
+
+        ambient_dim = read(io, Int64)
+        ambient_dim == 4 ||
+            error("raw_load_native: expected ambient_dim=4 (x1,x2,x3,x4), " *
+                  "got $ambient_dim in $path")
+
+        n_terms = read(io, Int64)
+        n_terms > 0 ||
+            error("raw_load_native: invalid n_terms=$n_terms in $path")
+
+        file_prime = read(io, UInt64)
+        file_prime == expected_prime ||
+            error("raw_load_native: $path has prime=$file_prime in its header, " *
+                  "expected $expected_prime")
+
+        exps = Vector{NATIVE_SUPPORT_EXP_TYPE}(undef, ambient_dim * n_terms)
+        read!(io, exps)
+
+        coeff_offset = position(io)
+        # coeff block is stored after the exponent block in the SAME file for
+        # v2-with-coefficients native files (see stream_specialize_one_at_a_time's
+        # original two-handle layout, which opened the same path twice at two
+        # different seek offsets for exactly this reason); replicate that offset
+        # here with a single handle instead of two.
+        expected_coeff_offset = 8 + 8 + 8 + 8 + ambient_dim * n_terms * sizeof(NATIVE_SUPPORT_EXP_TYPE)
+        coeff_offset == expected_coeff_offset ||
+            error("raw_load_native: unexpected coeff block offset in $path " *
+                  "(got $coeff_offset, expected $expected_coeff_offset) -- " *
+                  "native file layout assumption violated, refusing to guess")
+
+        coeffs = Vector{NATIVE_SUPPORT_COEFF_TYPE}(undef, n_terms)
+        read!(io, coeffs)
+
+        println("      done in ", round(time() - t0, digits=1), "s (",
+                n_terms, " raw terms resident in memory, kept for whole run)")
+        flush(stdout)
+
+        return RawNative(ambient_dim, n_terms, exps, coeffs)
+    finally
+        close(io)
+    end
+end
+
+function specialize_from_raw(raw::RawNative, expected_prime::UInt64, alpha, beta, S2)
+    p = expected_prime
+    alpha_r = coeff_to_u64(alpha) % p
+    beta_r  = coeff_to_u64(beta)  % p
+
+    fixed1_idx, fixed2_idx = FIXED_SLOTS
+    kept1_idx, kept2_idx   = KEPT_SLOTS
+    ambient_dim = raw.ambient_dim
+    n_terms = raw.n_terms
+
+    acc = Dict{Tuple{Int,Int}, UInt64}()
+
+    alpha_pow_cache = Dict{Int,UInt64}(0 => UInt64(1))
+    beta_pow_cache  = Dict{Int,UInt64}(0 => UInt64(1))
+
+    function cached_pow(cache::Dict{Int,UInt64}, base::UInt64, e::Int)
+        get!(cache, e) do
+            modpow(base, e, p)
+        end
+    end
+
+    @inbounds for i in 1:n_terms
+        base = (i - 1) * ambient_dim
+
+        e_fixed1 = Int(raw.exps[base + fixed1_idx])
+        e_fixed2 = Int(raw.exps[base + fixed2_idx])
+        e_kept1  = Int(raw.exps[base + kept1_idx])
+        e_kept2  = Int(raw.exps[base + kept2_idx])
+
+        c = UInt64(raw.coeffs[i]) % p
+
+        a_pow = cached_pow(alpha_pow_cache, alpha_r, e_fixed1)
+        b_pow = cached_pow(beta_pow_cache,  beta_r,  e_fixed2)
+
+        scale = modmul(a_pow, b_pow, p)
+        term  = modmul(c, scale, p)
+
+        key = (e_kept1, e_kept2)
+        acc[key] = haskey(acc, key) ? modadd(acc[key], term, p) : term
+    end
+
+    ctx = MPolyBuildCtx(S2)
+    Fp = base_ring(S2)
+    for ((k1, k2), c_u) in acc
+        iszero(c_u) && continue
+        push_term!(ctx, Fp(c_u), [k1, k2])
+    end
+    return finish(ctx)
+end
+
+# ---------------------------------------------------------------------------
 # Streaming specialization: fix FIXED_SLOTS at (alpha,beta), keep KEPT_SLOTS
-# as the bivariate result's two variables. ONE file open at a time -- this
-# function is called four times per sample point (once each for U0, U1, V0,
-# V1), sequentially, and nothing from a previous call survives except the
-# small MPolyRingElem it returned.
+# as the bivariate result's two variables. ONE file open at a time.
+#
+# As of the load-once fix above, this is used for V0/V1 ONLY -- U0/U1 go
+# through raw_load_native (once) + specialize_from_raw (per sample, no disk
+# I/O) instead. V0/V1 stay on this streaming path because keeping both
+# resident simultaneously would violate the one-V-at-a-time memory
+# constraint that motivated streaming in the first place.
 #
 # Peak memory for a single call: O(chunk_terms) raw exponent/coefficient
 # bytes (the read buffers below), plus a Dict{Tuple{Int,Int},UInt64}
@@ -204,7 +355,7 @@ end
 # project's Newton-polytope diagnostics already characterize (see
 # diag_newton_polygon / detect_box_structure in pilot_diagnostic.jl and
 # newton_polytope.jl respectively), is bounded by (deg_x3+1)*(deg_x4+1), NOT
-# by the 17.8M raw term count -- this is the entire reason streaming
+# by the 88.5M raw term count -- this is the entire reason streaming
 # specialization collapses a huge file into a small polynomial rather than
 # just being a slower way to load the same amount of data.
 function stream_specialize_one_at_a_time(path::String, expected_prime::UInt64,
@@ -373,18 +524,15 @@ function bivariate_colength(u0, u1, v0, v1, prime::UInt64; staircase_cutoff::Int
     Fp = GF(prime)
     S2, (x3s, x4s) = polynomial_ring(Fp, [:x3, :x4])
 
-    function rebuild(supp, coef)
-        ctx = MPolyBuildCtx(S2)
-        for (e, c) in zip(supp, coef)
-            push_term!(ctx, Fp(c), e)
-        end
-        finish(ctx)
-    end
-
     t0 = time()
+    println("      [worker] building ideal and starting degrevlex GB...")
+    flush(stdout)
     I = ideal(S2, [u0, u1, v0, v1])
     G = groebner_basis(I; ordering=degrevlex(S2))
     gb_elapsed = time() - t0
+    println("      [worker] GB done in ", round(gb_elapsed, digits=3),
+            "s, basis size=", length(G), " -- starting staircase count...")
+    flush(stdout)
 
     lms = [leading_monomial(g; ordering=degrevlex(S2)) for g in G]
     lm_exps = [collect(AbstractAlgebra.exponent_vectors(m))[1] for m in lms]
@@ -393,28 +541,45 @@ function bivariate_colength(u0, u1, v0, v1, prime::UInt64; staircase_cutoff::Int
     max_input_deg = maximum(total_degree(g) for g in (u0, u1, v0, v1))
     search_bound = max(2 * max_deg_bound, 2 * max_input_deg, 4)
 
-    function divides_some_lm(e3, e4)
-        for (a, b) in lm_exps
-            if e3 >= a && e4 >= b
-                return true
-            end
-        end
-        return false
-    end
+    # Efficient staircase count: a monomial ideal generated by lm_exps has a
+    # STAIRCASE shape, so for each fixed e3 the set of e4 NOT covered by any
+    # generator is determined by, for every generator (a,b) with a<=e3, the
+    # minimum b over those generators -- i.e. e4 is standard at this e3 iff
+    # e4 < min{b : (a,b) in lm_exps, a<=e3} (or unbounded-below if no such
+    # generator exists, which the ideal being zero-dimensional in this ring
+    # should preclude for large e3, caught below as :unbounded). This is
+    # O(search_bound * |G|) instead of the previous O(search_bound^2 * |G|)
+    # brute-force per-cell divisibility scan -- same answer, no need to
+    # probe every (e3,e4) cell individually since standard monomials at a
+    # given e3 always form a contiguous prefix in e4.
+    sorted_by_a = sort(lm_exps; by = first)
 
     standard_monomials = Tuple{Int,Int}[]
     box_exceeded = false
+    gi = 1  # index into sorted_by_a of the next generator to fold in as e3 increases
+    min_b_so_far = typemax(Int)
     for e3 in 0:search_bound
-        for e4 in 0:search_bound
-            if !divides_some_lm(e3, e4)
-                push!(standard_monomials, (e3, e4))
-                if length(standard_monomials) > staircase_cutoff
-                    box_exceeded = true
-                    break
-                end
-            end
+        while gi <= length(sorted_by_a) && sorted_by_a[gi][1] <= e3
+            min_b_so_far = min(min_b_so_far, sorted_by_a[gi][2])
+            gi += 1
         end
-        box_exceeded && break
+        # standard monomials at this e3: e4 in 0:(min_b_so_far-1), if any
+        if min_b_so_far == typemax(Int)
+            # no generator yet has a <= e3 -- every e4 is "standard" at this
+            # e3 under generators seen so far, which can only happen if the
+            # ideal is not actually zero-dimensional (or search_bound is too
+            # small); treat as unbounded rather than silently truncating.
+            box_exceeded = true
+            break
+        end
+        n_here = min_b_so_far
+        if length(standard_monomials) + n_here > staircase_cutoff
+            box_exceeded = true
+            break
+        end
+        for e4 in 0:(min_b_so_far - 1)
+            push!(standard_monomials, (e3, e4))
+        end
     end
 
     elapsed = time() - t0
@@ -492,7 +657,18 @@ function run_with_timeout(prime, u0, u1, v0, v1, timeout_secs::Real, script_path
             return (:error, NaN, -1, "worker exited without producing a result (crashed or killed externally)")
         end
 
-        return open(deserialize, outfile)
+        try
+            return open(deserialize, outfile)
+        catch e
+            error("run_with_timeout: worker process exited (not killed by our timeout) " *
+                  "and left a result file at $outfile, but it failed to deserialize " *
+                  "-- the file is corrupt or truncated. This is NOT reported as an " *
+                  "ordinary (:error, ...) status because a bad result file is a " *
+                  "different failure mode from a worker exception (run_worker's own " *
+                  "try/catch already reports those cleanly) and silently downgrading " *
+                  "it to a per-sample :error would hide a serialization/IO bug rather " *
+                  "than surface it. Underlying error: $(sprint(showerror, e))")
+        end
     finally
         rm(tmpdir; recursive=true, force=true)
     end
@@ -515,7 +691,7 @@ function main()
     prime = parse(UInt64, ARGS[5])
     n_samples   = length(ARGS) >= 6 ? parse(Int, ARGS[6])     : 8
     seed        = length(ARGS) >= 7 ? parse(Int, ARGS[7])     : 0
-    timeout_secs = length(ARGS) >= 8 ? parse(Float64, ARGS[8]) : 60.0
+    timeout_secs = length(ARGS) >= 8 ? parse(Float64, ARGS[8]) : 1800.0
     chunk_terms = length(ARGS) >= 9 ? parse(Int, ARGS[9])     : 1_000_000
 
     for path in (u0_path, u1_path, v0_path, v1_path)
@@ -539,12 +715,21 @@ function main()
     println("CONVENTION IN USE: fixing slots ", FIXED_SLOTS, " (x1,x2), keeping slots ",
             KEPT_SLOTS, " (x3,x4) -- see the CAVEAT comment above main() if this needs to change.")
     println()
-    println("At most one native file's exponent/coefficient arrays are ever held in ")
-    println("memory at once -- see stream_specialize_one_at_a_time's docstring.")
+    println("Memory discipline: U0/U1 (408.6 MB each) are loaded once and kept ")
+    println("resident for the whole run. At most one of V0/V1's much larger ")
+    println("exponent/coefficient arrays is ever held in memory at a time -- see ")
+    println("stream_specialize_one_at_a_time's docstring.")
     println()
 
     Fp = GF(prime)
     S2, _ = polynomial_ring(Fp, [:x3, :x4])
+
+    println("Loading U0/U1 ONCE (kept resident for the whole run; only V0/V1 ")
+    println("are re-streamed from disk per-sample, per the one-V-at-a-time constraint).")
+    flush(stdout)
+    u0_raw = raw_load_native(u0_path, prime)
+    u1_raw = raw_load_native(u1_path, prime)
+    println()
 
     rng = Random.MersenneTwister(seed)
     samples = Tuple{elem_type(Fp), elem_type(Fp)}[]
@@ -563,10 +748,11 @@ function main()
         println("=" ^ 70)
         flush(stdout)
 
-        println("  streaming+specializing U0, U1, V0, V1 ONE AT A TIME...")
+        println("  specializing U0,U1 from resident memory (no disk I/O) and ",
+                "streaming V0,V1 from disk ONE AT A TIME...")
         t0 = time()
-        u0 = stream_specialize_one_at_a_time(u0_path, prime, a, b, S2; chunk_terms=chunk_terms)
-        u1 = stream_specialize_one_at_a_time(u1_path, prime, a, b, S2; chunk_terms=chunk_terms)
+        u0 = specialize_from_raw(u0_raw, prime, a, b, S2)
+        u1 = specialize_from_raw(u1_raw, prime, a, b, S2)
         v0 = stream_specialize_one_at_a_time(v0_path, prime, a, b, S2; chunk_terms=chunk_terms)
         v1 = stream_specialize_one_at_a_time(v1_path, prime, a, b, S2; chunk_terms=chunk_terms)
         println("  all four specialized in ", round(time() - t0, digits=2), "s ",
