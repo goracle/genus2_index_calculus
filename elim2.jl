@@ -259,10 +259,200 @@ function map_coeffs_threaded(coeffs, t_gens, w_gens)
     return nums, dens
 end
 
+# -----------------------------------------------------------------------------
+# Mumford-identity check, post map_coeffs_threaded: v_RS(x)^2 ≡ f(x) (mod u_RS(x))
+#
+# u_num[i]/u_den[i] and v_num[i]/v_den[i] are the x^(i-1) coefficients of
+# u_RS(x) and v_RS(x) respectively, each an independent element of R
+# (num/den already reduced by tower_to_ring's own per-coefficient
+# _reduce_frac call -- see the comment above _reduce_frac). This function
+# re-forms u_RS(x) and v_RS(x) as polynomials in a fresh local variable X
+# over Frac(R) and checks the Mumford identity holds identically as a
+# rational function of the sample's own anchor variables (a1,a2 or b1,b2).
+#
+# symbolic_residual already guarantees this identity holds on the tower
+# elements handed to map_coeffs_threaded (see the pre/post-reduction
+# checks added in trial3_phi_symbolic_unified.jl). This check exists to
+# answer a DIFFERENT question: does elim2.jl's own independent
+# per-coefficient reduction in tower_to_ring/_reduce_frac (applied AFTER
+# symbolic_residual returns, entirely separate from -- and unaware of --
+# that upstream guarantee) preserve it? If this fails while the upstream
+# checks passed, the break is localized to THIS reduction step, not the
+# one inside symbolic_residual.
+#
+# Raises an ErrorException rather than returning a boolean: a failure
+# here means u1_num/u1_den and v1_num/v1_den (or the sample-2 analogues)
+# no longer describe a single self-consistent Mumford divisor, and
+# feeding them into Fu_decoupled/Fv_decoupled/Iuv_decoupled downstream
+# would silently produce an over-constrained ideal -- exactly the
+# hypothesized cause of the U-only O(p^2) vs UV O(1) solution-count
+# collapse. Better to fail loudly here, at the point consistency was
+# lost, than to chase it through a Groebner basis computation later.
+function _check_mumford_identity_ring(u_num::Vector, u_den::Vector,
+                                       v_num::Vector, v_den::Vector,
+                                       F_POLY_ASC::Vector{Int}, R,
+                                       curve_gens::Vector;
+                                       label::String = "")
+    if isempty(u_num) || isempty(v_num)
+        error("_check_mumford_identity_ring($label): empty u or v coefficient " *
+              "vector -- nothing to check, caller should not have reached this point")
+    end
+    if length(u_num) != length(u_den) || length(v_num) != length(v_den)
+        error("_check_mumford_identity_ring($label): mismatched num/den lengths " *
+              "(len(u_num)=$(length(u_num)), len(u_den)=$(length(u_den)), " *
+              "len(v_num)=$(length(v_num)), len(v_den)=$(length(v_den)))")
+    end
+
+    Rx, X = polynomial_ring(R, "X_mumford_check")
+
+    # Build u_RS(X) and v_RS(X) as polynomials over Frac(R)-valued
+    # coefficients, but clear denominators up front so everything stays
+    # in Rx (u_num[i]/u_den[i] * common_den_u is a polynomial in R).
+    den_u_common = reduce(*, u_den)
+    den_v_common = reduce(*, v_den)
+
+    u_poly = sum(
+        Rx(u_num[i]) * Rx(divexact(den_u_common, u_den[i])) * X^(i-1)
+        for i in 1:length(u_num)
+    )
+    v_poly = sum(
+        Rx(v_num[i]) * Rx(divexact(den_v_common, v_den[i])) * X^(i-1)
+        for i in 1:length(v_num)
+    )
+    f_poly = sum(Rx(coeff) * X^(i-1) for (i, coeff) in enumerate(F_POLY_ASC))
+
+    # NOTE: u_poly already equals u_RS(X) * den_u_common exactly (built as
+    # a sum of R-coefficients times X^(i-1); no division involved). Do NOT
+    # try to strip the den_u_common scalar back out via divexact(u_poly,
+    # Rx(den_u_common)) -- that is a polynomial-level exact division that
+    # checks term-by-term divisibility of u_poly's coefficients by
+    # den_u_common individually, which is a strictly stronger requirement
+    # than "u_RS(X) = u_poly/den_u_common is well-defined over Frac(R)".
+    # Each u_poly coefficient is u_num[i]*divexact(den_u_common, u_den[i]),
+    # i.e. only "naturally" carries the factors of den_u_common contributed
+    # by u_den[i]; there's no reason it's also divisible by the OTHER
+    # u_den[j]'s (j != i) folded into den_u_common, since u_num/u_den come
+    # from unrelated coefficients. That combined-sum divisibility can (and
+    # in practice does) fail even though u_RS(X) itself is perfectly
+    # well-defined as a rational function -- this was firing before any
+    # real comparison of u and v happened, so it's a bug in this check's
+    # construction, not evidence about the Mumford identity.
+    #
+    # Fix: never strip the scalar. Use u_poly itself (= u_RS(X)*den_u_common)
+    # as the modulus, and scale lhs by the matching power of den_u_common
+    # so the check stays a polynomial identity throughout. See below for
+    # why pseudorem(), not mod(), is the right reduction to use against
+    # this modulus.
+    #
+    # CORRECTION: an earlier version of this fix guarded mod() with
+    # is_unit(u_lead) where u_lead = u_num[end]*divexact(den_u_common,
+    # u_den[end]). That guard was wrong. R here is FqMPolyRing -- a
+    # genuine multivariate polynomial ring over F_p in the sample's anchor
+    # variables (a1,a2 or b1,b2), NOT a fraction field. is_unit(x) for x
+    # in a multivariate polynomial ring over a field is only ever true for
+    # nonzero CONSTANTS; u_lead is generically a nonconstant polynomial
+    # (bidegree (16,16) in an actual run), so is_unit(u_lead) was
+    # essentially guaranteed to be false regardless of whether anything
+    # upstream was broken -- the guard fired on every run, not just broken
+    # ones. That is_unit(den) idiom was borrowed from elsewhere in this
+    # file (bracket_num, ~line 4954) without checking it fit this ring:
+    # those call sites check is_unit(denominator(val)) for val in Kcoef =
+    # Frac(F[a1,a2,b1,b2]) -- there the denominator is expected to cancel
+    # down to 1 after arithmetic, so is_unit is a meaningful, often-true
+    # test. Here u_lead lives directly in R, not Frac(R), and there's no
+    # reason it should ever be constant.
+    #
+    # mod() needs an invertible leading coefficient in the modulus for a
+    # well-defined quotient/remainder in general, so it was never the
+    # right primitive for a modulus with non-unit leading coefficient over
+    # a general commutative ring. pseudorem() is: pseudorem(f, g) computes
+    # lc(g)^k * f reduced mod g for a suitable k (absorbing exactly the
+    # obstruction that would otherwise require lc(g) to be a unit), and is
+    # already used elsewhere in this file for the same reason (see
+    # pseudorem(g1_T, g2_T) at the PRS growth-prediction step, and the
+    # manual disk-sharded PRS loop further down). Since lc(u_poly) is
+    # nonzero (u_poly is a nonzero polynomial of degree length(u_num)-1 by
+    # construction) and R is an integral domain (a polynomial ring over a
+    # finite field), multiplying lhs by a nonzero power of lc(u_poly)
+    # cannot introduce or hide a nonzero residual: iszero is preserved
+    # both ways, so pseudorem(lhs, u_poly) == 0 iff the underlying
+    # (unscaled) identity holds -- exactly what mod(lhs, u_poly) would
+    # have certified had its unit precondition actually held.
+
+    # v_RS(X)^2 * den_v_common^2 - f(X) * den_v_common^2, further scaled by
+    # den_u_common^2 so the whole check stays polynomial against the u_poly
+    # modulus (= u_RS(X)*den_u_common) without ever dividing by den_u_common:
+    # residual vanishes iff the true (unscaled) identity v_RS(X)^2 ≡ f(X)
+    # (mod u_RS(X)) does too, since den_u_common and den_v_common are both
+    # nonzero elements of the fraction field, hence nonzerodivisors.
+    lhs = (v_poly^2 - f_poly * Rx(den_v_common)^2) * Rx(den_u_common)^2
+    residual = pseudorem(lhs, u_poly)
+
+    # CRITICAL: R (built at the top of this file as
+    # F[wa1,wa2,wb1,wb2,a2,a1,b2,b1]) is the plain, FREE polynomial ring --
+    # it does not itself impose the curve relations wa1^2 = a1^5+a1+2,
+    # wa2^2 = a2^5+a2+2 (those live separately as curve_a1/curve_a2, used
+    # elsewhere in this file only as ideal generators, e.g.
+    # `ideal(R_dec, vcat(Fu_decoupled, [curve_a1_d, curve_a2_d, ...]))`).
+    # The Mumford identity only needs to hold ON THE CURVE, i.e. modulo
+    # <curve_gens>, not identically in the free ring R. residual is built
+    # from tower elements whose w_i dependence is at most linear per the
+    # tower structure (_tower_to_ring's `num = n0*d1 + n1*d0*wv` never
+    # squares wv on its own), so any wa_i^2-or-higher term appearing here
+    # only arose from the polynomial arithmetic in this check (v_poly^2,
+    # u_poly^2 inside pseudorem's internal squaring of leading
+    # coefficients) -- exactly the kind of term curve_gens is meant to
+    # collapse back down. Testing iszero(residual) directly, without this
+    # reduction, would reject correct (u,v) pairs whenever such a term
+    # survives, which is what happened before this fix was added (see the
+    # sample-1 residual with wa1,wa2 appearing up to degree 4).
+    #
+    # residual lives in Rx = R[X] (a Generic.Poly{FqMPolyRingElem}), NOT
+    # directly in R -- normal_form(::MPolyRingElem, ::MPolyIdeal) only
+    # accepts elements of R itself, so it cannot be called on residual as
+    # a whole (confirmed by the MethodError: Oscar's normal_form methods
+    # all require an FqMPolyRingElem/MPolyRingElem first argument, and
+    # Generic.Poly{FqMPolyRingElem} is a different type -- a univariate
+    # polynomial in X whose COEFFICIENTS are FqMPolyRingElem). Reduce each
+    # X-coefficient of residual individually instead: a polynomial in X is
+    # zero iff every one of its coefficients is zero, so residual is zero
+    # on the curve iff every coefficient of residual, reduced mod
+    # <curve_gens>, is zero.
+    curve_ideal = ideal(R, curve_gens)
+    residual_coeffs_on_curve = iszero(residual) ? FqMPolyRingElem[] :
+        [normal_form(coeff(residual, i), curve_ideal) for i in 0:degree(residual)]
+
+    if !all(iszero, residual_coeffs_on_curve)
+        error("_check_mumford_identity_ring($label): v_RS(x)^2 - f(x) is NOT " *
+              "identically 0 mod u_RS(x) after map_coeffs_threaded's " *
+              "per-coefficient tower_to_ring/_reduce_frac reduction, even " *
+              "after reducing modulo the curve relations ($curve_gens). " *
+              "Mumford condition violated at this reduction step -- the " *
+              "(u,v) coefficient pair no longer describes a single " *
+              "self-consistent divisor. nonzero X-coefficients (on curve) = " *
+              "$(filter(!iszero, residual_coeffs_on_curve))")
+    end
+
+    return nothing
+end
+
 u1_num, u1_den = map_coeffs_threaded(res1.u_RS_coeffs, t_gens_1, w_gens_1)
 v1_num, v1_den = map_coeffs_threaded(res1.v_RS_coeffs, t_gens_1, w_gens_1)
 u2_num, u2_den = map_coeffs_threaded(res2.u_RS_coeffs, t_gens_2, w_gens_2)
 v2_num, v2_den = map_coeffs_threaded(res2.v_RS_coeffs, t_gens_2, w_gens_2)
+
+# Localize whether THIS file's own independent per-coefficient reduction
+# (as opposed to _reduce_tower_coeffs inside symbolic_residual, checked
+# separately in trial3_phi_symbolic_unified.jl) is what breaks the
+# Mumford coupling. Checked per-sample, immediately after each sample's
+# coefficients are mapped into R, so a failure here points at exactly
+# which sample's reduction lost consistency.
+_check_mumford_identity_ring(u1_num, u1_den, v1_num, v1_den, F_POLY_ASC, R,
+                              [curve_a1, curve_a2];
+                              label = "sample 1 (K=$K1), post map_coeffs_threaded")
+_check_mumford_identity_ring(u2_num, u2_den, v2_num, v2_den, F_POLY_ASC, R,
+                              [curve_b1, curve_b2];
+                              label = "sample 2 (K=$K2), post map_coeffs_threaded")
 
 println()
 println("Mapped both samples' u_RS/v_RS coefficients into the shared ring.")

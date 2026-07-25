@@ -163,6 +163,47 @@ function _reduce_tower_coeffs(coeffs::Vector, c::Int)
 end
 
 # -----------------------------------------------------------------------------
+# Mumford-identity check: v(x)^2 ≡ f(x)  (mod u(x))
+#
+# u_coeffs / v_coeffs are coefficient vectors (x^0, x^1, ...) over K_final,
+# exactly as stored in SymbolicResidualResult.u_RS_coeffs / v_RS_coeffs --
+# i.e. this is meant to be called BOTH immediately after u_RS/v_RS are built
+# (pre-reduction) and again after _reduce_tower_coeffs runs on each vector
+# independently (post-reduction). u is assumed monic with deg(u) == length-1
+# (matches how u_RS is normalized above).
+#
+# Raises an ErrorException -- rather than returning a boolean or silently
+# passing through mismatched coefficients -- because a failure here means
+# the (u,v) pair handed back to the caller no longer describes a single,
+# self-consistent point on the curve's 2-fold cover. Letting that propagate
+# silently is exactly the failure mode this check exists to catch: it would
+# surface downstream as an unexplained collapse in elim2.jl's solution count
+# rather than as a clear error at the point where consistency was lost.
+function _check_mumford_identity(u_coeffs::Vector, v_coeffs::Vector,
+                                  F_POLY_ASC::Vector{Int}, K_final, Kx, X;
+                                  label::String = "")
+    if isempty(u_coeffs) || isempty(v_coeffs)
+        error("_check_mumford_identity($label): empty u_coeffs or v_coeffs -- " *
+              "nothing to check, caller should not have reached this point")
+    end
+
+    u_poly = sum(K_final(u_coeffs[i]) * X^(i-1) for i in 1:length(u_coeffs))
+    v_poly = sum(K_final(v_coeffs[i]) * X^(i-1) for i in 1:length(v_coeffs))
+    f_poly = sum(K_final(coeff) * X^(i-1) for (i, coeff) in enumerate(F_POLY_ASC))
+
+    residual = mod(v_poly^2 - f_poly, u_poly)
+
+    if !iszero(residual)
+        error("_check_mumford_identity($label): v(x)^2 - f(x) is NOT " *
+              "identically 0 mod u(x). Mumford condition violated -- the " *
+              "(u,v) coefficient pair no longer describes a single " *
+              "self-consistent divisor. residual = $residual")
+    end
+
+    return nothing
+end
+
+# -----------------------------------------------------------------------------
 # Resultant-avoiding replacement for gcdx(Y_poly, u_RS).
 #
 # gcdx runs a full extended-Euclidean algorithm in Kx = K_final[X]. Every
@@ -387,14 +428,45 @@ function symbolic_residual(K::Int, c::Int, fixed_anchors::Vector{Tuple{Int,Int}}
     end
     v_RS = mod(-E_poly * Y_inv_mod, u_RS)
 
+    # Sanity check BEFORE reduction: v_RS was constructed directly from
+    # u_RS via Y_inv_mod, so this should hold identically by construction.
+    # If it doesn't, the bug is upstream of reduction entirely (E_poly/
+    # Y_poly/Y_inv_mod construction), not in _reduce_tower_coeffs.
+    _check_mumford_identity(
+        collect(coefficients(u_RS)), collect(coefficients(v_RS)),
+        F_POLY_ASC, K_final, Kx, X; label = "pre-reduction"
+    )
+
     # Reduce every coefficient to lowest terms at the tower's base
     # (rational_function_field) layer BEFORE handing them back to the
     # caller. This is the earliest and cheapest point to remove the
     # spurious multiplicity that would otherwise compound across
     # tower_to_ring's substitution and, worse, across coeff_equal's
     # cross-sample cross-multiplication in elim2.jl.
+    #
+    # NOTE: this reduces u_RS_coeffs and v_RS_coeffs INDEPENDENTLY,
+    # coefficient-by-coefficient (see _reduce_tower_elem / _reduce_base_frac).
+    # There is no guarantee that independent gcd cancellation in the v
+    # coefficients preserves the Mumford identity checked above -- if the
+    # gcd computed for a v coefficient differs from what would be needed to
+    # keep v^2 ≡ f (mod u) consistent with the (independently-reduced) u,
+    # the two are no longer describing the same divisor. The check below
+    # exists specifically to catch that.
     u_RS_coeffs_reduced = _reduce_tower_coeffs(collect(coefficients(u_RS)), c)
     v_RS_coeffs_reduced = _reduce_tower_coeffs(collect(coefficients(v_RS)), c)
+
+    # Sanity check AFTER reduction: if this fails while the pre-reduction
+    # check above passed, _reduce_tower_coeffs's independent per-coefficient
+    # reduction is the culprit -- it decoupled u and v's shared algebraic
+    # dependence on t1 (e.g. by canceling a t1-dependent gcd factor in one
+    # coefficient's numerator/denominator that has no counterpart being
+    # canceled in the other). That decoupling is the leading hypothesis for
+    # why elim2.jl's V-equations collapse the (t1,t2) solution count from
+    # O(p^2) to O(1) instead of merely resolving the +/-v sign ambiguity.
+    _check_mumford_identity(
+        u_RS_coeffs_reduced, v_RS_coeffs_reduced,
+        F_POLY_ASC, K_final, Kx, X; label = "post-reduction"
+    )
 
     return SymbolicResidualResult(
         K, c,
