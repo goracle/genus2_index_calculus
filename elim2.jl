@@ -2278,15 +2278,42 @@ function part_h_prime_build_and_eliminate(target_name::String, sample_num::Int,
     Rloc, gensloc = polynomial_ring(F, [w_names[1], w_names[2], t_names[1], t_names[2], target_name])
     w1_l, w2_l, t1_l, t2_l, T_l = gensloc
 
-    # Same mapping convention as PART H's images_s1/images_s2: the two
-    # w-generators and two t-generators actually present in this sample's
-    # num/den (confirmed degree-0 in the OTHER sample's w/t gens by the
-    # DEGREE-IN-W DIAGNOSTIC printed earlier in this run) map straight
-    # across; nothing here is sent to zero because there's nothing else
-    # to send -- num_coeff/den_coeff are already univariate-in-the-right-
-    # pair by construction, unlike PART H's images_s1/images_s2 which had
-    # to project out of the shared 8-variable ring R.
-    images_local = [w1_l, w2_l, t1_l, t2_l]
+    # v1_num/v1_den and v2_num/v2_den do NOT live in the same ring as each
+    # other -- this was the real bug, and it's a genuine asymmetry in the
+    # surrounding file, not a mistake in this function's first draft alone.
+    # u1_num/v1_num (sample 1) get REBUILT at elim2.jl's "Flattening sample
+    # 1's u_RS, v_RS coefficients into F[wa1,wa2,a1,a2]..." step, into the
+    # 4-variable ring R=(wa1,wa2,a1,a2) constructed there -- that's why
+    # PART H's images_s1 is only 4 elements (gens(R) IS [wa1,wa2,a1,a2] by
+    # the time PART H runs). u2_num/v2_num (sample 2) are NEVER rebuilt --
+    # they stay in the ORIGINAL 8-variable ring R=(wa1,wa2,wb1,wb2,a2,a1,
+    # b2,b1) from this file's very first polynomial_ring call.
+    #
+    # R's fixed gens order for sample 2 is, positionally:
+    #   [0]wa1 [1]wa2 [2]wb1 [3]wb2 [4]a2 [5]a1 [6]b2 [7]b1
+    # Note b2 comes BEFORE b1 in that order (not b1,b2) -- this is exactly
+    # what broke the previous version: it put t2_l (=b2) in the a2 slot
+    # (position 4) and zeroed the real b2 slot (position 6), truncating
+    # h from degree=25/terms=698 down to degree=13/terms=59 -- caught by
+    # the assert below, not silently. Copied verbatim from PART H's own
+    # images_s2 = [zero,zero,wb1_s,wb2_s,zero,zero,b2_s,b1_s] rather than
+    # re-deriving the slot order by hand a second time:
+    images_local = sample_num == 1 ?
+        [w1_l, w2_l, t1_l, t2_l] :
+        [zero(Rloc), zero(Rloc), w1_l, w2_l, zero(Rloc), zero(Rloc), t2_l, t1_l]
+    # Bisect checkpoint, cheap and placed BEFORE the evaluate() call that
+    # actually broke last run: this file has two different rings named R
+    # in play depending on which sample you're looking at (see comment
+    # above), so a length mismatch here is a real, recurring failure mode,
+    # not a hypothetical one. Assert it explicitly rather than letting
+    # evaluate() raise its generic ArgumentError several frames down.
+    @assert length(images_local) == nvars(parent(num_coeff)) (
+        "PART H' bisect: images_local has $(length(images_local)) entries but " *
+        "num_coeff for $(target_name) sample $(sample_num) lives in a ring with " *
+        "$(nvars(parent(num_coeff))) variables -- sample 1's v/u_num live in the " *
+        "rebuilt 4-variable R, sample 2's stay in the original 8-variable R; " *
+        "check which one num_coeff actually came from before editing the mapping."
+    )
     num_l = evaluate(num_coeff, images_local)
     den_l = evaluate(den_coeff, images_local)
     h_l = num_l - T_l * den_l
