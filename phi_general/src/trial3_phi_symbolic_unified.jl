@@ -264,6 +264,63 @@ function _inv_mod_small(Y_poly, u_RS, Kx, X, K_final)
     return v
 end
 
+# -----------------------------------------------------------------------------
+# report_t_degrees: instrumentation only, no effect on the returned result.
+#
+# Walks a tower element down to its base rational_function_field layer
+# (same c0 + w*c1 recursive shape as _reduce_tower_elem/_tower_to_ring) and
+# reports the numerator/denominator's TOTAL degree in (t1,...,tc) AND the
+# degree in EACH individual t_i separately -- matching the per-variable
+# convention elim2.jl's own DEGREE-IN-W DIAGNOSTIC already uses for wa1/wa2/
+# wb1/wb2, so these numbers are directly comparable to PART H's trace
+# without unit conversion. This never touches the tower field's w-layers
+# (there are none left once level==0), only the base rational function's
+# numerator/denominator, which are ordinary multivariate polynomials in
+# t1,...,tc supporting `degree(f, t_i)` and `total_degree(f)` directly.
+# -----------------------------------------------------------------------------
+function _t_degree_profile(val, level::Int, path::String="root")
+    if level == 0
+        num = numerator(val)
+        den = denominator(val)
+        R_t = parent(num)
+        tv = gens(R_t)
+        num_deg_total = iszero(num) ? -1 : total_degree(num)
+        den_deg_total = iszero(den) ? -1 : total_degree(den)
+        num_deg_per_t = [iszero(num) ? -1 : degree(num, t) for t in tv]
+        den_deg_per_t = [iszero(den) ? -1 : degree(den, t) for t in tv]
+        return [(path = path, num_total = num_deg_total, den_total = den_deg_total,
+                 num_per_t = num_deg_per_t, den_per_t = den_deg_per_t)]
+    end
+    val_poly = data(val)
+    c0 = coeff(val_poly, 0)
+    c1 = coeff(val_poly, 1)
+    # Walk BOTH branches -- _reduce_tower_elem reduces c0 (w-free part) and
+    # c1 (w-coefficient part) independently (lines 150-153 above), so both
+    # can carry distinct t-degree structure; only following c0 would give
+    # an incomplete, potentially misleadingly-small picture. Matches PART
+    # H's own per-layer trace, which printed all four leaves (c00,c01,c10,
+    # c11) of a depth-2 tower, not just the c0-branch ones.
+    return vcat(
+        _t_degree_profile(c0, level - 1, path * ".c0"),
+        _t_degree_profile(c1, level - 1, path * ".c1"),
+    )
+end
+
+function report_t_degrees(u_RS_coeffs_reduced::Vector, v_RS_coeffs_reduced::Vector, c::Int)
+    println("  [report_t_degrees] degree-in-t profile at the reduction boundary",
+            " (post _reduce_tower_coeffs, pre elim2.jl):")
+    for (label, coeffs) in (("u_RS", u_RS_coeffs_reduced), ("v_RS", v_RS_coeffs_reduced))
+        for (i, co) in enumerate(coeffs)
+            leaves = _t_degree_profile(co, c)
+            for leaf in leaves
+                println("    $(label)_coeffs[$i] [$(leaf.path)]: num_total=$(leaf.num_total)",
+                        "  den_total=$(leaf.den_total)",
+                        "  num_per_t=$(leaf.num_per_t)  den_per_t=$(leaf.den_per_t)")
+            end
+        end
+    end
+end
+
 function symbolic_residual(K::Int, c::Int, fixed_anchors::Vector{Tuple{Int,Int}}, 
                            u0::Int, u1::Int, v0::Int, v1::Int,
                            F_POLY_ASC::Vector{Int}, p::Int)::SymbolicResidualResult
@@ -467,6 +524,22 @@ function symbolic_residual(K::Int, c::Int, fixed_anchors::Vector{Tuple{Int,Int}}
         u_RS_coeffs_reduced, v_RS_coeffs_reduced,
         F_POLY_ASC, K_final, Kx, X; label = "post-reduction"
     )
+
+    # Degree-in-t instrumentation, measured HERE -- at the reduction
+    # boundary, before elim2.jl's _tower_to_ring/_base_frac_to_ring ever
+    # touches these coefficients. This is the earliest point in the whole
+    # pipeline a low-degree-in-t1 object could exist: everything from here
+    # onward (elim2.jl's tower_to_ring substitution, cross-sample
+    # coeff_equal cross-multiplication, the resultant/elimination stages)
+    # can only hold degree steady or inflate it further, never reduce it
+    # below what's reported here. If these numbers already match the
+    # degree-16-in-t1 PART H trace numbers, the reduction fix at lines
+    # 455-456 is not leaving anything on the table -- the size is intrinsic
+    # to this construction, not an artifact of a later stage. If these
+    # numbers are markedly SMALLER than PART H's degree-16, that's direct
+    # evidence something downstream of symbolic_residual (not this
+    # function) is responsible for the inflation, and is worth chasing.
+    report_t_degrees(u_RS_coeffs_reduced, v_RS_coeffs_reduced, c)
 
     return SymbolicResidualResult(
         K, c,
