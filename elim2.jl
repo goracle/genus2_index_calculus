@@ -2243,6 +2243,18 @@ println("backtraces already captured in this run's output.")
 #   V1 <- v1_num[2]/v1_den[2] (sample 1), v2_num[2]/v2_den[2] (sample 2)
 ################################################################################
 
+# Gate: PART H' reruns the slow eliminate() call (Groebner-based, on the
+# degree-25/698-term V generators) for all 4 (target,sample) combos. Once
+# a run has confirmed all four succeed, this is the same kind of already-
+# validated, static setup as the pre-saved sandboxes / the hand-fit
+# multiplicity code -- rerunning it every time is pure cost with no new
+# information. Default off; flip to true (or set ENV["ELIM2_RUN_PART_H_PRIME"])
+# to re-validate after a real change to the V construction, sample data,
+# or the eliminate() route itself.
+const PART_H_PRIME_ENABLED = get(ENV, "ELIM2_RUN_PART_H_PRIME", "false") == "true"
+
+if PART_H_PRIME_ENABLED
+
 println()
 println("===========================================================")
 println("PART H': isolated small-ring reconstruction, extended to V0/V1")
@@ -2417,6 +2429,12 @@ else
     println("assume the small-ring route works for V just because it worked for")
     println("U; the degree-25 V generators (vs degree-17 for U) may behave")
     println("differently. See per-case status above before proceeding. **")
+end
+
+else
+    println()
+    println("[PART H' skipped -- PART_H_PRIME_ENABLED=false. Set ENV[\"ELIM2_RUN_PART_H_PRIME\"]=\"true\" ",
+            "to re-run the isolated small-ring V0/V1 elimination check.]")
 end
 println()
 ################################################################################
@@ -4565,7 +4583,12 @@ function _roots_at_fixed_t(poly_5var, t1_val, t2_val, w_names::Vector{String},
     up = zero(Rt)
     for k in 0:d
         ck = coeff(univ, [genloc[5]], [k])
-        up += Fp(ck) * Tvar^k
+        # ck is still an element of Rloc (an FqMPolyRingElem) no matter how
+        # many variables/exponents are passed to coeff() -- AbstractAlgebra's
+        # coeff() always returns a same-ring element, it never drops down to
+        # the base field. constant_coefficient() is the call that actually
+        # extracts an FqFieldElem.
+        up += constant_coefficient(ck) * Tvar^k
     end
     rts = roots(up)
     return [r for (r, _mult) in rts]
