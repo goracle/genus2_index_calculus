@@ -4482,6 +4482,168 @@ else
 end
 println("="^70)
 
+################################################################################
+# MUMFORD OVERLAP TEST: pre-correction vs post-correction.
+#
+# Claire's manual test (already run, by hand, once): fix two of the four
+# unknowns (say a1,a2), solve U0=U1=0 for the remaining two (b1,b2) --
+# generically a finite set, found to be a PAIR of solutions -- then solve
+# V0=V1=0 for the SAME fixed a1,a2, found to be a SINGLE solution, and
+# check overlap between the U-pair and the V-singleton. Result: overlap
+# was empty, every trial.
+#
+# This section automates that test and runs it TWICE per sample: once
+# against results["B_result"] (step2, the RAW resultant-chain object,
+# BEFORE correct_multiplicity's hand-fit e2==3*e1 division), and once
+# against results["corrected"] (the object AFTER that division). If
+# overlap is empty in both, the break predates correct_multiplicity
+# entirely (upstream in the resultant chain or the per-sample independent
+# tower reduction). If overlap is nonempty pre-correction but empty
+# post-correction, correct_multiplicity's hand-fit rule is directly
+# implicated -- it is stripping the sheet that would have produced the
+# genuine overlap.
+#
+# IMPORTANT ASYMMETRY, matching what _run_bench already establishes: U0,
+# U1, V0, V1 for a given sample each live in THEIR OWN 5-variable ring
+# (gens_small = [w1,w2,t1,t2,target_name] built fresh per target inside
+# _run_bench), not a shared ring -- so this harness evaluates each
+# polynomial independently via substitution, rather than assuming they
+# share generators. t1,t2 are fixed to the SAME concrete GF(p) values
+# across all four polynomials for a given trial, which is the only
+# cross-target coupling this test relies on.
+#
+# Root-finding note: after eliminating w1,w2, each of U0/U1/V0/V1
+# (whether step2 or corrected) is, generically, a nonconstant polynomial
+# in the target variable T alone once t1,t2 are fixed to numbers -- i.e.
+# substituting t1,t2 turns e.g. U0(t1,t2,T) into a univariate poly in T.
+# roots() over GF(p) is used directly; this is exact, not a numerical
+# approximation, since everything here is already over GF(p).
+################################################################################
+
+println()
+println("="^70)
+println("MUMFORD OVERLAP TEST: pre-correction (step2) vs post-correction")
+println("="^70)
+println()
+println("Automates Claire's manual test: fix two unknowns, solve U0=U1=0 for")
+println("the other two (expect a finite set), solve V0=V1=0 for the SAME fixed")
+println("values, check overlap. Run against BOTH the raw resultant-chain object")
+println("(pre correct_multiplicity) and the corrected object (post), so a")
+println("difference in overlap isolates whether correct_multiplicity's hand-fit")
+println("e2==3*e1 rule is where the U/V coupling breaks.")
+println()
+
+function _roots_at_fixed_t(poly_5var, t1_val, t2_val, w_names::Vector{String},
+                            t_names::Vector{String}, target_name::String, Fp)
+    # poly_5var lives in polynomial_ring(F, [w1,w2,t1,t2,target_name]) (or
+    # the same ring with w1,w2 already eliminated -- either way this ring
+    # is what _run_bench built as R_small for this target/sample). Evaluate
+    # w1,w2 -> 0 (they're eliminated, i.e. the polynomial has degree 0 in
+    # them already; evaluating at 0 is a no-op check, not an approximation
+    # -- if this assumption is wrong, the resulting polynomial having
+    # unexpectedly low degree in the substituted t1,t2 values below would
+    # be the tell) and t1,t2 -> the fixed trial values, leaving a
+    # univariate polynomial in target_name alone.
+    Rloc = parent(poly_5var)
+    genloc = gens(Rloc)
+    # gens_small order in _run_bench is [w1,w2,t1,t2,T] (see _run_bench's
+    # `w1, w2, t1, t2, T = gens_small`), matched positionally here.
+    images = [Fp(0), Fp(0), Fp(t1_val), Fp(t2_val), genloc[5]]
+    univ = evaluate(poly_5var, images)
+    # univ is now an element of Rloc but with degree 0 in w1,w2,t1,t2 --
+    # extract it as a genuine univariate polynomial in the target variable
+    # via poly_coeffs_in-style coefficient extraction against genloc[5].
+    if iszero(univ)
+        return Fp[]   # identically zero after substitution -- every value
+                       # is a "root"; report as empty here and flag by
+                       # printing the h_s/degree context around the call
+                       # site rather than silently treating it as "no
+                       # solutions", since those are very different facts.
+    end
+    Rt, Tvar = polynomial_ring(Fp, string(target_name))
+    d = total_degree(univ)
+    up = zero(Rt)
+    for k in 0:d
+        ck = coeff(univ, [genloc[5]], [k])
+        up += Fp(ck) * Tvar^k
+    end
+    rts = roots(up)
+    return [r for (r, _mult) in rts]
+end
+
+function mumford_overlap_test(all_bench_results::Dict{String,Any},
+                                t_names::Vector{String}, w_names::Vector{String},
+                                sample_num::Int, t1_val, t2_val, Fp;
+                                which::Symbol = :corrected)
+    key_field = which == :corrected ? "corrected" : "B_result"
+    u0r = get(all_bench_results, "U0_sample$(sample_num)", nothing)
+    u1r = get(all_bench_results, "U1_sample$(sample_num)", nothing)
+    v0r = get(all_bench_results, "V0_sample$(sample_num)", nothing)
+    v1r = get(all_bench_results, "V1_sample$(sample_num)", nothing)
+    if any(r === nothing || (r isa Dict && haskey(r, "error")) for r in (u0r, u1r, v0r, v1r))
+        println("  ** skipping trial (t1=$t1_val, t2=$t2_val): one or more of ",
+                "U0/U1/V0/V1 sample $sample_num has no valid bench result **")
+        return nothing
+    end
+
+    u0_roots = _roots_at_fixed_t(u0r[key_field], t1_val, t2_val, w_names, t_names, "U0", Fp)
+    u1_roots = _roots_at_fixed_t(u1r[key_field], t1_val, t2_val, w_names, t_names, "U1", Fp)
+    v0_roots = _roots_at_fixed_t(v0r[key_field], t1_val, t2_val, w_names, t_names, "V0", Fp)
+    v1_roots = _roots_at_fixed_t(v1r[key_field], t1_val, t2_val, w_names, t_names, "V1", Fp)
+
+    # "Solve U0=U1=0" means the COMMON roots of the U0 and U1 univariate
+    # polynomials at this fixed (t1,t2) -- not the union. Same for V.
+    u_common = intersect(u0_roots, u1_roots)
+    v_common = intersect(v0_roots, v1_roots)
+    overlap = intersect(u_common, v_common)
+
+    println("  [$(key_field)] t1=$t1_val t2=$t2_val  ",
+            "U0 roots=", length(u0_roots), " U1 roots=", length(u1_roots),
+            " U-common=", length(u_common), "  ",
+            "V0 roots=", length(v0_roots), " V1 roots=", length(v1_roots),
+            " V-common=", length(v_common), "  ",
+            "overlap=", length(overlap))
+
+    return (u_common = u_common, v_common = v_common, overlap = overlap)
+end
+
+# Run a small batch of trials, mirroring Claire's manual test, against
+# BOTH pre- and post-correction objects, for both samples. Trial (t1,t2)
+# values are arbitrary nonzero field elements -- not chosen for any
+# special structure, matching "plugged in two values for x's" in the
+# manual test this automates.
+const MUMFORD_OVERLAP_TRIALS = [(3, 7), (11, 19), (101, 257), (1009, 2003)]
+
+println("Running ", length(MUMFORD_OVERLAP_TRIALS), " trial(s) per sample, ",
+        "against both pre-correction (B_result) and post-correction (corrected) objects...")
+println()
+
+Fp_check = GF(p)
+for sample_num in (1, 2)
+    t_names_s = sample_num == 1 ? ["a1", "a2"] : ["b1", "b2"]
+    w_names_s = sample_num == 1 ? ["wa1", "wa2"] : ["wb1", "wb2"]
+    println("-- sample $sample_num ($(t_names_s[1]),$(t_names_s[2])) --")
+    for (t1v, t2v) in MUMFORD_OVERLAP_TRIALS
+        println("  trial t1=$t1v t2=$t2v:")
+        mumford_overlap_test(all_bench_results, t_names_s, w_names_s, sample_num,
+                              t1v, t2v, Fp_check; which = :B_result)
+        mumford_overlap_test(all_bench_results, t_names_s, w_names_s, sample_num,
+                              t1v, t2v, Fp_check; which = :corrected)
+    end
+    println()
+end
+
+println("READOUT: if overlap is consistently 0 for BOTH :B_result and :corrected")
+println("across all trials, the U/V coupling break predates correct_multiplicity")
+println("entirely -- look upstream (resultant chain, or the per-sample independent")
+println("tower reduction in trial3_phi_symbolic_unified.jl's _reduce_tower_coeffs,")
+println("which the code's own comments already flag as a candidate for exactly")
+println("this failure mode). If overlap is nonzero for :B_result but 0 for")
+println(":corrected in the SAME trial, correct_multiplicity's hand-fit e2==3*e1")
+println("rule is directly implicated: it is stripping the sheet that carries the")
+println("genuine Mumford-consistent solution.")
+println("="^70)
+
 
 
 
