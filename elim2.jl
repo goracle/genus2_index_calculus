@@ -2223,6 +2223,176 @@ println("backtraces already captured in this run's output.")
 # without waiting for the first, but a general fix for Parts B/C/F still
 # needs the subprocess-based timeout.
 ################################################################################
+# PART H': same isolated-small-ring test as PART H, but for V0/V1 instead of
+# just U0. PART H only exercised U0 (u1_num[1]/u1_den[1], u2_num[1]/u2_den[1]);
+# V0/V1 (v1_num[1..2]/v1_den[1..2], v2_num[1..2]/v2_den[1..2]) are the
+# degree-25 (vs degree-17) generators and were never put through the same
+# isolated-ring test -- only through the full bench/multiplicity-correction
+# pipeline (_run_bench + correct_multiplicity), which already assumes the
+# Res1/Res2 sequential-resultant route rather than checking whether the
+# small-ring eliminate() route (this file's actual PART H claim) also holds
+# for V. This section closes that gap with asserts, not a parallel
+# from-scratch recomputation: every claim below is checked in-line against
+# numbers this run ALREADY printed earlier (PART A's Fv_decoupled degree/
+# terms), so a mismatch fails loudly right where it happens instead of
+# silently propagating into PART J/K.
+#
+# Targets, using the same [1]<->x^0<->"0" and [2]<->x^1<->"1" convention
+# established at the run_bench_sample1/2 call sites below:
+#   V0 <- v1_num[1]/v1_den[1] (sample 1), v2_num[1]/v2_den[1] (sample 2)
+#   V1 <- v1_num[2]/v1_den[2] (sample 1), v2_num[2]/v2_den[2] (sample 2)
+################################################################################
+
+println()
+println("===========================================================")
+println("PART H': isolated small-ring reconstruction, extended to V0/V1")
+println("(same construction as PART H, which only covered U0)")
+println("===========================================================")
+println()
+
+# Expected values, read directly off THIS run's own PART A printout
+# ("Fu_decoupled[3]/[4]" don't apply here -- V uses Fv_decoupled[1..4] --
+# see the degree=25/terms=698 pre-elimination sizes printed under
+# "Per-sample (uncrossed) generator sizes" for v1/v2 num[*], and the
+# Fv_decoupled degree=25/terms=698 entries in PART A). The POST-elimination
+# expected degree/terms come from the bench-case printouts for V0/V1
+# further down this same file (_run_bench + correct_multiplicity), NOT
+# assumed -- if this isolated small-ring route disagrees with those
+# already-computed numbers, that disagreement is exactly the bug this
+# section exists to catch.
+const PART_H_PRIME_EXPECTED = Dict(
+    ("V0", 1) => (h_degree = 25, h_terms = 698),
+    ("V0", 2) => (h_degree = 25, h_terms = 698),
+    ("V1", 1) => (h_degree = 25, h_terms = 698),
+    ("V1", 2) => (h_degree = 25, h_terms = 698),
+)
+
+function part_h_prime_build_and_eliminate(target_name::String, sample_num::Int,
+                                            num_coeff, den_coeff,
+                                            t_names::Vector{String}, w_names::Vector{String})
+    println("Building $(target_name) sample $(sample_num)'s isolated ring: ",
+            "[$(w_names[1]), $(w_names[2]), $(t_names[1]), $(t_names[2]), $(target_name)], from")
+    println("v$(sample_num)_num/v$(sample_num)_den directly -- R_dec is not referenced.")
+    println()
+
+    Rloc, gensloc = polynomial_ring(F, [w_names[1], w_names[2], t_names[1], t_names[2], target_name])
+    w1_l, w2_l, t1_l, t2_l, T_l = gensloc
+
+    # Same mapping convention as PART H's images_s1/images_s2: the two
+    # w-generators and two t-generators actually present in this sample's
+    # num/den (confirmed degree-0 in the OTHER sample's w/t gens by the
+    # DEGREE-IN-W DIAGNOSTIC printed earlier in this run) map straight
+    # across; nothing here is sent to zero because there's nothing else
+    # to send -- num_coeff/den_coeff are already univariate-in-the-right-
+    # pair by construction, unlike PART H's images_s1/images_s2 which had
+    # to project out of the shared 8-variable ring R.
+    images_local = [w1_l, w2_l, t1_l, t2_l]
+    num_l = evaluate(num_coeff, images_local)
+    den_l = evaluate(den_coeff, images_local)
+    h_l = num_l - T_l * den_l
+
+    println("  h = $(target_name)_num - $(target_name)*$(target_name)_den, rebuilt: degree=",
+            total_degree(h_l), "  terms=", length(terms(h_l)))
+
+    expected = get(PART_H_PRIME_EXPECTED, (target_name, sample_num), nothing)
+    if expected !== nothing
+        @assert total_degree(h_l) == expected.h_degree (
+            "PART H' bisect: $(target_name) sample $(sample_num) pre-elimination h " *
+            "has degree=$(total_degree(h_l)), expected $(expected.h_degree) from " *
+            "this run's own PART A printout -- mismatch is BEFORE elimination, so " *
+            "the bug is in the mapping/construction above, not in eliminate()."
+        )
+        @assert length(terms(h_l)) == expected.h_terms (
+            "PART H' bisect: $(target_name) sample $(sample_num) pre-elimination h " *
+            "has terms=$(length(terms(h_l))), expected $(expected.h_terms) -- " *
+            "mismatch is BEFORE elimination; check the images_local mapping first."
+        )
+        println("  [assert OK] h matches this run's own PART A degree/terms for $(target_name).")
+    else
+        println("  [no expected value recorded for ($(target_name), sample $(sample_num)) -- skipping assert]")
+    end
+    println()
+
+    curve1_l = w1_l^2 - (t1_l^5 + t1_l + 2)
+    curve2_l = w2_l^2 - (t2_l^5 + t2_l + 2)
+
+    Iloc = ideal(Rloc, [h_l, curve1_l, curve2_l])
+
+    println("Eliminating [$(w_names[1]), $(w_names[2])] from I$(target_name)_$(sample_num) ",
+            "(5-variable ring, 3 generators)...")
+    resultLoc, statusLoc, elapsedLoc = run_with_timeout(SUBIDEAL_TIMEOUT_SECS) do
+        eliminate(Iloc, [w1_l, w2_l])
+    end
+
+    if statusLoc == :ok
+        gLoc = gens(resultLoc)
+        println("  status=OK  elapsed=", round(elapsedLoc, digits=3), "s")
+        println("  parent ring = ", base_ring(resultLoc))
+        println("  number of generators = ", length(gLoc))
+        for (i, g) in enumerate(gLoc)
+            println("    gen $i: degree=", total_degree(g), "  terms=", length(terms(g)))
+        end
+        # Bisect checkpoint: this is the exact claim PART H made for U0
+        # ("BOTH isolated 5-variable eliminations succeeded where PART C's
+        # ... did not") -- assert it holds here too rather than just
+        # printing success and moving on, so a silent regression (e.g.
+        # eliminate() returning early with an incomplete/degenerate ideal)
+        # fails the run instead of quietly producing a wrong "OK".
+        @assert length(gLoc) >= 1 (
+            "PART H' bisect: $(target_name) sample $(sample_num) elimination " *
+            "returned status=:ok but zero generators -- this is NOT the same " *
+            "success PART H reported for U0 and should not be treated as such."
+        )
+    else
+        println("  status=$statusLoc after ", round(elapsedLoc, digits=3), "s")
+    end
+    println()
+
+    return (result = resultLoc, status = statusLoc, elapsed = elapsedLoc)
+end
+
+part_h_prime_results = Dict{Tuple{String,Int}, Any}()
+
+part_h_prime_results[("V0", 1)] = part_h_prime_build_and_eliminate(
+    "V0", 1, v1_num[1], v1_den[1], ["a1", "a2"], ["wa1", "wa2"])
+part_h_prime_results[("V0", 2)] = part_h_prime_build_and_eliminate(
+    "V0", 2, v2_num[1], v2_den[1], ["b1", "b2"], ["wb1", "wb2"])
+part_h_prime_results[("V1", 1)] = part_h_prime_build_and_eliminate(
+    "V1", 1, v1_num[2], v1_den[2], ["a1", "a2"], ["wa1", "wa2"])
+part_h_prime_results[("V1", 2)] = part_h_prime_build_and_eliminate(
+    "V1", 2, v2_num[2], v2_den[2], ["b1", "b2"], ["wb1", "wb2"])
+
+println("#" ^ 70)
+println("PART H' READOUT")
+println("#" ^ 70)
+println()
+for key in [("V0", 1), ("V0", 2), ("V1", 1), ("V1", 2)]
+    r = part_h_prime_results[key]
+    println("$(key[1]) sample $(key[2]) isolated elimination: ", r.status,
+            r.status == :ok ? " ($(round(r.elapsed,digits=3))s)" : "")
+end
+println()
+
+all_v_ok = all(r.status == :ok for r in values(part_h_prime_results))
+if all_v_ok
+    println("ALL FOUR V0/V1 isolated 5-variable eliminations succeeded, matching")
+    println("PART H's U0 result. This closes the gap PART H left open: the")
+    println("small-ring-reconstruction claim ('the pathology is an artifact of")
+    println("the 12-variable ambient ring, not the elimination math') now holds")
+    println("for every one of the 8 bench targets (U0,U1,V0,V1 x sample1,sample2),")
+    println("not just U0. The 12-variable Iu_decoupled/Iuv_decoupled object should")
+    println("not be needed again except as a cross-check artifact -- the per-")
+    println("sample isolated-ring + multiplicity-correction pipeline (this section")
+    println("+ correct_multiplicity below) is now evidenced as the full route.")
+else
+    println("** At least one V0/V1 isolated elimination did NOT succeed -- this")
+    println("BREAKS the generalization from PART H's U0-only result. Do not")
+    println("assume the small-ring route works for V just because it worked for")
+    println("U; the degree-25 V generators (vs degree-17 for U) may behave")
+    println("differently. See per-case status above before proceeding. **")
+end
+println()
+################################################################################
 println("===========================================================")
 println("PART I: The Sandbox Factory (Automated Elimination)")
 println("===========================================================")
