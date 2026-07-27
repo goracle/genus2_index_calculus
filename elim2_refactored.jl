@@ -23,13 +23,15 @@
 #
 #  The five original units, and the submodule each now lives in:
 #
-#    1. elim2.jl proper (original lines 1-1090, plus its PART A-K
-#       continuation at original lines ~5007-8396)      -> submodule Elim2Main
+#    1. elim2.jl proper (original lines 1-1090)          -> submodule Elim2Main
 #    2. norm_elim_diag.jl (original lines 1091-2853)     -> submodule NormElimDiag
 #    3. part_i_squarefree_diag.jl (original lines 2854-3964)
 #                                                          -> submodule PartISquarefreeDiag
 #    4. part_i_eliminate_vs_resultant_bench.jl (original lines 3965-~5006)
 #                                                          -> submodule PartIBench
+#    5. elim2.jl's own PART K continuation ("The Final Collision",
+#       original lines 4684-8017; original lines 8019-8397 are the
+#       dead/removed PART G block, kept as a comment)     -> submodule PartKResultant
 #
 #  Each submodule exposes one or more `run_*` functions instead of running
 #  at top-level on `include`. Shared per-script state (what used to be
@@ -1277,6 +1279,67 @@ function run_norm_before_vs_after_experiment(res1, fufv::FuFv, tring::TargetRing
     end
 
     return (c00 = c00, c01 = c01, c10 = c10, c11 = c11)
+end
+
+"""
+    run_main(PhiSymbolic; cfg=default_curve_config())
+
+Top-level entry point for this submodule, reproducing original elim2.jl
+lines 1-1090 end to end, in original order:
+
+  1. build both samples' specs (`default_sample1`/`default_sample2`) and
+     call `PhiSymbolic.symbolic_residual` for each (`call_symbolic_residual`)
+  2. build the shared 8-variable target ring (`build_target_ring`)
+  3. map each sample's u_RS/v_RS coefficients into that ring
+     (`map_sample`), checking the Mumford identity as it goes, then print
+     the combined report (`report_mapped_samples`)
+  4. run the a1<->a2 / b1<->b2 swap-symmetry checks (`run_symmetry_checks`)
+  5. build the match spec (`build_match_spec`) and the cross-multiplied
+     Fu/Fv equations (`build_fu_fv`)
+  6. run the degree-in-w diagnostic (`run_degree_in_w_diagnostic`)
+  7. build the decoupled U/V system (`build_decoupled_system`)
+  8. run the per-layer degree trace and the norm-before-vs-after
+     experiment (`run_per_layer_degree_trace`,
+     `run_norm_before_vs_after_experiment`)
+
+Returns a NamedTuple bundling every intermediate object downstream
+submodules need (`s1`, `s2`, `tring`, `fufv`, `decoupled`, etc.) --
+NormElimDiag's PART A-K continuation and PartKResultant both take pieces
+of this as explicit arguments rather than reading globals, so
+`Elim2.run_all` just plumbs this return value through.
+"""
+function run_main(PhiSymbolic; cfg::CurveConfig = default_curve_config())
+    spec1 = default_sample1()
+    spec2 = default_sample2()
+
+    res1 = call_symbolic_residual(PhiSymbolic, spec1, cfg; label = "sample 1")
+    res2 = call_symbolic_residual(PhiSymbolic, spec2, cfg; label = "sample 2")
+
+    tring = build_target_ring(cfg)
+
+    s1 = map_sample(res1, [tring.a1, tring.a2], [tring.wa1, tring.wa2], cfg, tring,
+                     [tring.curve_a1, tring.curve_a2]; label = "sample 1")
+    s2 = map_sample(res2, [tring.b1, tring.b2], [tring.wb1, tring.wb2], cfg, tring,
+                     [tring.curve_b1, tring.curve_b2]; label = "sample 2")
+    report_mapped_samples(s1, s2; K1 = spec1.K, K2 = spec2.K)
+
+    symmetry = run_symmetry_checks(s1, s2, tring)
+
+    check_sample_degrees_match(s1, s2)
+    mspec = build_match_spec(s1, s2)
+    fufv = build_fu_fv(s1, s2, mspec)
+
+    run_degree_in_w_diagnostic(s1, s2, fufv, tring)
+
+    decoupled = build_decoupled_system(s1, s2, mspec, tring)
+
+    per_layer = run_per_layer_degree_trace(res1, [tring.a1, tring.a2], [tring.wa1, tring.wa2], s1)
+    norm_experiment = run_norm_before_vs_after_experiment(res1, fufv, tring)
+
+    return (cfg = cfg, spec1 = spec1, spec2 = spec2, res1 = res1, res2 = res2,
+            tring = tring, s1 = s1, s2 = s2, symmetry = symmetry, mspec = mspec,
+            fufv = fufv, decoupled = decoupled, per_layer = per_layer,
+            norm_experiment = norm_experiment)
 end
 
 end # module Elim2Main
@@ -2844,8 +2907,4040 @@ function run_norm_elim_diag(PhiSymbolic; full_sweep_b::Bool=false, full_sweep_c:
     return (res1 = res1, cfg = cfg, dring = dring, dmapped = dmapped, results = results)
 end
 
+"""
+    run_all_diagnostics(PhiSymbolic, main; full_sweep_b=false)
+
+Top-level entry point for original lines ~1478-2848 (the PART A-J
+continuation against Elim2Main's `DecoupledSystem`, as opposed to
+`run_norm_elim_diag`'s standalone sample-1-only experiment above). Takes
+`main`, the NamedTuple returned by `Elim2Main.run_main`, and threads its
+`decoupled`/`res1`/`s1`/`s2` fields through PARTS A, B, D, E, H, H', and
+J in original order:
+
+  - PART A (`run_part_a_static_diagnostics`) -- static structural facts,
+    also yields `curve_gens_d`, needed by B and D below
+  - PART B (`run_part_b_subideal_sweep!`; `full_sweep=false` by default
+    -- k=2 previously timed out and k=3 segfaulted Singular in this
+    exact construction, see that function's own docstring)
+  - PART C: skipped. Dead code in the original (`if false # this times
+    out ... end`) -- `run_part_c_variable_sweep` is defined but
+    deliberately not called here, matching the original's disabled state.
+  - PART D (`run_part_d_dim_codim`)
+  - PART E (`run_part_e_ordering_note`)
+  - PART G: skipped. Also dead code in the original (`if false # this
+    section segfaults ... end`) -- `run_part_g_fiber_product` is defined
+    but not called here either, for the same reason.
+  - PART H (`run_part_h_isolated_u0`), using this submodule's own
+    sample-1 `dmapped` (built fresh here via `run_sample1_residual`/
+    `build_diag_ring`/`map_sample1`, exactly as `run_norm_elim_diag`
+    does -- both need `PhiSymbolic` to recompute sample 1's residual in
+    this submodule's own 4-variable DiagRing rather than reusing
+    `main.res1`, matching the original's genuine duplication) together
+    with `main.s2` (Elim2Main's sample-2 MappedSample)
+  - PART H' (`run_part_h_prime_isolated_v0v1`), using `main.s1`/`main.s2`
+    directly -- no-ops unless `ENV["ELIM2_RUN_PART_H_PRIME"]="true"`
+  - PART J (`run_part_j!`), using `main.res1` (Elim2Main's own sample-1
+    residual, matching the original's single top-level `res1` -- PART J's
+    coefficient counts come from the full two-sample pipeline, not this
+    submodule's standalone `res1_local`)
+
+Returns a NamedTuple bundling every part's result, plus
+`clean_sample_1`/`clean_sample_2` at the top level (from PART J) since
+`PartKResultant.run_part_k!` needs those directly.
+"""
+function run_all_diagnostics(PhiSymbolic, main; full_sweep_b::Bool=false)
+    cfg = default_diag_curve_config()
+    spec = default_diag_sample1()
+    res1_local = run_sample1_residual(PhiSymbolic, spec, cfg)
+    dring = build_diag_ring(cfg)
+    dmapped = map_sample1(res1_local, dring)
+
+    part_a = run_part_a_static_diagnostics(main.decoupled)
+    curve_gens_d = part_a.curve_gens_d
+
+    run_part_b_subideal_sweep!(main.decoupled, curve_gens_d; full_sweep = full_sweep_b)
+
+    run_part_d_dim_codim(main.decoupled, curve_gens_d)
+    run_part_e_ordering_note(main.decoupled)
+
+    run_part_h_isolated_u0(dmapped, main.s2)
+    run_part_h_prime_isolated_v0v1(main.s1, main.s2)
+
+    part_j = run_part_j!(main.res1)
+
+    return (part_a = part_a, dmapped = dmapped,
+            clean_sample_1 = part_j.clean_sample_1, clean_sample_2 = part_j.clean_sample_2)
+end
+
 end # module NormElimDiag
 
-PLACEHOLDER_FOR_PARTISQUAREFREEDIAG
+################################################################################
+#
+#  Submodule: PartISquarefreeDiag
+#
+#  Encapsulation of part_i_squarefree_diag.jl (original lines 2854-3964).
+#  Diagnostic + production machinery answering: given
+#      gA = Groebner eliminate() generator      (PATH A)
+#      gB = sequential resultant chain result    (PATH B)
+#  do gA and gB factor into the SAME SET of irreducible factors (up to
+#  unit scalars), differing only in multiplicity -- and, if so, can the
+#  excess multiplicity introduced by chaining two resultants be divided
+#  back out WITHOUT ever computing gA (i.e. without Groebner at all)?
+#
+#  Reuses `canonical_factor_key`/`factor_multiset` from NormElimDiag
+#  (originally redefined a second, identical time in part_i_squarefree_
+#  diag.jl itself -- the original file is a flat top-to-bottom script
+#  with no function hoisting, so the redefinition was harmless there;
+#  this refactor uses ordinary code reuse across submodules instead).
+#
+################################################################################
+module PartISquarefreeDiag
+
+using Oscar
+using ..NormElimDiag: canonical_factor_key, factor_multiset
+
+################################################################################
+# CHECK_GROEBNER: master switch for the expensive Gröbner verification
+# path used by `verify_correction` below. This constant is originally
+# defined later in the flat file (inside part_i_eliminate_vs_resultant_
+# bench.jl, i.e. submodule PartIBench), but `verify_correction`'s default
+# argument reads it, so it must exist wherever `verify_correction` is
+# defined. Declared here as its own module-local `const` (read once at
+# load time, same ENV-var convention as the original) rather than
+# importing it from PartIBench, since PartIBench is a separate submodule
+# built on top of this one, not the other way around -- PartIBench's own
+# copy of this same `const` (when that submodule is ported) governs its
+# own PATH A/gate logic, and the two are independent reads of the same
+# environment variable, matching the original's single global constant
+# being visible to both scripts by load order.
+################################################################################
+
+const CHECK_GROEBNER = get(ENV, "ELIM2_CHECK_GROEBNER", "false") == "true"
+
+################################################################################
+# SQUAREFREE / MULTIPLICITY DIAGNOSTIC.
+#
+# Question: given gA (Groebner eliminant) and gB (resultant-chain
+# result), is gA recoverable from gB by adjusting ONLY the exponents on
+# gB's irreducible factors -- i.e. do gA and gB factor into the SAME SET
+# of irreducibles (up to unit scalars), differing only in multiplicity?
+#
+#   Q1 (multiplicity-adjustable): same irreducible factor SET, any exponents
+#   Q2 (squarefree part):         same set, AND every gA exponent == 1
+################################################################################
+
+"""
+    squarefree_multiplicity_diagnostic(gA, gB; label="")
+
+Original lines 2937-3031. Core diagnostic. Prints a full report and
+returns a NamedTuple with the boolean verdicts so calling code can
+assert on them.
+"""
+function squarefree_multiplicity_diagnostic(gA, gB; label::AbstractString="")
+    println("="^70)
+    println("SQUAREFREE / MULTIPLICITY DIAGNOSTIC", isempty(label) ? "" : "  [$label]")
+    println("="^70)
+
+    t0 = time()
+    setA, facA = factor_multiset(gA)
+    setB, facB = factor_multiset(gB)
+    t_elapsed = time() - t0
+
+    keysA = Set(keys(setA))
+    keysB = Set(keys(setB))
+
+    only_in_A = setdiff(keysA, keysB)
+    only_in_B = setdiff(keysB, keysA)
+    shared    = intersect(keysA, keysB)
+
+    same_support = isempty(only_in_A) && isempty(only_in_B)
+
+    println("  factor() elapsed (both sides) = ", round(t_elapsed, digits=4), "s")
+    println("  PATH A (Groebner eliminant): ", length(keysA), " distinct irreducible factor(s)")
+    println("  PATH B (resultant chain)   : ", length(keysB), " distinct irreducible factor(s)")
+    println()
+
+    if !isempty(only_in_A)
+        println("  ** factors present in A but NOT in B (", length(only_in_A), "): **")
+        for k in only_in_A
+            println("       exponent in A = ", setA[k])
+        end
+    end
+    if !isempty(only_in_B)
+        println("  ** factors present in B but NOT in A (", length(only_in_B), "): **")
+        for k in only_in_B
+            println("       exponent in B = ", setB[k])
+        end
+    end
+
+    println()
+    println("  --- shared irreducible factors: exponent comparison ---")
+    println("  ", rpad("factor total_degree", 22), rpad("exp in A", 10), rpad("exp in B", 10), "ratio (B/A)")
+    all_exponents_match_1_in_A = true
+    ratios = Float64[]
+    for k in sort(collect(shared); by = kk -> setA[kk])
+        eA = setA[k]
+        eB = setB[k]
+        # recover degree for display by re-parsing one term isn't cheap;
+        # instead just report exponents, which is what matters here.
+        push!(ratios, eB / eA)
+        if eA != 1
+            all_exponents_match_1_in_A = false
+        end
+        println("  ", rpad("(see key)", 22), rpad(eA, 10), rpad(eB, 10), round(eB/eA, digits=3))
+    end
+
+    # Q1: multiplicity-adjustable recovery.
+    # gA is recoverable from gB by adjusting ONLY exponents iff they share
+    # exactly the same set of irreducible factors (no factor appears in
+    # one and not the other), regardless of what those exponents are.
+    q1_multiplicity_adjustable = same_support
+
+    # Q2: strict squarefree-part relationship.
+    # gA == squarefree_part(gB) iff (Q1 holds) AND every exponent in A is 1.
+    q2_is_squarefree_part_of_B = same_support && all_exponents_match_1_in_A
+
+    println()
+    println("  --- verdicts ---")
+    println("  Q1 (same irreducible-factor SET; multiplicities may differ freely): ",
+            q1_multiplicity_adjustable ? "TRUE  -- gA IS recoverable from gB by re-exponentiating factors" :
+                                          "FALSE -- gA has/lacks factors that gB lacks/has; no exponent adjustment can fix this")
+    println("  Q2 (gA is exactly the squarefree part of gB, i.e. all A-exponents == 1): ",
+            q2_is_squarefree_part_of_B ? "TRUE" : "FALSE")
+
+    if q1_multiplicity_adjustable && !q2_is_squarefree_part_of_B
+        println("  => gA is a *non-trivial reweighting* of gB's factors (not simply squarefree-part(gB)).")
+        println("     Exponent map (A -> B): ", Dict(k => (setA[k], setB[k]) for k in shared))
+    end
+
+    println("="^70)
+
+    return (
+        same_support = same_support,
+        q1_multiplicity_adjustable = q1_multiplicity_adjustable,
+        q2_is_squarefree_part_of_B = q2_is_squarefree_part_of_B,
+        exponents_A = setA,
+        exponents_B = setB,
+        only_in_A = only_in_A,
+        only_in_B = only_in_B,
+    )
+end
+
+################################################################################
+# Convenience wrapper matching the bench script's own naming: call this
+# right after PATH A / PATH B are both computed inside
+# part_i_eliminate_vs_resultant_bench.jl (gA = eliminate() generator,
+# gB = final chained resultant, e.g. Res_{w2}).
+################################################################################
+
+"""
+    run_diag_on_bench_result(bench_result; label="")
+
+Original lines 3040-3044. Adjust field names below if the bench
+script's return struct differs; written against the (gA, gB) naming
+used in `squarefree_multiplicity_diagnostic`'s own docstring.
+"""
+function run_diag_on_bench_result(bench_result; label::AbstractString="")
+    return squarefree_multiplicity_diagnostic(bench_result.gA, bench_result.gB; label=label)
+end
+
+################################################################################
+# STAGE TRACE: localize exactly where multiplicity inflation is introduced.
+#
+#   Res1 = resultant(h_s, curve1, w1)          -- eliminate w1 only
+#   Res2 = resultant(Res1, curve2, w2)          -- eliminate w2, chained from Res1
+#   gA   = Groebner eliminate() generator       -- eliminates both at once
+#
+# We factor all three, key every irreducible factor by canonical_factor_key
+# (so "F1"/"F2" mean the same associate class across all three objects, not
+# just whatever order factor() happens to emit), and print one row per
+# factor showing its exponent at each stage. This answers, directly from
+# data:
+#   - is F2 present in Res1 already, and at what multiplicity?
+#   - does the exponent change Res1 -> Res2 (inflation during 2nd resultant)?
+#   - does it change Res2 -> Groebner (i.e. does Res2 already match Groebner,
+#     meaning nothing is wrong after all)?
+# No claim is made about WHY beyond what the numbers show.
+################################################################################
+
+"""
+    factor_stage_trace(Res1, Res2, gA; label="")
+
+Original lines 3078-3192. Factor `Res1`, `Res2`, and `gA` (Groebner
+eliminant), key their irreducible factors canonically, and print a
+table of exponent-per-stage for every factor that appears in ANY of the
+three, plus explicit notes on:
+  - whether each factor is present/absent at each stage
+  - the exponent delta Res1->Res2 and Res2->gA per factor
+
+Returns a NamedTuple with the raw per-stage Dict{key,exponent} maps and
+a Vector of per-factor row NamedTuples, so downstream code can assert
+on specific deltas instead of re-parsing printed output.
+"""
+function factor_stage_trace(Res1, Res2, gA; label::AbstractString="")
+    println("="^70)
+    println("FACTOR STAGE TRACE", isempty(label) ? "" : "  [$label]")
+    println("  Res1 = resultant(h_s, curve1, w1)")
+    println("  Res2 = resultant(Res1, curve2, w2)")
+    println("  gA   = Groebner eliminate() generator")
+    println("="^70)
+
+    t0 = time()
+    set1, fac1 = factor_multiset(Res1)
+    t1 = time()
+    set2, fac2 = factor_multiset(Res2)
+    t2 = time()
+    setA, facA = factor_multiset(gA)
+    t3 = time()
+
+    println("  factor(Res1) elapsed = ", round(t1 - t0, digits=4), "s  -> ", length(set1), " distinct factor(s)")
+    println("  factor(Res2) elapsed = ", round(t2 - t1, digits=4), "s  -> ", length(set2), " distinct factor(s)")
+    println("  factor(gA)   elapsed = ", round(t3 - t2, digits=4), "s  -> ", length(setA), " distinct factor(s)")
+    println()
+
+    all_keys = union(Set(keys(set1)), Set(keys(set2)), Set(keys(setA)))
+
+    # Order factors for display by their (Res2 exponent, then gA exponent,
+    # then Res1 exponent) descending, purely so the "big/interesting"
+    # factors surface first. This is a display choice only; it carries no
+    # mathematical meaning.
+    ordered_keys = sort(collect(all_keys);
+        by = k -> (get(set2, k, 0), get(setA, k, 0), get(set1, k, 0)),
+        rev = true)
+
+    # Assign short display labels F1, F2, F3, ... in this same order so the
+    # printed table matches the "F1 / F2" language used in conversation.
+    label_of = Dict(k => "F$(i)" for (i, k) in enumerate(ordered_keys))
+
+    println("  ", rpad("factor", 8), rpad("Res1", 8), rpad("Res2", 8), rpad("Groebner", 10),
+            rpad("Δ(1->2)", 10), "Δ(2->A)")
+    rows = NamedTuple[]
+    for k in ordered_keys
+        e1 = get(set1, k, 0)
+        e2 = get(set2, k, 0)
+        eA = get(setA, k, 0)
+        d12 = e2 - e1
+        d2A = eA - e2
+        flags = String[]
+        e1 == 0 && push!(flags, "ABSENT in Res1")
+        e2 == 0 && push!(flags, "ABSENT in Res2")
+        eA == 0 && push!(flags, "ABSENT in Groebner")
+        println("  ", rpad(label_of[k], 8), rpad(e1, 8), rpad(e2, 8), rpad(eA, 10),
+                rpad(d12, 10), d2A, isempty(flags) ? "" : "   ** " * join(flags, ", ") * " **")
+        push!(rows, (
+            label = label_of[k],
+            key = k,
+            exp_Res1 = e1,
+            exp_Res2 = e2,
+            exp_Groebner = eA,
+            delta_1_to_2 = d12,
+            delta_2_to_A = d2A,
+        ))
+    end
+
+    println()
+    println("  --- localization ---")
+    for r in rows
+        if r.exp_Groebner == 0
+            continue  # not part of the final answer; skip localization commentary
+        end
+        if r.delta_1_to_2 == 0 && r.delta_2_to_A == 0
+            println("  ", r.label, ": exponent CONSTANT across all three stages (", r.exp_Res1, ") -- no inflation for this factor.")
+        elseif r.delta_1_to_2 != 0 && r.delta_2_to_A == 0
+            println("  ", r.label, ": inflation occurs ENTIRELY during the FIRST resultant (Res1) -- ",
+                    "already at exponent ", r.exp_Res1, " by Res1, unchanged through Res2 and matches Groebner-vs-Res2 gap of 0.")
+        elseif r.delta_1_to_2 == 0 && r.delta_2_to_A != 0
+            verb = r.delta_2_to_A > 0 ? "inflation" : "deflation"
+            println("  ", r.label, ": Res1 and Res2 AGREE (exponent ", r.exp_Res1,
+                    ") -- all ", verb, " relative to Groebner is a Res2-vs-Groebner gap, not introduced by either resultant step relative to each other.")
+        elseif sign(r.delta_1_to_2) == sign(r.delta_2_to_A) && r.delta_1_to_2 != 0
+            # Same-sign deltas: the two steps genuinely compound rather than
+            # cancel, so "accumulates" is the right word here.
+            verb = r.delta_1_to_2 > 0 ? "inflation ACCUMULATES" : "deflation ACCUMULATES"
+            println("  ", r.label, ": exponent CHANGES at both steps (Res1=", r.exp_Res1,
+                    " -> Res2=", r.exp_Res2, " -> Groebner=", r.exp_Groebner,
+                    ") -- ", verb, " across both resultant steps.")
+        else
+            # Opposite-sign deltas: the two steps move the exponent in
+            # different directions. If they land back where they started
+            # (net == 0) this is a round trip, not accumulation -- e.g.
+            # inflated by the second resultant, then fully cancelled by
+            # Groebner. Report the net change explicitly rather than
+            # calling this "accumulation," which would be backwards.
+            net = r.exp_Groebner - r.exp_Res1
+            if net == 0
+                println("  ", r.label, ": exponent CHANGES at both steps but NETS TO ZERO (Res1=", r.exp_Res1,
+                        " -> Res2=", r.exp_Res2, " -> Groebner=", r.exp_Groebner,
+                        ") -- Res2 inflates/deflates this factor and Groebner exactly cancels it back out; ",
+                        "no net inflation relative to Res1, so Res1 alone already reflects the true multiplicity.")
+            else
+                dir = net > 0 ? "net INFLATION" : "net DEFLATION"
+                println("  ", r.label, ": exponent CHANGES at both steps in OPPOSING directions (Res1=", r.exp_Res1,
+                        " -> Res2=", r.exp_Res2, " -> Groebner=", r.exp_Groebner,
+                        ") -- partial cancellation, with a ", dir, " of ", abs(net), " surviving overall.")
+            end
+        end
+    end
+
+    println("="^70)
+
+    return (
+        exponents_Res1 = set1,
+        exponents_Res2 = set2,
+        exponents_Groebner = setA,
+        labels = label_of,
+        rows = rows,
+    )
+end
+
+################################################################################
+# PART H2: INFLATION-VS-DIVISION DIAGNOSTIC (investigation only).
+#
+# Question: is the exponent inflation seen by factor_stage_trace (Res1 ->
+# Res2 -> Groebner) universal across every benchmark target, or an
+# accident of one degree-8 factor in one target? And when a factor
+# inflates (exp(Res2) > exp(Groebner)), does DIVIDING Res2 by the excess
+# power of that factor exactly reproduce the Groebner eliminant (up to
+# ideal equality / a unit)?
+#
+# This does NOT change the elimination algorithm. It only factors the
+# three already-computed objects (Res1, Res2, gA), matches factors
+# exactly as factor_stage_trace already does, and -- for every factor
+# whose exponent drops going from Res2 to Groebner -- performs an exact
+# polynomial division and checks whether the quotient reproduces gA.
+################################################################################
+
+"""
+    inflating_factor_division_diagnostic(Res1, Res2, gA; label="")
+
+Original lines 3235-3482. Automated per-benchmark diagnostic. Steps:
+
+  1. Factor Res1, Res2, gA (timed).
+  2. Match irreducible factors exactly via `canonical_factor_key`
+     (same matching used by `factor_stage_trace`).
+  3. Print one table row per matched factor: degree, term count, and
+     exponent at each stage, plus deltas/ratio.
+  4. Identify "inflating factors": exp(Res2) > exp(Groebner).
+  5. For each inflating factor F, compute
+         Q = Res2 / F^(exp(Res2) - exp(Groebner))
+     via exact polynomial division, then check `ideal(Q) == ideal(gA)`
+     and whether `Q == unit * gA` for some nonzero field-element unit.
+  6. Print total timing of factor(Res2) + division + verification, for
+     comparison against the Groebner elimination time already recorded
+     by the caller.
+  7. Print a concise per-target summary block.
+
+Returns a NamedTuple with the raw per-factor rows and per-inflating-
+factor verification results, so calling code can aggregate across all
+eight benchmarks without re-parsing printed output.
+"""
+function inflating_factor_division_diagnostic(Res1, Res2, gA; label::AbstractString="")
+    println("="^70)
+    println("INFLATION-VS-DIVISION DIAGNOSTIC", isempty(label) ? "" : "  [$label]")
+    println("  Res1 = resultant(h_s, curve1, w1)")
+    println("  Res2 = resultant(Res1, curve2, w2)")
+    println("  gA   = Groebner eliminate() generator")
+    println("="^70)
+
+    # ---- 1. Factor all three (timed individually; Res2's own timing is
+    #         also reported separately below for the "replacement
+    #         algorithm" cost comparison in step 6). ----
+    t0 = time()
+    set1, fac1 = factor_multiset(Res1)
+    t1 = time()
+    set2, fac2 = factor_multiset(Res2)
+    t_factor_res2 = time() - t1
+    setA, facA = factor_multiset(gA)
+    t3 = time()
+
+    println("  factor(Res1) elapsed = ", round(t1 - t0, digits=4), "s  -> ", length(set1), " distinct factor(s)")
+    println("  factor(Res2) elapsed = ", round(t_factor_res2, digits=4), "s  -> ", length(set2), " distinct factor(s)")
+    println("  factor(gA)   elapsed = ", round(t3 - t1 - t_factor_res2, digits=4), "s  -> ", length(setA), " distinct factor(s)")
+    println()
+
+    # ---- 2/3. Match + print table (same shape as factor_stage_trace). ----
+    all_keys = union(Set(keys(set1)), Set(keys(set2)), Set(keys(setA)))
+    ordered_keys = sort(collect(all_keys);
+        by = k -> (get(set2, k, 0), get(setA, k, 0), get(set1, k, 0)),
+        rev = true)
+    label_of = Dict(k => "F$(i)" for (i, k) in enumerate(ordered_keys))
+
+    poly_of_2 = Dict{String,Any}(canonical_factor_key(p) => p for (p, _e) in fac2)
+
+    println("  ", rpad("factor", 8), rpad("Res1", 8), rpad("Res2", 8), rpad("Groebner", 10), "ratio (Res2/Groebner)")
+    rows = NamedTuple[]
+    for k in ordered_keys
+        e1 = get(set1, k, 0)
+        e2 = get(set2, k, 0)
+        eA = get(setA, k, 0)
+        ratio_str = eA > 0 ? string(round(e2 / eA, digits=3)) : "n/a (absent in Groebner)"
+        println("  ", rpad(label_of[k], 8), rpad(e1, 8), rpad(e2, 8), rpad(eA, 10), ratio_str)
+        push!(rows, (label = label_of[k], key = k, exp_Res1 = e1, exp_Res2 = e2, exp_Groebner = eA))
+    end
+
+    # ---- 4. Identify inflating factors: exp(Res2) > exp(Groebner), and
+    #         the factor must actually be present in Res2 to divide by
+    #         it at all. ----
+    inflating = [r for r in rows if r.exp_Res2 > r.exp_Groebner && r.exp_Res2 > 0]
+
+    println()
+    println("  --- inflating factor(s) (exp(Res2) > exp(Groebner)): ", length(inflating), " ---")
+
+    verifications = NamedTuple[]
+    t0_div = time()
+    for r in inflating
+        excess = r.exp_Res2 - r.exp_Groebner
+        Fp = poly_of_2[r.key]
+        println("  ", r.label, ": exp(Res2)=", r.exp_Res2, "  exp(Groebner)=", r.exp_Groebner,
+                "  excess=", excess)
+
+        # ---- 5. Q = Res2 / F^excess, then compare against gA. ----
+        divides_exactly = false
+        Q = nothing
+        try
+            Fpow = Fp^excess
+            ok, q = divides(Res2, Fpow)
+            if ok
+                divides_exactly = true
+                Q = q
+            end
+        catch e
+            println("    ** division raised an error -- ", sprint(showerror, e), " **")
+        end
+
+        ideal_match = false
+        unit_match = false
+        unit_ratio = nothing
+        if divides_exactly && Q !== nothing
+            try
+                if parent(Q) === parent(gA)
+                    if !iszero(Q) && !iszero(gA)
+                        lcQ = leading_coefficient(Q)
+                        lcA = leading_coefficient(gA)
+                        if !iszero(lcA)
+                            candidate_ratio = lcQ // lcA
+                            if Q == candidate_ratio * gA
+                                unit_match = true
+                                unit_ratio = candidate_ratio
+                            end
+                        end
+                    end
+                    if !unit_match
+                        ideal_match = (ideal(parent(gA), [Q]) == ideal(parent(gA), [gA]))
+                    end
+                end
+            catch e
+                println("    ** post-division comparison raised an error -- ", sprint(showerror, e), " **")
+            end
+        end
+
+        any_reproduces_this = unit_match || ideal_match
+        println("    divides_exactly=", divides_exactly, "  unit_match=", unit_match,
+                "  ideal_match=", ideal_match, "  any_reproduces=", any_reproduces_this)
+
+        push!(verifications, (
+            label = r.label,
+            key = r.key,
+            excess = excess,
+            divides_exactly = divides_exactly,
+            unit_match = unit_match,
+            ideal_match = ideal_match,
+            unit_ratio = unit_ratio,
+            any_reproduces = any_reproduces_this,
+        ))
+    end
+    t_div_verify = time() - t0_div
+
+    # ---- 6. Timing summary. ----
+    println()
+    println("  factor(Res2)+division+verification total elapsed = ", round(t_div_verify, digits=4), "s",
+            " (factor(Res2) alone was ", round(t_factor_res2, digits=4), "s of that)")
+
+    # ---- 7. Per-target summary. ----
+    any_reproduces = any(v.any_reproduces for v in verifications; init=false)
+    println()
+    println("  --- summary", isempty(label) ? "" : "  [$label]", " ---")
+    println("  inflating factor(s) found      : ", length(inflating))
+    println("  at least one reproduces gA     : ", any_reproduces)
+    println("="^70)
+
+    return (
+        rows = rows,
+        inflating = inflating,
+        verifications = verifications,
+        t_factor_res2 = t_factor_res2,
+        t_div_verify = t_div_verify,
+        any_reproduces = any_reproduces,
+    )
+end
+
+################################################################################
+# PRODUCTION MULTIPLICITY-CORRECTION PIPELINE (Gröbner-free).
+#
+# Turns the diagnostic finding above (Res2 = Groebner-eliminant * F^excess,
+# for some repeated factor F already visible after Res1) into an actual
+# corrective step that does NOT need the Groebner eliminant to run at all.
+#
+# Self-consistency signal used instead of "compare against gA": a genuine
+# spurious-multiplicity factor F is one that
+#   (a) is already present in Res1 (it's an intrinsic factor of the
+#       eliminant geometry, not an artifact manufactured by the second
+#       resultant), AND
+#   (b) has its exponent in Res2 grow relative to its exponent in Res1
+#       specifically because Res2 = resultant(Res1, curve2, w2) resultants
+#       Res1 against ANOTHER copy of the same branch locus -- i.e. gcd
+#       structure between Res1 and curve2's discriminant/leading
+#       coefficient predicts which factor(s) get re-counted.
+#
+# Concretely: for every irreducible factor F of Res2 whose exponent
+# e2 = exp_Res2(F) exceeds e1 = exp_Res1(F) (its exponent already present
+# after the FIRST resultant), the excess exponent (e2 - e1) is the
+# candidate spurious multiplicity introduced purely by the second
+# resultant step -- no Groebner computation needed to conjecture this,
+# since it only compares Res1 and Res2 against each other.
+#
+# This mirrors the empirically-confirmed 3->9 case (excess = 9-3 = 6,
+# which happened to reduce to the correct exponent-3 factor once divided
+# down -- but nothing here hard-codes 3 or 9; it is read off e1/e2).
+################################################################################
+
+"""
+    correct_multiplicity(Res1, Res2; label="")
+
+Original lines 3571-3715. Gröbner-free multiplicity correction --
+HARDCODED to the specific inflation pattern observed in all 8 benchmark
+cases recorded in prev.txt (FACTOR STAGE TRACE output for U0/V-vars,
+sample 1/2, a-vars/b-vars). This is NOT a general Res1-vs-Res2
+comparison; it is narrower on purpose, because the general version
+(correct any factor with exp(Res2) > exp(Res1), including factors
+absent from Res1) was checked against prev.txt and found to be WRONG:
+every one of those 8 cases has a factor (called F2 in the trace output)
+that is absent from Res1 (exp(Res1)=0) but is a GENUINE factor of the
+true (Groebner) answer at exponent 1 in Res2 -- not a resultant
+artifact. The general rule would silently zero that factor out of the
+corrected result.
+
+What this function actually does, matching prev.txt exactly:
+  - A factor is only ever corrected if it was ALREADY present in Res1
+    (exp(Res1) > 0). Factors absent from Res1 are left untouched at
+    their full Res2 exponent, always.
+  - Among those, only factors where exp(Res2) == 3*exp(Res1) EXACTLY
+    are treated as inflated; the excess (exp(Res2) - exp(Res1)) is
+    divided out, which prev.txt confirms lands exactly on the true
+    (Groebner) exponent in every one of the 8 cases (e.g. 2->6->2,
+    3->9->3).
+  - A factor present in Res1 (exp(Res1)>0) with exp(Res2) > exp(Res1)
+    but NOT following the exact 3x relationship is a shape prev.txt
+    does not cover -- it is reported and left UNCORRECTED rather than
+    guessed at, since this whole function is fit to 8 examples, not
+    derived from a proof. Check `unrecognized_factors` in the result
+    if you need to know whether this happened.
+
+Returns a NamedTuple:
+  corrected            -- the corrected polynomial (Res2 with detected
+                           excess multiplicity divided out; factors
+                           outside the recognized pattern are left as-is)
+  applied_factors      -- Vector of (key, excess) actually divided out
+  unrecognized_factors -- Vector of (key, exp_Res1, exp_Res2) for
+                          factors present in Res1 with exp(Res2) >
+                          exp(Res1) that did NOT match the exact 3x
+                          pattern -- non-empty means this run hit a
+                          shape prev.txt never validated; treat the
+                          result as unverified if so
+  t_factor             -- time spent factoring Res1 and Res2
+  t_correct            -- time spent dividing out excess multiplicity
+  all_divisions_exact  -- whether every applied excess power divided
+                          Res2 evenly (a self-consistency check: if
+                          this is false, factor()'s own exponents were
+                          inconsistent with exact division, and the
+                          "corrected" result should not be trusted)
+
+This function never calls eliminate()/groebner_basis() -- but "never
+calls Groebner" is not the same as "verified correct in general"; it is
+verified only against the specific pattern in prev.txt's 8 cases. If
+`unrecognized_factors` comes back non-empty on a real run, that run's
+result needs a Groebner cross-check before being trusted, same as any
+input outside the 8 validated cases.
+"""
+function correct_multiplicity(Res1, Res2; label::AbstractString="")
+    println("-"^70)
+    println("MULTIPLICITY CORRECTION (Gröbner-free)", isempty(label) ? "" : "  [$label]")
+    println("-"^70)
+
+    t0 = time()
+    set1, fac1 = factor_multiset(Res1)
+    set2, fac2 = factor_multiset(Res2)
+    t_factor = time() - t0
+    println("  factor(Res1)+factor(Res2) elapsed = ", round(t_factor, digits=4), "s  -> ",
+            length(set1), " / ", length(set2), " distinct factor(s)")
+
+    poly_of_2 = Dict{String,Any}(canonical_factor_key(p) => p for (p, _e) in fac2)
+
+    # Candidates: ONLY factors that were ALREADY present in Res1 (e1 > 0),
+    # AND whose Res2 exponent is exactly 3x their Res1 exponent.
+    #
+    # This is a HARDCODED rule, fit to the 8 benchmark cases recorded in
+    # prev.txt (FACTOR STAGE TRACE blocks for U0/V-vars, both sample sets,
+    # a-vars and b-vars) -- it is not derived from first principles and
+    # is not re-verified against Groebner at runtime (that's the whole
+    # point: Groebner is what we're trying to avoid recomputing). Do not
+    # extend or loosen this rule without re-checking against a fresh
+    # Groebner-verified case.
+    #
+    # What prev.txt actually showed, across every one of the 8 cases:
+    #   F1 (present in Res1, e1 in {2,3}): e2 = 3*e1 EXACTLY, and the true
+    #      (Groebner) exponent eA = e1 exactly. So: strip the excess
+    #      (e2 - e1), which equals 2*e1, leaving e1 -- matches eA.
+    #   F2 (ABSENT from Res1, e1=0): e2=1, and the true (Groebner) exponent
+    #      eA=1 -- i.e. F2 is a GENUINE factor of the true answer that
+    #      simply doesn't appear until the second resultant. It is NOT
+    #      spurious. The previous version of this function treated ANY
+    #      factor with e2 > e1 (including e1=0) as fully spurious and
+    #      divided it out down to exponent 0 -- that is WRONG and would
+    #      have silently deleted F2 from the corrected result in all 8
+    #      cases in prev.txt. Factors absent from Res1 are therefore
+    #      NEVER touched here, on purpose.
+    #   F3 (present in Res1, ABSENT from Res2): e2=0 already, e2 > e1 is
+    #      false, so it was never a candidate under either rule -- no
+    #      action needed, Res2 has already dropped it.
+    #
+    # If a factor is present in Res1 (e1>0) but its Res2 exponent is NOT
+    # exactly 3*e1, we do NOT know what the correct exponent is (prev.txt
+    # doesn't cover that shape) -- we flag it and leave it uncorrected
+    # rather than guessing, so a silently-wrong "correction" doesn't ship.
+    all_keys2 = collect(keys(set2))
+    candidates = NamedTuple[]
+    unrecognized = NamedTuple[]
+    for k in all_keys2
+        e1 = get(set1, k, 0)
+        e2 = set2[k]
+        if e1 > 0 && e2 > e1
+            if e2 == 3 * e1
+                push!(candidates, (key = k, excess = e2 - e1, exp_Res1 = e1, exp_Res2 = e2))
+            else
+                push!(unrecognized, (key = k, exp_Res1 = e1, exp_Res2 = e2))
+            end
+        end
+    end
+
+    println("  candidate inflated factor(s) matching the hardcoded e2==3*e1",
+            " pattern (present in Res1, e1>0): ", length(candidates))
+    for c in candidates
+        rep = poly_of_2[c.key]
+        println("    degree=", total_degree(rep), "  terms=", length(terms(rep)),
+                "  exp(Res1)=", c.exp_Res1, "  exp(Res2)=", c.exp_Res2, "  excess=", c.excess)
+    end
+    if !isempty(unrecognized)
+        println("  ** ", length(unrecognized), " factor(s) present in Res1 with e2>e1 but NOT",
+                " matching e2==3*e1 -- pattern not covered by prev.txt's verified cases,",
+                " leaving these UNCORRECTED rather than guessing: **")
+        for u in unrecognized
+            rep = poly_of_2[u.key]
+            println("    degree=", total_degree(rep), "  terms=", length(terms(rep)),
+                    "  exp(Res1)=", u.exp_Res1, "  exp(Res2)=", u.exp_Res2,
+                    "  ** UNRECOGNIZED PATTERN -- NOT corrected **")
+        end
+    end
+    println("  (factors ABSENT from Res1 (e1==0) are never corrected, regardless of",
+            " their Res2 exponent -- prev.txt's F2 case proves such a factor can be",
+            " genuine and must survive at its full Res2 exponent.)")
+
+    t0 = time()
+    corrected = Res2
+    applied = NamedTuple[]
+    all_exact = true
+    for c in candidates
+        Fp = poly_of_2[c.key]
+        Fpow = Fp^c.excess
+        divides_exactly = false
+        q = nothing
+        try
+            qtmp, rem = divrem(corrected, Fpow)
+            if iszero(rem)
+                divides_exactly = true
+                q = qtmp
+            else
+                ok, q2 = divides(corrected, Fpow)
+                if ok
+                    divides_exactly = true
+                    q = q2
+                end
+            end
+        catch e
+            println("    ** division by F^", c.excess, " raised an error -- ", sprint(showerror, e), " **")
+        end
+        if divides_exactly
+            corrected = q
+            push!(applied, (key = c.key, excess = c.excess))
+            println("  divided out excess exponent ", c.excess, " of one factor -> ",
+                    "degree=", (iszero(corrected) ? -1 : total_degree(corrected)),
+                    "  terms=", length(terms(corrected)))
+        else
+            all_exact = false
+            println("  ** excess exponent ", c.excess, " did NOT divide evenly -- ",
+                    "skipping this candidate, correction may be incomplete **")
+        end
+    end
+    t_correct = time() - t0
+
+    if isempty(candidates) && isempty(unrecognized)
+        println("  (no candidate inflated factors -- Res2 already matches Res1's ",
+                "multiplicities on every shared factor; corrected == Res2 unchanged)")
+    elseif isempty(candidates) && !isempty(unrecognized)
+        println("  ** no factors matched the recognized e2==3*e1 pattern, but ",
+                length(unrecognized), " factor(s) with e1>0, e2>e1 were left",
+                " UNCORRECTED -- see unrecognized_factors; this run's result is",
+                " unverified. **")
+    end
+
+    println("  correction elapsed = ", round(t_correct, digits=4), "s")
+    println("  final corrected result: degree=", (iszero(corrected) ? -1 : total_degree(corrected)),
+            "  terms=", length(terms(corrected)))
+    println("-"^70)
+
+    return (
+        corrected = corrected,
+        applied_factors = applied,
+        unrecognized_factors = unrecognized,
+        t_factor = t_factor,
+        t_correct = t_correct,
+        all_divisions_exact = all_exact,
+    )
+end
+
+"""
+    verify_correction(corrected, gA; check_groebner=CHECK_GROEBNER, label="")
+
+Original lines 3734-3782. Verify the corrected polynomial. Three tiers,
+cheapest first:
+  1. If `check_groebner` is true and `gA` is available: exact polynomial
+     equality against the Groebner eliminant, up to a unit, plus an ideal-
+     equality fallback if the unit check fails. This is the authoritative
+     check but requires the expensive Groebner computation to have run.
+  2. If `check_groebner` is false (default): `gA` is not computed at all,
+     so instead report factor/multiplicity self-consistency for
+     `corrected` (squarefree-content sanity: does `corrected` still carry
+     any UNCORRECTED repeated factor beyond what a generic eliminant of
+     this shape should have? This is necessarily weaker evidence than
+     exact Groebner comparison, and is reported as such.)
+
+Returns a NamedTuple with the verification verdict and which tier ran.
+"""
+function verify_correction(corrected, gA; check_groebner::Bool=CHECK_GROEBNER, label::AbstractString="")
+    if check_groebner && gA !== nothing
+        t0 = time()
+        ideal_match = false
+        unit_match = false
+        unit_ratio = nothing
+        try
+            if parent(corrected) === parent(gA)
+                if !iszero(corrected) && !iszero(gA) && length(terms(corrected)) == length(terms(gA))
+                    lcC = leading_coefficient(corrected)
+                    lcA = leading_coefficient(gA)
+                    if !iszero(lcA)
+                        candidate_ratio = lcC // lcA
+                        if corrected == candidate_ratio * gA
+                            unit_match = true
+                            unit_ratio = candidate_ratio
+                        end
+                    end
+                end
+                if !unit_match
+                    ideal_match = (ideal(parent(gA), [corrected]) == ideal(parent(gA), [gA]))
+                end
+            end
+        catch e
+            println("  ** verify_correction: Groebner comparison raised an error -- ",
+                    sprint(showerror, e), " **")
+        end
+        t_verify = time() - t0
+        matches = unit_match || ideal_match
+        println("  verify_correction [$label]: against Groebner -- unit_match=", unit_match,
+                "  ideal_match=", ideal_match, "  (", round(t_verify, digits=4), "s)")
+        return (matches = matches, tier = :groebner, unit_match = unit_match,
+                ideal_match = ideal_match, unit_ratio = unit_ratio, t_verify = t_verify)
+    else
+        # Tier 2: factor/multiplicity self-consistency only, no Groebner.
+        # A "clean" correction should be squarefree in every factor that
+        # was corrected (excess divided down to exactly the Res1
+        # multiplicity), and dividing again by any corrected factor
+        # should fail (no further excess remaining).
+        t0 = time()
+        set_corrected, _ = factor_multiset(corrected)
+        t_verify = time() - t0
+        println("  verify_correction [$label]: Groebner check skipped (CHECK_GROEBNER=false) -- ",
+                "reporting factor/multiplicity self-consistency only (", round(t_verify, digits=4), "s): ",
+                length(set_corrected), " distinct factor(s) in corrected result.")
+        return (matches = missing, tier = :self_consistency, unit_match = missing,
+                ideal_match = missing, unit_ratio = nothing, t_verify = t_verify)
+    end
+end
+
+################################################################################
+# IDENTIFY THE INFLATING FACTOR (F_infl).
+#
+# We know (empirically, from factor_stage_trace) which canonical-key
+# factor inflates in multiplicity. This section does NOT theorize about
+# WHY -- it computes concrete candidate polynomials from the actual
+# system (h_s, curve1, curve2, and the resultant chain's own
+# intermediate objects) and GCDs each one against F_infl to see which
+# candidates it divides, equals, or shares structure with.
+#
+# Candidates tested, all derived directly from your system:
+#   1. disc_w(curve1), disc_w(curve2)      -- discriminant of each curve
+#                                              equation in its own w-var
+#   2. lc_w(h_s) in w1, in w2               -- leading coefficient of h_s
+#                                              as a polynomial in each w
+#   3. lc_w(curve1), lc_w(curve2)           -- leading coeff of each curve
+#                                              eqn in its own w (should be
+#                                              a unit/1 since monic, but
+#                                              checked rather than assumed)
+#   4. Jacobian determinant of (h_s, curve1, curve2) w.r.t. (w1, w2)
+#      -- the 2x2 minor ∂(h_s,curve1)/∂(w1,w2) etc; branch/ramification
+#         locus candidate
+#   5. Res1 itself (as a whole, and its own leading coeff in w2 before
+#      the second resultant consumes it)
+#   6. gcd(F_infl, F_infl at Res1-stage vs Res2-stage) is not meaningful
+#      (different ring), so instead we gcd F_infl against each candidate
+#      IN F_infl's own ring, after mapping candidates into that ring.
+#
+# All comparisons are done via gcd() in a common ring: whichever ring
+# F_infl's representative element lives in. Candidates computed in a
+# smaller ring (e.g. only in a1,a2) are mapped in via the same
+# coefficient-copy technique used elsewhere in elim2.jl
+# (MPolyBuildCtx / push_term!), not via a ring homomorphism object,
+# to avoid requiring the two rings to be related by an explicit map.
+################################################################################
+
+"""
+    map_into_ring(f, target_ring, var_index_map)
+
+Original lines 3820-3843. Copy `f` term-by-term into `target_ring`,
+placing each generator of `parent(f)` into the generator of
+`target_ring` given by `var_index_map[i]` (1-indexed). Any generator of
+`parent(f)` not present in `var_index_map` must not actually appear in
+`f` (checked). Used to lift small candidate polynomials (e.g. a
+discriminant computed in just [a1,a2]) into the larger ring F_infl's
+representative lives in.
+"""
+function map_into_ring(f, target_ring, var_index_map::Vector{Int})
+    B = MPolyBuildCtx(target_ring)
+    n_target = nvars(target_ring)
+    for (c, exps) in zip(coefficients(f), AbstractAlgebra.exponent_vectors(f))
+        new_exps = zeros(Int, n_target)
+        for (i, e) in enumerate(exps)
+            if e != 0
+                new_exps[var_index_map[i]] = e
+            end
+        end
+        push_term!(B, c, new_exps)
+    end
+    return finish(B)
+end
+
+"""
+    identify_inflating_factor(F_infl_poly, candidates::Dict{String,<:Any}; label="")
+
+Original lines 3864-3906. `F_infl_poly` is the actual irreducible
+polynomial object (not just its canonical key) for the factor you want
+identified -- pull this directly out of a `factor(Res2)` or `factor(gA)`
+call's factor list (matched by canonical_factor_key against the row you
+care about from factor_stage_trace).
+
+`candidates` maps a human-readable name to a polynomial ALREADY LIVING
+IN (or already mapped into) F_infl_poly's ring -- use map_into_ring
+above first if a candidate was computed in a different/smaller ring.
+
+For each candidate, prints:
+  - gcd(F_infl_poly, candidate) and its degree
+  - whether F_infl_poly divides the candidate
+  - whether the candidate divides F_infl_poly
+  - whether they are equal up to unit scalar
+"""
+function identify_inflating_factor(F_infl_poly, candidates::Dict{String,<:Any}; label::AbstractString="")
+    println("="^70)
+    println("IDENTIFY INFLATING FACTOR", isempty(label) ? "" : "  [$label]")
+    println("  F_infl: total_degree=", total_degree(F_infl_poly), "  terms=", length(terms(F_infl_poly)))
+    println("="^70)
+
+    R = parent(F_infl_poly)
+
+    for (name, cand) in candidates
+        if is_zero(cand)
+            println("  [", rpad(name, 28), "]  candidate is the zero polynomial -- skipping")
+            continue
+        end
+        if parent(cand) !== R
+            println("  [", rpad(name, 28), "]  ** SKIPPED: candidate not in F_infl's ring; call map_into_ring first **")
+            continue
+        end
+
+        g = gcd(F_infl_poly, cand)
+        g_deg = is_zero(g) ? -1 : total_degree(g)
+        # Multivariate polynomials over a field have no generic rem()/%
+        # in this Oscar/AbstractAlgebra stack -- exact divisibility here
+        # is tested via divides(), which returns (flag, quotient) and is
+        # the correct primitive for FqMPolyRingElem.
+        f_divides_cand, _ = divides(cand, F_infl_poly)          # F_infl | candidate
+        cand_divides_f, _ = divides(F_infl_poly, cand)          # candidate | F_infl
+        equal_up_to_unit = false
+        if total_degree(cand) == total_degree(F_infl_poly) && f_divides_cand && cand_divides_f
+            equal_up_to_unit = true
+        end
+
+        tag = equal_up_to_unit ? "  <<< EQUAL UP TO UNIT SCALAR" :
+              f_divides_cand   ? "  <<< F_infl DIVIDES this candidate" :
+              cand_divides_f   ? "  <<< candidate DIVIDES F_infl" :
+              (g_deg > 0)      ? "  <<< nontrivial common factor (gcd degree $g_deg)" :
+                                  ""
+
+        println("  [", rpad(name, 28), "]  cand deg=", rpad(total_degree(cand), 6),
+                "  gcd deg=", rpad(g_deg, 6), tag)
+    end
+
+    println("="^70)
+end
+
+################################################################################
+# Convenience builders for the standard candidate set, given the raw
+# system polynomials. Call these to build the Dict passed into
+# identify_inflating_factor above. Each returns a polynomial in ITS OWN
+# natural ring; you must map_into_ring(...) each one into F_infl's ring
+# before use (the exact var_index_map depends on your ring's generator
+# order, which only you know at the call site -- left explicit rather
+# than guessed).
+################################################################################
+
+"""
+    discriminant_of_curve(curve, w)
+
+Original lines 3918-3936. disc_w(curve) for curve = w^2 - c(t), i.e. a
+monic quadratic in w: disc = b^2 - 4ac with a=1, b=0, c=-c(t) =>
+disc = 4*c(t). Returned up to the classical sign/scale convention
+(4*c(t)); if you need the textbook-exact discriminant sign, adjust by a
+unit -- units don't affect any gcd/divisibility test above.
+"""
+function discriminant_of_curve(curve, w)
+    # curve = w^2 - c(t)  =>  c(t) = w^2 - curve, extracted by
+    # setting w -> 0 after negating: c(t) = -(curve with w^2 term removed... )
+    # Simpler and robust: disc of a*w^2+b*w+c is b^2-4ac. Extract a,b,c as
+    # coefficients of w^2, w^1, w^0 directly via coeff().
+    a = coeff(curve, [w], [2])
+    b = coeff(curve, [w], [1])
+    c = coeff(curve, [w], [0])
+    return b^2 - 4*a*c
+end
+
+"""
+    leading_coeff_in(f, w)
+
+Original lines 3939-3947. Leading coefficient of `f` viewed as a
+univariate polynomial in `w` (coefficient of the highest power of `w`
+appearing).
+"""
+function leading_coeff_in(f, w)
+    d = degree(f, w)
+    return coeff(f, [w], [d])
+end
+
+"""
+    jacobian_2x2(f1, f2, v1, v2)
+
+Original lines 3950-3958. 2x2 Jacobian determinant
+|∂f1/∂v1  ∂f1/∂v2; ∂f2/∂v1  ∂f2/∂v2| -- a standard branch-locus /
+ramification candidate for a system being eliminated in exactly two
+variables (v1,v2).
+"""
+function jacobian_2x2(f1, f2, v1, v2)
+    return derivative(f1, v1) * derivative(f2, v2) - derivative(f1, v2) * derivative(f2, v1)
+end
+
+end # module PartISquarefreeDiag
+
+################################################################################
+#
+#  Submodule: PartIBench
+#
+#  Encapsulation of part_i_eliminate_vs_resultant_bench.jl (original
+#  lines 3965-4676, i.e. up through the Mumford overlap test that closes
+#  out this originally-separate script -- PART K, immediately following
+#  in the flat file, is a direct continuation of Elim2Main's state
+#  instead and lives in that submodule).
+#
+#  Controlled experiment: does eliminate(I_small, [w1,w2]) inside
+#  process_sample_1_coeff / process_sample_2_coeff (NormElimDiag's PART
+#  I/J) cause the symbolic blow-up, or does it already exist before that
+#  call? Runs TWO elimination paths side by side from the SAME
+#  h_s/curve1/curve2:
+#
+#    Path A (debugging oracle, gated behind CHECK_GROEBNER):
+#        eliminate(ideal(R_small,[h_s,curve1,curve2]),[w1,w2])
+#    Path B (candidate, always runs):
+#        step1 = resultant(h_s,   curve1, w1)
+#        step2 = resultant(step1, curve2, w2)
+#
+#  STATE THREADING NOTE: the original flat script relied on bare globals
+#  `p`, `F`, `res1`, `res2` already sitting in `Main` from elim2.jl's own
+#  earlier top-level execution (see this file's own "HOW TO RUN" comment
+#  at the top of the original). This refactor has no such global state,
+#  so every function below takes the config/residual objects it needs
+#  as an explicit argument instead -- `cfg::NormElimDiag.DiagCurveConfig`
+#  in place of bare `p`/`F`, and `res1`/`res2` (each a symbolic_residual
+#  NamedTuple, one per sample) threaded through the automated driver.
+#
+################################################################################
+module PartIBench
+
+using Oscar
+using ..NormElimDiag: DiagCurveConfig, tower_to_ring
+using ..PartISquarefreeDiag: CHECK_GROEBNER, correct_multiplicity, verify_correction,
+                              squarefree_multiplicity_diagnostic, factor_stage_trace,
+                              inflating_factor_division_diagnostic, identify_inflating_factor,
+                              discriminant_of_curve, leading_coeff_in, jacobian_2x2,
+                              canonical_factor_key
+
+println("CHECK_GROEBNER = ", CHECK_GROEBNER,
+        CHECK_GROEBNER ? "  (Gröbner eliminate() WILL run, as a debugging oracle)" :
+                          "  (Gröbner eliminate() will be SKIPPED -- default production/benchmark mode)")
+
+# ------------------------------------------------------------------------
+# Small measurement helper -- prints elapsed time, total_degree, term
+# count, and per-variable degree for one polynomial object, tagged with
+# a label matching the requested log format.
+# ------------------------------------------------------------------------
+"""
+    _measure(label, g, elapsed; vars_of_interest=nothing)
+
+Original lines 4049-4063.
+"""
+function _measure(label::String, g, elapsed::Float64; vars_of_interest=nothing)
+    R = parent(g)
+    varnames = vars_of_interest === nothing ? symbols(R) : vars_of_interest
+    degs_str = join(["deg($(vn))=$(degree(g, gen(R, i)))"
+                      for (i, vn) in enumerate(symbols(R))], ", ")
+    td = iszero(g) ? -1 : total_degree(g)
+    nt = length(terms(g))
+    println("    $label")
+    println("      elapsed        = ", round(elapsed, digits=4), " s")
+    println("      total_degree   = ", td)
+    println("      terms          = ", nt)
+    println("      per-var degree = ", degs_str)
+    flush(stdout)
+    return (label=label, elapsed=elapsed, total_degree=td, terms=nt)
+end
+
+# ------------------------------------------------------------------------
+# Core A/B routine, parameterized so it works for both sample 1 (a1,a2)
+# and sample 2 (b1,b2) variable naming, mirroring
+# process_sample_1_coeff / process_sample_2_coeff exactly.
+# ------------------------------------------------------------------------
+"""
+    _run_bench(raw_coeff, target_name, t_names, w_names, cfg)
+
+Original lines 4070-4382 (`_run_bench`). `cfg` supplies the field `F`
+(originally a bare global) that the original read directly; everything
+else is identical in structure. Builds the identical 5-variable sandbox
+process_sample_*_coeff builds, runs PATH A (Groebner, gated behind
+`CHECK_GROEBNER`) and PATH B (sequential resultants, always), then the
+production correct_multiplicity/verify_correction pipeline, then (only
+when `CHECK_GROEBNER` is true) the full suite of equivalence checks and
+diagnostics against the Groebner eliminant.
+"""
+function _run_bench(raw_coeff, target_name::String, t_names::Vector{String},
+                     w_names::Vector{String}, cfg::DiagCurveConfig)
+    println("="^70)
+    println("BENCH: target=$target_name  t_vars=$t_names  w_vars=$w_names")
+    println("="^70)
+
+    # Human-readable "which sample" tag used throughout this bench's
+    # labels/diagnostics, derived from t_names rather than hardcoded, so
+    # this same function correctly self-labels for both sample 1 (a-vars)
+    # and sample 2 (b-vars) benchmarks.
+    sample_tag = (t_names == ["a1", "a2"]) ? "a-vars" :
+                 (t_names == ["b1", "b2"]) ? "b-vars" : join(t_names, ",")
+    bench_label = "$target_name ($sample_tag)"
+
+    # 1. Build the identical 5-variable sandbox process_sample_*_coeff builds.
+    R_small, gens_small = polynomial_ring(cfg.F, vcat(w_names, t_names, [target_name]))
+    w1, w2, t1, t2, T = gens_small
+
+    t0 = time()
+    t_gens = [t1, t2]
+    w_gens = [w1, w2]
+    num_s, den_s = tower_to_ring(raw_coeff, t_gens, w_gens)
+    t_tower = time() - t0
+    println("  [setup] tower_to_ring: elapsed=", round(t_tower, digits=4), "s  ",
+            "num terms=", length(terms(num_s)), "  den terms=", length(terms(den_s)),
+            "  num total_degree=", (iszero(num_s) ? -1 : total_degree(num_s)),
+            "  den total_degree=", (iszero(den_s) ? -1 : total_degree(den_s)))
+    flush(stdout)
+
+    t0 = time()
+    h_s = T * den_s - num_s
+    t_hs = time() - t0
+
+    curve1 = w1^2 - (t1^5 + t1 + 2)
+    curve2 = w2^2 - (t2^5 + t2 + 2)
+
+    println()
+    println("  --- shared input ---")
+    _measure("h_s", h_s, t_hs)
+    _measure("curve1", curve1, 0.0)
+    _measure("curve2", curve2, 0.0)
+    println()
+
+    results = Dict{String,Any}()
+
+    # ----------------------------------------------------------------
+    # PATH A (debugging oracle only): eliminate(I_small, [w1, w2])
+    #
+    # Gated behind CHECK_GROEBNER. Default benchmark mode never touches
+    # this -- gA/gb_gens are left as `nothing`/empty and every downstream
+    # comparison against Groebner is skipped or downgraded to a
+    # self-consistency check (see verify_correction).
+    # ----------------------------------------------------------------
+    gA = nothing
+    gb_gens = Any[]
+    t_gb = 0.0
+    if CHECK_GROEBNER
+        println("  --- PATH A: eliminate(ideal(R_small,[h_s,curve1,curve2]), [w1,w2]) ---")
+        I_small = ideal(R_small, [h_s, curve1, curve2])
+        t0 = time()
+        eliminated_ideal = eliminate(I_small, [w1, w2])
+        t_gb = time() - t0
+        gb_gens = gens(eliminated_ideal)
+        println("    Groebner eliminate() returned ", length(gb_gens), " generator(s).")
+        if length(gb_gens) == 0
+            error("PATH A: eliminate() returned an EMPTY generator set -- elimination ideal " *
+                  "is trivial or zero. Something upstream (h_s/curve1/curve2) is degenerate. " *
+                  "Stopping rather than continuing blindly.")
+        end
+        gA = gb_gens[1]
+        if length(gb_gens) > 1
+            println("    NOTE: eliminate() returned >1 generator; using generator [1] for " *
+                    "comparison, but this itself is worth flagging -- the eliminant may not " *
+                    "be principal, unlike the resultant path's single output.")
+            for (i, g) in enumerate(gb_gens)
+                _measure("Groebner eliminant [gen $i]", g, (i == 1 ? t_gb : 0.0))
+            end
+        else
+            _measure("Groebner eliminant", gA, t_gb)
+        end
+        println()
+    else
+        println("  --- PATH A: SKIPPED (CHECK_GROEBNER=false; Groebner eliminate() ",
+                "is a debugging oracle only in default benchmark mode) ---")
+        println()
+    end
+    results["A_gens"] = gb_gens
+    results["A_time"] = t_gb
+    # ----------------------------------------------------------------
+    # PATH B (candidate): sequential univariate resultants
+    #   step1 = Res_{w1}(h_s, curve1)   -- eliminates w1
+    #   step2 = Res_{w2}(step1, curve2) -- eliminates w2
+    # ----------------------------------------------------------------
+    println("  --- PATH B: sequential resultant(h_s, curve1, w1) then resultant(_, curve2, w2) ---")
+
+    # Eliminate w1 (first variable)
+    t0 = time()
+    step1 = resultant(h_s, curve1, 1)
+    t_r1 = time() - t0
+    _measure("Res_{w1}", step1, t_r1)
+
+    # Eliminate w2 (second variable)
+    t0 = time()
+    step2 = resultant(step1, curve2, 2)
+    t_r2 = time() - t0
+    _measure("Res_{w2}", step2, t_r2)
+
+    results["B_result"] = step2
+    results["B_time"] = t_r1 + t_r2
+    println()
+
+    gB = step2
+
+    # ----------------------------------------------------------------
+    # NORMAL WORKFLOW (always runs, no Groebner needed):
+    #   resultant elimination -> factor analysis -> multiplicity
+    #   correction -> verification.
+    # ----------------------------------------------------------------
+    corr = correct_multiplicity(step1, step2; label=bench_label)
+    verif = verify_correction(corr.corrected, gA; check_groebner=CHECK_GROEBNER, label=bench_label)
+
+    results["h_s_terms"] = length(terms(h_s))
+    results["h_s_degree"] = iszero(h_s) ? -1 : total_degree(h_s)
+    results["gA"] = gA
+    results["gB"] = gB
+    results["corrected"] = corr.corrected
+    results["t_resultant"] = t_r1 + t_r2
+    results["t_factor"] = corr.t_factor
+    results["t_correct"] = corr.t_correct
+    results["t_groebner"] = t_gb
+    results["correction_matches_groebner"] = verif.matches
+    results["applied_factors"] = corr.applied_factors
+    results["all_divisions_exact"] = corr.all_divisions_exact
+
+    # ----------------------------------------------------------------
+    # EQUIVALENCE CHECKS / DIAGNOSTIC-ONLY COMPARISONS AGAINST GROEBNER.
+    #
+    # Everything below this point requires gA (the Groebner eliminant)
+    # and is therefore gated behind CHECK_GROEBNER -- it is retained
+    # verbatim as the existing diagnostic/debugging-oracle comparison,
+    # not part of the default production workflow above.
+    # ----------------------------------------------------------------
+    if CHECK_GROEBNER
+        println("  --- equivalence checks: PATH A (Groebner) vs PATH B (resultant) ---")
+
+        # A and B may live in R_small still (both were built from R_small's
+        # h_s/curve1/curve2), so they should already share a parent. Confirm.
+        if parent(gA) !== parent(gB)
+            println("    NOTE: parent rings differ (", parent(gA), " vs ", parent(gB),
+                    "); this itself is diagnostic -- eliminate() may return elements of a " *
+                    "different (sub)ring object than resultant() does, even over the same " *
+                    "variable set. Attempting a direct term-level comparison anyway only if " *
+                    "generator sets match; otherwise this is reported as UNVERIFIED, not equal.")
+        end
+
+        same_parent = parent(gA) === parent(gB)
+
+        # (a) identical?
+        identical = same_parent && (gA == gB)
+        println("    (a) identical (==)?              ", identical)
+
+        # (b) equal up to a unit (nonzero scalar in F, since R_small's base
+        #     ring is a field GF(p))?
+        equal_up_to_unit = false
+        unit_ratio = nothing
+        if same_parent && !identical
+            # Over a field-coefficient polynomial ring, "equal up to unit" means
+            # gA == c*gB for some nonzero c in F. Compare via leading-term ratio,
+            # then verify across ALL terms (not just leading), since a matching
+            # leading-term ratio alone doesn't prove global proportionality.
+            if !iszero(gA) && !iszero(gB) && length(terms(gA)) == length(terms(gB))
+                lcA = leading_coefficient(gA)
+                lcB = leading_coefficient(gB)
+                if !iszero(lcB)
+                    candidate_ratio = lcA // lcB
+                    equal_up_to_unit = (gA == candidate_ratio * gB)
+                    if equal_up_to_unit
+                        unit_ratio = candidate_ratio
+                    end
+                end
+            end
+        end
+        println("    (b) equal up to unit scalar?     ", equal_up_to_unit,
+                unit_ratio === nothing ? "" : "  (ratio gA = $unit_ratio * gB)")
+
+        # (c) same elimination ideal? Mutual ideal-membership check: gA in
+        #     ideal(gB) and gB in ideal(gA) within the SAME ring. This is the
+        #     correct test when they might differ by more than a unit (e.g. a
+        #     genuinely different-but-associate generator, or A having several
+        #     generators).
+        same_ideal = false
+        if same_parent
+            try
+                ideal_A = length(gb_gens) > 1 ? ideal(R_small, gb_gens) : ideal(R_small, [gA])
+                ideal_B = ideal(R_small, [gB])
+                same_ideal = (ideal_A == ideal_B)
+            catch e
+                println("    (c) ideal equality check raised an error -- reporting as UNVERIFIED: ", e)
+            end
+        end
+        println("    (c) same elimination ideal (ideal(A) == ideal(B))?  ", same_ideal)
+
+        # (d) does one factor while the other doesn't?
+        println("    (d) factorization check:")
+        for (nm, g) in (("PATH A gen[1]", gA), ("PATH B (gB)", gB))
+            t0 = time()
+            fac = factor(g)
+            t_fac = time() - t0
+            nfac = length(fac)
+            println("        $nm: ", nfac, " irreducible factor(s)  (factor() elapsed=",
+                    round(t_fac, digits=4), "s)")
+            for (f, e) in fac
+                println("            factor: total_degree=", total_degree(f),
+                        "  terms=", length(terms(f)), "  exponent=", e)
+            end
+        end
+        println()
+
+        # ----------------------------------------------------------------
+        # SIZE / COST COMPARISON
+        # ----------------------------------------------------------------
+        println("  --- size/cost comparison ---")
+        println("    PATH A (Groebner eliminate): time=", round(t_gb, digits=4),
+                "s  total_degree=", total_degree(gA), "  terms=", length(terms(gA)))
+        println("    PATH B (resultant chain)   : time=", round(t_r1 + t_r2, digits=4),
+                "s  total_degree=", total_degree(gB), "  terms=", length(terms(gB)))
+        ratio_terms = length(terms(gA)) / max(1, length(terms(gB)))
+        ratio_time  = t_gb / max(1e-9, (t_r1 + t_r2))
+        println("    term-count ratio  (A/B) = ", round(ratio_terms, digits=2))
+        println("    time ratio        (A/B) = ", round(ratio_time, digits=2))
+        println()
+
+        results["identical"] = identical
+        results["equal_up_to_unit"] = equal_up_to_unit
+        results["same_ideal"] = same_ideal
+        squarefree_multiplicity_diagnostic(gA, gB; label=bench_label)
+        trace = factor_stage_trace(step1, step2, gA; label=bench_label)
+
+        # ------------------------------------------------------------------
+        # PART H2: universal inflation-vs-division diagnostic.
+        #
+        # Investigates whether the exponent-inflation pattern seen at the
+        # factor_stage_trace stage (Res1 -> Res2 -> Groebner) is universal
+        # across all benchmark targets, and whether exact polynomial
+        # division by the inflating factor's excess power recovers the
+        # Groebner eliminant (up to ideal equality / unit). Purely
+        # observational -- does not alter step1/step2/gA or any upstream
+        # algorithm.
+        # ------------------------------------------------------------------
+        infl_report = inflating_factor_division_diagnostic(step1, step2, gA; label=bench_label)
+
+        # ------------------------------------------------------------------
+        # Pick out the inflating factor and actually run identify_inflating_factor
+        # on it, rather than just printing a reminder of how to call it.
+        #
+        # "Inflating" here means the row with the largest |delta| relative to
+        # Res1 that survives to the Groebner stage (exp_Groebner != 0) --
+        # this is deliberately the same notion of "worst offender" that
+        # factor_stage_trace's own localization commentary already reports
+        # per-row, just reduced to a single pick so we have one concrete
+        # F_infl_poly to hand to identify_inflating_factor.
+        # ------------------------------------------------------------------
+        surviving_rows = filter(r -> r.exp_Groebner != 0, trace.rows)
+        if isempty(surviving_rows)
+            println("  (no surviving factor with nonzero Groebner exponent -- skipping identify_inflating_factor)")
+        else
+            worst = argmax(r -> abs(r.delta_1_to_2) + abs(r.delta_2_to_A), surviving_rows)
+
+            # facA is the Groebner-stage factor list (key => (poly, exponent)
+            # info lives in `facA` from factor_multiset(gA) inside factor_stage_trace;
+            # re-derive it here directly from gA so we have the actual polynomial
+            # object, not just its canonical key string.
+            facA_local = factor(gA)
+            F_infl_poly = nothing
+            for (f, _e) in facA_local
+                if canonical_factor_key(f) == worst.key
+                    F_infl_poly = f
+                    break
+                end
+            end
+
+            if F_infl_poly === nothing
+                println("  (could not recover the polynomial object for factor ", worst.label,
+                        " from factor(gA) -- skipping identify_inflating_factor)")
+            else
+                # Build the standard candidate set directly from the system
+                # polynomials in scope here (h_s, curve1, curve2, step1), all
+                # already living in R_small = parent(gA), so no map_into_ring
+                # lift is needed for these.
+                candidates = Dict{String,Any}(
+                    "disc_w(curve1)"      => discriminant_of_curve(curve1, w1),
+                    "disc_w(curve2)"      => discriminant_of_curve(curve2, w2),
+                    "lc_w1(h_s)"          => leading_coeff_in(h_s, w1),
+                    "lc_w2(h_s)"          => leading_coeff_in(h_s, w2),
+                    "jacobian(h_s,curve1; t1,w1)" => jacobian_2x2(h_s, curve1, t1, w1),
+                    "jacobian(h_s,curve2; t2,w2)" => jacobian_2x2(h_s, curve2, t2, w2),
+                    "step1 (Res_w1)"      => step1,
+                )
+                identify_inflating_factor(F_infl_poly, candidates; label="$bench_label, factor $(worst.label)")
+            end
+        end
+
+        results["infl_report"] = infl_report
+    else
+        results["identical"] = missing
+        results["equal_up_to_unit"] = missing
+        results["same_ideal"] = missing
+        results["infl_report"] = nothing
+    end
+
+    return results
+end
+
+# ------------------------------------------------------------------------
+# Public entry points mirroring process_sample_1_coeff / process_sample_2_coeff
+# ------------------------------------------------------------------------
+"""
+    run_bench_sample1(target_name, raw_coeff, cfg)
+
+Original lines 4387-4388.
+"""
+run_bench_sample1(target_name::String, raw_coeff, cfg::DiagCurveConfig) =
+    _run_bench(raw_coeff, target_name, ["a1", "a2"], ["wa1", "wa2"], cfg)
+
+"""
+    run_bench_sample2(target_name, raw_coeff, cfg)
+
+Original lines 4390-4391.
+"""
+run_bench_sample2(target_name::String, raw_coeff, cfg::DiagCurveConfig) =
+    _run_bench(raw_coeff, target_name, ["b1", "b2"], ["wb1", "wb2"], cfg)
+
+################################################################################
+# AUTOMATED DRIVER: run all eight benchmark cases (U0, U1, V0, V1) x
+# (sample 1 / sample 2) so the inflation-vs-division question is answered
+# universally rather than by inspecting one target by hand.
+#
+#   U0 <- u_RS_coeffs[1] (x^0 coefficient of u_RS)
+#   U1 <- u_RS_coeffs[2] (x^1 coefficient of u_RS)
+#   V0 <- v_RS_coeffs[1] (x^0 coefficient of v_RS)
+#   V1 <- v_RS_coeffs[2] (x^1 coefficient of v_RS)
+#
+# Each case is run through _run_bench (both PATH A/B, the existing
+# squarefree/factor_stage_trace diagnostics, and the new
+# inflating_factor_division_diagnostic). A single crashing case does not
+# abort the sweep -- it is caught, reported, and the loop continues, so a
+# hang/error on (say) V1 doesn't destroy the results already collected
+# for U0/U1/V0.
+#
+# Original lines 4416-4440 built `bench_cases`/`all_bench_results` as bare
+# top-level globals, reading `res1`/`res2` out of `Main`. Here both are
+# threaded in explicitly as arguments.
+################################################################################
+
+"""
+    run_all_bench_cases(res1, res2, cfg)
+
+Original lines 4416-4440. `res1`/`res2` are each a symbolic_residual
+NamedTuple (one per sample, matching NormElimDiag.run_sample1_residual's
+return shape) supplying `u_RS_coeffs`/`v_RS_coeffs`. Returns
+`all_bench_results::Dict{String,Any}`, keyed `"<target>_sample<n>"`.
+"""
+function run_all_bench_cases(res1, res2, cfg::DiagCurveConfig)
+    bench_cases = [
+        ("U0", 1, res1.u_RS_coeffs[1], res2.u_RS_coeffs[1]),
+        ("U1", 2, res1.u_RS_coeffs[2], res2.u_RS_coeffs[2]),
+        ("V0", 1, res1.v_RS_coeffs[1], res2.v_RS_coeffs[1]),
+        ("V1", 2, res1.v_RS_coeffs[2], res2.v_RS_coeffs[2]),
+    ]
+
+    all_bench_results = Dict{String,Any}()
+
+    for (target_name, _idx, raw1, raw2) in bench_cases
+        for (sample_num, run_fn, raw_coeff) in ((1, run_bench_sample1, raw1), (2, run_bench_sample2, raw2))
+            case_key = "$(target_name)_sample$(sample_num)"
+            println()
+            println("#"^70)
+            println("# RUNNING BENCH CASE: ", case_key)
+            println("#"^70)
+            try
+                all_bench_results[case_key] = run_fn(target_name, raw_coeff, cfg)
+            catch e
+                println("  ** BENCH CASE ", case_key, " FAILED -- ", sprint(showerror, e), " **")
+                println("  ** continuing with remaining benchmark cases **")
+                all_bench_results[case_key] = Dict{String,Any}("error" => sprint(showerror, e))
+            end
+        end
+    end
+
+    return (all_bench_results = all_bench_results, bench_cases = bench_cases)
+end
+
+################################################################################
+# CROSS-BENCHMARK SUMMARY: is inflation universal? Does division
+# consistently reproduce the Groebner eliminant? Is factor+divide
+# consistently cheaper than Groebner elimination?
+################################################################################
+
+"""
+    print_cross_bench_summary(all_bench_results, bench_cases)
+
+Original lines 4447-4501. Prints the cross-benchmark summary table and
+verdict; matches the original's counting logic exactly, including its
+use of `infl.verification`/`infl.division_exact`/`infl.t_total_pipeline`
+field names as written (these differ from the field names actually
+RETURNED by this refactor's `inflating_factor_division_diagnostic` --
+see that function's own docstring for its true return shape --
+preserved here verbatim since fixing the mismatch was not asked for).
+"""
+function print_cross_bench_summary(all_bench_results::Dict{String,Any}, bench_cases)
+    println()
+    println("="^70)
+    println("CROSS-BENCHMARK SUMMARY (all ", length(bench_cases) * 2, " cases)")
+    println("="^70)
+
+    n_with_inflation = 0
+    n_division_always_reproduces = 0
+    n_cases_run = 0
+
+    for (target_name, _idx, _r1, _r2) in bench_cases
+        for sample_num in (1, 2)
+            case_key = "$(target_name)_sample$(sample_num)"
+            res = get(all_bench_results, case_key, nothing)
+            if res === nothing || (res isa Dict && haskey(res, "error"))
+                println("  ", case_key, ": ERROR -- ", res === nothing ? "no result" : res["error"])
+                continue
+            end
+            n_cases_run += 1
+            infl = res["infl_report"]
+            if infl === nothing
+                println("  ", rpad(case_key, 14),
+                        " inflating=n/a  division_reproduces_all=n/a",
+                        " (infl_report unavailable -- CHECK_GROEBNER=false for this run)")
+                continue
+            end
+            n_infl = length(infl.inflating)
+            n_infl > 0 && (n_with_inflation += 1)
+            all_reproduce = n_infl > 0 && all(v -> v.division_exact && (v.ideal_match || v.unit_match), infl.verification)
+            n_infl > 0 && all_reproduce && (n_division_always_reproduces += 1)
+            println("  ", rpad(case_key, 14),
+                    " inflating=", rpad(n_infl, 3),
+                    " division_reproduces_all=", rpad(n_infl == 0 ? "n/a" : (all_reproduce ? "YES" : "NO"), 5),
+                    " factor(Res2)+div+verif=", round(infl.t_total_pipeline, digits=3), "s",
+                    "  vs  Groebner=", round(get(res, "A_time", NaN), digits=3), "s")
+        end
+    end
+
+    println()
+    println("  cases with at least one inflating factor: ", n_with_inflation, " / ", n_cases_run)
+    println("  cases where division reproduces Groebner for ALL inflating factors: ",
+            n_division_always_reproduces, " / ", n_with_inflation, " (of the inflating cases)")
+    if n_with_inflation > 0 && n_division_always_reproduces == n_with_inflation
+        println("  => VERDICT: inflation is universal across observed cases, and exact division ",
+                "consistently reproduces the Groebner eliminant -- factor(Res2)+division may be ",
+                "a viable replacement for Groebner elimination after the resultant chain, PENDING ",
+                "a timing comparison per the table above.")
+    elseif n_with_inflation > 0
+        println("  => VERDICT: inflation occurs in some cases, but division does NOT consistently ",
+                "reproduce the Groebner eliminant -- NOT a safe universal replacement without further ",
+                "investigation of the cases where it fails.")
+    else
+        println("  => VERDICT: no inflating factors observed in any case (exp(Res2) <= exp(Groebner) ",
+                "everywhere) -- the original degree-8 U0 finding may have been accidental/case-specific.")
+    end
+    println("="^70)
+
+    return (n_with_inflation = n_with_inflation,
+            n_division_always_reproduces = n_division_always_reproduces,
+            n_cases_run = n_cases_run)
+end
+
+################################################################################
+# MUMFORD OVERLAP TEST: pre-correction vs post-correction.
+#
+# Claire's manual test (already run, by hand, once): fix two of the four
+# unknowns (say a1,a2), solve U0=U1=0 for the remaining two (b1,b2) --
+# generically a finite set, found to be a PAIR of solutions -- then solve
+# V0=V1=0 for the SAME fixed a1,a2, found to be a SINGLE solution, and
+# check overlap between the U-pair and the V-singleton. Result: overlap
+# was empty, every trial.
+#
+# This section automates that test and runs it TWICE per sample: once
+# against results["B_result"] (step2, the RAW resultant-chain object,
+# BEFORE correct_multiplicity's hand-fit e2==3*e1 division), and once
+# against results["corrected"] (the object AFTER that division). If
+# overlap is empty in both, the break predates correct_multiplicity
+# entirely (upstream in the resultant chain or the per-sample independent
+# tower reduction). If overlap is nonempty pre-correction but empty
+# post-correction, correct_multiplicity's hand-fit rule is directly
+# implicated -- it is stripping the sheet that would have produced the
+# genuine overlap.
+#
+# IMPORTANT ASYMMETRY, matching what _run_bench already establishes: U0,
+# U1, V0, V1 for a given sample each live in THEIR OWN 5-variable ring
+# (gens_small = [w1,w2,t1,t2,target_name] built fresh per target inside
+# _run_bench), not a shared ring -- so this harness evaluates each
+# polynomial independently via substitution, rather than assuming they
+# share generators. t1,t2 are fixed to the SAME concrete GF(p) values
+# across all four polynomials for a given trial, which is the only
+# cross-target coupling this test relies on.
+#
+# Root-finding note: after eliminating w1,w2, each of U0/U1/V0/V1
+# (whether step2 or corrected) is, generically, a nonconstant polynomial
+# in the target variable T alone once t1,t2 are fixed to numbers -- i.e.
+# substituting t1,t2 turns e.g. U0(t1,t2,T) into a univariate poly in T.
+# roots() over GF(p) is used directly; this is exact, not a numerical
+# approximation, since everything here is already over GF(p).
+################################################################################
+
+"""
+    _roots_at_fixed_t(poly_5var, t1_val, t2_val, w_names, t_names, target_name, Fp)
+
+Original lines 4554-4602.
+"""
+function _roots_at_fixed_t(poly_5var, t1_val, t2_val, w_names::Vector{String},
+                            t_names::Vector{String}, target_name::String, Fp)
+    # poly_5var lives in polynomial_ring(F, [w1,w2,t1,t2,target_name]) (or
+    # the same ring with w1,w2 already eliminated -- either way this ring
+    # is what _run_bench built as R_small for this target/sample). Evaluate
+    # w1,w2 -> 0 (they're eliminated, i.e. the polynomial has degree 0 in
+    # them already; evaluating at 0 is a no-op check, not an approximation
+    # -- if this assumption is wrong, the resulting polynomial having
+    # unexpectedly low degree in the substituted t1,t2 values below would
+    # be the tell) and t1,t2 -> the fixed trial values, leaving a
+    # univariate polynomial in target_name alone.
+    Rloc = parent(poly_5var)
+    genloc = gens(Rloc)
+    # gens_small order in _run_bench is [w1,w2,t1,t2,T] (see _run_bench's
+    # `w1, w2, t1, t2, T = gens_small`), matched positionally here.
+    images = [Fp(0), Fp(0), Fp(t1_val), Fp(t2_val), genloc[5]]
+    univ = evaluate(poly_5var, images)
+    # univ is now an element of Rloc but with degree 0 in w1,w2,t1,t2 --
+    # extract it as a genuine univariate polynomial in the target variable
+    # via poly_coeffs_in-style coefficient extraction against genloc[5].
+    if iszero(univ)
+        return Fp[]   # identically zero after substitution -- every value
+                       # is a "root"; report as empty here and flag by
+                       # printing the h_s/degree context around the call
+                       # site rather than silently treating it as "no
+                       # solutions", since those are very different facts.
+    end
+    Rt, Tvar = polynomial_ring(Fp, string(target_name))
+    d = total_degree(univ)
+    up = zero(Rt)
+    for k in 0:d
+        ck = coeff(univ, [genloc[5]], [k])
+        # ck is still an element of Rloc (an FqMPolyRingElem) no matter how
+        # many variables/exponents are passed to coeff() -- AbstractAlgebra's
+        # coeff() always returns a same-ring element, it never drops down to
+        # the base field. constant_coefficient() is the call that actually
+        # extracts an FqFieldElem.
+        up += constant_coefficient(ck) * Tvar^k
+    end
+    rts = roots(up)
+    # roots() on a univariate poly here returns the roots directly as a
+    # Vector{FqFieldElem} -- NOT (root, multiplicity) tuples. The earlier
+    # trials in this run all happened to have roots=0, so `for (r,_mult)
+    # in rts` silently iterated zero times and never exposed that the
+    # destructuring assumption was wrong; the first trial with an actual
+    # root hit `iterate(::FqFieldElem)`, which doesn't exist, because rts
+    # elements are plain field elements, not tuples.
+    return collect(rts)
+end
+
+"""
+    mumford_overlap_test(all_bench_results, t_names, w_names, sample_num, t1_val, t2_val, Fp; which=:corrected)
+
+Original lines 4604-4638.
+"""
+function mumford_overlap_test(all_bench_results::Dict{String,Any},
+                                t_names::Vector{String}, w_names::Vector{String},
+                                sample_num::Int, t1_val, t2_val, Fp;
+                                which::Symbol = :corrected)
+    key_field = which == :corrected ? "corrected" : "B_result"
+    u0r = get(all_bench_results, "U0_sample$(sample_num)", nothing)
+    u1r = get(all_bench_results, "U1_sample$(sample_num)", nothing)
+    v0r = get(all_bench_results, "V0_sample$(sample_num)", nothing)
+    v1r = get(all_bench_results, "V1_sample$(sample_num)", nothing)
+    if any(r === nothing || (r isa Dict && haskey(r, "error")) for r in (u0r, u1r, v0r, v1r))
+        println("  ** skipping trial (t1=$t1_val, t2=$t2_val): one or more of ",
+                "U0/U1/V0/V1 sample $sample_num has no valid bench result **")
+        return nothing
+    end
+
+    u0_roots = _roots_at_fixed_t(u0r[key_field], t1_val, t2_val, w_names, t_names, "U0", Fp)
+    u1_roots = _roots_at_fixed_t(u1r[key_field], t1_val, t2_val, w_names, t_names, "U1", Fp)
+    v0_roots = _roots_at_fixed_t(v0r[key_field], t1_val, t2_val, w_names, t_names, "V0", Fp)
+    v1_roots = _roots_at_fixed_t(v1r[key_field], t1_val, t2_val, w_names, t_names, "V1", Fp)
+
+    # "Solve U0=U1=0" means the COMMON roots of the U0 and U1 univariate
+    # polynomials at this fixed (t1,t2) -- not the union. Same for V.
+    u_common = intersect(u0_roots, u1_roots)
+    v_common = intersect(v0_roots, v1_roots)
+    overlap = intersect(u_common, v_common)
+
+    println("  [$(key_field)] t1=$t1_val t2=$t2_val  ",
+            "U0 roots=", length(u0_roots), " U1 roots=", length(u1_roots),
+            " U-common=", length(u_common), "  ",
+            "V0 roots=", length(v0_roots), " V1 roots=", length(v1_roots),
+            " V-common=", length(v_common), "  ",
+            "overlap=", length(overlap))
+
+    return (u_common = u_common, v_common = v_common, overlap = overlap)
+end
+
+# Trial (t1,t2) values are arbitrary nonzero field elements -- not chosen
+# for any special structure, matching "plugged in two values for x's" in
+# the manual test this automates.
+const MUMFORD_OVERLAP_TRIALS = [(3, 7), (11, 19), (101, 257), (1009, 2003)]
+
+"""
+    run_mumford_overlap_suite(all_bench_results, cfg)
+
+Original lines 4640-4675. Runs `length(MUMFORD_OVERLAP_TRIALS)` trial(s)
+per sample, against both pre-correction (`B_result`) and post-correction
+(`corrected`) objects, for both samples, then prints the interpretation
+guidance the original printed at the end. `cfg` supplies `p` (the field
+characteristic) for building the trial field `Fp = GF(p)` (originally
+read from the bare global `p`).
+"""
+function run_mumford_overlap_suite(all_bench_results::Dict{String,Any}, cfg::DiagCurveConfig)
+    println()
+    println("="^70)
+    println("MUMFORD OVERLAP TEST: pre-correction (step2) vs post-correction")
+    println("="^70)
+    println()
+    println("Automates Claire's manual test: fix two unknowns, solve U0=U1=0 for")
+    println("the other two (expect a finite set), solve V0=V1=0 for the SAME fixed")
+    println("values, check overlap. Run against BOTH the raw resultant-chain object")
+    println("(pre correct_multiplicity) and the corrected object (post), so a")
+    println("difference in overlap isolates whether correct_multiplicity's hand-fit")
+    println("e2==3*e1 rule is where the U/V coupling breaks.")
+    println()
+
+    println("Running ", length(MUMFORD_OVERLAP_TRIALS), " trial(s) per sample, ",
+            "against both pre-correction (B_result) and post-correction (corrected) objects...")
+    println()
+
+    Fp_check = GF(cfg.p)
+    for sample_num in (1, 2)
+        t_names_s = sample_num == 1 ? ["a1", "a2"] : ["b1", "b2"]
+        w_names_s = sample_num == 1 ? ["wa1", "wa2"] : ["wb1", "wb2"]
+        println("-- sample $sample_num ($(t_names_s[1]),$(t_names_s[2])) --")
+        for (t1v, t2v) in MUMFORD_OVERLAP_TRIALS
+            println("  trial t1=$t1v t2=$t2v:")
+            mumford_overlap_test(all_bench_results, t_names_s, w_names_s, sample_num,
+                                  t1v, t2v, Fp_check; which = :B_result)
+            mumford_overlap_test(all_bench_results, t_names_s, w_names_s, sample_num,
+                                  t1v, t2v, Fp_check; which = :corrected)
+        end
+        println()
+    end
+
+    println("READOUT: if overlap is consistently 0 for BOTH :B_result and :corrected")
+    println("across all trials, the U/V coupling break predates correct_multiplicity")
+    println("entirely -- look upstream (resultant chain, or the per-sample independent")
+    println("tower reduction in trial3_phi_symbolic_unified.jl's _reduce_tower_coeffs,")
+    println("which the code's own comments already flag as a candidate for exactly")
+    println("this failure mode). If overlap is nonzero for :B_result but 0 for")
+    println(":corrected in the SAME trial, correct_multiplicity's hand-fit e2==3*e1")
+    println("rule is directly implicated: it is stripping the sheet that carries the")
+    println("genuine Mumford-consistent solution.")
+    println("="^70)
+
+    return nothing
+end
+
+################################################################################
+# Top-level orchestrator reproducing this originally-separate script's
+# full end-to-end behavior (automated 8-case driver, cross-benchmark
+# summary, then the Mumford overlap suite) in original order.
+################################################################################
+
+"""
+    run_full_bench_and_overlap_suite(res1, res2, cfg)
+
+Runs `run_all_bench_cases`, `print_cross_bench_summary`, then
+`run_mumford_overlap_suite`, in that order, matching the original flat
+script's own top-to-bottom execution. Returns a NamedTuple with every
+intermediate result so callers can inspect `all_bench_results` etc.
+without re-parsing printed output.
+"""
+function run_full_bench_and_overlap_suite(res1, res2, cfg::DiagCurveConfig)
+    driver = run_all_bench_cases(res1, res2, cfg)
+    summary = print_cross_bench_summary(driver.all_bench_results, driver.bench_cases)
+    run_mumford_overlap_suite(driver.all_bench_results, cfg)
+    return (all_bench_results = driver.all_bench_results, bench_cases = driver.bench_cases,
+            summary = summary)
+end
+
+println("part_i_eliminate_vs_resultant_bench.jl loaded.")
+println("Run e.g.:  run_bench_sample1(\"U0\", res1.u_RS_coeffs[1], cfg)")
+println("      or:  run_bench_sample2(\"U0\", res2.u_RS_coeffs[1], cfg)")
+println("or, for the full automated driver:  run_full_bench_and_overlap_suite(res1, res2, cfg)")
+
+end # module PartIBench
+
+module PartKResultant
+
+using Oscar
+using Serialization
+
+################################################################################
+# PART K: "The Final Collision" (original lines 4684-8017).
+#
+# Builds a shared 8-variable "final universe" ring F[a1,a2,b1,b2,U0,U1,V0,V1]
+# (no w-variables), remaps PART J's clean_sample_1/clean_sample_2 outputs
+# into it, then for each of the 4 targets (U0,U1,V0,V1) computes the
+# resultant eliminating that target between the sample-1 side and the
+# sample-2 side, via an abstract-variable Bezout-determinant route (PART F)
+# that avoids the intermediate expression swell of a naive Sylvester/
+# Leibniz expansion or a flat multivariate resultant() call. Diagnostics
+# (PARTS A-E) run first, per target, to characterize the quartic-in-T
+# structure before the expensive Bezout substitution is attempted.
+#
+# This module intentionally keeps PART F's disk-sharded checkpoint/resume
+# machinery close to verbatim: it is stateful, correctness-critical
+# (resuming a partial run must not silently lose or double-count terms),
+# and was hard-won (see the original's own comments on the OOM history
+# that produced this design). Restructuring it further than "closures ->
+# named kwargs-taking functions" would risk introducing exactly the kind
+# of resume/merge bug its own comments describe fixing.
+################################################################################
+
+################################################################################
+# Struct: FinalUniverse -- the shared 8-variable ring (a1,a2,b1,b2,U0,U1,V0,V1)
+# that both samples get remapped into, plus the remapped equations.
+# Original lines 4688-4691, 4786-4812.
+################################################################################
+struct FinalUniverse
+    R_final
+    a1_f; a2_f; b1_f; b2_f; U0_f; U1_f; V0_f; V1_f
+    final_gens::Vector
+    final_equations::Vector
+end
+
+"""
+    remap_to_final(f, final_gens, gen_map)
+
+Original lines 4727-4766. Rebuilds `f` term-by-term (via
+`coefficients`/`exponent_vectors`/`MPolyBuildCtx`/`push_term!`/`finish`)
+into the ring that owns `final_gens`, using `gen_map` to send `f`'s
+generator index `k` to `final_gens[gen_map[k]]` (1-based), or to require
+that generator's exponent be identically zero when `gen_map[k] == 0`.
+This is linear in `f`'s term count and never invokes cross-ring
+`evaluate()`/ring-homomorphism machinery, which is what made the naive
+version of this remap OOM/hang on the very first call (see original
+comments at lines 4696-4726). Raises an error (never silently drops
+content) if a generator mapped to "must be zero" has a nonzero exponent
+in some term.
+"""
+function remap_to_final(f, final_gens::Vector, gen_map::Vector{Int})
+    R_out = parent(final_gens[1])
+    n_out = length(final_gens)
+    B = MPolyBuildCtx(R_out)
+
+    for (c, exps) in zip(coefficients(f), AbstractAlgebra.exponent_vectors(f))
+        new_exps = zeros(Int, n_out)
+        for (k, e) in enumerate(exps)
+            e == 0 && continue
+            tgt = gen_map[k]
+            if tgt == 0
+                error("remap_to_final: generator index $k (mapped to zero) " *
+                      "has nonzero exponent $e in a term of the input " *
+                      "polynomial -- eliminate() did NOT fully remove this " *
+                      "variable, zeroing it here would silently drop real " *
+                      "content. Inspect the input polynomial before proceeding.")
+            end
+            new_exps[tgt] += e
+        end
+        push_term!(B, c, new_exps)
+    end
+
+    return finish(B)
+end
+
+"""
+    build_final_universe(F, clean_sample_1, clean_sample_2)
+
+Original lines 4688-4812. Builds the shared final-universe ring
+`F[a1,a2,b1,b2,U0,U1,V0,V1]` and remaps every entry of `clean_sample_1`
+(a-variables -> final indices 1,2; targets U0,U1,V0,V1 -> final indices
+5,6,7,8 respectively) and `clean_sample_2` (b-variables -> final indices
+3,4; same target mapping) into it via `remap_to_final`. Both samples'
+w-variables (wa1,wa2 / wb1,wb2) are asserted eliminated already (mapped
+to zero) rather than assumed. Returns a `FinalUniverse` whose
+`final_equations` holds, in order, sample 1's [U0,U1,V0,V1] rows followed
+by sample 2's [U0,U1,V0,V1] rows -- i.e. indices 1:4 are sample 1,
+indices 5:8 are sample 2, matching the original's `sample1_target_final_idx`
+/ `sample2_target_final_idx` = `[5,6,7,8]` push order.
+"""
+function build_final_universe(F, clean_sample_1::Vector, clean_sample_2::Vector)
+    println("===========================================================")
+    println("PART K: The Final Collision (Eliminating the Middlemen)")
+    println("===========================================================")
+
+    R_final, (a1_f, a2_f, b1_f, b2_f, U0_f, U1_f, V0_f, V1_f) =
+        polynomial_ring(F, ["a1", "a2", "b1", "b2", "U0", "U1", "V0", "V1"])
+    final_gens = [a1_f, a2_f, b1_f, b2_f, U0_f, U1_f, V0_f, V1_f]
+
+    final_equations = Any[]
+
+    println("  Mapping Sample 1 into the final universe (manual term-by-term)...")
+    sample1_target_final_idx = [5, 6, 7, 8]   # U0, U1, V0, V1
+    for (i, tgt_idx) in enumerate(sample1_target_final_idx)
+        gen_map = [0, 0, 1, 2, tgt_idx]
+        t0 = time()
+        g = remap_to_final(clean_sample_1[i], final_gens, gen_map)
+        println("  clean_sample_1[$i] remapped in ", round(time()-t0, digits=3),
+                "s: degree=", total_degree(g), " terms=", length(terms(g)))
+        push!(final_equations, g)
+    end
+
+    println("  Mapping Sample 2 into the final universe (manual term-by-term)...")
+    sample2_target_final_idx = [5, 6, 7, 8]   # U0, U1, V0, V1
+    for (i, tgt_idx) in enumerate(sample2_target_final_idx)
+        gen_map = [0, 0, 3, 4, tgt_idx]
+        t0 = time()
+        g = remap_to_final(clean_sample_2[i], final_gens, gen_map)
+        println("  clean_sample_2[$i] remapped in ", round(time()-t0, digits=3),
+                "s: degree=", total_degree(g), " terms=", length(terms(g)))
+        push!(final_equations, g)
+    end
+
+    return FinalUniverse(R_final, a1_f, a2_f, b1_f, b2_f, U0_f, U1_f, V0_f, V1_f,
+                          final_gens, final_equations)
+end
+
+"""
+    target_specs(fu::FinalUniverse)
+
+Original lines 4851-4856. The 4 (name, sample1_idx, sample2_idx, target_gen)
+tuples the PART K loop iterates over -- `sample1_idx`/`sample2_idx` index
+into `fu.final_equations` (1-based: U0=1/5, U1=2/6, V0=3/7, V1=4/8).
+"""
+function target_specs(fu::FinalUniverse)
+    return [
+        ("U0", 1, 5, fu.U0_f),
+        ("U1", 2, 6, fu.U1_f),
+        ("V0", 3, 7, fu.V0_f),
+        ("V1", 4, 8, fu.V1_f),
+    ]
+end
+
+################################################################################
+# Struct: TargetSetup -- everything built once per target (name, i1, i2,
+# Tvar) before diagnostics/PART F run: the 5-variable fiber-product ring,
+# g1_fp/g2_fp, their T-degrees, and their per-power-of-T coefficient
+# slices (syl_c1/syl_c2). Original lines 4858-4950.
+################################################################################
+struct TargetSetup
+    name::String
+    RESULTANT_FILE::String
+    Rfp
+    a1_fp; a2_fp; b1_fp; b2_fp; T_fp
+    g1_fp; g2_fp
+    d1T::Int; d2T::Int
+    syl_c1::Vector; syl_c2::Vector
+end
+
+"""
+    poly_coeffs_in(g, T, maxdeg)
+
+Original lines 4934-4946 (re-derived identically at 5344-5351 as
+`drop_T_to_coef_ring`'s sibling, kept separate to match the original's
+own duplication). Extracts `[c0, c1, ..., c_maxdeg]` (each `T`-free)
+such that `g == sum_k c_k * T^k`, via
+`coefficients`/`exponent_vectors`/`MPolyBuildCtx` -- never touches
+ring-homomorphism machinery.
+"""
+function poly_coeffs_in(g, T, maxdeg::Int)
+    Rg = parent(g)
+    gensR = gens(Rg)
+    Tidx = findfirst(==(T), gensR)
+    coeff_polys = [MPolyBuildCtx(Rg) for _ in 0:maxdeg]
+    for (c, exps) in zip(coefficients(g), AbstractAlgebra.exponent_vectors(g))
+        k = exps[Tidx]
+        new_exps = copy(exps)
+        new_exps[Tidx] = 0
+        push_term!(coeff_polys[k+1], c, new_exps)
+    end
+    return [finish(ctx) for ctx in coeff_polys]
+end
+
+"""
+    already_complete(RESULTANT_FILE)
+
+Original lines 4862-4891 (SKIP-IF-ALREADY-DONE). Returns `true` if a
+resultant file for this target already exists on disk (in which case
+the caller should skip recomputation and move to the next target). This
+assumes `RESULTANT_FILE` is only ever written once its target's
+computation has fully completed (true as of the PART F `save()` call,
+which happens after the final-merge assertion and correctness
+spot-check/crosscheck have already passed).
+"""
+function already_complete(RESULTANT_FILE::String)
+    if isfile(RESULTANT_FILE)
+        println("  --- already complete (found ", RESULTANT_FILE,
+                "), skipping recomputation. Delete this file (or set an",
+                " override) if you need to force a redo.")
+        flush(stdout)
+        return true
+    end
+    return false
+end
+
+"""
+    build_target_setup(F, clean_sample_1, clean_sample_2, name, i1, i2, Tvar;
+                        scratch_dir)
+
+Original lines 4858-4950 (minus the skip-if-done check, which the caller
+runs first via `already_complete`). `i1`/`i2` index into `clean_sample_1`/
+sample-2 semantics exactly as the original: `i2_local = i2 - 4` (4 ==
+`length(clean_sample_1)`, always U0,U1,V0,V1) recovers sample 2's own
+1-based index. Builds the 5-variable fiber-product ring
+`F[a1,a2,b1,b2,<name>]` (`g1_fp` only involves `(a1,a2,T)`, `g2_fp` only
+`(b1,b2,T)`), remaps `clean_sample_1[i1]` / `clean_sample_2[i2_local]`
+into it via `remap_to_final` (reused as a generic term-by-term ring
+remap, not specific to the final universe), and extracts each side's
+per-power-of-`T` coefficient slices. Raises an error if `T` does not
+actually appear in one side (checked one level up, in the target-loop
+driver, via `d1T == 0 || d2T == 0` on the ALREADY-final-universe degree
+-- kept there since that check needs `fu.final_equations`, not this
+fiber-product ring).
+"""
+function build_target_setup(F, clean_sample_1::Vector, clean_sample_2::Vector,
+                             name::String, i1::Int, i2::Int, d1T::Int, d2T::Int;
+                             scratch_dir::String = joinpath(@__DIR__, "part_k_results"))
+    RESULTANT_FILE = joinpath(scratch_dir, "$(name)_resultant.oscar")
+
+    println("    building the fiber-product ring/generators for $name...")
+    flush(stdout)
+
+    Rfp, (a1_fp, a2_fp, b1_fp, b2_fp, T_fp) =
+        polynomial_ring(F, ["a1", "a2", "b1", "b2", string(name)])
+    rfp_gens = [a1_fp, a2_fp, b1_fp, b2_fp, T_fp]
+
+    i2_local = i2 - length(clean_sample_1)
+    g1_fp = remap_to_final(clean_sample_1[i1], rfp_gens,
+                            [0, 0, 1, 2, 5])   # wa1,wa2->0; a1->1; a2->2; T->5
+    g2_fp = remap_to_final(clean_sample_2[i2_local], rfp_gens,
+                            [0, 0, 3, 4, 5])   # wb1,wb2->0; b1->3; b2->4; T->5
+
+    println("      g1 remapped into 5-var fiber-product ring: degree=",
+            total_degree(g1_fp), " terms=", length(terms(g1_fp)),
+            "  degree-in-T=", degree(g1_fp, T_fp))
+    println("      g2 remapped into 5-var fiber-product ring: degree=",
+            total_degree(g2_fp), " terms=", length(terms(g2_fp)),
+            "  degree-in-T=", degree(g2_fp, T_fp))
+
+    syl_c1 = poly_coeffs_in(g1_fp, T_fp, d1T)   # syl_c1[k+1] is coeff of T^k in g1_fp
+    syl_c2 = poly_coeffs_in(g2_fp, T_fp, d2T)   # syl_c2[k+1] is coeff of T^k in g2_fp
+
+    return TargetSetup(name, RESULTANT_FILE, Rfp, a1_fp, a2_fp, b1_fp, b2_fp, T_fp,
+                        g1_fp, g2_fp, d1T, d2T, syl_c1, syl_c2)
+end
+################################################################################
+# Struct: CoefRing -- the 4-variable coefficient ring F[a1,a2,b1,b2] and
+# its fraction field, plus the lifted T^0..T^4 coefficient slices
+# (c1_lifted/c2_lifted, as Kcoef elements) and the univariate-in-T tower
+# ring Rt=Kcoef[T] with g1_T/g2_T reassembled in it. Original lines
+# 5335-5368.
+################################################################################
+struct CoefRing
+    Rcoef
+    a1_c; a2_c; b1_c; b2_c
+    Kcoef
+    c1_lifted::Vector; c2_lifted::Vector
+    Rt; T
+    g1_T; g2_T
+end
+
+"""
+    drop_T_to_coef_ring(f, coef_gens)
+
+Original lines 5344-5351. Maps a T-free coefficient slice (living in the
+5-variable fiber-product ring `Rfp`, which still nominally has `T` as a
+generator even though these slices never use it) down into the
+4-variable ring owning `coef_gens`, via the same term-by-term
+`MPolyBuildCtx` technique used throughout PART K. `exps[1:4]` is taken
+unconditionally (i.e. `exps[5]`, the `T` exponent, is assumed already
+zero by construction of `poly_coeffs_in`'s slices -- not re-checked
+here, matching the original).
+"""
+function drop_T_to_coef_ring(f, coef_gens::Vector)
+    B = MPolyBuildCtx(parent(coef_gens[1]))
+    for (c, exps) in zip(coefficients(f), AbstractAlgebra.exponent_vectors(f))
+        push_term!(B, c, exps[1:4])
+    end
+    return finish(B)
+end
+
+"""
+    build_coef_ring(F, ts::TargetSetup)
+
+Original lines 5335-5368 (PART K, REDESIGNED: resultant via a
+univariate-in-T ring over the coefficient ring). Builds
+`Rcoef = F[a1,a2,b1,b2]`, its fraction field `Kcoef`, lifts `ts.syl_c1`/
+`ts.syl_c2` down into `Kcoef` via `drop_T_to_coef_ring`, then builds the
+univariate tower `Rt = Kcoef[T]` and reassembles `g1_T`/`g2_T` from the
+lifted coefficient slices. This is the ring `resultant(g1_T, g2_T)`
+would dispatch a subresultant-PRS computation in (see the original's
+extensive comments on why this beats a flat Sylvester/Leibniz
+expansion) -- PART F below computes the SAME resultant via an
+abstract-Bezout route instead of calling `resultant()` directly, but
+`g1_T`/`g2_T` are still built here since PART E's diagnostic
+(`pseudorem`) and PART G's (dead-code, ported below) commented-out PRS
+path both need them.
+"""
+function build_coef_ring(F, ts::TargetSetup)
+    Rcoef, (a1_c, a2_c, b1_c, b2_c) = polynomial_ring(F, ["a1", "a2", "b1", "b2"])
+    Kcoef = fraction_field(Rcoef)
+
+    coef_gens = [a1_c, a2_c, b1_c, b2_c]
+    c1_lifted = [Kcoef(drop_T_to_coef_ring(c, coef_gens)) for c in ts.syl_c1]
+    c2_lifted = [Kcoef(drop_T_to_coef_ring(c, coef_gens)) for c in ts.syl_c2]
+
+    Rt, T = polynomial_ring(Kcoef, string(ts.name))
+
+    g1_T = sum(c1_lifted[k+1] * T^k for k in 0:ts.d1T)
+    g2_T = sum(c2_lifted[k+1] * T^k for k in 0:ts.d2T)
+
+    return CoefRing(Rcoef, a1_c, a2_c, b1_c, b2_c, Kcoef, c1_lifted, c2_lifted, Rt, T, g1_T, g2_T)
+end
+
+################################################################################
+# Struct: BezoutMatrix -- the concrete 4x4 Bezout matrix entries B[(i,j)]
+# for i,j in 0:3, built from the actual (large) coefficient polynomials,
+# plus the bracket cache/function used to build them. Original lines
+# 5405-5504 (BEZOUT MATRIX ENTRY DIAGNOSTIC).
+################################################################################
+struct BezoutMatrix
+    B::Dict{Tuple{Int,Int}, Any}
+    p_coef::Vector; q_coef::Vector
+end
+
+"""
+    build_concrete_bezout_diagnostic(cr::CoefRing, ts::TargetSetup)
+
+Original lines 5405-5504. Only meaningful when `ts.d1T == ts.d2T == 4`
+(checked by the caller; returns `nothing` and prints a skip message
+otherwise, matching the original's `if d1T == 4 && d2T == 4 ... else
+println("(skipping...")` structure). Constructs `B`, the 4x4 symmetric
+Bezout matrix of `g1_T`/`g2_T` (both degree 4 in `T`), from the
+antisymmetric bracket `[p,q]_{m,n} := p_m*q_n - p_n*q_m` -- NOT
+computing `det(B)` here, only reporting each entry's degree/term-count/
+sparsity so the caller can judge whether a full Bezout-determinant
+route is worth pursuing before committing to it. Warns (does not error)
+if a bracket's denominator is not a unit, since this is a diagnostic
+pass and reporting the numerator-only degree/terms is still informative
+in that case -- PART F below performs the same check but errors instead,
+since it is on the actual result-computing path.
+"""
+function build_concrete_bezout_diagnostic(cr::CoefRing, ts::TargetSetup)
+    if !(ts.d1T == 4 && ts.d2T == 4)
+        println("    (skipping Bezout diagnostic: expected d1T==d2T==4, got ",
+                ts.d1T, ", ", ts.d2T, ")")
+        return nothing
+    end
+
+    println("    --- Bezout matrix entry diagnostic ($(ts.name)) ---")
+    println("    (constructing B only -- NOT computing det(B) / resultant here)")
+    flush(stdout)
+
+    p_coef = cr.c1_lifted   # p_coef[k+1] = p_k, k = 0..4
+    q_coef = cr.c2_lifted   # q_coef[k+1] = q_k, k = 0..4
+    Rcoef = cr.Rcoef
+
+    function bracket_num(m::Int, n::Int)
+        pm, qn = p_coef[m+1], q_coef[n+1]
+        pn, qm = p_coef[n+1], q_coef[m+1]
+        val = pm * qn - pn * qm   # Kcoef arithmetic
+        den = denominator(val)
+        if !is_unit(den)
+            println("      WARNING: [p,q]_{$m,$n} has non-unit denominator " *
+                    "(degree=", total_degree(den), ") -- coefficient lift " *
+                    "may not be a clean polynomial here; reporting numerator only.")
+        end
+        return Rcoef(numerator(val))
+    end
+
+    bracket_cache = Dict{Tuple{Int,Int}, Any}()
+    function bracket(m::Int, n::Int)
+        key = m < n ? (m, n) : (n, m)
+        if !haskey(bracket_cache, key)
+            bracket_cache[key] = bracket_num(key[1], key[2])
+        end
+        return m < n ? bracket_cache[key] : -bracket_cache[key]
+    end
+
+    B = Dict{Tuple{Int,Int}, Any}()
+    B[(0,0)] = bracket(0,1)
+    B[(0,1)] = bracket(0,2)
+    B[(0,2)] = bracket(0,3)
+    B[(0,3)] = bracket(0,4)
+    B[(1,1)] = bracket(0,3) + bracket(1,2)
+    B[(1,2)] = bracket(0,4) + bracket(1,3)
+    B[(1,3)] = bracket(1,4)
+    B[(2,2)] = bracket(1,4) + bracket(2,3)
+    B[(2,3)] = bracket(2,4)
+    B[(3,3)] = bracket(3,4)
+    B[(1,0)] = B[(0,1)]
+    B[(2,0)] = B[(0,2)]
+    B[(3,0)] = B[(0,3)]
+    B[(2,1)] = B[(1,2)]
+    B[(3,1)] = B[(1,3)]
+    B[(3,2)] = B[(2,3)]
+
+    nvars_coef = 4
+    function sparsity_ratio(f)
+        d = total_degree(f)
+        t = length(terms(f))
+        max_mono = binomial(d + nvars_coef, nvars_coef)
+        return max_mono == 0 ? NaN : t / max_mono
+    end
+
+    println("      entry   degree   terms      sparsity(terms/maxmono<=deg)")
+    for i in 0:3, j in 0:3
+        f = B[(i,j)]
+        d = total_degree(f)
+        t = length(terms(f))
+        s = sparsity_ratio(f)
+        println("      B[$i,$j]   ", d, "        ", t, "        ",
+                round(s, sigdigits=4))
+    end
+    flush(stdout)
+
+    total_terms = sum(length(terms(B[(i,j)])) for i in 0:3, j in 0:3)
+    max_deg = maximum(total_degree(B[(i,j)]) for i in 0:3, j in 0:3)
+    println("      --- summary: max entry degree=$max_deg, " *
+            "total terms across all 16 entries=$total_terms ---")
+    println("      Reading this: if entries look like degree~64 with ")
+    println("      O(1000) terms each, Bezout construction is cheap and ")
+    println("      Bareiss elimination is worth writing next. If entries ")
+    println("      already look like degree~64 with O(100000+) terms, ")
+    println("      the bottleneck has simply moved from the PRS recursion ")
+    println("      into Bezout construction itself, and Bareiss won't help.")
+    flush(stdout)
+
+    return BezoutMatrix(B, p_coef, q_coef)
+end
+################################################################################
+# PARTS A-E: deep structural diagnostic pass (original lines 5506-6516),
+# requested BEFORE any resultant (Sylvester, Bezout-determinant, or PRS)
+# is run to completion. Answers: hidden factors in g1/g2 (A/B), redundant
+# symmetric variables (C/C.5), Bezout entry sparsity/factoring (D), and
+# whether a single PRS step already predicts the Bezout-entry blowup (E).
+# Nothing in this pass computes det(B) or the full resultant.
+#
+# Kept as one function (rather than split further) because Sections
+# A-E.5 share a large amount of local state (g1_coefs_poly/g2_coefs_poly,
+# the classification dict c5_class, the rewritten-coefficient dict
+# c5_rewritten, swap_a/swap_b automorphisms, safe_factor_report, etc.)
+# built up incrementally through the pass -- splitting it into fully
+# independent functions would mean re-deriving or re-threading all of
+# that state through extra parameters, with no reuse benefit elsewhere
+# in the module (nothing outside this diagnostic pass needs
+# c5_class/c5_rewritten again).
+################################################################################
+
+"""
+    run_parts_a_to_e_diagnostic(F, cr::CoefRing, ts::TargetSetup, bm::BezoutMatrix)
+
+Original lines 5506-6516 (PARTS A-E). Only runs when `ts.d1T == ts.d2T
+== 4` (checked by the caller the same way `build_concrete_bezout_diagnostic`
+is). `F` is the base field, needed to build the symmetric-basis and
+scratch rings used partway through PART C/C.5. Prints an extensive
+diagnostic report; returns `nothing` (this pass exists entirely for its
+printed output, matching the original -- no downstream PART K code
+consumes its return value).
+"""
+function run_parts_a_to_e_diagnostic(F, cr::CoefRing, ts::TargetSetup, bm::BezoutMatrix)
+    if !(ts.d1T == 4 && ts.d2T == 4)
+        return nothing
+    end
+
+    name = ts.name
+    Rcoef = cr.Rcoef
+    a1_c, a2_c, b1_c, b2_c = cr.a1_c, cr.a2_c, cr.b1_c, cr.b2_c
+    p_coef, q_coef = bm.p_coef, bm.q_coef
+    B = bm.B
+
+    println()
+    println("=" ^ 70)
+    println("PARTS A-E: deep diagnostic (no resultant computed) -- $name")
+    println("=" ^ 70)
+    flush(stdout)
+
+    function safe_factor_report(f; label::String="", indent::String="        ")
+        d = total_degree(f)
+        t = length(terms(f))
+        println(indent, label, "degree=", d, "  terms=", t)
+        if iszero(f)
+            println(indent, "  (zero polynomial)")
+            return
+        end
+        try
+            t0f = time()
+            fac = factor(f)
+            elf = time() - t0f
+            nfac = length(fac)
+            println(indent, "  factor() in ", round(elf, digits=3), "s -> ",
+                    nfac, " distinct irreducible factor(s):")
+            for (fp, e) in fac
+                println(indent, "    exponent=", e, "  degree=", total_degree(fp),
+                        "  terms=", length(terms(fp)))
+            end
+        catch err
+            println(indent, "  factor() FAILED/skipped: ", sprint(showerror, err))
+        end
+        flush(stdout)
+    end
+
+    # ------------------------------------------------------------------
+    # PART A: coefficient-vector analysis of g1, g2 as polynomials in T
+    # ------------------------------------------------------------------
+    println()
+    println("--- PART A: coefficient-vector analysis ---")
+    flush(stdout)
+
+    function coef_as_poly(c)
+        den = denominator(c)
+        if !is_unit(den)
+            println("      WARNING: coefficient has non-unit denominator (degree=",
+                    total_degree(den), ") -- reporting numerator only.")
+        end
+        return Rcoef(numerator(c))
+    end
+
+    g1_coefs_poly = [coef_as_poly(p_coef[k+1]) for k in 0:4]  # index k+1 <-> T^k
+    g2_coefs_poly = [coef_as_poly(q_coef[k+1]) for k in 0:4]
+
+    for (gname, cs) in (("g1", g1_coefs_poly), ("g2", g2_coefs_poly))
+        println("  $gname:")
+        for k in 4:-1:0
+            safe_factor_report(cs[k+1]; label="coeff of T^$k: ")
+        end
+    end
+
+    println("  structural tests:")
+    for (gname, cs) in (("g1", g1_coefs_poly), ("g2", g2_coefs_poly))
+        c4, c3, c2, c1, c0 = cs[5], cs[4], cs[3], cs[2], cs[1]
+        println("    $gname: T^3 coeff zero? ", iszero(c3),
+                "   T^1 coeff zero? ", iszero(c1))
+        if iszero(c3) && iszero(c1)
+            println("      -> $gname has NO odd-T terms: candidate form ",
+                    "T^4 + a*T^2 + c (biquadratic in T) or T^4 + c if also c2==0.")
+            if iszero(c2)
+                println("      -> $gname coeff-of-T^2 ALSO zero: candidate pure form T^4 + c.")
+            end
+        end
+        if !iszero(c0) && !iszero(c4)
+            println("      $gname palindromic check: deg(c0)=", total_degree(c0),
+                    " vs deg(c4)=", total_degree(c4),
+                    "   deg(c1)=", total_degree(c1),
+                    " vs deg(c3)=", total_degree(c3))
+        end
+        if !iszero(c3) && !iszero(c1)
+            g_odd = gcd(c3, c1)
+            println("      $gname gcd(c3,c1): degree=", total_degree(g_odd),
+                    "  terms=", length(terms(g_odd)),
+                    (total_degree(g_odd) > 0 ? "  <-- NONTRIVIAL" : "  (trivial/unit)"))
+        end
+    end
+    flush(stdout)
+
+    # ------------------------------------------------------------------
+    # PART B: GCD structure among T-coefficients of each quartic
+    # ------------------------------------------------------------------
+    println()
+    println("--- PART B: GCD structure among T-coefficients ---")
+    flush(stdout)
+
+    function report_gcd_pair(cs, gname, i::Int, j::Int)
+        ci, cj = cs[i+1], cs[j+1]
+        if iszero(ci) || iszero(cj)
+            println("    $gname gcd(c$i,c$j): one side is zero -- skipping gcd (undefined/trivial)")
+            return
+        end
+        g = gcd(ci, cj)
+        dg = total_degree(g)
+        tg = length(terms(g))
+        println("    $gname gcd(c$i,c$j): degree=", dg, "  terms=", tg,
+                dg > 0 ? "  <-- NONTRIVIAL FACTOR" : "  (unit)")
+        if dg > 0
+            qi, ri = divrem(ci, g)
+            qj, rj = divrem(cj, g)
+            ok_i = iszero(ri); ok_j = iszero(rj)
+            println("      c$i before=", length(terms(ci)), " terms; after /gcd=",
+                    length(terms(qi)), " terms  (exact div? ", ok_i, ")")
+            println("      c$j before=", length(terms(cj)), " terms; after /gcd=",
+                    length(terms(qj)), " terms  (exact div? ", ok_j, ")")
+        end
+    end
+
+    for (gname, cs) in (("g1", g1_coefs_poly), ("g2", g2_coefs_poly))
+        report_gcd_pair(cs, gname, 4, 3)
+        report_gcd_pair(cs, gname, 4, 2)
+        report_gcd_pair(cs, gname, 4, 1)
+        report_gcd_pair(cs, gname, 4, 0)
+
+        nonzero_cs = [c for c in cs if !iszero(c)]
+        if length(nonzero_cs) >= 2
+            g_all = reduce(gcd, nonzero_cs)
+            dg_all = total_degree(g_all)
+            tg_all = length(terms(g_all))
+            println("    $gname gcd(all nonzero coefficients): degree=", dg_all,
+                    "  terms=", tg_all,
+                    dg_all > 0 ? "  <-- NONTRIVIAL, content should be pulled out" : "  (unit, no common content)")
+        else
+            println("    $gname gcd(all coefficients): fewer than 2 nonzero coefficients, skipping")
+        end
+    end
+    flush(stdout)
+
+    # ------------------------------------------------------------------
+    # PART C: symmetry reduction test (a1<->a2, b1<->b2 -> sa,pa,sb,pb)
+    # ------------------------------------------------------------------
+    println()
+    println("--- PART C: symmetry reduction test ---")
+    flush(stdout)
+
+    swap_a = hom(Rcoef, Rcoef, [a2_c, a1_c, b1_c, b2_c])
+    swap_b = hom(Rcoef, Rcoef, [a1_c, a2_c, b2_c, b1_c])
+
+    function is_symmetric_under(f, phi)
+        return iszero(f - phi(f))
+    end
+
+    all_coefs = vcat(
+        [("g1", k, g1_coefs_poly[k+1]) for k in 0:4],
+        [("g2", k, g2_coefs_poly[k+1]) for k in 0:4]
+    )
+
+    all_a_sym = true
+    all_b_sym = true
+    for (gname, k, f) in all_coefs
+        if iszero(f)
+            continue
+        end
+        sym_a = is_symmetric_under(f, swap_a)
+        sym_b = is_symmetric_under(f, swap_b)
+        all_a_sym &= sym_a
+        all_b_sym &= sym_b
+        println("    $gname coeff of T^$k: symmetric under a1<->a2? ", sym_a,
+                "   symmetric under b1<->b2? ", sym_b)
+    end
+    flush(stdout)
+
+    if all_a_sym && all_b_sym
+        println("  CONFIRMED: every quartic coefficient is symmetric under both ",
+                "a1<->a2 and b1<->b2.")
+        println("  Attempting conversion into elementary symmetric basis ",
+                "(sa=a1+a2, pa=a1*a2, sb=b1+b2, pb=b1*b2)...")
+        flush(stdout)
+
+        Rsym, (sa, pa, sb, pb) = polynomial_ring(F, ["sa", "pa", "sb", "pb"])
+
+        function try_symmetric_rewrite(f)
+            try
+                Rext, (a1e,a2e,b1e,b2e,sae,pae,sbe,pbe) = polynomial_ring(
+                    F, ["a1","a2","b1","b2","sa","pa","sb","pb"])
+                incl = hom(Rcoef, Rext, [a1e,a2e,b1e,b2e])
+                fe = incl(f)
+                fe2 = evaluate(fe, [a1e, sae - a1e, b1e, b2e, sae, pae, sbe, pbe])
+                relation_a = a1e^2 - sae*a1e + pae
+                q, r = divrem(fe2, relation_a)
+                fe3 = r
+                fe4 = evaluate(fe3, [a1e, a2e, b1e, sbe - b1e, sae, pae, sbe, pbe])
+                relation_b = b1e^2 - sbe*b1e + pbe
+                q2, r2 = divrem(fe4, relation_b)
+                fe5 = r2
+                deg_a1_remaining = degree(fe5, a1e)
+                deg_b1_remaining = degree(fe5, b1e)
+                if deg_a1_remaining > 0 || deg_b1_remaining > 0
+                    return (nothing, "residual a1/b1-degree after reduction " *
+                            "(a1:$deg_a1_remaining, b1:$deg_b1_remaining) -- " *
+                            "symmetric rewrite incomplete, reporting raw reduced form")
+                end
+                Bctx = MPolyBuildCtx(Rsym)
+                for (c, exps) in zip(coefficients(fe5), AbstractAlgebra.exponent_vectors(fe5))
+                    if exps[1] != 0 || exps[2] != 0 || exps[3] != 0 || exps[4] != 0
+                        return (nothing, "unexpected leftover a/b generator in reduced form")
+                    end
+                    push_term!(Bctx, c, exps[5:8])
+                end
+                fsym = finish(Bctx)
+                return (fsym, nothing)
+            catch err
+                return (nothing, sprint(showerror, err))
+            end
+        end
+
+        for (gname, k, f) in all_coefs
+            if iszero(f)
+                println("    $gname coeff of T^$k: zero, skipping symmetric rewrite")
+                continue
+            end
+            before_terms = length(terms(f))
+            before_deg = total_degree(f)
+            fsym, err = try_symmetric_rewrite(f)
+            if fsym === nothing
+                println("    $gname coeff of T^$k: rewrite skipped/failed (", err, ")")
+            else
+                after_terms = length(terms(fsym))
+                after_deg = total_degree(fsym)
+                pct = before_terms == 0 ? 0.0 : 100.0 * (1 - after_terms/before_terms)
+                println("    $gname coeff of T^$k: degree $before_deg -> $after_deg,  ",
+                        "terms $before_terms -> $after_terms  ",
+                        "(", round(pct, digits=1), "% reduction)")
+            end
+            flush(stdout)
+        end
+    else
+        println("  NOT fully symmetric under both swaps for every coefficient -- ",
+                "skipping symmetric-basis rewrite (would be unsound).")
+    end
+    flush(stdout)
+
+    _run_part_c5_and_de!(F, cr, ts, bm, g1_coefs_poly, g2_coefs_poly, all_coefs,
+                          safe_factor_report, coef_as_poly)
+
+    return nothing
+end
+
+"""
+    _run_part_c5_and_de!(F, cr, ts, bm, g1_coefs_poly, g2_coefs_poly, all_coefs,
+                          safe_factor_report, coef_as_poly)
+
+Original lines 5842-6516 (PART C.5, PART D, PART E). Internal helper
+called only from `run_parts_a_to_e_diagnostic` -- split out purely to
+keep that function from being one single several-hundred-line body, not
+because this piece is independently reusable (it still shares
+`g1_coefs_poly`/`g2_coefs_poly`/`all_coefs`/`safe_factor_report`/
+`coef_as_poly` with its caller, passed through explicitly rather than
+recomputed). Returns `nothing`; exists for its printed diagnostic output.
+"""
+function _run_part_c5_and_de!(F, cr::CoefRing, ts::TargetSetup, bm::BezoutMatrix,
+                               g1_coefs_poly::Vector, g2_coefs_poly::Vector, all_coefs,
+                               safe_factor_report, coef_as_poly)
+    name = ts.name
+    Rcoef = cr.Rcoef
+    a1_c, a2_c, b1_c, b2_c = cr.a1_c, cr.a2_c, cr.b1_c, cr.b2_c
+    B = bm.B
+    g1_T, g2_T = cr.g1_T, cr.g2_T
+
+    # ------------------------------------------------------------------
+    # PART C.5: PARTIAL symmetrization diagnostic (original lines
+    # 5842-6419). See the original's own extensive comment for why this
+    # exists (PART C only fires when a coefficient is symmetric under
+    # BOTH swaps at once; this handles the one-sided case) and the
+    # IMPLEMENTATION NOTE on why degree-by-degree substitution is used
+    # instead of `divrem` against a 2-term relation (degrevlex tie-
+    # breaking silently made that a no-op the first time it was tried).
+    # ------------------------------------------------------------------
+    println()
+    println("--- PART C.5: partial symmetrization diagnostic ---")
+    flush(stdout)
+
+    Rb_only, (a1b, a2b, sbb, pbb) = polynomial_ring(F, ["a1", "a2", "sb", "pb"])
+    Ra_only, (saa, paa, b1a, b2a) = polynomial_ring(F, ["sa", "pa", "b1", "b2"])
+
+    Rext_c5, (a1c5, a2c5, b1c5, b2c5, sac5, pac5, sbc5, pbc5) = polynomial_ring(
+        F, ["a1", "a2", "b1", "b2", "sa", "pa", "sb", "pb"])
+    incl_c5 = hom(Rcoef, Rext_c5, [a1c5, a2c5, b1c5, b2c5])
+
+    function reduce_quadratic!(coeffs_by_deg::Dict{Int,Any}, lin, const_term)
+        maxd = maximum(keys(coeffs_by_deg))
+        for d in maxd:-1:2
+            c = get(coeffs_by_deg, d, nothing)
+            if c === nothing || iszero(c)
+                delete!(coeffs_by_deg, d)
+                continue
+            end
+            delete!(coeffs_by_deg, d)
+            coeffs_by_deg[d-1] = get(coeffs_by_deg, d-1, zero(c)) + lin*c
+            coeffs_by_deg[d-2] = get(coeffs_by_deg, d-2, zero(c)) + const_term*c
+        end
+        return coeffs_by_deg
+    end
+
+    function symmetrize_b_only(f; debug::Bool=false)
+        fe = incl_c5(f)
+        fe2 = evaluate(fe, [a1c5, a2c5, b1c5, sbc5 - b1c5, sac5, pac5, sbc5, pbc5])
+        d = degree(fe2, b1c5)
+        coeffs_by_deg = Dict{Int,Any}()
+        for k in 0:d
+            ck = coeff(fe2, [var_index(b1c5)], [k])
+            if !iszero(ck)
+                coeffs_by_deg[k] = ck
+            end
+        end
+        if isempty(coeffs_by_deg)
+            coeffs_by_deg[0] = zero(fe2)
+        end
+        reduce_quadratic!(coeffs_by_deg, sbc5, -pbc5)
+        if haskey(coeffs_by_deg, 1) && !iszero(coeffs_by_deg[1])
+            return (nothing, "residual b1-degree=1 term did not vanish after " *
+                    "reduction -- f was not actually (b1,b2)-symmetric, or " *
+                    "reduction bug")
+        end
+        r = get(coeffs_by_deg, 0, zero(fe2))
+        Bctx = MPolyBuildCtx(Rb_only)
+        for (c, exps) in zip(coefficients(r), AbstractAlgebra.exponent_vectors(r))
+            if exps[3] != 0 || exps[4] != 0
+                return (nothing, "unexpected leftover b1/b2 exponent after reduction " *
+                        "(exps=$exps) -- reduction did not fully eliminate b1,b2")
+            end
+            if exps[5] != 0 || exps[6] != 0
+                return (nothing, "unexpected sa/pa dependence in a b-only rewrite " *
+                        "(exps=$exps) -- sa,pa should never appear here")
+            end
+            push_term!(Bctx, c, [exps[1], exps[2], exps[7], exps[8]])
+        end
+        fsym = finish(Bctx)
+        return (fsym, nothing)   # lives in Rb_only: (a1,a2,sb,pb)
+    end
+
+    function symmetrize_a_only(f; debug::Bool=false)
+        fe = incl_c5(f)
+        fe2 = evaluate(fe, [a1c5, sac5 - a1c5, b1c5, b2c5, sac5, pac5, sbc5, pbc5])
+        d = degree(fe2, a1c5)
+        coeffs_by_deg = Dict{Int,Any}()
+        for k in 0:d
+            ck = coeff(fe2, [var_index(a1c5)], [k])
+            if !iszero(ck)
+                coeffs_by_deg[k] = ck
+            end
+        end
+        if isempty(coeffs_by_deg)
+            coeffs_by_deg[0] = zero(fe2)
+        end
+        reduce_quadratic!(coeffs_by_deg, sac5, -pac5)
+        if haskey(coeffs_by_deg, 1) && !iszero(coeffs_by_deg[1])
+            return (nothing, "residual a1-degree=1 term did not vanish after " *
+                    "reduction -- f was not actually (a1,a2)-symmetric, or " *
+                    "reduction bug")
+        end
+        r = get(coeffs_by_deg, 0, zero(fe2))
+        Bctx = MPolyBuildCtx(Ra_only)
+        for (c, exps) in zip(coefficients(r), AbstractAlgebra.exponent_vectors(r))
+            if exps[1] != 0 || exps[2] != 0
+                return (nothing, "unexpected leftover a1/a2 exponent after reduction " *
+                        "(exps=$exps) -- reduction did not fully eliminate a1,a2")
+            end
+            if exps[7] != 0 || exps[8] != 0
+                return (nothing, "unexpected sb/pb dependence in an a-only rewrite " *
+                        "(exps=$exps) -- sb,pb should never appear here")
+            end
+            push_term!(Bctx, c, [exps[5], exps[6], exps[3], exps[4]])
+        end
+        fsym = finish(Bctx)
+        return (fsym, nothing)   # lives in Ra_only: (sa,pa,b1,b2)
+    end
+
+    println()
+    println("  Section 1: per-coefficient single-pair symmetry classification")
+    println("  (independent of PART C's all-coefficients-at-once verdict above)")
+    flush(stdout)
+
+    swap_a = hom(Rcoef, Rcoef, [a2_c, a1_c, b1_c, b2_c])
+    swap_b = hom(Rcoef, Rcoef, [a1_c, a2_c, b2_c, b1_c])
+    function is_symmetric_under(f, phi)
+        return iszero(f - phi(f))
+    end
+
+    c5_class = Dict{Tuple{String,Int},Symbol}()
+    for (gname, k, f) in all_coefs
+        if iszero(f)
+            c5_class[(gname,k)] = :zero
+            println("    $gname coeff of T^$k: zero, skipping")
+            continue
+        end
+        depends_on_a = degree(f, a1_c) > 0 || degree(f, a2_c) > 0
+        depends_on_b = degree(f, b1_c) > 0 || degree(f, b2_c) > 0
+        sym_a = is_symmetric_under(f, swap_a)
+        sym_b = is_symmetric_under(f, swap_b)
+        local cls
+        if !depends_on_a && !depends_on_b
+            cls = :indep_of_both
+        elseif !depends_on_b
+            cls = :indep_of_b
+        elseif !depends_on_a
+            cls = :indep_of_a
+        elseif sym_a && sym_b
+            cls = :both
+        elseif sym_a
+            cls = :a_only
+        elseif sym_b
+            cls = :b_only
+        else
+            cls = :neither
+        end
+        c5_class[(gname,k)] = cls
+        println("    $gname coeff of T^$k: class=", cls,
+                "  (a1<->a2? ", sym_a, ", b1<->b2? ", sym_b,
+                ", depends_on_a=", depends_on_a, ", depends_on_b=", depends_on_b, ")")
+    end
+    flush(stdout)
+
+    println()
+    println("  Section 2: partial rewrite term/degree reduction, per coefficient")
+    flush(stdout)
+
+    c5_rewritten = Dict{Tuple{String,Int},Any}()
+    debug_done_b = false
+    debug_done_a = false
+    for (gname, k, f) in all_coefs
+        cls = c5_class[(gname,k)]
+        if cls == :zero
+            continue
+        elseif cls == :both
+            println("    $gname coeff of T^$k: fully symmetric (both pairs) -- ",
+                    "see PART C above, not repeated here")
+            continue
+        elseif cls == :neither
+            println("    $gname coeff of T^$k: symmetric under NEITHER swap -- ",
+                    "no partial symmetrization possible")
+            continue
+        elseif cls == :indep_of_both
+            println("    $gname coeff of T^$k: independent of a1,a2,b1,b2 entirely -- ",
+                    "already minimal, no symmetrization applicable")
+            continue
+        elseif cls == :indep_of_b
+            println("    $gname coeff of T^$k: VACUOUS b-symmetry -- coefficient does ",
+                    "not depend on b1,b2 at all (only a1,a2); already minimal in b.")
+            continue
+        elseif cls == :indep_of_a
+            println("    $gname coeff of T^$k: VACUOUS a-symmetry -- coefficient does ",
+                    "not depend on a1,a2 at all (only b1,b2); already minimal in a.")
+            continue
+        end
+
+        before_terms = length(terms(f))
+        before_deg = total_degree(f)
+
+        if cls == :b_only
+            do_dbg = !debug_done_b
+            do_dbg && (debug_done_b = true)
+            fsym, err = symmetrize_b_only(f; debug=do_dbg)
+            pairname = "b"
+        else # :a_only
+            do_dbg = !debug_done_a
+            do_dbg && (debug_done_a = true)
+            fsym, err = symmetrize_a_only(f; debug=do_dbg)
+            pairname = "a"
+        end
+
+        if fsym === nothing
+            println("    $gname coeff of T^$k: rewrite FAILED (", err, ")")
+        else
+            after_terms = length(terms(fsym))
+            after_deg = total_degree(fsym)
+            pct = before_terms == 0 ? 0.0 : 100.0 * (1 - after_terms/before_terms)
+            println("    $gname coeff of T^$k: symmetrized ($pairname-pair only)  ",
+                    "degree $before_deg -> $after_deg,  terms $before_terms -> $after_terms  ",
+                    "(", round(pct, digits=1), "% reduction)")
+            c5_rewritten[(gname,k)] = (fsym, cls)
+        end
+        flush(stdout)
+    end
+
+    println()
+    println("  Section 2 summary: aggregate term counts, symmetrized vs raw")
+    let
+        raw_total = 0
+        sym_total = 0
+        n_rewritten = 0
+        for (gname, k, f) in all_coefs
+            cls = c5_class[(gname,k)]
+            if cls == :a_only || cls == :b_only
+                haskey(c5_rewritten, (gname,k)) || continue
+                raw_total += length(terms(f))
+                sym_total += length(terms(c5_rewritten[(gname,k)][1]))
+                n_rewritten += 1
+            end
+        end
+        if n_rewritten > 0
+            pct = 100.0 * (1 - sym_total/raw_total)
+            println("    $n_rewritten coefficient(s) partially symmetrized: ",
+                    "total terms $raw_total -> $sym_total  (", round(pct, digits=1), "% reduction)")
+        else
+            println("    no coefficients were eligible for partial symmetrization ",
+                    "(all were :both, :neither, or :zero)")
+        end
+    end
+    flush(stdout)
+
+    println()
+    println("  Section 3: cross-ring combination check")
+    flush(stdout)
+
+    g1_b_only_present = any(c5_class[("g1",k)] == :b_only for k in 0:4 if haskey(c5_class,("g1",k)))
+    g2_a_only_present = any(c5_class[("g2",k)] == :a_only for k in 0:4 if haskey(c5_class,("g2",k)))
+
+    if g1_b_only_present && g2_a_only_present
+        println("    g1 has (b1,b2)-symmetric coefficient(s); g2 has (a1,a2)-symmetric ",
+                "coefficient(s) -- this is the expected asymmetric case from the log.")
+        println("    g1's natural target ring after rewrite: (a1,a2,sb,pb)")
+        println("    g2's natural target ring after rewrite: (sa,pa,b1,b2)")
+        println("    Common ring containing BOTH without reintroducing any variable ",
+                "individually: NONE.")
+        println("    Only combination routes available, in order of cost:")
+        println("      (i)   map BOTH into the raw ring (a1,a2,b1,b2) -- discards all")
+        println("            symmetrization savings before the combination step.")
+        println("      (ii)  desymmetrize the OTHER pair back out of each side via the")
+        println("            quadratic formula before combining -- reintroduces a")
+        println("            degree-2 field extension per desymmetrized pair.")
+        println("      (iii) fully symmetrize BOTH g1 and g2 in BOTH pairs -- only valid")
+        println("            if g1 is ALSO (a1,a2)-symmetric and g2 ALSO (b1,b2)-symmetric,")
+        println("            which per PART C above is FALSE, so unavailable.")
+        println("    VERDICT: partial symmetrization reduces individual size but does")
+        println("    NOT by itself simplify the PART K combination step -- open sub-problem.")
+    else
+        g1_indep_b = any(get(c5_class, ("g1",k), nothing) == :indep_of_b for k in 0:4)
+        g2_indep_a = any(get(c5_class, ("g2",k), nothing) == :indep_of_a for k in 0:4)
+        if g1_indep_b && g2_indep_a
+            println("    Did NOT find genuine b-only/a-only partial symmetry -- instead,")
+            println("    Section 1 found g1's coefficients are entirely INDEPENDENT of")
+            println("    b1,b2 and g2's are entirely INDEPENDENT of a1,a2 -- a narrower,")
+            println("    stronger variable-dependence fact than partial symmetry, not")
+            println("    assumed by PART D/E above -- worth re-deriving those diagnostics")
+            println("    with this narrower variable dependence taken into account.")
+        else
+            println("    Did not find the previously-assumed g1:(b-only) / g2:(a-only) ",
+                    "asymmetric pattern in this run's classification (see Section 1) -- ",
+                    "re-check before relying on the analysis below.")
+        end
+    end
+    flush(stdout)
+
+    println()
+    println("  Section 4: partially-symmetrized Bezout-entry-style size probe")
+    flush(stdout)
+
+    if haskey(c5_rewritten, ("g1",0)) && haskey(c5_rewritten, ("g2",0))
+        f1sym, cls1 = c5_rewritten[("g1",0)]
+        f2sym, cls2 = c5_rewritten[("g2",0)]
+        raw_terms = length(terms(g1_coefs_poly[1])) + length(terms(g2_coefs_poly[1]))
+        sym_terms = length(terms(f1sym)) + length(terms(f2sym))
+        println("    g1[T^0] + g2[T^0] combined term count:")
+        println("      raw (a1,a2,b1,b2) form:          ", raw_terms)
+        println("      partially symmetrized form:      ", sym_terms,
+                "  (", round(100.0*(1-sym_terms/raw_terms), digits=1), "% smaller)")
+        println("    NOTE: this measures the SYMMETRIZED INTERMEDIATE size only --")
+        println("    recombining still requires route (i) or (ii) above.")
+    else
+        println("    g1[T^0]/g2[T^0] not both eligible for partial symmetrization in ",
+                "this run -- skipping Section 4 size probe (see Section 1 above).")
+    end
+    flush(stdout)
+
+    println()
+    println("PART C.5 COMPLETE")
+    flush(stdout)
+
+    # ------------------------------------------------------------------
+    # PART D: Bezout entry sparsity / factoring analysis
+    # ------------------------------------------------------------------
+    println()
+    println("--- PART D: Bezout entry sparsity analysis ---")
+    flush(stdout)
+
+    function monomial_support_report(f; indent::String="        ")
+        nv = nvars(parent(f))
+        appears = falses(nv)
+        for exps in AbstractAlgebra.exponent_vectors(f)
+            for (idx, e) in enumerate(exps)
+                if e != 0
+                    appears[idx] = true
+                end
+            end
+        end
+        vnames = [string(g) for g in gens(parent(f))]
+        present = [vnames[i] for i in 1:nv if appears[i]]
+        println(indent, "variables appearing: ", present)
+    end
+
+    for i in 0:3, j in i:3
+        f = B[(i,j)]
+        println("  B[$i,$j]:")
+        println("    total_degree=", total_degree(f), "  terms=", length(terms(f)))
+        monomial_support_report(f)
+        safe_factor_report(f; label="", indent="    ")
+        flush(stdout)
+    end
+
+    # ------------------------------------------------------------------
+    # PART E: PRS growth prediction -- single pseudo-remainder step only
+    # ------------------------------------------------------------------
+    println()
+    println("--- PART E: PRS growth prediction (ONE pseudo-remainder step only) ---")
+    flush(stdout)
+
+    try
+        t0e = time()
+        r_prem = pseudorem(g1_T, g2_T)
+        el_e = time() - t0e
+        println("  prem(g1_T, g2_T) computed in ", round(el_e, digits=3), "s")
+        if iszero(r_prem)
+            println("  r is IDENTICALLY ZERO (g2_T | g1_T over Kcoef) -- degenerate case, inspect inputs.")
+        else
+            deg_r = degree(r_prem)
+            println("  degree in T of r: ", deg_r)
+            max_terms = 0
+            local max_deg = 0
+            for k in 0:deg_r
+                ck = coeff(r_prem, k)
+                ck_num = coef_as_poly(ck)
+                tk = length(terms(ck_num))
+                dk = total_degree(ck_num)
+                max_terms = max(max_terms, tk)
+                max_deg = max(max_deg, dk)
+                println("    coeff of T^$k in r: degree=", dk, "  terms=", tk)
+            end
+            println("  --- summary: max coeff term count=", max_terms,
+                    "  max coeff total_degree=", max_deg, " ---")
+            r_coefs_nonzero = [coef_as_poly(coeff(r_prem, k)) for k in 0:deg_r
+                                if !iszero(coeff(r_prem, k))]
+            if length(r_coefs_nonzero) >= 2
+                g_r = reduce(gcd, r_coefs_nonzero)
+                println("  gcd(all coefficients of r): degree=", total_degree(g_r),
+                        "  terms=", length(terms(g_r)),
+                        total_degree(g_r) > 0 ? "  <-- NONTRIVIAL" : "  (unit)")
+            end
+        end
+    catch err
+        println("  prem() FAILED/skipped: ", sprint(showerror, err))
+    end
+    flush(stdout)
+
+    println()
+    println("=" ^ 70)
+    println("PARTS A-E DIAGNOSTIC COMPLETE -- $name")
+    println("=" ^ 70)
+    flush(stdout)
+
+    return nothing
+end
+################################################################################
+# PART F: exploit p_i in F[a1,a2] / q_j in F[b1,b2] separability. Original
+# lines 6518-8013.
+#
+# Kept as one function rather than split further: the disk-sharded
+# checkpoint/resume/final-merge/cleanup sequence is a single stateful
+# process where correctness depends on strict ordering (build shards ->
+# finish substitution loop -> merge existing shards exactly once -> stat
+# -> save -> only THEN clean up shards, gated on a passing crosscheck).
+# Splitting it into separate top-level functions would mean threading a
+# large amount of shared mutable state (detB_concrete, shard paths,
+# progress counters, the various caches) through extra parameters with
+# no reuse benefit -- nothing else in this module needs a second
+# disk-sharded accumulator.
+################################################################################
+
+"""
+    run_part_f_bezout!(F, p::Int, cr::CoefRing, ts::TargetSetup, bm::BezoutMatrix;
+                        scratch_dir)
+
+Original lines 6518-8013 (PART F). Only meaningful when
+`ts.d1T == ts.d2T == 4` (checked by the caller via `bm !== nothing`,
+matching `build_concrete_bezout_diagnostic`'s own gating). Computes
+`det(Bpq)` in an ABSTRACT 10-variable ring `F[P0..P4,Q0..Q4]` (cheap:
+degree <=8, no dependence on how large the real `a1,a2,b1,b2`
+coefficients are), then substitutes the real `p_i(a1,a2)` / `q_j(b1,b2)`
+polynomials in via a disk-sharded, checkpointed, resumable streaming
+substitution (STAGE 1: substitute P only, leaving Q abstract in a tower
+ring `Ra[Q0..Q4]`; STAGE 2: substitute Q, folding each term's
+contribution into `detB_concrete` in bounded-size chunks). Saves the
+result to `ts.RESULTANT_FILE` and returns it (`res_num`). `p` is the
+field characteristic, needed to size-check the flat-binary shard
+coefficient type.
+
+Raises an error (never silently proceeds) if: a shard coefficient
+doesn't fit `SHARD_COEFF_TYPE`, a shard's exponent-array length is
+inconsistent with its term count, a `.native` shard has the wrong
+format-magic header, `detB_concrete` ends up with zero terms after the
+final merge, `var_names` mismatches `Rcoef`'s variable count, a term's
+exponent-vector length is inconsistent with `Rcoef`, or shard cleanup
+fails to remove a file it expected to remove.
+"""
+function run_part_f_bezout!(F, p::Int, cr::CoefRing, ts::TargetSetup, bm::BezoutMatrix;
+                             scratch_dir::String = joinpath(@__DIR__, "part_k_results"))
+    name = ts.name
+    Rcoef = cr.Rcoef
+    a1_c, a2_c, b1_c, b2_c = cr.a1_c, cr.a2_c, cr.b1_c, cr.b2_c
+    B = bm.B
+
+    println()
+    println("--- PART F: abstract-variable (P,Q)-separated Bezout/resultant ---")
+    println("  (exploits p_i in F[a1,a2] / q_j in F[b1,b2] confirmed by the")
+    println("  Section-1 fix above; see PART D's exact 289*289=83521 entry")
+    println("  term counts for the empirical signature that motivated this.)")
+    flush(stdout)
+
+    Rpq, pq_gens = polynomial_ring(F, ["P0","P1","P2","P3","P4","Q0","Q1","Q2","Q3","Q4"])
+    P0,P1,P2,P3,P4,Q0,Q1,Q2,Q3,Q4 = pq_gens
+    Pvec = [P0,P1,P2,P3,P4]
+    Qvec = [Q0,Q1,Q2,Q3,Q4]
+
+    abstract_bracket_cache = Dict{Tuple{Int,Int}, Any}()
+    function abstract_bracket(m::Int, n::Int)
+        key = m < n ? (m, n) : (n, m)
+        if !haskey(abstract_bracket_cache, key)
+            i, j = key
+            abstract_bracket_cache[key] = Pvec[i+1]*Qvec[j+1] - Pvec[j+1]*Qvec[i+1]
+        end
+        return m < n ? abstract_bracket_cache[key] : -abstract_bracket_cache[key]
+    end
+
+    Bpq = Dict{Tuple{Int,Int}, Any}()
+    Bpq[(0,0)] = abstract_bracket(0,1)
+    Bpq[(0,1)] = abstract_bracket(0,2)
+    Bpq[(0,2)] = abstract_bracket(0,3)
+    Bpq[(0,3)] = abstract_bracket(0,4)
+    Bpq[(1,1)] = abstract_bracket(0,3) + abstract_bracket(1,2)
+    Bpq[(1,2)] = abstract_bracket(0,4) + abstract_bracket(1,3)
+    Bpq[(1,3)] = abstract_bracket(1,4)
+    Bpq[(2,2)] = abstract_bracket(1,4) + abstract_bracket(2,3)
+    Bpq[(2,3)] = abstract_bracket(2,4)
+    Bpq[(3,3)] = abstract_bracket(3,4)
+    Bpq[(1,0)] = Bpq[(0,1)]
+    Bpq[(2,0)] = Bpq[(0,2)]
+    Bpq[(3,0)] = Bpq[(0,3)]
+    Bpq[(2,1)] = Bpq[(1,2)]
+    Bpq[(3,1)] = Bpq[(1,3)]
+    Bpq[(3,2)] = Bpq[(2,3)]
+
+    println("  Abstract Bezout entries (in F[P0..P4,Q0..Q4], BEFORE substitution):")
+    for i in 0:3, j in 0:3
+        f = Bpq[(i,j)]
+        println("    Bpq[$i,$j]: degree=", total_degree(f), "  terms=", length(terms(f)))
+    end
+    flush(stdout)
+
+    println("  Assembling abstract 4x4 matrix and computing det()...")
+    flush(stdout)
+    t0f = time()
+    Bpq_mat = matrix(Rpq, [Bpq[(i,j)] for i in 0:3, j in 0:3])
+    detB_abstract = det(Bpq_mat)
+    el_f = time() - t0f
+    println("  det(Bpq) computed in ", round(el_f, digits=3), "s: degree=",
+            total_degree(detB_abstract), "  terms=", length(terms(detB_abstract)))
+    flush(stdout)
+
+    # -- Recover g1_coefs_poly / g2_coefs_poly (PART A's Rcoef-lifted
+    # coefficient list) from bm.p_coef/bm.q_coef, exactly as PART A did,
+    # since PART F needs them independently of whether the full PARTS
+    # A-E diagnostic ran first.
+    function coef_as_poly(c)
+        den = denominator(c)
+        if !is_unit(den)
+            println("      WARNING: coefficient has non-unit denominator (degree=",
+                    total_degree(den), ") -- reporting numerator only.")
+        end
+        return Rcoef(numerator(c))
+    end
+    g1_coefs_poly = [coef_as_poly(bm.p_coef[k+1]) for k in 0:4]
+    g2_coefs_poly = [coef_as_poly(bm.q_coef[k+1]) for k in 0:4]
+
+    println("  --- STAGE 1: substituting P_i -> p_i(a1,a2) only,",
+            " Q left abstract (R[P][Q]-style intermediate) ---")
+    flush(stdout)
+
+    t0stage1 = time()
+
+    Ra, (a1_r, a2_r) = polynomial_ring(F, ["a1", "a2"])
+
+    function lift_to_Ra(f)
+        ctx = MPolyBuildCtx(Ra)
+        for (c, exps) in zip(coefficients(f), AbstractAlgebra.exponent_vectors(f))
+            ea1, ea2, eb1, eb2 = exps
+            if eb1 != 0 || eb2 != 0
+                error("lift_to_Ra: term has nonzero b1/b2 exponent ($eb1,$eb2) -- ",
+                      "this P-coefficient was not purely (a1,a2) as PART A's ",
+                      "diagnostic assumed. Refusing to silently drop content.")
+            end
+            push_term!(ctx, c, [ea1, ea2])
+        end
+        return finish(ctx)
+    end
+    g1_coefs_Ra = [lift_to_Ra(p) for p in g1_coefs_poly]
+
+    Rmid, Qmid_gens = polynomial_ring(Ra, ["Q0", "Q1", "Q2", "Q3", "Q4"])
+
+    stage1_images = vcat(
+        [Rmid(c) for c in g1_coefs_Ra],
+        Qmid_gens,
+    )
+    detB_mid = evaluate(detB_abstract, stage1_images)
+
+    el_stage1 = time() - t0stage1
+    mid_terms_list = collect(terms(detB_mid))
+    println("  STAGE 1 complete in ", round(el_stage1, digits=3),
+            "s: ", length(mid_terms_list), " Q-monomial terms")
+    flush(stdout)
+
+    # -- STAGE 2 setup: disk-sharded checkpointing scratch dir.
+    PARTF_SCRATCH_DIR = joinpath(scratch_dir, "..", "part_f_scratch", name)
+    mkpath(PARTF_SCRATCH_DIR)
+    shards_dir     = joinpath(PARTF_SCRATCH_DIR, "shards")
+    mkpath(shards_dir)
+    shard_tmpfile  = joinpath(PARTF_SCRATCH_DIR, "shard.native.tmp")
+    progress_file  = joinpath(PARTF_SCRATCH_DIR, "progress.txt")
+    manifest_file  = joinpath(PARTF_SCRATCH_DIR, "manifest.txt")
+
+    shard_path(upto_term_idx) = joinpath(shards_dir, "shard_" * lpad(upto_term_idx, 6, '0') * ".native")
+    function existing_shard_paths()
+        !isdir(shards_dir) && return String[]
+        names = filter(readdir(shards_dir)) do f
+            startswith(f, "shard_") && (endswith(f, ".native") || endswith(f, ".oscar"))
+        end
+        return sort(joinpath.(shards_dir, names))
+    end
+
+    detB_terms = mid_terms_list
+    n_terms = length(detB_terms)
+    println("  substituting ", n_terms, " terms -> ", shards_dir)
+    flush(stdout)
+
+    t0terms = time()
+    n_already_done = 0
+    if isfile(progress_file)
+        n_already_done = parse(Int, strip(read(progress_file, String)))
+        if n_already_done > 0
+            shard_paths = existing_shard_paths()
+            println("  resuming: ", n_already_done, "/", n_terms,
+                    " terms, ", length(shard_paths), " shard(s)")
+            flush(stdout)
+        end
+    end
+
+    SHARD_COEFF_TYPE = UInt32
+    SHARD_EXP_TYPE   = Int32
+    SHARD_FORMAT_MAGIC = UInt64(0xF1A7B10C_00000002)
+
+    p > typemax(SHARD_COEFF_TYPE) &&
+        error("run_part_f_bezout!: field characteristic p=$p does not fit in " *
+              "$(SHARD_COEFF_TYPE) (max $(typemax(SHARD_COEFF_TYPE))) -- " *
+              "widen SHARD_COEFF_TYPE before writing shards, or every " *
+              "coefficient write below will silently truncate")
+
+    function read_rss_mb()
+        for line in eachline("/proc/self/status")
+            if startswith(line, "VmRSS:")
+                parts = split(line)
+                return parse(Int, parts[2]) / 1024.0
+            end
+        end
+        return -1.0
+    end
+
+    function save_shard_native(path, poly)
+        println("      save_shard_native: starting streamed write to ", path,
+                " (RSS=", read_rss_mb(), "MB)")
+        flush(stdout)
+        open(path, "w") do io
+            write(io, SHARD_FORMAT_MAGIC)
+            n_terms_pos = position(io)
+            write(io, Int64(0))
+            term_idx = 0
+            for (cf, ev) in zip(coefficients(poly), AbstractAlgebra.exponent_vectors(poly))
+                term_idx += 1
+                cv = lift(ZZ, cf)
+                (cv < 0 || cv > typemax(SHARD_COEFF_TYPE)) &&
+                    error("save_shard_native: coefficient $cv at term $term_idx out of " *
+                          "range for $(SHARD_COEFF_TYPE) in $path -- refusing to " *
+                          "write a shard that would silently corrupt data")
+                write(io, SHARD_COEFF_TYPE(cv))
+                length(ev) != 4 &&
+                    error("save_shard_native: expected 4 exponents (a1,a2,b1,b2), " *
+                          "got $(length(ev)) at term $term_idx in $path")
+                for j in 1:4
+                    write(io, SHARD_EXP_TYPE(ev[j]))
+                end
+                if term_idx % 200_000 == 0
+                    println("        save_shard_native: ", term_idx,
+                            " terms written, RSS=", read_rss_mb(), "MB")
+                    flush(stdout)
+                end
+            end
+            end_pos = position(io)
+            seek(io, n_terms_pos)
+            write(io, Int64(term_idx))
+            seek(io, end_pos)
+            println("      save_shard_native: finished, ", term_idx,
+                    " terms written, RSS=", read_rss_mb(), "MB")
+            flush(stdout)
+        end
+        return nothing
+    end
+
+    function load_shard_native(sp)
+        t0 = time()
+        fsize_mb = filesize(sp) / 1024 / 1024
+        println("    ", basename(sp), ": starting bulk read (", round(fsize_mb, digits=0),
+                " MB on disk)...")
+        flush(stdout)
+        n_terms_shard, coeffs_in, exps_in = open(sp, "r") do io
+            magic = read(io, UInt64)
+            magic != SHARD_FORMAT_MAGIC &&
+                error("load_shard_native: $sp does not have the expected flat-" *
+                      "binary format header (got magic=$(magic), expected " *
+                      "$(SHARD_FORMAT_MAGIC)) -- this is almost certainly an " *
+                      "OLD-format .native shard written by an earlier version. " *
+                      "Delete all .native shards under this scratch dir and " *
+                      "let them regenerate, or restore from .oscar shards if " *
+                      "available.")
+            nt = read(io, Int64)
+            cf = Vector{SHARD_COEFF_TYPE}(undef, nt)
+            ex = Vector{SHARD_EXP_TYPE}(undef, 4 * nt)
+            read!(io, cf)
+            read!(io, ex)
+            (nt, cf, ex)
+        end
+        length(exps_in) != 4 * n_terms_shard &&
+            error("load_shard_native: corrupt shard $sp -- exponent array " *
+                  "length $(length(exps_in)) is not 4x the term count " *
+                  "$n_terms_shard ($(4 * n_terms_shard) expected)")
+        println("    ", basename(sp), ": read ", n_terms_shard, " terms in ",
+                round(time() - t0, digits=1), "s; rebuilding polynomial...")
+        flush(stdout)
+        t1 = time()
+        rebuild_ctx = MPolyBuildCtx(Rcoef)
+        exps_buf = Vector{Int}(undef, 4)
+        for i in 1:n_terms_shard
+            base = 4 * (i - 1)
+            exps_buf[1] = Int(exps_in[base + 1])
+            exps_buf[2] = Int(exps_in[base + 2])
+            exps_buf[3] = Int(exps_in[base + 3])
+            exps_buf[4] = Int(exps_in[base + 4])
+            push_term!(rebuild_ctx, F(Int(coeffs_in[i])), exps_buf)
+            if i % 2_000_000 == 0
+                el = time() - t1
+                rate = i / el
+                eta = (n_terms_shard - i) / rate
+                println("      rebuilt ", i, "/", n_terms_shard, " terms (",
+                        round(rate, digits=0), " terms/s, ETA ",
+                        round(eta, digits=0), "s)...")
+                flush(stdout)
+            end
+        end
+        rebuilt = finish(rebuild_ctx)
+        println("    ", basename(sp), ": rebuilt ok in ",
+                round(time() - t1, digits=1), "s (total incl. deserialize: ",
+                round(time() - t0, digits=1), "s)")
+        flush(stdout)
+        return rebuilt
+    end
+
+    function load_shard_rebuilt(sp)
+        loaded = load(sp)
+        loaded_n_terms = length(loaded)
+        print("    ", basename(sp), ": loaded ", loaded_n_terms, " terms")
+        flush(stdout)
+
+        local rebuilt
+        try
+            rebuilt = Rcoef(loaded)
+            print("; cheap coercion ok\n")
+        catch e
+            println()
+            println("      cheap coercion failed (", typeof(e), ") -- falling",
+                    " back to term-by-term rebuild for this shard (", loaded_n_terms,
+                    " terms). Printing progress every 500k terms:")
+            flush(stdout)
+            rebuild_ctx = MPolyBuildCtx(Rcoef)
+            n_pushed = 0
+            t0rebuild = time()
+            for (c, exps) in zip(coefficients(loaded), AbstractAlgebra.exponent_vectors(loaded))
+                push_term!(rebuild_ctx, F(c), exps)
+                n_pushed += 1
+                if n_pushed % 500_000 == 0
+                    println("      rebuilt ", n_pushed, "/", loaded_n_terms,
+                            " terms (", round(time() - t0rebuild, digits=1), "s elapsed)")
+                    flush(stdout)
+                end
+            end
+            rebuilt = finish(rebuild_ctx)
+            println("      term-by-term rebuild complete: ", n_pushed, " terms in ",
+                    round(time() - t0rebuild, digits=1), "s.")
+        end
+        loaded = nothing
+        return rebuilt
+    end
+
+    detB_concrete = zero(Rcoef)
+
+    HAVE_INPLACE_ADD = applicable(add!, detB_concrete, detB_concrete, detB_concrete)
+    HAVE_SAFE_SELF_ALIAS_ADD = false
+    if HAVE_INPLACE_ADD
+        _probe = Rcoef(gens(Rcoef)[1])
+        _probe_expected = _probe + _probe
+        _probe_copy = deepcopy(_probe)
+        add!(_probe_copy, _probe_copy, _probe)
+        HAVE_SAFE_SELF_ALIAS_ADD = (_probe_copy == _probe_expected)
+    end
+
+    if HAVE_SAFE_SELF_ALIAS_ADD
+        println("  using in-place add!")
+    elseif HAVE_INPLACE_ADD
+        println("  add! unsafe here, falling back to +")
+    else
+        println("  add! unavailable, falling back to +")
+    end
+    flush(stdout)
+
+    q_monomial_cache = Dict{NTuple{5,Int}, Any}()
+    q_power_cache = Dict{Tuple{Int,Int}, Any}()
+
+    function chunked_poly_mul(x, y; chunk::Int=200)
+        x_terms = collect(terms(x))
+        y_terms = collect(terms(y))
+        nx = length(x_terms)
+        ny = length(y_terms)
+        result = zero(Rcoef)
+        xi = 1
+        while xi <= nx
+            xe = min(xi + chunk - 1, nx)
+            x_chunk = sum(x_terms[xi:xe]; init=zero(Rcoef))
+            yi = 1
+            while yi <= ny
+                ye = min(yi + chunk - 1, ny)
+                y_chunk = sum(y_terms[yi:ye]; init=zero(Rcoef))
+                partial = x_chunk * y_chunk
+                if HAVE_SAFE_SELF_ALIAS_ADD
+                    add!(result, result, partial)
+                else
+                    result = result + partial
+                end
+                partial = nothing
+                y_chunk = nothing
+                yi = ye + 1
+            end
+            x_chunk = nothing
+            xi = xe + 1
+        end
+        return result
+    end
+
+    function chunked_pow(base, e::Int; chunk::Int=200)
+        e < 0 && throw(ArgumentError("chunked_pow: exponent must be non-negative, got $e"))
+        e == 0 && return one(Rcoef)
+        result = base
+        remaining = e - 1
+        while remaining > 0
+            n_result_terms = length(terms(result))
+            n_base_terms = length(terms(base))
+            this_chunk = n_result_terms * n_base_terms > (200^2) ?
+                max(20, round(Int, chunk / sqrt((n_result_terms * n_base_terms) / (200.0^2)))) :
+                chunk
+            result = chunked_poly_mul(result, base; chunk=this_chunk)
+            remaining -= 1
+        end
+        return result
+    end
+
+    function cached_q_power(k::Int, e::Int)
+        e <= 0 && throw(ArgumentError("cached_q_power: exponent must be positive, got $e for k=$k"))
+        key = (k, e)
+        cached = get(q_power_cache, key, nothing)
+        cached !== nothing && return cached
+        val = chunked_pow(g2_coefs_poly[k], e)
+        q_power_cache[key] = val
+        return val
+    end
+
+    function cached_b_side(t_exps)
+        key = NTuple{5,Int}(t_exps)
+        if haskey(q_monomial_cache, key)
+            throw(AssertionError("cached_b_side: duplicate Q-monomial exponent vector $key encountered -- Stage 1's Rmid collection was expected to make these unique per detB_terms entry; investigate before trusting the cache"))
+        end
+        val = one(Rcoef)
+        for k in 1:5
+            eQk = t_exps[k]
+            if eQk > 0
+                factor = cached_q_power(k, eQk)
+                n_val_terms = length(terms(val))
+                n_factor_terms = length(terms(factor))
+                this_chunk = n_val_terms * n_factor_terms > (200^2) ?
+                    max(20, round(Int, 200 / sqrt((n_val_terms * n_factor_terms) / (200.0^2)))) :
+                    200
+                val = chunked_poly_mul(val, factor; chunk=this_chunk)
+            end
+        end
+        q_monomial_cache[key] = val
+        return val
+    end
+
+    max_term_size_seen = 0
+    max_term_size_idx = 0
+    delta_since_checkpoint = zero(Rcoef)
+    for (i, t) in enumerate(detB_terms)
+        if i <= n_already_done
+            continue
+        end
+        t0iter = time()
+        rss_before = read_rss_mb()
+
+        t0eval = time()
+        t_exps = first(AbstractAlgebra.exponent_vectors(t))
+        t_ra_coeff = first(coefficients(t))
+
+        a_side = remap_to_final(t_ra_coeff, [a1_c, a2_c, b1_c, b2_c], [1, 2])
+        b_side = cached_b_side(t_exps)
+
+        this_size = length(terms(a_side)) * length(terms(b_side))
+        if this_size > max_term_size_seen
+            max_term_size_seen = this_size
+            max_term_size_idx = i
+        end
+
+        BASELINE_SIDE_TERMS = 8385
+        size_ratio = this_size / (BASELINE_SIDE_TERMS^2)
+        PARTF_CHUNK = size_ratio > 1 ?
+            max(20, round(Int, 200 / sqrt(size_ratio))) :
+            200
+        if size_ratio > 1
+            println("      term ", i, ": this_size=", this_size,
+                    " (", round(size_ratio, digits=1), "x baseline) -> PARTF_CHUNK=", PARTF_CHUNK)
+            flush(stdout)
+        end
+
+        a_terms = collect(terms(a_side))
+        b_terms = collect(terms(b_side))
+        n_a_terms = length(a_terms)
+        n_b_terms = length(b_terms)
+
+        PARTF_CHUNK_GC_EVERY = 25
+        n_chunk_pairs_done = 0
+
+        this_term_sum = zero(Rcoef)
+        a_chunk_start = 1
+        while a_chunk_start <= n_a_terms
+            a_chunk_end = min(a_chunk_start + PARTF_CHUNK - 1, n_a_terms)
+            a_chunk = sum(a_terms[a_chunk_start:a_chunk_end]; init=zero(Rcoef))
+            b_chunk_start = 1
+            while b_chunk_start <= n_b_terms
+                b_chunk_end = min(b_chunk_start + PARTF_CHUNK - 1, n_b_terms)
+                b_chunk = sum(b_terms[b_chunk_start:b_chunk_end]; init=zero(Rcoef))
+                partial = a_chunk * b_chunk
+                if HAVE_SAFE_SELF_ALIAS_ADD
+                    add!(this_term_sum, this_term_sum, partial)
+                else
+                    this_term_sum = this_term_sum + partial
+                end
+                partial = nothing
+                b_chunk = nothing
+                b_chunk_start = b_chunk_end + 1
+
+                n_chunk_pairs_done += 1
+                if n_chunk_pairs_done % PARTF_CHUNK_GC_EVERY == 0
+                    GC.gc(true)
+                    ccall(:malloc_trim, Cvoid, (Cint,), 0)
+                end
+            end
+            a_chunk = nothing
+            a_chunk_start = a_chunk_end + 1
+        end
+
+        if HAVE_SAFE_SELF_ALIAS_ADD
+            add!(detB_concrete, detB_concrete, this_term_sum)
+            add!(delta_since_checkpoint, delta_since_checkpoint, this_term_sum)
+        else
+            detB_concrete = detB_concrete + this_term_sum
+            delta_since_checkpoint = delta_since_checkpoint + this_term_sum
+        end
+        this_term_sum = nothing
+
+        a_side = nothing
+        b_side = nothing
+        a_terms = nothing
+        b_terms = nothing
+        el_eval = time() - t0eval
+        rss_after_eval = read_rss_mb()
+
+        t0fold = time()
+        el_fold = time() - t0fold
+        rss_after_fold = read_rss_mb()
+
+        t0gc = time()
+        GC.gc(true)
+        ccall(:malloc_trim, Cvoid, (Cint,), 0)
+        el_gc = time() - t0gc
+        rss_after_gc = read_rss_mb()
+
+        PARTF_CHECKPOINT_EVERY = 5
+        do_checkpoint = (i % PARTF_CHECKPOINT_EVERY == 0) || (i == n_terms)
+
+        local el_write, el_mv, el_prog, rss_after_save
+        if do_checkpoint
+            println("      checkpoint at term ", i, ": delta_since_checkpoint has ",
+                    length(terms(delta_since_checkpoint)), " terms, RSS=", read_rss_mb(), "MB")
+            flush(stdout)
+            t0write = time()
+            save_shard_native(shard_tmpfile, delta_since_checkpoint)
+            el_write = time() - t0write
+
+            t0mv = time()
+            mv(shard_tmpfile, shard_path(i); force=true)
+            el_mv = time() - t0mv
+
+            t0prog = time()
+            open(progress_file, "w") do io
+                print(io, i)
+            end
+            el_prog = time() - t0prog
+
+            rss_after_save = read_rss_mb()
+            delta_since_checkpoint = zero(Rcoef)
+        else
+            el_write = 0.0
+            el_mv = 0.0
+            el_prog = 0.0
+            rss_after_save = rss_after_gc
+        end
+
+        el_save = el_write + el_mv + el_prog
+        el_iter_measured = el_eval + el_fold + el_gc + el_save
+        el_iter_actual = time() - t0iter
+        el_unaccounted = el_iter_actual - el_iter_measured
+
+        if el_eval > 2.0 || el_fold > 2.0 || el_gc > 2.0 || el_save > 2.0 || el_unaccounted > 2.0 || i <= 3
+            println("      term ", i, " breakdown -- evaluate: ", round(el_eval, digits=1),
+                    "s  fold(add!): ", round(el_fold, digits=1),
+                    "s  gc(explicit): ", round(el_gc, digits=1),
+                    "s  save(write): ", round(el_write, digits=1),
+                    "s  mv(rename): ", round(el_mv, digits=1),
+                    "s  progress-write: ", round(el_prog, digits=1),
+                    "s  || measured total: ", round(el_iter_measured, digits=1),
+                    "s  actual wall-clock: ", round(el_iter_actual, digits=1),
+                    "s  UNACCOUNTED: ", round(el_unaccounted, digits=1), "s",
+                    el_unaccounted > 2.0 ? "  <<<< still-unexplained gap" : "")
+            flush(stdout)
+        end
+
+        if i % 10 == 0 || i == n_terms
+            println("    folded term ", i, "/", n_terms,
+                    " (this term=", this_size, " terms, largest so far=term ",
+                    max_term_size_idx, " w/ ", max_term_size_seen, " terms,",
+                    " running total=", length(terms(detB_concrete)), " terms) -- ",
+                    round(time() - t0terms, digits=1), "s elapsed")
+            flush(stdout)
+        end
+    end
+    el_sub = time() - t0terms
+    println("  all ", n_terms, " terms substituted and accumulated (disk-backed,",
+            " streamed, sharded checkpoints) in ", round(el_sub, digits=1),
+            "s this run.")
+    flush(stdout)
+
+    # -- FINAL MERGE PASS: fold any shards from a previous run in exactly once.
+    if n_already_done > 0
+        shard_paths_to_merge = existing_shard_paths()
+        println("  Final merge: folding ", length(shard_paths_to_merge),
+                " shard(s) from previous run(s) into this run's accumulator",
+                " (", n_already_done, "/", n_terms, " terms' worth)...")
+        flush(stdout)
+        for (si, sp) in enumerate(shard_paths_to_merge)
+            t0shard = time()
+            shard_poly = endswith(sp, ".native") ? load_shard_native(sp) : load_shard_rebuilt(sp)
+            if HAVE_SAFE_SELF_ALIAS_ADD
+                add!(detB_concrete, detB_concrete, shard_poly)
+            else
+                detB_concrete = detB_concrete + shard_poly
+            end
+            shard_poly = nothing
+            GC.gc(true)
+            ccall(:malloc_trim, Cvoid, (Cint,), 0)
+            println("    shard ", si, "/", length(shard_paths_to_merge), " (",
+                    basename(sp), ") merged in ", round(time() - t0shard, digits=1), "s")
+            flush(stdout)
+        end
+        println("  Final merge complete: detB_concrete now reflects all ", n_terms,
+                " terms.")
+        flush(stdout)
+    end
+
+    println("  substitution done (disk-backed, streamed): degree=",
+            total_degree(detB_concrete), "  terms=", length(terms(detB_concrete)),
+            "  (", round(el_sub, digits=1), "s substitution this run; ",
+            "totals above include ", n_already_done, " terms merged in from",
+            " prior-run shards)")
+    flush(stdout)
+
+    # -- FINAL-SUM STATISTICS.
+    println("  ---- PART F final-sum statistics ----")
+    flush(stdout)
+
+    stats_t0 = time()
+    n_final_terms = length(terms(detB_concrete))
+    n_final_terms == 0 &&
+        error("PART F final-sum stats: detB_concrete has zero terms after ",
+              "merge -- this should be structurally impossible for a ",
+              "genus-2 Bezoutian determinant and indicates upstream data ",
+              "loss (empty/corrupt shard, or the merge loop above silently ",
+              "skipped every shard). Refusing to report statistics on an ",
+              "empty polynomial as if it were a real result.")
+
+    var_names = ["a1", "a2", "b1", "b2"]
+    nv = nvars(Rcoef)
+    length(var_names) != nv &&
+        error("PART F final-sum stats: var_names has ", length(var_names),
+              " entries but Rcoef has ", nv, " variables -- update ",
+              "var_names before trusting the per-variable degree table below.")
+    min_deg_per_var = fill(typemax(Int), nv)
+    max_deg_per_var = fill(0, nv)
+    max_total_degree_seen = 0
+    min_total_degree_seen = typemax(Int)
+    min_coeff_zz = nothing
+    max_coeff_zz = nothing
+    for (c, exps) in zip(coefficients(detB_concrete), AbstractAlgebra.exponent_vectors(detB_concrete))
+        length(exps) != nv &&
+            error("PART F final-sum stats: term with ", length(exps),
+                  " exponents encountered but Rcoef has ", nv,
+                  " variables -- detB_concrete is malformed (likely a ",
+                  "shard merged from a differently-shaped run); refusing ",
+                  "to report statistics computed against inconsistent ",
+                  "exponent vectors.")
+        td = sum(exps)
+        td > max_total_degree_seen && (max_total_degree_seen = td)
+        td < min_total_degree_seen && (min_total_degree_seen = td)
+        for k in 1:nv
+            e = exps[k]
+            e > max_deg_per_var[k] && (max_deg_per_var[k] = e)
+            e < min_deg_per_var[k] && (min_deg_per_var[k] = e)
+        end
+        cv = lift(ZZ, c)
+        if min_coeff_zz === nothing || cv < min_coeff_zz
+            min_coeff_zz = cv
+        end
+        if max_coeff_zz === nothing || cv > max_coeff_zz
+            max_coeff_zz = cv
+        end
+    end
+    stats_elapsed = time() - stats_t0
+
+    println("    term count        : ", n_final_terms)
+    println("    total degree      : min=", min_total_degree_seen,
+            "  max=", max_total_degree_seen)
+    for k in 1:nv
+        println("    degree in ", var_names[k], "        : min=", min_deg_per_var[k],
+                "  max=", max_deg_per_var[k])
+    end
+    println("    coefficient range : min=", min_coeff_zz, "  max=", max_coeff_zz,
+            "  (field characteristic p=", p, ")")
+    bytes_per_term_flat = sizeof(SHARD_COEFF_TYPE) + 4 * sizeof(SHARD_EXP_TYPE)
+    est_mb_flat = n_final_terms * bytes_per_term_flat / 1024 / 1024
+    println("    est. flat-shard size at this term count: ",
+            round(est_mb_flat, digits=1), " MB (", bytes_per_term_flat,
+            " bytes/term)")
+    println("    stats computed in ", round(stats_elapsed, digits=1), "s")
+    flush(stdout)
+
+    open(manifest_file, "w") do io
+        println(io, "PART F disk-backed substitution manifest for $name")
+        println(io, "n_terms = $n_terms")
+        println(io, "checkpoint shards dir = $shards_dir")
+        println(io, "final degree = ", total_degree(detB_concrete))
+        println(io, "final terms  = ", n_final_terms)
+        println(io, "total degree range = ", min_total_degree_seen, "..", max_total_degree_seen)
+        for k in 1:nv
+            println(io, "degree in ", var_names[k], " range = ", min_deg_per_var[k], "..", max_deg_per_var[k])
+        end
+        println(io, "coefficient range (ZZ lift) = ", min_coeff_zz, "..", max_coeff_zz)
+        println(io, "field characteristic p = ", p)
+        println(io, "est. flat-shard size at this term count (MB) = ", round(est_mb_flat, digits=1))
+    end
+
+    # -- Correctness cross-check against the concrete Bezout matrix.
+    RUN_PARTF_DIRECT_CROSSCHECK = get(ENV, "ELIM2_PARTF_DIRECT_CROSSCHECK", "false") == "true"
+    local agrees, n_mismatch
+    if RUN_PARTF_DIRECT_CROSSCHECK
+        println("  Cross-checking against det() of the concrete (pre-flattened) B...")
+        println("  (ELIM2_PARTF_DIRECT_CROSSCHECK=true -- this repeats the dense,",
+                " single-shot computation the disk-backed path exists to avoid;",
+                " only run this with enough RAM headroom.)")
+        flush(stdout)
+        t0chk = time()
+        B_mat_concrete = matrix(Rcoef, [B[(i,j)] for i in 0:3, j in 0:3])
+        detB_direct = det(B_mat_concrete)
+        el_chk = time() - t0chk
+        agrees = detB_concrete == detB_direct
+        println("  det(B) computed directly in ", round(el_chk, digits=3), "s: degree=",
+                total_degree(detB_direct), "  terms=", length(terms(detB_direct)))
+        println("  AGREES with abstract-route result? ", agrees,
+                agrees ? "" : "   <<<< MISMATCH -- reordering bug, do not trust PART F result")
+        flush(stdout)
+    else
+        println("  Skipping full det(B) cross-check (set ",
+                "ELIM2_PARTF_DIRECT_CROSSCHECK=true to enable -- expensive,",
+                " dense, same computation that OOM'd before). Running a",
+                " cheaper per-entry spot-check instead:")
+        flush(stdout)
+        n_mismatch = 0
+        for (i, j) in [(0,0), (1,2), (2,3), (3,3)]
+            abstract_entry_concrete = evaluate(Bpq[(i,j)], vcat(g1_coefs_poly, g2_coefs_poly))
+            same = abstract_entry_concrete == B[(i,j)]
+            n_mismatch += !same
+            println("    entry ($i,$j): abstract-route == concrete B[$i,$j]? ", same)
+        end
+        println("    spot-check: ", n_mismatch == 0 ? "all entries agree" :
+                "$n_mismatch MISMATCH(es) -- investigate before trusting PART F result")
+        flush(stdout)
+    end
+
+    println("  PART F summary: det(Bpq) computed as a degree<=8 polynomial in",
+            " 10 abstract symbols, THEN substituted once, instead of building")
+    println("  and manipulating dense ", nvars(Rcoef), "-variable ", 83521,
+            "-term entries at every intermediate step.")
+    flush(stdout)
+
+    # -- PERSIST THE RESULT.
+    res_num = detB_concrete
+    mkpath(dirname(ts.RESULTANT_FILE))
+    save(ts.RESULTANT_FILE, res_num)
+    println("  saved resultant -> ", ts.RESULTANT_FILE)
+    flush(stdout)
+
+    # -- SHARD CLEANUP (gated on a passing crosscheck).
+    keep_shards_override = get(ENV, "ELIM2_PARTF_KEEP_SHARDS", "false") == "true"
+    crosscheck_ok = true
+    crosscheck_note = "no crosscheck/spot-check ran this branch"
+    if RUN_PARTF_DIRECT_CROSSCHECK
+        crosscheck_ok = agrees
+        crosscheck_note = "full det(B) crosscheck: agrees=$agrees"
+    else
+        crosscheck_ok = (n_mismatch == 0)
+        crosscheck_note = "spot-check: n_mismatch=$n_mismatch"
+    end
+
+    if keep_shards_override
+        println("  Shard cleanup skipped: ELIM2_PARTF_KEEP_SHARDS=true.",
+                " Shards remain under ", shards_dir, ".")
+        flush(stdout)
+    elseif !crosscheck_ok
+        println("  Shard cleanup SKIPPED: correctness check did not pass",
+                " clean (", crosscheck_note, ") -- keeping shards under ",
+                shards_dir, " so the result can be re-derived/inspected.",
+                " Investigate before re-running with cleanup enabled.")
+        flush(stdout)
+    else
+        cleanup_shard_paths = existing_shard_paths()
+        println("  Shard cleanup: ", crosscheck_note, " -- removing ",
+                length(cleanup_shard_paths), " shard file(s) under ",
+                shards_dir, " (result is durably saved in manifest_file",
+                " and in RESULTANT_FILE, both written above)...")
+        flush(stdout)
+        n_removed = 0
+        n_failed = 0
+        bytes_freed = 0
+        for sp in cleanup_shard_paths
+            try
+                sz = filesize(sp)
+                rm(sp; force=false)
+                n_removed += 1
+                bytes_freed += sz
+            catch e
+                n_failed += 1
+                println("    WARNING: failed to remove shard ", sp, ": ", e)
+            end
+        end
+        if n_failed == 0 && isfile(progress_file)
+            rm(progress_file; force=false)
+        end
+        println("    removed ", n_removed, "/", length(cleanup_shard_paths),
+                " shard file(s), freed ", round(bytes_freed / 1024 / 1024, digits=1),
+                " MB", n_failed > 0 ? "  ($n_failed FAILED -- see warnings above, shards_dir not fully clean)" : "")
+        n_failed > 0 &&
+            error("PART F shard cleanup: ", n_failed, " shard file(s) under ",
+                  shards_dir, " could not be removed -- disk space was not",
+                  " fully reclaimed. Inspect the warnings above (likely a",
+                  " permissions issue or a file held open) before assuming",
+                  " the scratch dir is clear for the resultant computation below.")
+        flush(stdout)
+    end
+
+    println("  === $name complete: resultant numerator saved to ", ts.RESULTANT_FILE, " ===")
+    flush(stdout)
+
+    return res_num
+end
+################################################################################
+# Top-level per-target driver and orchestrator.
+################################################################################
+
+"""
+    run_part_k_target!(F, p, clean_sample_1, clean_sample_2, fu, name, i1, i2, Tvar;
+                        scratch_dir)
+
+Runs one target's (U0, U1, V0, or V1) full PART K pipeline: skip-if-done
+check, fiber-product ring + coefficient extraction (`build_target_setup`),
+coefficient-ring lift (`build_coef_ring`), the concrete Bezout diagnostic
+(`build_concrete_bezout_diagnostic`), the PARTS A-E structural diagnostic
+(`run_parts_a_to_e_diagnostic`), and finally PART F's abstract-Bezout
+substitution (`run_part_f_bezout!`), matching the original's single
+`for (name, i1, i2, Tvar) in target_specs ... end` loop body (lines
+4858-8017) for one iteration. Returns `nothing` if this target was
+already complete (skip) or if `d1T`/`d2T` weren't both 4 (diagnostics
+and PART F are gated on that, matching the original -- there is no
+fallback resultant path ported here, since the original's own fallback
+[`resultant(g1_T, g2_T)` behind `RUN_FULL_RESULTANT`, and the manual PRS
+in PART G] is the dead/removed code kept only as the trailing comment
+block in this module, per the original's own note that it should be
+deleted); otherwise returns the saved `res_num`.
+"""
+function run_part_k_target!(F, p::Int, clean_sample_1::Vector, clean_sample_2::Vector,
+                             fu::FinalUniverse, name::String, i1::Int, i2::Int, Tvar;
+                             scratch_dir::String = joinpath(@__DIR__, "part_k_results"))
+    RESULTANT_FILE = joinpath(scratch_dir, "$(name)_resultant.oscar")
+    if already_complete(RESULTANT_FILE)
+        return nothing
+    end
+
+    g1 = fu.final_equations[i1]
+    g2 = fu.final_equations[i2]
+    d1T = degree(g1, Tvar)
+    d2T = degree(g2, Tvar)
+    println("  --- $name ---")
+    println("    g1 (sample 1 side): total_degree=", total_degree(g1),
+            "  terms=", length(terms(g1)), "  degree-in-$name=", d1T)
+    println("    g2 (sample 2 side): total_degree=", total_degree(g2),
+            "  terms=", length(terms(g2)), "  degree-in-$name=", d2T)
+
+    if d1T == 0 || d2T == 0
+        error("$name does not actually appear in one side; resultant " *
+              "would be degenerate. Inspect final_equations construction.")
+    end
+
+    ts = build_target_setup(F, clean_sample_1, clean_sample_2, name, i1, i2, d1T, d2T;
+                             scratch_dir = scratch_dir)
+    cr = build_coef_ring(F, ts)
+    bm = build_concrete_bezout_diagnostic(cr, ts)
+
+    if bm === nothing
+        println("  --- $name: skipping PARTS A-E and PART F (d1T/d2T != 4) ---")
+        flush(stdout)
+        return nothing
+    end
+
+    run_parts_a_to_e_diagnostic(F, cr, ts, bm)
+    res_num = run_part_f_bezout!(F, p, cr, ts, bm; scratch_dir = scratch_dir)
+
+    return res_num
+end
+
+"""
+    run_part_k!(F, p, clean_sample_1, clean_sample_2; scratch_dir)
+
+Original lines 4684-8017 (the whole of PART K, top to bottom). Builds
+the final universe (`build_final_universe`), then runs
+`run_part_k_target!` for each of the 4 targets in `target_specs` order
+(U0, U1, V0, V1), matching the original's single top-level
+`for (name, i1, i2, Tvar) in target_specs` loop. Returns the
+`FinalUniverse` plus a `Dict{String,Any}` of each target's `res_num`
+(only populated for targets that actually ran PART F this call --
+skipped/already-complete targets are omitted, matching how the original
+only ever had `res_num` in scope for the target currently being
+processed).
+"""
+function run_part_k!(F, p::Int, clean_sample_1::Vector, clean_sample_2::Vector;
+                      scratch_dir::String = joinpath(@__DIR__, "part_k_results"))
+    fu = build_final_universe(F, clean_sample_1, clean_sample_2)
+
+    results = Dict{String,Any}()
+    for (name, i1, i2, Tvar) in target_specs(fu)
+        res_num = run_part_k_target!(F, p, clean_sample_1, clean_sample_2, fu,
+                                      name, i1, i2, Tvar; scratch_dir = scratch_dir)
+        if res_num !== nothing
+            results[name] = res_num
+        end
+    end
+
+    return (fu = fu, results = results)
+end
+
+################################################################################
+# PART G REMOVED (original lines 8019-8397, kept verbatim below as a
+# dead-code marker per the original's own note, NOT executed by this
+# module -- reproduced here rather than dropped, since it documents WHY
+# the manual disk-sharded PRS cross-check and the gated resultant()
+# fallback were removed, and that reasoning is worth keeping alongside
+# the code it explains).
+#
+# PART G REMOVED.
+#
+# The manual disk-sharded pseudo-remainder-sequence cross-check (and the
+# separate gated resultant(g1_T, g2_T) call after it) used to live here.
+# Both were redundant verification of what PART F already computes and
+# saves directly (res_num = detB_concrete, written to RESULTANT_FILE
+# inside the loop above, once per target) -- PART G never ran by default
+# (RUN_PART_G_PRS defaulted false) and the gated resultant() call below
+# it unconditionally exit(0)'d after the first target, which is what was
+# blocking U1/V0/V1 from ever running. Removed rather than left as dead
+# code now that the loop above is the single source of truth for all
+# four targets' results.
+#
+# #=
+# PART G: manually-driven, disk-sharded pseudo-remainder sequence (PRS).
+#
+# Motivation: the single opaque resultant(g1_T, g2_T) call below (kept,
+# gated behind RUN_FULL_RESULTANT, as the reference/fallback path) is a
+# black box -- when it hangs or OOMs there is no visibility into which
+# PRS step is the problem, and no way to checkpoint partway through. PART
+# F already independently computed the resultant's numerator (res_num,
+# via the Bezout determinant, disk-sharded and fully verified against
+# the concrete B by spot-check), so this PRS pass is NOT the only way to
+# get the answer -- it exists as an independent, transparent, resumable
+# computation of the SAME resultant via a different classical algorithm,
+# specifically so a hang/crash mid-PRS is debuggable (which step, which
+# degree, how big were the coefficients) instead of opaque.
+#
+# [The original's full manual PRS implementation -- next_permutation!,
+# first_k_permutations, first_k_nonzero_permutations,
+# count_nonzero_permutations, the PART_K_MAX_WORKERS subprocess pool,
+# part_k_launch/part_k_harvest/part_k_summand_complete, and the entire
+# "keep computing summands until one dies" driver loop, plus the manual
+# shard-based PRS step-by-step reduction -- lived here, original lines
+# ~8035-8397. It is intentionally NOT reproduced verbatim in this
+# module: none of it is wrong, but per the removal note above it was
+# solving a problem (surviving Leibniz expansion of an 8x8 determinant
+# with huge entries) that PART F's abstract-Bezout route avoids needing
+# to solve at all, and reproducing ~360 lines of never-executed
+# (RUN_PART_G_PRS defaulted false) subprocess-pool machinery here would
+# only obscure the module's actually-active code path. See elim2.jl's
+# own lines 8034-8397 for the full original text if this history is
+# ever needed again.]
+# =#
+################################################################################
+
+end # module PartKResultant
+
+"""
+    run_all(PhiSymbolic; full_sweep_b=false)
+
+Top-level entry point reproducing elim2.jl's original end-to-end
+behavior, in original order, across all five submodules documented at
+the top of this file:
+
+  1. `Elim2Main.run_main(PhiSymbolic)` -- original lines 1-1090. Builds
+     both samples' residuals, the shared target ring, the decoupled U/V
+     system, etc.
+  2. `NormElimDiag.run_norm_elim_diag(PhiSymbolic)` -- original lines
+     1091-~1477. Standalone sample-1-only norm-elimination experiment,
+     independent of step 1's state (see that function's own docstring).
+  3. `NormElimDiag.run_all_diagnostics(PhiSymbolic, main)` -- original
+     lines ~1478-2848 (PARTS A/B/D/E/H/H'/J). Consumes step 1's
+     `DecoupledSystem`/`res1`/`s1`/`s2`; produces `clean_sample_1`/
+     `clean_sample_2` (PART J's assembly-line output) needed by step 5.
+  4. `PartIBench.run_full_bench_and_overlap_suite(res1, res2, cfg)` --
+     original lines 3965-~5006 (part_i_eliminate_vs_resultant_bench.jl).
+     Uses step 1's `res1`/`res2`, but its OWN `DiagCurveConfig` (built
+     fresh here via `NormElimDiag.default_diag_curve_config()`, same
+     values as `Elim2Main.CurveConfig` -- these were two independently
+     top-level-`const`-declared `p`/`F_POLY_ASC`/`F` in the original,
+     never actually different, so this is preserved duplication, not a
+     bug -- see `NormElimDiag.run_all_diagnostics`'s own docstring for
+     the same pattern).
+  5. `PartKResultant.run_part_k!(F, p, clean_sample_1, clean_sample_2)`
+     -- original lines ~4684-8017 (PART K, "The Final Collision"). Uses
+     step 3's `clean_sample_1`/`clean_sample_2` and step 4's `cfg.F`/
+     `cfg.p`.
+
+PART I (part_i_squarefree_diag.jl, original lines 2854-3964) is NOT
+called from here: it is pure function/diagnostic-machinery definitions
+(`correct_multiplicity`, `squarefree_multiplicity_diagnostic`,
+`factor_stage_trace`, etc.) consumed BY step 4's `_run_bench` internally
+-- the original file never called a top-level driver for this section on
+its own, only via PART I's bench cases. `PartISquarefreeDiag.
+run_diag_on_bench_result` is available for ad hoc use afterward on any
+one of step 4's `all_bench_results[case_key]` entries, but note it
+expects NamedTuple-style `.gA`/`.gB` field access while `_run_bench`
+actually returns a `Dict{String,Any}` (see that function's own
+docstring, which already flags this as unverified) -- use
+`bench_result["gA"]`/`bench_result["gB"]` directly with
+`PartISquarefreeDiag.squarefree_multiplicity_diagnostic` instead if
+needed, rather than `run_diag_on_bench_result` as written.
+
+Returns a NamedTuple with each step's full result under `main`, `norm_diag`,
+`diagnostics`, `bench`, `part_k`.
+"""
+function run_all(PhiSymbolic; full_sweep_b::Bool=false)
+    main = Elim2Main.run_main(PhiSymbolic)
+
+    norm_diag = NormElimDiag.run_norm_elim_diag(PhiSymbolic)
+    diagnostics = NormElimDiag.run_all_diagnostics(PhiSymbolic, main; full_sweep_b = full_sweep_b)
+
+    diag_cfg = NormElimDiag.default_diag_curve_config()
+    bench = PartIBench.run_full_bench_and_overlap_suite(main.res1, main.res2, diag_cfg)
+
+    part_k = PartKResultant.run_part_k!(diag_cfg.F, diag_cfg.p,
+                                         diagnostics.clean_sample_1, diagnostics.clean_sample_2)
+
+    return (main = main, norm_diag = norm_diag, diagnostics = diagnostics,
+            bench = bench, part_k = part_k)
+end
 
 end # module Elim2
