@@ -58,6 +58,39 @@ using Oscar
 using Serialization
 
 ################################################################################
+# Root directory for sibling files/directories this package needs to find
+# on disk at runtime: phi_general/ (the PhiSymbolic engine),
+# part_j_worker.jl (PART J's subprocess worker), and the tmp/,
+# part_k_results/, part_f_scratch/ working directories PART J/K create.
+#
+# As a real Julia package, this file lives at <root>/Elim2/src/Elim2.jl --
+# `@__DIR__` here resolves to `<root>/Elim2/src`, which is TWO levels
+# below the actual root those sibling files/directories live in, not one
+# (unlike the original flat elim2_refactored.jl, where `@__DIR__` in a
+# single top-level script WAS the right root). ELIM2_ROOT_DIR corrects
+# for that nesting, same convention/name as the flat-file Pkg split this
+# package replaces used, so existing `ELIM2_ROOT_DIR` env-var overrides
+# and directory layouts keep working unchanged:
+#
+#   <root>/
+#   ├── Elim2/                 <- this package
+#   │   └── src/
+#   │       └── Elim2.jl       <- @__DIR__ here == <root>/Elim2/src
+#   ├── phi_general/
+#   ├── part_j_worker.jl
+#   ├── tmp/
+#   ├── part_f_scratch/
+#   └── part_k_results/
+#
+# Override via ENV["ELIM2_ROOT_DIR"] (must be set before `using Elim2`,
+# since this is evaluated once at module load as a `const`) if you keep
+# this package somewhere other than directly inside <root>.
+################################################################################
+const ELIM2_ROOT_DIR = haskey(ENV, "ELIM2_ROOT_DIR") ?
+    ENV["ELIM2_ROOT_DIR"] :
+    dirname(dirname(@__DIR__))   # src/ -> Elim2/ -> <root>
+
+################################################################################
 # Shared engine include, common to every submodule below (each original
 # script located trial3_phi_symbolic_unified.jl slightly differently --
 # see each submodule's own `locate_engine()` for the exact original
@@ -68,10 +101,12 @@ using Serialization
     locate_engine_default()
 
 Original elim2.jl's fixed assumption: the symbolic engine lives at
-`<this file's dir>/phi_general/src/trial3_phi_symbolic_unified.jl`.
+`<root>/phi_general/src/trial3_phi_symbolic_unified.jl`, where `<root>`
+is `ELIM2_ROOT_DIR` (see that constant's docstring above) -- i.e. a
+sibling of this package's own directory, not of this file.
 """
 function locate_engine_default()
-    return joinpath(@__DIR__, "phi_general", "src", "trial3_phi_symbolic_unified.jl")
+    return joinpath(ELIM2_ROOT_DIR, "phi_general", "src", "trial3_phi_symbolic_unified.jl")
 end
 
 ################################################################################
@@ -1381,7 +1416,7 @@ end # module Elim2Main
 module NormElimDiag
 
 using Oscar
-using ..Elim2: locate_engine_default
+using ..Elim2: locate_engine_default, ELIM2_ROOT_DIR
 using ..Elim2Main: DecoupledSystem
 
 ################################################################################
@@ -2767,7 +2802,7 @@ end
 const PART_J_MAX_WORKERS = 4
 
 """
-    run_part_j!(res1, output_dir=joinpath(@__DIR__, "tmp"), worker_path=joinpath(@__DIR__, "part_j_worker.jl"))
+    run_part_j!(res1, output_dir=joinpath(ELIM2_ROOT_DIR, "tmp"), worker_path=joinpath(ELIM2_ROOT_DIR, "part_j_worker.jl"))
 
 Original lines 2711-2848 (PART J). Builds the list of (sample,target)
 jobs from `res1`'s u_RS/v_RS coefficient counts (skipping u_RS's trivial
@@ -2779,10 +2814,14 @@ the next queued job into any freed slot as each process exits. Raises an
 error immediately if any worker subprocess exits with a nonzero code.
 Returns `(clean_sample_1, clean_sample_2)`, the loaded results in the
 same U0,U1,...,V0,V1,... order as the original's sequential loop.
+`output_dir`/`worker_path` default to siblings of `ELIM2_ROOT_DIR`
+(this package's own directory's parent, or `ENV["ELIM2_ROOT_DIR"]` if
+set) rather than of this source file, since `part_j_worker.jl` lives
+next to wherever this package itself is checked out, not inside `src/`.
 """
 function run_part_j!(res1;
-                      output_dir::String = joinpath(@__DIR__, "tmp"),
-                      worker_path::String = joinpath(@__DIR__, "part_j_worker.jl"))
+                      output_dir::String = joinpath(ELIM2_ROOT_DIR, "tmp"),
+                      worker_path::String = joinpath(ELIM2_ROOT_DIR, "part_j_worker.jl"))
     println("===========================================================")
     println("PART J: The Assembly Line (Processing All Coefficients)")
     println("===========================================================")
@@ -3999,9 +4038,29 @@ using ..PartISquarefreeDiag: CHECK_GROEBNER, correct_multiplicity, verify_correc
                               discriminant_of_curve, leading_coeff_in, jacobian_2x2,
                               canonical_factor_key
 
-println("CHECK_GROEBNER = ", CHECK_GROEBNER,
-        CHECK_GROEBNER ? "  (Gröbner eliminate() WILL run, as a debugging oracle)" :
-                          "  (Gröbner eliminate() will be SKIPPED -- default production/benchmark mode)")
+"""
+    report_check_groebner_mode()
+
+Original lines 4049 (top-level `println` at module load, immediately
+after `using ..PartISquarefreeDiag: CHECK_GROEBNER, ...` above). Reports
+whether `CHECK_GROEBNER` (an env-var-controlled `const` defined in
+`PartISquarefreeDiag`, defaulting `false`) will cause the Gröbner
+`eliminate()` debugging oracle to run alongside the production
+resultant+correction pipeline, or be skipped. Moved from a bare
+module-top-level statement into this function -- printing at `include`/
+`using` time (rather than when a `run_*` entry point is actually called)
+is exactly the kind of side effect that blocks this package from being
+precompiled, since Julia has to execute top-level module code once at
+precompile time and again at every load. Called automatically from
+`run_full_bench_and_overlap_suite` below, so the information still
+surfaces during a real run; call it directly if you want it printed
+without running the whole suite.
+"""
+function report_check_groebner_mode()
+    println("CHECK_GROEBNER = ", CHECK_GROEBNER,
+            CHECK_GROEBNER ? "  (Gröbner eliminate() WILL run, as a debugging oracle)" :
+                              "  (Gröbner eliminate() will be SKIPPED -- default production/benchmark mode)")
+end
 
 # ------------------------------------------------------------------------
 # Small measurement helper -- prints elapsed time, total_degree, term
@@ -4729,6 +4788,7 @@ intermediate result so callers can inspect `all_bench_results` etc.
 without re-parsing printed output.
 """
 function run_full_bench_and_overlap_suite(res1, res2, cfg::DiagCurveConfig)
+    report_check_groebner_mode()
     driver = run_all_bench_cases(res1, res2, cfg)
     summary = print_cross_bench_summary(driver.all_bench_results, driver.bench_cases)
     run_mumford_overlap_suite(driver.all_bench_results, cfg)
@@ -4736,10 +4796,18 @@ function run_full_bench_and_overlap_suite(res1, res2, cfg::DiagCurveConfig)
             summary = summary)
 end
 
-println("part_i_eliminate_vs_resultant_bench.jl loaded.")
-println("Run e.g.:  run_bench_sample1(\"U0\", res1.u_RS_coeffs[1], cfg)")
-println("      or:  run_bench_sample2(\"U0\", res2.u_RS_coeffs[1], cfg)")
-println("or, for the full automated driver:  run_full_bench_and_overlap_suite(res1, res2, cfg)")
+# part_i_eliminate_vs_resultant_bench.jl usage (originally four top-level
+# `println`s that fired at file-load time -- moved here as a comment for
+# the same precompile-safety reason as `report_check_groebner_mode`
+# above: nothing in this module should print anything until a `run_*`
+# entry point is actually called):
+#
+#   run_bench_sample1("U0", res1.u_RS_coeffs[1], cfg)
+#   run_bench_sample2("U0", res2.u_RS_coeffs[1], cfg)
+#
+# or, for the full automated driver:
+#
+#   run_full_bench_and_overlap_suite(res1, res2, cfg)
 
 end # module PartIBench
 
@@ -4747,6 +4815,7 @@ module PartKResultant
 
 using Oscar
 using Serialization
+using ..Elim2: ELIM2_ROOT_DIR
 
 ################################################################################
 # PART K: "The Final Collision" (original lines 4684-8017).
@@ -4973,7 +5042,7 @@ fiber-product ring).
 """
 function build_target_setup(F, clean_sample_1::Vector, clean_sample_2::Vector,
                              name::String, i1::Int, i2::Int, d1T::Int, d2T::Int;
-                             scratch_dir::String = joinpath(@__DIR__, "part_k_results"))
+                             scratch_dir::String = joinpath(ELIM2_ROOT_DIR, "part_k_results"))
     RESULTANT_FILE = joinpath(scratch_dir, "$(name)_resultant.oscar")
 
     println("    building the fiber-product ring/generators for $name...")
@@ -5928,7 +5997,7 @@ exponent-vector length is inconsistent with `Rcoef`, or shard cleanup
 fails to remove a file it expected to remove.
 """
 function run_part_f_bezout!(F, p::Int, cr::CoefRing, ts::TargetSetup, bm::BezoutMatrix;
-                             scratch_dir::String = joinpath(@__DIR__, "part_k_results"))
+                             scratch_dir::String = joinpath(ELIM2_ROOT_DIR, "part_k_results"))
     name = ts.name
     Rcoef = cr.Rcoef
     a1_c, a2_c, b1_c, b2_c = cr.a1_c, cr.a2_c, cr.b1_c, cr.b2_c
@@ -6754,7 +6823,7 @@ deleted); otherwise returns the saved `res_num`.
 """
 function run_part_k_target!(F, p::Int, clean_sample_1::Vector, clean_sample_2::Vector,
                              fu::FinalUniverse, name::String, i1::Int, i2::Int, Tvar;
-                             scratch_dir::String = joinpath(@__DIR__, "part_k_results"))
+                             scratch_dir::String = joinpath(ELIM2_ROOT_DIR, "part_k_results"))
     RESULTANT_FILE = joinpath(scratch_dir, "$(name)_resultant.oscar")
     if already_complete(RESULTANT_FILE)
         return nothing
@@ -6807,7 +6876,7 @@ only ever had `res_num` in scope for the target currently being
 processed).
 """
 function run_part_k!(F, p::Int, clean_sample_1::Vector, clean_sample_2::Vector;
-                      scratch_dir::String = joinpath(@__DIR__, "part_k_results"))
+                      scratch_dir::String = joinpath(ELIM2_ROOT_DIR, "part_k_results"))
     fu = build_final_universe(F, clean_sample_1, clean_sample_2)
 
     results = Dict{String,Any}()
