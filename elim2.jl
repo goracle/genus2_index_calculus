@@ -4591,7 +4591,14 @@ function _roots_at_fixed_t(poly_5var, t1_val, t2_val, w_names::Vector{String},
         up += constant_coefficient(ck) * Tvar^k
     end
     rts = roots(up)
-    return [r for (r, _mult) in rts]
+    # roots() on a univariate poly here returns the roots directly as a
+    # Vector{FqFieldElem} -- NOT (root, multiplicity) tuples. The earlier
+    # trials in this run all happened to have roots=0, so `for (r,_mult)
+    # in rts` silently iterated zero times and never exposed that the
+    # destructuring assumption was wrong; the first trial with an actual
+    # root hit `iterate(::FqFieldElem)`, which doesn't exist, because rts
+    # elements are plain field elements, not tuples.
+    return collect(rts)
 end
 
 function mumford_overlap_test(all_bench_results::Dict{String,Any},
