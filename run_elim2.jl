@@ -13,11 +13,12 @@
 #    ├── Elim2/                     <- the package
 #    │   ├── Project.toml
 #    │   └── src/
-#    │       └── Elim2.jl
+#    │       ├── Elim2.jl
+#    │       └── part_j_worker.jl  <- moved here from <root>, now a
+#    │                                 sibling of the other submodule files
 #    ├── phi_general/
 #    │   └── src/
 #    │       └── trial3_phi_symbolic_unified.jl
-#    ├── part_j_worker.jl
 #    ├── tmp/                       <- created by PART J on first run
 #    ├── part_k_results/            <- created by PART K on first run
 #    └── part_f_scratch/            <- created by PART K/F on first run
@@ -43,13 +44,25 @@
 #
 ################################################################################
 
-# ELIM2_ROOT_DIR: where phi_general/, part_j_worker.jl, tmp/, etc. live.
-# Defaults to this script's own directory. Override by setting
-# ENV["ELIM2_ROOT_DIR"] before running this script if you keep those
-# sibling files/directories somewhere else relative to Elim2/.
+# ELIM2_ROOT_DIR: where phi_general/, tmp/, etc. live (part_j_worker.jl
+# itself now lives at Elim2/src/part_j_worker.jl, not directly under this
+# dir -- see the layout diagram above). Defaults to this script's own
+# directory. Override by setting ENV["ELIM2_ROOT_DIR"] before running
+# this script if you keep those sibling files/directories somewhere else
+# relative to Elim2/.
 if !haskey(ENV, "ELIM2_ROOT_DIR")
     ENV["ELIM2_ROOT_DIR"] = @__DIR__
 end
+
+# CHECK_GROEBNER toggle: single top-level switch for the expensive
+# Gröbner verification path (PATH A in 04_part_i_bench.jl / the
+# check_groebner kwarg in 03_part_i_squarefree_diag.jl's
+# verify_correction). Read as an env var at module-load time by
+# 03_part_i_squarefree_diag.jl's `const CHECK_GROEBNER = ...`, so it MUST
+# be set here, before `using Elim2` below -- setting it any later has no
+# effect (Julia consts don't re-read the env after the module loads).
+# Flip this literal true/false to toggle it for a whole run.
+ENV["ELIM2_CHECK_GROEBNER"] = "true"
 
 import Pkg
 Pkg.activate(joinpath(@__DIR__, "Elim2"))

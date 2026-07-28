@@ -72,9 +72,11 @@ using Serialization
 
 ################################################################################
 # Root directory for sibling files/directories this package needs to find
-# on disk at runtime: phi_general/ (the PhiSymbolic engine),
-# part_j_worker.jl (PART J's subprocess worker), and the tmp/,
+# on disk at runtime: phi_general/ (the PhiSymbolic engine) and the tmp/,
 # part_k_results/, part_f_scratch/ working directories PART J/K create.
+# (part_j_worker.jl -- PART J's subprocess worker -- used to be one of
+# these top-level siblings too, but now lives at Elim2/src/part_j_worker.jl,
+# a sibling of this file, so it no longer needs ELIM2_ROOT_DIR to find it.)
 #
 # As a real Julia package, this file lives at <root>/Elim2/src/Elim2.jl --
 # `@__DIR__` here resolves to `<root>/Elim2/src`, which is TWO levels
@@ -88,9 +90,9 @@ using Serialization
 #   <root>/
 #   ├── Elim2/                 <- this package
 #   │   └── src/
-#   │       └── Elim2.jl       <- @__DIR__ here == <root>/Elim2/src
+#   │       ├── Elim2.jl       <- @__DIR__ here == <root>/Elim2/src
+#   │       └── part_j_worker.jl
 #   ├── phi_general/
-#   ├── part_j_worker.jl
 #   ├── tmp/
 #   ├── part_f_scratch/
 #   └── part_k_results/
@@ -133,7 +135,7 @@ end
 #                                directly as a bare-Julia file, without
 #                                going through this package/Oscar at all)
 #   01_elim2_main.jl            module Elim2Main            (needs SampleSpecs)
-#   02_norm_elim_diag.jl        module NormElimDiag          (needs Elim2Main)
+#   02_norm_elim_diag.jl        module NormElimDiag          (needs Elim2Main, SampleSpecs)
 #   03_part_i_squarefree_diag.jl module PartISquarefreeDiag  (needs NormElimDiag)
 #   04_part_i_bench.jl          module PartIBench            (needs NormElimDiag, PartISquarefreeDiag)
 #   05_part_k_resultant.jl      module PartKResultant        (needs Elim2 root only)

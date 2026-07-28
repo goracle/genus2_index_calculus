@@ -41,6 +41,7 @@ module NormElimDiag
 using Oscar
 using ..Elim2: locate_engine_default, ELIM2_ROOT_DIR
 using ..Elim2Main: DecoupledSystem
+using ..SampleSpecs: default_sample1
 
 ################################################################################
 # Struct: DiagCurveConfig -- this script's own copy of the curve/field
@@ -65,14 +66,19 @@ end
 """
     default_diag_sample1()
 
-Original lines 1148-1150: sample 1's (K,c,fixed,u0,u1,v0,v1) tuple,
-this script's own copy (identical values to Elim2Main.default_sample1()).
-Returned as a plain NamedTuple rather than Elim2Main.SampleSpec, since
-this script never imported that struct in the original.
+Sample 1's (K,c,fixed,u0,u1,v0,v1), now pulled directly from the shared
+SampleSpecs.default_sample1() (single source of truth for both samples)
+instead of keeping this script's own separate hardcoded copy of the same
+literals -- that duplication is exactly the pattern that let
+part_j_worker.jl's copy silently drift to K=3,c=2 for sample 2.
+Returned as a plain NamedTuple (not SampleSpecs.SampleSpec) to keep every
+downstream caller in this file working with `.K`/`.c`/etc. field access
+unchanged.
 """
 function default_diag_sample1()
-    return (K = 2, c = 2, fixed = Tuple{Int,Int}[],
-            u0 = 468873, u1 = 956582, v0 = 2168176, v1 = 2288437)
+    spec = default_sample1()
+    return (K = spec.K, c = spec.c, fixed = spec.fixed,
+            u0 = spec.u0, u1 = spec.u1, v0 = spec.v0, v1 = spec.v1)
 end
 
 """
