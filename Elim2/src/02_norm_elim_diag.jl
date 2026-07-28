@@ -1431,7 +1431,7 @@ end
 const PART_J_MAX_WORKERS = 4
 
 """
-    run_part_j!(res1, output_dir=joinpath(ELIM2_ROOT_DIR, "tmp"), worker_path=joinpath(ELIM2_ROOT_DIR, "part_j_worker.jl"))
+    run_part_j!(res1, output_dir=joinpath(ELIM2_ROOT_DIR, "tmp"), worker_path=joinpath(@__DIR__, "part_j_worker.jl"))
 
 Original lines 2711-2848 (PART J). Builds the list of (sample,target)
 jobs from `res1`'s u_RS/v_RS coefficient counts (skipping u_RS's trivial
@@ -1450,7 +1450,7 @@ next to wherever this package itself is checked out, not inside `src/`.
 """
 function run_part_j!(res1;
                       output_dir::String = joinpath(ELIM2_ROOT_DIR, "tmp"),
-                      worker_path::String = joinpath(ELIM2_ROOT_DIR, "part_j_worker.jl"))
+                      worker_path::String = joinpath(@__DIR__, "part_j_worker.jl"))
     println("===========================================================")
     println("PART J: The Assembly Line (Processing All Coefficients)")
     println("===========================================================")
