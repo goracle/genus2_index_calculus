@@ -1,11 +1,13 @@
 name = "Elim2"
 uuid = "16a9b2d9-0b3b-431b-95d4-ec51d8ee0eed"
-authors = ["claire"]
 version = "0.1.0"
+authors = ["claire"]
 
 [deps]
 Oscar = "f1435218-dba5-11e9-1e4d-f1a5fab5fc13"
+Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
 Serialization = "9e88b42a-f829-5b0c-bbe9-9e923198166b"
 
 [compat]
+Random = "1.11.0"
 julia = "1"

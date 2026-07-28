@@ -229,8 +229,8 @@ end
 """
     generate_sample_spec(sample_idx::Int; seed::Int=DEFAULT_SEED, p::Int=DEFAULT_P)
 
-Generates a valid `SampleSpec` for $K=2, c=2$ on $y^2 = x^5 + x + 2 \\pmod p$
-by computing $\\alpha \\cdot G$ using standard scalar multiplication.
+Generates a valid `SampleSpec` for \$K=2, c=2\$ on \$y^2 = x^5 + x + 2 \\pmod p\$
+by computing \\alpha \\cdot G using standard scalar multiplication.
 """
 function generate_sample_spec(sample_idx::Int; seed::Int = DEFAULT_SEED, p::Int = DEFAULT_P)
     f = Int[2, 1, 0, 0, 0, 1]              # f(x) = x^5 + x + 2
