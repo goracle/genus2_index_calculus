@@ -59,8 +59,8 @@ function default_sample1()
 end
 
 function default_sample2()
-    fixed2 = [(196, 793353)]
-    spec = SampleSpec(3, 2, fixed2, 2112189, 375309, 801778, 2048138)
+    fixed2 = Tuple{Int,Int}[]
+    spec = SampleSpec(2, 2, fixed2, 2112189, 375309, 801778, 2048138)
     if length(spec.fixed) != spec.K - spec.c
         error("elim2.jl: sample 2 (K=$(spec.K), c=$(spec.c)) needs exactly " *
               "$(spec.K - spec.c) fixed anchor(s), got $(length(spec.fixed)).")
@@ -885,8 +885,84 @@ struct DecoupledSystem
     block_ordering_dec
 end
 
+################################################################################
+# Mumford-identity check on the DECOUPLED system: v_RS(X)^2 ≡ f(X) (mod
+# u_RS(X)), where u_RS/v_RS are re-formed from the U_i/V_i TARGET
+# VARIABLES themselves (constrained by Fu_decoupled/Fv_decoupled to equal
+# num_d[i]/den_d[i]), evaluated modulo Iuv_decoupled (Fu_decoupled +
+# Fv_decoupled + curve relations).
+#
+# This exists to close the gap left after _check_mumford_identity_ring
+# (map_sample, checked on u_num/u_den/v_num/v_den BEFORE the U/V
+# decoupling): nothing previously re-verified the identity survives
+# build_decoupled_system's OWN construction step (introducing U_i, V_i as
+# free variables and equating them to num_d[i]/den_d[i] via
+# Fu_decoupled/Fv_decoupled). If independent per-coefficient reduction
+# upstream already decoupled u and v's shared dependence on a sample's
+# anchor variables (the leading hypothesis flagged in
+# trial3_phi_symbolic_unified.jl's post-reduction check docstring for the
+# V-equation O(p^2)->O(1) solution-count collapse), that decoupling would
+# surface here: V_i is only guaranteed to represent a self-consistent
+# v_RS(X) up to whatever U/V decoupling itself introduces, and this is
+# the first point where U_i and V_i coexist as free variables in the same
+# ring rather than as separately-reduced num/den pairs.
+#
+# Raises an ErrorException (matching _check_mumford_identity_ring's own
+# convention) rather than returning a boolean, for the same reason: a
+# failure here means Fv_decoupled no longer describes a Mumford-consistent
+# divisor for this sample, and Iuv_decoupled would silently be
+# over/under-constrained downstream.
+function _check_mumford_identity_decoupled(U_vars::Vector, V_vars::Vector,
+                                            F_POLY_ASC::Vector{Int}, R_dec,
+                                            Fu_decoupled::Vector, Fv_decoupled::Vector,
+                                            curve_gens::Vector;
+                                            label::String = "")
+    if isempty(U_vars) || isempty(V_vars)
+        error("_check_mumford_identity_decoupled($label): empty U_vars or V_vars " *
+              "-- nothing to check, caller should not have reached this point")
+    end
+
+    Rx, X = polynomial_ring(R_dec, "X_mumford_check_decoupled")
+
+    # u_RS(X) re-formed directly from the U_i target variables (NOT from
+    # num_d/den_d) -- U_i IS the value Fu_decoupled forces u_RS's x^(i-1)
+    # coefficient to take, so this is exactly what the decoupled system
+    # asserts u_RS(X) to be. Likewise v_RS(X) from V_vars.
+    u_poly = sum(Rx(U_vars[i]) * X^(i-1) for i in 1:length(U_vars))
+    v_poly = sum(Rx(V_vars[i]) * X^(i-1) for i in 1:length(V_vars))
+    f_poly = sum(Rx(F_POLY_ASC[i+1]) * X^i for i in 0:(length(F_POLY_ASC)-1))
+
+    # As in _check_mumford_identity_ring: u_poly's leading coefficient
+    # (U_vars[end], a free variable in R_dec) is not a unit, so pseudorem
+    # (not mod) is the correct primitive here.
+    residual = pseudorem(v_poly^2 - f_poly, u_poly)
+
+    # The identity only needs to hold ON THE VARIETY cut out by
+    # Fu_decoupled, Fv_decoupled, and the curve relations -- i.e. modulo
+    # Iuv_decoupled -- not identically in the free ring R_dec. Reduce each
+    # X-coefficient of residual against that ideal, same per-coefficient
+    # pattern as _check_mumford_identity_ring (normal_form only accepts
+    # single-ring elements, not the Generic.Poly{...} residual itself).
+    decoupled_ideal = ideal(R_dec, vcat(Fu_decoupled, Fv_decoupled, curve_gens))
+    residual_coeffs_on_variety = iszero(residual) ? [] :
+        [normal_form(coeff(residual, i), decoupled_ideal) for i in 0:degree(residual)]
+
+    if !all(iszero, residual_coeffs_on_variety)
+        error("_check_mumford_identity_decoupled($label): v_RS(X)^2 - f(X) is NOT " *
+              "identically 0 mod u_RS(X) once U_i/V_i are treated as the " *
+              "decoupled system's own target variables, even after reducing " *
+              "modulo Iuv_decoupled (Fu_decoupled + Fv_decoupled + curve " *
+              "relations). Mumford condition violated by the decoupling " *
+              "construction itself -- Fv_decoupled no longer describes a " *
+              "self-consistent divisor for this sample. nonzero X-coefficients " *
+              "(on variety) = $(filter(!iszero, residual_coeffs_on_variety))")
+    end
+
+    return nothing
+end
+
 """
-    build_decoupled_system(s1, s2, mspec, tring)
+    build_decoupled_system(s1, s2, mspec, tring, cfg)
 
 Original lines 812-878. Re-maps each sample's num/den (elements of R)
 into a new ring R_dec that additionally carries target variables
@@ -894,8 +970,13 @@ U0,U1,...  and V0,V1,..., then builds `U_i * den == num` (and `V_i`
 likewise) equations per sample -- this does not change the underlying
 variety, just phrases the coefficient-matching without cross-multiplying
 both samples' variables together directly.
+
+`cfg` (added alongside the new `_check_mumford_identity_decoupled` calls
+below) supplies `F_POLY_ASC` -- not otherwise available from `tring` --
+for the post-decoupling Mumford identity check on Fv_decoupled.
 """
-function build_decoupled_system(s1::MappedSample, s2::MappedSample, mspec::MatchSpec, tring::TargetRing)
+function build_decoupled_system(s1::MappedSample, s2::MappedSample, mspec::MatchSpec,
+                                 tring::TargetRing, cfg::CurveConfig)
     R_dec, dec_gens = polynomial_ring(
         base_ring(tring.R),
         vcat(["wa1", "wa2", "wb1", "wb2", "a2", "a1", "b2", "b1"],
@@ -955,6 +1036,19 @@ function build_decoupled_system(s1::MappedSample, s2::MappedSample, mspec::Match
         println("  Fv_decoupled[$i]: degree=", total_degree(g), "  terms=", length(terms(g)))
     end
     println()
+
+    # Closes the gap between map_sample's _check_mumford_identity_ring
+    # (checked on u_num/u_den/v_num/v_den BEFORE decoupling) and this
+    # function's own construction of Fu_decoupled/Fv_decoupled: verify the
+    # Mumford identity still holds per sample once U_i/V_i are introduced
+    # as the decoupled system's own target variables. Sample 1 uses
+    # curve_a1_d/curve_a2_d; sample 2 uses curve_b1_d/curve_b2_d.
+    _check_mumford_identity_decoupled(U_vars, V_vars, cfg.F_POLY_ASC, R_dec,
+                                       Fu_decoupled, Fv_decoupled,
+                                       [curve_a1_d, curve_a2_d]; label = "sample 1, decoupled")
+    _check_mumford_identity_decoupled(U_vars, V_vars, cfg.F_POLY_ASC, R_dec,
+                                       Fu_decoupled, Fv_decoupled,
+                                       [curve_b1_d, curve_b2_d]; label = "sample 2, decoupled")
 
     Iu_decoupled = ideal(R_dec, vcat(Fu_decoupled, [curve_a1_d, curve_a2_d, curve_b1_d, curve_b2_d]))
     Iuv_decoupled = ideal(R_dec, vcat(Fu_decoupled, Fv_decoupled,
@@ -1259,7 +1353,7 @@ function run_main(PhiSymbolic; cfg::CurveConfig = default_curve_config())
 
     run_degree_in_w_diagnostic(s1, s2, fufv, tring)
 
-    decoupled = build_decoupled_system(s1, s2, mspec, tring)
+    decoupled = build_decoupled_system(s1, s2, mspec, tring, cfg)
 
     per_layer = run_per_layer_degree_trace(res1, [tring.a1, tring.a2], [tring.wa1, tring.wa2], s1)
     norm_experiment = run_norm_before_vs_after_experiment(res1, fufv, tring)
