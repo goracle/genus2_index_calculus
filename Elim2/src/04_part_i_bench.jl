@@ -63,8 +63,8 @@ surfaces during a real run; call it directly if you want it printed
 without running the whole suite.
 """
 function report_check_groebner_mode()
-    println("CHECK_GROEBNER = ", CHECK_GROEBNER,
-            CHECK_GROEBNER ? "  (Gröbner eliminate() WILL run, as a debugging oracle)" :
+    println("CHECK_GROEBNER = ", CHECK_GROEBNER[],
+            CHECK_GROEBNER[] ? "  (Gröbner eliminate() WILL run, as a debugging oracle)" :
                               "  (Gröbner eliminate() will be SKIPPED -- default production/benchmark mode)")
 end
 
@@ -167,7 +167,7 @@ function _run_bench(raw_coeff, target_name::String, t_names::Vector{String},
     gA = nothing
     gb_gens = Any[]
     t_gb = 0.0
-    if CHECK_GROEBNER
+    if CHECK_GROEBNER[]
         println("  --- PATH A: eliminate(ideal(R_small,[h_s,curve1,curve2]), [w1,w2]) ---")
         I_small = ideal(R_small, [h_s, curve1, curve2])
         t0 = time()
@@ -230,7 +230,7 @@ function _run_bench(raw_coeff, target_name::String, t_names::Vector{String},
     #   correction -> verification.
     # ----------------------------------------------------------------
     corr = correct_multiplicity(step1, step2; label=bench_label)
-    verif = verify_correction(corr.corrected, gA; check_groebner=CHECK_GROEBNER, label=bench_label)
+    verif = verify_correction(corr.corrected, gA; check_groebner=CHECK_GROEBNER[], label=bench_label)
 
     results["h_s_terms"] = length(terms(h_s))
     results["h_s_degree"] = iszero(h_s) ? -1 : total_degree(h_s)
@@ -253,7 +253,7 @@ function _run_bench(raw_coeff, target_name::String, t_names::Vector{String},
     # verbatim as the existing diagnostic/debugging-oracle comparison,
     # not part of the default production workflow above.
     # ----------------------------------------------------------------
-    if CHECK_GROEBNER
+    if CHECK_GROEBNER[]
         println("  --- equivalence checks: PATH A (Groebner) vs PATH B (resultant) ---")
 
         # A and B may live in R_small still (both were built from R_small's

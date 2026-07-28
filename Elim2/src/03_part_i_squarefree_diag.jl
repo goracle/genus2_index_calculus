@@ -43,7 +43,21 @@ using ..NormElimDiag: canonical_factor_key, factor_multiset
 # being visible to both scripts by load order.
 ################################################################################
 
-const CHECK_GROEBNER = get(ENV, "ELIM2_CHECK_GROEBNER", "false") == "true"
+
+const CHECK_GROEBNER = Ref{Bool}(false)
+
+function read_check_groebner_env()::Bool
+    val = get(ENV, "ELIM2_CHECK_GROEBNER", "false")
+    parsed = tryparse(Bool, val)
+    if parsed === nothing
+        throw(ArgumentError("Invalid boolean for ELIM2_CHECK_GROEBNER: '$(val)'. Must be 'true' or 'false'."))
+    end
+    return parsed
+end
+
+function __init__()
+    CHECK_GROEBNER[] = read_check_groebner_env()
+end
 
 ################################################################################
 # SQUAREFREE / MULTIPLICITY DIAGNOSTIC.
@@ -737,7 +751,7 @@ function correct_multiplicity(Res1, Res2; label::AbstractString="")
 end
 
 """
-    verify_correction(corrected, gA; check_groebner=CHECK_GROEBNER, label="")
+    verify_correction(corrected, gA; check_groebner=CHECK_GROEBNER[], label="")
 
 Original lines 3734-3782. Verify the corrected polynomial. Three tiers,
 cheapest first:
@@ -754,7 +768,7 @@ cheapest first:
 
 Returns a NamedTuple with the verification verdict and which tier ran.
 """
-function verify_correction(corrected, gA; check_groebner::Bool=CHECK_GROEBNER, label::AbstractString="")
+function verify_correction(corrected, gA; check_groebner::Bool=CHECK_GROEBNER[], label::AbstractString="")
     if check_groebner && gA !== nothing
         t0 = time()
         ideal_match = false
