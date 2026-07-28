@@ -20,6 +20,7 @@ module Elim2Main
 using Oscar
 using Serialization
 using ..Elim2: locate_engine_default
+using ..SampleSpecs: SampleSpec, default_sample1, default_sample2
 
 ################################################################################
 # Struct: CurveConfig -- the curve/field constants, identical for both
@@ -39,34 +40,14 @@ function default_curve_config()
 end
 
 ################################################################################
-# Struct: SampleSpec -- one sample's (K, c, fixed anchors, u0/u1/v0/v1)
-# input to PhiSymbolic.symbolic_residual. Original top-level consts:
-# K1,c1,fixed1,u0_1,u1_1,v0_1,v1_1 (sample 1) and K2,c2,fixed2,u0_2,u1_2,
-# v0_2,v1_2 (sample 2).
+# SampleSpec / default_sample1 / default_sample2 now live in
+# 00_sample_specs.jl (module SampleSpecs), imported above, so this is the
+# ONE place K, c, fixed anchors, and u0/u1/v0/v1 are defined for both
+# samples -- part_j_worker.jl reads the exact same values by `include`-ing
+# that file directly (see its own header for why it can't just `using
+# Elim2`). Original top-level consts these replace: K1,c1,fixed1,u0_1,
+# u1_1,v0_1,v1_1 (sample 1) and K2,c2,fixed2,u0_2,u1_2,v0_2,v1_2 (sample 2).
 ################################################################################
-struct SampleSpec
-    K::Int
-    c::Int
-    fixed::Vector{Tuple{Int,Int}}
-    u0::Int
-    u1::Int
-    v0::Int
-    v1::Int
-end
-
-function default_sample1()
-    return SampleSpec(2, 2, Tuple{Int,Int}[], 468873, 956582, 2168176, 2288437)
-end
-
-function default_sample2()
-    fixed2 = Tuple{Int,Int}[]
-    spec = SampleSpec(2, 2, fixed2, 2112189, 375309, 801778, 2048138)
-    if length(spec.fixed) != spec.K - spec.c
-        error("elim2.jl: sample 2 (K=$(spec.K), c=$(spec.c)) needs exactly " *
-              "$(spec.K - spec.c) fixed anchor(s), got $(length(spec.fixed)).")
-    end
-    return spec
-end
 
 """
     call_symbolic_residual(PhiSymbolic, spec, cfg; label="sample")

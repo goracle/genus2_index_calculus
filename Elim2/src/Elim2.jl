@@ -127,15 +127,23 @@ end
 # Submodules, included in dependency order (each `using ..X` clause in a
 # submodule file requires X's file to be included first):
 #
-#   01_elim2_main.jl            module Elim2Main            (no deps)
+#   00_sample_specs.jl          module SampleSpecs           (no deps -- see
+#                                that file's header for why this is split
+#                                out: part_j_worker.jl `include()`s it
+#                                directly as a bare-Julia file, without
+#                                going through this package/Oscar at all)
+#   01_elim2_main.jl            module Elim2Main            (needs SampleSpecs)
 #   02_norm_elim_diag.jl        module NormElimDiag          (needs Elim2Main)
 #   03_part_i_squarefree_diag.jl module PartISquarefreeDiag  (needs NormElimDiag)
 #   04_part_i_bench.jl          module PartIBench            (needs NormElimDiag, PartISquarefreeDiag)
 #   05_part_k_resultant.jl      module PartKResultant        (needs Elim2 root only)
 #
 # This mirrors the original single-file elim2_refactored.jl's top-to-
-# bottom submodule order exactly -- only the file boundaries are new.
+# bottom submodule order exactly -- only the file boundaries are new
+# (00_sample_specs.jl did not exist as a separate original unit; it is a
+# pure extraction of a few lines that used to live inside 01_elim2_main.jl).
 ################################################################################
+include("00_sample_specs.jl")
 include("01_elim2_main.jl")
 include("02_norm_elim_diag.jl")
 include("03_part_i_squarefree_diag.jl")

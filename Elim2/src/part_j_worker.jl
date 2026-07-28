@@ -3,6 +3,15 @@
 #  part_j_worker.jl  --  ONE Part J sandbox (one sample x one target coeff),
 #  run as its own OS process.
 #
+#  Lives at Elim2/src/part_j_worker.jl (a sibling of 00_sample_specs.jl
+#  and the other submodule files) -- not outside the Pkg as it used to.
+#  It is still launched as a plain `julia <path>` subprocess (see
+#  NormElimDiag.run_part_j!'s `worker_path` default in
+#  02_norm_elim_diag.jl), not `include()`d into the Elim2 module, since
+#  it deliberately avoids `using Elim2`/the rest of this package's Oscar-
+#  heavy dependency chain -- see the K/c note below for the one thing it
+#  does now share with the package.
+#
 #  Why a subprocess and not a Threads.@spawn task: elim2.jl's own Part H
 #  notes already document that two eliminate()/Singular calls running
 #  concurrently *in the same process* raced on Singular's global omalloc
@@ -24,9 +33,29 @@
 #  Oscar's save().
 ################################################################################
 
+# K, c, fixed anchors, and u0/u1/v0/v1 for both samples now come from the
+# SAME single source of truth Elim2Main uses (00_sample_specs.jl), instead
+# of a hardcoded copy in this file that could (and did) silently drift out
+# of sync with Elim2Main.default_sample1()/default_sample2(). This file
+# has no `using Oscar` and no dependency on the rest of the package, so it
+# is safe to `include()` directly here, before `using Oscar` below.
+include(joinpath(@__DIR__, "00_sample_specs.jl"))
+using .SampleSpecs: default_sample1, default_sample2
+
 using Oscar
 
-const PHI_GENERAL_SRC = joinpath(@__DIR__, "phi_general", "src")
+# ELIM2_ROOT_DIR: this file now lives at <root>/Elim2/src/part_j_worker.jl,
+# TWO levels below <root> (same nesting as Elim2/src/Elim2.jl -- see that
+# file's own ELIM2_ROOT_DIR comment), not directly inside <root> as it did
+# when it lived outside the Pkg. phi_general/ is still a sibling of
+# <root>, so the path to it needs the same dirname(dirname(...)) 2-level
+# correction Elim2.jl uses, honoring ENV["ELIM2_ROOT_DIR"] if the caller
+# (run_part_j!) set it to something other than the default.
+const ELIM2_ROOT_DIR = haskey(ENV, "ELIM2_ROOT_DIR") ?
+    ENV["ELIM2_ROOT_DIR"] :
+    dirname(dirname(@__DIR__))   # src/ -> Elim2/ -> <root>
+
+const PHI_GENERAL_SRC = joinpath(ELIM2_ROOT_DIR, "phi_general", "src")
 include(joinpath(PHI_GENERAL_SRC, "trial3_phi_symbolic_unified.jl"))
 using .PhiSymbolic
 
