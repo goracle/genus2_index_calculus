@@ -499,7 +499,7 @@ function inflating_factor_division_diagnostic(Res1, Res2, gA; label::AbstractStr
             " (factor(Res2) alone was ", round(t_factor_res2, digits=4), "s of that)")
 
     # ---- 7. Per-target summary. ----
-    any_reproduces = any(v.any_reproduces for v in verifications; init=false)
+    any_reproduces = any(v.any_reproduces for v in verifications)
     println()
     println("  --- summary", isempty(label) ? "" : "  [$label]", " ---")
     println("  inflating factor(s) found      : ", length(inflating))
