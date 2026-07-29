@@ -548,12 +548,17 @@ function print_cross_bench_summary(all_bench_results::Dict{String,Any}, bench_ca
             end
             n_infl = length(infl.inflating)
             n_infl > 0 && (n_with_inflation += 1)
-            all_reproduce = n_infl > 0 && all(v -> v.division_exact && (v.ideal_match || v.unit_match), infl.verification)
+
+            # Fixed field: v.division_exact -> v.divides_exactly
+            all_reproduce = n_infl > 0 && all(v -> v.divides_exactly && (v.ideal_match || v.unit_match), infl.verifications)
             n_infl > 0 && all_reproduce && (n_division_always_reproduces += 1)
+
+            t_total_pipeline = infl.t_factor_res2 + infl.t_div_verify
+
             println("  ", rpad(case_key, 14),
                     " inflating=", rpad(n_infl, 3),
                     " division_reproduces_all=", rpad(n_infl == 0 ? "n/a" : (all_reproduce ? "YES" : "NO"), 5),
-                    " factor(Res2)+div+verif=", round(infl.t_total_pipeline, digits=3), "s",
+                    " factor(Res2)+div+verif=", round(t_total_pipeline, digits=3), "s",
                     "  vs  Groebner=", round(get(res, "A_time", NaN), digits=3), "s")
         end
     end
@@ -581,7 +586,6 @@ function print_cross_bench_summary(all_bench_results::Dict{String,Any}, bench_ca
             n_division_always_reproduces = n_division_always_reproduces,
             n_cases_run = n_cases_run)
 end
-
 ################################################################################
 # MUMFORD OVERLAP TEST: pre-correction vs post-correction.
 #
