@@ -1164,10 +1164,32 @@ end
 # lines 6518-8013.
 #
 # Kept as one function rather than split further: the disk-sharded
-# checkpoint/resume/final-merge/cleanup sequence is a single stateful
-# process where correctness depends on strict ordering (build shards ->
-# finish substitution loop -> merge existing shards exactly once -> stat
-# -> save -> only THEN clean up shards, gated on a passing crosscheck).
+# checkpoint/resume/consolidate/cleanup sequence is a single stateful
+# process where correctness (and, as of the ordering fix below, peak
+# memory) depends on strict ordering:
+#
+#   merge any pre-existing shards from a prior run into detB_concrete
+#   FIRST, while it's still zero(Rcoef) -> run the substitution loop for
+#   the remaining terms, periodically consolidating this run's own
+#   accumulating delta-shards on disk so they never pile up unboundedly
+#   -> stat -> save -> only THEN clean up shards, gated on a passing
+#   crosscheck.
+#
+# NOTE on the merge ordering specifically: an earlier version of this
+# function did the pre-existing-shard merge AFTER the substitution loop
+# instead of before it. That ordering was the cause of OOMs specifically
+# on RESUME (not on a from-scratch run): by the time that merge ran,
+# detB_concrete already held the full result of every new term processed
+# in the resumed session (i.e. it was already close to its final,
+# largest size), and the merge then loaded and added in every leftover
+# shard from the previous session ON TOP of that already-large object --
+# so resume's peak memory was strictly worse than a from-scratch run's,
+# which never has an "old shard pile" to merge in at all. Doing the
+# merge upfront instead means resume's memory profile matches a
+# from-scratch run: the loop always starts from a `detB_concrete` that
+# already reflects everything done so far, and just keeps growing it,
+# exactly as a from-scratch run would.
+#
 # Splitting it into separate top-level functions would mean threading a
 # large amount of shared mutable state (detB_concrete, shard paths,
 # progress counters, the various caches) through extra parameters with
@@ -1197,9 +1219,9 @@ Raises an error (never silently proceeds) if: a shard coefficient
 doesn't fit `SHARD_COEFF_TYPE`, a shard's exponent-array length is
 inconsistent with its term count, a `.native` shard has the wrong
 format-magic header, `detB_concrete` ends up with zero terms after the
-final merge, `var_names` mismatches `Rcoef`'s variable count, a term's
-exponent-vector length is inconsistent with `Rcoef`, or shard cleanup
-fails to remove a file it expected to remove.
+upfront merge and substitution loop, `var_names` mismatches `Rcoef`'s
+variable count, a term's exponent-vector length is inconsistent with
+`Rcoef`, or shard cleanup fails to remove a file it expected to remove.
 """
 function run_part_f_bezout!(F, p::Int, cr::CoefRing, ts::TargetSetup, bm::BezoutMatrix;
                              scratch_dir::String = joinpath(ELIM2_ROOT_DIR, "part_k_results"))
@@ -1527,7 +1549,56 @@ function run_part_f_bezout!(F, p::Int, cr::CoefRing, ts::TargetSetup, bm::Bezout
     end
     flush(stdout)
 
-    q_monomial_cache = Dict{NTuple{5,Int}, Any}()
+    # -- UPFRONT MERGE PASS: fold in any shards left over from a previous
+    # (crashed/interrupted) run, BEFORE the new-terms loop below runs.
+    #
+    # This used to happen AFTER the new-terms loop (see git history / the
+    # old "FINAL MERGE PASS" comment). That ordering was the actual OOM
+    # cause on resume: by the time the old merge ran, detB_concrete already
+    # held the full accumulated result of every new term processed this
+    # session (i.e. it was already close to its final, largest size), and
+    # the merge then loaded and added in every leftover delta-shard from
+    # the previous session ON TOP of that -- so resume's peak memory was
+    # "near-final detB_concrete" + "a pile of old shards being deserialized
+    # one at a time," strictly worse than a from-scratch run ever sees.
+    #
+    # Doing the merge here instead means it runs while detB_concrete is
+    # still zero(Rcoef) -- its cheapest possible state -- so resume's
+    # memory profile matches a from-scratch run: by the time the new-terms
+    # loop starts, detB_concrete already reflects all prior-session work as
+    # a single accumulated polynomial, and the loop below just keeps
+    # growing it exactly as it would from scratch.
+    if n_already_done > 0
+        shard_paths_to_merge = existing_shard_paths()
+        println("  Upfront merge: folding ", length(shard_paths_to_merge),
+                " shard(s) from previous run(s) into detB_concrete before",
+                " processing new terms (", n_already_done, "/", n_terms,
+                " terms' worth)...")
+        flush(stdout)
+        t0upfront = time()
+        for (si, sp) in enumerate(shard_paths_to_merge)
+            t0shard = time()
+            shard_poly = endswith(sp, ".native") ? load_shard_native(sp) : load_shard_rebuilt(sp)
+            if HAVE_SAFE_SELF_ALIAS_ADD
+                add!(detB_concrete, detB_concrete, shard_poly)
+            else
+                detB_concrete = detB_concrete + shard_poly
+            end
+            shard_poly = nothing
+            GC.gc(true)
+            ccall(:malloc_trim, Cvoid, (Cint,), 0)
+            println("    shard ", si, "/", length(shard_paths_to_merge), " (",
+                    basename(sp), ") merged in ", round(time() - t0shard, digits=1),
+                    "s, RSS=", read_rss_mb(), "MB")
+            flush(stdout)
+        end
+        println("  Upfront merge complete in ", round(time() - t0upfront, digits=1),
+                "s: detB_concrete now has ", length(terms(detB_concrete)),
+                " terms, reflecting all ", n_already_done, " previously-",
+                "completed terms. New-terms loop below starts from this base.")
+        flush(stdout)
+    end
+
     q_power_cache = Dict{Tuple{Int,Int}, Any}()
 
     function chunked_poly_mul(x, y; chunk::Int=200)
@@ -1587,11 +1658,7 @@ function run_part_f_bezout!(F, p::Int, cr::CoefRing, ts::TargetSetup, bm::Bezout
         return val
     end
 
-    function cached_b_side(t_exps)
-        key = NTuple{5,Int}(t_exps)
-        if haskey(q_monomial_cache, key)
-            throw(AssertionError("cached_b_side: duplicate Q-monomial exponent vector $key encountered -- Stage 1's Rmid collection was expected to make these unique per detB_terms entry; investigate before trusting the cache"))
-        end
+    function compute_b_side(t_exps)
         val = one(Rcoef)
         for k in 1:5
             eQk = t_exps[k]
@@ -1605,7 +1672,6 @@ function run_part_f_bezout!(F, p::Int, cr::CoefRing, ts::TargetSetup, bm::Bezout
                 val = chunked_poly_mul(val, factor; chunk=this_chunk)
             end
         end
-        q_monomial_cache[key] = val
         return val
     end
 
@@ -1624,7 +1690,7 @@ function run_part_f_bezout!(F, p::Int, cr::CoefRing, ts::TargetSetup, bm::Bezout
         t_ra_coeff = first(coefficients(t))
 
         a_side = remap_to_final(t_ra_coeff, [a1_c, a2_c, b1_c, b2_c], [1, 2])
-        b_side = cached_b_side(t_exps)
+        b_side = compute_b_side(t_exps)
 
         this_size = length(terms(a_side)) * length(terms(b_side))
         if this_size > max_term_size_seen
@@ -1730,6 +1796,65 @@ function run_part_f_bezout!(F, p::Int, cr::CoefRing, ts::TargetSetup, bm::Bezout
 
             rss_after_save = read_rss_mb()
             delta_since_checkpoint = zero(Rcoef)
+
+            # -- PERIODIC SHARD CONSOLIDATION: every PARTF_CONSOLIDATE_EVERY
+            # checkpoints, fold all current on-disk delta-shards into one
+            # consolidated shard and delete the small originals. Without
+            # this, a run interrupted late leaves behind one shard file per
+            # PARTF_CHECKPOINT_EVERY terms for its ENTIRE duration (e.g.
+            # thousands of tiny shards), all of which the upfront merge on
+            # the next resume has to load and add in one at a time. This
+            # keeps that count bounded to roughly PARTF_CONSOLIDATE_EVERY
+            # shards at any point, regardless of how far the run has gotten.
+            #
+            # Uses a throwaway accumulator (not detB_concrete) so this
+            # doesn't touch the loop's main running total or its memory
+            # footprint -- consolidated_acc is built up and discarded
+            # entirely within this block.
+            PARTF_CONSOLIDATE_EVERY = 20
+            n_checkpoints_done = div(i, PARTF_CHECKPOINT_EVERY)
+            do_consolidate = (n_checkpoints_done % PARTF_CONSOLIDATE_EVERY == 0) && (i != n_terms)
+            if do_consolidate
+                shard_paths_to_consolidate = existing_shard_paths()
+                if length(shard_paths_to_consolidate) > 1
+                    println("      consolidating ", length(shard_paths_to_consolidate),
+                            " shard(s) at term ", i, " into one, RSS=", read_rss_mb(), "MB")
+                    flush(stdout)
+                    t0consolidate = time()
+                    consolidated_acc = zero(Rcoef)
+                    for sp in shard_paths_to_consolidate
+                        shard_poly = endswith(sp, ".native") ? load_shard_native(sp) : load_shard_rebuilt(sp)
+                        if HAVE_SAFE_SELF_ALIAS_ADD
+                            add!(consolidated_acc, consolidated_acc, shard_poly)
+                        else
+                            consolidated_acc = consolidated_acc + shard_poly
+                        end
+                        shard_poly = nothing
+                    end
+                    save_shard_native(shard_tmpfile, consolidated_acc)
+                    consolidated_acc = nothing
+                    # Consolidated shard is named after the current term
+                    # index `i`, same convention as a normal checkpoint --
+                    # existing_shard_paths()/the upfront merge don't care
+                    # whether a shard came from one checkpoint or many, only
+                    # that shard filenames are unique, and mv(...; force=true)
+                    # below overwrites cleanly if `i` happens to collide with
+                    # one of the shards being replaced.
+                    consolidated_path = shard_path(i)
+                    mv(shard_tmpfile, consolidated_path; force=true)
+                    for sp in shard_paths_to_consolidate
+                        sp != consolidated_path && rm(sp; force=false)
+                    end
+                    GC.gc(true)
+                    ccall(:malloc_trim, Cvoid, (Cint,), 0)
+                    println("      consolidation complete in ",
+                            round(time() - t0consolidate, digits=1),
+                            "s: ", length(shard_paths_to_consolidate),
+                            " shard(s) -> 1 (", basename(consolidated_path),
+                            "), RSS=", read_rss_mb(), "MB")
+                    flush(stdout)
+                end
+            end
         else
             el_write = 0.0
             el_mv = 0.0
@@ -1771,32 +1896,14 @@ function run_part_f_bezout!(F, p::Int, cr::CoefRing, ts::TargetSetup, bm::Bezout
             "s this run.")
     flush(stdout)
 
-    # -- FINAL MERGE PASS: fold any shards from a previous run in exactly once.
-    if n_already_done > 0
-        shard_paths_to_merge = existing_shard_paths()
-        println("  Final merge: folding ", length(shard_paths_to_merge),
-                " shard(s) from previous run(s) into this run's accumulator",
-                " (", n_already_done, "/", n_terms, " terms' worth)...")
-        flush(stdout)
-        for (si, sp) in enumerate(shard_paths_to_merge)
-            t0shard = time()
-            shard_poly = endswith(sp, ".native") ? load_shard_native(sp) : load_shard_rebuilt(sp)
-            if HAVE_SAFE_SELF_ALIAS_ADD
-                add!(detB_concrete, detB_concrete, shard_poly)
-            else
-                detB_concrete = detB_concrete + shard_poly
-            end
-            shard_poly = nothing
-            GC.gc(true)
-            ccall(:malloc_trim, Cvoid, (Cint,), 0)
-            println("    shard ", si, "/", length(shard_paths_to_merge), " (",
-                    basename(sp), ") merged in ", round(time() - t0shard, digits=1), "s")
-            flush(stdout)
-        end
-        println("  Final merge complete: detB_concrete now reflects all ", n_terms,
-                " terms.")
-        flush(stdout)
-    end
+    # -- (No merge pass needed here: any shards from a previous run were
+    # already merged into detB_concrete UPFRONT, before the new-terms loop
+    # above -- see "UPFRONT MERGE PASS" earlier in this function. This
+    # run's own delta-shards are consolidated periodically during the loop
+    # itself -- see "PERIODIC SHARD CONSOLIDATION" in the checkpoint block
+    # above -- so by this point on-disk state is already just detB_concrete
+    # plus at most one small delta-shard's worth of unconsolidated recent
+    # checkpoints, not a pile of leftover fragments.)
 
     println("  substitution done (disk-backed, streamed): degree=",
             total_degree(detB_concrete), "  terms=", length(terms(detB_concrete)),
