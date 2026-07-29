@@ -1398,12 +1398,34 @@ function run_part_f_bezout!(F, p::Int, cr::CoefRing, ts::TargetSetup, bm::Bezout
         println("      save_shard_native: starting streamed write to ", path,
                 " (RSS=", read_rss_mb(), "MB)")
         flush(stdout)
+        # BLOCK-SEPARATED format: all coefficients first, then all
+        # exponents -- matching load_shard_native/read_shard_raw's
+        # read!(io, cf) / read!(io, ex) bulk reads, which each expect a
+        # single contiguous run of same-typed values, not per-term
+        # interleaving. (An earlier version of this function wrote
+        # per-term interleaved [coeff,e1,e2,e3,e4] data under the same
+        # SHARD_FORMAT_MAGIC that load_shard_native's block-separated read
+        # already expected -- the two never actually agreed on a format.
+        # Confirmed with the project owner that this shard format has
+        # never round-tripped successfully in any real run to date, only
+        # ever via from-scratch runs that never touch load_shard_native,
+        # so there is no existing shard data anywhere to stay compatible
+        # with. Block-separated, as implemented here, is simply THE
+        # format now.)
+        #
+        # Still two streamed passes over the same `poly`, not one -- no
+        # second copy of poly's terms is held in memory at any point.
+        # coefficients(poly)/AbstractAlgebra.exponent_vectors(poly) are
+        # re-iterable views over `poly` itself, not one-shot generators,
+        # so iterating them twice costs no extra memory, only extra time.
         open(path, "w") do io
             write(io, SHARD_FORMAT_MAGIC)
             n_terms_pos = position(io)
             write(io, Int64(0))
+
+            # -- PASS 1: all coefficients, in term order.
             term_idx = 0
-            for (cf, ev) in zip(coefficients(poly), AbstractAlgebra.exponent_vectors(poly))
+            for cf in coefficients(poly)
                 term_idx += 1
                 cv = lift(ZZ, cf)
                 (cv < 0 || cv > typemax(SHARD_COEFF_TYPE)) &&
@@ -1411,6 +1433,24 @@ function run_part_f_bezout!(F, p::Int, cr::CoefRing, ts::TargetSetup, bm::Bezout
                           "range for $(SHARD_COEFF_TYPE) in $path -- refusing to " *
                           "write a shard that would silently corrupt data")
                 write(io, SHARD_COEFF_TYPE(cv))
+                if term_idx % 200_000 == 0
+                    println("        save_shard_native: coeffs pass, ", term_idx,
+                            " terms written, RSS=", read_rss_mb(), "MB")
+                    flush(stdout)
+                end
+            end
+            n_coeff_terms = term_idx
+
+            # -- PASS 2: all exponent vectors, in the SAME term order as
+            # pass 1 -- coefficients(poly) and exponent_vectors(poly)
+            # iterate in lockstep term order for a given poly (the
+            # original code's `zip(coefficients(poly),
+            # exponent_vectors(poly))` relied on exactly this same
+            # guarantee), so re-iterating each separately still pairs
+            # term i's coefficient with term i's exponents correctly.
+            term_idx = 0
+            for ev in AbstractAlgebra.exponent_vectors(poly)
+                term_idx += 1
                 length(ev) != 4 &&
                     error("save_shard_native: expected 4 exponents (a1,a2,b1,b2), " *
                           "got $(length(ev)) at term $term_idx in $path")
@@ -1418,16 +1458,24 @@ function run_part_f_bezout!(F, p::Int, cr::CoefRing, ts::TargetSetup, bm::Bezout
                     write(io, SHARD_EXP_TYPE(ev[j]))
                 end
                 if term_idx % 200_000 == 0
-                    println("        save_shard_native: ", term_idx,
+                    println("        save_shard_native: exps pass, ", term_idx,
                             " terms written, RSS=", read_rss_mb(), "MB")
                     flush(stdout)
                 end
             end
+            term_idx != n_coeff_terms &&
+                error("save_shard_native: coefficient pass wrote $n_coeff_terms " *
+                      "terms but exponent pass wrote $term_idx terms for $path -- " *
+                      "coefficients(poly) and exponent_vectors(poly) disagreed on " *
+                      "term count between the two passes, which should be " *
+                      "structurally impossible for a fixed `poly`; refusing to " *
+                      "write a shard with mismatched term counts")
+
             end_pos = position(io)
             seek(io, n_terms_pos)
-            write(io, Int64(term_idx))
+            write(io, Int64(n_coeff_terms))
             seek(io, end_pos)
-            println("      save_shard_native: finished, ", term_idx,
+            println("      save_shard_native: finished, ", n_coeff_terms,
                     " terms written, RSS=", read_rss_mb(), "MB")
             flush(stdout)
         end
@@ -1490,6 +1538,202 @@ function run_part_f_bezout!(F, p::Int, cr::CoefRing, ts::TargetSetup, bm::Bezout
                 round(time() - t0, digits=1), "s)")
         flush(stdout)
         return rebuilt
+    end
+
+    # ---------------------------------------------------------------------
+    # FLAT-FORMAT (non-Oscar) shard merging.
+    #
+    # load_shard_native above always rebuilds a full MPolyBuildCtx/
+    # MPolyRingElem per shard -- that per-term Oscar object overhead (each
+    # term is a heap-allocated struct with its own GC-tracked coefficient
+    # object, ring context references, etc.) is why merging just 2 of 14
+    # shards at ~88.5M terms each was enough to OOM: 1.7GB of flat data on
+    # disk became 5.4GB+ of live Oscar objects in RAM, and that's BEFORE
+    # holding a second one during the add!.
+    #
+    # The functions below merge shards as raw (coeff, exponent-tuple) data
+    # in a plain Dict -- no Oscar ring, no MPolyBuildCtx, no per-term
+    # object graph -- so peak memory during merging is O(number of DISTINCT
+    # exponent tuples seen so far), not O(shards currently held as live
+    # Oscar polynomials). A Dict entry (NTuple{4,Int32} => UInt32) costs a
+    # small, fixed number of bytes; an Oscar polynomial term costs
+    # substantially more due to per-term heap allocation and GC tracking.
+    #
+    # Usage: read_shard_raw a set of shards, fold them all into one
+    # Dict{NTuple{4,SHARD_EXP_TYPE}, SHARD_COEFF_TYPE} accumulator via
+    # merge_into_raw_dict! (summing coefficients mod p, dropping
+    # zero-coefficient terms), write the result back out with
+    # write_shard_raw_dict, and ONLY convert to a live Oscar polynomial
+    # (via load_shard_native on the merged result) once there is a single
+    # merged shard left -- i.e. right before the value is actually needed
+    # as detB_concrete's starting point.
+    # ---------------------------------------------------------------------
+
+    # Reads a shard's raw (coeffs, exps) arrays with no Oscar/Rcoef
+    # involvement at all -- same on-disk format and validation as
+    # load_shard_native's read step, just without the MPolyBuildCtx
+    # rebuild that follows it there.
+    function read_shard_raw(sp)
+        fsize_mb = filesize(sp) / 1024 / 1024
+        println("    ", basename(sp), ": raw read (", round(fsize_mb, digits=0),
+                " MB on disk)...")
+        flush(stdout)
+        t0 = time()
+        n_terms_shard, coeffs_in, exps_in = open(sp, "r") do io
+            magic = read(io, UInt64)
+            magic != SHARD_FORMAT_MAGIC &&
+                error("read_shard_raw: $sp does not have the expected flat-" *
+                      "binary format header (got magic=$(magic), expected " *
+                      "$(SHARD_FORMAT_MAGIC)) -- this is almost certainly an " *
+                      "OLD-format .native shard written by an earlier version. " *
+                      "Delete all .native shards under this scratch dir and " *
+                      "let them regenerate, or restore from .oscar shards if " *
+                      "available.")
+            nt = read(io, Int64)
+            cf = Vector{SHARD_COEFF_TYPE}(undef, nt)
+            ex = Vector{SHARD_EXP_TYPE}(undef, 4 * nt)
+            read!(io, cf)
+            read!(io, ex)
+            (nt, cf, ex)
+        end
+        length(exps_in) != 4 * n_terms_shard &&
+            error("read_shard_raw: corrupt shard $sp -- exponent array " *
+                  "length $(length(exps_in)) is not 4x the term count " *
+                  "$n_terms_shard ($(4 * n_terms_shard) expected)")
+        println("    ", basename(sp), ": raw read done, ", n_terms_shard,
+                " terms in ", round(time() - t0, digits=1), "s")
+        flush(stdout)
+        return (n_terms_shard, coeffs_in, exps_in)
+    end
+
+    # Folds one shard's raw (coeffs, exps) arrays into `acc` (a
+    # Dict{NTuple{4,SHARD_EXP_TYPE}, SHARD_COEFF_TYPE}), summing
+    # coefficients mod p for matching exponent tuples and deleting any
+    # entry whose summed coefficient reduces to 0 mod p (a genuine
+    # cancellation, not an error -- unlike save_shard_native's out-of-range
+    # check, 0 is a perfectly valid coefficient value here, it just means
+    # that monomial's net contribution so far is zero and doesn't need to
+    # be stored).
+    function merge_into_raw_dict!(acc::Dict{NTuple{4,SHARD_EXP_TYPE}, SHARD_COEFF_TYPE},
+                                   n_terms_shard, coeffs_in, exps_in)
+        p_coeff = SHARD_COEFF_TYPE(p)
+        for i in 1:n_terms_shard
+            base = 4 * (i - 1)
+            key = (exps_in[base+1], exps_in[base+2], exps_in[base+3], exps_in[base+4])
+            new_cf = mod(Int64(get(acc, key, SHARD_COEFF_TYPE(0))) + Int64(coeffs_in[i]), Int64(p_coeff))
+            if new_cf == 0
+                delete!(acc, key)
+            else
+                acc[key] = SHARD_COEFF_TYPE(new_cf)
+            end
+        end
+        return acc
+    end
+
+    # Writes a raw Dict accumulator (from merge_into_raw_dict!) out to a
+    # shard file in the same on-disk format save_shard_native/
+    # load_shard_native use, so the result is a drop-in replacement for any
+    # of the shards that went into it -- existing_shard_paths(),
+    # load_shard_native, etc. all treat it identically to a
+    # directly-written checkpoint shard.
+    function write_shard_raw_dict(path, acc::Dict{NTuple{4,SHARD_EXP_TYPE}, SHARD_COEFF_TYPE})
+        println("      write_shard_raw_dict: writing ", length(acc),
+                " merged terms -> ", path, " (RSS=", read_rss_mb(), "MB)")
+        flush(stdout)
+        # BLOCK-SEPARATED format, matching the fixed save_shard_native:
+        # all coefficients first, then all exponents. Collect keys into a
+        # Vector ONCE so both passes iterate the exact same order --
+        # calling keys(acc) or iterating `acc` twice separately is not
+        # guaranteed to produce the same order across two different
+        # iterations in general, even though a single iteration is
+        # internally consistent; using one materialized key order for
+        # both passes sidesteps that entirely.
+        ordered_keys = collect(keys(acc))
+        open(path, "w") do io
+            write(io, SHARD_FORMAT_MAGIC)
+            write(io, Int64(length(ordered_keys)))
+
+            term_idx = 0
+            for key in ordered_keys
+                term_idx += 1
+                write(io, acc[key])
+                if term_idx % 2_000_000 == 0
+                    println("        write_shard_raw_dict: coeffs pass, ", term_idx,
+                            "/", length(ordered_keys), " terms written, RSS=",
+                            read_rss_mb(), "MB")
+                    flush(stdout)
+                end
+            end
+
+            term_idx = 0
+            for key in ordered_keys
+                term_idx += 1
+                for j in 1:4
+                    write(io, key[j])
+                end
+                if term_idx % 2_000_000 == 0
+                    println("        write_shard_raw_dict: exps pass, ", term_idx,
+                            "/", length(ordered_keys), " terms written, RSS=",
+                            read_rss_mb(), "MB")
+                    flush(stdout)
+                end
+            end
+        end
+        println("      write_shard_raw_dict: finished, ", length(ordered_keys),
+                " terms written, RSS=", read_rss_mb(), "MB")
+        flush(stdout)
+        return nothing
+    end
+
+    # Top-level convenience: given a list of shard paths (mix of .native/
+    # .oscar allowed, though .oscar shards fall back to load_shard_rebuilt
+    # + iterate its terms since they were never in this flat format to
+    # begin with), merge them all into one raw Dict and write the result
+    # to `out_path`, freeing each shard's raw arrays before reading the
+    # next. Returns the merged term count. Does NOT touch Rcoef/Oscar
+    # except for the .oscar fallback case.
+    function merge_native_shards_flat(shard_paths, out_path)
+        acc = Dict{NTuple{4,SHARD_EXP_TYPE}, SHARD_COEFF_TYPE}()
+        for (si, sp) in enumerate(shard_paths)
+            t0shard = time()
+            if endswith(sp, ".native")
+                (nt, cf, ex) = read_shard_raw(sp)
+                merge_into_raw_dict!(acc, nt, cf, ex)
+                cf = nothing
+                ex = nothing
+            else
+                # .oscar fallback: no flat format to read raw, so load it
+                # the old way and drain it into the same raw dict. This
+                # path is not expected to be hit for large shards in
+                # practice (all checkpoints/consolidations write .native),
+                # but is kept so old .oscar shards from a prior version
+                # remain mergeable rather than silently ignored.
+                shard_poly = load_shard_rebuilt(sp)
+                p_coeff = SHARD_COEFF_TYPE(p)
+                for (cf_val, ev) in zip(coefficients(shard_poly), AbstractAlgebra.exponent_vectors(shard_poly))
+                    key = (SHARD_EXP_TYPE(ev[1]), SHARD_EXP_TYPE(ev[2]), SHARD_EXP_TYPE(ev[3]), SHARD_EXP_TYPE(ev[4]))
+                    cv = SHARD_COEFF_TYPE(lift(ZZ, cf_val))
+                    new_cf = mod(Int64(get(acc, key, SHARD_COEFF_TYPE(0))) + Int64(cv), Int64(p_coeff))
+                    if new_cf == 0
+                        delete!(acc, key)
+                    else
+                        acc[key] = SHARD_COEFF_TYPE(new_cf)
+                    end
+                end
+                shard_poly = nothing
+            end
+            GC.gc(true)
+            ccall(:malloc_trim, Cvoid, (Cint,), 0)
+            println("    flat-merged shard ", si, "/", length(shard_paths), " (",
+                    basename(sp), ") in ", round(time() - t0shard, digits=1),
+                    "s, running dict has ", length(acc), " distinct terms, RSS=",
+                    read_rss_mb(), "MB")
+            flush(stdout)
+        end
+        write_shard_raw_dict(out_path, acc)
+        n_merged = length(acc)
+        acc = nothing
+        return n_merged
     end
 
     function load_shard_rebuilt(sp)
@@ -1570,32 +1814,50 @@ function run_part_f_bezout!(F, p::Int, cr::CoefRing, ts::TargetSetup, bm::Bezout
     # growing it exactly as it would from scratch.
     if n_already_done > 0
         shard_paths_to_merge = existing_shard_paths()
-        println("  Upfront merge: folding ", length(shard_paths_to_merge),
-                " shard(s) from previous run(s) into detB_concrete before",
-                " processing new terms (", n_already_done, "/", n_terms,
-                " terms' worth)...")
+        println("  Upfront merge: flat-merging ", length(shard_paths_to_merge),
+                " shard(s) from previous run(s) on disk (no Oscar objects",
+                " involved) before processing new terms (", n_already_done, "/",
+                n_terms, " terms' worth)...")
         flush(stdout)
         t0upfront = time()
-        for (si, sp) in enumerate(shard_paths_to_merge)
-            t0shard = time()
-            shard_poly = endswith(sp, ".native") ? load_shard_native(sp) : load_shard_rebuilt(sp)
-            if HAVE_SAFE_SELF_ALIAS_ADD
-                add!(detB_concrete, detB_concrete, shard_poly)
-            else
-                detB_concrete = detB_concrete + shard_poly
-            end
-            shard_poly = nothing
-            GC.gc(true)
-            ccall(:malloc_trim, Cvoid, (Cint,), 0)
-            println("    shard ", si, "/", length(shard_paths_to_merge), " (",
-                    basename(sp), ") merged in ", round(time() - t0shard, digits=1),
-                    "s, RSS=", read_rss_mb(), "MB")
+
+        if length(shard_paths_to_merge) == 1
+            # Nothing to merge -- just load the one shard directly as
+            # detB_concrete's starting value.
+            detB_concrete = load_shard_native(shard_paths_to_merge[1])
+        else
+            merged_shard_tmp = joinpath(PARTF_SCRATCH_DIR, "upfront_merge.native.tmp")
+            n_merged_terms = merge_native_shards_flat(shard_paths_to_merge, merged_shard_tmp)
+            println("  Upfront flat merge: ", length(shard_paths_to_merge),
+                    " shard(s) -> 1 merged shard with ", n_merged_terms,
+                    " distinct terms, in ", round(time() - t0upfront, digits=1),
+                    "s. Converting to a single Oscar polynomial (the only",
+                    " point in this pass where one gets built)...")
             flush(stdout)
+            t0convert = time()
+            detB_concrete = load_shard_native(merged_shard_tmp)
+            println("  Converted to Oscar polynomial in ",
+                    round(time() - t0convert, digits=1), "s.")
+            flush(stdout)
+
+            # Replace the old pile of shards on disk with the single merged
+            # one, so a crash right after this point doesn't lose the
+            # merge work and doesn't leave stale fragments lying around
+            # that a future upfront merge would redundantly re-merge.
+            merged_shard_final = shard_path(n_already_done)
+            mv(merged_shard_tmp, merged_shard_final; force=true)
+            for sp in shard_paths_to_merge
+                sp != merged_shard_final && rm(sp; force=false)
+            end
         end
+
+        GC.gc(true)
+        ccall(:malloc_trim, Cvoid, (Cint,), 0)
         println("  Upfront merge complete in ", round(time() - t0upfront, digits=1),
                 "s: detB_concrete now has ", length(terms(detB_concrete)),
                 " terms, reflecting all ", n_already_done, " previously-",
-                "completed terms. New-terms loop below starts from this base.")
+                "completed terms. New-terms loop below starts from this base.",
+                " RSS=", read_rss_mb(), "MB")
         flush(stdout)
     end
 
@@ -1807,10 +2069,14 @@ function run_part_f_bezout!(F, p::Int, cr::CoefRing, ts::TargetSetup, bm::Bezout
             # keeps that count bounded to roughly PARTF_CONSOLIDATE_EVERY
             # shards at any point, regardless of how far the run has gotten.
             #
-            # Uses a throwaway accumulator (not detB_concrete) so this
-            # doesn't touch the loop's main running total or its memory
-            # footprint -- consolidated_acc is built up and discarded
-            # entirely within this block.
+            # Uses merge_native_shards_flat (raw Dict, no Oscar objects)
+            # rather than building a live Oscar polynomial here, for the
+            # same reason the upfront merge does: shards at this project's
+            # scale (tens of millions of terms each) are large enough that
+            # even ONE live Oscar polynomial built from a shard, let alone
+            # several held/added in sequence, is enough to risk OOM on its
+            # own -- see the flat-merge helper functions' comments above
+            # load_shard_native.
             PARTF_CONSOLIDATE_EVERY = 20
             n_checkpoints_done = div(i, PARTF_CHECKPOINT_EVERY)
             do_consolidate = (n_checkpoints_done % PARTF_CONSOLIDATE_EVERY == 0) && (i != n_terms)
@@ -1818,21 +2084,11 @@ function run_part_f_bezout!(F, p::Int, cr::CoefRing, ts::TargetSetup, bm::Bezout
                 shard_paths_to_consolidate = existing_shard_paths()
                 if length(shard_paths_to_consolidate) > 1
                     println("      consolidating ", length(shard_paths_to_consolidate),
-                            " shard(s) at term ", i, " into one, RSS=", read_rss_mb(), "MB")
+                            " shard(s) at term ", i, " into one (flat merge,",
+                            " no Oscar objects), RSS=", read_rss_mb(), "MB")
                     flush(stdout)
                     t0consolidate = time()
-                    consolidated_acc = zero(Rcoef)
-                    for sp in shard_paths_to_consolidate
-                        shard_poly = endswith(sp, ".native") ? load_shard_native(sp) : load_shard_rebuilt(sp)
-                        if HAVE_SAFE_SELF_ALIAS_ADD
-                            add!(consolidated_acc, consolidated_acc, shard_poly)
-                        else
-                            consolidated_acc = consolidated_acc + shard_poly
-                        end
-                        shard_poly = nothing
-                    end
-                    save_shard_native(shard_tmpfile, consolidated_acc)
-                    consolidated_acc = nothing
+                    n_consolidated_terms = merge_native_shards_flat(shard_paths_to_consolidate, shard_tmpfile)
                     # Consolidated shard is named after the current term
                     # index `i`, same convention as a normal checkpoint --
                     # existing_shard_paths()/the upfront merge don't care
@@ -1851,7 +2107,8 @@ function run_part_f_bezout!(F, p::Int, cr::CoefRing, ts::TargetSetup, bm::Bezout
                             round(time() - t0consolidate, digits=1),
                             "s: ", length(shard_paths_to_consolidate),
                             " shard(s) -> 1 (", basename(consolidated_path),
-                            "), RSS=", read_rss_mb(), "MB")
+                            ", ", n_consolidated_terms, " distinct terms), RSS=",
+                            read_rss_mb(), "MB")
                     flush(stdout)
                 end
             end
