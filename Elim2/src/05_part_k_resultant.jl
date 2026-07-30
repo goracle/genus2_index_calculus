@@ -1614,7 +1614,7 @@ function run_part_f_bezout!(F, p::Int, cr::CoefRing, ts::TargetSetup, bm::Bezout
     # check, 0 is a perfectly valid coefficient value here, it just means
     # that monomial's net contribution so far is zero and doesn't need to
     # be stored).
-    function merge_into_raw_dict!(acc::Dict{NTuple{4,SHARD_EXP_TYPE}, SHARD_COEFF_TYPE},
+    function merge_into_raw_dict!(acc::Dict{NTuple{4,Int32}, UInt32},
                                    n_terms_shard, coeffs_in, exps_in)
         p_coeff = SHARD_COEFF_TYPE(p)
         for i in 1:n_terms_shard
@@ -1636,7 +1636,7 @@ function run_part_f_bezout!(F, p::Int, cr::CoefRing, ts::TargetSetup, bm::Bezout
     # of the shards that went into it -- existing_shard_paths(),
     # load_shard_native, etc. all treat it identically to a
     # directly-written checkpoint shard.
-    function write_shard_raw_dict(path, acc::Dict{NTuple{4,SHARD_EXP_TYPE}, SHARD_COEFF_TYPE})
+    function write_shard_raw_dict(path, acc::Dict{NTuple{4,Int32}, UInt32})
         println("      write_shard_raw_dict: writing ", length(acc),
                 " merged terms -> ", path, " (RSS=", read_rss_mb(), "MB)")
         flush(stdout)
