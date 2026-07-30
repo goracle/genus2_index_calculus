@@ -59,6 +59,12 @@ using .PhiSymbolic
 
 using HomotopyContinuation
 
+# NOTE: Oscar and HomotopyContinuation both export `homogenize` with
+# unrelated signatures (Oscar: polyhedral cones/matrices; HC.jl/ModelKit:
+# Expression/Variable). With both packages `using`-ed, plain `homogenize(...)`
+# calls below are qualified as HomotopyContinuation.ModelKit.homogenize(...)
+# to avoid dispatching into Oscar's PolyhedralGeometry method by accident.
+
 println("Julia threads available for HC.jl's cascade/monodromy step: ",
         Threads.nthreads(), " (set via -t; raise this if the NID step ",
         "below is the bottleneck -- OMP_NUM_THREADS does not affect it)")
@@ -194,13 +200,58 @@ println("Homogenizing per anchor pair (odd-degree curve => ordinary")
 println("projective closure, NOT weighted -- see comment above)...")
 println()
 
+# ---------------------------------------------------------------------------
+# HAND-ROLLED HOMOGENIZATION -- HC.jl v2.x has NO `homogenize` function.
+#
+# Confirmed directly (not assumed): `using HomotopyContinuation; methods(homogenize)`
+# in a clean session (v2.22.1, this project's pinned version) raises
+# `UndefVarError: homogenize not defined in Main` -- it isn't exported by
+# ModelKit, and grepping ModelKit's own doc export list (model_kit.md)
+# confirms there is no `homogenize` entry in it at all. The earlier
+# MethodError (`no method matching homogenize(::Expression, ::Variable)`,
+# with only Oscar's PolyhedralGeometry candidates listed) wasn't actually a
+# name collision masking HC.jl's real method -- HC.jl has no method here to
+# be masked. `homogenize` existed in HC.jl's OLD (v1.x) MultivariatePolynomials
+# ("@polyvar")-based API, which was dropped when v2.0 introduced ModelKit.
+#
+# Replacement, using ModelKit's `exponents_coefficients` /
+# `poly_from_exponents_coefficients` (both confirmed present in this
+# version): for a single homogenizing variable z, each monomial's missing
+# degree (target_degree - term_degree) is made up by an explicit power of z.
+# This is the textbook single-variable homogenization and matches this
+# script's own hand-derived check below exactly.
+# ---------------------------------------------------------------------------
+
+function homogenize_one(f::Expression, z::Variable, vars::Vector{Variable};
+                         target_degree::Union{Int,Nothing} = nothing)
+    M, c = exponents_coefficients(f, vars)
+    term_degrees = vec(sum(M, dims = 1))
+    d = target_degree === nothing ? maximum(term_degrees) : target_degree
+    any(term_degrees .> d) &&
+        error("homogenize_one: target_degree=$d is less than an existing " *
+              "term's degree $(maximum(term_degrees)) -- refusing to " *
+              "produce a negative power of $z.")
+    z_pows = d .- term_degrees
+    out = Expression(0)
+    for j in 1:length(c)
+        monom = c[j]
+        for (i, v) in enumerate(vars)
+            e = M[i, j]
+            e == 0 || (monom *= v^e)
+        end
+        z_pows[j] == 0 || (monom *= z^z_pows[j])
+        out += monom
+    end
+    return out
+end
+
 za1, za2, zb1, zb2 = Variable(:Za1), Variable(:Za2), Variable(:Zb1), Variable(:Zb2)
 
 # curve relations: homogenize each with its OWN anchor pair's Z.
-hom_curve_a1 = homogenize(hc_exprs_by_label["curve_a1"], za1)
-hom_curve_a2 = homogenize(hc_exprs_by_label["curve_a2"], za2)
-hom_curve_b1 = homogenize(hc_exprs_by_label["curve_b1"], zb1)
-hom_curve_b2 = homogenize(hc_exprs_by_label["curve_b2"], zb2)
+hom_curve_a1 = homogenize_one(hc_exprs_by_label["curve_a1"], za1, hc_vars)
+hom_curve_a2 = homogenize_one(hc_exprs_by_label["curve_a2"], za2, hc_vars)
+hom_curve_b1 = homogenize_one(hc_exprs_by_label["curve_b1"], zb1, hc_vars)
+hom_curve_b2 = homogenize_one(hc_exprs_by_label["curve_b2"], zb2, hc_vars)
 
 # Sanity-check each homogenized curve matches the hand-derived form exactly
 # (WA1^2*Za1^3 - A1^5 - A1*Za1^4 - 2*Za1^5), rather than trusting
@@ -215,16 +266,50 @@ iszero(expand(hom_curve_a1 - expected_curve_a1)) ||
 println("  curve_a1 homogenization VERIFIED against hand-derived form.")
 
 # Fu_decoupled[1]/Fv_decoupled[1] (sample 1, wa1,wa2,a1,a2,U0/V0) get BOTH
-# Za1 and Za2 (they involve both anchors of sample 1 at once) -- HC.jl's
-# homogenize accepts a vector of homogenizing variables for exactly this
-# multi-block case.
+# Za1 and Za2 (they involve both anchors of sample 1 at once).
+#
+# *** UNVERIFIED CONVENTION -- CHECK BEFORE TRUSTING DOWNSTREAM RESULTS ***
+# There is no HC.jl builtin here to defer to (see note above), and this
+# script has no hand-derived closed form for Fu_decoupled/Fv_decoupled to
+# check against the way hom_curve_a1 is checked below. The convention used
+# here puts the ENTIRE per-monomial degree deficiency onto Za1 alone
+# (Za2^0 always) -- i.e. treats [za1, za2] as "make up the missing degree
+# using za1, with za2 along for the ride at its already-occurring power."
+# This is almost certainly NOT what you want if Fu_decoupled/Fv_decoupled
+# is meant to be separately homogeneous in the (wa1,a1)-block and the
+# (wa2,a2)-block (a genuinely bi-homogeneous/multi-projective
+# construction) -- that needs a different function entirely (pad each
+# block to ITS OWN max degree with its own z), not this one. Given the
+# DEGREE-IN-W DIAGNOSTIC printed above (degree <=1 in EACH of wa1,wa2
+# separately), bi-homogeneous is plausible for your construction -- flagging
+# this explicitly rather than silently picking the single-degree
+# convention and letting a wrong answer look finished.
+function homogenize_two(f::Expression, z1::Variable, z2::Variable,
+                         vars::Vector{Variable})
+    M, c = exponents_coefficients(f, vars)
+    term_degrees = vec(sum(M, dims = 1))
+    d = maximum(term_degrees)
+    out = Expression(0)
+    for j in 1:length(c)
+        monom = c[j]
+        for (i, v) in enumerate(vars)
+            e = M[i, j]
+            e == 0 || (monom *= v^e)
+        end
+        missing_deg = d - term_degrees[j]
+        missing_deg == 0 || (monom *= z1^missing_deg)  # all on z1, see note above
+        out += monom
+    end
+    return out
+end
+
 hom_Fu = Vector{Expression}(undef, 4)
 hom_Fv = Vector{Expression}(undef, 4)
 for i in 1:4
     is_sample1 = isodd(i)  # matches build_decoupled_system's own convention
-    zvars = is_sample1 ? [za1, za2] : [zb1, zb2]
-    hom_Fu[i] = homogenize(hc_exprs_by_label["Fu_decoupled[$i]"], zvars)
-    hom_Fv[i] = homogenize(hc_exprs_by_label["Fv_decoupled[$i]"], zvars)
+    z1, z2 = is_sample1 ? (za1, za2) : (zb1, zb2)
+    hom_Fu[i] = homogenize_two(hc_exprs_by_label["Fu_decoupled[$i]"], z1, z2, hc_vars)
+    hom_Fv[i] = homogenize_two(hc_exprs_by_label["Fv_decoupled[$i]"], z1, z2, hc_vars)
 end
 println("  Fu_decoupled/Fv_decoupled homogenized (sample 1 -> Za1,Za2; ",
         "sample 2 -> Zb1,Zb2).")
