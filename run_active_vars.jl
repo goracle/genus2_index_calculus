@@ -116,7 +116,14 @@ function main()
         println("-" ^ 70)
         println("Box structure check (detect_box_structure)")
         println("-" ^ 70)
-        A = NewtonAnalyzer(supp, ambient_dim)
+        # prefilter=true is not optional at this scale -- exact convex hull
+        # on tens of millions of points hangs/OOMs polymake, per
+        # newton_polytope.jl's own warning. We already have per_variable_
+        # degree_bounds above (cheap, exact, no hull needed) confirming this
+        # is box-shaped in the min/max sense; prefilter's heuristic hull is
+        # only being asked to double check vertex/facet structure, not
+        # discover the degree bounds from scratch.
+        A = NewtonAnalyzer(supp, ambient_dim; prefilter=true)
         try
             verdict = detect_box_structure(A)
             println(verdict)
