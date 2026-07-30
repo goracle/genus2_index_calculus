@@ -59,11 +59,19 @@ using .PhiSymbolic
 
 using HomotopyContinuation
 
-# NOTE: Oscar and HomotopyContinuation both export `homogenize` with
-# unrelated signatures (Oscar: polyhedral cones/matrices; HC.jl/ModelKit:
-# Expression/Variable). With both packages `using`-ed, plain `homogenize(...)`
-# calls below are qualified as HomotopyContinuation.ModelKit.homogenize(...)
-# to avoid dispatching into Oscar's PolyhedralGeometry method by accident.
+# NOTE: an earlier version of this script attempted a projective
+# compactification (homogenizing the curve relations and
+# Fu_decoupled/Fv_decoupled per anchor pair) before running
+# numerical_irreducible_decomposition. That step was removed -- NID doesn't
+# require homogeneity, and the homogenization construction risked adding
+# spurious positive-dimensional structure (4 new variables, 0 new
+# equations). See the comment at the System(...) construction below for
+# the full account. HomotopyContinuation is `using`-ed together with Oscar
+# above; if you reintroduce anything from ModelKit that Oscar/Hecke also
+# export (e.g. `expand`, and previously `homogenize` was assumed to be one
+# of these but turned out not to exist in ModelKit at all -- see git
+# history/conversation), qualify it explicitly as
+# HomotopyContinuation.ModelKit.<name>(...) to avoid ambiguity errors.
 
 println("Julia threads available for HC.jl's cascade/monodromy step: ",
         Threads.nthreads(), " (set via -t; raise this if the NID step ",
@@ -163,168 +171,41 @@ end
 println()
 
 # ---------------------------------------------------------------------------
-# Step 2b: PROJECTIVE COMPACTIFICATION of each anchor pair's curve.
+# Step 2b: build the System directly from the 12 AFFINE equations/12
+# unknowns -- NO homogenization/projective compactification.
 #
-# The affine curve wa1^2 = a1^5 + a1 + 2 (degree 5 = 2g+1, g=2, ODD degree)
-# has its naive projective closure in ORDINARY P^2 (NOT weighted projective
-# space -- weighted P(1,g+1,1) is only needed for the EVEN-degree case,
-# where there are two points at infinity that would otherwise be singular;
-# see e.g. the Auckland "Mathematics of Public Key Cryptography" ch.10 and
-# the genus-2 Jacobian-models literature). For odd deg(f)=2g+1, the ordinary
-# homogeneous closure Y^2*Z^(2g-1) = Z^(2g+1)*f(X/Z) has exactly ONE point
-# at infinity, (0:1:0), and it is NON-SINGULAR -- confirmed both by the
-# cited sources and by direct symbolic expansion (see conversation): for
-# f(a1) = a1^5 + a1 + 2, this gives the homogeneous quintic
-#     WA1^2 * ZA1^3 - A1^5 - A1*ZA1^4 - 2*ZA1^5 = 0
-# which dehomogenizes back to wa1^2 - a1^5 - a1 - 2 at ZA1=1, and reduces to
-# -A1^5 = 0 (i.e. A1=0, giving the single point (0:1:0)) at ZA1=0.
+# REMOVED (previously here): a projective-compactification step that
+# homogenized the 4 curve relations per-anchor-pair (Za1,Za2,Zb1,Zb2) and
+# then Fu_decoupled/Fv_decoupled with those same 4 variables, producing a
+# 12-equation/16-variable NON-SQUARE system. Confirmed this was the wrong
+# tool for the actual goal (per conversation: homogenizing was intended as
+# a numerical-conditioning aid for HC.jl's NID, not because points at
+# infinity matter to the question being asked). Two problems with it,
+# for the record:
+#   1. numerical_irreducible_decomposition does NOT require homogeneity --
+#      that's a `solve()`-with-`homvar`-era (HC.jl v1.x) constraint, not an
+#      NID one. There was no correctness reason to homogenize before NID.
+#   2. Adding 4 new variables with NO new equations pinning them down risks
+#      introducing spurious positive-dimensional structure into the
+#      reported decomposition -- i.e. it could make an actually-finite
+#      affine variety LOOK positive-dimensional as an artifact of the
+#      construction, the opposite of "conditioning."
 #
-# Each anchor pair (wa1/a1, wa2/a2, wb1/b1, wb2/b2) gets its OWN
-# homogenizing variable (Za1, Za2, Zb1, Zb2) -- NOT one shared variable for
-# the whole system -- since each curve is an independent P^2 compactified
-# separately; U0,U1,V0,V1 are left un-homogenized (affine), since they are
-# the shared target variables and do not participate in either curve's own
-# point-at-infinity structure (Fu_decoupled/Fv_decoupled are LINEAR in
-# U_i/V_i by construction, so no compactification is needed in that
-# direction for the curve's sake).
-#
-# Rather than hand-derive the homogenization of Fu_decoupled/Fv_decoupled
-# (5 variables each: wa1,wa2,a1,a2,U_i or wb1,wb2,b1,b2,U_i) by hand and
-# risk mismatching per-block degrees, HC.jl's own `homogenize` is used
-# directly on each polynomial with its OWN anchor pair's homogenizing
-# variable(s) -- this is exactly the "use HC.jl's built-in support" request
-# rather than a hand-rolled multi-block homogenization.
+# The actual "Some homotopy paths in the u-regeneration intersection step
+# failed" warning HC.jl raised is a path-tracking robustness issue in
+# regeneration (confirmed: this is u-regeneration, HC.jl's witness-set
+# construction algorithm -- see Duff/Leykin/Rodriguez, cited in HC.jl's own
+# docs), which is orthogonal to affine vs. projective and has its own
+# dedicated options -- see the tuning note at the
+# numerical_irreducible_decomposition call below.
 # ---------------------------------------------------------------------------
 
-println("Homogenizing per anchor pair (odd-degree curve => ordinary")
-println("projective closure, NOT weighted -- see comment above)...")
-println()
-
-# ---------------------------------------------------------------------------
-# HAND-ROLLED HOMOGENIZATION -- HC.jl v2.x has NO `homogenize` function.
-#
-# Confirmed directly (not assumed): `using HomotopyContinuation; methods(homogenize)`
-# in a clean session (v2.22.1, this project's pinned version) raises
-# `UndefVarError: homogenize not defined in Main` -- it isn't exported by
-# ModelKit, and grepping ModelKit's own doc export list (model_kit.md)
-# confirms there is no `homogenize` entry in it at all. The earlier
-# MethodError (`no method matching homogenize(::Expression, ::Variable)`,
-# with only Oscar's PolyhedralGeometry candidates listed) wasn't actually a
-# name collision masking HC.jl's real method -- HC.jl has no method here to
-# be masked. `homogenize` existed in HC.jl's OLD (v1.x) MultivariatePolynomials
-# ("@polyvar")-based API, which was dropped when v2.0 introduced ModelKit.
-#
-# Replacement, using ModelKit's `exponents_coefficients` /
-# `poly_from_exponents_coefficients` (both confirmed present in this
-# version): for a single homogenizing variable z, each monomial's missing
-# degree (target_degree - term_degree) is made up by an explicit power of z.
-# This is the textbook single-variable homogenization and matches this
-# script's own hand-derived check below exactly.
-# ---------------------------------------------------------------------------
-
-function homogenize_one(f::Expression, z::Variable, vars::Vector{Variable};
-                         target_degree::Union{Int,Nothing} = nothing)
-    M, c = exponents_coefficients(f, vars)
-    term_degrees = vec(sum(M, dims = 1))
-    d = target_degree === nothing ? maximum(term_degrees) : target_degree
-    any(term_degrees .> d) &&
-        error("homogenize_one: target_degree=$d is less than an existing " *
-              "term's degree $(maximum(term_degrees)) -- refusing to " *
-              "produce a negative power of $z.")
-    z_pows = d .- term_degrees
-    out = Expression(0)
-    for j in 1:length(c)
-        monom = c[j]
-        for (i, v) in enumerate(vars)
-            e = M[i, j]
-            e == 0 || (monom *= v^e)
-        end
-        z_pows[j] == 0 || (monom *= z^z_pows[j])
-        out += monom
-    end
-    return out
-end
-
-za1, za2, zb1, zb2 = Variable(:Za1), Variable(:Za2), Variable(:Zb1), Variable(:Zb2)
-
-# curve relations: homogenize each with its OWN anchor pair's Z.
-hom_curve_a1 = homogenize_one(hc_exprs_by_label["curve_a1"], za1, hc_vars)
-hom_curve_a2 = homogenize_one(hc_exprs_by_label["curve_a2"], za2, hc_vars)
-hom_curve_b1 = homogenize_one(hc_exprs_by_label["curve_b1"], zb1, hc_vars)
-hom_curve_b2 = homogenize_one(hc_exprs_by_label["curve_b2"], zb2, hc_vars)
-
-# Sanity-check each homogenized curve matches the hand-derived form exactly
-# (WA1^2*Za1^3 - A1^5 - A1*Za1^4 - 2*Za1^5), rather than trusting
-# homogenize()'s output blind -- raises loudly on any mismatch.
-wa1_v, a1_v = hc_vars[1], hc_vars[6]
-expected_curve_a1 = wa1_v^2 * za1^3 - a1_v^5 - a1_v * za1^4 - 2 * za1^5
-iszero(expand(hom_curve_a1 - expected_curve_a1)) ||
-    error("homogenize() produced curve_a1 = $hom_curve_a1, which does not " *
-          "match the hand-derived homogeneous quintic $expected_curve_a1 " *
-          "-- STOP: do not proceed with a compactification that hasn't " *
-          "been verified against the closed-form derivation.")
-println("  curve_a1 homogenization VERIFIED against hand-derived form.")
-
-# Fu_decoupled[1]/Fv_decoupled[1] (sample 1, wa1,wa2,a1,a2,U0/V0) get BOTH
-# Za1 and Za2 (they involve both anchors of sample 1 at once).
-#
-# *** UNVERIFIED CONVENTION -- CHECK BEFORE TRUSTING DOWNSTREAM RESULTS ***
-# There is no HC.jl builtin here to defer to (see note above), and this
-# script has no hand-derived closed form for Fu_decoupled/Fv_decoupled to
-# check against the way hom_curve_a1 is checked below. The convention used
-# here puts the ENTIRE per-monomial degree deficiency onto Za1 alone
-# (Za2^0 always) -- i.e. treats [za1, za2] as "make up the missing degree
-# using za1, with za2 along for the ride at its already-occurring power."
-# This is almost certainly NOT what you want if Fu_decoupled/Fv_decoupled
-# is meant to be separately homogeneous in the (wa1,a1)-block and the
-# (wa2,a2)-block (a genuinely bi-homogeneous/multi-projective
-# construction) -- that needs a different function entirely (pad each
-# block to ITS OWN max degree with its own z), not this one. Given the
-# DEGREE-IN-W DIAGNOSTIC printed above (degree <=1 in EACH of wa1,wa2
-# separately), bi-homogeneous is plausible for your construction -- flagging
-# this explicitly rather than silently picking the single-degree
-# convention and letting a wrong answer look finished.
-function homogenize_two(f::Expression, z1::Variable, z2::Variable,
-                         vars::Vector{Variable})
-    M, c = exponents_coefficients(f, vars)
-    term_degrees = vec(sum(M, dims = 1))
-    d = maximum(term_degrees)
-    out = Expression(0)
-    for j in 1:length(c)
-        monom = c[j]
-        for (i, v) in enumerate(vars)
-            e = M[i, j]
-            e == 0 || (monom *= v^e)
-        end
-        missing_deg = d - term_degrees[j]
-        missing_deg == 0 || (monom *= z1^missing_deg)  # all on z1, see note above
-        out += monom
-    end
-    return out
-end
-
-hom_Fu = Vector{Expression}(undef, 4)
-hom_Fv = Vector{Expression}(undef, 4)
-for i in 1:4
-    is_sample1 = isodd(i)  # matches build_decoupled_system's own convention
-    z1, z2 = is_sample1 ? (za1, za2) : (zb1, zb2)
-    hom_Fu[i] = homogenize_two(hc_exprs_by_label["Fu_decoupled[$i]"], z1, z2, hc_vars)
-    hom_Fv[i] = homogenize_two(hc_exprs_by_label["Fv_decoupled[$i]"], z1, z2, hc_vars)
-end
-println("  Fu_decoupled/Fv_decoupled homogenized (sample 1 -> Za1,Za2; ",
-        "sample 2 -> Zb1,Zb2).")
-println()
-
-all_hom_exprs = vcat(
-    [hom_curve_a1, hom_curve_a2, hom_curve_b1, hom_curve_b2],
-    hom_Fu, hom_Fv,
+F = System(
+    [hc_exprs_by_label[label] for (label, _) in all_generators],
+    variables = hc_vars,
 )
-all_hom_vars = vcat(hc_vars, [za1, za2, zb1, zb2])
-
-F = System(all_hom_exprs, variables = all_hom_vars)
-println("Built HomotopyContinuation.System (PROJECTIVE, per-anchor-pair ",
-        "homogenized): ", length(all_hom_exprs), " equations, ",
-        length(all_hom_vars), " variables (12 affine + 4 homogenizing).")
+println("Built HomotopyContinuation.System (AFFINE, no homogenization): ",
+        length(all_generators), " equations, ", length(hc_vars), " variables.")
 println()
 
 # ---------------------------------------------------------------------------
@@ -336,6 +217,27 @@ println()
 # basis or dim() call at any point -- numerical_irreducible_decomposition
 # is witness-set/monodromy based (cascade of homotopies), which is exactly
 # why it's viable here when the symbolic route already choked.
+#
+# TUNING (added after a prior run hit "Some homotopy paths in the
+# u-regeneration intersection step failed. The returned witness set may be
+# incomplete."): confirmed directly from HC.jl's stable docs
+# (witness_sets.md / tracker.md / endgame_tracker.md -- fetched, not
+# assumed) that `regeneration` -- which numerical_irreducible_decomposition
+# calls internally, and whose options it forwards -- has an option that
+# targets this EXACT warning:
+#
+#   max_trials_u_homotopy = 5 (default): "maximal number of random
+#   subspaces tried until an intermediate u-regeneration intersection step
+#   succeeds."
+#
+# i.e. the default already retries a failing intersection step 5 times
+# with fresh random subspaces before giving up and printing the warning;
+# raising it gives more attempts. Also passing tighter tracker_options
+# (automatic_differentiation=3, extended_precision=true are the two the
+# docs explicitly flag as helping "numerically challenging paths") and a
+# larger EndgameOptions max_winding_number in case any failures are near
+# singular/multi-sheeted points -- these are secondary to
+# max_trials_u_homotopy, which targets the specific failing step.
 # ---------------------------------------------------------------------------
 
 println("=" ^ 70)
@@ -346,7 +248,19 @@ println("=" ^ 70)
 println()
 
 t0 = time()
-N = numerical_irreducible_decomposition(F; threading = true, show_progress = true)
+N = numerical_irreducible_decomposition(
+    F;
+    threading = true,
+    show_progress = true,
+    max_trials_u_homotopy = 25,
+    tracker_options = TrackerOptions(
+        automatic_differentiation = 3,
+        extended_precision = true,
+    ),
+    endgame_options = EndgameOptions(
+        max_winding_number = 12,
+    ),
+)
 println()
 println("numerical_irreducible_decomposition finished in ", round(time() - t0, digits=1), "s")
 println()
