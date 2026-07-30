@@ -147,18 +147,99 @@ all_generators = vcat(
     [("Fv_decoupled[$i]", g) for (i, g) in enumerate(dec.Fv_decoupled)],
 )
 
-hc_exprs = Expression[]
+hc_exprs_by_label = Dict{String, Expression}()
 for (label, g) in all_generators
     t0 = time()
     e = lift_to_hc_expression(g, hc_vars, dec_gens)
     println("  $label lifted in ", round(time() - t0, digits=3), "s")
-    push!(hc_exprs, e)
+    hc_exprs_by_label[label] = e
 end
 println()
 
-F = System(hc_exprs, variables = hc_vars)
-println("Built HomotopyContinuation.System: ", length(hc_exprs), " equations, ",
-        length(hc_vars), " variables.")
+# ---------------------------------------------------------------------------
+# Step 2b: PROJECTIVE COMPACTIFICATION of each anchor pair's curve.
+#
+# The affine curve wa1^2 = a1^5 + a1 + 2 (degree 5 = 2g+1, g=2, ODD degree)
+# has its naive projective closure in ORDINARY P^2 (NOT weighted projective
+# space -- weighted P(1,g+1,1) is only needed for the EVEN-degree case,
+# where there are two points at infinity that would otherwise be singular;
+# see e.g. the Auckland "Mathematics of Public Key Cryptography" ch.10 and
+# the genus-2 Jacobian-models literature). For odd deg(f)=2g+1, the ordinary
+# homogeneous closure Y^2*Z^(2g-1) = Z^(2g+1)*f(X/Z) has exactly ONE point
+# at infinity, (0:1:0), and it is NON-SINGULAR -- confirmed both by the
+# cited sources and by direct symbolic expansion (see conversation): for
+# f(a1) = a1^5 + a1 + 2, this gives the homogeneous quintic
+#     WA1^2 * ZA1^3 - A1^5 - A1*ZA1^4 - 2*ZA1^5 = 0
+# which dehomogenizes back to wa1^2 - a1^5 - a1 - 2 at ZA1=1, and reduces to
+# -A1^5 = 0 (i.e. A1=0, giving the single point (0:1:0)) at ZA1=0.
+#
+# Each anchor pair (wa1/a1, wa2/a2, wb1/b1, wb2/b2) gets its OWN
+# homogenizing variable (Za1, Za2, Zb1, Zb2) -- NOT one shared variable for
+# the whole system -- since each curve is an independent P^2 compactified
+# separately; U0,U1,V0,V1 are left un-homogenized (affine), since they are
+# the shared target variables and do not participate in either curve's own
+# point-at-infinity structure (Fu_decoupled/Fv_decoupled are LINEAR in
+# U_i/V_i by construction, so no compactification is needed in that
+# direction for the curve's sake).
+#
+# Rather than hand-derive the homogenization of Fu_decoupled/Fv_decoupled
+# (5 variables each: wa1,wa2,a1,a2,U_i or wb1,wb2,b1,b2,U_i) by hand and
+# risk mismatching per-block degrees, HC.jl's own `homogenize` is used
+# directly on each polynomial with its OWN anchor pair's homogenizing
+# variable(s) -- this is exactly the "use HC.jl's built-in support" request
+# rather than a hand-rolled multi-block homogenization.
+# ---------------------------------------------------------------------------
+
+println("Homogenizing per anchor pair (odd-degree curve => ordinary")
+println("projective closure, NOT weighted -- see comment above)...")
+println()
+
+za1, za2, zb1, zb2 = Variable(:Za1), Variable(:Za2), Variable(:Zb1), Variable(:Zb2)
+
+# curve relations: homogenize each with its OWN anchor pair's Z.
+hom_curve_a1 = homogenize(hc_exprs_by_label["curve_a1"], za1)
+hom_curve_a2 = homogenize(hc_exprs_by_label["curve_a2"], za2)
+hom_curve_b1 = homogenize(hc_exprs_by_label["curve_b1"], zb1)
+hom_curve_b2 = homogenize(hc_exprs_by_label["curve_b2"], zb2)
+
+# Sanity-check each homogenized curve matches the hand-derived form exactly
+# (WA1^2*Za1^3 - A1^5 - A1*Za1^4 - 2*Za1^5), rather than trusting
+# homogenize()'s output blind -- raises loudly on any mismatch.
+wa1_v, a1_v = hc_vars[1], hc_vars[6]
+expected_curve_a1 = wa1_v^2 * za1^3 - a1_v^5 - a1_v * za1^4 - 2 * za1^5
+iszero(expand(hom_curve_a1 - expected_curve_a1)) ||
+    error("homogenize() produced curve_a1 = $hom_curve_a1, which does not " *
+          "match the hand-derived homogeneous quintic $expected_curve_a1 " *
+          "-- STOP: do not proceed with a compactification that hasn't " *
+          "been verified against the closed-form derivation.")
+println("  curve_a1 homogenization VERIFIED against hand-derived form.")
+
+# Fu_decoupled[1]/Fv_decoupled[1] (sample 1, wa1,wa2,a1,a2,U0/V0) get BOTH
+# Za1 and Za2 (they involve both anchors of sample 1 at once) -- HC.jl's
+# homogenize accepts a vector of homogenizing variables for exactly this
+# multi-block case.
+hom_Fu = Vector{Expression}(undef, 4)
+hom_Fv = Vector{Expression}(undef, 4)
+for i in 1:4
+    is_sample1 = isodd(i)  # matches build_decoupled_system's own convention
+    zvars = is_sample1 ? [za1, za2] : [zb1, zb2]
+    hom_Fu[i] = homogenize(hc_exprs_by_label["Fu_decoupled[$i]"], zvars)
+    hom_Fv[i] = homogenize(hc_exprs_by_label["Fv_decoupled[$i]"], zvars)
+end
+println("  Fu_decoupled/Fv_decoupled homogenized (sample 1 -> Za1,Za2; ",
+        "sample 2 -> Zb1,Zb2).")
+println()
+
+all_hom_exprs = vcat(
+    [hom_curve_a1, hom_curve_a2, hom_curve_b1, hom_curve_b2],
+    hom_Fu, hom_Fv,
+)
+all_hom_vars = vcat(hc_vars, [za1, za2, zb1, zb2])
+
+F = System(all_hom_exprs, variables = all_hom_vars)
+println("Built HomotopyContinuation.System (PROJECTIVE, per-anchor-pair ",
+        "homogenized): ", length(all_hom_exprs), " equations, ",
+        length(all_hom_vars), " variables (12 affine + 4 homogenizing).")
 println()
 
 # ---------------------------------------------------------------------------
