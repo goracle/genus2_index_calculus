@@ -59,6 +59,13 @@ using .PhiSymbolic
 
 using HomotopyContinuation
 
+# @which/@edit live in InteractiveUtils, which the REPL auto-loads but a
+# plain `julia script.jl` run does not -- import explicitly so ad-hoc
+# `@which foo(...)` debugging works if this file is ever run non-interactively
+# (bit us in check_hc_api.jl: `@which` errored with UndefVarError until this
+# was added there too).
+using InteractiveUtils: @which, @edit
+
 # NOTE: an earlier version of this script attempted a projective
 # compactification (homogenizing the curve relations and
 # Fu_decoupled/Fv_decoupled per anchor pair) before running
@@ -131,8 +138,14 @@ function lift_to_hc_expression(poly, hc_vars::Vector{Variable}, dec_gens::Vector
         length(e) == n ||
             error("lift_to_hc_expression: exponent vector has length $(length(e)), " *
                   "expected $n -- polynomial from an unexpected ring?")
-        c_int = Int(lift(ZZ, c))  # canonical representative in [0,p), as an Int
-        term = Expression(c_int)
+        # BigInt, not Int: lift(ZZ, c) is arbitrary precision (fmpz/ZZRingElem);
+        # Int(...) throws InexactError once p > 2^63-1. Current p ~= 2.37e6 is
+        # nowhere near that, but this function shouldn't silently assume p
+        # stays small -- cast to BigInt so a future large-p run fails (if it
+        # fails at all) because HC.jl's Expression can't take one, not
+        # because of an avoidable narrowing cast here.
+        c_bigint = BigInt(lift(ZZ, c))
+        term = Expression(c_bigint)
         for i in 1:n
             e[i] == 0 && continue
             term *= hc_vars[i]^e[i]
@@ -385,6 +398,63 @@ open(csv_path, "w") do io
     end
 end
 println("Saved the same points to ", csv_path, " (plain CSV, portable).")
+println()
+
+# ---------------------------------------------------------------------------
+# Step 5b: certify the witness points (Smale alpha-theory), BEFORE Hensel.
+#
+# WHY: numerical_irreducible_decomposition's "degree 1" / "dimension 0"
+# summary is itself numerical -- it does not by itself constitute a proof
+# that these points are true isolated simple roots of the lifted system.
+# certify(F, points) runs interval/Krawczyk-backed Smale alpha-theory and
+# returns, per point, a rigorous mathematical guarantee (not a numerical
+# estimate) that a true root exists in a computable ball around it and is
+# unique/simple there. This is the fix for the "0D is evidence, not proof"
+# gap, and it costs comparatively little relative to the NID run itself.
+#
+# API used (confirmed against HC.jl's stable docs, not assumed):
+#   certify(F::System, points) -> CertificationResult
+#   ndistinct_certified(::CertificationResult) -> Int
+#   ncertified(::CertificationResult) -> Int
+# We raise if fewer points certify than we collected, rather than silently
+# reporting a partial certificate as if it covered everything.
+# ---------------------------------------------------------------------------
+
+println("=" ^ 70)
+println("Certifying witness points (Smale alpha-theory via HC.jl's certify)")
+println("=" ^ 70)
+
+cert_result = certify(F, witness_points)
+
+n_certified = ncertified(cert_result)
+n_distinct = ndistinct_certified(cert_result)
+
+println("Certified ", n_certified, "/", length(witness_points),
+        " point(s) as true, isolated, simple roots (rigorous, not numerical).")
+println("Of those, ", n_distinct, " are certified pairwise-distinct.")
+
+n_certified == length(witness_points) ||
+    error("Only ", n_certified, "/", length(witness_points), " points ",
+          "certified -- at least one witness point failed Smale ",
+          "certification (may be singular, or too close to another root ",
+          "for the certifying ball to be constructed). Do NOT treat the ",
+          "0-dimensionality claim as proven until this is resolved -- ",
+          "inspect cert_result directly (e.g. certificates(cert_result)) ",
+          "to find which point(s) failed.")
+n_distinct == length(witness_points) ||
+    error("Certified points are not all pairwise-distinct (", n_distinct,
+          "/", length(witness_points), ") -- the witness set may contain ",
+          "duplicates or a near-coincident pair; the raw NID degree-1 ",
+          "count should not be trusted as the true point count until this ",
+          "is resolved.")
+
+println("All ", length(witness_points), " witness points are rigorously ",
+        "certified as isolated, simple, pairwise-distinct roots of the ",
+        "characteristic-0 lifted system. This closes the 'evidence, not ",
+        "proof' gap for the characteristic-0 finiteness claim at this ",
+        "instance -- it is now a proof for this instance, not a numerical ",
+        "estimate. It does NOT extend to the mod-p system (see the Hensel ",
+        "step below) or to other instances.")
 println()
 
 # ---------------------------------------------------------------------------
