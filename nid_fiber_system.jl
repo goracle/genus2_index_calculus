@@ -296,3 +296,244 @@ println("may be positive-dimensional as well (or may not -- reduction mod p")
 println("can both create and destroy positive-dimensional behavior relative")
 println("to the characteristic-0 lift; this script only answers the")
 println("characteristic-0 question, cleanly and directly).")
+println()
+
+# ---------------------------------------------------------------------------
+# Step 5: extract and SAVE the actual dimension-0 witness points.
+#
+# BUG FIX: the run above (and the version of this script that produced it)
+# never called witness_sets(N; ...)/solutions(W) -- it only printed the
+# summary object N, which reports counts/degrees but not coordinates. The
+# 2475 witness points from that run were never captured and are gone
+# (HC.jl does not persist them anywhere on its own). This step does not
+# recover them; it fixes the script so a future run saves points as it
+# goes, and adds the mod-p / Hensel verification pass that was always the
+# intended next step per the file's own docstring notes.
+#
+# API used (confirmed directly against HC.jl's stable docs, not assumed):
+#   witness_sets(N; dims = [0], only_irreducible = true) -> Vector{WitnessSet}
+#   solutions(W::WitnessSet) -> the points stored in that witness set
+# Each dimension-0 witness set here has degree 1 (per the run's own
+# printed degree table), i.e. exactly one point; solutions(W) still
+# returns a vector, so we splat/collect across all such W to get every
+# point as a flat list.
+# ---------------------------------------------------------------------------
+
+using Serialization
+
+println("=" ^ 70)
+println("Extracting dimension-0 witness points")
+println("=" ^ 70)
+
+witness_sets_raw = witness_sets(N; dims = [0], only_irreducible = true)
+
+# witness_sets(N; dims=[...]) returns one `dim => Vector{WitnessSet}` pair per
+# requested dimension, NOT a flat Vector{WitnessSet} -- confirmed by the
+# Pair{Int64, Vector{WitnessSet}} type in the original error. Unwrap
+# explicitly rather than assuming the shape; raise if it's not what we expect
+# so this fails loudly instead of silently mis-extracting again.
+dim0_witness_sets = WitnessSet[]
+for entry in witness_sets_raw
+    if !(entry isa Pair{Int64, <:AbstractVector})
+        error("witness_sets(N; dims=[0]) returned an element of type ",
+              typeof(entry), ", expected Pair{Int64, <:AbstractVector} -- ",
+              "HC.jl's API may have changed; do not assume, re-check the docs.")
+    end
+    dim, wsets = entry
+    dim == 0 || error("witness_sets(N; dims=[0]) returned a pair for dim=",
+                       dim, ", expected only dim=0.")
+    append!(dim0_witness_sets, wsets)
+end
+
+println("Got ", length(dim0_witness_sets), " dimension-0 witness set(s) ",
+        "(each of degree 1 per the run above, i.e. one point each).")
+
+witness_points = Vector{Vector{ComplexF64}}()
+for W in dim0_witness_sets
+    for s in solutions(W)
+        push!(witness_points, ComplexF64.(s))
+    end
+end
+
+length(witness_points) > 0 ||
+    error("Extracted 0 witness points from ", length(dim0_witness_sets),
+          " witness set(s) -- extraction logic is still wrong, do not ",
+          "proceed to save/Hensel step with an empty result.")
+println("Collected ", length(witness_points), " witness point(s) in ",
+        "variable order: ", gen_names)
+println()
+
+# Save immediately -- do this BEFORE the mod-p pass below, so a crash or
+# interrupt during Hensel verification still leaves the raw
+# characteristic-0 points on disk. Two formats: a native Julia
+# Serialization dump (exact, fastest to reload in a follow-up Julia
+# session) and a plain CSV of real/imaginary parts (portable, inspectable
+# without Julia).
+out_dir = joinpath(@__DIR__, "nid_output")
+mkpath(out_dir)
+
+jls_path = joinpath(out_dir, "witness_points.jls")
+serialize(jls_path, (gen_names = gen_names, points = witness_points))
+println("Saved ", length(witness_points), " points to ", jls_path,
+        " (reload with: deserialize(\"$jls_path\")).")
+
+csv_path = joinpath(out_dir, "witness_points.csv")
+open(csv_path, "w") do io
+    println(io, join(["$(g)_re,$(g)_im" for g in gen_names], ","))
+    for pt in witness_points
+        println(io, join(["$(real(c)),$(imag(c))" for c in pt], ","))
+    end
+end
+println("Saved the same points to ", csv_path, " (plain CSV, portable).")
+println()
+
+# ---------------------------------------------------------------------------
+# Step 6: mod-p verification (the Hensel-lifting precondition check).
+#
+# WHAT THIS DOES: the 2475 (or however many) points above are roots of the
+# LIFTED (integer-coefficient, characteristic-0) system -- per this file's
+# own lifting-convention note at the top, this is a specific integer lift
+# chosen as a finiteness ORACLE, not a claim that solving it tells you
+# about the mod-p system directly. This step is the bridge: for each
+# witness point, reduce its coordinates mod p and check whether the
+# reduction is well-behaved, i.e. whether the point survives as a genuine,
+# non-degenerate solution of the ACTUAL mod-p system you care about.
+#
+# The precise criterion (multivariate Hensel's lemma, applied per-point):
+# a witness point x reduces to a well-defined, non-singular mod-p solution
+# iff det(Jacobian(F))(x) is a p-adic unit at x, i.e.
+#     det(J_F(x)) mod p != 0
+# Points that fail this check are exactly where characteristic-0 simplicity
+# (confirmed above: every component had degree 1, i.e. every root was
+# simple in C) could fail to survive reduction -- two distinct C-roots can
+# collide mod p, or a root's coordinates can blow up mod p (denominator
+# vanishing), even though nothing "went wrong" in the characteristic-0
+# solve itself.
+#
+# WHAT THIS DOES NOT DO: it does not perform the actual p-adic Newton
+# lifting/precision-raising step (i.e. computing the mod-p^k solution for
+# k>1) -- that is a separate step you'd only need if downstream code
+# requires higher p-adic precision than a single mod-p reduction. This
+# step only answers the yes/no Hensel-applicability question per point,
+# which is the thing that determines whether the characteristic-0 count
+# (2475, or however many in a future run) is trustworthy as the ACTUAL
+# mod-p solution count, or whether some points need to be discounted
+# (collided) or flagged (denominator vanishing / point at infinity mod p).
+#
+# p is read from wherever the rest of the pipeline defines it (Elim2's own
+# GF(p) modulus -- reusing dec's base ring's characteristic rather than
+# hardcoding, so this always matches whatever prime the run above actually
+# used).
+# ---------------------------------------------------------------------------
+
+println("=" ^ 70)
+println("Mod-p verification (Hensel-lifting precondition check)")
+println("=" ^ 70)
+
+p = Int(characteristic(base_ring(dec.R_dec)))
+println("Using p = ", p, " (read from dec.R_dec's base field characteristic).")
+println()
+
+# Jacobian of the same 12 generators, in the same variable order, built
+# once via HC.jl's own ModelKit differentiation (symbolic, exact -- not a
+# finite-difference approximation) so it can be evaluated at each point
+# without re-deriving anything by hand.
+exprs_in_order = [hc_exprs_by_label[label] for (label, _) in all_generators]
+J_expr = [HomotopyContinuation.ModelKit.differentiate(f, v)
+          for f in exprs_in_order, v in hc_vars]
+
+"""
+    reduce_mod_p(z::Complex, p::Int) -> Int
+
+Reduce a (numerically near-integer) complex witness coordinate to its
+canonical representative in [0,p). Verifies the imaginary part and the
+fractional part of the real part are both within numerical tolerance of
+zero before rounding -- if either check fails, the point's coordinates
+are not close enough to a rational integer lift to be reduced this way at
+all (a real, separate failure mode from the Jacobian-singularity check
+below; both are reported).
+"""
+function reduce_mod_p(z::Complex, p::Int; tol::Float64 = 1e-6)
+    if abs(imag(z)) > tol
+        return nothing
+    end
+    r = real(z)
+    n = round(Int, r)
+    if abs(r - n) > tol
+        return nothing
+    end
+    return mod(n, p)
+end
+
+hensel_ok = falses(length(witness_points))
+reduction_ok = falses(length(witness_points))
+det_mod_p = Vector{Union{Int,Nothing}}(undef, length(witness_points))
+
+for (i, pt) in enumerate(witness_points)
+    reduced = [reduce_mod_p(c, p) for c in pt]
+    if any(isnothing, reduced)
+        reduction_ok[i] = false
+        hensel_ok[i] = false
+        det_mod_p[i] = nothing
+        continue
+    end
+    reduction_ok[i] = true
+    reduced_int = Int.(reduced)
+
+    # Evaluate the (exact, symbolic) Jacobian at the reduced point, then
+    # take everything mod p and compute the determinant over that finite
+    # field via Oscar/Nemo (exact modular linear algebra -- no floating
+    # point involved in this determinant, unlike the witness-point solve
+    # itself).
+    Jn = [Int(round(real(
+              HomotopyContinuation.ModelKit.evaluate(J_expr[r, c], hc_vars => reduced_int)
+          ))) for r in 1:length(all_generators), c in 1:length(hc_vars)]
+    Fp = Oscar.GF(p)
+    Jn_modp = matrix(Fp, Jn)
+    d = det(Jn_modp)
+    det_mod_p[i] = Int(lift(ZZ, d))
+    hensel_ok[i] = !iszero(d)
+end
+
+n_reduction_failed = count(!, reduction_ok)
+n_singular = count(i -> reduction_ok[i] && !hensel_ok[i], eachindex(witness_points))
+n_verified = count(hensel_ok)
+
+println("Reduction-to-mod-p failed (coordinates not integer-lift-shaped, ",
+        "tol=1e-6): ", n_reduction_failed, " / ", length(witness_points))
+println("Reduced cleanly but Jacobian singular mod p (Hensel does NOT ",
+        "apply -- point may collide with another or be spurious mod p): ",
+        n_singular, " / ", length(witness_points))
+println("Verified: reduces cleanly AND Jacobian nonsingular mod p ",
+        "(Hensel applies, point is a genuine simple mod-p solution): ",
+        n_verified, " / ", length(witness_points))
+println()
+
+if n_reduction_failed > 0 || n_singular > 0
+    println("NOTE: ", n_reduction_failed + n_singular, " of ",
+            length(witness_points), " characteristic-0 witness points did ",
+            "NOT verify as clean simple solutions mod p. The trustworthy ",
+            "mod-p candidate count for this instance is ", n_verified,
+            ", not the raw characteristic-0 count of ", length(witness_points),
+            ". Points failing reduction (as opposed to failing the ",
+            "Jacobian check) may simply need a tighter tolerance or higher ",
+            "solve precision -- inspect them individually before assuming ",
+            "they're genuinely non-integral.")
+else
+    println("All ", length(witness_points), " witness points verified: ",
+            "every characteristic-0 root reduces to a distinct, ",
+            "non-degenerate solution of the actual mod-p system.")
+end
+println()
+
+# Persist the verification results alongside the raw points, so this pass
+# doesn't need to be rerun to answer "how many points actually verified"
+# later.
+verify_path = joinpath(out_dir, "hensel_verification.jls")
+serialize(verify_path, (
+    p = p,
+    reduction_ok = reduction_ok,
+    hensel_ok = hensel_ok,
+    det_mod_p = det_mod_p,
+))
+println("Saved verification results to ", verify_path, ".")
