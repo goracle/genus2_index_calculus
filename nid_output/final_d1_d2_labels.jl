@@ -14,8 +14,17 @@ Fpx, xp = polynomial_ring(Fp, "x")
 f_omega = xp^2 + xp + 1
 f_cubic = xp^3 - xp^2 + 1
 
-omega_roots_Fp = [-coeff(g, 0) for (g, _) in factor(f_omega) if degree(g) == 1]
 cubic_roots_Fp = [-coeff(g, 0) for (g, _) in factor(f_cubic) if degree(g) == 1]
+
+# x^2+x+1 does NOT split over F_p at this p (p mod 3 = 2, confirmed earlier
+# this session) -- its roots live in F_{p^2} = F_p[y]/(y^2+y+1), not F_p.
+# Build that extension and find its roots there (same construction
+# output_d1_d2.jl used originally), rather than indexing into an
+# always-empty F_p root list.
+Fp2, y2 = finite_field(f_omega, "y2")
+Fp2x, xp2 = polynomial_ring(Fp2, "x")
+f_omega_Fp2 = xp2^2 + xp2 + 1
+omega_roots_Fp2 = [-coeff(g, 0) for (g, _) in factor(f_omega_Fp2) if degree(g) == 1]
 
 CC = AcbField(128)
 Qx, x = polynomial_ring(QQ, "x")
@@ -115,7 +124,7 @@ println("d2: ", length(d2_distinct), " distinct value(s) (raw witness points: ",
         length(d2_labels), ")")
 for t in sort(collect(d2_distinct))
     a1, a2, b1, b2 = t
-    vals = (omega_roots_Fp[a1], omega_roots_Fp[a2], omega_roots_Fp[b1], omega_roots_Fp[b2])
+    vals = (omega_roots_Fp2[a1], omega_roots_Fp2[a2], omega_roots_Fp2[b1], omega_roots_Fp2[b2])
     println("  (a1,a2,b1,b2) = ", vals, "   [root indices: ", t, "]")
 end
 
@@ -125,7 +134,7 @@ serialize("d1_d2_final.jls", (
     d1_labels_by_point = d1_labels,
     d2_labels_by_point = d2_labels,
     cubic_roots_Fp = cubic_roots_Fp,
-    omega_roots_Fp = omega_roots_Fp,
+    omega_roots_Fp2 = omega_roots_Fp2,
 ))
 println()
 println("Saved to d1_d2_final.jls.")
