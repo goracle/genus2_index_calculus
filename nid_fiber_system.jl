@@ -261,24 +261,59 @@ println("=" ^ 70)
 println()
 
 t0 = time()
-N = numerical_irreducible_decomposition(
-    F;
-    threading = true,
-    show_progress = true,
-    max_trials_u_homotopy = 25,
-    tracker_options = TrackerOptions(
-        automatic_differentiation = 3,
-        extended_precision = true,
-    ),
-    endgame_options = EndgameOptions(
-        max_winding_number = 12,
-    ),
-)
+
+# Capture NID's own stdout/stderr so the "may be incomplete" warning (which
+# HC.jl prints directly, not raises -- see the hard-exit check just below)
+# can actually be detected in code rather than only read by a human off the
+# terminal. `N` itself is unaffected -- redirect_stdout/redirect_stderr wrap
+# the call, they don't change what numerical_irreducible_decomposition
+# returns.
+nid_output = IOBuffer()
+N = redirect_stdout(nid_output) do
+    redirect_stderr(nid_output) do
+        numerical_irreducible_decomposition(
+            F;
+            threading = true,
+            show_progress = true,
+            max_trials_u_homotopy = 50,
+            tracker_options = TrackerOptions(
+                automatic_differentiation = 3,
+                extended_precision = true,
+            ),
+            endgame_options = EndgameOptions(
+                max_winding_number = 12,
+            ),
+        )
+    end
+end
+nid_output_str = String(take!(nid_output))
+print(nid_output_str)  # echo everything NID printed, so nothing is lost
 println()
 println("numerical_irreducible_decomposition finished in ", round(time() - t0, digits=1), "s")
 println()
 println(N)
 println()
+
+# ---------------------------------------------------------------------------
+# HARD EXIT on "witness set may be incomplete": with max_trials_u_homotopy
+# raised to 50, this warning firing means 50 fresh random subspaces all
+# failed the u-regeneration intersection step -- i.e. this is no longer a
+# transient/retry-recoverable condition worth a soft warning, and the run's
+# witness-point count (2475/2457/2458 across the prior three runs) cannot be
+# trusted as complete if it appears. Per instructions: exit hard here so
+# runs can be repeated until one converges cleanly, rather than silently
+# continuing on a possibly-incomplete witness set into steps 4-6 below.
+# ---------------------------------------------------------------------------
+if occursin("may be incomplete", nid_output_str)
+    println("=" ^ 70)
+    println("FATAL: HC.jl reported the witness set may be incomplete, even")
+    println("after max_trials_u_homotopy = 50 fresh random subspaces. This")
+    println("run's witness-point count cannot be trusted -- exiting rather")
+    println("than proceeding to certification/Hensel steps on a possibly-")
+    println("incomplete set. Rerun (a fresh random seed may converge).")
+    println("=" ^ 70)
+    exit(1)
+end
 
 # ---------------------------------------------------------------------------
 # Step 4: explicit finiteness verdict, read off N directly rather than left
