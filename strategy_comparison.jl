@@ -1514,256 +1514,232 @@ function run_singer_quad_filtered_exponent_sweep(; Ns::Vector{Int} = [10_007, 10
 end
 
 # ---------------------------------------------------------------
-# Strategy 7: spectral swap local search (targets the 8th moment
-# directly via a linearized gradient, rather than a cheap proxy)
+# Strategy 7: pair-sum energy local search (exact O(B)-per-swap,
+# targets M4, used as a cheap proxy for M8)
 # ---------------------------------------------------------------
 #
-# EXTERNAL PROPOSAL (paraphrased): rather than screening candidates
-# with a cheap local proxy (density, or the earlier quad-sum filter),
-# spend the O(B^2) budget on a one-shot spectral dictionary and then
-# do cheap local search on top of it:
-#   1. Seed F via any existing construction.
-#   2. Identify the ~cB "bad" characters (largest |S_chi| = largest
-#      Fourier coefficients of 1_F) -- these dominate the 8th-moment
-#      sum sum_chi |S_chi|^8, so they're where the objective's
-#      sensitivity actually lives.
-#   3. Build the full mode-by-candidate phase table W_chi(x) = chi(x)
-#      for chi in the bad set Omega and x ranging over F union a
-#      random Theta(B) replacement pool -- an explicit Theta(B^2)
-#      table, spent once.
-#   4. Score a proposed swap (x -> y, x in F, y in the pool) via the
-#      FIRST-ORDER TAYLOR EXPANSION of sum_chi |S_chi|^8 under
-#      S_chi -> S_chi + (chi(y)-chi(x)), using only dot products
-#      against the precomputed table -- O(|Omega|) per swap instead
-#      of O(B) or worse.
-#   5. Run local search (greedy descent, or simulated annealing to
-#      escape local optima) over swaps using that O(|Omega|)-cost
-#      score.
+# HISTORY: this replaces an earlier version of Strategy 7 that scored
+# swaps via a linearized gradient of sum_chi |S_chi|^8 restricted to a
+# frozen set of "bad" Fourier modes (spectral_swap_search). That
+# version was measured to make the FULL-spectrum ratio (as estimated
+# by the character sampler) WORSE in 2 of 3 tested N's, and stall
+# (zero accepted swaps) at the third -- a real negative result, not a
+# noise artifact (see the run that prompted this rewrite), traced to
+# two compounding problems: (1) optimizing a small frozen mode subset
+# has no guarantee of transferring to the full spectrum -- a swap can
+# cleanly improve the ~B modes being watched while making the other
+# ~N-B modes worse, and the character sampler measures ALL of them;
+# (2) the linearization itself assumes |chi(y)-chi(x)| is small
+# relative to |S_chi|, which is not generally true when |S_chi| is
+# itself only O(sqrt(B))-ish. Both issues were real, not
+# implementation bugs -- the surrogate objective was the problem.
 #
-# GRADIENT CORRECTION (important, and NOT how the proposal stated it):
-# for complex S_chi, E = sum_chi |S_chi|^8 = sum_chi (S_chi * conj(S_chi))^4,
-# so treating S_chi as an independent complex variable,
-#   dE/dS_chi = 4 * (S_chi*conj(S_chi))^3 * conj(S_chi) = 4|S_chi|^6 * conj(S_chi)
-# and by symmetry (E is real, a function of |S_chi|^2) the correctly
-# linearized real-valued change under S_chi -> S_chi + delta is
-#   dE ~= 2 * Re( conj(dE/dS_chi) * delta ) = 8 |S_chi|^6 * Re( conj(S_chi) * delta ).
-# The proposal as given used conj(S_chi)^7 in place of 8|S_chi|^6*conj(S_chi)
-# -- those coincide only if S_chi is real, which it is not in general
-# here (S_chi is a genuine complex Fourier coefficient of a subset
-# indicator). Implemented below with the corrected exponent/prefactor;
-# see delta_E_swap.
+# EXTERNAL PROPOSAL (paraphrased, in response to that result): rather
+# than optimizing Fourier coefficients via a linearized surrogate,
+# work directly in physical space with the pair-sum multiplicity
+# function r(t) = #{(a,b) in FxF : a+b = t mod N} (an ordered-pair
+# count, i.e. the additive convolution 1_F * 1_F). A swap changes r at
+# only O(B) points (the pair-sums involving the swapped element), so
+# any energy functional of r that can be updated incrementally from
+# those O(B) changed entries admits an EXACT, no-linearization,
+# O(B)-per-swap local search -- "no surrogate, no frozen Omega, no
+# linearization, no worrying about missing frequencies."
 #
-# THIS IS STILL A LINEARIZATION, NOT AN EXACT SCORE: dE is a
-# first-order approximation valid for SMALL |delta| = |chi(y)-chi(x)|
-# relative to |S_chi| -- for a fixed accepted x, a single swap changes
-# each S_chi by a full unit-modulus difference (|delta|<=2), which is
-# not necessarily "small" relative to |S_chi| when B is itself small
-# (early in a sweep, or after many swaps have already been taken and
-# |S_chi| has been driven down toward the flat regime). The linear
-# score is used only to RANK candidate swaps (which one moves the true
-# E most in the right direction), not to predict the post-swap E
-# exactly -- after each accepted swap, S_chi is recomputed exactly
-# (not incrementally accumulated from the linear estimate) precisely
-# because the linear estimate is expected to drift from the true value
-# over many swaps. See recompute cadence in spectral_swap_search's
-# docstring.
+# CORRECTION TO THE PROPOSAL'S STATED IDENTITY (verified numerically,
+# both symbolically and by direct computation on random test sets --
+# see chat): the proposal describes the 8th moment as "literally the
+# 4th moment of the pair-sum distribution", i.e. sum_t r(t)^4. That is
+# NOT the correct identity. What IS exactly true (standard Parseval on
+# Z/N, verified numerically to floating-point precision across many
+# random F): sum_t r(t)^2 = (1/N) * sum_chi |S_chi|^4 -- this is
+# exactly M4 (already tracked elsewhere in this file), not M8, and IS
+# updatable in O(B) per swap (r changes at O(B) points, and
+# sum(v^2)-style energies update purely from the changed entries with
+# no cross-terms beyond those entries -- verified against brute-force
+# recomputation across 200 random trials, see chat).
 #
-# SIDON-NESS IS SIMULATED HERE VIA AN EXPLICIT CHECK, STANDING IN FOR
-# A STRUCTURAL GUARANTEE THIS CODE DOESN'T MODEL DIRECTLY: in the real
-# genus-2 setting the proposal was made for, F is built from D1 atoms
-# (degree-1 places), and Sidon-ness of a D1-atom-built factor base is
-# AUTOMATIC -- a structural consequence of Mumford-irreducibility under
-# addition of degree-1 divisors, not something that needs separate
-# checking. That's why the proposal itself says nothing about
-# preserving Sidon-ness: in its native setting, any swap between D1
-# atoms simply can't produce a non-Sidon result, so there's nothing to
-# enforce.
+# The TRUE exact identity for M8 involves q = r (*) r (the
+# AUTOCORRELATION of r, not r^4 pointwise): sum_chi |S_chi|^8 =
+# N * sum_t q(t)^2 (also verified numerically to floating-point
+# precision). But autocorrelation is a global operation -- changing
+# r at O(B) points was checked to change q at very close to ALL N
+# points (957 of 1009 in one concrete test), because convolution
+# smears a local change across the whole transform. So the true
+# M8-exact quantity does NOT admit an O(B)-per-swap update; it costs
+# O(N) per swap to recompute q from scratch. That defeats the "cheap
+# exact O(B^2) budget" premise of the proposal at the M8 level
+# specifically.
 #
-# This code operates one level of abstraction below that: F_int is a
-# plain Vector{Int} of residues mod N, with no notion of "is this
-# integer a D1 atom" or Mumford-irreducibility encoded anywhere. So the
-# automatic guarantee isn't actually present here -- swapping to an
-# arbitrary y in Z/N is NOT guaranteed Sidon-preserving the way
-# swapping to another D1 atom would be. The explicit sidon_defect check
-# on every accepted swap (via the same incremental sum-collision rule
-# used by greedy_sidon_subset elsewhere in this file) is the
-# SIMULATION of that structural guarantee at this level of
-# abstraction: it makes non-Sidon swaps unavailable as options, exactly
-# as the real D1-atom arithmetic would rule them out on its own. This
-# means many high-scoring swaps by the spectral criterion alone get
-# filtered out for breaking Sidon-ness, and the realized acceptance
-# rate can be far lower than the raw candidate pool would suggest --
-# reported honestly below (n_accepted vs n_tried) rather than assumed
-# away.
+# WHAT'S IMPLEMENTED HERE, GIVEN THAT: minimize sum_t r(t)^2 (= M4,
+# exactly, not a proxy for M4 -- an exact equality) via genuine
+# O(B)-per-swap incremental local search, used as an UNTESTED PROXY
+# for improving M8 (there is no theorem here, and no claim that
+# minimizing M4 necessarily improves M8 -- lower M4 is at best
+# correlated with lower M8 in the way "less concentrated pairwise
+# sums" is intuitively related to "less concentrated 4-fold sums", but
+# this is exactly the kind of claim that needs to be MEASURED, not
+# assumed, same discipline as every other strategy in this file).
+# What this construction DOES buy over the discarded spectral version:
+# a genuinely exact, cheap (O(B) per swap), no-approximation objective
+# -- so if it fails to improve M8, that failure isn't attributable to
+# a linearization error or a frozen-subset blind spot the way the
+# previous version's failure was. It would be a cleaner negative (or
+# positive) result either way.
 
 """
-    top_bad_characters(F_int, N; n_modes, n_probe)
+    pairsum_energy(F::Vector{Int}, N::Int) -> (r::Dict{Int,Int}, E::Int)
 
-Scans `n_probe` distinct nonzero characters of Z/N (chi indexed by
-k in 1:(N-1), character_value = exp(2*pi*i*k*x/N)), computes
-S_chi = sum_{f in F_int} chi(f) for each, and returns the `n_modes`
-with the largest |S_chi|, as a Vector{Int} of their k-indices
-(NOT deduplicated against each other beyond the natural distinctness
-of sampled k's -- duplicates are impossible since k's are drawn
-without replacement from 1:(N-1)).
+Builds the pair-sum multiplicity dict r(t) = #{(a,b) in FxF : a+b = t
+mod N} (ordered pairs, so r(2a) counts the single (a,a) self-pair once
+and r(a+b) for a != b counts both (a,b) and (b,a)) from scratch, and
+returns it alongside E = sum_t r(t)^2 -- exactly N times M4/N, i.e.
+exactly equal to sum_chi |S_chi|^4 / N (verified numerically; see
+Strategy 7 header comment). Only nonzero entries are stored (a sparse
+Dict, not a dense length-N array), since at most O(B^2) entries of r
+are ever nonzero.
 
-`n_probe` is a real cost: for a full/exact top-cB search you'd need
-n_probe = N-1 (every nonzero character), which is infeasible for the
-larger N's in this sweep -- so this scans a bounded random sample
-of characters instead of the exhaustive spectrum, and returns the
-worst OF THE SAMPLE, not the true global worst. This is explicitly
-an approximation of step 2 of the proposal (the "carefully chosen
-Omega"), not the exact "largest-magnitude characters over the full
-spectrum" -- flagged here rather than silently assumed equivalent.
-A larger n_probe narrows that gap at proportionally higher cost.
+O(B^2) cost -- called once per swap-search call (to build the initial
+r from the seed F), not once per step (steps update incrementally via
+pairsum_remove!/pairsum_add! below).
 """
-function top_bad_characters(F_int::Vector{Int}, N::Int; n_modes::Int, n_probe::Int)
-    n_probe = min(n_probe, N - 1)
-    ks = Random.shuffle(collect(1:(N-1)))[1:n_probe]
-    mags = Vector{Float64}(undef, n_probe)
-    for (idx, k) in enumerate(ks)
-        s = 0.0 + 0.0im
-        @inbounds for x in F_int
-            s += cis(2pi * k * x / N)
-        end
-        mags[idx] = abs(s)
+function pairsum_energy(F::Vector{Int}, N::Int)
+    r = Dict{Int,Int}()
+    for a in F, b in F
+        t = mod(a + b, N)
+        r[t] = get(r, t, 0) + 1
     end
-    order_idx = sortperm(mags; rev = true)
-    n_take = min(n_modes, n_probe)
-    return ks[order_idx[1:n_take]]
+    E = sum(v^2 for v in values(r))
+    return (r, E)
 end
 
 """
-    build_phase_table(zs, Omega, N) -> Dict{Int,Vector{ComplexF64}}
+    pairsum_bump!(r, t, delta) -> ΔE
 
-Builds the explicit W_chi(z) = chi(z) table for every z in `zs` and
-chi in `Omega`, keyed by z, each value a Vector{ComplexF64} in the
-same order as `Omega`. This is the Theta(|zs| * |Omega|) phase table
-the proposal calls for -- computed ONCE per search step (see
-spectral_swap_search) and reused for every swap-score lookup that
-step, rather than recomputing chi(y) redundantly inside the O(F*pool)
-swap-scoring loop (an earlier draft of this file did exactly that
-redundant recomputation before being caught and fixed here).
+Adds `delta` to r[t] (removing the key if it hits exactly 0, to keep r
+sparse), returning the resulting change in sum_t r(t)^2 caused by THIS
+single bump (new^2 - old^2). This is the atomic operation both
+pairsum_remove! and pairsum_add! are built from.
 """
-function build_phase_table(zs::Vector{Int}, Omega::Vector{Int}, N::Int)
-    table = Dict{Int,Vector{ComplexF64}}()
-    for z in zs
-        table[z] = [cis(2pi * k * z / N) for k in Omega]
-    end
-    return table
-end
-
-"""
-    delta_E_swap(x, y, S_vec, W_table, Omega) -> Float64
-
-Linearized change in sum_{chi in Omega} |S_chi|^8 under the swap
-x -> y, using the CORRECTED gradient (see Strategy 7 header comment:
-8*|S_chi|^6 * Re(conj(S_chi)*delta), not conj(S_chi)^7). `S_vec` is a
-Vector{ComplexF64} of S_chi values in the same order as `Omega`;
-`W_table` is the precomputed phase table from build_phase_table, so
-this function does zero cis() calls itself -- purely dot products
-against the precomputed table, matching the proposal's stated cost
-model of O(|Omega|) per swap after the table is built.
-"""
-function delta_E_swap(x::Int, y::Int, S_vec::Vector{ComplexF64},
-                        W_table::Dict{Int,Vector{ComplexF64}}, Omega::Vector{Int})
-    Wx = W_table[x]
-    Wy = W_table[y]
-    dE = 0.0
-    @inbounds for i in eachindex(Omega)
-        Sk = S_vec[i]
-        mag6 = abs2(Sk)^3
-        delta = Wy[i] - Wx[i]
-        dE += 8.0 * mag6 * real(conj(Sk) * delta)
+function pairsum_bump!(r::Dict{Int,Int}, t::Int, delta::Int)
+    old = get(r, t, 0)
+    new = old + delta
+    dE = new^2 - old^2
+    if new == 0
+        delete!(r, t)
+    else
+        r[t] = new
     end
     return dE
 end
 
 """
-    spectral_swap_search(F_int, N; n_modes, pool_size, n_probe, rng,
-                           method=:greedy, max_steps=200, recompute_every=20,
-                           anneal_T0=1.0, anneal_cooling=0.98)
+    pairsum_remove!(r, x, F_current, N) -> ΔE
 
-Local search over Sidon-preserving swaps of `F_int` (a Vector{Int}
-subset of Z/N, assumed already Sidon on entry -- NOT checked at entry,
-callers must pass a valid Sidon F), scored by the linearized 8th-moment
-gradient (see delta_E_swap below) against a fixed "bad mode" set Omega
-(from top_bad_characters) and a fixed random candidate pool of size
-`pool_size` (elements of Z/N not in F_int, sampled once at the start --
-matches the proposal's "candidate pool of size Theta(B)", not
-refreshed mid-search).
+Removes ALL ordered-pair contributions of `x` from `r`, given
+`F_current` (the current F, which must still CONTAIN x when this is
+called -- call this BEFORE actually removing x from your F array).
+For every other f in F_current (f != x), BOTH ordered pairs (x,f) and
+(f,x) map to the same t = x+f mod N and are each removed separately
+(they are two distinct entries in the ordered-pair count, even though
+they share a t) -- getting this double-removal right (rather than
+removing only one of the two) was verified against brute-force
+recomputation across 200 random trials (see Strategy 7 header
+comment); the single self-pair (x,x) is removed once, not twice.
+Returns the total energy change (sum of every pairsum_bump! call's
+contribution).
+"""
+function pairsum_remove!(r::Dict{Int,Int}, x::Int, F_current::Vector{Int}, N::Int)
+    dE = 0
+    for f in F_current
+        if f == x
+            dE += pairsum_bump!(r, mod(2x, N), -1)
+        else
+            dE += pairsum_bump!(r, mod(x + f, N), -1)
+            dE += pairsum_bump!(r, mod(f + x, N), -1)
+        end
+    end
+    return dE
+end
 
-ALGORITHM PER STEP:
-  1. Compute S_chi for every chi in Omega, exactly (a fresh O(|Omega|*B)
-     pass), NOT incrementally from prior linear estimates -- see the
-     drift caveat in the Strategy 7 header comment above. This is the
-     dominant per-step cost.
-  2. For every (x in F_int, y in pool) pair, compute the linearized
-     delta_E_swap(x, y, S_vec, W_table, Omega) score (O(|Omega|) per
-     pair using the precomputed table -- the O(B^2) table itself, i.e.
-     chi(z) for every chi in Omega and every z in F_int union pool, is
-     built ONCE per step from the current S_chi's inputs, reused for
-     all |F_int|*|pool| pairs that step).
-  3. method=:greedy -- take the single most-negative-scoring swap
-     (largest decrease in linearized E) that keeps F_int Sidon after
-     the swap (checked via sidon_defect on the post-swap set -- exact,
-     not linearized). If no swap both improves the linear score AND
-     preserves Sidon-ness, stop early.
-     method=:anneal -- simulated annealing: at temperature T (starting
-     at anneal_T0, multiplied by anneal_cooling after every step),
-     draw a RANDOM Sidon-preserving swap and accept it with
-     probability min(1, exp(-delta_E / T)) if delta_E > 0 (worsening),
-     always accept if delta_E <= 0 (improving) -- standard Metropolis
-     acceptance, so this can escape local optima the greedy variant
-     gets stuck in, at the cost of no early-stopping (always runs the
-     full max_steps).
-  4. Repeat up to `max_steps` steps. Every `recompute_every` steps (and
-     always at the end), Omega itself is NOT refreshed (kept fixed for
-     comparability across steps) but S_chi is always recomputed exactly
-     from scratch per step 1 above regardless of recompute_every --
-     recompute_every is currently unused/reserved (see NOTE below) and
-     accepted as a keyword for forward compatibility with a cheaper
-     incremental-S_chi variant, not yet implemented, since the exact
-     recompute is what step 1 already does every step.
+"""
+    pairsum_add!(r, y, F_after, N) -> ΔE
 
-NOTE: recompute_every is accepted but currently has no effect -- S_chi
-is always recomputed exactly every step (see step 1). This is
-INTENTIONALLY conservative (favors correctness of the score over
-speed) rather than a bug; a future incremental variant could update
-S_chi via S_chi += (chi(y)-chi(x)) for `recompute_every-1` steps
-between exact recomputes, trading some drift for O(|Omega|)-per-step
-instead of O(|Omega|*B)-per-step cost, but that tradeoff is NOT
-implemented here since the drift behavior would need its own
-validation before trusting it.
+Adds ALL ordered-pair contributions of `y` to `r`, given `F_after`
+(F with x already logically removed, and NOT yet containing y --
+i.e. the "in-between" state after pairsum_remove! but before y is
+appended to your F array). Mirrors pairsum_remove! exactly (same
+double-count-for-f!=x, single-count-for-self-pair structure, just
+adding instead of subtracting). Returns the total energy change.
+"""
+function pairsum_add!(r::Dict{Int,Int}, y::Int, F_after::Vector{Int}, N::Int)
+    dE = 0
+    for f in F_after
+        dE += pairsum_bump!(r, mod(y + f, N), +1)
+        dE += pairsum_bump!(r, mod(f + y, N), +1)
+    end
+    dE += pairsum_bump!(r, mod(2y, N), +1)
+    return dE
+end
+
+"""
+    pairsum_swap_search(F_int, N; pool_size, rng, method=:greedy,
+                          max_steps=200, anneal_T0=1.0, anneal_cooling=0.98)
+
+Local search over Sidon-preserving swaps of `F_int` (assumed already
+Sidon on entry -- not checked at entry), scored by the EXACT change in
+sum_t r(t)^2 (= M4, exactly -- see pairsum_energy) under each proposed
+swap, maintained incrementally via pairsum_remove!/pairsum_add! rather
+than recomputed from scratch each time -- genuinely O(B) per swap
+evaluated, not O(B^2) and not a linearized approximation of anything.
+
+Candidate pool: a fixed random Theta(B) set of elements not in F_int,
+sampled once at the start (same convention as the discarded spectral
+version, and same caveat: not refreshed mid-search).
+
+method=:greedy -- scans every (x in F, y in pool) pair each step (an
+O(B * pool_size) scan, each pair scored in O(B) via a TRIAL bump/undo
+against a COPY of the current r -- see implementation note below on
+why a copy is used rather than true in-place trial), takes the single
+most-negative-dE Sidon-preserving swap, commits it (mutating the real
+r), and repeats. Stops early if no improving Sidon-preserving swap is
+found. method=:anneal -- draws one random (x,y) pair per step,
+Metropolis-accepts based on the exact dE (same acceptance rule as the
+discarded spectral version), and only commits/mutates r if the
+resulting F is Sidon (a rejected proposal is a wasted step, same
+accepted tradeoff as before -- see chat).
+
+IMPLEMENTATION NOTE ON COST: scoring a single candidate swap exactly
+costs O(B) (apply pairsum_remove!+pairsum_add! to a trial copy of r,
+read off the total dE, discard the copy) -- copying a Dict of size
+O(B^2) (worst case, though typically much sparser for a Sidon set) on
+every one of the O(B*pool_size) candidate evaluations in a greedy step
+means the ACTUAL per-step cost is more like O(B * pool_size * B) in
+the worst case if r is dense, not the idealized O(B*pool_size). This
+is addressed by NOT copying r at all: instead, each candidate is
+scored by applying pairsum_remove!/pairsum_add! directly to the LIVE
+r, reading off dE, and then UNDOING the exact same bumps (which is
+exact and cheap since pairsum_bump! is its own exact inverse under
+negated delta) if the candidate is not the one taken. This keeps each
+candidate evaluation at genuine O(B) regardless of how large r's
+current support is.
 
 Returns (F_final::Vector{Int}, n_accepted::Int, n_tried::Int,
-history::Vector{Float64}) where history[i] is the exact (not linear)
-sum_chi |S_chi|^8 over Omega, evaluated after step i, so the ACTUAL
-trajectory of the (Omega-restricted) objective is visible -- distinct
-from the full character-sampler-estimated 8th moment over ALL
-characters, which is what run_spectral_swap_comparison below measures
-separately via the usual run_character_sampler_threaded call, since
-Omega is only a subset of the full spectrum and improving it is not
-guaranteed to improve the full-spectrum moment (another place where
-the linearization / mode-truncation approximation could fail to
-transfer -- measured, not assumed).
+history::Vector{Int}) where history[i] is the EXACT (not sampled,
+not linearized) sum_t r(t)^2 after step i.
 """
-function spectral_swap_search(F_int::Vector{Int}, N::Int;
-                                 n_modes::Int, pool_size::Int, n_probe::Int,
-                                 rng::AbstractRNG,
-                                 method::Symbol = :greedy,
-                                 max_steps::Int = 200,
-                                 recompute_every::Int = 20,
-                                 anneal_T0::Float64 = 1.0,
-                                 anneal_cooling::Float64 = 0.98)
+function pairsum_swap_search(F_int::Vector{Int}, N::Int;
+                                pool_size::Int,
+                                rng::AbstractRNG,
+                                method::Symbol = :greedy,
+                                max_steps::Int = 200,
+                                anneal_T0::Float64 = 1.0,
+                                anneal_cooling::Float64 = 0.98)
     @assert method in (:greedy, :anneal) "method must be :greedy or :anneal, got $method"
 
     F = copy(F_int)
     Fset = Set(F)
+    r, E = pairsum_energy(F, N)
 
-    # Fixed random candidate pool of size pool_size, sampled once, of
-    # elements NOT currently in F -- matches the proposal's "Theta(B)
-    # candidate pool", not refreshed mid-search (see docstring).
     pool_candidates = Int[]
     attempts = 0
     while length(pool_candidates) < pool_size && attempts < 20 * pool_size + N
@@ -1774,53 +1750,43 @@ function spectral_swap_search(F_int::Vector{Int}, N::Int;
         end
     end
     if length(pool_candidates) < pool_size
-        @warn "spectral_swap_search: could only build a pool of $(length(pool_candidates)) " *
+        @warn "pairsum_swap_search: could only build a pool of $(length(pool_candidates)) " *
               "(wanted $pool_size) after exhausting the attempt budget -- proceeding with " *
               "the smaller pool rather than looping indefinitely"
     end
 
-    # Omega: the bad-mode set, fixed for the whole search (see
-    # docstring -- not refreshed per step, for comparability of the
-    # score across steps).
-    Omega = top_bad_characters(F, N; n_modes = n_modes, n_probe = n_probe)
-
     n_accepted = 0
     n_tried = 0
-    history = Float64[]
+    history = Int[]
     T = anneal_T0
 
-    for step in 1:max_steps
-        # Step 1: exact S_chi over Omega for every current F element,
-        # from scratch (see NOTE in docstring on recompute_every).
-        S_vec = Vector{ComplexF64}(undef, length(Omega))
-        for (i, k) in enumerate(Omega)
-            s = 0.0 + 0.0im
-            @inbounds for f in F
-                s += cis(2pi * k * f / N)
-            end
-            S_vec[i] = s
-        end
-        push!(history, sum(abs2(s)^4 for s in S_vec))
+    # Scores one candidate swap (x -> y) EXACTLY, in O(B), by applying
+    # the bumps to the LIVE r, reading dE, then undoing them (exact
+    # inverse: re-applying the same bump sequence with negated deltas
+    # restores r to byte-for-byte the same state, since pairsum_bump!
+    # is a pure function of (old value, delta) -> new value with no
+    # hidden state). Does NOT mutate F -- only r, and only transiently.
+    function score_swap(x::Int, y::Int)
+        F_without_x = filter(!=(x), F)
+        dE = pairsum_remove!(r, x, F, N)
+        dE += pairsum_add!(r, y, F_without_x, N)
+        # Undo: remove y's just-added contributions, re-add x's.
+        pairsum_remove!(r, y, vcat(F_without_x, [y]), N)
+        pairsum_add!(r, x, F_without_x, N)
+        return dE
+    end
 
-        # Step 2 (the actual W_chi(z) table from the proposal): built
-        # ONCE per step over every z currently relevant (all of F plus
-        # the whole candidate pool), reused for every swap-score lookup
-        # this step -- avoids the O(F*pool) redundant cis() recomputation
-        # an earlier draft of this file had (see build_phase_table's
-        # docstring).
-        W_table = build_phase_table(vcat(F, pool_candidates), Omega, N)
+    for step in 1:max_steps
+        push!(history, E)
 
         if method == :greedy
-            best_dE = 0.0
+            best_dE = 0
             best_swap = nothing
             for x in F
                 for y in pool_candidates
                     n_tried += 1
-                    dE = delta_E_swap(x, y, S_vec, W_table, Omega)
-                    dE >= best_dE && continue  # only interested in improvements (dE < 0)
-                    # Check Sidon-ness of the post-swap set BEFORE
-                    # accepting this as the current best candidate --
-                    # exact check, not linearized (see header comment).
+                    dE = score_swap(x, y)
+                    dE >= best_dE && continue
                     F_trial = copy(F)
                     idx = findfirst(==(x), F_trial)
                     F_trial[idx] = y
@@ -1831,12 +1797,17 @@ function spectral_swap_search(F_int::Vector{Int}, N::Int;
                 end
             end
             if best_swap === nothing
-                # No improving, Sidon-preserving swap found -- greedy
-                # stops early rather than burning the remaining step
-                # budget on no-ops.
                 break
             end
             x, y = best_swap
+            F_without_x = filter(!=(x), F)
+            actual_dE = pairsum_remove!(r, x, F, N)
+            actual_dE += pairsum_add!(r, y, F_without_x, N)
+            @assert actual_dE == best_dE "pairsum energy bookkeeping mismatch: " *
+                "committed dE=$actual_dE != scored dE=$best_dE -- indicates a bug " *
+                "in score_swap's trial-and-undo symmetry, investigate before trusting " *
+                "any result from this search"
+            E += actual_dE
             idx = findfirst(==(x), F)
             F[idx] = y
             delete!(Fset, x)
@@ -1849,7 +1820,7 @@ function spectral_swap_search(F_int::Vector{Int}, N::Int;
             x = rand(rng, F)
             y = rand(rng, pool_candidates)
             n_tried += 1
-            dE = delta_E_swap(x, y, S_vec, W_table, Omega)
+            dE = score_swap(x, y)
             accept = if dE <= 0
                 true
             else
@@ -1860,6 +1831,10 @@ function spectral_swap_search(F_int::Vector{Int}, N::Int;
                 idx = findfirst(==(x), F_trial)
                 F_trial[idx] = y
                 if sidon_defect(F_trial, N) == 0
+                    F_without_x = filter(!=(x), F)
+                    actual_dE = pairsum_remove!(r, x, F, N)
+                    actual_dE += pairsum_add!(r, y, F_without_x, N)
+                    E += actual_dE
                     F[idx] = y
                     delete!(Fset, x)
                     push!(Fset, y)
@@ -1867,10 +1842,6 @@ function spectral_swap_search(F_int::Vector{Int}, N::Int;
                     push!(pool_candidates, x)
                     n_accepted += 1
                 end
-                # If the Sidon check fails, the swap is simply not
-                # taken -- the Metropolis draw accepted the LINEARIZED
-                # move, but Sidon-ness is enforced as a hard exact
-                # constraint on top, same as the :greedy branch.
             end
             T *= anneal_cooling
         end
@@ -1880,75 +1851,81 @@ function spectral_swap_search(F_int::Vector{Int}, N::Int;
 end
 
 # ---------------------------------------------------------------
-# run_spectral_swap_comparison: seeds via greedy_sidon_subset, refines
-# via spectral_swap_search, measures with the usual character sampler.
+# run_pairsum_swap_comparison: seeds via greedy_sidon_subset, refines
+# via pairsum_swap_search, measures with the usual character sampler
+# -- INCLUDING MULTIPLE INDEPENDENT SAMPLER SEEDS PER (N, before/after)
+# SO THE BEFORE/AFTER COMPARISON HAS A VISIBLE NOISE FLOOR.
 # ---------------------------------------------------------------
+#
+# WHY MULTIPLE SAMPLER SEEDS: the discarded spectral-swap version
+# reported single-seed before/after ratios (e.g. 563 -> 599) with no
+# indication of whether that gap was outside Monte Carlo noise --
+# flagged directly as a gap by the external review. Fixed here by
+# running run_character_sampler_threaded n_sampler_seeds times (with
+# DIFFERENT seeds) for both the before-refinement and after-refinement
+# F, and reporting mean +/- standard error for each, so a reader can
+# see directly whether "after" is outside "before"'s noise band rather
+# than having to trust a single point estimate.
 
 """
-    run_spectral_swap_comparison(; Ns, m_per_point, m_scaling, m_floor,
-                                    m_cap, seed, method, n_modes_factor,
-                                    pool_size_factor, n_probe_factor,
-                                    max_steps)
+    run_pairsum_swap_comparison(; Ns, m_per_point, m_scaling, m_floor,
+                                   m_cap, seed, method, pool_size_factor,
+                                   max_steps, n_sampler_seeds)
 
-For each N in `Ns`: builds B = round(N^0.4) (SAME B convention as
-compare_strategies' greedy/greedy_low_energy, for direct comparison --
-NOT the Singer-family's N^0.2 convention, since this strategy is not
-Singer-based) via greedy_sidon_subset, then refines it via
-spectral_swap_search (n_modes = round(n_modes_factor*B), pool_size =
-round(pool_size_factor*B), n_probe = round(n_probe_factor*B)),
-re-verifies Sidon-ness of the refined set (should be 0 by construction
--- spectral_swap_search only accepts Sidon-preserving swaps -- checked
-rather than assumed), then measures the SAME character-sampler 8th-
-moment ratio used throughout this file, both BEFORE (the greedy seed
-alone) and AFTER refinement, so the refinement's effect is visible as
-a direct before/after pair at matched (N, B) rather than only as an
-isolated number.
+Same overall shape as the discarded run_spectral_swap_comparison, but:
+  - refines via pairsum_swap_search (exact M4 minimization) instead of
+    the linearized spectral surrogate;
+  - runs `n_sampler_seeds` INDEPENDENT character-sampler measurements
+    (different seeds) for both the greedy seed (before) and the
+    refined F (after), reporting mean and standard error of the ratio
+    for each, so the before/after comparison carries a visible
+    confidence interval instead of a single noisy point estimate.
 
-Reports n_accepted/n_tried from the swap search (how much of the
-step/pool budget actually produced a Sidon-preserving improving swap)
-alongside the ratio, since a low acceptance rate would indicate the
-Sidon constraint is the binding limitation rather than the spectral
-scoring itself -- distinguishing those two failure modes matters for
-deciding whether to invest in a bigger pool/more steps versus a
-fundamentally different move set.
+Also reports the EXACT M4 energy (from pairsum_swap_search's history)
+before and after refinement -- this is not sampled/noisy at all (it's
+computed exactly), so it directly confirms whether the local search
+achieved what it was actually optimizing (M4 should only ever
+decrease or stay flat under :greedy; may fluctuate under :anneal),
+independent of whether that translates into a lower M8 ratio.
 """
-function run_spectral_swap_comparison(; Ns::Vector{Int} = [10_007, 100_003, 1_000_003, 10_000_019],
-                                          m_per_point::Int = 20_000,
-                                          m_scaling::Symbol = :sqrt_N,
-                                          m_floor::Int = 2_000,
-                                          m_cap::Int = typemax(Int),
-                                          seed::Int = 1,
-                                          method::Symbol = :greedy,
-                                          n_modes_factor::Float64 = 1.0,
-                                          pool_size_factor::Float64 = 1.0,
-                                          n_probe_factor::Float64 = 5.0,
-                                          max_steps::Int = 200)
+function run_pairsum_swap_comparison(; Ns::Vector{Int} = [10_007, 100_003, 1_000_003, 10_000_019],
+                                        m_per_point::Int = 20_000,
+                                        m_scaling::Symbol = :sqrt_N,
+                                        m_floor::Int = 2_000,
+                                        m_cap::Int = typemax(Int),
+                                        seed::Int = 1,
+                                        method::Symbol = :greedy,
+                                        pool_size_factor::Float64 = 1.0,
+                                        max_steps::Int = 200,
+                                        n_sampler_seeds::Int = 5)
     N0 = Float64(first(Ns))
     results = NamedTuple[]
 
-    println("\n=== Spectral swap local search (method=$method), seed=greedy_sidon_subset ===")
-    println("N\tB\tm\tratio_before\tratio_after\tn_accepted\tn_tried\tsidon_defect_after\telapsed_s")
+    println("\n=== Pair-sum energy local search (method=$method), seed=greedy_sidon_subset, " *
+            "$n_sampler_seeds independent sampler seeds per point ===")
+    println("N\tB\tm\tM4_before(exact)\tM4_after(exact)\t" *
+            "ratio_before(mean±se)\tratio_after(mean±se)\tn_accepted\tn_tried\tdefect_after\telapsed_s")
     for N in Ns
         B = round(Int, N^0.4)
-        rng = MersenneTwister(seed)
-        F_seed = greedy_sidon_subset(N, B, rng)
+        build_rng = MersenneTwister(seed)
+        F_seed = greedy_sidon_subset(N, B, build_rng)
         @assert length(F_seed) == B "greedy seed returned |F|=$(length(F_seed)), expected B=$B"
         @assert sidon_defect(F_seed, N) == 0 "greedy seed is not Sidon -- cannot proceed"
 
-        n_modes  = max(1, round(Int, n_modes_factor * B))
-        pool_sz  = max(1, round(Int, pool_size_factor * B))
-        n_probe  = max(n_modes, round(Int, n_probe_factor * B))
+        _, M4_before_exact = pairsum_energy(F_seed, N)
+
+        pool_sz = max(1, round(Int, pool_size_factor * B))
 
         t0 = time()
-        F_final, n_accepted, n_tried, history = spectral_swap_search(
-            F_seed, N; n_modes = n_modes, pool_size = pool_sz, n_probe = n_probe,
-            rng = rng, method = method, max_steps = max_steps)
+        F_final, n_accepted, n_tried, history = pairsum_swap_search(
+            F_seed, N; pool_size = pool_sz, rng = build_rng, method = method, max_steps = max_steps)
         search_elapsed = time() - t0
 
+        M4_after_exact = isempty(history) ? M4_before_exact : history[end]
         defect_after = sidon_defect(F_final, N)
         if defect_after != 0
             @warn "N=$N: refined F has nonzero sidon_defect=$defect_after -- " *
-                  "this should be impossible (spectral_swap_search only accepts " *
+                  "this should be impossible (pairsum_swap_search only accepts " *
                   "Sidon-preserving swaps); investigate before trusting this row"
         end
 
@@ -1967,32 +1944,63 @@ function run_spectral_swap_comparison(; Ns::Vector{Int} = [10_007, 100_003, 1_00
         flat = (Bf^8) / N
 
         F_before_wrapped = [[x] for x in F_seed]
-        result_before = run_character_sampler_threaded(G_for(N), F_before_wrapped; m = m, seed = seed,
-                                                          k_size = N, report_every = typemax(Int))
-        ratio_before = result_before.M8_running[end] / flat
-
         F_after_wrapped = [[x] for x in F_final]
-        result_after = run_character_sampler_threaded(G_for(N), F_after_wrapped; m = m, seed = seed,
-                                                         k_size = N, report_every = typemax(Int))
-        ratio_after = result_after.M8_running[end] / flat
 
-        elapsed = time() - t0   # total time for this N: search + both before/after sampler runs
+        ratios_before = Float64[]
+        ratios_after = Float64[]
+        for s in 1:n_sampler_seeds
+            sampler_seed = seed * 1_000_003 + s   # distinct, deterministic per (seed, s)
+            res_b = run_character_sampler_threaded(G_for(N), F_before_wrapped; m = m,
+                                                      seed = sampler_seed, k_size = N,
+                                                      report_every = typemax(Int))
+            push!(ratios_before, res_b.M8_running[end] / flat)
+            res_a = run_character_sampler_threaded(G_for(N), F_after_wrapped; m = m,
+                                                      seed = sampler_seed, k_size = N,
+                                                      report_every = typemax(Int))
+            push!(ratios_after, res_a.M8_running[end] / flat)
+        end
 
-        @printf("%d\t%d\t%d\t%.4f\t\t%.4f\t\t%d\t\t%d\t%d\t\t\t%.2f\n",
-                N, B, m, ratio_before, ratio_after, n_accepted, n_tried, defect_after, elapsed)
+        mean_before = mean(ratios_before)
+        mean_after = mean(ratios_after)
+        se_before = n_sampler_seeds > 1 ? std(ratios_before) / sqrt(n_sampler_seeds) : NaN
+        se_after = n_sampler_seeds > 1 ? std(ratios_after) / sqrt(n_sampler_seeds) : NaN
 
-        push!(results, (; N, B, m, ratio_before, ratio_after, n_accepted, n_tried,
-                           defect_after, elapsed))
+        elapsed = time() - t0
+
+        @printf("%d\t%d\t%d\t%d\t\t\t%d\t\t\t%.4f±%.4f\t%.4f±%.4f\t%d\t\t%d\t%d\t\t%.2f\n",
+                N, B, m, M4_before_exact, M4_after_exact,
+                mean_before, se_before, mean_after, se_after,
+                n_accepted, n_tried, defect_after, elapsed)
+
+        push!(results, (; N, B, m, M4_before_exact, M4_after_exact,
+                           mean_before, se_before, mean_after, se_after,
+                           ratios_before, ratios_after,
+                           n_accepted, n_tried, defect_after, elapsed))
+    end
+
+    println("\n--- Significance check: is (after - before) outside a 2-standard-error band? ---")
+    println("N\tmean_after - mean_before\tcombined_2se\toutside_2se_band?")
+    for r in results
+        diff = r.mean_after - r.mean_before
+        combined_2se = 2 * sqrt(r.se_before^2 + r.se_after^2)
+        outside = !isnan(combined_2se) && abs(diff) > combined_2se
+        @printf("%d\t%.4f\t\t\t\t%.4f\t\t%s\n", r.N, diff, combined_2se,
+                outside ? "YES (likely real)" : "no (within noise)")
+    end
+    if n_sampler_seeds < 3
+        @warn "n_sampler_seeds=$n_sampler_seeds is too few for the standard-error " *
+              "estimates above to be trustworthy themselves -- use at least 5-10 " *
+              "for a meaningful noise-floor check, this default/call used fewer"
     end
 
     if length(results) >= 2
-        println("\n--- Spectral-swap-refined growth-exponent fit (AFTER refinement, vs real N) ---")
-        fit_rows = [(; N = r.N, B = r.B, m = r.m, ratio = r.ratio_after,
+        println("\n--- Pair-sum-refined growth-exponent fit (AFTER refinement, mean ratio vs real N) ---")
+        fit_rows = [(; N = r.N, B = r.B, m = r.m, ratio = r.mean_after,
                        maxU = 0.0, defect = r.defect_after, elapsed = r.elapsed)
                     for r in results]
         fit = fit_growth_exponent(fit_rows)
-        println("\n--- For comparison, UNREFINED greedy-seed fit (BEFORE refinement) ---")
-        fit_rows_before = [(; N = r.N, B = r.B, m = r.m, ratio = r.ratio_before,
+        println("\n--- For comparison, UNREFINED greedy-seed fit (BEFORE refinement, mean ratio) ---")
+        fit_rows_before = [(; N = r.N, B = r.B, m = r.m, ratio = r.mean_before,
                               maxU = 0.0, defect = 0, elapsed = r.elapsed)
                            for r in results]
         fit_before = fit_growth_exponent(fit_rows_before)
@@ -2255,27 +2263,30 @@ if abspath(PROGRAM_FILE) == @__FILE__
         @error "run_singer_quad_filtered_exponent_sweep() failed" exception=(e, catch_backtrace())
     end
 
-    # External proposal: spectral swap local search -- greedy-seeded,
-    # refined by ranking swaps against a linearized 8th-moment
-    # gradient over the worst-magnitude Fourier modes. In the real
-    # genus-2/D1-atom setting Sidon-ness is automatic and needs no
-    # separate check; this code operates on plain Z/N residues, so it
-    # simulates that same constraint via an explicit sidon_defect
-    # check on every accepted swap (see Strategy 7 header comment for
-    # the gradient correction and why that check stands in for the
-    # D1-atom structural guarantee).
+    # Strategy 7 (current version): pair-sum energy local search --
+    # greedy-seeded, refined by an EXACT O(B)-per-swap minimization of
+    # sum_t r(t)^2 (= M4, exactly), used as an untested proxy for M8.
+    # Replaces the earlier linearized-spectral-gradient version of
+    # Strategy 7, which was discarded after making the full-spectrum
+    # ratio worse in 2 of 3 tested N's (see Strategy 7 header comment
+    # for the full history and the numerically-verified identities
+    # this version is built on). In the real genus-2/D1-atom setting
+    # Sidon-ness is automatic and needs no separate check; this code
+    # operates on plain Z/N residues, so it simulates that same
+    # constraint via an explicit sidon_defect check on every accepted
+    # swap.
     try
-        run_spectral_swap_comparison(; method = :greedy)
+        run_pairsum_swap_comparison(; method = :greedy)
     catch e
-        @error "run_spectral_swap_comparison(:greedy) failed" exception=(e, catch_backtrace())
+        @error "run_pairsum_swap_comparison(:greedy) failed" exception=(e, catch_backtrace())
     end
 
     # Same refinement, but simulated annealing instead of pure greedy
     # descent, to check whether greedy is getting stuck in a local
     # optimum the annealed variant can escape.
     try
-        run_spectral_swap_comparison(; method = :anneal)
+        run_pairsum_swap_comparison(; method = :anneal)
     catch e
-        @error "run_spectral_swap_comparison(:anneal) failed" exception=(e, catch_backtrace())
+        @error "run_pairsum_swap_comparison(:anneal) failed" exception=(e, catch_backtrace())
     end
 end
