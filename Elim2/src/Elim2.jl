@@ -134,7 +134,13 @@ end
 #                                out: part_j_worker.jl `include()`s it
 #                                directly as a bare-Julia file, without
 #                                going through this package/Oscar at all)
-#   01_elim2_main.jl            module Elim2Main            (needs SampleSpecs)
+#   00b_exceptional_locus_guard.jl module ExceptionalLocusGuard (needs SampleSpecs only --
+#                                symbolic mod-p precondition check, added per
+#                                advisory section 6.2; deliberately as
+#                                dependency-light as SampleSpecs itself, for
+#                                the same reason: it needs to run BEFORE any
+#                                Oscar/tower/HC.jl work, on the spec alone)
+#   01_elim2_main.jl            module Elim2Main            (needs SampleSpecs, ExceptionalLocusGuard)
 #   02_norm_elim_diag.jl        module NormElimDiag          (needs Elim2Main, SampleSpecs)
 #   03_part_i_squarefree_diag.jl module PartISquarefreeDiag  (needs NormElimDiag)
 #   04_part_i_bench.jl          module PartIBench            (needs NormElimDiag, PartISquarefreeDiag)
@@ -143,9 +149,12 @@ end
 # This mirrors the original single-file elim2_refactored.jl's top-to-
 # bottom submodule order exactly -- only the file boundaries are new
 # (00_sample_specs.jl did not exist as a separate original unit; it is a
-# pure extraction of a few lines that used to live inside 01_elim2_main.jl).
+# pure extraction of a few lines that used to live inside 01_elim2_main.jl.
+# 00b_exceptional_locus_guard.jl is new, not a prior-original extraction --
+# see its own header.)
 ################################################################################
 include("00_sample_specs.jl")
+include("00b_exceptional_locus_guard.jl")
 include("01_elim2_main.jl")
 include("02_norm_elim_diag.jl")
 include("03_part_i_squarefree_diag.jl")

@@ -401,6 +401,98 @@ println("Saved the same points to ", csv_path, " (plain CSV, portable).")
 println()
 
 # ---------------------------------------------------------------------------
+# Step 5a2: scan for advisory section 6.2's exceptional locus (D ~ K_C),
+# BEFORE the expensive Smale certification step below.
+#
+# WHY HERE: section 6.2's generic-finiteness argument (sigma: C^(2) -> J
+# generically birational for genus 2) does not cover points whose divisor
+# class is D ~ K_C ({P,Q} conjugate under the hyperelliptic involution --
+# same x-coordinate, opposite w-coordinate), nor the D=2P tangency case.
+# If any witness points land there, their finiteness needs the numerical
+# evidence directly (this run's own witness count), not the generic
+# argument -- worth knowing BEFORE spending the certification pass below,
+# not after.
+#
+# This checks sample 1's (a1,a2,wa1,wa2) and sample 2's (b1,b2,wb1,wb2)
+# separately and cross-checks they agree (both samples are forced onto the
+# same divisor class D by Fu_decoupled/Fv_decoupled, so a disagreement
+# would indicate a Mumford-identity inconsistency worth its own
+# investigation, not this script's job to resolve).
+# ---------------------------------------------------------------------------
+
+println("=" ^ 70)
+println("Scanning for section 6.2's exceptional locus (D ~ K_C)")
+println("=" ^ 70)
+
+const EXC_LOCUS_TOL = 1e-4   # same tolerance as classify_and_reduce_d1.jl's
+                              # MATCH_TOL, for consistency with the rest of
+                              # this pipeline's post-processing scripts.
+
+exc_needed = [:a1, :a2, :wa1, :wa2, :b1, :b2, :wb1, :wb2]
+exc_idx = Dict(v => findfirst(==(v), gen_names) for v in exc_needed)
+for v in exc_needed
+    isnothing(exc_idx[v]) &&
+        error("exceptional-locus scan: could not find $v in gen_names=$gen_names")
+end
+
+function _is_conjugate_pair(x1, y1, x2, y2; tol::Float64 = EXC_LOCUS_TOL)
+    return abs(x2 - x1) < tol && abs(y2 + y1) < tol
+end
+
+sample1_exc_hits = Int[]
+sample2_exc_hits = Int[]
+exc_mismatched = Int[]
+
+for (i, pt) in enumerate(witness_points)
+    a1v, a2v = pt[exc_idx[:a1]], pt[exc_idx[:a2]]
+    wa1v, wa2v = pt[exc_idx[:wa1]], pt[exc_idx[:wa2]]
+    b1v, b2v = pt[exc_idx[:b1]], pt[exc_idx[:b2]]
+    wb1v, wb2v = pt[exc_idx[:wb1]], pt[exc_idx[:wb2]]
+
+    hit1 = _is_conjugate_pair(a1v, wa1v, a2v, wa2v)
+    hit2 = _is_conjugate_pair(b1v, wb1v, b2v, wb2v)
+
+    hit1 && push!(sample1_exc_hits, i)
+    hit2 && push!(sample2_exc_hits, i)
+    (hit1 != hit2) && push!(exc_mismatched, i)
+end
+
+println("Sample 1 (a1,a2,wa1,wa2) hits exceptional locus: ",
+        length(sample1_exc_hits), " / ", length(witness_points))
+println("Sample 2 (b1,b2,wb1,wb2) hits exceptional locus: ",
+        length(sample2_exc_hits), " / ", length(witness_points))
+
+if !isempty(exc_mismatched)
+    println("*** WARNING: ", length(exc_mismatched), " point(s) have sample 1 ",
+            "and sample 2 disagreeing on hitting the exceptional locus -- ",
+            "unexpected if the Mumford identity holds. Indices: ", exc_mismatched)
+end
+
+exc_hit_indices = sort(union(sample1_exc_hits, sample2_exc_hits))
+if isempty(exc_hit_indices)
+    println("No witness points lie on the exceptional locus -- section 6.2's ",
+            "generic-finiteness argument applies unobstructed to every point ",
+            "in this run.")
+else
+    println("NOTE: ", length(exc_hit_indices), " witness point(s) (indices ",
+            exc_hit_indices, ") lie on the exceptional locus. Section 6.2's ",
+            "argument is silent on these by construction -- their finiteness ",
+            "rests on this run's own numerical/Hensel result (below), not on ",
+            "the generic birationality argument. Not an error, just recorded ",
+            "so it isn't mistaken for full generic-argument coverage.")
+end
+
+exc_path = joinpath(out_dir, "exceptional_locus_scan.jls")
+serialize(exc_path, (
+    tol = EXC_LOCUS_TOL,
+    sample1_hits = sample1_exc_hits,
+    sample2_hits = sample2_exc_hits,
+    mismatched = exc_mismatched,
+))
+println("Saved exceptional-locus scan results to ", exc_path, ".")
+println()
+
+# ---------------------------------------------------------------------------
 # Step 5b: certify the witness points (Smale alpha-theory), BEFORE Hensel.
 #
 # WHY: numerical_irreducible_decomposition's "degree 1" / "dimension 0"

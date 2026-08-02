@@ -21,6 +21,7 @@ using Oscar
 using Serialization
 using ..Elim2: locate_engine_default
 using ..SampleSpecs: SampleSpec, default_sample1, default_sample2
+using ..ExceptionalLocusGuard: guard_sample_spec
 
 ################################################################################
 # Struct: CurveConfig -- the curve/field constants, identical for both
@@ -1342,6 +1343,16 @@ of this as explicit arguments rather than reading globals, so
 function run_main(PhiSymbolic; cfg::CurveConfig = default_curve_config())
     spec1 = default_sample1()
     spec2 = default_sample2()
+
+    # Section 6.2 precondition: reject either spec before any tower/HC.jl
+    # work is attempted if its divisor class D lies in the exceptional
+    # locus (D ~ K_C, or the D=2P tangency) where sigma: C^(2) -> J fails
+    # to be injective -- the one place the generic-finiteness argument
+    # does not apply. Cheap (two mod-p operations per spec); raises with a
+    # specific message telling you to regenerate rather than solve and
+    # trust the generic argument where it doesn't hold.
+    guard_sample_spec(spec1, cfg.p; label = "sample 1")
+    guard_sample_spec(spec2, cfg.p; label = "sample 2")
 
     res1 = call_symbolic_residual(PhiSymbolic, spec1, cfg; label = "sample 1")
     res2 = call_symbolic_residual(PhiSymbolic, spec2, cfg; label = "sample 2")
