@@ -1127,6 +1127,882 @@ function run_singer_embedded_exponent_sweep(; Ns::Vector{Int} = [10_007, 100_003
 end
 
 # ---------------------------------------------------------------
+# Strategy 6: Singer set with an incremental 8th-moment-style filter
+# ---------------------------------------------------------------
+#
+# USER'S IDEA: unlike Strategy 5 above (which changes what F's
+# elements ARE, by summing Singer-point pairs), this one keeps F as a
+# genuine subset of D itself, taken in Singer order, but adds a SECOND
+# rejection filter on top of the ordinary Sidon check as each new
+# Singer element is considered:
+#
+#   1. Take D[1] unconditionally (first Singer element, no filter to
+#      apply yet -- nothing accepted before it to pair against).
+#   2. For each subsequent Singer element D[i] (i = 2, 3, ...., in
+#      native Singer order, no shuffling):
+#        a. Draw partner_i uniformly at random from the elements of F
+#           ALREADY ACCEPTED so far (not from all of D, not from Z/N).
+#        b. Compute diff_i = mod(D[i] - partner_i, N).
+#        c. Reject D[i] if diff_i + diff_prev has been seen before,
+#           for ANY previously accepted pair's diff_prev -- i.e.
+#           maintain a running Set of all such SUMS-OF-TWO-DIFFERENCES
+#           seen so far (call it quad_sums_seen), and reject D[i] if
+#           diff_i + diff_prev (mod N) lands on a value already in
+#           quad_sums_seen for some earlier accepted diff_prev.
+#        d. ALSO still apply the ordinary Sidon check against F itself
+#           (ordinary pairwise-sum collision, same rule as
+#           greedy_sidon_subset) -- both filters must pass.
+#        e. If D[i] fails either filter, skip it and move to D[i+1].
+#           NO retry with a different partner, no replacement --
+#           a rejected Singer element is simply never revisited, so
+#           |F| can and generally will be SMALLER than |D|.
+#
+# WHY THIS IS A GENUINE 8TH-MOMENT-STYLE FILTER, NOT JUST A RELABELED
+# 4TH-MOMENT ONE: a term contributing to the 8th moment / U^4-type sum
+# looks like a QUADRUPLE of differences summing to something repeated
+# -- schematically (a-b)+(c-d) colliding with another (a'-b')+(c'-d').
+# diff_i + diff_prev is exactly a sum of two differences of F-pairs,
+# so checking THAT value for collisions (rather than a single
+# difference, which is all the ordinary Sidon check does) is screening
+# against exactly the kind of 4-term additive coincidence that feeds
+# the 8th moment. This is still an O(B)-per-step, O(B^2)-total
+# incremental proxy -- same complexity class as greedy_low_energy's
+# tiebreak above -- NOT an exhaustive 8th-moment computation (which
+# would be the O(B^4)-or-worse thing the character sampler exists to
+# estimate cheaply instead of computing exactly).
+#
+# WHY THIS IS NOT A DERIVATION -- MUST BE MEASURED, NOT ASSUMED: per
+# section 7.6 (see file header), no O(B^2)-cost selection rule can be
+# PROVEN to control the true 8th moment / U^3-level behavior; this is
+# exactly that kind of rule, applied here to a Singer starting order
+# instead of a random one. It might help, it might not, and the random
+# partner draw means two runs with different seeds can accept a
+# different SUBSET of D and reach a different final B. That is
+# reported honestly (this strategy, like greedy_low_energy, cannot
+# promise an exact target_size -- see the wrapper below) rather than
+# assumed away.
+#
+# RELATIONSHIP TO EXISTING STRATEGIES: this reuses the Singer element
+# ORDER as the candidate stream (Strategy 4's D, walked in native
+# order rather than reshuffled) but reuses greedy_low_energy's
+# incremental-rejection SHAPE (Strategy 3) applied to a new quantity
+# (sum-of-two-differences rather than a density tiebreak). It is
+# neither pure Singer nor pure greedy -- a genuinely new hybrid, hence
+# its own strategy slot rather than a variant flag on either.
+
+"""
+    singer_quad_filtered_subset(q, rng; max_size=nothing) -> (F::Vector{Int}, Nq::Int, n_rejected::Int)
+
+Builds the native Singer difference set D via
+singer_sidon_subset_native(q, rng) (Nq = q^2+q+1, |D| = q+1), then
+walks D IN ITS NATIVE ORDER (no shuffling -- the Singer order itself
+is the point of interest here, unlike every rejection-based strategy
+above which shuffles first) applying two filters to each candidate
+D[i] (i >= 2; D[1] is always accepted):
+
+  - Ordinary Sidon check against F (elements accepted so far): reject
+    if mod(D[i] + f, Nq) has already appeared as a pairwise sum for
+    any f in F, or if mod(2*D[i], Nq) has already appeared.
+  - NEW 8th-moment-style filter: draw partner_i uniformly at random
+    from F (already-accepted elements only -- requires F nonempty,
+    guaranteed once D[1] is in), compute diff_i = mod(D[i] - partner_i,
+    Nq), and reject if mod(diff_i + diff_prev, Nq) has been seen
+    before for any diff_prev recorded from an earlier ACCEPTED
+    element's own partner draw. Both filters must pass for D[i] to be
+    accepted; failing either means D[i] is skipped and never
+    reconsidered (no retry with a different partner).
+
+All arithmetic mod Nq (the native Singer modulus) -- this function
+does NOT embed into a larger N; callers wanting a specific target N
+should embed F afterward and re-verify sidon_defect there directly,
+same caveat as singer_paired_sidon_subset above (summing/differencing
+Singer points is a different construction than embedding D alone, and
+no wraparound-only argument is established for it).
+
+`max_size`, if given, stops walking D early once length(F) reaches
+it (D still has q+1-max_size elements left unexamined in that case).
+Default `nothing` walks the full D.
+
+Returns F (the accepted subset, in the order accepted -- a prefix-ish
+subsequence of D's native order, NOT necessarily contiguous since
+rejected elements are simply skipped), Nq, and n_rejected = the number
+of D's elements that failed at least one filter (so the rejection
+rate is visible rather than silently absorbed -- mirrors
+n_collisions in singer_paired_sidon_subset).
+"""
+function singer_quad_filtered_subset(q::Int, rng::AbstractRNG; max_size::Union{Int,Nothing} = nothing)
+    D, Nq = singer_sidon_subset_native(q, rng)
+
+    F = Int[D[1]]
+    sums_seen = Set{Int}()
+    push!(sums_seen, mod(2 * D[1], Nq))
+
+    # diffs_seen: every diff_i = mod(D[i]-partner_i, Nq) recorded from
+    # a previously ACCEPTED element's own partner draw (one per
+    # accepted element after the first).
+    diffs_seen = Int[]
+    # quad_sums_seen: the set of all mod(diff_i + diff_prev, Nq)
+    # values already produced by earlier accepted elements, checked
+    # against new candidates before they're accepted.
+    quad_sums_seen = Set{Int}()
+
+    n_rejected = 0
+
+    for i in 2:length(D)
+        max_size !== nothing && length(F) >= max_size && break
+        x = D[i]
+
+        # Ordinary Sidon check against F, same rule as
+        # greedy_sidon_subset / greedy_low_energy_sidon_subset.
+        sidon_ok = true
+        new_sums = Int[]
+        for y in F
+            s = mod(x + y, Nq)
+            if s in sums_seen
+                sidon_ok = false
+                break
+            end
+            push!(new_sums, s)
+        end
+        if sidon_ok
+            s2 = mod(2x, Nq)
+            (s2 in sums_seen) && (sidon_ok = false)
+        end
+
+        if !sidon_ok
+            n_rejected += 1
+            continue
+        end
+
+        # 8th-moment-style filter: random partner from F as already
+        # accepted (F is guaranteed nonempty here, since D[1] seeded
+        # it before this loop starts).
+        partner = rand(rng, F)
+        diff_i = mod(x - partner, Nq)
+
+        quad_hit = false
+        for dp in diffs_seen
+            if mod(diff_i + dp, Nq) in quad_sums_seen
+                quad_hit = true
+                break
+            end
+        end
+
+        if quad_hit
+            n_rejected += 1
+            continue
+        end
+
+        # Accept: commit both filters' bookkeeping together, only now
+        # that both have passed.
+        push!(F, x)
+        union!(sums_seen, new_sums)
+        push!(sums_seen, mod(2x, Nq))
+        for dp in diffs_seen
+            push!(quad_sums_seen, mod(diff_i + dp, Nq))
+        end
+        push!(diffs_seen, diff_i)
+    end
+
+    return (F, Nq, n_rejected)
+end
+
+# ---------------------------------------------------------------
+# run_singer_quad_filtered_comparison: embedded in real N, same
+# harness shape as run_singer_paired_comparison for direct comparison
+# against raw embedded-Singer, paired-Singer, and greedy.
+# ---------------------------------------------------------------
+
+"""
+    run_singer_quad_filtered_comparison(; Ns, target_q_exponent, m_per_point,
+                                           m_scaling, m_floor, m_cap, seed)
+
+Same structure as run_singer_paired_comparison, but F is built via
+singer_quad_filtered_subset (native-order Singer walk with the
+incremental 8th-moment-style sum-of-differences filter) instead of
+raw D or paired-sums D. Re-verifies Sidon-ness of the embedded F
+against the REAL target N via sidon_defect (not assumed). Also
+reports n_rejected from the filtering step and the resulting B=|F|,
+which can differ across N (and across seeds at fixed N) since both
+the rejection rate and the random partner draws are stochastic.
+
+Uses the SAME seed convention as the other comparison functions in
+this file (fresh MersenneTwister(seed) per N).
+"""
+function run_singer_quad_filtered_comparison(; Ns::Vector{Int} = [10_007, 100_003, 1_000_003, 10_000_019],
+                                                 target_q_exponent::Float64 = 0.2,
+                                                 m_per_point::Int = 20_000,
+                                                 m_scaling::Symbol = :sqrt_N,
+                                                 m_floor::Int = 2_000,
+                                                 m_cap::Int = typemax(Int),
+                                                 seed::Int = 1)
+    N0 = Float64(first(Ns))
+    results = NamedTuple[]
+
+    println("\n=== Singer QUAD-FILTERED (native order + 8th-moment-style filter), " *
+            "embedded in real target N (target_q_exponent=$target_q_exponent) ===")
+    println("N\tq\tNq\tB(=|F|)\trejected\tm\tratio(MC/flat, vs N)\tmax|U|\tsidon_defect(mod N)\telapsed_s")
+    for N in Ns
+        q_target = max(2, floor(Int, N^target_q_exponent))
+        q_target = min(q_target, N)
+        q = largest_prime_leq(q_target)
+        rng = MersenneTwister(seed)
+        F_int, Nq, n_rejected = singer_quad_filtered_subset(q, rng)
+        B = length(F_int)
+
+        if Nq > N
+            @warn "N=$N, q=$q: Nq=$Nq exceeds N -- skipping this point " *
+                  "(target_q_exponent=$target_q_exponent too large for this N)"
+            continue
+        end
+
+        # Same wraparound caveat as singer_paired_sidon_subset /
+        # run_singer_embedded_comparison: F's representatives live in
+        # [0, Nq-1], so this only needs Nq <= N to embed without
+        # relabeling (values themselves don't change), but Sidon-ness
+        # of F under mod N is re-checked directly below rather than
+        # assumed, since this filter's guarantee (no bugs in the
+        # filter logic) is about mod Nq, not mod N.
+        defect = sidon_defect(F_int, N)
+        if defect != 0
+            @warn "N=$N, q=$q (Nq=$Nq): quad-filtered Singer subset has nonzero " *
+                  "sidon_defect=$defect when checked mod N -- unexpected, since the " *
+                  "ordinary Sidon filter was enforced mod Nq and Nq<=N should not " *
+                  "introduce new collisions; investigate before trusting this row"
+        end
+
+        m_target = if m_scaling == :fixed
+            m_per_point
+        elseif m_scaling == :sqrt_N
+            round(Int, m_per_point * sqrt(N / N0))
+        elseif m_scaling == :linear_N
+            round(Int, m_per_point * (N / N0))
+        else
+            error("unknown m_scaling = $m_scaling")
+        end
+        m = clamp(m_target, m_floor, min(m_cap, N - 1))
+
+        F = [[x] for x in F_int]
+        t0 = time()
+        result = run_character_sampler_threaded(G_for(N), F; m = m, seed = seed,
+                                                   k_size = N, report_every = typemax(Int))
+        elapsed = time() - t0
+
+        Bf = Float64(B)
+        flat = (Bf^8) / N
+        ratio = result.M8_running[end] / flat
+        maxU = maximum(abs.(result.U_vals))
+
+        @printf("%d\t%d\t%d\t%d\t%d\t\t%d\t%.4f\t%.4f\t%d\t%.2f\n",
+                N, q, Nq, B, n_rejected, m, ratio, maxU, defect, elapsed)
+
+        push!(results, (; N, q, Nq, B, n_rejected, m, ratio, maxU, defect, elapsed))
+    end
+
+    if length(results) >= 2
+        println("\n--- Singer-quad-filtered growth-exponent fit (vs real N) ---")
+        fit_rows = [(; N = r.N, B = r.B, m = r.m, ratio = r.ratio,
+                       maxU = r.maxU, defect = r.defect, elapsed = r.elapsed)
+                    for r in results]
+        fit = fit_growth_exponent(fit_rows)
+        return (; results, fit)
+    end
+
+    return (; results, fit = nothing)
+end
+
+# ---------------------------------------------------------------
+# run_singer_quad_filtered_exponent_sweep: does the quad filter do
+# anything once Nq is large enough for its collision space to have
+# real crowding?
+# ---------------------------------------------------------------
+#
+# WHY THIS EXISTS: at target_q_exponent=0.2 (the real constraint),
+# Nq is tiny (e.g. 31, 57, 183, 553 across this sweep's Ns) and B is
+# correspondingly tiny (B ~ N^0.2, so single digits to low twenties).
+# The quad filter's collision check operates on a space of size Nq,
+# and with only ~B quad-sums ever generated (one per accepted
+# element), there is essentially no chance of a collision when Nq is
+# already comparable to or larger than B -- the filter has nothing to
+# bite on at this scale, which is exactly what the first
+# run_singer_quad_filtered_comparison run showed (0-9 rejections out
+# of a few dozen candidates, and a fitted gamma slightly WORSE than
+# unfiltered embedded-Singer at the same exponent).
+#
+# This does NOT mean the filter idea is dead -- it means 0.2 is a
+# regime where it structurally cannot be tested, since the collision
+# space it checks is too roomy relative to how few elements exist to
+# fill it. This sweep raises target_q_exponent (same values as
+# run_singer_embedded_exponent_sweep: 0.2 up to 0.45) purely to see
+# whether, once Nq and B both grow, quad-sum collisions start
+# happening often enough for the filter to actually reject a
+# meaningful fraction of candidates and produce a DIFFERENT gamma than
+# the unfiltered embedded-Singer baseline at the same exponent.
+#
+# STILL DIAGNOSTIC, NOT A NEW FACTOR-BASE PROPOSAL, for the same
+# reason run_singer_embedded_exponent_sweep is diagnostic: the real
+# problem fixes target_q_exponent=0.2 given B ~ p^(2/5) ~ N^0.2 with
+# N ~ p^2. Exponents above 0.2 here are not an available choice --
+# they exist only to locate where (if anywhere) the filter mechanism
+# starts to have teeth, so you can judge whether the mechanism is
+# fundamentally toothless or just being tested in the wrong regime.
+
+"""
+    run_singer_quad_filtered_exponent_sweep(; Ns, exponents, kwargs...)
+
+Runs run_singer_quad_filtered_comparison once per exponent in
+`exponents` (same default range as run_singer_embedded_exponent_sweep:
+0.2 up to 0.45), prints each full block via the existing per-exponent
+function, then prints a compact summary table of (exponent, fitted
+gamma, fitted C, R^2, and total rejections summed across all Ns at
+that exponent) so you can see both the gamma trend AND whether the
+filter's rejection rate actually grows with exponent (it should, if
+"Nq too small relative to B" is really why it did nothing at 0.2).
+
+kwargs are forwarded to each run_singer_quad_filtered_comparison call
+(e.g. Ns, m_per_point, seed).
+"""
+function run_singer_quad_filtered_exponent_sweep(; Ns::Vector{Int} = [10_007, 100_003, 1_000_003, 10_000_019],
+                                                     exponents::Vector{Float64} = [0.2, 0.3, 0.4, 0.45],
+                                                     kwargs...)
+    println("\n############################################################")
+    println("# SINGER QUAD-FILTERED EXPONENT SWEEP -- DIAGNOSTIC ONLY")
+    println("# Real factor-base constraint is target_q_exponent=0.2")
+    println("# (B ~ p^(2/5) ~ N^0.2 given N ~ p^2). Exponents above 0.2")
+    println("# below are NOT valid factor-base choices -- they exist only")
+    println("# to check whether the quad filter starts rejecting a")
+    println("# meaningful fraction of candidates once Nq/B grow, i.e.")
+    println("# whether target_q_exponent=0.2 is just too small a regime")
+    println("# for this filter to have any effect, rather than the filter")
+    println("# being fundamentally inert.")
+    println("############################################################")
+
+    summary = NamedTuple[]
+    for exp in exponents
+        run = run_singer_quad_filtered_comparison(; Ns = Ns, target_q_exponent = exp, kwargs...)
+        total_rejected = isempty(run.results) ? 0 : sum(r.n_rejected for r in run.results)
+        total_candidates = isempty(run.results) ? 0 : sum(r.B + r.n_rejected for r in run.results)
+        reject_frac = total_candidates > 0 ? total_rejected / total_candidates : 0.0
+        if run.fit !== nothing
+            push!(summary, (; target_q_exponent = exp, run.fit.gamma, run.fit.C, run.fit.r2,
+                               total_rejected, total_candidates, reject_frac))
+        else
+            @warn "target_q_exponent=$exp: fewer than 2 successful points, skipped in summary"
+        end
+    end
+
+    if !isempty(summary)
+        println("\n=== Sweep summary: gamma AND rejection rate vs. target_q_exponent ===")
+        println("(if the filter is only toothless at small Nq/B, reject_frac should",
+                " rise with exponent -- if it stays near 0 throughout, the filter is",
+                " not just under-tested at 0.2, it is not discriminating at any scale probed here)")
+        println("target_q_exponent\tfitted_gamma\tfitted_C\tR^2\treject_frac\t(rejected/total)")
+        for s in summary
+            @printf("%.3f\t\t\t%.4f\t\t%.4e\t%.4f\t%.4f\t\t(%d/%d)\n",
+                    s.target_q_exponent, s.gamma, s.C, s.r2, s.reject_frac,
+                    s.total_rejected, s.total_candidates)
+        end
+        println("\nFor reference, the REAL constraint (target_q_exponent=0.2) is the",
+                " first row above -- everything past it is diagnostic extrapolation,",
+                " not an available choice given B ~ p^(2/5). Compare each row's gamma",
+                " against the UNFILTERED embedded-Singer gamma at the same exponent",
+                " (see run_singer_embedded_exponent_sweep's summary) to judge whether",
+                " the filter is doing anything once it has room to.")
+    end
+
+    return summary
+end
+
+# ---------------------------------------------------------------
+# Strategy 7: spectral swap local search (targets the 8th moment
+# directly via a linearized gradient, rather than a cheap proxy)
+# ---------------------------------------------------------------
+#
+# EXTERNAL PROPOSAL (paraphrased): rather than screening candidates
+# with a cheap local proxy (density, or the earlier quad-sum filter),
+# spend the O(B^2) budget on a one-shot spectral dictionary and then
+# do cheap local search on top of it:
+#   1. Seed F via any existing construction.
+#   2. Identify the ~cB "bad" characters (largest |S_chi| = largest
+#      Fourier coefficients of 1_F) -- these dominate the 8th-moment
+#      sum sum_chi |S_chi|^8, so they're where the objective's
+#      sensitivity actually lives.
+#   3. Build the full mode-by-candidate phase table W_chi(x) = chi(x)
+#      for chi in the bad set Omega and x ranging over F union a
+#      random Theta(B) replacement pool -- an explicit Theta(B^2)
+#      table, spent once.
+#   4. Score a proposed swap (x -> y, x in F, y in the pool) via the
+#      FIRST-ORDER TAYLOR EXPANSION of sum_chi |S_chi|^8 under
+#      S_chi -> S_chi + (chi(y)-chi(x)), using only dot products
+#      against the precomputed table -- O(|Omega|) per swap instead
+#      of O(B) or worse.
+#   5. Run local search (greedy descent, or simulated annealing to
+#      escape local optima) over swaps using that O(|Omega|)-cost
+#      score.
+#
+# GRADIENT CORRECTION (important, and NOT how the proposal stated it):
+# for complex S_chi, E = sum_chi |S_chi|^8 = sum_chi (S_chi * conj(S_chi))^4,
+# so treating S_chi as an independent complex variable,
+#   dE/dS_chi = 4 * (S_chi*conj(S_chi))^3 * conj(S_chi) = 4|S_chi|^6 * conj(S_chi)
+# and by symmetry (E is real, a function of |S_chi|^2) the correctly
+# linearized real-valued change under S_chi -> S_chi + delta is
+#   dE ~= 2 * Re( conj(dE/dS_chi) * delta ) = 8 |S_chi|^6 * Re( conj(S_chi) * delta ).
+# The proposal as given used conj(S_chi)^7 in place of 8|S_chi|^6*conj(S_chi)
+# -- those coincide only if S_chi is real, which it is not in general
+# here (S_chi is a genuine complex Fourier coefficient of a subset
+# indicator). Implemented below with the corrected exponent/prefactor;
+# see delta_E_swap.
+#
+# THIS IS STILL A LINEARIZATION, NOT AN EXACT SCORE: dE is a
+# first-order approximation valid for SMALL |delta| = |chi(y)-chi(x)|
+# relative to |S_chi| -- for a fixed accepted x, a single swap changes
+# each S_chi by a full unit-modulus difference (|delta|<=2), which is
+# not necessarily "small" relative to |S_chi| when B is itself small
+# (early in a sweep, or after many swaps have already been taken and
+# |S_chi| has been driven down toward the flat regime). The linear
+# score is used only to RANK candidate swaps (which one moves the true
+# E most in the right direction), not to predict the post-swap E
+# exactly -- after each accepted swap, S_chi is recomputed exactly
+# (not incrementally accumulated from the linear estimate) precisely
+# because the linear estimate is expected to drift from the true value
+# over many swaps. See recompute cadence in spectral_swap_search's
+# docstring.
+#
+# SIDON-NESS IS SIMULATED HERE VIA AN EXPLICIT CHECK, STANDING IN FOR
+# A STRUCTURAL GUARANTEE THIS CODE DOESN'T MODEL DIRECTLY: in the real
+# genus-2 setting the proposal was made for, F is built from D1 atoms
+# (degree-1 places), and Sidon-ness of a D1-atom-built factor base is
+# AUTOMATIC -- a structural consequence of Mumford-irreducibility under
+# addition of degree-1 divisors, not something that needs separate
+# checking. That's why the proposal itself says nothing about
+# preserving Sidon-ness: in its native setting, any swap between D1
+# atoms simply can't produce a non-Sidon result, so there's nothing to
+# enforce.
+#
+# This code operates one level of abstraction below that: F_int is a
+# plain Vector{Int} of residues mod N, with no notion of "is this
+# integer a D1 atom" or Mumford-irreducibility encoded anywhere. So the
+# automatic guarantee isn't actually present here -- swapping to an
+# arbitrary y in Z/N is NOT guaranteed Sidon-preserving the way
+# swapping to another D1 atom would be. The explicit sidon_defect check
+# on every accepted swap (via the same incremental sum-collision rule
+# used by greedy_sidon_subset elsewhere in this file) is the
+# SIMULATION of that structural guarantee at this level of
+# abstraction: it makes non-Sidon swaps unavailable as options, exactly
+# as the real D1-atom arithmetic would rule them out on its own. This
+# means many high-scoring swaps by the spectral criterion alone get
+# filtered out for breaking Sidon-ness, and the realized acceptance
+# rate can be far lower than the raw candidate pool would suggest --
+# reported honestly below (n_accepted vs n_tried) rather than assumed
+# away.
+
+"""
+    top_bad_characters(F_int, N; n_modes, n_probe)
+
+Scans `n_probe` distinct nonzero characters of Z/N (chi indexed by
+k in 1:(N-1), character_value = exp(2*pi*i*k*x/N)), computes
+S_chi = sum_{f in F_int} chi(f) for each, and returns the `n_modes`
+with the largest |S_chi|, as a Vector{Int} of their k-indices
+(NOT deduplicated against each other beyond the natural distinctness
+of sampled k's -- duplicates are impossible since k's are drawn
+without replacement from 1:(N-1)).
+
+`n_probe` is a real cost: for a full/exact top-cB search you'd need
+n_probe = N-1 (every nonzero character), which is infeasible for the
+larger N's in this sweep -- so this scans a bounded random sample
+of characters instead of the exhaustive spectrum, and returns the
+worst OF THE SAMPLE, not the true global worst. This is explicitly
+an approximation of step 2 of the proposal (the "carefully chosen
+Omega"), not the exact "largest-magnitude characters over the full
+spectrum" -- flagged here rather than silently assumed equivalent.
+A larger n_probe narrows that gap at proportionally higher cost.
+"""
+function top_bad_characters(F_int::Vector{Int}, N::Int; n_modes::Int, n_probe::Int)
+    n_probe = min(n_probe, N - 1)
+    ks = Random.shuffle(collect(1:(N-1)))[1:n_probe]
+    mags = Vector{Float64}(undef, n_probe)
+    for (idx, k) in enumerate(ks)
+        s = 0.0 + 0.0im
+        @inbounds for x in F_int
+            s += cis(2pi * k * x / N)
+        end
+        mags[idx] = abs(s)
+    end
+    order_idx = sortperm(mags; rev = true)
+    n_take = min(n_modes, n_probe)
+    return ks[order_idx[1:n_take]]
+end
+
+"""
+    build_phase_table(zs, Omega, N) -> Dict{Int,Vector{ComplexF64}}
+
+Builds the explicit W_chi(z) = chi(z) table for every z in `zs` and
+chi in `Omega`, keyed by z, each value a Vector{ComplexF64} in the
+same order as `Omega`. This is the Theta(|zs| * |Omega|) phase table
+the proposal calls for -- computed ONCE per search step (see
+spectral_swap_search) and reused for every swap-score lookup that
+step, rather than recomputing chi(y) redundantly inside the O(F*pool)
+swap-scoring loop (an earlier draft of this file did exactly that
+redundant recomputation before being caught and fixed here).
+"""
+function build_phase_table(zs::Vector{Int}, Omega::Vector{Int}, N::Int)
+    table = Dict{Int,Vector{ComplexF64}}()
+    for z in zs
+        table[z] = [cis(2pi * k * z / N) for k in Omega]
+    end
+    return table
+end
+
+"""
+    delta_E_swap(x, y, S_vec, W_table, Omega) -> Float64
+
+Linearized change in sum_{chi in Omega} |S_chi|^8 under the swap
+x -> y, using the CORRECTED gradient (see Strategy 7 header comment:
+8*|S_chi|^6 * Re(conj(S_chi)*delta), not conj(S_chi)^7). `S_vec` is a
+Vector{ComplexF64} of S_chi values in the same order as `Omega`;
+`W_table` is the precomputed phase table from build_phase_table, so
+this function does zero cis() calls itself -- purely dot products
+against the precomputed table, matching the proposal's stated cost
+model of O(|Omega|) per swap after the table is built.
+"""
+function delta_E_swap(x::Int, y::Int, S_vec::Vector{ComplexF64},
+                        W_table::Dict{Int,Vector{ComplexF64}}, Omega::Vector{Int})
+    Wx = W_table[x]
+    Wy = W_table[y]
+    dE = 0.0
+    @inbounds for i in eachindex(Omega)
+        Sk = S_vec[i]
+        mag6 = abs2(Sk)^3
+        delta = Wy[i] - Wx[i]
+        dE += 8.0 * mag6 * real(conj(Sk) * delta)
+    end
+    return dE
+end
+
+"""
+    spectral_swap_search(F_int, N; n_modes, pool_size, n_probe, rng,
+                           method=:greedy, max_steps=200, recompute_every=20,
+                           anneal_T0=1.0, anneal_cooling=0.98)
+
+Local search over Sidon-preserving swaps of `F_int` (a Vector{Int}
+subset of Z/N, assumed already Sidon on entry -- NOT checked at entry,
+callers must pass a valid Sidon F), scored by the linearized 8th-moment
+gradient (see delta_E_swap below) against a fixed "bad mode" set Omega
+(from top_bad_characters) and a fixed random candidate pool of size
+`pool_size` (elements of Z/N not in F_int, sampled once at the start --
+matches the proposal's "candidate pool of size Theta(B)", not
+refreshed mid-search).
+
+ALGORITHM PER STEP:
+  1. Compute S_chi for every chi in Omega, exactly (a fresh O(|Omega|*B)
+     pass), NOT incrementally from prior linear estimates -- see the
+     drift caveat in the Strategy 7 header comment above. This is the
+     dominant per-step cost.
+  2. For every (x in F_int, y in pool) pair, compute the linearized
+     delta_E_swap(x, y, S_vec, W_table, Omega) score (O(|Omega|) per
+     pair using the precomputed table -- the O(B^2) table itself, i.e.
+     chi(z) for every chi in Omega and every z in F_int union pool, is
+     built ONCE per step from the current S_chi's inputs, reused for
+     all |F_int|*|pool| pairs that step).
+  3. method=:greedy -- take the single most-negative-scoring swap
+     (largest decrease in linearized E) that keeps F_int Sidon after
+     the swap (checked via sidon_defect on the post-swap set -- exact,
+     not linearized). If no swap both improves the linear score AND
+     preserves Sidon-ness, stop early.
+     method=:anneal -- simulated annealing: at temperature T (starting
+     at anneal_T0, multiplied by anneal_cooling after every step),
+     draw a RANDOM Sidon-preserving swap and accept it with
+     probability min(1, exp(-delta_E / T)) if delta_E > 0 (worsening),
+     always accept if delta_E <= 0 (improving) -- standard Metropolis
+     acceptance, so this can escape local optima the greedy variant
+     gets stuck in, at the cost of no early-stopping (always runs the
+     full max_steps).
+  4. Repeat up to `max_steps` steps. Every `recompute_every` steps (and
+     always at the end), Omega itself is NOT refreshed (kept fixed for
+     comparability across steps) but S_chi is always recomputed exactly
+     from scratch per step 1 above regardless of recompute_every --
+     recompute_every is currently unused/reserved (see NOTE below) and
+     accepted as a keyword for forward compatibility with a cheaper
+     incremental-S_chi variant, not yet implemented, since the exact
+     recompute is what step 1 already does every step.
+
+NOTE: recompute_every is accepted but currently has no effect -- S_chi
+is always recomputed exactly every step (see step 1). This is
+INTENTIONALLY conservative (favors correctness of the score over
+speed) rather than a bug; a future incremental variant could update
+S_chi via S_chi += (chi(y)-chi(x)) for `recompute_every-1` steps
+between exact recomputes, trading some drift for O(|Omega|)-per-step
+instead of O(|Omega|*B)-per-step cost, but that tradeoff is NOT
+implemented here since the drift behavior would need its own
+validation before trusting it.
+
+Returns (F_final::Vector{Int}, n_accepted::Int, n_tried::Int,
+history::Vector{Float64}) where history[i] is the exact (not linear)
+sum_chi |S_chi|^8 over Omega, evaluated after step i, so the ACTUAL
+trajectory of the (Omega-restricted) objective is visible -- distinct
+from the full character-sampler-estimated 8th moment over ALL
+characters, which is what run_spectral_swap_comparison below measures
+separately via the usual run_character_sampler_threaded call, since
+Omega is only a subset of the full spectrum and improving it is not
+guaranteed to improve the full-spectrum moment (another place where
+the linearization / mode-truncation approximation could fail to
+transfer -- measured, not assumed).
+"""
+function spectral_swap_search(F_int::Vector{Int}, N::Int;
+                                 n_modes::Int, pool_size::Int, n_probe::Int,
+                                 rng::AbstractRNG,
+                                 method::Symbol = :greedy,
+                                 max_steps::Int = 200,
+                                 recompute_every::Int = 20,
+                                 anneal_T0::Float64 = 1.0,
+                                 anneal_cooling::Float64 = 0.98)
+    @assert method in (:greedy, :anneal) "method must be :greedy or :anneal, got $method"
+
+    F = copy(F_int)
+    Fset = Set(F)
+
+    # Fixed random candidate pool of size pool_size, sampled once, of
+    # elements NOT currently in F -- matches the proposal's "Theta(B)
+    # candidate pool", not refreshed mid-search (see docstring).
+    pool_candidates = Int[]
+    attempts = 0
+    while length(pool_candidates) < pool_size && attempts < 20 * pool_size + N
+        z = rand(rng, 0:(N-1))
+        attempts += 1
+        if !(z in Fset) && !(z in pool_candidates)
+            push!(pool_candidates, z)
+        end
+    end
+    if length(pool_candidates) < pool_size
+        @warn "spectral_swap_search: could only build a pool of $(length(pool_candidates)) " *
+              "(wanted $pool_size) after exhausting the attempt budget -- proceeding with " *
+              "the smaller pool rather than looping indefinitely"
+    end
+
+    # Omega: the bad-mode set, fixed for the whole search (see
+    # docstring -- not refreshed per step, for comparability of the
+    # score across steps).
+    Omega = top_bad_characters(F, N; n_modes = n_modes, n_probe = n_probe)
+
+    n_accepted = 0
+    n_tried = 0
+    history = Float64[]
+    T = anneal_T0
+
+    for step in 1:max_steps
+        # Step 1: exact S_chi over Omega for every current F element,
+        # from scratch (see NOTE in docstring on recompute_every).
+        S_vec = Vector{ComplexF64}(undef, length(Omega))
+        for (i, k) in enumerate(Omega)
+            s = 0.0 + 0.0im
+            @inbounds for f in F
+                s += cis(2pi * k * f / N)
+            end
+            S_vec[i] = s
+        end
+        push!(history, sum(abs2(s)^4 for s in S_vec))
+
+        # Step 2 (the actual W_chi(z) table from the proposal): built
+        # ONCE per step over every z currently relevant (all of F plus
+        # the whole candidate pool), reused for every swap-score lookup
+        # this step -- avoids the O(F*pool) redundant cis() recomputation
+        # an earlier draft of this file had (see build_phase_table's
+        # docstring).
+        W_table = build_phase_table(vcat(F, pool_candidates), Omega, N)
+
+        if method == :greedy
+            best_dE = 0.0
+            best_swap = nothing
+            for x in F
+                for y in pool_candidates
+                    n_tried += 1
+                    dE = delta_E_swap(x, y, S_vec, W_table, Omega)
+                    dE >= best_dE && continue  # only interested in improvements (dE < 0)
+                    # Check Sidon-ness of the post-swap set BEFORE
+                    # accepting this as the current best candidate --
+                    # exact check, not linearized (see header comment).
+                    F_trial = copy(F)
+                    idx = findfirst(==(x), F_trial)
+                    F_trial[idx] = y
+                    if sidon_defect(F_trial, N) == 0
+                        best_dE = dE
+                        best_swap = (x, y)
+                    end
+                end
+            end
+            if best_swap === nothing
+                # No improving, Sidon-preserving swap found -- greedy
+                # stops early rather than burning the remaining step
+                # budget on no-ops.
+                break
+            end
+            x, y = best_swap
+            idx = findfirst(==(x), F)
+            F[idx] = y
+            delete!(Fset, x)
+            push!(Fset, y)
+            filter!(!=(y), pool_candidates)
+            push!(pool_candidates, x)
+            n_accepted += 1
+
+        else  # :anneal
+            x = rand(rng, F)
+            y = rand(rng, pool_candidates)
+            n_tried += 1
+            dE = delta_E_swap(x, y, S_vec, W_table, Omega)
+            accept = if dE <= 0
+                true
+            else
+                rand(rng) < exp(-dE / max(T, 1e-12))
+            end
+            if accept
+                F_trial = copy(F)
+                idx = findfirst(==(x), F_trial)
+                F_trial[idx] = y
+                if sidon_defect(F_trial, N) == 0
+                    F[idx] = y
+                    delete!(Fset, x)
+                    push!(Fset, y)
+                    filter!(!=(y), pool_candidates)
+                    push!(pool_candidates, x)
+                    n_accepted += 1
+                end
+                # If the Sidon check fails, the swap is simply not
+                # taken -- the Metropolis draw accepted the LINEARIZED
+                # move, but Sidon-ness is enforced as a hard exact
+                # constraint on top, same as the :greedy branch.
+            end
+            T *= anneal_cooling
+        end
+    end
+
+    return (F, n_accepted, n_tried, history)
+end
+
+# ---------------------------------------------------------------
+# run_spectral_swap_comparison: seeds via greedy_sidon_subset, refines
+# via spectral_swap_search, measures with the usual character sampler.
+# ---------------------------------------------------------------
+
+"""
+    run_spectral_swap_comparison(; Ns, m_per_point, m_scaling, m_floor,
+                                    m_cap, seed, method, n_modes_factor,
+                                    pool_size_factor, n_probe_factor,
+                                    max_steps)
+
+For each N in `Ns`: builds B = round(N^0.4) (SAME B convention as
+compare_strategies' greedy/greedy_low_energy, for direct comparison --
+NOT the Singer-family's N^0.2 convention, since this strategy is not
+Singer-based) via greedy_sidon_subset, then refines it via
+spectral_swap_search (n_modes = round(n_modes_factor*B), pool_size =
+round(pool_size_factor*B), n_probe = round(n_probe_factor*B)),
+re-verifies Sidon-ness of the refined set (should be 0 by construction
+-- spectral_swap_search only accepts Sidon-preserving swaps -- checked
+rather than assumed), then measures the SAME character-sampler 8th-
+moment ratio used throughout this file, both BEFORE (the greedy seed
+alone) and AFTER refinement, so the refinement's effect is visible as
+a direct before/after pair at matched (N, B) rather than only as an
+isolated number.
+
+Reports n_accepted/n_tried from the swap search (how much of the
+step/pool budget actually produced a Sidon-preserving improving swap)
+alongside the ratio, since a low acceptance rate would indicate the
+Sidon constraint is the binding limitation rather than the spectral
+scoring itself -- distinguishing those two failure modes matters for
+deciding whether to invest in a bigger pool/more steps versus a
+fundamentally different move set.
+"""
+function run_spectral_swap_comparison(; Ns::Vector{Int} = [10_007, 100_003, 1_000_003, 10_000_019],
+                                          m_per_point::Int = 20_000,
+                                          m_scaling::Symbol = :sqrt_N,
+                                          m_floor::Int = 2_000,
+                                          m_cap::Int = typemax(Int),
+                                          seed::Int = 1,
+                                          method::Symbol = :greedy,
+                                          n_modes_factor::Float64 = 1.0,
+                                          pool_size_factor::Float64 = 1.0,
+                                          n_probe_factor::Float64 = 5.0,
+                                          max_steps::Int = 200)
+    N0 = Float64(first(Ns))
+    results = NamedTuple[]
+
+    println("\n=== Spectral swap local search (method=$method), seed=greedy_sidon_subset ===")
+    println("N\tB\tm\tratio_before\tratio_after\tn_accepted\tn_tried\tsidon_defect_after\telapsed_s")
+    for N in Ns
+        B = round(Int, N^0.4)
+        rng = MersenneTwister(seed)
+        F_seed = greedy_sidon_subset(N, B, rng)
+        @assert length(F_seed) == B "greedy seed returned |F|=$(length(F_seed)), expected B=$B"
+        @assert sidon_defect(F_seed, N) == 0 "greedy seed is not Sidon -- cannot proceed"
+
+        n_modes  = max(1, round(Int, n_modes_factor * B))
+        pool_sz  = max(1, round(Int, pool_size_factor * B))
+        n_probe  = max(n_modes, round(Int, n_probe_factor * B))
+
+        t0 = time()
+        F_final, n_accepted, n_tried, history = spectral_swap_search(
+            F_seed, N; n_modes = n_modes, pool_size = pool_sz, n_probe = n_probe,
+            rng = rng, method = method, max_steps = max_steps)
+        search_elapsed = time() - t0
+
+        defect_after = sidon_defect(F_final, N)
+        if defect_after != 0
+            @warn "N=$N: refined F has nonzero sidon_defect=$defect_after -- " *
+                  "this should be impossible (spectral_swap_search only accepts " *
+                  "Sidon-preserving swaps); investigate before trusting this row"
+        end
+
+        m_target = if m_scaling == :fixed
+            m_per_point
+        elseif m_scaling == :sqrt_N
+            round(Int, m_per_point * sqrt(N / N0))
+        elseif m_scaling == :linear_N
+            round(Int, m_per_point * (N / N0))
+        else
+            error("unknown m_scaling = $m_scaling")
+        end
+        m = clamp(m_target, m_floor, min(m_cap, N - 1))
+
+        Bf = Float64(B)
+        flat = (Bf^8) / N
+
+        F_before_wrapped = [[x] for x in F_seed]
+        result_before = run_character_sampler_threaded(G_for(N), F_before_wrapped; m = m, seed = seed,
+                                                          k_size = N, report_every = typemax(Int))
+        ratio_before = result_before.M8_running[end] / flat
+
+        F_after_wrapped = [[x] for x in F_final]
+        result_after = run_character_sampler_threaded(G_for(N), F_after_wrapped; m = m, seed = seed,
+                                                         k_size = N, report_every = typemax(Int))
+        ratio_after = result_after.M8_running[end] / flat
+
+        elapsed = time() - t0   # total time for this N: search + both before/after sampler runs
+
+        @printf("%d\t%d\t%d\t%.4f\t\t%.4f\t\t%d\t\t%d\t%d\t\t\t%.2f\n",
+                N, B, m, ratio_before, ratio_after, n_accepted, n_tried, defect_after, elapsed)
+
+        push!(results, (; N, B, m, ratio_before, ratio_after, n_accepted, n_tried,
+                           defect_after, elapsed))
+    end
+
+    if length(results) >= 2
+        println("\n--- Spectral-swap-refined growth-exponent fit (AFTER refinement, vs real N) ---")
+        fit_rows = [(; N = r.N, B = r.B, m = r.m, ratio = r.ratio_after,
+                       maxU = 0.0, defect = r.defect_after, elapsed = r.elapsed)
+                    for r in results]
+        fit = fit_growth_exponent(fit_rows)
+        println("\n--- For comparison, UNREFINED greedy-seed fit (BEFORE refinement) ---")
+        fit_rows_before = [(; N = r.N, B = r.B, m = r.m, ratio = r.ratio_before,
+                              maxU = 0.0, defect = 0, elapsed = r.elapsed)
+                           for r in results]
+        fit_before = fit_growth_exponent(fit_rows_before)
+        return (; results, fit, fit_before)
+    end
+
+    return (; results, fit = nothing, fit_before = nothing)
+end
+
+# ---------------------------------------------------------------
 # Strategy registry
 # ---------------------------------------------------------------
 
@@ -1352,5 +2228,54 @@ if abspath(PROGRAM_FILE) == @__FILE__
         run_singer_paired_comparison()
     catch e
         @error "run_singer_paired_comparison() failed" exception=(e, catch_backtrace())
+    end
+
+    # User's second idea: keep F as a genuine subset of D (native
+    # Singer order, not summed pairs), but screen each new Singer
+    # element with an incremental filter on sums-of-two-differences
+    # (a cheap proxy for 8th-moment-relevant 4-term additive
+    # coincidences) using a randomly drawn partner from what's already
+    # been accepted. Run at the same real constraint exponent (0.2)
+    # as the other Singer variants above for direct comparison.
+    try
+        run_singer_quad_filtered_comparison()
+    catch e
+        @error "run_singer_quad_filtered_comparison() failed" exception=(e, catch_backtrace())
+    end
+
+    # Does the quad filter do anything once Nq/B are large enough for
+    # its collision space to actually get crowded? The 0.2 run above
+    # showed near-zero rejections -- this checks whether that's a
+    # regime problem (fixed by raising the exponent) or the filter
+    # being fundamentally toothless (rejection rate stays ~0 even at
+    # larger exponents).
+    try
+        run_singer_quad_filtered_exponent_sweep()
+    catch e
+        @error "run_singer_quad_filtered_exponent_sweep() failed" exception=(e, catch_backtrace())
+    end
+
+    # External proposal: spectral swap local search -- greedy-seeded,
+    # refined by ranking swaps against a linearized 8th-moment
+    # gradient over the worst-magnitude Fourier modes. In the real
+    # genus-2/D1-atom setting Sidon-ness is automatic and needs no
+    # separate check; this code operates on plain Z/N residues, so it
+    # simulates that same constraint via an explicit sidon_defect
+    # check on every accepted swap (see Strategy 7 header comment for
+    # the gradient correction and why that check stands in for the
+    # D1-atom structural guarantee).
+    try
+        run_spectral_swap_comparison(; method = :greedy)
+    catch e
+        @error "run_spectral_swap_comparison(:greedy) failed" exception=(e, catch_backtrace())
+    end
+
+    # Same refinement, but simulated annealing instead of pure greedy
+    # descent, to check whether greedy is getting stuck in a local
+    # optimum the annealed variant can escape.
+    try
+        run_spectral_swap_comparison(; method = :anneal)
+    catch e
+        @error "run_spectral_swap_comparison(:anneal) failed" exception=(e, catch_backtrace())
     end
 end
