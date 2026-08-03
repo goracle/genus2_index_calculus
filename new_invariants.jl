@@ -441,6 +441,205 @@ function discrepancy_score(F::Vector{Int}, N::Int, B::Int;
 end
 
 # =================================================================
+# Proposal 5: sampled R(t)-variance score (approximate Singer /
+# autocorrelation-of-pairsums proxy)
+# =================================================================
+
+"""
+    diff_of_sums_multiplicity(F::Vector{Int}, N::Int) -> Dict{Int,Int}
+
+Builds r(u) = #{(a,b) in F x F : a+b=u mod N} as a sparse histogram
+(Dict, since N can be far larger than the O(B^2) support of r). This
+is the SAME pairwise-sum histogram r_{T+T} already discussed in
+advisory-6 section 7.6 -- exact, O(B^2) to build, and by itself only
+U^2-level (4th-moment) information, already implied by Sidon-ness
+(r(u) in {0,1,2} for a Sidon set, with value 2 only at the B
+symmetric points u=2a).
+"""
+function diff_of_sums_multiplicity(F::Vector{Int}, N::Int)
+    r = Dict{Int,Int}()
+    B = length(F)
+    sizehint!(r, B * B)
+    @inbounds for a in F, b in F
+        u = mod(a + b, N)
+        r[u] = get(r, u, 0) + 1
+    end
+    return r
+end
+
+"""
+    sampled_R_variance_score(F::Vector{Int}, N::Int; L::Int=0, rng) -> (mu, var_hat, L_used)
+
+PROPOSAL 5 (retroactive scorer; GPT-proposed). R(t) = #{(a,b,c,d) in
+F^4 : a+b-c-d=t} = sum_u r(u) r(u-t) is exactly the autocorrelation of
+r = r_{T+T} with itself (T = F here, matching advisory-6's notation
+with S = T+T). Section 7.6 identifies E(S,S) = sum_t R(t)^2 as the
+genuine 8th-moment-controlling quantity, and explicitly notes it is
+NOT recoverable from r's sum-of-squares (that gives only E(T,T),
+already fixed by Sidon-ness) -- computing it exactly costs O(B^4), or
+O(|J| log|J|) via FFT over the WHOLE ambient group, both worse than
+direct computation at the real B~N^0.2 scale (see 7.6's closing
+paragraph on the "tempting but incorrect shortcut").
+
+This function is the O(B^2)-budget compromise advisory-6 section 7.6
+lands on as the honest fallback ("item 8(c)"): rather than computing
+R(t) at every t (impossible in budget) or the trivial sum-of-squares
+of r (uninformative, already implied by Sidon-ness), sample L shifts
+t_1..t_L and compute R(t_i) EXACTLY at each sampled shift from the
+already-built O(B^2) histogram r (each R(t_i) itself costs O(B^2) --
+summing r(u)*r(u-t_i) over the O(B^2)-support histogram -- so L
+independent shifts cost O(L*B^2) total, not O(L) or O(B^2) alone).
+Returns the sample mean and variance of R(t_i) - mu across the L
+draws, where mu = B^4/N is the exact, unconditional expectation
+(section 7.3 of advisory-6 -- this holds with NO Sidon or
+pseudorandomness input, by pure double-counting, so it is not itself
+being tested here).
+
+IMPORTANT SCOPE CAVEAT, stated up front so this is not mistaken for a
+cheaper construction than it is: advisory-6 section 7.6 shows THIS
+QUANTITY (E(S,S), equivalently Var_t[R(t)] summed/averaged over ALL
+t) is exactly what O(B^2) pairwise data cannot certify a bound on in
+general -- U^2 data does not imply U^3 control. What is being tested
+here is only whether a SAMPLED estimate of it (necessarily noisy,
+using uniform sampling over t -- which 7.6 explicitly flags as prone
+to UNDERESTIMATING a heavy-tailed/lumpy true E(S,S)) correlates with
+the true 8th moment well enough to be useful as a cheap comparative
+score between candidate F's. That is a strictly weaker, purely
+empirical question, and this scorer answers only that.
+
+COMPLEXITY OF A LIVE (CONSTRUCTION-TIME) VARIANT -- answering the
+open question from the prior turn's discussion directly, since it
+determines whether this could ever be more than a retroactive
+scorer: a single greedy swap (remove x, add x') changes r at O(B)
+support points (every u = x+y for y in the current F, and every
+u = x'+y). Updating ONE sampled R(t_i) exactly after that requires
+revisiting every u where r(u) or r(u-t_i) changed -- O(B) work for
+that one t_i. With L=Theta(B^2) sampled shifts (matching the
+autocorrelation's own O(B^2)-support scale, as GPT's proposal
+specifies), a full incremental update after one swap costs
+O(B) * O(L) = O(B) * O(B^2) = O(B^3), NOT O(B) as hoped. This matches
+-- rather than escapes -- the general obstruction in section 7.6: any
+rule that tries to cheaply track U^3-level information (which this
+is, being R(t)'s autocorrelation-derived variance) inevitably pays
+more than the O(B^2) budget once you actually need it to respond to
+local changes, because U^3-level information does not decompose into
+O(1)-sized local updates the way U^2 (pairwise) information does.
+Consequence: this function is offered ONLY as a one-shot retroactive
+score on a COMPLETED F (cost O(L*B^2), paid once), never as a greedy
+tiebreak (which would need the O(B^3)-per-swap incremental version).
+Do not wire this into a live construction loop.
+
+COMPLEXITY / L CAP: the hot loop below is O(L_used * |support|), and
+|support| is itself O(B^2) (up to B(B+1)/2 distinct sums, folded by
+symmetry -- see diff_of_sums_multiplicity). The default L = B^2
+therefore makes total cost O(B^4), not O(B^2) -- fine at the small N
+in the retroactive sweep (N up to ~10^6, B up to ~250) but at
+N=10_000_019 (B=631) that is 631^4 ~ 1.6e11 dict-value lookups, which
+is minutes-to-hours single-threaded and was observed to hang in
+practice. Two changes below address this: (1) L is capped at
+L_CAP=20_000 regardless of B^2 when B^2 exceeds it -- still gives a
+usable sampled variance estimate (standard error ~1/sqrt(L), and
+20_000 independent draws is already a tight estimate) without paying
+for the full B^2-scale sample; (2) the per-shift R(t_i) computation is
+threaded, since the L shifts are fully independent given the shared
+read-only `support`/`r` data (no shared mutable state to race on),
+following the same static-chunk-per-task pattern used throughout this
+codebase (character_sampler.jl's run_character_sampler_threaded,
+strategy_comparison.jl's greedy_low_energy_sidon_subset) -- each task
+writes only to its own slice of Rvals, and no threadid()-indexed
+resource is used anywhere (unsafe under Julia's >=1.9 dynamic
+scheduler per those files' own comments).
+"""
+function sampled_R_variance_score(F::Vector{Int}, N::Int;
+                                    L::Int = 0,
+                                    L_cap::Int = 20_000,
+                                    rng::AbstractRNG = Random.default_rng())
+    B = length(F)
+    L_default = min(N - 1, B * B)
+    L = L > 0 ? L : min(L_default, L_cap)
+    if L_default > L_cap && L == L_default
+        # caller explicitly passed L > L_cap; honor it but warn, since
+        # they've opted out of the safety cap deliberately
+        @warn "sampled_R_variance_score: L=$L exceeds L_cap=$L_cap -- proceeding anyway since L was explicitly requested"
+    end
+
+    r = diff_of_sums_multiplicity(F, N)
+    # Only support points need iterating -- r is O(B^2)-sparse over N.
+    support = collect(r)  # Vector{Pair{Int,Int}}, (u => r(u)) -- read-only from here on
+
+    mu = (Float64(B)^4) / Float64(N)
+
+    shifts = Int[]
+    seen_t = Set{Int}()
+    attempts = 0
+    max_attempts = 20 * L + N
+    while length(shifts) < L && attempts < max_attempts
+        t = rand(rng, 0:(N-1))
+        if !(t in seen_t)
+            push!(seen_t, t)
+            push!(shifts, t)
+        end
+        attempts += 1
+    end
+    if length(shifts) < L
+        @warn "sampled_R_variance_score: could only draw $(length(shifts)) " *
+              "distinct shifts (wanted $L) after exhausting the attempt budget"
+    end
+    L_used = length(shifts)
+    L_used == 0 && return (mu, 0.0, 0)
+
+    Rvals = Vector{Float64}(undef, L_used)
+
+    nt = Threads.nthreads()
+    if nt == 1
+        @warn "nthreads() == 1 -- Julia was not started with multiple threads. " *
+              "Run with `julia -t auto` or `julia -t N` (N>1) to parallelize the " *
+              "R(t_i) sampling loop; this function cannot create OS threads Julia " *
+              "wasn't started with."
+    end
+
+    # Static, contiguous chunking of the L_used shifts across nt tasks
+    # -- each task only writes Rvals[range_t], reads only the shared
+    # read-only `r`/`support` (safe: Dict reads are safe to share
+    # across tasks with no concurrent writes), so there is no race.
+    # Never index by threadid() -- see file header / character_sampler.jl
+    # for why that is unsafe under Julia's dynamic scheduler.
+    chunk_bounds = let
+        bounds = Vector{UnitRange{Int}}(undef, nt)
+        base, rem = divrem(L_used, nt)
+        lo = 1
+        for t in 1:nt
+            len = base + (t <= rem ? 1 : 0)
+            bounds[t] = lo:(lo + len - 1)
+            lo += len
+        end
+        bounds
+    end
+
+    tasks = Vector{Task}(undef, nt)
+    for t in 1:nt
+        range_t = chunk_bounds[t]
+        tasks[t] = Threads.@spawn begin
+            @inbounds for i in range_t
+                ti = shifts[i]
+                s = 0.0
+                for (u, ru) in support
+                    v = get(r, mod(u - ti, N), 0)
+                    v == 0 && continue
+                    s += Float64(ru) * Float64(v)
+                end
+                Rvals[i] = s
+            end
+        end
+    end
+    foreach(wait, tasks)
+
+    diffs = Rvals .- mu
+    var_hat = sum(d -> d * d, diffs) / L_used
+    return (mu, var_hat, L_used)
+end
+
+# =================================================================
 # Retroactive correlation check -- the actual deliverable for this
 # pass. Builds F via the strategies ALREADY KNOWN to differ in true
 # 8th moment (greedy vs embedded-Singer at target_q_exponent=0.2,
@@ -473,7 +672,7 @@ function run_retroactive_correlation_check(; Ns::Vector{Int} = [10_007, 100_003,
             " the true 8th moment does? Lower proxy score should track lower gamma if the proxy",
             " is any good.\n")
 
-    println("N\tstrategy\tB\tgauss_T2\tgauss_T3\tdiffE_norm\tdiscrepancy_D2")
+    println("N\tstrategy\tB\tgauss_T2(raw)\tgauss_T3(raw)\tgauss_T2/B\tgauss_T3/B\tdiffE_norm(CONFIRMED CONSTANT=1, ignore)\tdiscrepancy_D2\tRvar_hat\tRvar_hat/mu^2\tL_used")
 
     for N in Ns
         B = round(Int, N^0.4)
@@ -518,13 +717,45 @@ function report_row(N::Int, label::String, F::Vector{Int}, p_for_gauss::Int)
     end
     t2 = get(gauss_scores, 2, NaN)
     t3 = get(gauss_scores, 3, NaN)
+    # NORMALIZED by B: a sum of B roughly-independent unit-magnitude
+    # terms has expected |sum|^2 ~ B under a null (no multiplicative
+    # bias) model, so raw T2/T3 conflates real bias with set size --
+    # confirmed a real confound empirically (see chat: raw T2 looked
+    # like it cleanly separated greedy from Singer, but T2/B does NOT
+    # separate them consistently in one direction across the sweep,
+    # including a near-zero outlier for greedy at N=10_000_019). T2/B
+    # is the quantity that actually isolates bias from size and is
+    # what should be read for the correlation check, not raw T2.
+    t2_per_B = B > 0 ? t2 / B : NaN
+    t3_per_B = B > 0 ? t3 / B : NaN
 
     diffE = diff_set_energy_normalized(F, N)
+    # NOTE: diffE is CONFIRMED CONSTANT (=1.0) for every Sidon set by
+    # construction -- Sidonness means every pairwise difference
+    # F[i]-F[j] (i!=j) is already distinct, so counts[t]=1 for all
+    # B(B-1) differences and diffE_norm=B(B-1)/(B(B-1))=1 identically,
+    # regardless of strategy or N. This is the SAME zero-degrees-of-
+    # freedom failure that killed the original pair-sum-energy
+    # proposal, just one level removed -- proposal 4 is FALSIFIED, not
+    # just weak. Still computed and printed here as the empirical
+    # confirmation of that, not because it's usable as a discriminator.
 
     rng_disc = MersenneTwister(1)
     D2 = discrepancy_score(F, N, B; rng = rng_disc)
 
-    @printf("%d\t%s\t%d\t%.4e\t%.4e\t%.4e\t%.4e\n", N, label, B, t2, t3, diffE, D2)
+    # Proposal 5: sampled R(t)-variance score. L capped the same way
+    # as elsewhere in this pass (min(N-1, B^2)) -- at the smallest N
+    # in this sweep (N=10007) B^2 can exceed N-1, so the cap matters
+    # and is handled inside sampled_R_variance_score itself.
+    rng_rvar = MersenneTwister(1)
+    mu, var_hat, L_used = sampled_R_variance_score(F, N; rng = rng_rvar)
+    # Normalized by mu^2 so the score is comparable across the very
+    # different (N,B) scales in this sweep, same rationale as gauss_T/B
+    # above (raw magnitude conflates real variance with scale).
+    var_hat_norm = mu > 0 ? var_hat / (mu * mu) : NaN
+
+    @printf("%d\t%s\t%d\t%.4e\t%.4e\t%.4e\t%.4e\t%.4e\t%.4e\t%.4e\t%.4e\t%d\n",
+            N, label, B, t2, t3, t2_per_B, t3_per_B, diffE, D2, var_hat, var_hat_norm, L_used)
 end
 
 # =================================================================
