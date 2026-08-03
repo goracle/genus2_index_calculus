@@ -303,6 +303,314 @@ function greedy_low_energy_sidon_subset(N::Int, target_size::Int, rng::AbstractR
 end
 
 # ---------------------------------------------------------------
+# Strategy 3.5: greedy with an incremental sampled-R(t)-variance
+# tiebreak (O(B^2)-budget version of new_invariants.jl's proposal 5)
+# ---------------------------------------------------------------
+#
+# WHY THIS EXISTS / WHERE IT CAME FROM
+# -------------------------------------
+# new_invariants.jl's sampled_R_variance_score is a RETROACTIVE scorer
+# only: its own docstring shows that tracking L=Theta(B^2) shifts live
+# through a greedy run costs O(B^3) per swap (O(B) work per shift,
+# times O(B^2) shifts), which blows the O(B^2) budget. The retroactive
+# correlation check (run_retroactive_correlation_check, run against
+# real greedy vs. embedded-Singer@0.2 data) showed this score DOES
+# separate the known-good (greedy, gamma~0.46) construction from the
+# known-bad one (Singer@0.2, gamma~1.57) in the right direction, so it
+# is worth trying to recover an O(B^2)-compatible LIVE version rather
+# than only ever using it after the fact.
+#
+# THE FIX: shrink L from Theta(B^2) to Theta(B) (a FIXED set of shifts
+# drawn ONCE at the start of the run, not redrawn per swap -- fixing
+# the shifts is also more principled for a tiebreak, since it scores
+# every candidate at a given step against the SAME shift set, the same
+# way compare_strategies fixes one character-sampler seed across
+# strategies rather than re-seeding per comparison). With L=Theta(B),
+# incremental cost per swap becomes O(B) [delta list size] * O(B)
+# [tracked shifts] = O(B^2), inside budget. This is a real reduction
+# in the ESTIMATE's precision (standard error ~ 1/sqrt(L), so
+# Theta(B) samples of R(t) is nosier than the Theta(B^2)/L_cap=20000
+# used in the retroactive check) -- offered as a legitimate O(B^2)
+# heuristic to TRY and measure, per section 7.6, not as a claim that
+# it recovers the retroactive score's precision.
+#
+# INCREMENTAL UPDATE (derived and numerically verified against a
+# direct O(B^2) rebuild before writing this -- see chat derivation):
+# on a swap (remove x, add x', from candidate set F to F' = F\{x} u {x'}),
+# the sumset histogram r(u) = #{(a,b) in F^2 : a+b=u} changes only at
+# points in a delta list Delta = {(u, d)} of size O(B): for y in F,
+# y != x: (x+y, -1) and (y+x, -1) [cross terms, x removed]; (2x, -1)
+# [diagonal, x removed]; for y in F' (new set), y != x': (x'+y, +1)
+# and (y+x', +1) [cross terms, x' added]; (2x', +1) [diagonal, x'
+# added]. Writing r_new = r_old + delta (delta as a sparse map, zero
+# elsewhere), bilinear expansion of R(t) = sum_u r(u) r(u-t) gives
+#     R_new(t) = R_old(t)
+#                + sum_{(w,d) in Delta} r_old(w+t) * d      [term2]
+#                + sum_{(u,d) in Delta} d * r_old(u-t)      [term3]
+#                + sum_{(u,d) in Delta} d * delta(u-t)      [term4]
+# each term summed ONLY over Delta's O(B) entries (not the full
+# support), each requiring O(1) dict lookups per entry -- so updating
+# ONE tracked R(t_i) costs O(B), and updating all L=Theta(B) tracked
+# shifts costs O(B^2) per swap, matching the target budget. This was
+# checked against a brute-force O(N) rebuild of r and a direct O(N)
+# recomputation of R(t) for several (t, swap) pairs; an earlier hand-
+# derived version of this formula (which iterated delta's support
+# only for term2/3/4 but conflated the diagonal (x,x)/(x',x') weight
+# with the cross terms) was WRONG (verified failing on t=5 and t=50
+# in the test case), so the diagonal MUST be added with weight 1 (not
+# 2) alongside the doubled cross terms, exactly as in the derivation
+# above -- this matches greedy_low_energy_sidon_subset's existing
+# 2x-diagonal handling elsewhere in this file, which is why this
+# tiebreak follows the same convention rather than inventing a new one.
+#
+# WHAT THE TIEBREAK ACTUALLY SCORES: at each step, among `lookahead`
+# Sidon-valid candidates, this picks the one whose ADDITION would
+# produce the smallest resulting sample variance of R(t_i)-mu across
+# the L fixed shifts (mu = B^4/N, the unconditional expectation from
+# advisory-6 section 7.3) -- i.e. greedily prefers candidates that
+# keep R(t) closer to flat (uniform), which is the direction
+# associated with LOWER true 8th moment per the retroactive check.
+# Like greedy_low_energy_sidon_subset, this is a heuristic TRY, not a
+# proof: per section 7.6, no O(B^2) selection rule can be proven to
+# control the 8th moment in general.
+"""
+    greedy_rvar_tiebreak_sidon_subset(N, target_size, rng; lookahead=6,
+                                        L_factor=4, max_restarts=20,
+                                        progress_every=5.0)
+
+Greedy Sidon construction (same rejection rule as greedy_sidon_subset)
+with a tiebreak that, among `lookahead` valid candidates at each step,
+picks the one minimizing the resulting sample variance of R(t)-mu
+across a FIXED set of L = L_factor * target_size shifts (drawn once,
+before the greedy loop starts). R(t) = sum_u r(u) r(u-t) is tracked
+incrementally via the O(B)-per-shift delta update derived and
+verified in the comments above; total incremental cost is
+O(L * B) = O(B^2) per swap given L = Theta(B), matching the O(B^2)
+budget available to construct F.
+
+This is an O(B^2)-budget attempt to recover, in a LIVE construction,
+the direction of separation new_invariants.jl's retroactive
+sampled_R_variance_score showed between known-good and known-bad
+strategies -- see the block comment above for the full derivation and
+why the naive Theta(B^2)-shift version (new_invariants.jl's
+retroactive scorer) cannot be run live within budget.
+
+Same restart-on-stall and threaded-restart structure as
+greedy_low_energy_sidon_subset (restarts are independent, each a full
+attempt over a fresh shuffle; static pre-split across
+Threads.nthreads() via Threads.@spawn, no threadid()-indexed state).
+"""
+function greedy_rvar_tiebreak_sidon_subset(N::Int, target_size::Int, rng::AbstractRNG;
+                                             lookahead::Int = 6, L_factor::Int = 4,
+                                             max_restarts::Int = 20,
+                                             progress_every::Real = 5.0)
+
+    L = max(1, L_factor * target_size)
+    mu = (Float64(target_size)^4) / Float64(N)
+
+    # One independent attempt. Local state only (elems, sums_seen for
+    # the Sidon check; r, shifts, Rvals for the rvar tiebreak) -- safe
+    # to run concurrently across tasks, same pattern as
+    # greedy_low_energy_sidon_subset's one_attempt.
+    function one_attempt(rng_local::AbstractRNG, scanned::Threads.Atomic{Int})
+        elems = Int[]
+        sums_seen = Set{Int}()          # for the Sidon rejection check (pairwise sums)
+        r = Dict{Int,Int}()             # sumset histogram r(u) = #{(a,b) in elems^2 : a+b=u}
+
+        # Fixed shift set, drawn ONCE for this attempt (not per swap/step
+        # -- see comment block above on why fixing shifts matters for a
+        # tiebreak, distinct from new_invariants.jl's per-call resampling
+        # in its purely retroactive, one-shot use).
+        shifts = Int[]
+        seen_t = Set{Int}()
+        while length(shifts) < L
+            t = rand(rng_local, 0:(N-1))
+            if !(t in seen_t)
+                push!(seen_t, t)
+                push!(shifts, t)
+            end
+        end
+        Rvals = zeros(Float64, L)   # R(t_i) for each tracked shift, maintained incrementally
+
+        candidates = collect(0:(N-1))
+        Random.shuffle!(rng_local, candidates)
+        ci = 1
+
+        # Applies a delta list (u => weight) to r in place, and returns
+        # it so the caller can also use it to update Rvals incrementally
+        # (avoids building the delta list twice).
+        function delta_for_add(x::Int, current_elems::Vector{Int})
+            d = Dict{Int,Int}()
+            for y in current_elems
+                y == x && continue
+                u1 = mod(x + y, N)
+                d[u1] = get(d, u1, 0) + 1
+                u2 = mod(y + x, N)
+                d[u2] = get(d, u2, 0) + 1
+            end
+            u0 = mod(2x, N)
+            d[u0] = get(d, u0, 0) + 1   # diagonal (x,x), weight 1 -- NOT doubled
+            return d
+        end
+
+        # Given r BEFORE the update and a delta list, returns the
+        # increment to add to R(t) for a single shift t -- the
+        # term2+term3+term4 formula verified above. O(|delta|) per shift.
+        function delta_R(r_before::Dict{Int,Int}, delta::Dict{Int,Int}, t::Int)
+            inc = 0.0
+            @inbounds for (u, dval) in delta
+                inc += get(r_before, mod(u - t, N), 0) * dval          # term3
+                inc += get(r_before, mod(u + t, N), 0) * dval          # term2 (r_old(w+t)*d, w=u here)
+                inc += dval * get(delta, mod(u - t, N), 0)             # term4
+            end
+            return inc
+        end
+
+        while length(elems) < target_size && ci <= length(candidates)
+            valid_batch = Tuple{Int,Dict{Int,Int},Float64}[]  # (x, delta_for_x, resulting_var_estimate)
+            scan = ci
+            while length(valid_batch) < lookahead && scan <= length(candidates)
+                x = candidates[scan]
+                ok = true
+                new_sums = Int[]
+                for y in elems
+                    s = mod(x + y, N)
+                    if s in sums_seen
+                        ok = false
+                        break
+                    end
+                    push!(new_sums, s)
+                end
+                if ok
+                    s2 = mod(2x, N)
+                    (s2 in sums_seen) && (ok = false)
+                end
+                if ok
+                    delta = delta_for_add(x, elems)
+                    # Trial-evaluate resulting variance WITHOUT mutating
+                    # shared state: compute the R(t)-increment for each
+                    # tracked shift using r as it stands now (pre-add),
+                    # sum (Rvals[i] + inc - mu)^2 as the candidate score.
+                    var_trial = 0.0
+                    for i in 1:L
+                        inc = delta_R(r, delta, shifts[i])
+                        diff = (Rvals[i] + inc) - mu
+                        var_trial += diff * diff
+                    end
+                    var_trial /= L
+                    push!(valid_batch, (x, delta, var_trial))
+                end
+                scan += 1
+                Threads.atomic_add!(scanned, 1)
+            end
+
+            if isempty(valid_batch)
+                ci = scan
+                continue
+            end
+
+            best = argmin(t -> t[3], valid_batch)
+            bx, bdelta = best[1], best[2]
+            push!(elems, bx)
+            for i in 1:L
+                Rvals[i] += delta_R(r, bdelta, shifts[i])
+            end
+            for (u, dval) in bdelta
+                r[u] = get(r, u, 0) + dval
+            end
+            for s in new_sums_for(bx, elems, N)
+                union!(sums_seen, (s,))
+            end
+            ci = scan
+        end
+
+        return elems
+    end
+
+    # Helper: recompute the sums a candidate x contributes against the
+    # CURRENT elems (post-add) for sums_seen bookkeeping -- mirrors
+    # greedy_low_energy_sidon_subset's inline new_sums accumulation but
+    # factored out since this function's main loop already builds a
+    # delta dict for the rvar tiebreak and re-deriving sums_seen updates
+    # from that dict (keyed by sums, weighted by count) is more error-
+    # prone than a direct O(B) pass.
+    function new_sums_for(x::Int, elems_after_add::Vector{Int}, N::Int)
+        out = Int[]
+        for y in elems_after_add
+            y == x && push!(out, mod(2x, N))
+            y != x && push!(out, mod(x + y, N))
+        end
+        return out
+    end
+
+    nt = Threads.nthreads()
+    if nt == 1
+        @warn "nthreads() == 1 -- Julia was not started with multiple threads. " *
+              "Run with `julia -t auto` or `julia -t N` (N>1) to actually run " *
+              "restart attempts concurrently."
+    end
+
+    n_waves = cld(max_restarts, nt)
+    attempt_number = 0
+
+    for wave in 1:n_waves
+        wave_size = min(nt, max_restarts - attempt_number)
+
+        scanned_counters = [Threads.Atomic{Int}(0) for _ in 1:wave_size]
+        results = Vector{Union{Nothing,Vector{Int}}}(undef, wave_size)
+
+        tasks = Vector{Task}(undef, wave_size)
+        for w in 1:wave_size
+            a = attempt_number + w
+            rng_local = MersenneTwister(rand(rng, UInt) ⊻ (0x9E3779B9 * UInt(a)))
+            sc = scanned_counters[w]
+            tasks[w] = Threads.@spawn begin
+                results[w] = one_attempt(rng_local, sc)
+            end
+        end
+
+        start_t = time()
+        last_report = start_t
+        while any(!istaskdone(t) for t in tasks)
+            sleep(0.2)
+            now_t = time()
+            if now_t - last_report >= progress_every
+                total_scanned = sum(c[] for c in scanned_counters)
+                elapsed = round(now_t - start_t, digits=1)
+                println("  ... greedy_rvar_tiebreak restart wave $wave/$n_waves " *
+                        "($wave_size attempt(s) in flight, N=$N, target_size=$target_size, L=$L): " *
+                        "$(total_scanned) total candidates scanned across the wave " *
+                        "so far, $(elapsed)s elapsed")
+                last_report = now_t
+            end
+        end
+        foreach(wait, tasks)
+
+        for w in 1:wave_size
+            elems = results[w]
+            if elems !== nothing && length(elems) >= target_size
+                a = attempt_number + w
+                if a > 1
+                    @warn "greedy_rvar_tiebreak_sidon_subset: needed $a attempt(s) " *
+                          "(N=$N, target_size=$target_size) -- earlier attempt(s) stalled " *
+                          "short of target_size, same known search-order-artifact class as " *
+                          "greedy_low_energy_sidon_subset's restart logic."
+                end
+                return elems
+            end
+        end
+
+        attempt_number += wave_size
+    end
+
+    error("greedy_rvar_tiebreak_sidon_subset: failed to reach target_size=$target_size " *
+          "at N=$N after $max_restarts restarts. Try a larger max_restarts or lookahead " *
+          "before concluding no such Sidon set exists (plain greedy_sidon_subset " *
+          "succeeding at the same (N, target_size) would confirm this is a search-order " *
+          "issue, not a capacity limit).")
+end
+
+# ---------------------------------------------------------------
 # Strategy 4: Singer difference set (prime case)
 # ---------------------------------------------------------------
 #
