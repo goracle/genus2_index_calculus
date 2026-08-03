@@ -1514,419 +1514,432 @@ function run_singer_quad_filtered_exponent_sweep(; Ns::Vector{Int} = [10_007, 10
 end
 
 # ---------------------------------------------------------------
-# Strategy 7: pair-sum energy local search (exact O(B)-per-swap,
-# targets M4, used as a cheap proxy for M8)
+# Strategy 7 (v3): greedy construction scored by a fixed random
+# character projection of the 8th moment
 # ---------------------------------------------------------------
 #
-# HISTORY: this replaces an earlier version of Strategy 7 that scored
-# swaps via a linearized gradient of sum_chi |S_chi|^8 restricted to a
-# frozen set of "bad" Fourier modes (spectral_swap_search). That
-# version was measured to make the FULL-spectrum ratio (as estimated
-# by the character sampler) WORSE in 2 of 3 tested N's, and stall
-# (zero accepted swaps) at the third -- a real negative result, not a
-# noise artifact (see the run that prompted this rewrite), traced to
-# two compounding problems: (1) optimizing a small frozen mode subset
-# has no guarantee of transferring to the full spectrum -- a swap can
-# cleanly improve the ~B modes being watched while making the other
-# ~N-B modes worse, and the character sampler measures ALL of them;
-# (2) the linearization itself assumes |chi(y)-chi(x)| is small
-# relative to |S_chi|, which is not generally true when |S_chi| is
-# itself only O(sqrt(B))-ish. Both issues were real, not
-# implementation bugs -- the surrogate objective was the problem.
+# HISTORY, v1 -> v2 -> v3:
 #
-# EXTERNAL PROPOSAL (paraphrased, in response to that result): rather
-# than optimizing Fourier coefficients via a linearized surrogate,
-# work directly in physical space with the pair-sum multiplicity
-# function r(t) = #{(a,b) in FxF : a+b = t mod N} (an ordered-pair
-# count, i.e. the additive convolution 1_F * 1_F). A swap changes r at
-# only O(B) points (the pair-sums involving the swapped element), so
-# any energy functional of r that can be updated incrementally from
-# those O(B) changed entries admits an EXACT, no-linearization,
-# O(B)-per-swap local search -- "no surrogate, no frozen Omega, no
-# linearization, no worrying about missing frequencies."
+# v1 (spectral_swap_search, discarded): scored Sidon-preserving swaps
+# via a LINEARIZED gradient of sum_chi |S_chi|^8 restricted to a
+# frozen set of "bad" Fourier modes. Made the full-spectrum ratio
+# WORSE in 2 of 3 tested N's and stalled at the third -- traced to (1)
+# a frozen mode subset with no transfer guarantee to the full
+# spectrum, and (2) the linearization itself being invalid when
+# |S_chi| ~ O(sqrt(B)).
 #
-# CORRECTION TO THE PROPOSAL'S STATED IDENTITY (verified numerically,
-# both symbolically and by direct computation on random test sets --
-# see chat): the proposal describes the 8th moment as "literally the
-# 4th moment of the pair-sum distribution", i.e. sum_t r(t)^4. That is
-# NOT the correct identity. What IS exactly true (standard Parseval on
-# Z/N, verified numerically to floating-point precision across many
-# random F): sum_t r(t)^2 = (1/N) * sum_chi |S_chi|^4 -- this is
-# exactly M4 (already tracked elsewhere in this file), not M8, and IS
-# updatable in O(B) per swap (r changes at O(B) points, and
-# sum(v^2)-style energies update purely from the changed entries with
-# no cross-terms beyond those entries -- verified against brute-force
-# recomputation across 200 random trials, see chat).
+# v2 (pairsum_swap_search, discarded): replaced the linearized
+# surrogate with an EXACT O(B)-per-swap objective, sum_t r(t)^2 (the
+# pair-sum energy, exactly equal to M4). Implementation was verified
+# correct (score_swap matches brute-force recomputation to the last
+# integer, r is restored byte-for-byte after every trial). The
+# objective itself, however, turned out to be USELESS for this
+# purpose: for a Sidon set of fixed size B, every pairwise sum is
+# either a self-pair (contributing r=1, B of them) or a two-way
+# collision of an ordered cross-pair (contributing r=2,
+# C(B,2) of them) -- Sidon-ness alone forces this multiset of r
+# VALUES for every Sidon set of size B, giving the closed form
+#   sum_t r(t)^2 = B*1^2 + C(B,2)*2^2 = 2B^2 - B,
+# a constant depending only on B, not on which B elements are chosen.
+# So M4 has literally zero degrees of freedom across the entire
+# Sidon-preserving search space -- n_accepted=0 at every N tested was
+# not a bug, it was the only mathematically possible outcome of that
+# search. (Verified both symbolically and by exhaustive candidate
+# enumeration against brute-force pairsum_energy recomputation; see
+# chat.) The lesson generalizes: any Sidon-preserving local-search
+# objective needs to depend on WHERE the occupied sums/differences
+# land, not just on their multiplicities, since Sidon-ness already
+# pins the multiplicity multiset.
 #
-# The TRUE exact identity for M8 involves q = r (*) r (the
-# AUTOCORRELATION of r, not r^4 pointwise): sum_chi |S_chi|^8 =
-# N * sum_t q(t)^2 (also verified numerically to floating-point
-# precision). But autocorrelation is a global operation -- changing
-# r at O(B) points was checked to change q at very close to ALL N
-# points (957 of 1009 in one concrete test), because convolution
-# smears a local change across the whole transform. So the true
-# M8-exact quantity does NOT admit an O(B)-per-swap update; it costs
-# O(N) per swap to recompute q from scratch. That defeats the "cheap
-# exact O(B^2) budget" premise of the proposal at the M8 level
-# specifically.
+# v3 (THIS FILE): abandons "optimize after construction" (local
+# search over swaps of a completed Sidon set) in favor of "spend the
+# quadratic budget during construction" -- built sequentially, the
+# same way greedy_sidon_subset is, except at each step the candidate
+# is chosen not as the first Sidon-valid one but as the Sidon-valid
+# one that minimizes a SAMPLED, EXACT (not linearized) 8th-moment
+# score against a FIXED set of K random characters, sampled once at
+# the very start and never adapted to the growing F (same fix as
+# v1's frozen-mode problem, but for an unbiased random Omega instead
+# of a frozen bad-mode Omega, so there's no "optimized for the modes
+# I'm watching, ignored everywhere else" failure mode -- a uniformly
+# random Omega is an unbiased estimator of the FULL M8 sum in
+# expectation, at any point during construction).
 #
-# WHAT'S IMPLEMENTED HERE, GIVEN THAT: minimize sum_t r(t)^2 (= M4,
-# exactly, not a proxy for M4 -- an exact equality) via genuine
-# O(B)-per-swap incremental local search, used as an UNTESTED PROXY
-# for improving M8 (there is no theorem here, and no claim that
-# minimizing M4 necessarily improves M8 -- lower M4 is at best
-# correlated with lower M8 in the way "less concentrated pairwise
-# sums" is intuitively related to "less concentrated 4-fold sums", but
-# this is exactly the kind of claim that needs to be MEASURED, not
-# assumed, same discipline as every other strategy in this file).
-# What this construction DOES buy over the discarded spectral version:
-# a genuinely exact, cheap (O(B) per swap), no-approximation objective
-# -- so if it fails to improve M8, that failure isn't attributable to
-# a linearization error or a frozen-subset blind spot the way the
-# previous version's failure was. It would be a cleaner negative (or
-# positive) result either way.
+# COMPLEXITY, STATED HONESTLY: with |Omega| = K held as a FIXED
+# CONSTANT (not scaled with B), each of the B construction stages
+# scores O(B) candidates (the shuffled-order Sidon-candidate stream,
+# same as greedy_sidon_subset) at O(K) = O(1) per candidate (K fixed
+# characters, updating each S_chi from the candidate's phase is O(1)
+# per character), giving O(B^2 * K) = O(B^2) total with K folded into
+# the constant. This is the HONEST version of the "O(B^2) budget"
+# claim: it holds because K is fixed, not because scoring against
+# Theta(B) characters is free -- scoring against Theta(B) characters
+# at every one of the B stages would cost O(B^3), which was flagged
+# and explicitly rejected in favor of fixed K (see chat).
+#
+# WHAT THIS IS NOT: this is still an untested proxy, same discipline
+# as every other strategy in this file -- a K-character random
+# projection is an unbiased ESTIMATE of the full M8 sum, not M8
+# itself, and greedily minimizing an estimate at each of B
+# sequential steps has no theorem attached guaranteeing the final
+# F's TRUE (character-sampler-measured) M8 ratio improves over plain
+# greedy_sidon_subset. That is exactly what
+# run_projected_greedy_comparison measures, with the same
+# multi-seed noise-floor discipline as the discarded v2 comparison.
 
 """
-    pairsum_energy(F::Vector{Int}, N::Int) -> (r::Dict{Int,Int}, E::Int)
+    sample_fixed_characters(N::Int, K::Int, rng::AbstractRNG) -> Vector{Int}
 
-Builds the pair-sum multiplicity dict r(t) = #{(a,b) in FxF : a+b = t
-mod N} (ordered pairs, so r(2a) counts the single (a,a) self-pair once
-and r(a+b) for a != b counts both (a,b) and (b,a)) from scratch, and
-returns it alongside E = sum_t r(t)^2 -- exactly N times M4/N, i.e.
-exactly equal to sum_chi |S_chi|^4 / N (verified numerically; see
-Strategy 7 header comment). Only nonzero entries are stored (a sparse
-Dict, not a dense length-N array), since at most O(B^2) entries of r
-are ever nonzero.
-
-O(B^2) cost -- called once per swap-search call (to build the initial
-r from the seed F), not once per step (steps update incrementally via
-pairsum_remove!/pairsum_add! below).
+Draws K distinct nonzero residues mod N, uniformly at random, to serve
+as the fixed character set Omega = {chi_k(x) = exp(2*pi*i*k*x/N) : k in
+result}. Sampled ONCE per construction run and never refreshed --
+deliberately unbiased and independent of the growing F, unlike v1's
+frozen "worst modes" set (which was itself derived from F and hence
+could miss modes that only became bad later in the search).
 """
-function pairsum_energy(F::Vector{Int}, N::Int)
-    r = Dict{Int,Int}()
-    for a in F, b in F
-        t = mod(a + b, N)
-        r[t] = get(r, t, 0) + 1
-    end
-    E = sum(v^2 for v in values(r))
-    return (r, E)
-end
-
-"""
-    pairsum_bump!(r, t, delta) -> ΔE
-
-Adds `delta` to r[t] (removing the key if it hits exactly 0, to keep r
-sparse), returning the resulting change in sum_t r(t)^2 caused by THIS
-single bump (new^2 - old^2). This is the atomic operation both
-pairsum_remove! and pairsum_add! are built from.
-"""
-function pairsum_bump!(r::Dict{Int,Int}, t::Int, delta::Int)
-    old = get(r, t, 0)
-    new = old + delta
-    dE = new^2 - old^2
-    if new == 0
-        delete!(r, t)
-    else
-        r[t] = new
-    end
-    return dE
-end
-
-"""
-    pairsum_remove!(r, x, F_current, N) -> ΔE
-
-Removes ALL ordered-pair contributions of `x` from `r`, given
-`F_current` (the current F, which must still CONTAIN x when this is
-called -- call this BEFORE actually removing x from your F array).
-For every other f in F_current (f != x), BOTH ordered pairs (x,f) and
-(f,x) map to the same t = x+f mod N and are each removed separately
-(they are two distinct entries in the ordered-pair count, even though
-they share a t) -- getting this double-removal right (rather than
-removing only one of the two) was verified against brute-force
-recomputation across 200 random trials (see Strategy 7 header
-comment); the single self-pair (x,x) is removed once, not twice.
-Returns the total energy change (sum of every pairsum_bump! call's
-contribution).
-"""
-function pairsum_remove!(r::Dict{Int,Int}, x::Int, F_current::Vector{Int}, N::Int)
-    dE = 0
-    for f in F_current
-        if f == x
-            dE += pairsum_bump!(r, mod(2x, N), -1)
-        else
-            dE += pairsum_bump!(r, mod(x + f, N), -1)
-            dE += pairsum_bump!(r, mod(f + x, N), -1)
-        end
-    end
-    return dE
-end
-
-"""
-    pairsum_add!(r, y, F_after, N) -> ΔE
-
-Adds ALL ordered-pair contributions of `y` to `r`, given `F_after`
-(F with x already logically removed, and NOT yet containing y --
-i.e. the "in-between" state after pairsum_remove! but before y is
-appended to your F array). Mirrors pairsum_remove! exactly (same
-double-count-for-f!=x, single-count-for-self-pair structure, just
-adding instead of subtracting). Returns the total energy change.
-"""
-function pairsum_add!(r::Dict{Int,Int}, y::Int, F_after::Vector{Int}, N::Int)
-    dE = 0
-    for f in F_after
-        dE += pairsum_bump!(r, mod(y + f, N), +1)
-        dE += pairsum_bump!(r, mod(f + y, N), +1)
-    end
-    dE += pairsum_bump!(r, mod(2y, N), +1)
-    return dE
-end
-
-"""
-    pairsum_swap_search(F_int, N; pool_size, rng, method=:greedy,
-                          max_steps=200, anneal_T0=1.0, anneal_cooling=0.98)
-
-Local search over Sidon-preserving swaps of `F_int` (assumed already
-Sidon on entry -- not checked at entry), scored by the EXACT change in
-sum_t r(t)^2 (= M4, exactly -- see pairsum_energy) under each proposed
-swap, maintained incrementally via pairsum_remove!/pairsum_add! rather
-than recomputed from scratch each time -- genuinely O(B) per swap
-evaluated, not O(B^2) and not a linearized approximation of anything.
-
-Candidate pool: a fixed random Theta(B) set of elements not in F_int,
-sampled once at the start (same convention as the discarded spectral
-version, and same caveat: not refreshed mid-search).
-
-method=:greedy -- scans every (x in F, y in pool) pair each step (an
-O(B * pool_size) scan, each pair scored in O(B) via a TRIAL bump/undo
-against a COPY of the current r -- see implementation note below on
-why a copy is used rather than true in-place trial), takes the single
-most-negative-dE Sidon-preserving swap, commits it (mutating the real
-r), and repeats. Stops early if no improving Sidon-preserving swap is
-found. method=:anneal -- draws one random (x,y) pair per step,
-Metropolis-accepts based on the exact dE (same acceptance rule as the
-discarded spectral version), and only commits/mutates r if the
-resulting F is Sidon (a rejected proposal is a wasted step, same
-accepted tradeoff as before -- see chat).
-
-IMPLEMENTATION NOTE ON COST: scoring a single candidate swap exactly
-costs O(B) (apply pairsum_remove!+pairsum_add! to a trial copy of r,
-read off the total dE, discard the copy) -- copying a Dict of size
-O(B^2) (worst case, though typically much sparser for a Sidon set) on
-every one of the O(B*pool_size) candidate evaluations in a greedy step
-means the ACTUAL per-step cost is more like O(B * pool_size * B) in
-the worst case if r is dense, not the idealized O(B*pool_size). This
-is addressed by NOT copying r at all: instead, each candidate is
-scored by applying pairsum_remove!/pairsum_add! directly to the LIVE
-r, reading off dE, and then UNDOING the exact same bumps (which is
-exact and cheap since pairsum_bump! is its own exact inverse under
-negated delta) if the candidate is not the one taken. This keeps each
-candidate evaluation at genuine O(B) regardless of how large r's
-current support is.
-
-Returns (F_final::Vector{Int}, n_accepted::Int, n_tried::Int,
-history::Vector{Int}) where history[i] is the EXACT (not sampled,
-not linearized) sum_t r(t)^2 after step i.
-"""
-function pairsum_swap_search(F_int::Vector{Int}, N::Int;
-                                pool_size::Int,
-                                rng::AbstractRNG,
-                                method::Symbol = :greedy,
-                                max_steps::Int = 200,
-                                anneal_T0::Float64 = 1.0,
-                                anneal_cooling::Float64 = 0.98)
-    @assert method in (:greedy, :anneal) "method must be :greedy or :anneal, got $method"
-
-    F = copy(F_int)
-    Fset = Set(F)
-    r, E = pairsum_energy(F, N)
-
-    pool_candidates = Int[]
+function sample_fixed_characters(N::Int, K::Int, rng::AbstractRNG)
+    K = min(K, N - 1)
+    ks = Set{Int}()
     attempts = 0
-    while length(pool_candidates) < pool_size && attempts < 20 * pool_size + N
-        z = rand(rng, 0:(N-1))
+    while length(ks) < K && attempts < 20 * K + N
+        k = rand(rng, 1:(N-1))
+        push!(ks, k)
         attempts += 1
-        if !(z in Fset) && !(z in pool_candidates)
-            push!(pool_candidates, z)
+    end
+    if length(ks) < K
+        @warn "sample_fixed_characters: could only draw $(length(ks)) distinct " *
+              "characters (wanted $K) after exhausting the attempt budget -- " *
+              "proceeding with the smaller set rather than looping indefinitely"
+    end
+    return collect(ks)
+end
+
+"""
+    projected_m8_score(S_vec::Vector{ComplexF64}) -> Float64
+
+Exact (not linearized) sum_{chi in Omega} |S_chi|^8 given the current
+S_chi values for every chi in Omega. O(K) per call.
+"""
+function projected_m8_score(S_vec::Vector{ComplexF64})
+    s = 0.0
+    @inbounds for S in S_vec
+        s += abs2(S)^4
+    end
+    return s
+end
+
+"""
+    projected_greedy_sidon_subset(N, target_size, rng; K=200,
+                                    n_probe_multiplier=4) -> (F, Omega, final_score)
+
+Sequential Sidon-set construction (same skeleton as
+greedy_sidon_subset: shuffle a candidate stream, keep Sidon-compatible
+ones, stop at target_size) EXCEPT at each of the `target_size` stages,
+instead of taking the first Sidon-compatible candidate encountered,
+this scans the FULL remaining candidate pool for Sidon-compatible
+candidates, scores up to `n_probe_multiplier * target_size` of them by
+the EXACT projected M8 score (sum over the K fixed characters in Omega
+of |S_chi + phase of candidate|^8), and takes the minimizer -- i.e. it
+greedily minimizes a sampled, unbiased proxy for the full 8th moment
+at construction time, rather than refining a completed Sidon set
+afterward (see file header for why refinement of a completed Sidon
+set is dead for the M4 proxy, and why construction avoids that
+specific trap).
+
+CANDIDATE-POOL BOOKKEEPING (fixed after an earlier draft of this
+function got this wrong -- see chat): every stage scans the ENTIRE
+remaining pool to identify which candidates are still Sidon-valid
+(permanently dropping ones that collide with the current sums_seen,
+since sums_seen only grows and a rejected candidate never becomes
+valid again), but only SCORES (evaluates the projected M8 for) the
+first `n_probe_multiplier * target_size` valid ones found each stage,
+to bound per-stage cost. Valid candidates beyond that scoring cap are
+kept in the pool for future stages rather than being silently
+discarded. An earlier draft discarded unscored-but-valid candidates
+at the end of every stage's scan, which caused the entire N-sized
+candidate space to be exhausted after only ~target_size/n_probe_multiplier
+stages instead of target_size stages -- confirmed by direct trace (see
+chat) and fixed here.
+
+NOTE ON MAXIMAL-BUT-NOT-MAXIMUM SIDON SETS: even with that bookkeeping
+fixed, this function (like greedy_sidon_subset itself) is not
+guaranteed to reach target_size -- greedy Sidon construction can paint
+itself into a corner where the partial set is a MAXIMAL Sidon set
+(no candidate anywhere in Z/N extends it) short of the requested size,
+purely because of which elements got picked early on, independent of
+implementation correctness. Verified directly (see chat): a stuck run
+was checked by exhaustively testing every residue in Z/N as a
+candidate extension of the partial F, not just the tracked candidate
+pool, confirming zero valid extensions existed anywhere -- a genuine
+dead end, not a pool-bookkeeping artifact. This is a known intrinsic
+risk of ANY greedy Sidon construction (plain greedy_sidon_subset is
+just as exposed to it, only less likely to hit it on any particular
+seed since its candidate ORDER differs). Callers should treat
+length(F) < target_size as a real possible outcome, not assume it
+indicates a bug.
+
+Omega (the K fixed characters) is sampled ONCE at the very start via
+sample_fixed_characters and never changes during construction. S_chi
+for every chi in Omega is maintained incrementally (O(K) update per
+accepted element, not recomputed from scratch each stage) as running
+complex sums.
+
+COST: up to `target_size` stages, each scanning the remaining pool
+(shrinking over time, same order of magnitude as greedy_sidon_subset's
+per-stage scan) but scoring at most n_probe_multiplier*target_size
+candidates at O(K) per candidate (K fixed, see file header) -- the
+scoring cost is O(B^2 * K) = O(B^2) total with K folded into the
+constant; the Sidon-validity scan itself is the same order of total
+work greedy_sidon_subset already does.
+
+Returns (F::Vector{Int}, Omega::Vector{Int}, final_score::Float64)
+where final_score is the EXACT projected M8 score (over Omega only,
+not the full spectrum) of the returned F -- NOT sampled/noisy, since
+Omega and every S_chi are tracked exactly throughout construction.
+"""
+function projected_greedy_sidon_subset(N::Int, target_size::Int, rng::AbstractRNG;
+                                          K::Int = 200,
+                                          n_probe_multiplier::Int = 4,
+                                          pool_refill_factor::Int = 3)
+    Omega = sample_fixed_characters(N, K, rng)
+    nK = length(Omega)
+    S_vec = zeros(ComplexF64, nK)
+
+    F = Int[]
+    sums_seen = Set{Int}()
+
+    max_probe_per_stage = max(1, n_probe_multiplier * target_size)
+    # BOUNDED POOL (fixes an O(N*B) per-stage scan -- see chat: the
+    # previous version rescanned the ENTIRE remaining N-sized tail
+    # every stage to find Sidon-valid candidates, giving O(N*B) total
+    # work, which is what hung at N=10_000_019. That rescan bought
+    # nothing: candidates far back in the shuffle are exchangeable
+    # with candidates near the front (the shuffle is uniform), so
+    # there is no reason to keep an O(N)-sized queue alive when only
+    # a probe-sized pool is ever scored. Fix: draw a bounded pool of
+    # `pool_refill_factor * max_probe_per_stage` FRESH, not-yet-seen
+    # residues at a time from a shuffled stream, refilling only when
+    # the live pool is exhausted (i.e. amortized, not every stage).
+    # This makes per-stage work O(pool size) = O(target_size), and
+    # total work O(target_size^2) = O(B^2), matching the stated
+    # budget, instead of O(N*B).
+    pool_size_target = max(1, pool_refill_factor * max_probe_per_stage)
+    stream = collect(0:(N-1))
+    Random.shuffle!(rng, stream)
+    stream_pos = 0  # index of the last element of `stream` already drawn
+    pool = Int[]
+
+    refill!() = begin
+        need = pool_size_target - length(pool)
+        take = min(need, length(stream) - stream_pos)
+        if take > 0
+            append!(pool, @view stream[(stream_pos+1):(stream_pos+take)])
+            stream_pos += take
         end
     end
-    if length(pool_candidates) < pool_size
-        @warn "pairsum_swap_search: could only build a pool of $(length(pool_candidates)) " *
-              "(wanted $pool_size) after exhausting the attempt budget -- proceeding with " *
-              "the smaller pool rather than looping indefinitely"
-    end
+    refill!()
 
-    n_accepted = 0
-    n_tried = 0
-    history = Int[]
-    T = anneal_T0
+    while length(F) < target_size
+        if isempty(pool)
+            break  # exhausted the entire shuffled stream with zero remaining valid candidates
+        end
 
-    # Scores one candidate swap (x -> y) EXACTLY, in O(B), by applying
-    # the bumps to the LIVE r, reading dE, then undoing them (exact
-    # inverse: re-applying the same bump sequence with negated deltas
-    # restores r to byte-for-byte the same state, since pairsum_bump!
-    # is a pure function of (old value, delta) -> new value with no
-    # hidden state). Does NOT mutate F -- only r, and only transiently.
-    function score_swap(x::Int, y::Int)
-        F_without_x = filter(!=(x), F)
-        dE = pairsum_remove!(r, x, F, N)
-        dE += pairsum_add!(r, y, F_without_x, N)
-        # Undo: remove y's just-added contributions, re-add x's.
-        pairsum_remove!(r, y, vcat(F_without_x, [y]), N)
-        pairsum_add!(r, x, F_without_x, N)
-        return dE
-    end
-
-    for step in 1:max_steps
-        push!(history, E)
-
-        if method == :greedy
-            best_dE = 0
-            best_swap = nothing
-            for x in F
-                for y in pool_candidates
-                    n_tried += 1
-                    dE = score_swap(x, y)
-                    dE >= best_dE && continue
-                    F_trial = copy(F)
-                    idx = findfirst(==(x), F_trial)
-                    F_trial[idx] = y
-                    if sidon_defect(F_trial, N) == 0
-                        best_dE = dE
-                        best_swap = (x, y)
-                    end
+        # Scan only the current (bounded) pool for Sidon-validity --
+        # O(pool size * |F|) per stage instead of O(N * |F|).
+        batch = Int[]
+        batch_new_sums = Vector{Int}[]
+        kept_pool = Int[]  # valid-but-unscored survivors, stay in the pool
+        for x in pool
+            ok = true
+            new_sums = Int[]
+            for y in F
+                s = mod(x + y, N)
+                if s in sums_seen
+                    ok = false
+                    break
+                end
+                push!(new_sums, s)
+            end
+            if ok
+                s2 = mod(2x, N)
+                if s2 in sums_seen
+                    ok = false
+                else
+                    push!(new_sums, s2)
                 end
             end
-            if best_swap === nothing
-                break
+            if !ok
+                continue  # permanently invalid (sums_seen only grows), drop from pool entirely
             end
-            x, y = best_swap
-            F_without_x = filter(!=(x), F)
-            actual_dE = pairsum_remove!(r, x, F, N)
-            actual_dE += pairsum_add!(r, y, F_without_x, N)
-            @assert actual_dE == best_dE "pairsum energy bookkeeping mismatch: " *
-                "committed dE=$actual_dE != scored dE=$best_dE -- indicates a bug " *
-                "in score_swap's trial-and-undo symmetry, investigate before trusting " *
-                "any result from this search"
-            E += actual_dE
-            idx = findfirst(==(x), F)
-            F[idx] = y
-            delete!(Fset, x)
-            push!(Fset, y)
-            filter!(!=(y), pool_candidates)
-            push!(pool_candidates, x)
-            n_accepted += 1
-
-        else  # :anneal
-            x = rand(rng, F)
-            y = rand(rng, pool_candidates)
-            n_tried += 1
-            dE = score_swap(x, y)
-            accept = if dE <= 0
-                true
+            if length(batch) < max_probe_per_stage
+                push!(batch, x)
+                push!(batch_new_sums, new_sums)
             else
-                rand(rng) < exp(-dE / max(T, 1e-12))
+                push!(kept_pool, x)  # valid, just not scored this round
             end
-            if accept
-                F_trial = copy(F)
-                idx = findfirst(==(x), F_trial)
-                F_trial[idx] = y
-                if sidon_defect(F_trial, N) == 0
-                    F_without_x = filter(!=(x), F)
-                    actual_dE = pairsum_remove!(r, x, F, N)
-                    actual_dE += pairsum_add!(r, y, F_without_x, N)
-                    E += actual_dE
-                    F[idx] = y
-                    delete!(Fset, x)
-                    push!(Fset, y)
-                    filter!(!=(y), pool_candidates)
-                    push!(pool_candidates, x)
-                    n_accepted += 1
-                end
-            end
-            T *= anneal_cooling
         end
+        pool = kept_pool
+
+        if isempty(batch)
+            refill!()
+            if isempty(pool)
+                break  # stream exhausted too, genuinely no valid candidates anywhere left to try
+            end
+            continue
+        end
+
+        # Score every candidate in the batch by the EXACT resulting
+        # projected M8 (over the fixed Omega), choosing the minimizer.
+        # No mutation of the real S_vec happens until the winner is
+        # chosen, so this is a pure trial, same discipline as v2's
+        # score_swap trial-without-committing pattern.
+        best_score = Inf
+        best_i = 0
+        best_phase = ComplexF64[]
+        for (i, x) in enumerate(batch)
+            trial_score = 0.0
+            phase_x = Vector{ComplexF64}(undef, nK)
+            @inbounds for kk in 1:nK
+                k = Omega[kk]
+                ph = cis(2pi * k * x / N)
+                phase_x[kk] = ph
+                trial_score += abs2(S_vec[kk] + ph)^4
+            end
+            if trial_score < best_score
+                best_score = trial_score
+                best_i = i
+                best_phase = phase_x
+            end
+        end
+
+        x_chosen = batch[best_i]
+        push!(F, x_chosen)
+        union!(sums_seen, batch_new_sums[best_i])
+        unused_batch = [batch[j] for j in eachindex(batch) if j != best_i]
+        pool = vcat(unused_batch, pool)
+        @inbounds for kk in 1:nK
+            S_vec[kk] += best_phase[kk]
+        end
+
+        length(pool) < pool_size_target && refill!()
     end
 
-    return (F, n_accepted, n_tried, history)
+    if length(F) < target_size
+        @warn "projected_greedy_sidon_subset: only built |F|=$(length(F)) " *
+              "(wanted target_size=$target_size) -- either the bounded pool never " *
+              "contained enough simultaneously-valid candidates, or (rarely) the " *
+              "partial Sidon set became genuinely maximal. Proceeding with the " *
+              "smaller set. Try a larger pool_refill_factor if this triggers often."
+    end
+
+    final_score = projected_m8_score(S_vec)
+    return (F, Omega, final_score)
 end
 
 # ---------------------------------------------------------------
-# run_pairsum_swap_comparison: seeds via greedy_sidon_subset, refines
-# via pairsum_swap_search, measures with the usual character sampler
-# -- INCLUDING MULTIPLE INDEPENDENT SAMPLER SEEDS PER (N, before/after)
-# SO THE BEFORE/AFTER COMPARISON HAS A VISIBLE NOISE FLOOR.
+# run_projected_greedy_comparison: builds via BOTH plain
+# greedy_sidon_subset (baseline) and projected_greedy_sidon_subset
+# (this file), measures both with the usual character sampler --
+# INCLUDING MULTIPLE INDEPENDENT SAMPLER SEEDS PER (N, baseline/
+# projected) SO THE COMPARISON HAS A VISIBLE NOISE FLOOR, same
+# discipline as the discarded v2 comparison (see its header comment
+# for why this matters: a single-seed before/after ratio has no way
+# to distinguish a real effect from Monte Carlo noise).
 # ---------------------------------------------------------------
-#
-# WHY MULTIPLE SAMPLER SEEDS: the discarded spectral-swap version
-# reported single-seed before/after ratios (e.g. 563 -> 599) with no
-# indication of whether that gap was outside Monte Carlo noise --
-# flagged directly as a gap by the external review. Fixed here by
-# running run_character_sampler_threaded n_sampler_seeds times (with
-# DIFFERENT seeds) for both the before-refinement and after-refinement
-# F, and reporting mean +/- standard error for each, so a reader can
-# see directly whether "after" is outside "before"'s noise band rather
-# than having to trust a single point estimate.
 
 """
-    run_pairsum_swap_comparison(; Ns, m_per_point, m_scaling, m_floor,
-                                   m_cap, seed, method, pool_size_factor,
-                                   max_steps, n_sampler_seeds)
+    run_projected_greedy_comparison(; Ns, m_per_point, m_scaling, m_floor,
+                                       m_cap, seed, K, n_probe_multiplier,
+                                       n_sampler_seeds)
 
-Same overall shape as the discarded run_spectral_swap_comparison, but:
-  - refines via pairsum_swap_search (exact M4 minimization) instead of
-    the linearized spectral surrogate;
-  - runs `n_sampler_seeds` INDEPENDENT character-sampler measurements
-    (different seeds) for both the greedy seed (before) and the
-    refined F (after), reporting mean and standard error of the ratio
-    for each, so the before/after comparison carries a visible
-    confidence interval instead of a single noisy point estimate.
+For each N: builds F_baseline via greedy_sidon_subset and
+F_projected via projected_greedy_sidon_subset (SAME underlying RNG
+stream up to the point their candidate orders diverge -- both start
+from `MersenneTwister(seed)`, so any difference in outcome is
+attributable to the construction rule, not to different random
+candidate orderings, to the extent the two constructions' RNG
+consumption stays aligned; see caveat in the function body), then
+runs `n_sampler_seeds` INDEPENDENT character-sampler measurements
+(different seeds) for each, reporting mean and standard error of the
+ratio for both so the comparison carries a visible confidence
+interval instead of a single noisy point estimate.
 
-Also reports the EXACT M4 energy (from pairsum_swap_search's history)
-before and after refinement -- this is not sampled/noisy at all (it's
-computed exactly), so it directly confirms whether the local search
-achieved what it was actually optimizing (M4 should only ever
-decrease or stay flat under :greedy; may fluctuate under :anneal),
-independent of whether that translates into a lower M8 ratio.
+Also reports the EXACT projected-M8 score (over Omega only, from
+projected_greedy_sidon_subset's own bookkeeping) for the projected
+construction -- not sampled/noisy, confirms the construction achieved
+what it was actually optimizing, independent of whether that
+transfers to the TRUE (full-spectrum, character-sampler-measured) M8
+ratio.
 """
-function run_pairsum_swap_comparison(; Ns::Vector{Int} = [10_007, 100_003, 1_000_003, 10_000_019],
-                                        m_per_point::Int = 20_000,
-                                        m_scaling::Symbol = :sqrt_N,
-                                        m_floor::Int = 2_000,
-                                        m_cap::Int = typemax(Int),
-                                        seed::Int = 1,
-                                        method::Symbol = :greedy,
-                                        pool_size_factor::Float64 = 1.0,
-                                        max_steps::Int = 200,
-                                        n_sampler_seeds::Int = 5)
+function run_projected_greedy_comparison(; Ns::Vector{Int} = [10_007, 100_003, 1_000_003, 10_000_019],
+                                            m_per_point::Int = 20_000,
+                                            m_scaling::Symbol = :sqrt_N,
+                                            m_floor::Int = 2_000,
+                                            m_cap::Int = typemax(Int),
+                                            seed::Int = 1,
+                                            K::Int = 200,
+                                            n_probe_multiplier::Int = 4,
+                                            n_sampler_seeds::Int = 5)
     N0 = Float64(first(Ns))
     results = NamedTuple[]
 
-    println("\n=== Pair-sum energy local search (method=$method), seed=greedy_sidon_subset, " *
-            "$n_sampler_seeds independent sampler seeds per point ===")
-    println("N\tB\tm\tM4_before(exact)\tM4_after(exact)\t" *
-            "ratio_before(mean±se)\tratio_after(mean±se)\tn_accepted\tn_tried\tdefect_after\telapsed_s")
+    println("\n=== Projected greedy construction (K=$K fixed random characters), " *
+            "baseline=greedy_sidon_subset, $n_sampler_seeds independent sampler seeds per point ===")
+    println("N\tB\tm\tprojM8_score(exact)\t" *
+            "ratio_baseline(mean±se)\tratio_projected(mean±se)\tdefect_proj\telapsed_s")
     for N in Ns
         B = round(Int, N^0.4)
-        build_rng = MersenneTwister(seed)
-        F_seed = greedy_sidon_subset(N, B, build_rng)
-        @assert length(F_seed) == B "greedy seed returned |F|=$(length(F_seed)), expected B=$B"
-        @assert sidon_defect(F_seed, N) == 0 "greedy seed is not Sidon -- cannot proceed"
 
-        _, M4_before_exact = pairsum_energy(F_seed, N)
+        # NOTE ON RNG ALIGNMENT: F_baseline is built from
+        # MersenneTwister(seed). F_proj is built from a DIFFERENT,
+        # offset seed (seed + 1_000_000*attempt, see retry loop below)
+        # -- both to allow retries on a maximal-Sidon dead end and
+        # because projected_greedy_sidon_subset draws Omega from its
+        # rng before touching the candidate stream, so the two
+        # constructions' candidate orders were never going to align
+        # element-for-element anyway. "seed" here buys run-to-run
+        # determinism/reproducibility, not a shared candidate
+        # ordering between baseline and projected -- flagged directly
+        # rather than implying a tighter match than actually holds.
+        rng_baseline = MersenneTwister(seed)
+        F_baseline = greedy_sidon_subset(N, B, rng_baseline)
+        @assert length(F_baseline) == B "greedy baseline returned |F|=$(length(F_baseline)), expected B=$B"
+        @assert sidon_defect(F_baseline, N) == 0 "greedy baseline is not Sidon -- cannot proceed"
 
-        pool_sz = max(1, round(Int, pool_size_factor * B))
-
-        t0 = time()
-        F_final, n_accepted, n_tried, history = pairsum_swap_search(
-            F_seed, N; pool_size = pool_sz, rng = build_rng, method = method, max_steps = max_steps)
-        search_elapsed = time() - t0
-
-        M4_after_exact = isempty(history) ? M4_before_exact : history[end]
-        defect_after = sidon_defect(F_final, N)
-        if defect_after != 0
-            @warn "N=$N: refined F has nonzero sidon_defect=$defect_after -- " *
-                  "this should be impossible (pairsum_swap_search only accepts " *
-                  "Sidon-preserving swaps); investigate before trusting this row"
+        # projected_greedy_sidon_subset can legitimately land on a
+        # MAXIMAL (but not maximum) Sidon set short of target_size B
+        # -- an intrinsic risk of greedy Sidon construction, not a
+        # bug (see that function's docstring for the direct
+        # verification that this is a genuine dead end, not a
+        # candidate-pool bookkeeping artifact). Retry with a fresh
+        # seed derivative a bounded number of times before giving up,
+        # rather than crashing the whole multi-N sweep on one unlucky
+        # draw.
+        F_proj = Int[]
+        Omega = Int[]
+        proj_score = NaN
+        build_elapsed = 0.0
+        max_retries = 5
+        for attempt in 1:max_retries
+            rng_proj = MersenneTwister(seed + 1_000_000 * attempt)
+            t0 = time()
+            F_proj, Omega, proj_score = projected_greedy_sidon_subset(
+                N, B, rng_proj; K = K, n_probe_multiplier = n_probe_multiplier)
+            build_elapsed = time() - t0
+            length(F_proj) == B && break
+            @warn "N=$N: projected greedy build attempt $attempt landed on a " *
+                  "maximal Sidon set of size $(length(F_proj)) < B=$B -- retrying " *
+                  "with a fresh RNG draw (attempt $(attempt+1)/$max_retries)"
+        end
+        @assert length(F_proj) == B "projected greedy failed to reach target_size=$B " *
+            "after $max_retries retries (last attempt returned |F|=$(length(F_proj))) -- " *
+            "this many consecutive maximal-Sidon dead ends is unusual, investigate " *
+            "before trusting this N"
+        defect_proj = sidon_defect(F_proj, N)
+        if defect_proj != 0
+            @warn "N=$N: projected-greedy F has nonzero sidon_defect=$defect_proj -- " *
+                  "this should be impossible (projected_greedy_sidon_subset only ever " *
+                  "accepts Sidon-preserving candidates); investigate before trusting this row"
         end
 
         m_target = if m_scaling == :fixed
@@ -1943,48 +1956,50 @@ function run_pairsum_swap_comparison(; Ns::Vector{Int} = [10_007, 100_003, 1_000
         Bf = Float64(B)
         flat = (Bf^8) / N
 
-        F_before_wrapped = [[x] for x in F_seed]
-        F_after_wrapped = [[x] for x in F_final]
+        F_baseline_wrapped = [[x] for x in F_baseline]
+        F_proj_wrapped = [[x] for x in F_proj]
 
-        ratios_before = Float64[]
-        ratios_after = Float64[]
+        t_sample_start = time()
+        ratios_baseline = Float64[]
+        ratios_proj = Float64[]
         for s in 1:n_sampler_seeds
             sampler_seed = seed * 1_000_003 + s   # distinct, deterministic per (seed, s)
-            res_b = run_character_sampler_threaded(G_for(N), F_before_wrapped; m = m,
+            res_b = run_character_sampler_threaded(G_for(N), F_baseline_wrapped; m = m,
                                                       seed = sampler_seed, k_size = N,
                                                       report_every = typemax(Int))
-            push!(ratios_before, res_b.M8_running[end] / flat)
-            res_a = run_character_sampler_threaded(G_for(N), F_after_wrapped; m = m,
+            push!(ratios_baseline, res_b.M8_running[end] / flat)
+            res_p = run_character_sampler_threaded(G_for(N), F_proj_wrapped; m = m,
                                                       seed = sampler_seed, k_size = N,
                                                       report_every = typemax(Int))
-            push!(ratios_after, res_a.M8_running[end] / flat)
+            push!(ratios_proj, res_p.M8_running[end] / flat)
         end
+        sample_elapsed = time() - t_sample_start
 
-        mean_before = mean(ratios_before)
-        mean_after = mean(ratios_after)
-        se_before = n_sampler_seeds > 1 ? std(ratios_before) / sqrt(n_sampler_seeds) : NaN
-        se_after = n_sampler_seeds > 1 ? std(ratios_after) / sqrt(n_sampler_seeds) : NaN
+        mean_baseline = mean(ratios_baseline)
+        mean_proj = mean(ratios_proj)
+        se_baseline = n_sampler_seeds > 1 ? std(ratios_baseline) / sqrt(n_sampler_seeds) : NaN
+        se_proj = n_sampler_seeds > 1 ? std(ratios_proj) / sqrt(n_sampler_seeds) : NaN
 
-        elapsed = time() - t0
+        elapsed = build_elapsed + sample_elapsed
 
-        @printf("%d\t%d\t%d\t%d\t\t\t%d\t\t\t%.4f±%.4f\t%.4f±%.4f\t%d\t\t%d\t%d\t\t%.2f\n",
-                N, B, m, M4_before_exact, M4_after_exact,
-                mean_before, se_before, mean_after, se_after,
-                n_accepted, n_tried, defect_after, elapsed)
+        @printf("%d\t%d\t%d\t%.4e\t\t%.4f±%.4f\t\t%.4f±%.4f\t\t%d\t\t%.2f\n",
+                N, B, m, proj_score,
+                mean_baseline, se_baseline, mean_proj, se_proj,
+                defect_proj, elapsed)
 
-        push!(results, (; N, B, m, M4_before_exact, M4_after_exact,
-                           mean_before, se_before, mean_after, se_after,
-                           ratios_before, ratios_after,
-                           n_accepted, n_tried, defect_after, elapsed))
+        push!(results, (; N, B, m, proj_score,
+                           mean_baseline, se_baseline, mean_proj, se_proj,
+                           ratios_baseline, ratios_proj,
+                           defect_proj, elapsed))
     end
 
-    println("\n--- Significance check: is (after - before) outside a 2-standard-error band? ---")
-    println("N\tmean_after - mean_before\tcombined_2se\toutside_2se_band?")
+    println("\n--- Significance check: is (projected - baseline) outside a 2-standard-error band? ---")
+    println("N\tmean_projected - mean_baseline\tcombined_2se\toutside_2se_band?")
     for r in results
-        diff = r.mean_after - r.mean_before
-        combined_2se = 2 * sqrt(r.se_before^2 + r.se_after^2)
+        diff = r.mean_proj - r.mean_baseline
+        combined_2se = 2 * sqrt(r.se_baseline^2 + r.se_proj^2)
         outside = !isnan(combined_2se) && abs(diff) > combined_2se
-        @printf("%d\t%.4f\t\t\t\t%.4f\t\t%s\n", r.N, diff, combined_2se,
+        @printf("%d\t%.4f\t\t\t\t\t%.4f\t\t%s\n", r.N, diff, combined_2se,
                 outside ? "YES (likely real)" : "no (within noise)")
     end
     if n_sampler_seeds < 3
@@ -1994,20 +2009,20 @@ function run_pairsum_swap_comparison(; Ns::Vector{Int} = [10_007, 100_003, 1_000
     end
 
     if length(results) >= 2
-        println("\n--- Pair-sum-refined growth-exponent fit (AFTER refinement, mean ratio vs real N) ---")
-        fit_rows = [(; N = r.N, B = r.B, m = r.m, ratio = r.mean_after,
-                       maxU = 0.0, defect = r.defect_after, elapsed = r.elapsed)
+        println("\n--- Projected-greedy growth-exponent fit (mean ratio vs real N) ---")
+        fit_rows = [(; N = r.N, B = r.B, m = r.m, ratio = r.mean_proj,
+                       maxU = 0.0, defect = r.defect_proj, elapsed = r.elapsed)
                     for r in results]
         fit = fit_growth_exponent(fit_rows)
-        println("\n--- For comparison, UNREFINED greedy-seed fit (BEFORE refinement, mean ratio) ---")
-        fit_rows_before = [(; N = r.N, B = r.B, m = r.m, ratio = r.mean_before,
-                              maxU = 0.0, defect = 0, elapsed = r.elapsed)
-                           for r in results]
-        fit_before = fit_growth_exponent(fit_rows_before)
-        return (; results, fit, fit_before)
+        println("\n--- For comparison, plain greedy_sidon_subset fit (mean ratio) ---")
+        fit_rows_baseline = [(; N = r.N, B = r.B, m = r.m, ratio = r.mean_baseline,
+                                 maxU = 0.0, defect = 0, elapsed = r.elapsed)
+                              for r in results]
+        fit_baseline = fit_growth_exponent(fit_rows_baseline)
+        return (; results, fit, fit_baseline)
     end
 
-    return (; results, fit = nothing, fit_before = nothing)
+    return (; results, fit = nothing, fit_baseline = nothing)
 end
 
 # ---------------------------------------------------------------
@@ -2263,30 +2278,22 @@ if abspath(PROGRAM_FILE) == @__FILE__
         @error "run_singer_quad_filtered_exponent_sweep() failed" exception=(e, catch_backtrace())
     end
 
-    # Strategy 7 (current version): pair-sum energy local search --
-    # greedy-seeded, refined by an EXACT O(B)-per-swap minimization of
-    # sum_t r(t)^2 (= M4, exactly), used as an untested proxy for M8.
-    # Replaces the earlier linearized-spectral-gradient version of
-    # Strategy 7, which was discarded after making the full-spectrum
-    # ratio worse in 2 of 3 tested N's (see Strategy 7 header comment
-    # for the full history and the numerically-verified identities
-    # this version is built on). In the real genus-2/D1-atom setting
-    # Sidon-ness is automatic and needs no separate check; this code
-    # operates on plain Z/N residues, so it simulates that same
-    # constraint via an explicit sidon_defect check on every accepted
-    # swap.
+    # Strategy 7 (v3, current version): projected greedy construction
+    # -- built sequentially like plain greedy_sidon_subset, but at
+    # each stage the Sidon-valid candidate chosen is the one
+    # minimizing the EXACT projected M8 score against a FIXED set of
+    # K=200 random characters sampled once at the start (see Strategy
+    # 7 header comment for the full v1 -> v2 -> v3 history: v1's
+    # linearized-gradient swap search made things worse, and v2's
+    # exact pair-sum-energy swap search turned out to optimize a
+    # quantity -- M4 -- that is PROVABLY CONSTANT across all Sidon
+    # sets of a fixed size, so it could never move at all). v3
+    # abandons post-hoc refinement of a completed Sidon set entirely
+    # in favor of spending the quadratic budget during construction,
+    # where there are genuine degrees of freedom to optimize over.
     try
-        run_pairsum_swap_comparison(; method = :greedy)
+        run_projected_greedy_comparison()
     catch e
-        @error "run_pairsum_swap_comparison(:greedy) failed" exception=(e, catch_backtrace())
-    end
-
-    # Same refinement, but simulated annealing instead of pure greedy
-    # descent, to check whether greedy is getting stuck in a local
-    # optimum the annealed variant can escape.
-    try
-        run_pairsum_swap_comparison(; method = :anneal)
-    catch e
-        @error "run_pairsum_swap_comparison(:anneal) failed" exception=(e, catch_backtrace())
+        @error "run_projected_greedy_comparison() failed" exception=(e, catch_backtrace())
     end
 end
