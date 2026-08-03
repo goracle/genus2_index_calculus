@@ -61,7 +61,7 @@
 using Random
 using Printf
 using Statistics
-using Base.Threads: nthreads   # Threads.@spawn / Threads.Atomic / Threads.atomic_add! used fully-qualified below
+using Base.Threads: nthreads   # Threads.@spawn used fully-qualified in projected_greedy_sidon_subset's batch-scoring loop below
 
 include("character_sampler.jl")
 include("scaling_sweep.jl")   # for fit_growth_exponent, reused here per-strategy
@@ -2067,6 +2067,19 @@ scoring cost is O(B^2 * K) = O(B^2) total with K folded into the
 constant; the Sidon-validity scan itself is the same order of total
 work greedy_sidon_subset already does.
 
+THREADED: the per-stage batch-scoring step (the O(B^2*K) part) is
+parallelized across Threads.nthreads() via Threads.@spawn -- each
+candidate's trial score is independent (only reads S_vec/Omega, no
+writes until the stage's winner is chosen), so it's an embarrassingly
+parallel map, followed by a cheap serial reduction to find the
+minimizer. The Sidon-validity scan (finding which pool candidates are
+still valid) remains serial -- it mutates `sums_seen`-derived state
+incrementally per candidate within a stage and is a smaller share of
+total cost than scoring at realistic K. Requires Julia started with
+multiple threads (`julia -t auto` or `-t N`, N>1) to actually run in
+parallel; falls back to correct but single-core behavior otherwise
+(see the nthreads()==1 warning below).
+
 Returns (F::Vector{Int}, Omega::Vector{Int}, final_score::Float64)
 where final_score is the EXACT projected M8 score (over Omega only,
 not the full spectrum) of the returned F -- NOT sampled/noisy, since
@@ -2076,6 +2089,12 @@ function projected_greedy_sidon_subset(N::Int, target_size::Int, rng::AbstractRN
                                           K::Int = 200,
                                           n_probe_multiplier::Int = 4,
                                           pool_refill_factor::Int = 3)
+    if Threads.nthreads() == 1
+        @warn "nthreads() == 1 -- Julia was not started with multiple threads, so the " *
+              "batch-scoring loop below will run on one core despite being threaded code " *
+              "(this is what was reported hanging). Restart with `julia -t auto` (or " *
+              "`-t N` for N>1) to actually use multiple threads."
+    end
     Omega = sample_fixed_characters(N, K, rng)
     nK = length(Omega)
     S_vec = zeros(ComplexF64, nK)
@@ -2168,24 +2187,63 @@ function projected_greedy_sidon_subset(N::Int, target_size::Int, rng::AbstractRN
         # No mutation of the real S_vec happens until the winner is
         # chosen, so this is a pure trial, same discipline as v2's
         # score_swap trial-without-committing pattern.
-        best_score = Inf
-        best_i = 0
-        best_phase = ComplexF64[]
-        for (i, x) in enumerate(batch)
-            trial_score = 0.0
-            phase_x = Vector{ComplexF64}(undef, nK)
-            @inbounds for kk in 1:nK
-                k = Omega[kk]
-                ph = cis(2pi * k * x / N)
-                phase_x[kk] = ph
-                trial_score += abs2(S_vec[kk] + ph)^4
+        #
+        # THREADED (previously a single serial for-loop -- this is
+        # the O(B^2*K) budget's actual cost, and it was all running on
+        # one core; see chat, this was reported hanging at N=10^6+
+        # scale). Each candidate's trial score only READS S_vec/Omega
+        # (no writes until the winner is chosen after the loop), so
+        # scoring the batch is embarrassingly parallel: split `batch`
+        # into nthreads() STATIC, CONTIGUOUS chunks and @spawn one task
+        # per chunk, each writing only to its own slice of preallocated
+        # trial_scores/trial_phases arrays -- same discipline as
+        # run_character_sampler_threaded in character_sampler.jl (never
+        # index anything by threadid(), since that is unsafe under
+        # Julia's >=1.9 dynamic scheduler; tie each task to its own
+        # chunk/closure instead). No RNG is used in this loop, so
+        # there's no analogous per-task-RNG concern here -- purely a
+        # read-many/write-disjoint parallel map, followed by a cheap
+        # serial O(batch size) reduction to find the minimizer.
+        nb = length(batch)
+        trial_scores = Vector{Float64}(undef, nb)
+        trial_phases = Vector{Vector{ComplexF64}}(undef, nb)
+
+        nt = Threads.nthreads()
+        chunk_bounds = let
+            bounds = Vector{UnitRange{Int}}(undef, nt)
+            base, rem = divrem(nb, nt)
+            lo = 1
+            for t in 1:nt
+                len = base + (t <= rem ? 1 : 0)
+                bounds[t] = lo:(lo + len - 1)
+                lo += len
             end
-            if trial_score < best_score
-                best_score = trial_score
-                best_i = i
-                best_phase = phase_x
+            bounds
+        end
+
+        tasks = Vector{Task}(undef, nt)
+        for t in 1:nt
+            range_t = chunk_bounds[t]
+            tasks[t] = Threads.@spawn begin
+                for i in range_t
+                    x = batch[i]
+                    trial_score = 0.0
+                    phase_x = Vector{ComplexF64}(undef, nK)
+                    @inbounds for kk in 1:nK
+                        k = Omega[kk]
+                        ph = cis(2pi * k * x / N)
+                        phase_x[kk] = ph
+                        trial_score += abs2(S_vec[kk] + ph)^4
+                    end
+                    trial_scores[i] = trial_score
+                    trial_phases[i] = phase_x
+                end
             end
         end
+        foreach(wait, tasks)
+
+        best_i = argmin(trial_scores)
+        best_phase = trial_phases[best_i]
 
         x_chosen = batch[best_i]
         push!(F, x_chosen)
@@ -2404,6 +2462,32 @@ end
 # Strategy 8: Fourier-peak pruning of a completed Singer set
 # ---------------------------------------------------------------
 #
+# RESULT (measured, this session -- see chat for full output): tested
+# at target_q_exponent in {0.2, 0.4}, q in {5, 7, 251, 331}, this
+# does NOT help. normalized_ratio (the per-element shape effect, with
+# the trivial B-shrinkage divided out -- see peak_pruned_subset and
+# run_singer_peak_pruned_comparison docstrings) came back CONSISTENTLY
+# ABOVE 1 at all four tested points (1.38, 1.16, 1.06, 1.07 as q grows
+# 5->7->251->331) -- i.e. the elements pruning REMOVES are, on a
+# per-element basis, LESS peak-heavy than the elements it KEEPS behind:
+# pruning makes the survivors' average worse, not better, the opposite
+# of the intended effect. Two things about the trend are worth stating
+# precisely: (1) the effect is consistently signed the wrong way, not
+# noisy/mixed like the projected-greedy comparison above -- all four
+# points agree; (2) normalized_ratio is APPROACHING 1 from above as q
+# grows (1.38 -> 1.16 -> 1.06 -> 1.07), not diverging further from it
+# or crossing below it -- consistent with the effect shrinking toward
+# "no effect" at larger scale, not with a real signal that just needed
+# more data to surface. Taken together this joins new_invariants.jl's
+# five cheap-proxy results (section 10.2) and Strategy 7's v1 as
+# another proxy that, once actually measured against the true
+# character-sampler/exact-DFT M8, does not do what its construction
+# suggested it should -- see peak_score's docstring below for the
+# likely reason (it is a phase-collapsed heuristic, not a derived
+# first-order M8 gradient, so there was never a proof it should point
+# the right direction; this is exactly the kind of gap that measuring
+# was supposed to catch, and did).
+#
 # USER'S IDEA (relayed from an external model, this session): rather
 # than changing HOW D is built (Strategies 4-7 above all vary the
 # construction), take the native Singer set D as-is and PRUNE it
@@ -2511,7 +2595,29 @@ function peak_pruned_subset(D::Vector{Int}, N::Int; top_frac::Float64 = 0.01, pr
 
     scores = [peak_score(x, N, S_hat, K_peak) for x in D]
 
+    # BUG FIX (found by running at small q -- see chat: q=5,7 both
+    # silently pruned ZERO elements): round(Int, prune_frac*length(D))
+    # rounds DOWN TO ZERO whenever prune_frac*|D| < 0.5, which happens
+    # for essentially every small-q native Singer set (e.g. |D|=6 at
+    # q=5, |D|=8 at q=7 -- 0.05*6=0.3, 0.05*8=0.4, both round to 0).
+    # The function returned D unchanged with no warning in that case,
+    # silently no-opting rather than pruning anything -- confirmed
+    # directly by the q=5/q=7 runs both showing B_after == B_before.
+    # Fixed to guarantee at least 1 element is pruned whenever
+    # prune_frac > 0 and D is nonempty (matching top_k_peaks' own
+    # max(1, round(...)) floor for the same reason), and to warn when
+    # the requested fraction had to be rounded UP to reach that floor,
+    # so a silent no-op like this one is now impossible to miss.
     n_prune = round(Int, prune_frac * length(D))
+    if n_prune == 0 && prune_frac > 0 && !isempty(D)
+        @warn "peak_pruned_subset: prune_frac=$prune_frac on |D|=$(length(D)) rounds " *
+              "down to 0 elements pruned -- flooring to 1 instead of silently no-oping " *
+              "(this is what happened, unflagged, at small q before this fix: B_after " *
+              "came back equal to B_before with no indication pruning did nothing). " *
+              "Use a larger q/N or a larger prune_frac if you want a genuinely " *
+              "informative pruning fraction rather than this floor."
+        n_prune = 1
+    end
     # Rank D's INDICES by score descending, then drop the top n_prune --
     # sortperm on indices (not on D itself) keeps `scores` aligned with
     # D's original order for the returned tuple, and keeps the pruned
@@ -2531,18 +2637,19 @@ end
 # ---------------------------------------------------------------
 
 """
-    run_singer_peak_pruned_comparison(; Ns, top_frac=0.01, prune_frac=0.05, seed=1)
+    run_singer_peak_pruned_comparison(; Ns, target_q_exponent=0.2, top_frac=0.01,
+                                          prune_frac=0.05, seed=1)
 
-For each N in `Ns`: picks the largest prime q with q^2+q+1 <= N (same
-convention as run_singer_embedded_comparison), builds the native
-Singer set D via singer_sidon_subset_native, embeds it in Z/N by
-literal inclusion (asserting N >= 2*(Nq-1), same embedding-validity
-guard as run_singer_embedded_comparison and full_spectrum_diagnostic
--- pruning does not relax this requirement, since D must already be a
-genuine Sidon set mod N before pruning is measured against it),
-re-verifies sidon_defect(D, N) == 0 (see peak_pruned_subset's
-docstring for why this is a blanket sanity check rather than something
-pruning itself could break), then computes:
+For each N in `Ns`: picks the largest prime q with q <= N^target_q_exponent
+(same convention as run_singer_embedded_comparison -- q^2+q+1 = Nq is then
+implied), builds the native Singer set D via singer_sidon_subset_native,
+embeds it in Z/N by literal inclusion (asserting N >= 2*(Nq-1), same
+embedding-validity guard as run_singer_embedded_comparison and
+full_spectrum_diagnostic -- pruning does not relax this requirement,
+since D must already be a genuine Sidon set mod N before pruning is
+measured against it), re-verifies sidon_defect(D, N) == 0 (see
+peak_pruned_subset's docstring for why this is a blanket sanity check
+rather than something pruning itself could break), then computes:
 
   - the EXACT M8 of the unpruned embedded D (sum_{k=1}^{N-1}
     |S_hat(k)|^8, i.e. total_M8 from top_k_peaks' normalization
@@ -2557,36 +2664,63 @@ pruning itself could break), then computes:
     scratch, not patched)
 
 and reports both, plus the ratio, plus |F_pruned| (pruning can only
-shrink B from D's q+1, by construction -- exactly
-round(prune_frac*(q+1)) elements are removed).
+shrink B from D's q+1, by construction -- see peak_pruned_subset's
+docstring on the round()-to-zero bug that was fixed there: at small q
+this floors to 1 element pruned rather than the requested fraction).
+
+DEFAULT target_q_exponent=0.2 MATCHES THE REAL FACTOR-BASE CONSTRAINT
+(B ~ p^(2/5) ~ N^0.2, per the advisory doc) but gives a TINY q even at
+large N (q=5 at N=10007, q=28 at N=2,000,000) -- confirmed directly:
+at q=5,7 (this function's original default Ns), B_before=6,8 and
+prune_frac=0.05 rounded down to 0 elements pruned before the fix
+above, and even post-fix, pruning exactly 1 of 6-8 elements is not a
+regime where a 1%-of-frequencies peak set or a 5%-of-elements prune
+fraction means much statistically. Following phi_diagnostic.jl's own
+convention (its smoke test uses target_q_exponent=0.4 specifically to
+get q large enough for its clustering test to have statistical power)
+-- raise target_q_exponent well above 0.2 here too if you want q (and
+hence B_before, and hence a meaningful prune count) actually large.
+This is a DIAGNOSTIC-ONLY exponent, same caveat as phi_diagnostic.jl's
+0.4 run: it is not a proposal that the real factor base use a larger
+q, only a way to get enough B for the pruning experiment itself to be
+legible. The 0.2 default is kept as the function's default despite
+this so the "real constraint" case is never silently skipped -- pass
+a larger target_q_exponent explicitly to see the effect at a
+statistically meaningful scale.
 
 THIS DOES NOT SCALE to the 10^7-point production sweep -- same
 restriction as full_spectrum_diagnostic (O(N*B) exact DFT, computed
-TWICE per N here: once for D, once for F_pruned). Keep Ns small (a few
-thousand to a few hundred thousand) or this will be very slow.
+TWICE per N here: once for D, once for F_pruned). Keep Ns/q small
+enough for O(N*B) to stay cheap (per phi_diagnostic.jl's own docs,
+N up to a few million with q up to the low hundreds is fine) or this
+will be very slow.
 
 Returns a Vector{NamedTuple} of per-N results (N, q, Nq, B_before,
-B_after, M8_before, M8_after, ratio, elapsed_s), printed as a table
-and also returned for further analysis.
+B_after, M8_before, M8_after, ratio, normalized_ratio, elapsed_s),
+printed as a table and also returned for further analysis.
 """
 function run_singer_peak_pruned_comparison(; Ns::Vector{Int} = [10_007, 100_003],
+                                               target_q_exponent::Float64 = 0.2,
                                                top_frac::Float64 = 0.01,
                                                prune_frac::Float64 = 0.05,
                                                seed::Int = 1)
     results = NamedTuple[]
 
-    println("\n=== Singer set, Fourier-PEAK-PRUNED (top_frac=$top_frac, prune_frac=$prune_frac) ===")
+    println("\n=== Singer set, Fourier-PEAK-PRUNED (target_q_exponent=$target_q_exponent, " *
+            "top_frac=$top_frac, prune_frac=$prune_frac) ===")
     println("N\tq\tNq\tB_before\tB_after\tM8_before\tM8_after\tratio(after/before)\tnormalized_ratio\tsidon_defect_before\tsidon_defect_after\telapsed_s")
     for N in Ns
         t0 = time()
         rng = MersenneTwister(seed)
-        q = largest_prime_leq(max(2, floor(Int, N^0.2)))
+        q_target = max(2, floor(Int, N^target_q_exponent))
+        q_target = min(q_target, N)  # guard tiny N, same as run_singer_embedded_comparison
+        q = largest_prime_leq(q_target)
         D, Nq = singer_sidon_subset_native(q, rng)
         B_before = length(D)
         @assert N >= 2 * (Nq - 1) "Singer native modulus Nq=$Nq too close to N=$N for a " *
-                         "valid embedding (need N >= 2*(Nq-1)) -- shrink q or grow N; " *
-                         "see run_singer_embedded_comparison for the full explanation " *
-                         "of why this guard exists"
+                         "valid embedding (need N >= 2*(Nq-1)) -- shrink q (lower " *
+                         "target_q_exponent) or grow N; see run_singer_embedded_comparison " *
+                         "for the full explanation of why this guard exists"
 
         defect_before = sidon_defect(D, N)
         if defect_before != 0
@@ -2924,17 +3058,56 @@ if abspath(PROGRAM_FILE) == @__FILE__
     # scale, gamma~1.57 -- see 10.1(ii)/run_singer_embedded_comparison)
     # and PRUNE the top prune_frac=5% of its elements by their exact
     # marginal contribution to D's own top-1%-by-mass Fourier peaks,
-    # per peak_pruned_subset's docstring above. Uses SMALL Ns only --
-    # this needs the exact O(N*B) DFT (computed twice per N), same
-    # restriction as full_spectrum_diagnostic, and does NOT scale to
-    # this file's usual 10^7-point sweep. Read the printed note about
-    # normalized_ratio before drawing any conclusion: a lower raw
-    # M8_after/M8_before ratio is expected from shrinking B alone and
-    # is not by itself evidence the pruning rule is doing anything
-    # beyond that.
+    # per peak_pruned_subset's docstring above.
+    #
+    # RESULT (measured -- see Strategy 8's header comment above for
+    # the full account): this does NOT help. normalized_ratio came
+    # back consistently ABOVE 1 (pruning makes the survivors WORSE
+    # per-element, not better) at all four points tested across both
+    # runs below, converging toward 1 (not below it) as q grows. This
+    # block is kept in the run script, unlike the discarded v1/v2
+    # dead ends elsewhere in this file, because -- unlike those, which
+    # were replaced by a corrected v2/v3 -- there is no follow-up
+    # version of this idea yet; it is left runnable so re-running it
+    # (e.g. after a change to peak_score, or at different top_frac/
+    # prune_frac values) remains easy, not because the current form is
+    # expected to succeed.
+    #
+    # Uses SMALL Ns only -- this needs the exact O(N*B) DFT (computed
+    # twice per N), same restriction as full_spectrum_diagnostic, and
+    # does NOT scale to this file's usual 10^7-point sweep. Read the
+    # printed note about normalized_ratio before drawing any
+    # conclusion from a re-run: a lower raw M8_after/M8_before ratio
+    # is expected from shrinking B alone and is not by itself evidence
+    # the pruning rule is doing anything beyond that.
+    #
+    # Two runs, mirroring phi_diagnostic.jl's own real-vs-diagnostic
+    # split: the REAL constraint (target_q_exponent=0.2) first, then a
+    # diagnostic-only higher exponent to get q (and hence B_before)
+    # large enough for the prune fraction to be statistically legible.
+    # RUN 1 at the default 0.2 exponent gave q=5,7 at these Ns --
+    # confirmed directly (see chat) to round prune_frac=0.05 down to
+    # ZERO elements pruned before peak_pruned_subset's round-to-zero
+    # fix above; even post-fix, pruning 1 of 6-8 elements is too small
+    # a sample for the result to mean much on its own (normalized_ratio
+    # 1.38, 1.16 at q=5,7 -- consistent in sign with, but noisier than,
+    # RUN 2's larger-q points). RUN 2 raises target_q_exponent to 0.4
+    # (same diagnostic-only value phi_diagnostic.jl uses for its own
+    # statistical-power reasons) so q, and hence |D|, is large enough
+    # that prune_frac=0.05 removes a real handful of elements rather
+    # than the floor -- this is the pair of runs (q=251,331,
+    # normalized_ratio 1.06, 1.07) that actually settles the sign and
+    # the converging-toward-1 trend described above.
     try
-        run_singer_peak_pruned_comparison()
+        println("--- Run 1: real constraint, target_q_exponent=0.2 (expect tiny q -- see comment above) ---")
+        run_singer_peak_pruned_comparison(; target_q_exponent = 0.2)
     catch e
-        @error "run_singer_peak_pruned_comparison() failed" exception=(e, catch_backtrace())
+        @error "run_singer_peak_pruned_comparison() [0.2] failed" exception=(e, catch_backtrace())
+    end
+    try
+        println("\n--- Run 2: diagnostic-only higher exponent, target_q_exponent=0.4 (larger q, statistically legible prune count) ---")
+        run_singer_peak_pruned_comparison(; Ns = [1_000_003, 2_000_003], target_q_exponent = 0.4)
+    catch e
+        @error "run_singer_peak_pruned_comparison() [0.4] failed" exception=(e, catch_backtrace())
     end
 end
