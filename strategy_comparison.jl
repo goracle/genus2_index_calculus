@@ -1435,6 +1435,73 @@ function run_singer_embedded_exponent_sweep(; Ns::Vector{Int} = [10_007, 100_003
 end
 
 # ---------------------------------------------------------------
+# Exact-spectrum helpers (shared by phi_diagnostic.jl,
+# norm_trace_pullback.jl, and Strategy 8 below)
+# ---------------------------------------------------------------
+#
+# Defined here (the file everything else already includes) rather
+# than in phi_diagnostic.jl, where the DFT+top-k logic originally
+# lived, to avoid a circular include: phi_diagnostic.jl already does
+# `include("strategy_comparison.jl")`, so putting these helpers there
+# instead and having strategy_comparison.jl include phi_diagnostic.jl
+# back would create a cycle. phi_diagnostic.jl's full_spectrum_diagnostic
+# now calls these two functions instead of duplicating the DFT/sort
+# logic inline (see that file's history -- it originally had this code
+# inline, moved here unchanged when Strategy 8 needed to reuse it).
+
+"""
+    compute_full_spectrum(F::Vector{Int}, N::Int) -> S_hat::Vector{ComplexF64}
+
+Direct O(N*|F|) DFT: S_hat(k) = sum_{x in F} exp(2*pi*i*k*x/N), for
+every k in 0:(N-1) (returned 1-indexed: S_hat[k+1] is the value at
+frequency k). EXACT, no Monte Carlo sampling -- this is what makes
+"top top_frac fraction of characters" a real ranking rather than a
+noisy one, and is only feasible because N is kept small enough for
+O(N*|F|) to be cheap (a few thousand up to a few million -- see
+full_spectrum_diagnostic's and Strategy 8's docstrings for the same
+caveat; this does NOT scale to the 10^7-scale production sweep points
+used elsewhere in this file, where only the character-sampler's Monte
+Carlo estimate is affordable).
+"""
+function compute_full_spectrum(F::Vector{Int}, N::Int)
+    S_hat = Vector{ComplexF64}(undef, N)
+    for k in 0:(N-1)
+        s = 0.0 + 0.0im
+        @inbounds for x in F
+            s += cis(2pi * k * x / N)
+        end
+        S_hat[k+1] = s
+    end
+    return S_hat
+end
+
+"""
+    top_k_peaks(S_hat::Vector{ComplexF64}, N::Int; top_frac=0.01)
+        -> (top_ks::Vector{Int}, top_mags8::Vector{Float64}, frac_of_M8::Float64)
+
+Given a full spectrum S_hat (as returned by compute_full_spectrum,
+1-indexed so S_hat[k+1] is frequency k), ranks the N-1 NON-TRIVIAL
+frequencies (k=0, the trivial character, is excluded -- S_hat(0) = |F|
+by construction, not part of the moment sum this project cares about)
+by |S_hat(k)|^8 and returns the top `top_frac` fraction as
+K_peak = top_ks (actual frequency values, not array indices), their
+|S_hat(k)|^8 magnitudes, and the fraction of the total non-trivial
+|S|^8 mass they account for.
+"""
+function top_k_peaks(S_hat::Vector{ComplexF64}, N::Int; top_frac::Float64 = 0.01)
+    mags8 = [abs(S_hat[k+1])^8 for k in 1:(N-1)]
+    total_M8 = sum(mags8)  # proportional to (N-1)*M8_hat/Gord_nontrivial scaling; relative use only here
+
+    n_top = max(1, round(Int, top_frac * (N - 1)))
+    order = sortperm(mags8; rev = true)
+    top_ks = [k for k in 1:(N-1)][order[1:n_top]]  # 1-indexed k values (actual frequency, not array index)
+    top_mags8 = mags8[order[1:n_top]]
+
+    frac_of_M8 = sum(top_mags8) / total_M8
+    return (top_ks, top_mags8, frac_of_M8)
+end
+
+# ---------------------------------------------------------------
 # Strategy 6: Singer set with an incremental 8th-moment-style filter
 # ---------------------------------------------------------------
 #
@@ -2334,6 +2401,253 @@ function run_projected_greedy_comparison(; Ns::Vector{Int} = [10_007, 100_003, 1
 end
 
 # ---------------------------------------------------------------
+# Strategy 8: Fourier-peak pruning of a completed Singer set
+# ---------------------------------------------------------------
+#
+# USER'S IDEA (relayed from an external model, this session): rather
+# than changing HOW D is built (Strategies 4-7 above all vary the
+# construction), take the native Singer set D as-is and PRUNE it
+# after the fact -- compute the exact top-top_frac Fourier peaks
+# K_peak (via top_k_peaks, same ranking full_spectrum_diagnostic
+# already uses diagnostically), score each x in D by its marginal
+# contribution to that peak mass,
+#
+#   grad(x) = sum_{k in K_peak} |S_hat(k)|^6 * cos(2*pi*k*x/N),
+#
+# and drop the top `prune_frac` of D by grad(x).
+#
+# WHY THIS IS A DIFFERENT KIND OF EXPERIMENT THAN 10.2's FIVE CHEAP
+# PROXIES (see genus2-index-calculus-advisory-6.md section 10.2, and
+# new_invariants.jl): those were all O(B^2)-BUDGET INCREMENTAL SCORES
+# computed DURING construction, deliberately cheap because they had to
+# run inside a B-stage greedy loop. This is different in kind, not
+# degree: it operates on the EXACT full spectrum (an O(N*B) DFT, same
+# cost class full_spectrum_diagnostic already pays), which is not
+# something an O(B^2) in-loop proxy could ever see -- diff_set_energy
+# and pairsum energy were dead on arrival PRECISELY because Sidon-ness
+# pins their O(B^2) inputs to a constant (see Strategy 7's v2 history
+# above); grad(x) has no such degeneracy, because it depends on WHERE
+# elements land relative to the actual peak frequencies, which Sidon-
+# ness does not constrain. The tradeoff is cost: this needs the exact
+# spectrum, so (like full_spectrum_diagnostic and unlike every other
+# strategy in this file) it does NOT scale to the 10^7-point production
+# sweep -- it is restricted to the same small-N regime already used for
+# the confinement/clustering diagnostics.
+#
+# WHY grad(x) USES |S_hat(k)|^6, NOT |S_hat(k)|^8 OR A GRADIENT OF THE
+# FULL M8 SUM: |S_hat(k)|^8 = |S_hat(k)|^6 * |S_hat(k)|^2, and
+# |S_hat(k)|^2 = S_hat(k) * conj(S_hat(k)); removing a single element
+# x from F changes S_hat(k) by -exp(2*pi*i*k*x/N), so the FIRST-ORDER
+# change in |S_hat(k)|^8 from removing x is proportional to
+# Re[ conj(S_hat(k))^4 * S_hat(k)^3 * exp(-2*pi*i*k*x/N) ] up to
+# constants -- not the real, phase-free quantity
+# |S_hat(k)|^6 * cos(2*pi*k*x/N) used here. What is implemented below
+# matches the score AS STATED in the user's proposal (a real-valued,
+# phase-collapsed proxy: it correlates x's own phase at frequency k
+# with the peak's already-large magnitude, rather than tracking the
+# exact complex derivative), not an independently-derived exact
+# gradient -- flagged here so the score is understood for what it is:
+# a plausible, cheap-to-compute heuristic ranking, not a linearization
+# with a first-order-correctness proof attached (same discipline this
+# file applies to every other proxy; see Strategy 7's v1 for what
+# happens when a linearized proxy of this general shape is trusted
+# without measuring it -- it made things WORSE in 2 of 3 tested N's).
+# This is exactly why the comparison harness below (like every other
+# strategy here) MEASURES the true, character-sampler-independent
+# EXACT M8 before and after pruning rather than assuming grad(x) is a
+# valid descent direction.
+
+"""
+    peak_score(x::Int, N::Int, S_hat::Vector{ComplexF64}, K_peak::Vector{Int}) -> Float64
+
+grad(x) = sum_{k in K_peak} |S_hat(k)|^6 * cos(2*pi*k*x/N) -- x's
+marginal alignment with the peak-frequency mass, as proposed by the
+user. O(|K_peak|) per call.
+"""
+function peak_score(x::Int, N::Int, S_hat::Vector{ComplexF64}, K_peak::Vector{Int})
+    s = 0.0
+    @inbounds for k in K_peak
+        mag6 = abs(S_hat[k+1])^6
+        s += mag6 * cos(2pi * k * x / N)
+    end
+    return s
+end
+
+"""
+    peak_pruned_subset(D::Vector{Int}, N::Int; top_frac=0.01, prune_frac=0.05)
+        -> (F_pruned::Vector{Int}, K_peak::Vector{Int}, scores::Vector{Float64})
+
+Given a completed Sidon set D subset Z/N (typically a native or
+embedded Singer set -- see run_singer_peak_pruned_comparison below for
+the intended caller), computes the exact spectrum of D (via
+compute_full_spectrum), identifies the top `top_frac` fraction of
+non-trivial frequencies by |S_hat(k)|^8 (via top_k_peaks -- this is
+K_peak, matching the ranking full_spectrum_diagnostic already reports
+diagnostically), scores every x in D by peak_score(x, N, S_hat,
+K_peak), and returns D with the top `prune_frac` fraction BY SCORE
+removed (highest grad(x) = most "peak-building", per the user's
+proposal -- these are dropped, not kept).
+
+PRUNING A SIDON SET IS TRIVIALLY STILL SIDON (removing elements from a
+Sidon set cannot create a new pairwise-sum collision), so no re-check
+against sidon_defect is mathematically necessary for correctness here
+-- unlike every OTHER strategy above, which constructs F by ADDING
+elements and must therefore verify Sidon-ness was preserved. The
+caller (run_singer_peak_pruned_comparison) verifies it anyway, not
+because a defect is possible from pruning itself, but as a blanket
+sanity check on D's own construction (same discipline as every other
+comparison harness in this file, which never assumes a defect of 0
+without checking).
+
+Returns F_pruned (D minus the pruned elements, in D's original
+relative order), K_peak (so callers can report how many frequencies
+were used), and scores (peak_score for every x in D, aligned with D's
+order, not just the pruned ones -- lets a caller inspect the full
+score distribution if wanted).
+"""
+function peak_pruned_subset(D::Vector{Int}, N::Int; top_frac::Float64 = 0.01, prune_frac::Float64 = 0.05)
+    S_hat = compute_full_spectrum(D, N)
+    K_peak, _, _ = top_k_peaks(S_hat, N; top_frac = top_frac)
+
+    scores = [peak_score(x, N, S_hat, K_peak) for x in D]
+
+    n_prune = round(Int, prune_frac * length(D))
+    # Rank D's INDICES by score descending, then drop the top n_prune --
+    # sortperm on indices (not on D itself) keeps `scores` aligned with
+    # D's original order for the returned tuple, and keeps the pruned
+    # elements' identities (not just their scores) directly recoverable
+    # if a caller wants to inspect which specific x's were dropped.
+    order = sortperm(scores; rev = true)
+    prune_idx = Set(order[1:n_prune])
+    F_pruned = [D[i] for i in eachindex(D) if !(i in prune_idx)]
+
+    return (F_pruned, K_peak, scores)
+end
+
+# ---------------------------------------------------------------
+# run_singer_peak_pruned_comparison: measures the TRUE (exact-DFT)
+# M8 of a native/embedded Singer set before and after peak pruning,
+# at the same small-N scale full_spectrum_diagnostic already uses.
+# ---------------------------------------------------------------
+
+"""
+    run_singer_peak_pruned_comparison(; Ns, top_frac=0.01, prune_frac=0.05, seed=1)
+
+For each N in `Ns`: picks the largest prime q with q^2+q+1 <= N (same
+convention as run_singer_embedded_comparison), builds the native
+Singer set D via singer_sidon_subset_native, embeds it in Z/N by
+literal inclusion (asserting N >= 2*(Nq-1), same embedding-validity
+guard as run_singer_embedded_comparison and full_spectrum_diagnostic
+-- pruning does not relax this requirement, since D must already be a
+genuine Sidon set mod N before pruning is measured against it),
+re-verifies sidon_defect(D, N) == 0 (see peak_pruned_subset's
+docstring for why this is a blanket sanity check rather than something
+pruning itself could break), then computes:
+
+  - the EXACT M8 of the unpruned embedded D (sum_{k=1}^{N-1}
+    |S_hat(k)|^8, i.e. total_M8 from top_k_peaks' normalization
+    undone -- recomputed directly here rather than reusing top_k_peaks'
+    internal total_M8, since that function only returns the top-frac
+    slice's fraction of the total, not the total itself)
+  - peak_pruned_subset(D, N; top_frac, prune_frac) to get F_pruned
+  - the EXACT M8 of F_pruned via a FRESH compute_full_spectrum +
+    top_k_peaks call (NOT incrementally derived from D's spectrum --
+    removing elements changes every S_hat(k), not just the ones at
+    K_peak, so the pruned set's spectrum must be recomputed from
+    scratch, not patched)
+
+and reports both, plus the ratio, plus |F_pruned| (pruning can only
+shrink B from D's q+1, by construction -- exactly
+round(prune_frac*(q+1)) elements are removed).
+
+THIS DOES NOT SCALE to the 10^7-point production sweep -- same
+restriction as full_spectrum_diagnostic (O(N*B) exact DFT, computed
+TWICE per N here: once for D, once for F_pruned). Keep Ns small (a few
+thousand to a few hundred thousand) or this will be very slow.
+
+Returns a Vector{NamedTuple} of per-N results (N, q, Nq, B_before,
+B_after, M8_before, M8_after, ratio, elapsed_s), printed as a table
+and also returned for further analysis.
+"""
+function run_singer_peak_pruned_comparison(; Ns::Vector{Int} = [10_007, 100_003],
+                                               top_frac::Float64 = 0.01,
+                                               prune_frac::Float64 = 0.05,
+                                               seed::Int = 1)
+    results = NamedTuple[]
+
+    println("\n=== Singer set, Fourier-PEAK-PRUNED (top_frac=$top_frac, prune_frac=$prune_frac) ===")
+    println("N\tq\tNq\tB_before\tB_after\tM8_before\tM8_after\tratio(after/before)\tnormalized_ratio\tsidon_defect_before\tsidon_defect_after\telapsed_s")
+    for N in Ns
+        t0 = time()
+        rng = MersenneTwister(seed)
+        q = largest_prime_leq(max(2, floor(Int, N^0.2)))
+        D, Nq = singer_sidon_subset_native(q, rng)
+        B_before = length(D)
+        @assert N >= 2 * (Nq - 1) "Singer native modulus Nq=$Nq too close to N=$N for a " *
+                         "valid embedding (need N >= 2*(Nq-1)) -- shrink q or grow N; " *
+                         "see run_singer_embedded_comparison for the full explanation " *
+                         "of why this guard exists"
+
+        defect_before = sidon_defect(D, N)
+        if defect_before != 0
+            @warn "N=$N, q=$q: unpruned embedded Singer set has nonzero " *
+                  "sidon_defect=$defect_before -- pruning results below are " *
+                  "untrustworthy at this N; investigate before trusting this row"
+        end
+
+        S_hat_before = compute_full_spectrum(D, N)
+        mags8_before = [abs(S_hat_before[k+1])^8 for k in 1:(N-1)]
+        M8_before = sum(mags8_before)
+
+        F_pruned, K_peak, scores = peak_pruned_subset(D, N; top_frac = top_frac, prune_frac = prune_frac)
+        B_after = length(F_pruned)
+
+        defect_after = sidon_defect(F_pruned, N)
+        if defect_after != 0
+            @warn "N=$N, q=$q: pruned set has nonzero sidon_defect=$defect_after -- " *
+                  "this should be IMPOSSIBLE (pruning only removes elements from an " *
+                  "already-Sidon set, which cannot create a new collision); investigate " *
+                  "peak_pruned_subset before trusting this row"
+        end
+
+        S_hat_after = compute_full_spectrum(F_pruned, N)
+        mags8_after = [abs(S_hat_after[k+1])^8 for k in 1:(N-1)]
+        M8_after = sum(mags8_after)
+
+        ratio = M8_after / M8_before
+        # normalized_ratio isolates the SHAPE effect of pruning from the
+        # trivial fact that removing elements shrinks M8 anyway (any
+        # random B_after-sized subset would show ratio < 1 too). Dividing
+        # each M8 by its own B^8 before comparing answers "are the
+        # SURVIVING elements less peak-heavy per-element than the
+        # original set", which is what the pruning rule is actually
+        # trying to achieve -- see peak_score's docstring on why this
+        # is a heuristic ranking, not a proven descent direction, so
+        # this number (not the raw ratio above) is the one to look at
+        # before drawing any conclusion.
+        normalized_ratio = (M8_after / Float64(B_after)^8) / (M8_before / Float64(B_before)^8)
+        elapsed = time() - t0
+
+        @printf("%d\t%d\t%d\t%d\t\t%d\t%.6e\t%.6e\t%.4f\t\t\t%.4f\t\t\t%d\t\t\t%d\t\t\t%.2f\n",
+                N, q, Nq, B_before, B_after, M8_before, M8_after, ratio, normalized_ratio,
+                defect_before, defect_after, elapsed)
+
+        push!(results, (; N, q, Nq, B_before, B_after, M8_before, M8_after, ratio,
+                           normalized_ratio, defect_before, defect_after, elapsed))
+    end
+
+    println("\nnormalized_ratio = (M8_after/B_after^8) / (M8_before/B_before^8) -- isolates")
+    println("the per-element SHAPE effect of pruning from the trivial fact that removing")
+    println("elements shrinks M8 regardless of which ones are removed (any same-size random")
+    println("subset would show raw ratio < 1 too). normalized_ratio < 1 means the surviving")
+    println("elements are genuinely less peak-heavy per-element, not just fewer in number;")
+    println("normalized_ratio >= 1 means pruning did nothing beyond the trivial B-shrinkage,")
+    println("or made the survivors WORSE per-element despite dropping the highest scorers.")
+
+    return results
+end
+
+# ---------------------------------------------------------------
 # Strategy registry
 # ---------------------------------------------------------------
 
@@ -2603,5 +2917,24 @@ if abspath(PROGRAM_FILE) == @__FILE__
         run_projected_greedy_comparison()
     catch e
         @error "run_projected_greedy_comparison() failed" exception=(e, catch_backtrace())
+    end
+
+    # Strategy 8: external-model idea (Gemini, this session) -- start
+    # from the native Singer set D (known-bad at the real embedding
+    # scale, gamma~1.57 -- see 10.1(ii)/run_singer_embedded_comparison)
+    # and PRUNE the top prune_frac=5% of its elements by their exact
+    # marginal contribution to D's own top-1%-by-mass Fourier peaks,
+    # per peak_pruned_subset's docstring above. Uses SMALL Ns only --
+    # this needs the exact O(N*B) DFT (computed twice per N), same
+    # restriction as full_spectrum_diagnostic, and does NOT scale to
+    # this file's usual 10^7-point sweep. Read the printed note about
+    # normalized_ratio before drawing any conclusion: a lower raw
+    # M8_after/M8_before ratio is expected from shrinking B alone and
+    # is not by itself evidence the pruning rule is doing anything
+    # beyond that.
+    try
+        run_singer_peak_pruned_comparison()
+    catch e
+        @error "run_singer_peak_pruned_comparison() failed" exception=(e, catch_backtrace())
     end
 end
