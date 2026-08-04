@@ -479,7 +479,24 @@ def jacobian_order_frobenius(curve: Curve) -> int:
     and the genus-2 zeta function relation. Ported from
     jacobian_order_frobenius in the Julia reference. O(p) time — fine for
     the small/demo primes this project targets; for larger p this should
-    be replaced (e.g. with a smarter point-counting method)."""
+    be replaced (e.g. with a smarter point-counting method).
+
+    BUGFIX (this port): the F_{p^2}-square test previously checked whether
+    the *norm* N(z) = fr^2 - g0*fi^2 was a QR in F_p. That test is not
+    equivalent to "is z itself a square in F_{p^2}^*" (norm being a square
+    in F_p is necessary but not sufficient -- F_{p^2}^* is cyclic of order
+    p^2-1, and squareness there must be tested by z^((p^2-1)/2) == 1 in
+    F_{p^2}, not via a shortcut through the norm). The old shortcut hugely
+    overcounted n2_affine (verified: gave N2 = 20398 instead of the true
+    10294 for p=101), which fed a wrong #Jac into the zeta formula and
+    silently produced a #Jac not divisible by the actual group exponent --
+    every random divisor's true order (confirmed independently by brute-
+    force repeated addition) turned out to not divide the old #Jac at all.
+    Also fixed a second bug: n2 was computed as n1 + n2_affine + 1, which
+    double-counts the F_p-rational affine points (the (a,b) double loop
+    below already ranges over all of F_{p^2}, n1's own affine points
+    included) and adds a spurious extra point at infinity.
+    """
     p = curve.p
 
     # N1 = #C(F_p) (including point at infinity)
@@ -496,36 +513,50 @@ def jacobian_order_frobenius(curve: Curve) -> int:
     while pow(g0, (p - 1) // 2, p) != p - 1:
         g0 += 1
 
+    def cmul(x, y):
+        # (x0+x1*g)*(y0+y1*g) = (x0y0+g0*x1y1) + (x0y1+x1y0)*g
+        return (
+            (x[0] * y[0] + g0 * x[1] * y[1]) % p,
+            (x[0] * y[1] + x[1] * y[0]) % p,
+        )
+
+    def cadd(x, y):
+        return ((x[0] + y[0]) % p, (x[1] + y[1]) % p)
+
+    def cpow(base, e):
+        # fast exponentiation in F_{p^2}^*
+        result = (1, 0)
+        b = base
+        while e > 0:
+            if e & 1:
+                result = cmul(result, b)
+            b = cmul(b, b)
+            e >>= 1
+        return result
+
+    fp2_order = p * p - 1  # order of F_{p^2}^*
     c0, c1, c2, c3, c4, c5 = curve.f_poly
     n2_affine = 0
     for b in range(p):
         for a in range(p):
             # z = a + b*sqrt(g0); compute f(z) = r + i*sqrt(g0)
             # represent as (real, imag) coefficients under basis {1, sqrt(g0)}
-            def cmul(x, y):
-                # (x0+x1*g)*(y0+y1*g) = (x0y0+g0*x1y1) + (x0y1+x1y0)*g
-                return (
-                    (x[0] * y[0] + g0 * x[1] * y[1]) % p,
-                    (x[0] * y[1] + x[1] * y[0]) % p,
-                )
-
-            def cadd(x, y):
-                return ((x[0] + y[0]) % p, (x[1] + y[1]) % p)
-
             z = (a, b)
             # Horner
             acc = (0, 0)
             for c in (c5, c4, c3, c2, c1, c0):
                 acc = cadd(cmul(acc, z), (c % p, 0))
-            fr, fi = acc
-            if fr == 0 and fi == 0:
-                n2_affine += 2
+            if acc == (0, 0):
+                # f(z) == 0: exactly one y (y=0) for this x-coordinate z
+                n2_affine += 1
                 continue
-            norm_f = (fr * fr - g0 * fi * fi) % p
-            if norm_f != 0 and pow(norm_f, (p - 1) // 2, p) == 1:
-                n2_affine += 4
+            # correct square test: f(z) is a square in F_{p^2}^* iff
+            # f(z)^((p^2-1)/2) == 1 there (the group is cyclic of order
+            # p^2-1). If so there are exactly two y's (y, -y) for this z.
+            if cpow(acc, fp2_order // 2) == (1, 0):
+                n2_affine += 2
 
-    n2 = n1 + n2_affine + 1  # + point at infinity over F_{p^2}
+    n2 = n2_affine + 1  # + point at infinity over F_{p^2} (n1 NOT added again)
 
     s1 = n1 - (p + 1)
     s2 = (s1 * s1 - (n2 - (p * p + 1))) // 2
