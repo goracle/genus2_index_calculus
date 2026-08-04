@@ -197,7 +197,6 @@ def _pdivrem(a, b, p):
         d = _pdeg(rem) - _pdeg(b)
         coeff = (rem[-1] * inv_lead) % p
         q[d] = coeff
-        # rem -= coeff * x^d * b
         sub = [0] * d + _pscale(b, coeff, p)
         rem = _psub(rem, sub, p)
         rem = _ptrim(rem)
@@ -223,7 +222,6 @@ def _pgcd_ext(a0, b0, p):
 
 
 def _u_to_poly(u):
-    # u = (c0,c1,c2) -> trimmed list
     return _ptrim(list(u))
 
 
@@ -248,67 +246,55 @@ def _f_as_list(curve: Curve):
 
 
 def jac_add(D1: Div2, D2: Div2, curve: Curve) -> Div2:
-    """Cantor composition + reduction on the genus-2 Jacobian.
-    General-purpose (heap-poly) version — always correct, ported from
-    _jac_add_degenerate in the Julia reference so we don't need the
-    fast-path degree bookkeeping. Correctness over speed for this project."""
+    """Cantor composition + reduction on the genus-2 Jacobian."""
     p = curve.p
     f = _f_as_list(curve)
 
     u1, v1 = _u_to_poly(D1.u), _v_to_poly(D1.v)
     u2, v2 = _u_to_poly(D2.u), _v_to_poly(D2.v)
 
-    # Step 1: d1 = gcd(u1, u2) = e1*u1 + e2*u2
     d1, e1, e2 = _pgcd_ext(u1, u2, p)
 
-    # Step 2: d = gcd(d1, v1+v2) = c1*d1 + c2*(v1+v2)
     vsum = _padd(v1, v2, p)
     if vsum == [0]:
         d, c1_, c2_ = d1, [1], [0]
     else:
         d, c1_, c2_ = _pgcd_ext(d1, vsum, p)
 
-    # s1 = c1_*e1, s2 = c1_*e2, s3 = c2_  s.t. d = s1*u1 + s2*u2 + s3*(v1+v2)
     s1 = _pmul(c1_, e1, p)
     s2 = _pmul(c1_, e2, p)
     s3 = c2_
 
-    # u = u1*u2 / d^2
     u1u2 = _pmul(u1, u2, p)
     d2 = _pmul(d, d, p)
     u_new, rem = _pdivrem(u1u2, d2, p)
     if rem != [0]:
-        raise ArithmeticError("jac_add: u1*u2 not divisible by d^2 (invalid divisor input)")
+        raise ArithmeticError("jac_add: u1*u2 not divisible by d^2")
 
-    # v = (s1*u1*v2 + s2*u2*v1 + s3*(v1*v2 + f)) / d  mod u_new
     term1 = _pmul(s1, _pmul(u1, v2, p), p)
     term2 = _pmul(s2, _pmul(u2, v1, p), p)
     term3 = _pmul(s3, _padd(_pmul(v1, v2, p), f, p), p)
     numer = _padd(_padd(term1, term2, p), term3, p)
     v_raw, rem2 = _pdivrem(numer, d, p)
     if rem2 != [0]:
-        raise ArithmeticError("jac_add: v numerator not divisible by d (invalid divisor input)")
+        raise ArithmeticError("jac_add: v numerator not divisible by d")
     if _pdeg(u_new) > 0:
         _, v_raw = _pdivrem(v_raw, u_new, p)
 
-    # Reduction: repeat until deg(u) <= 2 (genus 2)
     u_cur, v_cur = u_new, v_raw
     guard = 0
     while _pdeg(u_cur) > 2:
         guard += 1
         if guard > 20:
             raise ArithmeticError("jac_add: reduction did not converge")
-        # u' = (f - v^2) / u   (monic-normalized)
         v2poly = _pmul(v_cur, v_cur, p)
         fmv2 = _psub(f, v2poly, p)
         u_next, rem3 = _pdivrem(fmv2, u_cur, p)
         if rem3 != [0]:
             raise ArithmeticError("jac_add: reduction division had nonzero remainder")
-        # make monic
         if u_next != [0] and u_next[-1] != 1:
             inv_lead = fp_inv(u_next[-1], p)
             u_next = _pscale(u_next, inv_lead, p)
-        # v' = (-v) mod u_next
         v_neg = _pscale(v_cur, p - 1, p)
         if _pdeg(u_next) > 0:
             _, v_next = _pdivrem(v_neg, u_next, p)
@@ -316,17 +302,12 @@ def jac_add(D1: Div2, D2: Div2, curve: Curve) -> Div2:
             v_next = [0]
         u_cur, v_cur = u_next, v_next
 
-    # normalize u_cur to monic degree <=2 tuple form
     if u_cur == [0]:
         u_cur = [1]
     if u_cur[-1] != 1 and u_cur != [1]:
         inv_lead = fp_inv(u_cur[-1], p)
         u_cur = _pscale(u_cur, inv_lead, p)
 
-    # Final canonicalization: v must always be reduced mod u (in particular,
-    # when deg(u) == 0 the divisor is the identity and v must be [0] — the
-    # main reduction loop above only fires for deg(u) > 2, so deg(u) in
-    # {0,1} cases need this explicit reduce here).
     if _pdeg(u_cur) == 0:
         v_cur = [0]
     elif _pdeg(v_cur) >= _pdeg(u_cur):
@@ -341,7 +322,6 @@ def jac_mul(D: Div2, n: int, curve: Curve) -> Div2:
     if n == 0:
         return _identity()
     if n < 0:
-        # -D: negate v
         D = Div2(D.u, tuple((-c) % curve.p for c in D.v))
         n = -n
     R = _identity()
@@ -382,13 +362,7 @@ def mumford_from_pts(P: tuple, Q: tuple, curve: Curve) -> Div2:
 
 
 def u2_roots(u: tuple, curve: Curve) -> Optional[tuple]:
-    """For a degree-2 monic Mumford u-poly (c0,c1,c2=1), return both F_p
-    roots as (r1, r2), or None if it doesn't split (irreducible or not
-    degree 2)."""
     p = curve.p
-    if u[2] != 1 or (u[2] == 0):
-        # not degree exactly 2 (either 0 -> identity, or degree <2 already handled elsewhere)
-        pass
     if u[2] != 1:
         return None
     c0, c1 = u[0], u[1]
@@ -408,10 +382,6 @@ def mumford_v_eval(v: tuple, x: int, p: int) -> int:
 
 
 def split_divisor_to_points(D: Div2, curve: Curve) -> Optional[tuple]:
-    """If D's u-poly is degree 2 and splits over F_p, return the two
-    (x, y) curve points ((x1,y1), (x2,y2)) with y_i = v(x_i). Else None.
-    This is the Python analogue of checking 'does u(x) split' + reading
-    off the resulting curve points, as used when building F."""
     roots = u2_roots(D.u, curve)
     if roots is None:
         return None
@@ -419,7 +389,6 @@ def split_divisor_to_points(D: Div2, curve: Curve) -> Optional[tuple]:
     x1, x2 = roots
     y1 = mumford_v_eval(D.v, x1, p)
     y2 = mumford_v_eval(D.v, x2, p)
-    # sanity: points should lie on the curve
     return (x1, y1), (x2, y2)
 
 
@@ -434,10 +403,7 @@ def next_prime_at_least(n: int) -> int:
 
 
 def jacobian_order_bsgs(D: Div2, curve: Curve) -> int:
-    """Exact order of D via baby-step giant-step, bounded by the Hasse-Weil
-    bound (#Jac <= (sqrt(p)+1)^4). Ported from jac_order_bsgs. Intended for
-    modest p (a full O(sqrt(#Jac)) table); use jacobian_order_frobenius for
-    larger p."""
+    """Exact order of D via baby-step giant-step."""
     p = curve.p
     B = (int(p ** 0.5) + 2) ** 4
     m = int(B ** 0.5) + 1
@@ -449,7 +415,7 @@ def jacobian_order_bsgs(D: Div2, curve: Curve) -> int:
             baby[cur] = j
         cur = jac_add(cur, D, curve)
 
-    step = cur  # m*D
+    step = cur
     giant = step
     best = 0
     for i in range(1, m + 1):
@@ -463,7 +429,6 @@ def jacobian_order_bsgs(D: Div2, curve: Curve) -> int:
     if best == 0:
         raise ArithmeticError("jacobian_order_bsgs failed to find order within Hasse-Weil bound")
 
-    # reduce to exact order by dividing out prime factors that still kill D
     order = best
     for prime, _mult in factorint(order).items():
         while order % prime == 0:
@@ -476,26 +441,10 @@ def jacobian_order_bsgs(D: Div2, curve: Curve) -> int:
 
 def jacobian_order_frobenius(curve: Curve) -> int:
     """Exact #Jac(C/F_p) via point counts N1 = #C(F_p), N2 = #C(F_{p^2})
-    and the genus-2 zeta function relation. Ported from
-    jacobian_order_frobenius in the Julia reference. O(p) time — fine for
-    the small/demo primes this project targets; for larger p this should
-    be replaced (e.g. with a smarter point-counting method).
-
-    BUGFIX (this port): the F_{p^2}-square test previously checked whether
-    the *norm* N(z) = fr^2 - g0*fi^2 was a QR in F_p. That test is not
-    equivalent to "is z itself a square in F_{p^2}^*" (norm being a square
-    in F_p is necessary but not sufficient -- F_{p^2}^* is cyclic of order
-    p^2-1, and squareness there must be tested by z^((p^2-1)/2) == 1 in
-    F_{p^2}, not via a shortcut through the norm). The old shortcut hugely
-    overcounted n2_affine (verified: gave N2 = 20398 instead of the true
-    10294 for p=101), which fed a wrong #Jac into the zeta formula and
-    silently produced a #Jac not divisible by the actual group exponent --
-    every random divisor's true order (confirmed independently by brute-
-    force repeated addition) turned out to not divide the old #Jac at all.
-    Also fixed a second bug: n2 was computed as n1 + n2_affine + 1, which
-    double-counts the F_p-rational affine points (the (a,b) double loop
-    below already ranges over all of F_{p^2}, n1's own affine points
-    included) and adds a spurious extra point at infinity.
+    and the genus-2 zeta function characteristic polynomial coefficients:
+        a1 = p + 1 - N1
+        a2 = (a1^2 + N2 - p^2 - 1) / 2
+        #Jac(F_p) = 1 - a1 + a2 - a1*p + p^2
     """
     p = curve.p
 
@@ -514,7 +463,6 @@ def jacobian_order_frobenius(curve: Curve) -> int:
         g0 += 1
 
     def cmul(x, y):
-        # (x0+x1*g)*(y0+y1*g) = (x0y0+g0*x1y1) + (x0y1+x1y0)*g
         return (
             (x[0] * y[0] + g0 * x[1] * y[1]) % p,
             (x[0] * y[1] + x[1] * y[0]) % p,
@@ -524,7 +472,6 @@ def jacobian_order_frobenius(curve: Curve) -> int:
         return ((x[0] + y[0]) % p, (x[1] + y[1]) % p)
 
     def cpow(base, e):
-        # fast exponentiation in F_{p^2}^*
         result = (1, 0)
         b = base
         while e > 0:
@@ -534,33 +481,26 @@ def jacobian_order_frobenius(curve: Curve) -> int:
             e >>= 1
         return result
 
-    fp2_order = p * p - 1  # order of F_{p^2}^*
+    fp2_order = p * p - 1
     c0, c1, c2, c3, c4, c5 = curve.f_poly
     n2_affine = 0
     for b in range(p):
         for a in range(p):
-            # z = a + b*sqrt(g0); compute f(z) = r + i*sqrt(g0)
-            # represent as (real, imag) coefficients under basis {1, sqrt(g0)}
             z = (a, b)
-            # Horner
             acc = (0, 0)
             for c in (c5, c4, c3, c2, c1, c0):
                 acc = cadd(cmul(acc, z), (c % p, 0))
             if acc == (0, 0):
-                # f(z) == 0: exactly one y (y=0) for this x-coordinate z
                 n2_affine += 1
                 continue
-            # correct square test: f(z) is a square in F_{p^2}^* iff
-            # f(z)^((p^2-1)/2) == 1 there (the group is cyclic of order
-            # p^2-1). If so there are exactly two y's (y, -y) for this z.
             if cpow(acc, fp2_order // 2) == (1, 0):
                 n2_affine += 2
 
-    n2 = n2_affine + 1  # + point at infinity over F_{p^2} (n1 NOT added again)
+    n2 = n2_affine + 1  # + point at infinity over F_{p^2}
 
-    s1 = n1 - (p + 1)
-    s2 = (s1 * s1 - (n2 - (p * p + 1))) // 2
-    return 1 - s1 + s2 - p * s1 + p * p
+    a1 = p + 1 - n1
+    a2 = (a1 * a1 + n2 - p * p - 1) // 2
+    return 1 - a1 + a2 - a1 * p + p * p
 
 
 def random_point(curve: Curve, rng: random.Random) -> tuple:
@@ -574,19 +514,12 @@ def random_point(curve: Curve, rng: random.Random) -> tuple:
 
 
 def random_divisor(curve: Curve, rng: random.Random) -> Div2:
-    """A random (likely full-degree-2) reduced divisor, as the sum of two
-    random affine points."""
     P = random_point(curve, rng)
     Q = random_point(curve, rng)
     return mumford_from_pts(P, Q, curve)
 
 
 def _order_of_divisor(D: Div2, jac_order: int, curve: Curve) -> int:
-    """Exact order of D, given that ord(D) divides jac_order. Starts from
-    jac_order and repeatedly strips prime factors that still kill D --
-    standard order-from-group-order-and-factorization technique. D must
-    not be the identity (raises ValueError if it is, since order-of-identity
-    is a degenerate/ambiguous case callers should filter out first)."""
     if jac_is_identity(D):
         raise ValueError("_order_of_divisor: D is the identity")
     order = jac_order
@@ -601,20 +534,6 @@ def _order_of_divisor(D: Div2, jac_order: int, curve: Curve) -> int:
 
 def find_subgroup_generator(curve: Curve, rng: random.Random, jac_order: Optional[int] = None,
                              use_bsgs_order: bool = True):
-    """Find a generator `a` of the largest-prime-order subgroup of the
-    Jacobian, along with that prime order `ell` and cofactor `h`.
-    Ported from find_ell_generator. If jac_order is provided (e.g. from
-    jacobian_order_frobenius), uses the exact-cofactor fast path;
-    otherwise derives order per-candidate via BSGS.
-
-    NOTE: the target ell/h come from #Jac itself (the largest prime factor
-    of jac_order), not from whichever random D we happen to draw -- a
-    random D's own order is in general a proper divisor of jac_order, so
-    we must compute D's true order before deciding how to scale it, or
-    the ell-order subgroup element is never actually reached (this was a
-    prior bug: assuming ord(D) == jac_order caused an infinite loop, since
-    jac_mul(D, jac_order/ell) is not order-ell unless D happens to be a
-    full generator)."""
     if jac_order is not None:
         target_factors = factorint(jac_order)
         target_ell = max(target_factors.keys())
@@ -640,14 +559,10 @@ def find_subgroup_generator(curve: Curve, rng: random.Random, jac_order: Optiona
             continue
 
         if jac_order is not None:
-            # D's own order divides jac_order but usually isn't jac_order itself.
             ord_D = _order_of_divisor(D, jac_order, curve)
             if ord_D % target_ell != 0:
-                # D isn't in the order-ell subgroup at all; try another D.
                 continue
             ell, h = target_ell, target_h
-            # Scale D down to the order-ell subgroup: D has order ord_D with
-            # target_ell | ord_D, so (ord_D/target_ell)*D has order target_ell.
             a = jac_mul(D, ord_D // target_ell, curve)
         elif use_bsgs_order:
             ord_D = jacobian_order_bsgs(D, curve)
@@ -672,18 +587,10 @@ def find_subgroup_generator(curve: Curve, rng: random.Random, jac_order: Optiona
 def find_cryptographic_subgroup(p_start: int, f_poly: Sequence[int] = DEFAULT_F_POLY,
                                  min_bits: Optional[int] = None, rng: Optional[random.Random] = None,
                                  max_prime_tries: int = 50):
-    """Cycle through primes p >= p_start until we find a curve/subgroup
-    with cofactor as small as possible (i.e. #Jac itself is prime, or has
-    a large prime factor ell with small cofactor h). Mirrors the project
-    spec: 'cycle through primes until we find such a subgroup.'
-
-    Returns (curve, generator a, ell, h, p).
-    """
     if rng is None:
         rng = random.Random()
 
     p = next_prime_at_least(p_start)
-    best = None
     for _ in range(max_prime_tries):
         curve = Curve(p, f_poly)
         jac_order = jacobian_order_frobenius(curve)
