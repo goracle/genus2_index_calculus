@@ -180,6 +180,86 @@ function fit_growth_exponent(results::Vector{<:NamedTuple})
 end
 
 """
+    local_growth_exponents(results)
+
+Companion to fit_growth_exponent's single GLOBAL power-law fit --
+answers "is the exponent stable across the tested N range, or is it
+decreasing/increasing as N grows" (the global fit's R^2 cannot
+distinguish these: a single power law can fit a limited N-range
+excellently even when the true asymptotic exponent differs from the
+locally-measured one, e.g. if there is a crossover at larger N/B not
+yet reached, or if the fitted global gamma is simply not
+representative of the trend).
+
+For each CONSECUTIVE pair of points (r1, r2) in `results` (assumed
+sorted by increasing N, as `sweep()` produces), computes the local
+slope
+
+    gamma_local = log(r2.ratio / r1.ratio) / log(r2.N / r1.N)
+
+i.e. the exponent a power law would need between just those two
+points. Prints the sequence of local gammas alongside the consecutive
+N's they span, plus whether each is LOWER than the previous local
+gamma (a decreasing sequence is what "washing out at large N/B" would
+look like: if greedy's phase incoherence increasingly cancels as B
+grows, the LOCAL exponent between later N-pairs should trend toward
+0, not just the single global fit landing at some intermediate value
+by construction).
+
+CAVEAT: with only a few sweep points, each local gamma is a 2-point
+slope (noisy, no R^2 to check) -- this is a coarser, higher-variance
+signal than the global fit, appropriate for spotting a clear
+monotonic trend across 3+ consecutive gaps, not for a precise
+per-interval exponent. Needs at least 3 points (2 points give only
+one gap, nothing to compare a trend against).
+"""
+function local_growth_exponents(results::Vector{<:NamedTuple})
+    @assert length(results) >= 3 "need at least 3 sweep points to see a LOCAL trend " *
+                                  "(2 points give only one gap, nothing to compare against)"
+
+    sorted_results = sort(results; by = r -> r.N)
+    local_gammas = Float64[]
+    println("\n--- Local (consecutive-pair) growth exponents ---")
+    println("N_from\tN_to\tgamma_local\tvs_previous")
+    for i in 2:length(sorted_results)
+        r1, r2 = sorted_results[i-1], sorted_results[i]
+        g = log(r2.ratio / r1.ratio) / log(Float64(r2.N) / Float64(r1.N))
+        push!(local_gammas, g)
+        trend = if i == 2
+            "(first gap)"
+        elseif g < local_gammas[end-1]
+            "lower"
+        elseif g > local_gammas[end-1]
+            "higher"
+        else
+            "same"
+        end
+        @printf("%d\t%d\t%.4f\t\t%s\n", r1.N, r2.N, g, trend)
+    end
+
+    n_lower = count(i -> local_gammas[i] < local_gammas[i-1], 2:length(local_gammas))
+    n_gaps_compared = length(local_gammas) - 1
+    println()
+    if n_gaps_compared == 0
+        println("only one gap available -- no trend to report (need 4+ points for a real trend read)")
+    elseif n_lower == n_gaps_compared
+        println("-> LOCAL gamma is monotonically DECREASING across every gap: consistent with " *
+                "washing-out (phase incoherence increasingly cancelling as N/B grows). Still " *
+                "only $(length(sorted_results)) points -- more N's would strengthen this.")
+    elseif n_lower == 0
+        println("-> LOCAL gamma is flat or increasing across every gap: NOT consistent with " *
+                "washing-out at the N's tested here -- the global fit's gamma may be close to " *
+                "the actual asymptotic rate rather than a transient.")
+    else
+        println("-> LOCAL gamma is not monotonic ($(n_lower)/$(n_gaps_compared) gaps lower than " *
+                "the previous gap) -- no clean trend either way at this N range; could be noise " *
+                "from only a few points, or a genuine non-power-law crossover.")
+    end
+
+    return (; local_gammas, Ns = [r.N for r in sorted_results])
+end
+
+"""
     sweep_multi_seed(; Ns, seeds, m_per_point, m_scaling, m_floor, m_cap)
 
 Runs `sweep()` once per seed in `seeds` (same Ns and m-scaling options
@@ -219,6 +299,15 @@ function sweep_multi_seed(; Ns::Vector{Int} = [10_007, 100_003, 1_000_003, 10_00
         println("\n=== seed $seed ($(si)/$(length(seeds))) ===")
         results = sweep(; Ns, m_per_point, m_scaling, m_floor, m_cap, seed)
         fit = fit_growth_exponent(results)
+        # Companion LOCAL check (see local_growth_exponents docstring):
+        # the single global fit above cannot distinguish "gamma really
+        # is ~0.46 asymptotically" from "gamma is decreasing toward 0
+        # as N/B grow but hasn't gotten there yet at these Ns" -- both
+        # can produce a high-R^2 global fit over a limited N range.
+        # Needs 3+ Ns; skip (not fail the whole sweep) if fewer.
+        if length(results) >= 3
+            local_growth_exponents(results)
+        end
         per_seed_results[si] = results
         per_seed_gammas[si]  = fit.gamma
     end

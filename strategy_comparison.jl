@@ -1000,6 +1000,9 @@ function run_singer_comparison(; Ns::Vector{Int} = [10_007, 100_003, 1_000_003, 
                        maxU = r.maxU, defect = r.defect, elapsed = r.elapsed)
                     for r in results]
         fit = fit_growth_exponent(fit_rows)
+        if length(fit_rows) >= 3
+            local_growth_exponents(fit_rows)
+        end
         return (; results, fit)
     end
 
@@ -1181,6 +1184,9 @@ function run_singer_embedded_comparison(; Ns::Vector{Int} = [10_007, 100_003, 1_
                        maxU = r.maxU, defect = r.defect, elapsed = r.elapsed)
                     for r in results]
         fit = fit_growth_exponent(fit_rows)
+        if length(fit_rows) >= 3
+            local_growth_exponents(fit_rows)
+        end
         return (; results, fit)
     end
 
@@ -1780,6 +1786,9 @@ function run_singer_quad_filtered_comparison(; Ns::Vector{Int} = [10_007, 100_00
                        maxU = r.maxU, defect = r.defect, elapsed = r.elapsed)
                     for r in results]
         fit = fit_growth_exponent(fit_rows)
+        if length(fit_rows) >= 3
+            local_growth_exponents(fit_rows)
+        end
         return (; results, fit)
     end
 
@@ -2494,11 +2503,16 @@ end
 # after the fact -- compute the exact top-top_frac Fourier peaks
 # K_peak (via top_k_peaks, same ranking full_spectrum_diagnostic
 # already uses diagnostically), score each x in D by its marginal
-# contribution to that peak mass,
+# contribution to that peak mass via the exact first-order derivative
+# of sum_{k in K_peak} |S_hat(k)|^8 with respect to removing x,
 #
-#   grad(x) = sum_{k in K_peak} |S_hat(k)|^6 * cos(2*pi*k*x/N),
+#   grad(x) = sum_{k in K_peak} |S_hat(k)|^6 * cos(2*pi*k*x/N + arg(S_hat(k))),
 #
-# and drop the top `prune_frac` of D by grad(x).
+# and drop the top `prune_frac` of D by grad(x) (highest grad(x) = x
+# contributes most to shrinking M8_restricted if removed, so these are
+# the ones pruned -- see peak_score's docstring for the sign
+# convention and full derivation, and for the phase-collapsed
+# predecessor of this score, which is superseded).
 #
 # WHY THIS IS A DIFFERENT KIND OF EXPERIMENT THAN 10.2's FIVE CHEAP
 # PROXIES (see genus2-index-calculus-advisory-6.md section 10.2, and
@@ -2518,41 +2532,93 @@ end
 # sweep -- it is restricted to the same small-N regime already used for
 # the confinement/clustering diagnostics.
 #
-# WHY grad(x) USES |S_hat(k)|^6, NOT |S_hat(k)|^8 OR A GRADIENT OF THE
-# FULL M8 SUM: |S_hat(k)|^8 = |S_hat(k)|^6 * |S_hat(k)|^2, and
-# |S_hat(k)|^2 = S_hat(k) * conj(S_hat(k)); removing a single element
-# x from F changes S_hat(k) by -exp(2*pi*i*k*x/N), so the FIRST-ORDER
-# change in |S_hat(k)|^8 from removing x is proportional to
-# Re[ conj(S_hat(k))^4 * S_hat(k)^3 * exp(-2*pi*i*k*x/N) ] up to
-# constants -- not the real, phase-free quantity
-# |S_hat(k)|^6 * cos(2*pi*k*x/N) used here. What is implemented below
-# matches the score AS STATED in the user's proposal (a real-valued,
-# phase-collapsed proxy: it correlates x's own phase at frequency k
-# with the peak's already-large magnitude, rather than tracking the
-# exact complex derivative), not an independently-derived exact
-# gradient -- flagged here so the score is understood for what it is:
-# a plausible, cheap-to-compute heuristic ranking, not a linearization
-# with a first-order-correctness proof attached (same discipline this
-# file applies to every other proxy; see Strategy 7's v1 for what
-# happens when a linearized proxy of this general shape is trusted
-# without measuring it -- it made things WORSE in 2 of 3 tested N's).
-# This is exactly why the comparison harness below (like every other
-# strategy here) MEASURES the true, character-sampler-independent
-# EXACT M8 before and after pruning rather than assuming grad(x) is a
-# valid descent direction.
+# HISTORY -- WHY grad(x) NOW USES arg(S_hat(k)), NOT JUST |S_hat(k)|^6:
+# the original version of this score was |S_hat(k)|^6 * cos(2*pi*k*x/N),
+# a "phase-collapsed" heuristic that treats S_hat(k) as if it were a
+# positive real number -- correlating x's own phase with the peak's
+# magnitude but ignoring where S_hat(k)'s OWN phase actually sits. A
+# run_singer_peak_pruned_topfrac_comparison sweep at top_frac=0.01 vs
+# top_frac=1.0 came back with IDENTICAL prunings at both settings (a
+# null result on whether widening K_peak matters), which is consistent
+# with that score being a weaker, coarser signal than the true
+# gradient rather than evidence K_peak's width genuinely doesn't
+# matter. peak_score now implements the exact first-order term (see
+# its docstring for the derivation) -- the topfrac null result should
+# be re-measured against this version before trusting it.
+#
+# STILL A LINEARIZATION: this is exact for a SINGLE removal with
+# everything else in D held fixed; pruning prune_frac of D removes
+# many elements at once, and cross terms between simultaneous removals
+# are not captured. This is exactly why the comparison harness below
+# (like every other strategy here) MEASURES the true,
+# character-sampler-independent EXACT M8 before and after pruning
+# rather than assuming grad(x) is a valid descent direction at
+# anything beyond first order.
 
 """
     peak_score(x::Int, N::Int, S_hat::Vector{ComplexF64}, K_peak::Vector{Int}) -> Float64
 
-grad(x) = sum_{k in K_peak} |S_hat(k)|^6 * cos(2*pi*k*x/N) -- x's
-marginal alignment with the peak-frequency mass, as proposed by the
-user. O(|K_peak|) per call.
+grad(x) = -(1/8) * d(M8_restricted)/d[include x], i.e. the exact
+first-order change in sum_{k in K_peak} |S_hat(k)|^8 from adding x to
+F, PHASE-CORRECT version:
+
+  grad(x) = sum_{k in K_peak} |S_hat(k)|^6 * cos(2*pi*k*x/N + arg(S_hat(k)))
+
+Derivation: treating S_hat(k), conj(S_hat(k)) as independent,
+d|S_hat(k)|^8/d S_hat(k) = 4|S_hat(k)|^6 * conj(S_hat(k)). Removing x
+changes S_hat(k) by -exp(2*pi*i*k*x/N), so the real first-order change
+in |S_hat(k)|^8 is -8*|S_hat(k)|^6 * Re[conj(S_hat(k)) *
+exp(2*pi*i*k*x/N)] = -8*|S_hat(k)|^6 * |S_hat(k)| * cos(2*pi*k*x/N -
+arg(S_hat(k))) ... written with +arg(S_hat(k)) above via
+conj(S_hat(k)) = |S_hat(k)|*exp(-i*arg(S_hat(k))), so
+Re[conj(S_hat(k))*exp(2pi*i*k*x/N)] = |S_hat(k)|*cos(2*pi*k*x/N -
+arg(S_hat(k))); the sign convention here matches "high grad(x) =
+x reinforces the existing peaks, i.e. removing x would shrink M8",
+consistent with peak_pruned_subset pruning the HIGHEST-scoring x's.
+
+PREVIOUS VERSION (superseded): |S_hat(k)|^6 * cos(2*pi*k*x/N), with
+no arg(S_hat(k)) phase term -- equivalent to treating S_hat(k) as if
+it were a positive real number. That version was flagged in this
+file's history as a "phase-collapsed proxy," not a derivative, and a
+run_singer_peak_pruned_topfrac_comparison sweep at top_frac=0.01 vs
+top_frac=1.0 came back with IDENTICAL rankings (and hence identical
+pruning) at both settings -- a null result on whether widening
+K_peak changes anything. Since the phase-collapsed score is coarser
+than the true gradient (it only sees |S_hat(k)|, not where x's own
+phase sits relative to S_hat(k)'s phase), that null result was
+plausibly an artifact of the weaker proxy, not evidence that
+widening K_peak genuinely doesn't matter. This phase-corrected
+version is the true first-order derivative (up to the O(B^2)
+second-order cross terms from removing MULTIPLE elements
+simultaneously, which no single-element linearization captures) and
+supersedes the phase-collapsed one -- re-run the topfrac comparison
+against this version before drawing conclusions from the earlier
+null result.
+
+O(|K_peak|) per call, same cost as before (one extra angle() call per
+k). K_peak need not be a small "top fraction" -- passing every
+nonzero frequency (K_peak = 1:(N-1), i.e. calling peak_pruned_subset
+with top_frac=1.0) is a valid and meaningful use, answering "how does
+x align with the FULL spectrum's mass" rather than just the loudest
+1% -- see run_singer_peak_pruned_topfrac_comparison for a direct
+comparison of the two.
+
+STILL A LINEARIZATION, NOT A PROOF: this is the exact first-order
+term for removing a SINGLE x holding everything else fixed. Pruning
+prune_frac of D removes many elements at once, and cross terms
+between simultaneously-removed elements are not captured by any
+per-element score computed against the ORIGINAL (unpruned) S_hat --
+same caveat this file applies to every other proxy; the comparison
+harness measures the TRUE exact M8 before/after rather than trusting
+this score's ranking is what a greedy one-at-a-time removal would
+actually achieve.
 """
 function peak_score(x::Int, N::Int, S_hat::Vector{ComplexF64}, K_peak::Vector{Int})
     s = 0.0
     @inbounds for k in K_peak
-        mag6 = abs(S_hat[k+1])^6
-        s += mag6 * cos(2pi * k * x / N)
+        Sk = S_hat[k+1]
+        mag6 = abs(Sk)^6
+        s += mag6 * cos(2pi * k * x / N + angle(Sk))
     end
     return s
 end
@@ -2585,15 +2651,64 @@ without checking).
 
 Returns F_pruned (D minus the pruned elements, in D's original
 relative order), K_peak (so callers can report how many frequencies
-were used), and scores (peak_score for every x in D, aligned with D's
+were used), scores (peak_score for every x in D, aligned with D's
 order, not just the pruned ones -- lets a caller inspect the full
-score distribution if wanted).
+score distribution if wanted), and frac_of_M8 (the fraction of D's
+total |S_hat|^8 mass that K_peak alone accounts for -- see NOTE
+below on why this number, not just K_peak's raw size, is what
+determines whether top_frac actually changes anything).
+
+NOTE ON top_frac's REAL EFFECT: peak_score weights each frequency by
+|S_hat(k)|^6, so if D's spectrum is peaky (a handful of frequencies
+carry nearly all the mass -- frac_of_M8 near 1.0 already at small
+top_frac), then K_peak's remaining 99% of frequencies at
+top_frac=1.0 contribute negligibly to the ^6-weighted sum relative
+to the already-included peak frequencies. In that regime,
+top_frac=0.01 and top_frac=1.0 can produce near-IDENTICAL score
+RANKINGS (and hence identical pruning, identical F_pruned) even
+though the raw score magnitudes and wall-clock cost differ --
+because sortperm only depends on relative order, not the totals.
+This is NOT a bug in top_k_peaks or peak_score (both correctly use
+whatever K_peak they're given); it means a head-to-head comparison
+of top_frac values is only informative when frac_of_M8 at the
+smaller top_frac is meaningfully less than 1.0. Always check
+frac_of_M8 before concluding two top_frac settings "agree" or
+"disagree" in sign -- agreement may just mean the top_frac=0.01
+slice was already ~all the mass.
 """
 function peak_pruned_subset(D::Vector{Int}, N::Int; top_frac::Float64 = 0.01, prune_frac::Float64 = 0.05)
     S_hat = compute_full_spectrum(D, N)
-    K_peak, _, _ = top_k_peaks(S_hat, N; top_frac = top_frac)
+    K_peak, _, frac_of_M8 = top_k_peaks(S_hat, N; top_frac = top_frac)
 
     scores = [peak_score(x, N, S_hat, K_peak) for x in D]
+
+    # SIGN/FIRST-ORDER-CORRECTNESS CHECK: peak_score is only useful if
+    # its ranking actually predicts the real effect of removal. Rather
+    # than re-deriving the gradient independently (e.g. via a symbolic
+    # or sympy-style check external to this pipeline), verify it in
+    # place, on data already in hand: pick the single highest-scoring
+    # x* in D, recompute the spectrum of D with x* actually removed,
+    # and confirm M8_restricted (summed over the SAME K_peak) really
+    # did decrease -- this is exactly the claim peak_score's sign
+    # convention makes ("highest grad(x) = x contributes most to
+    # shrinking M8_restricted if removed"). This costs one extra
+    # O(N*B) spectrum computation, same cost class the caller already
+    # pays twice (before/after), so it is not a meaningfully more
+    # expensive stage to add here.
+    if !isempty(D)
+        x_star = D[argmax(scores)]
+        M8_restricted_before = sum(abs(S_hat[k+1])^8 for k in K_peak)
+        D_minus_xstar = filter(!=(x_star), D)
+        S_hat_minus = compute_full_spectrum(D_minus_xstar, N)
+        M8_restricted_after_removal = sum(abs(S_hat_minus[k+1])^8 for k in K_peak)
+        @assert M8_restricted_after_removal < M8_restricted_before (
+            "peak_score sign check failed: removing the highest-scoring element " *
+            "x*=$x_star did NOT decrease M8 restricted to K_peak " *
+            "($M8_restricted_before -> $M8_restricted_after_removal) -- peak_score's " *
+            "sign convention (or its derivation) is wrong, investigate before " *
+            "trusting any pruning result from this call"
+        )
+    end
 
     # BUG FIX (found by running at small q -- see chat: q=5,7 both
     # silently pruned ZERO elements): round(Int, prune_frac*length(D))
@@ -2627,7 +2742,101 @@ function peak_pruned_subset(D::Vector{Int}, N::Int; top_frac::Float64 = 0.01, pr
     prune_idx = Set(order[1:n_prune])
     F_pruned = [D[i] for i in eachindex(D) if !(i in prune_idx)]
 
-    return (F_pruned, K_peak, scores)
+    return (F_pruned, K_peak, scores, frac_of_M8)
+end
+
+# ---------------------------------------------------------------
+# Strategy 9: single-loudest-frequency PHASE-SPLIT exclusion
+# ---------------------------------------------------------------
+#
+# USER'S IDEA (relayed in chat): rather than a magnitude-ranked score
+# summed over many frequencies (Strategy 8's peak_pruned_subset,
+# which came back a null result -- see that function's docstring and
+# comment history), isolate the SINGLE loudest frequency k* and split
+# D by PHASE alone at that one frequency: which elements of D are
+# constructively reinforcing S_hat(k*) (phase-aligned with it) versus
+# destructively interfering or neutral (not phase-aligned).
+#
+# WHY THIS IS A GENUINELY DIFFERENT OBJECT FROM peak_score, NOT A
+# RELABELING: peak_score at any top_frac sums |S_hat(k)|^6-WEIGHTED
+# contributions across many k's at once, so an element's score
+# depends on its phase relationship to every frequency in K_peak
+# simultaneously, weighted by how loud each one is. Restricting to a
+# single k* removes the weighting and the aggregation entirely: every
+# element of D contributes exactly the SAME magnitude (a unit vector
+# exp(2*pi*i*k*x/N)) to S_hat(k*) -- only phase differs between
+# elements at a single frequency, there is no magnitude ranking to
+# collapse into ties the way the top_frac=0.01-vs-1.0 experiment did
+# (see peak_pruned_subset's docstring on frac_of_M8 near 1.0 washing
+# out the top_frac comparison -- that failure mode cannot occur here,
+# since there is only one frequency and every element's contribution
+# to it has identical magnitude by construction).
+#
+# THE SPLIT: partition D into F_aligned (elements whose phase at k* is
+# within +/-90 degrees of S_hat(k*)'s own phase, i.e.
+# Re[conj(S_hat(k*)) * exp(2*pi*i*k*x/N)] > 0 -- these are the
+# elements PUSHING S_hat(k*) further in the direction it already
+# points, so removing them should shrink |S_hat(k*)|) and F_opposed
+# (the rest). "Set exclusion to get the remainder", per the user's
+# phrasing, is D minus F_aligned = F_opposed -- this is the candidate
+# pruned set to measure, on the same logic as peak_pruned_subset:
+# excluding the elements identified as responsible for the peak.
+#
+# THIS IS STILL A LINEARIZATION IN THE SAME SENSE AS peak_score: the
+# 90-degree split is a first-order/sign-only criterion (does this
+# element point roughly toward or away from where S_hat(k*) already
+# is), not an exact optimal bipartition -- removing every aligned
+# element simultaneously changes S_hat(k*) a lot (this is typically a
+# LARGE-fraction split, roughly half of D, unlike peak_pruned_subset's
+# small prune_frac=0.05), so first-order reasoning about "which
+# individual elements help" is on much weaker footing here than for a
+# small perturbation. This is exactly why the same measurement
+# discipline applies: report the EXACT M8 of F_opposed via a fresh
+# compute_full_spectrum, do not assume the split achieves what its
+# construction suggests.
+#
+# COST: one extra full_spectrum computation for F_opposed, same cost
+# class as every other before/after comparison in this file. No
+# additional K_peak/top_frac parameter -- k* is just the single
+# argmax, always well-defined for nonempty D.
+"""
+    phase_split_by_peak_freq(D::Vector{Int}, N::Int)
+        -> (F_opposed::Vector{Int}, F_aligned::Vector{Int}, k_star::Int, S_hat::Vector{ComplexF64})
+
+Computes the exact spectrum of D, finds k_star = argmax_k |S_hat(k)|^8
+over the N-1 non-trivial frequencies (the single loudest frequency,
+not a top-frac slice), and partitions D by the sign of
+Re[conj(S_hat(k_star)) * exp(2*pi*i*k_star*x/N)] for each x in D:
+
+  - F_aligned: elements with positive real part -- phase-aligned with
+    S_hat(k_star), i.e. contributing to (reinforcing) the peak
+  - F_opposed: everything else (D minus F_aligned) -- the candidate
+    pruned/remainder set
+
+Returns F_opposed, F_aligned (so a caller can inspect the split
+sizes -- there is no guarantee of an even split, it depends on D's
+actual phase distribution at k_star), k_star itself, and the full
+S_hat (so a caller measuring M8_after does not need to recompute the
+BEFORE spectrum from scratch).
+"""
+function phase_split_by_peak_freq(D::Vector{Int}, N::Int)
+    S_hat = compute_full_spectrum(D, N)
+    mags8 = [abs(S_hat[k+1])^8 for k in 1:(N-1)]
+    k_star = argmax(mags8)  # 1-indexed into 1:(N-1), which IS the frequency value k itself
+
+    Sk_star = S_hat[k_star+1]
+    F_aligned = Int[]
+    F_opposed = Int[]
+    for x in D
+        alignment = real(conj(Sk_star) * cis(2pi * k_star * x / N))
+        if alignment > 0
+            push!(F_aligned, x)
+        else
+            push!(F_opposed, x)
+        end
+    end
+
+    return (F_opposed, F_aligned, k_star, S_hat)
 end
 
 # ---------------------------------------------------------------
@@ -2708,7 +2917,7 @@ function run_singer_peak_pruned_comparison(; Ns::Vector{Int} = [10_007, 100_003]
 
     println("\n=== Singer set, Fourier-PEAK-PRUNED (target_q_exponent=$target_q_exponent, " *
             "top_frac=$top_frac, prune_frac=$prune_frac) ===")
-    println("N\tq\tNq\tB_before\tB_after\tM8_before\tM8_after\tratio(after/before)\tnormalized_ratio\tsidon_defect_before\tsidon_defect_after\telapsed_s")
+    println("N\tq\tNq\tB_before\tB_after\tM8_before\tM8_after\tratio(after/before)\tnormalized_ratio\tfrac_of_M8_in_Kpeak\tsidon_defect_before\tsidon_defect_after\telapsed_s")
     for N in Ns
         t0 = time()
         rng = MersenneTwister(seed)
@@ -2733,7 +2942,7 @@ function run_singer_peak_pruned_comparison(; Ns::Vector{Int} = [10_007, 100_003]
         mags8_before = [abs(S_hat_before[k+1])^8 for k in 1:(N-1)]
         M8_before = sum(mags8_before)
 
-        F_pruned, K_peak, scores = peak_pruned_subset(D, N; top_frac = top_frac, prune_frac = prune_frac)
+        F_pruned, K_peak, scores, frac_of_M8 = peak_pruned_subset(D, N; top_frac = top_frac, prune_frac = prune_frac)
         B_after = length(F_pruned)
 
         defect_after = sidon_defect(F_pruned, N)
@@ -2762,12 +2971,12 @@ function run_singer_peak_pruned_comparison(; Ns::Vector{Int} = [10_007, 100_003]
         normalized_ratio = (M8_after / Float64(B_after)^8) / (M8_before / Float64(B_before)^8)
         elapsed = time() - t0
 
-        @printf("%d\t%d\t%d\t%d\t\t%d\t%.6e\t%.6e\t%.4f\t\t\t%.4f\t\t\t%d\t\t\t%d\t\t\t%.2f\n",
+        @printf("%d\t%d\t%d\t%d\t\t%d\t%.6e\t%.6e\t%.4f\t\t\t%.4f\t\t\t%.6f\t\t\t%d\t\t\t%d\t\t\t%.2f\n",
                 N, q, Nq, B_before, B_after, M8_before, M8_after, ratio, normalized_ratio,
-                defect_before, defect_after, elapsed)
+                frac_of_M8, defect_before, defect_after, elapsed)
 
         push!(results, (; N, q, Nq, B_before, B_after, M8_before, M8_after, ratio,
-                           normalized_ratio, defect_before, defect_after, elapsed))
+                           normalized_ratio, frac_of_M8, defect_before, defect_after, elapsed))
     end
 
     println("\nnormalized_ratio = (M8_after/B_after^8) / (M8_before/B_before^8) -- isolates")
@@ -2779,6 +2988,222 @@ function run_singer_peak_pruned_comparison(; Ns::Vector{Int} = [10_007, 100_003]
     println("or made the survivors WORSE per-element despite dropping the highest scorers.")
 
     return results
+end
+
+# ---------------------------------------------------------------
+# run_singer_phase_split_comparison: measures the TRUE (exact-DFT) M8
+# of a native/embedded Singer set before and after excluding the
+# elements PHASE-ALIGNED with the single loudest frequency k* (see
+# phase_split_by_peak_freq's docstring for the full construction and
+# why it is a different object from peak_pruned_subset's magnitude
+# ranking, not a relabeling of it).
+# ---------------------------------------------------------------
+
+"""
+    run_singer_phase_split_comparison(; Ns, target_q_exponent=0.2, seed=1)
+
+For each N in `Ns`: builds the native Singer set D (same construction
+as run_singer_peak_pruned_comparison, same embedding-validity guard),
+calls phase_split_by_peak_freq(D, N) to get F_opposed (the candidate
+pruned set: D minus the elements phase-aligned with D's single
+loudest frequency k*) and F_aligned, then measures the EXACT M8 of
+both D and F_opposed via fresh compute_full_spectrum calls (F_aligned
+is not separately re-measured -- it is the complement, reported for
+its size only, same as peak_pruned_subset's treatment of the pruned
+elements).
+
+UNLIKE run_singer_peak_pruned_comparison, there is no top_frac or
+prune_frac parameter: k* is always the single argmax frequency, and
+the aligned/opposed split sizes are whatever D's actual phase
+distribution at k* produces (not a fixed fraction) -- reported
+directly as B_after and n_aligned so the actual split ratio is
+visible, since (unlike a fixed prune_frac=0.05) there is no guarantee
+this is anywhere near 5%/95% -- a genuinely peaky D could plausibly
+split close to 50/50, which is a MUCH larger structural change than
+Strategy 8's small prune fraction; see phase_split_by_peak_freq's
+docstring on why first-order reasoning is weaker justification for a
+large-fraction split than a small one, which is exactly why this
+result must be measured exactly, not assumed.
+
+Returns a Vector{NamedTuple} of per-N results (N, q, Nq, k_star,
+B_before, B_after, n_aligned, M8_before, M8_after, ratio,
+normalized_ratio, sidon_defect_before, sidon_defect_after, elapsed_s),
+printed as a table and also returned for further analysis (e.g.
+fit_growth_exponent / local_growth_exponents on the ratio column, same
+as every other strategy in this file).
+"""
+function run_singer_phase_split_comparison(; Ns::Vector{Int} = [10_007, 100_003, 1_000_003, 10_000_019],
+                                               target_q_exponent::Float64 = 0.2,
+                                               seed::Int = 1)
+    results = NamedTuple[]
+
+    println("\n=== Singer set, PHASE-SPLIT at single loudest frequency k* " *
+            "(target_q_exponent=$target_q_exponent) ===")
+    println("N\tq\tNq\tk_star\tB_before\tB_after\tn_aligned\tM8_before\tM8_after\tratio(after/before)\tnormalized_ratio\tsidon_defect_before\tsidon_defect_after\telapsed_s")
+    for N in Ns
+        t0 = time()
+        rng = MersenneTwister(seed)
+        q_target = max(2, floor(Int, N^target_q_exponent))
+        q_target = min(q_target, N)
+        q = largest_prime_leq(q_target)
+        D, Nq = singer_sidon_subset_native(q, rng)
+        B_before = length(D)
+        @assert N >= 2 * (Nq - 1) "Singer native modulus Nq=$Nq too close to N=$N for a " *
+                         "valid embedding (need N >= 2*(Nq-1)) -- shrink q (lower " *
+                         "target_q_exponent) or grow N; see run_singer_embedded_comparison " *
+                         "for the full explanation of why this guard exists"
+
+        defect_before = sidon_defect(D, N)
+        if defect_before != 0
+            @warn "N=$N, q=$q: unpruned embedded Singer set has nonzero " *
+                  "sidon_defect=$defect_before -- phase-split results below are " *
+                  "untrustworthy at this N; investigate before trusting this row"
+        end
+
+        S_hat_before = compute_full_spectrum(D, N)
+        mags8_before = [abs(S_hat_before[k+1])^8 for k in 1:(N-1)]
+        M8_before = sum(mags8_before)
+
+        F_opposed, F_aligned, k_star, _ = phase_split_by_peak_freq(D, N)
+        B_after = length(F_opposed)
+        n_aligned = length(F_aligned)
+        @assert B_after + n_aligned == B_before "internal mismatch: phase split did not " *
+                                                 "partition D exactly -- this is a bug"
+
+        defect_after = sidon_defect(F_opposed, N)
+        if defect_after != 0
+            @warn "N=$N, q=$q: phase-split remainder has nonzero sidon_defect=$defect_after " *
+                  "-- this should be IMPOSSIBLE (excluding elements from an already-Sidon " *
+                  "set cannot create a new collision); investigate phase_split_by_peak_freq " *
+                  "before trusting this row"
+        end
+
+        S_hat_after = compute_full_spectrum(F_opposed, N)
+        mags8_after = [abs(S_hat_after[k+1])^8 for k in 1:(N-1)]
+        M8_after = sum(mags8_after)
+
+        ratio = M8_after / M8_before
+        normalized_ratio = (M8_after / Float64(B_after)^8) / (M8_before / Float64(B_before)^8)
+        elapsed = time() - t0
+
+        @printf("%d\t%d\t%d\t%d\t%d\t\t%d\t%d\t\t%.6e\t%.6e\t%.4f\t\t\t%.4f\t\t\t%d\t\t\t%d\t\t\t%.2f\n",
+                N, q, Nq, k_star, B_before, B_after, n_aligned, M8_before, M8_after, ratio,
+                normalized_ratio, defect_before, defect_after, elapsed)
+
+        push!(results, (; N, q, Nq, k_star, B_before, B_after, n_aligned, M8_before, M8_after,
+                           ratio, normalized_ratio, defect_before, defect_after, elapsed))
+    end
+
+    println("\nnormalized_ratio = (M8_after/B_after^8) / (M8_before/B_before^8), same convention")
+    println("as run_singer_peak_pruned_comparison. normalized_ratio < 1 means F_opposed is")
+    println("genuinely less peak-heavy per-element than D was, not just smaller.")
+    println("n_aligned/B_before shows the ACTUAL split fraction produced by phase alone --")
+    println("compare against Strategy 8's fixed prune_frac=0.05 to judge whether phase-split's")
+    println("much larger typical exclusion fraction is doing more, or just removing more.")
+
+    if length(results) >= 2
+        println("\n--- Phase-split growth-exponent fit (mean ratio vs real N) ---")
+        fit_rows = [(; N = r.N, B = r.B_after, m = 0, ratio = r.ratio,
+                       maxU = 0.0, defect = r.defect_after, elapsed = r.elapsed)
+                    for r in results]
+        fit = fit_growth_exponent(fit_rows)
+        if length(fit_rows) >= 3
+            local_growth_exponents(fit_rows)
+        end
+        return (; results, fit)
+    end
+
+    return (; results, fit = nothing)
+end
+
+# ---------------------------------------------------------------
+# run_singer_peak_pruned_topfrac_comparison: same D, same q/N, two
+# top_frac settings (default: the original top_frac=0.01 vs. the FULL
+# spectrum top_frac=1.0) -- answers the question "does scoring against
+# every nonzero frequency, not just the top 1% by mass, change the
+# sign of the effect".
+# ---------------------------------------------------------------
+
+"""
+    run_singer_peak_pruned_topfrac_comparison(; Ns, target_q_exponent=0.2,
+                                                  top_fracs=[0.01, 1.0],
+                                                  prune_frac=0.05, seed=1)
+
+Runs run_singer_peak_pruned_comparison once per value in `top_fracs`,
+at the SAME (Ns, target_q_exponent, prune_frac, seed) each time -- so
+D is IDENTICAL across all top_frac settings for a given N (D only
+depends on q, which only depends on N/target_q_exponent/seed; see
+run_singer_peak_pruned_comparison's rng seeding, reset fresh from
+`seed` every N, independent of top_frac). Prints a
+per-(N,top_frac) normalized_ratio comparison table at the end so the
+sign/magnitude of the effect at top_frac=0.01 (peak_score's original
+proposal: only the loudest 1% of frequencies inform the score) can be
+read directly against top_frac=1.0 (every nonzero frequency
+contributes to grad(x), i.e. the FULL spectrum -- this is the natural
+follow-up: the current score is blind to frequencies just below the
+top-1% cutoff, and pruning could easily be helping those loudest
+peaks while making frequencies in the 1-10% band worse, which
+top_frac=0.01 has no way to see or penalize).
+
+COST NOTE: top_frac only changes the size of K_peak in the O(B*K)
+scoring step (peak_score), NOT the O(N*B) exact-DFT step
+(compute_full_spectrum), which dominates total cost and runs
+regardless of top_frac. Going from top_frac=0.01 to top_frac=1.0
+is at most a ~2x total slowdown at the q,N scale this function is
+meant for (K_peak growing from 0.01*(N-1) to N-1, i.e. B*K terms
+going from ~0.01*N*B to ~N*B, comparable to but not dominating the
+DFT's own N*B cost) -- NOT the ~100x the K_peak size ratio alone
+would suggest, because compute_full_spectrum's cost is independent
+of top_frac and is what actually sets the wall-clock at this scale.
+Still does NOT scale to the 10^7-point production sweep, same
+restriction as run_singer_peak_pruned_comparison itself.
+
+Returns a Dict{Float64, Vector{NamedTuple}} keyed by top_frac, same
+per-N result shape as run_singer_peak_pruned_comparison.
+"""
+function run_singer_peak_pruned_topfrac_comparison(; Ns::Vector{Int} = [1_000_003, 2_000_003],
+                                                        target_q_exponent::Float64 = 0.4,
+                                                        top_fracs::Vector{Float64} = [0.01, 1.0],
+                                                        prune_frac::Float64 = 0.05,
+                                                        seed::Int = 1)
+    all_results = Dict{Float64, Vector{NamedTuple}}()
+    for tf in top_fracs
+        println("\n########## top_frac = $tf ##########")
+        all_results[tf] = run_singer_peak_pruned_comparison(; Ns = Ns,
+                                                                target_q_exponent = target_q_exponent,
+                                                                top_frac = tf,
+                                                                prune_frac = prune_frac,
+                                                                seed = seed)
+    end
+
+    println("\n=== top_frac head-to-head (same D per N, only K_peak's size differs) ===")
+    header = String[]
+    for tf in top_fracs
+        push!(header, "normalized_ratio(top_frac=$tf)")
+        push!(header, "frac_of_M8(top_frac=$tf)")
+    end
+    println("N\t" * join(header, "\t"))
+    for (i, N) in enumerate(Ns)
+        row_vals = String[]
+        for tf in top_fracs
+            r = all_results[tf][i]
+            @assert r.N == N "internal mismatch: result order does not match Ns -- this is a bug"
+            push!(row_vals, @sprintf("%.4f", r.normalized_ratio))
+            push!(row_vals, @sprintf("%.6f", r.frac_of_M8))
+        end
+        println("$N\t" * join(row_vals, "\t\t\t"))
+    end
+    println("\nIf the full-spectrum (top_frac=1.0) column comes back with normalized_ratio")
+    println("consistently < 1 while the top-1% column stays >= 1 (or vice versa), that")
+    println("would mean the SIGN of the effect depends on which frequencies inform the")
+    println("score -- i.e. peak_score's current top_frac=0.01 restriction is not just")
+    println("underpowered but actively looking at the wrong slice of the spectrum. If")
+    println("both columns agree in sign, CHECK frac_of_M8(top_frac=0.01) before")
+    println("concluding the top-1% restriction wasn't the problem: if it's already near")
+    println("1.0, the two settings never differed in which mass they saw, so agreement")
+    println("is not informative either way -- see peak_pruned_subset's docstring.")
+
+    return all_results
 end
 
 # ---------------------------------------------------------------
@@ -2938,6 +3363,18 @@ function compare_strategies(; Ns::Vector{Int} = [10_007, 100_003, 1_000_003, 10_
         if length(rs) >= 2
             println("\n[$strat]")
             fits[strat] = fit_growth_exponent(rs)
+            # Companion LOCAL check (see local_growth_exponents docstring
+            # in scaling_sweep.jl): the single global fit above cannot
+            # distinguish "gamma really is ~this value asymptotically"
+            # from "gamma is trending toward/away from 0 as N/B grow but
+            # this N-range hasn't shown it yet" -- both can produce a
+            # high-R^2 global fit. Needs 3+ points; strategies skipped
+            # at some N (e.g. greedy_low_energy at N=10000019, see its
+            # skip comment above) may have fewer than `strategies`-wide
+            # Ns and still clear this bar with 3.
+            if length(rs) >= 3
+                local_growth_exponents(rs)
+            end
         else
             @warn "[$strat] fewer than 2 valid points -- skipping fit"
         end
@@ -2957,157 +3394,187 @@ function compare_strategies(; Ns::Vector{Int} = [10_007, 100_003, 1_000_003, 10_
 end
 
 if abspath(PROGRAM_FILE) == @__FILE__
-    # Each block is wrapped independently so a failure in one strategy
-    # (e.g. a Sidon-construction exhaustion) doesn't prevent the others
-    # from running and reporting results -- previously a single error
-    # anywhere in compare_strategies() aborted the whole script before
-    # run_singer_comparison() ever executed.
+    # Strategy 9 runs FIRST, unthreaded, on its own (per chat: tired of
+    # waiting through the older strategies to reach new results) --
+    # every OTHER strategy below has already been run and its result
+    # is recorded in this file's own comments, so there is no reason
+    # to make Strategy 9 wait behind them anymore. Running it alone
+    # (not inside the threaded block below) also means it gets the
+    # full nthreads() budget to itself for its internal
+    # compute_full_spectrum/character-sampler parallelism, rather than
+    # competing with whatever else is spawned concurrently.
     try
-        compare_strategies()   # greedy vs greedy_low_energy, same (N,B) per row
+        println("--- Strategy 9: phase-split at single loudest frequency, " *
+                "target_q_exponent=0.2 (real constraint) ---")
+        run_singer_phase_split_comparison(; target_q_exponent = 0.2)
     catch e
-        @error "compare_strategies() failed -- see error below; continuing to Singer" exception=(e, catch_backtrace())
+        @error "run_singer_phase_split_comparison() [0.2] failed" exception=(e, catch_backtrace())
+    end
+    try
+        println("\n--- Strategy 9: phase-split at single loudest frequency, " *
+                "target_q_exponent=0.4 (diagnostic only) ---")
+        run_singer_phase_split_comparison(; Ns = [1_000_003, 2_000_003], target_q_exponent = 0.4)
+    catch e
+        @error "run_singer_phase_split_comparison() [0.4] failed" exception=(e, catch_backtrace())
     end
 
-    println("\n=== Singer difference set (own N/B columns -- see docstring caveat) ===")
-    try
-        run_singer_comparison()
-    catch e
-        @error "run_singer_comparison() failed" exception=(e, catch_backtrace())
-    end
-
-    # This is the fair, apples-to-apples comparison against
-    # greedy/greedy_low_energy above: same target N per row, ratio
-    # computed against that real N (not Singer's native Nq). See
-    # run_singer_embedded_comparison's docstring for why this is a
-    # separate function from run_singer_comparison rather than a
-    # variant flag on it -- the native-Nq ratio and the embedded-vs-N
-    # ratio are answering different questions and neither is a
-    # substitute for the other.
+    # ---------------------------------------------------------------
+    # Everything below is the PREVIOUSLY-RUN strategy sequence
+    # (Strategies 1-8 plus sweeps), now launched CONCURRENTLY via
+    # Threads.@spawn rather than run one-after-another -- per chat,
+    # threading "the ending tests" so they finish sooner in wall-clock
+    # while Strategy 9 above has already reported first.
     #
-    # run_singer_embedded_exponent_sweep runs target_q_exponent=0.2
-    # (the REAL constraint: B~p^(2/5)~N^0.2) plus several higher
-    # exponents purely as a DIAGNOSTIC to trace whether/where gamma
-    # trends back toward flat -- see that function's docstring. The
-    # higher exponents are not proposals; only the 0.2 row reflects
-    # an allowed factor-base choice.
-    try
-        run_singer_embedded_exponent_sweep()
-    catch e
-        @error "run_singer_embedded_exponent_sweep() failed" exception=(e, catch_backtrace())
-    end
-
-    # User's "randomized partner" idea: F = sums of Singer points with
-    # a random partner drawn from the Singer set itself, rather than
-    # raw D embedded directly. Run at the REAL constraint exponent
-    # (0.2) for direct comparison against greedy/greedy_low_energy
-    # above and raw embedded-Singer (target_q_exponent=0.2 block
-    # earlier in this run) at the same N -- this is the point of
-    # comparison that actually matters for the factor-base decision.
-    try
-        run_singer_paired_comparison()
-    catch e
-        @error "run_singer_paired_comparison() failed" exception=(e, catch_backtrace())
-    end
-
-    # User's second idea: keep F as a genuine subset of D (native
-    # Singer order, not summed pairs), but screen each new Singer
-    # element with an incremental filter on sums-of-two-differences
-    # (a cheap proxy for 8th-moment-relevant 4-term additive
-    # coincidences) using a randomly drawn partner from what's already
-    # been accepted. Run at the same real constraint exponent (0.2)
-    # as the other Singer variants above for direct comparison.
-    try
-        run_singer_quad_filtered_comparison()
-    catch e
-        @error "run_singer_quad_filtered_comparison() failed" exception=(e, catch_backtrace())
-    end
-
-    # Does the quad filter do anything once Nq/B are large enough for
-    # its collision space to actually get crowded? The 0.2 run above
-    # showed near-zero rejections -- this checks whether that's a
-    # regime problem (fixed by raising the exponent) or the filter
-    # being fundamentally toothless (rejection rate stays ~0 even at
-    # larger exponents).
-    try
-        run_singer_quad_filtered_exponent_sweep()
-    catch e
-        @error "run_singer_quad_filtered_exponent_sweep() failed" exception=(e, catch_backtrace())
-    end
-
-    # Strategy 7 (v3, current version): projected greedy construction
-    # -- built sequentially like plain greedy_sidon_subset, but at
-    # each stage the Sidon-valid candidate chosen is the one
-    # minimizing the EXACT projected M8 score against a FIXED set of
-    # K=200 random characters sampled once at the start (see Strategy
-    # 7 header comment for the full v1 -> v2 -> v3 history: v1's
-    # linearized-gradient swap search made things worse, and v2's
-    # exact pair-sum-energy swap search turned out to optimize a
-    # quantity -- M4 -- that is PROVABLY CONSTANT across all Sidon
-    # sets of a fixed size, so it could never move at all). v3
-    # abandons post-hoc refinement of a completed Sidon set entirely
-    # in favor of spending the quadratic budget during construction,
-    # where there are genuine degrees of freedom to optimize over.
-    try
-        run_projected_greedy_comparison()
-    catch e
-        @error "run_projected_greedy_comparison() failed" exception=(e, catch_backtrace())
-    end
-
-    # Strategy 8: external-model idea (Gemini, this session) -- start
-    # from the native Singer set D (known-bad at the real embedding
-    # scale, gamma~1.57 -- see 10.1(ii)/run_singer_embedded_comparison)
-    # and PRUNE the top prune_frac=5% of its elements by their exact
-    # marginal contribution to D's own top-1%-by-mass Fourier peaks,
-    # per peak_pruned_subset's docstring above.
+    # WHY BUFFERED OUTPUT, NOT DIRECT println/@printf FROM EACH TASK:
+    # every strategy function below prints its own table via bare
+    # println/@printf to the process-global stdout. If N tasks do that
+    # concurrently, their lines interleave mid-table and the output
+    # becomes unreadable (this is not a hypothetical -- Julia gives no
+    # ordering or atomicity guarantee across tasks writing to the same
+    # stream). Each task's output is instead captured into its own
+    # IOBuffer via redirect_stdout, and flushed as one atomic block to
+    # the real stdout when that task completes -- readable per-block,
+    # same total content, just not interleaved.
     #
-    # RESULT (measured -- see Strategy 8's header comment above for
-    # the full account): this does NOT help. normalized_ratio came
-    # back consistently ABOVE 1 (pruning makes the survivors WORSE
-    # per-element, not better) at all four points tested across both
-    # runs below, converging toward 1 (not below it) as q grows. This
-    # block is kept in the run script, unlike the discarded v1/v2
-    # dead ends elsewhere in this file, because -- unlike those, which
-    # were replaced by a corrected v2/v3 -- there is no follow-up
-    # version of this idea yet; it is left runnable so re-running it
-    # (e.g. after a change to peak_score, or at different top_frac/
-    # prune_frac values) remains easy, not because the current form is
-    # expected to succeed.
+    # WHY THIS IS NOT A FREE N-WAY SPEEDUP: every strategy below
+    # ALREADY uses Threads.nthreads() internally (character sampling
+    # and, for the Singer constructions, the field-arithmetic power
+    # table) -- see run_character_sampler_threaded and
+    # singer_sidon_subset_native's own threading comments. Running M
+    # strategies concurrently on top of that means up to M*nthreads()
+    # tasks contending for the same physical cores; Julia's scheduler
+    # will interleave them rather than deadlock, but wall-clock gains
+    # depend entirely on how many cores are idle beyond what a single
+    # strategy already saturates -- on a fully-loaded machine this can
+    # show little improvement, or even regress slightly from
+    # scheduling overhead, versus the old sequential order. It is
+    # still very unlikely to be SLOWER than strictly sequential
+    # (each task still only runs when a core is free), just not
+    # guaranteed to scale linearly with the number of blocks below.
     #
-    # Uses SMALL Ns only -- this needs the exact O(N*B) DFT (computed
-    # twice per N), same restriction as full_spectrum_diagnostic, and
-    # does NOT scale to this file's usual 10^7-point sweep. Read the
-    # printed note about normalized_ratio before drawing any
-    # conclusion from a re-run: a lower raw M8_after/M8_before ratio
-    # is expected from shrinking B alone and is not by itself evidence
-    # the pruning rule is doing anything beyond that.
-    #
-    # Two runs, mirroring phi_diagnostic.jl's own real-vs-diagnostic
-    # split: the REAL constraint (target_q_exponent=0.2) first, then a
-    # diagnostic-only higher exponent to get q (and hence B_before)
-    # large enough for the prune fraction to be statistically legible.
-    # RUN 1 at the default 0.2 exponent gave q=5,7 at these Ns --
-    # confirmed directly (see chat) to round prune_frac=0.05 down to
-    # ZERO elements pruned before peak_pruned_subset's round-to-zero
-    # fix above; even post-fix, pruning 1 of 6-8 elements is too small
-    # a sample for the result to mean much on its own (normalized_ratio
-    # 1.38, 1.16 at q=5,7 -- consistent in sign with, but noisier than,
-    # RUN 2's larger-q points). RUN 2 raises target_q_exponent to 0.4
-    # (same diagnostic-only value phi_diagnostic.jl uses for its own
-    # statistical-power reasons) so q, and hence |D|, is large enough
-    # that prune_frac=0.05 removes a real handful of elements rather
-    # than the floor -- this is the pair of runs (q=251,331,
-    # normalized_ratio 1.06, 1.07) that actually settles the sign and
-    # the converging-toward-1 trend described above.
-    try
-        println("--- Run 1: real constraint, target_q_exponent=0.2 (expect tiny q -- see comment above) ---")
-        run_singer_peak_pruned_comparison(; target_q_exponent = 0.2)
-    catch e
-        @error "run_singer_peak_pruned_comparison() [0.2] failed" exception=(e, catch_backtrace())
-    end
-    try
-        println("\n--- Run 2: diagnostic-only higher exponent, target_q_exponent=0.4 (larger q, statistically legible prune count) ---")
-        run_singer_peak_pruned_comparison(; Ns = [1_000_003, 2_000_003], target_q_exponent = 0.4)
-    catch e
-        @error "run_singer_peak_pruned_comparison() [0.4] failed" exception=(e, catch_backtrace())
+    # WHY try/catch STAYS PER-TASK: same reasoning as the original
+    # sequential version -- one strategy failing (e.g. a Sidon
+    # construction exhausting its candidate pool) must not prevent the
+    # others from completing and reporting.
+    tasks = Task[]
+
+    push!(tasks, Threads.@spawn begin
+        rd, wr = redirect_stdout()
+        redirect_stdout(wr) do
+            try
+                compare_strategies()   # greedy vs greedy_low_energy, same (N,B) per row
+            catch e
+                @error "compare_strategies() failed -- see error below; continuing to Singer" exception=(e, catch_backtrace())
+            end
+        end
+        close(wr)
+        String(read(rd))
+    end)
+
+    push!(tasks, Threads.@spawn begin
+        rd, wr = redirect_stdout()
+        redirect_stdout(wr) do
+            println("\n=== Singer difference set (own N/B columns -- see docstring caveat) ===")
+            try
+                run_singer_comparison()
+            catch e
+                @error "run_singer_comparison() failed" exception=(e, catch_backtrace())
+            end
+        end
+        close(wr)
+        String(read(rd))
+    end)
+
+    push!(tasks, Threads.@spawn begin
+        rd, wr = redirect_stdout()
+        redirect_stdout(wr) do
+            try
+                run_singer_embedded_exponent_sweep()
+            catch e
+                @error "run_singer_embedded_exponent_sweep() failed" exception=(e, catch_backtrace())
+            end
+        end
+        close(wr)
+        String(read(rd))
+    end)
+
+    push!(tasks, Threads.@spawn begin
+        rd, wr = redirect_stdout()
+        redirect_stdout(wr) do
+            try
+                run_singer_paired_comparison()
+            catch e
+                @error "run_singer_paired_comparison() failed" exception=(e, catch_backtrace())
+            end
+        end
+        close(wr)
+        String(read(rd))
+    end)
+
+    push!(tasks, Threads.@spawn begin
+        rd, wr = redirect_stdout()
+        redirect_stdout(wr) do
+            try
+                run_singer_quad_filtered_comparison()
+            catch e
+                @error "run_singer_quad_filtered_comparison() failed" exception=(e, catch_backtrace())
+            end
+        end
+        close(wr)
+        String(read(rd))
+    end)
+
+    push!(tasks, Threads.@spawn begin
+        rd, wr = redirect_stdout()
+        redirect_stdout(wr) do
+            try
+                run_singer_quad_filtered_exponent_sweep()
+            catch e
+                @error "run_singer_quad_filtered_exponent_sweep() failed" exception=(e, catch_backtrace())
+            end
+        end
+        close(wr)
+        String(read(rd))
+    end)
+
+    # run_projected_greedy_comparison() stays disabled (per chat,
+    # slow + null result) -- not spawned here either.
+
+    push!(tasks, Threads.@spawn begin
+        rd, wr = redirect_stdout()
+        redirect_stdout(wr) do
+            try
+                println("--- Run 1: real constraint, target_q_exponent=0.2 (expect tiny q -- see comment above) ---")
+                run_singer_peak_pruned_comparison(; target_q_exponent = 0.2)
+            catch e
+                @error "run_singer_peak_pruned_comparison() [0.2] failed" exception=(e, catch_backtrace())
+            end
+            try
+                println("\n--- Run 2: diagnostic-only higher exponent, target_q_exponent=0.4 (larger q, statistically legible prune count) ---")
+                run_singer_peak_pruned_comparison(; Ns = [1_000_003, 2_000_003], target_q_exponent = 0.4)
+            catch e
+                @error "run_singer_peak_pruned_comparison() [0.4] failed" exception=(e, catch_backtrace())
+            end
+            try
+                println("\n--- Run 3: top_frac=0.01 vs top_frac=1.0 (full spectrum) head-to-head, same D ---")
+                run_singer_peak_pruned_topfrac_comparison(; Ns = [1_000_003, 2_000_003], target_q_exponent = 0.4)
+            catch e
+                @error "run_singer_peak_pruned_topfrac_comparison() failed" exception=(e, catch_backtrace())
+            end
+        end
+        close(wr)
+        String(read(rd))
+    end)
+
+    # Collect and print each task's buffered output IN SUBMISSION
+    # ORDER (not completion order) once ALL tasks are done -- fetch()
+    # on a Task blocks until that task finishes and returns its value,
+    # so this loop both waits for everything and preserves a stable,
+    # rerun-to-rerun-comparable ordering that matches the original
+    # sequential script, rather than whatever order tasks happened to
+    # finish in (which varies run to run and would make diffing two
+    # runs' output harder).
+    for t in tasks
+        print(fetch(t))
     end
 end
