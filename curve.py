@@ -550,37 +550,88 @@ def random_divisor(curve: Curve, rng: random.Random) -> Div2:
     return mumford_from_pts(P, Q, curve)
 
 
+def _order_of_divisor(D: Div2, jac_order: int, curve: Curve) -> int:
+    """Exact order of D, given that ord(D) divides jac_order. Starts from
+    jac_order and repeatedly strips prime factors that still kill D --
+    standard order-from-group-order-and-factorization technique. D must
+    not be the identity (raises ValueError if it is, since order-of-identity
+    is a degenerate/ambiguous case callers should filter out first)."""
+    if jac_is_identity(D):
+        raise ValueError("_order_of_divisor: D is the identity")
+    order = jac_order
+    for prime, mult in factorint(order).items():
+        for _ in range(mult):
+            if order % prime == 0 and jac_is_identity(jac_mul(D, order // prime, curve)):
+                order //= prime
+            else:
+                break
+    return order
+
+
 def find_subgroup_generator(curve: Curve, rng: random.Random, jac_order: Optional[int] = None,
                              use_bsgs_order: bool = True):
     """Find a generator `a` of the largest-prime-order subgroup of the
     Jacobian, along with that prime order `ell` and cofactor `h`.
     Ported from find_ell_generator. If jac_order is provided (e.g. from
     jacobian_order_frobenius), uses the exact-cofactor fast path;
-    otherwise derives order per-candidate via BSGS."""
+    otherwise derives order per-candidate via BSGS.
+
+    NOTE: the target ell/h come from #Jac itself (the largest prime factor
+    of jac_order), not from whichever random D we happen to draw -- a
+    random D's own order is in general a proper divisor of jac_order, so
+    we must compute D's true order before deciding how to scale it, or
+    the ell-order subgroup element is never actually reached (this was a
+    prior bug: assuming ord(D) == jac_order caused an infinite loop, since
+    jac_mul(D, jac_order/ell) is not order-ell unless D happens to be a
+    full generator)."""
+    if jac_order is not None:
+        target_factors = factorint(jac_order)
+        target_ell = max(target_factors.keys())
+        if target_ell <= 3:
+            raise ValueError(
+                f"jac_order={jac_order} has no prime factor > 3 (largest is "
+                f"{target_ell}); no usable cryptographic subgroup exists for this curve"
+            )
+        target_h = jac_order // target_ell
+
+    attempts = 0
+    max_attempts = 10000
     while True:
+        attempts += 1
+        if attempts > max_attempts:
+            raise RuntimeError(
+                f"find_subgroup_generator: no generator found after {max_attempts} "
+                "random divisors"
+            )
+
         D = random_divisor(curve, rng)
         if jac_is_identity(D):
             continue
 
         if jac_order is not None:
-            ord_D = jac_order  # order of D divides jac_order; we factor below
+            # D's own order divides jac_order but usually isn't jac_order itself.
+            ord_D = _order_of_divisor(D, jac_order, curve)
+            if ord_D % target_ell != 0:
+                # D isn't in the order-ell subgroup at all; try another D.
+                continue
+            ell, h = target_ell, target_h
+            # Scale D down to the order-ell subgroup: D has order ord_D with
+            # target_ell | ord_D, so (ord_D/target_ell)*D has order target_ell.
+            a = jac_mul(D, ord_D // target_ell, curve)
         elif use_bsgs_order:
             ord_D = jacobian_order_bsgs(D, curve)
+            if ord_D <= 1:
+                continue
+            ell = max(factorint(ord_D).keys())
+            if ell <= 3:
+                continue
+            h = ord_D // ell
+            if h == 0:
+                continue
+            a = jac_mul(D, h, curve)
         else:
             raise ValueError("Must supply jac_order or use_bsgs_order=True")
 
-        if ord_D <= 1:
-            continue
-
-        # largest prime factor of ord_D
-        ell = max(factorint(ord_D).keys())
-        if ell <= 3:
-            continue
-        h = ord_D // ell
-        if h == 0:
-            continue
-
-        a = jac_mul(D, h, curve)
         if jac_is_identity(a):
             continue
         if jac_is_identity(jac_mul(a, ell, curve)):
