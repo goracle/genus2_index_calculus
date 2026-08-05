@@ -215,6 +215,114 @@ function cross_energy_matrix(sets::Vector{NamedTuple}, N::Int; top_frac::Float64
 end
 
 """
+    shift_test(set_i, set_j, N::Int; ts::Vector{Int})
+
+Tests a CONTROLLABLE alternative to hoping an independent random draw
+happens to anti-align: translate set_i's exponent set D by t (mod
+Nq_i) BEFORE embedding into Z/N, for each t in `ts`, and recompute its
+restricted alignment against set_j on their shared residue grid (same
+grid-restriction idea as residue_overlap_report -- only meaningful
+when set_i and set_j share Nq; asserted below).
+
+WHY THIS IS A REASONABLE KNOB: D + t (mod Nq) is still a valid Sidon
+set of the same size (translation preserves all pairwise differences,
+so sidon_defect is unchanged) and still embeds validly under the same
+N >= 2*(Nq-1) guard (translation mod Nq keeps every element in
+[0,Nq), same as the untranslated set). Shifting D by t rotates every
+character value by a k-dependent phase: for the shifted set D+t,
+S_hat_shifted(k) = sum_{x in D} exp(2pi*i*k*(x+t)/N)
+                 = exp(2pi*i*k*t/N) * S_hat_original(k)
+-- i.e. S_hat picks up a per-k phase rotation of exactly 2*pi*k*t/N.
+Because the residue-overlap diagnostic found the SAME 307 residues
+carrying anomalous mass regardless of the random generator/cubic (the
+grid itself is fixed by q, not the draw) and a strongly LOCKED phase
+on that shared grid (restricted_align stayed 0.60-0.78 across draws --
+not just co-located, phase-correlated), the free k-dependent rotation
+from a shift is a much more direct lever on that phase than hoping a
+fresh random (g, cubic) pair supplies an anti-aligned draw by chance --
+this makes the search for a sign flip a 1-parameter sweep over t
+instead of a search over the (unstructured, apparently not very free)
+space of independent constructions.
+
+NOTE: this shifts set_i's embedded set only; set_j and its spectrum
+are unchanged. Recomputes set_i's full spectrum fresh for each t (an
+O(N*B) DFT per t -- fine for small ts sweeps, but scale ts length with
+patience, same cost caveat as everywhere else in this file).
+"""
+function shift_test(set_i, set_j, N::Int; ts::Vector{Int})
+    @assert set_i.Nq == set_j.Nq "shift_test only meaningful for a shared Nq " *
+                                  "(got Nq_i=$(set_i.Nq), Nq_j=$(set_j.Nq)) -- " *
+                                  "see residue_overlap_report's docstring for why " *
+                                  "cross-Nq residues aren't comparable"
+    Nq = set_i.Nq
+
+    S_hat_j = compute_full_spectrum(set_j.D, N)
+    top_ks_j, _, _ = top_k_peaks(S_hat_j, N; top_frac = 0.01)
+    res_j = Set(mod(k, Nq) for k in top_ks_j)
+
+    println("\n--- Shift test: translating set i's D by t (mod Nq=$Nq) before embedding ---")
+    println("(looking for a t where restricted_align on the shared grid crosses zero --")
+    println(" a controllable alternative to hoping independent randomness anti-aligns)")
+    @printf("  %6s  %14s  %10s\n", "t", "restricted_align", "n_shared_ks")
+    results = NamedTuple[]
+    for t in ts
+        D_shifted = [mod(x + t, Nq) for x in set_i.D]
+        defect = sidon_defect(D_shifted, N)
+        if defect != 0
+            @warn "t=$t: shifted D has nonzero sidon_defect=$defect -- skipping (should not " *
+                  "happen for a pure translation; investigate if this fires)"
+            continue
+        end
+        S_hat_i_shifted = compute_full_spectrum(D_shifted, N)
+        top_ks_i, _, _ = top_k_peaks(S_hat_i_shifted, N; top_frac = 0.01)
+        res_i = Set(mod(k, Nq) for k in top_ks_i)
+        shared = intersect(res_i, res_j)
+
+        ks_i_shared = [k for k in top_ks_i if mod(k, Nq) in shared]
+        ks_j_shared = [k for k in top_ks_j if mod(k, Nq) in shared]
+        ks_shared = unique(vcat(ks_i_shared, ks_j_shared))
+
+        if isempty(ks_shared)
+            @printf("  %6d  %14s  %10d\n", t, "n/a (no shared ks)", 0)
+            continue
+        end
+
+        num = 0.0
+        denom_i = 0.0
+        denom_j = 0.0
+        @inbounds for k in ks_shared
+            si = S_hat_i_shifted[k+1]
+            sj = S_hat_j[k+1]
+            num += real(conj(si) * sj)
+            denom_i += abs2(si)
+            denom_j += abs2(sj)
+        end
+        denom = sqrt(denom_i * denom_j)
+        restricted_align = denom == 0.0 ? NaN : num / denom
+        @printf("  %6d  %+14.3f  %10d\n", t, restricted_align, length(ks_shared))
+        push!(results, (; t, restricted_align, n_shared = length(ks_shared)))
+    end
+
+    if !isempty(results)
+        best_neg = argmin(r -> r.restricted_align, results)
+        @printf("\n  Most anti-aligned t in this sweep: t=%d (restricted_align=%+.3f)\n",
+                best_neg.t, best_neg.restricted_align)
+        if best_neg.restricted_align < 0
+            println("  -> negative! at least one shift makes set_i's contribution CANCEL, not")
+            println("     reinforce, set_j's on their shared grid. Worth trying this t (and t's")
+            println("     near it) in the real union experiment.")
+        else
+            println("  -> still positive even at the best t in this sweep. Either the sweep is")
+            println("     too coarse (try more/denser ts) or the phase-lock isn't a simple linear")
+            println("     rotation in t at this resolution -- widen the search before concluding")
+            println("     no shift helps.")
+        end
+    end
+
+    return results
+end
+
+"""
     residue_overlap_report(sets, top_ks_per_set, residues_per_set, S_hats, N)
 
 Separates two hypotheses that both produce "high cross-alignment" but
@@ -517,12 +625,22 @@ if abspath(PROGRAM_FILE) == @__FILE__
     println("###         from norm_trace_pullback.jl; tests whether that resonance persists ###")
     println("###         across independent constructions of the SAME q, and whether other ###")
     println("###         draws of the same q help or hurt each other. ###\n")
-    run_cross_alignment_check(; N = N, qs = fill(17, 5), base_seed = 1)
+    result_a = run_cross_alignment_check(; N = N, qs = fill(17, 5), base_seed = 1)
 
     println("\n\n### Run B: varied q including q=17 and q=331 (norm_trace_pullback.jl's ###")
     println("###         non-clustering NEGATIVE CONTROL) -- tests whether a genuinely ###")
     println("###         resonant set (q=17) is helped or hurt by non-resonant neighbors. ###\n")
     run_cross_alignment_check(; N = N, qs = [17, 17, 331, 331, 17], base_seed = 100)
+
+    println("\n\n### Run C: shift test -- can translating one q=17 set's D (mod Nq) find a ###")
+    println("###         t where it CANCELS rather than reinforces another q=17 set on ###")
+    println("###         their shared residue grid? Uses set 1 and set 2 from Run A ###")
+    println("###         (Jaccard=1.000, restricted_align=+0.660 there -- see above). ###")
+    println("###         Sweeps t densely over a slice of [0, Nq); Nq=307 is small enough ###")
+    println("###         to eventually cover the full range cheaply if this coarse pass ###")
+    println("###         doesn't find a sign flip. ###\n")
+    set1, set2 = result_a.sets[1], result_a.sets[2]
+    shift_test(set1, set2, N; ts = collect(0:10:300))
 
     println("\n(Rerun with more sets / different base_seed / larger top_frac before treating a")
     println("single run's verdict as conclusive -- this is a first pass, same caveat as")
