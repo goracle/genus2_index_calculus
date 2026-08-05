@@ -2772,64 +2772,122 @@ end
 # since there is only one frequency and every element's contribution
 # to it has identical magnitude by construction).
 #
-# THE SPLIT: partition D into F_aligned (elements whose phase at k* is
-# within +/-90 degrees of S_hat(k*)'s own phase, i.e.
-# Re[conj(S_hat(k*)) * exp(2*pi*i*k*x/N)] > 0 -- these are the
-# elements PUSHING S_hat(k*) further in the direction it already
-# points, so removing them should shrink |S_hat(k*)|) and F_opposed
-# (the rest). "Set exclusion to get the remainder", per the user's
-# phrasing, is D minus F_aligned = F_opposed -- this is the candidate
-# pruned set to measure, on the same logic as peak_pruned_subset:
-# excluding the elements identified as responsible for the peak.
+# THE SPLIT: rank D by phase alignment at k* -- alignment(x) =
+# Re[conj(S_hat(k*)) * exp(2*pi*i*k*x/N)], which is large and positive
+# for elements PUSHING S_hat(k*) further in the direction it already
+# points -- and remove the top prune_frac fraction BY THIS RANKING
+# (default 0.05, same convention as Strategy 8's peak_pruned_subset).
+# F_aligned is the pruned elements, F_opposed = D minus F_aligned is
+# the candidate pruned/remainder set to measure.
 #
-# THIS IS STILL A LINEARIZATION IN THE SAME SENSE AS peak_score: the
-# 90-degree split is a first-order/sign-only criterion (does this
-# element point roughly toward or away from where S_hat(k*) already
-# is), not an exact optimal bipartition -- removing every aligned
-# element simultaneously changes S_hat(k*) a lot (this is typically a
-# LARGE-fraction split, roughly half of D, unlike peak_pruned_subset's
-# small prune_frac=0.05), so first-order reasoning about "which
-# individual elements help" is on much weaker footing here than for a
-# small perturbation. This is exactly why the same measurement
-# discipline applies: report the EXACT M8 of F_opposed via a fresh
-# compute_full_spectrum, do not assume the split achieves what its
-# construction suggests.
+# BUG FIX (originally: unbounded +/-90-degree SIGN split, not a
+# ranked/bounded prune): the first version put every x with
+# alignment(x) > 0 into F_aligned and removed ALL of them. That
+# criterion has no size control -- for a genuinely resonant D (phases
+# at k* actually clustered, which is WHY k* is the loudest peak in the
+# first place, not incidental), essentially every element has positive
+# alignment, since that clustering IS the mechanism making the sum
+# large instead of O(sqrt(B)). Confirmed directly with a synthetic
+# clustered-phase D: 300/300 elements landed in F_aligned, leaving
+# F_opposed EMPTY -- vs. a roughly even 162/138 split for phase-random
+# D at the same B. An empty F_opposed then poisons every downstream
+# consumer expecting B_after > 0 (M8 over an empty set,
+# normalized_ratio dividing by B_after^8 = 0) -- this was the
+# "over-prunes and deletes everything" bug. Ranking by alignment and
+# removing a fixed prune_frac (with the same floor-at-1 protection as
+# peak_pruned_subset, plus an explicit cap at |D|-1 so F_opposed can
+# never be emptied) fixes this: |F_opposed| is now deterministic and
+# bounded away from 0 for any prune_frac in (0,1), regardless of how
+# tight the phase clustering is.
+#
+# THIS IS STILL A LINEARIZATION IN THE SAME SENSE AS peak_score:
+# alignment(x) is a first-order criterion (does this element point
+# roughly toward where S_hat(k*) already is, and by how much), not an
+# exact optimal bipartition -- removing the top-ranked elements still
+# changes S_hat(k*) by more than a first-order approximation strictly
+# guarantees for a non-tiny prune_frac. This is exactly why the same
+# measurement discipline applies: report the EXACT M8 of F_opposed via
+# a fresh compute_full_spectrum, do not assume the split achieves what
+# its construction suggests.
 #
 # COST: one extra full_spectrum computation for F_opposed, same cost
-# class as every other before/after comparison in this file. No
-# additional K_peak/top_frac parameter -- k* is just the single
-# argmax, always well-defined for nonempty D.
+# class as every other before/after comparison in this file. Only
+# extra parameter is prune_frac (default 0.05, matching Strategy 8) --
+# k* is still just the single argmax, always well-defined for nonempty
+# D.
 """
-    phase_split_by_peak_freq(D::Vector{Int}, N::Int)
+    phase_split_by_peak_freq(D::Vector{Int}, N::Int; prune_frac::Float64 = 0.05)
         -> (F_opposed::Vector{Int}, F_aligned::Vector{Int}, k_star::Int, S_hat::Vector{ComplexF64})
 
 Computes the exact spectrum of D, finds k_star = argmax_k |S_hat(k)|^8
 over the N-1 non-trivial frequencies (the single loudest frequency,
-not a top-frac slice), and partitions D by the sign of
-Re[conj(S_hat(k_star)) * exp(2*pi*i*k_star*x/N)] for each x in D:
+not a top-frac slice), ranks every x in D by its alignment score
+Re[conj(S_hat(k_star)) * exp(2*pi*i*k_star*x/N)], and removes the
+`prune_frac` fraction with the HIGHEST alignment (most responsible for
+reinforcing S_hat(k_star)):
 
-  - F_aligned: elements with positive real part -- phase-aligned with
-    S_hat(k_star), i.e. contributing to (reinforcing) the peak
+  - F_aligned: the pruned elements (top prune_frac by alignment score)
   - F_opposed: everything else (D minus F_aligned) -- the candidate
-    pruned/remainder set
+    pruned/remainder set, and what gets measured downstream
 
-Returns F_opposed, F_aligned (so a caller can inspect the split
-sizes -- there is no guarantee of an even split, it depends on D's
-actual phase distribution at k_star), k_star itself, and the full
-S_hat (so a caller measuring M8_after does not need to recompute the
-BEFORE spectrum from scratch).
+BUG FIX (was: unbounded sign split, no size control): the original
+version put EVERY x with alignment > 0 into F_aligned and removed all
+of them, on the theory that "positive alignment" cleanly separates
+peak-reinforcing from peak-opposing elements. That criterion has no
+floor or ceiling on how much of D it removes -- for a set whose
+elements are genuinely NOT phase-random at k_star (i.e. exactly the
+interesting/resonant case that made k_star the loudest peak in the
+first place -- see norm_trace_pullback.jl's q=17 clustering finding),
+essentially every element's phase sits within 90 degrees of the sum's
+own direction, since that clustering is WHY the sum is large rather
+than O(sqrt(B)). Confirmed directly: a synthetic D with phases at
+k_star clustered around a common direction puts 100% of elements in
+F_aligned and leaves F_opposed EMPTY (checked with 300/300 landing in
+F_aligned in a Gaussian-clustered-phase simulation, vs. a roughly even
+162/138 split for phase-uniform D at the same B). An empty F_opposed
+then breaks every downstream consumer that assumes B_after > 0
+(M8_after computed over an empty set, normalized_ratio dividing by
+B_after^8 = 0) -- this is the over-pruning ("deletes everything") bug.
+
+FIX: use alignment as a RANKING, not a sign test, and remove exactly
+the top prune_frac fraction (same convention and same floor-at-1
+behavior as peak_pruned_subset's prune_frac, including a warning when
+prune_frac*|D| rounds down to 0). This guarantees 1 <= |F_aligned| <
+|D| for any prune_frac in (0, 1) and nonempty D, regardless of how
+tightly D's phases happen to cluster at k_star -- unlike the sign
+split, which had no such guarantee and degenerated exactly in the
+resonant case this strategy exists to study.
+
+Returns F_opposed, F_aligned (sized deterministically by prune_frac,
+not by D's phase distribution), k_star itself, and the full S_hat (so
+a caller measuring M8_after does not need to recompute the BEFORE
+spectrum from scratch).
 """
-function phase_split_by_peak_freq(D::Vector{Int}, N::Int)
+function phase_split_by_peak_freq(D::Vector{Int}, N::Int; prune_frac::Float64 = 0.05)
+    @assert 0.0 < prune_frac < 1.0 "prune_frac must be in (0,1), got $prune_frac"
     S_hat = compute_full_spectrum(D, N)
     mags8 = [abs(S_hat[k+1])^8 for k in 1:(N-1)]
     k_star = argmax(mags8)  # 1-indexed into 1:(N-1), which IS the frequency value k itself
 
     Sk_star = S_hat[k_star+1]
+    alignments = [real(conj(Sk_star) * cis(2pi * k_star * x / N)) for x in D]
+
+    n_prune = round(Int, prune_frac * length(D))
+    if n_prune == 0 && !isempty(D)
+        @warn "phase_split_by_peak_freq: prune_frac=$prune_frac on |D|=$(length(D)) rounds " *
+              "down to 0 elements pruned -- flooring to 1 instead of silently no-oping " *
+              "(same fix as peak_pruned_subset's identical bug)"
+        n_prune = 1
+    end
+    n_prune = min(n_prune, length(D) - 1)  # never prune everything -- F_opposed must stay nonempty
+
+    order = sortperm(alignments; rev = true)   # highest alignment first
+    aligned_idx = Set(order[1:n_prune])
+
     F_aligned = Int[]
     F_opposed = Int[]
-    for x in D
-        alignment = real(conj(Sk_star) * cis(2pi * k_star * x / N))
-        if alignment > 0
+    for (i, x) in enumerate(D)
+        if i in aligned_idx
             push!(F_aligned, x)
         else
             push!(F_opposed, x)
@@ -3000,30 +3058,30 @@ end
 # ---------------------------------------------------------------
 
 """
-    run_singer_phase_split_comparison(; Ns, target_q_exponent=0.2, seed=1)
+    run_singer_phase_split_comparison(; Ns, target_q_exponent=0.2, prune_frac=0.05, seed=1)
 
 For each N in `Ns`: builds the native Singer set D (same construction
 as run_singer_peak_pruned_comparison, same embedding-validity guard),
-calls phase_split_by_peak_freq(D, N) to get F_opposed (the candidate
-pruned set: D minus the elements phase-aligned with D's single
-loudest frequency k*) and F_aligned, then measures the EXACT M8 of
-both D and F_opposed via fresh compute_full_spectrum calls (F_aligned
-is not separately re-measured -- it is the complement, reported for
-its size only, same as peak_pruned_subset's treatment of the pruned
-elements).
+calls phase_split_by_peak_freq(D, N; prune_frac) to get F_opposed (the
+candidate pruned set: D minus the top prune_frac fraction of elements
+by phase-alignment with D's single loudest frequency k*) and
+F_aligned, then measures the EXACT M8 of both D and F_opposed via
+fresh compute_full_spectrum calls (F_aligned is not separately
+re-measured -- it is the complement, reported for its size only, same
+as peak_pruned_subset's treatment of the pruned elements).
 
-UNLIKE run_singer_peak_pruned_comparison, there is no top_frac or
-prune_frac parameter: k* is always the single argmax frequency, and
-the aligned/opposed split sizes are whatever D's actual phase
-distribution at k* produces (not a fixed fraction) -- reported
-directly as B_after and n_aligned so the actual split ratio is
-visible, since (unlike a fixed prune_frac=0.05) there is no guarantee
-this is anywhere near 5%/95% -- a genuinely peaky D could plausibly
-split close to 50/50, which is a MUCH larger structural change than
-Strategy 8's small prune fraction; see phase_split_by_peak_freq's
-docstring on why first-order reasoning is weaker justification for a
-large-fraction split than a small one, which is exactly why this
-result must be measured exactly, not assumed.
+BUG FIX / BEHAVIOR CHANGE: this used to have no top_frac or prune_frac
+parameter -- F_aligned was defined as EVERY x with positive alignment,
+an unbounded sign split rather than a ranked, sized prune. That
+degenerated to F_opposed = [] (pruning 100% of D) whenever D's phases
+at k* were genuinely clustered -- exactly the resonant case this
+strategy is meant to study; see phase_split_by_peak_freq's docstring
+for the confirmed 300/300 all-aligned example. It now takes
+prune_frac (default 0.05, matching Strategy 8's convention) and always
+removes exactly that fraction (floored at 1 element, capped at |D|-1
+so F_opposed can never be emptied), regardless of how tight the
+clustering is -- reported directly as B_after and n_aligned so the
+actual counts are visible.
 
 Returns a Vector{NamedTuple} of per-N results (N, q, Nq, k_star,
 B_before, B_after, n_aligned, M8_before, M8_after, ratio,
@@ -3034,6 +3092,7 @@ as every other strategy in this file).
 """
 function run_singer_phase_split_comparison(; Ns::Vector{Int} = [10_007, 100_003, 1_000_003, 10_000_019],
                                                target_q_exponent::Float64 = 0.2,
+                                               prune_frac::Float64 = 0.05,
                                                seed::Int = 1)
     results = NamedTuple[]
 
@@ -3064,7 +3123,7 @@ function run_singer_phase_split_comparison(; Ns::Vector{Int} = [10_007, 100_003,
         mags8_before = [abs(S_hat_before[k+1])^8 for k in 1:(N-1)]
         M8_before = sum(mags8_before)
 
-        F_opposed, F_aligned, k_star, _ = phase_split_by_peak_freq(D, N)
+        F_opposed, F_aligned, k_star, _ = phase_split_by_peak_freq(D, N; prune_frac = prune_frac)
         B_after = length(F_opposed)
         n_aligned = length(F_aligned)
         @assert B_after + n_aligned == B_before "internal mismatch: phase split did not " *
@@ -3456,114 +3515,140 @@ if abspath(PROGRAM_FILE) == @__FILE__
     # sequential version -- one strategy failing (e.g. a Sidon
     # construction exhausting its candidate pool) must not prevent the
     # others from completing and reporting.
+    #
+    # BUG FIX (crash): redirect_stdout()/redirect_stdout(f, wr) mutate
+    # the single GLOBAL Base.stdout binding -- it is not thread-local
+    # or task-local. The original code had every one of the 7 tasks
+    # below call redirect_stdout() concurrently via Threads.@spawn,
+    # each assuming it owned "the" stdout pipe for the duration of its
+    # block. In reality all 7 were racing to swap the same global
+    # binding: task B's redirect_stdout() call could silently replace
+    # task A's redirect before A's close(wr)/read(rd), so A ended up
+    # reading from (or writing into, then closing) a pipe it no longer
+    # owned. Depending on interleaving this surfaces as reading a
+    # closed/empty pipe, writing after close (IOError: stream is
+    # closed), or a stuck read() that never sees EOF because the wrong
+    # task closed the wrong writer -- all nondeterministic, which
+    # matches "crashes" rather than "reliably crashes the same way".
+    #
+    # FIX: take out a lock around the ENTIRE
+    # redirect/run/close/read sequence for each task, so only one task
+    # ever holds "ownership" of the global stdout swap at a time. This
+    # keeps the per-task IOBuffer-capture behavior and submission-order
+    # printing the surrounding comments describe, while making the
+    # swap itself safe. It serializes the redirect bookkeeping (cheap)
+    # NOTE ON WHAT THIS COSTS: unlike a first attempt at this fix (lock
+    # only around the redirect-in/redirect-out calls, released while
+    # f() itself runs), THIS IS STILL NOT SAFE if the lock is released
+    # between "point stdout at my pipe" and "read my pipe back" --
+    # another task could grab the lock in that window, redirect stdout
+    # to ITS OWN pipe, run its whole block, and redirect back, all
+    # while task A's f() is still executing and still writing into
+    # what is now the WRONG global stdout. So the lock below is held
+    # for the ENTIRE redirect_stdout(wr) do f() end call, not just the
+    # swap-in/swap-out bookkeeping. This DOES serialize the actual
+    # strategy computation across these 7 tasks (only one runs at a
+    # time from stdout's perspective) -- there is no way to keep
+    # println/@printf-based output capture safe under concurrency
+    # without serializing around the shared global stream; the
+    # alternative (rewriting every strategy function to build a string
+    # instead of printing) is a much larger change than this bug fix
+    # warrants. Each strategy still gets its own thread from Julia's
+    # scheduler and any INTERNAL Threads.@spawn parallelism (character
+    # sampling, field-arithmetic power tables) is unaffected, since
+    # those don't touch stdout -- only the top-level "run one strategy
+    # end-to-end" serialization changes here, trading some of the
+    # wall-clock overlap the original code intended for actually not
+    # crashing.
     tasks = Task[]
+    stdout_swap_lock = ReentrantLock()
 
-    push!(tasks, Threads.@spawn begin
-        rd, wr = redirect_stdout()
-        redirect_stdout(wr) do
+    "Run `f` with stdout captured into a private IOBuffer, safely w.r.t. other concurrent callers of this function (see BUG FIX note above -- the whole call is serialized, not just the redirect bookkeeping)."
+    function run_captured(f::Function)
+        return lock(stdout_swap_lock) do
+            rd, wr = redirect_stdout()
             try
-                compare_strategies()   # greedy vs greedy_low_energy, same (N,B) per row
-            catch e
-                @error "compare_strategies() failed -- see error below; continuing to Singer" exception=(e, catch_backtrace())
+                redirect_stdout(wr) do
+                    f()
+                end
+            finally
+                close(wr)
             end
+            String(read(rd))
         end
-        close(wr)
-        String(read(rd))
+    end
+
+    push!(tasks, Threads.@spawn run_captured() do
+        try
+            compare_strategies()   # greedy vs greedy_low_energy, same (N,B) per row
+        catch e
+            @error "compare_strategies() failed -- see error below; continuing to Singer" exception=(e, catch_backtrace())
+        end
     end)
 
-    push!(tasks, Threads.@spawn begin
-        rd, wr = redirect_stdout()
-        redirect_stdout(wr) do
-            println("\n=== Singer difference set (own N/B columns -- see docstring caveat) ===")
-            try
-                run_singer_comparison()
-            catch e
-                @error "run_singer_comparison() failed" exception=(e, catch_backtrace())
-            end
+    push!(tasks, Threads.@spawn run_captured() do
+        println("\n=== Singer difference set (own N/B columns -- see docstring caveat) ===")
+        try
+            run_singer_comparison()
+        catch e
+            @error "run_singer_comparison() failed" exception=(e, catch_backtrace())
         end
-        close(wr)
-        String(read(rd))
     end)
 
-    push!(tasks, Threads.@spawn begin
-        rd, wr = redirect_stdout()
-        redirect_stdout(wr) do
-            try
-                run_singer_embedded_exponent_sweep()
-            catch e
-                @error "run_singer_embedded_exponent_sweep() failed" exception=(e, catch_backtrace())
-            end
+    push!(tasks, Threads.@spawn run_captured() do
+        try
+            run_singer_embedded_exponent_sweep()
+        catch e
+            @error "run_singer_embedded_exponent_sweep() failed" exception=(e, catch_backtrace())
         end
-        close(wr)
-        String(read(rd))
     end)
 
-    push!(tasks, Threads.@spawn begin
-        rd, wr = redirect_stdout()
-        redirect_stdout(wr) do
-            try
-                run_singer_paired_comparison()
-            catch e
-                @error "run_singer_paired_comparison() failed" exception=(e, catch_backtrace())
-            end
+    push!(tasks, Threads.@spawn run_captured() do
+        try
+            run_singer_paired_comparison()
+        catch e
+            @error "run_singer_paired_comparison() failed" exception=(e, catch_backtrace())
         end
-        close(wr)
-        String(read(rd))
     end)
 
-    push!(tasks, Threads.@spawn begin
-        rd, wr = redirect_stdout()
-        redirect_stdout(wr) do
-            try
-                run_singer_quad_filtered_comparison()
-            catch e
-                @error "run_singer_quad_filtered_comparison() failed" exception=(e, catch_backtrace())
-            end
+    push!(tasks, Threads.@spawn run_captured() do
+        try
+            run_singer_quad_filtered_comparison()
+        catch e
+            @error "run_singer_quad_filtered_comparison() failed" exception=(e, catch_backtrace())
         end
-        close(wr)
-        String(read(rd))
     end)
 
-    push!(tasks, Threads.@spawn begin
-        rd, wr = redirect_stdout()
-        redirect_stdout(wr) do
-            try
-                run_singer_quad_filtered_exponent_sweep()
-            catch e
-                @error "run_singer_quad_filtered_exponent_sweep() failed" exception=(e, catch_backtrace())
-            end
+    push!(tasks, Threads.@spawn run_captured() do
+        try
+            run_singer_quad_filtered_exponent_sweep()
+        catch e
+            @error "run_singer_quad_filtered_exponent_sweep() failed" exception=(e, catch_backtrace())
         end
-        close(wr)
-        String(read(rd))
     end)
 
     # run_projected_greedy_comparison() stays disabled (per chat,
     # slow + null result) -- not spawned here either.
 
-    push!(tasks, Threads.@spawn begin
-        rd, wr = redirect_stdout()
-        redirect_stdout(wr) do
-            try
-                println("--- Run 1: real constraint, target_q_exponent=0.2 (expect tiny q -- see comment above) ---")
-                run_singer_peak_pruned_comparison(; target_q_exponent = 0.2)
-            catch e
-                @error "run_singer_peak_pruned_comparison() [0.2] failed" exception=(e, catch_backtrace())
-            end
-            try
-                println("\n--- Run 2: diagnostic-only higher exponent, target_q_exponent=0.4 (larger q, statistically legible prune count) ---")
-                run_singer_peak_pruned_comparison(; Ns = [1_000_003, 2_000_003], target_q_exponent = 0.4)
-            catch e
-                @error "run_singer_peak_pruned_comparison() [0.4] failed" exception=(e, catch_backtrace())
-            end
-            try
-                println("\n--- Run 3: top_frac=0.01 vs top_frac=1.0 (full spectrum) head-to-head, same D ---")
-                run_singer_peak_pruned_topfrac_comparison(; Ns = [1_000_003, 2_000_003], target_q_exponent = 0.4)
-            catch e
-                @error "run_singer_peak_pruned_topfrac_comparison() failed" exception=(e, catch_backtrace())
-            end
+    push!(tasks, Threads.@spawn run_captured() do
+        try
+            println("--- Run 1: real constraint, target_q_exponent=0.2 (expect tiny q -- see comment above) ---")
+            run_singer_peak_pruned_comparison(; target_q_exponent = 0.2)
+        catch e
+            @error "run_singer_peak_pruned_comparison() [0.2] failed" exception=(e, catch_backtrace())
         end
-        close(wr)
-        String(read(rd))
+        try
+            println("\n--- Run 2: diagnostic-only higher exponent, target_q_exponent=0.4 (larger q, statistically legible prune count) ---")
+            run_singer_peak_pruned_comparison(; Ns = [1_000_003, 2_000_003], target_q_exponent = 0.4)
+        catch e
+            @error "run_singer_peak_pruned_comparison() [0.4] failed" exception=(e, catch_backtrace())
+        end
+        try
+            println("\n--- Run 3: top_frac=0.01 vs top_frac=1.0 (full spectrum) head-to-head, same D ---")
+            run_singer_peak_pruned_topfrac_comparison(; Ns = [1_000_003, 2_000_003], target_q_exponent = 0.4)
+        catch e
+            @error "run_singer_peak_pruned_topfrac_comparison() failed" exception=(e, catch_backtrace())
+        end
     end)
 
     # Collect and print each task's buffered output IN SUBMISSION
