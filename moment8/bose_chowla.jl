@@ -83,34 +83,25 @@ function gf_q2_irreducible_quadratic(q::Int, rng::AbstractRNG)
 end
 
 """
-    bose_chowla_subset_native(q::Int, rng::AbstractRNG) -> (A::Vector{Int}, Mq::Int)
+    bose_chowla_power_table(q::Int, rng::AbstractRNG) -> (powers, theta, Mq, q)
 
-Builds a genuine Bose-Chowla Sidon set A subset Z/Mq (Mq = q^2-1,
-|A| = q) for prime power q, by explicit F_{q^2} arithmetic.
+Shared setup for the whole Bose(q,theta,k) family at a fixed (q,theta):
+finds a random irreducible quadratic defining F_{q^2}, finds a
+generator theta of the FULL group F_{q^2}^* (order q^2-1, verified
+against ALL prime factors -- same discipline as singer_sidon_subset_
+native's GENERATOR NOTE fix), and builds the power table theta^0 ..
+theta^(Mq-1).
 
-F_{q^2} elements are represented as coefficient pairs (a0, a1) meaning
-a0 + a1*alpha, with alpha^2 = -(d1*alpha + d0) mod q for a random
-irreducible monic quadratic found above (mirrors singer_sidon_subset_
-native's cubic-coefficient-triple representation one degree down).
+This is the expensive O(Mq) = O(q^2) part. Factored out so a k-sweep
+at fixed (q,theta) -- varying only which k in F_q\\{0} defines the
+membership condition below -- does this work ONCE and reuses it across
+every k, instead of redoing an O(Mq) power table per k.
 
-`theta` is found as a generator of the FULL group F_{q^2}^* (order
-q^2-1), verified against ALL prime factors of q^2-1 -- same discipline
-as singer_sidon_subset_native's GENERATOR NOTE fix (that function
-documents a real bug from an earlier, insufficiently-verified
-generator search; this reuses the same all-prime-factors check from
-the start rather than risk repeating it).
-
-A(q,theta) = { a in 0:(Mq-1) : theta^a - theta has zero alpha-
-coefficient }, i.e. theta^a and theta agree in their alpha-coordinate
--- equivalently theta^a - theta lands in the scalar (F_q) subfield.
-Matches the definition in Bose's construction / the Bose-Chowla
-survey literature exactly (A(q,theta) := {a : theta^a - theta in F_q}).
-
-Cost: O(Mq) = O(q^2) field multiplications for the power table --
-comparable in spirit to Singer's O(Nq)=O(B^2) budget (there B=q+1;
-here |A|=q, Mq=q^2-1, so this is O(Mq) = O(|A|^2) too).
+Returns theta as (0,1)-basis coefficients (v0,v1) so callers have the
+actual field element used, not an assumed (0,1) -- see
+bose_chowla_subset_for_k's docstring for why that distinction matters.
 """
-function bose_chowla_subset_native(q::Int, rng::AbstractRNG)
+function bose_chowla_power_table(q::Int, rng::AbstractRNG)
     Mq = q^2 - 1
     d0, d1 = gf_q2_irreducible_quadratic(q, rng)
 
@@ -154,10 +145,6 @@ function bose_chowla_subset_native(q::Int, rng::AbstractRNG)
         end
     end
 
-    # theta itself, as a field element (0 + 1*alpha), needed for the
-    # "theta^a - theta in F_q" membership test below.
-    theta_elem = (0, 1)
-
     # Power table theta^0 .. theta^(Mq-1).
     powers = Vector{NTuple{2,Int}}(undef, Mq)
     powers[1] = (1, 0)
@@ -165,16 +152,67 @@ function bose_chowla_subset_native(q::Int, rng::AbstractRNG)
         powers[i] = mul(powers[i-1], theta)
     end
 
+    return (powers, theta, Mq, q)
+end
+
+"""
+    bose_chowla_subset_for_k(powers, theta, Mq, q, k::Int) -> A::Vector{Int}
+
+Extracts Bose(q,theta,k) = { a in 0:(Mq-1) : theta^a - k*theta in F_q }
+from a power table already built by bose_chowla_power_table. This is
+the cheap O(Mq) membership scan, reused across every k at fixed
+(q,theta) -- k only enters here.
+
+theta^a - k*theta = (p0 - k*theta[1]) + (p1 - k*theta[2])*alpha, where
+(p0,p1) = powers[a+1] and (theta[1],theta[2]) is theta's OWN (v0,v1)
+coefficient pair as actually found by bose_chowla_power_table (theta
+is a general random field element there, NOT hardcoded to (0,1)=alpha
+-- an earlier version of this file assumed theta_elem=(0,1)
+unconditionally, which is only correct when the found generator
+happens to literally equal alpha; using theta[2] here is the fix,
+verified against the k=1 case in Python before shipping). Membership
+in F_q means the alpha-coefficient is 0, i.e. p1 - k*theta[2] == 0.
+
+k=0 is excluded by convention (matches the literature's k in
+F_q\\{0}; k=0 would just test theta^a in F_q, a degenerate case with
+different size/structure, not part of this family).
+"""
+function bose_chowla_subset_for_k(powers::Vector{NTuple{2,Int}}, theta::NTuple{2,Int},
+                                    Mq::Int, q::Int, k::Int)
+    @assert mod(k, q) != 0 "k must be nonzero mod q (k in F_q \\ {0})"
+    theta_alpha_coeff = theta[2]
+    kk = mod(k, q)
+
     A = Int[]
     for a in 0:(Mq-1)
         p0, p1 = powers[a+1]
-        # theta^a - theta = (p0 - 0) + (p1 - 1)*alpha ; membership in
-        # F_q means the alpha-coefficient is 0, i.e. p1 == 1.
-        if mod(p1 - theta_elem[2], q) == 0
+        if mod(p1 - kk * theta_alpha_coeff, q) == 0
             push!(A, a)
         end
     end
+    return A
+end
 
+"""
+    bose_chowla_subset_native(q::Int, rng::AbstractRNG; k::Int = 1) -> (A::Vector{Int}, Mq::Int)
+
+Builds a genuine Bose-Chowla Sidon set A subset Z/Mq (Mq = q^2-1,
+|A| = q) for prime power q, by explicit F_{q^2} arithmetic --
+Bose(q,theta,k) = { a : theta^a - k*theta in F_q } for the requested k
+(k=1 by default, matching every call site elsewhere in this project
+before the k-sweep existed).
+
+Thin wrapper around bose_chowla_power_table + bose_chowla_subset_for_k
+for callers that just want a single (q,k) pair and don't care about
+reusing the power table across multiple k's -- kept so existing
+call sites (resonance_check_bc, same_q_restricted_align_bc) work
+unchanged. For an actual k-sweep at fixed (q,theta), call
+bose_chowla_power_table once and bose_chowla_subset_for_k per k
+instead, to avoid redoing the O(Mq) power table for every k.
+"""
+function bose_chowla_subset_native(q::Int, rng::AbstractRNG; k::Int = 1)
+    powers, theta, Mq, _ = bose_chowla_power_table(q, rng)
+    A = bose_chowla_subset_for_k(powers, theta, Mq, q, k)
     return (A, Mq)
 end
 
@@ -275,6 +313,178 @@ function same_q_restricted_align_bc(N::Int, q::Int; top_frac::Float64 = 0.01,
 end
 
 """
+    shared_grid_restricted_align(S_hat_a, S_hat_b, Mq::Int, N::Int; top_frac::Float64 = 0.01)
+        -> (; jaccard, restricted_align, n_shared)
+
+The shared-grid restricted_align core math, factored out of
+same_q_restricted_align_bc so it can be reused unchanged for the k-
+sweep case (two DIFFERENT k's at fixed q,theta) instead of duplicating
+it. Takes two already-computed spectra and the common Mq they should
+both be reduced mod -- everything downstream of "I have two spectra
+and a modulus" is identical whether the two sets being compared came
+from independent (q,theta) draws or from the same (q,theta) at two
+different k's.
+"""
+function shared_grid_restricted_align(S_hat_a::Vector{ComplexF64}, S_hat_b::Vector{ComplexF64},
+                                        Mq::Int, N::Int; top_frac::Float64 = 0.01)
+    top_ks_a, _, _ = top_k_peaks(S_hat_a, N; top_frac = top_frac)
+    top_ks_b, _, _ = top_k_peaks(S_hat_b, N; top_frac = top_frac)
+
+    res_a = Set(mod(k, Mq) for k in top_ks_a)
+    res_b = Set(mod(k, Mq) for k in top_ks_b)
+    shared = intersect(res_a, res_b)
+    union_sz = length(union(res_a, res_b))
+    jaccard = union_sz == 0 ? NaN : length(shared) / union_sz
+
+    ks_a_shared = [k for k in top_ks_a if mod(k, Mq) in shared]
+    ks_b_shared = [k for k in top_ks_b if mod(k, Mq) in shared]
+    ks_shared = unique(vcat(ks_a_shared, ks_b_shared))
+
+    if isempty(ks_shared)
+        return (; jaccard, restricted_align = NaN, n_shared = 0)
+    end
+
+    num = 0.0
+    denom_a = 0.0
+    denom_b = 0.0
+    @inbounds for k in ks_shared
+        sa = S_hat_a[k+1]
+        sb = S_hat_b[k+1]
+        num += real(conj(sa) * sb)
+        denom_a += abs2(sa)
+        denom_b += abs2(sb)
+    end
+    denom = sqrt(denom_a * denom_b)
+    restricted_align = denom == 0.0 ? NaN : num / denom
+
+    return (; jaccard, restricted_align, n_shared = length(ks_shared))
+end
+
+"""
+    k_sweep_pair_align(N::Int, q::Int, k_a::Int, k_b::Int; top_frac::Float64 = 0.01,
+                        seed::Int = 1)
+
+THE k-SWEEP TEST: holds (q, theta) FIXED (single power table, single
+seed) and compares Bose(q,theta,k_a) against Bose(q,theta,k_b) -- i.e.
+only k varies, not the whole algebraic setup. This isolates k's effect
+on the cross-alignment sign cleanly, unlike varying q (which changes
+Mq, the field, everything at once) or independently redrawing theta
+(which changes the generator too).
+
+Builds the power table ONCE via bose_chowla_power_table and extracts
+both k_a's and k_b's sets from it via bose_chowla_subset_for_k, per
+the efficient design in that function's docstring -- a k-sweep across
+many k's at fixed (q,theta) should call bose_chowla_power_table once
+and reuse it, not redo the O(Mq) table per k (see
+run_k_sweep below for the multi-k driver that does this properly).
+
+Reuses shared_grid_restricted_align for the actual alignment
+statistic, same as same_q_restricted_align_bc.
+"""
+function k_sweep_pair_align(N::Int, q::Int, k_a::Int, k_b::Int; top_frac::Float64 = 0.01,
+                              seed::Int = 1)
+    rng = MersenneTwister(seed)
+    powers, theta, Mq, _ = bose_chowla_power_table(q, rng)
+    @assert N >= 2 * (Mq - 1) "q=$q: Mq=$Mq too close to N=$N for a valid embedding"
+
+    A_a = bose_chowla_subset_for_k(powers, theta, Mq, q, k_a)
+    A_b = bose_chowla_subset_for_k(powers, theta, Mq, q, k_b)
+
+    defect_a = sidon_defect(A_a, N)
+    defect_b = sidon_defect(A_b, N)
+    if defect_a != 0 || defect_b != 0
+        @warn "q=$q k_a=$k_a k_b=$k_b: nonzero sidon_defect (a=$defect_a, b=$defect_b) -- result untrustworthy"
+    end
+
+    S_hat_a = compute_full_spectrum(A_a, N)
+    S_hat_b = compute_full_spectrum(A_b, N)
+
+    return shared_grid_restricted_align(S_hat_a, S_hat_b, Mq, N; top_frac = top_frac)
+end
+
+"""
+    run_k_sweep(; N::Int, q::Int, ks::Vector{Int} = collect(1:(q-1)),
+                  top_frac::Float64 = 0.01, seed::Int = 1, k_ref::Int = 1)
+
+Driver for the k-sweep: fixes (q, theta) via a SINGLE
+bose_chowla_power_table call (seeded by `seed`), then for every k in
+`ks` compares Bose(q,theta,k) against the reference Bose(q,theta,k_ref)
+(k_ref=1 by default, matching every prior call site's implicit
+convention). Reports restricted_align per k so the sign pattern across
+the whole k in F_q\\{0} sweep is visible at a glance -- the goal being
+to find ANY k whose set anti-aligns (negative restricted_align)
+against k_ref=1, unlike every q tried so far in run_bc_sign_survey.
+
+This is deliberately NOT same-q-independent-draws (that's what
+same_q_restricted_align_bc / run_bc_sign_survey already test, and
+found always-positive) -- it isolates k as the single free variable at
+fixed (q,theta), per the plan: q and independent redraws already
+failed to flip the sign, k is the next (and, per Bose's own
+construction, genuinely different-per-k) lever to try.
+
+Prints a full sign summary at the end, same style as
+run_bc_sign_survey, so a negative-sign k (if found) stands out clearly.
+"""
+function run_k_sweep(; N::Int, q::Int, ks::Vector{Int} = collect(1:(q-1)),
+                        top_frac::Float64 = 0.01, seed::Int = 1, k_ref::Int = 1)
+    println("=== Bose-Chowla k-sweep: N=$N, q=$q (Mq=$(q^2-1)), k_ref=$k_ref, ks=$ks, seed=$seed ===\n")
+    println("Fixed (q,theta) via a single power-table build; only k varies below.\n")
+
+    rng = MersenneTwister(seed)
+    powers, theta, Mq, _ = bose_chowla_power_table(q, rng)
+    @assert N >= 2 * (Mq - 1) "q=$q: Mq=$Mq too close to N=$N for a valid embedding"
+
+    A_ref = bose_chowla_subset_for_k(powers, theta, Mq, q, k_ref)
+    defect_ref = sidon_defect(A_ref, N)
+    if defect_ref != 0
+        @warn "q=$q k_ref=$k_ref: nonzero sidon_defect=$defect_ref -- reference set untrustworthy"
+    end
+    S_hat_ref = compute_full_spectrum(A_ref, N)
+
+    @printf("  %6s  %10s  %10s  %17s  %10s\n", "k", "|A_k|", "jaccard", "restricted_align", "n_shared")
+
+    results = NamedTuple[]
+    for k in ks
+        if mod(k, q) == mod(k_ref, q)
+            continue   # skip comparing k_ref against itself
+        end
+        A_k = bose_chowla_subset_for_k(powers, theta, Mq, q, k)
+        defect_k = sidon_defect(A_k, N)
+        if defect_k != 0
+            @warn "q=$q k=$k: nonzero sidon_defect=$defect_k -- this k's result untrustworthy"
+        end
+        S_hat_k = compute_full_spectrum(A_k, N)
+        r = shared_grid_restricted_align(S_hat_ref, S_hat_k, Mq, N; top_frac = top_frac)
+        @printf("  %6d  %10d  %10.3f  %+17.3f  %10d\n",
+                k, length(A_k), r.jaccard, r.restricted_align, r.n_shared)
+        push!(results, (; k, r.jaccard, r.restricted_align, r.n_shared))
+    end
+
+    println("\n--- Sign summary (k-sweep, vs k_ref=$k_ref) ---")
+    signs = [sign(r.restricted_align) for r in results if !isnan(r.restricted_align)]
+    n_pos = count(==(1.0), signs)
+    n_neg = count(==(-1.0), signs)
+    n_tested = length(signs)
+    @printf("  %d/%d k's tested gave POSITIVE restricted_align (vs k_ref), %d/%d NEGATIVE\n",
+            n_pos, n_tested, n_neg, n_tested)
+    if n_neg == 0
+        println("  -> still all-positive: varying k at fixed (q,theta) did NOT flip the sign")
+        println("     for this q. Worth trying other q's before concluding k is a dead end --")
+        println("     the sign might depend on q mod something (cf. quadratic Gauss sum sign")
+        println("     depending on q mod 4) rather than being uniformly unfixable via k alone.")
+    else
+        neg_ks = [r.k for r in results if !isnan(r.restricted_align) && r.restricted_align < 0]
+        println("  -> FOUND negative-sign k's: $neg_ks -- this is exactly the lever needed.")
+        println("     Next: check whether Bose(q,theta,k) for a negative k here also anti-aligns")
+        println("     against a SINGER set (the real target), not just against k_ref within its")
+        println("     own Bose-Chowla family -- same-family anti-alignment doesn't guarantee")
+        println("     cross-family anti-alignment against Singer.")
+    end
+
+    return results
+end
+
+"""
     run_bc_sign_survey(; N::Int, qs::Vector{Int}, top_frac::Float64 = 0.01)
 
 Same two-step pipeline as resonance_sign_survey.jl's run_sign_survey
@@ -358,4 +568,14 @@ if abspath(PROGRAM_FILE) == @__FILE__
 
     println("\n(First pass -- rerun with more/different seeds per q before treating any")
     println("single q's sign as conclusive, same caveat as everywhere else in this project.)")
+
+    println("\n\n### k-sweep: fixed q, holding (q,theta) fixed and varying k across F_q\\{0} ###")
+    println("###           to test the one lever not yet tried (q and independent redraws ###")
+    println("###           both already gave all-positive sign, per the survey above and ###")
+    println("###           cross_singer_alignment.jl's shift_test). ###\n")
+    run_k_sweep(; N = N, q = 17, seed = 1, top_frac = 0.01)
+
+    println("\n(Single q=17 pass -- if this comes back all-positive too, rerun run_k_sweep on")
+    println("other resonant q's from the survey above (e.g. q=11, q=53) before concluding k")
+    println("doesn't help; the sign may depend on q itself, not be uniformly fixed by any lever.)")
 end
