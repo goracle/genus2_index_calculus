@@ -439,12 +439,109 @@ def jacobian_order_bsgs(D: Div2, curve: Curve) -> int:
     return order
 
 
+import subprocess
+
+
+class SageNotAvailable(RuntimeError):
+    """Raised when jacobian_order_frobenius_sage can't find/run `sage`."""
+
+
+def _build_sage_poly_str(f_poly: Sequence[int]) -> str:
+    """f_poly[i] = coefficient of x^i. Builds a Sage-syntax polynomial
+    string, e.g. (2, 1, 0, 0, 0, 1) -> "x^5 + x + 2" (term order doesn't
+    matter to Sage's parser; written high-to-low to match trial3's
+    convention and for readability if the script is ever printed for
+    debugging)."""
+    terms = []
+    for exp, c in enumerate(f_poly):
+        if c == 0:
+            continue
+        if exp == 0:
+            terms.append(f"{c}")
+        elif c == 1:
+            terms.append(f"x^{exp}")
+        else:
+            terms.append(f"{c}*x^{exp}")
+    return " + ".join(reversed(terms))
+
+
+def jacobian_order_frobenius_sage(curve: Curve, sage_executable: str = "sage",
+                                   timeout: Optional[float] = 120.0) -> int:
+    """Exact #Jac(C/F_p) by shelling out to Sage's frobenius_polynomial(),
+    mirroring trial3_fixed.jl's frobenius_jacobian_order.
+
+    Sage computes the Frobenius polynomial via Kedlaya's p-adic algorithm
+    (hypellfrob), O(p^{1/2} polylog p) -- this is what makes p in the
+    thousands (and trial3's working range, p ~ 10^6) tractable, unlike
+    the O(p^2)-ish pure-Python jacobian_order_frobenius below, which is a
+    direct point-counting loop and is the right tool only for small p
+    (used as the small-p correctness oracle for this function -- see
+    tests/verification before trusting Sage's output on a new curve).
+
+    Raises SageNotAvailable if `sage` isn't on PATH or the subprocess
+    fails/times out, rather than silently falling back -- a silent
+    fallback to the O(p^2) method would defeat the purpose of calling
+    this at the p-scale where that method is intractable.
+    """
+    p = curve.p
+    f_str = _build_sage_poly_str(curve.f_poly)
+
+    sage_script = f"""
+p = {p}
+F = GF(p)
+R.<x> = F[]
+f = {f_str}
+H = HyperellipticCurve(f)
+chi = H.frobenius_polynomial()
+N = ZZ(chi(1))
+print(int(N))
+"""
+
+    try:
+        result = subprocess.run(
+            [sage_executable, "-c", sage_script],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except FileNotFoundError as e:
+        raise SageNotAvailable(
+            f"'{sage_executable}' not found on PATH. Install Sage or pass "
+            f"sage_executable=<path to sage binary>."
+        ) from e
+    except subprocess.TimeoutExpired as e:
+        raise SageNotAvailable(
+            f"sage subprocess timed out after {timeout}s for p={p}"
+        ) from e
+
+    if result.returncode != 0:
+        raise SageNotAvailable(
+            f"sage subprocess failed (exit {result.returncode}) for p={p}.\n"
+            f"stdout: {result.stdout[-2000:]}\n"
+            f"stderr: {result.stderr[-2000:]}"
+        )
+
+    raw = result.stdout.strip()
+    try:
+        return int(raw)
+    except ValueError as e:
+        raise SageNotAvailable(
+            f"could not parse sage output as an integer for p={p}: {raw!r}\n"
+            f"stderr: {result.stderr[-2000:]}"
+        ) from e
+
+
 def jacobian_order_frobenius(curve: Curve) -> int:
     """Exact #Jac(C/F_p) via point counts N1 = #C(F_p), N2 = #C(F_{p^2})
     and the genus-2 zeta function characteristic polynomial coefficients:
         a1 = p + 1 - N1
         a2 = (a1^2 + N2 - p^2 - 1) / 2
         #Jac(F_p) = 1 - a1 + a2 - a1*p + p^2
+
+    O(p^2)-ish (see the N2 loop below); fine for small p (used to
+    cross-check jacobian_order_frobenius_sage above at small p), but not
+    the right tool once p reaches the thousands -- use the Sage-backed
+    version above for that regime.
     """
     p = curve.p
 
@@ -458,6 +555,21 @@ def jacobian_order_frobenius(curve: Curve) -> int:
             n1 += 2
 
     # N2 = #C(F_{p^2}), via F_{p^2} = F_p[g]/(g^2 - g0) with g0 a QNR
+    #
+    # Squareness test via the field norm, not a full Fp2 exponentiation.
+    # For x in Fp2^* (Fp2/Fp a genuine quadratic extension, since g0 is a
+    # QNR), x is a square in Fp2 iff its norm N(x) = u^2 - g0*v^2 (an Fp
+    # element) is a nonzero square in Fp -- the norm map Fp2^* -> Fp^* is
+    # surjective 2-to-1 onto squares, so squareness of x is exactly
+    # squareness of N(x). This lets the per-point Legendre-symbol check
+    # run as ONE Fp exponentiation (pow(norm_f, (p-1)//2, p)) instead of a
+    # full Fp2 modular exponentiation with exponent ~p^2/2 (each step of
+    # which is itself an Fp2 multiplication, i.e. several Fp
+    # multiplications) -- the same trick used in the Julia reference
+    # (trial1_autoell_p10.jl, jacobian_order_frobenius), which is what
+    # makes p in the low thousands tractable in that version. Verified
+    # independently against brute-force squareness testing on a small
+    # field before porting (see project notes / conversation).
     g0 = 2
     while pow(g0, (p - 1) // 2, p) != p - 1:
         g0 += 1
@@ -471,18 +583,8 @@ def jacobian_order_frobenius(curve: Curve) -> int:
     def cadd(x, y):
         return ((x[0] + y[0]) % p, (x[1] + y[1]) % p)
 
-    def cpow(base, e):
-        result = (1, 0)
-        b = base
-        while e > 0:
-            if e & 1:
-                result = cmul(result, b)
-            b = cmul(b, b)
-            e >>= 1
-        return result
-
-    fp2_order = p * p - 1
     c0, c1, c2, c3, c4, c5 = curve.f_poly
+    half = (p - 1) // 2
     n2_affine = 0
     for b in range(p):
         for a in range(p):
@@ -493,7 +595,9 @@ def jacobian_order_frobenius(curve: Curve) -> int:
             if acc == (0, 0):
                 n2_affine += 1
                 continue
-            if cpow(acc, fp2_order // 2) == (1, 0):
+            u, v = acc
+            norm_f = (u * u - g0 * v * v) % p
+            if norm_f != 0 and pow(norm_f, half, p) == 1:
                 n2_affine += 2
 
     n2 = n2_affine + 1  # + point at infinity over F_{p^2}
@@ -593,7 +697,7 @@ def find_cryptographic_subgroup(p_start: int, f_poly: Sequence[int] = DEFAULT_F_
     p = next_prime_at_least(p_start)
     for _ in range(max_prime_tries):
         curve = Curve(p, f_poly)
-        jac_order = jacobian_order_frobenius(curve)
+        jac_order = jacobian_order_frobenius_sage(curve)
         factors = factorint(jac_order)
         ell = max(factors.keys())
         h = jac_order // ell
