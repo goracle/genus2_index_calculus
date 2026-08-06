@@ -1,5 +1,6 @@
 *.~*
 *.jls
+.lake
 *.zip
 *.log
 *.bin
