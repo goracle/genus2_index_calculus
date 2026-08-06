@@ -97,6 +97,6 @@ theorem sidon_gives_hit_count_bound_combinatorial
       have : (0:ℝ) < (T.card : ℝ) := by exact_mod_cast hcard_pos
       exact ne_of_gt this
     field_simp
-    ring
+    try ring
   rw [heq] at hstep
   exact hstep

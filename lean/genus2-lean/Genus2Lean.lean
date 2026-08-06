@@ -12,5 +12,3 @@ import Genus2Lean.AverageComplexity
 import Genus2Lean.HyperellipticFunctionField
 import Genus2Lean.PaleyZygmund
 
--- Root-level module
-import PaleyZygmund

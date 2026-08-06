@@ -12,6 +12,8 @@ open Finset BigOperators
 variable {G : Type*} [AddCommGroup G] [Fintype G] [DecidableEq G]
 variable {X Y : Type*} [Fintype X] [Fintype Y] [DecidableEq Y]
 
+namespace AddComb
+
 /-! ### Fiber Degree Sum Identity -/
 
 def fiber (f : X → Y) (y : Y) : Finset X :=
@@ -75,3 +77,5 @@ theorem additiveEnergy_pos (S : Finset G) (hS : S.Nonempty) :
     exact Finset.single_le_sum
       (f := fun g => (repFunction S g)^2) (fun _ _ => Nat.zero_le _) hx_sum
   exact lt_of_lt_of_le h_sq_pos hle
+
+end AddComb

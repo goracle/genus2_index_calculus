@@ -109,6 +109,7 @@ theorem toPair_mul_involution (H : HyperellipticPolynomial k) (A B : k[X]) :
       = (algebraMap k[X] (CoordinateRing H) A)^2 -
           (algebraMap k[X] (CoordinateRing H) B) * (algebraMap k[X] (CoordinateRing H) B) *
             y H * y H := by
+        rw [map_neg]
         set a := algebraMap k[X] (CoordinateRing H) A
         set b := algebraMap k[X] (CoordinateRing H) B
         set w := y H
@@ -133,6 +134,7 @@ theorem toPair_add_involution (H : HyperellipticPolynomial k) (A B : k[X]) :
     (algebraMap k[X] (CoordinateRing H) A + algebraMap k[X] (CoordinateRing H) B * y H) +
     (algebraMap k[X] (CoordinateRing H) A + algebraMap k[X] (CoordinateRing H) (-B) * y H)
       = 2 * algebraMap k[X] (CoordinateRing H) A := by
+        rw [map_neg]
         set a := algebraMap k[X] (CoordinateRing H) A
         set b := algebraMap k[X] (CoordinateRing H) B
         set w := y H

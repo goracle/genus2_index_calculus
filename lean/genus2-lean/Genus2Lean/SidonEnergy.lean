@@ -162,8 +162,9 @@ theorem matchCount_zero_eq_energy (T : Finset G) :
     obtain ⟨⟨ha, hb, hc, hd⟩, heq, hsum⟩ := hp
     simp only [Finset.mem_product, Finset.mem_filter, Finset.mem_product]
     have hcd_sum : c + d = a + b := by
-      have := sub_eq_zero.mp heq
-      linarith [this]
+      have hsplit : a + b - c - d = (a + b) - (c + d) := by abel
+      rw [hsplit, sub_eq_zero] at heq
+      exact heq.symm
     exact ⟨⟨⟨ha, hb⟩, hsum⟩, ⟨hc, hd⟩, hcd_sum.trans hsum⟩
   · rintro ⟨a, b, c, d⟩ hp ⟨a', b', c', d'⟩ hp' heq
     simp only [Prod.mk.injEq] at heq
@@ -176,8 +177,8 @@ theorem matchCount_zero_eq_energy (T : Finset G) :
     simp only [Finset.mem_filter, Finset.mem_product]
     refine ⟨⟨ha, hb, hc, hd⟩, ?_, hab_sum⟩
     have hab_eq_cd : a + b = c + d := hab_sum.trans hcd_sum.symm
-    rw [sub_eq_zero]
-    exact hab_eq_cd
+    have : a + b - c - d = (a + b) - (c + d) := by abel
+    rw [this, hab_eq_cd, sub_self]
 
 /-- **Corollary, unconditional given `SidonRepBound`**: the `Δ = 0` slice of
 `matchCount` is at most `2B²`, immediately from `matchCount_zero_eq_energy`
@@ -194,7 +195,7 @@ theorem matchCount_zero_bound (T : Finset G) (hSidon : SidonRepBound T) :
   rw [matchCount_zero_eq_energy]
   exact sidon_energy_bound_nat T hSidon
 
-/-- NOTE on the advisory's literal `4·C(B,2)` form: advisory-7 §4 writes the
+/- NOTE on the advisory's literal `4·C(B,2)` form: advisory-7 §4 writes the
 chain `E(T,T) ≤ 4·#T ≤ 4·C(B,2)`. We deliberately do NOT formalize this
 exact intermediate expression — pinning down `Nat.choose T.card 2` in terms
 of `T.card * (T.card - 1)` correctly (Mathlib's `Nat.choose_two_right`

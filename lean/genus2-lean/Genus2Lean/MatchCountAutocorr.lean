@@ -48,9 +48,19 @@ theorem matchCount_eq_autocorr (T : Finset G) (Δ : G) :
           ((T ×ˢ T ×ˢ T ×ˢ T).filter
             (fun p : G × G × G × G =>
               p.1 + p.2.1 - p.2.2.1 - p.2.2.2 = Δ ∧ p.1 + p.2.1 = g)).card := by
-    apply Finset.card_eq_sum_card_fiberwise (f := fun p : G × G × G × G => p.1 + p.2.1)
-    intro p _
-    exact Finset.mem_univ _
+    have h := Finset.sum_fiberwise
+      (s := (T ×ˢ T ×ˢ T ×ˢ T).filter
+        (fun p : G × G × G × G => p.1 + p.2.1 - p.2.2.1 - p.2.2.2 = Δ))
+      (g := fun p : G × G × G × G => p.1 + p.2.1)
+      (f := fun _ : G × G × G × G => (1 : ℕ))
+    simp only [Finset.sum_const, smul_eq_mul, mul_one] at h
+    rw [← h]
+    apply Finset.sum_congr rfl
+    intro g _
+    congr 1
+    ext p
+    simp only [Finset.mem_filter, Finset.mem_product]
+    tauto
   rw [hfiber]
   apply Finset.sum_congr rfl
   intro g _
@@ -61,30 +71,26 @@ theorem matchCount_eq_autocorr (T : Finset G) (Δ : G) :
     simp only [Finset.mem_filter, Finset.mem_product] at hp
     obtain ⟨⟨ha, hb, hc, hd⟩, heq, hsum⟩ := hp
     simp only [Finset.mem_product, Finset.mem_filter]
-    refine ⟨⟨ha, hb⟩, hc, hd, ?_⟩
-    have hcd : c + d = g - Δ := by
-      have h1 : a + b - (c + d) = Δ := by
-        have : a + b - c - d = a + b - (c + d) := by abel
-        rw [← this]; exact heq
-      have := hsum
-      rw [this] at h1
-      have := sub_eq_iff_eq_add.mp h1
-      rw [this]; abel
-    rw [hcd, hsum]
+    refine ⟨⟨⟨ha, hb⟩, hsum⟩, ⟨hc, hd⟩, ?_⟩
+    have h1 : a + b - (c + d) = Δ := by
+      have : a + b - c - d = a + b - (c + d) := by abel
+      rw [← this]; exact heq
+    rw [hsum] at h1
+    have h2 := sub_eq_iff_eq_add.mp h1
+    rw [h2]; abel
   · rintro ⟨a, b, c, d⟩ hp ⟨a', b', c', d'⟩ hp' heq
     simp only [Prod.mk.injEq] at heq
     obtain ⟨⟨ha, hb⟩, hc, hd⟩ := heq
     simp [ha, hb, hc, hd]
   · rintro ⟨⟨a, b⟩, c, d⟩ hq
     simp only [Finset.mem_product, Finset.mem_filter] at hq
-    obtain ⟨⟨ha, hb⟩, hc, hd, hcd⟩ := hq
+    obtain ⟨⟨⟨ha, hb⟩, hab⟩, ⟨hc, hd⟩, hcd⟩ := hq
     refine ⟨(a, b, c, d), ?_, rfl⟩
     simp only [Finset.mem_filter, Finset.mem_product]
-    refine ⟨⟨ha, hb, hc, hd⟩, ?_, rfl⟩
-    have : c + d = g - Δ := hcd
-    have hgΔ : g - Δ + Δ = g := by abel
-    calc a + b - c - d = g - (c + d) := by rw [← hcd]; abel
-      _ = g - (g - Δ) := by rw [this]
+    refine ⟨⟨ha, hb, hc, hd⟩, ?_, hab⟩
+    have hgd : c + d = g - Δ := hcd
+    calc a + b - c - d = g - (c + d) := by rw [← hab]; abel
+      _ = g - (g - Δ) := by rw [hgd]
       _ = Δ := by abel
 
 /-- **Reindexing lemma**: `Σ_g repCount T (g - Δ) = Σ_g repCount T g`, since
