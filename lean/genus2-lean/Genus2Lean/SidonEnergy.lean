@@ -53,8 +53,11 @@ theorem sum_repCount_eq_card_sq (T : Finset G) :
   have hfiber :
       (T ×ˢ T).card =
         ∑ g ∈ (Finset.univ : Finset G),
-          ((T ×ˢ T).filter (fun p : G × G => p.1 + p.2 = g)).card :=
-    Finset.card_eq_sum_card_fiberwise (fun _ _ => Finset.mem_univ _)
+          ((T ×ˢ T).filter (fun p : G × G => p.1 + p.2 = g)).card := by
+    have h := Finset.sum_fiberwise (s := T ×ˢ T) (g := fun p : G × G => p.1 + p.2)
+      (f := fun _ : G × G => (1 : ℕ))
+    simp only [Finset.sum_const, smul_eq_mul, mul_one] at h
+    rw [← h]
   rw [← hcard, hfiber]
   rfl
 
@@ -135,36 +138,46 @@ theorem matchCount_zero_eq_energy (T : Finset G) :
           ((T ×ˢ T ×ˢ T ×ˢ T).filter
             (fun p : G × G × G × G =>
               p.1 + p.2.1 - p.2.2.1 - p.2.2.2 = (0 : G) ∧ p.1 + p.2.1 = g)).card := by
-    exact Finset.card_eq_sum_card_fiberwise (f := fun p => p.1 + p.2.1) (f := fun p : G × G × G × G => p.1 + p.2.1)
-    intro p _
-    exact Finset.mem_univ _
+    have h := Finset.sum_fiberwise
+      (s := (T ×ˢ T ×ˢ T ×ˢ T).filter
+        (fun p : G × G × G × G => p.1 + p.2.1 - p.2.2.1 - p.2.2.2 = (0 : G)))
+      (g := fun p : G × G × G × G => p.1 + p.2.1)
+      (f := fun _ : G × G × G × G => (1 : ℕ))
+    simp only [Finset.sum_const, smul_eq_mul, mul_one] at h
+    rw [← h]
+    apply Finset.sum_congr rfl
+    intro g _
+    congr 1
+    ext p
+    simp only [Finset.mem_filter, Finset.mem_product]
+    tauto
   rw [hfiber]
   apply Finset.sum_congr rfl
   intro g _
-  rw [← sq]
+  rw [sq, ← Finset.card_product]
   apply Finset.card_bij
     (i := fun p _ => ((p.1, p.2.1), (p.2.2.1, p.2.2.2)))
   · rintro ⟨a, b, c, d⟩ hp
     simp only [Finset.mem_filter, Finset.mem_product] at hp
     obtain ⟨⟨ha, hb, hc, hd⟩, heq, hsum⟩ := hp
-    simp only [Finset.mem_product, Finset.mem_filter]
-    refine ⟨⟨ha, hb⟩, hc, hd, ?_⟩
-    have : c + d = a + b := by
+    simp only [Finset.mem_product, Finset.mem_filter, Finset.mem_product]
+    have hcd_sum : c + d = a + b := by
       have := sub_eq_zero.mp heq
       linarith [this]
-    rw [this, hsum]
+    exact ⟨⟨⟨ha, hb⟩, hsum⟩, ⟨hc, hd⟩, hcd_sum.trans hsum⟩
   · rintro ⟨a, b, c, d⟩ hp ⟨a', b', c', d'⟩ hp' heq
     simp only [Prod.mk.injEq] at heq
     obtain ⟨⟨ha, hb⟩, hc, hd⟩ := heq
     simp [ha, hb, hc, hd]
   · rintro ⟨⟨a, b⟩, c, d⟩ hq
     simp only [Finset.mem_product, Finset.mem_filter] at hq
-    obtain ⟨⟨ha, hb⟩, hc, hd, hcd⟩ := hq
+    obtain ⟨⟨⟨ha, hb⟩, hab_sum⟩, ⟨hc, hd⟩, hcd_sum⟩ := hq
     refine ⟨(a, b, c, d), ?_, rfl⟩
     simp only [Finset.mem_filter, Finset.mem_product]
-    refine ⟨⟨ha, hb, hc, hd⟩, ?_, hcd.symm⟩
-    rw [← hcd]
-    abel
+    refine ⟨⟨ha, hb, hc, hd⟩, ?_, hab_sum⟩
+    have hab_eq_cd : a + b = c + d := hab_sum.trans hcd_sum.symm
+    rw [sub_eq_zero]
+    exact hab_eq_cd
 
 /-- **Corollary, unconditional given `SidonRepBound`**: the `Δ = 0` slice of
 `matchCount` is at most `2B²`, immediately from `matchCount_zero_eq_energy`
@@ -192,7 +205,7 @@ form is approximating. If the paper needs the literal `C(B,2)` form for
 exposition, it is safe to just cite `sidon_energy_bound_nat` and note
 `4·C(B,2) = 2B² - 2B ≥` is dominated by `2B²` — i.e. `sidon_energy_bound_nat`
 implies the advisory's stated bound is *slightly loose* rather than being a
-/-separate fact needing its own proof. -/
+separate fact needing its own proof. -/
 
 /-- **Bridge theorem**: if the factor base `F` *is itself* the Sidon set
 (`F = T`, the case advisory-7 §7.4 actually needs), then `SidonRepBound F`

@@ -1,7 +1,12 @@
+import Mathlib
 import Mathlib.Algebra.Group.Defs
 import Mathlib.Data.Finset.Basic
 import Mathlib.Data.Fintype.Basic
 import Mathlib.Algebra.BigOperators.Group.Finset.Basic
+set_option linter.style.header false
+set_option linter.unusedFintypeInType false
+
+
 open Finset BigOperators
 
 variable {G : Type*} [AddCommGroup G] [Fintype G] [DecidableEq G]
@@ -19,8 +24,11 @@ def fiberDegree (f : X → Y) (y : Y) : ℕ :=
 theorem sum_fiberDegrees_eq_card (f : X → Y) :
     ∑ y : Y, fiberDegree f y = Fintype.card X := by
   unfold fiberDegree fiber
-  rw [← Finset.card_univ]
-  exact Finset.sum_card_fiberwise_eq_card_univ f
+  have h := Finset.sum_fiberwise (s := (Finset.univ : Finset X)) (g := f)
+    (f := fun _ : X => (1 : ℕ))
+  simp only [Finset.sum_const, smul_eq_mul, mul_one, Finset.card_univ] at h
+  -- h : ∑ y : Y, (univ.filter (fun x => f x = y)).card = Fintype.card X
+  exact h
 
 /-! ### Target Hits Partition Identity -/
 
@@ -34,8 +42,11 @@ def targetHits (S : Finset G) (delta : G) : ℕ :=
 theorem sum_targetHits_eq_square (S : Finset G) :
     (∑ delta : G, targetHits S delta) = S.card ^ 2 := by
   unfold targetHits repFunction
-  have h := Finset.card_eq_sum_card_fiberwise (f := fun p : G × G => p.1 + p.2) (s := S ×ˢ S)
-  rw [h, Finset.card_prod]
+  have h := Finset.sum_fiberwise (s := S ×ˢ S) (g := fun p : G × G => p.1 + p.2)
+    (f := fun _ : G × G => (1 : ℕ))
+  simp only [Finset.sum_const, smul_eq_mul, mul_one] at h
+  -- h : ∑ delta : G, ((S ×ˢ S).filter (fun p => p.1 + p.2 = delta)).card = #(S ×ˢ S)
+  rw [h, Finset.card_product]
   ring
 
 /-! ### Additive Energy Positivity -/
@@ -60,4 +71,7 @@ theorem additiveEnergy_pos (S : Finset G) (hS : S.Nonempty) :
   have h_sq_pos : 0 < (repFunction S (x + x))^2 := by
     exact Nat.pow_pos h_rep_pos
   unfold additiveEnergy
-  exact Lt.trans_le h_sq_pos (Finset.single_le_sum (fun _ _ => Nat.zero_le _) hx_sum)
+  have hle : (repFunction S (x + x))^2 ≤ ∑ g ∈ sumSet S, (repFunction S g)^2 := by
+    exact Finset.single_le_sum
+      (f := fun g => (repFunction S g)^2) (fun _ _ => Nat.zero_le _) hx_sum
+  exact lt_of_lt_of_le h_sq_pos hle
