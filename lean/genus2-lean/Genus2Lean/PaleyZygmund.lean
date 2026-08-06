@@ -24,6 +24,7 @@ open Finset
 
 variable {G : Type*} [AddCommGroup G] [Fintype G] [DecidableEq G]
 
+omit [AddCommGroup G] [DecidableEq G] in
 /-- Finite Paley–Zygmund. For a nonnegative `X` on a finite type, the
 probability (uniform counting measure) that `X > 0` is at least
 `(∑ X)² / (|G| · ∑ X²)`. Stated in the "cross-multiplied" form to avoid
@@ -32,7 +33,6 @@ probability form when `∑ X² ≠ 0`.
 
 Proof: Cauchy–Schwarz on the support of `X`, treating the indicator as one
 factor and `X` as the other, then bounding the support's size by `|G|`. -/
-omit [AddCommGroup G] [DecidableEq G] in
 theorem paley_zygmund_finite (X : G → ℝ) (_hX : ∀ Δ, 0 ≤ X Δ) :
     (∑ Δ, X Δ) ^ 2 ≤
       ((univ.filter (fun Δ => X Δ ≠ 0)).card : ℝ) * ∑ Δ, (X Δ) ^ 2 := by
