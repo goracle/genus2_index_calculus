@@ -1,3 +1,16 @@
+-- Genus2Lean.lean
+-- Master aggregator module importing all components in the Genus2Lean project
+
 import Genus2Lean.Basic
+import Genus2Lean.addcomb
+import Genus2Lean.sidonbound
+import Genus2Lean.SidonEnergy
+import Genus2Lean.SumsetEnergy
+import Genus2Lean.MatchCountAutocorr
+import Genus2Lean.CombinatorialSecondMoment
 import Genus2Lean.AverageComplexity
+import Genus2Lean.HyperellipticFunctionField
 import Genus2Lean.PaleyZygmund
+
+-- Root-level module
+import PaleyZygmund

@@ -4,7 +4,7 @@ set_option linter.style.header false
 
 open Polynomial
 open AdjoinRoot
-
+noncomputable section
 /-- A polynomial `f : k[X]` defining a hyperelliptic curve of genus 2.
 For genus 2 over a field of characteristic ≠ 2, `f` has degree 5 or 6
 and is square-free. -/
@@ -42,19 +42,19 @@ theorem y_sq_eq (H : HyperellipticPolynomial k) :
 and acting trivially on `k[x]`. -/
 noncomputable def involution (H : HyperellipticPolynomial k) :
     CoordinateRing H →+* CoordinateRing H :=
-  AdjoinRoot.liftHom (X ^ 2 - C (H.f)) (algebraMap k[X] (CoordinateRing H)) (-y H) (by
+  AdjoinRoot.lift (X ^ 2 - C (H.f)) (algebraMap k[X] (CoordinateRing H)) (-y H) (by
     rw [eval₂_sub, eval₂_pow, eval₂_X, eval₂_C, neg_sq, y_sq_eq H]
     exact sub_self _)
 
 @[simp]
 theorem involution_y (H : HyperellipticPolynomial k) :
     involution H (y H) = -y H := by
-  exact liftHom_root (X ^ 2 - C (H.f)) (algebraMap k[X] (CoordinateRing H)) (-y H) _
+  exact lift_root (X ^ 2 - C (H.f)) (algebraMap k[X] (CoordinateRing H)) (-y H) _
 
 @[simp]
 theorem involution_algebraMap (H : HyperellipticPolynomial k) (p : k[X]) :
     involution H (algebraMap k[X] (CoordinateRing H) p) = algebraMap k[X] (CoordinateRing H) p := by
-  exact liftHom_of (X ^ 2 - C (H.f)) (algebraMap k[X] (CoordinateRing H)) (-y H) _ p
+  exact lift_of (X ^ 2 - C (H.f)) (algebraMap k[X] (CoordinateRing H)) (-y H) _ p
 
 /-- The hyperelliptic involution applied twice is the identity on generator `y`. -/
 theorem involution_involution_y (H : HyperellipticPolynomial k) :
@@ -76,7 +76,6 @@ theorem toPair_involution (H : HyperellipticPolynomial k) (A B : k[X]) :
 end HyperellipticPolynomial
 
 
-import Mathlib
 
 set_option linter.style.header false
 
@@ -137,7 +136,6 @@ theorem toPair_satisfies_charpoly (H : HyperellipticPolynomial k) (A B : k[X]) :
 end HyperellipticPolynomial
 
 
-import Mathlib
 
 set_option linter.style.header false
 
@@ -281,7 +279,6 @@ noncomputable def RiemannRochSpaceInf (H : HyperellipticPolynomial k) (n : ℕ) 
 end HyperellipticPolynomial
 
 
-import Mathlib
 
 set_option linter.style.header false
 

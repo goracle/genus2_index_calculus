@@ -111,7 +111,7 @@ theorem sidon_energy_bound_nat (T : Finset G) (hSidon : SidonRepBound T) :
   have hsum_le : ∑ g : G, (repCount T g) ^ 2 ≤ ∑ g : G, 2 * repCount T g :=
     Finset.sum_le_sum (fun g _ => hpt g)
   have hsum_eq : ∑ g : G, 2 * repCount T g = 2 * T.card ^ 2 := by
-    rw [Finset.mul_sum, sum_repCount_eq_card_sq]
+    rw [←Finset.mul_sum, sum_repCount_eq_card_sq]
   calc ∑ g : G, (repCount T g) ^ 2
       ≤ ∑ g : G, 2 * repCount T g := hsum_le
     _ = 2 * T.card ^ 2 := hsum_eq
@@ -135,13 +135,13 @@ theorem matchCount_zero_eq_energy (T : Finset G) :
           ((T ×ˢ T ×ˢ T ×ˢ T).filter
             (fun p : G × G × G × G =>
               p.1 + p.2.1 - p.2.2.1 - p.2.2.2 = (0 : G) ∧ p.1 + p.2.1 = g)).card := by
-    apply Finset.card_eq_sum_card_fiberwise (f := fun p : G × G × G × G => p.1 + p.2.1)
+    exact Finset.card_eq_sum_card_fiberwise (f := fun p => p.1 + p.2.1) (f := fun p : G × G × G × G => p.1 + p.2.1)
     intro p _
     exact Finset.mem_univ _
   rw [hfiber]
   apply Finset.sum_congr rfl
   intro g _
-  rw [← Finset.card_product]
+  rw [← sq]
   apply Finset.card_bij
     (i := fun p _ => ((p.1, p.2.1), (p.2.2.1, p.2.2.2)))
   · rintro ⟨a, b, c, d⟩ hp
@@ -192,7 +192,7 @@ form is approximating. If the paper needs the literal `C(B,2)` form for
 exposition, it is safe to just cite `sidon_energy_bound_nat` and note
 `4·C(B,2) = 2B² - 2B ≥` is dominated by `2B²` — i.e. `sidon_energy_bound_nat`
 implies the advisory's stated bound is *slightly loose* rather than being a
-separate fact needing its own proof. -/
+/-separate fact needing its own proof. -/
 
 /-- **Bridge theorem**: if the factor base `F` *is itself* the Sidon set
 (`F = T`, the case advisory-7 §7.4 actually needs), then `SidonRepBound F`

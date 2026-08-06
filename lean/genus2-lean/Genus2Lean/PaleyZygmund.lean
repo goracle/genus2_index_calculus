@@ -76,7 +76,7 @@ theorem paley_zygmund_prob (X : G → ℝ) (hX : ∀ Δ, 0 ≤ X Δ)
       Finset.card_le_univ _
     have hpos : 0 < Fintype.card G := by
       by_contra h
-      push_neg at h
+      push Not at h
       have hG0 : Fintype.card G = 0 := Nat.le_zero.mp h
       have : IsEmpty G := Fintype.card_eq_zero_iff.mp hG0
       have hsum0 : ∑ Δ : G, (X Δ) ^ 2 = 0 := by
