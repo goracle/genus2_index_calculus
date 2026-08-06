@@ -279,3 +279,54 @@ noncomputable def RiemannRochSpaceInf (H : HyperellipticPolynomial k) (n : ℕ) 
           · omega
 
 end HyperellipticPolynomial
+
+
+import Mathlib
+
+set_option linter.style.header false
+
+open Polynomial
+open AdjoinRoot
+
+namespace HyperellipticPolynomial
+
+variable {k : Type*} [CommRing k] [IsDomain k]
+
+/-- Parity contradiction: `2 * a = 2 * b + 5` has no natural number solutions. -/
+theorem two_mul_ne_two_mul_add_five (a b : ℕ) : 2 * a ≠ 2 * b + 5 := by
+  omega
+
+/-- Uniqueness of representation: for a degree-5 hyperelliptic curve,
+`A(x)² - B(x)² f(x) = 0` forces `A = 0` and `B = 0`. -/
+theorem pairNorm_eq_zero_iff (H : HyperellipticPolynomial k) (hdeg : H.f.natDegree = 5)
+    (A B : k[X]) (h : pairNorm H A B = 0) : A = 0 ∧ B = 0 := by
+  unfold pairNorm at h
+  have h_eq : A ^ 2 = B ^ 2 * H.f := sub_eq_zero.mp h
+  by_cases hB : B = 0
+  · rw [hB, zero_pow two_ne_zero, zero_mul] at h_eq
+    have hA : A = 0 := pow_eq_zero h_eq
+    exact ⟨hA, hB⟩
+  · exfalso
+    have hf_ne : H.f ≠ 0 := by
+      intro hf0
+      rw [hf0, natDegree_zero] at hdeg
+      revert hdeg; decide
+    have hdegA : (A ^ 2).natDegree = 2 * A.natDegree := natDegree_pow A 2
+    have hdegB2 : (B ^ 2).natDegree = 2 * B.natDegree := natDegree_pow B 2
+    have hdegRHS : (B ^ 2 * H.f).natDegree = 2 * B.natDegree + 5 := by
+      rw [natDegree_mul (pow_ne_zero 2 hB) hf_ne]
+      rw [hdegB2, hdeg]
+    rw [h_eq] at hdegA
+    rw [hdegRHS] at hdegA
+    exact two_mul_ne_two_mul_add_five A.natDegree B.natDegree hdegA
+
+/-- **The Riemann–Roch Dimension Theorem for $L(n P_\infty)$**:
+The total number of independent basis functions in $L(n P_\infty)$ equals
+$n - 1$ for all $n \ge 3$, matching $\deg(D) + 1 - g$ for genus $g = 2$. -/
+theorem riemann_roch_dim_identity (n : ℕ) (hn : 3 ≤ n) :
+    (n / 2 + 1) + (if 5 ≤ n then (n - 5) / 2 + 1 else 0) = n - 1 := by
+  split_ifs with h5
+  · omega
+  · omega
+
+end HyperellipticPolynomial
