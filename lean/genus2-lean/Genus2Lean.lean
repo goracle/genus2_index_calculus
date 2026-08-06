@@ -14,4 +14,6 @@ import Genus2Lean.PaleyZygmund
 import Genus2Lean.AffinePoints
 import Genus2Lean.DivisorClassGroup
 import Genus2Lean.PrincipalDivisors
+import Genus2Lean.PrincipalDivisorsScratch
+import Genus2Lean.PrincipalDivisorsDedekind
 

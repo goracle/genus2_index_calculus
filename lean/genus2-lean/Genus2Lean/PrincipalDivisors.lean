@@ -143,17 +143,86 @@ def ordInfOfPair (A B : k[X]) : ℤ :=
   if A = 0 ∧ B = 0 then 0
   else - (max (2 * A.natDegree : ℤ) (if B = 0 then 0 else 2 * B.natDegree + 5))
 
+/-- `toPair_injective`'s proof, isolated: `toPair H A B = 0` in `CoordinateRing H`
+forces `A = 0 ∧ B = 0`. Proved by unfolding `CoordinateRing H = AdjoinRoot f` (with
+`f := X² - C H.f`) down to `AdjoinRoot.mk f (C A + C B * X) = 0`, then
+`AdjoinRoot.mk_eq_zero : mk f g = 0 ↔ f ∣ g` reduces this to `f ∣ (C A + C B * X)`.
+Since `f` is monic of degree 2, a nonzero dividend of a degree-2 monic divisor must
+itself have degree ≥ 2 (`Polynomial.natDegree_le_of_dvd`), but `C A + C B * X` has
+degree ≤ 1 whenever it is nonzero — so it must be zero, and equating coefficients of
+`C A + C B * X = 0` gives `A = 0 ∧ B = 0` directly (no `pairNorm`, no domain
+structure, no `hdeg` hypothesis needed — this holds for any `H`). This is a cleaner
+route than the norm/involution approach originally sketched in `toPair_injective`'s
+docstring: that route still needs `algebraMap : k[X] → CoordinateRing H` injective
+to get from `algebraMap (pairNorm ...) = 0` back down to `pairNorm ... = 0` in
+`k[X]`, which is itself unproven (would need `CoordinateRing H` a domain, i.e.
+`NonsingularData`) — this lemma avoids that dependency entirely by working with
+`AdjoinRoot.mk_eq_zero` directly instead of going through `pairNorm`. -/
+theorem toPair_eq_zero_iff (H : HyperellipticPolynomial k) (A B : k[X]) :
+    toPair H A B = 0 ↔ A = 0 ∧ B = 0 := by
+  constructor
+  · intro heq
+    -- `heq : toPair H A B = 0` lives in `CoordinateRing H`'s own instances
+    -- (`H.instCommRingCoordinateRing` etc., from `HyperellipticFunctionField.lean`).
+    -- Those instances are *defeq* to `AdjoinRoot`'s native ones (built via
+    -- `inferInstanceAs`) but not *syntactically* identical terms, so `rw`/`unfold`
+    -- cannot bridge `CoordinateRing H`-phrased facts to `AdjoinRoot`-phrased
+    -- lemmas (`mk_eq_zero`, `mk_C`, `mk_X`, ...) no matter how they're combined —
+    -- confirmed the hard way across several failed attempts here. The robust fix:
+    -- state `heq' : AdjoinRoot.mk f (C A + C B * X) = 0` as an independent claim
+    -- and prove it by `exact heq` under a `show`, relying on the kernel's defeq
+    -- check (which sees through `inferInstanceAs`) rather than `rw`'s syntactic
+    -- matcher (which doesn't). This is the same idea as before, but applied via
+    -- `exact`/kernel typechecking instead of `rw`, since defeq-checking is
+    -- exactly the tool that's actually needed here.
+    have heq' : AdjoinRoot.mk ((X : (k[X])[X]) ^ 2 - C H.f) (C A + C B * X) = 0 := by
+      have : toPair H A B =
+          AdjoinRoot.mk ((X : (k[X])[X]) ^ 2 - C H.f) (C A + C B * X) := rfl
+      rw [this] at heq
+      exact heq
+    rw [AdjoinRoot.mk_eq_zero] at heq'
+    -- `f := X² - C H.f` is monic of natDegree 2; the dividend `C A + C B * X`
+    -- has natDegree ≤ 1, so divisibility forces it to be the zero polynomial.
+    -- Degree bookkeeping is via `compute_degree` (Mathlib.Tactic.ComputeDegree)
+    -- rather than hand-picked lemma names, since those are exactly the kind of
+    -- API names that are easy to get subtly wrong without a live goal state.
+    set f : (k[X])[X] := (X : (k[X])[X]) ^ 2 - C H.f with hf_def
+    set g : (k[X])[X] := C A + C B * X with hg_def
+    have hg_eq_zero : g = 0 := by
+      by_contra hg_ne
+      have hg_deg : g.natDegree ≤ 1 := by rw [hg_def]; compute_degree
+      have hf_deg : f.natDegree = 2 := by
+        rw [hf_def]
+        compute_degree!
+      have hcontra := Polynomial.natDegree_le_of_dvd heq' hg_ne
+      rw [hf_deg] at hcontra
+      omega
+    -- Equating coefficients of `C A + C B * X = 0` at degrees 0 and 1.
+    have hcoeff0 : g.coeff 0 = A := by rw [hg_def]; simp
+    have hcoeff1 : g.coeff 1 = B := by rw [hg_def]; simp
+    rw [hg_eq_zero] at hcoeff0 hcoeff1
+    simp only [coeff_zero] at hcoeff0 hcoeff1
+    exact ⟨hcoeff0.symm, hcoeff1.symm⟩
+  · rintro ⟨rfl, rfl⟩
+    simp [toPair]
+
 /-- `ordInfOfPair` is well-defined on the ring element `A + By`: if `(A₁, B₁)` and
 `(A₂, B₂)` give the same coordinate-ring element `toPair H A₁ B₁ = toPair H A₂ B₂`,
-then `A₁ = A₂` and `B₁ = B₂` — this is exactly `pairNorm_eq_zero_iff` applied to the
-difference `(A₁ - A₂, B₁ - B₂)`, whose `pairNorm` is forced to vanish by the
-coordinate-ring equality (via `toPair_mul_involution`-style norm computation).
-**Proof deferred**: routine given the existing `pairNorm_eq_zero_iff`, but not yet
-carried out — flagged rather than asserted via an unjustified `rfl`/`simp`. -/
+then `A₁ = A₂` and `B₁ = B₂`. Follows immediately from `toPair_eq_zero_iff` applied
+to the difference, using that `toPair H` is additive in `(A, B)` (both `algebraMap`
+and multiplication-by-`y H` are additive) so
+`toPair H A₁ B₁ - toPair H A₂ B₂ = toPair H (A₁ - A₂) (B₁ - B₂)`. -/
 theorem toPair_injective (H : HyperellipticPolynomial k) (hdeg : H.f.natDegree = 5)
     (A₁ B₁ A₂ B₂ : k[X]) (heq : toPair H A₁ B₁ = toPair H A₂ B₂) :
     A₁ = A₂ ∧ B₁ = B₂ := by
-  sorry
+  have hsub : toPair H (A₁ - A₂) (B₁ - B₂) = 0 := by
+    have : toPair H (A₁ - A₂) (B₁ - B₂) = toPair H A₁ B₁ - toPair H A₂ B₂ := by
+      unfold toPair
+      rw [map_sub, map_sub]
+      ring
+    rw [this, heq, sub_self]
+  obtain ⟨hA, hB⟩ := (toPair_eq_zero_iff H (A₁ - A₂) (B₁ - B₂)).mp hsub
+  exact ⟨sub_eq_zero.mp hA, sub_eq_zero.mp hB⟩
 
 /-! ## §3. Affine orders of vanishing via Dedekind-domain machinery — SCOPED OUT THIS SESSION
 
@@ -203,10 +272,20 @@ structure NonsingularData (H : HyperellipticPolynomial k) where
     Irreducible ((X : (k[X])[X]) ^ 2 - C H.f)
   /-- `H.f` is squarefree — the nonsingularity hypothesis, needed (on top of
   irreducibility above) for `CoordinateRing H` to be a Dedekind domain rather than
-  merely a domain. Not yet used by anything in this file (§3 is not carried out);
-  recorded so the eventual Dedekind-domain proof has a fixed named hypothesis to
-  consume instead of an ad hoc local assumption. -/
+  merely a domain. -/
   squarefree_f : Squarefree H.f
+  /-- `char k ≠ 2`, needed for `X² - C H.f` to be *separable* (not just
+  irreducible): in characteristic 2, `X² - c = (X - √c)²` has a repeated root
+  even when irreducible-as-a-polynomial-shaped-check might otherwise seem to
+  apply, so separability genuinely needs this excluded. Required by
+  `integralClosure.isDedekindDomain_fractionRing`'s `Algebra.IsSeparable`
+  hypothesis (via `Polynomial.separable_X_sq_sub_C`-style reasoning: the
+  derivative of `X² - c` is `2X`, which is the zero polynomial exactly when
+  `2 = 0` in `k`, and a nonzero-derivative argument is the standard route to
+  separability for this shape of polynomial). Matches the char-≠-2 caveat
+  already flagged in `AffinePoints.lean`'s docstring for the point-level
+  involution `iota_ne_self_of_Y_ne_zero`. -/
+  char_ne_two : (2 : k) ≠ 0
 
 /-- Given `NonsingularData`, `CoordinateRing H` is a domain. This is the one
 consequence of §3's setup this file does derive — a short step from
@@ -255,6 +334,21 @@ def coordinateRingIsDomain (H : HyperellipticPolynomial k)
   -- If *this* line fails, the bug is upstream of the final `exact`.
   haveI : IsDomain (k[X]) := inferInstance
   AdjoinRoot.isDomain_of_prime nd.irreducible_defining_poly.prime
+
+/-- Given `NonsingularData`, `CoordinateRing H` is a Dedekind domain. **Not proved
+here** — this is the central §3 gap. See `Genus2Lean/PrincipalDivisorsScratch.lean`
+for an in-progress draft attempt (built via Mathlib's
+`integralClosure.isDedekindDomain_fractionRing`: `k[X]` is Dedekind (PID), and
+`FractionRing (CoordinateRing H)` is a finite separable extension of
+`FractionRing (k[X])`, so the integral closure of `k[X]` in that fraction field is
+Dedekind; transporting that down to `CoordinateRing H` itself needs
+`CoordinateRing H` to equal that integral closure, which genuinely uses
+`squarefree_f`). That scratch file is NOT wired into the build or into anything
+downstream — kept separate until the chain actually compiles, so an in-progress
+draft never silently becomes load-bearing for other files. -/
+theorem coordinateRingIsDedekindDomain (H : HyperellipticPolynomial k)
+    (nd : NonsingularData H) : IsDedekindDomain (CoordinateRing H) := by
+  sorry
 
 /-! ## §4. `deg(div g) = 0` — the target theorem, stated but not proved
 
