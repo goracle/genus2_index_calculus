@@ -61,6 +61,49 @@ theorem paley_zygmund_finite (X : G → ℝ) (_hX : ∀ Δ, 0 ≤ X Δ) :
     _ = (S.card : ℝ) * ∑ Δ ∈ S, (X Δ)^2 := by
         rw [Finset.sum_const, nsmul_eq_mul, mul_one]
 
+omit [AddCommGroup G] [DecidableEq G] in
+/-- Probability form of `paley_zygmund_finite`: when `∑ X² ≠ 0`, the *fraction*
+of `Δ : G` with `X Δ ≠ 0` (i.e. the uniform-measure probability) is at least
+`(∑ X)² / (|G| · ∑ X²)`. This is exactly `paley_zygmund_finite` divided through
+by `|G| · ∑ X²`, phrased as a probability rather than a count — the form
+advisory-7 actually states its bounds in (e.g. eq 11, 17). -/
+theorem paley_zygmund_prob (X : G → ℝ) (hX : ∀ Δ, 0 ≤ X Δ)
+    (hsq : ∑ Δ : G, (X Δ) ^ 2 ≠ 0) :
+    (∑ Δ, X Δ) ^ 2 / ((Fintype.card G : ℝ) * ∑ Δ, (X Δ) ^ 2) ≤
+      ((univ.filter (fun Δ => X Δ ≠ 0)).card : ℝ) / (Fintype.card G : ℝ) := by
+  have hcard_pos : (0:ℝ) < (Fintype.card G : ℝ) := by
+    have hne : (univ.filter (fun Δ => X Δ ≠ 0)).card ≤ Fintype.card G :=
+      Finset.card_le_univ _
+    have hpos : 0 < Fintype.card G := by
+      by_contra h
+      push_neg at h
+      have hG0 : Fintype.card G = 0 := Nat.le_zero.mp h
+      have : IsEmpty G := Fintype.card_eq_zero_iff.mp hG0
+      have hsum0 : ∑ Δ : G, (X Δ) ^ 2 = 0 := by
+        simp [Finset.univ_eq_empty]
+      exact hsq hsum0
+    exact_mod_cast hpos
+  have hsq_nonneg : (0:ℝ) ≤ ∑ Δ : G, (X Δ) ^ 2 :=
+    Finset.sum_nonneg (fun Δ _ => sq_nonneg _)
+  have hsq_pos : (0:ℝ) < ∑ Δ : G, (X Δ) ^ 2 := lt_of_le_of_ne hsq_nonneg (Ne.symm hsq)
+  have hfin := paley_zygmund_finite X hX
+  have hdenom_pos : (0:ℝ) < (Fintype.card G : ℝ) * ∑ Δ, (X Δ) ^ 2 :=
+    mul_pos hcard_pos hsq_pos
+  -- Clear the left-hand denominator first (single use of `div_le_iff₀`,
+  -- already used successfully elsewhere in this file).
+  rw [div_le_iff₀ hdenom_pos]
+  -- Goal is now: (∑ X)² ≤ (count / card) * (card * ∑ X²).
+  -- Rewrite the right side back to `count * ∑ X²` by cancelling card/card,
+  -- then finish with `hfin` directly.
+  have hcard_ne : (Fintype.card G : ℝ) ≠ 0 := ne_of_gt hcard_pos
+  have hrhs :
+      ((univ.filter (fun Δ => X Δ ≠ 0)).card : ℝ) / (Fintype.card G : ℝ) *
+          ((Fintype.card G : ℝ) * ∑ Δ, (X Δ) ^ 2) =
+        ((univ.filter (fun Δ => X Δ ≠ 0)).card : ℝ) * ∑ Δ, (X Δ) ^ 2 := by
+    field_simp
+  rw [hrhs]
+  exact hfin
+
 /-- Named hypothesis: a bound on the second moment `∑ N(Δ)²`. This is
 *not* proved here — it is exactly the open additive-energy question from
 advisory-7 §7.4 (roughly: `∑ N(Δ)² ≤ M` for some explicit `M` in terms of
