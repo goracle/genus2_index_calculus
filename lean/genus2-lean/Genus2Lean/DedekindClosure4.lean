@@ -7,7 +7,6 @@ import Mathlib
 import Genus2Lean.HyperellipticFunctionField
 import Genus2Lean.AffinePoints
 import Genus2Lean.DivisorClassGroup
-import Genus2Lean.PrincipalDivisors
 import Genus2Lean.DedekindClosure2
 import Genus2Lean.DedekindClosure3
 

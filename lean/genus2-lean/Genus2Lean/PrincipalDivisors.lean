@@ -2,7 +2,6 @@ import Mathlib
 import Genus2Lean.HyperellipticFunctionField
 import Genus2Lean.AffinePoints
 import Genus2Lean.DivisorClassGroup
-import Genus2Lean.DedekindClosure6
 
 set_option linter.style.header false
 
@@ -44,7 +43,6 @@ open Polynomial
 namespace HyperellipticPolynomial
 
 open Divisor
-
 variable {k : Type*} [Field k]
 variable {H : HyperellipticPolynomial k}
 
@@ -171,6 +169,68 @@ theorem toPair_injective (H : HyperellipticPolynomial k) (_hdeg : H.f.natDegree 
   obtain ⟨hA, hB⟩ := (toPair_eq_zero_iff H (A₁ - A₂) (B₁ - B₂)).mp hsub
   exact ⟨sub_eq_zero.mp hA, sub_eq_zero.mp hB⟩
 
+/-- The degree of `A^2` is always even. -/
+theorem natDegree_sq (p : k[X]) : (p ^ 2).natDegree = 2 * p.natDegree := by
+  by_cases hp : p = 0
+  · subst hp; simp
+  · rw [sq, Polynomial.natDegree_mul hp hp]
+    ring
+
+/-- The degree of `B^2 * H.f` is always odd when `H.f.natDegree = 5` and `B ≠ 0`. -/
+theorem natDegree_sq_mul_f (H : HyperellipticPolynomial k) (hdeg : H.f.natDegree = 5)
+    {B : k[X]} (hb : B ≠ 0) : (B ^ 2 * H.f).natDegree = 2 * B.natDegree + 5 := by
+  have hf0 : H.f ≠ 0 := by
+    intro h
+    rw [h] at hdeg
+    simp at hdeg
+  have hb2 : B ^ 2 ≠ 0 := pow_ne_zero 2 hb
+  rw [Polynomial.natDegree_mul hb2 hf0, natDegree_sq, hdeg]
+
+/-- The main degree formula: for `(A, B) ≠ (0, 0)`, the degree of `pairNorm H A B`
+in `k[X]` equals `-ordInfOfPair A B`. Parity prevents degree cancellation between
+`A^2` (even degree) and `B^2 * H.f` (odd degree). -/
+theorem natDegree_pairNorm_eq_neg_ordInfOfPair (H : HyperellipticPolynomial k)
+    (hdeg : H.f.natDegree = 5) (A B : k[X]) (hAB : ¬(A = 0 ∧ B = 0)) :
+    ((pairNorm H A B).natDegree : ℤ) = - ordInfOfPair A B := by
+  dsimp [ordInfOfPair]
+  rw [if_neg hAB, neg_neg]
+  by_cases hb : B = 0
+  · -- Case B = 0: pairNorm H A 0 = A^2
+    subst hb
+    have ha : A ≠ 0 := by
+      rintro rfl
+      exact hAB ⟨rfl, rfl⟩
+    have hnorm : pairNorm H A 0 = A ^ 2 := by
+      unfold pairNorm
+      simp
+    rw [hnorm, natDegree_sq]
+    simp only [if_true]
+    have hpos : (0 : ℤ) ≤ 2 * (A.natDegree : ℤ) := by positivity
+    rw [max_eq_left hpos]
+    push_cast
+    rfl
+  · -- Case B ≠ 0: parity forces natDegree (A^2 - B^2 * H.f) = max deg(A^2) deg(B^2 * H.f)
+    rw [if_neg hb]
+    unfold pairNorm
+    have hdegA : (A ^ 2).natDegree = 2 * A.natDegree := natDegree_sq A
+    have hdegB : (B ^ 2 * H.f).natDegree = 2 * B.natDegree + 5 := natDegree_sq_mul_f H hdeg hb
+    have hne : (A ^ 2).natDegree ≠ (B ^ 2 * H.f).natDegree := by
+      rw [hdegA, hdegB]
+      omega
+    have hmax : (A ^ 2 - B ^ 2 * H.f).natDegree =
+        max (A ^ 2).natDegree (B ^ 2 * H.f).natDegree := by
+      rw [sub_eq_add_neg]
+      have hneg : (- (B ^ 2 * H.f)).natDegree = (B ^ 2 * H.f).natDegree :=
+        Polynomial.natDegree_neg (B ^ 2 * H.f)
+      rcases lt_or_gt_of_ne hne with hlt | hgt
+      · have hlt' : (A ^ 2).natDegree < (- (B ^ 2 * H.f)).natDegree := by rwa [hneg]
+        rw [Polynomial.natDegree_add_eq_right_of_natDegree_lt hlt', hneg, max_eq_right_of_lt hlt]
+      · have hgt' : (- (B ^ 2 * H.f)).natDegree < (A ^ 2).natDegree := by rwa [hneg]
+        rw [Polynomial.natDegree_add_eq_left_of_natDegree_lt hgt', max_eq_left_of_lt hgt]
+    rw [hmax, hdegA, hdegB]
+    push_cast
+    rfl
+
 /-! ## §3. Affine orders of vanishing via Dedekind-domain machinery -/
 
 /-- The hypotheses needed for `CoordinateRing H` to be a Dedekind domain. -/
@@ -186,20 +246,88 @@ theorem coordinateRingIsDomain (H : HyperellipticPolynomial k)
   haveI : IsDomain (k[X]) := inferInstance
   exact AdjoinRoot.isDomain_of_prime nd.irreducible_defining_poly.prime
 
-/-- Given `NonsingularData`, `CoordinateRing H` is a Dedekind domain. -/
-theorem coordinateRingIsDedekindDomain (H : HyperellipticPolynomial k)
-    (nd : NonsingularData H) : IsDedekindDomain (CoordinateRing H) := by
-  haveI : IsDomain (CoordinateRing H) := coordinateRingIsDomain H nd
-  sorry
+/-- `CoordinateRing H` is Noetherian as a quotient of the polynomial ring `k[X][X]`. -/
+instance coordinateRing_isNoetherian (H : HyperellipticPolynomial k) :
+    IsNoetherianRing (CoordinateRing H) := by
+  haveI : IsNoetherianRing (k[X]) := inferInstance
+  haveI : IsNoetherianRing ((k[X])[X]) := Polynomial.isNoetherianRing
+  exact Ideal.Quotient.isNoetherianRing _
+
+-- `coordinateRing_isIntegrallyClosed` and `coordinateRingIsDedekindDomain` now live in
+-- `PrincipalDivisorsIntegralClosure.lean`, which imports both this file and
+-- `DedekindClosure5` (the latter transitively imports this file via
+-- `PrincipalDivisorsDedekind.lean`, so those two theorems can't live here without
+-- creating an import cycle).
+
+/-! ## §3.5. Concrete affine valuations -/
+
+set_option linter.style.openClassical false
+open Classical
+
+/-- Evaluation map on `CoordinateRing H` at an affine point `P = (x₀, y₀)`,
+mapping $X \mapsto P.val.1$ and $Y \mapsto P.val.2$. -/
+def evalAtPoint (P : H.Point) : CoordinateRing H →+* k :=
+  AdjoinRoot.lift (Polynomial.evalRingHom P.val.1) P.val.2 (by
+    have hP : P.val.2 ^ 2 - eval P.val.1 H.f = 0 :=
+      sub_eq_zero.mpr P.property
+    simpa [HyperellipticPolynomial.Equation] using hP)
+
+/-- `evalAtPoint P` is surjective onto $k$ because constant scalars $c \in k$ map to themselves. -/
+theorem evalAtPoint_surjective (P : H.Point) :
+    Function.Surjective (evalAtPoint P) := by
+  intro c
+  refine ⟨AdjoinRoot.mk ((X : (k[X])[X]) ^ 2 - C H.f) (C (C c)), ?_⟩
+  change Polynomial.eval₂ (Polynomial.evalRingHom P.val.1) P.val.2 (C (C c)) = c
+  simp
+
+/-- The maximal ideal $\mathfrak{m}_P \subset \text{CoordinateRing } H$ vanishing at $P$. -/
+def pointIdeal (P : H.Point) : Ideal (CoordinateRing H) :=
+  RingHom.ker (evalAtPoint P)
+
+/-- $\mathfrak{m}_P$ is a maximal ideal since `evalAtPoint P` is surjective onto the field `k`. -/
+theorem pointIdeal_isMaximal (P : H.Point) : (pointIdeal P).IsMaximal := by
+  have hsurj := evalAtPoint_surjective P
+  exact RingHom.ker_isMaximal_of_surjective (evalAtPoint P) hsurj
+
+/-- `pointIdeal P` as a height-one prime ideal in `CoordinateRing H`. -/
+def pointHeightOne [IsDedekindDomain (CoordinateRing H)]
+    (P : H.Point) (h_bot : pointIdeal P ≠ ⊥) :
+    IsDedekindDomain.HeightOneSpectrum (CoordinateRing H) where
+  asIdeal := pointIdeal P
+  isPrime := (pointIdeal_isMaximal P).isPrime
+  ne_bot := h_bot
+
+/-- Concrete order of vanishing of $A(x) + B(x)y$ at an affine point $P$,
+defined via the local valuation at $\mathfrak{m}_P$. -/
+noncomputable def ordAt [IsDedekindDomain (CoordinateRing H)]
+    (P : H.Point) (A B : k[X]) : ℤ :=
+  if toPair H A B = 0 then
+    0
+  else if h_bot : pointIdeal P = ⊥ then
+    0
+  else
+    WithZero.log ((pointHeightOne P h_bot).intValuation (toPair H A B))
+    
 
 /-! ## §4. `deg(div g) = 0` — the target theorem -/
 
-/-- Target statement: the affine orders plus the order at infinity sum to zero. -/
-theorem deg_div_eq_zero_deg5 (H : HyperellipticPolynomial k) (_hdeg : H.f.natDegree = 5)
-    (ordAt : H.Point → k[X] → k[X] → ℤ)
-    (S : Finset H.Point) (A B : k[X]) (_hAB : ¬(A = 0 ∧ B = 0))
-    (_hsupp : ∀ P, P ∉ S → ordAt P A B = 0) :
-    (∑ P ∈ S, ordAt P A B) + ordInfOfPair A B = 0 := by
+/-- The norm bridge lemma: the sum of the affine orders of vanishing of $A(x) + B(x)y$
+equals the degree of its norm $N(A + By) = A^2 - B^2 f$. -/
+theorem sum_ordAt_eq_natDegree_pairNorm [IsDedekindDomain (CoordinateRing H)]
+    (S : Finset H.Point) (A B : k[X]) (hAB : ¬(A = 0 ∧ B = 0))
+    (hsupp : ∀ P, P ∉ S → ordAt P A B = 0) :
+    (∑ P ∈ S, ordAt P A B) = ((pairNorm H A B).natDegree : ℤ) := by
   sorry
+
+/-- Target statement: the affine orders plus the order at infinity sum to zero. -/
+theorem deg_div_eq_zero_deg5 (H : HyperellipticPolynomial k) (hdeg : H.f.natDegree = 5)
+    [IsDedekindDomain (CoordinateRing H)]
+    (S : Finset H.Point) (A B : k[X]) (hAB : ¬(A = 0 ∧ B = 0))
+    (hsupp : ∀ P, P ∉ S → ordAt P A B = 0) :
+    (∑ P ∈ S, ordAt P A B) + ordInfOfPair A B = 0 := by
+  rw [sum_ordAt_eq_natDegree_pairNorm S A B hAB hsupp]
+  have hdeg_norm := natDegree_pairNorm_eq_neg_ordInfOfPair H hdeg A B hAB
+  rw [hdeg_norm]
+  omega
 
 end HyperellipticPolynomial

@@ -20,5 +20,5 @@ import Genus2Lean.DedekindClosure2
 import Genus2Lean.DedekindClosure3
 import Genus2Lean.DedekindClosure4
 import Genus2Lean.DedekindClosure5
-import Genus2Lean.DedekindClosure6
+import Genus2Lean.PrincipalDivisorsIntegralClosure
 

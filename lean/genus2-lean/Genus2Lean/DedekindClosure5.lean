@@ -125,8 +125,11 @@ theorem poly_coeff_of_two_mul (h2 : (2 : k) ≠ 0) {a_K : K}
   have h2_map : (2 : K) = algebraMap k[X] K (C 2) := by simp [map_ofNat]
   rw [h2_map, ← mul_assoc, ← map_mul, ← C_mul, inv_mul_cancel₀ h2, map_one, map_one, one_mul]
 
-/-- Square-free denominator reduction -/
-theorem poly_coeff_of_norm {a : k[X]} {b_K : K}
+/-- Square-free denominator reduction. Requires `Squarefree H.f` explicitly — this is a genuine
+hypothesis about the specific curve `H`, not a fact derivable from `H` alone (see the note at
+`HyperellipticPolynomial.squarefree_f`'s old site in `HyperellipticFunctionField.lean`); callers
+typically supply `nd.squarefree_f` from a `NonsingularData H`. -/
+theorem poly_coeff_of_norm (hsf : Squarefree H.f) {a : k[X]} {b_K : K}
     (hnorm : ∃ q : k[X], (algebraMap k[X] K a) ^ 2 - b_K ^ 2 * algebraMap k[X] K H.f = algebraMap k[X] K q) :
     ∃ b : k[X], b_K = algebraMap k[X] K b := by
   rcases hnorm with ⟨q, hq⟩
@@ -136,7 +139,7 @@ theorem poly_coeff_of_norm {a : k[X]} {b_K : K}
     refine ⟨a ^ 2 - q, ?_⟩
     rw [map_sub, map_pow]
     linear_combination -hq
-  obtain ⟨b, hb_eq⟩ := sq_mul_mem_of_squarefree H.f H.squarefree_f b_K hb
+  obtain ⟨b, hb_eq⟩ := sq_mul_mem_of_squarefree H.f hsf b_K hb
   exact ⟨b, hb_eq.symm⟩
 
 /-- Every integral element $x \in L$ over $k[X]$ can be expressed as $a + b \cdot y_L$ 
@@ -150,6 +153,7 @@ theorem mem_integralClosure_iff_poly_coefficients
         a₁ = a₂ ∧ b₁ = b₂)
     (yL_sq : yL ^ 2 = (algebraMap k[X] L) H.f)
     (h2 : (2 : k) ≠ 0)
+    (hsf : Squarefree H.f)
     (x : L) :
     x ∈ integralClosure k[X] L ↔
       ∃ a b : k[X], x = (algebraMap k[X] L) a + (algebraMap k[X] L) b * yL := by
@@ -168,7 +172,7 @@ theorem mem_integralClosure_iff_poly_coefficients
       refine ⟨b', ?_⟩
       rw [← ha]
       exact hb'
-    obtain ⟨b, hb⟩ := poly_coeff_of_norm H hb_norm
+    obtain ⟨b, hb⟩ := poly_coeff_of_norm H hsf hb_norm
     refine ⟨a, b, ?_⟩
     rw [hx_decomp, ha, hb, IsScalarTower.algebraMap_apply k[X] K L,
       IsScalarTower.algebraMap_apply k[X] K L]

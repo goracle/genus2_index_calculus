@@ -317,9 +317,14 @@ theorem riemann_roch_dim_identity (n : ℕ) (hn : 3 ≤ n) :
   · omega
   · omega
 
-/-- The defining polynomial is squarefree. This is currently stored as a theorem
-so later proofs can use `H.squarefree_f`. -/
-theorem squarefree_f (H : HyperellipticPolynomial k) : Squarefree H.f := by
-  sorry
+/- **Squarefreeness is a genuine hypothesis, not a theorem.** The `HyperellipticPolynomial`
+structure only records `f` and its degree; nothing about the coefficients prevents a repeated
+root (e.g. `f = X^2 * (X^3 - 1)` has `natDegree = 5` and satisfies `HyperellipticPolynomial.mk`
+but is not squarefree). The previous version of this file stated `squarefree_f` as a `sorry`'d
+theorem claiming it held for every `H`, which is false and unprovable as stated; `nd.squarefree_f`
+in `NonsingularData` (`PrincipalDivisors.lean`) is the correct, honest way to require it — it's a
+hypothesis supplied by whoever constructs `NonsingularData H` for a specific curve, not a fact
+derivable from `H` alone. Downstream code should take `Squarefree H.f` (or `nd : NonsingularData H`
+and use `nd.squarefree_f`) as an explicit argument instead of calling a blanket `H.squarefree_f`. -/
 
 end HyperellipticPolynomial
