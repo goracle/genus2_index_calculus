@@ -60,22 +60,44 @@ argument has genuinely nontrivial (not just bookkeeping) content — "if `H.f` i
 `B ^ 2 * H.f ∈ k[X]` for `B ∈ k(X)`, then `B ∈ k[X]`" — is isolated as its own lemma
 (`sq_mul_mem_of_squarefree`).
 
-**Update (this session): `sq_mul_mem_of_squarefree` is no longer one opaque `sorry`.** It now has
+**Update (previous session): `sq_mul_mem_of_squarefree` is no longer one opaque `sorry`.** It has
 a complete, fully-linked Gauss's-lemma-style proof (strong induction on denominator degree,
 cancelling common irreducible factors, using `Squarefree f` to rule out the case where no further
 cancellation is possible — see that lemma's docstring for the full case breakdown) split across
 three declarations (`mk'_sq_mul_eq_iff`, `sq_mul_mem_of_squarefree_aux`,
-`sq_mul_mem_of_squarefree` itself). The overall *structure* of that proof is now load-bearing
-(**CONFIRMED-tier**: ordinary `have`/`obtain`/`calc` bookkeeping, no exotic tactics). What remains
-`sorry`'d is five small, individually-typed, **PLAUSIBLE-tier** gaps — each a single named Mathlib
-fact whose exact spelling wasn't checked against a live goal state (denominator-clearing for
-`mk'`, the base-case unit/inverse identification, an `mk'`-cancellation identity, an
-irreducible-factor-degree-positivity fact, and "prime + not-dividing + PID ⟹ coprime") — see the
-inline comments at each `sorry` site for the precise candidates. Converting one big gap into five
-small, precisely-targeted ones is the actual progress this session made; none of the five looks
-like it should need more than a handful of `exact?`/`apply?` tries in a live session. Everything
-downstream of `sq_mul_mem_of_squarefree` (§3.1, §3.2) is unchanged from before and still
-**PLAUSIBLE-tier** scaffolding, not attempted this session.
+`sq_mul_mem_of_squarefree` itself). The overall *structure* of that proof is load-bearing
+(**CONFIRMED-tier**: ordinary `have`/`obtain`/`calc` bookkeeping, no exotic tactics).
+
+**Update (this session): all five of that proof's small gaps are now closed.** They were split
+off into two standalone scratch files, `PrincipalDivisorsDedekindGaps.lean` (targets 1–4:
+denominator-clearing for `mk'`, the base-case unit/inverse identification, an `mk'`-cancellation
+identity, an irreducible-factor-degree-positivity fact) and `PrincipalDivisorsDedekindGaps2.lean`
+(target 5: "prime + not-dividing + PID ⟹ coprime", closed via `Irreducible.isUnit_gcd_iff` +
+`gcd_isUnit_iff` rather than a named coprimality lemma). Per live build feedback all five compile
+in those scratch files; this session folds each proof back in at its original `sorry` site here
+(two as new standalone `private theorem`s — `irreducible_polynomial_natDegree_pos`,
+`isCoprime_of_irreducible_not_dvd` — used at their call sites; the other three inlined directly
+into `mk'_sq_mul_eq_iff`, the base case of `sq_mul_mem_of_squarefree_aux`, and its Case-A
+`mk'`-cancellation step respectively), and both scratch files are now superseded and can be
+retired. `sq_mul_mem_of_squarefree` and everything it depends on is therefore **CONFIRMED-tier,
+fully proved, no `sorry`s** — modulo the recomposition itself not yet having been run through a
+live Lean session (see note at the very bottom of this docstring). One new typeclass dependency
+was introduced: `isCoprime_of_irreducible_not_dvd` needs `[DecidableEq k]`, discharged locally via
+`classical` at its one call site rather than threading it through the file's ambient `variable`
+block, so it doesn't leak into anything else's signature.
+
+Everything downstream of `sq_mul_mem_of_squarefree` (§3.1, §3.2) is unchanged from before and
+still **PLAUSIBLE-tier** scaffolding, not attempted this session — those two remaining `sorry`s
+(`coordinateRing_isIntegrallyClosed_in_fractionField`, `coordinateRingIsDedekindDomain_viaIntegralClosure`)
+are the next frontier, not today's.
+
+**Recomposition caveat**: this fold-in was done by direct text surgery (matching goal shapes by
+inspection against each scratch file's already-checked proof), not by re-running Lean — the
+individual proofs are **CONFIRMED** in isolation (per the live feedback that closed them in the
+scratch files) but their *transplant* into this file's exact local context (hypothesis names,
+`subst` behavior at the Case-A cancellation site in particular — flagged inline there) is
+**PLAUSIBLE** until the next `lake build` confirms it. Trust the process; if something doesn't
+land, it'll be a small, precisely-located mismatch, not a sign the underlying math is wrong.
 -/
 
 namespace HyperellipticPolynomial
@@ -85,13 +107,13 @@ variable {H : HyperellipticPolynomial k}
 
 /-! ## §3.0 The one hard sub-lemma, isolated
 
-Everything else in this file is scaffolding around this single fact. Its proof (this session)
-is fully structured — strong induction with all cases linked together — with five small,
-independently-checkable `sorry`s standing in for specific named Mathlib facts (see each
-`sorry` site's comment). If a later session closes those five, the rest of the file's one
-remaining `sorry` (in `coordinateRing_isIntegrallyClosed_in_fractionField`) should become
-attemptable, since it's *definitionally* built by calling this lemma at the point flagged ⚠
-in its own docstring.
+Everything else in this file is scaffolding around this single fact. Its proof is fully
+structured — strong induction with all cases linked together — and, as of this session, fully
+closed: the five small gaps that used to stand in for specific named Mathlib facts are now
+folded in (see the module docstring above for the fold-in details and the recomposition
+caveat). The rest of the file's two remaining `sorry`s (§3.1, §3.2) should now be attemptable,
+since `coordinateRing_isIntegrallyClosed_in_fractionField` is *definitionally* built by calling
+this lemma at the point flagged ⚠ in its own docstring.
 -/
 
 /-! **The squarefree-radical lemma, overview.** If `f` is squarefree in `k[X]` and `b ∈ k(X)` is
@@ -154,7 +176,7 @@ proved by `Nat.strong_induction_on`):
 Termination: `q.natDegree` strictly decreases in the only case that survives, so the induction
 is well-founded. -/
 
-/-- **Denominator-clearing, isolated.** The one localization-arithmetic fact the main proof
+/-! **Denominator-clearing, isolated.** The one localization-arithmetic fact the main proof
 needs: if `mk' K p ⟨q,_⟩ ^ 2 * algebraMap _ _ f = algebraMap _ _ c`, then `p ^ 2 * f = c * q ^ 2`
 as polynomials. **PLAUSIBLE, sorry'd**: mathematically immediate (squaring and clearing a single
 denominator), but the exact Mathlib `IsLocalization.mk'` lemma names for "`mk' K a s ^ 2 =
@@ -162,21 +184,129 @@ mk' K (a^2) (s^2)`" and "`mk' K a s = algebraMap _ _ c ↔ a = c * s`" were not 
 live goal state — candidates `IsLocalization.mk'_pow`, `IsLocalization.mk'_eq_iff_eq'`,
 `IsLocalization.mk'_eq_iff_eq`. This is exactly the kind of small, mechanical, individually
 `exact?`-able gap the induction was structured to expose rather than bury. -/
+
+/-- An irreducible polynomial over a field has positive `natDegree`. Contrapositive of
+`Polynomial.isUnit_iff_degree_eq_zero`. (Folded in from `PrincipalDivisorsDedekindGaps.lean`,
+target 4 — confirmed to build there per live feedback.) -/
+private theorem irreducible_polynomial_natDegree_pos {π : k[X]} (hπ : Irreducible π) :
+    0 < π.natDegree := by
+  rcases Nat.eq_zero_or_pos π.natDegree with hzero | hpos
+  · exfalso
+    have hπ_ne : π ≠ 0 := hπ.ne_zero
+    have hdeg_zero : π.degree = 0 := by
+      rw [Polynomial.degree_eq_natDegree hπ_ne, hzero]
+      rfl
+    have hunit : IsUnit π := Polynomial.isUnit_iff_degree_eq_zero.mpr hdeg_zero
+    exact hπ.1 hunit
+  · exact hpos
+
+/-- Cancelling a common nonzero factor `π` from both the numerator and denominator of an
+`IsLocalization.mk'` element. (Folded in from `PrincipalDivisorsDedekindGaps.lean`, target 3 —
+confirmed to build there per live feedback; this is the full proof, not the earlier
+`mk'_eq_iff_eq'`-based attempt that turned out to leave both sides wrapped in `algebraMap`.) -/
+private theorem mk'_cancel_common_factor {π p₁ q₁ : k[X]} (hπ : π ≠ 0) (hq₁ : q₁ ≠ 0) :
+    IsLocalization.mk' (FractionRing k[X]) (π * p₁)
+        (⟨π * q₁, mem_nonZeroDivisors_of_ne_zero (mul_ne_zero hπ hq₁)⟩ : nonZeroDivisors k[X]) =
+      IsLocalization.mk' (FractionRing k[X]) p₁
+        (⟨q₁, mem_nonZeroDivisors_of_ne_zero hq₁⟩ : nonZeroDivisors k[X]) := by
+  set K := FractionRing k[X]
+  set s1 : nonZeroDivisors k[X] :=
+    ⟨π * q₁, mem_nonZeroDivisors_of_ne_zero (mul_ne_zero hπ hq₁)⟩ with hs1_def
+  set s2 : nonZeroDivisors k[X] := ⟨q₁, mem_nonZeroDivisors_of_ne_zero hq₁⟩ with hs2_def
+  have hspec1 : IsLocalization.mk' K (π * p₁) s1 * algebraMap k[X] K (s1 : k[X]) =
+      algebraMap k[X] K (π * p₁) := IsLocalization.mk'_spec K (π * p₁) s1
+  have hspec2 : IsLocalization.mk' K p₁ s2 * algebraMap k[X] K (s2 : k[X]) =
+      algebraMap k[X] K p₁ := IsLocalization.mk'_spec K p₁ s2
+  have hinj : Function.Injective (algebraMap k[X] K) := IsFractionRing.injective k[X] K
+  have hπK_ne : algebraMap k[X] K π ≠ 0 := (map_ne_zero_iff _ hinj).mpr hπ
+  have hs1_ne : algebraMap k[X] K (s1 : k[X]) ≠ 0 := by
+    rw [hs1_def]
+    exact (map_ne_zero_iff _ hinj).mpr (mul_ne_zero hπ hq₁)
+  have hq1K_ne : algebraMap k[X] K q₁ ≠ 0 := (map_ne_zero_iff _ hinj).mpr hq₁
+  have hkey : IsLocalization.mk' K (π * p₁) s1 * algebraMap k[X] K (s1 : k[X]) =
+      IsLocalization.mk' K p₁ s2 * algebraMap k[X] K (s1 : k[X]) := by
+    rw [hspec1, hs1_def]
+    show algebraMap k[X] K (π * p₁) = IsLocalization.mk' K p₁ s2 * algebraMap k[X] K (π * q₁)
+    have hrhs : IsLocalization.mk' K p₁ s2 * algebraMap k[X] K (π * q₁) =
+        IsLocalization.mk' K p₁ s2 * algebraMap k[X] K (s2 : k[X]) * algebraMap k[X] K π := by
+      rw [hs2_def]
+      show IsLocalization.mk' K p₁ s2 * algebraMap k[X] K (π * q₁) =
+        IsLocalization.mk' K p₁ s2 * algebraMap k[X] K q₁ * algebraMap k[X] K π
+      rw [map_mul]
+      ring
+    rw [hrhs, hspec2, ← map_mul]
+    congr 1
+    ring
+  exact mul_right_cancel₀ hs1_ne hkey
+
+/-- In `k[X]` (`k` a field), an irreducible `π` not dividing `p` is coprime to `p`. Built from
+`gcd`/`Irreducible.isUnit_gcd_iff` rather than a single named "irreducible + not-dividing ⟹
+coprime" lemma. (Folded in from `PrincipalDivisorsDedekindGaps2.lean`'s
+`isCoprime_of_irreducible_not_dvd'`, target 5 — this was the last of the five gaps closed; the
+final proof needed `[DecidableEq k]`, which is why this lemma — and only this one of the five —
+carries that extra typeclass assumption.) -/
+private theorem isCoprime_of_irreducible_not_dvd [DecidableEq k]
+    {π p : k[X]} (hπ : Irreducible π) (hnd : ¬ π ∣ p) : IsCoprime π p := by
+  have hunit : IsUnit (gcd π p) := (hπ.isUnit_gcd_iff (y := p)).2 hnd
+  exact (gcd_isUnit_iff π p).1 hunit
+
 private theorem mk'_sq_mul_eq_iff (f c p q : k[X]) (hq : q ≠ 0) :
     (IsLocalization.mk' (FractionRing k[X]) p
         (⟨q, mem_nonZeroDivisors_of_ne_zero hq⟩ : nonZeroDivisors k[X])) ^ 2 *
         algebraMap k[X] (FractionRing k[X]) f = algebraMap k[X] (FractionRing k[X]) c ↔
       p ^ 2 * f = c * q ^ 2 := by
-  sorry
+  set K := FractionRing k[X]
+  set s : nonZeroDivisors k[X] := ⟨q, mem_nonZeroDivisors_of_ne_zero hq⟩ with hs_def
+  -- The defining equation of `mk'`: `mk' K p s * algebraMap _ _ (s : k[X]) = algebraMap _ _ p`.
+  have hspec : IsLocalization.mk' K p s * algebraMap k[X] K (s : k[X]) =
+      algebraMap k[X] K p := IsLocalization.mk'_spec K p s
+  have hqK_ne : algebraMap k[X] K (s : k[X]) ≠ 0 := by
+    have hinj : Function.Injective (algebraMap k[X] K) := IsFractionRing.injective k[X] K
+    have hs_ne : (s : k[X]) ≠ 0 := by rw [hs_def]; exact hq
+    exact (map_ne_zero_iff _ hinj).mpr hs_ne
+  constructor
+  · intro h
+    -- Multiply `h` through by `algebraMap _ _ (q^2)`, then use `hspec` (squared) to replace
+    -- `mk' K p s ^ 2 * algebraMap _ _ (q^2)` with `algebraMap _ _ (p^2)`.
+    have hspec2 : IsLocalization.mk' K p s ^ 2 * (algebraMap k[X] K (s : k[X])) ^ 2 =
+        algebraMap k[X] K p ^ 2 := by
+      rw [← mul_pow, hspec]
+    have hstep : algebraMap k[X] K p ^ 2 * algebraMap k[X] K f =
+        algebraMap k[X] K c * (algebraMap k[X] K (s : k[X])) ^ 2 := by
+      have hq2ne : (algebraMap k[X] K (s : k[X])) ^ 2 ≠ 0 := pow_ne_zero 2 hqK_ne
+      have hlhs : IsLocalization.mk' K p s ^ 2 * algebraMap k[X] K f *
+          (algebraMap k[X] K (s : k[X])) ^ 2 =
+          algebraMap k[X] K p ^ 2 * algebraMap k[X] K f := by
+        rw [mul_right_comm, hspec2]
+      rw [h] at hlhs
+      exact hlhs.symm
+    have hinj : Function.Injective (algebraMap k[X] K) := IsFractionRing.injective k[X] K
+    apply hinj
+    rw [map_mul, map_pow, map_mul, map_pow]
+    simpa [hs_def] using hstep
+  · intro h
+    have hmapped : algebraMap k[X] K (p ^ 2 * f) = algebraMap k[X] K (c * q ^ 2) := by
+      rw [h]
+    rw [map_mul, map_pow, map_mul, map_pow] at hmapped
+    have hspec2 : IsLocalization.mk' K p s ^ 2 * (algebraMap k[X] K (s : k[X])) ^ 2 =
+        algebraMap k[X] K p ^ 2 := by
+      rw [← mul_pow, hspec]
+    have hq2ne : (algebraMap k[X] K (s : k[X])) ^ 2 ≠ 0 := pow_ne_zero 2 hqK_ne
+    have hgoal_scaled : IsLocalization.mk' K p s ^ 2 * algebraMap k[X] K f *
+        (algebraMap k[X] K (s : k[X])) ^ 2 =
+        algebraMap k[X] K c * (algebraMap k[X] K (s : k[X])) ^ 2 := by
+      rw [mul_right_comm, hspec2]
+      simpa [hs_def] using hmapped
+    exact mul_right_cancel₀ hq2ne hgoal_scaled
 
-/-- **The induction, isolated.** For every `q ≠ 0` and `p c : k[X]` with `p² f = c q²`, the
+/-- **The induction.** For every `q ≠ 0` and `p c : k[X]` with `p² f = c q²`, the
 element `mk' K p ⟨q,_⟩` already lies in the range of `algebraMap k[X] (FractionRing k[X])`.
 Proved by strong induction on `q.natDegree`; see the module-level docstring above
-(`sq_mul_mem_of_squarefree`) for the full case breakdown. The two genuinely uncertain
-sub-steps — the unit/inverse identification in the base case, and the `mk'`-cancellation
-identity `mk' K (π p₁) ⟨π q₁,_⟩ = mk' K p₁ ⟨q₁,_⟩` in the inductive step's surviving case —
-are isolated as their own `sorry`s inline rather than left implicit, so a live session can
-target each with `exact?`/`apply?` independently. -/
+(`sq_mul_mem_of_squarefree`) for the full case breakdown. The two sub-steps that were the
+genuinely uncertain part — the unit/inverse identification in the base case, and the
+`mk'`-cancellation identity `mk' K (π p₁) ⟨π q₁,_⟩ = mk' K p₁ ⟨q₁,_⟩` in the inductive step's
+surviving case — are now filled in (see module docstring's fold-in note), each via the matching
+lemma from the two `...Gaps` scratch files. -/
 private theorem sq_mul_mem_of_squarefree_aux (f : k[X]) (hf : Squarefree f) :
     ∀ n : ℕ, ∀ q : k[X], q.natDegree = n → ∀ (hq : q ≠ 0), ∀ p c : k[X],
       p ^ 2 * f = c * q ^ 2 →
@@ -189,14 +319,27 @@ private theorem sq_mul_mem_of_squarefree_aux (f : k[X]) (hf : Squarefree f) :
     intro q hqdeg hq p c hpc
     rcases eq_or_ne q.natDegree 0 with hq0 | hq0
     · -- Base case: `q` is a nonzero constant, hence a unit in `k[X]` (`k` a field).
-      -- **PLAUSIBLE, sorry'd**: extract `q`'s unit-inverse and exhibit
-      -- `p' := p * (that inverse, as a polynomial)` with
-      -- `algebraMap _ _ p' = mk' K p ⟨q,_⟩`. Exact route: `q = C q₀` with
-      -- `q₀ ≠ 0` (`Polynomial.natDegree_eq_zero_iff_degree_le_zero` +
-      -- `Polynomial.eq_C_of_natDegree_eq_zero`), `q₀` a unit in `k` (`k` a field),
-      -- then `mk' K p ⟨C q₀,_⟩ = algebraMap _ _ (p * C q₀⁻¹)` via
-      -- `IsLocalization.mk'_eq_iff_eq_mul` or a direct unit-cancellation lemma for `mk'`.
-      sorry
+      -- `q = C q₀` for some `q₀ : k`, `q₀ ≠ 0`; exhibit `p' := p * C q₀⁻¹` directly.
+      obtain ⟨q₀, hq₀⟩ := Polynomial.natDegree_eq_zero.mp hq0
+      subst hq₀
+      have hq₀_ne : q₀ ≠ 0 := by
+        intro h; apply hq; rw [h]; exact map_zero C
+      refine ⟨p * C q₀⁻¹, ?_⟩
+      set K := FractionRing k[X]
+      set s : nonZeroDivisors k[X] := ⟨C q₀, mem_nonZeroDivisors_of_ne_zero hq⟩ with hs_def
+      have hspec : IsLocalization.mk' K p s * algebraMap k[X] K (s : k[X]) =
+          algebraMap k[X] K p := IsLocalization.mk'_spec K p s
+      have hinj : Function.Injective (algebraMap k[X] K) := IsFractionRing.injective k[X] K
+      have hsK_ne : algebraMap k[X] K (s : k[X]) ≠ 0 := by
+        rw [hs_def]
+        exact (map_ne_zero_iff _ hinj).mpr hq
+      apply mul_right_cancel₀ hsK_ne
+      rw [hspec]
+      rw [hs_def]
+      show algebraMap k[X] K (p * C q₀⁻¹) * algebraMap k[X] K (C q₀) = algebraMap k[X] K p
+      rw [← map_mul]
+      congr 1
+      rw [mul_assoc, ← C_mul, inv_mul_cancel₀ hq₀_ne, C_1, mul_one]
     · -- Inductive step: `q` has positive degree, hence is a non-unit, hence (`k[X]` a PID)
       -- has an irreducible factor.
       have hq_not_unit : ¬ IsUnit q := by
@@ -219,21 +362,10 @@ private theorem sq_mul_mem_of_squarefree_aux (f : k[X]) (hf : Squarefree f) :
         have hq₁_deg_lt : q₁.natDegree < n := by
           have hq_eq : q.natDegree = π.natDegree + q₁.natDegree := by
             rw [hq₁, Polynomial.natDegree_mul hπ_ne hq₁_ne]
-          -- `π` irreducible ⟹ not a unit ⟹ (`k` a field, so units of `k[X]` are exactly
-          -- the nonzero constants) `π.natDegree ≠ 0`; combined with `π ≠ 0`,
-          -- `π.natDegree > 0`. **PLAUSIBLE, sorry'd**: exact converse-direction lemma name
-          -- for "`natDegree = 0` and nonzero `⟹` `IsUnit`" over a field not confirmed —
-          -- candidates `Polynomial.isUnit_iff`, `Polynomial.isUnit_C`; this is the
-          -- contrapositive of `Polynomial.natDegree_eq_zero_of_isUnit` already used above
-          -- for `hq_not_unit`, so whichever lemma backs that one likely has (or is) the
-          -- iff form needed here too.
-          have hπ_deg_pos : 0 < π.natDegree := by
-            rcases Nat.eq_zero_or_pos π.natDegree with hπ0 | hπpos
-            · exfalso
-              obtain ⟨hπ_not_unit, -⟩ := hπ_irred
-              apply hπ_not_unit
-              sorry
-            · exact hπpos
+          -- `π` irreducible ⟹ `π.natDegree > 0` (over a field): closed via
+          -- `irreducible_polynomial_natDegree_pos` (contrapositive of
+          -- `Polynomial.isUnit_iff_degree_eq_zero`, matching `hq_not_unit`'s route above).
+          have hπ_deg_pos : 0 < π.natDegree := irreducible_polynomial_natDegree_pos hπ_irred
           omega
         -- The polynomial identity descends: from `p = π p₁`, `q = π q₁`,
         -- `p² f = c q²` becomes `π² p₁² f = c π² q₁²`, and cancelling `π² ≠ 0`
@@ -250,22 +382,32 @@ private theorem sq_mul_mem_of_squarefree_aux (f : k[X]) (hf : Squarefree f) :
         obtain ⟨p', hp'⟩ := ih q₁.natDegree hq₁_deg_lt q₁ rfl hq₁_ne p₁ c hp1c
         refine ⟨p', ?_⟩
         rw [hp']
-        -- **PLAUSIBLE, sorry'd**: `mk' K p₁ ⟨q₁,_⟩ = mk' K p ⟨q,_⟩` given `p = π p₁`,
-        -- `q = π q₁`, `π ≠ 0` — a standard `IsLocalization.mk'` cancellation identity.
-        -- Candidates: `IsLocalization.mk'_mul_cancel_left`,
-        -- building it from `IsLocalization.mk'_eq_iff_eq'` directly instead.
-        sorry
+        -- `mk' K p₁ ⟨q₁,_⟩ = mk' K p ⟨q,_⟩` given `p = π p₁`, `q = π q₁`: substitute and apply
+        -- `mk'_cancel_common_factor` (folded in from `PrincipalDivisorsDedekindGaps.lean`,
+        -- target 3 — confirmed to build there per live feedback). **One spot flagged for a
+        -- live check**: `subst hp₁ hq₁` here eliminates `p`/`q` throughout the whole tactic
+        -- block (including `hpc`, `hπp`, earlier `have`s) rather than just the goal — should
+        -- be harmless since nothing above this line depends on `p`/`q` staying un-substituted,
+        -- but if Lean complains about subst direction/ordering, `rw [hp₁, hq₁]` on just the
+        -- goal (`mk' K p₁ ⟨q₁,_⟩ = mk' K p ⟨q,_⟩` → `mk' K p₁ ⟨q₁,_⟩ = mk' K (π*p₁) ⟨π*q₁,_⟩`)
+        -- followed by `exact (mk'_cancel_common_factor hπ_ne hq₁_ne).symm` is the fallback.
+        subst hp₁ hq₁
+        exact (mk'_cancel_common_factor hπ_ne hq₁_ne).symm
       · -- Case B: `π ∤ p`. Derive `π² ∣ f`, contradicting `Squarefree f`.
         exfalso
         have hπ2_dvd_q2 : π ^ 2 ∣ q ^ 2 := pow_dvd_pow_of_dvd hπ_dvd 2
         have hπ2_dvd_rhs : π ^ 2 ∣ c * q ^ 2 := hπ2_dvd_q2.mul_left c
         have hπ2_dvd_lhs : π ^ 2 ∣ p ^ 2 * f := hpc ▸ hπ2_dvd_rhs
-        -- **PLAUSIBLE, sorry'd**: "prime `π`, `π ∤ p`, PID ⟹ `IsCoprime π p`" — standard
-        -- fact for a PID (Bézout via `EuclideanDomain`/`PrincipalIdealRing`), exact
-        -- Mathlib name not confirmed. Candidates: `EuclideanDomain.isCoprime_of_...`,
-        -- `Irreducible.coprime_iff_not_dvd` (combined with `hπ_irred`).
+        -- "prime `π`, `π ∤ p`, PID ⟹ `IsCoprime π p`" — closed via
+        -- `isCoprime_of_irreducible_not_dvd` (folded in from
+        -- `PrincipalDivisorsDedekindGaps2.lean`'s `isCoprime_of_irreducible_not_dvd'`,
+        -- target 5 — the last of the five gaps, confirmed to build there per live feedback).
+        -- Note this lemma needs `[DecidableEq k]`, which is why that instance is threaded
+        -- through this whole file's `variable {k : Type*} [Field k]` block below via a local
+        -- instance at the point of use (see that lemma's own signature above).
         have hcoprime : IsCoprime π p := by
-          sorry
+          classical
+          exact isCoprime_of_irreducible_not_dvd hπ_irred hπp
         have hcoprime2 : IsCoprime (π ^ 2) (p ^ 2) := hcoprime.pow
         have hπ2_dvd_f : π ^ 2 ∣ f := hcoprime2.dvd_of_dvd_mul_left hπ2_dvd_lhs
         obtain ⟨d, hd⟩ := hπ2_dvd_f

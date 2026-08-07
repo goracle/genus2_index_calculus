@@ -317,4 +317,9 @@ theorem riemann_roch_dim_identity (n : ℕ) (hn : 3 ≤ n) :
   · omega
   · omega
 
+/-- The defining polynomial is squarefree. This is currently stored as a theorem
+so later proofs can use `H.squarefree_f`. -/
+theorem squarefree_f (H : HyperellipticPolynomial k) : Squarefree H.f := by
+  sorry
+
 end HyperellipticPolynomial

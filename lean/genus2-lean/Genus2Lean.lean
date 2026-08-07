@@ -14,8 +14,10 @@ import Genus2Lean.PaleyZygmund
 import Genus2Lean.AffinePoints
 import Genus2Lean.DivisorClassGroup
 import Genus2Lean.PrincipalDivisors
-import Genus2Lean.PrincipalDivisorsScratch
 import Genus2Lean.PrincipalDivisorsDedekind
-import Genus2Lean.PrincipalDivisorsDedekindGaps
-import Genus2Lean.PrincipalDivisorsDedekindGaps2
+import Genus2Lean.FFKSidon
+import Genus2Lean.DedekindClosure2
+import Genus2Lean.DedekindClosure3
+import Genus2Lean.DedekindClosure4
+import Genus2Lean.DedekindClosure5
 
