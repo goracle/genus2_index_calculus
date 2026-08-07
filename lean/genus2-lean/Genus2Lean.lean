@@ -16,4 +16,6 @@ import Genus2Lean.DivisorClassGroup
 import Genus2Lean.PrincipalDivisors
 import Genus2Lean.PrincipalDivisorsScratch
 import Genus2Lean.PrincipalDivisorsDedekind
+import Genus2Lean.PrincipalDivisorsDedekindGaps
+import Genus2Lean.PrincipalDivisorsDedekindGaps2
 
