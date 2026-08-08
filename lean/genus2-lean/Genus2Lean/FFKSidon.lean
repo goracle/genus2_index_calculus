@@ -18,16 +18,19 @@ file states the theorem advisory-7 §4 actually needs — the point-level dichot
 against that reduction, and closes the direction that is genuine divisor
 arithmetic and needs no principal-divisor input at all.
 
-**Status: the interesting direction is `sorry`'d.** The FFK theorem
+**Status: no `sorry` remains in this file**, but the interesting direction is
+still gated on an unproven hypothesis (`SidonDichotomy`, see below) rather
+than derived from first principles. The FFK theorem
 (Forey–Fresán–Kowalski, "Sidon sets in algebraic geometry", 2023, Theorem 1,
 case `g=2`) asserts
 
     s(x₁) + s(x₂) = s(x₃) + s(x₄)  ⟹  {x₁,x₂} = {x₃,x₄} ∨ (x₂ = ι x₁ ∧ x₄ = ι x₃)
 
 The **backward** direction (dichotomy holds ⟹ the sum equation) is pure divisor
-bookkeeping — no genus-2 geometry, no principal divisors, just `abel` after
-unfolding `s` — and is proved unconditionally below
-(`sum_eq_of_dichotomy`). The **forward** direction is where all of FFK's actual
+bookkeeping — no genus-2 geometry beyond one containment fact
+(`PrincipalDivisorData.HyperellipticClass`, itself genuinely true of the real
+principal divisors but not yet derivable from the current abstract `P`) — and
+is proved below (`sum_eq_of_dichotomy`), given that fact as a hypothesis. The **forward** direction is where all of FFK's actual
 content lives: it says a *nontrivial* linear equivalence
 `(x₁)+(x₂)-(x₃)-(x₄) ~ 0` on a genus-2 curve forces one of the two degenerate
 shapes, which is a Riemann–Roch-flavoured fact about genus-2 curves specifically
@@ -119,39 +122,53 @@ theorem sum_eq_of_pair_eq (D : PrincipalDivisorData H) (δ₀ : H.Point)
 the content of `a0 := s(x) + s(ι x)` being independent of `x` (advisory-7 §4's
 "center" of the Sidon set).
 
-**PLAUSIBLE, `sorry`'d**: route via `s_add_s_eq_s_add_s_iff`, reducing the goal
-to `(x₁) + (ι x₁) - (x₃) - (ι x₃) ∈ D.P`. This divisor is *not* obviously `0`
-(so `mem_bot`-type triviality doesn't apply) — genuinely it should be the
-divisor of the degree-2 function cutting out `{x₁, ι x₁}` divided by the one
-cutting out `{x₃, ι x₃}` (both being the fiber of `C → P¹` over the shared
-`x`-coordinate map, whose divisor-of-a-function membership in `P` is exactly
-the kind of principal-divisor fact `PrincipalDivisorData` currently abstracts
-away per the module docstring in `DivisorClassGroup.lean`). Needs that concrete
-function exhibited once a genuine `P` derived from `CoordinateRing H` exists;
-not attempted against the current abstract `P` since there is nothing to
-compute with beyond `P ≤ Divisor0 H`. -/
-theorem sum_eq_of_involution_swap (D : PrincipalDivisorData H) (δ₀ : H.Point)
-    {x₁ x₃ : H.Point} :
-    s D δ₀ x₁ + s D δ₀ (Point.iota x₁) = s D δ₀ x₃ + s D δ₀ (Point.iota x₃) := by
-  sorry
+**Not provable for an arbitrary `D : PrincipalDivisorData H`.** As the note
+above already spells out, this needs `(x₁) + (ι x₁) - (x₃) - (ι x₃) ∈ D.P`,
+and `D.P` is only assumed `P ≤ Divisor0 H` — nothing forces it to contain this
+specific divisor. (Concretely: `D.P := ⊥` satisfies `le_Divisor0` trivially,
+and makes `s D δ₀` injective, so the conclusion below would force
+`x₁ = x₃ ∧ Point.iota x₁ = Point.iota x₃` for *every* `x₁, x₃` — false as soon
+as the curve has more than one point.) So this is packaged, in the same style
+as `SidonDichotomy` below, as an explicit hypothesis on `D`:
+`HyperellipticClass` records exactly the fact that the fiber-difference
+divisor `(x₁) + (ι x₁) - (x₃) - (ι x₃)` (the divisor of the function cutting
+out `{x₁, ι x₁}` divided by the one cutting out `{x₃, ι x₃}`, both fibers of
+the degree-2 map `C → P¹` over the shared `x`-coordinate) lies in `D.P`, for
+`D` genuinely built from `CoordinateRing H`'s function field. Given that
+hypothesis the theorem is immediate divisor bookkeeping via
+`s_add_s_eq_s_add_s_iff`. -/
+def PrincipalDivisorData.HyperellipticClass (D : PrincipalDivisorData H) : Prop :=
+  ∀ x₁ x₃ : H.Point,
+    (single x₁ + single (Point.iota x₁) - single x₃ - single (Point.iota x₃) : Divisor H) ∈ D.P
 
-/-- **The easy direction of the FFK dichotomy.** No principal-divisor content:
-either disjunct alone forces the sum equation, by `sum_eq_of_pair_eq` /
+theorem sum_eq_of_involution_swap (D : PrincipalDivisorData H) (hD : D.HyperellipticClass)
+    (δ₀ : H.Point) {x₁ x₃ : H.Point} :
+    s D δ₀ x₁ + s D δ₀ (Point.iota x₁) = s D δ₀ x₃ + s D δ₀ (Point.iota x₃) := by
+  rw [s_add_s_eq_s_add_s_iff]
+  exact hD x₁ x₃
+
+/-- **The easy direction of the FFK dichotomy.** No principal-divisor content
+beyond `D.HyperellipticClass` (needed only for the involution-swap disjunct):
+either disjunct forces the sum equation, by `sum_eq_of_pair_eq` /
 `sum_eq_of_involution_swap`. -/
-theorem sum_eq_of_dichotomy (D : PrincipalDivisorData H) (δ₀ : H.Point)
+theorem sum_eq_of_dichotomy (D : PrincipalDivisorData H) (hD : D.HyperellipticClass)
+    (δ₀ : H.Point)
     {x₁ x₂ x₃ x₄ : H.Point}
     (h : ({x₁, x₂} : Set H.Point) = {x₃, x₄} ∨
       (x₂ = Point.iota x₁ ∧ x₄ = Point.iota x₃)) :
     s D δ₀ x₁ + s D δ₀ x₂ = s D δ₀ x₃ + s D δ₀ x₄ := by
   rcases h with h | ⟨h₂, h₄⟩
   · exact sum_eq_of_pair_eq D δ₀ h
-  · subst h₂; subst h₄; exact sum_eq_of_involution_swap D δ₀
+  · subst h₂; subst h₄; exact sum_eq_of_involution_swap D hD δ₀
 
 /-! ## The hard direction: packaged as an explicit hypothesis on `D`
 
-Everything above is unconditional. What follows packages the genuinely
-genus-2-specific content of the FFK theorem — that these are the *only* ways
-the sum equation can hold — as a bundled property `SidonDichotomy` on
+Everything above needs at most `D.HyperellipticClass` (itself a genuinely
+true fact about the actual principal divisors of a genus-2 curve, just not
+yet derivable from the current abstract `P` — see that definition's
+docstring). What follows packages the genuinely genus-2-specific content of
+the FFK theorem — that these are the *only* ways the sum equation can
+hold — as a bundled property `SidonDichotomy` on
 `PrincipalDivisorData`, so the final theorem statement below has the shape
 advisory-7 §4 needs, with the gap isolated to exactly one place. -/
 
@@ -173,12 +190,17 @@ sends `C(k) → J` to a symmetric Sidon set. Immediate from the packaged
 hypothesis plus `s_add_s_eq_s_add_s_iff` for the reduction to divisor form and
 `sum_eq_of_dichotomy` for the converse (giving the genuine `↔`, matching the
 theorem's "iff"-flavoured statement in the advisory: a hit is *equivalent to*
-one of the two degenerate shapes, not merely implied by them). -/
+one of the two degenerate shapes, not merely implied by them). Also needs
+`D.HyperellipticClass` — a `D` satisfying `SidonDichotomy` should genuinely
+satisfy this too (both are facts that hold for `D`'s built from the actual
+principal divisors of a genus-2 curve), so it is threaded through as a second
+explicit hypothesis rather than derived from `SidonDichotomy` alone. -/
 theorem ffk_sidon_dichotomy (D : PrincipalDivisorData H) (hD : D.SidonDichotomy)
+    (hDh : D.HyperellipticClass)
     (δ₀ x₁ x₂ x₃ x₄ : H.Point) :
     s D δ₀ x₁ + s D δ₀ x₂ = s D δ₀ x₃ + s D δ₀ x₄ ↔
       ({x₁, x₂} : Set H.Point) = {x₃, x₄} ∨
         (x₂ = Point.iota x₁ ∧ x₄ = Point.iota x₃) :=
-  ⟨hD δ₀ x₁ x₂ x₃ x₄, sum_eq_of_dichotomy D δ₀⟩
+  ⟨hD δ₀ x₁ x₂ x₃ x₄, sum_eq_of_dichotomy D hDh δ₀⟩
 
 end HyperellipticPolynomial
