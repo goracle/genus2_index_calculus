@@ -595,31 +595,89 @@ theorem LPairCarrier_add_smul (hdeg : H.f.natDegree = 5) (x₁ x₂ : H.Point)
       -- N₂') (C c₂ * N₂'')`, not `ordAt Q N₁' N₁''`/`ordAt Q N₂' N₂''` directly, so the
       -- scale-invariance fact `hordScale` bridges back to the unscaled pairs.
       --
-      -- `hordScale`: `ordAt Q (C c * A) (C c * B) = ordAt Q A B` for any `c : k`. This is
-      -- true (`toPair H (C c) 0` is, for `c ≠ 0`, the image under `algebraMap k[X]
-      -- (CoordinateRing H)` of a unit of `k[X]` — `C c` with `k` a field — hence itself a
-      -- unit, hence in no proper ideal including `pointIdeal Q`, giving `ordAt Q (C c) 0 =
-      -- 0` via `ordAt_eq_zero_of_notMem`; then `ordAt_toPair_mul_of_ne_zero'` applied to
-      -- the product-pair identity `toPair H (C c * A) (C c * B) = toPair H (C c) 0 *
-      -- toPair H A B` — from `toPair_mul` — gives the additive decomposition, and the `C c
-      -- = 0` case is `rfl`-level since both sides become literal `0`). Flagged with a
-      -- `sorry` rather than assembled from guessed lemma names/argument orders
-      -- (`Ne.isUnit`, `isUnit_C`, `IsUnit.map`, `Ideal.eq_top_of_isUnit_mem`'s exact
-      -- signature) that were not checked against a live goal state this session, per this
-      -- file's stated policy of not silently working around unconfirmed steps — the
-      -- surrounding structural fix (passing the correct witness pair `(C c₁ * N₁', C c₁ *
-      -- N₁'')`/`(C c₂ * N₂', C c₂ * N₂'')` to `ordAt_add_ge_min`, rather than the
-      -- unscaled `(N₁', N₁'')`/`(N₂', N₂'')` the previous attempt wrongly passed) is what
-      -- actually needed fixing; this remaining piece is routine but unverified.
-      have hordScale : ∀ (c : k) (A B : k[X]), ordAt Q (C c * A) (C c * B) = ordAt Q A B := by
-        sorry
+      -- `hordScale`: `ordAt Q (C c * A) (C c * B) = ordAt Q A B` — but only genuinely
+      -- true for `c ≠ 0`. At `c = 0`, `C 0 * A = 0` and `C 0 * B = 0` literally, so the
+      -- LHS is `ordAt Q 0 0 = 0` (`ordAt`'s own `if toPair H A B = 0 then 0` branch),
+      -- while the RHS `ordAt Q A B` is *not* generally `0` — this is the identical
+      -- convention gap flagged above for `hordN₁`/`hordN₂` (`ordAt`'s `0`-at-a-zero-
+      -- `toPair` convention, rather than the valuation-theoretic `+∞`, breaks additivity
+      -- exactly at zero). So `hordScale` is stated and proved here only for `c ≠ 0`; the
+      -- `c = 0` case is left as the same class of gap (not re-derived, since it would
+      -- just restate the existing `hordN₁`/`hordN₂` sorries in different notation).
+      have hordScale : ∀ (c : k), c ≠ 0 → ∀ (A B : k[X]),
+          ordAt Q (C c * A) (C c * B) = ordAt Q A B := by
+        intro c hc A B
+        -- `toPair H (C c) 0 = algebraMap k[X] (CoordinateRing H) (C c)`: `toPair`'s
+        -- definition (`HyperellipticFunctionField.lean`) is `algebraMap A + algebraMap
+        -- B * y H`, and the second summand vanishes when `B = 0`.
+        have hCc_eq : toPair H (C c) (0 : k[X]) = algebraMap k[X] (CoordinateRing H) (C c) := by
+          unfold toPair; simp
+        -- `algebraMap k[X] (CoordinateRing H) (C c)` is a unit: its inverse is
+        -- `algebraMap k[X] (CoordinateRing H) (C c⁻¹)`, since `algebraMap` is a ring
+        -- hom (`map_mul`, `map_one`) and `C c * C c⁻¹ = C (c * c⁻¹) = C 1 = 1` in
+        -- `k[X]` (`c ≠ 0` gives `c * c⁻¹ = 1` in the field `k`). Mirrors the confirmed
+        -- pattern in `PrincipalDivisors.lean` (`rw [eqC, ← map_mul, mul_inv_cancel₀
+        -- coeff_ne, map_one]`): first the `k[X]`-level fact `C c * C c⁻¹ = 1` via `C`'s
+        -- own `map_mul`/`mul_inv_cancel₀`/`map_one`, then lift through `algebraMap`
+        -- once via its own `map_mul`.
+        have hCc_inv_poly : (C c : k[X]) * C c⁻¹ = 1 := by
+          rw [← map_mul, mul_inv_cancel₀ hc, map_one]
+        have hCc_inv : algebraMap k[X] (CoordinateRing H) (C c) *
+            algebraMap k[X] (CoordinateRing H) (C c⁻¹) = 1 := by
+          rw [← map_mul, hCc_inv_poly, map_one]
+        -- Build the `IsUnit` witness directly via the `Units` anonymous constructor
+        -- (`⟨val, inv, val_inv, inv_val⟩ : Mˣ`, needing only `CommMonoid` — always
+        -- available for a `CommRing` like `CoordinateRing H`) rather than a named lemma
+        -- like `isUnit_of_mul_eq_one`, whose exact spelling in this Mathlib version
+        -- wasn't confirmed (and turned out wrong — "unknown identifier" — last round).
+        have hCc_unit : IsUnit (algebraMap k[X] (CoordinateRing H) (C c)) :=
+          ⟨⟨algebraMap k[X] (CoordinateRing H) (C c), algebraMap k[X] (CoordinateRing H) (C c⁻¹),
+              hCc_inv, by rw [mul_comm]; exact hCc_inv⟩, rfl⟩
+        have hCc_ne : toPair H (C c) (0 : k[X]) ≠ 0 := by
+          rw [hCc_eq]
+          intro h
+          rw [h] at hCc_unit
+          exact not_isUnit_zero hCc_unit
+        have hprod : toPair H (C c * A) (C c * B) = toPair H (C c) 0 * toPair H A B := by
+          have := toPair_mul (C c) 0 A B
+          simpa using this.symm
+        by_cases hAB : toPair H A B = 0
+        · have hprod0 : toPair H (C c * A) (C c * B) = 0 := by rw [hprod, hAB, mul_zero]
+          unfold ordAt
+          rw [if_pos hprod0, if_pos hAB]
+        · -- `toPair H (C c) 0`'s image is a unit, hence lies in no proper ideal —
+          -- in particular not in the maximal ideal `pointIdeal Q`
+          -- (`pointIdeal_isMaximal`/`Ideal.eq_top_of_isUnit_mem`, same pattern
+          -- `toPair_one_zero_notMem_pointIdeal` uses for the `c = 1` special case) —
+          -- so `ordAt Q (C c) 0 = 0` via `ordAt_eq_zero_of_notMem`.
+          have hCc0 : ordAt Q (C c) (0 : k[X]) = 0 := by
+            apply ordAt_eq_zero_of_notMem
+            rw [hCc_eq]
+            intro hmem
+            exact (pointIdeal_isMaximal Q).ne_top
+              (Ideal.eq_top_of_isUnit_mem (pointIdeal Q) hmem hCc_unit)
+          have := ordAt_toPair_mul_of_ne_zero' Q h_bot (C c) 0 A B (C c * A) (C c * B)
+            hCc_ne hAB hprod
+          rw [this, hCc0, zero_add]
       have hordN : ordAt Q N' N'' ≥ min (ordAt Q N₁' N₁'') (ordAt Q N₂' N₂'') := by
-        have := ordAt_add_ge_min Q (c₁ • toPair H N₁' N₁'') (c₂ • toPair H N₂' N₂'')
+        have hstep := ordAt_add_ge_min Q (c₁ • toPair H N₁' N₁'') (c₂ • toPair H N₂' N₂'')
           (C c₁ * N₁') (C c₁ * N₁'') (C c₂ * N₂') (C c₂ * N₂'') N' N''
           (by rw [toPair_smul])
           (by rw [toPair_smul])
           (by rw [hNadd])
-        rwa [hordScale, hordScale] at this
+        -- `hordScale` only covers `c ≠ 0` (see its docstring above — the `c = 0` case
+        -- shares the same `ordAt`-convention gap as `hordN₁`/`hordN₂`), so case-split on
+        -- `c₁ = 0`/`c₂ = 0` here rather than rewriting unconditionally. When `c₁ = 0` (or
+        -- `c₂ = 0`), `C c₁ * N₁' = 0` and `C c₁ * N₁'' = 0` literally, so `ordAt Q (C c₁ *
+        -- N₁') (C c₁ * N₁'') = ordAt Q 0 0 = 0` — but relating that back to `ordAt Q N₁'
+        -- N₁''` needs the same unproven fact `hordN₁`'s zero branch already flags, so this
+        -- combined case is left as a `sorry` too rather than re-deriving that gap here in
+        -- different notation.
+        by_cases hc₁ : c₁ = 0
+        · sorry
+        · by_cases hc₂ : c₂ = 0
+          · sorry
+          · rwa [hordScale c₁ hc₁, hordScale c₂ hc₂] at hstep
       rw [hordD]
       calc ordAt Q N' N'' ≥ min (ordAt Q N₁' N₁'') (ordAt Q N₂' N₂'') := hordN
         _ = min (ordAt Q A₁ B₁ + ordAt Q A₂' B₂') (ordAt Q A₂ B₂ + ordAt Q A₁' B₁') := by
