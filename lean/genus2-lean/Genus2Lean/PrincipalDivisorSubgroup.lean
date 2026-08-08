@@ -193,6 +193,8 @@ theorem principalSubgroup_le_Divisor0 (H : HyperellipticPolynomial k) (hdeg : H.
   rw [principalSubgroup, AddSubgroup.closure_le]
   rintro D ⟨A₁, B₁, S₁, hAB₁, hsupp₁, hspec₁, hfin₁, A₂, B₂, S₂, hAB₂, hsupp₂, hspec₂, hfin₂,
     hmatch, rfl⟩
+  haveI := hfin₁
+  haveI := hfin₂
   rw [SetLike.mem_coe, mem_Divisor0_iff]
   exact deg_divToPairRatio_eq_zero hdeg A₁ B₁ hAB₁ S₁ hsupp₁ hspec₁ A₂ B₂ hAB₂ S₂ hsupp₂ hspec₂
     hmatch

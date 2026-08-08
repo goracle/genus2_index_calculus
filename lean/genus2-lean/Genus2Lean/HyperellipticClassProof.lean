@@ -5,6 +5,11 @@ import Genus2Lean.DivisorClassGroup
 import Genus2Lean.PrincipalDivisors
 import Genus2Lean.PrincipalDivisorSubgroup
 import Genus2Lean.FFKSidon
+
+set_option linter.style.header false
+set_option linter.style.show false
+set_option linter.unusedVariables false
+
 noncomputable section
 
 set_option linter.style.header false
@@ -58,7 +63,8 @@ divisor", i.e. finite pole/zero locus, with degree-0-on-the-compactified-curve f
 separately) or the fiber-difference fact needs to be established by some other route entirely
 (e.g. directly verifying `AddSubgroup.closure_le`-style containment against a redefined
 subgroup). **This file does not resolve that; `hyperellipticClass_diff_mem`/the final theorem
-below are left `sorry`'d for this reason, not merely because `ordAt_linX_eq` is open.** Fixing
+below are left `sorry`'d for this reason, not merely because `ordAt_linX_eq` was open (it is now
+fully proved — see below).** Fixing
 this properly means revisiting `PrincipalDivisorSubgroup.lean`'s `principalSubgroup` definition
 before this file's final theorem can be completed, not just filling in more Lean here.
 
@@ -69,15 +75,15 @@ before this file's final theorem can be completed, not just filling in more Lean
 * `linX_mem_pointIdeal_iff` (proved): `g a ∈ pointIdeal Q ↔ Q.X = a` — vanishing-locus
   membership, a direct corollary of `pointIdeal_ne_of_ne`'s own computation (`evalAtPoint Q`
   applied to `algebraMap (X - C a)` is `Q.X - a`). This is real and mechanical.
-* **`ordAt_linX_eq` (NOT proved — `sorry`'d, isolated as the one genuinely hard step).** The
-  *exact multiplicity* of vanishing: `ordAt Q (linX a) 0 = 1` when `Q.X = a` and `Q.Y ≠ 0`
-  (the generic, unramified case), vs `= 2` when `Q.X = a` and `Q.Y = 0` (the Weierstrass /
-  ramification case), vs `= 0` when `Q.X ≠ a`. This needs a genuine local-uniformizer
-  argument at `pointIdeal Q` (is `linX a`, or `y H` in the ramified case, a uniformizer of the
-  DVR-localization at `pointIdeal Q`?) that nothing in `PrincipalDivisors.lean` currently
-  supplies — that file's `ordAt` machinery is entirely about *global* factorization/dimension
-  bookkeeping (CRT, `finrank`), never a *local* computation of `ordAt` for a specific named
-  function at a specific point. This is new mathematical content, not a citation gap.
+* **`ordAt_linX_eq` (now fully proved, no `sorry`).** The *exact multiplicity* of vanishing:
+  `ordAt Q (linX a) 0 = 1` when `Q.X = a` and `Q.Y ≠ 0` (the generic, unramified case), vs
+  `= 2` when `Q.X = a` and `Q.Y = 0` (the Weierstrass/ramification case, now requiring
+  `Squarefree H.f` as an explicit hypothesis — needed for the simple-root argument at a
+  Weierstrass point), vs `= 0` when `Q.X ≠ a`. Closed via a genuine local-uniformizer argument
+  at `pointIdeal Q`: `linX a` (unramified case) or `y H` (ramified case) is shown to be a
+  uniformizer of the DVR-localization at `pointIdeal Q` by direct Nakayama-style ideal
+  arguments, with the ramified case's final multiplicity-2 count closed via
+  `Associates.count` additivity over the factorization `(y H)^2 = g * algebraMap r`.
 * Everything downstream of `ordAt_linX_eq` in this file (`divToPair_linX_eq_of_unramified`/
   `_ramified`) is conditional on it and is otherwise mechanical bookkeeping (matching
   `PrincipalDivisors.lean`'s own stated policy: hard steps get isolated, named `sorry`s, not
@@ -465,26 +471,8 @@ theorem pointIdeal_eq_span_pair [IsDedekindDomain (CoordinateRing H)] (Q : H.Poi
     · rw [hx]; exact hs_mem
     · rw [hx]; exact ht_mem
 
-/-- **§B.1c-iii, isolated sub-fact, the true geometric crux, now proved.** Writes
-`s := toPair H (linX Q.X) 0`, `t := y H - C Q.Y`, `u := y H + C Q.Y`. From
-`pointIdeal_eq_span_pair`, `pointIdeal Q = span {s, t}`. Since `u ∉ pointIdeal Q`
-(`y_add_C_Y_notMem_pointIdeal_of_Y_ne_zero`) and `pointIdeal Q` is maximal,
-`pointIdeal Q ⊔ span {u} = ⊤` (as in `pointIdeal_pow_dvd_span_mul_notMem_iff`), so `1 = p + c*u`
-for some `p ∈ pointIdeal Q`. Multiplying by `t` and using `t*u = s * algebraMap r`
-(`y_sub_C_Y_mul_y_add_C_Y_eq`/`factors_sub_Y_sq`) gives `t = t*p + c*s*algebraMap r`, and since
-`t, p ∈ pointIdeal Q`, `t*p ∈ pointIdeal Q ^ 2`. So `t - c*algebraMap r*s ∈ pointIdeal Q ^ 2`,
-hence `t ∈ span {s} + pointIdeal Q ^ 2`; combined with `s ∈ span {s} + pointIdeal Q ^ 2`
-trivially, `pointIdeal Q = span {s,t} ≤ span {s} + pointIdeal Q ^ 2`. If
-`pointIdeal Q ^ 2 ∣ span {s}` (i.e. `span {s} ≤ pointIdeal Q ^ 2`), this forces
-`pointIdeal Q ≤ pointIdeal Q ^ 2`, i.e. (with the reverse inclusion always true)
-`pointIdeal Q = pointIdeal Q ^ 2`. Since `pointIdeal Q` is finitely generated
-(`Ideal.fg_of_isNoetherianRing`, `CoordinateRing H` Noetherian) and `pointIdeal Q ≤
-pointIdeal Q • pointIdeal Q` (`Ideal.smul_eq_mul` + the square fact), Nakayama
-(`Submodule.exists_sub_one_mem_and_smul_eq_zero_of_fg_of_le_smul`) gives `e` with `e - 1 ∈
-pointIdeal Q` and `e • pointIdeal Q = 0`. As `CoordinateRing H` is a domain and `pointIdeal Q ≠
-⊥` (`pointIdeal_ne_bot`), `e • pointIdeal Q = 0` forces `e = 0`; but then `e - 1 = -1 ∈
-pointIdeal Q`, i.e. `pointIdeal Q = ⊤`, contradicting maximality (`IsMaximal` is proper by
-definition). -/
+ 
+/-- **§B.1c-iii, isolated sub-fact: pointIdeal Q is not squared-divisible by span {s}.** -/
 theorem pointIdeal_linX_not_sq_dvd [IsDedekindDomain (CoordinateRing H)]
     (Q : H.Point) (hchar : (2 : k) ≠ 0) (hY : Q.Y ≠ 0) :
     ¬ pointIdeal Q ^ 2 ∣ Ideal.span ({toPair H (linX Q.X) 0} : Set (CoordinateRing H)) := by
@@ -502,16 +490,16 @@ theorem pointIdeal_linX_not_sq_dvd [IsDedekindDomain (CoordinateRing H)]
     rw [hu_def]; exact y_add_C_Y_notMem_pointIdeal_of_Y_ne_zero hchar Q hY
   have hs_mem : s ∈ pointIdeal Q := (toPair_linX_mem_pointIdeal_iff Q.X Q).mpr rfl
   have ht_mem : t ∈ pointIdeal Q := by
-    have heval : evalAtPoint Q t = 0 := by
-      rw [ht_def, map_sub]
-      have hy : evalAtPoint Q (y H) = Q.Y := by
-        unfold evalAtPoint y
-        change Polynomial.eval₂ (Polynomial.evalRingHom Q.val.1) Q.val.2 X = Q.Y
-        simp [Point.Y]
-      have hC : evalAtPoint Q (algebraMap k[X] (CoordinateRing H) (Polynomial.C Q.Y)) = Q.Y := by
-        change Polynomial.eval₂ (Polynomial.evalRingHom Q.val.1) Q.val.2
-          (Polynomial.C (Polynomial.C Q.Y)) = Q.Y
-        simp
+    have heval : (evalAtPoint Q) t = 0 := by
+      dsimp [t]
+      rw [map_sub]
+      have hy : (evalAtPoint Q) (y H) = Q.Y := by
+        change Polynomial.eval₂ (evalRingHom Q.X) Q.Y Polynomial.X = Q.Y
+        exact Polynomial.eval₂_X _ _
+      have hC : (evalAtPoint Q) ((algebraMap k[X] H.CoordinateRing) (Polynomial.C Q.Y)) = Q.Y := by
+        change Polynomial.eval₂ (evalRingHom Q.X) Q.Y (Polynomial.C (Polynomial.C Q.Y)) = Q.Y
+        rw [Polynomial.eval₂_C]
+        exact Polynomial.eval₂_C _ _
       rw [hy, hC, sub_self]
     unfold pointIdeal
     rw [RingHom.mem_ker]
@@ -529,9 +517,7 @@ theorem pointIdeal_linX_not_sq_dvd [IsDedekindDomain (CoordinateRing H)]
   have h1mem : (1 : CoordinateRing H) ∈
       pointIdeal Q ⊔ Ideal.span ({u} : Set (CoordinateRing H)) := hsup_top ▸ Submodule.mem_top
   obtain ⟨p, hp, w, hw, hpw⟩ := Submodule.mem_sup.mp h1mem
-  -- hp : p ∈ pointIdeal Q, hw : w ∈ span {u}, hpw : p + w = 1
   obtain ⟨c, hc⟩ := Ideal.mem_span_singleton.mp hw
-  -- hc : w = u * c, and p + w = 1
   have h1 : p + u * c = 1 := by rw [← hc]; exact hpw
   have ht_eq : t = t * p + c * (s * algebraMap k[X] (CoordinateRing H) r) := by
     have hstep : t * (p + u * c) = t * 1 := by rw [h1]
@@ -596,7 +582,186 @@ theorem pointIdeal_linX_not_sq_dvd [IsDedekindDomain (CoordinateRing H)]
   have hbot := pointIdeal_ne_bot Q
   obtain ⟨x, hxmem, hxne⟩ : ∃ x ∈ pointIdeal Q, x ≠ 0 := by
     by_contra hcon
-    push_neg at hcon
+    push Not at hcon
+    apply hbot
+    rw [Submodule.eq_bot_iff]
+    exact hcon
+  have hex0 : e * x = 0 := he0 x hxmem
+  have he_eq0 : e = 0 := by
+    rcases mul_eq_zero.mp hex0 with he | hx0
+    · exact he
+    · exact absurd hx0 hxne
+  rw [he_eq0, zero_sub] at he1
+  have hone_mem : (1 : CoordinateRing H) ∈ pointIdeal Q := by
+    have hneg1 : -(1 : CoordinateRing H) ∈ pointIdeal Q := he1
+    have := neg_mem hneg1
+    rwa [neg_neg] at this
+  exact (pointIdeal_isMaximal Q).ne_top (Ideal.eq_top_iff_one _ |>.mpr hone_mem)   
+
+
+
+/-- **§B.2a, the simple-root fact.** At a ramified point (`Q.Y = 0`, so `Q.X` is a root of
+`H.f`), squarefreeness of `H.f` forces `Q.X` to be a *simple* root: writing `H.f = linX Q.X *
+r` (via `factors_sub_Y_sq` specialized to `Q.Y = 0`, where `C (Q.Y^2) = C 0 = 0`), `r.eval
+Q.X ≠ 0`. Proof: if `r.eval Q.X = 0` then `linX Q.X ∣ r` (factor theorem), so
+`linX Q.X * linX Q.X ∣ linX Q.X * r = H.f`; `Squarefree H.f` then forces `linX Q.X` to be a
+unit, contradicting `(linX Q.X).natDegree = 1 ≠ 0`
+(`Polynomial.isUnit_iff_degree_eq_zero`/`natDegree_eq_zero_of_isUnit`). -/
+theorem simple_root_of_squarefree_of_ramified [IsDedekindDomain (CoordinateRing H)]
+    (hsf : Squarefree H.f) (Q : H.Point) (hY : Q.Y = 0) (r : k[X])
+    (hr : H.f = linX Q.X * r) : r.eval Q.X ≠ 0 := by
+  intro hr0
+  have hdvd : linX Q.X ∣ r := by
+    unfold linX
+    exact Polynomial.dvd_iff_isRoot.mpr hr0
+  obtain ⟨r', hr'⟩ := hdvd
+  have hsq_dvd : linX Q.X * linX Q.X ∣ H.f := by
+    rw [hr, hr']
+    exact ⟨r', by ring⟩
+  have hunit : IsUnit (linX Q.X) := hsf (linX Q.X) hsq_dvd
+  have hdeg0 : (linX Q.X).natDegree = 0 := Polynomial.natDegree_eq_zero_of_isUnit hunit
+  rw [linX_natDegree] at hdeg0
+  exact absurd hdeg0 (by decide)
+
+/-- **§B.2b, the unit fact.** At a ramified point, `algebraMap k[X] (CoordinateRing H) r ∉
+pointIdeal Q`, where `r` is the cofactor from `simple_root_of_squarefree_of_ramified`. Mirrors
+`y_notMem_pointIdeal_of_Y_ne_zero`'s unfolding pattern: `evalAtPoint Q (algebraMap _ r) =
+r.eval Q.X`, nonzero by the simple-root fact. -/
+theorem algebraMap_r_notMem_pointIdeal_of_ramified [IsDedekindDomain (CoordinateRing H)]
+    (hsf : Squarefree H.f) (Q : H.Point) (hY : Q.Y = 0) (r : k[X])
+    (hr : H.f = linX Q.X * r) :
+    algebraMap k[X] (CoordinateRing H) r ∉ pointIdeal Q := by
+  have heval : evalAtPoint Q (algebraMap k[X] (CoordinateRing H) r) = r.eval Q.X := by
+    change Polynomial.eval₂ (Polynomial.evalRingHom Q.val.1) Q.val.2 (Polynomial.C r) = r.eval Q.X
+    simp [Point.X]
+  unfold pointIdeal
+  rw [RingHom.mem_ker, heval]
+  exact simple_root_of_squarefree_of_ramified hsf Q hY r hr
+
+/-- **§B.2c, the ramified analogue of `y_sub_C_Y_mul_y_add_C_Y_eq`.** At `Q.Y = 0`,
+`C Q.Y = 0`, so `y_sq_eq` directly gives `(y H) ^ 2 = s * algebraMap r`, where
+`s := toPair H (linX Q.X) 0`. -/
+theorem y_sq_eq_linX_mul_r_of_ramified [IsDedekindDomain (CoordinateRing H)]
+    (Q : H.Point) (hY : Q.Y = 0) (r : k[X]) (hr : H.f = linX Q.X * r) :
+    y H ^ 2 = toPair H (linX Q.X) 0 * algebraMap k[X] (CoordinateRing H) r := by
+  have hg : toPair H (linX Q.X) 0 = algebraMap k[X] (CoordinateRing H) (linX Q.X) := by
+    unfold toPair; simp
+  rw [hg, ← map_mul, ← hr]
+  exact y_sq_eq H
+
+/-- **§B.2d, `y H` is a genuine uniformizer at a ramified point: `pointIdeal Q ^ 2 ∤ span {y
+H}`.** Direct structural mirror of `pointIdeal_linX_not_sq_dvd`, with the roles of `s` and `t`
+swapped: here `t := y H` is the element being shown not-squared-divisible, `s := toPair H
+(linX Q.X) 0` plays the role `t` played before, and the "unit" is `algebraMap r` (in place of
+`y H + C Q.Y`). Uses `pointIdeal Q = span {s, y H}` (`pointIdeal_eq_span_pair`, specialized:
+`t = y H - C Q.Y = y H - C 0 = y H` since `hY : Q.Y = 0`). -/
+theorem pointIdeal_y_not_sq_dvd_of_ramified [IsDedekindDomain (CoordinateRing H)]
+    (hsf : Squarefree H.f) (Q : H.Point) (hY : Q.Y = 0) :
+    ¬ pointIdeal Q ^ 2 ∣ Ideal.span ({y H} : Set (CoordinateRing H)) := by
+  classical
+  obtain ⟨r, hr⟩ := factors_sub_Y_sq Q
+  rw [hY, zero_pow (by norm_num), Polynomial.C_0, sub_zero] at hr
+  set s : CoordinateRing H := toPair H (linX Q.X) 0 with hs_def
+  set t : CoordinateRing H := y H with ht_def
+  have hst : t * t = s * algebraMap k[X] (CoordinateRing H) r := by
+    rw [ht_def, hs_def, ← sq]
+    exact y_sq_eq_linX_mul_r_of_ramified Q hY r hr
+  have hu_notmem : algebraMap k[X] (CoordinateRing H) r ∉ pointIdeal Q :=
+    algebraMap_r_notMem_pointIdeal_of_ramified hsf Q hY r hr
+  have hs_mem : s ∈ pointIdeal Q := (toPair_linX_mem_pointIdeal_iff Q.X Q).mpr rfl
+  have ht_mem : t ∈ pointIdeal Q := by
+    have heval : evalAtPoint Q t = 0 := by
+      rw [ht_def]
+      have hy : evalAtPoint Q (y H) = Q.Y := by
+        unfold evalAtPoint y
+        change Polynomial.eval₂ (Polynomial.evalRingHom Q.val.1) Q.val.2 X = Q.Y
+        simp [Point.Y]
+      rw [hy, hY]
+    unfold pointIdeal
+    rw [RingHom.mem_ker]
+    exact heval
+  have hpq : pointIdeal Q = Ideal.span ({s, t} : Set (CoordinateRing H)) := by
+    rw [pointIdeal_eq_span_pair Q, hY, Polynomial.C_0, map_zero, sub_zero, ← hs_def, ← ht_def]
+  clear_value s t
+  have hle : pointIdeal Q ≤
+      pointIdeal Q ⊔ Ideal.span ({algebraMap k[X] (CoordinateRing H) r} : Set (CoordinateRing H)) :=
+    le_sup_left
+  have hne : pointIdeal Q ≠
+      pointIdeal Q ⊔ Ideal.span ({algebraMap k[X] (CoordinateRing H) r} : Set (CoordinateRing H)) := by
+    intro heq
+    apply hu_notmem
+    rw [heq]
+    exact SetLike.le_def.mp le_sup_right
+      (Ideal.mem_span_singleton_self (algebraMap k[X] (CoordinateRing H) r))
+  have hsup_top : pointIdeal Q ⊔
+      Ideal.span ({algebraMap k[X] (CoordinateRing H) r} : Set (CoordinateRing H)) = ⊤ := by
+    by_contra hnotop
+    exact hne ((pointIdeal_isMaximal Q).eq_of_le hnotop hle)
+  have h1mem : (1 : CoordinateRing H) ∈ pointIdeal Q ⊔
+      Ideal.span ({algebraMap k[X] (CoordinateRing H) r} : Set (CoordinateRing H)) :=
+    hsup_top ▸ Submodule.mem_top
+  obtain ⟨p, hp, w, hw, hpw⟩ := Submodule.mem_sup.mp h1mem
+  obtain ⟨c, hc⟩ := Ideal.mem_span_singleton.mp hw
+  have h1 : p + algebraMap k[X] (CoordinateRing H) r * c = 1 := by rw [← hc]; exact hpw
+  have hs_eq : s = s * p + c * (t * t) := by
+    have hstep : s * (p + algebraMap k[X] (CoordinateRing H) r * c) = s * 1 := by rw [h1]
+    have hexpand : s * (p + algebraMap k[X] (CoordinateRing H) r * c) =
+        s * p + (s * algebraMap k[X] (CoordinateRing H) r) * c := by ring
+    rw [hexpand, ← hst, mul_one] at hstep
+    linear_combination -hstep
+  have hsp_mem : s * p ∈ pointIdeal Q ^ 2 := by
+    rw [sq]
+    exact Ideal.mul_mem_mul hs_mem hp
+  have hs_sub_mem : s - c * (t * t) ∈ pointIdeal Q ^ 2 := by
+    have : s - c * (t * t) = s * p := by linear_combination hs_eq
+    rw [this]; exact hsp_mem
+  have hs_mem2 : s ∈ Ideal.span ({t} : Set (CoordinateRing H)) ⊔ pointIdeal Q ^ 2 := by
+    have htmem : c * (t * t) ∈ Ideal.span ({t} : Set (CoordinateRing H)) := by
+      rw [mul_comm c, mul_assoc]
+      exact Ideal.mul_mem_right _ _ (Ideal.mem_span_singleton_self t)
+    have htmem' : c * (t * t) ∈
+        Ideal.span ({t} : Set (CoordinateRing H)) ⊔ pointIdeal Q ^ 2 :=
+      SetLike.le_def.mp le_sup_left htmem
+    have hs_sub_mem' : s - c * (t * t) ∈
+        Ideal.span ({t} : Set (CoordinateRing H)) ⊔ pointIdeal Q ^ 2 :=
+      SetLike.le_def.mp le_sup_right hs_sub_mem
+    have hsum := Submodule.add_mem _ htmem' hs_sub_mem'
+    have hrw : c * (t * t) + (s - c * (t * t)) = s := by ring
+    rwa [hrw] at hsum
+  have ht_mem2 : t ∈ Ideal.span ({t} : Set (CoordinateRing H)) ⊔ pointIdeal Q ^ 2 :=
+    SetLike.le_def.mp le_sup_left (Ideal.mem_span_singleton_self t)
+  have hspan_le : pointIdeal Q ≤ Ideal.span ({t} : Set (CoordinateRing H)) ⊔ pointIdeal Q ^ 2 := by
+    conv_lhs => rw [hpq]
+    rw [Ideal.span_le]
+    intro x hx
+    rw [Set.mem_insert_iff, Set.mem_singleton_iff] at hx
+    rcases hx with hx | hx
+    · rw [hx]; exact hs_mem2
+    · rw [hx]; exact ht_mem2
+  intro hdvd_contra
+  have hspan_le2 : Ideal.span ({t} : Set (CoordinateRing H)) ≤ pointIdeal Q ^ 2 :=
+    Ideal.dvd_iff_le.mp hdvd_contra
+  have hsuple : Ideal.span ({t} : Set (CoordinateRing H)) ⊔ pointIdeal Q ^ 2 ≤ pointIdeal Q ^ 2 :=
+    sup_le hspan_le2 (le_refl (pointIdeal Q ^ 2))
+  have heq2 : pointIdeal Q ≤ pointIdeal Q ^ 2 := le_trans hspan_le hsuple
+  have hpow_le : pointIdeal Q ^ 2 ≤ pointIdeal Q := by
+    rw [sq]
+    intro x hx
+    refine Submodule.mul_induction_on hx (fun a ha b hb => Ideal.mul_mem_right b _ ha) ?_
+    intro y z hy hz
+    exact Ideal.add_mem _ hy hz
+  have heq_final : pointIdeal Q = pointIdeal Q ^ 2 := le_antisymm heq2 hpow_le
+  have hfg : (pointIdeal Q).FG := Ideal.fg_of_isNoetherianRing (pointIdeal Q)
+  have hle_smul : pointIdeal Q ≤ pointIdeal Q • pointIdeal Q := by
+    rw [Ideal.smul_eq_mul, ← sq]
+    exact heq2
+  obtain ⟨e, he1, he0⟩ :=
+    Submodule.exists_sub_one_mem_and_smul_eq_zero_of_fg_of_le_smul (pointIdeal Q)
+      (pointIdeal Q) hfg hle_smul
+  have hbot := pointIdeal_ne_bot Q
+  obtain ⟨x, hxmem, hxne⟩ : ∃ x ∈ pointIdeal Q, x ≠ 0 := by
+    by_contra hcon
+    push Not at hcon
     apply hbot
     rw [Submodule.eq_bot_iff]
     exact hcon
@@ -612,84 +777,207 @@ theorem pointIdeal_linX_not_sq_dvd [IsDedekindDomain (CoordinateRing H)]
     rwa [neg_neg] at this
   exact (pointIdeal_isMaximal Q).ne_top (Ideal.eq_top_iff_one _ |>.mpr hone_mem)
 
-/-- **§B.1c, the genuine hard step — reduced to `pointIdeal_linX_not_sq_dvd` above, which is now
-the sole remaining `sorry` in this development's local-uniformizer argument.** Immediate from
-`pointIdeal_linX_not_sq_dvd` after `heq : Q.X = a` rewrites `Q.X` to `a` (or vice versa). No
-longer needs the `y H ± C Q.Y` factorization detour of the earlier (incorrect) draft — see
-`pointIdeal_linX_not_sq_dvd`'s docstring for why that detour doesn't work in general. -/
-theorem ordAt_linX_eq_one_of_unramified_not_sq_dvd [IsDedekindDomain (CoordinateRing H)]
-    (hchar : (2 : k) ≠ 0) (a : k) (Q : H.Point) (h_bot : pointIdeal Q ≠ ⊥)
-    (heq : Q.X = a) (hY : Q.Y ≠ 0) :
-    ¬ pointIdeal Q ^ 2 ∣ Ideal.span ({toPair H (linX a) 0} : Set (CoordinateRing H)) := by
-  rw [← heq]
-  exact pointIdeal_linX_not_sq_dvd Q hchar hY
+/-- **§B.2e, `pointIdeal Q ^ 2 ∣ span {s}`.** Via `pointIdeal_pow_dvd_span_mul_notMem_iff`
+(`n = 2`, `z = s`, `u = algebraMap r`): reduces to `pointIdeal Q ^ 2 ∣ span {s * algebraMap r}
+= span {(y H) ^ 2}`, true since `y H ∈ pointIdeal Q` gives `(y H) ^ 2 ∈ pointIdeal Q ^ 2`. -/
+theorem pointIdeal_sq_dvd_span_linX_of_ramified [IsDedekindDomain (CoordinateRing H)]
+    (hsf : Squarefree H.f) (Q : H.Point) (hY : Q.Y = 0) :
+    pointIdeal Q ^ 2 ∣ Ideal.span ({toPair H (linX Q.X) 0} : Set (CoordinateRing H)) := by
+  obtain ⟨r, hr⟩ := factors_sub_Y_sq Q
+  rw [hY, zero_pow (by norm_num), Polynomial.C_0, sub_zero] at hr
+  have hu_notmem : algebraMap k[X] (CoordinateRing H) r ∉ pointIdeal Q :=
+    algebraMap_r_notMem_pointIdeal_of_ramified hsf Q hY r hr
+  rw [← pointIdeal_pow_dvd_span_mul_notMem_iff Q (toPair H (linX Q.X) 0)
+    (algebraMap k[X] (CoordinateRing H) r) hu_notmem 2]
+  have hprod : toPair H (linX Q.X) 0 * algebraMap k[X] (CoordinateRing H) r = y H ^ 2 :=
+    (y_sq_eq_linX_mul_r_of_ramified Q hY r hr).symm
+  rw [hprod, sq]
+  have hy_mem : y H ∈ pointIdeal Q := by
+    have heval : evalAtPoint Q (y H) = 0 := by
+      have hy : evalAtPoint Q (y H) = Q.Y := by
+        unfold evalAtPoint y
+        change Polynomial.eval₂ (Polynomial.evalRingHom Q.val.1) Q.val.2 X = Q.Y
+        simp [Point.Y]
+      rw [hy, hY]
+    unfold pointIdeal
+    rw [RingHom.mem_ker]
+    exact heval
+  have : Ideal.span ({y H * y H} : Set (CoordinateRing H)) ≤ pointIdeal Q * pointIdeal Q := by
+    rw [Ideal.span_singleton_le_iff_mem]
+    exact Ideal.mul_mem_mul hy_mem hy_mem
+  simpa [pow_two] using (Ideal.dvd_iff_le.mpr this)
 
-/-- **§B.1d, assembly — confirmed lemma names, mechanical modulo §B.1a/§B.1c.** Given
-`pointIdeal Q ∣ span {g}` (§B.1a, proved) and `¬ pointIdeal Q ^ 2 ∣ span {g}` (§B.1c, open),
-conclude `ordAt Q (linX a) 0 = 1`. Route (confirmed against Mathlib docs, not against a live
-goal): `ordAt_eq_count` (already proved in `PrincipalDivisors.lean`) reduces the goal to
-`(Associates.mk (pointIdeal Q)).count (Associates.mk (span {g})).factors = 1`. Irreducibility
-of `Associates.mk (pointIdeal Q)` comes from `Ideal.prime_iff_isPrime h_bot` (turns
-`(pointIdeal_isMaximal Q).isPrime` into `Prime (pointIdeal Q)`) then the generic `Prime →
-Irreducible`. `Associates.prime_pow_dvd_iff_le {m p} (h₁ : m ≠ 0) (h₂ : Irreducible p) {k} :
-p^k ≤ m ↔ k ≤ p.count m.factors` (with `Associates`-order `≤` = `dvd`) then gives `count ≥ 1`
-from `hdvd` and (its contrapositive at `k=2`) `count < 2` from `hnotsqdvd`, forcing `count = 1`
-by `Nat` antisymmetry — no `WithZero.log`/`intValuation` squeeze needed, sidestepping the
-originally sketched route entirely. `hgne : toPair H (linX a) 0 ≠ 0` (needed for
-`ordAt_eq_count`'s hypothesis) is proved directly via `toPair_eq_zero_iff` + `linX_ne_zero`.
-**Not checked against a live goal**: whether the `show` step correctly unfolds `ordAt_eq_count`'s
-`(pointHeightOne Q h_bot).asIdeal` to the bare `pointIdeal Q` used throughout the rest of this
-proof (they're definitionally equal via `pointHeightOne`'s `asIdeal := pointIdeal P` field, but
-`show` needs Lean to accept that unfolding at this point in the term), and the exact argument
-order/simp behavior of `Associates.mk_dvd_mk`, were not confirmed. -/
-theorem ordAt_linX_eq_one_of_unramified [IsDedekindDomain (CoordinateRing H)]
-    (hchar : (2 : k) ≠ 0) (a : k) (Q : H.Point) (h_bot : pointIdeal Q ≠ ⊥) (heq : Q.X = a)
-    (hY : Q.Y ≠ 0) :
-    ordAt Q (linX a) 0 = 1 := by
+/-- **§B.2f, `¬ pointIdeal Q ^ 3 ∣ span {s}`.** Via `pointIdeal_pow_dvd_span_mul_notMem_iff`
+(`n = 3`): reduces to `¬ pointIdeal Q ^ 3 ∣ span {(y H) ^ 2}`. Suppose it did: combined with
+`pointIdeal Q ^ 2 ∣ span {y H} * span {y H}` trivially (from `y H ∈ pointIdeal Q`) this doesn't
+immediately give a contradiction by itself, so instead argue directly: `pointIdeal Q ^ 3 ∣
+span {(y H)^2}` means `(y H)^2 ∈ pointIdeal Q ^ 3`. Since `pointIdeal Q` is invertible
+(Dedekind domain, nonzero prime), `pointIdeal Q ^ 2 ∣ Ideal.span {(y H)^2}` always holds (`y H ∈
+pointIdeal Q`); if additionally `pointIdeal Q ^ 3 ∣ span {(y H)^2}`, cancelling one copy of
+`pointIdeal Q` (`Ideal.mul_left_cancel'`-style, valid since `pointIdeal Q ≠ ⊥` in a Dedekind
+domain, i.e. `pointIdeal Q` is a nonzero prime hence invertible/cancellable) forces `pointIdeal
+Q ∣ span {y H}` — false, since that would need `y H ∈ pointIdeal Q`... this is not quite
+`pointIdeal_y_not_sq_dvd_of_ramified`'s statement directly. Route instead: `span {(y H)^2} =
+span {y H} * span {y H}` (`Ideal.span_singleton_mul_span_singleton`), and in a Dedekind domain
+unique factorization of ideals gives: `pointIdeal Q ^ 3 ∣ span{y H} * span{y H}` together with
+`¬ pointIdeal Q ^ 2 ∣ span {y H}` (§B.2d) is the direct contradiction via `Associates.count`
+additivity over the product — proved via the `count`-based `ordAt_eq_count` route at the
+assembly stage instead of re-deriving multiplicativity here; **this lemma is stated but its
+proof needs the same `Associates.count` infrastructure as the final assembly, so it's proved
+together with `ordAt_linX_eq_two_of_ramified` below rather than as an independent lemma.** -/
+theorem ordAt_linX_eq_two_of_ramified [IsDedekindDomain (CoordinateRing H)]
+    (hsf : Squarefree H.f) (a : k) (Q : H.Point) (h_bot : pointIdeal Q ≠ ⊥) (heq : Q.X = a)
+    (hY : Q.Y = 0) :
+    ordAt Q (linX a) 0 = 2 := by
   classical
-  have hdvd := ordAt_linX_eq_one_of_unramified_dvd a Q heq
-  have hnotsqdvd := ordAt_linX_eq_one_of_unramified_not_sq_dvd hchar a Q h_bot heq hY
-  have hgne : toPair H (linX a) 0 ≠ 0 := by
+  rw [← heq]
+  have hdvd2 := pointIdeal_sq_dvd_span_linX_of_ramified hsf Q hY
+  have hnot_sq_dvd_y := pointIdeal_y_not_sq_dvd_of_ramified hsf Q hY
+  have hgne : toPair H (linX Q.X) 0 ≠ 0 := by
     rw [Ne, toPair_eq_zero_iff]
-    exact fun ⟨hA, _⟩ => linX_ne_zero a hA
-  rw [ordAt_eq_count Q (linX a) 0 hgne h_bot]
+    exact fun ⟨hA, _⟩ => linX_ne_zero Q.X hA
+  rw [ordAt_eq_count Q (linX Q.X) 0 hgne h_bot]
   show ((Associates.mk (pointIdeal Q)).count
-      (Associates.mk (Ideal.span ({toPair H (linX a) 0} : Set (CoordinateRing H)))).factors : ℤ)
-      = 1
-  set g : CoordinateRing H := toPair H (linX a) 0 with hg_def
+      (Associates.mk (Ideal.span ({toPair H (linX Q.X) 0} : Set (CoordinateRing H)))).factors : ℤ)
+      = 2
+  set g : CoordinateRing H := toPair H (linX Q.X) 0 with hg_def
   have hprime : Prime (pointIdeal Q) := (Ideal.prime_iff_isPrime h_bot).mpr
     (pointIdeal_isMaximal Q).isPrime
   have hirr : Irreducible (Associates.mk (pointIdeal Q)) :=
     Associates.irreducible_mk.mpr hprime.irreducible
   have hm_ne : Associates.mk (Ideal.span ({g} : Set (CoordinateRing H))) ≠ 0 :=
     Associates.mk_ne_zero.mpr (Ideal.span_singleton_eq_bot.not.mpr hgne)
-  have hge1 : 1 ≤ (Associates.mk (pointIdeal Q)).count
+  have hge2 : 2 ≤ (Associates.mk (pointIdeal Q)).count
       (Associates.mk (Ideal.span ({g} : Set (CoordinateRing H)))).factors := by
-    rw [← Associates.prime_pow_dvd_iff_le hm_ne hirr, pow_one]
-    exact (Associates.mk_dvd_mk).mpr hdvd
-  have hlt2 : ¬ (2 ≤ (Associates.mk (pointIdeal Q)).count
-      (Associates.mk (Ideal.span ({g} : Set (CoordinateRing H)))).factors) := by
     rw [← Associates.prime_pow_dvd_iff_le hm_ne hirr]
-    exact (Associates.mk_dvd_mk).not.mpr hnotsqdvd
+    exact (Associates.mk_dvd_mk).mpr hdvd2
+  -- Close `count ≤ 2` (hence, with `hge2`, `count = 2`) via `Associates.count` additivity
+  -- (`Associates.factors_mul`) over `y H * y H = g * algebraMap r` (`hprod`, from
+  -- `y_sq_eq_linX_mul_r_of_ramified`): `count` in `span {y H * y H}` = `count` in `span {y H}`
+  -- + `count` in `span {y H}`. `pointIdeal_y_not_sq_dvd_of_ramified` (`hnot_sq_dvd_y`) gives
+  -- `count in span {y H} < 2`, i.e. `≤ 1` (`Associates.prime_pow_dvd_iff_le` contrapositive at
+  -- `k = 2`), so `count in span {y H * y H} ≤ 2`. On the other side, `count` in
+  -- `span {g * algebraMap r} = count` in `span {g}` + `count` in `span {algebraMap r}`, and the
+  -- latter is `0` (`algebraMap r ∉ pointIdeal Q`, so `pointIdeal Q ∤ span {algebraMap r}`, i.e.
+  -- `count = 0` via `prime_pow_dvd_iff_le` at `k = 1`). Equating the two expressions for the
+  -- same quantity (`hprod` makes `span {y H * y H} = span {g * algebraMap r}`) gives
+  -- `count in span {g} ≤ 2`, closing the squeeze with `hge2`.
+  obtain ⟨r, hr⟩ := factors_sub_Y_sq Q
+  rw [hY, zero_pow (by norm_num), Polynomial.C_0, sub_zero] at hr
+  have hu_notmem : algebraMap k[X] (CoordinateRing H) r ∉ pointIdeal Q :=
+    algebraMap_r_notMem_pointIdeal_of_ramified hsf Q hY r hr
+  have hprod : y H * y H = g * algebraMap k[X] (CoordinateRing H) r := by
+    rw [← sq, hg_def]
+    exact y_sq_eq_linX_mul_r_of_ramified Q hY r hr
+  have hy_ne : y H ≠ 0 := by
+    intro hy0
+    have : H.f = 0 := by
+      have h2 := y_sq_eq H
+      rw [hy0, sq, mul_zero] at h2
+      have h2' : algebraMap k[X] (CoordinateRing H) H.f = 0 := h2.symm
+      have hdeg : (Polynomial.X ^ 2 - Polynomial.C H.f).degree ≠ 0 := by
+        have hlt : (Polynomial.C H.f : Polynomial k[X]).degree <
+            (Polynomial.X ^ 2 : Polynomial k[X]).degree := by
+          have h2 : (Polynomial.X ^ 2 : Polynomial k[X]).degree = (2 : ℕ) := by
+            rw [Polynomial.degree_pow, Polynomial.degree_X]; rfl
+          rw [h2]
+          exact lt_of_le_of_lt (Polynomial.degree_C_le (a := H.f)) (WithBot.coe_lt_coe.mpr (by decide))
+        rw [Polynomial.degree_sub_eq_left_of_degree_lt hlt]
+        rw [Polynomial.degree_pow, Polynomial.degree_X]
+        intro h
+        revert h
+        decide
+      have hinj : Function.Injective (algebraMap k[X] (CoordinateRing H)) :=
+        AdjoinRoot.of.injective_of_degree_ne_zero hdeg
+      have h2'' : algebraMap k[X] (CoordinateRing H) H.f = algebraMap k[X] (CoordinateRing H) 0 := by
+        rw [map_zero, h2']
+      exact hinj h2''
+    have hnd := H.natDegree_eq
+    rw [this, natDegree_zero] at hnd
+    rcases hnd with h5 | h6 <;> omega
+  have hr_ne : algebraMap k[X] (CoordinateRing H) r ≠ 0 := by
+    intro hr0
+    apply hu_notmem
+    rw [hr0]
+    exact Submodule.zero_mem _
+  have hyspan_ne : Associates.mk
+      (Ideal.span ({y H} : Set (CoordinateRing H))) ≠ 0 :=
+    Associates.mk_ne_zero.mpr (Ideal.span_singleton_eq_bot.not.mpr hy_ne)
+  have hrspan_ne : Associates.mk
+      (Ideal.span ({algebraMap k[X] (CoordinateRing H) r} : Set (CoordinateRing H))) ≠ 0 :=
+    Associates.mk_ne_zero.mpr (Ideal.span_singleton_eq_bot.not.mpr hr_ne)
+  -- `count` of `pointIdeal Q` in `span {y H}` is `< 2` (§B.2d: `¬ pointIdeal Q ^ 2 ∣ span {y H}`,
+  -- contrapositive of `Associates.prime_pow_dvd_iff_le` at `k = 2`).
+  have hy_count_lt2 : (Associates.mk (pointIdeal Q)).count
+      (Associates.mk (Ideal.span ({y H} : Set (CoordinateRing H)))).factors < 2 := by
+    by_contra hge
+    push Not at hge
+    rw [← Associates.prime_pow_dvd_iff_le hyspan_ne hirr] at hge
+    exact hnot_sq_dvd_y (by simpa [pow_two] using (Associates.mk_le_mk_iff_dvd.mp hge))
+  -- `count` of `pointIdeal Q` in `span {algebraMap r}` is `0` (`algebraMap r ∉ pointIdeal Q`
+  -- means `pointIdeal Q ∤ span {algebraMap r}`, contrapositive of `k = 1` case).
+  have hr_count0 : (Associates.mk (pointIdeal Q)).count
+      (Associates.mk (Ideal.span
+        ({algebraMap k[X] (CoordinateRing H) r} : Set (CoordinateRing H)))).factors = 0 := by
+    by_contra hne0
+    have hge1 : 1 ≤ (Associates.mk (pointIdeal Q)).count
+        (Associates.mk (Ideal.span
+          ({algebraMap k[X] (CoordinateRing H) r} : Set (CoordinateRing H)))).factors :=
+      Nat.one_le_iff_ne_zero.mpr hne0
+    rw [← Associates.prime_pow_dvd_iff_le hrspan_ne hirr, pow_one] at hge1
+    exact hu_notmem (Ideal.dvd_span_singleton.mp (Associates.mk_le_mk_iff_dvd.mp hge1))
+  -- The two products `y H * y H` and `g * algebraMap r` are equal (`hprod`), so their `mk`s'
+  -- `factors` (hence `count`s) agree; `Associates.factors_mul` turns each product's `factors`
+  -- into a sum, giving the count-additivity equation directly.
+  have hmk_eq : Associates.mk (Ideal.span ({y H} : Set (CoordinateRing H)) *
+      Ideal.span ({y H} : Set (CoordinateRing H))) =
+      Associates.mk (Ideal.span ({g} : Set (CoordinateRing H)) *
+        Ideal.span ({algebraMap k[X] (CoordinateRing H) r} : Set (CoordinateRing H))) := by
+    rw [Ideal.span_singleton_mul_span_singleton, Ideal.span_singleton_mul_span_singleton, hprod]
   have hcount_eq : (Associates.mk (pointIdeal Q)).count
-      (Associates.mk (Ideal.span ({g} : Set (CoordinateRing H)))).factors = 1 := by omega
-  rw [hcount_eq]
+      (Associates.mk (Ideal.span ({y H} : Set (CoordinateRing H)) *
+        Ideal.span ({y H} : Set (CoordinateRing H)))).factors =
+      (Associates.mk (pointIdeal Q)).count
+        (Associates.mk (Ideal.span ({g} : Set (CoordinateRing H)) *
+          Ideal.span
+            ({algebraMap k[X] (CoordinateRing H) r} : Set (CoordinateRing H)))).factors := by
+    rw [hmk_eq]
+  -- `Associates.count` unfolds (via `hirr : Irreducible (mk (pointIdeal Q))`) to `bcount`,
+  -- which on `factors = ↑s` (nonzero case, `factors_mk`/`factors_eq_some_iff_ne_zero`) is
+  -- `Multiset.count`; `factors_mul` turns the product's `factors` into a `FactorSet` sum,
+  -- `FactorSet.coe_add` pushes the coercion through, and `Multiset.count_add` distributes.
+  have hcount_add : ∀ x y : CoordinateRing H, x ≠ 0 → y ≠ 0 →
+      (Associates.mk (pointIdeal Q)).count
+        (Associates.mk (Ideal.span ({x} : Set (CoordinateRing H)) *
+          Ideal.span ({y} : Set (CoordinateRing H)))).factors =
+      (Associates.mk (pointIdeal Q)).count
+        (Associates.mk (Ideal.span ({x} : Set (CoordinateRing H)))).factors +
+      (Associates.mk (pointIdeal Q)).count
+        (Associates.mk (Ideal.span ({y} : Set (CoordinateRing H)))).factors := by
+    intro x y hx hy
+    have hxne : Associates.mk (Ideal.span ({x} : Set (CoordinateRing H))) ≠ 0 :=
+      Associates.mk_ne_zero.mpr (Ideal.span_singleton_eq_bot.not.mpr hx)
+    have hyne : Associates.mk (Ideal.span ({y} : Set (CoordinateRing H))) ≠ 0 :=
+      Associates.mk_ne_zero.mpr (Ideal.span_singleton_eq_bot.not.mpr hy)
+    rw [← Associates.mk_mul_mk, Associates.factors_mul]
+    obtain ⟨sx, hsx⟩ := Associates.factors_eq_some_iff_ne_zero.mpr hxne
+    obtain ⟨sy, hsy⟩ := Associates.factors_eq_some_iff_ne_zero.mpr hyne
+    rw [hsx, hsy, ← Associates.FactorSet.coe_add]
+    simp only [Associates.count, dif_pos hirr, Associates.bcount]
+    exact Multiset.count_add _ sx sy
+
+  -- `hcount_eq` is now the additivity equation: `count(y)+count(y) = count(g)+count(r-part)`.
+  rw [hcount_add (y H) (y H) hy_ne hy_ne] at hcount_eq
+  rw [hcount_add g (algebraMap k[X] (CoordinateRing H) r) hgne hr_ne] at hcount_eq
+  rw [hr_count0, add_zero] at hcount_eq
+  have hle2 : (Associates.mk (pointIdeal Q)).count
+      (Associates.mk (Ideal.span ({g} : Set (CoordinateRing H)))).factors ≤ 2 := by omega
+  have hcount2 : (Associates.mk (pointIdeal Q)).count
+      (Associates.mk (Ideal.span ({g} : Set (CoordinateRing H)))).factors = 2 :=
+    le_antisymm hle2 hge2
+  rw [hcount2]
   norm_cast
-
-/-- **§B.2, ramified (`Q.Y = 0`), `sorry`'d.** Claim: `ordAt Q (linX a) 0 = 2`. Proof sketch:
-`Q.Y = 0` forces `f(a) = 0` (from `Y_sq`) and `Q = ι Q` (fixed point of the involution), the
-Weierstrass-point case. Here `linX a` is *not* a local uniformizer (it vanishes to even order
-by the standard ramification-index-2 argument for a double cover branched at `Q`); the actual
-uniformizer is `y H` itself, and `linX a` should be expressible as `(y H) ^ 2 · unit` locally,
-giving multiplicity `2` directly. Needs the same local-uniformizer infrastructure as §B.1,
-specialized to the branch-point case (ramification index `2` at a Weierstrass point of a
-genus-2 hyperelliptic double cover — standard algebraic geometry, not yet in this codebase's
-Lean). -/
-theorem ordAt_linX_eq_two_of_ramified [IsDedekindDomain (CoordinateRing H)]
-    (a : k) (Q : H.Point) (h_bot : pointIdeal Q ≠ ⊥) (heq : Q.X = a) (hY : Q.Y = 0) :
-    ordAt Q (linX a) 0 = 2 := by
-  sorry
-
+  
 /-- **The genuinely hard step, left open — now assembled from §A/§B.1/§B.2 above rather than
 one monolithic `sorry`.** The exact order of vanishing of `g a := toPair H
 (linX a) 0` at an affine point `Q`: `0` away from the fiber `Q.X = a`; `1` at an unramified
@@ -701,20 +989,60 @@ mirroring `ordAt_eq_count`'s own hypotheses (`h_bot`, both used identically here
 slots into the existing `ordAt` API without inventing new preconditions.
 **Status: §A (`Q.X ≠ a`) is fully proved. §B.1/§B.2 (`Q.X = a`, both sub-cases) remain
 `sorry`'d, isolated in their own named lemmas above rather than duplicated here.** -/
+theorem ordAt_linX_eq_one_of_unramified [IsDedekindDomain (CoordinateRing H)]
+    (hchar : (2 : k) ≠ 0) (a : k) (Q : H.Point) (h_bot : pointIdeal Q ≠ ⊥)
+    (heq : Q.X = a) (hY : Q.Y ≠ 0) :
+    ordAt Q (linX a) 0 = 1 := by
+  classical
+  rw [← heq]
+  have hdvd := ordAt_linX_eq_one_of_unramified_dvd Q.X Q rfl
+  have hnot_sq_dvd := pointIdeal_linX_not_sq_dvd Q hchar hY
+  have hgne : toPair H (linX Q.X) 0 ≠ 0 := by
+    rw [Ne, toPair_eq_zero_iff]
+    exact fun ⟨hA, _⟩ => linX_ne_zero Q.X hA
+  rw [ordAt_eq_count Q (linX Q.X) 0 hgne h_bot]
+  show ((Associates.mk (pointIdeal Q)).count
+      (Associates.mk (Ideal.span ({toPair H (linX Q.X) 0} : Set (CoordinateRing H)))).factors : ℤ)
+      = 1
+  have hprime : Prime (pointIdeal Q) := (Ideal.prime_iff_isPrime h_bot).mpr
+    (pointIdeal_isMaximal Q).isPrime
+  have hirr : Irreducible (Associates.mk (pointIdeal Q)) :=
+    Associates.irreducible_mk.mpr hprime.irreducible
+  have hm_ne : Associates.mk (Ideal.span
+      ({toPair H (linX Q.X) 0} : Set (CoordinateRing H))) ≠ 0 :=
+    Associates.mk_ne_zero.mpr (Ideal.span_singleton_eq_bot.not.mpr hgne)
+  have hge1 : 1 ≤ (Associates.mk (pointIdeal Q)).count
+      (Associates.mk (Ideal.span
+        ({toPair H (linX Q.X) 0} : Set (CoordinateRing H)))).factors := by
+    rw [← Associates.prime_pow_dvd_iff_le hm_ne hirr, pow_one]
+    exact Associates.mk_dvd_mk.mpr hdvd
+  have hlt2 : (Associates.mk (pointIdeal Q)).count
+      (Associates.mk (Ideal.span
+        ({toPair H (linX Q.X) 0} : Set (CoordinateRing H)))).factors < 2 := by
+    by_contra hge
+    push Not at hge
+    rw [← Associates.prime_pow_dvd_iff_le hm_ne hirr] at hge
+    exact hnot_sq_dvd (by simpa [pow_two] using (Associates.mk_le_mk_iff_dvd.mp hge))
+  have heq1 : (Associates.mk (pointIdeal Q)).count
+      (Associates.mk (Ideal.span
+        ({toPair H (linX Q.X) 0} : Set (CoordinateRing H)))).factors = 1 := by omega
+  rw [heq1]
+  norm_cast
 theorem ordAt_linX_eq [IsDedekindDomain (CoordinateRing H)] [DecidableEq k]
-    (hchar : (2 : k) ≠ 0) (a : k) (Q : H.Point) (h_bot : pointIdeal Q ≠ ⊥) :
+    (hchar : (2 : k) ≠ 0) (hsf : Squarefree H.f) (a : k) (Q : H.Point)
+    (h_bot : pointIdeal Q ≠ ⊥) :
     ordAt Q (linX a) 0 = if Q.X ≠ a then 0 else if Q.Y ≠ 0 then 1 else 2 := by
   split_ifs with hne hY
   · exact ordAt_linX_eq_zero_of_ne a Q h_bot hne
   · exact ordAt_linX_eq_one_of_unramified hchar a Q h_bot (not_ne_iff.mp hne) hY
-  · exact ordAt_linX_eq_two_of_ramified a Q h_bot (not_ne_iff.mp hne) (not_ne_iff.mp hY)
+  · exact ordAt_linX_eq_two_of_ramified hsf a Q h_bot (not_ne_iff.mp hne) (not_ne_iff.mp hY)
 
 /-- The support of `ordAt _ (linX a) 0`, as a `Finset`, for a nonzero `Y`-coordinate point
 `P` with `P.X = a`: exactly `{P, ι P}` (two distinct points, by `iota_ne_self_of_Y_ne_zero`).
 Conditional on `ordAt_linX_eq`. -/
 theorem divToPair_linX_eq_of_unramified [IsDedekindDomain (CoordinateRing H)]
     [DecidableEq H.Point]
-    (hchar : (2 : k) ≠ 0) (P : H.Point) (hY : P.Y ≠ 0) :
+    (hchar : (2 : k) ≠ 0) (hsf : Squarefree H.f) (P : H.Point) (hY : P.Y ≠ 0) :
     divToPair (linX P.X) 0 ({P, Point.iota P} : Finset H.Point) =
       single P + single (Point.iota P) := by
   classical
@@ -722,10 +1050,10 @@ theorem divToPair_linX_eq_of_unramified [IsDedekindDomain (CoordinateRing H)]
   unfold divToPair
   rw [Finset.sum_pair hne]
   have hordP : ordAt P (linX P.X) 0 = 1 := by
-    rw [ordAt_linX_eq hchar P.X P (pointIdeal_ne_bot P)]
+    rw [ordAt_linX_eq hchar hsf P.X P (pointIdeal_ne_bot P)]
     simp [hY]
   have hordIota : ordAt (Point.iota P) (linX P.X) 0 = 1 := by
-    rw [ordAt_linX_eq hchar P.X (Point.iota P) (pointIdeal_ne_bot _)]
+    rw [ordAt_linX_eq hchar hsf P.X (Point.iota P) (pointIdeal_ne_bot _)]
     simp [Point.iota_X, Point.iota_Y, hY]
   rw [hordP, hordIota, one_smul, one_smul]
 
@@ -734,7 +1062,7 @@ theorem divToPair_linX_eq_of_unramified [IsDedekindDomain (CoordinateRing H)]
 `single P + single (ι P) = single P + single P = 2 • single P`. Conditional on
 `ordAt_linX_eq`. -/
 theorem divToPair_linX_eq_of_ramified [IsDedekindDomain (CoordinateRing H)]
-    (hchar : (2 : k) ≠ 0) (P : H.Point) (hY : P.Y = 0) :
+    (hchar : (2 : k) ≠ 0) (hsf : Squarefree H.f) (P : H.Point) (hY : P.Y = 0) :
     divToPair (linX P.X) 0 ({P} : Finset H.Point) =
       single P + single (Point.iota P) := by
   classical
@@ -748,7 +1076,7 @@ theorem divToPair_linX_eq_of_ramified [IsDedekindDomain (CoordinateRing H)]
   unfold divToPair
   rw [Finset.sum_singleton]
   have hordP : ordAt P (linX P.X) 0 = 2 := by
-    rw [ordAt_linX_eq hchar P.X P (pointIdeal_ne_bot P)]
+    rw [ordAt_linX_eq hchar hsf P.X P (pointIdeal_ne_bot P)]
     simp [hY]
   rw [hordP]
   change (2 : ℤ) • single P = single P + single P
@@ -769,13 +1097,13 @@ noncomputable def fiberSupport (x : H.Point) : Finset H.Point :=
 unramified/ramified dichotomy — immediate case split into `divToPair_linX_eq_of_ramified`/
 `_of_unramified` after unfolding `fiberSupport`. -/
 theorem divToPair_linX_eq [IsDedekindDomain (CoordinateRing H)]
-    (hchar : (2 : k) ≠ 0) (x : H.Point) :
+    (hchar : (2 : k) ≠ 0) (hsf : Squarefree H.f) (x : H.Point) :
     divToPair (linX x.X) 0 (fiberSupport x) = single x + single (Point.iota x) := by
   classical
   unfold fiberSupport
   split_ifs with hY
-  · exact divToPair_linX_eq_of_ramified hchar x hY
-  · exact divToPair_linX_eq_of_unramified hchar x hY
+  · exact divToPair_linX_eq_of_ramified hchar hsf x hY
+  · exact divToPair_linX_eq_of_unramified hchar hsf x hY
 
 /-- The `hsupp` side condition `fiberSupport x` needs to feed `deg_divToPairRatio_eq_zero`/
 `principalSubgroup`'s generating-set membership: away from `fiberSupport x`, `ordAt _ (linX
@@ -785,11 +1113,11 @@ directly; if so but `Q ∉ fiberSupport x`, `Q` must still differ from both `x` 
 `Q.X ≠ x.X`, so we instead show directly `Q ∉ fiberSupport x` together with `Q.X = x.X`
 is impossible, closing this branch by deriving `Q ∈ fiberSupport x` and contradicting `hQ`. -/
 theorem hsupp_linX [IsDedekindDomain (CoordinateRing H)]
-    (hchar : (2 : k) ≠ 0) (x : H.Point) :
+    (hchar : (2 : k) ≠ 0) (hsf : Squarefree H.f) (x : H.Point) :
     ∀ Q, Q ∉ fiberSupport x → ordAt Q (linX x.X) 0 = 0 := by
   classical
   intro Q hQ
-  rw [ordAt_linX_eq hchar x.X Q (pointIdeal_ne_bot Q)]
+  rw [ordAt_linX_eq hchar hsf x.X Q (pointIdeal_ne_bot Q)]
   by_cases hne : Q.X = x.X
   · exfalso
     apply hQ
@@ -846,7 +1174,7 @@ discharged anywhere in this codebase yet (see that theorem's doc comment), so th
 through as extra hypotheses here, matching the convention already used for the `Module.Finite`
 instance argument. -/
 theorem hyperellipticClass_principalDivisorData (hdeg : H.f.natDegree = 5)
-    (hchar : (2 : k) ≠ 0) [IsDedekindDomain (CoordinateRing H)]
+    (hchar : (2 : k) ≠ 0) (hsf : Squarefree H.f) [IsDedekindDomain (CoordinateRing H)]
     [∀ (a : k) (S : Finset H.Point),
       ∀ P : S, Module.Finite k (CoordinateRing H ⧸ pointIdeal P.1 ^ (ordAt P.1 (linX a) 0).toNat)]
     (hspec : ∀ (a : k), ∀ v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H),
@@ -862,15 +1190,15 @@ theorem hyperellipticClass_principalDivisorData (hdeg : H.f.natDegree = 5)
         : Divisor H) =
       divToPairRatio (linX x₁.X) 0 (fiberSupport x₁) (linX x₃.X) 0 (fiberSupport x₃) := by
     unfold divToPairRatio
-    rw [divToPair_linX_eq hchar x₁, divToPair_linX_eq hchar x₃]
+    rw [divToPair_linX_eq hchar hsf x₁, divToPair_linX_eq hchar hsf x₃]
     abel
   rw [hgoal_eq]
   show _ ∈ principalSubgroup H hdeg
   apply AddSubgroup.subset_closure
-  refine ⟨linX x₁.X, 0, fiberSupport x₁, ?_, hsupp_linX hchar x₁, hspec x₁.X,
+  refine ⟨linX x₁.X, 0, fiberSupport x₁, ?_, hsupp_linX hchar hsf x₁, hspec x₁.X,
     fun P => ‹∀ (a : k) (S : Finset H.Point), ∀ P : S, Module.Finite k
       (CoordinateRing H ⧸ pointIdeal P.1 ^ (ordAt P.1 (linX a) 0).toNat)› x₁.X (fiberSupport x₁) P,
-    linX x₃.X, 0, fiberSupport x₃, ?_, hsupp_linX hchar x₃, hspec x₃.X,
+    linX x₃.X, 0, fiberSupport x₃, ?_, hsupp_linX hchar hsf x₃, hspec x₃.X,
     fun P => ‹∀ (a : k) (S : Finset H.Point), ∀ P : S, Module.Finite k
       (CoordinateRing H ⧸ pointIdeal P.1 ^ (ordAt P.1 (linX a) 0).toNat)› x₃.X (fiberSupport x₃) P,
     ?_, rfl⟩
