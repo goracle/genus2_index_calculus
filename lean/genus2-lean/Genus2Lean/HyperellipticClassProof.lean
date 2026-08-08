@@ -343,39 +343,267 @@ theorem pointIdeal_pow_dvd_span_mul_notMem_iff [IsDedekindDomain (CoordinateRing
       exact Ideal.mem_span_singleton.mpr ⟨u, rfl⟩
     exact hdvd.trans (Ideal.dvd_iff_le.mpr hsub)
 
-/-- **§B.1c-iii, isolated sub-fact, the true geometric crux — `sorry`'d, isolated as the final
-irreducible piece.** **Correction from an earlier draft of this lemma**: an earlier version of
-this file attempted to show `y H - C Q.Y` itself is a uniformizer at `pointIdeal Q` (i.e.
-`pointIdeal Q ^ 2 ∤ span {y H - C Q.Y}`, or even the stronger `span {y H - C Q.Y} = pointIdeal
-Q`). **That version is false in general.** Writing `s := X - C Q.X`, `t := y H - C Q.Y`, the
-curve relation gives `t * (t + 2 • C Q.Y) = s * r` for `r` from `factors_sub_Y_sq`, i.e. `2 *
-Q.Y * t ≡ s * r (mod pointIdeal Q ^ 2)` (since `t ^ 2 ∈ pointIdeal Q ^ 2`); if `r ∈ pointIdeal
-Q` (equivalently, `Q.X` is a *repeated* root of `H.f - C (Q.Y ^ 2)` in `k[X]`, i.e. the
-`x`-coordinate map is ramified at `Q` for reasons unrelated to `Q.Y = 0` — genuinely possible,
-`HyperellipticPolynomial` imposes no squarefreeness of `H.f`), then `s * r ∈ pointIdeal Q ^ 2`
-too, forcing (as `2 * Q.Y` is a unit, being the image of a nonzero field element) `t ∈
-pointIdeal Q ^ 2` — the negation of what the earlier draft claimed.
+/-- **§B.1c-iii-pre, structural fact: `pointIdeal Q = span {s, t}`**, where `s := toPair H
+(linX Q.X) 0` and `t := y H - C Q.Y`. Proved directly inside `CoordinateRing H`, no
+localization: `⊇` is `s, t ∈ pointIdeal Q` (both easy `evalAtPoint` computations); `⊆` takes
+`z ∈ pointIdeal Q`, writes `z = toPair H A B` (`toPair_surjective_local`), and uses the
+factor-theorem decompositions `A = C (A.eval Q.X) + linX Q.X * A₁`, `B = C (B.eval Q.X) +
+linX Q.X * B₁` (`Polynomial.dvd_iff_isRoot` applied to `A - C (A.eval Q.X)` etc.) to split off
+a multiple of `s`, leaving a remainder `C (A.eval Q.X) + C (B.eval Q.X) * y H` that — using
+`evalAtPoint Q z = 0`, i.e. `A.eval Q.X + B.eval Q.X * Q.Y = 0` — collapses to
+`B.eval Q.X * t`, a multiple of `t`. -/
+theorem pointIdeal_eq_span_pair [IsDedekindDomain (CoordinateRing H)] (Q : H.Point) :
+    pointIdeal Q = Ideal.span ({toPair H (linX Q.X) 0,
+      y H - algebraMap k[X] (CoordinateRing H) (Polynomial.C Q.Y)} : Set (CoordinateRing H)) := by
+  set s : CoordinateRing H := toPair H (linX Q.X) 0 with hs_def
+  set t : CoordinateRing H := y H - algebraMap k[X] (CoordinateRing H) (Polynomial.C Q.Y)
+    with ht_def
+  have hs_mem : s ∈ pointIdeal Q := (toPair_linX_mem_pointIdeal_iff Q.X Q).mpr rfl
+  have ht_eval : evalAtPoint Q t = 0 := by
+    rw [ht_def, map_sub]
+    have hy : evalAtPoint Q (y H) = Q.Y := by
+      unfold evalAtPoint y
+      change Polynomial.eval₂ (Polynomial.evalRingHom Q.val.1) Q.val.2 X = Q.Y
+      simp [Point.Y]
+    have hC : evalAtPoint Q (algebraMap k[X] (CoordinateRing H) (Polynomial.C Q.Y)) = Q.Y := by
+      change Polynomial.eval₂ (Polynomial.evalRingHom Q.val.1) Q.val.2
+        (Polynomial.C (Polynomial.C Q.Y)) = Q.Y
+      simp
+    rw [hy, hC, sub_self]
+  have ht_mem : t ∈ pointIdeal Q := by
+    unfold pointIdeal
+    rw [RingHom.mem_ker]
+    exact ht_eval
+  apply le_antisymm
+  · intro z hz
+    obtain ⟨A, B, hzAB⟩ := toPair_surjective_local H z
+    have hz' : evalAtPoint Q z = 0 := by
+      have := hz
+      unfold pointIdeal at this
+      rwa [RingHom.mem_ker] at this
+    have hzeval : A.eval Q.X + B.eval Q.X * Q.Y = 0 := by
+      have : evalAtPoint Q z = 0 := hz'
+      rw [hzAB] at this
+      unfold toPair at this
+      rw [map_add, map_mul] at this
+      have hAeval : evalAtPoint Q (algebraMap k[X] (CoordinateRing H) A) = A.eval Q.X := by
+        change Polynomial.eval₂ (Polynomial.evalRingHom Q.val.1) Q.val.2
+          (Polynomial.C A) = A.eval Q.X
+        simp
+      have hBeval : evalAtPoint Q (algebraMap k[X] (CoordinateRing H) B) = B.eval Q.X := by
+        change Polynomial.eval₂ (Polynomial.evalRingHom Q.val.1) Q.val.2
+          (Polynomial.C B) = B.eval Q.X
+        simp
+      have hyeval : evalAtPoint Q (y H) = Q.Y := by
+        unfold evalAtPoint y
+        change Polynomial.eval₂ (Polynomial.evalRingHom Q.val.1) Q.val.2 X = Q.Y
+        simp [Point.Y]
+      rwa [hAeval, hBeval, hyeval] at this
+    have hAdvd : linX Q.X ∣ (A - Polynomial.C (A.eval Q.X)) := by
+      unfold linX
+      apply Polynomial.dvd_iff_isRoot.mpr
+      show (A - Polynomial.C (A.eval Q.X)).eval Q.X = 0
+      simp
+    have hBdvd : linX Q.X ∣ (B - Polynomial.C (B.eval Q.X)) := by
+      unfold linX
+      apply Polynomial.dvd_iff_isRoot.mpr
+      show (B - Polynomial.C (B.eval Q.X)).eval Q.X = 0
+      simp
+    obtain ⟨A₁, hA₁⟩ := hAdvd
+    obtain ⟨B₁, hB₁⟩ := hBdvd
+    have hA_eq : A = Polynomial.C (A.eval Q.X) + linX Q.X * A₁ := by
+      have := hA₁; rw [sub_eq_iff_eq_add] at this; linear_combination this
+    have hB_eq : B = Polynomial.C (B.eval Q.X) + linX Q.X * B₁ := by
+      have := hB₁; rw [sub_eq_iff_eq_add] at this; linear_combination this
+    have hg : s = algebraMap k[X] (CoordinateRing H) (linX Q.X) := by
+      rw [hs_def]; unfold toPair; simp
+    have hz_split : z = algebraMap k[X] (CoordinateRing H) (Polynomial.C (A.eval Q.X)) +
+        algebraMap k[X] (CoordinateRing H) (Polynomial.C (B.eval Q.X)) * y H +
+        s * toPair H A₁ B₁ := by
+      have hstepA : algebraMap k[X] (CoordinateRing H) A =
+          algebraMap k[X] (CoordinateRing H) (Polynomial.C (A.eval Q.X)) +
+          s * algebraMap k[X] (CoordinateRing H) A₁ := by
+        rw [hg, ← map_mul, ← map_add, ← hA_eq]
+      have hstepB : algebraMap k[X] (CoordinateRing H) B =
+          algebraMap k[X] (CoordinateRing H) (Polynomial.C (B.eval Q.X)) +
+          s * algebraMap k[X] (CoordinateRing H) B₁ := by
+        rw [hg, ← map_mul, ← map_add, ← hB_eq]
+      have htoPairA1B1 : toPair H A₁ B₁ = algebraMap k[X] (CoordinateRing H) A₁ +
+          algebraMap k[X] (CoordinateRing H) B₁ * y H := by
+        unfold toPair; ring
+      rw [hzAB]
+      unfold toPair
+      rw [hstepA, hstepB, htoPairA1B1]
+      ring
+    have hrem : algebraMap k[X] (CoordinateRing H) (Polynomial.C (A.eval Q.X)) +
+        algebraMap k[X] (CoordinateRing H) (Polynomial.C (B.eval Q.X)) * y H =
+        algebraMap k[X] (CoordinateRing H) (Polynomial.C (B.eval Q.X)) * t := by
+      have hAeq : A.eval Q.X = -(B.eval Q.X * Q.Y) := by linear_combination hzeval
+      rw [ht_def, mul_sub]
+      have : algebraMap k[X] (CoordinateRing H) (Polynomial.C (A.eval Q.X)) =
+          - (algebraMap k[X] (CoordinateRing H) (Polynomial.C (B.eval Q.X)) *
+            algebraMap k[X] (CoordinateRing H) (Polynomial.C Q.Y)) := by
+        rw [← map_mul, ← map_neg]
+        congr 1
+        rw [hAeq]
+        ring
+      rw [this]
+      ring
+    rw [hz_split, hrem]
+    have hs_in_span : s ∈ Ideal.span ({s, t} : Set (CoordinateRing H)) :=
+      Ideal.subset_span (by simp)
+    have ht_in_span : t ∈ Ideal.span ({s, t} : Set (CoordinateRing H)) :=
+      Ideal.subset_span (by simp)
+    have hmem_s : s * toPair H A₁ B₁ ∈
+        Ideal.span ({s, t} : Set (CoordinateRing H)) :=
+      Ideal.mul_mem_right _ _ hs_in_span
+    have hmem_t : algebraMap k[X] (CoordinateRing H) (Polynomial.C (B.eval Q.X)) * t ∈
+        Ideal.span ({s, t} : Set (CoordinateRing H)) :=
+      Ideal.mul_mem_left _ _ ht_in_span
+    exact Ideal.add_mem _ hmem_s hmem_t
+  · rw [Ideal.span_le]
+    intro x hx
+    rw [Set.mem_insert_iff, Set.mem_singleton_iff] at hx
+    rcases hx with hx | hx
+    · rw [hx]; exact hs_mem
+    · rw [hx]; exact ht_mem
 
-**The correct, unconditional uniformizer at an unramified point is `s := X - C Q.X` (i.e.
-`toPair H (linX Q.X) 0`), not `t`.** Geometrically: the plane curve `Y² = f(X)` is smooth at
-`(Q.X, Q.Y)` with tangent line `2·Q.Y·(dY) - f'(Q.X)·(dX) = 0`; since `Q.Y ≠ 0` (char ≠ 2), the
-`dY`-coefficient `2·Q.Y` is always nonzero, so the tangent line is never vertical, so `X - Q.X`
-is *always* a valid local coordinate there — regardless of whether `f'(Q.X)` vanishes. This
-matches the algebra above: from `t * (y H + C Q.Y) = s * r` and `y H + C Q.Y` a **unit modulo
-`pointIdeal Q`** (`y_add_C_Y_notMem_pointIdeal_of_Y_ne_zero`, unconditional on `r`), `t` is,
-*in the localization at `pointIdeal Q`* (a DVR, since `IsDedekindDomain`), a multiple of `s`
-— so the local maximal ideal is generated by `s` alone, giving `ordAt Q s 0 ≤ 1`; combined with
-`s ∈ pointIdeal Q` (`ordAt ≥ 1`, `toPair_linX_mem_pointIdeal_iff`), `ordAt Q s 0 = 1` exactly.
-**Left `sorry`'d**: formalizing this needs either (a) explicit `HeightOneSpectrum`/DVR
-localization reasoning (`intValuation`, `exists_uniformizer`, division in the localization), or
-(b) a Nakayama-style argument (`Submodule.eq_smul_of_le_smul_of_le_jacobson` in
-`Mathlib.RingTheory.Nakayama`, applied to the f.g. ideal `pointIdeal Q` to show `pointIdeal Q =
-span {s} + pointIdeal Q ^ 2` forces `pointIdeal Q = span {s}` outright) — neither is currently
-built out in `PrincipalDivisors.lean`. -/
+/-- **§B.1c-iii, isolated sub-fact, the true geometric crux, now proved.** Writes
+`s := toPair H (linX Q.X) 0`, `t := y H - C Q.Y`, `u := y H + C Q.Y`. From
+`pointIdeal_eq_span_pair`, `pointIdeal Q = span {s, t}`. Since `u ∉ pointIdeal Q`
+(`y_add_C_Y_notMem_pointIdeal_of_Y_ne_zero`) and `pointIdeal Q` is maximal,
+`pointIdeal Q ⊔ span {u} = ⊤` (as in `pointIdeal_pow_dvd_span_mul_notMem_iff`), so `1 = p + c*u`
+for some `p ∈ pointIdeal Q`. Multiplying by `t` and using `t*u = s * algebraMap r`
+(`y_sub_C_Y_mul_y_add_C_Y_eq`/`factors_sub_Y_sq`) gives `t = t*p + c*s*algebraMap r`, and since
+`t, p ∈ pointIdeal Q`, `t*p ∈ pointIdeal Q ^ 2`. So `t - c*algebraMap r*s ∈ pointIdeal Q ^ 2`,
+hence `t ∈ span {s} + pointIdeal Q ^ 2`; combined with `s ∈ span {s} + pointIdeal Q ^ 2`
+trivially, `pointIdeal Q = span {s,t} ≤ span {s} + pointIdeal Q ^ 2`. If
+`pointIdeal Q ^ 2 ∣ span {s}` (i.e. `span {s} ≤ pointIdeal Q ^ 2`), this forces
+`pointIdeal Q ≤ pointIdeal Q ^ 2`, i.e. (with the reverse inclusion always true)
+`pointIdeal Q = pointIdeal Q ^ 2`. Since `pointIdeal Q` is finitely generated
+(`Ideal.fg_of_isNoetherianRing`, `CoordinateRing H` Noetherian) and `pointIdeal Q ≤
+pointIdeal Q • pointIdeal Q` (`Ideal.smul_eq_mul` + the square fact), Nakayama
+(`Submodule.exists_sub_one_mem_and_smul_eq_zero_of_fg_of_le_smul`) gives `e` with `e - 1 ∈
+pointIdeal Q` and `e • pointIdeal Q = 0`. As `CoordinateRing H` is a domain and `pointIdeal Q ≠
+⊥` (`pointIdeal_ne_bot`), `e • pointIdeal Q = 0` forces `e = 0`; but then `e - 1 = -1 ∈
+pointIdeal Q`, i.e. `pointIdeal Q = ⊤`, contradicting maximality (`IsMaximal` is proper by
+definition). -/
 theorem pointIdeal_linX_not_sq_dvd [IsDedekindDomain (CoordinateRing H)]
     (Q : H.Point) (hchar : (2 : k) ≠ 0) (hY : Q.Y ≠ 0) :
     ¬ pointIdeal Q ^ 2 ∣ Ideal.span ({toPair H (linX Q.X) 0} : Set (CoordinateRing H)) := by
-  sorry
+  classical
+  set s : CoordinateRing H := toPair H (linX Q.X) 0 with hs_def
+  set t : CoordinateRing H := y H - algebraMap k[X] (CoordinateRing H) (Polynomial.C Q.Y)
+    with ht_def
+  set u : CoordinateRing H := y H + algebraMap k[X] (CoordinateRing H) (Polynomial.C Q.Y)
+    with hu_def
+  obtain ⟨r, hr⟩ := factors_sub_Y_sq Q
+  have htu : t * u = s * algebraMap k[X] (CoordinateRing H) r := by
+    rw [ht_def, hu_def, hs_def]
+    exact y_sub_C_Y_mul_y_add_C_Y_eq Q r hr
+  have hu_notmem : u ∉ pointIdeal Q := by
+    rw [hu_def]; exact y_add_C_Y_notMem_pointIdeal_of_Y_ne_zero hchar Q hY
+  have hs_mem : s ∈ pointIdeal Q := (toPair_linX_mem_pointIdeal_iff Q.X Q).mpr rfl
+  have ht_mem : t ∈ pointIdeal Q := by
+    have heval : evalAtPoint Q t = 0 := by
+      rw [ht_def, map_sub]
+      have hy : evalAtPoint Q (y H) = Q.Y := by
+        unfold evalAtPoint y
+        change Polynomial.eval₂ (Polynomial.evalRingHom Q.val.1) Q.val.2 X = Q.Y
+        simp [Point.Y]
+      have hC : evalAtPoint Q (algebraMap k[X] (CoordinateRing H) (Polynomial.C Q.Y)) = Q.Y := by
+        change Polynomial.eval₂ (Polynomial.evalRingHom Q.val.1) Q.val.2
+          (Polynomial.C (Polynomial.C Q.Y)) = Q.Y
+        simp
+      rw [hy, hC, sub_self]
+    unfold pointIdeal
+    rw [RingHom.mem_ker]
+    exact heval
+  have hle : pointIdeal Q ≤ pointIdeal Q ⊔ Ideal.span ({u} : Set (CoordinateRing H)) := le_sup_left
+  have hne : pointIdeal Q ≠ pointIdeal Q ⊔ Ideal.span ({u} : Set (CoordinateRing H)) := by
+    intro heq
+    apply hu_notmem
+    rw [heq]
+    exact SetLike.le_def.mp le_sup_right (Ideal.mem_span_singleton_self u)
+  have hsup_top : pointIdeal Q ⊔ Ideal.span ({u} : Set (CoordinateRing H)) = ⊤ := by
+    by_contra hnotop
+    exact hne ((pointIdeal_isMaximal Q).eq_of_le hnotop hle)
+  have h1mem : (1 : CoordinateRing H) ∈
+      pointIdeal Q ⊔ Ideal.span ({u} : Set (CoordinateRing H)) := hsup_top ▸ Submodule.mem_top
+  obtain ⟨p, hp, w, hw, hpw⟩ := Submodule.mem_sup.mp h1mem
+  -- hp : p ∈ pointIdeal Q, hw : w ∈ span {u}, hpw : p + w = 1
+  obtain ⟨c, hc⟩ := Ideal.mem_span_singleton.mp hw
+  -- hc : w = u * c, and p + w = 1
+  have h1 : p + u * c = 1 := by rw [← hc]; exact hpw
+  have ht_eq : t = t * p + c * (s * algebraMap k[X] (CoordinateRing H) r) := by
+    have hstep : t * (p + u * c) = t * 1 := by rw [h1]
+    have hexpand : t * (p + u * c) = t * p + (t * u) * c := by ring
+    rw [hexpand, htu, mul_one] at hstep
+    linear_combination hstep
+  have htp_mem : t * p ∈ pointIdeal Q ^ 2 := by
+    rw [sq]
+    exact Ideal.mul_mem_mul ht_mem hp
+  have ht_sub_mem : t - c * (s * algebraMap k[X] (CoordinateRing H) r) ∈ pointIdeal Q ^ 2 := by
+    have : t - c * (s * algebraMap k[X] (CoordinateRing H) r) = t * p := by
+      rw [ht_eq]; ring
+    rw [this]; exact htp_mem
+  have ht_mem2 : t ∈ Ideal.span ({s} : Set (CoordinateRing H)) ⊔ pointIdeal Q ^ 2 := by
+    have hsmem : c * (s * algebraMap k[X] (CoordinateRing H) r) ∈
+        Ideal.span ({s} : Set (CoordinateRing H)) := by
+      rw [mul_comm c, mul_assoc]
+      exact Ideal.mul_mem_right _ _ (Ideal.mem_span_singleton_self s)
+    have hsum := Submodule.add_mem _ hsmem ht_sub_mem
+    have hrw : c * (s * algebraMap k[X] (CoordinateRing H) r) +
+        (t - c * (s * algebraMap k[X] (CoordinateRing H) r)) = t := by ring
+    rwa [hrw] at hsum
+  have hs_mem2 : s ∈ Ideal.span ({s} : Set (CoordinateRing H)) ⊔ pointIdeal Q ^ 2 :=
+    SetLike.le_def.mp le_sup_left (Ideal.mem_span_singleton_self s)
+  have hspan_le : pointIdeal Q ≤ Ideal.span ({s} : Set (CoordinateRing H)) ⊔ pointIdeal Q ^ 2 := by
+    rw [pointIdeal_eq_span_pair Q, Ideal.span_le]
+    intro x hx
+    rw [Set.mem_insert_iff, Set.mem_singleton_iff] at hx
+    rcases hx with hx | hx
+    · rw [hx]; exact hs_mem2
+    · rw [hx]; exact ht_mem2
+  intro hdvd_contra
+  have hspan_le2 : Ideal.span ({s} : Set (CoordinateRing H)) ≤ pointIdeal Q ^ 2 :=
+    Ideal.dvd_iff_le.mp hdvd_contra
+  have hsuple : Ideal.span ({s} : Set (CoordinateRing H)) ⊔ pointIdeal Q ^ 2 ≤ pointIdeal Q ^ 2 :=
+    sup_le hspan_le2 (le_refl (pointIdeal Q ^ 2))
+  have heq2 : pointIdeal Q ≤ pointIdeal Q ^ 2 := le_trans hspan_le hsuple
+  have hpow_le : pointIdeal Q ^ 2 ≤ pointIdeal Q := by
+    rw [sq]
+    intro x hx
+    refine Submodule.mul_induction_on hx (fun a ha b hb => Ideal.mul_mem_right b _ ha) ?_
+    intro y z hy hz
+    exact Ideal.add_mem _ hy hz
+  have heq_final : pointIdeal Q = pointIdeal Q ^ 2 :=
+    le_antisymm heq2 hpow_le
+  have hfg : (pointIdeal Q).FG := Ideal.fg_of_isNoetherianRing (pointIdeal Q)
+  have hle_smul : pointIdeal Q ≤ pointIdeal Q • pointIdeal Q := by
+    rw [Ideal.smul_eq_mul, ← sq]
+    exact heq2
+  obtain ⟨e, he1, he0⟩ :=
+    Submodule.exists_sub_one_mem_and_smul_eq_zero_of_fg_of_le_smul (pointIdeal Q)
+      (pointIdeal Q) hfg hle_smul
+  have hbot := pointIdeal_ne_bot Q
+  obtain ⟨x, hxmem, hxne⟩ : ∃ x ∈ pointIdeal Q, x ≠ 0 := by
+    by_contra hcon
+    push_neg at hcon
+    apply hbot
+    rw [Submodule.eq_bot_iff]
+    exact hcon
+  have hex0 : e * x = 0 := he0 x hxmem
+  have he_eq0 : e = 0 := by
+    rcases mul_eq_zero.mp hex0 with he | hx0
+    · exact he
+    · exact absurd hx0 hxne
+  rw [he_eq0, zero_sub] at he1
+  have hone_mem : (1 : CoordinateRing H) ∈ pointIdeal Q := by
+    have hneg1 : -(1 : CoordinateRing H) ∈ pointIdeal Q := he1
+    have := Ideal.neg_mem hneg1
+    rwa [neg_neg] at this
+  exact (pointIdeal_isMaximal Q).ne_top (Ideal.eq_top_iff_one _ |>.mpr hone_mem)
 
 /-- **§B.1c, the genuine hard step — reduced to `pointIdeal_linX_not_sq_dvd` above, which is now
 the sole remaining `sorry` in this development's local-uniformizer argument.** Immediate from
