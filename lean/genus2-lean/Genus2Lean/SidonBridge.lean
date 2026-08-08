@@ -170,36 +170,127 @@ advisory-7 says must be checked when the factor base is constructed. -/
 def AvoidsInvolutionPairs (F : Finset H.Point) : Prop :=
   ∀ x ∈ F, Point.iota x ∈ F → x = Point.iota x
 
-/-- **The mechanical bridge.** If `D` satisfies both `SidonDichotomy` and
-`HyperellipticClass`, and `F` avoids involution-pairs, then `sidonSet D δ₀ F`
-satisfies `SidonRepBound` — i.e. `SidonEnergy.lean`'s entire conditional
-apparatus (`sidon_energy_bound`, `matchCount_le_two_card_sq`,
-`sidon_gives_hit_count_bound_combinatorial`, ...) applies unconditionally to
-`T := s '' F` once this one curve-side hypothesis is granted.
+/-- **The extra hypothesis this proof needs beyond `SidonDichotomy` +
+`HyperellipticClass` + `AvoidsInvolutionPairs`.** `SidonDichotomy` applied to
+a "diagonal" collision `s x₁ + s x₁ = s x₁' + s x₁'` between two `ι`-fixed
+points `x₁, x₁' ∈ F` (Weierstrass points) has its "involution-swap" disjunct
+`x₁ = ι x₁ ∧ x₁' = ι x₁'` satisfied *automatically* whenever both points are
+`ι`-fixed — so that disjunct carries no information there, and
+`SidonDichotomy` alone gives no way to conclude `x₁ = x₁'` from
+`2 • s x₁ = 2 • s x₁'`. Rather than assert a separate injectivity fact about
+how `s` behaves on Weierstrass points (a true but nontrivial genus-2 fact,
+provable from Riemann–Roch but not otherwise needed here), the cheaper and
+equally standard fix is to simply keep Weierstrass points out of the factor
+base entirely: there are at most `2g + 2 = 6` of them on a genus-2 curve, out
+of `~p` points total, so excluding them from `F` costs nothing in practice
+and makes this hypothesis — unlike `AvoidsInvolutionPairs`, a genuine
+property of `D`'s divisor structure requiring geometric input to establish —
+purely a checkable-by-construction property of `F`. -/
+def NoWeierstrassPoints (F : Finset H.Point) : Prop :=
+  ∀ x ∈ F, Point.iota x ≠ x
 
-Proof sketch (not yet filled in — see the `sorry` below): unfold `repCount T
-g ≤ 2` to "at most one unordered pair of `F`-points maps to `g` under `(x,y)
-↦ s x + s y`, up to swap." Given three ordered pairs `(x₁,x₂), (x₃,x₄),
-(x₅,x₆)` all landing on the same `g`, `SidonDichotomy` (via
-`ffk_sidon_dichotomy`'s forward direction) forces each pair against each
-other to be either literally the same unordered pair or an involution-swap
-of it. `AvoidsInvolutionPairs` rules out the involution-swap disjunct
-whenever the two pairs are not already identical (an involution-swap
-between two *distinct* points of `F` would require one of them to be the
-other's image under `ι`, contradicting `AvoidsInvolutionPairs` unless they
-are literally equal as points, which forces the pairs to coincide too). So
-all three ordered pairs are forced to the same unordered pair, i.e.
-`repCount T g` counts at most the `≤ 2` orderings of one unordered pair —
-closing the bound. This is genuinely mechanical given the two curve-side
-hypotheses, but threading `Finset.image` preimages back through `s`
-(non-injective in general — two different `H.Point`s could coincide in `J`)
-adds real bookkeeping that has not been carried out here. -/
+/-- **The mechanical bridge.** If `D` satisfies both `SidonDichotomy` and
+`HyperellipticClass`, `F` avoids involution-pairs, and `F` contains no
+Weierstrass (`ι`-fixed) points (`NoWeierstrassPoints` — see its docstring
+for why this is needed beyond the other three hypotheses), then `sidonSet D
+δ₀ F` satisfies `SidonRepBound` — i.e. `SidonEnergy.lean`'s entire
+conditional apparatus (`sidon_energy_bound`, `matchCount_le_two_card_sq`,
+`sidon_gives_hit_count_bound_combinatorial`, ...) applies unconditionally to
+`T := s '' F` once these curve-side hypotheses are granted.
+
+**Proof.** Fix `g`. If no pair of `T`-elements sums to `g`, the bound is
+trivial. Otherwise fix one witnessing pair `(s x₁, s x₂)`, `x₁, x₂ ∈ F`,
+`s x₁ + s x₂ = g`. Every other pair `(s x₁', s x₂')` in the fiber, `x₁', x₂' ∈
+F`, `s x₁' + s x₂' = g`, is shown to equal `(s x₁, s x₂)` or the swap
+`(s x₂, s x₁)` by applying `SidonDichotomy` to `s x₁ + s x₂ = s x₁' + s x₂'`:
+
+* the "same unordered pair" disjunct gives this immediately;
+* the "involution-swap" disjunct (`x₂ = ι x₁ ∧ x₂' = ι x₁'`) is impossible:
+  combined with `AvoidsInvolutionPairs` (since `x₁, x₂ ∈ F` and `x₂ = ι x₁ ∈
+  F`, hence `x₁ = ι x₁`) it would make `x₁` a Weierstrass point of `F`,
+  contradicting `NoWeierstrassPoints`.
+
+So the whole fiber is a subset of the two-element set `{(s x₁, s x₂), (s x₂,
+s x₁)}`, giving `repCount ≤ 2`. -/
 theorem sidonRepBound_of_sidonDichotomy
     (δ₀ : H.Point) (F : Finset H.Point)
     (hDichotomy : D.SidonDichotomy) (hClass : D.HyperellipticClass)
-    (hAvoid : AvoidsInvolutionPairs F) :
+    (hAvoid : AvoidsInvolutionPairs F)
+    (hNoWeier : NoWeierstrassPoints F) :
     SidonRepBound (sidonSet D δ₀ F) := by
-  sorry
+  intro g
+  classical
+  set T := sidonSet D δ₀ F with hT
+  set S := (T ×ˢ T).filter (fun p : Jacobian H D × Jacobian H D => p.1 + p.2 = g) with hS
+  show S.card ≤ 2
+  rcases S.eq_empty_or_nonempty with hEmpty | ⟨⟨P1, P2⟩, hMem⟩
+  · simp [hEmpty]
+  · -- Unpack the witnessing pair `(P1, P2)` down to points `x1, x2 ∈ F`.
+    simp only [hS, Finset.mem_filter, Finset.mem_product, hT, sidonSet,
+      Finset.mem_image] at hMem
+    obtain ⟨⟨⟨x1, hx1F, hx1⟩, ⟨x2, hx2F, hx2⟩⟩, hsum⟩ := hMem
+    subst hx1; subst hx2
+    -- Show `S ⊆ {(s x1, s x2), (s x2, s x1)}`.
+    have hsubset : S ⊆ ({(s D δ₀ x1, s D δ₀ x2), (s D δ₀ x2, s D δ₀ x1)} :
+        Finset (Jacobian H D × Jacobian H D)) := by
+      rintro ⟨Q1, Q2⟩ hQ
+      simp only [hS, Finset.mem_filter, Finset.mem_product, hT, sidonSet,
+        Finset.mem_image] at hQ
+      obtain ⟨⟨⟨y1, hy1F, hy1⟩, ⟨y2, hy2F, hy2⟩⟩, hsum'⟩ := hQ
+      subst hy1; subst hy2
+      have heq : s D δ₀ x1 + s D δ₀ x2 = s D δ₀ y1 + s D δ₀ y2 := hsum.trans hsum'.symm
+      have hdich := hDichotomy δ₀ x1 x2 y1 y2 heq
+      simp only [Finset.mem_insert, Finset.mem_singleton, Prod.mk.injEq]
+      rcases hdich with hpair | ⟨hx2ι, hy2ι⟩
+      · -- `{x1, x2} = {y1, y2}` as sets: unfold to the two ordered
+        -- possibilities, following the same membership-case-bash route as
+        -- `FFKSidon.lean`'s `sum_eq_of_pair_eq` (traced by hand there for the
+        -- same reason: risk of a `subst`-ordering/wrong-direction-chaining
+        -- bug without a live goal state to check against).
+        have h1 : y1 ∈ ({x1, x2} : Set H.Point) := by rw [hpair]; simp
+        have h2 : y2 ∈ ({x1, x2} : Set H.Point) := by rw [hpair]; simp
+        have h3 : x1 ∈ ({y1, y2} : Set H.Point) := by rw [← hpair]; simp
+        have h4 : x2 ∈ ({y1, y2} : Set H.Point) := by rw [← hpair]; simp
+        simp only [Set.mem_insert_iff, Set.mem_singleton_iff] at h1 h2 h3 h4
+        -- h1 : y1 = x1 ∨ y1 = x2, h2 : y2 = x1 ∨ y2 = x2,
+        -- h3 : x1 = y1 ∨ x1 = y2, h4 : x2 = y1 ∨ x2 = y2.
+        have hordered : (y1 = x1 ∧ y2 = x2) ∨ (y1 = x2 ∧ y2 = x1) := by
+          rcases h1 with h1 | h1
+          · rcases h2 with h2 | h2
+            · -- h1 : y1 = x1, h2 : y2 = x1. Need y2 = x2 too; get it from h4.
+              rcases h4 with h4 | h4
+              · -- h4 : x2 = y1. Chain: x2 = y1 (h4), y1 = x1 (h1) ⟹ x2 = x1.
+                have hx2x1 : x2 = x1 := h4.trans h1
+                -- y2 = x1 (h2), x1 = x2 (hx2x1.symm) ⟹ y2 = x2.
+                exact Or.inl ⟨h1, h2.trans hx2x1.symm⟩
+              · -- h4 : x2 = y2. So y2 = x2 is h4.symm.
+                exact Or.inl ⟨h1, h4.symm⟩
+            · -- h1 : y1 = x1, h2 : y2 = x2. Exactly the target.
+              exact Or.inl ⟨h1, h2⟩
+          · rcases h2 with h2 | h2
+            · -- h1 : y1 = x2, h2 : y2 = x1. Exactly the swapped target.
+              exact Or.inr ⟨h1, h2⟩
+            · -- h1 : y1 = x2, h2 : y2 = x2. Need y2 = x1 too; get it from h3.
+              rcases h3 with h3 | h3
+              · -- h3 : x1 = y1. Chain: x1 = y1 (h3), y1 = x2 (h1) ⟹ x1 = x2.
+                have hx1x2 : x1 = x2 := h3.trans h1
+                -- y2 = x2 (h2), x2 = x1 (hx1x2.symm) ⟹ y2 = x1.
+                exact Or.inr ⟨h1, h2.trans hx1x2.symm⟩
+              · -- h3 : x1 = y2. So y2 = x1 is h3.symm.
+                exact Or.inr ⟨h1, h3.symm⟩
+        rcases hordered with ⟨hy1, hy2⟩ | ⟨hy1, hy2⟩
+        · exact Or.inl ⟨by rw [hy1], by rw [hy2]⟩
+        · exact Or.inr ⟨by rw [hy1], by rw [hy2]⟩
+      · -- Involution-swap disjunct: impossible, since it forces `x1` to be
+        -- a Weierstrass point of `F`, contradicting `NoWeierstrassPoints`.
+        exfalso
+        have hx1ι : x1 = Point.iota x1 := hAvoid x1 hx1F (hx2ι ▸ hx2F)
+        exact hNoWeier x1 hx1F hx1ι.symm
+    have hcard2 : ({(s D δ₀ x1, s D δ₀ x2), (s D δ₀ x2, s D δ₀ x1)} :
+        Finset (Jacobian H D × Jacobian H D)).card ≤ 2 := by
+      apply le_trans (Finset.card_insert_le _ _)
+      simp
+    exact le_trans (Finset.card_le_card hsubset) hcard2
 
 /-! ## §3. Where this project actually stakes its claim: the average case
 
