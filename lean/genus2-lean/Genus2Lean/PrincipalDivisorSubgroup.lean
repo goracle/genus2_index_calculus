@@ -15,47 +15,55 @@ open Polynomial
 `DivisorClassGroup.lean` leaves `PrincipalDivisorData.P` abstract: any subgroup of
 `Divisor0 H` satisfying only `P ≤ Divisor0 H`, not derived from `CoordinateRing H`. This
 file closes part of that gap by constructing a genuine subgroup of divisors of actual
-elements of the coordinate ring — `∑ P ∈ S, ordAt P A B • (P)` for `toPair H A B` — and
-proving it lands in `Divisor0 H`, using `PrincipalDivisors.lean`'s `deg_div_eq_zero_deg5`.
+elements of the coordinate ring, proving it lands in `Divisor0 H` via
+`PrincipalDivisors.lean`'s `deg_div_eq_zero_deg5`.
 
 **Scope, stated honestly:**
 
 * `Divisor H` (per `DivisorClassGroup.lean`'s own docstring) only covers the *affine* part
   of `C` — points at infinity are excluded by design. Consequently the affine divisor of a
-  function, `∑_{P ∈ S} ordAt P A B • (P)`, has degree `-ordInfOfPair A B` in general
+  single function, `∑_{P ∈ S} ordAt P A B • (P)`, has degree `-ordInfOfPair A B` in general
   (`deg_div_eq_zero_deg5`), **not** `0` — it is only degree-0 when the function has no
-  zero/pole at the point at infinity. This is not a bug to work around here: it is the
-  actual mathematical content of "principal divisors have degree 0" *for the compactified
-  curve*, which this file's affine-only `Divisor H` cannot fully see. Rather than construct
-  a subgroup and give it an unsound `le_Divisor0` proof, the subgroup built below is
-  generated *only* by the divisors of pairs `(A, B)` with `ordInfOfPair A B = 0` — a
-  genuinely smaller subgroup than the full principal divisors, but one whose degree-0
-  containment is actually true and actually proved.
-* `ordAt`'s finite support (needed to write the sum `∑ P ∈ S, ordAt P A B • (P)` as a
-  `Divisor H := H.Point →₀ ℤ` at all) is not derived here either — as in
-  `PrincipalDivisors.lean`, it is threaded through as an explicit `(S, hsupp)` pair rather
-  than proved to exist for arbitrary `(A, B)`. The Nullstellensatz-type `hspec` hypothesis
-  (every height-one prime with nonzero multiplicity in `(toPair H A B)`'s factorization is
-  `pointIdeal P` for some affine point `P`) is likewise carried through unchanged from
-  `PrincipalDivisors.lean`, for the same reason documented there.
-* Only the `H.f.natDegree = 5` case is covered (`deg_div_eq_zero_deg5`'s own hypothesis);
-  the degree-6 case (two points at infinity) is not addressed here.
+  zero/pole at the point at infinity. This is not a bug to work around: it is the actual
+  mathematical content of "principal divisors have degree 0" *for the compactified curve*,
+  which this file's affine-only `Divisor H` cannot fully see on its own.
+* **Generators are differences, not single functions — this is the key design point, and the
+  reason for a revision to this file's first version.** A first version generated
+  `principalSubgroup` only by single `divToPair A B S` with `ordInfOfPair A B = 0` on the nose.
+  That is too narrow: it misses exactly the case that matters for `FFKSidon.lean`'s
+  `HyperellipticClass` — the divisor of a genuine *ratio* `g/h` of two coordinate-ring elements
+  each individually having a nonzero (but *matching*) pole/zero order at infinity, e.g.
+  `g = toPair H (X - C a) 0`, `h = toPair H (X - C c) 0`, both degree-1-in-`X` so both
+  `ordInfOfPair = -2`, whose ratio `g/h` has no pole/zero at infinity at all (the order-2
+  contributions cancel) even though neither factor alone does. `CoordinateRing H` is a domain,
+  not a field, so "the divisor of `g/h`" is not literally `divToPair` of any single element —
+  it is `div(g) - div(h)` computed on the affine part directly. The generating set below is
+  therefore built from *pairs* `((A₁,B₁,S₁), (A₂,B₂,S₂))` with **matching** `ordInfOfPair`
+  (`ordInfOfPair A₁ B₁ = ordInfOfPair A₂ B₂`, not both `= 0`), generating
+  `divToPair A₁ B₁ S₁ - divToPair A₂ B₂ S₂`. Taking `(A₂, B₂, S₂) = (1, 0, ∅)` (so `h = 1`,
+  `ordInfOfPair 1 0 = 0`, `divToPair 1 0 ∅ = 0`) recovers the old single-function generators
+  as a special case, so this is a strict widening, not a different construction.
+* `ordAt`'s finite support is, as in `PrincipalDivisors.lean`, threaded through as explicit
+  `(S, hsupp)` data per function rather than derived to exist in general; likewise the
+  Nullstellensatz-type `hspec` hypothesis is carried through unchanged, for each of the two
+  functions in a generating pair.
+* Only the `H.f.natDegree = 5` case is covered (`deg_div_eq_zero_deg5`'s own hypothesis); the
+  degree-6 case (two points at infinity) is not addressed here.
 
 So: this file supplies a real, non-vacuous, honestly-scoped instance of
-`PrincipalDivisorData` — strictly smaller than "the" principal divisors of `C`, but
-genuinely built from `CoordinateRing H` rather than assumed — closing part, not all, of the
-gap `DivisorClassGroup.lean` flags. `FFKSidon.lean`'s `HyperellipticClass`/`SidonDichotomy`
-are not addressed here; they would need this subgroup (or its completion once points at
-infinity are modeled) checked against those specific hypotheses separately.
+`PrincipalDivisorData` — strictly smaller than "the" principal divisors of `C` (it only
+captures divisors of *ratios* expressible via two `toPair`s with matching pole order at
+infinity, not the fully general principal-divisor group), but genuinely built from
+`CoordinateRing H` rather than assumed, and wide enough to be the actual target
+`HyperellipticClassProof.lean` needs. `FFKSidon.lean`'s `SidonDichotomy` is not addressed
+here at all.
 
 **Verification status: drafted without a live Lean toolchain, same caveat as this project's
-other `PLAUSIBLE`-tier scaffolding.** A first draft used `Finsupp.onFinset` directly and
-failed to build (`Divisor H` doesn't unfold to `Finsupp`'s `DFunLike`/`.support`/`.sum` API
-at ordinary transparency); the version below instead builds `divToPair` as a `Finset.sum` of
-`zsmul`s of `single`, and computes its `deg` via plain `AddMonoidHom` lemmas
-(`map_sum`, `map_zsmul`, `deg_single`) — the same idiom `DivisorClassGroup.lean` itself uses
-throughout, so this is lower-risk than the original attempt, but has still not been
-`lake build`-checked against a live goal.
+other `PLAUSIBLE`-tier scaffolding — NOT yet `lake build`-checked.** `divToPair`/`deg_divToPair`
+below are carried over unchanged from the previous (now-superseded) version of this file,
+which did build successfully up through those two definitions; what's new here
+(`divToPairRatio`, `deg_divToPairRatio_eq_zero`, the widened `principalSubgroup`) has not been
+checked against a live goal.
 -/
 
 namespace HyperellipticPolynomial
@@ -99,52 +107,95 @@ theorem deg_divToPair [IsDedekindDomain (CoordinateRing H)] (A B : k[X]) (S : Fi
   rw [map_zsmul, deg_single]
   simp
 
-/-- **The degree-0 containment, for functions with no zero/pole at infinity.** This is where
-`PrincipalDivisors.lean`'s `deg_div_eq_zero_deg5` actually gets used: with
-`ordInfOfPair A B = 0`, the affine sum `∑ P ∈ S, ordAt P A B` alone is forced to `0`. -/
-theorem deg_divToPair_eq_zero (hdeg : H.f.natDegree = 5)
+/-- **The genuine generator shape.** The affine divisor of a *ratio* `g/h` of two
+coordinate-ring elements, `g = toPair H A₁ B₁` and `h = toPair H A₂ B₂`, as
+`divToPair A₁ B₁ S₁ - divToPair A₂ B₂ S₂`. This is not itself claimed to be `deg`-zero for
+arbitrary `(A₁,B₁,S₁), (A₂,B₂,S₂)` — see `deg_divToPairRatio_eq_zero` below for the actual
+condition (matching `ordInfOfPair`, not each individually zero). -/
+def divToPairRatio [IsDedekindDomain (CoordinateRing H)]
+    (A₁ B₁ : k[X]) (S₁ : Finset H.Point) (A₂ B₂ : k[X]) (S₂ : Finset H.Point) : Divisor H :=
+  divToPair A₁ B₁ S₁ - divToPair A₂ B₂ S₂
+
+/-- **The degree-0 containment for ratios: matching `ordInfOfPair`, not each individually
+zero.** With `ordInfOfPair A₁ B₁ = ordInfOfPair A₂ B₂`, `deg_div_eq_zero_deg5` applied to each
+half gives `(∑_{S₁} ordAt) = -ordInfOfPair A₁ B₁` and `(∑_{S₂} ordAt) = -ordInfOfPair A₂ B₂`;
+subtracting, the (possibly nonzero) `ordInfOfPair` terms cancel exactly because they're equal,
+leaving `deg (divToPairRatio ...) = 0` even though neither half alone is `deg`-zero unless
+`ordInfOfPair = 0`. This is the actual mechanism that makes `HyperellipticClassProof.lean`'s
+target expressible: taking `(A₂,B₂,S₂) := ((X - C a), 0, S)` twice with different centers `a`
+recovers exactly the fiber-difference divisor, since both centers give the same
+`ordInfOfPair = -2` (`ordInfOfPair` depends only on `natDegree`, not on the specific center). -/
+theorem deg_divToPairRatio_eq_zero (hdeg : H.f.natDegree = 5)
     [IsDedekindDomain (CoordinateRing H)]
-    (A B : k[X]) (hAB : ¬(A = 0 ∧ B = 0)) (S : Finset H.Point)
-    (hsupp : ∀ P, P ∉ S → ordAt P A B = 0)
-    (hspec : ∀ v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H),
+    (A₁ B₁ : k[X]) (hAB₁ : ¬(A₁ = 0 ∧ B₁ = 0)) (S₁ : Finset H.Point)
+    (hsupp₁ : ∀ P, P ∉ S₁ → ordAt P A₁ B₁ = 0)
+    (hspec₁ : ∀ v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H),
       (Associates.mk v.asIdeal).count
-        (Associates.mk (Ideal.span ({toPair H A B} : Set (CoordinateRing H)))).factors ≠ 0 →
+        (Associates.mk (Ideal.span ({toPair H A₁ B₁} : Set (CoordinateRing H)))).factors ≠ 0 →
       ∃ P, v.asIdeal = pointIdeal P)
-    [∀ P : S, Module.Finite k (CoordinateRing H ⧸ pointIdeal P.1 ^ (ordAt P.1 A B).toNat)]
-    (hinf : ordInfOfPair A B = 0) :
-    deg (divToPair A B S) = 0 := by
-  rw [deg_divToPair]
-  have h := deg_div_eq_zero_deg5 H hdeg S A B hAB hsupp hspec
+    [∀ P : S₁, Module.Finite k (CoordinateRing H ⧸ pointIdeal P.1 ^ (ordAt P.1 A₁ B₁).toNat)]
+    (A₂ B₂ : k[X]) (hAB₂ : ¬(A₂ = 0 ∧ B₂ = 0)) (S₂ : Finset H.Point)
+    (hsupp₂ : ∀ P, P ∉ S₂ → ordAt P A₂ B₂ = 0)
+    (hspec₂ : ∀ v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H),
+      (Associates.mk v.asIdeal).count
+        (Associates.mk (Ideal.span ({toPair H A₂ B₂} : Set (CoordinateRing H)))).factors ≠ 0 →
+      ∃ P, v.asIdeal = pointIdeal P)
+    [∀ P : S₂, Module.Finite k (CoordinateRing H ⧸ pointIdeal P.1 ^ (ordAt P.1 A₂ B₂).toNat)]
+    (hmatch : ordInfOfPair A₁ B₁ = ordInfOfPair A₂ B₂) :
+    deg (divToPairRatio A₁ B₁ S₁ A₂ B₂ S₂) = 0 := by
+  unfold divToPairRatio
+  rw [deg_sub, deg_divToPair, deg_divToPair]
+  have h₁ := deg_div_eq_zero_deg5 H hdeg S₁ A₁ B₁ hAB₁ hsupp₁ hspec₁
+  have h₂ := deg_div_eq_zero_deg5 H hdeg S₂ A₂ B₂ hAB₂ hsupp₂ hspec₂
   omega
 
-/-- The genuine, honestly-partial principal-divisor subgroup: generated by every
-`divToPair A B S` arising from a pair `(A, B)` with no zero/pole at infinity
-(`ordInfOfPair A B = 0`), for a fixed degree-5 `H`. Built via `AddSubgroup.closure` rather
-than a `Set`-carrier structure, so `≤ Divisor0 H` can be proved once via
-`AddSubgroup.closure_le` instead of per-generator. -/
+
+
+/-- The genuine principal-divisor subgroup: generated by every `divToPairRatio A₁ B₁ S₁ A₂ B₂
+S₂` arising from a pair of functions with **matching** `ordInfOfPair` (not each individually
+zero — see the module docstring for why this is the actual condition, and
+`deg_divToPairRatio_eq_zero` for the proof), for a fixed degree-5 `H`. Built via
+`AddSubgroup.closure` rather than a `Set`-carrier structure, so `≤ Divisor0 H` can be proved
+once via `AddSubgroup.closure_le` instead of per-generator.
+
+Strictly widens the previous (single-function) version of this subgroup: taking
+`(A₂,B₂,S₂) := (1, 0, ∅)` gives `divToPairRatio A B S 1 0 ∅ = divToPair A B S - 0 = divToPair
+A B S` (since `divToPair 1 0 ∅` is an empty `Finset.sum`, hence `0`) with `ordInfOfPair 1 0 =
+0` matching `ordInfOfPair A B = 0` exactly when the old condition held — so every old
+generator is still a generator here, via that special case. -/
 def principalSubgroup (H : HyperellipticPolynomial k) (hdeg : H.f.natDegree = 5)
     [IsDedekindDomain (CoordinateRing H)] : AddSubgroup (Divisor H) :=
   AddSubgroup.closure
-    { D : Divisor H | ∃ (A B : k[X]) (S : Finset H.Point)
-        (_hAB : ¬(A = 0 ∧ B = 0)) (hsupp : ∀ P, P ∉ S → ordAt P A B = 0)
-        (_hspec : ∀ v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H),
+    { D : Divisor H | ∃ (A₁ B₁ : k[X]) (S₁ : Finset H.Point)
+        (_hAB₁ : ¬(A₁ = 0 ∧ B₁ = 0)) (hsupp₁ : ∀ P, P ∉ S₁ → ordAt P A₁ B₁ = 0)
+        (_hspec₁ : ∀ v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H),
           (Associates.mk v.asIdeal).count
-            (Associates.mk (Ideal.span ({toPair H A B} : Set (CoordinateRing H)))).factors
+            (Associates.mk (Ideal.span ({toPair H A₁ B₁} : Set (CoordinateRing H)))).factors
               ≠ 0 → ∃ P, v.asIdeal = pointIdeal P)
-        (_hfin : ∀ P : S, Module.Finite k (CoordinateRing H ⧸
-          pointIdeal P.1 ^ (ordAt P.1 A B).toNat)),
-        ordInfOfPair A B = 0 ∧ D = divToPair A B S }
+        (_hfin₁ : ∀ P : S₁, Module.Finite k (CoordinateRing H ⧸
+          pointIdeal P.1 ^ (ordAt P.1 A₁ B₁).toNat))
+        (A₂ B₂ : k[X]) (S₂ : Finset H.Point)
+        (_hAB₂ : ¬(A₂ = 0 ∧ B₂ = 0)) (hsupp₂ : ∀ P, P ∉ S₂ → ordAt P A₂ B₂ = 0)
+        (_hspec₂ : ∀ v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H),
+          (Associates.mk v.asIdeal).count
+            (Associates.mk (Ideal.span ({toPair H A₂ B₂} : Set (CoordinateRing H)))).factors
+              ≠ 0 → ∃ P, v.asIdeal = pointIdeal P)
+        (_hfin₂ : ∀ P : S₂, Module.Finite k (CoordinateRing H ⧸
+          pointIdeal P.1 ^ (ordAt P.1 A₂ B₂).toNat)),
+        ordInfOfPair A₁ B₁ = ordInfOfPair A₂ B₂ ∧ D = divToPairRatio A₁ B₁ S₁ A₂ B₂ S₂ }
 
 /-- **`principalSubgroup H hdeg ≤ Divisor0 H`.** The one fact `PrincipalDivisorData` needs.
 Reduces, via `AddSubgroup.closure_le`, to checking every *generator* lands in `Divisor0 H`
-— exactly `deg_divToPair_eq_zero` above. -/
+— exactly `deg_divToPairRatio_eq_zero` above. -/
 theorem principalSubgroup_le_Divisor0 (H : HyperellipticPolynomial k) (hdeg : H.f.natDegree = 5)
     [IsDedekindDomain (CoordinateRing H)] :
     principalSubgroup H hdeg ≤ Divisor0 H := by
   rw [principalSubgroup, AddSubgroup.closure_le]
-  rintro D ⟨A, B, S, hAB, hsupp, hspec, hfin, hinf, rfl⟩
+  rintro D ⟨A₁, B₁, S₁, hAB₁, hsupp₁, hspec₁, hfin₁, A₂, B₂, S₂, hAB₂, hsupp₂, hspec₂, hfin₂,
+    hmatch, rfl⟩
   rw [SetLike.mem_coe, mem_Divisor0_iff]
-  exact deg_divToPair_eq_zero hdeg A B hAB S hsupp hspec hinf
+  exact deg_divToPairRatio_eq_zero hdeg A₁ B₁ hAB₁ S₁ hsupp₁ hspec₁ A₂ B₂ hAB₂ S₂ hsupp₂ hspec₂
+    hmatch
 
 /-- The genuine, honestly-partial `PrincipalDivisorData` instance for a degree-5 `H`,
 packaging `principalSubgroup`/`principalSubgroup_le_Divisor0`. Downstream (`FFKSidon.lean`)

@@ -10,6 +10,7 @@ import Genus2Lean.MatchCountAutocorr
 import Genus2Lean.CombinatorialSecondMoment
 import Genus2Lean.AverageComplexity
 import Genus2Lean.HyperellipticFunctionField
+import Genus2Lean.HyperellipticClassProof
 import Genus2Lean.PaleyZygmund
 import Genus2Lean.AffinePoints
 import Genus2Lean.DivisorClassGroup
