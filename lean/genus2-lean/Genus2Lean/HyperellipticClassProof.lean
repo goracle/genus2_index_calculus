@@ -519,29 +519,128 @@ theorem divToPair_linX_eq_of_ramified [IsDedekindDomain (CoordinateRing H)]
   change (2 : ℤ) • single P = single P + single P
   rw [two_smul]
 
+/-- **Uniform fiber-support `Finset`, covering both the unramified and ramified case of a
+single point `x`.** `fiberSupport x = {x}` when `x.Y = 0` (the point is its own `ι`-image, the
+Weierstrass/ramified case) and `{x, ι x}` otherwise (two distinct points). Packaging this as
+one `Finset`-valued function (rather than case-splitting at every call site) lets
+`divToPair_linX_eq`/`hsupp_linX_eq_of_notMem_fiberSupport` below state the unramified/ramified
+dichotomy once each, uniformly in `x`. -/
+noncomputable def fiberSupport (x : H.Point) : Finset H.Point :=
+  letI := Classical.dec
+  if x.Y = 0 then {x} else {x, Point.iota x}
+
+
+/-- `divToPair (linX x.X) 0 (fiberSupport x) = single x + single (ι x)`, uniformly across the
+unramified/ramified dichotomy — immediate case split into `divToPair_linX_eq_of_ramified`/
+`_of_unramified` after unfolding `fiberSupport`. -/
+theorem divToPair_linX_eq [IsDedekindDomain (CoordinateRing H)]
+    (hchar : (2 : k) ≠ 0) (x : H.Point) :
+    divToPair (linX x.X) 0 (fiberSupport x) = single x + single (Point.iota x) := by
+  classical
+  unfold fiberSupport
+  split_ifs with hY
+  · exact divToPair_linX_eq_of_ramified hchar x hY
+  · exact divToPair_linX_eq_of_unramified hchar x hY
+
+/-- The `hsupp` side condition `fiberSupport x` needs to feed `deg_divToPairRatio_eq_zero`/
+`principalSubgroup`'s generating-set membership: away from `fiberSupport x`, `ordAt _ (linX
+x.X) 0 = 0`. Splits on whether `Q.X = x.X`: if not, `ordAt_linX_eq_zero_of_ne` (§A) applies
+directly; if so but `Q ∉ fiberSupport x`, `Q` must still differ from both `x` and (when
+`x.Y ≠ 0`) `ι x` — but `ordAt_linX_eq` (§B) shows `ordAt Q (linX x.X) 0 = 0` fails only at
+`Q.X ≠ x.X`, so we instead show directly `Q ∉ fiberSupport x` together with `Q.X = x.X`
+is impossible, closing this branch by deriving `Q ∈ fiberSupport x` and contradicting `hQ`. -/
+theorem hsupp_linX [IsDedekindDomain (CoordinateRing H)]
+    (hchar : (2 : k) ≠ 0) (x : H.Point) :
+    ∀ Q, Q ∉ fiberSupport x → ordAt Q (linX x.X) 0 = 0 := by
+  classical
+  intro Q hQ
+  rw [ordAt_linX_eq hchar x.X Q (pointIdeal_ne_bot Q)]
+  by_cases hne : Q.X = x.X
+  · exfalso
+    apply hQ
+    unfold fiberSupport
+    split_ifs with hxY
+    · -- `x.Y = 0`: `fiberSupport x = {x}`; need `Q = x` from `Q.X = x.X` and `Q.Y = 0` (forced).
+      by_cases hQY : Q.Y = 0
+      · have : Q = x := by
+          apply Subtype.ext; apply Prod.ext
+          · exact hne
+          · change Q.Y = x.Y; rw [hQY, hxY]
+        simp [this]
+      · exfalso
+        -- `Q.Y ≠ 0` but `Q.X = x.X` and `x.Y = 0`: derive `Q.Y^2 = x.Y^2 = 0` from `Y_sq`
+        -- and `hne`, contradicting `hQY`.
+        have hQsq : Q.Y ^ 2 = H.f.eval Q.X := Point.Y_sq Q
+        have hxsq : x.Y ^ 2 = H.f.eval x.X := Point.Y_sq x
+        rw [hne, ← hxsq, hxY, zero_pow (two_ne_zero)] at hQsq
+        exact hQY (sq_eq_zero_iff.mp hQsq)
+    · -- `x.Y ≠ 0`: `fiberSupport x = {x, ι x}`; `Q.X = x.X` forces `Q = x` or `Q = ι x`.
+      have hQsq : Q.Y ^ 2 = H.f.eval Q.X := Point.Y_sq Q
+      have hxsq : x.Y ^ 2 = H.f.eval x.X := Point.Y_sq x
+      rw [hne, ← hxsq] at hQsq
+      have hYeq : Q.Y = x.Y ∨ Q.Y = -x.Y := by
+        have hfact : (Q.Y - x.Y) * (Q.Y + x.Y) = 0 := by
+          have hsub : Q.Y ^ 2 - x.Y ^ 2 = 0 := sub_eq_zero.mpr hQsq
+          have : (Q.Y - x.Y) * (Q.Y + x.Y) = Q.Y ^ 2 - x.Y ^ 2 := by ring
+          rw [this, hsub]
+        rcases mul_eq_zero.mp hfact with h | h
+        · left; exact sub_eq_zero.mp h
+        · right; exact eq_neg_of_add_eq_zero_left h
+      rcases hYeq with hYeq | hYeq
+      · have : Q = x := by
+          apply Subtype.ext; apply Prod.ext
+          · exact hne
+          · exact hYeq
+        simp [this]
+      · have : Q = Point.iota x := by
+          apply Subtype.ext; apply Prod.ext
+          · exact hne.trans (Point.iota_X x).symm
+          · change Q.Y = (Point.iota x).Y; rw [Point.iota_Y]; exact hYeq
+        simp [this]
+  · simp [hne]
+
 /-- **The target of this file**: for any two points `x₁, x₃`, the fiber-difference divisor is
 principal for the concrete `D := principalDivisorData H hdeg` — i.e.
-`(principalDivisorData H hdeg).HyperellipticClass`.
-
-**Two separate open gaps, both left `sorry`'d:**
-1. `ordAt_linX_eq`, used via `divToPair_linX_eq_of_unramified`/`_ramified` to identify each
-   half's divisor with `single x + single (ι x)`.
-2. **`principalSubgroup H hdeg`, as currently defined in `PrincipalDivisorSubgroup.lean`, does
-   not obviously contain the difference `divToPair (linX x₁.X) 0 S₁ - divToPair (linX x₃.X) 0
-   S₃`.** Its generating set requires `ordInfOfPair A B = 0` on each generator; both halves
-   here have `ordInfOfPair = -2` individually (`ordInfOfPair_linX`). `AddSubgroup.closure`
-   does not contain differences of non-members just because the difference is well-behaved —
-   this needs `principalSubgroup` itself widened (see the module docstring above) before this
-   theorem can be completed as stated. This is a design gap in the subgroup construction, not
-   a proof-effort gap in this file. -/
+`(principalDivisorData H hdeg).HyperellipticClass`. Built as a `divToPairRatio` generator of
+the (now correctly widened, matching-`ordInfOfPair`) `principalSubgroup` from
+`PrincipalDivisorSubgroup.lean`: `A₁ = linX x₁.X`, `S₁ = fiberSupport x₁`, `A₂ = linX x₃.X`,
+`S₂ = fiberSupport x₃`, with `ordInfOfPair` matching automatically (`ordInfOfPair_linX`, both
+`-2`). The remaining `hspec` Nullstellensatz-style hypotheses (needed by `principalSubgroup`'s
+own generating-set membership, per `PrincipalDivisors.lean`'s `deg_div_eq_zero_deg5`) are not
+discharged anywhere in this codebase yet (see that theorem's doc comment), so they are threaded
+through as extra hypotheses here, matching the convention already used for the `Module.Finite`
+instance argument. -/
 theorem hyperellipticClass_principalDivisorData (hdeg : H.f.natDegree = 5)
     (hchar : (2 : k) ≠ 0) [IsDedekindDomain (CoordinateRing H)]
     [∀ (a : k) (S : Finset H.Point),
-      ∀ P : S, Module.Finite k (CoordinateRing H ⧸ pointIdeal P.1 ^ (ordAt P.1 (linX a) 0).toNat)] :
+      ∀ P : S, Module.Finite k (CoordinateRing H ⧸ pointIdeal P.1 ^ (ordAt P.1 (linX a) 0).toNat)]
+    (hspec : ∀ (a : k), ∀ v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H),
+      (Associates.mk v.asIdeal).count
+        (Associates.mk (Ideal.span ({toPair H (linX a) 0} : Set (CoordinateRing H)))).factors
+          ≠ 0 → ∃ P, v.asIdeal = pointIdeal P) :
     (principalDivisorData H hdeg).HyperellipticClass := by
+  classical
   intro x₁ x₃
   show (single x₁ + single (Point.iota x₁) - single x₃ - single (Point.iota x₃) : Divisor H) ∈
     (principalDivisorData H hdeg).P
-  sorry
+  have hgoal_eq : (single x₁ + single (Point.iota x₁) - single x₃ - single (Point.iota x₃)
+        : Divisor H) =
+      divToPairRatio (linX x₁.X) 0 (fiberSupport x₁) (linX x₃.X) 0 (fiberSupport x₃) := by
+    unfold divToPairRatio
+    rw [divToPair_linX_eq hchar x₁, divToPair_linX_eq hchar x₃]
+    abel
+  rw [hgoal_eq]
+  show _ ∈ principalSubgroup H hdeg
+  apply AddSubgroup.subset_closure
+  refine ⟨linX x₁.X, 0, fiberSupport x₁, ?_, hsupp_linX hchar x₁, hspec x₁.X,
+    fun P => ‹∀ (a : k) (S : Finset H.Point), ∀ P : S, Module.Finite k
+      (CoordinateRing H ⧸ pointIdeal P.1 ^ (ordAt P.1 (linX a) 0).toNat)› x₁.X (fiberSupport x₁) P,
+    linX x₃.X, 0, fiberSupport x₃, ?_, hsupp_linX hchar x₃, hspec x₃.X,
+    fun P => ‹∀ (a : k) (S : Finset H.Point), ∀ P : S, Module.Finite k
+      (CoordinateRing H ⧸ pointIdeal P.1 ^ (ordAt P.1 (linX a) 0).toNat)› x₃.X (fiberSupport x₃) P,
+    ?_, rfl⟩
+  · exact fun ⟨hA, _⟩ => linX_ne_zero x₁.X hA
+  · exact fun ⟨hA, _⟩ => linX_ne_zero x₃.X hA
+  · rw [ordInfOfPair_linX, ordInfOfPair_linX]
 
 end HyperellipticPolynomial
