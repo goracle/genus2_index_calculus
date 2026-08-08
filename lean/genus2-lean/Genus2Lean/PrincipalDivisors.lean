@@ -289,6 +289,45 @@ theorem pointIdeal_isMaximal (P : H.Point) : (pointIdeal P).IsMaximal := by
   have hsurj := evalAtPoint_surjective P
   exact RingHom.ker_isMaximal_of_surjective (evalAtPoint P) hsurj
 
+/-- `CoordinateRing H` is not a field: it is a nonzero finite (rank-2, via the monic
+defining polynomial `X² - C H.f`) module over `k[X]`, with injective structure map
+`k[X] → CoordinateRing H` (injective by a pure degree argument, `AdjoinRoot.of` applied to
+a degree-`2` polynomial — no squarefreeness/irreducibility of `H.f` needed here). If
+`CoordinateRing H` were a field, integrality (`Module.Finite ⟹ Algebra.IsIntegral`) plus
+that injectivity would force `k[X]` to be a field too (`isField_of_isIntegral_of_isField`),
+contradicting `Polynomial.not_isField`. -/
+theorem degree_X_sq_sub_C_H_f_ne_zero : (X ^ 2 - C H.f : (k[X])[X]).degree ≠ 0 := by
+  have hnd : (X ^ 2 - C H.f : (k[X])[X]).natDegree = 2 := by compute_degree!
+  have hne0 : (X ^ 2 - C H.f : (k[X])[X]) ≠ 0 := by
+    intro h; rw [h, natDegree_zero] at hnd; exact absurd hnd (by decide)
+  rw [Polynomial.degree_eq_natDegree hne0, hnd]
+  decide
+
+/-- `CoordinateRing H` is nontrivial: it is `AdjoinRoot (X² - C H.f)` by definition, and
+`AdjoinRoot.nontrivial` applies since the defining polynomial has degree `2 ≠ 0`. Needed as an
+instance below (`Ring.ne_bot_of_isMaximal_of_not_isField` implicitly requires nontriviality of
+the ambient ring, since without it `⊥ = ⊤` and every ideal is both bot and top). -/
+instance coordinateRing_nontrivial : Nontrivial (CoordinateRing H) :=
+  AdjoinRoot.nontrivial (X ^ 2 - C H.f) degree_X_sq_sub_C_H_f_ne_zero
+
+theorem coordinateRing_not_isField : ¬IsField (CoordinateRing H) := by
+  have hmonic : (X ^ 2 - C H.f : (k[X])[X]).Monic :=
+    Polynomial.monic_X_pow_sub_C H.f two_ne_zero
+  haveI : Module.Finite k[X] (CoordinateRing H) := Polynomial.Monic.finite_adjoinRoot hmonic
+  haveI : Algebra.IsIntegral k[X] (CoordinateRing H) :=
+    Algebra.IsIntegral.of_finite k[X] (CoordinateRing H)
+  have hinj : Function.Injective (algebraMap k[X] (CoordinateRing H)) := by
+    show Function.Injective (AdjoinRoot.of (X ^ 2 - C H.f))
+    exact AdjoinRoot.of.injective_of_degree_ne_zero degree_X_sq_sub_C_H_f_ne_zero
+  intro hfield
+  exact Polynomial.not_isField k (isField_of_isIntegral_of_isField hinj hfield)
+
+/-- `pointIdeal P` is never the zero ideal: it is maximal (`pointIdeal_isMaximal`), and
+`CoordinateRing H` is not a field (`coordinateRing_not_isField`), so `Ring.
+ne_bot_of_isMaximal_of_not_isField` applies directly. -/
+theorem pointIdeal_ne_bot (P : H.Point) : pointIdeal P ≠ ⊥ :=
+  Ring.ne_bot_of_isMaximal_of_not_isField (pointIdeal_isMaximal P) coordinateRing_not_isField
+
 /-- `pointIdeal P` as a height-one prime ideal in `CoordinateRing H`. -/
 def pointHeightOne [IsDedekindDomain (CoordinateRing H)]
     (P : H.Point) (h_bot : pointIdeal P ≠ ⊥) :
@@ -296,6 +335,12 @@ def pointHeightOne [IsDedekindDomain (CoordinateRing H)]
   asIdeal := pointIdeal P
   isPrime := (pointIdeal_isMaximal P).isPrime
   ne_bot := h_bot
+
+/-- `pointHeightOne P`, with the `pointIdeal P ≠ ⊥` side condition discharged automatically
+via `pointIdeal_ne_bot` rather than threaded in by the caller. -/
+def pointHeightOne' [IsDedekindDomain (CoordinateRing H)] (P : H.Point) :
+    IsDedekindDomain.HeightOneSpectrum (CoordinateRing H) :=
+  pointHeightOne P (pointIdeal_ne_bot P)
 
 /-- Concrete order of vanishing of $A(x) + B(x)y$ at an affine point $P$,
 defined via the local valuation at $\mathfrak{m}_P$.
@@ -481,6 +526,16 @@ theorem finrank_quotient_pointIdeal (P : H.Point) :
   rw [LinearEquiv.finrank_eq hequiv.toLinearEquiv]
   exact Module.finrank_self k
 
+/-- The residue field `CoordinateRing H ⧸ pointIdeal P` is a finite-dimensional `k`-module:
+it is `k`-algebra isomorphic to `k` itself (same isomorphism as `finrank_quotient_pointIdeal`),
+and `k` is trivially finite over itself. -/
+instance finite_quotient_pointIdeal (P : H.Point) :
+    Module.Finite k (CoordinateRing H ⧸ pointIdeal P) := by
+  have hequiv : (CoordinateRing H ⧸ RingHom.ker (evalAtPointAlg P).toRingHom) ≃ₐ[k] k :=
+    Ideal.quotientKerAlgEquivOfSurjective (evalAtPointAlg_surjective P)
+  rw [pointIdeal_eq_ker_evalAtPointAlg]
+  exact Module.Finite.equiv hequiv.toLinearEquiv.symm
+
 /-! ### §4.2 scaffolding: CRT + associated-graded dimension count
 
 **UNVERIFIED — drafted without a Lean toolchain, same caveat as the §4.4 scaffold below:
@@ -522,16 +577,6 @@ Plan, decomposed so each piece is independently checkable/replaceable:
    `Fin n →`-indexed one), then apply step 4 to each factor and match against
    `(ordAt P A B).toNat` via `ordAt_nonneg`/`ordAt_eq_count` from §4.1.
 -/
-
-/-- Step 1: the ideal `Ideal.span {toPair H A B}` factors as the product, over `P ∈ S`, of
-`pointIdeal P` raised to its local multiplicity `(ordAt P A B).toNat`. **UNVERIFIED, no
-citation confirmed** — see the module comment above §4.2, item 1. -/
-theorem span_toPair_eq_prod_pointIdeal_pow [IsDedekindDomain (CoordinateRing H)]
-    (S : Finset H.Point) (A B : k[X]) (hAB : ¬(A = 0 ∧ B = 0))
-    (hsupp : ∀ P, P ∉ S → ordAt P A B = 0) :
-    Ideal.span ({toPair H A B} : Set (CoordinateRing H)) =
-      ∏ P ∈ S, pointIdeal P ^ (ordAt P A B).toNat := by
-  sorry
 
 /-- Distinct affine points give distinct point-ideals. Proved via the coordinate functions:
 `X - C P.X ∈ pointIdeal P` (since `evalAtPoint P` sends `X ↦ P.X`), so if `pointIdeal P =
@@ -581,6 +626,104 @@ theorem pointIdeal_ne_of_ne (P Q : H.Point) (hne : P ≠ Q) :
     simp [Point.Y]
   rw [map_sub, hCYevalQ, hyevalQ, sub_eq_zero] at hQY
   exact Subtype.ext (Prod.ext hQX.symm hQY)
+
+/-- Step 1: the ideal `Ideal.span {toPair H A B}` factors as the product, over `P ∈ S`, of
+`pointIdeal P` raised to its local multiplicity `(ordAt P A B).toNat`.
+
+**A genuine extra hypothesis has been added, `hspec`, that was missing from the original
+scaffold.** The mechanical CRT/factorization bookkeeping (`Ideal.
+finprod_heightOneSpectrum_factorization`, converting the resulting `finprod` over *all*
+height-one primes of `CoordinateRing H` to a `Finset.prod` over `S` via `hsupp`) is real and
+is proved below. But that bookkeeping alone is not enough: `hsupp` only constrains the
+multiplicity at primes of the form `pointIdeal P` for `P : H.Point` (i.e. `k`-rational points
+satisfying the curve equation) — it says nothing about a height-one prime of
+`CoordinateRing H` that is *not* of that form. Such primes exist in general (e.g. any closed
+point whose residue field is a proper extension of `k`, which happens whenever `k` is not
+algebraically closed), and nothing forces `g := toPair H A B` to avoid them. The theorem as
+stated is only true once every height-one prime dividing `Ideal.span {g}` is known to be
+`pointIdeal P` for some `P`, which is exactly what `hspec` supplies. Discharging `hspec` in
+general needs a Nullstellensatz-type or residue-field argument (e.g. `k` algebraically closed,
+or restricting to primes with residue field `k`) that is out of scope for this lemma; it is
+recorded here as its own explicit hypothesis rather than silently assumed. -/
+theorem span_toPair_eq_prod_pointIdeal_pow [IsDedekindDomain (CoordinateRing H)]
+    (S : Finset H.Point) (A B : k[X]) (hAB : ¬(A = 0 ∧ B = 0))
+    (hsupp : ∀ P, P ∉ S → ordAt P A B = 0)
+    -- See the doc comment above: every height-one prime with nonzero multiplicity in the
+    -- factorization of `Ideal.span {toPair H A B}` is `pointIdeal P` for some point `P`.
+    -- Not provable from CRT/factorization bookkeeping alone; needs a genuinely separate
+    -- Nullstellensatz/residue-field argument.
+    (hspec : ∀ v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H),
+      (Associates.mk v.asIdeal).count
+        (Associates.mk (Ideal.span ({toPair H A B} : Set (CoordinateRing H)))).factors ≠ 0 →
+      ∃ P, v.asIdeal = pointIdeal P) :
+    Ideal.span ({toPair H A B} : Set (CoordinateRing H)) =
+      ∏ P ∈ S, pointIdeal P ^ (ordAt P A B).toNat := by
+  classical
+  set g : CoordinateRing H := toPair H A B with hg_def
+  set I : Ideal (CoordinateRing H) := Ideal.span ({g} : Set (CoordinateRing H)) with hI_def
+  have hgne : g ≠ 0 := by rw [hg_def, Ne, toPair_eq_zero_iff]; exact hAB
+  have hIne : I ≠ 0 := by
+    rw [hI_def, Ne, Ideal.zero_eq_bot, Ideal.span_singleton_eq_bot]
+    exact hgne
+  -- The `HeightOneSpectrum` images of `S`, i.e. the primes `pointHeightOne' P` for `P ∈ S`.
+  set T : Finset (IsDedekindDomain.HeightOneSpectrum (CoordinateRing H)) :=
+    S.image pointHeightOne' with hT_def
+  have hinj : Set.InjOn pointHeightOne' (S : Set H.Point) := by
+    intro P _ Q _ hPQ
+    by_contra hne
+    exact pointIdeal_ne_of_ne P Q hne
+      (IsDedekindDomain.HeightOneSpectrum.ext_iff.mp hPQ)
+  -- Every prime with nonzero multiplicity in `I`'s factorization lies in `T`.
+  have hsub : Function.mulSupport
+      (fun v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H) => v.maxPowDividing I)
+      ⊆ (T : Set (IsDedekindDomain.HeightOneSpectrum (CoordinateRing H))) := by
+    intro v hv
+    have hcount_ne : (Associates.mk v.asIdeal).count (Associates.mk I).factors ≠ 0 := by
+      intro hz
+      apply hv
+      show v.maxPowDividing I = 1
+      rw [IsDedekindDomain.HeightOneSpectrum.maxPowDividing, hz, pow_zero]
+    obtain ⟨P, hP⟩ := hspec v hcount_ne
+    by_cases hPS : P ∈ S
+    · rw [hT_def, Finset.coe_image]
+      refine ⟨P, hPS, IsDedekindDomain.HeightOneSpectrum.ext ?_⟩
+      show (pointHeightOne' P).asIdeal = v.asIdeal
+      show pointIdeal P = v.asIdeal
+      exact hP.symm
+    · exfalso
+      apply hcount_ne
+      -- `P ∉ S` forces `ordAt P A B = 0`, hence (via `ordAt_eq_count`, when `pointIdeal P ≠ ⊥`)
+      -- the multiplicity of `pointIdeal P` in `I`'s factorization is `0`; `v.asIdeal = pointIdeal P`
+      -- transports this to `v`.
+      have hordP : ordAt P A B = 0 := hsupp P hPS
+      have hcount_eq : ((Associates.mk (pointHeightOne P (pointIdeal_ne_bot P)).asIdeal).count
+          (Associates.mk I).factors : ℤ) = 0 := by
+        rw [← ordAt_eq_count P A B hgne (pointIdeal_ne_bot P)]
+        exact hordP
+      have hcount0 : (Associates.mk (pointIdeal P)).count (Associates.mk I).factors = 0 := by
+        have : (pointHeightOne P (pointIdeal_ne_bot P)).asIdeal = pointIdeal P := rfl
+        rw [this] at hcount_eq
+        exact_mod_cast hcount_eq
+      rw [hP]
+      exact hcount0
+  -- Collapse the `finprod` over all height-one primes to a `Finset.prod` over `T`, then
+  -- reindex `T = S.image pointHeightOne'` back to a `Finset.prod` over `S`.
+  have hfactor : ∏ᶠ v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H),
+      v.maxPowDividing I = I :=
+    Ideal.finprod_heightOneSpectrum_factorization hIne
+  rw [finprod_eq_prod_of_mulSupport_subset _ hsub] at hfactor
+  rw [hT_def, Finset.prod_image hinj] at hfactor
+  rw [← hfactor]
+  refine Finset.prod_congr rfl (fun P _ => ?_)
+  show (pointHeightOne' P).maxPowDividing I = pointIdeal P ^ (ordAt P A B).toNat
+  rw [IsDedekindDomain.HeightOneSpectrum.maxPowDividing]
+  show pointIdeal P ^ (Associates.mk (pointHeightOne' P).asIdeal).count (Associates.mk I).factors
+      = pointIdeal P ^ (ordAt P A B).toNat
+  congr 1
+  have hcount_eq : ((Associates.mk (pointHeightOne' P).asIdeal).count
+      (Associates.mk I).factors : ℤ) = ordAt P A B :=
+    (ordAt_eq_count P A B hgne (pointIdeal_ne_bot P)).symm
+  omega
 
 /-- Step 2: distinct points give coprime (prime-power) ideals — needed to invoke CRT in
 step 3. Built from `pointIdeal_ne_of_ne` (distinct points ⟹ distinct maximal ideals) plus
@@ -662,40 +805,298 @@ noncomputable def crt_equiv_prod_pointIdeal_pow
       (Ideal.quotientInfRingEquivPiQuotient I h_pairwise)
   · simpa [I] using heq.symm
 
+/-- How `crt_equiv_prod_pointIdeal_pow` acts on classes of the form `Ideal.Quotient.mk _ x`:
+componentwise, it is again `Ideal.Quotient.mk _ x` (into the corresponding factor). This is
+just unwinding the `Ideal.quotientEquiv`/`Ideal.quotientInfRingEquivPiQuotient` composition
+used to build it, via `Ideal.quotientEquiv_mk` and `Ideal.quotientInfToPiQuotient_mk`. -/
+theorem crt_equiv_prod_pointIdeal_pow_mk
+    [IsDedekindDomain (CoordinateRing H)] (S : Finset H.Point) (A B : k[X])
+    (x : CoordinateRing H) :
+    crt_equiv_prod_pointIdeal_pow S A B (Ideal.Quotient.mk _ x) =
+      fun P : S => (Ideal.Quotient.mk (pointIdeal P.1 ^ (ordAt P.1 A B).toNat) x :
+        CoordinateRing H ⧸ pointIdeal P.1 ^ (ordAt P.1 A B).toNat) := by
+  unfold crt_equiv_prod_pointIdeal_pow
+  rw [RingEquiv.trans_apply, Ideal.quotientEquiv_mk, RingEquiv.refl_apply]
+  exact Ideal.quotientInfToPiQuotient_mk _ x
+
+/-- The ideal `pointIdeal P ^ (i + 1)` is covered by `pointIdeal P ^ i` in the lattice of
+ideals of `CoordinateRing H`: it is strictly smaller (`Ideal.pow_succ_lt_pow`), and there is
+no ideal strictly between them, since any such ideal would (by
+`Ideal.eq_prime_pow_of_succ_lt_of_le`, unique factorization of ideals in a Dedekind domain)
+have to equal `pointIdeal P ^ i`. This is the ideal-theoretic form of "the associated-graded
+piece `𝔪^i / 𝔪^{i+1}` has no proper nonzero submodules". -/
+theorem pointIdeal_pow_succ_covBy [IsDedekindDomain (CoordinateRing H)]
+    (P : H.Point) (i : ℕ) :
+    pointIdeal P ^ (i + 1) ⋖ pointIdeal P ^ i := by
+  haveI : (pointIdeal P).IsPrime := (pointIdeal_isMaximal P).isPrime
+  have hP_ne_bot : pointIdeal P ≠ ⊥ := pointIdeal_ne_bot P
+  refine ⟨Ideal.pow_succ_lt_pow hP_ne_bot i, ?_⟩
+  intro I hlt1 hlt2
+  have hle : I ≤ pointIdeal P ^ i := hlt2.le
+  have heq := Ideal.eq_prime_pow_of_succ_lt_of_le hP_ne_bot hlt1 hle
+  exact absurd heq hlt2.ne
+
+/-- The associated-graded piece `pointIdeal P ^ i ⧸ pointIdeal P ^ (i + 1)`, realized as the
+submodule `N := Submodule.map (Submodule.mkQ (pointIdeal P ^ (i + 1))) (pointIdeal P ^ i)` of
+`CoordinateRing H ⧸ pointIdeal P ^ (i + 1)`, is a simple `CoordinateRing H`-module.
+
+This transports `pointIdeal_pow_succ_covBy` (a `CovBy` fact about ideals of `CoordinateRing H`)
+across the correspondence-theorem order isomorphism `Submodule.comapMkQRelIso` between
+submodules of `CoordinateRing H ⧸ pointIdeal P ^ (i + 1)` and ideals of `CoordinateRing H`
+containing `pointIdeal P ^ (i + 1)`, under which `N` corresponds to `pointIdeal P ^ i` itself,
+combined with `Set.Ici.isAtom_iff` (an element is an atom of `Set.Ici a` iff `a ⋖` it) and
+`isSimpleModule_iff_isAtom`. -/
+theorem isSimpleModule_map_mkQ_pointIdeal_pow [IsDedekindDomain (CoordinateRing H)]
+    (P : H.Point) (i : ℕ) :
+    IsSimpleModule (CoordinateRing H)
+      (Submodule.map (Submodule.mkQ (pointIdeal P ^ (i + 1))) (pointIdeal P ^ i)) := by
+  have hle : pointIdeal P ^ (i + 1) ≤ pointIdeal P ^ i := (pointIdeal_pow_succ_covBy P i).le
+  set e := Submodule.comapMkQRelIso (R := CoordinateRing H) (pointIdeal P ^ (i + 1))
+    with he_def
+  set N : Submodule (CoordinateRing H) (CoordinateRing H ⧸ pointIdeal P ^ (i + 1)) :=
+    Submodule.map (Submodule.mkQ (pointIdeal P ^ (i + 1))) (pointIdeal P ^ i) with hN_def
+  have hcorr : e N = ⟨pointIdeal P ^ i, hle⟩ := by
+    apply Subtype.ext
+    show Submodule.comap (Submodule.mkQ (pointIdeal P ^ (i + 1))) N = pointIdeal P ^ i
+    rw [hN_def, Submodule.comap_map_mkQ]
+    simpa using sup_eq_left.mpr hle
+  rw [isSimpleModule_iff_isAtom]
+  have hatom_in_Ici : IsAtom (⟨pointIdeal P ^ i, hle⟩ : Set.Ici (pointIdeal P ^ (i + 1))) := by
+    rw [Set.Ici.isAtom_iff]
+    exact pointIdeal_pow_succ_covBy P i
+  rw [← hcorr] at hatom_in_Ici
+  exact (OrderIso.isAtom_iff e N).mp hatom_in_Ici
+
+/-- The annihilator (as a `CoordinateRing H`-module) of the associated-graded piece
+`N := (pointIdeal P ^ i).map (mkQ (pointIdeal P ^ (i + 1)))` is `pointIdeal P` itself: `N` is
+killed by `pointIdeal P` since it is (a quotient of) `pointIdeal P ^ i ⧸ pointIdeal P ^ (i+1)`
+and `pointIdeal P • (pointIdeal P ^ i) ≤ pointIdeal P ^ (i + 1)`; and the annihilator is always
+maximal for a simple module (`IsSimpleModule.annihilator_isMaximal`), so being a maximal ideal
+containing the maximal ideal `pointIdeal P`, it must equal `pointIdeal P`. -/
+theorem annihilator_map_mkQ_pointIdeal_pow [IsDedekindDomain (CoordinateRing H)]
+    (P : H.Point) (i : ℕ) :
+    Module.annihilator (CoordinateRing H)
+      (Submodule.map (Submodule.mkQ (pointIdeal P ^ (i + 1))) (pointIdeal P ^ i)) = pointIdeal P := by
+  set N : Submodule (CoordinateRing H) (CoordinateRing H ⧸ pointIdeal P ^ (i + 1)) :=
+    Submodule.map (Submodule.mkQ (pointIdeal P ^ (i + 1))) (pointIdeal P ^ i) with hN_def
+  have hle_ann : pointIdeal P ≤ Module.annihilator (CoordinateRing H) N := by
+    intro r hr
+    rw [Module.mem_annihilator]
+    rintro ⟨x, hx⟩
+    rw [hN_def, Submodule.mem_map] at hx
+    obtain ⟨y, hy, rfl⟩ := hx
+    apply Subtype.ext
+    show r • (Submodule.mkQ (pointIdeal P ^ (i + 1))) y = 0
+    rw [← map_smul]
+    show Submodule.Quotient.mk (r • y) = 0
+    rw [Submodule.Quotient.mk_eq_zero]
+    have hmem : r • y ∈ pointIdeal P ^ (i + 1) := by
+      rw [smul_eq_mul, pow_succ']
+      exact Ideal.mul_mem_mul hr hy
+    exact hmem
+  haveI := isSimpleModule_map_mkQ_pointIdeal_pow P i
+  haveI hann_max : (Module.annihilator (CoordinateRing H) N).IsMaximal :=
+    IsSimpleModule.annihilator_isMaximal
+  exact ((pointIdeal_isMaximal P).eq_of_le hann_max.ne_top hle_ann).symm
+
+/-- The associated-graded piece is `k`-linearly equivalent to the residue field
+`CoordinateRing H ⧸ pointIdeal P`: it is a simple `CoordinateRing H`-module
+(`isSimpleModule_map_mkQ_pointIdeal_pow`) annihilated exactly by `pointIdeal P`
+(`annihilator_map_mkQ_pointIdeal_pow`), so `isSimpleModule_iff_quot_maximal` produces some
+maximal ideal `I` with `N ≃ₗ[CoordinateRing H] CoordinateRing H ⧸ I`; since the annihilator of
+`CoordinateRing H ⧸ I` is `I` itself, and equivalent modules have equal annihilators, `I` must
+equal `pointIdeal P`. Every `CoordinateRing H`-linear map is in particular `k`-linear
+(`LinearEquiv.restrictScalars`), giving the `k`-equivalence. -/
+theorem map_mkQ_pointIdeal_pow_equiv [IsDedekindDomain (CoordinateRing H)]
+    (P : H.Point) (i : ℕ) :
+    Nonempty ((Submodule.map (Submodule.mkQ (pointIdeal P ^ (i + 1))) (pointIdeal P ^ i) :
+        Submodule (CoordinateRing H) (CoordinateRing H ⧸ pointIdeal P ^ (i + 1))) ≃ₗ[k]
+      CoordinateRing H ⧸ pointIdeal P) := by
+  haveI := isSimpleModule_map_mkQ_pointIdeal_pow P i
+  obtain ⟨I, hImax, ⟨e⟩⟩ := isSimpleModule_iff_quot_maximal.mp
+    (isSimpleModule_map_mkQ_pointIdeal_pow P i)
+  have hann := annihilator_map_mkQ_pointIdeal_pow P i
+  have hI_eq : I = pointIdeal P := by
+    have h1 : Module.annihilator (CoordinateRing H)
+        (Submodule.map (Submodule.mkQ (pointIdeal P ^ (i + 1))) (pointIdeal P ^ i)) =
+        Module.annihilator (CoordinateRing H) (CoordinateRing H ⧸ I) :=
+      LinearEquiv.annihilator_eq e
+    rw [hann, Ideal.annihilator_quotient] at h1
+    exact h1.symm
+  exact ⟨(e.trans (Submodule.quotEquivOfEq I (pointIdeal P) hI_eq)).restrictScalars k⟩
 
 /-- Step 4: the `k`-dimension of a single prime-power quotient `R ⧸ 𝔪_P^{n}` equals `n`.
 The genuinely mathematical content of §4.2 — the associated-graded computation
-`𝔪^i/𝔪^{i+1} ≅ R/𝔪` for a Dedekind domain localized at a height-one prime, combined with
-§4.3's `finrank_quotient_pointIdeal` (each graded piece is `1`-dimensional over `k`) and
-induction on `n` via dimension-additivity across the filtration's exact sequences.
-**UNVERIFIED, no citation confirmed** — this is the sub-step most likely to need genuinely
-new infrastructure (an explicit filtration/associated-graded argument) rather than a single
-Mathlib lemma; see the module comment above §4.2, item 4. -/
+`𝔪^i/𝔪^{i+1} ≅ R/𝔪` for a Dedekind domain (`map_mkQ_pointIdeal_pow_equiv`, built from a
+`CovBy` fact about the ideal lattice via `pointIdeal_pow_succ_covBy`), combined with §4.3's
+`finrank_quotient_pointIdeal` (the residue field `R/𝔪` is `1`-dimensional over `k`) and
+induction on `n` via `Submodule.finrank_quotient_add_finrank` across the filtration's short
+exact sequences `0 → 𝔪^i/𝔪^{i+1} → R/𝔪^{i+1} → R/𝔪^i → 0`, with `k`-finiteness of each stage
+supplied along the way via `Module.Finite.of_exact` (finite kernel + finite quotient ⟹ finite
+middle term) rather than assumed up front. -/
+theorem finrank_quotient_pointIdeal_pow_and_finite [IsDedekindDomain (CoordinateRing H)]
+    (P : H.Point) (n : ℕ) :
+    Module.finrank k (CoordinateRing H ⧸ pointIdeal P ^ n) = n ∧
+      Module.Finite k (CoordinateRing H ⧸ pointIdeal P ^ n) := by
+  induction n with
+  | zero =>
+    haveI hsub : Subsingleton (CoordinateRing H ⧸ (⊤ : Ideal (CoordinateRing H))) :=
+      Submodule.Quotient.subsingleton_iff.mpr rfl
+    rw [pow_zero, Ideal.one_eq_top]
+    refine ⟨Module.finrank_zero_of_subsingleton, ?_⟩
+    infer_instance
+  | succ i ih =>
+    obtain ⟨ihfin, ihmod⟩ := ih
+    haveI := ihmod
+    set Mi1 : Ideal (CoordinateRing H) := pointIdeal P ^ (i + 1) with hMi1_def
+    set N : Submodule (CoordinateRing H) (CoordinateRing H ⧸ Mi1) :=
+      Submodule.map (Submodule.mkQ Mi1) (pointIdeal P ^ i) with hN_def
+    set Nk : Submodule k (CoordinateRing H ⧸ Mi1) := N.restrictScalars k with hNk_def
+    -- `Nk` (the associated-graded piece, as a `k`-submodule) is `k`-linearly equivalent to
+    -- the residue field `CoordinateRing H ⧸ pointIdeal P`, hence `1`-dimensional and finite.
+    obtain ⟨eNk⟩ := map_mkQ_pointIdeal_pow_equiv P i
+    have heNk : Nk ≃ₗ[k] CoordinateRing H ⧸ pointIdeal P := by
+      have hid : Nk ≃ₗ[k] N :=
+        { toFun := fun x => ⟨x.1, x.2⟩
+          invFun := fun x => ⟨x.1, x.2⟩
+          map_add' := fun _ _ => rfl
+          map_smul' := fun _ _ => rfl
+          left_inv := fun _ => rfl
+          right_inv := fun _ => rfl }
+      exact hid.trans eNk
+    have hNk_finrank : Module.finrank k Nk = 1 := by
+      rw [LinearEquiv.finrank_eq heNk, finrank_quotient_pointIdeal]
+    haveI hNk_finite : Module.Finite k Nk :=
+      Module.Finite.equiv heNk.symm
+    -- `Nk`'s ambient module `Nk` and the quotient `(R ⧸ Mi1) ⧸ Nk ≃ R ⧸ pointIdeal P ^ i` are
+    -- both `k`-finite (the latter by the induction hypothesis via the third isomorphism
+    -- theorem), so `R ⧸ Mi1` itself is `k`-finite via `Module.Finite.of_exact` applied to the
+    -- tautological exact sequence `Nk →ₗ[k] (R ⧸ Mi1) →ₗ[k] (R ⧸ Mi1) ⧸ Nk`.
+    have hquot : ((CoordinateRing H ⧸ Mi1) ⧸ Nk) ≃ₗ[k]
+        CoordinateRing H ⧸ pointIdeal P ^ i := by
+      have hle : Mi1 ≤ pointIdeal P ^ i := (pointIdeal_pow_succ_covBy P i).le
+      have hstep1 : ((CoordinateRing H ⧸ Mi1) ⧸ Nk) ≃ₗ[k] ((CoordinateRing H ⧸ Mi1) ⧸ N) :=
+        Submodule.Quotient.restrictScalarsEquiv k N
+      have hstep2 : ((CoordinateRing H ⧸ Mi1) ⧸ N) ≃ₗ[k] CoordinateRing H ⧸ pointIdeal P ^ i :=
+        (Submodule.quotientQuotientEquivQuotient Mi1 (pointIdeal P ^ i) hle).restrictScalars k
+      exact hstep1.trans hstep2
+    have hquot_finrank : Module.finrank k ((CoordinateRing H ⧸ Mi1) ⧸ Nk) = i :=
+      (LinearEquiv.finrank_eq hquot).trans ihfin
+    haveI hquot_finite : Module.Finite k ((CoordinateRing H ⧸ Mi1) ⧸ Nk) :=
+      Module.Finite.equiv hquot.symm
+    haveI hMi1_finite : Module.Finite k (CoordinateRing H ⧸ Mi1) :=
+      Module.Finite.of_exact (LinearMap.exact_subtype_mkQ Nk) Nk.mkQ_surjective
+    refine ⟨?_, hMi1_finite⟩
+    have hadd := Submodule.finrank_quotient_add_finrank (R := k) Nk
+    rw [hquot_finrank, hNk_finrank] at hadd
+    omega
+
+/-- Step 4, stated form: the `k`-dimension of a single prime-power quotient `R ⧸ 𝔪_P^{n}`
+equals `n`. Thin wrapper around `finrank_quotient_pointIdeal_pow_and_finite`, which also
+establishes `k`-finiteness of `R ⧸ 𝔪_P^n` along the way (needed internally by the induction,
+and incidentally the very `Module.Finite` fact this project's other lemmas currently carry as
+an explicit hypothesis — see the doc comment on `finrank_quotient_prod_eq_sum_finrank`). -/
 theorem finrank_quotient_pointIdeal_pow [IsDedekindDomain (CoordinateRing H)]
     (P : H.Point) (n : ℕ) :
-    Module.finrank k (CoordinateRing H ⧸ pointIdeal P ^ n) = n := by
-  sorry
+    Module.finrank k (CoordinateRing H ⧸ pointIdeal P ^ n) = n :=
+  (finrank_quotient_pointIdeal_pow_and_finite P n).1
+
+/-- The `Module.Finite` instance for `R ⧸ 𝔪_P^n`, established as a side effect of the induction
+proving `finrank_quotient_pointIdeal_pow`. See that theorem's doc comment: this is the fact
+that `finrank_quotient_prod_eq_sum_finrank` and its downstream callers currently carry as an
+explicit hypothesis rather than deriving. -/
+theorem finite_quotient_pointIdeal_pow [IsDedekindDomain (CoordinateRing H)]
+    (P : H.Point) (n : ℕ) :
+    Module.Finite k (CoordinateRing H ⧸ pointIdeal P ^ n) :=
+  (finrank_quotient_pointIdeal_pow_and_finite P n).2
+
+/-- The ring isomorphism `crt_equiv_prod_pointIdeal_pow` from Step 3, repackaged as a
+`k`-`AlgEquiv`. `AlgEquiv.ofRingEquiv` only asks that the underlying function commute with
+`algebraMap k _`; since `algebraMap k (R ⧸ I) c = Ideal.Quotient.mk I (algebraMap k R c)`
+holds by `rfl` on both the quotient-by-a-product side and each quotient-by-a-prime-power
+factor, and every element of the source is `Ideal.Quotient.mk _ x` for some `x`
+(`Ideal.Quotient.mk_surjective`), the commuting square reduces to
+`crt_equiv_prod_pointIdeal_pow_mk` applied to `x = algebraMap k (CoordinateRing H) c`. -/
+noncomputable def crt_algEquiv_prod_pointIdeal_pow
+    [IsDedekindDomain (CoordinateRing H)] (S : Finset H.Point) (A B : k[X]) :
+    (CoordinateRing H ⧸ ∏ P ∈ S, pointIdeal P ^ (ordAt P A B).toNat) ≃ₐ[k]
+      (Π P : S, CoordinateRing H ⧸ pointIdeal P.1 ^ (ordAt P.1 A B).toNat) :=
+  AlgEquiv.ofRingEquiv (f := crt_equiv_prod_pointIdeal_pow S A B) (fun c => by
+    have hlhs : algebraMap k
+        (CoordinateRing H ⧸ ∏ P ∈ S, pointIdeal P ^ (ordAt P A B).toNat) c =
+        Ideal.Quotient.mk _ (algebraMap k (CoordinateRing H) c) := rfl
+    rw [hlhs, crt_equiv_prod_pointIdeal_pow_mk S A B (algebraMap k (CoordinateRing H) c)]
+    rfl)
+
+/-- The one genuinely uncertain step in `finrank_quotient_span_eq_sum_ordAt`'s assembly,
+isolated as its own lemma so the mechanical reindexing around it can be fully proved.
+
+The ring-iso-to-finrank transport itself (`crt_algEquiv_prod_pointIdeal_pow` above, plus
+`LinearEquiv.finrank_eq` and `Module.finrank_pi_fintype`) is mechanical and *is* filled in
+below. What is **not** filled in, and is taken as an explicit hypothesis instead, is
+finite-dimensionality of each factor `CoordinateRing H ⧸ pointIdeal P.1 ^ nP` over `k` —
+`Module.finrank_pi_fintype` needs `[Module.Finite k _]` on every factor (freeness is
+automatic over the field `k` via `Module.Free.of_divisionRing`, so only finiteness is a real
+side condition). Supplying that instance requires essentially the same associated-graded /
+filtration argument as `finrank_quotient_pointIdeal_pow` (§4.2 step 4, still `sorry`'d below)
+— finiteness and the value of the finrank are proved together there in the standard argument,
+so there is no shortcut to finiteness alone that doesn't already redo that step. Once
+`finrank_quotient_pointIdeal_pow` is closed it should also directly yield this `Module.Finite`
+instance (a `k`-module with known finite `finrank` and a basis is finite; alternatively
+redo the induction from that proof to build the instance), and the hypothesis below can be
+discharged and removed from the signature (and from the one call site in
+`finrank_quotient_span_eq_sum_ordAt`). -/
+theorem finrank_quotient_prod_eq_sum_finrank
+    [IsDedekindDomain (CoordinateRing H)] (S : Finset H.Point) (A B : k[X])
+    [hfin : ∀ P : S, Module.Finite k (CoordinateRing H ⧸ pointIdeal P.1 ^ (ordAt P.1 A B).toNat)] :
+    Module.finrank k
+        (CoordinateRing H ⧸ ∏ P ∈ S, pointIdeal P ^ (ordAt P A B).toNat) =
+      ∑ P : S, Module.finrank k (CoordinateRing H ⧸ pointIdeal P.1 ^ (ordAt P.1 A B).toNat) := by
+  rw [LinearEquiv.finrank_eq (crt_algEquiv_prod_pointIdeal_pow S A B).toLinearEquiv]
+  exact Module.finrank_pi_fintype k
 
 /-- §4.2 assembly: the `k`-dimension of `CoordinateRing H ⧸ Ideal.span {toPair H A B}` is the
 sum, over `P ∈ S`, of the local multiplicities `(ordAt P A B).toNat`. **The genuinely hard
 step** — needs CRT for the factored ideal (steps 1–3 above) plus the associated-graded
 dimension count for prime-power quotients (step 4 above). See the §4.2 module comment for the
-full decomposition; none of steps 1–4 have been checked against a live goal, so treat this
-assembly (which chains them via `Module.finrank`-of-a-ring-iso and finrank-of-a-finite-product)
-as unverified too — in particular the exact lemma taking "`R ≃+* Π i, Sᵢ`" to "`finrank k R =
-∑ i, finrank k (Sᵢ)`" was not looked up. -/
+full decomposition. The ring-iso-to-finrank transport is fully proved in
+`finrank_quotient_prod_eq_sum_finrank` above, modulo the `Module.Finite` hypothesis threaded
+through from this theorem's own signature (see that lemma's doc comment); everything below
+that point — applying `finrank_quotient_pointIdeal_pow` factorwise and reindexing the
+`Subtype` sum `∑ P : S, _` back to the `Finset` sum `∑ P ∈ S, _` via `Finset.sum_attach` — is
+filled in and, modulo `finrank_quotient_pointIdeal_pow` itself (§4.2 step 4, still `sorry`'d),
+should be solid. -/
 theorem finrank_quotient_span_eq_sum_ordAt [IsDedekindDomain (CoordinateRing H)]
     (S : Finset H.Point) (A B : k[X]) (hAB : ¬(A = 0 ∧ B = 0))
-    (hsupp : ∀ P, P ∉ S → ordAt P A B = 0) :
+    (hsupp : ∀ P, P ∉ S → ordAt P A B = 0)
+    -- See the doc comment on `span_toPair_eq_prod_pointIdeal_pow`: every height-one prime with
+    -- nonzero multiplicity in the factorization of `Ideal.span {toPair H A B}` must be of the
+    -- form `pointIdeal P`; this is a genuinely separate Nullstellensatz/residue-field fact, not
+    -- derivable from the CRT/factorization bookkeeping alone, so it is threaded through here
+    -- as an explicit hypothesis rather than assumed.
+    (hspec : ∀ v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H),
+      (Associates.mk v.asIdeal).count
+        (Associates.mk (Ideal.span ({toPair H A B} : Set (CoordinateRing H)))).factors ≠ 0 →
+      ∃ P, v.asIdeal = pointIdeal P)
+    -- See the doc comment on `finrank_quotient_prod_eq_sum_finrank`: this instance should
+    -- become derivable, and this hypothesis removable, once `finrank_quotient_pointIdeal_pow`
+    -- (§4.2 step 4) is proved.
+    [∀ P : S, Module.Finite k (CoordinateRing H ⧸ pointIdeal P.1 ^ (ordAt P.1 A B).toNat)] :
     Module.finrank k (CoordinateRing H ⧸ Ideal.span ({toPair H A B} : Set (CoordinateRing H))) =
       ∑ P ∈ S, (ordAt P A B).toNat := by
-  rw [span_toPair_eq_prod_pointIdeal_pow S A B hAB hsupp]
-  have hcrt := crt_equiv_prod_pointIdeal_pow S A B
-  -- Remaining step: `finrank k` of `crt_equiv_prod_pointIdeal_pow`'s ring iso, then
-  -- `finrank` of the `Finset`-indexed product `Π P : S, _` equals `∑ P ∈ S, finrank (_)`,
-  -- then apply `finrank_quotient_pointIdeal_pow` to each factor and reindex the `Subtype`
-  -- sum `∑ P : S, _` back to `∑ P ∈ S, _`. **UNVERIFIED** — not checked against a live goal.
-  sorry
+  -- Step 1: Force Lean to evaluate the type explicitly
+  have h_span := span_toPair_eq_prod_pointIdeal_pow S A B hAB hsupp hspec
+  -- Step 2: Rewrite using the clean local hypothesis
+  rw [h_span]
+  -- Step 3 (CRT): finrank of the quotient by the product ideal is the sum of the finranks of
+  -- the individual prime-power quotients, indexed over the `Subtype` `↥S`.
+  rw [finrank_quotient_prod_eq_sum_finrank S A B]
+  -- Step 4: each individual finrank is exactly the multiplicity, by §4.2 step 4.
+  rw [show (∑ P : S, Module.finrank k (CoordinateRing H ⧸ pointIdeal P.1 ^ (ordAt P.1 A B).toNat))
+      = ∑ P : S, (ordAt P.1 A B).toNat from
+    Finset.sum_congr rfl (fun (P : ↥S) _ => finrank_quotient_pointIdeal_pow P.1 (ordAt P.1 A B).toNat)]
+  -- Step 5: reindex the `Subtype` sum `∑ P : S, _` back to the `Finset` sum `∑ P ∈ S, _`.
+  exact Finset.sum_attach S (fun P => (ordAt P A B).toNat)
 
 /-! ### §4.4 scaffolding: `CoordinateRing H` as a rank-2 free `k[X]`-module
 
@@ -1412,7 +1813,18 @@ mathematical content lives in `finrank_quotient_span_eq_sum_ordAt` and
 `finrank_quotient_span_eq_natDegree_pairNorm`, both still `sorry`'d above. -/
 theorem sum_ordAt_eq_natDegree_pairNorm [IsDedekindDomain (CoordinateRing H)]
     (S : Finset H.Point) (A B : k[X]) (hAB : ¬(A = 0 ∧ B = 0))
-    (hsupp : ∀ P, P ∉ S → ordAt P A B = 0) :
+    (hsupp : ∀ P, P ∉ S → ordAt P A B = 0)
+    -- Required by `finrank_quotient_span_eq_sum_ordAt` below, which this theorem calls; see
+    -- that theorem's doc comment for why this hypothesis isn't derivable from the CRT/
+    -- factorization bookkeeping alone.
+    (hspec : ∀ v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H),
+      (Associates.mk v.asIdeal).count
+        (Associates.mk (Ideal.span ({toPair H A B} : Set (CoordinateRing H)))).factors ≠ 0 →
+      ∃ P, v.asIdeal = pointIdeal P)
+    -- See the doc comment on `finrank_quotient_prod_eq_sum_finrank`: this instance should
+    -- become derivable, and this hypothesis removable, once `finrank_quotient_pointIdeal_pow`
+    -- (§4.2 step 4) is proved.
+    [∀ P : S, Module.Finite k (CoordinateRing H ⧸ pointIdeal P.1 ^ (ordAt P.1 A B).toNat)] :
     (∑ P ∈ S, ordAt P A B) = ((pairNorm H A B).natDegree : ℤ) := by
   have hne : toPair H A B ≠ 0 := by
     rw [Ne, toPair_eq_zero_iff]
@@ -1425,16 +1837,27 @@ theorem sum_ordAt_eq_natDegree_pairNorm [IsDedekindDomain (CoordinateRing H)]
   have hsum_toNat : (∑ P ∈ S, ordAt P A B) = ((∑ P ∈ S, (ordAt P A B).toNat : ℕ) : ℤ) := by
     rw [Nat.cast_sum]
     exact Finset.sum_congr rfl (fun P hP => (Int.toNat_of_nonneg (hnonneg P hP)).symm)
-  rw [hsum_toNat, ← finrank_quotient_span_eq_sum_ordAt S A B hAB hsupp,
+  rw [hsum_toNat, ← finrank_quotient_span_eq_sum_ordAt S A B hAB hsupp hspec,
     finrank_quotient_span_eq_natDegree_pairNorm A B hAB]
 
 /-- Target statement: the affine orders plus the order at infinity sum to zero. -/
 theorem deg_div_eq_zero_deg5 (H : HyperellipticPolynomial k) (hdeg : H.f.natDegree = 5)
     [IsDedekindDomain (CoordinateRing H)]
     (S : Finset H.Point) (A B : k[X]) (hAB : ¬(A = 0 ∧ B = 0))
-    (hsupp : ∀ P, P ∉ S → ordAt P A B = 0) :
+    (hsupp : ∀ P, P ∉ S → ordAt P A B = 0)
+    -- Required by `sum_ordAt_eq_natDegree_pairNorm` below, which this theorem calls; see
+    -- `finrank_quotient_span_eq_sum_ordAt`'s doc comment for why this hypothesis isn't
+    -- derivable from the CRT/factorization bookkeeping alone.
+    (hspec : ∀ v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H),
+      (Associates.mk v.asIdeal).count
+        (Associates.mk (Ideal.span ({toPair H A B} : Set (CoordinateRing H)))).factors ≠ 0 →
+      ∃ P, v.asIdeal = pointIdeal P)
+    -- See the doc comment on `finrank_quotient_prod_eq_sum_finrank`: this instance should
+    -- become derivable, and this hypothesis removable, once `finrank_quotient_pointIdeal_pow`
+    -- (§4.2 step 4) is proved.
+    [∀ P : S, Module.Finite k (CoordinateRing H ⧸ pointIdeal P.1 ^ (ordAt P.1 A B).toNat)] :
     (∑ P ∈ S, ordAt P A B) + ordInfOfPair A B = 0 := by
-  rw [sum_ordAt_eq_natDegree_pairNorm S A B hAB hsupp]
+  rw [sum_ordAt_eq_natDegree_pairNorm S A B hAB hsupp hspec]
   have hdeg_norm := natDegree_pairNorm_eq_neg_ordInfOfPair H hdeg A B hAB
   rw [hdeg_norm]
   omega
