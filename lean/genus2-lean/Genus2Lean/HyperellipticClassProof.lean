@@ -537,7 +537,7 @@ theorem pointIdeal_linX_not_sq_dvd [IsDedekindDomain (CoordinateRing H)]
     have hstep : t * (p + u * c) = t * 1 := by rw [h1]
     have hexpand : t * (p + u * c) = t * p + (t * u) * c := by ring
     rw [hexpand, htu, mul_one] at hstep
-    linear_combination hstep
+    linear_combination -hstep
   have htp_mem : t * p ∈ pointIdeal Q ^ 2 := by
     rw [sq]
     exact Ideal.mul_mem_mul ht_mem hp
@@ -550,14 +550,23 @@ theorem pointIdeal_linX_not_sq_dvd [IsDedekindDomain (CoordinateRing H)]
         Ideal.span ({s} : Set (CoordinateRing H)) := by
       rw [mul_comm c, mul_assoc]
       exact Ideal.mul_mem_right _ _ (Ideal.mem_span_singleton_self s)
-    have hsum := Submodule.add_mem _ hsmem ht_sub_mem
+    have hsmem' : c * (s * algebraMap k[X] (CoordinateRing H) r) ∈
+        Ideal.span ({s} : Set (CoordinateRing H)) ⊔ pointIdeal Q ^ 2 :=
+      SetLike.le_def.mp le_sup_left hsmem
+    have ht_sub_mem' : t - c * (s * algebraMap k[X] (CoordinateRing H) r) ∈
+        Ideal.span ({s} : Set (CoordinateRing H)) ⊔ pointIdeal Q ^ 2 :=
+      SetLike.le_def.mp le_sup_right ht_sub_mem
+    have hsum := Submodule.add_mem _ hsmem' ht_sub_mem'
     have hrw : c * (s * algebraMap k[X] (CoordinateRing H) r) +
         (t - c * (s * algebraMap k[X] (CoordinateRing H) r)) = t := by ring
     rwa [hrw] at hsum
   have hs_mem2 : s ∈ Ideal.span ({s} : Set (CoordinateRing H)) ⊔ pointIdeal Q ^ 2 :=
     SetLike.le_def.mp le_sup_left (Ideal.mem_span_singleton_self s)
   have hspan_le : pointIdeal Q ≤ Ideal.span ({s} : Set (CoordinateRing H)) ⊔ pointIdeal Q ^ 2 := by
-    rw [pointIdeal_eq_span_pair Q, ← hs_def, ← ht_def, Ideal.span_le]
+    have hgen : pointIdeal Q = Ideal.span ({s, t} : Set (CoordinateRing H)) := by
+      rw [pointIdeal_eq_span_pair Q, ← hs_def, ← ht_def]
+    conv_lhs => rw [hgen]
+    rw [Ideal.span_le]
     intro x hx
     rw [Set.mem_insert_iff, Set.mem_singleton_iff] at hx
     rcases hx with hx | hx
