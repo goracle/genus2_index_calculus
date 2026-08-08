@@ -304,75 +304,90 @@ theorem y_sub_C_Y_mul_y_add_C_Y_eq [IsDedekindDomain (CoordinateRing H)]
 
 /-- **§B.1c-ii, isolated sub-fact: `pointIdeal Q`-adic valuation is invariant under
 multiplication by a `pointIdeal Q`-unit.** For `z : CoordinateRing H` and `u ∉ pointIdeal Q`,
-`pointIdeal Q ^ n ∣ span {z * u} ↔ pointIdeal Q ^ n ∣ span {z}`. Needs: `pointIdeal Q` prime
-(hence `Associates.mk (pointIdeal Q)` irreducible, as in §B.1d above), and that `u ∉ pointIdeal
-Q` makes `Associates.mk (span {u})` coprime to it — i.e. `Associates.count`, which is additive
-over the product `span {z * u} = span {z} * span {u}` (`Ideal.span_singleton_mul_span_singleton`
-or equivalent), contributes `0` from the `u`-factor. This is standard Dedekind-domain
-valuation-theory bookkeeping (the same flavor as §B.1d's `Associates.prime_pow_dvd_iff_le`
-argument) but the exact multiplicativity lemma name/shape (`Associates.count_mul`?) was not
-confirmed against a live goal — isolated here rather than guessed inline. -/
+`pointIdeal Q ^ n ∣ span {z * u} ↔ pointIdeal Q ^ n ∣ span {z}`. Route: `pointIdeal Q` is
+maximal, so `u ∉ pointIdeal Q` makes `pointIdeal Q` and `Ideal.span {u}` coprime
+(`Ideal.IsMaximal.eq_of_le` applied to `pointIdeal Q ≤ pointIdeal Q ⊔ span {u}`, forcing the
+sup to `⊤` since it's strictly larger; then `Ideal.isCoprime_iff_sup_eq`). `IsCoprime.pow_left`
+lifts this to `pointIdeal Q ^ n` coprime to `span {u}`, and `IsCoprime.dvd_of_dvd_mul_right`
+(applied at ideal level, since `Ideal (CoordinateRing H)` is a `CommSemiring`) gives the
+cancellation directly — no `Associates.count` machinery needed. -/
 theorem pointIdeal_pow_dvd_span_mul_notMem_iff [IsDedekindDomain (CoordinateRing H)]
-    (Q : H.Point) (h_bot : pointIdeal Q ≠ ⊥) (z u : CoordinateRing H) (hu : u ∉ pointIdeal Q)
-    (n : ℕ) :
+    (Q : H.Point) (z u : CoordinateRing H) (hu : u ∉ pointIdeal Q) (n : ℕ) :
     pointIdeal Q ^ n ∣ Ideal.span ({z * u} : Set (CoordinateRing H)) ↔
       pointIdeal Q ^ n ∣ Ideal.span ({z} : Set (CoordinateRing H)) := by
-  sorry
+  have hspan_eq : Ideal.span ({z * u} : Set (CoordinateRing H)) =
+      Ideal.span ({z} : Set (CoordinateRing H)) * Ideal.span ({u} : Set (CoordinateRing H)) :=
+    (Ideal.span_singleton_mul_span_singleton z u).symm
+  have hle : pointIdeal Q ≤ pointIdeal Q ⊔ Ideal.span ({u} : Set (CoordinateRing H)) :=
+    le_sup_left
+  have hne : pointIdeal Q ≠ pointIdeal Q ⊔ Ideal.span ({u} : Set (CoordinateRing H)) := by
+    intro heq
+    apply hu
+    rw [heq]
+    exact SetLike.le_def.mp le_sup_right (Ideal.mem_span_singleton_self u)
+  have hsup_top : pointIdeal Q ⊔ Ideal.span ({u} : Set (CoordinateRing H)) = ⊤ := by
+    by_contra hnotop
+    exact hne ((pointIdeal_isMaximal Q).eq_of_le hnotop hle)
+  have hcoprime : IsCoprime (pointIdeal Q) (Ideal.span ({u} : Set (CoordinateRing H))) :=
+    Ideal.isCoprime_iff_sup_eq.mpr hsup_top
+  have hcoprime_pow : IsCoprime (pointIdeal Q ^ n) (Ideal.span ({u} : Set (CoordinateRing H))) :=
+    hcoprime.pow_left
+  constructor
+  · intro hdvd
+    rw [hspan_eq] at hdvd
+    exact hcoprime_pow.dvd_of_dvd_mul_right hdvd
+  · intro hdvd
+    have hsub : Ideal.span ({z * u} : Set (CoordinateRing H)) ≤
+        Ideal.span ({z} : Set (CoordinateRing H)) := by
+      rw [Ideal.span_singleton_le_iff_mem]
+      exact Ideal.mem_span_singleton.mpr ⟨u, rfl⟩
+    exact hdvd.trans (Ideal.dvd_iff_le.mpr hsub)
 
 /-- **§B.1c-iii, isolated sub-fact, the true geometric crux — `sorry`'d, isolated as the final
-irreducible piece.** `y H - C Q.Y` is a uniformizer at `pointIdeal Q` when `Q.Y ≠ 0`: its
-`pointIdeal Q`-adic valuation is exactly `1`, equivalently `pointIdeal Q ^ 2 ∤ span {y H - C
-Q.Y}` (given it's already known to lie in `pointIdeal Q` itself, valuation `≥ 1`). This is the
-genuinely new mathematical content flagged throughout this file's docstrings: nothing in
-`PrincipalDivisors.lean`'s existing machinery computes a *local* valuation for a specific
-named function at a specific point (that file's `ordAt` tools are global factorization/CRT
-bookkeeping). A real proof likely needs either (a) a direct computation that `pointIdeal Q`
-is *generated* by `y H - C Q.Y` (i.e. `Ideal.span {y H - C Q.Y} = pointIdeal Q` exactly, via
-a surjectivity/dimension-count argument on `CoordinateRing H ⧸ span {y H - C Q.Y}` mirroring
-`PrincipalDivisors.lean §4`'s residue-field computations), which would immediately give
-valuation `1` and hence rule out `pointIdeal Q ^ 2 ∣ span {y H - C Q.Y}` since `pointIdeal Q ≠
-pointIdeal Q ^ 2` (Nakayama / `IsDedekindDomain` non-idempotence of nonzero primes); or (b) a
-more direct tangent-space/derivative argument. Left `sorry`'d pending that further work. -/
-theorem pointIdeal_uniformizer_not_sq_dvd [IsDedekindDomain (CoordinateRing H)]
-    (Q : H.Point) (hY : Q.Y ≠ 0) :
-    ¬ pointIdeal Q ^ 2 ∣ Ideal.span
-      ({y H - algebraMap k[X] (CoordinateRing H) (Polynomial.C Q.Y)} : Set (CoordinateRing H)) := by
+irreducible piece.** **Correction from an earlier draft of this lemma**: an earlier version of
+this file attempted to show `y H - C Q.Y` itself is a uniformizer at `pointIdeal Q` (i.e.
+`pointIdeal Q ^ 2 ∤ span {y H - C Q.Y}`, or even the stronger `span {y H - C Q.Y} = pointIdeal
+Q`). **That version is false in general.** Writing `s := X - C Q.X`, `t := y H - C Q.Y`, the
+curve relation gives `t * (t + 2 • C Q.Y) = s * r` for `r` from `factors_sub_Y_sq`, i.e. `2 *
+Q.Y * t ≡ s * r (mod pointIdeal Q ^ 2)` (since `t ^ 2 ∈ pointIdeal Q ^ 2`); if `r ∈ pointIdeal
+Q` (equivalently, `Q.X` is a *repeated* root of `H.f - C (Q.Y ^ 2)` in `k[X]`, i.e. the
+`x`-coordinate map is ramified at `Q` for reasons unrelated to `Q.Y = 0` — genuinely possible,
+`HyperellipticPolynomial` imposes no squarefreeness of `H.f`), then `s * r ∈ pointIdeal Q ^ 2`
+too, forcing (as `2 * Q.Y` is a unit, being the image of a nonzero field element) `t ∈
+pointIdeal Q ^ 2` — the negation of what the earlier draft claimed.
+
+**The correct, unconditional uniformizer at an unramified point is `s := X - C Q.X` (i.e.
+`toPair H (linX Q.X) 0`), not `t`.** Geometrically: the plane curve `Y² = f(X)` is smooth at
+`(Q.X, Q.Y)` with tangent line `2·Q.Y·(dY) - f'(Q.X)·(dX) = 0`; since `Q.Y ≠ 0` (char ≠ 2), the
+`dY`-coefficient `2·Q.Y` is always nonzero, so the tangent line is never vertical, so `X - Q.X`
+is *always* a valid local coordinate there — regardless of whether `f'(Q.X)` vanishes. This
+matches the algebra above: from `t * (y H + C Q.Y) = s * r` and `y H + C Q.Y` a **unit modulo
+`pointIdeal Q`** (`y_add_C_Y_notMem_pointIdeal_of_Y_ne_zero`, unconditional on `r`), `t` is,
+*in the localization at `pointIdeal Q`* (a DVR, since `IsDedekindDomain`), a multiple of `s`
+— so the local maximal ideal is generated by `s` alone, giving `ordAt Q s 0 ≤ 1`; combined with
+`s ∈ pointIdeal Q` (`ordAt ≥ 1`, `toPair_linX_mem_pointIdeal_iff`), `ordAt Q s 0 = 1` exactly.
+**Left `sorry`'d**: formalizing this needs either (a) explicit `HeightOneSpectrum`/DVR
+localization reasoning (`intValuation`, `exists_uniformizer`, division in the localization), or
+(b) a Nakayama-style argument (`Submodule.eq_smul_of_le_smul_of_le_jacobson` in
+`Mathlib.RingTheory.Nakayama`, applied to the f.g. ideal `pointIdeal Q` to show `pointIdeal Q =
+span {s} + pointIdeal Q ^ 2` forces `pointIdeal Q = span {s}` outright) — neither is currently
+built out in `PrincipalDivisors.lean`. -/
+theorem pointIdeal_linX_not_sq_dvd [IsDedekindDomain (CoordinateRing H)]
+    (Q : H.Point) (hchar : (2 : k) ≠ 0) (hY : Q.Y ≠ 0) :
+    ¬ pointIdeal Q ^ 2 ∣ Ideal.span ({toPair H (linX Q.X) 0} : Set (CoordinateRing H)) := by
   sorry
 
-/-- **§B.1c, the genuine hard step — reduced to a single named sub-fact via §B.1c-i/ii above,
-still `sorry`'d only through `pointIdeal_uniformizer_not_sq_dvd` below.**
-`pointIdeal Q ^ 2` does *not* divide `Ideal.span {g a}` where `g a := toPair H (linX a) 0`.
-Assembly: `heq : Q.X = a` rewrites `factors_sub_Y_sq Q`'s witness `r` into `H.f - C(Q.Y^2) =
-linX a * r`; `y_sub_C_Y_mul_y_add_C_Y_eq` turns this into `(y H - C Q.Y) * (y H + C Q.Y) = g a *
-algebraMap r`; `y_add_C_Y_notMem_pointIdeal_of_Y_ne_zero` (needs `hchar`, threaded in below)
-gives `y H + C Q.Y ∉ pointIdeal Q`; `pointIdeal_pow_dvd_span_mul_notMem_iff` then transfers
-`pointIdeal Q ^ 2 ∣ span {g a * algebraMap r}` to `pointIdeal Q ^ 2 ∣ span {y H - C Q.Y}` — so
-it suffices to refute the latter, which is `pointIdeal_uniformizer_not_sq_dvd` (still `sorry`'d,
-the true geometric content: `y H - C Q.Y` is a uniformizer at the unramified point `Q`, i.e.
-ramification index `1` there — genuinely new content, not in `PrincipalDivisors.lean`). -/
+/-- **§B.1c, the genuine hard step — reduced to `pointIdeal_linX_not_sq_dvd` above, which is now
+the sole remaining `sorry` in this development's local-uniformizer argument.** Immediate from
+`pointIdeal_linX_not_sq_dvd` after `heq : Q.X = a` rewrites `Q.X` to `a` (or vice versa). No
+longer needs the `y H ± C Q.Y` factorization detour of the earlier (incorrect) draft — see
+`pointIdeal_linX_not_sq_dvd`'s docstring for why that detour doesn't work in general. -/
 theorem ordAt_linX_eq_one_of_unramified_not_sq_dvd [IsDedekindDomain (CoordinateRing H)]
     (hchar : (2 : k) ≠ 0) (a : k) (Q : H.Point) (h_bot : pointIdeal Q ≠ ⊥)
     (heq : Q.X = a) (hY : Q.Y ≠ 0) :
     ¬ pointIdeal Q ^ 2 ∣ Ideal.span ({toPair H (linX a) 0} : Set (CoordinateRing H)) := by
-  obtain ⟨r, hfact⟩ := factors_sub_Y_sq Q
-  have hmul := y_sub_C_Y_mul_y_add_C_Y_eq Q r hfact
-  rw [heq] at hmul
-  intro hcontra
-  have hspan_dvd : Ideal.span ({toPair H (linX a) 0} : Set (CoordinateRing H)) ∣
-      Ideal.span ({toPair H (linX a) 0 * algebraMap k[X] (CoordinateRing H) r} :
-        Set (CoordinateRing H)) := by
-    rw [Ideal.dvd_span_singleton]
-    exact Ideal.mem_span_singleton.mpr ⟨algebraMap k[X] (CoordinateRing H) r, rfl⟩
-  have hcontra_mul : pointIdeal Q ^ 2 ∣ Ideal.span
-      ({toPair H (linX a) 0 * algebraMap k[X] (CoordinateRing H) r} : Set (CoordinateRing H)) :=
-    hcontra.trans hspan_dvd
-  rw [← hmul] at hcontra_mul
-  have hu : (y H + algebraMap k[X] (CoordinateRing H) (Polynomial.C Q.Y)) ∉ pointIdeal Q :=
-    y_add_C_Y_notMem_pointIdeal_of_Y_ne_zero hchar Q hY
-  have hcontra2 := (pointIdeal_pow_dvd_span_mul_notMem_iff Q h_bot
-    (y H - algebraMap k[X] (CoordinateRing H) (Polynomial.C Q.Y))
-    (y H + algebraMap k[X] (CoordinateRing H) (Polynomial.C Q.Y)) hu 2).mp hcontra_mul
-  exact pointIdeal_uniformizer_not_sq_dvd Q hY hcontra2
+  rw [← heq]
+  exact pointIdeal_linX_not_sq_dvd Q hchar hY
 
 /-- **§B.1d, assembly — confirmed lemma names, mechanical modulo §B.1a/§B.1c.** Given
 `pointIdeal Q ∣ span {g}` (§B.1a, proved) and `¬ pointIdeal Q ^ 2 ∣ span {g}` (§B.1c, open),
