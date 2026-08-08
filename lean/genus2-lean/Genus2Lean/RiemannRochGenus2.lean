@@ -199,6 +199,135 @@ theorem one_mem_LPairCarrier (x₁ x₂ : H.Point) : (1 : FractionRing (Coordina
   · omega
   · exact (polePairToFraction_one_zero_one_zero H).symm
 
+/-- `algebraMap k[X] (CoordinateRing H)` is injective — same proof as
+`coordinateRing_not_isField`'s `hinj`, isolated as its own lemma so
+`pairNorm_mul_of_toPair_mul` below can cancel it without re-deriving. -/
+theorem algebraMap_coordinateRing_injective :
+    Function.Injective (algebraMap k[X] (CoordinateRing H)) := by
+  show Function.Injective (AdjoinRoot.of (X ^ 2 - C H.f))
+  exact AdjoinRoot.of.injective_of_degree_ne_zero degree_X_sq_sub_C_H_f_ne_zero
+
+/-- **`pairNorm` is multiplicative under `toPair` multiplication**: if
+`toPair H A₃ B₃ = toPair H A B * toPair H A' B'`, then `pairNorm H A₃ B₃ =
+pairNorm H A B * pairNorm H A' B'`. Proof: `involution H` is a `RingHom`
+(`map_mul`), so `toPair_mul_involution` applied to the product gives
+`algebraMap (pairNorm H A₃ B₃) = (toPair H A B * toPair H A' B') *
+involution H (toPair H A B * toPair H A' B') = (toPair H A B * involution H
+(toPair H A B)) * (toPair H A' B' * involution H (toPair H A' B'))` after
+regrouping (commutative ring), which is `algebraMap (pairNorm H A B) *
+algebraMap (pairNorm H A' B') = algebraMap (pairNorm H A B * pairNorm H A'
+B')` by `toPair_mul_involution` again plus `map_mul`. Cancel `algebraMap`
+via its injectivity (`algebraMap_coordinateRing_injective`). -/
+theorem pairNorm_mul_of_toPair_mul (A B A' B' A₃ B₃ : k[X])
+    (hA₃ : toPair H A₃ B₃ = toPair H A B * toPair H A' B') :
+    pairNorm H A₃ B₃ = pairNorm H A B * pairNorm H A' B' := by
+  have h3 := toPair_mul_involution H A₃ B₃
+  have h1 := toPair_mul_involution H A B
+  have h2 := toPair_mul_involution H A' B'
+  rw [hA₃, map_mul (involution H)] at h3
+  -- h3 : (toPair H A B * toPair H A' B') * (involution H (toPair H A B) *
+  --       involution H (toPair H A' B')) = algebraMap (pairNorm H A₃ B₃)
+  have hregroup : toPair H A B * toPair H A' B' *
+      (involution H (toPair H A B) * involution H (toPair H A' B')) =
+      (toPair H A B * involution H (toPair H A B)) *
+        (toPair H A' B' * involution H (toPair H A' B')) := by ring
+  rw [hregroup, h1, h2, ← map_mul] at h3
+  exact (algebraMap_coordinateRing_injective h3).symm
+
+/-- **`ordInfOfPair` is additive under `toPair` multiplication** (the deg-5
+case): if `toPair H A₃ B₃ = toPair H A B * toPair H A' B'` and all three pairs
+are nonzero, then `ordInfOfPair A₃ B₃ = ordInfOfPair A B + ordInfOfPair A'
+B'`. Proof: `natDegree_pairNorm_eq_neg_ordInfOfPair` (already proved,
+`PrincipalDivisors.lean`) converts each `ordInfOfPair` to `-(pairNorm
+...).natDegree`; `pairNorm_mul_of_toPair_mul` turns the combined `pairNorm`
+into a product, and `Polynomial.natDegree_mul` (valid since `pairNorm H A B`
+and `pairNorm H A' B'` are both nonzero — they're `A²-B²f`, nonzero because
+`toPair_mul_involution` identifies them with a nonzero coordinate-ring norm
+of a nonzero element in the deg-5 domain case) turns `natDegree` of a product
+into a sum. -/
+theorem ordInfOfPair_add_of_toPair_mul [IsDomain (CoordinateRing H)]
+    (hdeg : H.f.natDegree = 5)
+    (A B A' B' A₃ B₃ : k[X])
+    (hAB : ¬(A = 0 ∧ B = 0)) (hA'B' : ¬(A' = 0 ∧ B' = 0))
+    (hA₃B₃ : ¬(A₃ = 0 ∧ B₃ = 0))
+    (hA₃ : toPair H A₃ B₃ = toPair H A B * toPair H A' B') :
+    ordInfOfPair A₃ B₃ = ordInfOfPair A B + ordInfOfPair A' B' := by
+  have hn3 := natDegree_pairNorm_eq_neg_ordInfOfPair H hdeg A₃ B₃ hA₃B₃
+  have hn1 := natDegree_pairNorm_eq_neg_ordInfOfPair H hdeg A B hAB
+  have hn2 := natDegree_pairNorm_eq_neg_ordInfOfPair H hdeg A' B' hA'B'
+  have hprod := pairNorm_mul_of_toPair_mul (H := H) A B A' B' A₃ B₃ hA₃
+  have hne1 : pairNorm H A B ≠ 0 := pairNorm_ne_zero_of_ne A B hAB
+  have hne2 : pairNorm H A' B' ≠ 0 := pairNorm_ne_zero_of_ne A' B' hA'B'
+  have hdeg_prod : (pairNorm H A₃ B₃).natDegree =
+      (pairNorm H A B).natDegree + (pairNorm H A' B').natDegree := by
+    rw [hprod, Polynomial.natDegree_mul hne1 hne2]
+  -- Combine: `-ordInfOfPair A₃ B₃ = (pairNorm A₃ B₃).natDegree`
+  -- `= (pairNorm A B).natDegree + (pairNorm A' B').natDegree`
+  -- `= -ordInfOfPair A B + -ordInfOfPair A' B'`, so negate both sides.
+  have : (-(ordInfOfPair A₃ B₃) : ℤ) = -(ordInfOfPair A B) + -(ordInfOfPair A' B') := by
+    rw [← hn3, ← hn1, ← hn2]
+    exact_mod_cast hdeg_prod
+  omega
+
+/-- `toPair H (A₁+A₂) (B₁+B₂) = toPair H A₁ B₁ + toPair H A₂ B₂`: linearity of
+`toPair` in its two polynomial arguments, extracted from the identical
+computation already inline in `RiemannRochSpaceInf`'s `add_mem'`
+(`HyperellipticFunctionField.lean`). -/
+theorem toPair_add (A1 B1 A2 B2 : k[X]) :
+    toPair H (A1 + A2) (B1 + B2) = toPair H A1 B1 + toPair H A2 B2 := by
+  unfold toPair
+  simp only [map_add]
+  set a1 := algebraMap k[X] (CoordinateRing H) A1
+  set a2 := algebraMap k[X] (CoordinateRing H) A2
+  set b1 := algebraMap k[X] (CoordinateRing H) B1
+  set b2 := algebraMap k[X] (CoordinateRing H) B2
+  set w := y H
+  ring
+
+/-- `c • toPair H A B = toPair H (C c * A) (C c * B)`: the `k`-scalar action
+(routed through `Algebra.compHom` via `algebraMap k k[X]`, per the
+`Algebra k (CoordinateRing H)` instance) distributes into both polynomial
+slots as multiplication by the constant polynomial `C c`. Extracted from the
+identical computation already inline in `RiemannRochSpaceInf`'s
+`smul_mem'`. -/
+theorem toPair_smul (c : k) (A B : k[X]) :
+    c • toPair H A B = toPair H (C c * A) (C c * B) := by
+  unfold toPair
+  rw [Algebra.compHom_smul_def, Algebra.smul_def]
+  rw [show algebraMap k k[X] c = C c from by simp [Polynomial.algebraMap_apply]]
+  simp only [map_mul]
+  set a := algebraMap k[X] (CoordinateRing H) A
+  set b := algebraMap k[X] (CoordinateRing H) B
+  set cc := algebraMap k[X] (CoordinateRing H) (C c)
+  set w := y H
+  ring
+
+/-- **The explicit multiplication formula for `toPair`**: `toPair H A B *
+toPair H A' B' = toPair H (A*A' + B*B'*H.f) (A*B' + A'*B)`. Derived directly:
+`(a+by)(a'+b'y) = aa' + ab'y + a'by + bb'y² = (aa'+bb'f) + (ab'+a'b)y` using
+`y² = f` (`y_sq_eq`). This is the multiplication-closure fact `toPair_add`
+provides for addition — needed to exhibit an explicit `(A'',B'')` witness for
+`LPairCarrier_add_smul`'s combined numerator/denominator, matching the
+abstract `toPair_surjective_local` existence with a concrete formula so the
+later `ordAt`/`ordInfOfPair` additivity lemmas (`ordAt_toPair_mul_of_ne_zero`,
+`ordInfOfPair_add_of_toPair_mul`) can be applied against a witness pair that
+is written down, not merely known to exist. -/
+theorem toPair_mul (A B A' B' : k[X]) :
+    toPair H A B * toPair H A' B' =
+      toPair H (A * A' + B * B' * H.f) (A * B' + A' * B) := by
+  unfold toPair
+  have hy2 : y H ^ 2 = algebraMap k[X] (CoordinateRing H) H.f := y_sq_eq H
+  simp only [map_add, map_mul]
+  set a := algebraMap k[X] (CoordinateRing H) A
+  set b := algebraMap k[X] (CoordinateRing H) B
+  set a' := algebraMap k[X] (CoordinateRing H) A'
+  set b' := algebraMap k[X] (CoordinateRing H) B'
+  set fH := algebraMap k[X] (CoordinateRing H) H.f
+  set w := y H
+  have : (a + b * w) * (a' + b' * w) = a * a' + b * b' * w ^ 2 + (a * b' + a' * b) * w := by
+    ring
+  rw [this, hy2]
+
 /-- **Key new infrastructure**: `ordAt` is additive under multiplication of
 `CoordinateRing H` elements, stated directly at the `intValuation` level
 (bypassing `toPair`-pair bookkeeping). `intValuation` is a bundled `Valuation`
@@ -260,8 +389,8 @@ numerator/denominator through `ordAt_toPair_mul_of_ne_zero`/
 `(A,B,A',B')`-level conjuncts; (3) the several `A'=B'=0`-style degenerate
 cases (`c₁=0`, `c₂=0`, denominators colliding) that the clean multiplicativity
 statement above doesn't cover on its own. -/
-theorem LPairCarrier_add_smul (x₁ x₂ : H.Point) (c₁ c₂ : k)
-    (z₁ z₂ : FractionRing (CoordinateRing H))
+theorem LPairCarrier_add_smul (hdeg : H.f.natDegree = 5) (x₁ x₂ : H.Point)
+    (c₁ c₂ : k) (z₁ z₂ : FractionRing (CoordinateRing H))
     (h₁ : z₁ ∈ LPairCarrier x₁ x₂) (h₂ : z₂ ∈ LPairCarrier x₁ x₂) :
     c₁ • z₁ + c₂ • z₂ ∈ LPairCarrier x₁ x₂ := by
   sorry
@@ -269,21 +398,28 @@ theorem LPairCarrier_add_smul (x₁ x₂ : H.Point) (c₁ c₂ : k)
 /-- `L((x₁)+(x₂))` as a genuine `k`-submodule of `FractionRing (CoordinateRing
 H)`, packaging `LPairCarrier` with `one_mem_LPairCarrier` /
 `LPairCarrier_add_smul` (the latter specialized to give `zero_mem'` and
-`add_mem'`/`smul_mem'` in the shapes `Submodule` wants). -/
-def LPair (x₁ x₂ : H.Point) : Submodule k (FractionRing (CoordinateRing H)) where
+`add_mem'`/`smul_mem'` in the shapes `Submodule` wants). Takes `hdeg` because
+`LPairCarrier_add_smul` needs it (for `ordInfOfPair` additivity, which is
+genuinely deg-5-specific — see `ordInfOfPair_add_of_toPair_mul`) — a change
+from the file's original scaffold, where `LPair` took no `hdeg`; every
+existing call site (`finrank_L_pair`, `finrank_L_canonical`) already has
+`hdeg` in scope, so this is a mechanical threading, not a new hypothesis on
+the file's overall dependency shape. -/
+def LPair (hdeg : H.f.natDegree = 5) (x₁ x₂ : H.Point) :
+    Submodule k (FractionRing (CoordinateRing H)) where
   carrier := LPairCarrier x₁ x₂
   zero_mem' := by
-    have h := LPairCarrier_add_smul x₁ x₂ 0 0 1 1
+    have h := LPairCarrier_add_smul hdeg x₁ x₂ 0 0 1 1
       (one_mem_LPairCarrier x₁ x₂) (one_mem_LPairCarrier x₁ x₂)
     simpa using h
   add_mem' {z₁ z₂} h₁ h₂ := by
-    have h := LPairCarrier_add_smul x₁ x₂ 1 1 z₁ z₂ h₁ h₂
+    have h := LPairCarrier_add_smul hdeg x₁ x₂ 1 1 z₁ z₂ h₁ h₂
     simpa using h
   smul_mem' c {z} h := by
     -- `c • z + 0 • z`, both summands drawn from the *same* membership proof
     -- `h` (the second copy of `z` is discarded by the `0` coefficient) —
     -- simplifies to `c • z`.
-    have h' := LPairCarrier_add_smul x₁ x₂ c 0 z z h h
+    have h' := LPairCarrier_add_smul hdeg x₁ x₂ c 0 z z h h
     simpa using h'
 
 /-! ## §2. The canonical divisor `K` and `L(K)`
@@ -367,7 +503,7 @@ the crux of the whole file and the hardest step in the project after the
 Dedekind-domain `sorry`s already in `PrincipalDivisors.lean`.** -/
 theorem finrank_L_pair (hdeg : H.f.natDegree = 5) (x₁ x₂ : H.Point)
     (hne : x₂ ≠ Point.iota x₁) :
-    Module.finrank k (LPair x₁ x₂) = 1 ∧ IsOnlyEffectiveInClass hdeg x₁ x₂ := by
+    Module.finrank k (LPair hdeg x₁ x₂) = 1 ∧ IsOnlyEffectiveInClass hdeg x₁ x₂ := by
   sorry
 
 /-- **The second hard step**: `ℓ((x)+(ι x)) = 2` for every `x` (every
@@ -382,7 +518,7 @@ exhibiting `1, x_coord ∈ LPair x (ι x)` (via the standard differential
 degree-2 map to `P¹` induced by `|K|` is shown to coincide with the
 hyperelliptic map itself (not merely have the same dimension). -/
 theorem finrank_L_canonical (hdeg : H.f.natDegree = 5) (x : H.Point) :
-    Module.finrank k (LPair x (Point.iota x)) = 2 ∧
+    Module.finrank k (LPair hdeg x (Point.iota x)) = 2 ∧
       IsOnlyFibersInCanonicalClass hdeg x := by
   sorry
 
