@@ -619,26 +619,48 @@ theorem pointIdeal_pow_pairwise_coprime [IsDedekindDomain (CoordinateRing H)]
     Ideal.isCoprime_iff_sup_eq.mpr hsup
   exact hcoprime.pow
 
-/-- Step 3: the Chinese Remainder Theorem, specialized to this factored ideal — the quotient
-by the product ideal is ring-isomorphic to the product of the individual prime-power
-quotients. **UNVERIFIED, no citation confirmed** — candidate is
-`Ideal.quotientInfRingEquivPiQuotient` (for pairwise coprime ideals, `Finset`-indexed) or an
-iterated two-ideal CRT built up by `Finset.induction`; not looked up against a live Mathlib. -/
-noncomputable def crt_equiv_prod_pointIdeal_pow [IsDedekindDomain (CoordinateRing H)]
+/-- Step 3: the Chinese Remainder Theorem, specialized to this factored ideal.
+The quotient by the product ideal is ring-isomorphic to the product of the
+individual prime-power quotients. -/
+noncomputable def crt_equiv_prod_pointIdeal_pow
+    [IsDedekindDomain (CoordinateRing H)]
     (S : Finset H.Point) (A B : k[X]) :
-    (CoordinateRing H ⧸ ∏ P ∈ S, pointIdeal P ^ (ordAt P A B).toNat) ≃+*
-      (Π P : S, CoordinateRing H ⧸ pointIdeal P.1 ^ (ordAt P.1 A B).toNat) := by
-  have hcoprime : ∀ P ∈ S, ∀ Q ∈ S, P ≠ Q →
-      IsCoprime (pointIdeal P ^ (ordAt P A B).toNat) (pointIdeal Q ^ (ordAt Q A B).toNat) :=
+    (CoordinateRing H ⧸
+        ∏ P ∈ S, pointIdeal P ^ (ordAt P A B).toNat) ≃+*
+      (Π P : S,
+        CoordinateRing H ⧸
+          pointIdeal P.1 ^ (ordAt P.1 A B).toNat) := by
+  let I : S → Ideal (CoordinateRing H) :=
+    fun P => pointIdeal P.1 ^ (ordAt P.1 A B).toNat
+  have hcoprime :
+      ∀ P ∈ S, ∀ Q ∈ S, P ≠ Q →
+        IsCoprime
+          (pointIdeal P ^ (ordAt P A B).toNat)
+          (pointIdeal Q ^ (ordAt Q A B).toNat) :=
     pointIdeal_pow_pairwise_coprime S A B
-  let I : S → Ideal (CoordinateRing H) := fun P => pointIdeal P.1 ^ (ordAt P.1 A B).toNat
-  have h_pairwise : ∀ (P Q : S), P ≠ Q → IsCoprime (I P) (I Q) := by
-    intro ⟨P, hP⟩ ⟨Q, hQ⟩ hneq
-    exact hcoprime P hP Q hQ (fun h => hneq (Subtype.ext h))
-  have heq : (∏ P ∈ S, pointIdeal P ^ (ordAt P A B).toNat) = ⨅ P : S, I P := by
-    sorry
-  rw [heq]
-  exact Ideal.quotientInfRingEquivPiQuotient I h_pairwise
+  have h_pairwise : Pairwise (Function.onFun IsCoprime I) := by
+    intro P Q hPQ
+    simpa [I, Function.onFun] using
+      hcoprime P.1 P.2 Q.1 Q.2 (by
+        intro h
+        exact hPQ (Subtype.ext h))
+  have h_pairwise_univ :
+      Set.Pairwise (↑(Finset.univ : Finset S) : Set S) (Function.onFun IsCoprime I) := by
+    rw [Finset.coe_univ, Set.pairwise_univ]
+    exact h_pairwise
+  have heq_sub : (∏ P : S, I P) = ⨅ P : S, I P := by
+    simpa using
+      (Ideal.prod_eq_iInf_of_pairwise_isCoprime
+        (s := (Finset.univ : Finset S)) (J := I) h_pairwise_univ)
+  have heq :
+      (∏ P ∈ S, pointIdeal P ^ (ordAt P A B).toNat) =
+        ⨅ P : S, I P := by
+    rw [← Finset.prod_attach]
+    simpa [I] using heq_sub
+  refine
+    (Ideal.quotientEquiv _ _ (RingEquiv.refl _) ?_).trans
+      (Ideal.quotientInfRingEquivPiQuotient I h_pairwise)
+  · simpa [I] using heq.symm
 
 
 /-- Step 4: the `k`-dimension of a single prime-power quotient `R ⧸ 𝔪_P^{n}` equals `n`.
@@ -851,6 +873,14 @@ def mulByToPairLin (H : HyperellipticPolynomial k) (A B : k[X]) :
     · change B * (c * p.1) + A * (c * p.2) = c * (B * p.1 + A * p.2)
       ring
 
+/-- Unfolding lemma for `mulByToPairLin`'s application, stated directly against its own
+definition (`rfl`) rather than relying on Mathlib's internal `LinearMap.coe_mk`-style simp set
+to unfold a raw structure projection through `∘ₗ`/coercion layers — added this session after
+that guess didn't fire cleanly inside `negSndEquiv_conj_mulByToPairLin` below. -/
+@[simp]
+theorem mulByToPairLin_apply (A B : k[X]) (p : k[X] × k[X]) :
+    (mulByToPairLin H A B) p = (A * p.1 + B * H.f * p.2, B * p.1 + A * p.2) := rfl
+
 /-- `mulByToPairLin H A B` really does correspond to multiplication by `toPair H A B`
 across `toPairEquiv`, i.e. the following square commutes:
 `toPairEquiv (mulByToPairLin p) = toPair H A B * toPairEquiv p`. **UNVERIFIED**: the
@@ -905,21 +935,376 @@ theorem span_toPair_eq_range_mulByToPairLin (A B : k[X]) :
     exact dvd_mul_right (toPair H A B) (toPairEquiv H q)
 
 
+/-- **Session update — attempt at Step 5, third route (not SNF, not the division-algorithm
+sketch from the §4.4 module comment; a "norm-composite" argument instead).** Not yet checked
+against a live goal, so still flagged UNVERIFIED throughout, but this route sidesteps both of
+the two candidate routes originally sketched: no Smith-normal-form API dependency, and no
+hand-built `k`-basis via `%ₘ`. Algebraic core (checked with `sympy`, not yet in Lean): writing
+`M B := mulByToPairLin H A B`, the two "conjugate" endomorphisms satisfy
+`M (-B) ∘ M B = M B ∘ M (-B) = (pairNorm H A B) • LinearMap.id` on `k[X] × k[X]` — i.e.
+`mulByToPairLin` really does behave like "multiply by `g`" composed with "multiply by `ḡ`"
+gives "multiply by `N`", mirroring `toPair_mul_involution` one level down, on the `Prod`
+model rather than in `CoordinateRing H` itself. -/
+theorem mulByToPairLin_comp_mulByToPairLin_neg (A B : k[X]) :
+    (mulByToPairLin H A (-B)).comp (mulByToPairLin H A B) =
+      (pairNorm H A B) • (LinearMap.id : (k[X] × k[X]) →ₗ[k[X]] (k[X] × k[X])) := by
+  apply LinearMap.ext
+  intro p
+  apply Prod.ext
+  · change A * (A * p.1 + B * H.f * p.2) + (-B) * H.f * (B * p.1 + A * p.2) =
+      (pairNorm H A B) * p.1
+    unfold pairNorm
+    ring
+  · change (-B) * (A * p.1 + B * H.f * p.2) + A * (B * p.1 + A * p.2) =
+      (pairNorm H A B) * p.2
+    unfold pairNorm
+    ring
+
+/-- The companion composite in the other order, needed to get `range ((pairNorm H A B) • id) ⊆
+range (mulByToPairLin H A B)` (rather than `⊆ range (mulByToPairLin H A (-B))`, which is what
+`mulByToPairLin_comp_mulByToPairLin_neg` alone would give). Same `sympy`-checked algebra,
+opposite composition order. -/
+theorem mulByToPairLin_comp_mulByToPairLin_neg' (A B : k[X]) :
+    (mulByToPairLin H A B).comp (mulByToPairLin H A (-B)) =
+      (pairNorm H A B) • (LinearMap.id : (k[X] × k[X]) →ₗ[k[X]] (k[X] × k[X])) := by
+  apply LinearMap.ext
+  intro p
+  apply Prod.ext
+  · change A * (A * p.1 + (-B) * H.f * p.2) + B * H.f * ((-B) * p.1 + A * p.2) =
+      (pairNorm H A B) * p.1
+    unfold pairNorm
+    ring
+  · change B * (A * p.1 + (-B) * H.f * p.2) + A * ((-B) * p.1 + A * p.2) =
+      (pairNorm H A B) * p.2
+    unfold pairNorm
+    ring
+
+/-- The involution `σ(a,b) := (a,-b)` on `k[X] × k[X]`, as a `k[X]`-linear equivalence.
+Used to close the "duality" gap flagged in the module comment below: conjugating
+`mulByToPairLin H A B` by `σ` gives `mulByToPairLin H A (-B)`, so the two composite maps
+`M` and `M'` from the norm-composite identities above are honestly symmetric (not just
+"plausibly" so), which is exactly what pins down `finrank(⊤/range M) = finrank(⊤/range M')`
+below. **UNVERIFIED**: the `LinearEquiv.ofInvolutive`-or-hand-built-inverse plumbing was not
+checked against a live goal, though the underlying `Prod.ext`/`ring` content is immediate. -/
+def negSndEquiv : (k[X] × k[X]) ≃ₗ[k[X]] (k[X] × k[X]) where
+  toFun p := (p.1, -p.2)
+  invFun p := (p.1, -p.2)
+  map_add' p q := by apply Prod.ext <;> simp <;> ring
+  map_smul' c p := by apply Prod.ext <;> simp
+  left_inv p := by simp
+  right_inv p := by simp
+
+/-- Unfolding lemma for `negSndEquiv`'s forward direction, stated directly against its own
+definition so later proofs don't need to guess Mathlib's internal `LinearEquiv.coe_mk`-style
+simp-lemma names. Proved by `rfl` since it's exactly `negSndEquiv`'s `toFun`. -/
+@[simp]
+theorem negSndEquiv_apply (p : k[X] × k[X]) :
+    (negSndEquiv (k := k)) p = (p.1, -p.2) := rfl
+
+/-- Unfolding lemma for `negSndEquiv`'s inverse direction, same rationale as
+`negSndEquiv_apply`. Since `negSndEquiv` is a self-inverse involution, `invFun` and `toFun`
+are literally the same function, so this is also `rfl`. -/
+@[simp]
+theorem negSndEquiv_symm_apply (p : k[X] × k[X]) :
+    (negSndEquiv (k := k)).symm p = (p.1, -p.2) := rfl
+
+/-- `sympy`-checked algebra (see the composite identities above for the same style of check):
+conjugating `mulByToPairLin H A B` by `negSndEquiv` gives `mulByToPairLin H A (-B)`. This is
+the precise form of the "symmetry" the module comment below originally left as an unproved
+duality guess — it is not a guess, it follows from this one `Prod.ext`/`ring` computation. -/
+theorem negSndEquiv_conj_mulByToPairLin (A B : k[X]) :
+    (negSndEquiv (k := k)).toLinearMap.comp ((mulByToPairLin H A B).comp
+        (negSndEquiv (k := k)).symm.toLinearMap) =
+      mulByToPairLin H A (-B) := by
+  apply LinearMap.ext
+  intro p
+  apply Prod.ext <;>
+    · simp only [LinearMap.comp_apply, LinearEquiv.coe_toLinearMap, negSndEquiv_apply,
+        negSndEquiv_symm_apply, mulByToPairLin_apply]
+      ring
+
+/-- Consequence of the conjugation identity: `negSndEquiv` carries `range (mulByToPairLin H A
+B)` bijectively onto `range (mulByToPairLin H A (-B))`, hence the two quotients `⊤ ⧸ range M`
+and `⊤ ⧸ range M'` have the same `k[X]`-module structure up to the equivalence `negSndEquiv`
+— in particular (once restricted to `k`-finrank, not done in this lemma) the same `k`-finrank.
+**UNVERIFIED**: the `Submodule.map`-of-`range`-under-a-conjugated-map bookkeeping was not
+checked against a live goal. -/
+theorem negSndEquiv_map_range_mulByToPairLin (A B : k[X]) :
+    Submodule.map (negSndEquiv (k := k)).toLinearMap
+        (LinearMap.range (mulByToPairLin H A B)) =
+      LinearMap.range (mulByToPairLin H A (-B)) := by
+  rw [← negSndEquiv_conj_mulByToPairLin A B]
+  ext z
+  simp only [Submodule.mem_map, LinearMap.mem_range]
+  constructor
+  · rintro ⟨y, ⟨x, rfl⟩, rfl⟩
+    refine ⟨(negSndEquiv (k := k)) x, ?_⟩
+    simp
+  · rintro ⟨x, rfl⟩
+    exact ⟨mulByToPairLin H A B ((negSndEquiv (k := k)).symm x),
+      ⟨(negSndEquiv (k := k)).symm x, rfl⟩, by simp⟩
+
+
+/-- `pairNorm` is even in its second argument. Immediate from
+`pairNorm H A B = A^2 - B^2*H.f` (the `B^2` absorbs the sign). Needed so the rank-nullity
+computation run with `B` replaced by `-B` lands on the same right-hand side `N.natDegree` as
+the one for `B`, which is what lets the two equations below actually be combined. -/
+theorem pairNorm_neg_snd (A B : k[X]) : pairNorm H A (-B) = pairNorm H A B := by
+  unfold pairNorm; ring
+
+/-- Step 2 of the module comment, made precise as a `≤` of `k[X]`-submodules:
+`range ((pairNorm H A B) • id) ≤ range (mulByToPairLin H A B)`. Proved via
+`mulByToPairLin_comp_mulByToPairLin_neg'`: `M ∘ M' = N • id`, so every `N • id`-image
+`N • q = M (M' q)` is already an `M`-image. -/
+theorem range_smul_id_le_range_mulByToPairLin (A B : k[X]) :
+    LinearMap.range
+        ((pairNorm H A B) • (LinearMap.id : (k[X] × k[X]) →ₗ[k[X]] (k[X] × k[X]))) ≤
+      LinearMap.range (mulByToPairLin H A B) := by
+  rintro z ⟨q, rfl⟩
+  refine LinearMap.mem_range.mpr ⟨(mulByToPairLin H A (-B)) q, ?_⟩
+  have := LinearMap.congr_fun (mulByToPairLin_comp_mulByToPairLin_neg' (H := H) A B) q
+  simpa using this
+
+/-- `(k[X] × k[X]) ⧸ range ((pairNorm H A B) • id)` has `k`-finrank
+`2 * (pairNorm H A B).natDegree`. The scalar map `N • id` acts diagonally on the product, so
+its cokernel is `k`-linearly equivalent to `(k[X] ⧸ (N)) × (k[X] ⧸ (N))` — built here directly
+via the first isomorphism theorem applied to the coordinatewise quotient map
+`(a, b) ↦ (mk a, mk b)`, whose kernel is exactly `range (N • id)` and which is surjective onto
+the product of quotients. Each factor's finrank is `N.natDegree` by
+`finrank_quotient_span_eq_natDegree` (confirmed to exist in Mathlib, per the §4.4 module
+comment: `Module.finrank K (Polynomial K ⧸ Ideal.span {f}) = f.natDegree`). -/
+theorem finrank_quotient_range_smul_id_eq_two_mul_natDegree_pairNorm
+    (A B : k[X]) (hne : pairNorm H A B ≠ 0) :
+    Module.finrank k
+        ((k[X] × k[X]) ⧸
+          LinearMap.range
+            ((pairNorm H A B) • (LinearMap.id : (k[X] × k[X]) →ₗ[k[X]] (k[X] × k[X])))) =
+      2 * (pairNorm H A B).natDegree := by
+  set N := pairNorm H A B with hN_def
+  set NV : (k[X] × k[X]) →ₗ[k[X]] (k[X] × k[X]) :=
+    N • (LinearMap.id : (k[X] × k[X]) →ₗ[k[X]] (k[X] × k[X])) with hNV_def
+  have hNV_apply : ∀ p : k[X] × k[X], NV p = (N * p.1, N * p.2) := fun p => rfl
+  -- The coordinatewise reduction map, as a `k`-linear map into the product of quotients.
+  set ψ : (k[X] × k[X]) →ₗ[k] (k[X] ⧸ Ideal.span ({N} : Set k[X])) ×
+      (k[X] ⧸ Ideal.span ({N} : Set k[X])) :=
+    (Ideal.Quotient.mkₐ k (Ideal.span ({N} : Set k[X]))).toLinearMap.prodMap
+      (Ideal.Quotient.mkₐ k (Ideal.span ({N} : Set k[X]))).toLinearMap with hψ_def
+  have hψ_apply : ∀ p : k[X] × k[X],
+      ψ p = (Ideal.Quotient.mk (Ideal.span ({N} : Set k[X])) p.1,
+             Ideal.Quotient.mk (Ideal.span ({N} : Set k[X])) p.2) := fun p => rfl
+  have hker : LinearMap.ker ψ = (LinearMap.range NV).restrictScalars k := by
+    ext p
+    -- `Ideal.mem_span_singleton : a ∈ span {b} ↔ b ∣ a`, i.e. `N ∣ p.i ↔ ∃ c, p.i = N * c`.
+    simp only [LinearMap.mem_ker, hψ_apply, Prod.mk_eq_zero, Ideal.Quotient.eq_zero_iff_mem,
+      Ideal.mem_span_singleton, Submodule.restrictScalars_mem, LinearMap.mem_range]
+    constructor
+    · rintro ⟨⟨c1, hc1⟩, ⟨c2, hc2⟩⟩
+      refine ⟨(c1, c2), ?_⟩
+      rw [hNV_apply (c1, c2)]
+      exact Prod.ext hc1.symm hc2.symm
+    · rintro ⟨q, rfl⟩
+      rw [hNV_apply q]
+      exact ⟨⟨q.1, rfl⟩, ⟨q.2, rfl⟩⟩
+  have hsurj : Function.Surjective ψ :=
+    Prod.map_surjective.mpr ⟨Ideal.Quotient.mk_surjective, Ideal.Quotient.mk_surjective⟩
+  have hrange_top : LinearMap.range ψ = ⊤ := LinearMap.range_eq_top.mpr hsurj
+  have e := (LinearMap.quotKerEquivRange ψ).trans (LinearEquiv.ofTop _ hrange_top)
+  rw [hker] at e
+  -- Bridge between the two `k`-module structures on `(k[X]×k[X]) ⧸ NV.range`: the one obtained
+  -- by first restricting `NV.range` to a `k`-submodule and then quotienting (used in `e`), versus
+  -- the one obtained by quotienting as a `k[X]`-module and restricting scalars on the whole
+  -- quotient (the elaboration appearing in the goal). These are equal as sets but not
+  -- syntactically the same term, so we transport `e` across the bridge equiv instead of `rw`.
+  have e' := (Submodule.Quotient.restrictScalarsEquiv k (LinearMap.range NV)).symm.trans e
+  -- `finrank_quotient_span_eq_natDegree : Module.finrank K (K[X] ⧸ Ideal.span {f}) = f.natDegree`
+  -- is unconditional (no `f ≠ 0` hypothesis, `f` implicit) — confirmed against current Mathlib.
+  rw [LinearEquiv.finrank_eq e', Module.finrank_prod, finrank_quotient_span_eq_natDegree]
+  ring
+
 /-- Step 5 (the actually-hard fact, isolated so the two candidate proof routes — Smith
 normal form, or a direct division-algorithm basis via the norm/rationalization trick — can
 be tried independently without touching the rest of the §4.4 chain): for `A B : k[X]` with
 `pairNorm H A B ≠ 0`, the `k`-dimension of `(k[X] × k[X]) ⧸ range (mulByToPairLin H A B)`
-equals `(pairNorm H A B).natDegree`. **UNVERIFIED, no citation confirmed** — see the module
-comment above §4.4 for the two candidate routes (the "determinant" of `mulByToPairLin H A B`
-in the Smith-normal-form / classical sense is exactly `A^2 - B^2*H.f = pairNorm H A B`, by
-the same computation as `Matrix.det_fin_two` applied to `!![A, B*H.f; B, A]`, so this
-statement's `pairNorm H A B` plays the role `M.det` played in the earlier `Matrix`-based
-draft of this lemma). -/
+equals `(pairNorm H A B).natDegree`. Closed this session via a fourth route: rank-nullity
+sandwiching `range (N • id) ≤ range M ≤ ⊤` combined with a first-isomorphism-theorem
+identification `range M ⧸ range (N • id) ≅ (k[X]×k[X]) ⧸ range M'` (using `M ∘ M' = N • id`
+and `M` injective, so `M⁻¹(range(N•id)) = range M'` exactly), plus `negSndEquiv` giving
+`finrank(⊤/range M) = finrank(⊤/range M')`. See `finrank_quotient_range_smul_id_eq_two_mul_natDegree_pairNorm`
+and the inline comments below for the parts flagged **UNVERIFIED** (one `restrictScalars`
+defeq bridge, and the exact hypothesis form of `finrank_quotient_span_eq_natDegree`). -/
 theorem finrank_quotient_range_mulByToPairLin_eq_natDegree_pairNorm
     (A B : k[X]) (hne : pairNorm H A B ≠ 0) :
     Module.finrank k ((k[X] × k[X]) ⧸ LinearMap.range (mulByToPairLin H A B)) =
       (pairNorm H A B).natDegree := by
-  sorry
+  have hinj : Function.Injective (mulByToPairLin H A B) := by
+    have hcomp := mulByToPairLin_comp_mulByToPairLin_neg (H := H) A B
+    intro p q hpq
+    have hcompeq :
+        (mulByToPairLin H A (-B)) (mulByToPairLin H A B p) =
+          (mulByToPairLin H A (-B)) (mulByToPairLin H A B q) := by
+      rw [hpq]
+    have hcomp_p : (mulByToPairLin H A (-B)) (mulByToPairLin H A B p) =
+        (pairNorm H A B) • p := by
+      have := LinearMap.congr_fun hcomp p
+      simpa using this
+    have hcomp_q : (mulByToPairLin H A (-B)) (mulByToPairLin H A B q) =
+        (pairNorm H A B) • q := by
+      have := LinearMap.congr_fun hcomp q
+      simpa using this
+    rw [hcomp_p, hcomp_q] at hcompeq
+    have hp1 : (pairNorm H A B) * p.1 = (pairNorm H A B) * q.1 := congrArg Prod.fst hcompeq
+    have hp2 : (pairNorm H A B) * p.2 = (pairNorm H A B) * q.2 := congrArg Prod.snd hcompeq
+    exact Prod.ext (mul_left_cancel₀ hne hp1) (mul_left_cancel₀ hne hp2)
+  set N := pairNorm H A B with hN_def
+  set M := mulByToPairLin H A B with hM_def
+  set M' := mulByToPairLin H A (-B) with hM'_def
+  have hne' : pairNorm H A (-B) ≠ 0 := by rw [pairNorm_neg_snd]; exact hne
+  -- `k[X]`-submodules (matching the outer theorem's own un-restricted `LinearMap.range`
+  -- convention), and their `k`-restricted counterparts, kept as *separate* named terms
+  -- throughout so every lemma call below gets the scalar type it actually expects — the
+  -- earlier build failure was exactly from letting these two views of the same underlying
+  -- carrier get conflated by `set`/unification.
+  set S : Submodule k[X] (k[X] × k[X]) :=
+    LinearMap.range (N • (LinearMap.id : (k[X] × k[X]) →ₗ[k[X]] (k[X] × k[X]))) with hS_def
+  set RM : Submodule k[X] (k[X] × k[X]) := LinearMap.range M with hRM_def
+  set RM' : Submodule k[X] (k[X] × k[X]) := LinearMap.range M' with hRM'_def
+  set Sk : Submodule k (k[X] × k[X]) := S.restrictScalars k with hSk_def
+  set RMk : Submodule k (k[X] × k[X]) := RM.restrictScalars k with hRMk_def
+  set RM'k : Submodule k (k[X] × k[X]) := RM'.restrictScalars k with hRM'k_def
+  have hSM : S ≤ RM := range_smul_id_le_range_mulByToPairLin (H := H) A B
+  have hSMk : Sk ≤ RMk := Submodule.restrictScalars_mono k hSM
+  -- The quotient types `(k[X]×k[X]) ⧸ S` and `(k[X]×k[X]) ⧸ Sk` are the same underlying type
+  -- (`restrictScalars` doesn't change the carrier), so `hSfinrank` below is stated against
+  -- `Sk` directly to match what `Submodule.finrank_quotient_add_finrank` and
+  -- `Submodule.quotientQuotientEquivQuotient` need.
+  have hSfinrank : Module.finrank k ((k[X] × k[X]) ⧸ Sk) = 2 * N.natDegree :=
+    finrank_quotient_range_smul_id_eq_two_mul_natDegree_pairNorm A B hne
+  haveI hSk_finite : Module.Finite k ((k[X] × k[X]) ⧸ Sk) := by
+    by_cases hpos : 0 < N.natDegree
+    · have hpos' : 0 < Module.finrank k ((k[X] × k[X]) ⧸ Sk) := by
+        rw [hSfinrank]
+        omega
+      exact Module.finite_of_finrank_pos hpos'
+    · have hdeg0 : N.natDegree = 0 := by omega
+      have eqC : N = C (N.coeff 0) := by
+        ext n
+        cases n with
+        | zero => simp
+        | succ m =>
+          have : N.coeff (Nat.succ m) = 0 := Polynomial.coeff_eq_zero_of_natDegree_lt (by omega)
+          simp [this]
+      have coeff_ne : N.coeff 0 ≠ 0 := by
+        intro h
+        rw [h, map_zero] at eqC
+        exact hne eqC
+      have top : Sk = ⊤ := by
+        set c : k := N.coeff 0 with hc_def
+        have hNC : N * C c⁻¹ = 1 := by
+          rw [eqC, ← map_mul, mul_inv_cancel₀ coeff_ne, map_one]
+        ext p
+        simp only [Submodule.mem_top, iff_true, hSk_def, Submodule.restrictScalars_mem, hS_def,
+          LinearMap.mem_range]
+        refine ⟨(C c⁻¹ * p.1, C c⁻¹ * p.2), ?_⟩
+        have hN1 : N * (C c⁻¹ * p.1) = p.1 := by
+          rw [← mul_assoc, hNC, one_mul]
+        have hN2 : N * (C c⁻¹ * p.2) = p.2 := by
+          rw [← mul_assoc, hNC, one_mul]
+        show (N * (C c⁻¹ * p.1), N * (C c⁻¹ * p.2)) = p
+        exact Prod.ext hN1 hN2
+      haveI hsub : Subsingleton ((k[X] × k[X]) ⧸ Sk) := by
+        constructor
+        intro x y
+        refine Submodule.Quotient.induction_on Sk x ?_
+        intro a
+        refine Submodule.Quotient.induction_on Sk y ?_
+        intro b
+        rw [← sub_eq_zero, ← Submodule.Quotient.mk_sub, Submodule.Quotient.mk_eq_zero, top]
+        trivial
+      have htop_bot : (⊤ : Submodule k ((k[X] × k[X]) ⧸ Sk)) = ⊥ := Subsingleton.elim _ _
+      exact ⟨⟨∅, by rw [Finset.coe_empty, Submodule.span_empty, ← htop_bot]⟩⟩
+  -- (I): rank-nullity of `RMk.map Sk.mkQ` inside the finite-dimensional `(k[X]×k[X]) ⧸ Sk`,
+  -- combined with the third-isomorphism identification of the resulting double quotient with
+  -- `(k[X]×k[X]) ⧸ RMk`.
+  have hthird := Submodule.quotientQuotientEquivQuotient Sk RMk hSMk
+  have hI : Module.finrank k ((k[X] × k[X]) ⧸ RMk) +
+      Module.finrank k (RMk.map Sk.mkQ) = 2 * N.natDegree := by
+    have hrn := Submodule.finrank_quotient_add_finrank (RMk.map Sk.mkQ)
+    rw [LinearEquiv.finrank_eq hthird] at hrn
+    rw [hrn, hSfinrank]
+  -- (II): `(k[X]×k[X]) ⧸ RM'k ≃ₗ[k] RMk.map Sk.mkQ`, via the first isomorphism theorem applied
+  -- to `φ := Sk.mkQ ∘ M : (k[X]×k[X]) →ₗ[k] (k[X]×k[X]) ⧸ Sk`, whose kernel is `RM'k` (using
+  -- `M ∘ M' = N • id` and `hinj`) and whose range is `RMk.map Sk.mkQ` (since `M` has range
+  -- exactly `RM`, hence `RMk` after restricting scalars).
+  set φ : (k[X] × k[X]) →ₗ[k] ((k[X] × k[X]) ⧸ Sk) :=
+    Sk.mkQ.comp (M.restrictScalars k) with hφ_def
+  have hφ_apply : ∀ p, φ p = Submodule.Quotient.mk (M p) := fun p => rfl
+  have hker_φ : LinearMap.ker φ = RM'k := by
+    ext p
+    simp only [LinearMap.mem_ker, hφ_apply, Submodule.Quotient.mk_eq_zero, hRM'k_def,
+      Submodule.restrictScalars_mem, hRM'_def, LinearMap.mem_range, hSk_def, hS_def]
+    constructor
+    · intro hmem
+      obtain ⟨q, hq⟩ := hmem
+      have hcompeq : M (M' q) = M p := by
+        have := LinearMap.congr_fun (mulByToPairLin_comp_mulByToPairLin_neg' (H := H) A B) q
+        simp only [LinearMap.comp_apply] at this
+        rw [this]
+        exact hq
+      exact ⟨q, hinj hcompeq⟩
+    · rintro ⟨q, rfl⟩
+      refine ⟨q, ?_⟩
+      have := LinearMap.congr_fun (mulByToPairLin_comp_mulByToPairLin_neg' (H := H) A B) q
+      exact this.symm
+  have hrange_φ : LinearMap.range φ = RMk.map Sk.mkQ := by
+    ext z
+    simp only [LinearMap.mem_range, hφ_apply, Submodule.mem_map, hRMk_def,
+      Submodule.restrictScalars_mem, hRM_def]
+    constructor
+    · rintro ⟨p, rfl⟩
+      exact ⟨M p, ⟨p, rfl⟩, rfl⟩
+    · rintro ⟨w, ⟨p, rfl⟩, rfl⟩
+      exact ⟨p, rfl⟩
+  have hII : Module.finrank k ((k[X] × k[X]) ⧸ RM'k) =
+      Module.finrank k (RMk.map Sk.mkQ) := by
+    have e := LinearMap.quotKerEquivRange φ
+    rw [hker_φ] at e
+    rw [LinearEquiv.finrank_eq e, hrange_φ]
+  -- (III): combine (I) and (II).
+  have hIII : Module.finrank k ((k[X] × k[X]) ⧸ RMk) +
+      Module.finrank k ((k[X] × k[X]) ⧸ RM'k) = 2 * N.natDegree := by
+    rw [hII]; exact hI
+  -- (IV): `negSndEquiv` carries `RM` bijectively onto `RM'`, hence the two quotients by `RMk`
+  -- and by `RM'k` have equal `k`-finrank.
+  have hIV : Module.finrank k ((k[X] × k[X]) ⧸ RMk) =
+      Module.finrank k ((k[X] × k[X]) ⧸ RM'k) := by
+    have hmap : Submodule.map (negSndEquiv (k := k)).toLinearMap RM = RM' :=
+      negSndEquiv_map_range_mulByToPairLin (H := H) A B
+    have e : ((k[X] × k[X]) ⧸ RMk) ≃ₗ[k] ((k[X] × k[X]) ⧸ RM'k) := by
+      refine Submodule.Quotient.equiv RMk RM'k ((negSndEquiv (k := k)).restrictScalars k) ?_
+      ext z
+      simp only [Submodule.mem_map, hRMk_def, hRM'k_def, Submodule.restrictScalars_mem]
+      constructor
+      · rintro ⟨p, hp, rfl⟩
+        have hpmem : (negSndEquiv (k := k)) p ∈ RM' := by
+          rw [← hmap]; exact ⟨p, hp, rfl⟩
+        simpa using hpmem
+      · intro hz
+        refine ⟨(negSndEquiv (k := k)).symm z, ?_, by simp⟩
+        have hz' : (negSndEquiv (k := k)) ((negSndEquiv (k := k)).symm z) ∈ RM' := by
+          simpa using hz
+        rw [← hmap] at hz'
+        obtain ⟨p, hp, hpeq⟩ := hz'
+        have hpz : p = (negSndEquiv (k := k)).symm z := by
+          apply (negSndEquiv (k := k)).injective
+          exact hpeq
+        rwa [← hpz]
+    exact LinearEquiv.finrank_eq e
+  -- Combine (III) and (IV): `2 * finrank(V/RMk) = 2 * N.natDegree`.
+  have hfinal : 2 * Module.finrank k ((k[X] × k[X]) ⧸ RMk) = 2 * N.natDegree := by
+    have hcopy := hIII
+    rw [← hIV] at hcopy
+    omega
+  exact Nat.eq_of_mul_eq_mul_left (by norm_num) hfinal
 
 /-- `pairNorm H A B ≠ 0` whenever `(A, B) ≠ (0, 0)`, given `CoordinateRing H` is a domain.
 Needed as a side fact for §4.4 (`mulByToPairLin H A B` is invertible over the fraction field
@@ -971,7 +1356,9 @@ theorem finrank_quotient_span_eq_natDegree_pairNorm [IsDedekindDomain (Coordinat
     IsScalarTower.of_algebraMap_eq (fun _ => rfl)
   let e_k : (k[X] × k[X]) ≃ₗ[k] CoordinateRing H :=
     LinearEquiv.restrictScalars k (toPairEquiv H)
-  have hmap : Submodule.map e_k.toLinearMap ((LinearMap.range (mulByToPairLin H A B)).restrictScalars k) =
+  have hmap :
+      Submodule.map e_k.toLinearMap
+        ((LinearMap.range (mulByToPairLin H A B)).restrictScalars k) =
       (Ideal.span ({toPair H A B} : Set (CoordinateRing H))).restrictScalars k := by
     ext z
     constructor
