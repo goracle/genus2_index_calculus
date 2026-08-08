@@ -1118,6 +1118,24 @@ theorem finrank_quotient_range_smul_id_eq_two_mul_natDegree_pairNorm
   have e' := (Submodule.Quotient.restrictScalarsEquiv k (LinearMap.range NV)).symm.trans e
   -- `finrank_quotient_span_eq_natDegree : Module.finrank K (K[X] ⧸ Ideal.span {f}) = f.natDegree`
   -- is unconditional (no `f ≠ 0` hypothesis, `f` implicit) — confirmed against current Mathlib.
+  -- Its proof still needs a `Module.Finite k (k[X] ⧸ Ideal.span {N})` instance in scope, which
+  -- isn't found automatically (instance search can't see `hne : N ≠ 0`). Supply it explicitly by
+  -- normalizing `N` to the monic associate `N * C N.leadingCoeff⁻¹` (same span, since `C
+  -- N.leadingCoeff⁻¹` is a unit), where `Polynomial.Monic.finite_quotient` applies directly.
+  have hNmonic : (N * C N.leadingCoeff⁻¹).Monic := Polynomial.monic_mul_leadingCoeff_inv hne
+  have hspan_eq :
+      Ideal.span ({N * C N.leadingCoeff⁻¹} : Set k[X]) = Ideal.span ({N} : Set k[X]) :=
+    Ideal.span_singleton_mul_right_unit
+      (isUnit_C.mpr (Units.mk0 N.leadingCoeff⁻¹ (inv_ne_zero
+        (Polynomial.leadingCoeff_ne_zero.mpr hne))).isUnit) N
+  haveI hfin_monic :
+      Module.Finite k (k[X] ⧸ Ideal.span ({N * C N.leadingCoeff⁻¹} : Set k[X])) :=
+    Polynomial.Monic.finite_quotient hNmonic
+  have equiv_span : (k[X] ⧸ Ideal.span ({N * C N.leadingCoeff⁻¹} : Set k[X])) ≃ₗ[k]
+      (k[X] ⧸ Ideal.span ({N} : Set k[X])) :=
+    (Submodule.quotEquivOfEq _ _ hspan_eq).restrictScalars k
+  haveI hfin_span : Module.Finite k (k[X] ⧸ Ideal.span ({N} : Set k[X])) :=
+    FiniteDimensional.of_surjective equiv_span.toLinearMap equiv_span.surjective
   rw [LinearEquiv.finrank_eq e', Module.finrank_prod, finrank_quotient_span_eq_natDegree]
   ring
 
@@ -1209,7 +1227,7 @@ theorem finrank_quotient_range_mulByToPairLin_eq_natDegree_pairNorm
           rw [← mul_assoc, hNC, one_mul]
         have hN2 : N * (C c⁻¹ * p.2) = p.2 := by
           rw [← mul_assoc, hNC, one_mul]
-        show (N * (C c⁻¹ * p.1), N * (C c⁻¹ * p.2)) = p
+        change (N * (C c⁻¹ * p.1), N * (C c⁻¹ * p.2)) = p
         exact Prod.ext hN1 hN2
       haveI hsub : Subsingleton ((k[X] × k[X]) ⧸ Sk) := by
         constructor
