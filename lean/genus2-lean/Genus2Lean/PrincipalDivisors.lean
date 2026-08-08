@@ -628,7 +628,18 @@ noncomputable def crt_equiv_prod_pointIdeal_pow [IsDedekindDomain (CoordinateRin
     (S : Finset H.Point) (A B : k[X]) :
     (CoordinateRing H ⧸ ∏ P ∈ S, pointIdeal P ^ (ordAt P A B).toNat) ≃+*
       (Π P : S, CoordinateRing H ⧸ pointIdeal P.1 ^ (ordAt P.1 A B).toNat) := by
-  sorry
+  have hcoprime : ∀ P ∈ S, ∀ Q ∈ S, P ≠ Q →
+      IsCoprime (pointIdeal P ^ (ordAt P A B).toNat) (pointIdeal Q ^ (ordAt Q A B).toNat) :=
+    pointIdeal_pow_pairwise_coprime S A B
+  let I : S → Ideal (CoordinateRing H) := fun P => pointIdeal P.1 ^ (ordAt P.1 A B).toNat
+  have h_pairwise : ∀ (P Q : S), P ≠ Q → IsCoprime (I P) (I Q) := by
+    intro ⟨P, hP⟩ ⟨Q, hQ⟩ hneq
+    exact hcoprime P hP Q hQ (fun h => hneq (Subtype.ext h))
+  have heq : (∏ P ∈ S, pointIdeal P ^ (ordAt P A B).toNat) = ⨅ P : S, I P := by
+    sorry
+  rw [heq]
+  exact Ideal.quotientInfRingEquivPiQuotient I h_pairwise
+
 
 /-- Step 4: the `k`-dimension of a single prime-power quotient `R ⧸ 𝔪_P^{n}` equals `n`.
 The genuinely mathematical content of §4.2 — the associated-graded computation
