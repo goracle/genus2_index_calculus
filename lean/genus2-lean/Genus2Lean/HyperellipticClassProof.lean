@@ -543,7 +543,7 @@ theorem pointIdeal_linX_not_sq_dvd [IsDedekindDomain (CoordinateRing H)]
     exact Ideal.mul_mem_mul ht_mem hp
   have ht_sub_mem : t - c * (s * algebraMap k[X] (CoordinateRing H) r) ∈ pointIdeal Q ^ 2 := by
     have : t - c * (s * algebraMap k[X] (CoordinateRing H) r) = t * p := by
-      rw [ht_eq]; ring
+      linear_combination ht_eq
     rw [this]; exact htp_mem
   have ht_mem2 : t ∈ Ideal.span ({s} : Set (CoordinateRing H)) ⊔ pointIdeal Q ^ 2 := by
     have hsmem : c * (s * algebraMap k[X] (CoordinateRing H) r) ∈
