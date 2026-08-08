@@ -374,6 +374,9 @@ theorem pointIdeal_eq_span_pair [IsDedekindDomain (CoordinateRing H)] (Q : H.Poi
     unfold pointIdeal
     rw [RingHom.mem_ker]
     exact ht_eval
+  have hg : s = algebraMap k[X] (CoordinateRing H) (linX Q.X) := by
+    rw [hs_def]; unfold toPair; simp
+  clear_value s t
   apply le_antisymm
   · intro z hz
     obtain ⟨A, B, hzAB⟩ := toPair_surjective_local H z
@@ -389,11 +392,11 @@ theorem pointIdeal_eq_span_pair [IsDedekindDomain (CoordinateRing H)] (Q : H.Poi
       have hAeval : evalAtPoint Q (algebraMap k[X] (CoordinateRing H) A) = A.eval Q.X := by
         change Polynomial.eval₂ (Polynomial.evalRingHom Q.val.1) Q.val.2
           (Polynomial.C A) = A.eval Q.X
-        simp
+        simp [Point.X]
       have hBeval : evalAtPoint Q (algebraMap k[X] (CoordinateRing H) B) = B.eval Q.X := by
         change Polynomial.eval₂ (Polynomial.evalRingHom Q.val.1) Q.val.2
           (Polynomial.C B) = B.eval Q.X
-        simp
+        simp [Point.X]
       have hyeval : evalAtPoint Q (y H) = Q.Y := by
         unfold evalAtPoint y
         change Polynomial.eval₂ (Polynomial.evalRingHom Q.val.1) Q.val.2 X = Q.Y
@@ -415,8 +418,6 @@ theorem pointIdeal_eq_span_pair [IsDedekindDomain (CoordinateRing H)] (Q : H.Poi
       have := hA₁; rw [sub_eq_iff_eq_add] at this; linear_combination this
     have hB_eq : B = Polynomial.C (B.eval Q.X) + linX Q.X * B₁ := by
       have := hB₁; rw [sub_eq_iff_eq_add] at this; linear_combination this
-    have hg : s = algebraMap k[X] (CoordinateRing H) (linX Q.X) := by
-      rw [hs_def]; unfold toPair; simp
     have hz_split : z = algebraMap k[X] (CoordinateRing H) (Polynomial.C (A.eval Q.X)) +
         algebraMap k[X] (CoordinateRing H) (Polynomial.C (B.eval Q.X)) * y H +
         s * toPair H A₁ B₁ := by
@@ -428,12 +429,9 @@ theorem pointIdeal_eq_span_pair [IsDedekindDomain (CoordinateRing H)] (Q : H.Poi
           algebraMap k[X] (CoordinateRing H) (Polynomial.C (B.eval Q.X)) +
           s * algebraMap k[X] (CoordinateRing H) B₁ := by
         rw [hg, ← map_mul, ← map_add, ← hB_eq]
-      have htoPairA1B1 : toPair H A₁ B₁ = algebraMap k[X] (CoordinateRing H) A₁ +
-          algebraMap k[X] (CoordinateRing H) B₁ * y H := by
-        unfold toPair; ring
       rw [hzAB]
       unfold toPair
-      rw [hstepA, hstepB, htoPairA1B1]
+      rw [hstepA, hstepB]
       ring
     have hrem : algebraMap k[X] (CoordinateRing H) (Polynomial.C (A.eval Q.X)) +
         algebraMap k[X] (CoordinateRing H) (Polynomial.C (B.eval Q.X)) * y H =
@@ -445,8 +443,7 @@ theorem pointIdeal_eq_span_pair [IsDedekindDomain (CoordinateRing H)] (Q : H.Poi
             algebraMap k[X] (CoordinateRing H) (Polynomial.C Q.Y)) := by
         rw [← map_mul, ← map_neg]
         congr 1
-        rw [hAeq]
-        ring
+        rw [hAeq, Polynomial.C_neg, Polynomial.C_mul]
       rw [this]
       ring
     rw [hz_split, hrem]
@@ -460,7 +457,7 @@ theorem pointIdeal_eq_span_pair [IsDedekindDomain (CoordinateRing H)] (Q : H.Poi
     have hmem_t : algebraMap k[X] (CoordinateRing H) (Polynomial.C (B.eval Q.X)) * t ∈
         Ideal.span ({s, t} : Set (CoordinateRing H)) :=
       Ideal.mul_mem_left _ _ ht_in_span
-    exact Ideal.add_mem _ hmem_s hmem_t
+    exact Ideal.add_mem _ hmem_t hmem_s
   · rw [Ideal.span_le]
     intro x hx
     rw [Set.mem_insert_iff, Set.mem_singleton_iff] at hx
@@ -519,6 +516,7 @@ theorem pointIdeal_linX_not_sq_dvd [IsDedekindDomain (CoordinateRing H)]
     unfold pointIdeal
     rw [RingHom.mem_ker]
     exact heval
+  clear_value s t u
   have hle : pointIdeal Q ≤ pointIdeal Q ⊔ Ideal.span ({u} : Set (CoordinateRing H)) := le_sup_left
   have hne : pointIdeal Q ≠ pointIdeal Q ⊔ Ideal.span ({u} : Set (CoordinateRing H)) := by
     intro heq
@@ -559,7 +557,7 @@ theorem pointIdeal_linX_not_sq_dvd [IsDedekindDomain (CoordinateRing H)]
   have hs_mem2 : s ∈ Ideal.span ({s} : Set (CoordinateRing H)) ⊔ pointIdeal Q ^ 2 :=
     SetLike.le_def.mp le_sup_left (Ideal.mem_span_singleton_self s)
   have hspan_le : pointIdeal Q ≤ Ideal.span ({s} : Set (CoordinateRing H)) ⊔ pointIdeal Q ^ 2 := by
-    rw [pointIdeal_eq_span_pair Q, Ideal.span_le]
+    rw [pointIdeal_eq_span_pair Q, ← hs_def, ← ht_def, Ideal.span_le]
     intro x hx
     rw [Set.mem_insert_iff, Set.mem_singleton_iff] at hx
     rcases hx with hx | hx
@@ -601,7 +599,7 @@ theorem pointIdeal_linX_not_sq_dvd [IsDedekindDomain (CoordinateRing H)]
   rw [he_eq0, zero_sub] at he1
   have hone_mem : (1 : CoordinateRing H) ∈ pointIdeal Q := by
     have hneg1 : -(1 : CoordinateRing H) ∈ pointIdeal Q := he1
-    have := Ideal.neg_mem hneg1
+    have := neg_mem hneg1
     rwa [neg_neg] at this
   exact (pointIdeal_isMaximal Q).ne_top (Ideal.eq_top_iff_one _ |>.mpr hone_mem)
 
