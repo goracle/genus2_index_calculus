@@ -101,7 +101,8 @@ which is *the same problem* this file's Lemma 0 (`hfinite_support`/
 `exists_finite_support_of_hspec`) already solves, just under an honestly-assumed `hspec`
 hypothesis rather than (as that file's `hspec'` sorry attempts) trying to derive
 prime-to-point correspondence from nothing. Not merged — different files, different
-hypothesis threading, no cycle to justify importing across — but if `UniqueDegree2MapRiemannHurwitz.lean`
+hypothesis threading, no cycle to justify importing across — but if
+`UniqueDegree2MapRiemannHurwitz.lean`
 is ever revisited, its `h_S_finite`/`h_S'_finite` sorries should cite this file's Lemma 0
 rather than be re-derived independently.
 -/
@@ -330,7 +331,43 @@ correct, representation-independent-modulo-`T` replacement for the false
 "`B=0`"/"the pole set is exactly `{x₁,x₂}`" claims: it bounds `D` on both
 sides by degree `2`, without ever asserting anything about `B, B'`
 syntactically. -/
-theorem coeffAt_divToPairRatio_bounds (hdeg : H.f.natDegree = 5)
+/-- **Factored out of `coeffAt_divToPairRatio_bounds`'s proof body** so §3a can cite it
+directly instead of re-deriving the same `AddMonoidHom`-transport argument a second time.
+`coeffAt P (divToPair a b S) = ordAt P a b` for any `P`, given a support witness `S` for
+`(a,b)` — pure bookkeeping via `map_sum`/`map_zsmul`/`coeffAt_single`, never applying
+`Divisor H` as a raw function (`Divisor H` is a plain `def`, not `abbrev`, over
+`H.Point →₀ ℤ`, so it doesn't unfold to `Finsupp`'s `DFunLike` application at ordinary
+transparency — same discipline as `PrincipalDivisorSubgroup.lean`'s `divToPair` docstring
+already notes). -/
+theorem coeffAt_divToPair_eq_ordAt (a b : k[X]) (S : Finset H.Point)
+    (hS : ∀ Q ∉ S, ordAt Q a b = 0) (P : H.Point) :
+    Divisor.coeffAt P (divToPair a b S) = ordAt P a b := by
+  unfold divToPair
+  rw [map_sum]
+  by_cases hPS : P ∈ S
+  · rw [Finset.sum_eq_single P
+      (fun Q _ hQP => by
+        rw [map_zsmul, Divisor.coeffAt_single, if_neg (Ne.symm hQP)]; simp)
+      (fun hPS' => absurd hPS hPS')]
+    rw [map_zsmul, Divisor.coeffAt_single_self]
+    simp
+  · rw [Finset.sum_eq_zero (fun Q hQ => by
+      have hQP : Q ≠ P := fun h => hPS (h ▸ hQ)
+      rw [map_zsmul, Divisor.coeffAt_single, if_neg (Ne.symm hQP)]; simp)]
+    rw [hS P hPS]
+
+/-- **Factored out alongside `coeffAt_divToPair_eq_ordAt`**: the same-support specialization
+`coeffAt P (divToPairRatio A B S A' B' S) = ordAt P A B - ordAt P A' B'`, used by both
+`coeffAt_divToPairRatio_bounds` and §3a below. -/
+theorem coeffAt_divToPairRatio_eq_sub (A B A' B' : k[X]) (T : Finset H.Point)
+    (hsuppAB : ∀ P, P ∉ T → ordAt P A B = 0)
+    (hsuppA'B' : ∀ P, P ∉ T → ordAt P A' B' = 0) (P : H.Point) :
+    Divisor.coeffAt P (divToPairRatio A B T A' B' T) = ordAt P A B - ordAt P A' B' := by
+  unfold divToPairRatio
+  rw [map_sub, coeffAt_divToPair_eq_ordAt A B T hsuppAB P,
+    coeffAt_divToPair_eq_ordAt A' B' T hsuppA'B' P]
+
+theorem coeffAt_divToPairRatio_bounds (_hdeg : H.f.natDegree = 5)
     (x₁ x₂ : H.Point) (A B A' B' : k[X])
     (hbound : IsPoleBoundedAtPair x₁ x₂ A B A' B')
     (T : Finset H.Point)
@@ -338,36 +375,10 @@ theorem coeffAt_divToPairRatio_bounds (hdeg : H.f.natDegree = 5)
     (hsuppA'B' : ∀ P, P ∉ T → ordAt P A' B' = 0) :
     (∀ P, P ≠ x₁ → P ≠ x₂ → 0 ≤ Divisor.coeffAt P (divToPairRatio A B T A' B' T)) ∧
     Divisor.coeffAt x₁ (divToPairRatio A B T A' B' T) ≥
-      -((if x₁ = x₁ then (1:ℤ) else 0) + (if x₁ = x₂ then 1 else 0)) ∧
+      -((if x₁ = x₁ then (1 : ℤ) else 0) + (if x₁ = x₂ then 1 else 0)) ∧
     Divisor.coeffAt x₂ (divToPairRatio A B T A' B' T) ≥
-      -((if x₂ = x₁ then (1:ℤ) else 0) + (if x₂ = x₂ then 1 else 0)) := by
-  -- Same `coeffAt`-transport idiom as `RatioDivisorCollapse.lean`'s `hcoef`
-  -- (`RatioDivisorCollapse.lean:386`), specialized to `divToPairRatio A B T A' B' T`
-  -- rather than a fixed 4-point target divisor: `coeffAt P D = ordAt P A B - ordAt P A' B'`
-  -- for every `P`, via the `AddMonoidHom` API (`map_sum`, `map_zsmul`, `coeffAt_single`),
-  -- never applying `Divisor H` as a raw function.
-  have hcoeffDivToPair : ∀ (a b : k[X]) (S : Finset H.Point),
-      (∀ Q ∉ S, ordAt Q a b = 0) → ∀ P,
-      Divisor.coeffAt P (divToPair a b S) = ordAt P a b := by
-    intro a b S hS P
-    unfold divToPair
-    rw [map_sum]
-    by_cases hPS : P ∈ S
-    · rw [Finset.sum_eq_single P
-        (fun Q _ hQP => by
-          rw [map_zsmul, Divisor.coeffAt_single, if_neg (Ne.symm hQP)]; simp)
-        (fun hPS' => absurd hPS hPS')]
-      rw [map_zsmul, Divisor.coeffAt_single_self]
-      simp
-    · rw [Finset.sum_eq_zero (fun Q hQ => by
-        have hQP : Q ≠ P := fun h => hPS (h ▸ hQ)
-        rw [map_zsmul, Divisor.coeffAt_single, if_neg (Ne.symm hQP)]; simp)]
-      rw [hS P hPS]
-  have hcoef : ∀ P : H.Point,
-      Divisor.coeffAt P (divToPairRatio A B T A' B' T) = ordAt P A B - ordAt P A' B' := by
-    intro P
-    unfold divToPairRatio
-    rw [map_sub, hcoeffDivToPair A B T hsuppAB P, hcoeffDivToPair A' B' T hsuppA'B' P]
+      -((if x₂ = x₁ then (1 : ℤ) else 0) + (if x₂ = x₂ then 1 else 0)) := by
+  have hcoef := coeffAt_divToPairRatio_eq_sub A B A' B' T hsuppAB hsuppA'B'
   obtain ⟨_, _, hptwise⟩ := hbound
   refine ⟨fun P hPx₁ hPx₂ => ?_, ?_, ?_⟩
   · -- `P ≠ x₁, x₂`: `hptwise P` gives `ordAt P A B ≥ ordAt P A' B' - 0`, i.e.
@@ -383,7 +394,8 @@ theorem coeffAt_divToPairRatio_bounds (hdeg : H.f.natDegree = 5)
     rw [hcoef x₂]
     split_ifs at hp ⊢ <;> omega
 
-/-! ## §3 (the genuinely new content, still open): a bounded-degree, pole-confined divisor forces the fiber dichotomy
+/-! ## §3 (the genuinely new content, still open): bounded-degree, pole-confined divisor
+forces the fiber dichotomy
 
 **Proof skeleton, drafted this session, not yet `lake build`-checked beyond
 what typechecks at the `sorry`s below.** §1 (`deg D ≤ 0`) and §2 (`D`'s
@@ -411,6 +423,15 @@ than folded into the top-level theorem's `sorry` as before.
 **Do not restart from the (false) original three-lemma "B=0" framing** —
 `SCOPING-finrank-L-pair.md` records why it's unsound. -/
 
+/-- **Small arithmetic helper**, factored out so §3a's uses of the same
+"`max x 0` is within `n` of `x`" fact don't each re-derive it. **Needs `-n ≤ x`
+as well as `0 ≤ n`** — without a lower bound on `x`, `max x 0 ≤ x + n` is false
+(e.g. `x` very negative, `n` fixed): the first draft of this lemma omitted
+`hxn` and `omega` correctly rejected it. Proved via `max_le` (the two-sided
+characterization of `max`) rather than case-splitting on `0 ≤ x`. -/
+theorem max_zero_le_add (x : ℤ) {n : ℤ} (hn : 0 ≤ n) (hxn : -n ≤ x) : max x 0 ≤ x + n := by
+  apply max_le <;> omega
+
 /-- **§3a (bookkeeping, should be easy).** Package §1's `deg D ≤ 0` and §2's
 pointwise pole bound into the single `IsRatioDivisor`-shaped existential:
 `D := divToPairRatio A B T A' B' T` has `¬(A=0∧B=0)`, `¬(A'=0∧B'=0)` (from
@@ -430,16 +451,178 @@ theorem isRatioDivisor_shape_of_bounds (hdeg : H.f.natDegree = 5)
     (hcoeffbound :
       (∀ P, P ≠ x₁ → P ≠ x₂ → 0 ≤ Divisor.coeffAt P (divToPairRatio A B T A' B' T)) ∧
       Divisor.coeffAt x₁ (divToPairRatio A B T A' B' T) ≥
-        -((if x₁ = x₁ then (1:ℤ) else 0) + (if x₁ = x₂ then 1 else 0)) ∧
+        -((if x₁ = x₁ then (1 : ℤ) else 0) + (if x₁ = x₂ then 1 else 0)) ∧
       Divisor.coeffAt x₂ (divToPairRatio A B T A' B' T) ≥
-        -((if x₂ = x₁ then (1:ℤ) else 0) + (if x₂ = x₂ then 1 else 0))) :
+        -((if x₂ = x₁ then (1 : ℤ) else 0) + (if x₂ = x₂ then 1 else 0))) :
     -- The positive part of `D` (support in `T \ {x₁,x₂}`, all coefficients ≥ 0 there,
     -- and ≥ -2 at x₁/x₂ combined with the deg ≤ 0 bound) has total mass ≤ 2 — the
     -- precise numeric fact §3e's case split needs. Stated here as the raw arithmetic
     -- consequence of hdegD + hcoeffbound, isolated so §3e can cite it without
     -- re-deriving the deg/coeffAt bookkeeping.
     ∑ P ∈ T, max (Divisor.coeffAt P (divToPairRatio A B T A' B' T)) 0 ≤ 2 := by
-  sorry
+  obtain ⟨hpos, hx₁, hx₂⟩ := hcoeffbound
+  -- `deg D = ∑ P ∈ T, coeffAt P D`: `D = divToPair A B T - divToPair A' B' T`
+  -- (`divToPairRatio`'s definition), `deg_divToPair` (`PrincipalDivisorSubgroup.lean`)
+  -- turns each half's `deg` into a `∑_T ordAt`, and `coeffAt_divToPairRatio_eq_sub`
+  -- (factored out above) identifies the termwise difference with `coeffAt P D`.
+  have hdeg_eq : deg (divToPairRatio A B T A' B' T) =
+      ∑ P ∈ T, Divisor.coeffAt P (divToPairRatio A B T A' B' T) := by
+    unfold divToPairRatio
+    rw [map_sub, deg_divToPair, deg_divToPair, ← Finset.sum_sub_distrib]
+    exact Finset.sum_congr rfl (fun P _ =>
+      (coeffAt_divToPairRatio_eq_sub A B A' B' T hsuppAB hsuppA'B' P).symm)
+  -- Split `T` into `{x₁,x₂} ∩ T` and the rest: at every `P ∈ T` outside `{x₁,x₂}`,
+  -- `coeffAt P D ≥ 0` (`hpos`), so `max (coeffAt P D) 0 = coeffAt P D` there — the
+  -- positive part contributes exactly its own `coeffAt` value away from `x₁,x₂`, and
+  -- summing `hdeg_eq`'s RHS against `hdegD` bounds the total (including the possibly-
+  -- negative `x₁,x₂` terms) by `0`; moving those two terms' negative contribution
+  -- (bounded below by `-2` total via `hx₁`/`hx₂`) to the other side gives the `≤ 2`
+  -- bound on the positive-part sum. Both `T = ∅` and the `x₁ = x₂` coincidence are
+  -- handled uniformly since `hx₁`/`hx₂` already fold that case into their `ite`s.
+  by_cases hx₁T : x₁ ∈ T
+  · by_cases hx₂T : x₂ ∈ T
+    · by_cases hxeq : x₁ = x₂
+      · -- `x₁ = x₂`: a single point contributes both indicators, `coeffAt x₁ D ≥ -2`.
+        subst hxeq
+        have hsplit : ∑ P ∈ T, max (Divisor.coeffAt P (divToPairRatio A B T A' B' T)) 0 =
+            max (Divisor.coeffAt x₁ (divToPairRatio A B T A' B' T)) 0 +
+              ∑ P ∈ T.erase x₁, max (Divisor.coeffAt P (divToPairRatio A B T A' B' T)) 0 := by
+          rw [← Finset.sum_erase_add T _ hx₁T, add_comm]
+        have hsplit' : ∑ P ∈ T, Divisor.coeffAt P (divToPairRatio A B T A' B' T) =
+            Divisor.coeffAt x₁ (divToPairRatio A B T A' B' T) +
+              ∑ P ∈ T.erase x₁, Divisor.coeffAt P (divToPairRatio A B T A' B' T) := by
+          rw [← Finset.sum_erase_add T _ hx₁T, add_comm]
+        have hrest_eq : ∑ P ∈ T.erase x₁, max (Divisor.coeffAt P (divToPairRatio A B T A' B' T)) 0
+            = ∑ P ∈ T.erase x₁, Divisor.coeffAt P (divToPairRatio A B T A' B' T) := by
+          refine Finset.sum_congr rfl (fun P hP => ?_)
+          have hPne : P ≠ x₁ := (Finset.mem_erase.mp hP).1
+          exact max_eq_left (hpos P hPne hPne)
+        rw [hsplit, hrest_eq]
+        rw [hdeg_eq, hsplit'] at hdegD
+        simp only [if_pos rfl] at hx₁
+        have hmax_le : max (Divisor.coeffAt x₁ (divToPairRatio A B T A' B' T)) 0 ≤
+            Divisor.coeffAt x₁ (divToPairRatio A B T A' B' T) + 2 :=
+          max_zero_le_add _ (by norm_num) (by omega)
+        omega
+      · -- `x₁ ≠ x₂`, both in `T`: two distinct points, each contributing its own `≥ -1` bound.
+        have hsplit : ∑ P ∈ T, max (Divisor.coeffAt P (divToPairRatio A B T A' B' T)) 0 =
+            max (Divisor.coeffAt x₁ (divToPairRatio A B T A' B' T)) 0 +
+              max (Divisor.coeffAt x₂ (divToPairRatio A B T A' B' T)) 0 +
+              ∑ P ∈ (T.erase x₁).erase x₂,
+                max (Divisor.coeffAt P (divToPairRatio A B T A' B' T)) 0 := by
+          rw [← Finset.sum_erase_add T _ hx₁T,
+            ← Finset.sum_erase_add (T.erase x₁) _
+              (Finset.mem_erase.mpr ⟨Ne.symm hxeq, hx₂T⟩)]
+          ring
+        have hsplit' : ∑ P ∈ T, Divisor.coeffAt P (divToPairRatio A B T A' B' T) =
+            Divisor.coeffAt x₁ (divToPairRatio A B T A' B' T) +
+              Divisor.coeffAt x₂ (divToPairRatio A B T A' B' T) +
+              ∑ P ∈ (T.erase x₁).erase x₂,
+                Divisor.coeffAt P (divToPairRatio A B T A' B' T) := by
+          rw [← Finset.sum_erase_add T _ hx₁T,
+            ← Finset.sum_erase_add (T.erase x₁) _
+              (Finset.mem_erase.mpr ⟨Ne.symm hxeq, hx₂T⟩)]
+          ring
+        have hrest_eq : ∑ P ∈ (T.erase x₁).erase x₂,
+            max (Divisor.coeffAt P (divToPairRatio A B T A' B' T)) 0
+            = ∑ P ∈ (T.erase x₁).erase x₂, Divisor.coeffAt P (divToPairRatio A B T A' B' T) := by
+          refine Finset.sum_congr rfl (fun P hP => ?_)
+          have hPne₂ : P ≠ x₂ := (Finset.mem_erase.mp hP).1
+          have hPne₁ : P ≠ x₁ := (Finset.mem_erase.mp (Finset.mem_erase.mp hP).2).1
+          exact max_eq_left (hpos P hPne₁ hPne₂)
+        rw [hsplit, hrest_eq]
+        rw [hdeg_eq, hsplit'] at hdegD
+        simp only [if_pos rfl, if_neg hxeq] at hx₁
+        simp only [if_neg (Ne.symm hxeq), if_pos rfl] at hx₂
+        have hmax₁ : max (Divisor.coeffAt x₁ (divToPairRatio A B T A' B' T)) 0 ≤
+            Divisor.coeffAt x₁ (divToPairRatio A B T A' B' T) + 1 :=
+          max_zero_le_add _ (by norm_num) (by omega)
+        have hmax₂ : max (Divisor.coeffAt x₂ (divToPairRatio A B T A' B' T)) 0 ≤
+            Divisor.coeffAt x₂ (divToPairRatio A B T A' B' T) + 1 :=
+          max_zero_le_add _ (by norm_num) (by omega)
+        omega
+    · -- `x₂ ∉ T`: `coeffAt x₂ D = 0` (outside the support), so `hx₂`'s bound is slack;
+      -- only `x₁`'s term needs separating from the rest.
+      have hx₂0 : Divisor.coeffAt x₂ (divToPairRatio A B T A' B' T) = 0 := by
+        rw [coeffAt_divToPairRatio_eq_sub A B A' B' T hsuppAB hsuppA'B' x₂,
+          hsuppAB x₂ hx₂T, hsuppA'B' x₂ hx₂T]
+        ring
+      have hsplit : ∑ P ∈ T, max (Divisor.coeffAt P (divToPairRatio A B T A' B' T)) 0 =
+          max (Divisor.coeffAt x₁ (divToPairRatio A B T A' B' T)) 0 +
+            ∑ P ∈ T.erase x₁, max (Divisor.coeffAt P (divToPairRatio A B T A' B' T)) 0 := by
+        rw [← Finset.sum_erase_add T _ hx₁T, add_comm]
+      have hsplit' : ∑ P ∈ T, Divisor.coeffAt P (divToPairRatio A B T A' B' T) =
+          Divisor.coeffAt x₁ (divToPairRatio A B T A' B' T) +
+            ∑ P ∈ T.erase x₁, Divisor.coeffAt P (divToPairRatio A B T A' B' T) := by
+        rw [← Finset.sum_erase_add T _ hx₁T, add_comm]
+      have hrest_eq : ∑ P ∈ T.erase x₁, max (Divisor.coeffAt P (divToPairRatio A B T A' B' T)) 0
+          = ∑ P ∈ T.erase x₁, Divisor.coeffAt P (divToPairRatio A B T A' B' T) := by
+        refine Finset.sum_congr rfl (fun P hP => ?_)
+        have hPne : P ≠ x₁ := (Finset.mem_erase.mp hP).1
+        by_cases hPx₂ : P = x₂
+        · rw [hPx₂, hx₂0]; simp
+        · exact max_eq_left (hpos P hPne hPx₂)
+      rw [hdeg_eq, hsplit'] at hdegD
+      have hxne : x₁ ≠ x₂ := fun h => hx₂T (h ▸ hx₁T)
+      simp only [if_pos rfl, if_neg hxne] at hx₁
+      have hmax₁ : max (Divisor.coeffAt x₁ (divToPairRatio A B T A' B' T)) 0 ≤
+          Divisor.coeffAt x₁ (divToPairRatio A B T A' B' T) + 1 :=
+        max_zero_le_add _ (by norm_num) (by omega)
+      calc ∑ P ∈ T, max (Divisor.coeffAt P (divToPairRatio A B T A' B' T)) 0
+          = max (Divisor.coeffAt x₁ (divToPairRatio A B T A' B' T)) 0 +
+              ∑ P ∈ T.erase x₁, max (Divisor.coeffAt P (divToPairRatio A B T A' B' T)) 0 := hsplit
+        _ = max (Divisor.coeffAt x₁ (divToPairRatio A B T A' B' T)) 0 +
+              ∑ P ∈ T.erase x₁, Divisor.coeffAt P (divToPairRatio A B T A' B' T) := by
+              rw [hrest_eq]
+        _ ≤ 2 := by omega
+  · -- `x₁ ∉ T`: both `coeffAt x₁ D = 0` and (symmetric case split) `coeffAt x₂ D`
+    -- handled the same way as `hpos` directly covers `T`'s support once `x₁∉T`.
+    have hx₁0 : Divisor.coeffAt x₁ (divToPairRatio A B T A' B' T) = 0 := by
+      rw [coeffAt_divToPairRatio_eq_sub A B A' B' T hsuppAB hsuppA'B' x₁,
+        hsuppAB x₁ hx₁T, hsuppA'B' x₁ hx₁T]
+      ring
+    by_cases hx₂T : x₂ ∈ T
+    · have hsplit : ∑ P ∈ T, max (Divisor.coeffAt P (divToPairRatio A B T A' B' T)) 0 =
+          max (Divisor.coeffAt x₂ (divToPairRatio A B T A' B' T)) 0 +
+            ∑ P ∈ T.erase x₂, max (Divisor.coeffAt P (divToPairRatio A B T A' B' T)) 0 := by
+        rw [← Finset.sum_erase_add T _ hx₂T, add_comm]
+      have hsplit' : ∑ P ∈ T, Divisor.coeffAt P (divToPairRatio A B T A' B' T) =
+          Divisor.coeffAt x₂ (divToPairRatio A B T A' B' T) +
+            ∑ P ∈ T.erase x₂, Divisor.coeffAt P (divToPairRatio A B T A' B' T) := by
+        rw [← Finset.sum_erase_add T _ hx₂T, add_comm]
+      have hrest_eq : ∑ P ∈ T.erase x₂, max (Divisor.coeffAt P (divToPairRatio A B T A' B' T)) 0
+          = ∑ P ∈ T.erase x₂, Divisor.coeffAt P (divToPairRatio A B T A' B' T) := by
+        refine Finset.sum_congr rfl (fun P hP => ?_)
+        have hPne : P ≠ x₂ := (Finset.mem_erase.mp hP).1
+        by_cases hPx₁ : P = x₁
+        · rw [hPx₁, hx₁0]; simp
+        · exact max_eq_left (hpos P hPx₁ hPne)
+      rw [hdeg_eq, hsplit'] at hdegD
+      have hxne : x₁ ≠ x₂ := fun h => hx₁T (h ▸ hx₂T)
+      simp only [if_neg (Ne.symm hxne), if_pos rfl] at hx₂
+      have hmax₂ : max (Divisor.coeffAt x₂ (divToPairRatio A B T A' B' T)) 0 ≤
+          Divisor.coeffAt x₂ (divToPairRatio A B T A' B' T) + 1 :=
+        max_zero_le_add _ (by norm_num) (by omega)
+      calc ∑ P ∈ T, max (Divisor.coeffAt P (divToPairRatio A B T A' B' T)) 0
+          = max (Divisor.coeffAt x₂ (divToPairRatio A B T A' B' T)) 0 +
+              ∑ P ∈ T.erase x₂, max (Divisor.coeffAt P (divToPairRatio A B T A' B' T)) 0 := hsplit
+        _ = max (Divisor.coeffAt x₂ (divToPairRatio A B T A' B' T)) 0 +
+              ∑ P ∈ T.erase x₂, Divisor.coeffAt P (divToPairRatio A B T A' B' T) := by
+              rw [hrest_eq]
+        _ ≤ 2 := by omega
+    · -- Neither `x₁` nor `x₂` is in `T`: `hpos` alone (with `hPx₁ := fun h => hx₁T (h ▸ hP')`-
+      -- style arguments) covers every `P ∈ T`, so the positive part equals `∑_T coeffAt`,
+      -- which is `deg D ≤ 0`, hence the max-sum (all terms already `≥ 0` implicitly, but
+      -- capped by `deg ≤ 0` forcing every term `≤ 0` too — see below) is `≤ 0 ≤ 2`.
+      have hrest_eq : ∑ P ∈ T, max (Divisor.coeffAt P (divToPairRatio A B T A' B' T)) 0
+          = ∑ P ∈ T, Divisor.coeffAt P (divToPairRatio A B T A' B' T) := by
+        refine Finset.sum_congr rfl (fun P hP => ?_)
+        have hPx₁ : P ≠ x₁ := fun h => hx₁T (h ▸ hP)
+        have hPx₂ : P ≠ x₂ := fun h => hx₂T (h ▸ hP)
+        exact max_eq_left (hpos P hPx₁ hPx₂)
+      rw [hrest_eq, ← hdeg_eq]
+      omega
+
 
 /-- **§3d (easy, the "constant" branch).** If `D`'s positive part is entirely
 zero — every coefficient in `T` is `≤ 0` — then `D` itself is `≤ 0`
@@ -479,9 +662,9 @@ theorem divisor_eq_fiber_shape_or_constant (hdeg : H.f.natDegree = 5)
     (hcoeffbound :
       (∀ P, P ≠ x₁ → P ≠ x₂ → 0 ≤ Divisor.coeffAt P (divToPairRatio A B T A' B' T)) ∧
       Divisor.coeffAt x₁ (divToPairRatio A B T A' B' T) ≥
-        -((if x₁ = x₁ then (1:ℤ) else 0) + (if x₁ = x₂ then 1 else 0)) ∧
+        -((if x₁ = x₁ then (1 : ℤ) else 0) + (if x₁ = x₂ then 1 else 0)) ∧
       Divisor.coeffAt x₂ (divToPairRatio A B T A' B' T) ≥
-        -((if x₂ = x₁ then (1:ℤ) else 0) + (if x₂ = x₂ then 1 else 0))) :
+        -((if x₂ = x₁ then (1 : ℤ) else 0) + (if x₂ = x₂ then 1 else 0))) :
     (∀ P ∈ T, Divisor.coeffAt P (divToPairRatio A B T A' B' T) ≤ 0) ∨
     (∃ x₃ x₄ : H.Point,
       (divToPairRatio A B T A' B' T : Divisor H) =
