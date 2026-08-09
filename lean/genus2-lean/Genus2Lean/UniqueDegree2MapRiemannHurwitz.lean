@@ -249,12 +249,12 @@ theorem isRamificationPointOf_repr_indep (P : H.Point)
     -- In a Dedekind domain, we can factor out the maximal ideal pointIdeal P.
     have h_in_ideal_num : toPair H A B ∈ pointIdeal P := by
       -- evalAtPoint P x = 0 iff x ∈ pointIdeal P
-      sorry
+      exact RingHom.mem_ker.mpr h_num_zero
     have h_in_ideal_denom : toPair H A' B' ∈ pointIdeal P := by
-      sorry
+      exact RingHom.mem_ker.mpr h_denom_zero
     -- We assumed the fraction represents a well-defined value or valid pole,
     -- which contradicts both being in the maximal ideal simultaneously.
-    sorry   
+    sorry
 
   -- Step 3: Case split on the pole condition.
   by_cases h_pole1 : evalAtPoint P (toPair H A₁' B₁') = 0
@@ -554,7 +554,40 @@ theorem pole_pair_eq_fiber_of_degree2_weierstrass_ramified
   -- Set equality of pairs implies elements match (up to permutation)
   have h_x2_eq : x₂ = Point.iota x₁ ∨ x₂ = x₁ := by
     -- Follows purely from the finite set equality h_pole_set_eq
-    sorry
+    have h_in : x₂ ∈ ({P_fib, Point.iota P_fib} : Set H.Point) := by
+      rw [←h_pole_set_eq]
+      exact Set.mem_insert_of_mem _ (Set.mem_singleton x₂)
+    have h_in_x1 : x₁ ∈ ({P_fib, Point.iota P_fib} : Set H.Point) := by
+      rw [←h_pole_set_eq]
+      exact Set.mem_insert x₁ _
+      
+    cases h_in with
+    | inl heq1 => 
+      -- x₂ = P_fib
+      cases h_in_x1 with
+      | inl heq2 => 
+        -- x₁ = P_fib, so x₂ = x₁
+        right
+        rw [heq1, heq2]
+      | inr heq2 => 
+        -- x₁ = ι P_fib
+        left
+        -- x₂ = P_fib. Need x₂ = ι x₁ => P_fib = ι (ι P_fib).
+        -- Assuming involution property Point.iota_iota exists:
+        sorry 
+    | inr heq1 => 
+      -- x₂ = ι P_fib
+      cases h_in_x1 with
+      | inl heq2 => 
+        -- x₁ = P_fib
+        left
+        rw [heq1, heq2]
+      | inr heq2 =>
+        -- x₁ = ι P_fib, so x₂ = x₁
+        right
+        rw [heq1, heq2]
+
+
     
   -- Resolve the disjunction using the properties of LPairCarrier 
   -- (if x₂ = x₁, then the divisor would not be a valid generic fiber unless it's a Weierstrass point, 
