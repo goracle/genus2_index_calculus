@@ -70,17 +70,40 @@ reuse of `deg_div_eq_zero_deg5` applied to each pair separately, matching
 `PrincipalDivisorSubgroup.lean`'s `deg_divToPairRatio_eq_zero` idiom exactly, including
 its `Module.Finite` instance hypotheses; §2 by direct reuse of `RatioDivisorCollapse.lean`'s
 `hcoef`/`hcoeffDivToPair` transport argument, ported verbatim to `divToPairRatio A B T A'
-B' T`). **Lemma 0** (`exists_finite_support_of_hspec`) is fully proved *modulo one small,
-explicitly isolated sub-lemma*, `hfinite_support`, which is the only remaining `sorry` short
-of §3: it needs the fact that `(Associates.mk I).factors` (`I ≠ 0`) unfolds to a genuine
-finite `Multiset`, and the precise Mathlib unfolding lemma for that was not checked against
-a live goal (see `hfinite_support`'s own docstring for the exact uncertainty and candidate
-lemma names) — this is a bookkeeping gap, not a mathematical one, pending `lake build`
-verification with a real REPL. **§3 (`constant_or_fiber_of_isPoleBoundedAtPair`) remains
-the one genuinely open, hard `sorry`** — the actual crux, not yet reduced to a precise
-sub-argument; do not restart from the old three-lemma "B=0" framing if revisiting this file.
+B' T`). **Lemma 0** (`exists_finite_support_of_hspec`, including its `hfinite_support`
+sub-lemma) is now fully proved, no `sorry` — confirmed by a clean `lake build` this session
+(the `Ideal.zero_eq_bot ▸` elaboration issue and the `zero_not_mem_normalizedFactors` →
+`zero_notMem_normalizedFactors` rename were the only two build errors, both fixed).
+**§3 (`constant_or_fiber_of_isPoleBoundedAtPair`) has been broken into a named proof
+skeleton** (§3a `isRatioDivisor_shape_of_bounds`, §3d `isConstantFraction_of_divisor_le_zero`,
+§3e `divisor_eq_fiber_shape_or_constant`, §3f `fiber_eq_of_divisor_shape`, plus the assembly)
+rather than left as one opaque `sorry` — §3a/§3d/§3e are routine `deg`/`coeffAt` bookkeeping
+once stated precisely (should be easy relative to Lemma 0); **§3f is the one genuinely hard,
+still-unformalized `sorry`** — the actual mathematical crux, isolated to its precise
+statement (`{x₃,x₄} = {x₁,x₂}` given the exact divisor shape, via `ordAt_linX_eq`, without
+circularity through `uniqueDegree2MapToP1`). The assembly theorem's own body is *also* left
+`sorry`'d for now (wiring §3a/§3d/§3e/§3f together, obtaining the common finite support via
+Lemma 0) — not yet attempted, since it's routine once §3a–§3f typecheck against a live goal.
+Do not restart from the old three-lemma "B=0" framing if revisiting this file.
 Note `uniqueDegree2MapToP1_of_elementary`'s assembly is unaffected by this session's changes
-and still depends only on §3.
+and still depends only on §3's top-level theorem.
+
+**Dupe-check against `UniqueDegree2MapRiemannHurwitz.lean` (this session):** no name
+collisions (`grep`-verified) and no import relationship either direction, so no cycle
+risk. Conceptually this file's §3 deliberately does *not* build any of that file's
+`IsDegree2Map`/`IsRamificationPointOf` apparatus — confirmed by inspection that `IsDegree2Map`
+requires an *exact* pole-degree-2 witness plus a `Disjoint S S'` pair, strictly more
+structure than §3's `deg`/`coeffAt`-only argument needs, matching the scoping doc's
+"more machine than the task needs" verdict. **One real, legitimate overlap**: that file's
+`isDegree2Map_of_mem_LPairCarrier_of_ne_constant` has its own unproved `h_S_finite`/
+`h_S'_finite`/`hspec'` gap — "find a finite support for `(A,B)` given `z ∈ LPairCarrier`" —
+which is *the same problem* this file's Lemma 0 (`hfinite_support`/
+`exists_finite_support_of_hspec`) already solves, just under an honestly-assumed `hspec`
+hypothesis rather than (as that file's `hspec'` sorry attempts) trying to derive
+prime-to-point correspondence from nothing. Not merged — different files, different
+hypothesis threading, no cycle to justify importing across — but if `UniqueDegree2MapRiemannHurwitz.lean`
+is ever revisited, its `h_S_finite`/`h_S'_finite` sorries should cite this file's Lemma 0
+rather than be re-derived independently.
 -/
 
 namespace HyperellipticPolynomial
@@ -362,24 +385,145 @@ theorem coeffAt_divToPairRatio_bounds (hdeg : H.f.natDegree = 5)
 
 /-! ## §3 (the genuinely new content, still open): a bounded-degree, pole-confined divisor forces the fiber dichotomy
 
-**Not yet reduced to a precise statement.** With §1's `deg D ≤ 0` and §2's
-pointwise bounds in hand (`D`'s pole part confined to `{x₁,x₂}`, mass `≤ 2`;
-`D`'s zero part therefore also mass `≤ 2`, support anywhere in `T`), the
-remaining content is: **either `z` is constant (i.e. `D`'s positive part is
-`0` too, once matched against `IsRatioDivisor`-style exactness — see below),
-or `z`'s pole set is genuinely `{x₁,x₂}` with `x₂ = ι x₁`.** This is where the
-project's existing, *proven* machinery should be reusable rather than
-reproving fiber structure from scratch: `RatioDivisorCollapse.lean`'s
-`mem_LPairCarrier_of_isRatioDivisor` goes `IsRatioDivisor → LPairCarrier`
-membership (with non-constancy) for a specific 4-point target divisor `(x₁)+
-(x₂)-(x₃)-(x₄)`; what's needed here is close to its *converse* — `D` (once
-its degree is pinned exactly via the discussion above, not just bounded) is
-itself `IsRatioDivisor`-shaped for `hdeg`, so `hyperellipticClass_...`-style
-fiber facts (`HyperellipticClassProof.lean`) or a direct case analysis via
-`ordAt_linX_eq` should apply to it. **Left open — this is the actual crux and
-the honest state of the art after this session's corrected analysis.
-`SCOPING-finrank-L-pair.md` records the precise math already checked (§1–§2
-above); do not restart from the (false) original three-lemma "B=0" framing.** -/
+**Proof skeleton, drafted this session, not yet `lake build`-checked beyond
+what typechecks at the `sorry`s below.** §1 (`deg D ≤ 0`) and §2 (`D`'s
+negative part confined to `{x₁,x₂}`, mass `≤ 2`) together pin `D`'s *shape*
+tightly enough to make `D` itself `IsRatioDivisor`-shaped (§3a) with total
+degree exactly `0` (not merely `≤ 0`) and negative part exactly `{x₁,x₂}`
+(not merely bounded there) once the positive part is nonzero (§3b/§3c). The
+zero-positive-part case is immediate (§3d, easy — this is the "constant"
+branch and needs nothing beyond §1+§2). The nonzero-positive-part case is
+where the real content lives: `D`'s positive part, being mass ≤ 2 with `deg D
+= 0` and negative part exactly `{x₁,x₂}` (mass 2), is forced to *also* be a
+single point-with-multiplicity-2 or two-distinct-points support — i.e. `D =
+(x₃)+(x₄) - (x₁) - (x₂)` for some `x₃, x₄` (§3e). Feeding this into
+`mem_LPairCarrier_of_isRatioDivisor` — used here in *contrapositive* form,
+not its stated direction — together with `uniqueDegree2MapToP1` would be
+circular (that theorem is exactly what this file is trying to replace), so
+the genuine remaining content is: directly show `{x₃,x₄} = {x₁,x₂}` (forcing
+`D = 0`, i.e. `z` constant) using only `ordAt_linX_eq`-style fiber structure,
+*without* going through `uniqueDegree2MapToP1`/`finrank_L_pair` (§3f — **the
+actual crux, genuinely unformalized reasoning, not bookkeeping**). Ordered
+below easiest-first per project convention; §3f is the hard one and is left
+as an isolated named `sorry` with its precise statement pinned down, rather
+than folded into the top-level theorem's `sorry` as before.
+
+**Do not restart from the (false) original three-lemma "B=0" framing** —
+`SCOPING-finrank-L-pair.md` records why it's unsound. -/
+
+/-- **§3a (bookkeeping, should be easy).** Package §1's `deg D ≤ 0` and §2's
+pointwise pole bound into the single `IsRatioDivisor`-shaped existential:
+`D := divToPairRatio A B T A' B' T` has `¬(A=0∧B=0)`, `¬(A'=0∧B'=0)` (from
+`hAB`/`hA'B'`, already available at call sites via `toPair_eq_zero_iff`), and
+support `T`. This lemma does *not* yet claim `ordInfOfPair A B = ordInfOfPair
+A' B'` (the equality `IsRatioDivisor` technically asks for) — `hbound` only
+gives `≥`; if the strict `IsRatioDivisor` predicate is needed downstream
+rather than just `deg`/`coeffAt` facts about `D`, that gap needs revisiting
+here first. -/
+theorem isRatioDivisor_shape_of_bounds (hdeg : H.f.natDegree = 5)
+    (x₁ x₂ : H.Point) (A B A' B' : k[X])
+    (hAB : ¬ (A = 0 ∧ B = 0)) (hA'B' : ¬ (A' = 0 ∧ B' = 0))
+    (T : Finset H.Point)
+    (hsuppAB : ∀ P, P ∉ T → ordAt P A B = 0)
+    (hsuppA'B' : ∀ P, P ∉ T → ordAt P A' B' = 0)
+    (hdegD : deg (divToPairRatio A B T A' B' T) ≤ 0)
+    (hcoeffbound :
+      (∀ P, P ≠ x₁ → P ≠ x₂ → 0 ≤ Divisor.coeffAt P (divToPairRatio A B T A' B' T)) ∧
+      Divisor.coeffAt x₁ (divToPairRatio A B T A' B' T) ≥
+        -((if x₁ = x₁ then (1:ℤ) else 0) + (if x₁ = x₂ then 1 else 0)) ∧
+      Divisor.coeffAt x₂ (divToPairRatio A B T A' B' T) ≥
+        -((if x₂ = x₁ then (1:ℤ) else 0) + (if x₂ = x₂ then 1 else 0))) :
+    -- The positive part of `D` (support in `T \ {x₁,x₂}`, all coefficients ≥ 0 there,
+    -- and ≥ -2 at x₁/x₂ combined with the deg ≤ 0 bound) has total mass ≤ 2 — the
+    -- precise numeric fact §3e's case split needs. Stated here as the raw arithmetic
+    -- consequence of hdegD + hcoeffbound, isolated so §3e can cite it without
+    -- re-deriving the deg/coeffAt bookkeeping.
+    ∑ P ∈ T, max (Divisor.coeffAt P (divToPairRatio A B T A' B' T)) 0 ≤ 2 := by
+  sorry
+
+/-- **§3d (easy, the "constant" branch).** If `D`'s positive part is entirely
+zero — every coefficient in `T` is `≤ 0` — then `D` itself is `≤ 0`
+everywhere, and combined with `deg D ≥` (whatever §2's bound forces at
+`x₁,x₂`) this pins `D`'s negative part too, but more directly: a divisor of
+a fraction `z` that is `≤ 0` everywhere with `deg = 0` (§1) must be exactly
+`0` (a nonzero effective-or-negative divisor of total degree `0` supported
+anywhere forces the "all coefficients zero" conclusion directly by summing),
+hence `z`'s divisor is `0`, hence `z` is constant. This direction does not
+need `ordAt_linX_eq` or any fiber structure — purely `deg`/`coeffAt`
+bookkeeping plus whatever converts "divisor `0`" into `IsConstantFraction`
+(likely already available near `mem_LPairCarrier_of_isRatioDivisor`'s
+non-constancy branch in `RatioDivisorCollapse.lean`, used in reverse). -/
+theorem isConstantFraction_of_divisor_le_zero (hdeg : H.f.natDegree = 5)
+    (A B A' B' : k[X]) (T : Finset H.Point)
+    (hsuppAB : ∀ P, P ∉ T → ordAt P A B = 0)
+    (hsuppA'B' : ∀ P, P ∉ T → ordAt P A' B' = 0)
+    (hdegD : deg (divToPairRatio A B T A' B' T) = 0)
+    (hle : ∀ P ∈ T, Divisor.coeffAt P (divToPairRatio A B T A' B' T) ≤ 0) :
+    IsConstantFraction (polePairToFraction (H := H) A B A' B') := by
+  sorry
+
+/-- **§3e (bookkeeping, but the case split needs care).** Given §3a's shape and
+the positive-part mass bound, either the positive part is `0` (§3d applies
+directly) or `D`'s positive part is supported on exactly one or two points
+`x₃, x₄ ∈ T` with total multiplicity exactly `2` (matching the negative
+part's mass exactly `2`, forced by `deg D = 0` once the `≤ 0`-everywhere
+degenerate case is excluded) — i.e. `D = single x₃ + single x₄ - single x₁ -
+single x₂` as divisors, `x₃ = x₄` allowed (double pole/zero coincidence).
+This is the precise shape `mem_LPairCarrier_of_isRatioDivisor`'s *converse*
+needs to even state a fiber-matching question. -/
+theorem divisor_eq_fiber_shape_or_constant (hdeg : H.f.natDegree = 5)
+    (x₁ x₂ : H.Point) (A B A' B' : k[X]) (T : Finset H.Point)
+    (hsuppAB : ∀ P, P ∉ T → ordAt P A B = 0)
+    (hsuppA'B' : ∀ P, P ∉ T → ordAt P A' B' = 0)
+    (hdegD : deg (divToPairRatio A B T A' B' T) = 0)
+    (hcoeffbound :
+      (∀ P, P ≠ x₁ → P ≠ x₂ → 0 ≤ Divisor.coeffAt P (divToPairRatio A B T A' B' T)) ∧
+      Divisor.coeffAt x₁ (divToPairRatio A B T A' B' T) ≥
+        -((if x₁ = x₁ then (1:ℤ) else 0) + (if x₁ = x₂ then 1 else 0)) ∧
+      Divisor.coeffAt x₂ (divToPairRatio A B T A' B' T) ≥
+        -((if x₂ = x₁ then (1:ℤ) else 0) + (if x₂ = x₂ then 1 else 0))) :
+    (∀ P ∈ T, Divisor.coeffAt P (divToPairRatio A B T A' B' T) ≤ 0) ∨
+    (∃ x₃ x₄ : H.Point,
+      (divToPairRatio A B T A' B' T : Divisor H) =
+        single x₃ + single x₄ - single x₁ - single x₂) := by
+  sorry
+
+/-- **§3f — THE HARD SORRY, the actual crux of the whole file.** Given `D =
+(x₃)+(x₄)-(x₁)-(x₂)` (§3e's second branch) and `x₂ ≠ ι x₁` (`hne`), show
+`{x₃,x₄} = {x₁,x₂}` (forcing `D = 0`, i.e. the fraction is constant after
+all) *without* invoking `uniqueDegree2MapToP1` or `finrank_L_pair` (that
+would be circular — this file exists to prove a version of
+`uniqueDegree2MapToP1`). The genuine content, per `SCOPING-finrank-L-pair.md`
+Route A step 3: `D`'s negative part `{x₁,x₂}` and positive part `{x₃,x₄}`
+both being pole/zero sets of the *same* ratio `z`, with `z`'s pole structure
+constrained by `ordInfOfPair`'s "half-integer weight at infinity" convention
+— a genuine hyperelliptic-curve fact about `k[X]`-degree parity, proved via
+direct case analysis on `ordAt_linX_eq` (`HyperellipticClassProof.lean:1031`)
+applied to whichever of `x₁,x₂,x₃,x₄` witnesses the pole/zero, rather than
+any general classification. **This is real, currently-unformalized
+mathematics — not a bookkeeping gap** (unlike §3a–§3e above, which are all
+routine once stated precisely). Anyone picking this up should reread
+`SCOPING-finrank-L-pair.md`'s Route A steps 1–3 in full before attempting a
+proof body; the statement here is Route A step 3's precise target, isolated
+from steps 1–2 (which are what forces `D` into this exact shape in the first
+place, i.e. §3a–§3e above). -/
+theorem fiber_eq_of_divisor_shape (x₁ x₂ x₃ x₄ : H.Point) (hne : x₂ ≠ Point.iota x₁)
+    (hdiv : ∃ A B A' B' : k[X],
+      IsPoleBoundedAtPair x₁ x₂ A B A' B' ∧
+      (∃ T : Finset H.Point,
+        (∀ P, P ∉ T → ordAt P A B = 0) ∧ (∀ P, P ∉ T → ordAt P A' B' = 0) ∧
+        (divToPairRatio A B T A' B' T : Divisor H) =
+          single x₃ + single x₄ - single x₁ - single x₂)) :
+    ({x₃, x₄} : Set H.Point) = {x₁, x₂} := by
+  sorry
+
+/-- **Assembly of §3a–§3f into the top-level target.** Wires the pieces above
+together: §3a/§2 give the shape, §3e case-splits on whether the positive part
+vanishes, §3d closes the vanishing case directly, and the nonvanishing case
+combines §3f (`{x₃,x₄} = {x₁,x₂}`, hence `D = 0`) with §3d again (now that
+`D`'s positive part is known `0` after substitution) to close. **Currently
+blocked on §3f being a real `sorry`** — everything else below it is
+plumbing. -/
 theorem constant_or_fiber_of_isPoleBoundedAtPair (hdeg : H.f.natDegree = 5)
     (x₁ x₂ : H.Point) (hne : x₂ ≠ Point.iota x₁) (A B A' B' : k[X])
     (hbound : IsPoleBoundedAtPair x₁ x₂ A B A' B')
@@ -392,6 +536,24 @@ theorem constant_or_fiber_of_isPoleBoundedAtPair (hdeg : H.f.natDegree = 5)
         (Associates.mk (Ideal.span ({toPair H A' B'} : Set (CoordinateRing H)))).factors ≠ 0 →
       ∃ P, v.asIdeal = pointIdeal P) :
     IsConstantFraction (polePairToFraction (H := H) A B A' B') := by
+  -- `IsPoleBoundedAtPair x₁ x₂ A B A' B'` unfolds to exactly three conjuncts:
+  -- `¬(A'=0∧B'=0)`, `ordInfOfPair A B ≥ ordInfOfPair A' B'`, and the pointwise
+  -- bound `∀ P, ordAt P A B ≥ ordAt P A' B' - (indicator sum)`. (Previously
+  -- mis-destructured as four patterns, which silently misaligned `hAB` with
+  -- the pointwise clause instead of the nonzero clause — caught by the
+  -- `rcases`-on-a-Pi-type error below once something tried to case on `hAB`.)
+  obtain ⟨hA'B', hmono, hpt⟩ := hbound
+  -- Obtain a finite common support `T` for `(A,B)` and `(A',B')` via Lemma 0,
+  -- then merge (`T₁ ∪ T₂` still satisfies both `hsuppAB`/`hsuppA'B'` clauses).
+  obtain ⟨T₁, hT₁⟩ := exists_finite_support_of_hspec A B (fun ⟨hA0, hB0⟩ =>
+    -- `A = 0 ∧ B = 0` would make `toPair H A B = 0`, contradicting `polePairToFraction`'s
+    -- implicit nonzero-numerator requirement — but that's not directly among `hbound`'s
+    -- conjuncts (only the denominator `A',B'` is asserted nonzero by `IsPoleBoundedAtPair`).
+    -- `LPairCarrier`'s own definition doesn't require the numerator nonzero either, so
+    -- this hypothesis position needs the caller-side fact, not something derivable from
+    -- `hbound` alone; left as an explicit gap rather than a wrong proof term.
+    sorry) hspecAB
+  obtain ⟨T₂, hT₂⟩ := exists_finite_support_of_hspec A' B' hA'B' hspecA'B'
   sorry
 
 /-! ## Assembly -/
