@@ -633,6 +633,37 @@ theorem isRatioDivisor_shape_of_bounds (hdeg : H.f.natDegree = 5)
       omega
 
 
+/-! ### Skeleton for `isConstantFraction_of_ordAt_eq`'s hard case — two sub-steps
+
+Per the docstring below (on `isConstantFraction_of_ordAt_eq` itself), the nonzero
+case needs two genuinely separate, currently-unformalized facts. Neither is proved
+here; these are staging targets. -/
+
+/-- **Sub-step A.** `ordAt`-equality everywhere (for nonzero `toPair H A B`,
+`toPair H A' B'`) implies `Ideal.span {toPair H A B} = Ideal.span {toPair H A' B'}`,
+via `Associates`-level unique factorization in the Dedekind domain `CoordinateRing H`
+(equal `count` at every height-one prime — `pointHeightOne P h_bot` for points with
+`pointIdeal P ≠ ⊥`, trivial elsewhere). Not yet proved — per the docstring below, look
+first at whether Mathlib's `IsDedekindDomain.HeightOneSpectrum` /
+`Associates.mk_eq_mk_iff_associated` API shortens this. -/
+theorem span_eq_of_ordAt_eq (A B A' B' : k[X])
+    (hABz : toPair H A B ≠ 0) (hA'B'z : toPair H A' B' ≠ 0)
+    (hordeq : ∀ P : H.Point, ordAt P A B = ordAt P A' B') :
+    Ideal.span ({toPair H A B} : Set (CoordinateRing H)) =
+      Ideal.span ({toPair H A' B'} : Set (CoordinateRing H)) := by
+  sorry
+
+/-- **Sub-step B.** `CoordinateRing H`'s unit group is exactly `k^×`, i.e. every
+unit is `algebraMap k[X] (CoordinateRing H) (C c)` for some `c : k` with `c ≠ 0`.
+Plausible from `CoordinateRing H` being a free `k[X]`-module of rank 2 via
+`toPairLin`/`toPairEquiv_mulByToPairLin` (`PrincipalDivisors.lean`), restricting units
+to the degree-0 part — but not yet stated or proved anywhere in this project, and
+needs `H.f` non-degenerate (roughly the standing `hdeg`). Not yet proved — check
+whether this has already been characterized elsewhere before reproving it. -/
+theorem isUnit_coordinateRing_iff (hdeg : H.f.natDegree = 5) (u : CoordinateRing H) :
+    IsUnit u ↔ ∃ c : k, c ≠ 0 ∧ u = algebraMap k[X] (CoordinateRing H) (C c) := by
+  sorry
+
 /-- **New isolated hard fact, factored out of §3d.** This is *not* the same gap as
 §3f — it is a lower-level, purely local-ring-theoretic statement with no fiber/`x`-
 coordinate content at all: if two pole-bounded pairs `(A,B)`, `(A',B')` have
@@ -845,6 +876,143 @@ theorem posMass_eq_negMass_le_two (hdeg : H.f.natDegree = 5)
   rw [hsum_eq] at hdegD
   linarith
 
+/-! ### §3f skeleton — Route A steps 1–3, decomposed per `SCOPING-finrank-L-pair.md`
+
+None of the three lemmas below are proved; this is a decomposition of the single
+`fiber_eq_of_divisor_shape` `sorry` (docstring below) into its three genuinely
+distinct sub-arguments (per the SCOPING doc's own numbering), each stated as its
+own target so a future session can attack them independently rather than reopening
+one monolithic goal. `fiber_eq_of_divisor_shape` itself is left exactly as it was
+(still one `sorry`) — these are staging lemmas it is expected to be assembled
+from, not yet wired in. -/
+
+/-- **Route A step 1.** If `IsPoleBoundedAtPair x₁ x₂ A B A' B'` and `B' ≠ 0`, the
+denominator `toPair H A' B'` has pole-at-infinity order `2 * B'.natDegree + 5`
+(odd multiple of the half-integer unit, per `ordInfOfPair`'s convention — see
+`SCOPING-finrank-L-pair.md` for the precise weighting), which cannot be matched
+against the total affine pole budget of `2` (one order-≤1 pole at each of `x₁`,
+`x₂`) contributed to `ordInfOfPair A B`'s side of the `≥` bound in
+`IsPoleBoundedAtPair`. Forces `B' = 0`. Not yet proved — the precise inequality
+chain from `ordInfOfPair`'s definition (`PrincipalDivisors.lean:122`) needs to be
+written out; flagged in the SCOPING doc as "probably the easiest of the three". -/
+theorem denom_B'_eq_zero_of_isPoleBoundedAtPair (hdeg : H.f.natDegree = 5)
+    (x₁ x₂ : H.Point) (A B A' B' : k[X])
+    (hbound : IsPoleBoundedAtPair x₁ x₂ A B A' B')
+    (hspecAB : ∀ v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H),
+      (Associates.mk v.asIdeal).count
+        (Associates.mk (Ideal.span ({toPair H A B} : Set (CoordinateRing H)))).factors ≠ 0 →
+      ∃ P, v.asIdeal = pointIdeal P)
+    (hspecA'B' : ∀ v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H),
+      (Associates.mk v.asIdeal).count
+        (Associates.mk (Ideal.span ({toPair H A' B'} : Set (CoordinateRing H)))).factors ≠ 0 →
+      ∃ P, v.asIdeal = pointIdeal P)
+    (T : Finset H.Point)
+    (hAB : ¬ (A = 0 ∧ B = 0))
+    (hsuppAB : ∀ P, P ∉ T → ordAt P A B = 0)
+    (hsuppA'B' : ∀ P, P ∉ T → ordAt P A' B' = 0)
+    -- **Weakening, added after the original (false) statement was found to have a
+    -- counterexample.** `IsPoleBoundedAtPair` alone does not force `B' = 0`: `A=A'=0,
+    -- B=B'=1` gives `z = toPair H 0 1 / toPair H 0 1 = y/y`, trivially satisfying
+    -- `IsPoleBoundedAtPair` with equality throughout, yet `B' = 1 ≠ 0` (this is exactly
+    -- the counterexample already documented in this file's own revision-history
+    -- docstring above, §"Revision history, kept here because the false start is
+    -- instructive"). The genuine content needs the pair to be in *lowest terms* — no
+    -- common affine zero/pole between numerator and denominator — which is what Route A
+    -- implicitly assumes throughout (a fraction already reduced, not one with a shared
+    -- spurious factor like `y` in the counterexample). This hypothesis is that lowest-
+    -- terms condition, stated pointwise.
+    (hreduced : ∀ P : H.Point, ordAt P A B = 0 ∨ ordAt P A' B' = 0)
+    [∀ P : T, Module.Finite k (CoordinateRing H ⧸ pointIdeal P.1 ^ (ordAt P.1 A B).toNat)]
+    [∀ P : T, Module.Finite k (CoordinateRing H ⧸ pointIdeal P.1 ^ (ordAt P.1 A' B').toNat)] :
+    B' = 0 := by
+  by_contra hB'ne
+  obtain ⟨hA'B', hmono, hpt⟩ := hbound
+  -- `deg_div_eq_zero_deg5` applied to each pair: `∑_T ordAt(A,B) = -ordInfOfPair A B`,
+  -- likewise for `(A',B')`.
+  have h₁ := deg_div_eq_zero_deg5 H hdeg T A B hAB hsuppAB hspecAB
+  have h₂ := deg_div_eq_zero_deg5 H hdeg T A' B' hA'B' hsuppA'B' hspecA'B'
+  -- `ordInfOfPair A' B'` unfolds explicitly since `B' ≠ 0`: `= -(max (2 deg A') (2 deg B' + 5))`,
+  -- in particular `ordInfOfPair A' B' ≤ -(2 * B'.natDegree + 5) ≤ -5`.
+  have hordInf_A'B' : ordInfOfPair A' B' ≤ -(2 * (B'.natDegree : ℤ) + 5) := by
+    dsimp [ordInfOfPair]
+    rw [if_neg hA'B', if_neg hB'ne]
+    have : (2 * (B'.natDegree : ℤ) + 5) ≤ max (2 * (A'.natDegree : ℤ)) (2 * (B'.natDegree : ℤ) + 5) :=
+      le_max_right _ _
+    linarith
+  -- **New, solid intermediate fact**: `(A',B')`'s support outside `{x₁,x₂}` is empty, i.e.
+  -- `ordAt P A' B' = 0` for every `P ≠ x₁, x₂`. Proof: for such `P`, `hpt` gives
+  -- `ordAt P A B ≥ ordAt P A' B' - 0 = ordAt P A' B'`. If `ordAt P A' B' > 0` then
+  -- `ordAt P A B > 0` too, so `ordAt P A B ≠ 0`; `hreduced` then forces `ordAt P A' B' = 0`,
+  -- contradicting `ordAt P A' B' > 0`. So `ordAt P A' B' ≤ 0`; combined with `ordAt_nonneg`
+  -- (`PrincipalDivisors.lean:472`, valid since `toPair H A' B' ≠ 0` — `hA'B'`, `toPair_eq_zero_iff`
+  -- — regardless of whether `pointIdeal P = ⊥`, where `ordAt` is `0` by definition anyway),
+  -- `ordAt P A' B' = 0`.
+  have hsupp_outside : ∀ P : H.Point, P ≠ x₁ → P ≠ x₂ → ordAt P A' B' = 0 := by
+    intro P hPx₁ hPx₂
+    have hind : ordAt P A B ≥ ordAt P A' B' - ((if P = x₁ then (1:ℤ) else 0) + (if P = x₂ then 1 else 0)) :=
+      hpt P
+    rw [if_neg hPx₁, if_neg hPx₂] at hind
+    simp only [add_zero, sub_zero] at hind
+    have hAB_ne : toPair H A' B' ≠ 0 := by rw [Ne, toPair_eq_zero_iff]; exact hA'B'
+    by_cases h_bot : pointIdeal P = ⊥
+    · simp only [ordAt, if_neg hAB_ne, dif_pos h_bot]
+    · have hge0 : 0 ≤ ordAt P A' B' := ordAt_nonneg P A' B' hAB_ne h_bot
+      by_contra hne
+      have hpos : 0 < ordAt P A' B' := lt_of_le_of_ne hge0 (Ne.symm hne)
+      have hABpos : 0 < ordAt P A B := lt_of_lt_of_le hpos hind
+      rcases hreduced P with hzero | hzero
+      · exact absurd hzero (ne_of_gt hABpos)
+      · exact absurd hzero (ne_of_gt hpos)
+  -- **Genuine remaining gap, now narrower.** `hsupp_outside` pins `(A',B')`'s entire affine
+  -- support to `{x₁,x₂}` (at most two points, each with `ordAt ≥ 0`). Combined with `h₂`
+  -- (`∑_T ordAt(A',B') = -ordInfOfPair A'B' ≥ 2 * B'.natDegree + 5 ≥ 5`, from `hordInf_A'B'`),
+  -- this forces `ordAt x₁ A' B' + ordAt x₂ A' B' ≥ 5` (all of the sum concentrated on at most
+  -- two points) — a large affine vanishing order concentrated at ≤ 2 points. Closing the proof
+  -- from here needs either: (a) an explicit bound on how large `ordAt` at a single point can be
+  -- relative to `B'.natDegree` (not yet available in this project — would need something like
+  -- "a nonzero pair's ordAt at any single point is `≤` some function of its total degree"), or
+  -- (b) the `CoordinateRing H` units-are-`k^×` fact (`isUnit_coordinateRing_iff`, stated
+  -- elsewhere in this file, also unproved) to rule out `(A',B')` having *no* affine support at
+  -- all despite `B' ≠ 0`. Neither is available yet — isolated here as the precise remaining gap.
+  sorry
+
+/-- **Route A step 2.** Given step 1's `B' = 0`, so `z = (A(x) + B(x)y) / A'(x)`, a
+similar parity argument on `y`'s own pole/zero structure (`y² = f(x)`, `deg f = 5`)
+against the same `≤ 2` affine pole budget forces `B = 0` too, reducing `z` to a pure
+rational function of `x` alone. Not yet proved — needs comparing `B(x)y/A'(x)`'s
+contribution to `ordAt`/`ordInfOfPair` against the bound, in the same style as step 1
+but one level up (SCOPING doc: "same flavor, one level up"). **Caution, not yet
+checked:** step 1's original statement (no `hreduced` hypothesis) turned out to have a
+counterexample already documented elsewhere in this file (the `y/y` self-cancellation
+trick) — this statement hasn't been stress-tested the same way and may need an analogous
+`hreduced`-style lowest-terms hypothesis threaded through before attempting a proof;
+don't assume it's correct as stated without checking first. -/
+theorem num_B_eq_zero_of_isPoleBoundedAtPair (x₁ x₂ : H.Point) (A B A' B' : k[X])
+    (hbound : IsPoleBoundedAtPair x₁ x₂ A B A' B') (hB' : B' = 0) :
+    B = 0 := by
+  sorry
+
+/-- **Route A step 3 — the one genuinely new piece of reasoning** (per the SCOPING
+doc; reuses `ordAt_linX_eq` rather than inventing ramification theory). Given steps
+1–2 (`B = B' = 0`, so `z = A(x)/A'(x)`), the `≤ 2` total pole-degree bound forces
+`deg A, deg A' ≤ 1` (from `ordInfOfPair`'s formula with `B = B' = 0`, i.e.
+`ordInfOfPair A 0 = -2 * A.natDegree`). A degree-≤1-over-degree-≤1 rational function
+of `x` with pole divisor exactly `{x₁,x₂}` (both affine, both order-≤1, per
+`hordeq`/`hdiv`'s shape) is, via case analysis on `ordAt_linX_eq`
+(`HyperellipticClassProof.lean:1031`: `Q.Y = 0` gives a double pole at one
+Weierstrass point, `Q.Y ≠ 0` gives a simple pole shared with `ι Q`), forced to have
+`{x₁,x₂}` be a fiber `{Q, ι Q}` of the coordinate function `x` — i.e. `x₂ = ι x₁` —
+unless the pole/zero sets coincide outright as sets, which is the theorem's actual
+conclusion. This is Route A step 3's precise target, isolated from steps 1–2. Not
+yet proved. -/
+theorem fiber_eq_of_pure_rational_pole_match (x₁ x₂ x₃ x₄ : H.Point)
+    (hne : x₂ ≠ Point.iota x₁) (A A' : k[X]) (hdegA : A.natDegree ≤ 1)
+    (hdegA' : A'.natDegree ≤ 1)
+    (hpoles : (divToPairRatio A 0 {x₁, x₂, x₃, x₄} A' 0 {x₁, x₂, x₃, x₄} : Divisor H) =
+      single x₃ + single x₄ - single x₁ - single x₂) :
+    ({x₃, x₄} : Set H.Point) = {x₁, x₂} := by
+  sorry
+
 /-- **§3f — THE HARD SORRY, the actual crux of the whole file.** Given `D =
 (x₃)+(x₄)-(x₁)-(x₂)` (§3e's second branch) and `x₂ ≠ ι x₁` (`hne`), show
 `{x₃,x₄} = {x₁,x₂}` (forcing `D = 0`, i.e. the fraction is constant after
@@ -872,6 +1040,10 @@ theorem fiber_eq_of_divisor_shape (x₁ x₂ x₃ x₄ : H.Point) (hne : x₂ �
         (divToPairRatio A B T A' B' T : Divisor H) =
           single x₃ + single x₄ - single x₁ - single x₂)) :
     ({x₃, x₄} : Set H.Point) = {x₁, x₂} := by
+  -- Expected assembly (not yet wired in): obtain `A B A' B' T` from `hdiv`, apply
+  -- `denom_B'_eq_zero_of_isPoleBoundedAtPair` then `num_B_eq_zero_of_isPoleBoundedAtPair`
+  -- to reduce to `B = B' = 0`, derive the `≤ 1` degree bounds from `IsPoleBoundedAtPair`'s
+  -- `ordInfOfPair` clause, then close with `fiber_eq_of_pure_rational_pole_match`.
   sorry
 
 /-- **Assembly of §3a–§3f into the top-level target.** Wires the pieces above
