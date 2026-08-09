@@ -515,9 +515,44 @@ theorem mem_LPairCarrier_of_isRatioDivisor (hdeg : H.f.natDegree = 5)
     rw [hordeq P] at hz
     simp only [sub_self] at hz
     simp only [Set.mem_insert_iff, Set.mem_singleton_iff]
-    -- Resolve each of `hz`'s four `ite`s via `split_ifs`, then close the
-    -- resulting (arithmetic-or-disjunction) goal with `tauto`/`omega`.
-    split_ifs at hz <;> first | tauto | omega
+    -- Resolve each of `hz`'s four `ite`s. `split_ifs <;> first | tauto |
+    -- omega`, `split_ifs <;> first | omega | (subst_vars; tauto)`, and
+    -- `split_ifs <;> first | omega | simp_all` were all tried and all
+    -- failed (heartbeat timeout, `whnf` timeout, and max recursion depth
+    -- respectively): every one of `tauto`, `subst_vars`, and `simp_all`
+    -- does some form of expensive proof search or unfolding against
+    -- `H.Point` — a subtype of `k × k` cut out by `Equation`, under
+    -- `open Classical` — that either blows the heartbeat budget or loops.
+    -- Written fully manually instead, avoiding all of `split_ifs`, `tauto`,
+    -- `subst`, and `simp_all` (and, after an argument-order slip using
+    -- `iff_of_true`/`iff_of_false`/`Or.elim` directly, now via `constructor`
+    -- + `intro`/`rcases` instead, which sidesteps needing to recall any of
+    -- those lemmas' exact argument order): `by_cases` on each of the four
+    -- equalities `P = xᵢ` (a plain decidability split, no search), rewrite
+    -- `hz`'s `ite`s away with `if_pos`/`if_neg` against the case hypotheses
+    -- directly (no `H.Point` unfolding), then in each of the 16 branches:
+    -- 9 are arithmetically inconsistent (`hz` becomes a false numeral
+    -- equation, closed by `omega`), and the remaining 7 consistent branches
+    -- all close uniformly by splitting the goal `Iff` into its two
+    -- implications and case-splitting the antecedent `Or`, discharging each
+    -- resulting subgoal from whichever `h1,h2,h3,h4` proves or refutes it
+    -- (`exact` for the true cases, `exact absurd ‹_› ‹_›` for the
+    -- impossible ones the case split still generates).
+    by_cases h1 : P = x₁ <;> by_cases h2 : P = x₂ <;>
+      by_cases h3 : P = x₃ <;> by_cases h4 : P = x₄ <;>
+      (try rw [if_pos h1] at hz) <;> (try rw [if_neg h1] at hz) <;>
+      (try rw [if_pos h2] at hz) <;> (try rw [if_neg h2] at hz) <;>
+      (try rw [if_pos h3] at hz) <;> (try rw [if_neg h3] at hz) <;>
+      (try rw [if_pos h4] at hz) <;> (try rw [if_neg h4] at hz) <;>
+      first
+        | exact absurd hz (by omega)
+        | (refine ⟨fun h => ?_, fun h => ?_⟩ <;>
+            rcases h with h | h <;>
+            first
+              | exact Or.inl h1 | exact Or.inr h2
+              | exact Or.inl h3 | exact Or.inr h4
+              | exact absurd h h1 | exact absurd h h2
+              | exact absurd h h3 | exact absurd h h4)
 
 
 
