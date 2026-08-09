@@ -25,4 +25,6 @@ import Genus2Lean.DedekindClosure5
 import Genus2Lean.PrincipalDivisorsIntegralClosure
 import Genus2Lean.SidonBridge
 import Genus2Lean.RiemannRochGenus2
+import Genus2Lean.RiemannRochCrux
+import Genus2Lean.PrincipalSubgroupCollapse
 

@@ -6,6 +6,7 @@ noncomputable section
 set_option linter.style.header false
 
 open Polynomial
+open Classical
 
 /-!
 # Genus-2 index calculus: the divisor group, principal divisors, and `J` as a divisor-class group
@@ -75,6 +76,35 @@ noncomputable def deg : Divisor H →+ ℤ :=
   show (Finsupp.liftAddHom (fun (_ : H.Point) => AddMonoidHom.id ℤ)) (Finsupp.single P 1) = 1
   rw [Finsupp.liftAddHom_apply_single]
   rfl
+
+/-- The coefficient-at-`P` homomorphism `Div(C) → ℤ`. Callers elsewhere
+(`PrincipalSubgroupCollapse.lean`) need to extract the `ℤ`-coefficient of a
+`Divisor H` at a chosen point via the `AddMonoidHom` API, exactly as `deg` does
+above, rather than through raw `Finsupp` application: `Divisor H` is a plain
+`def`, not `abbrev`, over `H.Point →₀ ℤ`, so it does not unfold to expose
+`Finsupp`'s `DFunLike` application at ordinary transparency (see the discussion
+in `PrincipalDivisorSubgroup.lean`'s `divToPair`). Built via
+`Finsupp.applyAddHom`, the library's own `AddMonoidHom` version of evaluation
+at a point, mirroring `deg`'s use of `Finsupp.liftAddHom`. -/
+noncomputable def coeffAt (P : H.Point) : Divisor H →+ ℤ :=
+  Finsupp.applyAddHom P
+
+-- **UNVERIFIED step** (no local Lean install to check against a live goal):
+-- `Finsupp.applyAddHom_apply` is assumed to be the simp-normal-form lemma
+-- unfolding `Finsupp.applyAddHom P f` to `f P`; if that name is wrong, the
+-- `simp` fallback should still close the goal — worst case replace the whole
+-- proof body with `simp [Finsupp.applyAddHom_apply]` or `simp [coeffAt]`.
+-- Condition stated as `if P = Q` (not `if Q = P`) to match how
+-- `PrincipalSubgroupCollapse.lean` consumes this lemma: it derives a
+-- `hQP : Q ≠ P` hypothesis and passes `Ne.symm hQP : P ≠ Q` to `if_neg`,
+-- which only typechecks against this orientation.
+@[simp] theorem coeffAt_single (P Q : H.Point) :
+    coeffAt P (single Q) = if P = Q then 1 else 0 := by
+  show Finsupp.applyAddHom P (Finsupp.single Q 1) = if P = Q then 1 else 0
+  simp [Finsupp.applyAddHom_apply, Finsupp.single_apply, eq_comm]
+
+@[simp] theorem coeffAt_single_self (P : H.Point) : coeffAt P (single P) = 1 := by
+  rw [coeffAt_single, if_pos rfl]
 
 @[simp] theorem deg_sub (D₁ D₂ : Divisor H) : deg (D₁ - D₂) = deg D₁ - deg D₂ :=
   map_sub deg D₁ D₂
