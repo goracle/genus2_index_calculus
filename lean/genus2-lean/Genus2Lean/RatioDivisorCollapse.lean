@@ -141,19 +141,16 @@ A'₂ B'₂` with divisors `D₁, D₂`, their product `z₁ * z₂` has divisor
 `ordInfOfPair_add_of_toPair_mul` for the matching-at-infinity condition), realized
 concretely via `toPair_mul`'s explicit formula for both the new numerator
 `toPair H A₁ B₁ * toPair H A₂ B₂ = toPair H (A₁A₂+B₁B₂f) (A₁B₂+A₂B₁)` and the new
-denominator likewise. **Left `sorry`'d**: the mechanical but nontrivial step of
-combining the two supports `S₁ ∪ S₂` and re-deriving `hsupp` for the *product*
-pair at every point outside that union — needs, for `P ∉ S₁ ∪ S₂`, that both
-factors have `ordAt P _ _ = 0` (immediate from `hsupp₁`/`hsupp₂`) and hence (via
-`ordAt_toPair_mul_of_ne_zero'`) the product does too, *provided* both factors are
-individually nonzero at `P` in the coordinate ring (not just `ordAt = 0`, which
-presumes nonzero-ness already built into the `hsupp` clause's own statement above —
-consistent, but the zero/nonzero bookkeeping across all four pairs simultaneously,
-including the possibility that a numerator or denominator pair is itself `(0,0)` on
-one side while nonzero overall, has not been carried through against a live goal
-state). This is the step flagged in the module docstring as new plumbing, not a
-copy from `LPairCarrier_add_smul` (whose common-denominator argument is scoped to
-the fixed two-point pole set `{x₁,x₂}`, not the unbounded support needed here). -/
+denominator likewise. **No longer `sorry`'d** (an earlier draft of this docstring
+called the support-combination step "left `sorry`'d" before the proof body below
+was actually filled in; that note was stale and has been corrected here rather
+than left to mislead a future session). The mechanical step it describes —
+combining the two supports into `S₁ ∪ S₂` and re-deriving `hsupp` for the
+*product* pair at every point outside that union — is carried out in full below,
+via `ordAt_toPair_mul_of_ne_zero'` pointwise plus `Finset.sum_subset` to widen
+each original support up to the union. Not a copy from `LPairCarrier_add_smul`
+(whose common-denominator argument is scoped to the fixed two-point pole set
+`{x₁,x₂}`, not the unbounded support needed here). -/
 theorem isRatioDivisor_add (hdeg : H.f.natDegree = 5) {D₁ D₂ : Divisor H}
     (hD₁ : IsRatioDivisor hdeg D₁) (hD₂ : IsRatioDivisor hdeg D₂) :
     IsRatioDivisor hdeg (D₁ + D₂) := by
@@ -350,10 +347,12 @@ gives a single ratio `z = toPair H A B / toPair H A' B'` whose divisor is exactl
 survive unless `x₂ = ι x₁`") pins `{x₃,x₄} = {x₁,x₂}` — needs matching the
 *specific* four-point support of `divToPairRatio A B S A' B' S` against
 `{x₁,x₂,x₃,x₄}` pointwise (i.e. `ordAt x₁ A B - ordAt x₁ A' B' = 1`,
-`ordAt x₃ A B - ordAt x₃ A' B' = -1`, and `= 0` at every other point of `S`) — a
-`Finsupp`/`Finset.sum` coefficient-extraction argument that has not been carried
-out. Isolated as its own `sorry`, distinct from and downstream of
-`isRatioDivisor_of_mem_principalSubgroup`. -/
+`ordAt x₃ A B - ordAt x₃ A' B' = -1`, and `= 0` at every other point of `S`), via
+a `Finsupp`/`Finset.sum` coefficient-extraction argument. **No longer `sorry`'d**
+(an earlier draft of this docstring called the step "isolated as its own `sorry`,
+distinct from and downstream of `isRatioDivisor_of_mem_principalSubgroup`" before
+the proof body below was filled in; that note was stale and has been corrected
+here). See `mem_LPairCarrier_of_isRatioDivisor` below for the completed proof. -/
 
 /-- The support-matching step: given the single-ratio witness `IsRatioDivisor`
 supplies for `(x₁)+(x₂)-(x₃)-(x₄)`, `z` (suitably oriented) lands in
