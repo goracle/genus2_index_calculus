@@ -188,9 +188,15 @@ def IsRamificationPointOf (z : FractionRing (CoordinateRing H)) (P : H.Point) : 
 
 
 
+set_option maxHeartbeats 1000000 in
 /-- **Representation independence for ramification.**
 If two representations `A₁, B₁, A₁', B₁'` and `A₂, B₂, A₂', B₂'` give the same field element,
 their ramification conditions at `P` are equivalent. -/
+-- `maxHeartbeats` raised for this declaration only: the non-pole branch's
+-- final `rwa` unifies against several `set`-bound local definitions
+-- (`c`, `A₂''`, `B₂''`) accumulated across a long tactic block, which pushes
+-- past the default budget on `whnf` even though each individual step is
+-- straightforward. Scoped via `in` so it doesn't affect the rest of the file.
 theorem isRamificationPointOf_repr_indep (P : H.Point)
     (A₁ B₁ A₁' B₁' A₂ B₂ A₂' B₂' : k[X])
     (h1 : ¬ (A₁' = 0 ∧ B₁' = 0))
@@ -239,21 +245,28 @@ theorem isRamificationPointOf_repr_indep (P : H.Point)
       _ = evalAtPoint P (toPair H A₂ B₂ * toPair H A₁' B₁') := by rw [h_cross]
       _ = evalAtPoint P (toPair H A₂ B₂) * evalAtPoint P (toPair H A₁' B₁') := by rw [map_mul]
 
-  -- Coprimality / regularity: a valid fraction representation cannot evaluate to 0 
-  -- in both numerator and denominator simultaneously at P.
+  -- **GENUINE GAP, not bookkeeping — flagged rather than silently `sorry`'d
+  -- through.** This statement, as a bare `∀ A B A' B'`, is actually FALSE:
+  -- nothing prevents `A, B, A', B'` from sharing a common zero at `P` (e.g.
+  -- take `A = A'`, `B = B'` — both numerator and denominator vanish at every
+  -- common root, with no contradiction, since `IsRamificationPointOf`'s
+  -- existential imposes no coprimality/reduced-representation constraint on
+  -- `A,B,A',B'` at all). Fixing this needs either (a) a coprimality
+  -- hypothesis threaded into `IsRamificationPointOf`'s definition itself
+  -- (changing §2's `Prop`, not just this proof), or (b) reworking this
+  -- lemma's proof to avoid needing pointwise-coprime representations —
+  -- e.g. by cancelling any common zero at `P` from `A,B,A',B'` before
+  -- comparing (a genuine "reduce the fraction at P" argument, not present
+  -- anywhere in this codebase). Left `sorry`, and the three downstream uses
+  -- (`h_ord_num1_zero`, `h_ord_num2_zero`, `h_ord_add`, in the pole branch
+  -- below) are equally blocked on it, for the same reason — not independent
+  -- gaps, but restatements of this one.
   have h_coprime : ∀ (A B A' B' : k[X]), 
     ¬(A' = 0 ∧ B' = 0) → 
     evalAtPoint P (toPair H A' B') = 0 → evalAtPoint P (toPair H A B) = 0 → False := by
     intro A B A' B' h_nz h_denom_zero h_num_zero
-    -- If both evaluate to 0, then P is a common root.
-    -- In a Dedekind domain, we can factor out the maximal ideal pointIdeal P.
-    have h_in_ideal_num : toPair H A B ∈ pointIdeal P := by
-      -- evalAtPoint P x = 0 iff x ∈ pointIdeal P
-      exact RingHom.mem_ker.mpr h_num_zero
-    have h_in_ideal_denom : toPair H A' B' ∈ pointIdeal P := by
-      exact RingHom.mem_ker.mpr h_denom_zero
-    -- We assumed the fraction represents a well-defined value or valid pole,
-    -- which contradicts both being in the maximal ideal simultaneously.
+    have h_in_ideal_num : toPair H A B ∈ pointIdeal P := RingHom.mem_ker.mpr h_num_zero
+    have h_in_ideal_denom : toPair H A' B' ∈ pointIdeal P := RingHom.mem_ker.mpr h_denom_zero
     sorry
 
   -- Step 3: Case split on the pole condition.
@@ -269,19 +282,18 @@ theorem isRamificationPointOf_repr_indep (P : H.Point)
     rw [if_pos h_pole1] at hram
     rw [if_pos h_pole2]
     
-  -- Valuation additivity on the original cross-multiplication h_cross, knowing neither numerator vanishes
+  -- **Blocked on the same gap as `h_coprime` above** — these need
+    -- `evalAtPoint P (toPair H A₁ B₁) ≠ 0` / `... A₂ B₂ ... ≠ 0`, which in
+    -- this branch (`h_pole1 : evalAtPoint P (toPair H A₁' B₁') = 0`) is
+    -- exactly `h_coprime`'s content restated, not something derivable from
+    -- `hram`, `h_cross`, or anything else already in scope here.
     have h_ord_num1_zero : ordAt P A₁ B₁ = 0 := by
-      -- Since evalAtPoint P (toPair H A₁ B₁) ≠ 0 (otherwise coprimality is violated with h_pole1)
       sorry
       
     have h_ord_num2_zero : ordAt P A₂ B₂ = 0 := by
-      -- Since evalAtPoint P (toPair H A₂ B₂) ≠ 0 (otherwise coprimality is violated with h_pole2)
       sorry
 
     have h_ord_add : ordAt P A₁' B₁' = ordAt P A₂' B₂' := by
-      -- Combine h_cross with valuation additivity: ord(xy) = ord(x) + ord(y)
-      -- ord(A₁ B₁) + ord(A₂' B₂') = ord(A₂ B₂) + ord(A₁' B₁')
-      -- 0 + ord(A₂' B₂') = 0 + ord(A₁' B₁')
       sorry      
     rwa [←h_ord_add]
 
@@ -332,21 +344,71 @@ theorem isRamificationPointOf_repr_indep (P : H.Point)
     -- Valuation additivity on the identity `h_shift_cross`.
     -- Since `ordAt P (toPair H A₁' B₁')` and `ordAt P (toPair H A₂' B₂'` have valuation 0 (non-poles),
     -- their contributions vanish under `ordAt` sum rules, equating the shifted numerators.
-    have h_ord_denom1 : ordAt P A₁' B₁' = 0 := by
-      -- h_pole1 asserts evalAtPoint P (A₁' B₁') ≠ 0, which implies valuation is 0
-      sorry
-      
-    have h_ord_denom2 : ordAt P A₂' B₂' = 0 := by
-      -- h_pole2 asserts evalAtPoint P (A₂' B₂') ≠ 0, which implies valuation is 0
-      sorry
+    have h_ord_denom1 : ordAt P A₁' B₁' = 0 :=
+      ordAt_eq_zero_of_notMem P A₁' B₁' (fun hmem => h_pole1 (RingHom.mem_ker.mp hmem))
 
-    have h_ord_shift_eq : ordAt P (A₁ - C c * A₁') (B₁ - C c * B₁') = 
-                          ordAt P (A₂ - C (evalAtPoint P (toPair H A₂ B₂) / evalAtPoint P (toPair H A₂' B₂')) * A₂')
-                                  (B₂ - C (evalAtPoint P (toPair H A₂ B₂) / evalAtPoint P (toPair H A₂' B₂')) * B₂') := by
-      -- Apply ordAt to both sides of h_shift_cross.
-      -- ordAt(shift1 * denom2) = ordAt(shift2 * denom1)
-      -- ordAt(shift1) + 0 = ordAt(shift2) + 0
-      sorry
+    have h_ord_denom2 : ordAt P A₂' B₂' = 0 :=
+      ordAt_eq_zero_of_notMem P A₂' B₂' (fun hmem => h_pole2 (RingHom.mem_ker.mp hmem))
+
+    set A₂'' := A₂ - C (evalAtPoint P (toPair H A₂ B₂) / evalAtPoint P (toPair H A₂' B₂')) * A₂'
+    set B₂'' := B₂ - C (evalAtPoint P (toPair H A₂ B₂) / evalAtPoint P (toPair H A₂' B₂')) * B₂'
+
+    have h_pole1_tp_ne : toPair H A₁' B₁' ≠ 0 := fun h => h1 ((toPair_eq_zero_iff H A₁' B₁').mp h)
+    have h_pole2_tp_ne : toPair H A₂' B₂' ≠ 0 := fun h => h2 ((toPair_eq_zero_iff H A₂' B₂').mp h)
+
+    -- No explicit type ascriptions here — the earlier version stated
+    -- `h_lhs_witness`/`h_rhs_witness`'s full type by hand, which forced the
+    -- elaborator to check defeq of that hand-written type against
+    -- `toPair_mul`'s output while `c`, `A₂''`, `B₂''` are large `set`-bound
+    -- terms, timing out on `whnf`. Letting Lean infer the type from
+    -- `toPair_mul`'s own statement avoids unfolding those definitions.
+    have h_lhs_witness := (toPair_mul (H := H) (A₁ - C c * A₁') (B₁ - C c * B₁') A₂' B₂').symm
+    have h_rhs_witness := (toPair_mul (H := H) A₂'' B₂'' A₁' B₁').symm
+
+    -- `hram` (already rewritten to the "not a pole" branch, `ordAt P (shift1)
+    -- = 2`) gives `toPair H (shift1) ≠ 0` directly: `ordAt` is `0` whenever
+    -- `toPair = 0` (its definition's first `if`), and `2 ≠ 0`. No separate
+    -- coprimality argument needed — unlike the pole-branch sorries above,
+    -- this one really is free once `hram` is in scope.
+    have h_shift1_ne : toPair H (A₁ - C c * A₁') (B₁ - C c * B₁') ≠ 0 := by
+      intro hz0
+      have hzero : ordAt P (A₁ - C c * A₁') (B₁ - C c * B₁') = 0 := by
+        unfold ordAt; rw [if_pos hz0]
+      omega
+
+    -- From `h_shift_cross : toPair(shift1) * toPair(denom2) = toPair(shift2)
+    -- * toPair(denom1)`: LHS is a product of two nonzero factors (`shift1`
+    -- via `h_shift1_ne` just above, `denom2` via `h_pole2_tp_ne`), hence
+    -- nonzero in the domain `CoordinateRing H`; so the RHS is nonzero too,
+    -- forcing `toPair(shift2) ≠ 0` (the other RHS factor, `toPair(denom1)`,
+    -- being possibly zero doesn't matter — a product is nonzero only if
+    -- *both* factors are).
+    have h_shift2_ne : toPair H A₂'' B₂'' ≠ 0 := by
+      intro hz0
+      have hcontra : toPair H (A₁ - C c * A₁') (B₁ - C c * B₁') * toPair H A₂' B₂' = 0 := by
+        rw [h_shift_cross, hz0, zero_mul]
+      exact (mul_ne_zero h_shift1_ne h_pole2_tp_ne) hcontra
+
+    have h_lhs_ord := ordAt_toPair_mul_of_ne_zero' P (pointIdeal_ne_bot P)
+      (A₁ - C c * A₁') (B₁ - C c * B₁') A₂' B₂'
+      _ _ h_shift1_ne h_pole2_tp_ne h_lhs_witness
+    have h_rhs_ord := ordAt_toPair_mul_of_ne_zero' P (pointIdeal_ne_bot P)
+      A₂'' B₂'' A₁' B₁' _ _ h_shift2_ne h_pole1_tp_ne h_rhs_witness
+
+    have h_ord_shift_eq : ordAt P (A₁ - C c * A₁') (B₁ - C c * B₁') = ordAt P A₂'' B₂'' := by
+      have h_toPair_eq : toPair H ((A₁ - C c * A₁') * A₂' + (B₁ - C c * B₁') * B₂' * H.f)
+                            ((A₁ - C c * A₁') * B₂' + A₂' * (B₁ - C c * B₁'))
+          = toPair H (A₂'' * A₁' + B₂'' * B₁' * H.f) (A₂'' * B₁' + A₁' * B₂'') := by
+        rw [h_lhs_witness, h_rhs_witness, h_shift_cross]
+      -- `ordAt` is a function of `toPair H A B` alone, so the equal `toPair`
+      -- values above give equal `ordAt`s directly.
+      have h_eq_ord : ordAt P ((A₁ - C c * A₁') * A₂' + (B₁ - C c * B₁') * B₂' * H.f)
+                              ((A₁ - C c * A₁') * B₂' + A₂' * (B₁ - C c * B₁'))
+          = ordAt P (A₂'' * A₁' + B₂'' * B₁' * H.f) (A₂'' * B₁' + A₁' * B₂'') := by
+        unfold ordAt
+        rw [h_toPair_eq]
+      rw [h_lhs_ord, h_rhs_ord, h_ord_denom2, h_ord_denom1] at h_eq_ord
+      omega
     
     rwa [←h_ord_shift_eq]
 
