@@ -425,9 +425,17 @@ alone — see `ordAt_add_ge_min`'s own docstring/history for the counterexample
 showing that branch is false as originally stated) is now structurally
 unreachable: `ordAt_add_ge_min` gained an explicit `g + g' ≠ 0` hypothesis this
 session, which rules the branch out via `hA₃` directly rather than needing it
-proved. The corresponding proof obligation didn't disappear — it moved to
-`ordAt_add_ge_min`'s one call site (`hordN` in `LPairCarrier_add_smul`), which
-now carries its own `sorry`'d `hsum_ne` side fact instead. -/
+proved. **Update: the proof obligation this displaced didn't stay open either.**
+`ordAt_add_ge_min` is no longer called directly from `LPairCarrier_add_smul`'s
+`hordN` at all — `ordAt'_add_ge_min` (`WithTop ℤ`-valued, fully unconditional,
+no `g + g' ≠ 0` hypothesis needed) is used there instead, and discharges
+`ordAt_add_ge_min`'s `g + g' ≠ 0` obligation internally, from its own already-
+established nonzero-ness, at its one remaining call site. The analogous
+`toPair H N' N'' = 0` degeneracy one level up in `LPairCarrier_add_smul` itself
+(previously a `sorry`'d `hordN`/`hsum_ne`-shaped gap, matching this docstring's
+old description) is also closed, via a case split at the top of that theorem's
+proof rather than a side hypothesis threaded through here — see
+`LPairCarrier_add_smul`'s own docstring. -/
 theorem WithZero.log_le_log_of_ne_zero {x y : WithZero (Multiplicative ℤ)}
     (hx : x ≠ 0) (hy : y ≠ 0) (h : x ≤ y) : x.log ≤ y.log := by
   -- Recover `x = exp x.log`, `y = exp y.log` from `exp_log` (needs `x ≠ 0`/`y ≠ 0`),
@@ -1005,10 +1013,34 @@ numerator/denominator built from `A₁,B₁,A₁',B₁',A₂,B₂,A₂',B₂',c�
 a `have` inside `LPairCarrier_add_smul`) purely so it elaborates against its
 own small, explicit local context instead of `LPairCarrier_add_smul`'s much
 larger one — this is what actually relieves the `whnf`/`isDefEq` timeouts in
-the `hchain` step below, not extra heartbeats. -/
+the `hchain` step below, not extra heartbeats.
+
+**Takes `hN'ne : toPair H N' N'' ≠ 0` as an explicit hypothesis (this
+session's fix — previously this case was reached internally via a `by_cases`
+and left `sorry`'d).** Verified concretely, not just asserted: without some
+such hypothesis the conclusion is genuinely false, not merely unproven — e.g.
+take `toPair H A₁ B₁ = toPair H A₂ B₂ = 0` (both numerator pairs the zero
+function; `IsPoleBoundedAtPair` never requires the numerator side nonzero, only
+the denominator, so this is a legitimate instantiation). Then `h1`/`h2` reduce
+to `s ≥ ordAt Q A₁' B₁'` and `s ≥ ordAt Q A₂' B₂'` individually — two
+*separate* lower bounds on `s` — while the goal (with `N' = N'' = 0` forced,
+hence `ordAt Q N' N'' = 0`) needs `s ≥ ordAt Q A₁' B₁' + ordAt Q A₂' B₂'`,
+their *sum*. Taking `Q` a point where both `ordAt Q A₁' B₁'` and
+`ordAt Q A₂' B₂'` are large and positive (a high-order common zero — freely
+choosable since `A₁',B₁',A₂',B₂'` are otherwise unconstrained beyond
+nonzero-as-a-pair) and `s` exactly their max makes `h1,h2` hold while the goal
+fails. Cancellation (`c₁ • toPair H N₁' N₁'' = -(c₂ • toPair H N₂' N₂'')` with
+both summands individually nonzero) lands in the same degenerate branch and is
+no better-behaved, so no weaker side condition on `A₁ B₁`/`A₂ B₂` alone can
+patch this — the hypothesis has to be on `N', N''` themselves. At
+`LPairCarrier_add_smul`'s only call site, `hN'ne` is available for free
+whenever it's true (and when it's false, that theorem now supplies an entirely
+different witness — see the `hzero`/`hNzero` split there — so this lemma is
+only ever invoked under `hN'ne`, never in the case this docstring diagnoses). -/
 theorem LPairCarrier_pointwise (c₁ c₂ : k)
     (A₁ B₁ A₁' B₁' A₂ B₂ A₂' B₂' N₁' N₁'' N₂' N₂'' N' N'' D' D'' : k[X])
     (hA₁'B₁'ne : toPair H A₁' B₁' ≠ 0) (hA₂'B₂'ne : toPair H A₂' B₂' ≠ 0)
+    (hN'ne : toPair H N' N'' ≠ 0)
     (hN₁mul : toPair H N₁' N₁'' = toPair H A₁ B₁ * toPair H A₂' B₂')
     (hN₂mul : toPair H N₂' N₂'' = toPair H A₂ B₂ * toPair H A₁' B₁')
     (hDmul : toPair H D' D'' = toPair H A₁' B₁' * toPair H A₂' B₂')
@@ -1119,68 +1151,44 @@ theorem LPairCarrier_pointwise (c₁ c₂ : k)
           min (ordAt' Q N₁' N₁'') (ordAt' Q N₂' N₂'') :=
         le_min (le_trans (min_le_left _ _) hge1) (le_trans (min_le_right _ _) hge2)
       exact le_trans hmin hstep
-    -- Descend `hordN'` back to `ordAt` (ℤ): the *goal* here, `ordAt Q N' N'' ≥
-    -- ordAt Q D' D'' - s`, is only meaningful/needed with `D', D''` nonzero
-    -- (`hDne` — always true, `D', D''` come from a product of two nonzero pairs)
-    -- and separately whether `N', N''` is nonzero. When `toPair H N' N'' ≠ 0`,
-    -- `hordN'`'s `WithTop ℤ` inequality transports down to the `ordAt`-level
-    -- `hordN` goal cleanly. When `toPair H N' N'' = 0` (only possible, per
-    -- `hNadd`, `toPair_eq_zero_iff`, and `mul_eq_zero`/`smul_eq_zero` in the
-    -- domain `CoordinateRing H` restricted to `k`'s scalar action, when `c₁ =
-    -- c₂ = 0` or when `c₁ • toPair H N₁' N₁'' = -(c₂ • toPair H N₂' N₂'')`
-    -- exactly — a genuine cancellation, not a convention artifact), the target
-    -- `0 ≥ ordAt Q D' D'' - s` is **not derivable from `h1, h2` alone**: e.g. at
-    -- `c₁ = c₂ = 0` (the case `LPair.zero_mem'` instantiates, at the specific
-    -- witness `z₁ = z₂ = 1`, where it happens to hold because `D',D'' = 1,0` are
-    -- unit-valued there) nothing in this lemma's hypotheses bounds `ordAt Q
-    -- A₁' B₁' + ordAt Q A₂' B₂'` above by `s`. This is the one genuine remaining
-    -- gap — see `OrdAtExtended.lean`'s diagnosis, option (a)/(b): either thread a
-    -- nonvanishing hypothesis for `c₁ • toPair H N₁' N₁'' + c₂ • toPair H N₂'
-    -- N₂''` down from `LPairCarrier_add_smul`'s own hypotheses (not yet checked
-    -- whether `IsPoleBoundedAtPair`'s existing conjuncts already force this), or
-    -- weaken `LPairCarrier_add_smul`'s statement to avoid the case. Left
-    -- `sorry`'d, isolated to exactly this one branch, rather than forced.
-    by_cases hN'zero : toPair H N' N'' = 0
-    · sorry
-    · -- `toPair H N' N'' ≠ 0`: transport everything down to `ℤ` via
-      -- `ordAt_eq_ordAt'_of_ne_zero`, applied to `N',N''` (this branch's
-      -- hypothesis) and to `A₂'B₂'`/`A₁'B₁'` (always nonzero, `hA₂'B₂'ne`/
-      -- `hA₁'B₁'ne`, established above from `hne₁`/`hne₂`). `A₁ B₁`/`A₂ B₂`
-      -- themselves may still be zero — `ordAt'`'s `⊤` on that side is handled
-      -- automatically by `WithTop`'s arithmetic in the `≥`-chain below, since we
-      -- only need a lower bound and `⊤` is `≥` anything.
-      have hchain : ordAt' Q N' N'' ≥
-          (ordAt Q A₁' B₁' + ordAt Q A₂' B₂' - s : ℤ) := by
-        calc ordAt' Q N' N'' ≥ min (ordAt' Q N₁' N₁'') (ordAt' Q N₂' N₂'') := hordN'
-          _ = min (ordAt' Q A₁ B₁ + ordAt' Q A₂' B₂') (ordAt' Q A₂ B₂ + ordAt' Q A₁' B₁') := by
-              rw [hordN₁', hordN₂']
-          _ ≥ ((ordAt Q A₁' B₁' + ordAt Q A₂' B₂' - s : ℤ) : WithTop ℤ) := by
-              rw [ordAt_eq_ordAt'_of_ne_zero Q A₂' B₂' hA₂'B₂'ne,
-                  ordAt_eq_ordAt'_of_ne_zero Q A₁' B₁' hA₁'B₁'ne, ge_iff_le, le_min_iff]
-              constructor
-              · -- `↑(A₁'B₁'+A₂'B₂'-s) ≤ ordAt' Q A₁ B₁ + ↑(ordAt Q A₂' B₂')`: from
-                -- `h1 : ordAt Q A₁ B₁ ≥ ordAt Q A₁' B₁' - s` if `toPair H A₁ B₁ ≠ 0`
-                -- (coerce `h1` directly); if `toPair H A₁ B₁ = 0`, `ordAt' Q A₁ B₁ =
-                -- ⊤ ≥` anything, so the bound holds regardless of `h1`.
-                by_cases hA₁B₁ : toPair H A₁ B₁ = 0
-                · have : ordAt' Q A₁ B₁ = ⊤ := by unfold ordAt'; rw [if_pos hA₁B₁]
-                  rw [this]; exact le_top
-                · rw [ordAt_eq_ordAt'_of_ne_zero Q A₁ B₁ hA₁B₁]
-                  have hle1 : (ordAt Q A₁' B₁' + ordAt Q A₂' B₂' - s : ℤ) ≤
-                      ordAt Q A₁ B₁ + ordAt Q A₂' B₂' := by omega
-                  rw [← WithTop.coe_add]
-                  exact WithTop.coe_le_coe.mpr hle1
-              · by_cases hA₂B₂ : toPair H A₂ B₂ = 0
-                · have : ordAt' Q A₂ B₂ = ⊤ := by unfold ordAt'; rw [if_pos hA₂B₂]
-                  rw [this]; simp
-                · rw [ordAt_eq_ordAt'_of_ne_zero Q A₂ B₂ hA₂B₂]
-                  have hle2 : (ordAt Q A₁' B₁' + ordAt Q A₂' B₂' - s : ℤ) ≤
-                      ordAt Q A₂ B₂ + ordAt Q A₁' B₁' := by omega
-                  rw [← WithTop.coe_add]
-                  exact WithTop.coe_le_coe.mpr hle2
-      rw [hordD]
-      rw [ordAt_eq_ordAt'_of_ne_zero Q N' N'' hN'zero] at hchain
-      exact WithTop.coe_le_coe.mp hchain
+    -- Descend `hordN'` back to `ordAt` (ℤ). `toPair H N' N'' ≠ 0` is now a
+    -- hypothesis (`hN'ne`, this session's fix — see the docstring above for why
+    -- the degenerate `toPair H N' N'' = 0` case is genuinely false in general,
+    -- not merely unproven, and has to be excluded rather than patched), so
+    -- `hordN'`'s `WithTop ℤ` inequality transports straight down to the
+    -- `ordAt`-level goal with no further case split needed here.
+    have hchain : ordAt' Q N' N'' ≥
+        (ordAt Q A₁' B₁' + ordAt Q A₂' B₂' - s : ℤ) := by
+      calc ordAt' Q N' N'' ≥ min (ordAt' Q N₁' N₁'') (ordAt' Q N₂' N₂'') := hordN'
+        _ = min (ordAt' Q A₁ B₁ + ordAt' Q A₂' B₂') (ordAt' Q A₂ B₂ + ordAt' Q A₁' B₁') := by
+            rw [hordN₁', hordN₂']
+        _ ≥ ((ordAt Q A₁' B₁' + ordAt Q A₂' B₂' - s : ℤ) : WithTop ℤ) := by
+            rw [ordAt_eq_ordAt'_of_ne_zero Q A₂' B₂' hA₂'B₂'ne,
+                ordAt_eq_ordAt'_of_ne_zero Q A₁' B₁' hA₁'B₁'ne, ge_iff_le, le_min_iff]
+            constructor
+            · -- `↑(A₁'B₁'+A₂'B₂'-s) ≤ ordAt' Q A₁ B₁ + ↑(ordAt Q A₂' B₂')`: from
+              -- `h1 : ordAt Q A₁ B₁ ≥ ordAt Q A₁' B₁' - s` if `toPair H A₁ B₁ ≠ 0`
+              -- (coerce `h1` directly); if `toPair H A₁ B₁ = 0`, `ordAt' Q A₁ B₁ =
+              -- ⊤ ≥` anything, so the bound holds regardless of `h1`.
+              by_cases hA₁B₁ : toPair H A₁ B₁ = 0
+              · have : ordAt' Q A₁ B₁ = ⊤ := by unfold ordAt'; rw [if_pos hA₁B₁]
+                rw [this]; exact le_top
+              · rw [ordAt_eq_ordAt'_of_ne_zero Q A₁ B₁ hA₁B₁]
+                have hle1 : (ordAt Q A₁' B₁' + ordAt Q A₂' B₂' - s : ℤ) ≤
+                    ordAt Q A₁ B₁ + ordAt Q A₂' B₂' := by omega
+                rw [← WithTop.coe_add]
+                exact WithTop.coe_le_coe.mpr hle1
+            · by_cases hA₂B₂ : toPair H A₂ B₂ = 0
+              · have : ordAt' Q A₂ B₂ = ⊤ := by unfold ordAt'; rw [if_pos hA₂B₂]
+                rw [this]; simp
+              · rw [ordAt_eq_ordAt'_of_ne_zero Q A₂ B₂ hA₂B₂]
+                have hle2 : (ordAt Q A₁' B₁' + ordAt Q A₂' B₂' - s : ℤ) ≤
+                    ordAt Q A₂ B₂ + ordAt Q A₁' B₁' := by omega
+                rw [← WithTop.coe_add]
+                exact WithTop.coe_le_coe.mpr hle2
+    rw [hordD]
+    rw [ordAt_eq_ordAt'_of_ne_zero Q N' N'' hN'ne] at hchain
+    exact WithTop.coe_le_coe.mp hchain
 
 /-- `LPairCarrier x₁ x₂` is closed under `k`-linear combinations: the
 common-denominator argument that turns two pole-bounded ratios into one.
@@ -1189,20 +1197,25 @@ c₂ z₂` is represented by numerator `c₁ · toPair A₁ B₁ · toPair A₂'
 · toPair A₂ B₂ · toPair A₁' B₁'` over denominator `toPair A₁' B₁' · toPair
 A₂' B₂'`.
 
-**Status.** All four of `IsPoleBoundedAtPair`'s conjuncts are proved. The
-`ordInfOfPair`-at-infinity conjunct was weakened from `=` to `≥` (see
-`IsPoleBoundedAtPair`'s docstring) since exact equality isn't provable for
-an arbitrary `k`-linear combination (leading-term cancellation between the
-two summands can strictly increase `ordInfOfPair` past the shared value);
-`≥` is what the rest of this file actually needs and is closed here via
-`ordInfOfPair_C_mul_ge`/`ordInfOfPair_add_ge_min`. The other three conjuncts
-go via the shared `LPairCarrier_pointwise` argument (built from
+**Status: fully proved, no `sorry` anywhere in this theorem.** All four of
+`IsPoleBoundedAtPair`'s conjuncts are proved. The `ordInfOfPair`-at-infinity
+conjunct was weakened from `=` to `≥` (see `IsPoleBoundedAtPair`'s docstring)
+since exact equality isn't provable for an arbitrary `k`-linear combination
+(leading-term cancellation between the two summands can strictly increase
+`ordInfOfPair` past the shared value); `≥` is what the rest of this file
+actually needs and is closed here via
+`ordInfOfPair_C_mul_ge`/`ordInfOfPair_add_ge_min`. The pointwise pole-order
+conjunct case-splits on `toPair H N' N'' = 0` right here (rather than inside
+`LPairCarrier_pointwise`): when zero, `c₁ • z₁ + c₂ • z₂` is the zero field
+element and is witnessed directly by `(0,0,1,0)`, sidestepping
+`IsPoleBoundedAtPair`'s pointwise bound entirely rather than trying to force
+it at the original `(N',N'',D',D'')` witness; when nonzero, it goes via the
+shared `LPairCarrier_pointwise` argument (built from
 `ordAt_toPair_mul_of_ne_zero'` for multiplicativity and `ordAt_add_ge_min`
-for the ultrametric step). `ordAt_add_ge_min` itself is now fully proved
-(closed this session via an added `g + g' ≠ 0` hypothesis); the residual gap
-that hypothesis exposes lives instead in `LPairCarrier_pointwise`'s own
-`hordN₁`/`hordN₂`/`hordN` `sorry` (the zero-`toPair`/zero-scalar convention
-boundary). -/
+for the ultrametric step), which now takes `toPair H N' N'' ≠ 0` as an
+explicit hypothesis rather than case-splitting on it internally — see
+`LPairCarrier_pointwise`'s own docstring for why the zero case is genuinely
+unprovable in general and has to be excluded rather than patched. -/
 theorem LPairCarrier_add_smul (hdeg : H.f.natDegree = 5) (x₁ x₂ : H.Point)
     (c₁ c₂ : k) (z₁ z₂ : FractionRing (CoordinateRing H))
     (h₁ : z₁ ∈ LPairCarrier x₁ x₂) (h₂ : z₂ ∈ LPairCarrier x₁ x₂) :
@@ -1291,14 +1304,48 @@ theorem LPairCarrier_add_smul (hdeg : H.f.natDegree = 5) (x₁ x₂ : H.Point)
     -- `ring` would otherwise finish, but there's nothing left for it to do) — the trailing
     -- `ring` was dead weight and Lean rightly complains "no goals to be solved".
     field_simp
-  -- **Shared point-wise argument**, applied below at a generic point `Q` (an affine point
-  -- distinct from `x₁, x₂`, or `x₁`/`x₂` themselves). Factored out to the top-level
-  -- `LPairCarrier_pointwise` lemma above (rather than a `have` inline here) so it
-  -- elaborates against its own small explicit context instead of this theorem's much
-  -- larger one — merely instantiated three times below (at a generic `P`, at `x₁`, at
-  -- `x₂`) rather than reproved inline at each of the three `IsPoleBoundedAtPair` conjuncts.
+  -- **The `toPair H N' N'' = 0` case, handled entirely separately (this session's
+  -- fix — previously routed into `LPairCarrier_pointwise`'s now-removed degenerate
+  -- branch, which was `sorry`'d because the naive goal there is actually false in
+  -- general; see that lemma's docstring for the concrete counterexample).** When
+  -- `toPair H N' N'' = 0`, `z := c₁ • z₁ + c₂ • z₂` is literally the zero element of
+  -- the fraction field (`polePairToFraction N' N'' D' D''` has a zero numerator), so
+  -- there is no need to witness it via `(N',N'',D',D'')` at all — `(0,0,1,0)` is a
+  -- strictly simpler, always-valid witness for `0`, and `IsPoleBoundedAtPair` at that
+  -- witness has no dependence on `A₁,B₁,A₁',B₁',A₂,B₂,A₂',B₂',s` whatsoever, so no
+  -- false general-purpose bound is ever needed.
+  by_cases hN'zero : toPair H N' N'' = 0
+  · have hz0 : c₁ • z₁ + c₂ • z₂ = (0 : FractionRing (CoordinateRing H)) := by
+      rw [hzeq]
+      unfold polePairToFraction
+      rw [hN'zero, map_zero, zero_div]
+    refine ⟨0, 0, 1, 0, ⟨?_, ?_, ?_⟩, ?_⟩
+    · exact fun h => one_ne_zero h.1
+    · rw [ordInfOfPair_zero_zero]
+      exact ordInfOfPair_le_zero 1 0
+    · intro P
+      have hzero00 : toPair H (0 : k[X]) 0 = 0 := by unfold toPair; simp
+      have hordAt00 : ordAt P (0 : k[X]) 0 = 0 := by
+        unfold ordAt; rw [if_pos hzero00]
+      rw [hordAt00, ordAt_one_zero P]
+      have hindnn : (0:ℤ) ≤ (if P = x₁ then (1:ℤ) else 0) + (if P = x₂ then 1 else 0) := by
+        split_ifs <;> omega
+      omega
+    · have hzero00' : toPair H (0 : k[X]) 0 = 0 := by unfold toPair; simp
+      rw [hz0]
+      unfold polePairToFraction
+      rw [hzero00', map_zero, zero_div]
+  -- **`hN'zero` here is `toPair H N' N'' ≠ 0`** (the negation, `by_cases`'s second
+  -- branch) — i.e. exactly the `hN'ne` hypothesis `LPairCarrier_pointwise` now
+  -- requires. **Shared point-wise argument**, applied below at a generic point `Q`
+  -- (an affine point distinct from `x₁, x₂`, or `x₁`/`x₂` themselves). Factored out
+  -- to the top-level `LPairCarrier_pointwise` lemma above (rather than a `have`
+  -- inline here) so it elaborates against its own small explicit context instead of
+  -- this theorem's much larger one — merely instantiated three times below (at a
+  -- generic `P`, at `x₁`, at `x₂`) rather than reproved inline at each of the three
+  -- `IsPoleBoundedAtPair` conjuncts.
   have hpointwise := LPairCarrier_pointwise c₁ c₂ A₁ B₁ A₁' B₁' A₂ B₂ A₂' B₂'
-    N₁' N₁'' N₂' N₂'' N' N'' D' D'' hA₁'B₁'ne hA₂'B₂'ne hN₁mul hN₂mul hDmul hN'_def hN''_def
+    N₁' N₁'' N₂' N₂'' N' N'' D' D'' hA₁'B₁'ne hA₂'B₂'ne hN'zero hN₁mul hN₂mul hDmul hN'_def hN''_def
   rw [hzeq]
   refine ⟨N', N'', D', D'', ⟨hD'D''ne, ?_, ?_⟩, rfl⟩
   · -- `ordInfOfPair N' N'' ≥ ordInfOfPair D' D''` (the actual conjunct required by

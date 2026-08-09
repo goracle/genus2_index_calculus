@@ -7,6 +7,7 @@ import Genus2Lean.PrincipalDivisorSubgroup
 import Genus2Lean.FFKSidon
 import Genus2Lean.HyperellipticClassProof
 import Genus2Lean.RiemannRochGenus2
+import Genus2Lean.RatioDivisorCollapse
 noncomputable section
 
 open Classical
@@ -71,17 +72,6 @@ open Divisor
 variable {k : Type*} [Field k]
 variable {H : HyperellipticPolynomial k}
 variable [IsDedekindDomain (CoordinateRing H)]
-
-/-- `z` is a `k`-constant inside `FractionRing (CoordinateRing H)`: the image of
-some `c : k` under the composite `k → k[X] → CoordinateRing H → FractionRing
-(CoordinateRing H)`. Phrased this way (rather than "`z` has empty pole divisor")
-because it is the notion `finrank_L_pair`'s conclusion (`ℓ = 1`, spanned by `1`)
-actually needs: every element of `LPair x₁ x₂` is *this*, not merely "has no
-poles" (the two coincide for a genus ≥ 1 curve, but the constant phrasing is the
-one that transfers directly into a `finrank = 1` proof via `1` spanning). -/
-def IsConstantFraction (z : FractionRing (CoordinateRing H)) : Prop :=
-  ∃ c : k, z = algebraMap (CoordinateRing H) (FractionRing (CoordinateRing H))
-    (algebraMap k[X] (CoordinateRing H) (C c))
 
 /-- **The crux fact**, stated precisely and cited (see the module docstring):
 uniqueness, up to `k`-scaling of the ratio, of the degree-2 map to `P¹` on a
@@ -155,36 +145,38 @@ theorem finrank_LPair_eq_one_of_uniqueDegree2MapToP1
 `(x₁)+(x₂)` is the only effective divisor in its class: given
 `(x₁)+(x₂)-(x₃)-(x₄) ∈ principalSubgroup H hdeg`, conclude `{x₃,x₄} = {x₁,x₂}`.
 
-**Left `sorry`'d — genuinely open, not mechanical plumbing (correcting this
-theorem's earlier docstring, which understated the gap).** `principalSubgroup`
-is an `AddSubgroup.closure` of ratio-divisor generators: membership means being
-a *finite ± combination* of generators, not literally one generator's divisor.
-So this needs a real two-step argument, neither step of which is done:
+**Now proved**, via the two-step argument formerly stranded downstream in
+`PrincipalSubgroupCollapse.lean` (which imported this file, so its completed
+proof previously could not be pulled back in here without a cycle). That
+material — independent of `uniqueDegree2MapToP1`, and only ever entangled with
+this file because of where it was housed — has since been extracted to
+`RatioDivisorCollapse.lean`, which this file now imports directly:
+`principalSubgroup` is an `AddSubgroup.closure` of ratio-divisor generators, so
+membership means being a *finite ± combination* of generators, not literally one
+generator's divisor; the argument needed is:
 
 1. **Closure collapse**: every `D ∈ principalSubgroup H hdeg` is actually the
    divisor of *some single* nonzero ratio `z ∈ FractionRing (CoordinateRing H)`
-   — true, and provable from what already exists in this project
-   (`AddSubgroup.closure_induction` with motive "`D` is the divisor of some
-   `z ≠ 0`", discharged via `1` for the `zero` case, `z₁ * z₂` for `add`
-   (using `toPair_mul`/`ordAt_toPair_mul_of_ne_zero'`, already in
-   `RiemannRochGenus2.lean`, for the needed multiplicativity), and `z⁻¹` for
-   `neg` — but this induction has not been carried out anywhere in this
-   project and is itself a genuine multi-step proof, not a corollary of
-   anything already on the books.
+   — `isRatioDivisor_of_mem_principalSubgroup` (`RatioDivisorCollapse.lean`).
 2. **Support matching**: given that single-ratio `z`, match its zero/pole
    structure against the specific 4-point target `(x₁)+(x₂)-(x₃)-(x₄)` to
    place `z` in `LPairCarrier x₁ x₂` (or its inverse in `LPairCarrier x₂ x₁`,
    depending on orientation) so `uniqueDegree2MapToP1` actually applies —
-   separate work from step 1.
+   `mem_LPairCarrier_of_isRatioDivisor` (`RatioDivisorCollapse.lean`).
 
-Flagged as its own gap, distinct from `uniqueDegree2MapToP1`, since it is
-divisor-group bookkeeping rather than the genus-2-specific geometric content —
-but it is *real* bookkeeping, not free, and should not be assumed closed by a
-quick follow-up. -/
+`PrincipalSubgroupCollapse.lean`'s `isOnlyEffectiveInClass_of_uniqueDegree2MapToP1'`
+(primed) is the same assembly and is kept as-is there (now itself importing
+`RatioDivisorCollapse.lean` rather than redefining this material) for callers
+already depending on that name. -/
 theorem isOnlyEffectiveInClass_of_uniqueDegree2MapToP1
     (hdeg : H.f.natDegree = 5) (x₁ x₂ : H.Point) (hne : x₂ ≠ Point.iota x₁) :
     IsOnlyEffectiveInClass hdeg x₁ x₂ := by
-  sorry
+  intro x₃ x₄ hmem
+  by_contra hcontra
+  obtain ⟨z, hzmem, hznonconst⟩ :=
+    mem_LPairCarrier_of_isRatioDivisor hdeg x₁ x₂ x₃ x₄
+      (isRatioDivisor_of_mem_principalSubgroup hdeg hmem) hcontra
+  exact hznonconst (uniqueDegree2MapToP1 hdeg x₁ x₂ hne z hzmem)
 
 /-- **Assembly**: `finrank_L_pair` itself, now a two-line combination of the two
 theorems above rather than a bare `sorry`. This is the intended replacement for
@@ -192,7 +184,16 @@ theorems above rather than a bare `sorry`. This is the intended replacement for
 `exact ⟨finrank_LPair_eq_one_of_uniqueDegree2MapToP1 hdeg x₁ x₂ hne,
 isOnlyEffectiveInClass_of_uniqueDegree2MapToP1 hdeg x₁ x₂ hne⟩` once this file is
 wired in (not done automatically here, to avoid editing
-`RiemannRochGenus2.lean`'s statement out from under it mid-session). -/
+`RiemannRochGenus2.lean`'s statement out from under it mid-session).
+
+**Update: `isOnlyEffectiveInClass_of_uniqueDegree2MapToP1` (this file) is no
+longer `sorry`'d** — see its own docstring above — so this theorem is now
+itself fully proved, with its only remaining dependency being
+`uniqueDegree2MapToP1`. It coincides in content with `finrank_L_pair''`
+(`PrincipalSubgroupCollapse.lean`), which combines the same
+`finrank_LPair_eq_one_of_uniqueDegree2MapToP1` with the primed
+`isOnlyEffectiveInClass_of_uniqueDegree2MapToP1'` instead; both are now
+equally complete. Kept here unmodified. -/
 theorem finrank_L_pair' (hdeg : H.f.natDegree = 5) (x₁ x₂ : H.Point)
     (hne : x₂ ≠ Point.iota x₁) :
     Module.finrank k (LPair hdeg x₁ x₂) = 1 ∧ IsOnlyEffectiveInClass hdeg x₁ x₂ :=
