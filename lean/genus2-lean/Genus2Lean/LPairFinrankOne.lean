@@ -963,32 +963,124 @@ theorem denom_B'_eq_zero_of_isPoleBoundedAtPair (hdeg : H.f.natDegree = 5)
       rcases hreduced P with hzero | hzero
       · exact absurd hzero (ne_of_gt hABpos)
       · exact absurd hzero (ne_of_gt hpos)
-  -- **Genuine remaining gap, now narrower.** `hsupp_outside` pins `(A',B')`'s entire affine
-  -- support to `{x₁,x₂}` (at most two points, each with `ordAt ≥ 0`). Combined with `h₂`
-  -- (`∑_T ordAt(A',B') = -ordInfOfPair A'B' ≥ 2 * B'.natDegree + 5 ≥ 5`, from `hordInf_A'B'`),
-  -- this forces `ordAt x₁ A' B' + ordAt x₂ A' B' ≥ 5` (all of the sum concentrated on at most
-  -- two points) — a large affine vanishing order concentrated at ≤ 2 points. Closing the proof
-  -- from here needs either: (a) an explicit bound on how large `ordAt` at a single point can be
-  -- relative to `B'.natDegree` (not yet available in this project — would need something like
-  -- "a nonzero pair's ordAt at any single point is `≤` some function of its total degree"), or
-  -- (b) the `CoordinateRing H` units-are-`k^×` fact (`isUnit_coordinateRing_iff`, stated
-  -- elsewhere in this file, also unproved) to rule out `(A',B')` having *no* affine support at
-  -- all despite `B' ≠ 0`. Neither is available yet — isolated here as the precise remaining gap.
-  sorry
+  -- **Closing the gap.** The missing ingredient isn't a degree bound at all — it's an
+  -- upper bound on `∑_T ordAt(A',B')` itself, which `hreduced` supplies via `hpt` pointwise.
+  -- At any `P`, `hreduced P` gives `ordAt P A B = 0 ∨ ordAt P A' B' = 0`. In the first case,
+  -- `hpt P` reads `ordAt P A B ≥ ordAt P A' B' - ind(P)` where `ind(P) := (if P=x₁ then 1
+  -- else 0) + (if P=x₂ then 1 else 0)`, i.e. `0 ≥ ordAt P A' B' - ind(P)`, so
+  -- `ordAt P A' B' ≤ ind(P)`; in the second case `ordAt P A' B' = 0 ≤ ind(P)` trivially
+  -- (`ind(P) ≥ 0` always). So `ordAt P A' B' ≤ ind(P)` at *every* point, unconditionally —
+  -- no case split on `x₁ = x₂` needed here (unlike a flat `≤ 1` per-point cap, which is false
+  -- when `x₁ = x₂` and both indicators fire together at the single coincident point).
+  -- Summed over `T`, `∑_T ind(P) = 2` regardless of whether `x₁ = x₂` (if equal, both
+  -- indicators fire together at that one point, contributing `2`; if distinct, each
+  -- contributes `1` at its own point), giving `∑_T ordAt(A',B') ≤ 2`.
+  have hcap_at : ∀ P : H.Point,
+      ordAt P A' B' ≤ (if P = x₁ then (1:ℤ) else 0) + (if P = x₂ then (1:ℤ) else 0) := by
+    intro P
+    rcases hreduced P with hzero | hzero
+    · have hind := hpt P
+      rw [hzero] at hind
+      omega
+    · have hind_nonneg : (0:ℤ) ≤ (if P = x₁ then (1:ℤ) else 0) + (if P = x₂ then (1:ℤ) else 0) := by
+        have h1 : (0:ℤ) ≤ if P = x₁ then (1:ℤ) else 0 := by by_cases h : P = x₁ <;> simp [h]
+        have h2 : (0:ℤ) ≤ if P = x₂ then (1:ℤ) else 0 := by by_cases h : P = x₂ <;> simp [h]
+        linarith
+      omega
+  -- `∑_T ordAt(A',B')` is bounded by `∑_T ind(P)`, which telescopes to `2`.
+  have hsum_le : (∑ P ∈ T, ordAt P A' B') ≤ 2 := by
+    calc (∑ P ∈ T, ordAt P A' B')
+        ≤ ∑ P ∈ T, ((if P = x₁ then (1:ℤ) else 0) + (if P = x₂ then (1:ℤ) else 0)) :=
+          Finset.sum_le_sum (fun P _ => hcap_at P)
+      _ = (∑ P ∈ T, (if P = x₁ then (1:ℤ) else 0)) + ∑ P ∈ T, (if P = x₂ then (1:ℤ) else 0) :=
+          Finset.sum_add_distrib
+      _ ≤ 1 + 1 := by
+          have hb1 : (∑ P ∈ T, (if P = x₁ then (1:ℤ) else 0)) ≤ 1 := by
+            have heq : (∑ P ∈ T, (if P = x₁ then (1:ℤ) else 0)) =
+                ((T.filter (fun P => P = x₁)).card : ℤ) := by
+              rw [← Finset.sum_filter]
+              simp [Finset.sum_const]
+            rw [heq]
+            have hsub : T.filter (fun P => P = x₁) ⊆ {x₁} := by
+              intro P hP
+              simp only [Finset.mem_filter] at hP
+              simp [hP.2]
+            have hcard : (T.filter (fun P => P = x₁)).card ≤ 1 := by
+              have := Finset.card_le_card hsub
+              simpa using this
+            exact_mod_cast hcard
+          have hb2 : (∑ P ∈ T, (if P = x₂ then (1:ℤ) else 0)) ≤ 1 := by
+            have heq : (∑ P ∈ T, (if P = x₂ then (1:ℤ) else 0)) =
+                ((T.filter (fun P => P = x₂)).card : ℤ) := by
+              rw [← Finset.sum_filter]
+              simp [Finset.sum_const]
+            rw [heq]
+            have hsub : T.filter (fun P => P = x₂) ⊆ {x₂} := by
+              intro P hP
+              simp only [Finset.mem_filter] at hP
+              simp [hP.2]
+            have hcard : (T.filter (fun P => P = x₂)).card ≤ 1 := by
+              have := Finset.card_le_card hsub
+              simpa using this
+            exact_mod_cast hcard
+          linarith
+      _ = 2 := by norm_num
+  -- Contradiction: `h₂` gives `∑_T ordAt(A',B') = -ordInfOfPair A'B'`, and `hordInf_A'B'`
+  -- gives `ordInfOfPair A'B' ≤ -(2 deg B' + 5) ≤ -5`, so `∑_T ordAt(A',B') ≥ 5 > 2 ≥ hsum_le`.
+  have hB'deg_nonneg : (0:ℤ) ≤ 2 * (B'.natDegree : ℤ) := by positivity
+  omega
 
 /-- **Route A step 2.** Given step 1's `B' = 0`, so `z = (A(x) + B(x)y) / A'(x)`, a
 similar parity argument on `y`'s own pole/zero structure (`y² = f(x)`, `deg f = 5`)
 against the same `≤ 2` affine pole budget forces `B = 0` too, reducing `z` to a pure
-rational function of `x` alone. Not yet proved — needs comparing `B(x)y/A'(x)`'s
-contribution to `ordAt`/`ordInfOfPair` against the bound, in the same style as step 1
-but one level up (SCOPING doc: "same flavor, one level up"). **Caution, not yet
-checked:** step 1's original statement (no `hreduced` hypothesis) turned out to have a
-counterexample already documented elsewhere in this file (the `y/y` self-cancellation
-trick) — this statement hasn't been stress-tested the same way and may need an analogous
-`hreduced`-style lowest-terms hypothesis threaded through before attempting a proof;
-don't assume it's correct as stated without checking first. -/
+rational function of `x` alone.
+
+**Not proved — attempted and reverted this session; the "mirror of step 1" idea is
+WRONG, documenting why so it isn't retried.** Step 1's argument confined `(A',B')`'s
+affine support to `{x₁,x₂}` using `hpt`'s *lower* bound on `ordAt P A B` (the
+numerator) together with `hreduced`, contraposed: `ordAt P A B = 0` (from `hreduced`'s
+first disjunct) forces `ordAt P A' B' ≤ (indicator)` via `hpt` directly, since `hpt`
+reads `ordAt P A B ≥ ordAt P A' B' - indicator`. Trying to run the same argument with
+`(A,B)` and `(A',B')` swapped **does not work**: `hpt` only ever bounds the numerator
+`ordAt P A B` from *below* by the denominator's data — there is no clause anywhere in
+`IsPoleBoundedAtPair` bounding `ordAt P A B` from *above*. So "`(A,B)`'s affine support
+is confined to `{x₁,x₂}`" is simply not derivable from `hbound` the way it was for
+`(A',B')` — a numerator is free to vanish at as many extra points as it likes; only its
+*poles* (via the denominator) are constrained. The whole "confine support, then contradict
+degree-5-driven lower bound" strategy therefore does not transfer to step 2 as stated.
+
+**What's actually needed instead** (re-reading `SCOPING-finrank-L-pair.md`'s step 2
+description: "comparing `y`'s own pole/zero structure... against the bound"): this is not
+about the *affine* divisor of `(A,B)` at all — it's about `y`'s pole structure specifically
+*at infinity*, i.e. an argument purely via `ordInfOfPair`/`pairNorm`'s degree formula,
+without needing `T`/`hspec`/finite-support machinery at all (unlike what this session's
+now-reverted attempt assumed). Sketch: `B' = 0` gives `ordInfOfPair A' 0 = -2 deg A'`
+(even). `hmono : ordInfOfPair A B ≥ -2 deg A'`. If `B ≠ 0`, `ordInfOfPair A B =
+-(max(2 deg A, 2 deg B + 5))`. The genuinely hard content is presumably in
+`pairNorm`/`toPair_mul_involution`: `toPair H A B * involution H (toPair H A B) =
+algebraMap (pairNorm H A B)` with `pairNorm H A B = A² - B²f` — and `z = toPair H A B /
+algebraMap A'` being pole-bounded by `(x₁)+(x₂)` (mass 2) should force `pairNorm H A B`
+(degree `-ordInfOfPair A B` when nonzero, by `natDegree_pairNorm_eq_neg_ordInfOfPair`) to
+be small — but making "mass 2 at `{x₁,x₂}`" talk to `pairNorm`'s *global* degree still
+seems to need the same `T`/`deg_div_eq_zero_deg5` connection step 1 used, just applied to
+a different quantity than "confine `(A,B)`'s support". **Not resolved this session** —
+flagging the dead end found (mirroring step 1 verbatim) rather than guessing further;
+whoever picks this up next should start from `pairNorm`/`toPair_mul_involution` and the
+`y_sq_eq` relation (`HyperellipticFunctionField.lean`) rather than repeating the
+affine-support-confinement approach. **One more data point against a quick affine-`ordAt`
+route**: checked whether `y`'s own affine vanishing structure (needed for any argument
+that goes pointwise through `ordAt P A B` with `B ≠ 0`, rather than staying at the
+`pairNorm`/infinity level) is already characterized elsewhere — it is not, fully.
+`HyperellipticClassProof.lean`'s `ordAt_linX_eq`-adjacent machinery (§B, around line 187)
+is itself mid-scaffold with real unresolved `sorry`s in the ramified/unramified local-
+uniformizer case split for `linX`, and doesn't cover `toPair H B 0`-style pairs (`y`
+itself, `A=0`) at all — so a pointwise `ordAt`-based route through step 2 would likely
+need to redo comparable local-uniformizer work from scratch, not just reuse existing
+lemmas. This reinforces that the `pairNorm`-at-infinity route sketched above is the more
+promising direction, even though it isn't fully worked out either. -/
 theorem num_B_eq_zero_of_isPoleBoundedAtPair (x₁ x₂ : H.Point) (A B A' B' : k[X])
-    (hbound : IsPoleBoundedAtPair x₁ x₂ A B A' B') (hB' : B' = 0) :
+    (hbound : IsPoleBoundedAtPair x₁ x₂ A B A' B') (hB' : B' = 0)
+    (hreduced : ∀ P : H.Point, ordAt P A B = 0 ∨ ordAt P A' B' = 0) :
     B = 0 := by
   sorry
 
