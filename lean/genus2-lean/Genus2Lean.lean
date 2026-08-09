@@ -27,4 +27,5 @@ import Genus2Lean.SidonBridge
 import Genus2Lean.RiemannRochGenus2
 import Genus2Lean.RiemannRochCrux
 import Genus2Lean.PrincipalSubgroupCollapse
+import Genus2Lean.OrdAtExtended
 
