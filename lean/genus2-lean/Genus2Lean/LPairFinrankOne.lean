@@ -1236,10 +1236,13 @@ theorem toPair_C_notMem_pointIdeal (c : k) (hc : c ≠ 0) (P : H.Point) :
     toPair H (Polynomial.C c) (0 : k[X]) ∉ pointIdeal P := by
   intro hmem
   have hunit : IsUnit (toPair H (Polynomial.C c) (0 : k[X])) := by
-    refine isUnit_of_mul_eq_one _ (toPair H (Polynomial.C c⁻¹) 0) ?_
-    have hmul := toPair_mul (H := H) (Polynomial.C c) 0 (Polynomial.C c⁻¹) 0
-    simp only [zero_mul, mul_zero, zero_add, add_zero] at hmul
-    rw [hmul, ← Polynomial.C_mul, mul_inv_cancel₀ hc, Polynomial.C_1, toPair_one_zero]
+    have hmul_fwd : toPair H (Polynomial.C c) 0 * toPair H (Polynomial.C c⁻¹) 0 = 1 := by
+      have hmul := toPair_mul (H := H) (Polynomial.C c) 0 (Polynomial.C c⁻¹) 0
+      simp only [zero_mul, mul_zero, zero_add, add_zero] at hmul
+      rw [hmul, ← Polynomial.C_mul, mul_inv_cancel₀ hc, Polynomial.C_1, toPair_one_zero]
+    have hmul_bwd : toPair H (Polynomial.C c⁻¹) 0 * toPair H (Polynomial.C c) 0 = 1 := by
+      rw [mul_comm]; exact hmul_fwd
+    exact ⟨⟨toPair H (Polynomial.C c) 0, toPair H (Polynomial.C c⁻¹) 0, hmul_fwd, hmul_bwd⟩, rfl⟩
   exact (pointIdeal_isMaximal P).ne_top
     (Ideal.eq_top_of_isUnit_mem (pointIdeal P) hmem hunit)
 
@@ -1267,8 +1270,9 @@ theorem ordAt_C_mul_eq (c : k) (hc : c ≠ 0) (P Q : k[X]) (hPQ : ¬ (P = 0 ∧ 
   have hPQne : toPair H P Q ≠ 0 := by rw [Ne, toPair_eq_zero_iff]; exact hPQ
   have hmul : toPair H (Polynomial.C c * P) (Polynomial.C c * Q) =
       toPair H (Polynomial.C c) (0 : k[X]) * toPair H P Q := by
-    have := toPair_mul (H := H) (Polynomial.C c) 0 P Q
-    simpa using this
+    have hraw := toPair_mul (H := H) (Polynomial.C c) 0 P Q
+    simp only [zero_mul, mul_zero, zero_add, add_zero] at hraw
+    exact hraw.symm
   by_cases hbot : pointIdeal R = ⊥
   · -- `ordAt` is `0` by definition at every `⊥`-ideal point, on both sides.
     have hne : toPair H (Polynomial.C c * P) (Polynomial.C c * Q) ≠ 0 := by
@@ -1308,20 +1312,67 @@ theorem eq_zero_or_C_or_C_mul_linX_of_natDegree_le_one (P : k[X]) (hP : P.natDeg
     · left; exact hP0
   · -- `coeff 1 ≠ 0`: `P = C (coeff 1) * X + C (coeff 0) = C (coeff 1) * (X - C (-coeff 0 / coeff 1))`.
     right; right
-    refine ⟨P.coeff 1, hP1, -(P.coeff 0 / P.coeff 1), ?_⟩
+    set c := P.coeff 1 with hc_def
+    set c₀ := P.coeff 0 with hc₀_def
+    refine ⟨c, -(c₀ / c), hP1, ?_⟩
     unfold linX
-    have hPeq : P = Polynomial.C (P.coeff 1) * Polynomial.X + Polynomial.C (P.coeff 0) := by
+    have hPeq : P = Polynomial.C c * Polynomial.X + Polynomial.C c₀ := by
       apply Polynomial.ext
       intro n
-      interval_cases n
-      · simp
-      · simp
-      all_goals (
-        have hn2 : (2:ℕ) ≤ n + 2 := by omega
-        sorry)
+      match n with
+      | 0 => simp [hc₀_def]
+      | 1 => simp [hc_def]
+      | (m + 2) =>
+        have hlt : P.natDegree < m + 2 := by omega
+        rw [Polynomial.coeff_eq_zero_of_natDegree_lt hlt]
+        simp
     rw [hPeq]
-    rw [mul_sub, mul_neg, sub_neg_eq_add, mul_div_cancel₀ _ hP1]
+    have hc_ne : c ≠ 0 := hP1
+    have hscalar : c * (-(c₀ / c)) = -c₀ := by
+      field_simp
+    have hlift : Polynomial.C c * Polynomial.C (-(c₀ / c)) = -Polynomial.C c₀ := by
+      rw [← Polynomial.C_mul, hscalar, Polynomial.C_neg]
+    rw [mul_sub, eq_sub_iff_add_eq, hlift]
     ring
+
+/-- **Helper: a `Divisor H` equation between two pairs of `single`s forces set equality
+of the underlying pairs.** Proved by evaluating both sides at each candidate point
+(`congrArg (fun D => D P)`) rather than reasoning about `Finsupp.support` directly — robust
+to coincidences among `a, b, c, d` (e.g. `a = b`). This is the reusable bookkeeping step that
+turns a literal divisor identity into a set-level conclusion; see call sites below. -/
+private lemma set_eq_of_two_singletons_eq
+    {a b c d : H.Point}
+    (h : (single a + single b : Divisor H) = single c + single d) :
+    ({a, b} : Set H.Point) = {c, d} := by
+  classical
+  -- Evaluate `coeffAt` of both sides at every point `x`: gives a single equation of
+  -- indicator sums that determines membership in `{a,b}` iff membership in `{c,d}`,
+  -- without ever `subst`ing `x` into `a,b,c,d` (which renames the wrong variable and
+  -- makes `a,b,c,d` disappear from context).
+  have hcoeff : ∀ x : H.Point,
+      (if x = a then 1 else 0) + (if x = b then 1 else 0) =
+        (if x = c then 1 else 0) + (if x = d then (1 : ℤ) else 0) := by
+    intro x
+    have h' := congrArg (Divisor.coeffAt x) h
+    simpa [map_add, Divisor.coeffAt_single, eq_comm] using h'
+  ext x
+  simp only [Set.mem_insert_iff, Set.mem_singleton_iff]
+  have hx := hcoeff x
+  by_cases hxa : x = a <;> by_cases hxb : x = b <;>
+    by_cases hxc : x = c <;> by_cases hxd : x = d <;>
+    (try rw [if_pos hxa] at hx) <;> (try rw [if_neg hxa] at hx) <;>
+    (try rw [if_pos hxb] at hx) <;> (try rw [if_neg hxb] at hx) <;>
+    (try rw [if_pos hxc] at hx) <;> (try rw [if_neg hxc] at hx) <;>
+    (try rw [if_pos hxd] at hx) <;> (try rw [if_neg hxd] at hx) <;>
+    first
+      | exact absurd hx (by omega)
+      | (refine ⟨fun h => ?_, fun h => ?_⟩ <;>
+          rcases h with h | h <;>
+          first
+            | exact Or.inl hxa | exact Or.inr hxb
+            | exact Or.inl hxc | exact Or.inr hxd
+            | exact absurd h hxa | exact absurd h hxb
+            | exact absurd h hxc | exact absurd h hxd)
 
 /-- **Route A step 3 — the one genuinely new piece of reasoning** (per the SCOPING
 doc; reuses `ordAt_linX_eq` rather than inventing ramification theory). Given steps
@@ -1381,7 +1432,22 @@ divisor" is real work (comparable to `divToPair_linX_eq_of_unramified`'s own
 proof), not yet carried out here. Left as a `sorry` with the full case-by-case
 plan recorded, rather than a single opaque gap — whoever continues this should
 be able to fill in each of the four cases above independently rather than
-re-deriving the case split itself. -/
+re-deriving the case split itself. (Partial progress this session: the fully-
+vanishing `A = A' = 0` branch is proved below; the remaining branches — mixed
+sign, same-root, different-roots — are left as separate named `sorry`s, per
+the case split above.) -/
+
+/-- **Helper for the "constant" branches of `fiber_eq_of_pure_rational_pole_match`.**
+`divToPair (C c) 0 S = 0` for any nonzero constant `c` and any finite support `S`:
+`ordAt P (C c) 0 = 0` at every point `P` (`ordAt_C_zero`), so every summand is
+`0 • single P = 0`. -/
+theorem divToPair_C_eq_zero (c : k) (hc : c ≠ 0) (S : Finset H.Point) :
+    (divToPair (Polynomial.C c) 0 S : Divisor H) = 0 := by
+  unfold divToPair
+  refine Finset.sum_eq_zero (fun P _ => ?_)
+  rw [ordAt_C_zero c hc P]
+  simp
+
 theorem fiber_eq_of_pure_rational_pole_match (hchar : (2 : k) ≠ 0) (hsf : Squarefree H.f)
     (x₁ x₂ x₃ x₄ : H.Point)
     (hne : x₂ ≠ Point.iota x₁) (A A' : k[X]) (hdegA : A.natDegree ≤ 1)
@@ -1389,7 +1455,45 @@ theorem fiber_eq_of_pure_rational_pole_match (hchar : (2 : k) ≠ 0) (hsf : Squa
     (hpoles : (divToPairRatio A 0 {x₁, x₂, x₃, x₄} A' 0 {x₁, x₂, x₃, x₄} : Divisor H) =
       single x₃ + single x₄ - single x₁ - single x₂) :
     ({x₃, x₄} : Set H.Point) = {x₁, x₂} := by
-  sorry
+  classical
+  -- Shared closing step for every branch where `divToPairRatio A 0 _ A' 0 _ = 0`:
+  -- rearrange `hpoles` into `single x₃ + single x₄ = single x₁ + single x₂` and hand
+  -- off to `set_eq_of_two_singletons_eq`, exactly as the `A = A' = 0` branch does.
+  have hclose : (divToPairRatio A 0 {x₁, x₂, x₃, x₄} A' 0 {x₁, x₂, x₃, x₄} : Divisor H) = 0 →
+      ({x₃, x₄} : Set H.Point) = {x₁, x₂} := by
+    intro hzero
+    have hsum : (single x₃ + single x₄ : Divisor H) = single x₁ + single x₂ := by
+      rw [hzero] at hpoles
+      have := hpoles.symm
+      rwa [sub_sub, sub_eq_zero] at this
+    exact set_eq_of_two_singletons_eq hsum
+  rcases eq_zero_or_C_or_C_mul_linX_of_natDegree_le_one A hdegA with hA0 | ⟨c, hc, hAc⟩ | ⟨c, a, hc, hAlin⟩
+  · rcases eq_zero_or_C_or_C_mul_linX_of_natDegree_le_one A' hdegA' with hA'0 | ⟨c', hc', hA'c⟩ | ⟨c', a', hc', hA'lin⟩
+    · -- Both `A`, `A'` effectively zero: `divToPair` of `(0,0)` is `0` on both sides.
+      apply hclose
+      simp [divToPairRatio, divToPair, hA0, hA'0]
+    · -- `A = 0`, `A'` a nonzero constant: `divToPair A 0 _ = 0` (`A = 0`) and
+      -- `divToPair A' 0 _ = 0` (`divToPair_C_eq_zero`), so the ratio is again `0`.
+      apply hclose
+      simp [divToPairRatio, hA0, hA'c, divToPair_C_eq_zero c' hc', divToPair]
+    · sorry -- `A = 0`, `A' = C c' * linX a'`: mixed-sign branch, genuinely delicate (see docstring)
+  · rcases eq_zero_or_C_or_C_mul_linX_of_natDegree_le_one A' hdegA' with hA'0 | ⟨c', hc', hA'c⟩ | ⟨c', a', hc', hA'lin⟩
+    · -- `A` a nonzero constant, `A' = 0`: symmetric to the previous case.
+      apply hclose
+      simp [divToPairRatio, hAc, hA'0, divToPair_C_eq_zero c hc, divToPair]
+    · -- Both nonzero constants: both halves vanish via `divToPair_C_eq_zero`.
+      apply hclose
+      simp [divToPairRatio, hAc, hA'c, divToPair_C_eq_zero c hc, divToPair_C_eq_zero c' hc']
+    · sorry -- `A` constant, `A' = C c' * linX a'`: mixed-sign branch
+  · rcases eq_zero_or_C_or_C_mul_linX_of_natDegree_le_one A' hdegA' with hA'0 | ⟨c', hc', hA'c⟩ | ⟨c', a', hc', hA'lin⟩
+    · sorry -- `A = C c * linX a`, `A' = 0`: mixed-sign branch
+    · sorry -- `A = C c * linX a`, `A'` constant: mixed-sign branch
+    · -- Both linear: split on whether the roots coincide.
+      by_cases haeq : a = a'
+      · sorry -- same root: both sides reduce to the same fiber divisor via `ordAt_C_mul_eq` +
+              -- `divToPair_linX_eq`, giving `divToPairRatio = 0`; same pattern as the vanishing cases.
+      · sorry -- different roots: genuinely uses `hne` and the hyperelliptic involution;
+              -- the one branch that isn't bookkeeping (see docstring above).
 
 
 
