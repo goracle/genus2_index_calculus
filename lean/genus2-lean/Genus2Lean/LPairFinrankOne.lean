@@ -129,6 +129,54 @@ crook):
   case" branch the same way §3f already did — two names for adjacent parts
   of the same remaining gap.
 
+**Status (latest session, continued): `h_deg_A'` rewired to actually use `hne`.**
+Per a ChatGPT-assisted design pass (transcript on file), the false
+`natDegree_eq_zero_of_ordInf_bound` (pure `ordInfOfPair`-size bound, no point
+data, provably false — see its old docstring, now removed) has been replaced
+by `natDegree_eq_zero_of_isPoleBoundedAtPair`, which takes `hne` and the
+pointwise pole bound `hpt` (specialized to `B = B' = 0`) as real hypotheses.
+`constant_or_fiber_of_isPoleBoundedAtPair`'s `h_deg_A'` step now calls this
+new lemma instead, so `hne` is finally used somewhere in the "Main case"
+branch (previously it appeared only in the theorem's signature). **The new
+lemma is itself still `sorry`'d — this was a wiring/shape fix, not a proof of
+new math.** ChatGPT's diagnosis (confirmed by hand): the natural next tool,
+`fiber_eq_of_pure_rational_pole_match`, does NOT directly apply here, because
+its hypothesis is an exact divisor *equation* with named witness points
+`x₃,x₄`, while this call site only has a pointwise *inequality* plus finite
+supports — no witnesses have been constructed. Closing
+`natDegree_eq_zero_of_isPoleBoundedAtPair` needs either its own direct
+`ordAt_linX_eq` case analysis (applied to the single point `Q'` with `Q'.X =
+a'`, likely less work) or a new "pointwise bound ⟹ exact divisor equation"
+bridge lemma before `fiber_eq_of_pure_rational_pole_match` can be invoked —
+see the new lemma's docstring for the full writeup. **Side effect**:
+`constant_or_fiber_of_isPoleBoundedAtPair` and `uniqueDegree2MapToP1_of_
+elementary` now both take `hchar : (2:k) ≠ 0` and `hsf : Squarefree H.f` as
+extra parameters (threaded through to the new lemma, which needs them for a
+future `ordAt_linX_eq` call) — this was already anticipated in this file's
+"Downstream callers... will need the same two hypotheses threaded through"
+note above.
+
+**Status (latest session, continued further): `fiber_eq_of_pure_rational_pole_match`
+found FALSE as originally stated, now weakened.** A second AI (cross-checking the
+first's diagnosis of Goals 1–5) found a genuine counterexample: because `divToPair`
+sums only over the caller-chosen `Finset` `{x₁,x₂,x₃,x₄}`, setting `x₄ := x₂` (a legal
+choice — `Finset` literals dedup) can silently truncate a fiber, letting `hpoles` hold
+while the conclusion is false. Independently verified by hand against `divToPair`'s
+definition (see the theorem's own docstring for the full counterexample) — this is a
+real hole, not a false alarm. **Fix**: added two new hypotheses, `hclosed₁`/`hclosed₃`,
+requiring the support set to be ι-closed at whichever root each side witnesses — true at
+every anticipated call site, since those call sites already fix `{x₁,x₂,x₃,x₄}` as a
+concrete set rather than an arbitrary superset. The mixed-sign/same-root branches
+(Goals 1–4 in that session's numbering) don't need this fix at all — the same AI pass
+also confirmed they close via the *already-proved* `ordAt_nonneg` (`PrincipalDivisors.
+lean:472`, `toPair H A B ≠ 0 → pointIdeal P ≠ ⊥ → 0 ≤ ordAt P A B`), no new lemma
+required, contrary to an initial suggestion to add a redundant `ordAt_linX_nonneg`.
+Per project convention this was a "weaken first" situation, not a "delete" one — the
+five branch `sorry`s are otherwise untouched and still open; only the theorem's
+signature changed. `fiber_eq_of_divisor_shape` (still `sorry`, unaffected build-wise
+since nothing calls this theorem yet) will need to supply `hclosed₁`/`hclosed₃` once
+it's wired up — flagged in its own comment now.
+
 **Dupe-check against `UniqueDegree2MapRiemannHurwitz.lean` (this session):** no name
 collisions (`grep`-verified) and no import relationship either direction, so no cycle
 risk. Conceptually this file's §3 deliberately does *not* build any of that file's
@@ -1374,6 +1422,61 @@ private lemma set_eq_of_two_singletons_eq
             | exact absurd h hxa | exact absurd h hxb
             | exact absurd h hxc | exact absurd h hxd)
 
+/-- **`ordAt` at the zero pair is always `0`.** Direct from `ordAt`'s own
+`if toPair H A B = 0 then 0 else ...` branch: `toPair H 0 0 = 0` (`toPair`
+unfolds to `algebraMap _ _ 0 + algebraMap _ _ 0 * y H = 0`), so the `if`
+fires immediately regardless of `P`. -/
+theorem ordAt_zero_zero (P : H.Point) : ordAt P (0 : k[X]) (0 : k[X]) = 0 := by
+  have hz : toPair H (0 : k[X]) (0 : k[X]) = 0 := by simp [toPair]
+  unfold ordAt
+  rw [if_pos hz]
+
+/-- **Helper for the "constant" branches of `fiber_eq_of_pure_rational_pole_match`.**
+`divToPair (C c) 0 S = 0` for any nonzero constant `c` and any finite support `S`:
+`ordAt P (C c) 0 = 0` at every point `P` (`ordAt_C_zero`), so every summand is
+`0 • single P = 0`. -/
+theorem divToPair_C_eq_zero (c : k) (hc : c ≠ 0) (S : Finset H.Point) :
+    (divToPair (Polynomial.C c) 0 S : Divisor H) = 0 := by
+  unfold divToPair
+  refine Finset.sum_eq_zero (fun P _ => ?_)
+  rw [ordAt_C_zero c hc P]
+  simp
+
+/-- **Sibling of `divToPair_C_eq_zero` for the literal zero pair.**
+`divToPair 0 0 S = 0` for any finite support `S`, via `ordAt_zero_zero`. -/
+theorem divToPair_zero_zero_eq_zero (S : Finset H.Point) :
+    (divToPair (0 : k[X]) (0 : k[X]) S : Divisor H) = 0 := by
+  unfold divToPair
+  refine Finset.sum_eq_zero (fun P _ => ?_)
+  rw [ordAt_zero_zero P]
+  simp
+
+/-- **New helper, closes all four "mixed-sign" branches of
+`fiber_eq_of_pure_rational_pole_match` uniformly.** `divToPair A 0 S` always has every
+term `ordAt P A 0 ≥ 0` (`ordAt`'s own `if`/`dif` gives `0` in the `toPair = 0` and
+`pointIdeal = ⊥` branches, `ordAt_nonneg` gives `≥ 0` in the genuine branch — so `≥ 0`
+unconditionally, no case split needed at the call site). If in addition
+`∑ P ∈ S, ordAt P A 0 = 0` (i.e. `divToPair A 0 S` has degree `0`, via `deg_divToPair`),
+every term must be exactly `0` (`Finset.sum_eq_zero_iff_of_nonneg`), hence
+`divToPair A 0 S = 0` termwise. -/
+theorem divToPair_right_zero_eq_zero_of_deg_eq_zero (A : k[X]) (S : Finset H.Point)
+    (hdeg : deg (divToPair A 0 S) = 0) :
+    (divToPair A 0 S : Divisor H) = 0 := by
+  have hordnn : ∀ P ∈ S, 0 ≤ ordAt P A 0 := by
+    intro P _
+    by_cases hz : toPair H A 0 = 0
+    · unfold ordAt; rw [if_pos hz]
+    · by_cases hbot : pointIdeal P = ⊥
+      · unfold ordAt; rw [if_neg hz, dif_pos hbot]
+      · exact ordAt_nonneg P A 0 hz hbot
+  rw [deg_divToPair] at hdeg
+  have hall0 : ∀ P ∈ S, ordAt P A 0 = 0 :=
+    (Finset.sum_eq_zero_iff_of_nonneg hordnn).mp hdeg
+  unfold divToPair
+  refine Finset.sum_eq_zero (fun P hP => ?_)
+  rw [hall0 P hP]
+  simp
+
 /-- **Route A step 3 — the one genuinely new piece of reasoning** (per the SCOPING
 doc; reuses `ordAt_linX_eq` rather than inventing ramification theory). Given steps
 1–2 (`B = B' = 0`, so `z = A(x)/A'(x)`), the `≤ 2` total pole-degree bound forces
@@ -1435,25 +1538,52 @@ be able to fill in each of the four cases above independently rather than
 re-deriving the case split itself. (Partial progress this session: the fully-
 vanishing `A = A' = 0` branch is proved below; the remaining branches — mixed
 sign, same-root, different-roots — are left as separate named `sorry`s, per
-the case split above.) -/
+the case split above.)
 
-/-- **Helper for the "constant" branches of `fiber_eq_of_pure_rational_pole_match`.**
-`divToPair (C c) 0 S = 0` for any nonzero constant `c` and any finite support `S`:
-`ordAt P (C c) 0 = 0` at every point `P` (`ordAt_C_zero`), so every summand is
-`0 • single P = 0`. -/
-theorem divToPair_C_eq_zero (c : k) (hc : c ≠ 0) (S : Finset H.Point) :
-    (divToPair (Polynomial.C c) 0 S : Divisor H) = 0 := by
-  unfold divToPair
-  refine Finset.sum_eq_zero (fun P _ => ?_)
-  rw [ordAt_C_zero c hc P]
-  simp
+**Statement WEAKENED this session — the original version above (no `S`-containment
+hypothesis) is FALSE.** A second AI cross-check (after the ChatGPT pass that diagnosed
+Goals 1–4/5's difficulty) found a genuine counterexample to the *unrestricted* claim,
+independently confirmed by hand against `divToPair`'s literal definition (`∑ P ∈ S, ordAt
+P A B • single P` — `Finset`, no multiplicity):
 
+Take `a ≠ a'`, `x₃` an *unramified* point with `x₃.X = a` (so `ι x₃ ≠ x₃`), `x₁` any point
+with `x₁.X = a'`, and — the crux — **`x₄ := x₂`** for some `x₂` with `x₂.X` neither `a` nor
+`a'`. Then `{x₁,x₂,x₃,x₄}` as a `Finset` *dedups* to `{x₁,x₂,x₃}` (`x₄ = x₂` literally),
+so `divToPair (linX a) 0 {x₁,x₂,x₃,x₄}` only ever sums over `x₃` from the `a`-fiber — `ι
+x₃ ∉ {x₁,x₂,x₃}` by construction, so its term is silently dropped, never cancelled. The
+resulting LHS collapses to exactly `single x₃ - single x₁`, which equals the RHS
+`single x₃+single x₄-single x₁-single x₂` once `x₄=x₂` is substituted (`single x₄` and
+`single x₂` then literally cancel) — so `hpoles` holds. `hne` also holds (`x₂.X ∉ {a,a'}`
+rules out `x₂ = ι x₁`). But the conclusion `{x₃,x₄}={x₁,x₂}` becomes `{x₃,x₂}={x₁,x₂}`,
+false since `x₃ ∉ {x₁,x₂}` by construction. **So the theorem, exactly as stated with a bare
+`S = {x₁,x₂,x₃,x₄}` support and no further hypothesis, is false** — the fix is not a matter
+of finishing the case split below (which is still the right shape once the hole is patched),
+but of ruling out this "truncated, partially-cancelled fiber" loophole first.
+
+**Fix applied**: an `hsupp₃ : fiberSupport ⟨a, _⟩ ⊆ {x₁,x₂,x₃,x₄}`-style containment is
+awkward to state directly (`fiberSupport` takes a `H.Point`, not a bare root `a : k`, and
+no point with `.X = a` is given by name until deep in the case split). Instead, the
+containment is stated the way it is actually *needed and available* at each call site: as a
+direct hypothesis that whichever of `x₁,x₂,x₃,x₄` witnesses a root also has its ι-partner in
+the support set, i.e. **the two hypotheses below**, which are exactly what's true whenever
+this theorem is actually invoked from `constant_or_fiber_of_isPoleBoundedAtPair`/`fiber_eq_
+of_divisor_shape` (that call site already knows `{x₁,x₂,x₃,x₄}` is a specific 4-point set,
+not an arbitrary superset, so asserting `ι`-closure on it is a real, checkable side
+condition there, not a hidden circularity). This is the honest "weaken first" fix per
+project convention — deleting the theorem outright was not necessary, since the mixed-sign
+and same-root branches below remain true and provable regardless (`ordAt_nonneg`, see next
+paragraph, closes them cleanly); only the different-roots branch needed the extra
+hypothesis. -/
 theorem fiber_eq_of_pure_rational_pole_match (hchar : (2 : k) ≠ 0) (hsf : Squarefree H.f)
     (x₁ x₂ x₃ x₄ : H.Point)
     (hne : x₂ ≠ Point.iota x₁) (A A' : k[X]) (hdegA : A.natDegree ≤ 1)
     (hdegA' : A'.natDegree ≤ 1)
     (hpoles : (divToPairRatio A 0 {x₁, x₂, x₃, x₄} A' 0 {x₁, x₂, x₃, x₄} : Divisor H) =
-      single x₃ + single x₄ - single x₁ - single x₂) :
+      single x₃ + single x₄ - single x₁ - single x₂)
+    (hclosed₁ : ∀ Q ∈ ({x₁, x₂, x₃, x₄} : Finset H.Point), Q.X = x₁.X →
+      Point.iota Q ∈ ({x₁, x₂, x₃, x₄} : Finset H.Point))
+    (hclosed₃ : ∀ Q ∈ ({x₁, x₂, x₃, x₄} : Finset H.Point), Q.X = x₃.X →
+      Point.iota Q ∈ ({x₁, x₂, x₃, x₄} : Finset H.Point)) :
     ({x₃, x₄} : Set H.Point) = {x₁, x₂} := by
   classical
   -- Shared closing step for every branch where `divToPairRatio A 0 _ A' 0 _ = 0`:
@@ -1475,23 +1605,175 @@ theorem fiber_eq_of_pure_rational_pole_match (hchar : (2 : k) ≠ 0) (hsf : Squa
     · -- `A = 0`, `A'` a nonzero constant: `divToPair A 0 _ = 0` (`A = 0`) and
       -- `divToPair A' 0 _ = 0` (`divToPair_C_eq_zero`), so the ratio is again `0`.
       apply hclose
-      simp [divToPairRatio, hA0, hA'c, divToPair_C_eq_zero c' hc', divToPair]
-    · sorry -- `A = 0`, `A' = C c' * linX a'`: mixed-sign branch, genuinely delicate (see docstring)
-  · rcases eq_zero_or_C_or_C_mul_linX_of_natDegree_le_one A' hdegA' with hA'0 | ⟨c', hc', hA'c⟩ | ⟨c', a', hc', hA'lin⟩
-    · -- `A` a nonzero constant, `A' = 0`: symmetric to the previous case.
+      unfold divToPairRatio
+      rw [hA0, hA'c, divToPair_C_eq_zero c' hc', divToPair_zero_zero_eq_zero]
+      simp
+    · -- `A = 0`, `A' = C c' * linX a'`: `divToPairRatio` reduces to
+      -- `- divToPair (linX a') 0 S` (via `ordAt_C_mul_eq` stripping the scalar), and
+      -- `hpoles` (degree `0` on the RHS) forces this to have degree `0` too, hence
+      -- (`ordAt_nonneg` — no term can be negative) it must vanish termwise
+      -- (`divToPair_right_zero_eq_zero_of_deg_eq_zero`).
       apply hclose
-      simp [divToPairRatio, hAc, hA'0, divToPair_C_eq_zero c hc, divToPair]
+      have hstep : (divToPairRatio A 0 {x₁, x₂, x₃, x₄} A' 0 {x₁, x₂, x₃, x₄} : Divisor H) =
+          - divToPair (linX a') 0 {x₁, x₂, x₃, x₄} := by
+        unfold divToPairRatio
+        rw [hA0, hA'lin, divToPair_zero_zero_eq_zero]
+        have hlinXne : linX a' ≠ (0 : k[X]) := by
+          rw [linX]; intro h
+          have hdeg := Polynomial.natDegree_X_sub_C a'
+          rw [h, Polynomial.natDegree_zero] at hdeg
+          exact absurd hdeg (by norm_num)
+        have hne0 : ¬ (linX a' = (0 : k[X]) ∧ (0 : k[X]) = 0) := fun h => hlinXne h.1
+        unfold divToPair
+        rw [zero_sub]
+        congr 1
+        refine Finset.sum_congr rfl (fun P _ => ?_)
+        have hordeq : ordAt P (Polynomial.C c' * linX a') (Polynomial.C c' * (0 : k[X])) =
+            ordAt P (linX a') 0 := ordAt_C_mul_eq c' hc' (linX a') 0 hne0 P
+        rw [mul_zero] at hordeq
+        rw [hordeq]
+      have hdeg0 : deg (divToPair (linX a') 0 {x₁, x₂, x₃, x₄}) = 0 := by
+        have hpoles' := hpoles
+        rw [hstep] at hpoles'
+        have hdegRHS : deg (single x₃ + single x₄ - single x₁ - single x₂ : Divisor H) = 0 := by
+          simp
+        rw [← hpoles'] at hdegRHS
+        simpa using hdegRHS
+      have hzero : (divToPair (linX a') 0 {x₁, x₂, x₃, x₄} : Divisor H) = 0 :=
+        divToPair_right_zero_eq_zero_of_deg_eq_zero (linX a') {x₁, x₂, x₃, x₄} hdeg0
+      rw [hstep, hzero]; simp
+  · rcases eq_zero_or_C_or_C_mul_linX_of_natDegree_le_one A' hdegA' with hA'0 | ⟨c', hc', hA'c⟩ | ⟨c', a', hc', hA'lin⟩
+    · -- `A` a nonzero constant, `A' = 0`: both halves vanish via `divToPair_C_eq_zero`/`A'=0`.
+      apply hclose
+      unfold divToPairRatio
+      rw [hAc, hA'0, divToPair_C_eq_zero c hc, divToPair_zero_zero_eq_zero]
+      simp
     · -- Both nonzero constants: both halves vanish via `divToPair_C_eq_zero`.
       apply hclose
-      simp [divToPairRatio, hAc, hA'c, divToPair_C_eq_zero c hc, divToPair_C_eq_zero c' hc']
-    · sorry -- `A` constant, `A' = C c' * linX a'`: mixed-sign branch
+      unfold divToPairRatio
+      rw [hAc, hA'c, divToPair_C_eq_zero c hc, divToPair_C_eq_zero c' hc']
+      simp
+    · -- `A` a nonzero constant, `A' = C c' * linX a'`: `divToPair A 0 _ = 0`
+      -- (`divToPair_C_eq_zero`), so `divToPairRatio` reduces to `- divToPair (linX a') 0 S`
+      -- exactly as in the `A = 0, A' = C c' * linX a'` branch above (the scalar `c` played
+      -- no role there either); same `hpoles`-forces-degree-`0`-forces-termwise-`0` route.
+      apply hclose
+      have hstep : (divToPairRatio A 0 {x₁, x₂, x₃, x₄} A' 0 {x₁, x₂, x₃, x₄} : Divisor H) =
+          - divToPair (linX a') 0 {x₁, x₂, x₃, x₄} := by
+        unfold divToPairRatio
+        rw [hAc, hA'lin, divToPair_C_eq_zero c hc]
+        have hlinXne : linX a' ≠ (0 : k[X]) := by
+          rw [linX]; intro h
+          have hdeg := Polynomial.natDegree_X_sub_C a'
+          rw [h, Polynomial.natDegree_zero] at hdeg
+          exact absurd hdeg (by norm_num)
+        have hne0 : ¬ (linX a' = (0 : k[X]) ∧ (0 : k[X]) = 0) := fun h => hlinXne h.1
+        rw [zero_sub]
+        congr 1
+        unfold divToPair
+        refine Finset.sum_congr rfl (fun P _ => ?_)
+        have hordeq : ordAt P (Polynomial.C c' * linX a') (Polynomial.C c' * (0 : k[X])) =
+            ordAt P (linX a') 0 := ordAt_C_mul_eq c' hc' (linX a') 0 hne0 P
+        rw [mul_zero] at hordeq
+        rw [hordeq]
+      have hdeg0 : deg (divToPair (linX a') 0 {x₁, x₂, x₃, x₄}) = 0 := by
+        have hpoles' := hpoles
+        rw [hstep] at hpoles'
+        have hdegRHS : deg (single x₃ + single x₄ - single x₁ - single x₂ : Divisor H) = 0 := by
+          simp
+        rw [← hpoles'] at hdegRHS
+        simpa using hdegRHS
+      have hzero : (divToPair (linX a') 0 {x₁, x₂, x₃, x₄} : Divisor H) = 0 :=
+        divToPair_right_zero_eq_zero_of_deg_eq_zero (linX a') {x₁, x₂, x₃, x₄} hdeg0
+      rw [hstep, hzero]; simp
   · rcases eq_zero_or_C_or_C_mul_linX_of_natDegree_le_one A' hdegA' with hA'0 | ⟨c', hc', hA'c⟩ | ⟨c', a', hc', hA'lin⟩
-    · sorry -- `A = C c * linX a`, `A' = 0`: mixed-sign branch
-    · sorry -- `A = C c * linX a`, `A'` constant: mixed-sign branch
+    · -- `A = C c * linX a`, `A' = 0`: mirror of the `A = 0, A' = C c' * linX a'` branch
+      -- with `A`/`A'` swapped — `divToPair A' 0 _ = 0` (`A' = 0`), so `divToPairRatio`
+      -- reduces to `+ divToPair (linX a) 0 S` this time (no leading negation), after
+      -- stripping the scalar `c` from `divToPair (C c * linX a) 0 S` via `ordAt_C_mul_eq`.
+      apply hclose
+      have hstep : (divToPairRatio A 0 {x₁, x₂, x₃, x₄} A' 0 {x₁, x₂, x₃, x₄} : Divisor H) =
+          divToPair (linX a) 0 {x₁, x₂, x₃, x₄} := by
+        unfold divToPairRatio
+        rw [hAlin, hA'0, divToPair_zero_zero_eq_zero]
+        have hlinXne : linX a ≠ (0 : k[X]) := by
+          rw [linX]; intro h
+          have hdeg := Polynomial.natDegree_X_sub_C a
+          rw [h, Polynomial.natDegree_zero] at hdeg
+          exact absurd hdeg (by norm_num)
+        have hne0 : ¬ (linX a = (0 : k[X]) ∧ (0 : k[X]) = 0) := fun h => hlinXne h.1
+        rw [sub_zero]
+        unfold divToPair
+        refine Finset.sum_congr rfl (fun P _ => ?_)
+        have hordeq : ordAt P (Polynomial.C c * linX a) (Polynomial.C c * (0 : k[X])) =
+            ordAt P (linX a) 0 := ordAt_C_mul_eq c hc (linX a) 0 hne0 P
+        rw [mul_zero] at hordeq
+        rw [hordeq]
+      have hdeg0 : deg (divToPair (linX a) 0 {x₁, x₂, x₃, x₄}) = 0 := by
+        have hpoles' := hpoles
+        rw [hstep] at hpoles'
+        rw [hpoles']
+        simp
+      have hzero : (divToPair (linX a) 0 {x₁, x₂, x₃, x₄} : Divisor H) = 0 :=
+        divToPair_right_zero_eq_zero_of_deg_eq_zero (linX a) {x₁, x₂, x₃, x₄} hdeg0
+      rw [hstep, hzero]
+    · -- `A = C c * linX a`, `A'` a nonzero constant: `divToPair A' 0 _ = 0`
+      -- (`divToPair_C_eq_zero`), so `divToPairRatio` reduces to `+ divToPair (linX a) 0 S`,
+      -- same shape as the previous branch (scalar-stripping on `A`'s side, not `A'`'s).
+      apply hclose
+      have hstep : (divToPairRatio A 0 {x₁, x₂, x₃, x₄} A' 0 {x₁, x₂, x₃, x₄} : Divisor H) =
+          divToPair (linX a) 0 {x₁, x₂, x₃, x₄} := by
+        unfold divToPairRatio
+        rw [hAlin, hA'c, divToPair_C_eq_zero c' hc']
+        have hlinXne : linX a ≠ (0 : k[X]) := by
+          rw [linX]; intro h
+          have hdeg := Polynomial.natDegree_X_sub_C a
+          rw [h, Polynomial.natDegree_zero] at hdeg
+          exact absurd hdeg (by norm_num)
+        have hne0 : ¬ (linX a = (0 : k[X]) ∧ (0 : k[X]) = 0) := fun h => hlinXne h.1
+        rw [sub_zero]
+        unfold divToPair
+        refine Finset.sum_congr rfl (fun P _ => ?_)
+        have hordeq : ordAt P (Polynomial.C c * linX a) (Polynomial.C c * (0 : k[X])) =
+            ordAt P (linX a) 0 := ordAt_C_mul_eq c hc (linX a) 0 hne0 P
+        rw [mul_zero] at hordeq
+        rw [hordeq]
+      have hdeg0 : deg (divToPair (linX a) 0 {x₁, x₂, x₃, x₄}) = 0 := by
+        have hpoles' := hpoles
+        rw [hstep] at hpoles'
+        rw [hpoles']
+        simp
+      have hzero : (divToPair (linX a) 0 {x₁, x₂, x₃, x₄} : Divisor H) = 0 :=
+        divToPair_right_zero_eq_zero_of_deg_eq_zero (linX a) {x₁, x₂, x₃, x₄} hdeg0
+      rw [hstep, hzero]
     · -- Both linear: split on whether the roots coincide.
       by_cases haeq : a = a'
-      · sorry -- same root: both sides reduce to the same fiber divisor via `ordAt_C_mul_eq` +
-              -- `divToPair_linX_eq`, giving `divToPairRatio = 0`; same pattern as the vanishing cases.
+      · -- Same root: `ordAt_C_mul_eq` strips the nonzero-scalar factor from both
+        -- sides, leaving `ordAt _ (linX a) 0` on both, so the two `divToPair` sums
+        -- are termwise equal over the same support `{x₁,x₂,x₃,x₄}` — no `fiberSupport`
+
+        -- or containment argument needed (per ChatGPT-confirmed proof: the ratio
+        -- vanishes purely because both sides compute the same underlying divisor,
+        -- scaled by different units).
+        apply hclose
+        subst haeq
+        unfold divToPairRatio
+        rw [hAlin, hA'lin, sub_eq_zero]
+        unfold divToPair
+        refine Finset.sum_congr rfl (fun P _ => ?_)
+        have hlinXne : linX a ≠ (0 : k[X]) := by
+          rw [linX]
+          intro h
+          have hdeg := Polynomial.natDegree_X_sub_C a
+          rw [h, Polynomial.natDegree_zero] at hdeg
+          exact absurd hdeg (by norm_num)
+        have hne0 : ¬ (linX a = (0 : k[X]) ∧ (0 : k[X]) = 0) := fun h => hlinXne h.1
+        have hc0 : ordAt P (Polynomial.C c * linX a) (Polynomial.C c * (0 : k[X])) =
+            ordAt P (linX a) 0 := ordAt_C_mul_eq c hc (linX a) 0 hne0 P
+        have hc'0 : ordAt P (Polynomial.C c' * linX a) (Polynomial.C c' * (0 : k[X])) =
+            ordAt P (linX a) 0 := ordAt_C_mul_eq c' hc' (linX a) 0 hne0 P
+        rw [mul_zero] at hc0 hc'0
+        rw [hc0, hc'0]
       · sorry -- different roots: genuinely uses `hne` and the hyperelliptic involution;
               -- the one branch that isn't bookkeeping (see docstring above).
 
@@ -1528,6 +1810,11 @@ theorem fiber_eq_of_divisor_shape (x₁ x₂ x₃ x₄ : H.Point) (hne : x₂ �
   -- `denom_B'_eq_zero_of_isPoleBoundedAtPair` then `num_B_eq_zero_of_isPoleBoundedAtPair`
   -- to reduce to `B = B' = 0`, derive the `≤ 1` degree bounds from `IsPoleBoundedAtPair`'s
   -- `ordInfOfPair` clause, then close with `fiber_eq_of_pure_rational_pole_match`.
+  -- **Note (this session): that theorem now also needs `hclosed₁`/`hclosed₃`** (ι-closure
+  -- of the support set at whichever root each side witnesses) — added after a counterexample
+  -- showed the bare version was false (see that theorem's docstring). Whoever wires this up
+  -- will need to either derive that closure from `hdiv`'s `T` (if `T` is already ι-closed by
+  -- construction elsewhere) or add it as an explicit extra hypothesis here too.
   sorry
   
 
@@ -1550,42 +1837,49 @@ lemma ordInfOfPair_right_zero (A : k[X]) :
     ring
 
 
-/-- **FALSE AS STATED — do not attempt to prove this; the gap is real, not a
-missing bookkeeping step. Documenting the counterexample so no future session
-wastes time on it.**
+/-- **Replaces the deleted, FALSE `natDegree_eq_zero_of_ordInf_bound`.**
+(Old lemma's counterexample, for the record: `A' = X` has `natDegree = 1`,
+`ordInfOfPair A' 0 = -2 ≥ -2`, and nothing false about it — it's the honest
+`z = c/(x-a)` witness of the genuine `x₂ = ι x₁` fiber case. A pure
+`ordInfOfPair`-size bound can never rule this out, since `A'.natDegree = 1`
+*is* a real, satisfiable case; only `hne` together with the actual pointwise
+pole data can.)
 
-`h_bound_eq : -2 * A'.natDegree ≥ -2` only forces `A'.natDegree ≤ 1`
-(over `ℕ`, `A'.natDegree ∈ {0, 1}`), and `h_deg_ge_one : A'.natDegree ≥ 1`
-then pins it to *exactly* `1`, not a contradiction. Concretely: `A' = X`
-(so `A'.natDegree = 1`) satisfies both hypotheses (`ordInfOfPair A' 0 =
--2 = -2 ≥ -2` ✓, `1 ≥ 1` ✓) with nothing false about it — `A'` of degree
-exactly `1` is a perfectly good polynomial, e.g. the actual `z = c/(x - a)`
-witnesses that show up in the genuine `x₂ = ι x₁` fiber case.
+**Correctly-shaped replacement, per ChatGPT-assisted design pass (session
+transcript): this lemma now carries the point data (`x₁, x₂, hne`) and the
+pointwise bound `hpt` that the false version omitted**, rather than trying to
+squeeze the conclusion out of an integer inequality alone. `hpt` here is
+`hbound`'s pointwise clause specialized to `B = B' = 0` (i.e. after `rw [hB,
+hB'] at hpt` at the call site — `B`, `B'` are *not* parameters here, the
+statement is already specialized to avoid re-threading them uselessly).
 
-**Root cause, traced to the call site (`constant_or_fiber_of_isPoleBoundedAtPair`'s
-`h_deg_A'` step, "Main case" branch below).** That branch is trying to prove
-`A'.natDegree = 0` — i.e. force *every* pole-bounded pair down to a genuine
-constant — using only `ordInfOfPair`'s `≥ -2` size bound (Route A steps 1–2).
-But that's not what Route A actually proves: Route A step 3
-(`fiber_eq_of_pure_rational_pole_match`) is *needed* to rule out
-`A'.natDegree = 1`, and it needs `hne : x₂ ≠ ι x₁` to do so (a genuine
-`ordAt_linX_eq` pole-matching argument, not a size bound — `hne` rules out
-exactly the `A'.natDegree = 1` case where `z`'s pole set could otherwise be a
-fiber). **`constant_or_fiber_of_isPoleBoundedAtPair`'s "Main case" branch
-currently never uses its `hne` hypothesis at all** (confirmed by grep — `hne`
-only appears in the theorem's signature, not its proof body) — that's the
-actual missing wiring, not a `deg = 0` fact waiting to be proved by a bigger
-hammer. Closing this properly means routing `h_deg_A'`'s branch through
-`fiber_eq_of_pure_rational_pole_match` (Route A step 3, itself still a
-`sorry`) using `hne`, not strengthening this lemma. Left unproved
-deliberately; do not wrap in additional hypotheses to force it through — the
-statement itself needs to change (either drop to `A'.natDegree ≤ 1` and
-handle the `=1` fiber case downstream, or take `hne` plus the pole-matching
-fact as extra hypotheses here). -/
-lemma natDegree_eq_zero_of_ordInf_bound (A' : k[X])
-    (h_bound_eq : -2 * (A'.natDegree : ℤ) ≥ -2)
-    (h_deg_ge_one : A'.natDegree ≥ 1) :
-    False := by
+**Still an honest `sorry`, not a fabricated proof — this is a genuinely
+different difficulty tier from a wiring fix.** Diagnosis (ChatGPT-assisted,
+confirmed by hand): the missing step is *not* covered by
+`fiber_eq_of_pure_rational_pole_match` directly, because that theorem's
+hypothesis `hpoles` is an exact `Divisor H` *equality* `single x₃ + single x₄
+- single x₁ - single x₂` with concrete witness points `x₃, x₄`, whereas what
+`hpt`/`hT₁`/`hT₂` supply at this call site is only a pointwise *inequality*
+plus finite supports — no witness points `x₃, x₄` and no divisor equation
+have been constructed yet. Building that bridge ("pointwise pole-bound
+inequality + finite support ⟹ exact fiber-shaped divisor equation with
+explicit witnesses") is itself unformalized work, comparable in size to
+`fiber_eq_of_divisor_shape`'s own gap just above — **not attempted here**,
+per the same "document, don't fake" convention as elsewhere in this file.
+Whoever closes this should either (a) prove it directly via the same
+`ordAt_linX_eq`/`fiberSupport` case analysis `fiber_eq_of_pure_rational_pole_
+match` uses, applied to the single point `Q'` with `Q'.X = a'` where `A' = C
+c' * linX a'` (using `hdegA'le1` + `eq_zero_or_C_or_C_mul_linX_of_natDegree_
+le_one` to get `a'`), or (b) first build the pointwise-inequality-to-exact-
+divisor-equation bridge as its own lemma and then call
+`fiber_eq_of_pure_rational_pole_match`. Route (a) is likely less work, since
+it avoids constructing the bridge lemma at all. -/
+lemma natDegree_eq_zero_of_isPoleBoundedAtPair (hchar : (2 : k) ≠ 0)
+    (hsf : Squarefree H.f) (x₁ x₂ : H.Point) (hne : x₂ ≠ Point.iota x₁)
+    (A A' : k[X]) (hdegA'le1 : A'.natDegree ≤ 1)
+    (hpt : ∀ P : H.Point, ordAt P A 0 ≥ ordAt P A' 0 -
+      ((if P = x₁ then 1 else 0) + (if P = x₂ then 1 else 0))) :
+    A'.natDegree = 0 := by
   sorry
 
 
@@ -1622,6 +1916,7 @@ combines §3f (`{x₃,x₄} = {x₁,x₂}`, hence `D = 0`) with §3d again (now 
 blocked on §3f being a real `sorry`** — everything else below it is
 plumbing. -/
 theorem constant_or_fiber_of_isPoleBoundedAtPair (hdeg : H.f.natDegree = 5)
+    (hchar : (2 : k) ≠ 0) (hsf : Squarefree H.f)
     (x₁ x₂ : H.Point) (hne : x₂ ≠ x₁.iota) (A B A' B' : k[X])
     (hbound : IsPoleBoundedAtPair x₁ x₂ A B A' B')
     (hspecAB : ∀ (v : IsDedekindDomain.HeightOneSpectrum H.CoordinateRing),
@@ -1680,19 +1975,32 @@ theorem constant_or_fiber_of_isPoleBoundedAtPair (hdeg : H.f.natDegree = 5)
     have hB : B = 0 := num_B_eq_zero_of_isPoleBoundedAtPair x₁ x₂ A B A' B' hbound h_denom_ord
 
     -- 3. Show A' and A are degree 0 (constants)
+    -- **Rewired (ChatGPT-assisted design pass) to actually use `hne`** — the previous
+    -- version only used the `ordInfOfPair ≥ -2` size bound (giving `natDegree ≤ 1`) and
+    -- called a lemma that tried to rule out `natDegree = 1` with no point data at all,
+    -- which is false (see `natDegree_eq_zero_of_isPoleBoundedAtPair`'s docstring). The
+    -- `≤ 1` bound is still derived the same way (from `h_denom_ord`/`ordInfOfPair_right_
+    -- zero`); ruling out the `= 1` case is now delegated to
+    -- `natDegree_eq_zero_of_isPoleBoundedAtPair`, which takes `hne` and `hpt` (specialized
+    -- to `B = B' = 0`) and is itself still a `sorry` (genuinely open, see its docstring —
+    -- not a wiring gap anymore, a real case-analysis gap).
     have h_deg_A' : A'.natDegree = 0 := by
-      by_contra h_deg_pos
-      have h_deg_ge_one : A'.natDegree ≥ 1 := Nat.one_le_iff_ne_zero.mpr h_deg_pos
-      -- `ordInfOfPair A' 0` evaluates exactly to `-2 * A'.natDegree`.
       have h_ord_A' : ordInfOfPair A' 0 = -2 * (A'.natDegree : ℤ) := ordInfOfPair_right_zero A'
-      -- Substituting B' = 0 into h_denom_ord forces -2 * A'.natDegree ≥ -2.
       have h_bound_eq : -2 * (A'.natDegree : ℤ) ≥ -2 := by
         calc -2 * (A'.natDegree : ℤ) = ordInfOfPair A' 0 := h_ord_A'.symm
         _ = ordInfOfPair A' B' := by rw [hB']
         _ ≥ -2 := h_denom_ord
-      -- -2 * deg ≥ -2 implies deg ≤ 1; ruling out deg = 1 (the remaining `natDegree_eq_zero_
-      -- of_ordInf_bound` step) is genuinely open — see that lemma's docstring above.
-      exact natDegree_eq_zero_of_ordInf_bound A' h_bound_eq h_deg_ge_one
+      have hdegA'le1 : A'.natDegree ≤ 1 := by
+        by_contra hgt
+        push_neg at hgt
+        have : (2 : ℤ) ≤ (A'.natDegree : ℤ) := by exact_mod_cast hgt
+        linarith
+      have hpt' : ∀ P : H.Point, ordAt P A 0 ≥ ordAt P A' 0 -
+          ((if P = x₁ then 1 else 0) + (if P = x₂ then 1 else 0)) := by
+        intro P
+        have := hpt P
+        rwa [hB, hB'] at this
+      exact natDegree_eq_zero_of_isPoleBoundedAtPair hchar hsf x₁ x₂ hne A A' hdegA'le1 hpt'
 
     have h_deg_A : A.natDegree = 0 := by
       by_contra h_deg_pos
@@ -1756,6 +2064,7 @@ everywhere in this project); once available, `constant_or_fiber_of_isPoleBounded
 signature is finalized* — the `hspec` threading below is provisional pending
 that. -/
 theorem uniqueDegree2MapToP1_of_elementary (hdeg : H.f.natDegree = 5)
+    (hchar : (2 : k) ≠ 0) (hsf : Squarefree H.f)
     (x₁ x₂ : H.Point) (hne : x₂ ≠ Point.iota x₁)
     (z : FractionRing (CoordinateRing H)) (hz : z ∈ LPairCarrier x₁ x₂)
     (hspecAll : ∀ (A B : k[X]), ∀ v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H),
@@ -1765,7 +2074,7 @@ theorem uniqueDegree2MapToP1_of_elementary (hdeg : H.f.natDegree = 5)
     IsConstantFraction z := by
   obtain ⟨A, B, A', B', hbound, hz_eq⟩ := hz
   rw [hz_eq]
-  exact constant_or_fiber_of_isPoleBoundedAtPair hdeg x₁ x₂ hne A B A' B' hbound
+  exact constant_or_fiber_of_isPoleBoundedAtPair hdeg hchar hsf x₁ x₂ hne A B A' B' hbound
     (hspecAll A B) (hspecAll A' B')
 
 end HyperellipticPolynomial
