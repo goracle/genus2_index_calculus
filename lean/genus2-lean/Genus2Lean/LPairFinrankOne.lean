@@ -3154,6 +3154,17 @@ theorem constant_or_fiber_of_isPoleBoundedAtPair (hdeg : H.f.natDegree = 5)
     -- `B' = 0` directly, which is *stronger* than the `ordInfOfPair A' B' ≥ -2` this
     -- step originally asked for — so `h_denom_ord` is now derived from `hB'` instead of
     -- the other way around.
+    -- `denom_B'_eq_zero_of_isPoleBoundedAtPair` carries two `Module.Finite` instance
+    -- arguments over `T₁ ∪ T₂` (one for `(A,B)`, one for `(A',B')`). These are not
+    -- hypotheses of this theorem, but they're never actually needed as such: they hold
+    -- unconditionally for any point and any power, via `finite_quotient_pointIdeal_pow`
+    -- (`PrincipalDivisors.lean`). Supply them locally so instance search finds them.
+    haveI : ∀ P : (T₁ ∪ T₂ : Finset H.Point),
+        Module.Finite k (CoordinateRing H ⧸ pointIdeal P.1 ^ (ordAt P.1 A B).toNat) :=
+      fun P => finite_quotient_pointIdeal_pow P.1 _
+    haveI : ∀ P : (T₁ ∪ T₂ : Finset H.Point),
+        Module.Finite k (CoordinateRing H ⧸ pointIdeal P.1 ^ (ordAt P.1 A' B').toNat) :=
+      fun P => finite_quotient_pointIdeal_pow P.1 _
     have hB' : B' = 0 :=
       denom_B'_eq_zero_of_isPoleBoundedAtPair hdeg x₁ x₂ A B A' B' hbound hspecAB hspecA'B'
         (T₁ ∪ T₂) hAB0
@@ -3162,27 +3173,62 @@ theorem constant_or_fiber_of_isPoleBoundedAtPair (hdeg : H.f.natDegree = 5)
         hreduced
 
     have h_denom_ord : ordInfOfPair A' B' ≥ -2 := by
-      rw [hB', ordInfOfPair_right_zero]
+      -- Same `hcap_at`/`hsum_le` pattern as the proof-by-contradiction inside
+      -- `denom_B'_eq_zero_of_isPoleBoundedAtPair` above (there run for a general `B' ≠ 0`
+      -- to derive a contradiction; here run directly, post-`hB'`, to get the bound itself).
+      -- `hreduced` + `hpt` give `ordAt P A' B' ≤ indicator(P)` at every point, so summing
+      -- over the finite support `T₂` bounds `∑ ordAt P A' B'` by `2`; `deg_div_eq_zero_deg5`
+      -- ties that sum to `-(ordInfOfPair A' B')`.
       have hA'0 : A' ≠ 0 := fun h => hA'B' ⟨h, hB'⟩
-      -- Fall back on `A'.natDegree ≤ 1`, already established just below as `hdegA'le1`,
-      -- is not yet available here — instead reprove the weaker bound needed (`≥ -2`
-      -- only requires `A'.natDegree ≤ 1`) directly from `hmono`/`ordInfOfPair_right_zero`
-      -- the same way `hdegA'le1` itself will shortly, so as not to reorder the proof.
-      sorry
-
-      by_contra hB'_ne
-      -- `ordInfOfPair A' B' ≤ -(2 deg B' + 5) ≤ -5` (true regardless of which branch of
-      -- `ordInfOfPair`'s `max` wins — no parity argument needed, see the deleted
-      -- `ordInf_parity_mismatch` note above for why that route was both false and unused).
-      have h_min : ordInfOfPair A' B' ≤ -(2 * (B'.natDegree : ℤ) + 5) := by
-        dsimp [ordInfOfPair]
-        rw [if_neg (fun h => hA'B' h), if_neg hB'_ne]
-        have : (2 * (B'.natDegree : ℤ) + 5) ≤
-            max (2 * (A'.natDegree : ℤ)) (2 * (B'.natDegree : ℤ) + 5) := le_max_right _ _
-        linarith
-      have hB'deg_nonneg : (0:ℤ) ≤ 2 * (B'.natDegree : ℤ) := by positivity
-      -- This contradicts the bounds from the pole support.
-      linarith [h_min, h_denom_ord, hB'deg_nonneg]
+      haveI : ∀ P : (T₂ : Finset H.Point),
+          Module.Finite k (CoordinateRing H ⧸ pointIdeal P.1 ^ (ordAt P.1 A' B').toNat) :=
+        fun P => finite_quotient_pointIdeal_pow P.1 _
+      have hcap_at : ∀ P : H.Point,
+          ordAt P A' B' ≤ (if P = x₁ then (1:ℤ) else 0) + (if P = x₂ then (1:ℤ) else 0) := by
+        intro P
+        rcases hreduced P with hzero | hzero
+        · have hind := hpt P
+          rw [hzero] at hind
+          omega
+        · have hind_nonneg :
+              (0:ℤ) ≤ (if P = x₁ then (1:ℤ) else 0) + (if P = x₂ then (1:ℤ) else 0) := by
+            have h1 : (0:ℤ) ≤ if P = x₁ then (1:ℤ) else 0 := by by_cases h : P = x₁ <;> simp [h]
+            have h2 : (0:ℤ) ≤ if P = x₂ then (1:ℤ) else 0 := by by_cases h : P = x₂ <;> simp [h]
+            linarith
+          omega
+      have hsum_le : (∑ P ∈ T₂, ordAt P A' B') ≤ 2 := by
+        calc (∑ P ∈ T₂, ordAt P A' B')
+            ≤ ∑ P ∈ T₂, ((if P = x₁ then (1:ℤ) else 0) + (if P = x₂ then (1:ℤ) else 0)) :=
+              Finset.sum_le_sum (fun P _ => hcap_at P)
+          _ = (∑ P ∈ T₂, (if P = x₁ then (1:ℤ) else 0)) +
+                ∑ P ∈ T₂, (if P = x₂ then (1:ℤ) else 0) := Finset.sum_add_distrib
+          _ ≤ 1 + 1 := by
+              have hb1 : (∑ P ∈ T₂, (if P = x₁ then (1:ℤ) else 0)) ≤ 1 := by
+                have heq : (∑ P ∈ T₂, (if P = x₁ then (1:ℤ) else 0)) =
+                    ((T₂.filter (fun P => P = x₁)).card : ℤ) := by
+                  rw [← Finset.sum_filter]; simp [Finset.sum_const]
+                rw [heq]
+                have hsub : T₂.filter (fun P => P = x₁) ⊆ {x₁} := by
+                  intro P hP; simp only [Finset.mem_filter] at hP; simp [hP.2]
+                have hcard : (T₂.filter (fun P => P = x₁)).card ≤ 1 := by
+                  have := Finset.card_le_card hsub
+                  simpa using this
+                exact_mod_cast hcard
+              have hb2 : (∑ P ∈ T₂, (if P = x₂ then (1:ℤ) else 0)) ≤ 1 := by
+                have heq : (∑ P ∈ T₂, (if P = x₂ then (1:ℤ) else 0)) =
+                    ((T₂.filter (fun P => P = x₂)).card : ℤ) := by
+                  rw [← Finset.sum_filter]; simp [Finset.sum_const]
+                rw [heq]
+                have hsub : T₂.filter (fun P => P = x₂) ⊆ {x₂} := by
+                  intro P hP; simp only [Finset.mem_filter] at hP; simp [hP.2]
+                have hcard : (T₂.filter (fun P => P = x₂)).card ≤ 1 := by
+                  have := Finset.card_le_card hsub
+                  simpa using this
+                exact_mod_cast hcard
+              linarith
+          _ = 2 := by norm_num
+      have hd := deg_div_eq_zero_deg5 H hdeg T₂ A' B' hA'B' hT₂ hspecA'B'
+      omega
 
     have hB : B = 0 := num_B_eq_zero_of_isPoleBoundedAtPair x₁ x₂ A B A' B' hbound h_denom_ord
 
@@ -3325,26 +3371,46 @@ theorem constant_or_fiber_of_isPoleBoundedAtPair (hdeg : H.f.natDegree = 5)
 
 /-! ## Assembly -/
 
-/-- **`uniqueDegree2MapToP1`, via the elementary route — assembly, pending §3.**
+/-- **`uniqueDegree2MapToP1`, via the elementary route — assembly.**
 `hz`'s witness `(A,B,A',B')` needs `hspec` for both halves threaded in
 (the same standing hypothesis `deg_div_eq_zero_deg5` already requires
-everywhere in this project); once available, `constant_or_fiber_of_isPoleBoundedAtPair`
-(§3, still open) closes the goal directly. This is a drop-in replacement for
-`RiemannRochCrux.lean`'s `uniqueDegree2MapToP1` *once §3 is closed and its
-signature is finalized* — the `hspec` threading below is provisional pending
-that. -/
+everywhere in this project); `constant_or_fiber_of_isPoleBoundedAtPair`
+(§3, now fully closed) closes the goal directly given a witness. This is a
+drop-in replacement for `RiemannRochCrux.lean`'s `uniqueDegree2MapToP1`
+*once the `hreduced` gap below is threaded through that file's callers too*.
+
+**Weakened, not fabricated (per project convention).** `hreduced` — no common
+affine zero/pole between the chosen numerator and denominator — is genuinely
+NOT derivable from bare `z ∈ LPairCarrier x₁ x₂` membership: `LPairCarrier`'s
+existential ranges over all pole-bounded pairs, reduced or not, and
+"clearing common factors" isn't sound in a Dedekind domain that isn't a UFD
+at the element level (confirmed via ChatGPT-assisted review: the natural fix
+— construct a reduced witness via an ideal-gcd cancellation — provably fails
+in general, since the "gcd ideal" need not be principal, a genuine
+class-group obstruction; and the alternative geometric construction of a
+reduced witness needs "every degree-2 map to `P¹` is the hyperelliptic map",
+which is *this very theorem*, so using it here would be circular). So rather
+than a bare `z ∈ LPairCarrier`, this theorem takes the witness pair directly,
+with `hreduced` as an honest extra hypothesis on it — exactly mirroring how
+`constant_or_fiber_of_isPoleBoundedAtPair` and `denom_B'_eq_zero_of_
+isPoleBoundedAtPair` already require it. Every caller now owes `hreduced` for
+whatever witness it supplies; see `RiemannRochCrux.lean`/
+`RatioDivisorCollapse.lean` for how that obligation propagates further up. -/
 theorem uniqueDegree2MapToP1_of_elementary (hdeg : H.f.natDegree = 5)
     (hchar : (2 : k) ≠ 0) (hsf : Squarefree H.f)
     (x₁ x₂ : H.Point) (hne : x₂ ≠ Point.iota x₁)
-    (z : FractionRing (CoordinateRing H)) (hz : z ∈ LPairCarrier x₁ x₂)
+    (z : FractionRing (CoordinateRing H)) (A B A' B' : k[X])
+    (hbound : IsPoleBoundedAtPair x₁ x₂ A B A' B')
+    (hz_eq : z = polePairToFraction (H := H) A B A' B')
     (hspecAll : ∀ (A B : k[X]), ∀ v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H),
       (Associates.mk v.asIdeal).count
         (Associates.mk (Ideal.span ({toPair H A B} : Set (CoordinateRing H)))).factors ≠ 0 →
-      ∃ P, v.asIdeal = pointIdeal P) :
+      ∃ P, v.asIdeal = pointIdeal P)
+    (hreduced : ∀ P : H.Point, ordAt P A B = 0 ∨ ordAt P A' B' = 0) :
     IsConstantFraction z := by
-  obtain ⟨A, B, A', B', hbound, hz_eq⟩ := hz
   rw [hz_eq]
   exact constant_or_fiber_of_isPoleBoundedAtPair hdeg hchar hsf x₁ x₂ hne A B A' B' hbound
-    (hspecAll A B) (hspecAll A' B') (by sorry)
+    (hspecAll A B) (hspecAll A' B') hreduced
+    (fun _ P => finite_quotient_pointIdeal_pow P.1 _)
 
 end HyperellipticPolynomial

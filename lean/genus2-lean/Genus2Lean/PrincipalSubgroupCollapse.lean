@@ -74,10 +74,22 @@ theorem isOnlyEffectiveInClass_of_uniqueDegree2MapToP1'
     IsOnlyEffectiveInClass hdeg x₁ x₂ := by
   intro x₃ x₄ hmem
   by_contra hcontra
-  obtain ⟨z, hzmem, hznonconst⟩ :=
-    mem_LPairCarrier_of_isRatioDivisor hdeg x₁ x₂ x₃ x₄
-      (isRatioDivisor_of_mem_principalSubgroup hdeg hmem) hcontra
-  exact hznonconst (uniqueDegree2MapToP1 hdeg x₁ x₂ hne z hzmem)
+  obtain ⟨A, B, A', B', S, hAB, hA'B', hmatch, hsupp, hdiv⟩ :=
+    isRatioDivisor_of_mem_principalSubgroup hdeg hmem
+  -- **Same open gap as `RiemannRochCrux.lean`'s
+  -- `isOnlyEffectiveInClass_of_uniqueDegree2MapToP1`: `hreduced` for this
+  -- specific witness is not derivable from `hAB, hA'B', hmatch, hsupp, hdiv`
+  -- alone (see that theorem's docstring and `LPairFinrankOne.lean`'s
+  -- `uniqueDegree2MapToP1_of_elementary` for why — confirmed circular with
+  -- the classification fact itself via ChatGPT-assisted review). Isolated
+  -- here as its own honest `sorry` rather than fabricated, matching that
+  -- file's handling of the identical obligation.
+  have hreduced : ∀ P : H.Point, ordAt P A B = 0 ∨ ordAt P A' B' = 0 := by
+    sorry
+  obtain ⟨z, C, D, C', D', hbound, hz_eq, hCD_reduced, hznonconst⟩ :=
+    mem_LPairCarrier_of_isRatioDivisor hdeg x₁ x₂ x₃ x₄ A B A' B' S
+      hAB hA'B' hmatch hsupp hdiv hreduced hcontra
+  exact hznonconst (uniqueDegree2MapToP1 hdeg x₁ x₂ hne z ⟨C, D, C', D', hbound, hz_eq⟩)
 
 /-- **`finrank_L_pair`, fully assembled, with the gap reduced to exactly
 `uniqueDegree2MapToP1`.** Combines `finrank_LPair_eq_one_of_uniqueDegree2MapToP1`

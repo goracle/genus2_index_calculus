@@ -167,16 +167,53 @@ generator's divisor; the argument needed is:
 `PrincipalSubgroupCollapse.lean`'s `isOnlyEffectiveInClass_of_uniqueDegree2MapToP1'`
 (primed) is the same assembly and is kept as-is there (now itself importing
 `RatioDivisorCollapse.lean` rather than redefining this material) for callers
-already depending on that name. -/
+already depending on that name.
+
+**New, honest gap opened by threading `hreduced` (this session).**
+`LPairFinrankOne.lean`'s elementary replacement for `uniqueDegree2MapToP1`
+needs `hreduced` (no common affine zero/pole between numerator and
+denominator) for its *specific* witness pair — not derivable from bare
+`LPairCarrier` membership (confirmed via ChatGPT-assisted review: the natural
+fix, an ideal-gcd cancellation, provably fails via a class-group obstruction;
+the geometric alternative needs "every degree-2 map is hyperelliptic", which
+is circular here since that's this theorem's own content). `mem_LPairCarrier_
+of_isRatioDivisor` was correspondingly weakened to take `hreduced` for its
+witness as an explicit hypothesis (`RatioDivisorCollapse.lean`). But at *this*
+call site, the witness comes from `isRatioDivisor_of_mem_principalSubgroup`,
+whose conclusion (`IsRatioDivisor`, a bare existential) gives no reducedness
+guarantee either — and this theorem's target, `IsOnlyEffectiveInClass`, is a
+*fixed*, hypothesis-free `Prop` consumed elsewhere (`RiemannRochGenus2.lean`,
+`PrincipalSubgroupCollapse.lean`) that this theorem can't unilaterally weaken
+without rippling into those files' own interfaces — out of scope for this
+pass. So the `hreduced` obligation is isolated here as its own explicit
+`sorry`, not silently assumed and not routed around by reintroducing the old
+(circular, or class-group-obstructed) shortcuts. Whoever picks this up next
+should either (a) prove `principalSubgroup`-arising witnesses are always
+reducible to a genus-2-specific normal form directly (candidate route: the
+"multiply by `x - a`" construction from the ChatGPT session, but reworked to
+not presuppose the very degree-2-uniqueness fact this file exists to prove),
+or (b) thread the weakening one level further and accept the ripple into
+`IsOnlyEffectiveInClass`'s consumers. -/
 theorem isOnlyEffectiveInClass_of_uniqueDegree2MapToP1
     (hdeg : H.f.natDegree = 5) (x₁ x₂ : H.Point) (hne : x₂ ≠ Point.iota x₁) :
     IsOnlyEffectiveInClass hdeg x₁ x₂ := by
   intro x₃ x₄ hmem
   by_contra hcontra
-  obtain ⟨z, hzmem, hznonconst⟩ :=
-    mem_LPairCarrier_of_isRatioDivisor hdeg x₁ x₂ x₃ x₄
-      (isRatioDivisor_of_mem_principalSubgroup hdeg hmem) hcontra
-  exact hznonconst (uniqueDegree2MapToP1 hdeg x₁ x₂ hne z hzmem)
+  obtain ⟨A, B, A', B', S, hAB, hA'B', hmatch, hsupp, hdiv⟩ :=
+    isRatioDivisor_of_mem_principalSubgroup hdeg hmem
+  -- **Open gap, isolated here (see docstring above): `hreduced` for this
+  -- specific `(A,B,A',B')`, i.e. no common affine zero/pole between the
+  -- witness `isRatioDivisor_of_mem_principalSubgroup` happens to produce.**
+  -- Not derivable from `hAB, hA'B', hmatch, hsupp, hdiv` alone, for the same
+  -- reason documented at `uniqueDegree2MapToP1_of_elementary`
+  -- (`LPairFinrankOne.lean`) and `mem_LPairCarrier_of_isRatioDivisor`
+  -- (`RatioDivisorCollapse.lean`).
+  have hreduced : ∀ P : H.Point, ordAt P A B = 0 ∨ ordAt P A' B' = 0 := by
+    sorry
+  obtain ⟨z, C, D, C', D', hbound, hz_eq, hCD_reduced, hznonconst⟩ :=
+    mem_LPairCarrier_of_isRatioDivisor hdeg x₁ x₂ x₃ x₄ A B A' B' S
+      hAB hA'B' hmatch hsupp hdiv hreduced hcontra
+  exact hznonconst (uniqueDegree2MapToP1 hdeg x₁ x₂ hne z ⟨C, D, C', D', hbound, hz_eq⟩)
 
 /-- **Assembly**: `finrank_L_pair` itself, now a two-line combination of the two
 theorems above rather than a bare `sorry`. This is the intended replacement for

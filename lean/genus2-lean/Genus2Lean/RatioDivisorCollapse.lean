@@ -366,15 +366,48 @@ uniqueDegree2MapToP1'` actually consumes: if `{x₃,x₄} ≠ {x₁,x₂}`, `z` 
 non-constant — this is the direction that combines with `uniqueDegree2MapToP1`
 (which forces every member of `LPairCarrier x₁ x₂` to be constant) to produce a
 contradiction, rather than the earlier (equivalent, but awkward to apply forward)
-phrasing via `≠ → ≠`. -/
+phrasing via `≠ → ≠`.
+
+**Weakened (not fabricated) to take `hreduced` explicitly, mirroring
+`uniqueDegree2MapToP1_of_elementary`'s own honest weakening
+(`LPairFinrankOne.lean`).** `IsRatioDivisor`'s existential (`hD`) gives no
+reducedness guarantee on its witness — `hcoef` only pins the *difference*
+`ordAt P A B - ordAt P A' B'` outside `{x₁,x₂,x₃,x₄}` to `0`, which is
+consistent with both orders being equal and positive there (a genuine common
+factor), so `hreduced` for `(A,B,A',B')` is not derivable from `hD` alone, for
+the same class-group-obstruction reason documented at
+`uniqueDegree2MapToP1_of_elementary`. Rather than leaving `hD`'s witness
+implicit (which would make stating `hreduced` about it impossible from outside),
+this theorem destructures `hD` in its own signature so the caller sees
+`A, B, A', B', S` directly and can supply `hreduced` for that exact witness —
+whoever discharges `isRatioDivisor_of_mem_principalSubgroup`'s output owes this
+alongside it now. -/
 theorem mem_LPairCarrier_of_isRatioDivisor (hdeg : H.f.natDegree = 5)
-    (x₁ x₂ x₃ x₄ : H.Point)
-    (hD : IsRatioDivisor hdeg
-      (single x₁ + single x₂ - single x₃ - single x₄ : Divisor H))
+    (x₁ x₂ x₃ x₄ : H.Point) (A B A' B' : k[X]) (S : Finset H.Point)
+    (hAB : ¬ (A = 0 ∧ B = 0)) (hA'B' : ¬ (A' = 0 ∧ B' = 0))
+    (hmatch : ordInfOfPair A B = ordInfOfPair A' B')
+    (hsupp : ∀ P, P ∉ S → ordAt P A B = 0 ∧ ordAt P A' B' = 0)
+    (hdiv : (single x₁ + single x₂ - single x₃ - single x₄ : Divisor H) =
+      divToPairRatio A B S A' B' S)
+    (hreduced : ∀ P : H.Point, ordAt P A B = 0 ∨ ordAt P A' B' = 0)
     (hne : ({x₃, x₄} : Set H.Point) ≠ {x₁, x₂}) :
-    ∃ z : FractionRing (CoordinateRing H), z ∈ LPairCarrier x₁ x₂ ∧
+    -- **Exposes the witness pair directly** (rather than the weaker
+    -- `∃ z, z ∈ LPairCarrier x₁ x₂ ∧ ...`) so the caller —
+    -- `isOnlyEffectiveInClass_of_uniqueDegree2MapToP1` — can hand this exact
+    -- witness straight to `uniqueDegree2MapToP1_of_elementary`, which needs
+    -- `hreduced` for the specific pair, not mere carrier membership.
+    -- `IsPoleBoundedAtPair x₁ x₂ C D C' D' ∧ z = polePairToFraction C D C' D'`
+    -- is definitionally what `z ∈ LPairCarrier x₁ x₂` unfolds to, so nothing
+    -- is lost versus the old return type. The witness pair below is
+    -- `(A', B', A, B)` (numerator/denominator swapped from this theorem's own
+    -- `A,B,A',B'` naming — see the `polePairToFraction` comment in the proof
+    -- for why), and `hreduced` restated for that swapped pair is literally
+    -- the same disjunction (`∨` is symmetric), so it transfers for free.
+    ∃ (z : FractionRing (CoordinateRing H)) (C D C' D' : k[X]),
+      IsPoleBoundedAtPair x₁ x₂ C D C' D' ∧
+      z = polePairToFraction (H := H) C D C' D' ∧
+      (∀ P : H.Point, ordAt P C D = 0 ∨ ordAt P C' D' = 0) ∧
       ¬ IsConstantFraction z := by
-  obtain ⟨A, B, A', B', S, hAB, hA'B', hmatch, hsupp, hdiv⟩ := hD
   have hABne : toPair H A B ≠ 0 := fun h => hAB ((toPair_eq_zero_iff H A B).mp h)
   have hA'B'ne : toPair H A' B' ≠ 0 := fun h => hA'B' ((toPair_eq_zero_iff H A' B').mp h)
   -- `divToPairRatio A B S A' B' S` evaluated at any point `P` (not just
@@ -429,7 +462,7 @@ theorem mem_LPairCarrier_of_isRatioDivisor (hdeg : H.f.natDegree = 5)
   -- part of `divToPairRatio A B S A' B' S = (x₁)+(x₂)-(x₃)-(x₄)`), so it is
   -- `A, B` — not `A', B'` — that must sit in the denominator for `z`'s poles
   -- to land at `x₁, x₂` as `LPairCarrier x₁ x₂` requires.
-  refine ⟨polePairToFraction A' B' A B, ⟨A', B', A, B, ?_, rfl⟩, ?_⟩
+  refine ⟨polePairToFraction A' B' A B, A', B', A, B, ?_, rfl, fun P => (hreduced P).symm, ?_⟩
   · -- `IsPoleBoundedAtPair x₁ x₂ A' B' A B`: both clauses are read off
     -- `hcoef` directly.
     refine ⟨hAB, ge_of_eq hmatch.symm, ?_⟩
@@ -449,7 +482,8 @@ theorem mem_LPairCarrier_of_isRatioDivisor (hdeg : H.f.natDegree = 5)
     intro P
     have hp := hcoef P
     split_ifs at hp ⊢ <;> omega
-  · -- Non-constancy: if `z = toPair A' B' / toPair A B` were constant, its
+  ·
+    -- Non-constancy: if `z = toPair A' B' / toPair A B` were constant, its
     -- divisor would be `0` everywhere, forcing `{x₃,x₄} = {x₁,x₂}` via `hcoef`
     -- — contradicting `hne`.
     rintro ⟨c, hc⟩

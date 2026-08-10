@@ -30,4 +30,5 @@ import Genus2Lean.PrincipalSubgroupCollapse
 import Genus2Lean.RatioDivisorCollapse
 import Genus2Lean.UniqueDegree2MapRiemannHurwitz
 import Genus2Lean.LPairFinrankOne
+import Genus2Lean.LCanonicalElementary
 
