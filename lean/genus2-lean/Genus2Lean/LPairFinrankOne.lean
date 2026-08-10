@@ -723,15 +723,129 @@ here; these are staging targets. -/
 `toPair H A' B'`) implies `Ideal.span {toPair H A B} = Ideal.span {toPair H A' B'}`,
 via `Associates`-level unique factorization in the Dedekind domain `CoordinateRing H`
 (equal `count` at every height-one prime — `pointHeightOne P h_bot` for points with
-`pointIdeal P ≠ ⊥`, trivial elsewhere). Not yet proved — per the docstring below, look
-first at whether Mathlib's `IsDedekindDomain.HeightOneSpectrum` /
-`Associates.mk_eq_mk_iff_associated` API shortens this. -/
+`pointIdeal P ≠ ⊥`, trivial elsewhere).
+
+**Corrected statement (ChatGPT-assisted design pass, this session): the original
+version omitted the `hspecAB`/`hspecA'B'` hypotheses that every other lemma in this
+file needing the same "which height-one primes can appear" fact already carries
+(see `deg_divToPairRatio_le_zero`, `exists_finite_support_of_hspec` above, and
+`denom_B'_eq_zero_of_isPoleBoundedAtPair` below for the identical pattern).**
+`hordeq` alone only pins down agreement at *curve points*; `CoordinateRing H` is a
+Dedekind domain with infinitely many height-one primes (it is a rank-2 free
+extension of `k[X]`, itself having infinitely many primes), so without ruling out
+disagreement at some non-curve prime, the conclusion does not follow from `hordeq`
+alone. Adding the two `hspec`-shaped hypotheses (same shape as every sibling lemma)
+repairs this: they say every height-one prime with positive multiplicity in either
+span *is* some `pointIdeal P`, so comparing at curve points via `hordeq` really does
+compare every prime that can possibly matter.
+
+Proof strategy: for a height-one prime `v`, `Ideal.count_associates_factors_eq`
+identifies `(Associates.mk v.asIdeal).count (Associates.mk I).factors` with
+`Multiset.count v.asIdeal (normalizedFactors I)` (`I` either span); the two counts
+agree because either (a) the count is `0` on both sides (no `hspec` witness, so `v`
+isn't `pointIdeal P` for any `P`, hence contributes `0` to both — this needs a
+*contrapositive* use of `hspec`, not just the forward direction, to rule out `v`
+appearing in one factorization but not being covered by `hspec` for the other) or
+(b) `v = pointHeightOne P h_bot` for some curve point `P`, where `ordAt_eq_count`
+(`PrincipalDivisors.lean`) turns `hordeq P` directly into equal counts. Equal
+`Multiset.count` at every element of `normalizedFactors` (both finite multisets,
+by `hfinite_support`) gives equal multisets (`Multiset.ext`), hence equal
+`Associates.mk`-image ideals (`normalizedFactors` reconstructs the ideal up to
+associates for a nonzero ideal in a Dedekind domain), hence — since both ideals
+here are already `Associates.mk`-represented via nonzero *principal* ideals in a
+domain — the ideals themselves are equal. -/
 theorem span_eq_of_ordAt_eq (A B A' B' : k[X])
     (hABz : toPair H A B ≠ 0) (hA'B'z : toPair H A' B' ≠ 0)
+    (hspecAB : ∀ v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H),
+      (Associates.mk v.asIdeal).count
+        (Associates.mk (Ideal.span ({toPair H A B} : Set (CoordinateRing H)))).factors ≠ 0 →
+      ∃ P, v.asIdeal = pointIdeal P)
+    (hspecA'B' : ∀ v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H),
+      (Associates.mk v.asIdeal).count
+        (Associates.mk (Ideal.span ({toPair H A' B'} : Set (CoordinateRing H)))).factors ≠ 0 →
+      ∃ P, v.asIdeal = pointIdeal P)
     (hordeq : ∀ P : H.Point, ordAt P A B = ordAt P A' B') :
     Ideal.span ({toPair H A B} : Set (CoordinateRing H)) =
       Ideal.span ({toPair H A' B'} : Set (CoordinateRing H)) := by
-  sorry
+  classical
+  set I : Ideal (CoordinateRing H) := Ideal.span ({toPair H A B} : Set (CoordinateRing H))
+    with hI_def
+  set I' : Ideal (CoordinateRing H) := Ideal.span ({toPair H A' B'} : Set (CoordinateRing H))
+    with hI'_def
+  have hIne : I ≠ 0 := by
+    rw [hI_def, Ne, Ideal.zero_eq_bot, Ideal.span_singleton_eq_bot]; exact hABz
+  have hI'ne : I' ≠ 0 := by
+    rw [hI'_def, Ne, Ideal.zero_eq_bot, Ideal.span_singleton_eq_bot]; exact hA'B'z
+  have hIbot : I ≠ ⊥ := by rw [Ideal.zero_eq_bot] at hIne; exact hIne
+  have hI'bot : I' ≠ ⊥ := by rw [Ideal.zero_eq_bot] at hI'ne; exact hI'ne
+  -- Every `J` appearing in either factorization is prime and nonzero (standard for
+  -- `normalizedFactors` of a nonzero ideal), so it packages into a genuine
+  -- `HeightOneSpectrum` term, letting `hspecAB`/`hspecA'B'`/`ordAt_eq_count` apply.
+  have hcount_eq : ∀ J : Ideal (CoordinateRing H),
+      Multiset.count J (UniqueFactorizationMonoid.normalizedFactors I) =
+        Multiset.count J (UniqueFactorizationMonoid.normalizedFactors I') := by
+    intro J
+    by_cases hJmem : J ∈ UniqueFactorizationMonoid.normalizedFactors I ∨
+        J ∈ UniqueFactorizationMonoid.normalizedFactors I'
+    · -- `J` is prime and nonzero either way (whichever side it's a member from),
+      -- so it packages into `v : HeightOneSpectrum (CoordinateRing H)`.
+      have hJprime : J.IsPrime ∧ J ≠ ⊥ := by
+        rcases hJmem with hJ | hJ
+        · exact ⟨((Ideal.mem_normalizedFactors_iff hIbot).mp hJ).1, by
+            intro hJ0; rw [hJ0] at hJ
+            exact UniqueFactorizationMonoid.zero_notMem_normalizedFactors I hJ⟩
+        · exact ⟨((Ideal.mem_normalizedFactors_iff hI'bot).mp hJ).1, by
+            intro hJ0; rw [hJ0] at hJ
+            exact UniqueFactorizationMonoid.zero_notMem_normalizedFactors I' hJ⟩
+      set v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H) :=
+        ⟨J, hJprime.1, hJprime.2⟩ with hv_def
+      have hvJ : v.asIdeal = J := rfl
+      -- `(Associates.mk v.asIdeal).count (Associates.mk I).factors` equals
+      -- `Multiset.count v.asIdeal (normalizedFactors I)` on each side
+      -- (`Ideal.count_associates_factors_eq`), so it suffices to compare those
+      -- `Associates`-level counts, which reduce to `pointIdeal`/`ordAt_eq_count`
+      -- comparisons via `hspecAB`/`hspecA'B'` when `v.asIdeal = pointIdeal P` for
+      -- some `P`, and to `0 = 0` otherwise (neither `hspec` can witness `v`, so `v`
+      -- has count `0` on both sides — contrapositive of `hspecAB`/`hspecA'B'`).
+      have hcAB : (Associates.mk v.asIdeal).count (Associates.mk I).factors =
+          Multiset.count v.asIdeal (UniqueFactorizationMonoid.normalizedFactors I) :=
+        Ideal.count_associates_factors_eq hIne v.isPrime v.ne_bot
+      have hcA'B' : (Associates.mk v.asIdeal).count (Associates.mk I').factors =
+          Multiset.count v.asIdeal (UniqueFactorizationMonoid.normalizedFactors I') :=
+        Ideal.count_associates_factors_eq hI'ne v.isPrime v.ne_bot
+      rw [hvJ] at hcAB hcA'B'
+      rw [← hcAB, ← hcA'B']
+      by_cases hPex : ∃ P, v.asIdeal = pointIdeal P
+      · obtain ⟨P, hP⟩ := hPex
+        by_cases h_bot : pointIdeal P = ⊥
+        · -- `pointIdeal P = ⊥`: `v.asIdeal = pointIdeal P = ⊥` contradicts `v.ne_bot`.
+          exact absurd (hP.trans h_bot) v.ne_bot
+        · have hordP : ordAt P A B = ordAt P A' B' := hordeq P
+          have hcountAB : ordAt P A B =
+              ((Associates.mk v.asIdeal).count (Associates.mk I).factors : ℤ) := by
+            rw [hP, hI_def]; exact ordAt_eq_count P A B hABz h_bot
+          have hcountA'B' : ordAt P A' B' =
+              ((Associates.mk v.asIdeal).count (Associates.mk I').factors : ℤ) := by
+            rw [hP, hI'_def]; exact ordAt_eq_count P A' B' hA'B'z h_bot
+          rw [hcountAB, hcountA'B'] at hordP
+          exact_mod_cast hordP
+      · -- `v` is witnessed by neither `hspecAB` nor `hspecA'B'` (else `hPex` would
+        -- hold), so both counts are forced to `0` by contraposition.
+        have hzAB : (Associates.mk v.asIdeal).count (Associates.mk I).factors = 0 := by
+          by_contra hne; exact hPex (hspecAB v hne)
+        have hzA'B' : (Associates.mk v.asIdeal).count (Associates.mk I').factors = 0 := by
+          by_contra hne; exact hPex (hspecA'B' v hne)
+        rw [hzAB, hzA'B']
+    · -- `J` is in neither factorization: both counts are `0` by
+      -- `Multiset.count_eq_zero`.
+      push_neg at hJmem
+      rw [Multiset.count_eq_zero.mpr hJmem.1, Multiset.count_eq_zero.mpr hJmem.2]
+  have hfactors_eq : UniqueFactorizationMonoid.normalizedFactors I =
+      UniqueFactorizationMonoid.normalizedFactors I' := Multiset.ext'_iff.mpr hcount_eq
+  calc I = (UniqueFactorizationMonoid.normalizedFactors I).prod :=
+        (UniqueFactorizationMonoid.prod_normalizedFactors_eq_self hIbot).symm
+    _ = (UniqueFactorizationMonoid.normalizedFactors I').prod := by rw [hfactors_eq]
+    _ = I' := UniqueFactorizationMonoid.prod_normalizedFactors_eq_self hI'bot
 
 /-- **Sub-step B — now proved.** `CoordinateRing H`'s unit group is exactly `k^×`.
 **Route actually used** (found after re-reading `RiemannRochGenus2.lean`'s already-proved
@@ -854,7 +968,15 @@ adjacent lemmas, or working directly with `IsDedekindDomain.HeightOneSpectrum`
 and `Associates.mk_eq_mk_iff_associated`-style results) shortens the first
 sub-step, and should search for whether `CoordinateRing H`'s unit group has
 already been characterized elsewhere before reproving it. -/
-theorem isConstantFraction_of_ordAt_eq (A B A' B' : k[X])
+theorem isConstantFraction_of_ordAt_eq (hdeg : H.f.natDegree = 5) (A B A' B' : k[X])
+    (hspecAB : ∀ v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H),
+      (Associates.mk v.asIdeal).count
+        (Associates.mk (Ideal.span ({toPair H A B} : Set (CoordinateRing H)))).factors ≠ 0 →
+      ∃ P, v.asIdeal = pointIdeal P)
+    (hspecA'B' : ∀ v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H),
+      (Associates.mk v.asIdeal).count
+        (Associates.mk (Ideal.span ({toPair H A' B'} : Set (CoordinateRing H)))).factors ≠ 0 →
+      ∃ P, v.asIdeal = pointIdeal P)
     (hordeq : ∀ P : H.Point, ordAt P A B = ordAt P A' B') :
     IsConstantFraction (polePairToFraction (H := H) A B A' B') := by
   by_cases hABz : toPair H A B = 0
@@ -865,20 +987,78 @@ theorem isConstantFraction_of_ordAt_eq (A B A' B' : k[X])
     have : (algebraMap k[X] (CoordinateRing H) (C (0:k))) = 0 := by simp
     rw [this, map_zero]
   · by_cases hA'B'z : toPair H A' B' = 0
-    · -- `toPair H A' B' = 0` but `toPair H A B ≠ 0`: impossible under `hordeq`, since
-      -- `toPair H A' B' = 0` forces `ordAt P A' B' = 0` for every `P` (`ordAt`'s own
-      -- `if r = 0 then 0 else ...` case), so `hordeq` would force `ordAt P A B = 0`
-      -- for every `P` too — plausible-but-not-quite-enough on its own to conclude
-      -- `toPair H A B = 0` (would need injectivity of "all `ordAt` vanish ⟹ element is
-      -- a unit or zero", the same missing fact as the main `sorry` below) — rather than
-      -- force a second copy of that gap here, this branch is folded into the same
-      -- `sorry` as the genuine nonzero case, since it needs the identical unique-
-      -- factorization machinery (applied with `toPair H A' B' = 0`, i.e. the "unit"
-      -- degenerates to `0`, not literally the same statement).
-      sorry
+    · -- **Now proved (ChatGPT-assisted, this session): this branch doesn't need
+      -- `hordeq` or the unique-factorization machinery at all.** `toPair H A' B' = 0`
+      -- makes `polePairToFraction`'s *denominator* vanish, so the whole fraction is
+      -- `0` by `FractionRing`'s (in fact any `Field`'s) `x / 0 = 0` convention —
+      -- mirrors the `hABz` branch just above verbatim, just on the other side of the
+      -- division. No need to derive `toPair H A B = 0` at all (which was the old,
+      -- unnecessarily hard route this branch's docstring was stuck on).
+      refine ⟨0, ?_⟩
+      unfold polePairToFraction
+      rw [hA'B'z, map_zero, div_zero]
+      have : (algebraMap k[X] (CoordinateRing H) (C (0:k))) = 0 := by simp
+      rw [this, map_zero]
     · -- Genuine case: both `toPair H A B ≠ 0` and `toPair H A' B' ≠ 0`, `ordAt` equal
       -- everywhere. Real content, see docstring above.
-      sorry
+      -- **Reduced (ChatGPT-assisted, this session) to `span_eq_of_ordAt_eq` +
+      -- `isUnit_coordinateRing_iff` — both already available — plus one remaining
+      -- fraction-field computation left as its own `sorry` below, not faked.**
+      -- `span_eq_of_ordAt_eq` itself is *also* still a `sorry` (its statement is now
+      -- believed correct, with the `hspec` hypotheses added; only its assembly proof
+      -- remains open — see that theorem's docstring), so this branch does not yet
+      -- close either, but the two remaining gaps are now cleanly separated: the
+      -- Dedekind-domain factorization fact (`span_eq_of_ordAt_eq`) and a self-contained
+      -- fraction-field identity (immediately below) with no more curve-specific content.
+      have hspan : Ideal.span ({toPair H A B} : Set (CoordinateRing H)) =
+          Ideal.span ({toPair H A' B'} : Set (CoordinateRing H)) :=
+        span_eq_of_ordAt_eq (H := H) A B A' B' hABz hA'B'z hspecAB hspecA'B' hordeq
+      have hassoc : Associated (toPair H A B) (toPair H A' B') :=
+        Ideal.span_singleton_eq_span_singleton.mp hspan
+      obtain ⟨u, hu⟩ := hassoc
+      -- `hu : toPair H A B * ↑u = toPair H A' B'`.
+      have hu_unit : IsUnit (u : CoordinateRing H) := u.isUnit
+      obtain ⟨c, hc, hcu⟩ := (isUnit_coordinateRing_iff (H := H) hdeg (u : CoordinateRing H)).mp
+        hu_unit
+      -- **Now proved.** With `hu : toPair H A B * ↑u = toPair H A' B'` and `hcu : (u :
+      -- CoordinateRing H) = algebraMap k[X] (CoordinateRing H) (C c)` (`c ≠ 0`), the
+      -- witness constant is `c⁻¹`. Strategy: establish the identity entirely inside
+      -- `CoordinateRing H` first (`hring_eq` below — no fraction-field lemma-name
+      -- uncertainty at all there), then push through `φ` and finish with `div_eq_iff`,
+      -- whose statement (`a / b = c ↔ a = c * b`, for `b ≠ 0`) is used in exactly the
+      -- orientation it's applied in below — chosen to match `mul_comm`-safe order
+      -- rather than assumed.
+      refine ⟨c⁻¹, ?_⟩
+      unfold polePairToFraction
+      set F := FractionRing (CoordinateRing H)
+      set φ : CoordinateRing H →+* F := algebraMap (CoordinateRing H) F with hφ_def
+      have hcz : (C c : k[X]) ≠ 0 := fun h => hc (by simpa using congrArg (Polynomial.eval 0) h)
+      have hCcpair_ne : toPair H (C c) 0 ≠ 0 := by
+        rw [Ne, toPair_eq_zero_iff]; exact fun h => hcz h.1
+      have hCc_alg : toPair H (C c) 0 = algebraMap k[X] (CoordinateRing H) (C c) := by
+        unfold toPair; simp
+      have hCc_ne_ring : (algebraMap k[X] (CoordinateRing H) (C c) : CoordinateRing H) ≠ 0 := by
+        rw [← hCc_alg]; exact hCcpair_ne
+      have hABz' : φ (toPair H A B) ≠ 0 :=
+        fun h => hABz (IsFractionRing.injective (CoordinateRing H) F
+          (by rw [hφ_def] at h; rw [h, map_zero]))
+      have hCc_ne_frac : φ (algebraMap k[X] (CoordinateRing H) (C c)) ≠ 0 :=
+        fun h => hCc_ne_ring (IsFractionRing.injective (CoordinateRing H) F
+          (by rw [hφ_def] at h; rw [h, map_zero]))
+      -- **Entirely inside `CoordinateRing H`, no fraction-field API needed here at all**:
+      -- `toPair H A B = algebraMap (C c⁻¹) * toPair H A' B'`, verified by substituting
+      -- `toPair H A' B' = toPair H A B * algebraMap (C c)` (from `hu`/`hcu`) and reducing
+      -- to `algebraMap (C c⁻¹) * algebraMap (C c) = algebraMap (C (c⁻¹ * c)) = algebraMap
+      -- (C 1) = 1`, a pure `k[X]`/ring-hom identity.
+      have hring_eq : toPair H A B =
+          algebraMap k[X] (CoordinateRing H) (C c⁻¹) * toPair H A' B' := by
+        have h1 : toPair H A' B' = algebraMap k[X] (CoordinateRing H) (C c) * toPair H A B := by
+          rw [← hu, hcu, mul_comm]
+        rw [h1, ← mul_assoc, ← map_mul, ← Polynomial.C_mul, inv_mul_cancel₀ hc,
+          Polynomial.C_1, map_one, one_mul]
+      have hden_ne : φ (toPair H A' B') ≠ 0 := by
+        rw [← hu, hcu, map_mul]; exact mul_ne_zero hABz' hCc_ne_frac
+      rw [div_eq_iff hden_ne, hring_eq, map_mul]
 
 /-- **§3d (bookkeeping, reduces to `isConstantFraction_of_ordAt_eq`).** If `D`'s
 positive part is entirely zero — every coefficient in `T` is `≤ 0` — combined
@@ -893,12 +1073,25 @@ actual mathematical content was mis-attributed to this lemma and lives in
 `isConstantFraction_of_ordAt_eq` instead. -/
 theorem isConstantFraction_of_divisor_le_zero (hdeg : H.f.natDegree = 5)
     (A B A' B' : k[X]) (T : Finset H.Point)
+    -- **Added this session, threaded through from `isConstantFraction_of_ordAt_eq`'s
+    -- now-corrected signature** (see that theorem's docstring — the original version
+    -- omitted these, which made its statement provably too weak). Same `hspec` shape
+    -- used throughout this file (`deg_divToPairRatio_le_zero`,
+    -- `denom_B'_eq_zero_of_isPoleBoundedAtPair`, etc.).
+    (hspecAB : ∀ v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H),
+      (Associates.mk v.asIdeal).count
+        (Associates.mk (Ideal.span ({toPair H A B} : Set (CoordinateRing H)))).factors ≠ 0 →
+      ∃ P, v.asIdeal = pointIdeal P)
+    (hspecA'B' : ∀ v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H),
+      (Associates.mk v.asIdeal).count
+        (Associates.mk (Ideal.span ({toPair H A' B'} : Set (CoordinateRing H)))).factors ≠ 0 →
+      ∃ P, v.asIdeal = pointIdeal P)
     (hsuppAB : ∀ P, P ∉ T → ordAt P A B = 0)
     (hsuppA'B' : ∀ P, P ∉ T → ordAt P A' B' = 0)
     (hdegD : deg (divToPairRatio A B T A' B' T) = 0)
     (hle : ∀ P ∈ T, Divisor.coeffAt P (divToPairRatio A B T A' B' T) ≤ 0) :
     IsConstantFraction (polePairToFraction (H := H) A B A' B') := by
-  apply isConstantFraction_of_ordAt_eq
+  apply isConstantFraction_of_ordAt_eq hdeg A B A' B' hspecAB hspecA'B'
   intro P
   rw [← sub_eq_zero, ← coeffAt_divToPairRatio_eq_sub A B A' B' T hsuppAB hsuppA'B' P]
   by_cases hPT : P ∈ T
@@ -1477,6 +1670,8 @@ theorem divToPair_right_zero_eq_zero_of_deg_eq_zero (A : k[X]) (S : Finset H.Poi
   rw [hall0 P hP]
   simp
 
+set_option maxHeartbeats 800000 in
+-- Route A step 3's degree/pole bookkeeping is long enough to need extra heartbeats
 /-- **Route A step 3 — the one genuinely new piece of reasoning** (per the SCOPING
 doc; reuses `ordAt_linX_eq` rather than inventing ramification theory). Given steps
 1–2 (`B = B' = 0`, so `z = A(x)/A'(x)`), the `≤ 2` total pole-degree bound forces
@@ -1528,17 +1723,15 @@ transcript, confirmed by hand against `hpoles`'s exact degree-0 shape):** case o
   This is the only case where `hne` is used, matching the ChatGPT-confirmed case
   analysis exactly.
 
-**Not yet fully wired into Lean below** — the case split above is right (checked
-independently), but the `Finset`/`Divisor.coeffAt` bookkeeping connecting
-`hpoles`'s literal divisor equation to "the RHS is a `fiberSupport`-shaped
-divisor" is real work (comparable to `divToPair_linX_eq_of_unramified`'s own
-proof), not yet carried out here. Left as a `sorry` with the full case-by-case
-plan recorded, rather than a single opaque gap — whoever continues this should
-be able to fill in each of the four cases above independently rather than
-re-deriving the case split itself. (Partial progress this session: the fully-
-vanishing `A = A' = 0` branch is proved below; the remaining branches — mixed
-sign, same-root, different-roots — are left as separate named `sorry`s, per
-the case split above.)
+**Update — fully wired into Lean below, no `sorry` remains in this theorem.** The case
+split above was right (checked independently), and the `Finset`/`Divisor.coeffAt`
+bookkeeping connecting `hpoles`'s literal divisor equation to "the RHS is a
+`fiberSupport`-shaped divisor" is now carried out for all branches: the vanishing
+branches (`A=A'=0`, mixed-sign, same-root) close via `hclose`/`divToPair_right_zero_eq_
+zero_of_deg_eq_zero` as sketched; the different-roots branch closes via a direct
+`coeffAt`-at-`Q₁`/`ι Q₁` coefficient bash (see `hbalance2` and below), using disjointness
+of the two fibers (Step 4) to isolate `Q₁, ι Q₁ ∈ {x₁,x₂}` and a final case split to force
+`x₂ = ι x₁`, contradicting `hne`.
 
 **Statement WEAKENED this session — the original version above (no `S`-containment
 hypothesis) is FALSE.** A second AI cross-check (after the ChatGPT pass that diagnosed
@@ -1582,7 +1775,11 @@ theorem fiber_eq_of_pure_rational_pole_match (hchar : (2 : k) ≠ 0) (hsf : Squa
       single x₃ + single x₄ - single x₁ - single x₂)
     (hclosed₁ : ∀ Q ∈ ({x₁, x₂, x₃, x₄} : Finset H.Point), Q.X = x₁.X →
       Point.iota Q ∈ ({x₁, x₂, x₃, x₄} : Finset H.Point))
+    (hclosed₂ : ∀ Q ∈ ({x₁, x₂, x₃, x₄} : Finset H.Point), Q.X = x₂.X →
+      Point.iota Q ∈ ({x₁, x₂, x₃, x₄} : Finset H.Point))
     (hclosed₃ : ∀ Q ∈ ({x₁, x₂, x₃, x₄} : Finset H.Point), Q.X = x₃.X →
+      Point.iota Q ∈ ({x₁, x₂, x₃, x₄} : Finset H.Point))
+    (hclosed₄ : ∀ Q ∈ ({x₁, x₂, x₃, x₄} : Finset H.Point), Q.X = x₄.X →
       Point.iota Q ∈ ({x₁, x₂, x₃, x₄} : Finset H.Point)) :
     ({x₃, x₄} : Set H.Point) = {x₁, x₂} := by
   classical
@@ -1774,11 +1971,349 @@ theorem fiber_eq_of_pure_rational_pole_match (hchar : (2 : k) ≠ 0) (hsf : Squa
             ordAt P (linX a) 0 := ordAt_C_mul_eq c' hc' (linX a) 0 hne0 P
         rw [mul_zero] at hc0 hc'0
         rw [hc0, hc'0]
-      · sorry -- different roots: genuinely uses `hne` and the hyperelliptic involution;
-              -- the one branch that isn't bookkeeping (see docstring above).
+      · -- Different roots: coefficient-comparison argument (ChatGPT-confirmed shape).
+        -- `linX a` and `linX a'` have disjoint zero-fibers (`a ≠ a'`), so `hpoles`'s
+        -- `+`/`-` split can't mix contributions from the two fibers — the positive part
+        -- must come entirely from the `X = a` fiber and the negative part entirely from
+        -- the `X = a'` fiber. `hclosed₃`/`hclosed₁` rule out a "truncated" single-point
+        -- fiber (forcing the clean unramified `{Q, ιQ}` shape on each side), and `hne`
+        -- rules out the negative fiber collapsing to an `ι`-pair around `x₁` that would
+        -- force `x₂ = ι x₁`.
+        have hlinXane : linX a ≠ (0 : k[X]) := linX_ne_zero a
+        have hlinXa'ne : linX a' ≠ (0 : k[X]) := linX_ne_zero a'
+        have hne0a : ¬ (linX a = (0 : k[X]) ∧ (0 : k[X]) = 0) := fun h => hlinXane h.1
+        have hne0a' : ¬ (linX a' = (0 : k[X]) ∧ (0 : k[X]) = 0) := fun h => hlinXa'ne h.1
+        classical
+        -- Coefficient of any `Q ∈ {x₁,x₂,x₃,x₄}` in `divToPair (poly) 0 {x₁,x₂,x₃,x₄}`,
+        -- computed directly from the `Finset.sum` definition — no outside-support fact
+        -- needed since we only ever evaluate at points inside the support.
+        have hcoeffPair : ∀ (P : k[X]) (Q : H.Point), Q ∈ ({x₁, x₂, x₃, x₄} : Finset H.Point) →
+            Divisor.coeffAt Q (divToPair P 0 {x₁, x₂, x₃, x₄}) = ordAt Q P 0 := by
+          intro P Q hQ
+          unfold divToPair
+          rw [map_sum, Finset.sum_eq_single Q
+            (fun R _ hRQ => by
+              rw [map_zsmul, Divisor.coeffAt_single, if_neg (Ne.symm hRQ)]; simp)
+            (fun hQS => absurd hQ hQS)]
+          rw [map_zsmul, Divisor.coeffAt_single_self]
+          simp
+        -- Reduce `hpoles`'s coefficient at any of the four named points to a bare
+        -- `ordAt`-difference on `linX a`/`linX a'` (scalars stripped via `ordAt_C_mul_eq`).
+        have hcoeff : ∀ Q ∈ ({x₁, x₂, x₃, x₄} : Finset H.Point),
+            Divisor.coeffAt Q (single x₃ + single x₄ - single x₁ - single x₂ : Divisor H) =
+              ordAt Q (linX a) 0 - ordAt Q (linX a') 0 := by
+          intro Q hQ
+          have hstep : Divisor.coeffAt Q
+              (divToPairRatio A 0 {x₁, x₂, x₃, x₄} A' 0 {x₁, x₂, x₃, x₄}) =
+              ordAt Q (linX a) 0 - ordAt Q (linX a') 0 := by
+            unfold divToPairRatio
+            rw [map_sub, hAlin, hA'lin, hcoeffPair (Polynomial.C c * linX a) Q hQ,
+              hcoeffPair (Polynomial.C c' * linX a') Q hQ]
+            have hordA := ordAt_C_mul_eq c hc (linX a) 0 hne0a Q
+            have hordA' := ordAt_C_mul_eq c' hc' (linX a') 0 hne0a' Q
+            rw [mul_zero] at hordA hordA'
+            rw [hordA, hordA']
+          rw [← hstep, hpoles]
+        -- Evaluate `hcoeff` at `x₃`: `coeffAt x₃ (RHS) ≥ 1` (it's `1`, or `2` if `x₃ = x₄`),
+        -- in particular positive, so `ordAt x₃ (linX a) 0 ≠ ordAt x₃ (linX a') 0` and the
+        -- difference is positive. By `ordAt_linX_eq` (values only ever `0,1,2`, and `a ≠ a'`
+        -- means `x₃.X` can't equal both), the only way a nonneg-minus-nonneg difference is
+        -- positive is `x₃.X = a` (contributing `≥ 1`) and `x₃.X ≠ a'` (contributing `0`).
+        have hordbd : ∀ (r : k) (Q : H.Point), ordAt Q (linX r) 0 = 0 ∨ ordAt Q (linX r) 0 = 1 ∨
+            ordAt Q (linX r) 0 = 2 := by
+          intro r Q
+          rw [ordAt_linX_eq hchar hsf r Q (pointIdeal_ne_bot Q)]
+          split_ifs <;> simp
+        -- **New this session — all-positive rearrangement, UNVERIFIED (no local Lean, next
+        -- session must check in the REPL).** Instead of chasing `hcoeff` at one named point
+        -- at a time (the previous attempt's gap: `x₃.X ≠ a` only forces `x₃ ∈ {x₁,x₂}`, not
+        -- `False`), rearrange `hcoeff` at *every* point of `H.Point` — not just the four named
+        -- ones — into a single divisor identity with every term on the nonneg side:
+        -- `D_a + single x₁ + single x₂ = D_a' + single x₃ + single x₄`, where `D_a :=
+        -- divToPair (linX a) 0 S`, `D_a' := divToPair (linX a') 0 S`. Both sides are honest
+        -- sums of `single`s with nonneg (`ordAt`-valued, or `1`) coefficients, so this is a
+        -- genuine mass-balance, not a signed difference — no cancellation ambiguity. Points
+        -- *outside* `S` contribute `0` to both `D_a`/`D_a'` (by `divToPair`'s own definition,
+        -- a `Finset.sum` over `S`) and `0` to the `single x_i` terms (all four named points are
+        -- in `S`), so the identity holds at every point of `H.Point`, i.e. as an equation of
+        -- `Divisor H`, not just on `S`.
+        -- Proved as whole-`Divisor H` algebra (mirroring the `hstep` idiom used in the
+        -- earlier branches of this theorem, e.g. the `A=0,A'=C c'*linX a'` case above),
+        -- NOT via `coeffAt`/`Finsupp.ext` — `Divisor H` is a `def` over `H.Point →₀ ℤ`, not
+        -- `abbrev` (see `Divisor.coeffAt`'s own docstring), so `Finsupp.ext` may not apply at
+        -- ordinary transparency; safer to stay inside the already-working `hstep`/`ring`-on-
+        -- `Divisor H`-as-`AddCommGroup` style used throughout this file.
+        have hstepD : (divToPairRatio A 0 {x₁, x₂, x₃, x₄} A' 0 {x₁, x₂, x₃, x₄} : Divisor H) =
+            (divToPair (linX a) 0 {x₁, x₂, x₃, x₄} : Divisor H) -
+              divToPair (linX a') 0 {x₁, x₂, x₃, x₄} := by
+          unfold divToPairRatio
+          rw [hAlin, hA'lin]
+          congr 1
+          · unfold divToPair
+            refine Finset.sum_congr rfl (fun P _ => ?_)
+            have hordA := ordAt_C_mul_eq c hc (linX a) 0 hne0a P
+            rw [mul_zero] at hordA
+            rw [hordA]
+          · unfold divToPair
+            refine Finset.sum_congr rfl (fun P _ => ?_)
+            have hordA' := ordAt_C_mul_eq c' hc' (linX a') 0 hne0a' P
+            rw [mul_zero] at hordA'
+            rw [hordA']
+        have hbalance : (divToPair (linX a) 0 {x₁, x₂, x₃, x₄} : Divisor H) + single x₁ + single x₂ =
+            (divToPair (linX a') 0 {x₁, x₂, x₃, x₄} : Divisor H) + single x₃ + single x₄ := by
+          have hpoles' := hpoles
+          rw [hstepD] at hpoles'
+          -- `hpoles' : D_a - D_a' = single x₃ + single x₄ - single x₁ - single x₂`. Regroup
+          -- the RHS's left-to-right subtraction chain into `(single x₃ + single x₄) -
+          -- (single x₁ + single x₂)` (`sub_sub`, already used for exactly this purpose at
+          -- `hclose`'s definition above), then apply the general `AddCommGroup` rearrangement
+          -- `a - b = c - d ↔ a + d = c + b` (`sub_eq_sub_iff_add_eq_add`) with `a := D_a`,
+          -- `b := D_a'`, `c := single x₃ + single x₄`, `d := single x₁ + single x₂`, giving
+          -- `D_a + (single x₁+single x₂) = (single x₃+single x₄) + D_a'` — then `abel` closes
+          -- the remaining associativity/commutativity mismatch against the goal's exact
+          -- bracketing (`+ single x₁ + single x₂` vs `+ (single x₁ + single x₂)`, etc.).
+          rw [sub_sub] at hpoles'
+          have hrearr := sub_eq_sub_iff_add_eq_add.mp hpoles'
+          -- `hrearr : D_a + (single x₁ + single x₂) = single x₃ + single x₄ + D_a'`
+          have : (divToPair (linX a) 0 {x₁, x₂, x₃, x₄} : Divisor H) + single x₁ + single x₂ =
+              single x₃ + single x₄ + (divToPair (linX a') 0 {x₁, x₂, x₃, x₄} : Divisor H) := by
+            rw [add_assoc]; exact hrearr
+          rw [this]; abel
+        -- **Degree bookkeeping, continuing from `hbalance`.** `deg` is additive
+        -- (`AddMonoidHom`), so `deg (D_a + single x₁ + single x₂) = deg D_a + 1 + 1` and
+        -- symmetrically for the other side; equating gives `deg D_a = deg D_a'`.
+        have hdegeq : deg (divToPair (linX a) 0 {x₁, x₂, x₃, x₄} : Divisor H) =
+            deg (divToPair (linX a') 0 {x₁, x₂, x₃, x₄} : Divisor H) := by
+          have h := congrArg deg hbalance
+          simp only [map_add, deg_single] at h
+          omega
+        -- Case split on whether this common degree is `0`.
+        by_cases hdeg0 : deg (divToPair (linX a) 0 {x₁, x₂, x₃, x₄} : Divisor H) = 0
+        · -- **Easy case: both sides vanish.** Exactly the "one/both zero" route sketched
+          -- above — `divToPair_right_zero_eq_zero_of_deg_eq_zero` termwise-vanishes both
+          -- `D_a` and `D_a'` (using `hdeg0` and `hdegeq.symm.trans hdeg0`/`hdeg0` resp.),
+          -- and `hbalance` collapses to `single x₁+single x₂ = single x₃+single x₄`, closed
+          -- by `set_eq_of_two_singletons_eq` (symmetrized, since that lemma's conclusion is
+          -- stated as `{a,b}={c,d}` from `single a+single b=single c+single d` — here we
+          -- have the `x₃,x₄`/`x₁,x₂` roles swapped relative to `hclose`'s usage above, so
+          -- take `.symm` on both the hypothesis and the goal).
+          have hzeroa : (divToPair (linX a) 0 {x₁, x₂, x₃, x₄} : Divisor H) = 0 :=
+            divToPair_right_zero_eq_zero_of_deg_eq_zero (linX a) {x₁, x₂, x₃, x₄} hdeg0
+          have hzeroa' : (divToPair (linX a') 0 {x₁, x₂, x₃, x₄} : Divisor H) = 0 :=
+            divToPair_right_zero_eq_zero_of_deg_eq_zero (linX a') {x₁, x₂, x₃, x₄}
+              (hdegeq ▸ hdeg0)
+          rw [hzeroa, hzeroa', zero_add, zero_add] at hbalance
+          have hsum2 : (single x₃ + single x₄ : Divisor H) = single x₁ + single x₂ :=
+            hbalance.symm
+          exact set_eq_of_two_singletons_eq hsum2
+        · -- **Hard case: `deg D_a = deg D_a' ≠ 0`.** Extract a witness point of `S` with
+          -- `X = a` (resp. `X = a'`), pin down `D_a`/`D_a'` as exactly that witness's
+          -- fiber (via `hsupp_linX`'s contrapositive + `divToPair_linX_eq`, widened from
+          -- `fiberSupport` to all of `S` by `Finset.sum_subset`, mirroring
+          -- `RatioDivisorCollapse.lean`'s established idiom for exactly this kind of
+          -- support-widening), then close via `hbalance` and `hne`.
+          classical
+          -- **Step 1: some point of `S` has `X = a`.** Contrapositive of `ordAt_linX_eq`:
+          -- if every point of `S` had `X ≠ a`, every term of `D_a`'s defining sum would be
+          -- `0` (via `ordAt_linX_eq_zero_of_ne`), forcing `D_a = 0`, hence `deg D_a = 0`,
+          -- contradicting `hdeg0`.
+          have hexA : ∃ Q₀ ∈ ({x₁, x₂, x₃, x₄} : Finset H.Point), Q₀.X = a := by
+            by_contra hcon
+            push_neg at hcon
+            have hallzero : (divToPair (linX a) 0 {x₁, x₂, x₃, x₄} : Divisor H) = 0 := by
+              unfold divToPair
+              refine Finset.sum_eq_zero (fun P hP => ?_)
+              rw [ordAt_linX_eq_zero_of_ne a P (pointIdeal_ne_bot P) (hcon P hP)]
+              simp
+            rw [hallzero] at hdeg0
+            exact hdeg0 (by simp)
+          have hexA' : ∃ Q₁ ∈ ({x₁, x₂, x₃, x₄} : Finset H.Point), Q₁.X = a' := by
+            by_contra hcon
+            push_neg at hcon
+            have hallzero : (divToPair (linX a') 0 {x₁, x₂, x₃, x₄} : Divisor H) = 0 := by
+              unfold divToPair
+              refine Finset.sum_eq_zero (fun P hP => ?_)
+              rw [ordAt_linX_eq_zero_of_ne a' P (pointIdeal_ne_bot P) (hcon P hP)]
+              simp
+            have hdeg0' : deg (divToPair (linX a') 0 {x₁, x₂, x₃, x₄} : Divisor H) = 0 := by
+              rw [hallzero]; simp
+            rw [← hdegeq] at hdeg0'
+            exact hdeg0 hdeg0'
+          obtain ⟨Q₀, hQ₀mem, hQ₀X⟩ := hexA
+          obtain ⟨Q₁, hQ₁mem, hQ₁X⟩ := hexA'
+          -- **Step 2: `ι Q₀ ∈ S` and `ι Q₁ ∈ S`.** `Q₀` is literally one of the four named
+          -- points, so `Q₀.X = xᵢ.X` (with `xᵢ := Q₀` itself, `rfl`), letting the matching
+          -- `hclosed_i` fire with `Q := Q₀`. Same for `Q₁`.
+          have hQ₀mem' : Q₀ = x₁ ∨ Q₀ = x₂ ∨ Q₀ = x₃ ∨ Q₀ = x₄ := by
+            simpa using hQ₀mem
+          have hιQ₀ : Point.iota Q₀ ∈ ({x₁, x₂, x₃, x₄} : Finset H.Point) := by
+            rcases hQ₀mem' with h | h | h | h
+            · exact h ▸ hclosed₁ Q₀ hQ₀mem (by rw [h])
+            · exact h ▸ hclosed₂ Q₀ hQ₀mem (by rw [h])
+            · exact h ▸ hclosed₃ Q₀ hQ₀mem (by rw [h])
+            · exact h ▸ hclosed₄ Q₀ hQ₀mem (by rw [h])
+          have hQ₁mem' : Q₁ = x₁ ∨ Q₁ = x₂ ∨ Q₁ = x₃ ∨ Q₁ = x₄ := by
+            simpa using hQ₁mem
+          have hιQ₁ : Point.iota Q₁ ∈ ({x₁, x₂, x₃, x₄} : Finset H.Point) := by
+            rcases hQ₁mem' with h | h | h | h
+            · exact h ▸ hclosed₁ Q₁ hQ₁mem (by rw [h])
+            · exact h ▸ hclosed₂ Q₁ hQ₁mem (by rw [h])
+            · exact h ▸ hclosed₃ Q₁ hQ₁mem (by rw [h])
+            · exact h ▸ hclosed₄ Q₁ hQ₁mem (by rw [h])
+          -- **Step 3: `D_a = single Q₀ + single (ι Q₀)`.** `fiberSupport Q₀ ⊆ S`
+          -- (`Q₀ ∈ S`, `ι Q₀ ∈ S` from Step 2 — `fiberSupport` is `{Q₀}` or `{Q₀, ι Q₀}`,
+          -- both contained once both named members are in `S`), and every point of
+          -- `S \ fiberSupport Q₀` contributes `0` to `D_a`'s sum (`hsupp_linX`, using
+          -- `linX a = linX Q₀.X` via `hQ₀X`). Widen `divToPair_linX_eq` (computed on the
+          -- exact fiber) up to all of `S` via `Finset.sum_subset`.
+          have hfiberSubA : fiberSupport Q₀ ⊆ ({x₁, x₂, x₃, x₄} : Finset H.Point) := by
+            unfold fiberSupport
+            split_ifs with hY
+            · simpa using hQ₀mem
+            · intro P hP
+              simp only [Finset.mem_insert, Finset.mem_singleton] at hP
+              rcases hP with h | h
+              · rw [h]; exact hQ₀mem
+              · rw [h]; exact hιQ₀
+          have hDa_eq : (divToPair (linX a) 0 {x₁, x₂, x₃, x₄} : Divisor H) =
+              single Q₀ + single (Point.iota Q₀) := by
+            rw [← hQ₀X]
+            rw [← divToPair_linX_eq hchar hsf Q₀]
+            unfold divToPair
+            symm
+            refine Finset.sum_subset hfiberSubA (fun P hP hPnot => ?_)
+            have hzero : ordAt P (linX Q₀.X) 0 = 0 := hsupp_linX hchar hsf Q₀ P hPnot
+            rw [hzero]; simp
+          have hfiberSubA' : fiberSupport Q₁ ⊆ ({x₁, x₂, x₃, x₄} : Finset H.Point) := by
+            unfold fiberSupport
+            split_ifs with hY
+            · simpa using hQ₁mem
+            · intro P hP
+              simp only [Finset.mem_insert, Finset.mem_singleton] at hP
+              rcases hP with h | h
+              · rw [h]; exact hQ₁mem
+              · rw [h]; exact hιQ₁
+          have hDa'_eq : (divToPair (linX a') 0 {x₁, x₂, x₃, x₄} : Divisor H) =
+              single Q₁ + single (Point.iota Q₁) := by
+            rw [← hQ₁X]
+            rw [← divToPair_linX_eq hchar hsf Q₁]
+            unfold divToPair
+            symm
+            refine Finset.sum_subset hfiberSubA' (fun P hP hPnot => ?_)
+            have hzero : ordAt P (linX Q₁.X) 0 = 0 := hsupp_linX hchar hsf Q₁ P hPnot
+            rw [hzero]; simp
+          -- **Step 4: the two fibers `{Q₀,ιQ₀}`, `{Q₁,ιQ₁}` are pairwise disjoint from each
+          -- other**, since `X` is `ι`-invariant (`iota_X`) and `Q₀.X = a ≠ a' = Q₁.X`.
+          have hXne : Q₀.X ≠ Q₁.X := by rw [hQ₀X, hQ₁X]; exact haeq
+          have hQ0Q1 : Q₀ ≠ Q₁ := fun h => hXne (h ▸ rfl)
+          have hQ0iQ1 : Q₀ ≠ Point.iota Q₁ := fun h => hXne (by rw [h, Point.iota_X])
+          have hiQ0Q1 : Point.iota Q₀ ≠ Q₁ := fun h => hXne (by rw [← Point.iota_X Q₀, h])
+          have hiQ0iQ1 : Point.iota Q₀ ≠ Point.iota Q₁ := fun h => hXne (by
+            rw [← Point.iota_X Q₀, ← Point.iota_X Q₁, h])
+          -- **Step 5: combine into the balance equation on the concrete fiber points.**
+          have hbalance2 : (single Q₀ + single (Point.iota Q₀) : Divisor H) + single x₁ + single x₂ =
+              single Q₁ + single (Point.iota Q₁) + single x₃ + single x₄ := by
+            rw [← hDa_eq, ← hDa'_eq]; exact hbalance
+          -- **Step 6: read off `{x₃,x₄}` and `{x₁,x₂}` via `coeffAt` at each of the four
+          -- fiber points, using Step 4's disjointness to kill cross-terms.** At `Q₀`: LHS
+          -- coefficient is `1 + [ιQ₀=Q₀] ≥ 1`; RHS's `Q₁,ιQ₁` terms vanish (Step 4), so
+          -- `[x₃=Q₀]+[x₄=Q₀] = 1 + [ιQ₀=Q₀] ≥ 1`, i.e. `Q₀ ∈ {x₃,x₄}`. Symmetrically for
+          -- `ιQ₀ ∈ {x₃,x₄}`, `Q₁,ιQ₁ ∈ {x₁,x₂}` (from the mirror coefficient at `Q₁`/`ιQ₁`,
+          -- where the `Q₀,ιQ₀` terms vanish on the LHS this time). Combined with each pair
+          -- having exactly the fiber's `2`-point (or doubled `1`-point) mass, and `{x₃,x₄}`/
+          -- `{x₁,x₂}` each having total mass exactly `2`, this pins `{x₃,x₄}={Q₀,ιQ₀}` and
+          -- `{x₁,x₂}={Q₁,ιQ₁}` as sets.
+          -- **Step 6: read off `{x₃,x₄}` and `{x₁,x₂}` via `coeffAt` at each of the four
+          -- fiber points, using Step 4's disjointness to kill cross-terms.**
+          -- **Step 6, redone via direct substitution rather than raw `coeffAt`-`if` chasing
+          -- (safer: avoids depending on `Divisor.coeffAt_single`'s exact `if` orientation).**
+          -- Substitute `hDa_eq`/`hDa'_eq` into `hbalance` to get `hbalance2` (already have,
+          -- Step 5): `single Q₀ + single (ι Q₀) + single x₁ + single x₂ = single Q₁ +
+          -- single (ι Q₁) + single x₃ + single x₄`. Regroup via `add_assoc`/`add_comm` into
+          -- `(single Q₀ + single (ι Q₀)) + (single x₁ + single x₂) = (single Q₁ +
+          -- single (ι Q₁)) + (single x₃ + single x₄)`, matching the shape `set_eq_of_two_
+          -- singletons_eq`-style reasoning needs, but with 4 summands: instead of reproving
+          -- that lemma's machinery from scratch for 4 terms, isolate `{x₁,x₂}` by moving
+          -- `single x₃ + single x₄` to the LHS: `(single Q₀+single ιQ₀) - (single Q₁+
+          -- single ιQ₁) = (single x₃+single x₄) - (single x₁+single x₂)`, i.e. exactly the
+          -- shape `hpoles` already had at the top (`D_a - D_a'` reinterpreted) — so instead
+          -- directly derive the **two separate two-point equalities** by using disjointness
+          -- (Step 4) to argue `single x₁+single x₂` must absorb *all* of the `Q₁,ιQ₁`-mass
+          -- and none of the `Q₀,ιQ₀`-mass. **Finished this session** (coefficient-bash route,
+          -- confirmed against a Gemini-assisted derivation): evaluate `hbalance2` via `coeffAt`
+          -- at `Q₁` and `ι Q₁` only. Disjointness (Step 4) zeroes the `Q₀,ιQ₀` cross-terms,
+          -- forcing `Q₁ ∈ {x₁,x₂}` and `ι Q₁ ∈ {x₁,x₂}` (`omega`, using nonnegativity of the
+          -- remaining `if`-terms). A finite case split on which of `x₁,x₂` each of `Q₁,ι Q₁`
+          -- equals forces `x₂ = Point.iota x₁` in every branch, contradicting `hne`. No
+          -- containment fact about `{x₃,x₄}` is ever needed — the crux only needs `Q₁ ≠ Q₀,
+          -- ι Q₀` and `ι Q₁ ≠ Q₀, ι Q₀` (Step 4). Cross-terms are zeroed with explicit
+          -- `if_neg`/`if_pos` calls against the disjointness facts; the two remaining
+          -- genuinely-unknown terms in each hypothesis are left as opaque `ite`s and
+          -- dispatched generically by `split_ifs ... <;> omega`.
+          exfalso
+          have hcoeffQ₁ := congrArg (Divisor.coeffAt Q₁) hbalance2
+          have hcoeffιQ₁ := congrArg (Divisor.coeffAt (Point.iota Q₁)) hbalance2
+          -- `simp` already resolves each `if P = P then _ else _` self-term down to
+          -- `if True then _ else _` on its own (confirmed by this session's build output),
+          -- so add `if_true` to finish collapsing that to a literal `1` before the
+          -- disjointness `rw`s below, which target genuine cross-terms only.
+          simp only [map_add, Divisor.coeffAt_single, if_true] at hcoeffQ₁ hcoeffιQ₁
+          -- Zero out the `Q₀, ι Q₀` cross-terms via Step 4's disjointness — these are the
+          -- only two `ite`s each hypothesis has left besides the already-resolved self-term
+          -- and the not-yet-known `x₁,x₂` (resp. `x₃,x₄`, `ιQ₁`) terms.
+          rw [if_neg hQ0Q1.symm, if_neg hiQ0Q1.symm] at hcoeffQ₁
+          rw [if_neg hQ0iQ1.symm, if_neg hiQ0iQ1.symm] at hcoeffιQ₁
+          -- Only the `x₁,x₂` (resp. `x₃,x₄`) terms need resolving by contradiction; the
+          -- remaining `if [Q₁=ιQ₁] ...` (resp. `if [ιQ₁=Q₁] ...`) terms are left as opaque
+          -- `ite`s and dispatched generically by `split_ifs ... <;> omega`, which needs no
+          -- information about their truth value (only that each is `0` or `1`).
+          have hQ₁mem12 : Q₁ = x₁ ∨ Q₁ = x₂ := by
+            by_contra hcon
+            push_neg at hcon
+            rw [if_neg hcon.1, if_neg hcon.2] at hcoeffQ₁
+            split_ifs at hcoeffQ₁ <;> omega
+          have hιQ₁mem12 : Point.iota Q₁ = x₁ ∨ Point.iota Q₁ = x₂ := by
+            by_contra hcon
+            push_neg at hcon
+            rw [if_neg hcon.1, if_neg hcon.2] at hcoeffιQ₁
+            split_ifs at hcoeffιQ₁ <;> omega
+          -- In every case, `x₂ = Point.iota x₁`, contradicting `hne`.
+          apply hne
+          rcases hQ₁mem12 with hQ₁x1 | hQ₁x2 <;> rcases hιQ₁mem12 with hιQ₁x1 | hιQ₁x2
+          · -- `Q₁ = x₁` and `ι Q₁ = x₁`: forces `Q₁ = ι Q₁`. Feed this back into `hcoeffQ₁`
+            -- to see the RHS mass at `Q₁` is `≥ 2`, which can only be matched if `x₂` (not
+            -- just `x₁`) also equals `Q₁` — then `x₂ = Q₁ = ι Q₁ = ι x₁` via `hιQ₁x1` and
+            -- `iota_iota`.
+            have hQ₁ιQ₁ : Q₁ = Point.iota Q₁ := hQ₁x1.trans hιQ₁x1.symm
+            have hx1x2 : x₁ = x₂ := by
+              by_contra hcon
+              have hQ₁ne2 : Q₁ ≠ x₂ := by rw [hQ₁x1]; exact hcon
+              rw [if_pos hQ₁ιQ₁, if_neg hQ₁ne2, if_pos hQ₁x1] at hcoeffQ₁
+              split_ifs at hcoeffQ₁ <;> omega
+            -- `x₂ = x₁ = Q₁ = ι Q₁ = ι x₁`.
+            exact hx1x2.symm.trans (hQ₁x1.symm.trans (hQ₁ιQ₁.trans (congrArg Point.iota hQ₁x1)))
+          · -- `Q₁ = x₁`, `ι Q₁ = x₂`: `x₂ = ι Q₁ = ι x₁` directly.
+            rw [← hιQ₁x2, ← hQ₁x1]
+          · -- `Q₁ = x₂`, `ι Q₁ = x₁`: apply `iota` to `ι Q₁ = x₁`, use `iota_iota` to get
+            -- `Q₁ = ι x₁`, then rewrite via `Q₁ = x₂`.
+            have hstep : Point.iota (Point.iota Q₁) = Point.iota x₁ := by rw [hιQ₁x1]
+            rw [Point.iota_iota] at hstep
+            rw [← hQ₁x2]; exact hstep
+          · -- `Q₁ = x₂` and `ι Q₁ = x₂`: mirrors the first subcase (`Q₁ = ι Q₁` again),
+            -- forcing `x₁ = x₂` via the RHS mass at `Q₁`, then `x₂ = Q₁ = ι Q₁ = ι x₂ = ι x₁`
+            -- (last step using `x₁ = x₂` again).
+            have hQ₁ιQ₁ : Q₁ = Point.iota Q₁ := hQ₁x2.trans hιQ₁x2.symm
+            have hx1x2 : x₁ = x₂ := by
+              by_contra hcon
+              have hQ₁ne1 : Q₁ ≠ x₁ := by rw [hQ₁x2]; exact Ne.symm hcon
+              rw [if_pos hQ₁ιQ₁, if_neg hQ₁ne1, if_pos hQ₁x2] at hcoeffQ₁
+              split_ifs at hcoeffQ₁ <;> omega
+            exact hQ₁x2.symm.trans (hQ₁ιQ₁.trans (congrArg Point.iota (hQ₁x2.trans hx1x2.symm)))
 
 
 
+set_option maxHeartbeats 800000 in
+-- heavy case-bash across the pole-match branches; default heartbeat budget is too tight
 /-- **§3f — THE HARD SORRY, the actual crux of the whole file.** Given `D =
 (x₃)+(x₄)-(x₁)-(x₂)` (§3e's second branch) and `x₂ ≠ ι x₁` (`hne`), show
 `{x₃,x₄} = {x₁,x₂}` (forcing `D = 0`, i.e. the fraction is constant after
@@ -1892,7 +2427,7 @@ constant-fraction conclusion. Restated as the actual missing degree fact,
 still open. -/
 lemma natDegree_eq_zero_of_mono (A A' : k[X])
     (hmono : ordInfOfPair A 0 ≥ ordInfOfPair A' 0)
-    (hB : (0:k[X]) = 0) (hB' : (0:k[X]) = 0)
+    (_hB : (0 : k[X]) = 0) (_hB' : (0 : k[X]) = 0)
     (h_deg_A' : A'.natDegree = 0) (h_deg_pos : ¬ A.natDegree = 0) :
     False := by
   -- `ordInfOfPair_right_zero` unfolds both sides: `ordInfOfPair A 0 = -2 * A.natDegree`,
@@ -1947,8 +2482,9 @@ theorem constant_or_fiber_of_isPoleBoundedAtPair (hdeg : H.f.natDegree = 5)
     -- **Genuinely open** (SCOPING-finrank-L-pair.md's Route A step 1/2 boundary): the
     -- old code claimed this followed from `hpt` alone via a lemma
     -- (`ordInf_ge_neg_two_of_pole_bounded`) typed against a fraction-level `ordInf` that
-    -- doesn't exist anywhere in the project. The real content — bounding `ordInfOfPair A' B'` below using `hpt`'s
-    -- pointwise data — needs the same `T`/`deg_div_eq_zero_deg5` summation
+    -- doesn't exist anywhere in the project. The real content — bounding
+    -- `ordInfOfPair A' B'` below using `hpt`'s pointwise data — needs the same
+    -- `T`/`deg_div_eq_zero_deg5` summation
     -- `denom_B'_eq_zero_of_isPoleBoundedAtPair` (§ above) already carries out in full
     -- (using `hT₁`/`hT₂`'s finite supports plus a `hreduced` lowest-terms hypothesis this
     -- theorem does not currently take as a parameter). Left as `sorry`, not a fabricated
@@ -1992,7 +2528,7 @@ theorem constant_or_fiber_of_isPoleBoundedAtPair (hdeg : H.f.natDegree = 5)
         _ ≥ -2 := h_denom_ord
       have hdegA'le1 : A'.natDegree ≤ 1 := by
         by_contra hgt
-        push_neg at hgt
+        push Not at hgt
         have : (2 : ℤ) ≤ (A'.natDegree : ℤ) := by exact_mod_cast hgt
         linarith
       have hpt' : ∀ P : H.Point, ordAt P A 0 ≥ ordAt P A' 0 -
