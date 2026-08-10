@@ -2534,13 +2534,77 @@ c' * linX a'` (using `hdegA'le1` + `eq_zero_or_C_or_C_mul_linX_of_natDegree_
 le_one` to get `a'`), or (b) first build the pointwise-inequality-to-exact-
 divisor-equation bridge as its own lemma and then call
 `fiber_eq_of_pure_rational_pole_match`. Route (a) is likely less work, since
-it avoids constructing the bridge lemma at all. -/
+it avoids constructing the bridge lemma at all. 
+ **Statement WEAKENED this session — the original version above (bare `hpt`, no
+lowest-terms hypothesis) is FALSE, confirmed by GPT and checked by hand.**
+Counterexample: take `A := A'` for any degree-1 `A'`. Then `hpt` becomes
+`ordAt P A' 0 ≥ ordAt P A' 0 - (nonneg indicator sum)`, which is `x ≥ x -
+(nonneg)`, automatically true at every `P` — so `hpt` places no real constraint
+on `A` at all in this instance, and `A'.natDegree = 1 ≠ 0` while every
+hypothesis holds. The one-directional inequality `hpt` supplies is simply not
+enough; `A` needs to be genuinely unrelated to `A'` (no shared zero), which is
+exactly the same "lowest-terms" gap `denom_B'_eq_zero_of_isPoleBoundedAtPair`
+already needed `hreduced` to close (see that theorem's docstring above for the
+identical `y/y` self-cancellation pattern — this is the affine analogue).
+
+**Fix applied**: added `hreducedA : ∀ P : H.Point, ordAt P A 0 = 0 ∨ ordAt P A'
+0 = 0` — no common affine zero between `A(x)` and `A'(x)`. This directly rules
+out the `A = A'` counterexample (whenever `A'` has a zero, `A` shares it, so
+`hreducedA`'s disjunction fails at that point unless `A = 0` there too, but
+`A = A'` nonzero at its own zero — contradiction). Matches the project's
+existing convention of weakening rather than deleting once a genuine
+counterexample is found.
+
+**Not yet re-attempted after the fix — still `sorry`.** The `constant_or_fiber_
+of_isPoleBoundedAtPair` call site (below) does not currently establish
+`hreducedA` either — this is a NEW gap, not previously flagged, surfaced by
+GPT's counterexample. Establishing it there likely needs the same `hreduced`-
+style argument `denom_B'_eq_zero_of_isPoleBoundedAtPair` uses (via `hbound`'s
+pointwise clause plus `hT₁`/`hT₂`'s finite supports), applied to the affine
+parts specifically — not attempted here, flagged for whoever picks this up
+next.
+
+**SECOND CORRECTION (this session): `hreducedA` itself abandoned — it is
+genuinely unprovable at the real call site, not just "not yet attempted".**
+Direct check: at `constant_or_fiber_of_isPoleBoundedAtPair`'s `h_deg_A'`
+step, nothing in scope (`hbound`, `h_denom_ord`, `hB`, `hB'`) rules out
+`A = A'` (any nonzero degree-≤1 polynomial) — that assignment satisfies
+every hypothesis available there (same self-cancellation shape as the
+parent `y/y` counterexample: `hpt'` becomes `ordAt P A 0 ≥ ordAt P A 0 -
+ind(P)`, trivially true). So `hreducedA` cannot be derived at that call
+site; threading it outward as an explicit hypothesis of `constant_or_
+fiber_of_isPoleBoundedAtPair` itself was also checked and found to just
+relocate the same unprovable gap to `uniqueDegree2MapToP1_of_elementary`,
+whose witness comes straight from `LPairCarrier`'s existential with no
+reducedness guarantee either (see `RiemannRochGenus2.lean`'s `LPairCarrier`
+docstring for the full trace, including why `IsRatioDivisor`'s own
+construction — `isRatioDivisor_add`'s raw numerator/denominator product —
+also does not supply it).
+
+**THIRD CORRECTION (this session): even the `A = A'` disjunct is too strong —
+found a further counterexample before writing any case-analysis proof.**
+Take `A = X`, `A' = C 2 * X` (needs `hchar : (2:k) ≠ 0`, i.e. `2 ≠ 0` in
+`k`, already a standing hypothesis here): `toPair H A' 0 = C 2_ring *
+toPair H A 0` where `C 2_ring := algebraMap k[X] (CoordinateRing H) (C
+2)`, and `C 2_ring` is a UNIT (already proved elsewhere in this project —
+`LPairFinrankOne.lean`'s `IsUnit ... ↔ ∃ c, c ≠ 0 ∧ ...`, and
+`RatioDivisorCollapse.lean`/`RiemannRochGenus2.lean` both use the same
+fact directly). A unit multiple doesn't change `ordAt` at any point, so
+`ordAt P A 0 = ordAt P A' 0` everywhere, `hpt` collapses to the same
+trivial `x ≥ x - ind(P)` as the `A = A'` case — yet `A ≠ A'` (as literal
+polynomials, `X ≠ C 2 * X` whenever `X ≠ 0`, i.e. always). So `A = A'`
+alone does not cover every degenerate case; the honest disjunct is "`A`
+and `A'` are associates" (differ by a nonzero scalar), matching exactly
+where `z = A/A'` collapses to a genuine constant `c` (not just `1`) — this
+is the actually-true generalization, checked to also handle the call
+site's needs (`z = toPair(C c * A', 0)/toPair(A', 0) = C c_ring`, a
+constant witness, replacing the earlier `z = 1` special case). -/
 lemma natDegree_eq_zero_of_isPoleBoundedAtPair (hchar : (2 : k) ≠ 0)
     (hsf : Squarefree H.f) (x₁ x₂ : H.Point) (hne : x₂ ≠ Point.iota x₁)
     (A A' : k[X]) (hdegA'le1 : A'.natDegree ≤ 1)
     (hpt : ∀ P : H.Point, ordAt P A 0 ≥ ordAt P A' 0 -
       ((if P = x₁ then 1 else 0) + (if P = x₂ then 1 else 0))) :
-    A'.natDegree = 0 := by
+    A'.natDegree = 0 ∨ ∃ c : k, c ≠ 0 ∧ A = Polynomial.C c * A' := by
   sorry
 
 
@@ -2636,84 +2700,108 @@ theorem constant_or_fiber_of_isPoleBoundedAtPair (hdeg : H.f.natDegree = 5)
 
     have hB : B = 0 := num_B_eq_zero_of_isPoleBoundedAtPair x₁ x₂ A B A' B' hbound h_denom_ord
 
-    -- 3. Show A' and A are degree 0 (constants)
+    -- 3. Show A' and A are degree 0 (constants) — OR handle the `A = A'` branch directly.
     -- **Rewired (ChatGPT-assisted design pass) to actually use `hne`** — the previous
     -- version only used the `ordInfOfPair ≥ -2` size bound (giving `natDegree ≤ 1`) and
     -- called a lemma that tried to rule out `natDegree = 1` with no point data at all,
     -- which is false (see `natDegree_eq_zero_of_isPoleBoundedAtPair`'s docstring). The
     -- `≤ 1` bound is still derived the same way (from `h_denom_ord`/`ordInfOfPair_right_
     -- zero`); ruling out the `= 1` case is now delegated to
-    -- `natDegree_eq_zero_of_isPoleBoundedAtPair`, which takes `hne` and `hpt` (specialized
-    -- to `B = B' = 0`) and is itself still a `sorry` (genuinely open, see its docstring —
-    -- not a wiring gap anymore, a real case-analysis gap).
-    have h_deg_A' : A'.natDegree = 0 := by
+    -- `natDegree_eq_zero_of_isPoleBoundedAtPair`, which now returns the honestly-true
+    -- disjunction `A'.natDegree = 0 ∨ A = A'` (see that lemma's docstring for why the
+    -- earlier `hreducedA`-hypothesis version was abandoned — genuinely unprovable at
+    -- this call site, not just unproved) instead of the too-strong `A'.natDegree = 0`
+    -- alone. Both branches are handled below, `rcases`'d immediately so the rest of the
+    -- proof only ever has to deal with one shape at a time.
+    have hdegA'le1 : A'.natDegree ≤ 1 := by
       have h_ord_A' : ordInfOfPair A' 0 = -2 * (A'.natDegree : ℤ) := ordInfOfPair_right_zero A'
       have h_bound_eq : -2 * (A'.natDegree : ℤ) ≥ -2 := by
         calc -2 * (A'.natDegree : ℤ) = ordInfOfPair A' 0 := h_ord_A'.symm
         _ = ordInfOfPair A' B' := by rw [hB']
         _ ≥ -2 := h_denom_ord
-      have hdegA'le1 : A'.natDegree ≤ 1 := by
-        by_contra hgt
-        push Not at hgt
-        have : (2 : ℤ) ≤ (A'.natDegree : ℤ) := by exact_mod_cast hgt
-        linarith
-      have hpt' : ∀ P : H.Point, ordAt P A 0 ≥ ordAt P A' 0 -
-          ((if P = x₁ then 1 else 0) + (if P = x₂ then 1 else 0)) := by
-        intro P
-        have := hpt P
-        rwa [hB, hB'] at this
-      exact natDegree_eq_zero_of_isPoleBoundedAtPair hchar hsf x₁ x₂ hne A A' hdegA'le1 hpt'
+      by_contra hgt
+      push_neg at hgt
+      have : (2 : ℤ) ≤ (A'.natDegree : ℤ) := by exact_mod_cast hgt
+      linarith
+    have hpt' : ∀ P : H.Point, ordAt P A 0 ≥ ordAt P A' 0 -
+        ((if P = x₁ then 1 else 0) + (if P = x₂ then 1 else 0)) := by
+      intro P
+      have := hpt P
+      rwa [hB, hB'] at this
+    rcases natDegree_eq_zero_of_isPoleBoundedAtPair hchar hsf x₁ x₂ hne A A' hdegA'le1 hpt'
+      with h_deg_A' | hAeqA'
+    · -- **Main branch**: `A'.natDegree = 0`, exactly the old proof from here on.
+      have h_deg_A : A.natDegree = 0 := by
+        by_contra h_deg_pos
+        -- By monotonicity (hmono), since A' is bounded to degree 0 and y-components vanish,
+        -- A is similarly restricted.
+        have hmono' : ordInfOfPair A 0 ≥ ordInfOfPair A' 0 := by
+          rw [hB, hB'] at hmono; exact hmono
+        exact natDegree_eq_zero_of_mono A A' hmono' rfl rfl h_deg_A' h_deg_pos
 
-    have h_deg_A : A.natDegree = 0 := by
-      by_contra h_deg_pos
-      -- By monotonicity (hmono), since A' is bounded to degree 0 and y-components vanish,
-      -- A is similarly restricted.
-      have hmono' : ordInfOfPair A 0 ≥ ordInfOfPair A' 0 := by rw [hB, hB'] at hmono; exact hmono
-      exact natDegree_eq_zero_of_mono A A' hmono' rfl rfl h_deg_A' h_deg_pos
+      -- 4. Reconstruct constant fraction in k
+      -- `Polynomial.eq_C_of_natDegree_eq_zero` produces an equality `p = C (p.coeff 0)`
+      have hcA : A = Polynomial.C (A.coeff 0) := Polynomial.eq_C_of_natDegree_eq_zero h_deg_A
+      have hcA' : A' = Polynomial.C (A'.coeff 0) := Polynomial.eq_C_of_natDegree_eq_zero h_deg_A'
+      -- `A' ≠ 0` (from `hA'B'`, since `B' = 0`), so its constant coefficient is nonzero —
+      -- needed so the witness fraction `A.coeff 0 / A'.coeff 0` is an honest quotient in `k`,
+      -- and so the denominator `toPair H A' 0` is a nonzero `CoordinateRing H` element.
+      have hA'ne : A' ≠ 0 := fun h => hA'B' ⟨h, hB'⟩
+      have hA'c0_ne : A'.coeff 0 ≠ 0 := by
+        intro hzero
+        apply hA'ne
+        rw [hcA', hzero, Polynomial.C_0]
+      have htoPairA'_ne : toPair H A' 0 ≠ 0 := by
+        rw [Ne, toPair_eq_zero_iff]
+        exact fun h => hA'ne h.1
+      -- `algebraMap (CoordinateRing H) (FractionRing (CoordinateRing H))` is injective
+      -- (`IsFractionRing.injective`, the codebase's standard route — see
+      -- `PrincipalDivisorsIntegralClosure.lean:110` for the same invocation), so a nonzero
+      -- `CoordinateRing H` element stays nonzero after mapping into the fraction field.
+      have hdenom_ne : algebraMap (CoordinateRing H) (FractionRing (CoordinateRing H))
+          (toPair H A' 0) ≠ 0 :=
+        (map_ne_zero_iff _ (IsFractionRing.injective (CoordinateRing H)
+          (FractionRing (CoordinateRing H)))).mpr htoPairA'_ne
 
-    -- 4. Reconstruct constant fraction in k
-    -- `Polynomial.eq_C_of_natDegree_eq_zero` produces an equality `p = C (p.coeff 0)`
-    have hcA : A = Polynomial.C (A.coeff 0) := Polynomial.eq_C_of_natDegree_eq_zero h_deg_A
-    have hcA' : A' = Polynomial.C (A'.coeff 0) := Polynomial.eq_C_of_natDegree_eq_zero h_deg_A'
-    -- `A' ≠ 0` (from `hA'B'`, since `B' = 0`), so its constant coefficient is nonzero —
-    -- needed so the witness fraction `A.coeff 0 / A'.coeff 0` is an honest quotient in `k`,
-    -- and so the denominator `toPair H A' 0` is a nonzero `CoordinateRing H` element.
-    have hA'ne : A' ≠ 0 := fun h => hA'B' ⟨h, hB'⟩
-    have hA'c0_ne : A'.coeff 0 ≠ 0 := by
-      intro hzero
-      apply hA'ne
-      rw [hcA', hzero, Polynomial.C_0]
-    have htoPairA'_ne : toPair H A' 0 ≠ 0 := by
-      rw [Ne, toPair_eq_zero_iff]
-      exact fun h => hA'ne h.1
-    -- `algebraMap (CoordinateRing H) (FractionRing (CoordinateRing H))` is injective
-    -- (`IsFractionRing.injective`, the codebase's standard route — see
-    -- `PrincipalDivisorsIntegralClosure.lean:110` for the same invocation), so a nonzero
-    -- `CoordinateRing H` element stays nonzero after mapping into the fraction field.
-    have hdenom_ne : algebraMap (CoordinateRing H) (FractionRing (CoordinateRing H))
-        (toPair H A' 0) ≠ 0 :=
-      (map_ne_zero_iff _ (IsFractionRing.injective (CoordinateRing H)
-        (FractionRing (CoordinateRing H)))).mpr htoPairA'_ne
+      dsimp [IsConstantFraction, polePairToFraction]
+      refine ⟨A.coeff 0 / A'.coeff 0, ?_⟩
 
-    dsimp [IsConstantFraction, polePairToFraction]
-    refine ⟨A.coeff 0 / A'.coeff 0, ?_⟩
+      -- Clean substitution using exact variable mappings to avoid polynomial namespace collisions
+      rw [hcA'] at hdenom_ne
+      rw [hcA, hcA', hB, hB']
+      -- `toPair H (C a) 0 = algebraMap k[X] (CoordinateRing H) (C a) + algebraMap k[X]
+      -- (CoordinateRing H) 0 * y H` (`HyperellipticFunctionField.lean:72-73`); the `B`-term
+      -- collapses via `map_zero`/`zero_mul`/`add_zero` on both sides at once. `rw [hcA, hcA']`
+      -- above also rewrote the witness's own `A.coeff 0`/`A'.coeff 0` into `(C _).coeff 0`
+      -- (since it rewrites every occurrence, including inside the already-substituted witness),
+      -- so `Polynomial.coeff_C_zero` collapses those back down first.
+      simp only [HyperellipticPolynomial.toPair, map_zero, zero_mul, add_zero,
+        Polynomial.coeff_C_zero] at hdenom_ne ⊢
+      -- Goal: `algMap (algMap2 (C a)) / algMap (algMap2 (C a')) = algMap (algMap2 (C (a/a')))`.
+      -- Clear the division on the LHS against `hdenom_ne`, folding the RHS's `C (a/a')` and the
+      -- newly-introduced `algMap (algMap2 (C a'))` factor into one `algMap (algMap2 (C (a/a' *
+      -- a')))` term via `map_mul`/`C_mul`, then close with `a = a/a' * a'` at the `k` level.
+      rw [div_eq_iff hdenom_ne, ← map_mul, ← map_mul, ← Polynomial.C_mul,
+        div_mul_cancel₀ _ hA'c0_ne]
+    · -- **New branch, `A = A'`**: `z = toPair H A 0 / toPair H A' 0 = toPair H A 0 /
+      -- toPair H A 0`, a nonzero element divided by itself — trivially the constant `1`,
+      -- no degree bookkeeping needed. `A' ≠ 0` (hence `A ≠ 0` via `hAeqA'`) comes from
+      -- `hA'B'` (`¬(A'=0∧B'=0)`) together with `hB' : B' = 0`.
+      have hA'ne : A' ≠ 0 := fun h => hA'B' ⟨h, hB'⟩
+      have hAne : A ≠ 0 := by rw [hAeqA']; exact hA'ne
+      have htoPairA_ne : toPair H A 0 ≠ 0 := by
+        rw [Ne, toPair_eq_zero_iff]
+        exact fun h => hAne h.1
+      have hdenom_ne : algebraMap (CoordinateRing H) (FractionRing (CoordinateRing H))
+          (toPair H A 0) ≠ 0 :=
+        (map_ne_zero_iff _ (IsFractionRing.injective (CoordinateRing H)
+          (FractionRing (CoordinateRing H)))).mpr htoPairA_ne
+      dsimp [IsConstantFraction, polePairToFraction]
+      refine ⟨1, ?_⟩
+      rw [hB, hB', ← hAeqA', Polynomial.C_1, map_one, map_one]
+      exact div_self hdenom_ne
 
-    -- Clean substitution using exact variable mappings to avoid polynomial namespace collisions
-    rw [hcA'] at hdenom_ne
-    rw [hcA, hcA', hB, hB']
-    -- `toPair H (C a) 0 = algebraMap k[X] (CoordinateRing H) (C a) + algebraMap k[X]
-    -- (CoordinateRing H) 0 * y H` (`HyperellipticFunctionField.lean:72-73`); the `B`-term
-    -- collapses via `map_zero`/`zero_mul`/`add_zero` on both sides at once. `rw [hcA, hcA']`
-    -- above also rewrote the witness's own `A.coeff 0`/`A'.coeff 0` into `(C _).coeff 0`
-    -- (since it rewrites every occurrence, including inside the already-substituted witness),
-    -- so `Polynomial.coeff_C_zero` collapses those back down first.
-    simp only [HyperellipticPolynomial.toPair, map_zero, zero_mul, add_zero,
-      Polynomial.coeff_C_zero] at hdenom_ne ⊢
-    -- Goal: `algMap (algMap2 (C a)) / algMap (algMap2 (C a')) = algMap (algMap2 (C (a/a')))`.
-    -- Clear the division on the LHS against `hdenom_ne`, folding the RHS's `C (a/a')` and the
-    -- newly-introduced `algMap (algMap2 (C a'))` factor into one `algMap (algMap2 (C (a/a' *
-    -- a')))` term via `map_mul`/`C_mul`, then close with `a = a/a' * a'` at the `k` level.
-    rw [div_eq_iff hdenom_ne, ← map_mul, ← map_mul, ← Polynomial.C_mul, div_mul_cancel₀ _ hA'c0_ne]
+
 
 /-! ## Assembly -/
 

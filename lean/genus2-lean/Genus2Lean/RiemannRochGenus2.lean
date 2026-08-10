@@ -108,7 +108,21 @@ def polePairToFraction (A B A' B' : k[X]) : FractionRing (CoordinateRing H) :=
 /-- `L((x₁)+(x₂))`, as a bare `Set`: every field element arising from some
 pole-bounded representation. This is the honest definition — `L` as a
 `Submodule` (`LPair`, below) has this as its carrier, with `k`-submodule
-closure proved separately rather than baked into this `Set`-builder. -/
+closure proved separately rather than baked into this `Set`-builder.
+
+**Known limitation, not yet fixed here (see `ordAtFrac`/`LPairCarrier'`
+below for the representation-independent replacement under construction):**
+this existential ranges over ALL pole-bounded pairs `(A,B,A',B')`, reduced
+or not. Consumers of this carrier that need a "no shared affine zero
+between numerator and denominator" fact (`hreduced`-style hypotheses in
+`LPairFinrankOne.lean`) cannot get it from membership in this `Set` alone —
+a genuine, currently-open gap, traced in full in that file's
+`natDegree_eq_zero_of_isPoleBoundedAtPair`/`constant_or_fiber_of_
+isPoleBoundedAtPair`. Attempting to "clear common factors" from an
+arbitrary witness is NOT a sound fix in general (`CoordinateRing H` being
+Dedekind gives unique factorization of *ideals*, not of *elements* — see
+`ordAtFrac`'s docstring for the representation-independent route that
+sidesteps this instead of trying to construct a reduced witness). -/
 def LPairCarrier (x₁ x₂ : H.Point) : Set (FractionRing (CoordinateRing H)) :=
   { z | ∃ A B A' B' : k[X], IsPoleBoundedAtPair x₁ x₂ A B A' B' ∧
       z = polePairToFraction A B A' B' }
@@ -685,6 +699,124 @@ theorem ordAt'_add_ge_min
             ordAt_eq_ordAt'_of_ne_zero P A B hAB,
             ordAt_eq_ordAt'_of_ne_zero P A' B' hA'B']
         exact_mod_cast hstep
+
+/-! ## §1a. `ordAtFrac`: an intrinsic, representation-independent pole/zero
+order on `FractionRing (CoordinateRing H)` itself
+
+**Motivation.** `ordAt P A B` is only ever stated about a chosen pair
+`(A, B)`, i.e. about a specific numerator or denominator, not about a
+fraction-field element `z` itself. Two different pole-bounded
+representations of the same `z` (say `(A,B,A',B')` and `(C,D,C',D')` with
+`polePairToFraction A B A' B' = polePairToFraction C D C' D'`) need not
+have `ordAt P A B = ordAt P C D` individually — only the *difference*
+`ordAt P A B - ordAt P A' B'` is forced to agree, since that difference is
+literally the order of `z` itself at `P`. This section makes that
+difference into its own definition, `ordAtFrac`, and proves it is
+well-defined (Route: `ordAt'`'s *unconditional* additivity under
+`toPair`-multiplication, `ordAt'_toPair_mul`, applied to the cross-
+multiplied equation `toPair A B * toPair C' D' = toPair C D * toPair A' B'`
+that `polePairToFraction A B A' B' = polePairToFraction C D C' D'` unfolds
+to). This is the intrinsic notion GPT's design-review recommended building
+`LPairCarrier` on top of, instead of trying to reduce an arbitrary witness
+pair to lowest terms (which is NOT a sound move for a general Dedekind
+domain — ideal factorization is unique, element factorization is not, so
+"cancel the shared factor" has no element-level meaning here in general).
+-/
+
+/-- **Cross-multiplied equality of two pole-pair fractions, unfolded to a
+`toPair`-product equation.** If `toPair A B / toPair A' B' = toPair C D /
+toPair C' D'` in the fraction field (both denominators nonzero), then
+`toPair A B * toPair C' D' = toPair C D * toPair A' B'` in `CoordinateRing
+H` itself — the standard field cross-multiplication (`div_eq_div_iff`),
+pushed down from the fraction field to the ring via injectivity of
+`algebraMap (CoordinateRing H) (FractionRing (CoordinateRing H))`
+(`IsFractionRing.injective`, the project's standard route for this step —
+see e.g. `LPairFinrankOne.lean`'s `hc'` derivation for the identical
+pattern). -/
+theorem toPair_mul_eq_of_polePairToFraction_eq (A B A' B' C D C' D' : k[X])
+    (hA'B' : toPair H A' B' ≠ 0) (hC'D' : toPair H C' D' ≠ 0)
+    (heq : polePairToFraction (H := H) A B A' B' = polePairToFraction (H := H) C D C' D') :
+    toPair H A B * toPair H C' D' = toPair H C D * toPair H A' B' := by
+  unfold polePairToFraction at heq
+  have hA'B'map : algebraMap (CoordinateRing H) (FractionRing (CoordinateRing H))
+      (toPair H A' B') ≠ 0 :=
+    (map_ne_zero_iff _ (IsFractionRing.injective (CoordinateRing H)
+      (FractionRing (CoordinateRing H)))).mpr hA'B'
+  have hC'D'map : algebraMap (CoordinateRing H) (FractionRing (CoordinateRing H))
+      (toPair H C' D') ≠ 0 :=
+    (map_ne_zero_iff _ (IsFractionRing.injective (CoordinateRing H)
+      (FractionRing (CoordinateRing H)))).mpr hC'D'
+  rw [div_eq_div_iff hA'B'map hC'D'map] at heq
+  rw [← map_mul, ← map_mul] at heq
+  exact IsFractionRing.injective (CoordinateRing H) (FractionRing (CoordinateRing H)) heq
+
+/-- **The well-definedness fact — CORRECTED to require `z ≠ 0`.** An earlier
+draft of this lemma tried to prove the conclusion with no hypothesis on the
+numerators `(A,B)`/`(C,D)` at all, closing the "both numerators vanish"
+case by `rw`-ing the goal down to `0 - ordAt P A' B' = 0 - ordAt P C D`
+and stopping — **that does not close the goal, and the underlying claim is
+FALSE**: if `z = 0` (i.e. `toPair H A B = toPair H C D = 0`), the two
+representations `0 / toPair A' B'` and `0 / toPair C' D'` place *no*
+constraint at all relating `A'B'`'s zero structure to `C'D'`'s (e.g. `A' =
+X, B' = 0` vs `C' = 1, D' = 0` both represent `z = 0`, but `ordAt P A' 0 ≠
+ordAt P 1 0` at the point `P` where `X` vanishes). This matches exactly why
+`ordAt'` uses `⊤` for the zero case instead of trying to assign it a
+finite order — `z = 0` genuinely has no well-defined *finite* order at any
+point. Fixed by requiring `hz : toPair H A B ≠ 0` (equivalently, by `hmul`
+below, `toPair H C D ≠ 0` too — both directions are derived, not assumed
+twice) as an explicit hypothesis, restricting this lemma (and `ordAtFrac`
+below) to nonzero `z`, which is all `LPairCarrier'` actually needs (its
+zero element, `z = 0`, is handled separately — see `LPairCarrier'`'s own
+docstring). -/
+theorem ordAt_sub_ordAt_eq_of_polePairToFraction_eq (P : H.Point)
+    (A B A' B' C D C' D' : k[X])
+    (hz : toPair H A B ≠ 0)
+    (hA'B' : toPair H A' B' ≠ 0) (hC'D' : toPair H C' D' ≠ 0)
+    (heq : polePairToFraction (H := H) A B A' B' = polePairToFraction (H := H) C D C' D') :
+    ordAt P A B - ordAt P A' B' = ordAt P C D - ordAt P C' D' := by
+  have hmul := toPair_mul_eq_of_polePairToFraction_eq A B A' B' C D C' D' hA'B' hC'D' heq
+  -- `toPair H C D ≠ 0`, derived from `hz` and `hmul` rather than assumed: if
+  -- `toPair H C D = 0`, `hmul`'s RHS `toPair H C D * toPair H A' B' = 0`, forcing the LHS
+  -- `toPair H A B * toPair H C' D' = 0` too — but that LHS is a product of two nonzeros
+  -- (`hz`, `hC'D'`) in a domain. `IsDedekindDomain` extends `IsDomain` as a field, but
+  -- `mul_ne_zero` needs `NoZeroDivisors` findable by instance search — matching
+  -- `isRatioDivisor_add`'s (`RatioDivisorCollapse.lean`) explicit `haveI` for the same
+  -- situation, stated here too rather than assumed to resolve automatically.
+  haveI : IsDomain (CoordinateRing H) := IsDedekindDomain.toIsDomain
+  have hCD : toPair H C D ≠ 0 := by
+    intro hCD0
+    have hRHS0 : toPair H C D * toPair H A' B' = 0 := by rw [hCD0]; ring
+    have hLHSne : toPair H A B * toPair H C' D' ≠ 0 := mul_ne_zero hz hC'D'
+    exact hLHSne (hmul.trans hRHS0)
+  have h1 := ordAt'_toPair_mul (H := H) P A B C' D'
+    (A * C' + B * D' * H.f) (A * D' + C' * B) (toPair_mul A B C' D').symm
+  have h2 := ordAt'_toPair_mul (H := H) P C D A' B'
+    (A * C' + B * D' * H.f) (A * D' + C' * B)
+    ((toPair_mul A B C' D').symm.trans hmul)
+  have hleft : ordAt' P A B + ordAt' P C' D' =
+      ordAt' P C D + ordAt' P A' B' := by rw [← h1, ← h2]
+  rw [ordAt_eq_ordAt'_of_ne_zero P A B hz, ordAt_eq_ordAt'_of_ne_zero P C' D' hC'D',
+      ordAt_eq_ordAt'_of_ne_zero P C D hCD, ordAt_eq_ordAt'_of_ne_zero P A' B' hA'B']
+    at hleft
+  have hleft' : (ordAt P A B : WithTop ℤ) + (ordAt P C' D' : WithTop ℤ) =
+      (ordAt P C D : WithTop ℤ) + (ordAt P A' B' : WithTop ℤ) := hleft
+  have hcast : ordAt P A B + ordAt P C' D' = ordAt P C D + ordAt P A' B' := by
+    exact_mod_cast hleft'
+  omega
+
+/-- **The intrinsic pole/zero order of a fraction-field element at a point,
+via a chosen pole-bounded representation — defined only for `z ≠ 0`
+representations (`toPair H A B ≠ 0`).** Well-defined by
+`ordAt_sub_ordAt_eq_of_polePairToFraction_eq` above (which requires exactly
+this nonvanishing) — any two nonzero-numerator representations of the same
+nonzero `z` give the same value. `z = 0` is deliberately not covered here;
+see `LPairCarrier'`'s docstring for how the zero element is handled
+separately rather than by stretching this definition to a case where it
+provably isn't well-defined. Defined as a plain function taking the
+witness explicitly (rather than via `Quotient`/`Classical.choice`
+machinery) since every call site already has a witness pair in hand. -/
+def ordAtFrac (P : H.Point) (A B A' B' : k[X]) : ℤ :=
+  ordAt P A B - ordAt P A' B'
 
 /-- `ordInfOfPair A B` is always `≤ 0`. -/
 theorem ordInfOfPair_le_zero (A B : k[X]) : ordInfOfPair A B ≤ 0 := by
