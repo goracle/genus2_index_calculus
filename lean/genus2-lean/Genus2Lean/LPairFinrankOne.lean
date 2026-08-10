@@ -843,9 +843,9 @@ theorem span_eq_of_ordAt_eq (A B A' B' : k[X])
   have hfactors_eq : UniqueFactorizationMonoid.normalizedFactors I =
       UniqueFactorizationMonoid.normalizedFactors I' := Multiset.ext'_iff.mpr hcount_eq
   calc I = (UniqueFactorizationMonoid.normalizedFactors I).prod :=
-        (UniqueFactorizationMonoid.prod_normalizedFactors_eq_self hIbot).symm
+        (Ideal.prod_normalizedFactors_eq_self hIbot).symm
     _ = (UniqueFactorizationMonoid.normalizedFactors I').prod := by rw [hfactors_eq]
-    _ = I' := UniqueFactorizationMonoid.prod_normalizedFactors_eq_self hI'bot
+    _ = I' := Ideal.prod_normalizedFactors_eq_self hI'bot
 
 /-- **Sub-step B — now proved.** `CoordinateRing H`'s unit group is exactly `k^×`.
 **Route actually used** (found after re-reading `RiemannRochGenus2.lean`'s already-proved
@@ -2333,23 +2333,126 @@ routine once stated precisely). Anyone picking this up should reread
 proof body; the statement here is Route A step 3's precise target, isolated
 from steps 1–2 (which are what forces `D` into this exact shape in the first
 place, i.e. §3a–§3e above). -/
+-- **Hypothesis package strengthened this session (ChatGPT-assisted design pass; every
+-- addition below checked by hand against the exact signature of the lemma it feeds —
+-- `denom_B'_eq_zero_of_isPoleBoundedAtPair`, `num_B_eq_zero_of_isPoleBoundedAtPair`, and
+-- `fiber_eq_of_pure_rational_pole_match` — not just accepted as proposed).** The bare
+-- `hdiv` this theorem previously carried is not enough to run the documented assembly.
+-- Four independent gaps, none of them a wiring issue:
+--
+-- (1) `denom_B'_eq_zero_of_isPoleBoundedAtPair` needs `hspecAB`/`hspecA'B'` (every other
+--     caller of that lemma threads them; this theorem alone omitted them), plus
+--     `hreduced` — a *lowest-terms* condition genuinely not implied by
+--     `IsPoleBoundedAtPair` (that lemma's own docstring gives the counterexample
+--     `A=A'=0, B=B'=1`, i.e. `z = y/y`, satisfying `IsPoleBoundedAtPair` with `B'≠0`) —
+--     plus two `Module.Finite` instance obligations over the support `Finset`, which
+--     don't exist as global instances anywhere in this project (checked by search) and
+--     so must be threaded in explicitly.
+-- (2) `num_B_eq_zero_of_isPoleBoundedAtPair` needs `ordInfOfPair A' B' ≥ -2` directly.
+--     **This is exactly `constant_or_fiber_of_isPoleBoundedAtPair`'s own still-open
+--     `h_denom_ord` sorry** (identical statement, identical missing content) — carried
+--     here as `hdenomOrd`, assumed, not proved. Deriving it from `hbound` alone without a
+--     lowest-terms assumption is unresolved; see that theorem's docstring for why the
+--     natural route (bounding `∑_T ordAt(A',B')` via `hpt` alone) fails without one.
+-- (3) `fiber_eq_of_pure_rational_pole_match` needs the four `hclosed` ι-closure facts,
+--     stated over the *literal* `Finset` `{x₁,x₂,x₃,x₄}`, and its own `hpoles` hypothesis
+--     is stated with that same literal `Finset` as the support on *both* sides of the
+--     ratio. So `T` is fixed to `{x₁,x₂,x₃,x₄}` here rather than left abstract — no
+--     support-extension lemma (`divToPair A B T = divToPair A B {x₁,x₂,x₃,x₄}` for
+--     `T ⊆ {x₁,x₂,x₃,x₄}`, or similar) exists anywhere in this project to bridge an
+--     arbitrary `T` to this shape, and inventing one is out of scope for this pass.
+-- (4) `denom_B'_eq_zero_of_isPoleBoundedAtPair` also needs `hAB : ¬(A=0 ∧ B=0)`. This one
+--     genuinely *is* free — if `A=0∧B=0` then `toPair H A B = 0` (`toPair_eq_zero_iff`),
+--     so `ordAt P A B = 0` at every `P` by `ordAt`'s own `if_pos` branch on that
+--     condition — so it is derived in the proof below, not assumed.
+--
+-- **Honesty note.** `hreduced` and `hdenomOrd` are real, currently-unformalized
+-- mathematical content, not bookkeeping. This theorem, once its proof is filled in, will
+-- not derive `{x₃,x₄}={x₁,x₂}` from `IsPoleBoundedAtPair` and the divisor equation alone —
+-- it derives it *given* a lowest-terms representation and the resulting infinity-order
+-- bound. Whoever eventually calls this from `constant_or_fiber_of_isPoleBoundedAtPair`'s
+-- §3f site still owes exactly those two facts (already flagged there as `h_denom_ord`'s
+-- own open sorry). Strengthening the hypotheses here relocates that gap to an explicit,
+-- precisely-named assumption instead of hiding it inside an opaque `sorry` — it does not
+-- close it, and the theorem should not be read as "done" until they are.
 theorem fiber_eq_of_divisor_shape (x₁ x₂ x₃ x₄ : H.Point) (hne : x₂ ≠ Point.iota x₁)
+    (hdeg : H.f.natDegree = 5) (hchar : (2 : k) ≠ 0) (hsf : Squarefree H.f)
     (hdiv : ∃ A B A' B' : k[X],
       IsPoleBoundedAtPair x₁ x₂ A B A' B' ∧
-      (∃ T : Finset H.Point,
-        (∀ P, P ∉ T → ordAt P A B = 0) ∧ (∀ P, P ∉ T → ordAt P A' B' = 0) ∧
-        (divToPairRatio A B T A' B' T : Divisor H) =
-          single x₃ + single x₄ - single x₁ - single x₂)) :
+      (∀ v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H),
+        (Associates.mk v.asIdeal).count
+          (Associates.mk (Ideal.span ({toPair H A B} : Set (CoordinateRing H)))).factors ≠ 0 →
+        ∃ P, v.asIdeal = pointIdeal P) ∧
+      (∀ v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H),
+        (Associates.mk v.asIdeal).count
+          (Associates.mk (Ideal.span ({toPair H A' B'} : Set (CoordinateRing H)))).factors ≠ 0 →
+        ∃ P, v.asIdeal = pointIdeal P) ∧
+      -- lowest-terms condition (§1 above); NOT derivable from `IsPoleBoundedAtPair` alone.
+      (∀ P : H.Point, ordAt P A B = 0 ∨ ordAt P A' B' = 0) ∧
+      -- infinity-order bound (§2 above); identical content to `constant_or_fiber_of_
+      -- isPoleBoundedAtPair`'s still-open `h_denom_ord`.
+      ordInfOfPair A' B' ≥ -2 ∧
+      (∀ P, P ∉ ({x₁, x₂, x₃, x₄} : Finset H.Point) → ordAt P A B = 0) ∧
+      (∀ P, P ∉ ({x₁, x₂, x₃, x₄} : Finset H.Point) → ordAt P A' B' = 0) ∧
+      (divToPairRatio A B {x₁, x₂, x₃, x₄} A' B' {x₁, x₂, x₃, x₄} : Divisor H) =
+        single x₃ + single x₄ - single x₁ - single x₂ ∧
+      -- (§1 above) `Module.Finite` obligations `denom_B'_eq_zero_of_isPoleBoundedAtPair`
+      -- needs, over the fixed support `{x₁,x₂,x₃,x₄}`. Packaged inside the existential
+      -- (rather than as top-level instance-implicit arguments) because their type
+      -- depends on `A, B, A', B'`, which are only bound here.
+      (∀ P : ({x₁, x₂, x₃, x₄} : Finset H.Point),
+        Module.Finite k (CoordinateRing H ⧸ pointIdeal P.1 ^ (ordAt P.1 A B).toNat)) ∧
+      (∀ P : ({x₁, x₂, x₃, x₄} : Finset H.Point),
+        Module.Finite k (CoordinateRing H ⧸ pointIdeal P.1 ^ (ordAt P.1 A' B').toNat)))
+    (hclosed₁ : ∀ Q ∈ ({x₁, x₂, x₃, x₄} : Finset H.Point), Q.X = x₁.X →
+      Point.iota Q ∈ ({x₁, x₂, x₃, x₄} : Finset H.Point))
+    (hclosed₂ : ∀ Q ∈ ({x₁, x₂, x₃, x₄} : Finset H.Point), Q.X = x₂.X →
+      Point.iota Q ∈ ({x₁, x₂, x₃, x₄} : Finset H.Point))
+    (hclosed₃ : ∀ Q ∈ ({x₁, x₂, x₃, x₄} : Finset H.Point), Q.X = x₃.X →
+      Point.iota Q ∈ ({x₁, x₂, x₃, x₄} : Finset H.Point))
+    (hclosed₄ : ∀ Q ∈ ({x₁, x₂, x₃, x₄} : Finset H.Point), Q.X = x₄.X →
+      Point.iota Q ∈ ({x₁, x₂, x₃, x₄} : Finset H.Point)) :
     ({x₃, x₄} : Set H.Point) = {x₁, x₂} := by
-  -- Expected assembly (not yet wired in): obtain `A B A' B' T` from `hdiv`, apply
-  -- `denom_B'_eq_zero_of_isPoleBoundedAtPair` then `num_B_eq_zero_of_isPoleBoundedAtPair`
-  -- to reduce to `B = B' = 0`, derive the `≤ 1` degree bounds from `IsPoleBoundedAtPair`'s
-  -- `ordInfOfPair` clause, then close with `fiber_eq_of_pure_rational_pole_match`.
-  -- **Note (this session): that theorem now also needs `hclosed₁`/`hclosed₃`** (ι-closure
-  -- of the support set at whichever root each side witnesses) — added after a counterexample
-  -- showed the bare version was false (see that theorem's docstring). Whoever wires this up
-  -- will need to either derive that closure from `hdiv`'s `T` (if `T` is already ι-closed by
-  -- construction elsewhere) or add it as an explicit extra hypothesis here too.
+  obtain ⟨A, B, A', B', hbound, hspecAB, hspecA'B', hreduced, hdenomOrd,
+    hsuppAB, hsuppA'B', hpoles, hfinAB, hfinA'B'⟩ := hdiv
+  haveI := hfinAB
+  haveI := hfinA'B'
+  -- `(A,B) ≠ (0,0)`: free from `toPair_eq_zero_iff` + `ordAt`'s `if_pos` branch (§4 above).
+  have hAB : ¬ (A = 0 ∧ B = 0) := by
+    intro hz
+    obtain ⟨hA0, hB0⟩ := hz
+    have hzero : toPair H A B = 0 := (toPair_eq_zero_iff H A B).mpr ⟨hA0, hB0⟩
+    -- With `toPair H A B = 0`, `hbound`'s pointwise clause forces `ordAt P A' B' ≤
+    -- (indicator)` everywhere via `ordAt`'s `if_pos hzero` branch giving `ordAt P A B = 0`
+    -- — this makes `A' B'` itself supported only on `{x₁,x₂}`, which should contradict
+    -- `hpoles` (RHS has `single x₃ + single x₄` with positive coefficient) UNLESS
+    -- `{x₃,x₄} ⊆ {x₁,x₂}` already — not obviously absurd without more work. Left as a
+    -- named gap rather than forced shut with an invalid tactic: see note below.
+    sorry
+  -- **Remaining assembly — NOT completed this pass.** I was not able to fully verify a
+  -- tactic-level proof from here without access to a Lean toolchain (this session's
+  -- earlier attempts at this file produced tactic blocks I could not actually check and
+  -- had to retract — flagging that explicitly rather than repeating it). The intended
+  -- shape, to be verified against a real `lake build` before trusting it:
+  --   1. `have hB' : B' = 0 := denom_B'_eq_zero_of_isPoleBoundedAtPair hdeg x₁ x₂ A B A' B'
+  --        hbound hspecAB hspecA'B' {x₁,x₂,x₃,x₄} hAB hsuppAB hsuppA'B' hreduced`
+  --      (relying on the `haveI`s above for the two instance arguments).
+  --   2. `have hB : B = 0 := num_B_eq_zero_of_isPoleBoundedAtPair x₁ x₂ A B A' B' hbound
+  --        (hB' ▸ hdenomOrd)` — NOTE: `hdenomOrd : ordInfOfPair A' B' ≥ -2` needs no
+  --      rewriting by `hB'` at all (it's already about `(A',B')`, not `(A',0)`); the
+  --      `▸` above is likely unnecessary — check whether `hdenomOrd` can be passed as-is.
+  --   3. Derive `A.natDegree ≤ 1` and `A'.natDegree ≤ 1` from `ordInfOfPair_right_zero`
+  --      (below) + `hbound`'s `ordInfOfPair A B ≥ ordInfOfPair A' B'` clause + `hdenomOrd`,
+  --      mirroring `constant_or_fiber_of_isPoleBoundedAtPair`'s existing `h_deg_A'`/
+  --      `h_deg_A` derivation (same file, further down) — that derivation is already
+  --      proved for an analogous but not identical goal shape, so it is a close model,
+  --      not a direct copy-paste.
+  --   4. Rewrite `hpoles` by `hB`/`hB'` to match `fiber_eq_of_pure_rational_pole_match`'s
+  --      expected `divToPairRatio A 0 {x₁,x₂,x₃,x₄} A' 0 {x₁,x₂,x₃,x₄}` shape (should be
+  --      a direct `rw`, since `hpoles` is already stated over that literal `Finset`).
+  --   5. `exact fiber_eq_of_pure_rational_pole_match hchar hsf x₁ x₂ x₃ x₄ hne A A'
+  --        ‹A.natDegree ≤ 1› ‹A'.natDegree ≤ 1› ‹rewritten hpoles› hclosed₁ hclosed₂
+  --        hclosed₃ hclosed₄`.
   sorry
   
 
