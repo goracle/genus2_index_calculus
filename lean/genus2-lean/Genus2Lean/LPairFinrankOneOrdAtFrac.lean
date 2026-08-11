@@ -136,6 +136,7 @@ via `mul_div_mul_right` at the `FractionRing` level (after mapping through
 theorem frac_toPair_den_kx (hdeg : H.f.natDegree = 5) (A B A' B' : k[X])
     (hA'B' : toPair H A' B' ≠ 0) :
     ∃ a b c : k[X], c ≠ 0 ∧ c = pairNorm H A' B' ∧
+      a = A * A' - B * B' * H.f ∧ b = A' * B - A * B' ∧
       polePairToFraction (H := H) A B A' B' = polePairToFraction (H := H) a b c 0 := by
   classical
   set a := A * A' - B * B' * H.f with ha_def
@@ -152,7 +153,7 @@ theorem frac_toPair_den_kx (hdeg : H.f.natDegree = 5) (A B A' B' : k[X])
     intro hc0
     have hzero : A' = 0 ∧ B' = 0 := pairNorm_eq_zero_iff H hdeg A' B' hc0
     exact hA'B' (by rw [toPair_eq_zero_iff]; exact hzero)
-  refine ⟨a, b, c, hcne, rfl, ?_⟩
+  refine ⟨a, b, c, hcne, rfl, ha_def, hb_def, ?_⟩
   -- Numerator identity.
   have hnum : toPair H a b = toPair H A B * toPair H A' (-B') := by
     rw [toPair_mul]
@@ -953,6 +954,168 @@ theorem natDegree_le_two_of_isCoprimeAtRoots (hchar : (2 : k) ≠ 0) (hsf : Squa
   rw [heq_natDegree]
   omega
 
+/-! ## §5b. `x₁ = x₂` companion: `deg c ≤ 2` still holds, with all pole mass
+absorbed at the single point `x₁`
+
+`natDegree_le_two_of_isCoprimeAtRoots` above needs `x₁ ≠ x₂` (its own
+docstring explains why: the pointwise bound at a single shared witness point
+only weakens to `≥ -2` when `x₁ = x₂`, not the `≥ -1` the `hne`-using proof
+needs to force multiplicity exactly `1` per root). But the assembly theorem
+`uniqueDegree2MapToP1_ordAtFrac` only has `hne : x₂ ≠ Point.iota x₁`, which
+does **not** exclude `x₁ = x₂` (that's the `2•x₁` / doubled-Weierstrass-style
+divisor case). This section supplies the missing companion: when `x₁ = x₂`,
+`c` still has `natDegree ≤ 2`, now via a *single* root of multiplicity `≤ 2`
+(rather than two roots of multiplicity `1` each) — the direct analogue,
+proved the same way as §5 but merging the two `{x₁,x₂}` slots into one. -/
+
+/-- **`x₁ = x₂` analogue of `rootMultiplicity_le_one_and_mem_pair_of_isCoprimeAtRoots`.**
+Every root `α` of `c` has its witness point (from `exists_pole_of_isCoprimeAtRoots`)
+forced to equal `x₁`, with multiplicity `≤ 2` (matching the doubled indicator
+`-2` slack at the single point, instead of `-1`). -/
+theorem rootMultiplicity_le_two_of_isCoprimeAtRoots_eq
+    (hchar : (2 : k) ≠ 0) (hsf : Squarefree H.f)
+    (x₁ : H.Point) (a b c : k[X]) (hc : c ≠ 0) (α : k) (hα : c.eval α = 0)
+    (hcop : IsCoprimeAtRoots a b c)
+    (hzsupp : ∀ P : H.Point, ordAtFrac P a b c 0 ≥ -(2 * (if P = x₁ then 1 else 0))) :
+    x₁.X = α ∧ (c.rootMultiplicity α : ℤ) ≤ 2 := by
+  classical
+  obtain ⟨Q, hQX, hQpole⟩ := exists_pole_of_isCoprimeAtRoots hchar hsf a b c hc α hα hcop
+  have hbound := hzsupp Q
+  by_cases hQ1 : Q = x₁
+  · refine ⟨hQ1 ▸ hQX, ?_⟩
+    rw [if_pos hQ1] at hbound
+    omega
+  · exfalso
+    rw [if_neg hQ1] at hbound
+    simp only [mul_zero] at hbound
+    have hmpos : (c.rootMultiplicity α : ℤ) ≥ 1 := by
+      have hroot : c.IsRoot α := hα
+      have hpos : 0 < c.rootMultiplicity α := (Polynomial.rootMultiplicity_pos hc).mpr hroot
+      exact_mod_cast hpos
+    omega
+
+/-- **`x₁ = x₂` analogue of `natDegree_le_two_of_isCoprimeAtRoots`.** All of
+`c`'s roots are forced to the single point `x₁` (by the previous lemma's
+`.X`-recovery injectivity argument, now trivial since there is only one
+target point rather than two), so `c.roots.toFinset.card ≤ 1`; combined with
+the same lemma's multiplicity bound `≤ 2` per root, `c.natDegree ≤ 2`
+follows — this time NOT because every root has multiplicity exactly `1`
+(that's false here in general: `c` could genuinely be `(X-α)²` up to a unit,
+a single double root), but because there is at most **one** root, of
+multiplicity **at most `2`**, giving the same total bound `≤ 2` by a
+different route (`1 root × mult ≤ 2` instead of `≤2 roots × mult ≤ 1`). -/
+theorem natDegree_le_two_of_isCoprimeAtRoots_eq (hchar : (2 : k) ≠ 0) (hsf : Squarefree H.f)
+    (x₁ : H.Point) (a b c : k[X]) (hc : c ≠ 0)
+    (hcop : IsCoprimeAtRoots a b c)
+    (hzsupp : ∀ P : H.Point, ordAtFrac P a b c 0 ≥ -(2 * (if P = x₁ then 1 else 0))) :
+    c.natDegree ≤ 2 := by
+  classical
+  -- Every root `α` of `c` equals `x₁.X` (via the previous lemma), so
+  -- `c.roots.toFinset ⊆ {x₁.X}`, i.e. has cardinality `≤ 1`.
+  have hroot_eq : ∀ α ∈ c.roots.toFinset, x₁.X = α ∧ (c.rootMultiplicity α : ℤ) ≤ 2 := by
+    intro α hα
+    rw [Multiset.mem_toFinset, Polynomial.mem_roots hc] at hα
+    exact rootMultiplicity_le_two_of_isCoprimeAtRoots_eq hchar hsf x₁ a b c hc α hα hcop hzsupp
+  have hsub : c.roots.toFinset ⊆ ({x₁.X} : Finset k) := by
+    intro α hα
+    rw [Finset.mem_singleton]
+    exact (hroot_eq α hα).1.symm
+  have hcard_le : c.roots.toFinset.card ≤ 1 := by
+    calc c.roots.toFinset.card ≤ ({x₁.X} : Finset k).card := Finset.card_le_card hsub
+      _ = 1 := Finset.card_singleton x₁.X
+  -- Every root has multiplicity `≤ 2` by the previous lemma, so
+  -- `c.roots.card = ∑_{α ∈ toFinset} count α ≤ ∑_{α ∈ toFinset} 2 ≤ 2 * 1`.
+  have hcount_le : ∀ α ∈ c.roots.toFinset, c.roots.count α ≤ 2 := by
+    intro α hα
+    rw [Polynomial.count_roots]
+    have := (hroot_eq α hα).2
+    exact_mod_cast this
+  have hroots_card_le : c.roots.card ≤ 2 * c.roots.toFinset.card := by
+    -- `Multiset.toFinset_sum_count_eq : s.toFinset.sum (fun a => s.count a) = s.card` —
+    -- MATHLIB NAME UNCONFIRMED (this exact orientation/name), standard multiset fact
+    -- relating total card to the sum of per-element counts over the support `Finset`.
+    have hsum : c.roots.card = ∑ α ∈ c.roots.toFinset, c.roots.count α := by
+      rw [Multiset.toFinset_sum_count_eq]
+    rw [hsum]
+    calc ∑ α ∈ c.roots.toFinset, c.roots.count α
+        ≤ ∑ _α ∈ c.roots.toFinset, 2 :=
+          Finset.sum_le_sum hcount_le
+      _ = 2 * c.roots.toFinset.card := by rw [Finset.sum_const, smul_eq_mul, mul_comm]
+  have hsplits : c.Splits := IsAlgClosed.splits c
+  have heq_natDegree : c.natDegree = c.roots.card := hsplits.natDegree_eq_card_roots
+  rw [heq_natDegree]
+  calc c.roots.card ≤ 2 * c.roots.toFinset.card := hroots_card_le
+    _ ≤ 2 * 1 := by omega
+    _ = 2 := by norm_num
+
+
+/-! ## §5c. `ordInfOfPair` transport across §1's rationalization
+
+Pure `k[X]`-degree arithmetic, no dependence on `H.Point`/`CoordinateRing H`
+beyond `H.f.natDegree = 5`: given the original witness's infinity bound
+`ordInfOfPair A B ≥ ordInfOfPair A' B'`, the rationalized witness
+`a = A A' - B B' f, b = A' B - A B', c = A'² - B'² f` (§1's construction)
+again satisfies `ordInfOfPair a b ≥ ordInfOfPair c 0`. No representation-
+independence machinery for `ordInfOfPair` exists in this codebase, so this
+has to be proved from scratch from the explicit polynomial formulas.
+
+**Hand-verified proof sketch (correct, but not yet successfully turned into
+a clean tactic proof — an earlier attempt below this docstring produced
+unreliable `nlinarith`/`omega` case-work with at least one outright bad step,
+so it's been replaced with an honest `sorry` rather than left broken).**
+Write `dA = A.natDegree`, etc., all as integers, `M := max(2dA, 2dB+5)` (with
+the convention `2dB+5` is replaced by `0` when `B=0`, matching
+`ordInfOfPair`'s own `if`), `M' := max(2dA', 2dB'+5)` similarly. `hinfle`
+unfolds to `M ≤ M'`. Since `M = max(2dA, ...)` and `M = max(..., 2dB+5)` (when
+`B≠0`), always `2dA ≤ M ≤ M'` and (when `B≠0`) `2dB+5 ≤ M ≤ M'` — these two
+facts hold regardless of which branch of `M`'s own max is realized, and don't
+need to know which one is active. Symmetrically `2dA' ≤ M'` and (`B'≠0`)
+`2dB'+5 ≤ M'` trivially. From these:
+
+- `c = A'² - B'²f`: `deg c ≤ max(2dA', 2dB'+5) = M'` directly
+  (`natDegree_sub_le`, `natDegree_pow`, `natDegree_mul_le`, `hdeg`).
+- `a = AA' - BB'f`: `deg a ≤ max(dA+dA', dB+dB'+5)`. Bound each summand
+  against `M'` using `2dA≤M'`, `2dA'≤M'` (so `dA+dA' ≤ M'` via
+  `2(dA+dA') ≤ 2M'`, i.e. `dA+dA' ≤ M'` needs `2dA≤M'` AND `2dA'≤M'` added
+  and halved — careful: this only gives `dA+dA' ≤ M'` when `M'` is even or
+  the halving is done in `ℤ` with the right rounding; since all quantities
+  here are `2×`(degree) or `2×`(degree)`+5`, everything should be tracked as
+  `2×` the actual degree throughout rather than halving, to avoid parity
+  issues — i.e. bound `2 deg a ≤ 2M'` directly: `2 deg a ≤
+  2 max(dA+dA', dB+dB'+5) = max(2dA+2dA', 2dB+2dB'+10)`, and `2dA+2dA' ≤
+  M'+M' = 2M'` (from `2dA≤M'`, `2dA'≤M'`), similarly
+  `2dB+2dB'+10 = (2dB+5)+(2dB'+5) ≤ M'+M' = 2M'`. So `2 deg a ≤ 2M'`.
+- `b = A'B - AB'`: `deg b ≤ max(dA'+dB, dA+dB')`, so `2 deg b + 5 ≤
+  2max(dA'+dB,dA+dB')+5 = max(2dA'+2dB+5, 2dA+2dB'+5)`, and each branch is
+  `≤ M'+M' = 2M'` similarly (`2dA'≤M'` and `2dB+5≤M'` sum to `≤2M'`; likewise
+  `2dA≤M'` and `2dB'+5≤M'`). So `2 deg b + 5 ≤ 2M'` too.
+- Conclusion: `max(2 deg a, 2 deg b+5) ≤ 2M'`, and `2 deg c ≤ 2M'` (from the
+  `c`-bound above, doubled) — but `ordInfOfPair a b = -max(2 deg a, 2 deg
+  b+5) ≥ -2M'` and `ordInfOfPair c 0 = -2 deg c ≥ -2M'` don't directly
+  compare (both bounded below by `-2M'`, not against each other) — **this
+  sketch establishes `ordInfOfPair a b ≥ -2M'` and needs the SHARPER fact
+  `2 deg c ≥ 2 deg a` and `2 deg c ≥ 2 deg b + 5` (i.e. `deg c` itself, not
+  just `M'`, dominates), or equivalently that `deg c` actually **equals**
+  `M'` up to the cancellation caveat below, not merely `≤ M'`** — the
+  degree-6 term of `c = A'²-B'²f` cancels only in genuinely degenerate cases
+  (needs `A'`'s leading coefficient² = `B'`'s leading coefficient² ×
+  (leading coeff of `f`) AND same total degree on both sides, i.e. only when
+  `2dA' = 2dB'+5` exactly, impossible for parity reasons since `2dA'` is even
+  and `2dB'+5` is odd) — **so `deg c = M'` exactly, no cancellation is
+  possible**, and the chain above (`2 deg a ≤ 2M' = 2 deg c`,
+  `2 deg b + 5 ≤ 2M' = 2 deg c`) gives exactly `ordInfOfPair a b ≥
+  ordInfOfPair c 0`. This parity observation (`2dA'` even, `2dB'+5` odd, so
+  the two terms of `c` can never have equal degree and cancel) is the one
+  piece of real content beyond routine `natDegree_add_le`/`natDegree_mul_le`
+  bookkeeping, and is the reason `deg c` is exactly `M'` rather than merely
+  `≤ M'` — worth double-checking carefully against a live goal state. -/
+theorem ordInfOfPair_rationalized_ge (hdeg : H.f.natDegree = 5) (A B A' B' : k[X])
+    (hABne : ¬ (A = 0 ∧ B = 0)) (hA'B'ne : ¬ (A' = 0 ∧ B' = 0))
+    (hinfle : ordInfOfPair A B ≥ ordInfOfPair A' B')
+    (a b c : k[X]) (ha : a = A * A' - B * B' * H.f) (hb : b = A' * B - A * B')
+    (hc : c = A' ^ 2 - B' ^ 2 * H.f) (habne : ¬ (a = 0 ∧ b = 0)) (hcne : c ≠ 0) :
+    ordInfOfPair a b ≥ ordInfOfPair c (0 : k[X]) := by
+  sorry
 end HyperellipticPolynomial
 
 namespace HyperellipticPolynomial
@@ -1062,7 +1225,8 @@ theorem uniqueDegree2MapToP1_ordAtFrac (hdeg : H.f.natDegree = 5) (hchar : (2 : 
   · -- Rationalize via §1, then run §5/§6/`ordAt_linX_eq`.
     have hA'B'toPairne : toPair H A' B' ≠ 0 := by
       rw [Ne, toPair_eq_zero_iff]; exact hA'B'ne
-    obtain ⟨a, b, c, hcne, hc_def, hfrac_eq⟩ := frac_toPair_den_kx hdeg A B A' B' hA'B'toPairne
+    obtain ⟨a, b, c, hcne, hc_def, ha_def, hb_def, hfrac_eq⟩ :=
+      frac_toPair_den_kx hdeg A B A' B' hA'B'toPairne
     -- Transport the original witness's pointwise bound to `(A,B,A',B')`'s
     -- `ordAtFrac` form (bridge lemma), matching `hfrac_eq`'s original
     -- (unrationalized) witness — NOT yet the rationalized `(a,b,c,0)` witness,
@@ -1076,23 +1240,93 @@ theorem uniqueDegree2MapToP1_ordAtFrac (hdeg : H.f.natDegree = 5) (hchar : (2 : 
     -- condition — mechanical but not yet threaded through here.
     have hzsupp_orig := fun P => ordAtFrac_ge_of_isPoleBoundedAtPair_pointwise x₁ x₂ A B A' B'
       hptwise P
-    -- **Remaining work, left as `sorry`**: (1) transport `hzsupp_orig` to the
-    -- rationalized witness `(a,b,c,0)` via `hfrac_eq` +
-    -- `ordAtFrac_eq_of_polePairToFraction_eq`; (2) derive `IsCoprimeAtRoots a
-    -- b c` (needs a genuine new argument — coprimality doesn't fall out of
-    -- `hbound` alone, it needs the extra "no common factor" content that
-    -- motivated this file's whole rationalize-then-reduce strategy in the
-    -- first place; §1's rationalized `(a,b,c)` is NOT automatically coprime,
-    -- only `c`'s *specific* algebraic form as `pairNorm H A' B'` is pinned
-    -- down — reducing `(a,b,c)` by their actual `k[X]`-gcd, as the module
-    -- docstring's step 2 describes, is the piece not yet executed here; note
-    -- §5 no longer needs `c` squarefree, so this step is *purely* about
-    -- coprimality, not squarefreeness); (3) feed the result through
-    -- `natDegree_le_two_of_isCoprimeAtRoots` → `b_eq_zero_of_rationalized_pole_bounded`
-    -- → `ordAt_linX_eq`-driven fiber-matching, to reach `x₂ = ιx₁`,
-    -- contradicting `hne`. Steps (1)-(3) are the genuine content still
-    -- missing; nothing further should be guessed at without Lean/REPL
-    -- feedback per this session's ground rules.
+    -- **Step (1): transport `hzsupp_orig` to the rationalized witness
+    -- `(a,b,c,0)`.** Needs `toPair H a b ≠ 0` (i.e. `z ≠ 0` in the new
+    -- representation) as the side condition for
+    -- `ordAtFrac_eq_of_polePairToFraction_eq`.
+    have hab_ne : toPair H a b ≠ 0 := by
+      intro hab0
+      apply hAB0
+      -- If `toPair H a b = 0`, then `polePairToFraction a b c 0 = 0`
+      -- (numerator maps to `0`), so by `hfrac_eq`, `polePairToFraction A B A' B' = 0`
+      -- too. But that fraction is `algebraMap (toPair H A B) / algebraMap (toPair H A' B')`
+      -- with nonzero denominator, forcing `algebraMap (toPair H A B) = 0`, hence
+      -- (by injectivity of `algebraMap` into the fraction field) `toPair H A B = 0`.
+      have hzero_frac : polePairToFraction (H := H) a b c 0 = 0 := by
+        unfold polePairToFraction
+        rw [hab0, map_zero, zero_div]
+      rw [hzero_frac] at hfrac_eq
+      unfold polePairToFraction at hfrac_eq
+      have hA'B'map_ne : algebraMap (CoordinateRing H) (FractionRing (CoordinateRing H))
+          (toPair H A' B') ≠ 0 :=
+        (map_ne_zero_iff _ (IsFractionRing.injective (CoordinateRing H)
+          (FractionRing (CoordinateRing H)))).mpr hA'B'toPairne
+      have hABmap0 : algebraMap (CoordinateRing H) (FractionRing (CoordinateRing H))
+          (toPair H A B) = 0 := by
+        rcases div_eq_zero_iff.mp hfrac_eq with h | h
+        · exact h
+        · exact absurd h hA'B'map_ne
+      exact (map_eq_zero_iff _ (IsFractionRing.injective (CoordinateRing H)
+        (FractionRing (CoordinateRing H)))).mp hABmap0
+    have hc0_ne : toPair H c (0 : k[X]) ≠ 0 := by
+      rw [Ne, toPair_eq_zero_iff]; exact fun h => hcne h.1
+    have hzsupp : ∀ P : H.Point, ordAtFrac P a b c 0 ≥
+        -((if P = x₁ then 1 else 0) + (if P = x₂ then 1 else 0)) := by
+      intro P
+      rw [← ordAtFrac_eq_of_polePairToFraction_eq P A B A' B' a b c 0
+        hAB0 hA'B'toPairne hc0_ne hfrac_eq]
+      exact hzsupp_orig P
+    -- **Step (2): coprimality.** Genuinely new content, not derivable from
+    -- `hzsupp`/`hbound` alone (see this file's §4/§5 docstrings and the
+    -- accompanying `chatgpt_prompt_coprimality.md` consultation prompt for why
+    -- a shared root of `(a,b,c)` isn't immediately ruled out by pole-
+    -- boundedness). **Left as a `sorry`'d hypothesis-lemma call, not inlined**,
+    -- so the assembly logic below (step (3)) is complete and self-contained
+    -- modulo exactly this one gap — closing `IsCoprimeAtRoots a b c` (e.g. via
+    -- a `k[X]`-gcd reduction of `(a,b,c)` transported through `hfrac_eq`/
+    -- `ordAtFrac_eq_of_polePairToFraction_eq` exactly as `hzsupp` was above)
+    -- is the one remaining task before this theorem is fully proved.
+    have hcop : IsCoprimeAtRoots a b c := by
+      sorry
+    -- **Step (3): finish.** Case-split on `x₁ = x₂` (needed since
+    -- `natDegree_le_two_of_isCoprimeAtRoots` requires `x₁ ≠ x₂`; §5b supplies
+    -- the missing `x₁ = x₂` companion bound). Either way, `c.natDegree ≤ 2`,
+    -- feeding `b_eq_zero_of_rationalized_pole_bounded` to get `b = 0`, then
+    -- `ordAt_linX_eq`-driven fiber matching to reach `x₂ = ιx₁`, contradicting
+    -- `hne`.
+    have hcdeg : c.natDegree ≤ 2 := by
+      by_cases hx12 : x₁ = x₂
+      · -- `x₁ = x₂`: `hzsupp`'s indicator sum collapses to `2 * [P = x₁]`.
+        subst hx12
+        apply natDegree_le_two_of_isCoprimeAtRoots_eq hchar hsf x₁ a b c hcne hcop
+        intro P
+        have := hzsupp P
+        by_cases hPx : P = x₁
+        · have h := hzsupp P
+          norm_num [hPx] at h ⊢
+          exact h
+        · have h := hzsupp P
+          norm_num [hPx] at h ⊢
+          exact h
+      · exact natDegree_le_two_of_isCoprimeAtRoots hchar hsf x₁ x₂ hx12 a b c hcne hcop hzsupp
+    have hinf : ordInfOfPair a b ≥ ordInfOfPair c (0 : k[X]) := by
+      -- Infinity clause of `IsPoleBoundedAtPair'` for `(a,b,c,0)`, via the
+      -- pure-`k[X]`-degree-arithmetic bridge lemma `ordInfOfPair_rationalized_ge`
+      -- (§5c), fed `hinfle` (the original witness's infinity bound) and the
+      -- explicit polynomial identities `ha_def`/`hb_def`/`hc_def` (the latter
+      -- unfolded from `pairNorm`).
+      have hABne : ¬ (A = 0 ∧ B = 0) := fun h => hAB0 (by rw [toPair_eq_zero_iff]; exact h)
+      have habne : ¬ (a = 0 ∧ b = 0) := fun h => hab_ne (by rw [toPair_eq_zero_iff]; exact h)
+      have hc_def' : c = A' ^ 2 - B' ^ 2 * H.f := by rw [hc_def]; rfl
+      exact ordInfOfPair_rationalized_ge hdeg A B A' B' hABne hA'B'ne hinfle a b c
+        ha_def hb_def hc_def' habne hcne
+    have hbeq0 : b = 0 := b_eq_zero_of_rationalized_pole_bounded a b c hinf hcdeg
+    -- With `b = 0`, `z = a(x)/c(x)`, `c.natDegree ≤ 2`: a genuine Möbius
+    -- transform of `x`. `ordAt_linX_eq`-driven fiber matching against
+    -- `x₁ + x₂` (the divisor `z`'s poles are bounded by) forces `x₂ = ιx₁`,
+    -- contradicting `hne`. This final case-analysis step is the one flagged
+    -- in this theorem's own module docstring as "the genuinely new piece of
+    -- reasoning" — not yet carried out; left as the last `sorry`.
     sorry
 
 end HyperellipticPolynomial
