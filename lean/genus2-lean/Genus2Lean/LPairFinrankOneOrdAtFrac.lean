@@ -1914,6 +1914,8 @@ theorem false_of_root_of_coprimeAtRoots_zero_snd
           _ = Point.iota (Point.iota Q) := (Point.iota_iota Q).symm
           _ = Point.iota x₁ := congrArg Point.iota hιQ1
       · exact False.elim (hQIneQ (hιQ2.trans hQ2.symm))
+set_option maxHeartbeats 5000000 in
+-- The proof performs substantial dependent-polynomial normalization.
 theorem uniqueDegree2MapToP1_ordAtFrac (hdeg : H.f.natDegree = 5) (hchar : (2 : k) ≠ 0)
     (hsf : Squarefree H.f) (x₁ x₂ : H.Point) (hne : x₂ ≠ Point.iota x₁)
     (z : FractionRing (CoordinateRing H)) (hz : z ∈ LPairCarrier' x₁ x₂) :
@@ -1986,8 +1988,16 @@ theorem uniqueDegree2MapToP1_ordAtFrac (hdeg : H.f.natDegree = 5) (hchar : (2 : 
     -- to a coprime-at-roots `(a₀,b₀,c₀)` representing the same fraction, with
     -- `hzsupp`/`hinf` transported automatically. Steps (3) onward now run on
     -- `(a₀,b₀,c₀)` instead of `(a,b,c)`.
-    obtain ⟨a₀, b₀, c₀, hc₀ne, hab₀_ne, _hfrac_eq₀, hzsupp₀, hinf₀, hcop⟩ :=
-      reduce_ordAtFrac_triple x₁ x₂ a b c hcne hab_ne hzsupp hinf
+    have hred : ∃ a₀ b₀ c₀ : k[X],
+        c₀ ≠ 0 ∧ toPair H a₀ b₀ ≠ 0 ∧
+        polePairToFraction (H := H) a b c 0 =
+          polePairToFraction (H := H) a₀ b₀ c₀ 0 ∧
+        (∀ P : H.Point, ordAtFrac P a₀ b₀ c₀ 0 ≥
+          -((if P = x₁ then 1 else 0) + (if P = x₂ then 1 else 0))) ∧
+        ordInfOfPair a₀ b₀ ≥ ordInfOfPair c₀ (0 : k[X]) ∧
+        IsCoprimeAtRoots a₀ b₀ c₀ := by
+      exact reduce_ordAtFrac_triple (H := H) x₁ x₂ a b c hcne hab_ne hzsupp hinf
+    obtain ⟨a₀, b₀, c₀, hc₀ne, hab₀_ne, hfrac_eq₀, hzsupp₀, hinf₀, hcop⟩ := hred
     -- **Step (3): finish.** Case-split on `x₁ = x₂` (needed since
     -- `natDegree_le_two_of_isCoprimeAtRoots` requires `x₁ ≠ x₂`; §5b supplies
     -- the missing `x₁ = x₂` companion bound). Either way, `c₀.natDegree ≤ 2`,
@@ -2008,13 +2018,59 @@ theorem uniqueDegree2MapToP1_ordAtFrac (hdeg : H.f.natDegree = 5) (hchar : (2 : 
       · exact
         natDegree_le_two_of_isCoprimeAtRoots
           hchar hsf x₁ x₂ hx12 a₀ b₀ c₀ hc₀ne hcop hzsupp₀
+          
+
+
+
+
     have hbeq0 : b₀ = 0 := b_eq_zero_of_rationalized_pole_bounded a₀ b₀ c₀ hinf₀ hcdeg
-    -- With `b₀ = 0`, `z = a₀(x)/c₀(x)`, `c₀.natDegree ≤ 2`: a genuine Möbius
-    -- transform of `x`. `ordAt_linX_eq`-driven fiber matching against
-    -- `x₁ + x₂` (the divisor `z`'s poles are bounded by) forces `x₂ = ιx₁`,
-    -- contradicting `hne`. This final case-analysis step is the one flagged
-    -- in this theorem's own module docstring as "the genuinely new piece of
-    -- reasoning" — not yet carried out; left as the last `sorry`.
-    sorry
+    subst hbeq0
+
+    have hcdeg0 : c₀.natDegree = 0 := by
+      by_contra hcdeg0
+      obtain ⟨α, hα⟩ := IsAlgClosed.exists_root c₀ (by
+        rw [Polynomial.degree_eq_natDegree hc₀ne]
+        exact_mod_cast hcdeg0)
+      exact false_of_root_of_coprimeAtRoots_zero_snd
+        (H := H) hchar hsf x₁ x₂ hne a₀ c₀ hc₀ne hcop hzsupp₀ α hα
+
+    have hadeg0 : a₀.natDegree = 0 := by
+      have habne0 : a₀ ≠ 0 := by
+        intro ha0
+        apply hab₀_ne
+        simp [ha0, toPair_eq_zero_iff]
+      have horda := hinf₀
+      rw [ordInfOfPair_eq_of_ne a₀ 0 (fun h => habne0 h.1)] at horda
+      rw [ordInfOfPair_eq_of_ne c₀ 0 (fun h => hc₀ne h.1)] at horda
+      rw [hcdeg0] at horda
+      simp at horda
+      omega
+
+    obtain ⟨ka, hka⟩ := Polynomial.natDegree_eq_zero.mp hadeg0
+    obtain ⟨kc, hkc⟩ := Polynomial.natDegree_eq_zero.mp hcdeg0
+    refine ⟨ka / kc, ?_⟩
+
+    have hkc_ne : kc ≠ 0 := by
+      rintro rfl
+      simp at hkc
+      exact hc₀ne hkc.symm
+
+    have h_inv : (algebraMap H.CoordinateRing (FractionRing H.CoordinateRing))
+        ((algebraMap k[X] H.CoordinateRing) (C kc⁻¹)) =
+      ((algebraMap H.CoordinateRing (FractionRing H.CoordinateRing))
+        ((algebraMap k[X] H.CoordinateRing) (C kc)))⁻¹ := by
+      symm
+      apply inv_eq_of_mul_eq_one_right
+      rw [← map_mul, ← map_mul, ← map_mul]
+      rw [mul_inv_cancel₀ hkc_ne]
+      simp
+
+    rw [hz_eq, hfrac_eq, hfrac_eq₀, ← hka, ← hkc]
+    unfold polePairToFraction
+    simp [HyperellipticPolynomial.toPair, toPair]
+    rw [div_eq_mul_inv]
+    rw [div_eq_mul_inv ka kc]
+    rw [map_mul, map_mul, map_mul]
+    rw [h_inv]
 
 end HyperellipticPolynomial
