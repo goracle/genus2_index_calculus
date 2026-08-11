@@ -1115,7 +1115,288 @@ theorem ordInfOfPair_rationalized_ge (hdeg : H.f.natDegree = 5) (A B A' B' : k[X
     (a b c : k[X]) (ha : a = A * A' - B * B' * H.f) (hb : b = A' * B - A * B')
     (hc : c = A' ^ 2 - B' ^ 2 * H.f) (habne : ¬ (a = 0 ∧ b = 0)) (hcne : c ≠ 0) :
     ordInfOfPair a b ≥ ordInfOfPair c (0 : k[X]) := by
-  sorry
+
+  have hABord := ordInfOfPair_eq_of_ne A B hABne
+  have hA'B'ord := ordInfOfPair_eq_of_ne A' B' hA'B'ne
+
+  -- `M' := max(2 deg A', if B'=0 then 0 else 2 deg B'+5)`. Everything below
+  -- is stated directly against this quantity via the two *plain* (no `ite`)
+  -- bounds `hA_M'` / `hB'_bound`, so no `omega` call downstream ever has to
+  -- look inside a bare `max`/`ite` itself.
+  have hmax :
+      max
+          (2 * (A.natDegree : ℤ))
+          (if B = 0 then 0 else 2 * (B.natDegree : ℤ) + 5)
+      ≤
+      max
+          (2 * (A'.natDegree : ℤ))
+          (if B' = 0 then 0 else 2 * (B'.natDegree : ℤ) + 5) := by
+    rw [← neg_le_neg_iff]
+    rw [← hABord, ← hA'B'ord]
+    exact hinfle
+
+  have hf : H.f ≠ 0 := by
+    intro hf
+    rw [hf] at hdeg
+    norm_num at hdeg
+
+  -- Plain (ite-free) bound: `2 deg A ≤ M'`.
+  have hA_M' : (2 : ℤ) * (A.natDegree : ℤ) ≤
+      max (2 * (A'.natDegree : ℤ))
+        (if B' = 0 then 0 else 2 * (B'.natDegree : ℤ) + 5) :=
+    (le_max_left _ _).trans hmax
+
+  -- Plain bound: `2 deg A' ≤ M'`.
+  have hA'_M' : (2 : ℤ) * (A'.natDegree : ℤ) ≤
+      max (2 * (A'.natDegree : ℤ))
+        (if B' = 0 then 0 else 2 * (B'.natDegree : ℤ) + 5) :=
+    le_max_left _ _
+
+  -- Plain bound: if `B ≠ 0`, `2 deg B + 5 ≤ M'`.
+  have hB_bound : B ≠ 0 → (2 : ℤ) * (B.natDegree : ℤ) + 5 ≤
+      max (2 * (A'.natDegree : ℤ))
+        (if B' = 0 then 0 else 2 * (B'.natDegree : ℤ) + 5) := by
+    intro hB0
+    have h := (le_max_right
+        (2 * (A.natDegree : ℤ)) (if B = 0 then 0 else 2 * (B.natDegree : ℤ) + 5)).trans hmax
+    rwa [if_neg hB0] at h
+
+  -- Plain bound: if `B' ≠ 0`, `2 deg B' + 5 ≤ M'`.
+  have hB'_bound : B' ≠ 0 → (2 : ℤ) * (B'.natDegree : ℤ) + 5 ≤
+      max (2 * (A'.natDegree : ℤ))
+        (if B' = 0 then 0 else 2 * (B'.natDegree : ℤ) + 5) := by
+    intro hB'0
+    rw [if_neg hB'0]
+    exact le_max_right (2 * (A'.natDegree : ℤ)) (2 * (B'.natDegree : ℤ) + 5)
+
+  -- Raw degree bounds for the products/differences making up `a`, `b`, `c`.
+  have hAA' : (A * A').natDegree ≤ A.natDegree + A'.natDegree :=
+    natDegree_mul_le
+
+  have hBB'f : (B * B' * H.f).natDegree ≤
+      B.natDegree + B'.natDegree + H.f.natDegree := by
+    have h1 : (B * B').natDegree ≤ B.natDegree + B'.natDegree :=
+      natDegree_mul_le
+    have h2 : (B * B' * H.f).natDegree ≤ (B * B').natDegree + H.f.natDegree :=
+      natDegree_mul_le
+    omega
+
+  have ha_le : a.natDegree ≤ max (A * A').natDegree (B * B' * H.f).natDegree := by
+    rw [ha]; exact natDegree_sub_le (A * A') (B * B' * H.f)
+
+  have hb_le : b.natDegree ≤ max (A' * B).natDegree (A * B').natDegree := by
+    rw [hb]; exact natDegree_sub_le (A' * B) (A * B')
+
+  -- `(A*A').natDegree ≤ M'`: from `hAA'` (`deg(AA') ≤ deg A + deg A'`) and
+  -- `2 deg A ≤ M'`, `2 deg A' ≤ M'` (both plain, always available).
+  have haa'_M : ((A * A').natDegree : ℤ) ≤
+      max (2 * (A'.natDegree : ℤ))
+        (if B' = 0 then 0 else 2 * (B'.natDegree : ℤ) + 5) := by
+    have hcast : ((A * A').natDegree : ℤ) ≤
+        (A.natDegree : ℤ) + (A'.natDegree : ℤ) := by
+      exact_mod_cast hAA'
+    by_cases hB'0 : B' = 0
+    · rw [if_pos hB'0] at hA_M' hA'_M' ⊢; omega
+    · rw [if_neg hB'0] at hA_M' hA'_M' ⊢; omega
+
+  -- `(B*B'*f).natDegree ≤ M'`. Case split on `B = 0` and `B' = 0`
+  -- separately since `hB_bound`/`hB'_bound` are conditional facts.
+  have hbbf_M : ((B * B' * H.f).natDegree : ℤ) ≤
+      max (2 * (A'.natDegree : ℤ))
+        (if B' = 0 then 0 else 2 * (B'.natDegree : ℤ) + 5) := by
+    by_cases hB0 : B = 0
+    · subst hB0
+      simp only [zero_mul, natDegree_zero, Nat.cast_zero]
+      by_cases hB'0 : B' = 0
+      · have h := hA'_M'; rw [if_pos hB'0] at h ⊢; omega
+      · have h := hA'_M'; rw [if_neg hB'0] at h ⊢; omega
+    · by_cases hB'0 : B' = 0
+      · subst hB'0
+        simp only [mul_zero, zero_mul, natDegree_zero, Nat.cast_zero]
+        simp
+      · have hcast : ((B * B' * H.f).natDegree : ℤ) ≤
+            (B.natDegree : ℤ) + (B'.natDegree : ℤ) + (H.f.natDegree : ℤ) := by
+          exact_mod_cast hBB'f
+        rw [hdeg] at hcast
+        have h1 := hB_bound hB0
+        have h2 := hB'_bound hB'0
+        rw [if_neg hB'0] at h1 h2 ⊢
+        omega
+
+  have ha_M : (a.natDegree : ℤ) ≤
+      max (2 * (A'.natDegree : ℤ))
+        (if B' = 0 then 0 else 2 * (B'.natDegree : ℤ) + 5) := by
+    have hab_le' : (a.natDegree : ℤ) ≤
+        max ((A * A').natDegree : ℤ) ((B * B' * H.f).natDegree : ℤ) := by
+      exact_mod_cast ha_le
+    exact le_trans hab_le' (max_le haa'_M hbbf_M)
+
+  -- `(A'*B).natDegree ≤ M'`: from `deg(A'B) ≤ deg A' + deg B`, `2 deg A' ≤ M'`
+  -- always, and (if `B ≠ 0`) `2 deg B + 5 ≤ M'`.
+  have hA'B_M : ((A' * B).natDegree : ℤ) ≤
+      max (2 * (A'.natDegree : ℤ))
+        (if B' = 0 then 0 else 2 * (B'.natDegree : ℤ) + 5) := by
+    have hcast : ((A' * B).natDegree : ℤ) ≤
+        (A'.natDegree : ℤ) + (B.natDegree : ℤ) := by
+      exact_mod_cast (show (A' * B).natDegree ≤
+        A'.natDegree + B.natDegree from natDegree_mul_le)
+    by_cases hB0 : B = 0
+    · subst hB0
+      simp only [mul_zero, natDegree_zero, Nat.cast_zero]
+      by_cases hB'0 : B' = 0
+      · have h := hA'_M'; rw [if_pos hB'0] at h ⊢; omega
+      · have h := hA'_M'; rw [if_neg hB'0] at h ⊢; omega
+    · have h := hB_bound hB0
+      by_cases hB'0 : B' = 0
+      · rw [if_pos hB'0] at h ⊢; omega
+      · rw [if_neg hB'0] at h ⊢; omega
+
+  -- `(A*B').natDegree ≤ M'`: from `deg(AB') ≤ deg A + deg B'`, `2 deg A ≤ M'`
+  -- always, and (if `B' ≠ 0`) `2 deg B' + 5 ≤ M'`.
+  have hAB'_M : ((A * B').natDegree : ℤ) ≤
+      max (2 * (A'.natDegree : ℤ))
+        (if B' = 0 then 0 else 2 * (B'.natDegree : ℤ) + 5) := by
+    have hcast : ((A * B').natDegree : ℤ) ≤
+        (A.natDegree : ℤ) + (B'.natDegree : ℤ) := by
+      exact_mod_cast (show (A * B').natDegree ≤
+        A.natDegree + B'.natDegree from natDegree_mul_le)
+    by_cases hB'0 : B' = 0
+    · subst hB'0
+      simp only [mul_zero, natDegree_zero, Nat.cast_zero]
+      simp
+    · have h := hB'_bound hB'0
+      rw [if_neg hB'0] at h ⊢
+      omega
+
+  have hb_M : (b.natDegree : ℤ) ≤
+      max (2 * (A'.natDegree : ℤ))
+        (if B' = 0 then 0 else 2 * (B'.natDegree : ℤ) + 5) := by
+    have hb_le' : (b.natDegree : ℤ) ≤
+        max ((A' * B).natDegree : ℤ) ((A * B').natDegree : ℤ) := by
+      exact_mod_cast hb_le
+    exact le_trans hb_le' (max_le hA'B_M hAB'_M)
+
+  -- `hcdeg`: `c.natDegree` EQUALS `M'`, not just `≤ M'`. Needed because
+  -- `ha_M`/`hb_M` only give `≤ M'`, and we need the *sharper* comparison
+  -- against `c.natDegree` itself. The two terms of `c = A'^2 - B'^2*f` have
+  -- degrees `2 dA'` (even) and `2 dB'+5` (odd) respectively when `B' ≠ 0`,
+  -- so they can never be equal and cancel — the larger one always survives
+  -- as `c`'s degree exactly.
+  have hcdeg : (c.natDegree : ℤ) =
+      max (2 * (A'.natDegree : ℤ))
+        (if B' = 0 then 0 else 2 * (B'.natDegree : ℤ) + 5) := by
+    by_cases hB'0 : B' = 0
+    · have hcval : c = A' ^ 2 := by
+        rw [hc, hB'0, zero_pow two_ne_zero, zero_mul, sub_zero]
+      have hcdeg' : c.natDegree = 2 * A'.natDegree := by
+        rw [hcval]; exact natDegree_pow A' 2
+      rw [hcdeg', if_pos hB'0]
+      have hnonneg : (0 : ℤ) ≤ 2 * (A'.natDegree : ℤ) := by positivity
+      push_cast
+      rw [max_eq_left hnonneg]
+    · have hA'2 : (A' ^ 2).natDegree = 2 * A'.natDegree := natDegree_pow A' 2
+      have hB'2f : (B' ^ 2 * H.f).natDegree = 2 * B'.natDegree + 5 := by
+        rw [natDegree_mul (pow_ne_zero 2 hB'0) hf, natDegree_pow B' 2, hdeg]
+      have hdeg_ne : (A' ^ 2).natDegree ≠ (B' ^ 2 * H.f).natDegree := by
+        rw [hA'2, hB'2f]; omega
+      rw [if_neg hB'0]
+      rcases lt_or_gt_of_ne hdeg_ne with hlt | hgt
+      · have hcdeg' : c.natDegree = (B' ^ 2 * H.f).natDegree := by
+          rw [hc]; exact natDegree_sub_eq_right_of_natDegree_lt hlt
+        rw [hcdeg', hB'2f]; push_cast; omega
+      · have hcdeg' : c.natDegree = (A' ^ 2).natDegree := by
+          rw [hc]; exact natDegree_sub_eq_left_of_natDegree_lt hgt
+        rw [hcdeg', hA'2]; push_cast; omega
+
+  rw [ordInfOfPair_eq_of_ne a b habne]
+  have hc_zero_pair : ¬ (c = 0 ∧ (0 : k[X]) = 0) := by simp [hcne]
+  rw [ordInfOfPair_eq_of_ne c 0 hc_zero_pair]
+
+  have ha_c : (2 : ℤ) * a.natDegree ≤ 2 * c.natDegree := by
+    rw [hcdeg]
+    have h := ha_M
+    omega
+
+  rw [if_pos (rfl : (0 : k[X]) = 0)]
+  have hrhs : max (2 * (c.natDegree : ℤ)) (0 : ℤ) = 2 * c.natDegree :=
+    max_eq_left (by positivity)
+  rw [hrhs]
+
+  by_cases hb0 : b = 0
+  · subst hb0
+    rw [if_pos (rfl : (0 : k[X]) = 0)]
+    have hlhs : max (2 * (a.natDegree : ℤ)) (0 : ℤ) = 2 * a.natDegree :=
+      max_eq_left (by positivity)
+    rw [hlhs, ge_iff_le, neg_le_neg_iff]
+    exact ha_c
+  · have hb_c : 2 * (b.natDegree : ℤ) + 5 ≤ 2 * c.natDegree := by
+      rw [hcdeg]
+      by_cases hB0 : B = 0
+      · -- `B = 0`: `b = A'*0 - A*B' = -A*B'`, so `b.natDegree = (A*B').natDegree`
+        -- exactly (up to the `neg`, which `natDegree` ignores).
+        subst hB0
+        have hbval : b.natDegree = (A * B').natDegree := by
+          rw [hb]; simp
+        rw [hbval]
+        by_cases hB'0 : B' = 0
+        · -- Then `b = -(A*0) = 0`, contradicting `hb0`.
+          exfalso; apply hb0; rw [hb]; simp [hB'0]
+        · have hAB'deg : (A * B').natDegree = A.natDegree + B'.natDegree := by
+            rcases eq_or_ne A 0 with hA0 | hA0
+            · exfalso; apply hb0; rw [hb, hA0]; simp
+            · exact natDegree_mul hA0 hB'0
+          rw [hAB'deg]
+          have h2 := hB'_bound hB'0
+          have h4 := hA_M'
+          rw [if_neg hB'0] at h2 h4 ⊢
+          omega
+      · by_cases hB'0 : B' = 0
+        · -- `B' = 0`: `b = A'*B - A*0 = A'*B`, so `b.natDegree = (A'*B).natDegree`
+          -- exactly.
+          subst hB'0
+          have hbval : b.natDegree = (A' * B).natDegree := by
+            rw [hb]; simp
+          rw [hbval]
+          have hA'Bdeg : (A' * B).natDegree = A'.natDegree + B.natDegree := by
+            rcases eq_or_ne A' 0 with hA'0 | hA'0
+            · exfalso; apply hb0; rw [hb, hA'0]; simp
+            · exact natDegree_mul hA'0 hB0
+          rw [hA'Bdeg]
+          have h1 := hB_bound hB0
+          have h3 := hA'_M'
+          simp at h1 h3 ⊢
+          omega
+        · -- Both `B ≠ 0` and `B' ≠ 0`: fall back to the subadditive bound
+          -- `b.natDegree ≤ max(dA'+dB, dA+dB')`, each branch closed by the
+          -- matching pair of conditional bounds.
+          have hb_le' : (b.natDegree : ℤ) ≤
+              max ((A' * B).natDegree : ℤ) ((A * B').natDegree : ℤ) := by
+            exact_mod_cast hb_le
+          have hA'B_cast : ((A' * B).natDegree : ℤ) ≤
+              (A'.natDegree : ℤ) + (B.natDegree : ℤ) := by
+            exact_mod_cast (show (A' * B).natDegree ≤ A'.natDegree + B.natDegree
+              from natDegree_mul_le)
+          have hAB'_cast : ((A * B').natDegree : ℤ) ≤
+              (A.natDegree : ℤ) + (B'.natDegree : ℤ) := by
+            exact_mod_cast (show (A * B').natDegree ≤ A.natDegree + B'.natDegree
+              from natDegree_mul_le)
+          have h1 := hB_bound hB0
+          have h2 := hB'_bound hB'0
+          have h3 := hA'_M'
+          have h4 := hA_M'
+          rw [if_neg hB'0] at h1 h2 h3 h4 ⊢
+          omega
+    rw [if_neg hb0]
+    have hab_le : max (2 * (a.natDegree : ℤ)) (2 * (b.natDegree : ℤ) + 5) ≤
+        2 * c.natDegree := max_le ha_c hb_c
+    rw [ge_iff_le, neg_le_neg_iff]
+    exact hab_le
+
+
+
+
+
+
 end HyperellipticPolynomial
 
 namespace HyperellipticPolynomial
@@ -1247,27 +1528,25 @@ theorem uniqueDegree2MapToP1_ordAtFrac (hdeg : H.f.natDegree = 5) (hchar : (2 : 
     have hab_ne : toPair H a b ≠ 0 := by
       intro hab0
       apply hAB0
-      -- If `toPair H a b = 0`, then `polePairToFraction a b c 0 = 0`
-      -- (numerator maps to `0`), so by `hfrac_eq`, `polePairToFraction A B A' B' = 0`
-      -- too. But that fraction is `algebraMap (toPair H A B) / algebraMap (toPair H A' B')`
-      -- with nonzero denominator, forcing `algebraMap (toPair H A B) = 0`, hence
-      -- (by injectivity of `algebraMap` into the fraction field) `toPair H A B = 0`.
       have hzero_frac : polePairToFraction (H := H) a b c 0 = 0 := by
-        unfold polePairToFraction
-        rw [hab0, map_zero, zero_div]
+           unfold polePairToFraction
+           rw [hab0, map_zero, zero_div]
       rw [hzero_frac] at hfrac_eq
       unfold polePairToFraction at hfrac_eq
-      have hA'B'map_ne : algebraMap (CoordinateRing H) (FractionRing (CoordinateRing H))
-          (toPair H A' B') ≠ 0 :=
-        (map_ne_zero_iff _ (IsFractionRing.injective (CoordinateRing H)
-          (FractionRing (CoordinateRing H)))).mpr hA'B'toPairne
-      have hABmap0 : algebraMap (CoordinateRing H) (FractionRing (CoordinateRing H))
-          (toPair H A B) = 0 := by
-        rcases div_eq_zero_iff.mp hfrac_eq with h | h
-        · exact h
-        · exact absurd h hA'B'map_ne
-      exact (map_eq_zero_iff _ (IsFractionRing.injective (CoordinateRing H)
-        (FractionRing (CoordinateRing H)))).mp hABmap0
+      have hA'B'map_ne :
+           algebraMap (CoordinateRing H) (FractionRing (CoordinateRing H))
+             (toPair H A' B') ≠ 0 :=
+           (map_ne_zero_iff _ (IsFractionRing.injective (CoordinateRing H)
+           (FractionRing (CoordinateRing H)))).mpr hA'B'toPairne
+      have hABmap0 :
+           algebraMap (CoordinateRing H) (FractionRing (CoordinateRing H))
+             (toPair H A B) = 0 := by
+           rcases div_eq_zero_iff.mp hfrac_eq with h | h
+           · exact h
+           · exact absurd h hA'B'map_ne
+      exact
+        (map_eq_zero_iff _ (IsFractionRing.injective (CoordinateRing H)
+          (FractionRing (CoordinateRing H)))).mp hABmap0
     have hc0_ne : toPair H c (0 : k[X]) ≠ 0 := by
       rw [Ne, toPair_eq_zero_iff]; exact fun h => hcne h.1
     have hzsupp : ∀ P : H.Point, ordAtFrac P a b c 0 ≥
@@ -1296,19 +1575,18 @@ theorem uniqueDegree2MapToP1_ordAtFrac (hdeg : H.f.natDegree = 5) (hchar : (2 : 
     -- `hne`.
     have hcdeg : c.natDegree ≤ 2 := by
       by_cases hx12 : x₁ = x₂
-      · -- `x₁ = x₂`: `hzsupp`'s indicator sum collapses to `2 * [P = x₁]`.
-        subst hx12
+      · subst hx12
         apply natDegree_le_two_of_isCoprimeAtRoots_eq hchar hsf x₁ a b c hcne hcop
         intro P
-        have := hzsupp P
+        have h := hzsupp P
         by_cases hPx : P = x₁
-        · have h := hzsupp P
-          norm_num [hPx] at h ⊢
+        · norm_num [hPx] at h ⊢
           exact h
-        · have h := hzsupp P
-          norm_num [hPx] at h ⊢
+        · norm_num [hPx] at h ⊢
           exact h
-      · exact natDegree_le_two_of_isCoprimeAtRoots hchar hsf x₁ x₂ hx12 a b c hcne hcop hzsupp
+      · exact
+        natDegree_le_two_of_isCoprimeAtRoots
+          hchar hsf x₁ x₂ hx12 a b c hcne hcop hzsupp
     have hinf : ordInfOfPair a b ≥ ordInfOfPair c (0 : k[X]) := by
       -- Infinity clause of `IsPoleBoundedAtPair'` for `(a,b,c,0)`, via the
       -- pure-`k[X]`-degree-arithmetic bridge lemma `ordInfOfPair_rationalized_ge`
