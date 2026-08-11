@@ -1462,6 +1462,28 @@ open Divisor
 
 variable {H} [IsAlgClosed k] [IsDedekindDomain (CoordinateRing H)]
 
+/-- **Bridge: `LPairCarrier ⊆ LPairCarrier'`.** Every witness pair satisfying
+the weak, separate-clause `IsPoleBoundedAtPair` also satisfies the
+`ordAtFrac`-based `IsPoleBoundedAtPair'` — no reducedness/lowest-terms fact
+about the witness is needed for this direction, only for the (unrelated)
+coprimality step downstream. Two ingredients, both already proved: the
+pointwise clause rewrites via `ordAtFrac_ge_of_isPoleBoundedAtPair_pointwise`
+(pure `ordAt` subtraction, `omega`-level), and the extra
+`toPair H A B ≠ 0` field of `IsPoleBoundedAtPair'` is supplied by case-splitting
+on whether the numerator vanishes: if it does, `z = 0 ∈ LPairCarrier'` via the
+carrier's own `Or.inl` clause (no witness pair needed at all); otherwise the
+same `(A,B,A',B')` witness transports directly. -/
+theorem LPairCarrier_subset_LPairCarrier' (x₁ x₂ : H.Point) :
+    LPairCarrier x₁ x₂ ⊆ LPairCarrier' x₁ x₂ := by
+  rintro z ⟨A, B, A', B', ⟨hA'B'ne, hinfle, hptwise⟩, hz_eq⟩
+  by_cases hAB0 : toPair H A B = 0
+  · refine Or.inl ?_
+    rw [hz_eq]
+    unfold polePairToFraction
+    rw [hAB0, map_zero, zero_div]
+  · refine Or.inr ⟨A, B, A', B', ⟨hAB0, hA'B'ne, hinfle, ?_⟩, hz_eq⟩
+    exact ordAtFrac_ge_of_isPoleBoundedAtPair_pointwise x₁ x₂ A B A' B' hptwise
+
 /-! ## §7. Assembly: `uniqueDegree2MapToP1`, no `hreduced` needed
 
 Chains §1 (rationalize) → §5/§6 (`b = 0`, `deg c ≤ 2`) → `ordAt_linX_eq`
@@ -1488,46 +1510,259 @@ sum via standard Mathlib `Polynomial.roots` API. So everything upstream of
 this theorem is now either fully proved or has an isolated, clearly-scoped
 `sorry` — this assembly step is the one remaining piece of genuinely new
 case-analysis work for a future session (or a ChatGPT-assisted pass, per
-this project's standard escalation path for hard sorries) to close. -/
+this project's standard escalation path for hard sorries) to close.
+
+**Wired to `LPairCarrier'`, not the bare `LPairCarrier`** (post-ChatGPT-
+consultation on the coprimality gap below): `LPairCarrier`'s witness pairs
+carry no reducedness/lowest-terms guarantee, which is exactly the missing
+ingredient the coprimality step needs (confirmed via an explicit
+counterexample — see `chatgpt_prompt_coprimality.md` — showing
+`IsCoprimeAtRoots a b c` is false for a witness with a common numerator/
+denominator zero). `LPairCarrier'`'s `ordAtFrac`-based pointwise clause is
+representation-independent and cancels shared factors automatically, so it
+is the honest hypothesis for this theorem. Callers holding only
+`z ∈ LPairCarrier x₁ x₂` (e.g. `RiemannRochCrux.lean`) reach this via
+`LPairCarrier_subset_LPairCarrier'` — that inclusion needs no reducedness at
+all, only the pure `ordAt`-subtraction identity, so it is not blocked by the
+same gap.
+
+**Second ChatGPT consultation, on `hcop` itself.** `ordAtFrac`'s pointwise
+bound (used for `hzsupp`/`hbound`) is a statement about a *difference* of
+`ordAt`s, which is blind to a shared factor's size — it does NOT give
+"no common zero of numerator and denominator", only a bound on the net pole
+order. Concrete counterexample confirming this (ChatGPT, verified against
+this file's own definitions): `f = X^5+1`, `A=B=A'=B'=1` gives
+`toPair H A' B' = 1+y ≠ 0` (satisfying `IsPoleBoundedAtPair'`'s nonzero
+hypothesis) yet the rationalized triple is `a=c=-X^5, b=0` — all three
+vanish at `α=0`, so `IsCoprimeAtRoots a b c` is false for this witness. So
+`hcop` genuinely cannot be proved from `hzsupp`/`hbound` alone; the fix is a
+**reduction step**, not a cleverer direct proof.
+
+**Resolution, `reduce_ordAtFrac_triple` below.** Rather than reducing the
+original `(A,B,A',B')` (which would need Dedekind-domain ideal theory in
+`CoordinateRing H`, per ChatGPT's explicit caution against that route), the
+reduction is done on the *already-rationalized* triple `(a,b,c) ∈ k[X]^3`
+(post `frac_toPair_den_kx`), using ordinary `k[X]`-gcd (`k[X]` is a
+Euclidean/GCD domain since `k` is a field) — dividing `(a,b,c)` by
+`g := gcd (gcd a b) c` kills every common root at once, since a value `α` is
+a common root of `(a,b,c)` iff it's a common root of the quotient triple's
+gcd, and dividing by the *full* gcd forces that quotient-gcd to be a unit
+(root-free, as a nonzero constant). This is cheap precisely because it acts
+after rationalization: `(a,b,c)` are plain `k[X]` polynomials, so no
+`CoordinateRing`-level factorization is needed, matching ChatGPT's
+"rank-2 `k[X]` representation" suggestion. Verified against the counter-
+example above: `g = X^5` there, reducing to `a₀=b₀... ` — actually
+`a₀=c₀=-1, b₀=0`, genuinely coprime, correctly identifying `z=1` (constant)
+as the true value of `(1+y)/(1+y)`. -/
+
+/-- **`ordInfOfPair` shifts by `-2·deg g` under multiplying both slots by a
+common nonzero factor `g`.** Pure `k[X]`-degree arithmetic: `natDegree`
+is additive under multiplication in a domain (`Polynomial.natDegree_mul`),
+so `ordInfOfPair (g*A) (g*B) = -max(2 deg(g*A), 2 deg(g*B)+5) =
+-(2 deg g) - max(2 deg A, 2 deg B + 5) = ordInfOfPair A B - 2 deg g` (the
+`(0,0)` case is excluded by `hAB`, and needs `g ≠ 0` throughout so
+`g*A = 0 ↔ A = 0` etc.). Two-sided (`A,B` and `A',B'` sharing the same `g`)
+so callers get the exact shift cancellation needed to transfer an
+`ordInfOfPair` *inequality* across common-factor division. -/
+theorem ordInfOfPair_mul_left (g A B : k[X]) (hg : g ≠ 0) (hAB : ¬ (A = 0 ∧ B = 0)) :
+    ordInfOfPair (g * A) (g * B) = ordInfOfPair A B - 2 * (g.natDegree : ℤ) := by
+  have hgAB : ¬ (g * A = 0 ∧ g * B = 0) := by
+    rintro ⟨hA0, hB0⟩
+    exact hAB ⟨(mul_eq_zero.mp hA0).resolve_left hg, (mul_eq_zero.mp hB0).resolve_left hg⟩
+  unfold ordInfOfPair
+  rw [if_neg hAB, if_neg hgAB]
+  by_cases hB : B = 0
+  · -- `B = 0` (so `A ≠ 0` from `hAB`), and hence `g * B = 0` too: both
+    -- `if`-branches collapse to the `2 * deg` term, no `+5` on either side.
+    have hA0 : A ≠ 0 := fun h => hAB ⟨h, hB⟩
+    have hgB : g * B = 0 := by rw [hB, mul_zero]
+    have hgA0 : g * A ≠ 0 := mul_ne_zero hg hA0
+    rw [if_pos hB, if_pos hgB, Polynomial.natDegree_mul hg hA0]
+    push_cast
+    omega
+  · -- `B ≠ 0` (hence `g * B ≠ 0`): both `if`-branches take the `+5` term,
+    -- and `natDegree_mul` applies to both slots of the `max`.
+    have hgB0 : g * B ≠ 0 := mul_ne_zero hg hB
+    rw [if_neg hB, if_neg hgB0, Polynomial.natDegree_mul hg hB]
+    by_cases hA0 : A = 0
+    · simp only [hA0, mul_zero, Polynomial.natDegree_zero]
+      push_cast
+      omega
+    · rw [Polynomial.natDegree_mul hg hA0]
+      push_cast
+      omega
+
+/-- **Reduction lemma: every nonzero-`c` rationalized triple `(a,b,c)`
+reduces to a coprime-at-roots triple representing the same fraction, with
+the same `ordAtFrac` pole bound at every point and the same `ordInfOfPair`
+bound relation.** The `k[X]`-analogue of "put a fraction in lowest terms":
+`g := gcd (gcd a b) c`; since `g ∣ c` and `c ≠ 0`, `g ≠ 0`, so
+`a = g*a₀, b = g*b₀, c = g*c₀` for a unique `(a₀,b₀,c₀)` (division exact by
+`gcd_dvd_*`). `polePairToFraction a b c 0 = polePairToFraction a₀ b₀ c₀ 0`
+by the same shared-factor cancellation `frac_toPair_den_kx` already uses
+(`toPair` is `k[X]`-linear in each slot, so `toPair H a b = algebraMap g *
+toPair H a₀ b₀`, and likewise `toPair H c 0 = algebraMap g * toPair H c₀ 0`;
+cancel `algebraMap g ≠ 0` via `mul_div_mul_left`, `k[X]`'s bare `gcd`/
+`gcd_dvd_left`/`gcd_dvd_right` API, same as `PrincipalDivisorsDedekind.lean`'s
+`isCoprime_of_irreducible_not_dvd` — MATHLIB NAME UNCONFIRMED for the exact
+instance path). `ordAtFrac` then transfers for free via
+`ordAtFrac_eq_of_polePairToFraction_eq` (already proved, representation-
+independent for nonzero numerators); `ordInfOfPair` transfers via
+`ordInfOfPair_mul_left` applied on both sides (the `-2 deg g` shift cancels
+in the inequality). `IsCoprimeAtRoots a₀ b₀ c₀` is proved directly rather
+than via a "quotient-gcd-is-unit" Mathlib lemma: if `α` were a shared root of
+`(a₀,b₀,c₀)`, `linX α ∣ a₀,b₀,c₀` (`dvd_iff_isRoot`), so `g*(linX α) ∣ a,b,c`
+(scaling by `g`), hence `g*(linX α) ∣ gcd (gcd a b) c = g` (`dvd_gcd` twice);
+cancelling the nonzero `g` (`mul_dvd_mul_iff_left`) gives `linX α ∣ 1`, i.e.
+`linX α` is a unit — impossible since `natDegree (linX α) = 1 ≠ 0`. This
+avoids needing to name the "dividing by the full gcd leaves the quotient-gcd
+a unit" lemma at all. -/
+theorem reduce_ordAtFrac_triple (x₁ x₂ : H.Point) (a b c : k[X]) (hcne : c ≠ 0)
+    (hab_ne : toPair H a b ≠ 0)
+    (hzsupp : ∀ P : H.Point, ordAtFrac P a b c 0 ≥
+      -((if P = x₁ then 1 else 0) + (if P = x₂ then 1 else 0)))
+    (hinf : ordInfOfPair a b ≥ ordInfOfPair c (0 : k[X])) :
+    ∃ a₀ b₀ c₀ : k[X], c₀ ≠ 0 ∧ toPair H a₀ b₀ ≠ 0 ∧
+      polePairToFraction (H := H) a b c 0 = polePairToFraction (H := H) a₀ b₀ c₀ 0 ∧
+      (∀ P : H.Point, ordAtFrac P a₀ b₀ c₀ 0 ≥
+        -((if P = x₁ then 1 else 0) + (if P = x₂ then 1 else 0))) ∧
+      ordInfOfPair a₀ b₀ ≥ ordInfOfPair c₀ (0 : k[X]) ∧
+      IsCoprimeAtRoots a₀ b₀ c₀ := by
+  classical
+  -- `g := gcd (gcd a b) c`: the joint `k[X]`-gcd of the whole triple.
+  -- `k[X]` is a `GCDMonoid` (field-coefficient polynomial ring), so the bare
+  -- `gcd`/`gcd_dvd_left`/`gcd_dvd_right`/`dvd_gcd` API applies directly —
+  -- MATHLIB NAME UNCONFIRMED for the exact instance path, but this is the
+  -- same `gcd` used elsewhere in the project (`PrincipalDivisorsDedekind.lean`,
+  -- `isCoprime_of_irreducible_not_dvd`).
+  set g := gcd (gcd a b) c with hg_def
+  have hg_dvd_ab : g ∣ gcd a b := gcd_dvd_left _ _
+  have hg_dvd_a : g ∣ a := hg_dvd_ab.trans (gcd_dvd_left _ _)
+  have hg_dvd_b : g ∣ b := hg_dvd_ab.trans (gcd_dvd_right _ _)
+  have hg_dvd_c : g ∣ c := gcd_dvd_right _ _
+  have hgne : g ≠ 0 := fun h => hcne (eq_zero_of_zero_dvd (h ▸ hg_dvd_c))
+  -- Explicit quotient witnesses.
+  obtain ⟨a₀, ha_eq⟩ := hg_dvd_a
+  obtain ⟨b₀, hb_eq⟩ := hg_dvd_b
+  obtain ⟨c₀, hc_eq⟩ := hg_dvd_c
+  have hc₀ne : c₀ ≠ 0 := by
+    intro h; apply hcne; rw [hc_eq, h, mul_zero]
+  have hab₀ne : ¬ (a₀ = 0 ∧ b₀ = 0) := by
+    rintro ⟨ha0, hb0⟩
+    apply hab_ne
+    apply toPair_eq_zero_iff H a b |>.mpr
+    exact ⟨by rw [ha_eq, ha0, mul_zero], by rw [hb_eq, hb0, mul_zero]⟩
+  have ha0₀ne : toPair H a₀ b₀ ≠ 0 := fun h => hab₀ne (toPair_eq_zero_iff H a₀ b₀ |>.mp h)
+  -- **Numerator/denominator factorization through `toPair H g 0`.**
+  have htoPair_right_zero : ∀ P : k[X],
+      toPair H P (0 : k[X]) = algebraMap k[X] (CoordinateRing H) P := by
+    intro P; unfold toPair; simp
+  have hg_toPair_ne : toPair H g (0 : k[X]) ≠ 0 :=
+    fun h => hgne (toPair_eq_zero_iff H g 0 |>.mp h).1
+  have hnum : toPair H a b = toPair H g (0 : k[X]) * toPair H a₀ b₀ := by
+    have hmul := toPair_mul (H := H) g 0 a₀ b₀
+    have harg1 : g * a₀ + 0 * b₀ * H.f = a := by rw [← ha_eq]; ring
+    have harg2 : g * b₀ + a₀ * 0 = b := by rw [← hb_eq]; ring
+    rw [harg1, harg2] at hmul
+    exact hmul.symm
+  have hden : toPair H c (0 : k[X]) = toPair H g (0 : k[X]) * toPair H c₀ (0 : k[X]) := by
+    have hmul := toPair_mul (H := H) g 0 c₀ 0
+    have harg1 : g * c₀ + 0 * 0 * H.f = c := by rw [← hc_eq]; ring
+    have harg2 : g * 0 + c₀ * 0 = (0 : k[X]) := by ring
+    rw [harg1, harg2] at hmul
+    exact hmul.symm
+  -- **Fraction equality**, by cancelling `algebraMap (toPair H g 0) ≠ 0`.
+  have hfrac_eq : polePairToFraction (H := H) a b c 0 =
+      polePairToFraction (H := H) a₀ b₀ c₀ 0 := by
+    unfold polePairToFraction
+    rw [hnum, hden, map_mul, map_mul]
+    have hgmap_ne : algebraMap (CoordinateRing H) (FractionRing (CoordinateRing H))
+        (toPair H g (0 : k[X])) ≠ 0 :=
+      (map_ne_zero_iff _ (IsFractionRing.injective (CoordinateRing H)
+        (FractionRing (CoordinateRing H)))).mpr hg_toPair_ne
+    rw [mul_div_mul_left _ _ hgmap_ne]
+  -- **`ordAtFrac` transfer**, via representation-independence.
+  have hc0_ne : toPair H c (0 : k[X]) ≠ 0 :=
+    fun h => hcne (toPair_eq_zero_iff H c 0 |>.mp h).1
+  have hc₀0_ne : toPair H c₀ (0 : k[X]) ≠ 0 :=
+    fun h => hc₀ne (toPair_eq_zero_iff H c₀ 0 |>.mp h).1
+  have hzsupp' : ∀ P : H.Point, ordAtFrac P a₀ b₀ c₀ 0 ≥
+      -((if P = x₁ then 1 else 0) + (if P = x₂ then 1 else 0)) := by
+    intro P
+    rw [← ordAtFrac_eq_of_polePairToFraction_eq P a b c 0 a₀ b₀ c₀ 0
+      hab_ne hc0_ne hc₀0_ne hfrac_eq]
+    exact hzsupp P
+  -- **`ordInfOfPair` transfer**, via the common-factor shift lemma applied to
+  -- both `(a,b)` and `(c,0)` with the same `g` — the `-2 deg g` shift cancels.
+  have hinf' : ordInfOfPair a₀ b₀ ≥ ordInfOfPair c₀ (0 : k[X]) := by
+    have hc₀0ne : ¬ (c₀ = 0 ∧ (0:k[X]) = 0) := fun h => hc₀ne h.1
+    have hshift_ab : ordInfOfPair a b = ordInfOfPair a₀ b₀ - 2 * (g.natDegree : ℤ) := by
+      rw [ha_eq, hb_eq]; exact ordInfOfPair_mul_left g a₀ b₀ hgne hab₀ne
+    have hshift_c : ordInfOfPair c (0 : k[X]) = ordInfOfPair c₀ (0 : k[X]) - 2 * (g.natDegree : ℤ) := by
+      have : c = g * c₀ := hc_eq
+      have h0 : (0 : k[X]) = g * 0 := by ring
+      rw [this]
+      calc ordInfOfPair (g * c₀) (g * 0)
+          = ordInfOfPair (g * c₀) (g * (0:k[X])) := rfl
+        _ = ordInfOfPair c₀ (0 : k[X]) - 2 * (g.natDegree : ℤ) := by
+              rw [← h0] at hc₀0ne ⊢
+              exact ordInfOfPair_mul_left g c₀ 0 hgne hc₀0ne
+    rw [hshift_ab, hshift_c] at hinf
+    linarith
+  -- **Coprimality**: no root `α` can be shared by `(a₀,b₀,c₀)`, since a
+  -- shared linear factor `(X-α)` would divide `g`'s quotient triple, hence
+  -- `(X-α)*g ∣ gcd (gcd a b) c = g`, forcing `X - α ∣ 1` after cancelling
+  -- the nonzero `g` — impossible since `X - α` is non-unit.
+  have hcop : IsCoprimeAtRoots a₀ b₀ c₀ := by
+    intro α hα
+    rintro ⟨hαa, hαb⟩
+    have hlin_dvd_a₀ : linX α ∣ a₀ := Polynomial.dvd_iff_isRoot.mpr hαa
+    have hlin_dvd_b₀ : linX α ∣ b₀ := Polynomial.dvd_iff_isRoot.mpr hαb
+    have hlin_dvd_c₀ : linX α ∣ c₀ := Polynomial.dvd_iff_isRoot.mpr hα
+    have hga_dvd : g * linX α ∣ a := by
+      rw [ha_eq]; exact mul_dvd_mul_left g hlin_dvd_a₀
+    have hgb_dvd : g * linX α ∣ b := by
+      rw [hb_eq]; exact mul_dvd_mul_left g hlin_dvd_b₀
+    have hgc_dvd : g * linX α ∣ c := by
+      rw [hc_eq]; exact mul_dvd_mul_left g hlin_dvd_c₀
+    have hgab_dvd : g * linX α ∣ gcd a b := dvd_gcd hga_dvd hgb_dvd
+    have hg2_dvd : g * linX α ∣ g := dvd_gcd hgab_dvd hgc_dvd
+    have hlin_dvd_one : linX α ∣ (1 : k[X]) := by
+      have hg_dvd_g1 : g ∣ g * 1 := by rw [mul_one]
+      have := (mul_dvd_mul_iff_left hgne).mp (hg2_dvd.trans hg_dvd_g1)
+      simpa using this
+    have hlin_unit : IsUnit (linX α : k[X]) := isUnit_of_dvd_one hlin_dvd_one
+    have hlin_deg : (linX α : k[X]).natDegree = 1 := by
+      unfold linX
+      compute_degree!
+    have hlin_deg0 : (linX α : k[X]).natDegree = 0 :=
+      Polynomial.natDegree_eq_zero_of_isUnit hlin_unit
+    omega
+  exact ⟨a₀, b₀, c₀, hc₀ne, ha0₀ne, hfrac_eq, hzsupp', hinf', hcop⟩
 theorem uniqueDegree2MapToP1_ordAtFrac (hdeg : H.f.natDegree = 5) (hchar : (2 : k) ≠ 0)
     (hsf : Squarefree H.f) (x₁ x₂ : H.Point) (hne : x₂ ≠ Point.iota x₁)
-    (z : FractionRing (CoordinateRing H)) (hz : z ∈ LPairCarrier x₁ x₂) :
+    (z : FractionRing (CoordinateRing H)) (hz : z ∈ LPairCarrier' x₁ x₂) :
     IsConstantFraction z := by
   classical
-  obtain ⟨A, B, A', B', hbound, hz_eq⟩ := hz
-  obtain ⟨hA'B'ne, hinfle, hptwise⟩ := hbound
-  by_cases hAB0 : toPair H A B = 0
-  · -- Numerator vanishes: `z = 0`, trivially constant (`c = 0`).
-    refine ⟨0, ?_⟩
-    rw [hz_eq]
-    unfold polePairToFraction
-    rw [hAB0, map_zero, zero_div]
-    simp
-  · -- Rationalize via §1, then run §5/§6/`ordAt_linX_eq`.
+  rcases hz with hz0 | ⟨A, B, A', B', hbound, hz_eq⟩
+  · -- `z = 0`, trivially constant (`c = 0`).
+    exact ⟨0, by rw [hz0]; simp⟩
+  · obtain ⟨hAB0ne, hA'B'ne, hinfle, hptwise'⟩ := hbound
+    -- Rationalize via §1, then run §5/§6/`ordAt_linX_eq`.
     have hA'B'toPairne : toPair H A' B' ≠ 0 := by
       rw [Ne, toPair_eq_zero_iff]; exact hA'B'ne
     obtain ⟨a, b, c, hcne, hc_def, ha_def, hb_def, hfrac_eq⟩ :=
       frac_toPair_den_kx hdeg A B A' B' hA'B'toPairne
-    -- Transport the original witness's pointwise bound to `(A,B,A',B')`'s
-    -- `ordAtFrac` form (bridge lemma), matching `hfrac_eq`'s original
-    -- (unrationalized) witness — NOT yet the rationalized `(a,b,c,0)` witness,
-    -- since `ordAtFrac` isn't representation-independent for the *pole-bound
-    -- hypothesis itself* (only for its *value*, once both numerators are
-    -- nonzero — `ordAtFrac_eq_of_polePairToFraction_eq`). The remaining gap:
-    -- transporting `hzsupp_orig` from `(A,B,A',B')` to `(a,b,c,0)` needs
-    -- exactly `ordAtFrac_eq_of_polePairToFraction_eq` applied at every point
-    -- `P`, which in turn needs `toPair H a b ≠ 0` (i.e. `z ≠ 0`, already
-    -- known from `hAB0`, transported through `hfrac_eq`) as its side
-    -- condition — mechanical but not yet threaded through here.
-    have hzsupp_orig := fun P => ordAtFrac_ge_of_isPoleBoundedAtPair_pointwise x₁ x₂ A B A' B'
-      hptwise P
-    -- **Step (1): transport `hzsupp_orig` to the rationalized witness
+    -- The original witness's pointwise bound is already `ordAtFrac`-shaped
+    -- (`hptwise'`, from `IsPoleBoundedAtPair'` membership) — no separate
+    -- bridge step needed here, unlike the old `LPairCarrier`-based proof.
+    -- **Step (1): transport `hptwise'` to the rationalized witness
     -- `(a,b,c,0)`.** Needs `toPair H a b ≠ 0` (i.e. `z ≠ 0` in the new
     -- representation) as the side condition for
     -- `ordAtFrac_eq_of_polePairToFraction_eq`.
     have hab_ne : toPair H a b ≠ 0 := by
       intro hab0
-      apply hAB0
+      apply hAB0ne
       have hzero_frac : polePairToFraction (H := H) a b c 0 = 0 := by
            unfold polePairToFraction
            rw [hab0, map_zero, zero_div]
@@ -1553,32 +1788,43 @@ theorem uniqueDegree2MapToP1_ordAtFrac (hdeg : H.f.natDegree = 5) (hchar : (2 : 
         -((if P = x₁ then 1 else 0) + (if P = x₂ then 1 else 0)) := by
       intro P
       rw [← ordAtFrac_eq_of_polePairToFraction_eq P A B A' B' a b c 0
-        hAB0 hA'B'toPairne hc0_ne hfrac_eq]
-      exact hzsupp_orig P
+        hAB0ne hA'B'toPairne hc0_ne hfrac_eq]
+      exact hptwise' P
+    -- **`ordInfOfPair` bound for `(a,b,c)`**, via the pure-`k[X]`-degree-
+    -- arithmetic bridge lemma `ordInfOfPair_rationalized_ge` (§5c), fed
+    -- `hinfle` (the original witness's infinity bound) and the explicit
+    -- polynomial identities `ha_def`/`hb_def`/`hc_def` — computed *before*
+    -- the coprimality reduction below, since this identity-based route only
+    -- applies to `(a,b,c)` themselves (tied to `A,B,A',B'` via `ha_def` etc.),
+    -- not to any reduced witness that no longer satisfies those identities.
+    have hinf : ordInfOfPair a b ≥ ordInfOfPair c (0 : k[X]) := by
+      have hABne : ¬ (A = 0 ∧ B = 0) := fun h => hAB0ne (by rw [toPair_eq_zero_iff]; exact h)
+      have habne : ¬ (a = 0 ∧ b = 0) := fun h => hab_ne (by rw [toPair_eq_zero_iff]; exact h)
+      have hc_def' : c = A' ^ 2 - B' ^ 2 * H.f := by rw [hc_def]; rfl
+      exact ordInfOfPair_rationalized_ge hdeg A B A' B' hABne hA'B'ne hinfle a b c
+        ha_def hb_def hc_def' habne hcne
     -- **Step (2): coprimality.** Genuinely new content, not derivable from
     -- `hzsupp`/`hbound` alone (see this file's §4/§5 docstrings and the
     -- accompanying `chatgpt_prompt_coprimality.md` consultation prompt for why
     -- a shared root of `(a,b,c)` isn't immediately ruled out by pole-
-    -- boundedness). **Left as a `sorry`'d hypothesis-lemma call, not inlined**,
-    -- so the assembly logic below (step (3)) is complete and self-contained
-    -- modulo exactly this one gap — closing `IsCoprimeAtRoots a b c` (e.g. via
-    -- a `k[X]`-gcd reduction of `(a,b,c)` transported through `hfrac_eq`/
-    -- `ordAtFrac_eq_of_polePairToFraction_eq` exactly as `hzsupp` was above)
-    -- is the one remaining task before this theorem is fully proved.
-    have hcop : IsCoprimeAtRoots a b c := by
-      sorry
+    -- boundedness). Resolved via `reduce_ordAtFrac_triple`: reduce `(a,b,c)`
+    -- to a coprime-at-roots `(a₀,b₀,c₀)` representing the same fraction, with
+    -- `hzsupp`/`hinf` transported automatically. Steps (3) onward now run on
+    -- `(a₀,b₀,c₀)` instead of `(a,b,c)`.
+    obtain ⟨a₀, b₀, c₀, hc₀ne, hab₀_ne, _hfrac_eq₀, hzsupp₀, hinf₀, hcop⟩ :=
+      reduce_ordAtFrac_triple x₁ x₂ a b c hcne hab_ne hzsupp hinf
     -- **Step (3): finish.** Case-split on `x₁ = x₂` (needed since
     -- `natDegree_le_two_of_isCoprimeAtRoots` requires `x₁ ≠ x₂`; §5b supplies
-    -- the missing `x₁ = x₂` companion bound). Either way, `c.natDegree ≤ 2`,
-    -- feeding `b_eq_zero_of_rationalized_pole_bounded` to get `b = 0`, then
+    -- the missing `x₁ = x₂` companion bound). Either way, `c₀.natDegree ≤ 2`,
+    -- feeding `b_eq_zero_of_rationalized_pole_bounded` to get `b₀ = 0`, then
     -- `ordAt_linX_eq`-driven fiber matching to reach `x₂ = ιx₁`, contradicting
     -- `hne`.
-    have hcdeg : c.natDegree ≤ 2 := by
+    have hcdeg : c₀.natDegree ≤ 2 := by
       by_cases hx12 : x₁ = x₂
       · subst hx12
-        apply natDegree_le_two_of_isCoprimeAtRoots_eq hchar hsf x₁ a b c hcne hcop
+        apply natDegree_le_two_of_isCoprimeAtRoots_eq hchar hsf x₁ a₀ b₀ c₀ hc₀ne hcop
         intro P
-        have h := hzsupp P
+        have h := hzsupp₀ P
         by_cases hPx : P = x₁
         · norm_num [hPx] at h ⊢
           exact h
@@ -1586,20 +1832,9 @@ theorem uniqueDegree2MapToP1_ordAtFrac (hdeg : H.f.natDegree = 5) (hchar : (2 : 
           exact h
       · exact
         natDegree_le_two_of_isCoprimeAtRoots
-          hchar hsf x₁ x₂ hx12 a b c hcne hcop hzsupp
-    have hinf : ordInfOfPair a b ≥ ordInfOfPair c (0 : k[X]) := by
-      -- Infinity clause of `IsPoleBoundedAtPair'` for `(a,b,c,0)`, via the
-      -- pure-`k[X]`-degree-arithmetic bridge lemma `ordInfOfPair_rationalized_ge`
-      -- (§5c), fed `hinfle` (the original witness's infinity bound) and the
-      -- explicit polynomial identities `ha_def`/`hb_def`/`hc_def` (the latter
-      -- unfolded from `pairNorm`).
-      have hABne : ¬ (A = 0 ∧ B = 0) := fun h => hAB0 (by rw [toPair_eq_zero_iff]; exact h)
-      have habne : ¬ (a = 0 ∧ b = 0) := fun h => hab_ne (by rw [toPair_eq_zero_iff]; exact h)
-      have hc_def' : c = A' ^ 2 - B' ^ 2 * H.f := by rw [hc_def]; rfl
-      exact ordInfOfPair_rationalized_ge hdeg A B A' B' hABne hA'B'ne hinfle a b c
-        ha_def hb_def hc_def' habne hcne
-    have hbeq0 : b = 0 := b_eq_zero_of_rationalized_pole_bounded a b c hinf hcdeg
-    -- With `b = 0`, `z = a(x)/c(x)`, `c.natDegree ≤ 2`: a genuine Möbius
+          hchar hsf x₁ x₂ hx12 a₀ b₀ c₀ hc₀ne hcop hzsupp₀
+    have hbeq0 : b₀ = 0 := b_eq_zero_of_rationalized_pole_bounded a₀ b₀ c₀ hinf₀ hcdeg
+    -- With `b₀ = 0`, `z = a₀(x)/c₀(x)`, `c₀.natDegree ≤ 2`: a genuine Möbius
     -- transform of `x`. `ordAt_linX_eq`-driven fiber matching against
     -- `x₁ + x₂` (the divisor `z`'s poles are bounded by) forces `x₂ = ιx₁`,
     -- contradicting `hne`. This final case-analysis step is the one flagged
