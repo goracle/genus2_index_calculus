@@ -243,6 +243,7 @@ gives the desired finite point-set. `ordAt_eq_count` (`PrincipalDivisors.lean`)
 already identifies `ordAt P A B` with exactly this count, so "outside the
 image, count is `0`, hence `ordAt` is `0`" closes the `hsupp`-shaped
 conclusion `deg_div_eq_zero_deg5`/`IsRatioDivisor` need. -/
+omit [IsAlgClosed k] in
 /-- **Confirmed route, using `count_associates_factors_eq` and `Ideal.mem_normalizedFactors_iff`
 (`Mathlib.RingTheory.DedekindDomain.Ideal.Lemmas`)**: for `I ≠ 0`, `J` prime, `J ≠ ⊥`,
 `(Associates.mk J).count (Associates.mk I).factors = Multiset.count J
@@ -302,6 +303,7 @@ theorem hfinite_support (I : Ideal (CoordinateRing H)) (hIne : I ≠ 0) :
   have hspec_eq := (hbuild v.asIdeal hmemFinset).choose_spec
   exact IsDedekindDomain.HeightOneSpectrum.ext hspec_eq
 
+omit [IsAlgClosed k] in
 theorem exists_finite_support_of_hspec (A B : k[X]) (hAB : ¬ (A = 0 ∧ B = 0))
     (hspec : ∀ v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H),
       (Associates.mk v.asIdeal).count
@@ -1220,6 +1222,7 @@ one monolithic goal. `fiber_eq_of_divisor_shape` itself is left exactly as it wa
 (still one `sorry`) — these are staging lemmas it is expected to be assembled
 from, not yet wired in. -/
 
+omit [IsAlgClosed k] in
 /-- **Route A step 1.** If `IsPoleBoundedAtPair x₁ x₂ A B A' B'` and `B' ≠ 0`, the
 denominator `toPair H A' B'` has pole-at-infinity order `2 * B'.natDegree + 5`
 (odd multiple of the half-integer unit, per `ordInfOfPair`'s convention — see
@@ -1384,6 +1387,7 @@ lemma denom_ordInf_ge_neg_two (A' B' : k[X])
     omega
 
 
+omit [IsAlgClosed k] in
 /-- **Route A step 2.** Given step 1's `B' = 0`, so `z = (A(x) + B(x)y) / A'(x)`, a
 similar parity argument on `y`'s own pole/zero structure (`y² = f(x)`, `deg f = 5`)
 against the same `≤ 2` affine pole budget forces `B = 0` too, reducing `z` to a pure
@@ -1459,66 +1463,13 @@ lemma num_B_eq_zero_of_isPoleBoundedAtPair (x₁ x₂ : H.Point) (A B A' B' : k[
 
 Three small helpers, factored out so `fiber_eq_of_pure_rational_pole_match`'s proof
 body can case-split cleanly on `A`'s (resp. `A'`'s) shape rather than re-deriving
-each of these facts inline. -/
+each of these facts inline.
 
-/-- **`toPair H (C c) 0` is never in any `pointIdeal P`, for `c ≠ 0`.** Same proof
-shape as `toPair_one_zero_notMem_pointIdeal` (`RiemannRochGenus2.lean:168`), just for
-a general nonzero constant instead of literally `1`: `C c` is a unit in `k[X]`
-(inverse `C c⁻¹`), so `toPair H (C c) 0` is a unit in `CoordinateRing H`
-(`toPair_mul` applied to `(C c, 0)` and `(C c⁻¹, 0)`, collapsing to `toPair H 1 0 =
-1` via `mul_inv_cancel₀`), and no proper ideal (in particular no maximal
-`pointIdeal P`) can contain a unit. -/
-theorem toPair_C_notMem_pointIdeal (c : k) (hc : c ≠ 0) (P : H.Point) :
-    toPair H (Polynomial.C c) (0 : k[X]) ∉ pointIdeal P := by
-  intro hmem
-  have hunit : IsUnit (toPair H (Polynomial.C c) (0 : k[X])) := by
-    have hmul_fwd : toPair H (Polynomial.C c) 0 * toPair H (Polynomial.C c⁻¹) 0 = 1 := by
-      have hmul := toPair_mul (H := H) (Polynomial.C c) 0 (Polynomial.C c⁻¹) 0
-      simp only [zero_mul, mul_zero, zero_add, add_zero] at hmul
-      rw [hmul, ← Polynomial.C_mul, mul_inv_cancel₀ hc, Polynomial.C_1, toPair_one_zero]
-    have hmul_bwd : toPair H (Polynomial.C c⁻¹) 0 * toPair H (Polynomial.C c) 0 = 1 := by
-      rw [mul_comm]; exact hmul_fwd
-    exact ⟨⟨toPair H (Polynomial.C c) 0, toPair H (Polynomial.C c⁻¹) 0, hmul_fwd, hmul_bwd⟩, rfl⟩
-  exact (pointIdeal_isMaximal P).ne_top
-    (Ideal.eq_top_of_isUnit_mem (pointIdeal P) hmem hunit)
-
-/-- **`ordAt` at a nonzero constant pair is always `0`.** Direct from
-`ordAt_eq_zero_of_notMem` + `toPair_C_notMem_pointIdeal`. -/
-theorem ordAt_C_zero (c : k) (hc : c ≠ 0) (P : H.Point) :
-    ordAt P (Polynomial.C c) (0 : k[X]) = 0 :=
-  ordAt_eq_zero_of_notMem P (Polynomial.C c) 0 (toPair_C_notMem_pointIdeal c hc P)
-
-/-- **`ordAt` is invariant under scaling by a nonzero constant.** `A = C c * P` for
-`c ≠ 0` has the same `ordAt` (hence the same divisor) as `P` itself, at every point:
-`toPair H (C c * P) (C c * Q) = toPair H (C c) 0 * toPair H P Q` (`toPair_mul`
-applied to `(C c, 0)` and `(P, Q)`, using `C c * P + 0 * Q * f = C c * P` and
-`C c * Q + P * 0 = C c * Q`), and `ordAt _ (C c) 0 = 0` (`ordAt_C_zero`), so
-`ordAt_toPair_mul_of_ne_zero'` collapses the sum to `ordAt _ P Q` directly.
-Both `hbot` branches of `ordAt`'s own `if`/`dif` are handled uniformly, since
-`ordAt_toPair_mul_of_ne_zero'` itself takes an explicit `h_bot` argument — split
-once here, at the top, rather than inside a sub-`have`. -/
-theorem ordAt_C_mul_eq (c : k) (hc : c ≠ 0) (P Q : k[X]) (hPQ : ¬ (P = 0 ∧ Q = 0))
-    (R : H.Point) :
-    ordAt R (Polynomial.C c * P) (Polynomial.C c * Q) = ordAt R P Q := by
-  have hCcne : toPair H (Polynomial.C c) (0 : k[X]) ≠ 0 := by
-    rw [Ne, toPair_eq_zero_iff]
-    exact fun h => hc (Polynomial.C_eq_zero.mp h.1)
-  have hPQne : toPair H P Q ≠ 0 := by rw [Ne, toPair_eq_zero_iff]; exact hPQ
-  have hmul : toPair H (Polynomial.C c * P) (Polynomial.C c * Q) =
-      toPair H (Polynomial.C c) (0 : k[X]) * toPair H P Q := by
-    have hraw := toPair_mul (H := H) (Polynomial.C c) 0 P Q
-    simp only [zero_mul, mul_zero, zero_add, add_zero] at hraw
-    exact hraw.symm
-  by_cases hbot : pointIdeal R = ⊥
-  · -- `ordAt` is `0` by definition at every `⊥`-ideal point, on both sides.
-    have hne : toPair H (Polynomial.C c * P) (Polynomial.C c * Q) ≠ 0 := by
-      rw [hmul]; exact mul_ne_zero hCcne hPQne
-    unfold ordAt
-    rw [if_neg hne, if_neg hPQne, dif_pos hbot, dif_pos hbot]
-  · have hCc0 : ordAt R (Polynomial.C c) (0 : k[X]) = 0 := ordAt_C_zero c hc R
-    have hstep := ordAt_toPair_mul_of_ne_zero' R hbot (Polynomial.C c) 0 P Q _ _
-      hCcne hPQne hmul
-    rw [hstep, hCc0, zero_add]
+`toPair_C_notMem_pointIdeal`, `ordAt_C_zero`, and `ordAt_C_mul_eq` originally lived
+here but have been ported upstream into `RiemannRochGenus2.lean` (so that file
+doesn't need to import this later, downstream one) — see the docstrings there.
+Kept out of this file now to avoid the duplicate-declaration error; use the
+`RiemannRochGenus2.lean` versions via the existing import. -/
 
 /-- **Degree-`≤1` polynomials in `k[X]` are `0`, a nonzero constant, or a nonzero
 constant times a monic linear factor.** Standard `k[X]`-degree bookkeeping via
@@ -2306,6 +2257,7 @@ theorem fiber_eq_of_pure_rational_pole_match (hchar : (2 : k) ≠ 0) (hsf : Squa
 
 
 
+omit [IsAlgClosed k] in
 /-- **Renamed from the broken `ordInfOfPair_right_zero`.** Was stated as an
 equation between two `ordInf` applications of a nonexistent fraction-level
 valuation; the honest fact this call site actually needs is `ordInfOfPair`'s

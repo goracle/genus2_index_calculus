@@ -579,17 +579,19 @@ theorem mumfordB_natDegree_le (Q₁ Q₂ : H.Point) (hne : Q₁.X ≠ Q₂.X) :
   refine le_trans natDegree_mul_le ?_
   simp [natDegree_C, natDegree_X_sub_C]
 
-/-- **`ordInfOfPair` of the Mumford numerator is exactly `-7`.** With `A =
+/-- **`ordInfOfPair` of the Mumford numerator is exactly `-5`.** With `A =
 -mumfordB Q₁ Q₂ hne` and `B = 1`: `B ≠ 0`, so `ordInfOfPair A B = -(max (2 *
-A.natDegree) (2 * 1 + 5))`. `A.natDegree = (-mumfordB Q₁ Q₂ hne).natDegree =
-(mumfordB Q₁ Q₂ hne).natDegree ≤ 1` (negation doesn't change `natDegree`, via
-`Polynomial.natDegree_neg`), so `2 * A.natDegree ≤ 2 < 7 = 2 * 1 + 5`, pinning
-the max at `7`. This is the pole-at-infinity order any "other side" witness
-(gap 2's `A', B'`) must be dominated by, i.e. `ordInfOfPair A' B' ≤ -7`, for
+A.natDegree) (2 * B.natDegree + 5))`. `B.natDegree = natDegree (1 : k[X]) = 0`
+(`Polynomial.natDegree_one`), so this second term is `2 * 0 + 5 = 5`.
+`A.natDegree = (-mumfordB Q₁ Q₂ hne).natDegree = (mumfordB Q₁ Q₂
+hne).natDegree ≤ 1` (negation doesn't change `natDegree`, via
+`Polynomial.natDegree_neg`), so `2 * A.natDegree ≤ 2 < 5`, pinning the max at
+`5`. This is the pole-at-infinity order any "other side" witness (gap 2's `A',
+B'`) must be dominated by, i.e. `ordInfOfPair A' B' ≤ -5`, for
 `IsPoleBoundedAtPair`'s `ordInfOfPair A B ≥ ordInfOfPair A' B'` clause to hold
 when this Mumford pair plays the role of the numerator `(A,B)`. -/
 theorem mumfordB_ordInfOfPair (Q₁ Q₂ : H.Point) (hne : Q₁.X ≠ Q₂.X) :
-    ordInfOfPair (-mumfordB Q₁ Q₂ hne) (1 : k[X]) = -7 := by
+    ordInfOfPair (-mumfordB Q₁ Q₂ hne) (1 : k[X]) = -5 := by
   have hAdeg : (-mumfordB Q₁ Q₂ hne).natDegree ≤ 1 := by
     rw [natDegree_neg]
     exact mumfordB_natDegree_le Q₁ Q₂ hne
@@ -598,7 +600,10 @@ theorem mumfordB_ordInfOfPair (Q₁ Q₂ : H.Point) (hne : Q₁.X ≠ Q₂.X) :
     push_cast
     linarith
   unfold ordInfOfPair
-  simp only [one_ne_zero, and_false, if_false, natDegree_one]
+  have hB1 : ¬ ((-mumfordB Q₁ Q₂ hne) = 0 ∧ (1 : k[X]) = 0) := by
+    intro h; exact one_ne_zero h.2
+  rw [if_neg hB1, if_neg (one_ne_zero (α := k[X]))]
+  rw [natDegree_one]
   rw [max_eq_right h2]
   norm_num
 

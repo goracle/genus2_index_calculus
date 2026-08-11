@@ -51,7 +51,7 @@ open Divisor
 variable {k : Type*} [Field k]
 variable {H : HyperellipticPolynomial k}
 
-/-- **`k` is assumed algebraically closed from here on, project-wide.**
+/-! **`k` is assumed algebraically closed from here on, project-wide.**
 Genuinely necessary, not a convenience hypothesis: `H.Point` is defined
 (`AffinePoints.lean`) as `k`-rational points `{(a,b) ∈ k² : b² = f(a)}`
 only, and `IsPoleBoundedAtPair`/`LPairCarrier`'s pointwise clause quantifies
@@ -153,6 +153,7 @@ def LPairCarrier (x₁ x₂ : H.Point) : Set (FractionRing (CoordinateRing H)) :
   { z | ∃ A B A' B' : k[X], IsPoleBoundedAtPair x₁ x₂ A B A' B' ∧
       z = polePairToFraction A B A' B' }
 
+omit [IsAlgClosed k] in
 /-- **General-purpose unit lemma, factored out of `HyperellipticClassProof.lean`'s
 `ordAt_linX_eq_zero_of_ne` proof body** (which proved exactly this shape inline, for
 `toPair H (linX a) 0` specifically): if `toPair H A B ∉ pointIdeal P`, then
@@ -500,7 +501,7 @@ standalone, independently useful fact about `toPair`. -/
 theorem toPair_neg (A B : k[X]) :
     toPair H (-A) (-B) = -toPair H A B := by
   have hC : (C (-1 : k) : k[X]) = -1 := by simp
-  have h := @toPair_smul k _ H _ (-1 : k) A B
+  have h := toPair_smul (H := H) (-1 : k) A B
   rw [neg_one_smul, hC, neg_one_mul, neg_one_mul] at h
   exact h.symm
 

@@ -9,6 +9,7 @@ import Genus2Lean.HyperellipticClassProof
 import Genus2Lean.RiemannRochGenus2
 import Genus2Lean.RatioDivisorCollapse
 import Genus2Lean.RiemannRochCrux
+import Genus2Lean.LCanonicalElementary
 set_option linter.style.header false
 
 noncomputable section
@@ -159,8 +160,13 @@ theorem frac_toPair_den_kx (hdeg : H.f.natDegree = 5) (A B A' B' : k[X])
     · rw [ha_def]; ring
     · rw [hb_def]; ring
   -- Denominator identity.
+  have htoPair_right_zero : ∀ P : k[X],
+      toPair H P (0 : k[X]) = algebraMap k[X] (CoordinateRing H) P := by
+    intro P
+    unfold toPair
+    simp
   have hden : toPair H c (0 : k[X]) = toPair H A' B' * toPair H A' (-B') := by
-    rw [hc_def, ← toPair_involution, toPair_mul_involution]
+    rw [hc_def, htoPair_right_zero, ← toPair_involution, toPair_mul_involution]
   unfold polePairToFraction
   rw [hnum, hden, map_mul, map_mul]
   have hA'B'map : algebraMap (CoordinateRing H) (FractionRing (CoordinateRing H))
@@ -238,7 +244,7 @@ theorem ordAt_linX_pow_ramified (hsf : Squarefree H.f) (a : k) (Q : H.Point)
     ordAt Q ((linX a) ^ m) (0 : k[X]) = (2 * m : ℤ) := by
   induction m with
   | zero =>
-    simp only [pow_zero, Nat.mul_zero, Nat.cast_zero]
+    simp only [pow_zero, Nat.cast_zero]
     have h1ne : (1 : CoordinateRing H) ∉ pointIdeal Q := fun h =>
       (pointIdeal_isMaximal Q).ne_top (Ideal.eq_top_of_isUnit_mem _ h isUnit_one)
     have : toPair H (1 : k[X]) (0 : k[X]) = 1 := toPair_one_zero
@@ -334,7 +340,7 @@ theorem ordAt_eq_rootMultiplicity_unramified (hchar : (2 : k) ≠ 0)
     rw [toPair_mul_right_zero, ← hc']
   have hc'notmem : toPair H c' (0 : k[X]) ∉ pointIdeal Q := by
     rw [toPair_mem_pointIdeal_iff]
-    simp only [Polynomial.eval_zero, mul_zero, add_zero]
+    simp only [Polynomial.eval_zero, zero_mul, add_zero]
     rw [heq]
     exact hc'eval
   have hordc' : ordAt Q c' (0 : k[X]) = 0 := ordAt_eq_zero_of_notMem Q c' 0 hc'notmem
@@ -379,7 +385,7 @@ theorem ordAt_eq_rootMultiplicity_ramified (hsf : Squarefree H.f)
     rw [toPair_mul_right_zero, ← hc']
   have hc'notmem : toPair H c' (0 : k[X]) ∉ pointIdeal Q := by
     rw [toPair_mem_pointIdeal_iff]
-    simp only [Polynomial.eval_zero, mul_zero, add_zero]
+    simp only [Polynomial.eval_zero, zero_mul, add_zero]
     rw [heq]
     exact hc'eval
   have hordc' : ordAt Q c' (0 : k[X]) = 0 := ordAt_eq_zero_of_notMem Q c' 0 hc'notmem
@@ -395,8 +401,44 @@ open Divisor
 
 variable {H} [IsAlgClosed k] [IsDedekindDomain (CoordinateRing H)]
 
-/-! ## §4. Every root of `c` gives a genuine pole of `z = (a+by)/c`, under
-pointwise coprimality — the crux lemma -/
+/-! ## §4. Every root of `c` gives pole mass ≥ its multiplicity, under
+pointwise coprimality — the crux lemma
+
+**Resolved via ChatGPT consultation (this session).** The original "existence
+of a pole" version of this lemma had a genuine gap in the Weierstrass case:
+`IsCoprimeAtRoots` only rules out `a(α)=0 ∧ b(α)=0` together, and
+`a(α)=0 ∧ b(α)≠0` at a Weierstrass root looked like it might not be a pole
+(since `Q.Y=0` kills `b`'s contribution to the *pointwise value* test). The
+resolution: it's still a pole, just of a different, still-uniform order. At a
+Weierstrass point `Q=(α,0)`, `y` is the local uniformizer (`ordQ(y)=1`,
+`ordQ(x-α)=2`, since `f` is squarefree so `α` is a simple root). If
+`a(α)=0` (so `ordQ(a(x)) ≥ 2`, `a` a polynomial in `x`) and `b(α)≠0` (so
+`ordQ(b(x)y) = ordQ(y) = 1` exactly), the two terms of `a+by` can't cancel at
+their minimum order, giving `ordQ(a+by) = 1` — NOT `≥ 2`, hence NOT
+swallowed by `c`'s order `2m ≥ 2` at that root. So `Q` is still a genuine
+pole, with `ordAtFrac Q a b c 0 = ordQ(a+by) - 2m ≤ 1 - 2m ≤ -m` (using
+`m ≥ 1`).
+
+**Uniform quantitative statement** (strictly stronger than mere pole
+existence, and — per the same consultation — exactly what's needed to drop
+the squarefreeness hypothesis on `c` entirely in §5 below): at any point `Q`
+over a root `α` of multiplicity `m := c.rootMultiplicity α`,
+
+- non-Weierstrass: `ordQ(a+by) = 0` for at least one of the two points over
+  `α` (the numerator can't vanish at both, by the `char ≠ 2` argument
+  already proved below), giving `ordAtFrac ≤ -m`;
+- Weierstrass: `ordQ(a+by) ≤ 1` always (either `0`, if `a(α)≠0`; or exactly
+  `1`, if `a(α)=0` — which under coprimality forces `b(α)≠0`), giving
+  `ordAtFrac ≤ 1 - 2m ≤ -m` whenever `m ≥ 1` (always true at a root).
+
+Both cases give `ordAtFrac Q a b c 0 ≤ -m` at some point `Q` over `α` — the
+statement proved below, `exists_pole_of_isCoprimeAtRoots`. This also lets
+§5 sum pole mass *with multiplicity* directly (`deg c = ∑ m_α ≤ deg(z)_∞`),
+rather than needing `c` squarefree to bound a *distinct*-root count — per
+the consultation, `c` is genuinely not squarefree in general (explicit
+counterexample: `A'=X, B'=1, f=X^5-3X+3` gives `c = pairNorm = X²-f` with a
+double root at `X=1`), so this multiplicity-aware route is the one that
+actually closes. -/
 
 /-- **Pointwise coprimality of `(a,b)` against `c`'s roots**: the `k[X]`-
 level replacement for `gcd(a,b,c) = 1`, stated exactly as needed (no
@@ -405,40 +447,48 @@ root of `a` and `b`. -/
 def IsCoprimeAtRoots (a b c : k[X]) : Prop :=
   ∀ α : k, c.eval α = 0 → ¬ (a.eval α = 0 ∧ b.eval α = 0)
 
-/-- **The crux lemma (GPT's Step 2 / "the really valuable lemma"), restated
-avoiding any need for a general `(a,b)`-multiplicity computation.** If `α`
-is a root of `c` (`c ≠ 0`) and `IsCoprimeAtRoots a b c` holds, some point
-`Q` over `α` — the ramified point if `α` is a root of `H.f`, otherwise
-either of the two unramified points, chosen so `a(α) + b(α)Q.Y ≠ 0` — has
-`ordAtFrac Q a b c 0 ≤ -1`, i.e. is a genuine pole of `z`.
+/-- **Local order of `a+by` at a ramified point is exactly `1` when `a(α)=0`,
+`b(α)≠0`.** The one piece of genuinely new local analysis identified by the
+ChatGPT consultation: `y` is a uniformizer at a simple Weierstrass point
+(`f` squarefree ⇒ `ordQ(x-α)=2`, `ordQ(y)=1`, via `y²=f`, `f` having a
+simple zero at `α`), so `a(x)` (vanishing at `α`, hence `ordQ(a) ≥ 2` as a
+function of the order-`2` uniformizer `x-α`) and `b(x)y` (with `b(α)≠0`,
+hence `ordQ(b(x)y) = ordQ(y) = 1` exactly) sit at different orders — no
+cancellation, so `ordQ(a+by) = min(ordQ(a), ordQ(by)) = 1`.
 
-**Non-Weierstrass case** (`H.f.eval α ≠ 0`): `IsAlgClosed k` gives `β` with
-`β² = H.f.eval α`, so `Q := ⟨(α,β), _⟩ : H.Point` and `ιQ = (α,-β)` are the
-two points over `α` (distinct since `β ≠ 0` here — `β = 0` would force
-`H.f.eval α = 0`, contradiction). Coprimality (`¬(a(α)=0 ∧ b(α)=0)`) plus
-`char k ≠ 2` forces `a(α)+b(α)β ≠ 0` **or** `a(α)-b(α)β ≠ 0` (both vanishing
-would force, by adding/subtracting, `2a(α) = 0` and `2b(α)β = 0`, hence
-`a(α)=0` via `hchar`, hence `b(α)β=0`, hence `b(α)=0` via `β≠0` —
-contradicting coprimality) — i.e. at least one of `Q, ιQ` is a genuine pole.
-**Weierstrass case** (`H.f.eval α = 0`): the unique point `Q=(α,0)` has
-`a(α)+b(α)·0 = a(α)`, and coprimality gives `a(α)≠0` directly (since `Q.Y=0`
-already, the disjunction `¬(a(α)=0 ∧ b(α)=0)` combined with needing
-`a(α)+0=0` forces `a(α)≠0` unless also using `b`, but the pole membership
-criterion only needs the *numerator* to be nonzero at `Q`, which `a(α)≠0`
-alone does NOT give if `a(α)=0` while `b(α)≠0` — **corrected**: at `Q.Y=0`,
-`toPair_mem_pointIdeal_iff` reads `a(α)+b(α)·0=a(α)=0`, so the numerator
-vanishes at `Q` iff `a(α)=0` — independent of `b(α)`. So the Weierstrass
-case's pole conclusion needs `a(α) ≠ 0` specifically, not just
-`¬(a(α)=0∧b(α)=0)`. **This is a genuine gap**: coprimality alone does not
-rule out `a(α)=0 ∧ b(α)≠0` at a Weierstrass root — flagged as `sorry`
-below, not fabricated; see the docstring at the `sorry` site for the exact
-extra hypothesis needed and why. -/
+**Not yet formalized here** — needs the local-uniformizer statement `ordQ(y)
+= 1` at a ramified point (equivalently, `y ∉ pointIdeal Q ^ 2`, dual to
+`y² = f` having a simple root) threaded through `ordAt`'s `intValuation`
+definition; this is exactly the kind of one-step "local parameter" fact
+`HyperellipticClassProof.lean`'s docstring (§B) flags as not yet built out
+for general pairs (only for bare `linX a` there). Genuine remaining
+formalization work, not a wrong statement — kept as its own named lemma
+(rather than inlined into `exists_pole_of_isCoprimeAtRoots`) so a future
+session can attack exactly this local fact in isolation. -/
+theorem ordAt_le_one_of_ramified_num_vanish (hsf : Squarefree H.f)
+    (a b : k[X]) (α : k) (Q : H.Point)
+    (h_bot : pointIdeal Q ≠ ⊥) (heq : Q.X = α) (hY : Q.Y = 0)
+    (ha : a.eval α = 0) (hb : b.eval α ≠ 0) :
+    ordAt Q a b ≤ 1 := by
+  sorry
+
+/-- **The crux lemma, quantitative form.** If `α` is a root of `c` (`c ≠ 0`)
+of multiplicity `m := c.rootMultiplicity α`, and `IsCoprimeAtRoots a b c`
+holds, some point `Q` over `α` has `ordAtFrac Q a b c 0 ≤ -m` — i.e. `Q`
+absorbs at least the full multiplicity `m` as pole order, regardless of
+whether `c` is squarefree at `α`. Strictly stronger than (and supersedes)
+the earlier existence-only version. -/
 theorem exists_pole_of_isCoprimeAtRoots (hchar : (2 : k) ≠ 0) (hsf : Squarefree H.f)
     (a b c : k[X]) (hc : c ≠ 0) (α : k) (hα : c.eval α = 0)
     (hcop : IsCoprimeAtRoots a b c) :
     ∃ Q : H.Point, Q.X = α ∧
-      ordAtFrac Q a b c (0 : k[X]) < 0 := by
+      ordAtFrac Q a b c (0 : k[X]) ≤ -(c.rootMultiplicity α : ℤ) := by
   classical
+  set m := c.rootMultiplicity α with hm_def
+  have hmpos : m ≥ 1 := by
+    have hroot : c.IsRoot α := hα
+    have hpos : 0 < m := by rw [hm_def]; exact (Polynomial.rootMultiplicity_pos hc).mpr hroot
+    omega
   by_cases hWeier : H.f.eval α = 0
   · -- Weierstrass case: unique point `Q = (α, 0)`.
     have hQeq : H.Equation α (0 : k) := by
@@ -448,44 +498,26 @@ theorem exists_pole_of_isCoprimeAtRoots (hchar : (2 : k) ≠ 0) (hsf : Squarefre
     have hQX : Q.X = α := rfl
     have hQY : Q.Y = 0 := rfl
     refine ⟨Q, hQX, ?_⟩
-    have haα : a.eval α ≠ 0 := by
-      -- **`sorry` — genuine gap**: coprimality (`IsCoprimeAtRoots`) rules out
-      -- `a(α)=0 ∧ b(α)=0` together, but the Weierstrass pole criterion needs
-      -- `a(α) ≠ 0` specifically (since `Q.Y=0` kills `b`'s contribution to
-      -- `toPair_mem_pointIdeal_iff`'s numerator-vanishing test). If
-      -- `a(α)=0 ∧ b(α)≠0` at a Weierstrass root, the *numerator* `a+by`
-      -- actually vanishes at `Q=(α,0)` (since `b(α)·0=0` regardless of
-      -- `b(α)`), so `Q` is NOT a pole from this criterion alone — need to
-      -- additionally rule out `a(α)=0 ∧ b(α)≠0`, which is NOT implied by
-      -- `IsCoprimeAtRoots` as currently defined. Two honest fixes, not
-      -- attempted here: (a) strengthen `IsCoprimeAtRoots` to also demand
-      -- `a(α) ≠ 0` specifically at Weierstrass roots (asymmetric in `a`
-      -- vs `b`, matching that `y` itself vanishes to order `1` in the
-      -- *ramification* sense at a Weierstrass point, so `b(x)y`'s
-      -- contribution there is "worth more" than a bare pointwise value
-      -- suggests — this needs a `y`-adic, not `x`-adic, coprimality
-      -- condition at Weierstrass roots specifically), or (b) show
-      -- separately that `a(α)=0 ∧ b(α)≠0` cannot happen for a witness
-      -- arising from Step 1's construction (`a = A*A'-B*B'*f`, `b =
-      -- A'*B-A*B'`), which may have extra structure beyond bare
-      -- coprimality. Left open, not fabricated.
-      sorry
-    have hnotmem : toPair H a b ∉ pointIdeal Q := by
-      rw [toPair_mem_pointIdeal_iff, hQX, hQY]
-      simp only [mul_zero, add_zero]
-      exact haα
-    have hordab : ordAt Q a b = 0 := ordAt_eq_zero_of_notMem Q a b hnotmem
-    have hordc : ordAt Q c (0 : k[X]) = 2 * (c.rootMultiplicity α : ℤ) :=
+    have hordc : ordAt Q c (0 : k[X]) = 2 * (m : ℤ) :=
       ordAt_eq_rootMultiplicity_ramified hsf c hc α Q (pointIdeal_ne_bot Q) hQX hQY
-    have hmpos : c.rootMultiplicity α ≥ 1 := by
-      rw [← Polynomial.rootMultiplicity_pos hc]  -- MATHLIB NAME UNCONFIRMED
-      exact hα
     unfold ordAtFrac
-    rw [hordab, hordc]
-    have : (2 * (c.rootMultiplicity α : ℤ)) ≥ 2 := by
-      have : (c.rootMultiplicity α : ℤ) ≥ 1 := by exact_mod_cast hmpos
+    rw [hordc]
+    by_cases haα : a.eval α = 0
+    · -- `a(α)=0` forces `b(α)≠0` (coprimality), giving `ordAt Q a b ≤ 1`
+      -- via the local-uniformizer lemma above.
+      have hbα : b.eval α ≠ 0 := fun hb0 => hcop α hα ⟨haα, hb0⟩
+      have hle1 := ordAt_le_one_of_ramified_num_vanish hsf a b α Q (pointIdeal_ne_bot Q)
+        hQX hQY haα hbα
       linarith
-    linarith
+    · -- `a(α)≠0` gives `ordAt Q a b = 0` directly (numerator doesn't vanish
+      -- at `Q` at all, since `Q.Y = 0` kills `b`'s contribution).
+      have hnotmem : toPair H a b ∉ pointIdeal Q := by
+        rw [toPair_mem_pointIdeal_iff, hQX, hQY]
+        simp only [mul_zero, add_zero]
+        exact haα
+      have hordab : ordAt Q a b = 0 := ordAt_eq_zero_of_notMem Q a b hnotmem
+      rw [hordab]
+      linarith
   · -- Non-Weierstrass case: two points `Q, ιQ` over `α`.
     obtain ⟨β, hβ⟩ : ∃ β : k, β ^ 2 = H.f.eval α := IsAlgClosed.exists_pow_nat_eq
       (H.f.eval α) (n := 2) (by norm_num)
@@ -514,20 +546,16 @@ theorem exists_pole_of_isCoprimeAtRoots (hchar : (2 : k) ≠ 0) (hsf : Squarefre
         · rcases mul_eq_zero.mp hbβ with hb | hβ0
           · exact hb
           · exact absurd hβ0 hβne
-    have hmpos : c.rootMultiplicity α ≥ 1 := by
-      rw [← Polynomial.rootMultiplicity_pos hc]  -- MATHLIB NAME UNCONFIRMED
-      exact hα
     rcases hor with hpos | hneg
     · refine ⟨Q, hQX, ?_⟩
       have hnotmem : toPair H a b ∉ pointIdeal Q := by
         rw [toPair_mem_pointIdeal_iff, hQX, hQY]; exact hpos
       have hordab : ordAt Q a b = 0 := ordAt_eq_zero_of_notMem Q a b hnotmem
-      have hordc : ordAt Q c (0 : k[X]) = (c.rootMultiplicity α : ℤ) :=
+      have hordc : ordAt Q c (0 : k[X]) = (m : ℤ) :=
         ordAt_eq_rootMultiplicity_unramified hchar c hc α Q (pointIdeal_ne_bot Q) hQX
           (hQY ▸ hβne)
       unfold ordAtFrac
       rw [hordab, hordc]
-      have : (c.rootMultiplicity α : ℤ) ≥ 1 := by exact_mod_cast hmpos
       linarith
     · -- Use `ιQ` instead: `(ιQ).X = α`, `(ιQ).Y = -β`, and
       -- `a(α) + b(α)*(-β) = a(α) - b(α)β ≠ 0` by `hneg`.
@@ -537,16 +565,280 @@ theorem exists_pole_of_isCoprimeAtRoots (hchar : (2 : k) ≠ 0) (hsf : Squarefre
         rw [toPair_mem_pointIdeal_iff, Point.iota_X, hQX, hιQY]
         intro hcontra
         apply hneg
-        linarith [hcontra]
+        have heq : a.eval α + b.eval α * (-β) = a.eval α - b.eval α * β := by ring
+        rw [← heq]
+        exact hcontra
       have hordab : ordAt (Point.iota Q) a b = 0 :=
         ordAt_eq_zero_of_notMem (Point.iota Q) a b hnotmem
       have hινe : (Point.iota Q).Y ≠ 0 := by rw [hιQY]; exact neg_ne_zero.mpr hβne
-      have hordc : ordAt (Point.iota Q) c (0 : k[X]) = (c.rootMultiplicity α : ℤ) :=
+      have hordc : ordAt (Point.iota Q) c (0 : k[X]) = (m : ℤ) :=
         ordAt_eq_rootMultiplicity_unramified hchar c hc α (Point.iota Q)
           (pointIdeal_ne_bot _) (by rw [Point.iota_X]; exact hQX) hινe
       unfold ordAtFrac
       rw [hordab, hordc]
-      have : (c.rootMultiplicity α : ℤ) ≥ 1 := by exact_mod_cast hmpos
       linarith
+
+end HyperellipticPolynomial
+
+namespace HyperellipticPolynomial
+
+open Divisor
+
+variable {H} [IsAlgClosed k] [IsDedekindDomain (CoordinateRing H)]
+
+/-! ## §5. `deg c ≤ 2`, via pole mass with multiplicity — no squarefreeness needed
+
+**Resolved via ChatGPT consultation (this session), superseding the original
+distinct-root-counting approach.** The original plan bounded the number of
+*distinct* roots of `c` by 2, which only gives `deg c ≤ 2` if `c` is
+squarefree — and per the consultation, `c = pairNorm H A' B' = (A')² -
+(B')²f` is **not** squarefree in general, even with `A', B'` coprime and `f`
+squarefree (explicit counterexample in the consultation transcript:
+`A'=X, B'=1, f=X⁵-3X+3` gives a double root of `c` at `X=1`).
+
+**The fix**: §4's crux lemma (`exists_pole_of_isCoprimeAtRoots`) was
+strengthened to a *quantitative* form — every root `α` of multiplicity `m`
+supplies pole mass **at least `m`**, not just "some pole". So instead of
+counting distinct roots, we bound the **sum of pole orders (with
+multiplicity) at `x₁` and `x₂` together**, which `IsPoleBoundedAtPair'`
+already caps at `2` directly (order `≤ 1` at each of the two points, by the
+pointwise clause with singleton indicators) — no `Finset.sum`-over-roots
+machinery needed at all, since every root's witness point `Q_α` is forced
+into `{x₁,x₂}` and contributes to a bound already available pointwise. -/
+
+/-- **Bridge: `IsPoleBoundedAtPair`'s pointwise `ordAt` clause restates as the
+`ordAtFrac`-shaped bound, for the same witness pair.** Pure unfolding —
+`ordAtFrac P A B A' B' := ordAt P A B - ordAt P A' B'` by definition, so this
+needs no representation-independence machinery, unlike
+`ordAtFrac_eq_of_polePairToFraction_eq` (which compares *different*
+witnesses of the same fraction). This is exactly what's needed to feed the
+`(A,B,A',B')` witness pulled out of `LPairCarrier` membership into §5/§6's
+`ordAtFrac`-based lemmas without first rationalizing. -/
+theorem ordAtFrac_ge_of_isPoleBoundedAtPair_pointwise (x₁ x₂ : H.Point) (A B A' B' : k[X])
+    (hptwise : ∀ P : H.Point, ordAt P A B ≥ ordAt P A' B' -
+      ((if P = x₁ then 1 else 0) + (if P = x₂ then 1 else 0)))
+    (P : H.Point) :
+    ordAtFrac P A B A' B' ≥ -((if P = x₁ then 1 else 0) + (if P = x₂ then 1 else 0)) := by
+  unfold ordAtFrac
+  have := hptwise P
+  omega
+
+/-- **Every root of `c` forces its witness point into `{x₁,x₂}`, with the
+root's full multiplicity absorbed there.** Direct combination of §4's
+quantitative crux lemma with the pointwise `{x₁,x₂}` pole cap: if `Q` is
+`α`'s witness point (`ordAtFrac Q a b c 0 ≤ -m`) and `Q ∉ {x₁,x₂}`, the
+pointwise bound forces `ordAtFrac Q a b c 0 ≥ 0`, an immediate contradiction
+once `m ≥ 1`. So `Q ∈ {x₁,x₂}`, and moreover `m ≤ 1` (the pointwise bound
+at `Q ∈ {x₁,x₂}` is `≥ -1`, matching a single indicator).
+
+**Requires `x₁ ≠ x₂`** (added after the original hypothesis-free statement was
+found false): when `x₁ = x₂`, a witness `Q` equal to both collapses the two
+indicators onto the same point, weakening the pointwise bound to `≥ -2`
+instead of `≥ -1`, which only forces `m ≤ 2`, not `m ≤ 1`. -/
+theorem rootMultiplicity_le_one_and_mem_pair_of_isCoprimeAtRoots
+    (hchar : (2 : k) ≠ 0) (hsf : Squarefree H.f)
+    (x₁ x₂ : H.Point) (hne : x₁ ≠ x₂) (a b c : k[X]) (hc : c ≠ 0) (α : k) (hα : c.eval α = 0)
+    (hcop : IsCoprimeAtRoots a b c)
+    (hzsupp : ∀ P : H.Point, ordAtFrac P a b c 0 ≥
+      -((if P = x₁ then 1 else 0) + (if P = x₂ then 1 else 0))) :
+    ∃ Q : H.Point, (Q = x₁ ∨ Q = x₂) ∧ Q.X = α ∧ (c.rootMultiplicity α : ℤ) ≤ 1 := by
+  classical
+  obtain ⟨Q, hQX, hQpole⟩ := exists_pole_of_isCoprimeAtRoots hchar hsf a b c hc α hα hcop
+  have hbound := hzsupp Q
+  by_cases hQ1 : Q = x₁
+  · refine ⟨Q, Or.inl hQ1, hQX, ?_⟩
+    rw [if_pos hQ1] at hbound
+    have hQ2 : Q ≠ x₂ := hQ1 ▸ hne
+    rw [if_neg hQ2] at hbound; omega
+  · by_cases hQ2 : Q = x₂
+    · refine ⟨Q, Or.inr hQ2, hQX, ?_⟩
+      rw [if_neg hQ1, if_pos hQ2] at hbound
+      omega
+    · exfalso
+      rw [if_neg hQ1, if_neg hQ2] at hbound
+      simp only [add_zero] at hbound
+      have hmpos : (c.rootMultiplicity α : ℤ) ≥ 1 := by
+        have hroot : c.IsRoot α := hα
+        have hpos : 0 < c.rootMultiplicity α := (Polynomial.rootMultiplicity_pos hc).mpr hroot
+        exact_mod_cast hpos
+      omega
+
+/-- **`c` has at most two roots (each of multiplicity exactly `1`, forced
+above), one absorbed at `x₁`, one at `x₂` — hence `deg c ≤ 2`.**
+
+**Construction.** Every root `α` of `c` maps (via the lemma above) to a
+witness point `Q_α ∈ {x₁,x₂}` with `c.rootMultiplicity α ≤ 1`. Two distinct
+roots `α ≠ α'` give witness points with `Q_α.X = α ≠ α' = Q_{α'}.X`, hence
+`Q_α ≠ Q_{α'}` — so at most one root can map to `x₁` and at most one to
+`x₂`, i.e. `c` has at most `2` distinct roots, **each of multiplicity `1`**.
+Since multiplicity-`1` roots contribute exactly their count to `c.natDegree`
+(no "missing" multiplicity to worry about, unlike the squarefree-counting
+route this replaces), `c.natDegree ≤ 2` follows directly — **this is the
+key simplification**: because every root is forced to multiplicity exactly
+`1` (not merely bounded), summing degree contributions needs no
+`Squarefree c` hypothesis at all, matching the consultation's diagnosis
+that the multiplicity-quantitative crux lemma is what actually removes the
+squarefreeness dependency. -/
+theorem natDegree_le_two_of_isCoprimeAtRoots (hchar : (2 : k) ≠ 0) (hsf : Squarefree H.f)
+    (x₁ x₂ : H.Point) (a b c : k[X]) (hc : c ≠ 0)
+    (hcop : IsCoprimeAtRoots a b c)
+    (hzsupp : ∀ P : H.Point, ordAtFrac P a b c 0 ≥
+      -((if P = x₁ then 1 else 0) + (if P = x₂ then 1 else 0))) :
+    c.natDegree ≤ 2 := by
+  classical
+  -- **Remaining bookkeeping** (mechanical, not new content): package
+  -- `rootMultiplicity_le_one_and_mem_pair_of_isCoprimeAtRoots` applied to
+  -- every element of `c.roots.toFinset` into the injection-into-`{x₁,x₂}`
+  -- argument, then read off `c.natDegree = ∑ (rootMultiplicity) ≤
+  -- ∑_{root} 1 ≤ 2` via the standard Mathlib fact bounding `c.natDegree`
+  -- below by its multiplicity-weighted root count over a splitting field
+  -- (`k` algebraically closed ⇒ equality, `Polynomial.natDegree_eq_card_roots`
+  -- or the `Multiset.card`-level equivalent — MATHLIB NAME UNCONFIRMED).
+  -- Left as `sorry`, isolated from the mathematical content (fully resolved
+  -- above) — this is exactly the kind of Mathlib-API-wiring step to close
+  -- via the REPL rather than guess blind.
+  sorry
+
+end HyperellipticPolynomial
+
+namespace HyperellipticPolynomial
+
+open Divisor
+
+variable {H} [IsAlgClosed k] [IsDedekindDomain (CoordinateRing H)]
+
+/-! ## §6. `b = 0`, via the `ordInfOfPair`/infinity route
+
+Mirrors `LPairFinrankOne.lean`'s `num_B_eq_zero_of_isPoleBoundedAtPair`
+exactly, specialized to the rationalized witness `(a,b,c,0)`: the
+denominator's `B'`-slot is already `0` here (by §1's construction), so
+`ordInfOfPair c 0 = -2 * c.natDegree ≥ -4` (from §5's `c.natDegree ≤ 2`)
+directly supplies the `≥ -2`-shaped hypothesis... except §5 only gives
+`≥ -4`, one notch too weak for `num_B_eq_zero_of_isPoleBoundedAtPair`'s exact
+`-2` threshold as stated there. Re-examining: that lemma's hypothesis
+`h_denom_ord : ordInfOfPair A' B' ≥ -2` was tuned to the *original*
+(unrationalized) `A'` before §1's conjugate multiplication — post-
+rationalization, `c`'s degree bound is looser (≤ 2 vs whatever `A'` had
+before), so the numeric threshold genuinely needs rederiving here rather
+than reused verbatim. Redone below directly from `ordInfOfPair`'s
+definition and the *same* `IsPoleBoundedAtPair'`-style infinity inequality,
+using the correct (weaker, `≥ -4`) bound and re-deriving what's actually
+needed: if `b ≠ 0`, `ordInfOfPair a b ≤ -5` (2·deg b + 5 term dominates the
+max, exactly as in the original lemma's proof), which combined with
+`ordInfOfPair a b ≥ ordInfOfPair c 0 ≥ -4` (infinity clause of
+`IsPoleBoundedAtPair'` for `(a,b,c,0)`, chained through §5) is already a
+contradiction (`-5 ≥ -4` is false) — so the weaker `≤ 2` bound on `c` is
+in fact already enough, no retightening to `≤ 1` needed. -/
+
+/-- **`b = 0` for the rationalized, degree-bounded witness.** Direct
+analogue of `num_B_eq_zero_of_isPoleBoundedAtPair`, redone with the
+threshold that actually matches §5's `c.natDegree ≤ 2` bound (`-4`, not
+`-2`) — see the section docstring above for why `-4` already suffices. -/
+theorem b_eq_zero_of_rationalized_pole_bounded (a b c : k[X])
+    (hinf : ordInfOfPair a b ≥ ordInfOfPair c (0 : k[X]))
+    (hcdeg : c.natDegree ≤ 2) :
+    b = 0 := by
+  by_contra hbne
+  have hcinf : ordInfOfPair c (0 : k[X]) ≥ -4 := by
+    dsimp [ordInfOfPair]
+    by_cases hc0 : c = 0
+    · simp [hc0]
+    · rw [if_neg (fun h => hc0 h.1), if_pos rfl]
+      have : (c.natDegree : ℤ) ≤ 2 := by exact_mod_cast hcdeg
+      omega
+  have hableneg5 : ordInfOfPair a b ≤ -5 := by
+    dsimp [ordInfOfPair]
+    have hab : ¬ (a = 0 ∧ b = 0) := fun h => hbne h.2
+    rw [if_neg hab, if_neg hbne]
+    have hbnn : (0 : ℤ) ≤ 2 * (b.natDegree : ℤ) := by positivity
+    have hmaxge : (2 * (b.natDegree : ℤ) + 5) ≤
+        max (2 * (a.natDegree : ℤ)) (2 * (b.natDegree : ℤ) + 5) := le_max_right _ _
+    linarith
+  linarith [hinf, hcinf, hableneg5]
+
+end HyperellipticPolynomial
+
+namespace HyperellipticPolynomial
+
+open Divisor
+
+variable {H} [IsAlgClosed k] [IsDedekindDomain (CoordinateRing H)]
+
+/-! ## §7. Assembly: `uniqueDegree2MapToP1`, no `hreduced` needed
+
+Chains §1 (rationalize) → §5/§6 (`b = 0`, `deg c ≤ 2`) → `ordAt_linX_eq`
+(already-proved Möbius-transform pole computation) → contradiction with
+`hne : x₂ ≠ Point.iota x₁`, exactly as sketched in this file's module
+docstring. Only handles the genuinely nonconstant case; `z`'s constancy is
+the theorem's own conclusion, reached here by deriving a contradiction from
+`z` nonconstant (i.e. `a` not a constant multiple of `c`) together with the
+fiber-matching argument, mirroring `fiber_eq_of_pure_rational_pole_match`'s
+shape one level up. **Left as `sorry`** — this last step is the one still
+requiring the actual `x₁+x₂` divisor-matching case analysis (the "4-way
+split on where the rationalized numerator's root lands" mentioned in the
+top-level project notes), not yet carried out here.
+
+**Status of §4/§5, post-ChatGPT-consultation.** The original Weierstrass gap
+in §4 is now resolved (no `sorry` in the main crux lemma
+`exists_pole_of_isCoprimeAtRoots` itself — only in the one supporting local-
+uniformizer fact `ordAt_le_one_of_ramified_num_vanish` it calls, which is
+real remaining formalization work, not a mathematical gap). §5 no longer
+needs a squarefreeness hypothesis on `c` at all (superseded the distinct-
+root-counting approach with a multiplicity-aware one), and has one
+remaining bookkeeping `sorry` wiring `c.natDegree` to its root-multiplicity
+sum via standard Mathlib `Polynomial.roots` API. So everything upstream of
+this theorem is now either fully proved or has an isolated, clearly-scoped
+`sorry` — this assembly step is the one remaining piece of genuinely new
+case-analysis work for a future session (or a ChatGPT-assisted pass, per
+this project's standard escalation path for hard sorries) to close. -/
+theorem uniqueDegree2MapToP1_ordAtFrac (hdeg : H.f.natDegree = 5) (hchar : (2 : k) ≠ 0)
+    (hsf : Squarefree H.f) (x₁ x₂ : H.Point) (hne : x₂ ≠ Point.iota x₁)
+    (z : FractionRing (CoordinateRing H)) (hz : z ∈ LPairCarrier x₁ x₂) :
+    IsConstantFraction z := by
+  classical
+  obtain ⟨A, B, A', B', hbound, hz_eq⟩ := hz
+  obtain ⟨hA'B'ne, hinfle, hptwise⟩ := hbound
+  by_cases hAB0 : toPair H A B = 0
+  · -- Numerator vanishes: `z = 0`, trivially constant (`c = 0`).
+    refine ⟨0, ?_⟩
+    rw [hz_eq]
+    unfold polePairToFraction
+    rw [hAB0, map_zero, zero_div]
+    simp
+  · -- Rationalize via §1, then run §5/§6/`ordAt_linX_eq`.
+    have hA'B'toPairne : toPair H A' B' ≠ 0 := by
+      rw [Ne, toPair_eq_zero_iff]; exact hA'B'ne
+    obtain ⟨a, b, c, hcne, hc_def, hfrac_eq⟩ := frac_toPair_den_kx hdeg A B A' B' hA'B'toPairne
+    -- Transport the original witness's pointwise bound to `(A,B,A',B')`'s
+    -- `ordAtFrac` form (bridge lemma), matching `hfrac_eq`'s original
+    -- (unrationalized) witness — NOT yet the rationalized `(a,b,c,0)` witness,
+    -- since `ordAtFrac` isn't representation-independent for the *pole-bound
+    -- hypothesis itself* (only for its *value*, once both numerators are
+    -- nonzero — `ordAtFrac_eq_of_polePairToFraction_eq`). The remaining gap:
+    -- transporting `hzsupp_orig` from `(A,B,A',B')` to `(a,b,c,0)` needs
+    -- exactly `ordAtFrac_eq_of_polePairToFraction_eq` applied at every point
+    -- `P`, which in turn needs `toPair H a b ≠ 0` (i.e. `z ≠ 0`, already
+    -- known from `hAB0`, transported through `hfrac_eq`) as its side
+    -- condition — mechanical but not yet threaded through here.
+    have hzsupp_orig := fun P => ordAtFrac_ge_of_isPoleBoundedAtPair_pointwise x₁ x₂ A B A' B'
+      hptwise P
+    -- **Remaining work, left as `sorry`**: (1) transport `hzsupp_orig` to the
+    -- rationalized witness `(a,b,c,0)` via `hfrac_eq` +
+    -- `ordAtFrac_eq_of_polePairToFraction_eq`; (2) derive `IsCoprimeAtRoots a
+    -- b c` (needs a genuine new argument — coprimality doesn't fall out of
+    -- `hbound` alone, it needs the extra "no common factor" content that
+    -- motivated this file's whole rationalize-then-reduce strategy in the
+    -- first place; §1's rationalized `(a,b,c)` is NOT automatically coprime,
+    -- only `c`'s *specific* algebraic form as `pairNorm H A' B'` is pinned
+    -- down — reducing `(a,b,c)` by their actual `k[X]`-gcd, as the module
+    -- docstring's step 2 describes, is the piece not yet executed here; note
+    -- §5 no longer needs `c` squarefree, so this step is *purely* about
+    -- coprimality, not squarefreeness); (3) feed the result through
+    -- `natDegree_le_two_of_isCoprimeAtRoots` → `b_eq_zero_of_rationalized_pole_bounded`
+    -- → `ordAt_linX_eq`-driven fiber-matching, to reach `x₂ = ιx₁`,
+    -- contradicting `hne`. Steps (1)-(3) are the genuine content still
+    -- missing; nothing further should be guessed at without Lean/REPL
+    -- feedback per this session's ground rules.
+    sorry
 
 end HyperellipticPolynomial
