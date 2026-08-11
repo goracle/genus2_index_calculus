@@ -395,22 +395,42 @@ theorem heightOneSpectrum_of_irreducible_ne_pointIdeal
     -- `finrank` doesn't decrease.
     have hqm : Ideal.span ({q} : Set k[X]) ≤ Ideal.comap (algebraMap k[X] (CoordinateRing H)) Q :=
       le_of_eq hQcomap.symm
-    set φ := Ideal.quotientMap Q (algebraMap k[X] (CoordinateRing H)) hqm
-    have hφ_inj : Function.Injective φ := Ideal.quotientMap_injective
+    have hφ_inj : Function.Injective
+        (Ideal.quotientMap Q (algebraMap k[X] (CoordinateRing H)) hqm) := by
+      intro a b hab
+      obtain ⟨a', rfl⟩ := Submodule.Quotient.mk_surjective (Ideal.span ({q} : Set k[X])) a
+      obtain ⟨b', rfl⟩ := Submodule.Quotient.mk_surjective (Ideal.span ({q} : Set k[X])) b
+      have hab' : (Ideal.Quotient.mk Q) (algebraMap k[X] (CoordinateRing H) a') =
+          (Ideal.Quotient.mk Q) (algebraMap k[X] (CoordinateRing H) b') := by
+        show (Ideal.quotientMap Q (algebraMap k[X] (CoordinateRing H)) hqm)
+              (Ideal.Quotient.mk (Ideal.span ({q} : Set k[X])) a') =
+            (Ideal.quotientMap Q (algebraMap k[X] (CoordinateRing H)) hqm)
+              (Ideal.Quotient.mk (Ideal.span ({q} : Set k[X])) b')
+        rw [Ideal.quotientMap_mk, Ideal.quotientMap_mk]
+        exact hab
+      rw [Ideal.Quotient.mk_eq_mk_iff_sub_mem] at hab'
+      show (Ideal.Quotient.mk (Ideal.span ({q} : Set k[X])) a') =
+          (Ideal.Quotient.mk (Ideal.span ({q} : Set k[X])) b')
+      rw [Ideal.Quotient.mk_eq_mk_iff_sub_mem]
+      rw [← hQcomap]
+      show algebraMap k[X] (CoordinateRing H) (a' - b') ∈ Q
+      rw [map_sub]
+      exact hab'
+    set φ := Ideal.quotientMap Q (algebraMap k[X] (CoordinateRing H)) hqm with hφ_def
     have hφ_lin : ∀ (c : k) (x : k[X] ⧸ Ideal.span ({q} : Set k[X])),
         φ (c • x) = c • φ x := by
       intro c x
-      induction x using Ideal.Quotient.induction_on with
-      | h x =>
-        show φ (Ideal.Quotient.mk _ (c • x)) = c • φ (Ideal.Quotient.mk _ x)
-        rw [Ideal.quotientMap_mk]
-        show Ideal.Quotient.mk Q (algebraMap k[X] (CoordinateRing H) (c • x)) =
-          c • Ideal.Quotient.mk Q (algebraMap k[X] (CoordinateRing H) x)
-        rw [Algebra.smul_def, Algebra.smul_def, map_mul]
-        congr 1
-        · congr 1
-          exact (IsScalarTower.algebraMap_apply k (k[X]) (CoordinateRing H) c)
-        · rw [Ideal.quotientMap_mk]
+      obtain ⟨x', rfl⟩ := Submodule.Quotient.mk_surjective (Ideal.span ({q} : Set k[X])) x
+      show φ (Ideal.Quotient.mk _ (c • x')) = c • φ (Ideal.Quotient.mk _ x')
+      have hlhs : φ (Ideal.Quotient.mk (Ideal.span ({q} : Set k[X])) (c • x')) =
+          Ideal.Quotient.mk Q (algebraMap k[X] (CoordinateRing H) (c • x')) :=
+        Ideal.quotientMap_mk
+      have hrhs : φ (Ideal.Quotient.mk (Ideal.span ({q} : Set k[X])) x') =
+          Ideal.Quotient.mk Q (algebraMap k[X] (CoordinateRing H) x') :=
+        Ideal.quotientMap_mk
+      simp only [hlhs, hrhs, Algebra.smul_def, map_mul,
+        IsScalarTower.algebraMap_apply k (k[X]) (CoordinateRing H) c,
+        ← Ideal.Quotient.algebraMap_eq]
     set φₗ : (k[X] ⧸ Ideal.span ({q} : Set k[X])) →ₗ[k] (CoordinateRing H ⧸ Q) :=
       { toFun := φ, map_add' := map_add φ, map_smul' := hφ_lin } with hφₗ_def
     have hφₗ_inj : Function.Injective φₗ := hφ_inj
@@ -450,10 +470,14 @@ theorem not_isPoleBoundedAtPairSpec_one_zero_irreducible
   obtain ⟨v, hvmem, hvne⟩ := heightOneSpectrum_of_irreducible_ne_pointIdeal (H := H) q hq hqdeg
   have hv1 : ordAtSpec v (1 : k[X]) 0 = 0 := by
     unfold ordAtSpec
-    rw [if_neg (by simp [toPair_one_zero])]
-    have hval : v.intValuation (toPair H (1 : k[X]) 0) = 1 := by
+    have hone_ne : toPair H (1 : k[X]) 0 ≠ 0 := by
+      rw [Ne, toPair_eq_zero_iff]
+      rintro ⟨hone, -⟩
+      exact one_ne_zero hone
+    rw [if_neg hone_ne]
+    have hval : v.intValuation (toPair H (1 : k[X]) 0) = (1 : WithZero (Multiplicative ℤ)) := by
       rw [toPair_one_zero]
-      exact map_one _
+      exact v.intValuation.map_one
     rw [hval]
     simp
   have hvq_pos : ordAtSpec v q (0 : k[X]) ≥ 1 := by
@@ -466,7 +490,7 @@ theorem not_isPoleBoundedAtPairSpec_one_zero_irreducible
     have hmem : toPair H q (0 : k[X]) ∈ v.asIdeal := by
       apply hvmem
       apply Ideal.subset_span
-      show algebraMap k[X] (CoordinateRing H) q = toPair H q (0 : k[X])
+      show toPair H q (0 : k[X]) = algebraMap k[X] (CoordinateRing H) q
       unfold toPair
       simp
     -- Same route as `ordAt_eq_count` (`PrincipalDivisors.lean`): unfold `intValuation`
