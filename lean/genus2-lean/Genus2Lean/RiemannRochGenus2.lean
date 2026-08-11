@@ -153,6 +153,79 @@ def LPairCarrier (x₁ x₂ : H.Point) : Set (FractionRing (CoordinateRing H)) :
   { z | ∃ A B A' B' : k[X], IsPoleBoundedAtPair x₁ x₂ A B A' B' ∧
       z = polePairToFraction A B A' B' }
 
+/-! ## §1b. `IsPoleBoundedAtPairSpec`: pole-boundedness at every closed point
+
+**Roadmap: `ROADMAP-lpaircarrier-nonclosed-field.md`.** `IsPoleBoundedAtPair`'s
+pointwise clause quantifies only over `P : H.Point`, i.e. only `k`-rational points —
+correct under the ambient `[IsAlgClosed k]` (every closed point is then `k`-rational,
+per this section's own docstring above), but not the right notion once `k` need not be
+algebraically closed: as that docstring's own `A=1,B=0,A'=q,B'=0` counterexample shows,
+a rational function can hide all of its poles at non-`k`-rational closed points and
+still vacuously satisfy every `H.Point`-indexed bound.
+
+`IsPoleBoundedAtPairSpec` is the fix: the same three clauses, with the pointwise clause
+requantified over `v : HeightOneSpectrum (CoordinateRing H)` — *every* closed point of
+the (affine) curve, rational or not — using `ordAtSpec` (`PrincipalDivisors.lean`) in
+place of `ordAt`, and `pointHeightOne' x₁`/`pointHeightOne' x₂` in place of `x₁`/`x₂` in
+the indicator. This definition does **not** need `[IsAlgClosed k]` and is stated outside
+that ambient hypothesis (`omit` below) — it is meant to be the general-`k` primitive
+that `IsPoleBoundedAtPair` specializes down to (`isPoleBoundedAtPair_of_spec`, next),
+not a replacement requiring closedness itself. -/
+
+omit [IsAlgClosed k] in
+/-- **General-`k` pole-boundedness, quantified over every closed point.** See the
+section docstring above. Same shape as `IsPoleBoundedAtPair`, with `H.Point` replaced by
+`IsDedekindDomain.HeightOneSpectrum (CoordinateRing H)` and `ordAt`/`x_i` replaced by
+`ordAtSpec`/`pointHeightOne' x_i`. -/
+def IsPoleBoundedAtPairSpec (x₁ x₂ : H.Point) (A B A' B' : k[X]) : Prop :=
+  ¬ (A' = 0 ∧ B' = 0) ∧
+  ordInfOfPair A B ≥ ordInfOfPair A' B' ∧
+  (∀ v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H),
+    ordAtSpec v A B ≥ ordAtSpec v A' B' -
+      ((if v = pointHeightOne' x₁ then 1 else 0) + (if v = pointHeightOne' x₂ then 1 else 0)))
+
+omit [IsAlgClosed k] in
+/-- **`LPairCarrierSpec`: `L((x₁)+(x₂))` as a bare `Set`, general-`k` version.**
+Direct analogue of `LPairCarrier`, built from `IsPoleBoundedAtPairSpec` instead of
+`IsPoleBoundedAtPair`. This is the carrier the general-`k` Riemann–Roch argument should
+be phrased against; `LPairCarrier` (rational-points-only) is recovered as a consequence
+via `isPoleBoundedAtPair_of_spec` below, not the other way around. -/
+def LPairCarrierSpec (x₁ x₂ : H.Point) : Set (FractionRing (CoordinateRing H)) :=
+  { z | ∃ A B A' B' : k[X], IsPoleBoundedAtPairSpec x₁ x₂ A B A' B' ∧
+      z = polePairToFraction A B A' B' }
+
+omit [IsAlgClosed k] in
+/-- **`IsPoleBoundedAtPairSpec` is at least as strong as `IsPoleBoundedAtPair`.**
+The direction that matters: every general-`k`-pole-bounded witness is, in particular,
+`H.Point`-pole-bounded, by specializing the universal `v`-quantifier to the rational
+points `pointHeightOne' P` and rewriting `ordAtSpec` back to `ordAt`
+(`ordAt_eq_ordAtSpec`). This lets every existing `H.Point`-only consumer of
+`IsPoleBoundedAtPair`/`LPairCarrier` in this project (in particular the whole
+rational-root / factor-base argument in `LPairFinrankOneOrdAtFrac.lean`) continue to
+apply unchanged once fed a `LPairCarrierSpec` witness instead of a `LPairCarrier` one —
+no rewriting of that downstream machinery is needed, only of what supplies its input. -/
+theorem isPoleBoundedAtPair_of_spec (x₁ x₂ : H.Point) (A B A' B' : k[X])
+    (h : IsPoleBoundedAtPairSpec x₁ x₂ A B A' B') :
+    IsPoleBoundedAtPair x₁ x₂ A B A' B' := by
+  obtain ⟨h1, h2, h3⟩ := h
+  refine ⟨h1, h2, fun P => ?_⟩
+  have hv := h3 (pointHeightOne' P)
+  rw [← ordAt_eq_ordAtSpec, ← ordAt_eq_ordAtSpec] at hv
+  -- Reconcile the two indicators: `if pointHeightOne' P = pointHeightOne' x_i then _`
+  -- (from `hv`) versus `if P = x_i then _` (the goal), via `pointHeightOne'`'s
+  -- injectivity.
+  rwa [pointHeightOne'_eq_iff, pointHeightOne'_eq_iff] at hv
+
+omit [IsAlgClosed k] in
+/-- **`LPairCarrierSpec ⊆ LPairCarrier`.** Direct consequence of
+`isPoleBoundedAtPair_of_spec`: every element represented by a general-`k`-pole-bounded
+witness is also represented by an `H.Point`-pole-bounded witness (the *same* witness),
+so membership transports. -/
+theorem lPairCarrierSpec_subset_lPairCarrier (x₁ x₂ : H.Point) :
+    LPairCarrierSpec x₁ x₂ ⊆ LPairCarrier x₁ x₂ := by
+  rintro z ⟨A, B, A', B', hbound, hz⟩
+  exact ⟨A, B, A', B', isPoleBoundedAtPair_of_spec x₁ x₂ A B A' B' hbound, hz⟩
+
 omit [IsAlgClosed k] in
 /-- **General-purpose unit lemma, factored out of `HyperellipticClassProof.lean`'s
 `ordAt_linX_eq_zero_of_ne` proof body** (which proved exactly this shape inline, for
@@ -218,6 +291,99 @@ theorem toPair_one_zero_notMem_pointIdeal (P : H.Point) :
 `ordAt_eq_zero_of_notMem` applies directly. -/
 theorem ordAt_one_zero (P : H.Point) : ordAt P (1 : k[X]) 0 = 0 :=
   ordAt_eq_zero_of_notMem P 1 0 (toPair_one_zero_notMem_pointIdeal P)
+
+/-! ## §1c. Certifying the `1/q(x)` counterexample is excluded by `IsPoleBoundedAtPairSpec`
+
+**Roadmap step 3.** This section's job is to confirm concretely (not just plausibly)
+that the general-`k` predicate actually closes the hole `IsPoleBoundedAtPair` had: the
+witness `A=1,B=0,A'=q,B'=0` (this section's own earlier docstring, `q` irreducible of
+degree ≥ 2 with no root in `k`) satisfied `IsPoleBoundedAtPair x₁ x₂ 1 0 q 0` for *every*
+`x₁,x₂`, vacuously, because no `k`-rational point sees `q`'s zero locus. The fix should
+make this witness fail `IsPoleBoundedAtPairSpec` instead — some genuine, non-rational
+closed point `v` above `q` must witness a violation of the pointwise clause.
+
+**The one hard step, isolated (`heightOneSpectrum_of_irreducible_ne_pointIdeal`
+below).** `q ∈ k[X]` irreducible of degree ≥ 2 generates a nonzero prime ideal
+`Ideal.span {q}` in `k[X]`; lifted to `CoordinateRing H` via
+`algebraMap k[X] (CoordinateRing H)`, this needs to be shown to sit under (or otherwise
+determine) a height-one prime `v` of `CoordinateRing H` that is not `pointIdeal P` for
+any `P : H.Point` — precisely because its residue field has degree ≥ 2 over `k`
+(`k[X]/(q)`, or a further-extended residue field once `y` is adjoined), while every
+`pointIdeal P` has residue field exactly `k` (`evalAtPoint P`'s surjectivity onto `k`,
+already proved, `PrincipalDivisors.lean`). This is a genuine going-up/lying-over fact
+about `CoordinateRing H` as a ring extension of `k[X]` (via `AdjoinRoot`), not
+mechanical bookkeeping — flagged as its own `sorry`, per this project's convention, with
+a companion ChatGPT consultation prompt (`chatgpt_prompt_heightonespectrum_lying_over.md`,
+alongside this roadmap). -/
+
+omit [IsAlgClosed k] in
+/-- **The hard step.** Every irreducible `q : k[X]` of degree ≥ 2 determines a
+height-one prime `v` of `CoordinateRing H` lying over `Ideal.span {q} : Ideal k[X]`
+(i.e. `v.asIdeal.comap (algebraMap k[X] (CoordinateRing H)) = Ideal.span {q}`), and this
+`v` is not `pointHeightOne' P` for any `P : H.Point` — because its residue field has
+`k`-dimension ≥ 2 (inherited from `k[X]/(q)`'s degree, `q.natDegree ≥ 2`), whereas
+`pointHeightOne' P`'s residue field is `k` itself (dimension `1`). **Not yet proved —
+this is the genuinely new mathematical content this section exists to isolate.** See
+the section docstring above and the companion consultation prompt. -/
+theorem heightOneSpectrum_of_irreducible_ne_pointIdeal [IsDedekindDomain (CoordinateRing H)]
+    (q : k[X]) (hq : Irreducible q) (hqdeg : 2 ≤ q.natDegree) :
+    ∃ v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H),
+      Ideal.span ({algebraMap k[X] (CoordinateRing H) q} : Set (CoordinateRing H)) ≤ v.asIdeal ∧
+      ∀ P : H.Point, v ≠ pointHeightOne' P := by
+  sorry
+
+omit [IsAlgClosed k] in
+/-- **Consequence: the `1/q(x)` witness fails `IsPoleBoundedAtPairSpec`'s pointwise
+clause, at the `v` supplied by the hard step above.** This is the mechanical half —
+once `heightOneSpectrum_of_irreducible_ne_pointIdeal` supplies a genuine non-rational
+`v` above `q`, showing `ordAtSpec v q 0 > 0` (so `q` has a genuine pole/zero
+there — concretely `ordAtSpec v q 0 ≥ 1`, since `algebraMap k[X] (CoordinateRing H) q ∈
+v.asIdeal` by construction) while the indicator at `v` is `0` (since `v ≠
+pointHeightOne' x₁, pointHeightOne' x₂` for any rational `x₁,x₂`, by the hard step's
+second conjunct) directly contradicts the clause `ordAtSpec v 1 0 ≥ ordAtSpec v q 0 -
+0`, because `ordAtSpec v 1 0 = 0` (`toPair H 1 0 = 1` is a unit, in no prime ideal) but
+`ordAtSpec v q 0 ≥ 1 > 0`. -/
+theorem not_isPoleBoundedAtPairSpec_one_zero_irreducible [IsDedekindDomain (CoordinateRing H)]
+    (x₁ x₂ : H.Point) (q : k[X]) (hq : Irreducible q) (hqdeg : 2 ≤ q.natDegree) :
+    ¬ IsPoleBoundedAtPairSpec x₁ x₂ (1 : k[X]) 0 q 0 := by
+  intro ⟨_, _, hptwise⟩
+  obtain ⟨v, hvmem, hvne⟩ := heightOneSpectrum_of_irreducible_ne_pointIdeal q hq hqdeg
+  have hv1 : ordAtSpec v (1 : k[X]) 0 = 0 := by
+    unfold ordAtSpec
+    rw [if_neg (by simp [toPair_one_zero])]
+    have hval : v.intValuation (toPair H (1 : k[X]) 0) = 1 := by
+      rw [toPair_one_zero]
+      exact map_one _
+    rw [hval]
+    simp
+  have hvq_pos : ordAtSpec v q (0 : k[X]) ≥ 1 := by
+    unfold ordAtSpec
+    have hqne : toPair H q (0 : k[X]) ≠ 0 := by
+      rw [Ne, toPair_eq_zero_iff]
+      rintro ⟨hq0, -⟩
+      exact hq.ne_zero hq0
+    rw [if_neg hqne]
+    have hmem : toPair H q (0 : k[X]) ∈ v.asIdeal := by
+      apply hvmem
+      apply Ideal.subset_span
+      show algebraMap k[X] (CoordinateRing H) q = toPair H q (0 : k[X])
+      unfold toPair
+      simp
+    have hval_lt : v.intValuation (toPair H q (0 : k[X])) < 1 :=
+      (v.intValuation_lt_one_iff_dvd _).mpr (Ideal.dvd_span_singleton.mpr hmem)
+    -- `intValuation < 1` in `WithZero (Multiplicative ℤ)` means `WithZero.log` is
+    -- strictly negative, i.e. `-WithZero.log (...) ≥ 1`. MATHLIB NAME UNCONFIRMED for
+    -- the precise lemma converting `< 1` to a `WithZero.log`-level strict inequality;
+    -- likely `WithZero.log_lt_zero_iff` or reasoning through `intValuation_lt_one_iff_dvd`
+    -- composed with `intValuation_le_one`/an explicit `Associates.count`-based
+    -- computation, mirroring `ordAt_eq_count`'s existing proof (`PrincipalDivisors.lean`).
+    sorry
+  have hindicator : ¬ (v = pointHeightOne' x₁) ∧ ¬ (v = pointHeightOne' x₂) :=
+    ⟨hvne x₁, hvne x₂⟩
+  have hbound := hptwise v
+  rw [if_neg hindicator.1, if_neg hindicator.2, hv1] at hbound
+  simp only [add_zero] at hbound
+  linarith
 
 /-- `ordInfOfPair 1 0 = 0`: `(1 : k[X])` has `natDegree = 0`
 (`Polynomial.natDegree_one`) and is nonzero, so `ordInfOfPair`'s `else`

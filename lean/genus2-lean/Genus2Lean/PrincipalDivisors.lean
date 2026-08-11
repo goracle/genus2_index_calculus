@@ -364,6 +364,57 @@ noncomputable def ordAt [IsDedekindDomain (CoordinateRing H)]
   else
     -WithZero.log ((pointHeightOne P h_bot).intValuation (toPair H A B))
 
+/-! ## §3b. `ordAtSpec`: the same order of vanishing, at an arbitrary closed point
+
+**Motivation (see `ROADMAP-lpaircarrier-nonclosed-field.md`).** `ordAt` above is
+already, internally, computed via a height-one prime of `CoordinateRing H`
+(`pointHeightOne P h_bot`) — it is only ever *applied* to primes that happen to come
+from a rational point `P : H.Point`. Over `k = ZMod p` this is a genuine restriction:
+`CoordinateRing H` has height-one primes with residue field strictly bigger than `k`
+(any point lying over a root of an irreducible factor of `H.f`, for instance), and
+`ordAt`'s `H.Point`-only domain simply cannot name them. `ordAtSpec` is the same
+valuation, un-restricted: defined for every `v : HeightOneSpectrum (CoordinateRing H)`
+directly, no side condition needed (unlike `ordAt`'s `h_bot`, every `HeightOneSpectrum`
+element already carries `ne_bot` in its own structure, so there is no `pointIdeal P = ⊥`
+case to exclude). `ordAt` becomes the rational-point specialization of this, proved
+by unfolding both definitions below (`ordAt_eq_ordAtSpec`) rather than redefined — so
+every existing lemma about `ordAt` continues to typecheck unchanged. -/
+noncomputable def ordAtSpec [IsDedekindDomain (CoordinateRing H)]
+    (v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H)) (A B : k[X]) : ℤ :=
+  if toPair H A B = 0 then
+    0
+  else
+    -WithZero.log (v.intValuation (toPair H A B))
+
+/-- **`ordAt` is the rational-point specialization of `ordAtSpec`.** Pure unfolding:
+both sides branch on `toPair H A B = 0` identically, and in the nonzero branch `ordAt`
+uses `(pointHeightOne P h_bot).intValuation`, which is definitionally
+`(pointHeightOne' P).intValuation` once the `h_bot` argument is discharged via
+`pointIdeal_ne_bot` — exactly what `pointHeightOne'` does. No new mathematical content,
+just making the existing internal factoring through `HeightOneSpectrum` visible at the
+type level, so `ordAtSpec`-based definitions (`IsPoleBoundedAtPairSpec`, planned) can be
+specialized down to `ordAt`-based ones (`IsPoleBoundedAtPair`) for free. -/
+theorem ordAt_eq_ordAtSpec [IsDedekindDomain (CoordinateRing H)] (P : H.Point) (A B : k[X]) :
+    ordAt P A B = ordAtSpec (pointHeightOne' P) A B := by
+  unfold ordAt ordAtSpec
+  by_cases hAB : toPair H A B = 0
+  · simp [hAB]
+  · rw [if_neg hAB, if_neg hAB]
+    have h_bot : pointIdeal P ≠ ⊥ := pointIdeal_ne_bot P
+    rw [dif_neg h_bot]
+    -- `pointHeightOne P h_bot` and `pointHeightOne' P` have the same `asIdeal`
+    -- (`pointIdeal P` in both cases) and `HeightOneSpectrum.intValuation` only
+    -- depends on `asIdeal`, so the two `intValuation`s agree; `pointHeightOne'`
+    -- unfolds to exactly `pointHeightOne P (pointIdeal_ne_bot P)`, matching this
+    -- branch's witness up to proof irrelevance on the `ne_bot` field (`Prop`, so
+    -- any two proofs of `pointIdeal P ≠ ⊥` are defeq). UNCONFIRMED AGAINST A LIVE
+    -- GOAL: if `rfl` doesn't close this (e.g. `HeightOneSpectrum` isn't reducible
+    -- enough, or `pointHeightOne'`'s unfolding needs an explicit `unfold
+    -- pointHeightOne'` first), try `unfold pointHeightOne'` right before this line,
+    -- or fall back to `congr 1` to reduce to the `asIdeal`-level equality
+    -- `pointIdeal P = pointIdeal P` (`rfl`) plus proof irrelevance on `ne_bot`.
+    rfl
+
 /-! ## §4. `deg(div g) = 0` — the target theorem
 
 **Scaffold, not a complete proof.** `sum_ordAt_eq_natDegree_pairNorm` decomposes into four
@@ -626,6 +677,23 @@ theorem pointIdeal_ne_of_ne (P Q : H.Point) (hne : P ≠ Q) :
     simp [Point.Y]
   rw [map_sub, hCYevalQ, hyevalQ, sub_eq_zero] at hQY
   exact Subtype.ext (Prod.ext hQX.symm hQY)
+
+/-- **`pointHeightOne'` is injective**, as an `iff` on equality — the form needed to
+rewrite an `if pointHeightOne' P = pointHeightOne' x₁ then _ else _` indicator into the
+`H.Point`-level `if P = x₁ then _ else _` one. Direct consequence of `pointIdeal_ne_of_ne`
+(contrapositive) plus `HeightOneSpectrum.ext_iff` (two height-one primes are equal iff
+their underlying ideals are). Needed by `isPoleBoundedAtPair_of_spec`
+(`RiemannRochGenus2.lean`) to reconcile `IsPoleBoundedAtPairSpec`'s
+`HeightOneSpectrum`-indexed indicator with `IsPoleBoundedAtPair`'s `H.Point`-indexed
+one. -/
+theorem pointHeightOne'_eq_iff [IsDedekindDomain (CoordinateRing H)] (P Q : H.Point) :
+    pointHeightOne' P = pointHeightOne' Q ↔ P = Q := by
+  constructor
+  · intro heq
+    by_contra hne
+    exact pointIdeal_ne_of_ne P Q hne
+      (IsDedekindDomain.HeightOneSpectrum.ext_iff.mp heq)
+  · rintro rfl; rfl
 
 /-- Step 1: the ideal `Ideal.span {toPair H A B}` factors as the product, over `P ∈ S`, of
 `pointIdeal P` raised to its local multiplicity `(ordAt P A B).toNat`.
