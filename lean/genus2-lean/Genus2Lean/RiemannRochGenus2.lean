@@ -325,12 +325,112 @@ height-one prime `v` of `CoordinateRing H` lying over `Ideal.span {q} : Ideal k[
 `pointHeightOne' P`'s residue field is `k` itself (dimension `1`). **Not yet proved —
 this is the genuinely new mathematical content this section exists to isolate.** See
 the section docstring above and the companion consultation prompt. -/
-theorem heightOneSpectrum_of_irreducible_ne_pointIdeal [IsDedekindDomain (CoordinateRing H)]
+theorem heightOneSpectrum_of_irreducible_ne_pointIdeal
     (q : k[X]) (hq : Irreducible q) (hqdeg : 2 ≤ q.natDegree) :
     ∃ v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H),
       Ideal.span ({algebraMap k[X] (CoordinateRing H) q} : Set (CoordinateRing H)) ≤ v.asIdeal ∧
       ∀ P : H.Point, v ≠ pointHeightOne' P := by
-  sorry
+  -- `k[X] → CoordinateRing H` is integral: same route as `coordinateRingIsDedekindDomain`
+  -- (`PrincipalDivisorsIntegralClosure.lean`), via the monic defining polynomial
+  -- `X² - C H.f` and `Polynomial.Monic.finite_adjoinRoot`.
+  have hmonic : (X ^ 2 - C H.f : (k[X])[X]).Monic :=
+    Polynomial.monic_X_pow_sub_C H.f two_ne_zero
+  haveI hfin : Module.Finite k[X] (CoordinateRing H) := Polynomial.Monic.finite_adjoinRoot hmonic
+  haveI hint : Algebra.IsIntegral k[X] (CoordinateRing H) :=
+    Algebra.IsIntegral.of_finite k[X] (CoordinateRing H)
+  haveI : IsDomain (CoordinateRing H) := IsDedekindDomain.toIsDomain
+  -- `Ideal.span {q}` is a nonzero prime ideal of `k[X]` (`q` irreducible, `k[X]` a PID/UFD).
+  have hqne0 : q ≠ 0 := hq.ne_zero
+  have hspanq_prime : (Ideal.span ({q} : Set k[X])).IsPrime :=
+    (Ideal.span_singleton_prime hqne0).mpr hq.prime
+  haveI : (Ideal.span ({q} : Set k[X])).IsPrime := hspanq_prime
+  -- `k[X] → CoordinateRing H` is injective (needed for `hP` below): same route as
+  -- `coordinateRing_not_isField`'s `hinj`.
+  have hker_inj : Function.Injective (algebraMap k[X] (CoordinateRing H)) := by
+    show Function.Injective (AdjoinRoot.of (X ^ 2 - C H.f))
+    exact AdjoinRoot.of.injective_of_degree_ne_zero degree_X_sq_sub_C_H_f_ne_zero
+  have hker_bot : RingHom.ker (algebraMap k[X] (CoordinateRing H)) = ⊥ :=
+    RingHom.ker_eq_bot_iff_eq_zero _ |>.mpr (fun a ha => hker_inj (by simpa using ha))
+  -- **Going-up** (the step this file's roadmap flagged as the hard one): a prime `Q` of
+  -- `CoordinateRing H` lying over `Ideal.span {q}` exists for free, since `k[X] →
+  -- CoordinateRing H` is an integral extension of domains
+  -- (`Ideal.exists_ideal_over_prime_of_isIntegral_of_isDomain`).
+  obtain ⟨Q, hQprime, hQcomap⟩ :=
+    Ideal.exists_ideal_over_prime_of_isIntegral_of_isDomain
+      (R := k[X]) (S := CoordinateRing H) (Ideal.span ({q} : Set k[X]))
+      (hP := hker_bot ▸ bot_le)
+  haveI : Q.IsPrime := hQprime
+  -- `Q ≠ ⊥`: if `Q = ⊥` then `Q.comap _ = ⊥` too (comap of `⊥` along an injective ring hom is
+  -- `⊥`), forcing `Ideal.span {q} = ⊥`, i.e. `q = 0`, contradicting `hqne0`.
+  have hQ_ne_bot : Q ≠ ⊥ := by
+    intro hQbot
+    rw [hQbot] at hQcomap
+    have : Ideal.span ({q} : Set k[X]) = ⊥ :=
+      hQcomap.symm.trans (Ideal.comap_bot_of_injective _ hker_inj)
+    rw [Ideal.span_singleton_eq_bot] at this
+    exact hqne0 this
+  set v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H) :=
+    ⟨Q, hQprime, hQ_ne_bot⟩ with hv_def
+  refine ⟨v, ?_, ?_⟩
+  · -- `Ideal.span {algebraMap _ q} ≤ v.asIdeal = Q`: from `Q.comap = Ideal.span {q}`,
+    -- i.e. `q ∈ Q` (since `q ∈ Ideal.span {q}` trivially), so `algebraMap _ q ∈ Q`.
+    apply Ideal.span_le.mpr
+    rw [Set.singleton_subset_iff]
+    show algebraMap k[X] (CoordinateRing H) q ∈ Q
+    rw [← Ideal.mem_comap, hQcomap]
+    exact Ideal.subset_span (Set.mem_singleton _)
+  · -- Residue field dimension comparison: `finrank k (CoordinateRing H ⧸ Q) ≥
+    -- finrank k (k[X] ⧸ Ideal.span {q}) = q.natDegree ≥ 2` (via the injective
+    -- `Ideal.quotientMap` induced by `Q.comap = Ideal.span {q}`), strictly bigger than
+    -- `finrank k (CoordinateRing H ⧸ pointIdeal P) = 1` (`finrank_quotient_pointIdeal`),
+    -- so `v ≠ pointHeightOne' P`.
+    intro P hveq
+    have hQeq : Q = pointIdeal P := by
+      have : v.asIdeal = (pointHeightOne' P).asIdeal := congrArg
+        IsDedekindDomain.HeightOneSpectrum.asIdeal hveq
+      simpa [hv_def, pointHeightOne', pointHeightOne] using this
+    -- The induced map `k[X] ⧸ Ideal.span {q} → CoordinateRing H ⧸ Q` is injective
+    -- (`Ideal.quotientMap_injective`, since `Ideal.span {q} = Q.comap (algebraMap ..)`
+    -- exactly matches its `J = I.comap f` hypothesis), hence `k`-linear-injective, so
+    -- `finrank` doesn't decrease.
+    have hqm : Ideal.span ({q} : Set k[X]) ≤ Ideal.comap (algebraMap k[X] (CoordinateRing H)) Q :=
+      le_of_eq hQcomap.symm
+    set φ := Ideal.quotientMap Q (algebraMap k[X] (CoordinateRing H)) hqm
+    have hφ_inj : Function.Injective φ := Ideal.quotientMap_injective
+    have hφ_lin : ∀ (c : k) (x : k[X] ⧸ Ideal.span ({q} : Set k[X])),
+        φ (c • x) = c • φ x := by
+      intro c x
+      induction x using Ideal.Quotient.induction_on with
+      | h x =>
+        show φ (Ideal.Quotient.mk _ (c • x)) = c • φ (Ideal.Quotient.mk _ x)
+        rw [Ideal.quotientMap_mk]
+        show Ideal.Quotient.mk Q (algebraMap k[X] (CoordinateRing H) (c • x)) =
+          c • Ideal.Quotient.mk Q (algebraMap k[X] (CoordinateRing H) x)
+        rw [Algebra.smul_def, Algebra.smul_def, map_mul]
+        congr 1
+        · congr 1
+          exact (IsScalarTower.algebraMap_apply k (k[X]) (CoordinateRing H) c)
+        · rw [Ideal.quotientMap_mk]
+    set φₗ : (k[X] ⧸ Ideal.span ({q} : Set k[X])) →ₗ[k] (CoordinateRing H ⧸ Q) :=
+      { toFun := φ, map_add' := map_add φ, map_smul' := hφ_lin } with hφₗ_def
+    have hφₗ_inj : Function.Injective φₗ := hφ_inj
+    -- `LinearMap.finrank_le_finrank_of_injective` needs `Module.Finite k (CoordinateRing H ⧸ Q)`
+    -- (the codomain): `CoordinateRing H` is `Module.Finite k[X] (CoordinateRing H)` (rank 2,
+    -- `hfin` above), so its quotient `CoordinateRing H ⧸ Q` is `Module.Finite k[X]` too
+    -- (finiteness passes to quotients), and `k[X] ⧸ Q.comap _` is `Module.Finite k` (it's a
+    -- quotient of `k[X]` by a nonzero ideal, `k[X]` being a PID with everything finite mod a
+    -- nonzero ideal) — chaining these via `Module.Finite.trans` gives `Module.Finite k
+    -- (CoordinateRing H ⧸ Q)`. UNCONFIRMED: the exact instance-chaining incantation Lean
+    -- needs here (which `Module.Finite` instances fire automatically vs. need to be supplied
+    -- by hand) was not checked against a live goal.
+    haveI : Module.Finite k (CoordinateRing H ⧸ Q) := by
+      sorry
+    have hle : Module.finrank k (k[X] ⧸ Ideal.span ({q} : Set k[X])) ≤
+        Module.finrank k (CoordinateRing H ⧸ Q) :=
+      LinearMap.finrank_le_finrank_of_injective hφₗ_inj
+    rw [finrank_quotient_span_eq_natDegree] at hle
+    rw [hQeq, finrank_quotient_pointIdeal] at hle
+    omega
 
 omit [IsAlgClosed k] in
 /-- **Consequence: the `1/q(x)` witness fails `IsPoleBoundedAtPairSpec`'s pointwise
@@ -343,11 +443,11 @@ pointHeightOne' x₁, pointHeightOne' x₂` for any rational `x₁,x₂`, by the
 second conjunct) directly contradicts the clause `ordAtSpec v 1 0 ≥ ordAtSpec v q 0 -
 0`, because `ordAtSpec v 1 0 = 0` (`toPair H 1 0 = 1` is a unit, in no prime ideal) but
 `ordAtSpec v q 0 ≥ 1 > 0`. -/
-theorem not_isPoleBoundedAtPairSpec_one_zero_irreducible [IsDedekindDomain (CoordinateRing H)]
+theorem not_isPoleBoundedAtPairSpec_one_zero_irreducible
     (x₁ x₂ : H.Point) (q : k[X]) (hq : Irreducible q) (hqdeg : 2 ≤ q.natDegree) :
     ¬ IsPoleBoundedAtPairSpec x₁ x₂ (1 : k[X]) 0 q 0 := by
   intro ⟨_, _, hptwise⟩
-  obtain ⟨v, hvmem, hvne⟩ := heightOneSpectrum_of_irreducible_ne_pointIdeal q hq hqdeg
+  obtain ⟨v, hvmem, hvne⟩ := heightOneSpectrum_of_irreducible_ne_pointIdeal (H := H) q hq hqdeg
   have hv1 : ordAtSpec v (1 : k[X]) 0 = 0 := by
     unfold ordAtSpec
     rw [if_neg (by simp [toPair_one_zero])]
@@ -369,15 +469,42 @@ theorem not_isPoleBoundedAtPairSpec_one_zero_irreducible [IsDedekindDomain (Coor
       show algebraMap k[X] (CoordinateRing H) q = toPair H q (0 : k[X])
       unfold toPair
       simp
-    have hval_lt : v.intValuation (toPair H q (0 : k[X])) < 1 :=
-      (v.intValuation_lt_one_iff_dvd _).mpr (Ideal.dvd_span_singleton.mpr hmem)
-    -- `intValuation < 1` in `WithZero (Multiplicative ℤ)` means `WithZero.log` is
-    -- strictly negative, i.e. `-WithZero.log (...) ≥ 1`. MATHLIB NAME UNCONFIRMED for
-    -- the precise lemma converting `< 1` to a `WithZero.log`-level strict inequality;
-    -- likely `WithZero.log_lt_zero_iff` or reasoning through `intValuation_lt_one_iff_dvd`
-    -- composed with `intValuation_le_one`/an explicit `Associates.count`-based
-    -- computation, mirroring `ordAt_eq_count`'s existing proof (`PrincipalDivisors.lean`).
-    sorry
+    -- Same route as `ordAt_eq_count` (`PrincipalDivisors.lean`): unfold `intValuation`
+    -- to `intValuationDef`'s explicit `Associates.count`-indexed formula rather than
+    -- reasoning about `WithZero.log`'s order directly (no `log_lt`/`log_le` lemma is
+    -- confirmed to exist in Mathlib for `WithZero`). `hn_pos` below closes via
+    -- `Associates.count_ne_zero_iff_dvd`, confirmed by ChatGPT consultation
+    -- (`chatgpt_prompt_associates_count_dvd.md`) against current Mathlib4 docs
+    -- (`Mathlib.RingTheory.UniqueFactorizationDomain.FactorSet`).
+    set n : ℕ := (Associates.mk v.asIdeal).count
+      (Associates.mk (Ideal.span ({toPair H q (0 : k[X])} : Set (CoordinateRing H)))).factors
+      with hn_def
+    have hval : v.intValuation (toPair H q (0 : k[X])) = WithZero.exp (-(n : ℤ)) := by
+      rw [IsDedekindDomain.HeightOneSpectrum.intValuation_apply,
+          IsDedekindDomain.HeightOneSpectrum.intValuationDef_if_neg _ hqne]
+      try rfl
+    have hspan_ne : Ideal.span ({toPair H q (0 : k[X])} : Set (CoordinateRing H)) ≠ 0 := by
+      intro h
+      apply hqne
+      have hmem0 : toPair H q (0 : k[X]) ∈ (0 : Ideal (CoordinateRing H)) := by
+        rw [← h]
+        exact Ideal.subset_span (Set.mem_singleton _)
+      exact Ideal.mem_bot.mp hmem0
+    have hdvd : v.asIdeal ∣ Ideal.span ({toPair H q (0 : k[X])} : Set (CoordinateRing H)) :=
+      Ideal.dvd_span_singleton.mpr hmem
+    have hn_pos : 1 ≤ n := by
+      rw [hn_def]
+      -- `v.irreducible` : `Irreducible v.asIdeal` — accessor name for `HeightOneSpectrum`'s
+      -- irreducibility field; if this exact name doesn't resolve, the underlying fact
+      -- (every height-one prime's `asIdeal` is irreducible in the ideal lattice) is
+      -- standard and should be findable under a nearby name in this Mathlib version.
+      exact Nat.one_le_iff_ne_zero.mpr
+        ((Associates.count_ne_zero_iff_dvd hspan_ne v.irreducible).mpr hdvd)
+    have hlog_exp : WithZero.log (WithZero.exp (-(n : ℤ))) = -(n : ℤ) :=
+      WithZero.exp_injective (WithZero.exp_log WithZero.exp_ne_zero)
+    show 1 ≤ -WithZero.log (v.intValuation (toPair H q (0 : k[X])))
+    rw [hval, hlog_exp]
+    omega
   have hindicator : ¬ (v = pointHeightOne' x₁) ∧ ¬ (v = pointHeightOne' x₂) :=
     ⟨hvne x₁, hvne x₂⟩
   have hbound := hptwise v
