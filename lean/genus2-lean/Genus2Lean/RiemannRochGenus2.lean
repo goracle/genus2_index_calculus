@@ -51,6 +51,32 @@ open Divisor
 variable {k : Type*} [Field k]
 variable {H : HyperellipticPolynomial k}
 
+/-- **`k` is assumed algebraically closed from here on, project-wide.**
+Genuinely necessary, not a convenience hypothesis: `H.Point` is defined
+(`AffinePoints.lean`) as `k`-rational points `{(a,b) ∈ k² : b² = f(a)}`
+only, and `IsPoleBoundedAtPair`/`LPairCarrier`'s pointwise clause quantifies
+only over `H.Point`. Over a non-algebraically-closed `k`, a rational
+function can have all of its poles at *non-`k`-rational* closed points
+(e.g. `z = 1/q(x)` for `q ∈ k[x]` irreducible of degree ≥ 2 with no root in
+`k`) — such `z` vacuously satisfies every `H.Point`-indexed pole bound
+(there is no `k`-point for the bound to fail at) while being genuinely
+non-constant, falsifying `finrank_L_pair`/`uniqueDegree2MapToP1` as stated.
+Concrete counterexample checked by hand (ChatGPT-assisted review, this
+session): `A=1,B=0,A'=q,B'=0` satisfies `IsPoleBoundedAtPair x₁ x₂ 1 0 q 0`
+for every `x₁ x₂`, since `ordAt P 1 0 = 0` and `ordAt P q 0 = 0` at every
+`k`-rational `P` (as `q` has no root in `k`), yet `z = 1/q(x)` is
+non-constant. `IsAlgClosed k` rules this out: every point of the curve
+(over the algebraic closure) is then `k`-rational, so `H.Point` really does
+range over every closed point and the pole bound is genuinely exhaustive.
+This matches how FFK's own proof is structured — they explicitly reduce to
+the algebraically closed case before the geometric point/divisor argument
+this project formalizes (see `RiemannRochCrux.lean`'s module docstring for
+the citation trail). Affordable for this project's actual target (genus-2
+index calculus is typically run over a finite field's algebraic closure or
+similar), so taken as a standing hypothesis rather than reworking `H.Point`
+to range over all closed points of `Spec k[x]` (a much larger change). -/
+variable [IsAlgClosed k]
+
 /-! ## §1. `L(x₁ + x₂)`: the Riemann–Roch space of an affine degree-2 divisor
 
 An element of `L((x₁)+(x₂))` is a ratio of two coordinate-ring elements,
@@ -951,6 +977,49 @@ theorem one_mem_LPairCarrier' (x₁ x₂ : H.Point) :
   · intro P; unfold ordAtFrac; omega
   · exact (polePairToFraction_one_zero_one_zero H).symm
 
+-- **Relocated up from later in the file (build-order fix).** `ordInfOfPair_le_zero`
+-- and `ordInfOfPair_C_mul_ge` originally sat after `LPairCarrier'_smul`, but
+-- `LPairCarrier'_smul`'s proof calls `ordInfOfPair_C_mul_ge` — a genuine forward
+-- reference, which Lean 4 rejects regardless of `sorry`s elsewhere in the file.
+-- Moved here (both depend only on `ordInfOfPair`'s own definition, imported from
+-- `PrincipalDivisors.lean`, so no further reordering is needed) rather than left
+-- in their original position.
+
+/-- `ordInfOfPair A B` is always `≤ 0`. -/
+theorem ordInfOfPair_le_zero (A B : k[X]) : ordInfOfPair A B ≤ 0 := by
+  by_cases hA : A = 0
+  · by_cases hB : B = 0
+    · simp [ordInfOfPair, hA, hB]
+    · simp [ordInfOfPair, hA, hB]
+  · by_cases hB : B = 0
+    · simp [ordInfOfPair, hA, hB]
+    · simp [ordInfOfPair, hA, hB]
+
+/-- Multiplying both slots by `C c` can only weaken the pole order at infinity. -/
+theorem ordInfOfPair_C_mul_ge (c : k) (A B : k[X]) :
+    ordInfOfPair (C c * A) (C c * B) ≥ ordInfOfPair A B := by
+  by_cases hc : c = 0
+  · have hL : ordInfOfPair (C c * A) (C c * B) = 0 := by
+      simp [hc, ordInfOfPair]
+    rw [hL]
+    exact ordInfOfPair_le_zero A B
+  · have hAdeg : (C c * A).natDegree = A.natDegree := by
+      simpa using
+        (Polynomial.natDegree_C_mul hc :
+          (C c * A).natDegree = A.natDegree)
+    have hBdeg : (C c * B).natDegree = B.natDegree := by
+      simpa using
+        (Polynomial.natDegree_C_mul hc :
+          (C c * B).natDegree = B.natDegree)
+    -- Avoid `Polynomial.C_eq_0`, which is not available here.
+    have hCne : (C c : k[X]) ≠ 0 := by
+      intro h
+      have hcoeff := congr_arg (fun p : k[X] => Polynomial.coeff p 0) h
+      simp only [Polynomial.coeff_C_zero, Polynomial.coeff_zero] at hcoeff
+      exact hc hcoeff
+    by_cases hA : A = 0 <;> by_cases hB : B = 0 <;>
+      simp [ordInfOfPair, hA, hB, hAdeg, hBdeg, mul_eq_zero, hCne]
+
 /-- **`LPairCarrier'` is closed under `k`-scaling.** Needed as the base case
 for the mixed `z₁ = 0`/`z₂ = 0` branches of `LPairCarrier'_add_smul` below,
 where the nonzero side's contribution `c • z` (`c` possibly `0`) needs its
@@ -999,50 +1068,23 @@ theorem LPairCarrier'_smul (x₁ x₂ : H.Point) (c : k) (z : FractionRing (Coor
           rw [hstep]
           have hCeq : (Polynomial.C c : k[X]) = algebraMap k k[X] c := by
             simp [Polynomial.algebraMap_apply]
+          -- Same idiom as `RiemannRochCrux.lean`/`PrincipalDivisors.lean:1774`/
+          -- `LCanonicalElementary.lean:143`: both `k`-algebra structures here are
+          -- built via `Algebra.compHom`, so `IsScalarTower` isn't automatic and is
+          -- established by hand.
+          haveI hst1 : IsScalarTower k k[X] (CoordinateRing H) :=
+            IsScalarTower.of_algebraMap_eq (fun _ => rfl)
+          haveI hst2 : IsScalarTower k (CoordinateRing H) (FractionRing (CoordinateRing H)) :=
+            IsScalarTower.of_algebraMap_eq (fun _ => rfl)
           rw [hCeq, ← IsScalarTower.algebraMap_apply k k[X] (CoordinateRing H),
               ← IsScalarTower.algebraMap_apply k (CoordinateRing H) (FractionRing (CoordinateRing H))]
         rw [hCc_alg, Algebra.smul_def]
         field_simp
 
-/-- `ordInfOfPair A B` is always `≤ 0`. -/
-theorem ordInfOfPair_le_zero (A B : k[X]) : ordInfOfPair A B ≤ 0 := by
-  by_cases hA : A = 0
-  · by_cases hB : B = 0
-    · simp [ordInfOfPair, hA, hB]
-    · simp [ordInfOfPair, hA, hB]
-  · by_cases hB : B = 0
-    · simp [ordInfOfPair, hA, hB]
-    · simp [ordInfOfPair, hA, hB]
-
 /-- The zero pair has `ordInfOfPair = 0`. -/
 theorem ordInfOfPair_zero_zero :
     ordInfOfPair (0 : k[X]) (0 : k[X]) = 0 := by
   simp [ordInfOfPair]
-
-/-- Multiplying both slots by `C c` can only weaken the pole order at infinity. -/
-theorem ordInfOfPair_C_mul_ge (c : k) (A B : k[X]) :
-    ordInfOfPair (C c * A) (C c * B) ≥ ordInfOfPair A B := by
-  by_cases hc : c = 0
-  · have hL : ordInfOfPair (C c * A) (C c * B) = 0 := by
-      simp [hc, ordInfOfPair]
-    rw [hL]
-    exact ordInfOfPair_le_zero A B
-  · have hAdeg : (C c * A).natDegree = A.natDegree := by
-      simpa using
-        (Polynomial.natDegree_C_mul hc :
-          (C c * A).natDegree = A.natDegree)
-    have hBdeg : (C c * B).natDegree = B.natDegree := by
-      simpa using
-        (Polynomial.natDegree_C_mul hc :
-          (C c * B).natDegree = B.natDegree)
-    -- Avoid `Polynomial.C_eq_0`, which is not available here.
-    have hCne : (C c : k[X]) ≠ 0 := by
-      intro h
-      have hcoeff := congr_arg (fun p : k[X] => Polynomial.coeff p 0) h
-      simp only [Polynomial.coeff_C_zero, Polynomial.coeff_zero] at hcoeff
-      exact hc hcoeff
-    by_cases hA : A = 0 <;> by_cases hB : B = 0 <;>
-      simp [ordInfOfPair, hA, hB, hAdeg, hBdeg, mul_eq_zero, hCne]
 
 /-- Helper: `ordInfOfPair A B` unfolded on its nonzero branch. `ordInfOfPair`
 picks up `Classical.propDecidable` for the `if B = 0 then .. else ..`
@@ -1801,7 +1843,8 @@ theorem LPairCarrier'_add_smul (hdeg : H.f.natDegree = 5) (x₁ x₂ : H.Point)
     have heq : c₁ • z₁ + c₂ • z₂ = c₂ • z₂ := by rw [hz1]; simp
     rw [heq]; exact hc₂z₂
   rcases h₂ with hz2 | hw₂
-  · have hc₁z₁ : c₁ • z₁ ∈ LPairCarrier' x₁ x₂ := LPairCarrier'_smul x₁ x₂ c₁ z₁ h₁
+  · have hc₁z₁ : c₁ • z₁ ∈ LPairCarrier' x₁ x₂ :=
+      LPairCarrier'_smul x₁ x₂ c₁ z₁ (Or.inr hw₁)
     have heq : c₁ • z₁ + c₂ • z₂ = c₁ • z₁ := by rw [hz2]; simp
     rw [heq]; exact hc₁z₁
   obtain ⟨A₁, B₁, A₁', B₁', ⟨hA₁ne, hne₁, hinf₁, hoff₁'⟩, hz₁⟩ := hw₁

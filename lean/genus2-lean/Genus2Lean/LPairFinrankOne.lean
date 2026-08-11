@@ -202,6 +202,12 @@ open Divisor
 
 variable {k : Type*} [Field k]
 variable {H : HyperellipticPolynomial k}
+-- `[IsAlgClosed k]` — see `RiemannRochGenus2.lean`'s docstring on its own
+-- `variable [IsAlgClosed k]` for why this is now a genuine, necessary
+-- standing hypothesis (not a convenience): the theorems in this file target
+-- `uniqueDegree2MapToP1`, which is false over a non-algebraically-closed
+-- `k` via the `z = 1/q(x)` counterexample documented there.
+variable [IsAlgClosed k]
 variable [IsDedekindDomain (CoordinateRing H)]
 
 /-! ## Lemma 0 (new, load-bearing infrastructure): finite support from `hspec`
