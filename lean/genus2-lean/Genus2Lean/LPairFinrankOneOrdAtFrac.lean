@@ -680,24 +680,86 @@ key simplification**: because every root is forced to multiplicity exactly
 that the multiplicity-quantitative crux lemma is what actually removes the
 squarefreeness dependency. -/
 theorem natDegree_le_two_of_isCoprimeAtRoots (hchar : (2 : k) ≠ 0) (hsf : Squarefree H.f)
-    (x₁ x₂ : H.Point) (a b c : k[X]) (hc : c ≠ 0)
+    (x₁ x₂ : H.Point) (hne : x₁ ≠ x₂) (a b c : k[X]) (hc : c ≠ 0)
     (hcop : IsCoprimeAtRoots a b c)
     (hzsupp : ∀ P : H.Point, ordAtFrac P a b c 0 ≥
       -((if P = x₁ then 1 else 0) + (if P = x₂ then 1 else 0))) :
     c.natDegree ≤ 2 := by
   classical
-  -- **Remaining bookkeeping** (mechanical, not new content): package
-  -- `rootMultiplicity_le_one_and_mem_pair_of_isCoprimeAtRoots` applied to
-  -- every element of `c.roots.toFinset` into the injection-into-`{x₁,x₂}`
-  -- argument, then read off `c.natDegree = ∑ (rootMultiplicity) ≤
-  -- ∑_{root} 1 ≤ 2` via the standard Mathlib fact bounding `c.natDegree`
-  -- below by its multiplicity-weighted root count over a splitting field
-  -- (`k` algebraically closed ⇒ equality, `Polynomial.natDegree_eq_card_roots`
-  -- or the `Multiset.card`-level equivalent — MATHLIB NAME UNCONFIRMED).
-  -- Left as `sorry`, isolated from the mathematical content (fully resolved
-  -- above) — this is exactly the kind of Mathlib-API-wiring step to close
-  -- via the REPL rather than guess blind.
-  sorry
+  -- Every root `α` of `c` maps to a witness point `Q_α ∈ {x₁,x₂}` with
+  -- `Q_α.X = α`, via the previous lemma. Package this as an injective map
+  -- from `c`'s (finite) root set into `{x₁,x₂}` — injective because `Q_α.X = α`
+  -- recovers `α` from `Q_α`, so distinct roots give distinct witness points.
+  have hroot_to_pair : ∀ α ∈ c.roots.toFinset,
+      ∃ Q : H.Point, (Q = x₁ ∨ Q = x₂) ∧ Q.X = α ∧ (c.rootMultiplicity α : ℤ) ≤ 1 := by
+    intro α hα
+    rw [Multiset.mem_toFinset, Polynomial.mem_roots hc] at hα
+    exact rootMultiplicity_le_one_and_mem_pair_of_isCoprimeAtRoots hchar hsf x₁ x₂ hne a b c hc
+      α hα hcop hzsupp
+  -- Choice function `α ↦ Q_α`, packaged via `Classical.choice` on the above.
+  choose Qf hQf_mem hQf_X hQf_mult using hroot_to_pair
+  -- `Qf` is injective on `c.roots.toFinset`: if `Qf α = Qf β` then
+  -- `α = (Qf α).X = (Qf β).X = β`.
+  have hQf_inj : ∀ α (hα : α ∈ c.roots.toFinset) β (hβ : β ∈ c.roots.toFinset),
+      Qf α hα = Qf β hβ → α = β := by
+    intro α hα β hβ heq
+    rw [← hQf_X α hα, ← hQf_X β hβ, heq]
+  -- Hence `c.roots.toFinset` injects into the 2-element set `{x₁, x₂}`,
+  -- bounding its cardinality by `2`.
+  have hcard_le : c.roots.toFinset.card ≤ 2 := by
+    have hmaps : ∀ α (hα : α ∈ c.roots.toFinset), Qf α hα ∈ ({x₁, x₂} : Finset H.Point) := by
+      intro α hα
+      rcases hQf_mem α hα with h | h <;> simp [h]
+    -- `Qf` is dependently typed (`∀ α, α ∈ c.roots.toFinset → H.Point`), so it
+    -- can't feed `Finset.card_le_card_of_injOn` directly (that wants a plain
+    -- function on a `Finset`). Route through `c.roots.toFinset.attach`, whose
+    -- elements are `⟨α, hα⟩ : {α // α ∈ c.roots.toFinset}` — the membership
+    -- proof travels with the element, so `Qf a.1 a.2` is a genuine
+    -- non-dependent function `{α // α ∈ c.roots.toFinset} → H.Point`.
+    have hcard_attach : c.roots.toFinset.attach.card ≤ ({x₁, x₂} : Finset H.Point).card := by
+      apply Finset.card_le_card_of_injOn (fun a => Qf a.1 a.2)
+      · intro a _
+        exact hmaps a.1 a.2
+      · intro a _ b _ heq
+        exact Subtype.ext (hQf_inj a.1 a.2 b.1 b.2 heq)
+    rw [Finset.card_attach] at hcard_attach
+    refine hcard_attach.trans ?_
+    -- `{x₁, x₂} = insert x₁ {x₂}`, so `card {x₁,x₂} ≤ card {x₂} + 1 = 2` via
+    -- `Finset.card_insert_le`. NAME UNCONFIRMED — please check in the REPL;
+    -- if it doesn't match, `decide`/`Finset.card_le_card ... ` or
+    -- `Finset.card_pair`-style lemmas are the likely alternates.
+    have : ({x₁, x₂} : Finset H.Point).card ≤ ({x₂} : Finset H.Point).card + 1 :=
+      Finset.card_insert_le x₁ ({x₂} : Finset H.Point)
+    simpa using this
+  -- Every root has multiplicity exactly `1` (`≥ 1` since it's a root of `c ≠ 0`,
+  -- `≤ 1` from `hQf_mult`), so the roots-with-multiplicity multiset `c.roots`
+  -- has no repeats, i.e. `c.roots.Nodup` — hence `c.roots.card =
+  -- c.roots.toFinset.card ≤ 2` (just proved above). Combined with `c` splitting
+  -- over `k` (below, using the ambient `[IsAlgClosed k]`), `c.roots.card =
+  -- c.natDegree` exactly, closing the goal.
+  have hnodup : c.roots.Nodup := by
+    rw [Multiset.nodup_iff_count_le_one]
+    intro α
+    by_cases hα : α ∈ c.roots
+    · have hα' : α ∈ c.roots.toFinset := Multiset.mem_toFinset.mpr hα
+      have hm1 : c.rootMultiplicity α ≤ 1 := by exact_mod_cast hQf_mult α hα'
+      rw [Polynomial.count_roots]
+      exact hm1
+    · simp [Multiset.count_eq_zero.mpr hα]
+  have hroots_card : c.roots.card = c.roots.toFinset.card := (Multiset.toFinset_card_of_nodup hnodup).symm
+  -- `IsAlgClosed k` *is* in scope here (the ambient `variable [IsAlgClosed k]`
+  -- block at the top of this section covers this theorem, confirmed by the
+  -- REPL error context listing `inst✝¹ : IsAlgClosed k`). Confirmed via
+  -- Mathlib docs (web search): in the current version, `Polynomial.Splits` is
+  -- a UNARY predicate (`f.Splits`, no ring-hom argument — the old binary
+  -- `Splits i f` API is gone), and `IsAlgClosed.splits (p : Polynomial k) :
+  -- p.Splits` gives it directly. `Polynomial.Splits.natDegree_eq_card_roots`
+  -- is exactly the fact wanted, in exactly this direction:
+  -- `f.Splits → f.natDegree = f.roots.card`.
+  have hsplits : c.Splits := IsAlgClosed.splits c
+  have heq_natDegree : c.natDegree = c.roots.card := hsplits.natDegree_eq_card_roots
+  rw [heq_natDegree]
+  omega
 
 end HyperellipticPolynomial
 
