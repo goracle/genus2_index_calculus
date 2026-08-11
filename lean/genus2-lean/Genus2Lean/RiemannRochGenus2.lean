@@ -267,6 +267,7 @@ theorem ordAt_eq_zero_of_notMem (P : H.Point) (A B : k[X])
     rw [hval_eq]
     simp
 
+omit [IsAlgClosed k] [IsDedekindDomain (CoordinateRing H)] in
 /-- `toPair H 1 0 = 1`: unfolds `toPair`'s definition (`algebraMap A +
 algebraMap B * y H`) with `A = 1, B = 0`, and `algebraMap` is a ring hom so
 sends `1 ↦ 1`. -/
@@ -419,18 +420,36 @@ theorem heightOneSpectrum_of_irreducible_ne_pointIdeal
     set φ := Ideal.quotientMap Q (algebraMap k[X] (CoordinateRing H)) hqm with hφ_def
     have hφ_lin : ∀ (c : k) (x : k[X] ⧸ Ideal.span ({q} : Set k[X])),
         φ (c • x) = c • φ x := by
+      -- Same idiom as `RiemannRochGenus2.lean:1393`/`RiemannRochCrux.lean`/
+      -- `PrincipalDivisors.lean:1774`/`LCanonicalElementary.lean:143`: the `k`-algebra
+      -- structure on `CoordinateRing H` is built via `Algebra.compHom`, so
+      -- `IsScalarTower k k[X] (CoordinateRing H)` isn't automatic and must be supplied
+      -- by hand before `IsScalarTower.algebraMap_apply` can fire.
+      haveI hst : IsScalarTower k (k[X]) (CoordinateRing H) :=
+        IsScalarTower.of_algebraMap_eq (fun _ => rfl)
+      haveI hst2 : IsScalarTower k (CoordinateRing H) (CoordinateRing H ⧸ Q) :=
+        IsScalarTower.of_algebraMap_eq (fun _ => rfl)
       intro c x
       obtain ⟨x', rfl⟩ := Submodule.Quotient.mk_surjective (Ideal.span ({q} : Set k[X])) x
       show φ (Ideal.Quotient.mk _ (c • x')) = c • φ (Ideal.Quotient.mk _ x')
-      have hlhs : φ (Ideal.Quotient.mk (Ideal.span ({q} : Set k[X])) (c • x')) =
-          Ideal.Quotient.mk Q (algebraMap k[X] (CoordinateRing H) (c • x')) :=
+      -- Push the `k`-scalar action down to `k[X]` first (`Algebra.smul_def` + `hst`), on
+      -- *both* sides, before invoking `φ` at all — this avoids needing a separate
+      -- `IsScalarTower` bridge through the quotient `CoordinateRing H ⧸ Q`.
+      have hcx' : c • x' = (algebraMap k (k[X])) c * x' := Algebra.smul_def c x'
+      rw [hcx']
+      have hstep : φ (Ideal.Quotient.mk (Ideal.span ({q} : Set k[X]))
+            ((algebraMap k (k[X])) c * x')) =
+          Ideal.Quotient.mk Q (algebraMap k[X] (CoordinateRing H)
+            ((algebraMap k (k[X])) c * x')) :=
         Ideal.quotientMap_mk
+      rw [hstep, map_mul]
+      simp only [← IsScalarTower.algebraMap_apply k (k[X]) (CoordinateRing H)]
       have hrhs : φ (Ideal.Quotient.mk (Ideal.span ({q} : Set k[X])) x') =
           Ideal.Quotient.mk Q (algebraMap k[X] (CoordinateRing H) x') :=
         Ideal.quotientMap_mk
-      simp only [hlhs, hrhs, Algebra.smul_def, map_mul,
-        IsScalarTower.algebraMap_apply k (k[X]) (CoordinateRing H) c,
-        ← Ideal.Quotient.algebraMap_eq]
+      rw [hrhs, Algebra.smul_def, map_mul,
+          IsScalarTower.algebraMap_apply k (CoordinateRing H) (CoordinateRing H ⧸ Q),
+          Ideal.Quotient.algebraMap_eq]
     set φₗ : (k[X] ⧸ Ideal.span ({q} : Set k[X])) →ₗ[k] (CoordinateRing H ⧸ Q) :=
       { toFun := φ, map_add' := map_add φ, map_smul' := hφ_lin } with hφₗ_def
     have hφₗ_inj : Function.Injective φₗ := hφ_inj
