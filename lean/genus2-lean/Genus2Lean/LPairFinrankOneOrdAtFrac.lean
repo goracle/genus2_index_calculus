@@ -2019,10 +2019,6 @@ theorem uniqueDegree2MapToP1_ordAtFrac (hdeg : H.f.natDegree = 5) (hchar : (2 : 
         natDegree_le_two_of_isCoprimeAtRoots
           hchar hsf x₁ x₂ hx12 a₀ b₀ c₀ hc₀ne hcop hzsupp₀
           
-
-
-
-
     have hbeq0 : b₀ = 0 := b_eq_zero_of_rationalized_pole_bounded a₀ b₀ c₀ hinf₀ hcdeg
     subst hbeq0
 
