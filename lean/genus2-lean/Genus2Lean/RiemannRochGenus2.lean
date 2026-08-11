@@ -818,6 +818,192 @@ machinery) since every call site already has a witness pair in hand. -/
 def ordAtFrac (P : H.Point) (A B A' B' : k[X]) : ℤ :=
   ordAt P A B - ordAt P A' B'
 
+/-- **`ordAtFrac` is representation-independent for nonzero `z`.** Direct
+restatement of `ordAt_sub_ordAt_eq_of_polePairToFraction_eq` in `ordAtFrac`
+notation: any two nonzero-numerator pole-pair representations of the same
+fraction-field element agree on `ordAtFrac` at every point. This is the fact
+that makes `IsPoleBoundedAtPair'`/`LPairCarrier'` below well-posed as a
+condition on `z` itself, not merely on a chosen witness pair. -/
+theorem ordAtFrac_eq_of_polePairToFraction_eq (P : H.Point)
+    (A B A' B' C D C' D' : k[X])
+    (hz : toPair H A B ≠ 0)
+    (hA'B' : toPair H A' B' ≠ 0) (hC'D' : toPair H C' D' ≠ 0)
+    (heq : polePairToFraction (H := H) A B A' B' = polePairToFraction (H := H) C D C' D') :
+    ordAtFrac P A B A' B' = ordAtFrac P C D C' D' :=
+  ordAt_sub_ordAt_eq_of_polePairToFraction_eq P A B A' B' C D C' D' hz hA'B' hC'D' heq
+
+/-- `toPair H (C c) 0` is never in any `pointIdeal P` for `c ≠ 0`: it is a
+unit (`toPair H (C c) 0 * toPair H (C c⁻¹) 0 = 1` via `toPair_mul` collapsed
+by `mul_inv_cancel₀`), and no maximal ideal contains a unit. Ported from
+`LPairFinrankOne.lean`'s `toPair_C_notMem_pointIdeal` so `RiemannRochGenus2.lean`
+does not need to import that (later, downstream) file. -/
+theorem toPair_C_notMem_pointIdeal (c : k) (hc : c ≠ 0) (P : H.Point) :
+    toPair H (Polynomial.C c) (0 : k[X]) ∉ pointIdeal P := by
+  intro hmem
+  have hunit : IsUnit (toPair H (Polynomial.C c) (0 : k[X])) := by
+    have hmul_fwd : toPair H (Polynomial.C c) 0 * toPair H (Polynomial.C c⁻¹) 0 = 1 := by
+      have hmul := toPair_mul (H := H) (Polynomial.C c) 0 (Polynomial.C c⁻¹) 0
+      simp only [zero_mul, mul_zero, zero_add, add_zero] at hmul
+      rw [hmul, ← Polynomial.C_mul, mul_inv_cancel₀ hc, Polynomial.C_1, toPair_one_zero]
+    have hmul_bwd : toPair H (Polynomial.C c⁻¹) 0 * toPair H (Polynomial.C c) 0 = 1 := by
+      rw [mul_comm]; exact hmul_fwd
+    exact ⟨⟨toPair H (Polynomial.C c) 0, toPair H (Polynomial.C c⁻¹) 0, hmul_fwd, hmul_bwd⟩, rfl⟩
+  exact (pointIdeal_isMaximal P).ne_top
+    (Ideal.eq_top_of_isUnit_mem (pointIdeal P) hmem hunit)
+
+/-- `ordAt` at a nonzero constant pair is always `0`. Ported from
+`LPairFinrankOne.lean`'s `ordAt_C_zero`. -/
+theorem ordAt_C_zero (c : k) (hc : c ≠ 0) (P : H.Point) :
+    ordAt P (Polynomial.C c) (0 : k[X]) = 0 :=
+  ordAt_eq_zero_of_notMem P (Polynomial.C c) 0 (toPair_C_notMem_pointIdeal c hc P)
+
+/-- **`ordAt` is invariant under scaling by a nonzero constant.** Ported from
+`LPairFinrankOne.lean`'s `ordAt_C_mul_eq`, needed here (rather than imported,
+since this file is upstream of that one) for `LPairCarrier'`'s scalar-closure
+lemma below. -/
+theorem ordAt_C_mul_eq (c : k) (hc : c ≠ 0) (P Q : k[X]) (hPQ : ¬ (P = 0 ∧ Q = 0))
+    (R : H.Point) :
+    ordAt R (Polynomial.C c * P) (Polynomial.C c * Q) = ordAt R P Q := by
+  have hCcne : toPair H (Polynomial.C c) (0 : k[X]) ≠ 0 := by
+    rw [Ne, toPair_eq_zero_iff]
+    exact fun h => hc (Polynomial.C_eq_zero.mp h.1)
+  have hPQne : toPair H P Q ≠ 0 := by rw [Ne, toPair_eq_zero_iff]; exact hPQ
+  have hmul : toPair H (Polynomial.C c * P) (Polynomial.C c * Q) =
+      toPair H (Polynomial.C c) (0 : k[X]) * toPair H P Q := by
+    have hraw := toPair_mul (H := H) (Polynomial.C c) 0 P Q
+    simp only [zero_mul, mul_zero, zero_add, add_zero] at hraw
+    exact hraw.symm
+  by_cases hbot : pointIdeal R = ⊥
+  · have hne : toPair H (Polynomial.C c * P) (Polynomial.C c * Q) ≠ 0 := by
+      rw [hmul]; exact mul_ne_zero hCcne hPQne
+    unfold ordAt
+    rw [if_neg hne, if_neg hPQne, dif_pos hbot, dif_pos hbot]
+  · have hCc0 : ordAt R (Polynomial.C c) (0 : k[X]) = 0 := ordAt_C_zero c hc R
+    have hstep := ordAt_toPair_mul_of_ne_zero' R hbot (Polynomial.C c) 0 P Q _ _
+      hCcne hPQne hmul
+    rw [hstep, hCc0, zero_add]
+
+/-! ## §1b. `IsPoleBoundedAtPair'` / `LPairCarrier'`: the `ordAtFrac`-based
+replacement for `IsPoleBoundedAtPair`/`LPairCarrier`
+
+**Motivation.** `IsPoleBoundedAtPair`'s pointwise clause states the pole
+bound as `ordAt P A B ≥ ordAt P A' B' - indicator P`, i.e. as a comparison
+between the numerator's and denominator's `ordAt` *separately*. This is
+too weak to rule out the "not lowest terms" counterexample
+`A=A'=0, B=B'=1` (`z = y/y`): both sides' `ordAt` inflate together by the
+same shared factor, so the separate-clause bound is satisfied even though
+`z = 1` has no pole anywhere. Every downstream consumer that needs the
+"lowest terms" fact currently re-supplies it as an extra hypothesis
+(`hreduced : ∀ P, ordAt P A B = 0 ∨ ordAt P A' B' = 0`,
+`LPairFinrankOne.lean`), which is itself unformalized mathematical content,
+not free.
+
+**Fix.** State the pointwise clause on `ordAtFrac P A B A' B'` — the
+*difference*, not the two `ordAt`s separately — instead. Since `ordAtFrac`
+is exactly `ordAt P A B - ordAt P A' B'`, common factors between numerator
+and denominator cancel automatically in the subtraction: at any point where
+both `A B` and `A' B'` vanish to the same order (the shared-factor case),
+`ordAtFrac` there is `0` regardless of how large that shared order is — no
+`hreduced` side-condition needed to see it. `ordAtFrac_eq_of_polePairToFraction_eq`
+above shows this bound is representation-independent (for nonzero `z`), so
+`IsPoleBoundedAtPair'` is a genuine condition on `z : FractionRing
+(CoordinateRing H)`, not merely on a chosen witness pair — matching the
+long-term intent flagged in `LPairCarrier`'s own docstring. -/
+
+/-- **`ordAtFrac`-based pole-boundedness at a pair of points.** Same shape as
+`IsPoleBoundedAtPair` (nonzero denominator, `ordInfOfPair` bound at infinity,
+pointwise bound at every affine point), except the affine pointwise clause is
+stated on `ordAtFrac P A B A' B'` directly rather than on `ordAt P A B` and
+`ordAt P A' B'` separately. The extra `toPair H A B ≠ 0` hypothesis (absent
+from `IsPoleBoundedAtPair`) is needed for `ordAtFrac_eq_of_polePairToFraction_eq`
+to apply — it restricts to nonzero `z`, matching `ordAtFrac`'s own scope; the
+zero element of `LPairCarrier'` is supplied separately, exactly as
+`ordAt_sub_ordAt_eq_of_polePairToFraction_eq`'s docstring anticipates. -/
+def IsPoleBoundedAtPair' (x₁ x₂ : H.Point) (A B A' B' : k[X]) : Prop :=
+  toPair H A B ≠ 0 ∧
+  ¬ (A' = 0 ∧ B' = 0) ∧
+  ordInfOfPair A B ≥ ordInfOfPair A' B' ∧
+  (∀ P : H.Point, ordAtFrac P A B A' B' ≥
+    -((if P = x₁ then 1 else 0) + (if P = x₂ then 1 else 0)))
+
+/-- **`L((x₁)+(x₂))`, `ordAtFrac`-based, as a bare `Set`.** The
+representation-independent replacement for `LPairCarrier` anticipated in
+that definition's own docstring: membership no longer depends on the choice
+of witness pair carrying a "lowest terms" property, since
+`IsPoleBoundedAtPair'`'s bound is already stated on the intrinsic quantity
+`ordAtFrac`. The zero element is included separately (`z = 0` has no
+witness pair with `toPair H A B ≠ 0`, matching `ordAtFrac`'s own restriction
+to nonzero numerators), rather than folded into the existential — mirroring
+how `ordAt'`/`ordAtFrac`'s docstrings handle the zero case throughout this
+file. -/
+def LPairCarrier' (x₁ x₂ : H.Point) : Set (FractionRing (CoordinateRing H)) :=
+  { z | z = 0 ∨ ∃ A B A' B' : k[X], IsPoleBoundedAtPair' x₁ x₂ A B A' B' ∧
+      z = polePairToFraction A B A' B' }
+
+/-- `1 ∈ LPairCarrier' x₁ x₂`, via the same witness pair `(1,0,1,0)` as
+`one_mem_LPairCarrier`. -/
+theorem one_mem_LPairCarrier' (x₁ x₂ : H.Point) :
+    (1 : FractionRing (CoordinateRing H)) ∈ LPairCarrier' x₁ x₂ := by
+  refine Or.inr ⟨1, 0, 1, 0, ⟨?_, ?_, ?_, ?_⟩, ?_⟩
+  · rw [toPair_one_zero]; exact one_ne_zero
+  · exact fun h => one_ne_zero h.1
+  · exact le_refl _
+  · intro P; unfold ordAtFrac; omega
+  · exact (polePairToFraction_one_zero_one_zero H).symm
+
+/-- **`LPairCarrier'` is closed under `k`-scaling.** Needed as the base case
+for the mixed `z₁ = 0`/`z₂ = 0` branches of `LPairCarrier'_add_smul` below,
+where the nonzero side's contribution `c • z` (`c` possibly `0`) needs its
+own membership fact rather than being read off the un-scaled witness pair
+for `z`. `c = 0` collapses to the zero element (`Or.inl`); `c ≠ 0` scales
+the numerator only, via `ordAt_C_mul_eq`, which leaves every `ordAtFrac`
+value at every point unchanged. -/
+theorem LPairCarrier'_smul (x₁ x₂ : H.Point) (c : k) (z : FractionRing (CoordinateRing H))
+    (h : z ∈ LPairCarrier' x₁ x₂) :
+    c • z ∈ LPairCarrier' x₁ x₂ := by
+  rcases h with hz | ⟨A, B, A', B', ⟨hAne, hne', hinf, hoff⟩, hz⟩
+  · exact Or.inl (by rw [hz]; simp)
+  · by_cases hc : c = 0
+    · exact Or.inl (by rw [hz, hc]; simp)
+    · refine Or.inr ⟨Polynomial.C c * A, Polynomial.C c * B, A', B', ⟨?_, hne', ?_, ?_⟩, ?_⟩
+      · rw [Ne, toPair_eq_zero_iff]
+        intro hcontra
+        exact hAne ((toPair_eq_zero_iff H A B).mpr
+          ⟨(mul_eq_zero.mp hcontra.1).resolve_left (Polynomial.C_ne_zero.mpr hc),
+           (mul_eq_zero.mp hcontra.2).resolve_left (Polynomial.C_ne_zero.mpr hc)⟩)
+      · have hAB : ¬ (A = 0 ∧ B = 0) := fun h => hAne ((toPair_eq_zero_iff H A B).mpr h)
+        calc ordInfOfPair (Polynomial.C c * A) (Polynomial.C c * B) ≥ ordInfOfPair A B :=
+              ordInfOfPair_C_mul_ge c A B
+          _ ≥ ordInfOfPair A' B' := hinf
+      · intro P
+        have hAB : ¬ (A = 0 ∧ B = 0) := fun h => hAne ((toPair_eq_zero_iff H A B).mpr h)
+        have hordeq : ordAt P (Polynomial.C c * A) (Polynomial.C c * B) = ordAt P A B :=
+          ordAt_C_mul_eq c hc A B hAB P
+        have := hoff P
+        unfold ordAtFrac at this ⊢
+        rw [hordeq]; exact this
+      · rw [hz]
+        unfold polePairToFraction
+        have hmul : toPair H (Polynomial.C c * A) (Polynomial.C c * B) =
+            toPair H (Polynomial.C c) (0 : k[X]) * toPair H A B := by
+          have hraw := toPair_mul (H := H) (Polynomial.C c) 0 A B
+          simp only [zero_mul, mul_zero, zero_add, add_zero] at hraw
+          exact hraw.symm
+        rw [hmul, map_mul]
+        have hCc_alg : algebraMap (CoordinateRing H) (FractionRing (CoordinateRing H))
+              (toPair H (Polynomial.C c) (0 : k[X])) =
+            algebraMap k (FractionRing (CoordinateRing H)) c := by
+          have hstep : toPair H (Polynomial.C c) (0 : k[X]) =
+              algebraMap k[X] (CoordinateRing H) (Polynomial.C c) := by
+            unfold toPair; simp
+          rw [hstep]
+          have hCeq : (Polynomial.C c : k[X]) = algebraMap k k[X] c := by
+            simp [Polynomial.algebraMap_apply]
+          rw [hCeq, ← IsScalarTower.algebraMap_apply k k[X] (CoordinateRing H),
+              ← IsScalarTower.algebraMap_apply k (CoordinateRing H) (FractionRing (CoordinateRing H))]
+        rw [hCc_alg, Algebra.smul_def]
+        field_simp
+
 /-- `ordInfOfPair A B` is always `≤ 0`. -/
 theorem ordInfOfPair_le_zero (A B : k[X]) : ordInfOfPair A B ≤ 0 := by
   by_cases hA : A = 0
@@ -1322,6 +1508,38 @@ theorem LPairCarrier_pointwise (c₁ c₂ : k)
     rw [ordAt_eq_ordAt'_of_ne_zero Q N' N'' hN'ne] at hchain
     exact WithTop.coe_le_coe.mp hchain
 
+/-- **`ordAtFrac`-based restatement of `LPairCarrier_pointwise`.** Thin
+wrapper: `LPairCarrier_pointwise` already proves the `ordAt`-level bound
+`ordAt Q N' N'' ≥ ordAt Q D' D'' - s`; since `ordAtFrac Q N' N'' D' D''` is
+*defined* as `ordAt Q N' N'' - ordAt Q D' D''`, that bound is exactly
+`ordAtFrac Q N' N'' D' D'' ≥ -s` after unfolding, no new bookkeeping needed
+— the hard multiplicativity/ultrametric argument lives entirely in the
+wrapped lemma. Hypotheses `h1`/`h2` are correspondingly restated on
+`ordAtFrac` (via `toPair H A₁ B₁ ≠ 0`/`toPair H A₂ B₂ ≠ 0`, needed so those
+are genuine `ordAtFrac`-level bounds rather than `ordAt`-level bounds that
+could silently be about a `toPair = 0` degenerate case). -/
+theorem LPairCarrier_pointwise' (c₁ c₂ : k)
+    (A₁ B₁ A₁' B₁' A₂ B₂ A₂' B₂' N₁' N₁'' N₂' N₂'' N' N'' D' D'' : k[X])
+    (hA₁'B₁'ne : toPair H A₁' B₁' ≠ 0) (hA₂'B₂'ne : toPair H A₂' B₂' ≠ 0)
+    (hN'ne : toPair H N' N'' ≠ 0)
+    (hN₁mul : toPair H N₁' N₁'' = toPair H A₁ B₁ * toPair H A₂' B₂')
+    (hN₂mul : toPair H N₂' N₂'' = toPair H A₂ B₂ * toPair H A₁' B₁')
+    (hDmul : toPair H D' D'' = toPair H A₁' B₁' * toPair H A₂' B₂')
+    (hN'_def : N' = C c₁ * N₁' + C c₂ * N₂')
+    (hN''_def : N'' = C c₁ * N₁'' + C c₂ * N₂'') :
+    ∀ (Q : H.Point) (s : ℤ),
+      ordAtFrac Q A₁ B₁ A₁' B₁' ≥ -s → ordAtFrac Q A₂ B₂ A₂' B₂' ≥ -s →
+      ordAtFrac Q N' N'' D' D'' ≥ -s := by
+  intro Q s h1 h2
+  have h1' : ordAt Q A₁ B₁ ≥ ordAt Q A₁' B₁' - s := by
+    unfold ordAtFrac at h1; omega
+  have h2' : ordAt Q A₂ B₂ ≥ ordAt Q A₂' B₂' - s := by
+    unfold ordAtFrac at h2; omega
+  have hstep := LPairCarrier_pointwise c₁ c₂ A₁ B₁ A₁' B₁' A₂ B₂ A₂' B₂'
+    N₁' N₁'' N₂' N₂'' N' N'' D' D'' hA₁'B₁'ne hA₂'B₂'ne hN'ne hN₁mul hN₂mul hDmul
+    hN'_def hN''_def Q s h1' h2'
+  unfold ordAtFrac; omega
+
 /-- `LPairCarrier x₁ x₂` is closed under `k`-linear combinations: the
 common-denominator argument that turns two pole-bounded ratios into one.
 Given `z₁` from `(A₁,B₁,A₁',B₁')` and `z₂` from `(A₂,B₂,A₂',B₂')`, `c₁ z₁ +
@@ -1556,16 +1774,160 @@ theorem LPairCarrier_add_smul (hdeg : H.f.natDegree = 5) (x₁ x₂ : H.Point)
     intro P
     exact hpointwise P _ (hoff₁ P) (hoff₂ P)
 
-/-- `L((x₁)+(x₂))` as a genuine `k`-submodule of `FractionRing (CoordinateRing
-H)`, packaging `LPairCarrier` with `one_mem_LPairCarrier` /
-`LPairCarrier_add_smul` (the latter specialized to give `zero_mem'` and
-`add_mem'`/`smul_mem'` in the shapes `Submodule` wants). Takes `hdeg` because
-`LPairCarrier_add_smul` needs it (for `ordInfOfPair` additivity, which is
-genuinely deg-5-specific — see `ordInfOfPair_add_of_toPair_mul`) — a change
-from the file's original scaffold, where `LPair` took no `hdeg`; every
-existing call site (`finrank_L_pair`, `finrank_L_canonical`) already has
-`hdeg` in scope, so this is a mechanical threading, not a new hypothesis on
-the file's overall dependency shape. -/
+/-- **`LPairCarrier'` is closed under `k`-linear combinations.** The
+`ordAtFrac`-based analogue of `LPairCarrier_add_smul`. The `z₁ = 0`/`z₂ = 0`
+cases are immediate (`LPairCarrier'` carries its zero element as a bare
+`Or.inl`, unlike `LPairCarrier`, which needs a witness pair even for `0`).
+In the genuine two-witness case, the construction is identical to
+`LPairCarrier_add_smul` (same combined numerator/denominator
+`N', N'', D', D''`, same `hzeq`), except: (a) the pointwise conjunct uses
+`LPairCarrier_pointwise'` (the `ordAtFrac`-level wrapper) in place of
+`LPairCarrier_pointwise`, fed `hoff₁'`/`hoff₂'` (the `ordAtFrac`-restated
+`IsPoleBoundedAtPair'` hypotheses) rather than `hoff₁`/`hoff₂`; (b) the
+degenerate `toPair H N' N'' = 0` sub-case is witnessed by `Or.inl` (the
+combination collapses to the fraction field's `0`) rather than by the
+`(0,0,1,0)` pole-pair `LPairCarrier_add_smul` needs, since `LPairCarrier'`
+does not require every element (including `0`) to carry a witness pair. -/
+theorem LPairCarrier'_add_smul (hdeg : H.f.natDegree = 5) (x₁ x₂ : H.Point)
+    (c₁ c₂ : k) (z₁ z₂ : FractionRing (CoordinateRing H))
+    (h₁ : z₁ ∈ LPairCarrier' x₁ x₂) (h₂ : z₂ ∈ LPairCarrier' x₁ x₂) :
+    c₁ • z₁ + c₂ • z₂ ∈ LPairCarrier' x₁ x₂ := by
+  -- Handle `z₁ = 0`/`z₂ = 0` upfront via `LPairCarrier'_smul`, so the scalar
+  -- `c₁`/`c₂` is correctly threaded through the surviving side's witness
+  -- rather than silently dropped (an earlier draft of this branch reused the
+  -- un-scaled witness pair for `z₂`, which is only valid when `c₂ = 1`).
+  rcases h₁ with hz1 | hw₁
+  · have hc₂z₂ : c₂ • z₂ ∈ LPairCarrier' x₁ x₂ := LPairCarrier'_smul x₁ x₂ c₂ z₂ h₂
+    have heq : c₁ • z₁ + c₂ • z₂ = c₂ • z₂ := by rw [hz1]; simp
+    rw [heq]; exact hc₂z₂
+  rcases h₂ with hz2 | hw₂
+  · have hc₁z₁ : c₁ • z₁ ∈ LPairCarrier' x₁ x₂ := LPairCarrier'_smul x₁ x₂ c₁ z₁ h₁
+    have heq : c₁ • z₁ + c₂ • z₂ = c₁ • z₁ := by rw [hz2]; simp
+    rw [heq]; exact hc₁z₁
+  obtain ⟨A₁, B₁, A₁', B₁', ⟨hA₁ne, hne₁, hinf₁, hoff₁'⟩, hz₁⟩ := hw₁
+  obtain ⟨A₂, B₂, A₂', B₂', ⟨hA₂ne, hne₂, hinf₂, hoff₂'⟩, hz₂⟩ := hw₂
+  -- The genuine two-witness case: identical combined-numerator/denominator
+  -- construction to `LPairCarrier_add_smul`.
+  set D' : k[X] := A₁' * A₂' + B₁' * B₂' * H.f with hD'_def
+  set D'' : k[X] := A₁' * B₂' + A₂' * B₁' with hD''_def
+  have hDmul : toPair H D' D'' = toPair H A₁' B₁' * toPair H A₂' B₂' :=
+    (toPair_mul A₁' B₁' A₂' B₂').symm
+  set N₁' : k[X] := A₁ * A₂' + B₁ * B₂' * H.f with hN₁'_def
+  set N₁'' : k[X] := A₁ * B₂' + A₂' * B₁ with hN₁''_def
+  set N₂' : k[X] := A₂ * A₁' + B₂ * B₁' * H.f with hN₂'_def
+  set N₂'' : k[X] := A₂ * B₁' + A₁' * B₂ with hN₂''_def
+  have hN₁mul : toPair H N₁' N₁'' = toPair H A₁ B₁ * toPair H A₂' B₂' :=
+    (toPair_mul A₁ B₁ A₂' B₂').symm
+  have hN₂mul : toPair H N₂' N₂'' = toPair H A₂ B₂ * toPair H A₁' B₁' :=
+    (toPair_mul A₂ B₂ A₁' B₁').symm
+  set N' : k[X] := C c₁ * N₁' + C c₂ * N₂' with hN'_def
+  set N'' : k[X] := C c₁ * N₁'' + C c₂ * N₂'' with hN''_def
+  have hNadd : toPair H N' N'' =
+      c₁ • toPair H N₁' N₁'' + c₂ • toPair H N₂' N₂'' := by
+    rw [hN'_def, hN''_def, toPair_add, toPair_smul, toPair_smul]
+  have hA₁'B₁'ne : toPair H A₁' B₁' ≠ 0 := fun h => hne₁ ((toPair_eq_zero_iff H A₁' B₁').mp h)
+  have hA₂'B₂'ne : toPair H A₂' B₂' ≠ 0 := fun h => hne₂ ((toPair_eq_zero_iff H A₂' B₂').mp h)
+  have hDne : toPair H D' D'' ≠ 0 := by
+    rw [hDmul]; exact mul_ne_zero hA₁'B₁'ne hA₂'B₂'ne
+  have hD'D''ne : ¬ (D' = 0 ∧ D'' = 0) := fun h => hDne ((toPair_eq_zero_iff H D' D'').mpr h)
+  have hzeq : c₁ • z₁ + c₂ • z₂ = polePairToFraction N' N'' D' D'' := by
+    have hd1 : (algebraMap (CoordinateRing H) (FractionRing (CoordinateRing H))
+        (toPair H A₁' B₁')) ≠ 0 :=
+      (map_ne_zero_iff _ (IsFractionRing.injective (CoordinateRing H)
+        (FractionRing (CoordinateRing H)))).mpr hA₁'B₁'ne
+    have hd2 : (algebraMap (CoordinateRing H) (FractionRing (CoordinateRing H))
+        (toPair H A₂' B₂')) ≠ 0 :=
+      (map_ne_zero_iff _ (IsFractionRing.injective (CoordinateRing H)
+        (FractionRing (CoordinateRing H)))).mpr hA₂'B₂'ne
+    have hNumEq : algebraMap (CoordinateRing H) (FractionRing (CoordinateRing H)) (toPair H N' N'') =
+        c₁ • algebraMap (CoordinateRing H) (FractionRing (CoordinateRing H)) (toPair H A₁ B₁) *
+          algebraMap (CoordinateRing H) (FractionRing (CoordinateRing H)) (toPair H A₂' B₂') +
+        c₂ • algebraMap (CoordinateRing H) (FractionRing (CoordinateRing H)) (toPair H A₂ B₂) *
+          algebraMap (CoordinateRing H) (FractionRing (CoordinateRing H)) (toPair H A₁' B₁') := by
+      rw [hNadd, hN₁mul, hN₂mul, map_add]
+      simp only [Algebra.smul_def, map_mul]
+      rw [← IsScalarTower.algebraMap_apply k (CoordinateRing H) (FractionRing (CoordinateRing H)) c₁,
+          ← IsScalarTower.algebraMap_apply k (CoordinateRing H) (FractionRing (CoordinateRing H)) c₂]
+      ring
+    have hDenEq : algebraMap (CoordinateRing H) (FractionRing (CoordinateRing H)) (toPair H D' D'') =
+        algebraMap (CoordinateRing H) (FractionRing (CoordinateRing H)) (toPair H A₁' B₁') *
+          algebraMap (CoordinateRing H) (FractionRing (CoordinateRing H)) (toPair H A₂' B₂') := by
+      rw [hDmul, map_mul]
+    rw [hz₁, hz₂]
+    unfold polePairToFraction
+    rw [hNumEq, hDenEq]
+    simp only [Algebra.smul_def]
+    field_simp
+  by_cases hN'zero : toPair H N' N'' = 0
+  · refine Or.inl ?_
+    rw [hzeq]
+    unfold polePairToFraction
+    rw [hN'zero, map_zero, zero_div]
+  · have hpointwise := LPairCarrier_pointwise' c₁ c₂ A₁ B₁ A₁' B₁' A₂ B₂ A₂' B₂'
+      N₁' N₁'' N₂' N₂'' N' N'' D' D'' hA₁'B₁'ne hA₂'B₂'ne hN'zero hN₁mul hN₂mul hDmul
+      hN'_def hN''_def
+    refine Or.inr ⟨N', N'', D', D'', ⟨hN'zero, hD'D''ne, ?_, ?_⟩, hzeq⟩
+    · -- `ordInfOfPair N' N'' ≥ ordInfOfPair D' D''`: identical argument to
+      -- `LPairCarrier_add_smul`'s corresponding conjunct (does not depend on
+      -- `ordAtFrac`/`ordAt` at all, so reused verbatim in shape).
+      have hge1 : ordInfOfPair N₁' N₁'' ≥ ordInfOfPair A₁ B₁ + ordInfOfPair A₂' B₂' := by
+        by_cases hA₁B₁ : toPair H A₁ B₁ = 0
+        · have hN₁zero : toPair H N₁' N₁'' = 0 := by rw [hN₁mul, hA₁B₁, zero_mul]
+          have hN₁pair : N₁' = 0 ∧ N₁'' = 0 := (toPair_eq_zero_iff H N₁' N₁'').mp hN₁zero
+          have hA₁pair : A₁ = 0 ∧ B₁ = 0 := (toPair_eq_zero_iff H A₁ B₁).mp hA₁B₁
+          have hA₁inf : ordInfOfPair A₁ B₁ = 0 := by
+            unfold ordInfOfPair; rw [if_pos hA₁pair]
+          rw [hN₁pair.1, hN₁pair.2, hA₁inf, zero_add]
+          show ordInfOfPair (0 : k[X]) 0 ≥ ordInfOfPair A₂' B₂'
+          calc ordInfOfPair (0 : k[X]) 0 = 0 := by unfold ordInfOfPair; rw [if_pos ⟨rfl, rfl⟩]
+            _ ≥ ordInfOfPair A₂' B₂' := ordInfOfPair_le_zero A₂' B₂'
+        · have hN₁ne : toPair H N₁' N₁'' ≠ 0 := by rw [hN₁mul]; exact mul_ne_zero hA₁B₁ hA₂'B₂'ne
+          have hN₁pairne : ¬ (N₁' = 0 ∧ N₁'' = 0) :=
+            fun h => hN₁ne ((toPair_eq_zero_iff H N₁' N₁'').mpr h)
+          have hA₁pairne : ¬ (A₁ = 0 ∧ B₁ = 0) := fun h => hA₁B₁ ((toPair_eq_zero_iff H A₁ B₁).mpr h)
+          exact le_of_eq (ordInfOfPair_add_of_toPair_mul (H := H) hdeg A₁ B₁ A₂' B₂' N₁' N₁''
+            hA₁pairne hne₂ hN₁pairne hN₁mul).symm
+      have hge2 : ordInfOfPair N₂' N₂'' ≥ ordInfOfPair A₂ B₂ + ordInfOfPair A₁' B₁' := by
+        by_cases hA₂B₂ : toPair H A₂ B₂ = 0
+        · have hN₂zero : toPair H N₂' N₂'' = 0 := by rw [hN₂mul, hA₂B₂, zero_mul]
+          have hN₂pair : N₂' = 0 ∧ N₂'' = 0 := (toPair_eq_zero_iff H N₂' N₂'').mp hN₂zero
+          have hA₂pair : A₂ = 0 ∧ B₂ = 0 := (toPair_eq_zero_iff H A₂ B₂).mp hA₂B₂
+          have hA₂inf : ordInfOfPair A₂ B₂ = 0 := by
+            unfold ordInfOfPair; rw [if_pos hA₂pair]
+          rw [hN₂pair.1, hN₂pair.2, hA₂inf, zero_add]
+          show ordInfOfPair (0 : k[X]) 0 ≥ ordInfOfPair A₁' B₁'
+          calc ordInfOfPair (0 : k[X]) 0 = 0 := by unfold ordInfOfPair; rw [if_pos ⟨rfl, rfl⟩]
+            _ ≥ ordInfOfPair A₁' B₁' := ordInfOfPair_le_zero A₁' B₁'
+        · have hN₂ne : toPair H N₂' N₂'' ≠ 0 := by rw [hN₂mul]; exact mul_ne_zero hA₂B₂ hA₁'B₁'ne
+          have hN₂pairne : ¬ (N₂' = 0 ∧ N₂'' = 0) :=
+            fun h => hN₂ne ((toPair_eq_zero_iff H N₂' N₂'').mpr h)
+          have hA₂pairne : ¬ (A₂ = 0 ∧ B₂ = 0) := fun h => hA₂B₂ ((toPair_eq_zero_iff H A₂ B₂).mpr h)
+          exact le_of_eq (ordInfOfPair_add_of_toPair_mul (H := H) hdeg A₂ B₂ A₁' B₁' N₂' N₂''
+            hA₂pairne hne₁ hN₂pairne hN₂mul).symm
+      have hDinf : ordInfOfPair D' D'' = ordInfOfPair A₁' B₁' + ordInfOfPair A₂' B₂' :=
+        ordInfOfPair_add_of_toPair_mul (H := H) hdeg A₁' B₁' A₂' B₂' D' D'' hne₁ hne₂ hD'D''ne hDmul
+      have hstep1 : ordInfOfPair N' N'' ≥ min (ordInfOfPair N₁' N₁'') (ordInfOfPair N₂' N₂'') := by
+        have hCN₁ : ordInfOfPair (C c₁ * N₁') (C c₁ * N₁'') ≥ ordInfOfPair N₁' N₁'' :=
+          ordInfOfPair_C_mul_ge c₁ N₁' N₁''
+        have hCN₂ : ordInfOfPair (C c₂ * N₂') (C c₂ * N₂'') ≥ ordInfOfPair N₂' N₂'' :=
+          ordInfOfPair_C_mul_ge c₂ N₂' N₂''
+        have hadd := ordInfOfPair_add_ge_min (C c₁ * N₁') (C c₁ * N₁'') (C c₂ * N₂') (C c₂ * N₂'')
+        rw [← hN'_def, ← hN''_def] at hadd
+        calc ordInfOfPair N' N'' ≥ min (ordInfOfPair (C c₁ * N₁') (C c₁ * N₁''))
+              (ordInfOfPair (C c₂ * N₂') (C c₂ * N₂'')) := hadd
+          _ ≥ min (ordInfOfPair N₁' N₁'') (ordInfOfPair N₂' N₂'') := min_le_min hCN₁ hCN₂
+      calc ordInfOfPair N' N'' ≥ min (ordInfOfPair N₁' N₁'') (ordInfOfPair N₂' N₂'') := hstep1
+        _ ≥ min (ordInfOfPair A₁ B₁ + ordInfOfPair A₂' B₂') (ordInfOfPair A₂ B₂ + ordInfOfPair A₁' B₁') :=
+            min_le_min hge1 hge2
+        _ ≥ ordInfOfPair A₁' B₁' + ordInfOfPair A₂' B₂' := by
+            rw [ge_iff_le, le_min_iff]
+            refine ⟨add_le_add_left hinf₁ _, ?_⟩
+            rw [add_comm (ordInfOfPair A₂ B₂) (ordInfOfPair A₁' B₁')]
+            exact add_le_add_right hinf₂ _
+        _ = ordInfOfPair D' D'' := hDinf.symm
+    · intro P
+      exact hpointwise P _ (hoff₁' P) (hoff₂' P)
+
 def LPair (hdeg : H.f.natDegree = 5) (x₁ x₂ : H.Point) :
     Submodule k (FractionRing (CoordinateRing H)) where
   carrier := LPairCarrier x₁ x₂
@@ -1582,6 +1944,23 @@ def LPair (hdeg : H.f.natDegree = 5) (x₁ x₂ : H.Point) :
     -- simplifies to `c • z`.
     have h' := LPairCarrier_add_smul hdeg x₁ x₂ c 0 z z h h
     simpa using h'
+
+/-- **`L((x₁)+(x₂))`, `ordAtFrac`-based, as a genuine `k`-submodule.** The
+`LPairCarrier'` analogue of `LPair`: packages `LPairCarrier'` with
+`one_mem_LPairCarrier'`/`LPairCarrier'_add_smul`/`LPairCarrier'_smul` into a
+`Submodule`. `smul_mem'` uses `LPairCarrier'_smul` directly (rather than
+`LPair`'s `c • z + 0 • z` route through `add_smul`) since a dedicated
+scalar-closure lemma already exists here — no need for the indirection. -/
+def LPair' (hdeg : H.f.natDegree = 5) (x₁ x₂ : H.Point) :
+    Submodule k (FractionRing (CoordinateRing H)) where
+  carrier := LPairCarrier' x₁ x₂
+  zero_mem' := by
+    have h := LPairCarrier'_smul x₁ x₂ 0 1 (one_mem_LPairCarrier' x₁ x₂)
+    simpa using h
+  add_mem' {z₁ z₂} h₁ h₂ := by
+    have h := LPairCarrier'_add_smul hdeg x₁ x₂ 1 1 z₁ z₂ h₁ h₂
+    simpa using h
+  smul_mem' c {z} h := LPairCarrier'_smul x₁ x₂ c z h
 
 /-! ## §2. The canonical divisor `K` and `L(K)`
 

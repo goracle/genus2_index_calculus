@@ -164,21 +164,26 @@ theorem one_x_linearIndependent (hdeg : H.f.natDegree = 5) :
       simp [HyperellipticPolynomial.toPair]
     have hcs : algebraMap k[X] (CoordinateRing H) (Polynomial.C s) =
         algebraMap k (CoordinateRing H) s := by
-      rw [IsScalarTower.algebraMap_apply k k[X] (CoordinateRing H)]; congr 1; simp
+      rw [IsScalarTower.algebraMap_apply k k[X] (CoordinateRing H)]
+      simp
     have hct : algebraMap k[X] (CoordinateRing H) (Polynomial.C t) =
         algebraMap k (CoordinateRing H) t := by
-      rw [IsScalarTower.algebraMap_apply k k[X] (CoordinateRing H)]; congr 1; simp
+      rw [IsScalarTower.algebraMap_apply k k[X] (CoordinateRing H)]
+      simp
     have hX : algebraMap k[X] (CoordinateRing H) (X : k[X]) = toPair H X 0 := by
       simp [HyperellipticPolynomial.toPair]
     -- Combine everything: rewrite the LHS entirely to
     -- `algebraMap (CoordinateRing H) _ (algebraMap k _ s) +
     --    algebraMap (CoordinateRing H) _ (algebraMap k _ t * toPair H X 0)`,
     -- then push the outer `algebraMap` in with `map_add`/`map_mul` and identify
-    -- the resulting `algebraMap k (CoordinateRing H) _` compositions with
-    -- `algebraMap k (FractionRing (CoordinateRing H)) _` via `IsScalarTower`.
+    -- the resulting *composed* `algebraMap (CoordinateRing H) (FractionRing _)
+    -- (algebraMap k (CoordinateRing H) _)` with the single-step
+    -- `algebraMap k (FractionRing (CoordinateRing H)) _` via `IsScalarTower`,
+    -- rewriting `←` since the composed form is what's in the goal, not the
+    -- single-step form.
     rw [hpair_eq, hcs, hct, hX, map_add, map_mul,
-      IsScalarTower.algebraMap_apply k (CoordinateRing H) (FractionRing (CoordinateRing H)),
-      IsScalarTower.algebraMap_apply k (CoordinateRing H) (FractionRing (CoordinateRing H))]
+      ← IsScalarTower.algebraMap_apply k (CoordinateRing H) (FractionRing (CoordinateRing H)),
+      ← IsScalarTower.algebraMap_apply k (CoordinateRing H) (FractionRing (CoordinateRing H))]
     -- Goal is now exactly `hst` after rewriting `s • 1 + t • _` via `Algebra.smul_def`.
     rw [Algebra.smul_def, Algebra.smul_def] at hst
     simpa using hst
@@ -473,8 +478,281 @@ theorem polePairSpace_finrank_le_two_of_fiber (hdeg : H.f.natDegree = 5)
     -- theorem's full conclusion for the degree half.
     exact ⟨hdegA, hdegA'le1, hB, hB'⟩
 
-/-- **§3: qualitative half. THE remaining hard `sorry` in this file — genuinely
-open, not bookkeeping.** Every effective divisor linearly equivalent to a
+/-! ## §2.5: Mumford reduction — attacking the `hreduced` gap directly
+
+**New content, addressing the project-wide `hreduced` blocker flagged in §3's
+docstring below and in `RiemannRochCrux.lean`'s
+`isOnlyEffectiveInClass_of_uniqueDegree2MapToP1`.**
+
+The blocker is *not* "every principal divisor's witness can be reduced by
+cancelling a common factor" — that is false in general (class-group
+obstruction, confirmed independently, see the uploaded ChatGPT session). The
+actual need is narrower: given two *specific* points `Q₁ Q₂ : H.Point`
+(arising as `x₃, x₄` or `x₁, x₂` in the calling theorems), *construct
+directly* a pair `(A, B)` whose finite zero divisor is exactly `Q₁ + Q₂`,
+built by hand from `Q₁, Q₂` themselves via Lagrange interpolation (the
+degree-2 case of Mumford/Cantor reduction) rather than obtained by trying to
+reduce an arbitrary witness handed to us by
+`isRatioDivisor_of_mem_principalSubgroup`. This sidesteps the class-group
+obstruction entirely: we never touch an arbitrary witness, we build our own.
+
+Two cases:
+* `Q₂ = Point.iota Q₁`: the fiber case, already fully handled by existing
+  machinery (`linX Q₁.X`, `ordAt_linX_eq`) — `B = 0`, so there is nothing to
+  reduce against (`hreduced` is trivial whenever one side has `B = 0`).
+* `Q₁.X ≠ Q₂.X` (covers every other case: distinct points with distinct
+  `x`-coordinates, since equal `x`-coordinates forces `Q₂ ∈ {Q₁, ιQ₁}`):
+  genuinely new, built here via the line through `(Q₁.X, Q₁.Y)` and
+  `(Q₂.X, Q₂.Y)`. -/
+
+/-- **General evaluation formula for `toPair`.** `evalAtPoint Q (toPair H A B)
+= A.eval Q.X + B.eval Q.X * Q.Y`. Generalizes the ad hoc computation inside
+`toPair_linX_mem_pointIdeal_iff` (`HyperellipticClassProof.lean`, specific to
+`A = linX a, B = 0`) to arbitrary `A, B`. Proved the same way: unfold `toPair`
+to the `algebraMap k[X] (CoordinateRing H) A + algebraMap k[X] (CoordinateRing H) B * y H`
+shape, push `evalAtPoint Q` through `map_add`/`map_mul`, and evaluate each
+piece — the `algebraMap k[X] (CoordinateRing H)` pieces via the same
+`eval₂`-unfolding `toPair_linX_mem_pointIdeal_iff` already uses (specialized
+there to `X`/`C a`, generalized here to arbitrary `A`/`B` via `Polynomial.C`),
+and `y H` via `AdjoinRoot.lift_root` (`evalAtPoint` is built as an
+`AdjoinRoot.lift`, and `y H = AdjoinRoot.root _` by definition). -/
+theorem evalAtPoint_toPair (Q : H.Point) (A B : k[X]) :
+    evalAtPoint Q (toPair H A B) = A.eval Q.X + B.eval Q.X * Q.Y := by
+  have hA : evalAtPoint Q (algebraMap k[X] (CoordinateRing H) A) = A.eval Q.X := by
+    change Polynomial.eval₂ (Polynomial.evalRingHom Q.val.1) Q.val.2 (Polynomial.C A) = A.eval Q.X
+    simp [Point.X]
+  have hB : evalAtPoint Q (algebraMap k[X] (CoordinateRing H) B) = B.eval Q.X := by
+    change Polynomial.eval₂ (Polynomial.evalRingHom Q.val.1) Q.val.2 (Polynomial.C B) = B.eval Q.X
+    simp [Point.X]
+  have hy : evalAtPoint Q (y H) = Q.Y := by
+    unfold evalAtPoint y
+    change Polynomial.eval₂ (Polynomial.evalRingHom Q.val.1) Q.val.2 X = Q.Y
+    simp [Point.Y]
+  unfold HyperellipticPolynomial.toPair
+  rw [map_add, map_mul, hA, hB, hy]
+
+/-- **Membership characterization, generalizing `toPair_linX_mem_pointIdeal_iff`
+to arbitrary `A, B`.** `toPair H A B ∈ pointIdeal Q ↔ A.eval Q.X + B.eval Q.X * Q.Y = 0`
+— immediate from `evalAtPoint_toPair` and `pointIdeal Q = RingHom.ker (evalAtPoint Q)`. -/
+theorem toPair_mem_pointIdeal_iff (Q : H.Point) (A B : k[X]) :
+    toPair H A B ∈ pointIdeal Q ↔ A.eval Q.X + B.eval Q.X * Q.Y = 0 := by
+  rw [pointIdeal, RingHom.mem_ker, evalAtPoint_toPair]
+
+/-- **The Mumford `b`-polynomial: the line through two points with distinct
+`x`-coordinates.** `mumfordB Q₁ Q₂ hne := C Q₁.Y + C ((Q₂.Y - Q₁.Y)/(Q₂.X -
+Q₁.X)) * linX Q₁.X` — the unique degree-≤1 polynomial with `b(Q₁.X) = Q₁.Y`,
+`b(Q₂.X) = Q₂.Y`, closed-form two-point Lagrange interpolation. The Mumford
+numerator element for the divisor `Q₁ + Q₂` is `toPair H (-mumfordB Q₁ Q₂
+hne) 1`, i.e. the ring element `y - b(x)` (using `B = 1` for the `y`-slot and
+negating `b` to get `y - b(x) = -b(x) + 1·y`). -/
+noncomputable def mumfordB (Q₁ Q₂ : H.Point) (hne : Q₁.X ≠ Q₂.X) : k[X] :=
+  Polynomial.C Q₁.Y + Polynomial.C ((Q₂.Y - Q₁.Y) / (Q₂.X - Q₁.X)) * linX Q₁.X
+
+@[simp] theorem mumfordB_eval_left (Q₁ Q₂ : H.Point) (hne : Q₁.X ≠ Q₂.X) :
+    (mumfordB Q₁ Q₂ hne).eval Q₁.X = Q₁.Y := by
+  unfold mumfordB linX
+  simp
+
+@[simp] theorem mumfordB_eval_right (Q₁ Q₂ : H.Point) (hne : Q₁.X ≠ Q₂.X) :
+    (mumfordB Q₁ Q₂ hne).eval Q₂.X = Q₂.Y := by
+  unfold mumfordB linX
+  have hsub : Q₂.X - Q₁.X ≠ 0 := sub_ne_zero.mpr (Ne.symm hne)
+  simp only [eval_add, eval_mul, eval_C, eval_sub, eval_X]
+  field_simp
+  ring
+
+/-- **Degree bound for the Mumford `b`-polynomial: `natDegree (mumfordB Q₁ Q₂
+hne) ≤ 1`.** Immediate from its shape `C Q₁.Y + C c * (X - C Q₁.X)`: the first
+summand has degree `0` and the second is a scalar multiple of `linX Q₁.X`
+(degree `≤ 1`), so `natDegree_add_le` plus `natDegree_C`/`natDegree_C_mul_le`/
+`natDegree_X_sub_C` cap the sum at `max 0 1 = 1`. Needed for the
+`ordInfOfPair`-side of `IsPoleBoundedAtPair` (gap 2): the Mumford numerator
+`toPair H (-mumfordB Q₁ Q₂ hne) 1` has `B`-slot `1 ≠ 0`, so its pole order at
+infinity is `-(max (2 * natDegree A) 7)` — this bound pins `2 * natDegree A ≤
+2 < 7`, so the max collapses to exactly `7` regardless of the precise degree
+of `mumfordB`. -/
+theorem mumfordB_natDegree_le (Q₁ Q₂ : H.Point) (hne : Q₁.X ≠ Q₂.X) :
+    (mumfordB Q₁ Q₂ hne).natDegree ≤ 1 := by
+  unfold mumfordB linX
+  refine le_trans (natDegree_add_le _ _) ?_
+  refine max_le (by simp) ?_
+  refine le_trans natDegree_mul_le ?_
+  simp [natDegree_C, natDegree_X_sub_C]
+
+/-- **`ordInfOfPair` of the Mumford numerator is exactly `-7`.** With `A =
+-mumfordB Q₁ Q₂ hne` and `B = 1`: `B ≠ 0`, so `ordInfOfPair A B = -(max (2 *
+A.natDegree) (2 * 1 + 5))`. `A.natDegree = (-mumfordB Q₁ Q₂ hne).natDegree =
+(mumfordB Q₁ Q₂ hne).natDegree ≤ 1` (negation doesn't change `natDegree`, via
+`Polynomial.natDegree_neg`), so `2 * A.natDegree ≤ 2 < 7 = 2 * 1 + 5`, pinning
+the max at `7`. This is the pole-at-infinity order any "other side" witness
+(gap 2's `A', B'`) must be dominated by, i.e. `ordInfOfPair A' B' ≤ -7`, for
+`IsPoleBoundedAtPair`'s `ordInfOfPair A B ≥ ordInfOfPair A' B'` clause to hold
+when this Mumford pair plays the role of the numerator `(A,B)`. -/
+theorem mumfordB_ordInfOfPair (Q₁ Q₂ : H.Point) (hne : Q₁.X ≠ Q₂.X) :
+    ordInfOfPair (-mumfordB Q₁ Q₂ hne) (1 : k[X]) = -7 := by
+  have hAdeg : (-mumfordB Q₁ Q₂ hne).natDegree ≤ 1 := by
+    rw [natDegree_neg]
+    exact mumfordB_natDegree_le Q₁ Q₂ hne
+  have h2 : (2 * ((-mumfordB Q₁ Q₂ hne).natDegree : ℤ)) ≤ 2 * ((0 : ℕ) : ℤ) + 5 := by
+    have : ((-mumfordB Q₁ Q₂ hne).natDegree : ℤ) ≤ 1 := by exact_mod_cast hAdeg
+    push_cast
+    linarith
+  unfold ordInfOfPair
+  simp only [one_ne_zero, and_false, if_false, natDegree_one]
+  rw [max_eq_right h2]
+  norm_num
+
+/-- **The Mumford witness pair vanishes at both `Q₁` and `Q₂`.** Immediate
+from `toPair_mem_pointIdeal_iff` plus `mumfordB_eval_left`/`_right`: `-b(x) +
+1·Y` evaluated at `Q_i` is `-b.eval Q_i.X + Q_i.Y = -Q_i.Y + Q_i.Y = 0`. -/
+theorem mumford_mem_pointIdeal (Q₁ Q₂ : H.Point) (hne : Q₁.X ≠ Q₂.X) :
+    toPair H (-mumfordB Q₁ Q₂ hne) 1 ∈ pointIdeal Q₁ ∧
+    toPair H (-mumfordB Q₁ Q₂ hne) 1 ∈ pointIdeal Q₂ := by
+  refine ⟨?_, ?_⟩ <;> rw [toPair_mem_pointIdeal_iff] <;> simp
+
+/-- **The Mumford witness pair does not vanish at `ι Q₁`, given `char k ≠ 2`,
+`Q₁.Y ≠ 0` (unramified), and `Q₁.X ≠ Q₂.X`.** This is the actual disjointness
+fact `hreduced` needs at the "other side" of the fiber through `Q₁`: since
+`a(x) = linX Q₁.X * linX Q₂.X` vanishes (by `ordAt_linX_eq`) exactly at
+`{Q₁, ιQ₁}` (from the `linX Q₁.X` factor) and `{Q₂, ιQ₂}` (from the `linX
+Q₂.X` factor), the only points where a *shared* zero with the Mumford
+numerator `toPair H (-mumfordB Q₁ Q₂ hne) 1` could occur are exactly `Q₁, ιQ₁,
+Q₂, ιQ₂` — and this lemma rules out `ιQ₁` (the symmetric statement for `ιQ₂`
+is `mumford_notMem_iota_right_of_unramified` below). Evaluating: `(-b(x) +
+Y).eval` at `ιQ₁ = (Q₁.X, -Q₁.Y)` is `-b(Q₁.X) + (-Q₁.Y) = -Q₁.Y - Q₁.Y =
+-2·Q₁.Y ≠ 0` since `char k ≠ 2` and `Q₁.Y ≠ 0`. -/
+theorem mumford_notMem_iota_left_of_unramified (hchar : (2 : k) ≠ 0)
+    (Q₁ Q₂ : H.Point) (hne : Q₁.X ≠ Q₂.X) (hY₁ : Q₁.Y ≠ 0) :
+    toPair H (-mumfordB Q₁ Q₂ hne) 1 ∉ pointIdeal (Point.iota Q₁) := by
+  rw [toPair_mem_pointIdeal_iff, Point.iota_X, Point.iota_Y, eval_neg, mumfordB_eval_left,
+    eval_one]
+  intro hzero
+  apply hY₁
+  have h2 : (2 : k) * Q₁.Y = 0 := by linear_combination -hzero
+  rcases mul_eq_zero.mp h2 with h2' | hy0
+  · exact absurd h2' hchar
+  · exact hy0
+
+/-- **Symmetric statement for `ιQ₂`.** Same proof as
+`mumford_notMem_iota_left_of_unramified` with the roles of `Q₁, Q₂` swapped
+in the evaluation, using `mumfordB_eval_right` instead of `_eval_left`. -/
+theorem mumford_notMem_iota_right_of_unramified (hchar : (2 : k) ≠ 0)
+    (Q₁ Q₂ : H.Point) (hne : Q₁.X ≠ Q₂.X) (hY₂ : Q₂.Y ≠ 0) :
+    toPair H (-mumfordB Q₁ Q₂ hne) 1 ∉ pointIdeal (Point.iota Q₂) := by
+  rw [toPair_mem_pointIdeal_iff, Point.iota_X, Point.iota_Y, eval_neg, mumfordB_eval_right,
+    eval_one]
+  intro hzero
+  apply hY₂
+  have h2 : (2 : k) * Q₂.Y = 0 := by linear_combination -hzero
+  rcases mul_eq_zero.mp h2 with h2' | hy0
+  · exact absurd h2' hchar
+  · exact hy0
+
+/-- **Gap 1, closed: the ramified case collapses `ι Q₁ = Q₁`.** When
+`Q₁.Y = 0`, `Point.iota Q₁ = Q₁` on the nose (`iota` negates the `Y`-coordinate,
+and `-0 = 0`), so there is nothing left to separate — the "does not vanish at
+`ι Q₁`" fact that `mumford_notMem_iota_left_of_unramified` proves in the
+unramified case is simply not the fact needed here; in the ramified case
+`ι Q₁ = Q₁` collapses into the "vanishes at `Q₁`" fact `mumford_mem_pointIdeal`
+already gives, which is the *easier* outcome, not a genuine proof obligation.
+Recorded here as its own lemma, ready for whichever later assembly pass
+threads the `Q_i.Y = 0`/`Q_i.Y ≠ 0` case split through the full `hreduced`
+disjunction (gaps 2/3, not attempted in this pass). -/
+theorem iota_eq_self_of_Y_eq_zero (Q : H.Point) (hY : Q.Y = 0) : Point.iota Q = Q := by
+  have hX : (Point.iota Q).X = Q.X := Point.iota_X Q
+  have hY' : (Point.iota Q).Y = Q.Y := by rw [Point.iota_Y, hY, neg_zero]
+  exact Subtype.ext (Prod.ext hX hY')
+
+/-- **Gap 4, partially closed: the Mumford numerator's `ordAt`-valued
+disjointness from `{ι Q₁, ι Q₂}`, in the unramified sub-case.** Combines
+`mumford_notMem_iota_left/right_of_unramified` with `ordAt_eq_zero_of_notMem`
+(`RiemannRochGenus2.lean`) to get `ordAt (ι Q₁) (-mumfordB Q₁ Q₂ hne) 1 = 0`
+directly. **Scope note:** this is the disjointness half only, and only for
+`Q_i.Y ≠ 0`. The ramified sub-case (`Q_i.Y = 0`, so `ι Q_i = Q_i`) is
+genuinely different in kind here: the numerator does NOT avoid `ι Q_i` there
+(`iota_eq_self_of_Y_eq_zero` plus `mumford_mem_pointIdeal` show it vanishes),
+so no analogous `ordAt = 0` statement holds — assembling a full two-branch
+`hreduced`-shaped disjunction for the numerator side alone (gap 4's original
+target) still needs that case split threaded through explicitly, and is left
+for the gap 2/3 wiring pass, not attempted here. -/
+theorem mumford_ordAt_iota_left_eq_zero_of_unramified (hchar : (2 : k) ≠ 0)
+    (Q₁ Q₂ : H.Point) (hne : Q₁.X ≠ Q₂.X) (hY₁ : Q₁.Y ≠ 0) :
+    ordAt (Point.iota Q₁) (-mumfordB Q₁ Q₂ hne) 1 = 0 :=
+  ordAt_eq_zero_of_notMem (Point.iota Q₁) _ 1
+    (mumford_notMem_iota_left_of_unramified hchar Q₁ Q₂ hne hY₁)
+
+/-- **Symmetric to `mumford_ordAt_iota_left_eq_zero_of_unramified`, for `ι Q₂`.** -/
+theorem mumford_ordAt_iota_right_eq_zero_of_unramified (hchar : (2 : k) ≠ 0)
+    (Q₁ Q₂ : H.Point) (hne : Q₁.X ≠ Q₂.X) (hY₂ : Q₂.Y ≠ 0) :
+    ordAt (Point.iota Q₂) (-mumfordB Q₁ Q₂ hne) 1 = 0 :=
+  ordAt_eq_zero_of_notMem (Point.iota Q₂) _ 1
+    (mumford_notMem_iota_right_of_unramified hchar Q₁ Q₂ hne hY₂)
+
+/-! **Status of §2.5, checked against the goal shapes above rather than
+assumed complete: this closes the core new mathematical step (explicit
+disjointness of the hand-built Mumford numerator from the `ιQ₁`/`ιQ₂`
+zeros of the hand-built `a(x)`), but does NOT yet assemble into a full
+replacement for `isOnlyEffectiveInClass_of_uniqueDegree2MapToP1`'s `hreduced
+:= by sorry` or for §3's `IsOnlyFibersInCanonicalClass` target.** Updated
+this session: gaps 1 and 4 below are now closed at the lemma level (not yet
+assembled into a single top-level `hreduced` term — that step still needs
+gaps 2/3). Remaining gaps, left open rather than assumed free:
+
+1. **Ramified sub-cases** (`Q₁.Y = 0` or `Q₂.Y = 0`, so `ιQ_i = Q_i`).
+   **Closed**: `iota_eq_self_of_Y_eq_zero` gives `ι Q_i = Q_i` directly in
+   this case, collapsing into `mumford_mem_pointIdeal`'s existing "vanishes
+   at `Q_i`" fact — confirmed to be the easier case, not a genuine gap, and
+   now recorded as its own named lemma.
+2. **The `(A,B)` denominator side of `IsPoleBoundedAtPair`**: this section
+   only builds ONE side of a pole-bounded pair (the numerator vanishing at
+   `Q₁, Q₂`, i.e. what would play the role of `A', B'` — a "denominator" in
+   `LPairCarrier`'s convention — for the divisor `(Q₁)+(Q₂)`). **Partially
+   closed this session**: `mumfordB_ordInfOfPair` computes the pole-at-infinity
+   order of the Mumford numerator itself exactly (`ordInfOfPair (-mumfordB Q₁
+   Q₂ hne) 1 = -7`, via the new degree bound `mumfordB_natDegree_le`), which is
+   the bookkeeping half `IsPoleBoundedAtPair`'s `ordInfOfPair A B ≥ ordInfOfPair
+   A' B'` clause will need once a genuine "other side" pair exists. **Still
+   open**: the other side (`A, B`, vanishing at whatever the "other" pair of
+   points is, e.g. `x₃, x₄`) itself — a *second* Mumford witness at a different
+   point pair — has not been constructed; `mumfordB_ordInfOfPair` only pins
+   down one side's number, not both sides of an actual `IsPoleBoundedAtPair`
+   instance.
+3. **Wiring into `isRatioDivisor_of_mem_principalSubgroup`'s actual
+   witness**: `isOnlyEffectiveInClass_of_uniqueDegree2MapToP1`'s `hreduced`
+   obligation is about the SPECIFIC `(A,B,A',B')` that
+   `isRatioDivisor_of_mem_principalSubgroup` happens to produce, not a
+   from-scratch pair. Closing that `sorry` with this section's results needs
+   either (a) showing `isRatioDivisor_of_mem_principalSubgroup`'s witness
+   agrees with the from-scratch Mumford witness built here (up to the
+   representation-independence `ordAtFrac` is meant to provide — itself
+   flagged elsewhere as not fully built), or (b) replacing that theorem's
+   proof strategy to construct its own witness via `mumfordB` directly
+   instead of consuming the existential, mirroring how this file's own §3
+   would use it. Either route is nontrivial additional wiring, not attempted
+   here.
+4. **The `hreduced` disjunction's other half** (`ordAt P A B = 0 ∨ ordAt P
+   A' B' = 0`), restricted to `P ∈ {ι Q₁, ι Q₂}`. **Partially closed**:
+   `mumford_ordAt_iota_left/right_eq_zero_of_unramified` give
+   `ordAt (ι Q_i) (-mumfordB Q₁ Q₂ hne) 1 = 0` directly via
+   `ordAt_eq_zero_of_notMem`, in the unramified sub-case (`Q_i.Y ≠ 0`). The
+   ramified sub-case needs gap 1's `iota_eq_self_of_Y_eq_zero` threaded in
+   instead (there the numerator does NOT avoid `ι Q_i`, so the *other*
+   disjunct — the `A,B` side vanishing, from gap 2 — must supply the
+   disjunction there), so a single case-split top-level `hreduced` term
+   still needs gap 2 to exist first. Not assembled into that top-level term
+   in this pass, to keep scope to the pieces gaps 1/4 asked for.
+
+Recommended next session: attack gap 2 (the `(A,B)` denominator-side Mumford
+witness plus `ordInfOfPair` bookkeeping) to get both halves of a from-scratch
+`(A,B,A',B')` pair, which is what a genuine `hreduced` case split (gaps 1+4
+combined) needs to terminate on; then attack gap 3 by rewriting
+`isOnlyEffectiveInClass_of_uniqueDegree2MapToP1`'s proof to build its own
+witness via this construction rather than consuming the existential one —
+likely the more tractable direction, since gap 3(a) (representation-
+independence) looks at least as hard as the original problem.
+
+**§3: `isOnlyFibersInCanonicalClass_of_elementary`, genuinely still open, not
+bookkeeping.** Every effective divisor linearly equivalent to a
 hyperelliptic fiber `(x)+(ιx)` is itself a fiber. Was intended to reuse
 `ordAt_linX_eq` (`HyperellipticClassProof.lean`, fully proved) directly
 against the §2 witness, the same technique `SCOPING-finrank-L-pair.md`'s
