@@ -1592,6 +1592,8 @@ theorem ordInfOfPair_mul_left (g A B : k[X]) (hg : g ≠ 0) (hAB : ¬ (A = 0 ∧
       push_cast
       omega
 
+set_option maxHeartbeats 2000000 in
+-- Reduction by the triple gcd causes substantial polynomial normalization.
 /-- **Reduction lemma: every nonzero-`c` rationalized triple `(a,b,c)`
 reduces to a coprime-at-roots triple representing the same fraction, with
 the same `ordAtFrac` pole bound at every point and the same `ordInfOfPair`
@@ -1695,18 +1697,16 @@ theorem reduce_ordAtFrac_triple (x₁ x₂ : H.Point) (a b c : k[X]) (hcne : c �
   -- **`ordInfOfPair` transfer**, via the common-factor shift lemma applied to
   -- both `(a,b)` and `(c,0)` with the same `g` — the `-2 deg g` shift cancels.
   have hinf' : ordInfOfPair a₀ b₀ ≥ ordInfOfPair c₀ (0 : k[X]) := by
-    have hc₀0ne : ¬ (c₀ = 0 ∧ (0:k[X]) = 0) := fun h => hc₀ne h.1
+    have hc₀0ne : ¬ (c₀ = 0 ∧ (0 : k[X]) = 0) := by
+      simpa using hc₀ne
     have hshift_ab : ordInfOfPair a b = ordInfOfPair a₀ b₀ - 2 * (g.natDegree : ℤ) := by
-      rw [ha_eq, hb_eq]; exact ordInfOfPair_mul_left g a₀ b₀ hgne hab₀ne
-    have hshift_c : ordInfOfPair c (0 : k[X]) = ordInfOfPair c₀ (0 : k[X]) - 2 * (g.natDegree : ℤ) := by
-      have : c = g * c₀ := hc_eq
-      have h0 : (0 : k[X]) = g * 0 := by ring
-      rw [this]
-      calc ordInfOfPair (g * c₀) (g * 0)
-          = ordInfOfPair (g * c₀) (g * (0:k[X])) := rfl
-        _ = ordInfOfPair c₀ (0 : k[X]) - 2 * (g.natDegree : ℤ) := by
-              rw [← h0] at hc₀0ne ⊢
-              exact ordInfOfPair_mul_left g c₀ 0 hgne hc₀0ne
+      rw [ha_eq, hb_eq]
+      exact ordInfOfPair_mul_left g a₀ b₀ hgne hab₀ne
+    have hshift_c : ordInfOfPair c (0 : k[X]) =
+        ordInfOfPair c₀ (0 : k[X]) - 2 * (g.natDegree : ℤ) := by
+      rw [hc_eq]
+      have h := ordInfOfPair_mul_left g c₀ (0 : k[X]) hgne hc₀0ne
+      simpa only [mul_zero] using h
     rw [hshift_ab, hshift_c] at hinf
     linarith
   -- **Coprimality**: no root `α` can be shared by `(a₀,b₀,c₀)`, since a
@@ -1739,6 +1739,181 @@ theorem reduce_ordAtFrac_triple (x₁ x₂ : H.Point) (a b c : k[X]) (hcne : c �
       Polynomial.natDegree_eq_zero_of_isUnit hlin_unit
     omega
   exact ⟨a₀, b₀, c₀, hc₀ne, ha0₀ne, hfrac_eq, hzsupp', hinf', hcop⟩
+/-! ## §7. Finishing step: `b₀ = 0`, `c₀.natDegree ≤ 2` forces `c₀` constant
+
+**The genuinely new piece of reasoning flagged in this file's own docstring**
+(`uniqueDegree2MapToP1_ordAtFrac`'s final step). With `b₀ = 0`, `z =
+a₀(x)/c₀(x)` is a Möbius transform of the coordinate function `x` alone. If
+`c₀` were non-constant it would have a root `α` (`k` algebraically closed);
+every point `Q` with `Q.X = α` gives `ordAt Q a₀ 0 = 0` (coprimality: `a₀(α)
+≠ 0` since `c₀(α) = 0`) and `ordAt Q c₀ 0 ≥ 1` (`ordAt_eq_rootMultiplicity_
+unramified`/`_ramified`, root multiplicity `≥ 1`), so `Q` is a genuine pole
+of `z`. Crucially, since `a₀, c₀ ∈ k[X]` don't involve `y`, this *same*
+computation holds at both points of the fiber over `α` (`toPair_mem_
+pointIdeal_iff` for a `B = 0`-slot pair only ever sees `Q.X`, never `Q.Y`) —
+so in the unramified case (`Q.Y ≠ 0`) **both** `Q` and `ι Q` are poles,
+forcing `{Q, ι Q} ⊆ {x₁, x₂}` by the pointwise pole-cap; since `Q ≠ ι Q`,
+this pins `{Q, ι Q} = {x₁, x₂}` exactly, giving `x₂ = ι x₁` either way the
+two points land — contradicting `hne`. In the ramified case (`Q.Y = 0`,
+`ι Q = Q`) the pole order at `Q` is `≥ 2`, which already exceeds every
+pointwise cap available (`≥ -1` when `x₁ ≠ x₂`, and `≥ -2` only at the
+single point `x₁` when `x₁ = x₂` — but that forces `Q = x₁ = x₂`, so
+`ι x₁ = ι Q = Q = x₁ = x₂`, contradicting `hne` directly without even using
+the multiplicity bound). Either way `c₀` non-constant is impossible. -/
+
+/-- **Fiber-matching contradiction lemma.** If `α` is a root of `c₀` (via a
+witness point `Q` with `Q.X = α`), coprimality plus the pointwise `{x₁,x₂}`
+pole cap on `(a₀,b₀,c₀,0)` (with `b₀ = 0`) forces `x₂ = Point.iota x₁` —
+contradicting `hne`. Packaged as `False` directly (rather than proving the
+positive `x₂ = ι x₁` fact and separately applying `hne`) since every call
+site immediately wants the contradiction. -/
+theorem false_of_root_of_coprimeAtRoots_zero_snd
+    (hchar : (2 : k) ≠ 0) (hsf : Squarefree H.f) (x₁ x₂ : H.Point)
+    (hne : x₂ ≠ Point.iota x₁) (a₀ c₀ : k[X]) (hc₀ne : c₀ ≠ 0)
+    (hcop : IsCoprimeAtRoots a₀ 0 c₀)
+    (hzsupp₀ : ∀ P : H.Point, ordAtFrac P a₀ 0 c₀ 0 ≥
+      -((if P = x₁ then 1 else 0) + (if P = x₂ then 1 else 0)))
+    (α : k) (hα : c₀.eval α = 0) : False := by
+  classical
+  -- `a₀(α) ≠ 0` by coprimality (`c₀(α) = 0`, and `(a₀,0)` can't both vanish at `α`).
+  have haα : a₀.eval α ≠ 0 := fun h => hcop α hα ⟨h, by simp⟩
+  -- Produce a witness point `Q` with `Q.X = α` (Weierstrass or not).
+  by_cases hWeier : H.f.eval α = 0
+  · -- Ramified case: unique point `Q = (α,0)`, `ι Q = Q`.
+    have hQeq : H.Equation α (0 : k) := by
+      show (0 : k) ^ 2 = H.f.eval α; rw [hWeier]; ring
+    set Q : H.Point := Point.mk α 0 hQeq with hQ_def
+    have hQX : Q.X = α := rfl
+    have hQY : Q.Y = 0 := rfl
+    have hordc : ordAt Q c₀ (0 : k[X]) = 2 * (c₀.rootMultiplicity α : ℤ) :=
+      ordAt_eq_rootMultiplicity_ramified hsf c₀ hc₀ne α Q (pointIdeal_ne_bot Q) hQX hQY
+    have hmpos : (c₀.rootMultiplicity α : ℤ) ≥ 1 := by
+      have hroot : c₀.IsRoot α := hα
+      have hpos : 0 < c₀.rootMultiplicity α := (Polynomial.rootMultiplicity_pos hc₀ne).mpr hroot
+      exact_mod_cast hpos
+    have hnotmem : toPair H a₀ (0 : k[X]) ∉ pointIdeal Q := by
+      rw [toPair_mem_pointIdeal_iff]; simp only [hQX, hQY, mul_zero, add_zero]; exact haα
+    have hordab : ordAt Q a₀ (0 : k[X]) = 0 := ordAt_eq_zero_of_notMem Q a₀ 0 hnotmem
+    have hboundQ := hzsupp₀ Q
+    unfold ordAtFrac at hboundQ
+    rw [hordab, hordc] at hboundQ
+    -- `hboundQ : 0 - 2*m ≥ -(ind x₁ + ind x₂)`, with `m ≥ 1`, so the RHS
+    -- indicator sum is `≥ 2`, forcing `Q = x₁` (and, if `x₁ ≠ x₂`, also
+    -- `Q = x₂`, which would force `x₁ = x₂` — either way `Q = x₁ = x₂`
+    -- whenever both indicators are needed, since a single indicator only
+    -- contributes `1`).
+    have hsum_ge : (2 : ℤ) ≤
+        (if Q = x₁ then 1 else 0) + (if Q = x₂ then 1 else 0) := by
+      linarith [hboundQ, hmpos]
+    have hQ1 : Q = x₁ := by
+      by_contra hQ1
+      by_cases hQ2 : Q = x₂
+      · have h := hsum_ge
+        simp only [if_neg hQ1, if_pos hQ2] at h
+        omega
+      · have h := hsum_ge
+        simp only [if_neg hQ1, if_neg hQ2] at h
+        omega
+    have hQ2 : Q = x₂ := by
+      by_contra hQ2
+      by_cases hQ1 : Q = x₁
+      · have h := hsum_ge
+        simp only [if_pos hQ1, if_neg hQ2] at h
+        omega
+      · have h := hsum_ge
+        simp only [if_neg hQ1, if_neg hQ2] at h
+        omega
+    have hιQeq : Point.iota Q = Q := by
+      apply Subtype.ext
+      apply Prod.ext
+      · exact Point.iota_X Q
+      · calc
+          (Point.iota Q).Y = -Q.Y := Point.iota_Y Q
+          _ = Q.Y := by rw [hQY]; simp
+    apply hne
+    calc
+      x₂ = Q := hQ2.symm
+      _ = Point.iota Q := hιQeq.symm
+      _ = Point.iota x₁ := congrArg Point.iota hQ1
+  · -- Unramified case: two points `Q, ι Q` over `α`, both genuine poles.
+    obtain ⟨β, hβ⟩ : ∃ β : k, β ^ 2 = H.f.eval α := IsAlgClosed.exists_pow_nat_eq
+      (H.f.eval α) (n := 2) (by norm_num)
+    have hβne : β ≠ 0 := by
+      intro h
+      rw [h] at hβ
+      simp at hβ
+      exact hWeier hβ.symm
+    have hQeq : H.Equation α β := by
+      show β ^ 2 = H.f.eval α
+      exact hβ
+    set Q : H.Point := Point.mk α β hQeq with hQ_def
+    have hQX : Q.X = α := rfl
+    have hQY : Q.Y = β := rfl
+    have hQYne : Q.Y ≠ 0 := hQY ▸ hβne
+    have hιQX : (Point.iota Q).X = α := by
+      rw [Point.iota_X]
+      exact hQX
+    have hιQYne : (Point.iota Q).Y ≠ 0 := by
+      rw [Point.iota_Y]
+      exact neg_ne_zero.mpr hQYne
+    have hQIneQ : Point.iota Q ≠ Q :=
+      Point.iota_ne_self_of_Y_ne_zero hchar hQYne
+    have hordabQ : ordAt Q a₀ (0 : k[X]) = 0 := by
+      apply ordAt_eq_zero_of_notMem
+      rw [toPair_mem_pointIdeal_iff]
+      simpa [hQX] using haα
+    have hordabιQ : ordAt (Point.iota Q) a₀ (0 : k[X]) = 0 := by
+      apply ordAt_eq_zero_of_notMem
+      rw [toPair_mem_pointIdeal_iff]
+      simpa [hιQX] using haα
+    have hmpos : (c₀.rootMultiplicity α : ℤ) ≥ 1 := by
+      have hroot : c₀.IsRoot α := hα
+      have hpos : 0 < c₀.rootMultiplicity α :=
+        (Polynomial.rootMultiplicity_pos hc₀ne).mpr hroot
+      exact_mod_cast hpos
+    have hordcQ : ordAt Q c₀ (0 : k[X]) = (c₀.rootMultiplicity α : ℤ) :=
+      ordAt_eq_rootMultiplicity_unramified hchar c₀ hc₀ne α Q
+        (pointIdeal_ne_bot Q) hQX hQYne
+    have hordcιQ : ordAt (Point.iota Q) c₀ (0 : k[X]) =
+        (c₀.rootMultiplicity α : ℤ) :=
+      ordAt_eq_rootMultiplicity_unramified hchar c₀ hc₀ne α (Point.iota Q)
+        (pointIdeal_ne_bot _) hιQX hιQYne
+    have hboundQ := hzsupp₀ Q
+    have hboundιQ := hzsupp₀ (Point.iota Q)
+    unfold ordAtFrac at hboundQ hboundιQ
+    rw [hordabQ, hordcQ] at hboundQ
+    rw [hordabιQ, hordcιQ] at hboundιQ
+    have hQmem : Q = x₁ ∨ Q = x₂ := by
+      by_cases hQ1 : Q = x₁
+      · exact Or.inl hQ1
+      by_cases hQ2 : Q = x₂
+      · exact Or.inr hQ2
+      exfalso
+      have h : -(c₀.rootMultiplicity α : ℤ) ≥ 0 := by
+        simpa only [if_neg hQ1, if_neg hQ2, sub_eq_add_neg, zero_add,
+          neg_zero, add_zero] using hboundQ
+      linarith
+    have hιQmem : Point.iota Q = x₁ ∨ Point.iota Q = x₂ := by
+      by_cases hQ1 : Point.iota Q = x₁
+      · exact Or.inl hQ1
+      by_cases hQ2 : Point.iota Q = x₂
+      · exact Or.inr hQ2
+      exfalso
+      have h : -(c₀.rootMultiplicity α : ℤ) ≥ 0 := by
+        simpa only [if_neg hQ1, if_neg hQ2, sub_eq_add_neg, zero_add,
+          neg_zero, add_zero] using hboundιQ
+      linarith
+    apply hne
+    rcases hQmem with hQ1 | hQ2
+    · rcases hιQmem with hιQ1 | hιQ2
+      · exact False.elim (hQIneQ (hιQ1.trans hQ1.symm))
+      · exact hιQ2.symm.trans (congrArg Point.iota hQ1)
+    · rcases hιQmem with hιQ1 | hιQ2
+      · calc
+          x₂ = Q := hQ2.symm
+          _ = Point.iota (Point.iota Q) := (Point.iota_iota Q).symm
+          _ = Point.iota x₁ := congrArg Point.iota hιQ1
+      · exact False.elim (hQIneQ (hιQ2.trans hQ2.symm))
 theorem uniqueDegree2MapToP1_ordAtFrac (hdeg : H.f.natDegree = 5) (hchar : (2 : k) ≠ 0)
     (hsf : Squarefree H.f) (x₁ x₂ : H.Point) (hne : x₂ ≠ Point.iota x₁)
     (z : FractionRing (CoordinateRing H)) (hz : z ∈ LPairCarrier' x₁ x₂) :
