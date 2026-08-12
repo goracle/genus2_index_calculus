@@ -555,6 +555,7 @@ theorem not_isPoleBoundedAtPairSpec_one_zero_irreducible
   simp only [add_zero] at hbound
   linarith
 
+omit [IsAlgClosed k] in
 /-- `ordInfOfPair 1 0 = 0`: `(1 : k[X])` has `natDegree = 0`
 (`Polynomial.natDegree_one`) and is nonzero, so `ordInfOfPair`'s `else`
 branch gives `-(max (2*0) 0) = 0`. -/
@@ -564,6 +565,7 @@ theorem ordInfOfPair_one_zero : ordInfOfPair (1 : k[X]) 0 = 0 := by
     Polynomial.natDegree_one]
   simp
 
+omit [IsAlgClosed k] in
 /-- `polePairToFraction 1 0 1 0 = 1`: both numerator and denominator are
 `toPair H 1 0 = 1` (`toPair_one_zero`), so the ratio is `1/1 = 1`. -/
 theorem polePairToFraction_one_zero_one_zero (H : HyperellipticPolynomial k)
@@ -573,6 +575,7 @@ theorem polePairToFraction_one_zero_one_zero (H : HyperellipticPolynomial k)
   rw [toPair_one_zero]
   simp
 
+omit [IsAlgClosed k] in
 /-- `1 ∈ LPairCarrier x₁ x₂`, via `A = 1, B = 0, A' = 1, B' = 0`: the
 constant function has no poles anywhere. `IsPoleBoundedAtPair`'s three
 conjuncts close via, respectively: `toPair_one_zero_notMem_pointIdeal`
@@ -595,6 +598,7 @@ theorem one_mem_LPairCarrier (x₁ x₂ : H.Point) : (1 : FractionRing (Coordina
     omega
   · exact (polePairToFraction_one_zero_one_zero H).symm
 
+omit [IsAlgClosed k] in
 /-- `algebraMap k[X] (CoordinateRing H)` is injective — same proof as
 `coordinateRing_not_isField`'s `hinj`, isolated as its own lemma so
 `pairNorm_mul_of_toPair_mul` below can cancel it without re-deriving. -/
@@ -603,6 +607,7 @@ theorem algebraMap_coordinateRing_injective :
   show Function.Injective (AdjoinRoot.of (X ^ 2 - C H.f))
   exact AdjoinRoot.of.injective_of_degree_ne_zero degree_X_sq_sub_C_H_f_ne_zero
 
+omit [IsAlgClosed k] in
 /-- **`pairNorm` is multiplicative under `toPair` multiplication**: if
 `toPair H A₃ B₃ = toPair H A B * toPair H A' B'`, then `pairNorm H A₃ B₃ =
 pairNorm H A B * pairNorm H A' B'`. Proof: `involution H` is a `RingHom`
@@ -630,6 +635,7 @@ theorem pairNorm_mul_of_toPair_mul (A B A' B' A₃ B₃ : k[X])
   rw [hregroup, h1, h2, ← map_mul] at h3
   exact (algebraMap_coordinateRing_injective h3).symm
 
+omit [IsAlgClosed k] in
 /-- **`ordInfOfPair` is additive under `toPair` multiplication** (the deg-5
 case): if `toPair H A₃ B₃ = toPair H A B * toPair H A' B'` and all three pairs
 are nonzero, then `ordInfOfPair A₃ B₃ = ordInfOfPair A B + ordInfOfPair A'
@@ -665,6 +671,7 @@ theorem ordInfOfPair_add_of_toPair_mul [IsDomain (CoordinateRing H)]
     exact_mod_cast hdeg_prod
   omega
 
+omit [IsAlgClosed k] in
 /-- `toPair H (A₁+A₂) (B₁+B₂) = toPair H A₁ B₁ + toPair H A₂ B₂`: linearity of
 `toPair` in its two polynomial arguments, extracted from the identical
 computation already inline in `RiemannRochSpaceInf`'s `add_mem'`
@@ -680,6 +687,7 @@ theorem toPair_add (A1 B1 A2 B2 : k[X]) :
   set w := y H
   ring
 
+omit [IsAlgClosed k] in
 /-- `c • toPair H A B = toPair H (C c * A) (C c * B)`: the `k`-scalar action
 (routed through `Algebra.compHom` via `algebraMap k k[X]`, per the
 `Algebra k (CoordinateRing H)` instance) distributes into both polynomial
@@ -698,6 +706,7 @@ theorem toPair_smul (c : k) (A B : k[X]) :
   set w := y H
   ring
 
+omit [IsAlgClosed k] in
 /-- **The explicit multiplication formula for `toPair`**: `toPair H A B *
 toPair H A' B' = toPair H (A*A' + B*B'*H.f) (A*B' + A'*B)`. Derived directly:
 `(a+by)(a'+b'y) = aa' + ab'y + a'by + bb'y² = (aa'+bb'f) + (ab'+a'b)y` using
@@ -724,6 +733,7 @@ theorem toPair_mul (A B A' B' : k[X]) :
     ring
   rw [this, hy2]
 
+omit [IsAlgClosed k] in
 /-- **Key new infrastructure**: `ordAt` is additive under multiplication of
 `CoordinateRing H` elements, stated directly at the `intValuation` level
 (bypassing `toPair`-pair bookkeeping). `intValuation` is a bundled `Valuation`
@@ -747,6 +757,7 @@ theorem ordAt_toPair_mul_of_ne_zero
     ((pointHeightOne P h_bot).intValuation_ne_zero g' hg')]
   ring
 
+omit [IsAlgClosed k] in
 /-- **Corollary of `ordAt_toPair_mul_of_ne_zero`, stated entirely at the `(A,B)`-pair
 level**: if `toPair H A₃ B₃ = toPair H A B * toPair H A' B'` with both factors
 nonzero, then `ordAt P A₃ B₃ = ordAt P A B + ordAt P A' B'`. This is the shape every
@@ -768,6 +779,7 @@ theorem ordAt_toPair_mul_of_ne_zero'
     rw [if_neg hA'B', dif_neg h_bot]
   rw [hstep, hA'val]
 
+omit [IsAlgClosed k] in
 /-- **Ultrametric inequality for `ordAt`**, again stated at the `intValuation`
 level: `v.intValuationDef (x+y) ≤ max (v.intValuationDef x) (v.intValuationDef
 y)` is `IsDedekindDomain.HeightOneSpectrum.intValuation.map_add_le_max'`,
@@ -789,6 +801,7 @@ theorem intValuation_add_le_max
         ((pointHeightOne P h_bot).intValuation g') :=
   IsDedekindDomain.HeightOneSpectrum.intValuation.map_add_le_max' _ g g'
 
+omit [IsAlgClosed k] in
 /-- **`ordAt`'s ultrametric inequality**, translated from `intValuation_add_le_max`
 via `ordAt`'s definition (`ordAt = -WithZero.log ∘ intValuation`, the `toPair H A B
 = 0`/`pointIdeal P = ⊥` branches trivial). Uses a locally-proved `WithZero.log`
@@ -827,6 +840,7 @@ theorem WithZero.log_le_log_of_ne_zero {x y : WithZero (Multiplicative ℤ)}
       WithZero.exp_eq_coe_ofAdd, WithZero.coe_le_coe] at h
   exact h
 
+omit [IsAlgClosed k] in
 /-- `toPair H (-A) (-B) = -toPair H A B`: specialize `toPair_smul` to `c = -1`,
 using `C (-1) = -1` (`Polynomial.C_neg`/`map_neg` on `C`, plus `C 1 = 1`) and
 `(-1 : k) • x = -x` (`neg_one_smul`). Not currently used by `ordAt_add_ge_min`
@@ -841,6 +855,7 @@ theorem toPair_neg (A B : k[X]) :
   rw [neg_one_smul, hC, neg_one_mul, neg_one_mul] at h
   exact h.symm
 
+omit [IsAlgClosed k] in
 /-- `intValuation` is negation-invariant: `v(-x) = v(x)` for every
 `x : CoordinateRing H`. Closed via the generic `Valuation.map_neg`
 (`IsDedekindDomain.HeightOneSpectrum.intValuation` is bundled as a
@@ -865,6 +880,7 @@ theorem intValuation_neg
       (pointHeightOne P h_bot).intValuation x :=
   Valuation.map_neg (pointHeightOne P h_bot).intValuation x
 
+omit [IsAlgClosed k] in
 theorem ordAt_add_ge_min
     (P : H.Point) (g g' : CoordinateRing H) (A B A' B' A₃ B₃ : k[X])
     (hA : toPair H A B = g) (hA' : toPair H A' B' = g') (hA₃ : toPair H A₃ B₃ = g + g')
@@ -987,6 +1003,7 @@ proved here rather than imported from there to avoid an import cycle, since
 `OrdAtExtended.lean` itself imports this file for `ordAt_toPair_mul_of_ne_zero'`
 and `ordAt_add_ge_min`). -/
 
+omit [IsAlgClosed k] in
 /-- `ordAt`'s `WithTop ℤ`-valued companion: identical to `ordAt` except the
 degenerate `toPair H A B = 0` case returns `⊤` in place of `ordAt`'s `0`
 placeholder. -/
@@ -998,6 +1015,7 @@ def ordAt' (P : H.Point) (A B : k[X]) : WithTop ℤ :=
   else
     -WithZero.log ((pointHeightOne P h_bot).intValuation (toPair H A B))
 
+omit [IsAlgClosed k] in
 /-- `ordAt'` agrees with `ordAt` (via the standard coercion `ℤ → WithTop ℤ`)
 whenever the pair is nonzero. -/
 theorem ordAt_eq_ordAt'_of_ne_zero (P : H.Point) (A B : k[X])
@@ -1011,6 +1029,7 @@ theorem ordAt_eq_ordAt'_of_ne_zero (P : H.Point) (A B : k[X])
   · simp only [dif_neg h_bot]
     simp
 
+omit [IsAlgClosed k] in
 /-- `ordAt'` is additive under `toPair`-multiplication *unconditionally* — no
 `≠ 0` hypothesis needed on either factor, unlike `ordAt_toPair_mul_of_ne_zero'`. -/
 theorem ordAt'_toPair_mul
@@ -1035,6 +1054,7 @@ theorem ordAt'_toPair_mul
           ordAt_eq_ordAt'_of_ne_zero P A' B' hA'B', hzstep]
       simp
 
+omit [IsAlgClosed k] in
 /-- `ordAt'` satisfies the ultrametric inequality *unconditionally* — no
 `g + g' ≠ 0` side hypothesis, unlike `ordAt_add_ge_min`. -/
 theorem ordAt'_add_ge_min
@@ -1086,6 +1106,7 @@ domain — ideal factorization is unique, element factorization is not, so
 "cancel the shared factor" has no element-level meaning here in general).
 -/
 
+omit [IsAlgClosed k] in
 /-- **Cross-multiplied equality of two pole-pair fractions, unfolded to a
 `toPair`-product equation.** If `toPair A B / toPair A' B' = toPair C D /
 toPair C' D'` in the fraction field (both denominators nonzero), then
@@ -1113,6 +1134,7 @@ theorem toPair_mul_eq_of_polePairToFraction_eq (A B A' B' C D C' D' : k[X])
   rw [← map_mul, ← map_mul] at heq
   exact IsFractionRing.injective (CoordinateRing H) (FractionRing (CoordinateRing H)) heq
 
+omit [IsAlgClosed k] in
 /-- **The well-definedness fact — CORRECTED to require `z ≠ 0`.** An earlier
 draft of this lemma tried to prove the conclusion with no hypothesis on the
 numerators `(A,B)`/`(C,D)` at all, closing the "both numerators vanish"
@@ -1167,6 +1189,7 @@ theorem ordAt_sub_ordAt_eq_of_polePairToFraction_eq (P : H.Point)
     exact_mod_cast hleft'
   omega
 
+omit [IsAlgClosed k] in
 /-- **The intrinsic pole/zero order of a fraction-field element at a point,
 via a chosen pole-bounded representation — defined only for `z ≠ 0`
 representations (`toPair H A B ≠ 0`).** Well-defined by
@@ -1181,6 +1204,7 @@ machinery) since every call site already has a witness pair in hand. -/
 def ordAtFrac (P : H.Point) (A B A' B' : k[X]) : ℤ :=
   ordAt P A B - ordAt P A' B'
 
+omit [IsAlgClosed k] in
 /-- **`ordAtFrac` is representation-independent for nonzero `z`.** Direct
 restatement of `ordAt_sub_ordAt_eq_of_polePairToFraction_eq` in `ordAtFrac`
 notation: any two nonzero-numerator pole-pair representations of the same
