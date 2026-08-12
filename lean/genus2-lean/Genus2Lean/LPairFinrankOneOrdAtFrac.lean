@@ -1494,6 +1494,9 @@ theorem LPairCarrier_subset_LPairCarrier' (x₁ x₂ : H.Point) :
     rw [hAB0, map_zero, zero_div]
   · refine Or.inr ⟨A, B, A', B', ⟨hAB0, hA'B'ne, hinfle, ?_⟩, hz_eq⟩
     exact ordAtFrac_ge_of_isPoleBoundedAtPair_pointwise x₁ x₂ A B A' B' hptwise
+    
+
+
 
 omit [IsAlgClosed k] in
 /-- **`ordAtSpec`-analogue of `ordAtFrac_ge_of_isPoleBoundedAtPair_pointwise`.**

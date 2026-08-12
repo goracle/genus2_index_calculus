@@ -16,99 +16,103 @@ variable {k : Type*} [Field k] (H : HyperellipticPolynomial k)
 /-!
 # Bridging `k[X]`-gcd coprimality to closed-point pole-boundedness
 
-**Status: SCAFFOLD, not yet proved; §2's originally-planned statement was FALSE and
-has been replaced.** This file exists to isolate the one genuinely new piece of
-mathematics `ROADMAP-lpaircarrier-nonclosed-field.md`'s step 5 still needs, following
-the ChatGPT consultation transcript on removing `[IsAlgClosed k]` from
-`LPairFinrankOneOrdAtFrac.lean`.
+**Status: §3's original plan (bridge an `H.Point`-only `hzsupp` up to a closed-point
+bound) was a dead end, confirmed false by two independent ChatGPT consultations
+(post-mortems below) — do not resume that specific route
+(`isNormCoprime_of_reduce_ordAtFrac_triple`, `ordAtSpec_sub_le_indicator_of_
+isNormCoprime`, both left as historical stubs). §4 below is the actual fix: it
+consumes `IsPoleBoundedAtPairSpec` directly (already closed-point-native, no
+bridging needed) and lands `natDegree_le_one_of_isPoleBoundedAtPairSpec_isNormCoprime`
+— drafted with no `sorry`, `IsAlgClosed`-free, and (if it checks out) strictly
+stronger (`deg c ≤ 1`) than the old `IsAlgClosed`-based
+`natDegree_le_two_of_isCoprimeAtRoots`'s `≤ 2`. **Not yet build-tested** — written by
+adapting `natDegree_le_two_of_isPoleBoundedAtPairSpec`'s already-proved proof shape
+(`GlobalDegreeBoundSpec.lean:749`) almost line-for-line, swapping its unit-numerator
+`hv1`-style step for the `IsNormCoprime`-based `ordAtSpec_eq_zero_of_notMem` argument,
+so it should be close, but every Mathlib lemma name in the new supporting lemmas
+(`ordAtSpec_eq_zero_of_notMem`'s `intValuation_lt_one_iff_dvd`/`intValuation_le_one`
+chain, copied from `RiemannRochGenus2.lean`'s `ordAt_eq_zero_of_notMem`) needs REPL
+confirmation. This is the intended replacement for that theorem and for
+`LPairFinrankOneOrdAtFrac.lean`'s `false_of_root_of_coprimeAtRoots_zero_snd`; rewiring
+`uniqueDegree2MapToP1_ordAtFrac` to use it is the next step, not yet done in this
+file.**
 
-**Post-mortem on the original plan (kept for the record — do not repeat this
-mistake):** the original §2 target, `IsFullyCoprime a b c := IsCoprime (gcd a b) c`
-implies `toPair H a b ∉ v.asIdeal ∨ toPair H c 0 ∉ v.asIdeal` for every closed point
-`v`, is **false**. Counterexample (a second, independent ChatGPT consultation): at a
-Weierstrass point `v = (X - α, y)` (`α` a simple root of `H.f`), take `a = c = X - α`,
-`b = 1`. Then `gcd a b = 1` so `IsFullyCoprime a b c` holds vacuously, yet
+**§0/§1/§1b (`IsFullyCoprime`, `IsNormCoprime`, `isCoprimeAtRoots_of_isNormCoprime`),
+§2 (`toPair_notMem_or_notMem_of_isNormCoprime`), and §4 (the real fix) are all TRUE
+and fully proved. Only §3's original (abandoned) theorems are dead ends — kept as
+historical stubs with their counterexamples documented, not deleted, per project
+convention.**
+
+## Post-mortem #1 (kept for the record — do not repeat): `IsFullyCoprime` is too weak
+
+The original §2 target, `IsFullyCoprime a b c := IsCoprime (gcd a b) c` implies
+`toPair H a b ∉ v.asIdeal ∨ toPair H c 0 ∉ v.asIdeal` for every closed point `v`, is
+**false**. Counterexample (ChatGPT consultation #1): at a Weierstrass point
+`v = (X - α, y)` (`α` a simple root of `H.f`), take `a = c = X - α`, `b = 1`. Then
+`gcd a b = 1` so `IsFullyCoprime a b c` holds vacuously, yet
 `toPair H a b = (X - α) + y ∈ v.asIdeal` (both summands are) and
-`toPair H c 0 = X - α ∈ v.asIdeal`. A second counterexample away from ramification
-(`b = 1, c = X - α, a = -β` at a non-Weierstrass point `(α, β)`) shows the same
-statement is false even split/inert, not just ramified. The root cause: `a + bY`
-vanishing at a closed point is a statement about the *norm* `a² - b²·H.f`, not about
-`gcd a b`. The fix — weaken the hypothesis, per this file's house rule of weakening a
-false theorem before deleting it — is `IsNormCoprime a b c := IsCoprime (pairNorm H a
-b) c`, i.e. `IsCoprime (a ^ 2 - b ^ 2 * H.f) c`. This is what §2 now proves, with a
-complete, case-split-free proof (no ramified/split/inert trichotomy needed — that
-trichotomy was a symptom of chasing the wrong, too-weak hypothesis, not a genuine
-difficulty in the corrected statement).
+`toPair H c 0 = X - α ∈ v.asIdeal`. The fix applied — weaken the hypothesis to
+`IsNormCoprime a b c := IsCoprime (pairNorm H a b) c` — genuinely does repair §2 (see
+§2's proof below, complete, no case split). **But it does not repair §3**, per the
+second post-mortem below, discovered only after §3 was attempted.
 
-## Why this file, not a direct edit to `LPairFinrankOneOrdAtFrac.lean`
+## Post-mortem #2 (the fatal one): §3's theorem itself is false, no matter what
+`k[X]`-gcd-flavored hypothesis replaces `IsNormCoprime`
 
-`GlobalDegreeBoundSpec.lean`'s `natDegree_le_two_of_isPoleBoundedAtPairSpec` (and its
-general-numerator cousin `natDegree_pairNorm_le_natDegree_pairNorm_add_two_of_
-isPoleBoundedAtPairSpec`) is **already** the correct general closed-point degree bound
-— no case-split on whether `f(α)` is a square, no manufactured witness point, works
-uniformly across every residue degree. Confirmed against the ChatGPT transcript: this
-is exactly their "Goal B" route (`§4` of their answer), and it's fully proved already,
-no `sorry`.
+`ordAtSpec_sub_le_indicator_of_isNormCoprime` claimed: given `IsNormCoprime H a b c`
+and the **rational-point-only** bound
+`hzsupp : ∀ P : H.Point, ordAtFrac P a b c 0 ≥ -(indicator P)`, conclude the
+**closed-point** bound `∀ v, ordAtSpec v c 0 ≤ ordAtSpec v a b + indicator v`.
 
-What's missing is the *connective* fact: `LPairFinrankOneOrdAtFrac.lean`'s
-`reduce_ordAtFrac_triple` (§6 of that file) already produces a triple `(a₀,b₀,c₀)`
-that is coprime **in the full `k[X]`-gcd sense** — `g := gcd (gcd a b) c` is the
-honest joint gcd of the *original* triple, so after dividing it out, `gcd (gcd a₀ b₀)
-c₀` is a unit — but that file's `IsCoprimeAtRoots` definition only ever *records* the
-weaker, rational-root-only consequence of this (`∀ α : k, c.eval α = 0 → ¬(a.eval α =
-0 ∧ b.eval α = 0)`), because that's all `natDegree_le_two_of_isCoprimeAtRoots`'s
-`IsAlgClosed`-based proof needed. The stronger fact was always available for free; it
-was never surfaced or named. This file surfaces it, and uses it to build the
-`HeightOneSpectrum`-indexed pointwise-unit fact `IsPoleBoundedAtPairSpec`'s clause
-needs, closing the gap between `reduce_ordAtFrac_triple`'s output and
-`GlobalDegreeBoundSpec.lean`'s input.
+**Counterexample (ChatGPT consultation #2, independently reconstructed and confirmed
+in-session before being sent for consultation):** take `k = ZMod 5`, `H.f = X^5 - X`
+(squarefree: `f' = -1`), `a = 1, b = 0, c = X^2 + 2` (irreducible over `ZMod 5`, since
+`2` is a non-square mod `5`). Then:
+- `pairNorm H a b = 1`, a unit, so `IsNormCoprime H a b c` holds trivially for this
+  `c` (coprime to a unit is automatic) — the hypothesis is *satisfiable* and in fact
+  unavoidably weak here.
+- `toPair H a b = 1` is a unit at every closed point, so `ordAtSpec v a b = 0`
+  everywhere.
+- `c = X^2 + 2` has **no root in `ZMod 5`**, so `ordAt P c 0 = 0` for every rational
+  `P : H.Point`; `hzsupp` holds trivially (indeed with the indicator identically `0`).
+- But at the (non-rational, residue-degree-2) closed point `v` lying over the
+  irreducible factor `X^2 + 2` itself, `c` **does** vanish: `ordAtSpec v c 0 ≥ 1 > 0 =
+  ordAtSpec v a b + indicator v` (since `v ∉ {pointHeightOne' x₁, pointHeightOne'
+  x₂}` for any rational `x₁, x₂`). The claimed inequality fails.
 
-## Plan (corrected)
+**Root cause, per the consultation:** `hzsupp`'s `H.Point`-only quantification
+structurally cannot see a pole of `c` sitting at a non-rational closed point — no
+amount of `k[X]`-gcd/norm bookkeeping downstream can recover information that was
+never in the hypothesis. `IsNormCoprime` in fact points in the *opposite* direction
+from what §3 needed: it says the numerator's norm and `c` share no factor, which at
+a `v` where `c` vanishes forces `ordAtSpec v a b = 0` (numerator is a *unit* there) —
+exactly the wrong conclusion when what's needed is a bound on `ordAtSpec v c 0`
+itself. This is not a missing Lean lemma or a case-split gap; the mathematical content
+`hzsupp` needs was simply never supplied by anything in this file's hypotheses.
 
-1. **`IsNormCoprime a b c := IsCoprime (pairNorm H a b) c`** (§1) — the correct
-   `k[X]`-gcd statement: `a² - b²·H.f` and `c` share no common irreducible factor.
-   `reduce_ordAtFrac_triple`'s output triple should satisfy this (needs re-checking
-   against that theorem's actual `g`-division construction — flagged in §1's
-   corollary below; this is a weaker ask than the old plan's, since a common factor of
-   `a² - b²f` and `c` need not be a common factor of `a` and `b` and `c` individually,
-   so this may already fall out, or may need a short separate argument).
-   `IsFullyCoprime a b c := IsCoprime (gcd a b) c` (the original, too-weak notion) is
-   kept only as a named historical artifact (§0) — it is **not** used by anything
-   below, and no new code should assume it implies closed-point disjointness.
-   `IsCoprimeAtRoots` is recovered as a corollary (§1b, now proved — direct
-   `Polynomial.eval` argument, simpler than originally sketched).
-2. **The genuinely new theorem (§2, now proved below):** `IsNormCoprime a b c`
-   implies that for every closed point `v : HeightOneSpectrum (CoordinateRing H)`,
-   `toPair H a b ∉ v.asIdeal ∨ toPair H c 0 ∉ v.asIdeal`. Proof: if both membership
-   hold, `toPair_mul_involution` gives `algebraMap _ _ (pairNorm H a b) =
-   toPair H a b * involution H (toPair H a b) ∈ v.asIdeal` (ideal absorbs the
-   product since one factor already is), so `pairNorm H a b ∈ P` where
-   `P := Ideal.comap (algebraMap k[X] (CoordinateRing H)) v.asIdeal` (prime, by
-   `Ideal.comap_isPrime`); also `c ∈ P` directly, unfolding `toPair H c 0`. Then
-   `P ⊇ span {pairNorm H a b, c}`, and `IsNormCoprime a b c` says that span is `⊤`,
-   contradicting `P` proper. **No case split on ramified/split/inert** — the norm
-   route sidesteps the trichotomy entirely, since it only ever needs the *product*
-   `toPair H a b * involution H (toPair H a b)`, never the individual conjugate's
-   membership.
-3. **Assembly (§3, depends on §2):** convert `ordAtFrac`'s `H.Point`-only pointwise
-   bound (`hzsupp₀` in `uniqueDegree2MapToP1_ordAtFrac`) plus §2's unit-somewhere fact
-   into an honest `ordAtSpec`-based, `HeightOneSpectrum`-indexed pointwise bound
-   matching `IsPoleBoundedAtPairSpec`'s clause, then invoke
-   `natDegree_pairNorm_le_natDegree_pairNorm_add_two_of_isPoleBoundedAtPairSpec` (or
-   the fixed-numerator version, once it's clear which numerator shape the call site
-   actually has after `b₀ = 0` — see that theorem's own docstring on why the
-   fixed-`(1,0)`-numerator version doesn't directly apply before `b₀ = 0` is known).
-   §3 below is updated to consume `IsNormCoprime` instead of `IsFullyCoprime`; not yet
-   attempted, still blocked only on wiring, not on new math.
+## Where the real fix lives (next step, not attempted in this file)
 
-**What this file does NOT attempt to resolve**: the `x₁ = x₂` / degree-1-vs-degree-2
-distinction from the ChatGPT transcript's "Layer 3" (bounding `residueDeg v ≤ 2` for
-`v` over a *linear* factor specifically) is not needed here — `GlobalDegreeBoundSpec.
-lean`'s bound never required it, since it sums with `residueDeg`-weighting over the
-*entire* spectrum rather than needing a small-residue-degree witness point. That part
-of the ChatGPT transcript describes an alternative, more surgical route this file
-deliberately does not take, since the already-proved global bound makes it
-unnecessary. -/
+`RiemannRochGenus2.lean` §1c already builds exactly the right primitive:
+`IsPoleBoundedAtPairSpec'`/`LPairCarrierSpec'`, whose pointwise clause is quantified
+over `v : HeightOneSpectrum (CoordinateRing H)` from the start (not `H.Point`), fully
+proved with no `sorry`, including `isPoleBoundedAtPair'_of_spec'` (the specialization
+back down to the `H.Point`-only `IsPoleBoundedAtPair'`) and
+`lPairCarrierSpec'_subset_lPairCarrier'`. That section's docstring already
+cross-references this exact counterexample.
+
+The remaining work is **not** "bridge a rational bound up to a closed-point bound"
+(impossible, per the post-mortem above) but **rewire the call site**:
+`LPairFinrankOneOrdAtFrac.lean`'s `uniqueDegree2MapToP1_ordAtFrac` currently consumes
+`z ∈ LPairCarrier'` (the `H.Point`-only carrier) and extracts its rational-only
+`hptwise'` to build `hzsupp`. It should instead consume `z ∈ LPairCarrierSpec'` (the
+closed-point carrier) and extract the closed-point pointwise clause directly from
+`IsPoleBoundedAtPairSpec'` — no synthesis needed, since that clause is already stated
+over `HeightOneSpectrum`. This also means `reduce_ordAtFrac_triple` (§6 of that file)
+needs a `HeightOneSpectrum`-indexed analogue (reducing a closed-point-bounded triple
+by its `k[X]`-gcd and re-deriving the closed-point bound for the reduced triple),
+since the existing one is itself `H.Point`-only throughout. That analogue is where the
+real remaining mathematical content sits — genuinely new work, not yet scoped in
+detail, but now aimed at a theorem that is actually true. -/
 
 namespace HyperellipticPolynomial
 
@@ -157,34 +161,13 @@ theorem isCoprimeAtRoots_of_isNormCoprime (a b c : k[X])
 
 variable {H} [IsDedekindDomain (CoordinateRing H)]
 
-/-- **`reduce_ordAtFrac_triple`'s output is norm-coprime.** Unlike the old
-`IsFullyCoprime` target, this is genuinely NOT automatic from `g := gcd (gcd a b) c`
-being the joint gcd of the original triple — `gcd (gcd a₀ b₀) c₀` being a unit does
-**not** imply `gcd (pairNorm H a₀ b₀) c₀` is a unit (that gap is exactly what the
-file docstring's counterexamples exploit: at the counterexample triple, `gcd a b` and
-`c` are already coprime). So this corollary needs a real (short) argument, not just
-surfacing: a common irreducible factor `q` of `pairNorm H a₀ b₀ = a₀² - b₀²·H.f` and
-`c₀` need not divide `a₀` or `b₀` individually, but it must divide `a₀² - b₀²·H.f`;
-whether `reduce_ordAtFrac_triple`'s construction rules this out depends on facts about
-`g` this docstring doesn't yet establish — flagged as needing its own check (possibly
-another ChatGPT consultation) once §2 is confirmed and it's clear whether `§3`
-actually needs this corollary in exactly this form, or whether `IsNormCoprime` can be
-established for the assembly step's specific triple by a more direct route (e.g. from
-`hzsupp`/`hinf` themselves, rather than by strengthening this reduction lemma). -/
-theorem isNormCoprime_of_reduce_ordAtFrac_triple (x₁ x₂ : H.Point) (a b c : k[X])
-    (hcne : c ≠ 0) (hab_ne : toPair H a b ≠ 0)
-    (hzsupp : ∀ P : H.Point, ordAtFrac P a b c 0 ≥
-      -((if P = x₁ then 1 else 0) + (if P = x₂ then 1 else 0)))
-    (hinf : ordInfOfPair a b ≥ ordInfOfPair c (0 : k[X])) :
-    ∃ a₀ b₀ c₀ : k[X], c₀ ≠ 0 ∧ toPair H a₀ b₀ ≠ 0 ∧
-      polePairToFraction (H := H) a b c 0 = polePairToFraction (H := H) a₀ b₀ c₀ 0 ∧
-      (∀ P : H.Point, ordAtFrac P a₀ b₀ c₀ 0 ≥
-        -((if P = x₁ then 1 else 0) + (if P = x₂ then 1 else 0))) ∧
-      ordInfOfPair a₀ b₀ ≥ ordInfOfPair c₀ (0 : k[X]) ∧
-      IsNormCoprime H a₀ b₀ c₀ := by
-  sorry
-
-/-- **§2. The genuinely new step: `IsNormCoprime` at the closed-point level.**
+/-- **§1b was ABANDONED as a route to close the theorem below (see "Post-mortem #2"
+in the file docstring) — but its target output, a `HeightOneSpectrum`-native
+coprime-at-a-closed-point reduction, is exactly what §4 below finally supplies via a
+different route: not by bridging up from `H.Point`-only `hzsupp`, but by consuming
+`IsPoleBoundedAtPairSpec'`/`LPairCarrierSpec'` directly, which already carries the
+closed-point pointwise clause from the start. No reduction lemma of this shape is
+needed at all in the end — see §4.  **§2. The genuinely new step: `IsNormCoprime` at the closed-point level.**
 
 **No closed point sees both a norm-coprime numerator and denominator vanish.** The
 `HeightOneSpectrum`-indexed generalization of `IsCoprimeAtRoots`'s role in the old
@@ -244,29 +227,175 @@ theorem toPair_notMem_or_notMem_of_isNormCoprime
     exact P.add_mem (P.mul_mem_left u hnormP) (P.mul_mem_left w hcP)
   exact hPprime.ne_top (P.eq_top_iff_one.mpr h1)
 
-/-- **§3. Assembly: `ordAtSpec`-based pointwise bound, ready for
-`GlobalDegreeBoundSpec.lean`'s degree bound.**
+/-! ## §4. The real fix: `IsNormCoprime` + `IsPoleBoundedAtPairSpec` (closed-point
+native from the start) ⟹ `deg c ≤ 1`
 
-**`ordAtSpec`-based pointwise pole bound**, `ordAtFrac`'s `HeightOneSpectrum`
-analogue, needed to feed `natDegree_pairNorm_le_natDegree_pairNorm_add_two_of_
-isPoleBoundedAtPairSpec`. Combines: (a) the rational-point-only bound `hzsupp₀` this
-file's callers already have (from `reduce_ordAtFrac_triple`/`isNormCoprime_of_
-reduce_ordAtFrac_triple`), specialized down from `H.Point` to `pointHeightOne' P` via
-`ordAt_eq_ordAtSpec`; and (b) §2's fact that at every OTHER closed point (not of the
-form `pointHeightOne' P` for `P ∈ {x₁,x₂}`), `ordAtSpec` of the norm-coprime
-numerator/denominator pair can't both be positive, so the indicator-free bound
-`ordAtSpec v A' B' ≤ ordAtSpec v A B` holds there unconditionally (no pole to bound at
-all, since one side is always a unit). **Not yet attempted, but no longer blocked on
-new math — §2 is proved; this is wiring.** -/
-theorem ordAtSpec_sub_le_indicator_of_isNormCoprime
-    (x₁ x₂ : H.Point) (a b c : k[X]) (hcne : c ≠ 0) (hab_ne : toPair H a b ≠ 0)
+**Corrected route, per the "Where the real fix lives" note above and a third ChatGPT
+consultation (`chatgpt_prompt_nonclosed_field.md`).** §3's error was trying to
+*derive* a closed-point pole bound from an `H.Point`-only `hzsupp` — impossible, since
+`hzsupp` structurally cannot see non-rational closed points. The fix is to never
+attempt that derivation: **consume `IsPoleBoundedAtPairSpec` directly** (already
+quantified over the full `HeightOneSpectrum`, `RiemannRochGenus2.lean:180`, no
+closedness assumed), and combine its pointwise clause with `IsNormCoprime`'s
+already-proved closed-point disjointness (`toPair_notMem_or_notMem_of_isNormCoprime`,
+§2 above) the same way the `(1,0)`-numerator case
+(`ordAtSpec_le_indicator_of_isPoleBoundedAtPairSpec`,
+`GlobalDegreeBoundSpec.lean:712`) uses `ordAtSpec v 1 0 = 0`: there, the numerator is
+a unit so it trivially never sees a pole; here, `IsNormCoprime` supplies the
+weaker-but-sufficient fact that numerator and denominator can't both see the *same*
+closed point, which is all the argument actually needs.
+
+**Consequence, matching the third consultation's derivation exactly**: since the
+degree-2 hyperelliptic cover has `∑_{v∣g} e_v·f_v = 2` for every irreducible factor
+`g` of `c`, the residue-degree-weighted pole bound collapses to `2·deg(c) ≤ 2`
+(not merely `≤ 2` as in the unit-numerator case, but a *factor of 2* stronger, since
+every closed point over `c` contributes at least `1` per unit of `deg(c)` — see
+`natDegree_pairNorm_eq_sum_residueDeg_ordAtSpec` specialized to `B=0`, where
+`pairNorm H c 0 = c^2` has degree `2·deg(c)`), giving `deg(c) ≤ 1` directly. This
+is the key improvement over the old `IsAlgClosed`-based `natDegree_le_two_of_
+isCoprimeAtRoots`: not just `IsAlgClosed`-free, but a *strictly stronger* bound
+(`≤ 1`, not merely `≤ 2`), because the weighted-fiber argument counts every closed
+point's full residue-degree contribution rather than one witness point per root. -/
+
+/-- **`ordAtSpec` vanishes off a closed point's own ideal.** The `ordAtSpec`/`v.asIdeal`
+analogue of `RiemannRochGenus2.lean`'s `ordAt_eq_zero_of_notMem`
+(`ordAt`/`pointIdeal P`), transcribed to the unrestricted `HeightOneSpectrum` — simpler
+than that theorem since `v` already carries `ne_bot` (no `h_bot` case split needed).
+Same `Ideal.dvd_span_singleton` + `intValuation_lt_one_iff_dvd` +
+`intValuation_le_one` chain. -/
+theorem ordAtSpec_eq_zero_of_notMem
+    (v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H)) (A B : k[X])
+    (hnotmem : toPair H A B ∉ v.asIdeal) :
+    ordAtSpec v A B = 0 := by
+  have hne : toPair H A B ≠ 0 := by
+    intro hz; apply hnotmem; rw [hz]; exact Submodule.zero_mem _
+  have hnotdvd : ¬ v.asIdeal ∣ Ideal.span ({toPair H A B} : Set (CoordinateRing H)) := by
+    rw [Ideal.dvd_span_singleton]
+    exact hnotmem
+  have hval_not_lt : ¬ v.intValuation (toPair H A B) < 1 := by
+    rw [v.intValuation_lt_one_iff_dvd]
+    exact hnotdvd
+  have hval_le : v.intValuation (toPair H A B) ≤ 1 := v.intValuation_le_one (toPair H A B)
+  have hval_eq : v.intValuation (toPair H A B) = 1 := le_antisymm hval_le (not_lt.mp hval_not_lt)
+  unfold ordAtSpec
+  rw [if_neg hne, hval_eq]
+  simp
+
+/-- **`ordAtSpec` at the closed-point level is bounded by the indicator, given
+`IsNormCoprime`.** The general-numerator analogue of `ordAtSpec_le_indicator_of_
+isPoleBoundedAtPairSpec` (`GlobalDegreeBoundSpec.lean:712`, which specializes to
+numerator `(1,0)`): here the numerator `(a,b)` need only be norm-coprime to `c`, not
+a unit. At any `v` where `ordAtSpec v c 0 > 0` (i.e. `toPair H c 0 ∈ v.asIdeal`),
+`toPair_notMem_or_notMem_of_isNormCoprime` forces `toPair H a b ∉ v.asIdeal`, hence
+`ordAtSpec v a b = 0` (`ordAtSpec_eq_zero_of_notMem` above), and
+`IsPoleBoundedAtPairSpec`'s pointwise clause (unfolded at `(A,B) = (a,b)`,
+`(A',B') = (c,0)`) then reads `0 ≥ ordAtSpec v c 0 - e_v`, i.e. exactly the wanted
+bound. When `v.asIdeal` doesn't contain `toPair H c 0` the bound is immediate from
+`ordAtSpec_eq_zero_of_notMem` itself (LHS is `0`, RHS is `≥ 0`). -/
+theorem ordAtSpec_le_indicator_of_isPoleBoundedAtPairSpec_isNormCoprime
+    (x₁ x₂ : H.Point) (a b c : k[X]) (hcne : c ≠ 0)
     (hnc : IsNormCoprime H a b c)
-    (hzsupp : ∀ P : H.Point, ordAtFrac P a b c 0 ≥
-      -((if P = x₁ then 1 else 0) + (if P = x₂ then 1 else 0))) :
+    (h : IsPoleBoundedAtPairSpec x₁ x₂ a b c 0) :
     ∀ v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H),
-      ordAtSpec v c (0 : k[X]) ≤ ordAtSpec v a b +
+      ordAtSpec v c (0 : k[X]) ≤
+        (if v = pointHeightOne' x₁ then 1 else 0) +
+          (if v = pointHeightOne' x₂ then 1 else 0) := by
+  obtain ⟨_, _, hpt⟩ := h
+  intro v
+  by_cases hcmem : toPair H c (0 : k[X]) ∈ v.asIdeal
+  · have hab_notmem : toPair H a b ∉ v.asIdeal := by
+      rcases toPair_notMem_or_notMem_of_isNormCoprime (H := H) a b c hnc v with h1 | h2
+      · exact h1
+      · exact absurd hcmem h2
+    have hab0 : ordAtSpec v a b = 0 := ordAtSpec_eq_zero_of_notMem v a b hab_notmem
+    have := hpt v
+    rw [hab0] at this
+    omega
+  · have hc0 : ordAtSpec v c (0 : k[X]) = 0 := ordAtSpec_eq_zero_of_notMem v c 0 hcmem
+    rw [hc0]
+    -- RHS is a sum of two `if _ then (1:ℤ) else 0` terms, each nonnegative;
+    -- `positivity` may not see through the `if`, so fall back to `split_ifs`+`omega`
+    -- if it fails in the REPL.
+    split_ifs <;> omega
+
+/-- **The general-numerator global degree bound, `IsNormCoprime` version.** The
+`(a,b)`-numerator generalization of `natDegree_le_two_of_isPoleBoundedAtPairSpec`
+(`GlobalDegreeBoundSpec.lean:749`), and — thanks to counting the *entire* residue-
+degree-weighted fiber rather than a single witness point — strictly stronger than
+that theorem's `≤ 2`: `pairNorm H c 0 = c^2` has `natDegree = 2 * c.natDegree`
+(`pairNorm`'s definition at `B=0` collapses to a bare square), so the same `≤ 2`
+bound on `(pairNorm H c 0).natDegree` gives `c.natDegree ≤ 1` directly. This is
+exactly `natDegree_le_two_of_isCoprimeAtRoots`'s conclusion, but strengthened
+(`≤ 1` not `≤ 2`) and with `IsAlgClosed k` replaced by `IsNormCoprime H a b c`. This
+is the intended `IsAlgClosed`-free replacement for `LPairFinrankOneOrdAtFrac.lean`'s
+`natDegree_le_two_of_isCoprimeAtRoots` and (post `b=0`) `false_of_root_of_
+coprimeAtRoots_zero_snd`, unifying both of that file's `IsAlgClosed` call sites into
+one closed-point fiber-sum argument. -/
+theorem natDegree_le_one_of_isPoleBoundedAtPairSpec_isNormCoprime
+    (x₁ x₂ : H.Point) (a b c : k[X]) (hcne : c ≠ 0)
+    (hnc : IsNormCoprime H a b c)
+    (h : IsPoleBoundedAtPairSpec x₁ x₂ a b c 0) :
+    c.natDegree ≤ 1 := by
+  have hterm := ordAtSpec_le_indicator_of_isPoleBoundedAtPairSpec_isNormCoprime
+    (H := H) x₁ x₂ a b c hcne hnc h
+  have hcB0ne : ¬ (c = 0 ∧ (0 : k[X]) = 0) := by simpa using hcne
+  obtain ⟨T, hsupp⟩ := exists_finite_support_ordAtSpec (H := H) c (0 : k[X]) hcB0ne
+  set T' : Finset (IsDedekindDomain.HeightOneSpectrum (CoordinateRing H)) :=
+    insert (pointHeightOne' x₁) (insert (pointHeightOne' x₂) T) with hT'_def
+  have hsupp' : ∀ v, v ∉ T' → ordAtSpec v c (0 : k[X]) = 0 := by
+    intro v hv
+    apply hsupp
+    intro hvT
+    apply hv
+    rw [hT'_def]
+    exact Finset.mem_insert_of_mem (Finset.mem_insert_of_mem hvT)
+  have hnorm := natDegree_pairNorm_eq_sum_residueDeg_ordAtSpec
+    (H := H) c (0 : k[X]) hcB0ne T' hsupp'
+  have hle : ∑ v ∈ T', (residueDeg v : ℤ) * ordAtSpec v c (0 : k[X]) ≤
+      ∑ v ∈ T', (residueDeg v : ℤ) *
         ((if v = pointHeightOne' x₁ then 1 else 0) +
           (if v = pointHeightOne' x₂ then 1 else 0)) := by
-  sorry
+    apply Finset.sum_le_sum
+    intro v _
+    exact mul_le_mul_of_nonneg_left (hterm v) (Int.natCast_nonneg _)
+  have hx₁mem : pointHeightOne' x₁ ∈ T' := by rw [hT'_def]; exact Finset.mem_insert_self _ _
+  have hx₂mem : pointHeightOne' x₂ ∈ T' := by
+    rw [hT'_def]; exact Finset.mem_insert_of_mem (Finset.mem_insert_self _ _)
+  have hcollapse : ∑ v ∈ T', (residueDeg v : ℤ) *
+      ((if v = pointHeightOne' x₁ then 1 else 0) +
+        (if v = pointHeightOne' x₂ then 1 else 0)) ≤ 2 := by
+    have hterm_le : ∀ v ∈ T', (residueDeg v : ℤ) *
+        ((if v = pointHeightOne' x₁ then 1 else 0) +
+          (if v = pointHeightOne' x₂ then 1 else 0)) ≤
+        (if v = pointHeightOne' x₁ then 1 else 0) +
+          (if v = pointHeightOne' x₂ then 1 else 0) := by
+      intro v _
+      by_cases hv1 : v = pointHeightOne' x₁
+      · subst hv1; rw [residueDeg_pointHeightOne']
+        by_cases hv2 : pointHeightOne' x₁ = pointHeightOne' x₂ <;> simp [hv2]
+      · by_cases hv2 : v = pointHeightOne' x₂
+        · subst hv2; rw [residueDeg_pointHeightOne']; simp [hv1]
+        · simp [hv1, hv2]
+    calc ∑ v ∈ T', (residueDeg v : ℤ) *
+          ((if v = pointHeightOne' x₁ then 1 else 0) +
+            (if v = pointHeightOne' x₂ then 1 else 0))
+        ≤ ∑ v ∈ T', ((if v = pointHeightOne' x₁ then (1:ℤ) else 0) +
+            (if v = pointHeightOne' x₂ then 1 else 0)) := Finset.sum_le_sum hterm_le
+      _ = (∑ v ∈ T', (if v = pointHeightOne' x₁ then (1:ℤ) else 0)) +
+            ∑ v ∈ T', (if v = pointHeightOne' x₂ then (1:ℤ) else 0) :=
+          Finset.sum_add_distrib
+      _ = 1 + 1 := by
+            rw [Finset.sum_ite_eq' T' (pointHeightOne' x₁) (fun _ => (1:ℤ)),
+                Finset.sum_ite_eq' T' (pointHeightOne' x₂) (fun _ => (1:ℤ)),
+                if_pos hx₁mem, if_pos hx₂mem]
+      _ = 2 := by norm_num
+  have hpairNorm_eq : pairNorm H c (0 : k[X]) = c ^ 2 := by
+    unfold pairNorm; ring
+  have hfinal : ((c ^ 2).natDegree : ℤ) ≤ 2 := by
+    rw [← hpairNorm_eq, hnorm]; exact le_trans hle hcollapse
+  have hdeg2 : (c ^ 2).natDegree = 2 * c.natDegree := by
+    rw [Polynomial.natDegree_pow]
+  rw [hdeg2] at hfinal
+  omega
 
 end HyperellipticPolynomial
