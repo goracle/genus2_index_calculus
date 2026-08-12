@@ -34,4 +34,5 @@ import Genus2Lean.LCanonicalElementary
 import Genus2Lean.GlobalDegreeBoundSpec
 import Genus2Lean.CoprimeAtRootsClosed
 import Genus2Lean.NonSquareFiberPoint
+import Genus2Lean.LPairFinrankOneOrdAtFracSpec
 
