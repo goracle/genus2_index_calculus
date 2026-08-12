@@ -100,10 +100,16 @@ namespace HyperellipticPolynomial
 
 open Divisor
 
-variable {H} [IsAlgClosed k] [IsDedekindDomain (CoordinateRing H)]
+variable {H} [IsDedekindDomain (CoordinateRing H)]
 
 /-! ## §1. Conjugate rationalization: every nonzero-numerator pole-bounded
-witness has a `k[X]`-denominator representation -/
+witness has a `k[X]`-denominator representation
+
+**Non-closed-field note (rewiring pass):** this section's `[IsAlgClosed k]`
+has been dropped — nothing here uses it. `frac_toPair_den_kx` is pure
+`toPair`/`FractionRing` algebra: rationalizing by the conjugate `A' - B'y`
+and cancelling the shared nonzero factor `toPair H A' (-B')` works over any
+field `k`. -/
 
 /-- **Step 1 (`frac_toPair_den_kx`).** Given any pole-bounded witness
 `(A,B,A',B')` for `z` (i.e. `toPair H A' B' ≠ 0`), rationalizing by the
@@ -271,10 +277,15 @@ namespace HyperellipticPolynomial
 
 open Divisor
 
-variable {H} [IsAlgClosed k] [IsDedekindDomain (CoordinateRing H)]
+variable {H} [IsDedekindDomain (CoordinateRing H)]
 
 /-! ## §3. `ordAt` of a general nonzero `c ∈ k[X]` at a point over one of its
 roots, via `rootMultiplicity`
+
+**Non-closed-field note (rewiring pass):** `[IsAlgClosed k]` dropped here
+too — every theorem below takes the point `Q` (and the fact `Q.X = α`) as
+an explicit hypothesis rather than manufacturing it from closedness, so
+nothing in this section needs `k` algebraically closed.
 
 **MATHLIB NAME UNCONFIRMED**: `Polynomial.pow_rootMultiplicity_dvd` and the
 existence of a cofactor `c'` with `c = (X - C α)^m * c'` and `¬ (X - C α) ∣

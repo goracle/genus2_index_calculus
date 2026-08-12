@@ -1,5 +1,19 @@
 # Roadmap: making `LPairCarrier`/`IsPoleBoundedAtPair` correct over `k = ZMod p`
 
+## Status update (post-formalization pass)
+
+Steps 1–3 below (`ordAtSpec`, `IsPoleBoundedAtPairSpec`/`LPairCarrierSpec`,
+`isPoleBoundedAtPair_of_spec`, and the counterexample re-certification) are
+now **done** — implemented in `PrincipalDivisors.lean` and
+`RiemannRochGenus2.lean`, not just planned. Step 4 (the global degree bound)
+has been scaffolded in a new file, `GlobalDegreeBoundSpec.lean`, but a closer
+look at the actual proof shape (see "Revised plan for step 4" below) found
+that the sketch originally given for it in this document was importantly
+incomplete: it is not a re-indexing of the existing rational-point argument,
+it is a genuine fork with new content on the non-rational side. The
+"Certified counterexample" and "out of scope" sections below have also been
+partly superseded — see the notes inline.
+
 ## TL;DR
 
 `natDegree_le_two_of_isCoprimeAtRoots` (`LPairFinrankOneOrdAtFrac.lean`) is not
@@ -165,67 +179,105 @@ which theorem hands it its input.
 
 ### 4. The genuinely new mathematical content: a global degree bound
 
-This is the piece that was previously (wrongly) attempted via
-`natDegree_le_two_of_isCoprimeAtRoots`, and is the real Riemann–Roch content
-the project needs. Shape:
+**Status: scaffolded (`GlobalDegreeBoundSpec.lean`), but the proof sketch
+originally given here has been superseded — see "Revised plan for step 4"
+below for what actually needs to be proved.** The high-level shape (bound
+`(pairNorm H A' B').natDegree ≤ 2` from `IsPoleBoundedAtPairSpec`) is still
+correct and is now a real theorem statement in that file:
 
 ```lean
 theorem natDegree_le_two_of_isPoleBoundedAtPairSpec
     (x₁ x₂ : H.Point) (A' B' : k[X]) (hA'B' : ¬(A' = 0 ∧ B' = 0))
-    (hspec : ∀ v : HeightOneSpectrum (CoordinateRing H),
-      -- pole bound at every place, from IsPoleBoundedAtPairSpec's pointwise clause,
-      -- specialized to the denominator's own zero/pole structure
-      ...) :
+    (h : IsPoleBoundedAtPairSpec x₁ x₂ (1 : k[X]) 0 A' B') :
     (pairNorm H A' B').natDegree ≤ 2 := ...
 ```
 
-Proof sketch (standard degree-of-a-divisor argument, made precise against
-this codebase's actual API): `natDegree_pairNorm_eq_neg_ordInfOfPair` gives
-`(pairNorm H A' B').natDegree = -ordInfOfPair A' B'` directly — so it
-suffices to bound `-ordInfOfPair A' B'` (the pole order of `toPair H A' B'`
-at infinity) by 2. This should follow from a *degree-of-divisor-is-zero*
-style fact for the coordinate ring's function field: the total degree of
-zeros of `toPair H A' B'` (summed over all closed points, weighted by
-residue-field degree, à la `sum_ordAt_eq_natDegree_pairNorm`'s intended
-generalization) equals its total pole degree (at infinity), and the pole
-bound `≤ (x₁)+(x₂)` on the *reciprocal* direction caps the zero-side sum at
-2 in exactly the way this file's existing `hcard_le`/`hnodup` argument
-already establishes for the rational-point-only sub-case. The rational-only
-argument is the right template; it just needs the sum extended over
-`HeightOneSpectrum` with residue-degree weights instead of over
-`c.roots.toFinset`.
+`natDegree_pairNorm_eq_neg_ordInfOfPair` (unconditional, already proved) and
+the residue-degree-weighted sum identity it's combined with are exactly as
+originally sketched, and the *termwise* local bound (pole-boundedness ⟹
+`ordAtSpec v A' B' ≤` the indicator, at every closed point `v`) is now fully
+proved with no case analysis needed — this part of the original sketch held
+up. What did not hold up, on closer inspection, is the claim that this
+"just needs the sum extended... with residue-degree weights instead of over
+`c.roots.toFinset`," i.e. that it's a mechanical generalization of the
+existing `hcard_le`/`hnodup` rational-point argument in
+`LPairFinrankOneOrdAtFrac.lean`. It is not — see below.
 
-This is real, not-yet-formalized mathematics — flag it for a ChatGPT
-consultation once the definitions in steps 1–3 are in place and compiling,
-rather than attempting it blind. It is the direct Lean analogue of "the
-degree of a principal divisor is zero" / Riemann–Roch's `ℓ(D) ≤ deg D + 1`
-for `deg D = 2`, phrased for this specific coordinate ring.
+### Revised plan for step 4
+
+Closer review found that `LPairFinrankOneOrdAtFrac.lean`'s existing
+rational-point machinery (`exists_pole_of_isCoprimeAtRoots` and everything
+downstream of it) is not a special case of a general closed-point argument
+that can simply be "extended" — it is genuinely rational-point-specific,
+because it manufactures an explicit `H.Point` lying over each root by
+invoking algebraic closedness (`IsAlgClosed.exists_pow_nat_eq`) to produce a
+square root in `k`. Over `k = ZMod p` that square root need not exist, so
+this construction cannot be generalized to a non-rational closed point — a
+different, uniform closed-point/valuation argument is needed there instead
+(and that argument, unlike the rational one, turns out to need no internal
+case analysis at all, which is a genuine simplification, not just a
+patch).
+
+The corrected, still fairly high-level picture:
+
+- **The reducedness hypothesis needs to be stated at full strength.** The
+  existing reduction step in `LPairFinrankOneOrdAtFrac.lean`
+  (`reduce_ordAtFrac_triple`) already produces a triple with no common
+  factor *at all* in `k[X]` (ordinary polynomial gcd, which does clear
+  common irreducible factors of every degree, not just rational roots) —
+  but it currently only records this as `IsCoprimeAtRoots`, a strictly
+  weaker statement that only talks about shared *rational* roots. The
+  stronger fact its own proof already establishes needs to be surfaced and
+  named, since it — not `IsCoprimeAtRoots` — is the actual hypothesis the
+  degree bound needs.
+- **The rational and non-rational parts of the denominator's factorization
+  genuinely need separate treatments, not a shared generalized lemma.**
+  Rational roots keep using (roughly) the existing
+  `exists_pole_of_isCoprimeAtRoots`-style case analysis. Non-rational
+  irreducible factors need a new, separate argument based directly on the
+  closed-point valuation bound from step 2 above — which, notably, is
+  simpler than the rational case (no case-splitting needed), since it never
+  has to name an explicit point.
+- **The rational case itself has a sub-case the existing lemma doesn't
+  correctly cover either**, once `k` isn't algebraically closed: a rational
+  root `α` where `f(α)` is a nonzero non-square in `k` gives no `k`-point of
+  the curve over `α` at all, but does give a single non-rational closed
+  point of residue degree 2. That sub-case needs the same non-rational
+  treatment as a genuine irreducible factor of `H.f`, not the existing
+  rational-point machinery — so the eventual split isn't cleanly "rational
+  roots vs. irreducible factors of degree ≥ 2," it's closer to "closed
+  points where the fiber over them is rational vs. everywhere else."
+- **The overall bound still assembles the same way** (sum a local
+  degree-weighted bound over all irreducible factors of the denominator,
+  using full coprimality to avoid double-counting, matching against the
+  norm-degree identity from step 4's already-scaffolded first half) — this
+  part of the original plan is intact.
+
+None of this changes the target theorem statement in
+`GlobalDegreeBoundSpec.lean`, and none of it invalidates steps 1–3 above.
+It only means step 4's proof needs a new case-analysis lemma for
+non-rational (or rational-but-non-square) closed points, alongside — not
+instead of — the existing rational-point machinery, rather than a bare
+reindexing of that machinery. This should be scoped as its own dedicated
+pass (with a ChatGPT consultation on the case-analysis details, per this
+project's usual convention for hard steps) once someone is ready to pick
+step 4 back up.
 
 ## Suggested order of attack
 
-1. **`ordAtSpec` + `ordAt_eq_ordAtSpec`.** Pure refactor, low risk, unlocks
-   everything else. Confirm every existing `ordAt`-consuming theorem still
-   applies via the identity (should be near-free — `ordAt` already computes
-   through `pointHeightOne`).
+1. **`ordAtSpec` + `ordAt_eq_ordAtSpec`.** ✅ Done (`PrincipalDivisors.lean`).
 2. **`IsPoleBoundedAtPairSpec`/`LPairCarrierSpec` + the derived
-   `isPoleBoundedAtPair_of_spec` direction.** Also low risk — purely a
-   restatement plus one specialization lemma.
-3. **Re-certify the counterexample is now excluded.** Before touching
-   anything else, confirm concretely that `A=1,B=0,A'=0,B'=1` (with `H.f`
-   irreducible over `k`) fails `IsPoleBoundedAtPairSpec`'s pointwise clause
-   at some `v` — i.e. that some non-rational closed point genuinely
-   witnesses the violation. This should be checkable directly: `H.f`
-   irreducible over `k` means `k[X]/(H.f)` is a field extension of `k` of
-   degree 5, giving a height-one prime of `CoordinateRing H` above it with
-   residue field of degree > 1, at which `toPair H 0 1 = y` vanishes (`y² =
-   H.f(x) = 0` in that residue field) — this `v` is not `pointHeightOne' x₁`
-   or `x₂` for any `k`-rational `x₁,x₂`, so it violates the pointwise clause
-   unless already excluded by the indicator, closing the counterexample.
-   Worth nailing down as a standalone sanity-check theorem before step 4.
-4. **The global degree bound (§4 above).** The one genuinely hard piece.
-   Scope it as its own file/session, likely with a ChatGPT consultation
-   prompt mirroring this project's existing style
-   (`chatgpt_prompt_coprimality.md`), once 1–3 compile.
+   `isPoleBoundedAtPair_of_spec` direction.** ✅ Done
+   (`RiemannRochGenus2.lean`).
+3. **Re-certify the counterexample is now excluded.** ✅ Done
+   (`RiemannRochGenus2.lean`, §1c).
+4. **The global degree bound (§4 above).** The one genuinely hard piece,
+   and still open. Scaffolded in `GlobalDegreeBoundSpec.lean`, with the
+   local termwise bound proved but the residue-degree-weighted sum identity
+   and its case-analysis prerequisites (see "Revised plan for step 4" above)
+   still needed. Scope the remaining case-analysis work as its own
+   file/session, with a ChatGPT consultation prompt mirroring this
+   project's existing style (`chatgpt_prompt_coprimality.md`).
 5. **Rewire `LPairFinrankOneOrdAtFrac.lean`'s assembly theorem** to consume
    `LPairCarrierSpec'` instead of `LPairCarrier'`, feeding
    `isPoleBoundedAtPair_of_spec` to reach the existing `H.Point`-only
@@ -240,17 +292,26 @@ for `deg D = 2`, phrased for this specific coordinate ring.
 
 - Rewriting `IsCoprimeAtRoots`, `hzsupp`, `exists_pole_of_isCoprimeAtRoots`,
   or any of the rational-root/factor-base bookkeeping in
-  `LPairFinrankOneOrdAtFrac.lean` §4/§5. These are correct statements about
-  the correct object (`H.Point`, the actual factor base) and should survive
-  this redesign untouched, consumed via `isPoleBoundedAtPair_of_spec` rather
-  than rewritten.
+  `LPairFinrankOneOrdAtFrac.lean` §4/§5, insofar as they're consumed via
+  `isPoleBoundedAtPair_of_spec` for the (still correct, still needed)
+  rational-point half of the eventual degree bound. **Revised**: per
+  "Revised plan for step 4" above, this machinery does *not* survive
+  untouched in every respect — its non-Weierstrass case relies on
+  algebraic closedness to produce a rational point over each root, which
+  fails in general over `k = ZMod p`, and the sub-case where that fails
+  needs to be redirected to a new non-rational-point argument rather than
+  patched internally. Still out of scope for *this* pass in the sense that
+  it's step 4's problem to solve, not steps 1–3's.
 - The non-Weierstrass square-root step in `exists_pole_of_isCoprimeAtRoots`
-  (currently `IsAlgClosed.exists_pow_nat_eq`) — separately fixable by
-  deriving `f(α) = (A'(α)/B'(α))²` algebraically from `c(α) = A'(α)² -
-  B'(α)²f(α) = 0` and coprimality (`B'(α) ≠ 0` follows from coprimality once
-  `f(α) ≠ 0`), per the ChatGPT correction on this thread. Small, local,
-  independent of the `HeightOneSpectrum` redesign — can be done in parallel
-  or first, since it doesn't touch `IsPoleBoundedAtPair`.
+  (currently `IsAlgClosed.exists_pow_nat_eq`) is **no longer believed
+  separately fixable in isolation** the way this section previously
+  suggested (deriving the square root algebraically from coprimality). That
+  derivation only produces the square root when one already exists in `k`;
+  when `f(α)` is a non-square in `k`, no such derivation can succeed,
+  because no rational point over `α` exists at all — this is a real case
+  requiring the non-rational closed-point argument from step 4, not a small
+  independent patch. Left for step 4 to resolve as part of its case
+  analysis, not before it.
 - Removing `[IsAlgClosed k]` from the rest of the file wholesale. Once
   `LPairCarrierSpec'` is correct for general `k`, the ambient `variable
   [IsAlgClosed k]` blocks can be relaxed section-by-section, but that's

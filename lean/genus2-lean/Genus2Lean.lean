@@ -31,4 +31,6 @@ import Genus2Lean.RatioDivisorCollapse
 import Genus2Lean.LPairFinrankOne
 import Genus2Lean.LPairFinrankOneOrdAtFrac
 import Genus2Lean.LCanonicalElementary
+import Genus2Lean.GlobalDegreeBoundSpec
+import Genus2Lean.CoprimeAtRootsClosed
 
