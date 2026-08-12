@@ -1495,6 +1495,47 @@ theorem LPairCarrier_subset_LPairCarrier' (x₁ x₂ : H.Point) :
   · refine Or.inr ⟨A, B, A', B', ⟨hAB0, hA'B'ne, hinfle, ?_⟩, hz_eq⟩
     exact ordAtFrac_ge_of_isPoleBoundedAtPair_pointwise x₁ x₂ A B A' B' hptwise
 
+omit [IsAlgClosed k] in
+/-- **`ordAtSpec`-analogue of `ordAtFrac_ge_of_isPoleBoundedAtPair_pointwise`.**
+Same pure-unfolding argument (`ordAtSpec v A B - ordAtSpec v A' B'` is
+literally the LHS of `IsPoleBoundedAtPairSpec'`'s pointwise clause, matching
+`IsPoleBoundedAtPairSpec`'s pointwise clause rearranged), transcribed from
+`P : H.Point` to `v : HeightOneSpectrum (CoordinateRing H)`. Needed to feed
+the witness pulled out of `LPairCarrierSpec` membership into
+`IsPoleBoundedAtPairSpec'`'s shape without first rationalizing. -/
+theorem ordAtSpec_sub_ge_of_isPoleBoundedAtPairSpec_pointwise (x₁ x₂ : H.Point)
+    (A B A' B' : k[X])
+    (hptwise : ∀ v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H),
+      ordAtSpec v A B ≥ ordAtSpec v A' B' -
+        ((if v = pointHeightOne' x₁ then 1 else 0) + (if v = pointHeightOne' x₂ then 1 else 0)))
+    (v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H)) :
+    ordAtSpec v A B - ordAtSpec v A' B' ≥
+      -((if v = pointHeightOne' x₁ then 1 else 0) + (if v = pointHeightOne' x₂ then 1 else 0)) := by
+  have := hptwise v
+  omega
+
+omit [IsAlgClosed k] in
+/-- **Bridge: `LPairCarrierSpec ⊆ LPairCarrierSpec'`.** The general-`k`
+analogue of `LPairCarrier_subset_LPairCarrier'` — same proof shape (case-split
+on whether the numerator vanishes, otherwise transport the witness pair
+directly), using `IsPoleBoundedAtPairSpec`'s `HeightOneSpectrum`-indexed
+pointwise clause and `ordAtSpec_sub_ge_of_isPoleBoundedAtPairSpec_pointwise`
+in place of the `H.Point`-only originals. This is the real fix this file's
+`uniqueDegree2MapToP1_ordAtFrac` needs: callers holding a `LPairCarrierSpec`
+witness (the general-`k`-correct carrier, `RiemannRochGenus2.lean` §1b) can
+now reach `LPairCarrierSpec'` without first funneling through the lossy
+`H.Point`-only `LPairCarrier`/`LPairCarrier'` pair. -/
+theorem LPairCarrierSpec_subset_LPairCarrierSpec' (x₁ x₂ : H.Point) :
+    LPairCarrierSpec x₁ x₂ ⊆ LPairCarrierSpec' x₁ x₂ := by
+  rintro z ⟨A, B, A', B', ⟨hA'B'ne, hinfle, hptwise⟩, hz_eq⟩
+  by_cases hAB0 : toPair H A B = 0
+  · refine Or.inl ?_
+    rw [hz_eq]
+    unfold polePairToFraction
+    rw [hAB0, map_zero, zero_div]
+  · refine Or.inr ⟨A, B, A', B', ⟨hAB0, hA'B'ne, hinfle, ?_⟩, hz_eq⟩
+    exact ordAtSpec_sub_ge_of_isPoleBoundedAtPairSpec_pointwise x₁ x₂ A B A' B' hptwise
+
 /-! ## §7. Assembly: `uniqueDegree2MapToP1`, no `hreduced` needed
 
 Chains §1 (rationalize) → §5/§6 (`b = 0`, `deg c ≤ 2`) → `ordAt_linX_eq`

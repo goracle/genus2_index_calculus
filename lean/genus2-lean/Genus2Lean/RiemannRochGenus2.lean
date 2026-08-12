@@ -454,16 +454,36 @@ theorem heightOneSpectrum_of_irreducible_ne_pointIdeal
       { toFun := φ, map_add' := map_add φ, map_smul' := hφ_lin } with hφₗ_def
     have hφₗ_inj : Function.Injective φₗ := hφ_inj
     -- `LinearMap.finrank_le_finrank_of_injective` needs `Module.Finite k (CoordinateRing H ⧸ Q)`
-    -- (the codomain): `CoordinateRing H` is `Module.Finite k[X] (CoordinateRing H)` (rank 2,
-    -- `hfin` above), so its quotient `CoordinateRing H ⧸ Q` is `Module.Finite k[X]` too
-    -- (finiteness passes to quotients), and `k[X] ⧸ Q.comap _` is `Module.Finite k` (it's a
-    -- quotient of `k[X]` by a nonzero ideal, `k[X]` being a PID with everything finite mod a
-    -- nonzero ideal) — chaining these via `Module.Finite.trans` gives `Module.Finite k
-    -- (CoordinateRing H ⧸ Q)`. UNCONFIRMED: the exact instance-chaining incantation Lean
-    -- needs here (which `Module.Finite` instances fire automatically vs. need to be supplied
-    -- by hand) was not checked against a live goal.
+    -- (the codomain). **Filled in** (was previously `sorry`'d, flagged as needing an
+    -- unconfirmed `Module.Finite.trans` chaining incantation): rather than chase that
+    -- composition, port the direct construction `GlobalDegreeBoundSpec.lean`'s
+    -- `finite_quotient_asIdeal` uses for a *general* `v : HeightOneSpectrum` (that file
+    -- can't be imported here — it imports this one — so the proof is inlined rather than
+    -- called). `v.asIdeal = Q` by construction (`hv_def`), so `Q ≠ ⊥` is `v.ne_bot`;
+    -- `CoordinateRing H = AdjoinRoot (X² - C H.f)` has a `k[X]`-basis via
+    -- `AdjoinRoot.powerBasisAux' hmonic` (`hmonic` already in scope above), letting
+    -- `Ideal.quotientEquivPiSpan` decompose `CoordinateRing H ⧸ Q` into a finite product of
+    -- `k[X] ⧸ span {smithCoeffs ...}` factors, each `k`-finite by Mathlib's own PID-quotient
+    -- `FiniteDimensional` instance; transport back along the `k[X]`-linear equivalence,
+    -- restricted to `k`-linear via the same `IsScalarTower.of_algebraMap_eq (fun _ => rfl)`
+    -- idiom used elsewhere in this file (e.g. `hst`/`hst2` just below).
     haveI : Module.Finite k (CoordinateRing H ⧸ Q) := by
-      sorry
+      set b : Module.Basis (Fin (X ^ 2 - C H.f : (k[X])[X]).natDegree) k[X] (CoordinateRing H) :=
+        AdjoinRoot.powerBasisAux' hmonic with hb_def
+      have hQ_ne : Q ≠ ⊥ := hQ_ne_bot
+      set e := Ideal.quotientEquivPiSpan (R := k[X]) (S := CoordinateRing H) Q b hQ_ne
+        with he_def
+      haveI hfactor : ∀ i, Module.Finite k
+          (k[X] ⧸ Ideal.span ({Ideal.smithCoeffs b Q hQ_ne i} : Set k[X])) := by
+        intro i
+        infer_instance
+      haveI hpi : Module.Finite k
+          (∀ i : Fin (X ^ 2 - C H.f : (k[X])[X]).natDegree,
+            k[X] ⧸ Ideal.span ({Ideal.smithCoeffs b Q hQ_ne i} : Set k[X])) :=
+        Module.Finite.pi
+      haveI hst0 : IsScalarTower k (k[X]) (CoordinateRing H) :=
+        IsScalarTower.of_algebraMap_eq (fun _ => rfl)
+      exact Module.Finite.equiv (LinearEquiv.restrictScalars k e).symm
     have hle : Module.finrank k (k[X] ⧸ Ideal.span ({q} : Set k[X])) ≤
         Module.finrank k (CoordinateRing H ⧸ Q) :=
       LinearMap.finrank_le_finrank_of_injective hφₗ_inj
@@ -1337,6 +1357,104 @@ theorem one_mem_LPairCarrier' (x₁ x₂ : H.Point) :
   · exact le_refl _
   · intro P; unfold ordAtFrac; omega
   · exact (polePairToFraction_one_zero_one_zero H).symm
+
+/-! ## §1c. `IsPoleBoundedAtPairSpec'` / `LPairCarrierSpec'`: the general-`k`,
+`ordAtFrac`-based replacement for `IsPoleBoundedAtPair'`/`LPairCarrier'`
+
+**Motivation.** `IsPoleBoundedAtPair'`'s pointwise clause quantifies over `P :
+H.Point` only, exactly the same `k`-rational-only restriction
+`ROADMAP-lpaircarrier-nonclosed-field.md` diagnoses for `IsPoleBoundedAtPair`
+(§1b above already has the fix for that one, `IsPoleBoundedAtPairSpec`/
+`LPairCarrierSpec`). `LPairFinrankOneOrdAtFrac.lean`'s
+`uniqueDegree2MapToP1_ordAtFrac` consumes `LPairCarrier'` membership directly,
+so it inherits the same defect: a witness whose poles sit entirely at
+non-`k`-rational closed points vacuously satisfies `IsPoleBoundedAtPair'`'s
+`H.Point`-indexed bound (same shape of counterexample as §1b's — e.g.
+`A=1,B=0,A'=0,B'=1` when `H.f` has no rational roots). This is exactly the gap
+surfaced by the `CoprimeAtRootsClosed.lean` `ordAtSpec_sub_le_indicator_of_
+isNormCoprime` counterexample (`f=X^5-X`, `a=1,b=0,c=X^2+2` over `k=ZMod 5`,
+via ChatGPT consultation): `hzsupp`, built from `hptwise' : ∀ P : H.Point, ...`
+inside `uniqueDegree2MapToP1_ordAtFrac`, can never see the pole `c` has at the
+non-rational closed point over `X^2+2`, no matter how it's massaged
+downstream — the missing information was never in the hypothesis to begin
+with.
+
+**Fix, mirroring §1b exactly.** Same three clauses as `IsPoleBoundedAtPair'`,
+with the pointwise clause requantified over `v : HeightOneSpectrum
+(CoordinateRing H)`, using `ordAtSpec v A B - ordAtSpec v A' B'` in place of
+`ordAtFrac P A B A' B'` (the latter is definitionally exactly `ordAt P A B -
+ordAt P A' B'`, so this is the literal `ordAtSpec` transcription of the same
+difference, not a new quantity). `uniqueDegree2MapToP1_ordAtFrac`'s hypothesis
+should eventually be rewired to consume `LPairCarrierSpec'` instead of
+`LPairCarrier'` (not done in this pass — that call site's own rewiring, and
+the corresponding fix to `reduce_ordAtFrac_triple`/`hzsupp` throughout
+`LPairFinrankOneOrdAtFrac.lean`, is future work); this section only builds the
+primitive itself plus the bridge lemma back down to `IsPoleBoundedAtPair'`, in
+the same shape §1b already established for the non-`ordAtFrac` pair. -/
+
+omit [IsAlgClosed k] in
+/-- **General-`k`, `ordAtFrac`-style pole-boundedness, quantified over every
+closed point.** See the section docstring above. Same shape as
+`IsPoleBoundedAtPair'`, with `H.Point` replaced by `IsDedekindDomain.
+HeightOneSpectrum (CoordinateRing H)` and `ordAtFrac P A B A' B'` replaced by
+`ordAtSpec v A B - ordAtSpec v A' B'` (the `ordAtSpec` transcription of the
+same difference `ordAtFrac` computes). -/
+def IsPoleBoundedAtPairSpec' (x₁ x₂ : H.Point) (A B A' B' : k[X]) : Prop :=
+  toPair H A B ≠ 0 ∧
+  ¬ (A' = 0 ∧ B' = 0) ∧
+  ordInfOfPair A B ≥ ordInfOfPair A' B' ∧
+  (∀ v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H),
+    ordAtSpec v A B - ordAtSpec v A' B' ≥
+      -((if v = pointHeightOne' x₁ then 1 else 0) +
+        (if v = pointHeightOne' x₂ then 1 else 0)))
+
+omit [IsAlgClosed k] in
+/-- **`LPairCarrierSpec'`: `L((x₁)+(x₂))`, `ordAtFrac`-based, general-`k`
+version.** Direct analogue of `LPairCarrier'`, built from
+`IsPoleBoundedAtPairSpec'` instead of `IsPoleBoundedAtPair'`. This is the
+carrier `uniqueDegree2MapToP1_ordAtFrac` should eventually be phrased against
+for a correct general-`k` statement; `LPairCarrier'` (rational-points-only) is
+recovered as a consequence via `isPoleBoundedAtPair'_of_spec'` below, not the
+other way around. -/
+def LPairCarrierSpec' (x₁ x₂ : H.Point) : Set (FractionRing (CoordinateRing H)) :=
+  { z | z = 0 ∨ ∃ A B A' B' : k[X], IsPoleBoundedAtPairSpec' x₁ x₂ A B A' B' ∧
+      z = polePairToFraction A B A' B' }
+
+omit [IsAlgClosed k] in
+/-- **`IsPoleBoundedAtPairSpec'` is at least as strong as
+`IsPoleBoundedAtPair'`.** The direction that matters, mirroring
+`isPoleBoundedAtPair_of_spec`: every general-`k`-pole-bounded `ordAtFrac`-style
+witness is, in particular, `H.Point`-pole-bounded, by specializing the
+universal `v`-quantifier to the rational points `pointHeightOne' P` and
+rewriting `ordAtSpec` back to `ordAt` (`ordAt_eq_ordAtSpec`) on both terms of
+the difference, which reassembles into `ordAtFrac P A B A' B'` by `ordAtFrac`'s
+own definition. This lets `LPairFinrankOneOrdAtFrac.lean`'s existing
+`H.Point`-only machinery continue to apply unchanged once fed a
+`LPairCarrierSpec'` witness instead of a `LPairCarrier'` one. -/
+theorem isPoleBoundedAtPair'_of_spec' (x₁ x₂ : H.Point) (A B A' B' : k[X])
+    (h : IsPoleBoundedAtPairSpec' x₁ x₂ A B A' B') :
+    IsPoleBoundedAtPair' x₁ x₂ A B A' B' := by
+  obtain ⟨h0, h1, h2, h3⟩ := h
+  refine ⟨h0, h1, h2, fun P => ?_⟩
+  have hv := h3 (pointHeightOne' P)
+  rw [← ordAt_eq_ordAtSpec, ← ordAt_eq_ordAtSpec] at hv
+  rw [pointHeightOne'_eq_iff, pointHeightOne'_eq_iff] at hv
+  -- `hv : ordAt P A B - ordAt P A' B' ≥ -(indicator)`, matching `ordAtFrac`'s
+  -- own definition (`ordAt P A B - ordAt P A' B'`) exactly.
+  unfold ordAtFrac
+  exact hv
+
+omit [IsAlgClosed k] in
+/-- **`LPairCarrierSpec' ⊆ LPairCarrier'`.** Direct consequence of
+`isPoleBoundedAtPair'_of_spec'`: every element represented by a
+general-`k`-pole-bounded `ordAtFrac`-style witness is also represented by an
+`H.Point`-pole-bounded one (the *same* witness, `z = 0` transporting
+trivially), so membership transports. -/
+theorem lPairCarrierSpec'_subset_lPairCarrier' (x₁ x₂ : H.Point) :
+    LPairCarrierSpec' x₁ x₂ ⊆ LPairCarrier' x₁ x₂ := by
+  rintro z (hz0 | ⟨A, B, A', B', hbound, hz⟩)
+  · exact Or.inl hz0
+  · exact Or.inr ⟨A, B, A', B', isPoleBoundedAtPair'_of_spec' x₁ x₂ A B A' B' hbound, hz⟩
 
 -- **Relocated up from later in the file (build-order fix).** `ordInfOfPair_le_zero`
 -- and `ordInfOfPair_C_mul_ge` originally sat after `LPairCarrier'_smul`, but
