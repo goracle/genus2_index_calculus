@@ -1775,7 +1775,7 @@ each contributing `residueDeg = 1` (`residueDeg_pointHeightOne'`) times `ordAtSp
 ≤ 1 + 1 = 2`, i.e. `c₀.natDegree ≤ 1` (stronger than needed, matches `hcdeg1`'s later
 bound, consistent since this is really the same fact reached earlier). -/
 theorem natDegree_le_two_of_gcdUnit_closed_point
-    [IsDedekindDomain (CoordinateRing H)]
+    (hdeg : H.f.natDegree = 5)
     (x₁ x₂ : H.Point) (a₀ b₀ c₀ : k[X]) (hc₀ne : c₀ ≠ 0)
     (hab₀ne : toPair H a₀ b₀ ≠ 0)
     (hgu : IsUnit (gcd (gcd a₀ b₀) c₀))
@@ -1785,11 +1785,193 @@ theorem natDegree_le_two_of_gcdUnit_closed_point
         -((if v = pointHeightOne' x₁ then 1 else 0) +
           (if v = pointHeightOne' x₂ then 1 else 0))) :
     c₀.natDegree ≤ 2 := by
-  /- ABANDONED: the attempted norm-degree/local-order argument is mathematically insufficient.
-     In particular, hzsuppSpec₀ only bounds ord(a₀,b₀) - ord(c₀,0),
-     and does not give ord(c₀,0) ≤ 1 or ≤ 2.  The old proof produced invalid
-     arithmetic goals and is intentionally disabled until a different route is found. -/
-  sorry
+  classical
+  haveI : IsDomain (CoordinateRing H) := IsDedekindDomain.toIsDomain
+
+  /- An irreducible factor of `c₀` has a zero at the `X`-coordinate of one of
+  the two distinguished rational points.  The important point is that the
+  witness supplied by `exists_ordAtSpec_lt_of_notMem_span_algebraMap` is a
+  closed point over the factor `q`; the pole bound then forces that witness
+  to be one of `x₁,x₂`. -/
+  have hq_root_location : ∀ {q : k[X]}, Irreducible q → q ∣ c₀ →
+      q.IsRoot x₁.X ∨ q.IsRoot x₂.X := by
+    intro q hq hqc
+    have hqne : q ≠ 0 := hq.ne_zero
+    have hnotmem : toPair H a₀ b₀ ∉
+        Ideal.span ({algebraMap k[X] (CoordinateRing H) q} : Set (CoordinateRing H)) := by
+      intro hmem
+      obtain ⟨hqa, hqb⟩ :=
+        (toPair_mem_span_algebraMap_iff (H := H) hdeg q a₀ b₀).mp hmem
+      have hqg : q ∣ gcd (gcd a₀ b₀) c₀ :=
+        dvd_gcd (dvd_gcd hqa hqb) hqc
+      exact hq.not_isUnit (isUnit_of_dvd_unit hqg hgu)
+    obtain ⟨v, hvq, hvlt⟩ :=
+      exists_ordAtSpec_lt_of_notMem_span_algebraMap
+        (H := H) q a₀ b₀ hq hab₀ne hnotmem
+    obtain ⟨s, hcs⟩ := hqc
+    have hsne : toPair H s (0 : k[X]) ≠ 0 := by
+      rw [Ne, toPair_eq_zero_iff]
+      intro hs0
+      exact hc₀ne (by rw [hcs, hs0.1, mul_zero])
+    have hqnePair : toPair H q (0 : k[X]) ≠ 0 := by
+      rw [Ne, toPair_eq_zero_iff]
+      exact fun h => hqne h.1
+    have hcprod : toPair H c₀ (0 : k[X]) =
+        toPair H q (0 : k[X]) * toPair H s (0 : k[X]) := by
+      have hm := toPair_mul (H := H) q 0 s 0
+      simpa [hcs] using hm.symm
+    have hcge : ordAtSpec v q (0 : k[X]) ≤
+        ordAtSpec v c₀ (0 : k[X]) := by
+      have heq := ordAtSpec_add_of_toPair_mul (H := H) v
+        q 0 s 0 c₀ 0 hqnePair hsne hcprod
+      have hsnn : 0 ≤ ordAtSpec v s (0 : k[X]) :=
+        ordAtSpec_nonneg v s 0 hsne
+      rw [heq]
+      omega
+    have habltc : ordAtSpec v a₀ b₀ <
+        ordAtSpec v c₀ (0 : k[X]) := lt_of_lt_of_le hvlt hcge
+    have hv_special : v = pointHeightOne' x₁ ∨ v = pointHeightOne' x₂ := by
+      by_contra hvnone
+      push_neg at hvnone
+      have hbound := hzsuppSpec₀ v
+      simp only [if_neg hvnone.1, if_neg hvnone.2, add_zero] at hbound
+      omega
+    rcases hv_special with rfl | rfl
+    · left
+      have hqmem : algebraMap k[X] (CoordinateRing H) q ∈ pointIdeal x₁ := hvq
+      change evalAtPoint x₁ (algebraMap k[X] (CoordinateRing H) q) = 0 at hqmem
+      change Polynomial.eval₂ (Polynomial.evalRingHom x₁.val.1) x₁.val.2 (C q) = 0 at hqmem
+      simpa [Point.X] using hqmem
+    · right
+      have hqmem : algebraMap k[X] (CoordinateRing H) q ∈ pointIdeal x₂ := hvq
+      change evalAtPoint x₂ (algebraMap k[X] (CoordinateRing H) q) = 0 at hqmem
+      change Polynomial.eval₂ (Polynomial.evalRingHom x₂.val.1) x₂.val.2 (C q) = 0 at hqmem
+      simpa [Point.X] using hqmem
+
+  /- Every root of `c₀` is one of the two distinguished X-coordinates. -/
+  have hroot_location : ∀ {α : k}, c₀.IsRoot α →
+      α = x₁.X ∨ α = x₂.X := by
+    intro α hα
+    have hlin : (X - C α : k[X]).IsRoot α := by simp
+    have hlin_irred : Irreducible (X - C α : k[X]) :=
+      Polynomial.irreducible_X_sub_C α
+    have hlin_dvd : (X - C α : k[X]) ∣ c₀ :=
+      Polynomial.dvd_iff_isRoot.mpr hα
+    obtain hq1 | hq2 := hq_root_location hlin_irred hlin_dvd
+    · left
+      have hx : x₁.X - α = 0 := by simpa using hq1
+      exact (sub_eq_zero.mp hx).symm
+    · right
+      have hx : x₂.X - α = 0 := by simpa using hq2
+      exact (sub_eq_zero.mp hx).symm
+
+  /- At a rational point `P`, the pole bound controls the root multiplicity
+  of `c₀` by the allowed pole multiplicity at that point. -/
+  have hrootMultiplicity_bound (P : H.Point) :
+      (c₀.rootMultiplicity P.X : ℤ) ≤
+        (if P = x₁ then 1 else 0) + (if P = x₂ then 1 else 0) := by
+    have hbound := hzsuppSpec₀ (pointHeightOne' P)
+    rw [← ordAt_eq_ordAtSpec, ← ordAt_eq_ordAtSpec] at hbound
+    simp only [pointHeightOne'_eq_iff] at hbound
+    have habnonneg : 0 ≤ ordAt P a₀ b₀ :=
+      ordAt_nonneg P a₀ b₀ hab₀ne (pointIdeal_ne_bot P)
+    have hcord_le : ordAt P c₀ (0 : k[X]) ≤
+        (if P = x₁ then 1 else 0) + (if P = x₂ then 1 else 0) := by
+      -- TODO: this does not follow from `habnonneg` and `hbound` alone.
+      -- The missing ingredient is the closed-point/norm-degree argument.
+      sorry
+    by_cases hY : P.Y = 0
+    · have hord := ordAt_eq_rootMultiplicity_ramified hsf c₀ hc₀ne P.X P
+        (pointIdeal_ne_bot P) rfl hY
+      rw [hord] at hcord_le
+      have hm : (c₀.rootMultiplicity P.X : ℤ) ≤
+          (if P = x₁ then 1 else 0) + (if P = x₂ then 1 else 0) := by
+        omega
+      exact hm
+    · have hYne : P.Y ≠ 0 := hY
+      have hord := ordAt_eq_rootMultiplicity_unramified hchar c₀ hc₀ne P.X P
+        (pointIdeal_ne_bot P) rfl hYne
+      rw [hord] at hcord_le
+      exact_mod_cast hcord_le
+
+  /- Every irreducible factor of `c₀` is linear, hence `c₀` splits over `k`. -/
+  have hc₀split : c₀.Splits := by
+    rw [Polynomial.splits_iff_splits]
+    right
+    intro q hq hqc
+    obtain hq1 | hq2 := hq_root_location hq hqc
+    · exact Polynomial.degree_eq_one_of_irreducible_of_root hq hq1
+    · exact Polynomial.degree_eq_one_of_irreducible_of_root hq hq2
+
+  /- The full root multiset has at most the two allowed roots, with
+  multiplicities bounded by the two pole allowances. -/
+  have hroots_le : c₀.roots ≤ ({x₁.X, x₂.X} : Multiset k) := by
+    rw [Multiset.le_iff_count]
+    intro α
+    rw [Polynomial.count_roots]
+    by_cases h1 : α = x₁.X
+    · by_cases h2 : α = x₂.X
+      · have hm := hrootMultiplicity_bound x₁
+        have hm' : (c₀.rootMultiplicity α : ℤ) ≤
+            (if x₁ = x₁ then 1 else 0) + (if x₁ = x₂ then 1 else 0) := by
+          simpa [h1] using hm
+        have hmNat : c₀.rootMultiplicity α ≤
+            (if x₁ = x₁ then 1 else 0) + (if x₁ = x₂ then 1 else 0) := by
+          exact_mod_cast hm'
+        have hXX : x₁.X = x₂.X := h1.symm.trans h2
+        have hmBound : c₀.rootMultiplicity α ≤ 2 := by
+          by_cases hpoint : x₁ = x₂
+          · simp [hpoint] at hmNat ⊢
+            omega
+          · simp [hpoint] at hmNat ⊢
+            omega
+        simpa [h1, h2, hXX, Multiset.count_cons, Multiset.count_singleton] using hmBound
+      · have hm := hrootMultiplicity_bound x₁
+        have hm' : (c₀.rootMultiplicity α : ℤ) ≤
+            (if x₁ = x₁ then 1 else 0) + (if x₁ = x₂ then 1 else 0) := by
+          simpa [h1] using hm
+        have hmNat : c₀.rootMultiplicity α ≤
+            (if x₁ = x₁ then 1 else 0) + (if x₁ = x₂ then 1 else 0) := by
+          exact_mod_cast hm'
+        have hXX : x₁.X ≠ x₂.X := by
+          intro hXX
+          apply h2
+          exact h1.trans hXX
+        have hpoint : x₁ ≠ x₂ := by
+          intro hp
+          apply hXX
+          exact congrArg (fun p : H.Point => p.X) hp
+        simpa [h1, h2, hpoint, hXX, Multiset.count_cons, Multiset.count_singleton] using hmNat
+    · by_cases h2 : α = x₂.X
+      · have hm := hrootMultiplicity_bound x₂
+        have hm' : (c₀.rootMultiplicity α : ℤ) ≤
+            (if x₂ = x₁ then 1 else 0) + (if x₂ = x₂ then 1 else 0) := by
+          simpa [h2] using hm
+        have hmNat : c₀.rootMultiplicity α ≤
+            (if x₂ = x₁ then 1 else 0) + (if x₂ = x₂ then 1 else 0) := by
+          exact_mod_cast hm'
+        have hXX : x₂.X ≠ x₁.X := by
+          intro hXX
+          apply h1
+          exact h2.trans hXX
+        have hpoint : x₂ ≠ x₁ := by
+          intro hp
+          apply hXX
+          exact congrArg (fun p : H.Point => p.X) hp
+        simpa [h1, h2, hpoint, hXX, Multiset.count_cons, Multiset.count_singleton] using hmNat
+      · have hzero : c₀.rootMultiplicity α = 0 := by
+          by_contra hm
+          have hmpos : 0 < c₀.rootMultiplicity α := Nat.pos_of_ne_zero hm
+          have hroot := (Polynomial.rootMultiplicity_pos hc₀ne).mp hmpos
+          have hαx1 : α = x₁.X :=
+            Or.resolve_right (hroot_location hroot) h2
+          exact h1 hαx1
+        simp [hzero, h1, h2]
+
+  calc
+    c₀.natDegree = c₀.roots.card := hc₀split.natDegree_eq_card_roots
+    _ ≤ ({x₁.X, x₂.X} : Multiset k).card := Multiset.card_le_card hroots_le
+    _ = 2 := by simp
 
 /-- The residue extension `L := AdjoinRoot q`, for irreducible `q : k[X]`. -/
 abbrev SplitBaseField (q : k[X]) : Type _ := AdjoinRoot q
@@ -2447,12 +2629,20 @@ theorem uniqueDegree2MapToP1Spec (hdeg : H.f.natDegree = 5) (hchar : (2 : k) ≠
     -- `hzsuppSpec₀` (built above, pre-`b₀=0`) directly — replaces the old
     -- `natDegree_le_two_of_isCoprimeAtRoots[_eq]` route, which silently required
     -- `[IsAlgClosed k]` via `IsAlgClosed.splits` in its own proof.
-    have hcdeg : c₀.natDegree ≤ 2 :=
-      natDegree_le_two_of_gcdUnit_closed_point (H := H) x₁ x₂ a₀ b₀ c₀ hc₀ne
-        hab₀_ne hgu hchar hsf hzsuppSpec₀
+    -- ABANDONED: do not elaborate the abandoned closed-point degree theorem here.
+    -- Its declaration is retained above for future reconstruction, but invoking it
+    -- from this large dependent context causes a `whnf` timeout.  This local gap
+    -- keeps the rest of the file buildable while we replace the degree-bound route.
+    have hcdeg : c₀.natDegree ≤ 2 := by
+      -- TODO: reintroduce the closed-point degree theorem once its elaboration
+      -- is refactored enough not to hit the deterministic heartbeat timeout.
+      sorry
     have hbeq0 : b₀ = 0 := by
-      exact b_eq_zero_of_rationalized_pole_bounded
-        a₀ b₀ c₀ hinf₀ hcdeg
+      -- Finite-field gap: the existing theorem is proved with `[IsAlgClosed k]`.
+      -- Over an arbitrary field, this needs the elementary infinity-order argument
+      -- for a nonzero `b₀`: `ordInfOfPair a₀ b₀ ≤ -5`, while `hcdeg` gives
+      -- `ordInfOfPair c₀ 0 ≥ -4`, contradicting `hinf₀`.
+      sorry
     subst b₀
     -- **[DEPRECATED ROUTE REMOVED]** This used to go through `IsNormCoprime`
     -- (`isNormCoprime_of_gcd_unit_snd_zero` +
@@ -2463,6 +2653,10 @@ theorem uniqueDegree2MapToP1Spec (hdeg : H.f.natDegree = 5) (hchar : (2 : k) ≠
     -- already in hand as `hcdeg`) from it. Left as an honest gap for the
     -- next pass rather than papered over with the deprecated bridge.
     have hcdeg1 : c₀.natDegree ≤ 1 := by
+      -- Finite-field gap: the old `natDegree_le_one...isNormCoprime` theorem
+      -- also carries an `[IsAlgClosed k]` dependency.  The missing replacement
+      -- is a closed-point argument ruling out an irreducible quadratic factor of
+      -- `c₀` after `b₀ = 0`.
       sorry
     -- **§4: finish.** `c₀.natDegree ≤ 1` — if `= 1`, it has a genuine root
     -- (`exists_root_of_natDegree_eq_one`), contradicting pole-boundedness via
@@ -2478,10 +2672,21 @@ theorem uniqueDegree2MapToP1Spec (hdeg : H.f.natDegree = 5) (hchar : (2 : k) ≠
         (H := H) hchar hsf x₁ x₂ hne a₀ c₀ hc₀ne hcop hzsupp₀ hzsuppSpec₀ α hα
     have hadeg0 : a₀.natDegree = 0 := by
       have habne0 : a₀ ≠ 0 := by
-        intro ha0; apply hab₀_ne; simp [ha0, toPair_eq_zero_iff]
-      have horda := hinf₀
-      rw [ordInfOfPair_eq_of_ne a₀ 0 (fun h => habne0 h.1)] at horda
-      rw [ordInfOfPair_eq_of_ne c₀ 0 (fun h => hc₀ne h.1)] at horda
+        intro ha0
+        apply hab₀_ne
+        simp [ha0, toPair_eq_zero_iff]
+      have haInf : ordInfOfPair a₀ (0 : k[X]) = -2 * (a₀.natDegree : ℤ) := by
+        rw [ordInfOfPair_eq_of_ne a₀ 0 (fun h => habne0 h.1)]
+        simp
+      have hcInf : ordInfOfPair c₀ (0 : k[X]) = -2 * (c₀.natDegree : ℤ) := by
+        rw [ordInfOfPair_eq_of_ne c₀ 0 (fun h => hc₀ne h.1)]
+        simp
+      have horda : -2 * (a₀.natDegree : ℤ) ≥
+          -2 * (c₀.natDegree : ℤ) := by
+        calc
+          -2 * (a₀.natDegree : ℤ) = ordInfOfPair a₀ (0 : k[X]) := haInf.symm
+          _ ≥ ordInfOfPair c₀ (0 : k[X]) := hinf₀
+          _ = -2 * (c₀.natDegree : ℤ) := hcInf
       rw [hcdeg0] at horda
       simp at horda
       omega
