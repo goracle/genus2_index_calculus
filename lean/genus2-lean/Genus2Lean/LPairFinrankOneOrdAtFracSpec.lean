@@ -317,91 +317,106 @@ theorem ordAtSpec_add_eq_of_lt [IsDedekindDomain (CoordinateRing H)]
   have hsum_eq : toPair H (A + C) (B + D) = toPair H A B + toPair H C D := toPair_add A B C D
   set n : ℕ := (ordAtSpec v A B).toNat with hn_def
   have hn_eq : ordAtSpec v A B = (n : ℤ) := (Int.toNat_of_nonneg (ordAtSpec_nonneg v A B hAB)).symm
-  -- `toPair H (A+C) (B+D) ≠ 0`: else `toPair H A B = -toPair H C D`, giving equal
-  -- `ordAtSpec` (via `ordAtSpec_eq_count` + `Ideal.span_singleton_neg` invariance),
-  -- contradicting `hlt`.
+  
   have hsumne : toPair H (A + C) (B + D) ≠ 0 := by
     intro hsum0
-    apply absurd hlt (lt_irrefl _)
     have hCDeq : toPair H C D = -toPair H A B := by
       have heq0 : toPair H A B + toPair H C D = 0 := by rw [← hsum_eq]; exact hsum0
       linear_combination heq0
-    have hspaneq : Ideal.span ({toPair H C D} : Set (CoordinateRing H)) =
-        Ideal.span ({toPair H A B} : Set (CoordinateRing H)) := by
+    have hspaneq : Ideal.span {toPair H C D} = Ideal.span {toPair H A B} := by
       rw [hCDeq, Ideal.span_singleton_neg]
-    rw [ordAtSpec_eq_count v A B hAB, ordAtSpec_eq_count v C D hCD, hspaneq]
-  have hIAB : Ideal.span ({toPair H A B} : Set (CoordinateRing H)) ≠ 0 := by
+    have heq : ordAtSpec v A B = ordAtSpec v C D := by
+      rw [ordAtSpec_eq_count v A B hAB, ordAtSpec_eq_count v C D hCD, hspaneq]
+    rw [heq] at hlt
+    exact absurd hlt (lt_irrefl _)
+    
+  have hIAB : Ideal.span {toPair H A B} ≠ 0 := by
     rw [Ne, Ideal.zero_eq_bot, Ideal.span_singleton_eq_bot]; exact hAB
-  have hICD : Ideal.span ({toPair H C D} : Set (CoordinateRing H)) ≠ 0 := by
+  have hICD : Ideal.span {toPair H C D} ≠ 0 := by
     rw [Ne, Ideal.zero_eq_bot, Ideal.span_singleton_eq_bot]; exact hCD
-  have hIsum : Ideal.span ({toPair H (A + C) (B + D)} : Set (CoordinateRing H)) ≠ 0 := by
+  have hIsum : Ideal.span {toPair H (A + C) (B + D)} ≠ 0 := by
     rw [Ne, Ideal.zero_eq_bot, Ideal.span_singleton_eq_bot]; exact hsumne
-  -- `v.asIdeal^n ∣ span {toPair A B}` and, since `n ≤ ordAtSpec v C D`'s witness
-  -- count strictly, also `v.asIdeal^n ∣ span {toPair C D}` — hence `v.asIdeal^n`
-  -- divides the sum (ideal powers absorb sums of their multiples).
-  have hn_le_AB : n ≤ (Associates.mk v.asIdeal).count
-      (Associates.mk (Ideal.span ({toPair H A B} : Set (CoordinateRing H)))).factors := by
-    have := ordAtSpec_eq_count v A B hAB
-    omega
-  have hn_lt_CD : n < (Associates.mk v.asIdeal).count
-      (Associates.mk (Ideal.span ({toPair H C D} : Set (CoordinateRing H)))).factors := by
+
+  -- Replace omega with explicit Nat.cast_inj
+  have h_count_AB : (Associates.mk v.asIdeal).count (Associates.mk (Ideal.span {toPair H A B})).factors = n := by
+    have h_eq := ordAtSpec_eq_count v A B hAB
+    rw [hn_eq] at h_eq
+    exact Nat.cast_inj.mp h_eq.symm
+
+  have hn_le_AB : n ≤ (Associates.mk v.asIdeal).count (Associates.mk (Ideal.span {toPair H A B})).factors :=
+    h_count_AB.symm.le
+
+  -- Replace omega with explicit Nat.cast_lt
+  have hn_lt_CD : n < (Associates.mk v.asIdeal).count (Associates.mk (Ideal.span {toPair H C D})).factors := by
     have hcCD := ordAtSpec_eq_count v C D hCD
-    omega
-  have hn_le_CD : n ≤ (Associates.mk v.asIdeal).count
-      (Associates.mk (Ideal.span ({toPair H C D} : Set (CoordinateRing H)))).factors :=
+    have hlt' := hlt
+    rw [hn_eq, hcCD] at hlt'
+    exact Nat.cast_lt.mp hlt'
+
+  have hn_le_CD : n ≤ (Associates.mk v.asIdeal).count (Associates.mk (Ideal.span {toPair H C D})).factors :=
     hn_lt_CD.le
-  have hdvd_AB : v.asIdeal ^ n ∣ Ideal.span ({toPair H A B} : Set (CoordinateRing H)) :=
-    Associates.mk_le_mk_iff_dvd.mp
-      ((Associates.prime_pow_dvd_iff_le hIAB v.associates_irreducible).mpr hn_le_AB)
-  have hdvd_CD : v.asIdeal ^ n ∣ Ideal.span ({toPair H C D} : Set (CoordinateRing H)) :=
-    Associates.mk_le_mk_iff_dvd.mp
-      ((Associates.prime_pow_dvd_iff_le hICD v.associates_irreducible).mpr hn_le_CD)
-  obtain ⟨IAB', hIAB'⟩ := hdvd_AB
-  obtain ⟨ICD', hICD'⟩ := hdvd_CD
-  have hAB_mem : toPair H A B ∈ v.asIdeal ^ n := by
-    rw [hIAB']; exact Ideal.mul_mem_right _ _ (Ideal.mem_span_singleton_self _)
-  have hCD_mem : toPair H C D ∈ v.asIdeal ^ n := by
-    rw [hICD']; exact Ideal.mul_mem_right _ _ (Ideal.mem_span_singleton_self _)
+    
+  have hdvd_AB : v.asIdeal ^ n ∣ Ideal.span {toPair H A B} := by
+    have h_pow := (Associates.prime_pow_dvd_iff_le (Associates.mk_ne_zero.mpr hIAB) v.associates_irreducible).mpr hn_le_AB
+    rw [← Associates.mk_pow] at h_pow
+    exact Associates.mk_le_mk_iff_dvd.mp h_pow
+    
+  have hdvd_CD : v.asIdeal ^ n ∣ Ideal.span {toPair H C D} := by
+    have h_pow := (Associates.prime_pow_dvd_iff_le (Associates.mk_ne_zero.mpr hICD) v.associates_irreducible).mpr hn_le_CD
+    rw [← Associates.mk_pow] at h_pow
+    exact Associates.mk_le_mk_iff_dvd.mp h_pow
+    
+  have hAB_mem : toPair H A B ∈ v.asIdeal ^ n := Ideal.dvd_span_singleton.mp hdvd_AB
+  have hCD_mem : toPair H C D ∈ v.asIdeal ^ n := Ideal.dvd_span_singleton.mp hdvd_CD
   have hsum_mem : toPair H (A + C) (B + D) ∈ v.asIdeal ^ n := by
     rw [hsum_eq]; exact (v.asIdeal ^ n).add_mem hAB_mem hCD_mem
+    
   have hn_le_sum : n ≤ (Associates.mk v.asIdeal).count
-      (Associates.mk (Ideal.span ({toPair H (A + C) (B + D)} : Set (CoordinateRing H)))).factors := by
-    rw [← Associates.prime_pow_dvd_iff_le hIsum v.associates_irreducible]
-    exact Associates.mk_le_mk_iff_dvd.mpr (Ideal.dvd_span_singleton.mpr hsum_mem)
-  -- Conversely `v.asIdeal^(n+1) ∤ span {toPair A B}` (`hn_le_AB` is tight — `n` IS
-  -- the exact count there via `hn_eq`), while `v.asIdeal^(n+1) ∣ span {toPair C D}`
-  -- (`hn_lt_CD` gives `n+1 ≤` that count). If `v.asIdeal^(n+1)` also divided the
-  -- sum, subtracting the `C,D` term (which it divides) would force it to divide
-  -- the `A,B` term too — contradiction. Hence the sum's count is exactly `n`.
-  have hn1_not_dvd_AB : ¬ v.asIdeal ^ (n + 1) ∣ Ideal.span ({toPair H A B} : Set (CoordinateRing H)) := by
+      (Associates.mk (Ideal.span {toPair H (A + C) (B + D)})).factors := by
+    rw [← Associates.prime_pow_dvd_iff_le (Associates.mk_ne_zero.mpr hIsum) v.associates_irreducible]
+    have h_mk_le := Associates.mk_le_mk_iff_dvd.mpr (Ideal.dvd_span_singleton.mpr hsum_mem)
+    rw [Associates.mk_pow] at h_mk_le
+    exact h_mk_le
+    
+  have hn1_not_dvd_AB : ¬ v.asIdeal ^ (n + 1) ∣ Ideal.span {toPair H A B} := by
     intro hdvd
-    have := (Associates.prime_pow_dvd_iff_le hIAB v.associates_irreducible).mp
-      (Associates.mk_le_mk_iff_dvd.mpr hdvd)
-    omega
-  have hn1_dvd_CD : v.asIdeal ^ (n + 1) ∣ Ideal.span ({toPair H C D} : Set (CoordinateRing H)) :=
-    Associates.mk_le_mk_iff_dvd.mp
-      ((Associates.prime_pow_dvd_iff_le hICD v.associates_irreducible).mpr hn_lt_CD)
-  have hn1_not_dvd_sum : ¬ v.asIdeal ^ (n + 1) ∣
-      Ideal.span ({toPair H (A + C) (B + D)} : Set (CoordinateRing H)) := by
+    have h_mk_le := Associates.mk_le_mk_iff_dvd.mpr hdvd
+    rw [Associates.mk_pow] at h_mk_le
+    have hc := (Associates.prime_pow_dvd_iff_le (Associates.mk_ne_zero.mpr hIAB) v.associates_irreducible).mp h_mk_le
+    -- Replace omega with explicit not_succ_le_self
+    rw [h_count_AB] at hc
+    exact Nat.not_succ_le_self n hc
+    
+  have hn1_dvd_CD : v.asIdeal ^ (n + 1) ∣ Ideal.span {toPair H C D} := by
+    have h_pow := (Associates.prime_pow_dvd_iff_le (Associates.mk_ne_zero.mpr hICD) v.associates_irreducible).mpr hn_lt_CD
+    rw [← Associates.mk_pow] at h_pow
+    exact Associates.mk_le_mk_iff_dvd.mp h_pow
+    
+  have hn1_not_dvd_sum : ¬ v.asIdeal ^ (n + 1) ∣ Ideal.span {toPair H (A + C) (B + D)} := by
     intro hdvd
     apply hn1_not_dvd_AB
-    have hCD_mem' : toPair H C D ∈ v.asIdeal ^ (n + 1) :=
-      Ideal.dvd_span_singleton.mp hn1_dvd_CD
-    have hsum_mem' : toPair H (A + C) (B + D) ∈ v.asIdeal ^ (n + 1) :=
-      Ideal.dvd_span_singleton.mp hdvd
+    have hCD_mem' : toPair H C D ∈ v.asIdeal ^ (n + 1) := Ideal.dvd_span_singleton.mp hn1_dvd_CD
+    have hsum_mem' : toPair H (A + C) (B + D) ∈ v.asIdeal ^ (n + 1) := Ideal.dvd_span_singleton.mp hdvd
     have hAB_mem' : toPair H A B ∈ v.asIdeal ^ (n + 1) := by
       have : toPair H A B = toPair H (A + C) (B + D) - toPair H C D := by rw [hsum_eq]; ring
       rw [this]; exact (v.asIdeal ^ (n + 1)).sub_mem hsum_mem' hCD_mem'
     exact Ideal.dvd_span_singleton.mpr hAB_mem'
+    
   have hn_ge_sum : (Associates.mk v.asIdeal).count
-      (Associates.mk (Ideal.span ({toPair H (A + C) (B + D)} : Set (CoordinateRing H)))).factors < n + 1 := by
+      (Associates.mk (Ideal.span {toPair H (A + C) (B + D)})).factors < n + 1 := by
     by_contra hge
-    push_neg at hge
+    push Not at hge
     apply hn1_not_dvd_sum
-    exact Associates.mk_le_mk_iff_dvd.mp
-      ((Associates.prime_pow_dvd_iff_le hIsum v.associates_irreducible).mpr hge)
-  rw [ordAtSpec_eq_count v (A + C) (B + D) hsumne, hn_eq]
-  omega
+    have h_pow := (Associates.prime_pow_dvd_iff_le (Associates.mk_ne_zero.mpr hIsum) v.associates_irreducible).mpr hge
+    rw [← Associates.mk_pow] at h_pow
+    exact Associates.mk_le_mk_iff_dvd.mp h_pow
+
+  -- Replace final omega with le_antisymm bridged via Nat.le_of_lt_succ
+  have h_count_eq : (Associates.mk v.asIdeal).count 
+      (Associates.mk (Ideal.span {toPair H (A + C) (B + D)})).factors = n :=
+    le_antisymm (Nat.le_of_lt_succ hn_ge_sum) hn_le_sum
+
+  rw [ordAtSpec_eq_count v (A + C) (B + D) hsumne, hn_eq, h_count_eq]
 
 omit [IsDedekindDomain (CoordinateRing H)] in
 /-- **`ordAtSpec` transport across a `polePairToFraction` equality**, the
@@ -929,14 +944,16 @@ theorem residueDeg_conjHeightOne [IsDedekindDomain (CoordinateRing H)]
     show Ideal.map (involutionEquiv H).symm.toRingHom
       (Ideal.comap (involutionEquiv H).symm.toRingHom v.asIdeal) = v.asIdeal
     exact Ideal.map_comap_of_surjective _ (involutionEquiv H).symm.surjective v.asIdeal
-  have halg : ∀ c : k, (involutionEquiv H).symm.toRingHom (algebraMap k (CoordinateRing H) c)
+    
+  have halg : ∀ c : k, (involutionEquiv H).symm (algebraMap k (CoordinateRing H) c)
       = algebraMap k (CoordinateRing H) c := by
     intro c
-    show involution H (algebraMap k (CoordinateRing H) c) = algebraMap k (CoordinateRing H) c
-    have hst : algebraMap k (CoordinateRing H) c
-        = algebraMap k[X] (CoordinateRing H) (algebraMap k k[X] c) :=
-      (IsScalarTower.algebraMap_apply k k[X] (CoordinateRing H) c)
-    rw [hst, involution_algebraMap]
+    have h_hom : (algebraMap k (CoordinateRing H) c) = 
+        (algebraMap k[X] (CoordinateRing H)) (algebraMap k k[X] c) := rfl
+    apply (involutionEquiv H).injective
+    rw [(involutionEquiv H).apply_symm_apply, h_hom]
+    exact (involution_algebraMap H (algebraMap k k[X] c)).symm
+    
   have e : (CoordinateRing H ⧸ (conjHeightOne (H := H) v).asIdeal) ≃ₐ[k]
       (CoordinateRing H ⧸ v.asIdeal) :=
     AlgEquiv.ofRingEquiv (f := Ideal.quotientEquiv _ _ (involutionEquiv H).symm hmap.symm)
@@ -945,7 +962,9 @@ theorem residueDeg_conjHeightOne [IsDedekindDomain (CoordinateRing H)]
               = Ideal.Quotient.mk _ (algebraMap k (CoordinateRing H) c) from rfl,
             Ideal.quotientEquiv_mk, halg]
         rfl)
-  exact (LinearEquiv.finrank_eq e.toLinearEquiv).symm
+        
+  exact LinearEquiv.finrank_eq e.toLinearEquiv
+
 
 /-- **`ordAtSpec` at a "B=0" pair is `conjHeightOne`-invariant.** `toPair H A 0 =
 algebraMap A` is fixed by `involution H`, so membership (hence the whole `Associates.count`
@@ -957,16 +976,14 @@ theorem ordAtSpec_conjHeightOne_fst [IsDedekindDomain (CoordinateRing H)]
     (v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H)) (A : k[X]) :
     ordAtSpec (conjHeightOne (H := H) v) A (0 : k[X]) = ordAtSpec v A (0 : k[X]) := by
   by_cases hA : A = 0
-  · subst hA; unfold ordAtSpec; simp
+  · subst hA
+    unfold ordAtSpec
+    have h0 : toPair H 0 (0 : k[X]) = 0 := by simp [HyperellipticPolynomial.toPair]
+    simp [h0]
   have hne : toPair H A (0 : k[X]) ≠ 0 := by rw [Ne, toPair_eq_zero_iff]; exact fun h => hA h.1
   have hcalg : toPair H A (0 : k[X]) = algebraMap k[X] (CoordinateRing H) A := by
     unfold HyperellipticPolynomial.toPair; simp
-  rw [ordAtSpec_eq_count _ A 0 hne, ordAtSpec_eq_count _ A 0 hne]
-  congr 1
-  rw [show (conjHeightOne (H := H) v).asIdeal
-      = Ideal.comap (involutionEquiv H).symm.toRingHom v.asIdeal from rfl]
-  congr 1
-  rw [hcalg]
+
   set alg := algebraMap k[X] (CoordinateRing H) A with halg_def
   have halg_fix : involution H alg = alg := involution_algebraMap H A
   have hsymm_eq : ∀ w : CoordinateRing H, (involutionEquiv H).symm w = involution H w := by
@@ -974,20 +991,35 @@ theorem ordAtSpec_conjHeightOne_fst [IsDedekindDomain (CoordinateRing H)]
     have hfwd : involutionEquiv H (involution H w) = w := involution_involution H w
     have := congrArg (involutionEquiv H).symm hfwd
     simpa using this.symm
-  ext c
-  simp only [Ideal.mem_comap, RingHom.coe_coe, Ideal.mem_span_singleton, hsymm_eq]
-  constructor
-  · rintro ⟨d, hd⟩
-    -- `involution H c = alg * d`; apply `involution H` to both sides (self-inverse).
-    refine ⟨involution H d, ?_⟩
-    have happ := congrArg (involution H) hd
-    rw [involution_involution, map_mul] at happ
-    rwa [halg_fix] at happ
-  · rintro ⟨d, hd⟩
-    refine ⟨involution H d, ?_⟩
-    have happ := congrArg (involution H) hd
-    rw [map_mul, halg_fix] at happ
-    exact happ
+
+  have hI : Ideal.comap (involutionEquiv H).symm.toRingHom (Ideal.span {alg}) = Ideal.span {alg} := by
+    ext c
+    simp only [Ideal.mem_comap, Ideal.mem_span_singleton]
+    have h_coe : (involutionEquiv H).symm.toRingHom c = involution H c := hsymm_eq c
+    rw [h_coe]
+    constructor
+    · rintro ⟨d, hd⟩
+      refine ⟨involution H d, ?_⟩
+      have happ := congrArg (involution H) hd
+      rw [map_mul, halg_fix] at happ
+      rw [involution_involution H c] at happ
+      exact happ
+    · rintro ⟨d, hd⟩
+      refine ⟨involution H d, ?_⟩
+      have happ := congrArg (involution H) hd
+      rw [map_mul, halg_fix] at happ
+      exact happ
+
+  rw [ordAtSpec_eq_count _ A 0 hne, ordAtSpec_eq_count _ A 0 hne, hcalg]
+  have h_comap_ideal : (conjHeightOne (H := H) v).asIdeal =
+      Ideal.comap (involutionEquiv H).symm.toRingHom v.asIdeal := rfl
+  rw [h_comap_ideal]
+  congr 1
+  -- Ideal.span {alg} is invariant under (involutionEquiv H).symm via hI,
+  -- so the count of comap v.asIdeal in span {alg} equals the count of v.asIdeal in span {alg}.
+  have h_count := Ideal.count_comap_of_equiv (involutionEquiv H).symm v.asIdeal (Ideal.span {alg})
+  rwa [hI] at h_count
+
 
 /-! ## §3f. `c₀.natDegree ≤ 2`, closed-point-native, avoiding the `pairNorm`
 circularity entirely.
@@ -1574,9 +1606,9 @@ Gap 1/Gap 2, see `chatgpt_prompt_final_two_gaps.txt`) by
 `ordAtSpec_eq_zero_of_notMem_four_of_dvd` / `natDegree_le_two_of_gcdUnit_closed_point`
 above. The abandoned draft is deleted rather than kept as a dangling, unclosed comment
 block (it previously left ~100 lines of live, headerless tactic code after an
-unterminated `/-!`, which does not parse). -/
+unterminated `!`, which does not parse). 
 
-/-- **Final assembly: `c₀.natDegree ≤ 2`, closed-point-native, no `IsAlgClosed`.**
+ **Final assembly: `c₀.natDegree ≤ 2`, closed-point-native, no `IsAlgClosed`.**
 `ordAtSpec v c₀ 0 = 0` away from `{x₁, x₂}` (`ordAtSpec_eq_zero_of_notMem_pair_of_dvd`)
 means the norm-degree identity `2·c₀.natDegree = ∑_{v∈T} residueDeg(v)·ordAtSpec(v,c₀,0)`
 (`natDegree_pairNorm_eq_sum_residueDeg_ordAtSpec` applied to `(c₀,0)`, `pairNorm H c₀ 0 =
