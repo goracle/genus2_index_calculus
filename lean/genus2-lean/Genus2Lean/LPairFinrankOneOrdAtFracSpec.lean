@@ -3065,6 +3065,40 @@ theorem uniqueDegree2MapToP1_general (hdeg : H.f.natDegree = 5) (hchar : (2 : k)
     IsConstantFraction z :=
   uniqueDegree2MapToP1Spec hdeg hchar hsf x₁ x₂ hne z hz
 
+/-- **`finrank_LPairSpec'_eq_one`, general `k` (no `[IsAlgClosed k]`).** The
+`LPairSpec'`/`uniqueDegree2MapToP1_general` analogue of `RiemannRochCrux.lean`'s
+`finrank_LPair_eq_one_of_uniqueDegree2MapToP1`, closing the gap that theorem's
+`[IsAlgClosed k]`-only proof couldn't: `LPairSpec' hdeg x₁ x₂` is spanned by
+`1`, exactly as in the closed-field case, but now via a pointwise pole bound
+that sees every closed point (`ordAtSpec`/`HeightOneSpectrum`), so the
+argument is valid over `k = ZMod p` and other finite/non-closed fields. Same
+proof shape as the closed-field original — only the membership lemma
+(`uniqueDegree2MapToP1_general` in place of `uniqueDegree2MapToP1`) and
+carrier (`LPairCarrierSpec'`/`LPairSpec'` in place of `LPairCarrier`/`LPair`)
+change. -/
+theorem finrank_LPairSpec'_eq_one (hdeg : H.f.natDegree = 5) (hchar : (2 : k) ≠ 0)
+    (hsf : Squarefree H.f) (x₁ x₂ : H.Point) (hne : x₂ ≠ Point.iota x₁) :
+    Module.finrank k (LPairSpec' hdeg x₁ x₂) = 1 := by
+  have hspan : LPairSpec' hdeg x₁ x₂ = Submodule.span k {(1 : FractionRing (CoordinateRing H))} := by
+    apply le_antisymm
+    · intro z hz
+      have hz' : z ∈ LPairCarrierSpec' x₁ x₂ := hz
+      obtain ⟨c, hc⟩ := uniqueDegree2MapToP1_general hdeg hchar hsf x₁ x₂ hne z hz'
+      rw [Submodule.mem_span_singleton]
+      refine ⟨c, ?_⟩
+      haveI hst1 : IsScalarTower k k[X] (CoordinateRing H) :=
+        IsScalarTower.of_algebraMap_eq (fun _ => rfl)
+      haveI hst2 : IsScalarTower k (CoordinateRing H) (FractionRing (CoordinateRing H)) :=
+        IsScalarTower.of_algebraMap_eq (fun _ => rfl)
+      rw [hc, Algebra.smul_def, mul_one,
+        IsScalarTower.algebraMap_apply k (CoordinateRing H) (FractionRing (CoordinateRing H)),
+        IsScalarTower.algebraMap_apply k k[X] (CoordinateRing H),
+        show algebraMap k k[X] c = C c from by simp]
+    · rw [Submodule.span_singleton_le_iff_mem]
+      exact one_mem_LPairCarrierSpec' x₁ x₂
+  rw [hspan]
+  exact finrank_span_singleton one_ne_zero
+
 end HyperellipticPolynomial
 
 end

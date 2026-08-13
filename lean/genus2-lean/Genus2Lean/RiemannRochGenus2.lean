@@ -1931,6 +1931,147 @@ theorem LPairCarrierSpec_pointwise (c₁ c₂ : k)
   exact WithTop.coe_le_coe.mp hchain
 
 omit [IsAlgClosed k] in
+/-- **`LPairCarrierSpec'` is closed under `k`-linear combinations.** The
+general-`k` analogue of `LPairCarrier'_add_smul`, using `IsPoleBoundedAtPairSpec'`
+(quantified over every `v : HeightOneSpectrum`, not just `H.Point`) and driven
+by `LPairCarrierSpec_pointwise` for the pointwise clause instead of
+`LPairCarrier_pointwise'`. Everything except the pointwise clause — the
+combined numerator/denominator construction, `hzeq`, the `ordInfOfPair`
+bound — is `ordAtFrac`/`ordAt`-independent and so is reused essentially
+verbatim from `LPairCarrier'_add_smul`. -/
+theorem LPairCarrierSpec'_add_smul (hdeg : H.f.natDegree = 5) (x₁ x₂ : H.Point)
+    (c₁ c₂ : k) (z₁ z₂ : FractionRing (CoordinateRing H))
+    (h₁ : z₁ ∈ LPairCarrierSpec' x₁ x₂) (h₂ : z₂ ∈ LPairCarrierSpec' x₁ x₂) :
+    c₁ • z₁ + c₂ • z₂ ∈ LPairCarrierSpec' x₁ x₂ := by
+  rcases h₁ with hz1 | hw₁
+  · have hc₂z₂ : c₂ • z₂ ∈ LPairCarrierSpec' x₁ x₂ := LPairCarrierSpec'_smul x₁ x₂ c₂ z₂ h₂
+    have heq : c₁ • z₁ + c₂ • z₂ = c₂ • z₂ := by rw [hz1]; simp
+    rw [heq]; exact hc₂z₂
+  rcases h₂ with hz2 | hw₂
+  · have hc₁z₁ : c₁ • z₁ ∈ LPairCarrierSpec' x₁ x₂ :=
+      LPairCarrierSpec'_smul x₁ x₂ c₁ z₁ (Or.inr hw₁)
+    have heq : c₁ • z₁ + c₂ • z₂ = c₁ • z₁ := by rw [hz2]; simp
+    rw [heq]; exact hc₁z₁
+  obtain ⟨A₁, B₁, A₁', B₁', ⟨hA₁ne, hne₁, hinf₁, hoff₁'⟩, hz₁⟩ := hw₁
+  obtain ⟨A₂, B₂, A₂', B₂', ⟨hA₂ne, hne₂, hinf₂, hoff₂'⟩, hz₂⟩ := hw₂
+  set D' : k[X] := A₁' * A₂' + B₁' * B₂' * H.f with hD'_def
+  set D'' : k[X] := A₁' * B₂' + A₂' * B₁' with hD''_def
+  have hDmul : toPair H D' D'' = toPair H A₁' B₁' * toPair H A₂' B₂' :=
+    (toPair_mul A₁' B₁' A₂' B₂').symm
+  set N₁' : k[X] := A₁ * A₂' + B₁ * B₂' * H.f with hN₁'_def
+  set N₁'' : k[X] := A₁ * B₂' + A₂' * B₁ with hN₁''_def
+  set N₂' : k[X] := A₂ * A₁' + B₂ * B₁' * H.f with hN₂'_def
+  set N₂'' : k[X] := A₂ * B₁' + A₁' * B₂ with hN₂''_def
+  have hN₁mul : toPair H N₁' N₁'' = toPair H A₁ B₁ * toPair H A₂' B₂' :=
+    (toPair_mul A₁ B₁ A₂' B₂').symm
+  have hN₂mul : toPair H N₂' N₂'' = toPair H A₂ B₂ * toPair H A₁' B₁' :=
+    (toPair_mul A₂ B₂ A₁' B₁').symm
+  set N' : k[X] := C c₁ * N₁' + C c₂ * N₂' with hN'_def
+  set N'' : k[X] := C c₁ * N₁'' + C c₂ * N₂'' with hN''_def
+  have hNadd : toPair H N' N'' =
+      c₁ • toPair H N₁' N₁'' + c₂ • toPair H N₂' N₂'' := by
+    rw [hN'_def, hN''_def, toPair_add, toPair_smul, toPair_smul]
+  have hA₁'B₁'ne : toPair H A₁' B₁' ≠ 0 := fun h => hne₁ ((toPair_eq_zero_iff H A₁' B₁').mp h)
+  have hA₂'B₂'ne : toPair H A₂' B₂' ≠ 0 := fun h => hne₂ ((toPair_eq_zero_iff H A₂' B₂').mp h)
+  have hDne : toPair H D' D'' ≠ 0 := by
+    rw [hDmul]; exact mul_ne_zero hA₁'B₁'ne hA₂'B₂'ne
+  have hD'D''ne : ¬ (D' = 0 ∧ D'' = 0) := fun h => hDne ((toPair_eq_zero_iff H D' D'').mpr h)
+  have hzeq : c₁ • z₁ + c₂ • z₂ = polePairToFraction N' N'' D' D'' := by
+    have hd1 : (algebraMap (CoordinateRing H) (FractionRing (CoordinateRing H))
+        (toPair H A₁' B₁')) ≠ 0 :=
+      (map_ne_zero_iff _ (IsFractionRing.injective (CoordinateRing H)
+        (FractionRing (CoordinateRing H)))).mpr hA₁'B₁'ne
+    have hd2 : (algebraMap (CoordinateRing H) (FractionRing (CoordinateRing H))
+        (toPair H A₂' B₂')) ≠ 0 :=
+      (map_ne_zero_iff _ (IsFractionRing.injective (CoordinateRing H)
+        (FractionRing (CoordinateRing H)))).mpr hA₂'B₂'ne
+    have hNumEq : algebraMap (CoordinateRing H) (FractionRing (CoordinateRing H)) (toPair H N' N'') =
+        c₁ • algebraMap (CoordinateRing H) (FractionRing (CoordinateRing H)) (toPair H A₁ B₁) *
+          algebraMap (CoordinateRing H) (FractionRing (CoordinateRing H)) (toPair H A₂' B₂') +
+        c₂ • algebraMap (CoordinateRing H) (FractionRing (CoordinateRing H)) (toPair H A₂ B₂) *
+          algebraMap (CoordinateRing H) (FractionRing (CoordinateRing H)) (toPair H A₁' B₁') := by
+      rw [hNadd, hN₁mul, hN₂mul, map_add]
+      simp only [Algebra.smul_def, map_mul]
+      rw [← IsScalarTower.algebraMap_apply k (CoordinateRing H) (FractionRing (CoordinateRing H)) c₁,
+          ← IsScalarTower.algebraMap_apply k (CoordinateRing H) (FractionRing (CoordinateRing H)) c₂]
+      ring
+    have hDenEq : algebraMap (CoordinateRing H) (FractionRing (CoordinateRing H)) (toPair H D' D'') =
+        algebraMap (CoordinateRing H) (FractionRing (CoordinateRing H)) (toPair H A₁' B₁') *
+          algebraMap (CoordinateRing H) (FractionRing (CoordinateRing H)) (toPair H A₂' B₂') := by
+      rw [hDmul, map_mul]
+    rw [hz₁, hz₂]
+    unfold polePairToFraction
+    rw [hNumEq, hDenEq]
+    simp only [Algebra.smul_def]
+    field_simp
+  by_cases hN'zero : toPair H N' N'' = 0
+  · refine Or.inl ?_
+    rw [hzeq]
+    unfold polePairToFraction
+    rw [hN'zero, map_zero, zero_div]
+  · have hpointwise := LPairCarrierSpec_pointwise c₁ c₂ A₁ B₁ A₁' B₁' A₂ B₂ A₂' B₂'
+      N₁' N₁'' N₂' N₂'' N' N'' D' D'' hA₁'B₁'ne hA₂'B₂'ne hN'zero hN₁mul hN₂mul hDmul
+      hN'_def hN''_def
+    refine Or.inr ⟨N', N'', D', D'', ⟨hN'zero, hD'D''ne, ?_, ?_⟩, hzeq⟩
+    · have hge1 : ordInfOfPair N₁' N₁'' ≥ ordInfOfPair A₁ B₁ + ordInfOfPair A₂' B₂' := by
+        by_cases hA₁B₁ : toPair H A₁ B₁ = 0
+        · have hN₁zero : toPair H N₁' N₁'' = 0 := by rw [hN₁mul, hA₁B₁, zero_mul]
+          have hN₁pair : N₁' = 0 ∧ N₁'' = 0 := (toPair_eq_zero_iff H N₁' N₁'').mp hN₁zero
+          have hA₁pair : A₁ = 0 ∧ B₁ = 0 := (toPair_eq_zero_iff H A₁ B₁).mp hA₁B₁
+          have hA₁inf : ordInfOfPair A₁ B₁ = 0 := by
+            unfold ordInfOfPair; rw [if_pos hA₁pair]
+          rw [hN₁pair.1, hN₁pair.2, hA₁inf, zero_add]
+          show ordInfOfPair (0 : k[X]) 0 ≥ ordInfOfPair A₂' B₂'
+          calc ordInfOfPair (0 : k[X]) 0 = 0 := by unfold ordInfOfPair; rw [if_pos ⟨rfl, rfl⟩]
+            _ ≥ ordInfOfPair A₂' B₂' := ordInfOfPair_le_zero A₂' B₂'
+        · have hN₁ne : toPair H N₁' N₁'' ≠ 0 := by rw [hN₁mul]; exact mul_ne_zero hA₁B₁ hA₂'B₂'ne
+          have hN₁pairne : ¬ (N₁' = 0 ∧ N₁'' = 0) :=
+            fun h => hN₁ne ((toPair_eq_zero_iff H N₁' N₁'').mpr h)
+          have hA₁pairne : ¬ (A₁ = 0 ∧ B₁ = 0) := fun h => hA₁B₁ ((toPair_eq_zero_iff H A₁ B₁).mpr h)
+          exact le_of_eq (ordInfOfPair_add_of_toPair_mul (H := H) hdeg A₁ B₁ A₂' B₂' N₁' N₁''
+            hA₁pairne hne₂ hN₁pairne hN₁mul).symm
+      have hge2 : ordInfOfPair N₂' N₂'' ≥ ordInfOfPair A₂ B₂ + ordInfOfPair A₁' B₁' := by
+        by_cases hA₂B₂ : toPair H A₂ B₂ = 0
+        · have hN₂zero : toPair H N₂' N₂'' = 0 := by rw [hN₂mul, hA₂B₂, zero_mul]
+          have hN₂pair : N₂' = 0 ∧ N₂'' = 0 := (toPair_eq_zero_iff H N₂' N₂'').mp hN₂zero
+          have hA₂pair : A₂ = 0 ∧ B₂ = 0 := (toPair_eq_zero_iff H A₂ B₂).mp hA₂B₂
+          have hA₂inf : ordInfOfPair A₂ B₂ = 0 := by
+            unfold ordInfOfPair; rw [if_pos hA₂pair]
+          rw [hN₂pair.1, hN₂pair.2, hA₂inf, zero_add]
+          show ordInfOfPair (0 : k[X]) 0 ≥ ordInfOfPair A₁' B₁'
+          calc ordInfOfPair (0 : k[X]) 0 = 0 := by unfold ordInfOfPair; rw [if_pos ⟨rfl, rfl⟩]
+            _ ≥ ordInfOfPair A₁' B₁' := ordInfOfPair_le_zero A₁' B₁'
+        · have hN₂ne : toPair H N₂' N₂'' ≠ 0 := by rw [hN₂mul]; exact mul_ne_zero hA₂B₂ hA₁'B₁'ne
+          have hN₂pairne : ¬ (N₂' = 0 ∧ N₂'' = 0) :=
+            fun h => hN₂ne ((toPair_eq_zero_iff H N₂' N₂'').mpr h)
+          have hA₂pairne : ¬ (A₂ = 0 ∧ B₂ = 0) := fun h => hA₂B₂ ((toPair_eq_zero_iff H A₂ B₂).mpr h)
+          exact le_of_eq (ordInfOfPair_add_of_toPair_mul (H := H) hdeg A₂ B₂ A₁' B₁' N₂' N₂''
+            hA₂pairne hne₁ hN₂pairne hN₂mul).symm
+      have hDinf : ordInfOfPair D' D'' = ordInfOfPair A₁' B₁' + ordInfOfPair A₂' B₂' :=
+        ordInfOfPair_add_of_toPair_mul (H := H) hdeg A₁' B₁' A₂' B₂' D' D'' hne₁ hne₂ hD'D''ne hDmul
+      have hstep1 : ordInfOfPair N' N'' ≥ min (ordInfOfPair N₁' N₁'') (ordInfOfPair N₂' N₂'') := by
+        have hCN₁ : ordInfOfPair (C c₁ * N₁') (C c₁ * N₁'') ≥ ordInfOfPair N₁' N₁'' :=
+          ordInfOfPair_C_mul_ge c₁ N₁' N₁''
+        have hCN₂ : ordInfOfPair (C c₂ * N₂') (C c₂ * N₂'') ≥ ordInfOfPair N₂' N₂'' :=
+          ordInfOfPair_C_mul_ge c₂ N₂' N₂''
+        have hadd := ordInfOfPair_add_ge_min (C c₁ * N₁') (C c₁ * N₁'') (C c₂ * N₂') (C c₂ * N₂'')
+        rw [← hN'_def, ← hN''_def] at hadd
+        calc ordInfOfPair N' N'' ≥ min (ordInfOfPair (C c₁ * N₁') (C c₁ * N₁''))
+              (ordInfOfPair (C c₂ * N₂') (C c₂ * N₂'')) := hadd
+          _ ≥ min (ordInfOfPair N₁' N₁'') (ordInfOfPair N₂' N₂'') := min_le_min hCN₁ hCN₂
+      calc ordInfOfPair N' N'' ≥ min (ordInfOfPair N₁' N₁'') (ordInfOfPair N₂' N₂'') := hstep1
+        _ ≥ min (ordInfOfPair A₁ B₁ + ordInfOfPair A₂' B₂') (ordInfOfPair A₂ B₂ + ordInfOfPair A₁' B₁') :=
+            min_le_min hge1 hge2
+        _ ≥ ordInfOfPair A₁' B₁' + ordInfOfPair A₂' B₂' := by
+            rw [ge_iff_le, le_min_iff]
+            refine ⟨add_le_add_left hinf₁ _, ?_⟩
+            rw [add_comm (ordInfOfPair A₂ B₂) (ordInfOfPair A₁' B₁')]
+            exact add_le_add_right hinf₂ _
+        _ = ordInfOfPair D' D'' := hDinf.symm
+    · intro v
+      exact hpointwise v _ (hoff₁' v) (hoff₂' v)
+
+omit [IsAlgClosed k] in
 /-- **`LPairCarrier'` is closed under `k`-scaling.** Needed as the base case
 for the mixed `z₁ = 0`/`z₂ = 0` branches of `LPairCarrier'_add_smul` below,
 where the nonzero side's contribution `c • z` (`c` possibly `0`) needs its
