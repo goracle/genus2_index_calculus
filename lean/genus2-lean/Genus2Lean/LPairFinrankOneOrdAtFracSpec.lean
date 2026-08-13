@@ -2638,11 +2638,23 @@ theorem uniqueDegree2MapToP1Spec (hdeg : H.f.natDegree = 5) (hchar : (2 : k) ≠
       -- is refactored enough not to hit the deterministic heartbeat timeout.
       sorry
     have hbeq0 : b₀ = 0 := by
-      -- Finite-field gap: the existing theorem is proved with `[IsAlgClosed k]`.
-      -- Over an arbitrary field, this needs the elementary infinity-order argument
-      -- for a nonzero `b₀`: `ordInfOfPair a₀ b₀ ≤ -5`, while `hcdeg` gives
-      -- `ordInfOfPair c₀ 0 ≥ -4`, contradicting `hinf₀`.
-      sorry
+      by_contra hb0
+      have hInfb : ordInfOfPair a₀ b₀ ≤ -5 := by
+        rw [ordInfOfPair_eq_of_ne a₀ b₀ hab₀ne]
+        simp only [if_neg hb0]
+        have hmax : (5 : ℤ) ≤
+            max (2 * (a₀.natDegree : ℤ)) (2 * (b₀.natDegree : ℤ) + 5) := by
+          exact le_trans (by omega) (le_max_right _ _)
+        linarith
+      have hInfc : -(4 : ℤ) ≤ ordInfOfPair c₀ (0 : k[X]) := by
+        rw [ordInfOfPair_eq_of_ne c₀ 0 (fun h => hc₀ne h.1)]
+        have hmax : max (2 * (c₀.natDegree : ℤ)) 0 ≤ 4 := by
+          apply max_le
+          · omega
+          · omega
+        simpa only [if_true, Nat.cast_zero, mul_zero, add_zero] using
+          (neg_le_neg hmax)
+      linarith [hinf₀, hInfb, hInfc]
     subst b₀
     -- **[DEPRECATED ROUTE REMOVED]** This used to go through `IsNormCoprime`
     -- (`isNormCoprime_of_gcd_unit_snd_zero` +
