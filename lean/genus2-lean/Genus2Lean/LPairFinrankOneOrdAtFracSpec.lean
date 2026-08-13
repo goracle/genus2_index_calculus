@@ -808,6 +808,80 @@ theorem mem_conjHeightOne_iff [IsDedekindDomain (CoordinateRing H)]
     simpa using this.symm
   rw [this]
 
+/-- **`residueDeg` is `conjHeightOne`-invariant.** `involutionEquiv H` is a `k`-algebra
+automorphism of `CoordinateRing H` (fixes `k` pointwise, via `involution_algebraMap` and
+`IsScalarTower k k[X] (CoordinateRing H)`) carrying `v.asIdeal` to `(conjHeightOne
+v).asIdeal` (that's exactly `conjHeightOne`'s definition: comap along the symm map), so it
+descends to a `k`-algebra iso of the two residue fields, giving equal `finrank`. -/
+theorem residueDeg_conjHeightOne [IsDedekindDomain (CoordinateRing H)]
+    (v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H)) :
+    residueDeg (conjHeightOne (H := H) v) = residueDeg v := by
+  unfold residueDeg
+  have hmap : Ideal.map (involutionEquiv H).symm.toRingHom (conjHeightOne (H := H) v).asIdeal
+      = v.asIdeal := by
+    show Ideal.map (involutionEquiv H).symm.toRingHom
+      (Ideal.comap (involutionEquiv H).symm.toRingHom v.asIdeal) = v.asIdeal
+    exact Ideal.map_comap_of_surjective _ (involutionEquiv H).symm.surjective v.asIdeal
+  have halg : ∀ c : k, (involutionEquiv H).symm.toRingHom (algebraMap k (CoordinateRing H) c)
+      = algebraMap k (CoordinateRing H) c := by
+    intro c
+    show involution H (algebraMap k (CoordinateRing H) c) = algebraMap k (CoordinateRing H) c
+    have hst : algebraMap k (CoordinateRing H) c
+        = algebraMap k[X] (CoordinateRing H) (algebraMap k k[X] c) :=
+      (IsScalarTower.algebraMap_apply k k[X] (CoordinateRing H) c)
+    rw [hst, involution_algebraMap]
+  have e : (CoordinateRing H ⧸ (conjHeightOne (H := H) v).asIdeal) ≃ₐ[k]
+      (CoordinateRing H ⧸ v.asIdeal) :=
+    AlgEquiv.ofRingEquiv (f := Ideal.quotientEquiv _ _ (involutionEquiv H).symm hmap.symm)
+      (fun c => by
+        rw [show algebraMap k (CoordinateRing H ⧸ (conjHeightOne (H := H) v).asIdeal) c
+              = Ideal.Quotient.mk _ (algebraMap k (CoordinateRing H) c) from rfl,
+            Ideal.quotientEquiv_mk, halg]
+        rfl)
+  exact (LinearEquiv.finrank_eq e.toLinearEquiv).symm
+
+/-- **`ordAtSpec` at a "B=0" pair is `conjHeightOne`-invariant.** `toPair H A 0 =
+algebraMap A` is fixed by `involution H`, so membership (hence the whole `Associates.count`
+multiplicity) transports identically between `v` and `conjHeightOne v` — not just the
+`> 0 ↔ > 0` fact `Case A` uses, but exact equality, since the ideal `Ideal.span
+{algebraMap A}` is itself `involutionEquiv`-invariant and `conjHeightOne v`'s ideal is the
+`involutionEquiv.symm`-comap of `v`'s. -/
+theorem ordAtSpec_conjHeightOne_fst [IsDedekindDomain (CoordinateRing H)]
+    (v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H)) (A : k[X]) :
+    ordAtSpec (conjHeightOne (H := H) v) A (0 : k[X]) = ordAtSpec v A (0 : k[X]) := by
+  by_cases hA : A = 0
+  · subst hA; unfold ordAtSpec; simp
+  have hne : toPair H A (0 : k[X]) ≠ 0 := by rw [Ne, toPair_eq_zero_iff]; exact fun h => hA h.1
+  have hcalg : toPair H A (0 : k[X]) = algebraMap k[X] (CoordinateRing H) A := by
+    unfold HyperellipticPolynomial.toPair; simp
+  rw [ordAtSpec_eq_count _ A 0 hne, ordAtSpec_eq_count _ A 0 hne]
+  congr 1
+  rw [show (conjHeightOne (H := H) v).asIdeal
+      = Ideal.comap (involutionEquiv H).symm.toRingHom v.asIdeal from rfl]
+  congr 1
+  rw [hcalg]
+  set alg := algebraMap k[X] (CoordinateRing H) A with halg_def
+  have halg_fix : involution H alg = alg := involution_algebraMap H A
+  have hsymm_eq : ∀ w : CoordinateRing H, (involutionEquiv H).symm w = involution H w := by
+    intro w
+    have hfwd : involutionEquiv H (involution H w) = w := involution_involution H w
+    have := congrArg (involutionEquiv H).symm hfwd
+    simpa using this.symm
+  ext c
+  simp only [Ideal.mem_comap, RingHom.coe_coe, Ideal.mem_span_singleton, hsymm_eq]
+  constructor
+  · rintro ⟨d, hd⟩
+    -- `involution H c = alg * d`; apply `involution H` to both sides (self-inverse).
+    refine ⟨involution H d, ?_⟩
+    have happ := congrArg (involution H) hd
+    rw [involution_involution, map_mul] at happ
+    rwa [halg_fix] at happ
+  · rintro ⟨d, hd⟩
+    refine ⟨involution H d, ?_⟩
+    have happ := congrArg (involution H) hd
+    rw [map_mul, halg_fix] at happ
+    exact happ
+
 /-! ## §3f. `c₀.natDegree ≤ 2`, closed-point-native, avoiding the `pairNorm`
 circularity entirely.
 
@@ -1058,7 +1132,7 @@ theorem ordAtSpec_eq_zero_of_notMem_four_of_dvd
       ordAtSpec v a₀ b₀ - ordAtSpec v c₀ (0 : k[X]) ≥
         -((if v = pointHeightOne' x₁ then 1 else 0) +
           (if v = pointHeightOne' x₂ then 1 else 0)))
-    (hchar : (2 : k) ≠ 0)
+    (hchar : (2 : k) ≠ 0) (hsf : Squarefree H.f)
     (v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H))
     (hv1 : v ≠ pointHeightOne' x₁) (hv2 : v ≠ pointHeightOne' x₂)
     (hw1 : conjHeightOne (H := H) v ≠ pointHeightOne' x₁)
@@ -1164,61 +1238,67 @@ theorem ordAtSpec_eq_zero_of_notMem_four_of_dvd
     (fun h => absurd h hq_irred.not_isUnit) id
   -- `2b₀ * y H ∈ v.asIdeal`: split on `q ∣ H.f` or not.
   by_cases hqf : q ∣ H.f
-  · -- Ramified: use the sharp valuation argument via `irreducible_sq_not_dvd_c0`-style
-    -- reasoning, packaged separately below at the `H.Point` level (this branch is dead
-    -- code here: the caller `natDegree_le_two_of_gcdUnit_closed_point` never reaches
-    -- this theorem in the ramified multiplicity case — see the restructured final
-    -- assembly, which handles ramified/unramified directly at `x₁,x₂` via `ordAt_linX_eq`
-    -- instead of through this abstract-`q` theorem). We still owe a proof here since the
-    -- theorem is stated unconditionally; finish via the same `hqf`-based valuation
-    -- squeeze ChatGPT outlined, using `ordAtSpec` order-additivity.
+  · -- Ramified case is actually **impossible** here: `H.f` squarefree (`hsf`) means
+    -- `q^2 ∤ H.f` (`q` irreducible, not a unit); combined with `q ∣ H.f` and
+    -- `y H ^ 2 = algebraMap H.f`, a parity argument on `ordAtSpec v` at `q^2` vs
+    -- `y H` gives a direct contradiction — no need to separate `q ∣ b₀` at all.
     exfalso
-    -- `q ∣ H.f` and `q ∣ c₀`: since `hgu` forbids `q ∣ a₀ ∧ q ∣ b₀` jointly (already have
-    -- `q ∣ a₀`), get `q ∤ b₀` — wait, we already derived `q ∣ a₀`; combine with `q ∣ c₀`
-    -- and `hgu` to directly get `¬ q ∣ b₀`... but that's not yet `False`, we need
-    -- `q ∣ b₀` too for the "support" theorem's needs elsewhere. For *this* theorem
-    -- (proving `ordAtSpec v c₀ 0 = 0`, i.e. deriving `False` from `hpos`), it suffices
-    -- to derive q∣a₀ ∧ q∣b₀ (done for a₀) and contradict `hgu` via `hqc₀`. Get `q∣b₀`
-    -- from `h2by_mem` using that `ordAtSpec v (y H) 0`-shaped valuation argument is
-    -- exactly the `q∣H.f` case ChatGPT resolved via the sharp `ord_v(q)=2, ord_v(y)=1`
-    -- computation — reproduce it minimally here via `y H ^ 2 = algebraMap H.f ∈ P`'s
-    -- ideal (`q ∣ H.f` already), giving `y H ∈ v.asIdeal` (prime, `y H^2 ∈ v.asIdeal`).
     have hyf : y H ^ 2 = algebraMap k[X] (CoordinateRing H) H.f := y_sq_eq H
-    have hqf_mem : algebraMap k[X] (CoordinateRing H) H.f ∈ v.asIdeal := by
-      show H.f ∈ P
-      rw [hq_gen, Ideal.mem_span_singleton]; exact hqf
-    have hy2mem : y H ^ 2 ∈ v.asIdeal := by rw [hyf]; exact hqf_mem
-    have hymem : y H ∈ v.asIdeal := by
-      rcases v.isPrime.mem_or_mem (show y H * y H ∈ v.asIdeal by rwa [← sq]) with h | h <;> exact h
-    -- `2b₀ * y H ∈ v.asIdeal` doesn't directly give `q ∣ b₀` when `y H ∈ v.asIdeal`
-    -- (both factors could vanish without `b₀`'s coefficient doing so) — this is exactly
-    -- the subtlety ChatGPT's sharp valuation argument resolves via *exact* orders, not
-    -- mere membership. Rather than reproduce that here, we instead show this branch is
-    -- unreachable in practice: with `q ∣ H.f` and `H.f` squarefree, `x₁` or `x₂` (via
-    -- the support argument) is forced to be the *unique* ramified point over `q`, and
-    -- the multiplicity bound is established directly at that rational point elsewhere.
-    -- To close *this* theorem soundly, fall back to deriving the contradiction the
-    -- long way: `q ∣ a₀` (have it), `q ∣ c₀` (have it) — if we can ALSO get `q ∣ b₀`
-    -- we're done via `hgu`; if not, this branch genuinely needs the sharp argument.
-    -- Since `hab₀ne` (`toPair H a₀ b₀ ≠ 0`) and `q∣a₀`, write `a₀ = q*a₁`; `habvmem :
-    -- toPair H a₀ b₀ ∈ v.asIdeal` combined with `algebraMap a₀ ∈ v.asIdeal` (from `q∣a₀`)
-    -- gives `algebraMap b₀ * y H ∈ v.asIdeal` directly (subtract), same shape as before
-    -- but now from ONE membership instead of two — no new info. Give up the bare-hands
-    -- route and invoke `hzsuppSpec₀` order-squeeze directly instead.
-    have ha_mem : algebraMap k[X] (CoordinateRing H) a₀ ∈ v.asIdeal := by
-      show a₀ ∈ P; rw [hq_gen, Ideal.mem_span_singleton]; exact hqa₀
-    have hby_mem : algebraMap k[X] (CoordinateRing H) b₀ * y H ∈ v.asIdeal := by
-      have : toPair H a₀ b₀ - algebraMap k[X] (CoordinateRing H) a₀ =
-          algebraMap k[X] (CoordinateRing H) b₀ * y H := by
-        unfold HyperellipticPolynomial.toPair; ring
-      rw [← this]; exact v.asIdeal.sub_mem habvmem ha_mem
-    -- This alone doesn't separate `b₀` from `y H` — both could vanish at `v` jointly.
-    -- Genuinely needs the sharp order computation (`ordAtSpec v q 0 = 2`, `ordAtSpec v
-    -- (y H) 0`-shaped `= 1`) to conclude `q ∣ b₀` when `ordAtSpec v (algebraMap b₀) 0 =
-    -- 0` is excluded via a degree/order squeeze against `hzsuppSpec₀`. This is precisely
-    -- what `irreducible_sq_not_dvd_c0` (H.Point-level, below) does cleanly via
-    -- `ordAt_linX_eq`'s exact case values — deferring to that rather than re-deriving
-    -- the same fact through the heavier `Associates.count` API here.
+    have hyToPair : y H = toPair H 0 1 := by unfold HyperellipticPolynomial.toPair; simp
+    have hyne : toPair H 0 1 ≠ (0 : CoordinateRing H) := by rw [← hyToPair]
+      -- `y H ≠ 0`: else `H.f = y H ^ 2 = 0`, contradicting `H.f` squarefree/nonzero
+      -- implicitly (a squarefree `0` is impossible in a nontrivial ring since `0 = u*u`
+      -- for any `u`, e.g. `u` non-unit if such exists; simplest: `H.f`'s `natDegree`
+      -- context elsewhere in the file always assumes `H.f ≠ 0`, and `hqf : q ∣ H.f`
+      -- with `q` irreducible forces `H.f ≠ 0`, since `q ∣ 0` is fine but then `H.f = 0`
+      -- would make `Squarefree H.f` force `IsUnit q` for every `q` with `q*q ∣ 0`,
+      -- i.e. every `q`, contradicting `hq_irred.not_isUnit` directly below via `hsf`.
+      intro hy0
+      rw [hy0] at hyf
+      have hf0 : H.f = 0 := by
+        have := hyf.symm; simpa using this
+      rw [hf0] at hqf
+      have : IsUnit q := hsf q (by rw [← sq]; exact dvd_zero _)
+      exact hq_irred.not_isUnit this
+    have hordy_ge0 : 0 ≤ ordAtSpec v (0:k[X]) 1 := ordAtSpec_nonneg v 0 1 hyne
+    have hordf : ordAtSpec v H.f (0:k[X]) = 2 * ordAtSpec v (0:k[X]) 1 := by
+      have hprod : toPair H H.f 0 = toPair H 0 1 * toPair H 0 1 := by
+        rw [hyToPair] at hyf ⊢
+        rw [← hyf]; unfold HyperellipticPolynomial.toPair; ring
+      have := ordAtSpec_add_of_toPair_mul (H := H) v 0 1 0 1 H.f 0 hyne hyne hprod.symm
+      rw [this]; ring
+    have hq2ndvd : ¬ q ^ 2 ∣ H.f := fun h => hq_irred.not_isUnit (hsf q (by rwa [← sq] at h))
+    -- `hordf : ordAtSpec v H.f 0 = 2 * ordAtSpec v (0) 1` is **even**. `q ∣ H.f` gives
+    -- `ordAtSpec v H.f 0 ≥ 1` (cheap, membership via `ordAtSpec_eq_zero_of_notMem`'s
+    -- contrapositive), so evenness forces `ordAtSpec v H.f 0 ≥ 2`. The genuine remaining
+    -- gap: turning `ordAtSpec v H.f 0 ≥ 2` into `q ^ 2 ∣ H.f` in `k[X]` (contradicting
+    -- `hq2ndvd`) needs comparing `v`'s multiplicity (in `CoordinateRing H`) against `q`'s
+    -- own multiplicity in `k[X]` at `P = v.asIdeal.comap = span {q}` — i.e. a
+    -- ramification-index fact (`ordAtSpec v (algebraMap q) 0` vs. `k[X]`-multiplicity of
+    -- `q` in `q` itself, `= 1`), not yet established in this file for a general
+    -- going-up prime (this is exactly the same class of gap flagged in this file's
+    -- earlier history around `heightOneSpectrum_over_irreducible`/ramification).
+    -- Isolating rather than forcing: see `chatgpt_prompt_ramified_squarefree.txt`.
+    have hfpos : 0 < ordAtSpec v H.f (0:k[X]) := by
+      have hfne : toPair H H.f (0:k[X]) ≠ 0 := by
+        rw [Ne, toPair_eq_zero_iff]; exact fun h => hsf.ne_zero h.1
+      have hfmem : toPair H H.f (0:k[X]) ∈ v.asIdeal := by
+        have halgf : toPair H H.f (0:k[X]) = algebraMap k[X] (CoordinateRing H) H.f := by
+          unfold HyperellipticPolynomial.toPair; simp
+        rw [halgf]; show H.f ∈ P; rw [hq_gen, Ideal.mem_span_singleton]; exact hqf
+      by_contra hle
+      push_neg at hle
+      have hle0 : ordAtSpec v H.f (0:k[X]) = 0 := le_antisymm hle (ordAtSpec_nonneg v H.f 0 hfne)
+      have hcount := ordAtSpec_eq_count v H.f 0 hfne
+      rw [hle0] at hcount
+      have hIne : Ideal.span ({toPair H H.f (0:k[X])} : Set (CoordinateRing H)) ≠ 0 := by
+        rw [Ne, Ideal.zero_eq_bot, Ideal.span_singleton_eq_bot]; exact hfne
+      have hge1 : 1 ≤ (Associates.mk v.asIdeal).count
+          (Associates.mk (Ideal.span ({toPair H H.f (0:k[X])} : Set (CoordinateRing H)))).factors := by
+        rw [← Associates.prime_pow_dvd_iff_le hIne v.associates_irreducible, pow_one]
+        exact Associates.mk_le_mk_iff_dvd.mpr (Ideal.dvd_span_singleton.mpr hfmem)
+      omega
+    have hordf_ge2 : ordAtSpec v H.f (0:k[X]) ≥ 2 := by omega
     sorry
   · -- Unramified: `q ∤ H.f` means `y H ∉ v.asIdeal` (else `y H^2 = algebraMap H.f ∈
     -- v.asIdeal` forces `q ∣ H.f`), so `v.asIdeal` prime + `2b₀*y ∈ v.asIdeal` + `y ∉
@@ -1244,111 +1324,13 @@ theorem ordAtSpec_eq_zero_of_notMem_four_of_dvd
     have hq_dvd_gcd : q ∣ gcd (gcd a₀ b₀) c₀ := dvd_gcd (dvd_gcd hqa₀ hqb₀) hqc₀
     exact absurd (isUnit_of_dvd_unit hq_dvd_gcd hgu) hq_irred.not_isUnit
 
-/-! **STATUS: `false_of_bad_factor_split_deg_ge_two` — attempted, not closed.**
-    (x₁ x₂ : H.Point) (a₀ b₀ c₀ : k[X]) (hc₀ne : c₀ ≠ 0)
-    (hab₀ne : toPair H a₀ b₀ ≠ 0)
-    (hgu : IsUnit (gcd (gcd a₀ b₀) c₀))
-    (hzsuppSpec₀ : ∀ v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H),
-      ordAtSpec v a₀ b₀ - ordAtSpec v c₀ (0 : k[X]) ≥
-        -((if v = pointHeightOne' x₁ then 1 else 0) +
-          (if v = pointHeightOne' x₂ then 1 else 0)))
-    (v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H))
-    (hv1 : v ≠ pointHeightOne' x₁) (hv2 : v ≠ pointHeightOne' x₂) :
-    ordAtSpec v c₀ (0 : k[X]) = 0 := by
-  by_contra hne0
-  have hc₀'ne : toPair H c₀ (0 : k[X]) ≠ 0 := by
-    rw [Ne, toPair_eq_zero_iff]; exact fun h => hc₀ne h.1
-  have hpos : 0 < ordAtSpec v c₀ (0 : k[X]) :=
-    lt_of_le_of_ne (ordAtSpec_nonneg v c₀ 0 hc₀'ne) (Ne.symm hne0)
-  have hvmem : toPair H c₀ (0 : k[X]) ∈ v.asIdeal := by
-    by_contra hnotmem
-    have := ordAtSpec_eq_zero_of_notMem v c₀ 0 hnotmem
-    omega
-  -- From `hzsuppSpec₀ v` (indicator `0`, since `v ∉ {x₁,x₂}`):
-  -- `ordAtSpec v a₀ b₀ ≥ ordAtSpec v c₀ 0 > 0`, so `toPair H a₀ b₀ ∈ v.asIdeal` too
-  -- (`ordAtSpec_eq_zero_of_notMem`, contrapositive).
-  have hbound := hzsuppSpec₀ v
-  simp only [hv1, hv2, if_neg, if_false] at hbound
-  have hab_pos : 0 < ordAtSpec v a₀ b₀ := by omega
-  have habmem : toPair H a₀ b₀ ∈ v.asIdeal := by
-    by_contra hnotmem
-    have := ordAtSpec_eq_zero_of_notMem v a₀ b₀ hnotmem
-    omega
-  -- Both numerator and denominator vanish at `v`: `v.asIdeal ⊇ span{toPair a₀ b₀,
-  -- toPair c₀ 0}`. Since `v.asIdeal` is prime and `≠ ⊤`, and `CoordinateRing H` is a
-  -- Dedekind domain (height-one primes are maximal), this makes `gcd (gcd a₀ b₀) c₀`
-  -- fail to be a unit: take `q` any irreducible factor of `gcd (gcd a₀ b₀) c₀` — but
-  -- `hgu` already says that gcd *is* a unit, so instead we derive the contradiction
-  -- directly from `hgu` via `IsCoprime`: `IsUnit (gcd (gcd a₀ b₀) c₀)` means `1 ∈
-  -- Ideal.span {a₀, b₀, c₀}` at the `k[X]` level (Bézout), i.e. `∃ u v w, u*a₀ + v*b₀ +
-  -- w*c₀ = 1`. Applying `algebraMap`/`toPair` machinery: `toPair H a₀ b₀ ∈ v.asIdeal`
-  -- gives `algebraMap a₀, algebraMap b₀`-combinations landing in `v.asIdeal` is not
-  -- immediate from `toPair` membership alone (the `y`-component mixes things) — so
-  -- instead argue directly at the `k[X]` Bézout level via `Ideal.mem_span_singleton`
-  -- comap, using that `v.asIdeal ∩ k[X]` (comap) is a prime ideal of `k[X]` (nonzero,
-  -- since `CoordinateRing H` is a finite `k[X]`-module, so `v.asIdeal` contracts to a
-  -- nonzero — indeed maximal — ideal of `k[X]`), hence `= span {q}` for some
-  -- irreducible `q`, and both `a₀,b₀,c₀`'s coefficients land in it via the argument
-  -- below (`hqa`, `hqb`, `hqc`), contradicting `hgu`.
-  classical
-  haveI : IsDomain (CoordinateRing H) := IsDedekindDomain.toIsDomain
-  set P : Ideal k[X] := Ideal.comap (algebraMap k[X] (CoordinateRing H)) v.asIdeal with hP_def
-  have hPprime : P.IsPrime := Ideal.comap_isPrime _ _
-  have hPtop : P ≠ ⊤ := hPprime.ne_top
-  have hPbot : P ≠ ⊥ := by
-    intro hPbot'
-    -- `P = ⊥` would make `algebraMap : k[X] → CoordinateRing H` injective on a
-    -- nonzero element mapping into `v.asIdeal` impossible unless that element is `0`
-    -- — but we don't directly need `P ≠ ⊥` for a contradiction here; skip needing it
-    -- by working with `P` as a general prime ideal of `k[X]` (`k[X]` a PID, so `P` is
-    -- generated by some `q`, either `0` or irreducible). We only need `q ≠ 0` from
-    -- `c₀ ∈ P` below combined with `c₀ ≠ 0`.
-    trivial
-  obtain ⟨q, hq_gen⟩ := (IsPrincipalIdealRing.principal P).principal ▸
-    (Submodule.IsPrincipal.principal P : ∃ q, P = Ideal.span {q})
-  -- `c₀ ∈ P` (from `algebraMap c₀ ∈ v.asIdeal`, via `htoPair_right_zero`-style
-  -- unfolding of `toPair H c₀ 0`).
-  have hc₀P : c₀ ∈ P := by
-    show algebraMap k[X] (CoordinateRing H) c₀ ∈ v.asIdeal
-    have : algebraMap k[X] (CoordinateRing H) c₀ = toPair H c₀ (0 : k[X]) := by
-      unfold HyperellipticPolynomial.toPair; simp
-    rw [this]; exact hvmem
-  have hqne0 : q ≠ 0 := by
-    intro hq0
-    rw [hq0, Ideal.span_singleton_zero] at hq_gen
-    exact hc₀ne (by rw [← Ideal.mem_bot (α := k[X]), ← hq_gen]; exact hc₀P)
-  have hq_irred : Irreducible q := by
-    have hPprime' : (Ideal.span ({q} : Set k[X])).IsPrime := hq_gen ▸ hPprime
-    exact (Ideal.span_singleton_prime hqne0).mp hPprime' |>.irreducible
-  have hqc₀ : q ∣ c₀ := by
-    have : c₀ ∈ Ideal.span ({q} : Set k[X]) := hq_gen ▸ hc₀P
-    rwa [Ideal.mem_span_singleton] at this
-  -- `q ∣ pairNorm H a₀ b₀`: `toPair H a₀ b₀ * involution H (toPair H a₀ b₀) =
-  -- algebraMap (pairNorm H a₀ b₀)` (`toPair_mul_involution`); `habmem` puts the first
-  -- factor in `v.asIdeal`, so (ideal absorbs multiplication) the whole product does
-  -- too, giving `algebraMap (pairNorm H a₀ b₀) ∈ v.asIdeal`, i.e. `pairNorm H a₀ b₀ ∈
-  -- P = span {q}` (comap), i.e. `q ∣ pairNorm H a₀ b₀`.
-  have hqnorm : q ∣ pairNorm H a₀ b₀ := by
-    have hprodmem : toPair H a₀ b₀ * involution H (toPair H a₀ b₀) ∈ v.asIdeal :=
-      v.asIdeal.mul_mem_right _ habmem
-    rw [toPair_mul_involution] at hprodmem
-    have : pairNorm H a₀ b₀ ∈ P := hprodmem
-    rw [hq_gen, Ideal.mem_span_singleton] at this
-    exact this
-  -- **The genuine remaining step (matches the abandoned §3e/split-fiber attempt's
-  -- exact obstruction): `q ∣ pairNorm H a₀ b₀` and `q ∣ c₀` alone, without `q ∣ b₀`
-  -- separately, do not yet contradict `hgu` — `notDvd_snd_of_dvd_gcd_pairNorm_of_
-  -- gcdUnit` needs `q ∣ b₀` as an extra hypothesis to derive `q ∣ a₀` (it's proved by
-  -- contradiction FROM `q ∣ b₀`, not usable standalone). Genuinely isolating `q ∣ a₀`
-  -- and `q ∣ b₀` *separately* from `habmem` needs the conjugate point `conjHeightOne v`
-  -- too (`toPair H a₀ b₀ ∈ v.asIdeal` and `toPair H a₀ (-b₀) ∈ (conjHeightOne
-  -- v).asIdeal` together, via `toPair_add_involution`, isolate `algebraMap (2*a₀)` —
-  -- but we only have membership at `v`, not at its conjugate, and there is no
-  -- a-priori reason both hold.** This is exactly the same wall as
-  -- `false_of_bad_factor_split_deg_ge_two` below and the ChatGPT prompts already
-  -- drafted earlier in this file's history — flagging rather than forcing a fake
-  -- finish.
-  sorry
+/-! **STATUS: `false_of_bad_factor_split_deg_ge_two` — abandoned, dead scaffold
+removed.** This was an earlier, superseded attempt at the same fact now proved (up to
+Gap 1/Gap 2, see `chatgpt_prompt_final_two_gaps.txt`) by
+`ordAtSpec_eq_zero_of_notMem_four_of_dvd` / `natDegree_le_two_of_gcdUnit_closed_point`
+above. The abandoned draft is deleted rather than kept as a dangling, unclosed comment
+block (it previously left ~100 lines of live, headerless tactic code after an
+unterminated `/-!`, which does not parse). -/
 
 /-- **Final assembly: `c₀.natDegree ≤ 2`, closed-point-native, no `IsAlgClosed`.**
 `ordAtSpec v c₀ 0 = 0` away from `{x₁, x₂}` (`ordAtSpec_eq_zero_of_notMem_pair_of_dvd`)
@@ -1365,6 +1347,7 @@ theorem natDegree_le_two_of_gcdUnit_closed_point
     (x₁ x₂ : H.Point) (a₀ b₀ c₀ : k[X]) (hc₀ne : c₀ ≠ 0)
     (hab₀ne : toPair H a₀ b₀ ≠ 0)
     (hgu : IsUnit (gcd (gcd a₀ b₀) c₀))
+    (hchar : (2 : k) ≠ 0) (hsf : Squarefree H.f)
     (hzsuppSpec₀ : ∀ v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H),
       ordAtSpec v a₀ b₀ - ordAtSpec v c₀ (0 : k[X]) ≥
         -((if v = pointHeightOne' x₁ then 1 else 0) +
@@ -1372,15 +1355,53 @@ theorem natDegree_le_two_of_gcdUnit_closed_point
     c₀.natDegree ≤ 2 := by
   have hc₀'ne : ¬ (c₀ = 0 ∧ (0 : k[X]) = 0) := by simpa using hc₀ne
   obtain ⟨T, hsupp⟩ := exists_finite_support_ordAtSpec (H := H) c₀ (0 : k[X]) hc₀'ne
+  -- **Four** exceptional points now (corrected from the earlier, false two-point
+  -- version): `x₁`, `x₂`, and their two `conjHeightOne`-images. `Case A` of
+  -- `ordAtSpec_eq_zero_of_notMem_four_of_dvd` genuinely needs all four excluded to
+  -- force vanishing elsewhere (see that theorem's docstring: `hzsuppSpec₀` alone at a
+  -- single `v` isn't enough, the conjugate point's instance is load-bearing too).
   set T' : Finset (IsDedekindDomain.HeightOneSpectrum (CoordinateRing H)) :=
-    insert (pointHeightOne' x₁) (insert (pointHeightOne' x₂) T) with hT'_def
+    insert (pointHeightOne' x₁) (insert (pointHeightOne' x₂)
+      (insert (conjHeightOne (H := H) (pointHeightOne' x₁))
+        (insert (conjHeightOne (H := H) (pointHeightOne' x₂)) T))) with hT'_def
   have hsupp' : ∀ v, v ∉ T' → ordAtSpec v c₀ (0 : k[X]) = 0 := by
     intro v hv
+    by_cases hv1 : v = pointHeightOne' x₁
+    · exact absurd hv1 (fun h => hv (by rw [hT'_def, h]; exact Finset.mem_insert_self _ _))
+    by_cases hv2 : v = pointHeightOne' x₂
+    · exact absurd hv2 (fun h => hv (by rw [hT'_def, h]
+        exact Finset.mem_insert_of_mem (Finset.mem_insert_self _ _)))
+    by_cases hw1 : conjHeightOne (H := H) v = pointHeightOne' x₁
+    · exact absurd hw1 (fun h => hv (by
+        rw [hT'_def]
+        have : v = conjHeightOne (H := H) (pointHeightOne' x₁) := by
+          have := congrArg (conjHeightOne (H := H)) h
+          rwa [show conjHeightOne (H := H) (conjHeightOne (H := H) v) = v from by
+            simp [conjHeightOne, Ideal.comap_comap]
+            congr 1
+            ext w
+            simp [mem_conjHeightOne_iff, involution_involution]] at this
+        rw [this]
+        exact Finset.mem_insert_of_mem (Finset.mem_insert_of_mem (Finset.mem_insert_self _ _))))
+    by_cases hw2 : conjHeightOne (H := H) v = pointHeightOne' x₂
+    · exact absurd hw2 (fun h => hv (by
+        rw [hT'_def]
+        have heq : v = conjHeightOne (H := H) (pointHeightOne' x₂) := by
+          have := congrArg (conjHeightOne (H := H)) h
+          rwa [show conjHeightOne (H := H) (conjHeightOne (H := H) v) = v from by
+            simp [conjHeightOne, Ideal.comap_comap]
+            congr 1
+            ext w
+            simp [mem_conjHeightOne_iff, involution_involution]] at this
+        rw [heq]
+        exact Finset.mem_insert_of_mem (Finset.mem_insert_of_mem
+          (Finset.mem_insert_of_mem (Finset.mem_insert_self _ _)))))
     apply hsupp
     intro hvT
     apply hv
     rw [hT'_def]
-    exact Finset.mem_insert_of_mem (Finset.mem_insert_of_mem hvT)
+    exact Finset.mem_insert_of_mem (Finset.mem_insert_of_mem
+      (Finset.mem_insert_of_mem (Finset.mem_insert_of_mem hvT)))
   have hnorm : ((pairNorm H c₀ (0 : k[X])).natDegree : ℤ) =
       ∑ v ∈ T', (residueDeg v : ℤ) * ordAtSpec v c₀ (0 : k[X]) :=
     natDegree_pairNorm_eq_sum_residueDeg_ordAtSpec (H := H) c₀ (0 : k[X]) hc₀'ne T' hsupp'
@@ -1388,104 +1409,191 @@ theorem natDegree_le_two_of_gcdUnit_closed_point
     unfold HyperellipticPolynomial.pairNorm; ring
   have hdeg2 : ((pairNorm H c₀ (0 : k[X])).natDegree : ℤ) = 2 * (c₀.natDegree : ℤ) := by
     rw [hpairNorm_eq, Polynomial.natDegree_pow]; push_cast; ring
-  -- Termwise: `residueDeg v * ordAtSpec v c₀ 0 ≤ (indicator at x₁) + (indicator at
-  -- x₂)`, using `ordAtSpec_eq_zero_of_notMem_pair_of_dvd` away from `{x₁,x₂}` and the
-  -- crude bound `ordAtSpec v c₀ 0 ≤ 1`, `residueDeg = 1` exactly at those two points
-  -- (via `hzsuppSpec₀` itself: at `v = pointHeightOne' x₁`, `hzsuppSpec₀ v` reads
-  -- `ordAtSpec v a₀ b₀ - ordAtSpec v c₀ 0 ≥ -1`, i.e. `ordAtSpec v c₀ 0 ≤ ordAtSpec v
-  -- a₀ b₀ + 1` — not by itself `≤ 1`; but combined with `ordAtSpec v c₀ 0 ≤
-  -- residueDeg`-scaled degree considerations this needs `ordAtSpec v a₀ b₀ = 0` at
-  -- `x₁,x₂` too, which we don't have in general). Use the weaker, always-true bound
-  -- instead: bound the *whole sum* directly via `hzsuppSpec₀` summed against
-  -- `residueDeg ≥ 0`, mirroring `sum_max_neg_ordAtSpec_diff_le_two`'s own proof, but
-  -- specialized to `A = a₀, B = b₀` (no `max`, since `ordAtSpec v c₀ 0 = 0` already
-  -- away from `x₁,x₂` collapses the sum before any `max` is needed).
-  have hterm_le : ∀ v ∈ T', (residueDeg v : ℤ) * ordAtSpec v c₀ (0 : k[X]) ≤
-      (residueDeg v : ℤ) *
-        ((if v = pointHeightOne' x₁ then 1 else 0) +
-          (if v = pointHeightOne' x₂ then 1 else 0)) := by
-    intro v _
-    by_cases hv1 : v = pointHeightOne' x₁
-    · subst hv1
-      by_cases hv2 : pointHeightOne' x₁ = pointHeightOne' x₂
-      · -- `x₁,x₂` coincide as `HeightOneSpectrum` points: indicator totals `2`, and
-        -- `ordAtSpec v c₀ 0` is bounded using `hzsuppSpec₀` plus nonnegativity of
-        -- `ordAtSpec v a₀ b₀` only when we also know the latter is small — instead
-        -- just use the crude fact `ordAtSpec ≤ residueDeg * ordAtSpec` scaling is
-        -- monotone and bound by `2` directly via `hzsuppSpec₀ v` combined with
-        -- `ordAtSpec v a₀ b₀ ≥ 0`.
-        simp only [hv2, if_pos rfl]
-        have hb := hzsuppSpec₀ (pointHeightOne' x₁)
-        simp only [if_pos rfl, hv2, if_pos rfl] at hb
-        have h0 : (0:ℤ) ≤ ordAtSpec (pointHeightOne' x₁ (H := H)) a₀ b₀ :=
-          ordAtSpec_nonneg _ a₀ b₀ hab₀ne
-        rw [residueDeg_pointHeightOne']
-        push_cast
-        omega
-      · simp only [if_pos rfl, hv2, if_neg (Ne.symm hv2)]
-        have hb := hzsuppSpec₀ (pointHeightOne' x₁ (H := H))
-        simp only [if_pos rfl, if_neg (Ne.symm hv2)] at hb
-        have h0 : (0:ℤ) ≤ ordAtSpec (pointHeightOne' x₁ (H := H)) a₀ b₀ :=
-          ordAtSpec_nonneg _ a₀ b₀ hab₀ne
-        rw [residueDeg_pointHeightOne']
-        push_cast
-        omega
-    · by_cases hv2 : v = pointHeightOne' x₂
-      · subst hv2
-        simp only [if_neg hv1, if_pos rfl]
-        have hb := hzsuppSpec₀ (pointHeightOne' x₂ (H := H))
-        simp only [if_neg hv1, if_pos rfl] at hb
-        have h0 : (0:ℤ) ≤ ordAtSpec (pointHeightOne' x₂ (H := H)) a₀ b₀ :=
-          ordAtSpec_nonneg _ a₀ b₀ hab₀ne
-        rw [residueDeg_pointHeightOne']
-        push_cast
-        omega
-      · have := ordAtSpec_eq_zero_of_notMem_pair_of_dvd (H := H) x₁ x₂ a₀ b₀ c₀ hc₀ne
-          hab₀ne hgu hzsuppSpec₀ v hv1 hv2
-        rw [this]; simp [hv1, hv2]
-  have hsum_le : ∑ v ∈ T', (residueDeg v : ℤ) * ordAtSpec v c₀ (0 : k[X]) ≤
-      ∑ v ∈ T', (residueDeg v : ℤ) *
-        ((if v = pointHeightOne' x₁ then 1 else 0) +
-          (if v = pointHeightOne' x₂ then 1 else 0)) :=
-    Finset.sum_le_sum hterm_le
-  have hx₁mem : pointHeightOne' x₁ ∈ T' := by rw [hT'_def]; exact Finset.mem_insert_self _ _
-  have hx₂mem : pointHeightOne' x₂ ∈ T' := by
-    rw [hT'_def]; exact Finset.mem_insert_of_mem (Finset.mem_insert_self _ _)
-  have hcollapse : ∑ v ∈ T', (residueDeg v : ℤ) *
-      ((if v = pointHeightOne' x₁ then 1 else 0) +
-        (if v = pointHeightOne' x₂ then 1 else 0)) ≤ 4 := by
-    have hterm_le' : ∀ v ∈ T', (residueDeg v : ℤ) *
-        ((if v = pointHeightOne' x₁ then 1 else 0) +
-          (if v = pointHeightOne' x₂ then 1 else 0)) ≤
-        2 * ((if v = pointHeightOne' x₁ then (1:ℤ) else 0) +
-          (if v = pointHeightOne' x₂ then 1 else 0)) := by
-      intro v _
-      by_cases hv1 : v = pointHeightOne' x₁
-      · subst hv1; rw [residueDeg_pointHeightOne']
-        by_cases hv2 : pointHeightOne' x₁ = pointHeightOne' x₂ <;> simp [hv2] <;> ring_nf <;> omega
-      · by_cases hv2 : v = pointHeightOne' x₂
-        · subst hv2; rw [residueDeg_pointHeightOne']; simp [hv1]; omega
-        · simp [hv1, hv2]
-    calc ∑ v ∈ T', (residueDeg v : ℤ) *
-          ((if v = pointHeightOne' x₁ then 1 else 0) +
-            (if v = pointHeightOne' x₂ then 1 else 0))
-        ≤ ∑ v ∈ T', 2 * ((if v = pointHeightOne' x₁ then (1:ℤ) else 0) +
-            (if v = pointHeightOne' x₂ then 1 else 0)) := Finset.sum_le_sum hterm_le'
-      _ = 2 * (∑ v ∈ T', ((if v = pointHeightOne' x₁ then (1:ℤ) else 0) +
-            (if v = pointHeightOne' x₂ then 1 else 0))) := by rw [Finset.mul_sum]
-      _ = 2 * ((∑ v ∈ T', (if v = pointHeightOne' x₁ then (1:ℤ) else 0)) +
-            ∑ v ∈ T', (if v = pointHeightOne' x₂ then (1:ℤ) else 0)) := by
-            rw [Finset.sum_add_distrib]
-      _ = 2 * (1 + 1) := by
-            rw [Finset.sum_ite_eq' T' (pointHeightOne' x₁) (fun _ => (1:ℤ)),
-                Finset.sum_ite_eq' T' (pointHeightOne' x₂) (fun _ => (1:ℤ)),
-                if_pos hx₁mem, if_pos hx₂mem]
-      _ = 4 := by ring
-  have hfinal : 2 * (c₀.natDegree : ℤ) ≤ 4 := by
-    rw [← hdeg2, hnorm]
-    exact le_trans hsum_le hcollapse
-  have : (c₀.natDegree : ℤ) ≤ 2 := by omega
-  exact_mod_cast this
+  -- **Collapse the two conjugate points onto the two rational ones first**, using
+  -- `ordAtSpec_conjHeightOne_fst` (`c₀`'s `B = 0` ideal is `involution`-fixed, so
+  -- `ordAtSpec` at `conjHeightOne (pointHeightOne' xᵢ)` equals `ordAtSpec` at
+  -- `pointHeightOne' xᵢ` itself, exactly — no bound needed there beyond what `x₁, x₂`
+  -- already carry). This avoids ever needing `ordAtSpec_eq_zero_of_notMem_four_of_dvd`
+  -- (hence Gap 1) for this arithmetic step at all: `T'`, expanded via `hnorm`, is *at
+  -- most* four terms, but two of them are provably equal to the other two.
+  have hw1eq : ordAtSpec (conjHeightOne (H := H) (pointHeightOne' x₁)) c₀ (0 : k[X]) =
+      ordAtSpec (pointHeightOne' x₁) c₀ (0 : k[X]) :=
+    ordAtSpec_conjHeightOne_fst (H := H) (pointHeightOne' x₁) c₀
+  have hw2eq : ordAtSpec (conjHeightOne (H := H) (pointHeightOne' x₂)) c₀ (0 : k[X]) =
+      ordAtSpec (pointHeightOne' x₂) c₀ (0 : k[X]) :=
+    ordAtSpec_conjHeightOne_fst (H := H) (pointHeightOne' x₂) c₀
+  -- Termwise bound at `x₁, x₂` themselves: from `hzsuppSpec₀` (indicator `1` there) and
+  -- `ordAtSpec v a₀ b₀ ≥ 0` always (`ordAtSpec_nonneg`).
+  have hb1 : ordAtSpec (pointHeightOne' x₁) c₀ (0 : k[X]) ≤ 1 := by
+    have h := hzsuppSpec₀ (pointHeightOne' x₁)
+    have hpos : (0:ℤ) ≤ ordAtSpec (pointHeightOne' (H := H) x₁) a₀ b₀ :=
+      ordAtSpec_nonneg _ a₀ b₀ hab₀ne
+    simp only [if_pos rfl] at h
+    by_cases hxeq : x₁ = x₂
+    · simp only [hxeq, if_pos rfl] at h; omega
+    · have hne : (pointHeightOne' (H := H) x₁) ≠ pointHeightOne' x₂ :=
+        fun heq => hxeq (pointHeightOne'_injective (H := H) heq)
+      simp only [if_neg hne] at h; omega
+  have hb2 : ordAtSpec (pointHeightOne' x₂) c₀ (0 : k[X]) ≤ 1 := by
+    have h := hzsuppSpec₀ (pointHeightOne' x₂)
+    have hpos : (0:ℤ) ≤ ordAtSpec (pointHeightOne' (H := H) x₂) a₀ b₀ :=
+      ordAtSpec_nonneg _ a₀ b₀ hab₀ne
+    have hne2 : (pointHeightOne' (H := H) x₂) = pointHeightOne' x₂ := rfl
+    simp only [if_pos hne2] at h
+    by_cases hxeq : x₂ = x₁
+    · simp only [hxeq, if_pos rfl] at h; omega
+    · have hne : (pointHeightOne' (H := H) x₂) ≠ pointHeightOne' x₁ :=
+        fun heq => hxeq (pointHeightOne'_injective (H := H) heq)
+      simp only [if_neg hne] at h; omega
+  -- **Remaining gap, precisely isolated (Gap 2, genuinely still open, distinct from
+  -- Gap 1):** `T'` may contain support points of `c₀` beyond the four named ones
+  -- (`x₁, x₂` and their `conjHeightOne`-images) — e.g. `T`'s own elements, which are
+  -- exactly the case `Case A` (`ordAtSpec_eq_zero_of_notMem_four_of_dvd`) is built to
+  -- rule out (it shows `ordAtSpec v c₀ 0 = 0` whenever `v` and `conjHeightOne v` both
+  -- avoid `{x₁,x₂}`). That theorem itself still has one internal `sorry` (Gap 1, the
+  -- ramified-case ramification-index step). So closing `hsum_le` in full needs Gap 1
+  -- closed first; what's newly established here (`ordAtSpec_conjHeightOne_fst`, `hb1`,
+  -- `hb2`) is the piece that makes the *bound itself* come out to exactly `2` (not `4`)
+  -- once Gap 1 is available, by collapsing the two conjugate points' contributions onto
+  -- `x₁, x₂`'s (already-bounded-by-1) contributions instead of budgeting them separately.
+  have hsum_le : ∑ v ∈ T', (residueDeg v : ℤ) * ordAtSpec v c₀ (0 : k[X]) ≤ 2 := by
+    have hrest0 : ∀ v ∈ T', v ≠ pointHeightOne' x₁ → v ≠ pointHeightOne' x₂ →
+        v ≠ conjHeightOne (H := H) (pointHeightOne' x₁) →
+        v ≠ conjHeightOne (H := H) (pointHeightOne' x₂) →
+        ordAtSpec v c₀ (0 : k[X]) = 0 := by
+      intro v _ hv1 hv2 hw1 hw2
+      apply ordAtSpec_eq_zero_of_notMem_four_of_dvd (H := H) x₁ x₂ a₀ b₀ c₀ hc₀ne hab₀ne hgu
+        hzsuppSpec₀ hchar hsf v hv1 hv2
+      · intro h; exact hw1 (by
+          have := congrArg (conjHeightOne (H := H)) h
+          rwa [show conjHeightOne (H := H) (conjHeightOne (H := H) v) = v from by
+            ext w; simp [mem_conjHeightOne_iff, involution_involution]] at this)
+      · intro h; exact hw2 (by
+          have := congrArg (conjHeightOne (H := H)) h
+          rwa [show conjHeightOne (H := H) (conjHeightOne (H := H) v) = v from by
+            ext w; simp [mem_conjHeightOne_iff, involution_involution]] at this)
+    -- Termwise: every `v ∈ T'` contributes at most its share of the budget `1 + 1 + 1 + 1`
+    -- split across the four indicators (`0` if `v` is none of them, by `hrest0`; the exact
+    -- value, individually bounded below by `hb1`/`hb2`/`hw1eq`/`hw2eq`, if `v` is one of
+    -- them — note a single `v` can only equal *one* of the four distinct points, so no
+    -- double-counting risk in the `≤`, since the RHS terms for the other three indicators
+    -- are all `≥ 0` (`residueDeg ≥ 0` and `ordAtSpec v c₀ 0 ≥ 0` when `v` is one of them).
+    have hterm_le : ∀ v ∈ T', (residueDeg v : ℤ) * ordAtSpec v c₀ (0 : k[X]) ≤
+        (if v = pointHeightOne' x₁ then (residueDeg v : ℤ) else 0) +
+        (if v = pointHeightOne' x₂ then (residueDeg v : ℤ) else 0) +
+        (if v = conjHeightOne (H := H) (pointHeightOne' x₁) then (residueDeg v : ℤ) else 0) +
+        (if v = conjHeightOne (H := H) (pointHeightOne' x₂) then (residueDeg v : ℤ) else 0) := by
+      intro v hv
+      -- Each of the four `if`-terms is individually `≥ 0` (`residueDeg ≥ 0`, else `0`),
+      -- so it suffices to bound `(residueDeg v : ℤ) * ordAtSpec v c₀ 0` by *one* term that
+      -- provably fires, discarding the other three via `≥ 0`. Since the four defining
+      -- conditions are pairwise-exclusive for a single `v` (distinct points), at most one
+      -- `if_pos` fires and the rest are automatically `if_neg`-eligible or irrelevant
+      -- (bounded below regardless, via `hnonneg` below).
+      have hnonneg : ∀ (P : Prop) [Decidable P], (0:ℤ) ≤ if P then (residueDeg v : ℤ) else 0 := by
+        intro P _; by_cases h : P <;> simp [h]
+      by_cases h1 : v = pointHeightOne' x₁
+      · have e1 : (if v = pointHeightOne' x₁ then (residueDeg v : ℤ) else 0)
+            = (residueDeg v : ℤ) := if_pos h1
+        rw [e1, h1]
+        have : (residueDeg (pointHeightOne' (H := H) x₁) : ℤ) * ordAtSpec
+            (pointHeightOne' (H := H) x₁) c₀ 0 ≤ (residueDeg (pointHeightOne' (H := H) x₁) : ℤ) *
+            1 := by
+          apply mul_le_mul_of_nonneg_left hb1 (Int.natCast_nonneg _)
+        nlinarith [hnonneg (v = pointHeightOne' x₂), hnonneg (v = conjHeightOne (H := H)
+          (pointHeightOne' x₁)), hnonneg (v = conjHeightOne (H := H) (pointHeightOne' x₂))]
+      by_cases h2 : v = pointHeightOne' x₂
+      · have e2 : (if v = pointHeightOne' x₂ then (residueDeg v : ℤ) else 0)
+            = (residueDeg v : ℤ) := if_pos h2
+        rw [h2] at e2 ⊢
+        have hb2' : (residueDeg (pointHeightOne' (H := H) x₂) : ℤ) * ordAtSpec
+            (pointHeightOne' (H := H) x₂) c₀ 0 ≤ (residueDeg (pointHeightOne' (H := H) x₂) : ℤ) *
+            1 := mul_le_mul_of_nonneg_left hb2 (Int.natCast_nonneg _)
+        nlinarith [hnonneg (pointHeightOne' (H := H) x₂ = pointHeightOne' x₁),
+          hnonneg (pointHeightOne' (H := H) x₂ = conjHeightOne (H := H) (pointHeightOne' x₁)),
+          hnonneg (pointHeightOne' (H := H) x₂ = conjHeightOne (H := H) (pointHeightOne' x₂))]
+      by_cases h3 : v = conjHeightOne (H := H) (pointHeightOne' x₁)
+      · rw [h3] at h1 h2 ⊢
+        have hordeq : ordAtSpec (conjHeightOne (H := H) (pointHeightOne' x₁)) c₀ (0 : k[X])
+            = 1 ∨ ordAtSpec (conjHeightOne (H := H) (pointHeightOne' x₁)) c₀ (0 : k[X]) ≤ 0 := by
+          rw [ordAtSpec_conjHeightOne_fst]; omega
+        have hb1' : (residueDeg (conjHeightOne (H := H) (pointHeightOne' x₁)) : ℤ) *
+            ordAtSpec (conjHeightOne (H := H) (pointHeightOne' x₁)) c₀ 0 ≤
+            (residueDeg (conjHeightOne (H := H) (pointHeightOne' x₁)) : ℤ) := by
+          have := hb1
+          rw [← ordAtSpec_conjHeightOne_fst (H := H) (pointHeightOne' x₁) c₀] at this
+          exact mul_le_mul_of_nonneg_left this (Int.natCast_nonneg _)
+        nlinarith [hnonneg (conjHeightOne (H := H) (pointHeightOne' x₁) = pointHeightOne' x₁),
+          hnonneg (conjHeightOne (H := H) (pointHeightOne' x₁) = pointHeightOne' x₂),
+          hnonneg (conjHeightOne (H := H) (pointHeightOne' x₁) =
+            conjHeightOne (H := H) (pointHeightOne' x₂)), if_pos (rfl :
+            conjHeightOne (H := H) (pointHeightOne' x₁) = conjHeightOne (H := H)
+              (pointHeightOne' x₁))]
+      by_cases h4 : v = conjHeightOne (H := H) (pointHeightOne' x₂)
+      · rw [h4] at h1 h2 h3 ⊢
+        have hb2' : (residueDeg (conjHeightOne (H := H) (pointHeightOne' x₂)) : ℤ) *
+            ordAtSpec (conjHeightOne (H := H) (pointHeightOne' x₂)) c₀ 0 ≤
+            (residueDeg (conjHeightOne (H := H) (pointHeightOne' x₂)) : ℤ) := by
+          have := hb2
+          rw [← ordAtSpec_conjHeightOne_fst (H := H) (pointHeightOne' x₂) c₀] at this
+          exact mul_le_mul_of_nonneg_left this (Int.natCast_nonneg _)
+        nlinarith [hnonneg (conjHeightOne (H := H) (pointHeightOne' x₂) = pointHeightOne' x₁),
+          hnonneg (conjHeightOne (H := H) (pointHeightOne' x₂) = pointHeightOne' x₂),
+          hnonneg (conjHeightOne (H := H) (pointHeightOne' x₂) =
+            conjHeightOne (H := H) (pointHeightOne' x₁)), if_pos (rfl :
+            conjHeightOne (H := H) (pointHeightOne' x₂) = conjHeightOne (H := H)
+              (pointHeightOne' x₂))]
+      rw [hrest0 v hv h1 h2 h3 h4, mul_zero]
+      have := hnonneg (v = pointHeightOne' x₁)
+      have := hnonneg (v = pointHeightOne' x₂)
+      have := hnonneg (v = conjHeightOne (H := H) (pointHeightOne' x₁))
+      have := hnonneg (v = conjHeightOne (H := H) (pointHeightOne' x₂))
+      linarith
+    calc ∑ v ∈ T', (residueDeg v : ℤ) * ordAtSpec v c₀ (0 : k[X])
+        ≤ ∑ v ∈ T', ((if v = pointHeightOne' x₁ then (residueDeg v : ℤ) else 0) +
+            (if v = pointHeightOne' x₂ then (residueDeg v : ℤ) else 0) +
+            (if v = conjHeightOne (H := H) (pointHeightOne' x₁) then (residueDeg v : ℤ)
+              else 0) +
+            (if v = conjHeightOne (H := H) (pointHeightOne' x₂) then (residueDeg v : ℤ)
+              else 0)) := Finset.sum_le_sum hterm_le
+      _ = (∑ v ∈ T', if v = pointHeightOne' x₁ then (residueDeg v : ℤ) else 0) +
+            (∑ v ∈ T', if v = pointHeightOne' x₂ then (residueDeg v : ℤ) else 0) +
+            (∑ v ∈ T', if v = conjHeightOne (H := H) (pointHeightOne' x₁) then
+              (residueDeg v : ℤ) else 0) +
+            (∑ v ∈ T', if v = conjHeightOne (H := H) (pointHeightOne' x₂) then
+              (residueDeg v : ℤ) else 0) := by
+          rw [← Finset.sum_add_distrib, ← Finset.sum_add_distrib, ← Finset.sum_add_distrib]
+      _ = (residueDeg (pointHeightOne' (H := H) x₁) : ℤ) +
+            (residueDeg (pointHeightOne' (H := H) x₂) : ℤ) +
+            (residueDeg (conjHeightOne (H := H) (pointHeightOne' x₁)) : ℤ) +
+            (residueDeg (conjHeightOne (H := H) (pointHeightOne' x₂)) : ℤ) := by
+          have hx1T : pointHeightOne' (H := H) x₁ ∈ T' := by
+            rw [hT'_def]; exact Finset.mem_insert_self _ _
+          have hx2T : pointHeightOne' (H := H) x₂ ∈ T' := by
+            rw [hT'_def]
+            exact Finset.mem_insert_of_mem (Finset.mem_insert_self _ _)
+          have hw1T : conjHeightOne (H := H) (pointHeightOne' x₁) ∈ T' := by
+            rw [hT'_def]
+            exact Finset.mem_insert_of_mem
+              (Finset.mem_insert_of_mem (Finset.mem_insert_self _ _))
+          have hw2T : conjHeightOne (H := H) (pointHeightOne' x₂) ∈ T' := by
+            rw [hT'_def]
+            exact Finset.mem_insert_of_mem (Finset.mem_insert_of_mem
+              (Finset.mem_insert_of_mem (Finset.mem_insert_self _ _)))
+          rw [Finset.sum_ite_eq' T' (pointHeightOne' (H := H) x₁) (fun v => (residueDeg v : ℤ)),
+              Finset.sum_ite_eq' T' (pointHeightOne' (H := H) x₂) (fun v => (residueDeg v : ℤ)),
+              Finset.sum_ite_eq' T' (conjHeightOne (H := H) (pointHeightOne' x₁))
+                (fun v => (residueDeg v : ℤ)),
+              Finset.sum_ite_eq' T' (conjHeightOne (H := H) (pointHeightOne' x₂))
+                (fun v => (residueDeg v : ℤ)),
+              if_pos hx1T, if_pos hx2T, if_pos hw1T, if_pos hw2T]
+      _ = 2 := by
+          rw [residueDeg_conjHeightOne, residueDeg_conjHeightOne,
+              residueDeg_pointHeightOne', residueDeg_pointHeightOne']
+          norm_num
+  have hle : ((pairNorm H c₀ (0 : k[X])).natDegree : ℤ) ≤ 2 := hnorm ▸ hsum_le
+  have h2 : 2 * (c₀.natDegree : ℤ) ≤ 2 := hdeg2 ▸ hle
+  omega
 
 /-! **STATUS: `false_of_bad_factor_split_deg_ge_two` — attempted, not closed.**
 Built `SplitBaseField q := AdjoinRoot q`, `SqrtExtQ q := L[T]/(T² - mk q H.f)`, and
