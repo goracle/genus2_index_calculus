@@ -1,778 +1,2371 @@
 import Mathlib
 import Genus2Lean.HyperellipticFunctionField
 import Genus2Lean.AffinePoints
-import Genus2Lean.DivisorClassGroup
 import Genus2Lean.PrincipalDivisors
-import Genus2Lean.PrincipalDivisorSubgroup
-import Genus2Lean.FFKSidon
-import Genus2Lean.HyperellipticClassProof
 import Genus2Lean.RiemannRochGenus2
-import Genus2Lean.RatioDivisorCollapse
-import Genus2Lean.RiemannRochCrux
-set_option linter.style.header false
+import Genus2Lean.GlobalDegreeBoundSpec
+import Genus2Lean.LPairFinrankOneOrdAtFrac
+import Genus2Lean.CoprimeAtRootsClosed
+import Genus2Lean.NonSquareFiberPoint
+
+/-!
+# `uniqueDegree2MapToP1`, general `k` (no `[IsAlgClosed k]`)
+
+This file closes the gap traced in `LPairFinrankOneOrdAtFrac.lean` and
+`CoprimeAtRootsClosed.lean`: `uniqueDegree2MapToP1_ordAtFrac` assumed
+`[IsAlgClosed k]` at exactly two call sites (`IsAlgClosed.exists_root` and
+`IsAlgClosed.exists_pow_nat_eq`), which is false for `k = ZMod p`.
+
+**The fix, in outline:**
+
+1. `reduce_ordAtFrac_triple` (`LPairFinrankOneOrdAtFrac.lean`) already reduces
+   a pole-bounded triple `(a,b,c)` by their joint `k[X]`-gcd `g := gcd (gcd a
+   b) c`, and its proof of `IsCoprimeAtRoots a₀ b₀ c₀` in fact shows something
+   stronger in passing: *any* common divisor `d ∣ a₀, b₀, c₀` must be a unit
+   (not just linear ones). `gcd_unit_of_reduce_ordAtFrac_triple` below states
+   this directly: `IsUnit (gcd (gcd a₀ b₀) c₀)`.
+2. Once the existing `b_eq_zero_of_rationalized_pole_bounded` gives `b₀ = 0`,
+   `IsUnit (gcd (gcd a₀ b₀) c₀) = IsUnit (gcd a₀ c₀)` collapses to ordinary
+   `IsCoprime a₀ c₀` (`gcd_isUnit_iff`), and `pairNorm H a₀ 0 = a₀ ^ 2`, so
+   `IsNormCoprime H a₀ 0 c₀ = IsCoprime (a₀^2) c₀` follows from
+   `IsCoprime.pow_left`. No new hard math — bookkeeping only.
+3. Feeding `IsNormCoprime` plus `IsPoleBoundedAtPairSpec` (available directly
+   from `LPairCarrierSpec'` membership, unlike the old `H.Point`-only
+   `LPairCarrier'`) into `CoprimeAtRootsClosed.lean`'s
+   `natDegree_le_one_of_isPoleBoundedAtPairSpec_isNormCoprime` gives
+   `c₀.natDegree ≤ 1` directly — stronger than the old `≤ 2`, and with no
+   algebraic closedness anywhere.
+4. Since `c₀.natDegree ≤ 1`, if `c₀` is nonconstant it is `C k * X + C m`
+   with `k ≠ 0`, which **always has a root over any field** (`α = -m/k`) — no
+   closedness needed to find it. Feed that root into the *existing*
+   `false_of_root_of_coprimeAtRoots_zero_snd` (which is already field-general
+   once it has a root in hand — its own two `IsAlgClosed` calls only concerned
+   finding a root and finding a square root of `H.f.eval α`, and the
+   unramified branch's square-root step is no longer needed at all, since we
+   only ever need `c₀.natDegree = 0` — see the note at that call site below;
+   we do not reach the unramified branch's `IsAlgClosed.exists_pow_nat_eq`
+   because we only call it to rule out a root existing, not to construct a
+   point over it).
+
+This means step 4 only needs the *existence* of a root at nonconstant `c₀`,
+which is where `false_of_root_of_coprimeAtRoots_zero_snd` is invoked. That
+theorem's own proof still calls `IsAlgClosed.exists_pow_nat_eq` internally
+(unramified branch, `H.f.eval α` a non-square) — so it is not itself
+closedness-free. We avoid this by never needing degree ≤ 2 with possible
+non-rational roots; instead §4 below directly derives `False` from a root of
+a genuinely *linear* `c₀`, without going through that lemma, using only the
+ramified/unramified split against the two given points `x₁, x₂` (no
+"produce a point over `α`" step needed at all — see `false_of_linear_root`).
+-/
+
+set_option maxHeartbeats 1000000
 
 noncomputable section
 
 open Classical
-
 open Polynomial
 
-
-variable {k : Type*} [Field k] (H : HyperellipticPolynomial k)
-/-!
-# `uniqueDegree2MapToP1`, scoped down: an elementary route avoiding Riemann–Hurwitz
-
-**Context.** `RiemannRochCrux.lean` reduces `finrank_L_pair` entirely to one
-theorem, `uniqueDegree2MapToP1`. `UniqueDegree2MapRiemannHurwitz.lean` attacks
-it via a full "degree-2 map to `P¹`" classification (ramification indices,
-Riemann–Hurwitz counting, Möbius-transform uniqueness) — genuinely more
-machinery than the fact needs, and correspondingly harder (see
-`SCOPING-finrank-L-pair.md` in the project root for the full analysis).
-
-**Revision history, kept here because the false start is instructive.** The
-first draft of this file tried to show a pole-bounded pair `(A,B,A',B')`
-directly forces `B = B' = 0` (reducing `z` to a pure rational function of `x`
-alone) by raw `k[X]`-degree counting. **That claim is false**: `A=A'=0,
-B=B'=1` gives `z = y/y = 1`, trivially constant and trivially satisfying
-`IsPoleBoundedAtPair`, yet `B' ≠ 0` — `IsPoleBoundedAtPair` never asserts a
-representation is reduced, so a shared spurious factor (here, all of `y`)
-between numerator and denominator can survive undetected. Full counterexample
-and the corrected derivation are in `SCOPING-finrank-L-pair.md`.
-
-**Current strategy**: work with the *divisor* `D := divToPairRatio A B T A'
-B' T` (`T` a finite support, Lemma 0 below) rather than with `B, B'` as raw
-polynomials. `D`'s coefficients automatically cancel any shared,
-representation-artifact factor, so bounds on `D` are honest facts about `z`
-itself:
-
-* **Lemma 0** (`exists_finite_support_of_hspec`): a finite support `Finset
-  H.Point` exists for any nonzero `toPair H A B`, given the standing `hspec`
-  hypothesis (same one `deg_div_eq_zero_deg5` already requires everywhere in
-  this project).
-* **§1** (`deg_divToPairRatio_le_zero`): `deg D ≤ 0`, unconditionally, via
-  `deg_div_eq_zero_deg5` applied to each pair separately (no need for
-  `ordInfOfPair A B = ordInfOfPair A' B'` — the weaker `≥`
-  `IsPoleBoundedAtPair` supplies is enough).
-* **§2** (`coeffAt_divToPairRatio_bounds`): `D`'s negative part is confined to
-  `{x₁,x₂}` with mass `≤ 2`, directly from `IsPoleBoundedAtPair`'s pointwise
-  clause transported to `coeffAt P D` (same transport `RatioDivisorCollapse.
-  lean`'s `hcoef` already does for a related divisor).
-* **§3** (`constant_or_fiber_of_isPoleBoundedAtPair`, **still open, the actual
-  crux**): from §1+§2's bounds (pole confined + mass-bounded, degree ≤ 0
-  overall ⟹ zero part also mass-bounded), conclude `z` constant or `x₂ = ι
-  x₁`. Not yet reduced to a precise sub-argument; the natural next move is
-  reusing `RatioDivisorCollapse.lean`'s `IsRatioDivisor`/
-  `mem_LPairCarrier_of_isRatioDivisor` machinery (going the direction that
-  file doesn't yet build) rather than re-deriving fiber structure from
-  scratch — see `SCOPING-finrank-L-pair.md` for the fuller discussion.
-
-**Status (this session): §1 and §2 are now fully proved** (`deg_divToPairRatio_le_zero`
-and `coeffAt_divToPairRatio_bounds` have no `sorry` in their own bodies — §1 by direct
-reuse of `deg_div_eq_zero_deg5` applied to each pair separately, matching
-`PrincipalDivisorSubgroup.lean`'s `deg_divToPairRatio_eq_zero` idiom exactly, including
-its `Module.Finite` instance hypotheses; §2 by direct reuse of `RatioDivisorCollapse.lean`'s
-`hcoef`/`hcoeffDivToPair` transport argument, ported verbatim to `divToPairRatio A B T A'
-B' T`). **Lemma 0** (`exists_finite_support_of_hspec`, including its `hfinite_support`
-sub-lemma) is now fully proved, no `sorry` — confirmed by a clean `lake build` this session
-(the `Ideal.zero_eq_bot ▸` elaboration issue and the `zero_not_mem_normalizedFactors` →
-`zero_notMem_normalizedFactors` rename were the only two build errors, both fixed).
-**§3 (`constant_or_fiber_of_isPoleBoundedAtPair`) has been broken into a named proof
-skeleton** (§3a `isRatioDivisor_shape_of_bounds`, §3d `isConstantFraction_of_divisor_le_zero`,
-§3e `posMass_eq_negMass_le_two` — **renamed and weakened from the original
-`divisor_eq_fiber_shape_or_constant`, which was found to be FALSE**; see that
-lemma's docstring in place for the counterexample and for why Route A
-(`SCOPING-finrank-L-pair.md`) should be attempted directly instead of patching
-this abstract-divisor-shape decomposition further —, §3f `fiber_eq_of_divisor_shape`,
-plus the assembly) rather than left as one opaque `sorry` — §3a/§3d are routine
-`deg`/`coeffAt` bookkeeping once stated precisely (§3d is now fully proved, no
-`sorry`), §3e is bookkeeping too but proves a materially weaker fact than
-originally hoped (see its docstring); **§3f is the one genuinely hard,
-still-unformalized `sorry`** — the actual mathematical crux, isolated to its precise
-statement (`{x₃,x₄} = {x₁,x₂}` given the exact divisor shape, via `ordAt_linX_eq`, without
-circularity through `uniqueDegree2MapToP1`) — **though note §3e no longer supplies
-§3f's hypothesis**, so the assembly still cannot wire these pieces together as
-originally planned; Route A steps 1–3 (SCOPING doc) are the likely unblock. The
-assembly theorem's own body is *also* left `sorry`'d for now (wiring §3a/§3d/§3f
-together, obtaining the common finite support via Lemma 0) — not yet attempted,
-since §3e's gap blocks it regardless.
-Do not restart from the old three-lemma "B=0" framing if revisiting this file.
-Note `uniqueDegree2MapToP1_of_elementary`'s assembly is unaffected by this session's changes
-and still depends only on §3's top-level theorem.
-
-**Status (latest session): Route A steps 1–2 confirmed already fully proved**
-(`denom_B'_eq_zero_of_isPoleBoundedAtPair`, `denom_ordInf_ge_neg_two`,
-`num_B_eq_zero_of_isPoleBoundedAtPair` — no `sorry`, this session only touched
-one dead `have` inside the first). **One easy sorry closed**:
-`natDegree_eq_zero_of_mono` (pure `ordInfOfPair_right_zero` unfolding +
-`omega`-shaped arithmetic, no new concepts). **Two sorries diagnosed as
-unsound and left explicitly flagged rather than papered over** (per project
-convention: false theorems get deleted/documented, not proved by hook or
-crook):
-- `ordInf_parity_mismatch` — **deleted**. `Odd (ordInfOfPair A' B')` for
-  `B' ≠ 0` is false (counterexample: `A'=X^10, B'=1` gives `ordInfOfPair =
-  -20`, even). It was also dead code: its output was fetched but never used
-  in the one call site's closing `linarith`. `hB'`'s proof is unaffected
-  (it already only needed `h_min`, the true weaker upper bound).
-- `natDegree_eq_zero_of_ordInf_bound` — **left as `sorry`, now documented
-  FALSE as literally stated** (`A'.natDegree = 1` is a genuine
-  counterexample, not excluded by the hypotheses given). Traced to the real
-  root cause: `constant_or_fiber_of_isPoleBoundedAtPair`'s "Main case" branch
-  tries to prove *unconditional* constancy (`A'.natDegree = 0`) using only
-  Route A steps 1–2's size bounds, but never invokes its own `hne`
-  hypothesis — which is exactly what's needed (via Route A step 3,
-  `fiber_eq_of_pure_rational_pole_match`, itself still `sorry`) to rule out
-  the genuine `A'.natDegree = 1` fiber case. **This is the real remaining
-  wiring gap in the "Main case" branch**, not a missing arithmetic lemma;
-  whoever revisits should re-route `h_deg_A'` through Route A step 3 using
-  `hne`, not attempt to strengthen `natDegree_eq_zero_of_ordInf_bound` itself
-  (see its docstring in place for the full argument). This blocks the "Main
-  case" branch the same way §3f already did — two names for adjacent parts
-  of the same remaining gap.
-
-**Status (latest session, continued): `h_deg_A'` rewired to actually use `hne`.**
-Per a ChatGPT-assisted design pass (transcript on file), the false
-`natDegree_eq_zero_of_ordInf_bound` (pure `ordInfOfPair`-size bound, no point
-data, provably false — see its old docstring, now removed) has been replaced
-by `natDegree_eq_zero_of_isPoleBoundedAtPair`, which takes `hne` and the
-pointwise pole bound `hpt` (specialized to `B = B' = 0`) as real hypotheses.
-`constant_or_fiber_of_isPoleBoundedAtPair`'s `h_deg_A'` step now calls this
-new lemma instead, so `hne` is finally used somewhere in the "Main case"
-branch (previously it appeared only in the theorem's signature). **The new
-lemma is itself still `sorry`'d — this was a wiring/shape fix, not a proof of
-new math.** ChatGPT's diagnosis (confirmed by hand): the natural next tool,
-`fiber_eq_of_pure_rational_pole_match`, does NOT directly apply here, because
-its hypothesis is an exact divisor *equation* with named witness points
-`x₃,x₄`, while this call site only has a pointwise *inequality* plus finite
-supports — no witnesses have been constructed. Closing
-`natDegree_eq_zero_of_isPoleBoundedAtPair` needs either its own direct
-`ordAt_linX_eq` case analysis (applied to the single point `Q'` with `Q'.X =
-a'`, likely less work) or a new "pointwise bound ⟹ exact divisor equation"
-bridge lemma before `fiber_eq_of_pure_rational_pole_match` can be invoked —
-see the new lemma's docstring for the full writeup. **Side effect**:
-`constant_or_fiber_of_isPoleBoundedAtPair` and `uniqueDegree2MapToP1_of_
-elementary` now both take `hchar : (2:k) ≠ 0` and `hsf : Squarefree H.f` as
-extra parameters (threaded through to the new lemma, which needs them for a
-future `ordAt_linX_eq` call) — this was already anticipated in this file's
-"Downstream callers... will need the same two hypotheses threaded through"
-note above.
-
-**Status (latest session, continued further): `fiber_eq_of_pure_rational_pole_match`
-found FALSE as originally stated, now weakened.** A second AI (cross-checking the
-first's diagnosis of Goals 1–5) found a genuine counterexample: because `divToPair`
-sums only over the caller-chosen `Finset` `{x₁,x₂,x₃,x₄}`, setting `x₄ := x₂` (a legal
-choice — `Finset` literals dedup) can silently truncate a fiber, letting `hpoles` hold
-while the conclusion is false. Independently verified by hand against `divToPair`'s
-definition (see the theorem's own docstring for the full counterexample) — this is a
-real hole, not a false alarm. **Fix**: added two new hypotheses, `hclosed₁`/`hclosed₃`,
-requiring the support set to be ι-closed at whichever root each side witnesses — true at
-every anticipated call site, since those call sites already fix `{x₁,x₂,x₃,x₄}` as a
-concrete set rather than an arbitrary superset. The mixed-sign/same-root branches
-(Goals 1–4 in that session's numbering) don't need this fix at all — the same AI pass
-also confirmed they close via the *already-proved* `ordAt_nonneg` (`PrincipalDivisors.
-lean:472`, `toPair H A B ≠ 0 → pointIdeal P ≠ ⊥ → 0 ≤ ordAt P A B`), no new lemma
-required, contrary to an initial suggestion to add a redundant `ordAt_linX_nonneg`.
-Per project convention this was a "weaken first" situation, not a "delete" one — the
-five branch `sorry`s are otherwise untouched and still open; only the theorem's
-signature changed. `fiber_eq_of_divisor_shape` (still `sorry`, unaffected build-wise
-since nothing calls this theorem yet) will need to supply `hclosed₁`/`hclosed₃` once
-it's wired up — flagged in its own comment now.
-
-**Dupe-check against `UniqueDegree2MapRiemannHurwitz.lean` (this session):** no name
-collisions (`grep`-verified) and no import relationship either direction, so no cycle
-risk. Conceptually this file's §3 deliberately does *not* build any of that file's
-`IsDegree2Map`/`IsRamificationPointOf` apparatus — confirmed by inspection that `IsDegree2Map`
-requires an *exact* pole-degree-2 witness plus a `Disjoint S S'` pair, strictly more
-structure than §3's `deg`/`coeffAt`-only argument needs, matching the scoping doc's
-"more machine than the task needs" verdict. **One real, legitimate overlap**: that file's
-`isDegree2Map_of_mem_LPairCarrier_of_ne_constant` has its own unproved `h_S_finite`/
-`h_S'_finite`/`hspec'` gap — "find a finite support for `(A,B)` given `z ∈ LPairCarrier`" —
-which is *the same problem* this file's Lemma 0 (`hfinite_support`/
-`exists_finite_support_of_hspec`) already solves, just under an honestly-assumed `hspec`
-hypothesis rather than (as that file's `hspec'` sorry attempts) trying to derive
-prime-to-point correspondence from nothing. Not merged — different files, different
-hypothesis threading, no cycle to justify importing across — but if
-`UniqueDegree2MapRiemannHurwitz.lean`
-is ever revisited, its `h_S_finite`/`h_S'_finite` sorries should cite this file's Lemma 0
-rather than be re-derived independently.
--/
+variable {k : Type*} [Field k] {H : HyperellipticPolynomial k}
 
 namespace HyperellipticPolynomial
 
 open Divisor
 
-variable {k : Type*} [Field k]
-variable {H : HyperellipticPolynomial k}
--- `[IsAlgClosed k]` — see `RiemannRochGenus2.lean`'s docstring on its own
--- `variable [IsAlgClosed k]` for why this is now a genuine, necessary
--- standing hypothesis (not a convenience): the theorems in this file target
--- `uniqueDegree2MapToP1`, which is false over a non-algebraically-closed
--- `k` via the `z = 1/q(x)` counterexample documented there.
-variable [IsAlgClosed k]
 variable [IsDedekindDomain (CoordinateRing H)]
 
-/-! ## Lemma 0 (new, load-bearing infrastructure): finite support from `hspec`
+/-! ## §1. Strengthening `reduce_ordAtFrac_triple`: the reduced triple's joint
+gcd is a unit, not merely root-coprime.
 
-**Added after discovering Lemma 1 as originally stated was FALSE** (see
-`SCOPING-finrank-L-pair.md`'s "Correction" section: `A=A'=0, B=B'=1` gives
-`z=1` trivially yet satisfies `IsPoleBoundedAtPair` with `B' ≠ 0` — raw
-`(A,B)`-pair degree-counting is unsound without knowing the representation is
-"efficient", and this project has no coprime-reduction machinery). Rather
-than build that (hard, possibly as hard as the original problem — see
-`h_coprime` in `UniqueDegree2MapRiemannHurwitz.lean`, the same wall from a
-different angle), this lemma sidesteps it: it does *not* reduce a
-representation, it directly proves the one fact actually needed downstream —
-that the (unreduced, possibly-redundant) support of `ordAt _ A B` is a finite
-`Finset H.Point`, given the standing `hspec` hypothesis already used
-identically throughout `PrincipalDivisors.lean`/`PrincipalDivisorSubgroup.lean`
-(`deg_div_eq_zero_deg5`, `sum_ordAt_eq_natDegree_pairNorm`, etc. all take this
-same hypothesis as an honest standing assumption, not something proved
-in-project — see `PrincipalDivisors.lean:633`'s note that it was "missing
-from the original" and had to be added explicitly; it encodes "no height-one
-prime of `CoordinateRing H` corresponds to a point at infinity", a genuine
-extra fact about this specific ring, consistent with `AffinePoints.lean`'s
-own flagged points-at-infinity gap).
+Mirrors the last part of `reduce_ordAtFrac_triple`'s own proof
+(`LPairFinrankOneOrdAtFrac.lean`) verbatim, with the specific divisor `linX α`
+generalized to an arbitrary common divisor `d`. -/
 
-**Proof shape**: `Associates.mk (Ideal.span {toPair H A B})).factors` is a
-`Multiset` (finite, by construction of `UniqueFactorizationMonoid` factors) of
-associate classes of height-one primes. `hspec` says every one of them, if it
-has positive count, equals `pointIdeal P` for some `P` — so composing
-`factors.toFinset` with a choice function `v ↦ P` (using `pointIdeal_ne_of_ne`
-for injectivity, so the resulting `Finset H.Point` doesn't need any
-multiplicity bookkeeping, just the underlying set of *which* points occur)
-gives the desired finite point-set. `ordAt_eq_count` (`PrincipalDivisors.lean`)
-already identifies `ordAt P A B` with exactly this count, so "outside the
-image, count is `0`, hence `ordAt` is `0`" closes the `hsupp`-shaped
-conclusion `deg_div_eq_zero_deg5`/`IsRatioDivisor` need. -/
-omit [IsAlgClosed k] in
-/-- **Confirmed route, using `count_associates_factors_eq` and `Ideal.mem_normalizedFactors_iff`
-(`Mathlib.RingTheory.DedekindDomain.Ideal.Lemmas`)**: for `I ≠ 0`, `J` prime, `J ≠ ⊥`,
-`(Associates.mk J).count (Associates.mk I).factors = Multiset.count J
-(UniqueFactorizationMonoid.normalizedFactors I)` — this is the exact bridge from
-`Associates.count` (the `FactorSet`/`WithTop`-wrapped API `hspec` is stated in) to
-`Multiset.count` on the genuine, honestly-finite `Multiset (Ideal (CoordinateRing H))`
-`normalizedFactors I`. Every `v : HeightOneSpectrum (CoordinateRing H)` supplies exactly
-such a `J := v.asIdeal` (prime via `v.isPrime`, nonzero via `v.ne_bot`), so nonzero count
-for `v` forces `v.asIdeal ∈ normalizedFactors I` (`Multiset.count_ne_zero`), landing `v.asIdeal`
-in the finite set `(normalizedFactors I).toFinset`. Conversely, `Ideal.mem_normalizedFactors_iff`
-(the Dedekind-domain-specialized membership criterion, giving `p.IsPrime` directly rather than
-the monoid-level `Prime`/`Irreducible` predicates) lets every `J` in that finite set be
-reassembled into a genuine `HeightOneSpectrum` term via the same anonymous-constructor shape
-`pointHeightOne`/`pointHeightOne'` already use elsewhere in this project. The remaining step —
-a finite set of `v`s themselves, not just of `v.asIdeal`s — is the image, over
-`(normalizedFactors I).toFinset.attach`, of a choice function performing that reassembly. -/
-theorem hfinite_support (I : Ideal (CoordinateRing H)) (hIne : I ≠ 0) :
-    ∃ Tset : Finset (IsDedekindDomain.HeightOneSpectrum (CoordinateRing H)),
-      ∀ v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H),
-        (Associates.mk v.asIdeal).count (Associates.mk I).factors ≠ 0 → v ∈ Tset := by
+omit [IsDedekindDomain (CoordinateRing H)] in
+/-- **The reduced triple from `reduce_ordAtFrac_triple` has unit joint gcd.**
+If `d ∣ a₀`, `d ∣ b₀`, `d ∣ c₀` where `a₀ = a/g`, `b₀ = b/g`, `c₀ = c/g` for
+`g := gcd (gcd a b) c`, then `d * g ∣ a, b, c`, hence `d * g ∣ g` (`dvd_gcd`
+twice), so cancelling the nonzero `g` gives `d ∣ 1`, i.e. `d` is a unit. This
+is the same cancellation `reduce_ordAtFrac_triple` already performs for
+`d = linX α`; stated here for an arbitrary common divisor, which is exactly
+`gcd (gcd a₀ b₀) c₀`. -/
+theorem gcd_unit_of_joint_reduce (a b c : k[X]) (hcne : c ≠ 0) :
+    IsUnit (gcd (gcd (a / gcd (gcd a b) c) (b / gcd (gcd a b) c))
+      (c / gcd (gcd a b) c)) := by
+  set g := gcd (gcd a b) c with hg_def
+  have hg_dvd_ab : g ∣ gcd a b := gcd_dvd_left _ _
+  have hg_dvd_a : g ∣ a := hg_dvd_ab.trans (gcd_dvd_left _ _)
+  have hg_dvd_b : g ∣ b := hg_dvd_ab.trans (gcd_dvd_right _ _)
+  have hg_dvd_c : g ∣ c := gcd_dvd_right _ _
+  have hgne : g ≠ 0 := fun h => hcne (eq_zero_of_zero_dvd (h ▸ hg_dvd_c))
+  obtain ⟨a₀, ha_eq⟩ := hg_dvd_a
+  obtain ⟨b₀, hb_eq⟩ := hg_dvd_b
+  obtain ⟨c₀, hc_eq⟩ := hg_dvd_c
+  have ha₀_eq : a / g = a₀ := by rw [ha_eq, mul_comm, mul_div_cancel_right₀ _ hgne]
+  have hb₀_eq : b / g = b₀ := by rw [hb_eq, mul_comm, mul_div_cancel_right₀ _ hgne]
+  have hc₀_eq : c / g = c₀ := by rw [hc_eq, mul_comm, mul_div_cancel_right₀ _ hgne]
+  rw [ha₀_eq, hb₀_eq, hc₀_eq]
+  set d := gcd (gcd a₀ b₀) c₀ with hd_def
+  have hd_dvd_a₀ : d ∣ a₀ := (gcd_dvd_left _ _).trans (gcd_dvd_left _ _)
+  have hd_dvd_b₀ : d ∣ b₀ := (gcd_dvd_left _ _).trans (gcd_dvd_right _ _)
+  have hd_dvd_c₀ : d ∣ c₀ := gcd_dvd_right _ _
+  have hgd_dvd_a : g * d ∣ a := by rw [ha_eq]; exact mul_dvd_mul_left g hd_dvd_a₀
+  have hgd_dvd_b : g * d ∣ b := by rw [hb_eq]; exact mul_dvd_mul_left g hd_dvd_b₀
+  have hgd_dvd_c : g * d ∣ c := by rw [hc_eq]; exact mul_dvd_mul_left g hd_dvd_c₀
+  have hgd_dvd_gab : g * d ∣ gcd a b := dvd_gcd hgd_dvd_a hgd_dvd_b
+  have hgd_dvd_g : g * d ∣ g := dvd_gcd hgd_dvd_gab hgd_dvd_c
+  have hd_dvd_one : d ∣ (1 : k[X]) := by
+    have hg_dvd_g1 : g ∣ g * 1 := by rw [mul_one]
+    have := (mul_dvd_mul_iff_left hgne).mp (hgd_dvd_g.trans hg_dvd_g1)
+    simpa using this
+  exact isUnit_of_dvd_one hd_dvd_one
+
+omit [IsDedekindDomain (CoordinateRing H)] in
+/-- **Restated against `reduce_ordAtFrac_triple`'s actual output witnesses.**
+Given the explicit quotient decomposition `a = g * a₀`, `b = g * b₀`,
+`c = g * c₀` with `g := gcd (gcd a b) c ≠ 0` (exactly what
+`reduce_ordAtFrac_triple`'s proof constructs internally), `gcd (gcd a₀ b₀) c₀`
+is a unit. -/
+theorem gcd_unit_of_reduce_ordAtFrac_triple (a b c a₀ b₀ c₀ : k[X])
+    (hcne : c ≠ 0) (hg_def : gcd (gcd a b) c ≠ 0)
+    (ha_eq : a = gcd (gcd a b) c * a₀) (hb_eq : b = gcd (gcd a b) c * b₀)
+    (hc_eq : c = gcd (gcd a b) c * c₀) :
+    IsUnit (gcd (gcd a₀ b₀) c₀) := by
+  have key := gcd_unit_of_joint_reduce a b c hcne
+  set g := gcd (gcd a b) c with hg_def'
+  have ha₀_eq : a / g = a₀ := by rw [ha_eq, mul_comm, mul_div_cancel_right₀ _ hg_def]
+  have hb₀_eq : b / g = b₀ := by rw [hb_eq, mul_comm, mul_div_cancel_right₀ _ hg_def]
+  have hc₀_eq : c / g = c₀ := by rw [hc_eq, mul_comm, mul_div_cancel_right₀ _ hg_def]
+  rwa [ha₀_eq, hb₀_eq, hc₀_eq] at key
+
+/-! ## §2. `IsNormCoprime` after `b = 0`.
+
+Once `b₀ = 0`, `pairNorm H a₀ 0 = a₀ ^ 2 - 0 ^ 2 * H.f = a₀ ^ 2`, so
+`IsNormCoprime H a₀ 0 c₀` (`IsCoprime (pairNorm H a₀ 0) c₀`) is exactly
+`IsCoprime (a₀ ^ 2) c₀`, which follows from ordinary `IsCoprime a₀ c₀` via
+`IsCoprime.pow_left`. -/
+
+omit [IsDedekindDomain (CoordinateRing H)] in
+/-- **`IsNormCoprime` from a unit joint gcd, at `b = 0`.** -/
+theorem isNormCoprime_of_gcd_unit_snd_zero (a c : k[X])
+    (hgu : IsUnit (gcd (gcd a (0 : k[X])) c)) :
+    IsNormCoprime H a 0 c := by
+  have hagcd : Associated (gcd (gcd a (0 : k[X])) c) (gcd a c) := by
+    exact (gcd_zero_right' a).gcd (Associated.refl c)
+
+  have hgu' : IsUnit (gcd a c) := by
+    exact hagcd.isUnit_iff.mp hgu
+
+  have hcop : IsCoprime a c := (gcd_isUnit_iff a c).1 hgu'
+  have hpn : pairNorm H a (0 : k[X]) = a ^ 2 := by
+    unfold pairNorm
+    ring
+  unfold IsNormCoprime
+  rw [hpn]
+  exact hcop.pow_left
+
+/-! ## §3. The `IsAlgClosed`-free degree bound and finishing step. -/
+
+omit [IsDedekindDomain (CoordinateRing H)] in
+/-- **`c.natDegree = 1` normal form: `c = C (c.coeff 1) * X + C (c.coeff 0)`.**
+Every coefficient of `c` beyond degree 1 vanishes (`natDegree_le_iff_coeff_eq_zero`
+at `n = 1`, since `c.natDegree ≤ 1`), so `c` agrees with its own degree-1 Taylor
+expansion at every coefficient, hence (`Polynomial.ext`) as a polynomial. -/
+theorem eq_C_mul_X_add_C_of_natDegree_eq_one (c : k[X]) (hc : c.natDegree = 1) :
+    c = C (c.coeff 1) * X + C (c.coeff 0) := by
+  apply Polynomial.ext
+  intro n
+  simp only [Polynomial.coeff_add, Polynomial.coeff_C_mul, Polynomial.coeff_X,
+    Polynomial.coeff_C]
+  match n with
+  | 0 => simp
+  | 1 => simp
+  | (m + 2) =>
+    have hzero : c.coeff (m + 2) = 0 := by
+      apply Polynomial.coeff_eq_zero_of_natDegree_lt
+      omega
+    simp [hzero]
+
+omit [IsDedekindDomain (CoordinateRing H)] in
+/-- **A polynomial of `natDegree = 1` over any field has a root.** Direct
+construction, since `Polynomial.exists_root`-style lemmas in Mathlib
+generally assume algebraic closure; this is elementary for degree exactly 1
+and needs no such hypothesis. With `c = C (c.coeff 1) * X + C (c.coeff 0)` and
+`c.coeff 1 ≠ 0` (else `c.natDegree ≤ 0`, contradicting `hc`), the root is
+`-(c.coeff 0) / (c.coeff 1)`. -/
+theorem exists_root_of_natDegree_eq_one (c : k[X]) (hc : c.natDegree = 1) :
+    ∃ α : k, c.eval α = 0 := by
+  have hc1ne : c.coeff 1 ≠ 0 := by
+    intro h
+    have hle0 : c.natDegree ≤ 0 := by
+      apply Polynomial.natDegree_le_iff_coeff_eq_zero.mpr
+      intro N hN
+      rcases N with _ | _ | m
+      · omega
+      · exact h
+      · exact Polynomial.coeff_eq_zero_of_natDegree_lt (by omega)
+    omega
+
+  refine ⟨-(c.coeff 0) / c.coeff 1, ?_⟩
+
+  have hceq := eq_C_mul_X_add_C_of_natDegree_eq_one c hc
+
+  have heval :
+      c.eval (-(c.coeff 0) / c.coeff 1) =
+        (C (c.coeff 1) * X + C (c.coeff 0)).eval
+          (-(c.coeff 0) / c.coeff 1) := by
+    exact congrArg
+      (fun p : k[X] => p.eval (-(c.coeff 0) / c.coeff 1)) hceq
+
+  rw [heval]
+  simp [hc1ne]
+  field_simp
+  ring
+
+/-! ## §3b. `ordAtSpec` transport across a `polePairToFraction` equality.
+
+`ordAt_sub_ordAt_eq_of_polePairToFraction_eq` (`RiemannRochGenus2.lean`)
+proves the `H.Point`/`ordAt` version of this fact via `ordAt'`
+(`pointIdeal`-based) machinery. Here we need the `HeightOneSpectrum`/
+`ordAtSpec` analogue. Rather than re-deriving the whole `ordAt'` apparatus
+generically, we go directly through `Associates.count` additivity over `*`
+(the same idiom already used at `LPairFinrankOneOrdAtFrac.lean:609-624` and
+`HyperellipticClassProof.lean:962`), since `ordAtSpec = ordAtSpec_eq_count`
+reduces everything to a statement about `Associates.count`, which is
+manifestly additive over products — no point-rationality involved anywhere
+in this argument. -/
+
+omit [IsDedekindDomain (CoordinateRing H)] in
+/-- **`Associates.count` is additive over `*`, at a prime, for nonzero
+elements of `CoordinateRing H`.** Extracted as its own lemma (the same
+computation is inlined in several places in this project); stated for a
+`HeightOneSpectrum` ideal (automatically prime + nonzero) rather than a bare
+`Prime` element, matching this file's needs directly. -/
+theorem count_mul_eq_add [IsDedekindDomain (CoordinateRing H)]
+    (v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H))
+    (x y : CoordinateRing H)
+    (hx : x ≠ 0) (hy : y ≠ 0) :
+    (Associates.mk v.asIdeal).count
+        (Associates.mk (Ideal.span ({x * y} : Set (CoordinateRing H)))).factors =
+      (Associates.mk v.asIdeal).count
+        (Associates.mk (Ideal.span ({x} : Set (CoordinateRing H)))).factors +
+      (Associates.mk v.asIdeal).count
+        (Associates.mk (Ideal.span ({y} : Set (CoordinateRing H)))).factors := by
+  have hxne :
+      Associates.mk (Ideal.span ({x} : Set (CoordinateRing H))) ≠ 0 :=
+    Associates.mk_ne_zero.mpr
+      (Ideal.span_singleton_eq_bot.not.mpr hx)
+
+  have hyne :
+      Associates.mk (Ideal.span ({y} : Set (CoordinateRing H))) ≠ 0 :=
+    Associates.mk_ne_zero.mpr
+      (Ideal.span_singleton_eq_bot.not.mpr hy)
+
+  have hspan :
+      Ideal.span ({x * y} : Set (CoordinateRing H)) =
+        Ideal.span ({x} : Set (CoordinateRing H)) *
+          Ideal.span ({y} : Set (CoordinateRing H)) := by
+    symm
+    exact Ideal.span_singleton_mul_span_singleton x y
+
+  rw [hspan]
+  rw [← Associates.mk_mul_mk]
+  rw [Associates.factors_mul]
+
+  obtain ⟨sx, hsx⟩ :=
+    Associates.factors_eq_some_iff_ne_zero.mpr hxne
+  obtain ⟨sy, hsy⟩ :=
+    Associates.factors_eq_some_iff_ne_zero.mpr hyne
+
+  rw [hsx, hsy, ← Associates.FactorSet.coe_add]
+  simpa [Associates.count, Associates.bcount, v.irreducible] using
+    (Multiset.count_add (Associates.mk v.asIdeal) sx sy)
+
+
+omit [IsDedekindDomain (CoordinateRing H)] in
+/-- **`ordAtSpec` is additive over `toPair`-multiplication**, at nonzero
+factors — the `ordAtSpec` analogue of `ordAt'_toPair_mul`. -/
+theorem ordAtSpec_add_of_toPair_mul [IsDedekindDomain (CoordinateRing H)]
+    (v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H))
+    (A B C D E F : k[X])
+    (hAB : toPair H A B ≠ 0) (hCD : toPair H C D ≠ 0)
+    (hmul : toPair H E F = toPair H A B * toPair H C D) :
+    ordAtSpec v E F = ordAtSpec v A B + ordAtSpec v C D := by
+  have hEF : toPair H E F ≠ 0 := by rw [hmul]; exact mul_ne_zero hAB hCD
+  rw [ordAtSpec_eq_count v A B hAB, ordAtSpec_eq_count v C D hCD,
+    ordAtSpec_eq_count v E F hEF, hmul]
+  have := count_mul_eq_add v (toPair H A B) (toPair H C D) hAB hCD
+  exact_mod_cast this
+
+omit [IsDedekindDomain (CoordinateRing H)] in
+/-- **Nonarchimedean "strict order gives order of the sum" law for `ordAtSpec`.**
+If `toPair H A B` and `toPair H C D` have distinct `ordAtSpec v` values, the sum
+`toPair H (A+C) (B+D)` has `ordAtSpec` equal to the *smaller* of the two — the
+usual ultrametric fact, proved directly via `Associates.count` (matching this
+file's existing idiom, e.g. the `hge1`/`Associates.prime_pow_dvd_iff_le` pattern
+used throughout `ordAtSpec_eq_zero_of_notMem_four_of_dvd`), rather than through
+`Valuation.map_add_eq_of_lt_right`/`WithZero.log` monotonicity directly, to avoid
+depending on an unconfirmed `WithZero.log` order-API name. Only the `A B` ≺ `C D`
+direction is stated (`hlt : ordAtSpec v A B < ordAtSpec v C D`); the symmetric
+case is obtained by swapping the two calls at use sites (`add_comm`). -/
+theorem ordAtSpec_add_eq_of_lt [IsDedekindDomain (CoordinateRing H)]
+    (v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H))
+    (A B C D : k[X])
+    (hAB : toPair H A B ≠ 0) (hCD : toPair H C D ≠ 0)
+    (hlt : ordAtSpec v A B < ordAtSpec v C D) :
+    ordAtSpec v (A + C) (B + D) = ordAtSpec v A B := by
   classical
-  -- Every ideal `J ∈ normalizedFactors I` is prime and nonzero, so it assembles into a
-  -- genuine `HeightOneSpectrum` term; package that reconstruction as a choice function.
-  -- `Ideal.mem_normalizedFactors_iff` (Dedekind-domain-specific, needs `I ≠ ⊥`) gives
-  -- `p.IsPrime` directly — the exact field `HeightOneSpectrum` needs — with no detour
-  -- through the monoid-level `Prime`/`Irreducible` predicates on `Ideal (CoordinateRing H)`.
-  have hbuild : ∀ J ∈ (UniqueFactorizationMonoid.normalizedFactors I).toFinset,
-      ∃ v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H), v.asIdeal = J := by
-    intro J hJ
-    rw [Multiset.mem_toFinset] at hJ
-    have hIbot : I ≠ ⊥ := by rw [← Ideal.zero_eq_bot]; exact hIne
-    have hJprime : J.IsPrime := ((Ideal.mem_normalizedFactors_iff hIbot).mp hJ).1
-    -- `J` is a genuine height-one prime: nonzero (else `normalizedFactors I` couldn't
-    -- contain it — `UniqueFactorizationMonoid.zero_notMem_normalizedFactors`) and prime.
-    have hJne : J ≠ ⊥ := by
-      intro hJ0
-      rw [hJ0] at hJ
-      exact UniqueFactorizationMonoid.zero_notMem_normalizedFactors I hJ
-    exact ⟨⟨J, hJprime, hJne⟩, rfl⟩
-  set Tset : Finset (IsDedekindDomain.HeightOneSpectrum (CoordinateRing H)) :=
-    (UniqueFactorizationMonoid.normalizedFactors I).toFinset.attach.image
-      (fun J => (hbuild J.1 J.2).choose) with hTset_def
-  refine ⟨Tset, fun v hv => ?_⟩
-  -- `v.asIdeal ∈ normalizedFactors I` via `Ideal.count_associates_factors_eq` + `count_ne_zero`.
-  have hcount_eq : (Associates.mk v.asIdeal).count (Associates.mk I).factors =
-      Multiset.count v.asIdeal (UniqueFactorizationMonoid.normalizedFactors I) :=
-    Ideal.count_associates_factors_eq hIne v.isPrime v.ne_bot
-  rw [hcount_eq] at hv
-  have hmemMultiset : v.asIdeal ∈ UniqueFactorizationMonoid.normalizedFactors I :=
-    Multiset.count_ne_zero.mp hv
-  have hmemFinset : v.asIdeal ∈ (UniqueFactorizationMonoid.normalizedFactors I).toFinset :=
-    Multiset.mem_toFinset.mpr hmemMultiset
-  rw [hTset_def]
-  refine Finset.mem_image.mpr ⟨⟨v.asIdeal, hmemFinset⟩, Finset.mem_attach _ _, ?_⟩
-  -- `(hbuild v.asIdeal hmemFinset).choose_spec : (choose).asIdeal = v.asIdeal`; combined with
-  -- `HeightOneSpectrum.ext`, this gives `choose = v` — the goal's actual orientation.
-  have hspec_eq := (hbuild v.asIdeal hmemFinset).choose_spec
-  exact IsDedekindDomain.HeightOneSpectrum.ext hspec_eq
+  have hsum_eq : toPair H (A + C) (B + D) = toPair H A B + toPair H C D := toPair_add A B C D
+  set n : ℕ := (ordAtSpec v A B).toNat with hn_def
+  have hn_eq : ordAtSpec v A B = (n : ℤ) := (Int.toNat_of_nonneg (ordAtSpec_nonneg v A B hAB)).symm
+  
+  have hsumne : toPair H (A + C) (B + D) ≠ 0 := by
+    intro hsum0
+    have hCDeq : toPair H C D = -toPair H A B := by
+      have heq0 : toPair H A B + toPair H C D = 0 := by rw [← hsum_eq]; exact hsum0
+      linear_combination heq0
+    have hspaneq : Ideal.span {toPair H C D} = Ideal.span {toPair H A B} := by
+      rw [hCDeq, Ideal.span_singleton_neg]
+    have heq : ordAtSpec v A B = ordAtSpec v C D := by
+      rw [ordAtSpec_eq_count v A B hAB, ordAtSpec_eq_count v C D hCD, hspaneq]
+    rw [heq] at hlt
+    exact absurd hlt (lt_irrefl _)
+    
+  have hIAB : Ideal.span {toPair H A B} ≠ 0 := by
+    rw [Ne, Ideal.zero_eq_bot, Ideal.span_singleton_eq_bot]; exact hAB
+  have hICD : Ideal.span {toPair H C D} ≠ 0 := by
+    rw [Ne, Ideal.zero_eq_bot, Ideal.span_singleton_eq_bot]; exact hCD
+  have hIsum : Ideal.span {toPair H (A + C) (B + D)} ≠ 0 := by
+    rw [Ne, Ideal.zero_eq_bot, Ideal.span_singleton_eq_bot]; exact hsumne
 
-omit [IsAlgClosed k] in
-theorem exists_finite_support_of_hspec (A B : k[X]) (hAB : ¬ (A = 0 ∧ B = 0))
-    (hspec : ∀ v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H),
-      (Associates.mk v.asIdeal).count
-        (Associates.mk (Ideal.span ({toPair H A B} : Set (CoordinateRing H)))).factors ≠ 0 →
-      ∃ P, v.asIdeal = pointIdeal P) :
-    ∃ S : Finset H.Point, ∀ P, P ∉ S → ordAt P A B = 0 := by
-  classical
-  set g : CoordinateRing H := toPair H A B with hg_def
-  set I : Ideal (CoordinateRing H) := Ideal.span ({g} : Set (CoordinateRing H)) with hI_def
-  have hgne : g ≠ 0 := by rw [hg_def, Ne, toPair_eq_zero_iff]; exact hAB
-  have hIne : I ≠ 0 := by
-    rw [hI_def, Ne, Ideal.zero_eq_bot, Ideal.span_singleton_eq_bot]
-    exact hgne
-  obtain ⟨Tset, hsub⟩ := hfinite_support I hIne
-  -- Restrict to the sub-`Finset` of `Tset` whose count is genuinely nonzero — a plain
-  -- `Finset.filter`, so still finite, and now every element has an honest `hspec`-supplied
-  -- witness point (no dummy/placeholder branch needed for the zero-count case, since those
-  -- `v`s are filtered out before the choice function is ever applied).
-  set Tpos : Finset (IsDedekindDomain.HeightOneSpectrum (CoordinateRing H)) :=
-    Tset.filter (fun v => (Associates.mk v.asIdeal).count (Associates.mk I).factors ≠ 0)
-    with hTpos_def
-  have hTpos_spec : ∀ v ∈ Tpos, (Associates.mk v.asIdeal).count (Associates.mk I).factors ≠ 0 :=
-    fun v hv => (Finset.mem_filter.mp hv).2
-  set S : Finset H.Point :=
-    Tpos.attach.image (fun v => (hspec v.1 (hTpos_spec v.1 v.2)).choose) with hS_def
-  refine ⟨S, fun P hPS => ?_⟩
-  by_cases hbot : pointIdeal P = ⊥
-  · -- `pointIdeal P = ⊥` makes `ordAt`'s own `dif_pos` branch return `0` directly,
-    -- regardless of `g`'s vanishing (we already know `g ≠ 0` from `hgne` above, so the
-    -- `if toPair H A B = 0` branch is never taken here).
-    unfold ordAt
-    rw [if_neg (hg_def ▸ hgne), dif_pos hbot]
-  · rw [ordAt_eq_count P A B hgne hbot]
-    have hne0 : (Associates.mk (pointHeightOne P hbot).asIdeal).count
-        (Associates.mk I).factors = 0 := by
-      by_contra hcount
-      apply hPS
-      rw [hS_def]
-      have hvmemT : pointHeightOne P hbot ∈ Tset := hsub (pointHeightOne P hbot) hcount
-      have hvmemPos : pointHeightOne P hbot ∈ Tpos := by
-        rw [hTpos_def, Finset.mem_filter]
-        exact ⟨hvmemT, hcount⟩
-      refine Finset.mem_image.mpr
-        ⟨⟨pointHeightOne P hbot, hvmemPos⟩, Finset.mem_attach _ _, ?_⟩
-      -- `(hspec v hv).choose_spec : v.asIdeal = pointIdeal (choose)`; here
-      -- `v.asIdeal = pointIdeal P` definitionally (`pointHeightOne`'s field), so
-      -- `pointIdeal P = pointIdeal (choose)`. The witness `choose` is an opaque term
-      -- (via `Classical.choice`), so `rw` on an equation mentioning it fails with a
-      -- "motive is not type correct" error (the goal `choose = P` depends on the very
-      -- term being rewritten) — use `Eq.trans`/`.symm` composition instead of `rw`.
-      have hspec_eq := (hspec (pointHeightOne P hbot) (hTpos_spec _ hvmemPos)).choose_spec
-      have hPideal : (pointHeightOne P hbot).asIdeal = pointIdeal P := rfl
-      have hPeq : pointIdeal P = pointIdeal
-          (hspec (pointHeightOne P hbot) (hTpos_spec _ hvmemPos)).choose :=
-        hPideal ▸ hspec_eq
-      by_contra hne
-      exact pointIdeal_ne_of_ne _ P hne hPeq.symm
-    exact_mod_cast hne0
+  -- Replace omega with explicit Nat.cast_inj
+  have h_count_AB : (Associates.mk v.asIdeal).count (Associates.mk (Ideal.span {toPair H A B})).factors = n := by
+    have h_eq := ordAtSpec_eq_count v A B hAB
+    rw [hn_eq] at h_eq
+    exact Nat.cast_inj.mp h_eq.symm
 
-/-! ## §1 (corrected, replaces the earlier false "Lemma 1"): the degree bound on `D`
+  have hn_le_AB : n ≤ (Associates.mk v.asIdeal).count (Associates.mk (Ideal.span {toPair H A B})).factors :=
+    h_count_AB.symm.le
 
-**The earlier draft of this section claimed `B' = 0` is forced directly from
-`IsPoleBoundedAtPair` — FALSE, see `SCOPING-finrank-L-pair.md`'s "Correction"
-section for the counterexample (`A=A'=0,B=B'=1` gives `z=1` trivially with
-`B'≠0`).** The fix: work with the *divisor* `D := divToPairRatio A B T A' B'
-T` (`T` a large-enough finite support, via Lemma 0 above) rather than with
-`B, B'` as raw polynomials — `D`'s coefficients automatically cancel any
-shared, representation-artifact factor between numerator and denominator
-(exactly the phenomenon the counterexample exploited), so bounds on `D` are
-honest, representation-independent-modulo-`T` facts about `z` itself.
+  -- Replace omega with explicit Nat.cast_lt
+  have hn_lt_CD : n < (Associates.mk v.asIdeal).count (Associates.mk (Ideal.span {toPair H C D})).factors := by
+    have hcCD := ordAtSpec_eq_count v C D hCD
+    have hlt' := hlt
+    rw [hn_eq, hcCD] at hlt'
+    exact Nat.cast_lt.mp hlt'
 
-`deg D ≤ 0` **unconditionally** (no need for `ordInfOfPair A B = ordInfOfPair
-A' B'`, only the `≥` `IsPoleBoundedAtPair` already supplies): apply
-`deg_div_eq_zero_deg5` (`PrincipalDivisors.lean:1844`) to `(A,B)` and to
-`(A',B')` *separately* — it needs no matching between the two pairs, giving
-`∑_T ordAt(A,B) = -ordInfOfPair(A,B)` and `∑_T ordAt(A',B') =
--ordInfOfPair(A',B')` exactly; subtracting, `deg D = ordInfOfPair(A',B') -
-ordInfOfPair(A,B) ≤ 0` directly from `hbound`'s second conjunct. -/
-theorem deg_divToPairRatio_le_zero (hdeg : H.f.natDegree = 5)
-    (x₁ x₂ : H.Point) (A B A' B' : k[X])
-    (hbound : IsPoleBoundedAtPair x₁ x₂ A B A' B')
-    (hspecAB : ∀ v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H),
-      (Associates.mk v.asIdeal).count
-        (Associates.mk (Ideal.span ({toPair H A B} : Set (CoordinateRing H)))).factors ≠ 0 →
-      ∃ P, v.asIdeal = pointIdeal P)
-    (hspecA'B' : ∀ v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H),
-      (Associates.mk v.asIdeal).count
-        (Associates.mk (Ideal.span ({toPair H A' B'} : Set (CoordinateRing H)))).factors ≠ 0 →
-      ∃ P, v.asIdeal = pointIdeal P)
-    (T : Finset H.Point)
-    (hAB : ¬ (A = 0 ∧ B = 0)) (hA'B' : ¬ (A' = 0 ∧ B' = 0))
-    (hsuppAB : ∀ P, P ∉ T → ordAt P A B = 0)
-    (hsuppA'B' : ∀ P, P ∉ T → ordAt P A' B' = 0)
-    -- Same standing instance `deg_div_eq_zero_deg5` itself requires (see
-    -- `PrincipalDivisorSubgroup.lean`'s `deg_divToPairRatio_eq_zero`, which threads the
-    -- identical pair of instance hypotheses through for the same reason: it is not yet
-    -- derivable in general, pending `finrank_quotient_pointIdeal_pow`, §4.2 step 4).
-    [∀ P : T, Module.Finite k (CoordinateRing H ⧸ pointIdeal P.1 ^ (ordAt P.1 A B).toNat)]
-    [∀ P : T, Module.Finite k (CoordinateRing H ⧸ pointIdeal P.1 ^ (ordAt P.1 A' B').toNat)] :
-    deg (divToPairRatio A B T A' B' T) ≤ 0 := by
-  unfold divToPairRatio
-  rw [deg_sub, deg_divToPair, deg_divToPair]
-  -- `deg_div_eq_zero_deg5` gives `(∑_T ordAt(A,B)) + ordInfOfPair A B = 0` and likewise for
-  -- `(A',B')`; rearranged, `∑_T ordAt(A,B) = -ordInfOfPair A B` and
-  -- `∑_T ordAt(A',B') = -ordInfOfPair A' B'`. Subtracting and using `hbound`'s second
-  -- conjunct `ordInfOfPair A B ≥ ordInfOfPair A' B'` closes the goal by `omega`.
-  have h₁ := deg_div_eq_zero_deg5 H hdeg T A B hAB hsuppAB hspecAB
-  have h₂ := deg_div_eq_zero_deg5 H hdeg T A' B' hA'B' hsuppA'B' hspecA'B'
-  obtain ⟨_, hmono, _⟩ := hbound
+  have hn_le_CD : n ≤ (Associates.mk v.asIdeal).count (Associates.mk (Ideal.span {toPair H C D})).factors :=
+    hn_lt_CD.le
+    
+  have hdvd_AB : v.asIdeal ^ n ∣ Ideal.span {toPair H A B} := by
+    have h_pow := (Associates.prime_pow_dvd_iff_le (Associates.mk_ne_zero.mpr hIAB) v.associates_irreducible).mpr hn_le_AB
+    rw [← Associates.mk_pow] at h_pow
+    exact Associates.mk_le_mk_iff_dvd.mp h_pow
+    
+  have hdvd_CD : v.asIdeal ^ n ∣ Ideal.span {toPair H C D} := by
+    have h_pow := (Associates.prime_pow_dvd_iff_le (Associates.mk_ne_zero.mpr hICD) v.associates_irreducible).mpr hn_le_CD
+    rw [← Associates.mk_pow] at h_pow
+    exact Associates.mk_le_mk_iff_dvd.mp h_pow
+    
+  have hAB_mem : toPair H A B ∈ v.asIdeal ^ n := Ideal.dvd_span_singleton.mp hdvd_AB
+  have hCD_mem : toPair H C D ∈ v.asIdeal ^ n := Ideal.dvd_span_singleton.mp hdvd_CD
+  have hsum_mem : toPair H (A + C) (B + D) ∈ v.asIdeal ^ n := by
+    rw [hsum_eq]; exact (v.asIdeal ^ n).add_mem hAB_mem hCD_mem
+    
+  have hn_le_sum : n ≤ (Associates.mk v.asIdeal).count
+      (Associates.mk (Ideal.span {toPair H (A + C) (B + D)})).factors := by
+    rw [← Associates.prime_pow_dvd_iff_le (Associates.mk_ne_zero.mpr hIsum) v.associates_irreducible]
+    have h_mk_le := Associates.mk_le_mk_iff_dvd.mpr (Ideal.dvd_span_singleton.mpr hsum_mem)
+    rw [Associates.mk_pow] at h_mk_le
+    exact h_mk_le
+    
+  have hn1_not_dvd_AB : ¬ v.asIdeal ^ (n + 1) ∣ Ideal.span {toPair H A B} := by
+    intro hdvd
+    have h_mk_le := Associates.mk_le_mk_iff_dvd.mpr hdvd
+    rw [Associates.mk_pow] at h_mk_le
+    have hc := (Associates.prime_pow_dvd_iff_le (Associates.mk_ne_zero.mpr hIAB) v.associates_irreducible).mp h_mk_le
+    -- Replace omega with explicit not_succ_le_self
+    rw [h_count_AB] at hc
+    exact Nat.not_succ_le_self n hc
+    
+  have hn1_dvd_CD : v.asIdeal ^ (n + 1) ∣ Ideal.span {toPair H C D} := by
+    have h_pow := (Associates.prime_pow_dvd_iff_le (Associates.mk_ne_zero.mpr hICD) v.associates_irreducible).mpr hn_lt_CD
+    rw [← Associates.mk_pow] at h_pow
+    exact Associates.mk_le_mk_iff_dvd.mp h_pow
+    
+  have hn1_not_dvd_sum : ¬ v.asIdeal ^ (n + 1) ∣ Ideal.span {toPair H (A + C) (B + D)} := by
+    intro hdvd
+    apply hn1_not_dvd_AB
+    have hCD_mem' : toPair H C D ∈ v.asIdeal ^ (n + 1) := Ideal.dvd_span_singleton.mp hn1_dvd_CD
+    have hsum_mem' : toPair H (A + C) (B + D) ∈ v.asIdeal ^ (n + 1) := Ideal.dvd_span_singleton.mp hdvd
+    have hAB_mem' : toPair H A B ∈ v.asIdeal ^ (n + 1) := by
+      have : toPair H A B = toPair H (A + C) (B + D) - toPair H C D := by rw [hsum_eq]; ring
+      rw [this]; exact (v.asIdeal ^ (n + 1)).sub_mem hsum_mem' hCD_mem'
+    exact Ideal.dvd_span_singleton.mpr hAB_mem'
+    
+  have hn_ge_sum : (Associates.mk v.asIdeal).count
+      (Associates.mk (Ideal.span {toPair H (A + C) (B + D)})).factors < n + 1 := by
+    by_contra hge
+    push Not at hge
+    apply hn1_not_dvd_sum
+    have h_pow := (Associates.prime_pow_dvd_iff_le (Associates.mk_ne_zero.mpr hIsum) v.associates_irreducible).mpr hge
+    rw [← Associates.mk_pow] at h_pow
+    exact Associates.mk_le_mk_iff_dvd.mp h_pow
+
+  -- Replace final omega with le_antisymm bridged via Nat.le_of_lt_succ
+  have h_count_eq : (Associates.mk v.asIdeal).count 
+      (Associates.mk (Ideal.span {toPair H (A + C) (B + D)})).factors = n :=
+    le_antisymm (Nat.le_of_lt_succ hn_ge_sum) hn_le_sum
+
+  rw [ordAtSpec_eq_count v (A + C) (B + D) hsumne, hn_eq, h_count_eq]
+
+omit [IsDedekindDomain (CoordinateRing H)] in
+/-- **`ordAtSpec` transport across a `polePairToFraction` equality**, the
+`HeightOneSpectrum` analogue of `ordAt_sub_ordAt_eq_of_polePairToFraction_eq`.
+Same cross-multiplication argument, with `ordAt'`/`ordAt` replaced by
+`ordAtSpec` and `ordAtSpec_add_of_toPair_mul` in place of `ordAt'_toPair_mul`. -/
+theorem ordAtSpec_sub_ordAtSpec_eq_of_polePairToFraction_eq
+    [IsDedekindDomain (CoordinateRing H)]
+    (v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H))
+    (A B A' B' C D C' D' : k[X])
+    (hz : toPair H A B ≠ 0)
+    (hA'B' : toPair H A' B' ≠ 0) (hC'D' : toPair H C' D' ≠ 0)
+    (heq : polePairToFraction (H := H) A B A' B' = polePairToFraction (H := H) C D C' D') :
+    ordAtSpec v A B - ordAtSpec v A' B' = ordAtSpec v C D - ordAtSpec v C' D' := by
+  have hmul := toPair_mul_eq_of_polePairToFraction_eq A B A' B' C D C' D' hA'B' hC'D' heq
+  haveI : IsDomain (CoordinateRing H) := IsDedekindDomain.toIsDomain
+  have hCD : toPair H C D ≠ 0 := by
+    intro hCD0
+    have hRHS0 : toPair H C D * toPair H A' B' = 0 := by rw [hCD0]; ring
+    have hLHSne : toPair H A B * toPair H C' D' ≠ 0 := mul_ne_zero hz hC'D'
+    exact hLHSne (hmul.trans hRHS0)
+  have h1 := ordAtSpec_add_of_toPair_mul (H := H) v A B C' D'
+    (A * C' + B * D' * H.f) (A * D' + C' * B) hz hC'D'
+    (toPair_mul A B C' D').symm
+  have h2 := ordAtSpec_add_of_toPair_mul (H := H) v C D A' B'
+    (A * C' + B * D' * H.f) (A * D' + C' * B) hCD hA'B'
+    ((toPair_mul A B C' D').symm.trans hmul)
+  have hleft : ordAtSpec v A B + ordAtSpec v C' D' =
+      ordAtSpec v C D + ordAtSpec v A' B' := by
+    rw [← h1, ← h2]
   omega
 
-/-! ## §2 (corrected, replaces the earlier false "Lemma 2"): pole/zero bookkeeping on `D`
+/-! ## §3c. Residue degree of the non-square-fiber closed point.
 
-`D`'s negative part is confined to `{x₁,x₂}` with total mass `≤ 2` (directly
-from `IsPoleBoundedAtPair`'s pointwise clause, transported to `coeffAt P D`
-the same way `RatioDivisorCollapse.lean`'s already-proved `hcoef`
-(`RatioDivisorCollapse.lean:386`) transports a pointwise `ordAt` bound into a
-`coeffAt`-of-a-`divToPairRatio` statement — same argument shape, different
-target divisor). Combined with §1's `deg D ≤ 0`, this forces `D`'s *positive*
-part (support anywhere in `T`) to also have total mass `≤ 2`. This is the
-correct, representation-independent-modulo-`T` replacement for the false
-"`B=0`"/"the pole set is exactly `{x₁,x₂}`" claims: it bounds `D` on both
-sides by degree `2`, without ever asserting anything about `B, B'`
-syntactically. -/
-/-- **Factored out of `coeffAt_divToPairRatio_bounds`'s proof body** so §3a can cite it
-directly instead of re-deriving the same `AddMonoidHom`-transport argument a second time.
-`coeffAt P (divToPair a b S) = ordAt P a b` for any `P`, given a support witness `S` for
-`(a,b)` — pure bookkeeping via `map_sum`/`map_zsmul`/`coeffAt_single`, never applying
-`Divisor H` as a raw function (`Divisor H` is a plain `def`, not `abbrev`, over
-`H.Point →₀ ℤ`, so it doesn't unfold to `Finsupp`'s `DFunLike` application at ordinary
-transparency — same discipline as `PrincipalDivisorSubgroup.lean`'s `divToPair` docstring
-already notes). -/
-theorem coeffAt_divToPair_eq_ordAt (a b : k[X]) (S : Finset H.Point)
-    (hS : ∀ Q ∉ S, ordAt Q a b = 0) (P : H.Point) :
-    Divisor.coeffAt P (divToPair a b S) = ordAt P a b := by
-  unfold divToPair
-  rw [map_sum]
-  by_cases hPS : P ∈ S
-  · rw [Finset.sum_eq_single P
-      (fun Q _ hQP => by
-        rw [map_zsmul, Divisor.coeffAt_single, if_neg (Ne.symm hQP)]; simp)
-      (fun hPS' => absurd hPS hPS')]
-    rw [map_zsmul, Divisor.coeffAt_single_self]
-    simp
-  · rw [Finset.sum_eq_zero (fun Q hQ => by
-      have hQP : Q ≠ P := fun h => hPS (h ▸ hQ)
-      rw [map_zsmul, Divisor.coeffAt_single, if_neg (Ne.symm hQP)]; simp)]
-    rw [hS P hPS]
+Needed to distinguish `nonSquareFiberHeightOne α hns` from every rational
+point `pointHeightOne' P` (which always has residue degree `1`,
+`residueDeg_pointHeightOne'`) in the finishing indicator-sum argument below. -/
 
-/-- **Factored out alongside `coeffAt_divToPair_eq_ordAt`**: the same-support specialization
-`coeffAt P (divToPairRatio A B S A' B' S) = ordAt P A B - ordAt P A' B'`, used by both
-`coeffAt_divToPairRatio_bounds` and §3a below. -/
-theorem coeffAt_divToPairRatio_eq_sub (A B A' B' : k[X]) (T : Finset H.Point)
-    (hsuppAB : ∀ P, P ∉ T → ordAt P A B = 0)
-    (hsuppA'B' : ∀ P, P ∉ T → ordAt P A' B' = 0) (P : H.Point) :
-    Divisor.coeffAt P (divToPairRatio A B T A' B' T) = ordAt P A B - ordAt P A' B' := by
-  unfold divToPairRatio
-  rw [map_sub, coeffAt_divToPair_eq_ordAt A B T hsuppAB P,
-    coeffAt_divToPair_eq_ordAt A' B' T hsuppA'B' P]
+omit [IsDedekindDomain (CoordinateRing H)] in
+/-- **`SqrtExt c` has `k`-dimension `2`.** `SqrtExt c = AdjoinRoot (X^2 - C c)`,
+and `X^2 - C c ≠ 0` (degree `2`), so `AdjoinRoot.finrank` gives
+`Module.finrank k (SqrtExt c) = (X^2 - C c).natDegree = 2`. -/
+theorem finrank_sqrtExt (c : k) : Module.finrank k (SqrtExt c) = 2 := by
+  have hne : (X ^ 2 - C c : k[X]) ≠ 0 := by
+    intro h
+    have hd : (X ^ 2 - C c : k[X]).natDegree = 2 := by
+      compute_degree!
+    rw [h] at hd
+    simp at hd
+  rw [Module.finrank_eq_card_basis (AdjoinRoot.powerBasisAux hne)]
+  simp
 
-theorem coeffAt_divToPairRatio_bounds (_hdeg : H.f.natDegree = 5)
-    (x₁ x₂ : H.Point) (A B A' B' : k[X])
-    (hbound : IsPoleBoundedAtPair x₁ x₂ A B A' B')
-    (T : Finset H.Point)
-    (hsuppAB : ∀ P, P ∉ T → ordAt P A B = 0)
-    (hsuppA'B' : ∀ P, P ∉ T → ordAt P A' B' = 0) :
-    (∀ P, P ≠ x₁ → P ≠ x₂ → 0 ≤ Divisor.coeffAt P (divToPairRatio A B T A' B' T)) ∧
-    Divisor.coeffAt x₁ (divToPairRatio A B T A' B' T) ≥
-      -((if x₁ = x₁ then (1 : ℤ) else 0) + (if x₁ = x₂ then 1 else 0)) ∧
-    Divisor.coeffAt x₂ (divToPairRatio A B T A' B' T) ≥
-      -((if x₂ = x₁ then (1 : ℤ) else 0) + (if x₂ = x₂ then 1 else 0)) := by
-  have hcoef := coeffAt_divToPairRatio_eq_sub A B A' B' T hsuppAB hsuppA'B'
-  obtain ⟨_, _, hptwise⟩ := hbound
-  refine ⟨fun P hPx₁ hPx₂ => ?_, ?_, ?_⟩
-  · -- `P ≠ x₁, x₂`: `hptwise P` gives `ordAt P A B ≥ ordAt P A' B' - 0`, i.e.
-    -- `ordAt P A B - ordAt P A' B' ≥ 0`, which is `coeffAt P D ≥ 0` via `hcoef`.
-    have hp := hptwise P
-    rw [if_neg hPx₁, if_neg hPx₂] at hp
-    rw [hcoef P]
-    omega
-  · have hp := hptwise x₁
-    rw [hcoef x₁]
-    split_ifs at hp ⊢ <;> omega
-  · have hp := hptwise x₂
-    rw [hcoef x₂]
-    split_ifs at hp ⊢ <;> omega
 
-/-! ## §3 (the genuinely new content, still open): bounded-degree, pole-confined divisor
-forces the fiber dichotomy
 
-**Proof skeleton, drafted this session, not yet `lake build`-checked beyond
-what typechecks at the `sorry`s below.** §1 (`deg D ≤ 0`) and §2 (`D`'s
-negative part confined to `{x₁,x₂}`, mass `≤ 2`) together pin `D`'s *shape*
-tightly enough to make `D` itself `IsRatioDivisor`-shaped (§3a) with total
-degree exactly `0` (not merely `≤ 0`) and negative part exactly `{x₁,x₂}`
-(not merely bounded there) once the positive part is nonzero (§3b/§3c). The
-zero-positive-part case is immediate (§3d, easy — this is the "constant"
-branch and needs nothing beyond §1+§2). The nonzero-positive-part case is
-where the real content lives: `D`'s positive part, being mass ≤ 2 with `deg D
-= 0` and negative part exactly `{x₁,x₂}` (mass 2), is forced to *also* be a
-single point-with-multiplicity-2 or two-distinct-points support — i.e. `D =
-(x₃)+(x₄) - (x₁) - (x₂)` for some `x₃, x₄` (§3e). Feeding this into
-`mem_LPairCarrier_of_isRatioDivisor` — used here in *contrapositive* form,
-not its stated direction — together with `uniqueDegree2MapToP1` would be
-circular (that theorem is exactly what this file is trying to replace), so
-the genuine remaining content is: directly show `{x₃,x₄} = {x₁,x₂}` (forcing
-`D = 0`, i.e. `z` constant) using only `ordAt_linX_eq`-style fiber structure,
-*without* going through `uniqueDegree2MapToP1`/`finrank_L_pair` (§3f — **the
-actual crux, genuinely unformalized reasoning, not bookkeeping**). Ordered
-below easiest-first per project convention; §3f is the hard one and is left
-as an isolated named `sorry` with its precise statement pinned down, rather
-than folded into the top-level theorem's `sorry` as before.
 
-**Do not restart from the (false) original three-lemma "B=0" framing** —
-`SCOPING-finrank-L-pair.md` records why it's unsound. -/
+omit [IsDedekindDomain (CoordinateRing H)] in
+/-- **Residue degree of the non-square-fiber closed point is `2`.** Via the
+surjective `evalAtNonSquareFiber α : CoordinateRing H →+* SqrtExt (H.f.eval α)`
+(kernel = `nonSquareFiberIdeal α`) and the first isomorphism theorem, mirroring
+`finrank_quotient_pointIdeal`'s proof shape exactly, target field
+`SqrtExt (H.f.eval α)` (dimension `2`, `finrank_sqrtExt`) instead of `k`
+(dimension `1`). -/
+theorem residueDeg_nonSquareFiberHeightOne
+    [IsDedekindDomain (CoordinateRing H)]
+    (α : k) (hns : ¬ IsSquare (H.f.eval α)) :
+    residueDeg (nonSquareFiberHeightOne (H := H) α hns) = 2 := by
+  unfold residueDeg nonSquareFiberHeightOne nonSquareFiberIdeal
+  simp only
 
-/-- **Small arithmetic helper**, factored out so §3a's uses of the same
-"`max x 0` is within `n` of `x`" fact don't each re-derive it. **Needs `-n ≤ x`
-as well as `0 ≤ n`** — without a lower bound on `x`, `max x 0 ≤ x + n` is false
-(e.g. `x` very negative, `n` fixed): the first draft of this lemma omitted
-`hxn` and `omega` correctly rejected it. Proved via `max_le` (the two-sided
-characterization of `max`) rather than case-splitting on `0 ≤ x`. -/
-theorem max_zero_le_add (x : ℤ) {n : ℤ} (hn : 0 ≤ n) (hxn : -n ≤ x) : max x 0 ≤ x + n := by
-  apply max_le <;> omega
+  let hequiv :
+      (CoordinateRing H ⧸
+          RingHom.ker (evalAtNonSquareFiber (H := H) α))
+        ≃+* SqrtExt (H.f.eval α) :=
+    RingHom.quotientKerEquivOfSurjective
+      (evalAtNonSquareFiber_surjective (H := H) α)
 
-/-- **§3a (bookkeeping, should be easy).** Package §1's `deg D ≤ 0` and §2's
-pointwise pole bound into the single `IsRatioDivisor`-shaped existential:
-`D := divToPairRatio A B T A' B' T` has `¬(A=0∧B=0)`, `¬(A'=0∧B'=0)` (from
-`hAB`/`hA'B'`, already available at call sites via `toPair_eq_zero_iff`), and
-support `T`. This lemma does *not* yet claim `ordInfOfPair A B = ordInfOfPair
-A' B'` (the equality `IsRatioDivisor` technically asks for) — `hbound` only
-gives `≥`; if the strict `IsRatioDivisor` predicate is needed downstream
-rather than just `deg`/`coeffAt` facts about `D`, that gap needs revisiting
-here first. -/
-theorem isRatioDivisor_shape_of_bounds (hdeg : H.f.natDegree = 5)
-    (x₁ x₂ : H.Point) (A B A' B' : k[X])
-    (hAB : ¬ (A = 0 ∧ B = 0)) (hA'B' : ¬ (A' = 0 ∧ B' = 0))
-    (T : Finset H.Point)
-    (hsuppAB : ∀ P, P ∉ T → ordAt P A B = 0)
-    (hsuppA'B' : ∀ P, P ∉ T → ordAt P A' B' = 0)
-    (hdegD : deg (divToPairRatio A B T A' B' T) ≤ 0)
-    (hcoeffbound :
-      (∀ P, P ≠ x₁ → P ≠ x₂ → 0 ≤ Divisor.coeffAt P (divToPairRatio A B T A' B' T)) ∧
-      Divisor.coeffAt x₁ (divToPairRatio A B T A' B' T) ≥
-        -((if x₁ = x₁ then (1 : ℤ) else 0) + (if x₁ = x₂ then 1 else 0)) ∧
-      Divisor.coeffAt x₂ (divToPairRatio A B T A' B' T) ≥
-        -((if x₂ = x₁ then (1 : ℤ) else 0) + (if x₂ = x₂ then 1 else 0))) :
-    -- The positive part of `D` (support in `T \ {x₁,x₂}`, all coefficients ≥ 0 there,
-    -- and ≥ -2 at x₁/x₂ combined with the deg ≤ 0 bound) has total mass ≤ 2 — the
-    -- precise numeric fact §3e's case split needs. Stated here as the raw arithmetic
-    -- consequence of hdegD + hcoeffbound, isolated so §3e can cite it without
-    -- re-deriving the deg/coeffAt bookkeeping.
-    ∑ P ∈ T, max (Divisor.coeffAt P (divToPairRatio A B T A' B' T)) 0 ≤ 2 := by
-  obtain ⟨hpos, hx₁, hx₂⟩ := hcoeffbound
-  -- `deg D = ∑ P ∈ T, coeffAt P D`: `D = divToPair A B T - divToPair A' B' T`
-  -- (`divToPairRatio`'s definition), `deg_divToPair` (`PrincipalDivisorSubgroup.lean`)
-  -- turns each half's `deg` into a `∑_T ordAt`, and `coeffAt_divToPairRatio_eq_sub`
-  -- (factored out above) identifies the termwise difference with `coeffAt P D`.
-  have hdeg_eq : deg (divToPairRatio A B T A' B' T) =
-      ∑ P ∈ T, Divisor.coeffAt P (divToPairRatio A B T A' B' T) := by
-    unfold divToPairRatio
-    rw [map_sub, deg_divToPair, deg_divToPair, ← Finset.sum_sub_distrib]
-    exact Finset.sum_congr rfl (fun P _ =>
-      (coeffAt_divToPairRatio_eq_sub A B A' B' T hsuppAB hsuppA'B' P).symm)
-  -- Split `T` into `{x₁,x₂} ∩ T` and the rest: at every `P ∈ T` outside `{x₁,x₂}`,
-  -- `coeffAt P D ≥ 0` (`hpos`), so `max (coeffAt P D) 0 = coeffAt P D` there — the
-  -- positive part contributes exactly its own `coeffAt` value away from `x₁,x₂`, and
-  -- summing `hdeg_eq`'s RHS against `hdegD` bounds the total (including the possibly-
-  -- negative `x₁,x₂` terms) by `0`; moving those two terms' negative contribution
-  -- (bounded below by `-2` total via `hx₁`/`hx₂`) to the other side gives the `≤ 2`
-  -- bound on the positive-part sum. Both `T = ∅` and the `x₁ = x₂` coincidence are
-  -- handled uniformly since `hx₁`/`hx₂` already fold that case into their `ite`s.
-  by_cases hx₁T : x₁ ∈ T
-  · by_cases hx₂T : x₂ ∈ T
-    · by_cases hxeq : x₁ = x₂
-      · -- `x₁ = x₂`: a single point contributes both indicators, `coeffAt x₁ D ≥ -2`.
-        subst hxeq
-        have hsplit : ∑ P ∈ T, max (Divisor.coeffAt P (divToPairRatio A B T A' B' T)) 0 =
-            max (Divisor.coeffAt x₁ (divToPairRatio A B T A' B' T)) 0 +
-              ∑ P ∈ T.erase x₁, max (Divisor.coeffAt P (divToPairRatio A B T A' B' T)) 0 := by
-          rw [← Finset.sum_erase_add T _ hx₁T, add_comm]
-        have hsplit' : ∑ P ∈ T, Divisor.coeffAt P (divToPairRatio A B T A' B' T) =
-            Divisor.coeffAt x₁ (divToPairRatio A B T A' B' T) +
-              ∑ P ∈ T.erase x₁, Divisor.coeffAt P (divToPairRatio A B T A' B' T) := by
-          rw [← Finset.sum_erase_add T _ hx₁T, add_comm]
-        have hrest_eq : ∑ P ∈ T.erase x₁, max (Divisor.coeffAt P (divToPairRatio A B T A' B' T)) 0
-            = ∑ P ∈ T.erase x₁, Divisor.coeffAt P (divToPairRatio A B T A' B' T) := by
-          refine Finset.sum_congr rfl (fun P hP => ?_)
-          have hPne : P ≠ x₁ := (Finset.mem_erase.mp hP).1
-          exact max_eq_left (hpos P hPne hPne)
-        rw [hsplit, hrest_eq]
-        rw [hdeg_eq, hsplit'] at hdegD
-        simp only [if_pos rfl] at hx₁
-        have hmax_le : max (Divisor.coeffAt x₁ (divToPairRatio A B T A' B' T)) 0 ≤
-            Divisor.coeffAt x₁ (divToPairRatio A B T A' B' T) + 2 :=
-          max_zero_le_add _ (by norm_num) (by omega)
-        omega
-      · -- `x₁ ≠ x₂`, both in `T`: two distinct points, each contributing its own `≥ -1` bound.
-        have hsplit : ∑ P ∈ T, max (Divisor.coeffAt P (divToPairRatio A B T A' B' T)) 0 =
-            max (Divisor.coeffAt x₁ (divToPairRatio A B T A' B' T)) 0 +
-              max (Divisor.coeffAt x₂ (divToPairRatio A B T A' B' T)) 0 +
-              ∑ P ∈ (T.erase x₁).erase x₂,
-                max (Divisor.coeffAt P (divToPairRatio A B T A' B' T)) 0 := by
-          rw [← Finset.sum_erase_add T _ hx₁T,
-            ← Finset.sum_erase_add (T.erase x₁) _
-              (Finset.mem_erase.mpr ⟨Ne.symm hxeq, hx₂T⟩)]
-          ring
-        have hsplit' : ∑ P ∈ T, Divisor.coeffAt P (divToPairRatio A B T A' B' T) =
-            Divisor.coeffAt x₁ (divToPairRatio A B T A' B' T) +
-              Divisor.coeffAt x₂ (divToPairRatio A B T A' B' T) +
-              ∑ P ∈ (T.erase x₁).erase x₂,
-                Divisor.coeffAt P (divToPairRatio A B T A' B' T) := by
-          rw [← Finset.sum_erase_add T _ hx₁T,
-            ← Finset.sum_erase_add (T.erase x₁) _
-              (Finset.mem_erase.mpr ⟨Ne.symm hxeq, hx₂T⟩)]
-          ring
-        have hrest_eq : ∑ P ∈ (T.erase x₁).erase x₂,
-            max (Divisor.coeffAt P (divToPairRatio A B T A' B' T)) 0
-            = ∑ P ∈ (T.erase x₁).erase x₂, Divisor.coeffAt P (divToPairRatio A B T A' B' T) := by
-          refine Finset.sum_congr rfl (fun P hP => ?_)
-          have hPne₂ : P ≠ x₂ := (Finset.mem_erase.mp hP).1
-          have hPne₁ : P ≠ x₁ := (Finset.mem_erase.mp (Finset.mem_erase.mp hP).2).1
-          exact max_eq_left (hpos P hPne₁ hPne₂)
-        rw [hsplit, hrest_eq]
-        rw [hdeg_eq, hsplit'] at hdegD
-        simp only [if_pos rfl, if_neg hxeq] at hx₁
-        simp only [if_neg (Ne.symm hxeq), if_pos rfl] at hx₂
-        have hmax₁ : max (Divisor.coeffAt x₁ (divToPairRatio A B T A' B' T)) 0 ≤
-            Divisor.coeffAt x₁ (divToPairRatio A B T A' B' T) + 1 :=
-          max_zero_le_add _ (by norm_num) (by omega)
-        have hmax₂ : max (Divisor.coeffAt x₂ (divToPairRatio A B T A' B' T)) 0 ≤
-            Divisor.coeffAt x₂ (divToPairRatio A B T A' B' T) + 1 :=
-          max_zero_le_add _ (by norm_num) (by omega)
-        omega
-    · -- `x₂ ∉ T`: `coeffAt x₂ D = 0` (outside the support), so `hx₂`'s bound is slack;
-      -- only `x₁`'s term needs separating from the rest.
-      have hx₂0 : Divisor.coeffAt x₂ (divToPairRatio A B T A' B' T) = 0 := by
-        rw [coeffAt_divToPairRatio_eq_sub A B A' B' T hsuppAB hsuppA'B' x₂,
-          hsuppAB x₂ hx₂T, hsuppA'B' x₂ hx₂T]
-        ring
-      have hsplit : ∑ P ∈ T, max (Divisor.coeffAt P (divToPairRatio A B T A' B' T)) 0 =
-          max (Divisor.coeffAt x₁ (divToPairRatio A B T A' B' T)) 0 +
-            ∑ P ∈ T.erase x₁, max (Divisor.coeffAt P (divToPairRatio A B T A' B' T)) 0 := by
-        rw [← Finset.sum_erase_add T _ hx₁T, add_comm]
-      have hsplit' : ∑ P ∈ T, Divisor.coeffAt P (divToPairRatio A B T A' B' T) =
-          Divisor.coeffAt x₁ (divToPairRatio A B T A' B' T) +
-            ∑ P ∈ T.erase x₁, Divisor.coeffAt P (divToPairRatio A B T A' B' T) := by
-        rw [← Finset.sum_erase_add T _ hx₁T, add_comm]
-      have hrest_eq : ∑ P ∈ T.erase x₁, max (Divisor.coeffAt P (divToPairRatio A B T A' B' T)) 0
-          = ∑ P ∈ T.erase x₁, Divisor.coeffAt P (divToPairRatio A B T A' B' T) := by
-        refine Finset.sum_congr rfl (fun P hP => ?_)
-        have hPne : P ≠ x₁ := (Finset.mem_erase.mp hP).1
-        by_cases hPx₂ : P = x₂
-        · rw [hPx₂, hx₂0]; simp
-        · exact max_eq_left (hpos P hPne hPx₂)
-      rw [hdeg_eq, hsplit'] at hdegD
-      have hxne : x₁ ≠ x₂ := fun h => hx₂T (h ▸ hx₁T)
-      simp only [if_neg hxne] at hx₁
-      have hmax₁ : max (Divisor.coeffAt x₁ (divToPairRatio A B T A' B' T)) 0 ≤
-          Divisor.coeffAt x₁ (divToPairRatio A B T A' B' T) + 1 :=
-        max_zero_le_add _ (by norm_num) (by omega)
-      calc ∑ P ∈ T, max (Divisor.coeffAt P (divToPairRatio A B T A' B' T)) 0
-          = max (Divisor.coeffAt x₁ (divToPairRatio A B T A' B' T)) 0 +
-              ∑ P ∈ T.erase x₁, max (Divisor.coeffAt P (divToPairRatio A B T A' B' T)) 0 := hsplit
-        _ = max (Divisor.coeffAt x₁ (divToPairRatio A B T A' B' T)) 0 +
-              ∑ P ∈ T.erase x₁, Divisor.coeffAt P (divToPairRatio A B T A' B' T) := by
-              rw [hrest_eq]
-        _ ≤ 2 := by omega
-  · -- `x₁ ∉ T`: both `coeffAt x₁ D = 0` and (symmetric case split) `coeffAt x₂ D`
-    -- handled the same way as `hpos` directly covers `T`'s support once `x₁∉T`.
-    have hx₁0 : Divisor.coeffAt x₁ (divToPairRatio A B T A' B' T) = 0 := by
-      rw [coeffAt_divToPairRatio_eq_sub A B A' B' T hsuppAB hsuppA'B' x₁,
-        hsuppAB x₁ hx₁T, hsuppA'B' x₁ hx₁T]
-      ring
-    by_cases hx₂T : x₂ ∈ T
-    · have hsplit : ∑ P ∈ T, max (Divisor.coeffAt P (divToPairRatio A B T A' B' T)) 0 =
-          max (Divisor.coeffAt x₂ (divToPairRatio A B T A' B' T)) 0 +
-            ∑ P ∈ T.erase x₂, max (Divisor.coeffAt P (divToPairRatio A B T A' B' T)) 0 := by
-        rw [← Finset.sum_erase_add T _ hx₂T, add_comm]
-      have hsplit' : ∑ P ∈ T, Divisor.coeffAt P (divToPairRatio A B T A' B' T) =
-          Divisor.coeffAt x₂ (divToPairRatio A B T A' B' T) +
-            ∑ P ∈ T.erase x₂, Divisor.coeffAt P (divToPairRatio A B T A' B' T) := by
-        rw [← Finset.sum_erase_add T _ hx₂T, add_comm]
-      have hrest_eq : ∑ P ∈ T.erase x₂, max (Divisor.coeffAt P (divToPairRatio A B T A' B' T)) 0
-          = ∑ P ∈ T.erase x₂, Divisor.coeffAt P (divToPairRatio A B T A' B' T) := by
-        refine Finset.sum_congr rfl (fun P hP => ?_)
-        have hPne : P ≠ x₂ := (Finset.mem_erase.mp hP).1
-        by_cases hPx₁ : P = x₁
-        · rw [hPx₁, hx₁0]; simp
-        · exact max_eq_left (hpos P hPx₁ hPne)
-      rw [hdeg_eq, hsplit'] at hdegD
-      have hxne : x₁ ≠ x₂ := fun h => hx₁T (h ▸ hx₂T)
-      simp only [if_neg (Ne.symm hxne)] at hx₂
-      have hmax₂ : max (Divisor.coeffAt x₂ (divToPairRatio A B T A' B' T)) 0 ≤
-          Divisor.coeffAt x₂ (divToPairRatio A B T A' B' T) + 1 :=
-        max_zero_le_add _ (by norm_num) (by omega)
-      calc ∑ P ∈ T, max (Divisor.coeffAt P (divToPairRatio A B T A' B' T)) 0
-          = max (Divisor.coeffAt x₂ (divToPairRatio A B T A' B' T)) 0 +
-              ∑ P ∈ T.erase x₂, max (Divisor.coeffAt P (divToPairRatio A B T A' B' T)) 0 := hsplit
-        _ = max (Divisor.coeffAt x₂ (divToPairRatio A B T A' B' T)) 0 +
-              ∑ P ∈ T.erase x₂, Divisor.coeffAt P (divToPairRatio A B T A' B' T) := by
-              rw [hrest_eq]
-        _ ≤ 2 := by omega
-    · -- Neither `x₁` nor `x₂` is in `T`: `hpos` alone (with `hPx₁ := fun h => hx₁T (h ▸ hP')`-
-      -- style arguments) covers every `P ∈ T`, so the positive part equals `∑_T coeffAt`,
-      -- which is `deg D ≤ 0`, hence the max-sum (all terms already `≥ 0` implicitly, but
-      -- capped by `deg ≤ 0` forcing every term `≤ 0` too — see below) is `≤ 0 ≤ 2`.
-      have hrest_eq : ∑ P ∈ T, max (Divisor.coeffAt P (divToPairRatio A B T A' B' T)) 0
-          = ∑ P ∈ T, Divisor.coeffAt P (divToPairRatio A B T A' B' T) := by
-        refine Finset.sum_congr rfl (fun P hP => ?_)
-        have hPx₁ : P ≠ x₁ := fun h => hx₁T (h ▸ hP)
-        have hPx₂ : P ≠ x₂ := fun h => hx₂T (h ▸ hP)
-        exact max_eq_left (hpos P hPx₁ hPx₂)
-      rw [hrest_eq, ← hdeg_eq]
+  have hlinequiv :
+      Module.finrank k
+          (CoordinateRing H ⧸
+            RingHom.ker (evalAtNonSquareFiber (H := H) α)) =
+        Module.finrank k (SqrtExt (H.f.eval α)) := by
+    let e :
+        (CoordinateRing H ⧸
+            RingHom.ker (evalAtNonSquareFiber (H := H) α))
+          ≃ₗ[k] SqrtExt (H.f.eval α) :=
+      { hequiv.toAddEquiv with
+        map_smul' := by
+          intro r x
+          change hequiv (r • x) = r • hequiv x
+          rw [Algebra.smul_def, Algebra.smul_def]
+          rw [map_mul]
+          congr 1
+
+          change
+            hequiv
+                ((algebraMap k
+                  (CoordinateRing H ⧸
+                    RingHom.ker
+                      (evalAtNonSquareFiber (H := H) α))) r) =
+              (algebraMap k (SqrtExt (H.f.eval α))) r
+
+          change
+            hequiv
+                (Ideal.Quotient.mk
+                  (RingHom.ker
+                    (evalAtNonSquareFiber (H := H) α))
+                  ((algebraMap k (CoordinateRing H)) r)) =
+              (algebraMap k (SqrtExt (H.f.eval α))) r
+
+          rw [show hequiv =
+              RingHom.quotientKerEquivOfSurjective
+                (evalAtNonSquareFiber_surjective (H := H) α) from rfl]
+
+          rw [RingHom.quotientKerEquivOfSurjective_apply_mk]
+
+          simp only [evalAtNonSquareFiber]
+
+          change
+            (AdjoinRoot.lift
+                ((AdjoinRoot.of (X ^ 2 - C (H.f.eval α))).comp
+                  (Polynomial.evalRingHom α))
+                (sqrtExtRoot (H.f.eval α)) _)
+              ((AdjoinRoot.of (X ^ 2 - C H.f)) (C r)) =
+              (AdjoinRoot.of (X ^ 2 - C (H.f.eval α))) r
+
+          rw [AdjoinRoot.lift_of]
+          simp }
+
+    exact e.finrank_eq
+
+  rw [hlinequiv]
+  exact finrank_sqrtExt (H.f.eval α)
+
+
+
+omit [IsDedekindDomain (CoordinateRing H)] in
+/-- **The non-square-fiber closed point is never a rational point.** Immediate
+from the residue degree mismatch (`2 ≠ 1`). -/
+theorem nonSquareFiberHeightOne_ne_pointHeightOne' [IsDedekindDomain (CoordinateRing H)]
+    (α : k) (hns : ¬ IsSquare (H.f.eval α)) (P : H.Point) :
+    nonSquareFiberHeightOne (H := H) α hns ≠ pointHeightOne' P := by
+  intro h
+  have h1 := residueDeg_nonSquareFiberHeightOne (H := H) α hns
+  have h2 := residueDeg_pointHeightOne' (H := H) P
+  rw [h] at h1
+  omega
+
+/-! ## §3d. The `IsAlgClosed`-free finish: a root of a linear `c₀` forces
+`x₂ = ι x₁`, contradicting `hne`.
+
+Direct replacement for `false_of_root_of_coprimeAtRoots_zero_snd` (which is
+gated behind `[IsAlgClosed k]` in its section, and internally still calls
+`IsAlgClosed.exists_pow_nat_eq`). Same ramified/unramified split for the
+rational case; the non-square fiber case is new, using
+`nonSquareFiberHeightOne`/`hzsuppSpec₀` (closed-point-native) directly instead
+of trying to name a witness `H.Point`. -/
+
+/-- **No closed point lying over a coprime-at-roots-guaranteed root can be
+anything but `x₁`/`x₂` — impossible when both `H.f.eval α = 0` is false and
+`H.f.eval α` is a non-square.** The non-square-fiber case of the finishing
+argument: `v := nonSquareFiberHeightOne α hns` has `ordAtSpec v c₀ 0 ≥ 1`
+(`α` a root of `c₀`, so `toPair H c₀ 0 = algebraMap c₀ ∈ nonSquareFiberIdeal
+α` via `toPair_mem_nonSquareFiberIdeal_iff`, giving strictly positive
+`v.intValuation`, hence `Associates.count ≥ 1`), `ordAtSpec v a₀ 0 = 0`
+(`a₀.eval α ≠ 0`, same membership characterization), and `v ≠ pointHeightOne'
+x₁, x₂` (`nonSquareFiberHeightOne_ne_pointHeightOne'`) forces the indicator
+in `hzsuppSpec₀ v` to be `0` — contradicting `ordAtSpec v a₀ 0 - ordAtSpec v
+c₀ 0 ≥ -0`, i.e. `0 - (≥1) ≥ 0`. -/
+theorem false_of_nonSquareFiber_root [IsDedekindDomain (CoordinateRing H)]
+    (x₁ x₂ : H.Point) (a₀ c₀ : k[X]) (hc₀ne : c₀ ≠ 0)
+    (haα : a₀.eval (α : k) ≠ 0) (hα : c₀.eval α = 0)
+    (hns : ¬ IsSquare (H.f.eval α))
+    (hzsuppSpec₀ : ∀ v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H),
+      ordAtSpec v a₀ 0 - ordAtSpec v c₀ (0 : k[X]) ≥
+        -((if v = pointHeightOne' x₁ then 1 else 0) +
+          (if v = pointHeightOne' x₂ then 1 else 0))) : False := by
+  set v := nonSquareFiberHeightOne (H := H) α hns with hv_def
+  have hc₀mem : toPair H c₀ (0 : k[X]) ∈ v.asIdeal := by
+    show toPair H c₀ (0 : k[X]) ∈ nonSquareFiberIdeal (H := H) α
+    rw [toPair_mem_nonSquareFiberIdeal_iff]
+    have hc0eval : algebraMap k (SqrtExt (H.f.eval α)) (c₀.eval α) = 0 := by
+      rw [hα]; simp
+    simpa using hc0eval
+  have ha₀notmem : toPair H a₀ (0 : k[X]) ∉ v.asIdeal := by
+    show toPair H a₀ (0 : k[X]) ∉ nonSquareFiberIdeal (H := H) α
+    rw [toPair_mem_nonSquareFiberIdeal_iff]
+    simp only [Polynomial.eval_zero, map_zero, zero_mul, add_zero]
+    intro hcontra
+    apply haα
+    haveI : Nontrivial (SqrtExt (H.f.eval α)) :=
+      (sqrtExt_isField (H.f.eval α) hns).toField.toNontrivial
+    have := (algebraMap k (SqrtExt (H.f.eval α))).injective
+    exact this (by simpa using hcontra)
+  have hc₀ne' : toPair H c₀ (0 : k[X]) ≠ 0 := by
+    rw [Ne, toPair_eq_zero_iff]; exact fun h => hc₀ne h.1
+  have hordc_pos : ordAtSpec v c₀ (0 : k[X]) ≥ 1 := by
+    rw [ordAtSpec_eq_count v c₀ 0 hc₀ne']
+    have hdvd : v.asIdeal ∣ Ideal.span ({toPair H c₀ (0 : k[X])} : Set (CoordinateRing H)) :=
+      Ideal.dvd_span_singleton.mpr hc₀mem
+    have hspan_ne : Associates.mk
+        (Ideal.span ({toPair H c₀ (0 : k[X])} : Set (CoordinateRing H))) ≠ 0 :=
+      Associates.mk_ne_zero.mpr (Ideal.span_singleton_eq_bot.not.mpr hc₀ne')
+    have hge1 : 1 ≤ (Associates.mk v.asIdeal).count (Associates.mk
+        (Ideal.span ({toPair H c₀ (0 : k[X])} : Set (CoordinateRing H)))).factors := by
+      have hdvd' : Associates.mk v.asIdeal ^ 1 ∣
+          Associates.mk (Ideal.span ({toPair H c₀ (0 : k[X])} : Set (CoordinateRing H))) := by
+        rw [pow_one, Associates.mk_dvd_mk]
+        exact hdvd
+      exact (Associates.prime_pow_dvd_iff_le hspan_ne
+        (Associates.irreducible_mk.mpr v.irreducible)).mp hdvd'
+    exact_mod_cast hge1
+  have horda0 : ordAtSpec v a₀ (0 : k[X]) = 0 := ordAtSpec_eq_zero_of_notMem v a₀ 0 ha₀notmem
+  have hbound := hzsuppSpec₀ v
+  rw [horda0] at hbound
+  have hvne1 : v ≠ pointHeightOne' x₁ :=
+    nonSquareFiberHeightOne_ne_pointHeightOne' (H := H) α hns x₁
+  have hvne2 : v ≠ pointHeightOne' x₂ :=
+    nonSquareFiberHeightOne_ne_pointHeightOne' (H := H) α hns x₂
+  simp only [if_neg hvne1, if_neg hvne2, add_zero] at hbound
+  omega
+
+/-- **The ramified rational case, without `[IsAlgClosed k]`.** Verbatim
+extraction of `false_of_root_of_coprimeAtRoots_zero_snd`'s ramified branch
+(`H.f.eval α = 0`): it never invokes closedness, only the unramified branch
+of that theorem does (via `IsAlgClosed.exists_pow_nat_eq`), so this half is a
+direct, unconditional replacement — no `hsq`/`hns` case split needed here. -/
+theorem false_of_root_ramified
+    [IsDedekindDomain (CoordinateRing H)]
+    (hsf : Squarefree H.f) (x₁ x₂ : H.Point)
+    (hne : x₂ ≠ Point.iota x₁) (a₀ c₀ : k[X]) (hc₀ne : c₀ ≠ 0)
+    (haα : a₀.eval (α : k) ≠ 0)
+    (hzsupp₀ : ∀ P : H.Point, ordAtFrac P a₀ 0 c₀ 0 ≥
+      -((if P = x₁ then 1 else 0) + (if P = x₂ then 1 else 0)))
+    (hWeier : H.f.eval α = 0) (hα : c₀.eval α = 0) : False := by
+  classical
+  have hQeq : H.Equation α (0 : k) := by
+    show (0 : k) ^ 2 = H.f.eval α; rw [hWeier]; ring
+  set Q : H.Point := Point.mk α 0 hQeq with hQ_def
+  have hQX : Q.X = α := rfl
+  have hQY : Q.Y = 0 := rfl
+  have hordc : ordAt Q c₀ (0 : k[X]) = 2 * (c₀.rootMultiplicity α : ℤ) :=
+    ordAt_eq_rootMultiplicity_ramified hsf c₀ hc₀ne α Q (pointIdeal_ne_bot Q) hQX hQY
+  have hmpos : (c₀.rootMultiplicity α : ℤ) ≥ 1 := by
+    have hroot : c₀.IsRoot α := hα
+    have hpos : 0 < c₀.rootMultiplicity α := (Polynomial.rootMultiplicity_pos hc₀ne).mpr hroot
+    exact_mod_cast hpos
+  have hnotmem : toPair H a₀ (0 : k[X]) ∉ pointIdeal Q := by
+    rw [toPair_mem_pointIdeal_iff]; simp only [hQX, hQY, mul_zero, add_zero]; exact haα
+  have hordab : ordAt Q a₀ (0 : k[X]) = 0 := ordAt_eq_zero_of_notMem Q a₀ 0 hnotmem
+  have hboundQ := hzsupp₀ Q
+  unfold ordAtFrac at hboundQ
+  rw [hordab, hordc] at hboundQ
+  have hsum_ge : (2 : ℤ) ≤
+      (if Q = x₁ then 1 else 0) + (if Q = x₂ then 1 else 0) := by
+    linarith [hboundQ, hmpos]
+  have hQ1 : Q = x₁ := by
+    by_contra hQ1
+    by_cases hQ2 : Q = x₂
+    · have h := hsum_ge
+      simp only [if_neg hQ1, if_pos hQ2] at h
       omega
+    · have h := hsum_ge
+      simp only [if_neg hQ1, if_neg hQ2] at h
+      omega
+  have hQ2 : Q = x₂ := by
+    by_contra hQ2
+    by_cases hQ1 : Q = x₁
+    · have h := hsum_ge
+      simp only [if_pos hQ1, if_neg hQ2] at h
+      omega
+    · have h := hsum_ge
+      simp only [if_neg hQ1, if_neg hQ2] at h
+      omega
+  have hιQeq : Point.iota Q = Q := by
+    apply Subtype.ext
+    apply Prod.ext
+    · exact Point.iota_X Q
+    · calc
+        (Point.iota Q).Y = -Q.Y := Point.iota_Y Q
+        _ = Q.Y := by rw [hQY]; simp
+  apply hne
+  calc
+    x₂ = Q := hQ2.symm
+    _ = Point.iota Q := hιQeq.symm
+    _ = Point.iota x₁ := congrArg Point.iota hQ1
+
+/-- **The unramified rational case, without `[IsAlgClosed k]`.** Same
+argument as `false_of_root_of_coprimeAtRoots_zero_snd`'s unramified branch,
+except the square root `β` with `β ^ 2 = H.f.eval α` is taken directly from
+the hypothesis `hsq : IsSquare (H.f.eval α)` (`IsSquare c ↔ ∃ r, c = r * r`)
+instead of from `IsAlgClosed.exists_pow_nat_eq`. Everything downstream is
+identical to the closed-field proof, since nothing else in that branch uses
+closedness. -/
+theorem false_of_root_unramified_of_isSquare
+    [IsDedekindDomain (CoordinateRing H)]
+    (hchar : (2 : k) ≠ 0) (x₁ x₂ : H.Point)
+    (hne : x₂ ≠ Point.iota x₁) (a₀ c₀ : k[X]) (hc₀ne : c₀ ≠ 0)
+    (haα : a₀.eval (α : k) ≠ 0)
+    (hzsupp₀ : ∀ P : H.Point, ordAtFrac P a₀ 0 c₀ 0 ≥
+      -((if P = x₁ then 1 else 0) + (if P = x₂ then 1 else 0)))
+    (hWeier : H.f.eval α ≠ 0) (hα : c₀.eval α = 0)
+    (hsq : IsSquare (H.f.eval α)) : False := by
+  classical
+  obtain ⟨β, hβ⟩ := hsq
+  have hβ' : β ^ 2 = H.f.eval α := by rw [sq]; exact hβ.symm
+  have hβne : β ≠ 0 := by
+    intro h
+    rw [h] at hβ'
+    simp at hβ'
+    exact hWeier hβ'.symm
+  have hQeq : H.Equation α β := by
+    show β ^ 2 = H.f.eval α
+    exact hβ'
+  set Q : H.Point := Point.mk α β hQeq with hQ_def
+  have hQX : Q.X = α := rfl
+  have hQY : Q.Y = β := rfl
+  have hQYne : Q.Y ≠ 0 := hQY ▸ hβne
+  have hιQX : (Point.iota Q).X = α := by
+    rw [Point.iota_X]; exact hQX
+  have hιQYne : (Point.iota Q).Y ≠ 0 := by
+    rw [Point.iota_Y]; exact neg_ne_zero.mpr hQYne
+  have hQIneQ : Point.iota Q ≠ Q :=
+    Point.iota_ne_self_of_Y_ne_zero hchar hQYne
+  have hordabQ : ordAt Q a₀ (0 : k[X]) = 0 := by
+    apply ordAt_eq_zero_of_notMem
+    rw [toPair_mem_pointIdeal_iff]
+    simpa [hQX] using haα
+  have hordabιQ : ordAt (Point.iota Q) a₀ (0 : k[X]) = 0 := by
+    apply ordAt_eq_zero_of_notMem
+    rw [toPair_mem_pointIdeal_iff]
+    simpa [hιQX] using haα
+  have hmpos : (c₀.rootMultiplicity α : ℤ) ≥ 1 := by
+    have hroot : c₀.IsRoot α := hα
+    have hpos : 0 < c₀.rootMultiplicity α :=
+      (Polynomial.rootMultiplicity_pos hc₀ne).mpr hroot
+    exact_mod_cast hpos
+  have hordcQ : ordAt Q c₀ (0 : k[X]) = (c₀.rootMultiplicity α : ℤ) :=
+    ordAt_eq_rootMultiplicity_unramified hchar c₀ hc₀ne α Q
+      (pointIdeal_ne_bot Q) hQX hQYne
+  have hordcιQ : ordAt (Point.iota Q) c₀ (0 : k[X]) =
+      (c₀.rootMultiplicity α : ℤ) :=
+    ordAt_eq_rootMultiplicity_unramified hchar c₀ hc₀ne α (Point.iota Q)
+      (pointIdeal_ne_bot _) hιQX hιQYne
+  have hboundQ := hzsupp₀ Q
+  have hboundιQ := hzsupp₀ (Point.iota Q)
+  unfold ordAtFrac at hboundQ hboundιQ
+  rw [hordabQ, hordcQ] at hboundQ
+  rw [hordabιQ, hordcιQ] at hboundιQ
+  have hQmem : Q = x₁ ∨ Q = x₂ := by
+    by_cases hQ1 : Q = x₁
+    · exact Or.inl hQ1
+    by_cases hQ2 : Q = x₂
+    · exact Or.inr hQ2
+    exfalso
+    have h : -(c₀.rootMultiplicity α : ℤ) ≥ 0 := by
+      simpa only [if_neg hQ1, if_neg hQ2, sub_eq_add_neg, zero_add,
+        neg_zero, add_zero] using hboundQ
+    linarith
+  have hιQmem : Point.iota Q = x₁ ∨ Point.iota Q = x₂ := by
+    by_cases hQ1 : Point.iota Q = x₁
+    · exact Or.inl hQ1
+    by_cases hQ2 : Point.iota Q = x₂
+    · exact Or.inr hQ2
+    exfalso
+    have h : -(c₀.rootMultiplicity α : ℤ) ≥ 0 := by
+      simpa only [if_neg hQ1, if_neg hQ2, sub_eq_add_neg, zero_add,
+        neg_zero, add_zero] using hboundιQ
+    linarith
+  apply hne
+  rcases hQmem with hQ1 | hQ2
+  · rcases hιQmem with hιQ1 | hιQ2
+    · exact False.elim (hQIneQ (hιQ1.trans hQ1.symm))
+    · exact hιQ2.symm.trans (congrArg Point.iota hQ1)
+  · rcases hιQmem with hιQ1 | hιQ2
+    · calc
+        x₂ = Q := hQ2.symm
+        _ = Point.iota (Point.iota Q) := (Point.iota_iota Q).symm
+        _ = Point.iota x₁ := congrArg Point.iota hιQ1
+    · exact False.elim (hQIneQ (hιQ2.trans hQ2.symm))
+
+/-- **The `IsAlgClosed`-free finish.** Direct replacement for
+`false_of_root_of_coprimeAtRoots_zero_snd`. The ramified rational case uses
+`false_of_root_ramified` (an extraction of that lemma's ramified branch,
+which never needed closedness); the unramified rational case uses
+`false_of_root_unramified_of_isSquare` (square root taken from `hsq`
+directly, not from `IsAlgClosed`); the `H.f.eval α` non-square case uses
+`false_of_nonSquareFiber_root`. -/
+theorem false_of_root_of_isCoprimeAtRoots_zero_snd_general
+    [IsDedekindDomain (CoordinateRing H)] [DecidableEq k]
+    (hchar : (2 : k) ≠ 0) (hsf : Squarefree H.f) (x₁ x₂ : H.Point)
+    (hne : x₂ ≠ Point.iota x₁) (a₀ c₀ : k[X]) (hc₀ne : c₀ ≠ 0)
+    (hcop : IsCoprimeAtRoots a₀ 0 c₀)
+    (hzsupp₀ : ∀ P : H.Point, ordAtFrac P a₀ 0 c₀ 0 ≥
+      -((if P = x₁ then 1 else 0) + (if P = x₂ then 1 else 0)))
+    (hzsuppSpec₀ : ∀ v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H),
+      ordAtSpec v a₀ 0 - ordAtSpec v c₀ (0 : k[X]) ≥
+        -((if v = pointHeightOne' x₁ then 1 else 0) +
+          (if v = pointHeightOne' x₂ then 1 else 0)))
+    (α : k) (hα : c₀.eval α = 0) : False := by
+  classical
+  have haα : a₀.eval α ≠ 0 := fun h => hcop α hα ⟨h, by simp⟩
+  by_cases hWeier : H.f.eval α = 0
+  · exact false_of_root_ramified
+      (H := H) hsf x₁ x₂ hne a₀ c₀ hc₀ne haα hzsupp₀ hWeier hα
+  · by_cases hsq : IsSquare (H.f.eval α)
+    · exact false_of_root_unramified_of_isSquare
+        (H := H) hchar x₁ x₂ hne a₀ c₀ hc₀ne haα hzsupp₀ hWeier hα hsq
+    · exact false_of_nonSquareFiber_root (H := H) x₁ x₂ a₀ c₀ hc₀ne haα hα hsq hzsuppSpec₀
+
+/-! ## §3e. `IsNormCoprime H a₀ b₀ c₀` directly, for general `b₀` (no `hbeq0`
+prerequisite).
+
+**The actual remaining gap, per the bad-factor plan.** Take any irreducible `q`
+dividing `gcd (pairNorm H a₀ b₀) c₀`. `hgu` (unit joint `k[X]`-gcd of `a₀,b₀,c₀`)
+forces `q ∤ b₀` (`notDvd_snd_of_dvd_gcd_pairNorm_of_gcdUnit` below — pure `k[X]`
+algebra, no closedness). Then case-split `q ∣ H.f` (ramified) vs `q ∤ H.f`
+(split/inert): each case forces a closed point `v` lying over `q` into
+`{pointHeightOne' x₁, pointHeightOne' x₂}` via `hzsuppSpec₀`, and since `q` is a
+common factor of `pairNorm a₀ b₀` and `c₀`, `v` witnesses both `toPair H a₀ b₀ ∈
+v.asIdeal` and `toPair H c₀ 0 ∈ v.asIdeal` — but genuinely new closed-point
+infrastructure (a `HeightOneSpectrum`-level construction for the *ramified* fiber at
+an arbitrary-degree irreducible `q ∣ H.f`, generalizing the existing rational-`α`-only
+ramified machinery in `LPairFinrankOneOrdAtFrac.lean`) is needed for the ramified
+case, and the `nonSquareFiberHeightOne`/`SqrtExt` pattern needs regeneralizing from
+`α : k` to `q : k[X]` for the split case. Built incrementally below. -/
+
+/-- **`q ∤ b₀`, from the unit joint gcd.** If `q ∣ pairNorm H a₀ b₀`, `q ∣ c₀`, and
+`q ∣ b₀`, then since `pairNorm H a₀ b₀ = a₀^2 - b₀^2 * H.f`, `q ∣ b₀^2 * H.f` too, so
+`q ∣ a₀^2`; `q` irreducible (hence prime, `k[X]` a UFD) gives `q ∣ a₀`. Then `q`
+divides `a₀`, `b₀`, and `c₀`, hence `q ∣ gcd (gcd a₀ b₀) c₀`, forcing `q` to be a
+unit (`hgu`) — contradicting `q` irreducible. -/
+theorem notDvd_snd_of_dvd_gcd_pairNorm_of_gcdUnit
+    (a₀ b₀ c₀ q : k[X]) (hq : Irreducible q)
+    (hgu : IsUnit (gcd (gcd a₀ b₀) c₀))
+    (hqc : q ∣ c₀) (hqn : q ∣ pairNorm H a₀ b₀) : ¬ q ∣ b₀ := by
+  intro hqb
+  have hqa2 : q ∣ a₀ ^ 2 := by
+    have hqb2f : q ∣ b₀ ^ 2 * H.f := Dvd.dvd.mul_right (hqb.pow (two_ne_zero)) H.f
+    have : q ∣ a₀ ^ 2 - b₀ ^ 2 * H.f + b₀ ^ 2 * H.f := by
+      have hsub : a₀ ^ 2 - b₀ ^ 2 * H.f = pairNorm H a₀ b₀ := rfl
+      rw [hsub]
+      exact hqn.add hqb2f
+    simpa using this
+  have hqa : q ∣ a₀ := hq.prime.dvd_of_dvd_pow hqa2
+  have hq_dvd_gcd : q ∣ gcd (gcd a₀ b₀) c₀ := dvd_gcd (dvd_gcd hqa hqb) hqc
+  exact hq.not_isUnit (isUnit_of_dvd_unit hq_dvd_gcd hgu)
+
+/-! ### The split (non-Weierstrass) bad-factor case, `q.natDegree ≥ 2`, `q ∤ H.f`.
+
+**Per the residue-field argument (confirmed correct, no exact-order computation
+needed):** at any `v` over `q` (going-up, `heightOneSpectrum_of_irreducible_ne_
+pointIdeal`), work in the field `L := CoordinateRing H ⧸ v.asIdeal`. Write `ȳ := mk (y
+H)`, so `ȳ² = mk H.f` in `L`. If `toPair H a₀ b₀ ∈ v.asIdeal` (i.e. `mk (toPair H a₀
+b₀) = 0`), consider the *conjugate* ideal `v' := ` the image of `v` under `involution
+H` (a ring automorphism, so `v'` is again height-one prime). Since `involution H
+(toPair H a₀ b₀) = toPair H a₀ (-b₀)`, membership transports: `toPair H a₀ b₀ ∈
+v.asIdeal ↔ toPair H a₀ (-b₀) ∈ v'.asIdeal`. The *sum* `toPair H a₀ b₀ + toPair H a₀
+(-b₀) = 2 • algebraMap a₀`(the `y`-terms cancel), so if **both** `toPair H a₀ b₀ ∈
+v.asIdeal` and its conjugate fact forced `a₀`'s image to vanish at `v` too — but we
+show directly below that at least one of `v`, `v'` fails to contain the numerator,
+using `q ∤ a₀` (from `q ∤ b₀`, `q ∣ pairNorm`, `q ∤ H.f`) and `hchar`. -/
+
+/-- **The conjugate `HeightOneSpectrum` under the hyperelliptic involution.**
+`involution H` is a ring automorphism (self-inverse, `involution_involution` below), so
+pushing a height-one prime through it stays height-one. -/
+theorem involution_involution (H : HyperellipticPolynomial k) (w : CoordinateRing H) :
+    involution H (involution H w) = w := by
+  obtain ⟨E, F, hw⟩ := toPair_surjective_local H w
+  rw [hw, toPair_involution, toPair_involution, neg_neg]
+
+theorem involution_bijective (H : HyperellipticPolynomial k) :
+    Function.Bijective (involution H) :=
+  Function.bijective_iff_has_inverse.mpr
+    ⟨involution H, involution_involution H, involution_involution H⟩
+
+/-- `involution H`, packaged as a `RingEquiv` (self-inverse ring automorphism). -/
+noncomputable def involutionEquiv (H : HyperellipticPolynomial k) :
+    CoordinateRing H ≃+* CoordinateRing H :=
+  RingEquiv.ofBijective (involution H) (involution_bijective H)
+
+/-- The conjugate closed point `v' := involution "of" v`, i.e. the height-one prime
+`(involutionEquiv H) '' v.asIdeal` (equivalently `Ideal.comap (involutionEquiv H).symm
+v.asIdeal`, since `involutionEquiv H` is self-inverse). -/
+def conjHeightOne [IsDedekindDomain (CoordinateRing H)]
+    (v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H)) :
+    IsDedekindDomain.HeightOneSpectrum (CoordinateRing H) where
+  asIdeal := Ideal.comap (involutionEquiv H).symm.toRingHom v.asIdeal
+  isPrime := Ideal.comap_isPrime _ _
+  ne_bot := by
+    intro hbot
+    apply v.ne_bot
+    have hcomap : Ideal.comap (involutionEquiv H).symm.toRingHom v.asIdeal = (⊥ : Ideal _) :=
+      hbot
+    have hmap := congrArg (Ideal.map (involutionEquiv H).symm.toRingHom) hcomap
+    rw [Ideal.map_bot] at hmap
+    rwa [Ideal.map_comap_of_surjective (involutionEquiv H).symm.toRingHom
+      (involutionEquiv H).symm.surjective v.asIdeal] at hmap
+
+/-- **Membership transports across `conjHeightOne`.** `w ∈ (conjHeightOne v).asIdeal ↔
+involution H w ∈ v.asIdeal`. Direct unfolding: `(conjHeightOne v).asIdeal` is the
+comap of `v.asIdeal` along `(involutionEquiv H).symm`, i.e. exactly `{w | (involutionEquiv
+H).symm w ∈ v.asIdeal}`; since `involution H` is its own inverse,
+`(involutionEquiv H).symm w = involution H w`. -/
+theorem mem_conjHeightOne_iff [IsDedekindDomain (CoordinateRing H)]
+    (v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H)) (w : CoordinateRing H) :
+    w ∈ (conjHeightOne (H := H) v).asIdeal ↔ involution H w ∈ v.asIdeal := by
+  show (involutionEquiv H).symm w ∈ v.asIdeal ↔ involution H w ∈ v.asIdeal
+  have : (involutionEquiv H).symm w = involution H w := by
+    have hfwd : involutionEquiv H (involution H w) = w := involution_involution H w
+    have := congrArg (involutionEquiv H).symm hfwd
+    simpa using this.symm
+  rw [this]
+
+/-- **`conjHeightOne` is an involution.** Follows directly from `mem_conjHeightOne_iff`
+(applied twice) and `involution_involution`: `w ∈ (conjHeightOne (conjHeightOne v)).asIdeal
+↔ involution H w ∈ (conjHeightOne v).asIdeal ↔ involution H (involution H w) ∈ v.asIdeal ↔
+w ∈ v.asIdeal`. -/
+theorem conjHeightOne_conjHeightOne [IsDedekindDomain (CoordinateRing H)]
+    (v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H)) :
+    conjHeightOne (H := H) (conjHeightOne (H := H) v) = v := by
+  ext w
+  rw [mem_conjHeightOne_iff, mem_conjHeightOne_iff, involution_involution]
+
+/-- **`pointHeightOne'` is injective.** `pointHeightOne' P`'s underlying ideal is
+`pointIdeal P` by definition, and distinct points have distinct point ideals
+(`pointIdeal_ne_of_ne`). -/
+theorem pointHeightOne'_injective [IsDedekindDomain (CoordinateRing H)] :
+    Function.Injective (pointHeightOne' (H := H)) := by
+  intro P Q heq
+  by_contra hne
+  exact pointIdeal_ne_of_ne P Q hne (congrArg IsDedekindDomain.HeightOneSpectrum.asIdeal heq)
+
+/-- **`residueDeg` is `conjHeightOne`-invariant.** `involutionEquiv H` is a `k`-algebra
+automorphism of `CoordinateRing H` (fixes `k` pointwise, via `involution_algebraMap` and
+`IsScalarTower k k[X] (CoordinateRing H)`) carrying `v.asIdeal` to `(conjHeightOne
+v).asIdeal` (that's exactly `conjHeightOne`'s definition: comap along the symm map), so it
+descends to a `k`-algebra iso of the two residue fields, giving equal `finrank`. -/
+theorem residueDeg_conjHeightOne [IsDedekindDomain (CoordinateRing H)]
+    (v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H)) :
+    residueDeg (conjHeightOne (H := H) v) = residueDeg v := by
+  unfold residueDeg
+  have hmap : Ideal.map (involutionEquiv H).symm.toRingHom (conjHeightOne (H := H) v).asIdeal
+      = v.asIdeal := by
+    show Ideal.map (involutionEquiv H).symm.toRingHom
+      (Ideal.comap (involutionEquiv H).symm.toRingHom v.asIdeal) = v.asIdeal
+    exact Ideal.map_comap_of_surjective _ (involutionEquiv H).symm.surjective v.asIdeal
+    
+  have halg : ∀ c : k, (involutionEquiv H).symm (algebraMap k (CoordinateRing H) c)
+      = algebraMap k (CoordinateRing H) c := by
+    intro c
+    have h_hom : (algebraMap k (CoordinateRing H) c) = 
+        (algebraMap k[X] (CoordinateRing H)) (algebraMap k k[X] c) := rfl
+    apply (involutionEquiv H).injective
+    rw [(involutionEquiv H).apply_symm_apply, h_hom]
+    exact (involution_algebraMap H (algebraMap k k[X] c)).symm
+    
+  have e : (CoordinateRing H ⧸ (conjHeightOne (H := H) v).asIdeal) ≃ₐ[k]
+      (CoordinateRing H ⧸ v.asIdeal) :=
+    AlgEquiv.ofRingEquiv (f := Ideal.quotientEquiv _ _ (involutionEquiv H).symm hmap.symm)
+      (fun c => by
+        rw [show algebraMap k (CoordinateRing H ⧸ (conjHeightOne (H := H) v).asIdeal) c
+              = Ideal.Quotient.mk _ (algebraMap k (CoordinateRing H) c) from rfl,
+            Ideal.quotientEquiv_mk, halg]
+        rfl)
+        
+  exact LinearEquiv.finrank_eq e.toLinearEquiv
 
 
-/-! ### Skeleton for `isConstantFraction_of_ordAt_eq`'s hard case — two sub-steps
+/-- **`ordAtSpec` at a "B=0" pair is `conjHeightOne`-invariant.** `toPair H A 0 =
+algebraMap A` is fixed by `involution H`, so membership (hence the whole `Associates.count`
+multiplicity) transports identically between `v` and `conjHeightOne v` — not just the
+`> 0 ↔ > 0` fact `Case A` uses, but exact equality, since the ideal `Ideal.span
+{algebraMap A}` is itself `involutionEquiv`-invariant and `conjHeightOne v`'s ideal is the
+`involutionEquiv.symm`-comap of `v`'s. -/
+theorem ordAtSpec_conjHeightOne_fst [IsDedekindDomain (CoordinateRing H)]
+    (v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H)) (A : k[X]) :
+    ordAtSpec (conjHeightOne (H := H) v) A (0 : k[X]) = ordAtSpec v A (0 : k[X]) := by
+  by_cases hA : A = 0
+  · subst hA
+    unfold ordAtSpec
+    have h0 : toPair H 0 (0 : k[X]) = 0 := by simp [HyperellipticPolynomial.toPair]
+    simp [h0]
+  have hne : toPair H A (0 : k[X]) ≠ 0 := by rw [Ne, toPair_eq_zero_iff]; exact fun h => hA h.1
+  have hcalg : toPair H A (0 : k[X]) = algebraMap k[X] (CoordinateRing H) A := by
+    unfold HyperellipticPolynomial.toPair; simp
 
-Per the docstring below (on `isConstantFraction_of_ordAt_eq` itself), the nonzero
-case needs two genuinely separate, currently-unformalized facts. Neither is proved
-here; these are staging targets. -/
+  set alg := algebraMap k[X] (CoordinateRing H) A with halg_def
+  have halg_fix : involution H alg = alg := involution_algebraMap H A
+  have hsymm_eq : ∀ w : CoordinateRing H, (involutionEquiv H).symm w = involution H w := by
+    intro w
+    have hfwd : involutionEquiv H (involution H w) = w := involution_involution H w
+    have := congrArg (involutionEquiv H).symm hfwd
+    simpa using this.symm
 
-/-- **Sub-step A.** `ordAt`-equality everywhere (for nonzero `toPair H A B`,
-`toPair H A' B'`) implies `Ideal.span {toPair H A B} = Ideal.span {toPair H A' B'}`,
-via `Associates`-level unique factorization in the Dedekind domain `CoordinateRing H`
-(equal `count` at every height-one prime — `pointHeightOne P h_bot` for points with
-`pointIdeal P ≠ ⊥`, trivial elsewhere).
+  have hI : Ideal.comap (involutionEquiv H).symm.toRingHom (Ideal.span {alg}) = Ideal.span {alg} := by
+    ext c
+    simp only [Ideal.mem_comap, Ideal.mem_span_singleton]
+    have h_coe : (involutionEquiv H).symm.toRingHom c = involution H c := hsymm_eq c
+    rw [h_coe]
+    constructor
+    · rintro ⟨d, hd⟩
+      refine ⟨involution H d, ?_⟩
+      have happ := congrArg (involution H) hd
+      rw [map_mul, halg_fix] at happ
+      rw [involution_involution H c] at happ
+      exact happ
+    · rintro ⟨d, hd⟩
+      refine ⟨involution H d, ?_⟩
+      have happ := congrArg (involution H) hd
+      rw [map_mul, halg_fix] at happ
+      exact happ
 
-**Corrected statement (ChatGPT-assisted design pass, this session): the original
-version omitted the `hspecAB`/`hspecA'B'` hypotheses that every other lemma in this
-file needing the same "which height-one primes can appear" fact already carries
-(see `deg_divToPairRatio_le_zero`, `exists_finite_support_of_hspec` above, and
-`denom_B'_eq_zero_of_isPoleBoundedAtPair` below for the identical pattern).**
-`hordeq` alone only pins down agreement at *curve points*; `CoordinateRing H` is a
-Dedekind domain with infinitely many height-one primes (it is a rank-2 free
-extension of `k[X]`, itself having infinitely many primes), so without ruling out
-disagreement at some non-curve prime, the conclusion does not follow from `hordeq`
-alone. Adding the two `hspec`-shaped hypotheses (same shape as every sibling lemma)
-repairs this: they say every height-one prime with positive multiplicity in either
-span *is* some `pointIdeal P`, so comparing at curve points via `hordeq` really does
-compare every prime that can possibly matter.
+  rw [ordAtSpec_eq_count _ A 0 hne, ordAtSpec_eq_count _ A 0 hne, hcalg]
+  have h_comap_ideal : (conjHeightOne (H := H) v).asIdeal =
+      Ideal.comap (involutionEquiv H).symm.toRingHom v.asIdeal := rfl
+  rw [h_comap_ideal]
+  congr 1
+  -- `Ideal.span {alg}` is invariant under `(involutionEquiv H).symm` (via `hI`), so counting
+  -- `comap v.asIdeal` against it agrees with counting `v.asIdeal` against it directly. No
+  -- Mathlib lemma packages this for a bare ring equiv, so we prove it here directly, matching
+  -- this file's existing `Associates.prime_pow_dvd_iff_le`/`Associates.mk_le_mk_iff_dvd` idiom
+  -- (e.g. `ordAtSpec_add_eq_of_lt` above): `n ≤ count P I ↔ P^n ∣ I`, and divisibility
+  -- transports along `Ideal.map f` for `f := (involutionEquiv H).toRingHom`, which is
+  -- multiplicative (`Ideal.mapHom`, `Ideal.map_pow`). Crucially, `Ideal.comap
+  -- (involutionEquiv H).symm.toRingHom = Ideal.map (involutionEquiv H).toRingHom`
+  -- (`Ideal.comap_symm`), so `w := (conjHeightOne v).asIdeal` is *itself* `map f v.asIdeal`,
+  -- and `hI` (rewritten the same way) says `map f alg' = alg'` — everything below is then a
+  -- single multiplicative hom `f` applied to two ideals, no inverse map needed at all.
+  classical
+  set f := (involutionEquiv H).toRingHom with hf_def
+  set alg' := Ideal.span ({alg} : Set (CoordinateRing H)) with halg'_def
+  have halg'ne : Associates.mk alg' ≠ 0 :=
+    Associates.mk_ne_zero.mpr (Ideal.span_singleton_eq_bot.not.mpr (hcalg ▸ hne))
+  have hcomap_eq_map : ∀ I : Ideal (CoordinateRing H),
+      Ideal.comap (involutionEquiv H).symm.toRingHom I = Ideal.map f I := fun I =>
+    Ideal.comap_symm (f := involutionEquiv H) (I := I)
+  have hw_eq : (conjHeightOne (H := H) v).asIdeal = Ideal.map f v.asIdeal := by
+    rw [h_comap_ideal, hcomap_eq_map]
+  have hmap_alg' : Ideal.map f alg' = alg' := by
+    have := hI; rw [hcomap_eq_map] at this; exact this
+  -- `map f v.asIdeal ^ n ∣ alg' ↔ v.asIdeal ^ n ∣ alg'`, one direction via the multiplicative
+  -- `map f` directly, the other via `map f.symm` (using `Ideal.map_of_equiv` to undo `map f`).
+  have hdvd_fwd : ∀ n : ℕ, v.asIdeal ^ n ∣ alg' → (Ideal.map f v.asIdeal) ^ n ∣ alg' := by
+    intro n ⟨c, hc⟩
+    refine ⟨Ideal.map f c, ?_⟩
+    have hmap := congrArg (Ideal.map f) hc
+    rwa [Ideal.map_mul, Ideal.map_pow, hmap_alg'] at hmap
+  have hdvd_bwd : ∀ n : ℕ, (Ideal.map f v.asIdeal) ^ n ∣ alg' → v.asIdeal ^ n ∣ alg' := by
+    intro n ⟨c, hc⟩
+    refine ⟨Ideal.map (involutionEquiv H).symm.toRingHom c, ?_⟩
+    have hmap := congrArg (Ideal.map (involutionEquiv H).symm.toRingHom) hc
+    rw [Ideal.map_mul, Ideal.map_pow] at hmap
+    -- `map f.symm (map f I) = I` for a `RingEquiv f` (`Ideal.map_of_equiv`), applied both to
+    -- `I = v.asIdeal` and, via `hmap_alg'` (`map f alg' = alg'`), to pin down that `alg'` is
+    -- also fixed by `map f.symm`.
+    have hmap_alg'_symm : Ideal.map (involutionEquiv H).symm.toRingHom alg' = alg' := by
+      have heq : Ideal.map (involutionEquiv H).symm.toRingHom (Ideal.map f alg') = alg' := by
+        rw [hf_def]; exact Ideal.map_of_equiv (f := involutionEquiv H) (I := alg')
+      rwa [hmap_alg'] at heq
+    have hmap_v : Ideal.map (involutionEquiv H).symm.toRingHom (Ideal.map f v.asIdeal) =
+        v.asIdeal := by
+      rw [hf_def]; exact Ideal.map_of_equiv (f := involutionEquiv H) (I := v.asIdeal)
+    rwa [hmap_v, hmap_alg'_symm] at hmap
+  have hcount_iff_w : ∀ n : ℕ,
+      n ≤ (Associates.mk (Ideal.map f v.asIdeal)).count (Associates.mk alg').factors ↔
+        (Ideal.map f v.asIdeal) ^ n ∣ alg' := by
+    intro n
+    rw [← Associates.mk_le_mk_iff_dvd, Associates.mk_pow]
+    rw [← hw_eq]
+    exact (Associates.prime_pow_dvd_iff_le halg'ne
+      (conjHeightOne (H := H) v).associates_irreducible).symm
+  have hcount_iff_v : ∀ n : ℕ,
+      n ≤ (Associates.mk v.asIdeal).count (Associates.mk alg').factors ↔ v.asIdeal ^ n ∣ alg' := by
+    intro n
+    rw [← Associates.mk_le_mk_iff_dvd, Associates.mk_pow]
+    exact (Associates.prime_pow_dvd_iff_le halg'ne v.associates_irreducible).symm
+  rw [hcomap_eq_map]
+  apply le_antisymm
+  · by_contra hcon
+    push_neg at hcon
+    have hge : (Associates.mk v.asIdeal).count (Associates.mk alg').factors + 1 ≤
+        (Associates.mk (Ideal.map f v.asIdeal)).count (Associates.mk alg').factors := hcon
+    have hdvd_w := (hcount_iff_w _).mp hge
+    have hdvd_v := hdvd_bwd _ hdvd_w
+    have := (hcount_iff_v _).mpr hdvd_v
+    omega
+  · by_contra hcon
+    push_neg at hcon
+    have hge : (Associates.mk (Ideal.map f v.asIdeal)).count (Associates.mk alg').factors + 1 ≤
+        (Associates.mk v.asIdeal).count (Associates.mk alg').factors := hcon
+    have hdvd_v := (hcount_iff_v _).mp hge
+    have hdvd_w := hdvd_fwd _ hdvd_v
+    have := (hcount_iff_w _).mpr hdvd_w
+    omega
 
-Proof strategy: for a height-one prime `v`, `Ideal.count_associates_factors_eq`
-identifies `(Associates.mk v.asIdeal).count (Associates.mk I).factors` with
-`Multiset.count v.asIdeal (normalizedFactors I)` (`I` either span); the two counts
-agree because either (a) the count is `0` on both sides (no `hspec` witness, so `v`
-isn't `pointIdeal P` for any `P`, hence contributes `0` to both — this needs a
-*contrapositive* use of `hspec`, not just the forward direction, to rule out `v`
-appearing in one factorization but not being covered by `hspec` for the other) or
-(b) `v = pointHeightOne P h_bot` for some curve point `P`, where `ordAt_eq_count`
-(`PrincipalDivisors.lean`) turns `hordeq P` directly into equal counts. Equal
-`Multiset.count` at every element of `normalizedFactors` (both finite multisets,
-by `hfinite_support`) gives equal multisets (`Multiset.ext`), hence equal
-`Associates.mk`-image ideals (`normalizedFactors` reconstructs the ideal up to
-associates for a nonzero ideal in a Dedekind domain), hence — since both ideals
-here are already `Associates.mk`-represented via nonzero *principal* ideals in a
-domain — the ideals themselves are equal. -/
-theorem span_eq_of_ordAt_eq (A B A' B' : k[X])
+
+
+
+
+/-! ## §3f. `c₀.natDegree ≤ 2`, closed-point-native, avoiding the `pairNorm`
+circularity entirely.
+
+**ChatGPT-suggested route (confirmed non-circular).** Rather than bound
+`c₀.natDegree` via `deg(pairNorm a₀ b₀)` (which `hinf₀` only bounds back in
+terms of `c₀.natDegree` itself — vacuous), work directly with ideal membership
+in `CoordinateRing H`: for irreducible `q ∣ c₀`, `hgu` forces
+`toPair H a₀ b₀ ∉ v.asIdeal` for *some* `v` lying over `q` (else `q` would
+divide `gcd (gcd a₀ b₀) c₀`), and `hzsuppSpec₀` then forces that `v` to be
+`pointHeightOne' x₁` or `pointHeightOne' x₂` — pinning `q` to be linear,
+rational, and multiplicity-one, with at most two such factors total. `hinf₀`
+never enters this argument. -/
+
+/-- **General going-up, with exact comap (no degree restriction).** Every
+irreducible `q : k[X]` determines a height-one prime `v` of `CoordinateRing H`
+lying exactly over `Ideal.span {q}` (`v.asIdeal.comap (algebraMap k[X]
+(CoordinateRing H)) = Ideal.span {q}`, not just `≤`). Extracted from
+`heightOneSpectrum_of_irreducible_ne_pointIdeal`'s proof: the going-up step
+(`Ideal.exists_ideal_over_prime_of_isIntegral_of_isDomain`) and the exact
+comap equality it produces never used `2 ≤ q.natDegree` — that hypothesis was
+only needed for the `≠ pointHeightOne' P` conclusion, dropped here since this
+version is applied to *every* factor of `c₀`, including linear ones. -/
+theorem heightOneSpectrum_over_irreducible
+    (q : k[X]) (hq : Irreducible q) :
+    ∃ v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H),
+      Ideal.comap (algebraMap k[X] (CoordinateRing H)) v.asIdeal =
+        Ideal.span ({q} : Set k[X]) := by
+  have hmonic : (X ^ 2 - C H.f : (k[X])[X]).Monic :=
+    Polynomial.monic_X_pow_sub_C H.f two_ne_zero
+  haveI hfin : Module.Finite k[X] (CoordinateRing H) := Polynomial.Monic.finite_adjoinRoot hmonic
+  haveI hint : Algebra.IsIntegral k[X] (CoordinateRing H) :=
+    Algebra.IsIntegral.of_finite k[X] (CoordinateRing H)
+  haveI : IsDomain (CoordinateRing H) := IsDedekindDomain.toIsDomain
+  have hqne0 : q ≠ 0 := hq.ne_zero
+  have hspanq_prime : (Ideal.span ({q} : Set k[X])).IsPrime :=
+    (Ideal.span_singleton_prime hqne0).mpr hq.prime
+  haveI : (Ideal.span ({q} : Set k[X])).IsPrime := hspanq_prime
+  have hker_inj : Function.Injective (algebraMap k[X] (CoordinateRing H)) := by
+    show Function.Injective (AdjoinRoot.of (X ^ 2 - C H.f))
+    exact AdjoinRoot.of.injective_of_degree_ne_zero degree_X_sq_sub_C_H_f_ne_zero
+  have hker_bot : RingHom.ker (algebraMap k[X] (CoordinateRing H)) = ⊥ :=
+    RingHom.ker_eq_bot_iff_eq_zero _ |>.mpr (fun a ha => hker_inj (by simpa using ha))
+  obtain ⟨Q, hQprime, hQcomap⟩ :=
+    Ideal.exists_ideal_over_prime_of_isIntegral_of_isDomain
+      (R := k[X]) (S := CoordinateRing H) (Ideal.span ({q} : Set k[X]))
+      (hP := hker_bot ▸ bot_le)
+  haveI : Q.IsPrime := hQprime
+  have hQ_ne_bot : Q ≠ ⊥ := by
+    intro hQbot
+    rw [hQbot] at hQcomap
+    have : Ideal.span ({q} : Set k[X]) = ⊥ :=
+      hQcomap.symm.trans (Ideal.comap_bot_of_injective _ hker_inj)
+    rw [Ideal.span_singleton_eq_bot] at this
+    exact hqne0 this
+  exact ⟨⟨Q, hQprime, hQ_ne_bot⟩, hQcomap⟩
+
+/-- **`toPair H A B ∈ v.asIdeal → q ∣ A`**, for `v` lying exactly over `q`
+(via `heightOneSpectrum_over_irreducible`'s comap equality). Only the `A`-part
+transfers cleanly through `comap` (the `B·y` term isn't `algebraMap` of a
+`k[X]` element), but that's already enough: combined with the same fact
+applied to a second combination, we can detect `q ∣ A ∧ q ∣ B` termwise. -/
+theorem dvd_of_algebraMap_mem_of_comap_eq
+    (q A : k[X]) (v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H))
+    (hv : Ideal.comap (algebraMap k[X] (CoordinateRing H)) v.asIdeal =
+      Ideal.span ({q} : Set k[X]))
+    (hA : algebraMap k[X] (CoordinateRing H) A ∈ v.asIdeal) : q ∣ A := by
+  have : A ∈ Ideal.comap (algebraMap k[X] (CoordinateRing H)) v.asIdeal := hA
+  rw [hv, Ideal.mem_span_singleton] at this
+  exact this
+
+/-- **The membership half of ChatGPT's key lemma.** `q ∣ A → q ∣ B →
+toPair H A B ∈ Ideal.span {algebraMap q}` (hence `∈ v.asIdeal` for any `v`
+lying over `q`, since `Ideal.span {algebraMap q} ≤ v.asIdeal` there). Trivial:
+`toPair H A B = algebraMap A + algebraMap B * y`, and both summands are
+divisible by `algebraMap q` once `A, B` are. -/
+theorem toPair_mem_span_algebraMap_of_dvd
+    (q A B : k[X]) (hqA : q ∣ A) (hqB : q ∣ B) :
+    toPair H A B ∈ Ideal.span ({algebraMap k[X] (CoordinateRing H) q} : Set (CoordinateRing H)) := by
+  rw [Ideal.mem_span_singleton]
+  unfold HyperellipticPolynomial.toPair
+  obtain ⟨A', rfl⟩ := hqA
+  obtain ⟨B', rfl⟩ := hqB
+  refine ⟨algebraMap k[X] (CoordinateRing H) A' +
+    algebraMap k[X] (CoordinateRing H) B' * y H, ?_⟩
+  simp only [map_mul]
+  ring
+
+/-- **The full membership iff.** `toPair H A B ∈ Ideal.span {algebraMap q} ↔
+q ∣ A ∧ q ∣ B`. The reverse direction is `toPair_mem_span_algebraMap_of_dvd`
+(trivial). Forward: membership gives `toPair H A B = algebraMap q * w` for
+some `w`; write `w = toPair H E F` (`toPair_surjective_local`), so `toPair H A
+B = toPair H (q*E) (q*F)` (`toPair_mul`, `algebraMap q = toPair H q 0`); then
+`toPair_injective` (needs `H.f.natDegree = 5`, threaded as `hdeg`) forces
+`A = q*E`, `B = q*F` directly, no coefficient/AdjoinRoot bookkeeping needed. -/
+theorem toPair_mem_span_algebraMap_iff
+    (hdeg : H.f.natDegree = 5) (q A B : k[X]) :
+    toPair H A B ∈ Ideal.span ({algebraMap k[X] (CoordinateRing H) q} : Set (CoordinateRing H)) ↔
+      q ∣ A ∧ q ∣ B := by
+  constructor
+  · intro hmem
+    rw [Ideal.mem_span_singleton] at hmem
+    obtain ⟨w, hw⟩ := hmem
+    obtain ⟨E, F, hEF⟩ := toPair_surjective_local H w
+    rw [hEF] at hw
+    have hqpair : algebraMap k[X] (CoordinateRing H) q = toPair H q 0 := by
+      unfold HyperellipticPolynomial.toPair; simp
+    have hprod : toPair H A B = toPair H (q * E) (q * F) := by
+      rw [hw, hqpair]
+      have := toPair_mul (H := H) q 0 E F
+      simpa using this
+    obtain ⟨hAeq, hBeq⟩ := toPair_injective H hdeg A B (q * E) (q * F) hprod
+    exact ⟨⟨E, hAeq⟩, ⟨F, hBeq⟩⟩
+  · rintro ⟨hqA, hqB⟩
+    exact toPair_mem_span_algebraMap_of_dvd (H := H) q A B hqA hqB
+
+/-- **The witness `v`.** If `toPair H a₀ b₀ ∉ Ideal.span {algebraMap q}`, there is a
+height-one prime `v` with `algebraMap q ∈ v.asIdeal` (i.e. `v` "lies over `q`") and
+`ordAtSpec v a₀ b₀ < ordAtSpec v q 0`. Proved by comparing `Associates.count` at every
+`v` in the (finite) union of the two factorizations' supports: if no such `v` existed,
+every count of `span{toPair a₀ b₀}` would be `≥` the matching count of
+`span{algebraMap q}`, giving `span{algebraMap q} ∣ span{toPair a₀ b₀}` (`Multiset.le`
+on `normalizedFactors`, `UniqueFactorizationMonoid.dvd_iff_normalized_factors_le_
+normalized_factors`) — i.e. `toPair a₀ b₀ ∈ span{algebraMap q}` (`Ideal.dvd_iff_le` +
+`Ideal.mem_span_singleton`), contradicting the hypothesis. -/
+theorem exists_ordAtSpec_lt_of_notMem_span_algebraMap
+    [IsDedekindDomain (CoordinateRing H)]
+    (q a₀ b₀ : k[X]) (hq : Irreducible q) (hab₀ne : toPair H a₀ b₀ ≠ 0)
+    (hnotmem : toPair H a₀ b₀ ∉
+      Ideal.span ({algebraMap k[X] (CoordinateRing H) q} : Set (CoordinateRing H))) :
+    ∃ v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H),
+      algebraMap k[X] (CoordinateRing H) q ∈ v.asIdeal ∧
+      ordAtSpec v a₀ b₀ < ordAtSpec v q 0 := by
+  classical
+  haveI : IsDomain (CoordinateRing H) := IsDedekindDomain.toIsDomain
+  have hqpair : algebraMap k[X] (CoordinateRing H) q = toPair H q 0 := by
+    unfold HyperellipticPolynomial.toPair; simp
+  have hqne : toPair H q (0 : k[X]) ≠ 0 := by
+    rw [Ne, toPair_eq_zero_iff]; exact fun h => hq.ne_zero h.1
+  by_contra hcon
+  push_neg at hcon
+  apply hnotmem
+  rw [Ideal.mem_span_singleton, hqpair]
+  -- Every `v` satisfies `ordAtSpec v q 0 ≤ ordAtSpec v a₀ b₀`, whenever `algebraMap q ∈
+  -- v.asIdeal` (`hcon`, rearranged); when `algebraMap q ∉ v.asIdeal`, `ordAtSpec v q 0 = 0
+  -- ≤ ordAtSpec v a₀ b₀` too (`ordAtSpec_nonneg`). So the inequality holds at *every* `v`,
+  -- unconditionally — giving `count v (span{algebraMap q}) ≤ count v (span{toPair a₀ b₀})`
+  -- everywhere, hence `span{algebraMap q} ∣ span{toPair a₀ b₀}`.
+  have hcount_le : ∀ v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H),
+      (Associates.mk v.asIdeal).count
+        (Associates.mk (Ideal.span ({toPair H q 0} : Set (CoordinateRing H)))).factors ≤
+      (Associates.mk v.asIdeal).count
+        (Associates.mk (Ideal.span ({toPair H a₀ b₀} : Set (CoordinateRing H)))).factors := by
+    intro v
+    have hordv_le : ordAtSpec v q 0 ≤ ordAtSpec v a₀ b₀ := by
+      by_cases hvmem : toPair H q 0 ∈ v.asIdeal
+      · exact hcon v (by rwa [← hqpair] at hvmem)
+      · rw [ordAtSpec_eq_zero_of_notMem v q 0 hvmem]
+        exact ordAtSpec_nonneg v a₀ b₀ hab₀ne
+    have hcAB := ordAtSpec_eq_count v q 0 hqne
+    have hcA'B' := ordAtSpec_eq_count v a₀ b₀ hab₀ne
+    rw [hcAB, hcA'B'] at hordv_le
+    exact_mod_cast hordv_le
+  have hle : Ideal.span ({toPair H q 0} : Set (CoordinateRing H)) ∣
+      Ideal.span ({toPair H a₀ b₀} : Set (CoordinateRing H)) := by
+    haveI hqIne : Ideal.span ({toPair H q 0} : Set (CoordinateRing H)) ≠ 0 := by
+      rw [Ne, Ideal.zero_eq_bot, Ideal.span_singleton_eq_bot]; exact hqne
+    haveI habIne : Ideal.span ({toPair H a₀ b₀} : Set (CoordinateRing H)) ≠ 0 := by
+      rw [Ne, Ideal.zero_eq_bot, Ideal.span_singleton_eq_bot]; exact hab₀ne
+    have hMultiset_le :
+        UniqueFactorizationMonoid.normalizedFactors
+          (Ideal.span ({toPair H q 0} : Set (CoordinateRing H))) ≤
+        UniqueFactorizationMonoid.normalizedFactors
+          (Ideal.span ({toPair H a₀ b₀} : Set (CoordinateRing H))) := by
+      rw [Multiset.le_iff_count]
+      intro J
+      by_cases hJprime : J.IsPrime ∧ J ≠ ⊥
+      · set v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H) :=
+          ⟨J, hJprime.1, hJprime.2⟩ with hv_def
+        have hvJ : v.asIdeal = J := rfl
+        have hq_count := Ideal.count_associates_factors_eq hqIne v.isPrime v.ne_bot
+        have hab_count := Ideal.count_associates_factors_eq habIne v.isPrime v.ne_bot
+        calc
+          Multiset.count J (UniqueFactorizationMonoid.normalizedFactors
+              (Ideal.span ({toPair H q 0} : Set (CoordinateRing H))))
+              = (Associates.mk v.asIdeal).count
+                  (Associates.mk (Ideal.span ({toPair H q 0} : Set (CoordinateRing H)))).factors := by
+                simpa [hvJ] using hq_count.symm
+          _ ≤ (Associates.mk v.asIdeal).count
+                (Associates.mk (Ideal.span ({toPair H a₀ b₀} : Set (CoordinateRing H)))).factors :=
+                hcount_le v
+          _ = Multiset.count J (UniqueFactorizationMonoid.normalizedFactors
+                (Ideal.span ({toPair H a₀ b₀} : Set (CoordinateRing H)))) := by
+                simpa [hvJ] using hab_count
+      · push Not at hJprime
+        by_cases hJ0 : J = 0
+        · have h1 : Multiset.count J (UniqueFactorizationMonoid.normalizedFactors
+              (Ideal.span ({toPair H q 0} : Set (CoordinateRing H)))) = 0 := by
+            rw [Multiset.count_eq_zero]
+            intro hmem
+            have hle := ((Ideal.mem_normalizedFactors_iff hqIne).mp hmem).2
+            rw [hJ0, Ideal.zero_eq_bot, le_bot_iff] at hle
+            exact hqIne hle
+          have h2 : Multiset.count J (UniqueFactorizationMonoid.normalizedFactors
+              (Ideal.span ({toPair H a₀ b₀} : Set (CoordinateRing H)))) = 0 := by
+            rw [Multiset.count_eq_zero]
+            intro hmem
+            have hle := ((Ideal.mem_normalizedFactors_iff habIne).mp hmem).2
+            rw [hJ0, Ideal.zero_eq_bot, le_bot_iff] at hle
+            exact habIne hle
+          rw [h1, h2]
+        · have hJprime' : ¬ J.IsPrime := by
+            intro hprime
+            apply hJ0
+            rw [Ideal.zero_eq_bot]
+            exact hJprime hprime
+          have h1 : Multiset.count J (UniqueFactorizationMonoid.normalizedFactors
+              (Ideal.span ({toPair H q 0} : Set (CoordinateRing H)))) = 0 := by
+            rw [Multiset.count_eq_zero]
+            intro hmem
+            exact hJprime' ((Ideal.mem_normalizedFactors_iff hqIne).mp hmem).1
+          have h2 : Multiset.count J (UniqueFactorizationMonoid.normalizedFactors
+              (Ideal.span ({toPair H a₀ b₀} : Set (CoordinateRing H)))) = 0 := by
+            rw [Multiset.count_eq_zero]
+            intro hmem
+            exact hJprime' ((Ideal.mem_normalizedFactors_iff habIne).mp hmem).1
+          rw [h1, h2]
+    calc Ideal.span ({toPair H q 0} : Set (CoordinateRing H))
+        = (UniqueFactorizationMonoid.normalizedFactors
+            (Ideal.span ({toPair H q 0} : Set (CoordinateRing H)))).prod :=
+          (Ideal.prod_normalizedFactors_eq_self hqIne).symm
+      _ ∣ (UniqueFactorizationMonoid.normalizedFactors
+            (Ideal.span ({toPair H a₀ b₀} : Set (CoordinateRing H)))).prod :=
+          Multiset.prod_dvd_prod_of_le hMultiset_le
+      _ = Ideal.span ({toPair H a₀ b₀} : Set (CoordinateRing H)) :=
+          Ideal.prod_normalizedFactors_eq_self habIne
+  -- `hle : span{toPair q 0} ∣ span{toPair a₀ b₀}` gives the required element membership.
+  have hmemb : toPair H a₀ b₀ ∈ Ideal.span ({toPair H q 0} : Set (CoordinateRing H)) :=
+    Ideal.dvd_span_singleton.mp hle
+  rw [Ideal.mem_span_singleton] at hmemb
+  exact hmemb
+
+/-- **Case A (fully closed): at `v` with `conjHeightOne v` also outside
+`{x₁,x₂}`, `ordAtSpec v c₀ 0 = 0`.** Uses `hzsuppSpec₀` at *both* `v` and
+`conjHeightOne v` (legitimate: `hzsuppSpec₀` is a hypothesis at every closed
+point). Since `c₀` has `B = 0`, `algebraMap c₀` is `involution`-fixed
+(`involution_algebraMap`), so `ordAtSpec v c₀ 0 > 0` transports to
+`ordAtSpec (conjHeightOne v) c₀ 0 > 0` too (`mem_conjHeightOne_iff`). Both
+instances of `hzsuppSpec₀` (indicator `0` at both, by hypothesis) then force
+`toPair H a₀ b₀ ∈ v.asIdeal` **and** `toPair H a₀ (-b₀) ∈ v.asIdeal` (the
+second via `mem_conjHeightOne_iff` applied to the *involution* of `toPair H a₀
+b₀`, which lands in `v.asIdeal` iff `toPair H a₀ b₀ ∈ (conjHeightOne
+v).asIdeal`). Adding gives `algebraMap (2a₀) ∈ v.asIdeal`, hence (via `q :=`
+the generator of `v`'s comap, `hchar`) `q ∣ a₀`. Subtracting gives `algebraMap
+(2b₀) * y H ∈ v.asIdeal`; if `q ∤ H.f` then `y H ∉ v.asIdeal` (else `y H ^ 2 =
+algebraMap H.f ∈ v.asIdeal` forces `q ∣ H.f` via the comap), giving `q ∣ b₀`
+directly. If `q ∣ H.f`, use the *exact* order computation instead: since `H.f`
+squarefree, `ordAtSpec v q 0 = 2` and `ordAtSpec v (y H) 0`-shaped reasoning
+(via `y H ^ 2 = algebraMap H.f`) forces the whole argument through a
+valuation-comparison rather than a bare unit/nonunit split — this sub-case is
+proved via `hzsuppSpec₀ v` directly with the sharper multiplicity bound
+`ordAtSpec v c₀ 0 ≥ 2` from `q^2 ∣ c₀` (using `q ∣ c₀`, `ordAtSpec v q 0 = 2`)
+against `ordAtSpec v (toPair H a₀ b₀) ≤ 1` (itself from the `q ∣ H.f` valuation
+argument at `v`), giving `hzsuppSpec₀`'s inequality `-1 ≤ 1 - ordAtSpec v c₀ 0`
+i.e. `ordAtSpec v c₀ 0 ≤ 2` — contradicting `≥ 4` if `q^2 ∣ c₀` fails to be
+excluded first; see `irreducible_sq_not_dvd_c0` below, which packages this
+whole ramified sub-argument at the `H.Point` level instead (cleaner: uses
+`ordAt_linX_eq`/`pointIdeal_sq_dvd_span_linX_of_ramified` directly, no
+abstract-`q` valuation bookkeeping needed). This theorem only proves the
+**support** half (Case A elimination); multiplicity is handled separately. -/
+theorem ordAtSpec_eq_zero_of_notMem_four_of_dvd
+    [IsDedekindDomain (CoordinateRing H)]
+    (x₁ x₂ : H.Point) (a₀ b₀ c₀ : k[X]) (hc₀ne : c₀ ≠ 0)
+    (hab₀ne : toPair H a₀ b₀ ≠ 0)
+    (hgu : IsUnit (gcd (gcd a₀ b₀) c₀))
+    (hzsuppSpec₀ : ∀ v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H),
+      ordAtSpec v a₀ b₀ - ordAtSpec v c₀ (0 : k[X]) ≥
+        -((if v = pointHeightOne' x₁ then 1 else 0) +
+          (if v = pointHeightOne' x₂ then 1 else 0)))
+    (hchar : (2 : k) ≠ 0) (hsf : Squarefree H.f)
+    (v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H))
+    (hv1 : v ≠ pointHeightOne' x₁) (hv2 : v ≠ pointHeightOne' x₂)
+    (hw1 : conjHeightOne (H := H) v ≠ pointHeightOne' x₁)
+    (hw2 : conjHeightOne (H := H) v ≠ pointHeightOne' x₂) :
+    ordAtSpec v c₀ (0 : k[X]) = 0 := by
+  classical
+  haveI : IsDomain (CoordinateRing H) := IsDedekindDomain.toIsDomain
+  by_contra hne0
+  have hc₀'ne : toPair H c₀ (0 : k[X]) ≠ 0 := by
+    rw [Ne, toPair_eq_zero_iff]; exact fun h => hc₀ne h.1
+  have hpos : 0 < ordAtSpec v c₀ (0 : k[X]) :=
+    lt_of_le_of_ne (ordAtSpec_nonneg v c₀ 0 hc₀'ne) (Ne.symm hne0)
+  have hvmem : toPair H c₀ (0 : k[X]) ∈ v.asIdeal := by
+    by_contra hnotmem
+    have := ordAtSpec_eq_zero_of_notMem v c₀ 0 hnotmem
+    omega
+  set w : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H) := conjHeightOne (H := H) v
+    with hw_def
+  -- `algebraMap c₀` is `involution`-fixed (`B = 0`), so membership transports to `w`.
+  have hcalg : algebraMap k[X] (CoordinateRing H) c₀ = toPair H c₀ (0 : k[X]) := by
+    unfold HyperellipticPolynomial.toPair; simp
+  have hwmem : toPair H c₀ (0 : k[X]) ∈ w.asIdeal := by
+    rw [hw_def, mem_conjHeightOne_iff, ← hcalg, involution_algebraMap, hcalg]
+    exact hvmem
+  have hwpos : 0 < ordAtSpec w c₀ (0 : k[X]) := by
+    by_contra hle
+    push_neg at hle
+    have hle0 : ordAtSpec w c₀ (0 : k[X]) = 0 := le_antisymm hle (ordAtSpec_nonneg w c₀ 0 hc₀'ne)
+    have := ordAtSpec_eq_zero_of_notMem w c₀ 0
+    -- `hle0` contradicts `hwmem` via `ordAtSpec_eq_zero_of_notMem`'s converse direction:
+    -- if `ordAtSpec = 0` were forced only by non-membership, membership would force `> 0`.
+    -- Direct route: `ordAtSpec_eq_count` plus `hwmem` gives a nonzero count.
+    have hcount := ordAtSpec_eq_count w c₀ 0 hc₀'ne
+    rw [hle0] at hcount
+    have hcount0 : (Associates.mk w.asIdeal).count
+        (Associates.mk (Ideal.span ({toPair H c₀ (0:k[X])} : Set (CoordinateRing H)))).factors
+        = 0 := by exact_mod_cast hcount.symm
+    have hdvd : w.asIdeal ∣ Ideal.span ({toPair H c₀ (0:k[X])} : Set (CoordinateRing H)) :=
+      Ideal.dvd_span_singleton.mpr hwmem
+    have hIne : Ideal.span ({toPair H c₀ (0:k[X])} : Set (CoordinateRing H)) ≠ 0 := by
+      rw [Ne, Ideal.zero_eq_bot, Ideal.span_singleton_eq_bot]; exact hc₀'ne
+    have hge1 : 1 ≤ (Associates.mk w.asIdeal).count
+        (Associates.mk (Ideal.span ({toPair H c₀ (0:k[X])} : Set (CoordinateRing H)))).factors := by
+      have hIne' : Associates.mk
+          (Ideal.span ({toPair H c₀ (0:k[X])} : Set (CoordinateRing H))) ≠ 0 :=
+        Associates.mk_ne_zero.mpr hIne
+      rw [← Associates.prime_pow_dvd_iff_le hIne' w.associates_irreducible, pow_one]
+      exact Associates.mk_le_mk_iff_dvd.mpr hdvd
+    omega
+  -- `hzsuppSpec₀` at `v` and `w` (both indicators `0`) force membership of `toPair H a₀ b₀`
+  -- at both.
+  have hbv := hzsuppSpec₀ v
+  simp only [hv1, hv2, if_neg, if_false] at hbv
+  have habv_pos : 0 < ordAtSpec v a₀ b₀ := by omega
+  have habvmem : toPair H a₀ b₀ ∈ v.asIdeal := by
+    by_contra hnotmem
+    have := ordAtSpec_eq_zero_of_notMem v a₀ b₀ hnotmem
+    omega
+  have hbw := hzsuppSpec₀ w
+  simp only [hw1, hw2, if_neg, if_false] at hbw
+  have habw_pos : 0 < ordAtSpec w a₀ b₀ := by omega
+  have habwmem : toPair H a₀ b₀ ∈ w.asIdeal := by
+    by_contra hnotmem
+    have := ordAtSpec_eq_zero_of_notMem w a₀ b₀ hnotmem
+    omega
+  -- `habwmem` transports back to `v` via `involution`: `toPair H a₀ (-b₀) ∈ v.asIdeal`.
+  have habvmem' : toPair H a₀ (-b₀) ∈ v.asIdeal := by
+    rw [hw_def, mem_conjHeightOne_iff] at habwmem
+    rwa [toPair_involution] at habwmem
+  -- Add and subtract: `algebraMap (2a₀) ∈ v.asIdeal`, `algebraMap (2b₀) * y H ∈ v.asIdeal`.
+  have hadd : toPair H a₀ b₀ + toPair H a₀ (-b₀) = algebraMap k[X] (CoordinateRing H) (2 * a₀) := by
+    unfold HyperellipticPolynomial.toPair
+    rw [map_mul, map_ofNat, map_neg]
+    ring
+  have hsub : toPair H a₀ b₀ - toPair H a₀ (-b₀) =
+      algebraMap k[X] (CoordinateRing H) (2 * b₀) * y H := by
+    unfold HyperellipticPolynomial.toPair
+    rw [map_mul, map_ofNat, map_neg]
+    ring
+  have h2a_mem : algebraMap k[X] (CoordinateRing H) (2 * a₀) ∈ v.asIdeal := by
+    rw [← hadd]; exact v.asIdeal.add_mem habvmem habvmem'
+  have h2by_mem : algebraMap k[X] (CoordinateRing H) (2 * b₀) * y H ∈ v.asIdeal := by
+    rw [← hsub]; exact v.asIdeal.sub_mem habvmem habvmem'
+  -- Set up `P := v.asIdeal.comap = span {q}` for irreducible `q` (PID argument, as before).
+  set P : Ideal k[X] := Ideal.comap (algebraMap k[X] (CoordinateRing H)) v.asIdeal with hP_def
+  have hPprime : P.IsPrime := Ideal.comap_isPrime _ _
+  obtain ⟨q, hq_gen⟩ := (IsPrincipalIdealRing.principal P).principal
+  rw [Ideal.submodule_span_eq] at hq_gen
+  have hc₀P : c₀ ∈ P := by
+    show algebraMap k[X] (CoordinateRing H) c₀ ∈ v.asIdeal
+    rw [hcalg]; exact hvmem
+  have hqne0 : q ≠ 0 := by
+    intro hq0
+    rw [hq0, Ideal.span_singleton_zero] at hq_gen
+    exact hc₀ne (by rw [← Ideal.mem_bot (R := k[X]), ← hq_gen]; exact hc₀P)
+  have hq_irred : Irreducible q := by
+    have hPprime' : (Ideal.span ({q} : Set k[X])).IsPrime := hq_gen ▸ hPprime
+    exact (Ideal.span_singleton_prime hqne0).mp hPprime' |>.irreducible
+  have hqc₀ : q ∣ c₀ := by
+    have : c₀ ∈ Ideal.span ({q} : Set k[X]) := hq_gen ▸ hc₀P
+    rwa [Ideal.mem_span_singleton] at this
+  -- `2a₀ ∈ v.asIdeal → q ∣ 2*a₀ → q ∣ a₀` (`hchar`, `2` a unit).
+  have hq2a : q ∣ 2 * a₀ := by
+    have : 2 * a₀ ∈ P := h2a_mem
+    rwa [hq_gen, Ideal.mem_span_singleton] at this
+  have h2unit : IsUnit (2 : k[X]) := by
+    rw [show (2 : k[X]) = Polynomial.C (2:k) from (map_ofNat Polynomial.C 2).symm]
+    exact (Polynomial.isUnit_C).mpr (IsUnit.mk0 (2:k) hchar)
+  have hq_prime : Prime q := hq_irred.prime
+  have hqa₀ : q ∣ a₀ := by
+    rcases (hq_prime.dvd_mul).mp hq2a with h | h
+    · exact absurd h (hq_irred.not_dvd_isUnit h2unit)
+    · exact h
+  -- `2b₀ * y H ∈ v.asIdeal`: split on `q ∣ H.f` or not.
+  by_cases hqf : q ∣ H.f
+  · -- Ramified case is actually **impossible** here: `H.f` squarefree (`hsf`) means
+    -- `q^2 ∤ H.f` (`q` irreducible, not a unit); combined with `q ∣ H.f` and
+    -- `y H ^ 2 = algebraMap H.f`, a parity argument on `ordAtSpec v` at `q^2` vs
+    -- `y H` gives a direct contradiction — no need to separate `q ∣ b₀` at all.
+    exfalso
+    have hyf : y H ^ 2 = algebraMap k[X] (CoordinateRing H) H.f := y_sq_eq H
+    have hyToPair : y H = toPair H 0 1 := by unfold HyperellipticPolynomial.toPair; simp
+    have hyne : toPair H 0 1 ≠ (0 : CoordinateRing H) := by
+      rw [← hyToPair]
+      -- `y H ≠ 0`: else `H.f = y H ^ 2 = 0`, contradicting `H.f` squarefree/nonzero
+      -- implicitly (a squarefree `0` is impossible in a nontrivial ring since `0 = u*u`
+      -- for any `u`, e.g. `u` non-unit if such exists; simplest: `H.f`'s `natDegree`
+      -- context elsewhere in the file always assumes `H.f ≠ 0`, and `hqf : q ∣ H.f`
+      -- with `q` irreducible forces `H.f ≠ 0`, since `q ∣ 0` is fine but then `H.f = 0`
+      -- would make `Squarefree H.f` force `IsUnit q` for every `q` with `q*q ∣ 0`,
+      -- i.e. every `q`, contradicting `hq_irred.not_isUnit` directly below via `hsf`.
+      intro hy0
+      rw [hy0] at hyf
+      have halg0 : algebraMap k[X] (CoordinateRing H) H.f = 0 := by rw [← hyf]; ring
+      have hf0 : H.f = 0 := by
+        have htp0 : toPair H H.f (0:k[X]) = 0 := by
+          unfold HyperellipticPolynomial.toPair; simpa using halg0
+        exact ((toPair_eq_zero_iff H H.f 0).mp htp0).1
+      have : IsUnit q := hsf q (by rw [hf0]; exact dvd_zero _)
+      exact hq_irred.not_isUnit this
+    have hordy_ge0 : 0 ≤ ordAtSpec v (0:k[X]) 1 := ordAtSpec_nonneg v 0 1 hyne
+    have hordf : ordAtSpec v H.f (0:k[X]) = 2 * ordAtSpec v (0:k[X]) 1 := by
+      have hprod : toPair H H.f 0 = toPair H 0 1 * toPair H 0 1 := by
+        have hmul := toPair_mul (H := H) 0 1 0 1
+        norm_num at hmul
+        exact hmul.symm
+      have := ordAtSpec_add_of_toPair_mul (H := H) v 0 1 0 1 H.f 0 hyne hyne hprod
+      rw [this]; ring
+    have hq2ndvd : ¬ q ^ 2 ∣ H.f := fun h => hq_irred.not_isUnit (hsf q (by rwa [pow_two] at h))
+    -- `hordf : ordAtSpec v H.f 0 = 2 * ordAtSpec v (0) 1` is **even**. `q ∣ H.f` gives
+    -- `ordAtSpec v H.f 0 ≥ 1` (cheap, membership via `ordAtSpec_eq_zero_of_notMem`'s
+    -- contrapositive), so evenness forces `ordAtSpec v H.f 0 ≥ 2`. The genuine remaining
+    -- gap: turning `ordAtSpec v H.f 0 ≥ 2` into `q ^ 2 ∣ H.f` in `k[X]` (contradicting
+    -- `hq2ndvd`) needs comparing `v`'s multiplicity (in `CoordinateRing H`) against `q`'s
+    -- own multiplicity in `k[X]` at `P = v.asIdeal.comap = span {q}` — i.e. a
+    -- ramification-index fact (`ordAtSpec v (algebraMap q) 0` vs. `k[X]`-multiplicity of
+    -- `q` in `q` itself, `= 1`), not yet established in this file for a general
+    -- going-up prime (this is exactly the same class of gap flagged in this file's
+    -- earlier history around `heightOneSpectrum_over_irreducible`/ramification).
+    -- Isolating rather than forcing: see `chatgpt_prompt_ramified_squarefree.txt`.
+    have hfpos : 0 < ordAtSpec v H.f (0:k[X]) := by
+      have hfne : toPair H H.f (0:k[X]) ≠ 0 := by
+        rw [Ne, toPair_eq_zero_iff]; exact fun h => hsf.ne_zero h.1
+      have hfmem : toPair H H.f (0:k[X]) ∈ v.asIdeal := by
+        have halgf : toPair H H.f (0:k[X]) = algebraMap k[X] (CoordinateRing H) H.f := by
+          unfold HyperellipticPolynomial.toPair; simp
+        rw [halgf]; show H.f ∈ P; rw [hq_gen, Ideal.mem_span_singleton]; exact hqf
+      by_contra hle
+      push_neg at hle
+      have hle0 : ordAtSpec v H.f (0:k[X]) = 0 := le_antisymm hle (ordAtSpec_nonneg v H.f 0 hfne)
+      have hcount := ordAtSpec_eq_count v H.f 0 hfne
+      rw [hle0] at hcount
+      have hIne : Ideal.span ({toPair H H.f (0:k[X])} : Set (CoordinateRing H)) ≠ 0 := by
+        rw [Ne, Ideal.zero_eq_bot, Ideal.span_singleton_eq_bot]; exact hfne
+      have hge1 : 1 ≤ (Associates.mk v.asIdeal).count
+          (Associates.mk (Ideal.span ({toPair H H.f (0:k[X])} : Set (CoordinateRing H)))).factors := by
+        have hIne' : Associates.mk
+            (Ideal.span ({toPair H H.f (0:k[X])} : Set (CoordinateRing H))) ≠ 0 :=
+          Associates.mk_ne_zero.mpr hIne
+        rw [← Associates.prime_pow_dvd_iff_le hIne' v.associates_irreducible, pow_one]
+        exact Associates.mk_le_mk_iff_dvd.mpr (Ideal.dvd_span_singleton.mpr hfmem)
+      omega
+    have hordf_ge2 : ordAtSpec v H.f (0:k[X]) ≥ 2 := by omega
+    -- **Corrected route (ChatGPT consultation, `chatgpt_prompt_ramified_sorry.txt`):
+    -- the ramified case is NOT vacuous — `ordAtSpec v H.f 0 ≥ 2` is exactly what
+    -- ramification predicts, not a contradiction. The actual argument compares the
+    -- *relative* orders of `a₀` and `(2b₀)·y` inside `toPair a₀ b₀`; it never needs
+    -- the exact ramification index `ordAtSpec v q 0`, only that it equals
+    -- `ordAtSpec v H.f 0` (via `H.f = q*r`, `q ∤ r`, squarefreeness), which is
+    -- `2 * ordAtSpec v (0) 1` (`hordf`) and hence `≥ 2`.
+    obtain ⟨r, hfr⟩ := hqf
+    have hq_not_dvd_r : ¬ q ∣ r := by
+      intro hqr
+      apply hq_irred.not_isUnit
+      apply hsf q
+      rw [hfr]
+      exact mul_dvd_mul_left q hqr
+    have hrne : toPair H r (0:k[X]) ≠ 0 := by
+      rw [Ne, toPair_eq_zero_iff]
+      exact fun h => hq_not_dvd_r (h.1 ▸ dvd_zero q)
+    have hr_notmem : algebraMap k[X] (CoordinateRing H) r ∉ v.asIdeal := by
+      intro hrmem
+      apply hq_not_dvd_r
+      have : r ∈ P := hrmem
+      rwa [hq_gen, Ideal.mem_span_singleton] at this
+    have hord_r : ordAtSpec v r (0:k[X]) = 0 := by
+      apply ordAtSpec_eq_zero_of_notMem v r 0
+      rwa [show toPair H r (0:k[X]) = algebraMap k[X] (CoordinateRing H) r by
+        unfold HyperellipticPolynomial.toPair; simp]
+    have hqne_toPair : toPair H q (0:k[X]) ≠ 0 := by
+      rw [Ne, toPair_eq_zero_iff]; exact fun h => hqne0 h.1
+    have hHf_prod : toPair H H.f (0:k[X]) = toPair H q (0:k[X]) * toPair H r (0:k[X]) := by
+      have := toPair_mul (H := H) q 0 r 0
+      simpa [hfr] using this.symm
+    have hord_q_eq_f : ordAtSpec v q (0:k[X]) = ordAtSpec v H.f (0:k[X]) := by
+      have := ordAtSpec_add_of_toPair_mul (H := H) v q 0 r 0 H.f 0 hqne_toPair hrne hHf_prod
+      rw [this, hord_r, add_zero]
+    -- `ordAtSpec v q 0 = 2 * ordAtSpec v (0) 1` (`m`, the order of `y`), and `m ≥ 1`.
+    have hord_q_eq_2m : ordAtSpec v q (0:k[X]) = 2 * ordAtSpec v (0:k[X]) 1 := by
+      rw [hord_q_eq_f]; exact hordf
+    have hm_pos : 0 < ordAtSpec v (0:k[X]) 1 := by omega
+    -- `toPair H a₀ b₀ ≠ 0` (from `habv_pos`), and its decomposition
+    -- `toPair a₀ b₀ = toPair a₀ 0 + toPair 0 b₀`.
+    have hab₀_ne : toPair H a₀ b₀ ≠ (0 : CoordinateRing H) := by
+      intro h0
+      rw [show ordAtSpec v a₀ b₀ = 0 from by unfold ordAtSpec; rw [if_pos h0]] at habv_pos
+      exact lt_irrefl 0 habv_pos
+    have hdecomp : toPair H a₀ b₀ = toPair H a₀ (0:k[X]) + toPair H (0:k[X]) b₀ := by
+      have := toPair_add (H := H) a₀ 0 0 b₀
+      simpa using this
+    -- We're already inside `exfalso` (goal `False`), so derive it by cases on
+    -- `q ∣ b₀`: get `ordAtSpec v (0) b₀ = ordAtSpec v (0) 1 = m`, via
+    -- `toPair 0 b₀ = toPair b₀ 0 * toPair 0 1` and `ordAtSpec v b₀ 0 = 0`
+    -- (nonmembership, since `q ∤ b₀`) in the non-divisibility case.
+    by_cases hqb₀ : q ∣ b₀
+    · -- `q ∣ a₀` (`hqa₀`), `q ∣ b₀`, `q ∣ c₀` (`hqc₀`) together contradict `hgu`.
+      have hq_dvd_gcd : q ∣ gcd (gcd a₀ b₀) c₀ := dvd_gcd (dvd_gcd hqa₀ hqb₀) hqc₀
+      exact absurd (isUnit_of_dvd_unit hq_dvd_gcd hgu) hq_irred.not_isUnit
+    have hb₀_notmem : algebraMap k[X] (CoordinateRing H) b₀ ∉ v.asIdeal := by
+      intro hb0mem
+      apply hqb₀
+      have : b₀ ∈ P := hb0mem
+      rwa [hq_gen, Ideal.mem_span_singleton] at this
+    have hb₀ne_toPair : toPair H b₀ (0:k[X]) ≠ 0 := by
+      rw [Ne, toPair_eq_zero_iff]
+      intro h
+      exact hb₀_notmem (by
+        rw [h.1, map_zero]; exact Submodule.zero_mem _)
+    have hord_b₀ : ordAtSpec v b₀ (0:k[X]) = 0 := by
+      apply ordAtSpec_eq_zero_of_notMem v b₀ 0
+      rwa [show toPair H b₀ (0:k[X]) = algebraMap k[X] (CoordinateRing H) b₀ by
+        unfold HyperellipticPolynomial.toPair; simp]
+    -- `hyne : toPair H 0 1 ≠ 0` is already in scope (established earlier in this
+    -- `by_cases hqf` branch, via `hyToPair`).
+    have h0b₀_prod : toPair H (0:k[X]) b₀ = toPair H b₀ (0:k[X]) * toPair H (0:k[X]) 1 := by
+      have := toPair_mul (H := H) b₀ 0 0 1
+      simpa using this.symm
+    have hord_0b₀ : ordAtSpec v (0:k[X]) b₀ = ordAtSpec v (0:k[X]) 1 := by
+      have := ordAtSpec_add_of_toPair_mul (H := H) v b₀ 0 0 1 0 b₀ hb₀ne_toPair hyne h0b₀_prod
+      rw [this, hord_b₀, zero_add]
+    -- Case split on `a₀ = 0`.
+    by_cases ha₀0 : a₀ = 0
+    · -- `toPair a₀ b₀ = toPair 0 b₀` directly: `ordAtSpec v a₀ b₀ = m`.
+      have habeq : ordAtSpec v a₀ b₀ = ordAtSpec v (0:k[X]) 1 := by
+        rw [ha₀0, ← hord_0b₀]
+      -- `hbv : ordAtSpec v a₀ b₀ ≥ ordAtSpec v c₀ 0 ≥ ordAtSpec v q 0 = 2m` (via
+      -- `q ∣ c₀`), contradicting `habeq : ordAtSpec v a₀ b₀ = m` and `m > 0`.
+      obtain ⟨s, hcs⟩ := hqc₀
+      have hs_ne : toPair H s (0:k[X]) ≠ 0 := by
+        rw [Ne, toPair_eq_zero_iff]
+        intro h
+        exact hc₀ne (by rw [hcs, h.1, mul_zero])
+      have hcs_prod : toPair H c₀ (0:k[X]) = toPair H q (0:k[X]) * toPair H s (0:k[X]) := by
+        have := toPair_mul (H := H) q 0 s 0
+        simpa [hcs] using this.symm
+      have hordc₀_ge : ordAtSpec v c₀ (0:k[X]) ≥ ordAtSpec v q (0:k[X]) := by
+        have heq := ordAtSpec_add_of_toPair_mul (H := H) v q 0 s 0 c₀ 0 hqne_toPair hs_ne hcs_prod
+        have hsnn : 0 ≤ ordAtSpec v s (0:k[X]) := ordAtSpec_nonneg v s 0 hs_ne
+        omega
+      omega
+    · -- `a₀ ≠ 0`: decompose `toPair a₀ b₀ = toPair a₀ 0 + toPair 0 b₀`, with
+      -- `ordAtSpec v a₀ 0 ≥ ordAtSpec v q 0 = 2m > m = ordAtSpec v 0 b₀`, so the sum's
+      -- order is exactly `m` (`ordAtSpec_add_eq_of_lt`, smaller term wins).
+      have ha₀ne_toPair : toPair H a₀ (0:k[X]) ≠ 0 := by
+        rw [Ne, toPair_eq_zero_iff]; exact fun h => ha₀0 h.1
+      obtain ⟨s, has⟩ := hqa₀
+      have hs_ne_or_a₀0 : toPair H s (0:k[X]) ≠ 0 := by
+        rw [Ne, toPair_eq_zero_iff]
+        intro h
+        exact ha₀0 (by rw [has, h.1, mul_zero])
+      have has_prod : toPair H a₀ (0:k[X]) = toPair H q (0:k[X]) * toPair H s (0:k[X]) := by
+        have := toPair_mul (H := H) q 0 s 0
+        simpa [has] using this.symm
+      have hord_a₀_ge : ordAtSpec v a₀ (0:k[X]) ≥ ordAtSpec v q (0:k[X]) := by
+        have heq := ordAtSpec_add_of_toPair_mul (H := H) v q 0 s 0 a₀ 0
+          hqne_toPair hs_ne_or_a₀0 has_prod
+        have hsnn : 0 ≤ ordAtSpec v s (0:k[X]) := ordAtSpec_nonneg v s 0 hs_ne_or_a₀0
+        omega
+      have hlt : ordAtSpec v (0:k[X]) b₀ < ordAtSpec v a₀ (0:k[X]) := by
+        rw [hord_0b₀]; omega
+      -- `ordAtSpec_add_eq_of_lt` with `(A,B) := (0,b₀)` (the smaller term) and
+      -- `(C,D) := (a₀,0)`: `ord v (0+a₀) (b₀+0) = ord v 0 b₀`.
+      have hzero_ne : toPair H (0:k[X]) b₀ ≠ 0 := by
+        rw [h0b₀_prod]; exact mul_ne_zero hb₀ne_toPair hyne
+      have hsum_eq : ordAtSpec v ((0:k[X]) + a₀) (b₀ + (0:k[X])) = ordAtSpec v (0:k[X]) b₀ :=
+        ordAtSpec_add_eq_of_lt (H := H) v (0:k[X]) b₀ a₀ (0:k[X])
+          hzero_ne ha₀ne_toPair hlt
+      have hsum_simp : ordAtSpec v a₀ b₀ = ordAtSpec v (0:k[X]) b₀ := by
+        rw [zero_add, add_zero] at hsum_eq; exact hsum_eq
+      rw [hsum_simp, hord_0b₀] at hbv
+      -- `hbv : m ≥ ordAtSpec v c₀ 0 ≥ ordAtSpec v q 0 = 2m` (via `q ∣ c₀`, same as
+      -- the `a₀ = 0` case above), contradicting `m > 0`.
+      obtain ⟨s, hcs⟩ := hqc₀
+      have hs_ne : toPair H s (0:k[X]) ≠ 0 := by
+        rw [Ne, toPair_eq_zero_iff]
+        intro h
+        exact hc₀ne (by rw [hcs, h.1, mul_zero])
+      have hcs_prod : toPair H c₀ (0:k[X]) = toPair H q (0:k[X]) * toPair H s (0:k[X]) := by
+        have := toPair_mul (H := H) q 0 s 0
+        simpa [hcs] using this.symm
+      have hordc₀_ge : ordAtSpec v c₀ (0:k[X]) ≥ ordAtSpec v q (0:k[X]) := by
+        have heq := ordAtSpec_add_of_toPair_mul (H := H) v q 0 s 0 c₀ 0 hqne_toPair hs_ne hcs_prod
+        have hsnn : 0 ≤ ordAtSpec v s (0:k[X]) := ordAtSpec_nonneg v s 0 hs_ne
+        omega
+      omega
+  · -- Unramified: `q ∤ H.f` means `y H ∉ v.asIdeal` (else `y H^2 = algebraMap H.f ∈
+    -- v.asIdeal` forces `q ∣ H.f`), so `v.asIdeal` prime + `2b₀*y ∈ v.asIdeal` + `y ∉
+    -- v.asIdeal` gives `algebraMap (2b₀) ∈ v.asIdeal`, hence `q ∣ 2b₀`, hence `q ∣ b₀`.
+    have hynotmem : y H ∉ v.asIdeal := by
+      intro hymem
+      apply hqf
+      have hy2mem : y H ^ 2 ∈ v.asIdeal := by
+        rw [pow_two]; exact Ideal.mul_mem_left v.asIdeal (y H) hymem
+      have hyf : y H ^ 2 = algebraMap k[X] (CoordinateRing H) H.f := y_sq_eq H
+      rw [hyf] at hy2mem
+      have : H.f ∈ P := hy2mem
+      rwa [hq_gen, Ideal.mem_span_singleton] at this
+    have h2b_mem : algebraMap k[X] (CoordinateRing H) (2 * b₀) ∈ v.asIdeal := by
+      rcases v.isPrime.mem_or_mem h2by_mem with h | h
+      · exact h
+      · exact absurd h hynotmem
+    have hq2b : q ∣ 2 * b₀ := by
+      have : (2:k[X]) * b₀ ∈ P := h2b_mem
+      rwa [hq_gen, Ideal.mem_span_singleton] at this
+    have hqb₀ : q ∣ b₀ := by
+      rcases (hq_prime.dvd_mul).mp hq2b with h | h
+      · exact absurd h (hq_irred.not_dvd_isUnit h2unit)
+      · exact h
+    have hq_dvd_gcd : q ∣ gcd (gcd a₀ b₀) c₀ := dvd_gcd (dvd_gcd hqa₀ hqb₀) hqc₀
+    exact absurd (isUnit_of_dvd_unit hq_dvd_gcd hgu) hq_irred.not_isUnit
+
+/-! **STATUS: `false_of_bad_factor_split_deg_ge_two` — abandoned, dead scaffold
+removed.** This was an earlier, superseded attempt at the same fact now proved (up to
+Gap 1/Gap 2, see `chatgpt_prompt_final_two_gaps.txt`) by
+`ordAtSpec_eq_zero_of_notMem_four_of_dvd` / `natDegree_le_two_of_gcdUnit_closed_point`
+above. The abandoned draft is deleted rather than kept as a dangling, unclosed comment
+block (it previously left ~100 lines of live, headerless tactic code after an
+unterminated `!`, which does not parse). 
+
+ **Final assembly: `c₀.natDegree ≤ 2`, closed-point-native, no `IsAlgClosed`.**
+`ordAtSpec v c₀ 0 = 0` away from `{x₁, x₂}` (`ordAtSpec_eq_zero_of_notMem_pair_of_dvd`)
+means the norm-degree identity `2·c₀.natDegree = ∑_{v∈T} residueDeg(v)·ordAtSpec(v,c₀,0)`
+(`natDegree_pairNorm_eq_sum_residueDeg_ordAtSpec` applied to `(c₀,0)`, `pairNorm H c₀ 0 =
+c₀^2`) collapses to (at most) the two terms at `pointHeightOne' x₁, pointHeightOne' x₂`,
+each contributing `residueDeg = 1` (`residueDeg_pointHeightOne'`) times `ordAtSpec ≤
+1` (from `hzsuppSpec₀`'s own indicator bound at those two points, mirroring
+`ordAtSpec_le_indicator_of_isPoleBoundedAtPairSpec`'s style) — giving `2·c₀.natDegree
+≤ 1 + 1 = 2`, i.e. `c₀.natDegree ≤ 1` (stronger than needed, matches `hcdeg1`'s later
+bound, consistent since this is really the same fact reached earlier). -/
+theorem natDegree_le_two_of_gcdUnit_closed_point
+    [IsDedekindDomain (CoordinateRing H)]
+    (x₁ x₂ : H.Point) (a₀ b₀ c₀ : k[X]) (hc₀ne : c₀ ≠ 0)
+    (hab₀ne : toPair H a₀ b₀ ≠ 0)
+    (hgu : IsUnit (gcd (gcd a₀ b₀) c₀))
+    (hchar : (2 : k) ≠ 0) (hsf : Squarefree H.f)
+    (hzsuppSpec₀ : ∀ v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H),
+      ordAtSpec v a₀ b₀ - ordAtSpec v c₀ (0 : k[X]) ≥
+        -((if v = pointHeightOne' x₁ then 1 else 0) +
+          (if v = pointHeightOne' x₂ then 1 else 0))) :
+    c₀.natDegree ≤ 2 := by
+  have hc₀'ne : ¬ (c₀ = 0 ∧ (0 : k[X]) = 0) := by simpa using hc₀ne
+  obtain ⟨T, hsupp⟩ := exists_finite_support_ordAtSpec (H := H) c₀ (0 : k[X]) hc₀'ne
+  -- **Four** exceptional points now (corrected from the earlier, false two-point
+  -- version): `x₁`, `x₂`, and their two `conjHeightOne`-images. `Case A` of
+  -- `ordAtSpec_eq_zero_of_notMem_four_of_dvd` genuinely needs all four excluded to
+  -- force vanishing elsewhere (see that theorem's docstring: `hzsuppSpec₀` alone at a
+  -- single `v` isn't enough, the conjugate point's instance is load-bearing too).
+  set T' : Finset (IsDedekindDomain.HeightOneSpectrum (CoordinateRing H)) :=
+    insert (pointHeightOne' x₁) (insert (pointHeightOne' x₂)
+      (insert (conjHeightOne (H := H) (pointHeightOne' x₁))
+        (insert (conjHeightOne (H := H) (pointHeightOne' x₂)) T))) with hT'_def
+  have hsupp' : ∀ v, v ∉ T' → ordAtSpec v c₀ (0 : k[X]) = 0 := by
+    intro v hv
+    by_cases hv1 : v = pointHeightOne' x₁
+    · exact absurd hv1 (fun h => hv (by rw [hT'_def, h]; exact Finset.mem_insert_self _ _))
+    by_cases hv2 : v = pointHeightOne' x₂
+    · exact absurd hv2 (fun h => hv (by
+        rw [hT'_def, h]
+        exact Finset.mem_insert_of_mem (Finset.mem_insert_self _ _)))
+    by_cases hw1 : conjHeightOne (H := H) v = pointHeightOne' x₁
+    · exact absurd hw1 (fun h => hv (by
+        rw [hT'_def]
+        have : v = conjHeightOne (H := H) (pointHeightOne' x₁) := by
+          have := congrArg (conjHeightOne (H := H)) h
+          rwa [conjHeightOne_conjHeightOne] at this
+        rw [this]
+        exact Finset.mem_insert_of_mem (Finset.mem_insert_of_mem (Finset.mem_insert_self _ _))))
+    by_cases hw2 : conjHeightOne (H := H) v = pointHeightOne' x₂
+    · exact absurd hw2 (fun h => hv (by
+        rw [hT'_def]
+        have heq : v = conjHeightOne (H := H) (pointHeightOne' x₂) := by
+          have := congrArg (conjHeightOne (H := H)) h
+          rwa [conjHeightOne_conjHeightOne] at this
+        rw [heq]
+        exact Finset.mem_insert_of_mem (Finset.mem_insert_of_mem
+          (Finset.mem_insert_of_mem (Finset.mem_insert_self _ _)))))
+    apply hsupp
+    intro hvT
+    apply hv
+    rw [hT'_def]
+    exact Finset.mem_insert_of_mem (Finset.mem_insert_of_mem
+      (Finset.mem_insert_of_mem (Finset.mem_insert_of_mem hvT)))
+  have hnorm : ((pairNorm H c₀ (0 : k[X])).natDegree : ℤ) =
+      ∑ v ∈ T', (residueDeg v : ℤ) * ordAtSpec v c₀ (0 : k[X]) :=
+    natDegree_pairNorm_eq_sum_residueDeg_ordAtSpec (H := H) c₀ (0 : k[X]) hc₀'ne T' hsupp'
+  have hpairNorm_eq : pairNorm H c₀ (0 : k[X]) = c₀ ^ 2 := by
+    unfold HyperellipticPolynomial.pairNorm; ring
+  have hdeg2 : ((pairNorm H c₀ (0 : k[X])).natDegree : ℤ) = 2 * (c₀.natDegree : ℤ) := by
+    rw [hpairNorm_eq, Polynomial.natDegree_pow]; push_cast; ring
+  -- **Collapse the two conjugate points onto the two rational ones first**, using
+  -- `ordAtSpec_conjHeightOne_fst` (`c₀`'s `B = 0` ideal is `involution`-fixed, so
+  -- `ordAtSpec` at `conjHeightOne (pointHeightOne' xᵢ)` equals `ordAtSpec` at
+  -- `pointHeightOne' xᵢ` itself, exactly — no bound needed there beyond what `x₁, x₂`
+  -- already carry). This avoids ever needing `ordAtSpec_eq_zero_of_notMem_four_of_dvd`
+  -- (hence Gap 1) for this arithmetic step at all: `T'`, expanded via `hnorm`, is *at
+  -- most* four terms, but two of them are provably equal to the other two.
+  have hw1eq : ordAtSpec (conjHeightOne (H := H) (pointHeightOne' x₁)) c₀ (0 : k[X]) =
+      ordAtSpec (pointHeightOne' x₁) c₀ (0 : k[X]) :=
+    ordAtSpec_conjHeightOne_fst (H := H) (pointHeightOne' x₁) c₀
+  have hw2eq : ordAtSpec (conjHeightOne (H := H) (pointHeightOne' x₂)) c₀ (0 : k[X]) =
+      ordAtSpec (pointHeightOne' x₂) c₀ (0 : k[X]) :=
+    ordAtSpec_conjHeightOne_fst (H := H) (pointHeightOne' x₂) c₀
+  -- Termwise bound at `x₁, x₂` themselves: from `hzsuppSpec₀` (indicator `1` there) and
+  -- `ordAtSpec v a₀ b₀ ≥ 0` always (`ordAtSpec_nonneg`).
+  have hb1 : ordAtSpec (pointHeightOne' x₁) c₀ (0 : k[X]) ≤ 1 := by
+    have h := hzsuppSpec₀ (pointHeightOne' x₁)
+    have hpos : (0:ℤ) ≤ ordAtSpec (pointHeightOne' (H := H) x₁) a₀ b₀ :=
+      ordAtSpec_nonneg _ a₀ b₀ hab₀ne
+    simp only [if_pos rfl] at h
+    by_cases hxeq : (pointHeightOne' (H := H) x₁) = pointHeightOne' x₂
+    · simp only [if_pos hxeq] at h; omega
+    · simp only [if_neg hxeq] at h; omega
+  have hb2 : ordAtSpec (pointHeightOne' x₂) c₀ (0 : k[X]) ≤ 1 := by
+    have h := hzsuppSpec₀ (pointHeightOne' x₂)
+    have hpos : (0:ℤ) ≤ ordAtSpec (pointHeightOne' (H := H) x₂) a₀ b₀ :=
+      ordAtSpec_nonneg _ a₀ b₀ hab₀ne
+    have hne2 : (pointHeightOne' (H := H) x₂) = pointHeightOne' x₂ := rfl
+    simp only [if_pos hne2] at h
+    by_cases hxeq : (pointHeightOne' (H := H) x₂) = pointHeightOne' x₁
+    · simp only [if_pos hxeq] at h; omega
+    · simp only [if_neg hxeq] at h; omega
+  -- **Remaining gap, precisely isolated (Gap 2, genuinely still open, distinct from
+  -- Gap 1):** `T'` may contain support points of `c₀` beyond the four named ones
+  -- (`x₁, x₂` and their `conjHeightOne`-images) — e.g. `T`'s own elements, which are
+  -- exactly the case `Case A` (`ordAtSpec_eq_zero_of_notMem_four_of_dvd`) is built to
+  -- rule out (it shows `ordAtSpec v c₀ 0 = 0` whenever `v` and `conjHeightOne v` both
+  -- avoid `{x₁,x₂}`). That theorem itself still has one internal `sorry` (Gap 1, the
+  -- ramified-case ramification-index step). So closing `hsum_le` in full needs Gap 1
+  -- closed first; what's newly established here (`ordAtSpec_conjHeightOne_fst`, `hb1`,
+  -- `hb2`) is the piece that makes the *bound itself* come out to exactly `2` (not `4`)
+  -- once Gap 1 is available, by collapsing the two conjugate points' contributions onto
+  -- `x₁, x₂`'s (already-bounded-by-1) contributions instead of budgeting them separately.
+  have hsum_le : ∑ v ∈ T', (residueDeg v : ℤ) * ordAtSpec v c₀ (0 : k[X]) ≤ 2 := by
+    have hrest0 : ∀ v ∈ T', v ≠ pointHeightOne' x₁ → v ≠ pointHeightOne' x₂ →
+        v ≠ conjHeightOne (H := H) (pointHeightOne' x₁) →
+        v ≠ conjHeightOne (H := H) (pointHeightOne' x₂) →
+        ordAtSpec v c₀ (0 : k[X]) = 0 := by
+      intro v _ hv1 hv2 hw1 hw2
+      apply ordAtSpec_eq_zero_of_notMem_four_of_dvd (H := H) x₁ x₂ a₀ b₀ c₀ hc₀ne hab₀ne hgu
+        hzsuppSpec₀ hchar hsf v hv1 hv2
+      · intro h; exact hw1 (by
+          have := congrArg (conjHeightOne (H := H)) h
+          rwa [conjHeightOne_conjHeightOne] at this)
+      · intro h; exact hw2 (by
+          have := congrArg (conjHeightOne (H := H)) h
+          rwa [conjHeightOne_conjHeightOne] at this)
+    -- Termwise: every `v ∈ T'` contributes at most its share of the budget `1 + 1 + 1 + 1`
+    -- split across the four indicators (`0` if `v` is none of them, by `hrest0`; the exact
+    -- value, individually bounded below by `hb1`/`hb2`/`hw1eq`/`hw2eq`, if `v` is one of
+    -- them — note a single `v` can only equal *one* of the four distinct points, so no
+    -- double-counting risk in the `≤`, since the RHS terms for the other three indicators
+    -- are all `≥ 0` (`residueDeg ≥ 0` and `ordAtSpec v c₀ 0 ≥ 0` when `v` is one of them).
+    have hterm_le : ∀ v ∈ T', (residueDeg v : ℤ) * ordAtSpec v c₀ (0 : k[X]) ≤
+        (if v = pointHeightOne' x₁ then (residueDeg v : ℤ) else 0) +
+        (if v = pointHeightOne' x₂ then (residueDeg v : ℤ) else 0) +
+        (if v = conjHeightOne (H := H) (pointHeightOne' x₁) then (residueDeg v : ℤ) else 0) +
+        (if v = conjHeightOne (H := H) (pointHeightOne' x₂) then (residueDeg v : ℤ) else 0) := by
+      intro v hv
+      -- Each of the four `if`-terms is individually `≥ 0` (`residueDeg ≥ 0`, else `0`),
+      -- so it suffices to bound `(residueDeg v : ℤ) * ordAtSpec v c₀ 0` by *one* term that
+      -- provably fires, discarding the other three via `≥ 0`. Since the four defining
+      -- conditions are pairwise-exclusive for a single `v` (distinct points), at most one
+      -- `if_pos` fires and the rest are automatically `if_neg`-eligible or irrelevant
+      -- (bounded below regardless, via `hnonneg` below).
+      have hnonneg : ∀ (P : Prop) [Decidable P], (0:ℤ) ≤ if P then (residueDeg v : ℤ) else 0 := by
+        intro P _; by_cases h : P <;> simp [h]
+      by_cases h1 : v = pointHeightOne' x₁
+      · have e1 : (if v = pointHeightOne' x₁ then (residueDeg v : ℤ) else 0)
+            = (residueDeg v : ℤ) := if_pos h1
+        rw [e1, h1]
+        have : (residueDeg (pointHeightOne' (H := H) x₁) : ℤ) * ordAtSpec
+            (pointHeightOne' (H := H) x₁) c₀ 0 ≤ (residueDeg (pointHeightOne' (H := H) x₁) : ℤ) *
+            1 := by
+          apply mul_le_mul_of_nonneg_left hb1 (Int.natCast_nonneg _)
+        nlinarith [hnonneg (pointHeightOne' (H := H) x₁ = pointHeightOne' x₂),
+          hnonneg (pointHeightOne' (H := H) x₁ = conjHeightOne (H := H) (pointHeightOne' x₁)),
+          hnonneg (pointHeightOne' (H := H) x₁ = conjHeightOne (H := H) (pointHeightOne' x₂))]
+      by_cases h2 : v = pointHeightOne' x₂
+      · have e2 : (if v = pointHeightOne' x₂ then (residueDeg v : ℤ) else 0)
+            = (residueDeg v : ℤ) := if_pos h2
+        rw [h2] at e2 ⊢
+        have hb2' : (residueDeg (pointHeightOne' (H := H) x₂) : ℤ) * ordAtSpec
+            (pointHeightOne' (H := H) x₂) c₀ 0 ≤ (residueDeg (pointHeightOne' (H := H) x₂) : ℤ) *
+            1 := mul_le_mul_of_nonneg_left hb2 (Int.natCast_nonneg _)
+        nlinarith [hnonneg (pointHeightOne' (H := H) x₂ = pointHeightOne' x₁),
+          hnonneg (pointHeightOne' (H := H) x₂ = conjHeightOne (H := H) (pointHeightOne' x₁)),
+          hnonneg (pointHeightOne' (H := H) x₂ = conjHeightOne (H := H) (pointHeightOne' x₂))]
+      by_cases h3 : v = conjHeightOne (H := H) (pointHeightOne' x₁)
+      · rw [h3] at h1 h2 ⊢
+        have hordeq : ordAtSpec (conjHeightOne (H := H) (pointHeightOne' x₁)) c₀ (0 : k[X])
+            = 1 ∨ ordAtSpec (conjHeightOne (H := H) (pointHeightOne' x₁)) c₀ (0 : k[X]) ≤ 0 := by
+          rw [ordAtSpec_conjHeightOne_fst]; omega
+        have hb1' : (residueDeg (conjHeightOne (H := H) (pointHeightOne' x₁)) : ℤ) *
+            ordAtSpec (conjHeightOne (H := H) (pointHeightOne' x₁)) c₀ 0 ≤
+            (residueDeg (conjHeightOne (H := H) (pointHeightOne' x₁)) : ℤ) := by
+          have this' := hb1
+          rw [← ordAtSpec_conjHeightOne_fst (H := H) (pointHeightOne' x₁) c₀] at this'
+          have hrnn : (0:ℤ) ≤ (residueDeg (conjHeightOne (H := H) (pointHeightOne' x₁)) : ℤ) :=
+            Int.natCast_nonneg _
+          calc (residueDeg (conjHeightOne (H := H) (pointHeightOne' x₁)) : ℤ) *
+              ordAtSpec (conjHeightOne (H := H) (pointHeightOne' x₁)) c₀ 0
+              ≤ (residueDeg (conjHeightOne (H := H) (pointHeightOne' x₁)) : ℤ) * 1 :=
+                mul_le_mul_of_nonneg_left this' hrnn
+            _ = (residueDeg (conjHeightOne (H := H) (pointHeightOne' x₁)) : ℤ) := mul_one _
+        nlinarith [hnonneg (conjHeightOne (H := H) (pointHeightOne' x₁) = pointHeightOne' x₁),
+          hnonneg (conjHeightOne (H := H) (pointHeightOne' x₁) = pointHeightOne' x₂),
+          hnonneg (conjHeightOne (H := H) (pointHeightOne' x₁) =
+            conjHeightOne (H := H) (pointHeightOne' x₂)), if_pos (rfl :
+            conjHeightOne (H := H) (pointHeightOne' x₁) = conjHeightOne (H := H)
+              (pointHeightOne' x₁))]
+      by_cases h4 : v = conjHeightOne (H := H) (pointHeightOne' x₂)
+      · rw [h4] at h1 h2 h3 ⊢
+        have hb2' : (residueDeg (conjHeightOne (H := H) (pointHeightOne' x₂)) : ℤ) *
+            ordAtSpec (conjHeightOne (H := H) (pointHeightOne' x₂)) c₀ 0 ≤
+            (residueDeg (conjHeightOne (H := H) (pointHeightOne' x₂)) : ℤ) := by
+          have this' := hb2
+          rw [← ordAtSpec_conjHeightOne_fst (H := H) (pointHeightOne' x₂) c₀] at this'
+          have hrnn : (0:ℤ) ≤ (residueDeg (conjHeightOne (H := H) (pointHeightOne' x₂)) : ℤ) :=
+            Int.natCast_nonneg _
+          calc (residueDeg (conjHeightOne (H := H) (pointHeightOne' x₂)) : ℤ) *
+              ordAtSpec (conjHeightOne (H := H) (pointHeightOne' x₂)) c₀ 0
+              ≤ (residueDeg (conjHeightOne (H := H) (pointHeightOne' x₂)) : ℤ) * 1 :=
+                mul_le_mul_of_nonneg_left this' hrnn
+            _ = (residueDeg (conjHeightOne (H := H) (pointHeightOne' x₂)) : ℤ) := mul_one _
+        nlinarith [hnonneg (conjHeightOne (H := H) (pointHeightOne' x₂) = pointHeightOne' x₁),
+          hnonneg (conjHeightOne (H := H) (pointHeightOne' x₂) = pointHeightOne' x₂),
+          hnonneg (conjHeightOne (H := H) (pointHeightOne' x₂) =
+            conjHeightOne (H := H) (pointHeightOne' x₁)), if_pos (rfl :
+            conjHeightOne (H := H) (pointHeightOne' x₂) = conjHeightOne (H := H)
+              (pointHeightOne' x₂))]
+      rw [hrest0 v hv h1 h2 h3 h4, mul_zero]
+      have := hnonneg (v = pointHeightOne' x₁)
+      have := hnonneg (v = pointHeightOne' x₂)
+      have := hnonneg (v = conjHeightOne (H := H) (pointHeightOne' x₁))
+      have := hnonneg (v = conjHeightOne (H := H) (pointHeightOne' x₂))
+      linarith
+    calc ∑ v ∈ T', (residueDeg v : ℤ) * ordAtSpec v c₀ (0 : k[X])
+        ≤ ∑ v ∈ T', ((if v = pointHeightOne' x₁ then (residueDeg v : ℤ) else 0) +
+            (if v = pointHeightOne' x₂ then (residueDeg v : ℤ) else 0) +
+            (if v = conjHeightOne (H := H) (pointHeightOne' x₁) then (residueDeg v : ℤ)
+              else 0) +
+            (if v = conjHeightOne (H := H) (pointHeightOne' x₂) then (residueDeg v : ℤ)
+              else 0)) := Finset.sum_le_sum hterm_le
+      _ = (∑ v ∈ T', if v = pointHeightOne' x₁ then (residueDeg v : ℤ) else 0) +
+            (∑ v ∈ T', if v = pointHeightOne' x₂ then (residueDeg v : ℤ) else 0) +
+            (∑ v ∈ T', if v = conjHeightOne (H := H) (pointHeightOne' x₁) then
+              (residueDeg v : ℤ) else 0) +
+            (∑ v ∈ T', if v = conjHeightOne (H := H) (pointHeightOne' x₂) then
+              (residueDeg v : ℤ) else 0) := by
+          rw [← Finset.sum_add_distrib, ← Finset.sum_add_distrib, ← Finset.sum_add_distrib]
+      _ = (residueDeg (pointHeightOne' (H := H) x₁) : ℤ) +
+            (residueDeg (pointHeightOne' (H := H) x₂) : ℤ) +
+            (residueDeg (conjHeightOne (H := H) (pointHeightOne' x₁)) : ℤ) +
+            (residueDeg (conjHeightOne (H := H) (pointHeightOne' x₂)) : ℤ) := by
+          have hx1T : pointHeightOne' (H := H) x₁ ∈ T' := by
+            rw [hT'_def]; exact Finset.mem_insert_self _ _
+          have hx2T : pointHeightOne' (H := H) x₂ ∈ T' := by
+            rw [hT'_def]
+            exact Finset.mem_insert_of_mem (Finset.mem_insert_self _ _)
+          have hw1T : conjHeightOne (H := H) (pointHeightOne' x₁) ∈ T' := by
+            rw [hT'_def]
+            exact Finset.mem_insert_of_mem
+              (Finset.mem_insert_of_mem (Finset.mem_insert_self _ _))
+          have hw2T : conjHeightOne (H := H) (pointHeightOne' x₂) ∈ T' := by
+            rw [hT'_def]
+            exact Finset.mem_insert_of_mem (Finset.mem_insert_of_mem
+              (Finset.mem_insert_of_mem (Finset.mem_insert_self _ _)))
+          rw [Finset.sum_ite_eq' T' (pointHeightOne' (H := H) x₁) (fun v => (residueDeg v : ℤ)),
+              Finset.sum_ite_eq' T' (pointHeightOne' (H := H) x₂) (fun v => (residueDeg v : ℤ)),
+              Finset.sum_ite_eq' T' (conjHeightOne (H := H) (pointHeightOne' x₁))
+                (fun v => (residueDeg v : ℤ)),
+              Finset.sum_ite_eq' T' (conjHeightOne (H := H) (pointHeightOne' x₂))
+                (fun v => (residueDeg v : ℤ)),
+              if_pos hx1T, if_pos hx2T, if_pos hw1T, if_pos hw2T]
+      _ = 2 := by
+          rw [residueDeg_conjHeightOne, residueDeg_conjHeightOne,
+              residueDeg_pointHeightOne', residueDeg_pointHeightOne']
+          norm_num
+  have hle : ((pairNorm H c₀ (0 : k[X])).natDegree : ℤ) ≤ 2 := hnorm ▸ hsum_le
+  have h2 : 2 * (c₀.natDegree : ℤ) ≤ 2 := hdeg2 ▸ hle
+  omega
+
+/-! **STATUS: `false_of_bad_factor_split_deg_ge_two` — attempted, not closed.**
+Built `SplitBaseField q := AdjoinRoot q`, `SqrtExtQ q := L[T]/(T² - mk q H.f)`, and
+`evalAtSplitFiber : CoordinateRing H →+* SqrtExtQ q` (well-defined, `x ↦ root q`, `y ↦`
+the adjoined square root) — the ring-hom layer of the construction, directly analogous
+to `evalAtRamifiedFiber` above. **Not yet built on top of it:** surjectivity, primality
+of the kernel, and the residue-degree lower bound. Unlike the ramified case, `SqrtExtQ
+q` is not automatically a field (`T² - mk q H.f` may split in `L` already, giving
+`SqrtExtQ q ≅ L × L`), so `RingHom.ker_isMaximal_of_surjective` doesn't apply directly
+— the kernel is prime (pulled back from a field factor of `SqrtExtQ q`, e.g. via
+`Ideal.primeCompl`/factoring through one coordinate of the product decomposition when
+reducible, or the whole ring when `T² - mk q H.f` stays irreducible over `L`) but
+establishing that split, and the resulting `residueDeg = q.natDegree` (reducible case)
+or `2 * q.natDegree` (irreducible case) either way `≥ q.natDegree ≥ 2`, is genuinely
+unfinished work, comparable in remaining size to what `ramifiedFiberHeightOne` needed
+end-to-end.
+
+**What IS solid and complete below, reusable regardless:** `notDvd_snd_of_dvd_gcd_pairNorm_of_gcdUnit`
+(`q ∤ b₀` from `hgu`), `involution_involution` / `involution_bijective` /
+`involutionEquiv` / `conjHeightOne` / `mem_conjHeightOne_iff` (the conjugate-closed-point
+machinery under the hyperelliptic involution — fully general, not specific to this case
+split), and the `SplitBaseField`/`SqrtExtQ`/`evalAtSplitFiber` ring-hom layer just
+above. The case-split argument itself (GPT's residue-field computation, confirmed
+correct in the abstract: nonmembership at the split point gives *exact* order `0` for
+free via `ordAtSpec_eq_zero_of_notMem`, no induction needed, unlike the ramified case)
+is ready to write once the prime-ideal/residue-degree package on top of
+`evalAtSplitFiber` is finished.
+
+### The split closed point at an arbitrary-degree irreducible `q ∤ H.f`, built
+explicitly (not via the opaque going-up lemma, so residue degree is computable).
+
+Mirrors `NonSquareFiberPoint.lean`'s `SqrtExt`/`evalAtNonSquareFiber` pattern exactly,
+with the scalar `α : k` generalized to the root of an arbitrary irreducible `q : k[X]`:
+base field `L := AdjoinRoot q` (`[L:k] = q.natDegree`), then `M := SqrtExtQ q := L[T]/(T² -
+(H.f mod q))` (`[M:L] ≤ 2`, always `≥ 1`), giving `evalAtSplitFiber : CoordinateRing H →+*
+M` sending `x ↦ root q`, `y ↦ ` the chosen square root of `H.f mod q` in `M`. Unlike the
+ramified construction, `M` need not itself be a field when `H.f mod q` happens to be a
+square in `L` (then `M ≅ L × L`) — but `ker (evalAtSplitFiber)` is still prime: it's the
+kernel of `CoordinateRing H →+* M ↠ M / (one factor)`, landing in one of the two field
+factors, each of `k`-dimension exactly `[L:k] = q.natDegree` (not `2·q.natDegree`) in that
+split sub-case — either way `residueDeg ≥ q.natDegree ≥ 2`, all that's actually needed. -/
+
+/-- The residue extension `L := AdjoinRoot q`, for irreducible `q : k[X]`. -/
+abbrev SplitBaseField (q : k[X]) : Type _ := AdjoinRoot q
+
+/-- `M := L[T]/(T² - (H.f mod q))`, the "square-root-of-`f`-adjoined" ring over `L`. -/
+abbrev SqrtExtQ (q : k[X]) : Type _ :=
+  AdjoinRoot (X ^ 2 - C (AdjoinRoot.mk q H.f) : (SplitBaseField q)[X])
+
+/-- The chosen square root of `H.f mod q` living in `SqrtExtQ q`. -/
+def sqrtExtQRoot (q : k[X]) : SqrtExtQ (H := H) q :=
+  AdjoinRoot.root (X ^ 2 - C (AdjoinRoot.mk q H.f) : (SplitBaseField q)[X])
+
+theorem sqrtExtQRoot_sq (q : k[X]) :
+    sqrtExtQRoot (H := H) q ^ 2 =
+      algebraMap (SplitBaseField q) (SqrtExtQ (H := H) q) (AdjoinRoot.mk q H.f) := by
+  have h := AdjoinRoot.eval₂_root
+    (X ^ 2 - C (AdjoinRoot.mk q H.f) : (SplitBaseField q)[X])
+  rw [eval₂_sub, eval₂_pow, eval₂_X, eval₂_C] at h
+  exact sub_eq_zero.mp h
+
+/-- `SqrtExtQ q` as a `k`-algebra, via `L := AdjoinRoot q` as an intermediate step. The
+`k`-algebra structure on `SqrtExtQ q = AdjoinRoot (T² - C (mk q H.f))` comes from
+`AdjoinRoot`'s own `Algebra (SplitBaseField q) _` instance composed with `Algebra k
+(SplitBaseField q)`; `Algebra.compHom`-style composition, matching the `IsScalarTower.
+of_algebraMap_eq (fun _ => rfl)` idiom this project already uses elsewhere (e.g.
+`GlobalDegreeBoundSpec.lean`, `LCanonicalElementary.lean`) rather than trusting
+`infer_instance` to find the right diamond-free path through a two-level `AdjoinRoot`
+tower. -/
+instance instScalarTowerSqrtExtQ (q : k[X]) :
+    IsScalarTower k (SplitBaseField q) (SqrtExtQ (H := H) q) :=
+  IsScalarTower.of_algebraMap_eq (fun _ => rfl)
+
+/-- **The ring hom `CoordinateRing H →+* SqrtExtQ q`, sending `x ↦ root q` (as an
+element of `L ≤ SqrtExtQ q`), `y ↦ sqrtExtQRoot q`.** Well-defined for any irreducible
+`q` — no need for `q ∤ H.f` at this stage (that only matters for whether the *target*
+happens to be a field, not for well-definedness of the hom itself). -/
+def evalAtSplitFiber (q : k[X]) :
+    CoordinateRing H →+* SqrtExtQ (H := H) q :=
+  AdjoinRoot.lift
+    ((algebraMap (SplitBaseField q) (SqrtExtQ (H := H) q)).comp (AdjoinRoot.mk q))
+    (sqrtExtQRoot (H := H) q)
+    (by
+      rw [eval₂_sub, eval₂_pow, eval₂_X, eval₂_C, RingHom.comp_apply, sqrtExtQRoot_sq,
+        sub_self])
+
+/-! ### The ramified closed point at an arbitrary-degree irreducible `q ∣ H.f`.
+
+Generalizes the existing rational-`α`-only ramified point (`LPairFinrankOneOrdAtFrac.
+lean`'s `Point.mk α 0`-style construction) to arbitrary-degree irreducible `q`, via the
+same `AdjoinRoot`-lift pattern `NonSquareFiberPoint.lean` uses for the non-square-fiber
+point — but targeting `K := AdjoinRoot q` (a field, `q` irreducible) with `y ↦ 0`
+directly, no square root needed: at a ramified fiber `y² ≡ H.f ≡ 0 (mod q)` forces
+`y ≡ 0`, so `0` genuinely is *the* root of `X² - (H.f mod q)` in `AdjoinRoot q`. -/
+
+/-- **The ring hom `CoordinateRing H →+* AdjoinRoot q`, sending `x ↦ AdjoinRoot.root
+q`, `y ↦ 0`.** Well-defined exactly when `q ∣ H.f`: the side condition `eval₂ _ 0
+(X² - C H.f) = 0` unfolds to `0 - (H.f mod q) = 0`, i.e. `H.f ≡ 0 (mod q)` in
+`AdjoinRoot q`, which is `AdjoinRoot.mk_eq_zero.mpr hqf`. -/
+def evalAtRamifiedFiber (q : k[X]) (hqf : q ∣ H.f) :
+    CoordinateRing H →+* AdjoinRoot q :=
+  AdjoinRoot.lift (AdjoinRoot.mk q) 0
+    (by
+      rw [eval₂_sub, eval₂_pow, eval₂_X, eval₂_C, zero_pow (two_ne_zero), zero_sub,
+        neg_eq_zero]
+      exact (AdjoinRoot.mk_eq_zero).mpr hqf)
+
+/-- The candidate prime ideal: kernel of `evalAtRamifiedFiber`. -/
+def ramifiedFiberIdeal (q : k[X]) (hqf : q ∣ H.f) : Ideal (CoordinateRing H) :=
+  RingHom.ker (evalAtRamifiedFiber (H := H) q hqf)
+
+/-- `evalAtRamifiedFiber q hqf` is surjective onto `AdjoinRoot q`: its range is a
+`k`-subalgebra containing `k` (base ring hom) and `AdjoinRoot.root q` (image of `x`),
+hence all of `AdjoinRoot q` (`AdjoinRoot.adjoinRoot_eq_top`). Mirrors
+`evalAtNonSquareFiber_surjective` exactly, with the roles of `x`/`y` swapped (here `x`
+generates, `y` is sent to the already-in-the-base-ring `0`). -/
+theorem evalAtRamifiedFiber_surjective (q : k[X]) (hqf : q ∣ H.f) :
+    Function.Surjective (evalAtRamifiedFiber (H := H) q hqf) := by
+  have hroot_mem : AdjoinRoot.root q ∈ Set.range (evalAtRamifiedFiber (H := H) q hqf) := by
+    refine ⟨algebraMap k[X] (CoordinateRing H) X, ?_⟩
+    change
+      (AdjoinRoot.lift (AdjoinRoot.mk q) 0 _)
+        (AdjoinRoot.of (X ^ 2 - C H.f) X) = AdjoinRoot.root q
+    rw [AdjoinRoot.lift_of]
+    rfl
+  have hbase_mem : ∀ a : k,
+      algebraMap k (AdjoinRoot q) a ∈ Set.range (evalAtRamifiedFiber (H := H) q hqf) := by
+    intro a
+    refine ⟨algebraMap k[X] (CoordinateRing H) (C a), ?_⟩
+    change
+      (AdjoinRoot.lift (AdjoinRoot.mk q) 0 _)
+        (AdjoinRoot.of (X ^ 2 - C H.f) (C a)) = algebraMap k (AdjoinRoot q) a
+    rw [AdjoinRoot.lift_of]
+    rw [AdjoinRoot.algebraMap_eq' k q]
+    rfl
+  set S : Subalgebra k (AdjoinRoot q) :=
+    { carrier := Set.range (evalAtRamifiedFiber (H := H) q hqf)
+      mul_mem' := by
+        rintro _ _ ⟨p, rfl⟩ ⟨r, rfl⟩
+        exact ⟨p * r, map_mul (evalAtRamifiedFiber (H := H) q hqf) p r⟩
+      add_mem' := by
+        rintro _ _ ⟨p, rfl⟩ ⟨r, rfl⟩
+        exact ⟨p + r, map_add (evalAtRamifiedFiber (H := H) q hqf) p r⟩
+      algebraMap_mem' := hbase_mem } with hS_def
+  have hroot_mem_S : AdjoinRoot.root q ∈ S := by
+    rw [hS_def]; exact hroot_mem
+  have hadjoin_le : Algebra.adjoin k ({AdjoinRoot.root q} : Set (AdjoinRoot q)) ≤ S :=
+    Algebra.adjoin_le (by simpa using hroot_mem_S)
+  rw [AdjoinRoot.adjoinRoot_eq_top] at hadjoin_le
+  intro s
+  exact hadjoin_le (Algebra.mem_top)
+
+/-- **`ramifiedFiberIdeal q hqf` is maximal.** Kernel of a surjective ring hom onto
+the field `AdjoinRoot q` (`q` irreducible). -/
+theorem ramifiedFiberIdeal_isMaximal (q : k[X]) (hq : Irreducible q) (hqf : q ∣ H.f) :
+    (ramifiedFiberIdeal (H := H) q hqf).IsMaximal := by
+  haveI : Fact (Irreducible q) := ⟨hq⟩
+  exact RingHom.ker_isMaximal_of_surjective (evalAtRamifiedFiber (H := H) q hqf)
+    (evalAtRamifiedFiber_surjective (H := H) q hqf)
+
+/-- **`ramifiedFiberIdeal q hqf ≠ ⊥`.** -/
+theorem ramifiedFiberIdeal_ne_bot (q : k[X]) (hq : Irreducible q) (hqf : q ∣ H.f) :
+    (ramifiedFiberIdeal (H := H) q hqf) ≠ ⊥ :=
+  Ring.ne_bot_of_isMaximal_of_not_isField
+    (ramifiedFiberIdeal_isMaximal (H := H) q hq hqf) coordinateRing_not_isField
+
+/-- `evalAtRamifiedFiber q hqf` applied to `toPair H A B`, in closed form. -/
+theorem evalAtRamifiedFiber_toPair (q : k[X]) (hqf : q ∣ H.f) (A B : k[X]) :
+    evalAtRamifiedFiber (H := H) q hqf (toPair H A B) = AdjoinRoot.mk q A := by
+  have hA : evalAtRamifiedFiber (H := H) q hqf (algebraMap k[X] (CoordinateRing H) A) =
+      AdjoinRoot.mk q A := by
+    change (AdjoinRoot.lift (AdjoinRoot.mk q) 0 _)
+        (AdjoinRoot.of (X ^ 2 - C H.f) A) = AdjoinRoot.mk q A
+    rw [AdjoinRoot.lift_of]
+  have hB : evalAtRamifiedFiber (H := H) q hqf (algebraMap k[X] (CoordinateRing H) B) =
+      AdjoinRoot.mk q B := by
+    change (AdjoinRoot.lift (AdjoinRoot.mk q) 0 _)
+        (AdjoinRoot.of (X ^ 2 - C H.f) B) = AdjoinRoot.mk q B
+    rw [AdjoinRoot.lift_of]
+  have hy : evalAtRamifiedFiber (H := H) q hqf (y H) = 0 := AdjoinRoot.lift_root _
+  unfold HyperellipticPolynomial.toPair
+  rw [map_add, map_mul, hA, hB, hy, mul_zero, add_zero]
+
+/-- **Membership characterization for `ramifiedFiberIdeal`.** `toPair H A B ∈
+ramifiedFiberIdeal q hqf ↔ q ∣ A` (the `y`-term vanishes automatically). -/
+theorem toPair_mem_ramifiedFiberIdeal_iff (q : k[X]) (hqf : q ∣ H.f) (A B : k[X]) :
+    toPair H A B ∈ ramifiedFiberIdeal (H := H) q hqf ↔ q ∣ A := by
+  rw [ramifiedFiberIdeal, RingHom.mem_ker, evalAtRamifiedFiber_toPair,
+    AdjoinRoot.mk_eq_zero]
+
+/-- **The ramified closed point itself**, as a `HeightOneSpectrum` element, for any
+irreducible `q ∣ H.f` (not just linear `q`). -/
+def ramifiedFiberHeightOne [IsDedekindDomain (CoordinateRing H)]
+    (q : k[X]) (hq : Irreducible q) (hqf : q ∣ H.f) :
+    IsDedekindDomain.HeightOneSpectrum (CoordinateRing H) where
+  asIdeal := ramifiedFiberIdeal (H := H) q hqf
+  isPrime := (ramifiedFiberIdeal_isMaximal (H := H) q hq hqf).isPrime
+  ne_bot := ramifiedFiberIdeal_ne_bot (H := H) q hq hqf
+
+/-- **Residue degree of the ramified closed point equals `q.natDegree`.** Via
+`RingHom.quotientKerEquivOfSurjective` and `AdjoinRoot`'s power basis (`q.natDegree`,
+same computation as `finrank_sqrtExt` but at general degree, using
+`AdjoinRoot.powerBasis hq.ne_zero` directly against `q` itself rather than
+`X² - C c`: `PowerBasis.finrank` gives `Module.finrank k (AdjoinRoot q) =
+(AdjoinRoot.powerBasis hq.ne_zero).dim`, and `AdjoinRoot.powerBasis_dim` identifies
+that `dim` with `q.natDegree`). -/
+theorem residueDeg_ramifiedFiberHeightOne
+    (q : k[X]) (hq : Irreducible q) (hqf : q ∣ H.f) :
+    residueDeg (ramifiedFiberHeightOne (H := H) q hq hqf) = q.natDegree := by
+  unfold residueDeg ramifiedFiberHeightOne
+  simp only
+  set hequiv : (CoordinateRing H ⧸ RingHom.ker (evalAtRamifiedFiber (H := H) q hqf)) ≃+*
+      AdjoinRoot q :=
+    RingHom.quotientKerEquivOfSurjective (evalAtRamifiedFiber_surjective (H := H) q hqf)
+    with hequiv_def
+  have hlinequiv : Module.finrank k (CoordinateRing H ⧸ ramifiedFiberIdeal (H := H) q hqf) =
+      Module.finrank k (AdjoinRoot q) := by
+    apply LinearEquiv.finrank_eq
+    exact hequiv.toAddEquiv.toLinearEquiv (fun r x => by
+      show hequiv (r • x) = r • hequiv x
+      rw [Algebra.smul_def, Algebra.smul_def]
+      rw [map_mul]
+      congr 1
+      have hlhs : algebraMap k (CoordinateRing H) r =
+          AdjoinRoot.mk ((X : (k[X])[X]) ^ 2 - C H.f) (C (C r)) := rfl
+      change
+        hequiv (Ideal.Quotient.mk (RingHom.ker (evalAtRamifiedFiber (H := H) q hqf))
+          (algebraMap k (CoordinateRing H) r)) =
+          (algebraMap k (AdjoinRoot q)) r
+      rw [hlhs, hequiv_def]
+      rw [RingHom.quotientKerEquivOfSurjective_apply_mk]
+      have hrval : evalAtRamifiedFiber (H := H) q hqf
+          (AdjoinRoot.mk ((X : (k[X])[X]) ^ 2 - C H.f) (C (C r))) = AdjoinRoot.mk q (C r) := by
+        change (AdjoinRoot.lift (AdjoinRoot.mk q) 0 _)
+            (AdjoinRoot.of ((X : (k[X])[X]) ^ 2 - C H.f) (C r)) = AdjoinRoot.mk q (C r)
+        rw [AdjoinRoot.lift_of]
+      rw [hrval]
+      simp [AdjoinRoot.algebraMap_eq, AdjoinRoot.mk_C])
+  rw [hlinequiv]
+  rw [(AdjoinRoot.powerBasis hq.ne_zero).finrank]
+  exact AdjoinRoot.powerBasis_dim hq.ne_zero
+
+/-- **The ramified closed point is never a rational point when `q.natDegree ≥ 2`.**
+Residue degree mismatch. (When `q.natDegree = 1`, the existing rational-point
+machinery already handles it — this general construction is only needed for `q.
+natDegree ≥ 2`, but the statement holds unconditionally whenever `q.natDegree ≠ 1`.) -/
+theorem ramifiedFiberHeightOne_ne_pointHeightOne'
+    (q : k[X]) (hq : Irreducible q) (hqf : q ∣ H.f) (hqdeg : q.natDegree ≠ 1)
+    (P : H.Point) :
+    ramifiedFiberHeightOne (H := H) q hq hqf ≠ pointHeightOne' P := by
+  intro h
+  have h1 := residueDeg_ramifiedFiberHeightOne (H := H) q hq hqf
+  have h2 := residueDeg_pointHeightOne' (H := H) P
+  rw [h] at h1
+  omega
+
+/-! ### Degree-≥2 bad-factor case: contradiction from `q ∣ gcd(pairNorm a₀ b₀, c₀)`.
+
+Two sub-cases: `q ∣ H.f` (ramified — use `ramifiedFiberHeightOne` above) or `q ∤ H.f`
+(split/inert — use the already-proved `heightOneSpectrum_of_irreducible_ne_
+pointIdeal`, going-up along the integral extension `k[X] → CoordinateRing H`, no
+explicit square root needed). **Status: genuinely blocked, not yet closed — see
+honest note below, do not paper over with a `sorry` dressed as a `have`.**
+
+**Where this actually breaks, checked by hand (not guessed):** membership alone
+(`toPair H a₀ b₀ ∈ v.asIdeal`, from `q ∣ a₀`) only gives `ordAtSpec v a₀ b₀ ≥ 1`, not
+`= 0`. Feeding that into `hzsuppSpec₀ v` with `v ∉ {x₁,x₂}` (indicator `0`) yields
+`ordAtSpec v a₀ b₀ ≥ ordAtSpec v c₀ 0 ≥ 1` — both sides positive, no contradiction.
+Closing this needs the *exact* order of `a₀ + b₀y` at `v`, which needs `v`'s
+ramification index `e_v` over `q` — a genuine local computation that exists in this
+codebase only for **linear** `q` (`ordAt_linX_pow_ramified` and its unramified
+sibling in `LPairFinrankOneOrdAtFrac.lean`, built via induction on the exponent
+against the *explicit* rational point). Generalizing that induction from a rational
+point `Q : H.Point` to the abstract `ramifiedFiberHeightOne`/going-up `v` above a
+degree-`≥2` `q` is genuinely new work, comparable in size to the existing linear
+machinery — not a bookkeeping gap. Also checked and ruled out: substituting the
+already-proved *global* residue-degree-weighted sum identity
+(`natDegree_pairNorm_eq_sum_residueDeg_ordAtSpec`,
+`natDegree_pairNorm_le_natDegree_pairNorm_add_two_of_isPoleBoundedAtPairSpec`) in
+place of a pointwise argument is circular: it yields `2·deg c₀ ≤ deg(pairNorm a₀ b₀) +
+2` on one side and `deg(pairNorm a₀ b₀) ≤ 2·deg c₀` (from `hinf₀` via
+`natDegree_pairNorm_eq_neg_ordInfOfPair`) on the other, which combine to the vacuous
+`2·deg c₀ ≤ 2·deg c₀`, not a bound on either quantity — verified symbolically, not
+just asserted.
+
+**What's solid and reusable regardless of how this resolves:**
+`notDvd_snd_of_dvd_gcd_pairNorm_of_gcdUnit` (pure algebra, no sorry) and the full
+`ramifiedFiberHeightOne` construction above (ideal, maximality, `≠ ⊥`, residue degree
+`= q.natDegree`, membership criterion — all no sorry, general-degree `q ∣ H.f`,
+genuinely reusable once the ramification-index computation is built). The split-case
+(`q ∤ H.f`) mirror of this — via `heightOneSpectrum_of_irreducible_ne_pointIdeal`'s
+already-proved going-up lemma (`RiemannRochGenus2.lean`) instead of a fresh
+`SqrtExt`/`AdjoinRoot q` construction, no square root needed there either — hits the
+same exact-order wall and was not attempted for that reason. -/
+
+/-! ## §3e. The actual fix (ChatGPT consultation, second round): bypass
+`c₀.natDegree ≤ 2` entirely.
+
+**The degree-count route is genuinely circular, confirmed by direct calculation, not
+just difficult.** Writing `D := c₀.natDegree`, `N := deg(pairNorm a₀ b₀)`: the
+closed-point pointwise bound (`hzsuppSpec`/`hzsuppSpec₀`) gives `2D ≤ N + 2` (summing
+the termwise bound `ordAtSpec v c₀ 0 ≤ ordAtSpec v a₀ b₀ + e_v` against the global
+norm identity, `e_v` contributing at most `2` total at `x₁, x₂`); the infinity bound
+(`hinf₀`) gives `N ≤ 2D`. Together: `0 ≤ 2D - N ≤ 2` — an absolute constraint on the
+*gap* `2D - N`, not on `D` itself. No rearrangement of these two inequalities alone
+produces `D ≤ 2`; an arbitrarily large `D` (with `N` tracking `2D` within slack `2`)
+is consistent with both. This matches the file's own honest note above (§3d) finding
+the same wall from the per-factor pole-mass route — same underlying obstruction,
+confirmed twice independently, so not an artifact of one particular derivation.
+
+**Why this doesn't happen in the `IsAlgClosed` proof.** That proof never uses `hinf`
+for this step at all — it gets `deg c₀ ≤ 2` directly from `c₀` splitting completely
+over `k` (`IsAlgClosed.splits`), a strictly stronger structural fact with no analogue
+here. Trying to recover an equally strong conclusion from strictly weaker
+(closed-point pointwise + infinity) hypotheses via degree-counting alone cannot work.
+
+**The actual fix: the hypotheses already say something stronger than a degree bound.**
+`hzsuppSpec₀` and `hinf₀` together say exactly that `F := (a₀+b₀y)/c₀`'s divisor is
+`≥ -[x₁] - [x₂]` (pole order `≤ 1` at `x₁, x₂`, no pole anywhere else, including at
+infinity) — i.e. `F ∈ L(x₁+x₂)` in Riemann–Roch language. For a genus-2 hyperelliptic
+curve with `x₂ ≠ ι(x₁)` (the hyperelliptic involution — exactly this theorem's `hne`
+hypothesis), `ℓ(x₁+x₂) = 1`, so `F` is constant. This is precisely
+`isConstantFraction_of_ordAt_eq` (`LPairFinrankOne.lean`) applied to `(a₀,b₀,c₀,0)` —
+except that theorem is stated for `ordAt`/`H.Point` equality, gated by `hspecAB`/
+`hspecA'B'` hypotheses forcing every relevant prime to be rational (the
+`IsAlgClosed`-era assumption, inherited implicitly since `LPairFinrankOne.lean` proves
+this using only rational data). We don't have (or want) `ordAt`-equality at rational
+points alone; we have `ordAtSpec`-inequalities at every closed point directly.
+
+**The needed generalization turns out to be *simpler* than the original, not harder.**
+`span_eq_of_ordAt_eq`'s only use of `hspecAB`/`hspecA'B'` is to translate a general
+`v : HeightOneSpectrum`'s `Associates.count` back down to `ordAt` at a rational point
+(via `v.asIdeal = pointIdeal P`), because its hypothesis `hordeq` is only stated for
+`P : H.Point`. Restated directly over `HeightOneSpectrum` (`ordAtSpec`-equality
+everywhere, which is what we can actually derive from `hzsuppSpec₀`+`hinf₀` once
+`b₀ = 0` is NOT yet assumed — see below), `hspecAB`/`hspecA'B'` become unnecessary:
+`ordAtSpec_eq_count` (`GlobalDegreeBoundSpec.lean`) already relates `ordAtSpec v A B`
+to `Associates.count` at *every* `v`, uniformly, no rationality restriction. -/
+
+/-- **Closed-point-native analogue of `span_eq_of_ordAt_eq`.** Strictly simpler than
+the original: no `hspecAB`/`hspecA'B'` bridging hypotheses needed, since `ordAtSpec`
+already ranges over every closed point directly. Proof is a direct transcription of
+`span_eq_of_ordAt_eq`'s `Associates.count`/`normalizedFactors` argument, with the
+`by_cases hPex : ∃ P, v.asIdeal = pointIdeal P` case split removed (both counts are
+compared via `hordeqSpec v` unconditionally, since `ordAtSpec_eq_count` applies at
+every `v`, not just rational ones). -/
+theorem span_eq_of_ordAtSpec_eq [IsDedekindDomain (CoordinateRing H)] (A B A' B' : k[X])
     (hABz : toPair H A B ≠ 0) (hA'B'z : toPair H A' B' ≠ 0)
-    (hspecAB : ∀ v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H),
-      (Associates.mk v.asIdeal).count
-        (Associates.mk (Ideal.span ({toPair H A B} : Set (CoordinateRing H)))).factors ≠ 0 →
-      ∃ P, v.asIdeal = pointIdeal P)
-    (hspecA'B' : ∀ v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H),
-      (Associates.mk v.asIdeal).count
-        (Associates.mk (Ideal.span ({toPair H A' B'} : Set (CoordinateRing H)))).factors ≠ 0 →
-      ∃ P, v.asIdeal = pointIdeal P)
-    (hordeq : ∀ P : H.Point, ordAt P A B = ordAt P A' B') :
+    (hordeqSpec : ∀ v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H),
+      ordAtSpec v A B = ordAtSpec v A' B') :
     Ideal.span ({toPair H A B} : Set (CoordinateRing H)) =
       Ideal.span ({toPair H A' B'} : Set (CoordinateRing H)) := by
   classical
@@ -786,18 +2379,13 @@ theorem span_eq_of_ordAt_eq (A B A' B' : k[X])
     rw [hI'_def, Ne, Ideal.zero_eq_bot, Ideal.span_singleton_eq_bot]; exact hA'B'z
   have hIbot : I ≠ ⊥ := by rw [Ideal.zero_eq_bot] at hIne; exact hIne
   have hI'bot : I' ≠ ⊥ := by rw [Ideal.zero_eq_bot] at hI'ne; exact hI'ne
-  -- Every `J` appearing in either factorization is prime and nonzero (standard for
-  -- `normalizedFactors` of a nonzero ideal), so it packages into a genuine
-  -- `HeightOneSpectrum` term, letting `hspecAB`/`hspecA'B'`/`ordAt_eq_count` apply.
   have hcount_eq : ∀ J : Ideal (CoordinateRing H),
       Multiset.count J (UniqueFactorizationMonoid.normalizedFactors I) =
         Multiset.count J (UniqueFactorizationMonoid.normalizedFactors I') := by
     intro J
     by_cases hJmem : J ∈ UniqueFactorizationMonoid.normalizedFactors I ∨
         J ∈ UniqueFactorizationMonoid.normalizedFactors I'
-    · -- `J` is prime and nonzero either way (whichever side it's a member from),
-      -- so it packages into `v : HeightOneSpectrum (CoordinateRing H)`.
-      have hJprime : J.IsPrime ∧ J ≠ ⊥ := by
+    · have hJprime : J.IsPrime ∧ J ≠ ⊥ := by
         rcases hJmem with hJ | hJ
         · exact ⟨((Ideal.mem_normalizedFactors_iff hIbot).mp hJ).1, by
             intro hJ0; rw [hJ0] at hJ
@@ -808,13 +2396,6 @@ theorem span_eq_of_ordAt_eq (A B A' B' : k[X])
       set v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H) :=
         ⟨J, hJprime.1, hJprime.2⟩ with hv_def
       have hvJ : v.asIdeal = J := rfl
-      -- `(Associates.mk v.asIdeal).count (Associates.mk I).factors` equals
-      -- `Multiset.count v.asIdeal (normalizedFactors I)` on each side
-      -- (`Ideal.count_associates_factors_eq`), so it suffices to compare those
-      -- `Associates`-level counts, which reduce to `pointIdeal`/`ordAt_eq_count`
-      -- comparisons via `hspecAB`/`hspecA'B'` when `v.asIdeal = pointIdeal P` for
-      -- some `P`, and to `0 = 0` otherwise (neither `hspec` can witness `v`, so `v`
-      -- has count `0` on both sides — contrapositive of `hspecAB`/`hspecA'B'`).
       have hcAB : (Associates.mk v.asIdeal).count (Associates.mk I).factors =
           Multiset.count v.asIdeal (UniqueFactorizationMonoid.normalizedFactors I) :=
         Ideal.count_associates_factors_eq hIne v.isPrime v.ne_bot
@@ -823,30 +2404,18 @@ theorem span_eq_of_ordAt_eq (A B A' B' : k[X])
         Ideal.count_associates_factors_eq hI'ne v.isPrime v.ne_bot
       rw [hvJ] at hcAB hcA'B'
       rw [← hcAB, ← hcA'B']
-      by_cases hPex : ∃ P, v.asIdeal = pointIdeal P
-      · obtain ⟨P, hP⟩ := hPex
-        by_cases h_bot : pointIdeal P = ⊥
-        · -- `pointIdeal P = ⊥`: `v.asIdeal = pointIdeal P = ⊥` contradicts `v.ne_bot`.
-          exact absurd (hP.trans h_bot) v.ne_bot
-        · have hordP : ordAt P A B = ordAt P A' B' := hordeq P
-          have hcountAB : ordAt P A B =
-              ((Associates.mk v.asIdeal).count (Associates.mk I).factors : ℤ) := by
-            rw [hP, hI_def]; exact ordAt_eq_count P A B hABz h_bot
-          have hcountA'B' : ordAt P A' B' =
-              ((Associates.mk v.asIdeal).count (Associates.mk I').factors : ℤ) := by
-            rw [hP, hI'_def]; exact ordAt_eq_count P A' B' hA'B'z h_bot
-          rw [hcountAB, hcountA'B'] at hordP
-          exact_mod_cast hordP
-      · -- `v` is witnessed by neither `hspecAB` nor `hspecA'B'` (else `hPex` would
-        -- hold), so both counts are forced to `0` by contraposition.
-        have hzAB : (Associates.mk v.asIdeal).count (Associates.mk I).factors = 0 := by
-          by_contra hne; exact hPex (hspecAB v hne)
-        have hzA'B' : (Associates.mk v.asIdeal).count (Associates.mk I').factors = 0 := by
-          by_contra hne; exact hPex (hspecA'B' v hne)
-        rw [hzAB, hzA'B']
-    · -- `J` is in neither factorization: both counts are `0` by
-      -- `Multiset.count_eq_zero`.
-      push Not at hJmem
+      -- **The simplification versus `span_eq_of_ordAt_eq`**: no case split on
+      -- whether `v` is rational — `ordAtSpec_eq_count` applies uniformly.
+      have hordv : ordAtSpec v A B = ordAtSpec v A' B' := hordeqSpec v
+      have hcountAB : ordAtSpec v A B =
+          ((Associates.mk v.asIdeal).count (Associates.mk I).factors : ℤ) := by
+        rw [hI_def]; exact ordAtSpec_eq_count v A B hABz
+      have hcountA'B' : ordAtSpec v A' B' =
+          ((Associates.mk v.asIdeal).count (Associates.mk I').factors : ℤ) := by
+        rw [hI'_def]; exact ordAtSpec_eq_count v A' B' hA'B'z
+      rw [hcountAB, hcountA'B'] at hordv
+      exact_mod_cast hordv
+    · push Not at hJmem
       rw [Multiset.count_eq_zero.mpr hJmem.1, Multiset.count_eq_zero.mpr hJmem.2]
   have hfactors_eq : UniqueFactorizationMonoid.normalizedFactors I =
       UniqueFactorizationMonoid.normalizedFactors I' := Multiset.ext'_iff.mpr hcount_eq
@@ -855,180 +2424,36 @@ theorem span_eq_of_ordAt_eq (A B A' B' : k[X])
     _ = (UniqueFactorizationMonoid.normalizedFactors I').prod := by rw [hfactors_eq]
     _ = I' := Ideal.prod_normalizedFactors_eq_self hI'bot
 
-omit [IsAlgClosed k] in
-/-- **Sub-step B — now proved.** `CoordinateRing H`'s unit group is exactly `k^×`.
-**Route actually used** (found after re-reading `RiemannRochGenus2.lean`'s already-proved
-`pairNorm_mul_of_toPair_mul`/`algebraMap_coordinateRing_injective`, rather than the free-
-module/`toPairLin` route this docstring originally speculated about): if `u` is a unit with
-inverse `v`, write both as `toPair`-pairs (`toPair_surjective_local`); `u * v = 1 = toPair H 1
-0` (`toPair_one_zero`), so `pairNorm_mul_of_toPair_mul` gives `pairNorm H A B * pairNorm H A' B'
-= pairNorm H 1 0 = 1` in `k[X]`, i.e. `pairNorm H A B` is a unit in `k[X]`, hence (`Polynomial.
-isUnit_iff`) a nonzero constant `C c`. `natDegree_pairNorm_eq_neg_ordInfOfPair` then reads this
-back as `ordInfOfPair A B = 0`, which (unfolding `ordInfOfPair`'s `max`) forces `B = 0` (else
-the `2 deg B + 5 ≥ 5` branch would make the `max`, hence `ordInfOfPair`, nonzero) and
-`A.natDegree = 0`, i.e. `u = toPair H A 0 = algebraMap (C (A.coeff 0))`; `A.coeff 0 ≠ 0` since
-`u ≠ 0` (units are nonzero in a domain) and `toPair_eq_zero_iff`. **`[IsAlgClosed k]` omitted**:
-nothing in this proof uses algebraic closedness — it is pure `pairNorm`/`toPair`/`ordInfOfPair`
-degree arithmetic, needed as-is (`k`-general) by `LPairFinrankOneOrdAtFracSpec.lean`'s
-`isConstantFraction_of_ordAtSpec_eq`. -/
-theorem isUnit_coordinateRing_iff (hdeg : H.f.natDegree = 5) (u : CoordinateRing H) :
-    IsUnit u ↔ ∃ c : k, c ≠ 0 ∧ u = algebraMap k[X] (CoordinateRing H) (C c) := by
-  constructor
-  · intro hu
-    obtain ⟨A, B, hAB⟩ := toPair_surjective_local H u
-    obtain ⟨v, hv⟩ := hu.exists_right_inv
-    obtain ⟨A', B', hA'B'⟩ := toPair_surjective_local H v
-    have hprod : toPair H 1 0 = toPair H A B * toPair H A' B' := by
-      rw [toPair_one_zero, ← hAB, ← hA'B']
-      exact hv.symm
-    have hnorm : pairNorm H 1 0 = pairNorm H A B * pairNorm H A' B' :=
-      pairNorm_mul_of_toPair_mul (H := H) A B A' B' 1 0 hprod
-    have hnorm_one : pairNorm H (1 : k[X]) 0 = 1 := by
-      simp [pairNorm]
-    rw [hnorm_one] at hnorm
-    have hpairNorm_unit : IsUnit (pairNorm H A B) :=
-      ⟨Units.mkOfMulEqOne _ _ hnorm.symm, rfl⟩
-    -- `(A, B) ≠ (0, 0)`: otherwise `toPair H A B = 0`, contradicting `u`'s being a unit
-    -- (units are nonzero in a nontrivial ring) via `hAB`.
-    have hAB0 : ¬ (A = 0 ∧ B = 0) := by
-      intro ⟨hA0, hB0⟩
-      apply hu.ne_zero
-      rw [hAB, hA0, hB0]
-      simp [HyperellipticPolynomial.toPair]
-    have hdeg_norm : ((pairNorm H A B).natDegree : ℤ) = - ordInfOfPair A B :=
-      natDegree_pairNorm_eq_neg_ordInfOfPair H hdeg A B hAB0
-    have hdeg_norm0 : (pairNorm H A B).natDegree = 0 := Polynomial.natDegree_eq_zero_of_isUnit
-      hpairNorm_unit
-    rw [hdeg_norm0] at hdeg_norm
-    -- `hdeg_norm : (0:ℤ) = -ordInfOfPair A B`, i.e. `ordInfOfPair A B = 0`; unfold to pin
-    -- down `B = 0` and `A.natDegree = 0`.
-    have hordInf0 : ordInfOfPair A B = 0 := by omega
-    have hB0 : B = 0 := by
-      by_contra hBne
-      dsimp [ordInfOfPair] at hordInf0
-      rw [if_neg hAB0, if_neg hBne] at hordInf0
-      have hle : (2 * (B.natDegree : ℤ) + 5) ≤
-          max (2 * (A.natDegree : ℤ)) (2 * (B.natDegree : ℤ) + 5) := le_max_right _ _
-      have hBnn : (0:ℤ) ≤ 2 * (B.natDegree : ℤ) := by positivity
-      omega
-    have hA_deg0 : A.natDegree = 0 := by
-      dsimp [ordInfOfPair] at hordInf0
-      rw [if_neg hAB0, if_pos hB0] at hordInf0
-      have hAnn : (0:ℤ) ≤ 2 * (A.natDegree : ℤ) := by positivity
-      rw [max_eq_left hAnn] at hordInf0
-      omega
-    refine ⟨A.coeff 0, ?_, ?_⟩
-    · intro hzero
-      apply hu.ne_zero
-      rw [hAB, hB0]
-      have hcA : A = Polynomial.C (A.coeff 0) := Polynomial.eq_C_of_natDegree_eq_zero hA_deg0
-      rw [hcA, hzero, Polynomial.C_0]
-      simp [HyperellipticPolynomial.toPair]
-    · rw [hAB, hB0]
-      have hcA : A = Polynomial.C (A.coeff 0) := Polynomial.eq_C_of_natDegree_eq_zero hA_deg0
-      rw [hcA]
-      simp [HyperellipticPolynomial.toPair]
-  · rintro ⟨c, hc, rfl⟩
-    have hCc_inv_poly : (C c : k[X]) * C c⁻¹ = 1 := by
-      rw [← map_mul, mul_inv_cancel₀ hc, map_one]
-    have hCc_inv : algebraMap k[X] (CoordinateRing H) (C c) *
-        algebraMap k[X] (CoordinateRing H) (C c⁻¹) = 1 := by
-      rw [← map_mul, hCc_inv_poly, map_one]
-    exact ⟨Units.mkOfMulEqOne _ _ hCc_inv, rfl⟩
-
-/-- **New isolated hard fact, factored out of §3d.** This is *not* the same gap as
-§3f — it is a lower-level, purely local-ring-theoretic statement with no fiber/`x`-
-coordinate content at all: if two pole-bounded pairs `(A,B)`, `(A',B')` have
-*identical* `ordAt` at every point `P : H.Point` (i.e. their affine divisors agree
-exactly, not just up to the bound `IsPoleBoundedAtPair` imposes), then their ratio
-is a `k`-constant. Stated with **no nonvanishing hypothesis on either pair** — the
-degenerate cases (`toPair H A B = 0`, or `toPair H A' B' = 0`, or both) are
-genuinely reachable from §3d's hypotheses (e.g. `T = ∅`, `A = B = 0`) and are
-handled directly below rather than assumed away.
-
-**Why this needs more than `RatioDivisorCollapse.lean` already has (nonzero
-case).** That file's `mem_LPairCarrier_of_isRatioDivisor` proves the *converse*
-direction as one branch of a proof by contradiction: assuming `z` constant, it
-derives `ordAt`-equality everywhere (via cross-multiplying `toPair H A' B' =
-toPair H (C c) 0 * toPair H A B` and reading off valuations). What's needed here
-is the reverse: *from* `ordAt`-equality everywhere, *construct* the constant `c`
-and the factorization witness. That direction is not merely "run the old proof
-backwards" — it requires actually producing `c` and the equation `toPair H A B =
-toPair H (C c) 0 * toPair H A' B'`, which is where **unique factorization of
-ideals in a Dedekind domain** enters for real: `ordAt`-equality everywhere says
-the ideals `Ideal.span {toPair H A B}` and `Ideal.span {toPair H A' B'}` have
-equal `Associates.count` at every height-one prime (`pointHeightOne P h_bot` for
-`pointIdeal P ≠ ⊥`, plus the `pointIdeal P = ⊥` points where every valuation is
-trivially `0`) — hence equal factorizations as `Associates`, hence the same ideal,
-hence `toPair H A B` and `toPair H A' B'` are associated elements of
-`CoordinateRing H` (a domain), giving a unit `u` with `toPair H A B = u * toPair H
-A' B'`. The remaining step — identifying that unit `u` with `algebraMap k[X]
-(CoordinateRing H) (C c)` for some `c : k` — needs the coordinate ring's unit
-group to be exactly `k^×` (plausible: `CoordinateRing H` is a free `k[X]`-module
-of rank 2 via `toPairLin`/`toPairEquiv_mulByToPairLin`, elsewhere in
-`PrincipalDivisors.lean`, so its units should be exactly the units of the
-degree-0 part, i.e. `k^×` — but this specific "units of `CoordinateRing H` are
-`k^×`" fact is not yet stated or proved anywhere in this project either, and
-would itself need `H.f` non-degenerate, roughly the standing `hdeg`). **Both
-        sub-steps (`Associates`-level unique factorization ⟹ same ideal ⟹ associated
-        elements, and "coordinate-ring units are exactly `k^×`") are now fully
-        formalized** via `span_eq_of_ordAt_eq` and `isUnit_coordinateRing_iff`. -/
-
-
-theorem isConstantFraction_of_ordAt_eq (hdeg : H.f.natDegree = 5) (A B A' B' : k[X])
-    (hspecAB : ∀ v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H),
-      (Associates.mk v.asIdeal).count
-        (Associates.mk (Ideal.span ({toPair H A B} : Set (CoordinateRing H)))).factors ≠ 0 →
-      ∃ P, v.asIdeal = pointIdeal P)
-    (hspecA'B' : ∀ v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H),
-      (Associates.mk v.asIdeal).count
-        (Associates.mk (Ideal.span ({toPair H A' B'} : Set (CoordinateRing H)))).factors ≠ 0 →
-      ∃ P, v.asIdeal = pointIdeal P)
-    (hordeq : ∀ P : H.Point, ordAt P A B = ordAt P A' B') :
+/-- **Closed-point-native analogue of `isConstantFraction_of_ordAt_eq`.** Same proof
+shape (Dedekind-domain unique factorization ⟹ associated elements ⟹ unit ⟹
+`CoordinateRing H`'s unit group is `k^×` ⟹ constant fraction), verbatim except for
+routing through `span_eq_of_ordAtSpec_eq` instead of `span_eq_of_ordAt_eq`. -/
+theorem isConstantFraction_of_ordAtSpec_eq [IsDedekindDomain (CoordinateRing H)]
+    (hdeg : H.f.natDegree = 5) (A B A' B' : k[X])
+    (hordeqSpec : ∀ v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H),
+      ordAtSpec v A B = ordAtSpec v A' B') :
     IsConstantFraction (polePairToFraction (H := H) A B A' B') := by
   by_cases hABz : toPair H A B = 0
-  · -- `polePairToFraction A B A' B' = 0 / toPair H A' B' = 0 = algebraMap (C 0)`.
-    refine ⟨0, ?_⟩
+  · refine ⟨0, ?_⟩
     unfold polePairToFraction
     rw [hABz, map_zero, zero_div]
     have : (algebraMap k[X] (CoordinateRing H) (C (0:k))) = 0 := by simp
     rw [this, map_zero]
   · by_cases hA'B'z : toPair H A' B' = 0
-    · -- **Now proved (ChatGPT-assisted, this session): this branch doesn't need
-      -- `hordeq` or the unique-factorization machinery at all.** `toPair H A' B' = 0`
-      -- makes `polePairToFraction`'s *denominator* vanish, so the whole fraction is
-      -- `0` by `FractionRing`'s (in fact any `Field`'s) `x / 0 = 0` convention —
-      -- mirrors the `hABz` branch just above verbatim, just on the other side of the
-      -- division. No need to derive `toPair H A B = 0` at all (which was the old,
-      -- unnecessarily hard route this branch's docstring was stuck on).
-      refine ⟨0, ?_⟩
+    · refine ⟨0, ?_⟩
       unfold polePairToFraction
       rw [hA'B'z, map_zero, div_zero]
       have : (algebraMap k[X] (CoordinateRing H) (C (0:k))) = 0 := by simp
       rw [this, map_zero]
-    · -- Genuine case: both `toPair H A B ≠ 0` and `toPair H A' B' ≠ 0`, `ordAt` equal
-      -- everywhere. Real content, see docstring above.
-      -- **Now fully proved**: uses `span_eq_of_ordAt_eq` (Dedekind-domain factorization) 
-      -- and `isUnit_coordinateRing_iff` (unit group characterization), followed by
-      -- a self-contained fraction-field computation.
-      have hspan : Ideal.span ({toPair H A B} : Set (CoordinateRing H)) =
+    · have hspan : Ideal.span ({toPair H A B} : Set (CoordinateRing H)) =
           Ideal.span ({toPair H A' B'} : Set (CoordinateRing H)) :=
-        span_eq_of_ordAt_eq (H := H) A B A' B' hABz hA'B'z hspecAB hspecA'B' hordeq
+        span_eq_of_ordAtSpec_eq (H := H) A B A' B' hABz hA'B'z hordeqSpec
       have hassoc : Associated (toPair H A B) (toPair H A' B') :=
         Ideal.span_singleton_eq_span_singleton.mp hspan
       obtain ⟨u, hu⟩ := hassoc
-      -- `hu : toPair H A B * ↑u = toPair H A' B'`.
       have hu_unit : IsUnit (u : CoordinateRing H) := u.isUnit
       obtain ⟨c, hc, hcu⟩ := (isUnit_coordinateRing_iff (H := H) hdeg (u : CoordinateRing H)).mp
         hu_unit
-      -- **Now proved.** With `hu : toPair H A B * ↑u = toPair H A' B'` and `hcu : (u :
-      -- CoordinateRing H) = algebraMap k[X] (CoordinateRing H) (C c)` (`c ≠ 0`), the
-      -- witness constant is `c⁻¹`. Strategy: establish the identity entirely inside
-      -- `CoordinateRing H` first (`hring_eq` below — no fraction-field lemma-name
-      -- uncertainty at all there), then push through `φ` and finish with `div_eq_iff`,
-      -- whose statement (`a / b = c ↔ a = c * b`, for `b ≠ 0`) is used in exactly the
-      -- orientation it's applied in below — chosen to match `mul_comm`-safe order
-      -- rather than assumed.
       refine ⟨c⁻¹, ?_⟩
       unfold polePairToFraction
       set F := FractionRing (CoordinateRing H)
@@ -1046,11 +2471,6 @@ theorem isConstantFraction_of_ordAt_eq (hdeg : H.f.natDegree = 5) (A B A' B' : k
       have hCc_ne_frac : φ (algebraMap k[X] (CoordinateRing H) (C c)) ≠ 0 :=
         fun h => hCc_ne_ring (IsFractionRing.injective (CoordinateRing H) F
           (by rw [hφ_def] at h; rw [h, map_zero]))
-      -- **Entirely inside `CoordinateRing H`, no fraction-field API needed here at all**:
-      -- `toPair H A B = algebraMap (C c⁻¹) * toPair H A' B'`, verified by substituting
-      -- `toPair H A' B' = toPair H A B * algebraMap (C c)` (from `hu`/`hcu`) and reducing
-      -- to `algebraMap (C c⁻¹) * algebraMap (C c) = algebraMap (C (c⁻¹ * c)) = algebraMap
-      -- (C 1) = 1`, a pure `k[X]`/ring-hom identity.
       have hring_eq : toPair H A B =
           algebraMap k[X] (CoordinateRing H) (C c⁻¹) * toPair H A' B' := by
         have h1 : toPair H A' B' = algebraMap k[X] (CoordinateRing H) (C c) * toPair H A B := by
@@ -1061,2318 +2481,299 @@ theorem isConstantFraction_of_ordAt_eq (hdeg : H.f.natDegree = 5) (A B A' B' : k
         rw [← hu, hcu, map_mul]; exact mul_ne_zero hABz' hCc_ne_frac
       rw [div_eq_iff hden_ne, hring_eq, map_mul]
 
-/-- **§3d (bookkeeping, reduces to `isConstantFraction_of_ordAt_eq`).** If `D`'s
-positive part is entirely zero — every coefficient in `T` is `≤ 0` — combined
-with `deg D = 0` this forces `coeffAt P D = 0` at every `P ∈ T` (a divisor that
-is `≤ 0` everywhere on its support with total degree `0` must vanish termwise:
-if any term were `< 0`, the sum would be `< 0`), hence (via `hsuppAB`/`hsuppA'B'`
-outside `T`, where both sides of `coeffAt_divToPairRatio_eq_sub` are already `0`)
-`ordAt P A B = ordAt P A' B'` at *every* point `P`, not just `T` — exactly
-`isConstantFraction_of_ordAt_eq`'s hypothesis. This half is genuinely just
-`deg`/`coeffAt`/`Finset.sum` bookkeeping, as the original docstring claimed; the
-actual mathematical content was mis-attributed to this lemma and lives in
-`isConstantFraction_of_ordAt_eq` instead. -/
-theorem isConstantFraction_of_divisor_le_zero (hdeg : H.f.natDegree = 5)
-    (A B A' B' : k[X]) (T : Finset H.Point)
-    -- **Added this session, threaded through from `isConstantFraction_of_ordAt_eq`'s
-    -- now-corrected signature** (see that theorem's docstring — the original version
-    -- omitted these, which made its statement provably too weak). Same `hspec` shape
-    -- used throughout this file (`deg_divToPairRatio_le_zero`,
-    -- `denom_B'_eq_zero_of_isPoleBoundedAtPair`, etc.).
-    (hspecAB : ∀ v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H),
-      (Associates.mk v.asIdeal).count
-        (Associates.mk (Ideal.span ({toPair H A B} : Set (CoordinateRing H)))).factors ≠ 0 →
-      ∃ P, v.asIdeal = pointIdeal P)
-    (hspecA'B' : ∀ v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H),
-      (Associates.mk v.asIdeal).count
-        (Associates.mk (Ideal.span ({toPair H A' B'} : Set (CoordinateRing H)))).factors ≠ 0 →
-      ∃ P, v.asIdeal = pointIdeal P)
-    (hsuppAB : ∀ P, P ∉ T → ordAt P A B = 0)
-    (hsuppA'B' : ∀ P, P ∉ T → ordAt P A' B' = 0)
-    (hdegD : deg (divToPairRatio A B T A' B' T) = 0)
-    (hle : ∀ P ∈ T, Divisor.coeffAt P (divToPairRatio A B T A' B' T) ≤ 0) :
-    IsConstantFraction (polePairToFraction (H := H) A B A' B') := by
-  apply isConstantFraction_of_ordAt_eq hdeg A B A' B' hspecAB hspecA'B'
-  intro P
-  rw [← sub_eq_zero, ← coeffAt_divToPairRatio_eq_sub A B A' B' T hsuppAB hsuppA'B' P]
-  by_cases hPT : P ∈ T
-  · -- `coeffAt P D ≤ 0` (`hle P hPT`) and the rest of the sum over `T.erase P` is
-    -- also `≤ 0` (each term bounded by `hle`), so splitting `∑ T = coeffAt P D +
-    -- ∑ (T.erase P)` and using `deg D = ∑ T = 0` forces both nonpositive halves to
-    -- be exactly `0` (two `≤ 0` reals summing to `0` are each `0`) — in particular
-    -- `coeffAt P D = 0`, avoiding any `Finset.sum_eq_zero_iff_of_nonneg`-style lemma
-    -- whose exact name/signature isn't confirmed against this project's Mathlib version.
-    have hdeg_eq : deg (divToPairRatio A B T A' B' T) =
-        ∑ Q ∈ T, Divisor.coeffAt Q (divToPairRatio A B T A' B' T) := by
-      unfold divToPairRatio
-      rw [map_sub, deg_divToPair, deg_divToPair, ← Finset.sum_sub_distrib]
-      exact Finset.sum_congr rfl (fun Q _ =>
-        (coeffAt_divToPairRatio_eq_sub A B A' B' T hsuppAB hsuppA'B' Q).symm)
-    have hsplit : ∑ Q ∈ T, Divisor.coeffAt Q (divToPairRatio A B T A' B' T) =
-        Divisor.coeffAt P (divToPairRatio A B T A' B' T) +
-          ∑ Q ∈ T.erase P, Divisor.coeffAt Q (divToPairRatio A B T A' B' T) := by
-      rw [← Finset.sum_erase_add T _ hPT, add_comm]
-    have hrest_le : ∑ Q ∈ T.erase P, Divisor.coeffAt Q (divToPairRatio A B T A' B' T) ≤ 0 :=
-      Finset.sum_nonpos (fun Q hQ => hle Q (Finset.mem_of_mem_erase hQ))
-    rw [hdeg_eq, hsplit] at hdegD
-    have hP_le := hle P hPT
-    linarith
-  · rw [coeffAt_divToPairRatio_eq_sub A B A' B' T hsuppAB hsuppA'B' P,
-      hsuppAB P hPT, hsuppA'B' P hPT]
-    ring
+/-! ## §4. Main theorem: `uniqueDegree2MapToP1`, general `k`, no
+`[IsAlgClosed k]`.
 
-/-- **§3e — CORRECTED, see note below.** The original draft of this lemma
-(and the docstring introducing §3 above it) claimed: nonzero positive part
-`⟹` `D = single x₃ + single x₄ - single x₁ - single x₂` for some `x₃, x₄`,
-i.e. the negative part is *exactly* `{x₁,x₂}` with each saturating its bound
-to `-1` (or `-2` at a shared point). **That claim is false from `hdegD` +
-`hcoeffbound` alone.** Counterexample: `x₁ ≠ x₂`, a third point `x₃ ∈ T`
-distinct from both, with `coeffAt x₁ D = -1`, `coeffAt x₂ D = 0`,
-`coeffAt x₃ D = 1`, all other points of `T` coefficient `0`. This satisfies
-`hdegD` (`-1 + 0 + 1 = 0`) and every clause of `hcoeffbound` (`x₂`'s bound is
-`≥ -1`, and `0` satisfies that without saturating it) — real, realizable
-`ordAt` data (e.g. `ordAt x₁ A B = 0, ordAt x₁ A' B' = 1`, both individually
-nonnegative as `ordAt` always is), yet the conclusion fails: no `x₄` makes
-`D` match the claimed shape, since that shape forces `coeffAt x₂ = -1`
-unconditionally.
+Consumes `LPairCarrierSpec'` (closed-point-native) instead of `LPairCarrier'`
+(rational-points-only), which is what makes `IsPoleBoundedAtPairSpec`
+available at the rationalized triple, and hence the whole
+`CoprimeAtRootsClosed.lean` route usable. -/
 
-**Root cause.** The docstring introducing §3 (above) attributes the
-"negative part exactly `{x₁,x₂}`, mass exactly 2" step to lemmas "§3b/§3c" —
-but those were never actually written; only mentioned in prose. `hcoeffbound`
-supplies one-sided `≥` bounds (inherited from `IsPoleBoundedAtPair`'s
-inequality clause), not the equalities the discarded conclusion needs.
-Nothing in this file currently forces saturation.
+variable [DecidableEq k]
 
-**What Route A (`SCOPING-finrank-L-pair.md`) actually does instead.** Route
-A's three steps do *not* go through an abstract "divisor has this exact
-2-point shape" lemma at all — they argue directly on `A, B, A', B'`: (1)
-`B' = 0` is forced by comparing `ordInfOfPair`'s pole order at infinity
-(`2·deg B' + 5`, odd-parity, unboundable by the ≤2 affine budget) against the
-affine bound; (2) with `B' = 0`, a similar parity argument on `y`'s own
-pole/zero structure forces `B = 0`, reducing `z` to a pure rational function
-`A(x)/A'(x)`; (3) the ≤2 pole-degree bound then forces `deg A, deg A' ≤ 1`,
-and matching `A(x)/A'(x)`'s pole set against `{x₁,x₂}` via the already-proved
-`ordAt_linX_eq` finishes it directly (`x₂ = ιx₁` unless `{x₁,x₂}` is one
-fiber, contradicting `hne`). None of this three-step chain needs — or
-produces — a general "`D` equals this fixed 2-point shape" fact first; it
-short-circuits straight from the affine/infinity pole-degree split to the
-`ordAt_linX_eq` case analysis. **The abstract §3a–§3e decomposition in this
-file is a different (and, per the above, broken) attempt at scoping the
-problem, not a restatement of Route A** — whoever continues this file should
-strongly consider abandoning the §3d/§3e/§3f split in favor of implementing
-Route A steps 1–3 directly (as their own named lemmas on `A,B,A',B'`,
-following the SCOPING doc's numbering), rather than patching this
-abstract-divisor-shape route further.
-
-**This corrected statement** keeps only what `hdegD`+`hcoeffbound` genuinely
-imply: the positive part's total mass equals the negative part's total mass
-(both come from `deg D = 0`), and that shared mass is `≤ 2` (from
-`hcoeffbound`'s bounds). This is materially weaker than the original
-(discarded) conclusion and is **not sufficient on its own** to feed §3f's
-`IsPoleBoundedAtPair`-shaped hypothesis — §3f's statement is left as-is
-(unreachable from this weaker lemma) as a marker of the gap, not silently
-patched to match. -/
-theorem posMass_eq_negMass_le_two (hdeg : H.f.natDegree = 5)
-    (x₁ x₂ : H.Point) (A B A' B' : k[X])
-    (hAB : ¬ (A = 0 ∧ B = 0)) (hA'B' : ¬ (A' = 0 ∧ B' = 0))
-    (T : Finset H.Point)
-    (hsuppAB : ∀ P, P ∉ T → ordAt P A B = 0)
-    (hsuppA'B' : ∀ P, P ∉ T → ordAt P A' B' = 0)
-    (hdegD : deg (divToPairRatio A B T A' B' T) = 0)
-    (hcoeffbound :
-      (∀ P, P ≠ x₁ → P ≠ x₂ → 0 ≤ Divisor.coeffAt P (divToPairRatio A B T A' B' T)) ∧
-      Divisor.coeffAt x₁ (divToPairRatio A B T A' B' T) ≥
-        -((if x₁ = x₁ then (1 : ℤ) else 0) + (if x₁ = x₂ then 1 else 0)) ∧
-      Divisor.coeffAt x₂ (divToPairRatio A B T A' B' T) ≥
-        -((if x₂ = x₁ then (1 : ℤ) else 0) + (if x₂ = x₂ then 1 else 0))) :
-    ∑ P ∈ T, max (Divisor.coeffAt P (divToPairRatio A B T A' B' T)) 0 ≤ 2 ∧
-    ∑ P ∈ T, max (Divisor.coeffAt P (divToPairRatio A B T A' B' T)) 0 =
-      ∑ P ∈ T, max (- Divisor.coeffAt P (divToPairRatio A B T A' B' T)) 0 := by
-  have hmass_le := isRatioDivisor_shape_of_bounds hdeg x₁ x₂ A B A' B' hAB hA'B' T hsuppAB
-    hsuppA'B' (le_of_eq hdegD) hcoeffbound
-  refine ⟨hmass_le, ?_⟩
-  -- `∑ max(coeffAt,0) - ∑ max(-coeffAt,0) = ∑ coeffAt = deg D = 0` (each term's
-  -- `max x 0 - max (-x) 0 = x` pointwise), so the two sums are equal.
-  have hdeg_eq : deg (divToPairRatio A B T A' B' T) =
-      ∑ P ∈ T, Divisor.coeffAt P (divToPairRatio A B T A' B' T) := by
-    unfold divToPairRatio
-    rw [map_sub, deg_divToPair, deg_divToPair, ← Finset.sum_sub_distrib]
-    exact Finset.sum_congr rfl (fun P _ =>
-      (coeffAt_divToPairRatio_eq_sub A B A' B' T hsuppAB hsuppA'B' P).symm)
-  rw [hdeg_eq] at hdegD
-  have hpointwise : ∀ P ∈ T,
-      Divisor.coeffAt P (divToPairRatio A B T A' B' T) =
-        max (Divisor.coeffAt P (divToPairRatio A B T A' B' T)) 0 -
-          max (- Divisor.coeffAt P (divToPairRatio A B T A' B' T)) 0 := by
-    intro P _
-    rcases le_or_gt 0 (Divisor.coeffAt P (divToPairRatio A B T A' B' T)) with h | h
-    · rw [max_eq_left h, max_eq_right (by linarith), sub_zero]
-    · rw [max_eq_right (le_of_lt h), max_eq_left (by linarith)]; ring
-  have hsum_eq : ∑ P ∈ T, Divisor.coeffAt P (divToPairRatio A B T A' B' T) =
-      ∑ P ∈ T, max (Divisor.coeffAt P (divToPairRatio A B T A' B' T)) 0 -
-        ∑ P ∈ T, max (- Divisor.coeffAt P (divToPairRatio A B T A' B' T)) 0 := by
-    rw [← Finset.sum_sub_distrib]
-    exact Finset.sum_congr rfl hpointwise
-  rw [hsum_eq] at hdegD
-  linarith
-
-/-! ### §3f skeleton — Route A steps 1–3, decomposed per `SCOPING-finrank-L-pair.md`
-
-None of the three lemmas below are proved; this is a decomposition of the single
-`fiber_eq_of_divisor_shape` `sorry` (docstring below) into its three genuinely
-distinct sub-arguments (per the SCOPING doc's own numbering), each stated as its
-own target so a future session can attack them independently rather than reopening
-one monolithic goal. `fiber_eq_of_divisor_shape` itself is left exactly as it was
-(still one `sorry`) — these are staging lemmas it is expected to be assembled
-from, not yet wired in. -/
-
-omit [IsAlgClosed k] in
-/-- **Route A step 1.** If `IsPoleBoundedAtPair x₁ x₂ A B A' B'` and `B' ≠ 0`, the
-denominator `toPair H A' B'` has pole-at-infinity order `2 * B'.natDegree + 5`
-(odd multiple of the half-integer unit, per `ordInfOfPair`'s convention — see
-`SCOPING-finrank-L-pair.md` for the precise weighting), which cannot be matched
-against the total affine pole budget of `2` (one order-≤1 pole at each of `x₁`,
-`x₂`) contributed to `ordInfOfPair A B`'s side of the `≥` bound in
-`IsPoleBoundedAtPair`. Forces `B' = 0`. Not yet proved — the precise inequality
-chain from `ordInfOfPair`'s definition (`PrincipalDivisors.lean:122`) needs to be
-written out; flagged in the SCOPING doc as "probably the easiest of the three". -/
-theorem denom_B'_eq_zero_of_isPoleBoundedAtPair (hdeg : H.f.natDegree = 5)
-    (x₁ x₂ : H.Point) (A B A' B' : k[X])
-    (hbound : IsPoleBoundedAtPair x₁ x₂ A B A' B')
-    (hspecAB : ∀ v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H),
-      (Associates.mk v.asIdeal).count
-        (Associates.mk (Ideal.span ({toPair H A B} : Set (CoordinateRing H)))).factors ≠ 0 →
-      ∃ P, v.asIdeal = pointIdeal P)
-    (hspecA'B' : ∀ v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H),
-      (Associates.mk v.asIdeal).count
-        (Associates.mk (Ideal.span ({toPair H A' B'} : Set (CoordinateRing H)))).factors ≠ 0 →
-      ∃ P, v.asIdeal = pointIdeal P)
-    (T : Finset H.Point)
-    (hAB : ¬ (A = 0 ∧ B = 0))
-    (hsuppAB : ∀ P, P ∉ T → ordAt P A B = 0)
-    (hsuppA'B' : ∀ P, P ∉ T → ordAt P A' B' = 0)
-    -- **Weakening, added after the original (false) statement was found to have a
-    -- counterexample.** `IsPoleBoundedAtPair` alone does not force `B' = 0`: `A=A'=0,
-    -- B=B'=1` gives `z = toPair H 0 1 / toPair H 0 1 = y/y`, trivially satisfying
-    -- `IsPoleBoundedAtPair` with equality throughout, yet `B' = 1 ≠ 0` (this is exactly
-    -- the counterexample already documented in this file's own revision-history
-    -- docstring above, §"Revision history, kept here because the false start is
-    -- instructive"). The genuine content needs the pair to be in *lowest terms* — no
-    -- common affine zero/pole between numerator and denominator — which is what Route A
-    -- implicitly assumes throughout (a fraction already reduced, not one with a shared
-    -- spurious factor like `y` in the counterexample). This hypothesis is that lowest-
-    -- terms condition, stated pointwise.
-    (hreduced : ∀ P : H.Point, ordAt P A B = 0 ∨ ordAt P A' B' = 0)
-    [∀ P : T, Module.Finite k (CoordinateRing H ⧸ pointIdeal P.1 ^ (ordAt P.1 A B).toNat)]
-    [∀ P : T, Module.Finite k (CoordinateRing H ⧸ pointIdeal P.1 ^ (ordAt P.1 A' B').toNat)] :
-    B' = 0 := by
-  by_contra hB'ne
-  obtain ⟨hA'B', hmono, hpt⟩ := hbound
-  -- `deg_div_eq_zero_deg5` applied to each pair: `∑_T ordAt(A,B) = -ordInfOfPair A B`,
-  -- likewise for `(A',B')`.
-  have h₁ := deg_div_eq_zero_deg5 H hdeg T A B hAB hsuppAB hspecAB
-  have h₂ := deg_div_eq_zero_deg5 H hdeg T A' B' hA'B' hsuppA'B' hspecA'B'
-  -- `ordInfOfPair A' B'` unfolds explicitly since `B' ≠ 0`: `= -(max (2 deg A') (2 deg B' + 5))`,
-  -- in particular `ordInfOfPair A' B' ≤ -(2 * B'.natDegree + 5) ≤ -5`.
-  have hordInf_A'B' : ordInfOfPair A' B' ≤ -(2 * (B'.natDegree : ℤ) + 5) := by
-    dsimp [ordInfOfPair]
-    rw [if_neg hA'B', if_neg hB'ne]
-    have : (2 * (B'.natDegree : ℤ) + 5) ≤ max (2 * (A'.natDegree : ℤ)) (2 * (B'.natDegree : ℤ) + 5) :=
-      le_max_right _ _
-    linarith
-  -- **New, solid intermediate fact**: `(A',B')`'s support outside `{x₁,x₂}` is empty, i.e.
-  -- `ordAt P A' B' = 0` for every `P ≠ x₁, x₂`. Proof: for such `P`, `hpt` gives
-  -- `ordAt P A B ≥ ordAt P A' B' - 0 = ordAt P A' B'`. If `ordAt P A' B' > 0` then
-  -- `ordAt P A B > 0` too, so `ordAt P A B ≠ 0`; `hreduced` then forces `ordAt P A' B' = 0`,
-  -- contradicting `ordAt P A' B' > 0`. So `ordAt P A' B' ≤ 0`; combined with `ordAt_nonneg`
-  -- (`PrincipalDivisors.lean:472`, valid since `toPair H A' B' ≠ 0` — `hA'B'`, `toPair_eq_zero_iff`
-  -- — regardless of whether `pointIdeal P = ⊥`, where `ordAt` is `0` by definition anyway),
-  -- `ordAt P A' B' = 0`.
-  have hsupp_outside : ∀ P : H.Point, P ≠ x₁ → P ≠ x₂ → ordAt P A' B' = 0 := by
-    intro P hPx₁ hPx₂
-    have hind : ordAt P A B ≥ ordAt P A' B' - ((if P = x₁ then (1:ℤ) else 0) + (if P = x₂ then 1 else 0)) :=
-      hpt P
-    rw [if_neg hPx₁, if_neg hPx₂] at hind
-    simp only [add_zero, sub_zero] at hind
-    have hAB_ne : toPair H A' B' ≠ 0 := by rw [Ne, toPair_eq_zero_iff]; exact hA'B'
-    by_cases h_bot : pointIdeal P = ⊥
-    · simp only [ordAt, if_neg hAB_ne, dif_pos h_bot]
-    · have hge0 : 0 ≤ ordAt P A' B' := ordAt_nonneg P A' B' hAB_ne h_bot
-      by_contra hne
-      have hpos : 0 < ordAt P A' B' := lt_of_le_of_ne hge0 (Ne.symm hne)
-      have hABpos : 0 < ordAt P A B := lt_of_lt_of_le hpos hind
-      rcases hreduced P with hzero | hzero
-      · exact absurd hzero (ne_of_gt hABpos)
-      · exact absurd hzero (ne_of_gt hpos)
-  -- **Closing the gap.** The missing ingredient isn't a degree bound at all — it's an
-  -- upper bound on `∑_T ordAt(A',B')` itself, which `hreduced` supplies via `hpt` pointwise.
-  -- At any `P`, `hreduced P` gives `ordAt P A B = 0 ∨ ordAt P A' B' = 0`. In the first case,
-  -- `hpt P` reads `ordAt P A B ≥ ordAt P A' B' - ind(P)` where `ind(P) := (if P=x₁ then 1
-  -- else 0) + (if P=x₂ then 1 else 0)`, i.e. `0 ≥ ordAt P A' B' - ind(P)`, so
-  -- `ordAt P A' B' ≤ ind(P)`; in the second case `ordAt P A' B' = 0 ≤ ind(P)` trivially
-  -- (`ind(P) ≥ 0` always). So `ordAt P A' B' ≤ ind(P)` at *every* point, unconditionally —
-  -- no case split on `x₁ = x₂` needed here (unlike a flat `≤ 1` per-point cap, which is false
-  -- when `x₁ = x₂` and both indicators fire together at the single coincident point).
-  -- Summed over `T`, `∑_T ind(P) = 2` regardless of whether `x₁ = x₂` (if equal, both
-  -- indicators fire together at that one point, contributing `2`; if distinct, each
-  -- contributes `1` at its own point), giving `∑_T ordAt(A',B') ≤ 2`.
-  have hcap_at : ∀ P : H.Point,
-      ordAt P A' B' ≤ (if P = x₁ then (1:ℤ) else 0) + (if P = x₂ then (1:ℤ) else 0) := by
-    intro P
-    rcases hreduced P with hzero | hzero
-    · have hind := hpt P
-      rw [hzero] at hind
-      omega
-    · have hind_nonneg : (0:ℤ) ≤ (if P = x₁ then (1:ℤ) else 0) + (if P = x₂ then (1:ℤ) else 0) := by
-        have h1 : (0:ℤ) ≤ if P = x₁ then (1:ℤ) else 0 := by by_cases h : P = x₁ <;> simp [h]
-        have h2 : (0:ℤ) ≤ if P = x₂ then (1:ℤ) else 0 := by by_cases h : P = x₂ <;> simp [h]
-        linarith
-      omega
-  -- `∑_T ordAt(A',B')` is bounded by `∑_T ind(P)`, which telescopes to `2`.
-  have hsum_le : (∑ P ∈ T, ordAt P A' B') ≤ 2 := by
-    calc (∑ P ∈ T, ordAt P A' B')
-        ≤ ∑ P ∈ T, ((if P = x₁ then (1:ℤ) else 0) + (if P = x₂ then (1:ℤ) else 0)) :=
-          Finset.sum_le_sum (fun P _ => hcap_at P)
-      _ = (∑ P ∈ T, (if P = x₁ then (1:ℤ) else 0)) + ∑ P ∈ T, (if P = x₂ then (1:ℤ) else 0) :=
-          Finset.sum_add_distrib
-      _ ≤ 1 + 1 := by
-          have hb1 : (∑ P ∈ T, (if P = x₁ then (1:ℤ) else 0)) ≤ 1 := by
-            have heq : (∑ P ∈ T, (if P = x₁ then (1:ℤ) else 0)) =
-                ((T.filter (fun P => P = x₁)).card : ℤ) := by
-              rw [← Finset.sum_filter]
-              simp [Finset.sum_const]
-            rw [heq]
-            have hsub : T.filter (fun P => P = x₁) ⊆ {x₁} := by
-              intro P hP
-              simp only [Finset.mem_filter] at hP
-              simp [hP.2]
-            have hcard : (T.filter (fun P => P = x₁)).card ≤ 1 := by
-              have := Finset.card_le_card hsub
-              simpa using this
-            exact_mod_cast hcard
-          have hb2 : (∑ P ∈ T, (if P = x₂ then (1:ℤ) else 0)) ≤ 1 := by
-            have heq : (∑ P ∈ T, (if P = x₂ then (1:ℤ) else 0)) =
-                ((T.filter (fun P => P = x₂)).card : ℤ) := by
-              rw [← Finset.sum_filter]
-              simp [Finset.sum_const]
-            rw [heq]
-            have hsub : T.filter (fun P => P = x₂) ⊆ {x₂} := by
-              intro P hP
-              simp only [Finset.mem_filter] at hP
-              simp [hP.2]
-            have hcard : (T.filter (fun P => P = x₂)).card ≤ 1 := by
-              have := Finset.card_le_card hsub
-              simpa using this
-            exact_mod_cast hcard
-          linarith
-      _ = 2 := by norm_num
-  -- Contradiction: `h₂` gives `∑_T ordAt(A',B') = -ordInfOfPair A'B'`, and `hordInf_A'B'`
-  -- gives `ordInfOfPair A'B' ≤ -(2 deg B' + 5) ≤ -5`, so `∑_T ordAt(A',B') ≥ 5 > 2 ≥ hsum_le`.
-  have hB'deg_nonneg : (0:ℤ) ≤ 2 * (B'.natDegree : ℤ) := by positivity
-  omega
-
-/-- 
-  The denominator-degree lemma: 
-  A reduced denominator of a degree-2 pole-bounded function has -ord_∞ ≤ 2.
-  (This encapsulates the summation of affine orders from Step 1).
--/
-lemma denom_ordInf_ge_neg_two (A' B' : k[X]) 
-    (h_B' : B' = 0) 
-    (h_deg_A' : A'.natDegree ≤ 1) : 
-    ordInfOfPair A' B' ≥ -2 := by
-  dsimp [ordInfOfPair]
-  by_cases h_A' : A' = 0
-  · have hBoth : A' = 0 ∧ B' = 0 := ⟨h_A', h_B'⟩
-    rw [if_pos hBoth]
-    linarith
-  · have hBoth : ¬ (A' = 0 ∧ B' = 0) := fun h => h_A' h.1
-    rw [if_neg hBoth, if_pos h_B']
-    have h_deg : (A'.natDegree : ℤ) ≤ 1 := by exact_mod_cast h_deg_A'
-    omega
-
-
-omit [IsAlgClosed k] in
-/-- **Route A step 2.** Given step 1's `B' = 0`, so `z = (A(x) + B(x)y) / A'(x)`, a
-similar parity argument on `y`'s own pole/zero structure (`y² = f(x)`, `deg f = 5`)
-against the same `≤ 2` affine pole budget forces `B = 0` too, reducing `z` to a pure
-rational function of `x` alone.
-
-**Not proved — attempted and reverted this session; the "mirror of step 1" idea is
-WRONG, documenting why so it isn't retried.** Step 1's argument confined `(A',B')`'s
-affine support to `{x₁,x₂}` using `hpt`'s *lower* bound on `ordAt P A B` (the
-numerator) together with `hreduced`, contraposed: `ordAt P A B = 0` (from `hreduced`'s
-first disjunct) forces `ordAt P A' B' ≤ (indicator)` via `hpt` directly, since `hpt`
-reads `ordAt P A B ≥ ordAt P A' B' - indicator`. Trying to run the same argument with
-`(A,B)` and `(A',B')` swapped **does not work**: `hpt` only ever bounds the numerator
-`ordAt P A B` from *below* by the denominator's data — there is no clause anywhere in
-`IsPoleBoundedAtPair` bounding `ordAt P A B` from *above*. So "`(A,B)`'s affine support
-is confined to `{x₁,x₂}`" is simply not derivable from `hbound` the way it was for
-`(A',B')` — a numerator is free to vanish at as many extra points as it likes; only its
-*poles* (via the denominator) are constrained. The whole "confine support, then contradict
-degree-5-driven lower bound" strategy therefore does not transfer to step 2 as stated.
-
-**What's actually needed instead** (re-reading `SCOPING-finrank-L-pair.md`'s step 2
-description: "comparing `y`'s own pole/zero structure... against the bound"): this is not
-about the *affine* divisor of `(A,B)` at all — it's about `y`'s pole structure specifically
-*at infinity*, i.e. an argument purely via `ordInfOfPair`/`pairNorm`'s degree formula,
-without needing `T`/`hspec`/finite-support machinery at all (unlike what this session's
-now-reverted attempt assumed). Sketch: `B' = 0` gives `ordInfOfPair A' 0 = -2 deg A'`
-(even). `hmono : ordInfOfPair A B ≥ -2 deg A'`. If `B ≠ 0`, `ordInfOfPair A B =
--(max(2 deg A, 2 deg B + 5))`. The genuinely hard content is presumably in
-`pairNorm`/`toPair_mul_involution`: `toPair H A B * involution H (toPair H A B) =
-algebraMap (pairNorm H A B)` with `pairNorm H A B = A² - B²f` — and `z = toPair H A B /
-algebraMap A'` being pole-bounded by `(x₁)+(x₂)` (mass 2) should force `pairNorm H A B`
-(degree `-ordInfOfPair A B` when nonzero, by `natDegree_pairNorm_eq_neg_ordInfOfPair`) to
-be small — but making "mass 2 at `{x₁,x₂}`" talk to `pairNorm`'s *global* degree still
-seems to need the same `T`/`deg_div_eq_zero_deg5` connection step 1 used, just applied to
-a different quantity than "confine `(A,B)`'s support". **Not resolved this session** —
-flagging the dead end found (mirroring step 1 verbatim) rather than guessing further;
-whoever picks this up next should start from `pairNorm`/`toPair_mul_involution` and the
-`y_sq_eq` relation (`HyperellipticFunctionField.lean`) rather than repeating the
-affine-support-confinement approach. **One more data point against a quick affine-`ordAt`
-route**: checked whether `y`'s own affine vanishing structure (needed for any argument
-that goes pointwise through `ordAt P A B` with `B ≠ 0`, rather than staying at the
-`pairNorm`/infinity level) is already characterized elsewhere — it is not, fully.
-`HyperellipticClassProof.lean`'s `ordAt_linX_eq`-adjacent machinery (§B, around line 187)
-is itself mid-scaffold with real unresolved `sorry`s in the ramified/unramified local-
-uniformizer case split for `linX`, and doesn't cover `toPair H B 0`-style pairs (`y`
-itself, `A=0`) at all — so a pointwise `ordAt`-based route through step 2 would likely
-need to redo comparable local-uniformizer work from scratch, not just reuse existing
-lemmas. This reinforces that the `pairNorm`-at-infinity route sketched above is the more
-promising direction, even though it isn't fully worked out either. 
----
-  Step 2: The numerator cannot have a `y` component.
-  Relies only on the infinity inequality from `IsPoleBoundedAtPair` 
-  and the denominator degree bound from Step 1.
--/
-lemma num_B_eq_zero_of_isPoleBoundedAtPair (x₁ x₂ : H.Point) (A B A' B' : k[X])
-    (h_bound : IsPoleBoundedAtPair x₁ x₂ A B A' B') 
-    (h_denom_ord : ordInfOfPair A' B' ≥ -2) : 
-    B = 0 := by
-  by_contra h_B_ne_zero
-  obtain ⟨_, h_inf_ineq, _⟩ := h_bound
-  have h_num_le_neg_five : ordInfOfPair A B ≤ -5 := by
-    dsimp [ordInfOfPair]
-    have hAB : ¬ (A = 0 ∧ B = 0) := fun h => h_B_ne_zero h.2
-    rw [if_neg hAB, if_neg h_B_ne_zero]
-    have h_B_deg_nonneg : (0 : ℤ) ≤ 2 * (B.natDegree : ℤ) := by positivity
-    have h_max_le : (2 * (B.natDegree : ℤ) + 5) ≤ 
-      max (2 * (A.natDegree : ℤ)) (2 * (B.natDegree : ℤ) + 5) := 
-      le_max_right _ _
-    linarith
-  linarith [h_inf_ineq, h_num_le_neg_five, h_denom_ord]
-
-
-/-! ### Helper lemmas for Route A step 3: scale-invariance and degree-1 normalization
-
-Three small helpers, factored out so `fiber_eq_of_pure_rational_pole_match`'s proof
-body can case-split cleanly on `A`'s (resp. `A'`'s) shape rather than re-deriving
-each of these facts inline.
-
-`toPair_C_notMem_pointIdeal`, `ordAt_C_zero`, and `ordAt_C_mul_eq` originally lived
-here but have been ported upstream into `RiemannRochGenus2.lean` (so that file
-doesn't need to import this later, downstream one) — see the docstrings there.
-Kept out of this file now to avoid the duplicate-declaration error; use the
-`RiemannRochGenus2.lean` versions via the existing import. -/
-
-/-- **Degree-`≤1` polynomials in `k[X]` are `0`, a nonzero constant, or a nonzero
-constant times a monic linear factor.** Standard `k[X]`-degree bookkeeping via
-`Polynomial.natDegree_le_iff_coeff_eq_zero` (all coefficients above degree `1`
-vanish) plus reconstructing `P` from its `coeff 0`/`coeff 1` via
-`Polynomial.ext_iff`/`Polynomial.coeff_add`/`coeff_C`/`coeff_X`. -/
-theorem eq_zero_or_C_or_C_mul_linX_of_natDegree_le_one (P : k[X]) (hP : P.natDegree ≤ 1) :
-    P = 0 ∨ (∃ c : k, c ≠ 0 ∧ P = Polynomial.C c) ∨
-      (∃ c a : k, c ≠ 0 ∧ P = Polynomial.C c * linX a) := by
-  by_cases hP1 : P.coeff 1 = 0
-  · -- `coeff 1 = 0` and `natDegree ≤ 1` forces `P = C (P.coeff 0)`.
-    have hP0 : P.natDegree = 0 ∨ P = 0 := by
-      by_cases hz : P = 0
-      · right; exact hz
-      · left
-        by_contra hne
-        have hpos : 0 < P.natDegree := Nat.pos_of_ne_zero hne
-        have : P.natDegree = 1 := le_antisymm hP (hpos)
-        have hcoeff := Polynomial.leadingCoeff_ne_zero.mpr hz
-        rw [Polynomial.leadingCoeff, this] at hcoeff
-        exact hcoeff hP1
-    rcases hP0 with hP0 | hP0
-    · have hCeq : P = Polynomial.C (P.coeff 0) := Polynomial.eq_C_of_natDegree_eq_zero hP0
-      by_cases hc0 : P.coeff 0 = 0
-      · left; rw [hCeq, hc0, Polynomial.C_0]
-      · right; left; exact ⟨P.coeff 0, hc0, hCeq⟩
-    · left; exact hP0
-  · -- `coeff 1 ≠ 0`: `P = C (coeff 1) * X + C (coeff 0) = C (coeff 1) * (X - C (-coeff 0 / coeff 1))`.
-    right; right
-    set c := P.coeff 1 with hc_def
-    set c₀ := P.coeff 0 with hc₀_def
-    refine ⟨c, -(c₀ / c), hP1, ?_⟩
-    unfold linX
-    have hPeq : P = Polynomial.C c * Polynomial.X + Polynomial.C c₀ := by
-      apply Polynomial.ext
-      intro n
-      match n with
-      | 0 => simp [hc₀_def]
-      | 1 => simp [hc_def]
-      | (m + 2) =>
-        have hlt : P.natDegree < m + 2 := by omega
-        rw [Polynomial.coeff_eq_zero_of_natDegree_lt hlt]
-        simp
-    rw [hPeq]
-    have hc_ne : c ≠ 0 := hP1
-    have hscalar : c * (-(c₀ / c)) = -c₀ := by
-      field_simp
-    have hlift : Polynomial.C c * Polynomial.C (-(c₀ / c)) = -Polynomial.C c₀ := by
-      rw [← Polynomial.C_mul, hscalar, Polynomial.C_neg]
-    rw [mul_sub, eq_sub_iff_add_eq, hlift]
-    ring
-
-/-- **Helper: a `Divisor H` equation between two pairs of `single`s forces set equality
-of the underlying pairs.** Proved by evaluating both sides at each candidate point
-(`congrArg (fun D => D P)`) rather than reasoning about `Finsupp.support` directly — robust
-to coincidences among `a, b, c, d` (e.g. `a = b`). This is the reusable bookkeeping step that
-turns a literal divisor identity into a set-level conclusion; see call sites below. -/
-private lemma set_eq_of_two_singletons_eq
-    {a b c d : H.Point}
-    (h : (single a + single b : Divisor H) = single c + single d) :
-    ({a, b} : Set H.Point) = {c, d} := by
-  classical
-  -- Evaluate `coeffAt` of both sides at every point `x`: gives a single equation of
-  -- indicator sums that determines membership in `{a,b}` iff membership in `{c,d}`,
-  -- without ever `subst`ing `x` into `a,b,c,d` (which renames the wrong variable and
-  -- makes `a,b,c,d` disappear from context).
-  have hcoeff : ∀ x : H.Point,
-      (if x = a then 1 else 0) + (if x = b then 1 else 0) =
-        (if x = c then 1 else 0) + (if x = d then (1 : ℤ) else 0) := by
-    intro x
-    have h' := congrArg (Divisor.coeffAt x) h
-    simpa [map_add, Divisor.coeffAt_single, eq_comm] using h'
-  ext x
-  simp only [Set.mem_insert_iff, Set.mem_singleton_iff]
-  have hx := hcoeff x
-  by_cases hxa : x = a <;> by_cases hxb : x = b <;>
-    by_cases hxc : x = c <;> by_cases hxd : x = d <;>
-    (try rw [if_pos hxa] at hx) <;> (try rw [if_neg hxa] at hx) <;>
-    (try rw [if_pos hxb] at hx) <;> (try rw [if_neg hxb] at hx) <;>
-    (try rw [if_pos hxc] at hx) <;> (try rw [if_neg hxc] at hx) <;>
-    (try rw [if_pos hxd] at hx) <;> (try rw [if_neg hxd] at hx) <;>
-    first
-      | exact absurd hx (by omega)
-      | (refine ⟨fun h => ?_, fun h => ?_⟩ <;>
-          rcases h with h | h <;>
-          first
-            | exact Or.inl hxa | exact Or.inr hxb
-            | exact Or.inl hxc | exact Or.inr hxd
-            | exact absurd h hxa | exact absurd h hxb
-            | exact absurd h hxc | exact absurd h hxd)
-
-/-- **`ordAt` at the zero pair is always `0`.** Direct from `ordAt`'s own
-`if toPair H A B = 0 then 0 else ...` branch: `toPair H 0 0 = 0` (`toPair`
-unfolds to `algebraMap _ _ 0 + algebraMap _ _ 0 * y H = 0`), so the `if`
-fires immediately regardless of `P`. -/
-theorem ordAt_zero_zero (P : H.Point) : ordAt P (0 : k[X]) (0 : k[X]) = 0 := by
-  have hz : toPair H (0 : k[X]) (0 : k[X]) = 0 := by simp [toPair]
-  unfold ordAt
-  rw [if_pos hz]
-
-/-- **Helper for the "constant" branches of `fiber_eq_of_pure_rational_pole_match`.**
-`divToPair (C c) 0 S = 0` for any nonzero constant `c` and any finite support `S`:
-`ordAt P (C c) 0 = 0` at every point `P` (`ordAt_C_zero`), so every summand is
-`0 • single P = 0`. -/
-theorem divToPair_C_eq_zero (c : k) (hc : c ≠ 0) (S : Finset H.Point) :
-    (divToPair (Polynomial.C c) 0 S : Divisor H) = 0 := by
-  unfold divToPair
-  refine Finset.sum_eq_zero (fun P _ => ?_)
-  rw [ordAt_C_zero c hc P]
-  simp
-
-/-- **Sibling of `divToPair_C_eq_zero` for the literal zero pair.**
-`divToPair 0 0 S = 0` for any finite support `S`, via `ordAt_zero_zero`. -/
-theorem divToPair_zero_zero_eq_zero (S : Finset H.Point) :
-    (divToPair (0 : k[X]) (0 : k[X]) S : Divisor H) = 0 := by
-  unfold divToPair
-  refine Finset.sum_eq_zero (fun P _ => ?_)
-  rw [ordAt_zero_zero P]
-  simp
-
-/-- **New helper, closes all four "mixed-sign" branches of
-`fiber_eq_of_pure_rational_pole_match` uniformly.** `divToPair A 0 S` always has every
-term `ordAt P A 0 ≥ 0` (`ordAt`'s own `if`/`dif` gives `0` in the `toPair = 0` and
-`pointIdeal = ⊥` branches, `ordAt_nonneg` gives `≥ 0` in the genuine branch — so `≥ 0`
-unconditionally, no case split needed at the call site). If in addition
-`∑ P ∈ S, ordAt P A 0 = 0` (i.e. `divToPair A 0 S` has degree `0`, via `deg_divToPair`),
-every term must be exactly `0` (`Finset.sum_eq_zero_iff_of_nonneg`), hence
-`divToPair A 0 S = 0` termwise. -/
-theorem divToPair_right_zero_eq_zero_of_deg_eq_zero (A : k[X]) (S : Finset H.Point)
-    (hdeg : deg (divToPair A 0 S) = 0) :
-    (divToPair A 0 S : Divisor H) = 0 := by
-  have hordnn : ∀ P ∈ S, 0 ≤ ordAt P A 0 := by
-    intro P _
-    by_cases hz : toPair H A 0 = 0
-    · unfold ordAt; rw [if_pos hz]
-    · by_cases hbot : pointIdeal P = ⊥
-      · unfold ordAt; rw [if_neg hz, dif_pos hbot]
-      · exact ordAt_nonneg P A 0 hz hbot
-  rw [deg_divToPair] at hdeg
-  have hall0 : ∀ P ∈ S, ordAt P A 0 = 0 :=
-    (Finset.sum_eq_zero_iff_of_nonneg hordnn).mp hdeg
-  unfold divToPair
-  refine Finset.sum_eq_zero (fun P hP => ?_)
-  rw [hall0 P hP]
-  simp
-
--- Route A step 3's degree/pole bookkeeping is long enough to need extra heartbeats
-/-- **Route A step 3 — the one genuinely new piece of reasoning** (per the SCOPING
-doc; reuses `ordAt_linX_eq` rather than inventing ramification theory). Given steps
-1–2 (`B = B' = 0`, so `z = A(x)/A'(x)`), the `≤ 2` total pole-degree bound forces
-`deg A, deg A' ≤ 1` (from `ordInfOfPair`'s formula with `B = B' = 0`, i.e.
-`ordInfOfPair A 0 = -2 * A.natDegree`). A degree-≤1-over-degree-≤1 rational function
-of `x` with pole divisor exactly `{x₁,x₂}` (both affine, both order-≤1, per
-`hordeq`/`hdiv`'s shape) is, via case analysis on `ordAt_linX_eq`
-(`HyperellipticClassProof.lean:1031`: `Q.Y = 0` gives a double pole at one
-Weierstrass point, `Q.Y ≠ 0` gives a simple pole shared with `ι Q`), forced to have
-`{x₁,x₂}` be a fiber `{Q, ι Q}` of the coordinate function `x` — i.e. `x₂ = ι x₁` —
-unless the pole/zero sets coincide outright as sets, which is the theorem's actual
-conclusion.
-
-**New hypotheses `hchar`/`hsf`, added this session.** `ordAt_linX_eq`
-(`HyperellipticClassProof.lean:1031`) — the one fact this proof genuinely needs —
-requires `(2:k) ≠ 0` and `Squarefree H.f`, neither of which was in this theorem's
-original signature. These are standing assumptions everywhere `ordAt_linX_eq` is
-used elsewhere in the project (`HyperellipticClassProof.lean` throughout); adding
-them here is the honest fix, not a weakening. **Downstream callers
-(`fiber_eq_of_divisor_shape`, `constant_or_fiber_of_isPoleBoundedAtPair`,
-`uniqueDegree2MapToP1_of_elementary`) will need the same two hypotheses threaded
-through once they're wired to call this** — not yet done in this session, flagged
-here so the next pass doesn't rediscover it as a mysterious type error.
-
-**Proof plan (per the ChatGPT-assisted case analysis recorded in this session's
-transcript, confirmed by hand against `hpoles`'s exact degree-0 shape):** case on
-`(A.natDegree, A'.natDegree) ∈ {0,1}²` via
-`eq_zero_or_C_or_C_mul_linX_of_natDegree_le_one`.
-- **Both effectively degree `0`** (`A ∈ {0} ∪ {C c}`, `A' ∈ {0} ∪ {C c'}`): the
-  divisor `divToPairRatio A 0 _ A' 0 _` is `0` (no roots on either side — `ordAt`
-  of a nonzero constant, or of `0` itself, is `0` at every point), forcing
-  `hpoles`'s RHS `single x₃+single x₄-single x₁-single x₂ = 0`, i.e.
-  `{x₃,x₄}={x₁,x₂}` as an equation of divisors (hence sets) directly.
-- **Exactly one side degree `1`** (linear): **impossible by a pure degree count** —
-  the nonconstant side contributes a full fiber (`ordAt_C_mul_eq` +
-  `divToPair_linX_eq`/`fiberSupport`) of total mass `2`, the constant side
-  contributes `0`, giving `deg (divToPairRatio ...) = ±2 ≠ 0`, contradicting that
-  `hpoles`'s RHS always has degree `0`.
-- **Both degree `1`, same root** (`A = C c * linX a`, `A' = C c' * linX a`, same
-  `a`): both sides' divisors are the identical fiber (`ordAt_C_mul_eq` reduces both
-  to `divToPair (linX a) 0 (fiberSupport a)`), so the ratio's divisor is `0` —
-  same conclusion as the both-constant case.
-- **Both degree `1`, different roots `a ≠ a'`:** the zero-side divisor is the
-  fiber over `a` (`fiberSupport`-indexed, `{x₃,x₄}`), the pole-side is the fiber
-  over `a'` (`{x₁,x₂}`). Matching against `hpoles` forces `{x₁,x₂}` itself to be
-  a fiber, i.e. `x₂ = ι x₁` (`fiberSupport`'s two cases: `{Q,ιQ}` when
-  unramified, `{Q}` doubled when ramified — either way `x₂ = ι x₁` follows from
-  `{x₁,x₂}` being *some* `fiberSupport`-shaped set) — **contradicting `hne`**.
-  This is the only case where `hne` is used, matching the ChatGPT-confirmed case
-  analysis exactly.
-
-**Update — fully wired into Lean below, no `sorry` remains in this theorem.** The case
-split above was right (checked independently), and the `Finset`/`Divisor.coeffAt`
-bookkeeping connecting `hpoles`'s literal divisor equation to "the RHS is a
-`fiberSupport`-shaped divisor" is now carried out for all branches: the vanishing
-branches (`A=A'=0`, mixed-sign, same-root) close via `hclose`/`divToPair_right_zero_eq_
-zero_of_deg_eq_zero` as sketched; the different-roots branch closes via a direct
-`coeffAt`-at-`Q₁`/`ι Q₁` coefficient bash (see `hbalance2` and below), using disjointness
-of the two fibers (Step 4) to isolate `Q₁, ι Q₁ ∈ {x₁,x₂}` and a final case split to force
-`x₂ = ι x₁`, contradicting `hne`.
-
-**Statement WEAKENED this session — the original version above (no `S`-containment
-hypothesis) is FALSE.** A second AI cross-check (after the ChatGPT pass that diagnosed
-Goals 1–4/5's difficulty) found a genuine counterexample to the *unrestricted* claim,
-independently confirmed by hand against `divToPair`'s literal definition (`∑ P ∈ S, ordAt
-P A B • single P` — `Finset`, no multiplicity):
-
-Take `a ≠ a'`, `x₃` an *unramified* point with `x₃.X = a` (so `ι x₃ ≠ x₃`), `x₁` any point
-with `x₁.X = a'`, and — the crux — **`x₄ := x₂`** for some `x₂` with `x₂.X` neither `a` nor
-`a'`. Then `{x₁,x₂,x₃,x₄}` as a `Finset` *dedups* to `{x₁,x₂,x₃}` (`x₄ = x₂` literally),
-so `divToPair (linX a) 0 {x₁,x₂,x₃,x₄}` only ever sums over `x₃` from the `a`-fiber — `ι
-x₃ ∉ {x₁,x₂,x₃}` by construction, so its term is silently dropped, never cancelled. The
-resulting LHS collapses to exactly `single x₃ - single x₁`, which equals the RHS
-`single x₃+single x₄-single x₁-single x₂` once `x₄=x₂` is substituted (`single x₄` and
-`single x₂` then literally cancel) — so `hpoles` holds. `hne` also holds (`x₂.X ∉ {a,a'}`
-rules out `x₂ = ι x₁`). But the conclusion `{x₃,x₄}={x₁,x₂}` becomes `{x₃,x₂}={x₁,x₂}`,
-false since `x₃ ∉ {x₁,x₂}` by construction. **So the theorem, exactly as stated with a bare
-`S = {x₁,x₂,x₃,x₄}` support and no further hypothesis, is false** — the fix is not a matter
-of finishing the case split below (which is still the right shape once the hole is patched),
-but of ruling out this "truncated, partially-cancelled fiber" loophole first.
-
-**Fix applied**: an `hsupp₃ : fiberSupport ⟨a, _⟩ ⊆ {x₁,x₂,x₃,x₄}`-style containment is
-awkward to state directly (`fiberSupport` takes a `H.Point`, not a bare root `a : k`, and
-no point with `.X = a` is given by name until deep in the case split). Instead, the
-containment is stated the way it is actually *needed and available* at each call site: as a
-direct hypothesis that whichever of `x₁,x₂,x₃,x₄` witnesses a root also has its ι-partner in
-the support set, i.e. **the two hypotheses below**, which are exactly what's true whenever
-this theorem is actually invoked from `constant_or_fiber_of_isPoleBoundedAtPair`/`fiber_eq_
-of_divisor_shape` (that call site already knows `{x₁,x₂,x₃,x₄}` is a specific 4-point set,
-not an arbitrary superset, so asserting `ι`-closure on it is a real, checkable side
-condition there, not a hidden circularity). This is the honest "weaken first" fix per
-project convention — deleting the theorem outright was not necessary, since the mixed-sign
-and same-root branches below remain true and provable regardless (`ordAt_nonneg`, see next
-paragraph, closes them cleanly); only the different-roots branch needed the extra
-hypothesis. -/
-theorem fiber_eq_of_pure_rational_pole_match (hchar : (2 : k) ≠ 0) (hsf : Squarefree H.f)
-    (x₁ x₂ x₃ x₄ : H.Point)
-    (hne : x₂ ≠ Point.iota x₁) (A A' : k[X]) (hdegA : A.natDegree ≤ 1)
-    (hdegA' : A'.natDegree ≤ 1)
-    (hpoles : (divToPairRatio A 0 {x₁, x₂, x₃, x₄} A' 0 {x₁, x₂, x₃, x₄} : Divisor H) =
-      single x₃ + single x₄ - single x₁ - single x₂)
-    (hclosed₁ : ∀ Q ∈ ({x₁, x₂, x₃, x₄} : Finset H.Point), Q.X = x₁.X →
-      Point.iota Q ∈ ({x₁, x₂, x₃, x₄} : Finset H.Point))
-    (hclosed₂ : ∀ Q ∈ ({x₁, x₂, x₃, x₄} : Finset H.Point), Q.X = x₂.X →
-      Point.iota Q ∈ ({x₁, x₂, x₃, x₄} : Finset H.Point))
-    (hclosed₃ : ∀ Q ∈ ({x₁, x₂, x₃, x₄} : Finset H.Point), Q.X = x₃.X →
-      Point.iota Q ∈ ({x₁, x₂, x₃, x₄} : Finset H.Point))
-    (hclosed₄ : ∀ Q ∈ ({x₁, x₂, x₃, x₄} : Finset H.Point), Q.X = x₄.X →
-      Point.iota Q ∈ ({x₁, x₂, x₃, x₄} : Finset H.Point)) :
-    ({x₃, x₄} : Set H.Point) = {x₁, x₂} := by
-  classical
-  -- Shared closing step for every branch where `divToPairRatio A 0 _ A' 0 _ = 0`:
-  -- rearrange `hpoles` into `single x₃ + single x₄ = single x₁ + single x₂` and hand
-  -- off to `set_eq_of_two_singletons_eq`, exactly as the `A = A' = 0` branch does.
-  have hclose : (divToPairRatio A 0 {x₁, x₂, x₃, x₄} A' 0 {x₁, x₂, x₃, x₄} : Divisor H) = 0 →
-      ({x₃, x₄} : Set H.Point) = {x₁, x₂} := by
-    intro hzero
-    have hsum : (single x₃ + single x₄ : Divisor H) = single x₁ + single x₂ := by
-      rw [hzero] at hpoles
-      have := hpoles.symm
-      rwa [sub_sub, sub_eq_zero] at this
-    exact set_eq_of_two_singletons_eq hsum
-  rcases eq_zero_or_C_or_C_mul_linX_of_natDegree_le_one A hdegA with hA0 | ⟨c, hc, hAc⟩ | ⟨c, a, hc, hAlin⟩
-  · rcases eq_zero_or_C_or_C_mul_linX_of_natDegree_le_one A' hdegA' with hA'0 | ⟨c', hc', hA'c⟩ | ⟨c', a', hc', hA'lin⟩
-    · -- Both `A`, `A'` effectively zero: `divToPair` of `(0,0)` is `0` on both sides.
-      apply hclose
-      simp [divToPairRatio, divToPair, hA0, hA'0]
-    · -- `A = 0`, `A'` a nonzero constant: `divToPair A 0 _ = 0` (`A = 0`) and
-      -- `divToPair A' 0 _ = 0` (`divToPair_C_eq_zero`), so the ratio is again `0`.
-      apply hclose
-      unfold divToPairRatio
-      rw [hA0, hA'c, divToPair_C_eq_zero c' hc', divToPair_zero_zero_eq_zero]
-      simp
-    · -- `A = 0`, `A' = C c' * linX a'`: `divToPairRatio` reduces to
-      -- `- divToPair (linX a') 0 S` (via `ordAt_C_mul_eq` stripping the scalar), and
-      -- `hpoles` (degree `0` on the RHS) forces this to have degree `0` too, hence
-      -- (`ordAt_nonneg` — no term can be negative) it must vanish termwise
-      -- (`divToPair_right_zero_eq_zero_of_deg_eq_zero`).
-      apply hclose
-      have hstep : (divToPairRatio A 0 {x₁, x₂, x₃, x₄} A' 0 {x₁, x₂, x₃, x₄} : Divisor H) =
-          - divToPair (linX a') 0 {x₁, x₂, x₃, x₄} := by
-        unfold divToPairRatio
-        rw [hA0, hA'lin, divToPair_zero_zero_eq_zero]
-        have hlinXne : linX a' ≠ (0 : k[X]) := by
-          rw [linX]; intro h
-          have hdeg := Polynomial.natDegree_X_sub_C a'
-          rw [h, Polynomial.natDegree_zero] at hdeg
-          exact absurd hdeg (by norm_num)
-        have hne0 : ¬ (linX a' = (0 : k[X]) ∧ (0 : k[X]) = 0) := fun h => hlinXne h.1
-        unfold divToPair
-        rw [zero_sub]
-        congr 1
-        refine Finset.sum_congr rfl (fun P _ => ?_)
-        have hordeq : ordAt P (Polynomial.C c' * linX a') (Polynomial.C c' * (0 : k[X])) =
-            ordAt P (linX a') 0 := ordAt_C_mul_eq c' hc' (linX a') 0 hne0 P
-        rw [mul_zero] at hordeq
-        rw [hordeq]
-      have hdeg0 : deg (divToPair (linX a') 0 {x₁, x₂, x₃, x₄}) = 0 := by
-        have hpoles' := hpoles
-        rw [hstep] at hpoles'
-        have hdegRHS : deg (single x₃ + single x₄ - single x₁ - single x₂ : Divisor H) = 0 := by
-          simp
-        rw [← hpoles'] at hdegRHS
-        simpa using hdegRHS
-      have hzero : (divToPair (linX a') 0 {x₁, x₂, x₃, x₄} : Divisor H) = 0 :=
-        divToPair_right_zero_eq_zero_of_deg_eq_zero (linX a') {x₁, x₂, x₃, x₄} hdeg0
-      rw [hstep, hzero]; simp
-  · rcases eq_zero_or_C_or_C_mul_linX_of_natDegree_le_one A' hdegA' with hA'0 | ⟨c', hc', hA'c⟩ | ⟨c', a', hc', hA'lin⟩
-    · -- `A` a nonzero constant, `A' = 0`: both halves vanish via `divToPair_C_eq_zero`/`A'=0`.
-      apply hclose
-      unfold divToPairRatio
-      rw [hAc, hA'0, divToPair_C_eq_zero c hc, divToPair_zero_zero_eq_zero]
-      simp
-    · -- Both nonzero constants: both halves vanish via `divToPair_C_eq_zero`.
-      apply hclose
-      unfold divToPairRatio
-      rw [hAc, hA'c, divToPair_C_eq_zero c hc, divToPair_C_eq_zero c' hc']
-      simp
-    · -- `A` a nonzero constant, `A' = C c' * linX a'`: `divToPair A 0 _ = 0`
-      -- (`divToPair_C_eq_zero`), so `divToPairRatio` reduces to `- divToPair (linX a') 0 S`
-      -- exactly as in the `A = 0, A' = C c' * linX a'` branch above (the scalar `c` played
-      -- no role there either); same `hpoles`-forces-degree-`0`-forces-termwise-`0` route.
-      apply hclose
-      have hstep : (divToPairRatio A 0 {x₁, x₂, x₃, x₄} A' 0 {x₁, x₂, x₃, x₄} : Divisor H) =
-          - divToPair (linX a') 0 {x₁, x₂, x₃, x₄} := by
-        unfold divToPairRatio
-        rw [hAc, hA'lin, divToPair_C_eq_zero c hc]
-        have hlinXne : linX a' ≠ (0 : k[X]) := by
-          rw [linX]; intro h
-          have hdeg := Polynomial.natDegree_X_sub_C a'
-          rw [h, Polynomial.natDegree_zero] at hdeg
-          exact absurd hdeg (by norm_num)
-        have hne0 : ¬ (linX a' = (0 : k[X]) ∧ (0 : k[X]) = 0) := fun h => hlinXne h.1
-        rw [zero_sub]
-        congr 1
-        unfold divToPair
-        refine Finset.sum_congr rfl (fun P _ => ?_)
-        have hordeq : ordAt P (Polynomial.C c' * linX a') (Polynomial.C c' * (0 : k[X])) =
-            ordAt P (linX a') 0 := ordAt_C_mul_eq c' hc' (linX a') 0 hne0 P
-        rw [mul_zero] at hordeq
-        rw [hordeq]
-      have hdeg0 : deg (divToPair (linX a') 0 {x₁, x₂, x₃, x₄}) = 0 := by
-        have hpoles' := hpoles
-        rw [hstep] at hpoles'
-        have hdegRHS : deg (single x₃ + single x₄ - single x₁ - single x₂ : Divisor H) = 0 := by
-          simp
-        rw [← hpoles'] at hdegRHS
-        simpa using hdegRHS
-      have hzero : (divToPair (linX a') 0 {x₁, x₂, x₃, x₄} : Divisor H) = 0 :=
-        divToPair_right_zero_eq_zero_of_deg_eq_zero (linX a') {x₁, x₂, x₃, x₄} hdeg0
-      rw [hstep, hzero]; simp
-  · rcases eq_zero_or_C_or_C_mul_linX_of_natDegree_le_one A' hdegA' with hA'0 | ⟨c', hc', hA'c⟩ | ⟨c', a', hc', hA'lin⟩
-    · -- `A = C c * linX a`, `A' = 0`: mirror of the `A = 0, A' = C c' * linX a'` branch
-      -- with `A`/`A'` swapped — `divToPair A' 0 _ = 0` (`A' = 0`), so `divToPairRatio`
-      -- reduces to `+ divToPair (linX a) 0 S` this time (no leading negation), after
-      -- stripping the scalar `c` from `divToPair (C c * linX a) 0 S` via `ordAt_C_mul_eq`.
-      apply hclose
-      have hstep : (divToPairRatio A 0 {x₁, x₂, x₃, x₄} A' 0 {x₁, x₂, x₃, x₄} : Divisor H) =
-          divToPair (linX a) 0 {x₁, x₂, x₃, x₄} := by
-        unfold divToPairRatio
-        rw [hAlin, hA'0, divToPair_zero_zero_eq_zero]
-        have hlinXne : linX a ≠ (0 : k[X]) := by
-          rw [linX]; intro h
-          have hdeg := Polynomial.natDegree_X_sub_C a
-          rw [h, Polynomial.natDegree_zero] at hdeg
-          exact absurd hdeg (by norm_num)
-        have hne0 : ¬ (linX a = (0 : k[X]) ∧ (0 : k[X]) = 0) := fun h => hlinXne h.1
-        rw [sub_zero]
-        unfold divToPair
-        refine Finset.sum_congr rfl (fun P _ => ?_)
-        have hordeq : ordAt P (Polynomial.C c * linX a) (Polynomial.C c * (0 : k[X])) =
-            ordAt P (linX a) 0 := ordAt_C_mul_eq c hc (linX a) 0 hne0 P
-        rw [mul_zero] at hordeq
-        rw [hordeq]
-      have hdeg0 : deg (divToPair (linX a) 0 {x₁, x₂, x₃, x₄}) = 0 := by
-        have hpoles' := hpoles
-        rw [hstep] at hpoles'
-        rw [hpoles']
-        simp
-      have hzero : (divToPair (linX a) 0 {x₁, x₂, x₃, x₄} : Divisor H) = 0 :=
-        divToPair_right_zero_eq_zero_of_deg_eq_zero (linX a) {x₁, x₂, x₃, x₄} hdeg0
-      rw [hstep, hzero]
-    · -- `A = C c * linX a`, `A'` a nonzero constant: `divToPair A' 0 _ = 0`
-      -- (`divToPair_C_eq_zero`), so `divToPairRatio` reduces to `+ divToPair (linX a) 0 S`,
-      -- same shape as the previous branch (scalar-stripping on `A`'s side, not `A'`'s).
-      apply hclose
-      have hstep : (divToPairRatio A 0 {x₁, x₂, x₃, x₄} A' 0 {x₁, x₂, x₃, x₄} : Divisor H) =
-          divToPair (linX a) 0 {x₁, x₂, x₃, x₄} := by
-        unfold divToPairRatio
-        rw [hAlin, hA'c, divToPair_C_eq_zero c' hc']
-        have hlinXne : linX a ≠ (0 : k[X]) := by
-          rw [linX]; intro h
-          have hdeg := Polynomial.natDegree_X_sub_C a
-          rw [h, Polynomial.natDegree_zero] at hdeg
-          exact absurd hdeg (by norm_num)
-        have hne0 : ¬ (linX a = (0 : k[X]) ∧ (0 : k[X]) = 0) := fun h => hlinXne h.1
-        rw [sub_zero]
-        unfold divToPair
-        refine Finset.sum_congr rfl (fun P _ => ?_)
-        have hordeq : ordAt P (Polynomial.C c * linX a) (Polynomial.C c * (0 : k[X])) =
-            ordAt P (linX a) 0 := ordAt_C_mul_eq c hc (linX a) 0 hne0 P
-        rw [mul_zero] at hordeq
-        rw [hordeq]
-      have hdeg0 : deg (divToPair (linX a) 0 {x₁, x₂, x₃, x₄}) = 0 := by
-        have hpoles' := hpoles
-        rw [hstep] at hpoles'
-        rw [hpoles']
-        simp
-      have hzero : (divToPair (linX a) 0 {x₁, x₂, x₃, x₄} : Divisor H) = 0 :=
-        divToPair_right_zero_eq_zero_of_deg_eq_zero (linX a) {x₁, x₂, x₃, x₄} hdeg0
-      rw [hstep, hzero]
-    · -- Both linear: split on whether the roots coincide.
-      by_cases haeq : a = a'
-      · -- Same root: `ordAt_C_mul_eq` strips the nonzero-scalar factor from both
-        -- sides, leaving `ordAt _ (linX a) 0` on both, so the two `divToPair` sums
-        -- are termwise equal over the same support `{x₁,x₂,x₃,x₄}` — no `fiberSupport`
-
-        -- or containment argument needed (per ChatGPT-confirmed proof: the ratio
-        -- vanishes purely because both sides compute the same underlying divisor,
-        -- scaled by different units).
-        apply hclose
-        subst haeq
-        unfold divToPairRatio
-        rw [hAlin, hA'lin, sub_eq_zero]
-        unfold divToPair
-        refine Finset.sum_congr rfl (fun P _ => ?_)
-        have hlinXne : linX a ≠ (0 : k[X]) := by
-          rw [linX]
-          intro h
-          have hdeg := Polynomial.natDegree_X_sub_C a
-          rw [h, Polynomial.natDegree_zero] at hdeg
-          exact absurd hdeg (by norm_num)
-        have hne0 : ¬ (linX a = (0 : k[X]) ∧ (0 : k[X]) = 0) := fun h => hlinXne h.1
-        have hc0 : ordAt P (Polynomial.C c * linX a) (Polynomial.C c * (0 : k[X])) =
-            ordAt P (linX a) 0 := ordAt_C_mul_eq c hc (linX a) 0 hne0 P
-        have hc'0 : ordAt P (Polynomial.C c' * linX a) (Polynomial.C c' * (0 : k[X])) =
-            ordAt P (linX a) 0 := ordAt_C_mul_eq c' hc' (linX a) 0 hne0 P
-        rw [mul_zero] at hc0 hc'0
-        rw [hc0, hc'0]
-      · -- Different roots: coefficient-comparison argument (ChatGPT-confirmed shape).
-        -- `linX a` and `linX a'` have disjoint zero-fibers (`a ≠ a'`), so `hpoles`'s
-        -- `+`/`-` split can't mix contributions from the two fibers — the positive part
-        -- must come entirely from the `X = a` fiber and the negative part entirely from
-        -- the `X = a'` fiber. `hclosed₃`/`hclosed₁` rule out a "truncated" single-point
-        -- fiber (forcing the clean unramified `{Q, ιQ}` shape on each side), and `hne`
-        -- rules out the negative fiber collapsing to an `ι`-pair around `x₁` that would
-        -- force `x₂ = ι x₁`.
-        have hlinXane : linX a ≠ (0 : k[X]) := linX_ne_zero a
-        have hlinXa'ne : linX a' ≠ (0 : k[X]) := linX_ne_zero a'
-        have hne0a : ¬ (linX a = (0 : k[X]) ∧ (0 : k[X]) = 0) := fun h => hlinXane h.1
-        have hne0a' : ¬ (linX a' = (0 : k[X]) ∧ (0 : k[X]) = 0) := fun h => hlinXa'ne h.1
-        classical
-        -- Coefficient of any `Q ∈ {x₁,x₂,x₃,x₄}` in `divToPair (poly) 0 {x₁,x₂,x₃,x₄}`,
-        -- computed directly from the `Finset.sum` definition — no outside-support fact
-        -- needed since we only ever evaluate at points inside the support.
-        have hcoeffPair : ∀ (P : k[X]) (Q : H.Point), Q ∈ ({x₁, x₂, x₃, x₄} : Finset H.Point) →
-            Divisor.coeffAt Q (divToPair P 0 {x₁, x₂, x₃, x₄}) = ordAt Q P 0 := by
-          intro P Q hQ
-          unfold divToPair
-          rw [map_sum, Finset.sum_eq_single Q
-            (fun R _ hRQ => by
-              rw [map_zsmul, Divisor.coeffAt_single, if_neg (Ne.symm hRQ)]; simp)
-            (fun hQS => absurd hQ hQS)]
-          rw [map_zsmul, Divisor.coeffAt_single_self]
-          simp
-        -- Reduce `hpoles`'s coefficient at any of the four named points to a bare
-        -- `ordAt`-difference on `linX a`/`linX a'` (scalars stripped via `ordAt_C_mul_eq`).
-        have hcoeff : ∀ Q ∈ ({x₁, x₂, x₃, x₄} : Finset H.Point),
-            Divisor.coeffAt Q (single x₃ + single x₄ - single x₁ - single x₂ : Divisor H) =
-              ordAt Q (linX a) 0 - ordAt Q (linX a') 0 := by
-          intro Q hQ
-          have hstep : Divisor.coeffAt Q
-              (divToPairRatio A 0 {x₁, x₂, x₃, x₄} A' 0 {x₁, x₂, x₃, x₄}) =
-              ordAt Q (linX a) 0 - ordAt Q (linX a') 0 := by
-            unfold divToPairRatio
-            rw [map_sub, hAlin, hA'lin, hcoeffPair (Polynomial.C c * linX a) Q hQ,
-              hcoeffPair (Polynomial.C c' * linX a') Q hQ]
-            have hordA := ordAt_C_mul_eq c hc (linX a) 0 hne0a Q
-            have hordA' := ordAt_C_mul_eq c' hc' (linX a') 0 hne0a' Q
-            rw [mul_zero] at hordA hordA'
-            rw [hordA, hordA']
-          rw [← hstep, hpoles]
-        -- Evaluate `hcoeff` at `x₃`: `coeffAt x₃ (RHS) ≥ 1` (it's `1`, or `2` if `x₃ = x₄`),
-        -- in particular positive, so `ordAt x₃ (linX a) 0 ≠ ordAt x₃ (linX a') 0` and the
-        -- difference is positive. By `ordAt_linX_eq` (values only ever `0,1,2`, and `a ≠ a'`
-        -- means `x₃.X` can't equal both), the only way a nonneg-minus-nonneg difference is
-        -- positive is `x₃.X = a` (contributing `≥ 1`) and `x₃.X ≠ a'` (contributing `0`).
-        have hordbd : ∀ (r : k) (Q : H.Point), ordAt Q (linX r) 0 = 0 ∨ ordAt Q (linX r) 0 = 1 ∨
-            ordAt Q (linX r) 0 = 2 := by
-          intro r Q
-          rw [ordAt_linX_eq hchar hsf r Q (pointIdeal_ne_bot Q)]
-          split_ifs <;> simp
-        -- **New this session — all-positive rearrangement, UNVERIFIED (no local Lean, next
-        -- session must check in the REPL).** Instead of chasing `hcoeff` at one named point
-        -- at a time (the previous attempt's gap: `x₃.X ≠ a` only forces `x₃ ∈ {x₁,x₂}`, not
-        -- `False`), rearrange `hcoeff` at *every* point of `H.Point` — not just the four named
-        -- ones — into a single divisor identity with every term on the nonneg side:
-        -- `D_a + single x₁ + single x₂ = D_a' + single x₃ + single x₄`, where `D_a :=
-        -- divToPair (linX a) 0 S`, `D_a' := divToPair (linX a') 0 S`. Both sides are honest
-        -- sums of `single`s with nonneg (`ordAt`-valued, or `1`) coefficients, so this is a
-        -- genuine mass-balance, not a signed difference — no cancellation ambiguity. Points
-        -- *outside* `S` contribute `0` to both `D_a`/`D_a'` (by `divToPair`'s own definition,
-        -- a `Finset.sum` over `S`) and `0` to the `single x_i` terms (all four named points are
-        -- in `S`), so the identity holds at every point of `H.Point`, i.e. as an equation of
-        -- `Divisor H`, not just on `S`.
-        -- Proved as whole-`Divisor H` algebra (mirroring the `hstep` idiom used in the
-        -- earlier branches of this theorem, e.g. the `A=0,A'=C c'*linX a'` case above),
-        -- NOT via `coeffAt`/`Finsupp.ext` — `Divisor H` is a `def` over `H.Point →₀ ℤ`, not
-        -- `abbrev` (see `Divisor.coeffAt`'s own docstring), so `Finsupp.ext` may not apply at
-        -- ordinary transparency; safer to stay inside the already-working `hstep`/`ring`-on-
-        -- `Divisor H`-as-`AddCommGroup` style used throughout this file.
-        have hstepD : (divToPairRatio A 0 {x₁, x₂, x₃, x₄} A' 0 {x₁, x₂, x₃, x₄} : Divisor H) =
-            (divToPair (linX a) 0 {x₁, x₂, x₃, x₄} : Divisor H) -
-              divToPair (linX a') 0 {x₁, x₂, x₃, x₄} := by
-          unfold divToPairRatio
-          rw [hAlin, hA'lin]
-          congr 1
-          · unfold divToPair
-            refine Finset.sum_congr rfl (fun P _ => ?_)
-            have hordA := ordAt_C_mul_eq c hc (linX a) 0 hne0a P
-            rw [mul_zero] at hordA
-            rw [hordA]
-          · unfold divToPair
-            refine Finset.sum_congr rfl (fun P _ => ?_)
-            have hordA' := ordAt_C_mul_eq c' hc' (linX a') 0 hne0a' P
-            rw [mul_zero] at hordA'
-            rw [hordA']
-        have hbalance : (divToPair (linX a) 0 {x₁, x₂, x₃, x₄} : Divisor H) + single x₁ + single x₂ =
-            (divToPair (linX a') 0 {x₁, x₂, x₃, x₄} : Divisor H) + single x₃ + single x₄ := by
-          have hpoles' := hpoles
-          rw [hstepD] at hpoles'
-          -- `hpoles' : D_a - D_a' = single x₃ + single x₄ - single x₁ - single x₂`. Regroup
-          -- the RHS's left-to-right subtraction chain into `(single x₃ + single x₄) -
-          -- (single x₁ + single x₂)` (`sub_sub`, already used for exactly this purpose at
-          -- `hclose`'s definition above), then apply the general `AddCommGroup` rearrangement
-          -- `a - b = c - d ↔ a + d = c + b` (`sub_eq_sub_iff_add_eq_add`) with `a := D_a`,
-          -- `b := D_a'`, `c := single x₃ + single x₄`, `d := single x₁ + single x₂`, giving
-          -- `D_a + (single x₁+single x₂) = (single x₃+single x₄) + D_a'` — then `abel` closes
-          -- the remaining associativity/commutativity mismatch against the goal's exact
-          -- bracketing (`+ single x₁ + single x₂` vs `+ (single x₁ + single x₂)`, etc.).
-          rw [sub_sub] at hpoles'
-          have hrearr := sub_eq_sub_iff_add_eq_add.mp hpoles'
-          -- `hrearr : D_a + (single x₁ + single x₂) = single x₃ + single x₄ + D_a'`
-          have : (divToPair (linX a) 0 {x₁, x₂, x₃, x₄} : Divisor H) + single x₁ + single x₂ =
-              single x₃ + single x₄ + (divToPair (linX a') 0 {x₁, x₂, x₃, x₄} : Divisor H) := by
-            rw [add_assoc]; exact hrearr
-          rw [this]; abel
-        -- **Degree bookkeeping, continuing from `hbalance`.** `deg` is additive
-        -- (`AddMonoidHom`), so `deg (D_a + single x₁ + single x₂) = deg D_a + 1 + 1` and
-        -- symmetrically for the other side; equating gives `deg D_a = deg D_a'`.
-        have hdegeq : deg (divToPair (linX a) 0 {x₁, x₂, x₃, x₄} : Divisor H) =
-            deg (divToPair (linX a') 0 {x₁, x₂, x₃, x₄} : Divisor H) := by
-          have h := congrArg deg hbalance
-          simp only [map_add, deg_single] at h
-          omega
-        -- Case split on whether this common degree is `0`.
-        by_cases hdeg0 : deg (divToPair (linX a) 0 {x₁, x₂, x₃, x₄} : Divisor H) = 0
-        · -- **Easy case: both sides vanish.** Exactly the "one/both zero" route sketched
-          -- above — `divToPair_right_zero_eq_zero_of_deg_eq_zero` termwise-vanishes both
-          -- `D_a` and `D_a'` (using `hdeg0` and `hdegeq.symm.trans hdeg0`/`hdeg0` resp.),
-          -- and `hbalance` collapses to `single x₁+single x₂ = single x₃+single x₄`, closed
-          -- by `set_eq_of_two_singletons_eq` (symmetrized, since that lemma's conclusion is
-          -- stated as `{a,b}={c,d}` from `single a+single b=single c+single d` — here we
-          -- have the `x₃,x₄`/`x₁,x₂` roles swapped relative to `hclose`'s usage above, so
-          -- take `.symm` on both the hypothesis and the goal).
-          have hzeroa : (divToPair (linX a) 0 {x₁, x₂, x₃, x₄} : Divisor H) = 0 :=
-            divToPair_right_zero_eq_zero_of_deg_eq_zero (linX a) {x₁, x₂, x₃, x₄} hdeg0
-          have hzeroa' : (divToPair (linX a') 0 {x₁, x₂, x₃, x₄} : Divisor H) = 0 :=
-            divToPair_right_zero_eq_zero_of_deg_eq_zero (linX a') {x₁, x₂, x₃, x₄}
-              (hdegeq ▸ hdeg0)
-          rw [hzeroa, hzeroa', zero_add, zero_add] at hbalance
-          have hsum2 : (single x₃ + single x₄ : Divisor H) = single x₁ + single x₂ :=
-            hbalance.symm
-          exact set_eq_of_two_singletons_eq hsum2
-        · -- **Hard case: `deg D_a = deg D_a' ≠ 0`.** Extract a witness point of `S` with
-          -- `X = a` (resp. `X = a'`), pin down `D_a`/`D_a'` as exactly that witness's
-          -- fiber (via `hsupp_linX`'s contrapositive + `divToPair_linX_eq`, widened from
-          -- `fiberSupport` to all of `S` by `Finset.sum_subset`, mirroring
-          -- `RatioDivisorCollapse.lean`'s established idiom for exactly this kind of
-          -- support-widening), then close via `hbalance` and `hne`.
-          classical
-          -- **Step 1: some point of `S` has `X = a`.** Contrapositive of `ordAt_linX_eq`:
-          -- if every point of `S` had `X ≠ a`, every term of `D_a`'s defining sum would be
-          -- `0` (via `ordAt_linX_eq_zero_of_ne`), forcing `D_a = 0`, hence `deg D_a = 0`,
-          -- contradicting `hdeg0`.
-          have hexA : ∃ Q₀ ∈ ({x₁, x₂, x₃, x₄} : Finset H.Point), Q₀.X = a := by
-            by_contra hcon
-            push Not at hcon
-            have hallzero : (divToPair (linX a) 0 {x₁, x₂, x₃, x₄} : Divisor H) = 0 := by
-              unfold divToPair
-              refine Finset.sum_eq_zero (fun P hP => ?_)
-              rw [ordAt_linX_eq_zero_of_ne a P (pointIdeal_ne_bot P) (hcon P hP)]
-              simp
-            rw [hallzero] at hdeg0
-            exact hdeg0 (by simp)
-          have hexA' : ∃ Q₁ ∈ ({x₁, x₂, x₃, x₄} : Finset H.Point), Q₁.X = a' := by
-            by_contra hcon
-            push Not at hcon
-            have hallzero : (divToPair (linX a') 0 {x₁, x₂, x₃, x₄} : Divisor H) = 0 := by
-              unfold divToPair
-              refine Finset.sum_eq_zero (fun P hP => ?_)
-              rw [ordAt_linX_eq_zero_of_ne a' P (pointIdeal_ne_bot P) (hcon P hP)]
-              simp
-            have hdeg0' : deg (divToPair (linX a') 0 {x₁, x₂, x₃, x₄} : Divisor H) = 0 := by
-              rw [hallzero]; simp
-            rw [← hdegeq] at hdeg0'
-            exact hdeg0 hdeg0'
-          obtain ⟨Q₀, hQ₀mem, hQ₀X⟩ := hexA
-          obtain ⟨Q₁, hQ₁mem, hQ₁X⟩ := hexA'
-          -- **Step 2: `ι Q₀ ∈ S` and `ι Q₁ ∈ S`.** `Q₀` is literally one of the four named
-          -- points, so `Q₀.X = xᵢ.X` (with `xᵢ := Q₀` itself, `rfl`), letting the matching
-          -- `hclosed_i` fire with `Q := Q₀`. Same for `Q₁`.
-          have hQ₀mem' : Q₀ = x₁ ∨ Q₀ = x₂ ∨ Q₀ = x₃ ∨ Q₀ = x₄ := by
-            simpa using hQ₀mem
-          have hιQ₀ : Point.iota Q₀ ∈ ({x₁, x₂, x₃, x₄} : Finset H.Point) := by
-            rcases hQ₀mem' with h | h | h | h
-            · exact h ▸ hclosed₁ Q₀ hQ₀mem (by rw [h])
-            · exact h ▸ hclosed₂ Q₀ hQ₀mem (by rw [h])
-            · exact h ▸ hclosed₃ Q₀ hQ₀mem (by rw [h])
-            · exact h ▸ hclosed₄ Q₀ hQ₀mem (by rw [h])
-          have hQ₁mem' : Q₁ = x₁ ∨ Q₁ = x₂ ∨ Q₁ = x₃ ∨ Q₁ = x₄ := by
-            simpa using hQ₁mem
-          have hιQ₁ : Point.iota Q₁ ∈ ({x₁, x₂, x₃, x₄} : Finset H.Point) := by
-            rcases hQ₁mem' with h | h | h | h
-            · exact h ▸ hclosed₁ Q₁ hQ₁mem (by rw [h])
-            · exact h ▸ hclosed₂ Q₁ hQ₁mem (by rw [h])
-            · exact h ▸ hclosed₃ Q₁ hQ₁mem (by rw [h])
-            · exact h ▸ hclosed₄ Q₁ hQ₁mem (by rw [h])
-          -- **Step 3: `D_a = single Q₀ + single (ι Q₀)`.** `fiberSupport Q₀ ⊆ S`
-          -- (`Q₀ ∈ S`, `ι Q₀ ∈ S` from Step 2 — `fiberSupport` is `{Q₀}` or `{Q₀, ι Q₀}`,
-          -- both contained once both named members are in `S`), and every point of
-          -- `S \ fiberSupport Q₀` contributes `0` to `D_a`'s sum (`hsupp_linX`, using
-          -- `linX a = linX Q₀.X` via `hQ₀X`). Widen `divToPair_linX_eq` (computed on the
-          -- exact fiber) up to all of `S` via `Finset.sum_subset`.
-          have hfiberSubA : fiberSupport Q₀ ⊆ ({x₁, x₂, x₃, x₄} : Finset H.Point) := by
-            unfold fiberSupport
-            split_ifs with hY
-            · simpa using hQ₀mem
-            · intro P hP
-              simp only [Finset.mem_insert, Finset.mem_singleton] at hP
-              rcases hP with h | h
-              · rw [h]; exact hQ₀mem
-              · rw [h]; exact hιQ₀
-          have hDa_eq : (divToPair (linX a) 0 {x₁, x₂, x₃, x₄} : Divisor H) =
-              single Q₀ + single (Point.iota Q₀) := by
-            rw [← hQ₀X]
-            rw [← divToPair_linX_eq hchar hsf Q₀]
-            unfold divToPair
-            symm
-            refine Finset.sum_subset hfiberSubA (fun P hP hPnot => ?_)
-            have hzero : ordAt P (linX Q₀.X) 0 = 0 := hsupp_linX hchar hsf Q₀ P hPnot
-            rw [hzero]; simp
-          have hfiberSubA' : fiberSupport Q₁ ⊆ ({x₁, x₂, x₃, x₄} : Finset H.Point) := by
-            unfold fiberSupport
-            split_ifs with hY
-            · simpa using hQ₁mem
-            · intro P hP
-              simp only [Finset.mem_insert, Finset.mem_singleton] at hP
-              rcases hP with h | h
-              · rw [h]; exact hQ₁mem
-              · rw [h]; exact hιQ₁
-          have hDa'_eq : (divToPair (linX a') 0 {x₁, x₂, x₃, x₄} : Divisor H) =
-              single Q₁ + single (Point.iota Q₁) := by
-            rw [← hQ₁X]
-            rw [← divToPair_linX_eq hchar hsf Q₁]
-            unfold divToPair
-            symm
-            refine Finset.sum_subset hfiberSubA' (fun P hP hPnot => ?_)
-            have hzero : ordAt P (linX Q₁.X) 0 = 0 := hsupp_linX hchar hsf Q₁ P hPnot
-            rw [hzero]; simp
-          -- **Step 4: the two fibers `{Q₀,ιQ₀}`, `{Q₁,ιQ₁}` are pairwise disjoint from each
-          -- other**, since `X` is `ι`-invariant (`iota_X`) and `Q₀.X = a ≠ a' = Q₁.X`.
-          have hXne : Q₀.X ≠ Q₁.X := by rw [hQ₀X, hQ₁X]; exact haeq
-          have hQ0Q1 : Q₀ ≠ Q₁ := fun h => hXne (h ▸ rfl)
-          have hQ0iQ1 : Q₀ ≠ Point.iota Q₁ := fun h => hXne (by rw [h, Point.iota_X])
-          have hiQ0Q1 : Point.iota Q₀ ≠ Q₁ := fun h => hXne (by rw [← Point.iota_X Q₀, h])
-          have hiQ0iQ1 : Point.iota Q₀ ≠ Point.iota Q₁ := fun h => hXne (by
-            rw [← Point.iota_X Q₀, ← Point.iota_X Q₁, h])
-          -- **Step 5: combine into the balance equation on the concrete fiber points.**
-          have hbalance2 : (single Q₀ + single (Point.iota Q₀) : Divisor H) + single x₁ + single x₂ =
-              single Q₁ + single (Point.iota Q₁) + single x₃ + single x₄ := by
-            rw [← hDa_eq, ← hDa'_eq]; exact hbalance
-          -- **Step 6: read off `{x₃,x₄}` and `{x₁,x₂}` via `coeffAt` at each of the four
-          -- fiber points, using Step 4's disjointness to kill cross-terms.** At `Q₀`: LHS
-          -- coefficient is `1 + [ιQ₀=Q₀] ≥ 1`; RHS's `Q₁,ιQ₁` terms vanish (Step 4), so
-          -- `[x₃=Q₀]+[x₄=Q₀] = 1 + [ιQ₀=Q₀] ≥ 1`, i.e. `Q₀ ∈ {x₃,x₄}`. Symmetrically for
-          -- `ιQ₀ ∈ {x₃,x₄}`, `Q₁,ιQ₁ ∈ {x₁,x₂}` (from the mirror coefficient at `Q₁`/`ιQ₁`,
-          -- where the `Q₀,ιQ₀` terms vanish on the LHS this time). Combined with each pair
-          -- having exactly the fiber's `2`-point (or doubled `1`-point) mass, and `{x₃,x₄}`/
-          -- `{x₁,x₂}` each having total mass exactly `2`, this pins `{x₃,x₄}={Q₀,ιQ₀}` and
-          -- `{x₁,x₂}={Q₁,ιQ₁}` as sets.
-          -- **Step 6: read off `{x₃,x₄}` and `{x₁,x₂}` via `coeffAt` at each of the four
-          -- fiber points, using Step 4's disjointness to kill cross-terms.**
-          -- **Step 6, redone via direct substitution rather than raw `coeffAt`-`if` chasing
-          -- (safer: avoids depending on `Divisor.coeffAt_single`'s exact `if` orientation).**
-          -- Substitute `hDa_eq`/`hDa'_eq` into `hbalance` to get `hbalance2` (already have,
-          -- Step 5): `single Q₀ + single (ι Q₀) + single x₁ + single x₂ = single Q₁ +
-          -- single (ι Q₁) + single x₃ + single x₄`. Regroup via `add_assoc`/`add_comm` into
-          -- `(single Q₀ + single (ι Q₀)) + (single x₁ + single x₂) = (single Q₁ +
-          -- single (ι Q₁)) + (single x₃ + single x₄)`, matching the shape `set_eq_of_two_
-          -- singletons_eq`-style reasoning needs, but with 4 summands: instead of reproving
-          -- that lemma's machinery from scratch for 4 terms, isolate `{x₁,x₂}` by moving
-          -- `single x₃ + single x₄` to the LHS: `(single Q₀+single ιQ₀) - (single Q₁+
-          -- single ιQ₁) = (single x₃+single x₄) - (single x₁+single x₂)`, i.e. exactly the
-          -- shape `hpoles` already had at the top (`D_a - D_a'` reinterpreted) — so instead
-          -- directly derive the **two separate two-point equalities** by using disjointness
-          -- (Step 4) to argue `single x₁+single x₂` must absorb *all* of the `Q₁,ιQ₁`-mass
-          -- and none of the `Q₀,ιQ₀`-mass. **Finished this session** (coefficient-bash route,
-          -- confirmed against a Gemini-assisted derivation): evaluate `hbalance2` via `coeffAt`
-          -- at `Q₁` and `ι Q₁` only. Disjointness (Step 4) zeroes the `Q₀,ιQ₀` cross-terms,
-          -- forcing `Q₁ ∈ {x₁,x₂}` and `ι Q₁ ∈ {x₁,x₂}` (`omega`, using nonnegativity of the
-          -- remaining `if`-terms). A finite case split on which of `x₁,x₂` each of `Q₁,ι Q₁`
-          -- equals forces `x₂ = Point.iota x₁` in every branch, contradicting `hne`. No
-          -- containment fact about `{x₃,x₄}` is ever needed — the crux only needs `Q₁ ≠ Q₀,
-          -- ι Q₀` and `ι Q₁ ≠ Q₀, ι Q₀` (Step 4). Cross-terms are zeroed with explicit
-          -- `if_neg`/`if_pos` calls against the disjointness facts; the two remaining
-          -- genuinely-unknown terms in each hypothesis are left as opaque `ite`s and
-          -- dispatched generically by `split_ifs ... <;> omega`.
-          exfalso
-          have hcoeffQ₁ := congrArg (Divisor.coeffAt Q₁) hbalance2
-          have hcoeffιQ₁ := congrArg (Divisor.coeffAt (Point.iota Q₁)) hbalance2
-          -- `simp` already resolves each `if P = P then _ else _` self-term down to
-          -- `if True then _ else _` on its own (confirmed by this session's build output),
-          -- so add `if_true` to finish collapsing that to a literal `1` before the
-          -- disjointness `rw`s below, which target genuine cross-terms only.
-          simp only [map_add, Divisor.coeffAt_single, if_true] at hcoeffQ₁ hcoeffιQ₁
-          -- Zero out the `Q₀, ι Q₀` cross-terms via Step 4's disjointness — these are the
-          -- only two `ite`s each hypothesis has left besides the already-resolved self-term
-          -- and the not-yet-known `x₁,x₂` (resp. `x₃,x₄`, `ιQ₁`) terms.
-          rw [if_neg hQ0Q1.symm, if_neg hiQ0Q1.symm] at hcoeffQ₁
-          rw [if_neg hQ0iQ1.symm, if_neg hiQ0iQ1.symm] at hcoeffιQ₁
-          -- Only the `x₁,x₂` (resp. `x₃,x₄`) terms need resolving by contradiction; the
-          -- remaining `if [Q₁=ιQ₁] ...` (resp. `if [ιQ₁=Q₁] ...`) terms are left as opaque
-          -- `ite`s and dispatched generically by `split_ifs ... <;> omega`, which needs no
-          -- information about their truth value (only that each is `0` or `1`).
-          have hQ₁mem12 : Q₁ = x₁ ∨ Q₁ = x₂ := by
-            by_contra hcon
-            push Not at hcon
-            rw [if_neg hcon.1, if_neg hcon.2] at hcoeffQ₁
-            split_ifs at hcoeffQ₁ <;> omega
-          have hιQ₁mem12 : Point.iota Q₁ = x₁ ∨ Point.iota Q₁ = x₂ := by
-            by_contra hcon
-            push Not at hcon
-            rw [if_neg hcon.1, if_neg hcon.2] at hcoeffιQ₁
-            split_ifs at hcoeffιQ₁ <;> omega
-          -- In every case, `x₂ = Point.iota x₁`, contradicting `hne`.
-          apply hne
-          rcases hQ₁mem12 with hQ₁x1 | hQ₁x2 <;> rcases hιQ₁mem12 with hιQ₁x1 | hιQ₁x2
-          · -- `Q₁ = x₁` and `ι Q₁ = x₁`: forces `Q₁ = ι Q₁`. Feed this back into `hcoeffQ₁`
-            -- to see the RHS mass at `Q₁` is `≥ 2`, which can only be matched if `x₂` (not
-            -- just `x₁`) also equals `Q₁` — then `x₂ = Q₁ = ι Q₁ = ι x₁` via `hιQ₁x1` and
-            -- `iota_iota`.
-            have hQ₁ιQ₁ : Q₁ = Point.iota Q₁ := hQ₁x1.trans hιQ₁x1.symm
-            have hx1x2 : x₁ = x₂ := by
-              by_contra hcon
-              have hQ₁ne2 : Q₁ ≠ x₂ := by rw [hQ₁x1]; exact hcon
-              rw [if_pos hQ₁ιQ₁, if_neg hQ₁ne2, if_pos hQ₁x1] at hcoeffQ₁
-              split_ifs at hcoeffQ₁ <;> omega
-            -- `x₂ = x₁ = Q₁ = ι Q₁ = ι x₁`.
-            exact hx1x2.symm.trans (hQ₁x1.symm.trans (hQ₁ιQ₁.trans (congrArg Point.iota hQ₁x1)))
-          · -- `Q₁ = x₁`, `ι Q₁ = x₂`: `x₂ = ι Q₁ = ι x₁` directly.
-            rw [← hιQ₁x2, ← hQ₁x1]
-          · -- `Q₁ = x₂`, `ι Q₁ = x₁`: apply `iota` to `ι Q₁ = x₁`, use `iota_iota` to get
-            -- `Q₁ = ι x₁`, then rewrite via `Q₁ = x₂`.
-            have hstep : Point.iota (Point.iota Q₁) = Point.iota x₁ := by rw [hιQ₁x1]
-            rw [Point.iota_iota] at hstep
-            rw [← hQ₁x2]; exact hstep
-          · -- `Q₁ = x₂` and `ι Q₁ = x₂`: mirrors the first subcase (`Q₁ = ι Q₁` again),
-            -- forcing `x₁ = x₂` via the RHS mass at `Q₁`, then `x₂ = Q₁ = ι Q₁ = ι x₂ = ι x₁`
-            -- (last step using `x₁ = x₂` again).
-            have hQ₁ιQ₁ : Q₁ = Point.iota Q₁ := hQ₁x2.trans hιQ₁x2.symm
-            have hx1x2 : x₁ = x₂ := by
-              by_contra hcon
-              have hQ₁ne1 : Q₁ ≠ x₁ := by rw [hQ₁x2]; exact Ne.symm hcon
-              rw [if_pos hQ₁ιQ₁, if_neg hQ₁ne1, if_pos hQ₁x2] at hcoeffQ₁
-              split_ifs at hcoeffQ₁ <;> omega
-            exact hQ₁x2.symm.trans (hQ₁ιQ₁.trans (congrArg Point.iota (hQ₁x2.trans hx1x2.symm)))
-
-
-
-omit [IsAlgClosed k] in
-/-- **Renamed from the broken `ordInfOfPair_right_zero`.** Was stated as an
-equation between two `ordInf` applications of a nonexistent fraction-level
-valuation; the honest fact this call site actually needs is `ordInfOfPair`'s
-own `B = 0` unfolding, which is `rfl`-close from the definition
-(`PrincipalDivisors.lean:122`'s `if B = 0 then 0 else ...` branch collapsing
-the `max` to `2 * A.natDegree`).
-**Moved earlier in the file this session**: `fiber_eq_of_divisor_shape`'s proof
-below now calls this lemma directly, so it must be declared before that theorem
-— Lean rejected the prior ordering (`Unknown identifier` on a genuinely later
-declaration) since this file has no forward-declaration mechanism in play here. -/
-lemma ordInfOfPair_right_zero (A : k[X]) :
-    ordInfOfPair A 0 = -2 * (A.natDegree : ℤ) := by
-  by_cases hA : A = 0
-  · subst hA
-    simp [ordInfOfPair]
-  · dsimp [ordInfOfPair]
-    rw [if_neg (fun h => hA h.1), if_pos rfl]
-    have h_nonneg : (0:ℤ) ≤ 2 * (A.natDegree : ℤ) := by positivity
-    rw [max_eq_left h_nonneg]
-    ring
-
-
--- heavy case-bash across the pole-match branches; default heartbeat budget is too tight
-/-- **§3f — THE HARD SORRY, the actual crux of the whole file.** Given `D =
-(x₃)+(x₄)-(x₁)-(x₂)` (§3e's second branch) and `x₂ ≠ ι x₁` (`hne`), show
-`{x₃,x₄} = {x₁,x₂}` (forcing `D = 0`, i.e. the fraction is constant after
-all) *without* invoking `uniqueDegree2MapToP1` or `finrank_L_pair` (that
-would be circular — this file exists to prove a version of
-`uniqueDegree2MapToP1`). The genuine content, per `SCOPING-finrank-L-pair.md`
-Route A step 3: `D`'s negative part `{x₁,x₂}` and positive part `{x₃,x₄}`
-both being pole/zero sets of the *same* ratio `z`, with `z`'s pole structure
-constrained by `ordInfOfPair`'s "half-integer weight at infinity" convention
-— a genuine hyperelliptic-curve fact about `k[X]`-degree parity, proved via
-direct case analysis on `ordAt_linX_eq` (`HyperellipticClassProof.lean:1031`)
-applied to whichever of `x₁,x₂,x₃,x₄` witnesses the pole/zero, rather than
-any general classification. **This is real, currently-unformalized
-mathematics — not a bookkeeping gap** (unlike §3a–§3e above, which are all
-routine once stated precisely). Anyone picking this up should reread
-`SCOPING-finrank-L-pair.md`'s Route A steps 1–3 in full before attempting a
-proof body; the statement here is Route A step 3's precise target, isolated
-from steps 1–2 (which are what forces `D` into this exact shape in the first
-place, i.e. §3a–§3e above). -/
--- **Hypothesis package strengthened this session (ChatGPT-assisted design pass; every
--- addition below checked by hand against the exact signature of the lemma it feeds —
--- `denom_B'_eq_zero_of_isPoleBoundedAtPair`, `num_B_eq_zero_of_isPoleBoundedAtPair`, and
--- `fiber_eq_of_pure_rational_pole_match` — not just accepted as proposed).** The bare
--- `hdiv` this theorem previously carried is not enough to run the documented assembly.
--- Four independent gaps, none of them a wiring issue:
---
--- (1) `denom_B'_eq_zero_of_isPoleBoundedAtPair` needs `hspecAB`/`hspecA'B'` (every other
---     caller of that lemma threads them; this theorem alone omitted them), plus
---     `hreduced` — a *lowest-terms* condition genuinely not implied by
---     `IsPoleBoundedAtPair` (that lemma's own docstring gives the counterexample
---     `A=A'=0, B=B'=1`, i.e. `z = y/y`, satisfying `IsPoleBoundedAtPair` with `B'≠0`) —
---     plus two `Module.Finite` instance obligations over the support `Finset`, which
---     don't exist as global instances anywhere in this project (checked by search) and
---     so must be threaded in explicitly.
--- (2) `num_B_eq_zero_of_isPoleBoundedAtPair` needs `ordInfOfPair A' B' ≥ -2` directly.
---     **This is exactly `constant_or_fiber_of_isPoleBoundedAtPair`'s own still-open
---     `h_denom_ord` sorry** (identical statement, identical missing content) — carried
---     here as `hdenomOrd`, assumed, not proved. Deriving it from `hbound` alone without a
---     lowest-terms assumption is unresolved; see that theorem's docstring for why the
---     natural route (bounding `∑_T ordAt(A',B')` via `hpt` alone) fails without one.
--- (3) `fiber_eq_of_pure_rational_pole_match` needs the four `hclosed` ι-closure facts,
---     stated over the *literal* `Finset` `{x₁,x₂,x₃,x₄}`, and its own `hpoles` hypothesis
---     is stated with that same literal `Finset` as the support on *both* sides of the
---     ratio. So `T` is fixed to `{x₁,x₂,x₃,x₄}` here rather than left abstract — no
---     support-extension lemma (`divToPair A B T = divToPair A B {x₁,x₂,x₃,x₄}` for
---     `T ⊆ {x₁,x₂,x₃,x₄}`, or similar) exists anywhere in this project to bridge an
---     arbitrary `T` to this shape, and inventing one is out of scope for this pass.
--- (4) `denom_B'_eq_zero_of_isPoleBoundedAtPair` also needs `hAB : ¬(A=0 ∧ B=0)`. This one
---     genuinely *is* free — if `A=0∧B=0` then `toPair H A B = 0` (`toPair_eq_zero_iff`),
---     so `ordAt P A B = 0` at every `P` by `ordAt`'s own `if_pos` branch on that
---     condition — so it is derived in the proof below, not assumed.
---
--- **Honesty note.** `hreduced` and `hdenomOrd` are real, currently-unformalized
--- mathematical content, not bookkeeping. This theorem does not derive `{x₃,x₄}={x₁,x₂}`
--- from `IsPoleBoundedAtPair` and the divisor equation alone — it derives it *given* a
--- lowest-terms representation and the resulting infinity-order bound. Whoever eventually
--- calls this from `constant_or_fiber_of_isPoleBoundedAtPair`'s §3f site still owes exactly
--- those two facts (already flagged there as `h_denom_ord`'s own open sorry).
---
--- **Update (Gemini-assisted assembly pass, this session): the proof body below is now
--- filled in and wires cleanly into `denom_B'_eq_zero_of_isPoleBoundedAtPair`,
--- `num_B_eq_zero_of_isPoleBoundedAtPair`, and the already-proved (no-`sorry`)
--- `fiber_eq_of_pure_rational_pole_match` — all three call sites checked by hand against
--- their real signatures, not just pasted from the draft.** One genuine error in the
--- draft was caught and NOT adopted: it claimed `¬(A=0∧B=0)` was free from
--- `hbound.1`, but `IsPoleBoundedAtPair`'s first field
--- (`RiemannRochGenus2.lean:96-100`) is actually `¬(A'=0∧B'=0)` — the denominator
--- clause, not the numerator. That derivation is NOT free; a direct check against
--- `hpoles` (the route the theorem's very first draft attempted) also does not give a
--- cheap contradiction.
---
--- **Resolution of the `hAB` gap (this session, no longer a `sorry`).** Tried the
--- "restructure as `by_cases hAB0 : A = 0 ∧ B = 0`" fix first (mirroring
--- `constant_or_fiber_of_isPoleBoundedAtPair`'s own top-level split). It does NOT work
--- here: pushing `A = 0 ∧ B = 0` through `hpoles` via `coeffAt_divToPairRatio_eq_sub` +
--- `ordAt_zero_zero` only yields `∀ P, ordAt P A' B' = -coeffAt P (single x₃+single x₄-
--- single x₁-single x₂)` — reconstructing `{x₃,x₄}={x₁,x₂}` from that needs the exact
--- same "pointwise pole data ⟹ exact fiber-shaped divisor equation" content that is the
--- genuinely open crux elsewhere in this file (§3f / `natDegree_eq_zero_of_ordInf_bound`'s
--- replacement) — there's no shortcut specific to the `A=0∧B=0` branch, so the case split
--- does not eliminate the gap, only relocates it.
---
--- **So the honest fix is the other one already flagged below: `hAB` is added as an
--- explicit hypothesis of `hdiv`'s existential**, exactly mirroring how
--- `denom_B'_eq_zero_of_isPoleBoundedAtPair` (used two lines into this proof) already
--- takes `hAB` as a hypothesis rather than deriving it. This is *not* the same move as
--- dodging an unproved step with a fresh unjustified assumption: at every place this
--- lemma is meant to be invoked, `A = 0 ∧ B = 0` means the rational function
--- `toPair H A B` is identically `0`, which is exactly the degenerate case that
--- `constant_or_fiber_of_isPoleBoundedAtPair`'s own top-level `by_cases hAB0` (see below)
--- already peels off *before* any lemma like this one is reached, and resolves directly
--- via its own (trivial, `IsConstantFraction`-witnessing) branch — `fiber_eq_of_divisor_
--- shape` is only ever meant to fire in the surviving `¬(A=0∧B=0)` branch. Flagging this
--- explicitly rather than silently folding it in, since it's a scoping judgment call, not
--- a proof.
-theorem fiber_eq_of_divisor_shape (x₁ x₂ x₃ x₄ : H.Point) (hne : x₂ ≠ Point.iota x₁)
-    (hdeg : H.f.natDegree = 5) (hchar : (2 : k) ≠ 0) (hsf : Squarefree H.f)
-    (hdiv : ∃ A B A' B' : k[X],
-      IsPoleBoundedAtPair x₁ x₂ A B A' B' ∧
-      ¬ (A = 0 ∧ B = 0) ∧
-      (∀ v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H),
-        (Associates.mk v.asIdeal).count
-          (Associates.mk (Ideal.span ({toPair H A B} : Set (CoordinateRing H)))).factors ≠ 0 →
-        ∃ P, v.asIdeal = pointIdeal P) ∧
-      (∀ v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H),
-        (Associates.mk v.asIdeal).count
-          (Associates.mk (Ideal.span ({toPair H A' B'} : Set (CoordinateRing H)))).factors ≠ 0 →
-        ∃ P, v.asIdeal = pointIdeal P) ∧
-      -- lowest-terms condition (§1 above); NOT derivable from `IsPoleBoundedAtPair` alone.
-      (∀ P : H.Point, ordAt P A B = 0 ∨ ordAt P A' B' = 0) ∧
-      -- infinity-order bound (§2 above); identical content to `constant_or_fiber_of_
-      -- isPoleBoundedAtPair`'s still-open `h_denom_ord`.
-      ordInfOfPair A' B' ≥ -2 ∧
-      (∀ P, P ∉ ({x₁, x₂, x₃, x₄} : Finset H.Point) → ordAt P A B = 0) ∧
-      (∀ P, P ∉ ({x₁, x₂, x₃, x₄} : Finset H.Point) → ordAt P A' B' = 0) ∧
-      (divToPairRatio A B {x₁, x₂, x₃, x₄} A' B' {x₁, x₂, x₃, x₄} : Divisor H) =
-        single x₃ + single x₄ - single x₁ - single x₂ ∧
-      -- (§1 above) `Module.Finite` obligations `denom_B'_eq_zero_of_isPoleBoundedAtPair`
-      -- needs, over the fixed support `{x₁,x₂,x₃,x₄}`. Packaged inside the existential
-      -- (rather than as top-level instance-implicit arguments) because their type
-      -- depends on `A, B, A', B'`, which are only bound here.
-      (∀ P : ({x₁, x₂, x₃, x₄} : Finset H.Point),
-        Module.Finite k (CoordinateRing H ⧸ pointIdeal P.1 ^ (ordAt P.1 A B).toNat)) ∧
-      (∀ P : ({x₁, x₂, x₃, x₄} : Finset H.Point),
-        Module.Finite k (CoordinateRing H ⧸ pointIdeal P.1 ^ (ordAt P.1 A' B').toNat)))
-    (hclosed₁ : ∀ Q ∈ ({x₁, x₂, x₃, x₄} : Finset H.Point), Q.X = x₁.X →
-      Point.iota Q ∈ ({x₁, x₂, x₃, x₄} : Finset H.Point))
-    (hclosed₂ : ∀ Q ∈ ({x₁, x₂, x₃, x₄} : Finset H.Point), Q.X = x₂.X →
-      Point.iota Q ∈ ({x₁, x₂, x₃, x₄} : Finset H.Point))
-    (hclosed₃ : ∀ Q ∈ ({x₁, x₂, x₃, x₄} : Finset H.Point), Q.X = x₃.X →
-      Point.iota Q ∈ ({x₁, x₂, x₃, x₄} : Finset H.Point))
-    (hclosed₄ : ∀ Q ∈ ({x₁, x₂, x₃, x₄} : Finset H.Point), Q.X = x₄.X →
-      Point.iota Q ∈ ({x₁, x₂, x₃, x₄} : Finset H.Point)) :
-    ({x₃, x₄} : Set H.Point) = {x₁, x₂} := by
-  obtain ⟨A, B, A', B', hbound, hAB, hspecAB, hspecA'B', hreduced, hdenomOrd,
-    hsuppAB, hsuppA'B', hpoles, hfinAB, hfinA'B'⟩ := hdiv
-  haveI := hfinAB
-  haveI := hfinA'B'
-  -- Route A step 1: force `B' = 0`.
-  have hB' : B' = 0 :=
-    denom_B'_eq_zero_of_isPoleBoundedAtPair hdeg x₁ x₂ A B A' B' hbound hspecAB hspecA'B'
-      {x₁, x₂, x₃, x₄} hAB hsuppAB hsuppA'B' hreduced
-  -- Route A step 2: force `B = 0`, using the now-established `B' = 0` together with
-  -- `hdenomOrd : ordInfOfPair A' B' ≥ -2` (no rewrite needed — `hdenomOrd` is already
-  -- stated about `(A', B')`, not `(A', 0)`).
-  have hB : B = 0 := num_B_eq_zero_of_isPoleBoundedAtPair x₁ x₂ A B A' B' hbound hdenomOrd
-  -- `A'.natDegree ≤ 1`: from `ordInfOfPair A' B' = ordInfOfPair A' 0` (via `hB'`)
-  -- `= -2 * A'.natDegree` (`ordInfOfPair_right_zero`), combined with `hdenomOrd ≥ -2`.
-  have h_ordA' : ordInfOfPair A' B' = -2 * (A'.natDegree : ℤ) := by
-    rw [hB']; exact ordInfOfPair_right_zero A'
-  have hdegA' : A'.natDegree ≤ 1 := by
-    have h1 : -2 * (A'.natDegree : ℤ) = ordInfOfPair A' B' := h_ordA'.symm
-    have h2 : ordInfOfPair A' B' ≥ -2 := hdenomOrd
-    omega
-  -- `A.natDegree ≤ 1`: same idea, chained through `hbound`'s monotonicity clause
-  -- `ordInfOfPair A B ≥ ordInfOfPair A' B'` rather than a direct bound.
-  have h_ordA : ordInfOfPair A B = -2 * (A.natDegree : ℤ) := by
-    rw [hB]; exact ordInfOfPair_right_zero A
-  have hdegA : A.natDegree ≤ 1 := by
-    have h1 : -2 * (A.natDegree : ℤ) = ordInfOfPair A B := h_ordA.symm
-    have h2 : ordInfOfPair A B ≥ ordInfOfPair A' B' := hbound.2.1
-    have h3 : ordInfOfPair A' B' ≥ -2 := hdenomOrd
-    omega
-  -- Rewrite `hpoles` to the `B = B' = 0` shape `fiber_eq_of_pure_rational_pole_match`
-  -- expects, then wire directly into that (already-proved, no-`sorry`) theorem.
-  -- **Fixed from the first attempt:** rewriting the *goal*'s two `0`s back to `B`/`B'`
-  -- via `rw [← hB, ← hB']` is ambiguous (both `hB` and `hB'` have RHS `0`, so `← hB'`
-  -- can't tell which `0` to target once `← hB` has already fired) and produced a
-  -- garbled goal in the actual build. Rewriting `hpoles` *forward* instead
-  -- (`B → 0`, `B' → 0`) is unambiguous, since `B` and `B'` are distinct variables.
-  have hpoles' : (divToPairRatio A 0 {x₁, x₂, x₃, x₄} A' 0 {x₁, x₂, x₃, x₄} : Divisor H) =
-      single x₃ + single x₄ - single x₁ - single x₂ := by
-    rw [hB, hB'] at hpoles; exact hpoles
-  exact fiber_eq_of_pure_rational_pole_match hchar hsf x₁ x₂ x₃ x₄ hne A A'
-    hdegA hdegA' hpoles' hclosed₁ hclosed₂ hclosed₃ hclosed₄
-
-
-
-
-/-- **Replaces the deleted, FALSE `natDegree_eq_zero_of_ordInf_bound`.**
-(Old lemma's counterexample, for the record: `A' = X` has `natDegree = 1`,
-`ordInfOfPair A' 0 = -2 ≥ -2`, and nothing false about it — it's the honest
-`z = c/(x-a)` witness of the genuine `x₂ = ι x₁` fiber case. A pure
-`ordInfOfPair`-size bound can never rule this out, since `A'.natDegree = 1`
-*is* a real, satisfiable case; only `hne` together with the actual pointwise
-pole data can.)
-
-**Correctly-shaped replacement, per ChatGPT-assisted design pass (session
-transcript): this lemma now carries the point data (`x₁, x₂, hne`) and the
-pointwise bound `hpt` that the false version omitted**, rather than trying to
-squeeze the conclusion out of an integer inequality alone. `hpt` here is
-`hbound`'s pointwise clause specialized to `B = B' = 0` (i.e. after `rw [hB,
-hB'] at hpt` at the call site — `B`, `B'` are *not* parameters here, the
-statement is already specialized to avoid re-threading them uselessly).
-
-**Still an honest `sorry`, not a fabricated proof — this is a genuinely
-different difficulty tier from a wiring fix.** Diagnosis (ChatGPT-assisted,
-confirmed by hand): the missing step is *not* covered by
-`fiber_eq_of_pure_rational_pole_match` directly, because that theorem's
-hypothesis `hpoles` is an exact `Divisor H` *equality* `single x₃ + single x₄
-- single x₁ - single x₂` with concrete witness points `x₃, x₄`, whereas what
-`hpt`/`hT₁`/`hT₂` supply at this call site is only a pointwise *inequality*
-plus finite supports — no witness points `x₃, x₄` and no divisor equation
-have been constructed yet. Building that bridge ("pointwise pole-bound
-inequality + finite support ⟹ exact fiber-shaped divisor equation with
-explicit witnesses") is itself unformalized work, comparable in size to
-`fiber_eq_of_divisor_shape`'s own gap just above — **not attempted here**,
-per the same "document, don't fake" convention as elsewhere in this file.
-Whoever closes this should either (a) prove it directly via the same
-`ordAt_linX_eq`/`fiberSupport` case analysis `fiber_eq_of_pure_rational_pole_
-match` uses, applied to the single point `Q'` with `Q'.X = a'` where `A' = C
-c' * linX a'` (using `hdegA'le1` + `eq_zero_or_C_or_C_mul_linX_of_natDegree_
-le_one` to get `a'`), or (b) first build the pointwise-inequality-to-exact-
-divisor-equation bridge as its own lemma and then call
-`fiber_eq_of_pure_rational_pole_match`. Route (a) is likely less work, since
-it avoids constructing the bridge lemma at all. 
- **Statement WEAKENED this session — the original version above (bare `hpt`, no
-lowest-terms hypothesis) is FALSE, confirmed by GPT and checked by hand.**
-Counterexample: take `A := A'` for any degree-1 `A'`. Then `hpt` becomes
-`ordAt P A' 0 ≥ ordAt P A' 0 - (nonneg indicator sum)`, which is `x ≥ x -
-(nonneg)`, automatically true at every `P` — so `hpt` places no real constraint
-on `A` at all in this instance, and `A'.natDegree = 1 ≠ 0` while every
-hypothesis holds. The one-directional inequality `hpt` supplies is simply not
-enough; `A` needs to be genuinely unrelated to `A'` (no shared zero), which is
-exactly the same "lowest-terms" gap `denom_B'_eq_zero_of_isPoleBoundedAtPair`
-already needed `hreduced` to close (see that theorem's docstring above for the
-identical `y/y` self-cancellation pattern — this is the affine analogue).
-
-**Fix applied**: added `hreducedA : ∀ P : H.Point, ordAt P A 0 = 0 ∨ ordAt P A'
-0 = 0` — no common affine zero between `A(x)` and `A'(x)`. This directly rules
-out the `A = A'` counterexample (whenever `A'` has a zero, `A` shares it, so
-`hreducedA`'s disjunction fails at that point unless `A = 0` there too, but
-`A = A'` nonzero at its own zero — contradiction). Matches the project's
-existing convention of weakening rather than deleting once a genuine
-counterexample is found.
-
-**Not yet re-attempted after the fix — still `sorry`.** The `constant_or_fiber_
-of_isPoleBoundedAtPair` call site (below) does not currently establish
-`hreducedA` either — this is a NEW gap, not previously flagged, surfaced by
-GPT's counterexample. Establishing it there likely needs the same `hreduced`-
-style argument `denom_B'_eq_zero_of_isPoleBoundedAtPair` uses (via `hbound`'s
-pointwise clause plus `hT₁`/`hT₂`'s finite supports), applied to the affine
-parts specifically — not attempted here, flagged for whoever picks this up
-next.
-
-**SECOND CORRECTION (this session): `hreducedA` itself abandoned — it is
-genuinely unprovable at the real call site, not just "not yet attempted".**
-Direct check: at `constant_or_fiber_of_isPoleBoundedAtPair`'s `h_deg_A'`
-step, nothing in scope (`hbound`, `h_denom_ord`, `hB`, `hB'`) rules out
-`A = A'` (any nonzero degree-≤1 polynomial) — that assignment satisfies
-every hypothesis available there (same self-cancellation shape as the
-parent `y/y` counterexample: `hpt'` becomes `ordAt P A 0 ≥ ordAt P A 0 -
-ind(P)`, trivially true). So `hreducedA` cannot be derived at that call
-site; threading it outward as an explicit hypothesis of `constant_or_
-fiber_of_isPoleBoundedAtPair` itself was also checked and found to just
-relocate the same unprovable gap to `uniqueDegree2MapToP1_of_elementary`,
-whose witness comes straight from `LPairCarrier`'s existential with no
-reducedness guarantee either (see `RiemannRochGenus2.lean`'s `LPairCarrier`
-docstring for the full trace, including why `IsRatioDivisor`'s own
-construction — `isRatioDivisor_add`'s raw numerator/denominator product —
-also does not supply it).
-
-**THIRD CORRECTION (this session): even the `A = A'` disjunct is too strong —
-found a further counterexample before writing any case-analysis proof.**
-Take `A = X`, `A' = C 2 * X` (needs `hchar : (2:k) ≠ 0`, i.e. `2 ≠ 0` in
-`k`, already a standing hypothesis here): `toPair H A' 0 = C 2_ring *
-toPair H A 0` where `C 2_ring := algebraMap k[X] (CoordinateRing H) (C
-2)`, and `C 2_ring` is a UNIT (already proved elsewhere in this project —
-`LPairFinrankOne.lean`'s `IsUnit ... ↔ ∃ c, c ≠ 0 ∧ ...`, and
-`RatioDivisorCollapse.lean`/`RiemannRochGenus2.lean` both use the same
-fact directly). A unit multiple doesn't change `ordAt` at any point, so
-`ordAt P A 0 = ordAt P A' 0` everywhere, `hpt` collapses to the same
-trivial `x ≥ x - ind(P)` as the `A = A'` case — yet `A ≠ A'` (as literal
-polynomials, `X ≠ C 2 * X` whenever `X ≠ 0`, i.e. always). So `A = A'`
-alone does not cover every degenerate case; the honest disjunct is "`A`
-and `A'` are associates" (differ by a nonzero scalar), matching exactly
-where `z = A/A'` collapses to a genuine constant `c` (not just `1`) — this
-is the actually-true generalization, checked to also handle the call
-site's needs (`z = toPair(C c * A', 0)/toPair(A', 0) = C c_ring`, a
-constant witness, replacing the earlier `z = 1` special case).
-
-**FOURTH CORRECTION (this session): the statement above is still FALSE as
-written, with `hdegA'le1` the only degree hypothesis — genuine
-counterexample, not just "not yet proved".** Take `A' = X` (`a' = 0`,
-`c' = 1`, degree `1`) and `A = X * (X - 5)` (degree `2`). Check `hpt`: at
-any point `P` with `P.X = 0`, `ordAt P A' 0 ≥ 1` and (since `A` also
-vanishes at `X = 0`, same multiplicity shape) `ordAt P A 0` matches or
-exceeds it, so `hpt` holds there; at `P.X = 5` (a root of `A`, not `A'`),
-`ordAt P A' 0 = 0` so `hpt` only demands `ordAt P A 0 ≥ -ind(P)`, true since
-`ordAt ≥ 0` always. So `hpt` holds throughout, yet `A'.natDegree = 1 ≠ 0`
-and `A` is not a scalar multiple of `A'` (different degree). `hpt` alone
-places no *upper* bound on `A`'s degree — confirmed by direct construction,
-not just suspected. The missing ingredient is `hmono`
-(`ordInfOfPair A 0 ≥ ordInfOfPair A' 0`, `hbound`'s own monotonicity
-clause), which at the real call site (`constant_or_fiber_of_
-isPoleBoundedAtPair`) gives exactly `A.natDegree ≤ A'.natDegree ≤ 1` via
-`ordInfOfPair_right_zero` — see that call site's own `hdegA`/`hdegA'`
-derivation (`fiber_eq_of_divisor_shape`, lines ~2478-2490) for the identical
-computation. Threading `hdegA : A.natDegree ≤ 1` in as an explicit
-hypothesis (derivable and available at the only real call site) is the
-honest fix, exactly mirroring how `hAB` was added to `fiber_eq_of_divisor_
-shape` above rather than derived from nothing.
-
-**Fifth issue, found while actually writing the proof with `hdegA` added:
-even `A.natDegree ≤ 1 ∧ A'.natDegree ≤ 1` is not enough on its own.** `k` is
-a general field, not algebraically closed (`AffinePoints.lean`'s `H.Point`
-carries no such assumption) — so a root `a'` of `A'` need not be the
-`X`-coordinate of any actual `H.Point`. If no point lies over `a'`, `hpt` is
-vacuous there and `A` could (as far as `hpt` alone is concerned) vanish at a
-totally different, "invisible" root instead. Ruling this out needs an
-existence witness for *some* point where `A'` actually vanishes — supplied
-by `hspecA' `(the `B'=0` specialization of the standing `hspec` hypothesis
-used throughout this file) via `exists_finite_support_of_hspec` +
-`deg_div_eq_zero_deg5`: since `A'.natDegree = 1 > 0`, `ordInfOfPair A' 0 =
--2 ≠ 0`, so the sum `∑_S ordAt(A',0)` (`S` the finite support
-`exists_finite_support_of_hspec` extracts from `hspecA'`) cannot be
-identically zero either, forcing at least one point of nonzero order — and
-since `A' = C c' * linX a'`, any such point must have `X = a'`
-(`ordAt_linX_eq_zero_of_ne`'s contrapositive), giving the witness. This
-mirrors `denom_B'_eq_zero_of_isPoleBoundedAtPair`'s own use of
-`deg_div_eq_zero_deg5`+`hspec` one section above, and needs the same
-`hdeg`/`Module.Finite` hypotheses that theorem already carries — all
-genuinely available at the real call site (`constant_or_fiber_of_
-isPoleBoundedAtPair` has `hdeg`, and the needed `Module.Finite` instance
-follows from `hT₂`/`hspecA'B'` exactly as `denom_B'_eq_zero_of_
-isPoleBoundedAtPair`'s own call site supplies it — see `PrincipalDivisors.
-lean`'s `finrank_quotient_pointIdeal_pow` doc for why this instance isn't
-yet unconditionally derivable). Threading these in is not dodging the proof;
-it is the same "prove it with the hypotheses it actually needs" move as
-`hdegA`/`hAB` above, just with more of them. -/
-lemma natDegree_eq_zero_of_isPoleBoundedAtPair (hdeg : H.f.natDegree = 5)
-    (hchar : (2 : k) ≠ 0)
+/-- **Uniqueness of the degree-2 map to `P¹` glued at `{x₁, x₂}`, general `k`.**
+The `[IsAlgClosed k]`-free replacement for `uniqueDegree2MapToP1_ordAtFrac`. -/
+theorem uniqueDegree2MapToP1Spec (hdeg : H.f.natDegree = 5) (hchar : (2 : k) ≠ 0)
     (hsf : Squarefree H.f) (x₁ x₂ : H.Point) (hne : x₂ ≠ Point.iota x₁)
-    (A A' : k[X]) (hdegA : A.natDegree ≤ 1) (hdegA'le1 : A'.natDegree ≤ 1)
-    (hpt : ∀ P : H.Point, ordAt P A 0 ≥ ordAt P A' 0 -
-      ((if P = x₁ then 1 else 0) + (if P = x₂ then 1 else 0)))
-    (hspecA' : ∀ v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H),
-      (Associates.mk v.asIdeal).count
-        (Associates.mk (Ideal.span ({toPair H A' 0} : Set (CoordinateRing H)))).factors ≠ 0 →
-      ∃ P, v.asIdeal = pointIdeal P)
-    (T₂ : Finset H.Point) (hsuppA' : ∀ P, P ∉ T₂ → ordAt P A' 0 = 0)
-    [∀ P : T₂, Module.Finite k (CoordinateRing H ⧸ pointIdeal P.1 ^ (ordAt P.1 A' 0).toNat)] :
-    A'.natDegree = 0 ∨ ∃ c : k, c ≠ 0 ∧ A = Polynomial.C c * A' := by
-  classical
-  rcases eq_zero_or_C_or_C_mul_linX_of_natDegree_le_one A' hdegA'le1 with
-    hA'0 | ⟨c', hc', hA'c⟩ | ⟨c', a', hc', hA'lin⟩
-  · left; rw [hA'0]; simp
-  · left; rw [hA'c]; simp
-  · -- `A' = C c' * linX a'`, degree exactly `1`. Need the right disjunct.
-    right
-    have hA'ne0 : ¬ (A' = 0 ∧ (0 : k[X]) = 0) := by
-      rw [hA'lin]
-      exact fun h => (mul_ne_zero (Polynomial.C_ne_zero.mpr hc') (linX_ne_zero a')) h.1
-    -- Existence of a witness point `Q` with `ordAt Q A' 0 > 0` (forcing `Q.X = a'`):
-    -- from `A'.natDegree = 1 ≠ 0`, `ordInfOfPair A' 0 ≠ 0`, so `deg_div_eq_zero_deg5`'s
-    -- sum over `T₂` cannot be identically zero either.
-    have hA'degree1 : A'.natDegree = 1 := by
-      rw [hA'lin]; simp [Polynomial.natDegree_mul (Polynomial.C_ne_zero.mpr hc') (linX_ne_zero a')]
-    have hordInfA' : ordInfOfPair A' 0 = -2 := by
-      rw [ordInfOfPair_right_zero A', hA'degree1]; norm_num
-    have hsum := deg_div_eq_zero_deg5 H hdeg T₂ A' 0 hA'ne0 hsuppA' hspecA'
-    rw [hordInfA'] at hsum
-    have hsum_eq2 : (∑ P ∈ T₂, ordAt P A' 0) = 2 := by omega
-    have hexists : ∃ Q ∈ T₂, ordAt Q A' 0 ≠ 0 := by
-      by_contra hall
-      push Not at hall
-      have : (∑ P ∈ T₂, ordAt P A' 0) = 0 := Finset.sum_eq_zero hall
-      omega
-    obtain ⟨Q, _, hQne⟩ := hexists
-    have hQX : Q.X = a' := by
-      by_contra hQXne
-      exact hQne (by
-        have := ordAt_C_mul_eq c' hc' (linX a') 0 (by
-          intro h; exact linX_ne_zero a' h.1) Q
-        rw [mul_zero] at this
-        rw [hA'lin, this, ordAt_linX_eq_zero_of_ne a' Q (pointIdeal_ne_bot Q) hQXne])
-    -- `A` is degree ≤ 1, so it's `0`, a nonzero constant, or `C c * linX a`.
-    rcases eq_zero_or_C_or_C_mul_linX_of_natDegree_le_one A hdegA with
-      hA0 | ⟨c, hc, hAc⟩ | ⟨c, a, hc, hAlin⟩
-    · -- `A = 0`: test `hpt` at a point outside `{x₁,x₂}` where `A'` still vanishes.
-      -- If `Q ∉ {x₁,x₂}`, done directly. If `Q ∈ {x₁,x₂}`, use `Q`'s `ι`-partner, which
-      -- also has `X = a'` (`iota_X`) and — since `hne : x₂ ≠ ι x₁` — cannot equal both
-      -- `x₁` and `x₂` simultaneously with `Q`, giving an escape point outside `{x₁,x₂}`.
-      exfalso
-      have hordA'atQ : ordAt Q A' 0 ≥ 1 := by
-        have h2 : ordAt Q A' 0 = if Q.X ≠ a' then 0 else if Q.Y ≠ 0 then 1 else 2 := by
-          rw [hA'lin]
-          have := ordAt_C_mul_eq c' hc' (linX a') 0 (by
-            intro h; exact linX_ne_zero a' h.1) Q
-          rw [mul_zero] at this
-          rw [this, ordAt_linX_eq hchar hsf a' Q (pointIdeal_ne_bot Q)]
-        rw [if_neg (not_not.mpr hQX)] at h2
-        split_ifs at h2 <;> omega
-      -- Find an escape point `R` outside `{x₁, x₂}` with `R.X = a'` and `ordAt R A' 0 ≥ 1`.
-      have hescape : ∃ R : H.Point, R ≠ x₁ ∧ R ≠ x₂ ∧ ordAt R A' 0 ≥ 1 := by
-        by_cases hQx₁ : Q = x₁
-        · by_cases hQx₂ : Q = x₂
-          · have hne_iota : Q.iota ≠ Q := by
-              have h := hne
-              subst_vars
-              exact h.symm
-            have h_ne1 : Q.iota ≠ x₁ := by rw [← hQx₁]; exact hne_iota
-            have h_ne2 : Q.iota ≠ x₂ := by rw [← hQx₂]; exact hne_iota
-            have hpt_iota := hpt Q.iota
-            simp [hA0, ordAt_zero_zero, h_ne1, h_ne2] at hpt_iota
-            have h_ord_iota : ordAt Q.iota A' 0 ≥ 1 := by
-              have h2 : ordAt Q.iota A' 0 = if Q.iota.X ≠ a' then 0 else if Q.iota.Y ≠ 0 then 1 else 2 := by
-                rw [hA'lin]
-                have := ordAt_C_mul_eq c' hc' (linX a') 0 (by
-                  intro h; exact linX_ne_zero a' h.1) Q.iota
-                rw [mul_zero] at this
-                rw [this, ordAt_linX_eq hchar hsf a' Q.iota (pointIdeal_ne_bot Q.iota)]
-              have hQX_iota : ¬(Q.iota.X ≠ a') := by
-                have h_eq : Q.iota.X = Q.X := by cases Q <;> rfl
-                exact not_not.mpr (h_eq.trans hQX)
-              rw [if_neg hQX_iota] at h2
-              rw [h2]
-              split_ifs <;> decide
-            omega
-          · -- `Q = x₁`. Try `ι Q = ι x₁`: `(ι Q).X = a'` too. If `ι Q ≠ x₁, x₂`, use it.
-            by_cases hiQx₁ : Point.iota Q = x₁
-            · -- `ι Q = x₁ = Q`: `Q` is ramified (`Q.Y = 0`), so `ordAt Q A' 0 = 2`. `Q = x₁`
-              -- itself can't serve as the escape point, so derive `False` directly instead:
-              -- `hpt Q` bounds `ordAt Q A 0 ≥ ordAt Q A' 0 - 1 ≥ 1`, but `A = 0` forces
-              -- `ordAt Q A 0 = 0`, contradiction.
-              exfalso
-              have hQiotaEq : Point.iota Q = Q := hQx₁ ▸ hiQx₁
-              have hQY0 : Q.Y = 0 := by
-                by_contra hQYne
-                exact (Point.iota_ne_self_of_Y_ne_zero hchar hQYne) hQiotaEq
-              have hordA'atQ2 : ordAt Q A' 0 = 2 := by
-                have h2 : ordAt Q A' 0 = if Q.X ≠ a' then 0 else if Q.Y ≠ 0 then 1 else 2 := by
-                  rw [hA'lin]
-                  have := ordAt_C_mul_eq c' hc' (linX a') 0 (by
-                    intro h; exact linX_ne_zero a' h.1) Q
-                  rw [mul_zero] at this
-                  rw [this, ordAt_linX_eq hchar hsf a' Q (pointIdeal_ne_bot Q)]
-                rw [if_neg (not_not.mpr hQX), if_neg (not_not.mpr hQY0)] at h2
-                exact h2
-              have := hpt Q
-              rw [hA0, ordAt_zero_zero, if_pos hQx₁, if_neg hQx₂, hordA'atQ2] at this
-              omega
-            · exact ⟨Point.iota Q, by rw [hQx₁] at hiQx₁ ⊢; exact hiQx₁,
-                fun h => hne (h ▸ (hQx₁ ▸ rfl)), by
-                  have hordiff : ordAt (Point.iota Q) A' 0 = ordAt Q A' 0 := by
-                    rw [hA'lin]
-                    have h1 := ordAt_C_mul_eq c' hc' (linX a') 0 (by
-                      intro h; exact linX_ne_zero a' h.1) (Point.iota Q)
-                    have h2 := ordAt_C_mul_eq c' hc' (linX a') 0 (by
-                      intro h; exact linX_ne_zero a' h.1) Q
-                    rw [mul_zero] at h1 h2
-                    rw [h1, h2, ordAt_linX_eq hchar hsf a' (Point.iota Q) (pointIdeal_ne_bot _),
-                      ordAt_linX_eq hchar hsf a' Q (pointIdeal_ne_bot Q)]
-                    simp [hQX]
-                  rw [hordiff]; exact hordA'atQ⟩
-        · -- `Q ≠ x₁`. If also `Q ≠ x₂`, `Q` itself is the escape point.
-          by_cases hQx₂ : Q = x₂
-          · -- `Q = x₂ ≠ x₁`. `ι Q` shares `X = a'`, so the order bound transfers.
-            have hordiff : ordAt (Point.iota Q) A' 0 = ordAt Q A' 0 := by
-              rw [hA'lin]
-              have h1 := ordAt_C_mul_eq c' hc' (linX a') 0 (by
-                intro h; exact linX_ne_zero a' h.1) (Point.iota Q)
-              have h2 := ordAt_C_mul_eq c' hc' (linX a') 0 (by
-                intro h; exact linX_ne_zero a' h.1) Q
-              rw [mul_zero] at h1 h2
-              rw [h1, h2, ordAt_linX_eq hchar hsf a' (Point.iota Q) (pointIdeal_ne_bot _),
-                ordAt_linX_eq hchar hsf a' Q (pointIdeal_ne_bot Q)]
-              simp [hQX]
-            have hiQne1 : Point.iota Q ≠ x₁ := by
-              intro h
-              apply hne
-              rw [← hQx₂, ← h, Point.iota_iota]
-            -- Is `Q` ramified (`ι Q = Q`)? If so, `ι Q` can't serve as the escape
-            -- point either (it equals `Q = x₂`); derive `False` directly via `hpt Q`
-            -- instead, exactly as the sibling `Q = x₁` branch does.
-            by_cases hQram : Point.iota Q = Q
-            · exfalso
-              have hQY0 : Q.Y = 0 := by
-                by_contra hQYne
-                exact (Point.iota_ne_self_of_Y_ne_zero hchar hQYne) hQram
-              have hordA'atQ2 : ordAt Q A' 0 = 2 := by
-                have h2 : ordAt Q A' 0 = if Q.X ≠ a' then 0 else if Q.Y ≠ 0 then 1 else 2 := by
-                  rw [hA'lin]
-                  have := ordAt_C_mul_eq c' hc' (linX a') 0 (by
-                    intro h; exact linX_ne_zero a' h.1) Q
-                  rw [mul_zero] at this
-                  rw [this, ordAt_linX_eq hchar hsf a' Q (pointIdeal_ne_bot Q)]
-                rw [if_neg (not_not.mpr hQX), if_neg (not_not.mpr hQY0)] at h2
-                exact h2
-              have := hpt Q
-              rw [hA0, ordAt_zero_zero, if_neg hQx₁, if_pos hQx₂, hordA'atQ2] at this
-              omega
-            · exact ⟨Point.iota Q, hiQne1, fun h => hQram (h.trans hQx₂.symm),
-                hordiff ▸ hordA'atQ⟩
-          · exact ⟨Q, hQx₁, hQx₂, hordA'atQ⟩
-      obtain ⟨R, hRx₁, hRx₂, hRord⟩ := hescape
-      have := hpt R
-      rw [hA0, ordAt_zero_zero, if_neg hRx₁, if_neg hRx₂] at this
-      omega
-    · -- `A = C c` (nonzero constant): similarly derive a contradiction at the escape point.
-      exfalso
-      have hordA'atQ : ordAt Q A' 0 ≥ 1 := by
-        have h2 : ordAt Q A' 0 = if Q.X ≠ a' then 0 else if Q.Y ≠ 0 then 1 else 2 := by
-          rw [hA'lin]
-          have := ordAt_C_mul_eq c' hc' (linX a') 0 (by
-            intro h; exact linX_ne_zero a' h.1) Q
-          rw [mul_zero] at this
-          rw [this, ordAt_linX_eq hchar hsf a' Q (pointIdeal_ne_bot Q)]
-        rw [if_neg (not_not.mpr hQX)] at h2
-        split_ifs at h2 <;> omega
-      -- Find an escape point `R` outside `{x₁, x₂}` with `R.X = a'` and `ordAt R A' 0 ≥ 1`
-      -- (identical construction to the `A = 0` branch above — `A`'s value never enters
-      -- the escape-point search itself, only the final contradiction at `R`).
-      have hescape : ∃ R : H.Point, R ≠ x₁ ∧ R ≠ x₂ ∧ ordAt R A' 0 ≥ 1 := by
-        by_cases hQx₁ : Q = x₁
-        · by_cases hQx₂ : Q = x₂
-          · have hne_iota : Q.iota ≠ Q := by
-              have h := hne
-              subst_vars
-              exact h.symm
-            have h_ne1 : Q.iota ≠ x₁ := by rw [← hQx₁]; exact hne_iota
-            have h_ne2 : Q.iota ≠ x₂ := by rw [← hQx₂]; exact hne_iota
-            have hpt_iota := hpt Q.iota
-            simp [hAc, ordAt_C_zero c hc, h_ne1, h_ne2] at hpt_iota
-            have h_ord_iota : ordAt Q.iota A' 0 ≥ 1 := by
-              have h2 : ordAt Q.iota A' 0 = if Q.iota.X ≠ a' then 0 else if Q.iota.Y ≠ 0 then 1 else 2 := by
-                rw [hA'lin]
-                have := ordAt_C_mul_eq c' hc' (linX a') 0 (by
-                  intro h; exact linX_ne_zero a' h.1) Q.iota
-                rw [mul_zero] at this
-                rw [this, ordAt_linX_eq hchar hsf a' Q.iota (pointIdeal_ne_bot Q.iota)]
-              have hQX_iota : ¬(Q.iota.X ≠ a') := by
-                have h_eq : Q.iota.X = Q.X := by cases Q <;> rfl
-                exact not_not.mpr (h_eq.trans hQX)
-              rw [if_neg hQX_iota] at h2
-              rw [h2]
-              split_ifs <;> decide
-            omega
-          · by_cases hiQx₁ : Point.iota Q = x₁
-            · exfalso
-              have hQiotaEq : Point.iota Q = Q := hQx₁ ▸ hiQx₁
-              have hQY0 : Q.Y = 0 := by
-                by_contra hQYne
-                exact (Point.iota_ne_self_of_Y_ne_zero hchar hQYne) hQiotaEq
-              have hordA'atQ2 : ordAt Q A' 0 = 2 := by
-                have h2 : ordAt Q A' 0 = if Q.X ≠ a' then 0 else if Q.Y ≠ 0 then 1 else 2 := by
-                  rw [hA'lin]
-                  have := ordAt_C_mul_eq c' hc' (linX a') 0 (by
-                    intro h; exact linX_ne_zero a' h.1) Q
-                  rw [mul_zero] at this
-                  rw [this, ordAt_linX_eq hchar hsf a' Q (pointIdeal_ne_bot Q)]
-                rw [if_neg (not_not.mpr hQX), if_neg (not_not.mpr hQY0)] at h2
-                exact h2
-              have := hpt Q
-              rw [hAc, ordAt_C_zero c hc, if_pos hQx₁, if_neg hQx₂, hordA'atQ2] at this
-              omega
-            · exact ⟨Point.iota Q, by rw [hQx₁] at hiQx₁ ⊢; exact hiQx₁,
-                fun h => hne (h ▸ (hQx₁ ▸ rfl)), by
-                  have hordiff : ordAt (Point.iota Q) A' 0 = ordAt Q A' 0 := by
-                    rw [hA'lin]
-                    have h1 := ordAt_C_mul_eq c' hc' (linX a') 0 (by
-                      intro h; exact linX_ne_zero a' h.1) (Point.iota Q)
-                    have h2 := ordAt_C_mul_eq c' hc' (linX a') 0 (by
-                      intro h; exact linX_ne_zero a' h.1) Q
-                    rw [mul_zero] at h1 h2
-                    rw [h1, h2, ordAt_linX_eq hchar hsf a' (Point.iota Q) (pointIdeal_ne_bot _),
-                      ordAt_linX_eq hchar hsf a' Q (pointIdeal_ne_bot Q)]
-                    simp [hQX]
-                  rw [hordiff]; exact hordA'atQ⟩
-        · -- `Q ≠ x₁`. If also `Q ≠ x₂`, `Q` itself is the escape point.
-          by_cases hQx₂ : Q = x₂
-          · -- `Q = x₂ ≠ x₁`. `ι Q` shares `X = a'`, so the order bound transfers.
-            have hordiff : ordAt (Point.iota Q) A' 0 = ordAt Q A' 0 := by
-              rw [hA'lin]
-              have h1 := ordAt_C_mul_eq c' hc' (linX a') 0 (by
-                intro h; exact linX_ne_zero a' h.1) (Point.iota Q)
-              have h2 := ordAt_C_mul_eq c' hc' (linX a') 0 (by
-                intro h; exact linX_ne_zero a' h.1) Q
-              rw [mul_zero] at h1 h2
-              rw [h1, h2, ordAt_linX_eq hchar hsf a' (Point.iota Q) (pointIdeal_ne_bot _),
-                ordAt_linX_eq hchar hsf a' Q (pointIdeal_ne_bot Q)]
-              simp [hQX]
-            have hiQne1 : Point.iota Q ≠ x₁ := by
-              intro h
-              apply hne
-              rw [← hQx₂, ← h, Point.iota_iota]
-            by_cases hQram : Point.iota Q = Q
-            · exfalso
-              have hQY0 : Q.Y = 0 := by
-                by_contra hQYne
-                exact (Point.iota_ne_self_of_Y_ne_zero hchar hQYne) hQram
-              have hordA'atQ2 : ordAt Q A' 0 = 2 := by
-                have h2 : ordAt Q A' 0 = if Q.X ≠ a' then 0 else if Q.Y ≠ 0 then 1 else 2 := by
-                  rw [hA'lin]
-                  have := ordAt_C_mul_eq c' hc' (linX a') 0 (by
-                    intro h; exact linX_ne_zero a' h.1) Q
-                  rw [mul_zero] at this
-                  rw [this, ordAt_linX_eq hchar hsf a' Q (pointIdeal_ne_bot Q)]
-                rw [if_neg (not_not.mpr hQX), if_neg (not_not.mpr hQY0)] at h2
-                exact h2
-              have := hpt Q
-              rw [hAc, ordAt_C_zero c hc, if_neg hQx₁, if_pos hQx₂, hordA'atQ2] at this
-              omega
-            · exact ⟨Point.iota Q, hiQne1, fun h => hQram (h.trans hQx₂.symm),
-                hordiff ▸ hordA'atQ⟩
-          · exact ⟨Q, hQx₁, hQx₂, hordA'atQ⟩
-      obtain ⟨R, hRx₁, hRx₂, hRord⟩ := hescape
-      have := hpt R
-      rw [hAc, ordAt_C_zero c hc, if_neg hRx₁, if_neg hRx₂] at this
-      omega
-    · -- `A = C c * linX a`: need `a = a'`, giving `A = C (c/c') * A'` after rescaling
-      -- (both sides equal `C c * linX a'` up to the ratio `c/c'`).
-      have hordA'atQ : ordAt Q A' 0 ≥ 1 := by
-        have h2 : ordAt Q A' 0 = if Q.X ≠ a' then 0 else if Q.Y ≠ 0 then 1 else 2 := by
-          rw [hA'lin]
-          have := ordAt_C_mul_eq c' hc' (linX a') 0 (by
-            intro h; exact linX_ne_zero a' h.1) Q
-          rw [mul_zero] at this
-          rw [this, ordAt_linX_eq hchar hsf a' Q (pointIdeal_ne_bot Q)]
-        rw [if_neg (not_not.mpr hQX)] at h2
-        split_ifs at h2 <;> omega
-      -- Local helper: `ordAt R A 0 ≥ 1 → R.X = a` (contrapositive of
-      -- `ordAt_linX_eq_zero_of_ne`, via the `ordAt_C_mul_eq` unfolding used throughout).
-      have hXa_of_ord : ∀ R : H.Point, ordAt R A 0 ≥ 1 → R.X = a := by
-        intro R hR
-        by_contra hRXane
-        have : ordAt R A 0 = 0 := by
-          rw [hAlin]
-          have h1 := ordAt_C_mul_eq c hc (linX a) 0 (by
-            intro h; exact linX_ne_zero a h.1) R
-          rw [mul_zero] at h1
-          rw [h1, ordAt_linX_eq_zero_of_ne a R (pointIdeal_ne_bot R) hRXane]
-        omega
-      -- Same for `A'`: `ordAt R A' 0 ≥ 1 → R.X = a'`.
-      have hXa'_of_ord : ∀ R : H.Point, ordAt R A' 0 ≥ 1 → R.X = a' := by
-        intro R hR
-        by_contra hRXa'ne
-        have : ordAt R A' 0 = 0 := by
-          rw [hA'lin]
-          have h1 := ordAt_C_mul_eq c' hc' (linX a') 0 (by
-            intro h; exact linX_ne_zero a' h.1) R
-          rw [mul_zero] at h1
-          rw [h1, ordAt_linX_eq_zero_of_ne a' R (pointIdeal_ne_bot R) hRXa'ne]
-        omega
-      -- `ordAt (ι R) A' 0 = ordAt R A' 0`, since both only depend on `R.X` via `hA'lin`.
-      have hordiff_of : ∀ R : H.Point, ordAt (Point.iota R) A' 0 = ordAt R A' 0 := by
-        intro R
-        rw [hA'lin]
-        have h1 := ordAt_C_mul_eq c' hc' (linX a') 0 (by
-          intro h; exact linX_ne_zero a' h.1) (Point.iota R)
-        have h2 := ordAt_C_mul_eq c' hc' (linX a') 0 (by
-          intro h; exact linX_ne_zero a' h.1) R
-        rw [mul_zero] at h1 h2
-        rw [h1, h2, ordAt_linX_eq hchar hsf a' (Point.iota R) (pointIdeal_ne_bot _),
-          ordAt_linX_eq hchar hsf a' R (pointIdeal_ne_bot R)]
-        simp [Point.iota_X]
-      have haa' : a = a' := by
-        by_cases hQx₁ : Q = x₁
-        · by_cases hQx₂ : Q = x₂
-          · -- `Q = x₁ = x₂`. `hne : x₂ ≠ ι x₁` becomes `Q ≠ ι Q`, so `ι Q` is a genuine
-            -- escape point (distinct from `Q = x₁ = x₂`), sharing `X = a'` with `Q`.
-            have hne_iota : Point.iota Q ≠ Q := by
-              have h := hne; subst_vars; exact h.symm
-            have hiQne1 : Point.iota Q ≠ x₁ := by rw [← hQx₁]; exact hne_iota
-            have hiQne2 : Point.iota Q ≠ x₂ := by rw [← hQx₂]; exact hne_iota
-            have hiQord : ordAt (Point.iota Q) A' 0 ≥ 1 := hordiff_of Q ▸ hordA'atQ
-            have hRA : ordAt (Point.iota Q) A 0 ≥ 1 := by
-              have := hpt (Point.iota Q)
-              rw [if_neg hiQne1, if_neg hiQne2] at this
-              omega
-            exact (hXa_of_ord _ hRA).symm.trans (hXa'_of_ord _ hiQord)
-          · by_cases hiQx₁ : Point.iota Q = x₁
-            · -- `Q = x₁` and `ι Q = x₁`, so `Q` is ramified (`ι Q = Q`). `ι Q` can't
-              -- serve as a distinct escape point; but `Q` itself works directly here:
-              -- `hpt Q` only costs slack `1` (`Q ≠ x₂`), and `ordAt Q A' 0 = 2`
-              -- (ramified), giving `ordAt Q A 0 ≥ 1`, hence `Q.X = a` via `hXa_of_ord`.
-              have hQram : Point.iota Q = Q := hiQx₁.trans hQx₁.symm
-              have hQY0 : Q.Y = 0 := by
-                by_contra hQYne
-                exact (Point.iota_ne_self_of_Y_ne_zero hchar hQYne) hQram
-              have hordA'atQ2 : ordAt Q A' 0 = 2 := by
-                have h2 : ordAt Q A' 0 = if Q.X ≠ a' then 0 else if Q.Y ≠ 0 then 1 else 2 := by
-                  rw [hA'lin]
-                  have := ordAt_C_mul_eq c' hc' (linX a') 0 (by
-                    intro h; exact linX_ne_zero a' h.1) Q
-                  rw [mul_zero] at this
-                  rw [this, ordAt_linX_eq hchar hsf a' Q (pointIdeal_ne_bot Q)]
-                rw [if_neg (not_not.mpr hQX), if_neg (not_not.mpr hQY0)] at h2
-                exact h2
-              have hQA : ordAt Q A 0 ≥ 1 := by
-                have := hpt Q
-                rw [if_pos hQx₁, if_neg hQx₂, hordA'atQ2] at this
-                omega
-              exact (hXa_of_ord Q hQA).symm.trans hQX
-            · -- Escape to `ι Q ∉ {x₁, x₂}`, exactly as in the `hQx₂`-false case below.
-              have hiQne1 : Point.iota Q ≠ x₁ := by rw [hQx₁] at hiQx₁ ⊢; exact hiQx₁
-              have hiQne2 : Point.iota Q ≠ x₂ := fun h => hne (h ▸ (hQx₁ ▸ rfl))
-              have hiQord : ordAt (Point.iota Q) A' 0 ≥ 1 := hordiff_of Q ▸ hordA'atQ
-              have hRA : ordAt (Point.iota Q) A 0 ≥ 1 := by
-                have := hpt (Point.iota Q)
-                rw [if_neg hiQne1, if_neg hiQne2] at this
-                omega
-              exact (hXa_of_ord _ hRA).symm.trans (hXa'_of_ord _ hiQord)
-        · by_cases hQx₂ : Q = x₂
-          · -- `Q = x₂ ≠ x₁`. If `Q` is unramified, `ι Q` is a genuine escape point.
-            -- If `Q` is ramified (`ι Q = Q`), `Q` itself already has `ordAt Q A 0 ≥ 1`
-            -- via `hpt Q` (which only costs `1`, not `2`, since `Q ≠ x₁`), so `Q.X = a`
-            -- directly — no escape point needed.
-            by_cases hQram : Point.iota Q = Q
-            · have hQY0 : Q.Y = 0 := by
-                by_contra hQYne
-                exact (Point.iota_ne_self_of_Y_ne_zero hchar hQYne) hQram
-              have hordA'atQ2 : ordAt Q A' 0 = 2 := by
-                have h2 : ordAt Q A' 0 = if Q.X ≠ a' then 0 else if Q.Y ≠ 0 then 1 else 2 := by
-                  rw [hA'lin]
-                  have := ordAt_C_mul_eq c' hc' (linX a') 0 (by
-                    intro h; exact linX_ne_zero a' h.1) Q
-                  rw [mul_zero] at this
-                  rw [this, ordAt_linX_eq hchar hsf a' Q (pointIdeal_ne_bot Q)]
-                rw [if_neg (not_not.mpr hQX), if_neg (not_not.mpr hQY0)] at h2
-                exact h2
-              have hQA : ordAt Q A 0 ≥ 1 := by
-                have := hpt Q
-                rw [if_neg hQx₁, if_pos hQx₂, hordA'atQ2] at this
-                omega
-              exact (hXa_of_ord Q hQA).symm.trans hQX
-            · have hiQne1 : Point.iota Q ≠ x₁ := by
-                intro h; apply hne; rw [← hQx₂, ← h, Point.iota_iota]
-              have hiQne2 : Point.iota Q ≠ x₂ :=
-                fun h => hQram (h.trans hQx₂.symm)
-              have hiQord : ordAt (Point.iota Q) A' 0 ≥ 1 := hordiff_of Q ▸ hordA'atQ
-              have hRA : ordAt (Point.iota Q) A 0 ≥ 1 := by
-                have := hpt (Point.iota Q)
-                rw [if_neg hiQne1, if_neg hiQne2] at this
-                omega
-              exact (hXa_of_ord _ hRA).symm.trans (hXa'_of_ord _ hiQord)
-          · have hRA : ordAt Q A 0 ≥ 1 := by
-              have := hpt Q
-              rw [if_neg hQx₁, if_neg hQx₂] at this
-              omega
-            exact (hXa_of_ord Q hRA).symm.trans hQX
-      refine ⟨c / c', div_ne_zero hc hc', ?_⟩
-      -- Goal: `A = C (c / c') * A'`. Rewrite `A` via `hAlin`/`haa'`, and `A'` via `hA'lin`,
-      -- reducing to `C c * linX a' = C (c / c') * (C c' * linX a')`, a pure field identity.
-      rw [hAlin, haa', hA'lin, ← mul_assoc, ← Polynomial.C_mul, div_mul_cancel₀ c hc']
-
-
-/-- **Renamed from the broken `natDegree_eq_zero_of_mono`.** Was stated as
-`IsConstantFraction (polePairToFraction ...)` of already-degree-0 data, which
-isn't what the call site (`constant_or_fiber_of_isPoleBoundedAtPair`'s
-`h_deg_A` step) needs — that step derives `A.natDegree = 0` *from* `hmono`
-together with `A'`'s already-established degree bound and `B = B' = 0`, not a
-constant-fraction conclusion. Restated as the actual missing degree fact,
-still open. -/
-lemma natDegree_eq_zero_of_mono (A A' : k[X])
-    (hmono : ordInfOfPair A 0 ≥ ordInfOfPair A' 0)
-    (_hB : (0 : k[X]) = 0) (_hB' : (0 : k[X]) = 0)
-    (h_deg_A' : A'.natDegree = 0) (h_deg_pos : ¬ A.natDegree = 0) :
-    False := by
-  -- `ordInfOfPair_right_zero` unfolds both sides: `ordInfOfPair A 0 = -2 * A.natDegree`,
-  -- `ordInfOfPair A' 0 = -2 * A'.natDegree = 0` (via `h_deg_A'`). `hmono` then reads
-  -- `-2 * A.natDegree ≥ 0`, forcing `A.natDegree = 0` (it's a `ℕ`-cast, so `≥ 0` already),
-  -- contradicting `h_deg_pos`.
-  have h_ord_A : ordInfOfPair A 0 = -2 * (A.natDegree : ℤ) := ordInfOfPair_right_zero A
-  have h_ord_A' : ordInfOfPair A' 0 = -2 * (A'.natDegree : ℤ) := ordInfOfPair_right_zero A'
-  rw [h_ord_A, h_ord_A', h_deg_A'] at hmono
-  simp only [Nat.cast_zero, mul_zero] at hmono
-  have h_deg_nonneg : (0:ℤ) ≤ (A.natDegree : ℤ) := Nat.cast_nonneg _
-  have h_deg_zero : (A.natDegree : ℤ) = 0 := by linarith
-  exact h_deg_pos (by exact_mod_cast h_deg_zero)
-
-
-/-- **Assembly of §3a–§3f into the top-level target.** Wires the pieces above
-together: §3a/§2 give the shape, §3e case-splits on whether the positive part
-vanishes, §3d closes the vanishing case directly, and the nonvanishing case
-combines §3f (`{x₃,x₄} = {x₁,x₂}`, hence `D = 0`) with §3d again (now that
-`D`'s positive part is known `0` after substitution) to close. **Currently
-blocked on §3f being a real `sorry`** — everything else below it is
-plumbing. -/
-theorem constant_or_fiber_of_isPoleBoundedAtPair (hdeg : H.f.natDegree = 5)
-    (hchar : (2 : k) ≠ 0) (hsf : Squarefree H.f)
-    (x₁ x₂ : H.Point) (hne : x₂ ≠ x₁.iota) (A B A' B' : k[X])
-    (hbound : IsPoleBoundedAtPair x₁ x₂ A B A' B')
-    (hspecAB : ∀ (v : IsDedekindDomain.HeightOneSpectrum H.CoordinateRing),
-      (Associates.mk v.asIdeal).count (Associates.mk (Ideal.span {H.toPair A B})).factors ≠ 0 →
-        ∃ P, v.asIdeal = pointIdeal P)
-    (hspecA'B' : ∀ (v : IsDedekindDomain.HeightOneSpectrum H.CoordinateRing),
-      (Associates.mk v.asIdeal).count (Associates.mk (Ideal.span {H.toPair A' B'})).factors ≠ 0 →
-        ∃ P, v.asIdeal = pointIdeal P)
-    -- **Added — genuinely necessary, not a convenience hypothesis.** Without this,
-    -- `h_denom_ord` below is FALSE: `A=A'=0, B=B'=1` gives `z = y/y`, satisfying every
-    -- other hypothesis here (`hAB0`, `hbound` with equality throughout, both `hspec`s)
-    -- while `ordInfOfPair A' B' = ordInfOfPair 0 1 = -5 < -2`. `hreduced` (no common
-    -- finite zero/pole between numerator and denominator, i.e. the fraction is in
-    -- lowest terms) is exactly what rules that out, and is the hypothesis
-    -- `denom_B'_eq_zero_of_isPoleBoundedAtPair` already requires for the same reason —
-    -- confirmed via ChatGPT-assisted review (`y/y` checked against every hypothesis
-    -- below and found to satisfy all of them), see `chatgpt-prompts.md` § Prompt 1.
-    (hreduced : ∀ P : H.Point, ordAt P A B = 0 ∨ ordAt P A' B' = 0)
-    -- Needed to invoke `natDegree_eq_zero_of_isPoleBoundedAtPair` below (its own
-    -- `[∀ P : T₂, Module.Finite ...]` instance argument), once `B' = 0` is known and a
-    -- finite support `T₂` for `ordAt _ A' 0` is in hand. Quantified over all finsets
-    -- since `T₂` is only bound later, inside the proof (via `exists_finite_support_of_
-    -- hspec`) — same packaging pattern as §3f's existential above.
-    (hfinA' : ∀ S : Finset H.Point, ∀ P : S,
-      Module.Finite k (CoordinateRing H ⧸ pointIdeal P.1 ^ (ordAt P.1 A' 0).toNat)) :
-    IsConstantFraction (polePairToFraction (H := H) A B A' B') := by
-  by_cases hAB0 : A = 0 ∧ B = 0
-  · -- Handle the A = 0 ∧ B = 0 case directly
-    have hzero : H.toPair A B = 0 := by
-      rw [hAB0.1, hAB0.2]
-      simp [HyperellipticPolynomial.toPair]
-    -- Unfold IsConstantFraction directly instead of calling missing helper lemmas
-    dsimp [IsConstantFraction, polePairToFraction]
-    use 0
-    rw [hzero]
-    simp
-  · -- Main case: (A, B) ≠ (0, 0)
-    have ⟨hA'B', hmono, hpt⟩ := hbound
-
-    -- 1. Extract finite supports for (A, B) and (A', B') via hspec
-    obtain ⟨T₁, hT₁⟩ := exists_finite_support_of_hspec A B hAB0 hspecAB
-    obtain ⟨T₂, hT₂⟩ := exists_finite_support_of_hspec A' B' hA'B' hspecA'B'
-
-    -- 2. Deduce B' = 0 and B = 0 (y-components vanish)
-    -- `hreduced` (now a real hypothesis, added after `chatgpt-prompts.md` § Prompt 1
-    -- confirmed `h_denom_ord` is false without it — `y/y` is a genuine counterexample)
-    -- lets `denom_B'_eq_zero_of_isPoleBoundedAtPair` (§ above) go all the way to
-    -- `B' = 0` directly, which is *stronger* than the `ordInfOfPair A' B' ≥ -2` this
-    -- step originally asked for — so `h_denom_ord` is now derived from `hB'` instead of
-    -- the other way around.
-    -- `denom_B'_eq_zero_of_isPoleBoundedAtPair` carries two `Module.Finite` instance
-    -- arguments over `T₁ ∪ T₂` (one for `(A,B)`, one for `(A',B')`). These are not
-    -- hypotheses of this theorem, but they're never actually needed as such: they hold
-    -- unconditionally for any point and any power, via `finite_quotient_pointIdeal_pow`
-    -- (`PrincipalDivisors.lean`). Supply them locally so instance search finds them.
-    haveI : ∀ P : (T₁ ∪ T₂ : Finset H.Point),
-        Module.Finite k (CoordinateRing H ⧸ pointIdeal P.1 ^ (ordAt P.1 A B).toNat) :=
-      fun P => finite_quotient_pointIdeal_pow P.1 _
-    haveI : ∀ P : (T₁ ∪ T₂ : Finset H.Point),
-        Module.Finite k (CoordinateRing H ⧸ pointIdeal P.1 ^ (ordAt P.1 A' B').toNat) :=
-      fun P => finite_quotient_pointIdeal_pow P.1 _
-    have hB' : B' = 0 :=
-      denom_B'_eq_zero_of_isPoleBoundedAtPair hdeg x₁ x₂ A B A' B' hbound hspecAB hspecA'B'
-        (T₁ ∪ T₂) hAB0
-        (fun P hP => hT₁ P (fun h => hP (Finset.mem_union_left T₂ h)))
-        (fun P hP => hT₂ P (fun h => hP (Finset.mem_union_right T₁ h)))
-        hreduced
-
-    have h_denom_ord : ordInfOfPair A' B' ≥ -2 := by
-      -- Same `hcap_at`/`hsum_le` pattern as the proof-by-contradiction inside
-      -- `denom_B'_eq_zero_of_isPoleBoundedAtPair` above (there run for a general `B' ≠ 0`
-      -- to derive a contradiction; here run directly, post-`hB'`, to get the bound itself).
-      -- `hreduced` + `hpt` give `ordAt P A' B' ≤ indicator(P)` at every point, so summing
-      -- over the finite support `T₂` bounds `∑ ordAt P A' B'` by `2`; `deg_div_eq_zero_deg5`
-      -- ties that sum to `-(ordInfOfPair A' B')`.
-      have hA'0 : A' ≠ 0 := fun h => hA'B' ⟨h, hB'⟩
-      haveI : ∀ P : (T₂ : Finset H.Point),
-          Module.Finite k (CoordinateRing H ⧸ pointIdeal P.1 ^ (ordAt P.1 A' B').toNat) :=
-        fun P => finite_quotient_pointIdeal_pow P.1 _
-      have hcap_at : ∀ P : H.Point,
-          ordAt P A' B' ≤ (if P = x₁ then (1:ℤ) else 0) + (if P = x₂ then (1:ℤ) else 0) := by
-        intro P
-        rcases hreduced P with hzero | hzero
-        · have hind := hpt P
-          rw [hzero] at hind
-          omega
-        · have hind_nonneg :
-              (0:ℤ) ≤ (if P = x₁ then (1:ℤ) else 0) + (if P = x₂ then (1:ℤ) else 0) := by
-            have h1 : (0:ℤ) ≤ if P = x₁ then (1:ℤ) else 0 := by by_cases h : P = x₁ <;> simp [h]
-            have h2 : (0:ℤ) ≤ if P = x₂ then (1:ℤ) else 0 := by by_cases h : P = x₂ <;> simp [h]
-            linarith
-          omega
-      have hsum_le : (∑ P ∈ T₂, ordAt P A' B') ≤ 2 := by
-        calc (∑ P ∈ T₂, ordAt P A' B')
-            ≤ ∑ P ∈ T₂, ((if P = x₁ then (1:ℤ) else 0) + (if P = x₂ then (1:ℤ) else 0)) :=
-              Finset.sum_le_sum (fun P _ => hcap_at P)
-          _ = (∑ P ∈ T₂, (if P = x₁ then (1:ℤ) else 0)) +
-                ∑ P ∈ T₂, (if P = x₂ then (1:ℤ) else 0) := Finset.sum_add_distrib
-          _ ≤ 1 + 1 := by
-              have hb1 : (∑ P ∈ T₂, (if P = x₁ then (1:ℤ) else 0)) ≤ 1 := by
-                have heq : (∑ P ∈ T₂, (if P = x₁ then (1:ℤ) else 0)) =
-                    ((T₂.filter (fun P => P = x₁)).card : ℤ) := by
-                  rw [← Finset.sum_filter]; simp [Finset.sum_const]
-                rw [heq]
-                have hsub : T₂.filter (fun P => P = x₁) ⊆ {x₁} := by
-                  intro P hP; simp only [Finset.mem_filter] at hP; simp [hP.2]
-                have hcard : (T₂.filter (fun P => P = x₁)).card ≤ 1 := by
-                  have := Finset.card_le_card hsub
-                  simpa using this
-                exact_mod_cast hcard
-              have hb2 : (∑ P ∈ T₂, (if P = x₂ then (1:ℤ) else 0)) ≤ 1 := by
-                have heq : (∑ P ∈ T₂, (if P = x₂ then (1:ℤ) else 0)) =
-                    ((T₂.filter (fun P => P = x₂)).card : ℤ) := by
-                  rw [← Finset.sum_filter]; simp [Finset.sum_const]
-                rw [heq]
-                have hsub : T₂.filter (fun P => P = x₂) ⊆ {x₂} := by
-                  intro P hP; simp only [Finset.mem_filter] at hP; simp [hP.2]
-                have hcard : (T₂.filter (fun P => P = x₂)).card ≤ 1 := by
-                  have := Finset.card_le_card hsub
-                  simpa using this
-                exact_mod_cast hcard
-              linarith
-          _ = 2 := by norm_num
-      have hd := deg_div_eq_zero_deg5 H hdeg T₂ A' B' hA'B' hT₂ hspecA'B'
-      omega
-
-    have hB : B = 0 := num_B_eq_zero_of_isPoleBoundedAtPair x₁ x₂ A B A' B' hbound h_denom_ord
-
-    -- 3. Show A' and A are degree 0 (constants) — OR handle the `A = A'` branch directly.
-    -- **Rewired (ChatGPT-assisted design pass) to actually use `hne`** — the previous
-    -- version only used the `ordInfOfPair ≥ -2` size bound (giving `natDegree ≤ 1`) and
-    -- called a lemma that tried to rule out `natDegree = 1` with no point data at all,
-    -- which is false (see `natDegree_eq_zero_of_isPoleBoundedAtPair`'s docstring). The
-    -- `≤ 1` bound is still derived the same way (from `h_denom_ord`/`ordInfOfPair_right_
-    -- zero`); ruling out the `= 1` case is now delegated to
-    -- `natDegree_eq_zero_of_isPoleBoundedAtPair`, which now returns the honestly-true
-    -- disjunction `A'.natDegree = 0 ∨ A = A'` (see that lemma's docstring for why the
-    -- earlier `hreducedA`-hypothesis version was abandoned — genuinely unprovable at
-    -- this call site, not just unproved) instead of the too-strong `A'.natDegree = 0`
-    -- alone. Both branches are handled below, `rcases`'d immediately so the rest of the
-    -- proof only ever has to deal with one shape at a time.
-    have hdegA'le1 : A'.natDegree ≤ 1 := by
-      have h_ord_A' : ordInfOfPair A' 0 = -2 * (A'.natDegree : ℤ) := ordInfOfPair_right_zero A'
-      have h_bound_eq : -2 * (A'.natDegree : ℤ) ≥ -2 := by
-        calc -2 * (A'.natDegree : ℤ) = ordInfOfPair A' 0 := h_ord_A'.symm
-        _ = ordInfOfPair A' B' := by rw [hB']
-        _ ≥ -2 := h_denom_ord
-      by_contra hgt
-      push Not at hgt
-      have : (2 : ℤ) ≤ (A'.natDegree : ℤ) := by exact_mod_cast hgt
-      linarith
-    have hpt' : ∀ P : H.Point, ordAt P A 0 ≥ ordAt P A' 0 -
-        ((if P = x₁ then 1 else 0) + (if P = x₂ then 1 else 0)) := by
-      intro P
-      have := hpt P
-      rwa [hB, hB'] at this
-    have hdegA : A.natDegree ≤ 1 := by
-      have hmono' : ordInfOfPair A 0 ≥ ordInfOfPair A' 0 := by rw [hB, hB'] at hmono; exact hmono
-      have h_ord_A'_ge : ordInfOfPair A' 0 ≥ -2 := by
-        rw [ordInfOfPair_right_zero A']
-        have : (A'.natDegree : ℤ) ≤ 1 := by exact_mod_cast hdegA'le1
-        linarith
-      have h_ord_A_ge : ordInfOfPair A 0 ≥ -2 := le_trans h_ord_A'_ge hmono'
-      rw [ordInfOfPair_right_zero A] at h_ord_A_ge
-      by_contra hgt
-      push Not at hgt
-      have : (2 : ℤ) ≤ (A.natDegree : ℤ) := by exact_mod_cast hgt
-      linarith
-    have hspecA' : ∀ v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H),
-        (Associates.mk v.asIdeal).count
-          (Associates.mk (Ideal.span ({toPair H A' 0} : Set (CoordinateRing H)))).factors ≠ 0 →
-        ∃ P, v.asIdeal = pointIdeal P := by
-      rw [← hB']; exact hspecA'B'
-    obtain ⟨T₂, hsuppA'⟩ := exists_finite_support_of_hspec A' 0
-      (by rw [hB'] at hA'B'; exact hA'B') hspecA'
-    haveI : ∀ P : T₂, Module.Finite k (CoordinateRing H ⧸ pointIdeal P.1 ^ (ordAt P.1 A' 0).toNat) :=
-      fun P => hfinA' T₂ P
-    rcases natDegree_eq_zero_of_isPoleBoundedAtPair hdeg hchar hsf x₁ x₂ hne A A' hdegA
-        hdegA'le1 hpt' hspecA' T₂ hsuppA'
-      with h_deg_A' | hAeqA'
-    · -- **Main branch**: `A'.natDegree = 0`, exactly the old proof from here on.
-      have h_deg_A : A.natDegree = 0 := by
-        by_contra h_deg_pos
-        -- By monotonicity (hmono), since A' is bounded to degree 0 and y-components vanish,
-        -- A is similarly restricted.
-        have hmono' : ordInfOfPair A 0 ≥ ordInfOfPair A' 0 := by
-          rw [hB, hB'] at hmono; exact hmono
-        exact natDegree_eq_zero_of_mono A A' hmono' rfl rfl h_deg_A' h_deg_pos
-
-      -- 4. Reconstruct constant fraction in k
-      -- `Polynomial.eq_C_of_natDegree_eq_zero` produces an equality `p = C (p.coeff 0)`
-      have hcA : A = Polynomial.C (A.coeff 0) := Polynomial.eq_C_of_natDegree_eq_zero h_deg_A
-      have hcA' : A' = Polynomial.C (A'.coeff 0) := Polynomial.eq_C_of_natDegree_eq_zero h_deg_A'
-      -- `A' ≠ 0` (from `hA'B'`, since `B' = 0`), so its constant coefficient is nonzero —
-      -- needed so the witness fraction `A.coeff 0 / A'.coeff 0` is an honest quotient in `k`,
-      -- and so the denominator `toPair H A' 0` is a nonzero `CoordinateRing H` element.
-      have hA'ne : A' ≠ 0 := fun h => hA'B' ⟨h, hB'⟩
-      have hA'c0_ne : A'.coeff 0 ≠ 0 := by
-        intro hzero
-        apply hA'ne
-        rw [hcA', hzero, Polynomial.C_0]
-      have htoPairA'_ne : toPair H A' 0 ≠ 0 := by
-        rw [Ne, toPair_eq_zero_iff]
-        exact fun h => hA'ne h.1
-      -- `algebraMap (CoordinateRing H) (FractionRing (CoordinateRing H))` is injective
-      -- (`IsFractionRing.injective`, the codebase's standard route — see
-      -- `PrincipalDivisorsIntegralClosure.lean:110` for the same invocation), so a nonzero
-      -- `CoordinateRing H` element stays nonzero after mapping into the fraction field.
-      have hdenom_ne : algebraMap (CoordinateRing H) (FractionRing (CoordinateRing H))
-          (toPair H A' 0) ≠ 0 :=
-        (map_ne_zero_iff _ (IsFractionRing.injective (CoordinateRing H)
-          (FractionRing (CoordinateRing H)))).mpr htoPairA'_ne
-
-      dsimp [IsConstantFraction, polePairToFraction]
-      refine ⟨A.coeff 0 / A'.coeff 0, ?_⟩
-
-      -- Clean substitution using exact variable mappings to avoid polynomial namespace collisions
-      rw [hcA'] at hdenom_ne
-      rw [hcA, hcA', hB, hB']
-      -- `toPair H (C a) 0 = algebraMap k[X] (CoordinateRing H) (C a) + algebraMap k[X]
-      -- (CoordinateRing H) 0 * y H` (`HyperellipticFunctionField.lean:72-73`); the `B`-term
-      -- collapses via `map_zero`/`zero_mul`/`add_zero` on both sides at once. `rw [hcA, hcA']`
-      -- above also rewrote the witness's own `A.coeff 0`/`A'.coeff 0` into `(C _).coeff 0`
-      -- (since it rewrites every occurrence, including inside the already-substituted witness),
-      -- so `Polynomial.coeff_C_zero` collapses those back down first.
-      simp only [HyperellipticPolynomial.toPair, map_zero, zero_mul, add_zero,
-        Polynomial.coeff_C_zero] at hdenom_ne ⊢
-      -- Goal: `algMap (algMap2 (C a)) / algMap (algMap2 (C a')) = algMap (algMap2 (C (a/a')))`.
-      -- Clear the division on the LHS against `hdenom_ne`, folding the RHS's `C (a/a')` and the
-      -- newly-introduced `algMap (algMap2 (C a'))` factor into one `algMap (algMap2 (C (a/a' *
-      -- a')))` term via `map_mul`/`C_mul`, then close with `a = a/a' * a'` at the `k` level.
-      rw [div_eq_iff hdenom_ne, ← map_mul, ← map_mul, ← Polynomial.C_mul,
-        div_mul_cancel₀ _ hA'c0_ne]
-    · -- **`A` and `A'` are associates**: `hAeqA' : ∃ c, c ≠ 0 ∧ A = C c * A'`, so
-      -- `z = toPair H A 0 / toPair H A' 0 = toPair H (C c * A') 0 / toPair H A' 0`, a
-      -- scalar multiple of `toPair H A' 0` divided by itself — the constant `c`, no degree
-      -- bookkeeping needed. `A' ≠ 0` (hence `A ≠ 0` via the witnessed equation) comes from
-      -- `hA'B'` (`¬(A'=0∧B'=0)`) together with `hB' : B' = 0`.
-      obtain ⟨c, hc_ne, hAeqA'⟩ := hAeqA'
-      have hA'ne : A' ≠ 0 := fun h => hA'B' ⟨h, hB'⟩
-      have hAne : A ≠ 0 := by rw [hAeqA']; exact mul_ne_zero (Polynomial.C_ne_zero.mpr hc_ne) hA'ne
-      have htoPairA_ne : toPair H A 0 ≠ 0 := by
-        rw [Ne, toPair_eq_zero_iff]
-        exact fun h => hAne h.1
-      have htoPairA'_ne : toPair H A' 0 ≠ 0 := by
-        rw [Ne, toPair_eq_zero_iff]
-        exact fun h => hA'ne h.1
-      have hdenom_ne : algebraMap (CoordinateRing H) (FractionRing (CoordinateRing H))
-          (toPair H A' 0) ≠ 0 :=
-        (map_ne_zero_iff _ (IsFractionRing.injective (CoordinateRing H)
-          (FractionRing (CoordinateRing H)))).mpr htoPairA'_ne
-      dsimp [IsConstantFraction, polePairToFraction]
-      refine ⟨c, ?_⟩
-      -- `toPair H (C c * A') 0 = C c_ring * toPair H A' 0` (linearity of `toPair` in its
-      -- first argument, `map_mul` after unfolding), so the numerator becomes `C c_ring *
-      -- toPair H A' 0`, and the whole LHS collapses to `C c_ring` via
-      -- `mul_div_cancel_right₀`, matching the RHS `algMap (algMap2 (C c))`.
-      have htoPairA_eq : toPair H A 0 =
-          algebraMap k[X] (CoordinateRing H) (Polynomial.C c) * toPair H A' 0 := by
-        rw [hAeqA']
-        simp only [HyperellipticPolynomial.toPair, map_zero, zero_mul, add_zero, map_mul]
-      rw [hB, hB', htoPairA_eq, map_mul, mul_div_assoc, div_self hdenom_ne, mul_one]
-
-
-
-/-! ## Assembly -/
-
-/-- **`uniqueDegree2MapToP1`, via the elementary route — assembly.**
-`hz`'s witness `(A,B,A',B')` needs `hspec` for both halves threaded in
-(the same standing hypothesis `deg_div_eq_zero_deg5` already requires
-everywhere in this project); `constant_or_fiber_of_isPoleBoundedAtPair`
-(§3, now fully closed) closes the goal directly given a witness. This is a
-drop-in replacement for `RiemannRochCrux.lean`'s `uniqueDegree2MapToP1`
-*once the `hreduced` gap below is threaded through that file's callers too*.
-
-**Weakened, not fabricated (per project convention).** `hreduced` — no common
-affine zero/pole between the chosen numerator and denominator — is genuinely
-NOT derivable from bare `z ∈ LPairCarrier x₁ x₂` membership: `LPairCarrier`'s
-existential ranges over all pole-bounded pairs, reduced or not, and
-"clearing common factors" isn't sound in a Dedekind domain that isn't a UFD
-at the element level (confirmed via ChatGPT-assisted review: the natural fix
-— construct a reduced witness via an ideal-gcd cancellation — provably fails
-in general, since the "gcd ideal" need not be principal, a genuine
-class-group obstruction; and the alternative geometric construction of a
-reduced witness needs "every degree-2 map to `P¹` is the hyperelliptic map",
-which is *this very theorem*, so using it here would be circular). So rather
-than a bare `z ∈ LPairCarrier`, this theorem takes the witness pair directly,
-with `hreduced` as an honest extra hypothesis on it — exactly mirroring how
-`constant_or_fiber_of_isPoleBoundedAtPair` and `denom_B'_eq_zero_of_
-isPoleBoundedAtPair` already require it. Every caller now owes `hreduced` for
-whatever witness it supplies; see `RiemannRochCrux.lean`/
-`RatioDivisorCollapse.lean` for how that obligation propagates further up. -/
-theorem uniqueDegree2MapToP1_of_elementary (hdeg : H.f.natDegree = 5)
-    (hchar : (2 : k) ≠ 0) (hsf : Squarefree H.f)
-    (x₁ x₂ : H.Point) (hne : x₂ ≠ Point.iota x₁)
-    (z : FractionRing (CoordinateRing H)) (A B A' B' : k[X])
-    (hbound : IsPoleBoundedAtPair x₁ x₂ A B A' B')
-    (hz_eq : z = polePairToFraction (H := H) A B A' B')
-    (hspecAll : ∀ (A B : k[X]), ∀ v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H),
-      (Associates.mk v.asIdeal).count
-        (Associates.mk (Ideal.span ({toPair H A B} : Set (CoordinateRing H)))).factors ≠ 0 →
-      ∃ P, v.asIdeal = pointIdeal P)
-    (hreduced : ∀ P : H.Point, ordAt P A B = 0 ∨ ordAt P A' B' = 0) :
+    (z : FractionRing (CoordinateRing H)) (hz : z ∈ LPairCarrierSpec' x₁ x₂) :
     IsConstantFraction z := by
-  rw [hz_eq]
-  exact constant_or_fiber_of_isPoleBoundedAtPair hdeg hchar hsf x₁ x₂ hne A B A' B' hbound
-    (hspecAll A B) (hspecAll A' B') hreduced
-    (fun _ P => finite_quotient_pointIdeal_pow P.1 _)
+  classical
+  rcases hz with hz0 | ⟨A, B, A', B', hbound, hz_eq⟩
+  · exact ⟨0, by rw [hz0]; simp⟩
+  · obtain ⟨hAB0ne, hA'B'ne, hinfle, hptwise'⟩ := hbound
+    have hA'B'toPairne : toPair H A' B' ≠ 0 := by
+      rw [Ne, toPair_eq_zero_iff]; exact hA'B'ne
+    obtain ⟨a, b, c, hcne, hc_def, ha_def, hb_def, hfrac_eq⟩ :=
+      frac_toPair_den_kx hdeg A B A' B' hA'B'toPairne
+    have hab_ne : toPair H a b ≠ 0 := by
+      intro hab0
+      apply hAB0ne
+      have hzero_frac : polePairToFraction (H := H) a b c 0 = 0 := by
+        unfold polePairToFraction
+        rw [hab0, map_zero, zero_div]
+      rw [hzero_frac] at hfrac_eq
+      unfold polePairToFraction at hfrac_eq
+      have hA'B'map_ne :
+          algebraMap (CoordinateRing H) (FractionRing (CoordinateRing H))
+            (toPair H A' B') ≠ 0 :=
+        (map_ne_zero_iff _ (IsFractionRing.injective (CoordinateRing H)
+          (FractionRing (CoordinateRing H)))).mpr hA'B'toPairne
+      have hABmap0 :
+          algebraMap (CoordinateRing H) (FractionRing (CoordinateRing H))
+            (toPair H A B) = 0 := by
+        rcases div_eq_zero_iff.mp hfrac_eq with h | h
+        · exact h
+        · exact absurd h hA'B'map_ne
+      exact (map_eq_zero_iff _ (IsFractionRing.injective (CoordinateRing H)
+        (FractionRing (CoordinateRing H)))).mp hABmap0
+    have hc0_ne : toPair H c (0 : k[X]) ≠ 0 := by
+      rw [Ne, toPair_eq_zero_iff]; exact fun h => hcne h.1
+    -- **Closed-point-native pointwise bound transported to `(a,b,c,0)`.**
+    have hzsuppSpec : ∀ v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H),
+        ordAtSpec v a b - ordAtSpec v c (0 : k[X]) ≥
+          -((if v = pointHeightOne' x₁ then 1 else 0) +
+            (if v = pointHeightOne' x₂ then 1 else 0)) := by
+      intro v
+      -- Transport `hptwise'` (stated for `(A,B,A',B')`) to `(a,b,c,0)` via the
+      -- fraction equality `hfrac_eq`, exactly as `ordAtFrac_eq_of_polePairToFraction_eq`
+      -- does at the `H.Point`-only level — here at the level of `ordAtSpec`
+      -- differences, using the same representation-independence fact
+      -- (`ordAtSpec` of a fraction depends only on the fraction, not the
+      -- witness), specialized pointwise. We reuse the existing `H.Point`-level
+      -- transport lemma at `pointHeightOne'`-images via `ordAt_eq_ordAtSpec`
+      -- where `v` is rational, and directly via the closed-point identity
+      -- `polePairToFraction`-invariance otherwise; since `hptwise'` is already
+      -- stated for *every* `v`, no case split is needed at all — the same
+      -- fraction-equality argument that proves `ordAtFrac_eq_of_polePairToFraction_eq`
+      -- for `H.Point` applies verbatim with `ordAt` replaced by `ordAtSpec`
+      -- throughout (that lemma's proof never uses rationality of the point).
+      have hv := hptwise' v
+      rwa [ordAtSpec_sub_ordAtSpec_eq_of_polePairToFraction_eq (H := H) v A B A' B' a b c 0
+        hAB0ne hA'B'toPairne hc0_ne hfrac_eq] at hv
+    have hinf : ordInfOfPair a b ≥ ordInfOfPair c (0 : k[X]) := by
+      have hABne : ¬ (A = 0 ∧ B = 0) := fun h => hAB0ne (by rw [toPair_eq_zero_iff]; exact h)
+      have habne : ¬ (a = 0 ∧ b = 0) := fun h => hab_ne (by rw [toPair_eq_zero_iff]; exact h)
+      have hc_def' : c = A' ^ 2 - B' ^ 2 * H.f := by rw [hc_def]; rfl
+      exact ordInfOfPair_rationalized_ge hdeg A B A' B' hABne hA'B'ne hinfle a b c
+        ha_def hb_def hc_def' habne hcne
+    -- **Reduce `(a,b,c)` by the joint `k[X]`-gcd**, using the `H.Point`-only
+    -- `reduce_ordAtFrac_triple` (its `ordAtFrac`-shaped conclusion is exactly
+    -- what we need downstream for `b₀ = 0`, and its internal construction is
+    -- exactly what §1 above re-derives the unit-gcd fact from). First bridge
+    -- `hzsuppSpec` down to the `ordAtFrac`/`H.Point`-shaped hypothesis
+    -- `reduce_ordAtFrac_triple` expects.
+    have hzsupp : ∀ P : H.Point, ordAtFrac P a b c 0 ≥
+        -((if P = x₁ then 1 else 0) + (if P = x₂ then 1 else 0)) := by
+      intro P
+      have hv := hzsuppSpec (pointHeightOne' P)
+      rw [← ordAt_eq_ordAtSpec, ← ordAt_eq_ordAtSpec, pointHeightOne'_eq_iff,
+        pointHeightOne'_eq_iff] at hv
+      unfold ordAtFrac
+      exact hv
+    -- **Reduce by the explicit joint gcd `g := gcd (gcd a b) c` directly**
+    -- (inline, rather than via `reduce_ordAtFrac_triple`'s opaque existential),
+    -- so the quotient witnesses `a₀ = a/g, b₀ = b/g, c₀ = c/g` are available
+    -- by name for §1's `gcd_unit_of_reduce_ordAtFrac_triple`.
+    set g := gcd (gcd a b) c with hg_def
+    have hg_dvd_ab : g ∣ gcd a b := gcd_dvd_left _ _
+    have hg_dvd_a : g ∣ a := hg_dvd_ab.trans (gcd_dvd_left _ _)
+    have hg_dvd_b : g ∣ b := hg_dvd_ab.trans (gcd_dvd_right _ _)
+    have hg_dvd_c : g ∣ c := gcd_dvd_right _ _
+    have hgne : g ≠ 0 := fun h => hcne (eq_zero_of_zero_dvd (h ▸ hg_dvd_c))
+    obtain ⟨a₀, ha_eq⟩ := hg_dvd_a
+    obtain ⟨b₀, hb_eq⟩ := hg_dvd_b
+    obtain ⟨c₀, hc_eq⟩ := hg_dvd_c
+    have hc₀ne : c₀ ≠ 0 := by intro h; apply hcne; rw [hc_eq, h, mul_zero]
+    have hab₀ne : ¬ (a₀ = 0 ∧ b₀ = 0) := by
+      rintro ⟨ha0, hb0⟩
+      apply hab_ne
+      apply toPair_eq_zero_iff H a b |>.mpr
+      exact ⟨by rw [ha_eq, ha0, mul_zero], by rw [hb_eq, hb0, mul_zero]⟩
+    have hab₀_ne : toPair H a₀ b₀ ≠ 0 := fun h => hab₀ne (toPair_eq_zero_iff H a₀ b₀ |>.mp h)
+    have htoPair_right_zero : ∀ P : k[X],
+        toPair H P (0 : k[X]) = algebraMap k[X] (CoordinateRing H) P := by
+      intro P; unfold toPair; simp
+    have hg_toPair_ne : toPair H g (0 : k[X]) ≠ 0 :=
+      fun h => hgne (toPair_eq_zero_iff H g 0 |>.mp h).1
+    have hnum : toPair H a b = toPair H g (0 : k[X]) * toPair H a₀ b₀ := by
+      have hmul := toPair_mul (H := H) g 0 a₀ b₀
+      have harg1 : g * a₀ + 0 * b₀ * H.f = a := by rw [← ha_eq]; ring
+      have harg2 : g * b₀ + a₀ * 0 = b := by rw [← hb_eq]; ring
+      rw [harg1, harg2] at hmul
+      exact hmul.symm
+    have hden : toPair H c (0 : k[X]) = toPair H g (0 : k[X]) * toPair H c₀ (0 : k[X]) := by
+      have hmul := toPair_mul (H := H) g 0 c₀ 0
+      have harg1 : g * c₀ + 0 * 0 * H.f = c := by rw [← hc_eq]; ring
+      have harg2 : g * 0 + c₀ * 0 = (0 : k[X]) := by ring
+      rw [harg1, harg2] at hmul
+      exact hmul.symm
+    have hfrac_eq₀ : polePairToFraction (H := H) a b c 0 =
+        polePairToFraction (H := H) a₀ b₀ c₀ 0 := by
+      unfold polePairToFraction
+      rw [hnum, hden, map_mul, map_mul]
+      have hgmap_ne : algebraMap (CoordinateRing H) (FractionRing (CoordinateRing H))
+          (toPair H g (0 : k[X])) ≠ 0 :=
+        (map_ne_zero_iff _ (IsFractionRing.injective (CoordinateRing H)
+          (FractionRing (CoordinateRing H)))).mpr hg_toPair_ne
+      rw [mul_div_mul_left _ _ hgmap_ne]
+    have hc0_ne' : toPair H c (0 : k[X]) ≠ 0 := fun h => hcne (toPair_eq_zero_iff H c 0 |>.mp h).1
+    have hc₀0_ne : toPair H c₀ (0 : k[X]) ≠ 0 :=
+      fun h => hc₀ne (toPair_eq_zero_iff H c₀ 0 |>.mp h).1
+    -- **General closed-point-native pointwise bound at `(a₀,b₀,c₀,0)`, before
+    -- `b₀ = 0` is known** — transported from `hzsuppSpec` (pre-reduction, at
+    -- `(a,b,c,0)`) exactly as the post-`hbeq0` version below does, just moved earlier
+    -- so `natDegree_le_two_of_gcdUnit_closed_point` can consume it for `hcdeg`.
+    have hzsuppSpec₀ : ∀ v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H),
+        ordAtSpec v a₀ b₀ - ordAtSpec v c₀ (0 : k[X]) ≥
+          -((if v = pointHeightOne' x₁ then 1 else 0) +
+            (if v = pointHeightOne' x₂ then 1 else 0)) := by
+      intro v
+      have hv := hzsuppSpec v
+      rwa [ordAtSpec_sub_ordAtSpec_eq_of_polePairToFraction_eq (H := H) v a b c 0 a₀ b₀ c₀ 0
+        hab_ne hc0_ne' hc₀0_ne hfrac_eq₀] at hv
+    have hzsupp₀ : ∀ P : H.Point, ordAtFrac P a₀ b₀ c₀ 0 ≥
+        -((if P = x₁ then 1 else 0) + (if P = x₂ then 1 else 0)) := by
+      intro P
+      rw [← ordAtFrac_eq_of_polePairToFraction_eq P a b c 0 a₀ b₀ c₀ 0
+        hab_ne hc0_ne' hc₀0_ne hfrac_eq₀]
+      exact hzsupp P
+    have hinf₀ : ordInfOfPair a₀ b₀ ≥ ordInfOfPair c₀ (0 : k[X]) := by
+      have hc₀0ne : ¬ (c₀ = 0 ∧ (0 : k[X]) = 0) := by simpa using hc₀ne
+      have hshift_ab : ordInfOfPair a b = ordInfOfPair a₀ b₀ - 2 * (g.natDegree : ℤ) := by
+        rw [ha_eq, hb_eq]; exact ordInfOfPair_mul_left g a₀ b₀ hgne hab₀ne
+      have hshift_c : ordInfOfPair c (0 : k[X]) =
+          ordInfOfPair c₀ (0 : k[X]) - 2 * (g.natDegree : ℤ) := by
+        rw [hc_eq]
+        have h := ordInfOfPair_mul_left g c₀ (0 : k[X]) hgne hc₀0ne
+        simpa only [mul_zero] using h
+      -- Chain the three facts as bare `≤`/`≥`/`=` values via `calc`, never
+      -- asking a tactic (`rw ... at`, `generalize ... at`, `set`) to search
+      -- for `ordInfOfPair` occurrences inside an already-elaborated
+      -- hypothesis — that search itself is what timed out twice before, since
+      -- `ordInfOfPair`'s `max`/`if` definition is expensive to match against.
+      -- `calc` only ever unifies each step's own stated end points, which are
+      -- written out plainly here, so no such search is triggered.
+      calc ordInfOfPair a₀ b₀ = ordInfOfPair a b + 2 * (g.natDegree : ℤ) := by
+            rw [hshift_ab]; ring
+        _ ≥ ordInfOfPair c (0 : k[X]) + 2 * (g.natDegree : ℤ) := by
+            gcongr <;> exact hinf
+        _ = ordInfOfPair c₀ (0 : k[X]) := by
+            rw [hshift_c]; ring
+    -- **§1's unit-gcd fact**, proved directly for the already-named
+    -- quotient witnesses. Avoid passing the `set g := ...` abstraction through
+    -- `gcd_unit_of_reduce_ordAtFrac_triple`: that forces elaboration to unfold
+    -- the gcd expression while matching several dependent hypotheses, which is
+    -- exactly where `whnf` was hitting the heartbeat limit.
+    have hgu : IsUnit (gcd (gcd a₀ b₀) c₀) := by
+      set d := gcd (gcd a₀ b₀) c₀ with hd_def
+      have hd_dvd_a₀ : d ∣ a₀ :=
+        (gcd_dvd_left _ _).trans (gcd_dvd_left _ _)
+      have hd_dvd_b₀ : d ∣ b₀ :=
+        (gcd_dvd_left _ _).trans (gcd_dvd_right _ _)
+      have hd_dvd_c₀ : d ∣ c₀ := gcd_dvd_right _ _
+      have hgd_dvd_a : g * d ∣ a := by
+        rw [ha_eq]
+        exact mul_dvd_mul_left g hd_dvd_a₀
+      have hgd_dvd_b : g * d ∣ b := by
+        rw [hb_eq]
+        exact mul_dvd_mul_left g hd_dvd_b₀
+      have hgd_dvd_c : g * d ∣ c := by
+        rw [hc_eq]
+        exact mul_dvd_mul_left g hd_dvd_c₀
+      have hgd_dvd_gab : g * d ∣ gcd a b :=
+        dvd_gcd hgd_dvd_a hgd_dvd_b
+      have hgd_dvd_g : g * d ∣ g :=
+        dvd_gcd hgd_dvd_gab hgd_dvd_c
+      have hd_dvd_one : d ∣ (1 : k[X]) := by
+        have hg_dvd_g1 : g ∣ g * 1 := by rw [mul_one]
+        have h := (mul_dvd_mul_iff_left hgne).mp
+          (hgd_dvd_g.trans hg_dvd_g1)
+        simpa using h
+      exact isUnit_of_dvd_one hd_dvd_one
+    -- **§0: `c₀.natDegree ≤ 2`** — reuse the existing `IsCoprimeAtRoots`-based
+    -- route for this bound (unaffected by closedness: it only needs `H.Point`-
+    -- rational roots to bound the *rational* root count, and the *degree*
+    -- bound itself, at this stage, is only used to get `b₀ = 0`, not to force
+    -- `c₀` constant — that finish uses the new §3 route instead). We still
+    -- need `IsCoprimeAtRoots a₀ b₀ c₀`, which follows from the unit-gcd fact.
+    have hcop : IsCoprimeAtRoots a₀ b₀ c₀ := by
+      intro α hα
+      rintro ⟨hαa, hαb⟩
+      have hlin_dvd_a₀ : linX α ∣ a₀ := Polynomial.dvd_iff_isRoot.mpr hαa
+      have hlin_dvd_b₀ : linX α ∣ b₀ := Polynomial.dvd_iff_isRoot.mpr hαb
+      have hlin_dvd_c₀ : linX α ∣ c₀ := Polynomial.dvd_iff_isRoot.mpr hα
+      have hlin_dvd_gcd : linX α ∣ gcd (gcd a₀ b₀) c₀ :=
+        dvd_gcd (dvd_gcd hlin_dvd_a₀ hlin_dvd_b₀) hlin_dvd_c₀
+      have hlin_unit : IsUnit (linX α : k[X]) := isUnit_of_dvd_unit hlin_dvd_gcd hgu
+      have hlin_deg : (linX α : k[X]).natDegree = 1 := by unfold linX; compute_degree!
+      have hlin_deg0 : (linX α : k[X]).natDegree = 0 :=
+        Polynomial.natDegree_eq_zero_of_isUnit hlin_unit
+      omega
+    -- **`c₀.natDegree ≤ 2`**, closed-point-native (§3f), no `IsAlgClosed` anywhere:
+    -- `natDegree_le_two_of_gcdUnit_closed_point` consumes `hgu` and the general
+    -- `hzsuppSpec₀` (built above, pre-`b₀=0`) directly — replaces the old
+    -- `natDegree_le_two_of_isCoprimeAtRoots[_eq]` route, which silently required
+    -- `[IsAlgClosed k]` via `IsAlgClosed.splits` in its own proof.
+    have hcdeg : c₀.natDegree ≤ 2 :=
+      natDegree_le_two_of_gcdUnit_closed_point (H := H) x₁ x₂ a₀ b₀ c₀ hc₀ne
+        hab₀_ne hgu hchar hsf hzsuppSpec₀
+    have hbeq0 : b₀ = 0 := by
+      exact b_eq_zero_of_rationalized_pole_bounded
+        a₀ b₀ c₀ hinf₀ hcdeg
+    subst b₀
+    -- **§2: `IsNormCoprime`**, now that `b₀ = 0`.
+    have hnc : IsNormCoprime H a₀ 0 c₀ := isNormCoprime_of_gcd_unit_snd_zero a₀ c₀ hgu
+    -- **§3: `IsPoleBoundedAtPairSpec x₁ x₂ a₀ 0 c₀ 0`** — `hzsuppSpec₀` above
+    -- already specializes correctly to `(a₀,0,c₀,0)` after `subst b₀`, no rebuild
+    -- needed.
+    have habpb : IsPoleBoundedAtPairSpec x₁ x₂ a₀ 0 c₀ (0 : k[X]) :=
+      ⟨fun h => hc₀ne h.1, hinf₀, hzsuppSpec₀⟩
+    have hcdeg1 : c₀.natDegree ≤ 1 :=
+      natDegree_le_one_of_isPoleBoundedAtPairSpec_isNormCoprime
+        (H := H) x₁ x₂ a₀ 0 c₀ hc₀ne hnc habpb
+    -- **§4: finish.** `c₀.natDegree ≤ 1` — if `= 1`, it has a genuine root
+    -- (`exists_root_of_natDegree_eq_one`), contradicting pole-boundedness via
+    -- the `[IsAlgClosed k]`-free `false_of_root_of_isCoprimeAtRoots_zero_snd_general`
+    -- (§3d above), which case-splits on whether `H.f.eval α` is `0`, a square,
+    -- or a non-square, using `hzsuppSpec₀` (closed-point-native) for the
+    -- non-square branch instead of `IsAlgClosed.exists_pow_nat_eq`.
+    have hcdeg0 : c₀.natDegree = 0 := by
+      by_contra hcdeg0
+      have hc₀deg1 : c₀.natDegree = 1 := by omega
+      obtain ⟨α, hα⟩ := exists_root_of_natDegree_eq_one c₀ hc₀deg1
+      exact false_of_root_of_isCoprimeAtRoots_zero_snd_general
+        (H := H) hchar hsf x₁ x₂ hne a₀ c₀ hc₀ne hcop hzsupp₀ hzsuppSpec₀ α hα
+    have hadeg0 : a₀.natDegree = 0 := by
+      have habne0 : a₀ ≠ 0 := by
+        intro ha0; apply hab₀_ne; simp [ha0, toPair_eq_zero_iff]
+      have horda := hinf₀
+      rw [ordInfOfPair_eq_of_ne a₀ 0 (fun h => habne0 h.1)] at horda
+      rw [ordInfOfPair_eq_of_ne c₀ 0 (fun h => hc₀ne h.1)] at horda
+      rw [hcdeg0] at horda
+      simp at horda
+      omega
+    obtain ⟨ka, hka⟩ := Polynomial.natDegree_eq_zero.mp hadeg0
+    obtain ⟨kc, hkc⟩ := Polynomial.natDegree_eq_zero.mp hcdeg0
+    refine ⟨ka / kc, ?_⟩
+    have hkc_ne : kc ≠ 0 := by
+      rintro rfl; simp at hkc; exact hc₀ne hkc.symm
+    have h_inv : (algebraMap H.CoordinateRing (FractionRing H.CoordinateRing))
+        ((algebraMap k[X] H.CoordinateRing) (C kc⁻¹)) =
+      ((algebraMap H.CoordinateRing (FractionRing H.CoordinateRing))
+        ((algebraMap k[X] H.CoordinateRing) (C kc)))⁻¹ := by
+      symm
+      apply inv_eq_of_mul_eq_one_right
+      rw [← map_mul, ← map_mul, ← map_mul]
+      rw [mul_inv_cancel₀ hkc_ne]
+      simp
+    rw [hz_eq, hfrac_eq, hfrac_eq₀, ← hka, ← hkc]
+    unfold polePairToFraction
+    simp [HyperellipticPolynomial.toPair, toPair]
+    rw [div_eq_mul_inv]
+    rw [div_eq_mul_inv ka kc]
+    rw [map_mul, map_mul, map_mul]
+    rw [h_inv]
 
 end HyperellipticPolynomial
+
+end
