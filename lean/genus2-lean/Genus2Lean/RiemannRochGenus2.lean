@@ -1806,6 +1806,131 @@ theorem LPairCarrierSpec'_smul (x₁ x₂ : H.Point) (c : k) (z : FractionRing (
         field_simp
 
 omit [IsAlgClosed k] in
+/-- `1 ∈ LPairCarrierSpec' x₁ x₂`, via the same witness `A = 1, B = 0, A' = 1,
+B' = 0` as `one_mem_LPairCarrier'`: the constant function has no poles at any
+closed point, so `IsPoleBoundedAtPairSpec'`'s pointwise clause (now quantified
+over every `v`, not just `H.Point`) holds vacuously, with both `ordAtSpec`
+terms equal to `0`. -/
+theorem one_mem_LPairCarrierSpec' (x₁ x₂ : H.Point) :
+    (1 : FractionRing (CoordinateRing H)) ∈ LPairCarrierSpec' x₁ x₂ := by
+  refine Or.inr ⟨1, 0, 1, 0, ⟨?_, ?_, ?_, ?_⟩, ?_⟩
+  · rw [toPair_one_zero]; exact one_ne_zero
+  · exact fun h => one_ne_zero h.1
+  · exact le_refl _
+  · intro v; unfold ordAtSpec; rw [if_neg (by rw [toPair_one_zero]; exact one_ne_zero)]; omega
+  · exact (polePairToFraction_one_zero_one_zero H).symm
+
+omit [IsAlgClosed k] in
+/-- **The shared point-wise argument for `LPairCarrierSpec'_add_smul`**, the
+`v`-general analogue of `LPairCarrier_pointwise`. Same statement shape and
+same proof strategy (working at the `WithTop ℤ`-valued `ordAtSpec'` level to
+avoid case-splitting on `toPair = 0`, then descending back to `ordAtSpec`
+(ℤ) via `hN'ne`), but with `v : HeightOneSpectrum` in place of `Q : H.Point`
+throughout. **Simpler than the original in one respect**: there is no
+`pointIdeal = ⊥` case to exclude, so the whole `by_cases h_bot` branch at the
+top of `LPairCarrier_pointwise` does not exist here — every step below is the
+direct `v`-indexed translation of that proof's nonzero-`h_bot` branch only.
+Takes `hN'ne : toPair H N' N'' ≠ 0` as an explicit hypothesis for the same
+reason `LPairCarrier_pointwise` does (see its own docstring for the
+counterexample showing this is genuinely needed, not merely unproven). -/
+theorem LPairCarrierSpec_pointwise (c₁ c₂ : k)
+    (A₁ B₁ A₁' B₁' A₂ B₂ A₂' B₂' N₁' N₁'' N₂' N₂'' N' N'' D' D'' : k[X])
+    (hA₁'B₁'ne : toPair H A₁' B₁' ≠ 0) (hA₂'B₂'ne : toPair H A₂' B₂' ≠ 0)
+    (hN'ne : toPair H N' N'' ≠ 0)
+    (hN₁mul : toPair H N₁' N₁'' = toPair H A₁ B₁ * toPair H A₂' B₂')
+    (hN₂mul : toPair H N₂' N₂'' = toPair H A₂ B₂ * toPair H A₁' B₁')
+    (hDmul : toPair H D' D'' = toPair H A₁' B₁' * toPair H A₂' B₂')
+    (hN'_def : N' = Polynomial.C c₁ * N₁' + Polynomial.C c₂ * N₂')
+    (hN''_def : N'' = Polynomial.C c₁ * N₁'' + Polynomial.C c₂ * N₂'') :
+    ∀ (v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H)) (s : ℤ),
+      ordAtSpec v A₁ B₁ ≥ ordAtSpec v A₁' B₁' - s → ordAtSpec v A₂ B₂ ≥ ordAtSpec v A₂' B₂' - s →
+      ordAtSpec v N' N'' ≥ ordAtSpec v D' D'' - s := by
+  intro v s h1 h2
+  have hordD : ordAtSpec v D' D'' = ordAtSpec v A₁' B₁' + ordAtSpec v A₂' B₂' := by
+    have hstep : ordAtSpec' v D' D'' = ordAtSpec' v A₁' B₁' + ordAtSpec' v A₂' B₂' :=
+      ordAtSpec'_toPair_mul v A₁' B₁' A₂' B₂' D' D'' hDmul
+    have hDne : toPair H D' D'' ≠ 0 := by
+      rw [hDmul]; exact mul_ne_zero hA₁'B₁'ne hA₂'B₂'ne
+    rw [ordAtSpec_eq_ordAtSpec'_of_ne_zero v D' D'' hDne,
+        ordAtSpec_eq_ordAtSpec'_of_ne_zero v A₁' B₁' hA₁'B₁'ne,
+        ordAtSpec_eq_ordAtSpec'_of_ne_zero v A₂' B₂' hA₂'B₂'ne] at hstep
+    exact_mod_cast hstep
+  have hordN₁' : ordAtSpec' v N₁' N₁'' = ordAtSpec' v A₁ B₁ + ordAtSpec' v A₂' B₂' :=
+    ordAtSpec'_toPair_mul v A₁ B₁ A₂' B₂' N₁' N₁'' hN₁mul
+  have hordN₂' : ordAtSpec' v N₂' N₂'' = ordAtSpec' v A₂ B₂ + ordAtSpec' v A₁' B₁' :=
+    ordAtSpec'_toPair_mul v A₂ B₂ A₁' B₁' N₂' N₂'' hN₂mul
+  have hordN' : ordAtSpec' v N' N'' ≥ min (ordAtSpec' v N₁' N₁'') (ordAtSpec' v N₂' N₂'') := by
+    have hCc₁N₁ : toPair H (Polynomial.C c₁ * N₁') (Polynomial.C c₁ * N₁'') =
+        toPair H (Polynomial.C c₁) (0 : k[X]) * toPair H N₁' N₁'' := by
+      have hmul := toPair_mul (H := H) (Polynomial.C c₁) 0 N₁' N₁''
+      simp only [zero_mul, mul_zero, add_zero] at hmul
+      exact hmul.symm
+    have hCc₂N₂ : toPair H (Polynomial.C c₂ * N₂') (Polynomial.C c₂ * N₂'') =
+        toPair H (Polynomial.C c₂) (0 : k[X]) * toPair H N₂' N₂'' := by
+      have hmul := toPair_mul (H := H) (Polynomial.C c₂) 0 N₂' N₂''
+      simp only [zero_mul, mul_zero, add_zero] at hmul
+      exact hmul.symm
+    have hstep := ordAtSpec'_add_ge_min v (Polynomial.C c₁ * N₁') (Polynomial.C c₁ * N₁'')
+      (Polynomial.C c₂ * N₂') (Polynomial.C c₂ * N₂'') N' N''
+      (by rw [hN'_def, hN''_def, toPair_add])
+    have hCcOrdGe : ∀ (c : k), ordAtSpec' v (Polynomial.C c) (0 : k[X]) ≥ 0 := by
+      intro c
+      by_cases hc : c = 0
+      · have hCc0 : toPair H (Polynomial.C c) (0 : k[X]) = 0 := by
+          rw [hc]; unfold toPair; simp
+        rw [show ordAtSpec' v (Polynomial.C c) (0 : k[X]) = ⊤ by
+          unfold ordAtSpec'; rw [if_pos hCc0]]
+        exact le_top
+      · have hCcne : toPair H (Polynomial.C c) (0 : k[X]) ≠ 0 := by
+          intro h; apply hc
+          have := (toPair_eq_zero_iff H (Polynomial.C c) (0 : k[X])).mp h
+          exact (Polynomial.C_eq_zero).mp this.1
+        have hCc0 : ordAtSpec v (Polynomial.C c) (0 : k[X]) = 0 := ordAtSpec_C_zero c hc v
+        rw [ordAtSpec_eq_ordAtSpec'_of_ne_zero v (Polynomial.C c) 0 hCcne, hCc0]
+        norm_cast
+    have hge1 : ordAtSpec' v (Polynomial.C c₁ * N₁') (Polynomial.C c₁ * N₁'') ≥
+        ordAtSpec' v N₁' N₁'' := by
+      rw [ordAtSpec'_toPair_mul v (Polynomial.C c₁) 0 N₁' N₁'' _ _ hCc₁N₁]
+      exact le_add_of_nonneg_left (hCcOrdGe c₁)
+    have hge2 : ordAtSpec' v (Polynomial.C c₂ * N₂') (Polynomial.C c₂ * N₂'') ≥
+        ordAtSpec' v N₂' N₂'' := by
+      rw [ordAtSpec'_toPair_mul v (Polynomial.C c₂) 0 N₂' N₂'' _ _ hCc₂N₂]
+      exact le_add_of_nonneg_left (hCcOrdGe c₂)
+    have hmin : min (ordAtSpec' v (Polynomial.C c₁ * N₁') (Polynomial.C c₁ * N₁''))
+        (ordAtSpec' v (Polynomial.C c₂ * N₂') (Polynomial.C c₂ * N₂'')) ≥
+        min (ordAtSpec' v N₁' N₁'') (ordAtSpec' v N₂' N₂'') :=
+      le_min (le_trans (min_le_left _ _) hge1) (le_trans (min_le_right _ _) hge2)
+    exact le_trans hmin hstep
+  have hchain : ordAtSpec' v N' N'' ≥
+      (ordAtSpec v A₁' B₁' + ordAtSpec v A₂' B₂' - s : ℤ) := by
+    calc ordAtSpec' v N' N'' ≥ min (ordAtSpec' v N₁' N₁'') (ordAtSpec' v N₂' N₂'') := hordN'
+      _ = min (ordAtSpec' v A₁ B₁ + ordAtSpec' v A₂' B₂')
+          (ordAtSpec' v A₂ B₂ + ordAtSpec' v A₁' B₁') := by rw [hordN₁', hordN₂']
+      _ ≥ ((ordAtSpec v A₁' B₁' + ordAtSpec v A₂' B₂' - s : ℤ) : WithTop ℤ) := by
+          rw [ordAtSpec_eq_ordAtSpec'_of_ne_zero v A₂' B₂' hA₂'B₂'ne,
+              ordAtSpec_eq_ordAtSpec'_of_ne_zero v A₁' B₁' hA₁'B₁'ne, ge_iff_le, le_min_iff]
+          constructor
+          · by_cases hA₁B₁ : toPair H A₁ B₁ = 0
+            · have : ordAtSpec' v A₁ B₁ = ⊤ := by unfold ordAtSpec'; rw [if_pos hA₁B₁]
+              rw [this]; exact le_top
+            · rw [ordAtSpec_eq_ordAtSpec'_of_ne_zero v A₁ B₁ hA₁B₁]
+              have hle1 : (ordAtSpec v A₁' B₁' + ordAtSpec v A₂' B₂' - s : ℤ) ≤
+                  ordAtSpec v A₁ B₁ + ordAtSpec v A₂' B₂' := by omega
+              rw [← WithTop.coe_add]
+              exact WithTop.coe_le_coe.mpr hle1
+          · by_cases hA₂B₂ : toPair H A₂ B₂ = 0
+            · have : ordAtSpec' v A₂ B₂ = ⊤ := by unfold ordAtSpec'; rw [if_pos hA₂B₂]
+              rw [this]; simp
+            · rw [ordAtSpec_eq_ordAtSpec'_of_ne_zero v A₂ B₂ hA₂B₂]
+              have hle2 : (ordAtSpec v A₁' B₁' + ordAtSpec v A₂' B₂' - s : ℤ) ≤
+                  ordAtSpec v A₂ B₂ + ordAtSpec v A₁' B₁' := by omega
+              rw [← WithTop.coe_add]
+              exact WithTop.coe_le_coe.mpr hle2
+  rw [hordD]
+  rw [ordAtSpec_eq_ordAtSpec'_of_ne_zero v N' N'' hN'ne] at hchain
+  exact WithTop.coe_le_coe.mp hchain
+
+omit [IsAlgClosed k] in
 /-- **`LPairCarrier'` is closed under `k`-scaling.** Needed as the base case
 for the mixed `z₁ = 0`/`z₂ = 0` branches of `LPairCarrier'_add_smul` below,
 where the nonzero side's contribution `c • z` (`c` possibly `0`) needs its
