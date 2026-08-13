@@ -3050,6 +3050,21 @@ theorem uniqueDegree2MapToP1Spec (hdeg : H.f.natDegree = 5) (hchar : (2 : k) ≠
     rw [map_mul, map_mul, map_mul]
     rw [h_inv]
 
+/-- **Alias for `RiemannRochCrux.lean`'s naming convention.** Identical to
+`uniqueDegree2MapToP1Spec` above; exists so a future pass wiring this into
+`RiemannRochCrux.lean`'s `finrank_L_pair` derivation (general `k`, no
+`[IsAlgClosed k]`) has a name matching that file's `uniqueDegree2MapToP1`.
+Kept in this file (rather than added to `RiemannRochCrux.lean` directly) to
+avoid a build cycle: `RiemannRochCrux.lean` is already transitively imported
+by this file (via `LPairFinrankOneOrdAtFrac.lean`/`GlobalDegreeBoundSpec.lean`
+→ `LPairFinrankOne.lean` → `RiemannRochCrux.lean`), so `RiemannRochCrux.lean`
+cannot import this file back without creating one. -/
+theorem uniqueDegree2MapToP1_general (hdeg : H.f.natDegree = 5) (hchar : (2 : k) ≠ 0)
+    (hsf : Squarefree H.f) (x₁ x₂ : H.Point) (hne : x₂ ≠ Point.iota x₁)
+    (z : FractionRing (CoordinateRing H)) (hz : z ∈ LPairCarrierSpec' x₁ x₂) :
+    IsConstantFraction z :=
+  uniqueDegree2MapToP1Spec hdeg hchar hsf x₁ x₂ hne z hz
+
 end HyperellipticPolynomial
 
 end

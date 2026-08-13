@@ -25,7 +25,6 @@ import Genus2Lean.DedekindClosure5
 import Genus2Lean.PrincipalDivisorsIntegralClosure
 import Genus2Lean.SidonBridge
 import Genus2Lean.RiemannRochGenus2
-import Genus2Lean.RiemannRochCrux
 import Genus2Lean.PrincipalSubgroupCollapse
 import Genus2Lean.RatioDivisorCollapse
 import Genus2Lean.LPairFinrankOne
@@ -35,4 +34,5 @@ import Genus2Lean.GlobalDegreeBoundSpec
 import Genus2Lean.CoprimeAtRootsClosed
 import Genus2Lean.NonSquareFiberPoint
 import Genus2Lean.LPairFinrankOneOrdAtFracSpec
+import Genus2Lean.RiemannRochCrux
 
