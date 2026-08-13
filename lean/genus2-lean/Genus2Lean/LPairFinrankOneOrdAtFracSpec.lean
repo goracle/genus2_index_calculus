@@ -930,6 +930,25 @@ theorem mem_conjHeightOne_iff [IsDedekindDomain (CoordinateRing H)]
     simpa using this.symm
   rw [this]
 
+/-- **`conjHeightOne` is an involution.** Follows directly from `mem_conjHeightOne_iff`
+(applied twice) and `involution_involution`: `w ∈ (conjHeightOne (conjHeightOne v)).asIdeal
+↔ involution H w ∈ (conjHeightOne v).asIdeal ↔ involution H (involution H w) ∈ v.asIdeal ↔
+w ∈ v.asIdeal`. -/
+theorem conjHeightOne_conjHeightOne [IsDedekindDomain (CoordinateRing H)]
+    (v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H)) :
+    conjHeightOne (H := H) (conjHeightOne (H := H) v) = v := by
+  ext w
+  rw [mem_conjHeightOne_iff, mem_conjHeightOne_iff, involution_involution]
+
+/-- **`pointHeightOne'` is injective.** `pointHeightOne' P`'s underlying ideal is
+`pointIdeal P` by definition, and distinct points have distinct point ideals
+(`pointIdeal_ne_of_ne`). -/
+theorem pointHeightOne'_injective [IsDedekindDomain (CoordinateRing H)] :
+    Function.Injective (pointHeightOne' (H := H)) := by
+  intro P Q heq
+  by_contra hne
+  exact pointIdeal_ne_of_ne P Q hne (congrArg IsDedekindDomain.HeightOneSpectrum.asIdeal heq)
+
 /-- **`residueDeg` is `conjHeightOne`-invariant.** `involutionEquiv H` is a `k`-algebra
 automorphism of `CoordinateRing H` (fixes `k` pointwise, via `involution_algebraMap` and
 `IsScalarTower k k[X] (CoordinateRing H)`) carrying `v.asIdeal` to `(conjHeightOne
@@ -1782,11 +1801,7 @@ theorem natDegree_le_two_of_gcdUnit_closed_point
         rw [hT'_def]
         have : v = conjHeightOne (H := H) (pointHeightOne' x₁) := by
           have := congrArg (conjHeightOne (H := H)) h
-          rwa [show conjHeightOne (H := H) (conjHeightOne (H := H) v) = v from by
-            simp [conjHeightOne, Ideal.comap_comap]
-            congr 1
-            ext w
-            simp [mem_conjHeightOne_iff, involution_involution]] at this
+          rwa [conjHeightOne_conjHeightOne] at this
         rw [this]
         exact Finset.mem_insert_of_mem (Finset.mem_insert_of_mem (Finset.mem_insert_self _ _))))
     by_cases hw2 : conjHeightOne (H := H) v = pointHeightOne' x₂
@@ -1794,11 +1809,7 @@ theorem natDegree_le_two_of_gcdUnit_closed_point
         rw [hT'_def]
         have heq : v = conjHeightOne (H := H) (pointHeightOne' x₂) := by
           have := congrArg (conjHeightOne (H := H)) h
-          rwa [show conjHeightOne (H := H) (conjHeightOne (H := H) v) = v from by
-            simp [conjHeightOne, Ideal.comap_comap]
-            congr 1
-            ext w
-            simp [mem_conjHeightOne_iff, involution_involution]] at this
+          rwa [conjHeightOne_conjHeightOne] at this
         rw [heq]
         exact Finset.mem_insert_of_mem (Finset.mem_insert_of_mem
           (Finset.mem_insert_of_mem (Finset.mem_insert_self _ _)))))
@@ -1872,12 +1883,10 @@ theorem natDegree_le_two_of_gcdUnit_closed_point
         hzsuppSpec₀ hchar hsf v hv1 hv2
       · intro h; exact hw1 (by
           have := congrArg (conjHeightOne (H := H)) h
-          rwa [show conjHeightOne (H := H) (conjHeightOne (H := H) v) = v from by
-            ext w; simp [mem_conjHeightOne_iff, involution_involution]] at this)
+          rwa [conjHeightOne_conjHeightOne] at this)
       · intro h; exact hw2 (by
           have := congrArg (conjHeightOne (H := H)) h
-          rwa [show conjHeightOne (H := H) (conjHeightOne (H := H) v) = v from by
-            ext w; simp [mem_conjHeightOne_iff, involution_involution]] at this)
+          rwa [conjHeightOne_conjHeightOne] at this)
     -- Termwise: every `v ∈ T'` contributes at most its share of the budget `1 + 1 + 1 + 1`
     -- split across the four indicators (`0` if `v` is none of them, by `hrest0`; the exact
     -- value, individually bounded below by `hb1`/`hb2`/`hw1eq`/`hw2eq`, if `v` is one of
@@ -1926,9 +1935,15 @@ theorem natDegree_le_two_of_gcdUnit_closed_point
         have hb1' : (residueDeg (conjHeightOne (H := H) (pointHeightOne' x₁)) : ℤ) *
             ordAtSpec (conjHeightOne (H := H) (pointHeightOne' x₁)) c₀ 0 ≤
             (residueDeg (conjHeightOne (H := H) (pointHeightOne' x₁)) : ℤ) := by
-          have := hb1
-          rw [← ordAtSpec_conjHeightOne_fst (H := H) (pointHeightOne' x₁) c₀] at this
-          exact mul_le_mul_of_nonneg_left this (Int.natCast_nonneg _)
+          have this' := hb1
+          rw [← ordAtSpec_conjHeightOne_fst (H := H) (pointHeightOne' x₁) c₀] at this'
+          have hrnn : (0:ℤ) ≤ (residueDeg (conjHeightOne (H := H) (pointHeightOne' x₁)) : ℤ) :=
+            Int.natCast_nonneg _
+          calc (residueDeg (conjHeightOne (H := H) (pointHeightOne' x₁)) : ℤ) *
+              ordAtSpec (conjHeightOne (H := H) (pointHeightOne' x₁)) c₀ 0
+              ≤ (residueDeg (conjHeightOne (H := H) (pointHeightOne' x₁)) : ℤ) * 1 :=
+                mul_le_mul_of_nonneg_left this' hrnn
+            _ = (residueDeg (conjHeightOne (H := H) (pointHeightOne' x₁)) : ℤ) := mul_one _
         nlinarith [hnonneg (conjHeightOne (H := H) (pointHeightOne' x₁) = pointHeightOne' x₁),
           hnonneg (conjHeightOne (H := H) (pointHeightOne' x₁) = pointHeightOne' x₂),
           hnonneg (conjHeightOne (H := H) (pointHeightOne' x₁) =
@@ -1940,9 +1955,15 @@ theorem natDegree_le_two_of_gcdUnit_closed_point
         have hb2' : (residueDeg (conjHeightOne (H := H) (pointHeightOne' x₂)) : ℤ) *
             ordAtSpec (conjHeightOne (H := H) (pointHeightOne' x₂)) c₀ 0 ≤
             (residueDeg (conjHeightOne (H := H) (pointHeightOne' x₂)) : ℤ) := by
-          have := hb2
-          rw [← ordAtSpec_conjHeightOne_fst (H := H) (pointHeightOne' x₂) c₀] at this
-          exact mul_le_mul_of_nonneg_left this (Int.natCast_nonneg _)
+          have this' := hb2
+          rw [← ordAtSpec_conjHeightOne_fst (H := H) (pointHeightOne' x₂) c₀] at this'
+          have hrnn : (0:ℤ) ≤ (residueDeg (conjHeightOne (H := H) (pointHeightOne' x₂)) : ℤ) :=
+            Int.natCast_nonneg _
+          calc (residueDeg (conjHeightOne (H := H) (pointHeightOne' x₂)) : ℤ) *
+              ordAtSpec (conjHeightOne (H := H) (pointHeightOne' x₂)) c₀ 0
+              ≤ (residueDeg (conjHeightOne (H := H) (pointHeightOne' x₂)) : ℤ) * 1 :=
+                mul_le_mul_of_nonneg_left this' hrnn
+            _ = (residueDeg (conjHeightOne (H := H) (pointHeightOne' x₂)) : ℤ) := mul_one _
         nlinarith [hnonneg (conjHeightOne (H := H) (pointHeightOne' x₂) = pointHeightOne' x₁),
           hnonneg (conjHeightOne (H := H) (pointHeightOne' x₂) = pointHeightOne' x₂),
           hnonneg (conjHeightOne (H := H) (pointHeightOne' x₂) =
