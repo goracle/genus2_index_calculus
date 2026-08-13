@@ -855,6 +855,7 @@ theorem span_eq_of_ordAt_eq (A B A' B' : k[X])
     _ = (UniqueFactorizationMonoid.normalizedFactors I').prod := by rw [hfactors_eq]
     _ = I' := Ideal.prod_normalizedFactors_eq_self hI'bot
 
+omit [IsAlgClosed k] in
 /-- **Sub-step B — now proved.** `CoordinateRing H`'s unit group is exactly `k^×`.
 **Route actually used** (found after re-reading `RiemannRochGenus2.lean`'s already-proved
 `pairNorm_mul_of_toPair_mul`/`algebraMap_coordinateRing_injective`, rather than the free-
