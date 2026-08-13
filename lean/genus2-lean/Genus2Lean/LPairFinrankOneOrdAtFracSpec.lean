@@ -1296,12 +1296,16 @@ theorem exists_ordAtSpec_lt_of_notMem_span_algebraMap
               (Ideal.span ({toPair H q 0} : Set (CoordinateRing H)))) = 0 := by
             rw [Multiset.count_eq_zero]
             intro hmem
-            exact ((Ideal.mem_normalizedFactors_iff hqIne).mp hmem).2 hJ0
+            have hle := ((Ideal.mem_normalizedFactors_iff hqIne).mp hmem).2
+            rw [hJ0, Ideal.zero_eq_bot, le_bot_iff] at hle
+            exact hqIne hle
           have h2 : Multiset.count J (UniqueFactorizationMonoid.normalizedFactors
               (Ideal.span ({toPair H a₀ b₀} : Set (CoordinateRing H)))) = 0 := by
             rw [Multiset.count_eq_zero]
             intro hmem
-            exact ((Ideal.mem_normalizedFactors_iff habIne).mp hmem).2 hJ0
+            have hle := ((Ideal.mem_normalizedFactors_iff habIne).mp hmem).2
+            rw [hJ0, Ideal.zero_eq_bot, le_bot_iff] at hle
+            exact habIne hle
           rw [h1, h2]
         · have hJprime' : ¬ J.IsPrime := by
             intro hprime
@@ -1444,13 +1448,13 @@ theorem ordAtSpec_eq_zero_of_notMem_four_of_dvd
   -- Add and subtract: `algebraMap (2a₀) ∈ v.asIdeal`, `algebraMap (2b₀) * y H ∈ v.asIdeal`.
   have hadd : toPair H a₀ b₀ + toPair H a₀ (-b₀) = algebraMap k[X] (CoordinateRing H) (2 * a₀) := by
     unfold HyperellipticPolynomial.toPair
-    push_cast
-    ring_nf
+    rw [map_mul, map_ofNat, map_neg]
+    ring
   have hsub : toPair H a₀ b₀ - toPair H a₀ (-b₀) =
       algebraMap k[X] (CoordinateRing H) (2 * b₀) * y H := by
     unfold HyperellipticPolynomial.toPair
-    push_cast
-    ring_nf
+    rw [map_mul, map_ofNat, map_neg]
+    ring
   have h2a_mem : algebraMap k[X] (CoordinateRing H) (2 * a₀) ∈ v.asIdeal := by
     rw [← hadd]; exact v.asIdeal.add_mem habvmem habvmem'
   have h2by_mem : algebraMap k[X] (CoordinateRing H) (2 * b₀) * y H ∈ v.asIdeal := by
@@ -1459,13 +1463,14 @@ theorem ordAtSpec_eq_zero_of_notMem_four_of_dvd
   set P : Ideal k[X] := Ideal.comap (algebraMap k[X] (CoordinateRing H)) v.asIdeal with hP_def
   have hPprime : P.IsPrime := Ideal.comap_isPrime _ _
   obtain ⟨q, hq_gen⟩ := (IsPrincipalIdealRing.principal P).principal
+  rw [Ideal.submodule_span_eq] at hq_gen
   have hc₀P : c₀ ∈ P := by
     show algebraMap k[X] (CoordinateRing H) c₀ ∈ v.asIdeal
     rw [hcalg]; exact hvmem
   have hqne0 : q ≠ 0 := by
     intro hq0
     rw [hq0, Ideal.span_singleton_zero] at hq_gen
-    exact hc₀ne (by rw [← Ideal.mem_bot (α := k[X]), ← hq_gen]; exact hc₀P)
+    exact hc₀ne (by rw [← Ideal.mem_bot (R := k[X]), ← hq_gen]; exact hc₀P)
   have hq_irred : Irreducible q := by
     have hPprime' : (Ideal.span ({q} : Set k[X])).IsPrime := hq_gen ▸ hPprime
     exact (Ideal.span_singleton_prime hqne0).mp hPprime' |>.irreducible
@@ -1477,10 +1482,13 @@ theorem ordAtSpec_eq_zero_of_notMem_four_of_dvd
     have : 2 * a₀ ∈ P := h2a_mem
     rwa [hq_gen, Ideal.mem_span_singleton] at this
   have h2unit : IsUnit (2 : k[X]) := by
-    rw [show (2 : k[X]) = Polynomial.C (2:k) by push_cast; ring]
+    rw [show (2 : k[X]) = Polynomial.C (2:k) from (map_ofNat Polynomial.C 2).symm]
     exact (Polynomial.isUnit_C).mpr (IsUnit.mk0 (2:k) hchar)
-  have hqa₀ : q ∣ a₀ := (hq_irred.dvd_mul_left_iff h2unit).mp (by rwa [mul_comm] at hq2a) |>.elim
-    (fun h => absurd h hq_irred.not_isUnit) id
+  have hq_prime : Prime q := hq_irred.prime
+  have hqa₀ : q ∣ a₀ := by
+    rcases (hq_prime.dvd_mul).mp hq2a with h | h
+    · exact absurd h (hq_irred.not_dvd_isUnit h2unit)
+    · exact h
   -- `2b₀ * y H ∈ v.asIdeal`: split on `q ∣ H.f` or not.
   by_cases hqf : q ∣ H.f
   · -- Ramified case is actually **impossible** here: `H.f` squarefree (`hsf`) means
@@ -1501,19 +1509,22 @@ theorem ordAtSpec_eq_zero_of_notMem_four_of_dvd
       -- i.e. every `q`, contradicting `hq_irred.not_isUnit` directly below via `hsf`.
       intro hy0
       rw [hy0] at hyf
+      have halg0 : algebraMap k[X] (CoordinateRing H) H.f = 0 := by rw [← hyf]; ring
       have hf0 : H.f = 0 := by
-        have := hyf.symm; simpa using this
-      rw [hf0] at hqf
-      have : IsUnit q := hsf q (by rw [← sq]; exact dvd_zero _)
+        have htp0 : toPair H H.f (0:k[X]) = 0 := by
+          unfold HyperellipticPolynomial.toPair; simpa using halg0
+        exact ((toPair_eq_zero_iff H H.f 0).mp htp0).1
+      have : IsUnit q := hsf q (by rw [hf0]; exact dvd_zero _)
       exact hq_irred.not_isUnit this
     have hordy_ge0 : 0 ≤ ordAtSpec v (0:k[X]) 1 := ordAtSpec_nonneg v 0 1 hyne
     have hordf : ordAtSpec v H.f (0:k[X]) = 2 * ordAtSpec v (0:k[X]) 1 := by
       have hprod : toPair H H.f 0 = toPair H 0 1 * toPair H 0 1 := by
-        rw [hyToPair] at hyf ⊢
-        rw [← hyf]; unfold HyperellipticPolynomial.toPair; ring
-      have := ordAtSpec_add_of_toPair_mul (H := H) v 0 1 0 1 H.f 0 hyne hyne hprod.symm
+        have hmul := toPair_mul (H := H) 0 1 0 1
+        norm_num at hmul
+        exact hmul.symm
+      have := ordAtSpec_add_of_toPair_mul (H := H) v 0 1 0 1 H.f 0 hyne hyne hprod
       rw [this]; ring
-    have hq2ndvd : ¬ q ^ 2 ∣ H.f := fun h => hq_irred.not_isUnit (hsf q (by rwa [← sq] at h))
+    have hq2ndvd : ¬ q ^ 2 ∣ H.f := fun h => hq_irred.not_isUnit (hsf q (by rwa [pow_two] at h))
     -- `hordf : ordAtSpec v H.f 0 = 2 * ordAtSpec v (0) 1` is **even**. `q ∣ H.f` gives
     -- `ordAtSpec v H.f 0 ≥ 1` (cheap, membership via `ordAtSpec_eq_zero_of_notMem`'s
     -- contrapositive), so evenness forces `ordAtSpec v H.f 0 ≥ 2`. The genuine remaining
@@ -1594,11 +1605,15 @@ theorem ordAtSpec_eq_zero_of_notMem_four_of_dvd
       exact lt_irrefl 0 habv_pos
     have hdecomp : toPair H a₀ b₀ = toPair H a₀ (0:k[X]) + toPair H (0:k[X]) b₀ := by
       have := toPair_add (H := H) a₀ 0 0 b₀
-      simpa using this.symm
-    -- `by_contra` on `q ∣ b₀`: get `ordAtSpec v (0) b₀ = ordAtSpec v (0) 1 = m`, via
+      simpa using this
+    -- We're already inside `exfalso` (goal `False`), so derive it by cases on
+    -- `q ∣ b₀`: get `ordAtSpec v (0) b₀ = ordAtSpec v (0) 1 = m`, via
     -- `toPair 0 b₀ = toPair b₀ 0 * toPair 0 1` and `ordAtSpec v b₀ 0 = 0`
-    -- (nonmembership, since `q ∤ b₀`).
-    by_contra hqb₀
+    -- (nonmembership, since `q ∤ b₀`) in the non-divisibility case.
+    by_cases hqb₀ : q ∣ b₀
+    · -- `q ∣ a₀` (`hqa₀`), `q ∣ b₀`, `q ∣ c₀` (`hqc₀`) together contradict `hgu`.
+      have hq_dvd_gcd : q ∣ gcd (gcd a₀ b₀) c₀ := dvd_gcd (dvd_gcd hqa₀ hqb₀) hqc₀
+      exact absurd (isUnit_of_dvd_unit hq_dvd_gcd hgu) hq_irred.not_isUnit
     have hb₀_notmem : algebraMap k[X] (CoordinateRing H) b₀ ∉ v.asIdeal := by
       intro hb0mem
       apply hqb₀
@@ -1608,7 +1623,7 @@ theorem ordAtSpec_eq_zero_of_notMem_four_of_dvd
       rw [Ne, toPair_eq_zero_iff]
       intro h
       exact hb₀_notmem (by
-        rw [h.1]; exact Submodule.zero_mem _)
+        rw [h.1, map_zero]; exact Submodule.zero_mem _)
     have hord_b₀ : ordAtSpec v b₀ (0:k[X]) = 0 := by
       apply ordAtSpec_eq_zero_of_notMem v b₀ 0
       rwa [show toPair H b₀ (0:k[X]) = algebraMap k[X] (CoordinateRing H) b₀ by
@@ -1692,8 +1707,8 @@ theorem ordAtSpec_eq_zero_of_notMem_four_of_dvd
     have hynotmem : y H ∉ v.asIdeal := by
       intro hymem
       apply hqf
-      have hy2mem : y H ^ 2 ∈ v.asIdeal := v.asIdeal.mul_mem_left _ hymem |>.mp (by
-        rw [sq]; exact v.asIdeal.mul_mem_left (y H) hymem)
+      have hy2mem : y H ^ 2 ∈ v.asIdeal := by
+        rw [pow_two]; exact Ideal.mul_mem_left v.asIdeal (y H) hymem
       have hyf : y H ^ 2 = algebraMap k[X] (CoordinateRing H) H.f := y_sq_eq H
       rw [hyf] at hy2mem
       have : H.f ∈ P := hy2mem
@@ -1705,8 +1720,10 @@ theorem ordAtSpec_eq_zero_of_notMem_four_of_dvd
     have hq2b : q ∣ 2 * b₀ := by
       have : (2:k[X]) * b₀ ∈ P := h2b_mem
       rwa [hq_gen, Ideal.mem_span_singleton] at this
-    have hqb₀ : q ∣ b₀ := (hq_irred.dvd_mul_left_iff h2unit).mp (by rwa [mul_comm] at hq2b) |>.elim
-      (fun h => absurd h hq_irred.not_isUnit) id
+    have hqb₀ : q ∣ b₀ := by
+      rcases (hq_prime.dvd_mul).mp hq2b with h | h
+      · exact absurd h (hq_irred.not_dvd_isUnit h2unit)
+      · exact h
     have hq_dvd_gcd : q ∣ gcd (gcd a₀ b₀) c₀ := dvd_gcd (dvd_gcd hqa₀ hqb₀) hqc₀
     exact absurd (isUnit_of_dvd_unit hq_dvd_gcd hgu) hq_irred.not_isUnit
 
