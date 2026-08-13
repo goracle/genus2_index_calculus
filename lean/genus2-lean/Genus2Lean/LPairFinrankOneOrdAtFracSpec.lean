@@ -297,6 +297,113 @@ theorem ordAtSpec_add_of_toPair_mul [IsDedekindDomain (CoordinateRing H)]
   exact_mod_cast this
 
 omit [IsDedekindDomain (CoordinateRing H)] in
+/-- **Nonarchimedean "strict order gives order of the sum" law for `ordAtSpec`.**
+If `toPair H A B` and `toPair H C D` have distinct `ordAtSpec v` values, the sum
+`toPair H (A+C) (B+D)` has `ordAtSpec` equal to the *smaller* of the two — the
+usual ultrametric fact, proved directly via `Associates.count` (matching this
+file's existing idiom, e.g. the `hge1`/`Associates.prime_pow_dvd_iff_le` pattern
+used throughout `ordAtSpec_eq_zero_of_notMem_four_of_dvd`), rather than through
+`Valuation.map_add_eq_of_lt_right`/`WithZero.log` monotonicity directly, to avoid
+depending on an unconfirmed `WithZero.log` order-API name. Only the `A B` ≺ `C D`
+direction is stated (`hlt : ordAtSpec v A B < ordAtSpec v C D`); the symmetric
+case is obtained by swapping the two calls at use sites (`add_comm`). -/
+theorem ordAtSpec_add_eq_of_lt [IsDedekindDomain (CoordinateRing H)]
+    (v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H))
+    (A B C D : k[X])
+    (hAB : toPair H A B ≠ 0) (hCD : toPair H C D ≠ 0)
+    (hlt : ordAtSpec v A B < ordAtSpec v C D) :
+    ordAtSpec v (A + C) (B + D) = ordAtSpec v A B := by
+  classical
+  have hsum_eq : toPair H (A + C) (B + D) = toPair H A B + toPair H C D := toPair_add A B C D
+  set n : ℕ := (ordAtSpec v A B).toNat with hn_def
+  have hn_eq : ordAtSpec v A B = (n : ℤ) := (Int.toNat_of_nonneg (ordAtSpec_nonneg v A B hAB)).symm
+  -- `toPair H (A+C) (B+D) ≠ 0`: else `toPair H A B = -toPair H C D`, giving equal
+  -- `ordAtSpec` (via `ordAtSpec_eq_count` + `Ideal.span_singleton_neg` invariance),
+  -- contradicting `hlt`.
+  have hsumne : toPair H (A + C) (B + D) ≠ 0 := by
+    intro hsum0
+    apply absurd hlt (lt_irrefl _)
+    have hCDeq : toPair H C D = -toPair H A B := by
+      have heq0 : toPair H A B + toPair H C D = 0 := by rw [← hsum_eq]; exact hsum0
+      linear_combination heq0
+    have hspaneq : Ideal.span ({toPair H C D} : Set (CoordinateRing H)) =
+        Ideal.span ({toPair H A B} : Set (CoordinateRing H)) := by
+      rw [hCDeq, Ideal.span_singleton_neg]
+    rw [ordAtSpec_eq_count v A B hAB, ordAtSpec_eq_count v C D hCD, hspaneq]
+  have hIAB : Ideal.span ({toPair H A B} : Set (CoordinateRing H)) ≠ 0 := by
+    rw [Ne, Ideal.zero_eq_bot, Ideal.span_singleton_eq_bot]; exact hAB
+  have hICD : Ideal.span ({toPair H C D} : Set (CoordinateRing H)) ≠ 0 := by
+    rw [Ne, Ideal.zero_eq_bot, Ideal.span_singleton_eq_bot]; exact hCD
+  have hIsum : Ideal.span ({toPair H (A + C) (B + D)} : Set (CoordinateRing H)) ≠ 0 := by
+    rw [Ne, Ideal.zero_eq_bot, Ideal.span_singleton_eq_bot]; exact hsumne
+  -- `v.asIdeal^n ∣ span {toPair A B}` and, since `n ≤ ordAtSpec v C D`'s witness
+  -- count strictly, also `v.asIdeal^n ∣ span {toPair C D}` — hence `v.asIdeal^n`
+  -- divides the sum (ideal powers absorb sums of their multiples).
+  have hn_le_AB : n ≤ (Associates.mk v.asIdeal).count
+      (Associates.mk (Ideal.span ({toPair H A B} : Set (CoordinateRing H)))).factors := by
+    have := ordAtSpec_eq_count v A B hAB
+    omega
+  have hn_lt_CD : n < (Associates.mk v.asIdeal).count
+      (Associates.mk (Ideal.span ({toPair H C D} : Set (CoordinateRing H)))).factors := by
+    have hcCD := ordAtSpec_eq_count v C D hCD
+    omega
+  have hn_le_CD : n ≤ (Associates.mk v.asIdeal).count
+      (Associates.mk (Ideal.span ({toPair H C D} : Set (CoordinateRing H)))).factors :=
+    hn_lt_CD.le
+  have hdvd_AB : v.asIdeal ^ n ∣ Ideal.span ({toPair H A B} : Set (CoordinateRing H)) :=
+    Associates.mk_le_mk_iff_dvd.mp
+      ((Associates.prime_pow_dvd_iff_le hIAB v.associates_irreducible).mpr hn_le_AB)
+  have hdvd_CD : v.asIdeal ^ n ∣ Ideal.span ({toPair H C D} : Set (CoordinateRing H)) :=
+    Associates.mk_le_mk_iff_dvd.mp
+      ((Associates.prime_pow_dvd_iff_le hICD v.associates_irreducible).mpr hn_le_CD)
+  obtain ⟨IAB', hIAB'⟩ := hdvd_AB
+  obtain ⟨ICD', hICD'⟩ := hdvd_CD
+  have hAB_mem : toPair H A B ∈ v.asIdeal ^ n := by
+    rw [hIAB']; exact Ideal.mul_mem_right _ _ (Ideal.mem_span_singleton_self _)
+  have hCD_mem : toPair H C D ∈ v.asIdeal ^ n := by
+    rw [hICD']; exact Ideal.mul_mem_right _ _ (Ideal.mem_span_singleton_self _)
+  have hsum_mem : toPair H (A + C) (B + D) ∈ v.asIdeal ^ n := by
+    rw [hsum_eq]; exact (v.asIdeal ^ n).add_mem hAB_mem hCD_mem
+  have hn_le_sum : n ≤ (Associates.mk v.asIdeal).count
+      (Associates.mk (Ideal.span ({toPair H (A + C) (B + D)} : Set (CoordinateRing H)))).factors := by
+    rw [← Associates.prime_pow_dvd_iff_le hIsum v.associates_irreducible]
+    exact Associates.mk_le_mk_iff_dvd.mpr (Ideal.dvd_span_singleton.mpr hsum_mem)
+  -- Conversely `v.asIdeal^(n+1) ∤ span {toPair A B}` (`hn_le_AB` is tight — `n` IS
+  -- the exact count there via `hn_eq`), while `v.asIdeal^(n+1) ∣ span {toPair C D}`
+  -- (`hn_lt_CD` gives `n+1 ≤` that count). If `v.asIdeal^(n+1)` also divided the
+  -- sum, subtracting the `C,D` term (which it divides) would force it to divide
+  -- the `A,B` term too — contradiction. Hence the sum's count is exactly `n`.
+  have hn1_not_dvd_AB : ¬ v.asIdeal ^ (n + 1) ∣ Ideal.span ({toPair H A B} : Set (CoordinateRing H)) := by
+    intro hdvd
+    have := (Associates.prime_pow_dvd_iff_le hIAB v.associates_irreducible).mp
+      (Associates.mk_le_mk_iff_dvd.mpr hdvd)
+    omega
+  have hn1_dvd_CD : v.asIdeal ^ (n + 1) ∣ Ideal.span ({toPair H C D} : Set (CoordinateRing H)) :=
+    Associates.mk_le_mk_iff_dvd.mp
+      ((Associates.prime_pow_dvd_iff_le hICD v.associates_irreducible).mpr hn_lt_CD)
+  have hn1_not_dvd_sum : ¬ v.asIdeal ^ (n + 1) ∣
+      Ideal.span ({toPair H (A + C) (B + D)} : Set (CoordinateRing H)) := by
+    intro hdvd
+    apply hn1_not_dvd_AB
+    have hCD_mem' : toPair H C D ∈ v.asIdeal ^ (n + 1) :=
+      Ideal.dvd_span_singleton.mp hn1_dvd_CD
+    have hsum_mem' : toPair H (A + C) (B + D) ∈ v.asIdeal ^ (n + 1) :=
+      Ideal.dvd_span_singleton.mp hdvd
+    have hAB_mem' : toPair H A B ∈ v.asIdeal ^ (n + 1) := by
+      have : toPair H A B = toPair H (A + C) (B + D) - toPair H C D := by rw [hsum_eq]; ring
+      rw [this]; exact (v.asIdeal ^ (n + 1)).sub_mem hsum_mem' hCD_mem'
+    exact Ideal.dvd_span_singleton.mpr hAB_mem'
+  have hn_ge_sum : (Associates.mk v.asIdeal).count
+      (Associates.mk (Ideal.span ({toPair H (A + C) (B + D)} : Set (CoordinateRing H)))).factors < n + 1 := by
+    by_contra hge
+    push_neg at hge
+    apply hn1_not_dvd_sum
+    exact Associates.mk_le_mk_iff_dvd.mp
+      ((Associates.prime_pow_dvd_iff_le hIsum v.associates_irreducible).mpr hge)
+  rw [ordAtSpec_eq_count v (A + C) (B + D) hsumne, hn_eq]
+  omega
+
+omit [IsDedekindDomain (CoordinateRing H)] in
 /-- **`ordAtSpec` transport across a `polePairToFraction` equality**, the
 `HeightOneSpectrum` analogue of `ordAt_sub_ordAt_eq_of_polePairToFraction_eq`.
 Same cross-multiplication argument, with `ordAt'`/`ordAt` replaced by
@@ -1299,7 +1406,144 @@ theorem ordAtSpec_eq_zero_of_notMem_four_of_dvd
         exact Associates.mk_le_mk_iff_dvd.mpr (Ideal.dvd_span_singleton.mpr hfmem)
       omega
     have hordf_ge2 : ordAtSpec v H.f (0:k[X]) ≥ 2 := by omega
-    sorry
+    -- **Corrected route (ChatGPT consultation, `chatgpt_prompt_ramified_sorry.txt`):
+    -- the ramified case is NOT vacuous — `ordAtSpec v H.f 0 ≥ 2` is exactly what
+    -- ramification predicts, not a contradiction. The actual argument compares the
+    -- *relative* orders of `a₀` and `(2b₀)·y` inside `toPair a₀ b₀`; it never needs
+    -- the exact ramification index `ordAtSpec v q 0`, only that it equals
+    -- `ordAtSpec v H.f 0` (via `H.f = q*r`, `q ∤ r`, squarefreeness), which is
+    -- `2 * ordAtSpec v (0) 1` (`hordf`) and hence `≥ 2`.
+    obtain ⟨r, hfr⟩ := hqf
+    have hq_not_dvd_r : ¬ q ∣ r := by
+      intro hqr
+      apply hq_irred.not_isUnit
+      apply hsf q
+      rw [hfr]
+      exact mul_dvd_mul_left q hqr
+    have hrne : toPair H r (0:k[X]) ≠ 0 := by
+      rw [Ne, toPair_eq_zero_iff]
+      exact fun h => hq_not_dvd_r (h.1 ▸ dvd_zero q)
+    have hr_notmem : algebraMap k[X] (CoordinateRing H) r ∉ v.asIdeal := by
+      intro hrmem
+      apply hq_not_dvd_r
+      have : r ∈ P := hrmem
+      rwa [hq_gen, Ideal.mem_span_singleton] at this
+    have hord_r : ordAtSpec v r (0:k[X]) = 0 := by
+      apply ordAtSpec_eq_zero_of_notMem v r 0
+      rwa [show toPair H r (0:k[X]) = algebraMap k[X] (CoordinateRing H) r by
+        unfold HyperellipticPolynomial.toPair; simp]
+    have hqne_toPair : toPair H q (0:k[X]) ≠ 0 := by
+      rw [Ne, toPair_eq_zero_iff]; exact fun h => hqne0 h.1
+    have hHf_prod : toPair H H.f (0:k[X]) = toPair H q (0:k[X]) * toPair H r (0:k[X]) := by
+      have := toPair_mul (H := H) q 0 r 0
+      simpa [hfr] using this.symm
+    have hord_q_eq_f : ordAtSpec v q (0:k[X]) = ordAtSpec v H.f (0:k[X]) := by
+      have := ordAtSpec_add_of_toPair_mul (H := H) v q 0 r 0 H.f 0 hqne_toPair hrne hHf_prod
+      rw [this, hord_r, add_zero]
+    -- `ordAtSpec v q 0 = 2 * ordAtSpec v (0) 1` (`m`, the order of `y`), and `m ≥ 1`.
+    have hord_q_eq_2m : ordAtSpec v q (0:k[X]) = 2 * ordAtSpec v (0:k[X]) 1 := by
+      rw [hord_q_eq_f]; exact hordf
+    have hm_pos : 0 < ordAtSpec v (0:k[X]) 1 := by omega
+    -- `toPair H a₀ b₀ ≠ 0` (from `habv_pos`), and its decomposition
+    -- `toPair a₀ b₀ = toPair a₀ 0 + toPair 0 b₀`.
+    have hab₀_ne : toPair H a₀ b₀ ≠ (0 : CoordinateRing H) := by
+      intro h0
+      rw [show ordAtSpec v a₀ b₀ = 0 from by unfold ordAtSpec; rw [if_pos h0]] at habv_pos
+      exact lt_irrefl 0 habv_pos
+    have hdecomp : toPair H a₀ b₀ = toPair H a₀ (0:k[X]) + toPair H (0:k[X]) b₀ := by
+      have := toPair_add (H := H) a₀ 0 0 b₀
+      simpa using this.symm
+    -- `by_contra` on `q ∣ b₀`: get `ordAtSpec v (0) b₀ = ordAtSpec v (0) 1 = m`, via
+    -- `toPair 0 b₀ = toPair b₀ 0 * toPair 0 1` and `ordAtSpec v b₀ 0 = 0`
+    -- (nonmembership, since `q ∤ b₀`).
+    by_contra hqb₀
+    have hb₀_notmem : algebraMap k[X] (CoordinateRing H) b₀ ∉ v.asIdeal := by
+      intro hb0mem
+      apply hqb₀
+      have : b₀ ∈ P := hb0mem
+      rwa [hq_gen, Ideal.mem_span_singleton] at this
+    have hb₀ne_toPair : toPair H b₀ (0:k[X]) ≠ 0 := by
+      rw [Ne, toPair_eq_zero_iff]
+      intro h
+      exact hb₀_notmem (by
+        rw [h.1]; exact Submodule.zero_mem _)
+    have hord_b₀ : ordAtSpec v b₀ (0:k[X]) = 0 := by
+      apply ordAtSpec_eq_zero_of_notMem v b₀ 0
+      rwa [show toPair H b₀ (0:k[X]) = algebraMap k[X] (CoordinateRing H) b₀ by
+        unfold HyperellipticPolynomial.toPair; simp]
+    -- `hyne : toPair H 0 1 ≠ 0` is already in scope (established earlier in this
+    -- `by_cases hqf` branch, via `hyToPair`).
+    have h0b₀_prod : toPair H (0:k[X]) b₀ = toPair H b₀ (0:k[X]) * toPair H (0:k[X]) 1 := by
+      have := toPair_mul (H := H) b₀ 0 0 1
+      simpa using this.symm
+    have hord_0b₀ : ordAtSpec v (0:k[X]) b₀ = ordAtSpec v (0:k[X]) 1 := by
+      have := ordAtSpec_add_of_toPair_mul (H := H) v b₀ 0 0 1 0 b₀ hb₀ne_toPair hyne h0b₀_prod
+      rw [this, hord_b₀, zero_add]
+    -- Case split on `a₀ = 0`.
+    by_cases ha₀0 : a₀ = 0
+    · -- `toPair a₀ b₀ = toPair 0 b₀` directly: `ordAtSpec v a₀ b₀ = m`.
+      have habeq : ordAtSpec v a₀ b₀ = ordAtSpec v (0:k[X]) 1 := by
+        rw [ha₀0, ← hord_0b₀]
+      -- `hbv : ordAtSpec v a₀ b₀ ≥ ordAtSpec v c₀ 0 ≥ ordAtSpec v q 0 = 2m` (via
+      -- `q ∣ c₀`), contradicting `habeq : ordAtSpec v a₀ b₀ = m` and `m > 0`.
+      obtain ⟨s, hcs⟩ := hqc₀
+      have hs_ne : toPair H s (0:k[X]) ≠ 0 := by
+        rw [Ne, toPair_eq_zero_iff]
+        intro h
+        exact hc₀ne (by rw [hcs, h.1, mul_zero])
+      have hcs_prod : toPair H c₀ (0:k[X]) = toPair H q (0:k[X]) * toPair H s (0:k[X]) := by
+        have := toPair_mul (H := H) q 0 s 0
+        simpa [hcs] using this.symm
+      have hordc₀_ge : ordAtSpec v c₀ (0:k[X]) ≥ ordAtSpec v q (0:k[X]) := by
+        have heq := ordAtSpec_add_of_toPair_mul (H := H) v q 0 s 0 c₀ 0 hqne_toPair hs_ne hcs_prod
+        have hsnn : 0 ≤ ordAtSpec v s (0:k[X]) := ordAtSpec_nonneg v s 0 hs_ne
+        omega
+      omega
+    · -- `a₀ ≠ 0`: decompose `toPair a₀ b₀ = toPair a₀ 0 + toPair 0 b₀`, with
+      -- `ordAtSpec v a₀ 0 ≥ ordAtSpec v q 0 = 2m > m = ordAtSpec v 0 b₀`, so the sum's
+      -- order is exactly `m` (`ordAtSpec_add_eq_of_lt`, smaller term wins).
+      have ha₀ne_toPair : toPair H a₀ (0:k[X]) ≠ 0 := by
+        rw [Ne, toPair_eq_zero_iff]; exact fun h => ha₀0 h.1
+      obtain ⟨s, has⟩ := hqa₀
+      have hs_ne_or_a₀0 : toPair H s (0:k[X]) ≠ 0 := by
+        rw [Ne, toPair_eq_zero_iff]
+        intro h
+        exact ha₀0 (by rw [has, h.1, mul_zero])
+      have has_prod : toPair H a₀ (0:k[X]) = toPair H q (0:k[X]) * toPair H s (0:k[X]) := by
+        have := toPair_mul (H := H) q 0 s 0
+        simpa [has] using this.symm
+      have hord_a₀_ge : ordAtSpec v a₀ (0:k[X]) ≥ ordAtSpec v q (0:k[X]) := by
+        have heq := ordAtSpec_add_of_toPair_mul (H := H) v q 0 s 0 a₀ 0
+          hqne_toPair hs_ne_or_a₀0 has_prod
+        have hsnn : 0 ≤ ordAtSpec v s (0:k[X]) := ordAtSpec_nonneg v s 0 hs_ne_or_a₀0
+        omega
+      have hlt : ordAtSpec v (0:k[X]) b₀ < ordAtSpec v a₀ (0:k[X]) := by
+        rw [hord_0b₀]; omega
+      -- `ordAtSpec_add_eq_of_lt` with `(A,B) := (0,b₀)` (the smaller term) and
+      -- `(C,D) := (a₀,0)`: `ord v (0+a₀) (b₀+0) = ord v 0 b₀`.
+      have hzero_ne : toPair H (0:k[X]) b₀ ≠ 0 := by
+        rw [h0b₀_prod]; exact mul_ne_zero hb₀ne_toPair hyne
+      have hsum_eq : ordAtSpec v ((0:k[X]) + a₀) (b₀ + (0:k[X])) = ordAtSpec v (0:k[X]) b₀ :=
+        ordAtSpec_add_eq_of_lt (H := H) v (0:k[X]) b₀ a₀ (0:k[X])
+          hzero_ne ha₀ne_toPair hlt
+      have hsum_simp : ordAtSpec v a₀ b₀ = ordAtSpec v (0:k[X]) b₀ := by
+        rw [zero_add, add_zero] at hsum_eq; exact hsum_eq
+      rw [hsum_simp, hord_0b₀] at hbv
+      -- `hbv : m ≥ ordAtSpec v c₀ 0 ≥ ordAtSpec v q 0 = 2m` (via `q ∣ c₀`, same as
+      -- the `a₀ = 0` case above), contradicting `m > 0`.
+      obtain ⟨s, hcs⟩ := hqc₀
+      have hs_ne : toPair H s (0:k[X]) ≠ 0 := by
+        rw [Ne, toPair_eq_zero_iff]
+        intro h
+        exact hc₀ne (by rw [hcs, h.1, mul_zero])
+      have hcs_prod : toPair H c₀ (0:k[X]) = toPair H q (0:k[X]) * toPair H s (0:k[X]) := by
+        have := toPair_mul (H := H) q 0 s 0
+        simpa [hcs] using this.symm
+      have hordc₀_ge : ordAtSpec v c₀ (0:k[X]) ≥ ordAtSpec v q (0:k[X]) := by
+        have heq := ordAtSpec_add_of_toPair_mul (H := H) v q 0 s 0 c₀ 0 hqne_toPair hs_ne hcs_prod
+        have hsnn : 0 ≤ ordAtSpec v s (0:k[X]) := ordAtSpec_nonneg v s 0 hs_ne
+        omega
+      omega
   · -- Unramified: `q ∤ H.f` means `y H ∉ v.asIdeal` (else `y H^2 = algebraMap H.f ∈
     -- v.asIdeal` forces `q ∣ H.f`), so `v.asIdeal` prime + `2b₀*y ∈ v.asIdeal` + `y ∉
     -- v.asIdeal` gives `algebraMap (2b₀) ∈ v.asIdeal`, hence `q ∣ 2b₀`, hence `q ∣ b₀`.
