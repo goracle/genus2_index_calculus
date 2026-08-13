@@ -1776,6 +1776,7 @@ each contributing `residueDeg = 1` (`residueDeg_pointHeightOne'`) times `ordAtSp
 bound, consistent since this is really the same fact reached earlier). -/
 set_option maxHeartbeats 100000000 in
 theorem natDegree_le_two_of_gcdUnit_closed_point
+    [DecidableEq k]
     (hdeg : H.f.natDegree = 5)
     (x₁ x₂ : H.Point) (a₀ b₀ c₀ : k[X]) (hc₀ne : c₀ ≠ 0)
     (hab₀ne : toPair H a₀ b₀ ≠ 0)
@@ -1786,7 +1787,6 @@ theorem natDegree_le_two_of_gcdUnit_closed_point
         -((if v = pointHeightOne' x₁ then 1 else 0) +
           (if v = pointHeightOne' x₂ then 1 else 0))) :
     c₀.natDegree ≤ 2 := by
-  classical
   haveI : IsDomain (CoordinateRing H) := IsDedekindDomain.toIsDomain
 
   /- An irreducible factor of `c₀` has a zero at the `X`-coordinate of one of
@@ -2850,14 +2850,22 @@ theorem uniqueDegree2MapToP1Spec (hdeg : H.f.natDegree = 5) (hchar : (2 : k) ≠
     -- `hzsuppSpec₀` (built above, pre-`b₀=0`) directly — replaces the old
     -- `natDegree_le_two_of_isCoprimeAtRoots[_eq]` route, which silently required
     -- `[IsAlgClosed k]` via `IsAlgClosed.splits` in its own proof.
-    -- ABANDONED: do not elaborate the abandoned closed-point degree theorem here.
-    -- Its declaration is retained above for future reconstruction, but invoking it
-    -- from this large dependent context causes a `whnf` timeout.  This local gap
-    -- keeps the rest of the file buildable while we replace the degree-bound route.
+    -- The `whnf` timeout at this call site is not caused by the callee (which
+    -- elaborates fine on its own, see its `set_option maxHeartbeats 100000000`
+    -- above) — it's caused by unifying the call against ~65 accumulated local
+    -- hypotheses (`hzsuppSpec`, `hzsupp`, `hnum`, `hden`, `hfrac_eq₀`, `hgu`'s
+    -- own internal `d`, etc.) still sitting in context here, none of which the
+    -- callee needs. `clear` them first so the `exact` elaborates against a
+    -- small, cheap-to-`whnf` context instead of raising heartbeats.
     have hcdeg : c₀.natDegree ≤ 2 := by
-      set_option maxHeartbeats 1000000000 in
-        exact natDegree_le_two_of_gcdUnit_closed_point (H := H) hdeg x₁ x₂ a₀ b₀ c₀
-          hc₀ne hab₀_ne hgu hchar hsf hzsuppSpec₀
+      clear hA'B'toPairne hab_ne hc0_ne hzsuppSpec hinf hzsupp
+        hg_dvd_ab hgne
+        htoPair_right_zero hg_toPair_ne hnum hden hfrac_eq₀ hc0_ne' hc₀0_ne
+        hzsupp₀ hinf₀ hcop hfrac_eq ha_def hb_def hc_def hcne
+        hAB0ne hA'B'ne hinfle hptwise' hz_eq hne
+        ha_eq hb_eq hc_eq hg_def g
+      exact natDegree_le_two_of_gcdUnit_closed_point (H := H) hdeg x₁ x₂ a₀ b₀ c₀
+        hc₀ne hab₀_ne hgu hchar hsf hzsuppSpec₀
     have hbeq0 : b₀ = 0 := by
       by_contra hb0
       have hInfb : ordInfOfPair a₀ b₀ ≤ -5 := by
@@ -2955,16 +2963,20 @@ theorem uniqueDegree2MapToP1Spec (hdeg : H.f.natDegree = 5) (hchar : (2 : k) ≠
         rw [Ne, toPair_eq_zero_iff]
         exact fun h => hc₀ne h.1
       have hvzero : ordAtSpec v c₀ (0 : k[X]) = 0 := by
-        set_option maxHeartbeats 100000000 in
-          exact ordAtSpec_eq_zero_of_notMem_four_of_dvd
-            (H := H) x₁ x₂ a₀ 0 c₀ hc₀ne hab₀_ne hgu hzsuppSpec₀ hchar hsf
-            v hv1 hv2 hw1 hw2
+        clear hqdeg_ne_one hqmem hwmem hc0ne_pair hAB0ne hA'B'ne hinfle hptwise'
+          hz_eq hne hcne ha_def hb_def hc_def hfrac_eq hab_ne hc0_ne hzsuppSpec
+          hinf hzsupp hg_dvd_ab hgne htoPair_right_zero
+          hg_toPair_ne hnum hden hfrac_eq₀ hc0_ne' hc₀0_ne hzsupp₀ hinf₀ hcop
+          hab₀ne hA'B'toPairne hq hqc ha_eq hb_eq hc_eq hg_def g
+        exact ordAtSpec_eq_zero_of_notMem_four_of_dvd
+          (H := H) x₁ x₂ a₀ 0 c₀ hc₀ne hab₀_ne hgu hzsuppSpec₀ hchar hsf
+          v hv1 hv2 hw1 hw2
       have hc0mem : toPair H c₀ (0 : k[X]) ∈ v.asIdeal := by
         obtain ⟨s, hs⟩ := hqc
         rw [hs]
         unfold HyperellipticPolynomial.toPair
-        rw [map_mul]
-        exact Ideal.mul_mem_left v.asIdeal _ hqmem
+        rw [map_mul, map_zero, zero_mul, add_zero]
+        exact Ideal.mul_mem_right _ v.asIdeal hqmem
       have hc0pos : 0 < ordAtSpec v c₀ (0 : k[X]) := by
         set_option maxHeartbeats 100000000 in
           rw [ordAtSpec_eq_count v c₀ 0 hc0ne_pair]
@@ -2988,12 +3000,16 @@ theorem uniqueDegree2MapToP1Spec (hdeg : H.f.natDegree = 5) (hchar : (2 : k) ≠
     -- or a non-square, using `hzsuppSpec₀` (closed-point-native) for the
     -- non-square branch instead of `IsAlgClosed.exists_pow_nat_eq`.
     have hcdeg0 : c₀.natDegree = 0 := by
-      set_option maxHeartbeats 100000000 in
-        by_contra hcdeg0
-        have hc₀deg1 : c₀.natDegree = 1 := by omega
-        obtain ⟨α, hα⟩ := exists_root_of_natDegree_eq_one c₀ hc₀deg1
-        exact false_of_root_of_isCoprimeAtRoots_zero_snd_general
-          (H := H) hchar hsf x₁ x₂ hne a₀ c₀ hc₀ne hcop hzsupp₀ hzsuppSpec₀ α hα
+      by_contra hcdeg0
+      have hc₀deg1 : c₀.natDegree = 1 := by omega
+      obtain ⟨α, hα⟩ := exists_root_of_natDegree_eq_one c₀ hc₀deg1
+      clear hcdeg0 hcdeg1 hAB0ne hA'B'ne hinfle hptwise' hz_eq hcne ha_def
+        hb_def hc_def hfrac_eq hab_ne hc0_ne hzsuppSpec hinf hzsupp hg_dvd_ab
+        hgne htoPair_right_zero hg_toPair_ne hnum hden
+        hfrac_eq₀ hc0_ne' hc₀0_ne hab₀ne hA'B'toPairne hgu hc₀deg1
+        ha_eq hb_eq hc_eq hg_def g
+      exact false_of_root_of_isCoprimeAtRoots_zero_snd_general
+        (H := H) hchar hsf x₁ x₂ hne a₀ c₀ hc₀ne hcop hzsupp₀ hzsuppSpec₀ α hα
     have hadeg0 : a₀.natDegree = 0 := by
       have habne0 : a₀ ≠ 0 := by
         intro ha0
