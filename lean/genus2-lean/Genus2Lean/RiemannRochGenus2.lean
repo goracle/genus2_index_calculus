@@ -1565,6 +1565,7 @@ theorem ordInfOfPair_zero_zero :
     ordInfOfPair (0 : k[X]) (0 : k[X]) = 0 := by
   simp [ordInfOfPair]
 
+omit [IsAlgClosed k] in
 /-- Helper: `ordInfOfPair A B` unfolded on its nonzero branch. `ordInfOfPair`
 picks up `Classical.propDecidable` for the `if B = 0 then .. else ..`
 internally, but a freshly-written `if B = 0 then .. else ..` in a goal's

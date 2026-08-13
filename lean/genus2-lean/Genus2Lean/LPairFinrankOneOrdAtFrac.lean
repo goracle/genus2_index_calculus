@@ -1120,6 +1120,7 @@ need to know which one is active. Symmetrically `2dA' ≤ M'` and (`B'≠0`)
   piece of real content beyond routine `natDegree_add_le`/`natDegree_mul_le`
   bookkeeping, and is the reason `deg c` is exactly `M'` rather than merely
   `≤ M'` — worth double-checking carefully against a live goal state. -/
+omit [IsAlgClosed k] in
 theorem ordInfOfPair_rationalized_ge (hdeg : H.f.natDegree = 5) (A B A' B' : k[X])
     (hABne : ¬ (A = 0 ∧ B = 0)) (hA'B'ne : ¬ (A' = 0 ∧ B' = 0))
     (hinfle : ordInfOfPair A B ≥ ordInfOfPair A' B')
@@ -1610,6 +1611,7 @@ example above: `g = X^5` there, reducing to `a₀=b₀... ` — actually
 `a₀=c₀=-1, b₀=0`, genuinely coprime, correctly identifying `z=1` (constant)
 as the true value of `(1+y)/(1+y)`. -/
 
+omit [IsAlgClosed k] in
 /-- **`ordInfOfPair` shifts by `-2·deg g` under multiplying both slots by a
 common nonzero factor `g`.** Pure `k[X]`-degree arithmetic: `natDegree`
 is additive under multiplication in a domain (`Polynomial.natDegree_mul`),

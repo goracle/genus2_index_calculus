@@ -516,6 +516,71 @@ theorem false_of_nonSquareFiber_root [IsDedekindDomain (CoordinateRing H)]
   simp only [if_neg hvne1, if_neg hvne2, add_zero] at hbound
   omega
 
+/-- **The ramified rational case, without `[IsAlgClosed k]`.** Verbatim
+extraction of `false_of_root_of_coprimeAtRoots_zero_snd`'s ramified branch
+(`H.f.eval α = 0`): it never invokes closedness, only the unramified branch
+of that theorem does (via `IsAlgClosed.exists_pow_nat_eq`), so this half is a
+direct, unconditional replacement — no `hsq`/`hns` case split needed here. -/
+theorem false_of_root_ramified
+    [IsDedekindDomain (CoordinateRing H)]
+    (hsf : Squarefree H.f) (x₁ x₂ : H.Point)
+    (hne : x₂ ≠ Point.iota x₁) (a₀ c₀ : k[X]) (hc₀ne : c₀ ≠ 0)
+    (haα : a₀.eval (α : k) ≠ 0)
+    (hzsupp₀ : ∀ P : H.Point, ordAtFrac P a₀ 0 c₀ 0 ≥
+      -((if P = x₁ then 1 else 0) + (if P = x₂ then 1 else 0)))
+    (hWeier : H.f.eval α = 0) (hα : c₀.eval α = 0) : False := by
+  classical
+  have hQeq : H.Equation α (0 : k) := by
+    show (0 : k) ^ 2 = H.f.eval α; rw [hWeier]; ring
+  set Q : H.Point := Point.mk α 0 hQeq with hQ_def
+  have hQX : Q.X = α := rfl
+  have hQY : Q.Y = 0 := rfl
+  have hordc : ordAt Q c₀ (0 : k[X]) = 2 * (c₀.rootMultiplicity α : ℤ) :=
+    ordAt_eq_rootMultiplicity_ramified hsf c₀ hc₀ne α Q (pointIdeal_ne_bot Q) hQX hQY
+  have hmpos : (c₀.rootMultiplicity α : ℤ) ≥ 1 := by
+    have hroot : c₀.IsRoot α := hα
+    have hpos : 0 < c₀.rootMultiplicity α := (Polynomial.rootMultiplicity_pos hc₀ne).mpr hroot
+    exact_mod_cast hpos
+  have hnotmem : toPair H a₀ (0 : k[X]) ∉ pointIdeal Q := by
+    rw [toPair_mem_pointIdeal_iff]; simp only [hQX, hQY, mul_zero, add_zero]; exact haα
+  have hordab : ordAt Q a₀ (0 : k[X]) = 0 := ordAt_eq_zero_of_notMem Q a₀ 0 hnotmem
+  have hboundQ := hzsupp₀ Q
+  unfold ordAtFrac at hboundQ
+  rw [hordab, hordc] at hboundQ
+  have hsum_ge : (2 : ℤ) ≤
+      (if Q = x₁ then 1 else 0) + (if Q = x₂ then 1 else 0) := by
+    linarith [hboundQ, hmpos]
+  have hQ1 : Q = x₁ := by
+    by_contra hQ1
+    by_cases hQ2 : Q = x₂
+    · have h := hsum_ge
+      simp only [if_neg hQ1, if_pos hQ2] at h
+      omega
+    · have h := hsum_ge
+      simp only [if_neg hQ1, if_neg hQ2] at h
+      omega
+  have hQ2 : Q = x₂ := by
+    by_contra hQ2
+    by_cases hQ1 : Q = x₁
+    · have h := hsum_ge
+      simp only [if_pos hQ1, if_neg hQ2] at h
+      omega
+    · have h := hsum_ge
+      simp only [if_neg hQ1, if_neg hQ2] at h
+      omega
+  have hιQeq : Point.iota Q = Q := by
+    apply Subtype.ext
+    apply Prod.ext
+    · exact Point.iota_X Q
+    · calc
+        (Point.iota Q).Y = -Q.Y := Point.iota_Y Q
+        _ = Q.Y := by rw [hQY]; simp
+  apply hne
+  calc
+    x₂ = Q := hQ2.symm
+    _ = Point.iota Q := hιQeq.symm
+    _ = Point.iota x₁ := congrArg Point.iota hQ1
+
 /-- **The unramified rational case, without `[IsAlgClosed k]`.** Same
 argument as `false_of_root_of_coprimeAtRoots_zero_snd`'s unramified branch,
 except the square root `β` with `β ^ 2 = H.f.eval α` is taken directly from
@@ -611,11 +676,12 @@ theorem false_of_root_unramified_of_isSquare
     · exact False.elim (hQIneQ (hιQ2.trans hQ2.symm))
 
 /-- **The `IsAlgClosed`-free finish.** Direct replacement for
-`false_of_root_of_coprimeAtRoots_zero_snd`. The ramified rational case
-reuses that lemma's exact argument (no closedness there); the unramified
-rational case uses `false_of_root_unramified_of_isSquare` (square root taken
-from `hsq` directly, not from `IsAlgClosed`); the `H.f.eval α` non-square
-case uses `false_of_nonSquareFiber_root`. -/
+`false_of_root_of_coprimeAtRoots_zero_snd`. The ramified rational case uses
+`false_of_root_ramified` (an extraction of that lemma's ramified branch,
+which never needed closedness); the unramified rational case uses
+`false_of_root_unramified_of_isSquare` (square root taken from `hsq`
+directly, not from `IsAlgClosed`); the `H.f.eval α` non-square case uses
+`false_of_nonSquareFiber_root`. -/
 theorem false_of_root_of_isCoprimeAtRoots_zero_snd_general
     [IsDedekindDomain (CoordinateRing H)] [DecidableEq k]
     (hchar : (2 : k) ≠ 0) (hsf : Squarefree H.f) (x₁ x₂ : H.Point)
@@ -631,8 +697,8 @@ theorem false_of_root_of_isCoprimeAtRoots_zero_snd_general
   classical
   have haα : a₀.eval α ≠ 0 := fun h => hcop α hα ⟨h, by simp⟩
   by_cases hWeier : H.f.eval α = 0
-  · exact false_of_root_of_coprimeAtRoots_zero_snd
-      (H := H) hchar hsf x₁ x₂ hne a₀ c₀ hc₀ne hcop hzsupp₀ α hα
+  · exact false_of_root_ramified
+      (H := H) hsf x₁ x₂ hne a₀ c₀ hc₀ne haα hzsupp₀ hWeier hα
   · by_cases hsq : IsSquare (H.f.eval α)
     · exact false_of_root_unramified_of_isSquare
         (H := H) hchar x₁ x₂ hne a₀ c₀ hc₀ne haα hzsupp₀ hWeier hα hsq
@@ -742,7 +808,7 @@ theorem mem_conjHeightOne_iff [IsDedekindDomain (CoordinateRing H)]
     simpa using this.symm
   rw [this]
 
-/-- **STATUS: `false_of_bad_factor_split_deg_ge_two` — attempted, not closed.**
+/-! **STATUS: `false_of_bad_factor_split_deg_ge_two` — attempted, not closed.**
 Built `SplitBaseField q := AdjoinRoot q`, `SqrtExtQ q := L[T]/(T² - mk q H.f)`, and
 `evalAtSplitFiber : CoordinateRing H →+* SqrtExtQ q` (well-defined, `x ↦ root q`, `y ↦`
 the adjoined square root) — the ring-hom layer of the construction, directly analogous
@@ -941,31 +1007,53 @@ def ramifiedFiberHeightOne [IsDedekindDomain (CoordinateRing H)]
   ne_bot := ramifiedFiberIdeal_ne_bot (H := H) q hq hqf
 
 /-- **Residue degree of the ramified closed point equals `q.natDegree`.** Via
-`RingHom.quotientKerEquivOfSurjective` and `AdjoinRoot`'s `finrank` (`q.natDegree`,
-same computation as `finrank_sqrtExt` but at general degree, using `AdjoinRoot.finrank`
-directly against `q` itself rather than `X² - C c`). -/
-theorem residueDeg_ramifiedFiberHeightOne [IsDedekindDomain (CoordinateRing H)]
+`RingHom.quotientKerEquivOfSurjective` and `AdjoinRoot`'s power basis (`q.natDegree`,
+same computation as `finrank_sqrtExt` but at general degree, using
+`AdjoinRoot.powerBasis hq.ne_zero` directly against `q` itself rather than
+`X² - C c`: `PowerBasis.finrank` gives `Module.finrank k (AdjoinRoot q) =
+(AdjoinRoot.powerBasis hq.ne_zero).dim`, and `AdjoinRoot.powerBasis_dim` identifies
+that `dim` with `q.natDegree`). -/
+theorem residueDeg_ramifiedFiberHeightOne
     (q : k[X]) (hq : Irreducible q) (hqf : q ∣ H.f) :
     residueDeg (ramifiedFiberHeightOne (H := H) q hq hqf) = q.natDegree := by
   unfold residueDeg ramifiedFiberHeightOne
   simp only
-  have hequiv : (CoordinateRing H ⧸ RingHom.ker (evalAtRamifiedFiber (H := H) q hqf)) ≃+*
+  set hequiv : (CoordinateRing H ⧸ RingHom.ker (evalAtRamifiedFiber (H := H) q hqf)) ≃+*
       AdjoinRoot q :=
     RingHom.quotientKerEquivOfSurjective (evalAtRamifiedFiber_surjective (H := H) q hqf)
+    with hequiv_def
   have hlinequiv : Module.finrank k (CoordinateRing H ⧸ ramifiedFiberIdeal (H := H) q hqf) =
       Module.finrank k (AdjoinRoot q) := by
     apply LinearEquiv.finrank_eq
     exact hequiv.toAddEquiv.toLinearEquiv (fun r x => by
       show hequiv (r • x) = r • hequiv x
-      simp [Algebra.smul_def, map_mul])
+      rw [Algebra.smul_def, Algebra.smul_def]
+      rw [map_mul]
+      congr 1
+      have hlhs : algebraMap k (CoordinateRing H) r =
+          AdjoinRoot.mk ((X : (k[X])[X]) ^ 2 - C H.f) (C (C r)) := rfl
+      change
+        hequiv (Ideal.Quotient.mk (RingHom.ker (evalAtRamifiedFiber (H := H) q hqf))
+          (algebraMap k (CoordinateRing H) r)) =
+          (algebraMap k (AdjoinRoot q)) r
+      rw [hlhs, hequiv_def]
+      rw [RingHom.quotientKerEquivOfSurjective_apply_mk]
+      have hrval : evalAtRamifiedFiber (H := H) q hqf
+          (AdjoinRoot.mk ((X : (k[X])[X]) ^ 2 - C H.f) (C (C r))) = AdjoinRoot.mk q (C r) := by
+        change (AdjoinRoot.lift (AdjoinRoot.mk q) 0 _)
+            (AdjoinRoot.of ((X : (k[X])[X]) ^ 2 - C H.f) (C r)) = AdjoinRoot.mk q (C r)
+        rw [AdjoinRoot.lift_of]
+      rw [hrval]
+      simp [AdjoinRoot.algebraMap_eq, AdjoinRoot.mk_C])
   rw [hlinequiv]
-  exact AdjoinRoot.finrank hq.ne_zero
+  rw [(AdjoinRoot.powerBasis hq.ne_zero).finrank]
+  exact AdjoinRoot.powerBasis_dim hq.ne_zero
 
 /-- **The ramified closed point is never a rational point when `q.natDegree ≥ 2`.**
 Residue degree mismatch. (When `q.natDegree = 1`, the existing rational-point
 machinery already handles it — this general construction is only needed for `q.
 natDegree ≥ 2`, but the statement holds unconditionally whenever `q.natDegree ≠ 1`.) -/
-theorem ramifiedFiberHeightOne_ne_pointHeightOne' [IsDedekindDomain (CoordinateRing H)]
+theorem ramifiedFiberHeightOne_ne_pointHeightOne'
     (q : k[X]) (hq : Irreducible q) (hqf : q ∣ H.f) (hqdeg : q.natDegree ≠ 1)
     (P : H.Point) :
     ramifiedFiberHeightOne (H := H) q hq hqf ≠ pointHeightOne' P := by
@@ -1167,11 +1255,51 @@ theorem uniqueDegree2MapToP1Spec (hdeg : H.f.natDegree = 5) (hchar : (2 : k) ≠
         rw [hc_eq]
         have h := ordInfOfPair_mul_left g c₀ (0 : k[X]) hgne hc₀0ne
         simpa only [mul_zero] using h
-      rw [hshift_ab, hshift_c] at hinf
-      linarith
-    -- **§1's unit-gcd fact**, for this specific witness triple.
-    have hgu : IsUnit (gcd (gcd a₀ b₀) c₀) :=
-      gcd_unit_of_reduce_ordAtFrac_triple a b c a₀ b₀ c₀ hcne hgne ha_eq hb_eq hc_eq
+      -- Chain the three facts as bare `≤`/`≥`/`=` values via `calc`, never
+      -- asking a tactic (`rw ... at`, `generalize ... at`, `set`) to search
+      -- for `ordInfOfPair` occurrences inside an already-elaborated
+      -- hypothesis — that search itself is what timed out twice before, since
+      -- `ordInfOfPair`'s `max`/`if` definition is expensive to match against.
+      -- `calc` only ever unifies each step's own stated end points, which are
+      -- written out plainly here, so no such search is triggered.
+      calc ordInfOfPair a₀ b₀ = ordInfOfPair a b + 2 * (g.natDegree : ℤ) := by
+            rw [hshift_ab]; ring
+        _ ≥ ordInfOfPair c (0 : k[X]) + 2 * (g.natDegree : ℤ) := by
+            gcongr <;> exact hinf
+        _ = ordInfOfPair c₀ (0 : k[X]) := by
+            rw [hshift_c]; ring
+    -- **§1's unit-gcd fact**, proved directly for the already-named
+    -- quotient witnesses. Avoid passing the `set g := ...` abstraction through
+    -- `gcd_unit_of_reduce_ordAtFrac_triple`: that forces elaboration to unfold
+    -- the gcd expression while matching several dependent hypotheses, which is
+    -- exactly where `whnf` was hitting the heartbeat limit.
+    have hgu : IsUnit (gcd (gcd a₀ b₀) c₀) := by
+      set d := gcd (gcd a₀ b₀) c₀ with hd_def
+      have hd_dvd_a₀ : d ∣ a₀ :=
+        (gcd_dvd_left _ _).trans (gcd_dvd_left _ _)
+      have hd_dvd_b₀ : d ∣ b₀ :=
+        (gcd_dvd_left _ _).trans (gcd_dvd_right _ _)
+      have hd_dvd_c₀ : d ∣ c₀ := gcd_dvd_right _ _
+      have hgd_dvd_a : g * d ∣ a := by
+        rw [ha_eq]
+        exact mul_dvd_mul_left g hd_dvd_a₀
+      have hgd_dvd_b : g * d ∣ b := by
+        rw [hb_eq]
+        exact mul_dvd_mul_left g hd_dvd_b₀
+      have hgd_dvd_c : g * d ∣ c := by
+        rw [hc_eq]
+        exact mul_dvd_mul_left g hd_dvd_c₀
+      have hgd_dvd_gab : g * d ∣ gcd a b :=
+        dvd_gcd hgd_dvd_a hgd_dvd_b
+      have hgd_dvd_g : g * d ∣ g :=
+        dvd_gcd hgd_dvd_gab hgd_dvd_c
+      have hd_dvd_one : d ∣ (1 : k[X]) := by
+        have hg_dvd_g1 : g ∣ g * 1 := by rw [mul_one]
+        have h := (mul_dvd_mul_iff_left hgne).mp
+          (hgd_dvd_g.trans hg_dvd_g1)
+        simpa using h
+      rw [← hd_def]
+      exact isUnit_of_dvd_one hd_dvd_one
     -- **§0: `c₀.natDegree ≤ 2`** — reuse the existing `IsCoprimeAtRoots`-based
     -- route for this bound (unaffected by closedness: it only needs `H.Point`-
     -- rational roots to bound the *rational* root count, and the *degree*
