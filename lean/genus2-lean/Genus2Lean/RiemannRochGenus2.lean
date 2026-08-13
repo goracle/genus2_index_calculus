@@ -1239,6 +1239,7 @@ theorem ordAtFrac_eq_of_polePairToFraction_eq (P : H.Point)
     ordAtFrac P A B A' B' = ordAtFrac P C D C' D' :=
   ordAt_sub_ordAt_eq_of_polePairToFraction_eq P A B A' B' C D C' D' hz hA'B' hC'D' heq
 
+omit [IsAlgClosed k] in
 /-- `toPair H (C c) 0` is never in any `pointIdeal P` for `c ≠ 0`: it is a
 unit (`toPair H (C c) 0 * toPair H (C c⁻¹) 0 = 1` via `toPair_mul` collapsed
 by `mul_inv_cancel₀`), and no maximal ideal contains a unit. Ported from
@@ -1258,12 +1259,14 @@ theorem toPair_C_notMem_pointIdeal (c : k) (hc : c ≠ 0) (P : H.Point) :
   exact (pointIdeal_isMaximal P).ne_top
     (Ideal.eq_top_of_isUnit_mem (pointIdeal P) hmem hunit)
 
+omit [IsAlgClosed k] in
 /-- `ordAt` at a nonzero constant pair is always `0`. Ported from
 `LPairFinrankOne.lean`'s `ordAt_C_zero`. -/
 theorem ordAt_C_zero (c : k) (hc : c ≠ 0) (P : H.Point) :
     ordAt P (Polynomial.C c) (0 : k[X]) = 0 :=
   ordAt_eq_zero_of_notMem P (Polynomial.C c) 0 (toPair_C_notMem_pointIdeal c hc P)
 
+omit [IsAlgClosed k] in
 /-- **`ordAt` is invariant under scaling by a nonzero constant.** Ported from
 `LPairFinrankOne.lean`'s `ordAt_C_mul_eq`, needed here (rather than imported,
 since this file is upstream of that one) for `LPairCarrier'`'s scalar-closure
@@ -1456,6 +1459,165 @@ theorem lPairCarrierSpec'_subset_lPairCarrier' (x₁ x₂ : H.Point) :
   · exact Or.inl hz0
   · exact Or.inr ⟨A, B, A', B', isPoleBoundedAtPair'_of_spec' x₁ x₂ A B A' B' hbound, hz⟩
 
+omit [IsAlgClosed k] in
+/-- **`ordAtSpec`'s ultrametric inequality**, the `v : HeightOneSpectrum`
+analogue of `ordAt_add_ge_min`. Unlike the `H.Point`-indexed original, there
+is no `pointIdeal = ⊥` case to exclude here — every `v` already carries
+`v.ne_bot` in its own structure — so this proof is a direct simplification of
+`ordAt_add_ge_min`'s nonzero branch (the `g = 0`/`g' = 0` branches transport
+unchanged, and the `pointIdeal = ⊥` branch simply does not exist). Needs the
+explicit `g + g' ≠ 0` hypothesis for the same reason `ordAt_add_ge_min` does
+(the `toPair H A₃ B₃ = 0` branch is genuinely false without it — see that
+theorem's own docstring for the counterexample). -/
+theorem ordAtSpec_add_ge_min
+    (v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H))
+    (g g' : CoordinateRing H) (A B A' B' A₃ B₃ : k[X])
+    (hA : toPair H A B = g) (hA' : toPair H A' B' = g') (hA₃ : toPair H A₃ B₃ = g + g')
+    (hgg'_ne : g + g' ≠ 0) :
+    ordAtSpec v A₃ B₃ ≥ min (ordAtSpec v A B) (ordAtSpec v A' B') := by
+  by_cases hg : toPair H A B = 0
+  · have hgval : g = 0 := hA ▸ hg
+    have heq : toPair H A₃ B₃ = toPair H A' B' := by rw [hA₃, hgval, zero_add, hA']
+    have hordEq : ordAtSpec v A₃ B₃ = ordAtSpec v A' B' := by unfold ordAtSpec; rw [heq]
+    have hordAB0 : ordAtSpec v A B = 0 := by unfold ordAtSpec; rw [if_pos hg]
+    rw [hordEq, hordAB0]
+    exact min_le_right _ _
+  · by_cases hg' : toPair H A' B' = 0
+    · have hg'val : g' = 0 := hA' ▸ hg'
+      have heq : toPair H A₃ B₃ = toPair H A B := by rw [hA₃, hg'val, add_zero, hA]
+      have hordEq : ordAtSpec v A₃ B₃ = ordAtSpec v A B := by unfold ordAtSpec; rw [heq]
+      have hordA'B'0 : ordAtSpec v A' B' = 0 := by unfold ordAtSpec; rw [if_pos hg']
+      rw [hordEq, hordA'B'0]
+      exact min_le_left _ _
+    · have hg3 : toPair H A₃ B₃ ≠ 0 := by rw [hA₃]; exact hgg'_ne
+      unfold ordAtSpec
+      rw [if_neg hg, if_neg hg', if_neg hg3]
+      have hval3 : toPair H A₃ B₃ = toPair H A B + toPair H A' B' := by
+        rw [hA₃, hA, hA']
+      have hstep : v.intValuation (toPair H A₃ B₃) ≤
+          max (v.intValuation (toPair H A B)) (v.intValuation (toPair H A' B')) := by
+        rw [hval3]; exact v.intValuation.map_add_le_max' _ _
+      have hne : ∀ (C D : k[X]), toPair H C D ≠ 0 → v.intValuation (toPair H C D) ≠ 0 := by
+        intro C D hCD
+        rw [IsDedekindDomain.HeightOneSpectrum.intValuation_apply,
+            IsDedekindDomain.HeightOneSpectrum.intValuationDef_if_neg _ hCD]
+        exact WithZero.exp_ne_zero
+      have hne3 := hne A₃ B₃ hg3
+      have hneAB := hne A B hg
+      have hneA'B' := hne A' B' hg'
+      have hmaxne : max (v.intValuation (toPair H A B))
+          (v.intValuation (toPair H A' B')) ≠ 0 := by
+        rcases max_choice (v.intValuation (toPair H A B))
+            (v.intValuation (toPair H A' B')) with h | h <;> rw [h]
+        · exact hneAB
+        · exact hneA'B'
+      have hlog := WithZero.log_le_log_of_ne_zero hne3 hmaxne hstep
+      have hmaxlog : (max (v.intValuation (toPair H A B))
+          (v.intValuation (toPair H A' B'))).log =
+          max (v.intValuation (toPair H A B)).log
+            (v.intValuation (toPair H A' B')).log := by
+        rcases le_total (v.intValuation (toPair H A B))
+            (v.intValuation (toPair H A' B')) with h | h
+        · rw [max_eq_right h, max_eq_right (WithZero.log_le_log_of_ne_zero hneAB hneA'B' h)]
+        · rw [max_eq_left h, max_eq_left (WithZero.log_le_log_of_ne_zero hneA'B' hneAB h)]
+      rw [hmaxlog] at hlog
+      omega
+
+omit [IsAlgClosed k] in
+/-- **`ordAtSpec'`: the `WithTop ℤ`-valued companion to `ordAtSpec`.** Handles
+`toPair H A B = 0` as `⊤` instead of `ordAtSpec`'s `0` placeholder, so it is
+additive and ultrametric *unconditionally*, with no nonvanishing hypothesis
+needed anywhere — the `v`-indexed analogue of `ordAt'`. -/
+def ordAtSpec' (v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H))
+    (A B : k[X]) : WithTop ℤ :=
+  if toPair H A B = 0 then
+    ⊤
+  else
+    -WithZero.log (v.intValuation (toPair H A B))
+
+omit [IsAlgClosed k] in
+/-- **`ordAtSpec'` agrees with `ordAtSpec` (coerced) whenever `toPair H A B ≠
+0`.** The `v`-indexed analogue of `ordAt_eq_ordAt'_of_ne_zero`, but simpler:
+there is no `pointIdeal = ⊥` case to split on here, so after `if_neg hAB` both
+sides reduce to the identical `-WithZero.log (v.intValuation (toPair H A B))`
+term (coerced into `WithTop ℤ` on the right), closed by `rfl`. -/
+theorem ordAtSpec_eq_ordAtSpec'_of_ne_zero
+    (v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H)) (A B : k[X])
+    (hAB : toPair H A B ≠ 0) :
+    ordAtSpec' v A B = (ordAtSpec v A B : WithTop ℤ) := by
+  unfold ordAtSpec' ordAtSpec
+  rw [if_neg hAB, if_neg hAB]
+  norm_cast
+
+omit [IsAlgClosed k] in
+/-- **`ordAtSpec'` is unconditionally multiplicative** (`toPair`-multiplicative
+witnesses add under `ordAtSpec'`, no nonvanishing side condition needed since
+the `toPair = 0` cases are handled by `⊤`'s absorbing behavior). The `v`-indexed
+analogue of `ordAt'_toPair_mul`. -/
+theorem ordAtSpec'_toPair_mul
+    (v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H))
+    (A B A' B' A₃ B₃ : k[X])
+    (hA₃ : toPair H A₃ B₃ = toPair H A B * toPair H A' B') :
+    ordAtSpec' v A₃ B₃ = ordAtSpec' v A B + ordAtSpec' v A' B' := by
+  by_cases hAB : toPair H A B = 0
+  · have hA₃0 : toPair H A₃ B₃ = 0 := by rw [hA₃, hAB, zero_mul]
+    unfold ordAtSpec'
+    rw [if_pos hA₃0, if_pos hAB]
+    simp
+  · by_cases hA'B' : toPair H A' B' = 0
+    · have hA₃0 : toPair H A₃ B₃ = 0 := by rw [hA₃, hA'B', mul_zero]
+      unfold ordAtSpec'
+      rw [if_pos hA₃0, if_pos hA'B']
+      simp
+    · have hA₃ne : toPair H A₃ B₃ ≠ 0 := by rw [hA₃]; exact mul_ne_zero hAB hA'B'
+      have hzstep : v.intValuation (toPair H A₃ B₃) =
+          v.intValuation (toPair H A B) * v.intValuation (toPair H A' B') := by
+        rw [hA₃, map_mul]
+      have hlogstep : -WithZero.log (v.intValuation (toPair H A₃ B₃)) =
+          -WithZero.log (v.intValuation (toPair H A B)) +
+            -WithZero.log (v.intValuation (toPair H A' B')) := by
+        rw [hzstep, WithZero.log_mul (v.intValuation_ne_zero _ hAB)
+          (v.intValuation_ne_zero _ hA'B')]
+        ring
+      rw [ordAtSpec_eq_ordAtSpec'_of_ne_zero v A₃ B₃ hA₃ne,
+          ordAtSpec_eq_ordAtSpec'_of_ne_zero v A B hAB,
+          ordAtSpec_eq_ordAtSpec'_of_ne_zero v A' B' hA'B']
+      unfold ordAtSpec
+      rw [if_neg hAB, if_neg hA'B', if_neg hA₃ne]
+      exact_mod_cast hlogstep
+
+omit [IsAlgClosed k] in
+/-- **`ordAtSpec'`'s ultrametric inequality, unconditional.** The `v`-indexed
+analogue of `ordAt'_add_ge_min`; the `toPair = 0` branches are immediate from
+`min _ ⊤ = _`/`min ⊤ _ = _`/`le_top`, and the genuinely hard case reduces to
+`ordAtSpec_add_ge_min` above via the coercion lemma. -/
+theorem ordAtSpec'_add_ge_min
+    (v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H))
+    (A B A' B' A₃ B₃ : k[X])
+    (hA₃ : toPair H A₃ B₃ = toPair H A B + toPair H A' B') :
+    ordAtSpec' v A₃ B₃ ≥ min (ordAtSpec' v A B) (ordAtSpec' v A' B') := by
+  by_cases hAB : toPair H A B = 0
+  · have heq : toPair H A₃ B₃ = toPair H A' B' := by rw [hA₃, hAB, zero_add]
+    have hordEq : ordAtSpec' v A₃ B₃ = ordAtSpec' v A' B' := by unfold ordAtSpec'; rw [heq]
+    have hAB_top : ordAtSpec' v A B = ⊤ := by unfold ordAtSpec'; rw [if_pos hAB]
+    rw [hordEq, hAB_top, min_eq_right le_top]
+  · by_cases hA'B' : toPair H A' B' = 0
+    · have heq : toPair H A₃ B₃ = toPair H A B := by rw [hA₃, hA'B', add_zero]
+      have hordEq : ordAtSpec' v A₃ B₃ = ordAtSpec' v A B := by unfold ordAtSpec'; rw [heq]
+      have hA'B'_top : ordAtSpec' v A' B' = ⊤ := by unfold ordAtSpec'; rw [if_pos hA'B']
+      rw [hordEq, hA'B'_top, min_eq_left le_top]
+    · by_cases hg3 : toPair H A₃ B₃ = 0
+      · have hA₃_top : ordAtSpec' v A₃ B₃ = ⊤ := by unfold ordAtSpec'; rw [if_pos hg3]
+        rw [hA₃_top]; exact le_top
+      · have hgg'_ne : toPair H A B + toPair H A' B' ≠ 0 := by
+          intro hsum; exact hg3 (hA₃ ▸ hsum)
+        have hstep := ordAtSpec_add_ge_min v (toPair H A B) (toPair H A' B')
+          A B A' B' A₃ B₃ rfl rfl hA₃ hgg'_ne
+        rw [ordAtSpec_eq_ordAtSpec'_of_ne_zero v A₃ B₃ hg3,
+            ordAtSpec_eq_ordAtSpec'_of_ne_zero v A B hAB,
+            ordAtSpec_eq_ordAtSpec'_of_ne_zero v A' B' hA'B']
+        exact_mod_cast hstep
+
 -- **Relocated up from later in the file (build-order fix).** `ordInfOfPair_le_zero`
 -- and `ordInfOfPair_C_mul_ge` originally sat after `LPairCarrier'_smul`, but
 -- `LPairCarrier'_smul`'s proof calls `ordInfOfPair_C_mul_ge` — a genuine forward
@@ -1464,6 +1626,7 @@ theorem lPairCarrierSpec'_subset_lPairCarrier' (x₁ x₂ : H.Point) :
 -- `PrincipalDivisors.lean`, so no further reordering is needed) rather than left
 -- in their original position.
 
+omit [IsAlgClosed k] in
 /-- `ordInfOfPair A B` is always `≤ 0`. -/
 theorem ordInfOfPair_le_zero (A B : k[X]) : ordInfOfPair A B ≤ 0 := by
   by_cases hA : A = 0
@@ -1474,6 +1637,7 @@ theorem ordInfOfPair_le_zero (A B : k[X]) : ordInfOfPair A B ≤ 0 := by
     · simp [ordInfOfPair, hA, hB]
     · simp [ordInfOfPair, hA, hB]
 
+omit [IsAlgClosed k] in
 /-- Multiplying both slots by `C c` can only weaken the pole order at infinity. -/
 theorem ordInfOfPair_C_mul_ge (c : k) (A B : k[X]) :
     ordInfOfPair (C c * A) (C c * B) ≥ ordInfOfPair A B := by
@@ -1499,6 +1663,149 @@ theorem ordInfOfPair_C_mul_ge (c : k) (A B : k[X]) :
     by_cases hA : A = 0 <;> by_cases hB : B = 0 <;>
       simp [ordInfOfPair, hA, hB, hAdeg, hBdeg, mul_eq_zero, hCne]
 
+omit [IsAlgClosed k] in
+/-- **`toPair H (C c) 0` is never in `v.asIdeal`, for any closed point `v` and
+any `c ≠ 0`.** The `v`-general analogue of `toPair_C_notMem_pointIdeal`: the
+key fact (`toPair H (C c) 0` is a unit of `CoordinateRing H`) is entirely
+`v`-independent — only the very last step (a unit lies in no proper ideal)
+needs `v.asIdeal`, via `v.asIdeal.IsPrime.ne_top` (every `HeightOneSpectrum`
+element is by definition a nonzero prime, hence proper) rather than
+`pointIdeal_isMaximal P`. -/
+theorem toPair_C_notMem_asIdeal (c : k) (hc : c ≠ 0)
+    (v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H)) :
+    toPair H (Polynomial.C c) (0 : k[X]) ∉ v.asIdeal := by
+  intro hmem
+  have hunit : IsUnit (toPair H (Polynomial.C c) (0 : k[X])) := by
+    have hmul_fwd : toPair H (Polynomial.C c) 0 * toPair H (Polynomial.C c⁻¹) 0 = 1 := by
+      have hmul := toPair_mul (H := H) (Polynomial.C c) 0 (Polynomial.C c⁻¹) 0
+      simp only [zero_mul, mul_zero, add_zero] at hmul
+      rw [hmul, ← Polynomial.C_mul, mul_inv_cancel₀ hc, Polynomial.C_1, toPair_one_zero]
+    have hmul_bwd : toPair H (Polynomial.C c⁻¹) 0 * toPair H (Polynomial.C c) 0 = 1 := by
+      rw [mul_comm]; exact hmul_fwd
+    exact ⟨⟨toPair H (Polynomial.C c) 0, toPair H (Polynomial.C c⁻¹) 0, hmul_fwd, hmul_bwd⟩, rfl⟩
+  haveI hprime : v.asIdeal.IsPrime := v.isPrime
+  exact hprime.ne_top (Ideal.eq_top_of_isUnit_mem v.asIdeal hmem hunit)
+
+omit [IsAlgClosed k] in
+/-- `ordAtSpec` at a nonzero constant pair is always `0`, for any closed point.
+The `v`-general analogue of `ordAt_C_zero`. Proved directly (rather than via a
+separate `ordAtSpec_eq_zero_of_notMem` helper, which lives only in a
+downstream file and is not available here) from `toPair_C_notMem_asIdeal`
+plus the same `intValuation_le_one`/`intValuation_lt_one_iff_dvd` chain
+`ordAtSpec_C_mul_eq` below also uses. -/
+theorem ordAtSpec_C_zero (c : k) (hc : c ≠ 0)
+    (v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H)) :
+    ordAtSpec v (Polynomial.C c) (0 : k[X]) = 0 := by
+  have hCcne : toPair H (Polynomial.C c) (0 : k[X]) ≠ 0 := by
+    rw [Ne, toPair_eq_zero_iff]
+    exact fun h => hc (Polynomial.C_eq_zero.mp h.1)
+  have hnotmem : toPair H (Polynomial.C c) (0 : k[X]) ∉ v.asIdeal := toPair_C_notMem_asIdeal c hc v
+  have hnotdvd : ¬ v.asIdeal ∣ Ideal.span
+      ({toPair H (Polynomial.C c) (0 : k[X])} : Set (CoordinateRing H)) := by
+    rw [Ideal.dvd_span_singleton]; exact hnotmem
+  have hval_not_lt : ¬ v.intValuation (toPair H (Polynomial.C c) (0 : k[X])) < 1 := by
+    rw [v.intValuation_lt_one_iff_dvd]; exact hnotdvd
+  have hval_le : v.intValuation (toPair H (Polynomial.C c) (0 : k[X])) ≤ 1 :=
+    v.intValuation_le_one (toPair H (Polynomial.C c) (0 : k[X]))
+  have hCcval1 : v.intValuation (toPair H (Polynomial.C c) (0 : k[X])) = 1 :=
+    le_antisymm hval_le (not_lt.mp hval_not_lt)
+  unfold ordAtSpec
+  rw [if_neg hCcne, hCcval1]
+  simp
+
+omit [IsAlgClosed k] in
+/-- **`ordAtSpec` is invariant under scaling by a nonzero constant**, for any
+closed point. The `v`-general analogue of `ordAt_C_mul_eq`, needed for
+`LPairCarrierSpec'`'s scalar-closure lemma below. -/
+theorem ordAtSpec_C_mul_eq (c : k) (hc : c ≠ 0) (P Q : k[X]) (hPQ : ¬ (P = 0 ∧ Q = 0))
+    (v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H)) :
+    ordAtSpec v (Polynomial.C c * P) (Polynomial.C c * Q) = ordAtSpec v P Q := by
+  have hCcne : toPair H (Polynomial.C c) (0 : k[X]) ≠ 0 := by
+    rw [Ne, toPair_eq_zero_iff]
+    exact fun h => hc (Polynomial.C_eq_zero.mp h.1)
+  have hPQne : toPair H P Q ≠ 0 := by rw [Ne, toPair_eq_zero_iff]; exact hPQ
+  have hmul : toPair H (Polynomial.C c * P) (Polynomial.C c * Q) =
+      toPair H (Polynomial.C c) (0 : k[X]) * toPair H P Q := by
+    have hraw := toPair_mul (H := H) (Polynomial.C c) 0 P Q
+    simp only [zero_mul, mul_zero, zero_add, add_zero] at hraw
+    exact hraw.symm
+  have hne : toPair H (Polynomial.C c * P) (Polynomial.C c * Q) ≠ 0 := by
+    rw [hmul]; exact mul_ne_zero hCcne hPQne
+  have hzstep : v.intValuation (toPair H (Polynomial.C c * P) (Polynomial.C c * Q)) =
+      v.intValuation (toPair H (Polynomial.C c) (0 : k[X])) * v.intValuation (toPair H P Q) := by
+    rw [hmul, map_mul]
+  have hnotmem : toPair H (Polynomial.C c) (0 : k[X]) ∉ v.asIdeal := toPair_C_notMem_asIdeal c hc v
+  have hnotdvd : ¬ v.asIdeal ∣ Ideal.span
+      ({toPair H (Polynomial.C c) (0 : k[X])} : Set (CoordinateRing H)) := by
+    rw [Ideal.dvd_span_singleton]; exact hnotmem
+  have hval_not_lt : ¬ v.intValuation (toPair H (Polynomial.C c) (0 : k[X])) < 1 := by
+    rw [v.intValuation_lt_one_iff_dvd]; exact hnotdvd
+  have hval_le : v.intValuation (toPair H (Polynomial.C c) (0 : k[X])) ≤ 1 :=
+    v.intValuation_le_one (toPair H (Polynomial.C c) (0 : k[X]))
+  have hCcval1 : v.intValuation (toPair H (Polynomial.C c) (0 : k[X])) = 1 :=
+    le_antisymm hval_le (not_lt.mp hval_not_lt)
+  unfold ordAtSpec
+  rw [if_neg hne, if_neg hPQne, hzstep, hCcval1, one_mul]
+
+omit [IsAlgClosed k] in
+/-- **`LPairCarrierSpec'` is closed under `k`-scaling.** The general-`k`
+analogue of `LPairCarrier'_smul`: `c = 0` collapses to the zero element;
+`c ≠ 0` scales the numerator only, via `ordAtSpec_C_mul_eq`, which leaves
+every `ordAtSpec` value at every closed point `v` unchanged, so the pointwise
+clause of `IsPoleBoundedAtPairSpec'` transfers unaltered. The final
+algebra-map computation (`z ↦ c • z` under `polePairToFraction`) is identical
+to `LPairCarrier'_smul`'s own closing steps, copied verbatim since it does
+not depend on which pole-boundedness predicate produced the witness. -/
+theorem LPairCarrierSpec'_smul (x₁ x₂ : H.Point) (c : k) (z : FractionRing (CoordinateRing H))
+    (h : z ∈ LPairCarrierSpec' x₁ x₂) :
+    c • z ∈ LPairCarrierSpec' x₁ x₂ := by
+  rcases h with hz | ⟨A, B, A', B', ⟨hAne, hne', hinf, hoff⟩, hz⟩
+  · exact Or.inl (by rw [hz]; simp)
+  · by_cases hc : c = 0
+    · exact Or.inl (by rw [hz, hc]; simp)
+    · refine Or.inr ⟨Polynomial.C c * A, Polynomial.C c * B, A', B', ⟨?_, hne', ?_, ?_⟩, ?_⟩
+      · rw [Ne, toPair_eq_zero_iff]
+        intro hcontra
+        exact hAne ((toPair_eq_zero_iff H A B).mpr
+          ⟨(mul_eq_zero.mp hcontra.1).resolve_left (Polynomial.C_ne_zero.mpr hc),
+           (mul_eq_zero.mp hcontra.2).resolve_left (Polynomial.C_ne_zero.mpr hc)⟩)
+      · have hAB : ¬ (A = 0 ∧ B = 0) := fun h => hAne ((toPair_eq_zero_iff H A B).mpr h)
+        calc ordInfOfPair (Polynomial.C c * A) (Polynomial.C c * B) ≥ ordInfOfPair A B :=
+              ordInfOfPair_C_mul_ge c A B
+          _ ≥ ordInfOfPair A' B' := hinf
+      · intro v
+        have hAB : ¬ (A = 0 ∧ B = 0) := fun h => hAne ((toPair_eq_zero_iff H A B).mpr h)
+        have hordeq : ordAtSpec v (Polynomial.C c * A) (Polynomial.C c * B) = ordAtSpec v A B :=
+          ordAtSpec_C_mul_eq c hc A B hAB v
+        have := hoff v
+        rw [hordeq]; exact this
+      · rw [hz]
+        unfold polePairToFraction
+        have hmul : toPair H (Polynomial.C c * A) (Polynomial.C c * B) =
+            toPair H (Polynomial.C c) (0 : k[X]) * toPair H A B := by
+          have hraw := toPair_mul (H := H) (Polynomial.C c) 0 A B
+          simp only [zero_mul, mul_zero, zero_add, add_zero] at hraw
+          exact hraw.symm
+        rw [hmul, map_mul]
+        have hCc_alg : algebraMap (CoordinateRing H) (FractionRing (CoordinateRing H))
+              (toPair H (Polynomial.C c) (0 : k[X])) =
+            algebraMap k (FractionRing (CoordinateRing H)) c := by
+          have hstep : toPair H (Polynomial.C c) (0 : k[X]) =
+              algebraMap k[X] (CoordinateRing H) (Polynomial.C c) := by
+            unfold toPair; simp
+          rw [hstep]
+          have hCeq : (Polynomial.C c : k[X]) = algebraMap k k[X] c := by
+            simp [Polynomial.algebraMap_apply]
+          haveI hst1 : IsScalarTower k k[X] (CoordinateRing H) :=
+            IsScalarTower.of_algebraMap_eq (fun _ => rfl)
+          haveI hst2 : IsScalarTower k (CoordinateRing H) (FractionRing (CoordinateRing H)) :=
+            IsScalarTower.of_algebraMap_eq (fun _ => rfl)
+          rw [hCeq, ← IsScalarTower.algebraMap_apply k k[X] (CoordinateRing H),
+              ← IsScalarTower.algebraMap_apply k (CoordinateRing H) (FractionRing (CoordinateRing H))]
+        rw [hCc_alg, Algebra.smul_def]
+        field_simp
+
+omit [IsAlgClosed k] in
 /-- **`LPairCarrier'` is closed under `k`-scaling.** Needed as the base case
 for the mixed `z₁ = 0`/`z₂ = 0` branches of `LPairCarrier'_add_smul` below,
 where the nonzero side's contribution `c • z` (`c` possibly `0`) needs its
