@@ -1015,10 +1015,86 @@ theorem ordAtSpec_conjHeightOne_fst [IsDedekindDomain (CoordinateRing H)]
       Ideal.comap (involutionEquiv H).symm.toRingHom v.asIdeal := rfl
   rw [h_comap_ideal]
   congr 1
-  -- Ideal.span {alg} is invariant under (involutionEquiv H).symm via hI,
-  -- so the count of comap v.asIdeal in span {alg} equals the count of v.asIdeal in span {alg}.
-  have h_count := Ideal.count_comap_of_equiv (involutionEquiv H).symm v.asIdeal (Ideal.span {alg})
-  rwa [hI] at h_count
+  -- `Ideal.span {alg}` is invariant under `(involutionEquiv H).symm` (via `hI`), so counting
+  -- `comap v.asIdeal` against it agrees with counting `v.asIdeal` against it directly. No
+  -- Mathlib lemma packages this for a bare ring equiv, so we prove it here directly, matching
+  -- this file's existing `Associates.prime_pow_dvd_iff_le`/`Associates.mk_le_mk_iff_dvd` idiom
+  -- (e.g. `ordAtSpec_add_eq_of_lt` above): `n ≤ count P I ↔ P^n ∣ I`, and divisibility
+  -- transports along `Ideal.map f` for `f := (involutionEquiv H).toRingHom`, which is
+  -- multiplicative (`Ideal.mapHom`, `Ideal.map_pow`). Crucially, `Ideal.comap
+  -- (involutionEquiv H).symm.toRingHom = Ideal.map (involutionEquiv H).toRingHom`
+  -- (`Ideal.comap_symm`), so `w := (conjHeightOne v).asIdeal` is *itself* `map f v.asIdeal`,
+  -- and `hI` (rewritten the same way) says `map f alg' = alg'` — everything below is then a
+  -- single multiplicative hom `f` applied to two ideals, no inverse map needed at all.
+  classical
+  set f := (involutionEquiv H).toRingHom with hf_def
+  set alg' := Ideal.span ({alg} : Set (CoordinateRing H)) with halg'_def
+  have halg'ne : Associates.mk alg' ≠ 0 :=
+    Associates.mk_ne_zero.mpr (Ideal.span_singleton_eq_bot.not.mpr (hcalg ▸ hne))
+  have hcomap_eq_map : ∀ I : Ideal (CoordinateRing H),
+      Ideal.comap (involutionEquiv H).symm.toRingHom I = Ideal.map f I := fun I =>
+    Ideal.comap_symm (f := involutionEquiv H) (I := I)
+  have hw_eq : (conjHeightOne (H := H) v).asIdeal = Ideal.map f v.asIdeal := by
+    rw [h_comap_ideal, hcomap_eq_map]
+  have hmap_alg' : Ideal.map f alg' = alg' := by
+    have := hI; rw [hcomap_eq_map] at this; exact this
+  -- `map f v.asIdeal ^ n ∣ alg' ↔ v.asIdeal ^ n ∣ alg'`, one direction via the multiplicative
+  -- `map f` directly, the other via `map f.symm` (using `Ideal.map_of_equiv` to undo `map f`).
+  have hdvd_fwd : ∀ n : ℕ, v.asIdeal ^ n ∣ alg' → (Ideal.map f v.asIdeal) ^ n ∣ alg' := by
+    intro n ⟨c, hc⟩
+    refine ⟨Ideal.map f c, ?_⟩
+    have hmap := congrArg (Ideal.map f) hc
+    rwa [Ideal.map_mul, Ideal.map_pow, hmap_alg'] at hmap
+  have hdvd_bwd : ∀ n : ℕ, (Ideal.map f v.asIdeal) ^ n ∣ alg' → v.asIdeal ^ n ∣ alg' := by
+    intro n ⟨c, hc⟩
+    refine ⟨Ideal.map (involutionEquiv H).symm.toRingHom c, ?_⟩
+    have hmap := congrArg (Ideal.map (involutionEquiv H).symm.toRingHom) hc
+    rw [Ideal.map_mul, Ideal.map_pow] at hmap
+    -- `map f.symm (map f I) = I` for a `RingEquiv f` (`Ideal.map_of_equiv`), applied both to
+    -- `I = v.asIdeal` and, via `hmap_alg'` (`map f alg' = alg'`), to pin down that `alg'` is
+    -- also fixed by `map f.symm`.
+    have hmap_alg'_symm : Ideal.map (involutionEquiv H).symm.toRingHom alg' = alg' := by
+      have heq : Ideal.map (involutionEquiv H).symm.toRingHom (Ideal.map f alg') = alg' := by
+        rw [hf_def]; exact Ideal.map_of_equiv (f := involutionEquiv H) (I := alg')
+      rwa [hmap_alg'] at heq
+    have hmap_v : Ideal.map (involutionEquiv H).symm.toRingHom (Ideal.map f v.asIdeal) =
+        v.asIdeal := by
+      rw [hf_def]; exact Ideal.map_of_equiv (f := involutionEquiv H) (I := v.asIdeal)
+    rwa [hmap_v, hmap_alg'_symm] at hmap
+  have hcount_iff_w : ∀ n : ℕ,
+      n ≤ (Associates.mk (Ideal.map f v.asIdeal)).count (Associates.mk alg').factors ↔
+        (Ideal.map f v.asIdeal) ^ n ∣ alg' := by
+    intro n
+    rw [← Associates.mk_le_mk_iff_dvd, Associates.mk_pow]
+    rw [← hw_eq]
+    exact (Associates.prime_pow_dvd_iff_le halg'ne
+      (conjHeightOne (H := H) v).associates_irreducible).symm
+  have hcount_iff_v : ∀ n : ℕ,
+      n ≤ (Associates.mk v.asIdeal).count (Associates.mk alg').factors ↔ v.asIdeal ^ n ∣ alg' := by
+    intro n
+    rw [← Associates.mk_le_mk_iff_dvd, Associates.mk_pow]
+    exact (Associates.prime_pow_dvd_iff_le halg'ne v.associates_irreducible).symm
+  rw [hcomap_eq_map]
+  apply le_antisymm
+  · by_contra hcon
+    push_neg at hcon
+    have hge : (Associates.mk v.asIdeal).count (Associates.mk alg').factors + 1 ≤
+        (Associates.mk (Ideal.map f v.asIdeal)).count (Associates.mk alg').factors := hcon
+    have hdvd_w := (hcount_iff_w _).mp hge
+    have hdvd_v := hdvd_bwd _ hdvd_w
+    have := (hcount_iff_v _).mpr hdvd_v
+    omega
+  · by_contra hcon
+    push_neg at hcon
+    have hge : (Associates.mk (Ideal.map f v.asIdeal)).count (Associates.mk alg').factors + 1 ≤
+        (Associates.mk v.asIdeal).count (Associates.mk alg').factors := hcon
+    have hdvd_v := (hcount_iff_v _).mp hge
+    have hdvd_w := hdvd_fwd _ hdvd_v
+    have := (hcount_iff_w _).mpr hdvd_w
+    omega
+
+
+
 
 
 /-! ## §3f. `c₀.natDegree ≤ 2`, closed-point-native, avoiding the `pairNorm`
@@ -1200,16 +1276,38 @@ theorem exists_ordAtSpec_lt_of_notMem_span_algebraMap
       · set v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H) :=
           ⟨J, hJprime.1, hJprime.2⟩ with hv_def
         have hvJ : v.asIdeal = J := rfl
-        rw [← hvJ]
-        rw [Ideal.count_associates_factors_eq hqIne v.isPrime v.ne_bot,
-          Ideal.count_associates_factors_eq habIne v.isPrime v.ne_bot]
-        exact hcount_le v
-      · push_neg at hJprime
+        have hq_count := Ideal.count_associates_factors_eq hqIne v.isPrime v.ne_bot
+        have hab_count := Ideal.count_associates_factors_eq habIne v.isPrime v.ne_bot
+        calc
+          Multiset.count J (UniqueFactorizationMonoid.normalizedFactors
+              (Ideal.span ({toPair H q 0} : Set (CoordinateRing H))))
+              = (Associates.mk v.asIdeal).count
+                  (Associates.mk (Ideal.span ({toPair H q 0} : Set (CoordinateRing H)))).factors := by
+                simpa [hvJ] using hq_count.symm
+          _ ≤ (Associates.mk v.asIdeal).count
+                (Associates.mk (Ideal.span ({toPair H a₀ b₀} : Set (CoordinateRing H)))).factors :=
+                hcount_le v
+          _ = Multiset.count J (UniqueFactorizationMonoid.normalizedFactors
+                (Ideal.span ({toPair H a₀ b₀} : Set (CoordinateRing H)))) := by
+                simpa [hvJ] using hab_count
+      · push Not at hJprime
         by_cases hJ0 : J = 0
-        · simp [hJ0, Multiset.count_eq_zero,
-            UniqueFactorizationMonoid.zero_notMem_normalizedFactors]
-        · have hJprime' : ¬ J.IsPrime := hJprime (by
-            intro hbot; exact hJ0 (by rw [Ideal.zero_eq_bot]; exact hbot))
+        · have h1 : Multiset.count J (UniqueFactorizationMonoid.normalizedFactors
+              (Ideal.span ({toPair H q 0} : Set (CoordinateRing H)))) = 0 := by
+            rw [Multiset.count_eq_zero]
+            intro hmem
+            exact ((Ideal.mem_normalizedFactors_iff hqIne).mp hmem).2 hJ0
+          have h2 : Multiset.count J (UniqueFactorizationMonoid.normalizedFactors
+              (Ideal.span ({toPair H a₀ b₀} : Set (CoordinateRing H)))) = 0 := by
+            rw [Multiset.count_eq_zero]
+            intro hmem
+            exact ((Ideal.mem_normalizedFactors_iff habIne).mp hmem).2 hJ0
+          rw [h1, h2]
+        · have hJprime' : ¬ J.IsPrime := by
+            intro hprime
+            apply hJ0
+            rw [Ideal.zero_eq_bot]
+            exact hJprime hprime
           have h1 : Multiset.count J (UniqueFactorizationMonoid.normalizedFactors
               (Ideal.span ({toPair H q 0} : Set (CoordinateRing H)))) = 0 := by
             rw [Multiset.count_eq_zero]
@@ -1230,9 +1328,11 @@ theorem exists_ordAtSpec_lt_of_notMem_span_algebraMap
           Multiset.prod_dvd_prod_of_le hMultiset_le
       _ = Ideal.span ({toPair H a₀ b₀} : Set (CoordinateRing H)) :=
           Ideal.prod_normalizedFactors_eq_self habIne
-  -- `hle : span{toPair q 0} ∣ span{toPair a₀ b₀}`, i.e. `toPair a₀ b₀ ∈ span{toPair q 0}`
-  -- (`Ideal.dvd_span_singleton`) — exactly what `hnotmem`/the goal need.
-  exact Ideal.dvd_span_singleton.mp hle
+  -- `hle : span{toPair q 0} ∣ span{toPair a₀ b₀}` gives the required element membership.
+  have hmemb : toPair H a₀ b₀ ∈ Ideal.span ({toPair H q 0} : Set (CoordinateRing H)) :=
+    Ideal.dvd_span_singleton.mp hle
+  rw [Ideal.mem_span_singleton] at hmemb
+  exact hmemb
 
 /-- **Case A (fully closed): at `v` with `conjHeightOne v` also outside
 `{x₁,x₂}`, `ordAtSpec v c₀ 0 = 0`.** Uses `hzsuppSpec₀` at *both* `v` and
@@ -1315,7 +1415,10 @@ theorem ordAtSpec_eq_zero_of_notMem_four_of_dvd
       rw [Ne, Ideal.zero_eq_bot, Ideal.span_singleton_eq_bot]; exact hc₀'ne
     have hge1 : 1 ≤ (Associates.mk w.asIdeal).count
         (Associates.mk (Ideal.span ({toPair H c₀ (0:k[X])} : Set (CoordinateRing H)))).factors := by
-      rw [← Associates.prime_pow_dvd_iff_le hIne w.associates_irreducible, pow_one]
+      have hIne' : Associates.mk
+          (Ideal.span ({toPair H c₀ (0:k[X])} : Set (CoordinateRing H))) ≠ 0 :=
+        Associates.mk_ne_zero.mpr hIne
+      rw [← Associates.prime_pow_dvd_iff_le hIne' w.associates_irreducible, pow_one]
       exact Associates.mk_le_mk_iff_dvd.mpr hdvd
     omega
   -- `hzsuppSpec₀` at `v` and `w` (both indicators `0`) force membership of `toPair H a₀ b₀`
@@ -1340,10 +1443,14 @@ theorem ordAtSpec_eq_zero_of_notMem_four_of_dvd
     rwa [toPair_involution] at habwmem
   -- Add and subtract: `algebraMap (2a₀) ∈ v.asIdeal`, `algebraMap (2b₀) * y H ∈ v.asIdeal`.
   have hadd : toPair H a₀ b₀ + toPair H a₀ (-b₀) = algebraMap k[X] (CoordinateRing H) (2 * a₀) := by
-    unfold HyperellipticPolynomial.toPair; push_cast; ring
+    unfold HyperellipticPolynomial.toPair
+    push_cast
+    ring_nf
   have hsub : toPair H a₀ b₀ - toPair H a₀ (-b₀) =
       algebraMap k[X] (CoordinateRing H) (2 * b₀) * y H := by
-    unfold HyperellipticPolynomial.toPair; push_cast; ring
+    unfold HyperellipticPolynomial.toPair
+    push_cast
+    ring_nf
   have h2a_mem : algebraMap k[X] (CoordinateRing H) (2 * a₀) ∈ v.asIdeal := by
     rw [← hadd]; exact v.asIdeal.add_mem habvmem habvmem'
   have h2by_mem : algebraMap k[X] (CoordinateRing H) (2 * b₀) * y H ∈ v.asIdeal := by
@@ -1351,8 +1458,7 @@ theorem ordAtSpec_eq_zero_of_notMem_four_of_dvd
   -- Set up `P := v.asIdeal.comap = span {q}` for irreducible `q` (PID argument, as before).
   set P : Ideal k[X] := Ideal.comap (algebraMap k[X] (CoordinateRing H)) v.asIdeal with hP_def
   have hPprime : P.IsPrime := Ideal.comap_isPrime _ _
-  obtain ⟨q, hq_gen⟩ := (IsPrincipalIdealRing.principal P).principal ▸
-    (Submodule.IsPrincipal.principal P : ∃ q, P = Ideal.span {q})
+  obtain ⟨q, hq_gen⟩ := (IsPrincipalIdealRing.principal P).principal
   have hc₀P : c₀ ∈ P := by
     show algebraMap k[X] (CoordinateRing H) c₀ ∈ v.asIdeal
     rw [hcalg]; exact hvmem
@@ -1384,7 +1490,8 @@ theorem ordAtSpec_eq_zero_of_notMem_four_of_dvd
     exfalso
     have hyf : y H ^ 2 = algebraMap k[X] (CoordinateRing H) H.f := y_sq_eq H
     have hyToPair : y H = toPair H 0 1 := by unfold HyperellipticPolynomial.toPair; simp
-    have hyne : toPair H 0 1 ≠ (0 : CoordinateRing H) := by rw [← hyToPair]
+    have hyne : toPair H 0 1 ≠ (0 : CoordinateRing H) := by
+      rw [← hyToPair]
       -- `y H ≠ 0`: else `H.f = y H ^ 2 = 0`, contradicting `H.f` squarefree/nonzero
       -- implicitly (a squarefree `0` is impossible in a nontrivial ring since `0 = u*u`
       -- for any `u`, e.g. `u` non-unit if such exists; simplest: `H.f`'s `natDegree`
@@ -1434,7 +1541,10 @@ theorem ordAtSpec_eq_zero_of_notMem_four_of_dvd
         rw [Ne, Ideal.zero_eq_bot, Ideal.span_singleton_eq_bot]; exact hfne
       have hge1 : 1 ≤ (Associates.mk v.asIdeal).count
           (Associates.mk (Ideal.span ({toPair H H.f (0:k[X])} : Set (CoordinateRing H)))).factors := by
-        rw [← Associates.prime_pow_dvd_iff_le hIne v.associates_irreducible, pow_one]
+        have hIne' : Associates.mk
+            (Ideal.span ({toPair H H.f (0:k[X])} : Set (CoordinateRing H))) ≠ 0 :=
+          Associates.mk_ne_zero.mpr hIne
+        rw [← Associates.prime_pow_dvd_iff_le hIne' v.associates_irreducible, pow_one]
         exact Associates.mk_le_mk_iff_dvd.mpr (Ideal.dvd_span_singleton.mpr hfmem)
       omega
     have hordf_ge2 : ordAtSpec v H.f (0:k[X]) ≥ 2 := by omega
@@ -1645,8 +1755,11 @@ theorem natDegree_le_two_of_gcdUnit_closed_point
     by_cases hv1 : v = pointHeightOne' x₁
     · exact absurd hv1 (fun h => hv (by rw [hT'_def, h]; exact Finset.mem_insert_self _ _))
     by_cases hv2 : v = pointHeightOne' x₂
-    · exact absurd hv2 (fun h => hv (by rw [hT'_def, h]
-        exact Finset.mem_insert_of_mem (Finset.mem_insert_self _ _)))
+    · exact absurd hv2 (by
+        intro h
+        apply hv
+        rw [hT'_def, h]
+        exact Finset.mem_insert_self _ _)
     by_cases hw1 : conjHeightOne (H := H) v = pointHeightOne' x₁
     · exact absurd hw1 (fun h => hv (by
         rw [hT'_def]
@@ -2570,7 +2683,7 @@ theorem uniqueDegree2MapToP1Spec (hdeg : H.f.natDegree = 5) (hchar : (2 : k) ≠
     -- `[IsAlgClosed k]` via `IsAlgClosed.splits` in its own proof.
     have hcdeg : c₀.natDegree ≤ 2 :=
       natDegree_le_two_of_gcdUnit_closed_point (H := H) x₁ x₂ a₀ b₀ c₀ hc₀ne
-        hab₀_ne hgu hzsuppSpec₀
+        hab₀_ne hgu hchar hsf hzsuppSpec₀
     have hbeq0 : b₀ = 0 := by
       exact b_eq_zero_of_rationalized_pole_bounded
         a₀ b₀ c₀ hinf₀ hcdeg
