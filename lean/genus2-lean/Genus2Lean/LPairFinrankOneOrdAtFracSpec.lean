@@ -826,7 +826,6 @@ theorem false_of_root_of_isCoprimeAtRoots_zero_snd_general
         -((if v = pointHeightOne' x₁ then 1 else 0) +
           (if v = pointHeightOne' x₂ then 1 else 0)))
     (α : k) (hα : c₀.eval α = 0) : False := by
-  classical
   have haα : a₀.eval α ≠ 0 := fun h => hcop α hα ⟨h, by simp⟩
   by_cases hWeier : H.f.eval α = 0
   · exact false_of_root_ramified
@@ -1396,7 +1395,7 @@ whole ramified sub-argument at the `H.Point` level instead (cleaner: uses
 abstract-`q` valuation bookkeeping needed). This theorem only proves the
 **support** half (Case A elimination); multiplicity is handled separately. -/
 theorem ordAtSpec_eq_zero_of_notMem_four_of_dvd
-    [IsDedekindDomain (CoordinateRing H)]
+    [IsDedekindDomain (CoordinateRing H)] [DecidableEq k]
     (x₁ x₂ : H.Point) (a₀ b₀ c₀ : k[X]) (hc₀ne : c₀ ≠ 0)
     (hab₀ne : toPair H a₀ b₀ ≠ 0)
     (hgu : IsUnit (gcd (gcd a₀ b₀) c₀))
@@ -1410,7 +1409,6 @@ theorem ordAtSpec_eq_zero_of_notMem_four_of_dvd
     (hw1 : conjHeightOne (H := H) v ≠ pointHeightOne' x₁)
     (hw2 : conjHeightOne (H := H) v ≠ pointHeightOne' x₂) :
     ordAtSpec v c₀ (0 : k[X]) = 0 := by
-  classical
   haveI : IsDomain (CoordinateRing H) := IsDedekindDomain.toIsDomain
   by_contra hne0
   have hc₀'ne : toPair H c₀ (0 : k[X]) ≠ 0 := by
