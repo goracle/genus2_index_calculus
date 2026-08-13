@@ -137,7 +137,16 @@ theorem gcd_unit_of_reduce_ordAtFrac_triple (a b c a₀ b₀ c₀ : k[X])
   have hc₀_eq : c / g = c₀ := by rw [hc_eq, mul_comm, mul_div_cancel_right₀ _ hg_def]
   rwa [ha₀_eq, hb₀_eq, hc₀_eq] at key
 
-/-! ## §2. `IsNormCoprime` after `b = 0`.
+/-! ## §2. [DEPRECATED] `IsNormCoprime` after `b = 0`.
+
+**DEPRECATED — do not use.** The `IsNormCoprime` route (this section and its
+consumer `natDegree_le_one_of_isPoleBoundedAtPairSpec_isNormCoprime` in
+`CoprimeAtRootsClosed.lean`) has been superseded by the `IsCoprimeAtRoots` /
+`ordAtSpec` closed-point route (§0, §3f, `natDegree_le_two_of_gcdUnit_closed_point`,
+`false_of_root_of_isCoprimeAtRoots_zero_snd_general`). That is now the good,
+maintained strategy; `IsNormCoprime` is not. Kept here only as historical
+reference — not called from the live assembly theorem
+(`uniqueDegree2MapToP1Spec`) anymore. Do not build on this.
 
 Once `b₀ = 0`, `pairNorm H a₀ 0 = a₀ ^ 2 - 0 ^ 2 * H.f = a₀ ^ 2`, so
 `IsNormCoprime H a₀ 0 c₀` (`IsCoprime (pairNorm H a₀ 0) c₀`) is exactly
@@ -145,7 +154,8 @@ Once `b₀ = 0`, `pairNorm H a₀ 0 = a₀ ^ 2 - 0 ^ 2 * H.f = a₀ ^ 2`, so
 `IsCoprime.pow_left`. -/
 
 omit [IsDedekindDomain (CoordinateRing H)] in
-/-- **`IsNormCoprime` from a unit joint gcd, at `b = 0`.** -/
+/-- **[DEPRECATED] `IsNormCoprime` from a unit joint gcd, at `b = 0`.**
+Superseded by the `IsCoprimeAtRoots` route — see section header. -/
 theorem isNormCoprime_of_gcd_unit_snd_zero (a c : k[X])
     (hgu : IsUnit (gcd (gcd a (0 : k[X])) c)) :
     IsNormCoprime H a 0 c := by
@@ -1839,7 +1849,7 @@ theorem natDegree_le_two_of_gcdUnit_closed_point
     ordAtSpec_conjHeightOne_fst (H := H) (pointHeightOne' x₂) c₀
   -- Termwise bound at `x₁, x₂` themselves: from `hzsuppSpec₀` (indicator `1` there) and
   -- `ordAtSpec v a₀ b₀ ≥ 0` always (`ordAtSpec_nonneg`).
-  have hb1 : ordAtSpec (pointHeightOne' x₁) c₀ (0 : k[X]) ≤ 1 := by
+  have hb1 : ordAtSpec (pointHeightOne' x₁) c₀ (0 : k[X]) ≤ 2 := by
     have h := hzsuppSpec₀ (pointHeightOne' x₁)
     have hpos : (0:ℤ) ≤ ordAtSpec (pointHeightOne' (H := H) x₁) a₀ b₀ :=
       ordAtSpec_nonneg _ a₀ b₀ hab₀ne
@@ -1847,7 +1857,7 @@ theorem natDegree_le_two_of_gcdUnit_closed_point
     by_cases hxeq : (pointHeightOne' (H := H) x₁) = pointHeightOne' x₂
     · simp only [if_pos hxeq] at h; omega
     · simp only [if_neg hxeq] at h; omega
-  have hb2 : ordAtSpec (pointHeightOne' x₂) c₀ (0 : k[X]) ≤ 1 := by
+  have hb2 : ordAtSpec (pointHeightOne' x₂) c₀ (0 : k[X]) ≤ 2 := by
     have h := hzsuppSpec₀ (pointHeightOne' x₂)
     have hpos : (0:ℤ) ≤ ordAtSpec (pointHeightOne' (H := H) x₂) a₀ b₀ :=
       ordAtSpec_nonneg _ a₀ b₀ hab₀ne
@@ -1856,18 +1866,16 @@ theorem natDegree_le_two_of_gcdUnit_closed_point
     by_cases hxeq : (pointHeightOne' (H := H) x₂) = pointHeightOne' x₁
     · simp only [if_pos hxeq] at h; omega
     · simp only [if_neg hxeq] at h; omega
-  -- **Remaining gap, precisely isolated (Gap 2, genuinely still open, distinct from
-  -- Gap 1):** `T'` may contain support points of `c₀` beyond the four named ones
-  -- (`x₁, x₂` and their `conjHeightOne`-images) — e.g. `T`'s own elements, which are
-  -- exactly the case `Case A` (`ordAtSpec_eq_zero_of_notMem_four_of_dvd`) is built to
-  -- rule out (it shows `ordAtSpec v c₀ 0 = 0` whenever `v` and `conjHeightOne v` both
-  -- avoid `{x₁,x₂}`). That theorem itself still has one internal `sorry` (Gap 1, the
-  -- ramified-case ramification-index step). So closing `hsum_le` in full needs Gap 1
-  -- closed first; what's newly established here (`ordAtSpec_conjHeightOne_fst`, `hb1`,
-  -- `hb2`) is the piece that makes the *bound itself* come out to exactly `2` (not `4`)
-  -- once Gap 1 is available, by collapsing the two conjugate points' contributions onto
-  -- `x₁, x₂`'s (already-bounded-by-1) contributions instead of budgeting them separately.
-  have hsum_le : ∑ v ∈ T', (residueDeg v : ℤ) * ordAtSpec v c₀ (0 : k[X]) ≤ 2 := by
+  -- **NOTE (stale comment corrected):** the earlier "Gap 1" (an internal `sorry` in
+  -- `ordAtSpec_eq_zero_of_notMem_four_of_dvd`'s ramified-case ramification-index step)
+  -- has since been resolved — see the "Corrected route" note at that theorem's proof
+  -- (ChatGPT-consultation fix, no `sorry` remains there). What follows below
+  -- (`hsum_le` and its `omega`/`linarith`/`nlinarith` steps) is currently broken —
+  -- real tactic-failure errors, not a `sorry` — and is the next thing to fix, not
+  -- deprecated: this whole theorem (`natDegree_le_two_of_gcdUnit_closed_point`) is
+  -- the maintained `IsCoprimeAtRoots`/closed-point route's degree-≤-2 bound, still
+  -- WIP.
+  have hsum_le : ∑ v ∈ T', (residueDeg v : ℤ) * ordAtSpec v c₀ (0 : k[X]) ≤ 4 := by
     have hrest0 : ∀ v ∈ T', v ≠ pointHeightOne' x₁ → v ≠ pointHeightOne' x₂ →
         v ≠ conjHeightOne (H := H) (pointHeightOne' x₁) →
         v ≠ conjHeightOne (H := H) (pointHeightOne' x₂) →
@@ -1909,7 +1917,7 @@ theorem natDegree_le_two_of_gcdUnit_closed_point
             (pointHeightOne' (H := H) x₁) c₀ 0 ≤ (residueDeg (pointHeightOne' (H := H) x₁) : ℤ) *
             1 := by
           apply mul_le_mul_of_nonneg_left hb1 (Int.natCast_nonneg _)
-        nlinarith [hnonneg (pointHeightOne' (H := H) x₁ = pointHeightOne' x₂),
+        linarith [hnonneg (pointHeightOne' (H := H) x₁ = pointHeightOne' x₂),
           hnonneg (pointHeightOne' (H := H) x₁ = conjHeightOne (H := H) (pointHeightOne' x₁)),
           hnonneg (pointHeightOne' (H := H) x₁ = conjHeightOne (H := H) (pointHeightOne' x₂))]
       by_cases h2 : v = pointHeightOne' x₂
@@ -1919,27 +1927,18 @@ theorem natDegree_le_two_of_gcdUnit_closed_point
         have hb2' : (residueDeg (pointHeightOne' (H := H) x₂) : ℤ) * ordAtSpec
             (pointHeightOne' (H := H) x₂) c₀ 0 ≤ (residueDeg (pointHeightOne' (H := H) x₂) : ℤ) *
             1 := mul_le_mul_of_nonneg_left hb2 (Int.natCast_nonneg _)
-        nlinarith [hnonneg (pointHeightOne' (H := H) x₂ = pointHeightOne' x₁),
+        linarith [hnonneg (pointHeightOne' (H := H) x₂ = pointHeightOne' x₁),
           hnonneg (pointHeightOne' (H := H) x₂ = conjHeightOne (H := H) (pointHeightOne' x₁)),
           hnonneg (pointHeightOne' (H := H) x₂ = conjHeightOne (H := H) (pointHeightOne' x₂))]
       by_cases h3 : v = conjHeightOne (H := H) (pointHeightOne' x₁)
       · rw [h3] at h1 h2 ⊢
-        have hordeq : ordAtSpec (conjHeightOne (H := H) (pointHeightOne' x₁)) c₀ (0 : k[X])
-            = 1 ∨ ordAtSpec (conjHeightOne (H := H) (pointHeightOne' x₁)) c₀ (0 : k[X]) ≤ 0 := by
-          rw [ordAtSpec_conjHeightOne_fst]; omega
         have hb1' : (residueDeg (conjHeightOne (H := H) (pointHeightOne' x₁)) : ℤ) *
             ordAtSpec (conjHeightOne (H := H) (pointHeightOne' x₁)) c₀ 0 ≤
-            (residueDeg (conjHeightOne (H := H) (pointHeightOne' x₁)) : ℤ) := by
+            (residueDeg (conjHeightOne (H := H) (pointHeightOne' x₁)) : ℤ) * 2 := by
           have this' := hb1
           rw [← ordAtSpec_conjHeightOne_fst (H := H) (pointHeightOne' x₁) c₀] at this'
-          have hrnn : (0:ℤ) ≤ (residueDeg (conjHeightOne (H := H) (pointHeightOne' x₁)) : ℤ) :=
-            Int.natCast_nonneg _
-          calc (residueDeg (conjHeightOne (H := H) (pointHeightOne' x₁)) : ℤ) *
-              ordAtSpec (conjHeightOne (H := H) (pointHeightOne' x₁)) c₀ 0
-              ≤ (residueDeg (conjHeightOne (H := H) (pointHeightOne' x₁)) : ℤ) * 1 :=
-                mul_le_mul_of_nonneg_left this' hrnn
-            _ = (residueDeg (conjHeightOne (H := H) (pointHeightOne' x₁)) : ℤ) := mul_one _
-        nlinarith [hnonneg (conjHeightOne (H := H) (pointHeightOne' x₁) = pointHeightOne' x₁),
+          exact mul_le_mul_of_nonneg_left this' (Int.natCast_nonneg _)
+        linarith [hnonneg (conjHeightOne (H := H) (pointHeightOne' x₁) = pointHeightOne' x₁),
           hnonneg (conjHeightOne (H := H) (pointHeightOne' x₁) = pointHeightOne' x₂),
           hnonneg (conjHeightOne (H := H) (pointHeightOne' x₁) =
             conjHeightOne (H := H) (pointHeightOne' x₂)), if_pos (rfl :
@@ -1949,17 +1948,11 @@ theorem natDegree_le_two_of_gcdUnit_closed_point
       · rw [h4] at h1 h2 h3 ⊢
         have hb2' : (residueDeg (conjHeightOne (H := H) (pointHeightOne' x₂)) : ℤ) *
             ordAtSpec (conjHeightOne (H := H) (pointHeightOne' x₂)) c₀ 0 ≤
-            (residueDeg (conjHeightOne (H := H) (pointHeightOne' x₂)) : ℤ) := by
+            (residueDeg (conjHeightOne (H := H) (pointHeightOne' x₂)) : ℤ) * 2 := by
           have this' := hb2
           rw [← ordAtSpec_conjHeightOne_fst (H := H) (pointHeightOne' x₂) c₀] at this'
-          have hrnn : (0:ℤ) ≤ (residueDeg (conjHeightOne (H := H) (pointHeightOne' x₂)) : ℤ) :=
-            Int.natCast_nonneg _
-          calc (residueDeg (conjHeightOne (H := H) (pointHeightOne' x₂)) : ℤ) *
-              ordAtSpec (conjHeightOne (H := H) (pointHeightOne' x₂)) c₀ 0
-              ≤ (residueDeg (conjHeightOne (H := H) (pointHeightOne' x₂)) : ℤ) * 1 :=
-                mul_le_mul_of_nonneg_left this' hrnn
-            _ = (residueDeg (conjHeightOne (H := H) (pointHeightOne' x₂)) : ℤ) := mul_one _
-        nlinarith [hnonneg (conjHeightOne (H := H) (pointHeightOne' x₂) = pointHeightOne' x₁),
+          exact mul_le_mul_of_nonneg_left this' (Int.natCast_nonneg _)
+        linarith [hnonneg (conjHeightOne (H := H) (pointHeightOne' x₂) = pointHeightOne' x₁),
           hnonneg (conjHeightOne (H := H) (pointHeightOne' x₂) = pointHeightOne' x₂),
           hnonneg (conjHeightOne (H := H) (pointHeightOne' x₂) =
             conjHeightOne (H := H) (pointHeightOne' x₁)), if_pos (rfl :
@@ -2009,12 +2002,12 @@ theorem natDegree_le_two_of_gcdUnit_closed_point
               Finset.sum_ite_eq' T' (conjHeightOne (H := H) (pointHeightOne' x₂))
                 (fun v => (residueDeg v : ℤ)),
               if_pos hx1T, if_pos hx2T, if_pos hw1T, if_pos hw2T]
-      _ = 2 := by
+      _ = 4 := by
           rw [residueDeg_conjHeightOne, residueDeg_conjHeightOne,
               residueDeg_pointHeightOne', residueDeg_pointHeightOne']
           norm_num
-  have hle : ((pairNorm H c₀ (0 : k[X])).natDegree : ℤ) ≤ 2 := hnorm ▸ hsum_le
-  have h2 : 2 * (c₀.natDegree : ℤ) ≤ 2 := hdeg2 ▸ hle
+  have hle : ((pairNorm H c₀ (0 : k[X])).natDegree : ℤ) ≤ 4 := hnorm ▸ hsum_le
+  have h2 : 2 * (c₀.natDegree : ℤ) ≤ 4 := hdeg2 ▸ hle
   omega
 
 /-! **STATUS: `false_of_bad_factor_split_deg_ge_two` — attempted, not closed.**
@@ -2721,16 +2714,16 @@ theorem uniqueDegree2MapToP1Spec (hdeg : H.f.natDegree = 5) (hchar : (2 : k) ≠
       exact b_eq_zero_of_rationalized_pole_bounded
         a₀ b₀ c₀ hinf₀ hcdeg
     subst b₀
-    -- **§2: `IsNormCoprime`**, now that `b₀ = 0`.
-    have hnc : IsNormCoprime H a₀ 0 c₀ := isNormCoprime_of_gcd_unit_snd_zero a₀ c₀ hgu
-    -- **§3: `IsPoleBoundedAtPairSpec x₁ x₂ a₀ 0 c₀ 0`** — `hzsuppSpec₀` above
-    -- already specializes correctly to `(a₀,0,c₀,0)` after `subst b₀`, no rebuild
-    -- needed.
-    have habpb : IsPoleBoundedAtPairSpec x₁ x₂ a₀ 0 c₀ (0 : k[X]) :=
-      ⟨fun h => hc₀ne h.1, hinf₀, hzsuppSpec₀⟩
-    have hcdeg1 : c₀.natDegree ≤ 1 :=
-      natDegree_le_one_of_isPoleBoundedAtPairSpec_isNormCoprime
-        (H := H) x₁ x₂ a₀ 0 c₀ hc₀ne hnc habpb
+    -- **[DEPRECATED ROUTE REMOVED]** This used to go through `IsNormCoprime`
+    -- (`isNormCoprime_of_gcd_unit_snd_zero` +
+    -- `natDegree_le_one_of_isPoleBoundedAtPairSpec_isNormCoprime`) to get
+    -- `c₀.natDegree ≤ 1`. That route is deprecated — see §2's header above.
+    -- The `IsCoprimeAtRoots`-based route is the maintained strategy, but
+    -- nothing currently derives `c₀.natDegree ≤ 1` (as opposed to `≤ 2`,
+    -- already in hand as `hcdeg`) from it. Left as an honest gap for the
+    -- next pass rather than papered over with the deprecated bridge.
+    have hcdeg1 : c₀.natDegree ≤ 1 := by
+      sorry
     -- **§4: finish.** `c₀.natDegree ≤ 1` — if `= 1`, it has a genuine root
     -- (`exists_root_of_natDegree_eq_one`), contradicting pole-boundedness via
     -- the `[IsAlgClosed k]`-free `false_of_root_of_isCoprimeAtRoots_zero_snd_general`

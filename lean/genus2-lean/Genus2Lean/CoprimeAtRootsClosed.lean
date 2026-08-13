@@ -227,8 +227,18 @@ theorem toPair_notMem_or_notMem_of_isNormCoprime
     exact P.add_mem (P.mul_mem_left u hnormP) (P.mul_mem_left w hcP)
   exact hPprime.ne_top (P.eq_top_iff_one.mpr h1)
 
-/-! ## §4. The real fix: `IsNormCoprime` + `IsPoleBoundedAtPairSpec` (closed-point
+/-! ## §4. [DEPRECATED] `IsNormCoprime` + `IsPoleBoundedAtPairSpec` (closed-point
 native from the start) ⟹ `deg c ≤ 1`
+
+**DEPRECATED — do not use.** Despite the "real fix" framing below (a stale
+self-description from when this route was still believed to be the fix),
+the `IsNormCoprime` strategy has been superseded by the `IsCoprimeAtRoots`
+closed-point route in `LPairFinrankOneOrdAtFracSpec.lean`
+(`natDegree_le_two_of_gcdUnit_closed_point`,
+`false_of_root_of_isCoprimeAtRoots_zero_snd_general`). `IsCoprimeAtRoots` is
+the maintained strategy; `IsNormCoprime` is not — nothing in the live
+assembly theorem calls `natDegree_le_one_of_isPoleBoundedAtPairSpec_isNormCoprime`
+anymore. Kept here only as historical reference. Do not build on this.
 
 **Corrected route, per the "Where the real fix lives" note above and a third ChatGPT
 consultation (`chatgpt_prompt_nonclosed_field.md`).** §3's error was trying to
