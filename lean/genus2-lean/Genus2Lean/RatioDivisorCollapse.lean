@@ -87,6 +87,7 @@ and depends only on Mathlib plus facts already available via this file's own
 imports (`PrincipalDivisors.lean`'s `ordAtSpec`, `IsDedekindDomain`/
 `HeightOneSpectrum` API) — no further transitive import needed. -/
 
+omit [IsAlgClosed k] in
 /-- Local copy of `GlobalDegreeBoundSpec.lean`'s `ordAtSpec_eq_count`. -/
 theorem ordAtSpec_eq_count_local [IsDedekindDomain (CoordinateRing H)]
     (v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H)) (A B : k[X])
@@ -107,6 +108,7 @@ theorem ordAtSpec_eq_count_local [IsDedekindDomain (CoordinateRing H)]
     WithZero.exp_injective (WithZero.exp_log WithZero.exp_ne_zero)
   rw [hlog_exp, neg_neg]
 
+omit [IsAlgClosed k] in
 /-- Local copy of `GlobalDegreeBoundSpec.lean`'s `ordAtSpec_eq_zero_of_count_eq_zero`. -/
 theorem ordAtSpec_eq_zero_of_count_eq_zero_local [IsDedekindDomain (CoordinateRing H)]
     (v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H)) (A B : k[X])
@@ -117,6 +119,7 @@ theorem ordAtSpec_eq_zero_of_count_eq_zero_local [IsDedekindDomain (CoordinateRi
   rw [ordAtSpec_eq_count_local v A B hne, hcount]
   rfl
 
+omit [IsAlgClosed k] in
 /-- Local copy of `LPairFinrankOneOrdAtFracSpec.lean`'s `count_mul_eq_add`. -/
 theorem count_mul_eq_add_local [IsDedekindDomain (CoordinateRing H)]
     (v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H))
@@ -153,6 +156,7 @@ theorem count_mul_eq_add_local [IsDedekindDomain (CoordinateRing H)]
   simpa [Associates.count, Associates.bcount, v.irreducible] using
     (Multiset.count_add (Associates.mk v.asIdeal) sx sy)
 
+omit [IsAlgClosed k] in
 /-- Local copy of `LPairFinrankOneOrdAtFracSpec.lean`'s `ordAtSpec_add_of_toPair_mul`. -/
 theorem ordAtSpec_add_of_toPair_mul_local [IsDedekindDomain (CoordinateRing H)]
     (v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H))
@@ -178,6 +182,7 @@ negative is literally `divToPairRatio A₂ B₂ S₂ A₁ B₁ S₁` (swap), no 
 this file's purposes — swapping the two sides of the ratio already gives negation.
 This section is accordingly short: only the ratio-level fact is recorded. -/
 
+omit [IsAlgClosed k] in
 /-- `-(divToPairRatio A₁ B₁ S₁ A₂ B₂ S₂) = divToPairRatio A₂ B₂ S₂ A₁ B₁ S₁`: swapping
 the numerator/denominator halves negates the divisor. Pure `sub`/`neg` bookkeeping,
 no valuation theory needed. -/
@@ -229,6 +234,7 @@ def IsRatioDivisor (_hdeg : H.f.natDegree = 5) (D : Divisor H) : Prop :=
       (ordAtSpec v A B ≠ 0 ∨ ordAtSpec v A' B' ≠ 0) → ∃ P, v = pointHeightOne' P) ∧
     D = divToPairRatio A B S A' B' S
 
+omit [IsAlgClosed k] in
 /-- `IsRatioDivisor` holds of `0`: take `A = A' = 1`, `B = B' = 0`, `S = ∅`.
 `hclosed` is immediate: `ordAtSpec v 1 0 = 0` at every `v` (`ordAtSpec_C_zero`,
 since `(1 : k[X]) = C 1`), so the disjunction in `hclosed`'s hypothesis is
@@ -250,6 +256,7 @@ theorem isRatioDivisor_zero (hdeg : H.f.natDegree = 5) :
   · unfold divToPairRatio divToPair
     simp
 
+omit [IsAlgClosed k] in
 /-- `IsRatioDivisor` is closed under negation: swap numerator/denominator (and
 correspondingly swap which of the matched `ordInfOfPair`s / `hsupp` / `hclosed`
 clauses go where), via `divToPairRatio_swap_neg`. `hclosed` transfers with the
@@ -261,6 +268,7 @@ theorem isRatioDivisor_neg (hdeg : H.f.natDegree = 5) {D : Divisor H}
     fun v hv => hclosed v hv.symm, ?_⟩
   rw [divToPairRatio_swap_neg]
 
+omit [IsAlgClosed k] in
 /-- **The genuinely new plumbing step**: `IsRatioDivisor` is closed under addition.
 Given ratios `z₁ = toPair A₁ B₁ / toPair A'₁ B'₁` and `z₂ = toPair A₂ B₂ / toPair
 A'₂ B'₂` with divisors `D₁, D₂`, their product `z₁ * z₂` has divisor `D₁ + D₂`

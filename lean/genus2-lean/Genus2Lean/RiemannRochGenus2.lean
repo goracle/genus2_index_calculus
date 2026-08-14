@@ -275,6 +275,7 @@ theorem toPair_one_zero : toPair H (1 : k[X]) 0 = 1 := by
   unfold toPair
   simp
 
+omit [IsAlgClosed k] in
 /-- `toPair H 1 0 = 1 ∉ pointIdeal P` for any `P`: `pointIdeal P` is a proper
 ideal (it is maximal, `pointIdeal_isMaximal`, hence `≠ ⊤`), and any ideal
 containing a unit is `⊤` (`Ideal.eq_top_of_isUnit_mem`) — `1` is a unit
@@ -287,6 +288,7 @@ theorem toPair_one_zero_notMem_pointIdeal (P : H.Point) :
   exact (pointIdeal_isMaximal P).ne_top
     (Ideal.eq_top_of_isUnit_mem (pointIdeal P) hmem isUnit_one)
 
+omit [IsAlgClosed k] in
 /-- `ordAt P 1 0 = 0` for every `P`: `toPair H 1 0 = 1` is never in any
 `pointIdeal P` (`toPair_one_zero_notMem_pointIdeal`), so
 `ordAt_eq_zero_of_notMem` applies directly. -/
