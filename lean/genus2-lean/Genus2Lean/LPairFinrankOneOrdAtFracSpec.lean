@@ -3313,6 +3313,31 @@ theorem mem_LPairCarrierSpec'_of_isRatioDivisor (hdeg : H.f.natDegree = 5)
               | exact absurd h h1 | exact absurd h h2
               | exact absurd h h3 | exact absurd h h4)
 
+omit [DecidableEq k] in
+/-- **Assembly, general `k`**: the `[IsAlgClosed k]`-free replacement for
+`RiemannRochCrux.lean`'s `isOnlyEffectiveInClass_of_uniqueDegree2MapToP1`.
+Direct port of that theorem's proof — `isRatioDivisor_of_mem_principalSubgroup`
+for closure collapse, then support matching — but with
+`mem_LPairCarrierSpec'_of_isRatioDivisor` in place of `mem_LPairCarrier_of_
+isRatioDivisor` and `uniqueDegree2MapToP1_general` in place of
+`uniqueDegree2MapToP1`. **No `hreduced` hypothesis and no `sorry`**: the
+closed-point bound `mem_LPairCarrierSpec'_of_isRatioDivisor` needs is derived
+internally from `IsRatioDivisor`'s own `hclosed` field, not assumed — this is
+exactly the gap `SCOPING-isRatioDivisorSpec.md` traces and closes. -/
+theorem isOnlyEffectiveInClass_of_uniqueDegree2MapToP1_general
+    (hdeg : H.f.natDegree = 5) (hchar : (2 : k) ≠ 0) (hsf : Squarefree H.f)
+    (x₁ x₂ : H.Point) (hne : x₂ ≠ Point.iota x₁) :
+    IsOnlyEffectiveInClass hdeg x₁ x₂ := by
+  intro x₃ x₄ hmem
+  by_contra hcontra
+  obtain ⟨A, B, A', B', S, hAB, hA'B', hmatch, hsupp, hclosed, hdiv⟩ :=
+    isRatioDivisor_of_mem_principalSubgroup hdeg hmem
+  obtain ⟨z, C, D, C', D', hbound, hz_eq, hznonconst⟩ :=
+    mem_LPairCarrierSpec'_of_isRatioDivisor hdeg x₁ x₂ x₃ x₄ A B A' B' S
+      hAB hA'B' hmatch hsupp hclosed hdiv hcontra
+  exact hznonconst (uniqueDegree2MapToP1_general hdeg hchar hsf x₁ x₂ hne z
+    (Or.inr ⟨C, D, C', D', hbound, hz_eq⟩))
+
 end HyperellipticPolynomial
 
 end

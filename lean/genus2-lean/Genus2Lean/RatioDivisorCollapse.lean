@@ -436,6 +436,7 @@ theorem isRatioDivisor_add (hdeg : H.f.natDegree = 5) {D₁ D₂ : Divisor H}
     abel
 
 
+omit [IsAlgClosed k] in
 /-- **§1's target**: every `D ∈ principalSubgroup H hdeg` is `IsRatioDivisor`.
 `AddSubgroup.closure_induction` against the three cases just proved
 (`isRatioDivisor_zero` for the base `AddSubgroup.closure` includes `0`
