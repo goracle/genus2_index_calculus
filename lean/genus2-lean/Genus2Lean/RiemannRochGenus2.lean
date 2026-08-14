@@ -1931,6 +1931,297 @@ theorem LPairCarrierSpec_pointwise (c₁ c₂ : k)
   exact WithTop.coe_le_coe.mp hchain
 
 omit [IsAlgClosed k] in
+/-- The zero pair has `ordInfOfPair = 0`. -/
+theorem ordInfOfPair_zero_zero :
+    ordInfOfPair (0 : k[X]) (0 : k[X]) = 0 := by
+  simp [ordInfOfPair]
+
+omit [IsAlgClosed k] in
+/-- Helper: `ordInfOfPair A B` unfolded on its nonzero branch. `ordInfOfPair`
+picks up `Classical.propDecidable` for the `if B = 0 then .. else ..`
+internally, but a freshly-written `if B = 0 then .. else ..` in a goal's
+stated type instead resolves to `instDecidableEq k` (since `k : Field` gives
+`DecidableEq k`) — a *different* `Decidable (B = 0)` term, even though both
+decide the same proposition. `rfl`/`simp only [if_neg h]` can fail to bridge
+this because they're instance-sensitive; `Subsingleton.elim` on the instance
+argument closes the gap unconditionally. Isolated here as its own lemma so it
+can be tested/compiled independently of `ordInfOfPair_add_ge_min`. -/
+theorem ordInfOfPair_eq_of_ne (A B : k[X]) (h : ¬(A = 0 ∧ B = 0)) :
+    ordInfOfPair A B =
+      -(max ((2 * A.natDegree : ℤ))
+          (if B = 0 then 0 else (2 * B.natDegree + 5 : ℤ))) := by
+  unfold ordInfOfPair
+  rw [if_neg h]
+  split_ifs with hB <;> rfl
+
+omit [IsAlgClosed k] in
+/-- `ordInfOfPair_A_degree_bound`'s first branch (`A.natDegree ≤ A'.natDegree`),
+isolated as its own lemma so it can be compiled/timed independently. -/
+theorem ordInfOfPair_A_degree_bound_le (A B A' B' : k[X])
+    (hd : A.natDegree ≤ A'.natDegree) :
+    (2 : ℤ) * ↑(A + A').natDegree ≤
+      max
+        (max (2 * (A.natDegree : ℤ)) (if B = 0 then 0 else 2 * (B.natDegree : ℤ) + 5))
+        (max (2 * (A'.natDegree : ℤ)) (if B' = 0 then 0 else 2 * (B'.natDegree : ℤ) + 5)) := by
+  have hle : (A + A').natDegree ≤ A'.natDegree := by
+    simpa [max_eq_right hd] using natDegree_add_le A A'
+  have hcast : (↑(A + A').natDegree : ℤ) ≤ ↑A'.natDegree := Nat.cast_le.mpr hle
+  have step1 : (2 : ℤ) * ↑(A + A').natDegree ≤ 2 * ↑A'.natDegree := by omega
+  have step2 : (2 : ℤ) * ↑A'.natDegree ≤
+      max (2 * (A'.natDegree : ℤ)) (if B' = 0 then 0 else 2 * (B'.natDegree : ℤ) + 5) :=
+    le_max_left (2 * (A'.natDegree : ℤ)) (if B' = 0 then 0 else 2 * (B'.natDegree : ℤ) + 5)
+  have step3 :
+      max (2 * (A'.natDegree : ℤ)) (if B' = 0 then 0 else 2 * (B'.natDegree : ℤ) + 5) ≤
+      max
+        (max (2 * (A.natDegree : ℤ)) (if B = 0 then 0 else 2 * (B.natDegree : ℤ) + 5))
+        (max (2 * (A'.natDegree : ℤ)) (if B' = 0 then 0 else 2 * (B'.natDegree : ℤ) + 5)) :=
+    le_max_right
+      (max (2 * (A.natDegree : ℤ)) (if B = 0 then 0 else 2 * (B.natDegree : ℤ) + 5))
+      (max (2 * (A'.natDegree : ℤ)) (if B' = 0 then 0 else 2 * (B'.natDegree : ℤ) + 5))
+  exact step1.trans (step2.trans step3)
+
+omit [IsAlgClosed k] in
+/-- `ordInfOfPair_A_degree_bound`'s second branch (`A'.natDegree ≤ A.natDegree`),
+isolated as its own lemma so it can be compiled/timed independently. -/
+theorem ordInfOfPair_A_degree_bound_ge (A B A' B' : k[X])
+    (hd : A'.natDegree ≤ A.natDegree) :
+    (2 : ℤ) * ↑(A + A').natDegree ≤
+      max
+        (max (2 * (A.natDegree : ℤ)) (if B = 0 then 0 else 2 * (B.natDegree : ℤ) + 5))
+        (max (2 * (A'.natDegree : ℤ)) (if B' = 0 then 0 else 2 * (B'.natDegree : ℤ) + 5)) := by
+  have hle : (A + A').natDegree ≤ A.natDegree := by
+    simpa [max_eq_left hd] using natDegree_add_le A A'
+  have hcast : (↑(A + A').natDegree : ℤ) ≤ ↑A.natDegree := Nat.cast_le.mpr hle
+  have step1 : (2 : ℤ) * ↑(A + A').natDegree ≤ 2 * ↑A.natDegree := by omega
+  have step2 : (2 : ℤ) * ↑A.natDegree ≤
+      max (2 * (A.natDegree : ℤ)) (if B = 0 then 0 else 2 * (B.natDegree : ℤ) + 5) :=
+    le_max_left (2 * (A.natDegree : ℤ)) (if B = 0 then 0 else 2 * (B.natDegree : ℤ) + 5)
+  have step3 :
+      max (2 * (A.natDegree : ℤ)) (if B = 0 then 0 else 2 * (B.natDegree : ℤ) + 5) ≤
+      max
+        (max (2 * (A.natDegree : ℤ)) (if B = 0 then 0 else 2 * (B.natDegree : ℤ) + 5))
+        (max (2 * (A'.natDegree : ℤ)) (if B' = 0 then 0 else 2 * (B'.natDegree : ℤ) + 5)) :=
+    le_max_left
+      (max (2 * (A.natDegree : ℤ)) (if B = 0 then 0 else 2 * (B.natDegree : ℤ) + 5))
+      (max (2 * (A'.natDegree : ℤ)) (if B' = 0 then 0 else 2 * (B'.natDegree : ℤ) + 5))
+  exact step1.trans (step2.trans step3)
+
+omit [IsAlgClosed k] in
+/-- The `A`-degree component of `ordInfOfPair_add_ge_min`'s main inequality:
+after `push_cast`, the `max_le` split leaves this as one of its two goals.
+Now just a two-way case split dispatching to `ordInfOfPair_A_degree_bound_le`/
+`_ge`, each of which was isolated and pinned down with explicit (non-`_`)
+`max` arguments to `le_max_left`/`le_max_right` to avoid the higher-order
+unification against deeply-nested `ite`-containing `max` terms that was
+timing out when left as `le_max_left _ _`/`le_max_right _ _` inside a single
+large `calc` block. -/
+theorem ordInfOfPair_A_degree_bound (A B A' B' : k[X]) :
+    (2 : ℤ) * ↑(A + A').natDegree ≤
+      max
+        (max (2 * (A.natDegree : ℤ)) (if B = 0 then 0 else 2 * (B.natDegree : ℤ) + 5))
+        (max (2 * (A'.natDegree : ℤ)) (if B' = 0 then 0 else 2 * (B'.natDegree : ℤ) + 5)) := by
+  rcases le_total A.natDegree A'.natDegree with hd | hd
+  · exact ordInfOfPair_A_degree_bound_le A B A' B' hd
+  · exact ordInfOfPair_A_degree_bound_ge A B A' B' hd
+
+omit [IsAlgClosed k] in
+/-- `ordInfOfPair_B_degree_bound`'s `B+B'=0` branch, isolated. -/
+theorem ordInfOfPair_B_degree_bound_sum_zero (A B A' B' : k[X]) (hBsum : B + B' = 0) :
+    (if B + B' = 0 then (0 : ℤ) else 2 * (B + B').natDegree + 5) ≤
+      max
+        (max (2 * (A.natDegree : ℤ)) (if B = 0 then 0 else 2 * (B.natDegree : ℤ) + 5))
+        (max (2 * (A'.natDegree : ℤ)) (if B' = 0 then 0 else 2 * (B'.natDegree : ℤ) + 5)) := by
+  simp only [if_pos hBsum]
+  have step1 : (0 : ℤ) ≤ 2 * (A.natDegree : ℤ) := by positivity
+  have step2 : (2 : ℤ) * (A.natDegree : ℤ) ≤
+      max (2 * (A.natDegree : ℤ)) (if B = 0 then 0 else 2 * (B.natDegree : ℤ) + 5) :=
+    le_max_left (2 * (A.natDegree : ℤ)) (if B = 0 then 0 else 2 * (B.natDegree : ℤ) + 5)
+  have step3 :
+      max (2 * (A.natDegree : ℤ)) (if B = 0 then 0 else 2 * (B.natDegree : ℤ) + 5) ≤
+      max
+        (max (2 * (A.natDegree : ℤ)) (if B = 0 then 0 else 2 * (B.natDegree : ℤ) + 5))
+        (max (2 * (A'.natDegree : ℤ)) (if B' = 0 then 0 else 2 * (B'.natDegree : ℤ) + 5)) :=
+    le_max_left
+      (max (2 * (A.natDegree : ℤ)) (if B = 0 then 0 else 2 * (B.natDegree : ℤ) + 5))
+      (max (2 * (A'.natDegree : ℤ)) (if B' = 0 then 0 else 2 * (B'.natDegree : ℤ) + 5))
+  exact step1.trans (step2.trans step3)
+
+omit [IsAlgClosed k] in
+/-- `ordInfOfPair_B_degree_bound`'s `B=0, B'≠0` branch, isolated. -/
+theorem ordInfOfPair_B_degree_bound_B_zero (A B A' B' : k[X])
+    (hB : B = 0) (hB' : B' ≠ 0) :
+    (if B + B' = 0 then (0 : ℤ) else 2 * (B + B').natDegree + 5) ≤
+      max
+        (max (2 * (A.natDegree : ℤ)) (if B = 0 then 0 else 2 * (B.natDegree : ℤ) + 5))
+        (max (2 * (A'.natDegree : ℤ)) (if B' = 0 then 0 else 2 * (B'.natDegree : ℤ) + 5)) := by
+  rw [hB, zero_add]
+  simp only [if_neg hB']
+  have step1 : (2 : ℤ) * (B'.natDegree : ℤ) + 5 ≤
+      max (2 * (A'.natDegree : ℤ)) (2 * (B'.natDegree : ℤ) + 5) :=
+    le_max_right (2 * (A'.natDegree : ℤ)) (2 * (B'.natDegree : ℤ) + 5)
+  have step2 :
+      max (2 * (A'.natDegree : ℤ)) (2 * (B'.natDegree : ℤ) + 5) ≤
+      max (max (2 * (A.natDegree : ℤ)) (0 : ℤ))
+        (max (2 * (A'.natDegree : ℤ)) (2 * (B'.natDegree : ℤ) + 5)) :=
+    le_max_right (max (2 * (A.natDegree : ℤ)) (0 : ℤ))
+      (max (2 * (A'.natDegree : ℤ)) (2 * (B'.natDegree : ℤ) + 5))
+  exact step1.trans step2
+
+omit [IsAlgClosed k] in
+/-- `ordInfOfPair_B_degree_bound`'s `B≠0, B'=0` branch, isolated. -/
+theorem ordInfOfPair_B_degree_bound_B'_zero (A B A' B' : k[X])
+    (hB : B ≠ 0) (hB' : B' = 0) :
+    (if B + B' = 0 then (0 : ℤ) else 2 * (B + B').natDegree + 5) ≤
+      max
+        (max (2 * (A.natDegree : ℤ)) (if B = 0 then 0 else 2 * (B.natDegree : ℤ) + 5))
+        (max (2 * (A'.natDegree : ℤ)) (if B' = 0 then 0 else 2 * (B'.natDegree : ℤ) + 5)) := by
+  rw [hB', add_zero]
+  simp only [if_neg hB]
+  have step1 : (2 : ℤ) * (B.natDegree : ℤ) + 5 ≤
+      max (2 * (A.natDegree : ℤ)) (2 * (B.natDegree : ℤ) + 5) :=
+    le_max_right (2 * (A.natDegree : ℤ)) (2 * (B.natDegree : ℤ) + 5)
+  have step2 :
+      max (2 * (A.natDegree : ℤ)) (2 * (B.natDegree : ℤ) + 5) ≤
+      max (max (2 * (A.natDegree : ℤ)) (2 * (B.natDegree : ℤ) + 5))
+        (max (2 * (A'.natDegree : ℤ)) (0 : ℤ)) :=
+    le_max_left (max (2 * (A.natDegree : ℤ)) (2 * (B.natDegree : ℤ) + 5))
+      (max (2 * (A'.natDegree : ℤ)) (0 : ℤ))
+  exact step1.trans step2
+
+omit [IsAlgClosed k] in
+/-- `ordInfOfPair_B_degree_bound`'s both-nonzero, `B.natDegree ≤ B'.natDegree`
+sub-branch, isolated. -/
+theorem ordInfOfPair_B_degree_bound_both_ne_le (A B A' B' : k[X])
+    (hBsum : ¬(B + B' = 0)) (hB : B ≠ 0) (hB' : B' ≠ 0)
+    (hd : B.natDegree ≤ B'.natDegree) :
+    (if B + B' = 0 then (0 : ℤ) else 2 * (B + B').natDegree + 5) ≤
+      max
+        (max (2 * (A.natDegree : ℤ)) (if B = 0 then 0 else 2 * (B.natDegree : ℤ) + 5))
+        (max (2 * (A'.natDegree : ℤ)) (if B' = 0 then 0 else 2 * (B'.natDegree : ℤ) + 5)) := by
+  have hle : (B + B').natDegree ≤ B'.natDegree := by
+    simpa [max_eq_right hd] using natDegree_add_le B B'
+  have hcast : (↑(B + B').natDegree : ℤ) ≤ ↑B'.natDegree := Nat.cast_le.mpr hle
+  rw [if_neg hBsum, if_neg hB, if_neg hB']
+  have step1 : (2 : ℤ) * (B + B').natDegree + 5 ≤ 2 * (B'.natDegree : ℤ) + 5 := by omega
+  have step2 : (2 : ℤ) * (B'.natDegree : ℤ) + 5 ≤
+      max (2 * (A'.natDegree : ℤ)) (2 * (B'.natDegree : ℤ) + 5) :=
+    le_max_right (2 * (A'.natDegree : ℤ)) (2 * (B'.natDegree : ℤ) + 5)
+  have step3 :
+      max (2 * (A'.natDegree : ℤ)) (2 * (B'.natDegree : ℤ) + 5) ≤
+      max (max (2 * (A.natDegree : ℤ)) (2 * (B.natDegree : ℤ) + 5))
+        (max (2 * (A'.natDegree : ℤ)) (2 * (B'.natDegree : ℤ) + 5)) :=
+    le_max_right (max (2 * (A.natDegree : ℤ)) (2 * (B.natDegree : ℤ) + 5))
+      (max (2 * (A'.natDegree : ℤ)) (2 * (B'.natDegree : ℤ) + 5))
+  exact step1.trans (step2.trans step3)
+
+omit [IsAlgClosed k] in
+/-- `ordInfOfPair_B_degree_bound`'s both-nonzero, `B'.natDegree ≤ B.natDegree`
+sub-branch, isolated. -/
+theorem ordInfOfPair_B_degree_bound_both_ne_ge (A B A' B' : k[X])
+    (hBsum : ¬(B + B' = 0)) (hB : B ≠ 0) (hB' : B' ≠ 0)
+    (hd : B'.natDegree ≤ B.natDegree) :
+    (if B + B' = 0 then (0 : ℤ) else 2 * (B + B').natDegree + 5) ≤
+      max
+        (max (2 * (A.natDegree : ℤ)) (if B = 0 then 0 else 2 * (B.natDegree : ℤ) + 5))
+        (max (2 * (A'.natDegree : ℤ)) (if B' = 0 then 0 else 2 * (B'.natDegree : ℤ) + 5)) := by
+  have hle : (B + B').natDegree ≤ B.natDegree := by
+    simpa [max_eq_left hd] using natDegree_add_le B B'
+  have hcast : (↑(B + B').natDegree : ℤ) ≤ ↑B.natDegree := Nat.cast_le.mpr hle
+  rw [if_neg hBsum, if_neg hB, if_neg hB']
+  have step1 : (2 : ℤ) * (B + B').natDegree + 5 ≤ 2 * (B.natDegree : ℤ) + 5 := by omega
+  have step2 : (2 : ℤ) * (B.natDegree : ℤ) + 5 ≤
+      max (2 * (A.natDegree : ℤ)) (2 * (B.natDegree : ℤ) + 5) :=
+    le_max_right (2 * (A.natDegree : ℤ)) (2 * (B.natDegree : ℤ) + 5)
+  have step3 :
+      max (2 * (A.natDegree : ℤ)) (2 * (B.natDegree : ℤ) + 5) ≤
+      max (max (2 * (A.natDegree : ℤ)) (2 * (B.natDegree : ℤ) + 5))
+        (max (2 * (A'.natDegree : ℤ)) (2 * (B'.natDegree : ℤ) + 5)) :=
+    le_max_left (max (2 * (A.natDegree : ℤ)) (2 * (B.natDegree : ℤ) + 5))
+      (max (2 * (A'.natDegree : ℤ)) (2 * (B'.natDegree : ℤ) + 5))
+  exact step1.trans (step2.trans step3)
+
+omit [IsAlgClosed k] in
+/-- The `B`-degree component of `ordInfOfPair_add_ge_min`'s main inequality:
+the other of the two `max_le`-split goals. Now just a case split dispatching
+to the five standalone sub-lemmas above. -/
+theorem ordInfOfPair_B_degree_bound (A B A' B' : k[X]) :
+    (if B + B' = 0 then (0 : ℤ) else 2 * (B + B').natDegree + 5) ≤
+      max
+        (max (2 * (A.natDegree : ℤ)) (if B = 0 then 0 else 2 * (B.natDegree : ℤ) + 5))
+        (max (2 * (A'.natDegree : ℤ)) (if B' = 0 then 0 else 2 * (B'.natDegree : ℤ) + 5)) := by
+  by_cases hBsum : B + B' = 0
+  · exact ordInfOfPair_B_degree_bound_sum_zero A B A' B' hBsum
+  · by_cases hB : B = 0
+    · have hB' : B' ≠ 0 := fun h => hBsum (by simp [hB, h])
+      exact ordInfOfPair_B_degree_bound_B_zero A B A' B' hB hB'
+    · by_cases hB' : B' = 0
+      · exact ordInfOfPair_B_degree_bound_B'_zero A B A' B' hB hB'
+      · rcases le_total B.natDegree B'.natDegree with hd | hd
+        · exact ordInfOfPair_B_degree_bound_both_ne_le A B A' B' hBsum hB hB' hd
+        · exact ordInfOfPair_B_degree_bound_both_ne_ge A B A' B' hBsum hB hB' hd
+
+omit [IsAlgClosed k] in
+/-- `ordInfOfPair_add_ge_min`'s main case, isolated: all three pairs
+`(A+A',B+B')`, `(A,B)`, `(A',B')` nonzero. Split into its own lemma so this
+step's `neg_le_neg_iff`/`max_le` unification against the degree-bound lemmas
+gets its own elaboration budget, rather than sharing one with the three
+zero-pair cases above it. -/
+theorem ordInfOfPair_add_ge_min_main (A B A' B' : k[X])
+    (hsum : ¬(A + A' = 0 ∧ B + B' = 0))
+    (hAB : ¬(A = 0 ∧ B = 0)) (hA'B' : ¬(A' = 0 ∧ B' = 0)) :
+    ordInfOfPair (A + A') (B + B') ≥
+      min (ordInfOfPair A B) (ordInfOfPair A' B') := by
+  have hLHS : ordInfOfPair (A + A') (B + B') =
+      -(max ((2 * (A + A').natDegree : ℤ))
+          (if B + B' = 0 then 0 else (2 * (B + B').natDegree + 5 : ℤ))) :=
+    ordInfOfPair_eq_of_ne (A + A') (B + B') hsum
+  have hRHS : min (ordInfOfPair A B) (ordInfOfPair A' B') =
+      -(max (max ((2 * A.natDegree : ℤ))
+              (if B = 0 then 0 else (2 * B.natDegree : ℤ) + 5))
+            (max ((2 * A'.natDegree : ℤ))
+              (if B' = 0 then 0 else (2 * B'.natDegree : ℤ) + 5))) := by
+    have hA0 := ordInfOfPair_eq_of_ne A B hAB
+    have hA'0 := ordInfOfPair_eq_of_ne A' B' hA'B'
+    rw [hA0, hA'0, min_neg_neg]
+  rw [ge_iff_le, hLHS, hRHS, neg_le_neg_iff]
+  exact max_le (ordInfOfPair_A_degree_bound A B A' B')
+    (ordInfOfPair_B_degree_bound A B A' B')
+
+omit [IsAlgClosed k] in
+theorem ordInfOfPair_add_ge_min (A B A' B' : k[X]) :
+    ordInfOfPair (A + A') (B + B') ≥
+      min (ordInfOfPair A B) (ordInfOfPair A' B') := by
+  -- If the sum pair is zero, LHS is `0`, and RHS is `≤ 0`.
+  by_cases hsum : A + A' = 0 ∧ B + B' = 0
+  · have hL : ordInfOfPair (A + A') (B + B') = 0 := by
+      unfold ordInfOfPair
+      rw [if_pos hsum]
+    rw [hL]
+    exact le_trans (min_le_left _ _) (ordInfOfPair_le_zero A B)
+  -- If the first pair is zero, the sum is just the second pair.
+  by_cases hAB : A = 0 ∧ B = 0
+  · obtain ⟨rfl, rfl⟩ := hAB
+    have hle := ordInfOfPair_le_zero A' B'
+    have hR :
+        min (ordInfOfPair (0 : k[X]) (0 : k[X]))
+          (ordInfOfPair A' B') =
+        ordInfOfPair A' B' := by
+      rw [ordInfOfPair_zero_zero, min_eq_right hle]
+    rw [zero_add, zero_add, hR]
+  -- If the second pair is zero, the sum is just the first pair.
+  by_cases hA'B' : A' = 0 ∧ B' = 0
+  · obtain ⟨rfl, rfl⟩ := hA'B'
+    have hle := ordInfOfPair_le_zero A B
+    have hR :
+        min (ordInfOfPair A B)
+          (ordInfOfPair (0 : k[X]) (0 : k[X])) =
+        ordInfOfPair A B := by
+      rw [ordInfOfPair_zero_zero, min_eq_left hle]
+    rw [add_zero, add_zero, hR]
+  -- Main case: none of the three pairs is the zero pair.
+  exact ordInfOfPair_add_ge_min_main A B A' B' hsum hAB hA'B'
+
+omit [IsAlgClosed k] in
 /-- **`LPairCarrierSpec'` is closed under `k`-linear combinations.** The
 general-`k` analogue of `LPairCarrier'_add_smul`, using `IsPoleBoundedAtPairSpec'`
 (quantified over every `v : HeightOneSpectrum`, not just `H.Point`) and driven
@@ -2069,7 +2360,14 @@ theorem LPairCarrierSpec'_add_smul (hdeg : H.f.natDegree = 5) (x₁ x₂ : H.Poi
             exact add_le_add_right hinf₂ _
         _ = ordInfOfPair D' D'' := hDinf.symm
     · intro v
-      exact hpointwise v _ (hoff₁' v) (hoff₂' v)
+      set s : ℤ := (if v = pointHeightOne' x₁ then 1 else 0) +
+        (if v = pointHeightOne' x₂ then 1 else 0) with hs_def
+      have h1 : ordAtSpec v A₁ B₁ ≥ ordAtSpec v A₁' B₁' - s := by
+        have := hoff₁' v; rw [← hs_def] at this; omega
+      have h2 : ordAtSpec v A₂ B₂ ≥ ordAtSpec v A₂' B₂' - s := by
+        have := hoff₂' v; rw [← hs_def] at this; omega
+      have hconcl := hpointwise v s h1 h2
+      omega
 
 omit [IsAlgClosed k] in
 /-- **`LPairCarrier'` is closed under `k`-scaling.** Needed as the base case
@@ -2133,284 +2431,6 @@ theorem LPairCarrier'_smul (x₁ x₂ : H.Point) (c : k) (z : FractionRing (Coor
         rw [hCc_alg, Algebra.smul_def]
         field_simp
 
-/-- The zero pair has `ordInfOfPair = 0`. -/
-theorem ordInfOfPair_zero_zero :
-    ordInfOfPair (0 : k[X]) (0 : k[X]) = 0 := by
-  simp [ordInfOfPair]
-
-omit [IsAlgClosed k] in
-/-- Helper: `ordInfOfPair A B` unfolded on its nonzero branch. `ordInfOfPair`
-picks up `Classical.propDecidable` for the `if B = 0 then .. else ..`
-internally, but a freshly-written `if B = 0 then .. else ..` in a goal's
-stated type instead resolves to `instDecidableEq k` (since `k : Field` gives
-`DecidableEq k`) — a *different* `Decidable (B = 0)` term, even though both
-decide the same proposition. `rfl`/`simp only [if_neg h]` can fail to bridge
-this because they're instance-sensitive; `Subsingleton.elim` on the instance
-argument closes the gap unconditionally. Isolated here as its own lemma so it
-can be tested/compiled independently of `ordInfOfPair_add_ge_min`. -/
-theorem ordInfOfPair_eq_of_ne (A B : k[X]) (h : ¬(A = 0 ∧ B = 0)) :
-    ordInfOfPair A B =
-      -(max ((2 * A.natDegree : ℤ))
-          (if B = 0 then 0 else (2 * B.natDegree + 5 : ℤ))) := by
-  unfold ordInfOfPair
-  rw [if_neg h]
-  split_ifs with hB <;> rfl
-
-/-- `ordInfOfPair_A_degree_bound`'s first branch (`A.natDegree ≤ A'.natDegree`),
-isolated as its own lemma so it can be compiled/timed independently. -/
-theorem ordInfOfPair_A_degree_bound_le (A B A' B' : k[X])
-    (hd : A.natDegree ≤ A'.natDegree) :
-    (2 : ℤ) * ↑(A + A').natDegree ≤
-      max
-        (max (2 * (A.natDegree : ℤ)) (if B = 0 then 0 else 2 * (B.natDegree : ℤ) + 5))
-        (max (2 * (A'.natDegree : ℤ)) (if B' = 0 then 0 else 2 * (B'.natDegree : ℤ) + 5)) := by
-  have hle : (A + A').natDegree ≤ A'.natDegree := by
-    simpa [max_eq_right hd] using natDegree_add_le A A'
-  have hcast : (↑(A + A').natDegree : ℤ) ≤ ↑A'.natDegree := Nat.cast_le.mpr hle
-  have step1 : (2 : ℤ) * ↑(A + A').natDegree ≤ 2 * ↑A'.natDegree := by omega
-  have step2 : (2 : ℤ) * ↑A'.natDegree ≤
-      max (2 * (A'.natDegree : ℤ)) (if B' = 0 then 0 else 2 * (B'.natDegree : ℤ) + 5) :=
-    le_max_left (2 * (A'.natDegree : ℤ)) (if B' = 0 then 0 else 2 * (B'.natDegree : ℤ) + 5)
-  have step3 :
-      max (2 * (A'.natDegree : ℤ)) (if B' = 0 then 0 else 2 * (B'.natDegree : ℤ) + 5) ≤
-      max
-        (max (2 * (A.natDegree : ℤ)) (if B = 0 then 0 else 2 * (B.natDegree : ℤ) + 5))
-        (max (2 * (A'.natDegree : ℤ)) (if B' = 0 then 0 else 2 * (B'.natDegree : ℤ) + 5)) :=
-    le_max_right
-      (max (2 * (A.natDegree : ℤ)) (if B = 0 then 0 else 2 * (B.natDegree : ℤ) + 5))
-      (max (2 * (A'.natDegree : ℤ)) (if B' = 0 then 0 else 2 * (B'.natDegree : ℤ) + 5))
-  exact step1.trans (step2.trans step3)
-
-/-- `ordInfOfPair_A_degree_bound`'s second branch (`A'.natDegree ≤ A.natDegree`),
-isolated as its own lemma so it can be compiled/timed independently. -/
-theorem ordInfOfPair_A_degree_bound_ge (A B A' B' : k[X])
-    (hd : A'.natDegree ≤ A.natDegree) :
-    (2 : ℤ) * ↑(A + A').natDegree ≤
-      max
-        (max (2 * (A.natDegree : ℤ)) (if B = 0 then 0 else 2 * (B.natDegree : ℤ) + 5))
-        (max (2 * (A'.natDegree : ℤ)) (if B' = 0 then 0 else 2 * (B'.natDegree : ℤ) + 5)) := by
-  have hle : (A + A').natDegree ≤ A.natDegree := by
-    simpa [max_eq_left hd] using natDegree_add_le A A'
-  have hcast : (↑(A + A').natDegree : ℤ) ≤ ↑A.natDegree := Nat.cast_le.mpr hle
-  have step1 : (2 : ℤ) * ↑(A + A').natDegree ≤ 2 * ↑A.natDegree := by omega
-  have step2 : (2 : ℤ) * ↑A.natDegree ≤
-      max (2 * (A.natDegree : ℤ)) (if B = 0 then 0 else 2 * (B.natDegree : ℤ) + 5) :=
-    le_max_left (2 * (A.natDegree : ℤ)) (if B = 0 then 0 else 2 * (B.natDegree : ℤ) + 5)
-  have step3 :
-      max (2 * (A.natDegree : ℤ)) (if B = 0 then 0 else 2 * (B.natDegree : ℤ) + 5) ≤
-      max
-        (max (2 * (A.natDegree : ℤ)) (if B = 0 then 0 else 2 * (B.natDegree : ℤ) + 5))
-        (max (2 * (A'.natDegree : ℤ)) (if B' = 0 then 0 else 2 * (B'.natDegree : ℤ) + 5)) :=
-    le_max_left
-      (max (2 * (A.natDegree : ℤ)) (if B = 0 then 0 else 2 * (B.natDegree : ℤ) + 5))
-      (max (2 * (A'.natDegree : ℤ)) (if B' = 0 then 0 else 2 * (B'.natDegree : ℤ) + 5))
-  exact step1.trans (step2.trans step3)
-
-/-- The `A`-degree component of `ordInfOfPair_add_ge_min`'s main inequality:
-after `push_cast`, the `max_le` split leaves this as one of its two goals.
-Now just a two-way case split dispatching to `ordInfOfPair_A_degree_bound_le`/
-`_ge`, each of which was isolated and pinned down with explicit (non-`_`)
-`max` arguments to `le_max_left`/`le_max_right` to avoid the higher-order
-unification against deeply-nested `ite`-containing `max` terms that was
-timing out when left as `le_max_left _ _`/`le_max_right _ _` inside a single
-large `calc` block. -/
-theorem ordInfOfPair_A_degree_bound (A B A' B' : k[X]) :
-    (2 : ℤ) * ↑(A + A').natDegree ≤
-      max
-        (max (2 * (A.natDegree : ℤ)) (if B = 0 then 0 else 2 * (B.natDegree : ℤ) + 5))
-        (max (2 * (A'.natDegree : ℤ)) (if B' = 0 then 0 else 2 * (B'.natDegree : ℤ) + 5)) := by
-  rcases le_total A.natDegree A'.natDegree with hd | hd
-  · exact ordInfOfPair_A_degree_bound_le A B A' B' hd
-  · exact ordInfOfPair_A_degree_bound_ge A B A' B' hd
-
-/-- `ordInfOfPair_B_degree_bound`'s `B+B'=0` branch, isolated. -/
-theorem ordInfOfPair_B_degree_bound_sum_zero (A B A' B' : k[X]) (hBsum : B + B' = 0) :
-    (if B + B' = 0 then (0 : ℤ) else 2 * (B + B').natDegree + 5) ≤
-      max
-        (max (2 * (A.natDegree : ℤ)) (if B = 0 then 0 else 2 * (B.natDegree : ℤ) + 5))
-        (max (2 * (A'.natDegree : ℤ)) (if B' = 0 then 0 else 2 * (B'.natDegree : ℤ) + 5)) := by
-  simp only [if_pos hBsum]
-  have step1 : (0 : ℤ) ≤ 2 * (A.natDegree : ℤ) := by positivity
-  have step2 : (2 : ℤ) * (A.natDegree : ℤ) ≤
-      max (2 * (A.natDegree : ℤ)) (if B = 0 then 0 else 2 * (B.natDegree : ℤ) + 5) :=
-    le_max_left (2 * (A.natDegree : ℤ)) (if B = 0 then 0 else 2 * (B.natDegree : ℤ) + 5)
-  have step3 :
-      max (2 * (A.natDegree : ℤ)) (if B = 0 then 0 else 2 * (B.natDegree : ℤ) + 5) ≤
-      max
-        (max (2 * (A.natDegree : ℤ)) (if B = 0 then 0 else 2 * (B.natDegree : ℤ) + 5))
-        (max (2 * (A'.natDegree : ℤ)) (if B' = 0 then 0 else 2 * (B'.natDegree : ℤ) + 5)) :=
-    le_max_left
-      (max (2 * (A.natDegree : ℤ)) (if B = 0 then 0 else 2 * (B.natDegree : ℤ) + 5))
-      (max (2 * (A'.natDegree : ℤ)) (if B' = 0 then 0 else 2 * (B'.natDegree : ℤ) + 5))
-  exact step1.trans (step2.trans step3)
-
-/-- `ordInfOfPair_B_degree_bound`'s `B=0, B'≠0` branch, isolated. -/
-theorem ordInfOfPair_B_degree_bound_B_zero (A B A' B' : k[X])
-    (hB : B = 0) (hB' : B' ≠ 0) :
-    (if B + B' = 0 then (0 : ℤ) else 2 * (B + B').natDegree + 5) ≤
-      max
-        (max (2 * (A.natDegree : ℤ)) (if B = 0 then 0 else 2 * (B.natDegree : ℤ) + 5))
-        (max (2 * (A'.natDegree : ℤ)) (if B' = 0 then 0 else 2 * (B'.natDegree : ℤ) + 5)) := by
-  rw [hB, zero_add]
-  simp only [if_neg hB']
-  have step1 : (2 : ℤ) * (B'.natDegree : ℤ) + 5 ≤
-      max (2 * (A'.natDegree : ℤ)) (2 * (B'.natDegree : ℤ) + 5) :=
-    le_max_right (2 * (A'.natDegree : ℤ)) (2 * (B'.natDegree : ℤ) + 5)
-  have step2 :
-      max (2 * (A'.natDegree : ℤ)) (2 * (B'.natDegree : ℤ) + 5) ≤
-      max (max (2 * (A.natDegree : ℤ)) (0 : ℤ))
-        (max (2 * (A'.natDegree : ℤ)) (2 * (B'.natDegree : ℤ) + 5)) :=
-    le_max_right (max (2 * (A.natDegree : ℤ)) (0 : ℤ))
-      (max (2 * (A'.natDegree : ℤ)) (2 * (B'.natDegree : ℤ) + 5))
-  exact step1.trans step2
-
-/-- `ordInfOfPair_B_degree_bound`'s `B≠0, B'=0` branch, isolated. -/
-theorem ordInfOfPair_B_degree_bound_B'_zero (A B A' B' : k[X])
-    (hB : B ≠ 0) (hB' : B' = 0) :
-    (if B + B' = 0 then (0 : ℤ) else 2 * (B + B').natDegree + 5) ≤
-      max
-        (max (2 * (A.natDegree : ℤ)) (if B = 0 then 0 else 2 * (B.natDegree : ℤ) + 5))
-        (max (2 * (A'.natDegree : ℤ)) (if B' = 0 then 0 else 2 * (B'.natDegree : ℤ) + 5)) := by
-  rw [hB', add_zero]
-  simp only [if_neg hB]
-  have step1 : (2 : ℤ) * (B.natDegree : ℤ) + 5 ≤
-      max (2 * (A.natDegree : ℤ)) (2 * (B.natDegree : ℤ) + 5) :=
-    le_max_right (2 * (A.natDegree : ℤ)) (2 * (B.natDegree : ℤ) + 5)
-  have step2 :
-      max (2 * (A.natDegree : ℤ)) (2 * (B.natDegree : ℤ) + 5) ≤
-      max (max (2 * (A.natDegree : ℤ)) (2 * (B.natDegree : ℤ) + 5))
-        (max (2 * (A'.natDegree : ℤ)) (0 : ℤ)) :=
-    le_max_left (max (2 * (A.natDegree : ℤ)) (2 * (B.natDegree : ℤ) + 5))
-      (max (2 * (A'.natDegree : ℤ)) (0 : ℤ))
-  exact step1.trans step2
-
-/-- `ordInfOfPair_B_degree_bound`'s both-nonzero, `B.natDegree ≤ B'.natDegree`
-sub-branch, isolated. -/
-theorem ordInfOfPair_B_degree_bound_both_ne_le (A B A' B' : k[X])
-    (hBsum : ¬(B + B' = 0)) (hB : B ≠ 0) (hB' : B' ≠ 0)
-    (hd : B.natDegree ≤ B'.natDegree) :
-    (if B + B' = 0 then (0 : ℤ) else 2 * (B + B').natDegree + 5) ≤
-      max
-        (max (2 * (A.natDegree : ℤ)) (if B = 0 then 0 else 2 * (B.natDegree : ℤ) + 5))
-        (max (2 * (A'.natDegree : ℤ)) (if B' = 0 then 0 else 2 * (B'.natDegree : ℤ) + 5)) := by
-  have hle : (B + B').natDegree ≤ B'.natDegree := by
-    simpa [max_eq_right hd] using natDegree_add_le B B'
-  have hcast : (↑(B + B').natDegree : ℤ) ≤ ↑B'.natDegree := Nat.cast_le.mpr hle
-  rw [if_neg hBsum, if_neg hB, if_neg hB']
-  have step1 : (2 : ℤ) * (B + B').natDegree + 5 ≤ 2 * (B'.natDegree : ℤ) + 5 := by omega
-  have step2 : (2 : ℤ) * (B'.natDegree : ℤ) + 5 ≤
-      max (2 * (A'.natDegree : ℤ)) (2 * (B'.natDegree : ℤ) + 5) :=
-    le_max_right (2 * (A'.natDegree : ℤ)) (2 * (B'.natDegree : ℤ) + 5)
-  have step3 :
-      max (2 * (A'.natDegree : ℤ)) (2 * (B'.natDegree : ℤ) + 5) ≤
-      max (max (2 * (A.natDegree : ℤ)) (2 * (B.natDegree : ℤ) + 5))
-        (max (2 * (A'.natDegree : ℤ)) (2 * (B'.natDegree : ℤ) + 5)) :=
-    le_max_right (max (2 * (A.natDegree : ℤ)) (2 * (B.natDegree : ℤ) + 5))
-      (max (2 * (A'.natDegree : ℤ)) (2 * (B'.natDegree : ℤ) + 5))
-  exact step1.trans (step2.trans step3)
-
-/-- `ordInfOfPair_B_degree_bound`'s both-nonzero, `B'.natDegree ≤ B.natDegree`
-sub-branch, isolated. -/
-theorem ordInfOfPair_B_degree_bound_both_ne_ge (A B A' B' : k[X])
-    (hBsum : ¬(B + B' = 0)) (hB : B ≠ 0) (hB' : B' ≠ 0)
-    (hd : B'.natDegree ≤ B.natDegree) :
-    (if B + B' = 0 then (0 : ℤ) else 2 * (B + B').natDegree + 5) ≤
-      max
-        (max (2 * (A.natDegree : ℤ)) (if B = 0 then 0 else 2 * (B.natDegree : ℤ) + 5))
-        (max (2 * (A'.natDegree : ℤ)) (if B' = 0 then 0 else 2 * (B'.natDegree : ℤ) + 5)) := by
-  have hle : (B + B').natDegree ≤ B.natDegree := by
-    simpa [max_eq_left hd] using natDegree_add_le B B'
-  have hcast : (↑(B + B').natDegree : ℤ) ≤ ↑B.natDegree := Nat.cast_le.mpr hle
-  rw [if_neg hBsum, if_neg hB, if_neg hB']
-  have step1 : (2 : ℤ) * (B + B').natDegree + 5 ≤ 2 * (B.natDegree : ℤ) + 5 := by omega
-  have step2 : (2 : ℤ) * (B.natDegree : ℤ) + 5 ≤
-      max (2 * (A.natDegree : ℤ)) (2 * (B.natDegree : ℤ) + 5) :=
-    le_max_right (2 * (A.natDegree : ℤ)) (2 * (B.natDegree : ℤ) + 5)
-  have step3 :
-      max (2 * (A.natDegree : ℤ)) (2 * (B.natDegree : ℤ) + 5) ≤
-      max (max (2 * (A.natDegree : ℤ)) (2 * (B.natDegree : ℤ) + 5))
-        (max (2 * (A'.natDegree : ℤ)) (2 * (B'.natDegree : ℤ) + 5)) :=
-    le_max_left (max (2 * (A.natDegree : ℤ)) (2 * (B.natDegree : ℤ) + 5))
-      (max (2 * (A'.natDegree : ℤ)) (2 * (B'.natDegree : ℤ) + 5))
-  exact step1.trans (step2.trans step3)
-
-/-- The `B`-degree component of `ordInfOfPair_add_ge_min`'s main inequality:
-the other of the two `max_le`-split goals. Now just a case split dispatching
-to the five standalone sub-lemmas above. -/
-theorem ordInfOfPair_B_degree_bound (A B A' B' : k[X]) :
-    (if B + B' = 0 then (0 : ℤ) else 2 * (B + B').natDegree + 5) ≤
-      max
-        (max (2 * (A.natDegree : ℤ)) (if B = 0 then 0 else 2 * (B.natDegree : ℤ) + 5))
-        (max (2 * (A'.natDegree : ℤ)) (if B' = 0 then 0 else 2 * (B'.natDegree : ℤ) + 5)) := by
-  by_cases hBsum : B + B' = 0
-  · exact ordInfOfPair_B_degree_bound_sum_zero A B A' B' hBsum
-  · by_cases hB : B = 0
-    · have hB' : B' ≠ 0 := fun h => hBsum (by simp [hB, h])
-      exact ordInfOfPair_B_degree_bound_B_zero A B A' B' hB hB'
-    · by_cases hB' : B' = 0
-      · exact ordInfOfPair_B_degree_bound_B'_zero A B A' B' hB hB'
-      · rcases le_total B.natDegree B'.natDegree with hd | hd
-        · exact ordInfOfPair_B_degree_bound_both_ne_le A B A' B' hBsum hB hB' hd
-        · exact ordInfOfPair_B_degree_bound_both_ne_ge A B A' B' hBsum hB hB' hd
-
-/-- `ordInfOfPair_add_ge_min`'s main case, isolated: all three pairs
-`(A+A',B+B')`, `(A,B)`, `(A',B')` nonzero. Split into its own lemma so this
-step's `neg_le_neg_iff`/`max_le` unification against the degree-bound lemmas
-gets its own elaboration budget, rather than sharing one with the three
-zero-pair cases above it. -/
-theorem ordInfOfPair_add_ge_min_main (A B A' B' : k[X])
-    (hsum : ¬(A + A' = 0 ∧ B + B' = 0))
-    (hAB : ¬(A = 0 ∧ B = 0)) (hA'B' : ¬(A' = 0 ∧ B' = 0)) :
-    ordInfOfPair (A + A') (B + B') ≥
-      min (ordInfOfPair A B) (ordInfOfPair A' B') := by
-  have hLHS : ordInfOfPair (A + A') (B + B') =
-      -(max ((2 * (A + A').natDegree : ℤ))
-          (if B + B' = 0 then 0 else (2 * (B + B').natDegree + 5 : ℤ))) :=
-    ordInfOfPair_eq_of_ne (A + A') (B + B') hsum
-  have hRHS : min (ordInfOfPair A B) (ordInfOfPair A' B') =
-      -(max (max ((2 * A.natDegree : ℤ))
-              (if B = 0 then 0 else (2 * B.natDegree : ℤ) + 5))
-            (max ((2 * A'.natDegree : ℤ))
-              (if B' = 0 then 0 else (2 * B'.natDegree : ℤ) + 5))) := by
-    have hA0 := ordInfOfPair_eq_of_ne A B hAB
-    have hA'0 := ordInfOfPair_eq_of_ne A' B' hA'B'
-    rw [hA0, hA'0, min_neg_neg]
-  rw [ge_iff_le, hLHS, hRHS, neg_le_neg_iff]
-  exact max_le (ordInfOfPair_A_degree_bound A B A' B')
-    (ordInfOfPair_B_degree_bound A B A' B')
-
-theorem ordInfOfPair_add_ge_min (A B A' B' : k[X]) :
-    ordInfOfPair (A + A') (B + B') ≥
-      min (ordInfOfPair A B) (ordInfOfPair A' B') := by
-  -- If the sum pair is zero, LHS is `0`, and RHS is `≤ 0`.
-  by_cases hsum : A + A' = 0 ∧ B + B' = 0
-  · have hL : ordInfOfPair (A + A') (B + B') = 0 := by
-      unfold ordInfOfPair
-      rw [if_pos hsum]
-    rw [hL]
-    exact le_trans (min_le_left _ _) (ordInfOfPair_le_zero A B)
-  -- If the first pair is zero, the sum is just the second pair.
-  by_cases hAB : A = 0 ∧ B = 0
-  · obtain ⟨rfl, rfl⟩ := hAB
-    have hle := ordInfOfPair_le_zero A' B'
-    have hR :
-        min (ordInfOfPair (0 : k[X]) (0 : k[X]))
-          (ordInfOfPair A' B') =
-        ordInfOfPair A' B' := by
-      rw [ordInfOfPair_zero_zero, min_eq_right hle]
-    rw [zero_add, zero_add, hR]
-  -- If the second pair is zero, the sum is just the first pair.
-  by_cases hA'B' : A' = 0 ∧ B' = 0
-  · obtain ⟨rfl, rfl⟩ := hA'B'
-    have hle := ordInfOfPair_le_zero A B
-    have hR :
-        min (ordInfOfPair A B)
-          (ordInfOfPair (0 : k[X]) (0 : k[X])) =
-        ordInfOfPair A B := by
-      rw [ordInfOfPair_zero_zero, min_eq_left hle]
-    rw [add_zero, add_zero, hR]
-  -- Main case: none of the three pairs is the zero pair.
-  exact ordInfOfPair_add_ge_min_main A B A' B' hsum hAB hA'B'
 -- `LPairCarrier x₁ x₂` is closed under `k`-linear combinations — see the
 -- docstring directly above `LPairCarrier_add_smul` below for the full
 -- picture. The lemma just below, `LPairCarrier_pointwise`, is the shared
@@ -3057,6 +3077,27 @@ def LPair' (hdeg : H.f.natDegree = 5) (x₁ x₂ : H.Point) :
     have h := LPairCarrier'_add_smul hdeg x₁ x₂ 1 1 z₁ z₂ h₁ h₂
     simpa using h
   smul_mem' c {z} h := LPairCarrier'_smul x₁ x₂ c z h
+
+/-- **`L((x₁)+(x₂))`, `ordAtSpec`-based (every closed point, not just
+`H.Point`), as a genuine `k`-submodule.** The `LPairCarrierSpec'` analogue of
+`LPair`/`LPair'`: packages `LPairCarrierSpec'` with
+`one_mem_LPairCarrierSpec'`/`LPairCarrierSpec'_add_smul`/
+`LPairCarrierSpec'_smul` into a `Submodule`. Uses the `c • z + 0 • z` route
+through `add_smul` (as `LPair` does), since `LPairCarrierSpec'_add_smul`
+needs `hdeg`. This is the carrier `finrank_LPairSpec'_eq_one`
+(`LPairFinrankOneOrdAtFracSpec.lean`) computes the dimension of, over general
+`k` with no `[IsAlgClosed k]`. -/
+def LPairSpec' (hdeg : H.f.natDegree = 5) (x₁ x₂ : H.Point) :
+    Submodule k (FractionRing (CoordinateRing H)) where
+  carrier := LPairCarrierSpec' x₁ x₂
+  zero_mem' := by
+    have h := LPairCarrierSpec'_add_smul hdeg x₁ x₂ 0 0 1 1
+      (one_mem_LPairCarrierSpec' x₁ x₂) (one_mem_LPairCarrierSpec' x₁ x₂)
+    simpa using h
+  add_mem' {z₁ z₂} h₁ h₂ := by
+    have h := LPairCarrierSpec'_add_smul hdeg x₁ x₂ 1 1 z₁ z₂ h₁ h₂
+    simpa using h
+  smul_mem' c {z} h := LPairCarrierSpec'_smul x₁ x₂ c z h
 
 /-! ## §2. The canonical divisor `K` and `L(K)`
 

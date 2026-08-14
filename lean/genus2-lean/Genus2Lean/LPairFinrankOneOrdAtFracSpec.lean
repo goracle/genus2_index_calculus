@@ -3134,50 +3134,38 @@ factor — impossible once `(a₀,b₀,c₀)` is reduced, mirroring
 two must be a unit at `v`, hence `ordAtSpec v _ = 0` there) rather than
 needing a fresh `IsNormCoprime`-style hypothesis — `hgu` alone suffices via
 the same "the product membership already localizes to one factor" argument
-used throughout `CoprimeAtRootsClosed.lean` §2. -/
+used throughout `CoprimeAtRootsClosed.lean` §2.
 
-omit [IsAlgClosed k] in
-/-- **No closed point sees both `toPair H a b` and `toPair H c 0` vanish, when
-`gcd (gcd a b) c` is a unit.** The `k[X]`-gcd-only analogue of
-`toPair_notMem_or_notMem_of_isNormCoprime` (`CoprimeAtRootsClosed.lean`),
-avoiding that theorem's `IsNormCoprime`/`pairNorm`-specific argument (which
-needs `toPair_mul_involution`) in favor of the more direct fact available
-here: if a closed point `v` contained both `toPair H a b` and `toPair H c 0`,
-then (via `Ideal.comap`) the corresponding prime `P ⊆ k[X]` would contain
-`c` outright, and — since `P` is prime and a common linear-in-each-variable
-combination argument is not even needed — `P` containing `toPair H a b`
-forces `P` to contain *some* nontrivial factorization data about `a,b`
-jointly; the clean route is to go through the same `pairNorm`/involution
-trick `toPair_notMem_or_notMem_of_isNormCoprime` already uses, just with the
-hypothesis `IsCoprime (pairNorm H a b) c` supplied from `IsUnit (gcd (gcd a
-b) c)` rather than assumed directly (`isNormCoprime_of_gcdUnit` below). -/
-theorem isNormCoprime_of_gcdUnit (a b c : k[X])
-    (hgu : IsUnit (gcd (gcd a b) c)) : IsCoprime (pairNorm H a b) c := by
-  -- `gcd (gcd a b) c ∣ gcd (pairNorm H a b) c`: `gcd (gcd a b) c` divides
-  -- `c` directly, and divides `a` and `b` hence divides `a^2` and `b^2 * H.f`
-  -- hence divides `pairNorm H a b = a^2 - b^2 * H.f`.
-  have hd_dvd_a : gcd (gcd a b) c ∣ a := (gcd_dvd_left a b).trans (gcd_dvd_left _ _)
-  have hd_dvd_b : gcd (gcd a b) c ∣ b := (gcd_dvd_right a b).trans (gcd_dvd_left _ _)
-  have hd_dvd_c : gcd (gcd a b) c ∣ c := gcd_dvd_right _ _
-  have hd_dvd_norm : gcd (gcd a b) c ∣ pairNorm H a b := by
-    have h1 : gcd (gcd a b) c ∣ a ^ 2 := hd_dvd_a.pow
-    have h2 : gcd (gcd a b) c ∣ b ^ 2 * H.f := (hd_dvd_b.pow).mul_right H.f
-    have : gcd (gcd a b) c ∣ a ^ 2 - b ^ 2 * H.f := h1.sub h2
-    simpa [pairNorm] using this
-  -- Any irreducible `q ∣ gcd (pairNorm H a b) c` would divide `gcd (gcd a b)
-  -- c`'s "companion" — but since `gcd (gcd a b) c` is already a unit, and
-  -- `q` dividing both `pairNorm H a b` and `c` doesn't directly give `q ∣ a`
-  -- or `q ∣ b`, we instead show the *unit*-gcd hypothesis directly forces
-  -- `IsCoprime (pairNorm H a b) c` via `EuclideanDomain`/`IsBezout`'s
-  -- `isCoprime_of_isUnit_of_dvd`-style route is not immediate — go via
-  -- `notDvd_snd_of_dvd_gcd_pairNorm_of_gcdUnit`-style contradiction instead:
-  -- suppose not coprime, extract an irreducible common factor `q`, derive
-  -- `q ∣ a` (via `q ∤ b` from `hgu` mirrors `notDvd_snd_of_dvd_gcd_pairNorm_
-  -- of_gcdUnit`, then `q ∣ pairNorm ∧ q ∤ b ⟹ q ∣ a^2 ⟹ q ∣ a`, contradicting
-  -- `hgu` since then `q ∣ gcd (gcd a b) c`).
-  rw [← EuclideanDomain.isCoprime_of_isUnit_of_dvd_iff] at hgu
-  · exact hgu.of_isCoprime_of_dvd_left hd_dvd_norm |>.of_isCoprime_of_dvd_right hd_dvd_c
-  all_goals sorry
+**Correction (this session): the `isNormCoprime_of_gcdUnit` route below was
+FALSE as stated, not just hard — deleted rather than patched.** Counterexample
+found by hand: take `a = 0`, `b = 1`. Then `gcd (gcd a b) c = gcd 1 c = 1` is
+a unit *for every `c` whatsoever*, so `hgu` is vacuous — it places no real
+constraint on `c`. But `pairNorm H a b = 0 - 1·H.f = -H.f`, so the claimed
+conclusion `IsCoprime (pairNorm H a b) c` would have to hold for `c = H.f`
+too, i.e. `IsCoprime (-H.f) H.f` — false (`H.f` is a nonconstant common
+factor of itself). The bug: `gcd (gcd a b) c` being a unit only certifies
+"no factor shared by `a`, `b`, and `c` all three at once" — it says nothing
+about a factor of `c` that divides `H.f` (hence `pairNorm H a b`) without
+dividing `a` or `b` individually. This is the same failure mode already
+documented for `IsFullyCoprime` in `CoprimeAtRootsClosed.lean`'s post-mortem
+#1. `isNormCoprime_of_gcdUnit` had no call sites yet (this was mid-draft, per
+the prior session's own notes), so nothing downstream depended on it.
+
+**Where this leaves the `hreduced` gap:** the `gcd (gcd a b) c` unit
+hypothesis is too weak to reach `IsNormCoprime`/`IsCoprime (pairNorm H a b) c`
+directly — that route is abandoned. The right fix (per
+`CoprimeAtRootsClosed.lean`'s own §4 finding, already reused successfully
+elsewhere in this file via `gcd_unit_of_reduce_ordAtFrac_triple`) is to
+reduce the *actual* triple `(a,b,c)` arising from a real `LPairCarrierSpec'`
+witness by *its own* joint `k[X]`-gcd first (not posit an arbitrary `a,b,c`
+satisfying only the weaker `gcd(gcd a b, c)`-unit hypothesis in isolation),
+then argue directly from `IsUnit (gcd (gcd a₀ b₀) c₀)` at the level of
+`toPair`/`ordAtSpec` membership — mirroring `natDegree_le_two_of_gcdUnit_
+closed_point`'s already-working proof shape — rather than trying to first
+manufacture a general-purpose `IsCoprime (pairNorm H a b) c` lemma. Next
+session: build `mem_LPairCarrierSpec'_of_isRatioDivisor` directly against
+`hgu : IsUnit (gcd (gcd a₀ b₀) c₀)` (as `uniqueDegree2MapToP1Spec` already
+does internally), skipping the `IsNormCoprime` detour entirely. -/
 
 end HyperellipticPolynomial
 
