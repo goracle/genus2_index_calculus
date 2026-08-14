@@ -153,6 +153,7 @@ theorem sidonRepBound_of_sidonDichotomy_nonInvolution_general
     (hAvoid : AvoidsInvolutionPairs F) (hNoWeier : NoWeierstrassPoints F) :
     SidonRepBound (sidonSet (principalDivisorData H hdeg) δ₀ F) := by
   intro g
+  unfold repCount
   classical
   set D := principalDivisorData H hdeg with hD
   set T := sidonSet D δ₀ F with hT

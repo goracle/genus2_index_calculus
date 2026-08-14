@@ -35,4 +35,6 @@ import Genus2Lean.CoprimeAtRootsClosed
 import Genus2Lean.NonSquareFiberPoint
 import Genus2Lean.LPairFinrankOneOrdAtFracSpec
 import Genus2Lean.RiemannRochCrux
+import Genus2Lean.SidonDichotomyGeneral
+import Genus2Lean.Complexity
 
