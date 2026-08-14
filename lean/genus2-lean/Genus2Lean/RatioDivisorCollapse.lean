@@ -74,6 +74,98 @@ def IsConstantFraction (z : FractionRing (CoordinateRing H)) : Prop :=
   ∃ c : k, z = algebraMap (CoordinateRing H) (FractionRing (CoordinateRing H))
     (algebraMap k[X] (CoordinateRing H) (C c))
 
+/-! ## §0. Local copies of `ordAtSpec`/`Associates.count` facts
+
+**Why copied here instead of imported**: `ordAtSpec_eq_count` and
+`ordAtSpec_eq_zero_of_count_eq_zero` live in `GlobalDegreeBoundSpec.lean`, and
+`ordAtSpec_add_of_toPair_mul`/`count_mul_eq_add` live in
+`LPairFinrankOneOrdAtFracSpec.lean` — both import `LPairFinrankOne.lean`, which
+itself imports *this* file (`RatioDivisorCollapse.lean`), so importing either
+back here is a genuine cycle (confirmed by `lake build`'s `build cycle detected`
+across exactly this loop). Each proof below is copied verbatim from its source
+and depends only on Mathlib plus facts already available via this file's own
+imports (`PrincipalDivisors.lean`'s `ordAtSpec`, `IsDedekindDomain`/
+`HeightOneSpectrum` API) — no further transitive import needed. -/
+
+/-- Local copy of `GlobalDegreeBoundSpec.lean`'s `ordAtSpec_eq_count`. -/
+theorem ordAtSpec_eq_count_local [IsDedekindDomain (CoordinateRing H)]
+    (v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H)) (A B : k[X])
+    (hne : toPair H A B ≠ 0) :
+    ordAtSpec v A B =
+      ((Associates.mk v.asIdeal).count
+        (Associates.mk (Ideal.span ({toPair H A B} : Set (CoordinateRing H)))).factors : ℤ) := by
+  unfold ordAtSpec
+  rw [if_neg hne]
+  set n : ℕ := (Associates.mk v.asIdeal).count
+    (Associates.mk (Ideal.span ({toPair H A B} : Set (CoordinateRing H)))).factors with hn_def
+  have hval : v.intValuation (toPair H A B) = WithZero.exp (-(n : ℤ)) := by
+    rw [IsDedekindDomain.HeightOneSpectrum.intValuation_apply,
+        IsDedekindDomain.HeightOneSpectrum.intValuationDef_if_neg _ hne]
+    try rfl
+  rw [hval]
+  have hlog_exp : WithZero.log (WithZero.exp (-(n : ℤ))) = -(n : ℤ) :=
+    WithZero.exp_injective (WithZero.exp_log WithZero.exp_ne_zero)
+  rw [hlog_exp, neg_neg]
+
+/-- Local copy of `GlobalDegreeBoundSpec.lean`'s `ordAtSpec_eq_zero_of_count_eq_zero`. -/
+theorem ordAtSpec_eq_zero_of_count_eq_zero_local [IsDedekindDomain (CoordinateRing H)]
+    (v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H)) (A B : k[X])
+    (hne : toPair H A B ≠ 0)
+    (hcount : (Associates.mk v.asIdeal).count
+      (Associates.mk (Ideal.span ({toPair H A B} : Set (CoordinateRing H)))).factors = 0) :
+    ordAtSpec v A B = 0 := by
+  rw [ordAtSpec_eq_count_local v A B hne, hcount]
+  rfl
+
+/-- Local copy of `LPairFinrankOneOrdAtFracSpec.lean`'s `count_mul_eq_add`. -/
+theorem count_mul_eq_add_local [IsDedekindDomain (CoordinateRing H)]
+    (v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H))
+    (x y : CoordinateRing H)
+    (hx : x ≠ 0) (hy : y ≠ 0) :
+    (Associates.mk v.asIdeal).count
+        (Associates.mk (Ideal.span ({x * y} : Set (CoordinateRing H)))).factors =
+      (Associates.mk v.asIdeal).count
+        (Associates.mk (Ideal.span ({x} : Set (CoordinateRing H)))).factors +
+      (Associates.mk v.asIdeal).count
+        (Associates.mk (Ideal.span ({y} : Set (CoordinateRing H)))).factors := by
+  have hxne :
+      Associates.mk (Ideal.span ({x} : Set (CoordinateRing H))) ≠ 0 :=
+    Associates.mk_ne_zero.mpr
+      (Ideal.span_singleton_eq_bot.not.mpr hx)
+  have hyne :
+      Associates.mk (Ideal.span ({y} : Set (CoordinateRing H))) ≠ 0 :=
+    Associates.mk_ne_zero.mpr
+      (Ideal.span_singleton_eq_bot.not.mpr hy)
+  have hspan :
+      Ideal.span ({x * y} : Set (CoordinateRing H)) =
+        Ideal.span ({x} : Set (CoordinateRing H)) *
+          Ideal.span ({y} : Set (CoordinateRing H)) := by
+    symm
+    exact Ideal.span_singleton_mul_span_singleton x y
+  rw [hspan]
+  rw [← Associates.mk_mul_mk]
+  rw [Associates.factors_mul]
+  obtain ⟨sx, hsx⟩ :=
+    Associates.factors_eq_some_iff_ne_zero.mpr hxne
+  obtain ⟨sy, hsy⟩ :=
+    Associates.factors_eq_some_iff_ne_zero.mpr hyne
+  rw [hsx, hsy, ← Associates.FactorSet.coe_add]
+  simpa [Associates.count, Associates.bcount, v.irreducible] using
+    (Multiset.count_add (Associates.mk v.asIdeal) sx sy)
+
+/-- Local copy of `LPairFinrankOneOrdAtFracSpec.lean`'s `ordAtSpec_add_of_toPair_mul`. -/
+theorem ordAtSpec_add_of_toPair_mul_local [IsDedekindDomain (CoordinateRing H)]
+    (v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H))
+    (A B C D E F : k[X])
+    (hAB : toPair H A B ≠ 0) (hCD : toPair H C D ≠ 0)
+    (hmul : toPair H E F = toPair H A B * toPair H C D) :
+    ordAtSpec v E F = ordAtSpec v A B + ordAtSpec v C D := by
+  have hEF : toPair H E F ≠ 0 := by rw [hmul]; exact mul_ne_zero hAB hCD
+  rw [ordAtSpec_eq_count_local v A B hAB, ordAtSpec_eq_count_local v C D hCD,
+    ordAtSpec_eq_count_local v E F hEF, hmul]
+  have := count_mul_eq_add_local v (toPair H A B) (toPair H C D) hAB hCD
+  exact_mod_cast this
+
 /-! ## §1. Negation invariance of `ordAt`/`ordInfOfPair` on pairs
 
 Needed for the `neg` case of the closure induction: `divToPairRatio A₁ B₁ S₁ A₂ B₂
@@ -111,33 +203,62 @@ infinity contributing to the affine-degree count — matching
 `deg_divToPairRatio_eq_zero`'s hypothesis shape). This is exactly
 `D = divToPairRatio A B S A' B' S` (same `S` for both halves is WLOG: pad each
 support with the other's via `hsupp`, since `ordAt` outside `S` is `0` and
-contributes nothing to the `divToPair` sum either way). -/
+contributes nothing to the `divToPair` sum either way).
+
+**`hclosed` (new field, this session): every closed point with nonzero support
+in either half is rational.** Mirrors `principalSubgroup`'s own generating set,
+which already carries exactly this fact on each generator (`hspec₁`/`hspec₂` in
+`PrincipalDivisorSubgroup.lean`) — `isRatioDivisor_of_mem_principalSubgroup`
+previously discarded it (destructured with `_hspec₁`/`_hspec₂`) when packaging
+the output, which is the root cause of the `hreduced`/closed-point gap
+documented at length in `LPairFinrankOneOrdAtFracSpec.lean` §5 and confirmed
+unfixable after the fact by a ChatGPT consultation (`hgu` alone cannot recover
+this once discarded — see that file's trailing note). Threading it through from
+the start, as this field now requires, closes that gap structurally instead of
+patching around it downstream. Stated via `ordAtSpec`/`pointHeightOne'`
+(this file's newer idiom) rather than the older `Associates.mk`-count/`pointIdeal`
+phrasing `principalSubgroup` itself still uses — equivalent content, converted
+at the one point (`isRatioDivisor_of_mem_principalSubgroup`) where the two
+styles meet. -/
 def IsRatioDivisor (_hdeg : H.f.natDegree = 5) (D : Divisor H) : Prop :=
   ∃ (A B A' B' : k[X]) (S : Finset H.Point),
     ¬ (A = 0 ∧ B = 0) ∧ ¬ (A' = 0 ∧ B' = 0) ∧
     ordInfOfPair A B = ordInfOfPair A' B' ∧
     (∀ P, P ∉ S → ordAt P A B = 0 ∧ ordAt P A' B' = 0) ∧
+    (∀ v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H),
+      (ordAtSpec v A B ≠ 0 ∨ ordAtSpec v A' B' ≠ 0) → ∃ P, v = pointHeightOne' P) ∧
     D = divToPairRatio A B S A' B' S
 
-/-- `IsRatioDivisor` holds of `0`: take `A = A' = 1`, `B = B' = 0`, `S = ∅`. -/
+/-- `IsRatioDivisor` holds of `0`: take `A = A' = 1`, `B = B' = 0`, `S = ∅`.
+`hclosed` is immediate: `ordAtSpec v 1 0 = 0` at every `v` (`ordAtSpec_C_zero`,
+since `(1 : k[X]) = C 1`), so the disjunction in `hclosed`'s hypothesis is
+never satisfied. -/
 theorem isRatioDivisor_zero (hdeg : H.f.natDegree = 5) :
     IsRatioDivisor hdeg (0 : Divisor H) := by
-  refine ⟨1, 0, 1, 0, ∅, ?_, ?_, ?_, ?_, ?_⟩
+  refine ⟨1, 0, 1, 0, ∅, ?_, ?_, ?_, ?_, ?_, ?_⟩
   · exact fun h => one_ne_zero h.1
   · exact fun h => one_ne_zero h.1
   · rfl
   · intro P _
     exact ⟨ordAt_one_zero P, ordAt_one_zero P⟩
+  · intro v hv
+    have h1 : (1 : k[X]) = Polynomial.C 1 := by simp
+    rw [h1] at hv
+    rcases hv with hv | hv
+    · exact (hv (ordAtSpec_C_zero 1 one_ne_zero v)).elim
+    · exact (hv (ordAtSpec_C_zero 1 one_ne_zero v)).elim
   · unfold divToPairRatio divToPair
     simp
 
 /-- `IsRatioDivisor` is closed under negation: swap numerator/denominator (and
-correspondingly swap which of the matched `ordInfOfPair`s / `hsupp` clauses go
-where), via `divToPairRatio_swap_neg`. -/
+correspondingly swap which of the matched `ordInfOfPair`s / `hsupp` / `hclosed`
+clauses go where), via `divToPairRatio_swap_neg`. `hclosed` transfers with the
+disjunction's two sides swapped, which is exactly the same disjunction. -/
 theorem isRatioDivisor_neg (hdeg : H.f.natDegree = 5) {D : Divisor H}
     (hD : IsRatioDivisor hdeg D) : IsRatioDivisor hdeg (-D) := by
-  obtain ⟨A, B, A', B', S, hAB, hA'B', hmatch, hsupp, rfl⟩ := hD
-  refine ⟨A', B', A, B, S, hA'B', hAB, hmatch.symm, fun P hP => (hsupp P hP).symm, ?_⟩
+  obtain ⟨A, B, A', B', S, hAB, hA'B', hmatch, hsupp, hclosed, rfl⟩ := hD
+  refine ⟨A', B', A, B, S, hA'B', hAB, hmatch.symm, fun P hP => (hsupp P hP).symm,
+    fun v hv => hclosed v hv.symm, ?_⟩
   rw [divToPairRatio_swap_neg]
 
 /-- **The genuinely new plumbing step**: `IsRatioDivisor` is closed under addition.
@@ -161,8 +282,8 @@ each original support up to the union. Not a copy from `LPairCarrier_add_smul`
 theorem isRatioDivisor_add (hdeg : H.f.natDegree = 5) {D₁ D₂ : Divisor H}
     (hD₁ : IsRatioDivisor hdeg D₁) (hD₂ : IsRatioDivisor hdeg D₂) :
     IsRatioDivisor hdeg (D₁ + D₂) := by
-  obtain ⟨A₁, B₁, A₁', B₁', S₁, hAB₁, hA'B'₁, hmatch₁, hsupp₁, rfl⟩ := hD₁
-  obtain ⟨A₂, B₂, A₂', B₂', S₂, hAB₂, hA'B'₂, hmatch₂, hsupp₂, rfl⟩ := hD₂
+  obtain ⟨A₁, B₁, A₁', B₁', S₁, hAB₁, hA'B'₁, hmatch₁, hsupp₁, hclosed₁, rfl⟩ := hD₁
+  obtain ⟨A₂, B₂, A₂', B₂', S₂, hAB₂, hA'B'₂, hmatch₂, hsupp₂, hclosed₂, rfl⟩ := hD₂
   -- Nonzero-as-`toPair` versions of the four hypotheses, used repeatedly below.
   have hAB₁ne : toPair H A₁ B₁ ≠ 0 := fun h => hAB₁ ((toPair_eq_zero_iff H A₁ B₁).mp h)
   have hAB₂ne : toPair H A₂ B₂ ≠ 0 := fun h => hAB₂ ((toPair_eq_zero_iff H A₂ B₂).mp h)
@@ -186,7 +307,7 @@ theorem isRatioDivisor_add (hdeg : H.f.natDegree = 5) {D₁ D₂ : Divisor H}
     fun h => hDne ((toPair_eq_zero_iff H _ _).mpr h)
   refine ⟨A₁ * A₂ + B₁ * B₂ * H.f, A₁ * B₂ + A₂ * B₁,
     A₁' * A₂' + B₁' * B₂' * H.f, A₁' * B₂' + A₂' * B₁',
-    S₁ ∪ S₂, hNAB, hDAB, ?_, ?_, ?_⟩
+    S₁ ∪ S₂, hNAB, hDAB, ?_, ?_, ?_, ?_⟩
   · -- matching `ordInfOfPair` for the product pairs: `ordInfOfPair_add_of_toPair_mul`
     -- applied on both the numerator and denominator sides, then `hmatch₁`/`hmatch₂`
     -- combine termwise.
@@ -216,6 +337,30 @@ theorem isRatioDivisor_add (hdeg : H.f.natDegree = 5) {D₁ D₂ : Divisor H}
       · rw [ordAt_toPair_mul_of_ne_zero' P h_bot A₁' B₁' A₂' B₂'
           (A₁' * A₂' + B₁' * B₂' * H.f) (A₁' * B₂' + A₂' * B₁') hA'B'₁ne hA'B'₂ne hDmul,
           (hsupp₁ P hP1).2, (hsupp₂ P hP2).2, add_zero]
+  · -- `hclosed` for the product pairs: expand each side's `ordAtSpec` via
+    -- additivity (`ordAtSpec_add_of_toPair_mul`) into the two factors' `ordAtSpec`s;
+    -- a nonzero sum forces at least one factor nonzero, which `hclosed₁`/`hclosed₂`
+    -- (applied to whichever factor pair it came from) already resolves.
+    intro v hv
+    rw [ordAtSpec_add_of_toPair_mul_local v A₁ B₁ A₂ B₂ _ _ hAB₁ne hAB₂ne hNmul,
+        ordAtSpec_add_of_toPair_mul_local v A₁' B₁' A₂' B₂' _ _ hA'B'₁ne hA'B'₂ne hDmul] at hv
+    -- `ℤ` gives no `a+b≠0 → a≠0∨b≠0` shortcut (signs can cancel), so argue by
+    -- contradiction on the goal itself: assuming `v` is non-rational, `hclosed₁`/
+    -- `hclosed₂`'s contrapositive forces every individual factor-side `ordAtSpec`
+    -- appearing in `hv` to be `0` (a nonzero one would exhibit rationality directly),
+    -- so both sides of `hv`'s sum are `0`, contradicting `hv`.
+    by_contra hnr
+    have e1 : ordAtSpec v A₁ B₁ = 0 := by
+      by_contra h; exact hnr (hclosed₁ v (Or.inl h))
+    have e2 : ordAtSpec v A₂ B₂ = 0 := by
+      by_contra h; exact hnr (hclosed₂ v (Or.inl h))
+    have e1' : ordAtSpec v A₁' B₁' = 0 := by
+      by_contra h; exact hnr (hclosed₁ v (Or.inr h))
+    have e2' : ordAtSpec v A₂' B₂' = 0 := by
+      by_contra h; exact hnr (hclosed₂ v (Or.inr h))
+    rcases hv with hv | hv
+    · exact hv (by rw [e1, e2, add_zero])
+    · exact hv (by rw [e1', e2', add_zero])
   · -- divisor-level identity `divToPairRatio (…product…) (S₁∪S₂) (…product…) (S₁∪S₂)
     -- = divToPairRatio A₁ B₁ S₁ A₁' B₁' S₁ + divToPairRatio A₂ B₂ S₂ A₂' B₂' S₂`:
     -- unfolds to a `Finset.sum` reindexing over `S₁ ∪ S₂` on each side plus the
@@ -317,16 +462,36 @@ theorem isRatioDivisor_of_mem_principalSubgroup (hdeg : H.f.natDegree = 5)
   refine AddSubgroup.closure_induction ?_ (isRatioDivisor_zero hdeg)
     (fun x y _ _ hx hy => isRatioDivisor_add hdeg hx hy)
     (fun x _ hx => isRatioDivisor_neg hdeg hx) hD
-  rintro D ⟨A₁, B₁, S₁, hAB₁, hsupp₁, _hspec₁, _hfin₁, A₂, B₂, S₂, hAB₂, hsupp₂, _hspec₂,
+  rintro D ⟨A₁, B₁, S₁, hAB₁, hsupp₁, hspec₁, _hfin₁, A₂, B₂, S₂, hAB₂, hsupp₂, hspec₂,
     _hfin₂, hmatch, rfl⟩
   -- A generator is `divToPairRatio A₁ B₁ S₁ A₂ B₂ S₂` with possibly *different*
   -- supports `S₁ ≠ S₂`. `IsRatioDivisor` as defined above insists on one shared
   -- `S`, so widen both to `S₁ ∪ S₂` — `divToPair` over a superset agrees since the
   -- added points contribute `ordAt = 0` (`hsupp₁`/`hsupp₂` outside their own `S`).
-  refine ⟨A₁, B₁, A₂, B₂, S₁ ∪ S₂, hAB₁, hAB₂, hmatch, ?_, ?_⟩
+  refine ⟨A₁, B₁, A₂, B₂, S₁ ∪ S₂, hAB₁, hAB₂, hmatch, ?_, ?_, ?_⟩
   · intro P hP
     simp only [Finset.mem_union, not_or] at hP
     exact ⟨hsupp₁ P hP.1, hsupp₂ P hP.2⟩
+  · -- `hclosed`: thread `hspec₁`/`hspec₂` (kept, no longer discarded) through the
+    -- `Associates.count`-to-`ordAtSpec` bridge (`ordAtSpec_eq_zero_of_count_eq_zero`,
+    -- contraposed) and `v.asIdeal = pointIdeal P → v = pointHeightOne' P`
+    -- (`HeightOneSpectrum.ext`), exactly the conversion the docstring above promises
+    -- at this one meeting point between `principalSubgroup`'s older idiom and this
+    -- file's `ordAtSpec`/`pointHeightOne'` one.
+    intro v hv
+    have hAB₁ne : toPair H A₁ B₁ ≠ 0 := fun h => hAB₁ ((toPair_eq_zero_iff H A₁ B₁).mp h)
+    have hAB₂ne : toPair H A₂ B₂ ≠ 0 := fun h => hAB₂ ((toPair_eq_zero_iff H A₂ B₂).mp h)
+    rcases hv with hv | hv
+    · have hcount : (Associates.mk v.asIdeal).count
+          (Associates.mk (Ideal.span ({toPair H A₁ B₁} : Set (CoordinateRing H)))).factors ≠ 0 :=
+        fun h => hv (ordAtSpec_eq_zero_of_count_eq_zero_local v A₁ B₁ hAB₁ne h)
+      obtain ⟨P, hP⟩ := hspec₁ v hcount
+      exact ⟨P, IsDedekindDomain.HeightOneSpectrum.ext hP⟩
+    · have hcount : (Associates.mk v.asIdeal).count
+          (Associates.mk (Ideal.span ({toPair H A₂ B₂} : Set (CoordinateRing H)))).factors ≠ 0 :=
+        fun h => hv (ordAtSpec_eq_zero_of_count_eq_zero_local v A₂ B₂ hAB₂ne h)
+      obtain ⟨P, hP⟩ := hspec₂ v hcount
+      exact ⟨P, IsDedekindDomain.HeightOneSpectrum.ext hP⟩
   · -- `divToPairRatio A₁ B₁ S₁ A₂ B₂ S₂ = divToPairRatio A₁ B₁ (S₁∪S₂) A₂ B₂ (S₁∪S₂)`:
     -- each `divToPair _ _ S` extends to `divToPair _ _ (S ∪ S')` for free since the
     -- extra terms are `ordAt P _ _ • single P` with `ordAt P _ _ = 0` (`hsupp`),

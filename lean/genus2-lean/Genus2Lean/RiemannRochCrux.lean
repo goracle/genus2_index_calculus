@@ -205,7 +205,7 @@ theorem isOnlyEffectiveInClass_of_uniqueDegree2MapToP1
     IsOnlyEffectiveInClass hdeg x₁ x₂ := by
   intro x₃ x₄ hmem
   by_contra hcontra
-  obtain ⟨A, B, A', B', S, hAB, hA'B', hmatch, hsupp, hdiv⟩ :=
+  obtain ⟨A, B, A', B', S, hAB, hA'B', hmatch, hsupp, _hclosed, hdiv⟩ :=
     isRatioDivisor_of_mem_principalSubgroup hdeg hmem
   -- **Open gap, isolated here (see docstring above): `hreduced` for this
   -- specific `(A,B,A',B')`, i.e. no common affine zero/pole between the

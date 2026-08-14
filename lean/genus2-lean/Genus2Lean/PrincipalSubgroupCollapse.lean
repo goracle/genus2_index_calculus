@@ -81,7 +81,7 @@ theorem isOnlyEffectiveInClass_of_uniqueDegree2MapToP1'
     IsOnlyEffectiveInClass hdeg x₁ x₂ := by
   intro x₃ x₄ hmem
   by_contra hcontra
-  obtain ⟨A, B, A', B', S, hAB, hA'B', hmatch, hsupp, hdiv⟩ :=
+  obtain ⟨A, B, A', B', S, hAB, hA'B', hmatch, hsupp, _hclosed, hdiv⟩ :=
     isRatioDivisor_of_mem_principalSubgroup hdeg hmem
   -- **Same open gap as `RiemannRochCrux.lean`'s
   -- `isOnlyEffectiveInClass_of_uniqueDegree2MapToP1`: `hreduced` for this
