@@ -3136,36 +3136,178 @@ needing a fresh `IsNormCoprime`-style hypothesis — `hgu` alone suffices via
 the same "the product membership already localizes to one factor" argument
 used throughout `CoprimeAtRootsClosed.lean` §2.
 
-**Correction (this session): the `isNormCoprime_of_gcdUnit` route below was
-FALSE as stated, not just hard — deleted rather than patched.** Counterexample
-found by hand: take `a = 0`, `b = 1`. Then `gcd (gcd a b) c = gcd 1 c = 1` is
-a unit *for every `c` whatsoever*, so `hgu` is vacuous — it places no real
-constraint on `c`. But `pairNorm H a b = 0 - 1·H.f = -H.f`, so the claimed
-conclusion `IsCoprime (pairNorm H a b) c` would have to hold for `c = H.f`
-too, i.e. `IsCoprime (-H.f) H.f` — false (`H.f` is a nonconstant common
-factor of itself). The bug: `gcd (gcd a b) c` being a unit only certifies
-"no factor shared by `a`, `b`, and `c` all three at once" — it says nothing
-about a factor of `c` that divides `H.f` (hence `pairNorm H a b`) without
-dividing `a` or `b` individually. This is the same failure mode already
-documented for `IsFullyCoprime` in `CoprimeAtRootsClosed.lean`'s post-mortem
-#1. `isNormCoprime_of_gcdUnit` had no call sites yet (this was mid-draft, per
-the prior session's own notes), so nothing downstream depended on it.
+**Superseded (see `SCOPING-isRatioDivisorSpec.md`): the plan below (reduce by
+`hgu`, argue via `IsUnit (gcd (gcd a₀ b₀) c₀)`) turned out to be unnecessary.**
+`IsRatioDivisor` (`RatioDivisorCollapse.lean`) was extended with an `hclosed`
+field this session — "every closed point with nonzero support in either half
+is rational", exactly the `hspec` fact `principalSubgroup`'s own generators
+already carry but which used to be discarded before reaching `IsRatioDivisor`.
+With `hclosed` in hand, the closed-point pointwise bound is immediate — no
+gcd-reduction, no `hgu`, no `IsNormCoprime` detour: at a closed point `v` that
+is not rational, `hclosed` (contrapositive) forces `ordAtSpec v _ = 0` on
+*both* the numerator and denominator side directly, so the difference is `0`,
+which trivially satisfies any pointwise bound; at a rational `v = pointHeightOne'
+P`, the bound is `hcoef P` (read off `hdiv`), transported via `ordAt_eq_ordAtSpec`.
+See `mem_LPairCarrierSpec'_of_isRatioDivisor` below. -/
 
-**Where this leaves the `hreduced` gap:** the `gcd (gcd a b) c` unit
-hypothesis is too weak to reach `IsNormCoprime`/`IsCoprime (pairNorm H a b) c`
-directly — that route is abandoned. The right fix (per
-`CoprimeAtRootsClosed.lean`'s own §4 finding, already reused successfully
-elsewhere in this file via `gcd_unit_of_reduce_ordAtFrac_triple`) is to
-reduce the *actual* triple `(a,b,c)` arising from a real `LPairCarrierSpec'`
-witness by *its own* joint `k[X]`-gcd first (not posit an arbitrary `a,b,c`
-satisfying only the weaker `gcd(gcd a b, c)`-unit hypothesis in isolation),
-then argue directly from `IsUnit (gcd (gcd a₀ b₀) c₀)` at the level of
-`toPair`/`ordAtSpec` membership — mirroring `natDegree_le_two_of_gcdUnit_
-closed_point`'s already-working proof shape — rather than trying to first
-manufacture a general-purpose `IsCoprime (pairNorm H a b) c` lemma. Next
-session: build `mem_LPairCarrierSpec'_of_isRatioDivisor` directly against
-`hgu : IsUnit (gcd (gcd a₀ b₀) c₀)` (as `uniqueDegree2MapToP1Spec` already
-does internally), skipping the `IsNormCoprime` detour entirely. -/
+/-- **The general-`k` support-matching step.** `LPairCarrierSpec'`/
+`IsPoleBoundedAtPairSpec'` analogue of `RatioDivisorCollapse.lean`'s
+`mem_LPairCarrier_of_isRatioDivisor`, consuming `IsRatioDivisor`'s witness
+directly (its `hclosed` field is exactly what removes the need for the
+`hreduced` hypothesis that theorem has to take as unprovable input). Same
+`hcoef` derivation, same swapped-witness `polePairToFraction A' B' A B`
+output, same non-constancy argument — only the pointwise-bound goal changes
+from `IsPoleBoundedAtPair` (`H.Point`-indexed) to `IsPoleBoundedAtPairSpec'`
+(`HeightOneSpectrum`-indexed), and that goal is now *proved*, not assumed. -/
+theorem mem_LPairCarrierSpec'_of_isRatioDivisor (hdeg : H.f.natDegree = 5)
+    (x₁ x₂ x₃ x₄ : H.Point) (A B A' B' : k[X]) (S : Finset H.Point)
+    (hAB : ¬ (A = 0 ∧ B = 0)) (hA'B' : ¬ (A' = 0 ∧ B' = 0))
+    (hmatch : ordInfOfPair A B = ordInfOfPair A' B')
+    (hsupp : ∀ P, P ∉ S → ordAt P A B = 0 ∧ ordAt P A' B' = 0)
+    (hclosed : ∀ v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H),
+      (ordAtSpec v A B ≠ 0 ∨ ordAtSpec v A' B' ≠ 0) → ∃ P, v = pointHeightOne' P)
+    (hdiv : (single x₁ + single x₂ - single x₃ - single x₄ : Divisor H) =
+      divToPairRatio A B S A' B' S)
+    (hne : ({x₃, x₄} : Set H.Point) ≠ {x₁, x₂}) :
+    ∃ (z : FractionRing (CoordinateRing H)) (C D C' D' : k[X]),
+      IsPoleBoundedAtPairSpec' x₁ x₂ C D C' D' ∧
+      z = polePairToFraction (H := H) C D C' D' ∧
+      ¬ IsConstantFraction z := by
+  have hABne : toPair H A B ≠ 0 := fun h => hAB ((toPair_eq_zero_iff H A B).mp h)
+  have hA'B'ne : toPair H A' B' ≠ 0 := fun h => hA'B' ((toPair_eq_zero_iff H A' B').mp h)
+  -- Identical to `mem_LPairCarrier_of_isRatioDivisor`'s `hcoef` derivation —
+  -- reads the pointwise `ordAt` difference off `hdiv` via `Finsupp.coeffAt`.
+  have hcoef : ∀ P : H.Point,
+      ordAt P A B - ordAt P A' B' =
+        (if P = x₁ then (1:ℤ) else 0) + (if P = x₂ then 1 else 0) -
+          (if P = x₃ then 1 else 0) - (if P = x₄ then 1 else 0) := by
+    intro P
+    have hcoeffDivToPair : ∀ (a b : k[X]) (T : Finset H.Point),
+        (∀ Q ∉ T, ordAt Q a b = 0) →
+        Divisor.coeffAt P (divToPair a b T) = ordAt P a b := by
+      intro a b T hT
+      unfold divToPair
+      rw [map_sum]
+      by_cases hPT : P ∈ T
+      · rw [Finset.sum_eq_single P
+          (fun Q _ hQP => by
+            rw [map_zsmul, Divisor.coeffAt_single, if_neg (Ne.symm hQP)]; simp)
+          (fun hPT' => absurd hPT hPT')]
+        rw [map_zsmul, Divisor.coeffAt_single_self]
+        simp
+      · rw [Finset.sum_eq_zero (fun Q hQ => by
+          have hQP : Q ≠ P := fun h => hPT (h ▸ hQ)
+          rw [map_zsmul, Divisor.coeffAt_single, if_neg (Ne.symm hQP)]; simp)]
+        rw [hT P hPT]
+    have hL : Divisor.coeffAt P (divToPairRatio A B S A' B' S) =
+        ordAt P A B - ordAt P A' B' := by
+      unfold divToPairRatio
+      rw [map_sub, hcoeffDivToPair A B S (fun Q hQ => (hsupp Q hQ).1),
+        hcoeffDivToPair A' B' S (fun Q hQ => (hsupp Q hQ).2)]
+    have hR : Divisor.coeffAt P
+        (single x₁ + single x₂ - single x₃ - single x₄ : Divisor H) =
+        (if P = x₁ then (1:ℤ) else 0) + (if P = x₂ then 1 else 0) -
+          (if P = x₃ then 1 else 0) - (if P = x₄ then 1 else 0) := by
+      rw [map_sub, map_sub, map_add, Divisor.coeffAt_single, Divisor.coeffAt_single,
+        Divisor.coeffAt_single, Divisor.coeffAt_single]
+    rw [← hdiv, hR] at hL
+    exact hL.symm
+  -- **The new content, replacing `hreduced`:** the closed-point-native
+  -- pointwise bound, derived from `hclosed` (non-rational `v`) + `hcoef`
+  -- (rational `v`) instead of taken as an unprovable hypothesis.
+  have hboundSpec : ∀ v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H),
+      ordAtSpec v A' B' - ordAtSpec v A B ≥
+        -((if v = pointHeightOne' x₁ then 1 else 0) +
+          (if v = pointHeightOne' x₂ then 1 else 0)) := by
+    intro v
+    by_cases hv : ∃ P, v = pointHeightOne' P
+    · obtain ⟨P, rfl⟩ := hv
+      have hp := hcoef P
+      rw [← ordAt_eq_ordAtSpec, ← ordAt_eq_ordAtSpec]
+      rw [pointHeightOne'_eq_iff, pointHeightOne'_eq_iff]
+      split_ifs at hp ⊢ <;> omega
+    · -- `v` is not rational: `hclosed`'s contrapositive forces both
+      -- `ordAtSpec v A B = 0` and `ordAtSpec v A' B' = 0`, so the difference
+      -- is `0`, trivially satisfying the bound (RHS is `≤ 0`).
+      have hAB0 : ordAtSpec v A B = 0 := by
+        by_contra h; exact hv (hclosed v (Or.inl h))
+      have hA'B'0 : ordAtSpec v A' B' = 0 := by
+        by_contra h; exact hv (hclosed v (Or.inr h))
+      rw [hAB0, hA'B'0, sub_zero]
+      have : (0:ℤ) ≤ (if v = pointHeightOne' x₁ then 1 else 0) +
+          (if v = pointHeightOne' x₂ then 1 else 0) := by positivity
+      linarith
+  -- From here, identical shape to `mem_LPairCarrier_of_isRatioDivisor`'s tail:
+  -- `z := polePairToFraction A' B' A B` lands in `IsPoleBoundedAtPairSpec'`
+  -- (numerator/denominator swapped, same reason as the closed-field version —
+  -- `(A,B)` witnesses the positive part `(x₁)+(x₂)`, so it belongs in the
+  -- denominator of `z` for `z`'s poles to sit at `x₁,x₂`), then non-constancy
+  -- from `hne` exactly as before.
+  refine ⟨polePairToFraction A' B' A B, A', B', A, B, ?_, rfl, ?_⟩
+  · exact ⟨hA'B'ne, hAB, ge_of_eq hmatch.symm, hboundSpec⟩
+  · rintro ⟨c, hc⟩
+    apply hne
+    have hCc_eq : toPair H (C c) (0 : k[X]) = algebraMap k[X] (CoordinateRing H) (C c) := by
+      unfold toPair; simp
+    rw [polePairToFraction, ← hCc_eq] at hc
+    have hABmapne : algebraMap (CoordinateRing H) (FractionRing (CoordinateRing H))
+        (toPair H A B) ≠ 0 :=
+      (map_ne_zero_iff _ (IsFractionRing.injective (CoordinateRing H)
+        (FractionRing (CoordinateRing H)))).mpr hABne
+    rw [div_eq_iff hABmapne] at hc
+    rw [← map_mul] at hc
+    have hc' : toPair H A' B' = toPair H (C c) 0 * toPair H A B :=
+      IsFractionRing.injective (CoordinateRing H) (FractionRing (CoordinateRing H)) hc
+    have hcne : c ≠ 0 := by
+      rintro rfl
+      apply hA'B'ne
+      have hz : toPair H (C (0:k)) (0:k[X]) = 0 := by unfold toPair; simp
+      rw [hc', hz, zero_mul]
+    have hCc_unit : IsUnit (algebraMap k[X] (CoordinateRing H) (C c)) := by
+      have hCc_inv_poly : (C c : k[X]) * C c⁻¹ = 1 := by
+        rw [← C_mul, mul_inv_cancel₀ hcne, C_1]
+      exact isUnit_of_mul_eq_one _ (algebraMap k[X] (CoordinateRing H) (C c⁻¹))
+        (by rw [← map_mul, hCc_inv_poly, map_one])
+    have hordeq : ∀ P : H.Point, ordAt P A' B' = ordAt P A B := by
+      intro P
+      by_cases h_bot : pointIdeal P = ⊥
+      · have hz0' : ∀ (a b : k[X]), ordAt P a b = 0 := by
+          intro a b
+          unfold ordAt
+          by_cases hab : toPair H a b = 0
+          · rw [if_pos hab]
+          · rw [if_neg hab, dif_pos h_bot]
+        rw [hz0', hz0']
+      · have hCc0 : ordAt P (C c) (0 : k[X]) = 0 := by
+          apply ordAt_eq_zero_of_notMem
+          rw [hCc_eq]
+          intro hmem
+          exact (pointIdeal_isMaximal P).ne_top
+            (Ideal.eq_top_of_isUnit_mem (pointIdeal P) hmem hCc_unit)
+        have hCcne : toPair H (C c) (0 : k[X]) ≠ 0 := by
+          rw [hCc_eq]; intro h; rw [h] at hCc_unit; exact not_isUnit_zero hCc_unit
+        have hstep := ordAt_toPair_mul_of_ne_zero' P h_bot (C c) 0 A B A' B' hCcne hABne hc'
+        rw [hstep, hCc0, zero_add]
+    ext P
+    have hz := hcoef P
+    rw [hordeq P] at hz
+    simp only [sub_self] at hz
+    simp only [Set.mem_insert_iff, Set.mem_singleton_iff]
+    by_cases h1 : P = x₁ <;> by_cases h2 : P = x₂ <;>
+      by_cases h3 : P = x₃ <;> by_cases h4 : P = x₄ <;>
+      (try rw [if_pos h1] at hz) <;> (try rw [if_neg h1] at hz) <;>
+      (try rw [if_pos h2] at hz) <;> (try rw [if_neg h2] at hz) <;>
+      (try rw [if_pos h3] at hz) <;> (try rw [if_neg h3] at hz) <;>
+      (try rw [if_pos h4] at hz) <;> (try rw [if_neg h4] at hz) <;>
+      first
+        | exact absurd hz (by omega)
+        | (refine ⟨fun h => ?_, fun h => ?_⟩ <;>
+            rcases h with h | h <;>
+            first
+              | exact Or.inl h1 | exact Or.inr h2
+              | exact Or.inl h3 | exact Or.inr h4
+              | exact absurd h h1 | exact absurd h h2
+              | exact absurd h h3 | exact absurd h h4)
 
 end HyperellipticPolynomial
 
