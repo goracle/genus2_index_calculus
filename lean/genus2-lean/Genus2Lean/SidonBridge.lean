@@ -218,8 +218,9 @@ theorem sidonRepBound_of_sidonDichotomy
     (hAvoid : AvoidsInvolutionPairs F)
     (hNoWeier : NoWeierstrassPoints F) :
     SidonRepBound (sidonSet D δ₀ F) := by
-  intro g
   classical
+  intro g
+  unfold repCount
   set T := sidonSet D δ₀ F with hT
   set S := (T ×ˢ T).filter (fun p : Jacobian H D × Jacobian H D => p.1 + p.2 = g) with hS
   show S.card ≤ 2

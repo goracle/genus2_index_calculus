@@ -170,7 +170,7 @@ theorem hitProb_ge_of_tight_secondMoment
   -- already dominates target LHS after multiplying through — done directly
   -- via `hcard_pos` and cross-multiplication, avoiding any `div_le_div_*` name.
   have heq : ((F.card : ℝ) ^ 4) ^ 2 / (c * (F.card : ℝ) ^ 4) = (F.card : ℝ) ^ 4 / c := by
-    field_simp; ring
+    field_simp
   rw [heq] at hcount
   have hcardN_ge1 : 1 ≤ Fintype.card G := by
     have hle : F.card ≤ Fintype.card G := by simpa using Finset.card_le_univ F
@@ -270,7 +270,6 @@ theorem totalCost_le_of_balanced
   have hterm1 : k₂ * (B : ℝ) * (c * N / (B : ℝ) ^ 4) = c * k₂ * (B : ℝ) ^ 2 := by
     rw [← hBbalance]
     field_simp
-    ring
   have hBrpow : (B : ℝ) ^ 2 = N ^ ((2:ℝ) / 5) := by
     have hBeq : (B : ℝ) = N ^ ((1:ℝ) / 5) := by
       rw [← hBbalance, ← Real.rpow_natCast (B : ℝ) 5, ← Real.rpow_mul (le_of_lt hBpos)]
@@ -278,8 +277,11 @@ theorem totalCost_le_of_balanced
     calc (B : ℝ) ^ 2 = (N ^ ((1:ℝ)/5)) ^ 2 := by rw [hBeq]
       _ = N ^ (((1:ℝ)/5) * 2) := by
           rw [← Real.rpow_natCast (N ^ ((1:ℝ)/5)) 2, ← Real.rpow_mul (le_of_lt hN)]
-      _ = N ^ ((2:ℝ)/5) := by ring_nf
-  rw [hterm1, hBrpow]
+          norm_cast
+      _ = N ^ ((2:ℝ)/5) := by
+          have : ((1:ℝ)/5) * 2 = (2:ℝ)/5 := by norm_num
+          rw [this]
+  simp only [hterm1, hBrpow]
   exact le_of_eq (by ring)
 
 end

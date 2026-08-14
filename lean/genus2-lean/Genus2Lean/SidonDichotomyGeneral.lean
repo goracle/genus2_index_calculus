@@ -144,39 +144,65 @@ supporting role, just earlier in the proof (establishing the hypothesis of
 the call, rather than closing an `exfalso` after it). `D.HyperellipticClass`
 is the one genuine hypothesis this version drops — it was only ever needed
 for the "easy direction" of the full dichotomy, which this version never
-invokes. -/
-theorem sidonRepBound_of_sidonDichotomy_nonInvolution_general
+invokes. 
+-------
+Standalone worker lemma, stated with its own fresh binders (not extracted
+from any ambient `intro`/`set` state) so there is no possibility of a bound
+variable in the final theorem's goal failing to match a locally-introduced
+name. `D` and `T` are ordinary explicit arguments here, not `set`-abbreviated
+from within a tactic block. -/
+theorem repCount_sidonSet_le_two_of_nonInvolution_general
     (hdeg : H.f.natDegree = 5) (hchar : (2 : k) ≠ 0) (hsf : Squarefree H.f)
-    [Fintype (Jacobian H (principalDivisorData H hdeg))]
-    [DecidableEq (Jacobian H (principalDivisorData H hdeg))]
+    (D : PrincipalDivisorData H) (hDP : D.P = principalSubgroup H hdeg)
+    [Fintype (Jacobian H D)] [DecidableEq (Jacobian H D)]
     (δ₀ : H.Point) (F : Finset H.Point)
-    (hAvoid : AvoidsInvolutionPairs F) (hNoWeier : NoWeierstrassPoints F) :
-    SidonRepBound (sidonSet (principalDivisorData H hdeg) δ₀ F) := by
-  intro g
-  unfold repCount
+    (hAvoid : AvoidsInvolutionPairs F) (hNoWeier : NoWeierstrassPoints F)
+    (w : Jacobian H D) :
+    repCount (sidonSet D δ₀ F) w ≤ 2 := by
   classical
-  set D := principalDivisorData H hdeg with hD
-  set T := sidonSet D δ₀ F with hT
-  set S := (T ×ˢ T).filter (fun p : Jacobian H D × Jacobian H D => p.1 + p.2 = g) with hS
-  show S.card ≤ 2
-  rcases S.eq_empty_or_nonempty with hEmpty | ⟨⟨P1, P2⟩, hMem⟩
-  · simp [hEmpty]
-  · simp only [hS, Finset.mem_filter, Finset.mem_product, hT, sidonSet,
-      Finset.mem_image] at hMem
-    obtain ⟨⟨⟨x1, hx1F, hx1⟩, ⟨x2, hx2F, hx2⟩⟩, hsum⟩ := hMem
+  -- `PrincipalDivisorData` has only one non-`Prop` field (`P`), so `hDP`
+  -- already pins down `D` itself, not just `D.P` — this lets us cast `heq`
+  -- along a whole-`D` equation (`hD`) instead of the field-only `hDP`, so
+  -- the `▸` below actually finds `D` to rewrite in `heq`'s type.
+  have hD : D = principalDivisorData H hdeg := by
+    cases D with
+    | mk DP DleD0 => cases hDP; rfl
+  rcases Nat.eq_zero_or_pos (repCount (sidonSet D δ₀ F) w) with hZero | hPos
+  · omega
+  · have hMem : ∃ P1 P2 : Jacobian H D,
+        P1 ∈ sidonSet D δ₀ F ∧ P2 ∈ sidonSet D δ₀ F ∧ P1 + P2 = w := by
+      by_contra hNone
+      push_neg at hNone
+      have hz : repCount (sidonSet D δ₀ F) w = 0 := by
+        unfold repCount
+        rw [Finset.card_eq_zero, Finset.filter_eq_empty_iff]
+        rintro ⟨P1, P2⟩ hmem
+        simp only [Finset.mem_product] at hmem
+        exact hNone P1 P2 hmem.1 hmem.2
+      omega
+    obtain ⟨P1, P2, hP1, hP2, hsum⟩ := hMem
+    unfold sidonSet at hP1 hP2
+    simp only [Finset.mem_image] at hP1 hP2
+    obtain ⟨x1, hx1F, hx1⟩ := hP1
+    obtain ⟨x2, hx2F, hx2⟩ := hP2
     subst hx1; subst hx2
     have hx1ne2 : x2 ≠ Point.iota x1 := fun h =>
       hNoWeier x1 hx1F (hAvoid x1 hx1F (h ▸ hx2F)).symm
-    have hsubset : S ⊆ ({(s D δ₀ x1, s D δ₀ x2), (s D δ₀ x2, s D δ₀ x1)} :
+    have hsubset : ((sidonSet D δ₀ F ×ˢ sidonSet D δ₀ F).filter
+        (fun p : Jacobian H D × Jacobian H D => p.1 + p.2 = w)) ⊆
+        ({(s D δ₀ x1, s D δ₀ x2), (s D δ₀ x2, s D δ₀ x1)} :
         Finset (Jacobian H D × Jacobian H D)) := by
       rintro ⟨Q1, Q2⟩ hQ
-      simp only [hS, Finset.mem_filter, Finset.mem_product, hT, sidonSet,
-        Finset.mem_image] at hQ
-      obtain ⟨⟨⟨y1, hy1F, hy1⟩, ⟨y2, hy2F, hy2⟩⟩, hsum'⟩ := hQ
+      simp only [Finset.mem_filter, Finset.mem_product] at hQ
+      obtain ⟨⟨hQ1, hQ2⟩, hsum'⟩ := hQ
+      unfold sidonSet at hQ1 hQ2
+      simp only [Finset.mem_image] at hQ1 hQ2
+      obtain ⟨y1, hy1F, hy1⟩ := hQ1
+      obtain ⟨y2, hy2F, hy2⟩ := hQ2
       subst hy1; subst hy2
       have heq : s D δ₀ x1 + s D δ₀ x2 = s D δ₀ y1 + s D δ₀ y2 := hsum.trans hsum'.symm
       have hpair := sidonDichotomy_nonInvolution_general hdeg hchar hsf δ₀ x1 x2 y1 y2
-        hx1ne2 heq
+        hx1ne2 (hD ▸ heq)
       simp only [Finset.mem_insert, Finset.mem_singleton, Prod.mk.injEq]
       have h1 : y1 ∈ ({x1, x2} : Set H.Point) := by rw [hpair]; simp
       have h2 : y2 ∈ ({x1, x2} : Set H.Point) := by rw [hpair]; simp
@@ -204,7 +230,22 @@ theorem sidonRepBound_of_sidonDichotomy_nonInvolution_general
         Finset (Jacobian H D × Jacobian H D)).card ≤ 2 := by
       apply le_trans (Finset.card_insert_le _ _)
       simp
+    have hfinal : repCount (sidonSet D δ₀ F) w =
+        ((sidonSet D δ₀ F ×ˢ sidonSet D δ₀ F).filter
+          (fun p : Jacobian H D × Jacobian H D => p.1 + p.2 = w)).card := rfl
+    rw [hfinal]
     exact le_trans (Finset.card_le_card hsubset) hcard2
+
+theorem sidonRepBound_of_sidonDichotomy_nonInvolution_general
+    (hdeg : H.f.natDegree = 5) (hchar : (2 : k) ≠ 0) (hsf : Squarefree H.f)
+    [Fintype (Jacobian H (principalDivisorData H hdeg))]
+    [DecidableEq (Jacobian H (principalDivisorData H hdeg))]
+    (δ₀ : H.Point) (F : Finset H.Point)
+    (hAvoid : AvoidsInvolutionPairs F) (hNoWeier : NoWeierstrassPoints F) :
+    SidonRepBound (sidonSet (principalDivisorData H hdeg) δ₀ F) :=
+  fun w =>
+    repCount_sidonSet_le_two_of_nonInvolution_general hdeg hchar hsf
+      (principalDivisorData H hdeg) rfl δ₀ F hAvoid hNoWeier w
 
 /-! ## Assembly: the worst-case hit-count guarantee, end to end, over `F_p`
 
