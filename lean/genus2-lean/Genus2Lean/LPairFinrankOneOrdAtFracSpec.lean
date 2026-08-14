@@ -3266,8 +3266,12 @@ theorem mem_LPairCarrierSpec'_of_isRatioDivisor (hdeg : H.f.natDegree = 5)
     have hCc_unit : IsUnit (algebraMap k[X] (CoordinateRing H) (C c)) := by
       have hCc_inv_poly : (C c : k[X]) * C c⁻¹ = 1 := by
         rw [← C_mul, mul_inv_cancel₀ hcne, C_1]
-      exact isUnit_of_mul_eq_one _ (algebraMap k[X] (CoordinateRing H) (C c⁻¹))
-        (by rw [← map_mul, hCc_inv_poly, map_one])
+      have hCc_inv : algebraMap k[X] (CoordinateRing H) (C c) *
+          algebraMap k[X] (CoordinateRing H) (C c⁻¹) = 1 := by
+        rw [← map_mul, hCc_inv_poly, map_one]
+      exact ⟨⟨algebraMap k[X] (CoordinateRing H) (C c),
+          algebraMap k[X] (CoordinateRing H) (C c⁻¹), hCc_inv,
+          by rw [mul_comm]; exact hCc_inv⟩, rfl⟩
     have hordeq : ∀ P : H.Point, ordAt P A' B' = ordAt P A B := by
       intro P
       by_cases h_bot : pointIdeal P = ⊥
