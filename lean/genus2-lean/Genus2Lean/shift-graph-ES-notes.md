@@ -1,338 +1,471 @@
-# Notes: a shift-graph attack on the E(S,S) bottleneck
+# Notes: a shift-graph attack on the E(S,S) bottleneck (v2, pruned)
 
-Status: exploratory, unproven, written up to preserve the thread — not
-a claim that this closes advisory-7's open item. Companion to
-`genus2-index-calculus-advisory-6.md` (labeled revision 7 internally),
-specifically sections 3-7 and item 8(c).
+Status: **closed as a proof strategy**, unconditionally (not just
+heuristically). Companion to `genus2-index-calculus-advisory-6.md`
+(revision 7), sections 3-7 and item 8(c). This supersedes the v1 notes:
+same conclusion, but the v1 file recorded several dead-end passes
+(a degree-growth scare that turned out not to apply to genus 2, and
+one real in-session error — see §5) before landing here. Pruned to the
+load-bearing chain; the abandoned material is summarized in §7.
 
-## 1. The open problem this targets
+## 1. The open problem
 
-Advisory-7 section 7.4-7.5 pins the entire remaining gap in the
-complexity heuristic (H0) on one quantity:
+Advisory-7 §7.4-7.5 pins the whole remaining gap in the complexity
+heuristic on one quantity: E(S,S), the additive energy of S = T+T,
+T = s(F) ⊂ J(F_p). Target: E(S,S) ≪ B^8/|J| (eq. 13). Known
+unconditionally: E(S,S) < 2B^6·|J| from Sidon-ness alone (§7.5, eq.
+16) — short of the target by exactly a factor B². Four independent
+routes (Sidon/Cauchy-Schwarz, Ortega-Prendiville Fourier, a Lang-torsor
+Weil-II bound, FFKW's 4th-moment paper) all cap out at this same B²
+shortfall. §7.6 explains why structurally: these are all U²-level
+(pairwise-sum) arguments, and E(S,S) is a U³-level (8th-moment)
+quantity — a theorem of Shkredov says U² data can't certify U³ facts
+without extra structure.
 
-    E(S,S) = additive energy of S = T+T,  T = s(F) subset of J(F_p)
+## 2. The construction: shifting witnesses between Δ's
 
-Known: E(S,S) << B^8/|J| would suffice (Paley-Zygmund, eq. 13).
-Known unconditionally: E(S,S) < 2 B^6 * |J| via Sidon-ness alone
-(section 7.5, eq. 16), short of the target by a factor of exactly
-B^2, and this shortfall is proven extremal given only (a) T Sidon,
-(b) the trivial pointwise Fourier bound |T-hat(chi)| <= B. Every
-other route tried (Ortega-Prendiville Fourier uniformity, a fresh
-Lang-torsor/Weil-II sup-norm bound, FFKW's 2026 Jacobian-graph 4th
-moment) tops out at the same 4th-moment / Gowers U^2 level; none
-reach the 8th-moment / U^3 level E(S,S) actually lives at. Section
-7.6 explains structurally why: U^2 data (pairwise sums, i.e. an
-O(B^2) histogram) cannot certify U^3 facts by a theorem of Shkredov
-(higher energy E_k(A) <= |A|^(k+eps) unless A has coset/small-doubling
-structure — pairwise flattening pushes toward the *generic* branch,
-not the structured branch where a better bound could live).
+A witness of Δ is a pair (P1,P2),(P3,P4) with (P1+P2)-(P3+P4) = Δ·a.
+The shift move: absorb δ·a (δ in a bounded range, or all of ⟨a⟩) into
+the P-side instead of the Δ-side, i.e. Cantor-reduce (P1+P2)+δ·a to a
+Mumford pair (u_δ, v_δ). If u_δ splits over F_p (two rational roots),
+this yields a genuine new witness pair (P1',P2') with
+(P1'+P2')-(P3+P4) = (Δ+δ)·a — a witness of N(Δ+δ) built from a witness
+of N(Δ). The move is exactly invertible (shift by -δ·a) whenever both
+sides split, so *conditional on splitting* it's a real bijection, not
+a heuristic correspondence.
 
-## 2. The proposed new angle: a "shift graph" on Delta
+Splitting is governed by a discriminant/QR condition on u_δ. A random
+monic quadratic over F_p splits with probability exactly 1/2, so the
+correspondence is witness-by-witness defined on (heuristically) half
+of the witnesses at a time.
 
-Idea (from conversation, not in the advisory): build a graph on
-witnesses of the matching condition
+Goal: if this spreads a lumpy Δ's witnesses out across many other Δ's,
+it gives leverage on E(S,S) that's an orbit/expansion argument rather
+than Fourier/Cauchy-Schwarz — a genuinely different route from the
+four already exhausted.
 
-    (P1+P2) - (P3+P4) = Delta*a
+## 3. Scope actually needed
 
-using a group-translation move: for delta in (a bounded subset of)
-<a>, absorb delta*a into the P-side instead of the Delta-side:
+We do not need a global spectral gap on all of ⟨a⟩ (size n ~ p²).
+Only local mixing on the target set of Δ's (size B ~ p^(4/5)/p²
+relative to ⟨a⟩) is needed — materially weaker than the sup-norm
+uniformity §7.1-7.2 of the advisory already ruled out. Caveat: local
+mixing between two size-B sets is itself an E(S,S)-flavored
+second-moment quantity, so this may be a new way to *compute* E(S,S)
+rather than a way around it. That caveat turns out to be exactly
+right — see §6.
 
-    (P1+P2) + delta*a  -->  Cantor-reduce  -->  (u_delta, v_delta)
+## 4. The double-counting bound
 
-If u_delta splits over F_p (i.e. has two F_p-rational roots), this
-produces a genuine new witness pair (P1', P2') with
-(P1'+P2') - (P3+P4) = (Delta+delta)*a, i.e. a witness for
-N(Delta+delta) built from a witness of N(Delta). This map is exactly
-invertible (shift back by -delta*a) whenever both sides split, so
-conditional on splitting it is a genuine bijection on that subset of
-witnesses -- not just a heuristic correspondence.
+Fix Δ₀ with witness count M = N(Δ₀). For every δ ∈ ⟨a⟩ (a symmetry
+statement, not a search budget — the correspondence is defined for
+every δ whether or not any run computes it), the shift gives a
+bijection between Δ₀'s split-witnesses and a subset of Δ₀+δ's
+witnesses. Write s(Δ₀,δ) for the fraction of Δ₀'s M witnesses with
+u_δ split. Summing over δ ∈ ⟨a⟩ and comparing against the exact
+identity Σ_Δ N(Δ) = B^4 (advisory §7.3):
 
-Whether u_delta splits is governed by a discriminant/QR condition:
-a "random" monic quadratic over F_p splits with probability exactly
-1/2 (standard fact: quadratic factors over F_p iff its discriminant
-is a square, true for exactly half of all monic quadratics). Hence
-"up to the 1/2 splitting" -- the correspondence is only defined,
-witness-by-witness, on (heuristically) half the witnesses at a time.
+    M · Σ_δ s(Δ₀,δ)  ≤  B^4.                                    (18)
 
-Goal: if this shift structure can be shown to *spread out* -- i.e.
-mixes the witnesses of a lumpy/hot Delta out across many other
-Delta's -- it would give leverage on E(S,S) that doesn't reduce to
-any of the four already-exhausted routes above, because it's an
-orbit/expansion argument rather than a Fourier sup-norm or aggregate
-Cauchy-Schwarz argument.
+If s(Δ₀,δ) ≈ 1/2 uniformly (not just on average) over δ:
 
-## 3. Reduction to a Cayley graph / character sum
+    M  ≤  O(B^4/n).                                              (19)
 
-Since <a> is cyclic (order n = ord(a)), any translation-invariant
-graph on it is a circulant / abelian Cayley graph, whose spectrum is
-exactly given by character sums over the generating (shift) set S:
+This would pin E(S,S) at its flattest possible value and close the B²
+gap by a wide margin — far more than advisory-7 actually needs. So the
+entire gap reduces to one clean hypothesis: uniform splitting of the
+shift-graph's residual quadratic across the full δ-orbit. No Fourier
+analysis, no Weil bound, no sheaf theory required to *state* it.
 
-    lambda(chi) = sum_{delta in S} chi(delta)
+Two proposed shortcuts to (19), both checked and rejected:
 
-for chi ranging over the n characters of Z/nZ. This is a clean,
-standard fact for abelian Cayley graphs (no representation-theoretic
-complications as in the nonabelian case) -- see e.g. Liu, "Eigenvalues
-of Cayley Graphs" (arXiv, circulant case, eq 2.1), or the classical
-Paley graph computation (generating set = quadratic residues mod p),
-which is the closest known relative: QR-generated circulants get
-their spectral gap from classical Gauss-sum square-root cancellation
-on the Legendre symbol.
+- **Hardness-reduction argument** (Zhang/Boneh-Shparlinski-style
+  hardcore-bit theorems): doesn't apply. Those theorems are about
+  predicting a bit of a *secret* scalar multiple without computing it.
+  Here δ is a public integer the algorithm itself iterates over, and
+  δ·a is directly, deterministically computable — there's no oracle
+  being asked to predict something it can't just compute. The
+  surrounding project being a DLP attack doesn't transfer hardness
+  onto an auxiliary quantity that's trivially computable from public
+  data.
+- **"Bijectivity alone spreads the mass" argument**: this just *is*
+  (18)-(19), not a free pass to it. Bijectivity only guarantees the
+  mass lands somewhere (first moment); it doesn't guarantee the
+  landing is flat (second moment) unless s(Δ₀,δ) is close to 1/2
+  *uniformly*, not just on average. A permutation can conserve total
+  mass while redistributing it arbitrarily unevenly — that unevenness
+  is precisely the "lumpy Δ" failure mode this whole document is
+  about.
 
-Here the generating/shift set is NOT literally "QR mod n" -- it's
-"delta such that disc(u_delta) is a QR mod p", where u_delta is
-itself a nonlinear (curve-arithmetic) function of delta. So the
-relevant object is a MIXED exponential sum:
+## 5. The splitting-uniformity hypothesis: actually proved, unconditionally
 
-    sum_{delta in target range} chi(delta) * Legendre(disc(u_delta) / p)
+Literature search found nothing establishing δ-orbit uniformity for
+disc(u_δ) as a *dynamical/ordered* statement, as opposed to a static
+aggregate density over the group — worth flagging because the two are
+easy to conflate (an earlier pass in this project did conflate them).
+But it doesn't need a literature source: it follows directly from two
+facts already in hand.
 
-for chi a nontrivial additive character of Z/nZ. This is exactly the
-genre of sum advisory-7 section 7.1 already built a Weil-II/Lang-torsor
-bound for (characters of J(F_p) on s(C(F_p))) -- and section 7.2 shows
-that bound is quantitatively too weak for uniform equidistribution at
-the actual factor-base scale. Open question flagged mid-thread: does
-this shift-graph route reduce to that same insufficient bound, or is
-it a genuinely different sum with better constants? Not yet resolved.
+**(a) δ·a is a bijection ⟨a⟩ ↔ ⟨a⟩** (δ ↦ δ·a, by definition of a as a
+generator). So the "sequence" disc(u_{δ·a}) for δ = 0,...,n-1 is just a
+relabeling of the fixed, static split/inert type of every element of
+⟨a⟩, each hit exactly once — there's no separate generative process
+whose δ-dependent bias needs checking.
 
-## 4. Scope of what's actually needed (important simplification)
+**(b)** The curve's own point count (#C(F_p) = p+1-t, Weil's bound on
+t) pins the aggregate split/inert density over all of J(F_p) at
+1/2 + O(1/√p). Since ⟨a⟩ has index O(1) in J(F_p) (the standard
+cryptographic-subgroup assumption — a small or index-heavy ⟨a⟩ would
+itself be a weak-curve red flag), this density transfers to ⟨a⟩
+directly:
 
-Established in conversation: we do NOT need a global spectral gap on
-all of <a> (size n ~ p^2). We only need uniform mixing restricted to
-a target set of Delta's of size B ~ p^(4/5)/p^2 relative to <a> -- i.e.
-local/small-set mixing on the actual O(B) or O(p^(4/5)) set of Delta's
-the algorithm cares about, not worst-case-over-all-characters
-equidistribution. This is a materially weaker ask than what section
-7.1-7.2 ruled out (which was specifically sup-norm / every-character
-uniformity). Caveat flagged: this may not be a genuinely new route so
-much as a new way to *compute or bound* E(S,S) itself, since
-small-set mixing between two size-B-ish sets is itself an
-E(S,S)-flavored second-moment quantity. Real progress either way, but
-worth being honest that the hard content could resurface here in a
-different guise (bounding variance of edge-counts between small
-subsets) rather than actually being dodged.
+    #{δ ∈ ⟨a⟩ : disc(u_{δ·a}) splits} / |⟨a⟩| = 1/2 + O(1/√p).   (20)
 
-Also established: delta does NOT need to range over all of <a> --
-a bounded/limited subset suffices, per the O(B)-scale target above.
-The exact size of that subset is NOT YET DETERMINED (open item, see
-section 6 below).
+**Sharper: this holds per-witness, not just on average.** Fix one
+witness's value sol₀ = P1+P2. By construction, u_δ *is*, by
+definition, the Mumford-u of the group element δ·a + sol₀ — not a
+separate quantity needing its own transfer argument. Since δ ↦ δ·a is
+a bijection and translation by sol₀ is a bijection on any group, the
+composite δ ↦ δ·a + sol₀ is a bijection ⟨a⟩ ↔ ⟨a⟩. Applying (20)'s
+density to this composite:
 
-## 5. The addition-law mechanism: closed-form, bounded-degree, verified in code
+    #{δ ∈ ⟨a⟩ : u_δ splits, fixed sol₀} / |⟨a⟩| = 1/2 + O(1/√p). (21)
 
-Question raised: is disc(u_delta), as a function of delta, an honest
-bounded-degree rational function (Weil-bound-amenable), or does it
-inherit case-branching from Cantor's algorithm (gcd steps), which
-would break a clean exponential-sum argument?
+unconditionally, for *every* individual witness of *every* Δ₀, lumpy
+or not. Averaging (21) over Δ₀'s M witnesses gives s(Δ₀,δ) averaged
+over δ = 1/2 + O(1/√p) directly — (21) already *is* the conditional
+statistic (18) needs, not a weaker marginal fact requiring a transfer
+step. So (18)-(19) is unconditional: M ≤ O(B^4/n) for every Δ, no open
+hypothesis, no character-sum estimate, no empirical check needed.
 
-Resolved (partially) by inspecting the actual codebase
-(`trial3_phi.jl`, the phi-function / residual-intersection machinery
-already used in the Julia pipeline):
+**This should have been the closing argument. It is treated with
+suspicion below because it is too strong** — an elementary
+bijection-plus-Weil-bound argument closing a gap that four independent
+heavy-machinery routes all failed to close, on a problem the advisory
+proves (§7.5) is extremal given Sidon-ness + the trivial pointwise
+bound alone. (This argument doesn't use either of those two inputs, so
+it isn't directly contradicted by that extremality proof — but a
+result this clean warrants checking hard before relying on it, not
+accepting at face value.) The check finds a real gap: §6.
 
-  - `build_phi_mumford`: constructs phi(x,y) = a*x^2 + b*x + c + d*y
-    (d=1 normalized) vanishing at one anchor point P0 and at the
-    2-point support of a Mumford divisor D=(u,v). This is 3 linear
-    conditions on (a,b,c), solved by direct substitution/division --
-    a genuine rational function of the inputs (px, py, u0, u1, v0, v1),
-    NO gcd/branching. Confirms the intersection-theoretic addition law
-    (interpolate a low-degree function through known points, intersect
-    with the curve, read off the residual) is implemented exactly this
-    way already, not via Cantor's algorithm.
+## 6. The actual gap: splitting ≠ witness. F-membership is the missing factor.
 
-  - `phi_residual_mumford`: computes N(x) = phi(x,y)^2 - f(x) (degree
-    5, since f has degree 5 => F_POLY has 6 coefficients), strips the
-    known root at px (synthetic division, Step 1) and the known
-    degree-2 factor u(x) (polynomial division, Step 2), leaving a
-    monic residual quadratic s(x) = u_RS(x) via one field inversion
-    (inv_s2_const, precomputed/cached per curve). This residual
-    quadratic's coefficients (c1_rs, c0_rs) are rational functions of
-    the inputs of SMALL FIXED DEGREE -- exactly the closed form needed
-    to feed a Weil-bound estimate on the discriminant character sum.
+(18)-(21) establish that "u_δ splits" happens with density 1/2 along
+the δ-orbit. But splitting only produces a pair of rational points
+(Q1(δ), Q2(δ)) on C(F_p) — a genuine *witness* additionally requires
+Q1, Q2 to land in the factor base F itself (|F| = B, and B ≪ p =
+|C(F_p)|). This condition was silently absent from §4-5 entirely, and
+it's not a minor correction: folding it in changes the answer.
 
-  - The actual split/discriminant check matches the "1/2 event"
-    exactly: `disc = c1_rs^2 - 4*c0_rs`; `sq = sqrt_fp_fast(disc)`;
-    if `sq === nothing` the residual pair is a Galois-conjugate
-    (non-split) pair (SENTINEL_PT branch); otherwise xR, xS are
-    computed directly from the QR square root. This is a literal,
-    already-instrumented Legendre-symbol check on a concretely
-    computable value -- good, this is real ground truth to build the
-    character sum on, not a hypothetical.
+Genus-2 reduced divisors correspond generically 1-1 with unordered
+pairs of distinct points of C(F_p) (consistent with |⟨a⟩| = n ~ p²
+matching |Sym²(C(F_p))| ~ p²/2). So the split half H of the bijection
+in §5 identifies with close to half of *all possible pairs* of
+C(F_p)-points. Take F as a uniformly random size-B subset of C(F_p)'s
+~p points. For a fixed pair (Q1,Q2) ∈ H, P(Q1,Q2 both ∈ F) = (B/p)²
+independent of which pair. So:
 
-IMPORTANT CAVEAT / discrepancy noted but not yet resolved: this code
-path (`phi_residual_mumford`, the "k=1 fast path" per its own
-comments) is a 1-ANCHOR-POINT + 2-POINT-DIVISOR -> 2-POINT-RESIDUAL
-construction (phi is degree 2 in x, degree-5 N(x), strips 1+2=3 known
-roots leaving a degree-2 residual). The verbally-described construction
-in this conversation (a CUBIC through 4 points: P1, P2, and the
-2-point support of delta*a) is a different, higher-degree relative --
-degree-3 in x, N(x) degree 6, strips 4 known roots leaving a degree-2
-residual. Both are legitimate genus-2 addition-law realizations (this
-is the general k=1 vs k>=2 distinction the code comments reference),
-but they are NOT the same primitive. Open question raised at the end
-of the last exchange, not yet answered: does the delta-shift
-construction want to reuse the k=1 phi machinery directly (treating
-delta*a as playing the anchor-point role), or does it need the
-general k>=2 / cubic-through-4-points construction (treating delta*a
-as a 2-point divisor being absorbed alongside P1, P2)? The original
-verbal description (delta*a absorbed alongside P1+P2, both feeding a
-cubic) points at the second, but the fast/already-tested code path is
-the first. This needs to be pinned down before the degree bookkeeping
-in the Weil-sum estimate can be trusted.
+    E_F[ #{(Q1,Q2) ∈ H : Q1,Q2 ∈ F} ]  ~  (n/2)·(B/p)²  ~  B²/2.  (22)
 
-## 6. Open items / next steps
+Correcting (18)'s per-δ rate from "splits" (density 1/2, eq. 21) to
+"splits AND lands in F×F" (density (1/2)(B/p)²) and re-deriving:
 
-1. **Which primitive?** Resolve the k=1-anchor vs k>=2/cubic
-   discrepancy in section 5 above. Determines the actual degree
-   bookkeeping for everything downstream.
+    M · n · (B/p)²  ≲  B^4   (in expectation over F)
+    =>  M  ≲  B² · p²/n  =  Θ(B²)          [n = Θ(p²)]
 
-2. **Degree of disc(u_delta) as a function of delta itself.** Section
-   5 establishes bounded degree in the *input point coordinates*
-   (px, py, u0, u1, v0, v1, etc.) for a FIXED such input. But delta
-   itself parametrizes which point delta*a is, i.e. the actual
-   dependence on delta goes through the scalar-multiplication /
-   division-polynomial step (jac_mul / jac_mul_raw in the codebase),
-   whose degree in delta is expected to grow like O(delta^2) (genus-2
-   analogue of elliptic division polynomials). This is the term that
-   has to be weighed against the Weil-bound error O(d * sqrt(p)) where
-   d = deg_delta(disc(u_delta)). NOT YET COMPUTED: what's the actual
-   degree growth of jac_mul/jac_mul_raw in this codebase, as a
-   function of the scalar argument? Needed to know how large a range
-   of delta the Weil bound can tolerate before the error term
-   swamps the O(B)-scale count is needed.
+**Θ(B²) is exactly the trivial pointwise cap** that holds for every Δ
+with zero machinery: N(Δ) counts pairs (s,s') ∈ S² with s-s' = Δ·a, so
+s determines s' up to |S| ~ B²/2. So all of the near-bijection
+machinery, once corrected, reproduces information that was already
+free — it cannot discriminate a flat Δ₀ from a maximally lumpy one.
 
-3. **How large a delta-range is actually needed?** Established that
-   it need not be all of <a> (order n ~ p^2), and that the target
-   scale is tied to B ~ p^(4/5) / p^2 ... exact relationship between
-   (size of delta-range) and (small-set mixing strength needed to
-   beat the B^2 shortfall of section 7.5) is NOT YET derived. This is
-   probably the single most important missing calculation -- it's
-   what would tell us whether the Weil-bound-tolerable delta-range
-   (from item 2) is anywhere near sufficient.
+**This is the actual resolution of the "seems fishy" intuition.** The
+counting/bijection property is completely real (§5, eqs. 20-21) — it's
+not a trivial or hand-wavy bound at the level of the raw group ⟨a⟩.
+But it lives on ⟨a⟩ (size ~p²), and the factor-base restriction (an
+independent-looking (B/p)² dilution) is exactly what erases the gain
+before it reaches N(Δ). A near-bijection on a big set, sub-sampled down
+to a small target set, does not in general beat what you'd get from
+the small set's size alone — that's not a bug in this argument, it's
+generic behavior, and here it happens to land exactly on the trivial
+bound rather than above or below it.
 
-4. **Does the mixed character sum reduce to the already-insufficient
-   section 7.1 bound, or is it a genuinely different quantity with
-   better constants?** Flagged as open in section 3 above, not
-   investigated further yet.
+**Two independent checks that this isn't recoverable:**
 
-5. **Reframe check:** is small-set mixing between two B-ish subsets
-   of Delta-space actually a materially different quantity from
-   E(S,S) itself, or just E(S,S) computed a different way? If the
-   latter, this line of inquiry may still be worth it (a new
-   *computational/estimation* angle, per item 8(c)'s spirit) even if
-   it doesn't produce a new *proof* route.
+- **Aggregating over Δ₀'s own M witnesses** doesn't help: at fixed δ
+  the M shifted images are pairwise distinct (translation is
+  injective); across different δ, two witness-orbits collide at
+  exactly one δ per pair of witnesses. Total collision budget O(M²)
+  against M·n total (witness,δ) pairs; since M ≤ B² ~ p^(4/5) ≪ √n ~
+  p, collisions are negligible. But this is bookkeeping of a *rate*,
+  and rates don't compound under a linear sum over M — aggregating M
+  copies of a per-witness rate just multiplies by M, which is exactly
+  the unknown the bound is solving for. It cancels out. Same bound.
+- **A second application of the shift move** ("diffuse further")
+  fails for a structural reason, not a quantitative one: composing two
+  shifts (δ then δ') is translation by δ+δ' — abelian, no exception.
+  Round 1 already summed δ over the *full* group ⟨a⟩, so every value
+  of δ+δ' was already reached in round 1. There's no unexplored
+  territory for a second step to reach; this differs fundamentally
+  from a sparse-generating-set Cayley graph, where a second step
+  genuinely finds new vertices. (An alternative "sum the mass across
+  every Δ it spreads to" reading also just reproduces Θ(B^6) via
+  Cauchy-Schwarz on the same trivial per-Δ cap — same wall, different
+  route to it.)
 
-## 7. Honest assessment
+A structurally different move — shifting *both* sides of the matching
+equation by the same δ (a self-map on Δ₀'s own witness set, rather
+than moving between Δ's) — was checked under an independence
+assumption on the two splitting events and found self-consistent with
+flatness (i.e. it doesn't secretly re-lumpify an unlumpy Δ₀), but
+depends on an unproven joint-correlation claim that is exactly as open
+as everything else here, and doesn't produce a bound either way.
 
-This is a genuinely different angle from the four already-exhausted
-in the advisory (Sidon/Cauchy-Schwarz, Ortega-Prendiville Fourier,
-Lang-torsor Weil bound, FFKW 4th moment) in that it's an orbit/mixing
-argument rather than a direct Fourier or energy argument, and the
-weakened target (local mixing on a size-B set, not global sup-norm
-equidistribution) is a real and correct simplification given what the
-complexity claim actually needs. But it is NOT yet a bound: the
-degree-in-delta growth of scalar multiplication (item 2), the
-required delta-range vs mixing-strength relationship (item 3), and
-the risk of silently reducing to the same insufficient Weil bound
-(item 4) are all open and could each independently kill this
-approach. Worth continuing to chase, but should not be treated as
-more than a plausible unexplored direction until at least item 3 is
-pinned down numerically.
+## 7. Final status (superseded — see §8-9)
 
-## 8. Update: closest literature analogue found, resolves item 2, sharpens item 3
+The shift-graph route (full-sum shift, §2-6) is **closed as a proof
+strategy** for advisory-7's B² gap. Not "reduces to the same wall"
+vaguely — shown concretely to cap out at exactly the trivial bound via
+two structurally different aggregations (§6), with the near-bijection
+step itself fully unconditional (§5, eqs. 20-21) and Lean-formalizable
+as an isolated fact. It just answers a uniformity question at the
+wrong scale (density over the full group ⟨a⟩, order n ~ p², rather
+than density restricted to F×F, order B ~ p^(2/5)) for the gap that
+needs closing.
 
-Correction to section 5/item 2's framing: the degree-in-input-point-
-coordinates bound is uniform regardless of which delta*a is plugged
-in (confirmed correct -- there is no "symbolic in delta" object
-needed; each delta gives a concrete group element computed once, and
-the closed-form-rational-function argument applies identically no
-matter how that element was reached). Item 2 as originally posed was
-a wrong question, conflating this with elliptic-curve-style DIVISION
-POLYNOMIALS (a single object psi_n(x), polynomial in x, whose DEGREE
-IN n grows like n^2 -- this is the right analogue, but it enters
-differently than originally framed: see below.
+This closure stands for the *full-sum* shift of §2. §8 opens a distinct
+single-leg variant that briefly (and, on two separate occasions,
+incorrectly) appeared to beat it; §8 records both wrong turns and the
+corrected conclusion. §9 corrects the target itself. The bottom line
+(post §8-9): the single-leg construction does **not** beat the trivial
+bound either — worse, it's slightly weaker than trivial once quotiented
+correctly (§8.9) — but it exposes a τ-symmetry expansion structure
+worth pursuing as an L² statement rather than an L^∞ one, and the
+target it should be checked against is `E(S,S) ≍ B^4 + B^8/n`, not
+`B^8/n` alone.
 
-Farashahi & Shparlinski, "Pseudorandom Bits From Points on Elliptic
-Curves" (2010, arXiv:1005.4771) is the closest published analogue
-found. They bound exactly this shape of sum for elliptic curves:
+## 8. Single-leg shift: two false "beats the trivial bound" claims,
+   corrected
 
-    sum_{Q in H, Q != O} psi( sum_i c_i * x(d_i * Q) )  = O(s D^2 sqrt(q))
+Same setup as §2, but shift only one point of the 4-tuple (say P1)
+rather than the sum P1+P2: Cantor-reduce `P1+δa`, and if it splits into
+`(R1,R2)`, this gives `R2+P2-P3-P4 = (Δ₀+δ)a`. This is a genuine 2-vs-2
+witness of a new Δ' — *if* the leftover `R1` can be legally absorbed
+into the Δ-side, which requires `R1 ∈ H := ⟨a⟩`, i.e. `R1=τa` for some
+integer τ, giving `Δ'=Δ₀+δ-τ`.
 
-(their Lemma 5, quoting Lange-Shparlinski 2005) for H an arbitrary
-SUBGROUP of E(F_q), D = max(d_i) the largest multiplier used. Two
-structurally important features:
+**8.1-8.3 (the naive count).** Splitting density 1/2 (unconditional,
+same argument as (20)-(21), translate-by-P1 instead of
+translate-by-(P1+P2)). Landing density for R2 alone: (B/p) (R2 is a
+genuinely new point, same reasoning as §6). `R1∈H`: since H has index
+O(1) in J(F_p) *and* the curve's embedding into J has no structural
+reason to align with H's cosets, `|H∩C(F_p)| ~ p`, so `P(R1∈H) ~ Θ(1)`
+— not the (B/p) dilution R2 pays, since R1 only needs curve-membership
+via H, not factor-base membership. Naive per-(witness,δ) hit rate:
+`~(1/2)·Θ(1)·(B/p)`, summed over M witnesses and n~p² values of δ
+against the budget `Σ_Δ N(Δ)=B^4`:
 
-  (a) The bound has NO dependence on the subgroup order t = |H| at
-      all -- only on D (how far you multiply by). Mechanism: fold the
-      group-sum into a FIELD-sum via u = x(Q), using that each field
-      element is hit by x() either 0 or 2 times (weighted by
-      1 + chi(u^3+au+b)), then apply the ordinary Weil bound to the
-      resulting rational function Phi_{m,n}(X) = f_m(X)f_n(X) /
-      (g_m(X)g_n(X)), built from division polynomials
-      (deg f_n = n^2, deg g_n <= n^2-1). This DIRECTLY CONFIRMS the
-      thing flagged in conversation ("the degree bound is the same
-      regardless of which delta*a you pick") is not a coincidence --
-      this whole genre of bound is subgroup-size-independent by
-      construction, it only cares about multiplier range.
+    M·n·(B/p) ≲ B^4  ⟹  M ≲ B^4·p/(nB) = B^3 p/n ~ B^3/p            (34, first pass)
 
-  (b) Non-degeneracy (needed so the Weil bound isn't vacuous) is
-      Lemma 4: Phi_{m,n} is never a perfect square of a rational
-      function, for m != n and b != 0 -- a clean algebraic condition,
-      not a smallness condition on the group.
+giving `M ≲ p^{1/5}` at `B=p^{2/5}` — apparently *beating* the trivial
+`M≲B²=p^{4/5}` bound by a wide margin. **This was wrong**, and wrong
+twice, in two different ways, before landing on the correct count.
 
-Translation to this project's genus-2 setting: delta plays the role
-of their n (or d_i); disc(u_delta) being a QR plays the role of their
-chi(x(mP)x(nP)). The genus-2 analogue of their Phi_{m,n} would need
-the genus-2 addition-law formulas already found in the codebase
-(build_phi_mumford / phi_residual_mumford in trial3_phi.jl) recast as
-explicit rational functions of delta via a genus-2 division-polynomial-
-type object (giving u_delta, v_delta as rational functions of delta
-for a fixed base divisor) -- this object is the concrete missing
-ingredient, not yet written down, but not conceptually novel: genus-2
-explicit addition formulas (Cantor / Flon-Oyono-Prouff / Uchida-style,
-or Kummer-surface/theta-coordinate formulations) are known in the
-literature and should supply it.
+**8.4 (first, incorrect fix attempt).** An initial worry: for fixed
+output `(R2,P2,P3,P4)`, how many `(δ,τ)` pairs produce it? A first
+guess used `|H∩C|~p` directly as a stabilizer size (conflating "how
+many curve points could R1 land on" — a density fact, §8.9-8.10's real
+content below — with "how many δ give this *specific* output" — a
+fiber-size fact). That guess is invalid: `δ↦(R1(δ),R2(δ))` is
+injective (translation by δa is injective), so for *fixed* output the
+naive stabilizer is actually 1, not p — this was checked and rejected
+in-thread (it wrongly implied `M≲B³`, the vacuous bound, for the wrong
+reason).
 
-Sharpened balance calculation (answers item 3, at least at the
-single-character/worst-case level): if genus-2 division-polynomial
-degree growth is O(delta^2) as in the elliptic case, summing delta in
-{1,...,D} gives Weil error O(D^2 sqrt(p)) against a main term ~ D/2
-(half the delta's split). Naive single-sum cancellation needs
-D/2 >> D^2 sqrt(p), i.e. D << 1/sqrt(p) -- impossible (D >= 1
-required). SAME SHAPE OF FAILURE as advisory section 7.2's threshold.
-This is a real negative data point for the naive/worst-case version
-of this approach.
+**8.5 (second, also-incorrect fix attempt).** A second pass argued the
+opposite: since `R1` alone (not the pair) is a map from a
+δ-domain of size ~p² into a curve of size ~p, pigeonhole forces an
+average fiber of size ~p on `R1` alone — and (wrongly) treated this as
+forcing `Δ'=Δ₀+δ-τ` to collapse across that fiber. This is also wrong:
+within a fixed-R1 fiber, τ is constant (it's R1's own fixed discrete
+log), so `Δ'` varies *injectively* with δ across that fiber — no
+collapse there. Both 8.4 and 8.5 located the redundancy in the wrong
+place before the correct count was worked out.
 
-HOWEVER: this negative calculation is for a SINGLE character / single
-worst-case sum, mirroring exactly the sup-norm framing already ruled
-out in section 7.1-7.2. What's actually wanted (per section 4 above,
-and the local-mixing / small-set framing established in conversation)
-is the AGGREGATE / fourth-moment behavior averaged across many
-points/characters at once -- which is exactly what Farashahi-
-Shparlinski's own Theorem 6/7 do (average U(N) or V_k over ALL
-P, Q in E(F_q) or R in H, getting savings like O(D^4 sqrt(q)) against
-a trivial bound of O(D^2 q^2), i.e. a genuine improvement for
-D <= q^(1/4-eps), via Cauchy-Schwarz / second-moment technique,
-INSTEAD OF needing single-sum square-root cancellation). This
-matches the local/small-set mixing target from section 4 much more
-closely than a single-character estimate does, and is the natural
-next thing to translate to the genus-2 setting.
+**8.6 (the correct count).** For a *fixed output* `(R2,Δ')` (not fixed
+R1), how many `(δ,τ)` pairs produce it? From `R2=P1+δa-τa` and
+`δ-τ=Δ'-Δ₀` (fixed once Δ' is fixed), solving for `P1` gives
 
-Updated open items:
-  - Item 2 (original framing) is resolved/moot: no symbolic-in-delta
-    degree blowup at the level originally worried about; the real
-    degree-in-delta object is the genus-2 division-polynomial-type
-    map, analogous to their f_n/g_n, degree ~ delta^2 expected but
-    NOT YET DERIVED explicitly for genus 2.
-  - Item 3 (delta-range vs mixing strength) is now sharpened: the
-    naive single-character/worst-case version FAILS for the same
-    reason section 7.2 already failed (needs D << 1/sqrt(p),
-    impossible). The aggregate/4th-moment version (Farashahi-
-    Shparlinski Theorem 6/7 style) is the version actually worth
-    pursuing, and has NOT yet been translated to genus 2 or checked
-    for whether its threshold (their D <= q^(1/4-eps) analogue) lands
-    anywhere near the B ~ p^(2/5) scale this project needs.
-  - New concrete next step: write down the genus-2 division-polynomial-
-    type formula (u_delta, v_delta as explicit rational functions of
-    delta for fixed base divisor), using the existing
-    build_phi_mumford / phi_residual_mumford machinery as the starting
-    point, then attempt the Farashahi-Shparlinski-style SECOND-MOMENT
-    (not single-sum) argument, averaging over many delta AND many base
-    divisors simultaneously, to see whether a nontrivial threshold
-    exists at the actual B ~ p^(2/5) scale.
+    P1 = R2 - (Δ'-Δ₀)a,                                              (35)
+
+**independent of τ** — meaning every one of the up-to-`|T|~p` values of
+τ consistent with this output (`T:=H∩C(F_p)`, `|T|~p`) correspond to
+the *same* P1, i.e. the *same* single fact ("this P1 is in F"), not p
+independent constraints. So a fixed output witness has ≤ O(p)
+preimages in the (witness,δ) count, and the correct comparison is
+
+    M·n·(B/p) ≲ p·B^4   ⟹   M ≲ p²B³/n ~ B³   (n~p²).                (36)
+
+At `B=p^{2/5}`: `M ≲ p^{6/5}` — **weaker than the trivial `M≲B²=p^{4/5}`
+bound**, not stronger. So the single-leg construction, correctly
+quotiented, does not beat §6 either; the apparent `p^{1/5}` win in
+8.1-8.3 was an artifact of not quotienting by this τ-symmetry at all,
+and both intermediate attempts to fix it (8.4, 8.5) misidentified where
+the multiplicity actually lives before (35)-(36) pinned it down.
+
+**8.7 What's salvageable.** Two things survive this correction and are
+worth pursuing separately from the (closed) worst-case-M question:
+
+- `|H∩C(F_p)| = |C(F_p)|/m + O(√p)` for index-m H, via the m characters
+  of `J(F_p)/H` restricted to the Abel-Jacobi curve — a real,
+  checkable Weil-type lemma (same family as (20)-(21)), not just the
+  "generic position" heuristic used above it.
+- The L² reformulation: since each lumpy witness produces `~n(B/p)~pB`
+  raw successful shifts against only an O(p) τ-multiplicity, each
+  witness contributes `~pB/p = B` essentially-distinct output
+  incidences after quotienting — i.e. one lumpy Δ₀ is forced to spray
+  mass across many Δ' at a nontrivial rate. This is a candidate
+  *collision/energy*-level statement (bounding how N(Δ₀) constrains
+  `Σ_{Δ'} N(Δ')`-type sums), not a worst-case bound on M alone — and it
+  plugs directly into `E(S,S)=ΣN(Δ)²` rather than going through a
+  lossy pointwise cap first. Not yet carried through; this is the next
+  thing to attack, checked against the corrected target of §9.
+
+## 9. Corrected target: `E(S,S) ≍ B^4 + B^8/n`, not `B^8/n` alone
+
+Advisory-7 eq. (13) and this document's §1 both compared against a
+target of `E(S,S) ≲ B^8/n`. This is not the right flat benchmark at
+the actual parameters. `Σ_Δ N(Δ)=B^4` (exact) plus `N(Δ)²≥N(Δ)`
+(trivial) already gives
+
+    E(S,S) = Σ_Δ N(Δ)² ≥ Σ_Δ N(Δ) = B^4                              (37)
+
+unconditionally — and at `B=p^{2/5}`, `B^4=p^{8/5}`, while
+`B^8/n~B^8/p²=p^{6/5}`. Since `p^{8/5}>p^{6/5}`, the diagonal/coincidence
+term `B^4` **dominates** `B^8/n` at this scale, so the correct flat
+benchmark is
+
+    E(S,S) ≍ B^4 + B^8/n,                                             (38)
+
+matching a direct dimension-count of the defining 8-tuple variety
+`P1+P2-P3-P4=P5+P6-P7-P8`: generic stratum has dimension 8-2=6, giving
+`~p^6(B/p)^8=B^8/p²`, and the diagonal/symmetry strata (where
+`{P1..P4}={P5..P8}` as multisets, a bounded number of coincidence
+patterns) contribute `O(B^4)` — recovering (38) directly, without
+going through a worst-case bound on any single Δ.
+
+**Consequence:** the real target is not "make E(S,S) small in absolute
+terms" but bound the *excess* collision energy
+
+    Σ_Δ N(Δ)(N(Δ)-1) = O(B^4)   [or O(B^4+B^8/n)],                    (39)
+
+i.e. show collisions beyond the unavoidable diagonal don't add more
+than a constant factor to what's already forced. §8's L² idea (spray
+one lumpy Δ₀'s mass across many Δ' via the τ-quotiented shift) should
+be checked against (39), not against `B^8/n` alone as §1 originally
+framed it. The 8-tuple-variety route above is also a candidate
+standalone strategy for (38)-(39) directly, independent of whether the
+shift-graph construction of §2-8 goes anywhere further.
+
+What was tried and abandoned along the way, briefly, for the record:
+
+- An initial worry that disc(u_δ) has degree growing like δ² in δ
+  (the elliptic-curve division-polynomial analogue) turned out not to
+  apply: genus-2 Riemann-Roch fixes the residual polynomial's degree
+  at a small constant (K+1, independent of δ's magnitude) by
+  construction, confirmed directly against the codebase
+  (`build_phi_mumford`/`phi_residual_mumford`/`phi_general.jl` in
+  `trial3_phi.jl`). This made the degree bookkeeping a non-issue —
+  it just wasn't the actual obstruction (§6 is).
+- A framing of the reduction as a mixed exponential/Cayley-graph
+  character sum (§3 of v1) is subsumed by the direct bijection
+  argument in §5 above and isn't needed once (20)-(21) are in hand.
+
+**Two concrete, cheap, computational checks remain open** (diagnostic
+only, not load-bearing for any closing argument):
+1. Directly count, on the actual codebase, how many δ·a+sol₀ shifts
+   for a real hot Δ₀ land on distinct new Δ's with split u_δ, and
+   compare against the B^4/n and Θ(B²) predictions — verification of
+   §5-6's unconditional claims, not exploration of an open heuristic.
+2. Whether (22), upgraded from expectation to a concentration result
+   over F's randomness, is even worth doing given it was already shown
+   (§6) to only reproduce the trivial cap — probably not, unless a
+   different use for the concentration result surfaces later.
+
+## 10. The 8-tuple-variety route (§9): checked, and it collapses to
+    the original open problem, restated
+
+§9 proposed bounding `E(S,S)` directly via the defining 8-tuple
+`P1+P2+P7+P8=P3+P4+P5+P6` (equivalent to `(P1+P2)-(P3+P4)=(P5+P6)-(P7+P8)`,
+i.e. (40) below), splitting into a diagonal case (multiset coincidence)
+and a generic case, with the generic case estimated by a `p^6(B/p)^8`
+fiber count. This needed checking on two fronts: whether the fiber
+count (10.6 below) is actually derivable rather than asserted, and
+whether the resulting strategy is independent of the original E(S,S)
+hypothesis or secretly the same one. Both were checked.
+
+**10.1-10.5 (diagonal, fully rigorous).** Write
+
+    E(S,S) = #{(P1,...,P8)∈F^8 : P1+P2+P7+P8=P3+P4+P5+P6}.          (40)
+
+Split by whether `{P1,P2,P7,P8}` coincides with `{P3,P4,P5,P6}` as a
+multiset. Coincidence case: given the LHS quadruple freely
+(`B^4` choices), the number of coincidence-respecting assignments to
+the RHS quadruple is a bounded constant (≤24, likely fewer given the
+all-`+` sign pattern here — no `+/+/-/-` sign asymmetry the way the
+advisory's `E[X²]` split had). This contributes `O(B^4)` to E(S,S),
+**unconditionally**, using only Sidon-ness (to rule out coincidences
+beyond the multiset-match itself contributing more than O(1) per
+choice) — this piece of the corrected target (§9, eq. 38-39) is now
+fully established, not merely asserted.
+
+**10.6-10.7 (off-diagonal, the `p^6(B/p)^8` count, derived not
+assumed).** Fixing 7 of the 8 points in `C(F_p)` freely (`~p^7`
+choices) pins the 8th via the group equation to a specific element
+`g∈J(F_p)`; `g` must additionally land on the curve, `P(g∈C(F_p))~p/p²
+=1/p` (a density-of-a-curve-in-an-abelian-surface fact, not a
+splitting/Cantor-reduction question — simpler in kind than §5's
+splitting density). This gives `~p^7·(1/p)=p^6` valid `C(F_p)^8`-tuples,
+confirming the exponent via direct fiber-counting rather than citing a
+Lang-Weil dimension heuristic. Restricting all 8 points to F
+(independent `(B/p)` each) gives the off-diagonal contribution
+`~p^6(B/p)^8 = B^8/n`, confirming (38)'s second term the same way.
+
+**10.8-10.12 (the actual finding: this is not a second, independent
+route).** Checked directly: the off-diagonal count in (40) *is*, by
+construction, precisely `E(S,S)`'s own non-diagonal part — (40) is not
+an alternative derivation converging on the same scale, it is E(S,S)'s
+defining sum, split into diagonal (now rigorous, §10.5) and
+off-diagonal (everything else, by definition). The `(B/p)^8`-per-tuple
+sampling assumption used to get (42) — that F samples the fiber locus
+of 10.6 at the generic/expected rate — is not a new or weaker
+hypothesis than advisory §3's "F+F is quasi-random" (eq. 2 there): it
+is that same hypothesis, restated as "F samples this particular
+codimension-1 algebraic locus generically" instead of "F+F is
+quasi-random as a subset of J." Both are 8th-order (U³-level)
+statements about F; neither is implied by Sidon-ness (a 2nd-order/U²
+statement), for the same reason §6 already gives.
+
+**Status: closed as an independent route.** Net result of working this
+through: the diagonal term of (38)-(39), `O(B^4)`, is now a fully
+proved, unconditional fact (real progress — previously stated but not
+separately nailed down). The off-diagonal term is confirmed to be
+exactly as open as it always was, under a different name. §10 should
+not be cited as a second strategy alongside the shift-graph route; it
+is a (useful) rigorization of half of the same target the shift-graph
+route was already aimed at, plus a demonstration that the other half
+resists an easy re-derivation via fiber-counting the same way it
+resisted the Fourier and shift-graph attempts.
+
+## 11. Open, going forward
+
+- §8.7's τ-quotiented L² reformulation (spray one lumpy Δ₀'s mass
+  across many Δ' at rate `~B` per witness after quotienting) is, unlike
+  §10, built from the shift-graph's own structure rather than from
+  re-expanding E(S,S)'s definition — genuinely worth checking on its
+  own terms against the corrected target (39), rather than assumed
+  independent without checking (the mistake §10 came close to making).
+  Not yet carried through.
+- The `|H∩C(F_p)|=|C(F_p)|/m+O(√p)` character-sum lemma (§8.7) remains
+  a clean, likely-provable side result regardless of what happens to
+  the L² idea.
