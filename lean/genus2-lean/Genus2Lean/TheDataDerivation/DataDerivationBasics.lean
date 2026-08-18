@@ -122,6 +122,61 @@ theorem not_isSquare_of_odd_natDegree {g : Polynomial K} (hg : g ≠ 0)
   rw [hdeg, Nat.odd_iff] at hodd
   omega
 
+/-- **Mechanical half, now proved.** For a field `K` and `a : K` that is not
+a square, `X^2 - C a` is irreducible: degree exactly 2 (`C a` has degree
+`≤ 0 < 2 = X^2`'s degree, so subtraction doesn't change `natDegree`), and by
+`Polynomial.irreducible_iff_roots_eq_zero_of_degree_le_three` a degree-2 (or
+-3) polynomial over a field is irreducible iff it has no root — a root `x`
+of `X^2 - C a` is exactly `x^2 = a`, i.e. `IsSquare a`, so `¬ IsSquare a`
+gives `roots = 0` gives `Irreducible`. This is the "clean, small" half the
+roadmap anticipated; the remaining `sorry` below (`fAtT`-specific) is the
+genuinely open part — showing the SPECIFIC field elements `fAtT p ... i`
+that `factIrreducible_K1`/`factIrreducible_K2` need are not squares, not
+this general conversion. -/
+theorem irreducible_X_sq_sub_C_of_not_isSquare {a : K} (ha : ¬ IsSquare a) :
+    Irreducible (X ^ 2 - C a : Polynomial K) := by
+  have hdeg2 : (X ^ 2 - C a : Polynomial K).natDegree = 2 := by
+    compute_degree!
+  rw [Polynomial.irreducible_iff_roots_eq_zero_of_degree_le_three (by omega) (by omega)]
+  by_contra hroots
+  obtain ⟨x, hx⟩ := Multiset.exists_mem_of_ne_zero hroots
+  have hxroot : (X ^ 2 - C a : Polynomial K).IsRoot x := Polynomial.isRoot_of_mem_roots hx
+  have : x ^ 2 - a = 0 := by simpa [Polynomial.IsRoot, Polynomial.eval_sub,
+    Polynomial.eval_pow, Polynomial.eval_C, Polynomial.eval_X] using hxroot
+  have hxa : x ^ 2 = a := sub_eq_zero.mp this
+  exact ha ⟨x, by rw [← hxa, sq]⟩
+
+/-- **Single-variable case, now proved (ChatGPT-assisted, degree-based
+route).** For `f : Polynomial K` of odd degree, its image in `RatFunc K`
+under `algebraMap (Polynomial K) (RatFunc K)` is not a square. Proved via
+`RatFunc.intDegree`: `RatFunc.intDegree_polynomial` identifies the image's
+`intDegree` with `f.natDegree`; if the image were `z * z` for some
+`z : RatFunc K`, `RatFunc.intDegree_mul` would force `f.natDegree` to be
+`z.intDegree + z.intDegree`, i.e. even — contradicting `Odd f.natDegree`.
+This route (via `RatFunc.intDegree`) is considerably shorter than the
+originally-planned numerator/denominator-clearing argument: it needs no
+`IsFractionRing.num`/`.den`/`IsRelPrime`/UFD API at all, just the two
+`intDegree` lemmas above plus `Odd`'s `∃ k, n = 2*k+1` unfolding. -/
+theorem RatFunc.not_isSquare_algebraMap_of_odd_natDegree
+    (f : Polynomial K) (hf_deg : Odd f.natDegree) (hf_ne : f ≠ 0) :
+    ¬ IsSquare ((algebraMap (Polynomial K) (RatFunc K)) f) := by
+  intro hs
+  rcases hs with ⟨z, hz⟩
+  have hf0 : (algebraMap (Polynomial K) (RatFunc K)) f ≠ 0 :=
+    (map_ne_zero_iff (algebraMap (Polynomial K) (RatFunc K))
+      (IsFractionRing.injective (Polynomial K) (RatFunc K))).mpr hf_ne
+  have hz0 : z ≠ 0 := by
+    intro hz0
+    rw [hz0, zero_mul] at hz
+    exact hf0 hz
+  have hdeg : ((algebraMap (Polynomial K) (RatFunc K)) f).intDegree =
+      z.intDegree + z.intDegree := by
+    rw [hz]; exact RatFunc.intDegree_mul hz0 hz0
+  rw [RatFunc.intDegree_polynomial] at hdeg
+  rcases hf_deg with ⟨k, hk⟩
+  have hk' : (f.natDegree : ℤ) = 2 * (k : ℤ) + 1 := by exact_mod_cast hk
+  omega
+
 /-- **The irreducibility lemma proper.** For `f : K[t]` a polynomial ring
 over a field `K`, and its image `f_t := f.eval₂ (algebraMap K (FractionRing
 (Polynomial K))) (algebraMap K (FractionRing (Polynomial K)) applied to the
@@ -135,25 +190,57 @@ level up, over `FractionRing (MvPolynomial (Fin 2) F)` for the first tower
 step and over `K1` (no longer a rational function field in the naive sense)
 for the second — see the note after this theorem.
 
-**Left as `sorry`**: the degree-parity argument (`not_isSquare_of_odd_natDegree`
-above) handles "not a square among literal squares of `RatFunc K` elements
-that come from `Polynomial K`" cleanly, but `RatFunc K` also contains
-genuine fractions (elements not of the form `algebraMap _ _ h` for a
-polynomial `h`), and ruling out `f_t` being the square of one of THOSE
-(a fraction `A/B` with `B` non-unit) needs an extra step — comparing
-numerator/denominator degrees after clearing denominators, or invoking
-`Polynomial.Monic.irreducible_of_irreducible_map`-style machinery, or an
-existing Mathlib `Irreducible`-of-`X^2 - a` criterion for characteristic ≠ 2
-fields with `a` non-square — not yet pinned down to a specific Mathlib
-lemma name, so left open rather than guessed at. -/
+**Split into three pieces across two passes.** The mechanical "not-a-square
+implies irreducible" half is `irreducible_X_sq_sub_C_of_not_isSquare` above
+(complete, general, no `sorry`). The single-variable "not a square in
+`RatFunc K`" half is now ALSO complete, no `sorry`, as
+`RatFunc.not_isSquare_algebraMap_of_odd_natDegree` above (ChatGPT-assisted:
+the `RatFunc.intDegree`-based route turned out much shorter than the
+originally-planned numerator/denominator-clearing argument). What remains
+`sorry`'d — restated as its own theorem below, `fAtT_not_isSquare`, rather
+than left inline here — is the genuinely two-variable TRANSPORT of this
+fact: `factIrreducible_K1`/`factIrreducible_K2` need the analogous
+non-square fact not in `RatFunc K` (one transcendental) but in `K0 =
+FractionRing (MvPolynomial (Fin 2) (F p))` (two commuting transcendentals,
+only one of which the curve polynomial is evaluated at) and then, for
+`factIrreducible_K2`, over `K1` rather than `K0` again. The proposed
+route (ChatGPT, second round): identify `MvPolynomial (Fin 2) K` with
+`Polynomial (MvPolynomial (Fin 1) K)` via `MvPolynomial.finSuccEquiv`,
+transport the resulting fraction-ring identification
+`FractionRing (MvPolynomial (Fin 2) K) ≃ₐ[K] RatFunc (MvPolynomial (Fin 1) K)`
+via `IsFractionRing.algEquivOfAlgEquiv`, and reduce to
+`RatFunc.not_isSquare_algebraMap_of_odd_natDegree` applied over the
+one-variable-smaller coefficient field `MvPolynomial (Fin 1) K`. Two
+supporting facts that route needs are individually named but NOT yet
+verified against this project's exact Mathlib checkout (`Polynomial.
+toMvPolynomial`'s exact name/API, and the precise current spelling of
+`natDegree` under an injective-coefficient-map `Polynomial.map` — both
+flagged by name uncertainty in the ChatGPT response this docstring is
+transcribing, not silently assumed). Left as `sorry` here rather than
+risk assembling those into a proof term sight-unseen. -/
 theorem sq_sub_curve_irreducible
     (f : Polynomial K) (hf_deg : Odd f.natDegree) (hf_ne : f ≠ 0) :
-    True := by
-  -- Target statement (not yet the actual claim — see docstring for why):
-  -- `Irreducible (X ^ 2 - C (algebraMap (Polynomial K) (RatFunc K)
-  --   (Polynomial.eval₂ ... f)) : Polynomial (RatFunc K))`.
-  -- The clean degree-parity half is `not_isSquare_of_odd_natDegree` above;
-  -- the fraction case is the genuinely open part of this lemma.
+    ¬ IsSquare (algebraMap (Polynomial K) (RatFunc K) f) :=
+  RatFunc.not_isSquare_algebraMap_of_odd_natDegree f hf_deg hf_ne
+
+/-- **The two-variable transport, still open.** This is what
+`factIrreducible_K1`/`factIrreducible_K2` in `DataDerivationTower.lean`
+actually need: the curve polynomial `f`, evaluated at `t = MvPolynomial.X
+(0 : Fin 2)` (only ONE of `K0`'s two transcendentals — the other,
+`MvPolynomial.X 1`, sits unused in the coefficient field, per the
+`finSuccEquiv`-based routing sketched in `sq_sub_curve_irreducible`'s
+docstring above), is not a square in `K0 = FractionRing (MvPolynomial
+(Fin 2) K)`. **Left as `sorry`**, genuinely unresolved this pass — the
+route is sketched (ChatGPT, second round) but not yet assembled into a
+checked Lean proof; see `sq_sub_curve_irreducible`'s docstring for the
+full plan and the two name-uncertain steps blocking a confident attempt. -/
+theorem fAtT_not_isSquare
+    (f : Polynomial K) (hf_deg : Odd f.natDegree) (hf_ne : f ≠ 0) :
+    ¬ IsSquare
+      (f.eval₂ (algebraMap K (FractionRing (MvPolynomial (Fin 2) K)))
+        (algebraMap (MvPolynomial (Fin 2) K) (FractionRing (MvPolynomial (Fin 2) K))
+          (MvPolynomial.X (0 : Fin 2))) :
+        FractionRing (MvPolynomial (Fin 2) K)) := by
   sorry
 
 end Irreducibility

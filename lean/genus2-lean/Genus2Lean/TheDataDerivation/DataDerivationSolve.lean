@@ -91,19 +91,21 @@ unknowns, matching Julia's `other_idx = [idx for idx in 1:nb if idx !=
 y_idx]` (line 375). -/
 def otherIdx : List ℕ := (List.range 5).filter (· ≠ yIdx)
 
-/-- `otherIdx.length = 4` — the four `Fin 5` slots other than `yIdx`. Proved
-abstractly via `mergeSort`'s permutation/sortedness/membership theorems
-(`List.mem_mergeSort`, `List.pairwise_mergeSort`, `List.mergeSort_perm`,
-`List.findIdx_lt_length_of_exists`, `List.findIdx_getElem`,
-`List.mem_iff_getElem`, `List.getElem?_take_of_lt`), never by
-kernel-reducing `mergeSort` itself (which does not reduce via
-`decide`/`rfl`/`native_decide` — its well-founded recursion is opaque to
-the kernel, a known Lean4 issue). `decide` is used only on closed
-computations that provably never touch `mergeSort`: `rrBasisCandidates
-20`'s own `countP` (plain `range`/`flatMap`), and the final five
-`(List.range 5).filter (· ≠ yIdx)` length checks (with `yIdx` rewritten to
-a literal first via `change`, so `decide` never sees `rrBasis5`). -/
-theorem otherIdx_length : otherIdx.length = 4 := by
+/-- `yIdx < 5`, extracted as its own standalone fact (previously only proved
+inline inside `otherIdx_length`) so the reindexing lemmas below (`otherMap`,
+`sum_otherIdx_add_y`) can use it directly as a named hypothesis rather than
+re-deriving it. Proved abstractly via `mergeSort`'s permutation/sortedness/
+membership theorems (`List.mem_mergeSort`, `List.pairwise_mergeSort`,
+`List.mergeSort_perm`, `List.findIdx_lt_length_of_exists`,
+`List.findIdx_getElem`, `List.mem_iff_getElem`, `List.getElem?_take_of_lt`),
+never by kernel-reducing `mergeSort` itself (which does not reduce via
+`decide`/`rfl`/`native_decide` — its well-founded recursion is opaque to the
+kernel, a known Lean4 issue). `decide` is used only on closed computations
+that provably never touch `mergeSort`: `rrBasisCandidates 20`'s own `countP`
+(plain `range`/`flatMap`), and (in `otherIdx_length` below) the final five
+`(List.range 5).filter (· ≠ yIdx)` length checks (with `yIdx` rewritten to a
+literal first via `change`, so `decide` never sees `rrBasis5`). -/
+theorem yIdx_lt_five : yIdx < 5 := by
   let x : ℕ × ℕ × ℕ := (5, 0, 1)
   let q : (ℕ × ℕ × ℕ) → (ℕ × ℕ × ℕ) → Bool := fun a b => decide (a.1 ≤ b.1)
   let s : List (ℕ × ℕ × ℕ) := (rrBasisCandidates 20).mergeSort q
@@ -192,7 +194,10 @@ theorem otherIdx_length : otherIdx.length = 4 := by
     simp [x]
   have hlen : rrBasis5.length = 5 := by
     simp [rrBasis5, rrBasisCandidates, List.length_flatMap]
-  have hy : yIdx < 5 := by rw [hlen] at hy_len; exact hy_len
+  rw [hlen] at hy_len; exact hy_len
+
+theorem otherIdx_length : otherIdx.length = 4 := by
+  have hy := yIdx_lt_five
   have hy_cases : yIdx = 0 ∨ yIdx = 1 ∨ yIdx = 2 ∨ yIdx = 3 ∨ yIdx = 4 := by omega
   rcases hy_cases with h0 | h1 | h2 | h3 | h4
   · change ((List.range 5).filter (fun x => x ≠ yIdx)).length = 4
@@ -410,6 +415,102 @@ private theorem matrixA_row_eval (a : Fin 2) (col : Fin 4) :
       px ^ bi * (if bj = 1 then py else 1) := by
   fin_cases a <;> simp [matrixA]
 
+/-- Membership characterization for `otherIdx`, stated in `Prop` form (bridging
+the `Bool`-valued `decide` that `List.filter`/`List.mem_filter` actually
+produce). -/
+private theorem mem_otherIdx_iff (n : ℕ) : n ∈ otherIdx ↔ n < 5 ∧ n ≠ yIdx := by
+  unfold otherIdx
+  rw [List.mem_filter, List.mem_range, decide_eq_true_eq]
+
+/-- **The reindexing bijection**, `col : Fin 4 ↦ otherIdx[col] : Fin 5`.
+Maps each of `otherIdx`'s 4 list positions into `Fin 5` (well-defined since
+every element of `otherIdx` is `< 5`, by `otherIdx`'s own `filter (· < 5)`-via-
+`range 5` construction). Does NOT assume `otherIdx`'s list-order matches
+`Fin 4`'s numeral order — the injectivity/surjectivity lemmas below only use
+`otherIdx.Nodup` and set membership, not any ordering fact. -/
+def otherMap (col : Fin 4) : Fin 5 :=
+  ⟨otherIdx.getD col.val 0, by
+    have hcol : col.val < otherIdx.length := by rw [otherIdx_length]; exact col.isLt
+    have hmem : otherIdx[col.val] ∈ otherIdx := List.getElem_mem hcol
+    have hlt5 : otherIdx[col.val] < 5 := ((mem_otherIdx_iff _).mp hmem).1
+    rw [List.getD_eq_getElem _ _ hcol]
+    exact hlt5⟩
+
+private theorem otherIdx_nodup : otherIdx.Nodup := by
+  unfold otherIdx
+  exact List.nodup_range.filter _
+
+/-- `otherMap` is injective — from `otherIdx.Nodup`, no ordering assumption
+needed. -/
+theorem otherMap_injective : Function.Injective otherMap := by
+  intro i j hij
+  have hi : i.val < otherIdx.length := by rw [otherIdx_length]; exact i.isLt
+  have hj : j.val < otherIdx.length := by rw [otherIdx_length]; exact j.isLt
+  have hget : otherIdx[i.val] = otherIdx[j.val] := by
+    have := congrArg Fin.val hij
+    simp only [otherMap, List.getD_eq_getElem _ _ hi, List.getD_eq_getElem _ _ hj] at this
+    exact this
+  exact Fin.ext ((otherIdx_nodup.getElem_inj_iff (hi := hi) (hj := hj)).mp hget)
+
+/-- Every `b : Fin 5` other than `yIdx` is hit by `otherMap`. -/
+theorem otherMap_surjOn (b : Fin 5) (hby : b ≠ ⟨yIdx, yIdx_lt_five⟩) :
+    ∃ col : Fin 4, otherMap col = b := by
+  have hbval_ne : b.val ≠ yIdx := fun h => hby (Fin.ext h)
+  have hbmem : b.val ∈ otherIdx := (mem_otherIdx_iff _).mpr ⟨b.isLt, hbval_ne⟩
+  obtain ⟨n, hn, hne⟩ := List.mem_iff_getElem.mp hbmem
+  have hn4 : n < 4 := by rw [← otherIdx_length]; exact hn
+  refine ⟨⟨n, hn4⟩, Fin.ext ?_⟩
+  show otherIdx.getD n 0 = b.val
+  rw [List.getD_eq_getElem _ _ hn]
+  exact hne
+
+/-- **Step 4, the reindexing identity**: mapping `F : Fin 5 → K2 p ...` over
+`otherIdx`'s 4 positions (via `otherMap`) plus the `yIdx` term separately is
+the same as summing `F` over all of `Fin 5`. This is the one genuinely
+combinatorial step in the `anchor{1,2}_defining_eq` argument (§ above,
+"the five-slot defining identity", step 4). -/
+theorem sum_otherIdx_add_y (F : Fin 5 → K2 p c0 c1 c2 c3 c4) :
+    (∑ col : Fin 4, F (otherMap col)) + F ⟨yIdx, yIdx_lt_five⟩ =
+      ∑ bidx : Fin 5, F bidx := by
+  have hsum : (∑ col : Fin 4, F (otherMap col)) =
+      ∑ b ∈ (Finset.univ.erase (⟨yIdx, yIdx_lt_five⟩ : Fin 5)), F b := by
+    apply Finset.sum_bij (fun (col : Fin 4) (_ : col ∈ (Finset.univ : Finset (Fin 4))) =>
+      otherMap col)
+    · -- membership: otherMap col ∈ univ.erase yIdx
+      intro col _
+      simp only [Finset.mem_erase, Finset.mem_univ, and_true]
+      have hcol : col.val < otherIdx.length := by rw [otherIdx_length]; exact col.isLt
+      have hmem : otherIdx[col.val] ∈ otherIdx := List.getElem_mem hcol
+      have hmem' : otherIdx[col.val] ≠ yIdx := ((mem_otherIdx_iff _).mp hmem).2
+      show (⟨otherIdx.getD col.val 0, _⟩ : Fin 5) ≠ ⟨yIdx, yIdx_lt_five⟩
+      intro hcontra
+      apply hmem'
+      have heq : otherIdx.getD col.val 0 = yIdx := congrArg Fin.val hcontra
+      rw [List.getD_eq_getElem _ _ hcol] at heq
+      exact heq
+    · -- injectivity: goal is `∀ a₁ ∈ univ, ∀ a₂ ∈ univ, otherMap a₁ = otherMap a₂ → a₁ = a₂`
+      intro col1 _ col2 _ heq
+      exact otherMap_injective heq
+    · -- surjectivity: goal is `∀ b ∈ univ.erase yIdx, ∃ a, ∃ (_ : a ∈ univ), otherMap a = b`
+      intro col1 hb
+      simp only [Finset.mem_erase, Finset.mem_univ, and_true] at hb
+      obtain ⟨col, hcol⟩ := otherMap_surjOn col1 hb
+      exact ⟨col, Finset.mem_univ _, hcol⟩
+    · -- value agreement (`F` applied via `otherMap`, both sides literally the same term)
+      intro col _
+      rfl
+  have hy_mem : (⟨yIdx, yIdx_lt_five⟩ : Fin 5) ∈ (Finset.univ : Finset (Fin 5)) :=
+    Finset.mem_univ _
+  have hsplit : (∑ bidx : Fin 5, F bidx) =
+      F ⟨yIdx, yIdx_lt_five⟩ +
+        ∑ b ∈ (Finset.univ.erase (⟨yIdx, yIdx_lt_five⟩ : Fin 5)), F b := by
+    have hnotmem : (⟨yIdx, yIdx_lt_five⟩ : Fin 5) ∉
+        Finset.univ.erase (⟨yIdx, yIdx_lt_five⟩ : Fin 5) := by
+      simp [Finset.mem_erase]
+    rw [← Finset.sum_insert hnotmem, Finset.insert_erase hy_mem]
+  rw [hsum, hsplit]
+  ring
+
 /-- **The five-slot defining identity**, row 0 of `A * coeffsOut = rhsVec`
 restated additively over all of `Fin 5` (not just `other_idx`) — see the
 docstring above §"The anchor argument, worked out precisely" for the
@@ -567,7 +668,28 @@ private theorem fAtX_eval_anchor1_eq :
     (fAtX p c0 c1 c2 c3 c4 u0 u1 v0 v1).eval (anchor1 p c0 c1 c2 c3 c4).1 =
       algebraMap (K1 p c0 c1 c2 c3 c4) (K2 p c0 c1 c2 c3 c4)
         (algebraMap (K0 p) (K1 p c0 c1 c2 c3 c4) (fAtT p c0 c1 c2 c3 c4 0)) := by
-  sorry
+  -- `g := algebraMap (K1 p ...) (K2 p ...) ∘ algebraMap (K0 p) (K1 p ...) : K0 p →+* K2 p ...`
+  set g : K0 p →+* K2 p c0 c1 c2 c3 c4 :=
+    (algebraMap (K1 p c0 c1 c2 c3 c4) (K2 p c0 c1 c2 c3 c4)).comp
+      (algebraMap (K0 p) (K1 p c0 c1 c2 c3 c4)) with hg
+  -- `fAtX`'s LHS unfolds (via `eval_map`) to `curvePoly.eval₂ (algebraMap (F p) (K2 p ...))
+  -- (anchor1.1)`; `fAtT`'s RHS, after folding the two nested `algebraMap`s into `g`, is
+  -- `g (curvePoly.eval₂ (algebraMap (F p) (K0 p)) (t0 p 0))`. `hom_eval₂` turns the latter
+  -- into `curvePoly.eval₂ (g.comp (algebraMap (F p) (K0 p))) (g (t0 p 0))`; after `hpoint`
+  -- fixes the evaluation point, the only remaining gap is the coefficient-map hom itself
+  -- (`algebraMap (F p) (K2 p ...)` vs `g.comp (algebraMap (F p) (K0 p))`), closed by `hcoeff`
+  -- since any two ring homs out of `F p = ZMod p` agree (`RingHom.ext_zmod`).
+  have hpoint : g (t0 p 0) = (anchor1 p c0 c1 c2 c3 c4).1 := by
+    rw [hg, RingHom.comp_apply]; simp only [anchor1]
+  have hfAtT : algebraMap (K1 p c0 c1 c2 c3 c4) (K2 p c0 c1 c2 c3 c4)
+      (algebraMap (K0 p) (K1 p c0 c1 c2 c3 c4) (fAtT p c0 c1 c2 c3 c4 0)) =
+      g ((curvePoly p c0 c1 c2 c3 c4).eval₂ (algebraMap (F p) (K0 p)) (t0 p 0)) := by
+    simp only [hg, RingHom.comp_apply, fAtT]
+  have hcoeff : algebraMap (F p) (K2 p c0 c1 c2 c3 c4) = g.comp (algebraMap (F p) (K0 p)) :=
+    RingHom.ext_zmod _ _
+  rw [fAtX, Polynomial.eval_map, hfAtT,
+    Polynomial.hom_eval₂ (curvePoly p c0 c1 c2 c3 c4) (algebraMap (F p) (K0 p)) g (t0 p 0),
+    hpoint, hcoeff]
 
 /-- Same identification at anchor 2. **Correction from the previous pass**:
 this originally claimed a single promotion (`algebraMap (K1 p ...) (K2 p
@@ -584,7 +706,22 @@ private theorem fAtX_eval_anchor2_eq :
     (fAtX p c0 c1 c2 c3 c4 u0 u1 v0 v1).eval (anchor2 p c0 c1 c2 c3 c4).1 =
       algebraMap (K1 p c0 c1 c2 c3 c4) (K2 p c0 c1 c2 c3 c4)
         (algebraMap (K0 p) (K1 p c0 c1 c2 c3 c4) (fAtT p c0 c1 c2 c3 c4 1)) := by
-  sorry
+  -- Identical argument to `fAtX_eval_anchor1_eq`, at anchor 2 (`t0 p 1` instead of `t0 p 0`);
+  -- `anchor2.1` is built by the same double-`algebraMap` promotion as `anchor1.1`.
+  set g : K0 p →+* K2 p c0 c1 c2 c3 c4 :=
+    (algebraMap (K1 p c0 c1 c2 c3 c4) (K2 p c0 c1 c2 c3 c4)).comp
+      (algebraMap (K0 p) (K1 p c0 c1 c2 c3 c4)) with hg
+  have hpoint : g (t0 p 1) = (anchor2 p c0 c1 c2 c3 c4).1 := by
+    rw [hg, RingHom.comp_apply]; simp only [anchor2]
+  have hfAtT : algebraMap (K1 p c0 c1 c2 c3 c4) (K2 p c0 c1 c2 c3 c4)
+      (algebraMap (K0 p) (K1 p c0 c1 c2 c3 c4) (fAtT p c0 c1 c2 c3 c4 1)) =
+      g ((curvePoly p c0 c1 c2 c3 c4).eval₂ (algebraMap (F p) (K0 p)) (t0 p 1)) := by
+    simp only [hg, RingHom.comp_apply, fAtT]
+  have hcoeff : algebraMap (F p) (K2 p c0 c1 c2 c3 c4) = g.comp (algebraMap (F p) (K0 p)) :=
+    RingHom.ext_zmod _ _
+  rw [fAtX, Polynomial.eval_map, hfAtT,
+    Polynomial.hom_eval₂ (curvePoly p c0 c1 c2 c3 c4) (algebraMap (F p) (K0 p)) g (t0 p 1),
+    hpoint, hcoeff]
 
 /-- **Assembled**: `w1^2 = f(t1)` promoted into `K2`, combining `w1_sq_eq`
 (promoted through `algebraMap (K1 p ...) (K2 p ...)`, since `anchor1.2 =
