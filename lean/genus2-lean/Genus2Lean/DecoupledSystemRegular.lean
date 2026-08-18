@@ -388,10 +388,42 @@ noncomputable def theData (c0 c1 c2 c3 c4 : F p)
       (vRS p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1 hgcdB) i).1
     v2_den := fun i => (coeffsToNumDen p c0 c1 c2 c3 c4 bSideGens
       (vRS p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1 hgcdB) i).2
-    u1_indep := by sorry
-    u2_indep := by sorry
-    v1_indep := by sorry
-    v2_indep := by sorry }
+    u1_indep := by
+      intro i v hv
+      have h1 := (towerToRdec_vars_subset p aSideGens
+        ((uRS p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1).coeff i.val)).1
+      have h2 := (towerToRdec_vars_subset p aSideGens
+        ((uRS p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1).coeff i.val)).2
+      have := (Finset.mem_union.mp hv).elim (fun hv1 => h1 hv1) (fun hv2 => h2 hv2)
+      simp only [aSideGens, coeffsToNumDen, Finset.mem_insert, Finset.mem_singleton] at this ⊢
+      tauto
+    u2_indep := by
+      intro i v hv
+      have h1 := (towerToRdec_vars_subset p bSideGens
+        ((uRS p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1).coeff i.val)).1
+      have h2 := (towerToRdec_vars_subset p bSideGens
+        ((uRS p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1).coeff i.val)).2
+      have := (Finset.mem_union.mp hv).elim (fun hv1 => h1 hv1) (fun hv2 => h2 hv2)
+      simp only [bSideGens, coeffsToNumDen, Finset.mem_insert, Finset.mem_singleton] at this ⊢
+      tauto
+    v1_indep := by
+      intro i v hv
+      have h1 := (towerToRdec_vars_subset p aSideGens
+        ((vRS p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1 hgcdA).coeff i.val)).1
+      have h2 := (towerToRdec_vars_subset p aSideGens
+        ((vRS p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1 hgcdA).coeff i.val)).2
+      have := (Finset.mem_union.mp hv).elim (fun hv1 => h1 hv1) (fun hv2 => h2 hv2)
+      simp only [aSideGens, coeffsToNumDen, Finset.mem_insert, Finset.mem_singleton] at this ⊢
+      tauto
+    v2_indep := by
+      intro i v hv
+      have h1 := (towerToRdec_vars_subset p bSideGens
+        ((vRS p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1 hgcdB).coeff i.val)).1
+      have h2 := (towerToRdec_vars_subset p bSideGens
+        ((vRS p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1 hgcdB).coeff i.val)).2
+      have := (Finset.mem_union.mp hv).elim (fun hv1 => h1 hv1) (fun hv2 => h2 hv2)
+      simp only [bSideGens, coeffsToNumDen, Finset.mem_insert, Finset.mem_singleton] at this ⊢
+      tauto }
 
 /-- `Fu_decoupled`, `01_elim2_main.jl:1042-1046`, flattened to a length-4
 list in the same order the original loop produces (`i=0`: sample-1 then

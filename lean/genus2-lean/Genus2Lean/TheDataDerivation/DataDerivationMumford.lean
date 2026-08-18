@@ -397,6 +397,94 @@ noncomputable def towerToRdec {Vars : Type*}
   ( n0 * den1 + n1 * den0 * MvPolynomial.X (sg.wGen 1),
     den0 * den1 )
 
+/-- **Shared generator-containment bound.** The four independence
+obligations `DecoupledGenerators.u1_indep`/`.u2_indep`/`.v1_indep`/
+`.v2_indep` in `DecoupledSystemRegular.lean` all reduce to this one fact
+about `towerToRdec`'s output: since every `MvPolynomial.X` term either
+function ever introduces is one of `sg.tGen 0`, `sg.tGen 1`, `sg.wGen 0`,
+`sg.wGen 1` (`baseFracToRing` only substitutes `sg.tGen`, `towerToRdecK1`
+additionally multiplies in `X (sg.wGen 0)`, `towerToRdec` additionally
+multiplies in `X (sg.wGen 1)` — no other generator is ever mentioned by
+name anywhere in the recursion), both the numerator and denominator stay
+within that 4-element set regardless of `v`. Proved by chasing `vars`
+through the recursion with `MvPolynomial.vars_add_subset`/`vars_mul`/
+`vars_X`/`vars_bind₁` (via `aeval_eq_bind₁`, for `baseFracToRing`'s call),
+rather than by induction on `v` itself — `towerToRdec`/`towerToRdecK1`/
+`baseFracToRing` are each a single non-recursive `let`-chain, not a
+recursive definition on `v`, so ordinary equational unfolding plus these
+four `vars` lemmas suffices; no separate induction principle is needed. -/
+theorem towerToRdec_vars_subset {Vars : Type*} [DecidableEq Vars]
+    (sg : SideGens Vars) (v : K2 p c0 c1 c2 c3 c4) :
+    (towerToRdec p sg v).1.vars ⊆ {sg.tGen 0, sg.tGen 1, sg.wGen 0, sg.wGen 1} ∧
+    (towerToRdec p sg v).2.vars ⊆ {sg.tGen 0, sg.tGen 1, sg.wGen 0, sg.wGen 1} := by
+  classical
+  -- Step 0: `baseFracToRing`'s output only involves `sg.tGen 0, sg.tGen 1`.
+  have hbase : ∀ w : K0 p, (baseFracToRing p sg w).1.vars ⊆ {sg.tGen 0, sg.tGen 1} ∧
+      (baseFracToRing p sg w).2.vars ⊆ {sg.tGen 0, sg.tGen 1} := by
+    intro w
+    unfold baseFracToRing
+    dsimp only
+    have hgen : ∀ i : Fin 2, (MvPolynomial.X (sg.tGen i) : MvPolynomial Vars (F p)).vars ⊆
+        ({sg.tGen 0, sg.tGen 1} : Finset Vars) := by
+      intro i
+      have : (MvPolynomial.X (sg.tGen i) : MvPolynomial Vars (F p)).vars ⊆ {sg.tGen i} := by
+        rw [MvPolynomial.vars_X]
+      refine this.trans ?_
+      fin_cases i <;> simp
+    constructor <;>
+      · rw [MvPolynomial.aeval_eq_bind₁]
+        exact (MvPolynomial.vars_bind₁ _ _).trans (Finset.biUnion_subset.mpr (fun i _ => hgen i))
+  -- Step 1: `towerToRdecK1`'s output additionally allows `sg.wGen 0`.
+  have hK1 : ∀ w : K1 p c0 c1 c2 c3 c4,
+      (towerToRdecK1 p sg w).1.vars ⊆ {sg.tGen 0, sg.tGen 1, sg.wGen 0} ∧
+      (towerToRdecK1 p sg w).2.vars ⊆ {sg.tGen 0, sg.tGen 1, sg.wGen 0} := by
+    intro w
+    unfold towerToRdecK1
+    dsimp only
+    set d0 := (AdjoinRoot.modByMonicHom (K1_poly_monic p c0 c1 c2 c3 c4) w).coeff 0
+    set d1 := (AdjoinRoot.modByMonicHom (K1_poly_monic p c0 c1 c2 c3 c4) w).coeff 1
+    obtain ⟨hn0, hd0⟩ := hbase d0
+    obtain ⟨hn1, hd1⟩ := hbase d1
+    have hsub3 : ({sg.tGen 0, sg.tGen 1} : Finset Vars) ⊆
+        {sg.tGen 0, sg.tGen 1, sg.wGen 0} := by
+      intro x hx; simp only [Finset.mem_insert, Finset.mem_singleton] at hx ⊢; tauto
+    refine ⟨?_, ?_⟩
+    · refine (MvPolynomial.vars_add_subset _ _).trans ?_
+      apply Finset.union_subset
+      · exact (MvPolynomial.vars_mul _ _).trans
+          (Finset.union_subset (hn0.trans hsub3) (hd1.trans hsub3))
+      · refine (MvPolynomial.vars_mul _ _).trans (Finset.union_subset
+          ((MvPolynomial.vars_mul _ _).trans
+            (Finset.union_subset (hn1.trans hsub3) (hd0.trans hsub3)))
+          ?_)
+        have : (MvPolynomial.X (sg.wGen 0) : MvPolynomial Vars (F p)).vars ⊆ {sg.wGen 0} := by
+          rw [MvPolynomial.vars_X]
+        exact this.trans (by intro x hx; simp only [Finset.mem_singleton] at hx; subst hx; simp)
+    · exact (MvPolynomial.vars_mul _ _).trans (Finset.union_subset (hd0.trans hsub3) (hd1.trans hsub3))
+  -- Step 2: `towerToRdec` itself additionally allows `sg.wGen 1`.
+  unfold towerToRdec
+  dsimp only
+  set d0 := (AdjoinRoot.modByMonicHom (K2_poly_monic p c0 c1 c2 c3 c4) v).coeff 0
+  set d1 := (AdjoinRoot.modByMonicHom (K2_poly_monic p c0 c1 c2 c3 c4) v).coeff 1
+  obtain ⟨hn0, hd0⟩ := hK1 d0
+  obtain ⟨hn1, hd1⟩ := hK1 d1
+  have hsub4 : ({sg.tGen 0, sg.tGen 1, sg.wGen 0} : Finset Vars) ⊆
+      {sg.tGen 0, sg.tGen 1, sg.wGen 0, sg.wGen 1} := by
+    intro x hx; simp only [Finset.mem_insert, Finset.mem_singleton] at hx ⊢; tauto
+  refine ⟨?_, ?_⟩
+  · refine (MvPolynomial.vars_add_subset _ _).trans ?_
+    apply Finset.union_subset
+    · exact (MvPolynomial.vars_mul _ _).trans
+        (Finset.union_subset (hn0.trans hsub4) (hd1.trans hsub4))
+    · refine (MvPolynomial.vars_mul _ _).trans (Finset.union_subset
+        ((MvPolynomial.vars_mul _ _).trans
+          (Finset.union_subset (hn1.trans hsub4) (hd0.trans hsub4)))
+        ?_)
+      have : (MvPolynomial.X (sg.wGen 1) : MvPolynomial Vars (F p)).vars ⊆ {sg.wGen 1} := by
+        rw [MvPolynomial.vars_X]
+      exact this.trans (by intro x hx; simp only [Finset.mem_singleton] at hx; subst hx; simp)
+  · exact (MvPolynomial.vars_mul _ _).trans (Finset.union_subset (hd0.trans hsub4) (hd1.trans hsub4))
+
 /-- **Correctness spec `towerToRdec` is intended to satisfy**, recorded in
 prose (not yet a checkable Lean statement — see below for why): under the
 embedding identifying `K2 p c0 c1 c2 c3 c4` with the sub-`F p`-algebra of

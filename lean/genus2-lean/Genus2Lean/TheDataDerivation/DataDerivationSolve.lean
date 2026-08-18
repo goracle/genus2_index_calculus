@@ -184,8 +184,7 @@ theorem otherIdx_length : otherIdx.length = 4 := by
         apply List.getElem?_take_of_lt; omega
       have hsome : (s.take 5)[s.findIdx (fun a => decide (a = x))]? = some x := by
         rw [htake]; exact hopt
-      sorry -- TODO: bridge `l[i]? = some x` back to `l[i] = x` given `i < l.length` —
-      -- need exact Mathlib lemma name, see prompt to ChatGPT
+      exact (List.getElem_eq_iff _).mpr hsome
   have hx_rrBasis5 : x ∈ rrBasis5 := by simpa [rrBasis5, s, q] using hx_take
   have hy_len : yIdx < rrBasis5.length := by
     apply List.findIdx_lt_length_of_exists
