@@ -1,0 +1,428 @@
+import Mathlib
+import Genus2Lean.TheDataDerivation.DataDerivationSolve
+
+/-!
+# `theData` derivation, part 4: `u_RS`/`v_RS`, the Mumford identity, and the bridge to `Rdec`
+
+Fourth and last of four files — see `DataDerivationBasics.lean`'s header for
+the full split rationale and file order. This file builds §4.2 items 7–8
+(`u_RS`, `v_RS` via the mod-`u_RS` inverse, and the Mumford identity
+`v_RS² ≡ f mod u_RS`) and the un-numbered "bridge to `Rdec`" section
+(`towerToRdec`, denominator-clearing from `K2` down to `Rdec`).
+
+**This pass**: `uRS_monic` is now fully proved (no `sorry`) — the roadmap's
+own "worth a five-minute Mathlib search" hunch about
+`Polynomial.monic_mul_leadingCoeff_inv`-style reasoning was directionally
+right; the actual lemma used is
+`Polynomial.natDegree_C_mul_eq_of_mul_eq_one` (degree preserved under
+multiplication by a witnessed unit) plus `Polynomial.coeff_C_mul` and
+`mul_inv_cancel₀`/`inv_mul_cancel₀`, all confirmed against `mathlib4`'s
+actual source this pass rather than guessed. `vRS`'s coprimality/inverse-
+identification gaps and the Mumford identity itself (`vRS_sq_eq_f_mod_uRS`)
+remain `sorry`, still downstream of `DataDerivationSolve.lean`'s `dvd_N_u`
+in particular (the Mumford identity's proof depends on all three of item
+6's divisibility facts, not just the two proved so far).
+
+`DecoupledSystemRegular.lean` imports this file (which transitively pulls
+in the other three) and builds the actual `theData : DecoupledGenerators`
+assembly against `towerToRdec`/`uRS`/`vRS` — see that file for the current
+state of that assembly.
+-/
+
+namespace Genus2Lean
+namespace TheDataDerivation
+
+open Polynomial
+
+variable (p : ℕ) [hp : Fact (Nat.Prime p)]
+
+/-! ## Item 7 (§4.2 / §4.0 step 6): `u_RS`, then `v_RS` via the mod-`u_RS` inverse
+
+`curBeforeMonic` (item 6) only equals the true quotient `cur` under the
+three `dvd_N_*` facts; `uRS` below is its monic normalization exactly as
+Julia's line 469 (`u_RS = cur * inv(leading_coefficient(cur))`), which
+additionally needs `curBeforeMonic ≠ 0` (Julia's `iszero(cur)` early-return,
+line 464 — the `SymbolicResidualResult(...,Any[],Any[],...)` degenerate
+case) to make sense as a normalization at all: dividing by the leading
+coefficient of the zero polynomial is `0/0`. That non-degeneracy, like
+`MatrixNondegenerate`, is recorded as an explicit hypothesis rather than
+proved or assumed globally — a genuine further exceptional-locus condition
+on `(p,c0,...,c4,u0,u1,v0,v1)`, additional to `MatrixNondegenerate`, not
+yet folded into a single combined statement anywhere in this file. -/
+
+section VRS
+
+variable (c0 c1 c2 c3 c4 u0 u1 v0 v1 : F p)
+
+/-- `u_RS(x)`, monic-normalized `curBeforeMonic` — Julia line 469. Uses
+`Polynomial.leadingCoeff` and its inverse in the field `K2`; well-defined
+(as the correct monic associate of `cur`) only once `curBeforeMonic ≠ 0`,
+recorded as the hypothesis `hcur` threaded through this section rather than
+proved here (upstream of item 6's own three `sorry`s, so nothing below
+could discharge it yet regardless). -/
+noncomputable def uRS : Polynomial (K2 p c0 c1 c2 c3 c4) :=
+  C (curBeforeMonic p c0 c1 c2 c3 c4 u0 u1 v0 v1).leadingCoeff⁻¹ *
+    curBeforeMonic p c0 c1 c2 c3 c4 u0 u1 v0 v1
+
+/-- `uRS` really is monic, given `curBeforeMonic ≠ 0`. **Now proved** (the
+roadmap's own five-minute-search hunch was right, and the lemma is now
+pinned down): `Polynomial.natDegree_C_mul_eq_of_mul_eq_one` (Mathlib,
+`Mathlib.Algebra.Polynomial.Degree.Lemmas`) gives `(C a * p).natDegree =
+p.natDegree` from a witnessed inverse `ai * a = 1` — here `a :=
+leadingCoeff⁻¹`, `ai := leadingCoeff`, and `leadingCoeff * leadingCoeff⁻¹ =
+1` is `mul_inv_cancel₀` (field, since `leadingCoeff ≠ 0` follows from `hcur`
+via `Polynomial.leadingCoeff_ne_zero`). With the degree preserved, the new
+leading coefficient is, by `Polynomial.coeff_C_mul` at the (unchanged)
+top degree, `leadingCoeff⁻¹ * leadingCoeff = 1` (`inv_mul_cancel₀`) — exactly
+`Monic`'s definition (`leadingCoeff = 1`). -/
+theorem uRS_monic (hcur : curBeforeMonic p c0 c1 c2 c3 c4 u0 u1 v0 v1 ≠ 0) :
+    (uRS p c0 c1 c2 c3 c4 u0 u1 v0 v1).Monic := by
+  simp only [uRS]
+  set q := curBeforeMonic p c0 c1 c2 c3 c4 u0 u1 v0 v1 with hq
+  -- Goal now: `(C q.leadingCoeff⁻¹ * q).Monic`.
+  have hlc : q.leadingCoeff ≠ 0 := (not_congr Polynomial.leadingCoeff_eq_zero).mpr hcur
+  have hau : q.leadingCoeff * q.leadingCoeff⁻¹ = 1 := mul_inv_cancel₀ hlc
+  have hdeg : (C q.leadingCoeff⁻¹ * q).natDegree = q.natDegree :=
+    Polynomial.natDegree_C_mul_eq_of_mul_eq_one hau
+  rw [Polynomial.Monic.def]
+  show (C q.leadingCoeff⁻¹ * q).coeff (C q.leadingCoeff⁻¹ * q).natDegree = 1
+  rw [hdeg, Polynomial.coeff_C_mul]
+  exact inv_mul_cancel₀ hlc
+
+/-- **`v_RS(x) = -E(x) * Y(x)⁻¹ mod u_RS(x)`** (§4.0 step 6, Julia line 486),
+computed via the Euclidean-algorithm route the roadmap names as the direct
+Mathlib counterpart of Julia's `gcdx` fallback (`_inv_mod_small` is flagged
+by the roadmap itself as "purely a bloat-avoidance optimization ... can be
+safely SKIPPED in the Lean port", so only the `gcdx`/Euclidean route is
+ported here, per the roadmap's own recommendation to prefer "whichever of
+the two is easier to formalize").
+
+`Polynomial (K2 p ...)` is a Euclidean domain (a polynomial ring over a
+field always is — `Polynomial.instEuclideanDomain` or equivalent), so
+`EuclideanDomain.gcdA`/`gcdB` are available: `gcdA a b * a + gcdB a b * b =
+gcd a b`. Taking `a := Ypoly`, `b := uRS`, and `gcd = 1` (needs
+`IsCoprime`/`gcd = 1`, itself a further hypothesis — Julia's `gcdx` just
+returns whatever `gcd` it computes and the caller trusts it is `1` because
+the construction guarantees `Y_poly` is a unit mod `u_RS`; this is NOT
+proved here, recorded as `hgcd` below), `gcdA Ypoly uRS` is exactly `Y⁻¹ mod
+u_RS` up to the sign/normalization `EuclideanDomain.gcdA` happens to use
+(Mathlib's Bézout coefficients are not always normalized the same way a
+hand-rolled extended-Euclidean routine like Julia's `gcdx` would produce —
+this is worth checking concretely, e.g. against Julia's ACTUAL sign
+convention for `gcdx`, once both sides are computable, rather than assumed
+to match `Y_inv_mod` on the nose; flagged rather than silently assumed).
+
+**Left as `sorry`**: both the coprimality hypothesis's discharge (would
+follow from item 6's divisibility facts plus the linear system's own
+non-degeneracy, but not derived here) and the actual identification of
+`gcdA Ypoly uRS` with "the" inverse are real remaining work, downstream of
+item 6.
+
+**Note on `%ₘ`:** Mathlib's `modByMonic` (`%ₘ`) is total — it typechecks
+for ANY divisor, not just monic ones — but its defining property
+(`a %ₘ b` has degree `< b.natDegree`, and is the "true" remainder) only
+holds when the divisor is genuinely monic. `vRS` below is stated against
+`uRS` directly rather than threading `uRS_monic`'s hypothesis `hcur`
+through as well, so as written this compiles but is only the CORRECT
+`v_RS` once `hcur` also holds alongside `hgcd` — both hypotheses belong
+together on any theorem actually USING `vRS`'s value (e.g.
+`vRS_sq_eq_f_mod_uRS` below), even though `vRS`'s bare definition only
+needs `hgcd` to typecheck. -/
+noncomputable def vRS
+    (hgcd : IsCoprime (Ypoly p c0 c1 c2 c3 c4 u0 u1 v0 v1) (uRS p c0 c1 c2 c3 c4 u0 u1 v0 v1)) :
+    Polynomial (K2 p c0 c1 c2 c3 c4) :=
+  (-(Epoly p c0 c1 c2 c3 c4 u0 u1 v0 v1) *
+      EuclideanDomain.gcdA (Ypoly p c0 c1 c2 c3 c4 u0 u1 v0 v1)
+        (uRS p c0 c1 c2 c3 c4 u0 u1 v0 v1)) %ₘ
+    uRS p c0 c1 c2 c3 c4 u0 u1 v0 v1
+
+end VRS
+
+/-! ## Item 8 (§4.0 step 8): the Mumford identity — NOT skippable
+
+Per the roadmap: "this one is NOT skippable: it's the actual correctness
+statement `(u_RS,v_RS)` really is a point on `Jac(C)`'s 2-torsion-free
+part". This is `_check_mumford_identity`'s "pre-reduction" check (the
+"post-reduction" copy has no counterpart here since item 8 in §4.2's build
+order — coefficient reduction to lowest terms — is separately flagged as
+skippable and is NOT ported below; see the note after this theorem). The
+roadmap's own assessment: "should be near-definitional once step 7 is in
+Lean", since `vRS` was constructed FROM `uRS` via the mod-`u_RS` inverse
+specifically so this identity holds by that construction, not as an
+independent fact requiring new algebra. -/
+
+section MumfordIdentity
+
+variable (c0 c1 c2 c3 c4 u0 u1 v0 v1 : F p)
+variable (hcur : curBeforeMonic p c0 c1 c2 c3 c4 u0 u1 v0 v1 ≠ 0)
+variable (hgcd : IsCoprime (Ypoly p c0 c1 c2 c3 c4 u0 u1 v0 v1) (uRS p c0 c1 c2 c3 c4 u0 u1 v0 v1))
+
+/-- **The Mumford identity**: `v_RS(x)^2 ≡ f(x) (mod u_RS(x))`, i.e.
+`(u_RS,v_RS)` really does define a point of `Jac(C)` — §4.0 step 8, Julia's
+`_check_mumford_identity` (pre-reduction copy; see docstring above for why
+the post-reduction copy is not ported). Takes `hcur` (§ Item 7's
+`uRS_monic` hypothesis) alongside `hgcd`, per the note at the end of
+`vRS`'s docstring — both are needed for `%ₘ uRS` to mean the true
+remainder, not just `hgcd` alone. **Left as `sorry`**: per the roadmap's
+own hint, the expected proof unfolds `vRS`'s definition against
+`EuclideanDomain.gcdA/gcdB`'s defining Bézout identity
+(`gcdA a b * a + gcdB a b * b = gcd a b = 1` under `hgcd`) and `Npoly`'s own
+definition (`E² - f·Y² = N`, itself `≡ 0 mod u_RS` once item 6's three
+divisibility facts are in hand, since `u_RS ∣ N` is exactly `dvd_N_u`
+composed with `curBeforeMonic`'s relation to `N`) — real work, but expected
+to be comparatively mechanical algebra once items 6–7 are actually
+discharged, not new mathematical content the way item 6 itself is. -/
+theorem vRS_sq_eq_f_mod_uRS :
+    (vRS p c0 c1 c2 c3 c4 u0 u1 v0 v1 hgcd) ^ 2 %ₘ uRS p c0 c1 c2 c3 c4 u0 u1 v0 v1 =
+      (fAtX p c0 c1 c2 c3 c4 u0 u1 v0 v1) %ₘ uRS p c0 c1 c2 c3 c4 u0 u1 v0 v1 := by
+  sorry
+
+end MumfordIdentity
+
+/-! ## Reduction to lowest terms (§4.2 item 8 / §4.0 step 7) — intentionally NOT ported
+
+Per the roadmap (§4.2 item 8): `_reduce_tower_coeffs` exists purely to keep
+Julia's NUMERICAL computation tractable (term-count bloat), and "Lean's
+kernel doesn't care about term-count bloat the way a numerical
+Gröbner/resultant computation does" — this step is deliberately dropped
+here, confirmed rather than merely assumed (nothing in items 7's `vRS` or
+item 8's Mumford-identity statement above depends on coefficients being in
+lowest terms; both are stated directly against `uRS`/`vRS` as elements of
+`K2`, unreduced). `theData`'s coefficients (below) are therefore
+possibly-non-reduced fractions throughout — this is a deliberate scope
+decision per the roadmap, not an oversight. -/
+
+/-! ## New item (implicit in §4.0, not separately numbered in §4.2):
+denominator-clearing, `K2` → `Rdec` — the bridge to `DecoupledGenerators`
+
+§4.0's own summary states the target crisply: "The output `theData` needs
+is exactly steps 1-7's `u_RS_coeffs`/`v_RS_coeffs` ... specialized twice
+... with different fixed `(u0,u1,v0,v1)` target data". What §4.0/§4.2
+leaves implicit is HOW a `K2`-valued coefficient becomes an `Rdec` element
+at all: `K2` is built over the ABSTRACT field `K0 = Frac(MvPolynomial (Fin
+2) F)`, with `t0 p 0`/`t0 p 1` as its two free generators, whereas
+`DecoupledSystemRegular.lean`'s `Rdec = MvPolynomial Idx F` has its OWN
+twelve named generators (`wa1,wa2,...`), and `DecoupledGenerators` wants
+each coefficient as an explicit `(num, den) : Rdec × Rdec` PAIR, not a
+single `K2`/fraction-field element — `Rdec` itself has no division. This is
+exactly `elim2.jl`'s `tower_to_ring`/`map_coeffs_threaded` step (confirmed
+by reading `01_elim2_main.jl` directly: `tower_to_ring` is called once per
+`u_RS`/`v_RS` coefficient, separately from `symbolic_residual`), and is
+genuinely a SEPARATE step from anything `symbolic_residual` itself does —
+worth naming explicitly here since §4.2's build order does not give it its
+own numbered item, but `theData`'s assembly below cannot be stated without
+it.
+
+**Left as `sorry`** throughout this section: a full port needs (a) a
+concrete ring isomorphism/embedding identifying `K2`'s rank-4-over-`K0`
+structure with the sub-`F`-algebra of `Rdec` generated by
+`{wa1,wa2,a1,a2}` (resp. `{wb1,wb2,b1,b2}` for the b-side copy) subject to
+the two curve relations — i.e. `K2 ≃ Rdec ⧸ (curve relations)`'s fraction
+field, restricted to the 4-generator subring — and (b) clearing each
+coefficient's denominator down to a genuine `Rdec` numerator/denominator
+pair (`tower_to_ring`'s own per-coefficient `_reduce_frac`, itself skipped
+per the note above, but the denominator-clearing ITSELF, as opposed to
+GCD-reducing it afterward, is not skippable — `Rdec` has no fractions at
+all, so SOME clearing step is mandatory even though further reduction to
+lowest terms is not). Neither (a) nor (b) is attempted here beyond stating
+the target type signature; this is flagged as likely comparable in
+difficulty to item 6, not a formality, since it is a genuine change of ring
+(fraction field of a quotient of a 2-variable polynomial ring, embedded
+into a 12-variable one) rather than an operation internal to a single fixed
+ring. -/
+
+section BridgeToRdec
+
+/-- Which 4-variable copy of `Rdec`'s generators `towerToRdec` targets —
+matches `DecoupledGenerators.u1_indep`/`.u2_indep`'s two `Finset Idx`
+targets in `DecoupledSystemRegular.lean` exactly (`{wa1,wa2,a1,a2}` vs.
+`{wb1,wb2,b1,b2}`). Kept as a named type (rather than just inlining the two
+`SideGens` records at each call site) purely for documentation value at the
+call site in `DecoupledSystemRegular.lean`. -/
+inductive Side | aSide | bSide
+  deriving DecidableEq
+
+/-- Per-copy target generators: `wGen 0, wGen 1` are the images of the
+tower's `w1, w2` (Julia's `w_gens`, i.e. `[wa1,wa2]` or `[wb1,wb2]`),
+`tGen 0, tGen 1` are the images of `t1, t2` (Julia's `t_gens`, i.e.
+`[a1,a2]` or `[b1,b2]`). A record of two `Fin 2 → Vars` functions rather
+than a bare string list (the earlier draft's `sideVars`), so `towerToRdec`
+below can build `MvPolynomial.X` terms directly. The call site in
+`DecoupledSystemRegular.lean` instantiates `Vars := Idx` with e.g.
+`⟨![a1, a2], ![wa1, wa2]⟩` for `Side.aSide`. -/
+structure SideGens (Vars : Type*) where
+  tGen : Fin 2 → Vars
+  wGen : Fin 2 → Vars
+
+/-! **§4.0's denominator-clearing step, ported directly from
+`01_elim2_main.jl`'s `_tower_to_ring`/`_reduce_frac`/`_base_frac_to_ring`**
+(read in full this pass — `elim2.zip`, lines 120–203 — so this is no
+longer a guess about what `tower_to_ring` does, closing the gap the
+roadmap's "New item" note above flagged as un-numbered in §4.2).
+
+The Julia recursion: an element of `K_final = K2` is stored, at the outer
+`AdjoinRoot` layer, as a degree-`≤1` polynomial in `w2` over `K1` —
+`data(val) = c0 + c1*w2` — and `c0, c1 : K1` are themselves degree-`≤1` in
+`w1` over `K0` — `c0 = d0 + d1*w1`, etc. — bottoming out at
+`K0 = FractionRing (MvPolynomial (Fin 2) F)`, where a value is literally a
+`num/den` fraction of 2-variable polynomials, cleared by substituting
+`SideGens.tGen`'s images (`_base_frac_to_ring`'s `evaluate(num, t_gens)`).
+Each recursive step combines its two children's `(num,den)` pairs via
+`num = n0*d1 + n1*d0*w`, `den = d0*d1` (cross-multiplication — `Rdec` has
+no division) — Julia additionally GCD-reduces at every step
+(`_reduce_frac`), which is dropped here, extending §4.2 item 8's finding
+("reduction to lowest terms ... likely SKIPPABLE ... Lean's kernel doesn't
+care about term-count bloat") from the earlier single-variable `Polynomial`
+case to this multivariate one, for the identical reason:
+`_reduce_frac`'s sole purpose is keeping Julia's NUMERICAL computation
+tractable, and dropping it changes no mathematical content — `num/den`
+still equals the same field element whether or not `num,den` share a
+common factor, and nothing downstream (`FuList`/`FvList` in
+`DecoupledSystemRegular.lean`, or this file) needs lowest-terms form.
+Flagged explicitly since this is a NEW instance of that skip (a genuinely
+multivariate one, where `MvPolynomial` also lacks the convenient
+`EuclideanDomain`/`gcd` API `Polynomial` has, giving a second, independent
+reason to drop it here beyond the term-count argument alone). -/
+
+/-- **Base case** (`level = 0`, Julia's `_base_frac_to_ring`): clear a `K0`
+element's denominator by substituting `sg.tGen`'s images for `K0`'s two
+`MvPolynomial (Fin 2) (F p)` generators. `K0 = FractionRing (MvPolynomial
+(Fin 2) (F p))`, so any `v : K0 p` has genuine numerator/denominator
+polynomials via `IsFractionRing.num`/`.den`; `MvPolynomial.aeval` with the
+variable map `fun i => X (sg.tGen i)` performs Julia's
+`evaluate(num, t_gens)` exactly. **No `sorry`**: this base case is
+constructive given the `IsFractionRing` API alone. -/
+noncomputable def baseFracToRing {Vars : Type*} [CommRing Vars]
+    (sg : SideGens Vars) (v : K0 p) :
+    MvPolynomial Vars (F p) × MvPolynomial Vars (F p) :=
+  ( MvPolynomial.aeval (fun i : Fin 2 => MvPolynomial.X (sg.tGen i))
+      (IsFractionRing.num (MvPolynomial (Fin 2) (F p)) v),
+    MvPolynomial.aeval (fun i : Fin 2 => MvPolynomial.X (sg.tGen i))
+      (IsFractionRing.den (MvPolynomial (Fin 2) (F p)) v) )
+
+/-- The defining quadratic for `K1`, monic (leading coefficient `1` by
+construction — `X^2 - C (fAtT ...)` always has `X^2`'s coefficient `1`),
+named separately so `towerToRdecK1`/its correctness lemmas can cite
+`Monic` without re-unfolding `K1`'s definition each time. **No `sorry`**:
+monicity of `X^2 - C a` is immediate from `Polynomial.monic_X_pow_sub_C`-
+style reasoning (`X^2` has leading coefficient `1`, subtracting a constant
+doesn't change the degree-2 coefficient). -/
+theorem K1_poly_monic (c0 c1 c2 c3 c4 : F p) :
+    (X ^ 2 - C (fAtT p c0 c1 c2 c3 c4 0) : Polynomial (K0 p)).Monic := by
+  have : (X ^ 2 - C (fAtT p c0 c1 c2 c3 c4 0) : Polynomial (K0 p)) =
+      X ^ 2 + C (-fAtT p c0 c1 c2 c3 c4 0) := by ring
+  rw [this]
+  exact (monic_X_pow 2).add_of_left (by
+    simpa using (degree_C_le (a := -fAtT p c0 c1 c2 c3 c4 0)).trans_lt
+      (by simp : (0 : WithBot ℕ) < 2))
+
+/-- **The resolved blocker.** `AdjoinRoot.modByMonicHom` (Mathlib,
+`Mathlib.RingTheory.AdjoinRoot`) is exactly the API the roadmap's
+"candidates" note was looking for: for `hg : g.Monic`, it is the
+(linear, well-defined) map `AdjoinRoot g →ₗ[R] Polynomial R` sending
+`AdjoinRoot.mk g f ↦ f %ₘ g` — i.e. THE canonical degree-`<deg g`
+representative of a class in `AdjoinRoot g`, which for `g` a monic
+quadratic is exactly the `d1*w+d0` normal form `_tower_to_ring` reads off
+via Julia's `data(val)`/`coeff(val_poly, 0/1)`. `AdjoinRoot.modByMonicHom_mk`
+is its defining computation lemma (`modByMonicHom hg (mk g f) = f %ₘ g`),
+and `.coeff 0` / `.coeff 1` on the resulting `Polynomial (K0 p)` extract
+`d0`/`d1` respectively — Julia's `coeff(val_poly, 0)` / `coeff(val_poly, 1)`
+verbatim. This closes the roadmap's own "not yet pinned down" note, so
+`towerToRdecK1` below is now a genuine construction, not a `sorry`. -/
+noncomputable def towerToRdecK1 {Vars : Type*} [CommRing Vars]
+    (sg : SideGens Vars) (v : K1 p c0 c1 c2 c3 c4) :
+    MvPolynomial Vars (F p) × MvPolynomial Vars (F p) :=
+  let valPoly : Polynomial (K0 p) :=
+    AdjoinRoot.modByMonicHom (K1_poly_monic p c0 c1 c2 c3 c4) v
+  let d0 : K0 p := valPoly.coeff 0
+  let d1 : K0 p := valPoly.coeff 1
+  let (n0, den0) := baseFracToRing p sg d0
+  let (n1, den1) := baseFracToRing p sg d1
+  ( n0 * den1 + n1 * den0 * MvPolynomial.X (sg.wGen 0),
+    den0 * den1 )
+
+/-- `K2`'s defining quadratic, monic over `K1` — same shape/proof as
+`K1_poly_monic`, one level up. **No `sorry`**. -/
+theorem K2_poly_monic (c0 c1 c2 c3 c4 : F p) :
+    (X ^ 2 - C (algebraMap (K0 p) (K1 p c0 c1 c2 c3 c4) (fAtT p c0 c1 c2 c3 c4 1)) :
+        Polynomial (K1 p c0 c1 c2 c3 c4)).Monic := by
+  have : (X ^ 2 -
+      C (algebraMap (K0 p) (K1 p c0 c1 c2 c3 c4) (fAtT p c0 c1 c2 c3 c4 1)) :
+        Polynomial (K1 p c0 c1 c2 c3 c4)) =
+      X ^ 2 + C (-(algebraMap (K0 p) (K1 p c0 c1 c2 c3 c4) (fAtT p c0 c1 c2 c3 c4 1))) := by
+    ring
+  rw [this]
+  exact (monic_X_pow 2).add_of_left (by
+    simpa using (degree_C_le
+        (a := -(algebraMap (K0 p) (K1 p c0 c1 c2 c3 c4) (fAtT p c0 c1 c2 c3 c4 1)))).trans_lt
+      (by simp : (0 : WithBot ℕ) < 2))
+
+/-- `level = 2` step (Julia's `_tower_to_ring` with `level=2`, i.e.
+`tower_to_ring`'s own entry point) — **this is `towerToRdec` itself**, the
+top-level denominator-clearing map §4.0's summary and
+`DecoupledSystemRegular.lean`'s `theData` assembly both need. Given
+`v : K2 p c0 c1 c2 c3 c4`, extract its `(c0,c1) : K1 p ... × K1 p ...`
+coefficient pair the same way `towerToRdecK1` does one level down (via
+`AdjoinRoot.modByMonicHom (K2_poly_monic ...)` instead of `K1_poly_monic`),
+recurse via `towerToRdecK1` on each, then combine using `sg.wGen 1`
+(`wa2`/`wb2`) as the image of `w2` — Julia's `num = n0*d1+n1*d0*wv`,
+`den = d0*d1` formula, identical shape to `towerToRdecK1`'s own combination
+step, now with the recursive call one level down being `towerToRdecK1`
+rather than `baseFracToRing`. Supersedes the earlier fully-abstract stub of
+the same name (which took an opaque `Side` and no `SideGens`); the
+`Side`/`sideVars` split from that draft is kept above only as
+documentation, with `SideGens` doing the actual work, since the assembly
+step needs concrete `Idx`-valued functions, not strings, to build
+`MvPolynomial.X` terms. **No `sorry`**: this and `towerToRdecK1` together
+close the roadmap's un-numbered "bridge to `Rdec`" gap in full — the
+denominator-clearing recursion itself (as opposed to the `_reduce_frac`
+GCD-cancellation step, deliberately dropped per the note above and in
+§4.2 item 8) is now a complete Lean construction, not a stub. -/
+noncomputable def towerToRdec {Vars : Type*} [CommRing Vars]
+    (sg : SideGens Vars) (v : K2 p c0 c1 c2 c3 c4) :
+    MvPolynomial Vars (F p) × MvPolynomial Vars (F p) :=
+  let valPoly : Polynomial (K1 p c0 c1 c2 c3 c4) :=
+    AdjoinRoot.modByMonicHom (K2_poly_monic p c0 c1 c2 c3 c4) v
+  let d0 : K1 p c0 c1 c2 c3 c4 := valPoly.coeff 0
+  let d1 : K1 p c0 c1 c2 c3 c4 := valPoly.coeff 1
+  let (n0, den0) := towerToRdecK1 p c0 c1 c2 c3 c4 sg d0
+  let (n1, den1) := towerToRdecK1 p c0 c1 c2 c3 c4 sg d1
+  ( n0 * den1 + n1 * den0 * MvPolynomial.X (sg.wGen 1),
+    den0 * den1 )
+
+/-- **Correctness spec `towerToRdec` is intended to satisfy**, recorded in
+prose (not yet a checkable Lean statement — see below for why): under the
+embedding identifying `K2 p c0 c1 c2 c3 c4` with the sub-`F p`-algebra of
+`FractionRing (MvPolynomial Vars (F p))` generated by `sg.tGen`/`sg.wGen`'s
+images subject to the two curve relations `wGen i ^ 2 = f (tGen i)` — call
+this embedding `ι : K2 p c0 c1 c2 c3 c4 →+* FractionRing (MvPolynomial Vars
+(F p))`, itself NOT constructed anywhere in this file — `towerToRdec sg v`
+should satisfy `(towerToRdec sg v).1 = (towerToRdec sg v).2 • ι v` (as
+elements of `FractionRing (MvPolynomial Vars (F p))`, after mapping the
+`Rdec`-valued pair through `algebraMap`), i.e. "clearing the denominator
+correctly." Left unstated as an actual `theorem` here because `ι` itself
+has no Lean definition yet — constructing it is flagged in the surrounding
+docstrings as comparable in difficulty to item 6, a genuine change of ring
+rather than plumbing — so there is nothing yet to quantify over. Recorded
+as prose so the embedding construction, whenever attempted, has a named
+target to prove rather than `towerToRdec` floating free of any spec. -/
+theorem towerToRdec_spec_TODO : True := trivial
+
+end BridgeToRdec
+
+/-! ## Assembling `theData`
+
+§4.0's own summary states the target crisply: "The output `theData` needs
+is exactly steps 1-7's `u_RS_coeffs`/`v_RS_coeffs` ... specialized twice
+... with different fixed `(u0,u1,v0,v1)` target data". The recipe: apply
+`uRS`/`vRS` above once with sample a's target data `(ua0,ua1,va0,va1)`, once
+with sample b's `(ub0,ub1,vb0,vb1)`, both against the SAME `(c0,...,c4)`,
+then run `towerToRdec` (with the a-side/b-side `SideGens` respectively) on
+each of `uRS`/`vRS`'s two relevant coefficients (`N_U_MATCH = 2`, skipping
+`u_RS`'s always-`1` leading `x^2` coefficient). The actual assembly into a
+`DecoupledGenerators` value lives in `DecoupledSystemRegular.lean` itself,
+which imports this file and instantiates `SideGens Idx` for both sides —
+see that file for the current, up-to-date state of that assembly. -/
+
+end TheDataDerivation
+end Genus2Lean

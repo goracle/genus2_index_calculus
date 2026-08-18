@@ -1,8 +1,28 @@
 import Mathlib
+import Genus2Lean.TheDataDerivation.DataDerivationMumford
 
 /-!
 # 0-dimensionality of the decoupled `P1+P2-P3-P4=(alpha-alpha')*a` matching
   system, via a regular sequence
+
+## Update this pass: symbolic `p`, and `theData` assembled (not opaque)
+
+Per `ROADMAP-regular-sequence.md`'s revision note and "Progress note": this
+file previously fixed `p = curveP = 2371157` and left `theData` as a bare
+`sorry`. Both are now updated: `F p := ZMod p` for an arbitrary prime `p`
+(§1, matching `TheDataDerivation.F`), and `theData` (§4bis) is assembled
+from `TheDataDerivation`'s `uRS`/`vRS`/`towerToRdec` rather than left
+opaque. This does NOT discharge any proof — `theData`'s assembly carries
+four explicit hypotheses (`hcurA/B`, `hgcdA/B`, each a genuine
+exceptional-locus condition inherited from `TheDataDerivation`'s own
+`uRS`/`vRS`), four fresh `sorry`s of its own (the `u1_indep`/etc.
+independence obligations — see §4bis), and `genList`/
+`decoupledSystem_isRegularSequence` are now stated for a general `(p,
+c0,...,c4, sa, sb)` satisfying those hypotheses rather than unconditionally.
+`decoupledSystem_isRegularSequence`'s own `sorry` is unchanged in substance
+(still the same statement being proved, now with explicit parameters/
+hypotheses rather than implicit fixed values). See §4bis's own docstring for
+exactly what is and isn't proved by this pass's assembly.
 
 ## What this file is
 
@@ -76,19 +96,26 @@ statement than what advisory-6 §6 established numerically, and answers
 advisory-6 §6.1's still-open mod-p finiteness question by construction if it
 goes through).
 
-## What is NOT yet in this file
+## What is NOT yet in this file (updated this pass)
 
-The actual 12 polynomials are `elim2`'s `PhiSymbolic.symbolic_residual`
-output (Julia, `phi_general/src/trial3_phi_symbolic_unified.jl`, not part of
-either uploaded zip) mapped through `map_coeffs_threaded`/`build_decoupled_system`.
-This file does not attempt to re-derive that closed form in Lean; instead it
-states the target system SHAPE (ring, variables, curve relations, and the
-`Fu_decoupled`/`Fv_decoupled` slots as opaque `k[X]`-elements satisfying the
-defining property `elim2` builds them from) and isolates exactly what data is
-needed to close `decoupledSystem_isRegularSequence` below: the 8 explicit
-polynomials. **This is the concrete blocker for turning the `sorry`s below
-into proofs** -- see `ROADMAP-regular-sequence.md`, "What I need from you",
-for the two ways to supply them.
+**No longer the closed-form polynomials themselves** — `theData` (§4bis) now
+derives them from `TheDataDerivation`'s tower/linear-solve/exact-division
+construction rather than treating them as an external transcription target.
+What's still missing:
+
+- `TheDataDerivation`'s own remaining `sorry`s (§4.2 items 1, 3's field
+  instances, `dvd_N_u`, `uRS_monic`, `vRS`'s inverse-identification, the
+  Mumford identity) — `theData` here is built FROM those definitions, so it
+  inherits every one of them, whether or not this file's own code mentions
+  them by name.
+- The four `u1_indep`/`u2_indep`/`v1_indep`/`v2_indep` obligations in
+  `theData`'s assembly (§4bis) — new `sorry`s introduced by this pass's
+  assembly itself, not inherited from `TheDataDerivation`.
+- `decoupledSystem_isRegularSequence`'s own `sorry` — the actual
+  regular-sequence argument (§5's five steps), entirely separate from
+  `theData`'s construction and not attempted by this pass.
+
+See `ROADMAP-regular-sequence.md` for the plan on all of these.
 -/
 
 namespace Genus2Lean
@@ -96,39 +123,50 @@ namespace DecoupledSystem
 
 open MvPolynomial
 
-/-! ## §1. The field and the curve -/
+/-! ## §1. The field and the curve
 
-/-- `p = 2371157`, `00_sample_specs.jl`'s `DEFAULT_P` / `01_elim2_main.jl`'s
-`default_curve_config().p`. Both samples and both curve copies (`a`-side,
-`b`-side) live over this same prime. -/
-def curveP : ℕ := 2371157
+**Updated this pass** per `ROADMAP-regular-sequence.md`'s revision note
+(item 1): `curveP : ℕ := 2371157` and `axiom curveP_prime` are gone. `p` is
+now an arbitrary prime, threaded as `[Fact (Nat.Prime p)]`, matching
+`TheDataDerivation`'s `F p`/`variable (p : ℕ) [hp : Fact (Nat.Prime p)]`
+exactly -- this is what lets `Rdec` here and `TheDataDerivation`'s `K2 p ...`
+typecheck against each other in the `theData` assembly below (§4bis), which
+was blocked on this update per the roadmap's own "Progress note" ("the two
+won't typecheck against each other until `DecoupledSystemRegular.lean` gets
+the symbolic-`p` update"). Likewise `curveF`'s fixed numeral coefficients
+(`x^5+x+2`, i.e. `c0=2,c1=1,c2=c3=c4=0`) are replaced by symbolic
+`(c0,...,c4 : F p)`, matching `TheDataDerivation.curvePoly`'s parametrization
+(unchanged since "the immediately prior session's framing" per the
+roadmap). -/
 
-/-- Placeholder for `p` prime; `elim2` never re-derives this (it is inherited
-from the DLP instance the whole project targets), but `GF(p)` needs it to be a
-field. Filed as an axiom rather than `sorry`d numerically -- `decide`/`norm_num`
-primality on a 7-digit prime is expensive to re-run per build; if this becomes
-a blocker, replace with a `by norm_num` or a cached `Nat.Prime` certificate. -/
-axiom curveP_prime : Nat.Prime curveP
+/-- The base field `F = GF(p)`, now symbolic -- `01_elim2_main.jl`'s
+`CurveConfig.F`, generalized away from the fixed `curveP` numeral. Matches
+`TheDataDerivation.F` exactly (same definition, restated here so this file
+does not need to `open` the other namespace just to name its own base
+field). -/
+abbrev F (p : ℕ) : Type := ZMod p
 
-instance : Fact (Nat.Prime curveP) := ⟨curveP_prime⟩
+noncomputable instance instFieldF (p : ℕ) [hp : Fact (Nat.Prime p)] : Field (F p) :=
+  ZMod.instField p
 
-/-- The base field `F = GF(p)`, `01_elim2_main.jl`'s `CurveConfig.F`. -/
-abbrev F : Type := ZMod curveP
-
-noncomputable instance : Field F := ZMod.instField curveP
-
-/-- `f(x) = x^5+x+2`, `01_elim2_main.jl`'s `F_POLY_ASC = [2,1,0,0,0,1]`
-(ascending coefficients: `2 + 1*x + 0*x^2 + 0*x^3 + 0*x^4 + 1*x^5`), the curve
-`C : y^2 = f(x)` shared by both samples ("Original top-level consts: p,
-F_POLY_ASC, F", same header comment). -/
-def curveF (x : F) : F := x ^ 5 + x + 2
+/-- `f(x) = c0 + c1 x + c2 x² + c3 x³ + c4 x⁴ + x⁵`, `01_elim2_main.jl`'s
+`F_POLY_ASC` generalized from the fixed `[2,1,0,0,0,1]` to symbolic-but-fixed
+coefficients (roadmap revision note: "this part does NOT change again this
+pass", carried over unchanged into this pass's own edit). Matches
+`TheDataDerivation.curvePoly` pointwise-evaluated, rather than as a
+`Polynomial` -- this file only ever needs `curveF`'s VALUES (in the curve
+relations below), not the polynomial itself, unlike `TheDataDerivation`
+which needs the polynomial to adjoin roots of `X² - curvePoly`. -/
+def curveF (p : ℕ) (c0 c1 c2 c3 c4 : F p) (x : F p) : F p :=
+  c0 + c1 * x + c2 * x ^ 2 + c3 * x ^ 3 + c4 * x ^ 4 + x ^ 5
 
 /-! ## §2. The 12-variable ring
 
 Variable order matches `01_elim2_main.jl:988-996`'s `dec_gens` exactly:
 `wa1,wa2,wb1,wb2,a2,a1,b2,b1,U0,U1,V0,V1` (note: `a2` before `a1`, `b2` before
 `b1` -- preserved from the original file's own (slightly unusual) generator
-order, not a transcription slip here). -/
+order, not a transcription slip here). Unaffected by the symbolic-`p` update
+-- `Idx` itself carries no field/curve data, only variable names. -/
 
 /-- The 12 index labels, in `dec_gens` order. -/
 inductive Idx : Type
@@ -138,36 +176,60 @@ inductive Idx : Type
 open Idx
 
 /-- `R_dec`, `01_elim2_main.jl`'s `DecoupledSystem.R_dec`:
-`MvPolynomial (Idx) F`, i.e. `F[wa1,wa2,wb1,wb2,a2,a1,b2,b1,U0,U1,V0,V1]`. -/
-abbrev Rdec : Type := MvPolynomial Idx F
+`MvPolynomial (Idx) (F p)`, i.e. `(F p)[wa1,wa2,wb1,wb2,a2,a1,b2,b1,U0,U1,V0,V1]`,
+now parametric in `p` (previously fixed at `curveP`). -/
+abbrev Rdec (p : ℕ) : Type := MvPolynomial Idx (F p)
 
-noncomputable instance : CommRing Rdec := MvPolynomial.commRing
+noncomputable instance instCommRingRdec (p : ℕ) : CommRing (Rdec p) := MvPolynomial.commRing
 
 /-- Notation matching the Julia variable names directly, so the equations
-below read the same as `01_elim2_main.jl`'s own `println` diagnostics. -/
-noncomputable def wa1' : Rdec := X wa1
-noncomputable def wa2' : Rdec := X wa2
-noncomputable def wb1' : Rdec := X wb1
-noncomputable def wb2' : Rdec := X wb2
-noncomputable def a1' : Rdec := X a1
-noncomputable def a2' : Rdec := X a2
-noncomputable def b1' : Rdec := X b1
-noncomputable def b2' : Rdec := X b2
-noncomputable def U0' : Rdec := X U0
-noncomputable def U1' : Rdec := X U1
-noncomputable def V0' : Rdec := X V0
-noncomputable def V1' : Rdec := X V1
+below read the same as `01_elim2_main.jl`'s own `println` diagnostics. Now
+parametric in `p` (previously `Rdec` was defined for the fixed `curveP`, so
+these needed no separate parameter). -/
+noncomputable def wa1' (p : ℕ) : Rdec p := X wa1
+noncomputable def wa2' (p : ℕ) : Rdec p := X wa2
+noncomputable def wb1' (p : ℕ) : Rdec p := X wb1
+noncomputable def wb2' (p : ℕ) : Rdec p := X wb2
+noncomputable def a1' (p : ℕ) : Rdec p := X a1
+noncomputable def a2' (p : ℕ) : Rdec p := X a2
+noncomputable def b1' (p : ℕ) : Rdec p := X b1
+noncomputable def b2' (p : ℕ) : Rdec p := X b2
+noncomputable def U0' (p : ℕ) : Rdec p := X U0
+noncomputable def U1' (p : ℕ) : Rdec p := X U1
+noncomputable def V0' (p : ℕ) : Rdec p := X V0
+noncomputable def V1' (p : ℕ) : Rdec p := X V1
 
 /-! ## §3. The four curve relations
 
 `01_elim2_main.jl:998-1001` / `:103-106` (both `TargetRing.build_target_ring`
 and `DecoupledSystem.build_decoupled_system` build the same four relations,
-once per ring copy -- reproduced here directly in `Rdec`). -/
+once per ring copy -- reproduced here directly in `Rdec`). **Updated this
+pass**: the fixed `+ 2` constant (from `curveF`'s old `x^5+x+2` numeral) is
+replaced by the general `c0 + c1*X + c2*X² + c3*X³ + c4*X⁴` shape, matching
+`curveF`'s new symbolic form above and `TheDataDerivation.curvePoly`'s
+`Rdec`-embedded shape -- each curve relation now takes `(c0,...,c4 : F p)` as
+an explicit parameter (the SAME five values across all four relations, per
+`TheDataDerivation`'s framing: "the SAME symbolic `f`" is shared by both
+samples/both tower copies). -/
 
-noncomputable def curveA1 : Rdec := wa1' ^ 2 - (a1' ^ 5 + a1' + 2)
-noncomputable def curveA2 : Rdec := wa2' ^ 2 - (a2' ^ 5 + a2' + 2)
-noncomputable def curveB1 : Rdec := wb1' ^ 2 - (b1' ^ 5 + b1' + 2)
-noncomputable def curveB2 : Rdec := wb2' ^ 2 - (b2' ^ 5 + b2' + 2)
+variable (p : ℕ)
+
+/-- `c0,...,c4 : F p` embedded into `Rdec p` as constants, so they can be
+added to the `X`-generator terms (`a1' p`, etc.) below -- `Rdec p` is a
+polynomial ring, `F p`'s elements are not literally its elements, `C` is
+`MvPolynomial`'s constant-embedding ring hom. -/
+noncomputable def curveA1 (c0 c1 c2 c3 c4 : F p) : Rdec p :=
+  wa1' p ^ 2 - (C c0 + C c1 * a1' p + C c2 * a1' p ^ 2 + C c3 * a1' p ^ 3 +
+    C c4 * a1' p ^ 4 + a1' p ^ 5)
+noncomputable def curveA2 (c0 c1 c2 c3 c4 : F p) : Rdec p :=
+  wa2' p ^ 2 - (C c0 + C c1 * a2' p + C c2 * a2' p ^ 2 + C c3 * a2' p ^ 3 +
+    C c4 * a2' p ^ 4 + a2' p ^ 5)
+noncomputable def curveB1 (c0 c1 c2 c3 c4 : F p) : Rdec p :=
+  wb1' p ^ 2 - (C c0 + C c1 * b1' p + C c2 * b1' p ^ 2 + C c3 * b1' p ^ 3 +
+    C c4 * b1' p ^ 4 + b1' p ^ 5)
+noncomputable def curveB2 (c0 c1 c2 c3 c4 : F p) : Rdec p :=
+  wb2' p ^ 2 - (C c0 + C c1 * b2' p + C c2 * b2' p ^ 2 + C c3 * b2' p ^ 3 +
+    C c4 * b2' p ^ 4 + b2' p ^ 5)
 
 /-! ## §4. `Fu_decoupled` / `Fv_decoupled`: the eight matching generators
 
@@ -196,19 +258,19 @@ per coefficient index `i ∈ {0,1}` (recall `N_U_MATCH = 2`, `length(s1.v_num)
 equations" count forces exactly 2 non-trivial `u`-coefficients and 2
 `v`-coefficients per sample, matching `deg(u_RS)=2` (Mumford normal form) and
 `deg(v_RS)≤1`). -/
-structure DecoupledGenerators where
+structure DecoupledGenerators (p : ℕ) where
   /-- Sample 1's u-side numerator/denominator, index 0,1 (matches `u0,u1`
   coefficients of `u_RS`, i.e. `s1.u_num`/`s1.u_den` restricted to the two
   non-leading coefficients -- the degree-2 leading coefficient is always `1`
   and is skipped, `mspec.N_U_MATCH = U_DEG_TOP - 1`, `build_match_spec`). -/
-  u1_num : Fin 2 → Rdec
-  u1_den : Fin 2 → Rdec
-  u2_num : Fin 2 → Rdec
-  u2_den : Fin 2 → Rdec
-  v1_num : Fin 2 → Rdec
-  v1_den : Fin 2 → Rdec
-  v2_num : Fin 2 → Rdec
-  v2_den : Fin 2 → Rdec
+  u1_num : Fin 2 → Rdec p
+  u1_den : Fin 2 → Rdec p
+  u2_num : Fin 2 → Rdec p
+  u2_den : Fin 2 → Rdec p
+  v1_num : Fin 2 → Rdec p
+  v1_den : Fin 2 → Rdec p
+  v2_num : Fin 2 → Rdec p
+  v2_den : Fin 2 → Rdec p
   /-- Sanity constraints this data must satisfy to actually BE `elim2`'s
   output (not part of `build_decoupled_system` itself, but properties any
   real instantiation must have -- flagged here so a future filled-in
@@ -216,36 +278,148 @@ structure DecoupledGenerators where
   involves sample 1's own variables `(wa1,wa2,a1,a2)`, not sample 2's
   `(wb1,wb2,b1,b2)` or the target variables `U0,U1,V0,V1` -- "decoupled"
   literally means each sample's num/den pair is a function of that sample's
-  own five variables (t/w-generators) alone, `MappedSample`'s whole point. -/
-  u1_indep : ∀ i, ∀ p ∈ (u1_num i).vars ∪ (u1_den i).vars, p ∈ ({wa1, wa2, a1, a2} : Finset Idx)
-  u2_indep : ∀ i, ∀ p ∈ (u2_num i).vars ∪ (u2_den i).vars, p ∈ ({wb1, wb2, b1, b2} : Finset Idx)
-  v1_indep : ∀ i, ∀ p ∈ (v1_num i).vars ∪ (v1_den i).vars, p ∈ ({wa1, wa2, a1, a2} : Finset Idx)
-  v2_indep : ∀ i, ∀ p ∈ (v2_num i).vars ∪ (v2_den i).vars, p ∈ ({wb1, wb2, b1, b2} : Finset Idx)
+  own five variables (t/w-generators) alone, `MappedSample`'s whole point.
+  (Bound variable renamed `v` here, was `p` in the pre-split-update draft --
+  that shadowed the now-explicit outer `p : ℕ` prime parameter.) -/
+  u1_indep : ∀ i, ∀ v ∈ (u1_num i).vars ∪ (u1_den i).vars, v ∈ ({wa1, wa2, a1, a2} : Finset Idx)
+  u2_indep : ∀ i, ∀ v ∈ (u2_num i).vars ∪ (u2_den i).vars, v ∈ ({wb1, wb2, b1, b2} : Finset Idx)
+  v1_indep : ∀ i, ∀ v ∈ (v1_num i).vars ∪ (v1_den i).vars, v ∈ ({wa1, wa2, a1, a2} : Finset Idx)
+  v2_indep : ∀ i, ∀ v ∈ (v2_num i).vars ∪ (v2_den i).vars, v ∈ ({wb1, wb2, b1, b2} : Finset Idx)
 
-/-- The actual Mumford-residual data. **Currently a `sorry`-backed opaque
-constant** standing in for the concrete polynomials `elim2` computes --
-see the module docstring and `ROADMAP-regular-sequence.md`. Downstream
-statements are phrased against `theData` so that once a real instance is
-supplied (replacing this with a `noncomputable def theData : DecoupledGenerators
-:= { u1_num := ..., ... }`), nothing else in this file needs to change. -/
-noncomputable def theData : DecoupledGenerators := by
-  -- BLOCKED: needs the eight closed-form polynomials from
-  -- `PhiSymbolic.symbolic_residual` (K=2,c=2 instance) / `build_decoupled_system`,
-  -- transcribed or re-derived symbolically. See `ROADMAP-regular-sequence.md`.
-  sorry
+/-- The actual Mumford-residual data, now assembled (§4bis below) from
+`TheDataDerivation`'s `uRS`/`vRS`/`towerToRdec` rather than left as a bare
+`sorry` -- see §4bis for the assembly and exactly which upstream `sorry`s it
+still depends on. Downstream statements (`FuList`/`FvList`/`genList`/the main
+theorem) are phrased against `theData` regardless of how it's built, so nothing
+below §4bis needed to change shape for this update. -/
+/-! ## §4bis. Assembling `theData` from `TheDataDerivation`
+
+**New this pass.** Previously `theData := by sorry`, an entirely opaque
+constant. Now built from `TheDataDerivation.uRS`/`.vRS`/`.towerToRdec`,
+following §4.0's own recipe ("specialized twice ... with different fixed
+`(u0,u1,v0,v1)` target data but the SAME symbolic `f`") -- this does NOT
+discharge any of `TheDataDerivation`'s own `sorry`s (`dvd_N_u`, the field
+instances, the Mumford identity, etc.); it only wires the (partially
+`sorry`-backed) derivation up to `Rdec`'s shape, so `theData` is no longer a
+bare unexplained `sorry` but an actual term built from named, individually-
+tracked `sorry`s living in `TheDataDerivation`. Every `sorry` this
+assembly's own hypotheses ultimately bottom out in is named explicitly
+below rather than absorbed silently. -/
+
+open TheDataDerivation
+
+/-- The a-side generator map: `TheDataDerivation`'s abstract tower variables
+`(t1,t2,w1,w2)` land on `(a1,a2,wa1,wa2)` here -- matches sample 1's own
+five variables (`DecoupledGenerators.u1_indep`'s target `{wa1,wa2,a1,a2}`
+exactly). -/
+noncomputable def aSideGens : SideGens Idx :=
+  ⟨![a1, a2], ![wa1, wa2]⟩
+
+/-- The b-side generator map: `(t1,t2,w1,w2) ↦ (b1,b2,wb1,wb2)`, matching
+`{wb1,wb2,b1,b2}`. -/
+noncomputable def bSideGens : SideGens Idx :=
+  ⟨![b1, b2], ![wb1, wb2]⟩
+
+/-- One sample's four target Mumford coefficients `(u0,u1,v0,v1)`, packaged
+together since `uRS`/`vRS` both need all four (`u0,u1` determine the target
+`u(x)=x²+u1x+u0` the `reduceMonomialModU` rows reduce against; `v0,v1`
+likewise for `v(x)=v1x+v0`) -- `00_sample_specs.jl`'s per-sample data, not
+reconstructed here (this file has never had access to the actual numeric/
+symbolic target values `elim2`'s two samples use; `SampleTarget` is a
+parameter, filled in by whoever instantiates `theData` for a specific DLP
+instance, exactly the same status `(c0,...,c4)` already had before this
+pass). Takes `p` explicitly (rather than picking up the section's implicit
+`{p : ℕ}`) since a `structure`'s own parameters are stated independently of
+surrounding `variable` declarations -- call sites below always apply it as
+`SampleTarget p`, matching. -/
+structure SampleTarget (p : ℕ) [Fact (Nat.Prime p)] where
+  u0 : F p
+  u1 : F p
+  v0 : F p
+  v1 : F p
+
+variable [Fact (Nat.Prime p)]
+
+/-- Extract `(x^0, x^1)` coefficients of a `Polynomial (K2 p ...)` value,
+run each through `towerToRdec sg`, and re-pair into the `(num0,den0,num1,
+den1)` shape `DecoupledGenerators` wants for one of its eight fields --
+shared plumbing for all eight `uRS`/`vRS` × a-side/b-side combinations
+below, rather than repeating the same four lines eight times. -/
+noncomputable def coeffsToNumDen (c0 c1 c2 c3 c4 : F p) (sg : SideGens Idx)
+    (poly : Polynomial (K2 p c0 c1 c2 c3 c4)) : Fin 2 → Rdec p × Rdec p :=
+  fun i => towerToRdec p c0 c1 c2 c3 c4 sg (poly.coeff i.val)
+
+/-- **The assembly.** Given the shared curve coefficients `(c0,...,c4)`, each
+sample's target `(u0,u1,v0,v1)`, and the hypotheses `TheDataDerivation.uRS`/
+`.vRS` need to be well-defined (`hcurA/hcurB` -- `curBeforeMonic ≠ 0` for
+each sample; `hgcdA/hgcdB` -- the `Ypoly`/`uRS` coprimality `vRS` needs),
+build the eight `Rdec p`-valued numerator/denominator functions. The four
+`u1_indep`/`u2_indep`/`v1_indep`/`v2_indep` independence obligations are
+**left as `sorry`** here -- they would follow from `towerToRdec`'s
+construction only ever introducing `sg`'s own generators (`aSideGens`'s
+image is exactly `{wa1,wa2,a1,a2}` by inspection of `SideGens`/
+`baseFracToRing`/`towerToRdecK1`/`towerToRdec`'s definitions, so this is
+plausible, but has not been proved as a lemma about `towerToRdec` itself
+anywhere in `TheDataDerivation.lean`, and is new work this pass did not
+attempt). -/
+noncomputable def theData (c0 c1 c2 c3 c4 : F p)
+    (sa sb : SampleTarget p)
+    (hcurA : curBeforeMonic p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1 ≠ 0)
+    (hcurB : curBeforeMonic p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1 ≠ 0)
+    (hgcdA : IsCoprime (Ypoly p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1)
+      (uRS p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1))
+    (hgcdB : IsCoprime (Ypoly p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1)
+      (uRS p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1)) :
+    DecoupledGenerators p :=
+  { u1_num := fun i => (coeffsToNumDen p c0 c1 c2 c3 c4 aSideGens
+      (uRS p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1) i).1
+    u1_den := fun i => (coeffsToNumDen p c0 c1 c2 c3 c4 aSideGens
+      (uRS p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1) i).2
+    u2_num := fun i => (coeffsToNumDen p c0 c1 c2 c3 c4 bSideGens
+      (uRS p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1) i).1
+    u2_den := fun i => (coeffsToNumDen p c0 c1 c2 c3 c4 bSideGens
+      (uRS p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1) i).2
+    v1_num := fun i => (coeffsToNumDen p c0 c1 c2 c3 c4 aSideGens
+      (vRS p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1 hgcdA) i).1
+    v1_den := fun i => (coeffsToNumDen p c0 c1 c2 c3 c4 aSideGens
+      (vRS p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1 hgcdA) i).2
+    v2_num := fun i => (coeffsToNumDen p c0 c1 c2 c3 c4 bSideGens
+      (vRS p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1 hgcdB) i).1
+    v2_den := fun i => (coeffsToNumDen p c0 c1 c2 c3 c4 bSideGens
+      (vRS p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1 hgcdB) i).2
+    u1_indep := by sorry
+    u2_indep := by sorry
+    v1_indep := by sorry
+    v2_indep := by sorry }
 
 /-- `Fu_decoupled`, `01_elim2_main.jl:1042-1046`, flattened to a length-4
 list in the same order the original loop produces (`i=0`: sample-1 then
 sample-2 equation; `i=1`: likewise), matching how `build_decoupled_system`
-`push!`s them. -/
-noncomputable def FuList : List Rdec :=
-  [ theData.u1_num 0 - U0' * theData.u1_den 0, theData.u2_num 0 - U0' * theData.u2_den 0,
-    theData.u1_num 1 - U1' * theData.u1_den 1, theData.u2_num 1 - U1' * theData.u2_den 1 ]
+`push!`s them. Now takes `theData`'s full parameter list (`c0,...,c4`, both
+samples' targets, and the four well-definedness hypotheses) since `theData`
+itself does. -/
+noncomputable def FuList (c0 c1 c2 c3 c4 : F p) (sa sb : SampleTarget p)
+    (hcurA : curBeforeMonic p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1 ≠ 0)
+    (hcurB : curBeforeMonic p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1 ≠ 0)
+    (hgcdA : IsCoprime (Ypoly p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1)
+      (uRS p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1))
+    (hgcdB : IsCoprime (Ypoly p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1)
+      (uRS p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1)) : List (Rdec p) :=
+  let d := theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB
+  [ d.u1_num 0 - U0' p * d.u1_den 0, d.u2_num 0 - U0' p * d.u2_den 0,
+    d.u1_num 1 - U1' p * d.u1_den 1, d.u2_num 1 - U1' p * d.u2_den 1 ]
 
 /-- `Fv_decoupled`, `01_elim2_main.jl:1048-1052`, same pattern for `V0,V1`. -/
-noncomputable def FvList : List Rdec :=
-  [ theData.v1_num 0 - V0' * theData.v1_den 0, theData.v2_num 0 - V0' * theData.v2_den 0,
-    theData.v1_num 1 - V1' * theData.v1_den 1, theData.v2_num 1 - V1' * theData.v2_den 1 ]
+noncomputable def FvList (c0 c1 c2 c3 c4 : F p) (sa sb : SampleTarget p)
+    (hcurA : curBeforeMonic p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1 ≠ 0)
+    (hcurB : curBeforeMonic p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1 ≠ 0)
+    (hgcdA : IsCoprime (Ypoly p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1)
+      (uRS p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1))
+    (hgcdB : IsCoprime (Ypoly p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1)
+      (uRS p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1)) : List (Rdec p) :=
+  let d := theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB
+  [ d.v1_num 0 - V0' p * d.v1_den 0, d.v2_num 0 - V0' p * d.v2_den 0,
+    d.v1_num 1 - V1' p * d.v1_den 1, d.v2_num 1 - V1' p * d.v2_den 1 ]
 
 /-! ## §5. The full 12-generator list and the 0-dimensionality goal -/
 
@@ -257,9 +431,20 @@ uses a `List` rather than the `ideal(...)` call directly, since
 `Ideal` -- regularity is order-and-multiplicity-sensitive in general, though
 for a genuinely regular sequence over a Noetherian local/graded ring any
 permutation is again regular; no reordering is attempted here, the list below
-is `elim2`'s own order, `Fu` before `Fv` before the four curve relations). -/
-noncomputable def genList : List Rdec :=
-  FuList ++ FvList ++ [curveA1, curveA2, curveB1, curveB2]
+is `elim2`'s own order, `Fu` before `Fv` before the four curve relations).
+Now parametric in `p, c0,...,c4`, both samples' targets, and `theData`'s
+four hypotheses, propagated from `FuList`/`FvList`/`curveA1`-etc. above. -/
+noncomputable def genList (c0 c1 c2 c3 c4 : F p) (sa sb : SampleTarget p)
+    (hcurA : curBeforeMonic p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1 ≠ 0)
+    (hcurB : curBeforeMonic p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1 ≠ 0)
+    (hgcdA : IsCoprime (Ypoly p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1)
+      (uRS p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1))
+    (hgcdB : IsCoprime (Ypoly p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1)
+      (uRS p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1)) : List (Rdec p) :=
+  FuList p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB ++
+    FvList p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB ++
+    [curveA1 p c0 c1 c2 c3 c4, curveA2 p c0 c1 c2 c3 c4,
+     curveB1 p c0 c1 c2 c3 c4, curveB2 p c0 c1 c2 c3 c4]
 
 /-- Sanity check on the shape of the construction: exactly 12 generators for
 12 variables, `Fintype.card Idx`. This is a NECESSARY (not sufficient)
@@ -267,25 +452,46 @@ condition for `genList` to be a maximal-length regular sequence in a
 12-variable polynomial ring -- checked here as a cheap guard so a future
 edit to `FuList`/`FvList`/the curve list that accidentally drops or
 duplicates a generator is caught immediately, independent of the harder
-`decoupledSystem_isRegularSequence` goal below. -/
-theorem genList_length : genList.length = Fintype.card Idx := by
+`decoupledSystem_isRegularSequence` goal below. Unaffected in substance by
+this pass's parametrization -- length is independent of which `(c0,...,c4,
+sa,sb,...)` values are plugged in, so the proof is unchanged, just
+restated with `genList`'s new arguments threaded through. -/
+theorem genList_length (c0 c1 c2 c3 c4 : F p) (sa sb : SampleTarget p)
+    (hcurA : curBeforeMonic p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1 ≠ 0)
+    (hcurB : curBeforeMonic p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1 ≠ 0)
+    (hgcdA : IsCoprime (Ypoly p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1)
+      (uRS p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1))
+    (hgcdB : IsCoprime (Ypoly p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1)
+      (uRS p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1)) :
+    (genList p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).length = Fintype.card Idx := by
   simp [genList, FuList, FvList, Fintype.card, Idx]
 
-/-- **Main target.** `genList` is a regular sequence on `Rdec` itself (as an
-`Rdec`-module), in the sense of `RingTheory.Sequence.IsRegular`. Since
-`Rdec = F[X_1,...,X_12]` is a polynomial ring over a field -- Cohen-Macaulay
-of Krull dimension 12 -- a regular sequence of length exactly 12 (`genList_length`)
-is equivalent to `Rdec ⧸ Ideal.ofList genList` being a nonzero Artinian
-`F`-algebra, i.e. `V(genList)` is 0-dimensional. This is the Lean-native
-formalization of advisory-6 §6.2's "Question 1" conclusion (generic
-0-dimensionality / finiteness) for `elim2`'s literal generators, proved by a
-direct algebraic (division) argument instead of the birationality-of-`sigma`
-geometric one -- see the module docstring for why this is a deliberately
-different, independent route to the same fact, and
-`ROADMAP-regular-sequence.md` for the per-step division witnesses this
-`sorry` unpacks into. -/
-theorem decoupledSystem_isRegularSequence :
-    RingTheory.Sequence.IsRegular Rdec genList := by
+/-- **Main target.** `genList` is a regular sequence on `Rdec p` itself (as
+an `Rdec p`-module), in the sense of `RingTheory.Sequence.IsRegular`. Since
+`Rdec p = (F p)[X_1,...,X_12]` is a polynomial ring over a field --
+Cohen-Macaulay of Krull dimension 12 -- a regular sequence of length exactly
+12 (`genList_length`) is equivalent to `Rdec p ⧸ Ideal.ofList genList` being
+a nonzero Artinian `F p`-algebra, i.e. `V(genList)` is 0-dimensional. Now
+understood, per the roadmap's §5 revision, as true for `p` and
+`(c0,...,c4)` outside an explicit exceptional locus rather than
+unconditionally -- the hypotheses threaded through `genList` above
+(`hcurA/B`, `hgcdA/B`) are part of that locus, though not yet the complete
+statement of it (§5's own division-witness genericity conditions,
+`MatrixNondegenerate` in particular, are additional hypotheses this
+statement does not yet carry -- flagged here rather than silently
+incomplete: a fully faithful restatement would also hypothesize
+`MatrixNondegenerate` for both samples, since `uRS`/`vRS` are only the
+INTENDED values under that condition too, not merely under `hcurA/B`/
+`hgcdA/B`). -/
+theorem decoupledSystem_isRegularSequence (c0 c1 c2 c3 c4 : F p) (sa sb : SampleTarget p)
+    (hcurA : curBeforeMonic p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1 ≠ 0)
+    (hcurB : curBeforeMonic p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1 ≠ 0)
+    (hgcdA : IsCoprime (Ypoly p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1)
+      (uRS p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1))
+    (hgcdB : IsCoprime (Ypoly p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1)
+      (uRS p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1)) :
+    RingTheory.Sequence.IsRegular (Rdec p)
+      (genList p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB) := by
   sorry
 
 /-- **Corollary, stated but not yet derived from the theorem above** (mirrors

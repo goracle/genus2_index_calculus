@@ -495,3 +495,87 @@ than deferred.
   balance, matching argument lists against existing definitions) but not
   kernel-checked. Flagging this explicitly rather than implying it's been
   verified.
+
+## Progress note (later pass): `TheDataDerivation.lean` split into four files; item 6's two anchor divisibility facts proved; `DecoupledSystemRegular.lean` updated to symbolic `p` with `theData` assembled
+
+**File split.** `TheDataDerivation.lean` (929 lines) was split into four
+files, in dependency order: `DataDerivationBasics.lean` (symbolic `F`,
+`curvePoly`, item 1's irreducibility lemma, item 2's RR-basis
+combinatorics), `DataDerivationTower.lean` (item 3, `K0 → K1 → K2`),
+`DataDerivationSolve.lean` (items 4–6, the `4×4` solve through exact
+division), `DataDerivationMumford.lean` (items 7–8 plus `BridgeToRdec`).
+Each carries its own header explaining the split and its place in the
+chain; all four share the `Genus2Lean.TheDataDerivation` namespace.
+`DecoupledSystemRegular.lean` now imports only the fourth file. Purely
+organizational — no mathematical content changed by the split itself.
+
+**Item 6 (§4.2): the two anchor divisibility facts are now proved.**
+`dvd_N_anchor1`/`dvd_N_anchor2` (in `DataDerivationSolve.lean`) are no
+longer `sorry` — they follow the roadmap's own proposed angle
+(`Polynomial.dvd_iff_isRoot` applied to `N(t_i) = 0`, itself following from
+squaring the linear system's row-0/row-1 defining equation and substituting
+the curve relation `w_i^2 = f(t_i)`) through to an actual proof term. The
+argument reduces to two new lemmas per anchor:
+- `anchor{1,2}_defining_eq` — the row-0/row-1 equation restated additively
+  over all 5 RR-basis slots (`E(t_i) + w_i·Y(t_i) = 0`), **left as `sorry`**:
+  needs `Matrix.mulVec_cramer` unfolded against `matrixA`/`rhsVec`/
+  `coeffsOut`'s definitions — mechanical but not yet carried out.
+- `anchor{1,2}_curve_relation` — `w_i^2 = f(t_i)` promoted into `K2`, **left
+  as `sorry`**: needs `AdjoinRoot.root`'s defining property plus
+  algebraMap-commutes-with-eval reasoning.
+
+So item 6 is now 2 proved theorems + 4 smaller, individually-tractable
+`sorry`s, rather than 3 opaque `sorry`s. `dvd_N_u` (target `u(x)`'s
+divisibility) is **still fully open** — no strategy found this pass either,
+though a new candidate angle is recorded in its docstring (relate `u(x) ∣ N`
+to the mod-`u` rows' polynomial congruence `E(x)+Y(x)(v1x+v0) ≡ 0 mod u(x)`,
+via a `v(x)^2 ≡ f mod u(x)` hypothesis on the TARGET data — not yet stated
+or sourced against `00_sample_specs.jl`).
+
+**`DecoupledSystemRegular.lean` updated to symbolic `p`, `theData`
+assembled.** Closes the "Progress note" above's two outstanding items:
+- `curveP`/`curveP_prime`/fixed `F` replaced by `F (p : ℕ) := ZMod p`,
+  `Rdec (p : ℕ) := MvPolynomial Idx (F p)`, threaded explicitly through
+  every downstream definition (`variable (p : ℕ)`, explicit — NOT implicit,
+  see caveat below). `curveF`/`curveA1..curveB2` likewise generalized from
+  the fixed `x^5+x+2` to symbolic `(c0,...,c4 : F p)`, matching
+  `TheDataDerivation.curvePoly`.
+- `theData` (§4bis, new section) is now assembled from
+  `TheDataDerivation.uRS`/`.vRS`/`.towerToRdec` rather than a bare `sorry`.
+  Takes `(c0,...,c4)`, both samples' target Mumford data (`SampleTarget`,
+  new structure bundling `(u0,u1,v0,v1)`), and four hypotheses `hcurA/B`
+  (`curBeforeMonic ≠ 0`, needed for `uRS`) and `hgcdA/B` (the coprimality
+  `vRS` needs) — inherited directly from `TheDataDerivation`'s own
+  well-definedness conditions on `uRS`/`vRS`. Introduces **four new
+  `sorry`s** of its own: `DecoupledGenerators`'s `u1_indep`/`u2_indep`/
+  `v1_indep`/`v2_indep` fields (that `towerToRdec`'s output only involves
+  the intended 4 variables per side) — plausible from `towerToRdec`'s
+  construction but not proved as a lemma anywhere, new work not attempted.
+  `FuList`/`FvList`/`genList`/`decoupledSystem_isRegularSequence` are now
+  stated for general `(p,c0,...,c4,sa,sb)` satisfying those four hypotheses,
+  not unconditionally — `decoupledSystem_isRegularSequence`'s own `sorry`
+  is otherwise unchanged in substance.
+
+**A real bug caught and fixed before finalizing**: the first draft of
+§4bis declared `p` *implicit* (`variable {p : ℕ}`) while every call site
+(`theData p c0 ...`, `genList p c0 ...`, etc.) passed `p` *explicitly* as a
+leading argument — inconsistent, would not typecheck. Fixed by making `p`
+explicit throughout (`variable (p : ℕ)`, matching `TheDataDerivation`'s own
+convention and every call site already in the file). Caught by re-reading
+the assembly against its call sites, not by a toolchain — flagging since
+this is exactly the kind of error hand-review can miss, and did almost miss
+here.
+
+**Not done this pass**:
+- `dvd_N_u`, still open (see above).
+- The four new `u1_indep`-etc. `sorry`s in `theData`'s assembly.
+- `MatrixNondegenerate` is not yet threaded as a hypothesis into
+  `decoupledSystem_isRegularSequence` — flagged in that theorem's own
+  docstring as a real gap (a fully faithful statement needs it too, since
+  `uRS`/`vRS` are only the intended values under `MatrixNondegenerate` as
+  well as `hcurA/B`/`hgcdA/B`).
+- Any of item 6/7/8's remaining `sorry`s beyond the two now discharged.
+- No Lean toolchain was available this pass either — all of the above is
+  hand-reviewed for structural/type consistency (including a systematic
+  re-check of every call site against the `variable (p : ℕ)` explicit-vs-
+  implicit question after the bug above was found), not kernel-checked.

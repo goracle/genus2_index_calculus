@@ -38,3 +38,8 @@ import Genus2Lean.RiemannRochCrux
 import Genus2Lean.SidonDichotomyGeneral
 import Genus2Lean.Complexity
 
+import Genus2Lean.DataDerivationBasics
+import Genus2Lean.DataDerivationTower
+import Genus2Lean.DataDerivationMumford
+import Genus2Lean.DataDerivationSolve
+import Genus2Lean.DecoupledSystemRegular
