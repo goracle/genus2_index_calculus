@@ -71,8 +71,10 @@ variables together, "coeff_equal", `build_fu_fv`); instead it introduces
 target variables `U0,U1,V0,V1` and constrains each sample's own
 `(u_num,u_den)`/`(v_num,v_den)` to hit those targets:
 
-  `Fu_decoupled`: `u1_num[i] - U_i * u1_den[i] = 0`  and  `u2_num[i] - U_i * u2_den[i] = 0`,  i = 0,1
-  `Fv_decoupled`: `v1_num[i] - V_i * v1_den[i] = 0`  and  `v2_num[i] - V_i * v2_den[i] = 0`,  i = 0,1
+  `Fu_decoupled`: `u1_num[i] - U_i * u1_den[i] = 0`  and
+  `u2_num[i] - U_i * u2_den[i] = 0`,  i = 0,1
+  `Fv_decoupled`: `v1_num[i] - V_i * v1_den[i] = 0`  and
+  `v2_num[i] - V_i * v2_den[i] = 0`,  i = 0,1
 
 (4 + 4 = 8 equations; each pair states "sample 1's own num/den equals the
 target" and "sample 2's own num/den equals the *same* target", which is
@@ -180,8 +182,6 @@ open Idx
 now parametric in `p` (previously fixed at `curveP`). -/
 abbrev Rdec (p : ℕ) : Type := MvPolynomial Idx (F p)
 
-noncomputable instance instCommRingRdec (p : ℕ) : CommRing (Rdec p) := MvPolynomial.commRing
-
 /-- Notation matching the Julia variable names directly, so the equations
 below read the same as `01_elim2_main.jl`'s own `println` diagnostics. Now
 parametric in `p` (previously `Rdec` was defined for the fixed `curveP`, so
@@ -286,13 +286,14 @@ structure DecoupledGenerators (p : ℕ) where
   v1_indep : ∀ i, ∀ v ∈ (v1_num i).vars ∪ (v1_den i).vars, v ∈ ({wa1, wa2, a1, a2} : Finset Idx)
   v2_indep : ∀ i, ∀ v ∈ (v2_num i).vars ∪ (v2_den i).vars, v ∈ ({wb1, wb2, b1, b2} : Finset Idx)
 
-/-- The actual Mumford-residual data, now assembled (§4bis below) from
+/-! ## §4bis. Assembling `theData` from `TheDataDerivation`
+
+The actual Mumford-residual data, now assembled (§4bis below) from
 `TheDataDerivation`'s `uRS`/`vRS`/`towerToRdec` rather than left as a bare
 `sorry` -- see §4bis for the assembly and exactly which upstream `sorry`s it
 still depends on. Downstream statements (`FuList`/`FvList`/`genList`/the main
 theorem) are phrased against `theData` regardless of how it's built, so nothing
-below §4bis needed to change shape for this update. -/
-/-! ## §4bis. Assembling `theData` from `TheDataDerivation`
+below §4bis needed to change shape for this update.
 
 **New this pass.** Previously `theData := by sorry`, an entirely opaque
 constant. Now built from `TheDataDerivation.uRS`/`.vRS`/`.towerToRdec`,
@@ -347,7 +348,7 @@ shared plumbing for all eight `uRS`/`vRS` × a-side/b-side combinations
 below, rather than repeating the same four lines eight times. -/
 noncomputable def coeffsToNumDen (c0 c1 c2 c3 c4 : F p) (sg : SideGens Idx)
     (poly : Polynomial (K2 p c0 c1 c2 c3 c4)) : Fin 2 → Rdec p × Rdec p :=
-  fun i => towerToRdec p c0 c1 c2 c3 c4 sg (poly.coeff i.val)
+  fun i => towerToRdec p sg (poly.coeff i.val)
 
 /-- **The assembly.** Given the shared curve coefficients `(c0,...,c4)`, each
 sample's target `(u0,u1,v0,v1)`, and the hypotheses `TheDataDerivation.uRS`/
@@ -464,7 +465,8 @@ theorem genList_length (c0 c1 c2 c3 c4 : F p) (sa sb : SampleTarget p)
     (hgcdB : IsCoprime (Ypoly p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1)
       (uRS p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1)) :
     (genList p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).length = Fintype.card Idx := by
-  simp [genList, FuList, FvList, Fintype.card, Idx]
+  simp only [genList, FuList, FvList, List.length_append, List.length_cons, List.length_nil]
+  decide
 
 /-- **Main target.** `genList` is a regular sequence on `Rdec p` itself (as
 an `Rdec p`-module), in the sense of `RingTheory.Sequence.IsRegular`. Since

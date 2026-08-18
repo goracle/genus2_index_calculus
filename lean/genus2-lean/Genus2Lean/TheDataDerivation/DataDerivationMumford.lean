@@ -85,7 +85,7 @@ theorem uRS_monic (hcur : curBeforeMonic p c0 c1 c2 c3 c4 u0 u1 v0 v1 ≠ 0) :
   have hdeg : (C q.leadingCoeff⁻¹ * q).natDegree = q.natDegree :=
     Polynomial.natDegree_C_mul_eq_of_mul_eq_one hau
   rw [Polynomial.Monic.def]
-  show (C q.leadingCoeff⁻¹ * q).coeff (C q.leadingCoeff⁻¹ * q).natDegree = 1
+  change (C q.leadingCoeff⁻¹ * q).coeff (C q.leadingCoeff⁻¹ * q).natDegree = 1
   rw [hdeg, Polynomial.coeff_C_mul]
   exact inv_mul_cancel₀ hlc
 
@@ -129,7 +129,7 @@ together on any theorem actually USING `vRS`'s value (e.g.
 `vRS_sq_eq_f_mod_uRS` below), even though `vRS`'s bare definition only
 needs `hgcd` to typecheck. -/
 noncomputable def vRS
-    (hgcd : IsCoprime (Ypoly p c0 c1 c2 c3 c4 u0 u1 v0 v1) (uRS p c0 c1 c2 c3 c4 u0 u1 v0 v1)) :
+    (_hgcd : IsCoprime (Ypoly p c0 c1 c2 c3 c4 u0 u1 v0 v1) (uRS p c0 c1 c2 c3 c4 u0 u1 v0 v1)) :
     Polynomial (K2 p c0 c1 c2 c3 c4) :=
   (-(Epoly p c0 c1 c2 c3 c4 u0 u1 v0 v1) *
       EuclideanDomain.gcdA (Ypoly p c0 c1 c2 c3 c4 u0 u1 v0 v1)
@@ -292,13 +292,13 @@ polynomials via `IsFractionRing.num`/`.den`; `MvPolynomial.aeval` with the
 variable map `fun i => X (sg.tGen i)` performs Julia's
 `evaluate(num, t_gens)` exactly. **No `sorry`**: this base case is
 constructive given the `IsFractionRing` API alone. -/
-noncomputable def baseFracToRing {Vars : Type*} [CommRing Vars]
+noncomputable def baseFracToRing {Vars : Type*}
     (sg : SideGens Vars) (v : K0 p) :
     MvPolynomial Vars (F p) × MvPolynomial Vars (F p) :=
   ( MvPolynomial.aeval (fun i : Fin 2 => MvPolynomial.X (sg.tGen i))
       (IsFractionRing.num (MvPolynomial (Fin 2) (F p)) v),
     MvPolynomial.aeval (fun i : Fin 2 => MvPolynomial.X (sg.tGen i))
-      (IsFractionRing.den (MvPolynomial (Fin 2) (F p)) v) )
+      (↑(IsFractionRing.den (MvPolynomial (Fin 2) (F p)) v) : MvPolynomial (Fin 2) (F p)) )
 
 /-- The defining quadratic for `K1`, monic (leading coefficient `1` by
 construction — `X^2 - C (fAtT ...)` always has `X^2`'s coefficient `1`),
@@ -310,7 +310,8 @@ doesn't change the degree-2 coefficient). -/
 theorem K1_poly_monic (c0 c1 c2 c3 c4 : F p) :
     (X ^ 2 - C (fAtT p c0 c1 c2 c3 c4 0) : Polynomial (K0 p)).Monic := by
   have : (X ^ 2 - C (fAtT p c0 c1 c2 c3 c4 0) : Polynomial (K0 p)) =
-      X ^ 2 + C (-fAtT p c0 c1 c2 c3 c4 0) := by ring
+      X ^ 2 + C (-fAtT p c0 c1 c2 c3 c4 0) := by
+    rw [Polynomial.C_neg, sub_eq_add_neg]
   rw [this]
   exact (monic_X_pow 2).add_of_left (by
     simpa using (degree_C_le (a := -fAtT p c0 c1 c2 c3 c4 0)).trans_lt
@@ -329,7 +330,7 @@ and `.coeff 0` / `.coeff 1` on the resulting `Polynomial (K0 p)` extract
 `d0`/`d1` respectively — Julia's `coeff(val_poly, 0)` / `coeff(val_poly, 1)`
 verbatim. This closes the roadmap's own "not yet pinned down" note, so
 `towerToRdecK1` below is now a genuine construction, not a `sorry`. -/
-noncomputable def towerToRdecK1 {Vars : Type*} [CommRing Vars]
+noncomputable def towerToRdecK1 {Vars : Type*}
     (sg : SideGens Vars) (v : K1 p c0 c1 c2 c3 c4) :
     MvPolynomial Vars (F p) × MvPolynomial Vars (F p) :=
   let valPoly : Polynomial (K0 p) :=
@@ -350,7 +351,13 @@ theorem K2_poly_monic (c0 c1 c2 c3 c4 : F p) :
       C (algebraMap (K0 p) (K1 p c0 c1 c2 c3 c4) (fAtT p c0 c1 c2 c3 c4 1)) :
         Polynomial (K1 p c0 c1 c2 c3 c4)) =
       X ^ 2 + C (-(algebraMap (K0 p) (K1 p c0 c1 c2 c3 c4) (fAtT p c0 c1 c2 c3 c4 1))) := by
-    ring
+    -- `rw [Polynomial.C_neg, sub_eq_add_neg]` here hits "motive is not type
+    -- correct": `K1 p ...` is a reducible `abbrev` over `AdjoinRoot`, and its
+    -- own `Field`/`Irreducible` instance search is entangled with this exact
+    -- polynomial term, so `rw` can't safely abstract it. `simp only` handles
+    -- such dependencies (per its own diagnostic message), same fix as the
+    -- earlier `w2_sq_eq` timeout.
+    simp only [Polynomial.C_neg, sub_eq_add_neg]
   rw [this]
   exact (monic_X_pow 2).add_of_left (by
     simpa using (degree_C_le
@@ -378,15 +385,15 @@ close the roadmap's un-numbered "bridge to `Rdec`" gap in full — the
 denominator-clearing recursion itself (as opposed to the `_reduce_frac`
 GCD-cancellation step, deliberately dropped per the note above and in
 §4.2 item 8) is now a complete Lean construction, not a stub. -/
-noncomputable def towerToRdec {Vars : Type*} [CommRing Vars]
+noncomputable def towerToRdec {Vars : Type*}
     (sg : SideGens Vars) (v : K2 p c0 c1 c2 c3 c4) :
     MvPolynomial Vars (F p) × MvPolynomial Vars (F p) :=
   let valPoly : Polynomial (K1 p c0 c1 c2 c3 c4) :=
     AdjoinRoot.modByMonicHom (K2_poly_monic p c0 c1 c2 c3 c4) v
   let d0 : K1 p c0 c1 c2 c3 c4 := valPoly.coeff 0
   let d1 : K1 p c0 c1 c2 c3 c4 := valPoly.coeff 1
-  let (n0, den0) := towerToRdecK1 p c0 c1 c2 c3 c4 sg d0
-  let (n1, den1) := towerToRdecK1 p c0 c1 c2 c3 c4 sg d1
+  let (n0, den0) := towerToRdecK1 p sg d0
+  let (n1, den1) := towerToRdecK1 p sg d1
   ( n0 * den1 + n1 * den0 * MvPolynomial.X (sg.wGen 1),
     den0 * den1 )
 

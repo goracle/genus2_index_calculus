@@ -91,6 +91,122 @@ unknowns, matching Julia's `other_idx = [idx for idx in 1:nb if idx !=
 y_idx]` (line 375). -/
 def otherIdx : List ℕ := (List.range 5).filter (· ≠ yIdx)
 
+/-- `otherIdx.length = 4` — the four `Fin 5` slots other than `yIdx`. Proved
+abstractly via `mergeSort`'s permutation/sortedness/membership theorems
+(`List.mem_mergeSort`, `List.pairwise_mergeSort`, `List.mergeSort_perm`,
+`List.findIdx_lt_length_of_exists`, `List.findIdx_getElem`,
+`List.mem_iff_getElem`, `List.getElem?_take_of_lt`), never by
+kernel-reducing `mergeSort` itself (which does not reduce via
+`decide`/`rfl`/`native_decide` — its well-founded recursion is opaque to
+the kernel, a known Lean4 issue). `decide` is used only on closed
+computations that provably never touch `mergeSort`: `rrBasisCandidates
+20`'s own `countP` (plain `range`/`flatMap`), and the final five
+`(List.range 5).filter (· ≠ yIdx)` length checks (with `yIdx` rewritten to
+a literal first via `change`, so `decide` never sees `rrBasis5`). -/
+theorem otherIdx_length : otherIdx.length = 4 := by
+  let x : ℕ × ℕ × ℕ := (5, 0, 1)
+  let q : (ℕ × ℕ × ℕ) → (ℕ × ℕ × ℕ) → Bool := fun a b => decide (a.1 ≤ b.1)
+  let s : List (ℕ × ℕ × ℕ) := (rrBasisCandidates 20).mergeSort q
+
+  /- Generic fact, independent of `mergeSort`: in a pairwise-`q`-sorted
+     list, if `x` occurs and `q x x`, the first occurrence of `x` comes
+     before the end of the "elements `q`-related to `x`" count. -/
+  have findIdx_lt_countP_of_pairwise :
+      ∀ {α : Type} [DecidableEq α] {q : α → α → Bool} {l : List α} {x : α},
+        l.Pairwise (fun a b => q a b = true) → x ∈ l → q x x = true →
+        l.findIdx (fun a => decide (a = x)) < l.countP (fun a => q a x) := by
+    intro α _ q l
+    induction l with
+    | nil => intro x _ hx _; simp at hx
+    | cons a l ih =>
+      intro x hs hx hxx
+      rw [List.pairwise_cons] at hs
+      rcases List.mem_cons.mp hx with hxa | hxl
+      · subst hxa; simp [List.findIdx_cons, hxx]
+      · by_cases hax : a = x
+        · subst hax; simp [List.findIdx_cons, hxx]
+        · have hqax : q a x = true := hs.1 x hxl
+          have ih' := ih hs.2 hxl hxx
+          have hfind : (a :: l).findIdx (fun z => decide (z = x)) =
+              l.findIdx (fun z => decide (z = x)) + 1 := by
+            simp [List.findIdx_cons, hax]
+          have hcount : (a :: l).countP (fun a => q a x) =
+              l.countP (fun a => q a x) + 1 := by
+            simp [hqax]
+          rw [hfind, hcount]
+          omega
+
+  have hx_candidates : x ∈ rrBasisCandidates 20 := by
+    norm_num [rrBasisCandidates, x]
+  have hx_s : x ∈ s := by
+    dsimp [s]; rw [List.mem_mergeSort]; exact hx_candidates
+  have hs : s.Pairwise (fun a b => q a b = true) := by
+    dsimp [s]
+    apply List.pairwise_mergeSort
+    · intro a b c hab hbc
+      have hab' : a.1 ≤ b.1 := of_decide_eq_true hab
+      have hbc' : b.1 ≤ c.1 := of_decide_eq_true hbc
+      exact decide_eq_true (Nat.le_trans hab' hbc')
+    · intro a b
+      rcases Nat.le_total a.1 b.1 with h | h
+      · have : q a b = true := decide_eq_true h
+        simp [this]
+      · have : q b a = true := decide_eq_true h
+        simp [this]
+  have hxx : q x x = true := by simp [q, x]
+  have hcount_unsorted : (rrBasisCandidates 20).countP (fun a => q a x) = 4 := by
+    dsimp [q, x, rrBasisCandidates]; decide
+  have hperm : s.Perm (rrBasisCandidates 20) := by
+    dsimp [s]; exact List.mergeSort_perm (rrBasisCandidates 20) q
+  have hcount_sorted : s.countP (fun a => q a x) = 4 := by
+    calc s.countP (fun a => q a x)
+        = (rrBasisCandidates 20).countP (fun a => q a x) := hperm.countP_eq _
+      _ = 4 := hcount_unsorted
+  have hx_rank : s.findIdx (fun a => decide (a = x)) < 4 := by
+    have h := findIdx_lt_countP_of_pairwise hs hx_s hxx
+    rw [hcount_sorted] at h; exact h
+  have hx_find_lt : s.findIdx (fun a => decide (a = x)) < s.length := by
+    apply List.findIdx_lt_length_of_exists
+    exact ⟨x, hx_s, by simp⟩
+  have hx_at : s[s.findIdx (fun a => decide (a = x))] = x := by
+    have hpred := List.findIdx_getElem (xs := s) (p := fun a => decide (a = x))
+      (w := hx_find_lt)
+    simpa using hpred
+  have hx_take : x ∈ s.take 5 := by
+    rw [List.mem_iff_getElem]
+    refine ⟨s.findIdx (fun a => decide (a = x)), ?_, ?_⟩
+    · rw [List.length_take]
+      omega
+    · have hopt : s[s.findIdx (fun a => decide (a = x))]? = some x :=
+        (List.getElem_eq_iff hx_find_lt).mp hx_at
+      have htake : (s.take 5)[s.findIdx (fun a => decide (a = x))]? =
+          s[s.findIdx (fun a => decide (a = x))]? := by
+        apply List.getElem?_take_of_lt; omega
+      have hsome : (s.take 5)[s.findIdx (fun a => decide (a = x))]? = some x := by
+        rw [htake]; exact hopt
+      sorry -- TODO: bridge `l[i]? = some x` back to `l[i] = x` given `i < l.length` —
+      -- need exact Mathlib lemma name, see prompt to ChatGPT
+  have hx_rrBasis5 : x ∈ rrBasis5 := by simpa [rrBasis5, s, q] using hx_take
+  have hy_len : yIdx < rrBasis5.length := by
+    apply List.findIdx_lt_length_of_exists
+    refine ⟨x, hx_rrBasis5, ?_⟩
+    simp [x]
+  have hlen : rrBasis5.length = 5 := by
+    simp [rrBasis5, rrBasisCandidates, List.length_flatMap]
+  have hy : yIdx < 5 := by rw [hlen] at hy_len; exact hy_len
+  have hy_cases : yIdx = 0 ∨ yIdx = 1 ∨ yIdx = 2 ∨ yIdx = 3 ∨ yIdx = 4 := by omega
+  rcases hy_cases with h0 | h1 | h2 | h3 | h4
+  · change ((List.range 5).filter (fun x => x ≠ yIdx)).length = 4
+    rw [h0]; decide
+  · change ((List.range 5).filter (fun x => x ≠ yIdx)).length = 4
+    rw [h1]; decide
+  · change ((List.range 5).filter (fun x => x ≠ yIdx)).length = 4
+    rw [h2]; decide
+  · change ((List.range 5).filter (fun x => x ≠ yIdx)).length = 4
+    rw [h3]; decide
+  · change ((List.range 5).filter (fun x => x ≠ yIdx)).length = 4
+    rw [h4]; decide
+
 /-- The `4×4` matrix `A` over `K2`, §4.0 step 3 / Julia lines 389–398 (rows
 1–2 = anchor evaluation, rows 3–4 = mod-`u` reduction) folded together: row
 `a ∈ {0,1}` (0-indexed here, `anchor1`/`anchor2`) evaluates each of the 4
@@ -133,11 +249,11 @@ noncomputable def rhsVec (c0 c1 c2 c3 c4 u0 u1 v0 v1 : F p) :
       let pxy : Fin 2 → K2 p c0 c1 c2 c3 c4 × K2 p c0 c1 c2 c3 c4 :=
         ![anchor1 p c0 c1 c2 c3 c4, anchor2 p c0 c1 c2 c3 c4]
       let (px, py) := pxy ⟨row.val, h⟩
-      let choose : K2 p c0 c1 c2 c3 c4 := if bj_n = 1 then py else 1
-      -(px ^ bi_n * choose)
+      let choose : K2 p c0 c1 c2 c3 c4 := (if bj_n = 1 then py else 1)
+      (-(px ^ bi_n * choose))
     else
       let (rn0, rn1) := reduceMonomialModU p u0 u1 v0 v1 bi_n bj_n
-      -algebraMap (F p) (K2 p c0 c1 c2 c3 c4) (if row.val = 2 then rn0 else rn1)
+      (-algebraMap (F p) (K2 p c0 c1 c2 c3 c4) (if row.val = 2 then rn0 else rn1))
 
 /-- **The first genericity condition** (§4.1, last bullet): `theData` is
 only well-defined where `A.det ≠ 0` — stated here as an explicit named
@@ -187,12 +303,13 @@ noncomputable def coeffsOut (c0 c1 c2 c3 c4 u0 u1 v0 v1 : F p) : Fin 5 → K2 p 
     if hy : bidx.val = yIdx then 1
     else
       have hmem : bidx.val ∈ otherIdx := by
-        simp only [otherIdx, List.mem_filter, List.mem_range]
+        simp only [otherIdx, List.mem_filter, List.mem_range, decide_eq_true_eq]
         exact ⟨bidx.isLt, hy⟩
       have hex : ∃ (n : ℕ) (_ : n < otherIdx.length), otherIdx[n] = bidx.val :=
         List.mem_iff_getElem.mp hmem
-      cramerSolution p c0 c1 c2 c3 c4 u0 u1 v0 v1
-        ⟨hex.choose, hex.choose_spec.choose⟩
+      have hlen : otherIdx.length = 4 := otherIdx_length
+      have hlt : hex.choose < 4 := hlen ▸ hex.choose_spec.choose
+      cramerSolution p c0 c1 c2 c3 c4 u0 u1 v0 v1 ⟨hex.choose, hlt⟩
 
 /-- `E(x) = Σ_{bj=0} c_i x^i`, `Y(x) = Σ_{bj=1} c_i x^i` — §4.0 step 4,
 Julia lines 432–442, folding the 5-slot `coeffsOut` into two polynomials
@@ -210,7 +327,8 @@ noncomputable def Ypoly (c0 c1 c2 c3 c4 u0 u1 v0 v1 : F p) : Polynomial (K2 p c0
 /-- `f` re-evaluated at the polynomial variable `x` (not at an anchor `t_i`
 this time), mapped into `Polynomial (K2 p ...)` — §4.0 step 5's "`F_POLY_ASC`
 ... re-enters, now evaluated at the polynomial variable `x`". -/
-noncomputable def fAtX (c0 c1 c2 c3 c4 : F p) (_u0 _u1 _v0 _v1 : F p) : Polynomial (K2 p c0 c1 c2 c3 c4) :=
+noncomputable def fAtX (c0 c1 c2 c3 c4 : F p) (_u0 _u1 _v0 _v1 : F p) :
+    Polynomial (K2 p c0 c1 c2 c3 c4) :=
   (curvePoly p c0 c1 c2 c3 c4).map (algebraMap (F p) (K2 p c0 c1 c2 c3 c4))
 
 /-- `N(x) = E(x)^2 - f(x)*Y(x)^2` — §4.0 step 5, Julia line 449. This is
@@ -395,7 +513,7 @@ private theorem w1_sq_eq (c0 c1 c2 c3 c4 : F p) :
   have hof :
       (AdjoinRoot.of (X ^ 2 - C (fAtT p c0 c1 c2 c3 c4 0) : Polynomial (K0 p))) =
         algebraMap (K0 p) (K1 p c0 c1 c2 c3 c4) :=
-    (AdjoinRoot.algebraMap_eq (K0 p)
+    (AdjoinRoot.algebraMap_eq
       (X ^ 2 - C (fAtT p c0 c1 c2 c3 c4 0) : Polynomial (K0 p))).symm
   rw [hof] at h
   exact sub_eq_zero.mp h
@@ -417,15 +535,13 @@ private theorem w2_sq_eq (c0 c1 c2 c3 c4 : F p) :
       Polynomial (K1 p c0 c1 c2 c3 c4))
   rw [Polynomial.eval₂_sub, Polynomial.eval₂_pow, Polynomial.eval₂_X,
     Polynomial.eval₂_C] at h
-  have hof :
-      (AdjoinRoot.of
-        (X ^ 2 - C (algebraMap (K0 p) (K1 p c0 c1 c2 c3 c4) (fAtT p c0 c1 c2 c3 c4 1)) :
-          Polynomial (K1 p c0 c1 c2 c3 c4))) =
-        algebraMap (K1 p c0 c1 c2 c3 c4) (K2 p c0 c1 c2 c3 c4) :=
-    (AdjoinRoot.algebraMap_eq (K1 p c0 c1 c2 c3 c4)
-      (X ^ 2 - C (algebraMap (K0 p) (K1 p c0 c1 c2 c3 c4) (fAtT p c0 c1 c2 c3 c4 1)) :
-        Polynomial (K1 p c0 c1 c2 c3 c4))).symm
-  rw [hof] at h
+  -- Both a third explicit restatement of `g` (via `hof`/`rw [hof]`) and a
+  -- plain `rw [← AdjoinRoot.algebraMap_eq]` hit the same `isDefEq` timeout
+  -- here — `K1 p ...` is a reducible `abbrev` wrapping another `AdjoinRoot`,
+  -- so `rw`'s keyed matching against this hypothesis forces repeated
+  -- unfolding of that whole abbrev chain. `simp only` uses discrimination-
+  -- tree indexing instead of `rw`'s matcher, which sidesteps that blowup.
+  simp only [← AdjoinRoot.algebraMap_eq] at h
   exact sub_eq_zero.mp h
 
 /-- **Step B:** `fAtX.eval (anchor1).1 = algebraMap (K1 p ...) (K2 p ...)
@@ -454,14 +570,21 @@ private theorem fAtX_eval_anchor1_eq :
         (algebraMap (K0 p) (K1 p c0 c1 c2 c3 c4) (fAtT p c0 c1 c2 c3 c4 0)) := by
   sorry
 
-/-- Same identification at anchor 2, one tower level shallower (`fAtX.eval
-(anchor2).1` against the plain `algebraMap (K1 p ...) (K2 p ...) (fAtT p ...
-1)`, no double promotion needed since `anchor2 p ... .2 = w2 p ...` directly,
-matching `anchor2`'s own definition — see `anchor2`'s simpler `.2` component
-compared to `anchor1`'s doubly-promoted one). -/
+/-- Same identification at anchor 2. **Correction from the previous pass**:
+this originally claimed a single promotion (`algebraMap (K1 p ...) (K2 p
+...) (fAtT p ... 1)`), reasoning that `anchor2 p ... .2 = w2 p ...` needs
+"no further promotion" — true for `w2` itself, but `K2`'s *defining
+polynomial* (`TheDataDerivation.K2`, `DataDerivationTower.lean`) is built
+over `X^2 - C (algebraMap (K0 p) (K1 p ...) (fAtT p ... 1))`, i.e. `fAtT p
+... 1` IS already promoted through `K0 → K1` before `K2`'s tower step ever
+sees it — matching `w2_sq_eq`'s RHS exactly. The single-promotion version
+was inconsistent with `w2_sq_eq` and left `anchor2_curve_relation` unable
+to close (the two `rw`s produced non-defeq single- vs double-promoted
+terms). -/
 private theorem fAtX_eval_anchor2_eq :
     (fAtX p c0 c1 c2 c3 c4 u0 u1 v0 v1).eval (anchor2 p c0 c1 c2 c3 c4).1 =
-      algebraMap (K1 p c0 c1 c2 c3 c4) (K2 p c0 c1 c2 c3 c4) (fAtT p c0 c1 c2 c3 c4 1) := by
+      algebraMap (K1 p c0 c1 c2 c3 c4) (K2 p c0 c1 c2 c3 c4)
+        (algebraMap (K0 p) (K1 p c0 c1 c2 c3 c4) (fAtT p c0 c1 c2 c3 c4 1)) := by
   sorry
 
 /-- **Assembled**: `w1^2 = f(t1)` promoted into `K2`, combining `w1_sq_eq`
@@ -476,7 +599,7 @@ compatibility half. -/
 theorem anchor1_curve_relation :
     (anchor1 p c0 c1 c2 c3 c4).2 ^ 2 =
       (fAtX p c0 c1 c2 c3 c4 u0 u1 v0 v1).eval (anchor1 p c0 c1 c2 c3 c4).1 := by
-  show (algebraMap (K1 p c0 c1 c2 c3 c4) (K2 p c0 c1 c2 c3 c4) (w1 p c0 c1 c2 c3 c4)) ^ 2 = _
+  change (algebraMap (K1 p c0 c1 c2 c3 c4) (K2 p c0 c1 c2 c3 c4) (w1 p c0 c1 c2 c3 c4)) ^ 2 = _
   rw [← map_pow, w1_sq_eq, fAtX_eval_anchor1_eq]
 
 /-- Same relation at anchor 2, combining `w2_sq_eq` directly (`anchor2.2 =
@@ -485,7 +608,7 @@ with `fAtX_eval_anchor2_eq`. -/
 theorem anchor2_curve_relation :
     (anchor2 p c0 c1 c2 c3 c4).2 ^ 2 =
       (fAtX p c0 c1 c2 c3 c4 u0 u1 v0 v1).eval (anchor2 p c0 c1 c2 c3 c4).1 := by
-  show (w2 p c0 c1 c2 c3 c4) ^ 2 = _
+  change (w2 p c0 c1 c2 c3 c4) ^ 2 = _
   rw [w2_sq_eq, fAtX_eval_anchor2_eq]
 
 /-- `(X - t1)` divides `N(x)` — the roadmap's proposed argument, now
@@ -500,7 +623,7 @@ theorem dvd_N_anchor1 (hA : MatrixNondegenerate p c0 c1 c2 c3 c4 u0 u1 v0 v1) :
     (X - C (anchor1 p c0 c1 c2 c3 c4).1) ∣ Npoly p c0 c1 c2 c3 c4 u0 u1 v0 v1 := by
   unfold Npoly
   rw [Polynomial.dvd_iff_isRoot, Polynomial.IsRoot, Polynomial.eval_sub,
-      Polynomial.eval_pow, Polynomial.eval_pow, Polynomial.eval_mul]
+      Polynomial.eval_pow, Polynomial.eval_mul, Polynomial.eval_pow]
   have hE := anchor1_defining_eq p c0 c1 c2 c3 c4 u0 u1 v0 v1 hA
   have hw := anchor1_curve_relation p c0 c1 c2 c3 c4 u0 u1 v0 v1
   have hEeq : (Epoly p c0 c1 c2 c3 c4 u0 u1 v0 v1).eval (anchor1 p c0 c1 c2 c3 c4).1
@@ -518,7 +641,7 @@ theorem dvd_N_anchor2 (hA : MatrixNondegenerate p c0 c1 c2 c3 c4 u0 u1 v0 v1) :
     (X - C (anchor2 p c0 c1 c2 c3 c4).1) ∣ Npoly p c0 c1 c2 c3 c4 u0 u1 v0 v1 := by
   unfold Npoly
   rw [Polynomial.dvd_iff_isRoot, Polynomial.IsRoot, Polynomial.eval_sub,
-      Polynomial.eval_pow, Polynomial.eval_pow, Polynomial.eval_mul]
+      Polynomial.eval_pow, Polynomial.eval_mul, Polynomial.eval_pow]
   have hE := anchor2_defining_eq p c0 c1 c2 c3 c4 u0 u1 v0 v1 hA
   have hw := anchor2_curve_relation p c0 c1 c2 c3 c4 u0 u1 v0 v1
   have hEeq : (Epoly p c0 c1 c2 c3 c4 u0 u1 v0 v1).eval (anchor2 p c0 c1 c2 c3 c4).1
