@@ -120,7 +120,7 @@ noncomputable def matrixA (c0 c1 c2 c3 c4 u0 u1 v0 v1 : F p) :
 
 /-- The RHS vector, same row split, using the `y_idx`-th basis element
 (`(bi_n, bj_n) := basis[y_idx]`) evaluated the same two ways, negated
-(Julia's `rhs[a,1] = -(...)`, `rhs[row0/1,1] = -rn0/-rn1` — the negation is
+(Julia's `rhs[a,1] = -(...)`, `rhs[row0/1,1] = -rn0` / `-rn1` — the negation is
 folded into `matrixA`'s sign convention here by keeping it explicit rather
 than absorbing it, since `Matrix.cramer`/`.det` don't care about an overall
 sign but a transcription slip on this specific minus sign would silently
@@ -133,7 +133,8 @@ noncomputable def rhsVec (c0 c1 c2 c3 c4 u0 u1 v0 v1 : F p) :
       let pxy : Fin 2 → K2 p c0 c1 c2 c3 c4 × K2 p c0 c1 c2 c3 c4 :=
         ![anchor1 p c0 c1 c2 c3 c4, anchor2 p c0 c1 c2 c3 c4]
       let (px, py) := pxy ⟨row.val, h⟩
-      -(px ^ bi_n * (if bj_n = 1 then py else 1))
+      let choose : K2 p c0 c1 c2 c3 c4 := if bj_n = 1 then py else 1
+      -(px ^ bi_n * choose)
     else
       let (rn0, rn1) := reduceMonomialModU p u0 u1 v0 v1 bi_n bj_n
       -algebraMap (F p) (K2 p c0 c1 c2 c3 c4) (if row.val = 2 then rn0 else rn1)
@@ -167,14 +168,31 @@ noncomputable def cramerSolution (c0 c1 c2 c3 c4 u0 u1 v0 v1 : F p) :
 
 /-- `coeffs_out`: the full 5-slot coefficient vector, `cramerSolution` at
 the 4 `other_idx` slots plus `1` at `y_idx` (Julia lines 425–429,
-`coeffs_out[y_idx] = K_final(1)`). -/
+`coeffs_out[y_idx] = K_final(1)`).
+
+**Avoids guessing at `List.findIdx?`/`List.indexOf?`/`List.idxOf` bound-
+lemma names entirely.** A previous version called `List.indexOf?`, which
+this project's toolchain does not have, and a subsequent attempt leaned on
+an unverified `List.idxOf_lt_length` name. This version instead uses only
+`List.mem_iff_getElem : a ∈ l ↔ ∃ (n) (h : n < l.length), l[n] = a`
+(confirmed present in Lean's core `Init.Data.List.Lemmas`), which hands
+back an in-bounds index directly as part of the existential — no separate
+bound lemma needed at all. `bidx.val ∈ otherIdx` is established directly
+from `bidx.val < 5` and `bidx.val ≠ yIdx` via `otherIdx`'s own definition
+(`List.mem_filter`/`List.mem_range`, both basic and safe), then
+`Classical.choose` on the resulting existential extracts the witness
+index together with its bound in one step. -/
 noncomputable def coeffsOut (c0 c1 c2 c3 c4 u0 u1 v0 v1 : F p) : Fin 5 → K2 p c0 c1 c2 c3 c4 :=
   fun bidx =>
-    if bidx.val = yIdx then 1
+    if hy : bidx.val = yIdx then 1
     else
-      match (otherIdx.indexOf? bidx.val) with
-      | some col => cramerSolution p c0 c1 c2 c3 c4 u0 u1 v0 v1 ⟨col, by omega⟩
-      | none => 0  -- unreachable: yIdx and otherIdx partition Fin 5
+      have hmem : bidx.val ∈ otherIdx := by
+        simp only [otherIdx, List.mem_filter, List.mem_range]
+        exact ⟨bidx.isLt, hy⟩
+      have hex : ∃ (n : ℕ) (_ : n < otherIdx.length), otherIdx[n] = bidx.val :=
+        List.mem_iff_getElem.mp hmem
+      cramerSolution p c0 c1 c2 c3 c4 u0 u1 v0 v1
+        ⟨hex.choose, hex.choose_spec.choose⟩
 
 /-- `E(x) = Σ_{bj=0} c_i x^i`, `Y(x) = Σ_{bj=1} c_i x^i` — §4.0 step 4,
 Julia lines 432–442, folding the 5-slot `coeffsOut` into two polynomials
@@ -192,7 +210,7 @@ noncomputable def Ypoly (c0 c1 c2 c3 c4 u0 u1 v0 v1 : F p) : Polynomial (K2 p c0
 /-- `f` re-evaluated at the polynomial variable `x` (not at an anchor `t_i`
 this time), mapped into `Polynomial (K2 p ...)` — §4.0 step 5's "`F_POLY_ASC`
 ... re-enters, now evaluated at the polynomial variable `x`". -/
-noncomputable def fAtX (c0 c1 c2 c3 c4 u0 u1 v0 v1 : F p) : Polynomial (K2 p c0 c1 c2 c3 c4) :=
+noncomputable def fAtX (c0 c1 c2 c3 c4 : F p) (_u0 _u1 _v0 _v1 : F p) : Polynomial (K2 p c0 c1 c2 c3 c4) :=
   (curvePoly p c0 c1 c2 c3 c4).map (algebraMap (F p) (K2 p c0 c1 c2 c3 c4))
 
 /-- `N(x) = E(x)^2 - f(x)*Y(x)^2` — §4.0 step 5, Julia line 449. This is
@@ -363,9 +381,23 @@ private theorem w1_sq_eq (c0 c1 c2 c3 c4 : F p) :
       algebraMap (K0 p) (K1 p c0 c1 c2 c3 c4) (fAtT p c0 c1 c2 c3 c4 0) := by
   have h := AdjoinRoot.eval₂_root
     (X ^ 2 - C (fAtT p c0 c1 c2 c3 c4 0) : Polynomial (K0 p))
-  rw [Polynomial.eval₂_sub, Polynomial.eval₂_pow, Polynomial.eval₂_X, Polynomial.eval₂_C,
-    ← AdjoinRoot.algebraMap_eq] at h
-  -- `h : (w1 p ...) ^ 2 - algebraMap (K0 p) (K1 p ...) (fAtT p ... 0) = 0`
+  rw [Polynomial.eval₂_sub, Polynomial.eval₂_pow, Polynomial.eval₂_X,
+    Polynomial.eval₂_C] at h
+  -- `h : (AdjoinRoot.root g) ^ 2 - (AdjoinRoot.of g) (fAtT p ... 0) = 0`,
+  -- `g := X^2 - C (fAtT p ... 0) : Polynomial (K0 p)`. Identify
+  -- `AdjoinRoot.of g` with `algebraMap (K0 p) (K1 p ...)` as its own
+  -- separate step (rather than a backward `rw [← AdjoinRoot.algebraMap_eq]`
+  -- folded into the chain above) — unrolling this way avoids forcing one
+  -- large `isDefEq` search across the whole rewritten term, which
+  -- previously timed out at the default heartbeat budget. No `set`, to
+  -- avoid the `let`-binding-vs-`rw` interaction this project has hit
+  -- before; the polynomial is spelled out again explicitly instead.
+  have hof :
+      (AdjoinRoot.of (X ^ 2 - C (fAtT p c0 c1 c2 c3 c4 0) : Polynomial (K0 p))) =
+        algebraMap (K0 p) (K1 p c0 c1 c2 c3 c4) :=
+    (AdjoinRoot.algebraMap_eq (K0 p)
+      (X ^ 2 - C (fAtT p c0 c1 c2 c3 c4 0) : Polynomial (K0 p))).symm
+  rw [hof] at h
   exact sub_eq_zero.mp h
 
 /-- **Step A, `K2`-level:** the analogous fact one level up, `w2 ^ 2 =
@@ -373,7 +405,9 @@ algebraMap (K1 p ...) (K2 p ...) (algebraMap (K0 p) (K1 p ...) (fAtT p ...
 1))`, i.e. `w2`'s defining quadratic living directly over `K1`. Identical
 argument to `w1_sq_eq`, one tower level up, against `g := X^2 - C
 (algebraMap (K0 p) (K1 p ...) (fAtT p ... 1))` (`K2`'s own defining
-polynomial, matching `TheDataDerivation.K2`'s definition exactly). -/
+polynomial, matching `TheDataDerivation.K2`'s definition exactly). Same
+unrolled-`rw` shape as `w1_sq_eq`, for the same heartbeat reason, and same
+no-`set` reasoning. -/
 private theorem w2_sq_eq (c0 c1 c2 c3 c4 : F p) :
     (w2 p c0 c1 c2 c3 c4) ^ 2 =
       algebraMap (K1 p c0 c1 c2 c3 c4) (K2 p c0 c1 c2 c3 c4)
@@ -381,8 +415,17 @@ private theorem w2_sq_eq (c0 c1 c2 c3 c4 : F p) :
   have h := AdjoinRoot.eval₂_root
     (X ^ 2 - C (algebraMap (K0 p) (K1 p c0 c1 c2 c3 c4) (fAtT p c0 c1 c2 c3 c4 1)) :
       Polynomial (K1 p c0 c1 c2 c3 c4))
-  rw [Polynomial.eval₂_sub, Polynomial.eval₂_pow, Polynomial.eval₂_X, Polynomial.eval₂_C,
-    ← AdjoinRoot.algebraMap_eq] at h
+  rw [Polynomial.eval₂_sub, Polynomial.eval₂_pow, Polynomial.eval₂_X,
+    Polynomial.eval₂_C] at h
+  have hof :
+      (AdjoinRoot.of
+        (X ^ 2 - C (algebraMap (K0 p) (K1 p c0 c1 c2 c3 c4) (fAtT p c0 c1 c2 c3 c4 1)) :
+          Polynomial (K1 p c0 c1 c2 c3 c4))) =
+        algebraMap (K1 p c0 c1 c2 c3 c4) (K2 p c0 c1 c2 c3 c4) :=
+    (AdjoinRoot.algebraMap_eq (K1 p c0 c1 c2 c3 c4)
+      (X ^ 2 - C (algebraMap (K0 p) (K1 p c0 c1 c2 c3 c4) (fAtT p c0 c1 c2 c3 c4 1)) :
+        Polynomial (K1 p c0 c1 c2 c3 c4))).symm
+  rw [hof] at h
   exact sub_eq_zero.mp h
 
 /-- **Step B:** `fAtX.eval (anchor1).1 = algebraMap (K1 p ...) (K2 p ...)
@@ -513,9 +556,19 @@ against `00_sample_specs.jl`, not yet done this pass) — flagged as a
 concrete next angle, not pursued further here since it introduces a new
 hypothesis (`v(x)^2 ≡ f mod u(x)` for the TARGET, distinct from
 `vRS_sq_eq_f_mod_uRS`'s claim about the COMPUTED `v_RS`) that itself needs
-sourcing and stating precisely before this can be attempted. -/
+sourcing and stating precisely before this can be attempted.
+
+**Type fix**: the divisor `X^2 + u1*X + u0` must live in `Polynomial (K2 p
+...)` to match `Npoly`'s type (a previous version wrote `C u1`/`C u0`
+directly, which are `Polynomial (F p)` since `u0 u1 : F p` — a type
+mismatch, since `X` here is `Polynomial (K2 p ...)`). Promoted `u0`,`u1`
+into `K2 p ...` via `algebraMap (F p) (K2 p ...)` before applying `C`,
+matching the pattern already used correctly elsewhere in this file (e.g.
+`fAtX`, `rhsVec`'s `algebraMap (F p) (K2 p ...)` calls). -/
 theorem dvd_N_u :
-    (X ^ 2 + C u1 * X + C u0) ∣ Npoly p c0 c1 c2 c3 c4 u0 u1 v0 v1 := by
+    (X ^ 2 + C (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u1) * X +
+        C (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u0)) ∣
+      Npoly p c0 c1 c2 c3 c4 u0 u1 v0 v1 := by
   sorry
 
 /-- The quotient `N(x) / ((X-t1)(X-t2)(X²+u1 X+u0))`, i.e. `cur` just before
@@ -528,7 +581,8 @@ wherever this is actually used against the three divisibility facts. -/
 noncomputable def curBeforeMonic : Polynomial (K2 p c0 c1 c2 c3 c4) :=
   ((Npoly p c0 c1 c2 c3 c4 u0 u1 v0 v1 /ₘ (X - C (anchor1 p c0 c1 c2 c3 c4).1))
       /ₘ (X - C (anchor2 p c0 c1 c2 c3 c4).1))
-    /ₘ (X ^ 2 + C u1 * X + C u0)
+    /ₘ (X ^ 2 + C (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u1) * X +
+        C (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u0))
 
 end ExactDivision
 

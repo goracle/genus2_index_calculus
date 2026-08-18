@@ -58,7 +58,7 @@ abbrev F : Type := ZMod p
 
 noncomputable instance instFieldF : Field (F p) := ZMod.instField p
 
-/-- The quintic's coefficients, symbolic-but-fixed (unchanged from the prior
+/-! The quintic's coefficients, symbolic-but-fixed (unchanged from the prior
 session's framing, revision note: "this part does NOT change again this
 pass"). `f(x) = c0 + c1 x + c2 x² + c3 x³ + c4 x⁴ + x⁵`, i.e.
 `F_POLY_ASC = [c0,c1,c2,c3,c4,1]` ascending — the leading coefficient is
@@ -74,7 +74,7 @@ existing file's `curveF : F → F` does). -/
 noncomputable def curvePoly : Polynomial (F p) :=
   C c0 + C c1 * X + C c2 * X ^ 2 + C c3 * X ^ 3 + C c4 * X ^ 4 + X ^ 5
 
-theorem curvePoly_natDegree (h4 : c4 ≠ 0 ∨ True) :
+theorem curvePoly_natDegree (_h4 : c4 ≠ 0 ∨ True) :
     True := by
   -- `curvePoly`'s degree-5 shape is by construction (leading term `X^5`,
   -- coefficient exactly 1); a `natDegree = 5` lemma is routine but not
@@ -119,9 +119,8 @@ theorem not_isSquare_of_odd_natDegree {g : Polynomial K} (hg : g ≠ 0)
     rintro rfl
     simp at hg
   have hdeg : (h ^ 2).natDegree = 2 * h.natDegree := natDegree_pow h 2
-  rw [hdeg] at hodd
-  exact (Nat.even_mul_succ_self h.natDegree).symm ▸ (by omega : ¬ Odd (2 * h.natDegree))
-    (by simpa using hodd)
+  rw [hdeg, Nat.odd_iff] at hodd
+  omega
 
 /-- **The irreducibility lemma proper.** For `f : K[t]` a polynomial ring
 over a field `K`, and its image `f_t := f.eval₂ (algebraMap K (FractionRing
@@ -195,7 +194,7 @@ mod (X^2+u1*X+u0)`'s coefficients `(r0[i], r1[i])` for `i = 0,...,maxI`.
 Ported as a `Fin (maxI+2) → F p × F p`-valued recursion (index shifted by
 one relative to Julia's 1-based `r0[i+1]` to match Lean's 0-based `Fin`,
 so `xmodUTable u0 u1 maxI n = (r0, r1)` for `X^n mod (X^2+u1 X+u0)`). -/
-def xmodUTable (u0 u1 : F p) : ℕ → F p × F p
+noncomputable def xmodUTable (u0 u1 : F p) : ℕ → F p × F p
   | 0 => (1, 0)
   | 1 => (0, 1)
   | n + 2 =>
@@ -208,7 +207,7 @@ via `(a0,a1)` at index `i` and `(b0,b1)` at index `i+1`) modulo the target
 `u(x) = x^2+u1 x+u0`, returning the `(r0,r1)` coefficients of the reduced
 `r0 + r1*x` (or, for `j=1`, `r0 + r1*x` after folding in the `v0,v1` data
 from the target `v(x) = v1*x+v0`). Ported directly from lines 50–58. -/
-def reduceMonomialModU (u0 u1 v0 v1 : F p) (i j : ℕ) : F p × F p :=
+noncomputable def reduceMonomialModU (u0 u1 v0 v1 : F p) (i j : ℕ) : F p × F p :=
   let (a0, a1) := xmodUTable p u0 u1 i
   if j = 0 then (a0, a1)
   else
