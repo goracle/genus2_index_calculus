@@ -552,8 +552,9 @@ private theorem coeffsOut_otherMap (col : Fin 4) :
     rw [hspec]; show (otherMap col).val = otherIdx[col.val]; rw [← hgetD]; rfl
   have hidx_eq : hex.choose = col.val :=
     otherIdx_nodup.getElem_inj_iff.mp hgoal_val
-  suffices h : (⟨hex.choose, hex.choose_spec.choose⟩ : Fin 4) = col by rw [h]
-  exact Fin.ext hidx_eq
+  have hchoose_lt4 : hex.choose < 4 := by rw [← otherIdx_length]; exact hex.choose_spec.choose
+  exact congrArg (cramerSolution p c0 c1 c2 c3 c4 u0 u1 v0 v1)
+    (Fin.ext (a := (⟨hex.choose, hchoose_lt4⟩ : Fin 4)) (b := col) hidx_eq)
 
 /-- **The five-slot defining identity**, row 0 of `A * coeffsOut = rhsVec`
 restated additively over all of `Fin 5` (not just `other_idx`) — see the
@@ -621,18 +622,20 @@ private theorem anchor_defining_eq_aux (hA : MatrixNondegenerate p c0 c1 c2 c3 c
   -- Step 1: Cramer's rule, unfolded pointwise at row `⟨a.val, _⟩`.
   have hmul := Matrix.mulVec_cramer A rhs
   have hrow := congrFun hmul (⟨a.val, by omega⟩ : Fin 4)
-  simp only [Matrix.mulVec, Matrix.dotProduct, Pi.smul_apply, smul_eq_mul] at hrow
+  simp only [Matrix.mulVec, dotProduct, Pi.smul_apply, smul_eq_mul] at hrow
   -- `hrow : ∑ col, A ⟨a.val,_⟩ col * A.cramer rhs col = A.det * rhs ⟨a.val,_⟩`.
   -- Step 2: divide by `A.det ≠ 0`, turning `cramer .../ det` into `cramerSolution`.
   have hrow' : ∑ col : Fin 4, A ⟨a.val, by omega⟩ col *
       (A.cramer rhs col / A.det) = rhs ⟨a.val, by omega⟩ := by
-    have := congrArg (· / A.det) hrow
-    dsimp only at this
-    rw [mul_comm A.det (rhs ⟨a.val, by omega⟩), mul_div_assoc,
-      mul_div_cancel_right₀ _ hdet] at this
-    rw [← this, Finset.sum_div]
-    congr 1
-    ext col
+    have hdiv := congrArg (· / A.det) hrow
+    simp only at hdiv
+    rw [mul_comm A.det (rhs ⟨a.val, by omega⟩),
+      mul_div_cancel_right₀ _ hdet] at hdiv
+    -- `hdiv : (∑ col, A ⟨a.val,_⟩ col * A.cramer rhs col) / A.det = rhs ⟨a.val,_⟩`
+    rw [Finset.sum_div] at hdiv
+    rw [← hdiv]
+    apply Finset.sum_congr rfl
+    intro col _
     rw [mul_div_assoc]
   have hcramerSolution : ∀ col : Fin 4, A.cramer rhs col / A.det =
       cramerSolution p c0 c1 c2 c3 c4 u0 u1 v0 v1 col := fun col => rfl
@@ -653,9 +656,10 @@ private theorem anchor_defining_eq_aux (hA : MatrixNondegenerate p c0 c1 c2 c3 c
       (-(px ^ bi_n * (if bj_n = 1 then py else 1))) := by
     show rhsVec p c0 c1 c2 c3 c4 u0 u1 v0 v1 ⟨a.val, by omega⟩ = _
     unfold rhsVec
-    have h2 : (⟨a.val, by omega⟩ : Fin 4).val < 2 := by omega
+    have h2 : (⟨a.val, by omega⟩ : Fin 4).val < 2 := a.isLt
     rw [dif_pos h2]
-    congr 1
+    have hidx : (⟨(⟨a.val, by omega⟩ : Fin 4).val, h2⟩ : Fin 2) = a := Fin.ext rfl
+    rw [hidx]
   rw [hrhsApply] at hrow'
   -- Move the RHS term to the left, recovering a 5-term additive identity
   -- (this is where `coeffsOut`'s extra `yIdx ↦ 1` slot re-enters).
