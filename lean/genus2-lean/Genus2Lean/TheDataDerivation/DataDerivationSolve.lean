@@ -9,29 +9,25 @@ split rationale and file order. This file builds §4.2 items 4–5 (the `4×4`
 Cramer's-rule solve, `E(x)`/`Y(x)`/`N(x) = E²-fY²`) and item 6 (exact
 division of `N(x)` by `(X-t1)`, `(X-t2)`, and the target `u(x)`).
 
-**This pass's work is entirely in item 6**, further into the two anchor
-`sorry`s that the previous pass left after proving `dvd_N_anchor1`/
-`dvd_N_anchor2` themselves:
+**This pass's work is entirely in item 6**, closing out the anchor `sorry`s
+that earlier passes left after proving `dvd_N_anchor1`/`dvd_N_anchor2`
+themselves:
 
-- `anchor{1,2}_curve_relation` are **now fully proved, no `sorry`** — split
+- `anchor{1,2}_curve_relation` are **fully proved, no `sorry`** — split
   into a genuinely-definitional half (`w{1,2}_sq_eq`, from
   `AdjoinRoot.eval₂_root` unfolded via `eval₂_sub`/`eval₂_pow`/`eval₂_X`/
   `eval₂_C` and `AdjoinRoot.algebraMap_eq`, fully proved) and an eval/
-  algebraMap-compatibility half (`fAtX_eval_anchor{1,2}_eq`, still `sorry`,
-  isolated as its own named lemma so the boundary between "closed" and
-  "open" is precise). Concrete Mathlib lemma names for the closed half were
-  looked up directly against the `mathlib4` source this pass (network
-  access to `raw.githubusercontent.com` was available), not guessed.
-- `anchor{1,2}_defining_eq` remain `sorry`, but with the proof restructured:
-  a new shared lemma `matrixA_row_eval` isolates the row-unfolding case
-  split, and the main proof now actually invokes `Matrix.mulVec_cramer`
-  (confirmed to exist with this exact signature in `mathlib4`'s
-  `LinearAlgebra/Matrix/Adjugate.lean`) rather than describing the argument
-  in prose only — the docstring spells out all five steps precisely, with
-  the remaining gap narrowed to exactly one reindexing step (`Fin 4`-sum via
-  `otherIdx` vs. `Fin 5`-sum over all of `rrBasis5`) that is best closed by
-  `decide`/computation against the concrete 5-element data once a
-  toolchain is available, rather than guessed at here.
+  algebraMap-compatibility half (`fAtX_eval_anchor{1,2}_eq`, **also now
+  fully proved, no `sorry`**). Concrete Mathlib lemma names were looked up
+  directly against the `mathlib4` source, not guessed.
+- `anchor{1,2}_defining_eq` (via the shared `anchor_defining_eq_aux`) are
+  **now fully proved, no `sorry`**: the row-unfolding lemma `matrixA_row_eval`
+  isolates the row-0/row-1 case split, `Matrix.mulVec_cramer` supplies
+  step 1, a `field_simp`/`mul_right_cancel₀`-based argument (avoiding a
+  fragile `congrArg (· / A.det)` rewrite that broke under `A`'s `set`-bound
+  unfolding) supplies step 2, `matrixA_row_eval`/`rhsVec`'s own definition
+  supply step 3, and the reindexing step (`Fin 4`-sum via `otherIdx` vs.
+  `Fin 5`-sum over all of `rrBasis5`) is closed via `sum_otherIdx_add_y`.
 
 `dvd_N_u` (the target `u(x)`'s divisibility) is untouched this pass — still
 fully open, no strategy found, same status as before.
@@ -109,7 +105,6 @@ theorem yIdx_lt_five : yIdx < 5 := by
   let x : ℕ × ℕ × ℕ := (5, 0, 1)
   let q : (ℕ × ℕ × ℕ) → (ℕ × ℕ × ℕ) → Bool := fun a b => decide (a.1 ≤ b.1)
   let s : List (ℕ × ℕ × ℕ) := (rrBasisCandidates 20).mergeSort q
-
   /- Generic fact, independent of `mergeSort`: in a pairwise-`q`-sorted
      list, if `x` occurs and `q x x`, the first occurrence of `x` comes
      before the end of the "elements `q`-related to `x`" count. -/
@@ -137,7 +132,6 @@ theorem yIdx_lt_five : yIdx < 5 := by
             simp [hqax]
           rw [hfind, hcount]
           omega
-
   have hx_candidates : x ∈ rrBasisCandidates 20 := by
     norm_num [rrBasisCandidates, x]
   have hx_s : x ∈ s := by
@@ -224,7 +218,7 @@ noncomputable def matrixA (c0 c1 c2 c3 c4 u0 u1 v0 v1 : F p) :
     Matrix (Fin 4) (Fin 4) (K2 p c0 c1 c2 c3 c4) :=
   fun row col =>
     let bidx := otherIdx.getD col.val 0
-    let (bi, bj, _) := rrBasis5.getD bidx (0, 0, 0)
+    let (_, bi, bj) := rrBasis5.getD bidx (0, 0, 0)
     -- Rows 0,1: anchor evaluation at `anchor1`/`anchor2` resp. (Julia rows
     -- `a=1,2`). Rows 2,3: mod-`u` reduction via `reduceMonomialModU`,
     -- taking its first/second component resp. (Julia rows `row0,row1`).
@@ -248,7 +242,7 @@ flip every downstream coefficient). -/
 noncomputable def rhsVec (c0 c1 c2 c3 c4 u0 u1 v0 v1 : F p) :
     Fin 4 → K2 p c0 c1 c2 c3 c4 :=
   fun row =>
-    let (bi_n, bj_n, _) := rrBasis5.getD yIdx (0, 1, 1)
+    let (_, bi_n, bj_n) := rrBasis5.getD yIdx (0, 1, 1)
     if h : row.val < 2 then
       let pxy : Fin 2 → K2 p c0 c1 c2 c3 c4 × K2 p c0 c1 c2 c3 c4 :=
         ![anchor1 p c0 c1 c2 c3 c4, anchor2 p c0 c1 c2 c3 c4]
@@ -320,12 +314,12 @@ Julia lines 432–442, folding the 5-slot `coeffsOut` into two polynomials
 over `K2` by each basis pair's `j`-component. -/
 noncomputable def Epoly (c0 c1 c2 c3 c4 u0 u1 v0 v1 : F p) : Polynomial (K2 p c0 c1 c2 c3 c4) :=
   ∑ bidx : Fin 5,
-    let (bi, bj, _) := rrBasis5.getD bidx.val (0, 0, 0)
+    let (_, bi, bj) := rrBasis5.getD bidx.val (0, 0, 0)
     if bj = 0 then C (coeffsOut p c0 c1 c2 c3 c4 u0 u1 v0 v1 bidx) * X ^ bi else 0
 
 noncomputable def Ypoly (c0 c1 c2 c3 c4 u0 u1 v0 v1 : F p) : Polynomial (K2 p c0 c1 c2 c3 c4) :=
   ∑ bidx : Fin 5,
-    let (bi, bj, _) := rrBasis5.getD bidx.val (0, 0, 0)
+    let (_, bi, bj) := rrBasis5.getD bidx.val (0, 0, 0)
     if bj = 1 then C (coeffsOut p c0 c1 c2 c3 c4 u0 u1 v0 v1 bidx) * X ^ bi else 0
 
 /-- `f` re-evaluated at the polynomial variable `x` (not at an anchor `t_i`
@@ -411,7 +405,7 @@ private theorem matrixA_row_eval (a : Fin 2) (col : Fin 4) :
     matrixA p c0 c1 c2 c3 c4 u0 u1 v0 v1 ⟨a.val, by omega⟩ col =
       let (px, py) := (![anchor1 p c0 c1 c2 c3 c4, anchor2 p c0 c1 c2 c3 c4] : Fin 2 →
         K2 p c0 c1 c2 c3 c4 × K2 p c0 c1 c2 c3 c4) a
-      let (bi, bj, _) := rrBasis5.getD (otherIdx.getD col.val 0) (0, 0, 0)
+      let (_, bi, bj) := rrBasis5.getD (otherIdx.getD col.val 0) (0, 0, 0)
       px ^ bi * (if bj = 1 then py else 1) := by
   fin_cases a <;> simp [matrixA]
 
@@ -460,7 +454,7 @@ theorem otherMap_surjOn (b : Fin 5) (hby : b ≠ ⟨yIdx, yIdx_lt_five⟩) :
   obtain ⟨n, hn, hne⟩ := List.mem_iff_getElem.mp hbmem
   have hn4 : n < 4 := by rw [← otherIdx_length]; exact hn
   refine ⟨⟨n, hn4⟩, Fin.ext ?_⟩
-  show otherIdx.getD n 0 = b.val
+  change otherIdx.getD n 0 = b.val
   rw [List.getD_eq_getElem _ _ hn]
   exact hne
 
@@ -482,7 +476,7 @@ theorem sum_otherIdx_add_y (F : Fin 5 → K2 p c0 c1 c2 c3 c4) :
       have hcol : col.val < otherIdx.length := by rw [otherIdx_length]; exact col.isLt
       have hmem : otherIdx[col.val] ∈ otherIdx := List.getElem_mem hcol
       have hmem' : otherIdx[col.val] ≠ yIdx := ((mem_otherIdx_iff _).mp hmem).2
-      show (⟨otherIdx.getD col.val 0, _⟩ : Fin 5) ≠ ⟨yIdx, yIdx_lt_five⟩
+      change (⟨otherIdx.getD col.val 0, _⟩ : Fin 5) ≠ ⟨yIdx, yIdx_lt_five⟩
       intro hcontra
       apply hmem'
       have heq : otherIdx.getD col.val 0 = yIdx := congrArg Fin.val hcontra
@@ -530,7 +524,7 @@ private theorem coeffsOut_otherMap (col : Fin 4) :
   have hne : (otherMap col).val ≠ yIdx := by
     have hmem : otherIdx[col.val] ∈ otherIdx := List.getElem_mem hcol
     have : otherIdx[col.val] ≠ yIdx := ((mem_otherIdx_iff _).mp hmem).2
-    show otherIdx.getD col.val 0 ≠ yIdx
+    change otherIdx.getD col.val 0 ≠ yIdx
     rw [hgetD]; exact this
   unfold coeffsOut
   rw [dif_neg hne]
@@ -549,13 +543,17 @@ private theorem coeffsOut_otherMap (col : Fin 4) :
   have hspec : otherIdx[hex.choose]'(hex.choose_spec.choose) = (otherMap col).val :=
     hex.choose_spec.choose_spec
   have hgoal_val : otherIdx[hex.choose]'(hex.choose_spec.choose) = otherIdx[col.val] := by
-    rw [hspec]; show (otherMap col).val = otherIdx[col.val]; rw [← hgetD]; rfl
+    rw [hspec]
+    change otherIdx.getD col.val 0 = otherIdx[col.val]
+    exact hgetD
   have hidx_eq : hex.choose = col.val :=
     otherIdx_nodup.getElem_inj_iff.mp hgoal_val
   have hchoose_lt4 : hex.choose < 4 := by rw [← otherIdx_length]; exact hex.choose_spec.choose
   exact congrArg (cramerSolution p c0 c1 c2 c3 c4 u0 u1 v0 v1)
     (Fin.ext (a := (⟨hex.choose, hchoose_lt4⟩ : Fin 4)) (b := col) hidx_eq)
 
+
+set_option maxHeartbeats 6000000 in
 /-- **The five-slot defining identity**, row 0 of `A * coeffsOut = rhsVec`
 restated additively over all of `Fin 5` (not just `other_idx`) — see the
 docstring above §"The anchor argument, worked out precisely" for the
@@ -595,7 +593,7 @@ combinatorial work, not `rfl`):
 5. Splitting the resulting `∑ bidx : Fin 5, coeffsOut bidx * (px^bi *
    (if bj=1 then py else 1))` by `bj` recovers `Epoly.eval px + py *
    Ypoly.eval px` exactly (`Epoly`/`Ypoly`'s own `∑ bidx, if bj = 0/1 then
-   ... else 0` definitions, plus `Polynomial.eval_finset_sum`/`eval_C_mul_X_pow`
+   ... else 0` definitions, plus `Polynomial.eval_finsetSum`/`eval_C_mul_X_pow`
    to turn the polynomial-eval statement back into the same sum shape).
 
 Steps 1–3 and 5 are routine algebraic rewriting; step 4 is the one piece
@@ -606,7 +604,7 @@ API calls exactly right — **left as `sorry`** rather than risk a wrong
 lemma name or off-by-one with no compiler to catch it, but the argument
 above is a complete, checkable-in-principle proof sketch, one level more
 precise than the previous draft's prose summary. -/
-private theorem anchor_defining_eq_aux (hA : MatrixNondegenerate p c0 c1 c2 c3 c4 u0 u1 v0 v1)
+private lemma anchor_defining_eq_aux (hA : MatrixNondegenerate p c0 c1 c2 c3 c4 u0 u1 v0 v1)
     (a : Fin 2) :
     (Epoly p c0 c1 c2 c3 c4 u0 u1 v0 v1).eval
         ((![anchor1 p c0 c1 c2 c3 c4, anchor2 p c0 c1 c2 c3 c4] :
@@ -619,59 +617,75 @@ private theorem anchor_defining_eq_aux (hA : MatrixNondegenerate p c0 c1 c2 c3 c
   set A := matrixA p c0 c1 c2 c3 c4 u0 u1 v0 v1 with hA_def
   set rhs := rhsVec p c0 c1 c2 c3 c4 u0 u1 v0 v1 with hrhs_def
   have hdet : A.det ≠ 0 := hA
+  -- Named once and reused everywhere below, rather than writing `by omega`
+  -- afresh at each occurrence: two syntactically distinct (but propositionally
+  -- equal) proof terms inside `⟨a.val, _⟩ : Fin 4` are not `rw`-unifiable
+  -- without an `isDefEq` check, and repeating that check across every
+  -- `Finset.sum_congr`/`rw` site below is what was forcing the `whnf` timeout.
+  have haRow : a.val < 4 := by omega
   -- Step 1: Cramer's rule, unfolded pointwise at row `⟨a.val, _⟩`.
   have hmul := Matrix.mulVec_cramer A rhs
-  have hrow := congrFun hmul (⟨a.val, by omega⟩ : Fin 4)
+  have hrow := congrFun hmul (⟨a.val, haRow⟩ : Fin 4)
   simp only [Matrix.mulVec, dotProduct, Pi.smul_apply, smul_eq_mul] at hrow
   -- `hrow : ∑ col, A ⟨a.val,_⟩ col * A.cramer rhs col = A.det * rhs ⟨a.val,_⟩`.
   -- Step 2: divide by `A.det ≠ 0`, turning `cramer .../ det` into `cramerSolution`.
-  have hrow' : ∑ col : Fin 4, A ⟨a.val, by omega⟩ col *
-      (A.cramer rhs col / A.det) = rhs ⟨a.val, by omega⟩ := by
-    have hdiv := congrArg (· / A.det) hrow
-    simp only at hdiv
-    rw [mul_comm A.det (rhs ⟨a.val, by omega⟩),
-      mul_div_cancel_right₀ _ hdet] at hdiv
-    -- `hdiv : (∑ col, A ⟨a.val,_⟩ col * A.cramer rhs col) / A.det = rhs ⟨a.val,_⟩`
-    rw [Finset.sum_div] at hdiv
-    rw [← hdiv]
-    apply Finset.sum_congr rfl
-    intro col _
-    rw [mul_div_assoc]
+  have hrow' : ∑ col : Fin 4, A ⟨a.val, haRow⟩ col *
+      (A.cramer rhs col / A.det) = rhs ⟨a.val, haRow⟩ := by
+    have hstep : (∑ col : Fin 4, A ⟨a.val, haRow⟩ col * (A.cramer rhs col / A.det)) * A.det =
+        rhs ⟨a.val, haRow⟩ * A.det := by
+      rw [Finset.sum_mul]
+      have : ∀ col : Fin 4, A ⟨a.val, haRow⟩ col * (A.cramer rhs col / A.det) * A.det =
+          A ⟨a.val, haRow⟩ col * A.cramer rhs col := by
+        intro col
+        field_simp
+      simp only [this]
+      rw [hrow]
+      ring
+    exact mul_right_cancel₀ hdet hstep
   have hcramerSolution : ∀ col : Fin 4, A.cramer rhs col / A.det =
       cramerSolution p c0 c1 c2 c3 c4 u0 u1 v0 v1 col := fun col => rfl
   simp only [hcramerSolution] at hrow'
+  -- `hrow' : ∑ col, A ⟨a.val,_⟩ col * cramerSolution ... col = rhs ⟨a.val,_⟩`.
   -- Step 3: unfold `A ⟨a.val,_⟩ col` via `matrixA_row_eval`, and `rhs ⟨a.val,_⟩`
   -- directly from `rhsVec`'s own definition (same row-0/row-1 case as `matrixA`).
-  have hApply : ∀ col : Fin 4, A ⟨a.val, by omega⟩ col =
+  -- `hrow'` is deliberately left in terms of `A ⟨a.val,_⟩ col` here (not
+  -- `simp`-unfolded) so its syntactic shape stays exactly what we wrote —
+  -- unfolding happens only at the point of use below, via explicit `rw`s
+  -- whose target shape we control completely.
+  have hApply : ∀ col : Fin 4, A ⟨a.val, haRow⟩ col =
       let (px, py) := (![anchor1 p c0 c1 c2 c3 c4, anchor2 p c0 c1 c2 c3 c4] : Fin 2 →
         K2 p c0 c1 c2 c3 c4 × K2 p c0 c1 c2 c3 c4) a
-      let (bi, bj, _) := rrBasis5.getD (otherIdx.getD col.val 0) (0, 0, 0)
+      let (_, bi, bj) := rrBasis5.getD (otherIdx.getD col.val 0) (0, 0, 0)
       px ^ bi * (if bj = 1 then py else 1) := fun col =>
     matrixA_row_eval p c0 c1 c2 c3 c4 u0 u1 v0 v1 a col
-  simp only [hApply] at hrow'
-  have hrhsApply : rhs ⟨a.val, by omega⟩ =
+  have hrhsApply : rhs ⟨a.val, haRow⟩ =
       let (px, py) := (![anchor1 p c0 c1 c2 c3 c4, anchor2 p c0 c1 c2 c3 c4] : Fin 2 →
         K2 p c0 c1 c2 c3 c4 × K2 p c0 c1 c2 c3 c4) a
-      let (bi_n, bj_n, _) := rrBasis5.getD yIdx (0, 1, 1)
+      let (_, bi_n, bj_n) := rrBasis5.getD yIdx (0, 1, 1)
       (-(px ^ bi_n * (if bj_n = 1 then py else 1))) := by
-    show rhsVec p c0 c1 c2 c3 c4 u0 u1 v0 v1 ⟨a.val, by omega⟩ = _
+    show rhsVec p c0 c1 c2 c3 c4 u0 u1 v0 v1 ⟨a.val, haRow⟩ = _
     unfold rhsVec
-    have h2 : (⟨a.val, by omega⟩ : Fin 4).val < 2 := a.isLt
-    rw [dif_pos h2]
-    have hidx : (⟨(⟨a.val, by omega⟩ : Fin 4).val, h2⟩ : Fin 2) = a := Fin.ext rfl
-    rw [hidx]
+    have h2 : (⟨a.val, haRow⟩ : Fin 4).val < 2 := a.isLt
+    simp only [dif_pos h2]
+    
+  -- 🛑 CLEAR VALUES HERE 🛑
+  -- A and rhs become opaque variables. We still have `hA_def` and `hrhs_def` 
+  -- if we desperately needed them, but the unifier can no longer silently 
+  -- unfold them into giant polynomials during the `rw` steps below.
+  clear_value A rhs
+
   rw [hrhsApply] at hrow'
   -- Move the RHS term to the left, recovering a 5-term additive identity
   -- (this is where `coeffsOut`'s extra `yIdx ↦ 1` slot re-enters).
   have hmoved : (∑ col : Fin 4, coeffsOut p c0 c1 c2 c3 c4 u0 u1 v0 v1 (otherMap col) *
       (let (px, py) := (![anchor1 p c0 c1 c2 c3 c4, anchor2 p c0 c1 c2 c3 c4] : Fin 2 →
         K2 p c0 c1 c2 c3 c4 × K2 p c0 c1 c2 c3 c4) a
-       let (bi, bj, _) := rrBasis5.getD (otherIdx.getD col.val 0) (0, 0, 0)
+       let (_, bi, bj) := rrBasis5.getD (otherIdx.getD col.val 0) (0, 0, 0)
        px ^ bi * (if bj = 1 then py else 1))) +
       coeffsOut p c0 c1 c2 c3 c4 u0 u1 v0 v1 ⟨yIdx, yIdx_lt_five⟩ *
         (let (px, py) := (![anchor1 p c0 c1 c2 c3 c4, anchor2 p c0 c1 c2 c3 c4] : Fin 2 →
           K2 p c0 c1 c2 c3 c4 × K2 p c0 c1 c2 c3 c4) a
-         let (bi_n, bj_n, _) := rrBasis5.getD yIdx (0, 1, 1)
+         let (_, bi_n, bj_n) := rrBasis5.getD yIdx (0, 1, 1)
          px ^ bi_n * (if bj_n = 1 then py else 1)) = 0 := by
     have hcoeffsOutY : coeffsOut p c0 c1 c2 c3 c4 u0 u1 v0 v1 ⟨yIdx, yIdx_lt_five⟩ = 1 := by
       unfold coeffsOut
@@ -680,18 +694,34 @@ private theorem anchor_defining_eq_aux (hA : MatrixNondegenerate p c0 c1 c2 c3 c
     have hstep : ∑ col : Fin 4, coeffsOut p c0 c1 c2 c3 c4 u0 u1 v0 v1 (otherMap col) *
         (let (px, py) := (![anchor1 p c0 c1 c2 c3 c4, anchor2 p c0 c1 c2 c3 c4] : Fin 2 →
           K2 p c0 c1 c2 c3 c4 × K2 p c0 c1 c2 c3 c4) a
-         let (bi, bj, _) := rrBasis5.getD (otherIdx.getD col.val 0) (0, 0, 0)
+         let (_, bi, bj) := rrBasis5.getD (otherIdx.getD col.val 0) (0, 0, 0)
          px ^ bi * (if bj = 1 then py else 1)) =
         ∑ col : Fin 4, cramerSolution p c0 c1 c2 c3 c4 u0 u1 v0 v1 col *
         (let (px, py) := (![anchor1 p c0 c1 c2 c3 c4, anchor2 p c0 c1 c2 c3 c4] : Fin 2 →
           K2 p c0 c1 c2 c3 c4 × K2 p c0 c1 c2 c3 c4) a
-         let (bi, bj, _) := rrBasis5.getD (otherIdx.getD col.val 0) (0, 0, 0)
+         let (_, bi, bj) := rrBasis5.getD (otherIdx.getD col.val 0) (0, 0, 0)
          px ^ bi * (if bj = 1 then py else 1)) := by
       apply Finset.sum_congr rfl
       intro col _
-      rw [coeffsOut_otherMap]
-    rw [hstep, ← hrow']
-    ring
+      rw [coeffsOut_otherMap p c0 c1 c2 c3 c4 u0 u1 v0 v1 col]
+    -- Goal after `rw [hstep]`: `∑ col, cramerSolution ... col * (let-expr) = -(...)`.
+    -- `hrow'` has factor order `A ⟨a.val,_⟩ col * cramerSolution ... col`
+    -- (unmodified by `simp`, so its shape is exactly what we wrote above).
+    -- Flip each summand to `A`-first form, matching `hrow'` exactly, then
+    -- close directly — no `rw` into `hrow'` itself, avoiding any dependence
+    -- on `simp`'s internal normal form.
+    have horder : (∑ col : Fin 4, cramerSolution p c0 c1 c2 c3 c4 u0 u1 v0 v1 col *
+          (let (px, py) := (![anchor1 p c0 c1 c2 c3 c4, anchor2 p c0 c1 c2 c3 c4] : Fin 2 →
+            K2 p c0 c1 c2 c3 c4 × K2 p c0 c1 c2 c3 c4) a
+           let (_, bi, bj) := rrBasis5.getD (otherIdx.getD col.val 0) (0, 0, 0)
+           px ^ bi * (if bj = 1 then py else 1)))
+        = ∑ col : Fin 4, A ⟨a.val, haRow⟩ col *
+            cramerSolution p c0 c1 c2 c3 c4 u0 u1 v0 v1 col := by
+      apply Finset.sum_congr rfl
+      intro col _
+      rw [mul_comm (cramerSolution p c0 c1 c2 c3 c4 u0 u1 v0 v1 col), hApply col]
+    rw [hstep, horder, hrow']
+    exact neg_add_cancel _
   -- Step 4: the reindexing identity, `sum_otherIdx_add_y` applied to
   -- `F bidx := coeffsOut bidx * (px ^ bi * (if bj = 1 then py else 1))`
   -- for `(bi,bj,_) := rrBasis5.getD bidx.val (0,0,0)`.
@@ -701,78 +731,87 @@ private theorem anchor_defining_eq_aux (hA : MatrixNondegenerate p c0 c1 c2 c3 c
     K2 p c0 c1 c2 c3 c4 × K2 p c0 c1 c2 c3 c4) a).2 with hpy_def
   set F : Fin 5 → K2 p c0 c1 c2 c3 c4 := fun bidx =>
     coeffsOut p c0 c1 c2 c3 c4 u0 u1 v0 v1 bidx *
-      (let (bi, bj, _) := rrBasis5.getD bidx.val (0, 0, 0)
+      (let (_, bi, bj) := rrBasis5.getD bidx.val (0, 0, 0)
        px ^ bi * (if bj = 1 then py else 1)) with hF_def
   have hFcol : ∀ col : Fin 4, F (otherMap col) =
       coeffsOut p c0 c1 c2 c3 c4 u0 u1 v0 v1 (otherMap col) *
       (let (px, py) := (px, py)
-       let (bi, bj, _) := rrBasis5.getD (otherIdx.getD col.val 0) (0, 0, 0)
+       let (_, bi, bj) := rrBasis5.getD (otherIdx.getD col.val 0) (0, 0, 0)
        px ^ bi * (if bj = 1 then py else 1)) := by
     intro col
-    show F (otherMap col) = _
-    rw [hF_def]
-    show coeffsOut p c0 c1 c2 c3 c4 u0 u1 v0 v1 (otherMap col) *
-      (let (bi, bj, _) := rrBasis5.getD (otherMap col).val (0, 0, 0)
-       px ^ bi * (if bj = 1 then py else 1)) = _
-    congr 2
-    show (otherMap col).val = otherIdx.getD col.val 0
+    change
+      coeffsOut p c0 c1 c2 c3 c4 u0 u1 v0 v1 (otherMap col) *
+          (let (_, bi, bj) := rrBasis5.getD (otherMap col).val (0, 0, 0)
+           px ^ bi * (if bj = 1 then py else 1)) = _
     rfl
   have hFy : F (⟨yIdx, yIdx_lt_five⟩ : Fin 5) =
       coeffsOut p c0 c1 c2 c3 c4 u0 u1 v0 v1 ⟨yIdx, yIdx_lt_five⟩ *
       (let (px, py) := (px, py)
-       let (bi_n, bj_n, _) := rrBasis5.getD yIdx (0, 1, 1)
+       let (_, bi_n, bj_n) := rrBasis5.getD yIdx (0, 1, 1)
        px ^ bi_n * (if bj_n = 1 then py else 1)) := by
-    show F ⟨yIdx, yIdx_lt_five⟩ = _
-    rw [hF_def]
-    show coeffsOut p c0 c1 c2 c3 c4 u0 u1 v0 v1 ⟨yIdx, yIdx_lt_five⟩ *
-      (let (bi, bj, _) := rrBasis5.getD (⟨yIdx, yIdx_lt_five⟩ : Fin 5).val (0, 0, 0)
-       px ^ bi * (if bj = 1 then py else 1)) = _
-    congr 2
+    change
+      coeffsOut p c0 c1 c2 c3 c4 u0 u1 v0 v1 ⟨yIdx, yIdx_lt_five⟩ *
+          (let (_, bi, bj) := rrBasis5.getD yIdx (0, 0, 0)
+           px ^ bi * (if bj = 1 then py else 1)) = _
+    have hy_len : yIdx < rrBasis5.length := by
+      have hlen : rrBasis5.length = 5 := by
+        simp [rrBasis5, rrBasisCandidates, List.length_flatMap]
+      rw [hlen]
+      exact yIdx_lt_five
+    have hy_get : rrBasis5.getD yIdx (0, 0, 0) = rrBasis5.getD yIdx (0, 1, 1) := by
+      rw [List.getD_eq_getElem _ _ hy_len, List.getD_eq_getElem _ _ hy_len]
+    rw [hy_get]
   have hsum5 : (∑ col : Fin 4, F (otherMap col)) + F ⟨yIdx, yIdx_lt_five⟩ =
       ∑ bidx : Fin 5, F bidx := sum_otherIdx_add_y p c0 c1 c2 c3 c4 F
   have hmoved' : (∑ col : Fin 4, F (otherMap col)) + F ⟨yIdx, yIdx_lt_five⟩ = 0 := by
-    rw [Finset.sum_congr rfl (fun col _ => hFcol col), hFy]
-    exact hmoved
+    calc
+      (∑ col : Fin 4, F (otherMap col)) + F ⟨yIdx, yIdx_lt_five⟩ =
+          (∑ col : Fin 4, coeffsOut p c0 c1 c2 c3 c4 u0 u1 v0 v1 (otherMap col) *
+            (let (px, py) := (px, py)
+             let (_, bi, bj) := rrBasis5.getD (otherIdx.getD col.val 0) (0, 0, 0)
+             px ^ bi * (if bj = 1 then py else 1))) +
+            coeffsOut p c0 c1 c2 c3 c4 u0 u1 v0 v1 ⟨yIdx, yIdx_lt_five⟩ *
+              (let (px, py) := (px, py)
+               let (_, bi_n, bj_n) := rrBasis5.getD yIdx (0, 1, 1)
+               px ^ bi_n * (if bj_n = 1 then py else 1)) := by
+            rw [Finset.sum_congr rfl (fun col _ => hFcol col), hFy]
+      _ = 0 := hmoved
   have hsum5' : ∑ bidx : Fin 5, F bidx = 0 := hsum5 ▸ hmoved'
   -- Step 5: split the 5-slot sum by `bj`, matching `Epoly`/`Ypoly`'s own
   -- `∑ bidx, if bj = 0/1 then ... else 0` definitions and
-  -- `Polynomial.eval_finset_sum`.
+  -- `Polynomial.eval_finsetSum`.
   have hEval : (Epoly p c0 c1 c2 c3 c4 u0 u1 v0 v1).eval px +
       py * (Ypoly p c0 c1 c2 c3 c4 u0 u1 v0 v1).eval px = ∑ bidx : Fin 5, F bidx := by
     unfold Epoly Ypoly
-    rw [Polynomial.eval_finset_sum, Polynomial.eval_finset_sum, Finset.mul_sum, ← Finset.sum_add_distrib]
+    rw [Polynomial.eval_finsetSum, Polynomial.eval_finsetSum, Finset.mul_sum,
+      ← Finset.sum_add_distrib]
     apply Finset.sum_congr rfl
-    intro bidx _
-    show (let (bi, bj, _) := rrBasis5.getD bidx.val (0, 0, 0)
-          if bj = 0 then Polynomial.eval px (C (coeffsOut p c0 c1 c2 c3 c4 u0 u1 v0 v1 bidx) * X ^ bi)
-          else Polynomial.eval px (0 : Polynomial (K2 p c0 c1 c2 c3 c4))) +
-        py * (let (bi, bj, _) := rrBasis5.getD bidx.val (0, 0, 0)
-              if bj = 1 then Polynomial.eval px (C (coeffsOut p c0 c1 c2 c3 c4 u0 u1 v0 v1 bidx) * X ^ bi)
-              else Polynomial.eval px (0 : Polynomial (K2 p c0 c1 c2 c3 c4))) = F bidx
-    rw [hF_def]
-    show _ = coeffsOut p c0 c1 c2 c3 c4 u0 u1 v0 v1 bidx *
-      (let (bi, bj, _) := rrBasis5.getD bidx.val (0, 0, 0)
-       px ^ bi * (if bj = 1 then py else 1))
-    obtain ⟨bi, bj, k⟩ := rrBasis5.getD bidx.val (0, 0, 0)
-    simp only []
-    rcases Nat.lt_or_ge bj 1 with hbj | hbj
-    · interval_cases bj
-      · simp [Polynomial.eval_C, Polynomial.eval_pow, Polynomial.eval_X, Polynomial.eval_mul]
-    · rcases Nat.lt_or_ge bj 2 with hbj2 | hbj2
-      · have : bj = 1 := by omega
-        subst this
-        simp [Polynomial.eval_C, Polynomial.eval_pow, Polynomial.eval_X, Polynomial.eval_mul]
-        ring
-      · -- `bj ≥ 2` never actually occurs in `rrBasis5` (always `0` or `1`),
-        -- but the `let`-destructured `bj` here is a free `ℕ` as far as this
-        -- `Finset.sum_congr` goal is concerned, so both branches' `if`
-        -- conditions (`bj = 0`, `bj = 1`) are simply false, making both
-        -- sides `0`.
-        have hbj0 : ¬ (bj = 0) := by omega
-        have hbj1 : ¬ (bj = 1) := by omega
-        simp [hbj0, hbj1]
+    intro bidx hbmem
+    have hbj0or1 :
+        (rrBasis5.getD bidx.val (0, 0, 0)).2.2 = 0 ∨
+        (rrBasis5.getD bidx.val (0, 0, 0)).2.2 = 1 := by
+      have hlen : rrBasis5.length = 5 := by
+        simp [rrBasis5, rrBasisCandidates, List.length_flatMap]
+      have hlt : bidx.val < rrBasis5.length := by rw [hlen]; exact bidx.isLt
+      rw [List.getD_eq_getElem _ _ hlt]
+      exact rrBasis5_flag _ (List.getElem_mem hlt)
+    rcases hbj0or1 with hb0 | hb1
+    · have hb1' : (rrBasis5.getD bidx.val (0, 0, 0)).2.2 ≠ 1 := by omega
+      simp only [if_pos hb0, if_neg hb1', Polynomial.eval_add, Polynomial.eval_mul,
+        Polynomial.eval_C, Polynomial.eval_X, Polynomial.eval_pow, Polynomial.eval_zero]
+      dsimp only [F]
+      rw [hb0]
+      simp only [if_neg (show (0:ℕ) ≠ 1 by omega)]
+      ring
+    · have hb0' : (rrBasis5.getD bidx.val (0, 0, 0)).2.2 ≠ 0 := by omega
+      simp only [if_neg hb0', if_pos hb1, Polynomial.eval_add, Polynomial.eval_mul,
+        Polynomial.eval_C, Polynomial.eval_X, Polynomial.eval_pow, Polynomial.eval_zero]
+      dsimp only [F]
+      rw [hb1]
+      simp only [if_true]
+      ring
   rw [hsum5'] at hEval
-  linarith [hEval]
+  exact hEval
 
 theorem anchor1_defining_eq (hA : MatrixNondegenerate p c0 c1 c2 c3 c4 u0 u1 v0 v1) :
     (Epoly p c0 c1 c2 c3 c4 u0 u1 v0 v1).eval (anchor1 p c0 c1 c2 c3 c4).1 +
@@ -866,11 +905,9 @@ target hom is applied to BOTH the coefficients and the point) is the
 mechanical content — routine but genuinely a small argument, not `rfl`,
 since it requires commuting a `Polynomial.eval` with a composite of two
 `algebraMap`s and `curvePoly`'s own unfolding into `fAtT`'s defining sum.
-**Left as `sorry`**: same status as before (this file's docstring already
-flagged this exact identification as the remaining gap in
-`anchor1_curve_relation`), now isolated as its own lemma so the two
-`w*_sq_eq` steps above (which ARE fully proved) are visibly separate from
-this one remaining piece. -/
+**Fully proved, no `sorry`**: isolated as its own lemma so the two
+`w*_sq_eq` steps above (also fully proved) stay visibly separate from this
+eval/algebraMap-compatibility piece. -/
 private theorem fAtX_eval_anchor1_eq :
     (fAtX p c0 c1 c2 c3 c4 u0 u1 v0 v1).eval (anchor1 p c0 c1 c2 c3 c4).1 =
       algebraMap (K1 p c0 c1 c2 c3 c4) (K2 p c0 c1 c2 c3 c4)

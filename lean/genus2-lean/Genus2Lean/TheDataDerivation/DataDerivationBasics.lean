@@ -274,6 +274,32 @@ blocks of 2 and `5` candidates only needs `i` up to `2`). -/
 def rrBasis5 : List (ℕ × ℕ × ℕ) :=
   ((rrBasisCandidates 20).mergeSort (fun a b => a.1 ≤ b.1)).take 5
 
+/-- Every candidate's flag component (`.2.2`) is `0` or `1` by construction
+— immediate from `rrBasisCandidates`'s `flatMap` shape (each `i` contributes
+exactly `(2i,i,0)` and `(2i+5,i,1)`), no `mergeSort` involved. -/
+theorem rrBasisCandidates_flag (maxOrder : ℕ) :
+    ∀ t ∈ rrBasisCandidates maxOrder, t.2.2 = 0 ∨ t.2.2 = 1 := by
+  intro t ht
+  simp only [rrBasisCandidates, List.mem_flatMap, List.mem_range] at ht
+  obtain ⟨i, _, hti⟩ := ht
+  simp only [List.mem_cons, List.not_mem_nil, or_false] at hti
+  rcases hti with hti | hti
+  · left; rw [hti]
+  · right; rw [hti]
+
+/-- Every element of `rrBasis5` has flag component `0` or `1` — combines
+`rrBasisCandidates_flag` with `rrBasis5 ⊆ rrBasisCandidates 20` via
+`List.mem_mergeSort`/`List.mem_of_mem_take` (`Prop`-level membership
+lemmas, safe to use even though `mergeSort` itself does not kernel-reduce
+via `decide`/`rfl`/`native_decide` — see `yIdx_lt_five`'s docstring in
+`DataDerivationSolve.lean` for the same caveat). -/
+theorem rrBasis5_flag : ∀ t ∈ rrBasis5, t.2.2 = 0 ∨ t.2.2 = 1 := by
+  intro t ht
+  apply rrBasisCandidates_flag 20
+  have ht' : t ∈ (rrBasisCandidates 20).mergeSort (fun a b => a.1 ≤ b.1) :=
+    List.mem_of_mem_take ht
+  exact (List.mem_mergeSort).mp ht'
+
 /-- Julia's `build_xmodu_table`: the recurrence `r0[i+1] = -r1[i]*u0`,
 `r1[i+1] = r0[i] - r1[i]*u1` (mod `p`, here just `F p`-arithmetic — no
 explicit `mod p` needed once everything lives in `ZMod p`), computing `X^i
