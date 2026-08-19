@@ -223,6 +223,7 @@ theorem sq_sub_curve_irreducible
     ¬ IsSquare (algebraMap (Polynomial K) (RatFunc K) f) :=
   RatFunc.not_isSquare_algebraMap_of_odd_natDegree f hf_deg hf_ne
 
+set_option maxHeartbeats 400000 in
 /-- **The two-variable transport, `i = 0` case.** This is what
 `factIrreducible_K1` in `DataDerivationTower.lean` actually needs: the
 curve polynomial `f`, evaluated at `t = MvPolynomial.X (0 : Fin 2)` (only
@@ -274,13 +275,13 @@ theorem fAtT_not_isSquare
   set K0 : Type _ := FractionRing B with hK0_def
   -- The `finSuccEquiv` identification `B ≃ₐ[K] Polynomial A`.
   set e : B ≃ₐ[K] Polynomial A := MvPolynomial.finSuccEquiv K 1 with he_def
-  -- The coefficient map `A → K'` (into the fraction field), then `K' → T`
-  -- (`RatFunc K'` sits over `K'` via `algebraMap`), composed.
-  set cmap : A →+* T := (algebraMap K' T).comp (algebraMap A K') with hcmap_def
-  have hcmap_inj : Function.Injective cmap := by
-    apply Function.Injective.comp
-    · exact (algebraMap K' T).injective
-    · exact IsFractionRing.injective A K'
+  -- The coefficient map `A → K'` (into the fraction field). The further
+  -- step `K' → T` (`RatFunc K'` sits over `K'` via `algebraMap`) is applied
+  -- separately in `polyToT` below, after `Polynomial.mapRingHom` has used
+  -- `cmap` to move coefficients from `A` to `K'`.
+  set cmap : A →+* K' := algebraMap A K' with hcmap_def
+  have hcmap_inj : Function.Injective cmap :=
+    IsFractionRing.injective A K'
   -- The induced polynomial map `Polynomial A →+* Polynomial T`... actually
   -- we want `Polynomial A →+* T` directly, landing in `T` via `algebraMap`.
   set polyToT : Polynomial A →+* T :=
@@ -288,36 +289,29 @@ theorem fAtT_not_isSquare
   -- `φ : B →+* T`, the full composite: `B ≃ Polynomial A → T`.
   set φ : B →+* T := polyToT.comp e.toRingEquiv.toRingHom with hφ_def
   have hφ_inj : Function.Injective φ := by
-    apply Function.Injective.comp
-    · apply Function.Injective.comp
-      · exact IsFractionRing.injective (Polynomial K') T
-      · exact Polynomial.map_injective cmap hcmap_inj
-    · exact e.injective
-  -- Extend `φ` to `Φ : K0 →+* T` via `IsLocalization.map`, using that `φ`
-  -- sends nonzero elements to nonzero elements (hence into
-  -- `nonZeroDivisors T`, since `T = RatFunc K'` is a field).
-  have hφ_ne_zero : ∀ b : B, b ≠ 0 → φ b ≠ 0 := by
-    intro b hb hcontra
-    exact hb (hφ_inj (by rw [hcontra, map_zero]))
-  set Φ : K0 →+* T :=
-    IsLocalization.lift
-      (M := nonZeroDivisors B) (g := φ)
-      (fun y => by
-        rw [isUnit_iff_ne_zero]
-        exact hφ_ne_zero (y : B) (nonZeroDivisors.ne_zero_of_mem (SetLike.coe_mem y)))
-    with hΦ_def
+    rw [hφ_def, hpolyToT_def, RingHom.coe_comp, RingHom.coe_comp]
+    exact Function.Injective.comp
+      (Function.Injective.comp (IsFractionRing.injective (Polynomial K') T)
+        (Polynomial.map_injective cmap hcmap_inj))
+      e.injective
+  -- Extend `φ` to `Φ : K0 →+* T` via `IsFractionRing.lift` (`B` is a domain
+  -- since it's a `MvPolynomial` ring over the field `K`, `K0 = FractionRing B`
+  -- is its field of fractions, and `T` is a field, so this applies directly).
+  letI : IsDomain B := by
+    change IsDomain (MvPolynomial (Fin 2) K)
+    infer_instance
+  set Φ : K0 →+* T := IsFractionRing.lift hφ_inj with hΦ_def
   have hΦ_alg : ∀ b : B, Φ (algebraMap B K0 b) = φ b := by
     intro b
-    simp [hΦ_def, IsLocalization.lift_eq]
-  have hΦ_inj : Function.Injective Φ := by
-    apply IsLocalization.lift_injective_iff.mpr
-    intro x y
-    constructor
-    · intro h
-      have := hφ_inj h
-      exact this
-    · intro h
-      rw [h]
+    show IsFractionRing.lift hφ_inj (algebraMap B K0 b) = φ b
+    exact IsFractionRing.lift_algebraMap hφ_inj b
+  -- `K0` is a field (fraction field of the domain `B`), hence a simple ring,
+  -- so any ring hom out of it into a nontrivial ring (`T` is a field) is
+  -- automatically injective — no need to unwind through `nonZeroDivisors`.
+  letI : Field K0 := by
+    change Field (FractionRing B)
+    exact IsFractionRing.toField B
+  have hΦ_inj : Function.Injective Φ := RingHom.injective Φ
   -- The key computation: `Φ` applied to `fAtT 0`'s underlying `B`-element
   -- lands exactly on the single-variable image `f` needs.
   have hΦ_fAtT0 :
@@ -333,32 +327,33 @@ theorem fAtT_not_isSquare
     -- `Polynomial.X` variable alone.
     have he_eval : e (f.eval₂ (algebraMap K B) (MvPolynomial.X (0 : Fin 2)))
         = f.map (algebraMap K A) := by
-      rw [Polynomial.eval₂_eq_sum_range]
-      simp only [map_sum, map_mul, map_pow, he_def, MvPolynomial.finSuccEquiv_apply]
-      rw [Polynomial.eval₂_eq_sum_range]
-      congr 1
-      ext n
-      simp [MvPolynomial.eval₂Hom_X', Fin.cases]
+      rw [Polynomial.algHom_eval₂_algebraMap]
+      rw [show e (MvPolynomial.X (0 : Fin 2)) = Polynomial.X
+          from by
+            rw [he_def]
+            exact MvPolynomial.finSuccEquiv_X_zero]
+      rw [show algebraMap K (Polynomial A) = Polynomial.C.comp (algebraMap K A) from by
+            ext x
+            simp]
+      -- `Polynomial.map` is definitionally the same evaluation at `X` with
+      -- coefficient map `Polynomial.C.comp _`.
+      simp only [Polynomial.map]
+      rfl
     show φ (f.eval₂ (algebraMap K B) (MvPolynomial.X (0 : Fin 2))) = _
     rw [hφ_def]
     simp only [RingHom.comp_apply, RingEquiv.toRingHom_eq_coe, RingHom.coe_coe]
-    rw [show (e : B → Polynomial A)
-          (f.eval₂ (algebraMap K B) (MvPolynomial.X (0 : Fin 2))) = f.map (algebraMap K A)
-        from he_eval]
-    rw [hpolyToT_def]
+    change polyToT (e (f.eval₂ (algebraMap K B) (MvPolynomial.X (0 : Fin 2)))) = _
+    rw [he_eval, hpolyToT_def]
     simp only [RingHom.comp_apply, Polynomial.coe_mapRingHom]
     rw [Polynomial.map_map]
-    congr 1
-    rw [show cmap.comp (algebraMap K A) = algebraMap K K' from ?_]
-    · rfl
-    · ext x
-      simp [hcmap_def, IsScalarTower.algebraMap_apply K A K']
+    rw [show cmap.comp (algebraMap K A) = algebraMap K K' from by
+      simpa [hcmap_def] using (IsScalarTower.algebraMap_eq K A K').symm]
   -- Degree/nonvanishing transport for `f.map (algebraMap K K')`.
-  have hK'_field : Field K' := IsFractionRing.toField A
+  letI : Field K' := IsFractionRing.toField A
   have hf_map_deg : Odd (f.map (algebraMap K K')).natDegree := by
     rwa [Polynomial.natDegree_map_eq_of_injective (algebraMap K K').injective]
   have hf_map_ne : f.map (algebraMap K K') ≠ 0 :=
-    Polynomial.map_ne_zero_of_injective (algebraMap K K').injective hf_ne
+    (Polynomial.map_ne_zero_iff (algebraMap K K').injective).mpr hf_ne
   have hnot : ¬ IsSquare (algebraMap (Polynomial K') T (f.map (algebraMap K K'))) :=
     RatFunc.not_isSquare_algebraMap_of_odd_natDegree
       (f.map (algebraMap K K')) hf_map_deg hf_map_ne
