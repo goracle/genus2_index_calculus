@@ -6,12 +6,20 @@ import Genus2Lean.TheDataDerivation.DataDerivationBasics
 
 Second of four files — see `DataDerivationBasics.lean`'s header for the full
 split rationale and file order. This file builds §4.2 item 3: the fraction
-field `K0`, and the two `AdjoinRoot` tower steps `K1`, `K2`, using the
-irreducibility lemma (`sq_sub_curve_irreducible`) from
-`DataDerivationBasics.lean` to (eventually) discharge the field instances —
-those two instances are still `sorry`'d here, blocked on
-`sq_sub_curve_irreducible`'s own remaining `sorry` in that file, unchanged
-from before the split.
+field `K0`, and the two `AdjoinRoot` tower steps `K1`, `K2`.
+
+**Irreducibility status (this pass): K1 done, K2 still open.** Both field
+instances previously rested on bare `axiom`s (`factIrreducible_K1_assumed`/
+`factIrreducible_K2_assumed`); both are now real theorems assembled from
+`DataDerivationBasics.lean`'s item-1 lemmas, but with different outcomes:
+`factIrreducible_K1_proved` is complete, no `sorry`, resting only on
+`curvePoly` having odd degree (true unconditionally, no irreducibility of
+the quintic itself needed — see that theorem's docstring). `factIrreducible_
+K2_proved` is still `sorry`'d, and NOT for the same reason as before: it's a
+genuinely different, harder claim (non-squareness has to be shown in `K1`,
+a field extension of `K0`, not in `K0` itself) that may depend on
+`(c0,...,c4,p)` in a way the K1 case never needed to — see that theorem's
+docstring for the full argument and the open question.
 
 **Import path note**: `import Genus2Lean.TheDataDerivation.DataDerivationBasics`
 assumes this project's module root is set up so that path resolves to
@@ -89,12 +97,21 @@ noncomputable def w1 (c0 c1 c2 c3 c4 : F p) : K1 p c0 c1 c2 c3 c4 :=
   AdjoinRoot.root (X ^ 2 - C (fAtT p c0 c1 c2 c3 c4 0) : Polynomial (K0 p))
   
 
-axiom factIrreducible_K1_assumed (c0 c1 c2 c3 c4 : F p) :
-    Irreducible (X ^ 2 - C (fAtT p c0 c1 c2 c3 c4 0) : Polynomial (K0 p))
+/-- **No longer an axiom.** `X^2 - C (fAtT ... 0)` is irreducible over `K0 p`
+because `fAtT p ... 0` is not a square in `K0 p` — `DataDerivationBasics.lean`'s
+`fAtT_p_not_isSquare` (item 1, §4.2), itself resting only on `curvePoly`
+having odd degree (`curvePoly_natDegree_odd`, unconditional in `p`/`c0..c4`)
+plus `irreducible_X_sq_sub_C_of_not_isSquare`'s general "not-a-square implies
+irreducible" conversion. `fAtT p c0 c1 c2 c3 c4 0` and `fAtT_p_not_isSquare`'s
+own statement are definitionally equal (`K0 p`/`t0` are reducible `abbrev`s),
+so no separate rewriting step is needed to line the two up. -/
+theorem factIrreducible_K1_proved (c0 c1 c2 c3 c4 : F p) :
+    Irreducible (X ^ 2 - C (fAtT p c0 c1 c2 c3 c4 0) : Polynomial (K0 p)) :=
+  irreducible_X_sq_sub_C_of_not_isSquare (fAtT_p_not_isSquare p c0 c1 c2 c3 c4 0)
 
 instance factIrreducible_K1 (c0 c1 c2 c3 c4 : F p) :
     Fact (Irreducible (X ^ 2 - C (fAtT p c0 c1 c2 c3 c4 0) : Polynomial (K0 p))) :=
-  ⟨factIrreducible_K1_assumed p c0 c1 c2 c3 c4⟩
+  ⟨factIrreducible_K1_proved p c0 c1 c2 c3 c4⟩
 
 
 
@@ -125,10 +142,9 @@ failure: that instance comes from `AdjoinRoot`'s own algebra structure
 (`AdjoinRoot.instAlgebra`-style, over the ring `X^2 - C (...)` is a
 polynomial in), which was unreachable before because instance search
 couldn't get past the earlier `CommRing` diamond to it — with the diamond
-gone, it resolves the same way `Field` now does. 
-
- Temporary axiom boundary: the degree-5 curve/non-square argument has been
-completed upstream and is assumed here as requested. 
+gone, it resolves the same way `Field` now does. `factIrreducible_K1`'s
+`Irreducible` fact is now a proved theorem (`factIrreducible_K1_proved`
+above), not an axiom — see that instance's own docstring.
 
  Tower step 2: `K2 := AdjoinRoot (X^2 - C (fAtT ... 1) : Polynomial
 (K1 p ...))` mapped through `K1`'s algebra structure over `K0` — Julia's
@@ -149,32 +165,63 @@ noncomputable def w2 (c0 c1 c2 c3 c4 : F p) : K2 p c0 c1 c2 c3 c4 :=
       Polynomial (K1 p c0 c1 c2 c3 c4))
 
 
-axiom factIrreducible_K2_assumed (c0 c1 c2 c3 c4 : F p) :
+/-- **Genuinely harder than `factIrreducible_K1`, NOT a re-application of the
+same lemma.** `factIrreducible_K1` only needed "`fAtT p ... 0` is not a
+square IN `K0 p`" (`DataDerivationBasics.fAtT_p_not_isSquare`). This instance
+needs "the IMAGE of `fAtT p ... 1` under `algebraMap (K0 p) (K1 p ...)` is
+not a square IN `K1 p ...`" — a strictly stronger claim, since `K1` is a
+genuine degree-2 field extension of `K0` (`K1 := AdjoinRoot (X^2 - C (fAtT
+... 0))`) and a non-square in a base field CAN become a square after
+adjoining a square root of something else (a general fact about quadratic
+extensions, not something specific to this construction that can be
+sidestepped). `fAtT_p_not_isSquare` alone does not give this — it's a
+statement about `K0`, not `K1`.
+
+**Proof sketch (not yet formalized as a term, hence still `sorry`):** in the
+degree-2 extension `K1/K0`, an element `a ∈ K0` becomes a square in `K1`
+iff either (i) `a` is already a square in `K0`, or (ii) `a` and the
+adjoined element's radicand (`fAtT p ... 0`, i.e. `w1^2` in `K1`) differ
+by a square factor in `K0` — concretely, `a` is a square in `K1 = K0(w1)`
+iff `a` or `a * fAtT p ... 0` is a square in `K0` (standard quadratic-
+extension fact: `K1`'s elements are `x + y*w1`, and `(x+y*w1)^2 = a` forces
+`y = 0` unless `a/fAtT(...,0)` is itself a square in `K0`, by comparing the
+`w1`-coefficient). So this reduces to TWO non-square-in-`K0` facts instead
+of one: `fAtT p ... 1` not a square in `K0` (have this already, via
+`fAtT_p_not_isSquare p c0 c1 c2 c3 c4 1`) AND `fAtT p ... 1 * fAtT p ... 0`
+not a square in `K0` either — the SECOND of these is new, not implied by
+either factor individually being non-square (product of two non-squares
+can be a square). Whether it's true likely depends on `c0,...,c4` and `p`
+genuinely (unlike the odd-degree argument, which needed nothing about the
+coefficients) — this may be the point where the earlier "should hold
+unconditionally" hope from `ROADMAP-regular-sequence.md` §4.1 breaks down
+for the SECOND tower step specifically, and where a real genericity
+condition on `(c0,...,c4,p)` might need to enter. Flagging this precisely
+rather than asserting either way. -/
+theorem factIrreducible_K2_proved (c0 c1 c2 c3 c4 : F p) :
     Irreducible
       (X ^ 2 - C (algebraMap (K0 p) (K1 p c0 c1 c2 c3 c4)
         (fAtT p c0 c1 c2 c3 c4 1)) :
-        Polynomial (K1 p c0 c1 c2 c3 c4))
+        Polynomial (K1 p c0 c1 c2 c3 c4)) := by
+  sorry -- ChatGPT prompt below; needs the quadratic-extension square criterion
+        -- sketched above, not just fAtT_p_not_isSquare re-applied.
 
 instance factIrreducible_K2 (c0 c1 c2 c3 c4 : F p) :
     Fact (Irreducible
       (X ^ 2 - C (algebraMap (K0 p) (K1 p c0 c1 c2 c3 c4)
         (fAtT p c0 c1 c2 c3 c4 1)) :
         Polynomial (K1 p c0 c1 c2 c3 c4))) :=
-  ⟨factIrreducible_K2_assumed p c0 c1 c2 c3 c4⟩
+  ⟨factIrreducible_K2_proved p c0 c1 c2 c3 c4⟩
 
 
 
-/- `K2` is a field — same shape as `factIrreducible_K1`, one level up
-(needs `sq_sub_curve_irreducible` instantiated at `K = K1 p c0 c1 c2 c3 c4`
-instead, which itself is only a field once `factIrreducible_K1` above
-fires — so this genuinely depends on that instance, not just on the same
-argument shape). Same "supply `Fact (Irreducible ...)`, let
-`AdjoinRoot.instField` do the rest" pattern as `K1` — see that instance's
-docstring for why a hand-proved `Field (K2 p ...)` term would reintroduce
-the `CommRing` diamond this file already hit once. **Left as `sorry`** at
-the `Irreducible` fact, same blocker. 
-Temporary axiom boundary: the second quadratic-extension non-square
-argument is assumed here as requested. -/
+/- `K2` is a field — same shape as `factIrreducible_K1`, one level up, via
+`AdjoinRoot.instField` firing off `factIrreducible_K2`'s `Fact (Irreducible
+...)` instance above. Unlike `factIrreducible_K1`, `factIrreducible_K2`'s
+underlying theorem (`factIrreducible_K2_proved`) is still a genuine `sorry`,
+not merely unassembled bookkeeping — see that theorem's docstring for why
+this is real open work (a quadratic-extension square criterion, possibly
+needing a genericity condition on `(c0,...,c4,p)`), not a restatement of
+the same odd-degree argument `factIrreducible_K1` used. -/
 
 end TheDataDerivation
 end Genus2Lean

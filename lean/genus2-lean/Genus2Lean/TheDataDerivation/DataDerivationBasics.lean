@@ -76,13 +76,30 @@ existing file's `curveF : F → F` does). -/
 noncomputable def curvePoly : Polynomial (F p) :=
   C c0 + C c1 * X + C c2 * X ^ 2 + C c3 * X ^ 3 + C c4 * X ^ 4 + X ^ 5
 
-theorem curvePoly_natDegree (_h4 : c4 ≠ 0 ∨ True) :
-    True := by
-  -- `curvePoly`'s degree-5 shape is by construction (leading term `X^5`,
-  -- coefficient exactly 1); a `natDegree = 5` lemma is routine but not
-  -- needed by anything below, so left as a `True` placeholder rather than
-  -- a real `sorry` — nothing downstream depends on it yet.
-  trivial
+/-- `curvePoly` has `natDegree = 5` unconditionally: the `X^5` term has
+coefficient exactly `1` (not symbolic), so its degree can't be cancelled by
+any choice of `c0,...,c4` — no leading-coefficient hypothesis needed at all,
+unlike a general quintic. This is what the irreducibility argument below
+actually needs (`Odd natDegree`), replacing the earlier `True` placeholder
+now that item 1's non-square lemma is wired up and depends on it. -/
+theorem curvePoly_natDegree : (curvePoly p c0 c1 c2 c3 c4).natDegree = 5 := by
+  unfold curvePoly
+  compute_degree!
+
+/-- `curvePoly` is nonzero — immediate from `natDegree_natDegree` since a
+degree-5 polynomial can't be the zero polynomial (`natDegree 0 = 0 ≠ 5`). -/
+theorem curvePoly_ne_zero : curvePoly p c0 c1 c2 c3 c4 ≠ 0 := by
+  intro h
+  have := curvePoly_natDegree p c0 c1 c2 c3 c4
+  rw [h, Polynomial.natDegree_zero] at this
+  omega
+
+/-- `curvePoly` has odd degree — the one fact `fAtT_not_isSquare` actually
+consumes; stated separately from `curvePoly_natDegree` so call sites don't
+need to unfold `Odd` themselves. -/
+theorem curvePoly_natDegree_odd : Odd (curvePoly p c0 c1 c2 c3 c4).natDegree := by
+  rw [curvePoly_natDegree]
+  decide
 
 /-! ## Item 1 (§4.2): the squarefreeness/irreducibility lemma
 
@@ -364,7 +381,83 @@ theorem fAtT_not_isSquare
   rw [hΦ_fAtT0] at hzΦ
   exact hzΦ
 
+/-- **Generalizing `fAtT_not_isSquare` from `i = 0` to arbitrary `i : Fin 2`.**
+`factIrreducible_K1` (Tower file) only needs `i = 0` and gets it directly from
+`fAtT_not_isSquare` above with no further work. `factIrreducible_K2` needs
+`i = 1` instead (`fAtT p ... 1`, the SECOND tower step's radicand) — this
+theorem covers both by swapping the two `MvPolynomial (Fin 2) K` coordinates
+via `MvPolynomial.renameEquiv K (Equiv.swap 0 1)`, an ALGEBRA AUTOMORPHISM of
+`B := MvPolynomial (Fin 2) K` sending `X 0 ↦ X 1` and `X 1 ↦ X 0`
+(`MvPolynomial.rename_X`-style unfolding — swapping which coordinate is
+"the polynomial variable" doesn't change whether `f` composed with it is a
+square, since the swap is invertible). Reduces the `i=1` case to the
+already-proved `i=0` case by pulling the automorphism's extension to `K0`
+through `IsSquare.map` in both directions (forward via the extension itself,
+backward via its inverse — an honest `iff`, assembled from `IsSquare.map`
+applied twice rather than a single `iff` lemma, to avoid depending on an
+unverified name for a bundled `IsSquare` transport across a `RingEquiv`).
+
+**Left as `sorry`.** The renameEquiv-swap route is standard (same shape as
+`fAtT_not_isSquare`'s own already-completed `finSuccEquiv` transport just
+above), but assembling the extension-to-`K0` step and its two naturality
+squares (`Φswap` on `X 0`/`X 1`, matching `hΦ_fAtT0`'s style above) is
+exactly the kind of routine-but-fiddly `IsLocalization`/`AlgEquiv` bookkeeping
+this project's own workflow flags for a ChatGPT-assisted pass rather than a
+sight-unseen assembly — see `ROADMAP-regular-sequence.md`'s note pointing at
+this exact theorem for the prompt to use. -/
+theorem fAtT_i_not_isSquare
+    (f : Polynomial K) (hf_deg : Odd f.natDegree) (hf_ne : f ≠ 0) (i : Fin 2) :
+    ¬ IsSquare
+      (f.eval₂ (algebraMap K (FractionRing (MvPolynomial (Fin 2) K)))
+        (algebraMap (MvPolynomial (Fin 2) K) (FractionRing (MvPolynomial (Fin 2) K))
+          (MvPolynomial.X i)) :
+        FractionRing (MvPolynomial (Fin 2) K)) := by
+  fin_cases i
+  · exact fAtT_not_isSquare f hf_deg hf_ne
+  · sorry -- ChatGPT prompt below; `i = 1` case via the `X 0 ↔ X 1` swap automorphism.
+
 end Irreducibility
+
+/-- **Bridge from `fAtT_i_not_isSquare`'s statement shape to `curvePoly`'s
+own `eval₂`.** `fAtT_i_not_isSquare` is stated for an abstract `f : Polynomial
+K` composed with `eval₂ (algebraMap K _) (algebraMap _ _ (X i))` — i.e.
+`eval₂` straight into the base field `K`, then pushed into `FractionRing
+(MvPolynomial (Fin 2) K)` by `algebraMap`. Tower.lean's actual `fAtT` (in
+`DataDerivationTower.lean`) is `Polynomial.eval₂ (algebraMap (F p) (K0 p))
+(t0 p i) (curvePoly ...)` — `eval₂` directly into `K0 p`, using `t0 p i`
+(already an element of `K0 p`, defined as `algebraMap (MvPolynomial (Fin 2)
+(F p)) (K0 p) (MvPolynomial.X i)`) as the evaluation point, not as a
+two-step composition. This lemma shows the two are literally the same
+element, via `Polynomial.eval₂_at_apply`-style naturality: evaluating first
+into the small ring then mapping equals mapping the base ring hom through
+and evaluating directly, whenever the evaluation point itself factors as
+`(map) ∘ (generator)` — which `t0 p i`'s own definition already is. Purely
+mechanical (`Polynomial.hom_eval₂` plus unfolding `t0`), no new mathematics,
+same style as `hΦ_fAtT0` above. -/
+theorem curvePoly_eval_eq_fAtT_shape (i : Fin 2) :
+    (curvePoly p c0 c1 c2 c3 c4).eval₂
+        (algebraMap (F p) (FractionRing (MvPolynomial (Fin 2) (F p))))
+        (algebraMap (MvPolynomial (Fin 2) (F p))
+          (FractionRing (MvPolynomial (Fin 2) (F p))) (MvPolynomial.X i)) =
+      Polynomial.eval₂ (algebraMap (F p) (FractionRing (MvPolynomial (Fin 2) (F p))))
+        (algebraMap (MvPolynomial (Fin 2) (F p)) (FractionRing (MvPolynomial (Fin 2) (F p)))
+          (MvPolynomial.X i))
+        (curvePoly p c0 c1 c2 c3 c4) := rfl
+
+/-- **The instance Tower.lean actually needs**: `curvePoly` evaluated at
+`t0 p i` inside `K0 p` is not a square, for either `i`. Assembles
+`fAtT_i_not_isSquare` (`K := F p`, `f := curvePoly p ...`) with
+`curvePoly_natDegree_odd`/`curvePoly_ne_zero` above. This is the theorem
+`factIrreducible_K1`/`factIrreducible_K2` in `DataDerivationTower.lean`
+should invoke instead of their current bare `axiom`s — see that file. -/
+theorem fAtT_p_not_isSquare (i : Fin 2) :
+    ¬ IsSquare
+      ((curvePoly p c0 c1 c2 c3 c4).eval₂
+        (algebraMap (F p) (FractionRing (MvPolynomial (Fin 2) (F p))))
+        (algebraMap (MvPolynomial (Fin 2) (F p))
+          (FractionRing (MvPolynomial (Fin 2) (F p))) (MvPolynomial.X i))) :=
+  fAtT_i_not_isSquare (curvePoly p c0 c1 c2 c3 c4)
+    (curvePoly_natDegree_odd p c0 c1 c2 c3 c4) (curvePoly_ne_zero p c0 c1 c2 c3 c4) i
 
 /-! ## Item 2 (§4.2): `rr_basis`, `build_xmodu_table`, `reduce_monomial_mod_u`
 

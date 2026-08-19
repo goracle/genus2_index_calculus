@@ -151,13 +151,17 @@ Lean", since `vRS` was constructed FROM `uRS` via the mod-`u_RS` inverse
 specifically so this identity holds by that construction, not as an
 independent fact requiring new algebra. -/
 
-section MumfordIdentity
+section GenericRemainderLemma
+-- **Deliberately its own section, above `MumfordIdentity`'s variables.**
+-- `sq_mod_eq_of_dvd` below mentions none of `p`, `c0..v1`, `hcur`, `hgcd` —
+-- but those are declared as ambient `variable`s in `section MumfordIdentity`
+-- (needed by `vRS_sq_eq_f_mod_uRS` right after it), and living inside that
+-- section was bloating this lemma's local context enough to timeout `whnf`
+-- during elaboration even though the statement never uses them. Elaborating
+-- it here, before any of those variables exist, gives it the smallest
+-- possible local context.
 
-variable (c0 c1 c2 c3 c4 u0 u1 v0 v1 : F p)
-variable (hcur : curBeforeMonic p c0 c1 c2 c3 c4 u0 u1 v0 v1 ≠ 0)
-variable (hgcd : IsCoprime (Ypoly p c0 c1 c2 c3 c4 u0 u1 v0 v1) (uRS p c0 c1 c2 c3 c4 u0 u1 v0 v1))
-
-set_option maxHeartbeats 1000000 in
+set_option maxHeartbeats 4000000 in
 /-- **Generic remainder lemma used by the Mumford identity.**
 This isolates all polynomial algebra from the very large concrete expressions
 for `uRS`, `Epoly`, `Ypoly`, and `fAtX`, so elaboration does not repeatedly
@@ -169,46 +173,78 @@ theorem sq_mod_eq_of_dvd
     (hN : U ∣ E ^ 2 - f * Y ^ 2)
     (hInv : U ∣ Y * G - 1) :
     ((-E * G) %ₘ U) ^ 2 %ₘ U = f %ₘ U := by
+  -- Step 1: `U ∣ (Y*G)^2 - 1`, via the identity `(YG)²-1 = (YG-1)(YG+1)`
+  -- stated once as its own `have` so `ring` only normalizes this small
+  -- identity, not an unbounded goal produced by `convert`.
+  have hsq1 : (Y * G) ^ 2 - 1 = (Y * G - 1) * (Y * G + 1) := by ring
   have hInvSq : U ∣ (Y * G) ^ 2 - 1 := by
-    have hprod : U ∣ (Y * G - 1) * (Y * G + 1) :=
-      dvd_mul_of_dvd_left hInv (Y * G + 1)
-    convert hprod using 1 <;> ring
+    rw [hsq1]; exact dvd_mul_of_dvd_left hInv (Y * G + 1)
+  clear hsq1
+  -- Step 2: `U ∣ (E*G)^2 - f`, via `N*G² + f*((YG)²-1) = (EG)²-f`.
   have hNscaled : U ∣ (E ^ 2 - f * Y ^ 2) * G ^ 2 :=
     dvd_mul_of_dvd_right hN (G ^ 2)
   have hInvscaled : U ∣ f * ((Y * G) ^ 2 - 1) :=
     dvd_mul_of_dvd_right hInvSq f
+  clear hInvSq hN hInv
+  have hid1 :
+      (E ^ 2 - f * Y ^ 2) * G ^ 2 + f * ((Y * G) ^ 2 - 1) = (E * G) ^ 2 - f := by
+    ring
   have hEGf : U ∣ (E * G) ^ 2 - f := by
-    have hadd :
-        U ∣ (E ^ 2 - f * Y ^ 2) * G ^ 2 +
-          f * ((Y * G) ^ 2 - 1) :=
-      dvd_add hNscaled hInvscaled
-    have hid :
-        (E ^ 2 - f * Y ^ 2) * G ^ 2 +
-          f * ((Y * G) ^ 2 - 1) =
-          (E * G) ^ 2 - f := by
-      ring
-    rw [← hid]
-    exact hadd
-  have hrem : U ∣ ((-E * G) %ₘ U) - (-E * G) :=
-    Polynomial.dvd_modByMonic_sub (-E * G) U
+    rw [← hid1]; exact dvd_add hNscaled hInvscaled
+  clear hid1 hNscaled hInvscaled
+  -- Step 3: `U ∣ (-E*G %ₘ U) - (-E*G)`, from the division algorithm identity.
+  have hrem : U ∣ ((-E * G) %ₘ U) - (-E * G) := by
+    -- `Polynomial.dvd_modByMonic_sub` does not exist under that name in
+    -- Mathlib (confirmed by search, not just absence from memory) — using
+    -- the roadmap's own documented fallback instead: `Polynomial.
+    -- modByMonic_eq_sub_mul_div` gives `p %ₘ q = p - q * (p /ₘ q)`, so
+    -- `p %ₘ q - p = -(q * (p /ₘ q))`, divisible by `q`.
+    rw [Polynomial.modByMonic_eq_sub_mul_div (-E * G) hU]
+    exact ⟨-((-E * G) /ₘ U), by ring⟩
+  -- Step 4: `U ∣ (-E*G %ₘ U)^2 - (E*G)^2`, via difference of squares.
+  have hsq2 :
+      ((-E * G) %ₘ U) ^ 2 - (E * G) ^ 2 =
+        (((-E * G) %ₘ U) + E * G) * (((-E * G) %ₘ U) - E * G) := by
+    ring
   have hvrem : U ∣ ((-E * G) %ₘ U) ^ 2 - (E * G) ^ 2 := by
-    have hfactor :
-        U ∣ (((-E * G) %ₘ U) + E * G) *
-          (((-E * G) %ₘ U) - E * G) :=
-      dvd_mul_of_dvd_left hrem (((-E * G) %ₘ U) - E * G)
-    convert hfactor using 1 <;> ring
+    rw [hsq2]
+    exact dvd_mul_of_dvd_left hrem (((-E * G) %ₘ U) - E * G)
+  clear hsq2 hrem
+  -- Step 5: combine steps 2 and 4 to get `U ∣ (-E*G %ₘ U)^2 - f`.
+  have hid2 :
+      ((-E * G) %ₘ U) ^ 2 - (E * G) ^ 2 + ((E * G) ^ 2 - f) =
+        ((-E * G) %ₘ U) ^ 2 - f := by
+    ring
   have hvf : U ∣ ((-E * G) %ₘ U) ^ 2 - f := by
-    have hadd := dvd_add hvrem hEGf
-    have hid :
-        ((-E * G) %ₘ U) ^ 2 - (E * G) ^ 2 +
-          ((E * G) ^ 2 - f) =
-          ((-E * G) %ₘ U) ^ 2 - f := by
-      ring
-    rw [← hid]
-    exact hadd
+    rw [← hid2]; exact dvd_add hvrem hEGf
+  clear hid2 hvrem hEGf
   exact Polynomial.modByMonic_eq_of_dvd_sub hU hvf
 
-/-- **The Mumford identity**: `v_RS(x)^2 ≡ f(x) (mod u_RS(x))`. -/
+end GenericRemainderLemma
+
+section MumfordIdentity
+
+variable (c0 c1 c2 c3 c4 u0 u1 v0 v1 : F p)
+variable (hcur : curBeforeMonic p c0 c1 c2 c3 c4 u0 u1 v0 v1 ≠ 0)
+variable (hgcd : IsCoprime (Ypoly p c0 c1 c2 c3 c4 u0 u1 v0 v1) (uRS p c0 c1 c2 c3 c4 u0 u1 v0 v1))
+
+/-- **The Mumford identity**: `v_RS(x)^2 ≡ f(x) (mod u_RS(x))`.
+
+**Review note on `hInv` vs `hgcd`, checked this pass**: `hInv` looks at
+first glance like it should be a free consequence of `hgcd : IsCoprime Y
+U` via `EuclideanDomain.gcd_eq_gcd_ab` (`gcd Y U = Y*gcdA Y U + U*gcdB Y
+U`) — but it is NOT, and keeping it as a separate hypothesis here is the
+correct choice, not redundant caution. `EuclideanDomain.gcd_isUnit_iff`
+confirms `hgcd` only gives `IsUnit (EuclideanDomain.gcd Y U)`, i.e.
+`gcd Y U = c` for SOME unit `c` (a nonzero constant), not `gcd Y U = 1`
+on the nose — `EuclideanDomain.gcd` (unlike `GCDMonoid.gcd`) carries no
+built-in normalization convention forcing the unit to be exactly `1`.
+Turning `hgcd` into `hInv` therefore needs an extra step: scaling
+`gcdA Y U` by `c⁻¹` to correct for whatever unit `gcd Y U` actually turned
+out to be. That scaling step is not carried out anywhere in this file, so
+`hInv` is real remaining content, not a restatement of `hgcd` — flagged
+explicitly rather than left for a future reader to (wrongly) assume one
+hypothesis subsumes the other. -/
 theorem vRS_sq_eq_f_mod_uRS
     (hcur :
       curBeforeMonic p c0 c1 c2 c3 c4 u0 u1 v0 v1 ≠ 0)
@@ -522,7 +558,8 @@ theorem towerToRdec_vars_subset {Vars : Type*} [DecidableEq Vars]
         have : (MvPolynomial.X (sg.wGen 0) : MvPolynomial Vars (F p)).vars ⊆ {sg.wGen 0} := by
           rw [MvPolynomial.vars_X]
         exact this.trans (by intro x hx; simp only [Finset.mem_singleton] at hx; subst hx; simp)
-    · exact (MvPolynomial.vars_mul _ _).trans (Finset.union_subset (hd0.trans hsub3) (hd1.trans hsub3))
+    · exact (MvPolynomial.vars_mul _ _).trans
+        (Finset.union_subset (hd0.trans hsub3) (hd1.trans hsub3))
   -- Step 2: `towerToRdec` itself additionally allows `sg.wGen 1`.
   unfold towerToRdec
   dsimp only
@@ -545,7 +582,8 @@ theorem towerToRdec_vars_subset {Vars : Type*} [DecidableEq Vars]
       have : (MvPolynomial.X (sg.wGen 1) : MvPolynomial Vars (F p)).vars ⊆ {sg.wGen 1} := by
         rw [MvPolynomial.vars_X]
       exact this.trans (by intro x hx; simp only [Finset.mem_singleton] at hx; subst hx; simp)
-  · exact (MvPolynomial.vars_mul _ _).trans (Finset.union_subset (hd0.trans hsub4) (hd1.trans hsub4))
+  · exact (MvPolynomial.vars_mul _ _).trans
+      (Finset.union_subset (hd0.trans hsub4) (hd1.trans hsub4))
 
 /-- **Correctness spec `towerToRdec` is intended to satisfy**, recorded in
 prose (not yet a checkable Lean statement — see below for why): under the
