@@ -822,100 +822,42 @@ base ring, matching whichever shape `theData`'s `w`-generators actually
 come out in from §4.1's ring stack). Left in this loose/informal form
 pending that ring-stack choice being pinned down concretely by
 `eightVar_finiteQuotient` below -- restating this precisely is easier once
-that dependency is fixed, rather than guessed now. -/
-theorem regular_of_norm_eliminate {σ : Type*} [DecidableEq σ] {R : Type*} [CommRing R]
-    (w : σ) (f : MvPolynomial σ R) (hw : w ∉ f.vars)
-    (P Q : MvPolynomial σ R) (hP : w ∉ P.vars) (hQ : w ∉ Q.vars) :
-    True := by  -- placeholder statement; see docstring -- precise shape TODO
-  trivial
+that dependency is fixed, rather than guessed now. 
 
-/-- **Roadmap §5 step 3, the 8-variable finite-quotient certificate.** For
-`p` outside a finite exceptional set of primes and `(c0,...,c4)` outside a
-Zariski-closed exceptional locus (both TBD concretely, per the roadmap's own
-"not assumed in advance" framing), the 8-generator list
-`[curve_a1,curve_a2,curve_b1,curve_b2, Fu_cross[0],Fu_cross[1],Fv_cross[0],
-Fv_cross[1]]` cuts `F[wa1,wa2,wb1,wb2,a1,a2,b1,b2]` down to a
-finite-dimensional (equivalently 0-dimensional) quotient. This is the
-genuinely hard, currently-unformalized step the roadmap flags as needing
-`theData`'s actual closed-form output, not merely its abstract
-`DecoupledGenerators` packaging -- stated here only as a placeholder
-pending that. **Best candidate in this file for a ChatGPT consultation**
-once `theData` is concretely filled in: the target certificate (triangular
-division witness or Gröbner basis) is a fixed, checkable symbolic
-computation at that point, not open-ended search. -/
-theorem eightVar_finiteQuotient : True := by  -- placeholder statement; see docstring
-  trivial
+ ## §5bis-0. Variable-peeling infrastructure for the "leading coefficient"
+argument
 
-/-- **Roadmap §5 step 4, the 4-variable finite-quotient + height-4
-certificate.** After eliminating `wa1,wa2,wb1,wb2` via
-`regular_of_norm_eliminate`, the resulting 4-generator system in
-`F[a1,a2,b1,b2]` (i) cuts the ring down to a finite-dimensional quotient
-(triangular division witness eliminating `b2` then `b1` then `a2` then
-`a1`, or an equivalent Gröbner basis with a positive power of each variable
-among its leading monomials), hence (ii) the generated ideal has height 4
-in a Krull-dimension-4 Cohen-Macaulay polynomial ring, hence (iii) the four
-generators form a regular sequence (system-of-parameters argument). Left
-as a single placeholder bundling roadmap step 4's three sub-claims rather
-than split further, since (ii)/(iii) are routine Cohen-Macaulay/
-system-of-parameters facts once (i)'s certificate is in hand -- the real
-content is entirely in (i), which needs the same concrete `theData` output
-as `eightVar_finiteQuotient` above (worth attempting together / in the same
-ChatGPT consultation). -/
-theorem fourVar_regularSequence : True := by  -- placeholder statement; see docstring
-  trivial
+Per ChatGPT consultation (see `chatgpt-prompt-regularsequence.md` and its
+reply): the robust version of "monic/nonzero-leading-coefficient in one
+variable implies regular element" is NOT "generators of strictly lower
+degree in `x`" but the sharper and actually-true statement: if the
+already-imposed ideal `I` is *extended from the coefficient ring* (i.e.
+`I = Ideal.map C J` for `J` an ideal not involving `x` at all — in our
+case, `I`'s generators literally don't mention `x`), then
+`MvPolynomial σ R ⧸ I ≃ Polynomial ((MvPolynomial {v // v≠x} R) ⧸ J)`, and
+the leading-coefficient argument for `Polynomial.Monic.isRegular` (which
+holds over ANY ring, not just domains — Mathlib) applies directly inside
+that quotient. This section builds the peeling equivalence and the two
+transport lemmas (`isRegular_of_monic_peel` for the monic/curve-relation
+case, `isRegular_of_leadingCoeff_regular_peel` for the more general
+regular-leading-coefficient case) needed for both the curve relations and
+(later, once the closed-form `Fu_cross`/`Fv_cross` polynomials are
+available concretely) the cross-generators. 
 
-/-- **Main target.** `genList` is a regular sequence on `Rdec p` itself (as
-an `Rdec p`-module), in the sense of `RingTheory.Sequence.IsRegular`. Since
-`Rdec p = (F p)[X_1,...,X_12]` is a polynomial ring over a field --
-Cohen-Macaulay of Krull dimension 12 -- a regular sequence of length exactly
-12 (`genList_length`) is equivalent to `Rdec p ⧸ Ideal.ofList genList` being
-a nonzero Artinian `F p`-algebra, i.e. `V(genList)` is 0-dimensional. Now
-understood, per the roadmap's §5 revision, as true for `p` and
-`(c0,...,c4)` outside an explicit exceptional locus rather than
-unconditionally -- the hypotheses threaded through `genList` above
-(`hcurA/B`, `hgcdA/B`) are part of that locus, though not yet the complete
-statement of it (§5's own division-witness genericity conditions,
-`MatrixNondegenerate` in particular, are additional hypotheses this
-statement does not yet carry -- flagged here rather than silently
-incomplete: a fully faithful restatement would also hypothesize
-`MatrixNondegenerate` for both samples, since `uRS`/`vRS` are only the
-INTENDED values under that condition too, not merely under `hcurA/B`/
-`hgcdA/B`).
-
-**This pass:** the body is reassembled per roadmap §5 step 5 out of the
-four lemmas above (`regular_of_linear_elim` applied four times, folded into
-`eightVar_finiteQuotient`/`fourVar_regularSequence` via
-`regular_of_norm_eliminate`) rather than left as one bare `sorry` -- see
-§5bis's docstring above for the attack order. The assembly itself
-(`sorry` here) is still to be written once steps 1-4's statements are
-confirmed against a real Lean session; not attempted blind in this pass,
-per Claire's "let me do all the testing" instruction. -/
-theorem decoupledSystem_isRegularSequence (c0 c1 c2 c3 c4 : F p) (sa sb : SampleTarget p)
-    (hcurA : curBeforeMonic p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1 ≠ 0)
-    (hcurB : curBeforeMonic p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1 ≠ 0)
-    (hgcdA : IsCoprime (Ypoly p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1)
-      (uRS p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1))
-    (hgcdB : IsCoprime (Ypoly p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1)
-      (uRS p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1)) :
-    RingTheory.Sequence.IsRegular (Rdec p)
-      (genList p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB) := by
-  -- Step 5 (roadmap §5): reassemble from `regular_of_linear_elim` (×4) +
-  -- `eightVar_finiteQuotient` + `regular_of_norm_eliminate` +
-  -- `fourVar_regularSequence`. Not yet written -- see §5bis docstring.
-  sorry
-
-/-- **Corollary, stated but not yet derived from the theorem above** (mirrors
-this project's convention of stating the target consequence alongside the
-main `sorry`, e.g. `SCOPING-isRatioDivisorSpec.md`'s §5): 0-dimensionality of
-the variety itself, phrased via `Ideal.ofList genList` having Krull dimension
-0 in the quotient ring. Left as a second `sorry` pending the Mathlib API
-survey noted in `ROADMAP-regular-sequence.md` ("Krull-dimension-0 from a
-length-`n` regular sequence in an `n`-variable polynomial ring" -- likely via
-Cohen-Macaulay-ness of `Rdec` plus a `Ideal.height`/system-of-parameters
-argument, not yet pinned to an exact Mathlib lemma name). -/
-theorem decoupledSystem_zeroDimensional :
-    True := by  -- placeholder statement; see docstring
-  trivial
+ Peel variable `x : Idx` out of `Rdec p`, landing on
+`Polynomial (MvPolynomial {v : Idx // v ≠ x} (F p))` -- the `Idx`-specific
+analogue of `MvPolynomial.finSuccEquiv`, built directly from
+`MvPolynomial.renameEquiv` (with a hand-built `Idx ≃ Option {v // v ≠ x}`)
+composed with `MvPolynomial.optionEquivLeft` (the same combinator already
+used successfully in `regular_of_linear_elim` above, applied here to a
+concrete finite `σ := Idx` rather than a generic `Option τ`). -/
+noncomputable def peelEquiv (p : ℕ) (x : Idx) :
+    Rdec p ≃ₐ[F p] Polynomial (MvPolynomial {v : Idx // v ≠ x} (F p)) :=
+  (MvPolynomial.renameEquiv (F p)
+      (((Equiv.optionSubtype x).symm
+          (Equiv.refl {v : Idx // v ≠ x})).val.symm : Idx ≃ Option {v : Idx // v ≠ x})).trans
+    (MvPolynomial.optionEquivLeft (F p) {v : Idx // v ≠ x})
 
 end DecoupledSystem
 end Genus2Lean
+
