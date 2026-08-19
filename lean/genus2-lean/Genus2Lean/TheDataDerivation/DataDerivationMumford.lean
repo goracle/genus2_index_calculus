@@ -185,7 +185,7 @@ theorem sq_mod_eq_of_dvd_step2
     (hInvSq : U ∣ (Y * G) ^ 2 - 1) :
     U ∣ (E * G) ^ 2 - f := by
   have hNscaled : U ∣ (E ^ 2 - f * Y ^ 2) * G ^ 2 :=
-    dvd_mul_of_dvd_right hN (G ^ 2)
+    dvd_mul_of_dvd_left hN (G ^ 2)
   have hInvscaled : U ∣ f * ((Y * G) ^ 2 - 1) :=
     dvd_mul_of_dvd_right hInvSq f
   have hid1 :
@@ -197,22 +197,18 @@ theorem sq_mod_eq_of_dvd_step2
 set_option maxHeartbeats 4000000 in
 /-- **Heartbeats raised** (see `sq_mod_eq_of_dvd_step1`'s docstring — same
 situation). Step 3 of `sq_mod_eq_of_dvd`: the division-algorithm remainder
-identity `U ∣ (X %ₘ U) - X`, stated for a general dividend `X` so the
-`ring` call only ever sees one `/ₘ` atom. -/
+identity `U ∣ (X %ₘ U) - X`, stated for a general dividend `X`. -/
 theorem sq_mod_eq_of_dvd_step3
-    {R : Type*} [CommRing R] {U : Polynomial R} (X : Polynomial R)
-    (hU : U.Monic) :
+    {R : Type*} [CommRing R] (U X : Polynomial R) :
     U ∣ (X %ₘ U) - X := by
-  -- `Polynomial.dvd_modByMonic_sub` does not exist under that name in
-  -- Mathlib (confirmed by search, not just absence from memory) — using
-  -- the roadmap's own documented fallback instead: `Polynomial.
-  -- modByMonic_eq_sub_mul_div` gives `p %ₘ q = p - q * (p /ₘ q)`, so
-  -- `p %ₘ q - p = -(q * (p /ₘ q))`, divisible by `q`. Note `q` (here `U`)
-  -- is IMPLICIT in that lemma, inferred from `hU`'s type — only `X` is
-  -- passed explicitly.
-  have hmod : X %ₘ U = X - U * (X /ₘ U) := Polynomial.modByMonic_eq_sub_mul_div X hU
-  rw [hmod]
-  exact ⟨-(X /ₘ U), by ring⟩
+  -- The file's earlier searches for `Polynomial.dvd_modByMonic_sub` turned
+  -- up an out-of-date (pre-refactor) signature that required an explicit
+  -- derivation via `modByMonic_eq_sub_mul_div` and a `Monic` hypothesis.
+  -- In this checkout, `Polynomial.dvd_modByMonic_sub (p q : Polynomial R)
+  -- : q ∣ p %ₘ q - p` already exists directly and unconditionally (no
+  -- `Monic` needed — confirmed against the live mathlib4 docs this pass),
+  -- so no `hU` parameter is needed here at all.
+  exact Polynomial.dvd_modByMonic_sub X U
 
 set_option maxHeartbeats 4000000 in
 /-- **Heartbeats raised** (see `sq_mod_eq_of_dvd_step1`'s docstring — same
@@ -224,7 +220,7 @@ theorem sq_mod_eq_of_dvd_step4
     U ∣ (X %ₘ U) ^ 2 - X ^ 2 := by
   have hsq2 : (X %ₘ U) ^ 2 - X ^ 2 = ((X %ₘ U) + X) * ((X %ₘ U) - X) := by ring
   rw [hsq2]
-  exact dvd_mul_of_dvd_left hrem ((X %ₘ U) - X)
+  exact dvd_mul_of_dvd_right hrem ((X %ₘ U) + X)
 
 set_option maxHeartbeats 4000000 in
 /-- **Heartbeats raised**: even this fully generic, abstract statement hit
@@ -248,7 +244,7 @@ theorem sq_mod_eq_of_dvd
     ((-E * G) %ₘ U) ^ 2 %ₘ U = f %ₘ U := by
   have hInvSq := sq_mod_eq_of_dvd_step1 hInv
   have hEGf := sq_mod_eq_of_dvd_step2 hN hInvSq
-  have hrem := sq_mod_eq_of_dvd_step3 (-E * G) hU
+  have hrem := sq_mod_eq_of_dvd_step3 U (-E * G)
   have hvrem := sq_mod_eq_of_dvd_step4 (-E * G) hrem
   -- `hvrem : U ∣ ((-E*G) %ₘ U)^2 - (-E*G)^2`; bridge `(-E*G)^2 = (E*G)^2`
   -- to match `hEGf`'s `(E*G)^2` before combining (not syntactically equal,
