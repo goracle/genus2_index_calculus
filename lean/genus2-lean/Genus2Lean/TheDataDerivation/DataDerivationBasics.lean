@@ -327,6 +327,113 @@ noncomputable def reduceMonomialModU (u0 u1 v0 v1 : F p) (i j : ℕ) : F p × F 
     let (b0, b1) := xmodUTable p u0 u1 (i + 1)
     (v0 * a0 + v1 * b0, v0 * a1 + v1 * b1)
 
+/-! ## `xmodUTable` correctness
+
+`xmodUTable` is *intended* to compute the coefficients of `X^n mod
+(X^2+u1*X+u0)`. This was never proved anywhere — `dvd_N_u` (item 6's last
+remaining gap, `DataDerivationSolve.lean`) needs it. Proved here, over
+`F p` directly (not yet promoted into any tower field `K2`; that promotion,
+via `Polynomial.map` and `Monic.map`, happens where it's actually needed
+downstream). -/
+
+section XModUCorrect
+
+variable (u0 u1 : F p)
+
+/-- The divisor `X^2 + C u1 * X + C u0` is monic — via `Polynomial.
+monic_X_pow_add` (`(X^n + q).Monic` from `q.degree < n`), applied with
+`n = 2`, `q = C u1 * X + C u0`. The degree bound itself is closed by the
+`compute_degree!` tactic (`Mathlib.Tactic.ComputeDegree`), which is built
+exactly for `degree f ≤/< d` goals and avoids hand-picking individual
+`degree_add_le`/`degree_mul_le`/`degree_C_le`/`degree_X_le`-style lemma
+names. -/
+theorem uPoly_monic : (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).Monic := by
+  have hdeg : (C u1 * X + C u0 : Polynomial (F p)).degree < (2 : ℕ) := by
+    compute_degree!
+  have := Polynomial.monic_X_pow_add (R := F p) (n := 2) hdeg
+  simpa [add_assoc] using this
+
+/-- `xmodUTable u0 u1 n`'s two components are exactly the coefficients of
+`X^n mod (X^2+u1*X+u0)` — the correctness fact `dvd_N_u` needs.
+
+Proved by strong induction on `n` in steps of `2` (matching `xmodUTable`'s
+own recursive shape): the `n+2` case reduces `X^(n+2) %ₘ U` to `X *
+(X^(n+1) %ₘ U) %ₘ U` via `modByMonic_eq_of_dvd_sub` (since their difference
+`X^(n+2) - X*(X^(n+1)%ₘU) = X*(X^(n+1) - X^(n+1)%ₘU)` is `X` times a
+multiple of `U`, by `modByMonic_add_div`), then substitutes the IH and
+reduces the resulting degree-≤1 polynomial `X*(C a+C b*X)` against `U`
+directly (its remainder, after subtracting `C b * U`, is again degree ≤ 1
+so equals its own `%ₘ U` by `modByMonic_eq_self_iff`). All degree bounds
+below are closed by `compute_degree!`. -/
+theorem xmodUTable_correct (n : ℕ) :
+    (X ^ n : Polynomial (F p)) %ₘ (X ^ 2 + C u1 * X + C u0) =
+      C (xmodUTable p u0 u1 n).1 + C (xmodUTable p u0 u1 n).2 * X := by
+  set U : Polynomial (F p) := X ^ 2 + C u1 * X + C u0 with hU_def
+  have hU : U.Monic := uPoly_monic p u0 u1
+  have hUdeg : U.degree = (2 : ℕ) := by
+    rw [hU_def]; compute_degree!
+  -- Base cases `n = 0, 1`: `X^0 = 1`, `X^1 = X`, both already degree < 2.
+  induction n using Nat.strong_induction_on with
+  | _ n ih =>
+    match n with
+    | 0 =>
+      have h0 : (X ^ 0 : Polynomial (F p)).degree < U.degree := by
+        rw [hUdeg]; compute_degree!
+      rw [(Polynomial.modByMonic_eq_self_iff hU).mpr h0]
+      simp [xmodUTable]
+    | 1 =>
+      have h1 : (X ^ 1 : Polynomial (F p)).degree < U.degree := by
+        rw [hUdeg]; compute_degree!
+      rw [(Polynomial.modByMonic_eq_self_iff hU).mpr h1]
+      simp [xmodUTable]
+    | (m + 2) =>
+      have ihm : (X ^ (m + 1) : Polynomial (F p)) %ₘ U =
+          C (xmodUTable p u0 u1 (m + 1)).1 + C (xmodUTable p u0 u1 (m + 1)).2 * X :=
+        ih (m + 1) (by omega)
+      set a := (xmodUTable p u0 u1 (m + 1)).1
+      set b := (xmodUTable p u0 u1 (m + 1)).2
+      -- `X^(m+2) - X * (X^(m+1) %ₘ U) = X * (X^(m+1) - X^(m+1) %ₘ U)`,
+      -- and `X^(m+1) - X^(m+1) %ₘ U = U * (X^(m+1) /ₘ U)` by `modByMonic_add_div`.
+      have hsub : U ∣ (X ^ (m + 2) : Polynomial (F p)) - X * (X ^ (m + 1) %ₘ U) := by
+        have hdiv : X ^ (m + 1) - X ^ (m + 1) %ₘ U = U * (X ^ (m + 1) /ₘ U) := by
+          have h := Polynomial.modByMonic_add_div (X ^ (m + 1) : Polynomial (F p)) U
+          linear_combination -h
+        have heq : (X ^ (m + 2) : Polynomial (F p)) - X * (X ^ (m + 1) %ₘ U) =
+            X * (U * (X ^ (m + 1) /ₘ U)) := by
+          rw [← hdiv]; ring
+        rw [heq]
+        exact ⟨X * (X ^ (m + 1) /ₘ U), by ring⟩
+      have hstep : (X ^ (m + 2) : Polynomial (F p)) %ₘ U =
+          (X * (X ^ (m + 1) %ₘ U)) %ₘ U :=
+        Polynomial.modByMonic_eq_of_dvd_sub hU hsub
+      rw [hstep, ihm]
+      -- Now reduce `X * (C a + C b * X) %ₘ U = (-b*u0) + (a - b*u1)*X`,
+      -- via `X*(C a+C b*X) - (C(-b*u0)+C(a-b*u1)*X) = C b * U` (a `ring`
+      -- identity), so `modByMonic_eq_of_dvd_sub` reduces to that degree-≤1
+      -- polynomial's own `%ₘ U`, which equals itself by `modByMonic_eq_self_iff`.
+      have hcong : X * (C a + C b * X) - (C (-b * u0) + C (a - b * u1) * X) = C b * U := by
+        rw [hU_def]
+        simp only [map_mul, map_sub, map_neg]
+        ring
+      have hdvd2 : U ∣ X * (C a + C b * X) - (C (-b * u0) + C (a - b * u1) * X) :=
+        ⟨C b, by rw [hcong]; ring⟩
+      have hmod2 : (X * (C a + C b * X)) %ₘ U =
+          (C (-b * u0) + C (a - b * u1) * X) %ₘ U :=
+        Polynomial.modByMonic_eq_of_dvd_sub hU hdvd2
+      have hlindeg : (C (-b * u0) + C (a - b * u1) * X : Polynomial (F p)).degree
+          < U.degree := by
+        rw [hUdeg]; compute_degree!
+      rw [hmod2, (Polynomial.modByMonic_eq_self_iff hU).mpr hlindeg]
+      -- Goal: `C(xmodUTable p u0 u1 (m+2)).1 + C(xmodUTable p u0 u1 (m+2)).2 * X`
+      -- vs `C(-b*u0) + C(a-b*u1)*X`. `xmodUTable`'s `n+2` clause makes the LHS
+      -- tuple *definitionally* `(-b*u0, a-b*u1)` (`a,b` are literally
+      -- `xmodUTable p u0 u1 (m+1)`'s two components via `set`), so `rfl`
+      -- should close it directly via the equation compiler's unfolding.
+      -- If `rfl` doesn't fire (equation-compiler unfolding can be picky
+      -- through `set`), replace this line with `simp [xmodUTable]`.
+      rfl
+
+end XModUCorrect
 
 end TheDataDerivation
 end Genus2Lean

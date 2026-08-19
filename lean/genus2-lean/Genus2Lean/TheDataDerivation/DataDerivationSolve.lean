@@ -51,6 +51,15 @@ namespace TheDataDerivation
 
 open Polynomial
 
+-- Raised from the 200000 default (10x) per explicit instruction: this
+-- file's proofs work over `Polynomial (K2 p c0 c1 c2 c3 c4)`, a
+-- deliberately-reducible triple-stacked `AdjoinRoot`/`FractionRing` tower,
+-- so `whnf`/`isDefEq` cost is structurally heavy even after replacing
+-- `set` with `let`+`clear_value` at the worst offenders (see those sites'
+-- comments). This is a scoped, deliberate loosening for this file's known
+-- arithmetic weight, not a substitute for the opacity-boundary work.
+set_option maxHeartbeats 2000000
+
 variable (p : ℕ) [hp : Fact (Nat.Prime p)]
 
 /-! ## Item 4 (§4.2): the `4×4` matrix `A` and `rhs`
@@ -409,6 +418,27 @@ private theorem matrixA_row_eval (a : Fin 2) (col : Fin 4) :
       px ^ bi * (if bj = 1 then py else 1) := by
   fin_cases a <;> simp [matrixA]
 
+/-- **Row-unfolding lemma for the mod-`u` rows.** `matrixA`'s row `2+a.val`
+(`a : Fin 2`, so row 2 or row 3) evaluated at any `col : Fin 4` is the
+`a`-th component (`.1` for row 2, `.2` for row 3) of `reduceMonomialModU`
+applied to the basis pair at `otherIdx.getD col.val 0` — `matrixA`'s
+`else` branch unfolded literally, same role as `matrixA_row_eval` for the
+anchor rows. -/
+private theorem matrixA_row23_eval (a : Fin 2) (col : Fin 4) :
+    matrixA p c0 c1 c2 c3 c4 u0 u1 v0 v1 ⟨2 + a.val, by omega⟩ col =
+      let (_, bi, bj) := rrBasis5.getD (otherIdx.getD col.val 0) (0, 0, 0)
+      let (r0, r1) := reduceMonomialModU p u0 u1 v0 v1 bi bj
+      algebraMap (F p) (K2 p c0 c1 c2 c3 c4) (if a.val = 0 then r0 else r1) := by
+  fin_cases a <;> simp [matrixA]
+
+/-- Same row-unfolding for `rhsVec`'s rows 2/3. -/
+private theorem rhsVec_row23_eval (a : Fin 2) :
+    rhsVec p c0 c1 c2 c3 c4 u0 u1 v0 v1 ⟨2 + a.val, by omega⟩ =
+      let (_, bi_n, bj_n) := rrBasis5.getD yIdx (0, 1, 1)
+      let (rn0, rn1) := reduceMonomialModU p u0 u1 v0 v1 bi_n bj_n
+      (-algebraMap (F p) (K2 p c0 c1 c2 c3 c4) (if a.val = 0 then rn0 else rn1)) := by
+  fin_cases a <;> simp [rhsVec]
+
 /-- Membership characterization for `otherIdx`, stated in `Prop` form (bridging
 the `Bool`-valued `decide` that `List.filter`/`List.mem_filter` actually
 produce). -/
@@ -553,7 +583,6 @@ private theorem coeffsOut_otherMap (col : Fin 4) :
     (Fin.ext (a := (⟨hex.choose, hchoose_lt4⟩ : Fin 4)) (b := col) hidx_eq)
 
 
-set_option maxHeartbeats 6000000 in
 /-- **The five-slot defining identity**, row 0 of `A * coeffsOut = rhsVec`
 restated additively over all of `Fin 5` (not just `other_idx`) — see the
 docstring above §"The anchor argument, worked out precisely" for the
@@ -830,6 +859,549 @@ theorem anchor2_defining_eq (hA : MatrixNondegenerate p c0 c1 c2 c3 c4 u0 u1 v0 
   have h := anchor_defining_eq_aux p c0 c1 c2 c3 c4 u0 u1 v0 v1 hA ⟨1, by norm_num⟩
   simpa using h
 
+/-- `xmodUTable_correct`, lifted from `F p` to `K2 p ...` via `Polynomial.
+map_modByMonic` (`map f (p %ₘ q) = map f p %ₘ map f q`, given `q.Monic`)
+applied to `f := algebraMap (F p) (K2 p ...)`, `q := X^2+C u1*X+C u0`. The
+LHS `map f (X^n %ₘ u) = (X^n : Polynomial K) %ₘ U` since `map f` commutes
+with `X^n` (`Polynomial.map_pow`/`map_X`) and `map f u = U` (`map_add`/
+`map_mul`/`map_C`/`map_X`/`map_pow`); the RHS similarly turns `map f (C a +
+C b * X)` into `C (f a) + C (f b) * X`. -/
+private theorem xmodUTable_correct_K (u0 u1 : F p) (n : ℕ) :
+    (X ^ n : Polynomial (K2 p c0 c1 c2 c3 c4)) %ₘ
+        (X ^ 2 + C (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u1) * X +
+          C (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u0)) =
+      C (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) (xmodUTable p u0 u1 n).1) +
+        C (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) (xmodUTable p u0 u1 n).2) * X := by
+  -- `let` + `clear_value` (not `set`): per the fix for this file's timeout,
+  -- `set` performs a goal-wide occurrence search/replace, which is expensive
+  -- against `K2`-typed terms; `let` binds the name cheaply and `clear_value`
+  -- then makes it opaque to later defeq checks while keeping the defining
+  -- equality (`hg_def`/`hu_def`) available at the one place it's needed.
+  let g : F p →+* K2 p c0 c1 c2 c3 c4 := algebraMap (F p) (K2 p c0 c1 c2 c3 c4)
+  clear_value (hg_def : g = algebraMap (F p) (K2 p c0 c1 c2 c3 c4))
+  let u : Polynomial (F p) := X ^ 2 + C u1 * X + C u0
+  clear_value (hu_def : u = X ^ 2 + C u1 * X + C u0)
+  have hUmap : (X ^ 2 + C (g u1) * X + C (g u0) : Polynomial (K2 p c0 c1 c2 c3 c4)) = u.map g := by
+    rw [hg_def, hu_def]
+    simp [Polynomial.map_add, Polynomial.map_mul, Polynomial.map_pow, Polynomial.map_C,
+      Polynomial.map_X]
+  have huMonic : u.Monic := by rw [hu_def]; exact uPoly_monic p u0 u1
+  -- Fold the goal to `g`/`u`-form (`← hg_def` for the `algebraMap` occurrences,
+  -- `hUmap` to turn the literal divisor into `u.map g`).
+  rw [← hg_def, hUmap]
+  -- `hmap : map g (X^n %ₘ u) = map g (X^n) %ₘ map g u = X^n %ₘ u.map g`
+  -- (`map g (X^n) = X^n` since `g` is a ring hom fixing `X`-powers under `map`).
+  have hmap := Polynomial.map_modByMonic g huMonic (p := (X ^ n : Polynomial (F p)))
+  rw [show (X ^ n : Polynomial (F p)).map g = (X ^ n : Polynomial (K2 p c0 c1 c2 c3 c4)) by
+    rw [hg_def]; simp [Polynomial.map_pow, Polynomial.map_X]] at hmap
+  rw [← hmap]
+  have hbase : (X ^ n : Polynomial (F p)) %ₘ u =
+      C (xmodUTable p u0 u1 n).1 + C (xmodUTable p u0 u1 n).2 * X := by
+    rw [hu_def]; exact xmodUTable_correct p u0 u1 n
+  have hbaseMapped := congrArg (Polynomial.map g) hbase
+  rw [Polynomial.map_add, Polynomial.map_mul, Polynomial.map_C, Polynomial.map_C,
+    Polynomial.map_X] at hbaseMapped
+  exact hbaseMapped
+
+/-- **The five-slot defining identity for the mod-`u` rows**, `a = 0`
+giving row 2 (the `.1`/`x^0`-coefficient row), `a = 1` giving row 3 (the
+`.2`/`x^1`-coefficient row) — the exact analogue of `anchor_defining_eq_aux`
+but for the two `reduceMonomialModU` rows instead of the two anchor rows.
+Same five steps: Cramer's rule at row `2+a.val`, divide by `A.det`, unfold
+via `matrixA_row23_eval`/`rhsVec_row23_eval`, reindex `Fin 4 → Fin 5` via
+`sum_otherIdx_add_y`, split the resulting 5-slot sum by `bj` to land on
+`Epoly`/`Ypoly`'s own coefficient-sum shape (via `reduceMonomialModU`'s own
+`bj`-split definition, matching `Epoly`/`Ypoly`'s `if bj = 0/1 then ...`
+sums termwise). -/
+private lemma row23_defining_eq_aux (hA : MatrixNondegenerate p c0 c1 c2 c3 c4 u0 u1 v0 v1)
+    (a : Fin 2) :
+    (∑ bidx : Fin 5,
+      let (_, bi, bj) := rrBasis5.getD bidx.val (0, 0, 0)
+      coeffsOut p c0 c1 c2 c3 c4 u0 u1 v0 v1 bidx *
+        algebraMap (F p) (K2 p c0 c1 c2 c3 c4)
+          (let (r0, r1) := reduceMonomialModU p u0 u1 v0 v1 bi bj
+           if a.val = 0 then r0 else r1)) = 0 := by
+  set A := matrixA p c0 c1 c2 c3 c4 u0 u1 v0 v1 with hA_def
+  set rhs := rhsVec p c0 c1 c2 c3 c4 u0 u1 v0 v1 with hrhs_def
+  have hdet : A.det ≠ 0 := hA
+  have haRow : 2 + a.val < 4 := by omega
+  -- Step 1: Cramer's rule at row `⟨2+a.val,_⟩`.
+  have hmul := Matrix.mulVec_cramer A rhs
+  have hrow := congrFun hmul (⟨2 + a.val, haRow⟩ : Fin 4)
+  simp only [Matrix.mulVec, dotProduct, Pi.smul_apply, smul_eq_mul] at hrow
+  -- Step 2: divide by `A.det ≠ 0`.
+  have hrow' : ∑ col : Fin 4, A ⟨2 + a.val, haRow⟩ col *
+      (A.cramer rhs col / A.det) = rhs ⟨2 + a.val, haRow⟩ := by
+    have hstep : (∑ col : Fin 4, A ⟨2 + a.val, haRow⟩ col * (A.cramer rhs col / A.det)) * A.det =
+        rhs ⟨2 + a.val, haRow⟩ * A.det := by
+      rw [Finset.sum_mul]
+      have : ∀ col : Fin 4, A ⟨2 + a.val, haRow⟩ col * (A.cramer rhs col / A.det) * A.det =
+          A ⟨2 + a.val, haRow⟩ col * A.cramer rhs col := by
+        intro col; field_simp
+      simp only [this]
+      rw [hrow]; ring
+    exact mul_right_cancel₀ hdet hstep
+  have hcramerSolution : ∀ col : Fin 4, A.cramer rhs col / A.det =
+      cramerSolution p c0 c1 c2 c3 c4 u0 u1 v0 v1 col := fun col => rfl
+  simp only [hcramerSolution] at hrow'
+  -- Step 3: unfold both sides via the row-23 unfolding lemmas.
+  have hApply : ∀ col : Fin 4, A ⟨2 + a.val, haRow⟩ col =
+      let (_, bi, bj) := rrBasis5.getD (otherIdx.getD col.val 0) (0, 0, 0)
+      let (r0, r1) := reduceMonomialModU p u0 u1 v0 v1 bi bj
+      algebraMap (F p) (K2 p c0 c1 c2 c3 c4) (if a.val = 0 then r0 else r1) := fun col =>
+    matrixA_row23_eval p c0 c1 c2 c3 c4 u0 u1 v0 v1 a col
+  have hrhsApply : rhs ⟨2 + a.val, haRow⟩ =
+      let (_, bi_n, bj_n) := rrBasis5.getD yIdx (0, 1, 1)
+      let (rn0, rn1) := reduceMonomialModU p u0 u1 v0 v1 bi_n bj_n
+      (-algebraMap (F p) (K2 p c0 c1 c2 c3 c4) (if a.val = 0 then rn0 else rn1)) := by
+    show rhsVec p c0 c1 c2 c3 c4 u0 u1 v0 v1 ⟨2 + a.val, haRow⟩ = _
+    exact rhsVec_row23_eval p c0 c1 c2 c3 c4 u0 u1 v0 v1 a
+  clear_value A rhs
+  rw [hrhsApply] at hrow'
+  -- Move the RHS term to the left, recovering the 5-term additive identity.
+  have hmoved : (∑ col : Fin 4, coeffsOut p c0 c1 c2 c3 c4 u0 u1 v0 v1 (otherMap col) *
+      (let (_, bi, bj) := rrBasis5.getD (otherIdx.getD col.val 0) (0, 0, 0)
+       let (r0, r1) := reduceMonomialModU p u0 u1 v0 v1 bi bj
+       algebraMap (F p) (K2 p c0 c1 c2 c3 c4) (if a.val = 0 then r0 else r1))) +
+      coeffsOut p c0 c1 c2 c3 c4 u0 u1 v0 v1 ⟨yIdx, yIdx_lt_five⟩ *
+        (let (_, bi_n, bj_n) := rrBasis5.getD yIdx (0, 1, 1)
+         let (rn0, rn1) := reduceMonomialModU p u0 u1 v0 v1 bi_n bj_n
+         algebraMap (F p) (K2 p c0 c1 c2 c3 c4) (if a.val = 0 then rn0 else rn1)) = 0 := by
+    have hcoeffsOutY : coeffsOut p c0 c1 c2 c3 c4 u0 u1 v0 v1 ⟨yIdx, yIdx_lt_five⟩ = 1 := by
+      unfold coeffsOut; rw [dif_pos rfl]
+    rw [hcoeffsOutY, one_mul]
+    have hstep : ∑ col : Fin 4, coeffsOut p c0 c1 c2 c3 c4 u0 u1 v0 v1 (otherMap col) *
+        (let (_, bi, bj) := rrBasis5.getD (otherIdx.getD col.val 0) (0, 0, 0)
+         let (r0, r1) := reduceMonomialModU p u0 u1 v0 v1 bi bj
+         algebraMap (F p) (K2 p c0 c1 c2 c3 c4) (if a.val = 0 then r0 else r1)) =
+        ∑ col : Fin 4, cramerSolution p c0 c1 c2 c3 c4 u0 u1 v0 v1 col *
+        (let (_, bi, bj) := rrBasis5.getD (otherIdx.getD col.val 0) (0, 0, 0)
+         let (r0, r1) := reduceMonomialModU p u0 u1 v0 v1 bi bj
+         algebraMap (F p) (K2 p c0 c1 c2 c3 c4) (if a.val = 0 then r0 else r1)) := by
+      apply Finset.sum_congr rfl
+      intro col _
+      rw [coeffsOut_otherMap p c0 c1 c2 c3 c4 u0 u1 v0 v1 col]
+    have horder : (∑ col : Fin 4, cramerSolution p c0 c1 c2 c3 c4 u0 u1 v0 v1 col *
+          (let (_, bi, bj) := rrBasis5.getD (otherIdx.getD col.val 0) (0, 0, 0)
+           let (r0, r1) := reduceMonomialModU p u0 u1 v0 v1 bi bj
+           algebraMap (F p) (K2 p c0 c1 c2 c3 c4) (if a.val = 0 then r0 else r1)))
+        = ∑ col : Fin 4, A ⟨2 + a.val, haRow⟩ col *
+            cramerSolution p c0 c1 c2 c3 c4 u0 u1 v0 v1 col := by
+      apply Finset.sum_congr rfl
+      intro col _
+      rw [mul_comm (cramerSolution p c0 c1 c2 c3 c4 u0 u1 v0 v1 col), hApply col]
+    rw [hstep, horder, hrow']
+    exact neg_add_cancel _
+  -- Step 4: reindex `Fin 4 → Fin 5` via `sum_otherIdx_add_y`.
+  -- `let` + `clear_value` (not `set`), named `Fsum` (not `F`): `F` is
+  -- already this file's ambient base-field notation (`F p = ZMod p`), and a
+  -- `let`-bound local of the same name self-shadows *inside its own body*
+  -- (every `F p` inside the value being defined would resolve to the
+  -- not-yet-fully-bound local `F : Fin 5 → K2 ...` instead of the ambient
+  -- `F p`) — `set`/`have` don't hit this because they fully elaborate the
+  -- RHS before binding the name, but `let` does not. Renaming avoids the
+  -- collision. `clear_value` is also split into three steps here (`let` /
+  -- `have ... := rfl` / `clear_value`) rather than hand-retyping the
+  -- destructured body for `clear_value`'s inline binder, since the
+  -- elaborated body contains a `match` from the `let (_, bi, bj) := ...`
+  -- pattern that doesn't syntactically match a hand-written copy.
+  let Fsum : Fin 5 → K2 p c0 c1 c2 c3 c4 := fun bidx =>
+    coeffsOut p c0 c1 c2 c3 c4 u0 u1 v0 v1 bidx *
+      (let (_, bi, bj) := rrBasis5.getD bidx.val (0, 0, 0)
+       algebraMap (F p) (K2 p c0 c1 c2 c3 c4)
+         (let (r0, r1) := reduceMonomialModU p u0 u1 v0 v1 bi bj
+          if a.val = 0 then r0 else r1))
+  have hF_def : Fsum = fun bidx =>
+      coeffsOut p c0 c1 c2 c3 c4 u0 u1 v0 v1 bidx *
+        (let (_, bi, bj) := rrBasis5.getD bidx.val (0, 0, 0)
+         algebraMap (F p) (K2 p c0 c1 c2 c3 c4)
+           (let (r0, r1) := reduceMonomialModU p u0 u1 v0 v1 bi bj
+            if a.val = 0 then r0 else r1)) := rfl
+  clear_value Fsum
+  have hFcol : ∀ col : Fin 4, Fsum (otherMap col) =
+      coeffsOut p c0 c1 c2 c3 c4 u0 u1 v0 v1 (otherMap col) *
+      (let (_, bi, bj) := rrBasis5.getD (otherIdx.getD col.val 0) (0, 0, 0)
+       let (r0, r1) := reduceMonomialModU p u0 u1 v0 v1 bi bj
+       algebraMap (F p) (K2 p c0 c1 c2 c3 c4) (if a.val = 0 then r0 else r1)) := by
+    intro col
+    -- `Fsum (otherMap col)` unfolds (via `hF_def`, a syntactic rewrite — not
+    -- a defeq check through `K2`'s `abbrev` chain) to the same product with
+    -- `bidx := otherMap col`; the only remaining gap is the *index*
+    -- `(otherMap col).val = otherIdx.getD col.val 0`, an `Fin`/`ℕ`-level
+    -- fact with no `K2` in it. Establishing that separately (`hidx`) and
+    -- rewriting only at the index avoids asking `rfl`/`whnf` to walk the
+    -- `K2`-typed `algebraMap` subterm, which is what caused the original
+    -- whole-term `change ... ; rfl` to time out (forced full unfolding
+    -- through the reducible `K2`/`AdjoinRoot`/`FractionRing` abbrev stack).
+    have hidx : (otherMap col).val = otherIdx.getD col.val 0 := rfl
+    simp only [hF_def, hidx]
+  have hFy : Fsum (⟨yIdx, yIdx_lt_five⟩ : Fin 5) =
+      coeffsOut p c0 c1 c2 c3 c4 u0 u1 v0 v1 ⟨yIdx, yIdx_lt_five⟩ *
+      (let (_, bi_n, bj_n) := rrBasis5.getD yIdx (0, 1, 1)
+       let (rn0, rn1) := reduceMonomialModU p u0 u1 v0 v1 bi_n bj_n
+       algebraMap (F p) (K2 p c0 c1 c2 c3 c4) (if a.val = 0 then rn0 else rn1)) := by
+    have hy_len : yIdx < rrBasis5.length := by
+      have hlen : rrBasis5.length = 5 := by
+        simp [rrBasis5, rrBasisCandidates, List.length_flatMap]
+      rw [hlen]; exact yIdx_lt_five
+    have hy_get : rrBasis5.getD yIdx (0, 0, 0) = rrBasis5.getD yIdx (0, 1, 1) := by
+      rw [List.getD_eq_getElem _ _ hy_len, List.getD_eq_getElem _ _ hy_len]
+    simp only [hF_def, hy_get]
+  have hsum5 : (∑ col : Fin 4, Fsum (otherMap col)) + Fsum ⟨yIdx, yIdx_lt_five⟩ =
+      ∑ bidx : Fin 5, Fsum bidx := sum_otherIdx_add_y p c0 c1 c2 c3 c4 Fsum
+  have hmoved' : (∑ col : Fin 4, Fsum (otherMap col)) + Fsum ⟨yIdx, yIdx_lt_five⟩ = 0 := by
+    calc
+      (∑ col : Fin 4, Fsum (otherMap col)) + Fsum ⟨yIdx, yIdx_lt_five⟩ =
+          (∑ col : Fin 4, coeffsOut p c0 c1 c2 c3 c4 u0 u1 v0 v1 (otherMap col) *
+            (let (_, bi, bj) := rrBasis5.getD (otherIdx.getD col.val 0) (0, 0, 0)
+             let (r0, r1) := reduceMonomialModU p u0 u1 v0 v1 bi bj
+             algebraMap (F p) (K2 p c0 c1 c2 c3 c4) (if a.val = 0 then r0 else r1))) +
+            coeffsOut p c0 c1 c2 c3 c4 u0 u1 v0 v1 ⟨yIdx, yIdx_lt_five⟩ *
+              (let (_, bi_n, bj_n) := rrBasis5.getD yIdx (0, 1, 1)
+               let (rn0, rn1) := reduceMonomialModU p u0 u1 v0 v1 bi_n bj_n
+               algebraMap (F p) (K2 p c0 c1 c2 c3 c4) (if a.val = 0 then rn0 else rn1)) := by
+            rw [Finset.sum_congr rfl (fun col _ => hFcol col), hFy]
+      _ = 0 := hmoved
+  have hsum5' : ∑ bidx : Fin 5, Fsum bidx = 0 := hsum5 ▸ hmoved'
+  -- The theorem's goal is stated directly via the `let`-match body (not
+  -- through `Fsum`, which is opaque post-`clear_value`), so unfold
+  -- pointwise via `hF_def` before closing.
+  rw [hF_def] at hsum5'
+  exact hsum5'
+
+/-- **The mod-`u` congruence, assembled**: `(E(x) + Y(x)*(v1*X+v0)) %ₘ u(x)
+= 0`, i.e. `u(x) ∣ E(x) + Y(x)*(v1*X+v0)`, obtained from `row23_defining_eq_aux`
+by identifying its two coefficient sums (`a=0`,`a=1`) with the two
+coefficients of `(E + Y*(v1 X+v0)) %ₘ u` via `xmodUTable_correct` (lifted to
+`K2` by `Polynomial.map_modByMonic`/`Monic.map`) and `reduceMonomialModU`'s
+own `j=0`/`j=1` split (`j=0`: `X^bi mod u`'s own coefficients, matching
+`E`'s `bj=0` terms; `j=1`: `(v0+v1 X) * X^bi mod u`'s coefficients — since
+`reduceMonomialModU`'s `j=1` branch computes `v0 * xmodUTable(bi) + v1 *
+xmodUTable(bi+1)`, which is exactly `(v0 + v1*X) * X^bi mod u` by linearity
+of `%ₘ` and `xmodUTable_correct` at both `bi` and `bi+1`, matching `Y`'s
+`bj=1` terms multiplied by `(v1 X+v0)`). -/
+theorem dvd_E_add_Y_mul_v (hA : MatrixNondegenerate p c0 c1 c2 c3 c4 u0 u1 v0 v1) :
+    (X ^ 2 + C (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u1) * X +
+        C (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u0)) ∣
+      (Epoly p c0 c1 c2 c3 c4 u0 u1 v0 v1 +
+        Ypoly p c0 c1 c2 c3 c4 u0 u1 v0 v1 *
+          (C (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) v1) * X +
+            C (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) v0))) := by
+  set K := K2 p c0 c1 c2 c3 c4
+  -- `let` + `clear_value` (not `set`) for `g`/`u`/`U`: per this file's
+  -- diagnosed fix elsewhere (`xmodUTable_correct_K`, `dvd_N_u`), `set`
+  -- performs an expensive goal-wide occurrence search/replace against
+  -- `K2`-typed terms. `let` binds cheaply and `clear_value` makes each name
+  -- opaque, keeping only the defining equation available to `rw` in at the
+  -- points that need it. Since (unlike `set`) this does NOT rewrite the
+  -- goal automatically, the goal is folded back to `g`/`U`-form explicitly
+  -- via `← hg_def`/`← hU_def` right before it's needed.
+  let g : F p →+* K := algebraMap (F p) K
+  clear_value (hg_def : g = algebraMap (F p) K)
+  let u : Polynomial (F p) := X ^ 2 + C u1 * X + C u0
+  clear_value (hu_def : u = X ^ 2 + C u1 * X + C u0)
+  let U : Polynomial K := X ^ 2 + C (g u1) * X + C (g u0)
+  clear_value (hU_def : U = X ^ 2 + C (g u1) * X + C (g u0))
+  have hUmap : U = u.map g := by
+    rw [hU_def, hu_def]
+    simp [Polynomial.map_add, Polynomial.map_mul, Polynomial.map_pow, Polynomial.map_C,
+      Polynomial.map_X]
+  have huMonic : u.Monic := by rw [hu_def]; exact uPoly_monic p u0 u1
+  have hUMonic : U.Monic := hUmap ▸ huMonic.map g
+  rw [← hg_def, ← hU_def]
+  rw [← Polynomial.modByMonic_eq_zero_iff_dvd hUMonic]
+  -- The target sum `R := E + Y*(v1X+v0)`. Its coefficients 0,1 are exactly
+  -- `row23_defining_eq_aux`'s two sums (`a=0`,`a=1`); its higher coefficients
+  -- vanish since `%ₘ U` has degree `< 2`, by `degree_modByMonic_lt`.
+  set R : Polynomial K := Epoly p c0 c1 c2 c3 c4 u0 u1 v0 v1 +
+      Ypoly p c0 c1 c2 c3 c4 u0 u1 v0 v1 *
+        (C (g v1) * X + C (g v0)) with hR_def
+  -- `R` rewritten as a single sum over `bidx : Fin 5`, one term per basis
+  -- slot, matching `Epoly`/`Ypoly`'s own `∑ bidx, if bj = 0/1 then ... else 0`
+  -- definitions merged together with the `(v1 X + v0)` factor distributed in.
+  have hRsum : R = ∑ bidx : Fin 5,
+      let (_, bi, bj) := rrBasis5.getD bidx.val (0, 0, 0)
+      if bj = 0 then C (coeffsOut p c0 c1 c2 c3 c4 u0 u1 v0 v1 bidx) * X ^ bi
+      else C (coeffsOut p c0 c1 c2 c3 c4 u0 u1 v0 v1 bidx) * X ^ bi * (C (g v1) * X + C (g v0)) := by
+    rw [hR_def]
+    unfold Epoly Ypoly
+    rw [Finset.sum_mul, ← Finset.sum_add_distrib]
+    apply Finset.sum_congr rfl
+    intro bidx _
+    have hbj0or1 : (rrBasis5.getD bidx.val (0, 0, 0)).2.2 = 0 ∨
+        (rrBasis5.getD bidx.val (0, 0, 0)).2.2 = 1 := by
+      have hlen : rrBasis5.length = 5 := by
+        simp [rrBasis5, rrBasisCandidates, List.length_flatMap]
+      have hlt : bidx.val < rrBasis5.length := by rw [hlen]; exact bidx.isLt
+      rw [List.getD_eq_getElem _ _ hlt]
+      exact rrBasis5_flag _ (List.getElem_mem hlt)
+    rcases hbj0or1 with hb0 | hb1
+    · have hb1' : (rrBasis5.getD bidx.val (0, 0, 0)).2.2 ≠ 1 := by omega
+      simp only [if_pos hb0, if_neg hb1']
+      ring
+    · have hb0' : (rrBasis5.getD bidx.val (0, 0, 0)).2.2 ≠ 0 := by omega
+      simp only [if_neg hb0', if_pos hb1]
+      ring
+  -- `%ₘ U` is `K`-linear (`Polynomial.modByMonicHom`), so distributes over
+  -- the 5-term sum via `map_sum` (the general `AddMonoidHomClass` lemma
+  -- `g (∑ x ∈ s, f x) = ∑ x ∈ s, g (f x)`, applied to `g := U.modByMonicHom`).
+  have hRmod : R %ₘ U = ∑ bidx : Fin 5,
+      (let (_, bi, bj) := rrBasis5.getD bidx.val (0, 0, 0)
+       if bj = 0 then C (coeffsOut p c0 c1 c2 c3 c4 u0 u1 v0 v1 bidx) * X ^ bi
+       else C (coeffsOut p c0 c1 c2 c3 c4 u0 u1 v0 v1 bidx) * X ^ bi *
+         (C (g v1) * X + C (g v0))) %ₘ U := by
+    rw [hRsum, ← Polynomial.modByMonicHom_apply,
+      map_sum U.modByMonicHom
+        (fun bidx : Fin 5 =>
+          let (_, bi, bj) := rrBasis5.getD bidx.val (0, 0, 0)
+          if bj = 0 then C (coeffsOut p c0 c1 c2 c3 c4 u0 u1 v0 v1 bidx) * X ^ bi
+          else C (coeffsOut p c0 c1 c2 c3 c4 u0 u1 v0 v1 bidx) * X ^ bi *
+            (C (g v1) * X + C (g v0)))
+        Finset.univ]
+    simp only [Polynomial.modByMonicHom_apply]
+  -- Each term's `%ₘ U`, computed via `xmodUTable_correct_K`, is exactly what
+  -- `reduceMonomialModU` returns (`j=0`: `X^bi %ₘ U`'s coefficients; `j=1`:
+  -- `v0*xmodUTable(bi) + v1*xmodUTable(bi+1)`, matching `(v0+v1X)*X^bi %ₘ U`
+  -- via `X^(bi+1) = X * X^bi` and `%ₘ U`'s `K`-linearity/multiplicativity).
+  -- Shared smul-fact, synthesized ONCE against the `set`-opaque `K` rather
+  -- than fresh inside each of `hterm`'s two branches: `Polynomial.smul_eq_C_mul`
+  -- needs `Module K K[X]`/`DistribSMul K K[X]`, and synthesizing that against
+  -- `K2 p c0 c1 c2 c3 c4` spelled out explicitly (as both branches' `hCterm`
+  -- previously did in their type ascriptions) re-triggers the full triple-
+  -- `AdjoinRoot` instance search at each site and blows the
+  -- `synthInstance.maxHeartbeats` budget independently, one branch at a time.
+  -- Stating it here once, against `K`, lets `set`'s opacity do its job: the
+  -- instance is resolved once and both branches below reuse this term via
+  -- `rw`/`simp only [hsmulC]` instead of re-invoking the lemma.
+  have hsmulC : ∀ (c : K) (q : Polynomial K), c • q = C c * q := fun c q =>
+    Polynomial.smul_eq_C_mul c
+  have hterm : ∀ bidx : Fin 5, ∀ a : Fin 2,
+      ((let (_, bi, bj) := rrBasis5.getD bidx.val (0, 0, 0)
+        if bj = 0 then C (coeffsOut p c0 c1 c2 c3 c4 u0 u1 v0 v1 bidx) * X ^ bi
+        else C (coeffsOut p c0 c1 c2 c3 c4 u0 u1 v0 v1 bidx) * X ^ bi *
+          (C (g v1) * X + C (g v0))) %ₘ U).coeff a.val =
+      coeffsOut p c0 c1 c2 c3 c4 u0 u1 v0 v1 bidx *
+        (let (_, bi, bj) := rrBasis5.getD bidx.val (0, 0, 0)
+         g (let (r0, r1) := reduceMonomialModU p u0 u1 v0 v1 bi bj
+            if a.val = 0 then r0 else r1)) := by
+    intro bidx a
+    -- NOT `set bi/bj/c := (rrBasis5.getD bidx.val (0,0,0)).2.1/.2.2/coeffsOut...`:
+    -- the goal's own `let (_, bi, bj) := rrBasis5.getD bidx.val (0,0,0)`
+    -- pattern-matches compile to a `match`/`Prod.rec` term, not literal
+    -- `.2.1`/`.2.2` projections, so `set`'s syntactic occurrence search
+    -- finds no match and falls back to an expensive whole-term `isDefEq`
+    -- search — the same `match`-vs-hand-written-copy mismatch already
+    -- diagnosed at `hFcol`/`hidx` above. `obtain` on the identical tuple
+    -- expression instead lets `rcases`'s own match-compiler line up with
+    -- the goal's compiled `match` structurally, which is cheap.
+    have hbj0or1' : (rrBasis5.getD bidx.val (0, 0, 0)).2.2 = 0 ∨
+        (rrBasis5.getD bidx.val (0, 0, 0)).2.2 = 1 := by
+      have hlen : rrBasis5.length = 5 := by
+        simp [rrBasis5, rrBasisCandidates, List.length_flatMap]
+      have hlt : bidx.val < rrBasis5.length := by rw [hlen]; exact bidx.isLt
+      rw [List.getD_eq_getElem _ _ hlt]
+      exact rrBasis5_flag _ (List.getElem_mem hlt)
+    -- `obtain`'s `cases` does NOT keep `bj` definitionally equal to the
+    -- `.2.2` projection it replaced (attempting to `exact` `hbj0or1'`
+    -- against a `bj`-phrased goal afterward fails outright) — so
+    -- `hbj0or1'` must be `revert`ed *before* the `obtain`, letting the same
+    -- case-split substitute consistently through both the goal and this
+    -- fact, rather than trying to bridge them after the fact.
+    revert hbj0or1'
+    obtain ⟨_, bi, bj⟩ := rrBasis5.getD bidx.val (0, 0, 0)
+    intro hbj0or1
+    -- `obtain` on a bare term elaborates via `cases`, which leaves a
+    -- residual `match (fst✝, bi, bj) with | (fst, bi, bj) => ...` wrapping
+    -- the goal rather than substituting straight through. That `match` is
+    -- applied to a literal constructor tuple, so it iota-reduces trivially
+    -- — `dsimp only []` forces that reduction cheaply, restoring the goal
+    -- to plain `if bj = 0 then _ else _` form for the `rw [if_pos/if_neg]`
+    -- calls below.
+    dsimp only [] at hbj0or1 ⊢
+    -- NOT `set c := coeffsOut p c0 c1 c2 c3 c4 u0 u1 v0 v1 bidx`: `set`
+    -- elaborates its RHS as a fresh term before doing anything else, and
+    -- that elaboration alone (against the large `K2` abbrev stack) is what
+    -- timed out here — not the subsequent occurrence search. `generalize`
+    -- instead abstracts the term as it already sits, pre-elaborated, in the
+    -- goal, at whichever occurrences match syntactically. `generalize`'s own
+    -- equation comes out reversed (`coeffsOut ... = c`) relative to `set`'s
+    -- convention (`c = coeffsOut ...`), which downstream `simp [..., hc_def]`
+    -- calls rely on — `.symm` restores it.
+    generalize hc_def' : coeffsOut p c0 c1 c2 c3 c4 u0 u1 v0 v1 bidx = c
+    have hc_def := hc_def'.symm
+    rcases hbj0or1 with hb0 | hb1
+    · -- `j = 0`: term is `C c * X^bi`; `%ₘ` commutes with `C c *ₗ ·`
+      -- (scalar multiplication, `modByMonicHom` is `K`-linear).
+      have hCterm : (C c * X ^ bi : Polynomial K) = c • (X ^ bi) := by
+        rw [hsmulC]
+      rw [if_pos hb0]
+      rw [hCterm, ← Polynomial.modByMonicHom_apply, map_smul, Polynomial.modByMonicHom_apply,
+        hU_def, hg_def, xmodUTable_correct_K p c0 c1 c2 c3 c4 u0 u1 bi, ← hg_def]
+      rw [hb0]
+      simp only [reduceMonomialModU, if_pos rfl]
+      -- `simp` (not `simp only`) previously timed out here: `simp`'s default
+      -- set contains smul-normalization lemmas that unconditionally probe
+      -- for a `Module`/`DistribSMul` instance whenever one is *available* on
+      -- the ambient type, re-triggering the same expensive search against the
+      -- raw triple-`AdjoinRoot` `K2`. `simp only` avoids that — but the goal
+      -- genuinely still has a residual `•` (from `map_smul` above), so
+      -- `hsmulC` (the pre-synthesized, `K`-typed smul fact) needs to be back
+      -- in the explicit list to clear it, alongside the coeff lemmas.
+      -- Residual goal (per REPL) had `X.coeff 0`/`X.coeff 1` left un-evaluated
+      -- (`Polynomial.coeff_X_mul` was flagged unused: the goal shape here is
+      -- `g (...) * X.coeff 0`, not `(g (...) * X).coeff 0`, so that lemma
+      -- never matched). `Polynomial.coeff_X_zero`/`coeff_X_one` evaluate
+      -- those directly to `1`/`0`; `mul_zero`/`add_zero` clean up the
+      -- resulting arithmetic.
+      -- `reduceIte` alone didn't discharge the `if 1 = 0 then _ else _` here
+      -- (unlike the parallel spot in the `j=1` branch) — likely because this
+      -- `1` descends from `a.val` post-`fin_cases` rather than being a bare
+      -- numeral literal, so the simproc's pattern match doesn't fire on it.
+      -- Supplying `if_neg (one_ne_zero (α := ℕ))` explicitly (same fact the
+      -- `j=1` branch already uses via `rw` before its `fin_cases`) discharges
+      -- it directly instead of relying on `reduceIte` to notice.
+      fin_cases a <;> simp only [hsmulC, hc_def, Polynomial.coeff_add,
+        Polynomial.coeff_C, Polynomial.coeff_C_mul, Polynomial.coeff_X_zero,
+        Polynomial.coeff_X_one, reduceIte, if_neg (one_ne_zero (α := ℕ)),
+        mul_zero, mul_one, add_zero, zero_add]
+    · -- `j = 1`: term is `C c * X^bi * (C(g v1)*X + C(g v0))
+      --         = C c * (C(g v1) * X^(bi+1) + C(g v0)*X^bi)`, so its `%ₘ U`
+      -- is `C c • (C(g v1) * (X^(bi+1) %ₘ U) + C(g v0) * (X^bi %ₘ U))` by
+      -- linearity, computed via `xmodUTable_correct_K` at `bi` and `bi+1`.
+      have hCterm : (C c * X ^ bi * (C (g v1) * X + C (g v0)) :
+          Polynomial K) =
+          c • (g v1 • (X ^ (bi + 1)) + g v0 • (X ^ bi)) := by
+        -- Chained `rw [hsmulC, hsmulC, hsmulC]` timed out here: each `rw`
+        -- re-unifies `hsmulC`'s instance argument against that specific
+        -- occurrence's (defeq but not syntactically identical) instance path,
+        -- and that unification cost — not fresh synthesis — is what
+        -- re-accumulates across three separate `rw` calls. `simp only` keys
+        -- off the head symbol once and rewrites all matching occurrences in
+        -- a single pass, which is far cheaper here.
+        -- `rw [pow_succ]` here also timed out for the same defeq-unification
+        -- reason as the `rw [hsmulC, ...]` chain above: constructing the
+        -- rewrite motive forces Lean to check defeq against the ambient
+        -- fully-unfolded `K2` polynomial-ring instance stack. `ring` handles
+        -- the `X ^ (bi + 1) = X ^ bi * X` exponent shift internally without
+        -- needing a standalone motive, so it can absorb this step directly.
+        simp only [hsmulC]
+        ring
+      have hb0' : bj ≠ 0 := by omega
+      rw [if_neg hb0']
+      -- This chained `rw` (7 lemmas back-to-back) hit the same wall as
+      -- `hCterm`'s: each successive `rw`, especially `map_smul` (which needs
+      -- `RingHom`/`SMul` structure unified against `K`/`K[X]`), re-checks its
+      -- motive against the unfolded `K2` instance stack. `simp only` with the
+      -- identical lemma set iterates to a fixed point in one pass instead of
+      -- re-deriving a fresh motive per lemma. Split into several calls
+      -- because the original `rw` used `Polynomial.modByMonicHom_apply` in
+      -- BOTH directions (once backward, then forward), and `hg_def` in both
+      -- directions too (forward to unfold `g` so `xmodUTable_correct_K`'s
+      -- pattern matches, then backward to refold) — mixing opposite
+      -- directions of the same lemma in a single `simp only` set risks a
+      -- non-terminating rewrite loop between them, so each direction gets
+      -- its own pass, in the same order the original `rw` chain used them.
+      simp only [hCterm, ← Polynomial.modByMonicHom_apply, map_smul, map_add, map_smul,
+        map_smul]
+      simp only [Polynomial.modByMonicHom_apply, hU_def, hg_def,
+        xmodUTable_correct_K p c0 c1 c2 c3 c4 u0 u1 (bi + 1),
+        xmodUTable_correct_K p c0 c1 c2 c3 c4 u0 u1 bi]
+      simp only [← hg_def]
+      rw [hb1]
+      simp only [reduceMonomialModU, if_neg (one_ne_zero (α := ℕ))]
+      -- Mirrors the `j=0` branch's closing tactic, but also needs
+      -- `mul_add`/`mul_assoc`: `j=0`'s `c • X^bi` was always a single smul
+      -- term, but here `hCterm`'s RHS is `c • (term1 + term2)`, so once
+      -- `hsmulC` turns the outer `•` into `C c * (term1 + term2)`, `mul_add`
+      -- has to distribute that product across the sum before the coeff
+      -- lemmas can see `term1`/`term2` separately; `Polynomial.coeff_add`
+      -- then splits the `.coeff` across that distributed sum.
+      -- After that, the LHS is `c * (g v1 * g b) + c * (g v0 * g a)`
+      -- (`a := (xmodUTable bi).val`, `b := (xmodUTable (bi+1)).val`, for
+      -- `val ∈ {1,2}` matching `a.val = 0`/`a.val = 1`) while the RHS is
+      -- still `c * g (v0 * a + v1 * b)`: `g` needs to be pushed through the
+      -- addition/multiplication to expose the same four factors, and only
+      -- then does the goal become a pure commutative-ring rearrangement that
+      -- `ring` can close. NOT the generic `map_add`/`map_mul` simp lemmas:
+      -- Mathlib's own docs on this lemma family warn that seeing `⇑f x`
+      -- triggers a search for an `AddHomClass`/`MulHomClass` (really
+      -- `RingHomClass`) instance on `g`'s *type*, and against the unfolded
+      -- `K2` abbrev stack that search is exactly the kind of expensive/
+      -- silently-failing lookup this file has hit before (`simp` reports
+      -- them "unused" rather than timing out, since it can fall back to not
+      -- using them, but either way they don't fire). `hgadd`/`hgmul` below
+      -- state the identical facts as plain equalities about `g`'s coercion,
+      -- proved by `map_add`/`map_mul` applied as ordinary *terms* (not simp
+      -- lemmas): as terms, elaboration unifies `g`'s already-known concrete
+      -- type `F p →+* K` against `map_add`/`map_mul`'s expected `HomClass`
+      -- argument directly, which is a single instance lookup against a
+      -- *fixed, non-`K`-dependent* type (`RingHom.instRingHomClass` for
+      -- `F p →+* K` as a whole) — cheap, unlike `simp`'s discrimination-tree
+      -- probing of every `⇑f x` subterm in the goal against `K`'s unfolded
+      -- structure, which is what actually blew up above. If `g.map_add'`/
+      -- `g.map_mul'` (the raw structure-field route) resolve faster in the
+      -- REPL, those are the fallback: `g`'s fields are set at `g`'s
+      -- definition, independent of any instance search either way.
+      have hgadd : ∀ x y : F p, g (x + y) = g x + g y := fun x y => map_add g x y
+      have hgmul : ∀ x y : F p, g (x * y) = g x * g y := fun x y => map_mul g x y
+      -- `reduceMonomialModU`'s unfold (just above) computes `xmodUTable p
+      -- u0 u1 (bi + 1)` from its own `i + 1` clause and may go through
+      -- `simp`'s arithmetic normal-form flip to `1 + bi` the same way the
+      -- first `xmodUTable_correct_K` application above was suspected to
+      -- (that suspicion turned out to be wrong there — the flip, if any,
+      -- happens later than that point, not before it). Rather than isolate
+      -- a separate pass to catch it (risks its own "made no progress" if the
+      -- flip lands somewhere else again, e.g. inside the very next `simp
+      -- only` block below), the same fact is folded directly into that
+      -- block's lemma list — `simp only` never errors on an unused entry
+      -- within a list that has other matches, only when the *entire* call
+      -- rewrites nothing, so this is safe regardless of exactly which of
+      -- this block's own lemmas ends up triggering the flip.
+      fin_cases a <;> simp only [hsmulC, hc_def, mul_add, mul_assoc, Polynomial.coeff_add,
+        Polynomial.coeff_C, Polynomial.coeff_C_mul, Polynomial.coeff_X_zero,
+        Polynomial.coeff_X_one, reduceIte, if_neg (one_ne_zero (α := ℕ)),
+        mul_zero, mul_one, add_zero, zero_add, hgadd, hgmul,
+        show (1 + bi) = bi + 1 from by omega] <;> ring
+  have hcoeff : ∀ a : Fin 2, (R %ₘ U).coeff a.val = 0 := by
+    intro a
+    have haux := row23_defining_eq_aux p c0 c1 c2 c3 c4 u0 u1 v0 v1 hA a
+    rw [← hg_def] at haux
+    rw [hRmod, Polynomial.finsetSum_coeff]
+    rw [show (∑ bidx : Fin 5, ((let (_, bi, bj) := rrBasis5.getD bidx.val (0, 0, 0)
+        if bj = 0 then C (coeffsOut p c0 c1 c2 c3 c4 u0 u1 v0 v1 bidx) * X ^ bi
+        else C (coeffsOut p c0 c1 c2 c3 c4 u0 u1 v0 v1 bidx) * X ^ bi *
+          (C (g v1) * X + C (g v0))) %ₘ U).coeff a.val) =
+        ∑ bidx : Fin 5, coeffsOut p c0 c1 c2 c3 c4 u0 u1 v0 v1 bidx *
+          (let (_, bi, bj) := rrBasis5.getD bidx.val (0, 0, 0)
+           g (let (r0, r1) := reduceMonomialModU p u0 u1 v0 v1 bi bj
+              if a.val = 0 then r0 else r1)) from
+      Finset.sum_congr rfl (fun bidx _ => hterm bidx a)]
+    exact haux
+  have hdeg : (R %ₘ U).degree < U.degree := Polynomial.degree_modByMonic_lt R hUMonic
+  have hUdeg : U.degree = (2 : ℕ) := by
+    -- `compute_degree` needs the goal's head symbol to literally be
+    -- `natDegree`/`degree`/`coeff` — going through `degree_eq_natDegree`
+    -- first left the goal as a cast-equality (`↑U.natDegree = ↑2`) wrapped
+    -- around an `Eq`, which isn't that shape. `compute_degree` handles
+    -- `degree` goals directly, so unfold `U` and call it straight away.
+    rw [hU_def]
+    compute_degree!
+  apply Polynomial.ext
+  intro n
+  match n with
+  | 0 => simpa using hcoeff ⟨0, by norm_num⟩
+  | 1 => simpa using hcoeff ⟨1, by norm_num⟩
+  | (n + 2) =>
+      apply Polynomial.coeff_eq_zero_of_degree_lt
+      rw [hUdeg] at hdeg
+      exact lt_of_lt_of_le hdeg (by
+        -- `norm_num` alone left a residual rather than closing
+        -- `(2 : WithBot ℕ) ≤ ↑(n + 2)` outright. `Nat.le_add_left 2 n : 2 ≤
+        -- n + 2` is the underlying `ℕ` fact; `exact_mod_cast` bridges it
+        -- across the `WithBot ℕ` coercion without needing a `WithBot`-
+        -- specific lemma name.
+        exact_mod_cast Nat.le_add_left 2 n)
+
 /-- **Step A, `K1`-level:** `w1 ^ 2 = algebraMap (K0 p) (K1 p ...) (fAtT p
 ... 0)`, extracted from `AdjoinRoot.eval₂_root` applied to `g := X^2 - C
 (fAtT ... 0)`. `eval₂_root g : g.eval₂ (AdjoinRoot.of g) (AdjoinRoot.root g)
@@ -1031,48 +1603,80 @@ theorem dvd_N_anchor2 (hA : MatrixNondegenerate p c0 c1 c2 c3 c4 u0 u1 v0 v1) :
   rw [hEeq, neg_sq, mul_pow, hw]
   ring
 
-/-- `u(x) = X² + u1 X + u0` divides `N(x)`. Unlike the two anchor cases,
-`u(x)`'s roots are not literal anchors of the linear system in the same
-direct sense — the mod-`u` rows (rows 2,3 of `A`) encode the Mumford
-condition via `reduceMonomialModU`'s reduction table rather than via a
-named point `(x_0, y_0)` with `x_0` a root of `u`, so there is no single
-`eval`-at-a-point argument the way `dvd_iff_isRoot` gave the anchor cases —
-`u(x)` need not even have roots IN `K2` (it may be irreducible over the
-base `F(t1,t2)`-type field, in which case `u_RS`'s own construction as a
-degree-2 factor is exactly what's making it meaningful, not a root
-witness). **Left as `sorry`, genuinely unresolved this pass**: this is
-still the part of item 6 without a sketched strategy — the roadmap did not
-propose one beyond "needs an actual divisibility proof". One angle worth
-trying next session that ISN'T in the roadmap yet: rows 2–3 of `A ·
-coeffsOut = rhsVec` are, by `reduceMonomialModU`'s construction, exactly the
-statement "`E(x) + Y(x)*(v1*x+v0) ≡ 0 (mod u(x))`" (the two mod-`u` rows are
-literally the `x^0`/`x^1` coefficients of that one polynomial congruence,
-unpacked componentwise via `xmodUTable`) — if so, `u(x) ∣ (E(x) +
-Y(x)*(v1 X + v0))` directly (a polynomial-level fact, not a per-root one),
-which is a different and possibly more tractable route into `u(x) ∣ N(x)`
-than chasing individual roots: one would still need to relate `(E+Y*(v1X+
-v0))`'s vanishing mod `u` to `E^2-f*Y^2`'s vanishing mod `u`, likely via
-`v(x)^2 ≡ f(x) mod u(x)` for the TARGET `v(x)=v1*x+v0` itself (a
-hypothesis on the sample data, not proved here, but plausibly available
-from how `(u0,u1,v0,v1)` are chosen upstream in `elim2` — worth checking
-against `00_sample_specs.jl`, not yet done this pass) — flagged as a
-concrete next angle, not pursued further here since it introduces a new
-hypothesis (`v(x)^2 ≡ f mod u(x)` for the TARGET, distinct from
-`vRS_sq_eq_f_mod_uRS`'s claim about the COMPUTED `v_RS`) that itself needs
-sourcing and stating precisely before this can be attempted.
+/-- **The target Mumford hypothesis**: `v(x) = v1*X + v0` squares to `f(x)`
+modulo the target `u(x) = X²+u1 X+u0` — the geometric condition making
+`(u,v)` an actual Mumford representative, distinct from `vRS_sq_eq_f_mod_uRS`
+(`DataDerivationMumford.lean`, which is the analogous fact about the
+COMPUTED `v_RS`, not the target `v` here). Not derived from anything else in
+this file — it is a hypothesis on the sample data `(u0,u1,v0,v1)`, supplied
+by whatever upstream construction produces a genuine Mumford pair (flagged
+in the previous pass's docstring as needing sourcing against
+`00_sample_specs.jl`; threaded here as an explicit named hypothesis per this
+project's convention of not folding genericity/side conditions away). -/
+def IsMumfordTarget (c0 c1 c2 c3 c4 u0 u1 v0 v1 : F p) : Prop :=
+  (X ^ 2 + C (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u1) * X +
+      C (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u0)) ∣
+    ((C (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) v1) * X +
+        C (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) v0)) ^ 2 -
+      fAtX p c0 c1 c2 c3 c4 u0 u1 v0 v1)
 
-**Type fix**: the divisor `X^2 + u1*X + u0` must live in `Polynomial (K2 p
-...)` to match `Npoly`'s type (a previous version wrote `C u1`/`C u0`
-directly, which are `Polynomial (F p)` since `u0 u1 : F p` — a type
-mismatch, since `X` here is `Polynomial (K2 p ...)`). Promoted `u0`,`u1`
-into `K2 p ...` via `algebraMap (F p) (K2 p ...)` before applying `C`,
-matching the pattern already used correctly elsewhere in this file (e.g.
-`fAtX`, `rhsVec`'s `algebraMap (F p) (K2 p ...)` calls). -/
-theorem dvd_N_u :
+/-- `u(x) = X² + u1 X + u0` divides `N(x)`. Assembled from `dvd_E_add_Y_mul_v`
+(`u ∣ E + Y*(v1X+v0)`, rows 2–3 of the linear system, this pass's new
+result) and `IsMumfordTarget` (`u ∣ v² - f`, the target Mumford condition),
+via the algebraic identity
+
+    N = E² - f Y² = (E - Y v)(E + Y v) + (v² - f) Y²
+
+(`v := v1 X + v0`, checked by `ring`): the first summand is divisible by `u`
+since `u ∣ E + Yv` (given) times anything; the second is divisible by `u`
+since `u ∣ v² - f` (given) times `Y²`. Sum of two multiples of `u` is a
+multiple of `u`. -/
+theorem dvd_N_u (hA : MatrixNondegenerate p c0 c1 c2 c3 c4 u0 u1 v0 v1)
+    (hMumford : IsMumfordTarget p c0 c1 c2 c3 c4 u0 u1 v0 v1) :
     (X ^ 2 + C (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u1) * X +
         C (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u0)) ∣
       Npoly p c0 c1 c2 c3 c4 u0 u1 v0 v1 := by
-  sorry
+  -- `let` + `clear_value` throughout (not `set`): six large `K2`-typed
+  -- definitions were previously introduced via `set`, each performing a
+  -- goal-wide occurrence search/replace — the diagnosed cost driver behind
+  -- this theorem's timeout. `let` binds each name once; `clear_value` then
+  -- makes it opaque to later defeq/`isDefEq` checks, keeping only the
+  -- defining equation (`hg_def`/`hU_def`/etc.) available to `rw` in at the
+  -- specific points that actually need to see through to the concrete
+  -- value (`huY`, `hVF`, `hNeq`) — `dvd_mul_of_dvd_right/left`/`dvd_add`
+  -- never need to unfold `U`/`E`/`Y`/`V`/`f` at all, so those steps now
+  -- operate on opaque names throughout.
+  let g : F p →+* K2 p c0 c1 c2 c3 c4 := algebraMap (F p) (K2 p c0 c1 c2 c3 c4)
+  clear_value (hg_def : g = algebraMap (F p) (K2 p c0 c1 c2 c3 c4))
+  let U : Polynomial (K2 p c0 c1 c2 c3 c4) := X ^ 2 + C (g u1) * X + C (g u0)
+  clear_value (hU_def : U = X ^ 2 + C (g u1) * X + C (g u0))
+  let E : Polynomial (K2 p c0 c1 c2 c3 c4) := Epoly p c0 c1 c2 c3 c4 u0 u1 v0 v1
+  clear_value (hE_def : E = Epoly p c0 c1 c2 c3 c4 u0 u1 v0 v1)
+  let Y : Polynomial (K2 p c0 c1 c2 c3 c4) := Ypoly p c0 c1 c2 c3 c4 u0 u1 v0 v1
+  clear_value (hY_def : Y = Ypoly p c0 c1 c2 c3 c4 u0 u1 v0 v1)
+  let V : Polynomial (K2 p c0 c1 c2 c3 c4) := C (g v1) * X + C (g v0)
+  clear_value (hV_def : V = C (g v1) * X + C (g v0))
+  let f : Polynomial (K2 p c0 c1 c2 c3 c4) := fAtX p c0 c1 c2 c3 c4 u0 u1 v0 v1
+  clear_value (hf_def : f = fAtX p c0 c1 c2 c3 c4 u0 u1 v0 v1)
+  have huY : U ∣ E + Y * V := by
+    rw [hU_def, hE_def, hY_def, hV_def, hg_def]
+    exact dvd_E_add_Y_mul_v p c0 c1 c2 c3 c4 u0 u1 v0 v1 hA
+  have hVF : U ∣ V ^ 2 - f := by
+    rw [hU_def, hV_def, hf_def, hg_def]
+    exact hMumford
+  have h1 : U ∣ (E - Y * V) * (E + Y * V) := dvd_mul_of_dvd_right huY (E - Y * V)
+  have h2 : U ∣ (V ^ 2 - f) * Y ^ 2 := dvd_mul_of_dvd_left hVF (Y ^ 2)
+  have hadd : U ∣ (E - Y * V) * (E + Y * V) + (V ^ 2 - f) * Y ^ 2 := dvd_add h1 h2
+  have hNeq : Npoly p c0 c1 c2 c3 c4 u0 u1 v0 v1 =
+      (E - Y * V) * (E + Y * V) + (V ^ 2 - f) * Y ^ 2 := by
+    rw [hE_def, hY_def, hV_def, hf_def, hg_def]; unfold Npoly; ring
+  -- The goal's divisor is stated literally (`X^2 + C(g u1)*X + C(g u0)`, from
+  -- the theorem signature), not via the opaque name `U` — `rw [hNeq]` alone
+  -- only rewrites the `Npoly` side, so the divisor also needs `← hU_def`
+  -- (and `← hg_def`, since `hU_def`'s RHS is stated in terms of `g`) to line
+  -- up with `hadd`, which is stated entirely in terms of `U`.
+  rw [hNeq, ← hg_def, ← hU_def]
+  exact hadd
 
 /-- The quotient `N(x) / ((X-t1)(X-t2)(X²+u1 X+u0))`, i.e. `cur` just before
 Julia's "Normalize to monic" step (line 469) — packaged here as a
