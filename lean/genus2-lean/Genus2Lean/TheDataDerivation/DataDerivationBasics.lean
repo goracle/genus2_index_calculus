@@ -390,21 +390,31 @@ via `MvPolynomial.renameEquiv K (Equiv.swap 0 1)`, an ALGEBRA AUTOMORPHISM of
 `B := MvPolynomial (Fin 2) K` sending `X 0 ↦ X 1` and `X 1 ↦ X 0`
 (`MvPolynomial.rename_X`-style unfolding — swapping which coordinate is
 "the polynomial variable" doesn't change whether `f` composed with it is a
-square, since the swap is invertible). Reduces the `i=1` case to the
-already-proved `i=0` case by pulling the automorphism's extension to `K0`
-through `IsSquare.map` in both directions (forward via the extension itself,
-backward via its inverse — an honest `iff`, assembled from `IsSquare.map`
-applied twice rather than a single `iff` lemma, to avoid depending on an
-unverified name for a bundled `IsSquare` transport across a `RingEquiv`).
+square, since the swap is invertible).
 
-**Left as `sorry`.** The renameEquiv-swap route is standard (same shape as
-`fAtT_not_isSquare`'s own already-completed `finSuccEquiv` transport just
-above), but assembling the extension-to-`K0` step and its two naturality
-squares (`Φswap` on `X 0`/`X 1`, matching `hΦ_fAtT0`'s style above) is
-exactly the kind of routine-but-fiddly `IsLocalization`/`AlgEquiv` bookkeeping
-this project's own workflow flags for a ChatGPT-assisted pass rather than a
-sight-unseen assembly — see `ROADMAP-regular-sequence.md`'s note pointing at
-this exact theorem for the prompt to use. -/
+**Assembled this pass (renameEquiv-swap route), NOT independently
+verified against a toolchain.** The `X 0 ↔ X 1` swap automorphism
+`e := MvPolynomial.renameEquiv K (Equiv.swap 0 1) : B ≃ₐ[K] B`
+(`B := MvPolynomial (Fin 2) K`) is extended to the fraction field
+`K0 := FractionRing B` via `IsFractionRing.fieldEquivOfAlgEquiv`, giving
+`E : K0 ≃ₐ[K] K0` with `E ∘ algebraMap B K0 = algebraMap B K0 ∘ e`
+(`fieldEquivOfAlgEquiv_algebraMap`). Since `e (X 1) = X 0`
+(`MvPolynomial.rename_X` plus `Equiv.swap_apply_right`) and `e` fixes `K`
+(it's a `K`-algebra map), `e` carries `f` evaluated at `X 1` to `f`
+evaluated at `X 0`; pushing through `algebraMap B K0` and using `E`'s
+naturality reduces "`f` at `X 1` is a square in `K0`" to "`f` at `X 0` is
+a square in `K0`" (via `E z` witnessing the square on the other side),
+closed by the already-proved `fAtT_not_isSquare`. **Flagging explicitly:**
+`IsFractionRing.fieldEquivOfAlgEquiv`/`_algebraMap`'s exact implicit-argument
+convention (which of its type parameters is the shared base ring vs. the two
+sides being compared, and which explicit `Type` arguments are the three
+fraction fields) was reconstructed from search-engine doc snippets, not a
+live toolchain — this is exactly the kind of routine-but-fiddly
+`IsLocalization`/`AlgEquiv` bookkeeping this project's workflow flags for a
+ChatGPT-assisted pass if the argument wiring below doesn't elaborate as
+written; see `ROADMAP-regular-sequence.md`'s note pointing at this theorem,
+and the prompt drafted alongside this pass's notes for exactly this
+possibility. -/
 theorem fAtT_i_not_isSquare
     (f : Polynomial K) (hf_deg : Odd f.natDegree) (hf_ne : f ≠ 0) (i : Fin 2) :
     ¬ IsSquare
@@ -414,7 +424,77 @@ theorem fAtT_i_not_isSquare
         FractionRing (MvPolynomial (Fin 2) K)) := by
   fin_cases i
   · exact fAtT_not_isSquare f hf_deg hf_ne
-  · sorry -- ChatGPT prompt below; `i = 1` case via the `X 0 ↔ X 1` swap automorphism.
+  · -- `i = 1` case: transport the `i = 0` case along the `X 0 ↔ X 1` swap
+    -- automorphism of `B := MvPolynomial (Fin 2) K`, extended to its
+    -- fraction field `K0`. `e` fixes `K` (it's a `K`-algebra automorphism)
+    -- and sends `X 1 ↦ X 0`, so it carries `f` evaluated at `X 1` to `f`
+    -- evaluated at `X 0` — reducing to the already-proved case via
+    -- `IsSquare`'s transport along a ring equivalence (both directions,
+    -- since `e`'s extension `E` is its own kind of equivalence).
+    -- `fin_cases` leaves the index as a defeq-but-not-syntactically-equal
+    -- term (`(fun i ↦ i) ⟨1, ⋯⟩`); `show` first to normalize it to the
+    -- literal `(1 : Fin 2)` so the `rw`s below actually find their pattern.
+    show ¬ IsSquare
+      (f.eval₂ (algebraMap K (FractionRing (MvPolynomial (Fin 2) K)))
+        (algebraMap (MvPolynomial (Fin 2) K) (FractionRing (MvPolynomial (Fin 2) K))
+          (MvPolynomial.X (1 : Fin 2))) :
+        FractionRing (MvPolynomial (Fin 2) K))
+    set B := MvPolynomial (Fin 2) K
+    set K0 := FractionRing B
+    let swap : Fin 2 ≃ Fin 2 := Equiv.swap 0 1
+    let e : B ≃ₐ[K] B := MvPolynomial.renameEquiv K swap
+    let E : K0 ≃ₐ[K] K0 :=
+      IsFractionRing.fieldEquivOfAlgEquiv (A := K) (B := B) (C := B) K K0 K0 e
+    have hE_alg : ∀ b : B, E (algebraMap B K0 b) = algebraMap B K0 (e b) :=
+      fun b => IsFractionRing.fieldEquivOfAlgEquiv_algebraMap
+        (A := K) (B := B) (C := B) K K0 K0 e b
+    have he_swap : e (MvPolynomial.X (1 : Fin 2)) = MvPolynomial.X (0 : Fin 2) := by
+      show MvPolynomial.rename swap (MvPolynomial.X (1 : Fin 2)) = MvPolynomial.X (0 : Fin 2)
+      rw [MvPolynomial.rename_X]
+      have : swap (1 : Fin 2) = 0 := Equiv.swap_apply_right (0 : Fin 2) (1 : Fin 2)
+      rw [this]
+    have hEval_e : e (f.eval₂ (algebraMap K B) (MvPolynomial.X (1 : Fin 2))) =
+        f.eval₂ (algebraMap K B) (MvPolynomial.X (0 : Fin 2)) := by
+      have h1 : f.eval₂ (algebraMap K B) (MvPolynomial.X (1 : Fin 2)) =
+          Polynomial.aeval (MvPolynomial.X (1 : Fin 2)) f :=
+        (Polynomial.aeval_def (MvPolynomial.X (1 : Fin 2)) f).symm
+      have h0 : f.eval₂ (algebraMap K B) (MvPolynomial.X (0 : Fin 2)) =
+          Polynomial.aeval (MvPolynomial.X (0 : Fin 2)) f :=
+        (Polynomial.aeval_def (MvPolynomial.X (0 : Fin 2)) f).symm
+      rw [h1, h0]
+      -- `e.toAlgHom.comp (aeval (X 1))` and `aeval (X 0)` are both algebra
+      -- homs `Polynomial K →ₐ[K] B`; they agree at `X` (both send it to
+      -- `e (X 1) = X 0` by `he_swap`), so they're equal by
+      -- `Polynomial.algHom_ext`. Apply that equality to `f`.
+      have hhom : e.toAlgHom.comp (Polynomial.aeval (MvPolynomial.X (1 : Fin 2))) =
+          Polynomial.aeval (MvPolynomial.X (0 : Fin 2)) := by
+        apply Polynomial.algHom_ext
+        show e (Polynomial.aeval (MvPolynomial.X (1 : Fin 2)) Polynomial.X) =
+          Polynomial.aeval (MvPolynomial.X (0 : Fin 2)) Polynomial.X
+        rw [Polynomial.aeval_X, Polynomial.aeval_X, he_swap]
+      have := congrArg (fun φ => φ f) hhom
+      simpa using this
+    have hE_key :
+        E (algebraMap B K0 (f.eval₂ (algebraMap K B) (MvPolynomial.X (1 : Fin 2)))) =
+        algebraMap B K0 (f.eval₂ (algebraMap K B) (MvPolynomial.X (0 : Fin 2))) := by
+      rw [hE_alg, hEval_e]
+    have hcast : ∀ (x : B),
+        f.eval₂ (algebraMap K K0) (algebraMap B K0 x) =
+          algebraMap B K0 (f.eval₂ (algebraMap K B) x) := by
+      intro x
+      rw [Polynomial.hom_eval₂]
+      have h_comp : RingHom.comp (algebraMap B K0) (algebraMap K B) = algebraMap K K0 := by
+        ext y
+        exact IsScalarTower.algebraMap_apply K B K0 y
+      rw [h_comp]
+    intro hs
+    obtain ⟨z, hz⟩ := hs
+    apply fAtT_not_isSquare f hf_deg hf_ne
+    refine ⟨E z, ?_⟩
+    have hgoal0 : f.eval₂ (algebraMap K K0) (algebraMap B K0 (MvPolynomial.X (0 : Fin 2))) =
+        E (f.eval₂ (algebraMap K K0) (algebraMap B K0 (MvPolynomial.X (1 : Fin 2)))) := by
+      rw [hcast, hcast, ← hE_key]
+    rw [hgoal0, hz, map_mul]
 
 end Irreducibility
 
