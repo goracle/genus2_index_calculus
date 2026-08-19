@@ -696,10 +696,10 @@ theorem regular_of_linear_elim {τ : Type*} {R : Type*} [CommRing R]
   -- `Ideal.quotientEquiv (I : Ideal R) (J : Ideal S) (f : R ≃+* S) (hIJ : J =
   -- Ideal.map (↑f) I) : R ⧸ I ≃+* S ⧸ J` -- confirmed this pass, note the
   -- hypothesis direction is `J = map f I`, i.e. `hIdealMap.symm` here.
-  have e : (MvPolynomial (Option τ) R ⧸ A) ≃+* Polynomial B :=
+  set e : (MvPolynomial (Option τ) R ⧸ A) ≃+* Polynomial B :=
     (Ideal.quotientEquiv A (Ideal.map Polynomial.C I')
       (MvPolynomial.optionEquivLeft R τ).toRingEquiv hIdealMap.symm).trans
-      I'.polynomialQuotientEquivQuotientPolynomial.symm
+      I'.polynomialQuotientEquivQuotientPolynomial.symm with he_def
   -- `e` sends `Ideal.Quotient.mk A (rename some p)` to `Polynomial.C
   -- (Ideal.Quotient.mk I' p)` for `p ∈ {c, d}` (chasing through both pieces of
   -- `e` on a class represented by `rename some p`: `Ideal.quotientEquiv` acts
@@ -709,15 +709,40 @@ theorem regular_of_linear_elim {τ : Type*} {R : Type*} [CommRing R]
   -- (map C I') (C p)` to `C (Ideal.Quotient.mk I' p)` by mapping `C`
   -- coefficientwise -- this uses `Ideal.polynomialQuotientEquivQuotientPolynomial_symm_mk`
   -- with `f := Polynomial.C p`, whose `Polynomial.map (Quotient.mk I')`
-  -- collapses to the single-coefficient case). Left the coefficientwise-map
-  -- unfolding as a `sorry`, since `Polynomial.map` on `C p` needing to reduce
-  -- to `C (mk p)` is routine (`Polynomial.map_C`) but not yet spelled out
-  -- with the exact simp set.
+  -- collapses to the single-coefficient case via `Polynomial.map_C`).
+  -- `g • x = Ideal.Quotient.mk A g * x` for `x : MvPolynomial (Option τ) R ⧸ A`:
+  -- this is the defining property of the `R`-module structure on `R ⧸ A`
+  -- (scalar action by the ambient ring factors through the quotient ring's own
+  -- multiplication). Proved directly via `Quotient.inductionOn'` rather than
+  -- relying on `smul_eq_mul`, which is stated for a ring acting on itself, not
+  -- for this cross-type action of `R` on `R ⧸ A`. Needed both for `hd_reg'`
+  -- (to transport the `•`-action through `e`) and for the final step.
+  have hsmul_mk : ∀ (r : MvPolynomial (Option τ) R) (x : MvPolynomial (Option τ) R ⧸ A),
+      r • x = Ideal.Quotient.mk A r * x := by
+    intro r x
+    refine Quotient.inductionOn' x ?_
+    intro x'
+    show Ideal.Quotient.mk A (r * x') = Ideal.Quotient.mk A r * Ideal.Quotient.mk A x'
+    rw [map_mul]
+  -- `e`'s value as a `RingEquiv.trans`, restated as an applied-form lemma
+  -- (via `RingEquiv.trans_apply`, a genuine simp lemma) rather than relied on
+  -- through `show`'s defeq check, since `e` is `set`-bound and opaque to
+  -- defeq unfolding once introduced as a local hypothesis.
+  have he_apply : ∀ x : MvPolynomial (Option τ) R ⧸ A,
+      e x = I'.polynomialQuotientEquivQuotientPolynomial.symm
+        ((Ideal.quotientEquiv A (Ideal.map Polynomial.C I')
+          (MvPolynomial.optionEquivLeft R τ).toRingEquiv hIdealMap.symm) x) := by
+    intro x
+    rw [he_def, RingEquiv.trans_apply]
   have he_C : ∀ p : MvPolynomial τ R,
       e (Ideal.Quotient.mk A (MvPolynomial.rename some p)) =
         Polynomial.C (Ideal.Quotient.mk I' p) := by
     intro p
-    sorry
+    rw [he_apply, Ideal.quotientEquiv_mk]
+    have hstep : (MvPolynomial.optionEquivLeft R τ).toRingEquiv (MvPolynomial.rename some p) =
+        Polynomial.C p := optionEquivLeft_rename_some p
+    rw [hstep, Ideal.polynomialQuotientEquivQuotientPolynomial_symm_mk]
+    simp
   -- `dbar` is regular in `B`: transport `hd_reg` through `e`. `e` is a ring
   -- isomorphism, hence bijective and multiplicative, so `Function.Injective
   -- (g' • ·)` on the source transports to `Function.Injective (e g' • ·)` on
@@ -730,7 +755,19 @@ theorem regular_of_linear_elim {τ : Type*} {R : Type*} [CommRing R]
   -- `Polynomial.C`'s injectivity plus a coefficient-extraction argument, not
   -- yet spelled out.
   have hd_reg' : IsSMulRegular B dbar := by
-    sorry
+    have hd_reg_poly : IsSMulRegular (Polynomial B) (Polynomial.C dbar) := by
+      rw [← he_C d]
+      have hcongr : ∀ x : MvPolynomial (Option τ) R ⧸ A,
+          e ((MvPolynomial.rename some d : MvPolynomial (Option τ) R) • x) =
+            e (Ideal.Quotient.mk A (MvPolynomial.rename some d)) • e x := by
+        intro x
+        rw [hsmul_mk, map_mul, smul_eq_mul]
+      exact (Equiv.isSMulRegular_congr (e := e.toEquiv) hcongr).mp hd_reg
+    intro x y hxy
+    apply Polynomial.C_injective
+    apply hd_reg_poly
+    simpa [smul_eq_mul] using
+      congrArg (Polynomial.C : B →+* Polynomial B) hxy
   -- Main step: `e` sends `g` to `C cbar - X * C dbar` (by `hg`'s shape and
   -- `he_C` applied to `c` and `d`, plus `e`'s ring-hom-ness distributing over
   -- `-`/`*`), so `regular_linear_of_regular_coeff hd_reg' cbar` gives
@@ -738,28 +775,36 @@ theorem regular_of_linear_elim {τ : Type*} {R : Type*} [CommRing R]
   -- (a bijection intertwining the two `•`-actions, since `e` is a ring hom:
   -- `e (g * x) = e g * e x`) to `IsSMulRegular (MvPolynomial (Option τ) R ⧸
   -- A) g`.
+  -- `e (mk A (X none)) = Polynomial.X`: the other half of `optionEquivLeft`'s
+  -- action on generators, via the named lemma `optionEquivLeft_X_none`
+  -- (mirrors `he_C`'s derivation exactly, swapping `optionEquivLeft_rename_some`
+  -- for `optionEquivLeft_X_none`).
+  have he_X : e (Ideal.Quotient.mk A (MvPolynomial.X none)) = Polynomial.X := by
+    rw [he_apply, Ideal.quotientEquiv_mk]
+    have hstep : (MvPolynomial.optionEquivLeft R τ).toRingEquiv (MvPolynomial.X none) =
+        Polynomial.X := MvPolynomial.optionEquivLeft_X_none R τ
+    rw [hstep]
+    show Polynomial.map (Ideal.Quotient.mk I') Polynomial.X = Polynomial.X
+    simp
   have hg_e : e (Ideal.Quotient.mk A g) =
       Polynomial.C cbar - Polynomial.X * Polynomial.C dbar := by
     rw [hg]
     show e (Ideal.Quotient.mk A (MvPolynomial.rename some c -
         MvPolynomial.X none * MvPolynomial.rename some d)) = _
-    rw [map_sub, map_mul, he_C, he_C]
-    congr 1
-    -- `e (Ideal.Quotient.mk A (MvPolynomial.X none)) = Polynomial.X`: the
-    -- other half of `optionEquivLeft`'s action on generators
-    -- (`optionEquivLeft_apply`'s `o.elim X (fun s => C (X s))`, `o := none`
-    -- case), then the `polynomialQuotientEquivQuotientPolynomial.symm` half
-    -- fixing `X` (it only touches coefficients, not the variable). Not yet
-    -- spelled out.
-    sorry
+    have hstep : (Ideal.Quotient.mk A : MvPolynomial (Option τ) R → MvPolynomial (Option τ) R ⧸ A)
+        (MvPolynomial.rename some c - MvPolynomial.X none * MvPolynomial.rename some d) =
+        Ideal.Quotient.mk A (MvPolynomial.rename some c) -
+          Ideal.Quotient.mk A (MvPolynomial.X none) * Ideal.Quotient.mk A (MvPolynomial.rename some d) := by
+      rw [map_sub, map_mul]
+    rw [hstep, map_sub, map_mul, he_C, he_C, he_X]
   have hreg_poly : IsSMulRegular (Polynomial B)
       (Polynomial.C cbar - Polynomial.X * Polynomial.C dbar) :=
     regular_linear_of_regular_coeff hd_reg' cbar
   intro x y hxy
-  simp only [smul_eq_mul] at hxy
+  change g • x = g • y at hxy
+  rw [hsmul_mk g x, hsmul_mk g y] at hxy
   apply e.injective
-  apply e.toEquiv.injective
-  have : e (g * x) = e (g * y) := by rw [hxy]
+  have : e (Ideal.Quotient.mk A g * x) = e (Ideal.Quotient.mk A g * y) := by rw [hxy]
   rw [map_mul, map_mul, hg_e] at this
   have hxy' : (Polynomial.C cbar - Polynomial.X * Polynomial.C dbar) • e x =
       (Polynomial.C cbar - Polynomial.X * Polynomial.C dbar) • e y := by
