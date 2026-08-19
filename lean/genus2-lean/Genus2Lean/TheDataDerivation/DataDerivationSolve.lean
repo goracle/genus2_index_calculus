@@ -1069,6 +1069,7 @@ private lemma row23_defining_eq_aux (hA : MatrixNondegenerate p c0 c1 c2 c3 c4 u
   rw [hF_def] at hsum5'
   exact hsum5'
 
+set_option maxHeartbeats 20000000
 /-- **The mod-`u` congruence, assembled**: `(E(x) + Y(x)*(v1*X+v0)) %ₘ u(x)
 = 0`, i.e. `u(x) ∣ E(x) + Y(x)*(v1*X+v0)`, obtained from `row23_defining_eq_aux`
 by identifying its two coefficient sums (`a=0`,`a=1`) with the two
@@ -1087,7 +1088,7 @@ theorem dvd_E_add_Y_mul_v (hA : MatrixNondegenerate p c0 c1 c2 c3 c4 u0 u1 v0 v1
         Ypoly p c0 c1 c2 c3 c4 u0 u1 v0 v1 *
           (C (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) v1) * X +
             C (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) v0))) := by
-  set K := K2 p c0 c1 c2 c3 c4
+  set K := K2 p c0 c1 c2 c3 c4 with hK_def
   -- `let` + `clear_value` (not `set`) for `g`/`u`/`U`: per this file's
   -- diagnosed fix elsewhere (`xmodUTable_correct_K`, `dvd_N_u`), `set`
   -- performs an expensive goal-wide occurrence search/replace against
@@ -1238,7 +1239,7 @@ theorem dvd_E_add_Y_mul_v (hA : MatrixNondegenerate p c0 c1 c2 c3 c4 u0 u1 v0 v1
       rw [hCterm, ← Polynomial.modByMonicHom_apply, map_smul, Polynomial.modByMonicHom_apply,
         hU_def, hg_def, xmodUTable_correct_K p c0 c1 c2 c3 c4 u0 u1 bi, ← hg_def]
       rw [hb0]
-      simp only [reduceMonomialModU, if_pos rfl]
+      simp only [reduceMonomialModU]
       -- `simp` (not `simp only`) previously timed out here: `simp`'s default
       -- set contains smul-normalization lemmas that unconditionally probe
       -- for a `Module`/`DistribSMul` instance whenever one is *available* on
@@ -1270,7 +1271,19 @@ theorem dvd_E_add_Y_mul_v (hA : MatrixNondegenerate p c0 c1 c2 c3 c4 u0 u1 v0 v1
       -- linearity, computed via `xmodUTable_correct_K` at `bi` and `bi+1`.
       have hCterm : (C c * X ^ bi * (C (g v1) * X + C (g v0)) :
           Polynomial K) =
-          c • (g v1 • (X ^ (bi + 1)) + g v0 • (X ^ bi)) := by
+          c • (g v1 • (X ^ (1 + bi)) + g v0 • (X ^ bi)) := by
+        -- Stated with the exponent as `1 + bi`, not `bi + 1`: downstream,
+        -- once this equation is `simp`-rewritten into the goal via
+        -- `map_smul`/`Polynomial.modByMonicHom_apply` (below), Lean's own
+        -- default `Nat`-addition normal form resurfaces the exponent as
+        -- `1 + bi` regardless of which form is written here — `xmodUTable_
+        -- correct_K` then has to be invoked at the matching `1 + bi` form to
+        -- actually fire (previously invoked at `bi + 1`, which silently
+        -- failed to match and left the goal in raw `%ₘ` form — diagnosed
+        -- from `simp`'s "unused simp argument" warning on that call, not
+        -- from a timeout or outright error). Matching the statement here to
+        -- that same normal form up front avoids the mismatch entirely
+        -- instead of trying to force a re-flip back to `bi + 1` afterward.
         -- Chained `rw [hsmulC, hsmulC, hsmulC]` timed out here: each `rw`
         -- re-unifies `hsmulC`'s instance argument against that specific
         -- occurrence's (defeq but not syntactically identical) instance path,
@@ -1303,10 +1316,45 @@ theorem dvd_E_add_Y_mul_v (hA : MatrixNondegenerate p c0 c1 c2 c3 c4 u0 u1 v0 v1
       -- its own pass, in the same order the original `rw` chain used them.
       simp only [hCterm, ← Polynomial.modByMonicHom_apply, map_smul, map_add, map_smul,
         map_smul]
-      simp only [Polynomial.modByMonicHom_apply, hU_def, hg_def,
-        xmodUTable_correct_K p c0 c1 c2 c3 c4 u0 u1 (bi + 1),
+      -- Ground truth from the REPL: at this point the goal has
+      -- `(...).modByMonicHom (X ^ (1+bi))`/`(...).modByMonicHom (X ^ bi)` —
+      -- the *bundled-hom-application* form, not bare `%ₘ` notation, because
+      -- the `← Polynomial.modByMonicHom_apply` rewrite two steps above
+      -- converted every `%ₘ` occurrence to this form so `map_smul` could
+      -- fire through the module hom. `U` itself is still the opaque local,
+      -- never unfolded to `X^2 + C (g u1) * X + C (g u0)` (let alone
+      -- further to `algebraMap`/`K2` form) by anything above.
+      -- `xmodUTable_correct_K`'s stated pattern is `X^n %ₘ (X^2 + C
+      -- (algebraMap (F p) (K2 ...) u1) * X + C (algebraMap (F p) (K2 ...)
+      -- u0))` — bare `%ₘ`, so `Polynomial.modByMonicHom_apply` (forward
+      -- this time) has to turn the two `.modByMonicHom` applications back
+      -- into `%ₘ` form first. `hUalg` states the divisor equality for `U`
+      -- (fully unfolded through `U → g,u0,u1-form → algebraMap-form →
+      -- K2-form`) as its own fact, so `rw [hUalg]` retargets only the two
+      -- (now-`%ₘ`-form) `U` occurrences to the fully-unfolded divisor —
+      -- leaving every other `g v1 •`/`g v0 •`/RHS `g (if ...)` occurrence
+      -- in the goal untouched, unlike a blanket `rw [hg_def]`/`hK_def` on
+      -- the whole (or even just LHS-restricted) goal, which would also
+      -- rewrite those and break the closing `ring`/`hgadd`/`hgmul` steps
+      -- below that expect to still see plain `g` applications there.
+      have hUalg : U = X ^ 2 +
+          C (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u1) * X +
+          C (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u0) := by
+        -- NOT `rw [hU_def, hg_def, hK_def]`: `hK_def : K = K2 p c0 c1 c2
+        -- c3 c4` rewrites the *type* `K` itself, and since `K` was
+        -- introduced via `set` (so it's a local `let`-bound abbreviation,
+        -- not an opaque variable), the rewrite has to abstract a motive
+        -- over the type argument `_a` in `algebraMap (F p) _a`, which drags
+        -- along the (type-dependent) `Field`/instance arguments elaborated
+        -- concretely against `K`'s own unfolding — exactly the "motive is
+        -- not type correct" failure. Since `hK_def` came from `set`, `K`
+        -- and `K2 p c0 c1 c2 c3 c4` are already definitionally equal, so
+        -- once `hU_def`/`hg_def` are unfolded the two sides agree by `rfl`
+        -- with no further rewriting of the type needed.
+        rw [hU_def, hg_def]
+      rw [Polynomial.modByMonicHom_apply, Polynomial.modByMonicHom_apply, hUalg]
+      rw [xmodUTable_correct_K p c0 c1 c2 c3 c4 u0 u1 (1 + bi),
         xmodUTable_correct_K p c0 c1 c2 c3 c4 u0 u1 bi]
-      simp only [← hg_def]
       rw [hb1]
       simp only [reduceMonomialModU, if_neg (one_ne_zero (α := ℕ))]
       -- Mirrors the `j=0` branch's closing tactic, but also needs
@@ -1345,23 +1393,46 @@ theorem dvd_E_add_Y_mul_v (hA : MatrixNondegenerate p c0 c1 c2 c3 c4 u0 u1 v0 v1
       have hgadd : ∀ x y : F p, g (x + y) = g x + g y := fun x y => map_add g x y
       have hgmul : ∀ x y : F p, g (x * y) = g x * g y := fun x y => map_mul g x y
       -- `reduceMonomialModU`'s unfold (just above) computes `xmodUTable p
-      -- u0 u1 (bi + 1)` from its own `i + 1` clause and may go through
-      -- `simp`'s arithmetic normal-form flip to `1 + bi` the same way the
-      -- first `xmodUTable_correct_K` application above was suspected to
-      -- (that suspicion turned out to be wrong there — the flip, if any,
-      -- happens later than that point, not before it). Rather than isolate
-      -- a separate pass to catch it (risks its own "made no progress" if the
-      -- flip lands somewhere else again, e.g. inside the very next `simp
-      -- only` block below), the same fact is folded directly into that
-      -- block's lemma list — `simp only` never errors on an unused entry
-      -- within a list that has other matches, only when the *entire* call
-      -- rewrites nothing, so this is safe regardless of exactly which of
-      -- this block's own lemmas ends up triggering the flip.
-      fin_cases a <;> simp only [hsmulC, hc_def, mul_add, mul_assoc, Polynomial.coeff_add,
+      -- u0 u1 (1 + bi)` — its own `i + 1` clause resurfaces as `1 + bi`
+      -- under `simp`'s default `Nat`-addition normal form, matching
+      -- `hCterm`'s statement (also written as `1 + bi` above, for the same
+      -- reason) and `xmodUTable_correct_K`'s invocation earlier in this
+      -- branch — all three now agree, so no further exponent-form
+      -- reconciliation is needed here.
+      -- `mul_assoc` dropped (flagged unused): with `g v1 •`/`g v0 •` now
+      -- fully expanded via `hgadd`/`hgmul`, both sides are already flat
+      -- sums of one product per term, so there's no nested `(a*b)*c` left
+      -- for `mul_assoc` to reassociate before `ring` takes over.
+      -- `← hg_def` (tried in place of `hgK1`/`hgK2` below) did NOT fire,
+      -- flagged unused by the linter: `simp`'s discrimination tree matches
+      -- syntactically before attempting defeq, and `hg_def`'s LHS pattern
+      -- (reversed) is `algebraMap (F p) K _` — with `K` a bare local
+      -- constant — while the goal has `algebraMap (F p) (K2 p c0 c1 c2 c3
+      -- c4) _`, an application. Those never even get compared up to defeq
+      -- by simp's indexing, despite being defeq (`K` unfolds to exactly
+      -- that application, since it came from `set`). `hgK1`/`hgK2` instead
+      -- state the needed bridge as concrete `have`s, each proved by a
+      -- one-shot `rw [hg_def]` where the goal is small enough that the
+      -- defeq check between `K` and `K2 p c0 c1 c2 c3 c4` (needed for `rw`'s
+      -- trailing `rfl`) is cheap, rather than asking `simp` to discover the
+      -- same defeq while pattern-matching across the whole goal.
+      have hgK1 : g (xmodUTable p u0 u1 (1 + bi)).1 =
+          algebraMap (F p) (K2 p c0 c1 c2 c3 c4) (xmodUTable p u0 u1 (1 + bi)).1 := by
+        rw [hg_def]
+      have hgK2 : g (xmodUTable p u0 u1 bi).1 =
+          algebraMap (F p) (K2 p c0 c1 c2 c3 c4) (xmodUTable p u0 u1 bi).1 := by
+        rw [hg_def]
+      have hgK3 : g (xmodUTable p u0 u1 (1 + bi)).2 =
+          algebraMap (F p) (K2 p c0 c1 c2 c3 c4) (xmodUTable p u0 u1 (1 + bi)).2 := by
+        rw [hg_def]
+      have hgK4 : g (xmodUTable p u0 u1 bi).2 =
+          algebraMap (F p) (K2 p c0 c1 c2 c3 c4) (xmodUTable p u0 u1 bi).2 := by
+        rw [hg_def]
+      fin_cases a <;> simp only [hsmulC, hc_def, mul_add, Polynomial.coeff_add,
         Polynomial.coeff_C, Polynomial.coeff_C_mul, Polynomial.coeff_X_zero,
         Polynomial.coeff_X_one, reduceIte, if_neg (one_ne_zero (α := ℕ)),
-        mul_zero, mul_one, add_zero, zero_add, hgadd, hgmul,
-        show (1 + bi) = bi + 1 from by omega] <;> ring
+        mul_zero, mul_one, add_zero, zero_add, hgadd, hgmul, ← hgK1, ← hgK2,
+        ← hgK3, ← hgK4] <;> ring
   have hcoeff : ∀ a : Fin 2, (R %ₘ U).coeff a.val = 0 := by
     intro a
     have haux := row23_defining_eq_aux p c0 c1 c2 c3 c4 u0 u1 v0 v1 hA a
