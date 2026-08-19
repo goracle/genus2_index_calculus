@@ -1,6 +1,8 @@
 import Mathlib
 import Genus2Lean.TheDataDerivation.DataDerivationBasics
 
+set_option linter.style.header false
+
 /-!
 # `theData` derivation, part 2: the tower `K0 → K1 → K2`
 
@@ -96,6 +98,7 @@ noncomputable def w1 (c0 c1 c2 c3 c4 : F p) : K1 p c0 c1 c2 c3 c4 :=
   AdjoinRoot.root (X ^ 2 - C (fAtT p c0 c1 c2 c3 c4 0) : Polynomial (K0 p))
   
 
+omit hp2 in
 /-- **No longer an axiom.** `X^2 - C (fAtT ... 0)` is irreducible over `K0 p`
 because `fAtT p ... 0` is not a square in `K0 p` — `DataDerivationBasics.lean`'s
 `fAtT_p_not_isSquare` (item 1, §4.2), itself resting only on `curvePoly`
@@ -108,6 +111,7 @@ theorem factIrreducible_K1_proved (c0 c1 c2 c3 c4 : F p) :
     Irreducible (X ^ 2 - C (fAtT p c0 c1 c2 c3 c4 0) : Polynomial (K0 p)) :=
   irreducible_X_sq_sub_C_of_not_isSquare (fAtT_p_not_isSquare p c0 c1 c2 c3 c4 0)
 
+omit hp2 in
 instance factIrreducible_K1 (c0 c1 c2 c3 c4 : F p) :
     Fact (Irreducible (X ^ 2 - C (fAtT p c0 c1 c2 c3 c4 0) : Polynomial (K0 p))) :=
   ⟨factIrreducible_K1_proved p c0 c1 c2 c3 c4⟩
@@ -179,11 +183,17 @@ theorem factIrreducible_K2_proved (c0 c1 c2 c3 c4 : F p) :
     exact fAtT_p_not_isSquare p c0 c1 c2 c3 c4 1
   have h01 : ¬ IsSquare
       (fAtT p c0 c1 c2 c3 c4 1 * fAtT p c0 c1 c2 c3 c4 0) := by
-    simpa [mul_comm] using
-      (fAtT_prod_not_isSquare
-        (curvePoly p c0 c1 c2 c3 c4)
-        (curvePoly_natDegree_odd p c0 c1 c2 c3 c4)
-        (curvePoly_ne_zero p c0 c1 c2 c3 c4))
+    have h_prod := fAtT_prod_not_isSquare
+      (curvePoly p c0 c1 c2 c3 c4)
+      (curvePoly_natDegree_odd p c0 c1 c2 c3 c4)
+      (curvePoly_ne_zero p c0 c1 c2 c3 c4)
+    have h_eq : fAtT p c0 c1 c2 c3 c4 1 * fAtT p c0 c1 c2 c3 c4 0 =
+        (curvePoly p c0 c1 c2 c3 c4).eval₂ (algebraMap (F p) (K0 p)) (t0 p 0) *
+        (curvePoly p c0 c1 c2 c3 c4).eval₂ (algebraMap (F p) (K0 p)) (t0 p 1) := by
+      rw [mul_comm]
+      rfl
+    rw [h_eq]
+    exact h_prod
   exact quadratic_extension_square_criterion
     (K := K0 p)
     (hchar := hchar)
