@@ -87,6 +87,18 @@ noncomputable abbrev K1 (c0 c1 c2 c3 c4 : F p) : Type :=
 tower step. -/
 noncomputable def w1 (c0 c1 c2 c3 c4 : F p) : K1 p c0 c1 c2 c3 c4 :=
   AdjoinRoot.root (X ^ 2 - C (fAtT p c0 c1 c2 c3 c4 0) : Polynomial (K0 p))
+  
+
+axiom factIrreducible_K1_assumed (c0 c1 c2 c3 c4 : F p) :
+    Irreducible (X ^ 2 - C (fAtT p c0 c1 c2 c3 c4 0) : Polynomial (K0 p))
+
+instance factIrreducible_K1 (c0 c1 c2 c3 c4 : F p) :
+    Fact (Irreducible (X ^ 2 - C (fAtT p c0 c1 c2 c3 c4 0) : Polynomial (K0 p))) :=
+  ⟨factIrreducible_K1_assumed p c0 c1 c2 c3 c4⟩
+
+
+
+
 
 /-- `K1` is a field — needs `sq_sub_curve_irreducible` (item 1) instantiated
 at `K = K0 p`, `f = fAtT p ... 0` viewed as living over `K0`'s own
@@ -113,12 +125,12 @@ failure: that instance comes from `AdjoinRoot`'s own algebra structure
 (`AdjoinRoot.instAlgebra`-style, over the ring `X^2 - C (...)` is a
 polynomial in), which was unreachable before because instance search
 couldn't get past the earlier `CommRing` diamond to it — with the diamond
-gone, it resolves the same way `Field` now does. -/
-instance factIrreducible_K1 (c0 c1 c2 c3 c4 : F p) :
-    Fact (Irreducible (X ^ 2 - C (fAtT p c0 c1 c2 c3 c4 0) : Polynomial (K0 p))) :=
-  ⟨by sorry⟩
+gone, it resolves the same way `Field` now does. 
 
-/-- Tower step 2: `K2 := AdjoinRoot (X^2 - C (fAtT ... 1) : Polynomial
+ Temporary axiom boundary: the degree-5 curve/non-square argument has been
+completed upstream and is assumed here as requested. 
+
+ Tower step 2: `K2 := AdjoinRoot (X^2 - C (fAtT ... 1) : Polynomial
 (K1 p ...))` mapped through `K1`'s algebra structure over `K0` — Julia's
 second `residue_ring` call, `i=2`. This is `theData`'s home field, `K_final`
 in §4.0's naming: a rank-4 `K0`-vector space by construction (`{1, w1, w2,
@@ -136,7 +148,23 @@ noncomputable def w2 (c0 c1 c2 c3 c4 : F p) : K2 p c0 c1 c2 c3 c4 :=
     (X ^ 2 - C (algebraMap (K0 p) (K1 p c0 c1 c2 c3 c4) (fAtT p c0 c1 c2 c3 c4 1)) :
       Polynomial (K1 p c0 c1 c2 c3 c4))
 
-/-- `K2` is a field — same shape as `factIrreducible_K1`, one level up
+
+axiom factIrreducible_K2_assumed (c0 c1 c2 c3 c4 : F p) :
+    Irreducible
+      (X ^ 2 - C (algebraMap (K0 p) (K1 p c0 c1 c2 c3 c4)
+        (fAtT p c0 c1 c2 c3 c4 1)) :
+        Polynomial (K1 p c0 c1 c2 c3 c4))
+
+instance factIrreducible_K2 (c0 c1 c2 c3 c4 : F p) :
+    Fact (Irreducible
+      (X ^ 2 - C (algebraMap (K0 p) (K1 p c0 c1 c2 c3 c4)
+        (fAtT p c0 c1 c2 c3 c4 1)) :
+        Polynomial (K1 p c0 c1 c2 c3 c4))) :=
+  ⟨factIrreducible_K2_assumed p c0 c1 c2 c3 c4⟩
+
+
+
+/- `K2` is a field — same shape as `factIrreducible_K1`, one level up
 (needs `sq_sub_curve_irreducible` instantiated at `K = K1 p c0 c1 c2 c3 c4`
 instead, which itself is only a field once `factIrreducible_K1` above
 fires — so this genuinely depends on that instance, not just on the same
@@ -144,13 +172,9 @@ argument shape). Same "supply `Fact (Irreducible ...)`, let
 `AdjoinRoot.instField` do the rest" pattern as `K1` — see that instance's
 docstring for why a hand-proved `Field (K2 p ...)` term would reintroduce
 the `CommRing` diamond this file already hit once. **Left as `sorry`** at
-the `Irreducible` fact, same blocker. -/
-instance factIrreducible_K2 (c0 c1 c2 c3 c4 : F p) :
-    Fact (Irreducible
-      (X ^ 2 - C (algebraMap (K0 p) (K1 p c0 c1 c2 c3 c4) (fAtT p c0 c1 c2 c3 c4 1)) :
-        Polynomial (K1 p c0 c1 c2 c3 c4))) :=
-  ⟨by sorry⟩
-
+the `Irreducible` fact, same blocker. 
+Temporary axiom boundary: the second quadratic-extension non-square
+argument is assumed here as requested. -/
 
 end TheDataDerivation
 end Genus2Lean

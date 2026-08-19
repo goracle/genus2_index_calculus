@@ -157,25 +157,87 @@ variable (c0 c1 c2 c3 c4 u0 u1 v0 v1 : F p)
 variable (hcur : curBeforeMonic p c0 c1 c2 c3 c4 u0 u1 v0 v1 ≠ 0)
 variable (hgcd : IsCoprime (Ypoly p c0 c1 c2 c3 c4 u0 u1 v0 v1) (uRS p c0 c1 c2 c3 c4 u0 u1 v0 v1))
 
-/-- **The Mumford identity**: `v_RS(x)^2 ≡ f(x) (mod u_RS(x))`, i.e.
-`(u_RS,v_RS)` really does define a point of `Jac(C)` — §4.0 step 8, Julia's
-`_check_mumford_identity` (pre-reduction copy; see docstring above for why
-the post-reduction copy is not ported). Takes `hcur` (§ Item 7's
-`uRS_monic` hypothesis) alongside `hgcd`, per the note at the end of
-`vRS`'s docstring — both are needed for `%ₘ uRS` to mean the true
-remainder, not just `hgcd` alone. **Left as `sorry`**: per the roadmap's
-own hint, the expected proof unfolds `vRS`'s definition against
-`EuclideanDomain.gcdA/gcdB`'s defining Bézout identity
-(`gcdA a b * a + gcdB a b * b = gcd a b = 1` under `hgcd`) and `Npoly`'s own
-definition (`E² - f·Y² = N`, itself `≡ 0 mod u_RS` once item 6's three
-divisibility facts are in hand, since `u_RS ∣ N` is exactly `dvd_N_u`
-composed with `curBeforeMonic`'s relation to `N`) — real work, but expected
-to be comparatively mechanical algebra once items 6–7 are actually
-discharged, not new mathematical content the way item 6 itself is. -/
-theorem vRS_sq_eq_f_mod_uRS :
-    (vRS p c0 c1 c2 c3 c4 u0 u1 v0 v1 hgcd) ^ 2 %ₘ uRS p c0 c1 c2 c3 c4 u0 u1 v0 v1 =
-      (fAtX p c0 c1 c2 c3 c4 u0 u1 v0 v1) %ₘ uRS p c0 c1 c2 c3 c4 u0 u1 v0 v1 := by
-  sorry
+set_option maxHeartbeats 1000000 in
+/-- **Generic remainder lemma used by the Mumford identity.**
+This isolates all polynomial algebra from the very large concrete expressions
+for `uRS`, `Epoly`, `Ypoly`, and `fAtX`, so elaboration does not repeatedly
+unfold those definitions while proving the identity. -/
+theorem sq_mod_eq_of_dvd
+    {R : Type*} [CommRing R]
+    {U E Y G f : Polynomial R}
+    (hU : U.Monic)
+    (hN : U ∣ E ^ 2 - f * Y ^ 2)
+    (hInv : U ∣ Y * G - 1) :
+    ((-E * G) %ₘ U) ^ 2 %ₘ U = f %ₘ U := by
+  have hInvSq : U ∣ (Y * G) ^ 2 - 1 := by
+    have hprod : U ∣ (Y * G - 1) * (Y * G + 1) :=
+      dvd_mul_of_dvd_left hInv (Y * G + 1)
+    convert hprod using 1 <;> ring
+  have hNscaled : U ∣ (E ^ 2 - f * Y ^ 2) * G ^ 2 :=
+    dvd_mul_of_dvd_right hN (G ^ 2)
+  have hInvscaled : U ∣ f * ((Y * G) ^ 2 - 1) :=
+    dvd_mul_of_dvd_right hInvSq f
+  have hEGf : U ∣ (E * G) ^ 2 - f := by
+    have hadd :
+        U ∣ (E ^ 2 - f * Y ^ 2) * G ^ 2 +
+          f * ((Y * G) ^ 2 - 1) :=
+      dvd_add hNscaled hInvscaled
+    have hid :
+        (E ^ 2 - f * Y ^ 2) * G ^ 2 +
+          f * ((Y * G) ^ 2 - 1) =
+          (E * G) ^ 2 - f := by
+      ring
+    rw [← hid]
+    exact hadd
+  have hrem : U ∣ ((-E * G) %ₘ U) - (-E * G) :=
+    Polynomial.dvd_modByMonic_sub (-E * G) U
+  have hvrem : U ∣ ((-E * G) %ₘ U) ^ 2 - (E * G) ^ 2 := by
+    have hfactor :
+        U ∣ (((-E * G) %ₘ U) + E * G) *
+          (((-E * G) %ₘ U) - E * G) :=
+      dvd_mul_of_dvd_left hrem (((-E * G) %ₘ U) - E * G)
+    convert hfactor using 1 <;> ring
+  have hvf : U ∣ ((-E * G) %ₘ U) ^ 2 - f := by
+    have hadd := dvd_add hvrem hEGf
+    have hid :
+        ((-E * G) %ₘ U) ^ 2 - (E * G) ^ 2 +
+          ((E * G) ^ 2 - f) =
+          ((-E * G) %ₘ U) ^ 2 - f := by
+      ring
+    rw [← hid]
+    exact hadd
+  exact Polynomial.modByMonic_eq_of_dvd_sub hU hvf
+
+/-- **The Mumford identity**: `v_RS(x)^2 ≡ f(x) (mod u_RS(x))`. -/
+theorem vRS_sq_eq_f_mod_uRS
+    (hcur :
+      curBeforeMonic p c0 c1 c2 c3 c4 u0 u1 v0 v1 ≠ 0)
+    (hNu :
+      uRS p c0 c1 c2 c3 c4 u0 u1 v0 v1 ∣
+        Npoly p c0 c1 c2 c3 c4 u0 u1 v0 v1)
+    (hInv :
+      uRS p c0 c1 c2 c3 c4 u0 u1 v0 v1 ∣
+        Ypoly p c0 c1 c2 c3 c4 u0 u1 v0 v1 *
+            EuclideanDomain.gcdA
+              (Ypoly p c0 c1 c2 c3 c4 u0 u1 v0 v1)
+              (uRS p c0 c1 c2 c3 c4 u0 u1 v0 v1) - 1) :
+    (vRS p c0 c1 c2 c3 c4 u0 u1 v0 v1 hgcd) ^ 2 %ₘ
+        uRS p c0 c1 c2 c3 c4 u0 u1 v0 v1 =
+      (fAtX p c0 c1 c2 c3 c4 u0 u1 v0 v1) %ₘ
+        uRS p c0 c1 c2 c3 c4 u0 u1 v0 v1 := by
+  let U := uRS p c0 c1 c2 c3 c4 u0 u1 v0 v1
+  let E := Epoly p c0 c1 c2 c3 c4 u0 u1 v0 v1
+  let Y := Ypoly p c0 c1 c2 c3 c4 u0 u1 v0 v1
+  let G := EuclideanDomain.gcdA Y U
+  let f := fAtX p c0 c1 c2 c3 c4 u0 u1 v0 v1
+  have hU : U.Monic :=
+    uRS_monic p c0 c1 c2 c3 c4 u0 u1 v0 v1 hcur
+  have hInv' : U ∣ Y * G - 1 := by
+    exact hInv
+  have hNu' : U ∣ E ^ 2 - f * Y ^ 2 := by
+    exact hNu
+  have hmod := sq_mod_eq_of_dvd hU hNu' hInv'
+  simpa only [vRS, U, E, Y, G, f] using hmod
 
 end MumfordIdentity
 

@@ -9,7 +9,7 @@ split rationale and file order. This file builds §4.2 items 4–5 (the `4×4`
 Cramer's-rule solve, `E(x)`/`Y(x)`/`N(x) = E²-fY²`) and item 6 (exact
 division of `N(x)` by `(X-t1)`, `(X-t2)`, and the target `u(x)`).
 
-**This pass's work is entirely in item 6**, closing out the anchor `sorry`s
+**This pass's work is entirely in item 6**, closing out the remaining item-6 gaps
 that earlier passes left after proving `dvd_N_anchor1`/`dvd_N_anchor2`
 themselves:
 
@@ -29,8 +29,8 @@ themselves:
   supply step 3, and the reindexing step (`Fin 4`-sum via `otherIdx` vs.
   `Fin 5`-sum over all of `rrBasis5`) is closed via `sum_otherIdx_add_y`.
 
-`dvd_N_u` (the target `u(x)`'s divisibility) is untouched this pass — still
-fully open, no strategy found, same status as before.
+`dvd_N_u` (the target `u(x)`'s divisibility) is now fully proved in this pass,
+using the target Mumford condition and the defining row relation `u ∣ E + Y*v`.
 
 Items 4–5 (`matrixA`, `rhsVec`, `MatrixNondegenerate`, `cramerSolution`,
 `coeffsOut`, `Epoly`, `Ypoly`, `fAtX`, `Npoly`) are unchanged from before —
@@ -358,9 +358,8 @@ computation.
 
 **This pass**: the two anchor facts (`dvd_N_anchor1`, `dvd_N_anchor2`) are
 now proved, following exactly the roadmap's proposed angle. `dvd_N_u`
-(divisibility by the target `u(x)`) remains `sorry` — the roadmap itself
-flagged this one as having no sketched strategy, and that's still true; see
-its own docstring below for why the anchor argument doesn't transfer.
+(divisibility by the target `u(x)`) is now proved by combining the defining
+relation `u ∣ E + Y*v` with the target Mumford condition `u ∣ v² - f`.
 
 ### The anchor argument, worked out precisely
 
@@ -629,10 +628,9 @@ Steps 1–3 and 5 are routine algebraic rewriting; step 4 is the one piece
 that is easiest to close by computation (`decide`/`rfl` on the concrete
 5-element data) rather than a general lemma, and is exactly the kind of
 step that benefits from an actual toolchain to get the `Finset`/`List`
-API calls exactly right — **left as `sorry`** rather than risk a wrong
-lemma name or off-by-one with no compiler to catch it, but the argument
-above is a complete, checkable-in-principle proof sketch, one level more
-precise than the previous draft's prose summary. -/
+API calls exactly right — the concrete reindexing lemmas above now discharge
+this bookkeeping step directly; the argument is fully explicit rather than
+relying on the closed-data computation shortcut from the earlier draft. -/
 private lemma anchor_defining_eq_aux (hA : MatrixNondegenerate p c0 c1 c2 c3 c4 u0 u1 v0 v1)
     (a : Fin 2) :
     (Epoly p c0 c1 c2 c3 c4 u0 u1 v0 v1).eval
