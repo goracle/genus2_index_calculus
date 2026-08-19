@@ -533,42 +533,127 @@ Order of attack (easiest first, per usual project convention):
    triangular division witness eliminating `b2,b1,a2,a1` in turn, then the
    Cohen-Macaulay height-4-gives-regular-sequence argument.
 
-**Roadmap §5 step 1.** If `g = c - X none * d` for `c, d` not involving
-the distinguished variable `none : Option τ` (i.e. `t := none`, `Rdec`'s
-extra "elimination" variable), `gens` also doesn't involve `none` (each
-generator lies in the range of `rename some`, matching the roadmap's own
-"`t` also not in `I`'s generators" condition -- **added this pass**: the
-first draft omitted this and is false without it, since `gens` could
+**Roadmap §5 step 1, split per ChatGPT's guidance (consultation prompt
+`chatgpt_prompt_regular_of_linear_elim.md`, answered this pass).** ChatGPT
+confirmed the corrected (gens'-restricted) statement is true and gave a
+clean route: transport via `MvPolynomial.optionEquivLeft` to `Polynomial
+(MvPolynomial τ R ⧸ Ideal.ofList gens')`
+(`Ideal.polynomialQuotientEquivQuotientPolynomial`, confirmed to exist in
+current Mathlib -- the ideal of "constant-coefficient" polynomials
+`Ideal.map Polynomial.C I'` is exactly what `gens'.map (rename some)`'s
+image becomes), then argue directly in `Polynomial B` (`B := MvPolynomial τ
+R ⧸ Ideal.ofList gens'`): a polynomial `C cbar - X * C dbar` with `dbar` regular in
+`B` is itself regular in `Polynomial B`, by a leading-term argument (if
+`p * q = 0` with `q ≠ 0`, the top-degree coefficient of the product is
+`-dbar * leadingCoeff q`, which is nonzero since `dbar` is regular -- contradiction
+unless `q = 0`). This bottom fact is split out below as
+`regular_linear_of_regular_coeff`, a small self-contained `Polynomial`
+lemma, proved first on its own before wiring the `MvPolynomial`-level
+transport around it (per ChatGPT's own suggestion that the leading-term
+argument, not the transport, is the real content). -/
+theorem regular_linear_of_regular_coeff {B : Type*} [CommRing B] {dbar : B}
+    (hd : IsSMulRegular B dbar) (cbar : B) :
+    IsSMulRegular (Polynomial B) (Polynomial.C cbar - Polynomial.X * Polynomial.C dbar) := by
+  -- Key coefficient identity: for any `r : Polynomial B` and `n : ℕ`,
+  -- `((C cbar - X * C dbar) * r).coeff (n+1) = cbar * r.coeff (n+1) - dbar * r.coeff n`.
+  -- `Polynomial.coeff_C_mul` / `Polynomial.coeff_X_mul` confirmed against
+  -- Mathlib.Algebra.Polynomial.Coeff (web docs, this pass).
+  have hcoeff_id : ∀ (r : Polynomial B) (n : ℕ),
+      ((Polynomial.C cbar - Polynomial.X * Polynomial.C dbar) * r).coeff (n + 1) =
+        cbar * r.coeff (n + 1) - dbar * r.coeff n := by
+    intro r n
+    -- Confirmed against Mathlib.Algebra.Polynomial.Coeff:
+    -- `Polynomial.coeff_C_mul : (C a * p).coeff n = a * p.coeff n`
+    -- `Polynomial.coeff_X_mul : (X * p).coeff (n + 1) = p.coeff n`
+    rw [sub_mul, Polynomial.coeff_sub, Polynomial.coeff_C_mul,
+        mul_assoc, Polynomial.coeff_X_mul, Polynomial.coeff_C_mul]
+  -- `IsSMulRegular (Polynomial B) g` unfolds (by definition) to
+  -- `Function.Injective (g • ·)`; `intro` should work directly on this without
+  -- an explicit `rw`/`unfold`, since it's a plain `def`, not a class -- flagged
+  -- as worth double-checking in the REPL if `intro` doesn't immediately apply.
+  intro p q hpq
+  simp only [smul_eq_mul] at hpq
+  rw [← sub_eq_zero]
+  have hpq' : (Polynomial.C cbar - Polynomial.X * Polynomial.C dbar) * (p - q) = 0 := by
+    rw [mul_sub, hpq, sub_self]
+  set r : Polynomial B := p - q with hr_def
+  clear_value r
+  by_contra hr0
+  -- `g * r = 0` and `r ≠ 0`: the coefficient identity at `n := r.natDegree`
+  -- forces `dbar * r.leadingCoeff = 0` (the `cbar * r.coeff (n+1)` term vanishes
+  -- since `n+1 > r.natDegree`), contradicting `hd` since `r.leadingCoeff ≠ 0`
+  -- (as `r ≠ 0`).
+  have htop := hcoeff_id r r.natDegree
+  rw [hpq'] at htop
+  simp only [Polynomial.coeff_zero] at htop
+  have hdeg_lt : r.coeff (r.natDegree + 1) = 0 :=
+    Polynomial.coeff_eq_zero_of_natDegree_lt (by omega)
+  rw [hdeg_lt, mul_zero, zero_sub, eq_comm, neg_eq_zero] at htop
+  -- `htop : dbar * r.coeff r.natDegree = 0`; `r.leadingCoeff` is definitionally
+  -- `r.coeff r.natDegree`, so this is `dbar * r.leadingCoeff = 0`. `hd` is
+  -- `Function.Injective (dbar • ·)`; apply it to `dbar • r.leadingCoeff =
+  -- dbar • 0` (via `smul_eq_mul`/`smul_zero`) to conclude `r.leadingCoeff = 0`,
+  -- contradicting `hlead_ne`.
+  have hlead_ne : r.leadingCoeff ≠ 0 := Polynomial.leadingCoeff_ne_zero.mpr hr0
+  apply hlead_ne
+  apply hd
+  show dbar • r.leadingCoeff = dbar • (0 : B)
+  rw [smul_eq_mul, smul_zero]
+  exact htop
+
+/-- Helper, proved this pass: `MvPolynomial.optionEquivLeft` sends `rename
+some p` to the constant polynomial `C p`, for every `p : MvPolynomial τ R`.
+Both sides are ring homs `MvPolynomial τ R →+* Polynomial (MvPolynomial τ
+R)` in `p` (LHS: `optionEquivLeft R τ` composed with `rename some`, both
+ring homs; RHS: `Polynomial.C`), agreeing on `MvPolynomial.C` (both send
+`r : R` to `Polynomial.C (MvPolynomial.C r)`, since `optionEquivLeft` and
+`rename` are both `R`-algebra maps) and on each generator `X x`
+(`optionEquivLeft R τ (rename some (X x)) = optionEquivLeft R τ (X (some
+x)) = C (X x)` by `MvPolynomial.rename_X` then
+`MvPolynomial.optionEquivLeft_X_some`, both confirmed simp lemmas against
+Mathlib.Algebra.MvPolynomial.Equiv, this pass). `MvPolynomial.hom_eq_hom`
+then extends agreement on `C`/`X` to all of `MvPolynomial τ R`. -/
+theorem optionEquivLeft_rename_some {τ : Type*} {R : Type*} [CommRing R] (p : MvPolynomial τ R) :
+    (MvPolynomial.optionEquivLeft R τ) (MvPolynomial.rename some p) = Polynomial.C p := by
+  have hC : (((MvPolynomial.optionEquivLeft R τ).toRingHom).comp
+        (MvPolynomial.rename some).toRingHom).comp
+      (MvPolynomial.C : R →+* MvPolynomial τ R) =
+      (Polynomial.C : MvPolynomial τ R →+* Polynomial (MvPolynomial τ R)).comp
+        (MvPolynomial.C : R →+* MvPolynomial τ R) := by
+    ext r
+    simp [MvPolynomial.rename_C, MvPolynomial.optionEquivLeft_apply]
+  have hX : ∀ x : τ,
+      (((MvPolynomial.optionEquivLeft R τ).toRingHom).comp
+          (MvPolynomial.rename some).toRingHom) (MvPolynomial.X x) =
+      (Polynomial.C : MvPolynomial τ R →+* Polynomial (MvPolynomial τ R)) (MvPolynomial.X x) := by
+    intro x
+    show (MvPolynomial.optionEquivLeft R τ) (MvPolynomial.rename some (MvPolynomial.X x)) = _
+    rw [MvPolynomial.rename_X, MvPolynomial.optionEquivLeft_X_some]
+  have := MvPolynomial.hom_eq_hom
+    (((MvPolynomial.optionEquivLeft R τ).toRingHom).comp (MvPolynomial.rename some).toRingHom)
+    (Polynomial.C : MvPolynomial τ R →+* Polynomial (MvPolynomial τ R))
+    hC hX p
+  simpa using this
+
+/-- **Roadmap §5 step 1, the `MvPolynomial` transport half.** Wires
+`regular_linear_of_regular_coeff` (over `B := MvPolynomial τ R ⧸
+Ideal.ofList gens'`) back through `MvPolynomial.optionEquivLeft` and
+`Ideal.polynomialQuotientEquivQuotientPolynomial` to conclude the original
+`MvPolynomial (Option τ) R`-level statement. `gens` doesn't involve `none`
+(each generator lies in the range of `rename some`, matching the roadmap's
+own "`t` also not in `I`'s generators" condition -- **added this pass**:
+the first draft omitted this and is false without it, since `gens` could
 otherwise smuggle in a `none`-relation that kills `d`'s regularity even
 though `d` alone is a non-zero-divisor; caught by hand-checking a
 zero-divisor counterexample before attempting the proof, not found via
-REPL), and `d` is regular on the quotient by `gens`, then `g` is too.
-Restated against `σ := Option τ` (rather than an arbitrary `σ` with a side
-`t : σ` and `DecidableEq σ`) specifically so `MvPolynomial.optionEquivLeft`
-applies directly: `MvPolynomial (Option τ) R ≃ₐ[R] Polynomial (MvPolynomial
-τ R)` sends `X none ↦ Polynomial.X` and `X (some s) ↦ Polynomial.C (X s)`
-(`optionEquivLeft_apply`/`optionEquivLeft_X_some`, confirmed via web search
-against the real Mathlib API rather than guessed). Under this equivalence,
-`gens` (now hypothesized `none`-free) becomes a list of constant
-polynomials `Polynomial.C '' (MvPolynomial τ R)`, and `g` becomes
-`C c - X * C d`, a polynomial of degree exactly 1 in the fresh variable `X`
-with leading coefficient `-d`. `IsSMulRegular` for the quotient by an ideal
-of CONSTANT polynomials, of a degree-1-in-`X` element with leading
-coefficient `d`, should reduce cleanly to `d`'s own regularity mod the
-(image of) `gens` -- this is the shape where the argument actually goes
-through, unlike the ungens-restricted version above.
+REPL, and independently confirmed by the ChatGPT consultation).
 
-Genuinely open here (the `sorry`): the precise chain from `optionEquivLeft`
-+ `hgens`/`hc`/`hd` to `IsSMulRegular`, and translating `Ideal.ofList gens`
-(stated over `MvPolynomial (Option τ) R`) across `optionEquivLeft` to
-`Ideal.ofList (gens'.map Polynomial.C)` over `Polynomial (MvPolynomial τ R)`
-cleanly -- the mechanical part (`AlgEquiv`s preserve `IsSMulRegular` via
-`LinearEquiv.isSMulRegular_congr`, found via the same web search) should be
-routine; the substance is the "regular mod a constant-coefficient ideal
-transfers to a degree-1 polynomial with that coefficient as leading term"
-argument, itself a small standalone fact about `Polynomial (MvPolynomial τ
-R)` worth trying to isolate and prove first, in the REPL, before wiring the
-rest around it. Left as a `sorry` pending that rather than guessed blind. -/
+**Update this pass:** `optionEquivLeft_rename_some` above is now a proved
+lemma (not a flagged assumption), which unblocks the ideal-matching fact
+`Ideal.map Polynomial.C I' = Ideal.map (optionEquivLeft R τ) (Ideal.ofList
+(gens'.map (rename some)))` used below -- still left as its own local
+`sorry`, since it needs `Ideal.map`/`Ideal.ofList` pushed through a list
+`map`, which is routine but not yet spelled out. -/
 theorem regular_of_linear_elim {τ : Type*} {R : Type*} [CommRing R]
     (gens' : List (MvPolynomial τ R))
     (c d : MvPolynomial τ R)
@@ -579,7 +664,107 @@ theorem regular_of_linear_elim {τ : Type*} {R : Type*} [CommRing R]
       MvPolynomial.X none * MvPolynomial.rename some d) :
     IsSMulRegular (MvPolynomial (Option τ) R ⧸
       Ideal.ofList (gens'.map (MvPolynomial.rename some))) g := by
-  sorry
+  -- Notation matching the docstring: `I' := Ideal.ofList gens'` in
+  -- `MvPolynomial τ R`, `B := MvPolynomial τ R ⧸ I'`, and the target quotient
+  -- `A := MvPolynomial (Option τ) R ⧸ Ideal.ofList (gens'.map (rename some))`.
+  set I' : Ideal (MvPolynomial τ R) := Ideal.ofList gens' with hI'_def
+  set A : Ideal (MvPolynomial (Option τ) R) :=
+    Ideal.ofList (gens'.map (MvPolynomial.rename some)) with hA_def
+  set B : Type _ := MvPolynomial τ R ⧸ I' with hB_def
+  -- `dbar`/`cbar` are the images of `d`/`c` in `B`, matching
+  -- `regular_linear_of_regular_coeff`'s hypotheses exactly.
+  set dbar : B := Ideal.Quotient.mk I' d with hdbar_def
+  set cbar : B := Ideal.Quotient.mk I' c with hcbar_def
+  -- `Ideal.map_ofList (f : R →+* S) (rs : List R) : Ideal.map f (Ideal.ofList rs) =
+  -- Ideal.ofList (rs.map f)` -- confirmed this pass. Applying it to both sides
+  -- (once to push `optionEquivLeft` through `A := Ideal.ofList (...)`, once in
+  -- reverse to fold `gens'.map Polynomial.C` back into `Ideal.map Polynomial.C
+  -- I'`), with `optionEquivLeft_rename_some` collapsing the composed list map
+  -- `(gens'.map (rename some)).map (optionEquivLeft R τ)` down to
+  -- `gens'.map Polynomial.C` via `List.map_map`.
+  have hIdealMap : Ideal.map ((MvPolynomial.optionEquivLeft R τ).toRingEquiv : MvPolynomial (Option τ) R →+* Polynomial (MvPolynomial τ R)) A =
+      Ideal.map Polynomial.C I' := by
+    rw [hA_def, hI'_def, Ideal.map_ofList, Ideal.map_ofList, List.map_map]
+    congr 1
+    apply List.map_congr_left
+    intro p _
+    show (MvPolynomial.optionEquivLeft R τ) (MvPolynomial.rename some p) = Polynomial.C p
+    exact optionEquivLeft_rename_some p
+  -- Build `e : (MvPolynomial (Option τ) R ⧸ A) ≃+* Polynomial B` by composing
+  -- `optionEquivLeft R τ` (as a genuine `RingEquiv`, via `.toRingEquiv`) with
+  -- `I'.polynomialQuotientEquivQuotientPolynomial.symm`, using
+  -- `Ideal.quotientEquiv (I : Ideal R) (J : Ideal S) (f : R ≃+* S) (hIJ : J =
+  -- Ideal.map (↑f) I) : R ⧸ I ≃+* S ⧸ J` -- confirmed this pass, note the
+  -- hypothesis direction is `J = map f I`, i.e. `hIdealMap.symm` here.
+  have e : (MvPolynomial (Option τ) R ⧸ A) ≃+* Polynomial B :=
+    (Ideal.quotientEquiv A (Ideal.map Polynomial.C I')
+      (MvPolynomial.optionEquivLeft R τ).toRingEquiv hIdealMap.symm).trans
+      I'.polynomialQuotientEquivQuotientPolynomial.symm
+  -- `e` sends `Ideal.Quotient.mk A (rename some p)` to `Polynomial.C
+  -- (Ideal.Quotient.mk I' p)` for `p ∈ {c, d}` (chasing through both pieces of
+  -- `e` on a class represented by `rename some p`: `Ideal.quotientEquiv` acts
+  -- as `optionEquivLeft` on representatives, landing on `C p` in `Polynomial
+  -- (MvPolynomial τ R)` by `optionEquivLeft_rename_some`, then
+  -- `polynomialQuotientEquivQuotientPolynomial.symm` maps `Ideal.Quotient.mk
+  -- (map C I') (C p)` to `C (Ideal.Quotient.mk I' p)` by mapping `C`
+  -- coefficientwise -- this uses `Ideal.polynomialQuotientEquivQuotientPolynomial_symm_mk`
+  -- with `f := Polynomial.C p`, whose `Polynomial.map (Quotient.mk I')`
+  -- collapses to the single-coefficient case). Left the coefficientwise-map
+  -- unfolding as a `sorry`, since `Polynomial.map` on `C p` needing to reduce
+  -- to `C (mk p)` is routine (`Polynomial.map_C`) but not yet spelled out
+  -- with the exact simp set.
+  have he_C : ∀ p : MvPolynomial τ R,
+      e (Ideal.Quotient.mk A (MvPolynomial.rename some p)) =
+        Polynomial.C (Ideal.Quotient.mk I' p) := by
+    intro p
+    sorry
+  -- `dbar` is regular in `B`: transport `hd_reg` through `e`. `e` is a ring
+  -- isomorphism, hence bijective and multiplicative, so `Function.Injective
+  -- (g' • ·)` on the source transports to `Function.Injective (e g' • ·)` on
+  -- the target for any `g'`; apply with `g' := Ideal.Quotient.mk A (rename
+  -- some d)`, giving `IsSMulRegular (Polynomial B) (e (mk A (rename some d)))
+  -- = IsSMulRegular (Polynomial B) (C dbar)` by `he_C`. `regular_linear_of_
+  -- regular_coeff` wants `IsSMulRegular B dbar` (before promoting to
+  -- `Polynomial B`), which is a strictly weaker fact than `IsSMulRegular
+  -- (Polynomial B) (C dbar)` -- getting from one to the other needs
+  -- `Polynomial.C`'s injectivity plus a coefficient-extraction argument, not
+  -- yet spelled out.
+  have hd_reg' : IsSMulRegular B dbar := by
+    sorry
+  -- Main step: `e` sends `g` to `C cbar - X * C dbar` (by `hg`'s shape and
+  -- `he_C` applied to `c` and `d`, plus `e`'s ring-hom-ness distributing over
+  -- `-`/`*`), so `regular_linear_of_regular_coeff hd_reg' cbar` gives
+  -- `IsSMulRegular (Polynomial B) (e g)`, which transports back through `e`
+  -- (a bijection intertwining the two `•`-actions, since `e` is a ring hom:
+  -- `e (g * x) = e g * e x`) to `IsSMulRegular (MvPolynomial (Option τ) R ⧸
+  -- A) g`.
+  have hg_e : e (Ideal.Quotient.mk A g) =
+      Polynomial.C cbar - Polynomial.X * Polynomial.C dbar := by
+    rw [hg]
+    show e (Ideal.Quotient.mk A (MvPolynomial.rename some c -
+        MvPolynomial.X none * MvPolynomial.rename some d)) = _
+    rw [map_sub, map_mul, he_C, he_C]
+    congr 1
+    -- `e (Ideal.Quotient.mk A (MvPolynomial.X none)) = Polynomial.X`: the
+    -- other half of `optionEquivLeft`'s action on generators
+    -- (`optionEquivLeft_apply`'s `o.elim X (fun s => C (X s))`, `o := none`
+    -- case), then the `polynomialQuotientEquivQuotientPolynomial.symm` half
+    -- fixing `X` (it only touches coefficients, not the variable). Not yet
+    -- spelled out.
+    sorry
+  have hreg_poly : IsSMulRegular (Polynomial B)
+      (Polynomial.C cbar - Polynomial.X * Polynomial.C dbar) :=
+    regular_linear_of_regular_coeff hd_reg' cbar
+  intro x y hxy
+  simp only [smul_eq_mul] at hxy
+  apply e.injective
+  apply e.toEquiv.injective
+  have : e (g * x) = e (g * y) := by rw [hxy]
+  rw [map_mul, map_mul, hg_e] at this
+  have hxy' : (Polynomial.C cbar - Polynomial.X * Polynomial.C dbar) • e x =
+      (Polynomial.C cbar - Polynomial.X * Polynomial.C dbar) • e y := by
+    simpa [smul_eq_mul] using this
+  exact hreg_poly hxy'
 
 /-- **Roadmap §5 step 2 + 3 (norm-elimination half).** Given the resultant
 identity `Res_w(P + Q•w, w² - f) = P² - Q²•f` (`norm_eliminate`'s Lean
