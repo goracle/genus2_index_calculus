@@ -162,10 +162,83 @@ section GenericRemainderLemma
 -- possible local context.
 
 set_option maxHeartbeats 4000000 in
-/-- **Generic remainder lemma used by the Mumford identity.**
+/-- **Heartbeats raised**: even this fully generic, abstract statement hit
+the default ceiling during elaboration (cause not yet isolated — see the
+`sq_mod_eq_of_dvd` docstring below for the splitting rationale).
+
+Step 1 of `sq_mod_eq_of_dvd`: `U ∣ (Y*G)^2 - 1` from `U ∣ Y*G - 1`. -/
+theorem sq_mod_eq_of_dvd_step1
+    {R : Type*} [CommRing R] {U Y G : Polynomial R}
+    (hInv : U ∣ Y * G - 1) :
+    U ∣ (Y * G) ^ 2 - 1 := by
+  have hsq1 : (Y * G) ^ 2 - 1 = (Y * G - 1) * (Y * G + 1) := by ring
+  rw [hsq1]
+  exact dvd_mul_of_dvd_left hInv (Y * G + 1)
+
+set_option maxHeartbeats 4000000 in
+/-- **Heartbeats raised** (see `sq_mod_eq_of_dvd_step1`'s docstring — same
+situation). Step 2 of `sq_mod_eq_of_dvd`: `U ∣ (E*G)^2 - f`, combining the
+`N` divisibility with step 1's inverse-squared divisibility. -/
+theorem sq_mod_eq_of_dvd_step2
+    {R : Type*} [CommRing R] {U E Y G f : Polynomial R}
+    (hN : U ∣ E ^ 2 - f * Y ^ 2)
+    (hInvSq : U ∣ (Y * G) ^ 2 - 1) :
+    U ∣ (E * G) ^ 2 - f := by
+  have hNscaled : U ∣ (E ^ 2 - f * Y ^ 2) * G ^ 2 :=
+    dvd_mul_of_dvd_right hN (G ^ 2)
+  have hInvscaled : U ∣ f * ((Y * G) ^ 2 - 1) :=
+    dvd_mul_of_dvd_right hInvSq f
+  have hid1 :
+      (E ^ 2 - f * Y ^ 2) * G ^ 2 + f * ((Y * G) ^ 2 - 1) = (E * G) ^ 2 - f := by
+    ring
+  rw [← hid1]
+  exact dvd_add hNscaled hInvscaled
+
+set_option maxHeartbeats 4000000 in
+/-- **Heartbeats raised** (see `sq_mod_eq_of_dvd_step1`'s docstring — same
+situation). Step 3 of `sq_mod_eq_of_dvd`: the division-algorithm remainder
+identity `U ∣ (X %ₘ U) - X`, stated for a general dividend `X` so the
+`ring` call only ever sees one `/ₘ` atom. -/
+theorem sq_mod_eq_of_dvd_step3
+    {R : Type*} [CommRing R] {U : Polynomial R} (X : Polynomial R)
+    (hU : U.Monic) :
+    U ∣ (X %ₘ U) - X := by
+  -- `Polynomial.dvd_modByMonic_sub` does not exist under that name in
+  -- Mathlib (confirmed by search, not just absence from memory) — using
+  -- the roadmap's own documented fallback instead: `Polynomial.
+  -- modByMonic_eq_sub_mul_div` gives `p %ₘ q = p - q * (p /ₘ q)`, so
+  -- `p %ₘ q - p = -(q * (p /ₘ q))`, divisible by `q`. Note `q` (here `U`)
+  -- is IMPLICIT in that lemma, inferred from `hU`'s type — only `X` is
+  -- passed explicitly.
+  have hmod : X %ₘ U = X - U * (X /ₘ U) := Polynomial.modByMonic_eq_sub_mul_div X hU
+  rw [hmod]
+  exact ⟨-(X /ₘ U), by ring⟩
+
+set_option maxHeartbeats 4000000 in
+/-- **Heartbeats raised** (see `sq_mod_eq_of_dvd_step1`'s docstring — same
+situation). Step 4 of `sq_mod_eq_of_dvd`: `U ∣ (X %ₘ U)^2 - X^2` for any
+`X`, via difference of squares against step 3's remainder divisibility. -/
+theorem sq_mod_eq_of_dvd_step4
+    {R : Type*} [CommRing R] {U : Polynomial R} (X : Polynomial R)
+    (hrem : U ∣ (X %ₘ U) - X) :
+    U ∣ (X %ₘ U) ^ 2 - X ^ 2 := by
+  have hsq2 : (X %ₘ U) ^ 2 - X ^ 2 = ((X %ₘ U) + X) * ((X %ₘ U) - X) := by ring
+  rw [hsq2]
+  exact dvd_mul_of_dvd_left hrem ((X %ₘ U) - X)
+
+set_option maxHeartbeats 4000000 in
+/-- **Heartbeats raised**: even this fully generic, abstract statement hit
+the default ceiling during elaboration.
+
+**Generic remainder lemma used by the Mumford identity.**
 This isolates all polynomial algebra from the very large concrete expressions
 for `uRS`, `Epoly`, `Ypoly`, and `fAtX`, so elaboration does not repeatedly
-unfold those definitions while proving the identity. -/
+unfold those definitions while proving the identity.
+
+Assembled from `sq_mod_eq_of_dvd_step{1,2,3,4}` above (split out because the
+single monolithic proof was hitting the `maxHeartbeats` ceiling even at 4M —
+splitting isolates which step, if any, is actually the expensive one instead
+of hiding it inside one large `by` block). -/
 theorem sq_mod_eq_of_dvd
     {R : Type*} [CommRing R]
     {U E Y G f : Polynomial R}
@@ -173,51 +246,21 @@ theorem sq_mod_eq_of_dvd
     (hN : U ∣ E ^ 2 - f * Y ^ 2)
     (hInv : U ∣ Y * G - 1) :
     ((-E * G) %ₘ U) ^ 2 %ₘ U = f %ₘ U := by
-  -- Step 1: `U ∣ (Y*G)^2 - 1`, via the identity `(YG)²-1 = (YG-1)(YG+1)`
-  -- stated once as its own `have` so `ring` only normalizes this small
-  -- identity, not an unbounded goal produced by `convert`.
-  have hsq1 : (Y * G) ^ 2 - 1 = (Y * G - 1) * (Y * G + 1) := by ring
-  have hInvSq : U ∣ (Y * G) ^ 2 - 1 := by
-    rw [hsq1]; exact dvd_mul_of_dvd_left hInv (Y * G + 1)
-  clear hsq1
-  -- Step 2: `U ∣ (E*G)^2 - f`, via `N*G² + f*((YG)²-1) = (EG)²-f`.
-  have hNscaled : U ∣ (E ^ 2 - f * Y ^ 2) * G ^ 2 :=
-    dvd_mul_of_dvd_right hN (G ^ 2)
-  have hInvscaled : U ∣ f * ((Y * G) ^ 2 - 1) :=
-    dvd_mul_of_dvd_right hInvSq f
-  clear hInvSq hN hInv
-  have hid1 :
-      (E ^ 2 - f * Y ^ 2) * G ^ 2 + f * ((Y * G) ^ 2 - 1) = (E * G) ^ 2 - f := by
-    ring
-  have hEGf : U ∣ (E * G) ^ 2 - f := by
-    rw [← hid1]; exact dvd_add hNscaled hInvscaled
-  clear hid1 hNscaled hInvscaled
-  -- Step 3: `U ∣ (-E*G %ₘ U) - (-E*G)`, from the division algorithm identity.
-  have hrem : U ∣ ((-E * G) %ₘ U) - (-E * G) := by
-    -- `Polynomial.dvd_modByMonic_sub` does not exist under that name in
-    -- Mathlib (confirmed by search, not just absence from memory) — using
-    -- the roadmap's own documented fallback instead: `Polynomial.
-    -- modByMonic_eq_sub_mul_div` gives `p %ₘ q = p - q * (p /ₘ q)`, so
-    -- `p %ₘ q - p = -(q * (p /ₘ q))`, divisible by `q`.
-    rw [Polynomial.modByMonic_eq_sub_mul_div (-E * G) hU]
-    exact ⟨-((-E * G) /ₘ U), by ring⟩
-  -- Step 4: `U ∣ (-E*G %ₘ U)^2 - (E*G)^2`, via difference of squares.
-  have hsq2 :
-      ((-E * G) %ₘ U) ^ 2 - (E * G) ^ 2 =
-        (((-E * G) %ₘ U) + E * G) * (((-E * G) %ₘ U) - E * G) := by
-    ring
-  have hvrem : U ∣ ((-E * G) %ₘ U) ^ 2 - (E * G) ^ 2 := by
-    rw [hsq2]
-    exact dvd_mul_of_dvd_left hrem (((-E * G) %ₘ U) - E * G)
-  clear hsq2 hrem
-  -- Step 5: combine steps 2 and 4 to get `U ∣ (-E*G %ₘ U)^2 - f`.
+  have hInvSq := sq_mod_eq_of_dvd_step1 hInv
+  have hEGf := sq_mod_eq_of_dvd_step2 hN hInvSq
+  have hrem := sq_mod_eq_of_dvd_step3 (-E * G) hU
+  have hvrem := sq_mod_eq_of_dvd_step4 (-E * G) hrem
+  -- `hvrem : U ∣ ((-E*G) %ₘ U)^2 - (-E*G)^2`; bridge `(-E*G)^2 = (E*G)^2`
+  -- to match `hEGf`'s `(E*G)^2` before combining (not syntactically equal,
+  -- just `ring`-equal, so the two `have`s don't unify on the nose).
+  have hnegsq : (-E * G) ^ 2 = (E * G) ^ 2 := by ring
+  rw [hnegsq] at hvrem
   have hid2 :
       ((-E * G) %ₘ U) ^ 2 - (E * G) ^ 2 + ((E * G) ^ 2 - f) =
         ((-E * G) %ₘ U) ^ 2 - f := by
     ring
   have hvf : U ∣ ((-E * G) %ₘ U) ^ 2 - f := by
     rw [← hid2]; exact dvd_add hvrem hEGf
-  clear hid2 hvrem hEGf
   exact Polynomial.modByMonic_eq_of_dvd_sub hU hvf
 
 end GenericRemainderLemma
