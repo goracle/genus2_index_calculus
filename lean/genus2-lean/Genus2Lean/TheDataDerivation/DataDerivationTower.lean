@@ -205,6 +205,7 @@ theorem factIrreducible_K2_proved (c0 c1 c2 c3 c4 : F p) :
   sorry -- ChatGPT prompt below; needs the quadratic-extension square criterion
         -- sketched above, not just fAtT_p_not_isSquare re-applied.
 
+/- Keep this instance unconditional: downstream files require `K2` to elaborate as a field. -/
 instance factIrreducible_K2 (c0 c1 c2 c3 c4 : F p) :
     Fact (Irreducible
       (X ^ 2 - C (algebraMap (K0 p) (K1 p c0 c1 c2 c3 c4)
