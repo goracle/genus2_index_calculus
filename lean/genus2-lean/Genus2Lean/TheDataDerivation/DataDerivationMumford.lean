@@ -34,7 +34,10 @@ namespace TheDataDerivation
 
 open Polynomial
 
-variable (p : ℕ) [hp : Fact (Nat.Prime p)]
+-- `hp2 : Fact (p ≠ 2)` — needed transitively: this file's proofs work over
+-- `K2 p ...`, whose `Field` instance (`factIrreducible_K2` in
+-- `DataDerivationTower.lean`) now requires odd characteristic.
+variable (p : ℕ) [hp : Fact (Nat.Prime p)] [hp2 : Fact (p ≠ 2)]
 
 /-! ## Item 7 (§4.2 / §4.0 step 6): `u_RS`, then `v_RS` via the mod-`u_RS` inverse
 

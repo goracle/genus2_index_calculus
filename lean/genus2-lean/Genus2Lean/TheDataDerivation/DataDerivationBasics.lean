@@ -496,6 +496,500 @@ theorem fAtT_i_not_isSquare
       rw [hcast, hcast, ← hE_key]
     rw [hgoal0, hz, map_mul]
 
+set_option maxHeartbeats 1000000 in
+/-- **Product non-square, the fact `factIrreducible_K2` needs.** `f`
+evaluated at BOTH transcendentals `X 0` and `X 1` at once — i.e. `fAtT_0 *
+fAtT_1` — is not a square in `K0 = FractionRing (MvPolynomial (Fin 2) K)`,
+for `f` of odd degree, no further hypothesis on `f`'s coefficients needed
+(same unconditional-in-the-coefficients flavor as `fAtT_not_isSquare`
+itself). This is the "genuinely two-variable" fact flagged as open in
+`factIrreducible_K2_proved`'s docstring in `DataDerivationTower.lean`
+(ChatGPT-assisted, second round).
+
+**Route.** Reuses `fAtT_not_isSquare`'s exact transport machinery
+(`e := MvPolynomial.finSuccEquiv K 1`, `φ`, `Φ`), but this time tracks
+BOTH `e (f.eval₂ ... (X 0))` (`↦ f.map (algebraMap K A)`, as before) and
+`e (f.eval₂ ... (X 1))` (`↦ Polynomial.C (f.eval₂ (algebraMap K A) (X 0))`
+— since `finSuccEquiv` sends `X 1 ↦ Polynomial.C (X 0 : A)`, evaluating `f`
+AT `X 1` becomes evaluating `f` at the CONSTANT `Polynomial.C (X 0 : A)`,
+landing entirely inside the coefficient ring `A`, not touching `Polynomial
+A`'s own variable). Composing with `Φ`, the product `Φ(fAtT_0) * Φ(fAtT_1)`
+becomes `algebraMap (Polynomial A') T (f.map (algebraMap K A'))` times the
+CONSTANT `algebraMap A' T (f.eval₂ (algebraMap K A) (X 0) |> algebraMap A A')`
+(`A' := FractionRing A`) — a polynomial of odd `natDegree` (`f.map`, by the
+same `natDegree_map_eq_of_injective` argument as `fAtT_not_isSquare`) times
+a NONZERO constant. `RatFunc.intDegree` is additive under `*` and a nonzero
+constant has `intDegree = 0` (`RatFunc.intDegree_C`), so the product still
+has ODD `intDegree` — hence still not a square, by the same
+`RatFunc.intDegree`-parity argument as the single-transcendental case,
+just with an extra even (`= 0`) contribution folded in. The constant
+factor's nonvanishing comes from `fAtT_i_not_isSquare` itself (`i = 1`):
+if `Φ(fAtT_1)`, i.e. that constant, were `0`, `Φ`'s injectivity would force
+`fAtT_1 = 0`, which is trivially a square (`0 = 0^2`), contradicting
+`fAtT_i_not_isSquare f hf_deg hf_ne 1`. -/
+theorem fAtT_prod_not_isSquare
+    (f : Polynomial K) (hf_deg : Odd f.natDegree) (hf_ne : f ≠ 0) :
+    ¬ IsSquare
+      ((f.eval₂ (algebraMap K (FractionRing (MvPolynomial (Fin 2) K)))
+          (algebraMap (MvPolynomial (Fin 2) K) (FractionRing (MvPolynomial (Fin 2) K))
+            (MvPolynomial.X (0 : Fin 2)))) *
+        (f.eval₂ (algebraMap K (FractionRing (MvPolynomial (Fin 2) K)))
+          (algebraMap (MvPolynomial (Fin 2) K) (FractionRing (MvPolynomial (Fin 2) K))
+            (MvPolynomial.X (1 : Fin 2)))) :
+        FractionRing (MvPolynomial (Fin 2) K)) := by
+  let A := MvPolynomial (Fin 1) K
+  let A' := FractionRing A
+  let T := RatFunc A'
+  let B := MvPolynomial (Fin 2) K
+  let K0 := FractionRing B
+
+  let e : B ≃ₐ[K] Polynomial A := MvPolynomial.finSuccEquiv K 1
+  let cmap : A →+* A' := algebraMap A A'
+  have hcmap_inj : Function.Injective cmap := IsFractionRing.injective A A'
+
+  let polyToT : Polynomial A' →+* T := algebraMap (Polynomial A') T
+  let φ : B →+* T := polyToT.comp ((Polynomial.mapRingHom cmap).comp e.toRingEquiv.toRingHom)
+  have hφ_inj : Function.Injective φ := by
+    intro x y hxy
+    apply e.injective
+    apply Polynomial.map_injective cmap hcmap_inj
+    apply IsFractionRing.injective (Polynomial A') T
+    exact hxy
+  let Φ : K0 →+* T := IsFractionRing.lift hφ_inj
+  have hΦ_alg : ∀ b : B, Φ (algebraMap B K0 b) = φ b := fun b =>
+    IsFractionRing.lift_algebraMap hφ_inj b
+  -- We only need injectivity of the base map `φ`; `IsFractionRing.lift` is
+  -- used below through its defining algebraMap compatibility.
+  -- `e (X 0) = X`, `e (X 1) = C (X 0 : A)`.
+  have he_X0 : e (MvPolynomial.X (0 : Fin 2)) = Polynomial.X := by
+    simpa only [e] using (MvPolynomial.finSuccEquiv_X_zero (R := K) (n := 1))
+  have he_X1 : e (MvPolynomial.X (Fin.succ (0 : Fin 1))) =
+      Polynomial.C (MvPolynomial.X (0 : Fin 1)) := by
+    simpa only [e] using
+      (MvPolynomial.finSuccEquiv_X_succ (R := K) (n := 1) (j := (0 : Fin 1)))
+  have he_X1' : e (MvPolynomial.X (1 : Fin 2)) =
+      Polynomial.C (MvPolynomial.X (0 : Fin 1)) := by
+    simpa using he_X1
+
+  have he_eval0 : e (f.eval₂ (algebraMap K B) (MvPolynomial.X (0 : Fin 2))) =
+      f.map (algebraMap K A) := by
+    have hhom : e.toAlgHom.comp (Polynomial.aeval (MvPolynomial.X (0 : Fin 2))) =
+        Polynomial.aeval (R := K) (A := Polynomial A) Polynomial.X := by
+      apply Polynomial.algHom_ext
+      show e (Polynomial.aeval (MvPolynomial.X (0 : Fin 2)) Polynomial.X) = _
+      rw [Polynomial.aeval_X, he_X0, Polynomial.aeval_X]
+    have h0 : f.eval₂ (algebraMap K B) (MvPolynomial.X (0 : Fin 2)) =
+        Polynomial.aeval (MvPolynomial.X (0 : Fin 2)) f := (Polynomial.aeval_def _ f).symm
+    rw [h0]
+    have h := congrArg (fun q => q f) hhom
+    calc
+      e (Polynomial.aeval (MvPolynomial.X (0 : Fin 2)) f) =
+          Polynomial.aeval Polynomial.X f := by
+            simpa [AlgHom.comp_apply] using h
+      _ = f.map (algebraMap K A) := by
+        exact Polynomial.aeval_X_left_eq_map f
+
+  have he_eval1 : e (f.eval₂ (algebraMap K B) (MvPolynomial.X (1 : Fin 2))) =
+      Polynomial.C (f.eval₂ (algebraMap K A) (MvPolynomial.X (0 : Fin 1))) := by
+    have hhom : e.toAlgHom.comp (Polynomial.aeval (MvPolynomial.X (1 : Fin 2))) =
+        Polynomial.aeval (Polynomial.C (MvPolynomial.X (0 : Fin 1)) : Polynomial A) := by
+      apply Polynomial.algHom_ext
+      show e (Polynomial.aeval (MvPolynomial.X (1 : Fin 2)) Polynomial.X) = _
+      rw [Polynomial.aeval_X, he_X1', Polynomial.aeval_X]
+    have h1 : f.eval₂ (algebraMap K B) (MvPolynomial.X (1 : Fin 2)) =
+        Polynomial.aeval (MvPolynomial.X (1 : Fin 2)) f := (Polynomial.aeval_def _ f).symm
+    rw [h1]
+    have heq := congrArg (fun q => q f) hhom
+    calc
+      e (Polynomial.aeval (MvPolynomial.X (1 : Fin 2)) f) =
+          Polynomial.aeval (Polynomial.C (MvPolynomial.X (0 : Fin 1)) : Polynomial A) f := by
+            simpa [AlgHom.comp_apply] using heq
+      _ = Polynomial.C (f.eval₂ (algebraMap K A) (MvPolynomial.X (0 : Fin 1))) := by
+        rw [Polynomial.aeval_def]
+        have hC : (Polynomial.C : A →+* Polynomial A).comp (algebraMap K A) =
+            algebraMap K (Polynomial A) := by
+          ext x
+          simpa using (IsScalarTower.algebraMap_apply K A (Polynomial A) x)
+        symm
+        rw [Polynomial.hom_eval₂, hC]
+
+  set fAtT0 : K0 :=
+      algebraMap B K0 (f.eval₂ (algebraMap K B) (MvPolynomial.X (0 : Fin 2))) with hfAtT0_def
+  set fAtT1 : K0 :=
+      algebraMap B K0 (f.eval₂ (algebraMap K B) (MvPolynomial.X (1 : Fin 2))) with hfAtT1_def
+
+  have hΦ_fAtT0 : Φ fAtT0 = algebraMap (Polynomial A') T (f.map (algebraMap K A')) := by
+    rw [hfAtT0_def, hΦ_alg]
+    show polyToT (Polynomial.mapRingHom cmap
+        (e (f.eval₂ (algebraMap K B) (MvPolynomial.X (0 : Fin 2))))) = _
+    rw [he_eval0]
+    show algebraMap (Polynomial A') T (Polynomial.map cmap (f.map (algebraMap K A))) = _
+    rw [Polynomial.map_map]
+    have h_comp : cmap.comp (algebraMap K A) = algebraMap K A' := by
+      ext x; exact IsScalarTower.algebraMap_apply K A A' x
+    rw [h_comp]
+
+  have hΦ_fAtT1 : Φ fAtT1 =
+      algebraMap (Polynomial A') T
+        (Polynomial.C (algebraMap A A' (f.eval₂ (algebraMap K A) (MvPolynomial.X (0 : Fin 1))))) := by
+    rw [hfAtT1_def, hΦ_alg]
+    show polyToT (Polynomial.mapRingHom cmap
+        (e (f.eval₂ (algebraMap K B) (MvPolynomial.X (1 : Fin 2))))) = _
+    rw [he_eval1]
+    show algebraMap (Polynomial A') T
+        (Polynomial.map cmap (Polynomial.C (f.eval₂ (algebraMap K A) (MvPolynomial.X (0 : Fin 1))))) = _
+    rw [Polynomial.map_C]
+
+  letI : Field A' := IsFractionRing.toField A
+  have h_inj_KA' : Function.Injective (algebraMap K A') := RingHom.injective _
+  have hf_map_deg : Odd (f.map (algebraMap K A')).natDegree := by
+    rw [Polynomial.natDegree_map_eq_of_injective h_inj_KA']
+    exact hf_deg
+  have hf_map_ne : f.map (algebraMap K A') ≠ 0 :=
+    (Polynomial.map_ne_zero_iff h_inj_KA').mpr hf_ne
+
+  have hfAtT1_ne : fAtT1 ≠ 0 := by
+    intro h
+    have h_eval_zero : f.eval₂ (algebraMap K B) (MvPolynomial.X (1 : Fin 2)) = 0 := by
+      apply IsFractionRing.injective B K0
+      simpa [hfAtT1_def] using h
+    have h_eval_zero_K0 :
+        f.eval₂ (algebraMap K K0)
+          (algebraMap B K0 (MvPolynomial.X (1 : Fin 2))) = 0 := by
+      have himage :
+          algebraMap B K0
+              (f.eval₂ (algebraMap K B) (MvPolynomial.X (1 : Fin 2))) = 0 := by
+        simpa using congrArg (algebraMap B K0) h_eval_zero
+      have htransport :
+          algebraMap B K0
+              (f.eval₂ (algebraMap K B) (MvPolynomial.X (1 : Fin 2))) =
+            f.eval₂ (algebraMap K K0)
+              (algebraMap B K0 (MvPolynomial.X (1 : Fin 2))) := by
+        have hcomp :
+            (algebraMap B K0).comp (algebraMap K B) = algebraMap K K0 := by
+          ext x
+          exact IsScalarTower.algebraMap_apply K B K0 x
+        have h := Polynomial.hom_eval₂ f (algebraMap K B) (algebraMap B K0)
+          (MvPolynomial.X (1 : Fin 2))
+        simpa [hcomp] using h
+      exact htransport.symm.trans himage
+    have hnot := fAtT_i_not_isSquare f hf_deg hf_ne (1 : Fin 2)
+    apply hnot
+    refine ⟨0, ?_⟩
+    simpa [h_eval_zero_K0]
+
+  have hΦfAtT1_ne : Φ fAtT1 ≠ 0 := by
+    intro h
+    apply hfAtT1_ne
+    apply RingHom.injective Φ
+    simpa using h
+
+  have hconst_ne : algebraMap A A' (f.eval₂ (algebraMap K A) (MvPolynomial.X (0 : Fin 1))) ≠ 0 := by
+    intro h
+    apply hΦfAtT1_ne
+    calc
+      Φ fAtT1 = algebraMap (Polynomial A') T
+          (Polynomial.C (algebraMap A A' (f.eval₂ (algebraMap K A) (MvPolynomial.X (0 : Fin 1))))) := hΦ_fAtT1
+      _ = 0 := by simp [h]
+
+  have hnot_f_map : ¬ IsSquare (algebraMap (Polynomial A') T (f.map (algebraMap K A'))) :=
+    RatFunc.not_isSquare_algebraMap_of_odd_natDegree
+      (f.map (algebraMap K A')) hf_map_deg hf_map_ne
+
+  have hprod_not : ¬ IsSquare (Φ fAtT0 * Φ fAtT1) := by
+    rw [hΦ_fAtT0, hΦ_fAtT1]
+    intro hs
+    obtain ⟨z, hz⟩ := hs
+
+    have hF_ne :
+        algebraMap (Polynomial A') T (f.map (algebraMap K A')) ≠ 0 := by
+      exact RatFunc.algebraMap_ne_zero hf_map_ne
+
+    have hC_poly_ne :
+        Polynomial.C
+          (algebraMap A A' (f.eval₂ (algebraMap K A) (MvPolynomial.X (0 : Fin 1)))) ≠ 0 :=
+      (Polynomial.C_ne_zero.mpr hconst_ne)
+
+    have hC_ne :
+        algebraMap (Polynomial A') T
+            (Polynomial.C
+              (algebraMap A A' (f.eval₂ (algebraMap K A) (MvPolynomial.X (0 : Fin 1))))) ≠ 0 := by
+      exact RatFunc.algebraMap_ne_zero hC_poly_ne
+
+    have hz0 : z ≠ 0 := by
+      intro hz'
+      rw [hz', zero_mul] at hz
+      rcases mul_eq_zero.mp hz with hF | hC
+      · exact hnot_f_map ⟨0, by simpa [hF]⟩
+      · exact hC_ne hC
+
+    have hdeg :
+        ((f.map (algebraMap K A')).natDegree : ℤ) = z.intDegree + z.intDegree := by
+      calc
+        ((f.map (algebraMap K A')).natDegree : ℤ) =
+            (algebraMap (Polynomial A') T (f.map (algebraMap K A'))).intDegree := by
+              symm
+              exact RatFunc.intDegree_polynomial
+        _ = (algebraMap (Polynomial A') T
+              (Polynomial.C
+                (algebraMap A A' (f.eval₂ (algebraMap K A) (MvPolynomial.X (0 : Fin 1))))) *
+            algebraMap (Polynomial A') T (f.map (algebraMap K A'))).intDegree := by
+              have hCdeg :
+                  (algebraMap (Polynomial A') T
+                    (Polynomial.C
+                      (algebraMap A A' (f.eval₂ (algebraMap K A) (MvPolynomial.X (0 : Fin 1)))))).intDegree = 0 := by
+                rw [RatFunc.intDegree_polynomial]
+                simp [hconst_ne]
+              rw [RatFunc.intDegree_mul hC_ne hF_ne, hCdeg, zero_add]
+        _ = (algebraMap (Polynomial A') T (f.map (algebraMap K A')) *
+              algebraMap (Polynomial A') T
+                (Polynomial.C
+                  (algebraMap A A' (f.eval₂ (algebraMap K A) (MvPolynomial.X (0 : Fin 1)))))).intDegree := by
+              rw [mul_comm]
+        _ = (z * z).intDegree := by
+              rw [show
+                algebraMap (Polynomial A') T (f.map (algebraMap K A')) *
+                    algebraMap (Polynomial A') T
+                      (Polynomial.C
+                        (algebraMap A A' (f.eval₂ (algebraMap K A) (MvPolynomial.X (0 : Fin 1))))) =
+                    z * z by simpa [mul_comm] using hz]
+        _ = z.intDegree + z.intDegree := RatFunc.intDegree_mul hz0 hz0
+
+    rcases hf_map_deg with ⟨k, hk⟩
+    have hk' : ((f.map (algebraMap K A')).natDegree : ℤ) =
+        2 * (k : ℤ) + 1 := by
+      exact_mod_cast hk
+    omega
+
+
+  intro hs
+  apply hprod_not
+  obtain ⟨w, hw⟩ := hs
+  refine ⟨Φ w, ?_⟩
+  have h_eval0_K0 :
+      f.eval₂ (algebraMap K K0)
+          (algebraMap B K0 (MvPolynomial.X (0 : Fin 2))) =
+        fAtT0 := by
+    rw [hfAtT0_def]
+    symm
+    have htransport := Polynomial.hom_eval₂ f (algebraMap K B)
+      (algebraMap B K0) (MvPolynomial.X (0 : Fin 2))
+    have hcomp : (algebraMap B K0).comp (algebraMap K B) = algebraMap K K0 := by
+      ext x
+      exact IsScalarTower.algebraMap_apply K B K0 x
+    rw [hcomp] at htransport
+    exact htransport
+  have h_eval1_K0 :
+      f.eval₂ (algebraMap K K0)
+          (algebraMap B K0 (MvPolynomial.X (1 : Fin 2))) =
+        fAtT1 := by
+    rw [hfAtT1_def]
+    symm
+    have htransport := Polynomial.hom_eval₂ f (algebraMap K B)
+      (algebraMap B K0) (MvPolynomial.X (1 : Fin 2))
+    have hcomp : (algebraMap B K0).comp (algebraMap K B) = algebraMap K K0 := by
+      ext x
+      exact IsScalarTower.algebraMap_apply K B K0 x
+    rw [hcomp] at htransport
+    exact htransport
+  have hw' : fAtT0 * fAtT1 = w * w := by
+    rw [← h_eval0_K0, ← h_eval1_K0]
+    exact hw
+  calc Φ fAtT0 * Φ fAtT1 = Φ (fAtT0 * fAtT1) := (map_mul Φ fAtT0 fAtT1).symm
+    _ = Φ (w * w) := by rw [hw']
+    _ = Φ w * Φ w := map_mul Φ w w
+
+/-- **Quadratic-extension square criterion (ChatGPT-assisted, degree-1-
+normal-form route).** For a field `K` of characteristic ≠ 2 and `d : K` a
+non-square, `L := AdjoinRoot (X^2 - C d)` is a genuine degree-2 extension
+of `K`; this is the standard fact that an element `a : K` becomes a square
+in `L` only if `a` or `a*d` was already a square in `K`. Contrapositive
+form (the one actually used downstream): if neither `a` nor `a*d` is a
+square in `K`, then `algebraMap K L a` is not a square in `L`.
+
+**Proof idea.** Every `z : L` is `AdjoinRoot.mk _ g` for some `g : K[X]`
+(`AdjoinRoot.mk_surjective`); replacing `g` by `g %ₘ (X^2 - C d)` doesn't
+change `mk _ g` (`AdjoinRoot.mk_eq_mk` plus `modByMonic_add_div`), and the
+remainder has `natDegree ≤ 1` (`natDegree_modByMonic_lt`), so by
+`Polynomial.exists_eq_X_add_C_of_natDegree_le_one` it has the shape
+`C y * X + C x` for some `x y : K` — i.e. every `z : L` is `of x + y • root`
+in the more familiar `x + y*w` notation, with `w := AdjoinRoot.root`
+satisfying `w^2 = d` (`AdjoinRoot.mk_eq_zero`/`X^2 - C d` vanishing at
+`root`). Squaring `x + y*w` and comparing `w`-coefficients (`2xy`, using
+`(2:K) ≠ 0` from `hchar`) forces `x = 0 ∨ y = 0`: the `y = 0` case gives
+`a = x^2` (contradicting `ha`), the `x = 0` case gives `a = d*y^2`, i.e.
+`a*d = (d*y)^2` (contradicting `hda`). Either way, contradiction — so
+`algebraMap K L a` cannot be a square. -/
+theorem quadratic_extension_square_criterion {K : Type*} [Field K]
+    (hchar : (2 : K) ≠ 0) {d a : K} (ha : ¬ IsSquare a) (hda : ¬ IsSquare (a * d)) :
+    ¬ IsSquare (algebraMap K (AdjoinRoot (X ^ 2 - C d : Polynomial K)) a) := by
+  set L := AdjoinRoot (X ^ 2 - C d : Polynomial K)
+  set U : Polynomial K := X ^ 2 - C d with hU_def
+  have hU_monic : U.Monic := by
+    rw [hU_def]
+    have hdeg : (- C d : Polynomial K).degree < (2 : ℕ) := by compute_degree!
+    have := Polynomial.monic_X_pow_add (R := K) (n := 2) hdeg
+    simpa [sub_eq_add_neg] using this
+  have hU_ne_one : U ≠ 1 := by
+    intro h
+    have hdeg1 : U.natDegree = 0 := by rw [h]; simp
+    have hdeg2 : U.natDegree = 2 := by rw [hU_def]; compute_degree!
+    omega
+  rintro ⟨z, hz⟩
+  obtain ⟨g, rfl⟩ := AdjoinRoot.mk_surjective z
+  set r := g %ₘ U with hr_def
+  have hmk_eq : AdjoinRoot.mk U g = AdjoinRoot.mk U r := by
+    symm
+    simpa [r, hr_def] using
+      (AdjoinRoot.mk_leftInverse hU_monic (AdjoinRoot.mk U g))
+  have hr_deg : r.natDegree < 2 := by
+    have h := Polynomial.natDegree_modByMonic_lt g hU_monic hU_ne_one
+    simpa [r, hU_def] using h
+    -- (`hU_def`'s `natDegree` matches the `2` computed by `compute_degree!` above)
+  have hr_natDegree_le_one : r.natDegree ≤ 1 := by omega
+  obtain ⟨y, x, hxy⟩ := Polynomial.exists_eq_X_add_C_of_natDegree_le_one hr_natDegree_le_one
+  -- `AdjoinRoot.mk U r = of x + y • root U` in the `C y * X + C x` shape `hxy` gives.
+  have hroot_sq : (AdjoinRoot.root U) ^ 2 = AdjoinRoot.of U d := by
+    have h0 : AdjoinRoot.mk U U = 0 := AdjoinRoot.mk_self
+    have hUexp : U = X ^ 2 - C d := hU_def
+    rw [hUexp, map_sub, map_pow] at h0
+    have : (AdjoinRoot.mk U X) ^ 2 = AdjoinRoot.mk U (C d) := by
+      have := sub_eq_zero.mp h0
+      simpa using this
+    simpa [AdjoinRoot.mk_X, AdjoinRoot.mk_C] using this
+  have hz' : AdjoinRoot.mk U g = AdjoinRoot.of U x + AdjoinRoot.of U y * AdjoinRoot.root U := by
+    rw [hmk_eq, hxy]
+    show AdjoinRoot.mk U (C y * X + C x) = _
+    rw [map_add, map_mul, AdjoinRoot.mk_C, AdjoinRoot.mk_C, AdjoinRoot.mk_X]
+    ring
+  rw [hz'] at hz
+  have hexpand :
+      (AdjoinRoot.of U x + AdjoinRoot.of U y * AdjoinRoot.root U) *
+        (AdjoinRoot.of U x + AdjoinRoot.of U y * AdjoinRoot.root U) =
+      AdjoinRoot.of U (x * x + y * y * d) +
+        AdjoinRoot.of U (2 * x * y) * AdjoinRoot.root U := by
+    have h0 :
+        (AdjoinRoot.of U x + AdjoinRoot.of U y * AdjoinRoot.root U) *
+          (AdjoinRoot.of U x + AdjoinRoot.of U y * AdjoinRoot.root U) =
+        AdjoinRoot.of U x * AdjoinRoot.of U x +
+          AdjoinRoot.of U x * AdjoinRoot.of U y * AdjoinRoot.root U +
+          AdjoinRoot.of U y * AdjoinRoot.of U x * AdjoinRoot.root U +
+          AdjoinRoot.of U y * AdjoinRoot.of U y * (AdjoinRoot.root U) ^ 2 := by
+      ring
+    rw [h0, hroot_sq]
+    have hxx : AdjoinRoot.of U x * AdjoinRoot.of U x = AdjoinRoot.of U (x * x) := by
+      simpa using (map_mul (AdjoinRoot.of U) x x).symm
+    have hyy :
+        AdjoinRoot.of U y * AdjoinRoot.of U y * AdjoinRoot.of U d =
+          AdjoinRoot.of U (y * y * d) := by
+      calc
+        AdjoinRoot.of U y * AdjoinRoot.of U y * AdjoinRoot.of U d =
+            AdjoinRoot.of U (y * y) * AdjoinRoot.of U d := by
+              rw [← map_mul]
+        _ = AdjoinRoot.of U (y * y * d) := by
+              rw [← map_mul]
+    have hxy' :
+        AdjoinRoot.of U x * AdjoinRoot.of U y +
+            AdjoinRoot.of U y * AdjoinRoot.of U x =
+          AdjoinRoot.of U (2 * x * y) := by
+      calc
+        AdjoinRoot.of U x * AdjoinRoot.of U y +
+            AdjoinRoot.of U y * AdjoinRoot.of U x =
+            AdjoinRoot.of U (x * y) + AdjoinRoot.of U (y * x) := by
+              rw [map_mul, map_mul]
+        _ = AdjoinRoot.of U (x * y + y * x) := by
+              rw [map_add]
+        _ = AdjoinRoot.of U (2 * x * y) := by
+              congr 1
+              ring
+    rw [hxx, hyy]
+    calc
+      AdjoinRoot.of U (x * x) +
+          AdjoinRoot.of U x * AdjoinRoot.of U y * AdjoinRoot.root U +
+          AdjoinRoot.of U y * AdjoinRoot.of U x * AdjoinRoot.root U +
+          AdjoinRoot.of U (y * y * d) =
+          AdjoinRoot.of U (x * x) +
+            (AdjoinRoot.of U x * AdjoinRoot.of U y +
+              AdjoinRoot.of U y * AdjoinRoot.of U x) * AdjoinRoot.root U +
+            AdjoinRoot.of U (y * y * d) := by ring
+      _ = AdjoinRoot.of U (x * x) +
+            AdjoinRoot.of U (2 * x * y) * AdjoinRoot.root U +
+            AdjoinRoot.of U (y * y * d) := by rw [hxy']
+      _ = (AdjoinRoot.of U (x * x) + AdjoinRoot.of U (y * y * d)) +
+            AdjoinRoot.of U (2 * x * y) * AdjoinRoot.root U := by ring
+      _ = AdjoinRoot.of U (x * x + y * y * d) +
+            AdjoinRoot.of U (2 * x * y) * AdjoinRoot.root U := by
+            rw [map_add]
+  rw [hexpand] at hz
+  -- `algebraMap K L a = AdjoinRoot.of U a` (`AdjoinRoot.algebraMap_eq`).
+  have haL : algebraMap K L a = AdjoinRoot.of U a := by
+    rw [show (algebraMap K L : K →+* L) = AdjoinRoot.of U from AdjoinRoot.algebraMap_eq U]
+  rw [haL] at hz
+  -- Compare `{1, root U}`-coordinates: `of` is injective (`U` monic, `natDegree ≥ 1`), and
+  -- `1, root U` are `K`-linearly independent, so `hz` forces `a = x*x + y*y*d` (the `1`
+  -- coefficient) AND `2*x*y = 0` (the `root`-coefficient) simultaneously. Rather than build
+  -- general linear-independence machinery, extract both facts directly via `AdjoinRoot.mk`'s
+  -- degree-≤1 normal form: apply `AdjoinRoot.mk_eq_mk`-style reasoning to `hz` restated as an
+  -- equality of `mk U` images of two degree-≤1 polynomials.
+  have hz_mk : AdjoinRoot.mk U (C a) =
+      AdjoinRoot.mk U (C (x * x + y * y * d) + C (2 * x * y) * X) := by
+    have hLHS : AdjoinRoot.of U a = AdjoinRoot.mk U (C a) := AdjoinRoot.mk_C a
+    have hRHS : AdjoinRoot.of U (x * x + y * y * d) +
+        AdjoinRoot.of U (2 * x * y) * AdjoinRoot.root U =
+        AdjoinRoot.mk U (C (x * x + y * y * d) + C (2 * x * y) * X) := by
+      calc
+        AdjoinRoot.of U (x * x + y * y * d) +
+            AdjoinRoot.of U (2 * x * y) * AdjoinRoot.root U =
+            AdjoinRoot.mk U (C (x * x + y * y * d)) +
+              AdjoinRoot.mk U (C (2 * x * y)) * AdjoinRoot.mk U X := by
+                rw [AdjoinRoot.mk_C, AdjoinRoot.mk_C, AdjoinRoot.mk_X]
+        _ = AdjoinRoot.mk U (C (x * x + y * y * d) + C (2 * x * y) * X) := by
+              calc
+                AdjoinRoot.mk U (C (x * x + y * y * d)) +
+                    AdjoinRoot.mk U (C (2 * x * y)) * AdjoinRoot.mk U X =
+                    AdjoinRoot.mk U (C (x * x + y * y * d)) +
+                      AdjoinRoot.mk U (C (2 * x * y) * X) := by rw [← map_mul]
+                _ = AdjoinRoot.mk U
+                    (C (x * x + y * y * d) + C (2 * x * y) * X) := by
+                    rw [← map_add]
+    rw [← hLHS, ← hRHS]
+    exact hz
+  rw [AdjoinRoot.mk_eq_mk] at hz_mk
+  -- `U ∣ (C a - (C (x*x+y*y*d) + C (2xy) * X))`; the divisor has `natDegree < 2 = U.natDegree`
+  -- unless it's zero (`Monic.not_dvd_of_natDegree_lt`), so it must be `0`, giving both
+  -- coefficient equalities by `Polynomial.ext_iff` at degrees `0` and `1`.
+  have hcoeff_diff_zero :
+      (C a - (C (x * x + y * y * d) + C (2 * x * y) * X) : Polynomial K) = 0 := by
+    by_contra hne
+    have hdeg_lt : (C a - (C (x * x + y * y * d) + C (2 * x * y) * X) :
+        Polynomial K).natDegree < U.natDegree := by
+      have hb : (C a - (C (x * x + y * y * d) + C (2 * x * y) * X) :
+          Polynomial K).natDegree ≤ 1 := by compute_degree!
+      have hUd2 : U.natDegree = 2 := by rw [hU_def]; compute_degree!
+      omega
+    exact (hU_monic.not_dvd_of_natDegree_lt hne hdeg_lt) hz_mk
+  have hcoeff0 : a = x * x + y * y * d := by
+    have h0 := congrArg (fun p => Polynomial.coeff p 0) hcoeff_diff_zero
+    exact sub_eq_zero.mp (by simpa using h0)
+  have hcoeff1 : (2 : K) * x * y = 0 := by
+    have h1 := congrArg (fun p => Polynomial.coeff p 1) hcoeff_diff_zero
+    simpa using h1
+  have hxy0 : x = 0 ∨ y = 0 := by
+    rcases mul_eq_zero.mp hcoeff1 with h | h
+    · rcases mul_eq_zero.mp h with h2 | hx
+      · exact absurd h2 hchar
+      · left; exact hx
+    · right; exact h
+  rcases hxy0 with hx0 | hy0
+  · apply hda
+    refine ⟨d * y, ?_⟩
+    rw [hcoeff0, hx0]
+    ring
+  · apply ha
+    refine ⟨x, ?_⟩
+    rw [hcoeff0, hy0]
+    ring
+
 end Irreducibility
 
 /-- **Bridge from `fAtT_i_not_isSquare`'s statement shape to `curvePoly`'s

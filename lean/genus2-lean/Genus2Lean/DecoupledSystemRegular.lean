@@ -339,7 +339,12 @@ structure SampleTarget (p : ℕ) [Fact (Nat.Prime p)] where
   v0 : F p
   v1 : F p
 
-variable [Fact (Nat.Prime p)]
+-- `Fact (p ≠ 2)` — needed transitively from here on: this section's
+-- definitions/theorems work over `TheDataDerivation.K2 p ...`, whose
+-- `Field` instance (`factIrreducible_K2`, `DataDerivationTower.lean`) now
+-- requires odd characteristic, matching this project's global "assume odd
+-- characteristic" convention.
+variable [Fact (Nat.Prime p)] [Fact (p ≠ 2)]
 
 /-- Extract `(x^0, x^1)` coefficients of a `Polynomial (K2 p ...)` value,
 run each through `towerToRdec sg`, and re-pair into the `(num0,den0,num1,

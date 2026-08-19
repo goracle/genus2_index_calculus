@@ -60,7 +60,10 @@ open Polynomial
 -- arithmetic weight, not a substitute for the opacity-boundary work.
 set_option maxHeartbeats 2000000
 
-variable (p : ℕ) [hp : Fact (Nat.Prime p)]
+-- `hp2 : Fact (p ≠ 2)` — needed transitively: this file's proofs work over
+-- `K2 p ...`, whose `Field` instance (`factIrreducible_K2` in
+-- `DataDerivationTower.lean`) now requires odd characteristic.
+variable (p : ℕ) [hp : Fact (Nat.Prime p)] [hp2 : Fact (p ≠ 2)]
 
 /-! ## Item 4 (§4.2): the `4×4` matrix `A` and `rhs`
 
