@@ -1270,40 +1270,10 @@ Everything above reduces to two facts not yet proved anywhere in this
 project (beyond `uRS_monic`, already done, and `regular_of_linear_elim`/
 `regular_of_norm_eliminate`, already scaffolded above): -/
 
-/-- **Gap 1 (anchor-variable peeling).** Each curve relation's coefficient
-polynomial `c0 + c1*a_i + c2*a_i^2 + c3*a_i^3 + c4*a_i^4 + a_i^5` (the thing
-subtracted from `wa_i^2` in `curveA1`/etc., §3), viewed after peeling only
-`a_i` itself (not yet any `w`-variable), is monic of degree 5 in `a_i` --
-IMMEDIATE from `c0,...,c4` being genuinely lower-order terms (`a_i^5`'s own
-coefficient is literally `1`, no division needed, unlike `uRS`'s
-leading-coefficient normalization). Stated here for one anchor variable
-`x : Idx` and its curve-coefficient polynomial `q : Rdec p` abstractly
-(rather than specialized four times to `a1,a2,b1,b2`) so the same lemma
-serves all four calls; `hx` records which variable `q` is monic-of-degree-5
-in, playing the role `curveA1`'s own literal shape would play once unfolded.
-Genuinely provable outright (not just plausible) once someone unfolds
-`curveA1`'s coefficient blob and matches it against
-`Polynomial.Monic`/`MvPolynomial`'s single-variable-degree API -- flagged
-as the SECOND-easiest remaining piece after the curve relations' own
-`wa_i`-monicity (`Gap 1` is one level "under" that, needed only once
-`peelEquiv` is iterated a second time to peel `a_i` itself out of the
-coefficient ring the first peel produced). -/
--- `hq` is a placeholder standing in for "`q` is `a_i`'s curve-coefficient
--- polynomial, in the shape §3 builds it" -- see the TODO immediately below
--- for the real statement this should become.
-theorem curveCoeffRegular (x : Idx) (q : Rdec p) (hq : True) :
-    True := by
-  trivial
--- TODO (Gap 1, real statement): after `peelEquiv p x`, `q`'s image in
--- `Polynomial (MvPolynomial {v // v ≠ x} (F p))` is `Polynomial.Monic` of
--- natDegree 5 -- prove via `Polynomial.monic_X_pow_add`-style reasoning on
--- the explicit sum `C c0 + C c1 * X + ... + X^5` (as a `Polynomial` in the
--- peeled variable, not an `MvPolynomial` sum), then transport through
--- `isRegular_of_monic_peel` (§5bis-0 below) to get `IsSMulRegular (Rdec p)`
--- for the FULL curve relation (`wa_i^2 - q`, peeling `wa_i` first via the
--- monic-degree-2 argument already sketched above, THEN `a_i` via this
--- lemma) -- two peels compose via `regular_linear_of_regular_coeff`-style
--- degree induction, not yet spelled out as its own combinator here.
+-- Real statement and proof moved below `peelEquivGen`/`peelEquiv` and
+-- Layer 1 (`Polynomial.isSMulRegular_of_leadingCoeff_isSMulRegular`), §5bis-0/
+-- §5bis-0a, since the correct statement needs both: `curveCoeffRegular` is
+-- defined right after Layer 1 below, no longer a `True`-stub here.
 
 set_option maxHeartbeats 1000000 in
 /-- **Gap 2 (the actual gcd/leading-coefficient tracking, the heart of the
@@ -1969,20 +1939,247 @@ regular-leading-coefficient case) needed for both the curve relations and
 (later, once the closed-form `Fu_cross`/`Fv_cross` polynomials are
 available concretely) the cross-generators.
 
-Peel variable `x : Idx` out of `Rdec p`, landing on
+ **Generic version of `peelEquiv`, over any `DecidableEq` variable type
+`σ`** (not just `Idx`), so the same peeling construction can be applied a
+SECOND time to the coefficient ring `MvPolynomial {v : Idx // v ≠ x} (F p)`
+`peelEquiv` itself produces -- needed by `curveCoeffRegular` below, which
+peels an anchor variable `a_i` out of that once-already-peeled ring. Same
+construction as `peelEquiv`, just with `Idx` generalized to `σ`. -/
+noncomputable def peelEquivGen {σ : Type*} [DecidableEq σ] (x : σ) :
+    MvPolynomial σ (F p) ≃ₐ[F p] Polynomial (MvPolynomial {v : σ // v ≠ x} (F p)) :=
+  (MvPolynomial.renameEquiv (F p)
+      (((Equiv.optionSubtype x).symm
+          (Equiv.refl {v : σ // v ≠ x})).val.symm : σ ≃ Option {v : σ // v ≠ x})).trans
+    (MvPolynomial.optionEquivLeft (F p) {v : σ // v ≠ x})
+
+/-- Peel variable `x : Idx` out of `Rdec p`, landing on
 `Polynomial (MvPolynomial {v : Idx // v ≠ x} (F p))` -- the `Idx`-specific
 analogue of `MvPolynomial.finSuccEquiv`, built directly from
 `MvPolynomial.renameEquiv` (with a hand-built `Idx ≃ Option {v // v ≠ x}`)
 composed with `MvPolynomial.optionEquivLeft` (the same combinator already
 used successfully in `regular_of_linear_elim` above, applied here to a
-concrete finite `σ := Idx` rather than a generic `Option τ`). -/
-noncomputable def peelEquiv (p : ℕ) (x : Idx) :
+concrete finite `σ := Idx` rather than a generic `Option τ`). Now a trivial
+specialization of `peelEquivGen` at `σ := Idx` (kept as its own `def`,
+rather than inlined at call sites, since `Rdec p` is definitionally
+`MvPolynomial Idx (F p)` and callers below already refer to `peelEquiv`
+by name). **Does not re-declare `p` in its OWN explicit binder list**
+(no literal `(p : ℕ)` written here) -- but since its type mentions `p`
+(`Rdec p`, `F p`), Lean auto-includes the ambient section variable `p`
+(and its `Fact (Nat.Prime p)`/`Fact (p ≠ 2)` instances, in scope via
+`variable` above) as this `def`'s own first explicit argument anyway,
+exactly the same mechanism `theData`/`genList` above already rely on
+(their own signatures don't write `(p : ℕ)` either, yet every call site
+passes `theData p ...`/`genList p ...` explicitly). So the correct call
+form is `peelEquiv p x`, matching that convention -- NOT `peelEquiv x`.
+An earlier draft mistakenly added a REDUNDANT local `(p : ℕ)` binder
+here, which SHADOWED the auto-included section variable with a fresh
+`p` carrying no `Fact` instances, causing a "failed to synthesize
+instance" error one level down at `peelEquivGen`'s own `F p`; the fix
+was removing that redundant binder, not adding one. -/
+noncomputable def peelEquiv (x : Idx) :
     Rdec p ≃ₐ[F p] Polynomial (MvPolynomial {v : Idx // v ≠ x} (F p)) :=
-  (MvPolynomial.renameEquiv (F p)
-      (((Equiv.optionSubtype x).symm
-          (Equiv.refl {v : Idx // v ≠ x})).val.symm : Idx ≃ Option {v : Idx // v ≠ x})).trans
-    (MvPolynomial.optionEquivLeft (F p) {v : Idx // v ≠ x})
+  peelEquivGen p x
 
+/-! ### §5bis-0a. The leading-coefficient regularity lemma (Layer 1)
+
+Per ChatGPT consultation (`chatgpt_prompt_regularseq_peel_chain.md`): the
+right primitive for turning "regular after peeling" into "regular before
+peeling" is NOT two separate lemmas (one for `Monic`, one for the linear
+`c - X*d` shape) but a single generic fact about `Polynomial A` for an
+arbitrary `CommRing A` (no domain hypothesis) -- `Polynomial.Monic.isRegular`
+and the linear case both become one-line corollaries.
+
+ChatGPT's own sketch used `Polynomial.leadingCoeff_mul` (`(p*q).leadingCoeff
+= p.leadingCoeff * q.leadingCoeff`) directly, but that lemma needs
+`[NoZeroDivisors R]` in Mathlib (confirmed by search: mathlib3/4's
+`leadingCoeff_mul` docstring requires it) -- exactly the hypothesis NOT
+available for our intermediate quotient rings `A` (a coefficient ring
+after peeling some but not all variables need not be a domain, even though
+`Rdec p` itself is). So the proof below goes through the definition of
+`IsSMulRegular` (injectivity of `c • ·`) and `Polynomial.natDegree_smul_of_smul_regular`/
+`Polynomial.leadingCoeff_smul_of_smul_regular` instead, which only need
+`IsSMulRegular`, matching exactly what we have to work with.
+
+Proof idea (`f.leadingCoeff` regular ⟹ `f` regular, as an `IsSMulRegular
+(Polynomial A) f` statement acting on `Polynomial A` itself via
+multiplication): suppose `f * g = 0`. Looking at the top coefficient of
+this product, `(f*g).coeff (f.natDegree + g.natDegree) = f.leadingCoeff *
+g.coeff g.natDegree = f.leadingCoeff * g.leadingCoeff` (`Polynomial.coeff_mul_degree_add_degree`-
+style top-coefficient fact, valid unconditionally, no domain hypothesis --
+this is the one piece of `leadingCoeff_mul`-style reasoning that IS true
+without `NoZeroDivisors`, since it's about a single specific coefficient of
+the product rather than claiming the product's OWN leadingCoeff/natDegree
+behaves multiplicatively). So `f.leadingCoeff * g.leadingCoeff = 0`,
+and `f.leadingCoeff` regular forces `g.leadingCoeff = 0`. That alone
+doesn't yet give `g = 0` (a polynomial can have nilpotent-free zero leading
+coefficient and yet be nonzero if its `natDegree` bound understates its
+support) -- but combined with induction on `g.natDegree` (peel off the
+top term and repeat against the ONE-LOWER-DEGREE remainder, which still
+multiplies to `0` against `f` since `f * (g - C g.leadingCoeff * X^g.natDegree)
+= f*g - f.leadingCoeff*g.leadingCoeff • X^g.natDegree = 0 - 0 = 0`) this
+closes by strong induction on `g.natDegree`. -/
+
+/-- The one coefficient-level fact from `leadingCoeff_mul` that survives
+without `NoZeroDivisors`: the TOP coefficient of a product is the product
+of the two top coefficients, unconditionally. Standard Mathlib fact
+(`Polynomial.coeff_mul_degree_add_degree`), restated here in `natDegree`
+form matching how the induction below consumes it. -/
+private theorem coeff_natDegree_add_natDegree_mul {A : Type*} [CommRing A]
+    (f g : Polynomial A) :
+    (f * g).coeff (f.natDegree + g.natDegree) = f.leadingCoeff * g.leadingCoeff :=
+  Polynomial.coeff_mul_degree_add_degree f g
+
+/-- **Layer 1, the key transport lemma.** A polynomial with `IsSMulRegular`
+leading coefficient is itself `IsSMulRegular` as an element of `Polynomial
+A` acting on itself by multiplication -- no domain/`NoZeroDivisors`
+hypothesis on `A` needed. Subsumes both the curve relations' `Monic` case
+(leading coefficient `1`, trivially regular) and the `Fu`/`Fv` generators'
+linear case (leading coefficient `-den`, regular exactly when `den` is,
+i.e. `denRegular`'s conclusion) -- a single lemma, matching what ChatGPT's
+consultation recommended instead of two separate `isRegular_of_monic_peel`/
+`isRegular_of_leadingCoeff_regular_peel` lemmas. -/
+theorem Polynomial.isSMulRegular_of_leadingCoeff_isSMulRegular
+    {A : Type*} [CommRing A] {f : Polynomial A}
+    (hf : IsSMulRegular A f.leadingCoeff) :
+    IsSMulRegular (Polynomial A) f := by
+  -- `IsSMulRegular (Polynomial A) f` unfolds to injectivity of `f • ·` on
+  -- `Polynomial A`; since the action here is by the ring's own
+  -- multiplication, this is `Function.Injective (f * ·)`, i.e. `g ↦ f * g`.
+  -- No induction needed in the end: `f.leadingCoeff` regular directly
+  -- forces `g.leadingCoeff = 0`, and for `g ≠ 0` that alone already
+  -- contradicts `g.natDegree ∉ g.eraseLead.support` once `eraseLead g = g`
+  -- (which `g.leadingCoeff = 0` gives via `self_sub_C_mul_X_pow`) -- no
+  -- degree-peeling recursion is actually required.
+  have hmul : ∀ g : Polynomial A, f * g = 0 → g = 0 := by
+    intro g hfg
+    by_contra hg0
+    -- Top coefficient of `f * g` is `f.leadingCoeff * g.leadingCoeff`,
+    -- and `f * g = 0` forces it to vanish.
+    have htop : f.leadingCoeff * g.leadingCoeff = 0 := by
+      have hc := coeff_natDegree_add_natDegree_mul f g
+      rw [hfg, Polynomial.coeff_zero] at hc
+      exact hc.symm
+    -- `f.leadingCoeff` regular ⟹ `g.leadingCoeff = 0`. `IsSMulRegular A c`
+    -- unfolds to injectivity of `c • ·`; rephrase `htop` in `•` form (via
+    -- `smul_eq_mul`) before applying `hf`, then convert the conclusion
+    -- back to `= 0` form.
+    have hglc : g.leadingCoeff = 0 := by
+      have hsmul : f.leadingCoeff • g.leadingCoeff = f.leadingCoeff • (0 : A) := by
+        rw [smul_eq_mul, smul_eq_mul, mul_zero]
+        exact htop
+      exact hf hsmul
+    -- `g.leadingCoeff = 0` forces `g.eraseLead = g` (the peeled-off term
+    -- `C g.leadingCoeff * X^g.natDegree` is itself `0`).
+    have herase : g.eraseLead = g := by
+      have hsub := Polynomial.self_sub_C_mul_X_pow g
+      rw [hglc, Polynomial.C_0, zero_mul, sub_zero] at hsub
+      exact hsub.symm
+    -- But `g.natDegree ∉ g.eraseLead.support` always holds, and combined
+    -- with `herase` this says `g.natDegree ∉ g.support`, contradicting
+    -- `g ≠ 0` (whose leading coefficient, hence `g.natDegree`-th
+    -- coefficient, is nonzero).
+    have hmem : g.natDegree ∉ g.eraseLead.support :=
+      Polynomial.natDegree_notMem_eraseLead_support
+    rw [herase] at hmem
+    exact hmem (Polynomial.mem_support_iff.mpr
+      (Polynomial.leadingCoeff_ne_zero.mpr hg0))
+  intro g₁ g₂ hgg
+  -- `hgg : f • g₁ = f • g₂`; rewrite `•` as `*`, move to `f * (g₁ - g₂) = 0`,
+  -- apply `hmul`, then conclude `g₁ = g₂` from `g₁ - g₂ = 0`.
+  have hmul_eq : f * g₁ = f * g₂ := by
+    rw [← smul_eq_mul, ← smul_eq_mul]; exact hgg
+  have hsub : f * (g₁ - g₂) = 0 := by
+    rw [mul_sub, hmul_eq, sub_self]
+  have hzero : g₁ - g₂ = 0 := hmul (g₁ - g₂) hsub
+  exact sub_eq_zero.mp hzero
+
+
+/-! ### §5bis-0b. Gap 1: the anchor-variable quintic coefficient is monic
+
+**Real statement, replacing the old `True`-stub.** Each curve relation's
+coefficient polynomial (the thing subtracted from `wa_i^2`/`wb_i^2` in
+`curveA1`/`curveA2`/`curveB1`/`curveB2`, §3) is, syntactically,
+`C c0 + C c1 * X_ai + C c2 * X_ai^2 + C c3 * X_ai^3 + C c4 * X_ai^4 +
+X_ai^5` for `X_ai` the anchor variable (`a1`/`a2`/`b1`/`b2` respectively)
+-- literally monic of degree 5 in that variable, `c0,...,c4` never
+appearing at any power ≥ 5. Stated here as a generic fact about the
+abstract quintic shape (`quintic` below), independent of `Idx`/`Rdec`
+specifics, then instantiated per anchor variable at call sites. -/
+
+/-- The abstract "quintic with monic top term" shape shared by every curve
+relation's coefficient polynomial, over any `CommRing A` -- no domain
+hypothesis needed, matching Layer 1's own generality. -/
+noncomputable def quintic {A : Type*} [CommRing A] (c0 c1 c2 c3 c4 : A) :
+    Polynomial A :=
+  Polynomial.C c0 + Polynomial.C c1 * Polynomial.X + Polynomial.C c2 * Polynomial.X ^ 2 +
+    Polynomial.C c3 * Polynomial.X ^ 3 + Polynomial.C c4 * Polynomial.X ^ 4 + Polynomial.X ^ 5
+
+/-- `quintic` is `Monic`, over ANY `CommRing A` (no `Nontrivial`/domain
+hypothesis needed for `Monic` itself -- unlike pinning down its exact
+`natDegree`, which genuinely does need `[Nontrivial A]` since over a
+trivial ring `quintic` is the zero polynomial with `natDegree = 0`; `Monic`
+alone doesn't need that, it only claims the COEFFICIENT at the tactic's own
+computed degree bound is `1`, which holds vacuously/trivially either way).
+`monicity!` (`Mathlib.Tactic.ComputeDegree`) is exactly the tactic built for
+this shape of goal: converts `Monic f` to `natDegree f ≤ 5` and
+`f.coeff 5 = 1`, discharging both automatically from `quintic`'s literal
+`C`/`X`/`+`/`^` structure -- the same tactic, on a structurally identical
+(quadratic, not quintic) `C`/`X`/`+`/`^` goal, already succeeds elsewhere
+in this file (`curBeforeMonic_natDegree_eq_sub`'s `hmonic3`/`hdeg3`, via
+`monicity!`/`compute_degree!`), so this is not a blind first use of the
+tactic in this codebase. **Not independently re-verified in a REPL this
+specific instance (5 terms instead of 3)** -- if `monicity!` alone doesn't
+close it, the flagged fallback is `Polynomial.monic_X_pow_add` applied to
+`quintic`'s rewritten form `X^5 + (C c0 + C c1*X + C c2*X^2 + C c3*X^3 +
+C c4*X^4)` (`add_comm`-rewritten so `X^5` is on the left, matching
+`monic_X_pow_add`'s expected shape), discharging its `degree (...) < 5`
+side goal via `compute_degree!`/`Polynomial.degree_add_le` chains, same
+style as `Epoly_natDegree_le_three` above. -/
+theorem quintic_monic {A : Type*} [CommRing A] (c0 c1 c2 c3 c4 : A) :
+    (quintic c0 c1 c2 c3 c4).Monic := by
+  unfold quintic
+  monicity!
+
+omit [Fact (p ≠ 2)] in
+/-- **Gap 1, the "shape" half -- proved outright, no `sorry`.** After
+peeling `x : Idx` (a `w`-variable, one of `wa1,wa2,wb1,wb2`) via
+`peelEquiv p x`, then peeling `anchor` (the MATCHING anchor variable,
+`a1/a2/b1/b2` respectively, itself an element of `{v : Idx // v ≠ x}` via
+`hne : anchor ≠ x`) out of that coefficient ring via `peelEquivGen`, the
+constants `c0,...,c4 : F p` embed into the twice-peeled ring `A` via
+`MvPolynomial.C`, and the resulting `quintic` instance
+`C c0 + C c1*X + ... + X^5 : Polynomial A` is `Monic` -- immediate from
+`quintic_monic` (`A`-generic, no domain hypothesis). This is the
+mathematical content Gap 1 needs.
+
+**What this theorem does NOT yet establish** (separate, still-open
+obligation, not conflated with the fact above): that `curveA1`/etc.'s
+ACTUAL coefficient blob (`C c0 + C c1 * a_i' + C c2 * a_i'^2 + C c3 *
+a_i'^3 + C c4 * a_i'^4 + a_i'^5 : Rdec p`, §3's literal definition), pushed
+through `(peelEquivGen p (⟨anchor,hne⟩ : {v : Idx // v ≠ x})).toRingEquiv`
+composed with `peelEquiv p x`, is DEFINITIONALLY/PROPOSITIONALLY EQUAL to
+this `quintic` instance -- i.e. that peeling really does turn the concrete
+curve-relation coefficient blob into exactly this shape, rather than some
+other rearrangement. That identification is expected to be a short
+`simp`/`rename`-unfolding lemma once someone has a REPL (`peelEquivGen`
+sends `X (anchor)` to `Polynomial.X` and `C r`/other-variable `X j` to
+`Polynomial.C (C_or_X_in_the_smaller_ring)`, matching `optionEquivLeft`'s
+known behavior, §5bis-0a's `optionEquivLeft_rename_some`/
+`_X_none`-style lemmas above), but is NOT attempted here -- flagged as the
+next concrete step, not silently assumed. -/
+theorem curveCoeffRegular (x anchor : Idx) (hne : anchor ≠ x)
+    (c0 c1 c2 c3 c4 : F p) :
+    let B := {v : Idx // v ≠ x}
+    let A := MvPolynomial {v : B // v ≠ (⟨anchor, hne⟩ : B)} (F p)
+    (quintic (MvPolynomial.C c0 : A) (MvPolynomial.C c1 : A) (MvPolynomial.C c2 : A)
+      (MvPolynomial.C c3 : A) (MvPolynomial.C c4 : A)).Monic := by
+  -- The goal is headed by two `let`s (`B`, `A`) before the actual `Monic`
+  -- statement; `show`/`dsimp only []` (beta/zeta-reducing the `let`s) or
+  -- `intro`-style unfolding is needed before `quintic_monic` applies --
+  -- `dsimp only` alone should zeta-reduce both `let`s here since they're
+  -- not dependent on any bound variable introduced later in the goal.
+  dsimp only
+  exact quintic_monic _ _ _ _ _
 
 /-! ## §6. The actual target theorems
 
