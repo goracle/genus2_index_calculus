@@ -1601,7 +1601,9 @@ theorem aeval_X_comp_injective_ne_zero {Vars : Type*}
     apply MvPolynomial.ringHom_ext
     · intro r
       simp only [RingHom.comp_apply, fwd, back, RingHom.id_apply,
-        AlgHom.toRingHom_eq_coe, RingHom.coe_coe, MvPolynomial.aeval_C]
+        AlgHom.toRingHom_eq_coe, RingHom.coe_coe]
+      simp only [MvPolynomial.aeval_C]
+      simp
     · intro i
       simp only [RingHom.comp_apply, fwd, back, RingHom.id_apply,
         AlgHom.toRingHom_eq_coe, RingHom.coe_coe, MvPolynomial.aeval_X]
