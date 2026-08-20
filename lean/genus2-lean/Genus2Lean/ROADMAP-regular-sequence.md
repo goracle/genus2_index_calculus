@@ -58,14 +58,29 @@ fixed numeral — see revision note above), and states the target theorem
 genList`, now understood as a statement with free parameters `p` (prime)
 and `c0,c1,c2,c3,c4 : F` (the quintic's coefficients, `f(x) = c0+c1x+c2x²+
 c3x³+c4x⁴+x⁵`), true for `p` and `(c0,...,c4)` outside an explicit
-exceptional locus. Both the theorem and `theData` (now a *derivation*, not
-a transcription target — §4) are `sorry`. This is a genuinely different
-proof route from advisory-6 §6.2's already-complete birationality argument
-(`sigma : C^(2) -> J` generically injective) — it works directly with the
-12 polynomials rather than the geometry, and for general `p` rather than a
+exceptional locus. This is a genuinely different proof route from
+advisory-6 §6.2's already-complete birationality argument (`sigma : C^(2)
+-> J` generically injective) — it works directly with the 12 polynomials
+rather than the geometry, and for general `p` rather than a
 characteristic-0 lift at one numerically-chosen prime, so if it goes
 through it closes §6.1's still-open mod-p question in full generality, not
 just for one sampled prime.
+
+**Current status (see the final progress note at the bottom for the full
+audit): `theData` is fully derived and assembled, not a transcription
+target and not a black box — every one of §4's construction steps (tower,
+`4×4` Cramer solve, `dvd_N_u`, `uRS`/`vRS`, the Mumford identity) is proved
+in `DataDerivationBasics/Tower/Solve/Mumford.lean`, all four of which are
+now `sorry`-free.** The only remaining gaps are 6 named `sorry`s, all in
+`DecoupledSystemRegular.lean`: four narrow lemmas with proof sketches
+already written (`Ypoly`/`Epoly`/`Npoly` degree bounds,
+`towerToRdec_den_ne_zero`), plus the two genuinely open structural pieces —
+`regularSeq_of_peel_chain` (assembling the now-proved `curveCoeffRegular`/
+`denRegular` into the full 12-step regular sequence) and
+`decoupledSystem_zeroDimensional` (the formal `IsRegular → Module.Finite`
+step). §5 steps 3–4's finite-quotient certificates are correctly left
+*unstated* rather than `sorry`-stubbed, since stating them honestly needs
+`Fu_cross`/`Fv_cross`'s closed forms, not yet extracted.
 
 ## Why a regular sequence, concretely, and why it reduces to polynomial division
 
@@ -876,3 +891,120 @@ here.
   hand-reviewed for structural/type consistency (including a systematic
   re-check of every call site against the `variable (p : ℕ)` explicit-vs-
   implicit question after the bug above was found), not kernel-checked.
+
+## Progress note (current pass): status re-audited against the actual files — nearly everything above is now discharged; every remaining `sorry` lives in `DecoupledSystemRegular.lean`, none in `TheDataDerivation`
+
+This pass did not add new mathematics. It re-read all five files against a
+literal `grep sorry`, since the roadmap's own prose (including several notes
+directly above) had drifted well behind the code — most "left as `sorry`"
+and "not yet proved" language above describes gaps that are now closed, and
+several sections still frame `theData`'s derivation as unstarted when it has
+in fact been fully built out and wired up. Restating the true state plainly:
+
+**`DataDerivationBasics.lean`, `DataDerivationMumford.lean`,
+`DataDerivationSolve.lean`, `DataDerivationTower.lean` — zero live `sorry`s
+among all four files.** Every occurrence of the word "sorry" left in these
+four files (5, 10, 5, and 0 respectively) is prose — a docstring or comment
+*reporting* that some nearby theorem is "now fully proved, no `sorry`," or
+narrating the history of a gap that has since been closed. None is an actual
+`sorry` term/tactic sitting in a proof. Concretely, this means:
+- §4.2 items 1–8 (the tower construction, the `4×4` Cramer solve, `Epoly`/
+  `Ypoly`/`Npoly`, the two anchor divisibility facts and their two supporting
+  lemmas each, `dvd_N_u`'s three-lemma decomposition from §6.1,
+  `uRS`/`uRS_monic`, `vRS`, and the Mumford identity `vRS_sq_eq_f_mod_uRS`)
+  are now **all proved**, not sketched — including `dvd_N_u` itself, which
+  the previous progress note above still lists as unproved.
+- The irreducibility caveat flagged in §4.1 (`X² - f(t_i)` irreducible over
+  each tower level, needed for `AdjoinRoot`'s field instance) is proved in
+  full generality in `DataDerivationBasics.lean`, both the "not a square in
+  the multivariate rational function field" half and the single-variable
+  `RatFunc`-level half (`fAtT_not_isSquare`).
+- `BridgeToRdec`'s `towerToRdec` construction (`DataDerivationMumford.lean`)
+  is complete and proved, including the base case and both inductive tower
+  steps (`towerToRdecK1`, then the `K1 → K2` step) — the file's own comments
+  mark each piece "No `sorry`" explicitly.
+- The file split described in the previous progress note (`TheDataDerivation.lean`
+  → four files) is done and is exactly the four files now on disk.
+
+The one substantive item still open in this cluster is genuinely a
+`DecoupledSystemRegular.lean`-side gap, not a `TheDataDerivation`-side one:
+`towerToRdec_den_ne_zero` (item below).
+
+**`DecoupledSystemRegular.lean` — 6 live `sorry`s, all individually named
+and none hidden inside a `True`-hypothesis or other disguised assumption.**
+This file is also further along than the previous progress note suggests:
+`theData` is fully assembled (not a bare `sorry`); `curveCoeffRegular`,
+`denRegular`, `regular_of_linear_elim`, `regular_of_norm_eliminate` (and its
+one-variable predecessor `regular_of_norm_eliminate_one`), the four
+`*SideGens_*Gen_injective` lemmas, `uRS_coeff_ne_zero`/`vRS_coeff_ne_zero`,
+and `curBeforeMonic_natDegree_eq_sub`/`_le_two` are all proved. The `Gap 2`
+false-theorem episode recorded above (§ "RESOLVED as false-as-a-theorem") is
+also handled correctly as designed: the two false claims were replaced by
+an explicit `Nondegenerate` hypothesis rather than patched into something
+still-false, and `denRegular` is proved conditional on that hypothesis. The
+six actual `sorry`s remaining, by line and theorem:
+
+1. `Ypoly_natDegree_le_zero`'s inner `have hsingle` — needs one missing
+   combinatorial fact about `rrBasis5` (`rrBasis5_bj_one_unique`: no *other*
+   RR-basis index besides `yIdx` has `bj = 1`); a prompt for exactly this
+   lemma is already drafted (`chatgpt_prompt_ypoly_epoly.md`), not yet run.
+2. `Epoly_natDegree_le_three` — stated, proof not started; the docstring
+   above it already gives the intended argument (from `rrBasis5`'s literal
+   top `bj = 0` entry).
+3. `Npoly_natDegree_le_six` — stated, proof not started; docstring gives the
+   intended `natDegree_sub_le`/`natDegree_mul_le`/`natDegree_pow_le`
+   assembly from the two lemmas above plus the already-proved
+   `curvePoly_natDegree`.
+4. `towerToRdec_den_ne_zero` — stated, proof not started; the docstring
+   gives the intended three-level induction (base case from
+   `IsFractionRing.den`'s nonzero-divisor property, two inductive steps via
+   `mul_ne_zero`). This is the one piece of "denominator never vanishes"
+   reasoning that still lives on the `DecoupledSystemRegular.lean` side
+   rather than already being finished upstream.
+5. `regularSeq_of_peel_chain` — the twelve-step variable-peel induction
+   assembling `curveCoeffRegular`/`denRegular` (both proved) into the full
+   regular-sequence statement. Explicitly **not attempted**, flagged in its
+   own docstring as new bookkeeping work rather than a corollary of the two
+   proved pieces it would compose.
+6. `decoupledSystem_zeroDimensional` — the formal step from `IsRegular` to
+   `Module.Finite` (a length-`n` regular sequence in an `n`-variable
+   polynomial ring over a field gives a nonzero Artinian quotient). Not
+   started; independent of `regularSeq_of_peel_chain`'s own `sorry`.
+
+`decoupledSystem_isRegularSequence` itself carries no `sorry` directly — it
+is proved *from* `regularSeq_of_peel_chain`, so item 5 above is its only
+dependency-chain gap, made visible in the proof term rather than left as an
+opaque `sorry` on the main theorem.
+
+**One item corrected, not just updated:** §5 steps 3–4's old `sorry`-stubs
+(`eightVar_finiteQuotient`, `fourVar_finiteQuotient`) were *deleted*, not
+filled in — they were built on a `hgens : True` placeholder standing in for
+"these really are the generators §5 describes," which is flagged in the
+file itself as the same failure mode as an unjustified `sorry`: it made the
+statements provable without ever pinning down what they're about. The
+honest state, recorded in the file's own §"5 steps 3-4: NOT YET STATEABLE"
+section, is that these two steps cannot be stated as real theorems until
+`Fu_cross`/`Fv_cross`'s closed forms are extracted concretely from `theData`
+— tracked as a prerequisite, not swept into a hypothesis.
+
+**Net count.** Across all five files: **6 live `sorry`s total, all in
+`DecoupledSystemRegular.lean`**, versus the double-digit-per-file picture
+several passages above (written progressively, pass over pass) still
+suggest by only reporting what was newly closed rather than the running
+total. Four of the six (1–4) are narrow, single-lemma gaps with an already-
+written proof sketch in the surrounding docstring. The remaining two (5, 6)
+are the genuinely open structural work: assembling the proved pieces into
+the full regular-sequence theorem, and the regular-sequence-to-dimension-0
+corollary.
+
+**Still not done, unchanged from before:**
+- No Lean toolchain was available this pass either. Every claim above about
+  a theorem being "proved" is a literal `grep`-verified absence of a `sorry`
+  token in that theorem's body, cross-checked by reading the surrounding
+  docstrings' own "no `sorry`"/"fully proved" annotations — not a kernel
+  check (`#print axioms` was not run). This is a stronger signal than a
+  hand-reviewed structural pass but still short of compilation.
+- §5 steps 3–4's finite-quotient certificates remain genuinely unstated
+  (not merely unproved), pending `Fu_cross`/`Fv_cross`'s closed forms.
+- `MatrixNondegenerate` (§6.5) is still not threaded as an explicit
+  hypothesis anywhere in `DecoupledSystemRegular.lean`.

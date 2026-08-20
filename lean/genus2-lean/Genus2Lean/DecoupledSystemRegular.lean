@@ -1569,6 +1569,50 @@ theorem curBeforeMonic_natDegree_le_two (c0 c1 c2 c3 c4 u0 u1 v0 v1 : F p) :
   have h6 := Npoly_natDegree_le_six p c0 c1 c2 c3 c4 u0 u1 v0 v1
   omega
 
+/-- **Helper for Piece A.** `MvPolynomial.aeval` against a purely-`X`-valued,
+injective substitution never kills a nonzero polynomial -- i.e. an injective
+renaming (here landing in `Rdec p = MvPolynomial Idx (F p)` rather than
+another `MvPolynomial`, matching exactly the shape `baseFracToRing` uses)
+is injective on nonzero elements. Proved directly via a left-inverse
+`RingHom` built from `Function.invFun tGen`, the same "build a retraction,
+apply `MvPolynomial.ringHom_ext`" technique `towerToRdec_spec`'s own
+`hcomp` step above already uses (confirmed present, `RingHom`-valued, in
+this codebase), rather than an unconfirmed named `rename`/`aeval`
+interchange lemma: `Function.invFun tGen` left-inverts `tGen` since `tGen`
+is injective, so the composite retraction fixes every `X i` and hence (by
+`ringHom_ext`) is the identity on all of `MvPolynomial (Fin 2) (F p)`; a
+map that is injective after composing with a retraction is itself
+injective, and an injective ring hom out of a nontrivial ring never sends a
+nonzero element to `0`. -/
+theorem aeval_X_comp_injective_ne_zero {Vars : Type*}
+    (tGen : Fin 2 → Vars) (htGen : Function.Injective tGen)
+    (q : MvPolynomial (Fin 2) (F p)) (hq : q ≠ 0) :
+    MvPolynomial.aeval (fun i : Fin 2 => MvPolynomial.X (tGen i) : Fin 2 → MvPolynomial Vars (F p)) q
+      ≠ 0 := by
+  intro hzero
+  apply hq
+  let fwd : MvPolynomial (Fin 2) (F p) →+* MvPolynomial Vars (F p) :=
+    (MvPolynomial.aeval (fun i : Fin 2 => MvPolynomial.X (tGen i) :
+      Fin 2 → MvPolynomial Vars (F p))).toRingHom
+  let back : MvPolynomial Vars (F p) →+* MvPolynomial (Fin 2) (F p) :=
+    (MvPolynomial.aeval (fun j : Vars => MvPolynomial.X (Function.invFun tGen j) :
+      Vars → MvPolynomial (Fin 2) (F p))).toRingHom
+  have hcomp : back.comp fwd = RingHom.id (MvPolynomial (Fin 2) (F p)) := by
+    apply MvPolynomial.ringHom_ext
+    · intro r
+      simp only [RingHom.comp_apply, fwd, back, RingHom.id_apply,
+        AlgHom.toRingHom_eq_coe, RingHom.coe_coe, MvPolynomial.aeval_C]
+    · intro i
+      simp only [RingHom.comp_apply, fwd, back, RingHom.id_apply,
+        AlgHom.toRingHom_eq_coe, RingHom.coe_coe, MvPolynomial.aeval_X]
+      rw [Function.leftInverse_invFun htGen i]
+  have := congrArg (fun φ => φ q) hcomp
+  simp only [RingHom.comp_apply, RingHom.id_apply] at this
+  rw [show fwd q = MvPolynomial.aeval
+        (fun i : Fin 2 => MvPolynomial.X (tGen i) : Fin 2 → MvPolynomial Vars (F p)) q from rfl,
+      hzero] at this
+  simpa using this.symm
+
 /-- **Piece A.** `towerToRdec`'s output denominator is nonzero whenever the
 input `K2` element is nonzero, for any `SideGens` with INJECTIVE `tGen`/
 `wGen` (`aSideGens`/`bSideGens` both qualify, `![a1,a2]`/`![wa1,wa2]` etc.
@@ -1577,13 +1621,49 @@ denominator-tracking through an already-`sorry`-free recursion -- see the
 docstring above `curBeforeMonic_natDegree_eq_two` for the three-level
 induction shape (base case: `IsFractionRing.den`'s nonzero-divisor property,
 transported by the injective-renaming `aeval`; inductive step, twice:
-`den0 * den1 ≠ 0` in a domain from each factor nonzero, `mul_ne_zero`). -/
+`den0 * den1 ≠ 0` in a domain from each factor nonzero, `mul_ne_zero`).
+The denominator, tracing `towerToRdec`/`towerToRdecK1`/`baseFracToRing`'s
+definitions, never actually depends on `wGen` or on `v ≠ 0` -- only the
+NUMERATOR does (via the extra `* X (wGen i)` term at each level) -- so
+`hwGen`/`hv` are carried as hypotheses (matching this theorem's existing
+call sites and interface) but not needed by this particular proof. -/
 theorem towerToRdec_den_ne_zero {Vars : Type*} [DecidableEq Vars]
     (sg : SideGens Vars) (htGen : Function.Injective sg.tGen)
     (hwGen : Function.Injective sg.wGen)
     (c0 c1 c2 c3 c4 : F p) (v : K2 p c0 c1 c2 c3 c4) (hv : v ≠ 0) :
     (towerToRdec p sg v).2 ≠ 0 := by
-  sorry
+  -- Base case: `baseFracToRing`'s denominator is `aeval (X ∘ tGen)` applied
+  -- to `IsFractionRing.den`, which is always a nonzero-divisor (hence
+  -- nonzero, `MvPolynomial (Fin 2) (F p)` being a domain), regardless of
+  -- which `K0 p` element it came from.
+  have hbase_den_ne_zero : ∀ w : K0 p, (baseFracToRing p sg w).2 ≠ 0 := by
+    intro w
+    have hd_ne_zero : ((IsFractionRing.den (MvPolynomial (Fin 2) (F p)) w : MvPolynomial (Fin 2) (F p)))
+        ≠ 0 := by
+      have hmem := (IsFractionRing.den (MvPolynomial (Fin 2) (F p)) w).property
+      exact nonZeroDivisors.ne_zero hmem
+    simpa only [baseFracToRing] using
+      aeval_X_comp_injective_ne_zero p sg.tGen htGen _ hd_ne_zero
+  -- First inductive step: `towerToRdecK1`'s denominator is `den0 * den1`,
+  -- each factor a `baseFracToRing` denominator (living in `MvPolynomial
+  -- Vars (F p)`, not `K1`/`K2` -- the multiplication below never leaves
+  -- that ring), hence nonzero by the base case; `MvPolynomial Vars (F p)`
+  -- has no zero divisors (`F p = ZMod p` is a field for prime `p`), so the
+  -- product of two nonzero elements is nonzero.
+  have hK1_den_ne_zero : ∀ x : K1 p c0 c1 c2 c3 c4, (towerToRdecK1 p sg x).2 ≠ 0 := by
+    intro x
+    unfold towerToRdecK1
+    dsimp only
+    exact mul_ne_zero
+      (hbase_den_ne_zero _)
+      (hbase_den_ne_zero _)
+  -- Second inductive step: `towerToRdec`'s own denominator is `den0 * den1`
+  -- from two `towerToRdecK1` calls, nonzero by the same argument one level up.
+  unfold towerToRdec
+  dsimp only
+  exact mul_ne_zero
+    (hK1_den_ne_zero _)
+    (hK1_den_ne_zero _)
 
 /-- **Gap 2, RESOLVED as false-as-a-theorem — corrected per ChatGPT
 consultation (`chatgpt-prompt-denRegular.md`).** The two `theorem`s that
