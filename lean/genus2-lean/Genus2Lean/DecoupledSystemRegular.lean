@@ -1070,17 +1070,15 @@ theorem regular_of_norm_eliminate_one {R : Type*} [CommRing R] (f P Q : R)
       exact hmap
     exact hg_not_unit ((IsUnit.mul_iff.mp hgg).1)
   refine RingTheory.Sequence.IsRegular.cons hnorm ?_
-  rw [RingTheory.Sequence.isRegular_iff]
-  refine ⟨RingTheory.Sequence.IsWeaklyRegular.nil _ _, ?_⟩
-  simp only [Ideal.ofList_nil, Submodule.top_smul]
-  exact fun htop => hn_not_unit ((Ideal.span_singleton_eq_top).1 (by
-    have : (⊤ : Submodule R R) = Ideal.span ({n} : Set R) := by
-      have hspan_eq : (({n} : Set R) • (⊤ : Submodule R R)) =
-          Ideal.span ({n} : Set R) := by
-        exact Submodule.set_smul_top_eq_span ({n} : Set R)
-      rw [← hspan_eq]
-      exact htop.symm
-    exact this.symm))
+  letI : Nontrivial (QuotSMulTop n R) := by
+    apply Submodule.Quotient.nontrivial_iff.mpr
+    intro htop
+    apply hn_not_unit
+    obtain ⟨b, hb, hnb⟩ :=
+      (Submodule.mem_smul_pointwise_iff_exists (1 : R) n (⊤ : Submodule R R)).mp
+        (htop.symm ▸ Submodule.mem_top)
+    exact IsUnit.of_mul_eq_one b (by simpa [smul_eq_mul] using hnb)
+  exact RingTheory.Sequence.IsRegular.nil R (QuotSMulTop n R)
 theorem regular_of_norm_eliminate {R : Type*} [CommRing R] (f : R)
     (n : ℕ) (Pv Qv : Fin n → R)
     (gens : Fin n → AdjoinRoot (Polynomial.X ^ 2 - Polynomial.C f : Polynomial R))
