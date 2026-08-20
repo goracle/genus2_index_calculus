@@ -883,8 +883,9 @@ but needs `AdjoinRoot`'s `{1,w}` basis made explicit in Lean
 `AdjoinRoot.modByMonicHom`/`.coeff 0`/`.coeff 1` unfolding as
 `towerToRdec_vars_subset` above already does for a similar purpose) and the
 matrix/adjugate identities (`Matrix.mul_adjugate`, `Matrix.mulVec_mulVec`)
-threaded through -- superseded by the direct factorization argument below. -/
-/-- **Attempted this pass via a factorization/conjugation argument.** Write
+threaded through -- superseded by the direct factorization argument below.
+
+**Attempted this pass via a factorization/conjugation argument.** Write
 `S := AdjoinRoot (X^2 - C f)`, `w := AdjoinRoot.root (X^2 - C f)`, `g := P +
 Q•w`, `g' := P - Q•w`. Since `w^2 = f` in `S`, `g * g' = algebraMap R S (P^2
 - Q^2*f)`. Not-a-unit half: if `n` were a unit, `algebraMap R S n = g*g'`
@@ -904,136 +905,182 @@ theorem regular_of_norm_eliminate_one {R : Type*} [CommRing R] (f P Q : R)
   classical
   by_cases hR : Nontrivial R
   swap
-  · -- Subsingleton R: every list of length 1 over R is trivially regular
-    -- since all elements coincide. FLAG: exact shape of `IsRegular` here
-    -- (weakly-regular + nontrivial-quotient) needs checking against the
-    -- Subsingleton instance; `simp` may just close this outright.
-    haveI : Subsingleton R := not_nontrivial_iff_subsingleton.mp hR
-    simp [RingTheory.Sequence.isRegular_cons_iff, IsSMulRegular,
-      Function.Injective, Subsingleton.elim]
+  · haveI : Subsingleton R := not_nontrivial_iff_subsingleton.mp hR
+    haveI : Subsingleton (Polynomial R) := by
+      constructor
+      intro p q
+      ext i
+      exact Subsingleton.elim _ _
+    have hp_zero : (Polynomial.X ^ 2 - Polynomial.C f : Polynomial R) = 0 :=
+      Subsingleton.elim _ _
+    letI : Subsingleton (AdjoinRoot
+        (Polynomial.X ^ 2 - Polynomial.C f : Polynomial R)) :=
+      Function.Surjective.subsingleton
+        (Ideal.Quotient.mk_surjective
+          (I := Ideal.span ({(Polynomial.X ^ 2 - Polynomial.C f : Polynomial R)} : Set (Polynomial R))))
+    exact False.elim ((not_nontrivial_iff_subsingleton.mpr inferInstance)
+      hreg.nontrivial)
   letI : Nontrivial R := hR
-  set p : Polynomial R := Polynomial.X ^ 2 - Polynomial.C f with hp_def
-  set S := AdjoinRoot p with hS_def
-  set w : S := AdjoinRoot.root p with hw_def
-  set g : S := AdjoinRoot.mk p (Polynomial.C P + Polynomial.C Q * Polynomial.X) with hg_def
-  set g' : S := AdjoinRoot.mk p (Polynomial.C P - Polynomial.C Q * Polynomial.X) with hg'_def
-  set n : R := P ^ 2 - Q ^ 2 * f with hn_def
-  -- `p` is monic of degree 2.
+  let p : Polynomial R := Polynomial.X ^ 2 - Polynomial.C f
   have hp_monic : p.Monic := by
-    rw [hp_def]; exact Polynomial.monic_X_pow_sub_C f (by norm_num)
-  have hp_deg : p.degree = (2 : ℕ) := by
-    rw [hp_def]; exact Polynomial.degree_X_pow_sub_C (by norm_num) f
-  have hp_natDeg : p.natDegree = 2 := Polynomial.natDegree_eq_of_degree_eq_some hp_deg
-  -- `w^2 = algebraMap R S f`, from `mk p p = 0` unfolded via `map_sub`.
-  have hw2 : w ^ 2 = algebraMap R S f := by
-    have hzero : AdjoinRoot.mk p p = 0 := AdjoinRoot.mk_self
-    rw [hp_def, map_sub] at hzero
-    have e1 : AdjoinRoot.mk p (Polynomial.X ^ 2 : Polynomial R) = w ^ 2 := by
-      rw [map_pow, hw_def, AdjoinRoot.mk_X]
-    have e2 : AdjoinRoot.mk p (Polynomial.C f) = algebraMap R S f := by
-      rw [AdjoinRoot.mk_C, ← AdjoinRoot.algebraMap_eq]
-    rw [hp_def, e1, e2] at hzero
-    -- `hzero : w^2 - algebraMap R S f = 0`
-    exact sub_eq_zero.mp hzero
-  -- Key factorization identity.
-  have hfactor : g * g' = algebraMap R S n := by
-    have expand : (Polynomial.C P + Polynomial.C Q * Polynomial.X) *
-        (Polynomial.C P - Polynomial.C Q * Polynomial.X) =
-        Polynomial.C (P ^ 2) - Polynomial.C (Q ^ 2) * Polynomial.X ^ 2 := by ring
-    have hgg' : g * g' = AdjoinRoot.mk p
-        (Polynomial.C (P ^ 2) - Polynomial.C (Q ^ 2) * Polynomial.X ^ 2) := by
-      rw [hg_def, hg'_def, ← map_mul, expand]
-    have hX2 : AdjoinRoot.mk p (Polynomial.X ^ 2 : Polynomial R) = w ^ 2 := by
-      rw [map_pow, hw_def, AdjoinRoot.mk_X]
-    rw [hgg', map_sub, map_mul, AdjoinRoot.mk_C, hX2, hw2, ← AdjoinRoot.algebraMap_eq]
-    rw [hn_def, map_sub, map_mul]
-  -- Extract `IsSMulRegular S g` and "quotient nontrivial" from `hreg`.
-  rw [RingTheory.Sequence.isRegular_cons_iff] at hreg
-  obtain ⟨hx, hquot⟩ := hreg
-  -- `hquot : RingTheory.Sequence.IsRegular (QuotSMulTop g S) []`, i.e.
-  -- `Nontrivial (QuotSMulTop g S)`, i.e. (up to the defeq `QuotSMulTop g S
-  -- = S ⧸ Ideal.span {g}` for `S` self-acting) `Ideal.span {g} ≠ ⊤`.
-  -- FLAG: exact bridge from `hquot` (an `IsRegular _ []`) to
-  -- `Nontrivial (QuotSMulTop g S)` and then to `Ideal.span {g} ≠ ⊤` is not
-  -- independently verified -- likely `hquot.nontrivial` (a field/lemma of
-  -- `IsRegular`?) then `Ideal.Quotient.nontrivial_iff` after identifying
-  -- `QuotSMulTop g S` with `S ⧸ Ideal.span {g}` (defeq or via a simp lemma
-  -- `QuotSMulTop` unfolds to; possibly `Submodule.Quotient.nontrivial_iff`
-  -- combined with `Ideal.span_singleton` reindexing).
+    dsimp [p]
+    exact Polynomial.monic_X_pow_sub_C f (by norm_num)
+  have hp_deg : p.degree = (2 : WithBot ℕ) := by
+    dsimp [p]
+    exact Polynomial.degree_X_pow_sub_C (R := R) (n := 2) (by norm_num) f
+  have hp_pos : 0 < p.degree := by
+    rw [hp_deg]
+    norm_num
+  have hreg' : RingTheory.Sequence.IsRegular (AdjoinRoot p)
+      [AdjoinRoot.mk p (Polynomial.C P + Polynomial.C Q * Polynomial.X)] := by
+    simpa [p] using hreg
+  let w : AdjoinRoot p := AdjoinRoot.root p
+  let g : AdjoinRoot p :=
+    AdjoinRoot.mk p (Polynomial.C P + Polynomial.C Q * Polynomial.X)
+  let g' : AdjoinRoot p :=
+    AdjoinRoot.mk p (Polynomial.C P - Polynomial.C Q * Polynomial.X)
+  let n : R := P ^ 2 - Q ^ 2 * f
+  have hw2 : w ^ 2 = algebraMap R (AdjoinRoot p) f := by
+    have hroot := AdjoinRoot.eval₂_root p
+    have hroot' : w ^ 2 - algebraMap R (AdjoinRoot p) f = 0 := by
+      simpa [w, p, Polynomial.eval₂_sub, Polynomial.eval₂_pow,
+        Polynomial.eval₂_X, Polynomial.eval₂_C,
+        AdjoinRoot.algebraMap_eq] using hroot
+    exact sub_eq_zero.mp hroot'
+  have hfactor : g * g' = algebraMap R (AdjoinRoot p) n := by
+    have hexpand :
+        (Polynomial.C P + Polynomial.C Q * Polynomial.X) *
+          (Polynomial.C P - Polynomial.C Q * Polynomial.X) =
+          Polynomial.C (P ^ 2) - Polynomial.C (Q ^ 2) * Polynomial.X ^ 2 := by
+      simp only [map_pow]
+      ring
+    calc
+      g * g' = AdjoinRoot.mk p
+          ((Polynomial.C P + Polynomial.C Q * Polynomial.X) *
+            (Polynomial.C P - Polynomial.C Q * Polynomial.X)) := by
+        simp [g, g', map_mul]
+      _ = AdjoinRoot.mk p
+          (Polynomial.C (P ^ 2) - Polynomial.C (Q ^ 2) * Polynomial.X ^ 2) := by
+        rw [hexpand]
+      _ = (AdjoinRoot.of p) (P ^ 2) -
+          (AdjoinRoot.of p) (Q ^ 2) * w ^ 2 := by
+        simp [w, map_sub, map_mul, AdjoinRoot.mk_C, AdjoinRoot.mk_X]
+      _ = algebraMap R (AdjoinRoot p) (P ^ 2 - Q ^ 2 * f) := by
+        rw [hw2]
+        simp [AdjoinRoot.algebraMap_eq, map_sub, map_mul, map_pow]
+      _ = algebraMap R (AdjoinRoot p) n := by
+        rfl
+  have hx : IsSMulRegular (AdjoinRoot p) g := by
+    rw [RingTheory.Sequence.isRegular_cons_iff] at hreg'
+    exact hreg'.1
   have hg_not_unit : ¬ IsUnit g := by
-    intro hu
-    have hspan_top : Ideal.span ({g} : Set S) = ⊤ := Ideal.span_singleton_eq_top.2 hu
-    -- FLAG: derive a contradiction with `hquot` via `hspan_top`.
-    sorry
-  -- Build the `w ↦ -w` involution `e : S ≃ₐ[R] S`.
-  have heval : Polynomial.eval₂ (algebraMap R S) (-w) p = 0 := by
-    rw [hp_def]
-    simp only [Polynomial.eval₂_sub, Polynomial.eval₂_pow, Polynomial.eval₂_X,
-      Polynomial.eval₂_C]
-    rw [neg_pow, show (2:ℕ) = 2 from rfl]
-    -- `(-w)^2 = w^2`
-    have : (-w) ^ 2 = w ^ 2 := by ring
-    rw [this, hw2, sub_self]
-  set σ : S →ₐ[R] S := AdjoinRoot.liftAlgHom p (Algebra.ofId R S) (-w) heval with hσ_def
+    intro hg
+    have htop : Ideal.span ({g} : Set (AdjoinRoot p)) = ⊤ :=
+      (Ideal.span_singleton_eq_top).2 hg
+    apply hreg'.top_ne_smul
+    rw [Ideal.ofList_singleton, htop]
+    simp
+  have heval : Polynomial.eval₂ (algebraMap R (AdjoinRoot p))
+      (-w) p = 0 := by
+    have hexpand : Polynomial.eval₂ (algebraMap R (AdjoinRoot p)) (-w) p
+        = (-w) ^ 2 - algebraMap R (AdjoinRoot p) f := by
+      simp only [p, Polynomial.eval₂_sub, Polynomial.eval₂_pow,
+        Polynomial.eval₂_X, Polynomial.eval₂_C]
+    have hpow : (-w) ^ 2 = w ^ 2 := by
+      ring
+    rw [hexpand, hpow, hw2, sub_self]
+  let σ : AdjoinRoot p →ₐ[R] AdjoinRoot p :=
+    AdjoinRoot.liftAlgHom p (Algebra.ofId R (AdjoinRoot p)) (-w) heval
   have hσ_root : σ w = -w := by
-    rw [hσ_def, hw_def]
-    exact AdjoinRoot.liftAlgHom_root p (Algebra.ofId R S) (-w) heval
-  have hσ_invol : σ.comp σ = AlgHom.id R S := by
+    simpa only [σ, w] using
+      (AdjoinRoot.liftAlgHom_root p (Algebra.ofId R (AdjoinRoot p)) (-w) heval)
+  have hσ_invol : σ.comp σ = AlgHom.id R (AdjoinRoot p) := by
     apply AdjoinRoot.algHom_ext
-    show σ (σ w) = w
+    change σ (σ (AdjoinRoot.root p)) = AdjoinRoot.root p
+    change σ (σ w) = w
     rw [hσ_root, map_neg, hσ_root, neg_neg]
-  have hinv : Function.Involutive σ := fun z => by
-    have := congrArg (fun (h : S →ₐ[R] S) => h z) hσ_invol
-    simpa using this
-  -- FLAG: `Function.Involutive.bijective` name not independently confirmed;
-  -- if absent, replace with `⟨hinv.injective, hinv.surjective⟩` built from
-  -- `Function.LeftInverse`/`Function.RightInverse` (`hinv` gives both since
-  -- it's its own inverse).
-  set e : S ≃ₐ[R] S := AlgEquiv.ofBijective σ hinv.bijective with he_def
-  have heg : e g = g' := by
-    rw [he_def]
-    show σ g = g'
-    rw [hg_def, hg'_def]
-    -- `σ (mk p f) = eval₂ (algebraMap R S) (-w) f` via `liftAlgHom_mk`.
-    rw [show σ (AdjoinRoot.mk p (Polynomial.C P + Polynomial.C Q * Polynomial.X)) =
-        Polynomial.eval₂ (algebraMap R S) (-w) (Polynomial.C P + Polynomial.C Q * Polynomial.X)
-        from AdjoinRoot.liftAlgHom_mk p (Algebra.ofId R S) (-w) heval _]
-    simp only [Polynomial.eval₂_add, Polynomial.eval₂_mul, Polynomial.eval₂_C, Polynomial.eval₂_X]
-    show algebraMap R S P + algebraMap R S Q * (-w) =
-        AdjoinRoot.mk p (Polynomial.C P - Polynomial.C Q * Polynomial.X)
-    rw [map_sub, map_mul, AdjoinRoot.mk_C, AdjoinRoot.mk_C, AdjoinRoot.mk_X, hw_def]
-    ring
-  -- Transport regularity of `g` across `e` to get regularity of `g'`.
-  have hx' : IsSMulRegular S g' := by
-    rw [← heg]
+  have hinv : Function.Involutive σ := by
+    intro z
+    have hz := congrArg (fun φ : AdjoinRoot p →ₐ[R] AdjoinRoot p => φ z) hσ_invol
+    simpa using hz
+  have hσ_g : σ g = g' := by
+    simp [σ, g, g', Polynomial.eval₂_add, Polynomial.eval₂_mul,
+      Polynomial.eval₂_C, Polynomial.eval₂_X, AdjoinRoot.mk_C,
+      AdjoinRoot.mk_X, map_sub, map_mul, AdjoinRoot.algebraMap_eq] <;> ring
+  have hσ_g' : σ g' = g := by
+    calc
+      σ g' = σ (σ g) := by rw [hσ_g]
+      _ = g := hinv g
+  have hσ_inj : Function.Injective σ := by
     intro a b hab
-    apply e.injective
-    have : e (g • a) = e (g • b) := by rw [hab]
-    -- FLAG: `e` an `AlgEquiv` is a ring hom, so `e (g • x) = e g • e x`.
-    simpa [smul_eq_mul, map_mul, heg] using this |>.imp id id  -- placeholder combinator
-  sorry -- FLAG: finish `hnorm`/`htop`/final assembly -- drafted below in comments
-  /- Remaining assembly (not yet in tactic form, sketch only):
+    calc
+      a = σ (σ a) := (hinv a).symm
+      _ = σ (σ b) := congrArg σ hab
+      _ = b := hinv b
+  have hx' : IsSMulRegular (AdjoinRoot p) g' := by
+    intro a b hab
+    have hh := congrArg σ hab
+    have hc : g * σ a = g * σ b := by
+      simpa [map_mul, hσ_g'] using hh
+    have hc' : σ a = σ b := hx (by simpa [smul_eq_mul] using hc)
+    exact hσ_inj hc'
   have hnorm : IsSMulRegular R n := by
     intro a b hab
-    have step1 : algebraMap R S (n * a) = algebraMap R S (n * b) := by rw [hab]
-    rw [map_mul, map_mul, hfactor] at step1
-    -- step1 : g * g' * algebraMap a = g * g' * algebraMap b
-    rw [mul_assoc, mul_assoc] at step1
-    have step2 := hx step1   -- g' * algebraMap a = g' * algebraMap b
-    have step3 := hx' step2  -- algebraMap a = algebraMap b
-    -- conclude a = b via AdjoinRoot.mk_eq_mk / mk_ne_zero_of_natDegree_lt,
-    -- using hp_monic, hp_natDeg (natDegree of C(a-b) is 0 < 2).
-    sorry
-  refine ⟨RingTheory.Sequence.IsWeaklyRegular.cons hnorm ?_, ?_⟩
-  · exact RingTheory.Sequence.IsWeaklyRegular.nil R (QuotSMulTop n R)
-  · -- Nontrivial (QuotSMulTop n R): from `¬ IsUnit g` and `hfactor`,
-    -- `n` is not a unit either (else `algebraMap n = g*g'` would be a unit
-    -- times g', making g a unit -- wait, need the OTHER direction: if n
-    -- were a unit, algebraMap n is a unit, hence g*g' is a unit, hence g
-    -- (and g') are each units -- this is `hg_not_unit`'s contrapositive).
-    sorry
-  -/
-
+    have step1 : algebraMap R (AdjoinRoot p) n *
+        algebraMap R (AdjoinRoot p) a =
+        algebraMap R (AdjoinRoot p) n *
+          algebraMap R (AdjoinRoot p) b := by
+      simpa [smul_eq_mul, map_mul] using congrArg
+        (algebraMap R (AdjoinRoot p)) hab
+    rw [← hfactor] at step1
+    have step2 : g' * algebraMap R (AdjoinRoot p) a =
+        g' * algebraMap R (AdjoinRoot p) b := by
+      apply hx
+      simpa [smul_eq_mul, mul_assoc] using step1
+    have step3 : algebraMap R (AdjoinRoot p) a =
+        algebraMap R (AdjoinRoot p) b := by
+      apply hx'
+      simpa [smul_eq_mul] using step2
+    have hof : (AdjoinRoot.of p) a = (AdjoinRoot.of p) b := by
+      simpa [AdjoinRoot.algebraMap_eq] using step3
+    by_contra hab
+    have hpoly_ne : Polynomial.C a - Polynomial.C b ≠ 0 := by
+      intro hz
+      apply hab
+      apply Polynomial.C_injective
+      exact sub_eq_zero.mp hz
+    have hpoly_deg : (Polynomial.C a - Polynomial.C b).degree < p.degree := by
+      have hle : (Polynomial.C a - Polynomial.C b).degree ≤ (0 : WithBot ℕ) := by
+        calc
+          (Polynomial.C a - Polynomial.C b).degree ≤
+              max (Polynomial.C a).degree (Polynomial.C b).degree :=
+            Polynomial.degree_sub_le (Polynomial.C a) (Polynomial.C b)
+          _ ≤ (0 : WithBot ℕ) := max_le Polynomial.degree_C_le Polynomial.degree_C_le
+      exact lt_of_le_of_lt hle hp_pos
+    have hmk : (AdjoinRoot.mk p) (Polynomial.C a - Polynomial.C b) ≠ 0 :=
+      AdjoinRoot.mk_ne_zero_of_degree_lt hp_monic hpoly_ne hpoly_deg
+    apply hmk
+    change (AdjoinRoot.mk p) (Polynomial.C a - Polynomial.C b) = 0
+    simpa [map_sub] using (sub_eq_zero.mpr hof)
+  have hn_not_unit : ¬ IsUnit n := by
+    intro hn
+    have hmap : IsUnit (algebraMap R (AdjoinRoot p) n) := hn.map _
+    have hgg : IsUnit (g * g') := by
+      rw [hfactor]
+      exact hmap
+    exact hg_not_unit ((IsUnit.mul_iff.mp hgg).1)
+  refine RingTheory.Sequence.IsRegular.cons hnorm ?_
+  rw [RingTheory.Sequence.isRegular_iff]
+  refine ⟨RingTheory.Sequence.IsWeaklyRegular.nil _ _, ?_⟩
+  simp only [Ideal.ofList_nil, Submodule.top_smul]
+  exact fun htop => hn_not_unit ((Ideal.span_singleton_eq_top).1 (by
+    have : (⊤ : Submodule R R) = Ideal.span ({n} : Set R) := by
+      have hspan_eq : (({n} : Set R) • (⊤ : Submodule R R)) =
+          Ideal.span ({n} : Set R) := by
+        exact Submodule.set_smul_top_eq_span ({n} : Set R)
+      rw [← hspan_eq]
+      exact htop.symm
+    exact this.symm))
 theorem regular_of_norm_eliminate {R : Type*} [CommRing R] (f : R)
     (n : ℕ) (Pv Qv : Fin n → R)
     (gens : Fin n → AdjoinRoot (Polynomial.X ^ 2 - Polynomial.C f : Polynomial R))
