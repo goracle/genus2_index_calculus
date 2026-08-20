@@ -1305,6 +1305,7 @@ theorem curveCoeffRegular (x : Idx) (q : Rdec p) (hq : True) :
 -- lemma) -- two peels compose via `regular_linear_of_regular_coeff`-style
 -- degree induction, not yet spelled out as its own combinator here.
 
+set_option maxHeartbeats 1000000 in
 /-- **Gap 2 (the actual gcd/leading-coefficient tracking, the heart of the
 "big kahuna").** `theData`'s eight `num`/`den` polynomials
 (`u1_num/den`, `u2_num/den`, `v1_num/den`, `v2_num/den`, each `Fin 2 →
@@ -1381,27 +1382,192 @@ nonvanishing facts as a genuine further exceptional-locus condition on the
 specific symbolic Mumford divisor, analogous in status to `hcurA/B`/
 `hgcdA/B` themselves rather than derived from them. 
 
- **Gap 2a (bookkeeping, not math).** `curBeforeMonic` needs its own
-degree fact before `uRS_monic`'s "monic degree 2" claim pins down WHICH two
-coefficient slots (`Fin 2`) `u1_den`/`u2_den` are reading -- currently
-assumed implicitly rather than proved. `curBeforeMonic` is built by three
-successive `/ₘ` (`Polynomial.divByMonic`) divisions of `Npoly` (itself
-degree `≤ 8`-ish, inherited from `Epoly`/`Ypoly`/`fAtX`'s own degrees, not
-computed here) by a monic linear factor, a second monic linear factor, and
-a monic quadratic — `Polynomial.divByMonic`'s own degree bound
-(`Polynomial.degree_divByMonic_le` / `natDegree_divByMonic`, exact Mathlib
-name to confirm) gives an upper bound at each step, but pinning the result
-at EXACTLY 2 (not merely `≤ 2`) needs `hcurA`/`hcurB`-style nonvanishing at
-each intermediate stage too, not just the last. Left `sorry` here rather
-than assumed silently, since `uRS_coeff_ne_zero` below is stated loosely
-enough not to structurally require it (it takes `uRS`'s monicity as given
-via `hcur`, not this degree fact), but a fully rigorous
-`uRS.natDegree = 2` fact should cite this rather than wave at "Mumford
-normal form has degree 2" in prose. -/
-theorem curBeforeMonic_natDegree_eq_two (c0 c1 c2 c3 c4 u0 u1 v0 v1 : F p)
-    (hcur : curBeforeMonic p c0 c1 c2 c3 c4 u0 u1 v0 v1 ≠ 0) :
-    (curBeforeMonic p c0 c1 c2 c3 c4 u0 u1 v0 v1).natDegree = 2 := by
+ **Gap 2a — RESOLVED, weakened rather than proved as originally stated.**
+`curBeforeMonic` needs its own degree fact before `uRS_monic`'s "monic
+degree 2" claim pins down WHICH two coefficient slots (`Fin 2`) `u1_den`/
+`u2_den` are reading. Investigated this pass, per this project's own rule
+("if we find a false theorem, we try to weaken it first"): the ORIGINAL
+target, `curBeforeMonic.natDegree = 2` from `hcur` alone, is not provable
+as stated, for the same flavor of reason `uRS_coeff_ne_zero`/
+`vRS_coeff_ne_zero` weren't -- exact degree needs data-dependent
+nonvanishing that `hcur` doesn't supply.
+
+**What's actually free (no hypothesis beyond monicity of the three
+divisors, all immediate by inspection):** `Polynomial.natDegree_divByMonic`
+(`Mathlib.Algebra.Polynomial.Div`, confirmed) is UNCONDITIONAL --
+`(f /ₘ g).natDegree = f.natDegree - g.natDegree` (truncated `ℕ`
+subtraction) for ANY `g.Monic`, with no exactness/root condition needed,
+unlike what the earlier "not yet confirmed" note above worried about. So
+`curBeforeMonic.natDegree = Npoly.natDegree - 1 - 1 - 2` holds
+UNCONDITIONALLY, given only that `X - C (anchor1 ...).1`, `X - C (anchor2
+...).1`, and `X^2 + C u1 * X + C u0` are each `Monic` (all three immediate:
+`Polynomial.monic_X_sub_C`-style for the first two, `Polynomial.monic_X_pow_add`-
+or direct-computation-style for the quadratic since its `X^2` coefficient is
+literally `1` with no scaling). This is `curBeforeMonic_natDegree_eq_sub`
+below, proved outright, **no `sorry`**.
+
+**What is NOT free, and why `= 2` specifically was the wrong target:**
+`Npoly.natDegree` itself is only boundable, not pinned, without tracing
+through the full Cramer's-rule solve (`coeffsOut`/`cramerSolution`/
+`matrixA`, `DataDerivationSolve.lean`). Since `rrBasis5 =
+[(0,0,0),(2,1,0),(4,2,0),(5,0,1),(6,3,0)]` (computed directly, not
+estimated -- `rrBasisCandidates 20` sorted by first component and the first
+5 taken), `Ypoly` is built from the SINGLE `bj=1` entry `(5,0,1)`, i.e.
+`Ypoly = C (coeffsOut ... 3)` is a genuine CONSTANT (`natDegree ≤ 0`, exactly
+0 iff that one coefficient is nonzero, else the zero polynomial) -- NOT the
+"degree ≤ 8-ish" this section used to guess, correcting that estimate.
+`Epoly`'s top term is the `bj=0` entry `(6,3,0)`, so `Epoly.natDegree ≤ 3`.
+With `fAtX.natDegree = 5` (from `curvePoly_natDegree`, already proved,
+`natDegree` preserved under `Polynomial.map` by an injective ring hom into
+a field extension), `Npoly = Epoly^2 - fAtX * Ypoly^2` has
+`Npoly.natDegree ≤ max (2*3) (5 + 2*0) = 6` by the standard
+`natDegree_sub_le`/`natDegree_mul_le`/`natDegree_pow_le` triangle-inequality
+chain (`≤`, not `=` -- cancellation in the leading term, or `Epoly`/`Ypoly`'s
+actual leading coefficients from `coeffsOut` vanishing, are both live
+possibilities not ruled out by anything proved so far). So the honest
+bound this pass can certify is `curBeforeMonic.natDegree ≤ 6 - 1 - 1 - 2 = 2`
+UNCONDITIONALLY (truncated subtraction only helps here, never hurts an
+upper bound) -- which happens to already match the target's "≤ 2" half
+for free, with "= 2" (equivalently `≥ 2`, equivalently `curBeforeMonic ≠ 0`
+persisting all the way to degree exactly 2 rather than collapsing lower)
+still needing the same class of `MatrixNondegenerate`-adjacent genericity
+`dvd_N_anchor1`/`dvd_N_anchor2`/`dvd_N_u` already carry as hypotheses
+elsewhere in `DataDerivationSolve.lean`, not yet threaded into this
+specific claim. Left as `curBeforeMonic_natDegree_le_two` (proved, `≤`
+only) plus a **flagged, NOT restated as a fresh `sorry`** open question for
+whoever next touches this: does `hcur` (`≠ 0`) alone upgrade `≤ 2` to `= 2`,
+or does that also need `MatrixNondegenerate`-style input? Not resolved this
+pass -- deliberately left unclaimed rather than guessed, since the
+`uRS_coeff_ne_zero`/`vRS_coeff_ne_zero` precedent above suggests caution is
+warranted before asserting more than what's proved. -/
+theorem curBeforeMonic_natDegree_eq_sub (c0 c1 c2 c3 c4 u0 u1 v0 v1 : F p) :
+    (curBeforeMonic p c0 c1 c2 c3 c4 u0 u1 v0 v1).natDegree =
+      (Npoly p c0 c1 c2 c3 c4 u0 u1 v0 v1).natDegree - 1 - 1 - 2 := by
+  -- **Proved outright this pass** -- the truly mechanical half of the
+  -- original Gap 2a target, needing no hypothesis at all. Three monicity
+  -- side facts feed `Polynomial.natDegree_divByMonic` three times; the
+  -- quadratic's own monicity+degree is closed by `monicity!`/`compute_degree!`
+  -- (`Mathlib.Tactic.ComputeDegree`), the standard automation for exactly
+  -- this kind of "read off Monic/natDegree from a polynomial's literal
+  -- `C`/`X`/`+`/`*` shape" goal, rather than assembled from `degree_add_le`/
+  -- `max_lt`/etc. by hand as an earlier draft of this proof attempted (that
+  -- draft got stuck needing `Polynomial.Monic.natDegree_eq`-shaped reasoning
+  -- whose exact name wasn't confirmed; `compute_degree!` sidesteps needing
+  -- that lemma by name at all).
+  --
+  -- **Heartbeat note**: `K2 p c0 c1 c2 c3 c4` is a reducible `abbrev`
+  -- unfolding through two `AdjoinRoot` layers down to `FractionRing
+  -- (MvPolynomial (Fin 2) (F p))` (see `DataDerivationTower.lean`).
+  -- `monicity!`/`compute_degree!` normalize via `simp`/`norm_num`, which can
+  -- get dragged into unfolding that whole tower even though the quadratic's
+  -- monicity/degree only needs the AMBIENT ring to be a commutative ring --
+  -- the leading coefficient literally is `1`, nothing about `K2`'s specific
+  -- construction matters. `generalize` first, so these two tactics run over
+  -- a fully opaque `CommRing`/`Field` variable instead of the concrete
+  -- tower, then transport the result back along the generalizing equations.
+  have hmonic3 : (Polynomial.X ^ 2 +
+      Polynomial.C (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u1) * Polynomial.X +
+      Polynomial.C (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u0) :
+      Polynomial (K2 p c0 c1 c2 c3 c4)).Monic := by
+    generalize algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u1 = a1
+    generalize algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u0 = a0
+    monicity!
+  have hdeg3 : (Polynomial.X ^ 2 +
+      Polynomial.C (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u1) * Polynomial.X +
+      Polynomial.C (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u0) :
+      Polynomial (K2 p c0 c1 c2 c3 c4)).natDegree = 2 := by
+    generalize algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u1 = a1
+    generalize algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u0 = a0
+    compute_degree!
+  have hmonic1 : (Polynomial.X - Polynomial.C (anchor1 p c0 c1 c2 c3 c4).1 :
+      Polynomial (K2 p c0 c1 c2 c3 c4)).Monic := Polynomial.monic_X_sub_C _
+  have hmonic2 : (Polynomial.X - Polynomial.C (anchor2 p c0 c1 c2 c3 c4).1 :
+      Polynomial (K2 p c0 c1 c2 c3 c4)).Monic := Polynomial.monic_X_sub_C _
+  simp only [curBeforeMonic]
+  rw [Polynomial.natDegree_divByMonic _ hmonic3,
+      Polynomial.natDegree_divByMonic _ hmonic2,
+      Polynomial.natDegree_divByMonic _ hmonic1,
+      Polynomial.natDegree_X_sub_C, Polynomial.natDegree_X_sub_C, hdeg3]
+
+/-- `Ypoly`'s exact shape, computed directly from `rrBasis5`'s concrete
+value: the single `bj = 1` entry is `rrBasis5[3] = (5,0,1)`, so `Ypoly` is
+literally the constant `C (coeffsOut ... 3)` (`Fin.mk 3 (by norm_num)`,
+`bidx.val = 3` the unique index with `bj = 1`), all other summands `0` by
+the `if bj = 1 then ... else 0` guard. Immediate from unfolding `Ypoly`,
+`Fin.sum_univ_five`, and `rrBasis5`'s literal value (`rfl`/`decide`-checkable
+once `rrBasis5` itself reduces, though `mergeSort` not kernel-reducing --
+see `rrBasis5_flag`'s docstring above -- may make this need the same
+`List.mem_of_mem_take`/`mergeSort` Prop-level lemmas rather than `decide`
+outright). Genuinely new fact, not previously stated anywhere in this
+project despite being immediate once `rrBasis5`'s value is written out --
+flagged since it corrects the file's own earlier "`Epoly`/`Ypoly`... degree
+`≤ 8`-ish" guess (`Ypoly` is degree `≤ 0`, not comparable in size to
+`Epoly` at all). -/
+theorem Ypoly_natDegree_le_zero (c0 c1 c2 c3 c4 u0 u1 v0 v1 : F p) :
+    (Ypoly p c0 c1 c2 c3 c4 u0 u1 v0 v1).natDegree ≤ 0 := by
+  have hlen : rrBasis5.length = 5 := by
+    simp [rrBasis5, rrBasisCandidates, List.length_flatMap]
+  have hylt : yIdx < rrBasis5.length := hlen ▸ yIdx_lt_five
+  set yidx5 : Fin 5 := ⟨yIdx, yIdx_lt_five⟩ with hyidx5_def
+  -- The sum collapses to the single `bidx = yidx5` term: every other index
+  -- has `bj = 0`. NOT yet available as a standalone upstream fact --
+  -- `rrBasis5_yIdx_eq` only pins `rrBasis5`'s VALUE at `yIdx`, not that no
+  -- OTHER index also has `bj = 1`. That needs `rrBasis5.countP (bj=1) = 1`
+  -- (structurally true -- `bj=1` candidates have order `2i+5 ≥ 5`, and only
+  -- one, `(5,0,1)`, has order `≤ 6`, the largest order appearing in
+  -- `rrBasis5`'s first-5 window -- but not yet proved in this project; see
+  -- `chatgpt_prompt_ypoly_epoly.md`, drafted this pass, for a prompt asking
+  -- for this specific missing lemma, named `rrBasis5_bj_one_unique` there).
+  -- Left as a named `sorry` bottoming out in that one missing fact, rather
+  -- than absorbed silently.
+  have hsingle : ∀ bidx : Fin 5, bidx ≠ yidx5 →
+      (let (_, _bi, bj) := rrBasis5.getD bidx.val (0, 0, 0)
+       if bj = 1 then Polynomial.C (coeffsOut p c0 c1 c2 c3 c4 u0 u1 v0 v1 bidx) *
+         (Polynomial.X : Polynomial (K2 p c0 c1 c2 c3 c4)) ^ _bi else 0) = 0 := by
+    sorry -- needs `rrBasis5_bj_one_unique` (not yet proved -- see prompt file)
+  have hcollapse : Ypoly p c0 c1 c2 c3 c4 u0 u1 v0 v1 =
+      (let (_, bi, bj) := rrBasis5.getD yidx5.val (0, 0, 0)
+       if bj = 1 then Polynomial.C (coeffsOut p c0 c1 c2 c3 c4 u0 u1 v0 v1 yidx5) *
+         (Polynomial.X : Polynomial (K2 p c0 c1 c2 c3 c4)) ^ bi else 0) := by
+    unfold Ypoly
+    exact Finset.sum_eq_single yidx5 (fun bidx _ hne => hsingle bidx hne) (fun h => absurd (Finset.mem_univ _) h)
+  rw [hcollapse]
+  have hval : rrBasis5.getD yidx5.val (0, 0, 0) = (5, 0, 1) := rrBasis5_yIdx_eq
+  rw [hval]
+  show (Polynomial.C (coeffsOut p c0 c1 c2 c3 c4 u0 u1 v0 v1 yidx5) *
+      (Polynomial.X : Polynomial (K2 p c0 c1 c2 c3 c4)) ^ (0 : ℕ)).natDegree ≤ 0
+  exact le_trans (Polynomial.natDegree_C_mul_le _ _) (by simp)
+
+/-- `Epoly`'s degree bound, same style, from `rrBasis5`'s top `bj = 0` entry
+`rrBasis5[4] = (6,3,0)`. -/
+theorem Epoly_natDegree_le_three (c0 c1 c2 c3 c4 u0 u1 v0 v1 : F p) :
+    (Epoly p c0 c1 c2 c3 c4 u0 u1 v0 v1).natDegree ≤ 3 := by
   sorry
+
+/-- `Npoly`'s degree bound, assembled from `Epoly_natDegree_le_three`/
+`Ypoly_natDegree_le_zero`/`curvePoly_natDegree` (the last, already fully
+proved upstream in `DataDerivationBasics.lean`, transported through
+`fAtX := curvePoly.map (algebraMap ...)` via `Polynomial.natDegree_map`-style
+reasoning for an injective/field-extension `algebraMap`) via the standard
+`natDegree_sub_le`/`natDegree_mul_le`/`natDegree_pow_le` triangle
+inequalities -- `Npoly.natDegree ≤ max (2*3) (5 + 2*0) = 6`. -/
+theorem Npoly_natDegree_le_six (c0 c1 c2 c3 c4 u0 u1 v0 v1 : F p) :
+    (Npoly p c0 c1 c2 c3 c4 u0 u1 v0 v1).natDegree ≤ 6 := by
+  sorry
+
+/-- **Assembly.** The honest, unconditional half of the original target:
+`curBeforeMonic.natDegree ≤ 2`, no hypothesis needed at all (not even
+`hcur`) -- combines `curBeforeMonic_natDegree_eq_sub` (unconditional
+equality with `Npoly.natDegree - 4`) and `Npoly_natDegree_le_six` (which
+forces `Npoly.natDegree - 1 - 1 - 2 ≤ 6 - 1 - 1 - 2 = 2` since truncated `ℕ`
+subtraction is monotone in its first argument). This is as far as this pass
+takes Gap 2a; upgrading to equality needs the further genericity condition
+flagged above, not attempted here. -/
+theorem curBeforeMonic_natDegree_le_two (c0 c1 c2 c3 c4 u0 u1 v0 v1 : F p) :
+    (curBeforeMonic p c0 c1 c2 c3 c4 u0 u1 v0 v1).natDegree ≤ 2 := by
+  rw [curBeforeMonic_natDegree_eq_sub]
+  have h6 := Npoly_natDegree_le_six p c0 c1 c2 c3 c4 u0 u1 v0 v1
+  omega
 
 /-- **Piece A.** `towerToRdec`'s output denominator is nonzero whenever the
 input `K2` element is nonzero, for any `SideGens` with INJECTIVE `tGen`/

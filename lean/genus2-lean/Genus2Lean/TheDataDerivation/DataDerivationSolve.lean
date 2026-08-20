@@ -202,6 +202,109 @@ theorem yIdx_lt_five : yIdx < 5 := by
     simp [rrBasis5, rrBasisCandidates, List.length_flatMap]
   rw [hlen] at hy_len; exact hy_len
 
+/-- `rrBasis5`'s actual entry at `yIdx` is exactly `(5, 0, 1)` -- `bi = 0`
+(order-component `.2.1`) and `bj = 1` (flag `.2.2`) -- matching the concrete
+value `DecoupledSystemRegular.lean`'s docstrings have long described
+(`rrBasis5 = [(0,0,0),(2,1,0),(4,2,0),(5,0,1),(6,3,0)]`, so `yIdx = 3`) but
+which was never actually pinned down as a standalone fact -- every
+downstream use so far only needed `yIdx`'s BOUND (`yIdx_lt_five`), not its
+VALUE. Needed for `Ypoly`'s degree bound: `Ypoly`'s only surviving summand
+is the `bidx = yIdx` slot (`bj = 1` there, `bj = 0` everywhere else via
+`rrBasis5_flag` plus this fact ruling out `bj = 1` colliding at any other
+index -- `findIdx` returns the FIRST such index, and there is only one by
+inspection, so `bi = 0` there gives that summand degree `0`).
+
+**Proof strategy**: rather than a fresh `countP`/`mergeSort`-rank argument
+(`yIdx_lt_five`'s route, needed there only because no length bound was yet
+available), this reuses `yIdx_lt_five`'s own internal witness `x := (5,0,1)`
+directly: `x` is the UNIQUE element of `rrBasisCandidates 20` with
+`bi = 0 ∧ bj = 1` (`bj = 1` forces the `(2i+5,i,1)` `flatMap` branch, and
+`bi = i = 0` pins `i`, giving exactly `(5,0,1)`). Uniqueness on
+`rrBasisCandidates 20` makes the two predicates `(· = x)` and
+`(bi = 0 ∧ bj = 1)` AGREE on every element of `rrBasis5` (a sub-list, via
+`mergeSort`+`take` membership, of that same candidate list), so
+`rrBasis5.findIdx (· = x) = rrBasis5.findIdx (bi = 0 ∧ bj = 1) = yIdx`
+pointwise, letting `List.findIdx_getElem` read off `rrBasis5[yIdx] = x`
+directly. -/
+theorem rrBasis5_yIdx_eq : rrBasis5.getD yIdx (0, 0, 0) = (5, 0, 1) := by
+  have hlen : rrBasis5.length = 5 := by
+    simp [rrBasis5, rrBasisCandidates, List.length_flatMap]
+  have hlt : yIdx < rrBasis5.length := hlen ▸ yIdx_lt_five
+  -- `(5,0,1)` is the unique `bi=0 ∧ bj=1` element of the full candidate
+  -- list -- a closed `List.filter`-style computation, never touching
+  -- `mergeSort`.
+  have hunique : ∀ t ∈ rrBasisCandidates 20, (t.2.1 = 0 ∧ t.2.2 = 1) ↔ t = (5, 0, 1) := by
+    intro t ht
+    simp only [rrBasisCandidates, List.mem_flatMap, List.mem_range] at ht
+    obtain ⟨i, _, hti⟩ := ht
+    simp only [List.mem_cons, List.not_mem_nil, or_false] at hti
+    rcases hti with hti | hti
+    · subst hti; constructor
+      · rintro ⟨-, hbot⟩
+        exact absurd hbot (by simp)
+      · intro hbot
+        simp only [Prod.mk.injEq] at hbot
+        simp only
+        omega
+    · subst hti; constructor
+      · rintro ⟨hbi, -⟩; subst hbi; rfl
+      · intro heq
+        have : i = 0 := by
+          have := heq
+          simpa using congrArg (fun t => t.2.1) this
+        subst this; exact ⟨rfl, rfl⟩
+  -- Every element of `rrBasis5` is an element of `rrBasisCandidates 20`.
+  have hsub : ∀ t ∈ rrBasis5, t ∈ rrBasisCandidates 20 := by
+    intro t ht
+    have ht' : t ∈ (rrBasisCandidates 20).mergeSort (fun a b => decide (a.1 ≤ b.1)) :=
+      List.mem_of_mem_take ht
+    exact (List.mem_mergeSort).mp ht'
+  -- So the two predicates agree pointwise on `rrBasis5`, hence `findIdx`
+  -- returns the same index for both. Proved by hand (not via a guessed
+  -- `List.findIdx_congr`-style name, per this project's own discipline of
+  -- never leaning on an unverified Mathlib lemma name -- see the caveat in
+  -- `coeffsOut`'s docstring above about `List.indexOf?`).
+  have hpred_eq : ∀ t ∈ rrBasis5,
+      decide (t.2.1 = 0 ∧ t.2.2 = 1) = decide (t = ((5, 0, 1) : ℕ × ℕ × ℕ)) := by
+    intro t ht
+    exact decide_eq_decide.mpr (hunique t (hsub t ht))
+  have findIdx_eq_of_pred_eq_on :
+      ∀ {α : Type} {p q : α → Bool} {l : List α},
+        (∀ t ∈ l, p t = q t) → l.findIdx p = l.findIdx q := by
+    intro α p q l
+    induction l with
+    | nil => intro _; rfl
+    | cons a l ih =>
+      intro heq
+      have ha : p a = q a := heq a (by simp)
+      simp only [List.findIdx_cons, ha]
+      by_cases hqa : q a = true
+      · simp [hqa]
+      · simp only [hqa, if_false]
+        have hrest : ∀ t ∈ l, p t = q t := fun t ht => heq t (List.mem_cons_of_mem a ht)
+        rw [ih hrest]
+  have hfind_eq : rrBasis5.findIdx (fun bij => decide (bij.2.1 = 0 ∧ bij.2.2 = 1)) =
+      rrBasis5.findIdx (fun bij => decide (bij = ((5, 0, 1) : ℕ × ℕ × ℕ))) :=
+    findIdx_eq_of_pred_eq_on hpred_eq
+  have hlt' : rrBasis5.findIdx (fun bij => decide (bij = ((5, 0, 1) : ℕ × ℕ × ℕ))) <
+      rrBasis5.length := hfind_eq ▸ hlt
+  have hpred := List.findIdx_getElem (xs := rrBasis5)
+    (p := fun bij => decide (bij = ((5, 0, 1) : ℕ × ℕ × ℕ))) (w := hlt')
+  have hyidx_eq : yIdx = rrBasis5.findIdx (fun bij => decide (bij = ((5, 0, 1) : ℕ × ℕ × ℕ))) := by
+    show rrBasis5.findIdx (fun bij => decide (bij.2.1 = 0 ∧ bij.2.2 = 1)) = _
+    exact hfind_eq
+  rw [List.getD_eq_getElem _ _ hlt]
+  -- `simp only [hyidx_eq]` (rather than `rw [hyidx_eq]`) avoids the "motive
+  -- is not type correct" issue: `yIdx` appears both in the value position of
+  -- `rrBasis5[yIdx]` and inside the bundled `<`-proof it depends on, so a
+  -- plain `rw` cannot abstract it safely, but `simp`'s congruence-based
+  -- rewriting handles the dependency correctly.
+  have hcast : rrBasis5[yIdx] =
+      rrBasis5[rrBasis5.findIdx (fun bij => decide (bij = ((5, 0, 1) : ℕ × ℕ × ℕ)))]'hlt' := by
+    simp only [hyidx_eq]
+  rw [hcast]
+  simpa using hpred
+
 theorem otherIdx_length : otherIdx.length = 4 := by
   have hy := yIdx_lt_five
   have hy_cases : yIdx = 0 ∨ yIdx = 1 ∨ yIdx = 2 ∨ yIdx = 3 ∨ yIdx = 4 := by omega
