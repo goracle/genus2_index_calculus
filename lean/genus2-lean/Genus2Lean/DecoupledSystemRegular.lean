@@ -3,7 +3,7 @@ import Genus2Lean.TheDataDerivation.DataDerivationMumford
 
 /-!
 # 0-dimensionality of the decoupled `P1+P2-P3-P4=(alpha-alpha')*a` matching
-# Revision 1: fixed three elaboration/type errors in the recursive norm-elimination proof.
+# Revision 3: fixed dependent `Fin` elimination in the `Ypoly` degree proof and closed the non-`bj=1` branch explicitly.
   system, via a regular sequence
 
 ## Update this pass: symbolic `p`, and `theData` assembled (not opaque)
@@ -1508,8 +1508,23 @@ theorem Ypoly_natDegree_le_zero (c0 c1 c2 c3 c4 u0 u1 v0 v1 : F p) :
   have hlen : rrBasis5.length = 5 := by
     simp [rrBasis5, rrBasisCandidates, List.length_flatMap]
   have hylt : yIdx < rrBasis5.length := hlen ▸ yIdx_lt_five
+  -- `hyidx` is derived BEFORE `set` introduces `yidx5`, so `interval_cases`
+  -- can freely case-split and substitute into `yIdx`'s occurrences without
+  -- fighting a dependent local definition (`yidx5 := ⟨yIdx, yIdx_lt_five⟩`)
+  -- whose own type/proof term mentions `yIdx` -- that ordering is what
+  -- caused `generalize`'s "result is not type correct" failure previously:
+  -- once `set` folds `⟨yIdx, yIdx_lt_five⟩` into `yidx5` everywhere,
+  -- `interval_cases`'s internal `generalize` on bare `yIdx` no longer
+  -- type-checks against the now-`yidx5`-mentioning context.
+  have hyidx : yIdx = 3 := by
+    have hylt5 : yIdx < 5 := hylt.trans_eq hlen
+    have hyidxeq := rrBasis5_yIdx_eq
+    interval_cases yIdx <;> revert hyidxeq <;> native_decide
   set yidx5 : Fin 5 := ⟨yIdx, yIdx_lt_five⟩ with hyidx5_def
-  -- The sum collapses to the single `bidx = yidx5` term: every other index
+  have hyidx5_three : yidx5 = (⟨3, by norm_num⟩ : Fin 5) := by
+    apply Fin.ext
+    simpa [yidx5] using hyidx
+  -- The sum collapses to the single `bidx = 3` term: every other index
   -- has `bj = 0`. NOT yet available as a standalone upstream fact --
   -- `rrBasis5_yIdx_eq` only pins `rrBasis5`'s VALUE at `yIdx`, not that no
   -- OTHER index also has `bj = 1`. That needs `rrBasis5.countP (bj=1) = 1`
@@ -1524,7 +1539,20 @@ theorem Ypoly_natDegree_le_zero (c0 c1 c2 c3 c4 u0 u1 v0 v1 : F p) :
       (let (_, _bi, bj) := rrBasis5.getD bidx.val (0, 0, 0)
        if bj = 1 then Polynomial.C (coeffsOut p c0 c1 c2 c3 c4 u0 u1 v0 v1 bidx) *
          (Polynomial.X : Polynomial (K2 p c0 c1 c2 c3 c4)) ^ _bi else 0) = 0 := by
-    sorry -- needs `rrBasis5_bj_one_unique` (not yet proved -- see prompt file)
+    intro bidx hne
+    have hcases3 : bidx = (⟨3, by norm_num⟩ : Fin 5) ∨
+        (rrBasis5.getD bidx.val (0, 0, 0)).2.2 ≠ 1 := by
+      fin_cases bidx <;> native_decide
+    have hcases : bidx = yidx5 ∨
+        (rrBasis5.getD bidx.val (0, 0, 0)).2.2 ≠ 1 := by
+      rcases hcases3 with h | h
+      · left
+        simpa [hyidx5_three] using h
+      · exact Or.inr h
+    rcases hcases with h | hbj
+    · exact False.elim (hne h)
+    · dsimp
+      rw [if_neg hbj]
   have hcollapse : Ypoly p c0 c1 c2 c3 c4 u0 u1 v0 v1 =
       (let (_, bi, bj) := rrBasis5.getD yidx5.val (0, 0, 0)
        if bj = 1 then Polynomial.C (coeffsOut p c0 c1 c2 c3 c4 u0 u1 v0 v1 yidx5) *
@@ -1537,6 +1565,12 @@ theorem Ypoly_natDegree_le_zero (c0 c1 c2 c3 c4 u0 u1 v0 v1 : F p) :
   show (Polynomial.C (coeffsOut p c0 c1 c2 c3 c4 u0 u1 v0 v1 yidx5) *
       (Polynomial.X : Polynomial (K2 p c0 c1 c2 c3 c4)) ^ (0 : ℕ)).natDegree ≤ 0
   exact le_trans (Polynomial.natDegree_C_mul_le _ _) (by simp)
+
+
+
+
+
+
 
 /-- `Epoly`'s degree bound, same style, from `rrBasis5`'s top `bj = 0` entry
 `rrBasis5[4] = (6,3,0)`. -/
