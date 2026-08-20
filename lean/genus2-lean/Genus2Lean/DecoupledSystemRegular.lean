@@ -1590,9 +1590,19 @@ theorem Epoly_natDegree_le_three (c0 c1 c2 c3 c4 u0 u1 v0 v1 : F p) :
   unfold Epoly
   refine le_trans (Polynomial.natDegree_sum_le _ _) ?_
   refine Finset.sup_le (fun bidx _ => ?_)
+  simp only [Function.comp_apply]
   have hbi3 : (rrBasis5.getD bidx.val (0, 0, 0)).2.1 ≤ 3 := by
     fin_cases bidx <;> native_decide
-  obtain ⟨a, bi, bj⟩ := rrBasis5.getD bidx.val (0, 0, 0)
+  -- `generalize` replaces every occurrence of the (now beta-reduced) term
+  -- `rrBasis5.getD bidx.val (0,0,0)` in the goal with a fresh triple `t`,
+  -- carrying `hbi3` along via `rw` first so it's stated about the same
+  -- fresh variable once destructured -- unlike a bare `obtain` on the raw
+  -- term (which introduces `a bi bj` disconnected from the goal, since the
+  -- goal's occurrences sit under an unreduced `Function.comp`/lambda).
+  revert hbi3
+  generalize rrBasis5.getD bidx.val (0, 0, 0) = t
+  obtain ⟨a, bi, bj⟩ := t
+  intro hbi3
   dsimp only at hbi3 ⊢
   split
   · -- goal: `(C (coeffsOut ... bidx) * X ^ bi).natDegree ≤ 3`, with `hbi3 :
