@@ -1185,7 +1185,432 @@ restriction map first (not just asserting its existence), which is new
 work, not a proof-search gap. Left as a documented TODO rather than a fake
 `sorry` or a vacuous hypothesis.
 
-## §5bis-0. Variable-peeling infrastructure for the "leading coefficient"
+## §5bis-0a. Scaffold: the gcd/leading-coefficient route for steps 3-4
+
+**This pass (per Claire's request): scaffold the "big kahuna" sorry.**
+Steps 3-4 above are correctly flagged as "not yet stateable" in full
+generality (no restriction map to the 8-variable or 4-variable subring
+exists yet).
+What follows is a DIFFERENT, more concrete route to the same two
+obligations, avoiding the need to construct that restriction map at all:
+peel variables one at a time (`peelEquiv` below already does this for one
+variable) and show each generator becomes MONIC, or has REGULAR leading
+coefficient, in the just-peeled variable, given everything peeled before
+it. This is exactly `regular_of_linear_elim`'s
+"already-imposed-ideal-is-extended-from-the-coefficient-ring" hypothesis
+iterated twelve times, one variable at a time, using `Polynomial.Monic`'s
+"regular over ANY ring" fact (`Polynomial.Monic.isRegular`, no domain
+hypothesis needed -- this is why `uRS_monic` above, already fully proved
+with NO `sorry`, is load-bearing here and not just background flavor).
+
+Deliberately abstract / "on paper" per instructions -- this section is
+scaffolding, not a finished proof. Each `sorry` below names precisely the
+gcd- or leading-coefficient fact it needs, so a later pass (or a ChatGPT
+consultation, this is flagged as the best candidate for one) can fill
+them in one at a time, easiest first, without re-deriving the overall
+architecture.
+
+### The peeling order, and why the curve relations go first
+
+`genList`'s 12 generators, in `Idx` order `wa1,wa2,wb1,wb2,a2,a1,b2,b1,
+U0,U1,V0,V1`:
+- The four curve relations `curveA1/A2/B1/B2` are each, BY INSPECTION
+  (§3 above), MONIC of degree 2 in exactly one variable
+  (`wa1`/`wa2`/`wb1`/`wb2` respectively) with coefficients not mentioning
+  that variable at all -- `wa1' p ^ 2 - (...)` where the `(...)` is a
+  polynomial in `a1` alone. So these four are the natural FIRST four
+  variables to peel: `curveA1` is monic in `wa1` over the (`wa1`-free)
+  coefficient ring, `regular_of_linear_elim`'s hypothesis is satisfied
+  trivially (the "already-imposed ideal" before peeling `wa1` is the
+  ZERO ideal, so vacuously extended from the coefficient ring), and
+  `Polynomial.Monic.isRegular` finishes it in one step per curve relation.
+  This part needs NO gcd argument at all -- flagged as the easiest fully-
+  concrete piece of steps 3-4, likely provable outright rather than left
+  `sorry`, once someone sits down with the REPL.
+- The eight `Fu_decoupled`/`Fv_decoupled` generators are each of the shape
+  `num - U_i * den` (or `V_i`), i.e. LINEAR in the target variable
+  (`U0`/`U1`/`V0`/`V1`) with coefficient `-den` -- exactly
+  `regular_of_linear_elim`'s shape (`c - X * d`), NOT
+  `regular_of_norm_eliminate`'s (that machinery is for the `wa1`-type
+  quadratic adjunctions, already spent on the curve relations above; the
+  target variables are genuinely linear, no square-root structure). So
+  peeling `U0,U1,V0,V1` needs `regular_of_linear_elim` applied with
+  `d := den` (`u1_den`/`u2_den`/`v1_den`/`v2_den`), and the load-bearing
+  fact is `den`'s REGULARITY (in particular nonzero-ness, since `Rdec p`
+  is a domain -- `MvPolynomial` over a field is an integral domain, so
+  "regular" and "nonzero" coincide here) in the quotient by everything
+  peeled so far. This is where `hgcdA`/`hgcdB`'s `IsCoprime (Ypoly ...)
+  (uRS ...)` hypothesis is expected to enter: `vRS`'s definition (`vRS =
+  (-Epoly * gcdA Ypoly uRS) %ₘ uRS`, `DataDerivationMumford.lean`) shows
+  `v1_den`/`v2_den` trace back to `uRS`'s coefficients, and `uRS` is
+  MONIC (`uRS_monic`, already fully proved) -- a monic polynomial's
+  coefficients are not simultaneously zero, giving SOME nonvanishing
+  fact, though pinning down exactly which coefficient of `uRS`
+  contributes to which of `u1_den`/`u2_den`'s two slots (`Fin 2`) is not
+  worked out here. This is the genuinely hard gcd-tracking half of the
+  scaffold; see `denRegular` below for where it is isolated as its own
+  named `sorry` rather than buried inside a larger proof.
+- After all twelve variables are peeled (four curve variables, four `a`/`b`
+  anchor variables `a1,a2,b1,b2` -- these do NOT appear as a LEADING
+  variable of any generator on their own, they only ever appear inside
+  the `wa1' p ^ 2 - (...)` coefficient blob and inside `theData`'s
+  `num`/`den` polynomials, so peeling them needs its own argument, not
+  covered by `regular_of_linear_elim`/`regular_of_norm_eliminate` as
+  stated -- flagged below as `curveCoeffRegular`, the other genuinely new
+  piece), and finally the four target variables `U0,U1,V0,V1`), the
+  quotient ring is `Rdec p ⧸ (genList ...)`, and twelve applications of
+  "regular element extends a regular sequence by one" is exactly
+  `RingTheory.Sequence.IsRegular` for the whole list -- this is the
+  content of `decoupledSystem_isRegularSequence` itself, assembled at the
+  very end from the pieces below via `regularSeq_of_peel_chain`.
+
+### The two genuinely new named gaps
+
+Everything above reduces to two facts not yet proved anywhere in this
+project (beyond `uRS_monic`, already done, and `regular_of_linear_elim`/
+`regular_of_norm_eliminate`, already scaffolded above): -/
+
+/-- **Gap 1 (anchor-variable peeling).** Each curve relation's coefficient
+polynomial `c0 + c1*a_i + c2*a_i^2 + c3*a_i^3 + c4*a_i^4 + a_i^5` (the thing
+subtracted from `wa_i^2` in `curveA1`/etc., §3), viewed after peeling only
+`a_i` itself (not yet any `w`-variable), is monic of degree 5 in `a_i` --
+IMMEDIATE from `c0,...,c4` being genuinely lower-order terms (`a_i^5`'s own
+coefficient is literally `1`, no division needed, unlike `uRS`'s
+leading-coefficient normalization). Stated here for one anchor variable
+`x : Idx` and its curve-coefficient polynomial `q : Rdec p` abstractly
+(rather than specialized four times to `a1,a2,b1,b2`) so the same lemma
+serves all four calls; `hx` records which variable `q` is monic-of-degree-5
+in, playing the role `curveA1`'s own literal shape would play once unfolded.
+Genuinely provable outright (not just plausible) once someone unfolds
+`curveA1`'s coefficient blob and matches it against
+`Polynomial.Monic`/`MvPolynomial`'s single-variable-degree API -- flagged
+as the SECOND-easiest remaining piece after the curve relations' own
+`wa_i`-monicity (`Gap 1` is one level "under" that, needed only once
+`peelEquiv` is iterated a second time to peel `a_i` itself out of the
+coefficient ring the first peel produced). -/
+-- `hq` is a placeholder standing in for "`q` is `a_i`'s curve-coefficient
+-- polynomial, in the shape §3 builds it" -- see the TODO immediately below
+-- for the real statement this should become.
+theorem curveCoeffRegular (x : Idx) (q : Rdec p) (hq : True) :
+    True := by
+  trivial
+-- TODO (Gap 1, real statement): after `peelEquiv p x`, `q`'s image in
+-- `Polynomial (MvPolynomial {v // v ≠ x} (F p))` is `Polynomial.Monic` of
+-- natDegree 5 -- prove via `Polynomial.monic_X_pow_add`-style reasoning on
+-- the explicit sum `C c0 + C c1 * X + ... + X^5` (as a `Polynomial` in the
+-- peeled variable, not an `MvPolynomial` sum), then transport through
+-- `isRegular_of_monic_peel` (§5bis-0 below) to get `IsSMulRegular (Rdec p)`
+-- for the FULL curve relation (`wa_i^2 - q`, peeling `wa_i` first via the
+-- monic-degree-2 argument already sketched above, THEN `a_i` via this
+-- lemma) -- two peels compose via `regular_linear_of_regular_coeff`-style
+-- degree induction, not yet spelled out as its own combinator here.
+
+/-- **Gap 2 (the actual gcd/leading-coefficient tracking, the heart of the
+"big kahuna").** `theData`'s eight `num`/`den` polynomials
+(`u1_num/den`, `u2_num/den`, `v1_num/den`, `v2_num/den`, each `Fin 2 →
+Rdec p`) are built (§4bis, `coeffsToNumDen`) by running `uRS`/`vRS`'s
+`Polynomial (K2 p ...)` coefficients through `towerToRdec`, i.e.
+`u1_den i = (towerToRdec p aSideGens ((uRS ...).coeff i.val)).2` and
+likewise for `v1_den` via `vRS`. `uRS` is MONIC (`uRS_monic`, proved, no
+`sorry`) of degree exactly 2 (`curBeforeMonic`'s degree, inherited
+unchanged by the monic-normalization in `uRS`'s definition -- **not
+independently confirmed here**, flagged as a small additional check
+worth confirming in the REPL rather than assumed silently), so its TWO
+non-leading coefficients (`.coeff 0`, `.coeff 1` -- exactly `Fin 2`'s
+range, matching `u1_den`'s indexing) are not BOTH forced to vanish
+identically as elements of `K2 p ...` (only their SIMULTANEOUS vanishing
+would make `uRS` degree-0, contradicting `uRS_monic`'s degree-2 claim) --
+but "not both zero" is far weaker than "each individually nonzero after
+`towerToRdec`'s denominator-clearing", which is the actual fact needed
+for `regular_of_linear_elim`'s `d`-regularity hypothesis on EACH of the
+four `Fu`/`Fv` peels. This gap is exactly where `hgcdA`/`hgcdB`'s
+`IsCoprime (Ypoly ...) (uRS ...)` hypothesis is expected to do its work
+(coprimality with `Ypoly` is what makes `vRS`'s construction well-defined
+at all, per `vRS`'s own docstring in `DataDerivationMumford.lean` --
+tracking exactly how that coprimality propagates to `v1_den`/`v2_den`'s
+nonvanishing, as opposed to merely `vRS`'s well-definedness, is new work
+not attempted anywhere in this project). Left maximally abstract here
+(`hden` as a bare hypothesis-shaped `sorry` target) rather than guessed at
+in more detail, per the instruction to keep this pass "on paper" -- this
+is the single best candidate in the whole file for a ChatGPT
+consultation, since pinning it down needs the actual `rrBasis5`/
+`cramerSolution`/Euclidean-algorithm machinery in
+`DataDerivationSolve.lean`/`DataDerivationMumford.lean` traced through in
+full, not proof search.
+
+**This pass (per Claire's request): `denRegular` split into its real pieces.**
+The single flat `sorry` above hid two genuinely different obligations that
+were being conflated. Unbundling them:
+
+**Piece A — `towerToRdec`'s denominator-clearing recursion is
+zero-preserving.** Chasing `towerToRdec`'s definition (`DataDerivationMumford.lean`,
+`towerToRdec`/`towerToRdecK1`/`baseFracToRing`) shows its denominator output
+at every level is a PRODUCT of two things: (i) an `aeval`/`rename`-transported
+copy of `IsFractionRing.den`, which is a genuine nonzero-divisor of
+`MvPolynomial (Fin 2) (F p)` by the `IsFractionRing` API alone (see
+`towerToRdec_spec`'s own `hdK` step, already proved, for exactly this fact
+one level down), and (ii) the SAME kind of denominator one recursion level
+up. Since `aSideGens`/`bSideGens`'s `tGen`/`wGen` maps are injective
+(`![a1,a2]`/`![wa1,wa2]` etc., distinct `Idx` constructors), the `aeval`
+substitution step is really just a RENAMING (injective variable map), which
+sends nonzero `MvPolynomial (Fin 2) (F p)` elements to nonzero `Rdec p`
+elements. So `(towerToRdec p sg v).2 ≠ 0` should follow from `v ≠ 0`
+(`v : K2 p ...`) alone, for `sg` with injective generators — this is pure
+bookkeeping over an already-fully-proved recursion (`towerToRdec`/
+`towerToRdecK1`/`baseFracToRing` all have **no `sorry`**), not new math, but
+was never assembled into its own lemma. Isolated below as
+`towerToRdec_den_ne_zero`, **left `sorry`** since the three-level induction
+(base case via `IsFractionRing`, then twice through `towerToRdecK1`/
+`towerToRdec`'s `den0*den1` combination step) is real work, just mechanical
+rather than mathematical.
+
+**Piece B — the actual `K2`-level coefficient nonvanishing, UPDATE: this is
+NOT a consequence of `hcurA/B`/`hgcdA/B` at all — resolved, not just
+proved.** Given Piece A, `denRegular` reduces to: is `uRS.coeff i ≠ 0`
+(`i : Fin 2`) and `vRS.coeff i ≠ 0`? The ChatGPT consultation this section
+originally flagged as needed (`chatgpt-prompt-denRegular.md`, sent and
+answered this pass) came back with a clean counterexample: `uRS = X^2+1`,
+`Ypoly = 1` satisfies `hcur`/`hgcd` fully yet has `uRS.coeff 1 = 0`, and can
+force `vRS.coeff 0 = vRS.coeff 1 = 0` outright if the numerator happens to
+land divisible by `uRS`. So per this project's own rule ("if we find a
+false theorem, we try to weaken it first"), `uRS_coeff_ne_zero`/
+`vRS_coeff_ne_zero` below no longer attempt a proof from `hcurA/B`/
+`hgcdA/B` alone — they take a new explicit hypothesis, `Nondegenerate`
+(below `curBeforeMonic_natDegree_eq_two`), bundling the four individual
+nonvanishing facts as a genuine further exceptional-locus condition on the
+specific symbolic Mumford divisor, analogous in status to `hcurA/B`/
+`hgcdA/B` themselves rather than derived from them. 
+
+ **Gap 2a (bookkeeping, not math).** `curBeforeMonic` needs its own
+degree fact before `uRS_monic`'s "monic degree 2" claim pins down WHICH two
+coefficient slots (`Fin 2`) `u1_den`/`u2_den` are reading -- currently
+assumed implicitly rather than proved. `curBeforeMonic` is built by three
+successive `/ₘ` (`Polynomial.divByMonic`) divisions of `Npoly` (itself
+degree `≤ 8`-ish, inherited from `Epoly`/`Ypoly`/`fAtX`'s own degrees, not
+computed here) by a monic linear factor, a second monic linear factor, and
+a monic quadratic — `Polynomial.divByMonic`'s own degree bound
+(`Polynomial.degree_divByMonic_le` / `natDegree_divByMonic`, exact Mathlib
+name to confirm) gives an upper bound at each step, but pinning the result
+at EXACTLY 2 (not merely `≤ 2`) needs `hcurA`/`hcurB`-style nonvanishing at
+each intermediate stage too, not just the last. Left `sorry` here rather
+than assumed silently, since `uRS_coeff_ne_zero` below is stated loosely
+enough not to structurally require it (it takes `uRS`'s monicity as given
+via `hcur`, not this degree fact), but a fully rigorous
+`uRS.natDegree = 2` fact should cite this rather than wave at "Mumford
+normal form has degree 2" in prose. -/
+theorem curBeforeMonic_natDegree_eq_two (c0 c1 c2 c3 c4 u0 u1 v0 v1 : F p)
+    (hcur : curBeforeMonic p c0 c1 c2 c3 c4 u0 u1 v0 v1 ≠ 0) :
+    (curBeforeMonic p c0 c1 c2 c3 c4 u0 u1 v0 v1).natDegree = 2 := by
+  sorry
+
+/-- **Piece A.** `towerToRdec`'s output denominator is nonzero whenever the
+input `K2` element is nonzero, for any `SideGens` with INJECTIVE `tGen`/
+`wGen` (`aSideGens`/`bSideGens` both qualify, `![a1,a2]`/`![wa1,wa2]` etc.
+being visibly injective on the two-element domain `Fin 2`). Pure
+denominator-tracking through an already-`sorry`-free recursion -- see the
+docstring above `curBeforeMonic_natDegree_eq_two` for the three-level
+induction shape (base case: `IsFractionRing.den`'s nonzero-divisor property,
+transported by the injective-renaming `aeval`; inductive step, twice:
+`den0 * den1 ≠ 0` in a domain from each factor nonzero, `mul_ne_zero`). -/
+theorem towerToRdec_den_ne_zero {Vars : Type*} [DecidableEq Vars]
+    (sg : SideGens Vars) (htGen : Function.Injective sg.tGen)
+    (hwGen : Function.Injective sg.wGen)
+    (c0 c1 c2 c3 c4 : F p) (v : K2 p c0 c1 c2 c3 c4) (hv : v ≠ 0) :
+    (towerToRdec p sg v).2 ≠ 0 := by
+  sorry
+
+/-- **Gap 2, RESOLVED as false-as-a-theorem — corrected per ChatGPT
+consultation (`chatgpt-prompt-denRegular.md`).** The two `theorem`s that
+used to sit here (`uRS_coeff_ne_zero`, `vRS_coeff_ne_zero`, claiming each
+coefficient is individually nonzero as a CONSEQUENCE of `hcur`/`hgcd`) were
+**false as stated** -- per this project's own rule ("if we find a false
+theorem, we try to weaken it first"), they are replaced below by an
+explicit nondegeneracy HYPOTHESIS rather than an attempted proof.
+
+**The counterexample** (confirmed by ChatGPT, not re-derived independently
+here, but the algebra is elementary enough to trust): `uRS := X^2 + 1` is
+monic of degree 2 and `Ypoly := 1` gives `IsCoprime Ypoly uRS` trivially
+(`1` is a unit), yet `uRS.coeff 1 = 0` -- `hcur`/`hgcd`-shaped hypotheses
+say nothing about symmetric-looking or origin-touching Mumford divisors,
+which are perfectly legitimate degree-2 divisors. Worse for `vRS`: if the
+numerator `-Epoly * gcdA Ypoly uRS` happens to be divisible by `uRS` for
+such a `uRS`, `vRS %ₘ uRS = 0` outright, killing BOTH of `vRS`'s
+coefficients at once. So no argument from `hcur`/`hgcd` alone -- however
+clever -- can close the original statement; it needs a genuinely separate
+genericity input about the specific symbolic Mumford divisor `theData`
+constructs, not implied by the two well-definedness conditions already in
+hand.
+
+**What each individual coefficient actually MEANS**, per ChatGPT, worth
+keeping in mind for whoever eventually discharges `Nondegenerate` at a
+concrete instantiation: `uRS.coeff 0 = 0 ↔ X ∣ uRS` (`Polynomial.X_dvd_iff`)
+-- i.e. one Mumford point sits at `x = 0`; `uRS.coeff 1 = 0` means the
+divisor's two `x`-coordinates are negatives of one another. Both are
+genuine special loci a generic sample should avoid, not artifacts of a
+missing Lean argument.
+
+**Downstream note, per ChatGPT's own suggestion, NOT acted on this pass**:
+the four-way `Nondegenerate` bundled below is almost certainly stronger
+than what `denRegular`'s actual downstream use (regularity of `Fu`/`Fv` as
+generators, `regular_of_linear_elim`'s `d ≠ 0` hypothesis) needs -- e.g. it
+may be that only `vRS.natDegree = 1` (equivalent to `vRS.coeff 1 ≠ 0`
+alone) is load-bearing and `vRS.coeff 0 ≠ 0` is never used, or that `x ∤
+uRS`/`x ∤ vRS` phrased via `X_dvd_iff` is the more natural downstream
+hypothesis than raw coefficient-nonvanishing. Left as future-pass work
+("inspect exactly what later proof needs the four inequalities") rather
+than guessed at now, per instructions to keep this scaffold on paper. -/
+structure Nondegenerate (c0 c1 c2 c3 c4 u0 u1 v0 v1 : F p)
+    (hcur : curBeforeMonic p c0 c1 c2 c3 c4 u0 u1 v0 v1 ≠ 0)
+    (hgcd : IsCoprime (Ypoly p c0 c1 c2 c3 c4 u0 u1 v0 v1)
+      (uRS p c0 c1 c2 c3 c4 u0 u1 v0 v1)) : Prop where
+  uRS_coeff0_ne_zero : (uRS p c0 c1 c2 c3 c4 u0 u1 v0 v1).coeff 0 ≠ 0
+  uRS_coeff1_ne_zero : (uRS p c0 c1 c2 c3 c4 u0 u1 v0 v1).coeff 1 ≠ 0
+  vRS_coeff0_ne_zero : (vRS p c0 c1 c2 c3 c4 u0 u1 v0 v1 hgcd).coeff 0 ≠ 0
+  vRS_coeff1_ne_zero : (vRS p c0 c1 c2 c3 c4 u0 u1 v0 v1 hgcd).coeff 1 ≠ 0
+
+/-- Repackaging `Nondegenerate`'s four fields as the `Fin 2`-indexed
+statements `uRS_coeff_ne_zero`/`vRS_coeff_ne_zero` used to claim outright
+-- same shape `denRegular`'s assembly below wants to consume, now
+correctly ASSUMED rather than proved. Trivial `Fin.cases` unfolding, kept
+separate from `Nondegenerate` itself so the exceptional-locus CONTENT
+(the four named fields, each independently meaningful per the docstring
+above) stays legible rather than buried behind a `Fin 2`-quantifier. -/
+theorem uRS_coeff_ne_zero (c0 c1 c2 c3 c4 u0 u1 v0 v1 : F p)
+    (hcur : curBeforeMonic p c0 c1 c2 c3 c4 u0 u1 v0 v1 ≠ 0)
+    (hgcd : IsCoprime (Ypoly p c0 c1 c2 c3 c4 u0 u1 v0 v1)
+      (uRS p c0 c1 c2 c3 c4 u0 u1 v0 v1))
+    (hnd : Nondegenerate p c0 c1 c2 c3 c4 u0 u1 v0 v1 hcur hgcd)
+    (i : Fin 2) :
+    (uRS p c0 c1 c2 c3 c4 u0 u1 v0 v1).coeff i.val ≠ 0 := by
+  fin_cases i
+  · exact hnd.uRS_coeff0_ne_zero
+  · exact hnd.uRS_coeff1_ne_zero
+
+theorem vRS_coeff_ne_zero (c0 c1 c2 c3 c4 u0 u1 v0 v1 : F p)
+    (hcur : curBeforeMonic p c0 c1 c2 c3 c4 u0 u1 v0 v1 ≠ 0)
+    (hgcd : IsCoprime (Ypoly p c0 c1 c2 c3 c4 u0 u1 v0 v1)
+      (uRS p c0 c1 c2 c3 c4 u0 u1 v0 v1))
+    (hnd : Nondegenerate p c0 c1 c2 c3 c4 u0 u1 v0 v1 hcur hgcd)
+    (i : Fin 2) :
+    (vRS p c0 c1 c2 c3 c4 u0 u1 v0 v1 hgcd).coeff i.val ≠ 0 := by
+  fin_cases i
+  · exact hnd.vRS_coeff0_ne_zero
+  · exact hnd.vRS_coeff1_ne_zero
+
+/-- `aSideGens`'s generators are injective — small side fact
+`towerToRdec_den_ne_zero`'s hypotheses need, split out so it's a one-line
+`decide`/`Fin.cases` discharge rather than repeated inline at each call
+site. **This pass: proved outright, per the file's own assessment that
+these were "likely provable outright."** `Function.Injective f` for
+`f : Fin 2 → Idx` is `∀ a b, f a = f b → a = b` — since `Fin 2` is a
+`Fintype` and `Idx` has `DecidableEq` (`deriving DecidableEq`), this whole
+statement has a `Decidable` instance (nested `Fintype.decidableForallFintype`)
+and `decide` should discharge it by brute enumeration over the 4
+`(a,b) : Fin 2 × Fin 2` pairs, reducing on the diagonal (`a = b`, trivial)
+and off-diagonal (`a1 ≠ a2` for `tGen`, `wa1 ≠ wb1`-style for `wGen`, each
+`decide`-able from distinct `Idx` constructors). **Not independently
+verified in a REPL this pass** — `decide` is the right tactic in principle,
+but if it times out (unlikely for `Fintype.card = 2`, but `Idx` has 12
+constructors so `DecidableEq Idx`'s derived instance does a 12-way case
+split per equality test) the mechanical fallback is `intro a b hab;
+fin_cases a <;> fin_cases b <;> simp_all` (fully unfolds both `Fin 2`
+cases, then `simp`/`Idx`'s injective-constructor lemmas close each of the
+4 resulting goals). -/
+theorem aSideGens_tGen_injective : Function.Injective (aSideGens).tGen := by
+  decide
+
+theorem aSideGens_wGen_injective : Function.Injective (aSideGens).wGen := by
+  decide
+
+theorem bSideGens_tGen_injective : Function.Injective (bSideGens).tGen := by
+  decide
+
+theorem bSideGens_wGen_injective : Function.Injective (bSideGens).wGen := by
+  decide
+
+/-- **Assembly, UPDATED per ChatGPT consultation.** `denRegular` itself,
+built from Pieces A and B, now taking TWO further hypotheses
+(`hndA`/`hndB : Nondegenerate ...`) that were previously (wrongly) claimed
+provable from `hcurA/B`/`hgcdA/B` alone -- see `Nondegenerate`'s docstring
+above for the counterexample showing why. `denRegular`'s own conclusion is
+UNCHANGED (still "all eight denominators nonzero"), but it is no longer
+unconditional given only well-definedness of `theData`: it now genuinely
+needs a further exceptional-locus condition per sample, exactly matching
+how `hcurA/B`/`hgcdA/B` themselves already work. Every theorem downstream
+of `denRegular` (`regularSeq_of_peel_chain`, `decoupledSystem_isRegularSequence`,
+`decoupledSystem_zeroDimensional`) will need `hndA`/`hndB` threaded through
+too, once this propagates -- **not done yet in this pass**, flagged as the
+immediate next step rather than attempted here, since it touches several
+signatures and instructions were to keep this pass scoped to `denRegular`
+itself. -/
+theorem denRegular (c0 c1 c2 c3 c4 : F p) (sa sb : SampleTarget p)
+    (hcurA : curBeforeMonic p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1 ≠ 0)
+    (hcurB : curBeforeMonic p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1 ≠ 0)
+    (hgcdA : IsCoprime (Ypoly p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1)
+      (uRS p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1))
+    (hgcdB : IsCoprime (Ypoly p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1)
+      (uRS p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1))
+    (hndA : Nondegenerate p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1 hcurA hgcdA)
+    (hndB : Nondegenerate p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1 hcurB hgcdB) :
+    let d := theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB
+    (∀ i, d.u1_den i ≠ 0) ∧ (∀ i, d.u2_den i ≠ 0) ∧
+    (∀ i, d.v1_den i ≠ 0) ∧ (∀ i, d.v2_den i ≠ 0) := by
+  -- NOTE (unverified, no REPL this pass): `simp only [theData, coeffsToNumDen]`
+  -- is used here to unfold `d.u1_den`/etc. down to `towerToRdec`'s raw
+  -- `.2` projection, matching the shape `u1_indep`'s already-working proof
+  -- above uses (`simp only [aSideGens, coeffsToNumDen, ...]`) rather than a
+  -- bare `show`, since `show` needs the two sides syntactically defeq up to
+  -- reducible unfolding and `theData`'s record-literal projections may not
+  -- reduce that transparently without help. If `simp only` leaves a residual
+  -- goal shape mismatch against `towerToRdec_den_ne_zero`'s conclusion,
+  -- try `dsimp only [theData, coeffsToNumDen]` instead (definitional-only,
+  -- no simp-set surprises) before falling back to `show` + `rfl`-adjacent
+  -- massaging.
+  refine ⟨fun i => ?_, fun i => ?_, fun i => ?_, fun i => ?_⟩
+  · simp only [theData, coeffsToNumDen]
+    exact towerToRdec_den_ne_zero p aSideGens aSideGens_tGen_injective
+      aSideGens_wGen_injective c0 c1 c2 c3 c4 _
+      (uRS_coeff_ne_zero p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1 hcurA hgcdA hndA i)
+  · simp only [theData, coeffsToNumDen]
+    exact towerToRdec_den_ne_zero p bSideGens bSideGens_tGen_injective
+      bSideGens_wGen_injective c0 c1 c2 c3 c4 _
+      (uRS_coeff_ne_zero p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1 hcurB hgcdB hndB i)
+  · simp only [theData, coeffsToNumDen]
+    exact towerToRdec_den_ne_zero p aSideGens aSideGens_tGen_injective
+      aSideGens_wGen_injective c0 c1 c2 c3 c4 _
+      (vRS_coeff_ne_zero p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1 hcurA hgcdA hndA i)
+  · simp only [theData, coeffsToNumDen]
+    exact towerToRdec_den_ne_zero p bSideGens bSideGens_tGen_injective
+      bSideGens_wGen_injective c0 c1 c2 c3 c4 _
+      (vRS_coeff_ne_zero p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1 hcurB hgcdB hndB i)
+
+/-- **Assembly placeholder.** Once `curveCoeffRegular`/`denRegular` (and the
+still-not-written-down "peel the remaining anchor/target variables in
+order, applying `regular_of_linear_elim`/`Polynomial.Monic.isRegular` at
+each step" induction they feed into) are filled in, this is where they
+compose into the full 12-step peel chain proving
+`decoupledSystem_isRegularSequence`. Not attempted this pass -- the
+twelve-step induction itself (which variable order, how each step's
+"already-imposed ideal is extended from the coefficient ring" hypothesis
+is re-verified after the PREVIOUS peel changes the ambient ring) is new
+bookkeeping work, not just a corollary of `curveCoeffRegular`/
+`denRegular`, and is exactly the "genuinely hard one" §5bis's own ordering
+note (step 3) already flags. Deliberately left as a named `sorry` rather
+than either attempted in full or silently absorbed into
+`decoupledSystem_isRegularSequence` directly, so it is visible as its own
+unit of future work. -/
+theorem regularSeq_of_peel_chain (c0 c1 c2 c3 c4 : F p) (sa sb : SampleTarget p)
+    (hcurA : curBeforeMonic p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1 ≠ 0)
+    (hcurB : curBeforeMonic p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1 ≠ 0)
+    (hgcdA : IsCoprime (Ypoly p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1)
+      (uRS p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1))
+    (hgcdB : IsCoprime (Ypoly p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1)
+      (uRS p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1)) :
+    RingTheory.Sequence.IsRegular (Rdec p)
+      (genList p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB) := by
+  sorry
+
+/-! ## §5bis-0. Variable-peeling infrastructure for the "leading coefficient"
 argument
 
 Per ChatGPT consultation (see `chatgpt-prompt-regularsequence.md` and its
@@ -1259,8 +1684,15 @@ theorem decoupledSystem_isRegularSequence (c0 c1 c2 c3 c4 : F p) (sa sb : Sample
     (hgcdB : IsCoprime (Ypoly p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1)
       (uRS p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1)) :
     RingTheory.Sequence.IsRegular (Rdec p)
-      (genList p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB) := by
-  sorry
+      (genList p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB) :=
+  -- Routed through the §5bis-0a scaffold (`regularSeq_of_peel_chain`) rather
+  -- than left as its own bare `sorry`, so the dependency on the two named
+  -- gaps (`curveCoeffRegular`, `denRegular`) is visible in the proof term
+  -- itself, not just in prose. `regularSeq_of_peel_chain` is itself still
+  -- `sorry`-backed (the twelve-step peel induction is new bookkeeping not
+  -- attempted this pass) -- this wiring changes nothing about what is
+  -- proved, only makes the dependency structure explicit.
+  regularSeq_of_peel_chain p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB
 
 /-- **The dimension-0 corollary the roadmap's TL;DR promises**, also never
 previously stated. Follows formally from
