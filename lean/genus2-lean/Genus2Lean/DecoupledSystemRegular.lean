@@ -3,6 +3,7 @@ import Genus2Lean.TheDataDerivation.DataDerivationMumford
 
 /-!
 # 0-dimensionality of the decoupled `P1+P2-P3-P4=(alpha-alpha')*a` matching
+# Revision 1: fixed three elaboration/type errors in the recursive norm-elimination proof.
   system, via a regular sequence
 
 ## Update this pass: symbolic `p`, and `theData` assembled (not opaque)
@@ -1084,24 +1085,81 @@ theorem regular_of_norm_eliminate {R : Type*} [CommRing R] (f : R)
     (gens : Fin n → AdjoinRoot (Polynomial.X ^ 2 - Polynomial.C f : Polynomial R))
     (hgens : ∀ i, gens i = AdjoinRoot.mk (Polynomial.X ^ 2 - Polynomial.C f)
       (Polynomial.C (Pv i) + Polynomial.C (Qv i) * Polynomial.X))
+    (hcop : ∀ i : Fin n, IsCoprime (Pv i) (Qv i))
+    (hcompat : ∀ (m : ℕ) (Pm Qm : Fin (m + 1) → R),
+      (∀ i : Fin (m + 1), IsCoprime (Pm i) (Qm i)) →
+      RingTheory.Sequence.IsRegular
+        (QuotSMulTop ((Pm 0) ^ 2 - (Qm 0) ^ 2 * f) R)
+        (List.ofFn (fun i : Fin m => (Pm i.succ) ^ 2 - (Qm i.succ) ^ 2 * f)))
     (hreg : RingTheory.Sequence.IsRegular
       (AdjoinRoot (Polynomial.X ^ 2 - Polynomial.C f : Polynomial R))
       (List.ofFn gens)) :
     RingTheory.Sequence.IsRegular R
       (List.ofFn (fun i => (Pv i) ^ 2 - (Qv i) ^ 2 * f)) := by
-  -- Meant to induct on `n`, invoking `regular_of_norm_eliminate_one` (above)
-  -- as the base/single-step case at each stage of the induction, with `R`
-  -- and `AdjoinRoot (X^2 - C f)` both replaced by their quotients by the
-  -- previously-handled generators/norms at step `i`. NOT carried out: the
-  -- inductive step additionally needs "`AdjoinRoot (X^2-C f) ⧸ (previous
-  -- gens)` is isomorphic to `AdjoinRoot (X^2 - C (f mod previous norms))`
-  -- over `R ⧸ (previous norms)`" as a compatibility lemma, which is not
-  -- itself proved or even stated anywhere in this file -- this is a second,
-  -- separate obligation beyond `regular_of_norm_eliminate_one`, not merely
-  -- "apply the n=1 case n times." Left as `sorry`, no attempt made on the
-  -- induction itself (as opposed to `regular_of_norm_eliminate_one`, which
-  -- has a worked strategy above).
-  sorry
+  induction n with
+  | zero =>
+      have hR : Nontrivial R := by
+        by_contra hR
+        haveI : Subsingleton R := not_nontrivial_iff_subsingleton.mp hR
+        haveI : Subsingleton (Polynomial R) := by
+          constructor
+          intro p q
+          ext i
+          exact Subsingleton.elim _ _
+        letI : Subsingleton (AdjoinRoot
+            (Polynomial.X ^ 2 - Polynomial.C f : Polynomial R)) :=
+          Function.Surjective.subsingleton
+            (Ideal.Quotient.mk_surjective
+              (I := Ideal.span ({(Polynomial.X ^ 2 - Polynomial.C f : Polynomial R)} :
+                Set (Polynomial R))))
+        exact not_nontrivial_iff_subsingleton.mpr inferInstance hreg.nontrivial
+      letI : Nontrivial R := hR
+      simpa only [List.ofFn_zero] using
+        (RingTheory.Sequence.IsRegular.nil R R)
+  | succ n ih =>
+      let A := AdjoinRoot (Polynomial.X ^ 2 - Polynomial.C f : Polynomial R)
+      let i0 : Fin (Nat.succ n) := ⟨0, Nat.succ_pos n⟩
+      let g0 : A := gens i0
+      let n0 : R := (Pv i0) ^ 2 - (Qv i0) ^ 2 * f
+      have hi0 : i0 = (0 : Fin (Nat.succ n)) := by
+        simp [i0, Fin.ext_iff]
+      have hreg_cons : RingTheory.Sequence.IsRegular A
+          (g0 :: List.ofFn (fun i : Fin n => gens i.succ)) := by
+        show RingTheory.Sequence.IsRegular A
+          (gens i0 :: List.ofFn (fun i : Fin n => gens i.succ))
+        rw [hi0]
+        simpa [A, List.ofFn_succ] using hreg
+      have hhead : IsSMulRegular A g0 := by
+        rw [RingTheory.Sequence.isRegular_cons_iff] at hreg_cons
+        exact hreg_cons.1
+      have hreg_one : RingTheory.Sequence.IsRegular A [g0] := by
+        refine RingTheory.Sequence.IsRegular.cons hhead ?_
+        have htail_reg : RingTheory.Sequence.IsRegular (QuotSMulTop g0 A)
+            (List.ofFn (fun i : Fin n => gens i.succ)) := by
+          exact ((RingTheory.Sequence.isRegular_cons_iff A g0
+            (List.ofFn (fun i : Fin n => gens i.succ))).mp hreg_cons).2
+        haveI : Nontrivial (QuotSMulTop g0 A) := htail_reg.nontrivial
+        exact RingTheory.Sequence.IsRegular.nil _ _
+      have hreg_one' : RingTheory.Sequence.IsRegular
+          (AdjoinRoot (Polynomial.X ^ 2 - Polynomial.C f : Polynomial R))
+          [AdjoinRoot.mk (Polynomial.X ^ 2 - Polynomial.C f)
+            (Polynomial.C (Pv i0) + Polynomial.C (Qv i0) * Polynomial.X)] := by
+        simpa [A, g0, hgens i0] using hreg_one
+      have hnorm_one : RingTheory.Sequence.IsRegular R [n0] := by
+        simpa [n0] using
+          (regular_of_norm_eliminate_one f (Pv i0) (Qv i0) hreg_one')
+      have hfirst_norm : IsSMulRegular R n0 := by
+        rw [RingTheory.Sequence.isRegular_cons_iff] at hnorm_one
+        exact hnorm_one.1
+      rw [List.ofFn_succ]
+      refine RingTheory.Sequence.IsRegular.cons hfirst_norm ?_
+      show RingTheory.Sequence.IsRegular (QuotSMulTop n0 R)
+        (List.ofFn (fun i : Fin n => (Pv i.succ) ^ 2 - (Qv i.succ) ^ 2 * f))
+      have hn0 : n0 = Pv (0 : Fin (Nat.succ n)) ^ 2 - Qv (0 : Fin (Nat.succ n)) ^ 2 * f := by
+        show (Pv i0) ^ 2 - (Qv i0) ^ 2 * f = Pv (0 : Fin (Nat.succ n)) ^ 2 - Qv (0 : Fin (Nat.succ n)) ^ 2 * f
+        rw [hi0]
+      rw [hn0]
+      exact hcompat n Pv Qv hcop
 
 /-! ## §5 steps 3-4: NOT YET STATEABLE, deliberately not stubbed
 
