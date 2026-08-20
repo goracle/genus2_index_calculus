@@ -816,20 +816,131 @@ theorem regular_of_linear_elim {τ : Type*} {R : Type*} [CommRing R]
     simpa [smul_eq_mul] using this
   exact hreg_poly hxy'
 
-/-- **Roadmap §5 step 2 + 3 (norm-elimination half).** Given the resultant
-identity `Res_w(P + Q•w, w² - f) = P² - Q²•f` (`norm_eliminate`'s Lean
-port), eliminating a single `AdjoinRoot`-style generator `w` with `w² = f`
-from a generator of the shape `P + Q•w` (both `P,Q` free of `w`) preserves
-regularity: if `[P₁+Q₁w, ..., Pₙ+Qₙw]` is regular on `R[w]/(w²-f)` then
-`[P₁²-Q₁²f, ..., Pₙ²-Qₙ²f]` is regular on `R` (informally -- the precise
-Lean statement needs `AdjoinRoot f` or an explicit quotient by `w²-f` as the
-base ring, matching whichever shape `theData`'s `w`-generators actually
-come out in from §4.1's ring stack). Left in this loose/informal form
-pending that ring-stack choice being pinned down concretely by
-`eightVar_finiteQuotient` below -- restating this precisely is easier once
-that dependency is fixed, rather than guessed now. 
+/-- **Roadmap §5 step 2 (norm-elimination half), now an actual `sorry`-backed
+statement instead of loose prose.** Previously this section only described
+the resultant identity `Res_w(P + Q•w, w² - f) = P² - Q²•f` informally and
+declined to state a Lean theorem "pending the ring-stack choice being
+pinned down." That choice is no longer open: `§4.1`/`DataDerivationTower.lean`
+already commit to `AdjoinRoot (X^2 - C f)` as the ring `w` lives in, so
+there is no obstruction to writing the statement down — only to proving it,
+which is not attempted here.
 
- ## §5bis-0. Variable-peeling infrastructure for the "leading coefficient"
+Statement: for `R` a commutative ring, `f : R`, `w : AdjoinRoot (X^2 - C f :
+Polynomial R)` the adjoined root, and `P Q : R` such that `g := C P + C Q *
+X` maps to `C P + C Q • w`'s class — if the list `gens` (each of the shape
+`Pᵢ + Qᵢ • w`, i.e. each `AdjoinRoot.mk`-image of a degree-≤1-in-`X`
+polynomial) is a regular sequence on `AdjoinRoot (X^2 - C f)`, then the
+list of "norms" `[P₁^2 - Q₁^2*f, ..., Pₙ^2 - Qₙ^2*f]` is a regular sequence
+on `R` itself. This is the precise claim `eightVar_finiteQuotient` and
+`fourVar_finiteQuotient` below both need, stated generically over one
+`AdjoinRoot` layer at a time (the two-layer `wa1,wa2`/`wb1,wb2` towers, one
+per sample, are meant to invoke this twice per sample -- once per adjoined
+`w_i` -- not covered by a single application). Genuinely new work: neither
+the resultant identity nor its regular-sequence-transport consequence is
+proved anywhere in this project. 
+ 
+**Core case of `regular_of_norm_eliminate`, split out and attempted this
+pass.** The general-`n` statement below reduces, at each step of its
+induction, to this single-generator fact: `AdjoinRoot (X^2 - C f)` is a free
+`R`-module of rank 2 with basis `{1, w}` (`w := AdjoinRoot.root`), so
+multiplication by `g := P + Q•w` is an `R`-linear endomorphism of `R × R`
+(via that basis) with matrix `M := !![P, Q*f; Q, P]` — its images of `1`
+and `w` are `P + Q•w ↦ (P,Q)` and `w•(P+Q•w) = Q•f + P•w ↦ (Q*f, P)`
+respectively. `M.det = P^2 - Q^2*f`, exactly the norm/target quantity.
+
+**Proof strategy (verified by hand, NOT yet carried out in Lean — this
+`sorry` is a genuine attempt-and-defer, not a restatement of the header
+theorem):**
+- *Injectivity half* (`N` is `IsSMulRegular` on `R`): suppose `N * r = 0`
+  for `r : R`. Let `v := M.adjugate.mulVec ![r, 0] = (P*r, -Q*r)` (an
+  explicit 2-vector, computed from `M.adjugate = !![P, -Q*f; -Q, P]`).
+  `M.mulVec v = M.mulVec (M.adjugate.mulVec ![r,0]) = (M * M.adjugate).mulVec
+  ![r,0] = (N • 1).mulVec ![r,0] = N*r • ![r,0] = 0` (`Matrix.mul_adjugate`
+  gives `M * M.adjugate = M.det • 1`). Translating `v = (P*r, -Q*r)` back
+  through the `{1,w}` basis to the element `P*r - Q*r•w : AdjoinRoot(...)`,
+  `M.mulVec v = 0` says `g • (P*r - Q*r•w) = 0`. Two sub-cases: (a) if
+  `P*r - Q*r•w ≠ 0` in `AdjoinRoot(...)`, this directly contradicts `g`
+  being `IsSMulRegular` (from `hreg`'s length-1 case, or the first step of
+  the general induction); (b) if `P*r = Q*r = 0` in `R`, then `r•1 = 0` in
+  `AdjoinRoot(...)` too (since `{1,w}` is an `R`-basis, `r•1 ↦ (r,0)` and
+  `(r,0)=(0,0)` in `R×R` iff `r=0` UNLESS... careful: `P*r=Q*r=0` does NOT
+  immediately give `r=0` unless `P,Q` themselves satisfy some regularity —
+  but it DOES give `g • (r•1) = P*r + Q*r•w = 0•1+0•w = 0` directly, i.e.
+  `r•1` is annihilated by `g`; if `r ≠ 0` then `r•1 ≠ 0` in `AdjoinRoot(...)`
+  (basis-freeness), again contradicting `g`'s regularity). Either sub-case
+  forces `r = 0`, giving injectivity of `N`.
+- *Nonzero-quotient half* (`R ⧸ (N) ≠ 0`, i.e. `N` not a unit): if `N` were
+  a unit, `M.adjugate * N⁻¹` would be a two-sided inverse for `M`
+  (`Matrix.mul_adjugate`/`Matrix.adjugate_mul` plus `N` a unit), making
+  multiplication-by-`g` bijective on `AdjoinRoot(...)`, in particular
+  surjective, so `g` is a unit there, contradicting `hreg`'s "quotient by
+  `g` is nonzero" clause (a unit generates the whole ring).
+
+This is a concrete, closed argument (same flavor as `regular_linear_of_regular_coeff`
+above — a leading-coefficient/determinant computation, not open-ended search)
+but needs `AdjoinRoot`'s `{1,w}` basis made explicit in Lean
+(`AdjoinRoot.powerBasisAux'` for `Monic (X^2 - C f)`, or direct
+`AdjoinRoot.modByMonicHom`/`.coeff 0`/`.coeff 1` unfolding as
+`towerToRdec_vars_subset` above already does for a similar purpose) and the
+matrix/adjugate identities (`Matrix.mul_adjugate`, `Matrix.mulVec_mulVec`)
+threaded through -- real work, not attempted here, hence still `sorry`. -/
+theorem regular_of_norm_eliminate_one {R : Type*} [CommRing R] (f P Q : R)
+    (hreg : RingTheory.Sequence.IsRegular
+      (AdjoinRoot (Polynomial.X ^ 2 - Polynomial.C f : Polynomial R))
+      [AdjoinRoot.mk (Polynomial.X ^ 2 - Polynomial.C f)
+        (Polynomial.C P + Polynomial.C Q * Polynomial.X)]) :
+    RingTheory.Sequence.IsRegular R [P ^ 2 - Q ^ 2 * f] := by
+  sorry
+
+theorem regular_of_norm_eliminate {R : Type*} [CommRing R] (f : R)
+    (n : ℕ) (Pv Qv : Fin n → R)
+    (gens : Fin n → AdjoinRoot (Polynomial.X ^ 2 - Polynomial.C f : Polynomial R))
+    (hgens : ∀ i, gens i = AdjoinRoot.mk (Polynomial.X ^ 2 - Polynomial.C f)
+      (Polynomial.C (Pv i) + Polynomial.C (Qv i) * Polynomial.X))
+    (hreg : RingTheory.Sequence.IsRegular
+      (AdjoinRoot (Polynomial.X ^ 2 - Polynomial.C f : Polynomial R))
+      (List.ofFn gens)) :
+    RingTheory.Sequence.IsRegular R
+      (List.ofFn (fun i => (Pv i) ^ 2 - (Qv i) ^ 2 * f)) := by
+  -- Meant to induct on `n`, invoking `regular_of_norm_eliminate_one` (above)
+  -- as the base/single-step case at each stage of the induction, with `R`
+  -- and `AdjoinRoot (X^2 - C f)` both replaced by their quotients by the
+  -- previously-handled generators/norms at step `i`. NOT carried out: the
+  -- inductive step additionally needs "`AdjoinRoot (X^2-C f) ⧸ (previous
+  -- gens)` is isomorphic to `AdjoinRoot (X^2 - C (f mod previous norms))`
+  -- over `R ⧸ (previous norms)`" as a compatibility lemma, which is not
+  -- itself proved or even stated anywhere in this file -- this is a second,
+  -- separate obligation beyond `regular_of_norm_eliminate_one`, not merely
+  -- "apply the n=1 case n times." Left as `sorry`, no attempt made on the
+  -- induction itself (as opposed to `regular_of_norm_eliminate_one`, which
+  -- has a worked strategy above).
+  sorry
+
+/-! ## §5 steps 3-4: NOT YET STATEABLE, deliberately not stubbed
+
+Roadmap §5 steps 3 ("8-variable finite-quotient certificate") and 4
+("4-variable finite-quotient certificate, then Cohen-Macaulay upgrade to
+regular sequence") used to have `sorry`-backed theorem stubs here
+(`eightVar_finiteQuotient`, `fourVar_finiteQuotient`). Both were deleted
+this pass, per project convention "we do not use hypotheses to get out of
+proving something": their generator lists (`eightGens`/`fourGens`) were
+taken as bare hypothesis-parameters with a `hgens : True` placeholder
+standing in for "these really are the generators §5 describes" — that
+placeholder made both statements provable by never actually pinning down
+which polynomials they're about, which is the same failure mode as an
+unjustified `sorry`-avoidance, just dressed as a hypothesis instead.
+
+The honest state: these two steps cannot be stated as real theorems yet,
+because the object they'd quantify over — `theData`'s output restricted to
+the 8-variable subring after eliminating `U0,U1,V0,V1` (step 3), and that
+result's further restriction to 4 variables after eliminating
+`wa1,wa2,wb1,wb2` (step 4) — is not constructed anywhere in this file or in
+`TheDataDerivation`. Restating them correctly requires building that
+restriction map first (not just asserting its existence), which is new
+work, not a proof-search gap. Left as a documented TODO rather than a fake
+`sorry` or a vacuous hypothesis.
+
+## §5bis-0. Variable-peeling infrastructure for the "leading coefficient"
 argument
 
 Per ChatGPT consultation (see `chatgpt-prompt-regularsequence.md` and its
@@ -847,9 +958,9 @@ transport lemmas (`isRegular_of_monic_peel` for the monic/curve-relation
 case, `isRegular_of_leadingCoeff_regular_peel` for the more general
 regular-leading-coefficient case) needed for both the curve relations and
 (later, once the closed-form `Fu_cross`/`Fv_cross` polynomials are
-available concretely) the cross-generators. 
+available concretely) the cross-generators.
 
- Peel variable `x : Idx` out of `Rdec p`, landing on
+Peel variable `x : Idx` out of `Rdec p`, landing on
 `Polynomial (MvPolynomial {v : Idx // v ≠ x} (F p))` -- the `Idx`-specific
 analogue of `MvPolynomial.finSuccEquiv`, built directly from
 `MvPolynomial.renameEquiv` (with a hand-built `Idx ≃ Option {v // v ≠ x}`)
@@ -862,6 +973,69 @@ noncomputable def peelEquiv (p : ℕ) (x : Idx) :
       (((Equiv.optionSubtype x).symm
           (Equiv.refl {v : Idx // v ≠ x})).val.symm : Idx ≃ Option {v : Idx // v ≠ x})).trans
     (MvPolynomial.optionEquivLeft (F p) {v : Idx // v ≠ x})
+
+
+/-! ## §6. The actual target theorems
+
+**These did not exist anywhere in the file before this pass — flagged in
+review as the single most important gap: the paper's claim ("this variety
+has dimension 0") was never stated as a Lean theorem at all, so it could
+not have a `sorry`, `True`-stub, or any other marker of incompleteness.
+Both statements below are added now, `sorry`-backed, precisely so that an
+audit (`#print axioms`, or just `grep sorry`) reports the true state of the
+file instead of reporting a false "complete" signal by omission.
+
+Neither proof is attempted here. The dependency chain each one would
+actually need, if attacked, is:
+`regular_of_linear_elim` (proved) + `regular_of_norm_eliminate` (`sorry`
+above) + `eightVar_finiteQuotient` (`sorry` above) +
+`fourVar_finiteQuotient` (`sorry` above) + the wiring roadmap §5 step 5
+describes (not attempted, not even stubbed as its own lemma) +
+every upstream `sorry` in `TheDataDerivation` that `theData` transitively
+depends on (`dvd_N_u`'s hypotheses, `towerToRdec_spec`, the four
+`u1_indep`-style fields' correctness — note `u1_indep` etc. themselves ARE
+proved, but only establish variable-support, not that `theData`'s numerators/
+denominators are the numbers they claim to be). -/
+
+/-- **The paper's actual claim.** `elim2`'s 12-equation decoupled matching
+system is a regular sequence of length 12 in the 12-variable ring `Rdec p`,
+for `p` and `(c0,...,c4)` satisfying `theData`'s own well-definedness
+hypotheses (`hcurA/B`, `hgcdA/B`) — i.e. outside the exceptional locus those
+four conditions carve out, with no further exceptional-locus condition
+identified or assumed beyond them (roadmap §5 steps 3-4 are exactly where
+additional such conditions would need to be discovered and threaded in,
+were this theorem actually proved; none has been, since none of the
+dependency chain above has been executed). Not proved. -/
+theorem decoupledSystem_isRegularSequence (c0 c1 c2 c3 c4 : F p) (sa sb : SampleTarget p)
+    (hcurA : curBeforeMonic p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1 ≠ 0)
+    (hcurB : curBeforeMonic p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1 ≠ 0)
+    (hgcdA : IsCoprime (Ypoly p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1)
+      (uRS p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1))
+    (hgcdB : IsCoprime (Ypoly p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1)
+      (uRS p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1)) :
+    RingTheory.Sequence.IsRegular (Rdec p)
+      (genList p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB) := by
+  sorry
+
+/-- **The dimension-0 corollary the roadmap's TL;DR promises**, also never
+previously stated. Follows formally from
+`decoupledSystem_isRegularSequence` once that is proved (a length-`n`
+regular sequence in an `n`-variable polynomial ring over a field makes the
+quotient a nonzero Artinian, i.e. finite-dimensional, `F p`-algebra) — the
+formal step from `IsRegular` to `Module.Finite` is itself not carried out
+here either, so this is a second, independent `sorry` on top of the first,
+not merely a restatement of it. -/
+theorem decoupledSystem_zeroDimensional (c0 c1 c2 c3 c4 : F p) (sa sb : SampleTarget p)
+    (hcurA : curBeforeMonic p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1 ≠ 0)
+    (hcurB : curBeforeMonic p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1 ≠ 0)
+    (hgcdA : IsCoprime (Ypoly p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1)
+      (uRS p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1))
+    (hgcdB : IsCoprime (Ypoly p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1)
+      (uRS p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1)) :
+    Module.Finite (F p) (Rdec p ⧸
+      Ideal.span (↑(genList p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).toFinset :
+        Set (Rdec p))) := by
+  sorry
 
 end DecoupledSystem
 end Genus2Lean
