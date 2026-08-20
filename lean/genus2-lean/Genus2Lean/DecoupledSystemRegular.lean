@@ -1573,10 +1573,35 @@ theorem Ypoly_natDegree_le_zero (c0 c1 c2 c3 c4 u0 u1 v0 v1 : F p) :
 
 
 /-- `Epoly`'s degree bound, same style, from `rrBasis5`'s top `bj = 0` entry
-`rrBasis5[4] = (6,3,0)`. -/
+`rrBasis5[4] = (6,3,0)`. Unlike `Ypoly_natDegree_le_zero`, `Epoly` does NOT
+collapse to a single surviving summand -- all FOUR `bj = 0` indices
+(`rrBasis5 = [(0,0,0),(2,1,0),(4,2,0),(5,0,1),(6,3,0)]`, so indices
+`0,1,2,4` survive with `bi ∈ {0,1,2,3}`) contribute. The bound instead comes
+from `Polynomial.natDegree_sum_le` (`(∑ i ∈ s, f i).natDegree ≤ s.sup (fun i
+=> (f i).natDegree)`): each individual summand, whether it's the `bj = 1`
+term (killed to `0`, degree `0`) or one of the four `bj = 0` terms
+(`C _ * X ^ bi` with `bi ≤ 3`, by the same concrete `rrBasis5` lookup style
+as `Ypoly`'s `hsingle`/`hcases3`), has `natDegree ≤ 3` -- so the whole
+`Finset.univ.sup` over `Fin 5` is `≤ 3`. No single-survivor lemma
+(`rrBasis5_bj_one_unique`) needed at all: bounding every term by the same
+constant sidesteps the uniqueness question `Ypoly`'s proof needed. -/
 theorem Epoly_natDegree_le_three (c0 c1 c2 c3 c4 u0 u1 v0 v1 : F p) :
     (Epoly p c0 c1 c2 c3 c4 u0 u1 v0 v1).natDegree ≤ 3 := by
-  sorry
+  unfold Epoly
+  refine le_trans (Polynomial.natDegree_sum_le _ _) ?_
+  refine Finset.sup_le (fun bidx _ => ?_)
+  have hbi3 : (rrBasis5.getD bidx.val (0, 0, 0)).2.1 ≤ 3 := by
+    fin_cases bidx <;> native_decide
+  obtain ⟨a, bi, bj⟩ := rrBasis5.getD bidx.val (0, 0, 0)
+  dsimp only at hbi3 ⊢
+  split
+  · -- goal: `(C (coeffsOut ... bidx) * X ^ bi).natDegree ≤ 3`, with `hbi3 :
+    -- bi ≤ 3` in context. `compute_degree!` handles the `C _ * X ^ bi`
+    -- shape generically (same tactic already used for `curBeforeMonic`'s
+    -- quadratic above) and discharges the resulting side goal `bi ≤ 3`
+    -- from `hbi3` itself.
+    compute_degree!
+  · simp
 
 /-- `Npoly`'s degree bound, assembled from `Epoly_natDegree_le_three`/
 `Ypoly_natDegree_le_zero`/`curvePoly_natDegree` (the last, already fully
