@@ -1622,7 +1622,29 @@ reasoning for an injective/field-extension `algebraMap`) via the standard
 inequalities -- `Npoly.natDegree ≤ max (2*3) (5 + 2*0) = 6`. -/
 theorem Npoly_natDegree_le_six (c0 c1 c2 c3 c4 u0 u1 v0 v1 : F p) :
     (Npoly p c0 c1 c2 c3 c4 u0 u1 v0 v1).natDegree ≤ 6 := by
-  sorry
+  unfold Npoly
+  have hE3 := Epoly_natDegree_le_three p c0 c1 c2 c3 c4 u0 u1 v0 v1
+  have hY0 := Ypoly_natDegree_le_zero p c0 c1 c2 c3 c4 u0 u1 v0 v1
+  have hf5 : (fAtX p c0 c1 c2 c3 c4 u0 u1 v0 v1).natDegree ≤ 5 := by
+    unfold fAtX
+    exact le_trans Polynomial.natDegree_map_le (le_of_eq (curvePoly_natDegree p c0 c1 c2 c3 c4))
+  have hE2 : (Epoly p c0 c1 c2 c3 c4 u0 u1 v0 v1 ^ 2).natDegree ≤ 6 :=
+    le_trans (Polynomial.natDegree_pow_le_of_le 2 hE3) (by norm_num)
+  have hY2 : (Ypoly p c0 c1 c2 c3 c4 u0 u1 v0 v1 ^ 2).natDegree ≤ 0 :=
+    le_trans (Polynomial.natDegree_pow_le_of_le 2 hY0) (by norm_num)
+  have hfY2 : (fAtX p c0 c1 c2 c3 c4 u0 u1 v0 v1 *
+      Ypoly p c0 c1 c2 c3 c4 u0 u1 v0 v1 ^ 2).natDegree ≤ 6 := by
+    -- `natDegree_mul_le : (p * q).natDegree ≤ p.natDegree + q.natDegree`
+    -- (standard triangle-inequality form, unconditional -- no `≠ 0`
+    -- hypothesis needed since it only claims `≤`, unlike the equality
+    -- version `natDegree_mul` which does need nonzero factors).
+    have hstep := Polynomial.natDegree_mul_le (p := fAtX p c0 c1 c2 c3 c4 u0 u1 v0 v1)
+      (q := Ypoly p c0 c1 c2 c3 c4 u0 u1 v0 v1 ^ 2)
+    omega
+  exact le_trans
+    (Polynomial.natDegree_sub_le (Epoly p c0 c1 c2 c3 c4 u0 u1 v0 v1 ^ 2)
+      (fAtX p c0 c1 c2 c3 c4 u0 u1 v0 v1 * Ypoly p c0 c1 c2 c3 c4 u0 u1 v0 v1 ^ 2))
+    (max_le hE2 hfY2)
 
 /-- **Assembly.** The honest, unconditional half of the original target:
 `curBeforeMonic.natDegree ≤ 2`, no hypothesis needed at all (not even
