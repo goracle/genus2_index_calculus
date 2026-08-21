@@ -1907,7 +1907,161 @@ bookkeeping work, not just a corollary of `curveCoeffRegular`/
 note (step 3) already flags. Deliberately left as a named `sorry` rather
 than either attempted in full or silently absorbed into
 `decoupledSystem_isRegularSequence` directly, so it is visible as its own
-unit of future work. -/
+unit of future work.
+
+### §5bis-prelim. Base-change regularity: the missing piece for repeated
+target variables (`U0`'s two generators, `U1`'s two, etc.)
+
+Per the two-round ChatGPT consultation (`chatgpt-prompt-regularseq-assembly-*.md`):
+`regular_of_linear_elim` alone is not enough to handle `Fu_decoupled`'s pairs
+`[num1 - U0*den1, num2 - U0*den2]`, because after imposing the first `U0`
+relation, the SECOND application needs `den2` regular in the QUOTIENT, not
+merely `den2 ≠ 0` in `Rdec p`. Naively this looks like it needs a
+"leading-coefficient-regular-in-A survives modding by a DIFFERENT A-relation"
+fact -- which is FALSE in general (counterexample worked by hand: `A = ℤ`,
+`e = 2` regular in `ℤ`, but `2` is a zero-divisor in `ℤ/(4) = ℤ/(c)` for
+`c := 4`, i.e. taking the linear relation's constant term `c` alone can kill
+regularity of an unrelated `e` when they share the same coefficient ring).
+
+The actual situation here is NOT that shape: `u1_den`/`u2_den` (the two `U0`
+denominators) come from `aSideGens`/`bSideGens` respectively (`u1_indep`/
+`u2_indep`), hence have DISJOINT variable sets (`{wa1,wa2,a1,a2}` vs.
+`{wb1,wb2,b1,b2}`) -- they do not share a coefficient ring at all, only the
+single target variable `U0`. This is a genuine flat-base-change situation:
+`u2_den` is regular in its own home ring (a domain, since `MvPolynomial` over
+a field is a domain, so regular = nonzero there), and extending scalars along
+a polynomial-ring adjunction in a DISJOINT set of fresh variables (here:
+everything on the `u1_den`-side, including the quotient by the first `U0`
+relation, which only touches those disjoint variables) preserves regularity,
+because `MvPolynomial σ R` is always `R`-free (`Module.Free.of_basis` via
+`MvPolynomial.basisMonomials`), hence `R`-flat, regardless of what happens on
+the `R`-side. Confirmed against Mathlib: `IsSMulRegular.of_flat_of_isBaseChange`
+and `IsSMulRegular.of_flat` (`Mathlib.RingTheory.Flat.Basic`), and
+`MvPolynomial.sumAlgEquiv : MvPolynomial (S₁ ⊕ S₂) R ≃ₐ[R] MvPolynomial S₁
+(MvPolynomial S₂ R)` (`Mathlib.Algebra.MvPolynomial.Equiv`) all exist as
+named. **Not yet proved below** -- the composition (reindex `Idx` into a sum
+matching the "already-quotiented side" vs. "the side `e` lives in", transport
+along `sumAlgEquiv`, then invoke the flat-base-change lemma) is sketched but
+left as a `sorry`, since it needs a REPL to get the `IsBaseChange`
+side-condition (that `MvPolynomial σ₁ (A ⧸ J) ⧸ ...` really is the base
+change of `A ⧸ J` along the fresh-variable polynomial extension) into exactly
+the shape `IsSMulRegular.of_flat_of_isBaseChange` wants, which is fiddly
+`AlgHom`/`LinearMap` bookkeeping that is easy to get wrong blind.
+
+No local `Module.Flat R (MvPolynomial σ R)` instance is declared below --
+Mathlib already provides `MvPolynomial.instFree : Module.Free R
+(MvPolynomial σ R)` (`Mathlib.RingTheory.MvPolynomial.Basic`) plus the
+generic `instance Module.Flat.of_free [Free R M] : Flat R M`
+(`Mathlib.RingTheory.Flat.Basic`), so `Module.Flat R (MvPolynomial σ R)`
+should already resolve automatically wherever needed via typeclass search;
+an earlier draft's attempt to declare it explicitly as `Module.Flat.of_free
+R (MvPolynomial σ R)` was a build error (`of_free` is itself the
+0-argument instance, not a 2-argument function to apply). 
+
+ **The missing base-change lemma.** If `e : MvPolynomial σ₂ R` is regular
+(as an element of its own home ring, acting on itself), then its image under
+`C` into ANY polynomial extension `MvPolynomial σ₁ (MvPolynomial σ₂ R)`
+remains regular -- polynomial-ring extension is flat, so this is
+`IsSMulRegular.of_flat` applied to the algebra map
+`MvPolynomial σ₂ R →+* MvPolynomial σ₁ (MvPolynomial σ₂ R)` (the `C`
+embedding of the OUTER `MvPolynomial σ₁`, i.e. treating `MvPolynomial σ₂ R`
+as the base ring `R` in `IsSMulRegular.of_flat`'s statement, not as the
+`σ₂`-side of anything). This is the base case; the actual use sites also
+need to quotient the `σ₁`-side by a relation, handled by
+`regular_of_disjoint_extension` below via `IsSMulRegular.of_flat_of_isBaseChange`
+instead of this plain `of_flat` version. -/
+theorem MvPolynomial.isSMulRegular_C_of_isSMulRegular {R : Type*} [CommRing R]
+    (σ₁ : Type*) {e : R} (he : IsSMulRegular R e) :
+    IsSMulRegular (MvPolynomial σ₁ R) (MvPolynomial.C (σ := σ₁) e) := by
+  -- `IsSMulRegular {R} (M) [SMul R M] (c : R) : Prop` (confirmed against
+  -- Mathlib source, `Mathlib.Algebra.Regular.SMul`) -- `R` is meant to be
+  -- inferred from `c`'s own type, so `IsSMulRegular (MvPolynomial σ₁ R)
+  -- (MvPolynomial.C e)` SHOULD unambiguously read off `R := MvPolynomial
+  -- σ₁ R` (self-action) from `C e`'s stated type alone. If the "stuck
+  -- SMul metavariable" error persists here, the likely culprit is
+  -- `isSMulRegular_algebraMap_iff`'s OWN explicit `(A : Type u_2)`
+  -- argument inside the proof confusing elaboration order, not this
+  -- statement -- flagged for the REPL to pinpoint precisely if this still
+  -- fails, since guessing further blind risks compounding the issue.
+  have h : IsSMulRegular (MvPolynomial σ₁ R) ((algebraMap R (MvPolynomial σ₁ R)) e) :=
+    IsSMulRegular.of_flat (R := R) (S := MvPolynomial σ₁ R) he
+  rwa [MvPolynomial.algebraMap_eq] at h
+
+/-- **The genuinely new lemma**, still `sorry`-backed: regularity of `e`
+(living in `MvPolynomial σ₂ R`, disjoint from `σ₁`) survives passing to
+`MvPolynomial (σ₁ ⊕ σ₂) R`, THEN quotienting by an ideal generated entirely
+from the `σ₁`-side (`g : MvPolynomial σ₁ R`, included into the sum type via
+`rename Sum.inl`). This is exactly what `regularSeq_of_peel_chain` needs at
+each of the four repeated-target-variable stages (`U0,U0`/`U1,U1`/`V0,V0`/
+`V1,V1`) and, per the ChatGPT consultation's own caveat, is NOT obviously
+the same lemma the eventual curve-relation stages need (there the "already
+quotiented side" is a growing, not fixed, set of variables as the peel
+proceeds) -- but it is the correct next target to prove and test in the
+REPL before attempting the 12-step assembly itself. Proof sketch (per
+ChatGPT): view `MvPolynomial (σ₁ ⊕ σ₂) R ≃ₐ[R] MvPolynomial σ₁ (MvPolynomial
+σ₂ R)` via `sumAlgEquiv`; `g`'s image lands in the base ring `MvPolynomial σ₂
+R`'s polynomial extension purely on the `σ₁` side (i.e. `sumAlgEquiv` sends
+`rename Sum.inl g` to the image of `g` in `MvPolynomial σ₁ (MvPolynomial σ₂
+R)` under the further map `MvPolynomial σ₁ R → MvPolynomial σ₁ (MvPolynomial
+σ₂ R)`, `MvPolynomial.map (algebraMap R (MvPolynomial σ₂ R))` -- NOT yet
+checked against `sumAlgEquiv_comp_rename_inl`/`_inr`'s exact simp normal
+form, flagged as the first thing to verify in the REPL); quotienting
+`MvPolynomial σ₁ (MvPolynomial σ₂ R)` by that ideal is base-changing
+`MvPolynomial σ₂ R ⧸ (0)= MvPolynomial σ₂ R` itself is untouched (`g`
+doesn't mention `σ₂` at all) along the flat map `MvPolynomial σ₂ R →
+(MvPolynomial σ₁ (MvPolynomial σ₂ R)) ⧸ (image of g)`, and `e`'s image is
+literally `C e` composed with that quotient map -- `IsSMulRegular.of_flat_of_
+isBaseChange` should close it once the `IsBaseChange`/`Module.Flat` instances
+line up, but assembling those instances (in particular: is `(MvPolynomial σ₁
+(MvPolynomial σ₂ R)) ⧸ (g)` flat over `MvPolynomial σ₂ R`? -- yes, because
+it's `(MvPolynomial σ₁ B) ⧸ (g)` for `B := MvPolynomial σ₂ R`, `g ∈
+MvPolynomial σ₁ R ⊆ MvPolynomial σ₁ B` via the constant-coefficient
+embedding, i.e. `g`'s image doesn't see `B`'s own structure at all, so this
+is `B`-free of the same "shape" as `MvPolynomial σ₁ R ⧸ (g)` is `R`-free/flat
+-- ITSELF a fact that likely needs its own small lemma, e.g. via
+`Ideal.map_ofList`-style reasoning showing `Ideal.map (MvPolynomial.map
+(algebraMap R B)) (Ideal.span {g})` corresponds to `B ⊗[R] (MvPolynomial σ₁ R
+⧸ (g))`, i.e. `TensorProduct.assoc`-style base-change-commutes-with-quotient,
+NOT yet spelled out) is exactly the fiddly part flagged above as needing a
+REPL rather than being guessed blind.
+
+**IMPORTANT CORRECTION (per second ChatGPT round-trip): the statement as
+originally written, over an arbitrary `[CommRing R]`, is FALSE.**
+Counterexample (ChatGPT's, hand-verified): `R := ℤ`, `σ₁ = σ₂ := PUnit`,
+`g := (2 : ℤ)`, `e := (2 : ℤ)`. `e = 2` is `IsSMulRegular` in its own home
+ring `MvPolynomial PUnit ℤ` (nonzero in a torsion-free `ℤ`-module). But
+after quotienting by `g = 2`, the quotient ring has characteristic 2, and
+`e`'s image there is literally `0` -- not regular. The obstruction is
+exactly the fiddly point flagged above: `MvPolynomial σ₁ R ⧸ (g)` need NOT
+be flat over `R` in general (`ℤ ⧸ (2)` isn't flat over `ℤ`), so the
+base-change step this lemma needs can fail outright over a general
+`CommRing R`.
+
+**Fix, since every actual use site in this file has `R := F p` for `p`
+prime (a field): add `[Field R]`.** Over a field, EVERY module is flat
+(`Module.Flat.of_field`/automatic instance), so `Module.Flat R
+(MvPolynomial σ₁ R ⧸ Ideal.span {g})` resolves with no extra hypothesis,
+and the base-change argument goes through as originally sketched. Restated
+below with `[Field R]` in place of `[CommRing R]`; the flat-base-change
+argument itself is NOT re-attempted here (still needs the REPL to get the
+`IsBaseChange`/tensor-identification steps -- `MvPolynomial.
+algebraTensorAlgEquiv R B : TensorProduct R B (MvPolynomial σ₁ R) ≃ₐ[B]
+MvPolynomial σ₁ B` (confirmed to exist, `Mathlib.RingTheory.
+TensorProduct.MvPolynomial`) is the correct tensor-identification lemma to
+use in place of the mis-instantiated `quotIdealMapEquivTensorQuot`
+attempt -- exactly right, per project convention). -/
+theorem regular_of_disjoint_extension {R : Type*} [Field R]
+    {σ₁ σ₂ : Type*} [DecidableEq σ₁] [DecidableEq σ₂]
+    (g : MvPolynomial σ₁ R) {e : MvPolynomial σ₂ R}
+    (he : IsSMulRegular (MvPolynomial σ₂ R) e) :
+    IsSMulRegular
+      (MvPolynomial (σ₁ ⊕ σ₂) R ⧸
+        (Ideal.ofList [MvPolynomial.rename Sum.inl g] : Ideal (MvPolynomial (σ₁ ⊕ σ₂) R)))
+      (Ideal.Quotient.mk
+        (Ideal.ofList [MvPolynomial.rename Sum.inl g] : Ideal (MvPolynomial (σ₁ ⊕ σ₂) R))
+        (MvPolynomial.rename Sum.inr e)) := by
+  sorry
+
 theorem regularSeq_of_peel_chain (c0 c1 c2 c3 c4 : F p) (sa sb : SampleTarget p)
     (hcurA : curBeforeMonic p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1 ≠ 0)
     (hcurB : curBeforeMonic p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1 ≠ 0)
@@ -2093,6 +2247,105 @@ theorem Polynomial.isSMulRegular_of_leadingCoeff_isSMulRegular
   have hzero : g₁ - g₂ = 0 := hmul (g₁ - g₂) hsub
   exact sub_eq_zero.mp hzero
 
+/-! ### §5bis-0a-bis. The quotient-transport lemma (Layer 2)
+
+Per the second ChatGPT consultation: this is the one piece it deliberately
+left as a `sorry` rather than guess blind, since it depends on exactly how
+this file's own quotient/peel machinery is set up. `regular_of_linear_elim`
+above already proves the special case of this transport for the linear
+shape `C c - X * C d`; this generalizes that SAME transport argument
+(`optionEquivLeft` + `Ideal.polynomialQuotientEquivQuotientPolynomial`,
+verbatim the same equivalence-chasing steps) to an ARBITRARY polynomial `g
+: MvPolynomial (Option τ) R` of the form `rename some (coeffs of g, as a
+polynomial in the peeled variable)`, with Layer 1
+(`Polynomial.isSMulRegular_of_leadingCoeff_isSMulRegular`) supplying the
+`Polynomial B`-level regularity fact in place of
+`regular_linear_of_regular_coeff`'s bespoke linear-case argument. Once this
+is in hand, `regular_of_linear_elim` itself becomes a one-line corollary
+(not rewritten here to avoid touching a working proof, but flagged as a
+cleanup opportunity for later). -/
+
+/-- **Layer 2, the quotient-transport lemma.** Let `τ` be a type of
+"already-peeled" variables, `gens' : List (MvPolynomial τ R)` the
+generators already imposed on that smaller ring, and `g : MvPolynomial
+(Option τ) R` a polynomial in ONE MORE variable (`none`, via
+`MvPolynomial.optionEquivLeft`'s identification with `Polynomial
+(MvPolynomial τ R)`) whose image under that identification, call it `G :
+Polynomial (MvPolynomial τ R)`, is given explicitly (`hg`) rather than
+merely asserted to exist. If `G`'s image in `Polynomial B` (`B :=
+MvPolynomial τ R ⧸ Ideal.ofList gens'`, i.e. `G.map (Ideal.Quotient.mk
+(Ideal.ofList gens'))`) has `IsSMulRegular B`-regular leading coefficient,
+then `g` itself is regular in the quotient `MvPolynomial (Option τ) R ⧸
+Ideal.ofList (gens'.map (rename some))`. This is exactly `regular_of_
+linear_elim`'s own transport argument, generalized from the fixed linear
+shape `C cbar - X * C dbar` to an arbitrary `G.map (mk I')`, using Layer 1
+in place of `regular_linear_of_regular_coeff` at the one point where the
+two proofs diverge. -/
+theorem regular_of_peeled_leadingCoeff {τ : Type*} {R : Type*} [CommRing R]
+    (gens' : List (MvPolynomial τ R))
+    (G : Polynomial (MvPolynomial τ R))
+    (g : MvPolynomial (Option τ) R)
+    (hg : (MvPolynomial.optionEquivLeft R τ) g = G)
+    (hlead : IsSMulRegular (MvPolynomial τ R ⧸ Ideal.ofList gens')
+      (G.map (Ideal.Quotient.mk (Ideal.ofList gens'))).leadingCoeff) :
+    IsSMulRegular (MvPolynomial (Option τ) R ⧸
+      Ideal.ofList (gens'.map (MvPolynomial.rename some))) g := by
+  set I' : Ideal (MvPolynomial τ R) := Ideal.ofList gens' with hI'_def
+  set A : Ideal (MvPolynomial (Option τ) R) :=
+    Ideal.ofList (gens'.map (MvPolynomial.rename some)) with hA_def
+  set B : Type _ := MvPolynomial τ R ⧸ I' with hB_def
+  -- Same ideal-matching fact `regular_of_linear_elim` establishes, verbatim.
+  have hIdealMap : Ideal.map ((MvPolynomial.optionEquivLeft R τ).toRingEquiv :
+      MvPolynomial (Option τ) R →+* Polynomial (MvPolynomial τ R)) A =
+      Ideal.map Polynomial.C I' := by
+    rw [hA_def, hI'_def, Ideal.map_ofList, Ideal.map_ofList, List.map_map]
+    congr 1
+    apply List.map_congr_left
+    intro q _
+    show (MvPolynomial.optionEquivLeft R τ) (MvPolynomial.rename some q) = Polynomial.C q
+    exact optionEquivLeft_rename_some q
+  -- Same `e : (MvPolynomial (Option τ) R ⧸ A) ≃+* Polynomial B` as in
+  -- `regular_of_linear_elim`, built the same way.
+  set e : (MvPolynomial (Option τ) R ⧸ A) ≃+* Polynomial B :=
+    (Ideal.quotientEquiv A (Ideal.map Polynomial.C I')
+      (MvPolynomial.optionEquivLeft R τ).toRingEquiv hIdealMap.symm).trans
+      I'.polynomialQuotientEquivQuotientPolynomial.symm with he_def
+  have hsmul_mk : ∀ (r : MvPolynomial (Option τ) R) (x : MvPolynomial (Option τ) R ⧸ A),
+      r • x = Ideal.Quotient.mk A r * x := by
+    intro r x
+    refine Quotient.inductionOn' x ?_
+    intro x'
+    show Ideal.Quotient.mk A (r * x') = Ideal.Quotient.mk A r * Ideal.Quotient.mk A x'
+    rw [map_mul]
+  have he_apply : ∀ x : MvPolynomial (Option τ) R ⧸ A,
+      e x = I'.polynomialQuotientEquivQuotientPolynomial.symm
+        ((Ideal.quotientEquiv A (Ideal.map Polynomial.C I')
+          (MvPolynomial.optionEquivLeft R τ).toRingEquiv hIdealMap.symm) x) := by
+    intro x
+    rw [he_def, RingEquiv.trans_apply]
+  -- `e (mk A g) = G.map (mk I')` : chase `g` through `optionEquivLeft`
+  -- (landing on `G` by `hg`) then through
+  -- `polynomialQuotientEquivQuotientPolynomial.symm` (landing on
+  -- `G.map (mk I')` by `_symm_mk`, the coefficientwise-map lemma) --
+  -- this is the one step genuinely more general than `regular_of_linear_
+  -- elim`'s `he_C`/`he_X`, since `G` here need not be `C cbar - X * C dbar`.
+  have hg_e : e (Ideal.Quotient.mk A g) = G.map (Ideal.Quotient.mk I') := by
+    rw [he_apply, Ideal.quotientEquiv_mk]
+    have hstep : (MvPolynomial.optionEquivLeft R τ).toRingEquiv g = G := hg
+    rw [hstep, Ideal.polynomialQuotientEquivQuotientPolynomial_symm_mk]
+  -- Layer 1, applied to `G.map (mk I') : Polynomial B`, using `hlead`
+  -- directly (no bespoke linear-case argument needed here).
+  have hreg_poly : IsSMulRegular (Polynomial B) (G.map (Ideal.Quotient.mk I')) :=
+    Polynomial.isSMulRegular_of_leadingCoeff_isSMulRegular hlead
+  intro x y hxy
+  change g • x = g • y at hxy
+  rw [hsmul_mk g x, hsmul_mk g y] at hxy
+  apply e.injective
+  have hstep : e (Ideal.Quotient.mk A g * x) = e (Ideal.Quotient.mk A g * y) := by rw [hxy]
+  rw [map_mul, map_mul, hg_e] at hstep
+  have hxy' : (G.map (Ideal.Quotient.mk I')) • e x = (G.map (Ideal.Quotient.mk I')) • e y := by
+    simpa [smul_eq_mul] using hstep
+  exact hreg_poly hxy'
 
 /-! ### §5bis-0b. Gap 1: the anchor-variable quintic coefficient is monic
 

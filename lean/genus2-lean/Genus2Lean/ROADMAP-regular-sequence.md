@@ -1008,3 +1008,196 @@ corollary.
   (not merely unproved), pending `Fu_cross`/`Fv_cross`'s closed forms.
 - `MatrixNondegenerate` (§6.5) is still not threaded as an explicit
   hypothesis anywhere in `DecoupledSystemRegular.lean`.
+
+## Progress note (current pass): builds clean, two ChatGPT round-trips on
+the assembly architecture, `regular_of_disjoint_extension` corrected from
+false to true, one new lemma proved (Layer 2), one remains genuinely open
+
+**The file builds with no errors as of this pass** (previous passes fixed
+two elaboration-order/typeclass-unification errors at
+`MvPolynomial.isSMulRegular_C_of_isSMulRegular`, unrelated to any `sorry`).
+`sorry` count is unchanged at the surface level from the previous note (6),
+but the *shape* of the remaining work changed substantially this pass, via
+two rounds of ChatGPT consultation on how `regularSeq_of_peel_chain` (item
+5 in the previous note) should actually be assembled. Recording the
+architecture here so it doesn't need to be re-explained from scratch next
+time.
+
+### The two-round consultation, summarized
+
+**Round 1** reviewed an early sketch of the 12-step peel induction and
+recommended a four-layer architecture instead of one flat induction:
+
+1. **Layer 1** — a single generic lemma: a polynomial over any `CommRing A`
+   with `IsSMulRegular`-regular leading coefficient is itself regular
+   (acting on `Polynomial A` by multiplication). Subsumes both the `Monic`
+   case (curve relations, leading coeff `1`) and the linear case (`Fu`/`Fv`
+   generators, leading coeff `-den`) as one-line corollaries — no
+   `NoZeroDivisors`/domain hypothesis needed, and no separate lemma per
+   case.
+2. **Layer 2** — a quotient-transport lemma: pushes Layer 1's
+   `Polynomial A`-level fact down through `MvPolynomial.optionEquivLeft`
+   and `Ideal.polynomialQuotientEquivQuotientPolynomial` into the actual
+   quotient ring the peel chain lives in. This is the direct
+   generalization of this file's own already-proved `regular_of_linear_elim`
+   (which only handled the fixed linear shape) to an arbitrary polynomial.
+3. **Layer 3** — the "shape" facts: that each generator, after peeling,
+   really does look like a monic/linear polynomial in the next variable
+   (`quintic`/`quintic_monic` for the curve relations' quintic coefficient
+   blob, `curveCoeffRegular` for the anchor-variable instantiation).
+4. **Layer 4** — the finite 12-stage assembly over the fixed variable
+   order, invoking Layers 1–3 at each stage.
+
+It also flagged `MvPolynomial.finSuccEquiv`/`Fin 12` reindexing as a
+cleaner alternative to this file's `{v : Idx // v ≠ x}`-subtype peeling,
+but that reindexing was **not attempted** this pass (would touch working
+`peelEquiv`/`peelEquivGen` machinery; flagged as a possible future
+cleanup, not a blocker).
+
+**Round 2**, after Layers 1–3 above were drafted, corrected two substantive
+points in the emerging Layer-4 assembly plan:
+
+- **`curveCoeffRegular` is likely not needed for the literal assembly.**
+  Each curve relation (`curveA1` etc.) is *already* monic in its own `w`-
+  variable as written — `curveCoeffRegular`'s job (showing the anchor-
+  variable coefficient blob is a monic quintic) only matters if the
+  intended proof strategy specifically peels the anchor variable too,
+  which the literal 12-generator list doesn't require.
+- **The genuinely hard gap is the repeated-target-variable problem**, not
+  the curve relations. `genList`'s order is `Fu ++ Fv ++ [curveA1..B2]`
+  (`Fu`/`Fv` first), and each of `U0`, `U1`, `V0`, `V1` has *two*
+  generators (`d.u1_num i - Ui * d.u1_den i` and
+  `d.u2_num i - Ui * d.u2_den i`). After imposing the first, the second's
+  denominator regularity is needed *in the quotient*, not merely
+  `≠ 0` in `Rdec p` — and the two denominators come from disjoint variable
+  sets (`{wa1,wa2,a1,a2}` vs. `{wb1,wb2,b1,b2}`), sharing only the target
+  variable (`U0` etc.), so this is a genuine flat-base-change situation,
+  not something `regular_of_linear_elim`/Layer 2 alone can discharge.
+
+This is exactly `regular_of_disjoint_extension`'s job, drafted the
+previous pass and left `sorry`-backed — Round 2 confirmed it is real,
+load-bearing work for the assembly, not a redundant lemma to skip.
+
+### What actually got done this pass
+
+- **Layer 2 is now proved**, not just planned: `regular_of_peeled_leadingCoeff`
+  (line ~2284), built by generalizing `regular_of_linear_elim`'s own
+  working transport argument (same `set I'/A/B/e` skeleton, same
+  `hIdealMap`/`hsmul_mk`/`he_apply` helper steps) from the fixed linear
+  shape `C c - X·C d` to an arbitrary polynomial `G : Polynomial
+  (MvPolynomial τ R)`, using Layer 1 in place of the linear case's bespoke
+  argument. `regular_of_linear_elim` itself was *not* rewritten as a
+  corollary of this (flagged as a safe future cleanup, not attempted to
+  avoid touching a working proof).
+- **`regular_of_disjoint_extension` was corrected from false to true.**
+  The version drafted the previous pass, over an arbitrary `[CommRing R]`,
+  is FALSE — ChatGPT's counterexample (`R := ℤ`, `σ₁ = σ₂ := PUnit`,
+  `g := e := 2`) is airtight: `e = 2` is regular in its own home ring, but
+  after quotienting by `g = 2` the quotient has characteristic 2 and `e`'s
+  image is literally `0`. The obstruction is that `MvPolynomial σ₁ R ⧸ (g)`
+  need not be flat over `R` in general (`ℤ ⧸ (2)` isn't `ℤ`-flat), which
+  is exactly the base-change step the lemma's proof needs. **Fix:**
+  `[CommRing R]` → `[Field R]` (line ~2053). Since every module over a
+  field is automatically flat, and the only `R` this file ever instantiates
+  the lemma at is `F p := ZMod p` (a field, given `[Fact (Nat.Prime p)]`),
+  this loses no generality actually needed here and makes the statement
+  true. No call sites existed yet to break from the tightened hypothesis.
+  Per project convention (weaken a false theorem rather than delete it):
+  the theorem was kept and corrected, not removed.
+- `regular_of_disjoint_extension`'s **proof itself is still `sorry`**
+  (unchanged) — the tensor-product/base-change assembly needed
+  (`MvPolynomial.algebraTensorAlgEquiv`, `IsSMulRegular.of_flat_of_isBaseChange`,
+  `TensorProduct.isBaseChange`) involves several nontrivial equivalence
+  compositions that were correctly identified as "needs a REPL, don't
+  guess blind" per project convention. A fresh, narrowly-scoped ChatGPT
+  prompt for exactly this proof (quoting the corrected `[Field R]`
+  statement and the specific confirmed Mathlib lemmas to use) was drafted
+  and is queued to run next — see "Next concrete step" below.
+
+### Current inventory of `sorry`s in `DecoupledSystemRegular.lean` (7 total,
+up from 6 — `regular_of_peeled_leadingCoeff` being newly proved is offset
+by `regular_of_disjoint_extension` now being counted as a live, corrected
+target rather than an untested draft)
+
+Unchanged from the previous note: items 1–4 (`Ypoly_natDegree_le_zero`'s
+`rrBasis5_bj_one_unique` gap, `Epoly_natDegree_le_three`,
+`Npoly_natDegree_le_six`, `towerToRdec_den_ne_zero`) and item 6
+(`decoupledSystem_zeroDimensional`, the `IsRegular → Module.Finite` step).
+
+Item 5 (`regularSeq_of_peel_chain`) is now better-decomposed rather than a
+single monolithic gap:
+- **Layer 1** (`Polynomial.isSMulRegular_of_leadingCoeff_isSMulRegular`,
+  line ~2195) — **proved**.
+- **Layer 2** (`regular_of_peeled_leadingCoeff`, line ~2284) — **proved**
+  this pass.
+- **Layer 3 shape facts** (`quintic`/`quintic_monic`, line ~2365;
+  `curveCoeffRegular`, line ~2423) — **proved**, though per Round 2 above,
+  `curveCoeffRegular` specifically may turn out to be unneeded for the
+  literal 12-generator assembly (kept anyway, harmless if unused).
+- **`regular_of_disjoint_extension`** (line ~2053) — statement corrected
+  to `[Field R]` this pass (now true), **proof still `sorry`** — the
+  concrete next target, see below.
+- **Layer 4, the actual 12-stage assembly** (inside
+  `regularSeq_of_peel_chain`, line ~2065) — **not started**. Depends on
+  `regular_of_disjoint_extension`'s proof being finished first (needed for
+  the four repeated-target-variable stages `U0,U0`/`U1,U1`/`V0,V0`/`V1,V1`);
+  the four curve-relation stages and the eight `Fu`/`Fv` first-generator
+  stages should route through Layer 2 + Layer 1 directly, per Round 2's
+  correction that `curveCoeffRegular` isn't needed there.
+
+**Net count, current pass: 7 live `sorry`s** — the same 4 narrow
+single-lemma gaps as before (1–4), the same dimension-0 corollary (6, now
+listed last), `regular_of_disjoint_extension`'s proof (new: corrected
+statement, proof not yet attempted), and the Layer-4 assembly itself
+(`regularSeq_of_peel_chain`, unchanged in substance but now much better
+scoped — three of its four stage-types have their supporting lemmas fully
+proved, only the repeated-target stages are blocked on
+`regular_of_disjoint_extension`).
+
+### Next concrete step
+
+Run this prompt (already drafted, copy verbatim) through ChatGPT with REPL
+access, to get `regular_of_disjoint_extension`'s actual proof:
+
+> I'm working in Lean 4 / Mathlib. I need to prove this theorem (now
+> correctly stated over `[Field R]`, per a prior round-trip that found the
+> `[CommRing R]` version false via a `ℤ`/characteristic-2 counterexample):
+>
+> ```lean
+> theorem regular_of_disjoint_extension {R : Type*} [Field R]
+>     {σ₁ σ₂ : Type*} [DecidableEq σ₁] [DecidableEq σ₂]
+>     (g : MvPolynomial σ₁ R) {e : MvPolynomial σ₂ R}
+>     (he : IsSMulRegular (MvPolynomial σ₂ R) e) :
+>     IsSMulRegular
+>       (MvPolynomial (σ₁ ⊕ σ₂) R ⧸
+>         (Ideal.ofList [MvPolynomial.rename Sum.inl g] : Ideal (MvPolynomial (σ₁ ⊕ σ₂) R)))
+>       (Ideal.Quotient.mk
+>         (Ideal.ofList [MvPolynomial.rename Sum.inl g] : Ideal (MvPolynomial (σ₁ ⊕ σ₂) R))
+>         (MvPolynomial.rename Sum.inr e)) := by
+>   sorry
+> ```
+>
+> Confirmed to exist in current Mathlib:
+> - `MvPolynomial.sumAlgEquiv (R) (S₁) (S₂) : MvPolynomial (S₁ ⊕ S₂) R ≃ₐ[R] MvPolynomial S₁ (MvPolynomial S₂ R)`
+> - `MvPolynomial.sumAlgEquiv_comp_rename_inl`/`_inr` (their exact
+>   coefficient-map/algebraMap composition forms)
+> - `MvPolynomial.algebraTensorAlgEquiv R B : TensorProduct R B (MvPolynomial σ₁ R) ≃ₐ[B] MvPolynomial σ₁ B`, sending `b ⊗ₜ p ↦ b • p.map (algebraMap R B)` (`Mathlib.RingTheory.TensorProduct.MvPolynomial`)
+> - `IsSMulRegular.of_flat_of_isBaseChange`, `IsSMulRegular.of_flat` (`Mathlib.RingTheory.Flat.Basic`)
+> - `TensorProduct.isBaseChange (R) (M) (S) : IsBaseChange S ((TensorProduct.mk R S M) 1)`
+> - Since `R` is now a `Field`, every `R`-module (in particular
+>   `MvPolynomial σ₁ R ⧸ Ideal.span {g}`) is automatically `Module.Flat R`.
+>
+> Please give the concrete Lean 4 proof, using `algebraTensorAlgEquiv` (not
+> `Algebra.TensorProduct.quotIdealMapEquivTensorQuot`, which was tried in a
+> prior round and had its `A`/`B` roles backwards for this situation) to
+> identify `MvPolynomial σ₁ B ⧸ Ideal.span {ĝ}` (`ĝ := g.map (algebraMap R
+> B)`, `B := MvPolynomial σ₂ R`) with `B ⊗[R] (MvPolynomial σ₁ R ⧸
+> Ideal.span {g})`, then apply the flat-base-change regularity lemma.
+
+Once that lands, Layer 4's four `U/V` repeated-target stages become
+mechanical applications of `regular_of_disjoint_extension` (with the
+disjointness of `{wa1,wa2,a1,a2}` vs. `{wb1,wb2,b1,b2}` already established
+by `u1_indep`/`u2_indep`/etc., proved upstream), and the remaining work in
+`regularSeq_of_peel_chain` is genuinely mechanical bookkeeping (routing
+each of the 12 stages through the now-complete Layer 1/2/3/
+`regular_of_disjoint_extension` toolkit) rather than open mathematics.
