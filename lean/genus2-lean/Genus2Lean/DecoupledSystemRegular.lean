@@ -2074,63 +2074,78 @@ theorem regular_of_disjoint_extension {R : Type*} [Field R]
   -- a first REPL pass hit a stuck `HasQuotient` instance search that
   -- traced back to `Ideal.span {g'}` being re-elaborated at each use site
   -- rather than named once; naming every ideal up front removes that.
-  set B : Type _ := MvPolynomial σ₂ R with hB_def
-  set g' : MvPolynomial σ₁ B := g.map (algebraMap R B) with hg'_def
-  set I' : Ideal (MvPolynomial σ₁ B) := Ideal.span {g'} with hI'_def
+  -- Earlier revisions tried `set B := MvPolynomial σ₂ R with hB_def` to
+  -- abbreviate `MvPolynomial σ₂ R` as `B` for readability. REPL testing
+  -- across three separate attempts (bare `rename_i he`; `rename_i e he`;
+  -- a pre-`set` value-level rename to `e0`/`he0`) showed this ALWAYS
+  -- reverts and reintroduces at least one of `e`/`he` as an inaccessible
+  -- hypothesis no matter how the fallout is patched afterward, because
+  -- `e`'s own type literally IS the expression `set` is abstracting, so
+  -- Lean must revert (not just `change`) any hypothesis whose TYPE
+  -- depends on it -- unavoidable, not a naming mistake. Fix: don't
+  -- introduce `B` as a separate `set` name at all. `MvPolynomial σ₂ R` is
+  -- used literally everywhere below in its place; this is purely a
+  -- readability trade (`B` was never anything but notation for
+  -- `MvPolynomial σ₂ R` here), and with no `set` over `e`'s type, `e`
+  -- and `he` are never touched, so no revert -- and no inaccessible
+  -- name -- can arise in the first place.
+  set g' : MvPolynomial σ₁ (MvPolynomial σ₂ R) :=
+    g.map (algebraMap R (MvPolynomial σ₂ R)) with hg'_def
+  set I' : Ideal (MvPolynomial σ₁ (MvPolynomial σ₂ R)) := Ideal.span {g'} with hI'_def
   set Iq : Ideal (MvPolynomial σ₁ R) := Ideal.span {g} with hIq_def
   -- `Q` named up front (not just at the point of use, as an earlier pass
   -- did) so every later reference -- including inside `hflat_tensor`'s
-  -- `TensorProduct R B (MvPolynomial σ₁ R ⧸ Iq)` -- is the SAME elaborated
+  -- `TensorProduct R (MvPolynomial σ₂ R) (MvPolynomial σ₁ R ⧸ Iq)` -- is the SAME elaborated
   -- term `Q`, not independently-elaborated occurrences of the same
   -- mathematical object that could diverge under unification. This is the
   -- direct fix for the `HasQuotient` instance-search failure the REPL hit.
   set Q : Type _ := MvPolynomial σ₁ R ⧸ Iq with hQ_def
-  set J : Ideal (TensorProduct R B (MvPolynomial σ₁ R)) :=
-    Ideal.span {(1 : B) ⊗ₜ[R] g} with hJ_def
+  set J : Ideal (TensorProduct R (MvPolynomial σ₂ R) (MvPolynomial σ₁ R)) :=
+    Ideal.span {(1 : (MvPolynomial σ₂ R)) ⊗ₜ[R] g} with hJ_def
   set A : Ideal (MvPolynomial (σ₁ ⊕ σ₂) R) :=
     Ideal.ofList [MvPolynomial.rename Sum.inl g] with hA_def
   -- `sumAlgEquiv`, and the exact ideal it carries `A` to.
-  set E₁ : MvPolynomial (σ₁ ⊕ σ₂) R ≃ₐ[R] MvPolynomial σ₁ B :=
+  set E₁ : MvPolynomial (σ₁ ⊕ σ₂) R ≃ₐ[R] MvPolynomial σ₁ (MvPolynomial σ₂ R) :=
     MvPolynomial.sumAlgEquiv R σ₁ σ₂ with hE₁_def
   have hE₁_inl : E₁ (MvPolynomial.rename Sum.inl g) = g' := by
     have h := congrArg (fun F => F g) (MvPolynomial.sumAlgEquiv_comp_rename_inl R σ₁ σ₂)
     simp only [AlgHom.comp_apply, AlgHom.coe_coe] at h
-    -- `h : ↑(sumAlgEquiv R σ₁ σ₂) (rename Sum.inl g) = mapAlgHom (Algebra.ofId R B) g`, with
+    -- `h : ↑(sumAlgEquiv R σ₁ σ₂) (rename Sum.inl g) = mapAlgHom (Algebra.ofId R (MvPolynomial σ₂ R)) g`, with
     -- the LHS coerced (`↑(sumAlgEquiv ...)`) while the goal has bare `E₁` applied directly --
     -- these are defeq but not syntactically equal. The earlier `simpa [hE₁_def, hg'_def] using
-    -- h` attempt failed: `simp`'s `algebraMap_eq` lemma rewrites `algebraMap R B` (from
-    -- `hg'_def`) to `C` on the GOAL side, but leaves `h`'s RHS as `mapAlgHom (Algebra.ofId R B)
+    -- h` attempt failed: `simp`'s `algebraMap_eq` lemma rewrites `algebraMap R (MvPolynomial σ₂ R)` (from
+    -- `hg'_def`) to `C` on the GOAL side, but leaves `h`'s RHS as `mapAlgHom (Algebra.ofId R (MvPolynomial σ₂ R))
     -- g` un-normalized to the same `map C` form, so the two sides end up stated over different
     -- (defeq but non-syntactic) presentations of the same map and `simpa` can't close the gap.
-    -- Fix: normalize `h` itself down to `g.map (algebraMap R B) = g'` via `MvPolynomial.map`
+    -- Fix: normalize `h` itself down to `g.map (algebraMap R (MvPolynomial σ₂ R)) = g'` via `MvPolynomial.map`
     -- unfolding of `mapAlgHom`/`Algebra.ofId`, matching `hg'_def` on the nose, then finish with
     -- `h.symm` (after fixing up the LHS coercion) rather than asking `simpa` to bridge both
     -- sides in one step.
-    rw [show (MvPolynomial.mapAlgHom (Algebra.ofId R B) g : MvPolynomial σ₁ B)
-          = g.map (algebraMap R B) from rfl] at h
+    rw [show (MvPolynomial.mapAlgHom (Algebra.ofId R (MvPolynomial σ₂ R)) g : MvPolynomial σ₁ (MvPolynomial σ₂ R))
+          = g.map (algebraMap R (MvPolynomial σ₂ R)) from rfl] at h
     simpa [hE₁_def, hg'_def] using h
-  have hIdealMap : Ideal.map (E₁ : MvPolynomial (σ₁ ⊕ σ₂) R →+* MvPolynomial σ₁ B) A = I' := by
+  have hIdealMap : Ideal.map (E₁ : MvPolynomial (σ₁ ⊕ σ₂) R →+* MvPolynomial σ₁ (MvPolynomial σ₂ R)) A = I' := by
     rw [hA_def, Ideal.ofList_singleton, Ideal.map_span, Set.image_singleton]
     show Ideal.span {E₁ (MvPolynomial.rename Sum.inl g)} = I'
     rw [hE₁_inl, hI'_def]
-  -- Transport the quotient along `E₁` to `MvPolynomial σ₁ B ⧸ I'`.
-  set e' : MvPolynomial (σ₁ ⊕ σ₂) R ⧸ A ≃+* MvPolynomial σ₁ B ⧸ I' :=
-    Ideal.quotientEquiv A I' (E₁ : MvPolynomial (σ₁ ⊕ σ₂) R ≃+* MvPolynomial σ₁ B)
+  -- Transport the quotient along `E₁` to `MvPolynomial σ₁ (MvPolynomial σ₂ R) ⧸ I'`.
+  set e' : MvPolynomial (σ₁ ⊕ σ₂) R ⧸ A ≃+* MvPolynomial σ₁ (MvPolynomial σ₂ R) ⧸ I' :=
+    Ideal.quotientEquiv A I' (E₁ : MvPolynomial (σ₁ ⊕ σ₂) R ≃+* MvPolynomial σ₁ (MvPolynomial σ₂ R))
       hIdealMap.symm with he'_def
   -- `e'` sends the class of `rename Sum.inr e` to the class of
-  -- `algebraMap B (MvPolynomial σ₁ B) e` in `MvPolynomial σ₁ B ⧸ I'`.
-  have hE₁_inr : E₁ (MvPolynomial.rename Sum.inr e) = algebraMap B (MvPolynomial σ₁ B) e := by
+  -- `algebraMap (MvPolynomial σ₂ R) (MvPolynomial σ₁ (MvPolynomial σ₂ R)) e` in `MvPolynomial σ₁ (MvPolynomial σ₂ R) ⧸ I'`.
+  have hE₁_inr : E₁ (MvPolynomial.rename Sum.inr e) = algebraMap (MvPolynomial σ₂ R) (MvPolynomial σ₁ (MvPolynomial σ₂ R)) e := by
     have h := congrArg (fun F => F e) (MvPolynomial.sumAlgEquiv_comp_rename_inr R σ₁ σ₂)
     simp only [AlgHom.comp_apply, AlgHom.coe_coe] at h
     simpa [hE₁_def] using h
   have he'_apply :
       e' (Ideal.Quotient.mk A (MvPolynomial.rename Sum.inr e)) =
-        Ideal.Quotient.mk I' (algebraMap B (MvPolynomial σ₁ B) e) := by
+        Ideal.Quotient.mk I' (algebraMap (MvPolynomial σ₂ R) (MvPolynomial σ₁ (MvPolynomial σ₂ R)) e) := by
     rw [he'_def, Ideal.quotientEquiv_mk]
     show Ideal.Quotient.mk I' (E₁ (MvPolynomial.rename Sum.inr e)) = _
     rw [hE₁_inr]
-  -- `B`-flatness of `MvPolynomial σ₁ B ⧸ I'` via base change of
-  -- `MvPolynomial σ₁ R ⧸ Iq` (flat over the field `R`) along `R → B`,
+  -- `(MvPolynomial σ₂ R)`-flatness of `MvPolynomial σ₁ (MvPolynomial σ₂ R) ⧸ I'` via base change of
+  -- `MvPolynomial σ₁ R ⧸ Iq` (flat over the field `R`) along `R → (MvPolynomial σ₂ R)`,
   -- transported across a `LinearEquiv` built from `algebraTensorAlgEquiv`.
   -- Per this file's own established convention (see the comment above
   -- `MvPolynomial.isSMulRegular_C_of_isSMulRegular`): NOT a named lemma
@@ -2138,9 +2153,9 @@ theorem regular_of_disjoint_extension {R : Type*} [Field R]
   -- instance resolution -- every module over a field is flat automatically
   -- -- so `inferInstance` should close this outright.
   have hflat_quot_R : Module.Flat R Q := inferInstance
-  have hflat_tensor : Module.Flat B (TensorProduct R B Q) :=
-    Module.Flat.baseChange R B _
-  -- Identify `MvPolynomial σ₁ B ⧸ I'` with `TensorProduct R B (MvPolynomial
+  have hflat_tensor : Module.Flat (MvPolynomial σ₂ R) (TensorProduct R (MvPolynomial σ₂ R) Q) :=
+    Module.Flat.baseChange R (MvPolynomial σ₂ R) _
+  -- Identify `MvPolynomial σ₁ (MvPolynomial σ₂ R) ⧸ I'` with `TensorProduct R (MvPolynomial σ₂ R) (MvPolynomial
   -- σ₁ R) ⧸ J` via `algebraTensorAlgEquiv` (an `AlgEquiv`, so its induced
   -- `Ideal.quotientEquiv` on the quotient level is available once we know
   -- it carries `J` to `I'`). NOTE FOR REPL: the exact simp-normal form of
@@ -2149,56 +2164,48 @@ theorem regular_of_disjoint_extension {R : Type*} [Field R]
   -- `hE₂_g` below; if `simp [E₂]` does not close it, `#check
   -- @MvPolynomial.algebraTensorAlgEquiv` and search for its defining
   -- `@[simp]` lemma, then adjust the simp set there.
-  set E₂ : TensorProduct R B (MvPolynomial σ₁ R) ≃ₐ[B] MvPolynomial σ₁ B :=
-    MvPolynomial.algebraTensorAlgEquiv R B with hE₂_def
-  have hE₂_g : E₂ ((1 : B) ⊗ₜ[R] g) = g' := by
+  set E₂ : TensorProduct R (MvPolynomial σ₂ R) (MvPolynomial σ₁ R) ≃ₐ[(MvPolynomial σ₂ R)] MvPolynomial σ₁ (MvPolynomial σ₂ R) :=
+    MvPolynomial.algebraTensorAlgEquiv R (MvPolynomial σ₂ R) with hE₂_def
+  have hE₂_g : E₂ ((1 : (MvPolynomial σ₂ R)) ⊗ₜ[R] g) = g' := by
     simp [hE₂_def, hg'_def]
-  have hIdealMap₂ : Ideal.map (E₂ : TensorProduct R B (MvPolynomial σ₁ R) →+* MvPolynomial σ₁ B) J
+  have hIdealMap₂ : Ideal.map (E₂ : TensorProduct R (MvPolynomial σ₂ R) (MvPolynomial σ₁ R) →+* MvPolynomial σ₁ (MvPolynomial σ₂ R)) J
       = I' := by
     rw [hJ_def, Ideal.map_span, Set.image_singleton]
-    show Ideal.span {E₂ ((1 : B) ⊗ₜ[R] g)} = I'
+    show Ideal.span {E₂ ((1 : (MvPolynomial σ₂ R)) ⊗ₜ[R] g)} = I'
     rw [hE₂_g, hI'_def]
-  set e'' : TensorProduct R B (MvPolynomial σ₁ R) ⧸ J ≃+* MvPolynomial σ₁ B ⧸ I' :=
-    Ideal.quotientEquiv J I' (E₂ : TensorProduct R B (MvPolynomial σ₁ R) ≃+* MvPolynomial σ₁ B)
+  set e'' : TensorProduct R (MvPolynomial σ₂ R) (MvPolynomial σ₁ R) ⧸ J ≃+* MvPolynomial σ₁ (MvPolynomial σ₂ R) ⧸ I' :=
+    Ideal.quotientEquiv J I' (E₂ : TensorProduct R (MvPolynomial σ₂ R) (MvPolynomial σ₁ R) ≃+* MvPolynomial σ₁ (MvPolynomial σ₂ R))
       hIdealMap₂.symm with he''_def
-  -- `TensorProduct R B (MvPolynomial σ₁ R) ⧸ J` is `B`-linearly equivalent
-  -- to `B ⊗[R] (MvPolynomial σ₁ R ⧸ Iq)` via `Submodule.baseChange`-style
-  -- quotient/tensor commutation (`TensorProduct.tensorQuotientEquiv`, used
-  -- here strictly as a `LinearEquiv`, never as an `AlgEquiv` -- per the
-  -- ChatGPT reply's explicit warning that its Mathlib declaration is only
-  -- a `LinearEquiv`). NOTE FOR REPL: this is the one composition not yet
-  -- checked against the exact Mathlib statement; `TensorProduct.
-  -- tensorQuotientEquiv B Iq.toSubmodule` is the ChatGPT-suggested name,
-  -- unverified -- confirm via `#check @TensorProduct.tensorQuotientEquiv`
-  -- and fill in below, then compose with `e''` (via `e''.toLinearEquiv` --
-  -- or an explicit `LinearEquiv.ofRingEquiv`-style bridge if `RingEquiv`
-  -- doesn't coerce to `LinearEquiv` directly, unverified) to get
-  -- `hquot_equiv_tensor`.
-  -- NOTE FOR REPL: `Module.Flat.of_linearEquiv` per Mathlib docs is
-  -- "modules linearly equivalent to a flat module are flat" -- i.e. given
-  -- `[Flat R M]` and `e : N ≃ₗ[R] M`, concludes `Flat R N`. So the equiv we
-  -- need to hand it goes `quotient ≃ₗ[B] tensor` (`N := quotient`,
-  -- `M := tensor`, matching `hflat_tensor : Flat B tensor` above). The
-  -- exact argument-passing convention (explicit `e` vs. instance-style)
-  -- is NOT yet double-checked here -- confirm via `#check
-  -- @Module.Flat.of_linearEquiv` in the REPL and adjust the call shape
-  -- below if it differs.
-  -- (`Q` is now named up front alongside `B`/`I'`/`J`/`Iq` -- see the note
-  -- there for why: this is the direct fix for a `HasQuotient`
-  -- instance-search failure the REPL hit when `TensorProduct R B
-  -- (MvPolynomial σ₁ R ⧸ Iq)` was written inline instead of via `Q`.)
-  have hquot_equiv_tensor : MvPolynomial σ₁ B ⧸ I' ≃ₗ[B] TensorProduct R B Q := by
+  -- `Module.Flat.of_linearEquiv` (confirmed signature, Mathlib.RingTheory.Flat.Basic):
+  -- `{R M N} [Flat R M] (e : N ≃ₗ[R] M) : Flat R N`. So `M := TensorProduct R (MvPolynomial σ₂ R) Q`
+  -- (flat via `hflat_tensor`, found by local instance search since it's in
+  -- context) and `N := MvPolynomial σ₁ (MvPolynomial σ₂ R) ⧸ I'` (the goal). Two earlier attempts
+  -- failed on the SAME underlying universe-unification issue: stating the equiv
+  -- `MvPolynomial σ₁ (MvPolynomial σ₂ R) ⧸ I' ≃ₗ[(MvPolynomial σ₂ R)] TensorProduct R (MvPolynomial σ₂ R) Q` as its own standalone
+  -- `have` forces `HasQuotient` instance search to run before the LHS's universe
+  -- is pinned by anything, producing an inflated combined-universe target that
+  -- no instance matches (even though the same quotient type elaborates fine
+  -- elsewhere, e.g. `e'`/`e''` above). A `set`-based rename (`Qsub`) sidestepped
+  -- that but then broke on `▸`/`subst`, which needs a bare free variable, not a
+  -- `let`-bound one. Fix: `apply` against the ALREADY-STATED goal type below --
+  -- this pins `N` from the goal itself before the equiv is elaborated, so the
+  -- remaining `sorry` goal is `MvPolynomial σ₁ (MvPolynomial σ₂ R) ⧸ I' ≃ₗ[(MvPolynomial σ₂ R)] TensorProduct R (MvPolynomial σ₂ R) Q`
+  -- with the LHS universe already fixed, avoiding the ordering problem entirely.
+  have hflat_quot_B : Module.Flat (MvPolynomial σ₂ R) (MvPolynomial σ₁ (MvPolynomial σ₂ R) ⧸ I') := by
+    apply Module.Flat.of_linearEquiv (R := (MvPolynomial σ₂ R)) (M := TensorProduct R (MvPolynomial σ₂ R) Q)
     sorry
-  have hflat_quot_B : Module.Flat B (MvPolynomial σ₁ B ⧸ I') :=
-    Module.Flat.of_linearEquiv hquot_equiv_tensor
-  -- Close with `IsSMulRegular.of_flat`: `he : IsSMulRegular B e` (note
-  -- `MvPolynomial σ₂ R` IS `B` on the nose, so this is literally `he`),
-  -- transported to `MvPolynomial σ₁ B ⧸ I'` via the flat base change
-  -- `B → MvPolynomial σ₁ B ⧸ I'`.
+  -- Close with `IsSMulRegular.of_flat`: `he : IsSMulRegular (MvPolynomial σ₂ R) e`,
+  -- transported to `MvPolynomial σ₁ (MvPolynomial σ₂ R) ⧸ I'` via the flat
+  -- base change `MvPolynomial σ₂ R → MvPolynomial σ₁ (MvPolynomial σ₂ R) ⧸ I'`.
+  -- Same call shape as the working
+  -- `MvPolynomial.isSMulRegular_C_of_isSMulRegular` above: `he` passed
+  -- positionally, only `S` given explicitly, `R` inferred from `he`.
+  -- (`e`/`he` are the theorem's own binders, used bare throughout this
+  -- proof -- no `set`/`rename_i` ever ran over their type, so there is no
+  -- stray inaccessible variable to worry about at this point.)
   have hreg_quot :
-      IsSMulRegular (MvPolynomial σ₁ B ⧸ I') (algebraMap B (MvPolynomial σ₁ B ⧸ I') e) := by
-    have := IsSMulRegular.of_flat (R := B) (S := MvPolynomial σ₁ B ⧸ I') (x := e) he
-    exact this
+      IsSMulRegular (MvPolynomial σ₁ (MvPolynomial σ₂ R) ⧸ I') (algebraMap (MvPolynomial σ₂ R) (MvPolynomial σ₁ (MvPolynomial σ₂ R) ⧸ I') e) :=
+    IsSMulRegular.of_flat (S := MvPolynomial σ₁ (MvPolynomial σ₂ R) ⧸ I') he
   -- Transport `hreg_quot` back through `e'` to the original quotient.
   intro x y hxy
   apply e'.injective
@@ -2212,10 +2219,36 @@ theorem regular_of_disjoint_extension {R : Type*} [Field R]
     rw [hsmul_eq, hsmul_eq] at hxy
     rw [hxy]
   rw [map_mul, map_mul, he'_apply] at hxy'
+  -- `hxy'` is now stated with `Ideal.Quotient.mk I' (C e)` on the ring-map
+  -- side (`simp`'s normal form for `algebraMap (MvPolynomial σ₂ R)
+  -- (MvPolynomial σ₁ (MvPolynomial σ₂ R)) e`, per `MvPolynomial.algebraMap_eq`),
+  -- while the goal below is stated with the quotient-level
+  -- `algebraMap (MvPolynomial σ₂ R) (MvPolynomial σ₁ (MvPolynomial σ₂ R) ⧸ I') e`
+  -- directly -- same fact, but `simpa` alone doesn't bridge the two
+  -- normal forms (REPL-confirmed: it leaves a `C e` vs `algebraMap ... e`
+  -- mismatch). Fix: rewrite the quotient-level `algebraMap` down to
+  -- `Ideal.Quotient.mk I' (algebraMap ... e)` first via
+  -- `IsScalarTower.algebraMap_apply` (confirmed signature,
+  -- Mathlib.Algebra.Algebra.Tower: `algebraMap A C x = algebraMap B C
+  -- (algebraMap A B x)` given `IsScalarTower A B C`; here
+  -- `A := MvPolynomial σ₂ R`, `B := MvPolynomial σ₁ (MvPolynomial σ₂ R)`,
+  -- `C := ... ⧸ I'`, instance found automatically via
+  -- `Ideal.Quotient.isScalarTower`/the quotient's own `IsScalarTower B B
+  -- (B ⧸ I')`), then close with `rfl` since `algebraMap B (B ⧸ I')` IS
+  -- `Ideal.Quotient.mk I'` by definition (`Ideal.Quotient.algebra`'s ring
+  -- hom component, Mathlib.RingTheory.Ideal.QuotientOperations) -- then
+  -- match `hxy'` exactly instead of asking `simpa` to unify two distinct
+  -- simp-normal forms in one step.
+  have halg_eq :
+      (algebraMap (MvPolynomial σ₂ R) (MvPolynomial σ₁ (MvPolynomial σ₂ R) ⧸ I') e) =
+        Ideal.Quotient.mk I' (MvPolynomial.C e) := by
+    simp [IsScalarTower.algebraMap_apply (MvPolynomial σ₂ R) (MvPolynomial σ₁ (MvPolynomial σ₂ R))
+      (MvPolynomial σ₁ (MvPolynomial σ₂ R) ⧸ I')]
   have hxy'' :
-      (algebraMap B (MvPolynomial σ₁ B ⧸ I') e) • e' x =
-      (algebraMap B (MvPolynomial σ₁ B ⧸ I') e) • e' y := by
-    simpa [smul_eq_mul] using hxy'
+      (algebraMap (MvPolynomial σ₂ R) (MvPolynomial σ₁ (MvPolynomial σ₂ R) ⧸ I') e) • e' x =
+      (algebraMap (MvPolynomial σ₂ R) (MvPolynomial σ₁ (MvPolynomial σ₂ R) ⧸ I') e) • e' y := by
+    simp only [smul_eq_mul, halg_eq]
+    exact hxy'
   exact hreg_quot hxy''
 
 theorem regularSeq_of_peel_chain (c0 c1 c2 c3 c4 : F p) (sa sb : SampleTarget p)
