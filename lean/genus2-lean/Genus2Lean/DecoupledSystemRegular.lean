@@ -2049,9 +2049,9 @@ generic obstruction, in which case the paper's own genericity claim
 survives with a codimension-≥1 exceptional locus exactly like ordinary
 "generic point" theorems always carry one. Nothing below investigates this
 -- it is scoped as future work, after `regularSeq_of_peel_chain` itself is
-closed. -/
+closed. 
 
-/-- **Assembly placeholder.** Once `curveCoeffRegular`/`denRegular`/
+ **Assembly placeholder.** Once `curveCoeffRegular`/`denRegular`/
 `CrossNondegenerate` (and the
 still-not-written-down "peel the remaining anchor/target variables in
 order, applying `regular_of_linear_elim`/`Polynomial.Monic.isRegular` at
@@ -2474,7 +2474,8 @@ theorem isSMulRegular_of_mul_eq_of_isSMulRegular {M : Type*} [CommRing M]
   intro x y hxy
   simp only [smul_eq_mul] at hxy
   apply hc
-  rw [smul_eq_mul, smul_eq_mul, ← h, mul_assoc, mul_assoc, hxy]
+  show c * x = c * y
+  rw [← h, mul_assoc, mul_assoc, hxy]
 
 /-- **Signature update this pass**: `denRegular` (above) now genuinely needs
 `hndA`/`hndB : Nondegenerate ...` beyond `hcurA/B`/`hgcdA/B` -- this was
@@ -2729,7 +2730,7 @@ theorem regular_of_peeled_leadingCoeff {τ : Type*} {R : Type*} [CommRing R]
     congr 1
     apply List.map_congr_left
     intro q _
-    show (MvPolynomial.optionEquivLeft R τ) (MvPolynomial.rename some q) = Polynomial.C q
+    change (MvPolynomial.optionEquivLeft R τ) (MvPolynomial.rename some q) = Polynomial.C q
     exact optionEquivLeft_rename_some q
   -- Same `e : (MvPolynomial (Option τ) R ⧸ A) ≃+* Polynomial B` as in
   -- `regular_of_linear_elim`, built the same way.
@@ -2742,7 +2743,7 @@ theorem regular_of_peeled_leadingCoeff {τ : Type*} {R : Type*} [CommRing R]
     intro r x
     refine Quotient.inductionOn' x ?_
     intro x'
-    show Ideal.Quotient.mk A (r * x') = Ideal.Quotient.mk A r * Ideal.Quotient.mk A x'
+    change Ideal.Quotient.mk A (r * x') = Ideal.Quotient.mk A r * Ideal.Quotient.mk A x'
     rw [map_mul]
   have he_apply : ∀ x : MvPolynomial (Option τ) R ⧸ A,
       e x = I'.polynomialQuotientEquivQuotientPolynomial.symm
