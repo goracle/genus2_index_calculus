@@ -2193,7 +2193,38 @@ theorem regular_of_disjoint_extension {R : Type*} [Field R]
   -- with the LHS universe already fixed, avoiding the ordering problem entirely.
   have hflat_quot_B : Module.Flat (MvPolynomial σ₂ R) (MvPolynomial σ₁ (MvPolynomial σ₂ R) ⧸ I') := by
     apply Module.Flat.of_linearEquiv (R := (MvPolynomial σ₂ R)) (M := TensorProduct R (MvPolynomial σ₂ R) Q)
-    sorry
+    -- Route: `Algebra.TensorProduct.tensorQuotientEquiv` (confirmed in current Mathlib,
+    -- `Mathlib.RingTheory.TensorProduct.Quotient`) identifies
+    -- `TensorProduct R (MvPolynomial σ₂ R) Q` with the quotient of
+    -- `TensorProduct R (MvPolynomial σ₂ R) (MvPolynomial σ₁ R)` by the EXTENDED ideal
+    -- `Ideal.map includeRight Iq` directly -- no `Submodule.range` bookkeeping needed,
+    -- unlike the `AlgebraTensorModule.tensorQuotientEquiv` route considered earlier.
+    -- `hJq` identifies that extended ideal with `J` (already defined above as
+    -- `Ideal.span {1 ⊗ₜ g}`), then `e''`'s `AlgEquiv`-level twin (`eAlg`, built via
+    -- `Ideal.quotientEquivAlg` rather than the bare `Ideal.quotientEquiv` `e''` uses,
+    -- so it carries the `MvPolynomial σ₂ R`-linear structure this goal needs) finishes
+    -- the chain. NOTE FOR REPL: `hJq`'s proof is the one step not yet REPL-verified --
+    -- if `congr 1` / `Ideal.map_span` don't produce exactly `Ideal.span {includeRight g}
+    -- = Ideal.span {1 ⊗ₜ g}`, adjust with `show`/`simp [Ideal.map_span]` as needed.
+    have hJq :
+        Ideal.map
+            (Algebra.TensorProduct.includeRight :
+              MvPolynomial σ₁ R →ₐ[R] TensorProduct R (MvPolynomial σ₂ R) (MvPolynomial σ₁ R))
+            Iq = J := by
+      rw [hIq_def, hJ_def, Ideal.map_span, Set.image_singleton]
+      congr 1
+      exact Algebra.TensorProduct.includeRight_apply g
+    let tE := Algebra.TensorProduct.tensorQuotientEquiv
+      (MvPolynomial σ₂ R) (MvPolynomial σ₁ R) (MvPolynomial σ₂ R) Iq
+    have hTensor :
+        TensorProduct R (MvPolynomial σ₂ R) Q ≃ₗ[MvPolynomial σ₂ R]
+          TensorProduct R (MvPolynomial σ₂ R) (MvPolynomial σ₁ R) ⧸ J := by
+      rw [hQ_def, ← hJq]
+      exact tE.toLinearEquiv
+    let eAlg : (TensorProduct R (MvPolynomial σ₂ R) (MvPolynomial σ₁ R) ⧸ J) ≃ₐ[MvPolynomial σ₂ R]
+        (MvPolynomial σ₁ (MvPolynomial σ₂ R) ⧸ I') :=
+      Ideal.quotientEquivAlg J I' E₂ hIdealMap₂
+    exact eAlg.toLinearEquiv.symm.trans hTensor
   -- Close with `IsSMulRegular.of_flat`: `he : IsSMulRegular (MvPolynomial σ₂ R) e`,
   -- transported to `MvPolynomial σ₁ (MvPolynomial σ₂ R) ⧸ I'` via the flat
   -- base change `MvPolynomial σ₂ R → MvPolynomial σ₁ (MvPolynomial σ₂ R) ⧸ I'`.
