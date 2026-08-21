@@ -2203,17 +2203,15 @@ theorem regular_of_disjoint_extension {R : Type*} [Field R]
     -- `Ideal.span {1 ⊗ₜ g}`), then `e''`'s `AlgEquiv`-level twin (`eAlg`, built via
     -- `Ideal.quotientEquivAlg` rather than the bare `Ideal.quotientEquiv` `e''` uses,
     -- so it carries the `MvPolynomial σ₂ R`-linear structure this goal needs) finishes
-    -- the chain. NOTE FOR REPL: `hJq`'s proof is the one step not yet REPL-verified --
-    -- if `congr 1` / `Ideal.map_span` don't produce exactly `Ideal.span {includeRight g}
-    -- = Ideal.span {1 ⊗ₜ g}`, adjust with `show`/`simp [Ideal.map_span]` as needed.
+    -- the chain. REPL-confirmed: `rw [hIq_def, hJ_def, Ideal.map_span, Set.image_singleton]`
+    -- closes `hJq` outright (no further `congr`/`exact` needed) -- `includeRight g` and
+    -- `1 ⊗ₜ g` are defeq, so `rw`'s trailing `rfl` finishes the goal.
     have hJq :
         Ideal.map
             (Algebra.TensorProduct.includeRight :
               MvPolynomial σ₁ R →ₐ[R] TensorProduct R (MvPolynomial σ₂ R) (MvPolynomial σ₁ R))
             Iq = J := by
       rw [hIq_def, hJ_def, Ideal.map_span, Set.image_singleton]
-      congr 1
-      exact Algebra.TensorProduct.includeRight_apply g
     let tE := Algebra.TensorProduct.tensorQuotientEquiv
       (MvPolynomial σ₂ R) (MvPolynomial σ₁ R) (MvPolynomial σ₂ R) Iq
     have hTensor :
