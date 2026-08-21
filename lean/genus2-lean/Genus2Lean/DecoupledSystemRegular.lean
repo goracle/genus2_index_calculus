@@ -116,7 +116,11 @@ What's still missing:
   assembly itself, not inherited from `TheDataDerivation`.
 - `decoupledSystem_isRegularSequence`'s own `sorry` — the actual
   regular-sequence argument (§5's five steps), entirely separate from
-  `theData`'s construction and not attempted by this pass.
+  `theData`'s construction and not attempted by this pass. **This theorem
+  (and `decoupledSystem_zeroDimensional`) is stated in
+  `AlphaLocusDegreeUniform.lean`, not here** — see the note at the end of
+  this file, after §5bis, for why and for the fixed-target/uniform-in-
+  `alpha` relationship between the two files.
 
 See `ROADMAP-regular-sequence.md` for the plan on all of these.
 -/
@@ -333,7 +337,23 @@ instance, exactly the same status `(c0,...,c4)` already had before this
 pass). Takes `p` explicitly (rather than picking up the section's implicit
 `{p : ℕ}`) since a `structure`'s own parameters are stated independently of
 surrounding `variable` declarations -- call sites below always apply it as
-`SampleTarget p`, matching. -/
+`SampleTarget p`, matching.
+
+**Deliberately `alpha`-agnostic.** Per the header docstring's eq 1
+(`[P1]+[P2]-alpha*a = [P3]+[P4]-alpha'*a`), an instance of `SampleTarget p`
+stands for `R(alpha;P1,P2) = Reduce(alpha*a-P1-P2)`'s Mumford coefficients
+for SOME `alpha,P1,P2` -- but this structure itself carries no `alpha`,
+`P1`, or `P2` field and asserts no relationship between `(u0,u1,v0,v1)` and
+any such data; it is the target coefficients alone, exactly as
+`coeffsToNumDen`/`theData` below need them, nothing more. The extension
+that actually names `alpha,P1,P2` and packages the reduction claim as a
+hypothesis field is `SampleTargetFromAlpha` in `AlphaLocusDegreeUniform.lean`
+(`.toSampleTarget : SampleTarget p`), not this structure -- keeping that
+data out of `SampleTarget` itself is what lets this file's machinery
+(`theData`, `genList`, the peel-chain regular-sequence proof) stay usable
+for "some fixed target, however it arose" without importing
+`DivisorClassGroup.lean`'s `Jacobian`/`toJacobian` machinery just to state
+a structure of four field elements. -/
 structure SampleTarget (p : ℕ) [Fact (Nat.Prime p)] where
   u0 : F p
   u1 : F p
@@ -1893,7 +1913,146 @@ theorem denRegular (c0 c1 c2 c3 c4 : F p) (sa sb : SampleTarget p)
       bSideGens_wGen_injective c0 c1 c2 c3 c4 _
       (vRS_coeff_ne_zero p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1 hcurB hgcdB hndB i)
 
-/-- **Assembly placeholder.** Once `curveCoeffRegular`/`denRegular` (and the
+/-! ## §5bis-prelim2. `CrossNondegenerate`: the resultant hypothesis the
+repeated-target stages genuinely need
+
+**New this pass, per ChatGPT's counterexample (see the long comment above
+`regularSeq_of_peel_chain`'s `sorry`, and `ROADMAP-regular-sequence.md`'s
+matching progress note).** `denRegular` alone (all 8 `Fu`/`Fv` denominators
+individually nonzero) is NOT enough to make the second generator introduced
+for each of `U0,U1,V0,V1` regular in the quotient by the first -- the
+`k[a,b,U]`-counterexample there (`Fu0 = a(1-U)`, `Fu1 = b(1-U)`, both
+denominators nonzero and disjoint, yet `a*Fu1 = b*Fu0` already in the
+ambient ring) shows this can genuinely fail. Per Claire's own read of this
+(having seen the analogous "missing witness points" symptom before, on a
+real curve, via `HomotopyContinuation.jl`): this is expected to be FALSE
+for at least some, quite possibly most, choices of `(c0,...,c4)` -- the
+paper's `c`'s were left fully symbolic/generic specifically to avoid
+committing to one curve, and per Claire, "this is our punishment for
+that": some genus-2-*shaped* quintics are numerically/algebraically
+ill-behaved in exactly this cross-sample-degeneracy way, without that being
+visible from `curBeforeMonic ≠ 0`/`IsCoprime Ypoly uRS`/`Nondegenerate`
+alone (all three are per-SAMPLE conditions; this is a cross-sample one).
+So this is NOT stated as a theorem to later prove generically -- it is
+recorded as a fourth genuine per-instance exceptional-locus hypothesis,
+exactly parallel to how `Nondegenerate` itself was added, with the same
+open status: true for "enough" `(c0,...,c4, sa, sb)` to be worth stating
+(Claire's homotopy-continuation run on a real curve DID find the expected
+0-dimensional count, up to the missing-witness-point noise this hypothesis
+is the algebraic explanation for), but false in general, and NOT proved or
+assumed to hold generically here.
+
+**Precise content -- CORRECTED this pass (second ChatGPT round-trip).** For
+each of the 4 repeated-target pairs, the "resultant" `d₁ * c₂ - d₂ * c₁`
+(`c` = num, `d` = den, sample-1/A first, sample-2/B second, matching
+`Fu0`'s role as "already-imposed first generator") must be
+**`IsSMulRegular`** in the quotient by `Fu0` -- NOT merely `≠ 0` there.
+
+**Why the earlier `≠ 0` version was itself a false economy, caught before
+being acted on further.** The intended argument was: `d₁*Fu1 = d₂*Fu0 +
+resultant` (`Fu0 := u1_num i - X_target*u1_den i`, `Fu1 := u2_num i -
+X_target*u2_den i` -- direct computation, `d₁(c₂-Xd₂) - d₂(c₁-Xd₁) =
+d₁c₂-d₂c₁ = resultant`, so mod `Fu0` this reads `d₁*Fu1 ≡ resultant`), so
+`d₁` regular mod `Fu0` (easy -- `d₁` doesn't involve the target variable,
+survives quotienting by the LINEAR-in-that-variable relation `Fu0`) plus
+`resultant ≠ 0` mod `Fu0` was hoped to give `Fu1` regular mod `Fu0`. This is
+WRONG: from `d₁*x = 0` in the quotient one only learns `resultant*x ≡
+d₂*Fu0*x ≡ 0` (using `d₁*Fu1=d₂*Fu0+resultant` with `Fu1` in place of `x`
+is circular; the actual deduction needed is injectivity of `Fu1 • ·`, i.e.
+`Fu1*x=0 ⟹ x=0` -- multiplying by `d₁` gives `d₁*Fu1*x = resultant*x ≡ 0`,
+and THIS is where `resultant ≠ 0` alone is insufficient: `resultant*x ≡ 0`
+with `resultant ≠ 0` in a general (non-domain) quotient does NOT force `x =
+0` -- exactly the zero-divisor gap `IsSMulRegular` exists to rule out).
+Caught by hand-verifying the intended proof step rather than assuming
+`≠ 0` would suffice because "that's the natural exceptional-locus
+condition" -- per this project's own rule not to use a hypothesis to
+paper over an actual proof gap, `≠ 0` was too weak and is replaced below by
+`IsSMulRegular` directly.
+
+**The proof this now DOES support** (straightforward, once stated this
+way): `Fu1 • x = 0` in `Rdec p ⧸ ⟨Fu0⟩` gives `d₁ • (Fu1 • x) = 0`, and
+`d₁ • (Fu1 • x) = (d₁*Fu1) • x = resultant • x` (the identity above, valid
+mod `Fu0`); `resultant` regular then forces `x = 0` directly -- no
+regularity of `d₁` is even needed for THIS direction (it would be needed
+to separately conclude `d₁` itself is regular mod `Fu0`, which is not what
+this step needs). `d₁` regular mod `Fu0` is still needed elsewhere in the
+assembly (to make `Fu0` itself a valid "first generator" stage via
+`regular_of_linear_elim`), just not for this particular step.
+
+**Naming convention below**: `hu0`/`hu1` for the `U0`/`U1` target's two
+resultants (from `u1_*`/`u2_*`, i.e. the `Fu` pairs), `hv0`/`hv1` likewise
+for `V0`/`V1` (from `v1_*`/`v2_*`, the `Fv` pairs) -- matching
+`Nondegenerate`'s four-field naming pattern. -/
+structure CrossNondegenerate (c0 c1 c2 c3 c4 : F p) (sa sb : SampleTarget p)
+    (hcurA : curBeforeMonic p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1 ≠ 0)
+    (hcurB : curBeforeMonic p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1 ≠ 0)
+    (hgcdA : IsCoprime (Ypoly p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1)
+      (uRS p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1))
+    (hgcdB : IsCoprime (Ypoly p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1)
+      (uRS p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1)) : Prop where
+  /-- `U0`'s two `Fu` generators (`i = 0`) don't degenerate: `u1_den 0 *
+  u2_num 0 - u2_den 0 * u1_num 0` is `IsSMulRegular` in the quotient by
+  `Fu0 := u1_num 0 - X U0 * u1_den 0` in `Rdec p` (not merely nonzero
+  there -- see the corrected docstring above for why `≠ 0` alone is not
+  enough). -/
+  hu0 : IsSMulRegular
+      (Rdec p ⧸ Ideal.span {(theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_num 0 -
+        U0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_den 0})
+      (Ideal.Quotient.mk
+        (Ideal.span {(theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_num 0 -
+          U0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_den 0})
+        ((theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_den 0 *
+          (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_num 0 -
+          (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_den 0 *
+          (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_num 0))
+  /-- `U1`'s two `Fu` generators (`i = 1`), same shape. -/
+  hu1 : IsSMulRegular
+      (Rdec p ⧸ Ideal.span {(theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_num 1 -
+        U1' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_den 1})
+      (Ideal.Quotient.mk
+        (Ideal.span {(theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_num 1 -
+          U1' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_den 1})
+        ((theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_den 1 *
+          (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_num 1 -
+          (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_den 1 *
+          (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_num 1))
+  /-- `V0`'s two `Fv` generators (`i = 0`), same shape with `v1_*`/`v2_*`. -/
+  hv0 : IsSMulRegular
+      (Rdec p ⧸ Ideal.span {(theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_num 0 -
+        V0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_den 0})
+      (Ideal.Quotient.mk
+        (Ideal.span {(theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_num 0 -
+          V0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_den 0})
+        ((theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_den 0 *
+          (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v2_num 0 -
+          (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v2_den 0 *
+          (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_num 0))
+  /-- `V1`'s two `Fv` generators (`i = 1`), same shape. -/
+  hv1 : IsSMulRegular
+      (Rdec p ⧸ Ideal.span {(theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_num 1 -
+        V1' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_den 1})
+      (Ideal.Quotient.mk
+        (Ideal.span {(theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_num 1 -
+          V1' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_den 1})
+        ((theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_den 1 *
+          (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v2_num 1 -
+          (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v2_den 1 *
+          (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_num 1))
+
+/-- **Next goal, once this monster theorem is actually proved** (Claire's
+own framing, worth keeping on record rather than only in chat): figure out
+WHERE in `(c0,...,c4)`-space `CrossNondegenerate` (and `Nondegenerate`)
+actually fail. Live open possibility, not yet investigated at all: the
+failure locus might be small/pathological -- "a handful of crappy,
+non-genus-2 curves that just happen to look like genus 2" -- rather than a
+generic obstruction, in which case the paper's own genericity claim
+survives with a codimension-≥1 exceptional locus exactly like ordinary
+"generic point" theorems always carry one. Nothing below investigates this
+-- it is scoped as future work, after `regularSeq_of_peel_chain` itself is
+closed. -/
+
+/-- **Assembly placeholder.** Once `curveCoeffRegular`/`denRegular`/
+`CrossNondegenerate` (and the
 still-not-written-down "peel the remaining anchor/target variables in
 order, applying `regular_of_linear_elim`/`Polynomial.Monic.isRegular` at
 each step" induction they feed into) are filled in, this is where they
@@ -2299,16 +2458,47 @@ theorem regular_of_disjoint_extension {R : Type*} [Field R]
     exact hxy'
   exact hreg_quot hxy''
 
-theorem regularSeq_of_peel_chain (c0 c1 c2 c3 c4 : F p) (sa sb : SampleTarget p)
-    (hcurA : curBeforeMonic p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1 ≠ 0)
-    (hcurB : curBeforeMonic p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1 ≠ 0)
-    (hgcdA : IsCoprime (Ypoly p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1)
-      (uRS p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1))
-    (hgcdB : IsCoprime (Ypoly p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1)
-      (uRS p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1)) :
-    RingTheory.Sequence.IsRegular (Rdec p)
-      (genList p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB) := by
-  sorry
+/-- **Small lemma, proved this pass, correcting `CrossNondegenerate`'s
+earlier `≠ 0`-only version** (per the second ChatGPT round-trip on
+`regularSeq_of_peel_chain`'s assembly: the identity `a * b = c` with only
+`c ≠ 0` -- not `IsSMulRegular c` -- does NOT give `IsSMulRegular b` in a
+general (non-domain) ring; hand-verified counterexample: any ring with a
+nonzero zero-divisor `r`, `a := 1`, `b := r`, `c := r`). This is the
+CORRECT version: if `c` itself is `M`-regular and `a * b = c` (as elements
+of the ring `M` acting on itself), then `b` is `M`-regular. Note `a`
+itself need not be regular for this direction -- only used to relate `b`
+to `c` via the identity, not invoked again in the proof. -/
+theorem isSMulRegular_of_mul_eq_of_isSMulRegular {M : Type*} [CommRing M]
+    {a b c : M} (hc : IsSMulRegular M c) (h : a * b = c) :
+    IsSMulRegular M b := by
+  intro x y hxy
+  simp only [smul_eq_mul] at hxy
+  apply hc
+  rw [smul_eq_mul, smul_eq_mul, ← h, mul_assoc, mul_assoc, hxy]
+
+/-- **Signature update this pass**: `denRegular` (above) now genuinely needs
+`hndA`/`hndB : Nondegenerate ...` beyond `hcurA/B`/`hgcdA/B` -- this was
+flagged in `denRegular`'s own docstring as a propagation not yet done, since
+every theorem downstream of `denRegular` needs these two new hypotheses
+threaded through. -/
+
+/-- **`regularSeq_of_peel_chain` has moved to `PeelChainAssembly.lean`.**
+
+This file used to carry its own `sorry`-backed copy of this theorem
+(same name, same statement) at this location. It was a stale duplicate
+left over from before the peel-chain assembly work was split out into
+its own file per Claire's request (see `PeelChainAssembly.lean`'s header
+docstring) -- deleted this pass so there is exactly one copy, and exactly
+one place (`PeelChainAssembly.lean`) tracking its `sorry` status, rather
+than two declarations of the same name/statement silently drifting apart
+or (worse) both compiling under two different fully-qualified paths
+without either file's author noticing the other exists.
+
+`PeelChainAssembly.lean` imports this file and depends on everything
+above this point (`genList`, `denRegular`, `CrossNondegenerate`,
+`regular_of_linear_elim`, `isSMulRegular_of_mul_eq_of_isSMulRegular`,
+`regular_of_peeled_leadingCoeff`, `curveCoeffRegular`, `quintic_monic`) --
+nothing below this point in THIS file. -/
 
 /-! ## §5bis-0. Variable-peeling infrastructure for the "leading coefficient"
 argument
@@ -2693,52 +2883,40 @@ depends on (`dvd_N_u`'s hypotheses, `towerToRdec_spec`, the four
 proved, but only establish variable-support, not that `theData`'s numerators/
 denominators are the numbers they claim to be). -/
 
-/-- **The paper's actual claim.** `elim2`'s 12-equation decoupled matching
-system is a regular sequence of length 12 in the 12-variable ring `Rdec p`,
-for `p` and `(c0,...,c4)` satisfying `theData`'s own well-definedness
-hypotheses (`hcurA/B`, `hgcdA/B`) — i.e. outside the exceptional locus those
-four conditions carve out, with no further exceptional-locus condition
-identified or assumed beyond them (roadmap §5 steps 3-4 are exactly where
-additional such conditions would need to be discovered and threaded in,
-were this theorem actually proved; none has been, since none of the
-dependency chain above has been executed). Not proved. -/
-theorem decoupledSystem_isRegularSequence (c0 c1 c2 c3 c4 : F p) (sa sb : SampleTarget p)
-    (hcurA : curBeforeMonic p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1 ≠ 0)
-    (hcurB : curBeforeMonic p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1 ≠ 0)
-    (hgcdA : IsCoprime (Ypoly p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1)
-      (uRS p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1))
-    (hgcdB : IsCoprime (Ypoly p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1)
-      (uRS p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1)) :
-    RingTheory.Sequence.IsRegular (Rdec p)
-      (genList p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB) :=
-  -- Routed through the §5bis-0a scaffold (`regularSeq_of_peel_chain`) rather
-  -- than left as its own bare `sorry`, so the dependency on the two named
-  -- gaps (`curveCoeffRegular`, `denRegular`) is visible in the proof term
-  -- itself, not just in prose. `regularSeq_of_peel_chain` is itself still
-  -- `sorry`-backed (the twelve-step peel induction is new bookkeeping not
-  -- attempted this pass) -- this wiring changes nothing about what is
-  -- proved, only makes the dependency structure explicit.
-  regularSeq_of_peel_chain p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB
+/-! ## `decoupledSystem_isRegularSequence` / `decoupledSystem_zeroDimensional`
+have moved to `AlphaLocusDegreeUniform.lean`
 
-/-- **The dimension-0 corollary the roadmap's TL;DR promises**, also never
-previously stated. Follows formally from
-`decoupledSystem_isRegularSequence` once that is proved (a length-`n`
-regular sequence in an `n`-variable polynomial ring over a field makes the
-quotient a nonzero Artinian, i.e. finite-dimensional, `F p`-algebra) — the
-formal step from `IsRegular` to `Module.Finite` is itself not carried out
-here either, so this is a second, independent `sorry` on top of the first,
-not merely a restatement of it. -/
-theorem decoupledSystem_zeroDimensional (c0 c1 c2 c3 c4 : F p) (sa sb : SampleTarget p)
-    (hcurA : curBeforeMonic p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1 ≠ 0)
-    (hcurB : curBeforeMonic p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1 ≠ 0)
-    (hgcdA : IsCoprime (Ypoly p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1)
-      (uRS p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1))
-    (hgcdB : IsCoprime (Ypoly p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1)
-      (uRS p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1)) :
-    Module.Finite (F p) (Rdec p ⧸
-      Ideal.span (↑(genList p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).toFinset :
-        Set (Rdec p))) := by
-  sorry
+**Coherentized this pass.** These two theorems ("the paper's actual claim,
+fixed-target case" and "the dimension-0 corollary") used to be stated here,
+verbatim, at the end of this file. They now live in
+`AlphaLocusDegreeUniform.lean` instead — same statements, same `sorry`s,
+same proof term where one exists, just relocated — because that file is
+the one organized around `alpha,alpha'` and the eq-1 divisor-class picture
+`[P1]+[P2]-alpha*a = [P3]+[P4]-alpha'*a` this file's own header docstring
+already describes, and these two theorems are exactly that picture's
+*fixed-target* special case: `SampleTarget p` here is deliberately
+`alpha`-agnostic (`(u0,u1,v0,v1)` only, no `alpha,P1,P2` fields — see
+`SampleTarget`'s own docstring, §3 above), standing for "some
+`R(alpha;P1,P2) = Reduce(alpha*a-P1-P2)`, `alpha`/`P1`/`P2` unspecified,"
+and these theorems are the "regular sequence"/"0-dimensional" claims with
+that target held fixed. `AlphaLocusDegreeUniform.lean`'s
+`SampleTargetFromAlpha` is the extension of `SampleTarget` that actually
+names `alpha,P1,P2` and packages the divisor-class equation
+`(u0,u1,v0,v1)` is claimed to reduce from (its `isReduction` field);
+`decoupledSystem_degree_uniform` there is the uniform-in-`(alpha,alpha')`
+strengthening of these two fixed-target statements, per
+`ROADMAP-alpha-locus.md`.
+
+This file (`Idx`, `Rdec`, `SampleTarget`, `theData`, `genList`,
+`Nondegenerate`, `CrossNondegenerate`) stays scoped to "machinery for one
+fixed target, agnostic to where it came from," matching
+`AlphaLocusDegreeUniform.lean`'s own stated organizing principle. Nothing
+above this note changes: `genList` and `Nondegenerate` are still defined/
+proved-or-`sorry`'d here exactly as before; `regularSeq_of_peel_chain`
+itself has moved to `PeelChainAssembly.lean` (see the note just above
+this one) and is no longer declared in this file at all.
+`AlphaLocusDegreeUniform.lean` imports this file to state its two
+relocated theorems (and `decoupledSystem_degree_uniform`) against them. -/
 
 end DecoupledSystem
 end Genus2Lean

@@ -42,3 +42,4 @@ import Genus2Lean.TheDataDerivation.DataDerivationTower
 import Genus2Lean.TheDataDerivation.DataDerivationMumford
 import Genus2Lean.TheDataDerivation.DataDerivationSolve
 import Genus2Lean.DecoupledSystemRegular
+import Genus2Lean.ZeroD.PeelChainAssembly
