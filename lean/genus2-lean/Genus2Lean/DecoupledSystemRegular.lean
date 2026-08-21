@@ -2480,9 +2480,9 @@ theorem isSMulRegular_of_mul_eq_of_isSMulRegular {M : Type*} [CommRing M]
 `hndA`/`hndB : Nondegenerate ...` beyond `hcurA/B`/`hgcdA/B` -- this was
 flagged in `denRegular`'s own docstring as a propagation not yet done, since
 every theorem downstream of `denRegular` needs these two new hypotheses
-threaded through. -/
+threaded through.
 
-/-- **`regularSeq_of_peel_chain` has moved to `PeelChainAssembly.lean`.**
+ **`regularSeq_of_peel_chain` has moved to `PeelChainAssembly.lean`.**
 
 This file used to carry its own `sorry`-backed copy of this theorem
 (same name, same statement) at this location. It was a stale duplicate
@@ -2498,9 +2498,9 @@ without either file's author noticing the other exists.
 above this point (`genList`, `denRegular`, `CrossNondegenerate`,
 `regular_of_linear_elim`, `isSMulRegular_of_mul_eq_of_isSMulRegular`,
 `regular_of_peeled_leadingCoeff`, `curveCoeffRegular`, `quintic_monic`) --
-nothing below this point in THIS file. -/
+nothing below this point in THIS file. 
 
-/-! ## §5bis-0. Variable-peeling infrastructure for the "leading coefficient"
+## §5bis-0. Variable-peeling infrastructure for the "leading coefficient"
 argument
 
 Per ChatGPT consultation (see `chatgpt-prompt-regularsequence.md` and its
