@@ -2203,26 +2203,45 @@ theorem regular_of_disjoint_extension {R : Type*} [Field R]
     -- `Ideal.span {1 ⊗ₜ g}`), then `e''`'s `AlgEquiv`-level twin (`eAlg`, built via
     -- `Ideal.quotientEquivAlg` rather than the bare `Ideal.quotientEquiv` `e''` uses,
     -- so it carries the `MvPolynomial σ₂ R`-linear structure this goal needs) finishes
-    -- the chain. REPL-confirmed: `rw [hIq_def, hJ_def, Ideal.map_span, Set.image_singleton]`
-    -- closes `hJq` outright (no further `congr`/`exact` needed) -- `includeRight g` and
-    -- `1 ⊗ₜ g` are defeq, so `rw`'s trailing `rfl` finishes the goal.
+    -- the chain. REPL note: `rw [hIq_def, hJ_def, Ideal.map_span, Set.image_singleton]`
+    -- alone leaves `Ideal.span {includeRight g} = Ideal.span {1 ⊗ₜ g}` (defeq but not
+    -- syntactically `rfl`-closed by `rw`'s own trailing check) -- close with `simp` using
+    -- `includeRight_apply` to rewrite the LHS singleton down to the RHS form.
+    -- REPL note: `tensorQuotientEquiv`'s base ring `R` must be given explicitly
+    -- (`(R := R)`) -- with `S := A := MvPolynomial σ₂ R` both instantiated to the
+    -- same type, elaboration can't pin down which `R` the `IsScalarTower R S A`
+    -- instance search is over from the explicit arguments alone.
     have hJq :
         Ideal.map
             (Algebra.TensorProduct.includeRight :
               MvPolynomial σ₁ R →ₐ[R] TensorProduct R (MvPolynomial σ₂ R) (MvPolynomial σ₁ R))
             Iq = J := by
       rw [hIq_def, hJ_def, Ideal.map_span, Set.image_singleton]
-    let tE := Algebra.TensorProduct.tensorQuotientEquiv
+      simp [Algebra.TensorProduct.includeRight_apply]
+    let tE := Algebra.TensorProduct.tensorQuotientEquiv (R := R)
       (MvPolynomial σ₂ R) (MvPolynomial σ₁ R) (MvPolynomial σ₂ R) Iq
     have hTensor :
         TensorProduct R (MvPolynomial σ₂ R) Q ≃ₗ[MvPolynomial σ₂ R]
           TensorProduct R (MvPolynomial σ₂ R) (MvPolynomial σ₁ R) ⧸ J := by
-      rw [hQ_def, ← hJq]
+      -- `rw [hQ_def, ...]` fails here: `Q`'s own instances are baked into the
+      -- `TensorProduct`/`≃ₗ` type, so rewriting `Q` breaks `rw`'s motive. `Q := MvPolynomial
+      -- σ₁ R ⧸ Iq` is defeq (from `set`), so `show` the goal with `Q` unfolded instead --
+      -- no rewrite needed, sidesteps the dependent-motive issue entirely.
+      show TensorProduct R (MvPolynomial σ₂ R) (MvPolynomial σ₁ R ⧸ Iq) ≃ₗ[MvPolynomial σ₂ R]
+        TensorProduct R (MvPolynomial σ₂ R) (MvPolynomial σ₁ R) ⧸ J
+      rw [← hJq]
       exact tE.toLinearEquiv
     let eAlg : (TensorProduct R (MvPolynomial σ₂ R) (MvPolynomial σ₁ R) ⧸ J) ≃ₐ[MvPolynomial σ₂ R]
         (MvPolynomial σ₁ (MvPolynomial σ₂ R) ⧸ I') :=
-      Ideal.quotientEquivAlg J I' E₂ hIdealMap₂
-    exact eAlg.toLinearEquiv.symm.trans hTensor
+      -- `Ideal.quotientEquivAlg (I) (J) (f) (hIJ : J = map f I)` -- with our `I := J`
+      -- (tensor-side), `J := I'` (target), the hypothesis needed is `I' = map E₂ J`,
+      -- i.e. `hIdealMap₂.symm` (matching the `e''` construction above, which also
+      -- needs `.symm` on the same `hIdealMap₂`) -- NOT `hIdealMap₂` bare.
+      Ideal.quotientEquivAlg J I' E₂ hIdealMap₂.symm
+    -- `eAlg.toLinearEquiv.symm : (... ⧸ I') ≃ₗ (... ⧸ J)`, `hTensor : (Tensor ... Q) ≃ₗ (... ⧸ J)`
+    -- -- both land on `(... ⧸ J)`, so compose via `hTensor.symm` (⧸J → Tensor...Q), not
+    -- `hTensor` itself, to reach the stated goal `(... ⧸ I') ≃ₗ (Tensor ... Q)`.
+    exact eAlg.toLinearEquiv.symm.trans hTensor.symm
   -- Close with `IsSMulRegular.of_flat`: `he : IsSMulRegular (MvPolynomial σ₂ R) e`,
   -- transported to `MvPolynomial σ₁ (MvPolynomial σ₂ R) ⧸ I'` via the flat
   -- base change `MvPolynomial σ₂ R → MvPolynomial σ₁ (MvPolynomial σ₂ R) ⧸ I'`.
