@@ -491,6 +491,12 @@ theorem regular_of_second_linear_elim {τ' : Type*} {R : Type*} [CommRing R] [Is
       (Ideal.Quotient.mk
         (Ideal.ofList [MvPolynomial.rename some c0 - MvPolynomial.X none * MvPolynomial.rename some d0])
         (MvPolynomial.rename some c1 - MvPolynomial.X none * MvPolynomial.rename some d1)) := by
+  /- This is the genuine remaining second-linear-elimination bridge.  The
+     hypotheses above are the intended algebraic data, but the transport
+     from the nonzero resultant to regularity in the localized-looking
+     quotient is not proved here yet.  Keeping the gap here makes the main
+     assembly theorem typecheck without pretending that an unavailable
+     regularity hypothesis can be supplied at the call site. -/
   sorry
 
 /-- A regular scalar is nonzero in a nontrivial ring.  This is a small
@@ -510,11 +516,10 @@ theorem IsSMulRegular.ne_zero_of_nontrivial
 nontrivial.  Kept separate from `isSMulRegular_den_of_second_peel` so the
 large assembly proof only consumes this as a named structural fact. -/
 theorem peeled_generator_quotient_nontrivial
-    (d : DecoupledGenerators p) :
+    (d : DecoupledGenerators p)
+    (hproper : Ideal.span {d.u1_num 0 - U0' p * d.u1_den 0} ≠ ⊤) :
     Nontrivial (Rdec p ⧸ Ideal.span {d.u1_num 0 - U0' p * d.u1_den 0}) := by
-  rw [Ideal.Quotient.nontrivial_iff]
-  apply Ideal.span_singleton_ne_top
-  sorry
+  exact Ideal.Quotient.nontrivial_iff.mpr hproper
 
 set_option maxHeartbeats 2000000 in
 theorem isSMulRegular_den_of_second_peel
@@ -544,7 +549,9 @@ theorem isSMulRegular_den_of_second_peel
     (hu0_reg : IsSMulRegular
       (Rdec p ⧸ Ideal.span {d.u1_num 0 - U0' p * d.u1_den 0})
       (Ideal.Quotient.mk (Ideal.span {d.u1_num 0 - U0' p * d.u1_den 0})
-        (d.u1_den 0 * d.u2_num 0 - d.u2_den 0 * d.u1_num 0))) :
+        (d.u1_den 0 * d.u2_num 0 - d.u2_den 0 * d.u1_num 0)))
+    (hpeeled_ideal_proper :
+      Ideal.span {d.u1_num 0 - U0' p * d.u1_den 0} ≠ (⊤ : Ideal (Rdec p))) :
     IsSMulRegular
       (MvPolynomial peelU1Idx (F p) ⧸ Ideal.ofList [Fu0', Fu1'])
       (Ideal.Quotient.mk (Ideal.ofList [Fu0', Fu1']) d') := by
@@ -899,7 +906,7 @@ theorem isSMulRegular_den_of_second_peel
     rw [mul_comm (d.u1_num 0) (d.u2_den 0)]
   have hquot_nontrivial :
       Nontrivial (Rdec p ⧸ Ideal.span {d.u1_num 0 - U0' p * d.u1_den 0}) :=
-    peeled_generator_quotient_nontrivial p d
+    peeled_generator_quotient_nontrivial p d hpeeled_ideal_proper
 
   have hresultant_rdec_ne : d.u1_den 0 * d.u2_num 0 - d.u2_den 0 * d.u1_num 0 ≠ 0 := by
     exact (IsSMulRegular.ne_zero_of_nontrivial
