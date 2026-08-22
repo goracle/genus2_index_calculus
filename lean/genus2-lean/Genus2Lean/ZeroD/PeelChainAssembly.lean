@@ -69,6 +69,17 @@ Three named sorries, ordered easiest-first per project convention:
 namespace Genus2Lean
 namespace DecoupledSystem
 
+/-! REFACTOR REVISION
+
+This revision extracts the `optionSplit` rename identities from the large
+second-peel proof.  In particular, the old `congrArg MvPolynomial.rename`
+call at the `hFu0'_maps` step left the `CommSemiring` parameter unresolved.
+The typed helper lemmas below make both the source variable type and the
+coefficient ring explicit.  The remaining Step-F `sorry` is intentionally
+kept as a single named local bottleneck: it is the actual unproved
+regularity/coprimality step, not a Lean elaboration problem.
+-/
+
 open MvPolynomial
 open Idx
 open TheDataDerivation
@@ -239,42 +250,55 @@ and once at `σ := τ := {v : Idx // v ≠ U1}` (resp. `V1`), `R := F p`
 (§1's `isSMulRegular_den_of_second_peel`, one variable-peel down) — the
 whole point of stating it generically here rather than only at `σ :=
 Idx` as the original draft did. -/
-theorem isSMulRegular_bridge_prefix_gen {σ : Type*} [DecidableEq σ] (R : Type*) [CommRing R]
+theorem isSMulRegular_bridge_prefix_gen
+    {σ : Type*} [DecidableEq σ] (R : Type*) [CommRing R]
     (x : σ) (gens' : List (MvPolynomial {v : σ // v ≠ x} R))
-    (g : MvPolynomial {v : σ // v ≠ x} R) :
+    (g : MvPolynomial (Option {v : σ // v ≠ x}) R) :
     IsSMulRegular
-      (MvPolynomial σ R ⧸ Ideal.ofList (gens'.map (fun q : MvPolynomial {v : σ // v ≠ x} R =>
-        ((MvPolynomial.renameEquiv R (optionSplit x)).symm (MvPolynomial.rename some q) :
-          MvPolynomial σ R))))
+      (MvPolynomial σ R ⧸
+        Ideal.ofList (gens'.map (fun q : MvPolynomial {v : σ // v ≠ x} R =>
+          ((MvPolynomial.renameEquiv R (optionSplit x)).symm
+            (MvPolynomial.rename some q) :
+            MvPolynomial σ R))))
       (Ideal.Quotient.mk
         (Ideal.ofList (gens'.map (fun q : MvPolynomial {v : σ // v ≠ x} R =>
-          ((MvPolynomial.renameEquiv R (optionSplit x)).symm (MvPolynomial.rename some q) :
+          ((MvPolynomial.renameEquiv R (optionSplit x)).symm
+            (MvPolynomial.rename some q) :
             MvPolynomial σ R))))
-        ((MvPolynomial.renameEquiv R (optionSplit x)).symm (MvPolynomial.rename some g)))
+        ((MvPolynomial.renameEquiv R (optionSplit x)).symm g))
     ↔
     IsSMulRegular
       (MvPolynomial (Option {v : σ // v ≠ x}) R ⧸
         Ideal.ofList (gens'.map (MvPolynomial.rename some)))
-      (Ideal.Quotient.mk (Ideal.ofList (gens'.map (MvPolynomial.rename some)))
-        (MvPolynomial.rename some g)) := by
-  set e : MvPolynomial σ R ≃+* MvPolynomial (Option {v : σ // v ≠ x}) R :=
+      (Ideal.Quotient.mk
+        (Ideal.ofList (gens'.map (MvPolynomial.rename some)))
+        g) := by
+  set e : MvPolynomial σ R ≃+*
+      MvPolynomial (Option {v : σ // v ≠ x}) R :=
     (MvPolynomial.renameEquiv R (optionSplit x)).toRingEquiv with he_def
+
   set I : Ideal (MvPolynomial σ R) :=
     Ideal.ofList (gens'.map (fun q : MvPolynomial {v : σ // v ≠ x} R =>
       (e.symm (MvPolynomial.rename some q) : MvPolynomial σ R))) with hI_def
+
   set J : Ideal (MvPolynomial (Option {v : σ // v ≠ x}) R) :=
     Ideal.ofList (gens'.map (MvPolynomial.rename some)) with hJ_def
-  have hIJ : Ideal.map (e : MvPolynomial σ R →+* MvPolynomial (Option {v : σ // v ≠ x}) R) I = J := by
+
+  have hIJ :
+      Ideal.map
+        (e : MvPolynomial σ R →+* MvPolynomial (Option {v : σ // v ≠ x}) R) I = J := by
     rw [hI_def, hJ_def, Ideal.map_ofList, List.map_map]
     congr 1
     apply List.map_congr_left
     intro q _
     change e (e.symm (MvPolynomial.rename some q)) = MvPolynomial.rename some q
     exact e.apply_symm_apply _
-  have hrs : e (e.symm (MvPolynomial.rename some g)) = MvPolynomial.rename some g :=
-    e.apply_symm_apply _
+
+  have hrs : e (e.symm g) = g := e.apply_symm_apply _
+
   exact isSMulRegular_of_ringEquiv_of_mapsTo e I J hIJ
-    (e.symm (MvPolynomial.rename some g)) (MvPolynomial.rename some g) hrs
+    (e.symm g) g hrs
+
 
 /-! ## §1. The induction helper (sorry #1, easiest)
 
@@ -316,6 +340,66 @@ theorem isSMulRegular_C_const_of_isSMulRegular {A : Type*} [CommRing A] {d : A}
     IsSMulRegular (Polynomial A) (Polynomial.C d) :=
   Polynomial.isSMulRegular_of_leadingCoeff_isSMulRegular
     (f := (Polynomial.C d : Polynomial A)) (by rwa [Polynomial.leadingCoeff_C])
+
+/--
+A small elaboration lemma for the `optionSplit` change of variables.  The old
+proof used `congrArg MvPolynomial.rename`, leaving the coefficient ring and
+source variable type implicit.  At that point both are dependent on nested
+subtypes, so Lean could leave the `CommSemiring` parameter metavariable
+stuck.  Making the polynomial and its variable map explicit removes that
+ambiguity and also gives the later second-peel proof a named reusable fact.
+-/
+theorem rename_optionSplit_some
+    {σ R : Type*} [DecidableEq σ] [CommSemiring R]
+    (x : σ) (q : MvPolynomial {v : σ // v ≠ x} R) :
+    MvPolynomial.rename (optionSplit x ∘ (Subtype.val : {v : σ // v ≠ x} → σ)) q =
+      MvPolynomial.rename (some : {v : σ // v ≠ x} → Option {v : σ // v ≠ x}) q := by
+  have hsplit :
+      (optionSplit x) ∘ (Subtype.val : {v : σ // v ≠ x} → σ) =
+        (some : {v : σ // v ≠ x} → Option {v : σ // v ≠ x}) := by
+    funext v
+    change (Equiv.optionSubtypeNe x).symm v.val = some v
+    exact Equiv.optionSubtypeNe_symm_of_ne v.property
+  rw [hsplit]
+
+/-- The complete linear change-of-variables identity used by the first
+`U0`-peel. -/
+theorem rename_optionSplit_linear
+    {σ R : Type*} [DecidableEq σ] [CommRing R]
+    (x : σ) (c d : MvPolynomial {v : σ // v ≠ x} R) :
+    MvPolynomial.rename (optionSplit x)
+        (MvPolynomial.rename (Subtype.val : {v : σ // v ≠ x} → σ) c -
+          MvPolynomial.X x * MvPolynomial.rename (Subtype.val : {v : σ // v ≠ x} → σ) d) =
+      MvPolynomial.rename some c - MvPolynomial.X none * MvPolynomial.rename some d := by
+  rw [map_sub, map_mul, MvPolynomial.rename_rename, MvPolynomial.rename_rename,
+    MvPolynomial.rename_X]
+  have hsplit_some :
+      (optionSplit x) ∘ (Subtype.val : {v : σ // v ≠ x} → σ) =
+        (some : {v : σ // v ≠ x} → Option {v : σ // v ≠ x}) := by
+    funext v
+    change (Equiv.optionSubtypeNe x).symm v.val = some v
+    exact Equiv.optionSubtypeNe_symm_of_ne v.property
+  have hsplit_x : optionSplit x x = none := by
+    change (Equiv.optionSubtypeNe x).symm x = none
+    exact Equiv.optionSubtypeNe_symm_self x
+  rw [hsplit_x, hsplit_some]
+
+/-- Inverse `optionSplit` identity used when collapsing a bridge back to the
+original peeled polynomial ring. -/
+theorem rename_optionSplit_symm_some
+    {σ R : Type*} [DecidableEq σ] [CommSemiring R]
+    (x : σ) (q : MvPolynomial {v : σ // v ≠ x} R) :
+    (MvPolynomial.renameEquiv R (optionSplit x)).symm (MvPolynomial.rename some q) =
+      MvPolynomial.rename (Subtype.val : {v : σ // v ≠ x} → σ) q := by
+  show MvPolynomial.rename (optionSplit x).symm (MvPolynomial.rename some q) =
+    MvPolynomial.rename (Subtype.val : {v : σ // v ≠ x} → σ) q
+  rw [MvPolynomial.rename_rename]
+  have hcomp :
+      (optionSplit x).symm ∘ (some : {v : σ // v ≠ x} → Option {v : σ // v ≠ x}) =
+        (Subtype.val : {v : σ // v ≠ x} → σ) := by
+    funext v
+    exact Equiv.optionSubtype_symm_apply_apply_some x (Equiv.refl {v : σ // v ≠ x}) v
+  rw [hcomp]
 
 /-- **The actual induction helper needed for stages 2/3 and 6/7** (`Fu2`
 through `Fv3`). Precise scoped statement: work inside `τ := {v : Idx // v
@@ -372,6 +456,9 @@ section peelU1τNotation
 
 local notation "τU1" => peelU1Idx
 
+
+omit [Fact (p ≠ 2)] in
+set_option maxHeartbeats 2000000 in
 theorem isSMulRegular_den_of_second_peel
     (d : DecoupledGenerators p)
     (hden : (∀ i, d.u1_den i ≠ 0) ∧ (∀ i, d.u2_den i ≠ 0) ∧
@@ -382,7 +469,24 @@ theorem isSMulRegular_den_of_second_peel
     (hFu1' : MvPolynomial.rename (Subtype.val : peelU1Idx → Idx) Fu1' =
       d.u2_num 0 - U0' p * d.u2_den 0)
     (hd' : MvPolynomial.rename (Subtype.val : peelU1Idx → Idx) d' =
-      d.u1_den 1) :
+      d.u1_den 1)
+    -- **The missing ingredient, per ChatGPT's diagnosis**: regularity mod
+    -- `⟨c0''⟩` alone does NOT give regularity mod `⟨Fu0'⟩` (the full linear
+    -- element) -- verified false by an explicit counterexample. What DOES
+    -- work is the algebraic identity `d.u1_den 0 * Fu1' = resultant +
+    -- d.u2_den 0 * Fu0'` (`resultant := d.u1_den 0 * d.u2_num 0 -
+    -- d.u2_den 0 * d.u1_num 0`, exactly `CrossNondegenerate.hu0`'s own
+    -- element), which collapses mod `⟨Fu0'⟩` to `d.u1_den 0 • (mk Fu1') =
+    -- mk resultant` -- closed via `isSMulRegular_of_mul_eq_of_isSMulRegular`
+    -- given `hu0_reg` below, matching `hcross.hu0` verbatim (stated at
+    -- `Rdec p` level so call sites can supply `hcross.hu0` as-is with no
+    -- restatement) -- the SAME resultant fact the outer 12-stage assembly
+    -- already uses for `Fu0`/`Fu1` mod `⟨Fu0⟩` (see `hFu1_reg`, §3 stage
+    -- 1), one variable-peel down.
+    (hu0_reg : IsSMulRegular
+      (Rdec p ⧸ Ideal.span {d.u1_num 0 - U0' p * d.u1_den 0})
+      (Ideal.Quotient.mk (Ideal.span {d.u1_num 0 - U0' p * d.u1_den 0})
+        (d.u1_den 0 * d.u2_num 0 - d.u2_den 0 * d.u1_num 0))) :
     IsSMulRegular
       (MvPolynomial peelU1Idx (F p) ⧸ Ideal.ofList [Fu0', Fu1'])
       (Ideal.Quotient.mk (Ideal.ofList [Fu0', Fu1']) d') := by
@@ -656,21 +760,7 @@ theorem isSMulRegular_den_of_second_peel
         (MvPolynomial.rename (Subtype.val : τU1' → τU1) c0'' -
           MvPolynomial.X x0 * MvPolynomial.rename (Subtype.val : τU1' → τU1) d0'') =
       MvPolynomial.rename some c0'' - MvPolynomial.X none * MvPolynomial.rename some d0''
-    rw [map_sub, map_mul, MvPolynomial.rename_rename, MvPolynomial.rename_rename,
-      MvPolynomial.rename_X]
-    congr 2
-    · congr 1
-      funext v
-      show (optionSplit x0) (Subtype.val v) = some v
-      have := Equiv.optionSubtype_apply_val_apply x0 (Equiv.refl τU1') v
-      simpa using this
-    · show (optionSplit x0) x0 = none
-      exact Equiv.optionSubtype_apply_apply_self x0 (Equiv.refl τU1')
-    · congr 1
-      funext v
-      show (optionSplit x0) (Subtype.val v) = some v
-      have := Equiv.optionSubtype_apply_val_apply x0 (Equiv.refl τU1') v
-      simpa using this
+    exact rename_optionSplit_linear (R := F p) x0 c0'' d0''
   have hFu0'_reg : IsSMulRegular
       (MvPolynomial τU1 (F p) ⧸ Ideal.ofList ([] : List (MvPolynomial τU1 (F p))))
       (Ideal.Quotient.mk (Ideal.ofList ([] : List (MvPolynomial τU1 (F p)))) Fu0') := by
@@ -891,7 +981,9 @@ theorem isSMulRegular_den_of_second_peel
     rw [map_mul, map_mul, he₁_C] at hstep
     have hxy' : (Polynomial.C (Ideal.Quotient.mk I'₁ d1'')) • e₁ x =
         (Polynomial.C (Ideal.Quotient.mk I'₁ d1'')) • e₁ y := by
-      simpa [smul_eq_mul] using hstep
+      change Polynomial.C (Ideal.Quotient.mk I'₁ d1'') * e₁ x =
+        Polynomial.C (Ideal.Quotient.mk I'₁ d1'') * e₁ y
+      exact hstep
     exact hreg_poly hxy'
   -- **`Fu1'` regular mod `⟨Fu0'⟩` (in `τU1`'s ring)**: `regular_of_linear_elim`
   -- at `τ := τU1'`, `gens' := [c0'']`, `c := c1''`, `d := d1''`, `hd_reg :=
@@ -899,11 +991,14 @@ theorem isSMulRegular_den_of_second_peel
   -- rename some d1''` mod `Ideal.ofList [rename some c0'']` in
   -- `MvPolynomial (Option τU1') (F p)` -- exactly `hFu1'_reg_opt` below,
   -- matching `hFu1'_eq`'s shape.
+  let A0 : Ideal (MvPolynomial (Option τU1') (F p)) :=
+    Ideal.ofList (([c0''] : List (MvPolynomial τU1' (F p))).map
+      (MvPolynomial.rename (some : τU1' → Option τU1')))
   have hFu1'_reg_opt : IsSMulRegular
-      (MvPolynomial (Option τU1') (F p) ⧸
-        Ideal.ofList (([c0''] : List (MvPolynomial τU1' (F p))).map (MvPolynomial.rename some)))
-      (Ideal.Quotient.mk _
-        (MvPolynomial.rename some c1'' - MvPolynomial.X none * MvPolynomial.rename some d1'')) := by
+      (MvPolynomial (Option τU1') (F p) ⧸ A0)
+      (Ideal.Quotient.mk A0
+        (MvPolynomial.rename (some : τU1' → Option τU1') c1'' -
+          MvPolynomial.X none * MvPolynomial.rename (some : τU1' → Option τU1') d1'')) := by
     apply regular_of_linear_elim (τ := τU1') (R := F p) [c0''] c1'' d1''
     · exact hd1''_opt_reg
     · rfl
@@ -914,60 +1009,69 @@ theorem isSMulRegular_den_of_second_peel
   have hFu1'_reg : IsSMulRegular
       (MvPolynomial τU1 (F p) ⧸ Ideal.ofList [Fu0'])
       (Ideal.Quotient.mk (Ideal.ofList [Fu0']) Fu1') := by
-    set g1 : MvPolynomial τU1' (F p) := c1'' - MvPolynomial.X x0 * d1'' with hg1_def
-    have hbridge :
-        IsSMulRegular
-          (MvPolynomial τU1 (F p) ⧸
-            Ideal.ofList (([c0''] : List (MvPolynomial τU1' (F p))).map (fun q : MvPolynomial τU1' (F p) =>
-              ((MvPolynomial.renameEquiv (F p) (optionSplit x0)).symm (MvPolynomial.rename some q) :
-                MvPolynomial τU1 (F p)))))
-          (Ideal.Quotient.mk
-            (Ideal.ofList (([c0''] : List (MvPolynomial τU1' (F p))).map (fun q : MvPolynomial τU1' (F p) =>
-              ((MvPolynomial.renameEquiv (F p) (optionSplit x0)).symm (MvPolynomial.rename some q) :
-                MvPolynomial τU1 (F p)))))
-            ((MvPolynomial.renameEquiv (F p) (optionSplit x0)).symm
-              (MvPolynomial.rename some g1)))
-        ↔
-        IsSMulRegular
-          (MvPolynomial (Option τU1') (F p) ⧸
-            Ideal.ofList (([c0''] : List (MvPolynomial τU1' (F p))).map (MvPolynomial.rename some)))
-          (Ideal.Quotient.mk
-            (Ideal.ofList (([c0''] : List (MvPolynomial τU1' (F p))).map (MvPolynomial.rename some)))
-            (MvPolynomial.rename some g1)) :=
-      isSMulRegular_bridge_prefix_gen (σ := τU1) (F p) x0
-        ([c0''] : List (MvPolynomial τU1' (F p))) g1
-    -- `(renameEquiv (F p) (optionSplit x0)).symm ∘ rename some = rename
-    -- (Subtype.val : τU1' → τU1)`, since `renameEquiv _ e` unfolds to `rename
-    -- e`/`rename e.symm` on the two sides and `(optionSplit x0).symm ∘
-    -- some = (Subtype.val : τU1' → τU1)` by `optionSplit`'s own construction
-    -- (`Equiv.optionSubtype`) -- both `rfl`-provable compositions, so the
-    -- whole bridge LHS collapses onto plain `rename (Subtype.val : τU1' →
-    -- τU1)` applied to the `τU1'`-side list/element, matching `hFu0'_eq`/
-    -- `hFu1'_eq`'s own RHS shape exactly.
-    have hcollapse : ∀ q : MvPolynomial τU1' (F p),
-        (MvPolynomial.renameEquiv (F p) (optionSplit x0)).symm (MvPolynomial.rename some q) =
-        MvPolynomial.rename (Subtype.val : τU1' → τU1) q := by
-      intro q
-      show MvPolynomial.rename (optionSplit x0).symm (MvPolynomial.rename some q) =
-        MvPolynomial.rename (Subtype.val : τU1' → τU1) q
-      rw [MvPolynomial.rename_rename]
-      congr 1
-      funext v
-      show ((optionSplit x0).symm) (some v) = v.val
-      exact Equiv.optionSubtype_symm_apply_apply_some x0 (Equiv.refl τU1') v
-    simp only [List.map_cons, List.map_nil, hcollapse] at hbridge
-    have hLHS_eq : MvPolynomial.rename (Subtype.val : τU1' → τU1) c0'' = Fu0' := by
-      rw [hFu0'_eq, map_sub, map_mul, MvPolynomial.rename_X]
-    have hRHS_eq : MvPolynomial.rename (Subtype.val : τU1' → τU1) g1 = Fu1' := by
-      rw [hg1_def, hFu1'_eq, map_sub, map_mul, MvPolynomial.rename_X]
-    rw [hLHS_eq, hRHS_eq] at hbridge
-    rw [hbridge]
-    rw [show (MvPolynomial.rename (some : τU1' → Option τU1') g1) =
-        MvPolynomial.rename some c1'' - MvPolynomial.X none * MvPolynomial.rename some d1'' by
-      rw [hg1_def]
-      simp only [map_sub, map_mul, MvPolynomial.rename_X]]
-    exact hFu1'_reg_opt
-  -- **Step F: `d'` is `IsSMulRegular` mod `Ideal.ofList [Fu0', Fu1']`
+    set g1 : MvPolynomial (Option τU1') (F p) :=
+      MvPolynomial.rename some c1'' -
+        MvPolynomial.X none * MvPolynomial.rename some d1'' with hg1_def
+
+    let e : MvPolynomial τU1 (F p) ≃+*
+        MvPolynomial (Option τU1') (F p) :=
+      (MvPolynomial.renameEquiv (F p) (optionSplit x0)).toRingEquiv
+
+    have hFu0'_maps :
+        e Fu0' =
+          MvPolynomial.rename some c0'' -
+            MvPolynomial.X none * MvPolynomial.rename some d0'' := by
+      rw [hFu0'_eq]
+      change
+        MvPolynomial.rename (optionSplit x0)
+            (MvPolynomial.rename (Subtype.val : τU1' → τU1) c0'' -
+              MvPolynomial.X x0 *
+                MvPolynomial.rename (Subtype.val : τU1' → τU1) d0'') =
+          MvPolynomial.rename some c0'' -
+            MvPolynomial.X none * MvPolynomial.rename some d0''
+      exact rename_optionSplit_linear (R := F p) x0 c0'' d0''
+
+    have hFu1'_maps :
+        e Fu1' =
+          MvPolynomial.rename some c1'' -
+            MvPolynomial.X none * MvPolynomial.rename some d1'' := by
+      rw [hFu1'_eq]
+      change
+        MvPolynomial.rename (optionSplit x0)
+            (MvPolynomial.rename (Subtype.val : τU1' → τU1) c1'' -
+              MvPolynomial.X x0 *
+                MvPolynomial.rename (Subtype.val : τU1' → τU1) d1'') =
+          MvPolynomial.rename some c1'' -
+            MvPolynomial.X none * MvPolynomial.rename some d1''
+      exact rename_optionSplit_linear (R := F p) x0 c1'' d1''
+
+    -- `e.symm (rename some c0'') = Fu0'` and `e.symm g1 = Fu1'`, both by
+    -- applying `e.symm` to `hFu0'_maps`/`hFu1'_maps` and using
+    -- `e.symm_apply_apply`.
+    have he_symm_c0'' : e.symm (MvPolynomial.rename some c0'' -
+        MvPolynomial.X none * MvPolynomial.rename some d0'') = Fu0' := by
+      rw [← hFu0'_maps, e.symm_apply_apply]
+    have he_symm_g1 : e.symm g1 = Fu1' := by
+      rw [hg1_def, ← hFu1'_maps, e.symm_apply_apply]
+
+    have hbridge :=
+      (isSMulRegular_bridge_prefix_gen (F p) x0 [c0''] g1).mpr
+    -- `hbridge` needs the RHS of the iff, exactly `hFu1'_reg_opt`'s shape
+    -- (mod `Ideal.ofList [rename some c0'']`, i.e. `A0`, at element `g1`).
+    have hbridge' := hbridge hFu1'_reg_opt
+    -- `hbridge'` is now stated mod `Ideal.ofList [e.symm (rename some c0'')]`
+    -- at element `e.symm g1` -- rewrite both via the two `he_symm_*` facts
+    -- to land exactly on the goal's `Ideal.ofList [Fu0']` / `Fu1'`.
+    rw [he_symm_c0'', he_symm_g1] at hbridge'
+    exact hbridge'
+  -- **Step F: `d'` is `IsSMulRegular` mod `Ideal.ofList [Fu0', Fu1']`.
+  -- This is deliberately isolated as the final named bottleneck.  Everything
+  -- above this point is the two-generator peeling/change-of-variables setup;
+  -- the remaining issue is exactly the missing same-family regularity of
+  -- `d1den''` modulo `c0''`.
+  have hsecond_peel_final : IsSMulRegular
+      (MvPolynomial τU1 (F p) ⧸ Ideal.ofList [Fu0', Fu1'])
+      (Ideal.Quotient.mk (Ideal.ofList [Fu0', Fu1']) d') := by
   -- (the lemma's actual target).**
   --
   -- **CORRECTED THIS PASS -- the previous plan here (chaining
@@ -1068,11 +1172,15 @@ theorem isSMulRegular_den_of_second_peel
   -- it follows), or (b) add it as a new named field, parallel to
   -- `CrossNondegenerate`'s own four fields, if it is a genuinely new
   -- per-instance exceptional-locus condition.
-  sorry
+    -- This is now the only unresolved local stage of the second-peel
+    -- theorem.  Keeping the placeholder here means subsequent elaboration
+    -- and typeclass failures occur in the small final goal rather than inside
+    -- the preceding 600-line construction.
+    sorry
+
+  exact hsecond_peel_final
 
 end peelU1τNotation
-
-set_option maxHeartbeats 200000
 
 /-! ## §2. The bridge lemma (sorry #2)
 
@@ -1088,6 +1196,7 @@ already identifies as the right one, just invoked through the generic
 transport lemma instead of hand-rederiving the `Ideal.quotientEquiv`
 dance a third time. -/
 
+omit [Fact (p ≠ 2)] in
 theorem peelEquivGen_eq {σ : Type*} [DecidableEq σ] (x : σ) :
     peelEquivGen p x =
       (MvPolynomial.renameEquiv (F p) (optionSplit x)).trans
@@ -1135,7 +1244,7 @@ theorem isSMulRegular_bridge_prefix (x : Idx) (gens' : List (MvPolynomial {v : I
         Ideal.ofList (gens'.map (MvPolynomial.rename some)))
       (Ideal.Quotient.mk (Ideal.ofList (gens'.map (MvPolynomial.rename some)))
         (MvPolynomial.rename some g)) :=
-  isSMulRegular_bridge_prefix_gen (F p) x gens' g
+  isSMulRegular_bridge_prefix_gen (F p) x gens' (MvPolynomial.rename some g)
 
 /-! ## §3. The 12-stage assembly (sorry #3)
 
