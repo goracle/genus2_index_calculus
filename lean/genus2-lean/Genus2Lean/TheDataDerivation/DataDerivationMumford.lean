@@ -628,6 +628,68 @@ theorem towerToRdec_vars_subset {Vars : Type*} [DecidableEq Vars]
   · exact (MvPolynomial.vars_mul _ _).trans
       (Finset.union_subset (hd0.trans hsub4) (hd1.trans hsub4))
 
+/-- **Tightened denominator bound, found while chasing a ChatGPT-flagged
+gap in `PeelChainAssembly.lean`'s curve-relation stages (`hCurveA1_reg`
+etc.).** `towerToRdec_vars_subset` above states a bound of
+`{tGen 0, tGen 1, wGen 0, wGen 1}` for BOTH the numerator and the
+denominator, but inspecting the actual recursion shows the DENOMINATOR
+alone satisfies the strictly tighter bound `{tGen 0, tGen 1}` — no
+`wGen` variable ever enters a denominator at any level. This is visible
+directly from `towerToRdecK1`/`towerToRdec`'s own defining formulas:
+`den := den0 * den1` at every level, where `den0, den1` are themselves
+either `baseFracToRing` outputs (which only ever call `aeval` against
+`sg.tGen`, never touching `sg.wGen` at all) or, one level up,
+`towerToRdecK1`'s own denominator outputs (tGen-only, by the same fact
+one level down) — the `X (sg.wGen k)` factor `towerToRdecK1`/`towerToRdec`
+each introduce is multiplied ONLY into the numerator term
+(`n1 * den0 * X (sg.wGen k)`), never into `den0 * den1` itself. So the
+denominator's variable set never grows past `{tGen 0, tGen 1}`, at any
+recursion depth. Proved by the same `vars_mul`/`vars_add_subset` chase
+as `towerToRdec_vars_subset`, specialized to the denominator component
+only (dropping the numerator's `hsub3`/`hsub4` upgrade step, which is
+exactly where that lemma's proof introduces the `wGen` element the
+denominator never actually needs). -/
+theorem towerToRdec_den_vars_subset {Vars : Type*} [DecidableEq Vars]
+    (sg : SideGens Vars) (v : K2 p c0 c1 c2 c3 c4) :
+    (towerToRdec p sg v).2.vars ⊆ {sg.tGen 0, sg.tGen 1} := by
+  classical
+  -- Step 0: `baseFracToRing`'s denominator only involves `sg.tGen 0, sg.tGen 1`
+  -- (identical to `towerToRdec_vars_subset`'s own Step 0).
+  have hbase : ∀ w : K0 p, (baseFracToRing p sg w).2.vars ⊆ {sg.tGen 0, sg.tGen 1} := by
+    intro w
+    unfold baseFracToRing
+    dsimp only
+    have hgen : ∀ i : Fin 2, (MvPolynomial.X (sg.tGen i) : MvPolynomial Vars (F p)).vars ⊆
+        ({sg.tGen 0, sg.tGen 1} : Finset Vars) := by
+      intro i
+      have : (MvPolynomial.X (sg.tGen i) : MvPolynomial Vars (F p)).vars ⊆ {sg.tGen i} := by
+        rw [MvPolynomial.vars_X]
+      refine this.trans ?_
+      fin_cases i <;> simp
+    rw [MvPolynomial.aeval_eq_bind₁]
+    exact (MvPolynomial.vars_bind₁ _ _).trans (Finset.biUnion_subset.mpr (fun i _ => hgen i))
+  -- Step 1: `towerToRdecK1`'s denominator (`den0 * den1`, both `baseFracToRing`
+  -- denominators) stays within `{tGen 0, tGen 1}` -- no `wGen 0` factor is ever
+  -- multiplied into it (unlike the numerator, which does pick one up).
+  have hK1 : ∀ w : K1 p c0 c1 c2 c3 c4,
+      (towerToRdecK1 p sg w).2.vars ⊆ {sg.tGen 0, sg.tGen 1} := by
+    intro w
+    unfold towerToRdecK1
+    dsimp only
+    set d0 := (AdjoinRoot.modByMonicHom (K1_poly_monic p c0 c1 c2 c3 c4) w).coeff 0
+    set d1 := (AdjoinRoot.modByMonicHom (K1_poly_monic p c0 c1 c2 c3 c4) w).coeff 1
+    exact (MvPolynomial.vars_mul _ _).trans
+      (Finset.union_subset (hbase d0) (hbase d1))
+  -- Step 2: `towerToRdec`'s denominator (`den0 * den1`, both `towerToRdecK1`
+  -- denominators) stays within `{tGen 0, tGen 1}` by the same argument, one
+  -- level up -- no `wGen 1` factor enters it either.
+  unfold towerToRdec
+  dsimp only
+  set d0 := (AdjoinRoot.modByMonicHom (K2_poly_monic p c0 c1 c2 c3 c4) v).coeff 0
+  set d1 := (AdjoinRoot.modByMonicHom (K2_poly_monic p c0 c1 c2 c3 c4) v).coeff 1
+  exact (MvPolynomial.vars_mul _ _).trans
+    (Finset.union_subset (hK1 d0) (hK1 d1))
+
 /-- **THE MISSING CORRECTNESS SPEC — flagged in review as the most
 important gap in this file, now stated instead of left as prose.**
 `towerToRdec_vars_subset` above only bounds *which variables* the output

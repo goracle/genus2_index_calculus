@@ -1,520 +1,156 @@
-# `regularSeq_of_peel_chain` assembly — final design (corrects `06_final_design.md`)
+# `regularSeq_of_peel_chain` assembly — status (compressed)
 
-## TL;DR correction to the uploaded notes
+**This replaces the previous 520-line version**, which documented several
+false starts (the `isRegular_cons_iff'`-unrolling route, various
+`regular_of_disjoint_extension` misapplications) before landing on the
+mechanism actually used in `PeelChainAssembly.lean` §3. Those false
+starts are resolved and not reproduced here — see git history / the
+prior version of this file if the historical reasoning is ever needed.
+This version states only: (1) the mechanism actually in use, (2) exactly
+what's proved vs. open right now, (3) what's blocking each open piece.
 
-`04_design_notes.md` / `05_notes.md` / `06_final_design.md` circle around a
-"fork" between the unprimed and primed `isRegular_cons_iff` and end
-`06_final_design.md` by flagging what it calls a genuine **math gap**
-(item 4): that `CrossNondegenerate.hu1` is stated mod `Ideal.span {Fu2}`
-alone, not mod the "full prefix" `Ideal.ofList [Fu0,Fu1,Fu2]`, and that
-this is insufficient for `isRegular_cons_iff'`.
+## The mechanism in use
 
-**This is a false alarm.** Re-checking Mathlib's actual statement:
+`RingTheory.Sequence.IsRegular M rs` unfolds (`isWeaklyRegular_iff_Fin`)
+to a FLAT per-index statement: `∀ i, IsSMulRegular (M ⧸ Ideal.ofList
+(rs.take i) • ⊤) rs[i]`, plus one extra `top_ne_smul` field. No
+`QuotSMulTop`/`DoubleQuot` nesting is needed — each of the 12 indices is
+checked against a single flat quotient by the literal prefix
+`Ideal.ofList (rs.take i)`. `genList = [Fu0,Fu1,Fu2,Fu3,Fv0,Fv1,Fv2,Fv3,
+curveA1,curveA2,curveB1,curveB2]` (`hgenList`, proved). §3.0's
+`quotSMulTop_equiv_span`/`isSMulRegular_quotSMulTop_of_span` bridge
+lemmas (proved) are HARMLESS LEFTOVERS from an earlier, superseded
+route — not used by the current flat-index assembly, kept only in case
+they're useful later.
 
-```
-isRegular_cons_iff' (M) (r) (rs) :
-  IsRegular M (r :: rs) ↔
-    IsSMulRegular M r ∧
-    IsRegular (QuotSMulTop r M) (rs.map (Ideal.Quotient.mk (Ideal.span {r})))
-```
+## What's proved (no `sorry`), in `regularSeq_of_peel_chain`
 
-Applying this **repeatedly**, peeling one generator at a time, never asks
-for "regular mod the full prefix" as a hypothesis to be independently
-supplied — it asks for regularity of the NEXT generator's image mod the
-ideal spanned by the SINGLE generator *just* peeled, inside the module
-`QuotSMulTop r M` that is itself already sitting over the previous quotient.
-Concretely, unrolling twice from `M := Rdec p`:
+- `hFu0_reg`, `hFv0_reg` — plain `IsSMulRegular (Rdec p) Fu0`/`Fv0`
+  (first-generator-for-a-fresh-variable shape, via `isSMulRegular_first_gen`,
+  itself proved via `regular_of_linear_elim` at empty prefix).
+- `hFu1_reg`, `hFu3_reg`, `hFv1_reg`, `hFv3_reg` — regular mod the
+  single immediately-preceding same-target generator (`Ideal.span
+  {Fu0}` etc.), via the ring identity `d1*Fu1 = resultant + d2*Fu0`
+  collapsing mod `⟨Fu0⟩`, closed by `isSMulRegular_of_mul_eq_of_isSMulRegular`
+  fed by `hcross.hu0`/`hcross.hu1`/`hcross.hv0`/`hcross.hv1`.
+- All of §0–§2's infrastructure (`isSMulRegular_bridge_prefix_gen`,
+  `isSMulRegular_C_const_of_isSMulRegular`, `regular_of_second_linear_elim`,
+  `isSMulRegular_first_gen`, the `quotSMulTop`/span bridge) — fully proved.
+- **New this pass**, in `DataDerivationMumford.lean`:
+  `towerToRdec_den_vars_subset` — proves the DENOMINATOR half of
+  `towerToRdec`'s output (hence `u1_den i`/`u2_den i`/`v1_den i`/`v2_den i`
+  for every `i`) is `⊆ {tGen 0, tGen 1}` only, i.e. **never involves
+  either `w`-variable of its own side** (`u1_den`/`v1_den` never involve
+  `wa1` OR `wa2`; `u2_den`/`v2_den` never involve `wb1` OR `wb2`) — a
+  strictly tighter bound than the existing `towerToRdec_vars_subset`
+  (which bounds numerator and denominator together at
+  `{tGen0,tGen1,wGen0,wGen1}`). Found while investigating the curve-stage
+  gap below; not yet consumed by anything (see "still open" below).
 
-```
-IsRegular (Rdec p) [Fu0, Fu1, Fu2, ...]
-  ↔ IsSMulRegular (Rdec p) Fu0
-    ∧ IsRegular (QuotSMulTop Fu0 (Rdec p)) [mk_{Fu0} Fu1, mk_{Fu0} Fu2, ...]
-  ↔ IsSMulRegular (Rdec p) Fu0
-    ∧ IsSMulRegular (QuotSMulTop Fu0 (Rdec p)) (mk_{Fu0} Fu1)
-    ∧ IsRegular (QuotSMulTop (mk_{Fu0} Fu1) (QuotSMulTop Fu0 (Rdec p)))
-        [mk_{Fu1} (mk_{Fu0} Fu2), ...]
-```
+## Still open: two independent gaps, both now diagnosed precisely
 
-The SECOND-level ideal (`Ideal.span {mk_{Fu0} Fu1}` inside `Rdec p ⧸
-⟨Fu0⟩`) corresponds, via `DoubleQuot.quotQuotEquivQuotSup`, to the full
-2-element prefix `Rdec p ⧸ Ideal.ofList [Fu0, Fu1]` in the ambient ring —
-so the growing prefix IS what accumulates, automatically, one step at a
-time. It is never asked for as a single up-front hypothesis "regular mod
-the full prefix ideal"; it is built by feeding `isRegular_cons_iff'` the
-*single new generator mod the single most-recently-adjoined one*, at each
-step, matching `QuotSMulTop`'s own nesting exactly.
+### Gap A — `hFu2_reg`, `hFv2_reg`, `hFu3_full_reg`, `hFv3_full_reg`
+### (repeated-target-variable stages 2/3/6/7 mod their full prefix)
 
-`CrossNondegenerate.hu0`/`hu1`/`hv0`/`hv1` are stated **exactly** in this
-single-step shape: `hu0` is about `Fu1` (`U0`'s second generator) mod
-`Ideal.span {Fu0}` alone — precisely because `Fu1` is imposed
-**immediately after** `Fu0`, with the ideal generated by `Fu0` alone (no
-prior generators exist yet at that point in the list, since `Fu0` is
-`genList`'s very first element). `hu1` is `Fu3` mod `Ideal.span {Fu2}`
-alone — again correct, because `Fu2` is the generator immediately
-preceding `Fu3` in `genList`, and at the point `Fu3` is peeled, the
-`QuotSMulTop`-nesting is `QuotSMulTop Fu2 (QuotSMulTop Fu1 (QuotSMulTop
-Fu0 (Rdec p)))`, whose "one step back" ideal (the one `isRegular_cons_iff'`
-actually asks about at that step) is `Ideal.span {mk Fu2}` inside the
-3-times-already-quotiented ring — literally `Rdec p ⧸ Ideal.ofList
-[Fu0,Fu1,Fu2]` by repeated `DoubleQuot`, and `hu1`'s own statement
-(`Ideal.span {Fu2}` inside bare `Rdec p`, no earlier quotienting written
-out) is the SAME fact, pre-composed with the identification `Rdec p ⧸
-Ideal.ofList [Fu0,Fu1,Fu2] ≅ (a nested nested QuotSMulTop)` — which is
-precisely what the general bridge lemma below (`isSMulRegular_bridge_prefix`)
-supplies. So no restatement of `CrossNondegenerate` is needed. `06`'s
-"item 4" is deleted, not acted on.
+**Diagnosis (confirmed correct by ChatGPT consultation this pass, see
+`chatgpt_prompt_curve_stages_and_coprimality.md`'s Problem 2 answer):**
+genuinely needs `IsCoprime (u1_num 0) (u1_den 1)`-style cross-index
+coprimality, NOT derivable from `hgcdA : IsCoprime (Ypoly ...) (uRS ...)`
+alone — a denominator-clearing recursion (`towerToRdec`) can introduce
+common factors between coefficients at different indices that aren't
+forced by the original rational function's own coprimality. This is
+genuinely new nondegeneracy content, not a Lean gap.
 
-## Consequence: don't use `regular_of_disjoint_extension`/list-generalization
-## chaining through growing quotients-of-quotients at all
+**Recommended packaging (per ChatGPT, not yet acted on):** don't add
+four separate ad hoc fields (`coprime_u1_01`, `coprime_u2_01`, etc.) tied
+to the specific `Fu2`/`Fu3`/`Fv2`/`Fv3` Lean stages. Instead formulate
+ONE structural hypothesis at the coefficient-family level, e.g. `∀ r ∈
+{u1,u2,v1,v2}, i < j → IsCoprime (r.num i) (r.den j)` (or whatever
+orientation the elimination proof actually consumes — check which
+direction/indices are actually needed before finalizing the statement).
+**Caveat also flagged by ChatGPT**: double check the claimed equivalence
+"regular mod `⟨Fu0⟩` ⟺ `IsCoprime (u1_num 0) (u1_den 1)`" before baking
+it into the hypothesis's statement — it is NOT true for an arbitrary
+linear relation `n - U*d` without extra conditions on `d` (counterexample:
+`x` is regular mod `(x - 2U)` in `k[x,U]` despite `gcd(x,x) ≠ 1`). Verify
+this equivalence actually holds in our specific setup (it was derived
+via `isSMulRegular_quotient_span_singleton_of_isCoprime`, PeelChainAssembly.lean
+§0 — re-check that lemma's hypotheses match what's available here) before
+relying on it.
 
-The `04`/`05`/`06` notes spent most of their effort on how to chain
-`regular_of_disjoint_extension` (a `σ₁ ⊕ σ₂`, single-shot statement)
-through a *sequence* of already-imposed relations, worrying that each
-step re-quotients an already-quotiented ring that is no longer a clean
-`MvPolynomial _ (F p)`. **This worry is avoided entirely** by choosing,
-for each of the 8 "first-generator" `Fu`/`Fv` stages, to apply
-`regular_of_disjoint_extension` ONCE, directly against `Rdec p` itself
-(never against an intermediate quotient), using the bridge lemma to
-identify `Rdec p ⧸ Ideal.ofList (prefix so far)` with the `Option`/`⊕`-split
-ring `regular_of_disjoint_extension` is stated over — exactly the
-`isSMulRegular_bridge` idea from `02_bridge_core.lean`, generalized from a
-single peeled variable to an arbitrary FIXED prefix ideal made of
-already-`Idx`-disjoint generators. No list-generalization of
-`regular_of_disjoint_extension` is needed (`06`'s sorry #2 is also
-dropped) — the single-generator version (`g := Ideal.ofList gens'`... no,
-literally the ALREADY proved statement, `g : MvPolynomial σ₁ R` a single
-polynomial) is applied ONCE per stage, with `σ₁ := "everything the
-already-imposed prefix's variables live in"` collapsed down to a single
-peeled variable `U0`/`U1`/`V0`/`V1`/anchor, i.e. `g` IS the previously
-peeled variable's own defining relation, not a list.
+**Next step:** decide the exact new hypothesis's statement (need Claire's
+input on whether it's plausible for the real construction), add it
+parallel to `Nondegenerate`/`CrossNondegenerate`, then close these 4
+stages using the existing `isSMulRegular_den_of_second_peel` machinery
+(§1), which is already written to consume exactly this shape of input
+(its own `hcross01` parameter) — no new Lean infrastructure needed once
+the hypothesis exists, just wiring.
 
-Actually — simplification realized while re-deriving: **the "first
-generator" stages (`Fu0`, `Fu2`, `Fv0`, `Fv2`) don't need
-`regular_of_disjoint_extension` chained against a growing prefix at all**.
-`Fu0 := u1_num 0 - X U0 * u1_den 0` is exactly `regular_of_linear_elim`'s
-own shape (`g = rename some c - X none * rename some d`), applied with
-`τ := {v : Idx // v ≠ U0}` and `gens' := []` (empty prefix, since `Fu0` is
-`genList`'s first element) — `regular_of_linear_elim` ITSELF handles
-"linear in the peeled variable, coefficient regular in the rest," no
-`regular_of_disjoint_extension` involved for the FIRST stage. What
-`regular_of_disjoint_extension` is for is exactly `denRegular`'s
-`u1_den 0 : Rdec p` being regular not in bare `Rdec p` (trivial, it's a
-domain, `≠ 0` suffices) but SPECIFICALLY surviving the fact that
-`regular_of_linear_elim`'s hypothesis `hd_reg` wants regularity **in the
-peeled coefficient ring** `MvPolynomial τ (F p)` with `τ := {v // v ≠ U0}`
-(the WHOLE 11-variable ring, not modulo anything yet, since prefix is
-empty) — which is immediate from `u1_den 0 ≠ 0` (a domain) with NO
-`regular_of_disjoint_extension` needed at all for `Fu0`/`Fu2`/`Fv0`/`Fv2`.
-This matches `06`'s own stage-1 analysis ("NO regular_of_disjoint_extension
-needed at ALL for this first stage").
+### Gap B — `hCurveA1_reg`, `hCurveA2_reg`, `hCurveB1_reg`, `hCurveB2_reg`
+### (curve-relation stages 8-11 mod the full 8-element `Fu++Fv` prefix)
 
-So where IS `regular_of_disjoint_extension` actually needed? Re-examining:
-nowhere in the 8 `Fu`/`Fv` stages, once `CrossNondegenerate` supplies the
-4 repeated-target steps directly (`isSMulRegular_of_mul_eq_of_isSMulRegular`)
-and `regular_of_linear_elim` supplies the 4 first-generator steps directly
-(coefficient ring = everything except one target variable, i.e. `gens' :=
-[]` always, since each of `Fu0,Fu2,Fv0,Fv2` is the FIRST generator
-introduced for its own target variable in `genList`'s order — `genList`
-never revisits `U0` after `Fu0,Fu1`, so by the time `Fu2` (`U1`, first
-gen) is reached, the ideal already imposed is `⟨Fu0,Fu1⟩`, WHICH DOES NOT
-INVOLVE `U1` AT ALL — `Fu0`,`Fu1` are polynomials in `U0` and the A/B `w`
-variables only, never `U1`). This is the actual resolution `06` was
-reaching for with `regular_of_disjoint_extension_list` but didn't need:
-**`regular_of_linear_elim`'s own `gens'` parameter already IS the
-"already-imposed prefix," expressed directly as a `List (MvPolynomial τ
-R)` for `τ := {v // v ≠ (peeled var)}` — no extra disjointness lemma is
-needed, PROVIDED the already-imposed prefix, reinterpreted in `τ`, has
-`hd_reg : IsSMulRegular (Rdec p ⧸ Ideal.ofList prefix) (image of u1_den 1)`.**
+**Original plan was WRONG** (found and corrected this pass): the
+in-file docstrings assumed the 8-element prefix, after peeling the
+matching `w`-variable (e.g. `wa1` for `curveA1`), collapses to an ideal
+"extended from the coefficient ring" (i.e. every prefix generator has
+literal `wa1`-degree 0) — false. `Fu0,Fu2,Fv0,Fv2` (the A-side
+generators) all genuinely can depend on `wa1` through their NUMERATORS
+(`u1_num`/`v1_num`).
 
-This last hypothesis (`u1_den 1` regular mod `⟨Fu0,Fu1⟩`) is exactly what
-WAS flagged (correctly) as needing `regular_of_disjoint_extension`: `Fu0,
-Fu1` involve only `{U0, wa1,wa2,a1,a2, wb1,wb2,b1,b2}` (`U0` plus BOTH
-`w`-sides, since `Fu1`'s own `u2_den 1`... wait, check: `Fu0 := u1_num 0 -
-U0*u1_den 0` involves `{wa1,wa2,a1,a2}` (A-side only, per `u1_indep`) plus
-`U0`. `Fu1 := u2_num 0 - U0*u2_den 0` involves `{wb1,wb2,b1,b2}`
-(B-side, `u2_indep`) plus `U0`. So `⟨Fu0,Fu1⟩`'s variables are `{U0,
-wa1,wa2,a1,a2,wb1,wb2,b1,b2}` — 9 of the 12, EVERYTHING except `U1,V0,V1`.
-`u1_den 1` (needed for `Fu2`) is again A-side-only (`{wa1,wa2,a1,a2}`, by
-`u1_indep`), i.e. `u1_den 1`'s variables are a SUBSET of `⟨Fu0,Fu1⟩`'s
-variables, NOT disjoint from them — so `regular_of_disjoint_extension`
-(which needs `e`'s variables DISJOINT from `g`'s) doesn't directly apply
-either! What actually makes `Fu2` work is different: `u1_den 1`
-is regular in the AMBIENT ring `Rdec p` (nonzero, domain) and its
-variables (`{wa1,wa2,a1,a2}`) are a subset of the untouched-by-`Fu0,Fu1`... 
-no, they OVERLAP with `Fu0`'s variables directly (`Fu0` also lives in
-`{wa1,wa2,a1,a2,U0}`). So regularity of `u1_den 1` mod `⟨Fu0,Fu1⟩` is
-NOT free — needs its own argument.
+**Refined diagnosis this pass** (via `towerToRdec_den_vars_subset`
+above, confirmed by direct inspection of `towerToRdecK1`/`towerToRdec`'s
+defining formulas): the DENOMINATORS (`u1_den`/`v1_den`) are honestly
+`wa1`-free (proved), but the NUMERATORS are `wa1`-degree exactly ≤ 1
+(linear, never quadratic) — `towerToRdecK1`'s numerator formula
+`n0*den1 + n1*den0*X(wGen 0)` is manifestly linear in `X(wGen 0)` with
+`wGen`-free coefficients, and this property is preserved (separately,
+for `wa1` and `wa2` independently) one level up in `towerToRdec`. So
+each of `Fu0,Fu2,Fv0,Fv2` is `wa1`-degree ≤ 1 (not 0), while `curveA1 =
+wa1^2 - quintic(a1)` is monic of `wa1`-degree exactly 2. B-side
+generators (`Fu1,Fu3,Fv1,Fv3`) remain honestly variable-disjoint from
+`{wa1,wa2,a1,a2}` entirely (unaffected by this).
 
-**Correct fix, checked properly this time**: split `⟨Fu0, Fu1⟩` itself
-along A-side/B-side: `Fu0`'s variables `⊆ {U0,wa1,wa2,a1,a2}`, `Fu1`'s
-variables `⊆ {U0,wb1,wb2,b1,b2}` — these are NOT disjoint from each
-other (both mention `U0`), so `Ideal.ofList [Fu0,Fu1]` does not split as
-a disjoint-variable sum directly either. BUT `u1_den 1`'s variables
-(`{wa1,wa2,a1,a2}`, A-side, per `u1_indep i=1`) never touch `U0` — and
-`Fu1` (B-side + `U0`) doesn't touch `{wa1,wa2,a1,a2}` at all. So the
-right disjoint split is: `σ₁ := {wb1,wb2,b1,b2,U0,U1,V0,V1}` (everything
-`u1_den 1` does NOT depend on) vs `σ₂ := {wa1,wa2,a1,a2}` (where `u1_den
-1` DOES live) — apply `regular_of_disjoint_extension` with `g := Fu0`
-projected onto ... **no**, `Fu0` lives in BOTH sides (`U0` ∈ σ₁, A-side ∈
-σ₂) — `regular_of_disjoint_extension`'s `g : MvPolynomial σ₁ R` must live
-ENTIRELY in `σ₁`, and `Fu0` doesn't (it has both a `U0`-part and an
-A-side part). **`regular_of_disjoint_extension` literally cannot apply to
-`Fu0` as the "already imposed" generator**, regardless of how `σ₁/σ₂` is
-split, because `Fu0` always straddles the target variable and its own
-side's `w`-variables.
+**Sent back to ChatGPT this pass** (`chatgpt_prompt_followup_wgen_degree.md`,
+not yet answered as of this writing): whether "monic quadratic mod an
+ideal generated by degree-≤1-in-the-same-variable elements" is provable
+outright from the bidegree bound alone, or whether (like Gap A) it
+needs its own new resultant/nondegeneracy-type hypothesis. Likely
+outcome, per the shape of Gap A's answer: probably needs a new
+hypothesis (a resultant of `curveA1` against the up-to-4
+degree-≤1-in-`wa1` prefix generators being nonzero/regular) — but not
+confirmed yet, don't assume until ChatGPT's answer comes back.
 
-## Actual resolution (third pass, this is the one that works)
+**Next step:** read ChatGPT's answer to `chatgpt_prompt_followup_wgen_degree.md`,
+then either (a) write the outright proof if one exists, using
+`towerToRdec_den_vars_subset` plus the linear-numerator fact
+(not yet stated as its own Lean lemma — would need a
+`towerToRdec_num_degree_le_one`-style companion to
+`towerToRdec_den_vars_subset`, analogous construction, not yet written),
+or (b) add whatever new hypothesis is recommended, packaged uniformly
+across all 4 curve stages the same way Gap A's fix should be.
 
-Don't try to make `u1_den 1` regular mod `⟨Fu0, Fu1⟩` via
-`regular_of_disjoint_extension` treating `⟨Fu0,Fu1⟩` as "the σ₁-side
-ideal." Instead go back to `regular_of_linear_elim`'s OWN hypothesis
-shape directly: it wants `hd_reg : IsSMulRegular (MvPolynomial τ R ⧸
-Ideal.ofList gens') (rename some d)` for `τ := {v ≠ U1}`, `gens' :=
-[Fu0, Fu1]` reinterpreted as elements of `MvPolynomial τ (F p)` (both do
-avoid `U1`, so this reinterpretation is valid — `Fu0,Fu1 : Rdec p` factor
-through the peeling-out-`U1` equivalence as `rename some` of honest `τ`-side
-polynomials, by `u1_indep`/`u2_indep`'s variable bounds, since neither
-`Fu0` nor `Fu1` mentions `U1`). **This is now a 2-element-prefix instance
-of exactly the SAME "disjoint variables survive quotienting" fact, but
-now correctly with `u1_den 1` (A-side, avoiding `U0,U1,wb*,b*`) disjoint
-from `{Fu0, Fu1}`'s COMBINED variable set MINUS what `u1_den 1` needs**:
-`u1_den 1`'s vars ⊆ `{wa1,wa2,a1,a2}` \ `{a1,a2}`... no wait, `u1_den 1`
-CAN reuse `wa1,wa2,a1,a2` (same A-side symbols as `u1_den 0`/`Fu0` — the
-data comes from the SAME `aSideGens` symbols, reused across `i=0,1`, not
-fresh copies!). **This means `u1_den 1` and `Fu0` are NOT
-variable-disjoint at all** — both live in `{wa1,wa2,a1,a2}` (plus `Fu0`
-also has `U0`). So `regular_of_disjoint_extension` cannot separate them
-by a variable-disjointness argument, full stop — `u1_den 1` regular mod
-`Fu0` is NOT a disjointness fact, it is either TRUE FOR A DIFFERENT
-REASON or FALSE.
+## Gap C — `top_ne_smul`
 
-**Check by hand whether it's even true.** `Fu0 = u1_num 0 - U0 * u1_den
-0`, both `u1_num 0, u1_den 0 ∈ F[wa1,wa2,a1,a2]` (A-side only). Modulo
-`Fu0`, `U0 ≡ u1_num 0 / u1_den 0` FORMALLY (not literally, since `u1_den
-0` need not be a unit) — but crucially the quotient ring `Rdec p ⧸
-⟨Fu0⟩` still contains a full, UNTOUCHED copy of `F[wa1,wa2,a1,a2]` as a
-subring (via the "eliminate `U0`" identification `regular_of_linear_elim`
-itself is built on: `Rdec p ⧸ ⟨Fu0⟩ ≅ MvPolynomial {v≠U0} (F p)` overall
-— NOT merely a quotient of the coefficient ring, the WHOLE thing, because
-`Fu0` is monic/linear in `U0` with regular leading coeff `u1_den 0`,
-eliminating `U0` COMPLETELY via `regular_of_linear_elim`'s own
-"Polynomial B" argument, i.e. after imposing `Fu0`, `U0`'s class becomes
-expressible in terms of the rest, and the whole quotient ring IS
-(isomorphic to) `MvPolynomial {v ≠ U0} (F p)` — **not quotiented further
-by anything else**, since `Ideal.ofList [Fu0]` with `gens' := []` gives
-literally `B := MvPolynomial τ R ⧸ Ideal.ofList [] = MvPolynomial τ R`
-itself, `Ideal.ofList [] = ⊥`.
+`IsRegular`'s second field, `⊤ ≠ Ideal.ofList genList • ⊤`. Not
+attempted at all yet. Proving it honestly likely needs exhibiting an
+actual `F p`-point solving all 12 defining equations (giving a
+surjection `Rdec p ↠ F p` killing the ideal, hence properness) — this is
+real existence-of-a-point mathematics (does the genus-2 construction
+have any valid sample point at all for generic `(c0..c4, sa, sb)`?), not
+bookkeeping. Not scoped further this pass; flag to Claire before
+attempting, since it may need its own hypothesis or may already be
+implied by `Nondegenerate`/`CrossNondegenerate`'s existence in the first
+place (if those structures are only ever instantiated at points where a
+solution demonstrably exists) — worth asking Claire directly rather than
+guessing.
 
-**This is the key fact that makes everything work and was implicit but
-never stated explicitly in `04`/`05`/`06`:** `Rdec p ⧸ ⟨Fu0⟩ ≅
-MvPolynomial {v : Idx // v ≠ U0} (F p)` **exactly** (an honest
-isomorphism, not merely a surjection) — because `regular_of_linear_elim`'s
-own proof shows the quotient is `Polynomial B` mod nothing further
-collapsed to `B` alone... **wait, that's not right either**: eliminating
-`U0` via `Fu0` gives `Rdec p ⧸ ⟨Fu0⟩ ≅ MvPolynomial {v≠U0} (F p)` only if
-`Fu0` is thought of as "solve for `U0`" which needs `u1_den 0` to be a
-UNIT, not merely regular. **This is wrong.** `Rdec p ⧸ ⟨Fu0⟩` is NOT
-isomorphic to the smaller polynomial ring in general (e.g. `k[U,d]/(d*U -
-1)` is NOT `k[d]`, it's `k[d, d⁻¹]`, a genuinely bigger ring when `d` is
-not a unit already). Retract this claim entirely.
+## Final wiring (`sorry` at the very end of `regularSeq_of_peel_chain`)
 
-## Actual actual resolution: `u1_den 1` regular mod `⟨Fu0,Fu1⟩` is exactly
-## a `regular_of_disjoint_extension` instance, just with the SPLIT chosen
-## correctly (peeled variable side vs. its own side's OTHER-INDEX copy)
-
-Re-examine once more, carefully, matching `regular_of_disjoint_extension`'s
-ACTUAL statement (`g : MvPolynomial σ₁ R`, `e : MvPolynomial σ₂ R`,
-`σ₁,σ₂` DISJOINT index sets, conclusion: `e`'s image is regular mod `⟨g⟩`
-inside `MvPolynomial (σ₁ ⊕ σ₂) R`). The elements actually in play at the
-`Fu2` stage: already-imposed `g := Fu0` (vars `⊆ {U0} ∪ ASide`) and `g₂
-:= Fu1` (vars `⊆ {U0} ∪ BSide`), want `e := u1_den 1` (vars `⊆ ASide`)
-regular mod `⟨Fu0, Fu1⟩`.
-
-Split `Idx` as `σ₁ := {U0, U1, V0, V1} ∪ ASide ∪ BSide` is everything —
-not a useful split. Instead split as `Idx ≃ ASide ⊕ Rest` (`Rest := {U0,
-U1, V0, V1} ∪ BSide`, 8 variables). `u1_den 1 : MvPolynomial ASide (F
-p)`'s own home ring — REGULAR there (nonzero, domain). `Fu0` and `Fu1`
-BOTH live in `Rest`?? NO — `Fu0` mentions `ASide` (via `u1_num 0, u1_den
-0`)! `Fu0` is NOT purely a `Rest`-side polynomial. So this split doesn't
-work either, for the SAME reason as before: `Fu0` genuinely straddles
-`ASide` and `{U0}`.
-
-**This means `regular_of_disjoint_extension`, exactly as it is currently
-stated (single `g`, one variable-disjoint side), cannot discharge the
-`Fu2` stage `u1_den 1` regular mod `⟨Fu0,Fu1⟩` obligation *by itself* —
-not because of the list-vs-singleton issue `06` worried about, but
-because `Fu0` is not confined to a `σ₁` disjoint from `u1_den 1`'s
-variables in the first place** (they share all of `ASide`). This is a
-DIFFERENT and more basic obstruction than `06` identified, and needs
-checking whether it's even TRUE, not just whether the current lemmas
-reach it.
-
-**Resolve by hand-checking truth first (per project convention: check
-before either weakening or reaching for machinery).** Work in `F[U0, a,
-d]` (`a := u1_num 0`, `d := u1_den 0`, both really elements of a bigger
-`ASide`-ring but the mechanism only needs one representative pair to
-test), `Fu0 := a - U0*d`. Is `d' := u1_den 1` (a DIFFERENT, independent
-element of the SAME `ASide` ring, e.g. literally a different polynomial
-in the same variables `wa1,wa2,a1,a2` — `u1_den`/`u2_den` at DIFFERENT `i`
-come from evaluating `uRS`'s coefficient list at different indices, so
-`u1_den 0` and `u1_den 1` are two different, in general algebraically
-INDEPENDENT-looking, elements of `F[wa1,wa2,a1,a2]`, not obviously related)
-regular mod `⟨a - U0*d⟩` in `F[U0,ASide]`? YES: `F[U0,ASide]/(a-U0d) ≅
-F[ASide][U0]/(a - U0 d)`, and `d'` is a constant (no `U0`) with
-`d'`'s image nonzero: mod `⟨a-U0d⟩`, `F[U0,ASide]/(a-U0d)` — as an
-`ASide`-module — is FREE (in fact `≅` to `F[ASide]` as a module IF `d` is
-a nonzerodivisor, via `U0 ↦` no simplification, since `a - U0 d` is
-literally `Polynomial.Monic`-like ONLY when `d` is a UNIT — but
-`regular_of_linear_elim`'s own machinery does NOT need `d` a unit, it
-needs `d` REGULAR, and shows `Polynomial B` (`B := ASide-ring/gens'`)
-survives multiplication by `C d - X * C c`-shape elements regularly via
-the LEADING COEFFICIENT argument (Layer 1) — the quotient `Rdec p ⧸
-⟨Fu0⟩`, as an ABELIAN GROUP / `ASide`-module, is `Polynomial (F[ASide])`
-still (NOT collapsed down to `F[ASide]` — that was the error above),
-i.e. `B[U0]` with NO relations beyond `Fu0` itself, so `d'`'s image is
-just `C d' ∈ B[U0]`, and `IsSMulRegular (B[U0]) (C d')` iff `IsSMulRegular
-B d'` (Layer 1, `C`'s leading-coefficient-preserving, degree 0). `B :=
-F[ASide] ⧸ Ideal.ofList [] = F[ASide]` itself here (empty prefix at the
-`Fu0`-alone stage) — so `d'` regular in `B` is just `d' ≠ 0` in the domain
-`F[ASide]`, TRUE by `denRegular`. **So `u1_den 1` (i.e. `d'`) IS regular
-mod `⟨Fu0⟩` alone, for the SAME reason `d` (`u1_den 0`) was — Layer 1
-applied a second time, treating `d'` as just another element of the
-coefficient ring `B`, nothing to do with disjointness of variables at
-all.**
-
-This dissolves the entire false start above: **`regular_of_disjoint_extension`
-was never the right tool for the "does the NEXT stage's denominator
-survive the PREVIOUS stage's quotienting" question — Layer 1
-(`Polynomial.isSMulRegular_of_leadingCoeff_isSMulRegular`) already answers
-it, because `Rdec p ⧸ ⟨Fu0�extendedby nothing else⟩` is `Polynomial B`
-with `B` UNCHANGED from before `Fu0` was imposed (`Fu0` only touches the
-`U0`-graded piece, the `B`-coefficients themselves are untouched by
-imposing a single relation purely linear in `U0`).** The ONLY place
-`regular_of_disjoint_extension` earns its keep is the one place `06`
-correctly used it for OTHER reasons: nowhere, actually, in the 8
-`Fu`/`Fv` stages — see below, it turns out not to be needed there either,
-once Layer 1/2 are applied stage-by-stage instead of trying to
-characterize "regular mod the WHOLE prefix" in one shot.
-
-## The real per-stage argument (uniform, all 8 `Fu`/`Fv` stages)
-
-At the point `genList[k]` (a `Fu`/`Fv` generator, peeling variable `x ∈
-{U0,U1,V0,V1}`) is reached, the ALREADY-imposed prefix consists of some
-number of EARLIER `Fu`/`Fv` generators, each linear in ITS OWN target
-variable (`x' ≠ x`, already peeled) with regular leading coefficient in
-whatever coefficient ring existed at ITS OWN stage. Applying
-`regular_of_linear_elim`/`regular_of_peeled_leadingCoeff` INDUCTIVELY,
-`Rdec p ⧸ Ideal.ofList prefix_k` is REPEATEDLY of the form `Polynomial
-(Polynomial (... (F[the 4 untouched target vars ++ all 8 w/anchor vars])
-...))` — i.e. peeling `k` linear-in-one-variable relations one at a time
-via Layer 1/2 nests `Polynomial` `k` times over the UNTOUCHED coefficient
-ring, and NEVER otherwise disturbs that coefficient ring (its own
-elements' regularity is governed ENTIRELY by Layer 1 applied to their
-image as a CONSTANT, i.e. `C`, at each peeling step — `IsSMulRegular
-(Polynomial A) (C a) ↔ IsSMulRegular A a`, degree 0 leading coefficient
-`= a` itself, no interaction with the peeled variable at all). So: an
-element `d' : Rdec p` whose variables avoid `{peeled vars so far} ∪
-{x}` stays regular through the ENTIRE prefix, by INDUCTION using Layer 1
-at each step, REGARDLESS of what side (`ASide`/`BSide`) it's on relative
-to the prefix — no disjoint-variable/base-change argument
-(`regular_of_disjoint_extension`) is needed ANYWHERE in the 8 `Fu`/`Fv`
-stages. `regular_of_disjoint_extension` is DEAD CODE for this file's
-actual assembly (kept, proved, may be useful for the 4 curve-relation
-stages or future work, but the 12-step chain below does not call it).
-
-This makes the whole assembly UNIFORM and simple: every one of the 12
-stages reduces to Layer 1 + Layer 2
-(`regular_of_peeled_leadingCoeff`/`regular_of_linear_elim`), chained via
-`isRegular_cons_iff'`, with the one substantive per-stage input being
-EITHER `denRegular` (8 stages: 4 first-generator directly, 4
-repeated-target via `CrossNondegenerate` +
-`isSMulRegular_of_mul_eq_of_isSMulRegular`) OR `curveCoeffRegular`/monic-ness
-(4 curve stages).
-
-## Concrete 12-stage plan
-
-Notation: `Q_k := Rdec p ⧸ Ideal.ofList (genList.take k)` (`Q_0 = Rdec
-p`). Need, for each `k = 0..11`: `IsSMulRegular Q_k genList[k]`
-(interpreted via `isRegular_cons_iff'`'s own single-step `QuotSMulTop`
-nesting, bridged to `Q_k`'s `Ideal.ofList` form by the SAME bridge lemma
-proved once, `isSMulRegular_bridge_prefix`, below — generalizing
-`03_general_transport.lean`'s `isSMulRegular_of_ringEquiv_of_mapsTo` from
-"one ring equiv" to "the specific chain of `Ideal.quotientEquiv`s
-`DoubleQuot` gives, iterated," OR — simpler, avoiding `DoubleQuot`
-entirely — proved DIRECTLY by induction on the prefix length using
-`regular_of_peeled_leadingCoeff` itself, never leaving the "peel one
-variable, `Polynomial` nesting" picture. **This second route is what the
-actual Lean file below uses** — no `DoubleQuot`/`QuotSMulTop`-vs-`Ideal.ofList`
-bridge lemma is proved at all; `isRegular_cons_iff'` is applied directly,
-with each step's hypothesis discharged by combining `regular_of_linear_elim`
-(stage's OWN linear shape) with Layer-1-style "constant survives" facts
-for whichever OTHER already-proved-regular elements (`hcross`'s
-resultants, `denRegular`'s denominators) are needed for the NEXT
-generator's own linear-elim/leadingCoeff hypothesis, all expressed
-directly in terms of `gens' := genList.take k` reinterpreted in the
-current peeled variable's `τ`.
-
-Stage list, with the peeled variable and which fact supplies
-`IsSMulRegular (MvPolynomial τ (F p) ⧸ Ideal.ofList gens'_k) (image of the
-next generator's defining data)`:
-
-0. **`Fu0`** — peel `U0`. `gens' := []`. `hd_reg` needed: `u1_den 0`
-   regular in `MvPolynomial {v≠U0} (F p) ⧸ Ideal.ofList [] =
-   MvPolynomial {v≠U0} (F p)` itself — from `denRegular.1 0` (`≠ 0`) +
-   domain. `regular_of_linear_elim` closes this stage directly.
-1. **`Fu1`** — NOT a new peeled variable (`Fu1` is still linear in `U0`,
-   the SAME peeled variable as stage 0 — `genList`'s order imposes BOTH
-   `U0`-generators before moving to `U1`). This does NOT fit
-   `regular_of_linear_elim`'s "peel a NEW variable" shape at all — `U0`
-   is already peeled. Instead: `Fu1` lives entirely in the ALREADY-quotiented
-   ring `Q_1 = Rdec p ⧸ ⟨Fu0⟩`, and per `isRegular_cons_iff'`'s single-step
-   shape, the needed fact is `IsSMulRegular Q_1 (mk Fu1)` — supplied
-   DIRECTLY by `hcross.hu0` (`CrossNondegenerate`'s field, stated in
-   EXACTLY this shape, `Rdec p ⧸ Ideal.span {Fu0}`) + `Fu1 = mk` of the
-   resultant identity, closed by `isSMulRegular_of_mul_eq_of_isSMulRegular`.
-   No peeling infrastructure touched at this stage at all.
-2. **`Fu2`** — peel `U1` (a genuinely NEW variable — first time `U1`
-   appears in `genList`). `gens' := [Fu0, Fu1]`, reinterpreted in `τ :=
-   {v ≠ U1}` (valid: neither mentions `U1`, by `u1_indep 0`/`u2_indep 0`).
-   `hd_reg` needed: `u1_den 1` regular in `MvPolynomial τ (F p) ⧸
-   Ideal.ofList [Fu0,Fu1]`. Proved by TWO applications of Layer 1 (`Fu0`
-   then `Fu1`, each just "adjoin one more `Polynomial` layer, `u1_den 1`'s
-   image is a constant `C`/`C∘C` throughout, survives by Layer 1 applied
-   to a degree-0 leading coefficient at each peel") — spelled out as its
-   own small helper lemma below
-   (`isSMulRegular_const_of_isSMulRegular_of_disjoint_prefix`, proved by
-   induction on the prefix list, no `regular_of_disjoint_extension`
-   needed).
-3. **`Fu3`** — same shape as stage 1 (repeated target, `U1`), via
-   `hcross.hu1`.
-4-7. **`Fv0,Fv1,Fv2,Fv3`** — same four shapes, one register up (`V0,V1`
-   instead of `U0,U1`), `hcross.hv0`/`hv1` for the repeated stages.
-8-11. **`curveA1,curveA2,curveB1,curveB2`** — peel the matching `w`
-   variable (`wa1,wa2,wb1,wb2`), monic (leading coeff `1`, trivially
-   regular by Layer 1), via `regular_of_peeled_leadingCoeff` +
-   `curveCoeffRegular`'s Monic fact. `gens'` at this point is the full
-   8-element `Fu++Fv` prefix — the SAME induction helper
-   (`isSMulRegular_const_of_isSMulRegular_of_disjoint_prefix`-style, or
-   here trivially since leading coeff `1` is regular in ANY ring, no
-   induction needed at all: `Polynomial.isSMulRegular_of_leadingCoeff_isSMulRegular`
-   applies directly with `hf : IsSMulRegular _ 1`, always true,
-   `isSMulRegular_one`/`IsUnit.isSMulRegular` since `1` is a unit).
-
-## Named sorries this file introduces (easiest first)
-
-1. **`isSMulRegular_const_of_isSMulRegular_of_disjoint_prefix`** — the
-   induction helper for stage 2/6-style steps (`u1_den 1`/`v1_den 1`-style
-   "already-regular-in-ambient-ring constant survives an arbitrary FIXED
-   LIST of earlier linear-elim peels, PROVIDED each earlier peel's own
-   variable is different from the constant's variables and different from
-   each other" — proved by `List.rec`/induction on `gens'`, repeatedly
-   invoking Layer 1 with a degree-0 `C`). Genuinely new but small and
-   fully mechanical, matching Layer 1's own proof style exactly (no new
-   mathematical content, pure bookkeeping).
-2. **The bridge between `genList.take k` (an `Rdec p`-level `List`,
-   `Ideal.ofList`-quotiented) and the SPECIFIC `MvPolynomial τ (F p)`-level
-   reinterpretation `regular_of_linear_elim`/Layer-1-induction need** —
-   i.e. formalizing "`Fu0, Fu1` avoid `U1`, hence factor through
-   `peelEquivGen p U1`'s coefficient ring as honest `τ`-side polynomials."
-   This is `01_bridge.lean`/`02_bridge_core.lean`'s `isSMulRegular_bridge`
-   idea, but now PROVABLE OUTRIGHT (not `sorry`) using
-   `03_general_transport.lean`'s `isSMulRegular_of_ringEquiv_of_mapsTo`,
-   which is already a complete, `sorry`-free proof — this pass wires it
-   in rather than re-deriving it.
-3. **The final `isRegular_cons_iff'` 12-fold assembly itself** — purely
-   mechanical chaining once 1-2 are in hand, but long (12 explicit
-   applications) — scoped as its own `sorry` until 1-2 are checked in the
-   REPL, so Claire can test the two genuinely new pieces independently
-   before the full chain is attempted.
-
-## What did NOT change
-
-- `regular_of_disjoint_extension`, `regular_of_linear_elim`,
-  `regular_of_peeled_leadingCoeff`, `isSMulRegular_of_mul_eq_of_isSMulRegular`,
-  `curveCoeffRegular`, `CrossNondegenerate`, `denRegular` — all used
-  as-is, no restatement.
-- `CrossNondegenerate`'s fields are NOT restated mod a "full prefix" —
-  `06`'s item 4 is retracted, see above.
-- `regular_of_disjoint_extension_list` (`06`'s sorry #2) is NOT created —
-  turned out to be unnecessary once the per-stage argument is done via
-  Layer-1 induction instead of base-change.
-
-## Status update: build errors fixed (this pass)
-
-`PeelChainAssembly.lean` had 4 build `error`s (not `sorry`s) blocking
-compilation, all inside `regular_of_second_linear_elim` — the Step-E
-helper for `Fu1'` regular mod `⟨Fu0'⟩` (see that theorem's own docstring
-in the file for the pre-existing math context; it is a different theorem
-from the 3 named sorries above, which live inside `regularSeq_of_peel_chain`
-and `isSMulRegular_den_of_second_peel`). Root cause: the old proof built
-the ideal as a `let I := Ideal.ofList [g0]` and tried to identify it with
-`Ideal.span {g0}` via `show ... by simp [I]`, which made Lean pick the
-wrong `Semiring` instance for `Ideal Q` and cascaded into 3 further
-type-mismatch/unsolved-goal errors downstream in the same proof.
-
-Fix: rewrote the proof to use `Ideal.ofList_singleton` (a Mathlib lemma
-already used successfully elsewhere in this file) to convert to
-`Ideal.span {g0}` up front, then closed the goal with the same
-`hmk0`/`ring`-identity/`isSMulRegular_of_mul_eq_of_isSMulRegular` idiom
-already used for `hFu1_reg`/`hFu3_reg`/`hFv1_reg`/`hFv3_reg` later in the
-file (the `CrossNondegenerate.hu0`/`hu1`/`hv0`/`hv1`-driven stage-1/3/5/7
-steps). No theorem statement changed, no math content added — this was a
-proof-engineering fix, not progress on any of the 3 named sorries above.
-A side effect: the fix incidentally proved outright the `ring` identity
-that `regular_of_second_linear_elim`'s OLD docstring had flagged as "not
-in doubt but needing a bridging fact" — turns out no bridging fact was
-needed, since `hresultant_reg` was already stated at the right (bigger)
-ring level in the theorem's own signature; see the theorem's updated
-docstring.
-
-**File now compiles with 0 errors.** Remaining `sorry`s, unchanged by
-this pass, in call/dependency order:
-
-- `regular_of_second_linear_elim`'s own CALLER (`isSMulRegular_den_of_
-  second_peel`, Step E) still needs to supply that lemma's `hresultant_reg`
-  HYPOTHESIS for the concrete instance — currently `sorry`'d at the call
-  site itself (not inside `regular_of_second_linear_elim`, which is now
-  fully proved).
-- `isSMulRegular_den_of_second_peel`'s own remaining coprimality gap
-  (`u1_num 0`/`u1_den 1`-style pair, flagged in-file as needing a
-  `gcd(c0'', d1den'') = 1`-type fact not currently tracked by
-  `Nondegenerate`/`CrossNondegenerate`) — open, not attempted this pass.
-- The 12-stage `regularSeq_of_peel_chain` assembly itself — still `sorry`,
-  per plan item 3 above; unaffected by this pass's fix.
-
-Next natural step: decide whether the coprimality gap should become a new
-named field (parallel to `CrossNondegenerate`'s existing four), following
-this project's own rule of weakening/extending hypotheses honestly rather
-than asserting an unproved claim — or whether it's derivable from
-`hgcdA`/`hgcdB`/`hndA`/`hndB` already in scope, which has not yet been
-checked.
-
-## Status update: `hresultant_reg` closed (later pass)
-
-The first bullet above (`regular_of_second_linear_elim`'s caller needing
-to supply `hresultant_reg`) is now done — confirmed building by the user.
-`isSMulRegular_den_of_second_peel`'s `hτ` derivation bridges its own
-`hu0_reg` parameter (stated at `Rdec p` level) down to `hresultant_reg`'s
-required `MvPolynomial (Option τU1') (F p)`-level shape, in two hops:
-
-1. `Rdec p → MvPolynomial (Option τU1) (F p)`: NOT a ring equiv (a first
-   attempt tried `isSMulRegular_bridge_prefix_gen`'s `.mp` directly as if
-   it landed in plain `MvPolynomial τU1 (F p)`, which type-checks as
-   `Ideal.ofList (List.map (rename some) [Fu0'])` in
-   `MvPolynomial (Option τU1) (F p)` — a different ring, since
-   `|Option τU1| = |Idx| ≠ |τU1|`, so no ring equiv between `Option τU1`
-   and `τU1` can exist; that mismatch was the actual build error this
-   bullet is replacing). Fixed by deriving the `Option τU1`-level fact
-   honestly (`hopt_reg`), then descending to `τU1` via an explicit
-   retraction `back := rename (fun z : Option τU1 => z.getD x0)` (a left
-   inverse of `rename some`, not an equiv) and a direct `IsSMulRegular`
-   unfolding (`intro x y hxy; ...`) rather than a transport lemma.
-2. `MvPolynomial τU1 (F p) → MvPolynomial (Option τU1') (F p)`: unchanged
-   from the previous pass — a genuine ring equiv
-   (`|τU1| = |Option τU1'|`), transported via
-   `isSMulRegular_of_ringEquiv_of_mapsTo` in one shot.
-
-**File now compiles with 0 errors and 2 remaining named `sorry`s** (down
-from 3): the coprimality gap inside `isSMulRegular_den_of_second_peel`,
-and the 12-stage `regularSeq_of_peel_chain` assembly. Both unattempted
-this pass — the "next natural step" note above still stands unchanged.
+Purely mechanical once Gaps A/B/C close: 12-way `Fin.cases` (or
+equivalent) matching each `regular_mod_prev i` obligation, after
+`List.take`/`List.get` unfolding on the literal 12-element list, against
+the corresponding `h*_reg` fact above (rewriting `Ideal.ofList (rs.take
+i)` to match each fact's stated ideal via `Ideal.ofList_nil`/
+`Ideal.ofList_singleton`/`rfl` as needed) — plus `top_ne_smul` (Gap C).
+Not attempted yet; blocked on Gaps A/B/C being real theorems to plug in,
+not blocked on any remaining Lean bookkeeping uncertainty.

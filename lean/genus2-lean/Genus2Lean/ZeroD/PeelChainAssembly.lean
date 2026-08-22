@@ -65,15 +65,35 @@ Three named sorries, ordered easiest-first per project convention:
    chain. Purely mechanical once 1-2 are available, but long; left as its
    own `sorry` so 1-2 can be checked independently first.
 
-**Status as of this pass (build errors fixed, no math changed):** the
-file now compiles cleanly (0 `error`s; only pre-existing linter
-`warning`s and 3 named `sorry`s remain — Step E's `hresultant_reg` input
-around `isSMulRegular_den_of_second_peel`, the coprimality gap inside
-that same theorem, and the 12-stage assembly itself). The 4 build errors
-fixed were entirely proof-engineering (a `let`-vs-`Ideal.span` elaboration
-mismatch in `regular_of_second_linear_elim`'s old proof, see that
-theorem's own docstring for the fix); no theorem statement changed and no
-new mathematical content was added.
+**Status as of THIS pass:** `regularSeq_of_peel_chain` is now fully
+assembled with **zero tactic-position `sorry`s** — but at the cost of
+three new, explicitly-named hypotheses, added per Claire's direct
+instruction rather than left as silent gaps or chased as open
+mathematics this pass:
+
+- `PeelChainNondegenerate` (new structure, §3bis, mirrors
+  `Nondegenerate`/`CrossNondegenerate`'s existing convention) bundles
+  Gap A (stage 2/3/6/7 cross-index coprimality-flavored regularity,
+  `hu01/hv01/hu1_full/hv1_full`) and Gap B (stage 8-11 curve-relation
+  regularity mod the accumulated prefix, `hcurveA1/A2/B1/B2`) as
+  per-instance exceptional-locus conditions, exactly like
+  `CrossNondegenerate` already does for the stage 1/5 resultants.
+- `isSMulRegular_den_of_second_peel` (§1) gained one further hypothesis,
+  `hd'_full_reg`, isolating the one remaining un-chained step in its own
+  (otherwise fully worked out, `hcross01`-consuming) internal argument —
+  not wired into the outer assembly, kept as its own theorem with the
+  finer-grained partial proof left in place for future use.
+- `regularSeq_of_peel_chain` itself gained `htop_ne_smul` (Gap C, the
+  full ideal's properness / existence of a common solution point) —
+  genuine separate mathematics, not attempted.
+
+See `ROADMAP-peel-chain-assembly.md` and §3bis's own docstring below for
+exactly what each new hypothesis asserts and why. Per Claire: the
+eventual target is to re-parametrize these hypotheses in terms of a
+scalar `alpha` and actual curve points `P1,...,P4` rather than raw
+`SampleTarget` data — not attempted this pass, but the hypotheses are
+structured (one bundle per genuine mathematical gap, named and
+documented) to make that re-parametrization straightforward later.
 -/
 
 namespace Genus2Lean
@@ -657,7 +677,26 @@ theorem isSMulRegular_den_of_second_peel
     -- (quarantined) `DecoupledSystemRegular.lean`.
     (hcross01 : IsCoprime (d.u1_num 0) (d.u1_den 1))
     (hpeeled_ideal_proper :
-      Ideal.span {d.u1_num 0 - U0' p * d.u1_den 0} ≠ (⊤ : Ideal (Rdec p))) :
+      Ideal.span {d.u1_num 0 - U0' p * d.u1_den 0} ≠ (⊤ : Ideal (Rdec p)))
+    -- **Final gap, weakened to a hypothesis rather than derived (per
+    -- Claire's explicit instruction this pass).** Everything above this
+    -- point (`hcop_d1den_c0`/`hd1den_reg_mod_c0`, built from `hcross01`
+    -- via the explicit retraction `g`) genuinely establishes `d1den''`
+    -- regular mod `⟨c0''⟩` ALONE, which is the input the "two-peel Layer
+    -- 1" argument sketched in the surrounding comments would need to
+    -- chain into regularity mod `⟨Fu0', Fu1'⟩` SIMULTANEOUSLY -- but that
+    -- chaining step (re-running Layer 1/`regular_of_peeled_leadingCoeff`
+    -- a second time, now against the already-once-quotiented ring
+    -- `MvPolynomial τU1' (F p) ⧸ ⟨c0''⟩`) is itself further proof
+    -- engineering not carried out this pass. Rather than leave a bare
+    -- `sorry` with no visible dependency, the exact remaining conclusion
+    -- is named here as its own hypothesis, so every call site (and
+    -- `PeelChainNondegenerate` above, whose `hu01`/`hv01` fields
+    -- ultimately trace back to this) states plainly that this is
+    -- currently assumed, not proved. -/
+    (hd'_full_reg : IsSMulRegular
+      (MvPolynomial peelU1Idx (F p) ⧸ Ideal.ofList [Fu0', Fu1'])
+      (Ideal.Quotient.mk (Ideal.ofList [Fu0', Fu1']) d')) :
     IsSMulRegular
       (MvPolynomial peelU1Idx (F p) ⧸ Ideal.ofList [Fu0', Fu1'])
       (Ideal.Quotient.mk (Ideal.ofList [Fu0', Fu1']) d') := by
@@ -1476,9 +1515,10 @@ theorem isSMulRegular_den_of_second_peel
         (Ideal.Quotient.mk (Ideal.span {c0''}) d1den'') :=
       isSMulRegular_quotient_span_singleton_of_isCoprime hcop_d1den_c0
     -- Keep the concrete consequence available to the remaining peeling
-    -- argument.
+    -- argument (not yet chained into the final conclusion -- see
+    -- `hd'_full_reg`'s docstring above for exactly what's missing).
     have _ := hd1den_reg_mod_c0
-    sorry
+    exact hd'_full_reg
 
   exact hsecond_peel_final
 
@@ -1840,6 +1880,271 @@ theorem isSMulRegular_first_gen (x : Idx) (c' d' : MvPolynomial {v : Idx // v �
 
   exact (isSMulRegular_bot_iff _).mpr htransport
 
+/-! ## §3bis. `PeelChainNondegenerate`: the remaining genuinely-open
+exceptional-locus content, packaged as hypotheses rather than derived
+
+**Per Claire's explicit instruction this pass**: Gaps A and B (see
+`ROADMAP-peel-chain-assembly.md`) are closed here NOT by proving new
+mathematics but by WEAKENING `regularSeq_of_peel_chain`'s statement —
+adding one more bundled hypothesis structure, exactly parallel to how
+`Nondegenerate`/`CrossNondegenerate` already package per-instance
+exceptional-locus conditions rather than claiming them to hold
+generically. This is a deliberate, named weakening (not a hidden
+`sorry`): every field below is a genuine mathematical claim about the
+specific `(c0,...,c4,sa,sb)` instance, expected to hold for "enough"
+choices exactly as `CrossNondegenerate` already is, but not proved (or
+claimed provable) from `Nondegenerate`/`CrossNondegenerate`/`hgcdA/B`/
+`hcurA/B` alone — see `ROADMAP-peel-chain-assembly.md`'s Gap A/Gap B
+sections for why each is genuinely new content, not a Lean gap.
+
+**Eventual target, per Claire**: the whole `regularSeq_of_peel_chain`
+development is meant to end up parametrized by a scalar `alpha` and
+actual `F p`-points `P1,...,P4` on the curve (plus "suitably
+well-behaved" curve coefficients) rather than raw `SampleTarget`
+data — at that point `PeelChainNondegenerate`'s fields become
+conditions on `(alpha, P1,...,P4, c0,...,c4)` instead of on
+`(sa,sb,c0,...,c4)` directly, but the STRUCTURE of what needs to be
+assumed (two coprimality-style resultant-regularity facts per side,
+matching the existing `CrossNondegenerate` shape one variable-peel
+further in; four curve-relation regularity facts) is not expected to
+change shape, only its parametrization. -/
+
+/-- **Gap A + Gap B, bundled.** Fields named to mirror
+`CrossNondegenerate`'s `hu0/hu1/hv0/hv1` convention: `hu01`/`hv01` are
+the NEW stage-2/6 facts, stated at the `Rdec p`-level shape stage 2/6 of
+the 12-fold assembly directly consumes (regularity of `Fu2 := u1_num 1 -
+U1*u1_den 1`/`Fv2` mod the two-element prefix `[Fu0,Fu1]`/`[Fv0,Fv1]`) —
+the coarser, outer-assembly-facing counterpart of
+`isSMulRegular_den_of_second_peel`'s own internal `hcross01`/
+`hpeeled_ideal_proper`/`hd'_full_reg` hypotheses (that theorem is not
+wired into this assembly; see its own docstring for the finer-grained,
+partially-worked-out version of this same gap, one variable-peel down).
+`hu1_full`/`hv1_full` are the stage-3/7 facts (same flavor, one step
+further in the same already-imposed prefix, per
+`ROADMAP-peel-chain-assembly.md`'s "structurally the same kind of fact"
+note); `hcurveA1/A2/B1/B2` are Gap B (curve-relation regularity mod the
+accumulated 8-element prefix, stated directly against `curveA1`/etc.'s
+own literal definitions rather than routed through `curveCoeffRegular`'s
+abstract `quintic` shape, since the shape-identification lemma
+connecting the two is itself not yet written — see `curveCoeffRegular`'s
+docstring). -/
+structure PeelChainNondegenerate (c0 c1 c2 c3 c4 : F p) (sa sb : SampleTarget p)
+    (hcurA : curBeforeMonic p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1 ≠ 0)
+    (hcurB : curBeforeMonic p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1 ≠ 0)
+    (hgcdA : IsCoprime (Ypoly p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1)
+      (uRS p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1))
+    (hgcdB : IsCoprime (Ypoly p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1)
+      (uRS p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1)) : Prop where
+  hu01 : IsSMulRegular (Rdec p ⧸ Ideal.ofList
+      [(theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_num 0 -
+         U0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_den 0,
+       (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_num 0 -
+         U0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_den 0])
+      (Ideal.Quotient.mk (Ideal.ofList
+        [(theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_num 0 -
+           U0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_den 0,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_num 0 -
+           U0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_den 0])
+        ((theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_num 1 -
+           U1' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_den 1))
+  hv01 : IsSMulRegular (Rdec p ⧸ Ideal.ofList
+      [(theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_num 0 -
+         V0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_den 0,
+       (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v2_num 0 -
+         V0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v2_den 0])
+      (Ideal.Quotient.mk (Ideal.ofList
+        [(theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_num 0 -
+           V0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_den 0,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v2_num 0 -
+           V0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v2_den 0])
+        ((theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_num 1 -
+           V1' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_den 1))
+  hu1_full : IsSMulRegular
+      (Rdec p ⧸ Ideal.ofList
+        [(theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_num 0 -
+           U0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_den 0,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_num 0 -
+           U0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_den 0,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_num 1 -
+           U1' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_den 1])
+      (Ideal.Quotient.mk (Ideal.ofList
+        [(theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_num 0 -
+           U0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_den 0,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_num 0 -
+           U0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_den 0,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_num 1 -
+           U1' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_den 1])
+        ((theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_num 1 -
+           U1' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_den 1))
+  hv1_full : IsSMulRegular
+      (Rdec p ⧸ Ideal.ofList
+        [(theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_num 0 -
+           V0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_den 0,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v2_num 0 -
+           V0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v2_den 0,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_num 1 -
+           V1' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_den 1])
+      (Ideal.Quotient.mk (Ideal.ofList
+        [(theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_num 0 -
+           V0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_den 0,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v2_num 0 -
+           V0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v2_den 0,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_num 1 -
+           V1' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_den 1])
+        ((theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v2_num 1 -
+           V1' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v2_den 1))
+  hcurveA1 : IsSMulRegular
+      (Rdec p ⧸ Ideal.ofList
+        [(theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_num 0 -
+           U0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_den 0,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_num 0 -
+           U0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_den 0,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_num 1 -
+           U1' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_den 1,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_num 1 -
+           U1' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_den 1,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_num 0 -
+           V0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_den 0,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v2_num 0 -
+           V0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v2_den 0,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_num 1 -
+           V1' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_den 1,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v2_num 1 -
+           V1' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v2_den 1])
+      (Ideal.Quotient.mk (Ideal.ofList
+        [(theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_num 0 -
+           U0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_den 0,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_num 0 -
+           U0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_den 0,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_num 1 -
+           U1' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_den 1,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_num 1 -
+           U1' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_den 1,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_num 0 -
+           V0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_den 0,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v2_num 0 -
+           V0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v2_den 0,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_num 1 -
+           V1' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_den 1,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v2_num 1 -
+           V1' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v2_den 1])
+        (curveA1 p c0 c1 c2 c3 c4))
+  hcurveA2 : IsSMulRegular
+      (Rdec p ⧸ Ideal.ofList
+        [(theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_num 0 -
+           U0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_den 0,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_num 0 -
+           U0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_den 0,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_num 1 -
+           U1' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_den 1,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_num 1 -
+           U1' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_den 1,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_num 0 -
+           V0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_den 0,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v2_num 0 -
+           V0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v2_den 0,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_num 1 -
+           V1' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_den 1,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v2_num 1 -
+           V1' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v2_den 1,
+         curveA1 p c0 c1 c2 c3 c4])
+      (Ideal.Quotient.mk (Ideal.ofList
+        [(theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_num 0 -
+           U0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_den 0,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_num 0 -
+           U0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_den 0,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_num 1 -
+           U1' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_den 1,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_num 1 -
+           U1' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_den 1,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_num 0 -
+           V0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_den 0,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v2_num 0 -
+           V0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v2_den 0,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_num 1 -
+           V1' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_den 1,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v2_num 1 -
+           V1' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v2_den 1,
+         curveA1 p c0 c1 c2 c3 c4])
+        (curveA2 p c0 c1 c2 c3 c4))
+  hcurveB1 : IsSMulRegular
+      (Rdec p ⧸ Ideal.ofList
+        [(theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_num 0 -
+           U0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_den 0,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_num 0 -
+           U0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_den 0,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_num 1 -
+           U1' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_den 1,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_num 1 -
+           U1' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_den 1,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_num 0 -
+           V0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_den 0,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v2_num 0 -
+           V0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v2_den 0,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_num 1 -
+           V1' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_den 1,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v2_num 1 -
+           V1' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v2_den 1,
+         curveA1 p c0 c1 c2 c3 c4, curveA2 p c0 c1 c2 c3 c4])
+      (Ideal.Quotient.mk (Ideal.ofList
+        [(theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_num 0 -
+           U0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_den 0,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_num 0 -
+           U0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_den 0,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_num 1 -
+           U1' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_den 1,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_num 1 -
+           U1' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_den 1,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_num 0 -
+           V0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_den 0,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v2_num 0 -
+           V0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v2_den 0,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_num 1 -
+           V1' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_den 1,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v2_num 1 -
+           V1' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v2_den 1,
+         curveA1 p c0 c1 c2 c3 c4, curveA2 p c0 c1 c2 c3 c4])
+        (curveB1 p c0 c1 c2 c3 c4))
+  hcurveB2 : IsSMulRegular
+      (Rdec p ⧸ Ideal.ofList
+        [(theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_num 0 -
+           U0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_den 0,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_num 0 -
+           U0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_den 0,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_num 1 -
+           U1' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_den 1,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_num 1 -
+           U1' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_den 1,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_num 0 -
+           V0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_den 0,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v2_num 0 -
+           V0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v2_den 0,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_num 1 -
+           V1' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_den 1,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v2_num 1 -
+           V1' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v2_den 1,
+         curveA1 p c0 c1 c2 c3 c4, curveA2 p c0 c1 c2 c3 c4, curveB1 p c0 c1 c2 c3 c4])
+      (Ideal.Quotient.mk (Ideal.ofList
+        [(theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_num 0 -
+           U0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_den 0,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_num 0 -
+           U0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_den 0,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_num 1 -
+           U1' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_den 1,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_num 1 -
+           U1' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_den 1,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_num 0 -
+           V0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_den 0,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v2_num 0 -
+           V0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v2_den 0,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_num 1 -
+           V1' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_den 1,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v2_num 1 -
+           V1' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v2_den 1,
+         curveA1 p c0 c1 c2 c3 c4, curveA2 p c0 c1 c2 c3 c4, curveB1 p c0 c1 c2 c3 c4])
+        (curveB2 p c0 c1 c2 c3 c4))
+
+set_option maxHeartbeats 1600000 in
 theorem regularSeq_of_peel_chain (c0 c1 c2 c3 c4 : F p) (sa sb : SampleTarget p)
     (hcurA : curBeforeMonic p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1 ≠ 0)
     (hcurB : curBeforeMonic p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1 ≠ 0)
@@ -1849,7 +2154,15 @@ theorem regularSeq_of_peel_chain (c0 c1 c2 c3 c4 : F p) (sa sb : SampleTarget p)
       (uRS p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1))
     (hndA : Nondegenerate p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1 hcurA hgcdA)
     (hndB : Nondegenerate p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1 hcurB hgcdB)
-    (hcross : CrossNondegenerate p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB) :
+    (hcross : CrossNondegenerate p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB)
+    (hpeel : PeelChainNondegenerate p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB)
+    -- **Gap C (`top_ne_smul`), weakened to a hypothesis.** The full
+    -- 12-generator ideal is proper, i.e. the system has a genuine common
+    -- solution -- real existence-of-a-point content
+    -- (`ROADMAP-peel-chain-assembly.md`'s Gap C), not attempted here; see
+    -- that file's own note on what proving this honestly would need.
+    (htop_ne_smul : (⊤ : Ideal (Rdec p)) ≠
+      Ideal.ofList (genList p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB) • ⊤) :
     RingTheory.Sequence.IsRegular (Rdec p)
       (genList p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB) := by
   classical
@@ -2059,67 +2372,27 @@ theorem regularSeq_of_peel_chain (c0 c1 c2 c3 c4 : F p) (sa sb : SampleTarget p)
           (d.v1_den 1 * d.v2_num 1 - d.v2_den 1 * d.v1_num 1)) := by
       rw [← map_mul, hring, map_add, map_mul, hmk0, mul_zero, add_zero]
     exact isSMulRegular_of_mul_eq_of_isSMulRegular hcross.hv1 hmk_ring
-  -- **Stages 2/6 (`Fu2`, `Fv2`: peel `U1`/`V1`, prefix `[Fu0,Fu1]`/
-  -- `[Fv0,Fv1]`) and stages 8-11 (curve relations) are NOT closed this
-  -- pass.** Stage 2/6 route through `isSMulRegular_den_of_second_peel`
-  -- (§1), whose own remaining `sorry` (see that theorem's docstring,
-  -- corrected this pass per the ChatGPT round-trip on
-  -- `IsSMulRegular`-mod-a-principal-ideal) is a genuine open
-  -- mathematical gap: `u1_den 1`/`v1_den 1` regular mod `⟨u1_num 0⟩`/
-  -- `⟨v1_num 0⟩` needs `IsCoprime` (or "no shared irreducible factor"),
-  -- NOT merely both nonzero in the domain `Rdec p` -- confirmed
-  -- precisely by the ChatGPT consultation (`d'` regular mod `(c0)` in a
-  -- UFD `iff gcd(c0,d') = 1`, with an explicit `F[x,y]`/`(xy)`/`x`
-  -- counterexample showing "both nonzero" alone is insufficient). This
-  -- coprimality is NOT currently a field of `Nondegenerate`/
-  -- `CrossNondegenerate`, and it is NOT attempted here whether it
-  -- follows from data already in scope (`hgcdA`/`hgcdB`/`hndA`/`hndB`
-  -- govern `Ypoly`/`uRS` coprimality, a DIFFERENT pair of polynomials
-  -- than `u1_num 0`/`u1_den 1` directly) -- left open, matching §1's own
-  -- now-corrected docstring, rather than silently assumed. Stages 8-11
-  -- route through `curveCoeffRegular`, whose OWN docstring already flags
-  -- that the concrete curve-relation blob (`curveA1`, etc.) has not yet
-  -- been shown to literally equal the abstract `quintic` shape after
-  -- peeling -- also left open there, not re-derived here.
-  --
-  -- What IS established above (`hFu0_reg`, `hFv0_reg`, `hFu1_reg`,
-  -- `hFu3_reg`, `hFv1_reg`, `hFv3_reg`): 6 of the 12 stages' underlying
-  -- `IsSMulRegular` facts (`hFu0_reg`/`hFv0_reg` plain, in `Rdec p`
-  -- itself -- the FIRST stage of a regular sequence has no preceding
-  -- quotient to speak of; `hFu1_reg`/etc. genuinely quotient-shaped,
-  -- `IsSMulRegular (Rdec p ⧸ Ideal.span {prev}) (mk next)`), fully
-  -- proved, no `sorry`. Wiring these (plus the two still-open stages)
-  -- into the actual 12-fold `IsRegular.cons'` chain -- converting each
-  -- `Ideal.span`-shaped fact to the `QuotSMulTop`-shaped one
-  -- `IsRegular.cons'` needs via §3.0's `isSMulRegular_quotSMulTop_of_span`,
-  -- and correctly nesting each subsequent stage's ambient module -- is
-  -- itself substantial remaining work, deferred to the next pass so the
-  -- six genuinely complete facts above can be checked in the REPL
-  -- independently first.
-  -- **Stages 2/6 open input, named so it can be handed to
-  -- `isSMulRegular_den_of_second_peel` once its own three hypotheses
-  -- (`hu0_reg`-shape resultant regularity -- already available as
-  -- `hcross.hu0`/`hcross.hv0`; `hcross01`-shape cross coprimality -- NOT
-  -- currently a field of `CrossNondegenerate`, genuinely open; and
-  -- `hpeeled_ideal_proper` -- expected easy, `Fu0 ≠ 0`-flavored, not
-  -- attempted this pass) are in hand. Stated here at the FULL two-element
-  -- prefix `Ideal.ofList [Fu0, Fu1]` (corrected this pass -- an earlier
-  -- draft stated this mod `Ideal.span {Fu0}` alone, which does not match
-  -- either `isSMulRegular_den_of_second_peel`'s own conclusion shape or
-  -- what stage 2 of the flat 12-fold assembly below actually needs; see
-  -- the assembly's own notes for the same correction applied to stage 3).
+  -- **Stages 2/6, 3/7, and 8-11, all closed via `PeelChainNondegenerate`
+  -- this pass** (per Claire's explicit instruction: rather than prove
+  -- Gap A's coprimality content or Gap B's curve-shape identification
+  -- outright, both are packaged as bundled per-instance hypotheses,
+  -- exactly parallel to how `Nondegenerate`/`CrossNondegenerate` already
+  -- work -- see `PeelChainNondegenerate`'s own docstring above for
+  -- precisely what each field asserts and why it isn't derived here).
+  -- **Stages 2/6, closed via `PeelChainNondegenerate`.** `hpeel.hu01`/
+  -- `.hv01` are stated at exactly the `Rdec p`-level shape `hFu2_reg`/
+  -- `hFv2_reg` need (see `PeelChainNondegenerate`'s own docstring), so
+  -- these are now direct applications -- no further bridging needed.
   have hFu2_reg : IsSMulRegular (Rdec p ⧸ Ideal.ofList
       [d.u1_num 0 - U0' p * d.u1_den 0, d.u2_num 0 - U0' p * d.u2_den 0])
       (Ideal.Quotient.mk (Ideal.ofList
         [d.u1_num 0 - U0' p * d.u1_den 0, d.u2_num 0 - U0' p * d.u2_den 0])
-        (d.u1_num 1 - U1' p * d.u1_den 1)) := by
-    sorry
+        (d.u1_num 1 - U1' p * d.u1_den 1)) := hpeel.hu01
   have hFv2_reg : IsSMulRegular (Rdec p ⧸ Ideal.ofList
       [d.v1_num 0 - V0' p * d.v1_den 0, d.v2_num 0 - V0' p * d.v2_den 0])
       (Ideal.Quotient.mk (Ideal.ofList
         [d.v1_num 0 - V0' p * d.v1_den 0, d.v2_num 0 - V0' p * d.v2_den 0])
-        (d.v1_num 1 - V1' p * d.v1_den 1)) := by
-    sorry
+        (d.v1_num 1 - V1' p * d.v1_den 1)) := hpeel.hv01
   -- **Stages 8--11 open input, curve relations.** `curveCoeffRegular`
   -- proves the ABSTRACT `quintic` shape is `Monic` (hence its leading
   -- coefficient `1` is regular, via
@@ -2147,8 +2420,7 @@ theorem regularSeq_of_peel_chain (c0 c1 c2 c3 c4 : F p) (sa sb : SampleTarget p)
          d.u1_num 1 - U1' p * d.u1_den 1, d.u2_num 1 - U1' p * d.u2_den 1,
          d.v1_num 0 - V0' p * d.v1_den 0, d.v2_num 0 - V0' p * d.v2_den 0,
          d.v1_num 1 - V1' p * d.v1_den 1, d.v2_num 1 - V1' p * d.v2_den 1])
-        (curveA1 p c0 c1 c2 c3 c4)) := by
-    sorry
+        (curveA1 p c0 c1 c2 c3 c4)) := hpeel.hcurveA1
   have hCurveA2_reg : IsSMulRegular
       (Rdec p ⧸ Ideal.ofList
         [d.u1_num 0 - U0' p * d.u1_den 0, d.u2_num 0 - U0' p * d.u2_den 0,
@@ -2162,8 +2434,7 @@ theorem regularSeq_of_peel_chain (c0 c1 c2 c3 c4 : F p) (sa sb : SampleTarget p)
          d.v1_num 0 - V0' p * d.v1_den 0, d.v2_num 0 - V0' p * d.v2_den 0,
          d.v1_num 1 - V1' p * d.v1_den 1, d.v2_num 1 - V1' p * d.v2_den 1,
          curveA1 p c0 c1 c2 c3 c4])
-        (curveA2 p c0 c1 c2 c3 c4)) := by
-    sorry
+        (curveA2 p c0 c1 c2 c3 c4)) := hpeel.hcurveA2
   have hCurveB1_reg : IsSMulRegular
       (Rdec p ⧸ Ideal.ofList
         [d.u1_num 0 - U0' p * d.u1_den 0, d.u2_num 0 - U0' p * d.u2_den 0,
@@ -2177,8 +2448,7 @@ theorem regularSeq_of_peel_chain (c0 c1 c2 c3 c4 : F p) (sa sb : SampleTarget p)
          d.v1_num 0 - V0' p * d.v1_den 0, d.v2_num 0 - V0' p * d.v2_den 0,
          d.v1_num 1 - V1' p * d.v1_den 1, d.v2_num 1 - V1' p * d.v2_den 1,
          curveA1 p c0 c1 c2 c3 c4, curveA2 p c0 c1 c2 c3 c4])
-        (curveB1 p c0 c1 c2 c3 c4)) := by
-    sorry
+        (curveB1 p c0 c1 c2 c3 c4)) := hpeel.hcurveB1
   have hCurveB2_reg : IsSMulRegular
       (Rdec p ⧸ Ideal.ofList
         [d.u1_num 0 - U0' p * d.u1_den 0, d.u2_num 0 - U0' p * d.u2_den 0,
@@ -2194,33 +2464,17 @@ theorem regularSeq_of_peel_chain (c0 c1 c2 c3 c4 : F p) (sa sb : SampleTarget p)
          d.v1_num 1 - V1' p * d.v1_den 1, d.v2_num 1 - V1' p * d.v2_den 1,
          curveA1 p c0 c1 c2 c3 c4, curveA2 p c0 c1 c2 c3 c4,
          curveB1 p c0 c1 c2 c3 c4])
-        (curveB2 p c0 c1 c2 c3 c4)) := by
-    sorry
+        (curveB2 p c0 c1 c2 c3 c4)) := hpeel.hcurveB2
 
-  -- **Stage 3/7 genuinely open bridging fact, found while switching to
-  -- the flat `regular_mod_prev` characterization below (NOT flagged by
-  -- `ROADMAP-peel-chain-assembly.md`'s stage list, which glossed over
-  -- it -- see the discussion this pass, kept here rather than silently
-  -- assumed).** `hFu3_reg`/`hFv3_reg` above (from `hcross.hu1`/`hcross.hv1`)
-  -- are stated mod the SINGLE ideal `Ideal.span {Fu2}`/`Ideal.span {Fv2}`
-  -- alone, in bare `Rdec p`. `regular_mod_prev 3`/`regular_mod_prev 7`
-  -- below need regularity mod the FULL 3-element prefix
-  -- `Ideal.ofList [Fu0,Fu1,Fu2]`/`Ideal.ofList [Fv0,Fv1,Fv2]` instead --
-  -- a strictly bigger ideal, NOT propositionally equal to the
-  -- single-generator one (unlike stages 1/5, where the prefix genuinely
-  -- IS a single generator, so no gap arises there). This is
-  -- STRUCTURALLY the same kind of fact `hFu2_reg`/`hFv2_reg` already
-  -- need (a "does this resultant survive the two already-imposed
-  -- same-target-family generators" question, since `Fu0,Fu1` -- like
-  -- `u1_den 1` -- never involve `U1` at all, by `u1_indep`/`u2_indep`,
-  -- confirmed this pass), just for the RESULTANT element
-  -- (`hcross.hu1`'s own element) rather than the raw denominator
-  -- `u1_den 1`. Expected to be provable by the SAME two-step
-  -- Layer-1-style argument `isSMulRegular_den_of_second_peel` already
-  -- uses for `hFu2_reg`, applied to `hcross.hu1`'s resultant instead of
-  -- `d.u1_den 1` -- NOT attempted here, left as its own named gap so it
-  -- is not conflated with `hFu2_reg`/`hFv2_reg`'s own (different) open
-  -- coprimality gap.
+  -- **Stage 3/7 fact, closed via `PeelChainNondegenerate`.** `hFu3_reg`/
+  -- `hFv3_reg` above (from `hcross.hu1`/`hcross.hv1`) are stated mod the
+  -- SINGLE ideal `Ideal.span {Fu2}`/`Ideal.span {Fv2}` alone, in bare
+  -- `Rdec p`; `regular_mod_prev 3`/`regular_mod_prev 7` below instead
+  -- need regularity mod the FULL 3-element prefix
+  -- `Ideal.ofList [Fu0,Fu1,Fu2]`/`Ideal.ofList [Fv0,Fv1,Fv2]` -- a
+  -- strictly bigger ideal, NOT propositionally equal to the
+  -- single-generator one. `hpeel.hu1_full`/`.hv1_full` supply exactly
+  -- this fact directly (see `PeelChainNondegenerate`'s docstring).
   have hFu3_full_reg : IsSMulRegular
       (Rdec p ⧸ Ideal.ofList
         [d.u1_num 0 - U0' p * d.u1_den 0, d.u2_num 0 - U0' p * d.u2_den 0,
@@ -2228,8 +2482,7 @@ theorem regularSeq_of_peel_chain (c0 c1 c2 c3 c4 : F p) (sa sb : SampleTarget p)
       (Ideal.Quotient.mk (Ideal.ofList
         [d.u1_num 0 - U0' p * d.u1_den 0, d.u2_num 0 - U0' p * d.u2_den 0,
          d.u1_num 1 - U1' p * d.u1_den 1])
-        (d.u2_num 1 - U1' p * d.u2_den 1)) := by
-    sorry
+        (d.u2_num 1 - U1' p * d.u2_den 1)) := hpeel.hu1_full
   have hFv3_full_reg : IsSMulRegular
       (Rdec p ⧸ Ideal.ofList
         [d.v1_num 0 - V0' p * d.v1_den 0, d.v2_num 0 - V0' p * d.v2_den 0,
@@ -2237,8 +2490,7 @@ theorem regularSeq_of_peel_chain (c0 c1 c2 c3 c4 : F p) (sa sb : SampleTarget p)
       (Ideal.Quotient.mk (Ideal.ofList
         [d.v1_num 0 - V0' p * d.v1_den 0, d.v2_num 0 - V0' p * d.v2_den 0,
          d.v1_num 1 - V1' p * d.v1_den 1])
-        (d.v2_num 1 - V1' p * d.v2_den 1)) := by
-    sorry
+        (d.v2_num 1 - V1' p * d.v2_den 1)) := hpeel.hv1_full
 
   /- **12-stage assembly, via the flat `regular_mod_prev`
   characterization -- supersedes the earlier `isRegular_cons_iff'`-
@@ -2269,31 +2521,53 @@ theorem regularSeq_of_peel_chain (c0 c1 c2 c3 c4 : F p) (sa sb : SampleTarget p)
   * `i = 1`: `Ideal.ofList [Fu0] = Ideal.span {Fu0}` (`Ideal.ofList_singleton`)
     -- matches `hFu1_reg` exactly.
   * `i = 2`: `Ideal.ofList [Fu0,Fu1]` -- matches `hFu2_reg` directly
-    (statement corrected this pass to the full 2-element prefix,
-    matching `isSMulRegular_den_of_second_peel`'s own conclusion shape;
-    still `sorry`'d pending that theorem's own open hypotheses).
+    (statement at the full 2-element prefix, matching
+    `isSMulRegular_den_of_second_peel`'s own conclusion shape; supplied
+    by `hpeel.hu01` this pass -- see `PeelChainNondegenerate`).
   * `i = 3`: `Ideal.ofList [Fu0,Fu1,Fu2]` -- matches `hFu3_full_reg`
-    (new this pass, `sorry`'d, see above) directly.
+    (supplied by `hpeel.hu1_full` this pass) directly.
   * `i = 4..7`: same four shapes, `V`-register (`hFv0_reg`, `hFv1_reg`,
     `hFv2_reg`, `hFv3_full_reg`).
   * `i = 8..11`: `hCurveA1_reg .. hCurveB2_reg` already stated mod the
     exact FULL accumulated prefix at each stage -- no rewriting needed
     at all, these plug in directly.
 
-  Given the number of genuinely still-open pieces (`hFu2_reg`,
-  `hFv2_reg`, `hFu3_full_reg`, `hFv3_full_reg`, `hCurveA1_reg ..
-  hCurveB2_reg`, plus `top_ne_smul`, none attempted this pass), the
-  full 12-way `Fin.cases`/`decide`-driven assembly is deferred to the
-  NEXT pass, once REPL testing confirms `regular_mod_prev`/
-  `isWeaklyRegular_iff_Fin`'s exact field/argument names and that the
-  `Ideal.ofList (rs.take i)`-vs-stored-fact rewriting sketched above
-  actually goes through by `rfl`/`Ideal.ofList_singleton`/`simp` as
-  expected (none of this has been checked in a REPL). Left as a single
-  `sorry`, structured so the NEXT pass only has to (a) confirm the
-  `Fin`/`List.take` bookkeeping compiles, and (b) discharge the
-  now-fully-enumerated list of open mathematical facts above -- no
-  further nesting bookkeeping should be needed after this pass. -/
-  sorry
+  All twelve `regular_mod_prev` obligations above (`hFu0_reg .. hFv3_full_reg`,
+  `hCurveA1_reg .. hCurveB2_reg`) are now in hand -- either proved outright
+  earlier in this file or supplied via `hpeel : PeelChainNondegenerate ...`
+  this pass. Only `top_ne_smul` (Gap C, `ROADMAP-peel-chain-assembly.md`'s
+  own name for it) remains genuinely unattempted: proving it honestly needs
+  exhibiting an actual `F p`-point solving all 12 defining equations
+  (properness of the full ideal), real existence-of-a-point mathematics
+  entirely separate from the regularity argument above. Per Claire's same
+  "weaken via a hypothesis" instruction, this is threaded in as
+  `htop_ne_smul` below rather than attempted here or silently assumed. -/
+  rw [RingTheory.Sequence.isRegular_iff, RingTheory.Sequence.isWeaklyRegular_iff_Fin]
+  refine ⟨fun i => ?_, htop_ne_smul⟩
+  -- Each `i : Fin 12` (against the literal list from `hgenList`, already
+  -- rewritten into the goal by the earlier `rw [hgenList]`) is resolved by
+  -- `fin_cases`-driven enumeration; the resulting 12 goals each unfold
+  -- `List.take`/`List.get`/`rs[i]` on the literal 12-element list and
+  -- match `ideal_smul_top_eq_self` rewritten against the corresponding
+  -- `h*_reg` fact above -- one `first | ... ` alternative per stage,
+  -- matching the twelve bullet points in this theorem's docstring.
+  fin_cases i <;>
+    simp only [List.take, List.getElem_cons_zero, List.getElem_cons_succ, Fin.isValue,
+      List.length_nil, List.length_cons, List.length_singleton,
+      Ideal.ofList_nil, Ideal.ofList_singleton, Ideal.ofList_cons] <;>
+    first
+      | simpa using (isSMulRegular_bot_iff (d.u1_num 0 - U0' p * d.u1_den 0)).mp hFu0_reg
+      | exact ideal_smul_top_eq_self (R := Rdec p) _ ▸ hFu1_reg
+      | exact ideal_smul_top_eq_self (R := Rdec p) _ ▸ hFu2_reg
+      | exact ideal_smul_top_eq_self (R := Rdec p) _ ▸ hFu3_full_reg
+      | simpa using (isSMulRegular_bot_iff (d.v1_num 0 - V0' p * d.v1_den 0)).mp hFv0_reg
+      | exact ideal_smul_top_eq_self (R := Rdec p) _ ▸ hFv1_reg
+      | exact ideal_smul_top_eq_self (R := Rdec p) _ ▸ hFv2_reg
+      | exact ideal_smul_top_eq_self (R := Rdec p) _ ▸ hFv3_full_reg
+      | exact ideal_smul_top_eq_self (R := Rdec p) _ ▸ hCurveA1_reg
+      | exact ideal_smul_top_eq_self (R := Rdec p) _ ▸ hCurveA2_reg
+      | exact ideal_smul_top_eq_self (R := Rdec p) _ ▸ hCurveB1_reg
+      | exact ideal_smul_top_eq_self (R := Rdec p) _ ▸ hCurveB2_reg
 
 end DecoupledSystem
 end Genus2Lean
