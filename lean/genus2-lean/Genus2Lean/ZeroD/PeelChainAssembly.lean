@@ -457,7 +457,65 @@ section peelU1τNotation
 local notation "τU1" => peelU1Idx
 
 
-omit [Fact (p ≠ 2)] in
+/-- **Standalone lemma, split out so it can be tested in the REPL on its
+own** (per Claire's request to break the giant theorem into smaller
+pieces). This is the precise fact needed for `Fu1'` regular mod `⟨Fu0'⟩`
+inside `isSMulRegular_den_of_second_peel` below.
+
+Earlier (WRONG) attempt: tried to get this from `regular_of_linear_elim`/
+`isSMulRegular_bridge_prefix_gen` applied with `gens' := [c0']`, concluding
+regularity mod `⟨c0'⟩` alone in `Option τ'` and then "bridging" that to
+`⟨g0⟩` — but `Ideal.span {c0' - X*d0'} ≠ Ideal.span {c0'}` in general
+(checked by hand: `c0'` doesn't reduce to `0` modulo `⟨c0' - X*d0'⟩`, e.g.
+visible by evaluating at `X := 0`). That route proves the wrong statement
+and was deleted; this lemma is the correct replacement, isolated so its
+proof can be attempted/tested independently of the surrounding 700-line
+proof.
+
+**Currently a `sorry`** — the underlying identity
+(`d0*g1 - d1*g0 = rename (d0*c1-c0*d1)`, checked by `ring`) is not in doubt,
+but turning "the resultant `d0*c1-c0*d1` is regular in the SMALL ring
+`MvPolynomial τ' R`" into "the resultant's image is regular in the BIGGER
+quotient ring `MvPolynomial (Option τ') R ⧸ ⟨g0⟩`" needs a genuine bridging
+fact this pass didn't close — see `chatgpt_prompt_second_linear_elim.md`
+for the exact statement escalated to ChatGPT. (Not simply `B[X]/(dX-c) ≅ B`
+— that's FALSE when `d` isn't a unit, e.g. `k[U,d]/(dU-1) ≇ k[d]`; a
+mistake caught and retracted this pass.) -/
+theorem regular_of_second_linear_elim {τ' : Type*} {R : Type*} [CommRing R] [IsDomain R]
+    (c0 d0 c1 d1 : MvPolynomial τ' R)
+    (hd0_ne : d0 ≠ 0)
+    (hresultant_ne : d0 * c1 - c0 * d1 ≠ 0) :
+    IsSMulRegular
+      (MvPolynomial (Option τ') R ⧸
+        Ideal.ofList [MvPolynomial.rename some c0 - MvPolynomial.X none * MvPolynomial.rename some d0])
+      (Ideal.Quotient.mk
+        (Ideal.ofList [MvPolynomial.rename some c0 - MvPolynomial.X none * MvPolynomial.rename some d0])
+        (MvPolynomial.rename some c1 - MvPolynomial.X none * MvPolynomial.rename some d1)) := by
+  sorry
+
+/-- A regular scalar is nonzero in a nontrivial ring.  This is a small
+helper used by the second-peel assembly to avoid reproving the same
+``exists_pair_ne`` argument inline. -/
+theorem IsSMulRegular.ne_zero_of_nontrivial
+    {R M : Type*} [Semiring R] [AddCommMonoid M] [Module R M]
+    [Nontrivial M] {r : R} (hr : IsSMulRegular M r) : r ≠ 0 := by
+  intro hr0
+  obtain ⟨x, y, hxy⟩ := exists_pair_ne M
+  apply hxy
+  apply hr
+  rw [hr0]
+  simp
+
+/-- The first peeled relation generates a proper ideal, hence its quotient is
+nontrivial.  Kept separate from `isSMulRegular_den_of_second_peel` so the
+large assembly proof only consumes this as a named structural fact. -/
+theorem peeled_generator_quotient_nontrivial
+    (d : DecoupledGenerators p) :
+    Nontrivial (Rdec p ⧸ Ideal.span {d.u1_num 0 - U0' p * d.u1_den 0}) := by
+  rw [Ideal.Quotient.nontrivial_iff]
+  apply Ideal.span_singleton_ne_top
+  sorry
+
 set_option maxHeartbeats 2000000 in
 theorem isSMulRegular_den_of_second_peel
     (d : DecoupledGenerators p)
@@ -547,36 +605,66 @@ theorem isSMulRegular_den_of_second_peel
     intro v hv
     have hmem := hu1_indep0 v (by
       simpa only [u1den0] using Finset.mem_union_left u1den0.vars hv)
-    have hne1 : v ≠ U1 := by rintro rfl; fin_cases hmem
-    have hne0 : v ≠ U0 := by rintro rfl; fin_cases hmem
+    have hne1 : v ≠ U1 := by
+      intro hv1
+      subst v
+      simpa using hmem
+    have hne0 : v ≠ U0 := by
+      intro hv0
+      subst v
+      simpa using hmem
     exact ⟨⟨⟨v, hne1⟩, by rw [hx0_def]; exact fun h => hne0 (congrArg Subtype.val h)⟩, rfl⟩
   have hu1den0_range : (↑u1den0.vars : Set Idx) ⊆ Set.range (fun v : τU1' => (v.1.1 : Idx)) := by
     intro v hv
     have hmem := hu1_indep0 v (by
       exact Finset.mem_union_right u1num0.vars hv)
-    have hne1 : v ≠ U1 := by rintro rfl; fin_cases hmem
-    have hne0 : v ≠ U0 := by rintro rfl; fin_cases hmem
+    have hne1 : v ≠ U1 := by
+      intro hv1
+      subst v
+      simpa using hmem
+    have hne0 : v ≠ U0 := by
+      intro hv0
+      subst v
+      simpa using hmem
     exact ⟨⟨⟨v, hne1⟩, by rw [hx0_def]; exact fun h => hne0 (congrArg Subtype.val h)⟩, rfl⟩
   have hu2num0_range : (↑u2num0.vars : Set Idx) ⊆ Set.range (fun v : τU1' => (v.1.1 : Idx)) := by
     intro v hv
     have hmem := hu2_indep0 v (by
       simpa only [u2den0] using Finset.mem_union_left u2den0.vars hv)
-    have hne1 : v ≠ U1 := by rintro rfl; fin_cases hmem
-    have hne0 : v ≠ U0 := by rintro rfl; fin_cases hmem
+    have hne1 : v ≠ U1 := by
+      intro hv1
+      subst v
+      simpa using hmem
+    have hne0 : v ≠ U0 := by
+      intro hv0
+      subst v
+      simpa using hmem
     exact ⟨⟨⟨v, hne1⟩, by rw [hx0_def]; exact fun h => hne0 (congrArg Subtype.val h)⟩, rfl⟩
   have hu2den0_range : (↑u2den0.vars : Set Idx) ⊆ Set.range (fun v : τU1' => (v.1.1 : Idx)) := by
     intro v hv
     have hmem := hu2_indep0 v (by
       simpa only [u2num0] using Finset.mem_union_right u2num0.vars hv)
-    have hne1 : v ≠ U1 := by rintro rfl; fin_cases hmem
-    have hne0 : v ≠ U0 := by rintro rfl; fin_cases hmem
+    have hne1 : v ≠ U1 := by
+      intro hv1
+      subst v
+      simpa using hmem
+    have hne0 : v ≠ U0 := by
+      intro hv0
+      subst v
+      simpa using hmem
     exact ⟨⟨⟨v, hne1⟩, by rw [hx0_def]; exact fun h => hne0 (congrArg Subtype.val h)⟩, rfl⟩
   have hu1den1_range : (↑u1den1.vars : Set Idx) ⊆ Set.range (fun v : τU1' => (v.1.1 : Idx)) := by
     intro v hv
     have hmem := hu1_indep1 v (by
       simpa only [u1num1] using Finset.mem_union_right u1num1.vars hv)
-    have hne1 : v ≠ U1 := by rintro rfl; fin_cases hmem
-    have hne0 : v ≠ U0 := by rintro rfl; fin_cases hmem
+    have hne1 : v ≠ U1 := by
+      intro hv1
+      subst v
+      simpa using hmem
+    have hne0 : v ≠ U0 := by
+      intro hv0
+      subst v
+      simpa using hmem
     exact ⟨⟨⟨v, hne1⟩, by rw [hx0_def]; exact fun h => hne0 (congrArg Subtype.val h)⟩, rfl⟩
   obtain ⟨c0'', hc0''⟩ := MvPolynomial.exists_rename_eq_of_vars_subset_range
     u1num0 (fun v : τU1' => (v.1.1 : Idx)) hf_inj hu1num0_range
@@ -778,245 +866,72 @@ theorem isSMulRegular_den_of_second_peel
       (MvPolynomial.rename some c0'' - MvPolynomial.X none * MvPolynomial.rename some d0'')
       hFu0'_maps).mpr hFu0'_reg_opt
 
+  -- REVISION 3: the resultant/proper-quotient part is now split into the
+  -- named helper `hquot_nontrivial` plus the generic lemma
+  -- `IsSMulRegular.ne_zero_of_nontrivial`.  This makes the remaining gap
+  -- explicit and local, and avoids mixing it with the polynomial renaming
+  -- bookkeeping.
+  --
   -- **Step E: `Fu1'` is `IsSMulRegular` mod `Ideal.ofList [Fu0']`.**
-  -- Apply `regular_of_linear_elim` a SECOND time, now at `τ := τU1'` (one
-  -- level further down than Step D), `R := F p`, `gens' := [c0'']`
-  -- (`Fu0'` reinterpreted as a `τU1'`-side element -- the SAME `c0'', d0''`
-  -- Step A/B already produced), `c := c1''`, `d := d1''`. `hd_reg` for
-  -- THIS call needs `d1''`'s `rename some` image regular mod
-  -- `Ideal.ofList [rename some c0'']` in `MvPolynomial (Option τU1') (F p)`
-  -- -- this is a genuine `regular_of_disjoint_extension` instance (NOT
-  -- the multi-generator mess earlier drafts worried about): `c0''` lives
-  -- entirely in `u1_indep`'s A-side Finset `{wa1,wa2,a1,a2}` and `d1''`
-  -- entirely in `u2_indep`'s B-side Finset `{wb1,wb2,b1,b2}` (both
-  -- reinterpreted inside `τU1'`, disjoint from each other and from `x0`),
-  -- so splitting `τU1'` as `σ₁ ⊕ σ₂` along "does this variable's `Idx`-image
-  -- lie in `{wa1,wa2,a1,a2}`" separates `c0''` (lands entirely in `σ₁`)
-  -- from `d1''` (lands entirely in `σ₂`) cleanly, with NO element
-  -- straddling both sides (unlike `Fu0`/`Fu1` themselves at the OUTER
-  -- level, which straddle their target variable and their own side --
-  -- the whole reason this needed a second peel first: after Step
-  -- A/B/D's peeling, `c0''`/`d0''`/`c1''`/`d1''` are honest τU1'-side
-  -- elements with NO further `x0`-dependence to straddle).
-  classical
-  set predA : τU1' → Prop := fun v => (v.1.1 : Idx) ∈ ({wa1, wa2, a1, a2} : Finset Idx) with hpredA_def
-  set σ₁ : Type := {v : τU1' // predA v} with hσ₁_def
-  set σ₂ : Type := {v : τU1' // ¬ predA v} with hσ₂_def
-  set esplit : σ₁ ⊕ σ₂ ≃ τU1' := Equiv.sumCompl predA with hesplit_def
-  -- `c0''`'s variables lie in `predA` (A-side, per `u1_indep 0`'s target
-  -- Finset transported through `hc0''`/`f`'s range description already
-  -- established in Step A) -- so `c0''` has a `σ₁`-side representative.
-  have hc0''_predA : (↑c0''.vars : Set τU1') ⊆ {v : τU1' | predA v} := by
-    intro v hv
-    have hmem : ((fun w : τU1' => (w.1.1 : Idx)) v) ∈ ({wa1, wa2, a1, a2} : Finset Idx) := by
-      have hrange : (v.1.1 : Idx) ∈ (↑u1num0.vars : Set Idx) := by
-        have hdeg := (MvPolynomial.mem_vars_iff_degreeOf_ne_zero).mp hv
-        have hdeg_rename :=
-          MvPolynomial.degreeOf_rename_of_injective hf_inj v (p := c0'')
-        have hdeg' : MvPolynomial.degreeOf ((fun v : τU1' => (v.1.1 : Idx)) v)
-            (MvPolynomial.rename (fun v : τU1' => (v.1.1 : Idx)) c0'') ≠ 0 := by
-          rw [hdeg_rename]
-          exact hdeg
-        rw [hc0''] at hdeg'
-        exact (MvPolynomial.mem_vars_iff_degreeOf_ne_zero).mpr hdeg'
-      exact hu1_indep0 v.1.1 (Finset.mem_union_left u1den0.vars hrange)
-    simpa [hpredA_def] using hmem
-  have hd1''_predA : (↑d1''.vars : Set τU1') ⊆ {v : τU1' | ¬ predA v} := by
-    intro v hv
-    have hmem : ((fun w : τU1' => (w.1.1 : Idx)) v) ∈ ({wb1, wb2, b1, b2} : Finset Idx) := by
-      have hrange : (v.1.1 : Idx) ∈ (↑u2den0.vars : Set Idx) := by
-        have hdeg := (MvPolynomial.mem_vars_iff_degreeOf_ne_zero).mp hv
-        have hdeg_rename :=
-          MvPolynomial.degreeOf_rename_of_injective hf_inj v (p := d1'')
-        have hdeg' : MvPolynomial.degreeOf ((fun v : τU1' => (v.1.1 : Idx)) v)
-            (MvPolynomial.rename (fun v : τU1' => (v.1.1 : Idx)) d1'') ≠ 0 := by
-          rw [hdeg_rename]
-          exact hdeg
-        rw [hd1''] at hdeg'
-        exact (MvPolynomial.mem_vars_iff_degreeOf_ne_zero).mpr hdeg'
-      exact hu2_indep0 v.1.1 (Finset.mem_union_right u2num0.vars hrange)
-    intro hcontra
-    have hA : (v.1.1 : Idx) ∈ ({wa1, wa2, a1, a2} : Finset Idx) := by
-      simpa [hpredA_def] using hcontra
-    have hB : (v.1.1 : Idx) ∈ ({wb1, wb2, b1, b2} : Finset Idx) := hmem
-    exact (Finset.disjoint_left.mp (by decide :
-      Disjoint ({wa1, wa2, a1, a2} : Finset Idx)
-        ({wb1, wb2, b1, b2} : Finset Idx))) hA hB
-  obtain ⟨c0₁, hc0₁⟩ := MvPolynomial.exists_rename_eq_of_vars_subset_range
-    c0'' (Subtype.val : σ₁ → τU1') Subtype.val_injective
-    (by
-      intro v hv
-      exact ⟨⟨v, hc0''_predA hv⟩, rfl⟩)
-  obtain ⟨d1₂, hd1₂⟩ := MvPolynomial.exists_rename_eq_of_vars_subset_range
-    d1'' (Subtype.val : σ₂ → τU1') Subtype.val_injective
-    (by
-      intro v hv
-      exact ⟨⟨v, hd1''_predA hv⟩, rfl⟩)
-  -- `c0₁ : MvPolynomial σ₁ (F p)`, `d1₂ : MvPolynomial σ₂ (F p)`, both
-  -- honest disjoint-side elements. `d1₂` is nonzero (renaming injective,
-  -- `d1'' ≠ 0` from `hd1''_ne`), hence `IsSMulRegular` in its own ring
-  -- `MvPolynomial σ₂ (F p)` (a domain).
-  have hd1₂_ne : d1₂ ≠ 0 := by
-    intro h
-    apply hd1''_ne
-    rw [← hd1₂, h, map_zero]
-  have hd1₂_reg : IsSMulRegular (MvPolynomial σ₂ (F p)) d1₂ := by
-    intro x y hxy
-    apply mul_left_cancel₀ hd1₂_ne
-    simpa only [smul_eq_mul] using hxy
-  -- **`regular_of_disjoint_extension` applied**: `d1₂`'s image (`rename
-  -- Sum.inr d1₂`) survives quotienting `MvPolynomial (σ₁ ⊕ σ₂) (F p)` by
-  -- `⟨rename Sum.inl c0₁⟩`.
-  have hdisjoint := regular_of_disjoint_extension (R := F p) (σ₁ := σ₁) (σ₂ := σ₂)
-    c0₁ hd1₂_reg
-  -- Transport `hdisjoint` (stated over `σ₁ ⊕ σ₂`) back to `τU1'` via
-  -- `renameEquiv (F p) esplit : MvPolynomial (σ₁ ⊕ σ₂) (F p) ≃+*
-  -- MvPolynomial τU1' (F p)`, using `esplit`'s defining property
-  -- (`Equiv.sumCompl_apply_inl`/`_inr`) to identify `esplit (Sum.inl v) =
-  -- v.1` / `esplit (Sum.inr v) = v.1`, hence `rename esplit (rename
-  -- Sum.inl c0₁) = rename Subtype.val c0₁ = c0''` (by `hc0₁` composed with
-  -- `rename_rename`) and likewise for `d1₂`/`d1''`.
-  set eO : MvPolynomial (σ₁ ⊕ σ₂) (F p) ≃+* MvPolynomial τU1' (F p) :=
-    (MvPolynomial.renameEquiv (F p) esplit).toRingEquiv with heO_def
-  have heO_inl : eO (MvPolynomial.rename Sum.inl c0₁) = c0'' := by
-    show MvPolynomial.rename (⇑esplit) (MvPolynomial.rename Sum.inl c0₁) = c0''
-    rw [MvPolynomial.rename_rename]
-    rw [show (⇑esplit ∘ Sum.inl : σ₁ → τU1') = (Subtype.val : σ₁ → τU1') from
-      funext (fun v => Equiv.sumCompl_apply_inl v)]
-    exact hc0₁
-  have heO_inr : eO (MvPolynomial.rename Sum.inr d1₂) = d1'' := by
-    show MvPolynomial.rename (⇑esplit) (MvPolynomial.rename Sum.inr d1₂) = d1''
-    rw [MvPolynomial.rename_rename]
-    rw [show (⇑esplit ∘ Sum.inr : σ₂ → τU1') = (Subtype.val : σ₂ → τU1') from
-      funext (fun v => Equiv.sumCompl_apply_inr v)]
-    exact hd1₂
-  have hIdealMapO : Ideal.map (eO : MvPolynomial (σ₁ ⊕ σ₂) (F p) →+* MvPolynomial τU1' (F p))
-      (Ideal.ofList [MvPolynomial.rename Sum.inl c0₁]) = Ideal.ofList [c0''] := by
-    rw [Ideal.ofList_singleton, Ideal.ofList_singleton, Ideal.map_span, Set.image_singleton]
-    change Ideal.span {eO (MvPolynomial.rename Sum.inl c0₁)} = Ideal.span {c0''}
-    rw [heO_inl]
-  have hd1''_reg_mod_c0'' :
-      IsSMulRegular (MvPolynomial τU1' (F p) ⧸ Ideal.ofList [c0''])
-        (Ideal.Quotient.mk (Ideal.ofList [c0'']) d1'') := by
-    have htransport := (isSMulRegular_of_ringEquiv_of_mapsTo eO
-      (Ideal.ofList [MvPolynomial.rename Sum.inl c0₁]) (Ideal.ofList [c0''])
-      hIdealMapO (MvPolynomial.rename Sum.inr d1₂) d1'' heO_inr).mp
-    simpa [heO_inr] using htransport hdisjoint
-  -- Push `d1''`'s regularity (mod `⟨c0''⟩` in `τU1'`'s ring) forward to the
-  -- `Option τU1'`-level fact `regular_of_linear_elim` needs as its `hd_reg`
-  -- (`gens' := [c0'']`, `d := d1''`): plain functoriality of
-  -- `Ideal.Quotient.mk`/`rename some`, matching the domain-preservation
-  -- step Step D already used for the empty-prefix case, now for a
-  -- singleton prefix -- `rename some` is injective, so nonzero survives,
-  -- and `IsSMulRegular` in a domain is exactly `mul_left_cancel₀`, BUT
-  -- here the ambient ring is a nontrivial quotient (not a domain
-  -- outright), so instead of re-deriving from scratch we reuse
-  -- `regular_of_linear_elim`'s OWN internal machinery is unavailable
-  -- directly -- what IS available is the general fact that `rename some`
-  -- (an injective ring hom into a LARGER polynomial ring not touching
-  -- `none`) commutes with quotienting by a `gens'`-list not involving
-  -- `none` either, i.e. this is exactly `isSMulRegular_bridge_prefix_gen`
-  -- applied a THIRD time, now at `σ := τU1'`, `x :=` (a placeholder single
-  -- extra variable) -- **not needed**: `regular_of_linear_elim` itself
-  -- takes `hd_reg` stated ALREADY at the `Option τU1'` level, and the
-  -- bridge from "regular mod `Ideal.ofList gens'` in the base ring" to
-  -- "regular mod `Ideal.ofList (gens'.map (rename some))` in `Option`
-  -- of that ring" for a NONZERODIVISOR/regular element is exactly
-  -- `regular_of_peeled_leadingCoeff`'s/Layer 1's OWN transport shape one
-  -- more time: `MvPolynomial (Option τU1') (F p) ⧸ Ideal.ofList
-  -- (gens'.map (rename some))` is `Polynomial` of `MvPolynomial τU1' (F p)
-  -- ⧸ Ideal.ofList gens'`, and `rename some d1''`'s image there is `C
-  -- (mk d1'')`, regular by `isSMulRegular_C_const_of_isSMulRegular`
-  -- applied to `hd1''_reg_mod_c0''`, transported through the SAME
-  -- `optionEquivLeft`-based identification `regular_of_linear_elim`
-  -- itself uses internally (`Ideal.quotientEquiv` + `optionEquivLeft`,
-  -- exactly `hFu0'_reg_opt`'s own route, now with `gens' := [c0'']`
-  -- instead of `[]`).
-  set I'₁ : Ideal (MvPolynomial τU1' (F p)) := Ideal.ofList [c0''] with hI'₁_def
-  set A₁ : Ideal (MvPolynomial (Option τU1') (F p)) :=
-    Ideal.ofList (([c0''] : List (MvPolynomial τU1' (F p))).map (MvPolynomial.rename some)) with hA₁_def
-  have hIdealMap₁ : Ideal.map ((MvPolynomial.optionEquivLeft (F p) τU1').toRingEquiv :
-      MvPolynomial (Option τU1') (F p) →+* Polynomial (MvPolynomial τU1' (F p))) A₁ =
-      Ideal.map Polynomial.C I'₁ := by
-    rw [hA₁_def, hI'₁_def, Ideal.map_ofList, Ideal.map_ofList, List.map_map]
-    congr 1
-    apply List.map_congr_left
-    intro q _
-    show (MvPolynomial.optionEquivLeft (F p) τU1') (MvPolynomial.rename some q) = Polynomial.C q
-    exact optionEquivLeft_rename_some q
-  set e₁ : (MvPolynomial (Option τU1') (F p) ⧸ A₁) ≃+* Polynomial (MvPolynomial τU1' (F p) ⧸ I'₁) :=
-    (Ideal.quotientEquiv A₁ (Ideal.map Polynomial.C I'₁)
-      (MvPolynomial.optionEquivLeft (F p) τU1').toRingEquiv hIdealMap₁.symm).trans
-      I'₁.polynomialQuotientEquivQuotientPolynomial.symm with he₁_def
-  have he₁_apply : ∀ x : MvPolynomial (Option τU1') (F p) ⧸ A₁,
-      e₁ x = I'₁.polynomialQuotientEquivQuotientPolynomial.symm
-        ((Ideal.quotientEquiv A₁ (Ideal.map Polynomial.C I'₁)
-          (MvPolynomial.optionEquivLeft (F p) τU1').toRingEquiv hIdealMap₁.symm) x) := by
-    intro x; rw [he₁_def, RingEquiv.trans_apply]
-  have he₁_C : e₁ (Ideal.Quotient.mk A₁ (MvPolynomial.rename some d1'')) =
-      Polynomial.C (Ideal.Quotient.mk I'₁ d1'') := by
-    rw [he₁_apply, Ideal.quotientEquiv_mk]
-    have hstep : (MvPolynomial.optionEquivLeft (F p) τU1').toRingEquiv
-        (MvPolynomial.rename some d1'') = Polynomial.C d1'' := optionEquivLeft_rename_some d1''
-    rw [hstep, Ideal.polynomialQuotientEquivQuotientPolynomial_symm_mk]
-    simp
-  have hd1''_opt_reg : IsSMulRegular (MvPolynomial (Option τU1') (F p) ⧸ A₁)
-      (Ideal.Quotient.mk A₁ (MvPolynomial.rename some d1'')) := by
-    have hsmul_mk₁ : ∀ (r : MvPolynomial (Option τU1') (F p)) (x : MvPolynomial (Option τU1') (F p) ⧸ A₁),
-        r • x = Ideal.Quotient.mk A₁ r * x := by
-      intro r x
-      refine Quotient.inductionOn' x ?_
-      intro x'
-      show Ideal.Quotient.mk A₁ (r * x') = Ideal.Quotient.mk A₁ r * Ideal.Quotient.mk A₁ x'
-      rw [map_mul]
-    have hreg_poly : IsSMulRegular (Polynomial (MvPolynomial τU1' (F p) ⧸ I'₁))
-        (Polynomial.C (Ideal.Quotient.mk I'₁ d1'')) :=
-      isSMulRegular_C_const_of_isSMulRegular hd1''_reg_mod_c0''
-    intro x y hxy
-    change (MvPolynomial.rename some d1'') • x = (MvPolynomial.rename some d1'') • y at hxy
-    rw [hsmul_mk₁ _ x, hsmul_mk₁ _ y] at hxy
-    apply e₁.injective
-    have hstep : e₁ (Ideal.Quotient.mk A₁ (MvPolynomial.rename some d1'') * x) =
-        e₁ (Ideal.Quotient.mk A₁ (MvPolynomial.rename some d1'') * y) := by rw [hxy]
-    rw [map_mul, map_mul, he₁_C] at hstep
-    have hxy' : (Polynomial.C (Ideal.Quotient.mk I'₁ d1'')) • e₁ x =
-        (Polynomial.C (Ideal.Quotient.mk I'₁ d1'')) • e₁ y := by
-      change Polynomial.C (Ideal.Quotient.mk I'₁ d1'') * e₁ x =
-        Polynomial.C (Ideal.Quotient.mk I'₁ d1'') * e₁ y
-      exact hstep
-    exact hreg_poly hxy'
-  -- **`Fu1'` regular mod `⟨Fu0'⟩` (in `τU1`'s ring)**: `regular_of_linear_elim`
-  -- at `τ := τU1'`, `gens' := [c0'']`, `c := c1''`, `d := d1''`, `hd_reg :=
-  -- hd1''_opt_reg`, concluding regularity of `rename some c1'' - X none *
-  -- rename some d1''` mod `Ideal.ofList [rename some c0'']` in
-  -- `MvPolynomial (Option τU1') (F p)` -- exactly `hFu1'_reg_opt` below,
-  -- matching `hFu1'_eq`'s shape.
-  let A0 : Ideal (MvPolynomial (Option τU1') (F p)) :=
-    Ideal.ofList (([c0''] : List (MvPolynomial τU1' (F p))).map
-      (MvPolynomial.rename (some : τU1' → Option τU1')))
-  have hFu1'_reg_opt : IsSMulRegular
-      (MvPolynomial (Option τU1') (F p) ⧸ A0)
-      (Ideal.Quotient.mk A0
-        (MvPolynomial.rename (some : τU1' → Option τU1') c1'' -
-          MvPolynomial.X none * MvPolynomial.rename (some : τU1' → Option τU1') d1'')) := by
-    apply regular_of_linear_elim (τ := τU1') (R := F p) [c0''] c1'' d1''
-    · exact hd1''_opt_reg
-    · rfl
-  -- Bridge `hFu1'_reg_opt` (at `Option τU1'` level, prefix `[c0'']`) up to
-  -- `τU1`'s ring (prefix `[Fu0']`), via `isSMulRegular_bridge_prefix_gen (F
-  -- p) x0 [c0''] (c1'' - X x0 * d1'')` -- the SAME bridge instance
-  -- `hFu0'_reg` used, now with a nonempty `gens'`.
+  -- Rewritten this pass to use the new standalone lemma
+  -- `regular_of_second_linear_elim` directly, instead of the (incorrect)
+  -- `regular_of_disjoint_extension` + bridge-lemma route the previous
+  -- attempt used (that route solved "d1'' regular mod ⟨c0''⟩", the WRONG
+  -- sub-goal -- `Ideal.span {c0''-X*d0''} ≠ Ideal.span {c0''}` in general).
+  --
+  -- `d0''*c1'' - c0''*d1''` (the resultant needed by
+  -- `regular_of_second_linear_elim`) is, up to `Subtype.val`-renaming, the
+  -- SAME element `hu0_reg` tracks (`d.u1_den 0 * d.u2_num 0 - d.u2_den 0 *
+  -- d.u1_num 0`, via `hc0''/hd0''/hc1''/hd1''`'s defining equations
+  -- `c0'' ↦ u1num0`, `d0'' ↦ u1den0`, `c1'' ↦ u2num0`, `d1'' ↦ u2den0`).
+  -- `hu0_reg` gives regularity of THIS element mod `⟨Fu0⟩` in `Rdec p`;
+  -- since a regular element of a nontrivial ring is never `0` (else `0 • x
+  -- = 0 • y` for any `x ≠ y` would violate injectivity), its image there
+  -- is nonzero, and pulling back along the injective
+  -- `rename (Subtype.val : τU1' → Idx)` gives nonzero already in the
+  -- domain `MvPolynomial τU1' (F p)` -- exactly `regular_of_second_linear_elim`'s
+  -- `hresultant_ne` hypothesis.
+  have hresultant_rename :
+      MvPolynomial.rename (fun v : τU1' => (v.1.1 : Idx)) (d0'' * c1'' - c0'' * d1'') =
+        d.u1_den 0 * d.u2_num 0 - d.u2_den 0 * d.u1_num 0 := by
+    rw [map_sub, map_mul, map_mul, hd0'', hc1'', hc0'', hd1'']
+    simp only [u1num0, u1den0, u2num0, u2den0]
+    rw [mul_comm (d.u1_num 0) (d.u2_den 0)]
+  have hquot_nontrivial :
+      Nontrivial (Rdec p ⧸ Ideal.span {d.u1_num 0 - U0' p * d.u1_den 0}) :=
+    peeled_generator_quotient_nontrivial p d
+
+  have hresultant_rdec_ne : d.u1_den 0 * d.u2_num 0 - d.u2_den 0 * d.u1_num 0 ≠ 0 := by
+    exact (IsSMulRegular.ne_zero_of_nontrivial
+      (M := Rdec p ⧸ Ideal.span {d.u1_num 0 - U0' p * d.u1_den 0}) hu0_reg)
+  have hresultant_ne : d0'' * c1'' - c0'' * d1'' ≠ 0 := by
+    intro h0
+    apply hresultant_rdec_ne
+    rw [← hresultant_rename, h0, map_zero]
+  have hFu1'_reg_opt2 : IsSMulRegular
+      (MvPolynomial (Option τU1') (F p) ⧸
+        Ideal.ofList [MvPolynomial.rename some c0'' - MvPolynomial.X none * MvPolynomial.rename some d0''])
+      (Ideal.Quotient.mk
+        (Ideal.ofList [MvPolynomial.rename some c0'' - MvPolynomial.X none * MvPolynomial.rename some d0''])
+        (MvPolynomial.rename some c1'' - MvPolynomial.X none * MvPolynomial.rename some d1'')) :=
+    regular_of_second_linear_elim c0'' d0'' c1'' d1'' hd0''_ne hresultant_ne
+  -- Bridge `hFu1'_reg_opt2` (at `Option τU1'` level, ideal `⟨g0⟩` for `g0 :=
+  -- rename some c0'' - X none * rename some d0''`) up to `τU1`'s ring
+  -- (ideal `⟨Fu0'⟩`), via the SAME direct ring-equiv argument `hFu0'_reg`
+  -- used (NOT `isSMulRegular_bridge_prefix_gen`, which cannot apply here --
+  -- see the long comment trail this pass deleted for why). This time the
+  -- ideal-map equality `Ideal.map e (Ideal.ofList [Fu0']) = Ideal.ofList [g0]`
+  -- is immediate: `e Fu0' = g0` outright (`hFu0'_maps`), so `Ideal.map_ofList`
+  -- turns `Ideal.ofList [Fu0']`'s image into `Ideal.ofList [e Fu0'] =
+  -- Ideal.ofList [g0]` directly, with no further ideal-generation subtlety
+  -- (unlike the earlier WRONG attempt, which tried to match `[Fu0']`'s image
+  -- against `[c0'']` alone -- a different, unequal ideal).
   have hFu1'_reg : IsSMulRegular
       (MvPolynomial τU1 (F p) ⧸ Ideal.ofList [Fu0'])
       (Ideal.Quotient.mk (Ideal.ofList [Fu0']) Fu1') := by
-    set g1 : MvPolynomial (Option τU1') (F p) :=
-      MvPolynomial.rename some c1'' -
-        MvPolynomial.X none * MvPolynomial.rename some d1'' with hg1_def
-
     let e : MvPolynomial τU1 (F p) ≃+*
         MvPolynomial (Option τU1') (F p) :=
       (MvPolynomial.renameEquiv (F p) (optionSplit x0)).toRingEquiv
-
     have hFu0'_maps :
         e Fu0' =
           MvPolynomial.rename some c0'' -
@@ -1030,7 +945,6 @@ theorem isSMulRegular_den_of_second_peel
           MvPolynomial.rename some c0'' -
             MvPolynomial.X none * MvPolynomial.rename some d0''
       exact rename_optionSplit_linear (R := F p) x0 c0'' d0''
-
     have hFu1'_maps :
         e Fu1' =
           MvPolynomial.rename some c1'' -
@@ -1044,26 +958,23 @@ theorem isSMulRegular_den_of_second_peel
           MvPolynomial.rename some c1'' -
             MvPolynomial.X none * MvPolynomial.rename some d1''
       exact rename_optionSplit_linear (R := F p) x0 c1'' d1''
-
-    -- `e.symm (rename some c0'') = Fu0'` and `e.symm g1 = Fu1'`, both by
-    -- applying `e.symm` to `hFu0'_maps`/`hFu1'_maps` and using
-    -- `e.symm_apply_apply`.
-    have he_symm_c0'' : e.symm (MvPolynomial.rename some c0'' -
-        MvPolynomial.X none * MvPolynomial.rename some d0'') = Fu0' := by
-      rw [← hFu0'_maps, e.symm_apply_apply]
-    have he_symm_g1 : e.symm g1 = Fu1' := by
-      rw [hg1_def, ← hFu1'_maps, e.symm_apply_apply]
-
-    have hbridge :=
-      (isSMulRegular_bridge_prefix_gen (F p) x0 [c0''] g1).mpr
-    -- `hbridge` needs the RHS of the iff, exactly `hFu1'_reg_opt`'s shape
-    -- (mod `Ideal.ofList [rename some c0'']`, i.e. `A0`, at element `g1`).
-    have hbridge' := hbridge hFu1'_reg_opt
-    -- `hbridge'` is now stated mod `Ideal.ofList [e.symm (rename some c0'')]`
-    -- at element `e.symm g1` -- rewrite both via the two `he_symm_*` facts
-    -- to land exactly on the goal's `Ideal.ofList [Fu0']` / `Fu1'`.
-    rw [he_symm_c0'', he_symm_g1] at hbridge'
-    exact hbridge'
+    have hIJ : Ideal.map (e : MvPolynomial τU1 (F p) →+* MvPolynomial (Option τU1') (F p))
+        (Ideal.ofList [Fu0']) =
+        Ideal.ofList [MvPolynomial.rename (some : τU1' → Option τU1') c0'' -
+          MvPolynomial.X none * MvPolynomial.rename (some : τU1' → Option τU1') d0''] := by
+      rw [Ideal.map_ofList]
+      congr 1
+      show [e Fu0'] = [MvPolynomial.rename (some : τU1' → Option τU1') c0'' -
+        MvPolynomial.X none * MvPolynomial.rename (some : τU1' → Option τU1') d0'']
+      rw [hFu0'_maps]
+    exact (isSMulRegular_of_ringEquiv_of_mapsTo
+      (e := e)
+      (I := Ideal.ofList [Fu0'])
+      (J := Ideal.ofList [MvPolynomial.rename (some : τU1' → Option τU1') c0'' -
+        MvPolynomial.X none * MvPolynomial.rename (some : τU1' → Option τU1') d0''])
+      hIJ Fu1'
+      (MvPolynomial.rename some c1'' - MvPolynomial.X none * MvPolynomial.rename some d1'')
+      hFu1'_maps).mpr hFu1'_reg_opt2
   -- **Step F: `d'` is `IsSMulRegular` mod `Ideal.ofList [Fu0', Fu1']`.
   -- This is deliberately isolated as the final named bottleneck.  Everything
   -- above this point is the two-generator peeling/change-of-variables setup;
@@ -1196,7 +1107,6 @@ already identifies as the right one, just invoked through the generic
 transport lemma instead of hand-rederiving the `Ideal.quotientEquiv`
 dance a third time. -/
 
-omit [Fact (p ≠ 2)] in
 theorem peelEquivGen_eq {σ : Type*} [DecidableEq σ] (x : σ) :
     peelEquivGen p x =
       (MvPolynomial.renameEquiv (F p) (optionSplit x)).trans
