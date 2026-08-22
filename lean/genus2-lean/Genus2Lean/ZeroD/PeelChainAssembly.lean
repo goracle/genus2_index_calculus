@@ -2038,6 +2038,193 @@ theorem regularSeq_of_peel_chain (c0 c1 c2 c3 c4 : F p) (sa sb : SampleTarget p)
   -- itself substantial remaining work, deferred to the next pass so the
   -- six genuinely complete facts above can be checked in the REPL
   -- independently first.
+  -- **Stages 2/6 open input, named so it can be handed to
+  -- `isSMulRegular_den_of_second_peel` once its own three hypotheses
+  -- (`hu0_reg`-shape resultant regularity -- already available as
+  -- `hcross.hu0`/`hcross.hv0`; `hcross01`-shape cross coprimality -- NOT
+  -- currently a field of `CrossNondegenerate`, genuinely open; and
+  -- `hpeeled_ideal_proper` -- expected easy, `Fu0 ≠ 0`-flavored, not
+  -- attempted this pass) are in hand. Stated here directly at `Rdec p`
+  -- level (`Ideal.span {Fu0}`-shaped, i.e. what stage 2 of the 12-fold
+  -- chain literally needs) so the two open pieces are visible as their
+  -- own named `sorry`s rather than folded into the giant tail term.
+  have hFu2_reg : IsSMulRegular (Rdec p ⧸ Ideal.span
+      {d.u1_num 0 - U0' p * d.u1_den 0})
+      (Ideal.Quotient.mk (Ideal.span {d.u1_num 0 - U0' p * d.u1_den 0})
+        (d.u1_num 1 - U1' p * d.u1_den 1)) := by
+    sorry
+  have hFv2_reg : IsSMulRegular (Rdec p ⧸ Ideal.span
+      {d.v1_num 0 - V0' p * d.v1_den 0})
+      (Ideal.Quotient.mk (Ideal.span {d.v1_num 0 - V0' p * d.v1_den 0})
+        (d.v1_num 1 - V1' p * d.v1_den 1)) := by
+    sorry
+  -- **Stages 8--11 open input, curve relations.** `curveCoeffRegular`
+  -- proves the ABSTRACT `quintic` shape is `Monic` (hence its leading
+  -- coefficient `1` is regular, via
+  -- `Polynomial.isSMulRegular_of_leadingCoeff_isSMulRegular`/
+  -- `isSMulRegular_one`), but does NOT yet identify `curveA1`/`curveA2`/
+  -- `curveB1`/`curveB2`'s literal `Rdec p`-level definitions (peeled
+  -- through the accumulated 8-element `Fu++Fv` prefix, then through the
+  -- matching `w`-variable) with that abstract shape -- see
+  -- `curveCoeffRegular`'s own docstring in `DecoupledSystemRegular.lean`
+  -- for exactly what remains: a `simp`/`rename`-unfolding identity, not
+  -- new mathematics. Stated here at the shape each stage actually needs:
+  -- regular mod the FULL prefix accumulated so far (`Ideal.ofList` of all
+  -- generators strictly before it in `genList`), matching
+  -- `isRegular_cons_iff'`'s single-step requirement once the earlier
+  -- seven/eight stages have already been peeled off by the `QuotSMulTop`
+  -- nesting below.
+  have hCurveA1_reg : IsSMulRegular
+      (Rdec p ⧸ Ideal.ofList
+        [d.u1_num 0 - U0' p * d.u1_den 0, d.u2_num 0 - U0' p * d.u2_den 0,
+         d.u1_num 1 - U1' p * d.u1_den 1, d.u2_num 1 - U1' p * d.u2_den 1,
+         d.v1_num 0 - V0' p * d.v1_den 0, d.v2_num 0 - V0' p * d.v2_den 0,
+         d.v1_num 1 - V1' p * d.v1_den 1, d.v2_num 1 - V1' p * d.v2_den 1])
+      (Ideal.Quotient.mk (Ideal.ofList
+        [d.u1_num 0 - U0' p * d.u1_den 0, d.u2_num 0 - U0' p * d.u2_den 0,
+         d.u1_num 1 - U1' p * d.u1_den 1, d.u2_num 1 - U1' p * d.u2_den 1,
+         d.v1_num 0 - V0' p * d.v1_den 0, d.v2_num 0 - V0' p * d.v2_den 0,
+         d.v1_num 1 - V1' p * d.v1_den 1, d.v2_num 1 - V1' p * d.v2_den 1])
+        (curveA1 p c0 c1 c2 c3 c4)) := by
+    sorry
+  have hCurveA2_reg : IsSMulRegular
+      (Rdec p ⧸ Ideal.ofList
+        [d.u1_num 0 - U0' p * d.u1_den 0, d.u2_num 0 - U0' p * d.u2_den 0,
+         d.u1_num 1 - U1' p * d.u1_den 1, d.u2_num 1 - U1' p * d.u2_den 1,
+         d.v1_num 0 - V0' p * d.v1_den 0, d.v2_num 0 - V0' p * d.v2_den 0,
+         d.v1_num 1 - V1' p * d.v1_den 1, d.v2_num 1 - V1' p * d.v2_den 1,
+         curveA1 p c0 c1 c2 c3 c4])
+      (Ideal.Quotient.mk (Ideal.ofList
+        [d.u1_num 0 - U0' p * d.u1_den 0, d.u2_num 0 - U0' p * d.u2_den 0,
+         d.u1_num 1 - U1' p * d.u1_den 1, d.u2_num 1 - U1' p * d.u2_den 1,
+         d.v1_num 0 - V0' p * d.v1_den 0, d.v2_num 0 - V0' p * d.v2_den 0,
+         d.v1_num 1 - V1' p * d.v1_den 1, d.v2_num 1 - V1' p * d.v2_den 1,
+         curveA1 p c0 c1 c2 c3 c4])
+        (curveA2 p c0 c1 c2 c3 c4)) := by
+    sorry
+  have hCurveB1_reg : IsSMulRegular
+      (Rdec p ⧸ Ideal.ofList
+        [d.u1_num 0 - U0' p * d.u1_den 0, d.u2_num 0 - U0' p * d.u2_den 0,
+         d.u1_num 1 - U1' p * d.u1_den 1, d.u2_num 1 - U1' p * d.u2_den 1,
+         d.v1_num 0 - V0' p * d.v1_den 0, d.v2_num 0 - V0' p * d.v2_den 0,
+         d.v1_num 1 - V1' p * d.v1_den 1, d.v2_num 1 - V1' p * d.v2_den 1,
+         curveA1 p c0 c1 c2 c3 c4, curveA2 p c0 c1 c2 c3 c4])
+      (Ideal.Quotient.mk (Ideal.ofList
+        [d.u1_num 0 - U0' p * d.u1_den 0, d.u2_num 0 - U0' p * d.u2_den 0,
+         d.u1_num 1 - U1' p * d.u1_den 1, d.u2_num 1 - U1' p * d.u2_den 1,
+         d.v1_num 0 - V0' p * d.v1_den 0, d.v2_num 0 - V0' p * d.v2_den 0,
+         d.v1_num 1 - V1' p * d.v1_den 1, d.v2_num 1 - V1' p * d.v2_den 1,
+         curveA1 p c0 c1 c2 c3 c4, curveA2 p c0 c1 c2 c3 c4])
+        (curveB1 p c0 c1 c2 c3 c4)) := by
+    sorry
+  have hCurveB2_reg : IsSMulRegular
+      (Rdec p ⧸ Ideal.ofList
+        [d.u1_num 0 - U0' p * d.u1_den 0, d.u2_num 0 - U0' p * d.u2_den 0,
+         d.u1_num 1 - U1' p * d.u1_den 1, d.u2_num 1 - U1' p * d.u2_den 1,
+         d.v1_num 0 - V0' p * d.v1_den 0, d.v2_num 0 - V0' p * d.v2_den 0,
+         d.v1_num 1 - V1' p * d.v1_den 1, d.v2_num 1 - V1' p * d.v2_den 1,
+         curveA1 p c0 c1 c2 c3 c4, curveA2 p c0 c1 c2 c3 c4,
+         curveB1 p c0 c1 c2 c3 c4])
+      (Ideal.Quotient.mk (Ideal.ofList
+        [d.u1_num 0 - U0' p * d.u1_den 0, d.u2_num 0 - U0' p * d.u2_den 0,
+         d.u1_num 1 - U1' p * d.u1_den 1, d.u2_num 1 - U1' p * d.u2_den 1,
+         d.v1_num 0 - V0' p * d.v1_den 0, d.v2_num 0 - V0' p * d.v2_den 0,
+         d.v1_num 1 - V1' p * d.v1_den 1, d.v2_num 1 - V1' p * d.v2_den 1,
+         curveA1 p c0 c1 c2 c3 c4, curveA2 p c0 c1 c2 c3 c4,
+         curveB1 p c0 c1 c2 c3 c4])
+        (curveB2 p c0 c1 c2 c3 c4)) := by
+    sorry
+
+  /- **12-stage assembly, wiring notes (read before extending).**
+
+  `isRegular_cons_iff' M r rs` reduces `IsRegular M (r :: rs)` to
+  `IsSMulRegular M r ∧ IsRegular (QuotSMulTop r M) (rs.map (mk (Ideal.span
+  {r})))`. Applying this REPEATEDLY, stage `k`'s ambient module is
+  `QuotSMulTop g_{k-1} (QuotSMulTop g_{k-2} (... (QuotSMulTop g_0 (Rdec
+  p))...))` and its generator list is `rs` with `k` compositions of
+  `Ideal.Quotient.mk (Ideal.span {g_i})` applied.
+
+  **Stage 0's `IsSMulRegular` obligation** (`IsSMulRegular (Rdec p)
+  (Fu0)`) matches `hFu0_reg` EXACTLY -- no bridging needed, both are
+  bare `Rdec p`-level facts.
+
+  **Stage 1's obligation** (`IsSMulRegular (QuotSMulTop Fu0 (Rdec p))
+  (mk (Ideal.span {Fu0}) Fu1)`) matches `hFu1_reg` up to EXACTLY ONE
+  application of `isSMulRegular_quotSMulTop_of_span` (the `QuotSMulTop
+  r (Rdec p) ≃ₗ Rdec p ⧸ Ideal.span {r}` bridge, §3.0 above) -- `hFu1_reg`
+  is already stated as `IsSMulRegular (Rdec p ⧸ Ideal.span {Fu0}) (mk
+  Fu1)`, the RIGHT-hand side of that bridge. Same pattern for `hFu3_reg`
+  (stage 3, mod `⟨Fu2⟩`... **NOTE**: `hFu3_reg` as currently proved above
+  is stated mod `Ideal.span {Fu2}` directly at `Rdec p` level, matching
+  `hcross.hu1`'s own single-generator convention -- it is NOT yet
+  reduced through `Fu0,Fu1,Fu2`'s combined `QuotSMulTop` nesting, which
+  is what stage 3 of the ACTUAL 12-chain needs; see next paragraph),
+  `hFv0_reg`/`hFv1_reg`/`hFv3_reg` similarly, and `hFu2_reg`/`hFv2_reg`/
+  `hCurveA1_reg`/`hCurveA2_reg`/`hCurveB1_reg`/`hCurveB2_reg` above.
+
+  **The genuine remaining gap (left as a single named `sorry` below, NOT
+  attempted this pass).** Every one of `hFu1_reg .. hCurveB2_reg` above
+  is stated mod the SINGLE immediately-preceding generator (`Ideal.span
+  {g_{k-1}}` in bare `Rdec p`), because that is the shape
+  `CrossNondegenerate`/`isSMulRegular_den_of_second_peel`/
+  `curveCoeffRegular` themselves naturally produce. But
+  `isRegular_cons_iff'`, unrolled `k` times, asks for regularity in the
+  `k`-times-NESTED module `QuotSMulTop g_{k-1} (... (QuotSMulTop g_0 M)
+  ...)`, with the generator itself pushed through `k` COMPOSED `mk`
+  maps, not just the last one. For `k = 1` (stages 1, 5) these coincide
+  exactly (one bridge application, as above). For `k ≥ 2` (stages 2--11)
+  they do NOT coincide syntactically, and identifying them needs, at
+  each step `i < k`, the further fact that `g_{k-1}`'s home ring `Rdec p
+  ⧸ Ideal.span {g_{k-1}}` -- the ring `hFu2_reg`/etc. are stated in --
+  is itself related to `QuotSMulTop g_{i} (...)` by the SAME
+  `quotSMulTop_equiv_span` bridge one level further in, composed `k`
+  times. Concretely this needs a lemma of the shape "`IsSMulRegular (Rdec
+  p ⧸ Ideal.span {g_{k-1}}) (mk s)` implies `IsSMulRegular (QuotSMulTop
+  g_{k-1} (QuotSMulTop g_{k-2} (...))) ((mk_{g_{k-1}} ∘ ... ∘ mk_{g_0})
+  s)` given each earlier `g_i` does not affect `s`'s regularity" -- i.e.
+  exactly `isSMulRegular_bridge_prefix`-style prefix bookkeeping, but
+  now needed at the OUTER (`Rdec p`-level generator list) layer, not
+  just the INNER (`MvPolynomial τ (F p)`-level, already handled by
+  `isSMulRegular_bridge_prefix` in §2) layer. `isSMulRegular_bridge_prefix`
+  itself is stated for a SINGLE peeled-variable's coefficient ring, not
+  for this outer per-generator nesting, so it does not directly apply
+  here -- a genuinely new (if likely short, `List.rec`-shaped) lemma is
+  needed. NOT attempted this pass; see the ChatGPT prompt below. -/
+
+  -- **Named remaining gap: the outer `QuotSMulTop`-nesting vs.
+  -- single-generator-`Ideal.span` bridge, iterated across the 12-element
+  -- list.** Every ingredient (`hFu0_reg` .. `hCurveB2_reg` above,
+  -- `isSMulRegular_quotSMulTop_of_span`, `isRegular_quotSMulTop_of_span`)
+  -- is in place; what's missing is the inductive lemma described in the
+  -- paragraph above, applied eleven times (or proved once in general
+  -- List-recursive form and invoked eleven times). Left as a single
+  -- `sorry` rather than eleven separate ones, since it is really one
+  -- lemma applied repeatedly, not eleven independent mathematical facts.
+  --
+  -- ChatGPT prompt for this gap (copy verbatim):
+  --
+  -- "In Lean 4 / Mathlib, I have `RingTheory.Sequence.isRegular_cons_iff'
+  -- (M) (r) (rs) : IsRegular M (r :: rs) ↔ IsSMulRegular M r ∧
+  -- IsRegular (QuotSMulTop r M) (rs.map (Ideal.Quotient.mk (Ideal.span
+  -- {r})))`, and `QuotSMulTop r M := M ⧸ (r • ⊤ : Submodule R M)`. I am
+  -- chaining this 12 times over a fixed base ring `R` and module `M := R`
+  -- itself, with generators `g0, g1, ..., g11 : R`. For each `k`, I
+  -- already have a proof of `IsSMulRegular (R ⧸ Ideal.span {g (k-1)})
+  -- (Ideal.Quotient.mk (Ideal.span {g (k-1)}) (g k))` (regular mod ONLY
+  -- the single immediately-preceding generator). I need to turn this into
+  -- `IsSMulRegular (QuotSMulTop (g (k-1)) (QuotSMulTop (g (k-2)) (...
+  -- (QuotSMulTop (g 0) R)...))) ((mk_{g(k-1)} ∘ ... ∘ mk_{g 0}) (g k))`,
+  -- i.e. bridge one single-generator-quotient fact into the k-times
+  -- nested `QuotSMulTop` module `isRegular_cons_iff'`'s unrolled form
+  -- actually produces. I have a helper `quotSMulTop_equiv_span (r : R) :
+  -- QuotSMulTop r R ≃ₗ[R] R ⧸ Ideal.span {r}` already proved (via
+  -- `QuotSMulTop.equivQuotTensor` and `TensorProduct.rid`), plus
+  -- `LinearEquiv.isSMulRegular_congr`. What is the cleanest way, in
+  -- Lean 4 Mathlib, to compose/iterate this bridge across a growing
+  -- nested `QuotSMulTop` stack indexed by a `List`, ideally as one
+  -- `List.rec`/`Nat`-indexed induction lemma I can invoke at each of the
+  -- 12 stages, rather than writing out 12 separate ad hoc proofs? Please
+  -- give a complete Lean 4 proof, not just a sketch."
   sorry
 
 end DecoupledSystem
