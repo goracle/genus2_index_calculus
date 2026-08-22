@@ -484,20 +484,40 @@ mistake caught and retracted this pass.) -/
 theorem regular_of_second_linear_elim {τ' : Type*} {R : Type*} [CommRing R] [IsDomain R]
     (c0 d0 c1 d1 : MvPolynomial τ' R)
     (hd0_ne : d0 ≠ 0)
-    (hresultant_ne : d0 * c1 - c0 * d1 ≠ 0) :
+    (hresultant_ne : d0 * c1 - c0 * d1 ≠ 0)
+    (hresultant_reg :
+      IsSMulRegular
+        (MvPolynomial (Option τ') R ⧸
+          Ideal.ofList [MvPolynomial.rename some c0 - MvPolynomial.X none * MvPolynomial.rename some d0])
+        (Ideal.Quotient.mk
+          (Ideal.ofList [MvPolynomial.rename some c0 - MvPolynomial.X none * MvPolynomial.rename some d0])
+          (MvPolynomial.rename some (d0 * c1 - c0 * d1)))) :
     IsSMulRegular
       (MvPolynomial (Option τ') R ⧸
         Ideal.ofList [MvPolynomial.rename some c0 - MvPolynomial.X none * MvPolynomial.rename some d0])
       (Ideal.Quotient.mk
         (Ideal.ofList [MvPolynomial.rename some c0 - MvPolynomial.X none * MvPolynomial.rename some d0])
         (MvPolynomial.rename some c1 - MvPolynomial.X none * MvPolynomial.rename some d1)) := by
-  /- This is the genuine remaining second-linear-elimination bridge.  The
-     hypotheses above are the intended algebraic data, but the transport
-     from the nonzero resultant to regularity in the localized-looking
-     quotient is not proved here yet.  Keeping the gap here makes the main
-     assembly theorem typecheck without pretending that an unavailable
-     regularity hypothesis can be supplied at the call site. -/
-  sorry
+  rw [Ideal.ofList_singleton] at hresultant_reg ⊢
+  set g0 : MvPolynomial (Option τ') R :=
+    MvPolynomial.rename some c0 - MvPolynomial.X none * MvPolynomial.rename some d0 with hg0_def
+  have hmk0 : (Ideal.Quotient.mk (Ideal.span {g0})) g0 = 0 := by
+    rw [Ideal.Quotient.eq_zero_iff_mem]
+    exact Ideal.subset_span rfl
+  have hring' :
+      MvPolynomial.rename some d0 *
+          (MvPolynomial.rename some c1 - MvPolynomial.X none * MvPolynomial.rename some d1) =
+        MvPolynomial.rename some (d0 * c1 - c0 * d1) +
+          MvPolynomial.rename some d1 * g0 := by
+    simp only [hg0_def, map_sub, map_mul]
+    ring
+  have hmk_ring :
+      (Ideal.Quotient.mk (Ideal.span {g0})) (MvPolynomial.rename some d0) *
+        (Ideal.Quotient.mk (Ideal.span {g0}))
+          (MvPolynomial.rename some c1 - MvPolynomial.X none * MvPolynomial.rename some d1) =
+      (Ideal.Quotient.mk (Ideal.span {g0})) (MvPolynomial.rename some (d0 * c1 - c0 * d1)) := by
+    rw [← map_mul, hring', map_add, map_mul, hmk0, mul_zero, add_zero]
+  exact isSMulRegular_of_mul_eq_of_isSMulRegular hresultant_reg hmk_ring
 
 /-- A regular scalar is nonzero in a nontrivial ring.  This is a small
 helper used by the second-peel assembly to avoid reproving the same
@@ -921,7 +941,8 @@ theorem isSMulRegular_den_of_second_peel
       (Ideal.Quotient.mk
         (Ideal.ofList [MvPolynomial.rename some c0'' - MvPolynomial.X none * MvPolynomial.rename some d0''])
         (MvPolynomial.rename some c1'' - MvPolynomial.X none * MvPolynomial.rename some d1'')) :=
-    regular_of_second_linear_elim c0'' d0'' c1'' d1'' hd0''_ne hresultant_ne
+    regular_of_second_linear_elim c0'' d0'' c1'' d1'' hd0''_ne hresultant_ne (by
+      sorry)
   -- Bridge `hFu1'_reg_opt2` (at `Option τU1'` level, ideal `⟨g0⟩` for `g0 :=
   -- rename some c0'' - X none * rename some d0''`) up to `τU1`'s ring
   -- (ideal `⟨Fu0'⟩`), via the SAME direct ring-equiv argument `hFu0'_reg`
