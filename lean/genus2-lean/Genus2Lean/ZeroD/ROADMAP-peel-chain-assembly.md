@@ -438,3 +438,83 @@ next generator's defining data)`:
 - `regular_of_disjoint_extension_list` (`06`'s sorry #2) is NOT created —
   turned out to be unnecessary once the per-stage argument is done via
   Layer-1 induction instead of base-change.
+
+## Status update: build errors fixed (this pass)
+
+`PeelChainAssembly.lean` had 4 build `error`s (not `sorry`s) blocking
+compilation, all inside `regular_of_second_linear_elim` — the Step-E
+helper for `Fu1'` regular mod `⟨Fu0'⟩` (see that theorem's own docstring
+in the file for the pre-existing math context; it is a different theorem
+from the 3 named sorries above, which live inside `regularSeq_of_peel_chain`
+and `isSMulRegular_den_of_second_peel`). Root cause: the old proof built
+the ideal as a `let I := Ideal.ofList [g0]` and tried to identify it with
+`Ideal.span {g0}` via `show ... by simp [I]`, which made Lean pick the
+wrong `Semiring` instance for `Ideal Q` and cascaded into 3 further
+type-mismatch/unsolved-goal errors downstream in the same proof.
+
+Fix: rewrote the proof to use `Ideal.ofList_singleton` (a Mathlib lemma
+already used successfully elsewhere in this file) to convert to
+`Ideal.span {g0}` up front, then closed the goal with the same
+`hmk0`/`ring`-identity/`isSMulRegular_of_mul_eq_of_isSMulRegular` idiom
+already used for `hFu1_reg`/`hFu3_reg`/`hFv1_reg`/`hFv3_reg` later in the
+file (the `CrossNondegenerate.hu0`/`hu1`/`hv0`/`hv1`-driven stage-1/3/5/7
+steps). No theorem statement changed, no math content added — this was a
+proof-engineering fix, not progress on any of the 3 named sorries above.
+A side effect: the fix incidentally proved outright the `ring` identity
+that `regular_of_second_linear_elim`'s OLD docstring had flagged as "not
+in doubt but needing a bridging fact" — turns out no bridging fact was
+needed, since `hresultant_reg` was already stated at the right (bigger)
+ring level in the theorem's own signature; see the theorem's updated
+docstring.
+
+**File now compiles with 0 errors.** Remaining `sorry`s, unchanged by
+this pass, in call/dependency order:
+
+- `regular_of_second_linear_elim`'s own CALLER (`isSMulRegular_den_of_
+  second_peel`, Step E) still needs to supply that lemma's `hresultant_reg`
+  HYPOTHESIS for the concrete instance — currently `sorry`'d at the call
+  site itself (not inside `regular_of_second_linear_elim`, which is now
+  fully proved).
+- `isSMulRegular_den_of_second_peel`'s own remaining coprimality gap
+  (`u1_num 0`/`u1_den 1`-style pair, flagged in-file as needing a
+  `gcd(c0'', d1den'') = 1`-type fact not currently tracked by
+  `Nondegenerate`/`CrossNondegenerate`) — open, not attempted this pass.
+- The 12-stage `regularSeq_of_peel_chain` assembly itself — still `sorry`,
+  per plan item 3 above; unaffected by this pass's fix.
+
+Next natural step: decide whether the coprimality gap should become a new
+named field (parallel to `CrossNondegenerate`'s existing four), following
+this project's own rule of weakening/extending hypotheses honestly rather
+than asserting an unproved claim — or whether it's derivable from
+`hgcdA`/`hgcdB`/`hndA`/`hndB` already in scope, which has not yet been
+checked.
+
+## Status update: `hresultant_reg` closed (later pass)
+
+The first bullet above (`regular_of_second_linear_elim`'s caller needing
+to supply `hresultant_reg`) is now done — confirmed building by the user.
+`isSMulRegular_den_of_second_peel`'s `hτ` derivation bridges its own
+`hu0_reg` parameter (stated at `Rdec p` level) down to `hresultant_reg`'s
+required `MvPolynomial (Option τU1') (F p)`-level shape, in two hops:
+
+1. `Rdec p → MvPolynomial (Option τU1) (F p)`: NOT a ring equiv (a first
+   attempt tried `isSMulRegular_bridge_prefix_gen`'s `.mp` directly as if
+   it landed in plain `MvPolynomial τU1 (F p)`, which type-checks as
+   `Ideal.ofList (List.map (rename some) [Fu0'])` in
+   `MvPolynomial (Option τU1) (F p)` — a different ring, since
+   `|Option τU1| = |Idx| ≠ |τU1|`, so no ring equiv between `Option τU1`
+   and `τU1` can exist; that mismatch was the actual build error this
+   bullet is replacing). Fixed by deriving the `Option τU1`-level fact
+   honestly (`hopt_reg`), then descending to `τU1` via an explicit
+   retraction `back := rename (fun z : Option τU1 => z.getD x0)` (a left
+   inverse of `rename some`, not an equiv) and a direct `IsSMulRegular`
+   unfolding (`intro x y hxy; ...`) rather than a transport lemma.
+2. `MvPolynomial τU1 (F p) → MvPolynomial (Option τU1') (F p)`: unchanged
+   from the previous pass — a genuine ring equiv
+   (`|τU1| = |Option τU1'|`), transported via
+   `isSMulRegular_of_ringEquiv_of_mapsTo` in one shot.
+
+**File now compiles with 0 errors and 2 remaining named `sorry`s** (down
+from 3): the coprimality gap inside `isSMulRegular_den_of_second_peel`,
+and the 12-stage `regularSeq_of_peel_chain` assembly. Both unattempted
+this pass — the "next natural step" note above still stands unchanged.
