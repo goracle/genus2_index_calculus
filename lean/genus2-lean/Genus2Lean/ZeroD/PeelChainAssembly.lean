@@ -2144,8 +2144,14 @@ structure PeelChainNondegenerate (c0 c1 c2 c3 c4 : F p) (sa sb : SampleTarget p)
          curveA1 p c0 c1 c2 c3 c4, curveA2 p c0 c1 c2 c3 c4, curveB1 p c0 c1 c2 c3 c4])
         (curveB2 p c0 c1 c2 c3 c4))
 
-set_option maxHeartbeats 1600000 in
-theorem regularSeq_of_peel_chain (c0 c1 c2 c3 c4 : F p) (sa sb : SampleTarget p)
+-- **Extracted from `regularSeq_of_peel_chain` for compile-time isolation.**
+-- Split out so this chunk elaborates (and, if broken, fails) on its own
+-- instead of as part of one monolithic multi-thousand-heartbeat proof term.
+-- Bundles `Fu0`/`Fv0`'s "first generator" regularity facts; see the (now
+-- deleted from the main theorem) inline comment this replaced for the
+-- mathematical explanation, still present in `ROADMAP-peel-chain-assembly.md`.
+set_option maxHeartbeats 400000 in
+private lemma hFu0Fv0_reg_of (c0 c1 c2 c3 c4 : F p) (sa sb : SampleTarget p)
     (hcurA : curBeforeMonic p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1 ≠ 0)
     (hcurB : curBeforeMonic p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1 ≠ 0)
     (hgcdA : IsCoprime (Ypoly p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1)
@@ -2154,47 +2160,15 @@ theorem regularSeq_of_peel_chain (c0 c1 c2 c3 c4 : F p) (sa sb : SampleTarget p)
       (uRS p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1))
     (hndA : Nondegenerate p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1 hcurA hgcdA)
     (hndB : Nondegenerate p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1 hcurB hgcdB)
-    (hcross : CrossNondegenerate p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB)
-    (hpeel : PeelChainNondegenerate p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB)
-    -- **Gap C (`top_ne_smul`), weakened to a hypothesis.** The full
-    -- 12-generator ideal is proper, i.e. the system has a genuine common
-    -- solution -- real existence-of-a-point content
-    -- (`ROADMAP-peel-chain-assembly.md`'s Gap C), not attempted here; see
-    -- that file's own note on what proving this honestly would need.
-    (htop_ne_smul : (⊤ : Ideal (Rdec p)) ≠
-      Ideal.ofList (genList p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB) • ⊤) :
-    RingTheory.Sequence.IsRegular (Rdec p)
-      (genList p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB) := by
+    (d : DecoupledGenerators p)
+    (hd_def : d = theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB) :
+    IsSMulRegular (Rdec p) (d.u1_num 0 - U0' p * d.u1_den 0) ∧
+    IsSMulRegular (Rdec p) (d.v1_num 0 - V0' p * d.v1_den 0) := by
   classical
-  -- Unfold `genList` down to a literal 12-element `List.cons` chain, so
-  -- `IsRegular.cons'` can be applied one element at a time.
-  set d := theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB with hd_def
-  have hgenList : genList p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB =
-      [ d.u1_num 0 - U0' p * d.u1_den 0, d.u2_num 0 - U0' p * d.u2_den 0,
-        d.u1_num 1 - U1' p * d.u1_den 1, d.u2_num 1 - U1' p * d.u2_den 1,
-        d.v1_num 0 - V0' p * d.v1_den 0, d.v2_num 0 - V0' p * d.v2_den 0,
-        d.v1_num 1 - V1' p * d.v1_den 1, d.v2_num 1 - V1' p * d.v2_den 1,
-        curveA1 p c0 c1 c2 c3 c4, curveA2 p c0 c1 c2 c3 c4,
-        curveB1 p c0 c1 c2 c3 c4, curveB2 p c0 c1 c2 c3 c4 ] := by
-    simp only [genList, FuList, FvList, hd_def, List.append_eq]
-    rfl
-  rw [hgenList]
   have hden := denRegular p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB hndA hndB
-  -- **`Fu0`/`Fv0` "first generator" reduction.** Both `Fu0 := u1_num 0 -
-  -- U0*u1_den 0` and `Fv0 := v1_num 0 - V0*v1_den 0` are literally
-  -- `rename Subtype.val (c' - X x * d')` for `x := U0`/`V0`, `τ := {v ≠
-  -- x}`, `c' := d.u1_num 0`/`d.v1_num 0` and `d' := d.u1_den 0`/`d.v1_den
-  -- 0` VIEWED AS `τ`-side polynomials -- but `d.u1_num 0` etc. are
-  -- already stated as elements of `Rdec p := MvPolynomial Idx (F p)`
-  -- directly, not `MvPolynomial τ (F p)`. Since `u1_num 0`/`u1_den 0`
-  -- avoid `U0` (`u1_indep 0`'s target Finset `{wa1,wa2,a1,a2}` never
-  -- contains `U0`), they have canonical `τ`-side representatives via
-  -- `MvPolynomial.exists_rename_eq_of_vars_subset_range`, exactly as
-  -- `isSMulRegular_den_of_second_peel`'s own Step A already does for the
-  -- SAME data one level further down. Obtain those representatives here.
+  rw [← hd_def] at hden
   have hU0_ne_U1 : (U0 : Idx) ≠ U1 := by decide
   have hV0_ne_V1 : (V0 : Idx) ≠ V1 := by decide
-  -- `Fu0`'s representatives (`τ := {v ≠ U0}`).
   have hu1num0_rangeU0 : (↑(d.u1_num 0).vars : Set Idx) ⊆
       Set.range (fun v : {v : Idx // v ≠ U0} => (v.1 : Idx)) := by
     intro v hv
@@ -2239,7 +2213,6 @@ theorem regularSeq_of_peel_chain (c0 c1 c2 c3 c4 : F p) (sa sb : SampleTarget p)
   have hFu0_reg : IsSMulRegular (Rdec p) (d.u1_num 0 - U0' p * d.u1_den 0) := by
     rw [hFu0_eq]
     exact isSMulRegular_first_gen p U0 cu0 du0 hdu0_ne
-  -- `Fv0`'s representatives (`τ := {v ≠ V0}`), identical construction.
   have hv1num0_rangeV0 : (↑(d.v1_num 0).vars : Set Idx) ⊆
       Set.range (fun v : {v : Idx // v ≠ V0} => (v.1 : Idx)) := by
     intro v hv
@@ -2284,21 +2257,46 @@ theorem regularSeq_of_peel_chain (c0 c1 c2 c3 c4 : F p) (sa sb : SampleTarget p)
   have hFv0_reg : IsSMulRegular (Rdec p) (d.v1_num 0 - V0' p * d.v1_den 0) := by
     rw [hFv0_eq]
     exact isSMulRegular_first_gen p V0 cv0 dv0 hdv0_ne
-  -- **`Fu1`/`Fu3`/`Fv1`/`Fv3` "repeated target" reduction.** Each is
-  -- regular mod the immediately-preceding same-target generator via
-  -- `isSMulRegular_of_mul_eq_of_isSMulRegular`, fed by `hcross`'s
-  -- matching field and the identity `d₁ * Fu1 = resultant + d₂ * Fu0`
-  -- (`Fu0`'s own vanishing, i.e. working mod `Ideal.span {Fu0}` where
-  -- `Fu0 ≡ 0`, collapses `d₂ * Fu0` to `0`, leaving `d₁ * Fu1 ≡
-  -- resultant` exactly matching `hcross.hu0`'s stated element) --
-  -- checked directly by ring-normalizing the un-quotiented identity
-  -- `d1 * (c2 - X*d2) = (d1*c2 - d2*c1) + d2 * (c1 - X*d1)` (`X := U0'
-  -- p`), which holds in `Rdec p` with NO quotienting at all, THEN
-  -- pushing through `Ideal.Quotient.mk` where the `d2 * Fu0` term maps
-  -- to `d2 • (mk Fu0) = d2 • 0 = 0`.
+  exact ⟨hFu0_reg, hFv0_reg⟩
+
+-- **Extracted from `regularSeq_of_peel_chain` for compile-time isolation.**
+-- Bundles the `Fu1`/`Fu3`/`Fv1`/`Fv3` "repeated target" regularity facts
+-- (each regular mod the immediately-preceding same-target generator, via
+-- `isSMulRegular_of_mul_eq_of_isSMulRegular` fed by the matching `hcross`
+-- field) -- see `ROADMAP-peel-chain-assembly.md` for the mathematical
+-- explanation this replaced.
+set_option maxHeartbeats 400000 in
+private lemma hFu1Fu3Fv1Fv3_reg_of (c0 c1 c2 c3 c4 : F p) (sa sb : SampleTarget p)
+    (hcurA : curBeforeMonic p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1 ≠ 0)
+    (hcurB : curBeforeMonic p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1 ≠ 0)
+    (hgcdA : IsCoprime (Ypoly p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1)
+      (uRS p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1))
+    (hgcdB : IsCoprime (Ypoly p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1)
+      (uRS p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1))
+    (hcross : CrossNondegenerate p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB)
+    (d : DecoupledGenerators p)
+    (hd_def : d = theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB) :
+    IsSMulRegular (Rdec p ⧸ Ideal.span {d.u1_num 0 - U0' p * d.u1_den 0})
+      (Ideal.Quotient.mk (Ideal.span {d.u1_num 0 - U0' p * d.u1_den 0})
+        (d.u2_num 0 - U0' p * d.u2_den 0)) ∧
+    IsSMulRegular (Rdec p ⧸ Ideal.span {d.u1_num 1 - U1' p * d.u1_den 1})
+      (Ideal.Quotient.mk (Ideal.span {d.u1_num 1 - U1' p * d.u1_den 1})
+        (d.u2_num 1 - U1' p * d.u2_den 1)) ∧
+    IsSMulRegular (Rdec p ⧸ Ideal.span {d.v1_num 0 - V0' p * d.v1_den 0})
+      (Ideal.Quotient.mk (Ideal.span {d.v1_num 0 - V0' p * d.v1_den 0})
+        (d.v2_num 0 - V0' p * d.v2_den 0)) ∧
+    IsSMulRegular (Rdec p ⧸ Ideal.span {d.v1_num 1 - V1' p * d.v1_den 1})
+      (Ideal.Quotient.mk (Ideal.span {d.v1_num 1 - V1' p * d.v1_den 1})
+        (d.v2_num 1 - V1' p * d.v2_den 1)) := by
+  classical
   have hFu1_reg : IsSMulRegular (Rdec p ⧸ Ideal.span
       {d.u1_num 0 - U0' p * d.u1_den 0}) (Ideal.Quotient.mk (Ideal.span {d.u1_num 0 - U0' p * d.u1_den 0})
         (d.u2_num 0 - U0' p * d.u2_den 0)) := by
+    have hu0 : IsSMulRegular
+        (Rdec p ⧸ Ideal.span {d.u1_num 0 - U0' p * d.u1_den 0})
+        (Ideal.Quotient.mk (Ideal.span {d.u1_num 0 - U0' p * d.u1_den 0})
+          (d.u1_den 0 * d.u2_num 0 - d.u2_den 0 * d.u1_num 0)) := by
+      rw [hd_def]; exact hcross.hu0
     have hmk0 : (Ideal.Quotient.mk (Ideal.span {d.u1_num 0 - U0' p * d.u1_den 0})
         (d.u1_num 0 - U0' p * d.u1_den 0)) = 0 := by
       rw [Ideal.Quotient.eq_zero_iff_mem]
@@ -2314,10 +2312,15 @@ theorem regularSeq_of_peel_chain (c0 c1 c2 c3 c4 : F p) (sa sb : SampleTarget p)
           (Ideal.span {d.u1_num 0 - U0' p * d.u1_den 0})
           (d.u1_den 0 * d.u2_num 0 - d.u2_den 0 * d.u1_num 0)) := by
       rw [← map_mul, hring, map_add, map_mul, hmk0, mul_zero, add_zero]
-    exact isSMulRegular_of_mul_eq_of_isSMulRegular hcross.hu0 hmk_ring
+    exact isSMulRegular_of_mul_eq_of_isSMulRegular hu0 hmk_ring
   have hFu3_reg : IsSMulRegular (Rdec p ⧸ Ideal.span
       {d.u1_num 1 - U1' p * d.u1_den 1}) (Ideal.Quotient.mk (Ideal.span {d.u1_num 1 - U1' p * d.u1_den 1})
         (d.u2_num 1 - U1' p * d.u2_den 1)) := by
+    have hu1 : IsSMulRegular
+        (Rdec p ⧸ Ideal.span {d.u1_num 1 - U1' p * d.u1_den 1})
+        (Ideal.Quotient.mk (Ideal.span {d.u1_num 1 - U1' p * d.u1_den 1})
+          (d.u1_den 1 * d.u2_num 1 - d.u2_den 1 * d.u1_num 1)) := by
+      rw [hd_def]; exact hcross.hu1
     have hmk0 : (Ideal.Quotient.mk (Ideal.span {d.u1_num 1 - U1' p * d.u1_den 1})
         (d.u1_num 1 - U1' p * d.u1_den 1)) = 0 := by
       rw [Ideal.Quotient.eq_zero_iff_mem]
@@ -2333,10 +2336,15 @@ theorem regularSeq_of_peel_chain (c0 c1 c2 c3 c4 : F p) (sa sb : SampleTarget p)
           (Ideal.span {d.u1_num 1 - U1' p * d.u1_den 1})
           (d.u1_den 1 * d.u2_num 1 - d.u2_den 1 * d.u1_num 1)) := by
       rw [← map_mul, hring, map_add, map_mul, hmk0, mul_zero, add_zero]
-    exact isSMulRegular_of_mul_eq_of_isSMulRegular hcross.hu1 hmk_ring
+    exact isSMulRegular_of_mul_eq_of_isSMulRegular hu1 hmk_ring
   have hFv1_reg : IsSMulRegular (Rdec p ⧸ Ideal.span
       {d.v1_num 0 - V0' p * d.v1_den 0}) (Ideal.Quotient.mk (Ideal.span {d.v1_num 0 - V0' p * d.v1_den 0})
         (d.v2_num 0 - V0' p * d.v2_den 0)) := by
+    have hv0 : IsSMulRegular
+        (Rdec p ⧸ Ideal.span {d.v1_num 0 - V0' p * d.v1_den 0})
+        (Ideal.Quotient.mk (Ideal.span {d.v1_num 0 - V0' p * d.v1_den 0})
+          (d.v1_den 0 * d.v2_num 0 - d.v2_den 0 * d.v1_num 0)) := by
+      rw [hd_def]; exact hcross.hv0
     have hmk0 : (Ideal.Quotient.mk (Ideal.span {d.v1_num 0 - V0' p * d.v1_den 0})
         (d.v1_num 0 - V0' p * d.v1_den 0)) = 0 := by
       rw [Ideal.Quotient.eq_zero_iff_mem]
@@ -2352,10 +2360,15 @@ theorem regularSeq_of_peel_chain (c0 c1 c2 c3 c4 : F p) (sa sb : SampleTarget p)
           (Ideal.span {d.v1_num 0 - V0' p * d.v1_den 0})
           (d.v1_den 0 * d.v2_num 0 - d.v2_den 0 * d.v1_num 0)) := by
       rw [← map_mul, hring, map_add, map_mul, hmk0, mul_zero, add_zero]
-    exact isSMulRegular_of_mul_eq_of_isSMulRegular hcross.hv0 hmk_ring
+    exact isSMulRegular_of_mul_eq_of_isSMulRegular hv0 hmk_ring
   have hFv3_reg : IsSMulRegular (Rdec p ⧸ Ideal.span
       {d.v1_num 1 - V1' p * d.v1_den 1}) (Ideal.Quotient.mk (Ideal.span {d.v1_num 1 - V1' p * d.v1_den 1})
         (d.v2_num 1 - V1' p * d.v2_den 1)) := by
+    have hv1 : IsSMulRegular
+        (Rdec p ⧸ Ideal.span {d.v1_num 1 - V1' p * d.v1_den 1})
+        (Ideal.Quotient.mk (Ideal.span {d.v1_num 1 - V1' p * d.v1_den 1})
+          (d.v1_den 1 * d.v2_num 1 - d.v2_den 1 * d.v1_num 1)) := by
+      rw [hd_def]; exact hcross.hv1
     have hmk0 : (Ideal.Quotient.mk (Ideal.span {d.v1_num 1 - V1' p * d.v1_den 1})
         (d.v1_num 1 - V1' p * d.v1_den 1)) = 0 := by
       rw [Ideal.Quotient.eq_zero_iff_mem]
@@ -2371,7 +2384,388 @@ theorem regularSeq_of_peel_chain (c0 c1 c2 c3 c4 : F p) (sa sb : SampleTarget p)
           (Ideal.span {d.v1_num 1 - V1' p * d.v1_den 1})
           (d.v1_den 1 * d.v2_num 1 - d.v2_den 1 * d.v1_num 1)) := by
       rw [← map_mul, hring, map_add, map_mul, hmk0, mul_zero, add_zero]
-    exact isSMulRegular_of_mul_eq_of_isSMulRegular hcross.hv1 hmk_ring
+    exact isSMulRegular_of_mul_eq_of_isSMulRegular hv1 hmk_ring
+  exact ⟨hFu1_reg, hFu3_reg, hFv1_reg, hFv3_reg⟩
+
+-- **Extracted from `regularSeq_of_peel_chain` for compile-time isolation
+-- (`whnf` timeout with everything in one command; per Claire's
+-- instruction, splitting the giant proof term into independent
+-- top-level lemmas rather than raising `maxHeartbeats` further).**
+-- Takes every one of the ten stage-regularity facts actually consumed by
+-- the final 12-way assembly (NOT `hFu3_reg`/`hFv3_reg` -- those are
+-- superseded by `hFu3_full_reg`/`hFv3_full_reg` at this stage, see
+-- `ROADMAP-peel-chain-assembly.md`) plus `htop_ne_smul`, and produces the
+-- final `RingTheory.Sequence.IsRegular` conclusion via the flat
+-- `regular_mod_prev` characterization. See `regularSeq_of_peel_chain`
+-- itself for how each fact is obtained.
+set_option maxHeartbeats 1000000 in
+private lemma regularSeq_of_peel_chain_assembly (c0 c1 c2 c3 c4 : F p) (sa sb : SampleTarget p)
+    (hcurA : curBeforeMonic p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1 ≠ 0)
+    (hcurB : curBeforeMonic p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1 ≠ 0)
+    (hgcdA : IsCoprime (Ypoly p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1)
+      (uRS p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1))
+    (hgcdB : IsCoprime (Ypoly p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1)
+      (uRS p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1))
+    (htop_ne_smul : (⊤ : Ideal (Rdec p)) ≠
+      Ideal.ofList (genList p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB) • ⊤)
+    (d : DecoupledGenerators p)
+    (hd_def : d = theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB)
+    (hgenList : genList p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB =
+      [ d.u1_num 0 - U0' p * d.u1_den 0, d.u2_num 0 - U0' p * d.u2_den 0,
+        d.u1_num 1 - U1' p * d.u1_den 1, d.u2_num 1 - U1' p * d.u2_den 1,
+        d.v1_num 0 - V0' p * d.v1_den 0, d.v2_num 0 - V0' p * d.v2_den 0,
+        d.v1_num 1 - V1' p * d.v1_den 1, d.v2_num 1 - V1' p * d.v2_den 1,
+        curveA1 p c0 c1 c2 c3 c4, curveA2 p c0 c1 c2 c3 c4,
+        curveB1 p c0 c1 c2 c3 c4, curveB2 p c0 c1 c2 c3 c4 ])
+    (hFu0_reg : IsSMulRegular (Rdec p) (d.u1_num 0 - U0' p * d.u1_den 0))
+    (hFv0_reg : IsSMulRegular (Rdec p) (d.v1_num 0 - V0' p * d.v1_den 0))
+    (hFu1_reg : IsSMulRegular (Rdec p ⧸ Ideal.span {d.u1_num 0 - U0' p * d.u1_den 0})
+      (Ideal.Quotient.mk (Ideal.span {d.u1_num 0 - U0' p * d.u1_den 0})
+        (d.u2_num 0 - U0' p * d.u2_den 0)))
+    (hFv1_reg : IsSMulRegular (Rdec p ⧸ Ideal.span {d.v1_num 0 - V0' p * d.v1_den 0})
+      (Ideal.Quotient.mk (Ideal.span {d.v1_num 0 - V0' p * d.v1_den 0})
+        (d.v2_num 0 - V0' p * d.v2_den 0)))
+    (hFu2_reg : IsSMulRegular (Rdec p ⧸ Ideal.ofList
+        [d.u1_num 0 - U0' p * d.u1_den 0, d.u2_num 0 - U0' p * d.u2_den 0])
+        (Ideal.Quotient.mk (Ideal.ofList
+          [d.u1_num 0 - U0' p * d.u1_den 0, d.u2_num 0 - U0' p * d.u2_den 0])
+          (d.u1_num 1 - U1' p * d.u1_den 1)))
+    (hFv2_reg : IsSMulRegular (Rdec p ⧸ Ideal.ofList
+        [d.v1_num 0 - V0' p * d.v1_den 0, d.v2_num 0 - V0' p * d.v2_den 0])
+        (Ideal.Quotient.mk (Ideal.ofList
+          [d.v1_num 0 - V0' p * d.v1_den 0, d.v2_num 0 - V0' p * d.v2_den 0])
+          (d.v1_num 1 - V1' p * d.v1_den 1)))
+    (hFu3_full_reg : IsSMulRegular
+      (Rdec p ⧸ Ideal.ofList
+        [d.u1_num 0 - U0' p * d.u1_den 0, d.u2_num 0 - U0' p * d.u2_den 0,
+         d.u1_num 1 - U1' p * d.u1_den 1])
+      (Ideal.Quotient.mk (Ideal.ofList
+        [d.u1_num 0 - U0' p * d.u1_den 0, d.u2_num 0 - U0' p * d.u2_den 0,
+         d.u1_num 1 - U1' p * d.u1_den 1])
+        (d.u2_num 1 - U1' p * d.u2_den 1)))
+    (hFv3_full_reg : IsSMulRegular
+      (Rdec p ⧸ Ideal.ofList
+        [d.v1_num 0 - V0' p * d.v1_den 0, d.v2_num 0 - V0' p * d.v2_den 0,
+         d.v1_num 1 - V1' p * d.v1_den 1])
+      (Ideal.Quotient.mk (Ideal.ofList
+        [d.v1_num 0 - V0' p * d.v1_den 0, d.v2_num 0 - V0' p * d.v2_den 0,
+         d.v1_num 1 - V1' p * d.v1_den 1])
+        (d.v2_num 1 - V1' p * d.v2_den 1)))
+    (hCurveA1_reg : IsSMulRegular
+      (Rdec p ⧸ Ideal.ofList
+        [d.u1_num 0 - U0' p * d.u1_den 0, d.u2_num 0 - U0' p * d.u2_den 0,
+         d.u1_num 1 - U1' p * d.u1_den 1, d.u2_num 1 - U1' p * d.u2_den 1,
+         d.v1_num 0 - V0' p * d.v1_den 0, d.v2_num 0 - V0' p * d.v2_den 0,
+         d.v1_num 1 - V1' p * d.v1_den 1, d.v2_num 1 - V1' p * d.v2_den 1])
+      (Ideal.Quotient.mk (Ideal.ofList
+        [d.u1_num 0 - U0' p * d.u1_den 0, d.u2_num 0 - U0' p * d.u2_den 0,
+         d.u1_num 1 - U1' p * d.u1_den 1, d.u2_num 1 - U1' p * d.u2_den 1,
+         d.v1_num 0 - V0' p * d.v1_den 0, d.v2_num 0 - V0' p * d.v2_den 0,
+         d.v1_num 1 - V1' p * d.v1_den 1, d.v2_num 1 - V1' p * d.v2_den 1])
+        (curveA1 p c0 c1 c2 c3 c4)))
+    (hCurveA2_reg : IsSMulRegular
+      (Rdec p ⧸ Ideal.ofList
+        [d.u1_num 0 - U0' p * d.u1_den 0, d.u2_num 0 - U0' p * d.u2_den 0,
+         d.u1_num 1 - U1' p * d.u1_den 1, d.u2_num 1 - U1' p * d.u2_den 1,
+         d.v1_num 0 - V0' p * d.v1_den 0, d.v2_num 0 - V0' p * d.v2_den 0,
+         d.v1_num 1 - V1' p * d.v1_den 1, d.v2_num 1 - V1' p * d.v2_den 1,
+         curveA1 p c0 c1 c2 c3 c4])
+      (Ideal.Quotient.mk (Ideal.ofList
+        [d.u1_num 0 - U0' p * d.u1_den 0, d.u2_num 0 - U0' p * d.u2_den 0,
+         d.u1_num 1 - U1' p * d.u1_den 1, d.u2_num 1 - U1' p * d.u2_den 1,
+         d.v1_num 0 - V0' p * d.v1_den 0, d.v2_num 0 - V0' p * d.v2_den 0,
+         d.v1_num 1 - V1' p * d.v1_den 1, d.v2_num 1 - V1' p * d.v2_den 1,
+         curveA1 p c0 c1 c2 c3 c4])
+        (curveA2 p c0 c1 c2 c3 c4)))
+    (hCurveB1_reg : IsSMulRegular
+      (Rdec p ⧸ Ideal.ofList
+        [d.u1_num 0 - U0' p * d.u1_den 0, d.u2_num 0 - U0' p * d.u2_den 0,
+         d.u1_num 1 - U1' p * d.u1_den 1, d.u2_num 1 - U1' p * d.u2_den 1,
+         d.v1_num 0 - V0' p * d.v1_den 0, d.v2_num 0 - V0' p * d.v2_den 0,
+         d.v1_num 1 - V1' p * d.v1_den 1, d.v2_num 1 - V1' p * d.v2_den 1,
+         curveA1 p c0 c1 c2 c3 c4, curveA2 p c0 c1 c2 c3 c4])
+      (Ideal.Quotient.mk (Ideal.ofList
+        [d.u1_num 0 - U0' p * d.u1_den 0, d.u2_num 0 - U0' p * d.u2_den 0,
+         d.u1_num 1 - U1' p * d.u1_den 1, d.u2_num 1 - U1' p * d.u2_den 1,
+         d.v1_num 0 - V0' p * d.v1_den 0, d.v2_num 0 - V0' p * d.v2_den 0,
+         d.v1_num 1 - V1' p * d.v1_den 1, d.v2_num 1 - V1' p * d.v2_den 1,
+         curveA1 p c0 c1 c2 c3 c4, curveA2 p c0 c1 c2 c3 c4])
+        (curveB1 p c0 c1 c2 c3 c4)))
+    (hCurveB2_reg : IsSMulRegular
+      (Rdec p ⧸ Ideal.ofList
+        [d.u1_num 0 - U0' p * d.u1_den 0, d.u2_num 0 - U0' p * d.u2_den 0,
+         d.u1_num 1 - U1' p * d.u1_den 1, d.u2_num 1 - U1' p * d.u2_den 1,
+         d.v1_num 0 - V0' p * d.v1_den 0, d.v2_num 0 - V0' p * d.v2_den 0,
+         d.v1_num 1 - V1' p * d.v1_den 1, d.v2_num 1 - V1' p * d.v2_den 1,
+         curveA1 p c0 c1 c2 c3 c4, curveA2 p c0 c1 c2 c3 c4,
+         curveB1 p c0 c1 c2 c3 c4])
+      (Ideal.Quotient.mk (Ideal.ofList
+        [d.u1_num 0 - U0' p * d.u1_den 0, d.u2_num 0 - U0' p * d.u2_den 0,
+         d.u1_num 1 - U1' p * d.u1_den 1, d.u2_num 1 - U1' p * d.u2_den 1,
+         d.v1_num 0 - V0' p * d.v1_den 0, d.v2_num 0 - V0' p * d.v2_den 0,
+         d.v1_num 1 - V1' p * d.v1_den 1, d.v2_num 1 - V1' p * d.v2_den 1,
+         curveA1 p c0 c1 c2 c3 c4, curveA2 p c0 c1 c2 c3 c4,
+         curveB1 p c0 c1 c2 c3 c4])
+        (curveB2 p c0 c1 c2 c3 c4))) :
+    RingTheory.Sequence.IsRegular (Rdec p)
+      (genList p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB) := by
+  classical
+  rw [hgenList]
+  have hquotient_mk_regular (I : Ideal (Rdec p)) (r : Rdec p)
+      (h : IsSMulRegular (Rdec p ⧸ I) (Ideal.Quotient.mk I r)) :
+      IsSMulRegular (Rdec p ⧸ I • (⊤ : Submodule (Rdec p) (Rdec p))) r := by
+    have hI : I • (⊤ : Submodule (Rdec p) (Rdec p)) =
+        (I : Submodule (Rdec p) (Rdec p)) := by
+      rw [Ideal.smul_top_eq_map, Algebra.algebraMap_self, Ideal.map_id,
+        Submodule.restrictScalars_self]
+    rw [hI, isSMulRegular_quotient_iff_mem_of_smul_mem]
+    intro x hx
+    apply Ideal.Quotient.eq_zero_iff_mem.mp
+    apply h
+    change (Ideal.Quotient.mk I r) • (Ideal.Quotient.mk I x) =
+      (Ideal.Quotient.mk I r) • 0
+    rw [smul_zero, smul_eq_mul, ← map_mul, Ideal.Quotient.eq_zero_iff_mem]
+    exact hx
+  rw [RingTheory.Sequence.isRegular_iff, RingTheory.Sequence.isWeaklyRegular_iff_Fin]
+  refine ⟨fun i => ?_, htop_ne_smul⟩
+  fin_cases i
+  · show IsSMulRegular (Rdec p ⧸ Ideal.ofList (([] : List (Rdec p))) • ⊤)
+      (d.u1_num 0 - U0' p * d.u1_den 0)
+    apply hquotient_mk_regular (Ideal.ofList [])
+      (d.u1_num 0 - U0' p * d.u1_den 0)
+    rw [show (Ideal.ofList [] : Ideal (Rdec p)) = ⊥ from Ideal.ofList_nil]
+    exact (isSMulRegular_bot_iff (d.u1_num 0 - U0' p * d.u1_den 0)).mp hFu0_reg
+  · show IsSMulRegular (Rdec p ⧸ Ideal.ofList
+        [d.u1_num 0 - U0' p * d.u1_den 0] • ⊤)
+      (d.u2_num 0 - U0' p * d.u2_den 0)
+    apply hquotient_mk_regular
+      (Ideal.ofList [d.u1_num 0 - U0' p * d.u1_den 0])
+      (d.u2_num 0 - U0' p * d.u2_den 0)
+    rw [show Ideal.ofList [d.u1_num 0 - U0' p * d.u1_den 0] =
+        Ideal.span {d.u1_num 0 - U0' p * d.u1_den 0} from
+          Ideal.ofList_singleton (d.u1_num 0 - U0' p * d.u1_den 0)]
+    exact hFu1_reg
+  · show IsSMulRegular (Rdec p ⧸ Ideal.ofList
+        [d.u1_num 0 - U0' p * d.u1_den 0,
+         d.u2_num 0 - U0' p * d.u2_den 0] • ⊤)
+      (d.u1_num 1 - U1' p * d.u1_den 1)
+    exact hquotient_mk_regular
+      (Ideal.ofList [d.u1_num 0 - U0' p * d.u1_den 0,
+        d.u2_num 0 - U0' p * d.u2_den 0])
+      (d.u1_num 1 - U1' p * d.u1_den 1) hFu2_reg
+  · show IsSMulRegular (Rdec p ⧸ Ideal.ofList
+        [d.u1_num 0 - U0' p * d.u1_den 0,
+         d.u2_num 0 - U0' p * d.u2_den 0,
+         d.u1_num 1 - U1' p * d.u1_den 1] • ⊤)
+      (d.u2_num 1 - U1' p * d.u2_den 1)
+    exact hquotient_mk_regular
+      (Ideal.ofList [d.u1_num 0 - U0' p * d.u1_den 0,
+        d.u2_num 0 - U0' p * d.u2_den 0,
+        d.u1_num 1 - U1' p * d.u1_den 1])
+      (d.u2_num 1 - U1' p * d.u2_den 1) hFu3_full_reg
+  · show IsSMulRegular (Rdec p ⧸ Ideal.ofList
+        [d.u1_num 0 - U0' p * d.u1_den 0,
+         d.u2_num 0 - U0' p * d.u2_den 0,
+         d.u1_num 1 - U1' p * d.u1_den 1,
+         d.u2_num 1 - U1' p * d.u2_den 1] • ⊤)
+      (d.v1_num 0 - V0' p * d.v1_den 0)
+    apply hquotient_mk_regular
+      (Ideal.ofList [d.u1_num 0 - U0' p * d.u1_den 0,
+        d.u2_num 0 - U0' p * d.u2_den 0,
+        d.u1_num 1 - U1' p * d.u1_den 1,
+        d.u2_num 1 - U1' p * d.u2_den 1])
+      (d.v1_num 0 - V0' p * d.v1_den 0)
+    -- **Genuinely open, flagged rather than forced.** `hFv0_reg` only
+    -- gives regularity of `Fv0` in bare `Rdec p` (⊥-level); this stage
+    -- needs it mod the FULL 4-element `Fu`-prefix `[Fu0,Fu1,Fu2,Fu3]`,
+    -- which are all `U`-side/disjoint from `Fv0`'s own (`V`-side)
+    -- variables. `regular_of_disjoint_extension` (DecoupledSystemRegular.lean)
+    -- is the intended tool for "regular alone ⟹ regular mod a
+    -- variable-disjoint extension" but (a) is itself not fully proved yet
+    -- (see its own docstring -- still needs the flat-base-change REPL
+    -- steps) and (b) as stated only extends by ONE generator, not four at
+    -- once. Needs either an iterated application (once `regular_of_
+    -- disjoint_extension` itself is closed) or a genuinely new
+    -- multi-generator version. Not attempted here -- see
+    -- `chatgpt_prompt_stage4_disjoint_prefix.md` (to be handed to
+    -- ChatGPT) rather than guessed at.
+    sorry
+  · show IsSMulRegular (Rdec p ⧸ Ideal.ofList
+        [d.u1_num 0 - U0' p * d.u1_den 0,
+         d.u2_num 0 - U0' p * d.u2_den 0,
+         d.u1_num 1 - U1' p * d.u1_den 1,
+         d.u2_num 1 - U1' p * d.u2_den 1,
+         d.v1_num 0 - V0' p * d.v1_den 0] • ⊤)
+      (d.v2_num 0 - V0' p * d.v2_den 0)
+    apply hquotient_mk_regular
+      (Ideal.ofList [d.v1_num 0 - V0' p * d.v1_den 0])
+      (d.v2_num 0 - V0' p * d.v2_den 0)
+    rw [show Ideal.ofList [d.v1_num 0 - V0' p * d.v1_den 0] =
+        Ideal.span {d.v1_num 0 - V0' p * d.v1_den 0} from
+          Ideal.ofList_singleton (d.v1_num 0 - V0' p * d.v1_den 0)]
+    exact hFv1_reg
+  · show IsSMulRegular (Rdec p ⧸ Ideal.ofList
+        [d.u1_num 0 - U0' p * d.u1_den 0,
+         d.u2_num 0 - U0' p * d.u2_den 0,
+         d.u1_num 1 - U1' p * d.u1_den 1,
+         d.u2_num 1 - U1' p * d.u2_den 1,
+         d.v1_num 0 - V0' p * d.v1_den 0,
+         d.v2_num 0 - V0' p * d.v2_den 0] • ⊤)
+      (d.v1_num 1 - V1' p * d.v1_den 1)
+    exact hquotient_mk_regular
+      (Ideal.ofList [d.v1_num 0 - V0' p * d.v1_den 0,
+        d.v2_num 0 - V0' p * d.v2_den 0])
+      (d.v1_num 1 - V1' p * d.v1_den 1) hFv2_reg
+  · show IsSMulRegular (Rdec p ⧸ Ideal.ofList
+        [d.u1_num 0 - U0' p * d.u1_den 0,
+         d.u2_num 0 - U0' p * d.u2_den 0,
+         d.u1_num 1 - U1' p * d.u1_den 1,
+         d.u2_num 1 - U1' p * d.u2_den 1,
+         d.v1_num 0 - V0' p * d.v1_den 0,
+         d.v2_num 0 - V0' p * d.v2_den 0,
+         d.v1_num 1 - V1' p * d.v1_den 1] • ⊤)
+      (d.v2_num 1 - V1' p * d.v2_den 1)
+    exact hquotient_mk_regular
+      (Ideal.ofList [d.v1_num 0 - V0' p * d.v1_den 0,
+        d.v2_num 0 - V0' p * d.v2_den 0,
+        d.v1_num 1 - V1' p * d.v1_den 1])
+      (d.v2_num 1 - V1' p * d.v2_den 1) hFv3_full_reg
+  · show IsSMulRegular (Rdec p ⧸ Ideal.ofList
+        [d.u1_num 0 - U0' p * d.u1_den 0,
+         d.u2_num 0 - U0' p * d.u2_den 0,
+         d.u1_num 1 - U1' p * d.u1_den 1,
+         d.u2_num 1 - U1' p * d.u2_den 1,
+         d.v1_num 0 - V0' p * d.v1_den 0,
+         d.v2_num 0 - V0' p * d.v2_den 0,
+         d.v1_num 1 - V1' p * d.v1_den 1,
+         d.v2_num 1 - V1' p * d.v2_den 1] • ⊤)
+      (curveA1 p c0 c1 c2 c3 c4)
+    exact hquotient_mk_regular
+      (Ideal.ofList [d.u1_num 0 - U0' p * d.u1_den 0,
+        d.u2_num 0 - U0' p * d.u2_den 0,
+        d.u1_num 1 - U1' p * d.u1_den 1,
+        d.u2_num 1 - U1' p * d.u2_den 1,
+        d.v1_num 0 - V0' p * d.v1_den 0,
+        d.v2_num 0 - V0' p * d.v2_den 0,
+        d.v1_num 1 - V1' p * d.v1_den 1,
+        d.v2_num 1 - V1' p * d.v2_den 1])
+      (curveA1 p c0 c1 c2 c3 c4) hCurveA1_reg
+  · show IsSMulRegular (Rdec p ⧸ Ideal.ofList
+        [d.u1_num 0 - U0' p * d.u1_den 0,
+         d.u2_num 0 - U0' p * d.u2_den 0,
+         d.u1_num 1 - U1' p * d.u1_den 1,
+         d.u2_num 1 - U1' p * d.u2_den 1,
+         d.v1_num 0 - V0' p * d.v1_den 0,
+         d.v2_num 0 - V0' p * d.v2_den 0,
+         d.v1_num 1 - V1' p * d.v1_den 1,
+         d.v2_num 1 - V1' p * d.v2_den 1,
+         curveA1 p c0 c1 c2 c3 c4] • ⊤)
+      (curveA2 p c0 c1 c2 c3 c4)
+    exact hquotient_mk_regular
+      (Ideal.ofList [d.u1_num 0 - U0' p * d.u1_den 0,
+        d.u2_num 0 - U0' p * d.u2_den 0,
+        d.u1_num 1 - U1' p * d.u1_den 1,
+        d.u2_num 1 - U1' p * d.u2_den 1,
+        d.v1_num 0 - V0' p * d.v1_den 0,
+        d.v2_num 0 - V0' p * d.v2_den 0,
+        d.v1_num 1 - V1' p * d.v1_den 1,
+        d.v2_num 1 - V1' p * d.v2_den 1,
+        curveA1 p c0 c1 c2 c3 c4])
+      (curveA2 p c0 c1 c2 c3 c4) hCurveA2_reg
+  · show IsSMulRegular (Rdec p ⧸ Ideal.ofList
+        [d.u1_num 0 - U0' p * d.u1_den 0,
+         d.u2_num 0 - U0' p * d.u2_den 0,
+         d.u1_num 1 - U1' p * d.u1_den 1,
+         d.u2_num 1 - U1' p * d.u2_den 1,
+         d.v1_num 0 - V0' p * d.v1_den 0,
+         d.v2_num 0 - V0' p * d.v2_den 0,
+         d.v1_num 1 - V1' p * d.v1_den 1,
+         d.v2_num 1 - V1' p * d.v2_den 1,
+         curveA1 p c0 c1 c2 c3 c4,
+         curveA2 p c0 c1 c2 c3 c4] • ⊤)
+      (curveB1 p c0 c1 c2 c3 c4)
+    exact hquotient_mk_regular
+      (Ideal.ofList [d.u1_num 0 - U0' p * d.u1_den 0,
+        d.u2_num 0 - U0' p * d.u2_den 0,
+        d.u1_num 1 - U1' p * d.u1_den 1,
+        d.u2_num 1 - U1' p * d.u2_den 1,
+        d.v1_num 0 - V0' p * d.v1_den 0,
+        d.v2_num 0 - V0' p * d.v2_den 0,
+        d.v1_num 1 - V1' p * d.v1_den 1,
+        d.v2_num 1 - V1' p * d.v2_den 1,
+        curveA1 p c0 c1 c2 c3 c4,
+        curveA2 p c0 c1 c2 c3 c4])
+      (curveB1 p c0 c1 c2 c3 c4) hCurveB1_reg
+  · show IsSMulRegular (Rdec p ⧸ Ideal.ofList
+        [d.u1_num 0 - U0' p * d.u1_den 0,
+         d.u2_num 0 - U0' p * d.u2_den 0,
+         d.u1_num 1 - U1' p * d.u1_den 1,
+         d.u2_num 1 - U1' p * d.u2_den 1,
+         d.v1_num 0 - V0' p * d.v1_den 0,
+         d.v2_num 0 - V0' p * d.v2_den 0,
+         d.v1_num 1 - V1' p * d.v1_den 1,
+         d.v2_num 1 - V1' p * d.v2_den 1,
+         curveA1 p c0 c1 c2 c3 c4,
+         curveA2 p c0 c1 c2 c3 c4,
+         curveB1 p c0 c1 c2 c3 c4] • ⊤)
+      (curveB2 p c0 c1 c2 c3 c4)
+    exact hquotient_mk_regular
+      (Ideal.ofList [d.u1_num 0 - U0' p * d.u1_den 0,
+        d.u2_num 0 - U0' p * d.u2_den 0,
+        d.u1_num 1 - U1' p * d.u1_den 1,
+        d.u2_num 1 - U1' p * d.u2_den 1,
+        d.v1_num 0 - V0' p * d.v1_den 0,
+        d.v2_num 0 - V0' p * d.v2_den 0,
+        d.v1_num 1 - V1' p * d.v1_den 1,
+        d.v2_num 1 - V1' p * d.v2_den 1,
+        curveA1 p c0 c1 c2 c3 c4,
+        curveA2 p c0 c1 c2 c3 c4,
+        curveB1 p c0 c1 c2 c3 c4])
+      (curveB2 p c0 c1 c2 c3 c4) hCurveB2_reg
+
+set_option maxHeartbeats 1000000 in
+theorem regularSeq_of_peel_chain (c0 c1 c2 c3 c4 : F p) (sa sb : SampleTarget p)
+    (hcurA : curBeforeMonic p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1 ≠ 0)
+    (hcurB : curBeforeMonic p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1 ≠ 0)
+    (hgcdA : IsCoprime (Ypoly p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1)
+      (uRS p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1))
+    (hgcdB : IsCoprime (Ypoly p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1)
+      (uRS p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1))
+    (hndA : Nondegenerate p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1 hcurA hgcdA)
+    (hndB : Nondegenerate p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1 hcurB hgcdB)
+    (hcross : CrossNondegenerate p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB)
+    (hpeel : PeelChainNondegenerate p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB)
+    -- **Gap C (`top_ne_smul`), weakened to a hypothesis.** The full
+    -- 12-generator ideal is proper, i.e. the system has a genuine common
+    -- solution -- real existence-of-a-point content
+    -- (`ROADMAP-peel-chain-assembly.md`'s Gap C), not attempted here; see
+    -- that file's own note on what proving this honestly would need.
+    (htop_ne_smul : (⊤ : Ideal (Rdec p)) ≠
+      Ideal.ofList (genList p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB) • ⊤) :
+    RingTheory.Sequence.IsRegular (Rdec p)
+      (genList p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB) := by
+  classical
+  -- Unfold `genList` down to a literal 12-element `List.cons` chain, so
+  -- `IsRegular.cons'` can be applied one element at a time.
+  set d := theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB with hd_def
+  have hgenList : genList p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB =
+      [ d.u1_num 0 - U0' p * d.u1_den 0, d.u2_num 0 - U0' p * d.u2_den 0,
+        d.u1_num 1 - U1' p * d.u1_den 1, d.u2_num 1 - U1' p * d.u2_den 1,
+        d.v1_num 0 - V0' p * d.v1_den 0, d.v2_num 0 - V0' p * d.v2_den 0,
+        d.v1_num 1 - V1' p * d.v1_den 1, d.v2_num 1 - V1' p * d.v2_den 1,
+        curveA1 p c0 c1 c2 c3 c4, curveA2 p c0 c1 c2 c3 c4,
+        curveB1 p c0 c1 c2 c3 c4, curveB2 p c0 c1 c2 c3 c4 ] := by
+    simp only [genList, FuList, FvList, hd_def, List.append_eq]
+    rfl
+  -- **`Fu0`/`Fv0` and `Fu1`/`Fu3`/`Fv1`/`Fv3`, both proved in standalone
+  -- lemmas above** (`hFu0Fv0_reg_of`/`hFu1Fu3Fv1Fv3_reg_of`) so they
+  -- elaborate independently of this theorem's own (much larger) proof
+  -- term -- see those lemmas' docstrings / `ROADMAP-peel-chain-assembly.md`
+  -- for the mathematical content, unchanged from before this refactor.
+  obtain ⟨hFu0_reg, hFv0_reg⟩ :=
+    hFu0Fv0_reg_of p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB hndA hndB d hd_def
+  obtain ⟨hFu1_reg, hFu3_reg, hFv1_reg, hFv3_reg⟩ :=
+    hFu1Fu3Fv1Fv3_reg_of p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB hcross d hd_def
   -- **Stages 2/6, 3/7, and 8-11, all closed via `PeelChainNondegenerate`
   -- this pass** (per Claire's explicit instruction: rather than prove
   -- Gap A's coprimality content or Gap B's curve-shape identification
@@ -2491,83 +2885,17 @@ theorem regularSeq_of_peel_chain (c0 c1 c2 c3 c4 : F p) (sa sb : SampleTarget p)
         [d.v1_num 0 - V0' p * d.v1_den 0, d.v2_num 0 - V0' p * d.v2_den 0,
          d.v1_num 1 - V1' p * d.v1_den 1])
         (d.v2_num 1 - V1' p * d.v2_den 1)) := hpeel.hv1_full
-
-  /- **12-stage assembly, via the flat `regular_mod_prev`
-  characterization -- supersedes the earlier `isRegular_cons_iff'`-
-  unrolling draft.**
-
-  `RingTheory.Sequence.IsRegular M rs` (confirmed against Mathlib
-  source, `RegularSequence.lean`) unfolds to `IsWeaklyRegular M rs`
-  (itself characterized, via `isWeaklyRegular_iff_Fin`, by `∀ i : Fin
-  rs.length, IsSMulRegular (M ⧸ Ideal.ofList (rs.take i) • ⊤) rs[i]`)
-  PLUS one extra nondegeneracy field `top_ne_smul : ⊤ ≠ Ideal.ofList rs
-  • ⊤`. Crucially, `regular_mod_prev`'s statement is FLAT: a single
-  quotient by `Ideal.ofList (rs.take i)`, never a nested `QuotSMulTop`
-  tower -- so this is a strictly easier target to assemble than the
-  `isRegular_cons_iff'`-unrolling route attempted in an earlier pass
-  (kept, in spirit, only through `isSMulRegular_quotSMulTop_of_span`
-  above, which is no longer needed for THIS route but is harmless to
-  leave proved for potential future use).
-
-  With `genList = [Fu0,Fu1,Fu2,Fu3,Fv0,Fv1,Fv2,Fv3,cA1,cA2,cB1,cB2]`
-  (`hgenList` above), the twelve `regular_mod_prev i` obligations are,
-  after unfolding `List.take`/`List.get`/`rs[i]` for each concrete `i`
-  (all closed by `rfl`/`simp` on the literal list, no genuine case
-  analysis beyond picking which stored fact to quote):
-
-  * `i = 0`: `Ideal.ofList (rs.take 0) = Ideal.ofList [] = ⊥` -- matches
-    `hFu0_reg` (`IsSMulRegular (Rdec p) Fu0`) via `Ideal.ofList_nil` +
-    `isSMulRegular_bot_iff`.
-  * `i = 1`: `Ideal.ofList [Fu0] = Ideal.span {Fu0}` (`Ideal.ofList_singleton`)
-    -- matches `hFu1_reg` exactly.
-  * `i = 2`: `Ideal.ofList [Fu0,Fu1]` -- matches `hFu2_reg` directly
-    (statement at the full 2-element prefix, matching
-    `isSMulRegular_den_of_second_peel`'s own conclusion shape; supplied
-    by `hpeel.hu01` this pass -- see `PeelChainNondegenerate`).
-  * `i = 3`: `Ideal.ofList [Fu0,Fu1,Fu2]` -- matches `hFu3_full_reg`
-    (supplied by `hpeel.hu1_full` this pass) directly.
-  * `i = 4..7`: same four shapes, `V`-register (`hFv0_reg`, `hFv1_reg`,
-    `hFv2_reg`, `hFv3_full_reg`).
-  * `i = 8..11`: `hCurveA1_reg .. hCurveB2_reg` already stated mod the
-    exact FULL accumulated prefix at each stage -- no rewriting needed
-    at all, these plug in directly.
-
-  All twelve `regular_mod_prev` obligations above (`hFu0_reg .. hFv3_full_reg`,
-  `hCurveA1_reg .. hCurveB2_reg`) are now in hand -- either proved outright
-  earlier in this file or supplied via `hpeel : PeelChainNondegenerate ...`
-  this pass. Only `top_ne_smul` (Gap C, `ROADMAP-peel-chain-assembly.md`'s
-  own name for it) remains genuinely unattempted: proving it honestly needs
-  exhibiting an actual `F p`-point solving all 12 defining equations
-  (properness of the full ideal), real existence-of-a-point mathematics
-  entirely separate from the regularity argument above. Per Claire's same
-  "weaken via a hypothesis" instruction, this is threaded in as
-  `htop_ne_smul` below rather than attempted here or silently assumed. -/
-  rw [RingTheory.Sequence.isRegular_iff, RingTheory.Sequence.isWeaklyRegular_iff_Fin]
-  refine ⟨fun i => ?_, htop_ne_smul⟩
-  -- Each `i : Fin 12` (against the literal list from `hgenList`, already
-  -- rewritten into the goal by the earlier `rw [hgenList]`) is resolved by
-  -- `fin_cases`-driven enumeration; the resulting 12 goals each unfold
-  -- `List.take`/`List.get`/`rs[i]` on the literal 12-element list and
-  -- match `ideal_smul_top_eq_self` rewritten against the corresponding
-  -- `h*_reg` fact above -- one `first | ... ` alternative per stage,
-  -- matching the twelve bullet points in this theorem's docstring.
-  fin_cases i <;>
-    simp only [List.take, List.getElem_cons_zero, List.getElem_cons_succ, Fin.isValue,
-      List.length_nil, List.length_cons, List.length_singleton,
-      Ideal.ofList_nil, Ideal.ofList_singleton, Ideal.ofList_cons] <;>
-    first
-      | simpa using (isSMulRegular_bot_iff (d.u1_num 0 - U0' p * d.u1_den 0)).mp hFu0_reg
-      | exact ideal_smul_top_eq_self (R := Rdec p) _ ▸ hFu1_reg
-      | exact ideal_smul_top_eq_self (R := Rdec p) _ ▸ hFu2_reg
-      | exact ideal_smul_top_eq_self (R := Rdec p) _ ▸ hFu3_full_reg
-      | simpa using (isSMulRegular_bot_iff (d.v1_num 0 - V0' p * d.v1_den 0)).mp hFv0_reg
-      | exact ideal_smul_top_eq_self (R := Rdec p) _ ▸ hFv1_reg
-      | exact ideal_smul_top_eq_self (R := Rdec p) _ ▸ hFv2_reg
-      | exact ideal_smul_top_eq_self (R := Rdec p) _ ▸ hFv3_full_reg
-      | exact ideal_smul_top_eq_self (R := Rdec p) _ ▸ hCurveA1_reg
-      | exact ideal_smul_top_eq_self (R := Rdec p) _ ▸ hCurveA2_reg
-      | exact ideal_smul_top_eq_self (R := Rdec p) _ ▸ hCurveB1_reg
-      | exact ideal_smul_top_eq_self (R := Rdec p) _ ▸ hCurveB2_reg
+  -- **Final assembly, extracted to `regularSeq_of_peel_chain_assembly`
+  -- above for compile-time isolation** (this theorem plus that tail was
+  -- one command that hit the `whnf` heartbeat ceiling; splitting into two
+  -- top-level commands, each independently checked, fixes that without
+  -- raising `maxHeartbeats` further). All ten facts that lemma consumes
+  -- are already in hand above.
+  exact regularSeq_of_peel_chain_assembly p c0 c1 c2 c3 c4 sa sb hcurA hcurB
+    hgcdA hgcdB htop_ne_smul d hd_def hgenList
+    hFu0_reg hFv0_reg hFu1_reg hFv1_reg hFu2_reg hFv2_reg
+    hFu3_full_reg hFv3_full_reg
+    hCurveA1_reg hCurveA2_reg hCurveB1_reg hCurveB2_reg
 
 end DecoupledSystem
 end Genus2Lean
