@@ -153,7 +153,7 @@ only ever instantiated at points where a solution demonstrably exists)
 is still an open question worth asking Claire directly rather than
 guessing, same as before.
 
-## Final wiring status
+## Final wiring status (stale as of this update — see next section)
 
 `regularSeq_of_peel_chain` itself: **done, no `sorry`** (delegates to
 `regularSeq_of_peel_chain_assembly`). `regularSeq_of_peel_chain_assembly`:
@@ -163,3 +163,110 @@ fields described above — not blocked on any remaining Lean bookkeeping
 uncertainty. Everything else in the 12-stage assembly (stages 0–3, 8–11)
 is wired and closed, either unconditionally or via an explicit,
 already-declared hypothesis.
+
+## Update this pass: the `PeelChainNondegenerate` fields for stages 4–7 now EXIST, but are not yet wired, and the disjoint-extension route needs a genuinely new lemma
+
+**The missing fields described above are no longer missing.**
+`PeelChainNondegenerate` now has `hv0_A`, `hv1_B`, `hv2_A`, `hv3_B`
+(added in the session between the previous version of this file and
+this one), stated at the minimal SAME-SIDE sub-prefix per stage:
+
+| stage | field | given mod | drop (disjoint) |
+|---|---|---|---|
+| 4 | `hv0_A` | `[Fu0,Fu2]` | `[Fu1,Fu3]` |
+| 5 | `hv1_B` | `[Fu1,Fu3]` | `[Fu0,Fu2]` |
+| 6 | `hv2_A` | `[Fu0,Fu2,Fv0]` | `[Fu1,Fu3,Fv1]` |
+| 7 | `hv3_B` | `[Fu1,Fu3,Fv1]` | `[Fu0,Fu2,Fv2]` |
+
+**But none of this is wired into `regularSeq_of_peel_chain_assembly`
+yet** — its signature still only takes the original ten hypotheses
+(`hFu0_reg` through `hCurveB2_reg`), and the caller
+`regularSeq_of_peel_chain` never references `hpeel.hv0_A` etc. The 4
+`sorry`s are exactly where they were.
+
+**Checked the variable-disjointness claim precisely this pass** (the
+in-place comments assert it but don't spell out the `Idx`-level
+detail): confirmed correct. `Fu0/Fu2` (roadmap labels; = `u1_num
+0/u1_num 1` in `genList` position terms) have vars ⊆
+`{wa1,wa2,a1,a2,U0}` / `{wa1,wa2,a1,a2,U1}`. `Fu1/Fu3` (= `u2_num
+0/u2_num 1`) have vars ⊆ `{wb1,wb2,b1,b2,U0}` / `{wb1,wb2,b1,b2,U1}`.
+`Fv0` has vars ⊆ `{wa1,wa2,a1,a2,V0}`. Despite `Fu0` and `Fu1` BOTH
+using the literal variable `U0` (intentional — `U0` is a shared
+matching variable, not side-exclusive), `Fv0`'s var set is still
+fully disjoint from `Fu1`/`Fu3`'s (`V0 ∉ {U0,U1}`, A-side vars ∉
+B-side vars) — so the disjoint-extension claim for stage 4 is
+mathematically correct.
+
+**Why `regular_of_disjoint_extension_list` (existing, proved) cannot
+be applied directly.** Its hypothesis needs `e` UNCONDITIONALLY
+regular in its own home ring `MvPolynomial σ₂ R` — no ambient
+quotient. But `hpeel.hv0_A` gives `Fv0` regular only AFTER already
+quotienting by `[Fu0,Fu2]` (which lives in the SAME variables as
+`Fv0` modulo `V0` vs `U0/U1` — i.e. `Fu0,Fu2,Fv0` all need the
+A-side vars `{wa1,wa2,a1,a2}`, so `[Fu0,Fu2]` can't be pushed onto
+the disjoint `σ₁` side either — that's exactly Gap A's content, why
+`hv0_A` needs to be a hypothesis at all). So closing stage 4 needs a
+TWO-SIDED generalization: `e` regular mod its own-side prefix
+`gens₂'` survives extending by a disjoint `σ₁` and quotienting by
+`gens₁'` there. This is NOT a trivial corollary of the one-sided
+lemma — worked through the flat-base-change argument by hand this
+pass and confirmed it needs the base ring in the final
+`IsSMulRegular.of_flat`-style step to be `MvPolynomial σ₂ R ⧸
+Ideal.ofList gens₂'` instead of `MvPolynomial σ₂ R` itself, which
+doesn't drop cleanly out of the existing proof without redoing the
+`sumAlgEquiv`/`algebraTensorAlgEquiv`/`tensorQuotientEquiv` chain.
+
+**Drafted a ChatGPT prompt for this** (per project practice — hard
+sorry, deep math, no REPL available to verify blind):
+`chatgpt_prompt_two_sided_disjoint_extension.md`. Asks for a proof of
+
+```
+theorem regular_of_disjoint_extension_list_two_sided
+    {R : Type*} [Field R] {σ₁ σ₂ : Type*} [DecidableEq σ₁] [DecidableEq σ₂]
+    (gens₁' : List (MvPolynomial σ₁ R)) (gens₂' : List (MvPolynomial σ₂ R))
+    {e : MvPolynomial σ₂ R}
+    (he : IsSMulRegular (MvPolynomial σ₂ R ⧸ Ideal.ofList gens₂')
+      (Ideal.Quotient.mk (Ideal.ofList gens₂') e)) :
+    IsSMulRegular
+      (MvPolynomial (σ₁ ⊕ σ₂) R ⧸ Ideal.ofList
+        ((gens₁'.map (MvPolynomial.rename Sum.inl)) ++
+         (gens₂'.map (MvPolynomial.rename Sum.inr))))
+      (Ideal.Quotient.mk (...) (MvPolynomial.rename Sum.inr e))
+```
+
+Once this lands (proved, no `sorry`), the remaining wiring per stage
+is:
+1. An `Idx`-specialized bridge (analogous to
+   `isSMulRegular_bridge_prefix_gen`, but for a genuine `σ₁ ⊕ σ₂`
+   split rather than `Option`), using a hand-built `Idx ≃ σ₁ ⊕ σ₂`
+   equiv per stage (concretely: `σ₁`/`σ₂` as `Idx`-subtypes over
+   disjoint `Finset Idx` covering all 12 constructors between them —
+   e.g. stage 4: `σ₂ := {v // v ∈ ({wa1,wa2,a1,a2,V0} : Finset Idx)}`,
+   `σ₁ :=` the complement).
+2. Apply `regular_of_disjoint_extension_list_two_sided` with
+   `gens₂' := [Fu0,Fu2]`-as-`σ₂`-polynomials, `gens₁' :=
+   [Fu1,Fu3]`-as-`σ₁`-polynomials, `he := hpeel.hv0_A` (suitably
+   transported to the subtype level via
+   `MvPolynomial.exists_rename_eq_of_vars_subset_range`, same
+   technique `hFu0Fv0_reg_of` already uses).
+3. Bridge back to `Rdec p` via step 1's equiv, matching
+   `isSMulRegular_bridge_prefix`'s existing pattern.
+4. Thread the result into `regularSeq_of_peel_chain_assembly`'s
+   signature (4 new hypothesis parameters) and
+   `regularSeq_of_peel_chain`'s call site (4 new `have`s from
+   `hpeel.hv0_A`/etc., mirroring exactly how `hFu2_reg :=
+   hpeel.hu01` etc. already work).
+
+Steps 1–4 are mechanical once the two-sided lemma exists, but
+non-trivial (roughly 50–80 lines per stage given the file's existing
+density for comparable bridges) — not attempted yet this pass, since
+the lemma itself is the load-bearing piece and shouldn't be built on
+top of an unverified two-sided flat-base-change argument.
+
+**Nothing in `PeelChainAssembly.lean` or `DecoupledSystemRegular.lean`
+was edited this pass** — this was a read-only diagnosis + a drafted
+ChatGPT prompt, per the project's "ask ChatGPT for hard sorries"
+practice, since attempting the two-sided tensor/flat argument blind
+(no REPL) carries real risk of a subtle wrong turn in exactly the
+kind of `AlgEquiv`/`IsBaseChange` bookkeeping the one-sided lemma's
+own docstring already flagged as fiddly even WITH a REPL.
