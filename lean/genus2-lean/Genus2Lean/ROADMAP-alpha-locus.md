@@ -615,3 +615,91 @@ enough to see what remains.
 `decoupledSystem_isRegularSequence`/`decoupledSystem_zeroDimensional` from
 the end of `DecoupledSystemRegular.lean` now that they're duplicated here
 — not done this pass, flagged so it isn't lost.
+
+## Update (this pass): confirmed sorry inventory, answered "what do the two
+## sorries actually achieve," drafted a ChatGPT consultation for
+## `decoupledSystem_zeroDimensional`
+
+**Full-chain sorry audit, done fresh this pass** (`grep` for actual `sorry`
+tactic uses, not docstring mentions, across all four `.lean` files):
+`DecoupledSystemRegular.lean`, `PeelChainAssembly.lean`, `AlphaReduce.lean`
+are all genuinely 0-`sorry` — every remaining `sorry` in the whole project
+lives in `AlphaLocusDegreeUniform.lean`, and there are exactly two:
+`decoupledSystem_zeroDimensional` and `decoupledSystem_degree_uniform`.
+`decoupledSystem_isRegularSequence` is confirmed proved (one-line
+delegation to `regularSeq_of_peel_chain`), matching this file's own
+existing claim.
+
+**Answering Claire's question — what does closing each sorry actually
+buy**, stated plainly since it wasn't spelled out in one place before:
+closing `decoupledSystem_zeroDimensional` is pure Mathlib-API
+commutative algebra with ZERO alpha/genus-2 content — it doesn't move
+Step 1/2 forward at all, it only upgrades the fixed-target
+regular-sequence fact to a fixed-target finiteness fact. Closing
+`decoupledSystem_degree_uniform` is not currently possible in Lean at
+all — not because of a missing proof idea, but because two prerequisite
+pieces of work are still undone and both live OUTSIDE Lean: porting
+`Reduce` (Task A, an actual Julia→Lean port of `phi_general.zip`'s
+algorithm) and empirically determining what `Bad` even is (Task B, a
+numerical Julia/Oscar investigation of whether `D ~ K_C` correlates with
+a degree jump, per Step 2). Whether the bad `alpha`'s end up being
+literally readable off a formula (e.g. `D ~ K_C`) or something the
+computer algebra has to determine per-instance is exactly Step 2's open
+question — nobody has run that check yet.
+
+**Attempted `decoupledSystem_zeroDimensional` this pass; not closed —
+routed to a ChatGPT consultation instead, per project convention for
+hard sorries.** The needed fact — "regular sequence of length
+`Fintype.card Idx` (=12) in `MvPolynomial Idx (F p)` implies the quotient
+is `Module.Finite (F p)`-finite" — is real commutative algebra (system-
+of-parameters / Cohen-Macaulay dimension theory), not a Mathlib one-
+liner; confirmed via direct web search that no ready-made Mathlib lemma
+states this. Two candidate routes surfaced and written up in
+`chatgpt_prompt_zerodim.md` (drafted, not yet sent/answered):
+1. **Krull's height theorem**, now genuinely present in current Mathlib
+   (`Mathlib.RingTheory.Ideal.KrullsHeightTheorem`,
+   `Mathlib.RingTheory.Ideal.Height` — `Ideal.height`,
+   `ringKrullDim`, `Ideal.height_le_ringKrullDim_quotient_add_encard`) —
+   this infrastructure did not exist when older passes of this project
+   assessed the gap as "a Mathlib-API question not yet surveyed"; it may
+   be surveyable now. Missing piece: connecting `rs.length = 12` to
+   `ringKrullDim (Rdec p) = 12` (does Mathlib know
+   `ringKrullDim (MvPolynomial ι k) = Fintype.card ι` for a field `k`?
+   Not confirmed — only found an inequality for the single-variable
+   case, `Polynomial.ringKrullDim_le`) and then chaining height/dimension
+   facts to get equality (not just inequality) at the quotient, which
+   isn't obviously routine.
+2. **Noether normalization** (`Mathlib.RingTheory.NoetherNormalization`,
+   `exists_integral_inj_algHom_of_quotient`) — for `I ≠ ⊤` an ideal of
+   `MvPolynomial (Fin n) k`, gives `MvPolynomial (Fin s) k ↪ (quotient)`
+   integral+injective for SOME `s ≤ n`. If `s = 0` can be forced from
+   `rs.length = n` and `IsRegular`, `MvPolynomial (Fin 0) k ≃ k` and the
+   quotient is finite over `k` directly — this looks like the more
+   concrete/tractable route of the two, but nailing `s = 0` is exactly
+   where the same underlying dimension-theory content has to enter one
+   way or another; flagged as "the crux of the whole sorry" in the
+   consultation prompt rather than assumed solvable.
+
+Also recorded in the prompt (in case it's the real answer): the 12
+generators' own shape means the honest finiteness argument might not be
+a free corollary of `IsRegular`+length-count at all, but might need to
+reuse the SAME "final 4-variable elimination certificate" gap that
+`ROADMAP-regular-sequence.md` §5 step 4 already flags as needed for
+`decoupledSystem_isRegularSequence` itself (the 4 curve-relation
+generators pin `wa*,wb*` integrally over `F p[a1,a2,b1,b2]`, and the 8
+`Fu`/`Fv` generators pin `U0,U1,V0,V1` linearly over the same subring
+given the others — but nothing in `genList` directly bounds
+`a1,a2,b1,b2` themselves; that has to come from eliminating everything
+else symbolically, which is a genericity/degree computation, not
+abstract commutative algebra). If ChatGPT confirms this, the "just
+Mathlib API, unrelated to genericity" framing this roadmap and
+`ROADMAP-regular-sequence.md` both currently use for this sorry is
+optimistic and should be corrected.
+
+**Not sent to ChatGPT yet this pass** — Claire copies prompts over
+herself per project convention; `chatgpt_prompt_zerodim.md` is ready to
+paste. Nothing in `AlphaLocusDegreeUniform.lean` was edited this pass
+(no proof attempt was made without a plan, per "don't write nothing but
+also don't guess blind on hard math" — this sorry cleared the bar for
+"ask ChatGPT first," not "write a plausible-looking but untested Lean
+proof term").

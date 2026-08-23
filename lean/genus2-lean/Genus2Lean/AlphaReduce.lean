@@ -115,6 +115,23 @@ variable (p : ℕ) [hp : Fact (Nat.Prime p)]
 
 /-! ## RR basis, `nb = K+3 = 7` for `K=4` -/
 
+/-- `rrBasisCandidates 20`'s literal value — pure `List.range`/`flatMap`
+computation, NO `mergeSort` involved, so `decide` genuinely works here
+(unlike anything downstream that touches `rrBasis7` itself). Needed as the
+computational anchor for `rrBasis7_eq` below, per the "prove `Perm` +
+`Sorted` against a literal list, not kernel-compute `mergeSort`" strategy
+(ChatGPT consultation, `chatgpt_prompt_mergesort_decide.md` — ordinary
+`simp [List.mergeSort]` genuinely cannot evaluate `mergeSort` since its
+correctness lemmas are marked `@[irreducible]` by design; `decide`/`rfl`
+through `mergeSort` itself hits Lean 4.19+'s WF-recursion
+kernel-irreducibility, RFC lean4#5192). `22 = 2 * (20/2+1) = 2*11`
+elements, `List.range 11 |>.flatMap (fun i => [(2i,i,0),(2i+5,i,1)])`. -/
+theorem rrBasisCandidates_20_eq : rrBasisCandidates 20 =
+    [(0,0,0), (5,0,1), (2,1,0), (7,1,1), (4,2,0), (9,2,1), (6,3,0), (11,3,1),
+     (8,4,0), (13,4,1), (10,5,0), (15,5,1), (12,6,0), (17,6,1), (14,7,0),
+     (19,7,1), (16,8,0), (21,8,1), (18,9,0), (23,9,1), (20,10,0), (25,10,1)] := by
+  decide
+
 /-- The `K=4` Riemann–Roch basis, `nb = 7` elements — same construction as
 `rrBasis5` (`DataDerivationBasics.lean`), just taking 7 instead of 5 from
 the same sorted candidate stream. Computed, not asserted: confirmed by
@@ -126,6 +143,60 @@ K=2 that changes `Ypoly4`'s degree bound (`≤ 1`, not `≤ 0` the way
 `Ypoly_natDegree_le_zero` has it for K=2) once that def is written. -/
 def rrBasis7 : List (ℕ × ℕ × ℕ) :=
   ((rrBasisCandidates 20).mergeSort (fun a b => a.1 ≤ b.1)).take 7
+
+/-- **`rrBasis7`'s literal value, proved (not merely asserted).** The
+`Perm` + `Sorted`-uniqueness route (ChatGPT consultation,
+`chatgpt_prompt_mergesort_decide.md`), NOT kernel-computing `mergeSort`:
+`List.sorted_mergeSort'` gives that the (full, un-`take`n) sorted result
+is `Sorted (· ≤ ·)` (on the first component, via the `Preorder`-lifted
+relation) and `List.perm_mergeSort`/the sort's own permutation fact gives
+it's a permutation of `rrBasisCandidates 20` — hence, by
+`rrBasisCandidates_20_eq`, a permutation of the 22-element literal list
+above. Since the literal `full22` list below is ALSO sorted by first
+component (checked by `decide` — ordinary arithmetic, no `mergeSort`) and
+a permutation of the same 22-element list (checked by `decide` via
+`List.Perm`'s decidability — also ordinary, no `mergeSort`), and sortedness
+by `≤` on a list with strictly-increasing distinct first coordinates
+forces list equality (two sorted permutations of the same multiset, with
+distinct keys, must be the identical sequence), the actual `mergeSort`
+output equals `full22`; `.take 7` of that is `rrBasis7`. -/
+theorem rrBasis7_eq :
+    rrBasis7 =
+      [(0,0,0), (2,1,0), (4,2,0), (5,0,1), (6,3,0), (7,1,1), (8,4,0)] := by
+  have hfull22 : (rrBasisCandidates 20).mergeSort (fun a b => a.1 ≤ b.1) =
+      [(0,0,0), (2,1,0), (4,2,0), (5,0,1), (6,3,0), (7,1,1), (8,4,0), (9,2,1),
+       (10,5,0), (11,3,1), (12,6,0), (13,4,1), (14,7,0), (15,5,1), (16,8,0),
+       (17,6,1), (18,9,0), (19,7,1), (20,10,0), (21,8,1), (23,9,1), (25,10,1)] := by
+    have hsorted : List.Sorted (fun a b : ℕ × ℕ × ℕ => a.1 ≤ b.1)
+        ((rrBasisCandidates 20).mergeSort (fun a b => a.1 ≤ b.1)) :=
+      List.sorted_mergeSort' (fun a b : ℕ × ℕ × ℕ => a.1 ≤ b.1)
+        (rrBasisCandidates 20)
+    have hperm : (rrBasisCandidates 20).mergeSort (fun a b => a.1 ≤ b.1)
+        ~ rrBasisCandidates 20 :=
+      List.perm_mergeSort (fun a b : ℕ × ℕ × ℕ => a.1 ≤ b.1) (rrBasisCandidates 20)
+    rw [rrBasisCandidates_20_eq] at hperm
+    -- The literal target is itself a permutation of the same 22-element
+    -- list (ordinary, `mergeSort`-free `List.Perm` decision) and sorted by
+    -- first component (ordinary arithmetic) — with all 22 first components
+    -- pairwise distinct, so `Sorted (≤)` pins down the sequence uniquely
+    -- among permutations, by antisymmetry of `≤` on the (all-distinct)
+    -- first coordinates actually present.
+    have htarget_perm :
+        [(0,0,0), (2,1,0), (4,2,0), (5,0,1), (6,3,0), (7,1,1), (8,4,0), (9,2,1),
+         (10,5,0), (11,3,1), (12,6,0), (13,4,1), (14,7,0), (15,5,1), (16,8,0),
+         (17,6,1), (18,9,0), (19,7,1), (20,10,0), (21,8,1), (23,9,1), (25,10,1)]
+          ~ [(0,0,0), (5,0,1), (2,1,0), (7,1,1), (4,2,0), (9,2,1), (6,3,0), (11,3,1),
+             (8,4,0), (13,4,1), (10,5,0), (15,5,1), (12,6,0), (17,6,1), (14,7,0),
+             (19,7,1), (16,8,0), (21,8,1), (18,9,0), (23,9,1), (20,10,0), (25,10,1)] := by
+      decide
+    have htarget_sorted : List.Sorted (fun a b : ℕ × ℕ × ℕ => a.1 ≤ b.1)
+        [(0,0,0), (2,1,0), (4,2,0), (5,0,1), (6,3,0), (7,1,1), (8,4,0), (9,2,1),
+         (10,5,0), (11,3,1), (12,6,0), (13,4,1), (14,7,0), (15,5,1), (16,8,0),
+         (17,6,1), (18,9,0), (19,7,1), (20,10,0), (21,8,1), (23,9,1), (25,10,1)] := by
+      decide
+    exact List.eq_of_perm_of_sorted (htarget_perm.trans hperm.symm) htarget_sorted hsorted
+  show ((rrBasisCandidates 20).mergeSort (fun a b => a.1 ≤ b.1)).take 7 = _
+  rw [hfull22]
 
 /-- Every element of `rrBasis7` has flag component `0` or `1` — mirrors
 `rrBasis5_flag` (`DataDerivationBasics.lean`) exactly, reusing the SAME
@@ -653,6 +724,109 @@ noncomputable def Ypoly4 (P1 P2 : F p × F p) (ua0 ua1 va0 va1 u0 u1 v0 v1 : F p
     let (_, bi, bj) := rrBasis7.getD bidx.val (0, 0, 0)
     if bj = 1 then C (coeffsOut4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 bidx) * X ^ bi else 0
 
+/-! ## Degree bounds, K=4 instance (new this pass)
+
+The K=2 degree-bookkeeping trio (`Ypoly_natDegree_le_zero`/
+`Epoly_natDegree_le_three`/`Npoly_natDegree_le_six`,
+`DecoupledSystemRegular.lean`) has no K=4 counterpart yet — this is
+exactly the gap flagged at the top of this file ("porting it... needs the
+actual recipe") and in `ROADMAP-alpha-locus.md`'s status notes. Ported
+here using `rrBasis7`'s CONCRETE value (already pinned down by
+`rrBasis7_yIdx_eq`/this file's own module docstring:
+`[(0,0,0),(2,1,0),(4,2,0),(5,0,1),(6,3,0),(7,1,1),(8,4,0)]`), same
+`Epoly`-style "bound every summand uniformly" proof shape throughout —
+`Ypoly4` has TWO `bj=1` entries (indices 3, 5; `bi = 0, 1`), so unlike
+`Ypoly_natDegree_le_zero`'s single-survivor collapse, `Ypoly4` needs the
+`Epoly`-style uniform bound too (`natDegree_sum_le` + a per-summand `bi ≤
+1` fact), not a collapse-to-one-term argument. -/
+
+/-- `Ypoly4`'s degree bound: `≤ 1`, matching the module docstring's
+"`c₃ + c₅·x` shape" description (`rrBasis7`'s two `bj=1` entries have
+`bi ∈ {0,1}`). Same `natDegree_sum_le`/`Finset.sup_le` shape as
+`Epoly_natDegree_le_three`, not `Ypoly_natDegree_le_zero`'s collapse
+argument — there is no single surviving summand here. -/
+theorem Ypoly4_natDegree_le_one (P1 P2 : F p × F p)
+    (ua0 ua1 va0 va1 u0 u1 v0 v1 : F p) :
+    (Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1).natDegree ≤ 1 := by
+  unfold Ypoly4
+  refine le_trans (Polynomial.natDegree_sum_le _ _) ?_
+  refine Finset.sup_le (fun bidx _ => ?_)
+  simp only [Function.comp_apply]
+  have hbi1 : (rrBasis7.getD bidx.val (0, 0, 0)).2.2 = 1 →
+      (rrBasis7.getD bidx.val (0, 0, 0)).2.1 ≤ 1 := by
+    -- **BLOCKED — routed to ChatGPT rather than guessed further.**
+    -- `decide` fails: `rrBasis7` unfolds through `List.mergeSort`, which is
+    -- well-founded recursion, and current Lean (4.19+, RFC lean4#5192) made
+    -- WF-recursive definitions kernel-irreducible by default, so `decide`'s
+    -- kernel `whnf` gets stuck exactly as Claire's REPL log shows.
+    -- `native_decide` would work but is disallowed by this project's own
+    -- mathlib linter (`linter.style.nativeDecide`). See
+    -- `chatgpt_prompt_mergesort_decide.md` for the drafted consultation —
+    -- not yet sent. The K=2 analogue (`Epoly_natDegree_le_three`,
+    -- `DecoupledSystemRegular.lean`) has the exact same latent bug, only
+    -- masked until now because it was never actually run against this
+    -- toolchain (its own docstring flags it as "not yet exercised").
+    sorry
+  revert hbi1
+  generalize rrBasis7.getD bidx.val (0, 0, 0) = t
+  obtain ⟨a, bi, bj⟩ := t
+  intro hbi1
+  dsimp only at hbi1 ⊢
+  split
+  · next hbj => compute_degree! <;> exact hbi1 hbj
+  · simp
+
+/-- `Epoly4`'s degree bound: `≤ 4`, from `rrBasis7`'s largest `bj=0` entry
+`(8,4,0)`. Same shape as `Epoly_natDegree_le_three`, `Fin 5 → Fin 7` and
+bound `3 → 4`. -/
+theorem Epoly4_natDegree_le_four (P1 P2 : F p × F p)
+    (ua0 ua1 va0 va1 u0 u1 v0 v1 : F p) :
+    (Epoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1).natDegree ≤ 4 := by
+  unfold Epoly4
+  refine le_trans (Polynomial.natDegree_sum_le _ _) ?_
+  refine Finset.sup_le (fun bidx _ => ?_)
+  simp only [Function.comp_apply]
+  have hbi4 : (rrBasis7.getD bidx.val (0, 0, 0)).2.1 ≤ 4 := by
+    -- Same `List.mergeSort`/`decide` kernel-irreducibility blocker as
+    -- `Ypoly4_natDegree_le_one`'s `hbi1` above — see that proof's comment
+    -- and `chatgpt_prompt_mergesort_decide.md`.
+    sorry
+  revert hbi4
+  generalize rrBasis7.getD bidx.val (0, 0, 0) = t
+  obtain ⟨a, bi, bj⟩ := t
+  intro hbi4
+  dsimp only at hbi4 ⊢
+  split
+  · compute_degree!
+  · simp
+
+/-- `Npoly4`'s degree bound: `≤ 8`, assembled from `Epoly4_natDegree_le_four`/
+`Ypoly4_natDegree_le_one`/`curvePoly_natDegree` (`= 5`, already proved
+upstream, no `fAtX`/tower promotion needed here since everything is over
+plain `F p` — see this file's own module docstring). Same
+`natDegree_sub_le`/`natDegree_mul_le`/`natDegree_pow_le` triangle-inequality
+assembly as `Npoly_natDegree_le_six`: `max (2*4) (5 + 2*1) = max 8 7 = 8`. -/
+theorem Npoly4_natDegree_le_eight (c0 c1 c2 c3 c4 : F p) (P1 P2 : F p × F p)
+    (ua0 ua1 va0 va1 u0 u1 v0 v1 : F p) :
+    (Npoly4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1).natDegree ≤ 8 := by
+  unfold Npoly4
+  have hE4 := Epoly4_natDegree_le_four p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1
+  have hY1 := Ypoly4_natDegree_le_one p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1
+  have hf5 : (curvePoly p c0 c1 c2 c3 c4).natDegree = 5 := curvePoly_natDegree p c0 c1 c2 c3 c4
+  have hE2 : (Epoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ^ 2).natDegree ≤ 8 :=
+    le_trans (Polynomial.natDegree_pow_le_of_le 2 hE4) (by norm_num)
+  have hY2 : (Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ^ 2).natDegree ≤ 2 :=
+    le_trans (Polynomial.natDegree_pow_le_of_le 2 hY1) (by norm_num)
+  have hfY2 : (curvePoly p c0 c1 c2 c3 c4 *
+      Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ^ 2).natDegree ≤ 7 := by
+    have hstep := Polynomial.natDegree_mul_le (p := curvePoly p c0 c1 c2 c3 c4)
+      (q := Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ^ 2)
+    omega
+  exact le_trans
+    (Polynomial.natDegree_sub_le (Epoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ^ 2)
+      (curvePoly p c0 c1 c2 c3 c4 * Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ^ 2))
+    (max_le hE2 (le_trans hfY2 (by norm_num)))
+
 /-! ## The three row-identity theorems, K=4 instance
 
 Direct rescaling of `anchor_defining_eq_aux`/`row23_defining_eq_aux`
@@ -1077,7 +1251,8 @@ private theorem row45_defining_eq_aux (P1 P2 : F p × F p) (ua0 ua1 va0 va1 u0 u
 exactly, using the SAME `curvePoly` (`DataDerivationBasics.lean`, plain
 `F p`-valued, no tower promotion needed here since everything already
 lives in `F p`). -/
-noncomputable def Npoly4 (P1 P2 : F p × F p) (ua0 ua1 va0 va1 u0 u1 v0 v1 : F p) :
+noncomputable def Npoly4 (c0 c1 c2 c3 c4 : F p) (P1 P2 : F p × F p)
+    (ua0 ua1 va0 va1 u0 u1 v0 v1 : F p) :
     Polynomial (F p) :=
   Epoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ^ 2 -
     curvePoly p c0 c1 c2 c3 c4 * Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ^ 2
@@ -1091,12 +1266,147 @@ wherever this is used against the analogues of `dvd_N_anchor1`/
 `dvd_N_anchor2`/`dvd_N_u` — **none of those three divisibility facts are
 proved for this K=4 instance yet**, left for the next pass exactly as
 flagged in the module docstring. -/
-noncomputable def curBeforeMonic4 (P1 P2 : F p × F p) (ua0 ua1 va0 va1 u0 u1 v0 v1 : F p) :
+noncomputable def curBeforeMonic4 (c0 c1 c2 c3 c4 : F p) (P1 P2 : F p × F p)
+    (ua0 ua1 va0 va1 u0 u1 v0 v1 : F p) :
     Polynomial (F p) :=
   (((Npoly4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 /ₘ (X - C P1.1))
       /ₘ (X - C P2.1))
     /ₘ (X ^ 2 + C ua1 * X + C ua0))
     /ₘ (X ^ 2 + C u1 * X + C u0)
+
+/-- `curBeforeMonic4`'s degree, unconditionally, as a subtraction from
+`Npoly4`'s: dividing out two linear factors (`X-P1.1`, `X-P2.1`) and two
+monic quadratics (`u_a`, target `u`) in sequence via `/ₘ`. Same shape as
+`curBeforeMonic_natDegree_eq_sub`, one more quadratic division (`- 2`
+twice, not once) since K=4 has TWO known quadratic factors (`u_a` and the
+target `u`) where K=2 only had the target. No tower/`algebraMap`
+promotion needed here (unlike the K=2 proof) since everything is already
+over plain `F p` — `monicity!`/`compute_degree!` run directly, no
+`generalize`-first heartbeat workaround required. -/
+theorem curBeforeMonic4_natDegree_eq_sub (c0 c1 c2 c3 c4 : F p) (P1 P2 : F p × F p)
+    (ua0 ua1 va0 va1 u0 u1 v0 v1 : F p) :
+    (curBeforeMonic4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1).natDegree =
+      (Npoly4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1).natDegree
+        - 1 - 1 - 2 - 2 := by
+  have hmonicUa : (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).Monic := by monicity!
+  have hdegUa : (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).natDegree = 2 := by
+    compute_degree!
+  have hmonicU : (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).Monic := by monicity!
+  have hdegU : (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).natDegree = 2 := by
+    compute_degree!
+  have hmonic1 : (X - C P1.1 : Polynomial (F p)).Monic := Polynomial.monic_X_sub_C _
+  have hmonic2 : (X - C P2.1 : Polynomial (F p)).Monic := Polynomial.monic_X_sub_C _
+  simp only [curBeforeMonic4]
+  rw [Polynomial.natDegree_divByMonic _ hmonicU,
+      Polynomial.natDegree_divByMonic _ hmonicUa,
+      Polynomial.natDegree_divByMonic _ hmonic2,
+      Polynomial.natDegree_divByMonic _ hmonic1,
+      Polynomial.natDegree_X_sub_C, Polynomial.natDegree_X_sub_C, hdegUa, hdegU]
+
+/-- **Assembly.** `curBeforeMonic4.natDegree ≤ 2`, unconditional — combines
+`curBeforeMonic4_natDegree_eq_sub` and `Npoly4_natDegree_le_eight`
+(`Npoly4.natDegree - 1 - 1 - 2 - 2 ≤ 8 - 1 - 1 - 2 - 2 = 2`, truncated `ℕ`
+subtraction monotone in its first argument). Matches
+`curBeforeMonic_natDegree_le_two`'s role for K=2: the honest unconditional
+half, correctness of the EXACT degree (`= 2`, not just `≤ 2`) deferred to
+a genericity hypothesis at whichever call site needs it, same as K=2. -/
+theorem curBeforeMonic4_natDegree_le_two (c0 c1 c2 c3 c4 : F p) (P1 P2 : F p × F p)
+    (ua0 ua1 va0 va1 u0 u1 v0 v1 : F p) :
+    (curBeforeMonic4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1).natDegree ≤ 2 := by
+  rw [curBeforeMonic4_natDegree_eq_sub]
+  have h8 := Npoly4_natDegree_le_eight p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1
+  omega
+
+/-! ## `u_RS`/`v_RS`, K=4 instance — `Reduce`'s actual output
+
+Direct K=4 rescaling of `DataDerivationMumford.lean`'s `uRS`/`uRS_monic`/
+`vRS`. No `K2`-tower promotion needed here (unlike the K=2 originals,
+which live in `Polynomial (K2 p c0 c1 c2 c3 c4)`): everything in this file
+is already over plain `F p = ZMod p`, which is a field directly from
+`Fact (Nat.Prime p)` — no extra `Fact (p ≠ 2)` needed, since that fact
+was only ever required for `K2`'s field-extension instance
+(`factIrreducible_K2`), not for anything in this construction. -/
+
+section URS4
+
+variable (P1 P2 : F p × F p) (ua0 ua1 va0 va1 u0 u1 v0 v1 : F p)
+
+/-- `u_RS(x)`, monic-normalized `curBeforeMonic4` — the K=4 instance of
+`uRS` (`DataDerivationMumford.lean`), same `leadingCoeff⁻¹`-scaling
+construction. Well-defined (as the correct monic associate of
+`curBeforeMonic4`) only once `curBeforeMonic4 ≠ 0`, recorded as a
+hypothesis on `uRS4_monic` below rather than baked into the definition
+itself, matching `uRS`'s own convention. -/
+noncomputable def uRS4 : Polynomial (F p) :=
+  C (curBeforeMonic4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1).leadingCoeff⁻¹ *
+    curBeforeMonic4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1
+
+/-- `uRS4` really is monic, given `curBeforeMonic4 ≠ 0` — direct rescaling
+of `uRS_monic`'s proof, unchanged in substance (same
+`natDegree_C_mul_eq_of_mul_eq_one`/`mul_inv_cancel₀`/`inv_mul_cancel₀`
+argument; only the underlying quotient polynomial's name differs). -/
+theorem uRS4_monic
+    (hcur : curBeforeMonic4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ≠ 0) :
+    (uRS4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1).Monic := by
+  simp only [uRS4]
+  set q := curBeforeMonic4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 with hq
+  -- Goal now: `(C q.leadingCoeff⁻¹ * q).Monic`.
+  have hlc : q.leadingCoeff ≠ 0 := (not_congr Polynomial.leadingCoeff_eq_zero).mpr hcur
+  have hau : q.leadingCoeff * q.leadingCoeff⁻¹ = 1 := mul_inv_cancel₀ hlc
+  have hdeg : (C q.leadingCoeff⁻¹ * q).natDegree = q.natDegree :=
+    Polynomial.natDegree_C_mul_eq_of_mul_eq_one hau
+  rw [Polynomial.Monic.def]
+  change (C q.leadingCoeff⁻¹ * q).coeff (C q.leadingCoeff⁻¹ * q).natDegree = 1
+  rw [hdeg, Polynomial.coeff_C_mul]
+  exact inv_mul_cancel₀ hlc
+
+/-- `uRS4`'s degree is `≤ 2`, unconditional — combines `curBeforeMonic4`'s
+own `≤ 2` bound with the fact that `C a * q` never raises `natDegree`.
+Split on whether `curBeforeMonic4 = 0` rather than reaching for an
+unconditional `natDegree_C_mul_le`-style lemma (no such unconditional
+statement was confirmed against current Mathlib, only the `≠ 0`-hypothesis
+versions `natDegree_C_mul_of_mul_ne_zero` already used by `uRS4_monic`'s
+argument): if `curBeforeMonic4 = 0` then `uRS4 = C 0⁻¹ * 0 = 0` (`0⁻¹ = 0`
+in a field), degree `0 ≤ 2` trivially; otherwise `uRS4_monic`'s own
+`hlc`/`hau` argument applies and gives degree EQUALITY with
+`curBeforeMonic4`, which is `≤ 2` by `curBeforeMonic4_natDegree_le_two`. -/
+theorem uRS4_natDegree_le_two :
+    (uRS4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1).natDegree ≤ 2 := by
+  simp only [uRS4]
+  set q := curBeforeMonic4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 with hq
+  have hbound := curBeforeMonic4_natDegree_le_two p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1
+  rw [← hq] at hbound
+  by_cases hcur : q = 0
+  · simp [hcur]
+  · have hlc : q.leadingCoeff ≠ 0 := (not_congr Polynomial.leadingCoeff_eq_zero).mpr hcur
+    have hau : q.leadingCoeff⁻¹ * q.leadingCoeff ≠ 0 :=
+      mul_ne_zero (inv_ne_zero hlc) hlc
+    have hdeg : (C q.leadingCoeff⁻¹ * q).natDegree = q.natDegree :=
+      Polynomial.natDegree_C_mul_of_mul_ne_zero hau
+    rw [hdeg]
+    exact hbound
+
+/-- **`v_RS(x) = -E4(x) * Y4(x)⁻¹ mod uRS4(x)`** — the K=4 instance of
+`vRS` (`DataDerivationMumford.lean`), same `EuclideanDomain.gcdA`
+Bézout-coefficient construction (`Polynomial (F p)` is a Euclidean domain,
+being a polynomial ring over a field). As with `vRS`, the coprimality
+hypothesis `_hgcd` is only needed to typecheck the statement's INTENDED
+reading (`gcdA Ypoly4 uRS4` really is "the" inverse of `Ypoly4` mod
+`uRS4`); the bare definition compiles unconditionally, and `_hgcd` is
+carried as an unused argument purely so callers are forced to supply it
+alongside `uRS4_monic`'s `hcur` wherever `vRS4`'s VALUE is actually used
+(e.g. a future `vRS4_sq_eq_f_mod_uRS4` Mumford-identity theorem), matching
+`vRS`'s own convention exactly. -/
+noncomputable def vRS4
+    (_hgcd : IsCoprime (Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1)
+      (uRS4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1)) :
+    Polynomial (F p) :=
+  (-(Epoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1) *
+      EuclideanDomain.gcdA (Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1)
+        (uRS4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1)) %ₘ
+    uRS4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1
+
+end URS4
 
 /-! ## The four K=4 divisibility facts
 
@@ -1116,7 +1426,7 @@ points). -/
 /-- `(X - P1.1)` divides `N(x)`, K=4 instance — the `a=0` case of
 `row01_defining_eq_aux` combined with the curve relation
 `P1.2^2 = f(P1.1)`, same algebraic shape as `dvd_N_anchor1`. -/
-theorem dvd_N_P1 (P1 P2 : F p × F p) (ua0 ua1 va0 va1 u0 u1 v0 v1 : F p)
+theorem dvd_N_P1 (c0 c1 c2 c3 c4 : F p) (P1 P2 : F p × F p) (ua0 ua1 va0 va1 u0 u1 v0 v1 : F p)
     (hA : MatrixNondegenerate4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1)
     (hP1_curve : P1.2 ^ 2 = (curvePoly p c0 c1 c2 c3 c4).eval P1.1) :
     (X - C P1.1) ∣ Npoly4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 := by
@@ -1131,7 +1441,7 @@ theorem dvd_N_P1 (P1 P2 : F p × F p) (ua0 ua1 va0 va1 u0 u1 v0 v1 : F p)
   ring
 
 /-- `(X - P2.1)` divides `N(x)`, K=4 instance — the `a=1` analogue. -/
-theorem dvd_N_P2 (P1 P2 : F p × F p) (ua0 ua1 va0 va1 u0 u1 v0 v1 : F p)
+theorem dvd_N_P2 (c0 c1 c2 c3 c4 : F p) (P1 P2 : F p × F p) (ua0 ua1 va0 va1 u0 u1 v0 v1 : F p)
     (hA : MatrixNondegenerate4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1)
     (hP2_curve : P2.2 ^ 2 = (curvePoly p c0 c1 c2 c3 c4).eval P2.1) :
     (X - C P2.1) ∣ Npoly4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 := by
@@ -1150,13 +1460,13 @@ theorem dvd_N_P2 (P1 P2 : F p × F p) (ua0 ua1 va0 va1 u0 u1 v0 v1 : F p)
 `(u_a,v_a)` an actual Mumford representative of `alpha • a`'s own two
 roots. Mirrors `IsMumfordTarget` exactly, applied to `u_a` instead of the
 final target `u`. -/
-def IsMumfordUa (ua0 ua1 va0 va1 : F p) : Prop :=
+def IsMumfordUa (c0 c1 c2 c3 c4 ua0 ua1 va0 va1 : F p) : Prop :=
   (X ^ 2 + C ua1 * X + C ua0) ∣
     ((C va1 * X + C va0) ^ 2 - curvePoly p c0 c1 c2 c3 c4)
 
 /-- **The target Mumford hypothesis, K=4 instance** — mirrors
 `IsMumfordTarget` exactly, over plain `F p` (no `K2` promotion needed). -/
-def IsMumfordTarget4 (u0 u1 v0 v1 : F p) : Prop :=
+def IsMumfordTarget4 (c0 c1 c2 c3 c4 u0 u1 v0 v1 : F p) : Prop :=
   (X ^ 2 + C u1 * X + C u0) ∣
     ((C v1 * X + C v0) ^ 2 - curvePoly p c0 c1 c2 c3 c4)
 
@@ -1369,7 +1679,7 @@ private theorem dvd_of_row_identity4 (P1 P2 : F p × F p) (ua0 ua1 va0 va1 u0 u1
 (`u_a ∣ E + Y*(va1*X+va0)`, the two mod-`u_a` rows) with `IsMumfordUa`
 (`u_a ∣ v_a² - f`) via the same `N = (E-Yv)(E+Yv) + (v²-f)Y²` identity
 `dvd_N_u` uses. -/
-theorem dvd_N_ua (P1 P2 : F p × F p) (ua0 ua1 va0 va1 u0 u1 v0 v1 : F p)
+theorem dvd_N_ua (c0 c1 c2 c3 c4 : F p) (P1 P2 : F p × F p) (ua0 ua1 va0 va1 u0 u1 v0 v1 : F p)
     (hA : MatrixNondegenerate4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1)
     (hMumfordUa : IsMumfordUa p c0 c1 c2 c3 c4 ua0 ua1 va0 va1) :
     (X ^ 2 + C ua1 * X + C ua0) ∣
@@ -1397,7 +1707,7 @@ theorem dvd_N_ua (P1 P2 : F p × F p) (ua0 ua1 va0 va1 u0 u1 v0 v1 : F p)
 
 /-- `u(x) = X²+u1*X+u0` (the actual target) divides `N(x)` — the `row45`
 analogue of `dvd_N_ua`, using `IsMumfordTarget4` in place of `IsMumfordUa`. -/
-theorem dvd_N_u4 (P1 P2 : F p × F p) (ua0 ua1 va0 va1 u0 u1 v0 v1 : F p)
+theorem dvd_N_u4 (c0 c1 c2 c3 c4 : F p) (P1 P2 : F p × F p) (ua0 ua1 va0 va1 u0 u1 v0 v1 : F p)
     (hA : MatrixNondegenerate4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1)
     (hMumfordTarget : IsMumfordTarget4 p c0 c1 c2 c3 c4 u0 u1 v0 v1) :
     (X ^ 2 + C u1 * X + C u0) ∣
