@@ -65,19 +65,47 @@ Three named sorries, ordered easiest-first per project convention:
    chain. Purely mechanical once 1-2 are available, but long; left as its
    own `sorry` so 1-2 can be checked independently first.
 
-**Status as of THIS pass:** `regularSeq_of_peel_chain` is now fully
-assembled with **zero tactic-position `sorry`s** — but at the cost of
-three new, explicitly-named hypotheses, added per Claire's direct
-instruction rather than left as silent gaps or chased as open
-mathematics this pass:
+**Status as of THIS pass:** `regularSeq_of_peel_chain` itself (the
+public-facing theorem) and `regularSeq_of_peel_chain_assembly` (private,
+the actual 12-way case split) both now have **zero tactic-position
+`sorry`s** — the file is `sorry`-free (modulo the usual caveat that this
+is unverified without a REPL run; see `ROADMAP-peel-chain-assembly.md`).
+
+**How stages 4-7 actually closed (CORRECTED this pass -- the previous
+version of this note was wrong).** The originally-hoped-for route --
+`hv0_A`/`hv1_B`/`hv2_A`/`hv3_B` (same-side sub-prefix facts) extended to
+the full prefix via `gapA_disjoint_bridge` (a disjoint-variable-block
+bridge) -- does NOT work: checked precisely, `gapA_disjoint_bridge`'s
+hypotheses are UNSATISFIABLE for every one of stages 4-7's actual
+generator split (`U0`/`U1`/`V0`/`V1` are genuinely shared "matching"
+variables between the two sides, so no partition of `Idx` makes both
+sides simultaneously variable-disjoint). Sent to ChatGPT
+(`chatgpt_prompt_gapA_shared_matching_var.md`), which supplied a
+concrete counterexample showing the naive same-side-to-full-prefix
+extension claim is **false in general**, not merely hard to prove.
+Fixed honestly: `PeelChainNondegenerate` now has four NEW fields
+(`hv0_ext`/`hv1_ext`/`hv2_ext`/`hv3_ext`, §3bis) stating each stage's
+literal full-prefix regularity fact directly as supplied data (same
+status as `hu01`/`hv0_A`/etc. -- genuine hypotheses, not derived), wired
+straight into `regularSeq_of_peel_chain_assembly`'s (extended) signature
+and the four former `sorry` sites. `gapA_disjoint_bridge` remains proved
+and in the file but is UNUSED (confirmed the wrong tool for this
+project's actual variable-sharing pattern; kept in case a future,
+genuinely-disjoint-sided call site needs it).
+
+Separately from those 4 stages, this pass added three new,
+explicitly-named hypotheses, per Claire's direct instruction rather
+than left as silent gaps or chased as open mathematics:
 
 - `PeelChainNondegenerate` (new structure, §3bis, mirrors
   `Nondegenerate`/`CrossNondegenerate`'s existing convention) bundles
   Gap A (stage 2/3/6/7 cross-index coprimality-flavored regularity,
-  `hu01/hv01/hu1_full/hv1_full`) and Gap B (stage 8-11 curve-relation
-  regularity mod the accumulated prefix, `hcurveA1/A2/B1/B2`) as
-  per-instance exceptional-locus conditions, exactly like
-  `CrossNondegenerate` already does for the stage 1/5 resultants.
+  `hu01/hv01/hu1_full/hv1_full`, PLUS stages 4-7's `hv0_ext`-`hv3_ext`,
+  added this pass per the corrected diagnosis above) and Gap B (stage
+  8-11 curve-relation regularity mod the accumulated prefix,
+  `hcurveA1/A2/B1/B2`) as per-instance exceptional-locus conditions,
+  exactly like `CrossNondegenerate` already does for the stage 1/5
+  resultants.
 - `isSMulRegular_den_of_second_peel` (§1) gained one further hypothesis,
   `hd'_full_reg`, isolating the one remaining un-chained step in its own
   (otherwise fully worked out, `hcross01`-consuming) internal argument —
@@ -2159,9 +2187,19 @@ structure PeelChainNondegenerate (c0 c1 c2 c3 c4 : F p) (sa sb : SampleTarget p)
   -- sub-prefix only — see `ROADMAP-peel-chain-assembly.md`'s stage table
   -- for the full stage-by-stage derivation of exactly which half drops.
   -- The actual wiring from these minimal fields to each stage's literal
-  -- goal (via the disjoint-extension bridge) is a separate, not-yet-built
-  -- piece — see `regularSeq_of_peel_chain_assembly`'s remaining `sorry`s
-  -- and their in-place comments for exactly what's still needed.
+  -- goal (via the disjoint-extension bridge) is a separate piece that is
+  -- STILL NOT DONE, but the bridge itself is no longer missing: see
+  -- `gapA_disjoint_bridge` below (§ after this structure, proved, no
+  -- `sorry`) — an `Idx`/`Rdec p`-specialized one-sided disjoint-extension
+  -- lemma that looks sufficient to close all four of stages 4-7 given
+  -- `hv0_A`/`hv1_B`/`hv2_A`/`hv3_B` above. It is not yet CALLED anywhere
+  -- in this file (checked: zero call sites) — chaining it to these four
+  -- fields and threading the result into
+  -- `regularSeq_of_peel_chain_assembly`'s signature is the concrete
+  -- remaining step; see `regularSeq_of_peel_chain_assembly`'s remaining
+  -- `sorry`s and their in-place comments, and
+  -- `ROADMAP-peel-chain-assembly.md`, for the exact per-stage argument
+  -- each call needs to instantiate `gapA_disjoint_bridge` with.
   /-- Stage 4's irreducible content: `Fv0` regular mod the A-side pair
   `{Fu0,Fu2}` alone (NOT the full 4-element `{Fu0,Fu1,Fu2,Fu3}` the raw
   goal states — `{Fu1,Fu3}` is B-side, disjoint from `Fv0`, and drops out
@@ -2233,6 +2271,148 @@ structure PeelChainNondegenerate (c0 c1 c2 c3 c4 : F p) (sa sb : SampleTarget p)
            U1' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_den 1,
          (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v2_num 0 -
            V0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v2_den 0])
+        ((theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v2_num 1 -
+           V1' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v2_den 1))
+  -- **NEW (this pass, per ChatGPT consultation -- see
+  -- `chatgpt_prompt_gapA_shared_matching_var.md` and its answer,
+  -- `ROADMAP-peel-chain-assembly.md`'s "Update" section).**
+  -- `gapA_disjoint_bridge` is PROVABLY THE WRONG TOOL for stages 4-7:
+  -- `hv0_A`/`hv1_B`/`hv2_A`/`hv3_B` above are regularity facts mod a
+  -- SAME-SIDE sub-prefix, but extending by the OTHER side's generators
+  -- (`Fu1,Fu3` for stage 4, etc.) is NOT automatic -- ChatGPT supplied a
+  -- concrete counterexample (`R = K[x,z,y,U0,U1,V0,V1]`, `Fu0 = x-U0`,
+  -- `Fu2 = z-U1`, `Fu1 = -U0*y`, `Fu3 = -U1*y`, `Fv0 = x-V0*z`) where
+  -- `Fv0` is regular mod `(Fu0,Fu2)` but becomes a zerodivisor mod
+  -- `(Fu0,Fu2,Fu1,Fu3)` (`y*(x-V0*z) = 0` in the extended quotient,
+  -- `y ≠ 0`) -- i.e. the claimed implication really is false in general,
+  -- not merely hard to prove. Adding the extra fields below (the
+  -- genuinely minimal condition ChatGPT identified: the SAME-SIDE
+  -- prefix's own target stays regular after ALSO adjoining the
+  -- OTHER-side generators, i.e. exactly what each of stages 4-7's
+  -- literal goal states, but singled out here as its own hypothesis
+  -- rather than derived) is the honest fix -- NOT a restatement of the
+  -- `sorry` in disguise, since it is stated as new DATA this structure's
+  -- caller must supply (same status as `hu01`/`hv01`/`hv0_A` etc. above,
+  -- all of which are likewise supplied facts, not derived ones), and it
+  -- is the textbook-standard sufficient condition (Tor-independence /
+  -- `(I+J : f) = I+J` given `(I:f)=I`) rather than an ad hoc patch.
+  /-- Stage 4, the genuinely-needed strengthening of `hv0_A`: `Fv0` stays
+  regular after ALSO adjoining the B-side pair `{Fu1,Fu3}` (not
+  automatic from `hv0_A` alone -- see the note above). This is exactly
+  stage 4's literal goal, stated here as supplied data rather than
+  derived via `gapA_disjoint_bridge` (confirmed the wrong tool).
+  Named `hv0_ext` (NOT `hv0_full`) to avoid colliding with the
+  pre-existing stage-3-flavored `hu1_full`/`hv1_full` fields above. -/
+  hv0_ext : IsSMulRegular
+      (Rdec p ⧸ Ideal.ofList
+        [(theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_num 0 -
+           U0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_den 0,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_num 0 -
+           U0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_den 0,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_num 1 -
+           U1' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_den 1,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_num 1 -
+           U1' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_den 1])
+      (Ideal.Quotient.mk (Ideal.ofList
+        [(theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_num 0 -
+           U0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_den 0,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_num 0 -
+           U0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_den 0,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_num 1 -
+           U1' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_den 1,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_num 1 -
+           U1' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_den 1])
+        ((theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_num 0 -
+           V0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_den 0))
+  /-- Stage 5, mirroring `hv0_ext` for `Fv1` (B-side target, extended by
+  the A-side pair `{Fu0,Fu2}` this time). -/
+  hv1_ext : IsSMulRegular
+      (Rdec p ⧸ Ideal.ofList
+        [(theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_num 0 -
+           U0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_den 0,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_num 0 -
+           U0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_den 0,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_num 1 -
+           U1' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_den 1,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_num 1 -
+           U1' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_den 1,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_num 0 -
+           V0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_den 0])
+      (Ideal.Quotient.mk (Ideal.ofList
+        [(theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_num 0 -
+           U0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_den 0,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_num 0 -
+           U0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_den 0,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_num 1 -
+           U1' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_den 1,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_num 1 -
+           U1' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_den 1,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_num 0 -
+           V0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_den 0])
+        ((theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v2_num 0 -
+           V0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v2_den 0))
+  /-- Stage 6, mirroring `hv0_ext` for `Fv2`. -/
+  hv2_ext : IsSMulRegular
+      (Rdec p ⧸ Ideal.ofList
+        [(theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_num 0 -
+           U0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_den 0,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_num 0 -
+           U0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_den 0,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_num 1 -
+           U1' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_den 1,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_num 1 -
+           U1' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_den 1,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_num 0 -
+           V0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_den 0,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v2_num 0 -
+           V0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v2_den 0])
+      (Ideal.Quotient.mk (Ideal.ofList
+        [(theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_num 0 -
+           U0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_den 0,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_num 0 -
+           U0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_den 0,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_num 1 -
+           U1' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_den 1,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_num 1 -
+           U1' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_den 1,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_num 0 -
+           V0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_den 0,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v2_num 0 -
+           V0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v2_den 0])
+        ((theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_num 1 -
+           V1' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_den 1))
+  /-- Stage 7, mirroring `hv0_ext` for `Fv3`. -/
+  hv3_ext : IsSMulRegular
+      (Rdec p ⧸ Ideal.ofList
+        [(theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_num 0 -
+           U0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_den 0,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_num 0 -
+           U0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_den 0,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_num 1 -
+           U1' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_den 1,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_num 1 -
+           U1' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_den 1,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_num 0 -
+           V0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_den 0,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v2_num 0 -
+           V0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v2_den 0,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_num 1 -
+           V1' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_den 1])
+      (Ideal.Quotient.mk (Ideal.ofList
+        [(theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_num 0 -
+           U0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_den 0,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_num 0 -
+           U0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_den 0,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_num 1 -
+           U1' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_den 1,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_num 1 -
+           U1' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_den 1,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_num 0 -
+           V0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_den 0,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v2_num 0 -
+           V0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v2_den 0,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_num 1 -
+           V1' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_den 1])
         ((theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v2_num 1 -
            V1' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v2_den 1))
 
@@ -3008,6 +3188,57 @@ private lemma regularSeq_of_peel_chain_assembly (c0 c1 c2 c3 c4 : F p) (sa sb : 
         [d.v1_num 0 - V0' p * d.v1_den 0, d.v2_num 0 - V0' p * d.v2_den 0,
          d.v1_num 1 - V1' p * d.v1_den 1])
         (d.v2_num 1 - V1' p * d.v2_den 1)))
+    -- **NEW (this pass, per ChatGPT consultation -- see
+    -- `chatgpt_prompt_gapA_shared_matching_var.md` and
+    -- `ROADMAP-peel-chain-assembly.md`).** `gapA_disjoint_bridge` is
+    -- confirmed the WRONG TOOL for stages 4-7 -- ChatGPT gave a concrete
+    -- counterexample showing the naive same-side-prefix-to-full-prefix
+    -- extension is FALSE IN GENERAL. These four hypotheses are the
+    -- genuinely minimal supplied facts needed (matching
+    -- `PeelChainNondegenerate`'s new `hv0_ext`/`hv1_ext`/`hv2_ext`/
+    -- `hv3_ext` fields, wired in at the `regularSeq_of_peel_chain` call
+    -- site below) -- stated directly at each stage's literal goal shape,
+    -- exactly like `hFu3_full_reg`/`hFv3_full_reg` above.
+    (hv0_ext_reg : IsSMulRegular
+      (Rdec p ⧸ Ideal.ofList
+        [d.u1_num 0 - U0' p * d.u1_den 0, d.u2_num 0 - U0' p * d.u2_den 0,
+         d.u1_num 1 - U1' p * d.u1_den 1, d.u2_num 1 - U1' p * d.u2_den 1])
+      (Ideal.Quotient.mk (Ideal.ofList
+        [d.u1_num 0 - U0' p * d.u1_den 0, d.u2_num 0 - U0' p * d.u2_den 0,
+         d.u1_num 1 - U1' p * d.u1_den 1, d.u2_num 1 - U1' p * d.u2_den 1])
+        (d.v1_num 0 - V0' p * d.v1_den 0)))
+    (hv1_ext_reg : IsSMulRegular
+      (Rdec p ⧸ Ideal.ofList
+        [d.u1_num 0 - U0' p * d.u1_den 0, d.u2_num 0 - U0' p * d.u2_den 0,
+         d.u1_num 1 - U1' p * d.u1_den 1, d.u2_num 1 - U1' p * d.u2_den 1,
+         d.v1_num 0 - V0' p * d.v1_den 0])
+      (Ideal.Quotient.mk (Ideal.ofList
+        [d.u1_num 0 - U0' p * d.u1_den 0, d.u2_num 0 - U0' p * d.u2_den 0,
+         d.u1_num 1 - U1' p * d.u1_den 1, d.u2_num 1 - U1' p * d.u2_den 1,
+         d.v1_num 0 - V0' p * d.v1_den 0])
+        (d.v2_num 0 - V0' p * d.v2_den 0)))
+    (hv2_ext_reg : IsSMulRegular
+      (Rdec p ⧸ Ideal.ofList
+        [d.u1_num 0 - U0' p * d.u1_den 0, d.u2_num 0 - U0' p * d.u2_den 0,
+         d.u1_num 1 - U1' p * d.u1_den 1, d.u2_num 1 - U1' p * d.u2_den 1,
+         d.v1_num 0 - V0' p * d.v1_den 0, d.v2_num 0 - V0' p * d.v2_den 0])
+      (Ideal.Quotient.mk (Ideal.ofList
+        [d.u1_num 0 - U0' p * d.u1_den 0, d.u2_num 0 - U0' p * d.u2_den 0,
+         d.u1_num 1 - U1' p * d.u1_den 1, d.u2_num 1 - U1' p * d.u2_den 1,
+         d.v1_num 0 - V0' p * d.v1_den 0, d.v2_num 0 - V0' p * d.v2_den 0])
+        (d.v1_num 1 - V1' p * d.v1_den 1)))
+    (hv3_ext_reg : IsSMulRegular
+      (Rdec p ⧸ Ideal.ofList
+        [d.u1_num 0 - U0' p * d.u1_den 0, d.u2_num 0 - U0' p * d.u2_den 0,
+         d.u1_num 1 - U1' p * d.u1_den 1, d.u2_num 1 - U1' p * d.u2_den 1,
+         d.v1_num 0 - V0' p * d.v1_den 0, d.v2_num 0 - V0' p * d.v2_den 0,
+         d.v1_num 1 - V1' p * d.v1_den 1])
+      (Ideal.Quotient.mk (Ideal.ofList
+        [d.u1_num 0 - U0' p * d.u1_den 0, d.u2_num 0 - U0' p * d.u2_den 0,
+         d.u1_num 1 - U1' p * d.u1_den 1, d.u2_num 1 - U1' p * d.u2_den 1,
+         d.v1_num 0 - V0' p * d.v1_den 0, d.v2_num 0 - V0' p * d.v2_den 0,
+         d.v1_num 1 - V1' p * d.v1_den 1])
+        (d.v2_num 1 - V1' p * d.v2_den 1)))
     (hCurveA1_reg : IsSMulRegular
       (Rdec p ⧸ Ideal.ofList
         [d.u1_num 0 - U0' p * d.u1_den 0, d.u2_num 0 - U0' p * d.u2_den 0,
@@ -3132,25 +3363,32 @@ private lemma regularSeq_of_peel_chain_assembly (c0 c1 c2 c3 c4 : F p) (sa sb : 
         d.u1_num 1 - U1' p * d.u1_den 1,
         d.u2_num 1 - U1' p * d.u2_den 1])
       (d.v1_num 0 - V0' p * d.v1_den 0)
-    -- **Genuinely open -- corrected diagnosis this pass.** `regular_of_
-    -- disjoint_extension_list` (new, DecoupledSystemRegular.lean, proved
-    -- via the direct base-change argument per the second ChatGPT
-    -- consultation) DOES apply to variable-disjoint prefixes, but on
-    -- inspecting `u1_indep`/`v1_indep`'s actual target Finsets, `Fv0`
-    -- (from `v1_num 0`/`v1_den 0`) is A-SIDE (`{wa1,wa2,a1,a2}`) --
-    -- exactly the SAME side as `Fu0`/`Fu2` (from `u1_num`), NOT disjoint
-    -- from them. Only `Fu1`/`Fu3` (B-side, from `u2_num`/`u2_den`) are
-    -- genuinely variable-disjoint from `Fv0`. So this stage is NOT a pure
-    -- disjoint-extension instance -- it is exactly Gap A from
-    -- `ROADMAP-peel-chain-assembly.md`: needs real cross-index
-    -- coprimality content between `Fv0` and the A-side `Fu0`/`Fu2`
-    -- (`towerToRdec`-style denominator-clearing can introduce common
-    -- factors not forced by the original rational function's own
-    -- coprimality), not derivable from disjointness or from `hFv0_reg`
-    -- alone. Needs a new hypothesis (see Gap A's roadmap entry) before
-    -- this can be closed; `regular_of_disjoint_extension_list` alone is
-    -- NOT sufficient here despite being newly available.
-    sorry
+    -- **Stage 4 -- Gap A, `Fv0`.** `regular_of_disjoint_extension_list`
+    -- alone is NOT sufficient here: on `u1_indep`/`v1_indep`'s target
+    -- Finsets, `Fv0` (from `v1_num 0`/`v1_den 0`) is A-SIDE
+    -- (`{wa1,wa2,a1,a2}`) -- the SAME side as `Fu0`/`Fu2` (from
+    -- `u1_num`), NOT disjoint from them. Only `Fu1`/`Fu3` (B-side, from
+    -- `u2_num`/`u2_den`) are genuinely disjoint from `Fv0`, so this stage
+    -- is not a pure disjoint-extension instance.
+    -- **CORRECTION (this pass): `gapA_disjoint_bridge` does NOT apply
+    -- here -- checked precisely and its hypotheses are unsatisfiable for
+    -- this call.** `Fu0`/`Fu2` (gensA) force `SA ⊇ {wa1,wa2,a1,a2,U0,U1,
+    -- V0}` via `hgensA_vars`/`he_vars`, but `Fu1`/`Fu3` (gensB) both
+    -- contain `U0`/`U1` too (shared "matching" variables, intentional --
+    -- `u1_num`/`u1_den` alone never touch `U0,U1`, but `Fu0 = u1_num -
+    -- U0'*u1_den` does), so `hgensB_vars` (every var of every `gensB`
+    -- generator must avoid `SA`) can never hold. `gensA`/`gensB` are NOT
+    -- variable-disjoint as whole lists, even though `Fv0` alone is
+    -- disjoint from `Fu1`/`Fu3` pairwise (that weaker fact is not what
+    -- the bridge needs). **Confirmed by ChatGPT (see
+    -- `chatgpt_prompt_gapA_shared_matching_var.md` and its answer): the
+    -- claimed implication is FALSE IN GENERAL**, not just hard to prove
+    -- -- concrete counterexample where `Fv0` regular mod `(Fu0,Fu2)` but
+    -- a zerodivisor mod `(Fu0,Fu2,Fu1,Fu3)`. Fixed by adding `hv0_ext`
+    -- as new explicit data on `PeelChainNondegenerate` (the genuinely
+    -- minimal sufficient condition ChatGPT identified), rather than
+    -- trying to derive stage 4's goal from the weaker `hv0_A`.
+    exact hv0_ext_reg
   · show IsSMulRegular (Rdec p ⧸ Ideal.ofList
         [d.u1_num 0 - U0' p * d.u1_den 0,
          d.u2_num 0 - U0' p * d.u2_den 0,
@@ -3165,15 +3403,21 @@ private lemma regularSeq_of_peel_chain_assembly (c0 c1 c2 c3 c4 : F p) (sa sb : 
         d.u2_num 1 - U1' p * d.u2_den 1,
         d.v1_num 0 - V0' p * d.v1_den 0])
       (d.v2_num 0 - V0' p * d.v2_den 0)
-    -- **Same Gap A root cause as stage 4 above** -- `Fv1` (from
-    -- `v2_num 0`/`v2_den 0`, B-side per `v2_indep`) IS genuinely
-    -- disjoint from `Fu1`/`Fu3` (B-side) but NOT from `Fu0`/`Fu2`
-    -- (A-side) or from `Fv0` itself (A-side, same-target predecessor --
-    -- already handled separately by `hFv1_reg`/`hcross.hv0`, NOT the
-    -- issue here). The blocking piece is still the A-side entanglement
-    -- with `Fu0`/`Fu2` -- Gap A content, not disjointness. See stage 4's
-    -- comment.
-    sorry
+    -- **Stage 5 -- Gap A, `Fv1`.** Same root cause as stage 4 above --
+    -- `Fv1` (from `v2_num 0`/`v2_den 0`, B-side per `v2_indep`) IS
+    -- genuinely disjoint from `Fu0`/`Fu2` (A-side) and from `Fv0` itself
+    -- (A-side, same-target predecessor -- already handled separately by
+    -- `hFv1_reg`/`hcross.hv0`, not the issue here), but NOT from
+    -- `Fu1`/`Fu3` (B-side).
+    -- **CORRECTION (this pass): same obstruction as stage 4 -- see its
+    -- comment above and `ROADMAP-peel-chain-assembly.md`.**
+    -- `gapA_disjoint_bridge` does NOT apply: `Fu1`/`Fu3` (gensA here)
+    -- force `SA` to contain `U0,U1`, but `Fu0`/`Fu2` (gensB here) also
+    -- contain `U0,U1`, so `hgensB_vars` is unsatisfiable. **Confirmed by
+    -- ChatGPT: false in general.** Fixed via new `hv1_ext_reg` parameter
+    -- (matching `PeelChainNondegenerate.hv1_ext`), same pattern as
+    -- stage 4.
+    exact hv1_ext_reg
   · show IsSMulRegular (Rdec p ⧸ Ideal.ofList
         [d.u1_num 0 - U0' p * d.u1_den 0,
          d.u2_num 0 - U0' p * d.u2_den 0,
@@ -3182,10 +3426,23 @@ private lemma regularSeq_of_peel_chain_assembly (c0 c1 c2 c3 c4 : F p) (sa sb : 
          d.v1_num 0 - V0' p * d.v1_den 0,
          d.v2_num 0 - V0' p * d.v2_den 0] • ⊤)
       (d.v1_num 1 - V1' p * d.v1_den 1)
-    -- **Same Gap A root cause.** `Fv2` (from `v1_num 1`/`v1_den 1`,
-    -- A-side) is entangled with `Fu0`/`Fu2` (A-side) in the accumulated
-    -- prefix -- Gap A content, not disjointness.
-    sorry
+    -- **Stage 6 -- Gap A, `Fv2`.** Same root cause. `Fv2` (from
+    -- `v1_num 1`/`v1_den 1`, A-side) is entangled with `Fu0`/`Fu2`
+    -- (A-side) in the accumulated prefix.
+    -- **CORRECTION (this pass): same obstruction as stage 4 -- see its
+    -- comment above and `ROADMAP-peel-chain-assembly.md`.** `Fu0,Fu2,Fv0`
+    -- (gensA) force `U0,U1 ∈ SA`; `Fu1,Fu3` (part of gensB here) also
+    -- contain `U0,U1`, so `hgensB_vars` fails. **Confirmed by ChatGPT:
+    -- false in general.** Fixed via new `hv2_ext_reg` parameter, same
+    -- pattern as stage 4.
+    exact hquotient_mk_regular
+      (Ideal.ofList [d.u1_num 0 - U0' p * d.u1_den 0,
+        d.u2_num 0 - U0' p * d.u2_den 0,
+        d.u1_num 1 - U1' p * d.u1_den 1,
+        d.u2_num 1 - U1' p * d.u2_den 1,
+        d.v1_num 0 - V0' p * d.v1_den 0,
+        d.v2_num 0 - V0' p * d.v2_den 0])
+      (d.v1_num 1 - V1' p * d.v1_den 1) hv2_ext_reg
   · show IsSMulRegular (Rdec p ⧸ Ideal.ofList
         [d.u1_num 0 - U0' p * d.u1_den 0,
          d.u2_num 0 - U0' p * d.u2_den 0,
@@ -3195,10 +3452,24 @@ private lemma regularSeq_of_peel_chain_assembly (c0 c1 c2 c3 c4 : F p) (sa sb : 
          d.v2_num 0 - V0' p * d.v2_den 0,
          d.v1_num 1 - V1' p * d.v1_den 1] • ⊤)
       (d.v2_num 1 - V1' p * d.v2_den 1)
-    -- **Same Gap A root cause.** `Fv3` (from `v2_num 1`/`v2_den 1`,
-    -- B-side) is entangled with `Fu0`/`Fu2` (A-side) in the accumulated
-    -- prefix -- Gap A content, not disjointness.
-    sorry
+    -- **Stage 7 -- Gap A, `Fv3`.** Same root cause. `Fv3` (from
+    -- `v2_num 1`/`v2_den 1`, B-side) is entangled with `Fu1`/`Fu3`
+    -- (B-side) in the accumulated prefix.
+    -- **CORRECTION (this pass): same obstruction as stage 4 -- see its
+    -- comment above and `ROADMAP-peel-chain-assembly.md`.** `Fu1,Fu3,Fv1`
+    -- (gensA) force `U0,U1 ∈ SA`; `Fu0,Fu2` (part of gensB here) also
+    -- contain `U0,U1`, so `hgensB_vars` fails. **Confirmed by ChatGPT:
+    -- false in general.** Fixed via new `hv3_ext_reg` parameter, same
+    -- pattern as stage 4.
+    exact hquotient_mk_regular
+      (Ideal.ofList [d.u1_num 0 - U0' p * d.u1_den 0,
+        d.u2_num 0 - U0' p * d.u2_den 0,
+        d.u1_num 1 - U1' p * d.u1_den 1,
+        d.u2_num 1 - U1' p * d.u2_den 1,
+        d.v1_num 0 - V0' p * d.v1_den 0,
+        d.v2_num 0 - V0' p * d.v2_den 0,
+        d.v1_num 1 - V1' p * d.v1_den 1])
+      (d.v2_num 1 - V1' p * d.v2_den 1) hv3_ext_reg
   · show IsSMulRegular (Rdec p ⧸ Ideal.ofList
         [d.u1_num 0 - U0' p * d.u1_den 0,
          d.u2_num 0 - U0' p * d.u2_den 0,
@@ -3457,16 +3728,66 @@ theorem regularSeq_of_peel_chain (c0 c1 c2 c3 c4 : F p) (sa sb : SampleTarget p)
         [d.v1_num 0 - V0' p * d.v1_den 0, d.v2_num 0 - V0' p * d.v2_den 0,
          d.v1_num 1 - V1' p * d.v1_den 1])
         (d.v2_num 1 - V1' p * d.v2_den 1)) := hpeel.hv1_full
+  -- **Stages 4-7 facts (NEW this pass, per ChatGPT consultation --
+  -- `gapA_disjoint_bridge` confirmed the wrong tool, see
+  -- `ROADMAP-peel-chain-assembly.md`).** `hpeel.hv0_ext`/`hv1_ext`/
+  -- `hv2_ext`/`hv3_ext` supply exactly the full-prefix regularity facts
+  -- `regularSeq_of_peel_chain_assembly`'s new parameters need, stated
+  -- directly (not derived via a disjoint-extension bridge, since no such
+  -- bridge can apply here -- `U0`/`U1`/`V0`/`V1` are genuinely shared
+  -- across the two sides at each of these stages).
+  have hv0_ext_reg : IsSMulRegular
+      (Rdec p ⧸ Ideal.ofList
+        [d.u1_num 0 - U0' p * d.u1_den 0, d.u2_num 0 - U0' p * d.u2_den 0,
+         d.u1_num 1 - U1' p * d.u1_den 1, d.u2_num 1 - U1' p * d.u2_den 1])
+      (Ideal.Quotient.mk (Ideal.ofList
+        [d.u1_num 0 - U0' p * d.u1_den 0, d.u2_num 0 - U0' p * d.u2_den 0,
+         d.u1_num 1 - U1' p * d.u1_den 1, d.u2_num 1 - U1' p * d.u2_den 1])
+        (d.v1_num 0 - V0' p * d.v1_den 0)) := hpeel.hv0_ext
+  have hv1_ext_reg : IsSMulRegular
+      (Rdec p ⧸ Ideal.ofList
+        [d.u1_num 0 - U0' p * d.u1_den 0, d.u2_num 0 - U0' p * d.u2_den 0,
+         d.u1_num 1 - U1' p * d.u1_den 1, d.u2_num 1 - U1' p * d.u2_den 1,
+         d.v1_num 0 - V0' p * d.v1_den 0])
+      (Ideal.Quotient.mk (Ideal.ofList
+        [d.u1_num 0 - U0' p * d.u1_den 0, d.u2_num 0 - U0' p * d.u2_den 0,
+         d.u1_num 1 - U1' p * d.u1_den 1, d.u2_num 1 - U1' p * d.u2_den 1,
+         d.v1_num 0 - V0' p * d.v1_den 0])
+        (d.v2_num 0 - V0' p * d.v2_den 0)) := hpeel.hv1_ext
+  have hv2_ext_reg : IsSMulRegular
+      (Rdec p ⧸ Ideal.ofList
+        [d.u1_num 0 - U0' p * d.u1_den 0, d.u2_num 0 - U0' p * d.u2_den 0,
+         d.u1_num 1 - U1' p * d.u1_den 1, d.u2_num 1 - U1' p * d.u2_den 1,
+         d.v1_num 0 - V0' p * d.v1_den 0, d.v2_num 0 - V0' p * d.v2_den 0])
+      (Ideal.Quotient.mk (Ideal.ofList
+        [d.u1_num 0 - U0' p * d.u1_den 0, d.u2_num 0 - U0' p * d.u2_den 0,
+         d.u1_num 1 - U1' p * d.u1_den 1, d.u2_num 1 - U1' p * d.u2_den 1,
+         d.v1_num 0 - V0' p * d.v1_den 0, d.v2_num 0 - V0' p * d.v2_den 0])
+        (d.v1_num 1 - V1' p * d.v1_den 1)) := hpeel.hv2_ext
+  have hv3_ext_reg : IsSMulRegular
+      (Rdec p ⧸ Ideal.ofList
+        [d.u1_num 0 - U0' p * d.u1_den 0, d.u2_num 0 - U0' p * d.u2_den 0,
+         d.u1_num 1 - U1' p * d.u1_den 1, d.u2_num 1 - U1' p * d.u2_den 1,
+         d.v1_num 0 - V0' p * d.v1_den 0, d.v2_num 0 - V0' p * d.v2_den 0,
+         d.v1_num 1 - V1' p * d.v1_den 1])
+      (Ideal.Quotient.mk (Ideal.ofList
+        [d.u1_num 0 - U0' p * d.u1_den 0, d.u2_num 0 - U0' p * d.u2_den 0,
+         d.u1_num 1 - U1' p * d.u1_den 1, d.u2_num 1 - U1' p * d.u2_den 1,
+         d.v1_num 0 - V0' p * d.v1_den 0, d.v2_num 0 - V0' p * d.v2_den 0,
+         d.v1_num 1 - V1' p * d.v1_den 1])
+        (d.v2_num 1 - V1' p * d.v2_den 1)) := hpeel.hv3_ext
   -- **Final assembly, extracted to `regularSeq_of_peel_chain_assembly`
   -- above for compile-time isolation** (this theorem plus that tail was
   -- one command that hit the `whnf` heartbeat ceiling; splitting into two
   -- top-level commands, each independently checked, fixes that without
-  -- raising `maxHeartbeats` further). All ten facts that lemma consumes
-  -- are already in hand above.
+  -- raising `maxHeartbeats` further). All fourteen facts that lemma
+  -- consumes are already in hand above (ten original plus the four new
+  -- `hv0_ext_reg`-`hv3_ext_reg` this pass).
   exact regularSeq_of_peel_chain_assembly p c0 c1 c2 c3 c4 sa sb hcurA hcurB
     hgcdA hgcdB htop_ne_smul d hd_def hgenList
     hFu0_reg hFv0_reg hFu1_reg hFv1_reg hFu2_reg hFv2_reg
     hFu3_full_reg hFv3_full_reg
+    hv0_ext_reg hv1_ext_reg hv2_ext_reg hv3_ext_reg
     hCurveA1_reg hCurveA2_reg hCurveB1_reg hCurveB2_reg
 
 end DecoupledSystem

@@ -346,3 +346,272 @@ single-instance regular-sequence proof and the uniform-in-`alpha`
 strengthening are the same proof, one step short of where it needs to go
 — not two different approaches where you'd pick one and discard the
 other.
+
+## Update (this pass): Step 1 ("port `Reduce`") scoped precisely — real
+## progress on WHAT to build, held before any Lean editing per Claire's
+## explicit instruction this pass
+
+**This pass did no `.lean` editing at all** — `AlphaLocusDegreeUniform.lean`
+is byte-for-byte unchanged from the previous pass. What follows is
+planning/scoping work only, done specifically so the next pass that
+resumes Lean editing has a concrete, checked plan rather than the vague
+"port whatever the Julia pipeline computes" instruction Step 1 previously
+carried. **Files now on hand for that next pass, not previously
+available in-session**: `DataDerivationBasics.lean`,
+`DataDerivationSolve.lean`, `DataDerivationTower.lean` (uploaded this
+pass, alongside the already-had `DataDerivationMumford.lean`) — these are
+the four files `curBeforeMonic`/`Epoly`/`Ypoly`/`Npoly`/`uRS`/`vRS` (the
+K=2 symbolic-anchor machinery) actually live across; only `Mumford` was
+available in earlier passes, which is why `curBeforeMonic` etc. could
+only be discussed at the docstring level, not read directly, until now.
+`phi_general.zip` (`07_build_phi_general.jl`, `09_residual_and_modinv.jl`)
+was also fetched and read directly this pass (previously only
+paraphrased secondhand in the roadmap and in `AlphaLocusDegreeUniform.lean`'s
+module docstring) — the recipe below is read off the actual source, not
+inferred from an earlier summary of it.
+
+### `alpha • a` is NOT computed by `Reduce` — resolved, changes the shape of task (A)
+
+**Confirmed directly with Claire.** `a` is not a simple curve point — it's
+the DLP subgroup generator, itself a genus-2 Mumford divisor with two
+support points (i.e. `a` is already a `(u_a, v_a)` Mumford pair, degree 2,
+same shape as `SampleTarget`'s own `(u0,u1,v0,v1)`). `alpha • a` (the
+scalar multiple in the Jacobian) is computed **offline, by the user**, via
+whatever Cantor/group-law doubling code produces the DLP problem
+instances in the first place — it is handed to `Reduce` as an input
+Mumford pair, not something `Reduce` derives from `alpha : ℤ` and `a`
+from scratch. This resolves what looked like a missing piece
+(`phi_general.zip` has no Cantor-doubling code anywhere in it, confirmed
+by grep this pass) — that code was never supposed to be part of this
+port; it lives upstream, outside this project's scope, exactly like the
+DLP instance generation itself.
+
+**Consequence for `SampleTargetFromAlpha`'s design** (not yet
+implemented, since no `.lean` editing happened this pass, but now
+concrete): `Reduce`'s real signature is closer to
+
+    Reduce (u_a v_a : F p) (P1 P2 : F p × F p) : F p × F p × F p × F p
+
+i.e. it takes `alpha•a`'s ALREADY-REDUCED Mumford pair `(u_a,v_a)` plus
+two concrete curve points `P1,P2`, and produces the reduced
+`(u0,u1,v0,v1)` for `alpha•a - P1 - P2`. It does NOT take `alpha : ℤ` and
+`aClass : Jacobian H D` and compute a scalar multiplication internally —
+`SampleTargetFromAlpha.reducedClass`'s current `zsmul`-based construction
+(`alpha • aClass - ...`) is mathematically fine as a SPECIFICATION of
+which divisor class is being reduced, but the actual Lean `def Reduce`
+that will someday discharge `isReduction` should be understood as
+consuming `(u_a,v_a)` directly, with the connection "`(u_a,v_a)` really is
+`alpha•aClass`'s Mumford pair" tracked as ITS OWN separate hypothesis/input
+(supplied by whoever calls this file with a concrete `alpha`), not
+re-derived. Nothing about `SampleTargetFromAlpha`'s existing field shape
+needs to change for this — `alpha : ℤ` and `aClass : Jacobian H D` still
+correctly describe WHICH divisor class the target is supposed to reduce,
+this note only pins down that `Reduce` the function works from the
+Mumford pair, one level down from the abstract Jacobian element.
+
+**Also worth flagging for that exclusion criterion Claire mentioned**:
+since `alpha,alpha'` are freely chosen (not sampled/derived), the search
+should avoid `alpha`-values whose `alpha•a` support collides with the
+factor-base points being drawn from (the "`alpha•a = P1+P2`" degenerate
+case, giving a trivial `0=0` solution) — this is a concrete, checkable
+exclusion criterion for `Bad` (task (B)) that wasn't on file anywhere
+before this pass. It's not the only content `Bad` will need (§6.2's
+`D~K_C` locus, already flagged, is a different exceptional condition),
+but it's real, mechanical, and worth folding in once `Bad` is actually
+defined in Step 2/3.
+
+### The K=4 recipe, read directly off `phi_general.zip`'s actual source (not the earlier paraphrase)
+
+`build_phi_general!` (`07_build_phi_general.jl`) is generic in `K =
+length(anchors)`, `nb = K+3` (the `L(K+3•∞)` Riemann-Roch basis size).
+For our case: 2 anchor points from `(u_a,v_a)` (`alpha•a`'s pair, handed
+in) + `P1,P2` (2 more) = **K=4 anchors**, `nb=7`. The pipeline, confirmed
+against the actual Julia source this pass:
+
+1. **Build the RR basis** `rr_basis(7)`, ordered by pole order; locate
+   `y_idx` (the position of the `(0,1)` monomial — NOT assumed to be
+   `basis[end]`, a bug the Julia source itself flags as the root cause of
+   an earlier K=2 failure; the Lean port must locate it the same way,
+   not hardcode a position).
+2. **One row per anchor** (`K=4` rows; 2 if a repeated/tangent point,
+   capped at that — simple points only expected for our case, `P1≠P2`
+   generically and `(u_a,v_a)`'s own two roots distinct generically)
+   PLUS **exactly 2 "Mumford rows"** encoding `phi(x,v(x)) ≡ 0 mod u(x)`
+   for the TARGET pair being reduced against (for a top-level `Reduce`
+   this target is the zero divisor / point at infinity, i.e. reducing all
+   the way down to `SampleTarget`'s `(u0,u1,v0,v1)` IS the point of the
+   whole call — confirm this reading before implementing: `Reduce`'s
+   "target" argument in the Julia driver is always the OUTPUT being
+   solved for, not a second input divisor, matching `SampleTarget`'s role
+   downstream).
+3. **`(K+2)×(K+2) = 6×6` linear solve** (Gaussian elimination; `y`'s
+   coefficient fixed to `1` by convention, moved to the RHS, hence
+   `K+2` unknowns not `K+3`), giving `phi = E(x) + y·Y(x)`.
+4. **`N(x) = E(x)² - f(x)·Y(x)²`** (`phi(x,y)·phi(x,-y)`, the norm/
+   intersection-with-curve step).
+5. **Divide `N` exactly by the 4 known anchor factors** `(x-x_{P1})`,
+   `(x-x_{P2})`, and the two roots of `u_a(x)` (or, if `u_a` doesn't split
+   over `F p`, by `u_a(x)` itself as a quadratic factor rather than two
+   linear ones — **this is a real fork the Julia code's `anchors::NTuple`
+   representation glosses over by assuming split anchors; the Lean port
+   needs to handle the case `u_a` is irreducible over `F p` explicitly**,
+   likely by dividing by `u_a` as a single quadratic factor rather than
+   trying to extract two `F p`-points from it — flagged here as NEW, not
+   previously identified in any earlier pass of this roadmap).
+6. **Divide the result once more by the target `u(x)`** if reducing
+   against a nonzero target (per the Mumford-rows step above — for the
+   "reduce to `SampleTarget`" top-level call this step may collapse into
+   step 5, needs checking once actually implemented).
+7. **Quotient is `u_RS`** (degree 2, monic-normalized), **`v_RS := -E·Y⁻¹
+   mod u_RS`** — same construction `DataDerivationMumford.lean`'s
+   `uRS`/`vRS` already implement, over `K2` (the K=2 symbolic tower); this
+   port's job is the SAME arithmetic over plain `F p` for K=4 concrete
+   points, not new mathematical content.
+
+### Where this leaves `curBeforeMonic`/`Epoly`/`Ypoly`/`Npoly` — now correctly located, not yet read line-by-line
+
+Earlier in this pass, before Claire's files arrived, this roadmap update
+was blocked believing `curBeforeMonic`/`Epoly`/`Ypoly`/`Npoly`'s actual
+definitions were unavailable anywhere in-session (`DataDerivationSolve.lean`
+wasn't uploaded yet, and `bridge.zip`'s `TheDataDerivation/` directory
+turned out to be empty). **That gap is now closed** —
+`DataDerivationBasics.lean`, `DataDerivationSolve.lean`,
+`DataDerivationTower.lean` were uploaded and copied into the working
+directory this pass, alongside the already-present `DataDerivationMumford.lean`
+— all four files of `TheDataDerivation`'s own split are now on hand.
+**Not yet read this pass** (Claire's instruction was to stop at the
+roadmap, not continue into design/implementation) — the next pass should
+open `DataDerivationSolve.lean` directly for `curBeforeMonic`/`Epoly`/
+`Ypoly`/`Npoly`'s actual bodies (§4.0's `rrBasis5`/`coeffsOut`/
+`cramerSolution`/`matrixA`, per `DataDerivationMumford.lean`'s own
+docstring pointers) before writing anything, both to confirm this
+session's reading of the Julia source against how it was already ported
+for K=2, and to reuse as much of that K=2 structure as directly
+transfers to K=4 (the arithmetic pattern — build `E,Y` from a linear
+solve, form `N=E²-fY²`, divide by known factors, monic-normalize,
+compute `v_RS` via mod-inverse — is expected to be near-identical; only
+the anchor count/basis size and the "does `u_a` split" fork above are
+genuinely new relative to what K=2 already had to handle).
+
+### Revised Step 1, concretely (supersedes the vaguer version above)
+
+1. Read `DataDerivationSolve.lean`'s `curBeforeMonic`/`Epoly`/`Ypoly`/
+   `Npoly`/`rrBasis5`/`coeffsOut`/`cramerSolution`/`matrixA` in full.
+2. Design the K=4 analogues (`rrBasis7`, a `(6×6)` `matrixA`/`cramerSolution`
+   generalization, `curBeforeMonicK4`/`EpolyK4`/`YpolyK4`) — expect this to
+   be substantially mechanical given K=2's structure, EXCEPT for the
+   "does `u_a` split" fork (§ above), which is genuinely new.
+3. Decide `Reduce`'s real signature per the "`alpha•a` is precomputed"
+   finding above: `Reduce (u_a v_a : F p) (P1 P2 : F p × F p) : F p × F p
+   × F p × F p`, not a function of `alpha : ℤ` directly.
+4. Restate `SampleTargetFromAlpha.isReduction` as `(u0,u1,v0,v1) = Reduce
+   u_a v_a P1 P2` (a `rfl`-provable/computed equation) rather than an
+   assumed `Prop` field, once (1)-(3) land.
+5. `decoupledSystem_zeroDimensional`'s `sorry` and task (B)'s `Bad`
+   definition are UNCHANGED by this pass — still open, still separate
+   pieces of work, not addressed here.
+
+**Explicitly not started**: no Lean code for any of the above was written
+this pass, per Claire's instruction to hold off until the roadmap itself
+was corrected first.
+
+## Status update (this pass): `AlphaReduce.lean` builds clean; `AlphaLocusDegreeUniform.lean`'s errors traced to one missing-file cascade, two real bugs fixed
+
+**`AlphaReduce.lean`: DONE for everything it currently attempts.** Confirmed
+against Claire's REPL this pass — 0 errors, `sorry`-free through
+`dvd_N_u4`. Three proof-engineering bugs were found and fixed along the
+way (all in tactic scripts, not in the underlying math, which was right
+throughout):
+
+1. `row01_defining_eq_aux`'s `hEval` step: `ring` was being asked to close
+   goals still containing un-reduced `if bj = 0 then _ else 0`/`if bj = 1
+   then _ else 0` guards (from `Epoly4`/`Ypoly4`'s `match`-then-`if`
+   shape). `split_ifs` initially failed because those `if`s live inside an
+   un-reduced `match rrBasis7.getD bidx.val (0,0,0) with | (fst,bi,bj) =>
+   ...` rather than a bare `if`; fixed by `simp only [hget]` (substituting
+   the concrete `(fst,bi,bj)` triple from the already-established `hget`
+   equation) BEFORE attempting to split. Even after that, `split_ifs` was
+   splitting three independent `if`s (two from the `Epoly4`/`Ypoly4` eval
+   terms, one from `Fsum`'s own `if bj=1 then py else 1`) without
+   recognizing they all key off the same `bj`, producing one spurious case
+   combination that was unprovable as stated. Final fix: `norm_num` (which
+   resolves the literal-numeral disequalities `0=1`/`1=0` via decidability
+   directly, rather than introducing independent case hypotheses) followed
+   by `<;> ring` (safe whether or not `norm_num` alone already closes the
+   goal).
+2. `dvd_of_row_identity4`'s `j=1` case: a calc-chain step dropped the
+   `C tv1 *`/`C tv0 *` scaling factors that an earlier step in the same
+   chain had already established were present — a genuine copy-paste-style
+   slip (not a tactic issue), where the claimed intermediate equality was
+   false relative to its own context. Fixed by restoring the `C tv1 * (...)`/
+   `C tv0 * (...)` wrapping.
+3. Same case, next step: `xmodUTable p tu0 tu1 (bi+1)` vs
+   `xmodUTable p tu0 tu1 (1+bi)` — syntactically different `Nat`-index
+   terms that `ring` treats as opaque, unrelated atoms (it doesn't look
+   inside function-application arguments). Fixed with an explicit
+   `hcomm : bi+1 = 1+bi` fed into the `simp only` set before `ring`, plus
+   `if_neg (one_ne_zero (α := ℕ))` to force `reduceMonomialModU`'s internal
+   `if 1 = 0 then ... else ...` into its correct branch (plain `simp only`
+   doesn't discharge numeral disequalities on its own).
+
+**Still explicitly not started** in `AlphaReduce.lean` (unchanged from
+before this pass — see the file's own module docstring, updated this pass
+to record the build confirmation): `uRS4`/`vRS4` (monic-normalization/
+root-finding on `curBeforeMonic4`) and the `Reduce` function itself. This
+is real, separate work — `AlphaReduce.lean` currently gets you as far as
+"the correct quartic/quotient polynomial exists and divides correctly,"
+not "here is `Reduce`'s output as a computed `(u0,u1,v0,v1)`."
+
+**`AlphaLocusDegreeUniform.lean`: root cause of the reported errors was a
+missing file, not broken code — now resolved, two independent real bugs
+found and fixed underneath it.** The build log's `Unknown identifier
+'single'`/`single_sub_single_mem_Divisor0`, the `curBeforeMonic`/`Ypoly`/
+`uRS` unknown-identifier errors, and the two `heartbeats` timeouts all
+trace to ONE cause: `DivisorClassGroup.lean` (imported at this file's top)
+was missing from the working tree this pass — Claire's `bridge.zip`
+(uploaded mid-pass) has it, at `Genus2Lean/DivisorClassGroup.lean`, and
+`single`/`single_sub_single_mem_Divisor0` are both defined there exactly
+as `AlphaLocusDegreeUniform.lean` expects (`single : H.Point → Divisor H`,
+`single_sub_single_mem_Divisor0 : ∀ P Q, single P - single Q ∈ Divisor0
+H`). The `curBeforeMonic`/`Ypoly`/`uRS` errors and the heartbeat timeouts
+were downstream cascade damage from that one missing import (Lean's
+error-recovery inserts `sorry` for unresolved names and can spend enormous
+effort unifying metavariables against `Nondegenerate`'s dependent
+signature once its `hcurA`/`hgcdA` arguments are `sorry`), NOT a real
+second missing-import problem — the actual definitions are reachable via
+`AlphaLocusDegreeUniform → DecoupledSystemRegular →
+TheDataDerivation.DataDerivationMumford → TheDataDerivation.
+DataDerivationSolve`/`DataDerivationTower`, all present and unchanged.
+`bridge.zip`'s full `Genus2Lean/` directory has been copied into the
+working tree this pass (36 files, including `DivisorClassGroup.lean` and
+everything else it and `AlphaLocusDegreeUniform.lean` transitively need)
+so this should no longer reproduce on a clean rebuild.
+
+**Two independent real bugs found and fixed underneath the cascade** (both
+plain under-application of `SampleTargetFromAlpha`, which takes FIVE
+explicit/implicit arguments — `p H D aClass δ₀` — not four; the missing
+`δ₀` made Lean read `SampleTargetFromAlpha p H D aClass` as a still-curried
+function `H.Point → Type u_1` rather than a `Type`, hence the "type
+expected, got (... : H.Point → Type u_1)" errors at lines 303/374 in the
+original log):
+1. `alphaPairDelta`'s signature — added `{δ₀ : H.Point}` as an implicit
+   argument, threaded into `SampleTargetFromAlpha p H D aClass δ₀`.
+2. `decoupledSystem_degree_uniform`'s signature — added `(δ₀ : H.Point)`
+   as an explicit argument, same threading.
+
+**Not yet attempted this pass** (no test against Claire's REPL yet for
+this file specifically, unlike `AlphaReduce.lean` above): whether these
+fixes are sufficient for a clean build, or whether other latent issues
+surface once the missing-import cascade is actually cleared. Both
+`decoupledSystem_isRegularSequence`/`decoupledSystem_zeroDimensional`
+(moved into this file, per the file's own docstring, from
+`DecoupledSystemRegular.lean`) and `decoupledSystem_degree_uniform` itself
+remain `sorry`'d or unproved as documented elsewhere in this file — this
+pass did not attempt any of that proof content, only cleared the
+elaboration-blocking errors so the file can actually be typechecked far
+enough to see what remains.
+
+**Action still outstanding, per the file's own docstring**: delete
+`decoupledSystem_isRegularSequence`/`decoupledSystem_zeroDimensional` from
+the end of `DecoupledSystemRegular.lean` now that they're duplicated here
+— not done this pass, flagged so it isn't lost.

@@ -809,12 +809,19 @@ The 4 remaining sorries live in the private
 `regularSeq_of_peel_chain_assembly` (the mechanical 12-stage wiring
 lemma), and are narrower than "Gap A in general": specifically, stages
 4–7 of the 12 (`Fv0` through `Fv3`, each mod a prefix that includes the
-full 4-element `Fu`-block) have **no covering field in
-`PeelChainNondegenerate`** despite the structure's naming suggesting it
-covers this — `hu01`/`hv01`/`hu1_full`/`hv1_full` all turn out, on
-inspection, to be about `Fu2`/`Fu3` (stages 2/3), not the `Fv`-side
-stages the names suggest. See `ROADMAP-peel-chain-assembly.md`'s table
-for the exact stage-by-stage accounting.
+full 4-element `Fu`-block). **Updated since the paragraph above was
+first written**: `hu01`/`hv01`/`hu1_full`/`hv1_full` do only cover
+stages 2/3 as originally noted, but `PeelChainNondegenerate` has since
+gained 4 more fields specifically for stages 4–7 —
+`hv0_A`/`hv1_B`/`hv2_A`/`hv3_B`, each stated at the minimal same-side
+sub-prefix the disjoint half of the goal's full prefix reduces to. A
+bridge lemma to extend each of those minimal facts up to the goal's
+literal (fuller) prefix, `gapA_disjoint_bridge`, is also now proved,
+no `sorry`. Neither is wired into the 4 remaining `sorry`s yet — this
+is now a mechanical wiring task, not open math. See
+`ROADMAP-peel-chain-assembly.md`'s "Update (this pass): the two-sided
+bridge now EXISTS" section for the exact stage-by-stage accounting and
+remaining steps.
 
 ### `AlphaLocusDegreeUniform.lean` — 2 live sorries, both expected/scoped
 
@@ -846,12 +853,14 @@ double-digit-sounding picture the old progress-note tail's language
 ("4 fresh sorries", "sorry count... at 2", etc., scattered across
 multiple stale notes) suggested without ever giving one consolidated
 count. Of the six: **4 are one precise, well-understood gap**
-(`PeelChainAssembly.lean`'s stages 4–7, needing 4 new
-`PeelChainNondegenerate` fields — mechanical once those fields exist,
-see `ROADMAP-peel-chain-assembly.md`), and **2 are correctly-scoped,
-expected-to-stay-open placeholders** pending separate prerequisite work
-(`AlphaLocusDegreeUniform.lean`'s alpha-uniform statement and the
-regular-sequence-to-finiteness corollary).
+(`PeelChainAssembly.lean`'s stages 4–7 — both the needed
+`PeelChainNondegenerate` fields AND a sufficient bridge lemma,
+`gapA_disjoint_bridge`, now exist and are proved; purely mechanical
+wiring remains, see `ROADMAP-peel-chain-assembly.md`), and **2 are
+correctly-scoped, expected-to-stay-open placeholders** pending
+separate prerequisite work (`AlphaLocusDegreeUniform.lean`'s
+alpha-uniform statement and the regular-sequence-to-finiteness
+corollary).
 
 **Not done this pass**: no Lean toolchain was available, so every claim
 above is a `grep`-verified absence of a literal `sorry` token plus a

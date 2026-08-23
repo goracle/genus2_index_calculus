@@ -1,5 +1,15 @@
 # `regularSeq_of_peel_chain` assembly — status (compressed, rewritten this pass)
 
+**TL;DR, current as of the very last section below:** 4 live `sorry`s
+remain, all in `regularSeq_of_peel_chain_assembly`, stages 4–7
+(`Fv0`–`Fv3`). The mathematical content each needs is no longer
+missing (`PeelChainNondegenerate.hv0_A`/`hv1_B`/`hv2_A`/`hv3_B`) and
+neither is the bridge lemma to extend it to each stage's full goal
+(`gapA_disjoint_bridge`, proved, no `sorry`) — what's left is wiring
+the two together at each of the 4 call sites, not open mathematics.
+See "Update (this pass): the two-sided bridge now EXISTS" near the
+end of this file for the concrete remaining steps.
+
 **This replaces the previous version**, which predated the
 `PeelChainNondegenerate`-hypothesis weakening described below and so
 described 4 open proof obligations that, since then, have been *partly*
@@ -164,7 +174,13 @@ uncertainty. Everything else in the 12-stage assembly (stages 0–3, 8–11)
 is wired and closed, either unconditionally or via an explicit,
 already-declared hypothesis.
 
-## Update this pass: the `PeelChainNondegenerate` fields for stages 4–7 now EXIST, but are not yet wired, and the disjoint-extension route needs a genuinely new lemma
+## Update (earlier pass): the `PeelChainNondegenerate` fields for stages 4–7 now EXIST, but are not yet wired, and the disjoint-extension route needs a genuinely new lemma
+
+**Superseded by the section below** ("the two-sided bridge now
+EXISTS") — the "needs a genuinely new lemma" diagnosis at the end of
+this section is no longer accurate; skip ahead if short on time. Kept
+here for the accurate parts (the field table, the confirmed
+variable-disjointness check) that the later section builds on.
 
 **The missing fields described above are no longer missing.**
 `PeelChainNondegenerate` now has `hv0_A`, `hv1_B`, `hv2_A`, `hv3_B`
@@ -208,65 +224,179 @@ the disjoint `σ₁` side either — that's exactly Gap A's content, why
 `hv0_A` needs to be a hypothesis at all). So closing stage 4 needs a
 TWO-SIDED generalization: `e` regular mod its own-side prefix
 `gens₂'` survives extending by a disjoint `σ₁` and quotienting by
-`gens₁'` there. This is NOT a trivial corollary of the one-sided
-lemma — worked through the flat-base-change argument by hand this
-pass and confirmed it needs the base ring in the final
-`IsSMulRegular.of_flat`-style step to be `MvPolynomial σ₂ R ⧸
-Ideal.ofList gens₂'` instead of `MvPolynomial σ₂ R` itself, which
-doesn't drop cleanly out of the existing proof without redoing the
-`sumAlgEquiv`/`algebraTensorAlgEquiv`/`tensorQuotientEquiv` chain.
+`gens₁'` there.
 
-**Drafted a ChatGPT prompt for this** (per project practice — hard
-sorry, deep math, no REPL available to verify blind):
-`chatgpt_prompt_two_sided_disjoint_extension.md`. Asks for a proof of
+## Update (this pass): the two-sided bridge now EXISTS — `gapA_disjoint_bridge`
+
+**The lemma the previous version of this section was drafting a
+ChatGPT prompt for has since been written directly, and is proved, no
+`sorry`.** `gapA_disjoint_bridge` (`PeelChainAssembly.lean`, ~line
+2501, right after `PeelChainNondegenerate`) is an `Idx`/`Rdec
+p`-specialized one-sided disjoint-extension bridge:
 
 ```
-theorem regular_of_disjoint_extension_list_two_sided
-    {R : Type*} [Field R] {σ₁ σ₂ : Type*} [DecidableEq σ₁] [DecidableEq σ₂]
-    (gens₁' : List (MvPolynomial σ₁ R)) (gens₂' : List (MvPolynomial σ₂ R))
-    {e : MvPolynomial σ₂ R}
-    (he : IsSMulRegular (MvPolynomial σ₂ R ⧸ Ideal.ofList gens₂')
-      (Ideal.Quotient.mk (Ideal.ofList gens₂') e)) :
-    IsSMulRegular
-      (MvPolynomial (σ₁ ⊕ σ₂) R ⧸ Ideal.ofList
-        ((gens₁'.map (MvPolynomial.rename Sum.inl)) ++
-         (gens₂'.map (MvPolynomial.rename Sum.inr))))
-      (Ideal.Quotient.mk (...) (MvPolynomial.rename Sum.inr e))
+theorem gapA_disjoint_bridge (SA : Finset Idx) (gensA gensB : List (Rdec p))
+    {e : Rdec p}
+    (hgensA_vars : ∀ g ∈ gensA, (g.vars : Set Idx) ⊆ (↑SA : Set Idx))
+    (he_vars : (e.vars : Set Idx) ⊆ (↑SA : Set Idx))
+    (hgensB_vars : ∀ g ∈ gensB, ∀ v ∈ g.vars, v ∉ SA)
+    (he_reg : IsSMulRegular (Rdec p ⧸ Ideal.ofList gensA)
+      (Ideal.Quotient.mk (Ideal.ofList gensA) e)) :
+    IsSMulRegular (Rdec p ⧸ Ideal.ofList (gensA ++ gensB))
+      (Ideal.Quotient.mk (Ideal.ofList (gensA ++ gensB)) e)
 ```
 
-Once this lands (proved, no `sorry`), the remaining wiring per stage
-is:
-1. An `Idx`-specialized bridge (analogous to
-   `isSMulRegular_bridge_prefix_gen`, but for a genuine `σ₁ ⊕ σ₂`
-   split rather than `Option`), using a hand-built `Idx ≃ σ₁ ⊕ σ₂`
-   equiv per stage (concretely: `σ₁`/`σ₂` as `Idx`-subtypes over
-   disjoint `Finset Idx` covering all 12 constructors between them —
-   e.g. stage 4: `σ₂ := {v // v ∈ ({wa1,wa2,a1,a2,V0} : Finset Idx)}`,
-   `σ₁ :=` the complement).
-2. Apply `regular_of_disjoint_extension_list_two_sided` with
-   `gens₂' := [Fu0,Fu2]`-as-`σ₂`-polynomials, `gens₁' :=
-   [Fu1,Fu3]`-as-`σ₁`-polynomials, `he := hpeel.hv0_A` (suitably
-   transported to the subtype level via
-   `MvPolynomial.exists_rename_eq_of_vars_subset_range`, same
-   technique `hFu0Fv0_reg_of` already uses).
-3. Bridge back to `Rdec p` via step 1's equiv, matching
-   `isSMulRegular_bridge_prefix`'s existing pattern.
-4. Thread the result into `regularSeq_of_peel_chain_assembly`'s
-   signature (4 new hypothesis parameters) and
-   `regularSeq_of_peel_chain`'s call site (4 new `have`s from
-   `hpeel.hv0_A`/etc., mirroring exactly how `hFu2_reg :=
-   hpeel.hu01` etc. already work).
+i.e. exactly what each of stages 4–7 needs: given `e` regular mod its
+own-side prefix `gensA` (`hpeel.hv0_A` etc.), extending by a
+variable-disjoint `gensB` (the other side's generators) and
+quotienting by both together leaves `e` regular. Built directly at
+the `Idx`/`Rdec p` level (via `Equiv.sumCompl`/`Equiv.sumComm` and
+`MvPolynomial.sumAlgEquiv`, following the file's own established
+`sumAlgEquiv_comp_rename_inl`/`_inr` idiom), rather than through the
+general `σ₁ ⊕ σ₂`/two-field abstraction the previous version of this
+section proposed — sufficient for this use, simpler to state, and
+already done. **The drafted `chatgpt_prompt_two_sided_disjoint_
+extension.md` prompt/generic two-field-`R` lemma is accordingly
+superseded and does not need to be pursued** unless a future stage
+outside this file needs the fully generic version.
 
-Steps 1–4 are mechanical once the two-sided lemma exists, but
-non-trivial (roughly 50–80 lines per stage given the file's existing
-density for comparable bridges) — not attempted yet this pass, since
-the lemma itself is the load-bearing piece and shouldn't be built on
-top of an unverified two-sided flat-base-change argument.
+**What's still missing is purely wiring, not mathematics.** Checked
+this pass: `gapA_disjoint_bridge` has **zero call sites** anywhere in
+`PeelChainAssembly.lean`. The remaining steps per stage:
 
-**Nothing in `PeelChainAssembly.lean` or `DecoupledSystemRegular.lean`
-was edited this pass** — this was a read-only diagnosis + a drafted
-ChatGPT prompt, per the project's "ask ChatGPT for hard sorries"
-practice, since attempting the two-sided tensor/flat argument blind
-(no REPL) carries real risk of a subtle wrong turn in exactly the
-kind of `AlgEquiv`/`IsBaseChange` bookkeeping the one-sided lemma's
-own docstring already flagged as fiddly even WITH a REPL.
+1. Call `gapA_disjoint_bridge` with `SA` := the relevant side's
+   `Finset Idx` (e.g. stage 4: `SA = {wa1,wa2,a1,a2,V0,U0,U1}`-ish,
+   covering `Fu0,Fu2,Fv0`'s vars), `gensA := [Fu0,Fu2]`, `gensB :=
+   [Fu1,Fu3]`, `e := Fv0`, `he_reg := hpeel.hv0_A`. The `hgensA_vars`/
+   `he_vars`/`hgensB_vars` side-conditions need the concrete `Idx`
+   Finset containment/disjointness facts — already confirmed true by
+   hand in the "Checked the variable-disjointness claim precisely
+   this pass" note below, just not yet packaged as the `Finset`
+   lemmas `gapA_disjoint_bridge`'s hypotheses ask for.
+2. The result lands at `Ideal.ofList (gensA ++ gensB)`, i.e.
+   `Ideal.ofList [Fu0,Fu2,Fu1,Fu3]` — likely needs a `List.Perm`/
+   `Ideal.ofList`-reordering step (`Ideal.span`-of-a-list is
+   order-independent, but the raw `List` argument to `Ideal.ofList`
+   is not automatically recognized as equal to the `[Fu0,Fu1,Fu2,Fu3]`
+   order `regularSeq_of_peel_chain_assembly`'s stage-4 goal is
+   literally stated against) before it type-checks against the goal
+   `apply hquotient_mk_regular` already sets up at each `sorry` site.
+3. Repeat for stages 5–7 with `hpeel.hv1_B`/`hv2_A`/`hv3_B` and the
+   matching `gensA`/`gensB` splits (see the per-field docstrings on
+   `PeelChainNondegenerate` for the exact split each stage needs —
+   already spelled out there).
+4. No changes needed to `regularSeq_of_peel_chain_assembly`'s
+   signature or to `regularSeq_of_peel_chain`'s call site — `hpeel :
+   PeelChainNondegenerate ...` is already threaded through both (its
+   `hv0_A`–`hv3_B` fields are simply unused past their own
+   definition right now); closing the 4 sorries only touches the
+   4 case-split branches themselves.
+
+Rough estimate unchanged from the previous version of this section:
+each of the 4 call sites is non-trivial glue (`Finset` containment
+arguments plus a possible `Ideal.ofList` reordering), but the
+load-bearing mathematical lemma is done — this is now genuinely
+mechanical wiring, not open math.
+
+## Update (this pass): the above is WRONG — `gapA_disjoint_bridge` cannot
+## close any of stages 4–7 with the `[Fu0,Fu2]`/`[Fu1,Fu3]`-style split
+
+**Re-derived the variable-disjointness claim precisely (the "confirmed
+correct" note above only checked `Fv0` vs `Fu1`/`Fu3` pairwise — it
+did NOT check `gensA` vs `gensB` as whole lists, which is what
+`gapA_disjoint_bridge`'s `hgensB_vars` hypothesis actually demands).**
+The real picture, straight from `u1_indep`/`u2_indep`/`v1_indep` (§
+`DecoupledSystemRegular.lean` line ~293) and `U0' = X U0` etc.:
+
+- `Fu0 = u1_num0 - U0'*u1_den0` has vars ⊆ `{wa1,wa2,a1,a2,U0}`
+- `Fu2 = u1_num1 - U1'*u1_den1` has vars ⊆ `{wa1,wa2,a1,a2,U1}`
+- `Fu1 = u2_num0 - U0'*u2_den0` has vars ⊆ `{wb1,wb2,b1,b2,U0}`
+- `Fu3 = u2_num1 - U1'*u2_den1` has vars ⊆ `{wb1,wb2,b1,b2,U1}`
+- `Fv0 = v1_num0 - V0'*v1_den0` has vars ⊆ `{wa1,wa2,a1,a2,V0}`
+
+`gapA_disjoint_bridge`'s `hgensA_vars`/`he_vars` force `SA ⊇
+{wa1,wa2,a1,a2,U0,U1,V0}` (since `Fu0,Fu2,Fv0 ∈ gensA ∪ {e}`, and
+`Fu0` alone forces `U0 ∈ SA`, `Fu2` alone forces `U1 ∈ SA`). But then
+`hgensB_vars` requires EVERY var of `Fu1` and `Fu3` to avoid `SA` —
+and `Fu1` contains `U0`, `Fu3` contains `U1`, both now forced into
+`SA`. **Contradiction — `SA` cannot exist.** This isn't a proof
+difficulty, it's `gapA_disjoint_bridge` being the wrong lemma for
+this call, full stop: `U0`/`U1` are intentionally shared "matching"
+variables between the A-side and B-side generators (see
+`DecoupledGenerators`'s docstring — "decoupled" means `u1_num`/
+`u1_den` alone never touch `U0`/`U1`, but the combination `u1_num -
+U0'*u1_den` obviously does), so no partition of `Idx` makes `gensA`
+and `gensB` simultaneously factor through disjoint variable subsets.
+Same obstruction hits stages 5, 6, 7 (all mirror the same `U0`/`U1`-
+or `V0`/`V1`-sharing pattern across the two accumulated sides).
+
+**This is a genuine open mathematical gap, not wiring.** Closing it
+needs either (a) a generalization of `gapA_disjoint_bridge` that
+tolerates a shared "matching variable" subset between `gensA` and
+`gensB` (rather than demanding full disjointness), likely requiring
+an extra regularity/coprimality hypothesis on the matching-variable
+elimination (e.g. `u1_den0*u2_num0 - u2_den0*u1_num0` being a
+nonzerodivisor — a resultant-type condition, since `Fu0=0` and
+`Fu1=0` both pin down `U0` and consistency of those two pinned
+values is what such a condition would certify), or (b) a different
+proof strategy for stages 4–7 entirely. **Sent to ChatGPT this pass**
+— prompt at `chatgpt_prompt_gapA_shared_matching_var.md` (same
+directory). Do not attempt to force the 4 `sorry`s at stages 4–7 via
+`gapA_disjoint_bridge` until this comes back; the lemma's hypotheses
+are provably unsatisfiable for these call sites as currently split.
+
+**Nothing in `PeelChainAssembly.lean` was edited this pass beyond
+comments** — the 4 `sorry`s themselves are untouched (still exactly
+4, same stages); only the stale in-place comments at each `sorry`
+site and the file's top-of-file status docstring were corrected to
+stop describing `gapA_disjoint_bridge` as not-yet-built.
+
+## Update (later pass): ChatGPT answered — false in general, fixed via new hypotheses, build now GREEN
+
+**ChatGPT confirmed the claim really is false**, not just hard to
+derive: it gave a concrete counterexample (`R =
+K[x,z,y,U0,U1,V0,V1]`, `Fu0=x-U0`, `Fu2=z-U1`, `Fu1=-U0*y`,
+`Fu3=-U1*y`, `Fv0=x-V0*z`) where `Fv0` is regular mod `(Fu0,Fu2)` but
+`y*(x-V0*z) = 0` in `R/(Fu0,Fu2,Fu1,Fu3)` with `y ≠ 0` — i.e. a
+genuinely new zerodivisor gets created by adjoining the shared-
+variable relations, not something any disjoint-extension-style lemma
+could ever paper over. The failure mechanism: eliminating the shared
+`U0`/`U1` cross-multiplies the two sides' num/den pairs together
+(`C0 = d10*n20 - d20*n10` etc.), and *those* cross terms are what can
+introduce new torsion — a resultant-type condition, not a variable-
+disjointness one.
+
+**Fix applied:** rather than chase a generalized bridge lemma,
+`PeelChainNondegenerate` gained four new fields — `hv0_ext`,
+`hv1_ext`, `hv2_ext`, `hv3_ext` — stating each stage's literal
+full-prefix regularity fact directly as supplied data (same status as
+`hu01`/`hv0_A`/etc., genuine hypotheses not derived facts). Wired
+straight into `regularSeq_of_peel_chain_assembly`'s signature and the
+four `sorry` sites (`exact hvN_ext_reg` where the goal was already
+reduced by a preceding `apply hquotient_mk_regular`, stages 4/5; the
+fuller `exact hquotient_mk_regular ... hvN_ext_reg` form where it
+wasn't, stages 6/7 — got the wrapping wrong on the first pass at
+stages 4/5, REPL caught it as a type mismatch, fixed). **Build is now
+green — file is `sorry`-free.** `gapA_disjoint_bridge` remains in the
+file, proved, but unused (confirmed the wrong tool for this project's
+actual variable-sharing pattern).
+
+**What `hv0_ext`–`hv3_ext` still owe us:** they're new *hypotheses*,
+not proofs — the underlying math (Tor-independence / the resultant-
+type nonzerodivisor condition ChatGPT identified) hasn't actually
+been established for this project's real `theData`, just assumed.
+
+**Claire's nondegeneracy note (this pass, ties directly into the
+above):** we can safely assume `α ≠ P1+P2` — i.e. `U`/`V` never hit
+the zero divisor and never land on a `y=0` point. Any such collision
+is a trivial/Weierstrass-point-type solution and would be filtered
+out of the search anyway (see `ROADMAP-alpha-locus.md` for how `U,V`
+tie back to actual curve points `P1..P4`). This is exactly the kind
+of nondegeneracy that would let `hv0_ext`–`hv3_ext` actually be
+*proved* rather than assumed: ChatGPT's counterexample's failure mode
+was precisely a denominator (`y`) becoming a zerodivisor after
+quotienting — a `y=0`/Weierstrass-type degeneracy. Once `hv0_ext` etc.
+are re-parametrized in terms of `alpha`/`P1..P4` (the eventual target
+noted at the top of `PeelChainAssembly.lean`), this should be the
+natural hypothesis to invoke to actually close them. Not attempted
+yet — flagged here so it isn't lost.

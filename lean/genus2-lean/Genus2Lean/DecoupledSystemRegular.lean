@@ -16,10 +16,14 @@ from `TheDataDerivation`'s `uRS`/`vRS`/`towerToRdec` rather than left
 opaque. This does NOT discharge any proof — `theData`'s assembly carries
 four explicit hypotheses (`hcurA/B`, `hgcdA/B`, each a genuine
 exceptional-locus condition inherited from `TheDataDerivation`'s own
-`uRS`/`vRS`), four fresh `sorry`s of its own (the `u1_indep`/etc.
-independence obligations — see §4bis), and `genList`/
-`decoupledSystem_isRegularSequence` are now stated for a general `(p,
-c0,...,c4, sa, sb)` satisfying those hypotheses rather than unconditionally.
+`uRS`/`vRS`) — and `genList`/`decoupledSystem_isRegularSequence` are
+now stated for a general `(p, c0,...,c4, sa, sb)` satisfying those
+hypotheses rather than unconditionally. **Correction, later pass**:
+the `u1_indep`/`u2_indep`/`v1_indep`/`v2_indep` independence
+obligations mentioned as "four fresh `sorry`s" in the sentence above
+when first written are, as of this correction, all proved — see
+§4bis, each closed via `towerToRdec_vars_subset` plus a short
+`Finset.mem_union`/`tauto` argument. This file has 0 live `sorry`s.
 `decoupledSystem_isRegularSequence`'s own `sorry` is unchanged in substance
 (still the same statement being proved, now with explicit parameters/
 hypotheses rather than implicit fixed values). See §4bis's own docstring for
@@ -380,15 +384,16 @@ noncomputable def coeffsToNumDen (c0 c1 c2 c3 c4 : F p) (sg : SideGens Idx)
 sample's target `(u0,u1,v0,v1)`, and the hypotheses `TheDataDerivation.uRS`/
 `.vRS` need to be well-defined (`hcurA/hcurB` -- `curBeforeMonic ≠ 0` for
 each sample; `hgcdA/hgcdB` -- the `Ypoly`/`uRS` coprimality `vRS` needs),
-build the eight `Rdec p`-valued numerator/denominator functions. The four
-`u1_indep`/`u2_indep`/`v1_indep`/`v2_indep` independence obligations are
-**left as `sorry`** here -- they would follow from `towerToRdec`'s
-construction only ever introducing `sg`'s own generators (`aSideGens`'s
-image is exactly `{wa1,wa2,a1,a2}` by inspection of `SideGens`/
-`baseFracToRing`/`towerToRdecK1`/`towerToRdec`'s definitions, so this is
-plausible, but has not been proved as a lemma about `towerToRdec` itself
-anywhere in `TheDataDerivation.lean`, and is new work this pass did not
-attempt). -/
+build the eight `Rdec p`-valued numerator/denominator functions. **The
+four `u1_indep`/`u2_indep`/`v1_indep`/`v2_indep` independence
+obligations are proved (correction, later pass — an earlier version of
+this docstring left them as `sorry` and described the argument below
+as merely plausible-but-unproved)**: `towerToRdec`'s construction only
+ever introduces `sg`'s own generators, and this IS proved as a lemma
+about `towerToRdec` itself, `towerToRdec_vars_subset`
+(`DataDerivationMumford.lean`) -- each of the four fields below is a
+direct application of it plus a short `Finset.mem_union`/`tauto`
+argument. -/
 noncomputable def theData (c0 c1 c2 c3 c4 : F p)
     (sa sb : SampleTarget p)
     (hcurA : curBeforeMonic p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1 ≠ 0)

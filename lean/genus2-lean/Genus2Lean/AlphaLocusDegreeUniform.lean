@@ -1,7 +1,14 @@
 import Mathlib
 import Genus2Lean.DecoupledSystemRegular
 import Genus2Lean.DivisorClassGroup
+import Genus2Lean.AlphaReduce
+import Genus2Lean.ZeroD.PeelChainAssembly
 
+-- `regularSeq_of_peel_chain` (used by `decoupledSystem_isRegularSequence`
+-- below, moved verbatim from `DecoupledSystemRegular.lean`) lives in
+-- `PeelChainAssembly.lean`, which IMPORTS `DecoupledSystemRegular.lean`
+-- (not the reverse) — so importing only `DecoupledSystemRegular` here
+-- does not transitively reach it; this file needs its own direct import.
 -- `DecoupledSystemRegular.lean` does not import `DivisorClassGroup.lean` (it
 -- has never needed `Jacobian`/`toJacobian` before this file), so this file
 -- imports it directly. `HyperellipticFunctionField.lean`/`AffinePoints.lean`
@@ -199,15 +206,32 @@ would be unmotivated machinery ahead of Step 2 actually needing it.
 
 noncomputable section
 
--- `Jacobian`, `PrincipalDivisorData`, `toJacobian`, `single` etc. live in
--- `namespace HyperellipticPolynomial` (`DivisorClassGroup.lean`), NOT in
--- `Genus2Lean.DecoupledSystem` — opened here so they can be used
--- unqualified below, matching how `LCanonicalElementary.lean` and other
--- consumers of that file already do it.
+-- `Jacobian`, `PrincipalDivisorData`, `toJacobian` live in `namespace
+-- HyperellipticPolynomial`; `single`, `Divisor0`,
+-- `single_sub_single_mem_Divisor0` live one level deeper, in the nested
+-- `namespace Divisor` (`DivisorClassGroup.lean`, closed again before
+-- `Jacobian` etc. are defined) — `open HyperellipticPolynomial` alone does
+-- NOT reach into that nested namespace, so both opens are needed.
 open HyperellipticPolynomial
+open HyperellipticPolynomial.Divisor
 
 namespace Genus2Lean
 namespace DecoupledSystem
+
+-- `curBeforeMonic`, `Ypoly`, `uRS` live in `Genus2Lean.TheDataDerivation`
+-- (`DataDerivationSolve.lean`/`DataDerivationMumford.lean`), reached
+-- transitively via `DecoupledSystemRegular.lean`'s own import chain — but
+-- that file only brings the NAMESPACE in scope for ITSELF (`open
+-- TheDataDerivation` at its own line 319); this file needs the same
+-- `open` again to use those names unqualified, matching how
+-- `DecoupledSystemRegular.lean` does it. (`Nondegenerate`,
+-- `CrossNondegenerate`, `genList`, `Rdec`, `regularSeq_of_peel_chain` are
+-- NOT in `TheDataDerivation` — they live directly in
+-- `Genus2Lean.DecoupledSystem`, i.e. THIS namespace, so no extra `open`
+-- is needed for those; `regularSeq_of_peel_chain` specifically needed the
+-- `PeelChainAssembly` import above instead, since it's a different file's
+-- missing-import problem, not a missing-`open` one.)
+open TheDataDerivation
 
 variable {k : Type*} [Field k] {H : HyperellipticPolynomial k}
 variable {D : PrincipalDivisorData H}
@@ -299,7 +323,7 @@ directly, so downstream statements can talk about `sa.alpha - sb.alpha`
 time. Purely notational; carries no new mathematical content beyond
 `SampleTargetFromAlpha` itself. -/
 abbrev alphaPairDelta {p : ℕ} [Fact (Nat.Prime p)] {aClass : Jacobian H D}
-    (sa sb : SampleTargetFromAlpha p H D aClass) : ℤ :=
+    {δ₀ : H.Point} (sa sb : SampleTargetFromAlpha p H D aClass δ₀) : ℤ :=
   sa.alpha - sb.alpha
 
 /-! ## Task (B): the exceptional locus `Bad` (left abstract — see module
@@ -368,9 +392,10 @@ polynomials in `alpha,alpha'`, so degree jumps only occur on their
 vanishing locus — that locus becoming the concrete candidate for `Bad`.
 None of that is attempted here. -/
 theorem decoupledSystem_degree_uniform (p : ℕ) [Fact (Nat.Prime p)]
-    [Fact (p ≠ 2)] (c0 c1 c2 c3 c4 : F p) (ell : ℕ) (aClass : Jacobian H D) :
+    [Fact (p ≠ 2)] (c0 c1 c2 c3 c4 : F p) (ell : ℕ) (aClass : Jacobian H D)
+    (δ₀ : H.Point) :
     ∃ (d : ℕ) (Bad : Set (ℤ × ℤ)), IsSmallExceptionalSet (p := p) ell Bad ∧
-      ∀ (sa sb : SampleTargetFromAlpha p H D aClass),
+      ∀ (sa sb : SampleTargetFromAlpha p H D aClass δ₀),
         (sa.alpha, sb.alpha) ∉ Bad →
         ∀ (hcurA : curBeforeMonic p c0 c1 c2 c3 c4
             sa.toSampleTarget.u0 sa.toSampleTarget.u1
@@ -429,10 +454,22 @@ theorem decoupledSystem_isRegularSequence (p : ℕ) [Fact (Nat.Prime p)]
       (uRS p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1))
     (hndA : Nondegenerate p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1 hcurA hgcdA)
     (hndB : Nondegenerate p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1 hcurB hgcdB)
-    (hcross : CrossNondegenerate p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB) :
+    (hcross : CrossNondegenerate p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB)
+    -- `regularSeq_of_peel_chain`'s current signature (`PeelChainAssembly.lean`,
+    -- as actually built against the `ZeroD` folder) takes two more
+    -- hypotheses beyond what this theorem previously threaded through:
+    -- `hpeel` (`PeelChainNondegenerate`) and `htop_ne_smul` (Gap C, the
+    -- 12-generator ideal is proper). Added here as plain pass-through
+    -- hypotheses, matching this project's existing convention of exposing
+    -- genuinely-open mathematical content as an explicit hypothesis rather
+    -- than asserting it — not new content invented at this call site.
+    (hpeel : PeelChainNondegenerate p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB)
+    (htop_ne_smul : (⊤ : Ideal (Rdec p)) ≠
+      Ideal.ofList (genList p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB) • ⊤) :
     RingTheory.Sequence.IsRegular (Rdec p)
       (genList p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB) :=
   regularSeq_of_peel_chain p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB hndA hndB hcross
+    hpeel htop_ne_smul
 
 /-- **The dimension-0 corollary, fixed-target case.** Moved verbatim from
 `DecoupledSystemRegular.lean`. Still `sorry` — the formal `IsRegular →
