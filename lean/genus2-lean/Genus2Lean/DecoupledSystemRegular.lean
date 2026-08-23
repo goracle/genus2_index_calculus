@@ -2613,6 +2613,81 @@ theorem regular_of_disjoint_extension_list {R : Type*} [Field R]
     exact hxy'
   exact hreg_quot hxy''
 
+set_option maxHeartbeats 10000000 in
+/-- **Auxiliary generalization of `regular_of_disjoint_extension_list`,
+built this pass towards the two-sided version needed for Gap A** (see
+`ROADMAP-peel-chain-assembly.md` and this session's ChatGPT consultation).
+Identical proof to `regular_of_disjoint_extension_list` verbatim, with
+`MvPolynomial σ₂ R` replaced throughout by an arbitrary commutative
+`R`-algebra `B'` -- the proof never actually uses that `MvPolynomial σ₂ R`
+is itself a polynomial ring, only that it is a commutative `R`-algebra
+(for `Module.Flat.baseChange`, `Algebra.TensorProduct.tensorQuotientEquiv`,
+`MvPolynomial.algebraTensorAlgEquiv`, all of which are stated for a
+general `R`-algebra base, not specifically for `MvPolynomial σ₂ R`). This
+lets `he`'s ring be something other than a bare polynomial ring -- in
+particular, in the next lemma, the quotient ring `B₀ := MvPolynomial σ₂ R
+⧸ Ideal.ofList gens₂'`. -/
+theorem regular_of_extension_into_algebra {R : Type*} [Field R]
+    {σ₁ : Type*} [DecidableEq σ₁] (B' : Type*) [CommRing B'] [Algebra R B']
+    (gens' : List (MvPolynomial σ₁ R)) {e : B'}
+    (he : IsSMulRegular B' e) :
+    IsSMulRegular
+      (MvPolynomial σ₁ B' ⧸
+        (Ideal.ofList (gens'.map (fun q => q.map (algebraMap R B'))) :
+          Ideal (MvPolynomial σ₁ B')))
+      (Ideal.Quotient.mk
+        (Ideal.ofList (gens'.map (fun q => q.map (algebraMap R B'))) :
+          Ideal (MvPolynomial σ₁ B'))
+        (MvPolynomial.C e)) := by
+  set Iq : Ideal (MvPolynomial σ₁ R) := Ideal.ofList gens' with hIq_def
+  set Q : Type _ := MvPolynomial σ₁ R ⧸ Iq with hQ_def
+  set g' : Ideal (MvPolynomial σ₁ B') :=
+    Ideal.ofList (gens'.map (fun q => q.map (algebraMap R B'))) with hg'_def
+  have hflat_quot_R : Module.Flat R Q := inferInstance
+  have hflat_tensor : Module.Flat B' (TensorProduct R B' Q) :=
+    Module.Flat.baseChange R B' _
+  set J : Ideal (TensorProduct R B' (MvPolynomial σ₁ R)) :=
+    Ideal.map Algebra.TensorProduct.includeRight Iq with hJ_def
+  set E₂ : TensorProduct R B' (MvPolynomial σ₁ R) ≃ₐ[B']
+      MvPolynomial σ₁ B' :=
+    MvPolynomial.algebraTensorAlgEquiv R B' with hE₂_def
+  have hIdealMap₂ : Ideal.map
+      (E₂ : TensorProduct R B' (MvPolynomial σ₁ R) →+* MvPolynomial σ₁ B') J
+      = g' := by
+    have hJ_ofList : J = Ideal.ofList (gens'.map Algebra.TensorProduct.includeRight) := by
+      rw [hJ_def, hIq_def]; exact Ideal.map_ofList _ _
+    rw [hJ_ofList, Ideal.map_ofList, List.map_map, hg'_def]
+    congr 1
+    apply List.map_congr_left
+    intro q _
+    show E₂ (Algebra.TensorProduct.includeRight q) = q.map (algebraMap R B')
+    simp [hE₂_def]
+  set eAlg : (TensorProduct R B' (MvPolynomial σ₁ R) ⧸ J) ≃ₐ[B']
+      (MvPolynomial σ₁ B' ⧸ g') :=
+    Ideal.quotientEquivAlg J g' E₂ hIdealMap₂.symm with heAlg_def
+  have hTensorQuot :
+      (TensorProduct R B' Q) ≃ₗ[B']
+        (TensorProduct R B' (MvPolynomial σ₁ R) ⧸ J) := by
+    have tE := Algebra.TensorProduct.tensorQuotientEquiv (R := R)
+      B' (MvPolynomial σ₁ R) B' Iq
+    exact tE.toLinearEquiv
+  have hflat_final : Module.Flat B'
+      (TensorProduct R B' (MvPolynomial σ₁ R) ⧸ J) :=
+    Module.Flat.of_linearEquiv hTensorQuot.symm
+  have hflat_gquot : Module.Flat B' (MvPolynomial σ₁ B' ⧸ g') :=
+    Module.Flat.of_linearEquiv eAlg.symm.toLinearEquiv
+  have hreg_quot :
+      IsSMulRegular (MvPolynomial σ₁ B' ⧸ g')
+        (algebraMap B' (MvPolynomial σ₁ B' ⧸ g') e) :=
+    IsSMulRegular.of_flat (S := MvPolynomial σ₁ B' ⧸ g') he
+  have halg_eq :
+      (algebraMap B' (MvPolynomial σ₁ B' ⧸ g') e) =
+        Ideal.Quotient.mk g' (MvPolynomial.C e) := by
+    simp [IsScalarTower.algebraMap_apply B' (MvPolynomial σ₁ B')
+      (MvPolynomial σ₁ B' ⧸ g')]
+  rwa [halg_eq] at hreg_quot
+
+
 /-- **Small lemma, proved this pass, correcting `CrossNondegenerate`'s
 earlier `≠ 0`-only version** (per the second ChatGPT round-trip on
 `regularSeq_of_peel_chain`'s assembly: the identity `a * b = c` with only

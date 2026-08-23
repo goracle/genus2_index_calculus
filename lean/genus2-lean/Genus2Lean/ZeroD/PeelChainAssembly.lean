@@ -2479,6 +2479,471 @@ private lemma hFu1Fu3Fv1Fv3_reg_of (c0 c1 c2 c3 c4 : F p) (sa sb : SampleTarget 
     exact isSMulRegular_of_mul_eq_of_isSMulRegular hv1 hmk_ring
   exact ⟨hFu1_reg, hFu3_reg, hFv1_reg, hFv3_reg⟩
 
+set_option maxHeartbeats 1000000 in
+/-- **Gap A bridge lemma.** Given a same-side prefix `gensA` whose
+generators all have `.vars ⊆ SA` (`SA : Finset Idx`), a target `e` -
+ALSO with `.vars ⊆ SA` - already known regular mod `Ideal.ofList gensA`
+in `Rdec p`, and a disjoint list `gensB` whose generators all have
+`.vars` avoiding `SA` entirely, then `e` stays regular mod the combined
+ideal `Ideal.ofList (gensA ++ gensB)`. (The `e.vars ⊆ SA` hypothesis
+holds at every one of this file's 4 Gap A call sites -- `Fv0`/`Fv1`/
+`Fv2`/`Fv3` are each confined to their own same-side Finset by
+`v1_indep`/`v2_indep`, exactly the side `gensA` also lives in -- so this
+is not a loss of generality here.) Built from `regular_of_extension_
+into_algebra` (`DecoupledSystemRegular.lean`, proved, no `sorry`),
+applied with `B' := MvPolynomial σA (F p) ⧸ IqA` (`σA := {v // v ∈ SA}`,
+`IqA` the `σA`-rewritten `gensA`) as the algebra both `e` and `gensA`
+live in, and `τ := {v // v ∉ SA}` as the fresh index type `gensB` is
+rewritten over. The final identification composes `MvPolynomial.
+sumAlgEquiv` (via `Equiv.sumCompl`/`Equiv.sumComm` for `Idx ≃ τ ⊕ σA`)
+with `MvPolynomial.mapAlgHom` quotiented against `IqA`'s image
+(`MvPolynomial.ker_mapAlgHom` + `RingHom.quotientKerEquivOfSurjective`). -/
+theorem gapA_disjoint_bridge (SA : Finset Idx) (gensA gensB : List (Rdec p))
+    {e : Rdec p}
+    (hgensA_vars : ∀ g ∈ gensA, (g.vars : Set Idx) ⊆ (↑SA : Set Idx))
+    (he_vars : (e.vars : Set Idx) ⊆ (↑SA : Set Idx))
+    (hgensB_vars : ∀ g ∈ gensB, ∀ v ∈ g.vars, v ∉ SA)
+    (he_reg : IsSMulRegular (Rdec p ⧸ Ideal.ofList gensA)
+      (Ideal.Quotient.mk (Ideal.ofList gensA) e)) :
+    IsSMulRegular (Rdec p ⧸ Ideal.ofList (gensA ++ gensB))
+      (Ideal.Quotient.mk (Ideal.ofList (gensA ++ gensB)) e) := by
+  classical
+  set σA : Type := {v : Idx // v ∈ SA} with hσA_def
+  set τ : Type := {v : Idx // v ∉ SA} with hτ_def
+  -- `Idx ≃ τ ⊕ σA`, via `Equiv.sumCompl`/`Equiv.sumComm`.
+  set eIdx : τ ⊕ σA ≃ Idx :=
+    (Equiv.sumComm τ σA).trans (Equiv.sumCompl (· ∈ SA)) with heIdx_def
+  set E : Rdec p ≃ₐ[F p] MvPolynomial τ (MvPolynomial σA (F p)) :=
+    (MvPolynomial.renameEquiv (F p) eIdx.symm).trans
+      (MvPolynomial.sumAlgEquiv (F p) τ σA) with hE_def
+  -- `E` sends `X` of a `σA`-variable to the pure-coefficient (`Sum.inr`)
+  -- side, and `X` of a `τ`-variable to the pure-outer (`Sum.inl`) side.
+  -- `eIdx.symm = (Equiv.sumCompl (· ∈ SA)).symm.trans (Equiv.sumComm τ σA).symm`,
+  -- and `(Equiv.sumComm τ σA).symm = Equiv.sumComm σA τ` swaps `inl`/`inr`. So for
+  -- `v ∈ SA` (i.e. `v : σA`), `(sumCompl _).symm v.1 = Sum.inl ⟨v.1,_⟩ : σA ⊕ τ`
+  -- becomes `Sum.inr ⟨v.1,_⟩ : τ ⊕ σA` after the `sumComm` swap -- i.e. `Sum.inr v`
+  -- (up to the `Subtype.ext`-trivial proof-irrelevant coercion back to `v`).
+  -- Uses the already-proven `sumAlgEquiv_comp_rename_inl`/`_inr` pattern
+  -- (`DecoupledSystemRegular.lean`'s established, working idiom for this exact
+  -- API) rather than the unreliable `sumAlgEquiv_apply` simp lemma directly.
+  have hE_X_inr : ∀ v : σA, E (MvPolynomial.X v.1) =
+      MvPolynomial.C (MvPolynomial.X v) := by
+    intro v
+    have h1 : eIdx.symm v.1 = Sum.inr v := by
+      rw [heIdx_def, Equiv.symm_trans_apply]
+      show (Equiv.sumComm σA τ) ((Equiv.sumCompl (· ∈ SA)).symm v.1) = Sum.inr v
+      show (Equiv.sumComm σA τ)
+          (if h : v.1 ∈ SA then Sum.inl ⟨v.1, h⟩ else Sum.inr ⟨v.1, h⟩) = Sum.inr v
+      rw [dif_pos v.2]
+      rfl
+    have h2 : E (MvPolynomial.X v.1) =
+        algebraMap (MvPolynomial σA (F p)) (MvPolynomial τ (MvPolynomial σA (F p)))
+          (MvPolynomial.X v) := by
+      rw [hE_def, AlgEquiv.trans_apply]
+      change (MvPolynomial.sumAlgEquiv (F p) τ σA)
+        (MvPolynomial.rename eIdx.symm (MvPolynomial.X v.1)) = _
+      rw [MvPolynomial.rename_X, h1]
+      have h3 := congrArg (fun F => F (MvPolynomial.X v))
+        (MvPolynomial.sumAlgEquiv_comp_rename_inr (F p) τ σA)
+      simp only [AlgHom.comp_apply, AlgHom.coe_coe] at h3
+      simpa using h3
+    rw [h2, MvPolynomial.algebraMap_eq]
+  have hE_X_inl : ∀ v : τ, E (MvPolynomial.X v.1) = MvPolynomial.X v := by
+    intro v
+    have h1 : eIdx.symm v.1 = Sum.inl v := by
+      rw [heIdx_def, Equiv.symm_trans_apply]
+      show (Equiv.sumComm σA τ) ((Equiv.sumCompl (· ∈ SA)).symm v.1) = Sum.inl v
+      show (Equiv.sumComm σA τ)
+          (if h : v.1 ∈ SA then Sum.inl ⟨v.1, h⟩ else Sum.inr ⟨v.1, h⟩) = Sum.inl v
+      rw [dif_neg v.2]
+      rfl
+    have h2 : E (MvPolynomial.X v.1) =
+        (MvPolynomial.map (algebraMap (F p) (MvPolynomial σA (F p)))
+          : MvPolynomial τ (F p) →+* MvPolynomial τ (MvPolynomial σA (F p)))
+          (MvPolynomial.X v) := by
+      rw [hE_def, AlgEquiv.trans_apply]
+      change (MvPolynomial.sumAlgEquiv (F p) τ σA)
+        (MvPolynomial.rename eIdx.symm (MvPolynomial.X v.1)) = _
+      rw [MvPolynomial.rename_X, h1]
+      have h3 := congrArg (fun F => F (MvPolynomial.X v))
+        (MvPolynomial.sumAlgEquiv_comp_rename_inl (F p) τ σA)
+      simp only [AlgHom.comp_apply, AlgHom.coe_coe] at h3
+      simpa using h3
+    rw [h2, MvPolynomial.map_X]
+  -- Every generator of `gensA` factors through `σA` (its `.vars ⊆ SA`).
+  have hgensA_factor : ∀ g ∈ gensA,
+      ∃ g' : MvPolynomial σA (F p), MvPolynomial.rename (Subtype.val : σA → Idx) g' = g := by
+    intro g hg
+    apply MvPolynomial.exists_rename_eq_of_vars_subset_range g
+      (Subtype.val : σA → Idx) Subtype.val_injective
+    intro v hv
+    exact ⟨⟨v, hgensA_vars g hg hv⟩, rfl⟩
+  choose gensA' hgensA'_eq using hgensA_factor
+  -- Every generator of `gensB` factors through `τ` (its `.vars ∩ SA = ∅`).
+  have hgensB_factor : ∀ g ∈ gensB,
+      ∃ g' : MvPolynomial τ (F p), MvPolynomial.rename (Subtype.val : τ → Idx) g' = g := by
+    intro g hg
+    apply MvPolynomial.exists_rename_eq_of_vars_subset_range g
+      (Subtype.val : τ → Idx) Subtype.val_injective
+    intro v hv
+    exact ⟨⟨v, hgensB_vars g hg v hv⟩, rfl⟩
+  choose gensB' hgensB'_eq using hgensB_factor
+  -- `E` evaluates a polynomial living purely on the `σA` side as
+  -- the corresponding coefficient polynomial, and a polynomial living
+  -- purely on the `τ` side via the coefficient-preserving map.
+  -- Proving these statements for an arbitrary source polynomial avoids
+  -- dependent induction through the non-canonical `gensA'`/`gensB'`
+  -- choices.
+  have hE_sigma_factor : ∀ g' : MvPolynomial σA (F p),
+      E (MvPolynomial.rename (Subtype.val : σA → Idx) g') =
+        MvPolynomial.C g' := by
+    intro g'
+    induction g' using MvPolynomial.induction_on with
+    | C a =>
+        rw [MvPolynomial.rename_C]
+        show E (MvPolynomial.C a) = _
+        rw [show (MvPolynomial.C a : Rdec p) =
+          algebraMap (F p) (Rdec p) a from rfl, E.commutes]
+        simp
+    | add p q hp hq =>
+        rw [map_add (MvPolynomial.rename (Subtype.val : σA → Idx)),
+          map_add E, hp, hq, ← map_add]
+    | mul_X p v hp =>
+        rw [map_mul (MvPolynomial.rename (Subtype.val : σA → Idx)),
+          MvPolynomial.rename_X, map_mul E, hp, hE_X_inr v]
+        simpa only [MvPolynomial.C_mul]
+  have hE_tau_factor : ∀ g' : MvPolynomial τ (F p),
+      E (MvPolynomial.rename (Subtype.val : τ → Idx) g') =
+        MvPolynomial.map (algebraMap (F p) (MvPolynomial σA (F p))) g' := by
+    intro g'
+    induction g' using MvPolynomial.induction_on with
+    | C a =>
+        rw [MvPolynomial.rename_C]
+        show E (MvPolynomial.C a) = _
+        rw [show (MvPolynomial.C a : Rdec p) =
+          algebraMap (F p) (Rdec p) a from rfl, E.commutes,
+          MvPolynomial.map_C]
+        simp
+    | add p q hp hq =>
+        rw [map_add (MvPolynomial.rename (Subtype.val : τ → Idx)),
+          map_add E, hp, hq, ← map_add]
+    | mul_X p v hp =>
+        rw [map_mul (MvPolynomial.rename (Subtype.val : τ → Idx)),
+          MvPolynomial.rename_X, map_mul E, hp, hE_X_inl v, map_mul,
+          MvPolynomial.map_X]
+  have hE_gensA : ∀ g (hg : g ∈ gensA), E g =
+      MvPolynomial.C (gensA' g hg) := by
+    intro g hg
+    have h := hE_sigma_factor (gensA' g hg)
+    simpa only [hgensA'_eq g hg] using h
+  have hE_gensB' : ∀ g (hg : g ∈ gensB), E g =
+      MvPolynomial.map (algebraMap (F p) (MvPolynomial σA (F p)))
+        (gensB' g hg) := by
+    intro g hg
+    have h := hE_tau_factor (gensB' g hg)
+    simpa only [hgensB'_eq g hg] using h
+
+  -- Build `IqA` (the `σA`-rewritten `gensA`), `B' := MvPolynomial σA (F p)
+  -- ⧸ IqA`, and `Eq_e : MvPolynomial τ B'`, the coefficient-quotiented
+  -- image of `E e`.
+  set gensA'' : List (MvPolynomial σA (F p)) :=
+    gensA.attach.map (fun g => gensA' g.1 g.2) with hgensA''_def
+  set IqA : Ideal (MvPolynomial σA (F p)) := Ideal.ofList gensA'' with hIqA_def
+  set B' : Type := MvPolynomial σA (F p) ⧸ IqA with hB'_def
+  set gensB'' : List (MvPolynomial τ (F p)) :=
+    gensB.attach.map (fun g => gensB' g.1 g.2) with hgensB''_def
+  set qA : MvPolynomial σA (F p) →+* B' := Ideal.Quotient.mk IqA with hqA_def
+  set Eq_e : MvPolynomial τ B' := MvPolynomial.map qA (E e) with hEq_e_def
+  -- `gensA''`'s image under `rename Subtype.val` recovers `gensA` exactly
+  -- (pointwise `hgensA'_eq`), so `Ideal.ofList gensA''`'s pushforward
+  -- along `rename Subtype.val` is `Ideal.ofList gensA`.
+  have hgensA''_rename :
+      gensA''.map (MvPolynomial.rename (Subtype.val : σA → Idx)) = gensA := by
+    rw [hgensA''_def, List.map_map]
+    have hcomp : (MvPolynomial.rename (Subtype.val : σA → Idx) ∘
+        fun g : {x // x ∈ gensA} => gensA' g.1 g.2) = fun g : {x // x ∈ gensA} => g.1 := by
+      funext g; exact hgensA'_eq g.1 g.2
+    rw [hcomp]
+    simp
+  -- Likewise, `gensB''`'s image under `rename Subtype.val` recovers
+  -- `gensB` exactly (pointwise `hgensB'_eq`).
+  have hgensB''_rename :
+      gensB''.map (MvPolynomial.rename (Subtype.val : τ → Idx)) = gensB := by
+    rw [hgensB''_def, List.map_map]
+    have hcomp : (MvPolynomial.rename (Subtype.val : τ → Idx) ∘
+        fun g : {x // x ∈ gensB} => gensB' g.1 g.2) = fun g : {x // x ∈ gensB} => g.1 := by
+      funext g; exact hgensB'_eq g.1 g.2
+    rw [hcomp]
+    simp
+  -- `qA (mk (Ideal.ofList gensA) e)`-flavored regularity: transport
+  -- `he_reg` across `Ideal.Quotient.mk (Ideal.ofList gensA)` vs `E`/`qA`
+  -- via `isSMulRegular_of_ringEquiv_of_mapsTo`, using the ring equiv
+  -- `Rdec p ⧸ Ideal.ofList gensA ≃+* B'` built from `E` and `hgensA''_rename`.
+  have hIdealMap :
+      Ideal.map (MvPolynomial.C : MvPolynomial σA (F p) →+* MvPolynomial τ (MvPolynomial σA (F p)))
+        IqA =
+      Ideal.map (E : Rdec p →+* MvPolynomial τ (MvPolynomial σA (F p)))
+        (Ideal.ofList gensA) := by
+    rw [hIqA_def, Ideal.map_ofList, Ideal.map_ofList]
+    apply congrArg Ideal.ofList
+    rw [hgensA''_def, List.map_map]
+    calc
+      List.map (fun g : {x // x ∈ gensA} => MvPolynomial.C (gensA' g.1 g.2)) gensA.attach =
+          List.map (fun g : {x // x ∈ gensA} => E g.1) gensA.attach := by
+        exact List.map_congr_left (fun g _ => (hE_gensA g.1 g.2).symm)
+      _ = List.map (E : Rdec p → MvPolynomial τ (MvPolynomial σA (F p))) gensA := by
+        exact List.attach_map_val
+  set eA : Rdec p ⧸ Ideal.ofList gensA ≃+*
+      MvPolynomial τ (MvPolynomial σA (F p)) ⧸
+        Ideal.map (MvPolynomial.C : MvPolynomial σA (F p) →+* MvPolynomial τ (MvPolynomial σA (F p)))
+          IqA :=
+    Ideal.quotientEquiv (Ideal.ofList gensA)
+      (Ideal.map (MvPolynomial.C : MvPolynomial σA (F p) →+* MvPolynomial τ (MvPolynomial σA (F p)))
+        IqA)
+      (E : Rdec p ≃+* MvPolynomial τ (MvPolynomial σA (F p))) hIdealMap with heA_def
+  have heA_apply' : ∀ x : Rdec p,
+      eA (Ideal.Quotient.mk (Ideal.ofList gensA) x) =
+        Ideal.Quotient.mk
+          (Ideal.map (MvPolynomial.C : MvPolynomial σA (F p) →+*
+            MvPolynomial τ (MvPolynomial σA (F p))) IqA)
+          (E x) := by
+    intro x
+    rw [heA_def, Ideal.quotientEquiv_mk]
+    change Ideal.Quotient.mk _ (E x) = Ideal.Quotient.mk _ (E x)
+    rfl
+  have heA_apply : eA (Ideal.Quotient.mk (Ideal.ofList gensA) e) =
+      Ideal.Quotient.mk
+        (Ideal.map (MvPolynomial.C : MvPolynomial σA (F p) →+*
+          MvPolynomial τ (MvPolynomial σA (F p))) IqA) (E e) := by
+    exact heA_apply' e
+  -- Identify `MvPolynomial τ (MvPolynomial σA (F p)) ⧸ Ideal.map C IqA`
+  -- with `MvPolynomial τ B'` directly, via `MvPolynomial.ker_mapAlgHom`
+  -- applied to `mapAlgHom (Ideal.Quotient.mkₐ (F p) IqA)`.
+  set mapHom : MvPolynomial τ (MvPolynomial σA (F p)) →+* MvPolynomial τ B' :=
+    (MvPolynomial.mapAlgHom (Ideal.Quotient.mkₐ (F p) IqA)).toRingHom with hmapHom_def
+  have hmapHom_eq_map :
+      mapHom = MvPolynomial.map qA := by
+    rw [hmapHom_def, hqA_def]
+    rfl
+  have hmapHom_surj : Function.Surjective mapHom := by
+    apply MvPolynomial.map_surjective
+    exact Ideal.Quotient.mk_surjective
+  have hmapHom_ker : RingHom.ker mapHom =
+      Ideal.map (MvPolynomial.C : MvPolynomial σA (F p) →+* MvPolynomial τ (MvPolynomial σA (F p)))
+        IqA := by
+    rw [hmapHom_def]
+    change RingHom.ker (MvPolynomial.mapAlgHom (Ideal.Quotient.mkₐ (F p) IqA)) =
+      Ideal.map MvPolynomial.C IqA
+    rw [MvPolynomial.ker_mapAlgHom]
+    exact congrArg (Ideal.map MvPolynomial.C)
+      (Ideal.Quotient.mkₐ_ker (F p) IqA)
+  set eB0 : MvPolynomial τ (MvPolynomial σA (F p)) ⧸
+      RingHom.ker (mapHom : MvPolynomial τ (MvPolynomial σA (F p)) →+* MvPolynomial τ B')
+      ≃+* MvPolynomial τ B' :=
+    RingHom.quotientKerEquivOfSurjective hmapHom_surj with heB0_def
+  have heB0_apply : ∀ x : MvPolynomial τ (MvPolynomial σA (F p)),
+      eB0 (Ideal.Quotient.mk (RingHom.ker
+        (mapHom : MvPolynomial τ (MvPolynomial σA (F p)) →+* MvPolynomial τ B')) x) = mapHom x := by
+    intro x
+    rw [heB0_def]
+    exact RingHom.quotientKerEquivOfSurjective_apply_mk hmapHom_surj x
+  set eKerCast : MvPolynomial τ (MvPolynomial σA (F p)) ⧸
+      Ideal.map (MvPolynomial.C : MvPolynomial σA (F p) →+* MvPolynomial τ (MvPolynomial σA (F p)))
+        IqA
+      ≃+*
+      MvPolynomial τ (MvPolynomial σA (F p)) ⧸
+      RingHom.ker (mapHom : MvPolynomial τ (MvPolynomial σA (F p)) →+* MvPolynomial τ B') :=
+    Ideal.quotEquivOfEq hmapHom_ker.symm with heKerCast_def
+  have heKerCast_apply : ∀ x : MvPolynomial τ (MvPolynomial σA (F p)),
+      eKerCast (Ideal.Quotient.mk
+        (Ideal.map (MvPolynomial.C : MvPolynomial σA (F p) →+*
+          MvPolynomial τ (MvPolynomial σA (F p))) IqA) x) =
+        Ideal.Quotient.mk (RingHom.ker
+          (mapHom : MvPolynomial τ (MvPolynomial σA (F p)) →+* MvPolynomial τ B')) x := by
+    intro x
+    rw [heKerCast_def, Ideal.quotEquivOfEq_mk]
+  set eB : MvPolynomial τ (MvPolynomial σA (F p)) ⧸
+      Ideal.map (MvPolynomial.C : MvPolynomial σA (F p) →+* MvPolynomial τ (MvPolynomial σA (F p)))
+        IqA ≃+* MvPolynomial τ B' :=
+    eKerCast.trans eB0 with heB_def
+  have heB_apply : eB (Ideal.Quotient.mk
+      (Ideal.map (MvPolynomial.C : MvPolynomial σA (F p) →+* MvPolynomial τ (MvPolynomial σA (F p)))
+        IqA) (E e)) = Eq_e := by
+    rw [heB_def, RingEquiv.trans_apply, heKerCast_apply, heB0_apply,
+      hEq_e_def]
+    exact congrArg (fun f => f (E e)) hmapHom_eq_map
+  -- Combine `eA` and `eB` into the full ring equivalence, and transport
+  -- `he_reg` across it via `isSMulRegular_of_ringEquiv_of_mapsTo`.
+  set eAB : Rdec p ⧸ Ideal.ofList gensA ≃+* MvPolynomial τ B' := eA.trans eB with heAB_def
+  -- General form of `heAB_apply` (below), for arbitrary `x : Rdec p`, not
+  -- just `e` -- needed to identify `eAB.symm` on `gensB`-shaped elements.
+  have heAB_apply' : ∀ x : Rdec p, eAB (Ideal.Quotient.mk (Ideal.ofList gensA) x) =
+      mapHom (E x) := by
+    intro x
+    rw [heAB_def, RingEquiv.trans_apply, heA_apply' x, heB_def,
+      RingEquiv.trans_apply, heKerCast_apply, heB0_apply]
+  have heAB_apply : eAB (Ideal.Quotient.mk (Ideal.ofList gensA) e) = Eq_e := by
+    rw [heAB_apply', hEq_e_def]
+    exact congrArg (fun f => f (E e)) hmapHom_eq_map
+  -- Since `e.vars ⊆ SA`, `e` factors through `σA` (same argument as
+  -- `hgensA_factor`), so `E e = C e'` for the rewritten `e' : MvPolynomial
+  -- σA (F p)` -- no `τ`-dependence at all, matching `hE_gensA`'s
+  -- computation on `gensA`'s own elements.
+  obtain ⟨e', he'_eq⟩ := MvPolynomial.exists_rename_eq_of_vars_subset_range e
+    (Subtype.val : σA → Idx) Subtype.val_injective (fun v hv => ⟨⟨v, he_vars hv⟩, rfl⟩)
+  have hE_e : E e = MvPolynomial.C e' := by
+    rw [← he'_eq]
+    exact hE_sigma_factor e'
+  have hEq_e_eq : Eq_e = MvPolynomial.C (qA e') := by
+    rw [hEq_e_def, hE_e, MvPolynomial.map_C]
+  -- Apply `regular_of_extension_into_algebra` to `qA e' : B'`, whose
+  -- regularity is exactly `he_reg` transported through `eA`/`heA_apply`.
+  have he'_reg : IsSMulRegular B' (qA e') := by
+    have heAB_e : eAB (Ideal.Quotient.mk (Ideal.ofList gensA) e) =
+        MvPolynomial.C (qA e') := by
+      rw [heAB_apply, hEq_e_eq]
+    have hreg_eAB :
+        IsSMulRegular (MvPolynomial τ B')
+          (eAB (Ideal.Quotient.mk (Ideal.ofList gensA) e)) := by
+      intro x y hxy
+      simp only [smul_eq_mul] at hxy
+      have hxy' : eAB.symm (eAB (Ideal.Quotient.mk (Ideal.ofList gensA) e)) * eAB.symm x =
+          eAB.symm (eAB (Ideal.Quotient.mk (Ideal.ofList gensA) e)) * eAB.symm y := by
+        rw [← map_mul, ← map_mul, hxy]
+      rw [eAB.symm_apply_apply] at hxy'
+      have := he_reg (by simpa only [smul_eq_mul] using hxy')
+      exact eAB.symm.injective this
+    rw [heAB_e] at hreg_eAB
+    intro x y hxy
+    apply MvPolynomial.C_injective τ B'
+    apply hreg_eAB
+    simpa only [smul_eq_mul, map_mul] using
+      congrArg (MvPolynomial.C : B' → MvPolynomial τ B') hxy
+
+  -- Every `gensB` generator factors through `τ`, disjoint from `qA e' :
+  -- B'`'s home ring by construction -- exactly `regular_of_extension_
+  -- into_algebra`'s hypothesis shape.
+  have hkey := regular_of_extension_into_algebra (R := F p) (σ₁ := τ) B' gensB'' he'_reg
+  -- Bridge `MvPolynomial τ B' ⧸ Ideal.ofList (gensB''.map ...)` back to
+  -- `Rdec p ⧸ Ideal.ofList (gensA ++ gensB)` via `eAB` and
+  -- `Ideal.ofList_append`.
+  have hgensB''_vars_le : Ideal.map (eAB.symm : MvPolynomial τ B' →+* Rdec p ⧸ Ideal.ofList gensA)
+      (Ideal.ofList (gensB''.map (fun q => q.map (algebraMap (F p) B')))) =
+      Ideal.map (Ideal.Quotient.mk (Ideal.ofList gensA) : Rdec p →+* Rdec p ⧸ Ideal.ofList gensA)
+        (Ideal.ofList gensB) := by
+    rw [Ideal.map_ofList, Ideal.map_ofList, List.map_map]
+    congr 1
+    rw [hgensB''_def, List.map_map, show gensB.map (Ideal.Quotient.mk (Ideal.ofList gensA)) =
+      gensB.attach.map (fun g : {x // x ∈ gensB} =>
+        Ideal.Quotient.mk (Ideal.ofList gensA) g.1) by simp]
+    apply List.map_congr_left
+    intro g hg
+    show eAB.symm (((fun g' : {x // x ∈ gensB} => gensB' g'.1 g'.2) g).map
+      (algebraMap (F p) B')) = Ideal.Quotient.mk (Ideal.ofList gensA) g.1
+    apply eAB.injective
+    simp only [eAB.apply_symm_apply]
+    rw [heAB_apply', hE_gensB' g.1 g.2]
+    have hm := congrArg
+      (fun f => f (MvPolynomial.map
+        (algebraMap (F p) (MvPolynomial σA (F p))) (gensB' g.1 g.2)))
+      hmapHom_eq_map
+    rw [hm]
+    have hqa : qA.comp (algebraMap (F p) (MvPolynomial σA (F p))) = algebraMap (F p) B' := by
+      rw [hqA_def]; rfl
+    rw [MvPolynomial.map_map, hqa]
+  -- Final assembly: `(Rdec p ⧸ Ideal.ofList gensA) ⧸ Ideal.map (mk _) (Ideal.ofList gensB)`
+  -- is isomorphic, via `eAB` and `hgensB''_vars_le`, to `MvPolynomial τ B' ⧸
+  -- Ideal.ofList (gensB''.map ...)` -- exactly `hkey`'s space -- and, via
+  -- `DoubleQuot.quotQuotEquivQuotSup` and `Ideal.ofList_append`, to
+  -- `Rdec p ⧸ Ideal.ofList (gensA ++ gensB)` -- the goal's space. Chase `e`
+  -- through both isomorphisms to transport `hkey`'s regularity across.
+  set g'' : Ideal (MvPolynomial τ B') :=
+    Ideal.ofList (gensB''.map (fun q => q.map (algebraMap (F p) B'))) with hg''_def
+  set eDouble : (Rdec p ⧸ Ideal.ofList gensA) ⧸
+      Ideal.map (Ideal.Quotient.mk (Ideal.ofList gensA)) (Ideal.ofList gensB) ≃+*
+      MvPolynomial τ B' ⧸ g'' :=
+    Ideal.quotientEquiv
+      (Ideal.map (Ideal.Quotient.mk (Ideal.ofList gensA)) (Ideal.ofList gensB)) g''
+      eAB (by
+        rw [← hgensB''_vars_le]
+        rw [Ideal.map_map]
+        simp) with heDouble_def
+  have heDouble_apply : ∀ x : Rdec p ⧸ Ideal.ofList gensA,
+      eDouble (Ideal.Quotient.mk
+        (Ideal.map (Ideal.Quotient.mk (Ideal.ofList gensA)) (Ideal.ofList gensB)) x) =
+      Ideal.Quotient.mk g'' (eAB x) := by
+    intro x
+    rw [heDouble_def, Ideal.quotientEquiv_mk]
+  set eSup : (Rdec p ⧸ Ideal.ofList gensA) ⧸
+      Ideal.map (Ideal.Quotient.mk (Ideal.ofList gensA)) (Ideal.ofList gensB) ≃+*
+      Rdec p ⧸ (Ideal.ofList gensA ⊔ Ideal.ofList gensB) :=
+    DoubleQuot.quotQuotEquivQuotSup (Ideal.ofList gensA) (Ideal.ofList gensB) with heSup_def
+  have heSup_apply : ∀ x : Rdec p,
+      eSup (Ideal.Quotient.mk
+        (Ideal.map (Ideal.Quotient.mk (Ideal.ofList gensA)) (Ideal.ofList gensB))
+        (Ideal.Quotient.mk (Ideal.ofList gensA) x)) =
+      Ideal.Quotient.mk (Ideal.ofList gensA ⊔ Ideal.ofList gensB) x := by
+    intro x
+    rw [heSup_def]
+    exact DoubleQuot.quotQuotEquivQuotSup_quotQuotMk _ _ x
+  have hSupEq : Ideal.ofList gensA ⊔ Ideal.ofList gensB =
+      Ideal.ofList (gensA ++ gensB) := by
+    rw [Ideal.ofList_append]
+  set eFull : Rdec p ⧸ (Ideal.ofList gensA ⊔ Ideal.ofList gensB) ≃+*
+      Rdec p ⧸ Ideal.ofList (gensA ++ gensB) := Ideal.quotEquivOfEq hSupEq with heFull_def
+  have heFull_apply : ∀ x : Rdec p,
+      eFull (Ideal.Quotient.mk (Ideal.ofList gensA ⊔ Ideal.ofList gensB) x) =
+      Ideal.Quotient.mk (Ideal.ofList (gensA ++ gensB)) x := by
+    intro x
+    rw [heFull_def, Ideal.quotEquivOfEq_mk]
+  set eBig : (Rdec p ⧸ Ideal.ofList gensA) ⧸
+      Ideal.map (Ideal.Quotient.mk (Ideal.ofList gensA)) (Ideal.ofList gensB) ≃+*
+      Rdec p ⧸ Ideal.ofList (gensA ++ gensB) := eSup.trans eFull with heBig_def
+  have heBig_apply : ∀ x : Rdec p,
+      eBig (Ideal.Quotient.mk
+        (Ideal.map (Ideal.Quotient.mk (Ideal.ofList gensA)) (Ideal.ofList gensB))
+        (Ideal.Quotient.mk (Ideal.ofList gensA) x)) =
+      Ideal.Quotient.mk (Ideal.ofList (gensA ++ gensB)) x := by
+    intro x
+    rw [heBig_def, RingEquiv.trans_apply, heSup_apply, heFull_apply]
+  -- Transport `hkey`'s regularity across `eDouble.symm.trans eBig`
+  -- (equivalently `eBig` applied after identifying the two double-quotient
+  -- presentations), matching at the distinguished point `mk _ (mk _ e)`,
+  -- which both `heDouble_apply`/`heBig_apply` and `hkey`'s own statement
+  -- (via `hEq_e_def`/`heAB_apply`) show lands on the same element.
+  have hpoint : eBig (eDouble.symm (Ideal.Quotient.mk g'' Eq_e)) =
+      Ideal.Quotient.mk (Ideal.ofList (gensA ++ gensB)) e := by
+    have h1 : eDouble.symm (Ideal.Quotient.mk g'' Eq_e) =
+        Ideal.Quotient.mk
+          (Ideal.map (Ideal.Quotient.mk (Ideal.ofList gensA)) (Ideal.ofList gensB))
+          (Ideal.Quotient.mk (Ideal.ofList gensA) e) := by
+      apply eDouble.injective
+      simp only [eDouble.apply_symm_apply]
+      rw [heDouble_apply, heAB_apply]
+    rw [h1, heBig_apply]
+  have hreg_final : IsSMulRegular (Rdec p ⧸ Ideal.ofList (gensA ++ gensB))
+      (eBig (eDouble.symm (Ideal.Quotient.mk g'' Eq_e))) := by
+    set eTransport : MvPolynomial τ B' ⧸ g'' ≃+*
+        Rdec p ⧸ Ideal.ofList (gensA ++ gensB) :=
+      eDouble.symm.trans eBig with heTransport_def
+    show IsSMulRegular (Rdec p ⧸ Ideal.ofList (gensA ++ gensB))
+      (eTransport (Ideal.Quotient.mk g'' Eq_e))
+    have hkey' :
+        IsSMulRegular (MvPolynomial τ B' ⧸ g'')
+          (Ideal.Quotient.mk g'' Eq_e) := by
+      rw [hEq_e_eq]
+      exact hkey
+    intro x y hxy
+    simp only [smul_eq_mul] at hxy
+    have hxy' : eTransport.symm (eTransport (Ideal.Quotient.mk g'' Eq_e)) * eTransport.symm x =
+        eTransport.symm (eTransport (Ideal.Quotient.mk g'' Eq_e)) * eTransport.symm y := by
+      rw [← map_mul, ← map_mul, hxy]
+    rw [eTransport.symm_apply_apply] at hxy'
+    have := hkey' (by simpa only [smul_eq_mul] using hxy')
+    exact eTransport.symm.injective this
+  rw [hpoint] at hreg_final
+  exact hreg_final
+
 -- **Extracted from `regularSeq_of_peel_chain` for compile-time isolation
 -- (`whnf` timeout with everything in one command; per Claire's
 -- instruction, splitting the giant proof term into independent
