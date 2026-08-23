@@ -110,38 +110,57 @@ uniform-in-generic-Delta 0-dimensionality; if anything it is a concrete
 first example of the "exceptional set" the uniform bound needs to name
 explicitly.)
 
-## What's actually in the files (unchanged from previous roadmap version, still accurate)
+## What's actually in the files (updated this pass — the previous version's
+## file-location and sorry-status claims for `DecoupledSystemRegular.lean`
+## were stale; see `ROADMAP-regular-sequence.md`'s current-status section
+## for the full audit this summarizes)
 
-- **`DataDerivationBasics/Tower/Solve/Mumford.lean`** (uploaded): builds
-  `theData`, i.e. `(uRS, vRS)`, as a tower construction over symbolic
-  anchors, for one sample. Curve-and-anchor data only; no `alpha`
-  anywhere.
-- **`DecoupledSystemRegular.lean`** (uploaded, "Revision 3"): `Idx` is the
-  12-variable list. `SampleTarget` is `(u0,u1,v0,v1)` with **no `alpha`
-  field, no `P1,P2` field** — it is agnostic to how the target arose.
-  `decoupledSystem_isRegularSequence` and `decoupledSystem_zeroDimensional`
-  are both stated (both still `sorry`) for **fixed** `sa sb : SampleTarget`
-  — i.e. this file currently only has the machinery to talk about
-  regularity/dimension-0-ness at one target pair at a time. There is
-  nothing in the file, currently, that quantifies over `alpha,alpha'` or
-  states a claim of the form "for all `alpha,alpha'` outside {exceptional
-  set}, degree <= d".
-- **`genus2-index-calculus-advisory-6.md`** (`bridge.zip`, actually
-  "Revision 7" per its own header despite the filename): has eq 1, has
-  `alpha,alpha'`, has the `D~K_C` locus (§6.2) as the exceptional set for
-  *single-instance* finiteness (Question 1), and has Question 3 (§6.3) —
-  uniform degree stability across `(alpha,alpha')` — explicitly filed as
-  open but downgraded to "detail, not fatal." Per the corrected picture
-  above, that downgrade should be reversed: Question 3, correctly proved,
-  IS the resolution to Question 4 (§7's entire 8th-moment apparatus).
-- **`LCanonicalElementary.lean`** (`bridge.zip`): has `mumfordB`, the
-  concrete two-point Mumford reduction — the bridge lemma needed to state
-  eq 1 in terms of literal curve points at all, still only for the
-  un-shifted `Q1+Q2` case, not the `alpha`-shifted `[P1]+[P2]-alpha*a`
-  case.
+- **`DataDerivationBasics/Tower/Solve/Mumford.lean`**: builds `theData`,
+  i.e. `(uRS, vRS)`, as a tower construction over symbolic anchors, for
+  one sample. Curve-and-anchor data only; no `alpha` anywhere.
+  `DataDerivationMumford.lean` (the piece of this chain re-audited this
+  pass) is essentially complete — `uRS_monic`, the Mumford identity, and
+  the `towerToRdec` bridge are all proved, no `sorry`.
+- **`DecoupledSystemRegular.lean`**: `Idx` is the 12-variable list.
+  `SampleTarget` is `(u0,u1,v0,v1)` with **no `alpha` field, no `P1,P2`
+  field** — it is agnostic to how the target arose, exactly as before.
+  **`decoupledSystem_isRegularSequence` and `decoupledSystem_zeroDimensional`
+  no longer live in this file** — both moved to `AlphaLocusDegreeUniform.lean`
+  (see below), cleanly, with a pointer docstring left in their old spot.
+  `theData`'s own assembly in this file is fully wired, no `sorry`. There
+  is still nothing in this file that quantifies over `alpha,alpha'` — that
+  remains exactly the gap this roadmap is about.
+- **`AlphaLocusDegreeUniform.lean`** (new since the previous version of
+  this roadmap; supersedes the old plan of adding `alpha` machinery
+  directly to `DecoupledSystemRegular.lean`): the actual current home of
+  `decoupledSystem_isRegularSequence` (fixed-target case — **proved, no
+  `sorry`**, a one-line term proof delegating to
+  `PeelChainAssembly.lean`'s `regularSeq_of_peel_chain`) and
+  `decoupledSystem_zeroDimensional` (fixed-target `IsRegular →
+  Module.Finite` corollary — **still `sorry`**, a separate Mathlib-API
+  gap unrelated to the regular-sequence content). Also the current home
+  of `decoupledSystem_degree_uniform` — the actual target theorem this
+  roadmap is about — stated but `sorry`, exactly per Steps 1-2 below not
+  having landed yet, and `SampleTargetFromAlpha`, task (A)'s
+  `alpha`-parametrized extension of `SampleTarget`, with `isReduction`
+  still an assumed `Prop` field rather than a constructed witness (task
+  (A) itself, still open — see Step 1).
+- **`genus2-index-calculus-advisory-6.md`**: has eq 1, has `alpha,alpha'`,
+  has the `D~K_C` locus (§6.2) as the exceptional set for *single-instance*
+  finiteness (Question 1), and has Question 3 (§6.3) — uniform degree
+  stability across `(alpha,alpha')` — explicitly filed as open but
+  downgraded to "detail, not fatal." Per the corrected picture above,
+  that downgrade should be reversed: Question 3, correctly proved, IS
+  the resolution to Question 4 (§7's entire 8th-moment apparatus). Not
+  re-read this pass; status as of the last check.
+- **`LCanonicalElementary.lean`**: has `mumfordB`, the concrete two-point
+  Mumford reduction — the bridge lemma needed to state eq 1 in terms of
+  literal curve points at all, still only for the un-shifted `Q1+Q2`
+  case, not the `alpha`-shifted `[P1]+[P2]-alpha*a` case. Not re-read
+  this pass.
 - **`RiemannRochGenus2.lean`**: has `finrank_L_canonical`/`L_pair`
   machinery, the toolkit `D~K_C` (and any degree-jump-locus argument)
-  would be built from.
+  would be built from. Not re-read this pass.
 
 ## The actual target theorem, stated precisely
 
@@ -197,12 +216,18 @@ and the 8th-moment problem is not actually closed.
 
 ## Proposed roadmap, in order
 
-### Step 0 (unchanged, do this first): reconcile the two copies of
-`DecoupledSystemRegular.lean`, and get `ROADMAP-regular-sequence.md`
-pointed at the uploaded "Revision 3" file, not `bridge.zip`'s stale copy.
-No new content here relative to the previous roadmap version — still the
-correct first move, still costs nothing, still prevents wasted
-reconciliation effort later.
+### Step 0 — DONE, no longer needed as a step
+
+The previous version of this roadmap opened with reconciling two
+divergent copies of `DecoupledSystemRegular.lean` (an uploaded one vs. a
+stale copy bundled in `bridge.zip`). That concern is now moot: this
+session's working files are a single clean import chain
+(`DataDerivationMumford` → `DecoupledSystemRegular` →
+`PeelChainAssembly` → `AlphaLocusDegreeUniform`, confirmed directly from
+each file's own `import` lines this pass) with no duplicate definitions
+found anywhere in it. Left here, struck from "to do," rather than
+silently deleted, so a future reader doesn't wonder whether the
+reconciliation ever happened.
 
 ### Step 1: build task (A), the `alpha`-parametrized `SampleTarget`
 
@@ -286,7 +311,10 @@ by-generator for one fixed target) to track how the regular-sequence
 witnesses' degrees behave as the target varies over the
 `alpha`-parametrized family — likely via showing the relevant resultants/
 discriminants in the peel-chain construction (`regularSeq_of_peel_chain`,
-`Nondegenerate`, `CrossNondegenerate`) are themselves polynomial in
+`Nondegenerate`, `CrossNondegenerate`, and — new since the previous
+version of this roadmap — `PeelChainNondegenerate`, the hypothesis
+bundle `regularSeq_of_peel_chain` now also depends on; see
+`ROADMAP-peel-chain-assembly.md`) are themselves polynomial in
 `alpha,alpha'` of bounded degree, so that "degree jumps" can only happen
 on their vanishing locus — which is exactly the kind of set `Bad` needs
 to be, and connects back to Step 2's numerical check directly.

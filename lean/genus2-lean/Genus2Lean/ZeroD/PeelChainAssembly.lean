@@ -2143,6 +2143,98 @@ structure PeelChainNondegenerate (c0 c1 c2 c3 c4 : F p) (sa sb : SampleTarget p)
            V1' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v2_den 1,
          curveA1 p c0 c1 c2 c3 c4, curveA2 p c0 c1 c2 c3 c4, curveB1 p c0 c1 c2 c3 c4])
         (curveB2 p c0 c1 c2 c3 c4))
+  -- **New fields this pass — the actual Gap A content for stages 4-7
+  -- (`Fv0`-`Fv3` mod a prefix containing the full `Fu`-block), minimized
+  -- against the free/already-proved disjoint-extension machinery rather
+  -- than stated at the literal (needlessly strong) goal shape.** Every
+  -- one of stages 4-7's goals, as `fin_cases i` states them, is "regular
+  -- mod the full accumulated `Fu++Fv`-prefix so far" — but half of each
+  -- such prefix is variable-DISJOINT from the target generator
+  -- (`u1_indep`/`u2_indep`/`v1_indep`/`v2_indep`'s target Finsets:
+  -- A-side `{wa1,wa2,a1,a2}` vs. B-side `{wb1,wb2,b1,b2}`, confirmed
+  -- disjoint), so that half transports for free via
+  -- `regular_of_disjoint_extension_list` (`DecoupledSystemRegular.lean`,
+  -- already proved, no `sorry`) and contributes NOTHING to what must be
+  -- assumed here. Fields below are stated at the minimal same-side
+  -- sub-prefix only — see `ROADMAP-peel-chain-assembly.md`'s stage table
+  -- for the full stage-by-stage derivation of exactly which half drops.
+  -- The actual wiring from these minimal fields to each stage's literal
+  -- goal (via the disjoint-extension bridge) is a separate, not-yet-built
+  -- piece — see `regularSeq_of_peel_chain_assembly`'s remaining `sorry`s
+  -- and their in-place comments for exactly what's still needed.
+  /-- Stage 4's irreducible content: `Fv0` regular mod the A-side pair
+  `{Fu0,Fu2}` alone (NOT the full 4-element `{Fu0,Fu1,Fu2,Fu3}` the raw
+  goal states — `{Fu1,Fu3}` is B-side, disjoint from `Fv0`, and drops out
+  via `regular_of_disjoint_extension_list`). -/
+  hv0_A : IsSMulRegular
+      (Rdec p ⧸ Ideal.ofList
+        [(theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_num 0 -
+           U0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_den 0,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_num 1 -
+           U1' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_den 1])
+      (Ideal.Quotient.mk (Ideal.ofList
+        [(theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_num 0 -
+           U0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_den 0,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_num 1 -
+           U1' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_den 1])
+        ((theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_num 0 -
+           V0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_den 0))
+  /-- Stage 5's irreducible content: `Fv1` regular mod the B-side pair
+  `{Fu1,Fu3}` alone (the raw goal's prefix additionally has `Fv0`, A-side,
+  disjoint from `Fv1`, dropped for the same reason as above). -/
+  hv1_B : IsSMulRegular
+      (Rdec p ⧸ Ideal.ofList
+        [(theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_num 0 -
+           U0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_den 0,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_num 1 -
+           U1' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_den 1])
+      (Ideal.Quotient.mk (Ideal.ofList
+        [(theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_num 0 -
+           U0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_den 0,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_num 1 -
+           U1' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_den 1])
+        ((theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v2_num 0 -
+           V0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v2_den 0))
+  /-- Stage 6's irreducible content: `Fv2` regular mod the A-side triple
+  `{Fu0,Fu2,Fv0}` (the raw goal's prefix additionally has `Fu1,Fu3,Fv1`,
+  all B-side, disjoint from `Fv2`, dropped). -/
+  hv2_A : IsSMulRegular
+      (Rdec p ⧸ Ideal.ofList
+        [(theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_num 0 -
+           U0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_den 0,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_num 1 -
+           U1' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_den 1,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_num 0 -
+           V0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_den 0])
+      (Ideal.Quotient.mk (Ideal.ofList
+        [(theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_num 0 -
+           U0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_den 0,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_num 1 -
+           U1' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u1_den 1,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_num 0 -
+           V0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_den 0])
+        ((theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_num 1 -
+           V1' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_den 1))
+  /-- Stage 7's irreducible content: `Fv3` regular mod the B-side triple
+  `{Fu1,Fu3,Fv1}` (the raw goal's prefix additionally has `Fu0,Fu2,Fv2`,
+  all A-side, disjoint from `Fv3`, dropped). -/
+  hv3_B : IsSMulRegular
+      (Rdec p ⧸ Ideal.ofList
+        [(theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_num 0 -
+           U0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_den 0,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_num 1 -
+           U1' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_den 1,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v2_num 0 -
+           V0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v2_den 0])
+      (Ideal.Quotient.mk (Ideal.ofList
+        [(theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_num 0 -
+           U0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_den 0,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_num 1 -
+           U1' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).u2_den 1,
+         (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v2_num 0 -
+           V0' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v2_den 0])
+        ((theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v2_num 1 -
+           V1' p * (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v2_den 1))
 
 -- **Extracted from `regularSeq_of_peel_chain` for compile-time isolation.**
 -- Split out so this chunk elaborates (and, if broken, fails) on its own

@@ -690,781 +690,174 @@ thing." It is a sequence of explicit certificates: matrix-row identities,
 target Mumford congruence, support containment, resultant nonvanishing, norm
 elimination, and finally a finite-quotient/height certificate.
 
-## What is explicitly out of scope for this pass
-
-- Actually discharging any of §4's 9 steps or §5's `sorry`s — this pass is
-  the roadmap amendment only, per what was asked for; §4/§5 above are the
-  plan, not yet executed.
-- A specific choice of "how symbolic is `p`" beyond "arbitrary prime with no
-  numeral fixed anywhere" — no attempt is made here to further restrict
-  (e.g. "`p ≡ 1 mod something`") beyond what falls out of the exceptional-
-  locus conditions §4/§5 actually derive as the construction proceeds.
-- `decoupledSystem_zeroDimensional`'s exact final statement — still deferred
-  pending the Mathlib API survey noted in prior drafts (Krull-dimension-0
-  from a length-`n` regular sequence in an `n`-variable polynomial ring),
-  now additionally deferred behind §4/§5 landing first.
-- Re-deriving anything about `phi_general`'s combinatorial RR-basis
-  selection (`rr_basis`'s specific ordering choice) — treated as a
-  black-box combinatorial convention to port literally (§4.2 step 2), not
-  re-justified from first principles.
-
-## Files touched / added this pass
-
-- This roadmap, amended in place: revision note added; TL;DR, the "why a
-  regular sequence" section, and §5 (formerly the "suggested order of
-  attack") revised for symbolic `p`; §4 (`theData`'s derivation plan) is
-  entirely new, replacing every previous version's transcription-request
-  section, now grounded in the actual `trial3_phi_symbolic_unified.jl`
-  construction (uploaded and read in full this pass).
-- `DecoupledSystemRegular.lean` itself NOT yet touched this pass — `curveP`/
-  `curveP_prime`/`F`'s definitions still reflect the fixed-`p` version and
-  need updating to match §4.1 before any of §4's derivation work can begin
-  in the file itself; flagged here as the first concrete edit for the next
-  session, not made yet since this pass is roadmap-only per what was asked.
-
-## Progress note (later pass): §4.2 items 7–8 drafted, plus one un-numbered gap found
-
-`TheDataDerivation.lean` now has a `sorry`-backed skeleton for every step
-§4.2 lists (items 1–8), not just items 1–6:
-
-- **Item 7** (`uRS`, `vRS`): `uRS` is `curBeforeMonic`'s monic
-  normalization (`sorry`'d monicity lemma, `uRS_monic`, conditional on a
-  `curBeforeMonic ≠ 0` hypothesis `hcur` — a genuine further exceptional-
-  locus condition beyond `MatrixNondegenerate`, not yet folded into one
-  combined statement). `vRS` is built via `EuclideanDomain.gcdA`/`gcdB`
-  (the roadmap's own suggested route, since `_inv_mod_small` is explicitly
-  skippable per §4.0 step 6), conditional on an `IsCoprime (Ypoly) (uRS)`
-  hypothesis `hgcd` that is not discharged.
-- **Item 8** (Mumford identity): stated as `vRS_sq_eq_f_mod_uRS`, a real
-  `sorry`'d theorem (not skipped — the roadmap is explicit this one isn't
-  skippable, unlike coefficient-reduction). Only the pre-reduction copy is
-  stated, matching the decision (below) to drop reduction-to-lowest-terms
-  entirely.
-- **Reduction to lowest terms** (§4.2 item 8 / §4.0 step 7): confirmed
-  droppable, not just assumed — neither `vRS` nor
-  `vRS_sq_eq_f_mod_uRS` above depends on coefficients being reduced, so
-  this step has no Lean counterpart at all, per the roadmap's own
-  prediction.
-- **A gap §4.2's numbered list doesn't name**: turning a `K2`-valued
-  coefficient into the `(num, den) : Rdec × Rdec` pair `DecoupledGenerators`
-  actually wants. This is `elim2.jl`'s `tower_to_ring`/
-  `map_coeffs_threaded`, confirmed by reading `01_elim2_main.jl` as a
-  separate step from `symbolic_residual` itself, not covered by §4.0's
-  8-step numbered list (which stops at `symbolic_residual`'s own output).
-  Stubbed as `towerToRdec` in a new `BridgeToRdec` section — fully
-  `sorry`'d, flagged as comparable in difficulty to item 6 (a genuine change
-  of ring, not an operation internal to one fixed ring). **This section
-  also surfaces a live inconsistency**: `towerToRdec`'s codomain uses this
-  file's symbolic `F p`, but `DecoupledSystemRegular.lean`'s `Rdec` still
-  uses the fixed-`curveP` `F` — the two won't typecheck against each other
-  until `DecoupledSystemRegular.lean` gets the symbolic-`p` update this
-  roadmap already flagged as outstanding (previous "Files touched" note
-  above). Not fixed this pass; recorded at the point it would first bite.
-- **Not done this pass**: the actual assembly of a `DecoupledGenerators`
-  value / replacement of `DecoupledSystemRegular.lean`'s `theData := by
-  sorry`. Every ingredient now has a name and a signature in
-  `TheDataDerivation.lean`, but the assembly itself lives in
-  `DecoupledSystemRegular.lean` (needs `Idx`/`Rdec` imported the other
-  direction) and is documented as the next concrete edit rather than made
-  here, per the same "don't block structure on unfinished `sorry`s"
-  approach as the rest of this file. `DecoupledSystemRegular.lean`'s
-  `curveP`/`F` still need the symbolic-`p` update (previous note, still
-  outstanding) before that assembly can even typecheck.
-- No Lean toolchain was available to compile-check this pass's additions;
-  reviewed by hand for structural/type consistency (section/namespace
-  balance, matching argument lists against existing definitions) but not
-  kernel-checked. Flagging this explicitly rather than implying it's been
-  verified.
-
-## Progress note (later pass): `TheDataDerivation.lean` split into four files; item 6's two anchor divisibility facts proved; `DecoupledSystemRegular.lean` updated to symbolic `p` with `theData` assembled
-
-**File split.** `TheDataDerivation.lean` (929 lines) was split into four
-files, in dependency order: `DataDerivationBasics.lean` (symbolic `F`,
-`curvePoly`, item 1's irreducibility lemma, item 2's RR-basis
-combinatorics), `DataDerivationTower.lean` (item 3, `K0 → K1 → K2`),
-`DataDerivationSolve.lean` (items 4–6, the `4×4` solve through exact
-division), `DataDerivationMumford.lean` (items 7–8 plus `BridgeToRdec`).
-Each carries its own header explaining the split and its place in the
-chain; all four share the `Genus2Lean.TheDataDerivation` namespace.
-`DecoupledSystemRegular.lean` now imports only the fourth file. Purely
-organizational — no mathematical content changed by the split itself.
-
-**Item 6 (§4.2): the two anchor divisibility facts are now proved.**
-`dvd_N_anchor1`/`dvd_N_anchor2` (in `DataDerivationSolve.lean`) are no
-longer `sorry` — they follow the roadmap's own proposed angle
-(`Polynomial.dvd_iff_isRoot` applied to `N(t_i) = 0`, itself following from
-squaring the linear system's row-0/row-1 defining equation and substituting
-the curve relation `w_i^2 = f(t_i)`) through to an actual proof term. The
-argument reduces to two new lemmas per anchor:
-- `anchor{1,2}_defining_eq` — the row-0/row-1 equation restated additively
-  over all 5 RR-basis slots (`E(t_i) + w_i·Y(t_i) = 0`), **left as `sorry`**:
-  needs `Matrix.mulVec_cramer` unfolded against `matrixA`/`rhsVec`/
-  `coeffsOut`'s definitions — mechanical but not yet carried out.
-- `anchor{1,2}_curve_relation` — `w_i^2 = f(t_i)` promoted into `K2`, **left
-  as `sorry`**: needs `AdjoinRoot.root`'s defining property plus
-  algebraMap-commutes-with-eval reasoning.
-
-So item 6 is now 2 proved theorems + 4 smaller, individually-tractable
-`sorry`s, rather than 3 opaque `sorry`s. `dvd_N_u` (target `u(x)`'s divisibility) is still a `sorry`, but the missing
-strategy is now explicit. The mod-`u` rows of the linear system are intended
-to establish
-
-    E(x) + Y(x) * vT(x) ≡ 0 mod uT(x),
-
-where `uT(x) = x^2 + u1*x + u0` and `vT(x) = v1*x + v0` are the target
-Mumford data. The target specification must also provide the usual Mumford
-relation
-
-    vT(x)^2 ≡ f(x) mod uT(x).
-
-Then, in `Polynomial K2`,
-
-    N = E^2 - f*Y^2
-      = (E^2 - vT^2*Y^2) + (vT^2 - f)*Y^2
-      = (E - Y*vT)*(E + Y*vT) + (vT^2 - f)*Y^2.
-
-The first summand is divisible by `uT` because the mod-`uT` rows give
-`uT ∣ E + Y*vT`; the second is divisible by `uT` by the target Mumford
-relation. Therefore `uT ∣ N`. This is the whole mathematical argument:
-there is no root-by-root argument, no factorization of `N`, and no appeal to
-the numerical `divexact` call.
-
-The Lean proof should be split into three small lemmas:
-1. `target_mod_u_congruence` : the two mod-`uT` matrix rows imply
-   `uT ∣ E + Y*vT`;
-2. `target_mumford_relation` : a field-valued target specification carries
-   `uT ∣ vT^2 - f` (equivalently the remainder of `vT^2-f` modulo `uT` is
-   zero);
-3. `dvd_N_u` : combine (1) and (2) with the displayed algebraic identity.
-
-This also clarifies the API boundary: `dvd_N_u` should not manufacture or
-prove the target being a valid Mumford pair. That belongs in `SampleTarget`
-(or a separate `IsMumfordTarget` predicate) and can be assumed by the
-derivation theorem exactly where the target data are introduced. For the
-actual generator assembly, those target hypotheses then become ordinary
-inputs, just like `hcur` and `hgcd`.
-
-**`DecoupledSystemRegular.lean` updated to symbolic `p`, `theData`
-assembled.** Closes the "Progress note" above's two outstanding items:
-- `curveP`/`curveP_prime`/fixed `F` replaced by `F (p : ℕ) := ZMod p`,
-  `Rdec (p : ℕ) := MvPolynomial Idx (F p)`, threaded explicitly through
-  every downstream definition (`variable (p : ℕ)`, explicit — NOT implicit,
-  see caveat below). `curveF`/`curveA1..curveB2` likewise generalized from
-  the fixed `x^5+x+2` to symbolic `(c0,...,c4 : F p)`, matching
-  `TheDataDerivation.curvePoly`.
-- `theData` (§4bis, new section) is now assembled from
-  `TheDataDerivation.uRS`/`.vRS`/`.towerToRdec` rather than a bare `sorry`.
-  Takes `(c0,...,c4)`, both samples' target Mumford data (`SampleTarget`,
-  new structure bundling `(u0,u1,v0,v1)`), and four hypotheses `hcurA/B`
-  (`curBeforeMonic ≠ 0`, needed for `uRS`) and `hgcdA/B` (the coprimality
-  `vRS` needs) — inherited directly from `TheDataDerivation`'s own
-  well-definedness conditions on `uRS`/`vRS`. Introduces **four new
-  `sorry`s** of its own: `DecoupledGenerators`'s `u1_indep`/`u2_indep`/
-  `v1_indep`/`v2_indep` fields (that `towerToRdec`'s output only involves
-  the intended 4 variables per side) — plausible from `towerToRdec`'s
-  construction but not proved as a lemma anywhere, new work not attempted.
-  `FuList`/`FvList`/`genList`/`decoupledSystem_isRegularSequence` are now
-  stated for general `(p,c0,...,c4,sa,sb)` satisfying those four hypotheses,
-  not unconditionally — `decoupledSystem_isRegularSequence`'s own `sorry`
-  is otherwise unchanged in substance.
-
-**A real bug caught and fixed before finalizing**: the first draft of
-§4bis declared `p` *implicit* (`variable {p : ℕ}`) while every call site
-(`theData p c0 ...`, `genList p c0 ...`, etc.) passed `p` *explicitly* as a
-leading argument — inconsistent, would not typecheck. Fixed by making `p`
-explicit throughout (`variable (p : ℕ)`, matching `TheDataDerivation`'s own
-convention and every call site already in the file). Caught by re-reading
-the assembly against its call sites, not by a toolchain — flagging since
-this is exactly the kind of error hand-review can miss, and did almost miss
-here.
-
-**Not done this pass**:
-- `dvd_N_u` remains unproved, but its proof strategy is now explicit in
-  §6.1 and no longer depends on factoring `N` or splitting `u`.
-- The four new `u1_indep`-etc. `sorry`s in `theData`'s assembly; their
-  support-containment strategy is recorded in §6.4.
-- `MatrixNondegenerate` is not yet threaded as a hypothesis into
-  `decoupledSystem_isRegularSequence`; §6.5 specifies how to make it an
-  explicit construction hypothesis.
-- Any of item 6/7/8's remaining `sorry`s beyond the two now discharged.
-- No Lean toolchain was available this pass either — all of the above is
-  hand-reviewed for structural/type consistency (including a systematic
-  re-check of every call site against the `variable (p : ℕ)` explicit-vs-
-  implicit question after the bug above was found), not kernel-checked.
-
-## Progress note (current pass): status re-audited against the actual files — nearly everything above is now discharged; every remaining `sorry` lives in `DecoupledSystemRegular.lean`, none in `TheDataDerivation`
-
-This pass did not add new mathematics. It re-read all five files against a
-literal `grep sorry`, since the roadmap's own prose (including several notes
-directly above) had drifted well behind the code — most "left as `sorry`"
-and "not yet proved" language above describes gaps that are now closed, and
-several sections still frame `theData`'s derivation as unstarted when it has
-in fact been fully built out and wired up. Restating the true state plainly:
-
-**`DataDerivationBasics.lean`, `DataDerivationMumford.lean`,
-`DataDerivationSolve.lean`, `DataDerivationTower.lean` — zero live `sorry`s
-among all four files.** Every occurrence of the word "sorry" left in these
-four files (5, 10, 5, and 0 respectively) is prose — a docstring or comment
-*reporting* that some nearby theorem is "now fully proved, no `sorry`," or
-narrating the history of a gap that has since been closed. None is an actual
-`sorry` term/tactic sitting in a proof. Concretely, this means:
-- §4.2 items 1–8 (the tower construction, the `4×4` Cramer solve, `Epoly`/
-  `Ypoly`/`Npoly`, the two anchor divisibility facts and their two supporting
-  lemmas each, `dvd_N_u`'s three-lemma decomposition from §6.1,
-  `uRS`/`uRS_monic`, `vRS`, and the Mumford identity `vRS_sq_eq_f_mod_uRS`)
-  are now **all proved**, not sketched — including `dvd_N_u` itself, which
-  the previous progress note above still lists as unproved.
-- The irreducibility caveat flagged in §4.1 (`X² - f(t_i)` irreducible over
-  each tower level, needed for `AdjoinRoot`'s field instance) is proved in
-  full generality in `DataDerivationBasics.lean`, both the "not a square in
-  the multivariate rational function field" half and the single-variable
-  `RatFunc`-level half (`fAtT_not_isSquare`).
-- `BridgeToRdec`'s `towerToRdec` construction (`DataDerivationMumford.lean`)
-  is complete and proved, including the base case and both inductive tower
-  steps (`towerToRdecK1`, then the `K1 → K2` step) — the file's own comments
-  mark each piece "No `sorry`" explicitly.
-- The file split described in the previous progress note (`TheDataDerivation.lean`
-  → four files) is done and is exactly the four files now on disk.
-
-The one substantive item still open in this cluster is genuinely a
-`DecoupledSystemRegular.lean`-side gap, not a `TheDataDerivation`-side one:
-`towerToRdec_den_ne_zero` (item below).
-
-**`DecoupledSystemRegular.lean` — 6 live `sorry`s, all individually named
-and none hidden inside a `True`-hypothesis or other disguised assumption.**
-This file is also further along than the previous progress note suggests:
-`theData` is fully assembled (not a bare `sorry`); `curveCoeffRegular`,
-`denRegular`, `regular_of_linear_elim`, `regular_of_norm_eliminate` (and its
-one-variable predecessor `regular_of_norm_eliminate_one`), the four
-`*SideGens_*Gen_injective` lemmas, `uRS_coeff_ne_zero`/`vRS_coeff_ne_zero`,
-and `curBeforeMonic_natDegree_eq_sub`/`_le_two` are all proved. The `Gap 2`
-false-theorem episode recorded above (§ "RESOLVED as false-as-a-theorem") is
-also handled correctly as designed: the two false claims were replaced by
-an explicit `Nondegenerate` hypothesis rather than patched into something
-still-false, and `denRegular` is proved conditional on that hypothesis. The
-six actual `sorry`s remaining, by line and theorem:
-
-1. `Ypoly_natDegree_le_zero`'s inner `have hsingle` — needs one missing
-   combinatorial fact about `rrBasis5` (`rrBasis5_bj_one_unique`: no *other*
-   RR-basis index besides `yIdx` has `bj = 1`); a prompt for exactly this
-   lemma is already drafted (`chatgpt_prompt_ypoly_epoly.md`), not yet run.
-2. `Epoly_natDegree_le_three` — stated, proof not started; the docstring
-   above it already gives the intended argument (from `rrBasis5`'s literal
-   top `bj = 0` entry).
-3. `Npoly_natDegree_le_six` — stated, proof not started; docstring gives the
-   intended `natDegree_sub_le`/`natDegree_mul_le`/`natDegree_pow_le`
-   assembly from the two lemmas above plus the already-proved
-   `curvePoly_natDegree`.
-4. `towerToRdec_den_ne_zero` — stated, proof not started; the docstring
-   gives the intended three-level induction (base case from
-   `IsFractionRing.den`'s nonzero-divisor property, two inductive steps via
-   `mul_ne_zero`). This is the one piece of "denominator never vanishes"
-   reasoning that still lives on the `DecoupledSystemRegular.lean` side
-   rather than already being finished upstream.
-5. `regularSeq_of_peel_chain` — the twelve-step variable-peel induction
-   assembling `curveCoeffRegular`/`denRegular` (both proved) into the full
-   regular-sequence statement. Explicitly **not attempted**, flagged in its
-   own docstring as new bookkeeping work rather than a corollary of the two
-   proved pieces it would compose.
-6. `decoupledSystem_zeroDimensional` — the formal step from `IsRegular` to
-   `Module.Finite` (a length-`n` regular sequence in an `n`-variable
-   polynomial ring over a field gives a nonzero Artinian quotient). Not
-   started; independent of `regularSeq_of_peel_chain`'s own `sorry`.
-
-`decoupledSystem_isRegularSequence` itself carries no `sorry` directly — it
-is proved *from* `regularSeq_of_peel_chain`, so item 5 above is its only
-dependency-chain gap, made visible in the proof term rather than left as an
-opaque `sorry` on the main theorem.
-
-**One item corrected, not just updated:** §5 steps 3–4's old `sorry`-stubs
-(`eightVar_finiteQuotient`, `fourVar_finiteQuotient`) were *deleted*, not
-filled in — they were built on a `hgens : True` placeholder standing in for
-"these really are the generators §5 describes," which is flagged in the
-file itself as the same failure mode as an unjustified `sorry`: it made the
-statements provable without ever pinning down what they're about. The
-honest state, recorded in the file's own §"5 steps 3-4: NOT YET STATEABLE"
-section, is that these two steps cannot be stated as real theorems until
-`Fu_cross`/`Fv_cross`'s closed forms are extracted concretely from `theData`
-— tracked as a prerequisite, not swept into a hypothesis.
-
-**Net count.** Across all five files: **6 live `sorry`s total, all in
-`DecoupledSystemRegular.lean`**, versus the double-digit-per-file picture
-several passages above (written progressively, pass over pass) still
-suggest by only reporting what was newly closed rather than the running
-total. Four of the six (1–4) are narrow, single-lemma gaps with an already-
-written proof sketch in the surrounding docstring. The remaining two (5, 6)
-are the genuinely open structural work: assembling the proved pieces into
-the full regular-sequence theorem, and the regular-sequence-to-dimension-0
-corollary.
-
-**Still not done, unchanged from before:**
-- No Lean toolchain was available this pass either. Every claim above about
-  a theorem being "proved" is a literal `grep`-verified absence of a `sorry`
-  token in that theorem's body, cross-checked by reading the surrounding
-  docstrings' own "no `sorry`"/"fully proved" annotations — not a kernel
-  check (`#print axioms` was not run). This is a stronger signal than a
-  hand-reviewed structural pass but still short of compilation.
-- §5 steps 3–4's finite-quotient certificates remain genuinely unstated
-  (not merely unproved), pending `Fu_cross`/`Fv_cross`'s closed forms.
-- `MatrixNondegenerate` (§6.5) is still not threaded as an explicit
-  hypothesis anywhere in `DecoupledSystemRegular.lean`.
-
-## Progress note (current pass): builds clean, two ChatGPT round-trips on
-the assembly architecture, `regular_of_disjoint_extension` corrected from
-false to true, one new lemma proved (Layer 2), one remains genuinely open
-
-**The file builds with no errors as of this pass** (previous passes fixed
-two elaboration-order/typeclass-unification errors at
-`MvPolynomial.isSMulRegular_C_of_isSMulRegular`, unrelated to any `sorry`).
-`sorry` count is unchanged at the surface level from the previous note (6),
-but the *shape* of the remaining work changed substantially this pass, via
-two rounds of ChatGPT consultation on how `regularSeq_of_peel_chain` (item
-5 in the previous note) should actually be assembled. Recording the
-architecture here so it doesn't need to be re-explained from scratch next
-time.
-
-### The two-round consultation, summarized
-
-**Round 1** reviewed an early sketch of the 12-step peel induction and
-recommended a four-layer architecture instead of one flat induction:
-
-1. **Layer 1** — a single generic lemma: a polynomial over any `CommRing A`
-   with `IsSMulRegular`-regular leading coefficient is itself regular
-   (acting on `Polynomial A` by multiplication). Subsumes both the `Monic`
-   case (curve relations, leading coeff `1`) and the linear case (`Fu`/`Fv`
-   generators, leading coeff `-den`) as one-line corollaries — no
-   `NoZeroDivisors`/domain hypothesis needed, and no separate lemma per
-   case.
-2. **Layer 2** — a quotient-transport lemma: pushes Layer 1's
-   `Polynomial A`-level fact down through `MvPolynomial.optionEquivLeft`
-   and `Ideal.polynomialQuotientEquivQuotientPolynomial` into the actual
-   quotient ring the peel chain lives in. This is the direct
-   generalization of this file's own already-proved `regular_of_linear_elim`
-   (which only handled the fixed linear shape) to an arbitrary polynomial.
-3. **Layer 3** — the "shape" facts: that each generator, after peeling,
-   really does look like a monic/linear polynomial in the next variable
-   (`quintic`/`quintic_monic` for the curve relations' quintic coefficient
-   blob, `curveCoeffRegular` for the anchor-variable instantiation).
-4. **Layer 4** — the finite 12-stage assembly over the fixed variable
-   order, invoking Layers 1–3 at each stage.
-
-It also flagged `MvPolynomial.finSuccEquiv`/`Fin 12` reindexing as a
-cleaner alternative to this file's `{v : Idx // v ≠ x}`-subtype peeling,
-but that reindexing was **not attempted** this pass (would touch working
-`peelEquiv`/`peelEquivGen` machinery; flagged as a possible future
-cleanup, not a blocker).
-
-**Round 2**, after Layers 1–3 above were drafted, corrected two substantive
-points in the emerging Layer-4 assembly plan:
-
-- **`curveCoeffRegular` is likely not needed for the literal assembly.**
-  Each curve relation (`curveA1` etc.) is *already* monic in its own `w`-
-  variable as written — `curveCoeffRegular`'s job (showing the anchor-
-  variable coefficient blob is a monic quintic) only matters if the
-  intended proof strategy specifically peels the anchor variable too,
-  which the literal 12-generator list doesn't require.
-- **The genuinely hard gap is the repeated-target-variable problem**, not
-  the curve relations. `genList`'s order is `Fu ++ Fv ++ [curveA1..B2]`
-  (`Fu`/`Fv` first), and each of `U0`, `U1`, `V0`, `V1` has *two*
-  generators (`d.u1_num i - Ui * d.u1_den i` and
-  `d.u2_num i - Ui * d.u2_den i`). After imposing the first, the second's
-  denominator regularity is needed *in the quotient*, not merely
-  `≠ 0` in `Rdec p` — and the two denominators come from disjoint variable
-  sets (`{wa1,wa2,a1,a2}` vs. `{wb1,wb2,b1,b2}`), sharing only the target
-  variable (`U0` etc.), so this is a genuine flat-base-change situation,
-  not something `regular_of_linear_elim`/Layer 2 alone can discharge.
-
-This is exactly `regular_of_disjoint_extension`'s job, drafted the
-previous pass and left `sorry`-backed — Round 2 confirmed it is real,
-load-bearing work for the assembly, not a redundant lemma to skip.
-
-### What actually got done this pass
-
-- **Layer 2 is now proved**, not just planned: `regular_of_peeled_leadingCoeff`
-  (line ~2284), built by generalizing `regular_of_linear_elim`'s own
-  working transport argument (same `set I'/A/B/e` skeleton, same
-  `hIdealMap`/`hsmul_mk`/`he_apply` helper steps) from the fixed linear
-  shape `C c - X·C d` to an arbitrary polynomial `G : Polynomial
-  (MvPolynomial τ R)`, using Layer 1 in place of the linear case's bespoke
-  argument. `regular_of_linear_elim` itself was *not* rewritten as a
-  corollary of this (flagged as a safe future cleanup, not attempted to
-  avoid touching a working proof).
-- **`regular_of_disjoint_extension` was corrected from false to true.**
-  The version drafted the previous pass, over an arbitrary `[CommRing R]`,
-  is FALSE — ChatGPT's counterexample (`R := ℤ`, `σ₁ = σ₂ := PUnit`,
-  `g := e := 2`) is airtight: `e = 2` is regular in its own home ring, but
-  after quotienting by `g = 2` the quotient has characteristic 2 and `e`'s
-  image is literally `0`. The obstruction is that `MvPolynomial σ₁ R ⧸ (g)`
-  need not be flat over `R` in general (`ℤ ⧸ (2)` isn't `ℤ`-flat), which
-  is exactly the base-change step the lemma's proof needs. **Fix:**
-  `[CommRing R]` → `[Field R]` (line ~2053). Since every module over a
-  field is automatically flat, and the only `R` this file ever instantiates
-  the lemma at is `F p := ZMod p` (a field, given `[Fact (Nat.Prime p)]`),
-  this loses no generality actually needed here and makes the statement
-  true. No call sites existed yet to break from the tightened hypothesis.
-  Per project convention (weaken a false theorem rather than delete it):
-  the theorem was kept and corrected, not removed.
-- `regular_of_disjoint_extension`'s **proof itself is still `sorry`**
-  (unchanged) — the tensor-product/base-change assembly needed
-  (`MvPolynomial.algebraTensorAlgEquiv`, `IsSMulRegular.of_flat_of_isBaseChange`,
-  `TensorProduct.isBaseChange`) involves several nontrivial equivalence
-  compositions that were correctly identified as "needs a REPL, don't
-  guess blind" per project convention. A fresh, narrowly-scoped ChatGPT
-  prompt for exactly this proof (quoting the corrected `[Field R]`
-  statement and the specific confirmed Mathlib lemmas to use) was drafted
-  and is queued to run next — see "Next concrete step" below.
-
-### Current inventory of `sorry`s in `DecoupledSystemRegular.lean` (7 total,
-up from 6 — `regular_of_peeled_leadingCoeff` being newly proved is offset
-by `regular_of_disjoint_extension` now being counted as a live, corrected
-target rather than an untested draft)
-
-Unchanged from the previous note: items 1–4 (`Ypoly_natDegree_le_zero`'s
-`rrBasis5_bj_one_unique` gap, `Epoly_natDegree_le_three`,
-`Npoly_natDegree_le_six`, `towerToRdec_den_ne_zero`) and item 6
-(`decoupledSystem_zeroDimensional`, the `IsRegular → Module.Finite` step).
-
-Item 5 (`regularSeq_of_peel_chain`) is now better-decomposed rather than a
-single monolithic gap:
-- **Layer 1** (`Polynomial.isSMulRegular_of_leadingCoeff_isSMulRegular`,
-  line ~2195) — **proved**.
-- **Layer 2** (`regular_of_peeled_leadingCoeff`, line ~2284) — **proved**
-  this pass.
-- **Layer 3 shape facts** (`quintic`/`quintic_monic`, line ~2365;
-  `curveCoeffRegular`, line ~2423) — **proved**, though per Round 2 above,
-  `curveCoeffRegular` specifically may turn out to be unneeded for the
-  literal 12-generator assembly (kept anyway, harmless if unused).
-- **`regular_of_disjoint_extension`** (line ~2053) — statement corrected
-  to `[Field R]` this pass (now true), **proof still `sorry`** — the
-  concrete next target, see below.
-- **Layer 4, the actual 12-stage assembly** (inside
-  `regularSeq_of_peel_chain`, line ~2065) — **not started**. Depends on
-  `regular_of_disjoint_extension`'s proof being finished first (needed for
-  the four repeated-target-variable stages `U0,U0`/`U1,U1`/`V0,V0`/`V1,V1`);
-  the four curve-relation stages and the eight `Fu`/`Fv` first-generator
-  stages should route through Layer 2 + Layer 1 directly, per Round 2's
-  correction that `curveCoeffRegular` isn't needed there.
-
-**Net count, current pass: 7 live `sorry`s** — the same 4 narrow
-single-lemma gaps as before (1–4), the same dimension-0 corollary (6, now
-listed last), `regular_of_disjoint_extension`'s proof (new: corrected
-statement, proof not yet attempted), and the Layer-4 assembly itself
-(`regularSeq_of_peel_chain`, unchanged in substance but now much better
-scoped — three of its four stage-types have their supporting lemmas fully
-proved, only the repeated-target stages are blocked on
-`regular_of_disjoint_extension`).
-
-### Next concrete step
-
-Run this prompt (already drafted, copy verbatim) through ChatGPT with REPL
-access, to get `regular_of_disjoint_extension`'s actual proof:
-
-> I'm working in Lean 4 / Mathlib. I need to prove this theorem (now
-> correctly stated over `[Field R]`, per a prior round-trip that found the
-> `[CommRing R]` version false via a `ℤ`/characteristic-2 counterexample):
->
-> ```lean
-> theorem regular_of_disjoint_extension {R : Type*} [Field R]
->     {σ₁ σ₂ : Type*} [DecidableEq σ₁] [DecidableEq σ₂]
->     (g : MvPolynomial σ₁ R) {e : MvPolynomial σ₂ R}
->     (he : IsSMulRegular (MvPolynomial σ₂ R) e) :
->     IsSMulRegular
->       (MvPolynomial (σ₁ ⊕ σ₂) R ⧸
->         (Ideal.ofList [MvPolynomial.rename Sum.inl g] : Ideal (MvPolynomial (σ₁ ⊕ σ₂) R)))
->       (Ideal.Quotient.mk
->         (Ideal.ofList [MvPolynomial.rename Sum.inl g] : Ideal (MvPolynomial (σ₁ ⊕ σ₂) R))
->         (MvPolynomial.rename Sum.inr e)) := by
->   sorry
-> ```
->
-> Confirmed to exist in current Mathlib:
-> - `MvPolynomial.sumAlgEquiv (R) (S₁) (S₂) : MvPolynomial (S₁ ⊕ S₂) R ≃ₐ[R] MvPolynomial S₁ (MvPolynomial S₂ R)`
-> - `MvPolynomial.sumAlgEquiv_comp_rename_inl`/`_inr` (their exact
->   coefficient-map/algebraMap composition forms)
-> - `MvPolynomial.algebraTensorAlgEquiv R B : TensorProduct R B (MvPolynomial σ₁ R) ≃ₐ[B] MvPolynomial σ₁ B`, sending `b ⊗ₜ p ↦ b • p.map (algebraMap R B)` (`Mathlib.RingTheory.TensorProduct.MvPolynomial`)
-> - `IsSMulRegular.of_flat_of_isBaseChange`, `IsSMulRegular.of_flat` (`Mathlib.RingTheory.Flat.Basic`)
-> - `TensorProduct.isBaseChange (R) (M) (S) : IsBaseChange S ((TensorProduct.mk R S M) 1)`
-> - Since `R` is now a `Field`, every `R`-module (in particular
->   `MvPolynomial σ₁ R ⧸ Ideal.span {g}`) is automatically `Module.Flat R`.
->
-> Please give the concrete Lean 4 proof, using `algebraTensorAlgEquiv` (not
-> `Algebra.TensorProduct.quotIdealMapEquivTensorQuot`, which was tried in a
-> prior round and had its `A`/`B` roles backwards for this situation) to
-> identify `MvPolynomial σ₁ B ⧸ Ideal.span {ĝ}` (`ĝ := g.map (algebraMap R
-> B)`, `B := MvPolynomial σ₂ R`) with `B ⊗[R] (MvPolynomial σ₁ R ⧸
-> Ideal.span {g})`, then apply the flat-base-change regularity lemma.
-
-Once that lands, Layer 4's four `U/V` repeated-target stages become
-mechanical applications of `regular_of_disjoint_extension` (with the
-disjointness of `{wa1,wa2,a1,a2}` vs. `{wb1,wb2,b1,b2}` already established
-by `u1_indep`/`u2_indep`/etc., proved upstream), and the remaining work in
-`regularSeq_of_peel_chain` is genuinely mechanical bookkeeping (routing
-each of the 12 stages through the now-complete Layer 1/2/3/
-`regular_of_disjoint_extension` toolkit) rather than open mathematics.
-
-## Progress note (this pass): `regular_of_disjoint_extension` is now fully
-proved, REPL-verified, no `sorry`. Different route than the queued prompt
-above actually used.
-
-The prompt drafted above (`algebraTensorAlgEquiv` route) was never run.
-Instead, a fresh ChatGPT round-trip identified a materially cleaner route
-via **`Algebra.TensorProduct.tensorQuotientEquiv`**
-(`Mathlib.RingTheory.TensorProduct.Quotient` — confirmed to exist in
-current Mathlib; NOT to be confused with the plain `TensorProduct.
-tensorQuotientEquiv` in `Mathlib.LinearAlgebra.TensorProduct.Quotient`,
-which is a different, weaker lemma without the algebra structure). This
-lemma packages the identification directly as a quotient by an *ideal*
-(`Ideal.map includeRight I`), not a `Submodule.range`, which is exactly
-what's needed to compose with `Ideal.quotientEquivAlg` -- no
-`Submodule.range`-equals-`Ideal.span` bookkeeping lemma was needed, unlike
-every earlier draft's plan (including the `AlgebraTensorModule.
-tensorQuotientEquiv` route a different ChatGPT round floated in between,
-which *would* have needed exactly that bookkeeping lemma and was
-correctly abandoned in favor of this one before being attempted).
-
-**Caution for future ChatGPT round-trips on this file:** one intermediate
-answer asserted a theorem `Algebra.TensorProduct.tensorQuotientEquiv` with
-a signature that turned out, on independent doc verification, to be
-subtly wrong in argument meaning (though the name and rough shape were
-right) -- always independently verify a cited lemma's *exact* signature
-against `leanprover-community.github.io/mathlib4_docs` before wiring it
-into a proof; don't trust a citation on name-match alone.
-
-Three REPL round-trips were needed to close the `sorry` once the route was
-chosen, none of them mathematical -- all elaboration/direction plumbing:
-1. `Algebra.TensorProduct.includeRight g` and `1 ⊗ₜ[R] g` are *defeq* but
-   not syntactically `rfl`-matched by `rw`'s own trailing check; needed an
-   explicit `simp [Algebra.TensorProduct.includeRight_apply]` after the
-   `rw [Ideal.map_span, Set.image_singleton]` chain, not just the `rw`
-   alone.
-2. `Algebra.TensorProduct.tensorQuotientEquiv`'s implicit base ring `R`
-   couldn't be inferred when both scalar-tower arguments (`S`, `A`) were
-   instantiated to the same type `MvPolynomial σ₂ R` -- needed `(R := R)`
-   supplied explicitly at the call site.
-3. Two direction/composition bugs: `rw [hQ_def, ...]` broke `rw`'s motive
-   (fixed via `show` with `Q` unfolded to its defeq definition instead of
-   rewriting it -- `Q`'s own instances are baked into the surrounding
-   `TensorProduct`/`≃ₗ` type, so `rw` can't abstract over it safely);
-   `Ideal.quotientEquivAlg`'s hypothesis needed `.symm` on `hIdealMap₂`
-   (its actual convention is `hIJ : J = map f I` given `I J`, matching
-   this file's *existing* `Ideal.quotientEquiv` call two lines above it,
-   which already used `.symm` on the same hypothesis -- a same-file
-   precedent that should have been checked before drafting the new call);
-   and the final `.trans` needed `hTensor.symm`, not `hTensor` bare, since
-   both pieces land on `(... ⧸ J)` as their shared middle term.
-
-**File builds clean.** `sorry` count in `DecoupledSystemRegular.lean`:
-**2**, down from the previous pass's headline "7 live sorrys" narrower to
-the file's own literal count (this file's own literal `sorry` tokens were
-actually 3, not 7 -- the "7" in the previous progress note conflated
-theorem-level *gaps* across the whole assembly, several of which had not
-yet materialized as `sorry` tokens on disk, with literal remaining
-`sorry`s; corrected here to avoid re-propagating the inflated count).
-Remaining, both previously identified and unchanged in substance:
-1. `regularSeq_of_peel_chain` -- Layer 4, the 12-stage assembly. Now
-   genuinely unblocked: `regular_of_disjoint_extension`'s proof is done,
-   so the four repeated-target-variable (`U0,U0`/`U1,U1`/`V0,V0`/`V1,V1`)
-   stages have their supporting lemma in hand, alongside the already-
-   proved Layer 1/2/3 pieces the curve-relation and first-generator
-   stages route through. This is the concrete next target.
-2. `decoupledSystem_zeroDimensional` -- the `IsRegular → Module.Finite`
-   corollary, independent of (1), not started this pass.
-
-## Progress note (this pass): `Nondegenerate` (`hndA`/`hndB`) propagated
-through `regularSeq_of_peel_chain`, `decoupledSystem_isRegularSequence`,
-`decoupledSystem_zeroDimensional` -- signature-only, no new proofs, file
-still builds, `sorry` count unchanged at 2
-
-Before attempting `regularSeq_of_peel_chain`'s actual 12-stage proof, a
-blocker surfaced on inspection: `denRegular` (proved, upstream) was
-updated in an EARLIER pass to require two further explicit hypotheses,
-`hndA hndB : Nondegenerate ...`, beyond `hcurA/B`/`hgcdA/B` -- but that
-pass's own docstring explicitly flagged ("not done yet in this pass") that
-every theorem downstream of `denRegular` would need the same two
-hypotheses threaded through, and that propagation had not actually
-happened. Concretely: `regularSeq_of_peel_chain`'s statement, as it stood,
-could not possibly discharge `denRegular`'s hypotheses even in principle,
-since it had no way to produce a `Nondegenerate` witness from what it was
-given -- the *statement*, not just the proof, was blocked.
-
-Fixed this pass, mechanically, in three places:
-- `regularSeq_of_peel_chain` gains `hndA`/`hndB` as new explicit arguments
-  (proof still `sorry` -- untouched otherwise).
-- `decoupledSystem_isRegularSequence` gains the same two arguments and now
-  passes them through to its `regularSeq_of_peel_chain` call (this
-  theorem's own proof term, previously complete modulo
-  `regularSeq_of_peel_chain`'s `sorry`, needed the extra two arguments
-  added to that call -- the only actual proof-term edit this pass, purely
-  mechanical).
-- `decoupledSystem_zeroDimensional` gains the same two arguments for
-  signature parity, even though it doesn't yet call either of the other
-  two (both still independent `sorry`s) -- done now so a future pass
-  proving one of these three doesn't also need a mechanical signature
-  edit on top of the real work.
-
-No other call sites existed for any of the three (checked via `grep`), so
-nothing else needed updating. `Nondegenerate`'s own definition, `uRS_coeff_
-ne_zero`/`vRS_coeff_ne_zero`, and `denRegular` itself are all UNCHANGED --
-this pass is pure propagation of an already-decided widening of the
-exceptional locus, not new mathematical content.
-
-**Net effect on the paper-facing claim:** `decoupledSystem_isRegularSequence`
-and `decoupledSystem_zeroDimensional` now (honestly) require SIX
-exceptional-locus conditions per the two samples (`hcurA/B`, `hgcdA/B`,
-`hndA/B`), not four -- this is a real (if modest) narrowing of the claimed
-generic locus, discovered in the `denRegular` pass and now made visible in
-every downstream theorem's statement rather than silently absent from
-three of the four theorems that actually need it.
-
-### Next concrete step, still `regularSeq_of_peel_chain`'s 12-stage proof
-
-With the signature now correct, the next pass should attempt the actual
-Layer-4 assembly: route the four `Fu`/`Fv` first-generator stages and four
-curve-relation stages through Layer 1 (`Polynomial.isSMulRegular_of_
-leadingCoeff_isSMulRegular`) + Layer 2 (`regular_of_peeled_leadingCoeff`)
-directly, and the four repeated-target-variable stages
-(`U0,U0`/`U1,U1`/`V0,V0`/`V1,V1`) through `regular_of_disjoint_extension`
-(now proved) using the disjointness facts already established
-(`u1_indep`/`u2_indep`/etc.). **One thing to verify before assuming the
-curve-relation stages are as simple as Round 2's earlier note claimed**:
-`curveCoeffRegular`'s own docstring (search "What this theorem does NOT
-yet establish") flags that the identification between the actual
-`curveA1`/etc. coefficient blob and the abstract `quintic` shape it proves
-`Monic` for is itself NOT yet established -- a short `simp`/`rename`-
-unfolding lemma, per that docstring, but not written. If the curve-
-relation stages route through `curveCoeffRegular` after all (Round 2's
-claim that they don't needs re-checking against the literal 12-generator
-list, not just re-assumed), that identification lemma is a prerequisite
-worth writing first, since it's small and independently useful either way.
-
-## Progress note (this pass): drafted the ChatGPT prompt for `regularSeq_of_peel_chain`'s actual 12-stage assembly; not attempted blind
-
-Confirmed via re-reading (no Lean toolchain available this pass either):
-`decoupledSystem_zeroDimensional`'s own `sorry` (item 2) is independent and
-untouched. `regularSeq_of_peel_chain` (item 1) is exactly as scoped by the
-previous pass -- Layers 1-3 and `regular_of_disjoint_extension` all proved,
-`denRegular`/`Nondegenerate` in hand, only the 12-stage assembly itself
-missing.
-
-Per project convention ("if the math gets too deep, ask ChatGPT -- just
-ask, don't make an elaborate md file for the ask itself, but a hard sorry
-gets a queued prompt"), did NOT attempt this blind. The concrete obstacle,
-confirmed by inspection rather than assumed: Layer 2
-(`regular_of_peeled_leadingCoeff`) and `regular_of_disjoint_extension` are
-both stated over the generic peeling shapes (`Option τ`, `σ₁ ⊕ σ₂`)
-`peelEquivGen`'s own construction uses, but `Idx` here is a flat
-12-constructor inductive, not syntactically an iterated `Option` or sum
-type -- reaching the shape these lemmas want, at each of the 12 stages, in
-the right variable-disjointness configuration (`{wa1,wa2,a1,a2}` vs.
-`{wb1,wb2,b1,b2}` for the repeated-`U0`/`U1`/`V0`/`V1` stages specifically,
-where the two generators sharing a target variable is itself the subtlety
-`regular_of_disjoint_extension`'s "disjoint" hypothesis needs care around),
-is genuine bookkeeping work this project's own rule flags as REPL-territory,
-not something to guess at from a written description of the pieces alone.
-
-Drafted `chatgpt_prompt_peel_chain_assembly.md`: quotes every already-proved
-piece the assembly would use verbatim (Layer 1, Layer 2,
-`regular_of_linear_elim`, `regular_of_disjoint_extension`, `denRegular`,
-the curve relations' monic-in-own-variable shape, `IsRegular.cons`/
-`isRegular_cons_iff`/`IsRegular.nil`), states `regularSeq_of_peel_chain`'s
-exact target, and asks five specific composition questions: (1) how to
-bridge `Idx`'s flat-inductive shape to the `Option`/`⊕` shape Layers 2 and
-`regular_of_disjoint_extension` want at each stage, or whether those lemmas
-should instead be restated directly in terms of `Ideal.ofList (g :: gs)`-
-quotient-of-quotient reasoning to avoid the bridge entirely; (2) the four
-"simple" `Fu0`/`Fu2`/`Fv0`/`Fv2` first-generator-per-target stages; (3) the
-four "repeated-target" `Fu1`/`Fu3`/`Fv1`/`Fv3` stages and precisely how
-`regular_of_disjoint_extension` applies when the shared target variable
-(`U0` etc.) is exactly the one variable that ISN'T disjoint between the two
-sides; (4) the four curve-relation stages, confirming they're the easiest
-(monic degree-2, leading coeff `1`) and flagging the late-stage peel-order
-question; (5) the final 12-fold `IsRegular.cons` chain plus the
-`Nontrivial (QuotSMulTop ...)` side conditions `IsRegular.nil` needs 12
-quotients deep.
-
-**Not run yet.** `regularSeq_of_peel_chain`'s `sorry` is unchanged in
-substance; a comment above it in `DecoupledSystemRegular.lean` now points
-at the prompt file rather than leaving the "next step" only in this
-roadmap. File still builds (comment-only change at the one `sorry` site,
-no proof-term edits). `sorry` count unchanged at 2.
-
-### Next concrete step
-
-Run `chatgpt_prompt_peel_chain_assembly.md` (Claire, via her own REPL/
-ChatGPT access) and report back the answer for wiring into
-`regularSeq_of_peel_chain`. `decoupledSystem_zeroDimensional` remains a
-fully independent second target, not started.
-
-## Progress note (this pass): ChatGPT's answer on `regularSeq_of_peel_chain`'s 12-stage assembly is back — found a REAL counterexample, not just an API gap. Paper-level finding, not acted on in the file yet.
-
-Ran `chatgpt_prompt_peel_chain_assembly.md`. Result, confirmed by
-independent inspection of the file (not taken on faith):
-
-**8 of 12 stages are routine**, per ChatGPT's guidance (not yet wired in,
-but no obstruction found):
-- The 4 "first generator per target" stages (`Fu0`, `Fu2`, `Fv0`, `Fv2` —
-  i.e. the first of the two generators introduced for each of `U0,U1,V0,V1`
-  respectively) go through Layer 1 + Layer 2 directly, using `denRegular`'s
-  nonvanishing-in-`Rdec p` fact converted to coefficient-ring regularity via
-  domain-ness (`Rdec p` a domain since `F p` is a field).
-- The 4 curve-relation stages (`curveA1/A2/B1/B2`) go through Layer 1 + 2
-  with leading coefficient `1` (trivially regular) — no repeated-target
-  issue reaches them since none of the 8 `Fu`/`Fv` generators contain any
-  `w`-variable.
-- The `Idx`-vs-`Option τ` bridge these both need doesn't require an
-  iterated-`Option` tower or `Idx ≃ Fin 12` — a per-target equivalence
-  `Option {j : Idx // j ≠ w} ≃ Idx` suffices, and the final 12-fold
-  assembly should use `RingTheory.Sequence.isRegular_append_iff'`/
-  `IsRegular.cons'` (native prefix-quotient bookkeeping) rather than manual
-  `QuotSMulTop`-vs-`Ideal.ofList` equivalence-chasing.
-
-**The 4 "repeated-target" stages are genuinely NOT provable as currently
-hypothesized** (`Fu1`, `Fu3`, `Fv1`, `Fv3` — the SECOND generator for each
-of `U0,U1,V0,V1`, e.g. `Fu1 := d.u2_num i - Uk*d.u2_den i` needing to be
-regular in the quotient by the already-imposed `Fu0 := d.u1_num i -
-Uk*d.u1_den i`). ChatGPT's counterexample, hand-verified: in `k[a,b,U]`,
-`Fu0 := a*(1-U)`, `Fu1 := b*(1-U)`. Both "denominators" `a`, `b` are
-nonzero and live in disjoint variable sets — exactly matching what
-`denRegular` + `u1_indep`/`u2_indep` give us — yet `a*Fu1 = a*b*(1-U) =
-b*Fu0` already in the ambient ring, so `a*Fu1 = 0` in the quotient by `Fu0`
-while `a ≠ 0` there: `Fu1` is a zero-divisor, not regular.
-`regular_of_disjoint_extension` cannot discharge this stage — its
-disjointness hypothesis is about `g`'s and `e`'s variable sets, but `Fu0`
-and `Fu1` share the SAME target variable `Uk`, which is exactly the
-non-disjoint part.
-
-Checked independently (not just trusting ChatGPT): confirmed no resultant/
-coprimality identity linking A-side (`u1_num/u1_den`) and B-side
-(`u2_num/u2_den`) data exists anywhere in the file — `theData` builds them
-via two fully independent `coeffsToNumDen` calls on `sa`/`sb`, related only
-by sharing the same symbolic curve `(c0,...,c4)`. So the gap is real, not
-an oversight.
-
-**What would close it** (per ChatGPT, not built): the identity `d₁*Fu1 -
-d₂*Fu0 = d₁*c₂ - d₂*c₁` reduces "`Fu1` regular mod `Fu0`" to "the
-resultant-like combination `d₁*c₂ - d₂*c₁` is regular mod `Fu0`" — which
-needs a genuinely NEW hypothesis about the actual Mumford-divisor num/den
-data (an exceptional-locus nonvanishing condition), not derivable from
-anything currently proved.
-
-**Not acted on in the file this pass.** Per project convention ("if we
-find a false theorem, we try to weaken it first, then delete") -- this
-theorem is not weakened yet, because whether a resultant-nonvanishing
-condition is actually generically true for `elim2`'s real Mumford data is
-a question about the paper's own math, not something to guess at in Lean.
-`regularSeq_of_peel_chain`'s `sorry`-site comment updated with the full
-finding (counterexample included) so this is visible in-file, not just in
-this roadmap. `chatgpt_reply_peel_chain_assembly.md` added alongside the
-prompt file as a saved summary. File still builds (comment-only change).
-`sorry` count unchanged at 2.
-
-### Next concrete step
-
-Not a Lean task: determine (Claire / re-derivation from the paper) whether
-a resultant-nonvanishing condition between the A-side and B-side Mumford
-data is actually generically true for `elim2`'s real data. If yes, add it
-as a new `Nondegenerate`-style hypothesis field (same shape as the earlier
-`Nondegenerate` fix) and wire the 8 easy stages + this new stage together.
-If it's NOT generically true, `decoupledSystem_isRegularSequence` itself
-needs to be weakened or the paper's own claim revisited -- this is above
-the Lean formalization's pay grade to resolve alone.
+## Progress note (current pass): full re-audit against the actual 4 files on disk — most of the progress-note history above is now stale and has been removed
+
+**This pass replaced everything below the design sections above (§4/§5/§6
+and earlier) with this one section.** The previous version of this file
+had ~14 progressively-appended "Progress note" sections going back several
+sessions, several of which reported sorry counts, file splits, and
+theorem locations that no longer match the code — the most recent one, for
+instance, reported `regularSeq_of_peel_chain` at "sorry count unchanged at
+2" and left open whether a resultant-nonvanishing hypothesis should be
+added; that hypothesis has since been added (see below), so that note's
+open question is resolved. Rather than append yet another note on top of
+an already-hard-to-follow chain, this pass replaces the whole tail. See
+git history if any specific earlier note's reasoning is needed later.
+
+**Module structure, confirmed from the actual `import` lines.** The
+project is organized as a chain, not the four independent files this
+session's upload set might suggest in isolation:
+
+```
+DataDerivationBasics / DataDerivationSolve / DataDerivationTower
+  (not part of this session's upload; §4.2 items 1-6 and the tower's
+   field instances live here)
+        │
+        ▼
+DataDerivationMumford.lean   (§4.2 items 7-8: uRS/vRS, Mumford identity,
+                               towerToRdec bridge to Rdec)
+        │
+        ▼
+DecoupledSystemRegular.lean  (Idx/Rdec, SampleTarget, theData assembly,
+                               genList, Nondegenerate/CrossNondegenerate)
+        │
+        ▼
+PeelChainAssembly.lean       (the 12-stage regular-sequence assembly,
+                               regularSeq_of_peel_chain)
+        │
+        ▼
+AlphaLocusDegreeUniform.lean (decoupledSystem_isRegularSequence /
+                               decoupledSystem_zeroDimensional — the
+                               fixed-target theorems — plus the
+                               unstarted alpha-uniform statement)
+```
+
+## Sorry count, verified by direct `grep` against literal `sorry` tactic
+## occurrences (not prose mentions of the word), this pass
+
+| file | live `sorry`s |
+|---|---|
+| `DataDerivationMumford.lean` | **0** |
+| `DecoupledSystemRegular.lean` | **0** |
+| `PeelChainAssembly.lean` | **4** |
+| `AlphaLocusDegreeUniform.lean` | **2** |
+
+No live `axiom`s anywhere in these four files, no `True`-stub gap-hiding,
+no `admit`. (The two `factIrreducible_K1_assumed`/`K2_assumed` axioms
+described in older progress notes belong to `DataDerivationTower.lean`,
+which is not among the files reviewed this pass — that file was not
+re-checked this session.)
+
+### `DataDerivationMumford.lean` — 0 sorries, essentially complete
+
+`uRS_monic`, the Mumford identity `vRS_sq_eq_f_mod_uRS`, and the full
+`towerToRdec` denominator-clearing bridge (`baseFracToRing`,
+`towerToRdecK1`, `towerToRdec`, `towerToRdec_vars_subset`,
+`towerToRdec_den_vars_subset`) are all proved outright. Two items that
+remain as **explicit hypotheses rather than proofs**, correctly not
+disguised as anything stronger:
+- `vRS_sq_eq_f_mod_uRS` takes `hNu` (from `dvd_N_u`, upstream in the
+  not-uploaded `DataDerivationSolve.lean`) and `hInv` (a genuine
+  Bézout-unit-normalization fact, checked this pass to NOT be a free
+  consequence of `hgcd : IsCoprime` — `EuclideanDomain.gcd` carries no
+  built-in "the unit is exactly 1" convention) as explicit parameters.
+  Both are correctly kept as hypotheses, not smuggled defaults.
+- The file's own in-place note about a "left as `sorry`" denominator-
+  clearing gap (in the docstring above `BridgeToRdec`'s section) is
+  **stale prose** — the actual `towerToRdec` construction immediately
+  below that note is complete and sorry-free; the note describes a
+  concern from earlier in the same pass that was resolved later in that
+  same pass but never cleaned up. Flagging here so a future reader
+  doesn't waste time hunting for a sorry that isn't there.
+
+### `DecoupledSystemRegular.lean` — 0 sorries in this file directly
+
+`theData`'s assembly (§4bis) is fully wired, not opaque. In particular,
+the four independence obligations (`u1_indep`/`u2_indep`/`v1_indep`/
+`v2_indep`) that the file's own top-of-file docstring still describes as
+"four fresh `sorry`s of its own" are **all proved** — each via
+`towerToRdec_vars_subset` from `DataDerivationMumford.lean`, a short
+`Finset.mem_union`/`tauto` argument. **That header docstring needs a
+one-line correction** (it currently overclaims staleness); not fixed in
+this pass since it's a documentation-only issue, flagged for the next
+person editing that file's header.
+
+`Nondegenerate`/`CrossNondegenerate` are hypothesis-style structures by
+design (not proof obligations) — the exceptional-locus conditions the
+construction is expected to need "for enough" `(c0,...,c4,sa,sb)`, same
+status as always.
+
+`decoupledSystem_isRegularSequence`/`decoupledSystem_zeroDimensional`
+are **no longer stated in this file** — moved to
+`AlphaLocusDegreeUniform.lean` (see below), cleanly: a pointer docstring
+was left in their old place, no duplication.
+
+### `PeelChainAssembly.lean` — 4 live sorries, precisely located
+
+Full account in `ROADMAP-peel-chain-assembly.md` (rewritten this pass,
+see that file). Summary: `regularSeq_of_peel_chain` itself is
+**fully proved, no sorry** — Gap A, Gap B, and Gap C (the three open
+items earlier progress notes above discuss at length) have each been
+**weakened to explicit hypotheses** per this project's stated practice,
+bundled into a new `PeelChainNondegenerate` structure (Gap A/B) plus a
+direct `htop_ne_smul` hypothesis (Gap C). This resolves the open question
+the previous tail's last progress note left hanging (whether a
+resultant-nonvanishing-style hypothesis should be added) — yes, and it
+has been.
+
+The 4 remaining sorries live in the private
+`regularSeq_of_peel_chain_assembly` (the mechanical 12-stage wiring
+lemma), and are narrower than "Gap A in general": specifically, stages
+4–7 of the 12 (`Fv0` through `Fv3`, each mod a prefix that includes the
+full 4-element `Fu`-block) have **no covering field in
+`PeelChainNondegenerate`** despite the structure's naming suggesting it
+covers this — `hu01`/`hv01`/`hu1_full`/`hv1_full` all turn out, on
+inspection, to be about `Fu2`/`Fu3` (stages 2/3), not the `Fv`-side
+stages the names suggest. See `ROADMAP-peel-chain-assembly.md`'s table
+for the exact stage-by-stage accounting.
+
+### `AlphaLocusDegreeUniform.lean` — 2 live sorries, both expected/scoped
+
+- `decoupledSystem_degree_uniform` — the alpha-uniform strengthening,
+  correctly left `sorry` pending Steps 1–2 of `ROADMAP-alpha-locus.md`
+  (a `Reduce` port and an empirical `Bad`-locus investigation, both
+  explicitly out-of-Lean prerequisite work, not attempted).
+- `decoupledSystem_zeroDimensional` — the fixed-target `IsRegular →
+  Module.Finite` corollary. Genuinely separate math from
+  `regularSeq_of_peel_chain`'s content (needs "length-`n` regular
+  sequence in `n`-variable polynomial ring over a field ⟹ nonzero
+  Artinian quotient", a Mathlib-API question not yet surveyed) — not
+  blocked by anything in `PeelChainAssembly.lean`.
+- `decoupledSystem_isRegularSequence` (the fixed-target, non-uniform
+  theorem) is **sorry-free** — a one-line term proof
+  `:= regularSeq_of_peel_chain ...`, so it inherits exactly
+  `regularSeq_of_peel_chain`'s hypothesis list (`hpeel`,
+  `htop_ne_smul`) as its own remaining proof obligations, with no
+  sorry of its own.
+- The file-move cleanup item in its own end-of-file checklist ("delete
+  the two theorems from `DecoupledSystemRegular.lean`") is marked done
+  (struck through) and confirmed accurate this pass — no duplicate
+  definitions found.
+
+## Net picture, this pass
+
+Six live sorries total across the four files reviewed, down from the
+double-digit-sounding picture the old progress-note tail's language
+("4 fresh sorries", "sorry count... at 2", etc., scattered across
+multiple stale notes) suggested without ever giving one consolidated
+count. Of the six: **4 are one precise, well-understood gap**
+(`PeelChainAssembly.lean`'s stages 4–7, needing 4 new
+`PeelChainNondegenerate` fields — mechanical once those fields exist,
+see `ROADMAP-peel-chain-assembly.md`), and **2 are correctly-scoped,
+expected-to-stay-open placeholders** pending separate prerequisite work
+(`AlphaLocusDegreeUniform.lean`'s alpha-uniform statement and the
+regular-sequence-to-finiteness corollary).
+
+**Not done this pass**: no Lean toolchain was available, so every claim
+above is a `grep`-verified absence of a literal `sorry` token plus a
+structural read of the surrounding proof term — not a kernel check.
+`DataDerivationBasics.lean`/`DataDerivationSolve.lean`/
+`DataDerivationTower.lean` (upstream of `DataDerivationMumford.lean`,
+not part of this session's upload) were not re-examined this pass; their
+status is inherited from whatever the last check of those files found
+and is not re-verified here.
