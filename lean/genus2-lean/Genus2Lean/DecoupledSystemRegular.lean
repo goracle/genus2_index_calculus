@@ -2458,6 +2458,161 @@ theorem regular_of_disjoint_extension {R : Type*} [Field R]
     exact hxy'
   exact hreg_quot hxy''
 
+set_option maxHeartbeats 10000000 in
+/-- **The multi-generator version, per the (uploaded) second ChatGPT
+consultation on `regular_of_disjoint_extension`'s own follow-up.**
+ChatGPT's key correction to the original plan: do NOT iterate the
+single-generator lemma above one generator at a time (the coefficient
+ring `MvPolynomial σ₁ R ⧸ Ideal.ofList (gens'.take k)` after peeling is
+no longer literally "two disjoint polynomial rings," so the induction's
+bookkeeping is much worse than needed). Instead there is a direct
+base-change argument for the WHOLE ideal at once: `MvPolynomial σ₁ R ⧸
+Ideal.ofList gens'` is still an `R`-vector space (hence `R`-free, hence
+`R`-flat, automatic since `R` is a field), so `Module.Flat.baseChange`
+gives `Module.Flat (MvPolynomial σ₂ R) (TensorProduct R (MvPolynomial σ₂
+R) (MvPolynomial σ₁ R ⧸ Ideal.ofList gens'))` directly, and `he`
+transports across via `IsSMulRegular.of_flat`. The only remaining work is
+identifying that tensor product with the actual quotient ring we want,
+via `Algebra.TensorProduct.tensorQuotientEquiv` (tensoring with a
+quotient = quotienting the tensor product by the extended ideal) composed
+with `MvPolynomial.algebraTensorAlgEquiv`/`MvPolynomial.sumAlgEquiv` --
+exactly the same equivalence chain `regular_of_disjoint_extension` above
+already builds (`E₁`/`E₂`/`e'`/`e''`-style), just with `Ideal.ofList
+gens'` in place of the single `Ideal.span {g}`. Reuses
+`sumAlgEquiv_comp_rename_inl`/`_inr` and `Ideal.map_ofList` (generator-list
+version of the same ideal-transport argument `hIdealMap`/`hIdealMap₂`
+above already carry out for a singleton list) rather than introducing new
+machinery. -/
+theorem regular_of_disjoint_extension_list {R : Type*} [Field R]
+    {σ₁ σ₂ : Type*} [DecidableEq σ₁] [DecidableEq σ₂]
+    (gens' : List (MvPolynomial σ₁ R)) {e : MvPolynomial σ₂ R}
+    (he : IsSMulRegular (MvPolynomial σ₂ R) e) :
+    IsSMulRegular
+      (MvPolynomial (σ₁ ⊕ σ₂) R ⧸
+        (Ideal.ofList (gens'.map (MvPolynomial.rename Sum.inl)) :
+          Ideal (MvPolynomial (σ₁ ⊕ σ₂) R)))
+      (Ideal.Quotient.mk
+        (Ideal.ofList (gens'.map (MvPolynomial.rename Sum.inl)) :
+          Ideal (MvPolynomial (σ₁ ⊕ σ₂) R))
+        (MvPolynomial.rename Sum.inr e)) := by
+  set Iq : Ideal (MvPolynomial σ₁ R) := Ideal.ofList gens' with hIq_def
+  set Q : Type _ := MvPolynomial σ₁ R ⧸ Iq with hQ_def
+  set g' : Ideal (MvPolynomial σ₁ (MvPolynomial σ₂ R)) :=
+    Ideal.ofList (gens'.map (fun q => q.map (algebraMap R (MvPolynomial σ₂ R))))
+    with hg'_def
+  set A : Ideal (MvPolynomial (σ₁ ⊕ σ₂) R) :=
+    Ideal.ofList (gens'.map (MvPolynomial.rename Sum.inl)) with hA_def
+  set E₁ : MvPolynomial (σ₁ ⊕ σ₂) R ≃ₐ[R] MvPolynomial σ₁ (MvPolynomial σ₂ R) :=
+    MvPolynomial.sumAlgEquiv R σ₁ σ₂ with hE₁_def
+  -- `E₁` carries each mapped-in generator of `gens'` to the corresponding
+  -- generator of `g'` -- pointwise the same fact `hE₁_inl` establishes for
+  -- a single `g` in `regular_of_disjoint_extension`, so `A` transports to
+  -- `g'` exactly (via `Ideal.map_ofList` + `List.map_map` + this pointwise
+  -- fact, instead of `Ideal.map_span`/`Set.image_singleton` for the
+  -- singleton case above).
+  have hE₁_inl : ∀ q : MvPolynomial σ₁ R,
+      E₁ (MvPolynomial.rename Sum.inl q) = q.map (algebraMap R (MvPolynomial σ₂ R)) := by
+    intro q
+    have h := congrArg (fun F => F q) (MvPolynomial.sumAlgEquiv_comp_rename_inl R σ₁ σ₂)
+    simp only [AlgHom.comp_apply, AlgHom.coe_coe] at h
+    rw [show (MvPolynomial.mapAlgHom (Algebra.ofId R (MvPolynomial σ₂ R)) q :
+          MvPolynomial σ₁ (MvPolynomial σ₂ R)) = q.map (algebraMap R (MvPolynomial σ₂ R)) from rfl] at h
+    simpa [hE₁_def] using h
+  have hIdealMap : Ideal.map (E₁ : MvPolynomial (σ₁ ⊕ σ₂) R →+* MvPolynomial σ₁ (MvPolynomial σ₂ R)) A = g' := by
+    rw [hA_def, hg'_def, Ideal.map_ofList, List.map_map]
+    congr 1
+    apply List.map_congr_left
+    intro q _
+    exact hE₁_inl q
+  set e' : MvPolynomial (σ₁ ⊕ σ₂) R ⧸ A ≃+* MvPolynomial σ₁ (MvPolynomial σ₂ R) ⧸ g' :=
+    Ideal.quotientEquiv A g' (E₁ : MvPolynomial (σ₁ ⊕ σ₂) R ≃+* MvPolynomial σ₁ (MvPolynomial σ₂ R))
+      hIdealMap.symm with he'_def
+  have hE₁_inr : E₁ (MvPolynomial.rename Sum.inr e) =
+      algebraMap (MvPolynomial σ₂ R) (MvPolynomial σ₁ (MvPolynomial σ₂ R)) e := by
+    have h := congrArg (fun F => F e) (MvPolynomial.sumAlgEquiv_comp_rename_inr R σ₁ σ₂)
+    simp only [AlgHom.comp_apply, AlgHom.coe_coe] at h
+    simpa [hE₁_def] using h
+  have he'_apply :
+      e' (Ideal.Quotient.mk A (MvPolynomial.rename Sum.inr e)) =
+        Ideal.Quotient.mk g' (algebraMap (MvPolynomial σ₂ R) (MvPolynomial σ₁ (MvPolynomial σ₂ R)) e) := by
+    rw [he'_def, Ideal.quotientEquiv_mk]
+    show Ideal.Quotient.mk g' (E₁ (MvPolynomial.rename Sum.inr e)) = _
+    rw [hE₁_inr]
+  -- `Q := MvPolynomial σ₁ R ⧸ Iq` is `R`-flat (automatic over a field),
+  -- so its base change along `R → MvPolynomial σ₂ R` is flat over
+  -- `MvPolynomial σ₂ R` -- same two steps as `regular_of_disjoint_extension`,
+  -- now with the FULL prefix ideal `Iq := Ideal.ofList gens'` in place of
+  -- a single `Ideal.span {g}`.
+  have hflat_quot_R : Module.Flat R Q := inferInstance
+  have hflat_tensor : Module.Flat (MvPolynomial σ₂ R) (TensorProduct R (MvPolynomial σ₂ R) Q) :=
+    Module.Flat.baseChange R (MvPolynomial σ₂ R) _
+  set J : Ideal (TensorProduct R (MvPolynomial σ₂ R) (MvPolynomial σ₁ R)) :=
+    Ideal.map Algebra.TensorProduct.includeRight Iq with hJ_def
+  set E₂ : TensorProduct R (MvPolynomial σ₂ R) (MvPolynomial σ₁ R) ≃ₐ[(MvPolynomial σ₂ R)]
+      MvPolynomial σ₁ (MvPolynomial σ₂ R) :=
+    MvPolynomial.algebraTensorAlgEquiv R (MvPolynomial σ₂ R) with hE₂_def
+  have hIdealMap₂ : Ideal.map
+      (E₂ : TensorProduct R (MvPolynomial σ₂ R) (MvPolynomial σ₁ R) →+* MvPolynomial σ₁ (MvPolynomial σ₂ R)) J
+      = g' := by
+    have hJ_ofList : J = Ideal.ofList (gens'.map Algebra.TensorProduct.includeRight) := by
+      rw [hJ_def, hIq_def]
+      exact Ideal.map_ofList _ _
+    rw [hJ_ofList, Ideal.map_ofList, List.map_map, hg'_def]
+    congr 1
+    apply List.map_congr_left
+    intro q _
+    show E₂ (Algebra.TensorProduct.includeRight q) = q.map (algebraMap R (MvPolynomial σ₂ R))
+    simp [hE₂_def]
+  set e'' : TensorProduct R (MvPolynomial σ₂ R) (MvPolynomial σ₁ R) ⧸ J ≃+* MvPolynomial σ₁ (MvPolynomial σ₂ R) ⧸ g' :=
+    Ideal.quotientEquiv J g' (E₂ : TensorProduct R (MvPolynomial σ₂ R) (MvPolynomial σ₁ R) ≃+* MvPolynomial σ₁ (MvPolynomial σ₂ R))
+      hIdealMap₂.symm with he''_def
+  -- `Algebra.TensorProduct.tensorQuotientEquiv`: tensoring with a quotient
+  -- is the extended-ideal quotient of the tensor product, i.e.
+  -- `TensorProduct R (MvPolynomial σ₂ R) Q ≃ (TensorProduct R (MvPolynomial σ₂ R)
+  -- (MvPolynomial σ₁ R)) ⧸ J` -- the direct replacement for iterating
+  -- `regular_of_disjoint_extension` one generator at a time, per ChatGPT.
+  have hTensorQuot :
+      (TensorProduct R (MvPolynomial σ₂ R) Q) ≃ₗ[MvPolynomial σ₂ R]
+        (TensorProduct R (MvPolynomial σ₂ R) (MvPolynomial σ₁ R) ⧸ J) := by
+    have tE := Algebra.TensorProduct.tensorQuotientEquiv (R := R)
+      (MvPolynomial σ₂ R) (MvPolynomial σ₁ R) (MvPolynomial σ₂ R) Iq
+    exact tE.toLinearEquiv
+  have hflat_final : Module.Flat (MvPolynomial σ₂ R)
+      (TensorProduct R (MvPolynomial σ₂ R) (MvPolynomial σ₁ R) ⧸ J) :=
+    Module.Flat.of_linearEquiv hTensorQuot.symm
+  set eAlg : (TensorProduct R (MvPolynomial σ₂ R) (MvPolynomial σ₁ R) ⧸ J) ≃ₐ[MvPolynomial σ₂ R]
+      (MvPolynomial σ₁ (MvPolynomial σ₂ R) ⧸ g') :=
+    Ideal.quotientEquivAlg J g' E₂ hIdealMap₂.symm with heAlg_def
+  have hflat_gquot : Module.Flat (MvPolynomial σ₂ R) (MvPolynomial σ₁ (MvPolynomial σ₂ R) ⧸ g') :=
+    Module.Flat.of_linearEquiv eAlg.symm.toLinearEquiv
+  have hreg_quot :
+      IsSMulRegular (MvPolynomial σ₁ (MvPolynomial σ₂ R) ⧸ g')
+        (algebraMap (MvPolynomial σ₂ R) (MvPolynomial σ₁ (MvPolynomial σ₂ R) ⧸ g') e) :=
+    IsSMulRegular.of_flat (S := MvPolynomial σ₁ (MvPolynomial σ₂ R) ⧸ g') he
+  intro x y hxy
+  apply e'.injective
+  have hsmul_eq : ∀ z : MvPolynomial (σ₁ ⊕ σ₂) R ⧸ A,
+      (Ideal.Quotient.mk A (MvPolynomial.rename Sum.inr e)) • z =
+        Ideal.Quotient.mk A (MvPolynomial.rename Sum.inr e) * z := fun z => rfl
+  change (Ideal.Quotient.mk A (MvPolynomial.rename Sum.inr e)) • x =
+      (Ideal.Quotient.mk A (MvPolynomial.rename Sum.inr e)) • y at hxy
+  have hxy' : e' ((Ideal.Quotient.mk A (MvPolynomial.rename Sum.inr e)) * x) =
+      e' ((Ideal.Quotient.mk A (MvPolynomial.rename Sum.inr e)) * y) := by
+    rw [hsmul_eq, hsmul_eq] at hxy
+    rw [hxy]
+  rw [map_mul, map_mul, he'_apply] at hxy'
+  have halg_eq :
+      (algebraMap (MvPolynomial σ₂ R) (MvPolynomial σ₁ (MvPolynomial σ₂ R) ⧸ g') e) =
+        Ideal.Quotient.mk g' (MvPolynomial.C e) := by
+    simp [IsScalarTower.algebraMap_apply (MvPolynomial σ₂ R) (MvPolynomial σ₁ (MvPolynomial σ₂ R))
+      (MvPolynomial σ₁ (MvPolynomial σ₂ R) ⧸ g')]
+  have hxy'' :
+      (algebraMap (MvPolynomial σ₂ R) (MvPolynomial σ₁ (MvPolynomial σ₂ R) ⧸ g') e) • e' x =
+      (algebraMap (MvPolynomial σ₂ R) (MvPolynomial σ₁ (MvPolynomial σ₂ R) ⧸ g') e) • e' y := by
+    simp only [smul_eq_mul, halg_eq]
+    exact hxy'
+  exact hreg_quot hxy''
+
 /-- **Small lemma, proved this pass, correcting `CrossNondegenerate`'s
 earlier `≠ 0`-only version** (per the second ChatGPT round-trip on
 `regularSeq_of_peel_chain`'s assembly: the identity `a * b = c` with only

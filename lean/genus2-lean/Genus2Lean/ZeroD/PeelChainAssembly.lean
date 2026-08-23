@@ -2510,7 +2510,7 @@ private lemma regularSeq_of_peel_chain_assembly (c0 c1 c2 c3 c4 : F p) (sa sb : 
     RingTheory.Sequence.IsRegular (Rdec p)
       (genList p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB) := by
   classical
-  rw [hgenList]
+  rw [hgenList] at htop_ne_smul ⊢
   have hquotient_mk_regular (I : Ideal (Rdec p)) (r : Rdec p)
       (h : IsSMulRegular (Rdec p ⧸ I) (Ideal.Quotient.mk I r)) :
       IsSMulRegular (Rdec p ⧸ I • (⊤ : Submodule (Rdec p) (Rdec p))) r := by
@@ -2575,20 +2575,24 @@ private lemma regularSeq_of_peel_chain_assembly (c0 c1 c2 c3 c4 : F p) (sa sb : 
         d.u1_num 1 - U1' p * d.u1_den 1,
         d.u2_num 1 - U1' p * d.u2_den 1])
       (d.v1_num 0 - V0' p * d.v1_den 0)
-    -- **Genuinely open, flagged rather than forced.** `hFv0_reg` only
-    -- gives regularity of `Fv0` in bare `Rdec p` (⊥-level); this stage
-    -- needs it mod the FULL 4-element `Fu`-prefix `[Fu0,Fu1,Fu2,Fu3]`,
-    -- which are all `U`-side/disjoint from `Fv0`'s own (`V`-side)
-    -- variables. `regular_of_disjoint_extension` (DecoupledSystemRegular.lean)
-    -- is the intended tool for "regular alone ⟹ regular mod a
-    -- variable-disjoint extension" but (a) is itself not fully proved yet
-    -- (see its own docstring -- still needs the flat-base-change REPL
-    -- steps) and (b) as stated only extends by ONE generator, not four at
-    -- once. Needs either an iterated application (once `regular_of_
-    -- disjoint_extension` itself is closed) or a genuinely new
-    -- multi-generator version. Not attempted here -- see
-    -- `chatgpt_prompt_stage4_disjoint_prefix.md` (to be handed to
-    -- ChatGPT) rather than guessed at.
+    -- **Genuinely open -- corrected diagnosis this pass.** `regular_of_
+    -- disjoint_extension_list` (new, DecoupledSystemRegular.lean, proved
+    -- via the direct base-change argument per the second ChatGPT
+    -- consultation) DOES apply to variable-disjoint prefixes, but on
+    -- inspecting `u1_indep`/`v1_indep`'s actual target Finsets, `Fv0`
+    -- (from `v1_num 0`/`v1_den 0`) is A-SIDE (`{wa1,wa2,a1,a2}`) --
+    -- exactly the SAME side as `Fu0`/`Fu2` (from `u1_num`), NOT disjoint
+    -- from them. Only `Fu1`/`Fu3` (B-side, from `u2_num`/`u2_den`) are
+    -- genuinely variable-disjoint from `Fv0`. So this stage is NOT a pure
+    -- disjoint-extension instance -- it is exactly Gap A from
+    -- `ROADMAP-peel-chain-assembly.md`: needs real cross-index
+    -- coprimality content between `Fv0` and the A-side `Fu0`/`Fu2`
+    -- (`towerToRdec`-style denominator-clearing can introduce common
+    -- factors not forced by the original rational function's own
+    -- coprimality), not derivable from disjointness or from `hFv0_reg`
+    -- alone. Needs a new hypothesis (see Gap A's roadmap entry) before
+    -- this can be closed; `regular_of_disjoint_extension_list` alone is
+    -- NOT sufficient here despite being newly available.
     sorry
   · show IsSMulRegular (Rdec p ⧸ Ideal.ofList
         [d.u1_num 0 - U0' p * d.u1_den 0,
@@ -2598,12 +2602,21 @@ private lemma regularSeq_of_peel_chain_assembly (c0 c1 c2 c3 c4 : F p) (sa sb : 
          d.v1_num 0 - V0' p * d.v1_den 0] • ⊤)
       (d.v2_num 0 - V0' p * d.v2_den 0)
     apply hquotient_mk_regular
-      (Ideal.ofList [d.v1_num 0 - V0' p * d.v1_den 0])
+      (Ideal.ofList [d.u1_num 0 - U0' p * d.u1_den 0,
+        d.u2_num 0 - U0' p * d.u2_den 0,
+        d.u1_num 1 - U1' p * d.u1_den 1,
+        d.u2_num 1 - U1' p * d.u2_den 1,
+        d.v1_num 0 - V0' p * d.v1_den 0])
       (d.v2_num 0 - V0' p * d.v2_den 0)
-    rw [show Ideal.ofList [d.v1_num 0 - V0' p * d.v1_den 0] =
-        Ideal.span {d.v1_num 0 - V0' p * d.v1_den 0} from
-          Ideal.ofList_singleton (d.v1_num 0 - V0' p * d.v1_den 0)]
-    exact hFv1_reg
+    -- **Same Gap A root cause as stage 4 above** -- `Fv1` (from
+    -- `v2_num 0`/`v2_den 0`, B-side per `v2_indep`) IS genuinely
+    -- disjoint from `Fu1`/`Fu3` (B-side) but NOT from `Fu0`/`Fu2`
+    -- (A-side) or from `Fv0` itself (A-side, same-target predecessor --
+    -- already handled separately by `hFv1_reg`/`hcross.hv0`, NOT the
+    -- issue here). The blocking piece is still the A-side entanglement
+    -- with `Fu0`/`Fu2` -- Gap A content, not disjointness. See stage 4's
+    -- comment.
+    sorry
   · show IsSMulRegular (Rdec p ⧸ Ideal.ofList
         [d.u1_num 0 - U0' p * d.u1_den 0,
          d.u2_num 0 - U0' p * d.u2_den 0,
@@ -2612,10 +2625,10 @@ private lemma regularSeq_of_peel_chain_assembly (c0 c1 c2 c3 c4 : F p) (sa sb : 
          d.v1_num 0 - V0' p * d.v1_den 0,
          d.v2_num 0 - V0' p * d.v2_den 0] • ⊤)
       (d.v1_num 1 - V1' p * d.v1_den 1)
-    exact hquotient_mk_regular
-      (Ideal.ofList [d.v1_num 0 - V0' p * d.v1_den 0,
-        d.v2_num 0 - V0' p * d.v2_den 0])
-      (d.v1_num 1 - V1' p * d.v1_den 1) hFv2_reg
+    -- **Same Gap A root cause.** `Fv2` (from `v1_num 1`/`v1_den 1`,
+    -- A-side) is entangled with `Fu0`/`Fu2` (A-side) in the accumulated
+    -- prefix -- Gap A content, not disjointness.
+    sorry
   · show IsSMulRegular (Rdec p ⧸ Ideal.ofList
         [d.u1_num 0 - U0' p * d.u1_den 0,
          d.u2_num 0 - U0' p * d.u2_den 0,
@@ -2625,11 +2638,10 @@ private lemma regularSeq_of_peel_chain_assembly (c0 c1 c2 c3 c4 : F p) (sa sb : 
          d.v2_num 0 - V0' p * d.v2_den 0,
          d.v1_num 1 - V1' p * d.v1_den 1] • ⊤)
       (d.v2_num 1 - V1' p * d.v2_den 1)
-    exact hquotient_mk_regular
-      (Ideal.ofList [d.v1_num 0 - V0' p * d.v1_den 0,
-        d.v2_num 0 - V0' p * d.v2_den 0,
-        d.v1_num 1 - V1' p * d.v1_den 1])
-      (d.v2_num 1 - V1' p * d.v2_den 1) hFv3_full_reg
+    -- **Same Gap A root cause.** `Fv3` (from `v2_num 1`/`v2_den 1`,
+    -- B-side) is entangled with `Fu0`/`Fu2` (A-side) in the accumulated
+    -- prefix -- Gap A content, not disjointness.
+    sorry
   · show IsSMulRegular (Rdec p ⧸ Ideal.ofList
         [d.u1_num 0 - U0' p * d.u1_den 0,
          d.u2_num 0 - U0' p * d.u2_den 0,
@@ -2723,6 +2735,9 @@ private lemma regularSeq_of_peel_chain_assembly (c0 c1 c2 c3 c4 : F p) (sa sb : 
         curveB1 p c0 c1 c2 c3 c4])
       (curveB2 p c0 c1 c2 c3 c4) hCurveB2_reg
 
+-- Large accumulated context from `hpeel.*`/`hcross.*`-derived `have`s
+-- below (mirrors the same elaboration cost as `regularSeq_of_peel_chain_
+-- assembly` above, which needed the same bump for the same reason).
 set_option maxHeartbeats 1000000 in
 theorem regularSeq_of_peel_chain (c0 c1 c2 c3 c4 : F p) (sa sb : SampleTarget p)
     (hcurA : curBeforeMonic p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1 ≠ 0)
@@ -2755,7 +2770,7 @@ theorem regularSeq_of_peel_chain (c0 c1 c2 c3 c4 : F p) (sa sb : SampleTarget p)
         d.v1_num 1 - V1' p * d.v1_den 1, d.v2_num 1 - V1' p * d.v2_den 1,
         curveA1 p c0 c1 c2 c3 c4, curveA2 p c0 c1 c2 c3 c4,
         curveB1 p c0 c1 c2 c3 c4, curveB2 p c0 c1 c2 c3 c4 ] := by
-    simp only [genList, FuList, FvList, hd_def, List.append_eq]
+    simp only [genList, FuList, FvList, hd_def]
     rfl
   -- **`Fu0`/`Fv0` and `Fu1`/`Fu3`/`Fv1`/`Fv3`, both proved in standalone
   -- lemmas above** (`hFu0Fv0_reg_of`/`hFu1Fu3Fv1Fv3_reg_of`) so they
