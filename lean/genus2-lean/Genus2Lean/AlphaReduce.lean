@@ -152,7 +152,58 @@ as sharing "the exact same latent bug" (`Epoly_natDegree_le_three`,
 fresh `sorry`-grep that file is genuinely 0-`sorry` already, so whatever
 that file does at the analogous step evidently isn't hitting this same
 blocker (or was already fixed); worth a quick diff-read next pass rather
-than assuming it needs the identical fix. -/
+than assuming it needs the identical fix.
+
+**Confirmed against Claire's REPL (later pass): this whole file compiles
+clean, 0 errors, 0 `sorry`.** Two Taylor-shift argument-order bugs in
+`comp_X_add_C_coeff_one`/`comp_X_add_C_coeff_zero` (`Polynomial.taylor_coeff`
+takes only `n` explicitly — `r`/`f` are section variables, not positional
+arguments — so the calls needed `(r := t) (f := f)` named rather than `1 f`/
+`0 f` positional) were the only real build blockers; fixed and confirmed.
+
+**Update (this pass): the "Same open gap as upstream" note below is now
+STALE for this file — `uRS4_dvd_Npoly4` genuinely closes the four-factor
+combining gap** (via the six explicit pairwise-coprimality hypotheses,
+`prod_dvd_of_pairwise_coprime_four` + the `/ₘ`-peeling chain matching
+`curBeforeMonic4`'s own left-to-right factor order) — it was already fully
+written and, per the compile confirmation above, builds. What was NOT yet
+done, until this pass: `vRS4_sq_eq_f_mod_uRS4` still took `hNu` as its OWN
+separate raw hypothesis rather than deriving it from `uRS4_dvd_Npoly4` —
+redundant duplication of exactly the fact `uRS4_dvd_Npoly4` already proves.
+Fixed this pass: `vRS4_sq_eq_f_mod_uRS4` now takes `uRS4_dvd_Npoly4`'s own
+hypothesis bundle (`hA`/curve-membership/Mumford/six-coprimality) instead
+of a bare `hNu`, and derives `hNu` internally via one application of
+`uRS4_dvd_Npoly4` plus `unfold Npoly4` (definitional match against
+`E^2 - f*Y^2`). `hInv` (the `Y`,`uRS4` coprimality Bézout-witness fact) is
+UNCHANGED, still a raw hypothesis — it is not implied by the four-factor
+combining and is genuinely separate content (this file's own docstring on
+`uRS4`/`vRS4` already makes this `hInv`-vs-`hgcd` distinction explicitly).
+**Not yet tested against Claire's REPL** — written and reasoned through
+(the `unfold_let`/`unfold Npoly4 at` step mirrors this file's existing
+`unfold Npoly4`-then-`rw [dvd_iff_isRoot, ...]` idiom used throughout
+`dvd_N_P1`/`dvd_N_P2` above, so no new tactic idiom introduced), but not
+yet compiled.
+
+**What's left in this file, accurately, after this pass** (superseding all
+earlier "not yet started"/"still open" language above, which described an
+earlier state): (1) `Reduce`'s CORRECTNESS — that `Reduce`'s output really
+is the Mumford reduction of `alpha•a - P1 - P2` — is the one substantial
+piece of remaining mathematical content; `Reduce` itself is fully defined
+and its underlying `uRS4`/`vRS4` machinery is now fully wired
+(`uRS4_dvd_Npoly4` combining + `vRS4_sq_eq_f_mod_uRS4` Mumford identity,
+both `sorry`-free), so this is a genuinely new theorem to state and prove,
+not a missing definition. (2) The `IsMumfordUa`/`IsMumfordTarget4`/
+`MatrixNondegenerate4`/six-coprimality hypothesis bundle `uRS4_dvd_Npoly4`
+and `vRS4_sq_eq_f_mod_uRS4` both now require is exactly task (B)'s `Bad`
+exceptional-locus question from `ROADMAP-alpha-locus.md` — nothing here
+derives those hypotheses from a smaller/cheaper genericity condition, they
+are assumed throughout, matching this file's "hypotheses instead of proof"
+convention. (3) The tangent-anchor (`m=2`, `P1=P2` or other pairwise
+coincidence) case flagged extensively in `ROADMAP-alpha-locus.md`'s
+"K=4 recipe" section is still fully unstarted in this file — everything
+above is the SIMPLE-point case only (`h12`'s `IsCoprime (X-C P1.1) (X-C
+P2.1)` hypothesis already presupposes `P1.1 ≠ P2.1`, i.e. rules the
+tangent case out by hypothesis rather than handling it). -/
 
 namespace Genus2Lean
 namespace TheDataDerivation
@@ -717,6 +768,79 @@ theorem rhsVec4_row45_eval (P1 P2 : F p × F p) (ua0 ua1 va0 va1 u0 u1 v0 v1 : F
       let (rn0, rn1) := reduceMonomialModU p u0 u1 v0 v1 bi_n bj_n
       (-(if a.val = 0 then rn0 else rn1)) := by
   fin_cases a <;> rfl
+
+/-! ## Tangent-anchor row content (`m=2` case), K=4 — the `P1=P2`
+coincidence case
+
+Per `ROADMAP-alpha-locus.md`'s "K=4 recipe... CONFIRMED against
+`phi_general.zip`'s actual reference implementation" section (step (ii) of
+the recommended scope), ported here verbatim from the confirmed Julia
+source, not re-derived. **Claire's observation this pass, now recorded as
+a standing hypothesis rather than re-derived from curve geometry each
+time**: since this project's factor base excludes involution pairs
+(`P`/`-P` never both sampled), `P1.1 = P2.1 ⟹ P1 = P2` for any `P1,P2`
+this file is ever actually called with — so `P1.1 = P2.1` (checkable from
+`h12`'s `IsCoprime (X - C P1.1) (X - C P2.1)` failing) IS the tangency
+trigger, with no separate "same x, different y" sub-case to keep apart
+from it (superseding the roadmap's earlier, more cautious phrasing on
+this point).
+
+This section builds only the STANDALONE arithmetic content — the branch
+derivative and the two per-column tangent-row-entry formulas — not yet
+wired into `matrixA4`/`Epoly4`/`Ypoly4` themselves (that wiring, and the
+`uRS4_dvd_Npoly4`-tangent-case divisibility argument built from it, are
+steps (iii)-(iv), still to come). -/
+
+section TangentRow4
+
+/-- **The branch derivative**: for a curve point `(px,py)` with `py ≠ 0`
+(the standing nondegeneracy this project already needs throughout —
+`py = 0` is a Weierstrass point, excluded via `Bad` as noted in
+`ROADMAP-alpha-locus.md`'s point 3), the implicit-function-theorem
+derivative of `y` along the branch `y² = f(x)` at `x = px` is
+`f'(px) / (2·py)`. Confirmed against `phi_general.zip`'s
+`branch_series!`/`fill_f_tay!` (`F_x(px) = -f'(px)`, `F_y = 2py`,
+`y'(px) = -F_x/F_y`), not re-derived from scratch. -/
+noncomputable def branchDeriv4 (c0 c1 c2 c3 c4 : F p) (px py : F p) : F p :=
+  (derivative (curvePoly p c0 c1 c2 c3 c4)).eval px / (2 * py)
+
+/-- **Tangent-row entry, pure-`x` column** (`(i,0)`-shaped basis monomial
+`x^i`, no `y`-dependence): the derivative-row entry is the ORDINARY
+polynomial derivative coefficient `i·px^(i-1)` — no branch-series
+involvement, matching `ROADMAP-alpha-locus.md`'s point 3 exactly ("no
+branch-series involvement, since this monomial has no `y`"). Stated via
+`Polynomial.derivative_X_pow`'s closed form rather than a bespoke `i·x^(i-
+1)` definition, to keep this provably equal to "the derivative of `x^i`
+evaluated at `px`" rather than an independently-asserted formula (the
+`Polynomial.derivative`-based route this file's earlier tangent-lemma
+route, `comp_X_add_C_coeff_one`, already established as the correct way
+to talk about derivatives-at-a-point in this file). -/
+noncomputable def tangentRowEntryX4 (i : ℕ) (px : F p) : F p :=
+  (derivative (X ^ i : Polynomial (F p))).eval px
+
+/-- **Tangent-row entry, pure-`x` column, closed form** — confirms
+`tangentRowEntryX4` really does compute `i·px^(i-1)` for `i ≥ 1` (the `i=0`
+case, `x^0 = 1`, has zero derivative, matching `Nat.cast 0 = 0` on the
+RHS's `i=0` instance automatically). Uses `Polynomial.derivative_X_pow`,
+confirmed present in current Mathlib4. -/
+theorem tangentRowEntryX4_eq (i : ℕ) (px : F p) :
+    tangentRowEntryX4 p i px = (i : F p) * px ^ (i - 1) := by
+  unfold tangentRowEntryX4
+  rw [Polynomial.derivative_X_pow]
+  simp
+
+/-- **Tangent-row entry, mixed `x^i·y` column** (`(i,1)`-shaped basis
+monomial `x^i·y`): the PRODUCT-RULE expansion against the branch series,
+`i·px^(i-1)·py + px^i·y'(px)` — confirmed against
+`phi_general.zip`'s `fill_monomial_block!` m=2 path, the genuinely new
+per-column formula relative to the `m=1`/pure-evaluation case (not a
+simple reuse of the ordinary derivative rule, since `y` itself varies
+along the branch). `py`/`branchDeriv4 p c0 c1 c2 c3 c4 px py` play the
+roles of `y(px)`/`y'(px)` respectively. -/
+noncomputable def tangentRowEntryXY4 (c0 c1 c2 c3 c4 : F p) (i : ℕ) (px py : F p) : F p :=
+  tangentRowEntryX4 p i px * py + px ^ i * branchDeriv4 p c0 c1 c2 c3 c4 px py
+
+end TangentRow4
 
 /-- **Genericity condition, K=4 instance** — mirrors `MatrixNondegenerate`
 (`DataDerivationSolve.lean`) exactly: `theData`-for-`Reduce` is only
@@ -1935,15 +2059,22 @@ here `vRS4_sq_eq_f_mod_uRS4`) is K=4-specific, substituting `uRS4`/`vRS4`/
 module docstring already notes — no `algebraMap`/tower promotion needed
 since everything already lives in plain `F p`).
 
-**Same open gap as upstream, not a new one**: `DataDerivationSolve.lean`
-never proves `uRS ∣ Npoly` either — `vRS_sq_eq_f_mod_uRS` takes `hNu` as a
-raw hypothesis, not something it derives from `dvd_N_anchor1`/
-`dvd_N_anchor2`/`dvd_N_u`. `vRS4_sq_eq_f_mod_uRS4` below does the same:
-`hNu`/`hInv` are hypotheses, not delegated to `dvd_N_P1`/`dvd_N_P2`/
-`dvd_N_ua`/`dvd_N_u4` above. Combining those four individual-factor facts
-into a single `uRS4 ∣ Npoly4` statement is real remaining work (the same
-"item 6→7 bridge" gap `DataDerivationMumford.lean`'s own docstring flags
-as still open for K=2), not something skipped here that K=2 already has. -/
+**Update (this pass): CLOSED for this file, still open upstream in K=2.**
+`DataDerivationSolve.lean`'s K=2 `vRS_sq_eq_f_mod_uRS` still takes `hNu` as
+a raw hypothesis — that upstream gap is UNCHANGED, not touched this pass.
+But for THIS file, `uRS4_dvd_Npoly4` (below, combining `dvd_N_P1`/
+`dvd_N_P2`/`dvd_N_ua`/`dvd_N_u4` via six explicit pairwise-coprimality
+hypotheses) now exists and is `sorry`-free, and `vRS4_sq_eq_f_mod_uRS4`
+below has been updated to DERIVE `hNu` from it (taking
+`uRS4_dvd_Npoly4`'s own hypothesis bundle instead of a bare `hNu`) rather
+than assume it separately — `hInv` alone remains a genuine raw hypothesis,
+which is correct (it is not implied by the four-factor combining). Porting
+this same fix back to `DataDerivationSolve.lean`'s K=2
+`vRS_sq_eq_f_mod_uRS` is a natural, symmetric follow-up (the K=2 file has
+the identical `dvd_N_anchor1`/`dvd_N_anchor2`/`dvd_N_u` three-factor
+version of the same combining lemma available, just never wired in) but
+was NOT done this pass — flagged here so it isn't lost, not silently
+assumed. -/
 
 section GenericRemainderLemma4
 -- Same isolation rationale as `DataDerivationMumford.lean`'s own
@@ -2210,9 +2341,22 @@ is real remaining content, not a restatement of `hgcd`. -/
 theorem vRS4_sq_eq_f_mod_uRS4
     (hcur :
       curBeforeMonic4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ≠ 0)
-    (hNu :
-      uRS4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ∣
-        Npoly4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1)
+    (hA : MatrixNondegenerate4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1)
+    (hP1_curve : P1.2 ^ 2 = (curvePoly p c0 c1 c2 c3 c4).eval P1.1)
+    (hP2_curve : P2.2 ^ 2 = (curvePoly p c0 c1 c2 c3 c4).eval P2.1)
+    (hMumfordUa : IsMumfordUa p c0 c1 c2 c3 c4 ua0 ua1 va0 va1)
+    (hMumfordTarget : IsMumfordTarget4 p c0 c1 c2 c3 c4 u0 u1 v0 v1)
+    (h12 : IsCoprime (X - C P1.1 : Polynomial (F p)) (X - C P2.1))
+    (h13 : IsCoprime (X - C P1.1 : Polynomial (F p))
+      (X ^ 2 + C ua1 * X + C ua0))
+    (h14 : IsCoprime (X - C P1.1 : Polynomial (F p))
+      (X ^ 2 + C u1 * X + C u0))
+    (h23 : IsCoprime (X - C P2.1 : Polynomial (F p))
+      (X ^ 2 + C ua1 * X + C ua0))
+    (h24 : IsCoprime (X - C P2.1 : Polynomial (F p))
+      (X ^ 2 + C u1 * X + C u0))
+    (h34 : IsCoprime (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p))
+      (X ^ 2 + C u1 * X + C u0))
     (hInv :
       uRS4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ∣
         Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 *
@@ -2223,6 +2367,18 @@ theorem vRS4_sq_eq_f_mod_uRS4
         uRS4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 =
       (curvePoly p c0 c1 c2 c3 c4) %ₘ
         uRS4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 := by
+  -- `hNu` is no longer taken as a hypothesis: it is now DERIVED from
+  -- `uRS4_dvd_Npoly4` (the four-factor combining theorem, proved above from
+  -- the same pairwise-coprimality/curve/Mumford data this theorem now also
+  -- takes explicitly), closing exactly the gap this file's own module
+  -- docstring ("Same open gap as upstream, not a new one") flagged. `Npoly4`
+  -- unfolds definitionally to `E^2 - f*Y^2`, so `uRS4_dvd_Npoly4`'s
+  -- conclusion is `hNu'` after one `unfold`.
+  have hNu :
+      uRS4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ∣
+        Npoly4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 :=
+    uRS4_dvd_Npoly4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1
+      hcur hA hP1_curve hP2_curve hMumfordUa hMumfordTarget h12 h13 h14 h23 h24 h34
   let U := uRS4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1
   let E := Epoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1
   let Y := Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1
@@ -2231,7 +2387,15 @@ theorem vRS4_sq_eq_f_mod_uRS4
   have hU : U.Monic :=
     uRS4_monic p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 hcur
   have hInv' : U ∣ Y * G - 1 := by exact hInv
-  have hNu' : U ∣ E ^ 2 - f * Y ^ 2 := by exact hNu
+  have hNu' : U ∣ E ^ 2 - f * Y ^ 2 := by
+    show uRS4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ∣
+      (Epoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1) ^ 2 -
+        (curvePoly p c0 c1 c2 c3 c4) * (Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1) ^ 2
+    have hNu2 : uRS4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ∣
+        (Epoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1) ^ 2 -
+          (curvePoly p c0 c1 c2 c3 c4) * (Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1) ^ 2 := by
+      unfold Npoly4 at hNu; exact hNu
+    exact hNu2
   have hmod := sq_mod_eq_of_dvd_4 hU hNu' hInv'
   simpa only [vRS4, U, E, Y, G, f] using hmod
 

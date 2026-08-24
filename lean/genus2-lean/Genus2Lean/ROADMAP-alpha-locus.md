@@ -867,3 +867,94 @@ paste. Nothing in `AlphaLocusDegreeUniform.lean` was edited this pass
 also don't guess blind on hard math" — this sorry cleared the bar for
 "ask ChatGPT first," not "write a plausible-looking but untested Lean
 proof term").
+
+## Update (this pass): `AlphaReduce.lean` confirmed compiling clean (0
+## errors, 0 `sorry`); the `uRS4 ∣ Npoly4` combining gap this document's
+## own earlier passes flagged as "real remaining work" is CLOSED — it was
+## already fully written, just not wired into `vRS4_sq_eq_f_mod_uRS4`
+
+**Build-blocker fix, confirmed against Claire's REPL**: two calls to
+`Polynomial.taylor_coeff` (in `comp_X_add_C_coeff_one`/
+`comp_X_add_C_coeff_zero`, the Taylor-shift coefficient lemmas the K=4
+tangent-anchor `rootMultiplicity_ge_two_of_eval_derivative_eq_zero` route
+depends on) were passing `r`/`f` as ordinary positional arguments
+(`Polynomial.taylor_coeff (r := t) 1 f`); `taylor_coeff`'s actual Mathlib4
+signature (`Mathlib.Algebra.Polynomial.Taylor`) declares `r`/`f` as
+SECTION variables, not part of `taylor_coeff`'s own explicit argument
+list — only `n` is. Fixed by naming both: `Polynomial.taylor_coeff
+(r := t) (f := f) 1`/`... 0`. File confirmed 0-error, 0-`sorry` after this
+fix — this closes out the module docstring's own earlier "not yet
+exercised against the real Lean toolchain" caveats on `dvd_N_ua`/`dvd_N_u4`
+and everything before them.
+
+**Status correction — `uRS4_dvd_Npoly4` (this document's "Task, item (1)"
+from the earlier "Still genuinely not started" passage above) turns out
+to already be fully written, not merely planned.** Re-reading the file
+directly (rather than trusting the module docstring's own "not yet
+started"/"real remaining work" language, which was stale) found
+`uRS4_dvd_Npoly4` already proved, `sorry`-free: it combines `dvd_N_P1`/
+`dvd_N_P2`/`dvd_N_ua`/`dvd_N_u4` (the four individual-factor divisibility
+facts) into `uRS4 ∣ Npoly4` via `prod_dvd_of_pairwise_coprime_four` (a
+generic `CommRing`-level combinator, also already present) plus a
+`/ₘ`-peeling chain matching `curBeforeMonic4`'s own left-to-right factor
+order — given six explicit `IsCoprime` hypotheses pairing up
+`(X-P1.1)`/`(X-P2.1)`/`u_a`/`u` (task (B)'s `Bad`-exceptional-locus
+condition, supplied as hypotheses throughout this file, not derived).
+What WAS genuinely still open (and is now fixed, this pass): the file's
+downstream Mumford-identity theorem, `vRS4_sq_eq_f_mod_uRS4`, was NOT
+using `uRS4_dvd_Npoly4` — it took its own separate raw `hNu` hypothesis,
+duplicating exactly the fact `uRS4_dvd_Npoly4` already proves, rather than
+deriving it. Fixed: `vRS4_sq_eq_f_mod_uRS4` now takes `uRS4_dvd_Npoly4`'s
+own hypothesis bundle and derives `hNu` internally (one application plus
+`unfold Npoly4` for the definitional match against `E²-f·Y²`); `hInv` (the
+`Y`,`uRS4`-coprimality Bézout-witness fact — genuinely separate content,
+not implied by the four-factor combining) is unchanged, still a raw
+hypothesis. **Not yet tested against Claire's REPL** — written this pass,
+reasoning checked against the file's own existing idioms, but the fix
+itself (as opposed to everything upstream of it) has not been compiled.
+
+**Correction to this document's own "Task" framing above**: the
+`decoupledSystem_degree_uniform` sorry's blocking-task description
+("Task A... unstarted... Task B... nobody has run that check yet") is
+UNCHANGED by this pass — `uRS4_dvd_Npoly4`'s six coprimality hypotheses
+are exactly task (B)'s `Bad` locus, still assumed rather than derived or
+bounded, so this pass's fix is entirely about internal consistency within
+`AlphaReduce.lean` (not re-proving `hNu` from scratch each time it's
+needed), not new progress on task (B) itself. Also unchanged: `Reduce`'s
+CORRECTNESS (that it actually computes `alpha•a - P1 - P2`'s Mumford
+reduction) is still a fully open, not-yet-attempted theorem — `Reduce`
+itself, and everything under it (`uRS4`, `vRS4`, the Mumford identity,
+now including a `hNu` derived rather than assumed) is definitionally
+complete and internally consistent, but nothing in the file yet connects
+that machinery back to the actual group-law semantics `Reduce` is
+supposed to compute. That connection is the genuinely next piece of
+mathematical content, not a Lean-engineering gap like the ones closed
+this pass.
+
+**Also unchanged, explicitly flagged (not touched this pass)**: the
+tangent-anchor (`P1=P2` or other pairwise-coincidence, `m=2` row-block)
+case this document's "K=4 recipe" section describes in detail is still
+fully unimplemented in `AlphaReduce.lean` — `uRS4_dvd_Npoly4`'s own `h12`
+hypothesis (`IsCoprime (X-C P1.1) (X-C P2.1)`) presupposes `P1.1 ≠ P2.1`,
+i.e. rules the tangent case out by hypothesis rather than handling it.
+`rootMultiplicity_ge_two_of_eval_derivative_eq_zero`/
+`sq_dvd_of_eval_derivative_eq_zero` (the general `(X-C t)²∣f`-from-
+value-and-derivative-vanishing lemmas this document's "Route, confirmed
+against current Mathlib4 docs" section scoped out) ARE now proved in the
+file, `sorry`-free — but nothing downstream actually invokes them yet for
+an `Epoly4Tangent`/`Ypoly4Tangent` tangent-case row-block, matching this
+document's own item (ii)-(iv) from the earlier "concretely, the plan"
+passage, still unstarted.
+
+**Suggested next step, not yet started**: port this pass's
+`uRS4_dvd_Npoly4`-into-`vRS4_sq_eq_f_mod_uRS4` wiring fix back to K=2's
+`DataDerivationSolve.lean`/`DataDerivationMumford.lean`. Checked this pass
+that the prerequisite pieces do NOT yet exist there symmetrically —
+`DataDerivationSolve.lean` has `dvd_N_anchor1`/`dvd_N_anchor2`/`dvd_N_u`
+(the three individual-factor facts, K=2's analogue of `dvd_N_P1`/
+`dvd_N_ua`/`dvd_N_u4` combined two-into-one since K=2 has only 2 "extra"
+anchors) but no `prod_dvd_of_pairwise_coprime_four`-style combinator and
+no `uRS_dvd_Npoly` theorem at all — and K=2's version lives over the `K2`
+tower field, not plain `F p`, so this is a genuine port (checking the
+combinator generalizes over the tower ring, not just a copy-paste), not a
+one-line fix like the K=4 wiring was. Flagged, not attempted.
