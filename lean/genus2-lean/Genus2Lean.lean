@@ -46,3 +46,4 @@ import Genus2Lean.ZeroD.PeelChainAssembly
 import Genus2Lean.AlphaReduce
 import Genus2Lean.SharedRootCombining
 import Genus2Lean.AlphaLocusDegreeUniform
+import Genus2Lean.P1TargetSharedRoot

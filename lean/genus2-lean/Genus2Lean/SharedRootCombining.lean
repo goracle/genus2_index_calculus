@@ -346,5 +346,81 @@ theorem vRS4LcmShared_sq_eq_f_mod_uRS4LcmShared
 
 end MumfordIdentity4LcmShared
 
+/-! ## Dispatcher: `h34`-free combining, case-split on whether `u_a`/`target`
+share a root
+
+`uRS4_dvd_Npoly4` (`AlphaReduce.lean`) and `npoly4_dvd_of_shared_root`
+(above) are genuinely different theorems about genuinely different
+polynomials — `uRS4` (product-based, needs `h34`) vs `uaTargetLcm4`
+(`lcm`-based, does not). Neither subsumes the other, so a caller who does
+NOT want to assume `h34` up front cannot get a single uniform divisor
+polynomial back — it depends on which branch they're in, and that's real
+mathematical content, not a proof gap. This dispatcher packages that case
+split explicitly: it takes every hypothesis EXCEPT `h34` (in particular
+`h13`/`h14`/`h23`/`h24`/`h1L`/`h2L`, since those are near-identical-looking
+but distinct coprimality facts required by each branch respectively —
+`h13`/`h23` are P1/P2-vs-`u_a` in raw quadratic form, `h1L`/`h2L` are the
+same P1/P2 vs the MERGED `lcm` factor, needed only in the shared-root
+branch) and returns a disjunction: either `h34` holds and `uRS4 ∣ Npoly4`
+(the ordinary, already-proved case), or it doesn't and
+`uaTargetLcm4 ∣ curBeforeMonic4LcmShared`-shaped divisibility holds via the
+shared-root branch instead. `Classical.em` on `h34` supplies the case
+split; each branch is closed by the theorem that branch already has —
+no new mathematical content here, purely dispatch. -/
+
+section Dispatcher4
+
+variable (c0 c1 c2 c3 c4 : F p) (P1 P2 : F p × F p)
+variable (ua0 ua1 va0 va1 u0 u1 v0 v1 : F p)
+
+/-- **`uRS4 ∣ Npoly4` OR the shared-root `lcm`-combine goes through** —
+`h34`-free dispatcher. `Classical.em` on `h34` supplies the case split;
+each branch closes directly by the theorem that branch already has
+(`uRS4_dvd_Npoly4` for the coprime case, `npoly4_dvd_of_shared_root` for
+the shared-root case) — no new mathematical content, purely dispatch. -/
+theorem uRS4_dvd_Npoly4_or_shared_root
+    (hne : curBeforeMonic4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ≠ 0)
+    (hA : MatrixNondegenerate4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1)
+    (hP1_curve : P1.2 ^ 2 = (curvePoly p c0 c1 c2 c3 c4).eval P1.1)
+    (hP2_curve : P2.2 ^ 2 = (curvePoly p c0 c1 c2 c3 c4).eval P2.1)
+    (hMumfordUa : IsMumfordUa p c0 c1 c2 c3 c4 ua0 ua1 va0 va1)
+    (hMumfordTarget : IsMumfordTarget4 p c0 c1 c2 c3 c4 u0 u1 v0 v1)
+    (h12 : IsCoprime (X - C P1.1 : Polynomial (F p)) (X - C P2.1))
+    (h13 : IsCoprime (X - C P1.1 : Polynomial (F p))
+      (X ^ 2 + C ua1 * X + C ua0))
+    (h14 : IsCoprime (X - C P1.1 : Polynomial (F p))
+      (X ^ 2 + C u1 * X + C u0))
+    (h23 : IsCoprime (X - C P2.1 : Polynomial (F p))
+      (X ^ 2 + C ua1 * X + C ua0))
+    (h24 : IsCoprime (X - C P2.1 : Polynomial (F p))
+      (X ^ 2 + C u1 * X + C u0))
+    (h1L : IsCoprime (X - C P1.1 : Polynomial (F p))
+      (uaTargetLcm4 p ua0 ua1 u0 u1))
+    (h2L : IsCoprime (X - C P2.1 : Polynomial (F p))
+      (uaTargetLcm4 p ua0 ua1 u0 u1)) :
+    (IsCoprime (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p))
+        (X ^ 2 + C u1 * X + C u0) ∧
+      uRS4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ∣
+        Npoly4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1) ∨
+    (¬ IsCoprime (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p))
+        (X ^ 2 + C u1 * X + C u0) ∧
+      (X - C P1.1) * (X - C P2.1) * (uaTargetLcm4 p ua0 ua1 u0 u1) ∣
+        Npoly4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1) := by
+  rcases Classical.em
+      (IsCoprime (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p))
+        (X ^ 2 + C u1 * X + C u0)) with h34 | h34
+  · exact Or.inl ⟨h34,
+      uRS4_dvd_Npoly4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1
+        hne hA hP1_curve hP2_curve hMumfordUa hMumfordTarget h12 h13 h14 h23 h24 h34⟩
+  · have hd1 := dvd_N_P1 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 hA hP1_curve
+    have hd2 := dvd_N_P2 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 hA hP2_curve
+    have hd3 := dvd_N_ua p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 hA hMumfordUa
+    have hd4 := dvd_N_u4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 hA hMumfordTarget
+    exact Or.inr ⟨h34,
+      npoly4_dvd_of_shared_root p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1
+        h12 h1L h2L hd1 hd2 hd3 hd4⟩
+
+end Dispatcher4
+
 end TheDataDerivation
 end Genus2Lean
