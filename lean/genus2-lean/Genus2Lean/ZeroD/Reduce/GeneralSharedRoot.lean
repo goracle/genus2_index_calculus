@@ -614,20 +614,22 @@ theorem npoly4LcmLinearPair_natDegree_eq_two (P1 P2 : F p × F p) (h : P1.1 ≠ 
     · exact hne1 hz
     · exact hne2 hz
   have hdeg : ((X - C P1.1 : Polynomial (F p)) * (X - C P2.1)).natDegree = 2 := by
-    rw [Polynomial.natDegree_mul hm1 hm2, Polynomial.natDegree_X_sub_C, Polynomial.natDegree_X_sub_C]
-  -- `gcd * lcm = q1 * q2` and `gcd = u` (a unit, i.e. `C c` for nonzero `c`
-  -- since units in `Polynomial (F p)` are exactly nonzero constants),
-  -- so `lcm = q1 * q2 * u⁻¹`, an associate, hence same `natDegree`.
-  have huC : ∃ c : F p, c ≠ 0 ∧ (u : Polynomial (F p)) = C c := by
-    have hudeg : (u : Polynomial (F p)).natDegree = 0 := by
-      have := Polynomial.natDegree_le_of_dvd (⟨EuclideanDomain.gcd (X - C P1.1 : Polynomial (F p))
-        (X - C P2.1) * ((u⁻¹ : Polynomial (F p)ˣ) : Polynomial (F p)), by
-        rw [← hu]; simp⟩ : (u : Polynomial (F p)) ∣ (1 : Polynomial (F p))) one_ne_zero
-      simpa using this
-    obtain ⟨c, hc⟩ := Polynomial.natDegree_eq_zero_iff_degree_le_zero.mp (by omega) |>.imp
-      (fun h => h) -- placeholder, replaced below
-    sorry
-  sorry
+    rw [Polynomial.natDegree_mul hne1 hne2, Polynomial.natDegree_X_sub_C, Polynomial.natDegree_X_sub_C]
+  -- `u` (the unit realizing `gcd`) has `natDegree 0`: it divides `1`,
+  -- so `natDegree_le_of_dvd` bounds it above by `natDegree 1 = 0`.
+  have hune : (u : Polynomial (F p)) ≠ 0 := u.ne_zero
+  have hudvd1 : (u : Polynomial (F p)) ∣ (1 : Polynomial (F p)) := u.isUnit.dvd
+  have hudeg0 : (u : Polynomial (F p)).natDegree = 0 := by
+    have hle := Polynomial.natDegree_le_of_dvd hudvd1 one_ne_zero
+    simpa using hle
+  -- `gcd * lcm = q1 * q2`, `gcd = ↑u`, both sides nonzero, so `natDegree_mul`
+  -- on each side plus `hudeg0` pins down `lcm.natDegree`.
+  have hlhs : (EuclideanDomain.gcd (X - C P1.1 : Polynomial (F p)) (X - C P2.1) *
+      EuclideanDomain.lcm (X - C P1.1 : Polynomial (F p)) (X - C P2.1)).natDegree =
+      (EuclideanDomain.lcm (X - C P1.1 : Polynomial (F p)) (X - C P2.1)).natDegree := by
+    rw [← hu, Polynomial.natDegree_mul hune hlcmne, hudeg0, zero_add]
+  rw [hprod, hdeg] at hlhs
+  exact hlhs.symm
 
 /-- `u_RS,general(x)`, monic-normalized `curBeforeMonic4General` — same
 `leadingCoeff⁻¹`-scaling construction as `uRS4`/`uRS4LcmShared`/
