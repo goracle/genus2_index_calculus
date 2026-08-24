@@ -468,6 +468,120 @@ against the actual Julia source this pass:
    port's job is the SAME arithmetic over plain `F p` for K=4 concrete
    points, not new mathematical content.
 
+### Update (this pass): step 2's "2 if a repeated/tangent point" case, previously punted, now scoped precisely
+
+**Claire flagged this directly.** Step 2 above has always said "one row per
+anchor, 2 if a repeated/tangent point, capped at that — simple points only
+expected for our case" — that was a scoping punt from an earlier pass, not
+a resolved question, and `AlphaReduce.lean`'s current K=4 code bakes in the
+simple-point assumption as a hardcoded hypothesis
+(`h12 : IsCoprime (X - C P1.1) (X - C P2.1)` in `uRS4_dvd_Npoly4`) rather
+than as a case split. Concretely, in the DLP/index-calculus setting this
+project actually targets, `P1=P2` (or `P1,P2` hyperelliptic-conjugate, or
+`(u_a,v_a)`'s own two roots coinciding) is not a measure-zero edge case to
+wave off — a factor-base walk revisiting the same point, or a Jacobian
+element whose Mumford divisor happens to be non-reduced/tangent, is a
+realistic input, and `Reduce` needs to handle it rather than silently
+requiring the caller to pre-filter it (that filtering itself is exactly
+the kind of `Bad`-set bookkeeping Step 2's earlier bullets already worry
+about, so getting this right doesn't just improve robustness, it also
+narrows what `Bad` needs to exclude).
+
+**What "P1=P2" (a double root) needs to change, concretely, relative to
+the simple-point recipe above:**
+
+1. **The interpolation condition itself (step 2's "one row per anchor")
+   changes shape.** A simple anchor `P1=(x1,y1)` contributes one row:
+   `phi(x1,y1) = 0` i.e. `E(x1) + y1*Y(x1) = 0`. A *tangent*/double anchor
+   at the same point contributes that row PLUS a second row from the
+   FIRST-ORDER condition — not `phi` evaluated at a second point (there
+   isn't one), but the derivative of `phi(x, y(x))` along the curve
+   vanishing at `x1`, i.e. (chain rule along `y² = f(x)`, so `2y·y' =
+   f'(x)`) the condition `E'(x1) + y1'*Y(x1) + y1*Y'(x1) = 0` where `y1' =
+   f'(x1)/(2y1)` (needs `y1 ≠ 0`, i.e. `P1` not a Weierstrass point — a
+   genuinely separate degeneracy, already flagged elsewhere in this
+   project as excludable from `Bad`, see `PeelChainAssembly.lean`'s
+   Claire's-nondegeneracy-note near its end). This is standard Hermite/
+   osculating interpolation, not new mathematics, but it IS a different
+   row formula, not a re-use of the same `row01_defining_eq_aux`-style
+   evaluation lemma with a repeated `x`-value plugged in twice (that would
+   give a rank-deficient, not tangency-encoding, linear system).
+2. **The divisibility target changes from `IsCoprime`-based factoring to
+   `rootMultiplicity`.** Once `phi` is built to satisfy both the value AND
+   derivative conditions at `x1`, the resulting `N(x) = E(x)² - f(x)Y(x)²`
+   has `(X - C x1)` as a root of `N` of multiplicity ≥ 2 (standard "double
+   root of `f` ⟹ root of `f'` too" fact, and here it runs the other
+   direction: value+derivative vanishing forces the SQUARE `(X-x1)²` to
+   divide `N`, via `Polynomial.rootMultiplicity` — confirmed this pass via
+   web search that Mathlib4 has the needed pieces:
+   `Polynomial.rootMultiplicity_pos`, `Polynomial.rootMultiplicity_eq_zero_iff`,
+   `Polynomial.prod_multiset_root_eq_finset_root` (roots-with-multiplicity
+   give the exact `∏ (X-a)^rootMultiplicity` factorization), and the
+   `Polynomial.Separable`/`Polynomial.Separable.squarefree` API for the
+   generic/simple-root side. No custom multiplicity theory needs to be
+   built from scratch, but the K=4 divisibility proof
+   (`uRS4_dvd_Npoly4`'s shape) needs a genuinely different lemma for the
+   tangent case — `(X-C x1)^2 ∣ N`, proved via `rootMultiplicity x1 N ≥ 2`
+   from the value+derivative vanishing, not via `IsCoprime`-based
+   `prod_dvd_of_pairwise_coprime_four`.
+3. **`uRS4`'s degree-2 output already has room for this** — a genus-2
+   Mumford `u(x)` of degree 2 with a double root IS the correct
+   representation of a tangent/non-reduced divisor `2[P1]` (that's the
+   whole point of Mumford representation: `u(x)=(x-x1)²` legitimately
+   encodes "the divisor `2P1`", not an error state) — so `uRS4`/`vRS4`'s
+   existing type signatures don't need to change, only the PROOF that
+   `uRS4 ∣ Npoly4` needs a second case.
+4. **How many genuinely distinct cases this creates.** Not just "simple
+   vs. P1=P2" — the full case inventory, matching the "quadruple(??)"
+   question: with `K=4` anchors total (`P1,P2`, and `(u_a,v_a)`'s two
+   roots `Q1,Q2`), the possible coincidence patterns are (a) all four
+   distinct (current code — done), (b) exactly one coincidence among the
+   four (`P1=P2`, or `P1=Q1`, etc. — six sub-cases by symmetry, but
+   algebraically all "one double root among four simple-or-double
+   anchors", the SAME row-and-divisibility fix, just applied to a
+   different pair), (c) two independent coincidences (e.g. `P1=P2` AND
+   `Q1=Q2` simultaneously — two double roots), (d) a triple coincidence
+   (`P1=P2=Q1`, giving a genus-2 curve point of multiplicity 3 in the
+   divisor — needs a SECOND-derivative row, `rootMultiplicity ≥ 3`, this
+   is where "double/triple" stops being symmetric relabeling and starts
+   needing an actual higher-order Hermite condition), (e) `P1=P2=Q1=Q2`
+   (multiplicity 4, needs a third-derivative row). **(d) and (e) are
+   almost certainly not worth building now** — for the DLP walk this
+   project's `AlphaReduce` ultimately serves, `P1,P2` are drawn from a
+   factor base and `alpha•a`'s Mumford roots come from group-law
+   arithmetic; a coincidence of 3+ of the 4 anchor points is a much rarer
+   degeneracy than a single pairwise coincidence, and can reasonably be
+   folded into `Bad`/excluded rather than proved through, at least for a
+   first pass. **(b)/(c) (multiplicity exactly 2, once or twice) are the
+   ones actually worth proving**, since a single repeated point in a
+   factor-base walk (the `P1=P2` case specifically) is a real, not
+   exotic, input.
+5. **Recommended scope for the next pass, in order**: (i) prove the
+   single-double-root case in isolation first — a standalone lemma
+   `rootMultiplicity_ge_two_of_value_and_derivative` (or similarly named)
+   at the general `Polynomial (F p)` level, no `AlphaReduce`-specific
+   content, checked against Mathlib's actual `rootMultiplicity` API before
+   writing Lean (search `Mathlib.Algebra.Polynomial.Div`,
+   `Mathlib.Algebra.Polynomial.Roots`,
+   `Mathlib.RingTheory.Polynomial.Basic` for the exact multiplicity/
+   derivative-vanishing lemma names — `Polynomial.rootMultiplicity`'s
+   docs page and neighbors are the right search surface, not guessed);
+   (ii) build the tangent-anchor row formula for `Epoly4`/`Ypoly4`
+   (probably `Epoly4Tangent`/`Ypoly4Tangent` or a case-split single
+   definition — TBD which reads cleaner) and its own row-identity lemma,
+   mirroring `row01_defining_eq_aux`'s proof shape but for the derivative
+   condition; (iii) redo `dvd_N_P1`-style divisibility using (i)+(ii) to
+   get `(X-C x1)^2 ∣ Npoly4` for the `P1=P2` case specifically; (iv) only
+   after (i)-(iii) are solid, decide whether to generalize to the other
+   five pairwise-coincidence sub-cases of (b) (likely a single lemma
+   parametrized by WHICH two of the four anchors coincide, not six
+   separate proofs, if the row-formula genuinely doesn't care which pair
+   it is) or handle `P1=P2` alone for now and fold the rest into `Bad`.
+   **Nothing implemented yet this pass** — this section is scoping only,
+   per the same "plan before touching a 2000+-line working proof" instinct
+   already used elsewhere in this project; the existing `AlphaReduce.lean`
+   simple-point code is untouched.
+
 ### Where this leaves `curBeforeMonic`/`Epoly`/`Ypoly`/`Npoly` — now correctly located, not yet read line-by-line
 
 Earlier in this pass, before Claire's files arrived, this roadmap update

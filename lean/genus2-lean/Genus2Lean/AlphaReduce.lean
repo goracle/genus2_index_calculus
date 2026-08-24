@@ -104,7 +104,55 @@ started**: `uRS4`/`vRS4`
 on `curBeforeMonic4`'s roots intersected with the curve, not a separate
 Mumford-reduction step; `Reduce` IS this root-finding, not something built
 on top of it) and the `Reduce` function itself wrapping everything into the
-`F p × F p × F p × F p` signature `AlphaLocusDegreeUniform.lean` needs. -/
+`F p × F p × F p × F p` signature `AlphaLocusDegreeUniform.lean` needs.
+
+**Update (later pass): `uRS4`/`vRS4` ARE built** — the paragraph above was
+stale. `uRS4` (monic normalization of `curBeforeMonic4`), `uRS4_monic`,
+`uRS4_natDegree_le_two`, and `vRS4` (`-E4*Y4⁻¹ mod uRS4` via
+`EuclideanDomain.gcdA`) are all defined/proved, `sorry`-free, mirroring
+`DataDerivationMumford.lean`'s `uRS`/`uRS_monic`/`vRS` exactly. The Mumford
+identity itself, `vRS4_sq_eq_f_mod_uRS4` (`v_RS4² ≡ curvePoly mod u_RS4`),
+is also now ported, direct port of `vRS_sq_eq_f_mod_uRS`'s generic
+`sq_mod_eq_of_dvd` chain (ring-generic, no changes needed) plus a K=4
+wrapper. **Still genuinely not started, and still the real gap**: (1)
+`uRS4 ∣ Npoly4` as a single combined fact — `dvd_N_P1`/`dvd_N_P2`/
+`dvd_N_ua`/`dvd_N_u4` prove divisibility by each factor separately, but no
+theorem here (or in `DataDerivationSolve.lean`'s K=2 analogue, which has
+the identical gap) combines them into `uRS4 ∣ Npoly4` itself — this is
+exactly the hypothesis `vRS4_sq_eq_f_mod_uRS4`'s `hNu` still has to assume
+rather than derive; routed to a ChatGPT consultation this pass
+(`chatgpt_prompt_uRS4_dvd_Npoly4.md`, not yet sent/answered), since it
+needs pairwise-coprimality genericity hypotheses this file doesn't yet
+have a clean Lean statement for. (2) **`Reduce` itself is now defined**
+(packaging `uRS4`/`vRS4`'s coefficients into an `F p × F p × F p × F p`
+tuple, given the input target it reduces against) — but its CORRECTNESS
+(that it actually computes the Mumford reduction of `alpha•a - P1 - P2`)
+is not proved and depends on (1).
+
+**This pass**: the two `sorry`s in `Ypoly4_natDegree_le_one`/
+`Epoly4_natDegree_le_four` (the `hbi1`/`hbi4` inner `have`s, previously
+routed to a drafted-but-unsent ChatGPT consultation,
+`chatgpt_prompt_mergesort_decide.md`) are now attempted directly rather
+than deferred: both goals are about `rrBasis7.getD bidx.val (0,0,0)` for
+`bidx : Fin 7`, and `rrBasis7_eq` (already proved, above) gives
+`rrBasis7`'s literal 7-element list value via the `Perm`+`Sorted`-
+uniqueness route — which never asks the kernel to unfold `mergeSort`, so
+it sidesteps the WF-recursion/kernel-irreducibility blocker
+(lean4#5192) that made bare `decide` fail on `rrBasis7` directly. Fix:
+`rw [rrBasis7_eq]` first (turning the goal into a lookup into a literal
+list), then `fin_cases bidx <;> decide` (seven concrete, ordinary
+`Nat`-arithmetic goals) — **`interval_cases bidx` was tried first and
+confirmed by Claire's REPL to fail** (`unsupported type Fin 7`;
+`interval_cases` wants a type with an order/bound instance it can search
+for, not `Fin n` directly — `fin_cases` is the tactic actually meant for
+finite-type case splits and is the fix now in place, not yet re-tested).
+The K=2 analogue this file's earlier note flagged
+as sharing "the exact same latent bug" (`Epoly_natDegree_le_three`,
+`DecoupledSystemRegular.lean`) was NOT touched this pass — confirmed via
+fresh `sorry`-grep that file is genuinely 0-`sorry` already, so whatever
+that file does at the analogous step evidently isn't hitting this same
+blocker (or was already fixed); worth a quick diff-read next pass rather
+than assuming it needs the identical fix. -/
 
 namespace Genus2Lean
 namespace TheDataDerivation
@@ -793,19 +841,15 @@ theorem Ypoly4_natDegree_le_one (P1 P2 : F p × F p)
   simp only [Function.comp_apply]
   have hbi1 : (rrBasis7.getD bidx.val (0, 0, 0)).2.2 = 1 →
       (rrBasis7.getD bidx.val (0, 0, 0)).2.1 ≤ 1 := by
-    -- **BLOCKED — routed to ChatGPT rather than guessed further.**
-    -- `decide` fails: `rrBasis7` unfolds through `List.mergeSort`, which is
-    -- well-founded recursion, and current Lean (4.19+, RFC lean4#5192) made
-    -- WF-recursive definitions kernel-irreducible by default, so `decide`'s
-    -- kernel `whnf` gets stuck exactly as Claire's REPL log shows.
-    -- `native_decide` would work but is disallowed by this project's own
-    -- mathlib linter (`linter.style.nativeDecide`). See
-    -- `chatgpt_prompt_mergesort_decide.md` for the drafted consultation —
-    -- not yet sent. The K=2 analogue (`Epoly_natDegree_le_three`,
-    -- `DecoupledSystemRegular.lean`) has the exact same latent bug, only
-    -- masked until now because it was never actually run against this
-    -- toolchain (its own docstring flags it as "not yet exercised").
-    sorry
+    -- Rewrite through `rrBasis7_eq` (the `Perm`+`Sorted`-uniqueness proof of
+    -- `rrBasis7`'s literal value, which never kernel-computes `mergeSort`)
+    -- so the goal becomes a `List.getD` lookup into a literal 7-element
+    -- list — decidable by ordinary `Nat` arithmetic, no `mergeSort`
+    -- unfolding needed. This was the `decide`-on-`mergeSort` blocker
+    -- (WF-recursive defs are kernel-irreducible, lean4#5192); `rrBasis7_eq`
+    -- routes around it entirely rather than needing ChatGPT.
+    rw [rrBasis7_eq]
+    fin_cases bidx <;> decide
   revert hbi1
   generalize rrBasis7.getD bidx.val (0, 0, 0) = t
   obtain ⟨a, bi, bj⟩ := t
@@ -826,10 +870,11 @@ theorem Epoly4_natDegree_le_four (P1 P2 : F p × F p)
   refine Finset.sup_le (fun bidx _ => ?_)
   simp only [Function.comp_apply]
   have hbi4 : (rrBasis7.getD bidx.val (0, 0, 0)).2.1 ≤ 4 := by
-    -- Same `List.mergeSort`/`decide` kernel-irreducibility blocker as
-    -- `Ypoly4_natDegree_le_one`'s `hbi1` above — see that proof's comment
-    -- and `chatgpt_prompt_mergesort_decide.md`.
-    sorry
+    -- Same fix as `Ypoly4_natDegree_le_one`'s `hbi1` above: rewrite through
+    -- `rrBasis7_eq` first, then it's a literal-list lookup, no `mergeSort`
+    -- kernel-irreducibility blocker.
+    rw [rrBasis7_eq]
+    fin_cases bidx <;> decide
   revert hbi4
   generalize rrBasis7.getD bidx.val (0, 0, 0) = t
   obtain ⟨a, bi, bj⟩ := t
@@ -1771,6 +1816,372 @@ theorem dvd_N_u4 (c0 c1 c2 c3 c4 : F p) (P1 P2 : F p × F p) (ua0 ua1 va0 va1 u0
       (E - Y * V) * (E + Y * V) + (V ^ 2 - f) * Y ^ 2 := by
     unfold Npoly4; ring
   rw [hNeq]; exact hadd
+
+/-! ## The Mumford identity, K=4 instance — `v_RS4² ≡ f (mod u_RS4)`
+
+Direct port of `DataDerivationMumford.lean`'s `vRS_sq_eq_f_mod_uRS` chain.
+The four `sq_mod_eq_of_dvd_step*` lemmas and `sq_mod_eq_of_dvd` itself are
+completely generic in the ring (`{R : Type*} [CommRing R]`) — they mention
+no `K2`/tower content at all, so they port to `Polynomial (F p)` with zero
+changes, not a rescaling. Only the wrapper (`vRS_sq_eq_f_mod_uRS` itself,
+here `vRS4_sq_eq_f_mod_uRS4`) is K=4-specific, substituting `uRS4`/`vRS4`/
+`Epoly4`/`Ypoly4`/`curvePoly`/`Npoly4` for their K=2/tower counterparts
+(`curvePoly` plays `fAtX`'s role directly here, exactly as this file's
+module docstring already notes — no `algebraMap`/tower promotion needed
+since everything already lives in plain `F p`).
+
+**Same open gap as upstream, not a new one**: `DataDerivationSolve.lean`
+never proves `uRS ∣ Npoly` either — `vRS_sq_eq_f_mod_uRS` takes `hNu` as a
+raw hypothesis, not something it derives from `dvd_N_anchor1`/
+`dvd_N_anchor2`/`dvd_N_u`. `vRS4_sq_eq_f_mod_uRS4` below does the same:
+`hNu`/`hInv` are hypotheses, not delegated to `dvd_N_P1`/`dvd_N_P2`/
+`dvd_N_ua`/`dvd_N_u4` above. Combining those four individual-factor facts
+into a single `uRS4 ∣ Npoly4` statement is real remaining work (the same
+"item 6→7 bridge" gap `DataDerivationMumford.lean`'s own docstring flags
+as still open for K=2), not something skipped here that K=2 already has. -/
+
+section GenericRemainderLemma4
+-- Same isolation rationale as `DataDerivationMumford.lean`'s own
+-- `GenericRemainderLemma` section: kept free of this file's `p`/`c0..v1`
+-- `variable`s so elaboration doesn't carry a large local context through
+-- statements that don't mention any of it.
+
+set_option maxHeartbeats 4000000 in
+/-- Step 1: `U ∣ (Y*G)^2 - 1` from `U ∣ Y*G - 1`. Ring-generic, identical
+to `DataDerivationMumford.lean`'s `sq_mod_eq_of_dvd_step1`. -/
+theorem sq_mod_eq_of_dvd_step1_4
+    {R : Type*} [CommRing R] {U Y G : Polynomial R}
+    (hInv : U ∣ Y * G - 1) :
+    U ∣ (Y * G) ^ 2 - 1 := by
+  have hsq1 : (Y * G) ^ 2 - 1 = (Y * G - 1) * (Y * G + 1) := by ring
+  rw [hsq1]
+  exact dvd_mul_of_dvd_left hInv (Y * G + 1)
+
+set_option maxHeartbeats 4000000 in
+/-- Step 2: `U ∣ (E*G)^2 - f`. Ring-generic, identical to
+`sq_mod_eq_of_dvd_step2`. -/
+theorem sq_mod_eq_of_dvd_step2_4
+    {R : Type*} [CommRing R] {U E Y G f : Polynomial R}
+    (hN : U ∣ E ^ 2 - f * Y ^ 2)
+    (hInvSq : U ∣ (Y * G) ^ 2 - 1) :
+    U ∣ (E * G) ^ 2 - f := by
+  have hNscaled : U ∣ (E ^ 2 - f * Y ^ 2) * G ^ 2 :=
+    dvd_mul_of_dvd_left hN (G ^ 2)
+  have hInvscaled : U ∣ f * ((Y * G) ^ 2 - 1) :=
+    dvd_mul_of_dvd_right hInvSq f
+  have hid1 :
+      (E ^ 2 - f * Y ^ 2) * G ^ 2 + f * ((Y * G) ^ 2 - 1) = (E * G) ^ 2 - f := by
+    ring
+  rw [← hid1]
+  exact dvd_add hNscaled hInvscaled
+
+set_option maxHeartbeats 4000000 in
+/-- Step 3: `U ∣ (X %ₘ U) - X`. Ring-generic, identical to
+`sq_mod_eq_of_dvd_step3`. -/
+theorem sq_mod_eq_of_dvd_step3_4
+    {R : Type*} [CommRing R] (U X : Polynomial R) :
+    U ∣ (X %ₘ U) - X :=
+  Polynomial.dvd_modByMonic_sub X U
+
+set_option maxHeartbeats 4000000 in
+/-- Step 4: `U ∣ (X %ₘ U)^2 - X^2`. Ring-generic, identical to
+`sq_mod_eq_of_dvd_step4`. -/
+theorem sq_mod_eq_of_dvd_step4_4
+    {R : Type*} [CommRing R] {U : Polynomial R} (X : Polynomial R)
+    (hrem : U ∣ (X %ₘ U) - X) :
+    U ∣ (X %ₘ U) ^ 2 - X ^ 2 := by
+  have hsq2 : (X %ₘ U) ^ 2 - X ^ 2 = ((X %ₘ U) + X) * ((X %ₘ U) - X) := by ring
+  rw [hsq2]
+  exact dvd_mul_of_dvd_right hrem ((X %ₘ U) + X)
+
+set_option maxHeartbeats 4000000 in
+/-- Assembled generic remainder lemma, identical to
+`DataDerivationMumford.lean`'s `sq_mod_eq_of_dvd`. -/
+theorem sq_mod_eq_of_dvd_4
+    {R : Type*} [CommRing R]
+    {U E Y G f : Polynomial R}
+    (hU : U.Monic)
+    (hN : U ∣ E ^ 2 - f * Y ^ 2)
+    (hInv : U ∣ Y * G - 1) :
+    ((-E * G) %ₘ U) ^ 2 %ₘ U = f %ₘ U := by
+  have hInvSq := sq_mod_eq_of_dvd_step1_4 hInv
+  have hEGf := sq_mod_eq_of_dvd_step2_4 hN hInvSq
+  have hrem := sq_mod_eq_of_dvd_step3_4 U (-E * G)
+  have hvrem := sq_mod_eq_of_dvd_step4_4 (-E * G) hrem
+  have hnegsq : (-E * G) ^ 2 = (E * G) ^ 2 := by ring
+  rw [hnegsq] at hvrem
+  have hid2 :
+      ((-E * G) %ₘ U) ^ 2 - (E * G) ^ 2 + ((E * G) ^ 2 - f) =
+        ((-E * G) %ₘ U) ^ 2 - f := by
+    ring
+  have hvf : U ∣ ((-E * G) %ₘ U) ^ 2 - f := by
+    rw [← hid2]; exact dvd_add hvrem hEGf
+  exact Polynomial.modByMonic_eq_of_dvd_sub hU hvf
+
+end GenericRemainderLemma4
+
+section FourFactorCombining4
+-- Own section, above `MumfordIdentity4`'s `variable`s, same isolation
+-- rationale as `GenericRemainderLemma4` — this lemma mentions no
+-- `p`/`c0..v1` at all, only four abstract monic polynomials over a
+-- generic `R`, so it should not carry a large ambient local context.
+
+/-- **Combine four individually-known divisibility facts into one, given
+pairwise coprimality.** Ring-generic (no `F p`/`Npoly4`-specific content) —
+built from `IsCoprime.mul_left` (coprimality of a product) and
+`IsCoprime.mul_dvd` (coprime factors' product divides a common multiple),
+per the ChatGPT consultation's confirmed-against-Mathlib architecture
+(`chatgpt_prompt_uRS4_dvd_Npoly4.md`). Six pairwise-coprimality hypotheses
+for four factors (`C(4,2) = 6`), matching that consultation's own
+`FourPairwiseCoprime`-style interface — deliberately explicit hypotheses,
+not derived from root/eval conditions here (that derivation, for the
+linear-vs-quadratic and quadratic-vs-quadratic cases, is real further work
+not attempted in this pass; see the module docstring). -/
+theorem prod_dvd_of_pairwise_coprime_four
+    {R : Type*} [CommRing R] {q1 q2 q3 q4 N : R}
+    (h12 : IsCoprime q1 q2) (h13 : IsCoprime q1 q3) (h14 : IsCoprime q1 q4)
+    (h23 : IsCoprime q2 q3) (h24 : IsCoprime q2 q4) (h34 : IsCoprime q3 q4)
+    (hd1 : q1 ∣ N) (hd2 : q2 ∣ N) (hd3 : q3 ∣ N) (hd4 : q4 ∣ N) :
+    q1 * q2 * q3 * q4 ∣ N := by
+  have h12_3 : IsCoprime (q1 * q2) q3 := IsCoprime.mul_left h13 h23
+  have h12_4 : IsCoprime (q1 * q2) q4 := IsCoprime.mul_left h14 h24
+  have h12_34 : IsCoprime (q1 * q2) (q3 * q4) := IsCoprime.mul_right h12_3 h12_4
+  have hd12 : q1 * q2 ∣ N := IsCoprime.mul_dvd h12 hd1 hd2
+  have hd34 : q3 * q4 ∣ N := IsCoprime.mul_dvd h34 hd3 hd4
+  have hd1234 : (q1 * q2) * (q3 * q4) ∣ N := IsCoprime.mul_dvd h12_34 hd12 hd34
+  have heq : (q1 * q2) * (q3 * q4) = q1 * q2 * q3 * q4 := by ring
+  rwa [heq] at hd1234
+
+/-- **Successive `/ₘ` by a monic divisor, given the product already
+divides.** If `q.Monic` and `q ∣ N`, then `N /ₘ q` satisfies
+`q' * (N /ₘ q) = k` whenever `N = q * q' * k`-shaped — concretely, this
+peels ONE monic factor off a product-divisibility fact, reducing the
+`k1*k2*k3*k4`-factor combining problem to induction on that peeling.
+Built from `Polynomial.modByMonic_eq_zero_iff_dvd` (divisibility ↔ exact
+remainder) and `Polynomial.mul_divByMonic_cancel_left` (`q * p /ₘ q = p`
+for monic `q`), both confirmed against current Mathlib. -/
+theorem divByMonic_eq_of_dvd_mul {R : Type*} [CommRing R]
+    {q k N : Polynomial R} (hq : q.Monic) (hN : N = q * k) :
+    N /ₘ q = k := by
+  rw [hN]
+  exact Polynomial.mul_divByMonic_cancel_left k hq
+
+end FourFactorCombining4
+
+/-! ## `uRS4 ∣ Npoly4`, K=4 instance — closing the combining gap
+
+Instantiates `prod_dvd_of_pairwise_coprime_four`/`divByMonic_eq_of_dvd_mul`
+against `Npoly4`'s four known factors (`dvd_N_P1`/`dvd_N_P2`/`dvd_N_ua`/
+`dvd_N_u4`) and `curBeforeMonic4`'s own four-step `/ₘ` chain. The six
+pairwise-coprimality hypotheses are the genericity conditions this file's
+module docstring and `ROADMAP-alpha-locus.md`'s Task (B) both flag as the
+open "`Bad`" exceptional-locus question — supplied here as explicit
+hypotheses (matching this file's convention throughout), not derived. -/
+
+section CombineDvd4
+
+variable (c0 c1 c2 c3 c4 : F p) (P1 P2 : F p × F p) (ua0 ua1 va0 va1 u0 u1 v0 v1 : F p)
+
+/-- **`uRS4 ∣ Npoly4`**, given: (a) `curBeforeMonic4 ≠ 0` (needed so `uRS4`'s
+leading-coefficient rescaling is a genuine unit, matching `uRS4_monic`'s own
+hypothesis), (b) the four individual-factor divisibility facts (via
+`MatrixNondegenerate4`/curve-membership/Mumford hypotheses, exactly as
+`dvd_N_P1`/`dvd_N_P2`/`dvd_N_ua`/`dvd_N_u4` already require), and (c) six
+pairwise-coprimality facts pinning down the genericity locus. This is
+exactly `vRS4_sq_eq_f_mod_uRS4`'s `hNu` hypothesis, now proved rather than
+assumed (given the coprimality inputs). -/
+theorem uRS4_dvd_Npoly4
+    (hne : curBeforeMonic4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ≠ 0)
+    (hA : MatrixNondegenerate4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1)
+    (hP1_curve : P1.2 ^ 2 = (curvePoly p c0 c1 c2 c3 c4).eval P1.1)
+    (hP2_curve : P2.2 ^ 2 = (curvePoly p c0 c1 c2 c3 c4).eval P2.1)
+    (hMumfordUa : IsMumfordUa p c0 c1 c2 c3 c4 ua0 ua1 va0 va1)
+    (hMumfordTarget : IsMumfordTarget4 p c0 c1 c2 c3 c4 u0 u1 v0 v1)
+    (h12 : IsCoprime (X - C P1.1 : Polynomial (F p)) (X - C P2.1))
+    (h13 : IsCoprime (X - C P1.1 : Polynomial (F p))
+      (X ^ 2 + C ua1 * X + C ua0))
+    (h14 : IsCoprime (X - C P1.1 : Polynomial (F p))
+      (X ^ 2 + C u1 * X + C u0))
+    (h23 : IsCoprime (X - C P2.1 : Polynomial (F p))
+      (X ^ 2 + C ua1 * X + C ua0))
+    (h24 : IsCoprime (X - C P2.1 : Polynomial (F p))
+      (X ^ 2 + C u1 * X + C u0))
+    (h34 : IsCoprime (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p))
+      (X ^ 2 + C u1 * X + C u0)) :
+    uRS4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ∣
+      Npoly4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 := by
+  have hd1 := dvd_N_P1 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 hA hP1_curve
+  have hd2 := dvd_N_P2 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 hA hP2_curve
+  have hd3 := dvd_N_ua p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 hA hMumfordUa
+  have hd4 := dvd_N_u4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 hA hMumfordTarget
+  have hprod :
+      (X - C P1.1) * (X - C P2.1) * (X ^ 2 + C ua1 * X + C ua0) *
+          (X ^ 2 + C u1 * X + C u0) ∣
+        Npoly4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 :=
+    prod_dvd_of_pairwise_coprime_four h12 h13 h14 h23 h24 h34 hd1 hd2 hd3 hd4
+  obtain ⟨k, hk⟩ := hprod
+  have hm1 : (X - C P1.1 : Polynomial (F p)).Monic := Polynomial.monic_X_sub_C _
+  have hm2 : (X - C P2.1 : Polynomial (F p)).Monic := Polynomial.monic_X_sub_C _
+  have hm3 : (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).Monic := by monicity!
+  have hm4 : (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).Monic := by monicity!
+  -- Peel the four factors off `Npoly4` one `/ₘ` at a time, matching
+  -- `curBeforeMonic4`'s own left-to-right order exactly.
+  have hstep0 :
+      Npoly4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 =
+        (X - C P1.1) *
+          ((X - C P2.1) * (X ^ 2 + C ua1 * X + C ua0) *
+            (X ^ 2 + C u1 * X + C u0) * k) := by
+    rw [hk]; ring
+  have hstep1 :
+      Npoly4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 /ₘ (X - C P1.1) =
+        (X - C P2.1) * (X ^ 2 + C ua1 * X + C ua0) * (X ^ 2 + C u1 * X + C u0) * k :=
+    divByMonic_eq_of_dvd_mul hm1 hstep0
+  have hstep1' :
+      (X - C P2.1) * (X ^ 2 + C ua1 * X + C ua0) * (X ^ 2 + C u1 * X + C u0) * k =
+        (X - C P2.1) *
+          ((X ^ 2 + C ua1 * X + C ua0) * (X ^ 2 + C u1 * X + C u0) * k) := by ring
+  have hstep2 :
+      (Npoly4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 /ₘ (X - C P1.1)) /ₘ
+          (X - C P2.1) =
+        (X ^ 2 + C ua1 * X + C ua0) * (X ^ 2 + C u1 * X + C u0) * k :=
+    divByMonic_eq_of_dvd_mul hm2 (hstep1.trans hstep1')
+  have hstep2' :
+      (X ^ 2 + C ua1 * X + C ua0) * (X ^ 2 + C u1 * X + C u0) * k =
+        (X ^ 2 + C ua1 * X + C ua0) * ((X ^ 2 + C u1 * X + C u0) * k) := by ring
+  have hstep3 :
+      ((Npoly4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 /ₘ (X - C P1.1)) /ₘ
+          (X - C P2.1)) /ₘ (X ^ 2 + C ua1 * X + C ua0) =
+        (X ^ 2 + C u1 * X + C u0) * k :=
+    divByMonic_eq_of_dvd_mul hm3 (hstep2.trans hstep2')
+  have hstep4 :
+      curBeforeMonic4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 = k := by
+    unfold curBeforeMonic4
+    rw [hstep3]
+    exact divByMonic_eq_of_dvd_mul hm4 rfl
+  -- `uRS4` is `curBeforeMonic4` scaled by a unit (its leading coefficient's
+  -- inverse), so `curBeforeMonic4 ∣ Npoly4` gives `uRS4 ∣ Npoly4` directly:
+  -- `curBeforeMonic4 = k` and `k ∣ Npoly4` (from `hk`, reading the divisor
+  -- side), and `uRS4` is an associate of `curBeforeMonic4`.
+  have hcurdvd :
+      curBeforeMonic4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ∣
+        Npoly4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 := by
+    rw [hstep4, hk]
+    exact ⟨(X - C P1.1) * (X - C P2.1) * (X ^ 2 + C ua1 * X + C ua0) *
+      (X ^ 2 + C u1 * X + C u0), by ring⟩
+  -- `uRS4 = C leadingCoeff⁻¹ * curBeforeMonic4`; this scaling is a genuine
+  -- unit-rescaling (hence divisibility-preserving both ways) only when
+  -- `curBeforeMonic4 ≠ 0` — `hne` is exactly this file's own hypothesis
+  -- (matching `uRS4_monic`'s convention), needed for this step even though
+  -- the earlier `hcurdvd` derivation didn't need it.
+  unfold uRS4
+  obtain ⟨m, hm⟩ := hcurdvd
+  have hlc : (curBeforeMonic4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1).leadingCoeff
+      ≠ 0 := (not_congr Polynomial.leadingCoeff_eq_zero).mpr hne
+  refine ⟨C (curBeforeMonic4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1).leadingCoeff
+    * m, ?_⟩
+  rw [hm]
+  have : (C (curBeforeMonic4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1).leadingCoeff⁻¹ *
+      curBeforeMonic4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1) *
+      (C (curBeforeMonic4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1).leadingCoeff * m) =
+      C ((curBeforeMonic4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1).leadingCoeff⁻¹ *
+        (curBeforeMonic4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1).leadingCoeff) *
+      (curBeforeMonic4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 * m) := by
+    simp only [map_mul]; ring
+  rw [this, inv_mul_cancel₀ hlc, map_one, one_mul]
+
+end CombineDvd4
+
+section MumfordIdentity4
+
+variable (c0 c1 c2 c3 c4 : F p) (P1 P2 : F p × F p) (ua0 ua1 va0 va1 u0 u1 v0 v1 : F p)
+variable (hcur : curBeforeMonic4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ≠ 0)
+variable (hgcd : IsCoprime (Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1)
+  (uRS4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1))
+
+/-- **The Mumford identity, K=4 instance**: `v_RS4(x)^2 ≡ curvePoly(x)
+(mod u_RS4(x))`. Direct K=4 port of `vRS_sq_eq_f_mod_uRS`; same
+`hInv` vs `hgcd` distinction applies (see that theorem's docstring) — `hInv`
+is real remaining content, not a restatement of `hgcd`. -/
+theorem vRS4_sq_eq_f_mod_uRS4
+    (hcur :
+      curBeforeMonic4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ≠ 0)
+    (hNu :
+      uRS4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ∣
+        Npoly4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1)
+    (hInv :
+      uRS4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ∣
+        Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 *
+            EuclideanDomain.gcdA
+              (Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1)
+              (uRS4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1) - 1) :
+    (vRS4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 hgcd) ^ 2 %ₘ
+        uRS4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 =
+      (curvePoly p c0 c1 c2 c3 c4) %ₘ
+        uRS4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 := by
+  let U := uRS4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1
+  let E := Epoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1
+  let Y := Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1
+  let G := EuclideanDomain.gcdA Y U
+  let f := curvePoly p c0 c1 c2 c3 c4
+  have hU : U.Monic :=
+    uRS4_monic p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 hcur
+  have hInv' : U ∣ Y * G - 1 := by exact hInv
+  have hNu' : U ∣ E ^ 2 - f * Y ^ 2 := by exact hNu
+  have hmod := sq_mod_eq_of_dvd_4 hU hNu' hInv'
+  simpa only [vRS4, U, E, Y, G, f] using hmod
+
+end MumfordIdentity4
+
+/-! ## `Reduce`, assembled
+
+Per `AlphaLocusDegreeUniform.lean`'s own "`Reduce`'s actual algorithm, now
+on file" section (step 4's note, read closely this pass): the
+`(u0,u1,v0,v1)` fed INTO the K=4 linear system (`matrixA4`'s rows 4,5) is
+NOT the same thing as `Reduce`'s OUTPUT — it is whichever target this
+particular call is reducing against (the other sample's target in the
+two-sample matching setup, or "the point at infinity" for a base-case
+single reduction). The output — `uRS4`/`vRS4`'s own coefficients — is a
+genuinely different `(u0,u1,v0,v1)`-shaped tuple. So `Reduce` below takes
+the input target as a parameter (matching `uRS4`/`vRS4`'s own existing
+signatures exactly, no new machinery) and reads the OUTPUT off as
+`uRS4`/`vRS4`'s coefficients — there is no circularity, just two distinct
+uses of the same 4-tuple shape at different points in the pipeline.
+
+**`uRS4`/`vRS4` have `natDegree ≤ 2`** (`uRS4_natDegree_le_two`; `vRS4`'s
+bound isn't separately proved here but follows the same way, being a
+`%ₘ uRS4` remainder), so `.coeff 0`/`.coeff 1` are exactly the `u0/v0` and
+`u1/v1` slots a Mumford pair's degree-≤2 encoding needs (`.coeff 2`, the
+leading term, is `1` since `uRS4` is monic by `uRS4_monic` — dropped, same
+convention `SampleTarget` already uses throughout).
+
+**Signature note**: takes `hgcd`/`hcur` as explicit hypotheses, matching
+this file's "hypotheses instead of proof" convention — `Reduce` does not
+prove coprimality or non-degeneracy, it requires them, exactly as
+`vRS4`/`uRS4_monic` already do. This is NOT the `uRS4 ∣ Npoly4` combining
+gap (routed to `chatgpt_prompt_uRS4_dvd_Npoly4.md`, not yet answered) —
+that gap is about CORRECTNESS of `(uRS4,vRS4)` as the true Mumford
+reduction, not about whether `Reduce` can be defined; `Reduce` below is
+unconditionally well-defined given `hgcd`/`hcur`, and its correctness
+(i.e. that it actually computes `alpha•a - P1 - P2`'s reduction) is a
+separate, not-yet-attempted theorem. -/
+
+/-- **`Reduce`**: Mumford-reduce `alpha • a - P1 - P2` against a given
+target `(u0,u1,v0,v1)` (the divisor class this call's linear system is
+solving relative to — see the section docstring above), returning the new
+Mumford pair `(u0',u1',v0',v1')` read off `uRS4`/`vRS4`'s coefficients.
+`(ua0,ua1,va0,va1)` is `alpha • a`'s own already-reduced Mumford pair,
+handed in precomputed per the module docstring's "`alpha • a` is
+precomputed, not computed here" finding. -/
+noncomputable def Reduce (c0 c1 c2 c3 c4 : F p) (P1 P2 : F p × F p)
+    (ua0 ua1 va0 va1 u0 u1 v0 v1 : F p)
+    (_hcur : curBeforeMonic4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ≠ 0)
+    (hgcd : IsCoprime (Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1)
+      (uRS4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1)) :
+    F p × F p × F p × F p :=
+  ((uRS4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1).coeff 0,
+   (uRS4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1).coeff 1,
+   (vRS4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 hgcd).coeff 0,
+   (vRS4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 hgcd).coeff 1)
 
 end TheDataDerivation
 end Genus2Lean
