@@ -820,5 +820,58 @@ noncomputable def ReduceGeneral (c0 c1 c2 c3 c4 : F p) (P1 P2 : F p × F p)
 
 end ReduceGeneral4
 
+/-! ## `ReduceDispatchGeneral`: the `h12`–`h34`-free full dispatcher
+
+Direct port of `AlphaReduce.lean`'s `ReduceDispatch`, swapping the
+`P1 ≠ P2` branch's call from `Reduce` to `ReduceGeneral`. The `P1 = P2`
+branch is UNCHANGED — still `ReduceTangent` on `Epoly4Tangent`/
+`Ypoly4Tangent`, genuinely different objects (built from
+`coeffsOut4Tangent`'s own tangent-row Cramer solution, not `Epoly4`/
+`Ypoly4` with `P1 = P2` substituted; confirmed by inspection, see
+`Epoly4Tangent`'s definition in `AlphaReduce.lean` and its docstring on
+`Ypoly4`'s "genuinely different" K=4 shape). `npoly4Lcm4`/
+`curBeforeMonic4General`/`uRS4General` ARE all well-defined at `P1 = P2`
+(`EuclideanDomain.lcm (X - C P1.1) (X - C P2.1)` degenerates harmlessly to
+a single linear factor there, no falsity anywhere in their construction —
+confirmed by inspection, none of `GeneralQuotient`/`GeneralOutput`'s
+definitions or proofs use `h : P1.1 ≠ P2.1` except
+`npoly4LcmLinearPair_natDegree_eq_two`, which is not on `ReduceGeneral`'s
+call path), but the tangent-row linear system is still the mathematically
+correct model of `alpha • a - 2•P1` (a doubled point), not `alpha • a - P1
+- P2` with `P1 = P2` plugged into the two-DISTINCT-points system — so this
+dispatcher keeps the same two-way case split as `ReduceDispatch`, just
+with the `P1 ≠ P2` branch's six raw `h12`–`h34` obligations replaced by
+zero. -/
+
+section ReduceDispatchGeneral
+
+/-- **`ReduceDispatchGeneral`**: case-splits on `P1 = P2` exactly as
+`ReduceDispatch` does, routing to `ReduceTangent` (`P1 = P2`, unchanged)
+or `ReduceGeneral` (`P1 ≠ P2`, the `h12`–`h34`-free replacement for
+`Reduce`). A caller in the `P1 ≠ P2` branch now only ever has to supply
+`hcur`/`hgcd` against the GENERAL objects — never any of the six pairwise
+`IsCoprime` facts, and never a false hypothesis (unlike `ReduceDispatch`'s
+`P1 ≠ P2` branch, which is well-typed but requires `h12`–`h34` that may
+not hold when `P1`/`P2`/`u_a`/`target` collide). -/
+noncomputable def ReduceDispatchGeneral (c0 c1 c2 c3 c4 : F p) (P1 P2 : F p × F p)
+    (ua0 ua1 va0 va1 u0 u1 v0 v1 : F p)
+    (hcur : P1 ≠ P2 →
+      curBeforeMonic4General p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ≠ 0)
+    (hgcd : P1 ≠ P2 → IsCoprime (Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1)
+      (uRS4General p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1))
+    (hcurT : P1 = P2 →
+      curBeforeMonic4Tangent p c0 c1 c2 c3 c4 P1.1 P1.2 ua0 ua1 va0 va1 u0 u1 v0 v1 ≠ 0)
+    (hgcdT : P1 = P2 → IsCoprime
+      (Ypoly4Tangent p c0 c1 c2 c3 c4 P1.1 P1.2 ua0 ua1 va0 va1 u0 u1 v0 v1)
+      (uRS4Tangent p c0 c1 c2 c3 c4 P1.1 P1.2 ua0 ua1 va0 va1 u0 u1 v0 v1)) :
+    F p × F p × F p × F p :=
+  if hP : P1 = P2 then
+    ReduceTangent p c0 c1 c2 c3 c4 P1.1 P1.2 ua0 ua1 va0 va1 u0 u1 v0 v1
+      (hcurT hP) (hgcdT hP)
+  else
+    ReduceGeneral p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 (hcur hP) (hgcd hP)
+
+end ReduceDispatchGeneral
+
 end TheDataDerivation
 end Genus2Lean
