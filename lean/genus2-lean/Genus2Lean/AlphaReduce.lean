@@ -187,12 +187,36 @@ theorem rrBasis7_eq :
           (rrBasisCandidates 20) :=
       List.mergeSort_perm (rrBasisCandidates 20) (fun a b => decide (a.1 ≤ b.1))
     rw [rrBasisCandidates_20_eq] at hperm
-    -- The literal target is itself a permutation of the same 22-element
-    -- list (ordinary, `mergeSort`-free `List.Perm` decision) and sorted by
-    -- first component (ordinary arithmetic) — with all 22 first components
-    -- pairwise distinct, so `Pairwise (≤)` pins down the sequence uniquely
-    -- among permutations, by antisymmetry of `≤` on the (all-distinct)
-    -- first coordinates actually present.
+    -- `Std.Antisymm (fun a b => a.1 ≤ b.1)` is false in general on
+    -- `ℕ × ℕ × ℕ` (two triples can share `.1` without being equal), so
+    -- `List.Perm.eq_of_pairwise'` doesn't apply to that relation directly.
+    -- But every element of `rrBasisCandidates 20` has a `.1` value distinct
+    -- from every other element's (checked by `decide` on the concrete
+    -- 22-element list via `rrBasisCandidates_20_eq`), so on elements drawn
+    -- from this list, `.1 ≤` and `.1 =` collapse `≤`-antisymmetry down to
+    -- ordinary equality; package that as `r a b := a.1 < b.1 ∨ a = b`,
+    -- which IS unconditionally antisymmetric on all of `ℕ × ℕ × ℕ`, and
+    -- transfer both `Pairwise` facts across using the distinctness lemma.
+    have hne : ∀ a ∈ rrBasisCandidates 20, ∀ b ∈ rrBasisCandidates 20,
+        a.1 = b.1 → a = b := by
+      rw [rrBasisCandidates_20_eq]
+      decide
+    set r : ℕ × ℕ × ℕ → ℕ × ℕ × ℕ → Prop := fun a b => a.1 < b.1 ∨ a = b with hr
+    have hantisymm : ∀ a b : ℕ × ℕ × ℕ, r a b → r b a → a = b := by
+      intro a b hab hba
+      rcases hab with hab | hab
+      · rcases hba with hba | hba
+        · exact absurd (Nat.lt_trans hab hba) (lt_irrefl _)
+        · exact hba.symm
+      · exact hab
+    have hsorted' : List.Pairwise r
+        ((rrBasisCandidates 20).mergeSort (fun a b => decide (a.1 ≤ b.1))) := by
+      apply List.Pairwise.imp_of_mem (R := fun a b : ℕ × ℕ × ℕ => a.1 ≤ b.1) (S := r)
+      · intro a b ha hb hab
+        rcases lt_or_eq_of_le hab with h | h
+        · exact Or.inl h
+        · exact Or.inr (hne a ((List.mem_mergeSort).mp ha) b ((List.mem_mergeSort).mp hb) h)
+      · exact hsorted
     have htarget_perm :
         List.Perm
           [(0,0,0), (2,1,0), (4,2,0), (5,0,1), (6,3,0), (7,1,1), (8,4,0), (9,2,1),
@@ -202,14 +226,16 @@ theorem rrBasis7_eq :
            (8,4,0), (13,4,1), (10,5,0), (15,5,1), (12,6,0), (17,6,1), (14,7,0),
            (19,7,1), (16,8,0), (21,8,1), (18,9,0), (23,9,1), (20,10,0), (25,10,1)] := by
       decide
-    have htarget_sorted : List.Pairwise (fun a b : ℕ × ℕ × ℕ => a.1 ≤ b.1)
+    have htarget_sorted' : List.Pairwise r
         [(0,0,0), (2,1,0), (4,2,0), (5,0,1), (6,3,0), (7,1,1), (8,4,0), (9,2,1),
          (10,5,0), (11,3,1), (12,6,0), (13,4,1), (14,7,0), (15,5,1), (16,8,0),
          (17,6,1), (18,9,0), (19,7,1), (20,10,0), (21,8,1), (23,9,1), (25,10,1)] := by
       decide
-    exact List.Perm.eq_of_pairwise' hsorted htarget_sorted (hperm.trans htarget_perm.symm)
+    haveI : Std.Antisymm r := ⟨hantisymm⟩
+    exact List.Perm.eq_of_pairwise' hsorted' htarget_sorted' (hperm.trans htarget_perm.symm)
   show ((rrBasisCandidates 20).mergeSort (fun a b => decide (a.1 ≤ b.1))).take 7 = _
   rw [hfull22]
+  rfl
 
 /-- Every element of `rrBasis7` has flag component `0` or `1` — mirrors
 `rrBasis5_flag` (`DataDerivationBasics.lean`) exactly, reusing the SAME
