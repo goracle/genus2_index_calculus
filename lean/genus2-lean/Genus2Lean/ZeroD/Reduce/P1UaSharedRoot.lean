@@ -1,8 +1,8 @@
 import Mathlib
-import Genus2Lean.TheDataDerivation.DataDerivationBasics
-import Genus2Lean.AlphaReduce
-import Genus2Lean.SharedRootCombining
-import Genus2Lean.P1TargetSharedRoot
+import Genus2Lean.ZeroD.TheDataDerivation.DataDerivationBasics
+import Genus2Lean.ZeroD.Reduce.AlphaReduce
+import Genus2Lean.ZeroD.Reduce.SharedRootCombining
+import Genus2Lean.ZeroD.Reduce.P1TargetSharedRoot
 
 /-! # Combining `Npoly4`'s four factors when `P1` and `u_a` share a root
 

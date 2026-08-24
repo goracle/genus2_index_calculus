@@ -1,5 +1,5 @@
 import Mathlib
-import Genus2Lean.TheDataDerivation.DataDerivationMumford
+import Genus2Lean.ZeroD.TheDataDerivation.DataDerivationMumford
 
 /-!
 # 0-dimensionality of the decoupled `P1+P2-P3-P4=(alpha-alpha')*a` matching

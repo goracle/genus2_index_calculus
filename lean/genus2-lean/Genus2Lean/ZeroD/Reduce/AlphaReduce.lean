@@ -1,5 +1,5 @@
 import Mathlib
-import Genus2Lean.TheDataDerivation.DataDerivationBasics
+import Genus2Lean.ZeroD.TheDataDerivation.DataDerivationBasics
 
 /-! Numbered revision 7: fixes the yIdx7 optional-list RHS reduction and
     normalizes the tangent derivative summands after the basis match. -/

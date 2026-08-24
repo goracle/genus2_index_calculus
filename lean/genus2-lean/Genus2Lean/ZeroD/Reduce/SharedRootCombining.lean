@@ -1,6 +1,6 @@
 import Mathlib
-import Genus2Lean.TheDataDerivation.DataDerivationBasics
-import Genus2Lean.AlphaReduce
+import Genus2Lean.ZeroD.TheDataDerivation.DataDerivationBasics
+import Genus2Lean.ZeroD.Reduce.AlphaReduce
 
 /-! # Combining `Npoly4`'s four factors when `u_a` and `target` share a root
 

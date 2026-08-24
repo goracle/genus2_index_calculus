@@ -1,6 +1,6 @@
 import Mathlib
-import Genus2Lean.TheDataDerivation.DataDerivationMumford
-import Genus2Lean.DecoupledSystemRegular
+import Genus2Lean.ZeroD.TheDataDerivation.DataDerivationMumford
+import Genus2Lean.ZeroD.DecoupledSystemRegular
 
 /-!
 # `regularSeq_of_peel_chain`: the actual 12-stage assembly

@@ -1,6 +1,6 @@
 import Mathlib
-import Genus2Lean.TheDataDerivation.DataDerivationSolve
-import Genus2Lean.TheDataDerivation.DataDerivationTower
+import Genus2Lean.ZeroD.TheDataDerivation.DataDerivationSolve
+import Genus2Lean.ZeroD.TheDataDerivation.DataDerivationTower
 
 /-!
 # `theData` derivation, part 4: `u_RS`/`v_RS`, the Mumford identity, and the bridge to `Rdec`
