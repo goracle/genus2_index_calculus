@@ -2334,6 +2334,299 @@ theorem dvd_N_P1P2_tangent (ua0 ua1 va0 va1 u0 u1 v0 v1 : F p)
   exact sq_dvd_of_eval_derivative_eq_zero p
     (f := Npoly4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1) (t := px) hNe h0 h1
 
+/-! ## Tangent-case mod-`u_a`/mod-target row identities — closing the
+`hUa`/`hU` gap for `Npoly4Tangent`
+
+`curBeforeMonic4Tangent_dvd_Npoly4Tangent`/`uRS4Tangent_dvd_Npoly4Tangent`
+(below, in the "Tangent-anchor quotient assembly" section) both took
+`hUa`/`hU` (`(X²+ua1*X+ua0) ∣ Npoly4Tangent` and `(X²+u1*X+u0) ∣
+Npoly4Tangent`) as raw hypotheses — this section proves them, mirroring
+`row23_defining_eq_aux`/`row45_defining_eq_aux`/`dvd_of_row_identity4`/
+`dvd_N_ua`/`dvd_N_u4` exactly, substituting the tangent Cramer-rule
+objects (`matrixA4Tangent`/`rhsVec4Tangent`/`coeffsOut4Tangent`/
+`cramerSolution4Tangent`) for their non-tangent counterparts. Rows 2–5 of
+`matrixA4Tangent`/`rhsVec4Tangent` are byte-identical in shape to
+`matrixA4`/`rhsVec4`'s (`matrixA4Tangent_row23_eval`/`_row45_eval`,
+`rhsVec4Tangent_row23_eval`/`_row45_eval`, proved earlier in this file),
+so the same five-step Cramer's-rule argument goes through with no new
+mathematical content — only the object names change. -/
+
+section TangentRowIdentity4RowsTwoFour
+
+variable (ua0 ua1 va0 va1 u0 u1 v0 v1 : F p)
+
+/-- **The seven-slot defining identity for the mod-`u_a` rows, tangent
+case** (rows 2–3) — the tangent analogue of `row23_defining_eq_aux`,
+substituting `matrixA4Tangent`/`rhsVec4Tangent`/`coeffsOut4Tangent`/
+`cramerSolution4Tangent` for `matrixA4`/`rhsVec4`/`coeffsOut4`/
+`cramerSolution4`. -/
+private theorem rowTangent23_defining_eq_aux
+    (hA : MatrixNondegenerate4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1)
+    (a : Fin 2) :
+    (∑ bidx : Fin 7,
+      let (_, bi, bj) := rrBasis7.getD bidx.val (0, 0, 0)
+      coeffsOut4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 bidx *
+        (let (r0, r1) := reduceMonomialModU p ua0 ua1 va0 va1 bi bj
+         if a.val = 0 then r0 else r1)) = 0 := by
+  set A := matrixA4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 with hA_def
+  set rhs := rhsVec4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 with hrhs_def
+  have hdet : A.det ≠ 0 := hA
+  have haRow : 2 + a.val < 6 := by omega
+  have hmul := Matrix.mulVec_cramer A rhs
+  have hrow := congrFun hmul (⟨2 + a.val, haRow⟩ : Fin 6)
+  simp only [Matrix.mulVec, dotProduct, Pi.smul_apply, smul_eq_mul] at hrow
+  have hrow' : ∑ col : Fin 6, A ⟨2 + a.val, haRow⟩ col *
+      (A.cramer rhs col / A.det) = rhs ⟨2 + a.val, haRow⟩ := by
+    have hstep : (∑ col : Fin 6, A ⟨2 + a.val, haRow⟩ col * (A.cramer rhs col / A.det)) * A.det =
+        rhs ⟨2 + a.val, haRow⟩ * A.det := by
+      rw [Finset.sum_mul]
+      have : ∀ col : Fin 6, A ⟨2 + a.val, haRow⟩ col * (A.cramer rhs col / A.det) * A.det =
+          A ⟨2 + a.val, haRow⟩ col * A.cramer rhs col := by
+        intro col; field_simp
+      simp only [this]
+      rw [hrow]; ring
+    exact mul_right_cancel₀ hdet hstep
+  have hcramerSolution : ∀ col : Fin 6, A.cramer rhs col / A.det =
+      cramerSolution4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 col :=
+    fun col => rfl
+  simp only [hcramerSolution] at hrow'
+  have hApply : ∀ col : Fin 6, A ⟨2 + a.val, haRow⟩ col =
+      let (_, bi, bj) := rrBasis7.getD (otherIdx7.getD col.val 0) (0, 0, 0)
+      let (r0, r1) := reduceMonomialModU p ua0 ua1 va0 va1 bi bj
+      if a.val = 0 then r0 else r1 := fun col =>
+    matrixA4Tangent_row23_eval p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 a col
+  have hrhsApply : rhs ⟨2 + a.val, haRow⟩ =
+      let (_, bi_n, bj_n) := rrBasis7.getD yIdx7 (0, 1, 1)
+      let (rn0, rn1) := reduceMonomialModU p ua0 ua1 va0 va1 bi_n bj_n
+      (-(if a.val = 0 then rn0 else rn1)) :=
+    rhsVec4Tangent_row23_eval p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 a
+  clear_value A rhs
+  rw [hrhsApply] at hrow'
+  have hmoved : (∑ col : Fin 6,
+      coeffsOut4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 (otherMap4 col) *
+      (let (_, bi, bj) := rrBasis7.getD (otherIdx7.getD col.val 0) (0, 0, 0)
+       let (r0, r1) := reduceMonomialModU p ua0 ua1 va0 va1 bi bj
+       if a.val = 0 then r0 else r1)) +
+      coeffsOut4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1
+        ⟨yIdx7, yIdx7_lt_seven⟩ *
+        (let (_, bi_n, bj_n) := rrBasis7.getD yIdx7 (0, 1, 1)
+         let (rn0, rn1) := reduceMonomialModU p ua0 ua1 va0 va1 bi_n bj_n
+         if a.val = 0 then rn0 else rn1) = 0 := by
+    have hcoeffsOutY : coeffsOut4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1
+        ⟨yIdx7, yIdx7_lt_seven⟩ = 1 := by
+      unfold coeffsOut4Tangent; rw [dif_pos rfl]
+    rw [hcoeffsOutY, one_mul]
+    have hstep : ∑ col : Fin 6,
+        coeffsOut4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 (otherMap4 col) *
+        (let (_, bi, bj) := rrBasis7.getD (otherIdx7.getD col.val 0) (0, 0, 0)
+         let (r0, r1) := reduceMonomialModU p ua0 ua1 va0 va1 bi bj
+         if a.val = 0 then r0 else r1) =
+        ∑ col : Fin 6,
+        cramerSolution4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 col *
+        (let (_, bi, bj) := rrBasis7.getD (otherIdx7.getD col.val 0) (0, 0, 0)
+         let (r0, r1) := reduceMonomialModU p ua0 ua1 va0 va1 bi bj
+         if a.val = 0 then r0 else r1) := by
+      apply Finset.sum_congr rfl
+      intro col _
+      rw [coeffsOut4Tangent_otherMap p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 col]
+    have horder : (∑ col : Fin 6,
+          cramerSolution4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 col *
+          (let (_, bi, bj) := rrBasis7.getD (otherIdx7.getD col.val 0) (0, 0, 0)
+           let (r0, r1) := reduceMonomialModU p ua0 ua1 va0 va1 bi bj
+           if a.val = 0 then r0 else r1))
+        = ∑ col : Fin 6, A ⟨2 + a.val, haRow⟩ col *
+            cramerSolution4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 col := by
+      apply Finset.sum_congr rfl
+      intro col _
+      rw [mul_comm (cramerSolution4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1
+        u0 u1 v0 v1 col), hApply col]
+    rw [hstep, horder, hrow']
+    exact neg_add_cancel _
+  set Fsum : Fin 7 → F p := fun bidx =>
+    coeffsOut4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 bidx *
+      (let (_, bi, bj) := rrBasis7.getD bidx.val (0, 0, 0)
+       let (r0, r1) := reduceMonomialModU p ua0 ua1 va0 va1 bi bj
+       if a.val = 0 then r0 else r1) with hF_def
+  have hFcol : ∀ col : Fin 6, Fsum (otherMap4 col) =
+      coeffsOut4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 (otherMap4 col) *
+      (let (_, bi, bj) := rrBasis7.getD (otherIdx7.getD col.val 0) (0, 0, 0)
+       let (r0, r1) := reduceMonomialModU p ua0 ua1 va0 va1 bi bj
+       if a.val = 0 then r0 else r1) := by
+    intro col
+    have hidx : (otherMap4 col).val = otherIdx7.getD col.val 0 := rfl
+    simp only [hF_def, hidx]
+  have hFy : Fsum (⟨yIdx7, yIdx7_lt_seven⟩ : Fin 7) =
+      coeffsOut4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1
+        ⟨yIdx7, yIdx7_lt_seven⟩ *
+      (let (_, bi_n, bj_n) := rrBasis7.getD yIdx7 (0, 1, 1)
+       let (rn0, rn1) := reduceMonomialModU p ua0 ua1 va0 va1 bi_n bj_n
+       if a.val = 0 then rn0 else rn1) := by
+    have hy_len : yIdx7 < rrBasis7.length := by
+      have hlen : rrBasis7.length = 7 := by
+        simp [rrBasis7, rrBasisCandidates, List.length_flatMap]
+      rw [hlen]; exact yIdx7_lt_seven
+    have hy_get : rrBasis7.getD yIdx7 (0, 0, 0) = rrBasis7.getD yIdx7 (0, 1, 1) := by
+      rw [List.getD_eq_getElem _ _ hy_len, List.getD_eq_getElem _ _ hy_len]
+    simp only [hF_def, hy_get]
+  have hsum7 : (∑ col : Fin 6, Fsum (otherMap4 col)) + Fsum ⟨yIdx7, yIdx7_lt_seven⟩ =
+      ∑ bidx : Fin 7, Fsum bidx := sum_otherIdx7_add_y p Fsum
+  have hmoved' : (∑ col : Fin 6, Fsum (otherMap4 col)) + Fsum ⟨yIdx7, yIdx7_lt_seven⟩ = 0 := by
+    calc
+      (∑ col : Fin 6, Fsum (otherMap4 col)) + Fsum ⟨yIdx7, yIdx7_lt_seven⟩ =
+          (∑ col : Fin 6,
+            coeffsOut4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1
+              (otherMap4 col) *
+            (let (_, bi, bj) := rrBasis7.getD (otherIdx7.getD col.val 0) (0, 0, 0)
+             let (r0, r1) := reduceMonomialModU p ua0 ua1 va0 va1 bi bj
+             if a.val = 0 then r0 else r1)) +
+            coeffsOut4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1
+              ⟨yIdx7, yIdx7_lt_seven⟩ *
+              (let (_, bi_n, bj_n) := rrBasis7.getD yIdx7 (0, 1, 1)
+               let (rn0, rn1) := reduceMonomialModU p ua0 ua1 va0 va1 bi_n bj_n
+               if a.val = 0 then rn0 else rn1) := by
+            rw [Finset.sum_congr rfl (fun col _ => hFcol col), hFy]
+      _ = 0 := hmoved
+  have hsum7' : ∑ bidx : Fin 7, Fsum bidx = 0 := hsum7 ▸ hmoved'
+  rw [hF_def] at hsum7'
+  exact hsum7'
+
+/-- **The seven-slot defining identity for the mod-target-`u` rows,
+tangent case** (rows 4–5) — the tangent analogue of `row45_defining_eq_aux`,
+identical argument to `rowTangent23_defining_eq_aux` above with the row
+offset shifted from `2+a.val` to `4+a.val` and `matrixA4Tangent_row45_eval`/
+`rhsVec4Tangent_row45_eval` supplying the row-unfolding step. -/
+private theorem rowTangent45_defining_eq_aux
+    (hA : MatrixNondegenerate4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1)
+    (a : Fin 2) :
+    (∑ bidx : Fin 7,
+      let (_, bi, bj) := rrBasis7.getD bidx.val (0, 0, 0)
+      coeffsOut4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 bidx *
+        (let (r0, r1) := reduceMonomialModU p u0 u1 v0 v1 bi bj
+         if a.val = 0 then r0 else r1)) = 0 := by
+  set A := matrixA4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 with hA_def
+  set rhs := rhsVec4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 with hrhs_def
+  have hdet : A.det ≠ 0 := hA
+  have haRow : 4 + a.val < 6 := by omega
+  have hmul := Matrix.mulVec_cramer A rhs
+  have hrow := congrFun hmul (⟨4 + a.val, haRow⟩ : Fin 6)
+  simp only [Matrix.mulVec, dotProduct, Pi.smul_apply, smul_eq_mul] at hrow
+  have hrow' : ∑ col : Fin 6, A ⟨4 + a.val, haRow⟩ col *
+      (A.cramer rhs col / A.det) = rhs ⟨4 + a.val, haRow⟩ := by
+    have hstep : (∑ col : Fin 6, A ⟨4 + a.val, haRow⟩ col * (A.cramer rhs col / A.det)) * A.det =
+        rhs ⟨4 + a.val, haRow⟩ * A.det := by
+      rw [Finset.sum_mul]
+      have : ∀ col : Fin 6, A ⟨4 + a.val, haRow⟩ col * (A.cramer rhs col / A.det) * A.det =
+          A ⟨4 + a.val, haRow⟩ col * A.cramer rhs col := by
+        intro col; field_simp
+      simp only [this]
+      rw [hrow]; ring
+    exact mul_right_cancel₀ hdet hstep
+  have hcramerSolution : ∀ col : Fin 6, A.cramer rhs col / A.det =
+      cramerSolution4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 col :=
+    fun col => rfl
+  simp only [hcramerSolution] at hrow'
+  have hApply : ∀ col : Fin 6, A ⟨4 + a.val, haRow⟩ col =
+      let (_, bi, bj) := rrBasis7.getD (otherIdx7.getD col.val 0) (0, 0, 0)
+      let (r0, r1) := reduceMonomialModU p u0 u1 v0 v1 bi bj
+      if a.val = 0 then r0 else r1 := fun col =>
+    matrixA4Tangent_row45_eval p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 a col
+  have hrhsApply : rhs ⟨4 + a.val, haRow⟩ =
+      let (_, bi_n, bj_n) := rrBasis7.getD yIdx7 (0, 1, 1)
+      let (rn0, rn1) := reduceMonomialModU p u0 u1 v0 v1 bi_n bj_n
+      (-(if a.val = 0 then rn0 else rn1)) :=
+    rhsVec4Tangent_row45_eval p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 a
+  clear_value A rhs
+  rw [hrhsApply] at hrow'
+  have hmoved : (∑ col : Fin 6,
+      coeffsOut4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 (otherMap4 col) *
+      (let (_, bi, bj) := rrBasis7.getD (otherIdx7.getD col.val 0) (0, 0, 0)
+       let (r0, r1) := reduceMonomialModU p u0 u1 v0 v1 bi bj
+       if a.val = 0 then r0 else r1)) +
+      coeffsOut4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1
+        ⟨yIdx7, yIdx7_lt_seven⟩ *
+        (let (_, bi_n, bj_n) := rrBasis7.getD yIdx7 (0, 1, 1)
+         let (rn0, rn1) := reduceMonomialModU p u0 u1 v0 v1 bi_n bj_n
+         if a.val = 0 then rn0 else rn1) = 0 := by
+    have hcoeffsOutY : coeffsOut4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1
+        ⟨yIdx7, yIdx7_lt_seven⟩ = 1 := by
+      unfold coeffsOut4Tangent; rw [dif_pos rfl]
+    rw [hcoeffsOutY, one_mul]
+    have hstep : ∑ col : Fin 6,
+        coeffsOut4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 (otherMap4 col) *
+        (let (_, bi, bj) := rrBasis7.getD (otherIdx7.getD col.val 0) (0, 0, 0)
+         let (r0, r1) := reduceMonomialModU p u0 u1 v0 v1 bi bj
+         if a.val = 0 then r0 else r1) =
+        ∑ col : Fin 6,
+        cramerSolution4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 col *
+        (let (_, bi, bj) := rrBasis7.getD (otherIdx7.getD col.val 0) (0, 0, 0)
+         let (r0, r1) := reduceMonomialModU p u0 u1 v0 v1 bi bj
+         if a.val = 0 then r0 else r1) := by
+      apply Finset.sum_congr rfl
+      intro col _
+      rw [coeffsOut4Tangent_otherMap p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 col]
+    have horder : (∑ col : Fin 6,
+          cramerSolution4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 col *
+          (let (_, bi, bj) := rrBasis7.getD (otherIdx7.getD col.val 0) (0, 0, 0)
+           let (r0, r1) := reduceMonomialModU p u0 u1 v0 v1 bi bj
+           if a.val = 0 then r0 else r1))
+        = ∑ col : Fin 6, A ⟨4 + a.val, haRow⟩ col *
+            cramerSolution4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 col := by
+      apply Finset.sum_congr rfl
+      intro col _
+      rw [mul_comm (cramerSolution4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1
+        u0 u1 v0 v1 col), hApply col]
+    rw [hstep, horder, hrow']
+    exact neg_add_cancel _
+  set Fsum : Fin 7 → F p := fun bidx =>
+    coeffsOut4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 bidx *
+      (let (_, bi, bj) := rrBasis7.getD bidx.val (0, 0, 0)
+       let (r0, r1) := reduceMonomialModU p u0 u1 v0 v1 bi bj
+       if a.val = 0 then r0 else r1) with hF_def
+  have hFcol : ∀ col : Fin 6, Fsum (otherMap4 col) =
+      coeffsOut4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 (otherMap4 col) *
+      (let (_, bi, bj) := rrBasis7.getD (otherIdx7.getD col.val 0) (0, 0, 0)
+       let (r0, r1) := reduceMonomialModU p u0 u1 v0 v1 bi bj
+       if a.val = 0 then r0 else r1) := by
+    intro col
+    have hidx : (otherMap4 col).val = otherIdx7.getD col.val 0 := rfl
+    simp only [hF_def, hidx]
+  have hFy : Fsum (⟨yIdx7, yIdx7_lt_seven⟩ : Fin 7) =
+      coeffsOut4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1
+        ⟨yIdx7, yIdx7_lt_seven⟩ *
+      (let (_, bi_n, bj_n) := rrBasis7.getD yIdx7 (0, 1, 1)
+       let (rn0, rn1) := reduceMonomialModU p u0 u1 v0 v1 bi_n bj_n
+       if a.val = 0 then rn0 else rn1) := by
+    have hy_len : yIdx7 < rrBasis7.length := by
+      have hlen : rrBasis7.length = 7 := by
+        simp [rrBasis7, rrBasisCandidates, List.length_flatMap]
+      rw [hlen]; exact yIdx7_lt_seven
+    have hy_get : rrBasis7.getD yIdx7 (0, 0, 0) = rrBasis7.getD yIdx7 (0, 1, 1) := by
+      rw [List.getD_eq_getElem _ _ hy_len, List.getD_eq_getElem _ _ hy_len]
+    simp only [hF_def, hy_get]
+  have hsum7 : (∑ col : Fin 6, Fsum (otherMap4 col)) + Fsum ⟨yIdx7, yIdx7_lt_seven⟩ =
+      ∑ bidx : Fin 7, Fsum bidx := sum_otherIdx7_add_y p Fsum
+  have hmoved' : (∑ col : Fin 6, Fsum (otherMap4 col)) + Fsum ⟨yIdx7, yIdx7_lt_seven⟩ = 0 := by
+    calc
+      (∑ col : Fin 6, Fsum (otherMap4 col)) + Fsum ⟨yIdx7, yIdx7_lt_seven⟩ =
+          (∑ col : Fin 6,
+            coeffsOut4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1
+              (otherMap4 col) *
+            (let (_, bi, bj) := rrBasis7.getD (otherIdx7.getD col.val 0) (0, 0, 0)
+             let (r0, r1) := reduceMonomialModU p u0 u1 v0 v1 bi bj
+             if a.val = 0 then r0 else r1)) +
+            coeffsOut4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1
+              ⟨yIdx7, yIdx7_lt_seven⟩ *
+              (let (_, bi_n, bj_n) := rrBasis7.getD yIdx7 (0, 1, 1)
+               let (rn0, rn1) := reduceMonomialModU p u0 u1 v0 v1 bi_n bj_n
+               if a.val = 0 then rn0 else rn1) := by
+            rw [Finset.sum_congr rfl (fun col _ => hFcol col), hFy]
+      _ = 0 := hmoved
+  have hsum7' : ∑ bidx : Fin 7, Fsum bidx = 0 := hsum7 ▸ hmoved'
+  rw [hF_def] at hsum7'
+  exact hsum7'
+
+end TangentRowIdentity4RowsTwoFour
+
 /-! ## The four K=4 divisibility facts
 
 Direct rescaling of `dvd_N_anchor1`/`dvd_N_anchor2`/`dvd_E_add_Y_mul_v`/
@@ -2657,6 +2950,282 @@ theorem dvd_N_u4 (c0 c1 c2 c3 c4 : F p) (P1 P2 : F p × F p) (ua0 ua1 va0 va1 u0
   have hNeq : Npoly4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 =
       (E - Y * V) * (E + Y * V) + (V ^ 2 - f) * Y ^ 2 := by
     unfold Npoly4; ring
+  rw [hNeq]; exact hadd
+
+/-! ## The two tangent-case divisibility facts — `hUa`/`hU` for
+`Npoly4Tangent`, closing the gap flagged in the "Tangent-anchor quotient
+assembly" section's docstring
+
+Direct tangent-case port of `dvd_of_row_identity4`/`dvd_N_ua`/`dvd_N_u4`,
+substituting `Epoly4Tangent`/`Ypoly4Tangent`/`coeffsOut4Tangent` for their
+non-tangent counterparts and `rowTangent23_defining_eq_aux`/
+`rowTangent45_defining_eq_aux` (above) for `row23_defining_eq_aux`/
+`row45_defining_eq_aux`. Same `N = (E-Yv)(E+Yv) + (v²-f)Y²` identity
+closes both, exactly as in the non-tangent case. -/
+
+/-- **`dvd_of_row_identity4`, tangent case** — the K=4-tangent, plain-`F p`
+bridge from the two mod-`(tu0,tu1,tv0,tv1)` row identities to
+`(X²+tu1*X+tu0) ∣ (Epoly4Tangent + Ypoly4Tangent*(tv1*X+tv0))`. Identical
+argument to `dvd_of_row_identity4`, substituting `coeffsOut4Tangent` for
+`coeffsOut4` throughout (the argument never unfolds `Epoly4`/`Ypoly4`
+beyond their `coeffsOut4`-indexed sum shape, and `Epoly4Tangent`/
+`Ypoly4Tangent` share that exact shape with `coeffsOut4Tangent` in place
+of `coeffsOut4`). -/
+private theorem dvd_of_row_identity4Tangent (ua0 ua1 va0 va1 u0 u1 v0 v1 : F p)
+    (tu0 tu1 tv0 tv1 : F p)
+    (hrow : ∀ a : Fin 2, (∑ bidx : Fin 7,
+        let (_, bi, bj) := rrBasis7.getD bidx.val (0, 0, 0)
+        coeffsOut4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 bidx *
+          (let (r0, r1) := reduceMonomialModU p tu0 tu1 tv0 tv1 bi bj
+           if a.val = 0 then r0 else r1)) = 0) :
+    (X ^ 2 + C tu1 * X + C tu0) ∣
+      (Epoly4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 +
+        Ypoly4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 * (C tv1 * X + C tv0)) := by
+  set U : Polynomial (F p) := X ^ 2 + C tu1 * X + C tu0 with hU_def
+  have hUmonic : U.Monic := by rw [hU_def]; exact uPoly_monic p tu0 tu1
+  rw [← Polynomial.modByMonic_eq_zero_iff_dvd hUmonic]
+  set R : Polynomial (F p) :=
+      Epoly4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 +
+        Ypoly4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 * (C tv1 * X + C tv0)
+      with hR_def
+  have hRsum : R = ∑ bidx : Fin 7,
+      let (_, bi, bj) := rrBasis7.getD bidx.val (0, 0, 0)
+      if bj = 0 then
+        C (coeffsOut4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 bidx) * X ^ bi
+      else C (coeffsOut4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 bidx) * X ^ bi *
+        (C tv1 * X + C tv0) := by
+    rw [hR_def]
+    unfold Epoly4Tangent Ypoly4Tangent
+    rw [Finset.sum_mul, ← Finset.sum_add_distrib]
+    apply Finset.sum_congr rfl
+    intro bidx _
+    have hbj0or1 : (rrBasis7.getD bidx.val (0, 0, 0)).2.2 = 0 ∨
+        (rrBasis7.getD bidx.val (0, 0, 0)).2.2 = 1 := by
+      have hlen : rrBasis7.length = 7 := by
+        simp [rrBasis7, rrBasisCandidates, List.length_flatMap]
+      have hlt : bidx.val < rrBasis7.length := by rw [hlen]; exact bidx.isLt
+      rw [List.getD_eq_getElem _ _ hlt]
+      exact rrBasis7_flag _ (List.getElem_mem hlt)
+    rcases hbj0or1 with hb0 | hb1
+    · have hb1' : (rrBasis7.getD bidx.val (0, 0, 0)).2.2 ≠ 1 := by omega
+      simp only [if_pos hb0, if_neg hb1']
+      ring
+    · have hb0' : (rrBasis7.getD bidx.val (0, 0, 0)).2.2 ≠ 0 := by omega
+      simp only [if_neg hb0', if_pos hb1]
+      ring
+  have hRmod : R %ₘ U = ∑ bidx : Fin 7,
+      (let (_, bi, bj) := rrBasis7.getD bidx.val (0, 0, 0)
+       if bj = 0 then
+         C (coeffsOut4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 bidx) * X ^ bi
+       else
+         C (coeffsOut4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 bidx) * X ^ bi *
+           (C tv1 * X + C tv0)) %ₘ U := by
+    rw [hRsum, ← Polynomial.modByMonicHom_apply,
+      map_sum U.modByMonicHom
+        (fun bidx : Fin 7 =>
+          let (_, bi, bj) := rrBasis7.getD bidx.val (0, 0, 0)
+          if bj = 0 then
+            C (coeffsOut4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 bidx) * X ^ bi
+          else
+            C (coeffsOut4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 bidx) *
+              X ^ bi * (C tv1 * X + C tv0))
+        Finset.univ]
+    simp only [Polynomial.modByMonicHom_apply]
+  have hsmulC : ∀ (c : F p) (q : Polynomial (F p)), c • q = C c * q :=
+    fun c _ => Polynomial.smul_eq_C_mul c
+  have hmod_add : ∀ q r : Polynomial (F p), (q + r) %ₘ U = q %ₘ U + r %ₘ U := by
+    intro q r
+    rw [← Polynomial.modByMonicHom_apply, ← Polynomial.modByMonicHom_apply,
+      ← Polynomial.modByMonicHom_apply, map_add]
+  have hmod_Cmul : ∀ (c : F p) (q : Polynomial (F p)), (C c * q) %ₘ U = C c * (q %ₘ U) := by
+    intro c q
+    rw [← hsmulC, ← Polynomial.modByMonicHom_apply, ← Polynomial.modByMonicHom_apply, map_smul,
+      hsmulC]
+  have hterm : ∀ bidx : Fin 7,
+      (let (_, bi, bj) := rrBasis7.getD bidx.val (0, 0, 0)
+       if bj = 0 then
+         C (coeffsOut4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 bidx) * X ^ bi
+       else
+         C (coeffsOut4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 bidx) * X ^ bi *
+            (C tv1 * X + C tv0)) %ₘ U =
+       let (_, bi, bj) := rrBasis7.getD bidx.val (0, 0, 0)
+       let (r0, r1) := reduceMonomialModU p tu0 tu1 tv0 tv1 bi bj
+       C (coeffsOut4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 bidx) *
+         (C r0 + C r1 * X) := by
+    intro bidx
+    generalize hget : rrBasis7.getD bidx.val (0, 0, 0) = g
+    rcases g with ⟨fst, bi, bj⟩
+    have hbj0or1 : bj = 0 ∨ bj = 1 := by
+      have hlen : rrBasis7.length = 7 := by
+        simp [rrBasis7, rrBasisCandidates, List.length_flatMap]
+      have hlt : bidx.val < rrBasis7.length := by rw [hlen]; exact bidx.isLt
+      have hflag :
+          (rrBasis7.getD bidx.val (0, 0, 0)).2.2 = 0 ∨
+            (rrBasis7.getD bidx.val (0, 0, 0)).2.2 = 1 := by
+        rw [List.getD_eq_getElem _ _ hlt]
+        exact rrBasis7_flag _ (List.getElem_mem hlt)
+      rw [hget] at hflag
+      exact hflag
+    generalize hc_def' : coeffsOut4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1
+      u0 u1 v0 v1 bidx = c
+    rcases hbj0or1 with hb0 | hb1
+    · subst bj
+      have hpow :
+          X ^ bi %ₘ U =
+            C (xmodUTable p tu0 tu1 bi).1 + C (xmodUTable p tu0 tu1 bi).2 * X := by
+        simpa [hU_def] using xmodUTable_correct p tu0 tu1 bi
+      calc
+        (C c * X ^ bi) %ₘ U = C c * (X ^ bi %ₘ U) := hmod_Cmul c _
+        _ = C c *
+            (C (xmodUTable p tu0 tu1 bi).1 + C (xmodUTable p tu0 tu1 bi).2 * X) := by
+          rw [hpow]
+        _ = C c *
+            (C (reduceMonomialModU p tu0 tu1 tv0 tv1 bi 0).1 +
+              C (reduceMonomialModU p tu0 tu1 tv0 tv1 bi 0).2 * X) := by
+          rfl
+    · subst bj
+      have hXmul : (C c * X ^ bi : Polynomial (F p)) * (C tv1 * X + C tv0) =
+          C c * (C tv1 * X ^ (bi + 1)) + C c * (C tv0 * X ^ bi) := by ring
+      have hpow_succ :
+          X ^ (bi + 1) %ₘ U =
+            C (xmodUTable p tu0 tu1 (bi + 1)).1 +
+              C (xmodUTable p tu0 tu1 (bi + 1)).2 * X := by
+        simpa [hU_def] using xmodUTable_correct p tu0 tu1 (bi + 1)
+      have hpow :
+          X ^ bi %ₘ U =
+            C (xmodUTable p tu0 tu1 bi).1 + C (xmodUTable p tu0 tu1 bi).2 * X := by
+        simpa [hU_def] using xmodUTable_correct p tu0 tu1 bi
+      calc
+        (C c * X ^ bi * (C tv1 * X + C tv0)) %ₘ U =
+            (C c * (C tv1 * X ^ (bi + 1)) + C c * (C tv0 * X ^ bi)) %ₘ U := by
+          rw [hXmul]
+        _ = (C c * (C tv1 * X ^ (bi + 1))) %ₘ U +
+              (C c * (C tv0 * X ^ bi)) %ₘ U := hmod_add _ _
+        _ = C c * (C tv1 * (X ^ (bi + 1) %ₘ U)) +
+              C c * (C tv0 * (X ^ bi %ₘ U)) := by
+          have h1 := hmod_Cmul c (C tv1 * X ^ (bi + 1))
+          have h1' := hmod_Cmul tv1 (X ^ (bi + 1))
+          have h2 := hmod_Cmul c (C tv0 * X ^ bi)
+          have h2' := hmod_Cmul tv0 (X ^ bi)
+          rw [h1, h1', h2, h2']
+        _ = C c * (C tv1 * (C (xmodUTable p tu0 tu1 (bi + 1)).1 +
+              C (xmodUTable p tu0 tu1 (bi + 1)).2 * X)) +
+              C c * (C tv0 * (C (xmodUTable p tu0 tu1 bi).1 +
+                C (xmodUTable p tu0 tu1 bi).2 * X)) := by
+          rw [hpow_succ, hpow]
+        _ = C c *
+              (C (reduceMonomialModU p tu0 tu1 tv0 tv1 bi 1).1 +
+                C (reduceMonomialModU p tu0 tu1 tv0 tv1 bi 1).2 * X) := by
+          have hcomm : bi + 1 = 1 + bi := Nat.add_comm bi 1
+          simp only [reduceMonomialModU, xmodUTable, if_neg (one_ne_zero (α := ℕ)),
+            map_add, map_mul, ← hcomm]
+          ring
+  have hrow0 := hrow ⟨0, by norm_num⟩
+  have hrow1 := hrow ⟨1, by norm_num⟩
+  simp at hrow0
+  simp at hrow1
+  have hrow0' : (∑ bidx : Fin 7,
+      let (_, bi, bj) := rrBasis7.getD bidx.val (0, 0, 0)
+      coeffsOut4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 bidx *
+        (let (r0, _) := reduceMonomialModU p tu0 tu1 tv0 tv1 bi bj; r0)) = 0 := hrow0
+  have hrow1' : (∑ bidx : Fin 7,
+      let (_, bi, bj) := rrBasis7.getD bidx.val (0, 0, 0)
+      coeffsOut4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 bidx *
+        (let (_, r1) := reduceMonomialModU p tu0 tu1 tv0 tv1 bi bj; r1)) = 0 := hrow1
+  have hRmodsum : R %ₘ U = ∑ bidx : Fin 7,
+      let (_, bi, bj) := rrBasis7.getD bidx.val (0, 0, 0)
+      let (r0, r1) := reduceMonomialModU p tu0 tu1 tv0 tv1 bi bj
+      C (coeffsOut4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 bidx) *
+        (C r0 + C r1 * X) := by
+    rw [hRmod]; exact Finset.sum_congr rfl (fun bidx _ => hterm bidx)
+  rw [hRmodsum]
+  have hsplit : (∑ bidx : Fin 7,
+      let (_, bi, bj) := rrBasis7.getD bidx.val (0, 0, 0)
+      let (r0, r1) := reduceMonomialModU p tu0 tu1 tv0 tv1 bi bj
+      C (coeffsOut4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 bidx) *
+        (C r0 + C r1 * X)) =
+      (∑ bidx : Fin 7,
+          let (_, bi, bj) := rrBasis7.getD bidx.val (0, 0, 0)
+          C (coeffsOut4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 bidx *
+            (let (r0, _) := reduceMonomialModU p tu0 tu1 tv0 tv1 bi bj; r0))) +
+      (∑ bidx : Fin 7,
+          let (_, bi, bj) := rrBasis7.getD bidx.val (0, 0, 0)
+          C (coeffsOut4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 bidx *
+            (let (_, r1) := reduceMonomialModU p tu0 tu1 tv0 tv1 bi bj; r1))) * X := by
+    rw [Finset.sum_mul, ← Finset.sum_add_distrib]
+    apply Finset.sum_congr rfl
+    intro bidx _
+    obtain ⟨_, bi, bj⟩ := rrBasis7.getD bidx.val (0, 0, 0)
+    obtain ⟨r0, r1⟩ := reduceMonomialModU p tu0 tu1 tv0 tv1 bi bj
+    simp only [map_mul]
+    ring
+  rw [hsplit, ← map_sum, ← map_sum, hrow0', hrow1']
+  simp
+
+/-- **`(X²+ua1*X+ua0) ∣ Npoly4Tangent`** — the tangent-case analogue of
+`dvd_N_ua`, closing one of the two hypotheses
+`curBeforeMonic4Tangent_dvd_Npoly4Tangent`/`uRS4Tangent_dvd_Npoly4Tangent`
+previously took as raw assumptions. Same `N = (E-Yv)(E+Yv) + (v²-f)Y²`
+combining identity as `dvd_N_ua`. -/
+theorem dvd_N_uaTangent (ua0 ua1 va0 va1 u0 u1 v0 v1 : F p)
+    (hA : MatrixNondegenerate4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1)
+    (hMumfordUa : IsMumfordUa p c0 c1 c2 c3 c4 ua0 ua1 va0 va1) :
+    (X ^ 2 + C ua1 * X + C ua0) ∣
+      Npoly4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 := by
+  have huY : (X ^ 2 + C ua1 * X + C ua0) ∣
+      (Epoly4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 +
+        Ypoly4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 *
+          (C va1 * X + C va0)) :=
+    dvd_of_row_identity4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1
+      ua0 ua1 va0 va1
+      (fun a => rowTangent23_defining_eq_aux p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1
+        hA a)
+  have hVF : (X ^ 2 + C ua1 * X + C ua0) ∣
+      ((C va1 * X + C va0) ^ 2 - curvePoly p c0 c1 c2 c3 c4) := hMumfordUa
+  set E := Epoly4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1
+  set Y := Ypoly4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1
+  set V : Polynomial (F p) := C va1 * X + C va0
+  set f := curvePoly p c0 c1 c2 c3 c4
+  have h1 : (X ^ 2 + C ua1 * X + C ua0) ∣ (E - Y * V) * (E + Y * V) :=
+    dvd_mul_of_dvd_right huY (E - Y * V)
+  have h2 : (X ^ 2 + C ua1 * X + C ua0) ∣ (V ^ 2 - f) * Y ^ 2 := dvd_mul_of_dvd_left hVF (Y ^ 2)
+  have hadd : (X ^ 2 + C ua1 * X + C ua0) ∣
+      (E - Y * V) * (E + Y * V) + (V ^ 2 - f) * Y ^ 2 := dvd_add h1 h2
+  have hNeq : Npoly4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 =
+      (E - Y * V) * (E + Y * V) + (V ^ 2 - f) * Y ^ 2 := by
+    unfold Npoly4Tangent; ring
+  rw [hNeq]; exact hadd
+
+/-- **`(X²+u1*X+u0) ∣ Npoly4Tangent`** — the tangent-case analogue of
+`dvd_N_u4`, closing the other of the two hypotheses
+`curBeforeMonic4Tangent_dvd_Npoly4Tangent`/`uRS4Tangent_dvd_Npoly4Tangent`
+previously took as raw assumptions. -/
+theorem dvd_N_u4Tangent (ua0 ua1 va0 va1 u0 u1 v0 v1 : F p)
+    (hA : MatrixNondegenerate4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1)
+    (hMumfordTarget : IsMumfordTarget4 p c0 c1 c2 c3 c4 u0 u1 v0 v1) :
+    (X ^ 2 + C u1 * X + C u0) ∣
+      Npoly4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 := by
+  have huY : (X ^ 2 + C u1 * X + C u0) ∣
+      (Epoly4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 +
+        Ypoly4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 * (C v1 * X + C v0)) :=
+    dvd_of_row_identity4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1
+      u0 u1 v0 v1
+      (fun a => rowTangent45_defining_eq_aux p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1
+        hA a)
+  have hVF : (X ^ 2 + C u1 * X + C u0) ∣
+      ((C v1 * X + C v0) ^ 2 - curvePoly p c0 c1 c2 c3 c4) := hMumfordTarget
+  set E := Epoly4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1
+  set Y := Ypoly4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1
+  set V : Polynomial (F p) := C v1 * X + C v0
+  set f := curvePoly p c0 c1 c2 c3 c4
+  have h1 : (X ^ 2 + C u1 * X + C u0) ∣ (E - Y * V) * (E + Y * V) :=
+    dvd_mul_of_dvd_right huY (E - Y * V)
+  have h2 : (X ^ 2 + C u1 * X + C u0) ∣ (V ^ 2 - f) * Y ^ 2 := dvd_mul_of_dvd_left hVF (Y ^ 2)
+  have hadd : (X ^ 2 + C u1 * X + C u0) ∣
+      (E - Y * V) * (E + Y * V) + (V ^ 2 - f) * Y ^ 2 := dvd_add h1 h2
+  have hNeq : Npoly4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 =
+      (E - Y * V) * (E + Y * V) + (V ^ 2 - f) * Y ^ 2 := by
+    unfold Npoly4Tangent; ring
   rw [hNeq]; exact hadd
 
 /-! ## The Mumford identity, K=4 instance — `v_RS4² ≡ f (mod u_RS4)`
@@ -3093,6 +3662,46 @@ theorem uRS4Tangent_dvd_Npoly4Tangent
     ring
   rw [hscale, inv_mul_cancel₀ hlc, map_one, one_mul]
 
+/-- **`uRS4Tangent ∣ Npoly4Tangent`, fully derived** — the tangent-case
+counterpart of `uRS4_dvd_Npoly4`: takes the same underlying
+`MatrixNondegenerate4Tangent`/curve/Mumford/genericity data
+`dvd_N_P1P2_tangent`/`dvd_N_uaTangent`/`dvd_N_u4Tangent` need, and derives
+`hTan`/`hUa`/`hU` internally (via those three theorems) rather than
+assuming them the way `uRS4Tangent_dvd_Npoly4Tangent` above does. This is
+`ROADMAP-alpha-locus.md`'s tangent-case combining gap, closed: the
+tangent-anchor squared factor no longer has to be assumed to divide
+`Npoly4Tangent`, it is proved from the row-identity/curve/branch-derivative
+facts exactly as the two ordinary literal-point factors already are in
+`uRS4_dvd_Npoly4`. The three pairwise-coprimality hypotheses
+(`hTUa`/`hTU`/`hUaU`) remain the genuine open genericity ("`Bad`"
+exceptional-locus) content — same status as `uRS4_dvd_Npoly4`'s six
+`h12`–`h34` hypotheses, not derived here or anywhere else in this file. -/
+theorem uRS4Tangent_dvd_Npoly4Tangent_full
+    (ua0 ua1 va0 va1 u0 u1 v0 v1 : F p)
+    (hcur : curBeforeMonic4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 ≠ 0)
+    (hA : MatrixNondegenerate4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1)
+    (hpy : py ≠ 0) (hp2 : (2 : F p) ≠ 0)
+    (hP_curve : py ^ 2 = (curvePoly p c0 c1 c2 c3 c4).eval px)
+    (hNe : Npoly4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 ≠ 0)
+    (hMumfordUa : IsMumfordUa p c0 c1 c2 c3 c4 ua0 ua1 va0 va1)
+    (hMumfordTarget : IsMumfordTarget4 p c0 c1 c2 c3 c4 u0 u1 v0 v1)
+    (hTUa : IsCoprime ((X - C px : Polynomial (F p)) ^ 2)
+      (X ^ 2 + C ua1 * X + C ua0))
+    (hTU : IsCoprime ((X - C px : Polynomial (F p)) ^ 2)
+      (X ^ 2 + C u1 * X + C u0))
+    (hUaU : IsCoprime (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p))
+      (X ^ 2 + C u1 * X + C u0)) :
+    uRS4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 ∣
+      Npoly4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 := by
+  have hTan := dvd_N_P1P2_tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1
+    hA hpy hp2 hP_curve hNe
+  have hUa := dvd_N_uaTangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1
+    hA hMumfordUa
+  have hU := dvd_N_u4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1
+    hA hMumfordTarget
+  exact uRS4Tangent_dvd_Npoly4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1
+    hcur hTan hUa hU hTUa hTU hUaU
+
 /-- Tangent analogue of `vRS4`: the normalized `-E * Y⁻¹ (mod uRS)` remainder. -/
 noncomputable def vRS4Tangent
     (ua0 ua1 va0 va1 u0 u1 v0 v1 : F p)
@@ -3127,6 +3736,55 @@ theorem vRS4Tangent_sq_eq_f_mod_uRS4Tangent
         uRS4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 =
       (curvePoly p c0 c1 c2 c3 c4) %ₘ
         uRS4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 := by
+  have hU : (uRS4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1).Monic :=
+    uRS4Tangent_monic p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 hcur
+  have hmod := sq_mod_eq_of_dvd_4 hU hNu hInv
+  simpa only [vRS4Tangent] using hmod
+
+/-- **`vRS4Tangent_sq_eq_f_mod_uRS4Tangent`, fully derived** — the tangent
+counterpart of `vRS4_sq_eq_f_mod_uRS4`'s "`hNu` no longer a hypothesis"
+fix, using `uRS4Tangent_dvd_Npoly4Tangent_full` in place of
+`uRS4_dvd_Npoly4` to derive `hNu` from the same underlying
+`MatrixNondegenerate4Tangent`/curve/Mumford/genericity data rather than
+assuming it. Closes the tangent-case combining gap end to end: this
+theorem's only remaining non-`Ypoly4Tangent`-coprimality hypotheses are
+`hTUa`/`hTU`/`hUaU` (the tangent genericity/`Bad`-locus data, still
+assumed, same status as `uRS4_dvd_Npoly4`'s `h12`–`h34`) and `hInv` (the
+Bézout-witness fact, genuinely separate content, same as the non-tangent
+case). -/
+theorem vRS4Tangent_sq_eq_f_mod_uRS4Tangent_full
+    (ua0 ua1 va0 va1 u0 u1 v0 v1 : F p)
+    (hcur : curBeforeMonic4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 ≠ 0)
+    (hA : MatrixNondegenerate4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1)
+    (hpy : py ≠ 0) (hp2 : (2 : F p) ≠ 0)
+    (hP_curve : py ^ 2 = (curvePoly p c0 c1 c2 c3 c4).eval px)
+    (hNe : Npoly4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 ≠ 0)
+    (hMumfordUa : IsMumfordUa p c0 c1 c2 c3 c4 ua0 ua1 va0 va1)
+    (hMumfordTarget : IsMumfordTarget4 p c0 c1 c2 c3 c4 u0 u1 v0 v1)
+    (hTUa : IsCoprime ((X - C px : Polynomial (F p)) ^ 2)
+      (X ^ 2 + C ua1 * X + C ua0))
+    (hTU : IsCoprime ((X - C px : Polynomial (F p)) ^ 2)
+      (X ^ 2 + C u1 * X + C u0))
+    (hUaU : IsCoprime (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p))
+      (X ^ 2 + C u1 * X + C u0))
+    (hgcd : IsCoprime
+      (Ypoly4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1)
+      (uRS4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1))
+    (hInv :
+      uRS4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 ∣
+        Ypoly4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 *
+            EuclideanDomain.gcdA
+              (Ypoly4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1)
+              (uRS4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1) - 1) :
+    (vRS4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 hgcd) ^ 2 %ₘ
+        uRS4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 =
+      (curvePoly p c0 c1 c2 c3 c4) %ₘ
+        uRS4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 := by
+  have hNu :
+      uRS4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 ∣
+        Npoly4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 :=
+    uRS4Tangent_dvd_Npoly4Tangent_full p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1
+      hcur hA hpy hp2 hP_curve hNe hMumfordUa hMumfordTarget hTUa hTU hUaU
   have hU : (uRS4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1).Monic :=
     uRS4Tangent_monic p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 hcur
   have hmod := sq_mod_eq_of_dvd_4 hU hNu hInv
@@ -3258,6 +3916,72 @@ noncomputable def Reduce (c0 c1 c2 c3 c4 : F p) (P1 P2 : F p × F p)
    (uRS4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1).coeff 1,
    (vRS4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 hgcd).coeff 0,
    (vRS4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 hgcd).coeff 1)
+
+/-! ## `ReduceTangent` and the `P1 = P2` dispatcher
+
+`Reduce` above is unconditionally computable, but only *correct* when
+`P1 ≠ P2` — the ordinary construction's row-01 uses two evaluation
+points, and `hgcd`/`hcur` become unsatisfiable (not merely uncorroborated)
+once `P1 = P2`, since the corresponding `MatrixNondegenerate4` forces a
+det on two linearly-dependent rows. `IsCoprime (X - C P1.1) (X - C P2.1)`
+itself is simply false when `P1.1 = P2.1`, so no caller can actually
+discharge `Reduce`'s hypotheses in the tangent case using the ordinary
+pipeline — that's what the tangent machinery (`Epoly4Tangent` etc.,
+`TangentCombine4` above) exists to replace.
+
+`ReduceTangent` mirrors `Reduce` exactly, reading its output off
+`uRS4Tangent`/`vRS4Tangent`'s coefficients instead. `ReduceDispatch` case-
+splits on `P1 = P2` and calls one or the other, so a caller supplies
+*either* the six ordinary coprimality facts (`P1 ≠ P2` branch) *or* the
+three tangent ones `hTUa`/`hTU`/`hUaU` (`P1 = P2` branch) — never both, and
+never the unusable `h12`-style hypothesis in the tangent branch. This is
+purely a wiring layer: it does not prove correctness of either branch (that
+is `uRS4_dvd_Npoly4`/`vRS4_sq_eq_f_mod_uRS4` on one side and
+`uRS4Tangent_dvd_Npoly4Tangent_full`/`vRS4Tangent_sq_eq_f_mod_uRS4Tangent_full`
+on the other, both proved elsewhere in this file already), it only lets a
+caller reach the right branch's output without ever stating the wrong
+branch's hypotheses. -/
+
+/-- **`ReduceTangent`**: tangent-case counterpart of `Reduce`, for
+`alpha • a - 2•(px,py)` (a doubled point rather than two distinct points).
+Reads the output Mumford pair off `uRS4Tangent`/`vRS4Tangent`'s
+coefficients, exactly as `Reduce` does for `uRS4`/`vRS4`. -/
+noncomputable def ReduceTangent (c0 c1 c2 c3 c4 px py : F p)
+    (ua0 ua1 va0 va1 u0 u1 v0 v1 : F p)
+    (_hcur : curBeforeMonic4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 ≠ 0)
+    (hgcd : IsCoprime (Ypoly4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1)
+      (uRS4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1)) :
+    F p × F p × F p × F p :=
+  ((uRS4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1).coeff 0,
+   (uRS4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1).coeff 1,
+   (vRS4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 hgcd).coeff 0,
+   (vRS4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 hgcd).coeff 1)
+
+/-- **`ReduceDispatch`**: case-splits on `P1 = P2` and routes to `Reduce`
+(`P1 ≠ P2` branch) or `ReduceTangent` (`P1 = P2` branch, `(px,py) := P1`).
+Unlike a version taking both hypothesis bundles up front, `hcur`/`hgcd` and
+`hcurT`/`hgcdT` here are each a *function* out of the corresponding case
+(`P1 ≠ P2 → ...` / `P1 = P2 → ...`), so a caller only ever has to produce
+the bundle matching the case they are actually in — never
+`IsCoprime (X - C P1.1) (X - C P2.1)` when `P1 = P2`, since that fact is
+false in that case, not just hard to prove. -/
+noncomputable def ReduceDispatch (c0 c1 c2 c3 c4 : F p) (P1 P2 : F p × F p)
+    (ua0 ua1 va0 va1 u0 u1 v0 v1 : F p)
+    (hcur : P1 ≠ P2 →
+      curBeforeMonic4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ≠ 0)
+    (hgcd : P1 ≠ P2 → IsCoprime (Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1)
+      (uRS4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1))
+    (hcurT : P1 = P2 →
+      curBeforeMonic4Tangent p c0 c1 c2 c3 c4 P1.1 P1.2 ua0 ua1 va0 va1 u0 u1 v0 v1 ≠ 0)
+    (hgcdT : P1 = P2 → IsCoprime
+      (Ypoly4Tangent p c0 c1 c2 c3 c4 P1.1 P1.2 ua0 ua1 va0 va1 u0 u1 v0 v1)
+      (uRS4Tangent p c0 c1 c2 c3 c4 P1.1 P1.2 ua0 ua1 va0 va1 u0 u1 v0 v1)) :
+    F p × F p × F p × F p :=
+  if hP : P1 = P2 then
+    ReduceTangent p c0 c1 c2 c3 c4 P1.1 P1.2 ua0 ua1 va0 va1 u0 u1 v0 v1
+      (hcurT hP) (hgcdT hP)
+  else
+    Reduce p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 (hcur hP) (hgcd hP)
 
 end TheDataDerivation
 end Genus2Lean

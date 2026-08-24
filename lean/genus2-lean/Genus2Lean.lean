@@ -44,4 +44,5 @@ import Genus2Lean.TheDataDerivation.DataDerivationSolve
 import Genus2Lean.DecoupledSystemRegular
 import Genus2Lean.ZeroD.PeelChainAssembly
 import Genus2Lean.AlphaReduce
+import Genus2Lean.SharedRootCombining
 import Genus2Lean.AlphaLocusDegreeUniform
