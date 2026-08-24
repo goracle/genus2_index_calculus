@@ -177,5 +177,174 @@ theorem npoly4_quotient_eq_lcm_mul_of_shared_root
   exact ⟨k, hstep2⟩
 
 end SharedRootCombine4
+
+/-! ## `uRS4LcmShared` / `vRS4LcmShared`: monic-normalized output for the
+shared-root branch
+
+`curBeforeMonic4LcmShared` is the two-step quotient
+`(Npoly4 /ₘ (X-P1.1)) /ₘ (X-P2.1)` — well-defined unconditionally, exactly
+like `curBeforeMonic4`'s own first two steps, and NOT a third `/ₘ` division
+by `uaTargetLcm4` (see the previous section's docstring for why that step
+is not available in general). `npoly4_quotient_eq_lcm_mul_of_shared_root`
+already shows this quotient equals `uaTargetLcm4 * k` for a witness `k`
+under the same hypotheses `uRS4_dvd_Npoly4` needs, minus `IsCoprime u_a
+target` — so `curBeforeMonic4LcmShared` really is a degree-≤4 polynomial
+divisible only by `u_a`'s and `target`'s combined root set, same role
+`curBeforeMonic4` plays for the non-shared-root branch, just reached by a
+two-step rather than four-step quotient chain. `uRS4LcmShared`/
+`vRS4LcmShared` monic-normalize / Bézout-invert it exactly as `uRS4`/`vRS4`
+do for `curBeforeMonic4`. -/
+
+section URS4LcmShared
+
+variable (c0 c1 c2 c3 c4 : F p) (P1 P2 : F p × F p)
+variable (ua0 ua1 va0 va1 u0 u1 v0 v1 : F p)
+
+/-- Two-step quotient of `Npoly4` by `(X-P1.1)` then `(X-P2.1)` only —
+the shared-root-branch analogue of `curBeforeMonic4`'s first two steps. -/
+noncomputable def curBeforeMonic4LcmShared : Polynomial (F p) :=
+  (Npoly4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 /ₘ (X - C P1.1)) /ₘ
+    (X - C P2.1)
+
+/-- `u_RS,shared(x)`, monic-normalized `curBeforeMonic4LcmShared` — same
+`leadingCoeff⁻¹`-scaling construction as `uRS4`. -/
+noncomputable def uRS4LcmShared : Polynomial (F p) :=
+  C (curBeforeMonic4LcmShared p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1).leadingCoeff⁻¹ *
+    curBeforeMonic4LcmShared p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1
+
+/-- `uRS4LcmShared` is monic, given `curBeforeMonic4LcmShared ≠ 0` — byte-
+for-byte the same argument as `uRS4_monic`, only the quotient's name
+differs. -/
+theorem uRS4LcmShared_monic
+    (hcur : curBeforeMonic4LcmShared p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ≠ 0) :
+    (uRS4LcmShared p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1).Monic := by
+  simp only [uRS4LcmShared]
+  set q := curBeforeMonic4LcmShared p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 with hq
+  have hlc : q.leadingCoeff ≠ 0 := (not_congr Polynomial.leadingCoeff_eq_zero).mpr hcur
+  have hau : q.leadingCoeff * q.leadingCoeff⁻¹ = 1 := mul_inv_cancel₀ hlc
+  have hdeg : (C q.leadingCoeff⁻¹ * q).natDegree = q.natDegree :=
+    Polynomial.natDegree_C_mul_eq_of_mul_eq_one hau
+  rw [Polynomial.Monic.def]
+  change (C q.leadingCoeff⁻¹ * q).coeff (C q.leadingCoeff⁻¹ * q).natDegree = 1
+  rw [hdeg, Polynomial.coeff_C_mul]
+  exact inv_mul_cancel₀ hlc
+
+/-- **`v_RS,shared(x) = -E4(x) * Y4(x)⁻¹ mod uRS4LcmShared(x)`** — same
+`EuclideanDomain.gcdA` Bézout-coefficient construction as `vRS4`. -/
+noncomputable def vRS4LcmShared
+    (_hgcd : IsCoprime (Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1)
+      (uRS4LcmShared p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1)) :
+    Polynomial (F p) :=
+  (-(Epoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1) *
+      EuclideanDomain.gcdA (Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1)
+        (uRS4LcmShared p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1)) %ₘ
+    uRS4LcmShared p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1
+
+end URS4LcmShared
+
+/-! ## Mumford identity, shared-root branch
+
+Mirrors `vRS4_sq_eq_f_mod_uRS4` exactly, substituting
+`npoly4_quotient_eq_lcm_mul_of_shared_root`'s weaker hypothesis set
+(`h12`, `h1L`, `h2L` — no `IsCoprime u_a target`) for the six pairwise
+facts, and re-deriving `uRS4LcmShared ∣ Npoly4` from that existential
+witness rather than from `uRS4_dvd_Npoly4` directly. `sq_mod_eq_of_dvd_4`
+itself is reused completely unchanged (it is already fully ring-generic,
+proved once in `AlphaReduce.lean` for any `CommRing R`). -/
+
+section MumfordIdentity4LcmShared
+
+variable (c0 c1 c2 c3 c4 : F p) (P1 P2 : F p × F p) (ua0 ua1 va0 va1 u0 u1 v0 v1 : F p)
+
+/-- **The Mumford identity, shared-root branch**: `v_RS,shared(x)^2 ≡
+curvePoly(x) (mod u_RS,shared(x))`, valid when `u_a` and `target` share a
+root (so `IsCoprime u_a target` — used by `vRS4_sq_eq_f_mod_uRS4` — is
+false), replacing it with the `lcm`-based combining route. -/
+theorem vRS4LcmShared_sq_eq_f_mod_uRS4LcmShared
+    (hcur : curBeforeMonic4LcmShared p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ≠ 0)
+    (hgcd : IsCoprime (Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1)
+      (uRS4LcmShared p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1))
+    (h12 : IsCoprime (X - C P1.1 : Polynomial (F p)) (X - C P2.1))
+    (h1L : IsCoprime (X - C P1.1 : Polynomial (F p)) (uaTargetLcm4 p ua0 ua1 u0 u1))
+    (h2L : IsCoprime (X - C P2.1 : Polynomial (F p)) (uaTargetLcm4 p ua0 ua1 u0 u1))
+    (hd1 : (X - C P1.1 : Polynomial (F p)) ∣
+      Npoly4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1)
+    (hd2 : (X - C P2.1 : Polynomial (F p)) ∣
+      Npoly4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1)
+    (hUa : (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)) ∣
+      Npoly4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1)
+    (hU : (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)) ∣
+      Npoly4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1)
+    (hInv :
+      uRS4LcmShared p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ∣
+        Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 *
+            EuclideanDomain.gcdA
+              (Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1)
+              (uRS4LcmShared p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1) - 1) :
+    (vRS4LcmShared p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 hgcd) ^ 2 %ₘ
+        uRS4LcmShared p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 =
+      (curvePoly p c0 c1 c2 c3 c4) %ₘ
+        uRS4LcmShared p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 := by
+  have hprod := npoly4_dvd_of_shared_root
+    p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 h12 h1L h2L hd1 hd2 hUa hU
+  obtain ⟨k, hk⟩ := hprod
+  have hm1 : (X - C P1.1 : Polynomial (F p)).Monic := Polynomial.monic_X_sub_C _
+  have hm2 : (X - C P2.1 : Polynomial (F p)).Monic := Polynomial.monic_X_sub_C _
+  have hstep0 :
+      Npoly4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 =
+        (X - C P1.1) * ((X - C P2.1) * (uaTargetLcm4 p ua0 ua1 u0 u1 * k)) := by
+    rw [hk]
+    ring
+  have hstep1 :
+      Npoly4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 /ₘ (X - C P1.1) =
+        (X - C P2.1) * (uaTargetLcm4 p ua0 ua1 u0 u1 * k) :=
+    divByMonic_eq_of_dvd_mul hm1 hstep0
+  have hstep2 :
+      (Npoly4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 /ₘ (X - C P1.1)) /ₘ
+          (X - C P2.1) =
+        uaTargetLcm4 p ua0 ua1 u0 u1 * k :=
+    divByMonic_eq_of_dvd_mul hm2 hstep1
+  have hNu : curBeforeMonic4LcmShared p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ∣
+      Npoly4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 := by
+    unfold curBeforeMonic4LcmShared
+    refine ⟨(X - C P1.1) * (X - C P2.1), ?_⟩
+    rw [hstep2, hstep0]
+    ring
+  let U := uRS4LcmShared p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1
+  let E := Epoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1
+  let Y := Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1
+  let G := EuclideanDomain.gcdA Y U
+  let f := curvePoly p c0 c1 c2 c3 c4
+  have hU : U.Monic :=
+    uRS4LcmShared_monic p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 hcur
+  have hInv' : U ∣ Y * G - 1 := by exact hInv
+  have hNu' : U ∣ E ^ 2 - f * Y ^ 2 := by
+    show uRS4LcmShared p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ∣
+      (Epoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1) ^ 2 -
+        (curvePoly p c0 c1 c2 c3 c4) * (Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1) ^ 2
+    have huRS : uRS4LcmShared p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ∣
+        curBeforeMonic4LcmShared p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 := by
+      simp only [uRS4LcmShared]
+      set q := curBeforeMonic4LcmShared p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1
+      have hq : q.leadingCoeff ≠ 0 :=
+        (not_congr Polynomial.leadingCoeff_eq_zero).mpr hcur
+      refine ⟨C q.leadingCoeff, ?_⟩
+      have hC : C q.leadingCoeff⁻¹ * C q.leadingCoeff = 1 := by
+        rw [← C_mul, inv_mul_cancel₀ hq, C_1]
+      calc
+        q = q * 1 := by simp
+        _ = q * (C q.leadingCoeff⁻¹ * C q.leadingCoeff) := by rw [hC]
+        _ = (q * C q.leadingCoeff⁻¹) * C q.leadingCoeff := by rw [mul_assoc]
+        _ = (C q.leadingCoeff⁻¹ * q) * C q.leadingCoeff := by rw [mul_comm q]
+    have hNu2 : uRS4LcmShared p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ∣
+        Npoly4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 :=
+      huRS.trans hNu
+    unfold Npoly4 at hNu2
+    exact hNu2
+  have hmod := sq_mod_eq_of_dvd_4 hU hNu' hInv'
+  simpa only [vRS4LcmShared, U, E, Y, G, f] using hmod
+
+end MumfordIdentity4LcmShared
+
 end TheDataDerivation
 end Genus2Lean
