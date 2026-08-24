@@ -1,6 +1,8 @@
 import Mathlib
 import Genus2Lean.TheDataDerivation.DataDerivationBasics
 
+/-! Numbered revision 7: fixes the yIdx7 optional-list RHS reduction and
+    normalizes the tangent derivative summands after the basis match. -/
 /-!
 # `Reduce`: Mumford reduction of `alpha • a - P1 - P2` down to `(u0,u1,v0,v1)`
 
@@ -842,6 +844,142 @@ noncomputable def tangentRowEntryXY4 (c0 c1 c2 c3 c4 : F p) (i : ℕ) (px py : F
 
 end TangentRow4
 
+/-! ## Tangent matrix, `matrixA4Tangent`/`rhsVec4Tangent` — step (iii)
+
+Per `ROADMAP-alpha-locus.md`'s recommended scope, step (iii): a SEPARATE
+matrix/rhs pair for the `P1=P2` tangent case, rather than threading an
+`if P1 = P2` branch through the already-working `matrixA4`/`rhsVec4`
+(matching the roadmap's own "likely one lemma parametrized by which pair"
+framing, and this project's convention of not destabilizing an
+already-compiling proof). Rows 2–5 are copy-pasted UNCHANGED from
+`matrixA4`/`rhsVec4` — they never reference `P1`/`P2` at all (only rows
+0–1 do), so nothing about the `u_a`/target reduction rows changes when the
+two literal-point anchors collapse into one tangent anchor. Only rows 0–1
+change: row 0 is the ordinary evaluation row at `px := P1.1` (`m=1`'s
+usual row, unchanged in form), row 1 is the NEW derivative-along-the-
+branch row, using `tangentRowEntryX4`/`tangentRowEntryXY4` per-column
+(the `bj=0`/`bj=1` split matching those two lemmas' own split exactly). -/
+
+variable (px py : F p)
+
+/-- The `6×6` tangent-case matrix. Row 0: ordinary evaluation at `(px,py)`
+(same formula as `matrixA4`'s row-0/row-1, one point instead of two).
+Row 1: the tangent/derivative row, `tangentRowEntryX4`/`tangentRowEntryXY4`
+depending on the column's `bj`. Rows 2–5: byte-identical to `matrixA4`. -/
+noncomputable def matrixA4Tangent (ua0 ua1 va0 va1 u0 u1 v0 v1 : F p) :
+    Matrix (Fin 6) (Fin 6) (F p) :=
+  fun row col =>
+    let bidx := otherIdx7.getD col.val 0
+    let (_, bi, bj) := rrBasis7.getD bidx (0, 0, 0)
+    if row.val = 0 then
+      px ^ bi * (if bj = 1 then py else 1)
+    else if row.val = 1 then
+      if bj = 1 then tangentRowEntryXY4 p c0 c1 c2 c3 c4 bi px py
+      else tangentRowEntryX4 p bi px
+    else if row.val = 2 ∨ row.val = 3 then
+      let (r0, r1) := reduceMonomialModU p ua0 ua1 va0 va1 bi bj
+      if row.val = 2 then r0 else r1
+    else
+      let (r0, r1) := reduceMonomialModU p u0 u1 v0 v1 bi bj
+      if row.val = 4 then r0 else r1
+
+/-- The tangent-case RHS vector. Row 0: ordinary evaluation, unchanged
+form. Row 1: the tangent-row entry applied to the `yIdx7`-th (bare-`y`)
+basis element — `bj_n = 1` unconditionally for that element (per
+`rrBasis7_yIdx_eq`), so this is always the `tangentRowEntryXY4` branch,
+matching `matrixA4Tangent`'s row-1 `bj=1` case. Rows 2–5: byte-identical
+to `rhsVec4`. -/
+noncomputable def rhsVec4Tangent (ua0 ua1 va0 va1 u0 u1 v0 v1 : F p) :
+    Fin 6 → F p :=
+  fun row =>
+    let (_, bi_n, bj_n) := rrBasis7.getD yIdx7 (0, 1, 1)
+    if row.val = 0 then
+      -(px ^ bi_n * (if bj_n = 1 then py else 1))
+    else if row.val = 1 then
+      -(tangentRowEntryXY4 p c0 c1 c2 c3 c4 bi_n px py)
+    else if row.val = 2 ∨ row.val = 3 then
+      let (rn0, rn1) := reduceMonomialModU p ua0 ua1 va0 va1 bi_n bj_n;
+      -(if row.val = 2 then rn0 else rn1)
+    else
+      let (rn0, rn1) := reduceMonomialModU p u0 u1 v0 v1 bi_n bj_n;
+      -(if row.val = 4 then rn0 else rn1)
+
+/-- Row-unfolding for `matrixA4Tangent`'s row 0 — identical shape to
+`matrixA4_row01_eval`'s row-0 case, one point instead of two. -/
+theorem matrixA4Tangent_row0_eval (ua0 ua1 va0 va1 u0 u1 v0 v1 : F p) (col : Fin 6) :
+    matrixA4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 ⟨0, by omega⟩ col =
+      let (_, bi, bj) := rrBasis7.getD (otherIdx7.getD col.val 0) (0, 0, 0)
+      px ^ bi * (if bj = 1 then py else 1) := by
+  simp [matrixA4Tangent]
+
+/-- Row-unfolding for `matrixA4Tangent`'s row 1 (the new derivative row) —
+the `bj=0`/`bj=1` split matching `tangentRowEntryX4`/`tangentRowEntryXY4`
+exactly. -/
+theorem matrixA4Tangent_row1_eval (ua0 ua1 va0 va1 u0 u1 v0 v1 : F p) (col : Fin 6) :
+    matrixA4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 ⟨1, by omega⟩ col =
+      let (_, bi, bj) := rrBasis7.getD (otherIdx7.getD col.val 0) (0, 0, 0)
+      if bj = 1 then tangentRowEntryXY4 p c0 c1 c2 c3 c4 bi px py
+      else tangentRowEntryX4 p bi px := by
+  simp [matrixA4Tangent]
+
+/-- Row-unfolding for `matrixA4Tangent`'s rows 2–3 — byte-identical to
+`matrixA4_row23_eval` since those rows never reference `px`/`py`. -/
+theorem matrixA4Tangent_row23_eval (ua0 ua1 va0 va1 u0 u1 v0 v1 : F p)
+    (a : Fin 2) (col : Fin 6) :
+    matrixA4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 ⟨2 + a.val, by omega⟩ col =
+      let (_, bi, bj) := rrBasis7.getD (otherIdx7.getD col.val 0) (0, 0, 0)
+      let (r0, r1) := reduceMonomialModU p ua0 ua1 va0 va1 bi bj
+      if a.val = 0 then r0 else r1 := by
+  fin_cases a <;> simp [matrixA4Tangent]
+
+/-- Row-unfolding for `matrixA4Tangent`'s rows 4–5 — byte-identical to
+`matrixA4_row45_eval`. -/
+theorem matrixA4Tangent_row45_eval (ua0 ua1 va0 va1 u0 u1 v0 v1 : F p)
+    (a : Fin 2) (col : Fin 6) :
+    matrixA4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 ⟨4 + a.val, by omega⟩ col =
+      let (_, bi, bj) := rrBasis7.getD (otherIdx7.getD col.val 0) (0, 0, 0)
+      let (r0, r1) := reduceMonomialModU p u0 u1 v0 v1 bi bj
+      if a.val = 0 then r0 else r1 := by
+  fin_cases a <;> simp [matrixA4Tangent]
+
+/-- Row-unfolding for `rhsVec4Tangent`'s row 0 — identical shape to
+`rhsVec4_row01_eval`'s row-0 case. -/
+theorem rhsVec4Tangent_row0_eval (ua0 ua1 va0 va1 u0 u1 v0 v1 : F p) :
+    rhsVec4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 ⟨0, by omega⟩ =
+      let (_, bi_n, bj_n) := rrBasis7.getD yIdx7 (0, 1, 1)
+      (-(px ^ bi_n * (if bj_n = 1 then py else 1))) := by
+  rfl
+
+/-- Row-unfolding for `rhsVec4Tangent`'s row 1 (the new derivative row). -/
+theorem rhsVec4Tangent_row1_eval (ua0 ua1 va0 va1 u0 u1 v0 v1 : F p) :
+    rhsVec4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 ⟨1, by omega⟩ =
+      let (_, bi_n, _) := rrBasis7.getD yIdx7 (0, 1, 1)
+      (-(tangentRowEntryXY4 p c0 c1 c2 c3 c4 bi_n px py)) := by
+  rfl
+
+/-- Row-unfolding for `rhsVec4Tangent`'s rows 2–3 — byte-identical to
+`rhsVec4_row23_eval`. -/
+theorem rhsVec4Tangent_row23_eval (ua0 ua1 va0 va1 u0 u1 v0 v1 : F p) (a : Fin 2) :
+    rhsVec4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 ⟨2 + a.val, by omega⟩ =
+      let (_, bi_n, bj_n) := rrBasis7.getD yIdx7 (0, 1, 1)
+      let (rn0, rn1) := reduceMonomialModU p ua0 ua1 va0 va1 bi_n bj_n
+      (-(if a.val = 0 then rn0 else rn1)) := by
+  fin_cases a <;> rfl
+
+/-- Row-unfolding for `rhsVec4Tangent`'s rows 4–5 — byte-identical to
+`rhsVec4_row45_eval`. -/
+theorem rhsVec4Tangent_row45_eval (ua0 ua1 va0 va1 u0 u1 v0 v1 : F p) (a : Fin 2) :
+    rhsVec4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 ⟨4 + a.val, by omega⟩ =
+      let (_, bi_n, bj_n) := rrBasis7.getD yIdx7 (0, 1, 1)
+      let (rn0, rn1) := reduceMonomialModU p u0 u1 v0 v1 bi_n bj_n
+      (-(if a.val = 0 then rn0 else rn1)) := by
+  fin_cases a <;> rfl
+
+/-- **Genericity condition, tangent case** — mirrors `MatrixNondegenerate4`
+exactly, for `matrixA4Tangent` in place of `matrixA4`. -/
+def MatrixNondegenerate4Tangent (ua0 ua1 va0 va1 u0 u1 v0 v1 : F p) : Prop :=
+  (matrixA4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1).det ≠ 0
+
 /-- **Genericity condition, K=4 instance** — mirrors `MatrixNondegenerate`
 (`DataDerivationSolve.lean`) exactly: `theData`-for-`Reduce` is only
 well-defined where `A.det ≠ 0`, a genuine further exceptional-locus
@@ -914,6 +1052,391 @@ theorem coeffsOut4_otherMap (P1 P2 : F p × F p) (ua0 ua1 va0 va1 u0 u1 v0 v1 : 
   exact congrArg (cramerSolution4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1)
     (Fin.ext (a := (⟨hex.choose, hchoose_lt6⟩ : Fin 6)) (b := col) hidx_eq)
 
+/-! ## Tangent-case coefficient assembly — step (iii) continued
+
+`cramerSolution4Tangent`/`coeffsOut4Tangent`/`Epoly4Tangent`/`Ypoly4Tangent`
+mirror `cramerSolution4`/`coeffsOut4`/`Epoly4`/`Ypoly4` exactly, substituting
+`matrixA4Tangent`/`rhsVec4Tangent` for `matrixA4`/`rhsVec4`. `otherMap4`/
+`otherIdx7`/`yIdx7` are REUSED unchanged — those are pure column/index
+combinatorics independent of which matrix/rhs pair is being solved. -/
+
+/-- Tangent-case Cramer's-rule solution — mirrors `cramerSolution4`. -/
+noncomputable def cramerSolution4Tangent (ua0 ua1 va0 va1 u0 u1 v0 v1 : F p) :
+    Fin 6 → F p :=
+  fun i =>
+    (matrixA4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1).cramer
+        (rhsVec4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1) i /
+      (matrixA4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1).det
+
+/-- Tangent-case full 7-slot coefficient vector — mirrors `coeffsOut4`. -/
+noncomputable def coeffsOut4Tangent (ua0 ua1 va0 va1 u0 u1 v0 v1 : F p) :
+    Fin 7 → F p :=
+  fun bidx =>
+    if hy : bidx.val = yIdx7 then 1
+    else
+      have hmem : bidx.val ∈ otherIdx7 := by
+        simp only [otherIdx7, List.mem_filter, List.mem_range, decide_eq_true_eq]
+        exact ⟨bidx.isLt, hy⟩
+      have hex : ∃ (n : ℕ) (_ : n < otherIdx7.length), otherIdx7[n] = bidx.val :=
+        List.mem_iff_getElem.mp hmem
+      have hlt : hex.choose < 6 := otherIdx7_length ▸ hex.choose_spec.choose
+      cramerSolution4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1
+        ⟨hex.choose, hlt⟩
+
+/-- Tangent-case `otherMap4` bridge — mirrors `coeffsOut4_otherMap`
+verbatim, substituting `coeffsOut4Tangent`/`cramerSolution4Tangent`. -/
+theorem coeffsOut4Tangent_otherMap (ua0 ua1 va0 va1 u0 u1 v0 v1 : F p) (col : Fin 6) :
+    coeffsOut4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 (otherMap4 col) =
+      cramerSolution4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 col := by
+  have hcol : col.val < otherIdx7.length := by rw [otherIdx7_length]; exact col.isLt
+  have hgetD : otherIdx7.getD col.val 0 = otherIdx7[col.val] := List.getD_eq_getElem _ _ hcol
+  have hne : (otherMap4 col).val ≠ yIdx7 := by
+    have hmem : otherIdx7[col.val] ∈ otherIdx7 := List.getElem_mem hcol
+    have : otherIdx7[col.val] ≠ yIdx7 := ((mem_otherIdx7_iff _).mp hmem).2
+    change otherIdx7.getD col.val 0 ≠ yIdx7
+    rw [hgetD]; exact this
+  unfold coeffsOut4Tangent
+  rw [dif_neg hne]
+  set hex : ∃ (n : ℕ) (_ : n < otherIdx7.length), otherIdx7[n] = (otherMap4 col).val :=
+    List.mem_iff_getElem.mp (by
+      simp only [otherIdx7, List.mem_filter, List.mem_range, decide_eq_true_eq]
+      exact ⟨(otherMap4 col).isLt, hne⟩) with hex_def
+  have hspec : otherIdx7[hex.choose]'(hex.choose_spec.choose) = (otherMap4 col).val :=
+    hex.choose_spec.choose_spec
+  have hgoal_val : otherIdx7[hex.choose]'(hex.choose_spec.choose) = otherIdx7[col.val] := by
+    rw [hspec]
+    change otherIdx7.getD col.val 0 = otherIdx7[col.val]
+    exact hgetD
+  have hidx_eq : hex.choose = col.val :=
+    otherIdx7_nodup.getElem_inj_iff.mp hgoal_val
+  have hchoose_lt6 : hex.choose < 6 := by rw [← otherIdx7_length]; exact hex.choose_spec.choose
+  exact congrArg (cramerSolution4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1)
+    (Fin.ext (a := (⟨hex.choose, hchoose_lt6⟩ : Fin 6)) (b := col) hidx_eq)
+
+/-- Tangent-case `E(x)` — mirrors `Epoly4`. -/
+noncomputable def Epoly4Tangent (ua0 ua1 va0 va1 u0 u1 v0 v1 : F p) :
+    Polynomial (F p) :=
+  ∑ bidx : Fin 7,
+    let (_, bi, bj) := rrBasis7.getD bidx.val (0, 0, 0)
+    if bj = 0 then
+      C (coeffsOut4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 bidx) * X ^ bi
+    else 0
+
+/-- Tangent-case `Y(x)` — mirrors `Ypoly4`. -/
+noncomputable def Ypoly4Tangent (ua0 ua1 va0 va1 u0 u1 v0 v1 : F p) :
+    Polynomial (F p) :=
+  ∑ bidx : Fin 7,
+    let (_, bi, bj) := rrBasis7.getD bidx.val (0, 0, 0)
+    if bj = 1 then
+      C (coeffsOut4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 bidx) * X ^ bi
+    else 0
+
+/-! ## Tangent row-identity theorems — step (iii) continued
+
+Mirrors `row01_defining_eq_aux` (the K=4 simple-point value-vanishing
+identity) but for the tangent case's two rows: row 0 is the ordinary
+value identity at `(px,py)` (byte-identical algebraic content to
+`row01_defining_eq_aux`, one point instead of two); row 1 is the NEW
+derivative-along-the-branch identity, `E'(px) + py*Y'(px) +
+px*... "` — concretely `phi`'s directional derivative along the branch
+vanishes, i.e. `(E'.eval px) + (Y.eval px)*(branchDeriv) + py*(Y'.eval
+px) = 0`, matching `tangentRowEntryXY4`'s product-rule construction per
+column. Both proofs reuse the exact same five-step Cramer's-rule
+skeleton as `row01_defining_eq_aux`; only the per-column entry formula
+and the final "sum of entries = polynomial eval" identification differ,
+so this is factored as one generic lemma (`rowTangent_defining_eq_aux`)
+parametrized by the row index, then two one-line wrappers extract the
+concrete value/derivative statements each downstream divisibility proof
+actually needs. -/
+
+section TangentRowIdentity4
+
+variable (ua0 ua1 va0 va1 u0 u1 v0 v1 : F p)
+
+/-- **Generic tangent row-identity**: for row `r : Fin 2` of
+`matrixA4Tangent`/`rhsVec4Tangent`, the Cramer's-rule solution satisfies
+the row's own defining linear equation, stated abstractly via the row's
+column-entry function `entry` and RHS `negEntry` (rather than unfolding
+`matrixA4Tangent`/`rhsVec4Tangent` inline) so it can serve both row 0
+(`entry = fun bi _ => px^bi`-style, `bj`-split) and row 1
+(`entry` = the tangent per-column formula) uniformly. Kept `private`,
+matching this file's convention for these Cramer-rule plumbing lemmas. -/
+private theorem rowTangent_defining_eq_aux (r : Fin 2)
+    (hA : MatrixNondegenerate4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1)
+    (entry : ℕ → ℕ → F p) (negEntry : F p)
+    (hrow : ∀ col : Fin 6,
+      matrixA4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 ⟨r.val, by omega⟩ col =
+        let (_, bi, bj) := rrBasis7.getD (otherIdx7.getD col.val 0) (0, 0, 0)
+        entry bi bj)
+    (hrhs : rhsVec4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 ⟨r.val, by omega⟩ =
+      negEntry)
+    (hyentry : let (_, bi_n, bj_n) := rrBasis7.getD yIdx7 (0, 1, 1); entry bi_n bj_n = -negEntry) :
+    (∑ bidx : Fin 7,
+      let (_, bi, bj) := rrBasis7.getD bidx.val (0, 0, 0)
+      coeffsOut4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 bidx * entry bi bj) = 0 := by
+  have hdet : (matrixA4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1).det ≠ 0 := hA
+  have hrRow : r.val < 6 := by omega
+  have hmul := Matrix.mulVec_cramer
+    (matrixA4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1)
+    (rhsVec4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1)
+  have hrow' : ∑ col : Fin 6,
+      matrixA4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 ⟨r.val, hrRow⟩ col *
+      cramerSolution4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 col =
+      rhsVec4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 ⟨r.val, hrRow⟩ := by
+    have hstep : (∑ col : Fin 6,
+        matrixA4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 ⟨r.val, hrRow⟩ col *
+        cramerSolution4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 col) *
+        (matrixA4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1).det =
+        rhsVec4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 ⟨r.val, hrRow⟩ *
+          (matrixA4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1).det := by
+      unfold cramerSolution4Tangent
+      rw [Finset.sum_mul]
+      have hcol : ∀ col : Fin 6,
+          matrixA4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 ⟨r.val, hrRow⟩ col *
+          ((matrixA4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1).cramer
+              (rhsVec4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1) col /
+            (matrixA4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1).det) *
+          (matrixA4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1).det =
+          matrixA4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 ⟨r.val, hrRow⟩ col *
+          (matrixA4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1).cramer
+              (rhsVec4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1) col := by
+        intro col; field_simp
+      simp only [hcol]
+      have hthis := congrFun hmul (⟨r.val, hrRow⟩ : Fin 6)
+      simp only [Matrix.mulVec, dotProduct, Pi.smul_apply, smul_eq_mul] at hthis
+      rw [hthis]; ring
+    exact mul_right_cancel₀ hdet hstep
+  rw [hrhs] at hrow'
+  have hswap : (∑ col : Fin 6,
+      matrixA4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 ⟨r.val, hrRow⟩ col *
+        cramerSolution4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 col) =
+      ∑ col : Fin 6, coeffsOut4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1
+        (otherMap4 col) *
+        (let (_, bi, bj) := rrBasis7.getD (otherIdx7.getD col.val 0) (0, 0, 0); entry bi bj) := by
+    apply Finset.sum_congr rfl
+    intro col _
+    rw [coeffsOut4Tangent_otherMap, mul_comm, hrow col]
+  rw [hswap] at hrow'
+  have hFsum : (∑ bidx : Fin 7,
+      let (_, bi, bj) := rrBasis7.getD bidx.val (0, 0, 0)
+      coeffsOut4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 bidx * entry bi bj) =
+      (∑ col : Fin 6, coeffsOut4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1
+        (otherMap4 col) *
+        (let (_, bi, bj) := rrBasis7.getD (otherIdx7.getD col.val 0) (0, 0, 0); entry bi bj)) +
+      coeffsOut4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1
+        ⟨yIdx7, yIdx7_lt_seven⟩ *
+        (let (_, bi_n, bj_n) := rrBasis7.getD yIdx7 (0, 1, 1); entry bi_n bj_n) := by
+    let Fsum : Fin 7 → F p := fun bidx =>
+      let (_, bi, bj) := rrBasis7.getD bidx.val (0, 0, 0)
+      coeffsOut4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 bidx * entry bi bj
+    have hFcol : ∀ col : Fin 6,
+        Fsum (otherMap4 col) =
+          coeffsOut4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1
+            (otherMap4 col) *
+            (let (_, bi, bj) := rrBasis7.getD (otherIdx7.getD col.val 0) (0, 0, 0); entry bi bj) := by
+      intro col
+      have hidx : (otherMap4 col).val = otherIdx7.getD col.val 0 := rfl
+      simp only [Fsum, hidx]
+    have hFy : Fsum (⟨yIdx7, yIdx7_lt_seven⟩ : Fin 7) =
+        coeffsOut4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1
+          ⟨yIdx7, yIdx7_lt_seven⟩ *
+          (let (_, bi_n, bj_n) := rrBasis7.getD yIdx7 (0, 1, 1); entry bi_n bj_n) := by
+      have hy_len : yIdx7 < rrBasis7.length := by
+        have hlen : rrBasis7.length = 7 := by
+          simp [rrBasis7, rrBasisCandidates, List.length_flatMap]
+        rw [hlen]
+        exact yIdx7_lt_seven
+      have hy_get : rrBasis7.getD yIdx7 (0, 0, 0) =
+          rrBasis7.getD yIdx7 (0, 1, 1) := by
+        rw [List.getD_eq_getElem _ _ hy_len, List.getD_eq_getElem _ _ hy_len]
+      unfold Fsum
+      rw [hy_get]
+    have hsum7 :
+        (∑ col : Fin 6, Fsum (otherMap4 col)) +
+            Fsum ⟨yIdx7, yIdx7_lt_seven⟩ =
+          ∑ bidx : Fin 7, Fsum bidx :=
+      sum_otherIdx7_add_y p Fsum
+    calc
+      ∑ bidx : Fin 7, Fsum bidx =
+          (∑ col : Fin 6, Fsum (otherMap4 col)) + Fsum ⟨yIdx7, yIdx7_lt_seven⟩ :=
+        hsum7.symm
+      _ = (∑ col : Fin 6,
+            coeffsOut4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1
+              (otherMap4 col) *
+              (let (_, bi, bj) := rrBasis7.getD (otherIdx7.getD col.val 0) (0, 0, 0); entry bi bj)) +
+          coeffsOut4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1
+            ⟨yIdx7, yIdx7_lt_seven⟩ *
+            (let (_, bi_n, bj_n) := rrBasis7.getD yIdx7 (0, 1, 1); entry bi_n bj_n) := by
+        rw [Finset.sum_congr rfl (fun col _ => hFcol col), hFy]
+  rw [hFsum]
+  have hcoeffsOutY : coeffsOut4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1
+      ⟨yIdx7, yIdx7_lt_seven⟩ = 1 := by
+    unfold coeffsOut4Tangent; rw [dif_pos rfl]
+  rw [hcoeffsOutY, one_mul]
+  simp only [hyentry]
+  rw [hrow']
+  ring
+
+end TangentRowIdentity4
+
+/-- **Value identity, tangent case** (row 0): `phi(px,py) = 0`, i.e.
+`E(px) + py*Y(px) = 0` for `E := Epoly4Tangent`, `Y := Ypoly4Tangent` —
+the tangent-case, single-point analogue of `row01_defining_eq_aux`. -/
+private theorem rowTangent0_defining_eq_aux (ua0 ua1 va0 va1 u0 u1 v0 v1 : F p)
+    (hA : MatrixNondegenerate4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1) :
+    (Epoly4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1).eval px +
+      py * (Ypoly4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1).eval px = 0 := by
+  have hsum := rowTangent_defining_eq_aux p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1
+    (⟨0, by omega⟩ : Fin 2) hA (fun bi bj => px ^ bi * (if bj = 1 then py else 1))
+    (-py)
+    (fun col => matrixA4Tangent_row0_eval p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 col)
+    (by
+      have hy_len : yIdx7 < rrBasis7.length := by
+        have hlen : rrBasis7.length = 7 := by
+          simp [rrBasis7, rrBasisCandidates, List.length_flatMap]
+        rw [hlen]
+        exact yIdx7_lt_seven
+      have hy_get : rrBasis7.getD yIdx7 (0, 0, 0) =
+          rrBasis7.getD yIdx7 (0, 1, 1) := by
+        rw [List.getD_eq_getElem _ _ hy_len, List.getD_eq_getElem _ _ hy_len]
+      have hy_get11 : rrBasis7.getD yIdx7 (0, 1, 1) = (5, 0, 1) := by
+        calc
+          rrBasis7.getD yIdx7 (0, 1, 1) = rrBasis7.getD yIdx7 (0, 0, 0) := hy_get.symm
+          _ = (5, 0, 1) := rrBasis7_yIdx_eq
+      have hy_getElem : rrBasis7[yIdx7] = (5, 0, 1) := by
+        rw [← List.getD_eq_getElem _ _ hy_len]
+        exact rrBasis7_yIdx_eq
+      have hy_getElem? : rrBasis7[yIdx7]? = some (5, 0, 1) := by
+        simp [hy_len, hy_getElem]
+      simp [rhsVec4Tangent, hy_getElem, hy_getElem?])
+    (by
+      have hy_len : yIdx7 < rrBasis7.length := by
+        have hlen : rrBasis7.length = 7 := by
+          simp [rrBasis7, rrBasisCandidates, List.length_flatMap]
+        rw [hlen]
+        exact yIdx7_lt_seven
+      have hy_get : rrBasis7.getD yIdx7 (0, 0, 0) =
+          rrBasis7.getD yIdx7 (0, 1, 1) := by
+        rw [List.getD_eq_getElem _ _ hy_len, List.getD_eq_getElem _ _ hy_len]
+      have hy_get11 : rrBasis7.getD yIdx7 (0, 1, 1) = (5, 0, 1) := by
+        calc
+          rrBasis7.getD yIdx7 (0, 1, 1) = rrBasis7.getD yIdx7 (0, 0, 0) := hy_get.symm
+          _ = (5, 0, 1) := rrBasis7_yIdx_eq
+      rw [hy_get11]
+      simp)
+  rw [show (Epoly4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1).eval px +
+      py * (Ypoly4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1).eval px =
+      ∑ bidx : Fin 7,
+        let (_, bi, bj) := rrBasis7.getD bidx.val (0, 0, 0)
+        coeffsOut4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 bidx *
+          (px ^ bi * (if bj = 1 then py else 1)) from ?_]
+  · exact hsum
+  · unfold Epoly4Tangent Ypoly4Tangent
+    rw [Polynomial.eval_finsetSum, Polynomial.eval_finsetSum, Finset.mul_sum,
+      ← Finset.sum_add_distrib]
+    apply Finset.sum_congr rfl
+    intro bidx _
+    generalize hget : rrBasis7.getD bidx.val (0, 0, 0) = g
+    rcases g with ⟨fst, bi, bj⟩
+    have hbj0or1 : bj = 0 ∨ bj = 1 := by
+      have hlen : rrBasis7.length = 7 := by
+        simp [rrBasis7, rrBasisCandidates, List.length_flatMap]
+      have hlt : bidx.val < rrBasis7.length := by rw [hlen]; exact bidx.isLt
+      have hflag : (rrBasis7.getD bidx.val (0, 0, 0)).2.2 = 0 ∨
+          (rrBasis7.getD bidx.val (0, 0, 0)).2.2 = 1 := by
+        rw [List.getD_eq_getElem _ _ hlt]
+        exact rrBasis7_flag _ (List.getElem_mem hlt)
+      rw [hget] at hflag
+      exact hflag
+    rcases hbj0or1 with hb0 | hb1
+    · subst bj
+      norm_num [Polynomial.eval_mul, Polynomial.eval_C, Polynomial.eval_X, Polynomial.eval_pow]
+    · subst bj
+      norm_num [Polynomial.eval_mul, Polynomial.eval_C, Polynomial.eval_X, Polynomial.eval_pow]
+      ring
+
+/-- **Derivative identity, tangent case** (row 1): the directional
+derivative of `phi(x,y(x))` along the branch `y²=f(x)` vanishes at
+`x=px` — `E'(px) + py*Y'(px) + Y(px)*branchDeriv = 0`, matching
+`tangentRowEntryXY4`'s product-rule construction: this is exactly the
+`m=2` row-block content confirmed against `phi_general.zip`
+(`ROADMAP-alpha-locus.md`'s "K=4 recipe" §3), the fact
+`sq_dvd_of_eval_derivative_eq_zero` needs alongside
+`rowTangent0_defining_eq_aux` to conclude `(X-C px)²∣N`. -/
+private theorem rowTangent1_defining_eq_aux (ua0 ua1 va0 va1 u0 u1 v0 v1 : F p)
+    (hA : MatrixNondegenerate4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1) :
+    (derivative (Epoly4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1)).eval px +
+      py * (derivative (Ypoly4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1)).eval px
+      + (Ypoly4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1).eval px *
+        branchDeriv4 p c0 c1 c2 c3 c4 px py = 0 := by
+  have hsum := rowTangent_defining_eq_aux p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1
+    (⟨1, by omega⟩ : Fin 2) hA
+    (fun bi bj => if bj = 1 then tangentRowEntryXY4 p c0 c1 c2 c3 c4 bi px py
+      else tangentRowEntryX4 p bi px)
+    (rhsVec4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 ⟨1, by omega⟩)
+    (fun col => matrixA4Tangent_row1_eval p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 col)
+    rfl (by
+      have hy_len : yIdx7 < rrBasis7.length := by
+        have hlen : rrBasis7.length = 7 := by
+          simp [rrBasis7, rrBasisCandidates, List.length_flatMap]
+        rw [hlen]
+        exact yIdx7_lt_seven
+      have hy_get : rrBasis7.getD yIdx7 (0, 0, 0) =
+          rrBasis7.getD yIdx7 (0, 1, 1) := by
+        rw [List.getD_eq_getElem _ _ hy_len, List.getD_eq_getElem _ _ hy_len]
+      have hy_get11 : rrBasis7.getD yIdx7 (0, 1, 1) = (5, 0, 1) := by
+        calc
+          rrBasis7.getD yIdx7 (0, 1, 1) = rrBasis7.getD yIdx7 (0, 0, 0) := hy_get.symm
+          _ = (5, 0, 1) := rrBasis7_yIdx_eq
+      rw [hy_get11]
+      have hrow :
+          rhsVec4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1
+              (⟨1, by omega⟩ : Fin 6) =
+            -(tangentRowEntryXY4 p c0 c1 c2 c3 c4 0 px py) := by
+        unfold rhsVec4Tangent
+        rw [hy_get11]
+        rfl
+      rw [hrow]
+      simp)
+  rw [show (derivative (Epoly4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1)).eval px +
+      py * (derivative (Ypoly4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1)).eval px
+      + (Ypoly4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1).eval px *
+        branchDeriv4 p c0 c1 c2 c3 c4 px py =
+      ∑ bidx : Fin 7,
+        let (_, bi, bj) := rrBasis7.getD bidx.val (0, 0, 0)
+        coeffsOut4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 bidx *
+          (if bj = 1 then tangentRowEntryXY4 p c0 c1 c2 c3 c4 bi px py
+           else tangentRowEntryX4 p bi px) from ?_]
+  · exact hsum
+  · unfold Epoly4Tangent Ypoly4Tangent tangentRowEntryXY4
+    rw [Polynomial.derivative_sum, Polynomial.derivative_sum,
+      Polynomial.eval_finsetSum, Polynomial.eval_finsetSum, Polynomial.eval_finsetSum,
+      Finset.mul_sum, Finset.sum_mul, ← Finset.sum_add_distrib,
+      ← Finset.sum_add_distrib]
+    apply Finset.sum_congr rfl
+    intro bidx _
+    generalize hget : rrBasis7.getD bidx.val (0, 0, 0) = g
+    rcases g with ⟨fst, bi, bj⟩
+    have hbj0or1 : bj = 0 ∨ bj = 1 := by
+      have hlen : rrBasis7.length = 7 := by
+        simp [rrBasis7, rrBasisCandidates, List.length_flatMap]
+      have hlt : bidx.val < rrBasis7.length := by rw [hlen]; exact bidx.isLt
+      have hflag : (rrBasis7.getD bidx.val (0, 0, 0)).2.2 = 0 ∨
+          (rrBasis7.getD bidx.val (0, 0, 0)).2.2 = 1 := by
+        rw [List.getD_eq_getElem _ _ hlt]
+        exact rrBasis7_flag _ (List.getElem_mem hlt)
+      rw [hget] at hflag
+      exact hflag
+    rcases hbj0or1 with hb0 | hb1
+    · subst bj
+      simp [tangentRowEntryX4, Polynomial.derivative_C_mul,
+        Polynomial.eval_mul, Polynomial.eval_C]
+      <;> ring
+    · subst bj
+      simp [tangentRowEntryX4, Polynomial.derivative_C_mul,
+        Polynomial.eval_mul, Polynomial.eval_C, Polynomial.derivative_X_pow]
+      <;> push_cast
+      <;> ring
 
 /-- `E(x) = Σ_{bj=0} c_i x^i` for the K=4 instance — mirrors `Epoly`
 exactly, summing over `Fin 7` instead of `Fin 5`. -/
@@ -1465,6 +1988,16 @@ theorem Npoly4_natDegree_le_eight (c0 c1 c2 c3 c4 : F p) (P1 P2 : F p × F p)
       (curvePoly p c0 c1 c2 c3 c4 * Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ^ 2))
     (max_le hE2 (le_trans hfY2 (by norm_num)))
 
+/-- `N(x)` for the TANGENT case (`P1=P2`, one point `(px,py)` with
+multiplicity 2) — same `E²-fY²` formula as `Npoly4`, substituting
+`Epoly4Tangent`/`Ypoly4Tangent`. This is `Npoly4`'s replacement when the
+two literal-point anchors collapse into one tangent anchor, per
+`ROADMAP-alpha-locus.md`'s tangent-row section. -/
+noncomputable def Npoly4Tangent (ua0 ua1 va0 va1 u0 u1 v0 v1 : F p) :
+    Polynomial (F p) :=
+  Epoly4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 ^ 2 -
+    curvePoly p c0 c1 c2 c3 c4 * Ypoly4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 ^ 2
+
 /-- The quotient `N(x) / ((x-P1.x)(x-P2.x)(x²+ua1*x+ua0)(x²+u1*x+u0))` —
 the K=4 analogue of `curBeforeMonic`, dividing out BOTH known quadratics
 (`u_a` and the target `u`) directly rather than by literal roots, per this
@@ -1720,6 +2253,86 @@ theorem sq_dvd_of_eval_derivative_eq_zero
   have hdvd : (X - C t) ^ f.rootMultiplicity t ∣ f :=
     ⟨f /ₘ (X - C t) ^ f.rootMultiplicity t, hmul.symm⟩
   exact (pow_dvd_pow (X - C t) hge).trans hdvd
+
+/-! ## The tangent-case squared-factor divisibility fact — steps (iii)/(iv)
+
+Closes `ROADMAP-alpha-locus.md`'s recommended-scope items (iii) (redo the
+`P1=P2` divisibility using the value/derivative lemmas above) using the
+row-identity facts `rowTangent0_defining_eq_aux`/`rowTangent1_defining_eq_aux`
+built earlier in this file, now that `sq_dvd_of_eval_derivative_eq_zero`
+is available to conclude from them. -/
+
+/-- **`(X - C px)² ∣ Npoly4Tangent`** — the tangent-case analogue of
+`dvd_N_P1`/`dvd_N_P2`. Route: `Npoly4Tangent.eval px = 0` follows exactly
+as in `dvd_N_P1` (from `rowTangent0_defining_eq_aux` + the curve relation
+`py²=f(px)`); `(derivative Npoly4Tangent).eval px = 0` needs the
+product/chain rule on `E²-fY²` plus `rowTangent1_defining_eq_aux` (the
+branch-derivative row) and, crucially, `branchDeriv4`'s own defining
+property `2*py*branchDeriv4 = f'(px)` (valid since `py≠0`) to cancel the
+`f'(px)*Y(px)²` term against the `2*f(px)*Y(px)*Y'(px)` cross-term. Both
+value and derivative vanishing then give `(X-C px)²∣N` via
+`sq_dvd_of_eval_derivative_eq_zero`.
+
+**New hypothesis surfaced this pass, not previously flagged anywhere in
+this file**: `hp2 : (2:F p)≠0`, i.e. `p ≠ 2`. `branchDeriv4` divides by
+`2*py`, so at `p=2` it silently returns `0` (division by zero convention)
+and `2*py*branchDeriv4 = f'(px)` becomes the false statement `0=f'(px)`.
+This file's module docstring elsewhere claims "no extra `Fact (p≠2)`
+needed" for the K=4 construction generally — that claim is still correct
+for the SIMPLE-point case (`dvd_N_P1`/`dvd_N_P2`/etc., which never divide
+by `2`), but is now known to be false for the TANGENT case specifically:
+odd characteristic is a genuine precondition of the branch-derivative
+construction (standard — `p=2` hyperelliptic curves need Artin-Schreier
+theory instead of `y²=f(x)`'s usual calculus, well outside this project's
+scope), not a Lean-engineering artifact. Should be folded into whatever
+`Bad`/exceptional-locus bookkeeping this project already does for `p=2`
+(if any currently exists), rather than silently assumed away. -/
+theorem dvd_N_P1P2_tangent (ua0 ua1 va0 va1 u0 u1 v0 v1 : F p)
+    (hA : MatrixNondegenerate4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1)
+    (hpy : py ≠ 0) (hp2 : (2 : F p) ≠ 0)
+    (hP_curve : py ^ 2 = (curvePoly p c0 c1 c2 c3 c4).eval px)
+    (hNe : Npoly4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 ≠ 0) :
+    (X - C px) ^ 2 ∣ Npoly4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 := by
+  have hval := rowTangent0_defining_eq_aux p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 hA
+  have hder := rowTangent1_defining_eq_aux p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 hA
+  have hEeq : (Epoly4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1).eval px =
+      -(py * (Ypoly4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1).eval px) := by
+    exact eq_neg_of_add_eq_zero_left hval
+  have h0 : (Npoly4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1).eval px = 0 := by
+    unfold Npoly4Tangent
+    rw [Polynomial.eval_sub, Polynomial.eval_pow, Polynomial.eval_mul, Polynomial.eval_pow,
+      hEeq, neg_sq, mul_pow, ← hP_curve]
+    ring
+  have hbranch : 2 * py * branchDeriv4 p c0 c1 c2 c3 c4 px py =
+      (derivative (curvePoly p c0 c1 c2 c3 c4)).eval px := by
+    unfold branchDeriv4
+    have h2py : (2 : F p) * py ≠ 0 := mul_ne_zero hp2 hpy
+    field_simp
+  have hderE : (derivative (Epoly4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1)).eval
+      px = -(py * (derivative
+        (Ypoly4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1)).eval px) -
+      (Ypoly4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1).eval px *
+        branchDeriv4 p c0 c1 c2 c3 c4 px py := by
+    rw [add_assoc] at hder
+    have h := eq_neg_of_add_eq_zero_left hder
+    rw [neg_add] at h
+    simpa only [sub_eq_add_neg] using h
+  have h1 : (derivative (Npoly4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1)).eval px
+      = 0 := by
+    have hNsq : Npoly4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 =
+        Epoly4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 *
+          Epoly4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 -
+        curvePoly p c0 c1 c2 c3 c4 *
+          (Ypoly4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 *
+            Ypoly4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1) := by
+      unfold Npoly4Tangent; ring
+    rw [hNsq]
+    simp only [Polynomial.derivative_sub, Polynomial.derivative_mul, Polynomial.eval_sub,
+      Polynomial.eval_add, Polynomial.eval_mul]
+    rw [hderE, hEeq, ← hbranch, ← hP_curve]
+    ring
+  exact sq_dvd_of_eval_derivative_eq_zero p
+    (f := Npoly4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1) (t := px) hNe h0 h1
 
 /-! ## The four K=4 divisibility facts
 
@@ -2326,6 +2939,200 @@ theorem uRS4_dvd_Npoly4
   rw [this, inv_mul_cancel₀ hlc, map_one, one_mul]
 
 end CombineDvd4
+
+/-! ## Tangent-anchor quotient assembly
+
+The tangent case replaces the two linear anchor factors by the single
+squared factor `(X - C px)^2`.  The theorem `dvd_N_P1P2_tangent` supplies
+that squared-factor divisibility.  The following lemmas extend the existing
+`/ₘ` quotient bookkeeping through that repeated factor, so the tangent case
+has the same quotient/normalization layer as the ordinary four-factor case.
+Coprimality remains explicit: establishing the exceptional-locus hypotheses
+is separate from this polynomial bookkeeping. -/
+
+section TangentCombine4
+
+variable (c0 c1 c2 c3 c4 : F p) (px py : F p)
+
+/-- Tangent-case quotient after removing the squared literal-point factor and
+`u_a`. -/
+noncomputable def curBeforeMonic4Tangent
+    (ua0 ua1 va0 va1 u0 u1 v0 v1 : F p) : Polynomial (F p) :=
+  ((Npoly4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 /ₘ
+      (X - C px) ^ 2) /ₘ
+    (X ^ 2 + C ua1 * X + C ua0))
+
+/-- The squared tangent-anchor factor is monic. -/
+theorem tangentAnchorPoly4_monic :
+    ((X - C px : Polynomial (F p)) ^ 2).Monic := by
+  exact (Polynomial.monic_X_sub_C px).pow 2
+
+/-- Three pairwise-coprime divisors combine into their product. -/
+theorem prod_dvd_of_pairwise_coprime_three
+    {R : Type*} [CommRing R] {q1 q2 q3 N : R}
+    (h12 : IsCoprime q1 q2) (h13 : IsCoprime q1 q3)
+    (h23 : IsCoprime q2 q3)
+    (hd1 : q1 ∣ N) (hd2 : q2 ∣ N) (hd3 : q3 ∣ N) :
+    q1 * q2 * q3 ∣ N := by
+  have h12_3 : IsCoprime (q1 * q2) q3 := IsCoprime.mul_left h13 h23
+  have hd12 : q1 * q2 ∣ N := IsCoprime.mul_dvd h12 hd1 hd2
+  have hprod : (q1 * q2) * q3 ∣ N := IsCoprime.mul_dvd h12_3 hd12 hd3
+  have heq : (q1 * q2) * q3 = q1 * q2 * q3 := by ring
+  rwa [heq] at hprod
+
+/-- The tangent quotient divides `N` once the squared tangent factor, `u_a`,
+and the target all divide `N` pairwise-coprimely. -/
+theorem curBeforeMonic4Tangent_dvd_Npoly4Tangent
+    (ua0 ua1 va0 va1 u0 u1 v0 v1 : F p)
+    (hTan : ((X - C px : Polynomial (F p)) ^ 2) ∣
+      Npoly4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1)
+    (hUa : (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)) ∣
+      Npoly4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1)
+    (hU : (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)) ∣
+      Npoly4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1)
+    (hTUa : IsCoprime ((X - C px : Polynomial (F p)) ^ 2)
+      (X ^ 2 + C ua1 * X + C ua0))
+    (hTU : IsCoprime ((X - C px : Polynomial (F p)) ^ 2)
+      (X ^ 2 + C u1 * X + C u0))
+    (hUaU : IsCoprime (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p))
+      (X ^ 2 + C u1 * X + C u0)) :
+    curBeforeMonic4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 ∣
+      Npoly4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 := by
+  have hprod :
+      ((X - C px : Polynomial (F p)) ^ 2) *
+          (X ^ 2 + C ua1 * X + C ua0) *
+          (X ^ 2 + C u1 * X + C u0) ∣
+        Npoly4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 :=
+    prod_dvd_of_pairwise_coprime_three hTUa hTU hUaU hTan hUa hU
+  obtain ⟨k, hk⟩ := hprod
+  have htMonic : ((X - C px : Polynomial (F p)) ^ 2).Monic :=
+    tangentAnchorPoly4_monic p px
+  have huaMonic : (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).Monic := by
+    monicity!
+  have hstep0 :
+      Npoly4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 =
+        (X - C px) ^ 2 *
+          ((X ^ 2 + C ua1 * X + C ua0) *
+            ((X ^ 2 + C u1 * X + C u0) * k)) := by
+    rw [hk]
+    ring
+  have hstep1 :
+      Npoly4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 /ₘ
+          (X - C px) ^ 2 =
+        (X ^ 2 + C ua1 * X + C ua0) *
+          ((X ^ 2 + C u1 * X + C u0) * k) :=
+    divByMonic_eq_of_dvd_mul htMonic hstep0
+  have hstep2 :
+      (Npoly4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 /ₘ
+          (X - C px) ^ 2) /ₘ
+          (X ^ 2 + C ua1 * X + C ua0) =
+        (X ^ 2 + C u1 * X + C u0) * k :=
+    divByMonic_eq_of_dvd_mul huaMonic hstep1
+  unfold curBeforeMonic4Tangent
+  rw [hstep2]
+  exact ⟨(X - C px) ^ 2 * (X ^ 2 + C ua1 * X + C ua0), by
+    rw [hk]
+    ring⟩
+
+/-- Monic normalization of the tangent quotient. -/
+noncomputable def uRS4Tangent
+    (ua0 ua1 va0 va1 u0 u1 v0 v1 : F p) : Polynomial (F p) :=
+  C (curBeforeMonic4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1).leadingCoeff⁻¹ *
+    curBeforeMonic4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1
+
+theorem uRS4Tangent_monic
+    (ua0 ua1 va0 va1 u0 u1 v0 v1 : F p)
+    (hcur : curBeforeMonic4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 ≠ 0) :
+    (uRS4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1).Monic := by
+  simp only [uRS4Tangent]
+  set q := curBeforeMonic4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 with hq
+  have hlc : q.leadingCoeff ≠ 0 :=
+    (not_congr Polynomial.leadingCoeff_eq_zero).mpr hcur
+  have hau : q.leadingCoeff * q.leadingCoeff⁻¹ = 1 := mul_inv_cancel₀ hlc
+  have hdeg : (C q.leadingCoeff⁻¹ * q).natDegree = q.natDegree :=
+    Polynomial.natDegree_C_mul_eq_of_mul_eq_one hau
+  rw [Polynomial.Monic.def]
+  change (C q.leadingCoeff⁻¹ * q).coeff (C q.leadingCoeff⁻¹ * q).natDegree = 1
+  rw [hdeg, Polynomial.coeff_C_mul]
+  exact inv_mul_cancel₀ hlc
+
+/-- The normalized tangent quotient divides the tangent numerator. -/
+theorem uRS4Tangent_dvd_Npoly4Tangent
+    (ua0 ua1 va0 va1 u0 u1 v0 v1 : F p)
+    (hcur : curBeforeMonic4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 ≠ 0)
+    (hTan : ((X - C px : Polynomial (F p)) ^ 2) ∣
+      Npoly4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1)
+    (hUa : (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)) ∣
+      Npoly4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1)
+    (hU : (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)) ∣
+      Npoly4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1)
+    (hTUa : IsCoprime ((X - C px : Polynomial (F p)) ^ 2)
+      (X ^ 2 + C ua1 * X + C ua0))
+    (hTU : IsCoprime ((X - C px : Polynomial (F p)) ^ 2)
+      (X ^ 2 + C u1 * X + C u0))
+    (hUaU : IsCoprime (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p))
+      (X ^ 2 + C u1 * X + C u0)) :
+    uRS4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 ∣
+      Npoly4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 := by
+  have hq := curBeforeMonic4Tangent_dvd_Npoly4Tangent p c0 c1 c2 c3 c4 px py
+    ua0 ua1 va0 va1 u0 u1 v0 v1 hTan hUa hU hTUa hTU hUaU
+  unfold uRS4Tangent
+  obtain ⟨m, hm⟩ := hq
+  have hlc : (curBeforeMonic4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1).leadingCoeff ≠ 0 :=
+    (not_congr Polynomial.leadingCoeff_eq_zero).mpr hcur
+  refine ⟨C (curBeforeMonic4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1).leadingCoeff * m, ?_⟩
+  rw [hm]
+  have hscale :
+      (C (curBeforeMonic4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1).leadingCoeff⁻¹ *
+        curBeforeMonic4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1) *
+      (C (curBeforeMonic4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1).leadingCoeff * m) =
+      C ((curBeforeMonic4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1).leadingCoeff⁻¹ *
+        (curBeforeMonic4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1).leadingCoeff) *
+      (curBeforeMonic4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 * m) := by
+    simp only [map_mul]
+    ring
+  rw [hscale, inv_mul_cancel₀ hlc, map_one, one_mul]
+
+/-- Tangent analogue of `vRS4`: the normalized `-E * Y⁻¹ (mod uRS)` remainder. -/
+noncomputable def vRS4Tangent
+    (ua0 ua1 va0 va1 u0 u1 v0 v1 : F p)
+    (_hgcd : IsCoprime
+      (Ypoly4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1)
+      (uRS4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1)) :
+    Polynomial (F p) :=
+  (-(Epoly4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1) *
+      EuclideanDomain.gcdA
+        (Ypoly4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1)
+        (uRS4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1)) %ₘ
+    uRS4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1
+
+/-- Tangent Mumford congruence, conditional on the same Bezout inverse witness
+used by the ordinary K=4 construction. -/
+theorem vRS4Tangent_sq_eq_f_mod_uRS4Tangent
+    (ua0 ua1 va0 va1 u0 u1 v0 v1 : F p)
+    (hcur : curBeforeMonic4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 ≠ 0)
+    (hgcd : IsCoprime
+      (Ypoly4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1)
+      (uRS4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1))
+    (hNu :
+      uRS4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 ∣
+        Npoly4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1)
+    (hInv :
+      uRS4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 ∣
+        Ypoly4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 *
+            EuclideanDomain.gcdA
+              (Ypoly4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1)
+              (uRS4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1) - 1) :
+    (vRS4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 hgcd) ^ 2 %ₘ
+        uRS4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 =
+      (curvePoly p c0 c1 c2 c3 c4) %ₘ
+        uRS4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 := by
+  have hU : (uRS4Tangent p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1).Monic :=
+    uRS4Tangent_monic p c0 c1 c2 c3 c4 px py ua0 ua1 va0 va1 u0 u1 v0 v1 hcur
+  have hmod := sq_mod_eq_of_dvd_4 hU hNu hInv
+  simpa only [vRS4Tangent] using hmod
+
+end TangentCombine4
 
 section MumfordIdentity4
 
