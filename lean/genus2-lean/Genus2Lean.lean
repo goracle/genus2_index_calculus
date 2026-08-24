@@ -47,3 +47,6 @@ import Genus2Lean.AlphaReduce
 import Genus2Lean.SharedRootCombining
 import Genus2Lean.AlphaLocusDegreeUniform
 import Genus2Lean.P1TargetSharedRoot
+import Genus2Lean.P2TargetSharedRoot
+import Genus2Lean.P1UaSharedRoot
+import Genus2Lean.P2UaSharedRoot
