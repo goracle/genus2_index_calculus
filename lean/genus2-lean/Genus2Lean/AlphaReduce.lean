@@ -142,7 +142,7 @@ direct computation this pass to be
 K=2 that changes `Ypoly4`'s degree bound (`≤ 1`, not `≤ 0` the way
 `Ypoly_natDegree_le_zero` has it for K=2) once that def is written. -/
 def rrBasis7 : List (ℕ × ℕ × ℕ) :=
-  ((rrBasisCandidates 20).mergeSort (fun a b => a.1 ≤ b.1)).take 7
+  ((rrBasisCandidates 20).mergeSort (fun a b => decide (a.1 ≤ b.1))).take 7
 
 /-- **`rrBasis7`'s literal value, proved (not merely asserted).** The
 `Perm` + `Sorted`-uniqueness route (ChatGPT consultation,
@@ -163,39 +163,52 @@ output equals `full22`; `.take 7` of that is `rrBasis7`. -/
 theorem rrBasis7_eq :
     rrBasis7 =
       [(0,0,0), (2,1,0), (4,2,0), (5,0,1), (6,3,0), (7,1,1), (8,4,0)] := by
-  have hfull22 : (rrBasisCandidates 20).mergeSort (fun a b => a.1 ≤ b.1) =
+  have hfull22 :
+      (rrBasisCandidates 20).mergeSort (fun a b => decide (a.1 ≤ b.1)) =
       [(0,0,0), (2,1,0), (4,2,0), (5,0,1), (6,3,0), (7,1,1), (8,4,0), (9,2,1),
        (10,5,0), (11,3,1), (12,6,0), (13,4,1), (14,7,0), (15,5,1), (16,8,0),
        (17,6,1), (18,9,0), (19,7,1), (20,10,0), (21,8,1), (23,9,1), (25,10,1)] := by
-    have hsorted : List.Sorted (fun a b : ℕ × ℕ × ℕ => a.1 ≤ b.1)
-        ((rrBasisCandidates 20).mergeSort (fun a b => a.1 ≤ b.1)) :=
-      List.sorted_mergeSort' (fun a b : ℕ × ℕ × ℕ => a.1 ≤ b.1)
-        (rrBasisCandidates 20)
-    have hperm : (rrBasisCandidates 20).mergeSort (fun a b => a.1 ≤ b.1)
-        ~ rrBasisCandidates 20 :=
-      List.perm_mergeSort (fun a b : ℕ × ℕ × ℕ => a.1 ≤ b.1) (rrBasisCandidates 20)
+    have hsorted : List.Pairwise (fun a b : ℕ × ℕ × ℕ => a.1 ≤ b.1)
+        ((rrBasisCandidates 20).mergeSort (fun a b => decide (a.1 ≤ b.1))) := by
+      have hb : List.Pairwise (fun a b : ℕ × ℕ × ℕ => decide (a.1 ≤ b.1) = true)
+          ((rrBasisCandidates 20).mergeSort (fun a b => decide (a.1 ≤ b.1))) := by
+        apply List.pairwise_mergeSort
+        · intro a b c hab hbc
+          exact decide_eq_true (Nat.le_trans (of_decide_eq_true hab) (of_decide_eq_true hbc))
+        · intro a b
+          rcases Nat.le_total a.1 b.1 with h | h
+          · have : decide (a.1 ≤ b.1) = true := decide_eq_true h
+            simp [this]
+          · have : decide (b.1 ≤ a.1) = true := decide_eq_true h
+            simp [this]
+      exact hb.imp (fun h => of_decide_eq_true h)
+    have hperm :
+        List.Perm ((rrBasisCandidates 20).mergeSort (fun a b => decide (a.1 ≤ b.1)))
+          (rrBasisCandidates 20) :=
+      List.mergeSort_perm (rrBasisCandidates 20) (fun a b => decide (a.1 ≤ b.1))
     rw [rrBasisCandidates_20_eq] at hperm
     -- The literal target is itself a permutation of the same 22-element
     -- list (ordinary, `mergeSort`-free `List.Perm` decision) and sorted by
     -- first component (ordinary arithmetic) — with all 22 first components
-    -- pairwise distinct, so `Sorted (≤)` pins down the sequence uniquely
+    -- pairwise distinct, so `Pairwise (≤)` pins down the sequence uniquely
     -- among permutations, by antisymmetry of `≤` on the (all-distinct)
     -- first coordinates actually present.
     have htarget_perm :
-        [(0,0,0), (2,1,0), (4,2,0), (5,0,1), (6,3,0), (7,1,1), (8,4,0), (9,2,1),
-         (10,5,0), (11,3,1), (12,6,0), (13,4,1), (14,7,0), (15,5,1), (16,8,0),
-         (17,6,1), (18,9,0), (19,7,1), (20,10,0), (21,8,1), (23,9,1), (25,10,1)]
-          ~ [(0,0,0), (5,0,1), (2,1,0), (7,1,1), (4,2,0), (9,2,1), (6,3,0), (11,3,1),
-             (8,4,0), (13,4,1), (10,5,0), (15,5,1), (12,6,0), (17,6,1), (14,7,0),
-             (19,7,1), (16,8,0), (21,8,1), (18,9,0), (23,9,1), (20,10,0), (25,10,1)] := by
+        List.Perm
+          [(0,0,0), (2,1,0), (4,2,0), (5,0,1), (6,3,0), (7,1,1), (8,4,0), (9,2,1),
+           (10,5,0), (11,3,1), (12,6,0), (13,4,1), (14,7,0), (15,5,1), (16,8,0),
+           (17,6,1), (18,9,0), (19,7,1), (20,10,0), (21,8,1), (23,9,1), (25,10,1)]
+          [(0,0,0), (5,0,1), (2,1,0), (7,1,1), (4,2,0), (9,2,1), (6,3,0), (11,3,1),
+           (8,4,0), (13,4,1), (10,5,0), (15,5,1), (12,6,0), (17,6,1), (14,7,0),
+           (19,7,1), (16,8,0), (21,8,1), (18,9,0), (23,9,1), (20,10,0), (25,10,1)] := by
       decide
-    have htarget_sorted : List.Sorted (fun a b : ℕ × ℕ × ℕ => a.1 ≤ b.1)
+    have htarget_sorted : List.Pairwise (fun a b : ℕ × ℕ × ℕ => a.1 ≤ b.1)
         [(0,0,0), (2,1,0), (4,2,0), (5,0,1), (6,3,0), (7,1,1), (8,4,0), (9,2,1),
          (10,5,0), (11,3,1), (12,6,0), (13,4,1), (14,7,0), (15,5,1), (16,8,0),
          (17,6,1), (18,9,0), (19,7,1), (20,10,0), (21,8,1), (23,9,1), (25,10,1)] := by
       decide
-    exact List.eq_of_perm_of_sorted (htarget_perm.trans hperm.symm) htarget_sorted hsorted
-  show ((rrBasisCandidates 20).mergeSort (fun a b => a.1 ≤ b.1)).take 7 = _
+    exact List.Perm.eq_of_pairwise' hsorted htarget_sorted (hperm.trans htarget_perm.symm)
+  show ((rrBasisCandidates 20).mergeSort (fun a b => decide (a.1 ≤ b.1))).take 7 = _
   rw [hfull22]
 
 /-- Every element of `rrBasis7` has flag component `0` or `1` — mirrors
@@ -207,7 +220,7 @@ way `rrBasis5_flag` is needed by `anchor_defining_eq_aux`'s. -/
 theorem rrBasis7_flag : ∀ t ∈ rrBasis7, t.2.2 = 0 ∨ t.2.2 = 1 := by
   intro t ht
   apply rrBasisCandidates_flag 20
-  have ht' : t ∈ (rrBasisCandidates 20).mergeSort (fun a b => a.1 ≤ b.1) :=
+  have ht' : t ∈ (rrBasisCandidates 20).mergeSort (fun a b => decide (a.1 ≤ b.1)) :=
     List.mem_of_mem_take ht
   exact (List.mem_mergeSort).mp ht'
 
@@ -800,33 +813,6 @@ theorem Epoly4_natDegree_le_four (P1 P2 : F p × F p)
   · compute_degree!
   · simp
 
-/-- `Npoly4`'s degree bound: `≤ 8`, assembled from `Epoly4_natDegree_le_four`/
-`Ypoly4_natDegree_le_one`/`curvePoly_natDegree` (`= 5`, already proved
-upstream, no `fAtX`/tower promotion needed here since everything is over
-plain `F p` — see this file's own module docstring). Same
-`natDegree_sub_le`/`natDegree_mul_le`/`natDegree_pow_le` triangle-inequality
-assembly as `Npoly_natDegree_le_six`: `max (2*4) (5 + 2*1) = max 8 7 = 8`. -/
-theorem Npoly4_natDegree_le_eight (c0 c1 c2 c3 c4 : F p) (P1 P2 : F p × F p)
-    (ua0 ua1 va0 va1 u0 u1 v0 v1 : F p) :
-    (Npoly4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1).natDegree ≤ 8 := by
-  unfold Npoly4
-  have hE4 := Epoly4_natDegree_le_four p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1
-  have hY1 := Ypoly4_natDegree_le_one p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1
-  have hf5 : (curvePoly p c0 c1 c2 c3 c4).natDegree = 5 := curvePoly_natDegree p c0 c1 c2 c3 c4
-  have hE2 : (Epoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ^ 2).natDegree ≤ 8 :=
-    le_trans (Polynomial.natDegree_pow_le_of_le 2 hE4) (by norm_num)
-  have hY2 : (Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ^ 2).natDegree ≤ 2 :=
-    le_trans (Polynomial.natDegree_pow_le_of_le 2 hY1) (by norm_num)
-  have hfY2 : (curvePoly p c0 c1 c2 c3 c4 *
-      Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ^ 2).natDegree ≤ 7 := by
-    have hstep := Polynomial.natDegree_mul_le (p := curvePoly p c0 c1 c2 c3 c4)
-      (q := Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ^ 2)
-    omega
-  exact le_trans
-    (Polynomial.natDegree_sub_le (Epoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ^ 2)
-      (curvePoly p c0 c1 c2 c3 c4 * Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ^ 2))
-    (max_le hE2 (le_trans hfY2 (by norm_num)))
-
 /-! ## The three row-identity theorems, K=4 instance
 
 Direct rescaling of `anchor_defining_eq_aux`/`row23_defining_eq_aux`
@@ -1256,6 +1242,33 @@ noncomputable def Npoly4 (c0 c1 c2 c3 c4 : F p) (P1 P2 : F p × F p)
     Polynomial (F p) :=
   Epoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ^ 2 -
     curvePoly p c0 c1 c2 c3 c4 * Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ^ 2
+
+/-- `Npoly4`'s degree bound: `≤ 8`, assembled from `Epoly4_natDegree_le_four`/
+`Ypoly4_natDegree_le_one`/`curvePoly_natDegree` (`= 5`, already proved
+upstream, no `fAtX`/tower promotion needed here since everything is over
+plain `F p` — see this file's own module docstring). Same
+`natDegree_sub_le`/`natDegree_mul_le`/`natDegree_pow_le` triangle-inequality
+assembly as `Npoly_natDegree_le_six`: `max (2*4) (5 + 2*1) = max 8 7 = 8`. -/
+theorem Npoly4_natDegree_le_eight (c0 c1 c2 c3 c4 : F p) (P1 P2 : F p × F p)
+    (ua0 ua1 va0 va1 u0 u1 v0 v1 : F p) :
+    (Npoly4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1).natDegree ≤ 8 := by
+  unfold Npoly4
+  have hE4 := Epoly4_natDegree_le_four p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1
+  have hY1 := Ypoly4_natDegree_le_one p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1
+  have hf5 : (curvePoly p c0 c1 c2 c3 c4).natDegree = 5 := curvePoly_natDegree p c0 c1 c2 c3 c4
+  have hE2 : (Epoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ^ 2).natDegree ≤ 8 :=
+    le_trans (Polynomial.natDegree_pow_le_of_le 2 hE4) (by norm_num)
+  have hY2 : (Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ^ 2).natDegree ≤ 2 :=
+    le_trans (Polynomial.natDegree_pow_le_of_le 2 hY1) (by norm_num)
+  have hfY2 : (curvePoly p c0 c1 c2 c3 c4 *
+      Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ^ 2).natDegree ≤ 7 := by
+    have hstep := Polynomial.natDegree_mul_le (p := curvePoly p c0 c1 c2 c3 c4)
+      (q := Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ^ 2)
+    omega
+  exact le_trans
+    (Polynomial.natDegree_sub_le (Epoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ^ 2)
+      (curvePoly p c0 c1 c2 c3 c4 * Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ^ 2))
+    (max_le hE2 (le_trans hfY2 (by norm_num)))
 
 /-- The quotient `N(x) / ((x-P1.x)(x-P2.x)(x²+ua1*x+ua0)(x²+u1*x+u0))` —
 the K=4 analogue of `curBeforeMonic`, dividing out BOTH known quadratics
