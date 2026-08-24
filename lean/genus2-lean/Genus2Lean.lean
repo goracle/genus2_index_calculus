@@ -50,3 +50,4 @@ import Genus2Lean.ZeroD.Reduce.P1TargetSharedRoot
 import Genus2Lean.ZeroD.Reduce.P2TargetSharedRoot
 import Genus2Lean.ZeroD.Reduce.P1UaSharedRoot
 import Genus2Lean.ZeroD.Reduce.P2UaSharedRoot
+import Genus2Lean.ZeroD.Reduce.GeneralSharedRoot
