@@ -46,9 +46,9 @@ theorem npoly4_dvd_of_p2_ua_shared_root
     (h24 : IsCoprime (X - C P1.1 : Polynomial (F p))
       (X ^ 2 + C u1 * X + C u0))
     (h2L : IsCoprime (X - C P1.1 : Polynomial (F p))
-      (p2UaLcm4 p P1 ua0 ua1))
+      (p2UaLcm4 p P2 ua0 ua1))
     (hUL : IsCoprime (X ^ 2 + C u1 * X + C u0 : Polynomial (F p))
-      (p2UaLcm4 p P1 ua0 ua1))
+      (p2UaLcm4 p P2 ua0 ua1))
     (hd2 : (X - C P1.1 : Polynomial (F p)) ∣
       Npoly4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1)
     (hd4 : (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)) ∣
@@ -57,7 +57,7 @@ theorem npoly4_dvd_of_p2_ua_shared_root
       Npoly4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1)
     (hd3 : (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)) ∣
       Npoly4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1) :
-    (X - C P1.1) * (X ^ 2 + C u1 * X + C u0) * (p2UaLcm4 p P1 ua0 ua1) ∣
+    (X - C P1.1) * (X ^ 2 + C u1 * X + C u0) * (p2UaLcm4 p P2 ua0 ua1) ∣
       Npoly4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 :=
   prod_dvd_of_coprime_to_lcm h24 h2L hUL hd2 hd4 hd1 hd3
 
@@ -70,9 +70,9 @@ theorem npoly4_quotient_eq_p2_ua_lcm_mul_of_shared_root
     (h24 : IsCoprime (X - C P1.1 : Polynomial (F p))
       (X ^ 2 + C u1 * X + C u0))
     (h2L : IsCoprime (X - C P1.1 : Polynomial (F p))
-      (p2UaLcm4 p P1 ua0 ua1))
+      (p2UaLcm4 p P2 ua0 ua1))
     (hUL : IsCoprime (X ^ 2 + C u1 * X + C u0 : Polynomial (F p))
-      (p2UaLcm4 p P1 ua0 ua1))
+      (p2UaLcm4 p P2 ua0 ua1))
     (hd2 : (X - C P1.1 : Polynomial (F p)) ∣
       Npoly4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1)
     (hd4 : (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)) ∣
@@ -84,7 +84,7 @@ theorem npoly4_quotient_eq_p2_ua_lcm_mul_of_shared_root
     ∃ k : Polynomial (F p),
       (Npoly4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 /ₘ (X - C P1.1)) /ₘ
           (X ^ 2 + C u1 * X + C u0) =
-        p2UaLcm4 p P1 ua0 ua1 * k := by
+        p2UaLcm4 p P2 ua0 ua1 * k := by
   obtain ⟨k, hk⟩ := npoly4_dvd_of_p2_ua_shared_root
     p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 h24 h2L hUL hd2 hd4 hd1 hd3
   refine ⟨k, ?_⟩
@@ -92,11 +92,11 @@ theorem npoly4_quotient_eq_p2_ua_lcm_mul_of_shared_root
   have hmu : (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).Monic := by monicity!
   have hstep0 :
       Npoly4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 =
-        (X - C P1.1) * ((X ^ 2 + C u1 * X + C u0) * (p2UaLcm4 p P1 ua0 ua1 * k)) := by
+        (X - C P1.1) * ((X ^ 2 + C u1 * X + C u0) * (p2UaLcm4 p P2 ua0 ua1 * k)) := by
     rw [hk]; ring
   have hstep1 :
       Npoly4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 /ₘ (X - C P1.1) =
-        (X ^ 2 + C u1 * X + C u0) * (p2UaLcm4 p P1 ua0 ua1 * k) :=
+        (X ^ 2 + C u1 * X + C u0) * (p2UaLcm4 p P2 ua0 ua1 * k) :=
     divByMonic_eq_of_dvd_mul hm2 hstep0
   exact divByMonic_eq_of_dvd_mul hmu hstep1
 
@@ -173,9 +173,9 @@ theorem vRS4P2UaShared_sq_eq_f_mod_uRS4P2UaShared
       (uRS4P2UaShared p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1))
     (h24 : IsCoprime (X - C P1.1 : Polynomial (F p))
       (X ^ 2 + C u1 * X + C u0))
-    (h2L : IsCoprime (X - C P1.1 : Polynomial (F p)) (p2UaLcm4 p P1 ua0 ua1))
+    (h2L : IsCoprime (X - C P1.1 : Polynomial (F p)) (p2UaLcm4 p P2 ua0 ua1))
     (hUL : IsCoprime (X ^ 2 + C u1 * X + C u0 : Polynomial (F p))
-      (p2UaLcm4 p P1 ua0 ua1))
+      (p2UaLcm4 p P2 ua0 ua1))
     (hd1 : (X - C P2.1 : Polynomial (F p)) ∣
       Npoly4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1)
     (hd2 : (X - C P1.1 : Polynomial (F p)) ∣
@@ -200,15 +200,15 @@ theorem vRS4P2UaShared_sq_eq_f_mod_uRS4P2UaShared
   have hmu : (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).Monic := by monicity!
   have hstep0 :
       Npoly4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 =
-        (X - C P1.1) * ((X ^ 2 + C u1 * X + C u0) * (p2UaLcm4 p P1 ua0 ua1 * k)) := by
+        (X - C P1.1) * ((X ^ 2 + C u1 * X + C u0) * (p2UaLcm4 p P2 ua0 ua1 * k)) := by
     rw [hk]; ring
   have hstep1 :
       Npoly4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 /ₘ (X - C P1.1) =
-        (X ^ 2 + C u1 * X + C u0) * (p2UaLcm4 p P1 ua0 ua1 * k) :=
+        (X ^ 2 + C u1 * X + C u0) * (p2UaLcm4 p P2 ua0 ua1 * k) :=
     divByMonic_eq_of_dvd_mul hm2 hstep0
   have hstep2 :
       curBeforeMonic4P2UaShared p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 =
-        p2UaLcm4 p P1 ua0 ua1 * k :=
+        p2UaLcm4 p P2 ua0 ua1 * k :=
     divByMonic_eq_of_dvd_mul hmu hstep1
   set cur := curBeforeMonic4P2UaShared p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1
   set U := uRS4P2UaShared p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1
@@ -268,15 +268,15 @@ theorem uRS4_dvd_Npoly4_or_p2_ua_shared_root
     (h34 : IsCoprime (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p))
       (X ^ 2 + C u1 * X + C u0))
     (h2L : IsCoprime (X - C P1.1 : Polynomial (F p))
-      (p2UaLcm4 p P1 ua0 ua1))
+      (p2UaLcm4 p P2 ua0 ua1))
     (hUL : IsCoprime (X ^ 2 + C u1 * X + C u0 : Polynomial (F p))
-      (p2UaLcm4 p P1 ua0 ua1)) :
+      (p2UaLcm4 p P2 ua0 ua1)) :
     (P1.2 ^ 2 = (curvePoly p c0 c1 c2 c3 c4).eval P1.1 ∧
       IsCoprime (X - C P2.1 : Polynomial (F p)) (X ^ 2 + C ua1 * X + C ua0) ∧
       uRS4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ∣
         Npoly4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1) ∨
     (¬ IsCoprime (X - C P2.1 : Polynomial (F p)) (X ^ 2 + C ua1 * X + C ua0) ∧
-      (X - C P1.1) * (X ^ 2 + C u1 * X + C u0) * (p2UaLcm4 p P1 ua0 ua1) ∣
+      (X - C P1.1) * (X ^ 2 + C u1 * X + C u0) * (p2UaLcm4 p P2 ua0 ua1) ∣
         Npoly4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1) := by
   rcases Classical.em
       (IsCoprime (X - C P2.1 : Polynomial (F p)) (X ^ 2 + C ua1 * X + C ua0)) with h23 | h23
@@ -289,7 +289,7 @@ theorem uRS4_dvd_Npoly4_or_p2_ua_shared_root
     have hd4 := dvd_N_u4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 hA hMumfordTarget
     exact Or.inr ⟨h23,
       npoly4_dvd_of_p2_ua_shared_root p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1
-        h14 h2L hUL hd2 hd4 hd1 hd3⟩
+        h14 h2L hUL hd1 hd4 hd2 hd3⟩
 
 end Dispatcher23
 
@@ -324,9 +324,9 @@ theorem vRS4_sq_eq_f_mod_uRS4_or_p2_ua_shared_root
       (X ^ 2 + C u1 * X + C u0))
     (h34 : IsCoprime (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p))
       (X ^ 2 + C u1 * X + C u0))
-    (h2L : IsCoprime (X - C P1.1 : Polynomial (F p)) (p2UaLcm4 p P1 ua0 ua1))
+    (h2L : IsCoprime (X - C P1.1 : Polynomial (F p)) (p2UaLcm4 p P2 ua0 ua1))
     (hUL : IsCoprime (X ^ 2 + C u1 * X + C u0 : Polynomial (F p))
-      (p2UaLcm4 p P1 ua0 ua1))
+      (p2UaLcm4 p P2 ua0 ua1))
     (hcurShared :
       curBeforeMonic4P2UaShared p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ≠ 0)
     (hgcd : (hcop : IsCoprime (X - C P2.1 : Polynomial (F p))
@@ -372,7 +372,7 @@ theorem vRS4_sq_eq_f_mod_uRS4_or_p2_ua_shared_root
     exact Or.inr ⟨h23,
       vRS4P2UaShared_sq_eq_f_mod_uRS4P2UaShared
         p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1
-        hcurShared hgcdShared h14 h2L hUL hd1 hd2 hd3 hd4 hInvShared⟩
+        hcurShared hgcdShared h14 h2L hUL hd2 hd1 hd3 hd4 hInvShared⟩
 
 end Dispatcher23MumfordIdentity
 
