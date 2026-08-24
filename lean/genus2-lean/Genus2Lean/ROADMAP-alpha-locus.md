@@ -468,119 +468,169 @@ against the actual Julia source this pass:
    port's job is the SAME arithmetic over plain `F p` for K=4 concrete
    points, not new mathematical content.
 
-### Update (this pass): step 2's "2 if a repeated/tangent point" case, previously punted, now scoped precisely
+### Update (this pass): step 2's "2 if a repeated/tangent point" case —
+### CONFIRMED against `phi_general.zip`'s actual reference implementation,
+### not designed from scratch. Claire's correction: this is a standard,
+### already-solved part of the pipeline, not new mathematics to invent.
 
-**Claire flagged this directly.** Step 2 above has always said "one row per
-anchor, 2 if a repeated/tangent point, capped at that — simple points only
-expected for our case" — that was a scoping punt from an earlier pass, not
-a resolved question, and `AlphaReduce.lean`'s current K=4 code bakes in the
-simple-point assumption as a hardcoded hypothesis
-(`h12 : IsCoprime (X - C P1.1) (X - C P2.1)` in `uRS4_dvd_Npoly4`) rather
-than as a case split. Concretely, in the DLP/index-calculus setting this
-project actually targets, `P1=P2` (or `P1,P2` hyperelliptic-conjugate, or
-`(u_a,v_a)`'s own two roots coinciding) is not a measure-zero edge case to
-wave off — a factor-base walk revisiting the same point, or a Jacobian
-element whose Mumford divisor happens to be non-reduced/tangent, is a
-realistic input, and `Reduce` needs to handle it rather than silently
-requiring the caller to pre-filter it (that filtering itself is exactly
-the kind of `Bad`-set bookkeeping Step 2's earlier bullets already worry
-about, so getting this right doesn't just improve robustness, it also
-narrows what `Bad` needs to exclude).
+**Corrects the previous version of this section.** That version treated
+the tangent-anchor row formula and the `m≥3` scoping decision as an open
+design question to work out from first principles. It isn't — `06_
+monomial_columns.jl`/`07_build_phi_general.jl`/`05_branch_series.jl`
+(uploaded and read directly this pass) already implement exactly this,
+tested and working, and the port's job is to transcribe that algorithm
+faithfully, not invent one. Corrected picture below, read straight off
+the source rather than reconstructed from the general theory.
 
-**What "P1=P2" (a double root) needs to change, concretely, relative to
-the simple-point recipe above:**
+**The reference implementation's actual design, confirmed line-by-line:**
 
-1. **The interpolation condition itself (step 2's "one row per anchor")
-   changes shape.** A simple anchor `P1=(x1,y1)` contributes one row:
-   `phi(x1,y1) = 0` i.e. `E(x1) + y1*Y(x1) = 0`. A *tangent*/double anchor
-   at the same point contributes that row PLUS a second row from the
-   FIRST-ORDER condition — not `phi` evaluated at a second point (there
-   isn't one), but the derivative of `phi(x, y(x))` along the curve
-   vanishing at `x1`, i.e. (chain rule along `y² = f(x)`, so `2y·y' =
-   f'(x)`) the condition `E'(x1) + y1'*Y(x1) + y1*Y'(x1) = 0` where `y1' =
-   f'(x1)/(2y1)` (needs `y1 ≠ 0`, i.e. `P1` not a Weierstrass point — a
-   genuinely separate degeneracy, already flagged elsewhere in this
-   project as excludable from `Bad`, see `PeelChainAssembly.lean`'s
-   Claire's-nondegeneracy-note near its end). This is standard Hermite/
-   osculating interpolation, not new mathematics, but it IS a different
-   row formula, not a re-use of the same `row01_defining_eq_aux`-style
-   evaluation lemma with a repeated `x`-value plugged in twice (that would
-   give a rank-deficient, not tangency-encoding, linear system).
-2. **The divisibility target changes from `IsCoprime`-based factoring to
-   `rootMultiplicity`.** Once `phi` is built to satisfy both the value AND
-   derivative conditions at `x1`, the resulting `N(x) = E(x)² - f(x)Y(x)²`
-   has `(X - C x1)` as a root of `N` of multiplicity ≥ 2 (standard "double
-   root of `f` ⟹ root of `f'` too" fact, and here it runs the other
-   direction: value+derivative vanishing forces the SQUARE `(X-x1)²` to
-   divide `N`, via `Polynomial.rootMultiplicity` — confirmed this pass via
-   web search that Mathlib4 has the needed pieces:
-   `Polynomial.rootMultiplicity_pos`, `Polynomial.rootMultiplicity_eq_zero_iff`,
-   `Polynomial.prod_multiset_root_eq_finset_root` (roots-with-multiplicity
-   give the exact `∏ (X-a)^rootMultiplicity` factorization), and the
-   `Polynomial.Separable`/`Polynomial.Separable.squarefree` API for the
-   generic/simple-root side. No custom multiplicity theory needs to be
-   built from scratch, but the K=4 divisibility proof
-   (`uRS4_dvd_Npoly4`'s shape) needs a genuinely different lemma for the
-   tangent case — `(X-C x1)^2 ∣ N`, proved via `rootMultiplicity x1 N ≥ 2`
-   from the value+derivative vanishing, not via `IsCoprime`-based
-   `prod_dvd_of_pairwise_coprime_four`.
-3. **`uRS4`'s degree-2 output already has room for this** — a genus-2
-   Mumford `u(x)` of degree 2 with a double root IS the correct
-   representation of a tangent/non-reduced divisor `2[P1]` (that's the
-   whole point of Mumford representation: `u(x)=(x-x1)²` legitimately
-   encodes "the divisor `2P1`", not an error state) — so `uRS4`/`vRS4`'s
-   existing type signatures don't need to change, only the PROOF that
-   `uRS4 ∣ Npoly4` needs a second case.
-4. **How many genuinely distinct cases this creates.** Not just "simple
-   vs. P1=P2" — the full case inventory, matching the "quadruple(??)"
-   question: with `K=4` anchors total (`P1,P2`, and `(u_a,v_a)`'s two
-   roots `Q1,Q2`), the possible coincidence patterns are (a) all four
-   distinct (current code — done), (b) exactly one coincidence among the
-   four (`P1=P2`, or `P1=Q1`, etc. — six sub-cases by symmetry, but
-   algebraically all "one double root among four simple-or-double
-   anchors", the SAME row-and-divisibility fix, just applied to a
-   different pair), (c) two independent coincidences (e.g. `P1=P2` AND
-   `Q1=Q2` simultaneously — two double roots), (d) a triple coincidence
-   (`P1=P2=Q1`, giving a genus-2 curve point of multiplicity 3 in the
-   divisor — needs a SECOND-derivative row, `rootMultiplicity ≥ 3`, this
-   is where "double/triple" stops being symmetric relabeling and starts
-   needing an actual higher-order Hermite condition), (e) `P1=P2=Q1=Q2`
-   (multiplicity 4, needs a third-derivative row). **(d) and (e) are
-   almost certainly not worth building now** — for the DLP walk this
-   project's `AlphaReduce` ultimately serves, `P1,P2` are drawn from a
-   factor base and `alpha•a`'s Mumford roots come from group-law
-   arithmetic; a coincidence of 3+ of the 4 anchor points is a much rarer
-   degeneracy than a single pairwise coincidence, and can reasonably be
-   folded into `Bad`/excluded rather than proved through, at least for a
-   first pass. **(b)/(c) (multiplicity exactly 2, once or twice) are the
-   ones actually worth proving**, since a single repeated point in a
-   factor-base walk (the `P1=P2` case specifically) is a real, not
-   exotic, input.
-5. **Recommended scope for the next pass, in order**: (i) prove the
-   single-double-root case in isolation first — a standalone lemma
-   `rootMultiplicity_ge_two_of_value_and_derivative` (or similarly named)
-   at the general `Polynomial (F p)` level, no `AlphaReduce`-specific
-   content, checked against Mathlib's actual `rootMultiplicity` API before
-   writing Lean (search `Mathlib.Algebra.Polynomial.Div`,
-   `Mathlib.Algebra.Polynomial.Roots`,
-   `Mathlib.RingTheory.Polynomial.Basic` for the exact multiplicity/
-   derivative-vanishing lemma names — `Polynomial.rootMultiplicity`'s
-   docs page and neighbors are the right search surface, not guessed);
-   (ii) build the tangent-anchor row formula for `Epoly4`/`Ypoly4`
-   (probably `Epoly4Tangent`/`Ypoly4Tangent` or a case-split single
-   definition — TBD which reads cleaner) and its own row-identity lemma,
-   mirroring `row01_defining_eq_aux`'s proof shape but for the derivative
-   condition; (iii) redo `dvd_N_P1`-style divisibility using (i)+(ii) to
-   get `(X-C x1)^2 ∣ Npoly4` for the `P1=P2` case specifically; (iv) only
-   after (i)-(iii) are solid, decide whether to generalize to the other
-   five pairwise-coincidence sub-cases of (b) (likely a single lemma
-   parametrized by WHICH two of the four anchors coincide, not six
-   separate proofs, if the row-formula genuinely doesn't care which pair
-   it is) or handle `P1=P2` alone for now and fold the rest into `Bad`.
-   **Nothing implemented yet this pass** — this section is scoping only,
-   per the same "plan before touching a 2000+-line working proof" instinct
-   already used elsewhere in this project; the existing `AlphaReduce.lean`
-   simple-point code is untouched.
+1. **Multiplicity is capped at `m ∈ {1,2}` in the reference code itself**,
+   not just as a convenient simplification for this port.
+   `build_phi_general!`'s anchor loop asserts
+   `occ_count == 1 || occ_count == 2` and errors out explicitly for a
+   point occurring 3+ times ("`fill_f_tay!` extended to `f_tay[3..]`... is
+   not yet supported"); `_monomial_column!` has the identical cap
+   ("only m=1 ... and m=2 ... are implemented; higher-order tangency
+   (m>=3) needs ... `F_yy` cross-term handled explicitly"). So the
+   triple/quadruple-coincidence question from the previous version of
+   this section is already answered by the project's own reference
+   pipeline: **not implemented there either**, by explicit design, not
+   oversight. This directly confirms (rather than just motivates) this
+   roadmap's earlier recommendation to fold `m≥3` into `Bad` rather than
+   build third-derivative Hermite conditions — that's what the working
+   Julia code that actually runs the DLP walk already does.
+2. **Tangency detection**: for anchor `a` in the `K`-tuple, scan
+   `anchors[1..a-1]` for an equal RAW point; if found, this occurrence
+   gets no row at all (`is_repeat_of_earlier`, `continue`s the loop). The
+   FIRST occurrence's own multiplicity `m` is set to
+   `occ_count = ` (how many times this point occurs at or after its first
+   position) — i.e. one point occurring twice in the tuple produces
+   exactly ONE row-block, of size 2, not two separate size-1 row-blocks.
+   Translating directly: in `AlphaReduce.lean`'s terms, if `P1 = P2`
+   (equal as pairs, not just equal x-coordinate — see point 5 below), the
+   anchor list effectively has one fewer occupied "slot," and that slot's
+   row-block is the tangent one, not two ordinary evaluation rows (which
+   would just make the linear system rank-deficient/singular — exactly
+   the bug class `build_phi_general!`'s own header comments describe
+   fixing elsewhere in this file for the analogous single-point case).
+3. **The `m=2` row-block, exact formula, confirmed from source**:
+   - Row 1 (unchanged from `m=1`): the ordinary evaluation row,
+     `phi(px,py) = 0`.
+   - Row 2 (new): the **first-derivative-along-the-branch** row. For the
+     hyperelliptic model `F(x,y) = y² - f(x)`, `fill_f_tay!` computes
+     `F_x(px) = -f'(px)` (a plain Horner evaluation of the derivative
+     coefficients of `curvePoly`/`f`, no `y`-dependence — confirmed
+     directly, `f_tay[2] = -f'(px)` in backend representation). `branch_
+     series!` then forms `Fy = 2·py`, `Fy_inv = Fy⁻¹` (so `py ≠ 0` is a
+     hard precondition — `build_phi_general!` asserts `py != 0`
+     unconditionally for every anchor, not just tangent ones; this is
+     exactly the "not a Weierstrass point" nondegeneracy this roadmap
+     already flagged as needed and excludable via `Bad`), and computes
+     the branch-series derivative `y'(px) = -F_x(px)/F_y(px) =
+     f'(px)/(2·py)` — the standard implicit-function-theorem formula for
+     `y² = f(x)`, matching exactly what this section's earlier draft
+     proposed (`y1' = f'(x1)/(2y1)`), now confirmed rather than derived
+     from scratch.
+   - Per-column derivative contribution (`fill_monomial_block!`'s m=2
+     path, cross-checked in `07_build_phi_general.jl` by an independent
+     `i·px^(i-1)` recomputation for every `j=0` column — worth mirroring
+     as a Lean-side sanity lemma, see point 6 below): for a pure-`x`
+     column `(i,0)`, the derivative-row entry is the ordinary polynomial
+     derivative coefficient `i·px^(i-1)` (the `t¹` coefficient of
+     `(px+t)^i`'s binomial expansion — no branch-series involvement,
+     since this monomial has no `y`). For an `x^i·y` column `(i,1)`, the
+     derivative-row entry needs the PRODUCT RULE against the branch
+     series: `t¹` coefficient of `(px+t)^i·y(px+t)` is
+     `i·px^(i-1)·y(px) + px^i·y'(px)` (both `y(px)=py` and `y'(px)` from
+     the branch series above) — this is the genuinely new per-column
+     formula relative to the `m=1` case, not a simple reuse of the
+     ordinary derivative rule, and it's the piece the previous version of
+     this section correctly flagged as needing "the derivative of
+     `phi(x,y(x))`," now with the exact product-rule expansion confirmed.
+4. **`N(x) = E(x)² - f(x)Y(x)²`'s resulting root structure**: value+
+   derivative vanishing of `phi(x,y(x)) = E(x) + y(x)Y(x)` at `x=px`
+   (with `y(x)` satisfying the curve relation near `px`) is exactly the
+   standard fact that forces `rootMultiplicity px N ≥ 2` — this part of
+   the previous version of this section's plan is unchanged and still the
+   right target (`Polynomial.rootMultiplicity`,
+   `Polynomial.rootMultiplicity_pos`,
+   `Polynomial.rootMultiplicity_eq_zero_iff`,
+   `Polynomial.prod_multiset_root_eq_finset_root`, confirmed present in
+   current Mathlib4 via direct doc search last pass) — nothing in this
+   pass's source-reading changes that half of the plan, only confirms the
+   row-construction half that feeds it.
+5. **One clarification the source reading surfaces that the previous
+   version of this section didn't have precisely right**: tangency
+   detection in the reference implementation is keyed on the anchor being
+   the literal SAME `(px,py)` PAIR (`anchors[prev] == anchors[a]`, a raw
+   tuple equality on both coordinates), not merely `P1.1 = P2.1` (same
+   x-coordinate). This matters for the hyperelliptic-conjugate case this
+   roadmap's `AlphaReduce.lean` status notes flagged earlier
+   (`P1`/`P2`'s x-coordinates coinciding but `y`-coordinates being
+   `y1 = -y2 ≠ y1`, i.e. the two conjugate points over the same `x`): that
+   is NOT tangency in this pipeline's sense at all — it is two perfectly
+   ordinary, distinct simple anchors that merely share an x-coordinate,
+   still `m=1` each, no derivative row needed. Whatever K=4-specific
+   `IsCoprime`-based argument `uRS4_dvd_Npoly4` uses for the "distinct
+   points, possibly same x-coordinate" case should already be fine for
+   this sub-case (the two points are still distinct as PAIRS, hence still
+   coprime in a Mumford/degree-2-factor sense — `(x-x1)` doesn't apply to
+   either since neither has multiplicity, and if `u_a`/target `u` are the
+   size-2 factors covering conjugate pairs, the existing `MatrixNondegenerate4`-
+   style hypotheses likely already cover it structurally); only literal
+   pair-equality `P1 = P2` triggers the genuinely new tangent case. Worth
+   double-checking against `AlphaReduce.lean`'s actual `h12`/`h13`/etc.
+   hypotheses once (i)-(iii) below are underway, but this is a real
+   correction to how "duplicate" should be read, not a new complication —
+   if anything it narrows the tangent case to exactly the one situation
+   the Julia reference code itself treats specially.
+6. **A reusable Lean proof-engineering pattern, not just a math fact,
+   worth adopting from the reference source**: `build_phi_general!`
+   cross-checks the tangent derivative row via an INDEPENDENT
+   recomputation (`i·px^(i-1)` derived directly, not by re-running the
+   same recurrence) and asserts equality — the same "independent
+   re-derivation catches a sign/indexing bug the shared-machinery version
+   can't see" discipline this project's own conventions already favor
+   (see e.g. `compute_branch_series!`'s own "DEFENSIVE ASSERT" comments
+   doing the same thing for `f_tay`). Worth doing the analogous thing in
+   Lean once the tangent row-identity lemma exists: prove the derivative-
+   row coefficient two independent ways (once via whatever recursive
+   construction the Lean port uses, once via a direct closed-form
+   `derivative`-based computation) and check they agree, as an extra
+   confidence check before relying on it in `uRS4_dvd_Npoly4`'s tangent
+   case — not required for correctness (Lean doesn't need runtime
+   assertions the way Julia does), but a good sanity pass while writing
+   the port, mirroring how this project already used ChatGPT/REPL
+   round-trips elsewhere to catch exactly this class of bug early.
+
+**Recommended scope for the next pass, in order (updated, supersedes the
+previous version's step list; (i)-(iii) unchanged in substance, now with
+the confirmed formulas to implement directly rather than re-derive):**
+
+(i) prove the general `Polynomial (F p)` lemma —
+`rootMultiplicity ≥ 2` from value+derivative vanishing — standalone, no
+`AlphaReduce`-specific content (search `Mathlib.Algebra.Polynomial.Div`/
+`.Roots`/`Mathlib.RingTheory.Polynomial.Basic` for the exact name before
+writing anything, per this project's "search first, don't guess Mathlib
+API" rule); (ii) port the confirmed `m=2` row formula above verbatim —
+`Epoly4Tangent`/`Ypoly4Tangent` (or a case-split single definition) using
+the exact `f'(px)/(2·py)` branch-derivative and the exact per-column
+product-rule formula from point 3, not a re-derivation; (iii) redo
+`uRS4_dvd_Npoly4`'s divisibility for the `P1=P2` literal-pair-equality
+case using (i)+(ii); (iv) once (i)-(iii) are solid, generalize to the
+other pairwise-coincidence sub-cases (`P1=Q1`, etc.) — likely one lemma
+parametrized by which pair, matching how `build_phi_general!`'s own loop
+treats every anchor uniformly rather than special-casing which position
+tangency occurs at. **`m≥3` (triple/quadruple coincidence) is now
+confirmed out of scope, matching the reference implementation's own
+explicit limits, not just this roadmap's earlier judgment call** — fold
+into `Bad` rather than build the `F_yy` cross-term machinery
+`_monomial_column!`'s own comment says would be needed. **Nothing
+implemented in `.lean` yet this pass** — `phi_general.zip` was read and
+this section corrected/confirmed against it, per Claire's instruction;
+`AlphaReduce.lean`'s existing simple-point code is still untouched,
+matching this project's "plan before editing a large working proof"
+practice.
 
 ### Where this leaves `curBeforeMonic`/`Epoly`/`Ypoly`/`Npoly` — now correctly located, not yet read line-by-line
 

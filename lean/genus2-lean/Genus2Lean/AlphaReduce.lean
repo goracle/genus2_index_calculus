@@ -1492,6 +1492,111 @@ noncomputable def vRS4
 
 end URS4
 
+/-! ## Root multiplicity ≥ 2 from value+derivative vanishing (general lemma)
+
+Per `ROADMAP-alpha-locus.md`'s tangency-case scoping (step (i)): a
+standalone `Polynomial (F p)`-level fact, no `AlphaReduce`-specific
+content, needed to turn "phi's value AND derivative-along-the-branch
+vanish at `x = px`" (the K=4 tangent-anchor row-block's actual content,
+confirmed directly against `phi_general.zip`'s `fill_f_tay!`/
+`branch_series!`) into `(X - C px)^2 ∣ N` for the K=4 tangent case,
+replacing the `IsCoprime (X - C P1.1) (X - C P2.1)`-based argument
+`uRS4_dvd_Npoly4` currently uses for the (still separately needed)
+simple-point case.
+
+**Route, confirmed against current Mathlib4 docs before writing anything**
+(`Mathlib.Algebra.Polynomial.RingDivision`,
+`Mathlib.Algebra.Polynomial.Degree.TrailingDegree`): `rootMultiplicity t p
+= (p.comp (X + C t)).natTrailingDegree`
+(`Polynomial.rootMultiplicity_eq_natTrailingDegree`), and
+`natTrailingDegree` is bounded below by `Polynomial.le_natTrailingDegree`
+once enough low coefficients vanish. The two coefficients that matter are
+`(p.comp (X + C t)).coeff 0 = p.eval t` (evaluation at the shift point)
+and `(p.comp (X + C t)).coeff 1 = (derivative p).eval t` (the standard
+"linear coefficient of a Taylor shift is the derivative" fact — confirmed
+via `Polynomial.hasseDeriv_one : hasseDeriv 1 f = derivative f` composed
+with `Polynomial.taylor_coeff`, rather than assumed). -/
+
+/-- The Taylor-shift `p.comp (X + C t)`'s coefficient-1 is `(derivative
+p).eval t` — the general fact `rootMultiplicity_ge_two_of_eval_derivative_eq_zero`
+below needs, isolated here so it can be checked/reused independently of
+the rest of that proof. Route: `Polynomial.taylor_coeff` gives coefficient
+`k` of `taylor t f` as `(hasseDeriv k f).eval t`, and `taylor t f` is
+definitionally `f.comp (X + C t)` (`Polynomial.taylor`'s own definition);
+`hasseDeriv_one` identifies `hasseDeriv 1` with the ordinary `derivative`. -/
+theorem comp_X_add_C_coeff_one (f : Polynomial (F p)) (t : F p) :
+    (f.comp (X + C t)).coeff 1 = (derivative f).eval t := by
+  have h := Polynomial.taylor_coeff (r := t) (f := f) 1
+  rw [Polynomial.taylor_apply] at h
+  rw [h, Polynomial.hasseDeriv_one]
+
+/-- The Taylor-shift's coefficient-0 is `f.eval t` — the `n=0` counterpart
+of `comp_X_add_C_coeff_one` above, same route (`taylor_coeff` + `taylor_apply`
++ `hasseDeriv_zero : hasseDeriv 0 f = f`), needed for the `m=0` case of
+`rootMultiplicity_ge_two_of_eval_derivative_eq_zero`'s `le_natTrailingDegree`
+argument below (that case's goal doesn't unify with `h0 : f.eval t = 0`
+directly without this bridge). -/
+theorem comp_X_add_C_coeff_zero (f : Polynomial (F p)) (t : F p) :
+    (f.comp (X + C t)).coeff 0 = f.eval t := by
+  have h := Polynomial.taylor_coeff (r := t) (f := f) 0
+  rw [Polynomial.taylor_apply] at h
+  rw [h, Polynomial.hasseDeriv_zero]
+  rfl
+
+/-- **The general lemma** (no `AlphaReduce`-specific content): if a
+polynomial `f` and its derivative both vanish at `t`, then `t` is a root
+of `f` of multiplicity at least 2 — i.e. `(X - C t)^2 ∣ f`. This is the
+tool the K=4 tangent-anchor case needs to turn `phi`'s value+derivative
+vanishing (from the `m=2` row-block, confirmed against
+`phi_general.zip`) into a squared-factor divisibility of `Npoly4`, in
+place of the `IsCoprime`-based argument the simple-point case uses.
+
+`p` is passed explicitly (not left to auto-bound-implicit inference) to
+avoid the argument-order confusion an earlier attempt this pass hit at
+the call site in `sq_dvd_of_eval_derivative_eq_zero` below (`hf` being
+fed into a slot Lean expected a `Nat.Prime` witness for). -/
+theorem rootMultiplicity_ge_two_of_eval_derivative_eq_zero
+    (p : ℕ) [Fact (Nat.Prime p)] {f : Polynomial (F p)} {t : F p} (hf : f ≠ 0)
+    (h0 : f.eval t = 0) (h1 : (derivative f).eval t = 0) :
+    2 ≤ f.rootMultiplicity t := by
+  rw [Polynomial.rootMultiplicity_eq_natTrailingDegree]
+  refine Polynomial.le_natTrailingDegree ?_ ?_
+  · -- `f.comp (X + C t) ≠ 0`: `comp` with a degree-1 (hence non-constant,
+    -- injective-on-evaluation) polynomial doesn't kill a nonzero `f` —
+    -- via `Polynomial.taylor`, an additive equiv, so `taylor_eq_zero`
+    -- reduces this to `f ≠ 0` directly.
+    have h := (Polynomial.taylor_eq_zero (r := t) (f := f)).not.mpr hf
+    rwa [Polynomial.taylor_apply] at h
+  · intro m hm
+    interval_cases m
+    · rw [comp_X_add_C_coeff_zero]; exact h0
+    · rw [comp_X_add_C_coeff_one]; exact h1
+
+/-- **Squared-factor form**, the version `uRS4_dvd_Npoly4`'s tangent case
+will actually invoke: `(X - C t)^2 ∣ f` follows from value+derivative
+vanishing. Route (confirmed against Mathlib4 docs — no
+`Polynomial.pow_rootMultiplicity_dvd` lemma exists; the actual name is
+`Polynomial.pow_mul_divByMonic_rootMultiplicity_eq`):
+`(X - C t) ^ rootMultiplicity t f * (f /ₘ (X - C t) ^ rootMultiplicity t f)
+= f` gives `(X - C t) ^ rootMultiplicity t f ∣ f` directly (anonymous-
+constructor witness, rather than `Dvd.intro`, whose exact argument order
+wasn't confirmed against current docs this pass), then `pow_dvd_pow`
+bridges the exponent down from the (possibly larger) actual multiplicity
+to the `2` this lemma needs, using the bound above. Same explicit-`p`
+convention as the lemma above, for the same reason. -/
+theorem sq_dvd_of_eval_derivative_eq_zero
+    (p : ℕ) [Fact (Nat.Prime p)] {f : Polynomial (F p)} {t : F p} (hf : f ≠ 0)
+    (h0 : f.eval t = 0) (h1 : (derivative f).eval t = 0) :
+    (X - C t) ^ 2 ∣ f := by
+  have hge := rootMultiplicity_ge_two_of_eval_derivative_eq_zero p (f := f) (t := t) hf h0 h1
+  have hmul := Polynomial.pow_mul_divByMonic_rootMultiplicity_eq f t
+  -- `a ∣ b` unfolds to `∃ c, b = a * c`; supply the quotient and `hmul`'s
+  -- symm directly rather than risk `Dvd.intro`'s exact argument order
+  -- (not confirmed against current Mathlib4 docs this pass).
+  have hdvd : (X - C t) ^ f.rootMultiplicity t ∣ f :=
+    ⟨f /ₘ (X - C t) ^ f.rootMultiplicity t, hmul.symm⟩
+  exact (pow_dvd_pow (X - C t) hge).trans hdvd
+
 /-! ## The four K=4 divisibility facts
 
 Direct rescaling of `dvd_N_anchor1`/`dvd_N_anchor2`/`dvd_E_add_Y_mul_v`/
