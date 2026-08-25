@@ -539,8 +539,12 @@ ingredients, checked against the actual files this pass (not guessed):
    confirmed gap, not an oversight to fix by reading harder. What DOES exist:
    `toPair H A B : CoordinateRing H` for `A B : k[X]` (so `toPair H
    (X^2 + C u1 * X + C u0) (C v1 * X + C v0)` is the actual coordinate-ring
-   element `u(x) + v(x)·y` a Mumford pair names), and `divToPair H A B S :
-   Divisor H := ∑ P ∈ S, ordAt P A B • single P` for an EXPLICIT finite point
+   element `u(x) + v(x)·y` a Mumford pair names), and `divToPair A B S :
+   Divisor H := ∑ P ∈ S, ordAt P A B • single P` (`H` implicit — a section
+   `variable`, not an explicit argument like `toPair`'s; unlike `toPair`,
+   nothing in `A B : k[X]` alone pins `H` down, so call sites below use
+   named-argument syntax `divToPair (H := H) A B S` rather than relying on
+   unification to find it from context) for an EXPLICIT finite point
    set `S` (`PrincipalDivisorSubgroup.lean`). There is no lemma computing `S`
    from `(A,B)` alone (that would need root-finding/`Polynomial.roots`-type
    machinery over `F p`, specifically the finitely many affine points where
@@ -553,7 +557,7 @@ ingredients, checked against the actual files this pass (not guessed):
 2. **`reducedClass`'s definition**, already on file, unchanged (`alpha •
    aClass - toJacobian D (⟨single P1 + single P2 - 2•single δ₀, _⟩)`).
 3. **The equality goal**: `reducedClass` equals `toJacobian D` applied to
-   `divToPair H u v S` (packaged into `Divisor0 H` via `hmem`), for whichever
+   `divToPair u v S` (`H` implicit; packaged into `Divisor0 H` via `hmem`), for whichever
    `S` witnesses `isReductionOf`'s underlying `(u0,u1,v0,v1)`.
 
 **Not yet resolved, flagged rather than guessed**: whether `S` should be
@@ -576,7 +580,45 @@ file) equals `toJacobian D` of that same divisor. This is exactly the
 theorem `ROADMAP-reduce-to-zerodim.md` flagged as "not attempted here," now
 typechecking; the proof (§3a's three-lemma skeleton: residual-intersection →
 residual-Mumford → principal-witness via `ordAt`) is Step 3, deliberately not
-attempted in this pass. -/
+attempted in this pass.
+
+**Statement shape, revised this pass to fix a `whnf` heartbeat timeout, then
+a follow-up `C`/`X` elaboration error**: the Mumford-pair-as-polynomial
+encoding `X^2 + C u1 * X + C u0` / `C v1 * X + C v0` used to appear inline,
+spelled out three separate times (`hsupp`, `hmem`, and the goal's anonymous-
+constructor argument) — cheap to write but expensive to elaborate, since
+each occurrence re-triggers full unification of `X`/`C`'s ring against `H`'s
+field and the surrounding `divToPair (H := H)`/`ordAt (H := H)` applications
+independently. Named `u v : Polynomial (F p)` as their own explicit
+parameters with defining hypotheses `hu`/`hv` instead — this is the same
+"thread it through as a hypothesis rather than an inline term" discipline
+this codebase already uses elsewhere (e.g. `DecoupledGenerators`'s abstract
+fields) — so `hsupp`/`hmem`/the goal now refer to the already-elaborated
+`u`/`v` rather than re-elaborating the underlying polynomial expression
+three times over. This fixed the heartbeat timeout but surfaced a second,
+previously-masked issue: `hu`/`hv`'s own RHS (`X^2 + C ... `) still needs to
+know it lives in `Polynomial (F p)`, and Lean's elaboration order for `=`
+does not push the LHS's declared type down into an under-constrained RHS
+strongly enough for `X`/`C`'s implicit ring argument to resolve on its own
+— so both RHSs are ascribed directly, `(... : Polynomial (F p))`, the same
+fix already needed at `divToPair`'s call sites in earlier passes.
+**Correction after that attempt still failed identically**: ascribing the
+*whole sum* (`(X^2 + C u1 * X + C u0 : Polynomial (F p))`) doesn't help
+either — `+`'s own elaboration doesn't necessarily push the ascribed result
+type down into each summand before `C`'s domain needs to be known, so `C`
+still saw an unconstrained metavariable first. Fixed by ascribing `X` and
+each `C _` application individually, e.g. `(C sa.toSampleTarget.u1 :
+Polynomial (F p))`, which fixes `C`'s domain (`Polynomial.C : R →+* R[X]`,
+so ascribing the codomain immediately forces `R := F p`) at the exact point
+each one is elaborated, with no dependency on how `+`/`*`/`=` propagate
+expected types afterward. Likewise
+the goal's `⟨divToPair ..., hmem⟩` anonymous-constructor term (checked
+against `toJacobian D`'s expected argument type `↥(Divisor0 H)`, which
+unfolds through `AddSubgroup`/`SetLike`/`Subtype` coercions to accept
+anonymous-constructor syntax — the likely `whnf` hotspot) was replaced with
+an explicit `Subtype.mk (divToPair (H := H) u v S : Divisor H) hmem`, so the
+`Divisor H` ascription is settled as its own step before the
+subtype-membership coercion is attempted. -/
 theorem reducedClass_eq_of_isReduction' {p : ℕ} [Fact (Nat.Prime p)] [Fact (p ≠ 2)]
     {H : HyperellipticPolynomial (F p)} [IsDedekindDomain (CoordinateRing H)]
     {D : PrincipalDivisorData H}
@@ -611,17 +653,14 @@ theorem reducedClass_eq_of_isReduction' {p : ℕ} [Fact (Nat.Prime p)] [Fact (p 
           sa.toSampleTarget.u0 sa.toSampleTarget.u1
           sa.toSampleTarget.v0 sa.toSampleTarget.v1))
     (hr : isReduction' sa c0 c1 c2 c3 c4 ua0 ua1 va0 va1 hcur hgcd hcurT hgcdT)
-    (S : Finset H.Point)
-    (hsupp : ∀ P, P ∉ S → ordAt P
-      (X ^ 2 + C sa.toSampleTarget.u1 * X + C sa.toSampleTarget.u0)
-      (C sa.toSampleTarget.v1 * X + C sa.toSampleTarget.v0) = 0)
-    (hmem : divToPair H
-      (X ^ 2 + C sa.toSampleTarget.u1 * X + C sa.toSampleTarget.u0)
-      (C sa.toSampleTarget.v1 * X + C sa.toSampleTarget.v0) S ∈ Divisor0 H) :
-    sa.reducedClass = toJacobian D
-      ⟨divToPair H
-        (X ^ 2 + C sa.toSampleTarget.u1 * X + C sa.toSampleTarget.u0)
-        (C sa.toSampleTarget.v1 * X + C sa.toSampleTarget.v0) S, hmem⟩ := by
+    (S : Finset H.Point) (u v : Polynomial (F p))
+    (hu : u = (Polynomial.X : Polynomial (F p)) ^ 2 + (Polynomial.C sa.toSampleTarget.u1 : Polynomial (F p)) * Polynomial.X
+      + (Polynomial.C sa.toSampleTarget.u0 : Polynomial (F p)))
+    (hv : v = (Polynomial.C sa.toSampleTarget.v1 : Polynomial (F p)) * (Polynomial.X : Polynomial (F p))
+      + (Polynomial.C sa.toSampleTarget.v0 : Polynomial (F p)))
+    (hsupp : ∀ P, P ∉ S → ordAt (H := H) P u v = 0)
+    (hmem : (divToPair (H := H) u v S : Divisor H) ∈ Divisor0 H) :
+    sa.reducedClass = toJacobian D (Subtype.mk (divToPair (H := H) u v S : Divisor H) hmem) := by
   sorry
 
 /-! ## Task (B): the exceptional locus `Bad` (left abstract — see module

@@ -346,6 +346,138 @@ robustness note rather than assuming distinct roots). Not yet sent —
 next step is to copy that prompt to ChatGPT and bring the reply back
 before writing any proof body for the Step 2 sorry.
 
+## Status update (this pass, 3rd) — build-error fix, no new math
+
+Fixed the build errors blocking `AlphaLocusDegreeUniform.lean` (errors
+first, per project ordering). Root cause: `reducedClass_eq_of_isReduction'`
+(Step 2's statement) called `divToPair H A B S`, but `divToPair` in
+`PrincipalDivisorSubgroup.lean` takes `H` as an implicit **section**
+`variable`, not an explicit argument (unlike `toPair`, which genuinely
+does take `H` explicitly) — so `H` was being passed positionally into
+`divToPair`'s `A` slot, producing the `HyperellipticPolynomial (F p)` vs
+`Polynomial ?m` mismatch, which cascaded into the `Function expected at C`
+errors on the following `C`/`X` terms (their expected types collapsed to
+metavariables once the surrounding application failed to elaborate).
+Fix: dropped the explicit `H` from both `divToPair` call sites (the
+`hmem` hypothesis and the final anonymous-constructor term); `H` is
+inferred at both from the ambient `Divisor0 H` / `toJacobian D` expected
+types. Also corrected the three docstring mentions of `divToPair H A B S`
+above the theorem, which described the same (wrong) explicit-`H` calling
+convention. No sorry count changed by this pass — still exactly two live
+sorries (`reducedClass_eq_of_isReduction'` at Step 2, and the unrelated,
+explicitly-out-of-scope `decoupledSystem_degree_uniform`). Not yet
+re-verified against a live `lake build` (Claire's repl per project
+convention) — flagging as fixed-per-careful-reading, not confirmed-green.
+
+## Status update (this pass, 4th) — build error persisted, real root cause
+
+The 3rd pass's fix was necessary but not sufficient — Claire's rebuild
+still failed, now with `failed to synthesize instance of type class
+Membership (Divisor ?m.762) (AddSubgroup H.Divisor)` at the `hmem`
+line, plus the same cascade of `Function expected at C` errors on the
+`X`/`C` terms feeding it. Actual root cause: dropping `H` entirely (3rd
+pass's fix) relies on Lean inferring it from context, but nothing in
+`divToPair`'s own argument types (`A B : k[X]`, `S : Finset H.Point`)
+pins `k`/`H` down *before* `A`/`B` need to be elaborated — `A`/`B` are
+built from `X`/`C`, whose own expected type depends on `k`, which
+depends on `H`. This is circular under ordinary left-to-right
+unification: elaborating `A` needs `H` (for `k[X]`'s `k`), but `H`
+isn't resolved until the whole `divToPair` application's result type is
+checked against `Divisor0 H`'s ambient type in `hmem`/the goal — too
+late for `X`/`C` inside `A`/`B` to already know what ring they live in.
+**Fix: named-argument syntax at both call sites**, `divToPair (H := H)
+A B S` (and, for the same reason and to avoid asymmetric fragility even
+though this particular occurrence built cleanly last time, `ordAt (H :=
+H) P A B` in `hsupp` too) — this pins `H` immediately, before `A`/`B`
+are elaborated, so `X`/`C`'s expected type (`Polynomial (F p)`, since
+`H : HyperellipticPolynomial (F p)`) is known from the start and the
+`Function expected at C` cascade cannot occur. Updated the docstring
+above the theorem to describe this explicitly (why bare unification
+doesn't work here, unlike the more common case where an implicit is
+recoverable from a later explicit argument). Not yet re-verified
+against a live build — this is the second attempt at the same two
+call sites, so treat with slightly more scrutiny than usual on the
+next rebuild report.
+
+## Status update (this pass, 5th) — `whnf` heartbeat timeout, statement restructured
+
+Claire's rebuild after the 4th pass's fix got past the type-mismatch/
+instance-synthesis errors entirely, but hit a new failure: `(deterministic)
+timeout at whnf, maximum number of heartbeats (200000) has been reached`,
+pointing at the goal/`hmem` line. Per the project's own heartbeats guidance
+("unroll the proof a bit and clear state you don't need, before increasing
+heartbeats") — but this is a *statement* elaborating, not a tactic proof (the
+body is just `sorry`), so there's no tactic state to unroll; the fix has to
+be in the statement's shape instead. Two changes:
+
+1. The Mumford-pair polynomial encoding (`X^2 + C u1 * X + C u0`, `C v1 * X +
+   C v0`) was spelled out inline three separate times across `hsupp`, `hmem`,
+   and the goal. Each occurrence forces the elaborator to redo the same
+   `X`/`C`-against-`(F p)[X]` unification independently, compounded by
+   `divToPair (H := H)`/`ordAt (H := H)`'s own unification work at each site.
+   Factored `u v : Polynomial (F p)` out as their own named parameters with
+   defining equalities `hu`/`hv`, so the polynomial expression is elaborated
+   exactly once and every other hypothesis/the goal just refers to `u`/`v`.
+2. The goal's `⟨divToPair ..., hmem⟩` anonymous-constructor term was being
+   checked against `toJacobian D`'s expected argument type `↥(Divisor0 H)`,
+   which requires unfolding through `AddSubgroup`/`SetLike`/`Subtype`
+   coercions to accept anonymous-constructor syntax — likely the actual
+   `whnf` hotspot. Replaced with an explicit `Subtype.mk (divToPair (H := H)
+   u v S : Divisor H) hmem`, so the `Divisor H` ascription is settled as its
+   own step before the subtype-membership coercion is attempted.
+
+Updated the docstring immediately above the theorem with this rationale.
+Checked for downstream call sites of `reducedClass_eq_of_isReduction'`
+(grepped the whole `ZeroD` tree) — none exist yet, so widening its parameter
+list (`u v` as new explicit arguments) breaks nothing. Not yet re-verified
+against a live build — third attempt at this same theorem's statement, so
+if this doesn't clear it, worth considering whether `IsDedekindDomain
+(CoordinateRing H)` itself (an instance argument, not searched but still
+present in every surrounding type) is contributing unfolding cost, or
+whether `set_option maxHeartbeats` at the statement level is the more
+honest fix at that point rather than continuing to restructure.
+
+## Status update (this pass, 6th) — heartbeat timeout cleared, one more `C`/`X` fix
+
+Claire's rebuild after the 5th pass got past the `whnf` timeout entirely
+(confirming the `u v`/`Subtype.mk` restructuring worked), but hit the same
+`Function expected at C` failure as before — now isolated to `hu`/`hv`
+themselves rather than cascading from `divToPair`. Root cause: `hu : u = X^2
++ C ... ` relies on `u`'s declared type (`Polynomial (F p)`, two lines up)
+flowing across the `=` into the RHS to resolve `X`/`C`'s implicit ring — it
+doesn't; Lean's equality elaboration doesn't propagate the LHS's type into
+an under-constrained RHS that way. Same root issue as the `divToPair
+(H := H)` fix two passes ago, just relocated. Fix: ascribed both RHSs
+directly, `hu : u = (X ^ 2 + C ... + C ... : Polynomial (F p))` and
+similarly for `hv`. Updated the docstring above the theorem to fold this
+into the existing "statement shape, revised this pass" explanation rather
+than adding a separate note. Not yet re-verified — fourth attempt at this
+theorem's statement; if a build report still shows a `C`/`X` or elaboration
+error at this point, stop restructuring inline and instead build `u`/`v`
+as their own top-level `def`s (e.g. `mumfordU sa : Polynomial (F p) := ...`)
+so the ring is fixed once at the definition site with no `=`/ascription
+juggling needed anywhere downstream.
+
+## Status update (this pass, 7th) — same `C`/`X` error persisted, per-term ascription
+
+Claire reported the identical error at the identical column positions after
+the 6th pass's fix — confirmed via `md5sum` that the file she built was in
+fact the ascribed version, so this ruled out a stale-file mixup and
+confirmed the fix itself didn't work as intended. Diagnosis: ascribing the
+*whole summed expression* (`(X^2 + C u1 * X + C u0 : Polynomial (F p))`)
+still fails, because `+`'s elaboration doesn't necessarily propagate an
+outer expected-type ascription down into each individual summand before
+that summand's own head symbol (`C`) needs its implicit argument resolved —
+so `C` was still being elaborated against an unconstrained metavariable
+first, same as with no ascription at all. Real fix: ascribe `X` and each
+`C _` application *individually* — `(C sa.toSampleTarget.u1 : Polynomial (F
+p))` — which pins `Polynomial.C : R →+* R[X]`'s `R` immediately via the
+codomain, with no dependency on how the surrounding `+`/`*`/`=` propagate
+types afterward. This is a strictly more robust pattern than ascribing a
+compound expression as a whole, worth remembering for future statements in
+this file that build `k[X]` terms from `X`/`C` this way. Not yet
+re-verified.
+
 ## Ordering summary (errors first, then sorries, easiest first)
 
 0. Re-run comment-stripped sorry scan on `AlphaLocusDegreeUniform.lean`
