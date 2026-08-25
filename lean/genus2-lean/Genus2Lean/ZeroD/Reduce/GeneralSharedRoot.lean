@@ -1056,12 +1056,11 @@ directly** — `uRS4General.natDegree = 2` (monic-normalization preserves
 plus `curBeforeMonic4General ≠ 0` (immediate from `natDegree = 2 ≠ 0`,
 via `Polynomial.natDegree_eq_zero_iff_...`-style contrapositive: a
 polynomial with a nonzero `natDegree` cannot itself be the zero
-polynomial, since `(0 : Polynomial _).natDegree = 0`). Wiring this in at
-`ReduceGeneral_isMumfordTarget4`'s call site (replacing that theorem's
-bare `hdeg2` hypothesis with a proof term calling this theorem) is
-`ROADMAP-reduce-to-zerodim.md`'s remaining step-1 action item, not
-attempted in this pass to avoid touching `ReduceGeneral_isMumfordTarget4`
-itself without Claire's REPL confirming this theorem compiles first. -/
+polynomial, since `(0 : Polynomial _).natDegree = 0`). Wired into
+`ReduceGeneral_isMumfordTarget4`'s call site below (`ReduceGeneralCorrectness`
+section) — that theorem's bare `hdeg2` hypothesis is replaced by a `have`
+calling this theorem, per `ROADMAP-reduce-to-zerodim.md`'s step-1 action
+item 5. -/
 theorem uRS4General_natDegree_eq_two
     (hlead : coeffsOut4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ⟨6, by norm_num⟩ ≠ 0)
     (h12 : P1.1 ≠ P2.1)
@@ -1266,17 +1265,16 @@ monic polynomial of `natDegree = 2` (NOT merely `≤ 2`: a monic polynomial
 of `natDegree 0` or `1`, e.g. `q = 1`, is not literally `X² + ...`, whose
 own `natDegree` is always exactly `2` by construction — this was caught
 and fixed after an earlier draft of this section wrongly stated the `≤ 2`
-version as "unconditionally true"), but `curBeforeMonic4General_natDegree_le_eight`
-only bounds `uRS4General`'s degree by `8`, not `2` (the "sharpening under
-`P1.1 ≠ P2.1`" section above sharpens `npoly4Lcm4`'s degree, the DIVISOR,
-not `curBeforeMonic4General`'s own degree, the QUOTIENT — nobody has closed
-that gap). Rather than assume the sharper bound silently, or leave the
-correctness theorem entirely unstated, this section follows the project's
-"weaken to an explicit hypothesis" practice: `monicQuadratic_eq_reconstruct`
-below takes the sharp `natDegree = 2` hypothesis directly (the true, correct
-statement — not merely `≤ 2`), and `ReduceGeneral_isMumfordTarget4` takes
-that same still-open degree bound as a named hypothesis (`hdeg2`) rather
-than asserting it holds automatically. -/
+version as "unconditionally true").
+
+**Updated status**: the sharp `natDegree = 2` bound is now CLOSED —
+`uRS4General_natDegree_eq_two` (`GeneralOutput` section above) proves it,
+modulo the same genericity hypotheses (`hlead`/`h12`/`hne34`/`hnoroot34`/
+`hP1ua`/`hP1target`/`hP2ua`/`hP2target`) `npoly4Lcm4_natDegree_eq_six`
+needed. `ReduceGeneral_isMumfordTarget4` below now takes those hypotheses
+directly and derives `hdeg2` internally via a `have`, rather than taking
+`hdeg2` as a bare hypothesis — `ROADMAP-reduce-to-zerodim.md`'s step-1
+action item 5, now done. -/
 
 section ReduceGeneralCorrectness
 
@@ -1311,8 +1309,8 @@ theorem monicQuadratic_eq_reconstruct {q : Polynomial (F p)} (hmonic : q.Monic)
     simp [hzero, Polynomial.coeff_add, Polynomial.coeff_X_pow, Polynomial.coeff_C,
       Polynomial.coeff_C_mul, Polynomial.coeff_X]
 
-/-- **`ReduceGeneral`'s output is a genuine Mumford pair, given the
-not-yet-proved sharp degree bound `hdeg2`.** Unfolds `ReduceGeneral` to its
+/-- **`ReduceGeneral`'s output is a genuine Mumford pair — fully proved,
+`hdeg2` now derived rather than assumed.** Unfolds `ReduceGeneral` to its
 `uRS4General`/`vRS4General` coefficients, rewrites both polynomials via
 `monicQuadratic_eq_reconstruct` (using `uRS4General_monic`/`hdeg2` for `u`;
 `vRS4General` needs no monicity or degree bound at all here, since
@@ -1340,19 +1338,28 @@ theorem ReduceGeneral_isMumfordTarget4
             EuclideanDomain.gcdA
               (Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1)
               (uRS4General p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1) - 1)
-    -- **The genuinely open piece** — `curBeforeMonic4General_natDegree_le_eight`
-    -- only gives `≤ 8`; the sharp `≤ 2` bound (expected to follow from
-    -- `P1.1 ≠ P2.1` plus `u_a`/target-vs-anchor genericity, mirroring
-    -- `npoly4LcmLinearPair_natDegree_eq_two`'s sharpening one level up, but
-    -- not yet proved for the QUOTIENT `curBeforeMonic4General`) is supplied
-    -- here as an explicit hypothesis rather than assumed or left unstated,
-    -- per this project's "weaken first" practice:
-    (hdeg2 : (uRS4General p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1).natDegree = 2) :
+    -- **Closed** — `uRS4General_natDegree_eq_two` (`GeneralOutput` section
+    -- above) proves this sharp bound unconditionally-modulo-genericity;
+    -- the hypotheses below are its exact preconditions, replacing what
+    -- used to be a bare `hdeg2` hypothesis here. `ROADMAP-reduce-to-
+    -- zerodim.md`'s step-1 action item 5.
+    (hlead : coeffsOut4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ⟨6, by norm_num⟩ ≠ 0)
+    (h12 : P1.1 ≠ P2.1)
+    (hne34 : (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)) ≠ X ^ 2 + C u1 * X + C u0)
+    (hnoroot34 : ¬ ∃ r : F p, (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).eval r = 0 ∧
+        (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).eval r = 0)
+    (hP1ua : ¬ (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).eval P1.1 = 0)
+    (hP1target : ¬ (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).eval P1.1 = 0)
+    (hP2ua : ¬ (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).eval P2.1 = 0)
+    (hP2target : ¬ (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).eval P2.1 = 0) :
     IsMumfordTarget4 p c0 c1 c2 c3 c4
       (ReduceGeneral p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 hcur hgcd).1
       (ReduceGeneral p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 hcur hgcd).2.1
       (ReduceGeneral p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 hcur hgcd).2.2.1
       (ReduceGeneral p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 hcur hgcd).2.2.2 := by
+  have hdeg2 : (uRS4General p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1).natDegree = 2 :=
+    uRS4General_natDegree_eq_two p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1
+      hlead h12 hne34 hnoroot34 hP1ua hP1target hP2ua hP2target
   set U := uRS4General p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 with hU_def
   set V := vRS4General p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 hgcd with hV_def
   have hUmonic : U.Monic :=
