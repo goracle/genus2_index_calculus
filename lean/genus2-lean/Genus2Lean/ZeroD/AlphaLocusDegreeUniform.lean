@@ -2,6 +2,7 @@ import Mathlib
 import Genus2Lean.ZeroD.DecoupledSystemRegular
 import Genus2Lean.DivisorClassGroup
 import Genus2Lean.ZeroD.Reduce.AlphaReduce
+import Genus2Lean.ZeroD.Reduce.GeneralSharedRoot
 import Genus2Lean.ZeroD.PeelChainAssembly
 
 -- `regularSeq_of_peel_chain` (used by `decoupledSystem_isRegularSequence`
