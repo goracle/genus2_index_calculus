@@ -1,6 +1,7 @@
 import Mathlib
 import Genus2Lean.PrincipalDivisorSubgroup
 import Genus2Lean.ZeroD.Reduce.AlphaReduce
+import Genus2Lean.ZeroD.Reduce.GeneralSharedRoot
 import Genus2Lean.ZeroD.TheDataDerivation.DataDerivationBasics
 import Genus2Lean.RiemannRochGenus2
 import Genus2Lean.LCanonicalElementary
@@ -79,7 +80,7 @@ a `D_old = D_new` conclusion given their per-point case-split facts as
 hypotheses). Also done, this pass, following up on ChatGPT's second reply
 (the residual-point/`A`-valuation follow-up): **lemma 12**
 (`pairNorm_neg_eq`, `pairNorm H E (-Y) = pairNorm H E Y`) and **lemma 13**
-(`ordAt_neg_eq_ordAt_of_pairNorm_eq_mul`, the residual-point mirror of
+(`ordAtFrac_neg_eq_ordAt_of_pairNorm_eq_mul`, the residual-point mirror of
 lemma 8 — needs neither `hchar` nor `P.Y ≠ 0`, unlike lemma 8 itself,
 since it goes through lemma 4 rather than lemma 6's `rootMultiplicity`
 detour); and the three "layers" ChatGPT's follow-up reply recommended for
@@ -632,9 +633,9 @@ theorem pairNorm_neg_eq (E Y : k[X]) :
   ring
 
 /-- **Lemma 13 of the stack (the residual-point mirror of lemma 8):
-`ordAt P E (-Y) = ordAt P A 0` at a residual point where `ḡ = toPair H E
-(-Y)` vanishes at `P` (as a ring element, `hgbar_ne`) but `g` doesn't
-(`hg_ne_eval`).** Mirrors lemma 8's own composition
+`ordAtFrac P E (-Y) U 0 = ordAt P A 0` at a residual point where `ḡ =
+toPair H E (-Y)` vanishes at `P` (as a ring element, `hgbar_ne`) but `g`
+doesn't (`hg_ne_eval`).** Mirrors lemma 8's own composition
 (`ordAtFrac_eq_ordAt_of_pairNorm_eq_mul`) with the roles of `g`/`ḡ`
 swapped: lemma 4 (`ordAt_eq_ordAt_pairNorm_of_eval_eq_zero`) applied
 directly to the pair `(E,-Y)` gives `ordAt P E (-Y) = ordAt P (pairNorm H E
@@ -646,18 +647,26 @@ is a Weierstrass point. `pairNorm_neg_eq` (lemma 12) then rewrites
 `pairNorm H E (-Y)` back to `pairNorm H E Y`, so the SAME caller-supplied
 factorization `hAU : pairNorm H E Y = A * U` (not a second one) feeds
 lemma 7 (`ordAt_add_of_pairNorm_eq_mul`) directly, and the `+ordAt P U 0`
-term cancels by `omega` exactly as in lemma 8. -/
-theorem ordAt_neg_eq_ordAt_of_pairNorm_eq_mul
+term cancels against `ordAtFrac`'s own `- ordAt P U 0` by `omega` exactly
+as in lemma 8. (Caught in review: the earlier version of this lemma
+concluded the bare `ordAt P E (-Y) = ordAt P A 0`, dropping the `ordAt P U
+0` term entirely with no justification — that statement is false whenever
+`ordAt P U 0 ≠ 0`, since `ordAt_add_of_pairNorm_eq_mul` only gives the sum
+`ordAt P A 0 + ordAt P U 0`, not `ordAt P A 0` alone; weakened to the
+`ordAtFrac` form, which is what lemma 8's own mirror actually needs and is
+what genuinely follows from the same composition.) -/
+theorem ordAtFrac_neg_eq_ordAt_of_pairNorm_eq_mul
     [IsDedekindDomain (CoordinateRing H)]
     (P : H.Point) (h_bot : pointIdeal P ≠ ⊥) (E Y A U : k[X])
     (hgbar_ne : toPair H E (-Y) ≠ 0)
     (hg_ne_eval : E.eval P.X + (-(-Y)).eval P.X * P.Y ≠ 0)
     (hAU : pairNorm H E Y = A * U) (hA_ne : toPair H A (0 : k[X]) ≠ 0)
     (hU_ne : toPair H U (0 : k[X]) ≠ 0) :
-    ordAt P E (-Y) = ordAt P A (0 : k[X]) := by
+    ordAtFrac P E (-Y) U (0 : k[X]) = ordAt P A (0 : k[X]) := by
   have hN_eq_mult : ordAt P E (-Y) = ordAt P (pairNorm H E (-Y)) (0 : k[X]) :=
     ordAt_eq_ordAt_pairNorm_of_eval_eq_zero P h_bot E (-Y) hgbar_ne hg_ne_eval
   have hAU' : pairNorm H E (-Y) = A * U := by rw [pairNorm_neg_eq]; exact hAU
+  unfold ordAtFrac
   rw [hN_eq_mult, hAU', ordAt_add_of_pairNorm_eq_mul P h_bot (A * U) A U rfl hA_ne hU_ne]
   omega
 
@@ -705,6 +714,7 @@ theorem ordAt_mul_eq_one_of_ordAt_eq_one_zero
     (hL : ordAt P L (0 : k[X]) = 1) (hF : ordAt P F (0 : k[X]) = 0) :
     ordAt P (L * F) (0 : k[X]) = 1 := by
   rw [ordAt_add_of_pairNorm_eq_mul P h_bot (L * F) L F rfl hL_ne hF_ne, hL, hF]
+  ring
 
 /-- **Layer 2, four-factor form — the exact shape this project's `A =
 (x-x₁)(x-x₂)·uₐ·u_target` needs.** One "designated" factor `L` contributes
@@ -788,6 +798,57 @@ theorem ordAt_A_eq_one_of_eval_ne_zero
     ordAt_eq_zero_of_eval_ne_zero P F₃ (0 : k[X]) (by rw [hPX]; simpa using hF₃_eval)
   exact ordAt_mul4_eq_one_of_ordAt_eq_one_zero_zero_zero P h_bot (linX a) F₁ F₂ F₃
     hL_ne (hFi_ne F₁ hF₁_eval) (hFi_ne F₂ hF₂_eval) (hFi_ne F₃ hF₃_eval) hL hF₁ hF₂ hF₃
+
+/-- **Lemma 14 of the stack: the "old point" case of the pointwise
+`ordAt`-of-`h` identity, `h := g/U`, `g := toPair H E Y`.** Direct
+composition of lemma 8 (`ordAtFrac_eq_ordAt_of_pairNorm_eq_mul`) with
+`ordAt P A 0 = 1` supplied as a hypothesis (discharged at the call site
+via this file's Layer 1/2/3 lemmas) — concludes `ordAtFrac P E Y U 0 = 1`
+at a point where `g(P) = 0` (`hg_ne_eval`) and `ḡ(P) ≠ 0` (implicitly, via
+`hN_eq_mult` needing only lemma 4's hypotheses, not a separate `ḡ`
+nonvanishing check here — matching lemma 8's own signature exactly, which
+does not itself require `ḡ(P) ≠ 0` as input, only `hN_eq_mult`'s
+derivation does, and that is discharged by the caller supplying `hg_ne`/
+`hg_ne_eval` to lemma 4 directly). Kept generic and thin: this is the
+"old point contributes coefficient 1" half of ChatGPT's follow-up reply's
+§3 case split, not the residual/new half (lemma 13 does that directly,
+no further wrapping needed since it already concludes the `ordAtFrac`
+form). No `S`/`Pold1`/`Pold2` bookkeeping here — that belongs to the
+call site's `∀ P` assembly (`eq_of_coeffAt_eq`/`coeffAt_single` applied
+pointwise), matching ChatGPT's own recommendation not to contort this
+stack's support sets to fit a single monolithic lemma. -/
+theorem ordAtFrac_eq_one_of_old_point
+    [IsDedekindDomain (CoordinateRing H)]
+    (P : H.Point) (h_bot : pointIdeal P ≠ ⊥) (E Y A U : k[X])
+    (hg_ne : toPair H E Y ≠ 0) (hg_ne_eval : E.eval P.X + (-Y).eval P.X * P.Y ≠ 0)
+    (hAU : pairNorm H E Y = A * U) (hA_ne : toPair H A (0 : k[X]) ≠ 0)
+    (hU_ne : toPair H U (0 : k[X]) ≠ 0) (hA_ord : ordAt P A (0 : k[X]) = 1) :
+    ordAtFrac P E Y U (0 : k[X]) = 1 := by
+  have hN_eq_mult : ordAt P E Y = ordAt P (pairNorm H E Y) (0 : k[X]) :=
+    ordAt_eq_ordAt_pairNorm_of_eval_eq_zero P h_bot E Y hg_ne hg_ne_eval
+  rw [ordAtFrac_eq_ordAt_of_pairNorm_eq_mul P h_bot E Y A U hAU hA_ne hU_ne hN_eq_mult, hA_ord]
+
+/-- **Lemma 15 of the stack: the "new/residual point" case, the mirror of
+lemma 14 via lemma 13 instead of lemma 8.** At a point where `ḡ(P) = 0`
+(`hgbar_ne`) and `g(P) ≠ 0` (`hg_ne_eval`), given `ordAt P A 0 = 1`,
+concludes `ordAtFrac P E (-Y) U 0 = 1` — i.e. the residual point
+contributes coefficient 1 to `h`'s divisor via the CONJUGATE pair
+`(E,-Y)`, matching ChatGPT's own flagged subtlety (§3: "at a residual
+point... trying to force everything through lemma 8 is wrong"). Purely a
+one-line application of lemma 13 with `hA_ord` substituted in — kept as
+its own named lemma (rather than inlined at the call site) so the
+call-site assembly reads as a clean case split between lemma 14 and
+lemma 15, not a repeated unfolding of lemma 13's own five hypotheses. -/
+theorem ordAtFrac_neg_eq_one_of_new_point
+    [IsDedekindDomain (CoordinateRing H)]
+    (P : H.Point) (h_bot : pointIdeal P ≠ ⊥) (E Y A U : k[X])
+    (hgbar_ne : toPair H E (-Y) ≠ 0)
+    (hg_ne_eval : E.eval P.X + (-(-Y)).eval P.X * P.Y ≠ 0)
+    (hAU : pairNorm H E Y = A * U) (hA_ne : toPair H A (0 : k[X]) ≠ 0)
+    (hU_ne : toPair H U (0 : k[X]) ≠ 0) (hA_ord : ordAt P A (0 : k[X]) = 1) :
+    ordAtFrac P E (-Y) U (0 : k[X]) = 1 := by
+  rw [ordAtFrac_neg_eq_ordAt_of_pairNorm_eq_mul P h_bot E Y A U hgbar_ne hg_ne_eval
+    hAU hA_ne hU_ne, hA_ord]
 
 end HyperellipticPolynomial
 
