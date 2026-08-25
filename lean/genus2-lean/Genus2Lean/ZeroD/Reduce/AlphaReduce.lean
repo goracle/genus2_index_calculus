@@ -1531,6 +1531,61 @@ theorem Epoly4_natDegree_le_four (P1 P2 : F p × F p)
   · compute_degree!
   · simp
 
+/-- `Epoly4`'s degree is EXACTLY 4, given that `coeffsOut4` doesn't
+vanish at the unique `bi=4` slot (`rrBasis7`'s largest `bj=0` entry,
+`(8,4,0)`, at `bidx = 6` per `rrBasis7_eq`) — the genuine genericity
+condition `Npoly4_natDegree_le_eight`'s upper bound needs to become an
+equality, in the same spirit as `DecoupledSystemRegular.lean`'s
+`curBeforeMonic_natDegree_eq_sub` docstring flags for the K=2 analogue
+(`Epoly`'s own leading Cramer coefficient not vanishing was left open
+there rather than guessed at; here it's the same fact, named outright as
+a hypothesis rather than left unclaimed, per this project's "weaken to a
+hypothesis" convention). `coeffsOut4`'s value at slot 6 is a genuine
+Cramer's-rule ratio (`cramerSolution4`, itself `A.cramer rhs i / A.det`),
+so this is data-dependent and not provable unconditionally — matches
+`ROADMAP-reduce-to-zerodim.md`'s prediction for (1b)'s first half. -/
+theorem Epoly4_natDegree_eq_four (P1 P2 : F p × F p)
+    (ua0 ua1 va0 va1 u0 u1 v0 v1 : F p)
+    (hlead : coeffsOut4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ⟨6, by norm_num⟩ ≠ 0) :
+    (Epoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1).natDegree = 4 := by
+  have hle := Epoly4_natDegree_le_four p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1
+  refine le_antisymm hle ?_
+  -- The `bidx = 6` summand of `Epoly4` is
+  -- `C (coeffsOut4 ... 6) * X^4` (since `rrBasis7.getD 6 (0,0,0) = (8,4,0)`,
+  -- `bj = 0`), which contributes `coeffsOut4 ... 6` at `coeff 4`. Every
+  -- OTHER summand has `bi ≤ 3` (all `rrBasis7` entries besides index 6
+  -- with `bj = 0` have smaller `bi`; the two `bj = 1` entries don't
+  -- contribute to `Epoly4` at all), hence `coeff 4 = 0` there, so
+  -- `Epoly4.coeff 4 = coeffsOut4 ... 6 ≠ 0`, giving `natDegree ≥ 4` via
+  -- `Polynomial.le_natDegree_of_ne_zero`.
+  apply Polynomial.le_natDegree_of_ne_zero
+  unfold Epoly4
+  rw [Polynomial.finset_sum_coeff]
+  have hrr : rrBasis7 = [(0,0,0), (2,1,0), (4,2,0), (5,0,1), (6,3,0), (7,1,1), (8,4,0)] :=
+    rrBasis7_eq
+  -- Isolate the `bidx = 6` summand: every other `bidx : Fin 7` has
+  -- `coeff 4 = 0` in its summand, either because `bj = 1` (summand is
+  -- literally `0`) or because `bj = 0` with `bi ≠ 4` (an `X^bi` term
+  -- with `bi ≠ 4` contributes `0` at `coeff 4`).
+  have hother : ∀ bidx ∈ (Finset.univ : Finset (Fin 7)), bidx ≠ (⟨6, by norm_num⟩ : Fin 7) →
+      (let (_, bi, bj) := rrBasis7.getD bidx.val (0, 0, 0)
+       if bj = 0 then C (coeffsOut4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 bidx) * X ^ bi
+       else (0 : Polynomial (F p))).coeff 4 = 0 := by
+    intro bidx _ hne
+    fin_cases bidx <;>
+      simp_all [hrr, List.getD, Polynomial.coeff_C_mul, Polynomial.coeff_X_pow]
+  have hthis : (let (_, bi, bj) := rrBasis7.getD (⟨6, by norm_num⟩ : Fin 7).val (0, 0, 0)
+      if bj = 0 then C (coeffsOut4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 (⟨6, by norm_num⟩ : Fin 7)) *
+        X ^ bi
+      else (0 : Polynomial (F p))).coeff 4 =
+      coeffsOut4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ⟨6, by norm_num⟩ := by
+    rw [hrr]
+    norm_num [List.getD, Polynomial.coeff_C_mul, Polynomial.coeff_X_pow]
+  rw [Finset.sum_eq_single (⟨6, by norm_num⟩ : Fin 7) hother
+    (fun h => absurd (Finset.mem_univ _) h)]
+  rw [hthis]
+  exact hlead
+
 /-! ## The three row-identity theorems, K=4 instance
 
 Direct rescaling of `anchor_defining_eq_aux`/`row23_defining_eq_aux`
@@ -1987,6 +2042,54 @@ theorem Npoly4_natDegree_le_eight (c0 c1 c2 c3 c4 : F p) (P1 P2 : F p × F p)
     (Polynomial.natDegree_sub_le (Epoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ^ 2)
       (curvePoly p c0 c1 c2 c3 c4 * Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ^ 2))
     (max_le hE2 (le_trans hfY2 (by norm_num)))
+
+/-- `Npoly4`'s degree is EXACTLY 8, given `Epoly4`'s sharp degree
+(`Epoly4_natDegree_eq_four`) — and, notably, needing NOTHING further:
+`curvePoly * Ypoly4^2` has degree `≤ 5 + 2*1 = 7 < 8`
+(`curvePoly_natDegree` `=5`, `Ypoly4_natDegree_le_one` `≤1`), strictly
+below `Epoly4^2`'s degree `2*4=8`, so the subtraction can't cancel the
+leading term no matter what `Ypoly4`'s own leading behavior is. This
+confirms `ROADMAP-reduce-to-zerodim.md`'s "there is a real chance this
+half is free" guess for (1b)'s second half: given `Epoly4`'s sharp
+degree, `Npoly4`'s sharp degree needs no ADDITIONAL genericity
+hypothesis beyond `hlead`. -/
+theorem Npoly4_natDegree_eq_eight (c0 c1 c2 c3 c4 : F p) (P1 P2 : F p × F p)
+    (ua0 ua1 va0 va1 u0 u1 v0 v1 : F p)
+    (hlead : coeffsOut4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ⟨6, by norm_num⟩ ≠ 0) :
+    (Npoly4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1).natDegree = 8 := by
+  have hE4 : (Epoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1).natDegree = 4 :=
+    Epoly4_natDegree_eq_four p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 hlead
+  have hY1 := Ypoly4_natDegree_le_one p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1
+  have hf5 : (curvePoly p c0 c1 c2 c3 c4).natDegree = 5 := curvePoly_natDegree p c0 c1 c2 c3 c4
+  have hE2deg : (Epoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ^ 2).natDegree = 8 := by
+    rw [Polynomial.natDegree_pow, hE4]
+  have hY2le : (Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ^ 2).natDegree ≤ 2 :=
+    le_trans (Polynomial.natDegree_pow_le_of_le 2 hY1) (by norm_num)
+  have hfY2lt : (curvePoly p c0 c1 c2 c3 c4 *
+      Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ^ 2).natDegree < 8 := by
+    have hstep := Polynomial.natDegree_mul_le (p := curvePoly p c0 c1 c2 c3 c4)
+      (q := Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ^ 2)
+    omega
+  -- `Npoly4 = Epoly4^2 - curvePoly*Ypoly4^2`, top term degree 8 minus a
+  -- strictly-lower-degree term never cancels the leading coefficient, so
+  -- `natDegree` is preserved. Built directly from the coefficient-4-of-8
+  -- (i.e. the top coefficient) argument, `Polynomial.coeff_sub_eq_left_of_lt`.
+  unfold Npoly4
+  have hE2ne : (Epoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ^ 2) ≠ 0 := by
+    intro hz; rw [hz] at hE2deg; simp at hE2deg
+  apply le_antisymm
+  · have h1 := Polynomial.natDegree_sub_le
+      (Epoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ^ 2)
+      (curvePoly p c0 c1 c2 c3 c4 * Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ^ 2)
+    omega
+  · apply Polynomial.le_natDegree_of_ne_zero
+    have hcoeff : (Epoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ^ 2 -
+        curvePoly p c0 c1 c2 c3 c4 * Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ^ 2).coeff 8 =
+        (Epoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ^ 2).coeff 8 :=
+      Polynomial.coeff_sub_eq_left_of_lt (by omega : (curvePoly p c0 c1 c2 c3 c4 *
+        Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ^ 2).natDegree < 8)
+    rw [hcoeff, ← hE2deg]
+    exact Polynomial.leadingCoeff_ne_zero.mpr hE2ne
 
 /-- `N(x)` for the TANGENT case (`P1=P2`, one point `(px,py)` with
 multiplicity 2) — same `E²-fY²` formula as `Npoly4`, substituting

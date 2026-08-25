@@ -631,6 +631,166 @@ theorem npoly4LcmLinearPair_natDegree_eq_two (P1 P2 : F p × F p) (h : P1.1 ≠ 
   rw [hprod, hdeg] at hlhs
   exact hlhs.symm
 
+/-- The quadratic pair `u_a(X) = X²+ua1·X+ua0` / `target(X) = X²+u1·X+u0`
+is coprime whenever they're not equal as polynomials AND share no root in
+`F p` — the positive direction of `not_coprime_quadratics_iff`'s
+dichotomy, phrased as its contrapositive. -/
+theorem isCoprime_quadratic_pair_of_ne_of_no_shared_root
+    (hne : (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)) ≠ X ^ 2 + C u1 * X + C u0)
+    (hnoroot : ¬ ∃ r : F p, (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).eval r = 0 ∧
+        (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).eval r = 0) :
+    IsCoprime (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)) (X ^ 2 + C u1 * X + C u0) := by
+  by_contra hnc
+  rw [not_coprime_quadratics_iff p] at hnc
+  rcases hnc with hroot | heq
+  · exact hnoroot hroot
+  · exact hne heq
+
+/-- `lcm(u_a, target)` (the quadratic pair) has EXACT degree 4 whenever
+`u_a ≠ target` as polynomials AND they share no root in `F p` — mirrors
+`npoly4LcmLinearPair_natDegree_eq_two`'s proof one degree up (coprime
+monic factors' `lcm` is a unit multiple of their product, degree `2+2=4`),
+using `isCoprime_quadratic_pair_of_ne_of_no_shared_root` for the
+coprimality half instead of `isCoprime_linear_pair_of_ne`. -/
+theorem npoly4LcmQuadraticPair_natDegree_eq_four
+    (hne : (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)) ≠ X ^ 2 + C u1 * X + C u0)
+    (hnoroot : ¬ ∃ r : F p, (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).eval r = 0 ∧
+        (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).eval r = 0) :
+    (EuclideanDomain.lcm (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p))
+        (X ^ 2 + C u1 * X + C u0)).natDegree = 4 := by
+  have hm3 : (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).Monic := by monicity!
+  have hm4 : (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).Monic := by monicity!
+  have hcop := isCoprime_quadratic_pair_of_ne_of_no_shared_root p ua0 ua1 u0 u1 hne hnoroot
+  have hgcdunit : IsUnit (EuclideanDomain.gcd (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p))
+      (X ^ 2 + C u1 * X + C u0)) :=
+    EuclideanDomain.gcd_isUnit_iff.mpr hcop
+  have hprod := EuclideanDomain.gcd_mul_lcm (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p))
+    (X ^ 2 + C u1 * X + C u0)
+  obtain ⟨u, hu⟩ := hgcdunit
+  have hne3 : (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)) ≠ 0 := hm3.ne_zero
+  have hne4 : (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)) ≠ 0 := hm4.ne_zero
+  have hlcmne : (EuclideanDomain.lcm (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p))
+      (X ^ 2 + C u1 * X + C u0)) ≠ 0 := by
+    rw [Ne, EuclideanDomain.lcm_eq_zero_iff]
+    intro hz; rcases hz with hz | hz
+    · exact hne3 hz
+    · exact hne4 hz
+  have hdeg : ((X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)) *
+      (X ^ 2 + C u1 * X + C u0)).natDegree = 4 := by
+    rw [Polynomial.natDegree_mul hne3 hne4]
+    have e3 : (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).natDegree = 2 := by compute_degree!
+    have e4 : (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).natDegree = 2 := by compute_degree!
+    rw [e3, e4]
+  have hune : (u : Polynomial (F p)) ≠ 0 := u.ne_zero
+  have hudvd1 : (u : Polynomial (F p)) ∣ (1 : Polynomial (F p)) := u.isUnit.dvd
+  have hudeg0 : (u : Polynomial (F p)).natDegree = 0 := by
+    have hle := Polynomial.natDegree_le_of_dvd hudvd1 one_ne_zero
+    simpa using hle
+  have hlhs : (EuclideanDomain.gcd (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p))
+      (X ^ 2 + C u1 * X + C u0) *
+      EuclideanDomain.lcm (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p))
+        (X ^ 2 + C u1 * X + C u0)).natDegree =
+      (EuclideanDomain.lcm (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p))
+        (X ^ 2 + C u1 * X + C u0)).natDegree := by
+    rw [← hu, Polynomial.natDegree_mul hune hlcmne, hudeg0, zero_add]
+  rw [hprod, hdeg] at hlhs
+  exact hlhs.symm
+
+/-- `npoly4Lcm4`'s degree is EXACTLY 6, given `P1.1 ≠ P2.1` (linear pair
+sharpening, `npoly4LcmLinearPair_natDegree_eq_two`), `u_a ≠ target` with
+no shared root (quadratic pair sharpening,
+`npoly4LcmQuadraticPair_natDegree_eq_four`), AND that the resulting
+linear-pair lcm and quadratic-pair lcm are themselves coprime
+(`hcop1234`) — this last hypothesis is genuinely needed and not free: it
+is what lets the OUTER `gcd_mul_lcm` step (nesting `lcm(q12,q34)`, the
+literal definition of `npoly4LcmRaw`) pin an exact degree rather than
+only `≤ 6`, exactly mirroring why `hne34`/`hnoroot34` were needed one
+level down for the quadratic pair itself. `hcop1234`'s natural sufficient
+condition is "the linear pair's two roots are not roots of the quadratic
+pair", but that reduction is not attempted here — left as an explicit
+hypothesis at this level, per this project's "weaken to a hypothesis
+rather than force a false/unprovable claim" convention. -/
+theorem npoly4Lcm4_natDegree_eq_six (h12 : P1.1 ≠ P2.1)
+    (hne34 : (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)) ≠ X ^ 2 + C u1 * X + C u0)
+    (hnoroot34 : ¬ ∃ r : F p, (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).eval r = 0 ∧
+        (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).eval r = 0)
+    (hcop1234 : IsCoprime (EuclideanDomain.lcm (X - C P1.1 : Polynomial (F p)) (X - C P2.1))
+        (EuclideanDomain.lcm (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p))
+          (X ^ 2 + C u1 * X + C u0))) :
+    (npoly4Lcm4 p P1 P2 ua0 ua1 u0 u1).natDegree = 6 := by
+  have hm1 : (X - C P1.1 : Polynomial (F p)).Monic := Polynomial.monic_X_sub_C _
+  have hm2 : (X - C P2.1 : Polynomial (F p)).Monic := Polynomial.monic_X_sub_C _
+  have hm3 : (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).Monic := by monicity!
+  have hm4 : (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).Monic := by monicity!
+  have hdeg12 : (EuclideanDomain.lcm (X - C P1.1 : Polynomial (F p)) (X - C P2.1)).natDegree
+      = 2 := npoly4LcmLinearPair_natDegree_eq_two p P1 P2 h12
+  have hdeg34 : (EuclideanDomain.lcm (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p))
+      (X ^ 2 + C u1 * X + C u0)).natDegree = 4 :=
+    npoly4LcmQuadraticPair_natDegree_eq_four p ua0 ua1 u0 u1 hne34 hnoroot34
+  have hne12 : EuclideanDomain.lcm (X - C P1.1 : Polynomial (F p)) (X - C P2.1) ≠ 0 := by
+    intro hz
+    rw [EuclideanDomain.lcm_eq_zero_iff] at hz
+    rcases hz with hz | hz
+    · exact hm1.ne_zero hz
+    · exact hm2.ne_zero hz
+  have hne34' : EuclideanDomain.lcm (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p))
+      (X ^ 2 + C u1 * X + C u0) ≠ 0 := by
+    intro hz
+    rw [EuclideanDomain.lcm_eq_zero_iff] at hz
+    rcases hz with hz | hz
+    · exact hm3.ne_zero hz
+    · exact hm4.ne_zero hz
+  -- Same `gcd_mul_lcm`-associate argument as `npoly4LcmLinearPair_natDegree_eq_two`/
+  -- `npoly4LcmQuadraticPair_natDegree_eq_four`, one level up: `hcop1234`
+  -- gives `gcd q12 q34` a unit, so `lcm q12 q34` is a unit multiple of
+  -- `q12 * q34`, degree `2+4=6`.
+  have hgcdunit : IsUnit (EuclideanDomain.gcd
+      (EuclideanDomain.lcm (X - C P1.1 : Polynomial (F p)) (X - C P2.1))
+      (EuclideanDomain.lcm (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p))
+        (X ^ 2 + C u1 * X + C u0))) :=
+    EuclideanDomain.gcd_isUnit_iff.mpr hcop1234
+  have hprod := EuclideanDomain.gcd_mul_lcm
+    (EuclideanDomain.lcm (X - C P1.1 : Polynomial (F p)) (X - C P2.1))
+    (EuclideanDomain.lcm (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p))
+      (X ^ 2 + C u1 * X + C u0))
+  obtain ⟨u, hu⟩ := hgcdunit
+  have hrawne : npoly4LcmRaw p P1 P2 ua0 ua1 u0 u1 ≠ 0 := npoly4LcmRaw_ne_zero p P1 P2 ua0 ua1 u0 u1
+  have hprodne : (EuclideanDomain.lcm (X - C P1.1 : Polynomial (F p)) (X - C P2.1)) *
+      (EuclideanDomain.lcm (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p))
+        (X ^ 2 + C u1 * X + C u0)) ≠ 0 := mul_ne_zero hne12 hne34'
+  have hproddeg : ((EuclideanDomain.lcm (X - C P1.1 : Polynomial (F p)) (X - C P2.1)) *
+      (EuclideanDomain.lcm (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p))
+        (X ^ 2 + C u1 * X + C u0))).natDegree = 6 := by
+    rw [Polynomial.natDegree_mul hne12 hne34', hdeg12, hdeg34]
+  have hune : (u : Polynomial (F p)) ≠ 0 := u.ne_zero
+  have hudvd1 : (u : Polynomial (F p)) ∣ (1 : Polynomial (F p)) := u.isUnit.dvd
+  have hudeg0 : (u : Polynomial (F p)).natDegree = 0 := by
+    have hle := Polynomial.natDegree_le_of_dvd hudvd1 one_ne_zero
+    simpa using hle
+  have hlhs : (EuclideanDomain.gcd
+      (EuclideanDomain.lcm (X - C P1.1 : Polynomial (F p)) (X - C P2.1))
+      (EuclideanDomain.lcm (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p))
+        (X ^ 2 + C u1 * X + C u0)) *
+      npoly4LcmRaw p P1 P2 ua0 ua1 u0 u1).natDegree =
+      (npoly4LcmRaw p P1 P2 ua0 ua1 u0 u1).natDegree := by
+    rw [← hu, Polynomial.natDegree_mul hune hrawne, hudeg0, zero_add]
+  rw [show EuclideanDomain.gcd
+      (EuclideanDomain.lcm (X - C P1.1 : Polynomial (F p)) (X - C P2.1))
+      (EuclideanDomain.lcm (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p))
+        (X ^ 2 + C u1 * X + C u0)) *
+      npoly4LcmRaw p P1 P2 ua0 ua1 u0 u1 =
+      (EuclideanDomain.lcm (X - C P1.1 : Polynomial (F p)) (X - C P2.1)) *
+      (EuclideanDomain.lcm (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p))
+        (X ^ 2 + C u1 * X + C u0)) from hprod, hproddeg] at hlhs
+  simp only [npoly4Lcm4]
+  set q := npoly4LcmRaw p P1 P2 ua0 ua1 u0 u1 with hq
+  have hlc : q.leadingCoeff ≠ 0 := (not_congr Polynomial.leadingCoeff_eq_zero).mpr hrawne
+  have hau : q.leadingCoeff⁻¹ * q.leadingCoeff ≠ 0 := mul_ne_zero (inv_ne_zero hlc) hlc
+  have hscaledeg : (C q.leadingCoeff⁻¹ * q).natDegree = q.natDegree :=
+    Polynomial.natDegree_C_mul_of_mul_ne_zero hau
+  rw [hscaledeg]
+  exact hlhs.symm
+
 /-- `u_RS,general(x)`, monic-normalized `curBeforeMonic4General` — same
 `leadingCoeff⁻¹`-scaling construction as `uRS4`/`uRS4LcmShared`/
 `uRS4Tangent`, applied to `curBeforeMonic4General` instead. Well-defined
@@ -714,6 +874,73 @@ noncomputable def vRS4General
       EuclideanDomain.gcdA (Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1)
         (uRS4General p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1)) %ₘ
     uRS4General p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1
+
+/-- **`hdeg2` itself, as an actual theorem** — `curBeforeMonic4General`'s
+degree is EXACTLY 2, combining `Npoly4_natDegree_eq_eight` (`AlphaReduce.lean`,
+needing only `hlead`, the `bi=4` Cramer coefficient nonvanishing) and
+`npoly4Lcm4_natDegree_eq_six` (needing `h12`/`hne34`/`hnoroot34`/`hcop1234`
+above). `8 - 6 = 2` via `Polynomial.natDegree_divByMonic`, exactly as
+`ROADMAP-reduce-to-zerodim.md`'s step-4 combination predicted, now with
+BOTH halves sharp instead of merely bounded. This closes step 1 of that
+roadmap modulo the four named genericity hypotheses (`hlead`/`h12`/
+`hne34`/`hnoroot34`/`hcop1234`) — the same class of "weaken to a
+hypothesis" object as `Nondegenerate`/`CrossNondegenerate` elsewhere in
+this project, not a `sorry`. -/
+theorem curBeforeMonic4General_natDegree_eq_two
+    (hlead : coeffsOut4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ⟨6, by norm_num⟩ ≠ 0)
+    (h12 : P1.1 ≠ P2.1)
+    (hne34 : (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)) ≠ X ^ 2 + C u1 * X + C u0)
+    (hnoroot34 : ¬ ∃ r : F p, (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).eval r = 0 ∧
+        (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).eval r = 0)
+    (hcop1234 : IsCoprime (EuclideanDomain.lcm (X - C P1.1 : Polynomial (F p)) (X - C P2.1))
+        (EuclideanDomain.lcm (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p))
+          (X ^ 2 + C u1 * X + C u0))) :
+    (curBeforeMonic4General p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1).natDegree = 2 := by
+  have hmonic := npoly4Lcm4_monic p P1 P2 ua0 ua1 u0 u1
+  have heq :
+      (curBeforeMonic4General p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1).natDegree =
+        (Npoly4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1).natDegree -
+          (npoly4Lcm4 p P1 P2 ua0 ua1 u0 u1).natDegree := by
+    simp only [curBeforeMonic4General]
+    exact Polynomial.natDegree_divByMonic _ hmonic
+  have h8 : (Npoly4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1).natDegree = 8 :=
+    Npoly4_natDegree_eq_eight p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 hlead
+  have h6 : (npoly4Lcm4 p P1 P2 ua0 ua1 u0 u1).natDegree = 6 :=
+    npoly4Lcm4_natDegree_eq_six p P1 P2 ua0 ua1 u0 u1 h12 hne34 hnoroot34 hcop1234
+  omega
+
+/-- **`hdeg2`, the shape `ReduceGeneral_isMumfordTarget4` needs
+directly** — `uRS4General.natDegree = 2` (monic-normalization preserves
+`natDegree`), obtained from `curBeforeMonic4General_natDegree_eq_two`
+plus `curBeforeMonic4General ≠ 0` (immediate from `natDegree = 2 ≠ 0`,
+via `Polynomial.natDegree_eq_zero_iff_...`-style contrapositive: a
+polynomial with a nonzero `natDegree` cannot itself be the zero
+polynomial, since `(0 : Polynomial _).natDegree = 0`). Wiring this in at
+`ReduceGeneral_isMumfordTarget4`'s call site (replacing that theorem's
+bare `hdeg2` hypothesis with a proof term calling this theorem) is
+`ROADMAP-reduce-to-zerodim.md`'s remaining step-1 action item, not
+attempted in this pass to avoid touching `ReduceGeneral_isMumfordTarget4`
+itself without Claire's REPL confirming this theorem compiles first. -/
+theorem uRS4General_natDegree_eq_two
+    (hlead : coeffsOut4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ⟨6, by norm_num⟩ ≠ 0)
+    (h12 : P1.1 ≠ P2.1)
+    (hne34 : (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)) ≠ X ^ 2 + C u1 * X + C u0)
+    (hnoroot34 : ¬ ∃ r : F p, (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).eval r = 0 ∧
+        (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).eval r = 0)
+    (hcop1234 : IsCoprime (EuclideanDomain.lcm (X - C P1.1 : Polynomial (F p)) (X - C P2.1))
+        (EuclideanDomain.lcm (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p))
+          (X ^ 2 + C u1 * X + C u0))) :
+    (uRS4General p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1).natDegree = 2 := by
+  have hdeg2 := curBeforeMonic4General_natDegree_eq_two p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1
+    u0 u1 v0 v1 hlead h12 hne34 hnoroot34 hcop1234
+  have hcurne : curBeforeMonic4General p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ≠ 0 := by
+    intro hz; rw [hz] at hdeg2; simp at hdeg2
+  simp only [uRS4General]
+  set q := curBeforeMonic4General p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 with hq
+  have hlc : q.leadingCoeff ≠ 0 := (not_congr Polynomial.leadingCoeff_eq_zero).mpr hcurne
+  have hau : q.leadingCoeff⁻¹ * q.leadingCoeff ≠ 0 := mul_ne_zero (inv_ne_zero hlc) hlc
+  rw [Polynomial.natDegree_C_mul_of_mul_ne_zero hau]
+  exact hdeg2
 
 end GeneralOutput
 
