@@ -1,661 +1,1397 @@
-# Roadmap: `reducedClass ↔ isReduction'` (Reduce's divisor-class correctness)
+# Raw ChatGPT reply — Step 3 math (Reduce's divisor-class correctness)
 
-## Status as of this pass (supersedes the relevant part of
-## `ROADMAP-reduce-to-zerodim.md` step 2, item 2 — that item is what
-## this document scopes in detail)
+This is the full, unedited answer to `CHATGPT-PROMPT-step3-reduce-
+correctness.md`, kept verbatim for reference. The condensed,
+actionable version (mapped onto our actual Lean names/files) is in
+`ROADMAP-reduce-divisor-correctness.md` §3a–3e — read that first;
+come back here only for the full derivations/justifications it
+summarizes.
 
-`ROADMAP-reduce-to-zerodim.md` correctly predicted this gap and
-correctly said it wasn't scoped yet ("likely deserving its own roadmap
-section once someone sits down with `DivisorClassGroup.lean` directly").
-That sitting-down happened this pass. Findings:
+---
 
-- `DivisorClassGroup.lean` (237 lines, 0 sorry) is thin — it defines
-  `Jacobian H D` abstractly over any `P : PrincipalDivisorData H` and is
-  NOT itself where the gap lives.
-- `PrincipalDivisorSubgroup.lean` (212 lines, 0 sorry) supplies a real,
-  honestly-partial `PrincipalDivisorData` instance for degree-5 `H`
-  (`principalSubgroup`, gated on `[IsDedekindDomain (CoordinateRing H)]`
-  and friends) — this is NOT a stub; it typechecks and is load-bearing.
-- `PrincipalDivisors.lean`/`PrincipalDivisorsDedekind.lean`/
-  `PrincipalDivisorsIntegralClosure.lean` are a large (4400+ line)
-  function-field/Dedekind-domain development (`ordAt`, CRT, `deg(div g)
-  = 0`) that backs the instance above. Comment-stripped, live-tactic
-  `sorry` count in `PrincipalDivisors.lean` itself is 0 — the `sorry`
-  hits from a raw grep are all inside `/- ... -/` prose describing
-  historical/still-conditional status, not open goals. Its main target
-  theorem (`deg_div_eq_zero_deg5`-shaped) is proved, but conditioned on
-  two hypotheses (`hspec`, a `Module.Finite` instance bundle) that are
-  deliberately kept as hypotheses per project convention rather than
-  derived — that's fine, matches "weaken first" policy, not a gap to
-  chase right now.
-- `Reduce/` (`AlphaReduce.lean`, `GeneralSharedRoot.lean`,
-  `ReduceDispatchGeneral`) proves **polynomial-level Mumford
-  correctness only** (`ReduceGeneral_isMumfordTarget4`: output satisfies
-  `v² ≡ f mod u`). It does NOT mention `Jacobian`, `toJacobian`, or
-  `Divisor0` anywhere except in prose pointing elsewhere. This is
-  confirmed, not a re-open.
-- The actual gap is `AlphaLocusDegreeUniform.lean`'s own docstring,
-  verbatim: `isReduction'` (coordinate-level, real equation, computable
-  RHS) and `reducedClass`/`isReduction` (divisor-class-level, the
-  `SampleTargetFromAlpha` field) are two separate things, and **nothing
-  proves they coincide**. `isReduction'` has 10 raw `sorry` hits in that
-  file (need to re-check comment-stripped count — see Step 0 below,
-  don't trust the raw number).
+Yes. There is a very clean way to organize the proof, and I think it will map unusually well onto your existing `ordAt` machinery.
 
-## Step 0 (do this first, before anything else below)
+The one conceptual correction I would make at the outset is:
 
-Re-run the comment-stripped sorry scan (the one that correctly flagged
-`PrincipalDivisors.lean` as 0 live sorries despite 13 raw hits) against
-`AlphaLocusDegreeUniform.lean` and `GeneralSharedRoot.lean`'s single raw
-hit. We don't yet know the TRUE live-sorry count in either file — do not
-plan Step 1 below off the raw `grep -c sorry` numbers, they're known to
-overcount in this codebase. Also confirm both files currently build
-clean (per project convention: verify before building on top of
-anything, and per the earlier note that `GeneralSharedRoot.lean`'s
-build status was "less explicitly confirmed" last time it mattered).
+> The polynomial phi(x) itself is not generally the principal-divisor witness.
+> The natural witness is a function of the form
+> h(x,y) = (y - phi(x)) / u_new(x)
+> (up to an overall nonzero scalar and sign conventions).
+>
+> Your N = phi^2 - f is the norm of the numerator (y - phi), and its quotient by the known factors tells you which residual x-coordinates occur.
 
-## Step 1 — smallest honest move: make `isReduction'` load-bearing
+That is exactly the geometry behind the Cantor reduction step. Cantor's algorithm is explicitly split into composition and reduction, with the reduction step replacing (u,v) by ((f-v^2)/u, -v mod u) in the h=0, odd-characteristic case.
 
-Nothing here requires new math yet. Per
-`ROADMAP-reduce-to-zerodim.md` step 2 item 1: once `hdeg2` is closed
-(that's step 1 of the OLD roadmap, may already be done — check), swap
-`SampleTargetFromAlpha`'s bare `isReduction : Prop` field for
-`isReduction'`'s actual statement, or add
-`isReduction'_implies_isReduction` connecting them. This doesn't touch
-the divisor-class gap but stops the file from carrying two unrelated
-notions under confusingly similar names. Cheap, mechanical, do it
-first — eliminates a live sorry (the unconstrained `isReduction : Prop`
-field is itself effectively an escape hatch) without needing any new
-algebraic-geometry content.
+## 1. Start with the geometric picture
 
-## Step 2 — state the real target theorem (as a named `sorry`, not
-## attempted yet)
+Let C: y^2 = f(x), deg f = 5, over K = F_p, p ≠ 2, with f squarefree.
 
-Write, but do not try to prove, something of the shape:
+There is one point at infinity, call it δ₀, and ord_{δ₀}(x) = -2, ord_{δ₀}(y) = -5.
+
+So a cubic polynomial phi(x) has pole order 6 at infinity.
+
+Therefore y - phi(x) has pole order 6 at δ₀, generically because the cubic term dominates y:
+
+div(y - phi) = Z(y-phi) - 6δ₀.
+
+The affine zeros of y - phi are exactly the intersection points of the curve y^2=f(x) with the graph y=phi(x).
+
+Now eliminate y: (y-phi)(y+phi) = f - phi^2.
+
+Thus the x-coordinates of those intersection points are the roots of N(x) = phi(x)^2 - f(x) (up to sign).
+
+Since deg phi = 3, deg N = 6. So Bezout here is literally visible as polynomial degree: there are six intersections counting multiplicity.
+
+That is the fundamental fact your Lean proof should exploit.
+
+## 2. The standard genus-2 Cantor reduction identity
+
+Suppose you have a semireduced divisor D_old = P1+P2+Q1+Q2-4δ₀ with Mumford representation (u_old, v_old), where u_old = prod(x-xi) in the completely split picture, and v_old(xi) = yi.
+
+Choose phi satisfying phi(xi) = yi at all four points.
+
+Then u_old | phi^2 - f. Write phi^2 - f = u_old · u_new. Since the left side has degree 6 and u_old has degree 4, deg u_new = 2.
+
+Let its roots be r1,r2, with corresponding curve points Ri = (ri, phi(ri)).
+
+Then div(y - phi) = P1+P2+Q1+Q2+R1+R2 - 6δ₀.
+
+Now define v_new ≡ -phi (mod u_new). The minus sign is crucial.
+
+The Mumford divisor associated to (u_new, v_new) is D_new = R̄1 + R̄2 - 2δ₀, where R̄i = (ri, -phi(ri)) is the hyperelliptic conjugate.
+
+And now comes the beautiful trick: (y - phi(x)) / u_new(x) has:
+- zeros at the original four points (Pi, Qi),
+- poles at the conjugate residual points (R̄1, R̄2),
+- pole of order 2 at infinity.
+
+Why?
+
+At Ri: y - phi(x) = 0 there too, and u_new(x) = 0, so the two zeros cancel.
+
+At R̄i: y = -phi(ri), so y - phi(ri) = -2phi(ri), which is generally nonzero, while u_new(ri) = 0. Hence there is a pole.
+
+At infinity: ord_{δ₀}(y-phi) = -6 and ord_{δ₀}(u_new) = -4, so ord_{δ₀}((y-phi)/u_new) = -6-(-4) = -2.
+
+Therefore: div((y-phi)/u_new) = D_old - D_new.
+
+That is the entire correctness proof of the reduction step.
+
+So, class-theoretically, D_old ~ D_new.
+
+This is the geometric content of Cantor reduction. The standard algorithm consequently returns the unique reduced divisor in the same class.
+
+## 3. This also tells you exactly what ordAt should be applied to
+
+For your Lean development, I would conceptualize the eventual theorem as:
+
+ordAt((y-phi(x))/u_new(x), P) = coeff_P(D_old) - coeff_P(D_new)
+
+for every closed point P.
+
+Or globally: div(h) = D_old - D_new, h = (y-phi)/u_new.
+
+That is much better as the conceptual target than trying to prove directly that the two Mumford pairs represent the same Jacobian point.
+
+You then get equality in Pic^0 immediately because a principal divisor represents zero.
+
+So I would structure the eventual formal proof around three separate facts:
+
+1. u_old | (phi^2 - f).
+2. u_new = (phi^2-f)/u_old describes the residual intersection divisor.
+3. The rational function h = (y-phi)/u_new has divisor D_old - D_new.
+
+The third is the actual class-preservation theorem.
+
+## 4. Why N = phi^2-f is the right computational object
+
+This is where your N calculation fits beautifully.
+
+The hyperelliptic involution is ι(x,y) = (x,-y).
+
+For g = y - phi(x), its conjugate is ι(g) = -y - phi(x).
+
+Their product is g·ι(g) = phi(x)^2 - y^2 = phi(x)^2 - f(x) = N(x).
+
+So N is exactly the norm N_{K(C)/K(x)}(g).
+
+This explains an otherwise slightly mysterious feature of Cantor arithmetic: N lives in the x-polynomial ring because norms forget whether an intersection point is P or ι(P).
+
+If the known divisor contributes the factor u_old, then N = u_old·u_new.
+
+The remaining factor is exactly the x-projection of the residual intersection divisor.
+
+That is why the quotient polynomial gives you the new u.
+
+And then the sign v_new ≡ -phi (mod u_new) switches the residual points to their hyperelliptic conjugates, which is exactly what turns the geometric relation from D_old + R - 6δ₀ into D_old - D_new.
+
+This is also exactly what the usual Cantor step says: after forming u' = (f-v^2)/u, replace v by -v mod u'.
+
+## 5. Your more general E+Yy formulation
+
+This is particularly relevant to the code you've described.
+
+You apparently aren't always using the literal y-phi(x); instead you have something like g = E(x) + Y(x)y, with norm N(x) = E(x)^2 - f(x)Y(x)^2.
+
+That is completely natural.
+
+The involution sends g = E+Yy to ḡ = E-Yy, so g·ḡ = E^2 - Y^2 y^2 = E^2 - fY^2 = N.
+
+Thus N is again the norm of the actual curve function.
+
+This gives you a very useful slogan for the formalization: N tells you where g or ḡ vanishes; g itself tells you which side of the involution the divisor lives on.
+
+So I would not make the eventual principal-divisor theorem about N itself.
+
+It should be about an element of the function field represented by something of the form E+Yy, possibly divided by an x-only denominator.
+
+The norm calculation is then a supporting lemma that tells you the x-divisor of that function.
+
+## 6. The exact sign issue for your D_old
+
+This is the place where I think you should be particularly careful in translating your actual implementation.
+
+You wrote that your target divisor is D_old = alpha·aClass - [P1] - [P2] + 2[δ₀].
+
+But the elementary Cantor interpolation argument above for phi through P1,P2 proves the corresponding statement for alpha·aClass + [P1] + [P2] - 2[δ₀] unless your implementation has already encoded negation somewhere else.
+
+To subtract Pi, you should ordinarily add its inverse -Pi = [ι(Pi) - δ₀].
+
+On Mumford coordinates, negation is (u,v) ↦ (u,-v).
+
+So if your old divisor really is D_a - [P1] - [P2] + 2δ₀, the interpolation function for the composition stage should geometrically pass through ι(P1), ι(P2), not P1,P2, unless your definitions of E, Y, or the target v_a have already absorbed those signs.
+
+This is probably the single most important thing to check against your current code.
+
+If your phi literally satisfies phi(x(Pi)) = y(Pi), then y-phi has zeros at Pi, not at ι(Pi).
+
+If instead phi(x(Pi)) = -y(Pi), then y-phi vanishes at ι(Pi), which is what subtraction needs.
+
+So the correct informal statement for your code is: determine which points are zeros of the actual curve function g = E+Yy, rather than reading the sign solely from the x-polynomial N.
+
+That's exactly where the E+Yy formulation is preferable to talking only about phi.
+
+## 7. Distinct points P1 ≠ P2
+
+For the distinct-point case, the interpolation condition is simply phi(x1)=y1, phi(x2)=y2, together with the corresponding conditions coming from u_a,v_a.
+
+Geometrically these are ordinary intersection conditions.
+
+If P1≠P2 and both are ordinary affine points, each contributes intersection multiplicity 1 unless the cubic happens to be tangent there.
+
+So you get four prescribed intersection points and two residual intersections.
+
+The resulting divisor calculation is exactly the one above.
+
+The subtle cases are not really about P1≠P2 versus P1=P2 by themselves; they are about intersection multiplicity. Your case split is convenient because doubling forces you to encode multiplicity 2 explicitly.
+
+## 8. Doubling: P1=P2=P
+
+Now suppose the same point occurs twice.
+
+You need the cubic to intersect the curve with multiplicity 2 at P.
+
+For an ordinary affine point P=(x0,y0) with y0≠0, differentiate y^2=f(x).
+
+Locally, 2y·dy/dx = f'(x), so the tangent slope is dy/dx = f'(x0)/(2y0).
+
+Therefore the Hermite interpolation conditions are phi(x0)=y0, and phi'(x0) = f'(x0)/(2y0).
+
+Then y-phi(x) vanishes to order at least 2 at P.
+
+That is the exact geometric meaning of your doubling branch.
+
+So in divisor language you get ord_P(y-phi) ≥ 2, and, provided the second-order contact is exactly two, ord_P(y-phi) = 2.
+
+This is the divisor analogue of the tangent-line construction on an elliptic curve.
+
+## 9. But there is an additional exceptional case: y(P)=0
+
+This is worth calling out explicitly for your Lean development.
+
+If y0=0, then P is a ramification point of the hyperelliptic map.
+
+The formula f'(x0)/(2y0) doesn't make sense.
+
+That isn't a finite-field issue. It's geometric: the tangent at a branch point is vertical, so it is not the graph of a function y=phi(x).
+
+For a squarefree f, f'(x0)≠0, and using a local parameter t=y, one has x-x0 ~ c·t^2.
+
+Hence x-x0 has order 2 at the branch point.
+
+In fact, div(x-x0) = 2P - 2δ₀.
+
+So if your doubling branch permits a Weierstrass point, that case has an especially simple principal-divisor witness: x-x0.
+
+Its divisor immediately proves 2[P]-2[δ₀]=0 in the Jacobian.
+
+So for a completely robust theorem, I would expect three geometric subcases eventually:
+
+1. P1≠P2;
+2. P1=P2 and y(P)≠0, Hermite/tangent interpolation;
+3. P1=P2 and y(P)=0, ramification/vertical-tangent case.
+
+Your existing P1=P2 split is the right major split, but the second branch may eventually need that internal exceptional case.
+
+## 10. Why nothing here requires an algebraically closed field
+
+This is actually good news for your formalization.
+
+The geometry is often explained over K̄ by saying u(x)=prod(x-xi), and talking about individual points.
+
+But that is only a visualization.
+
+The actual Cantor algorithm is defined over the original field K, using polynomial gcds and quotients. Standard treatments formulate Mumford representations over an arbitrary base field with the appropriate rationality conditions; the finite-field setting is completely standard.
+
+For K=F_p, you can avoid algebraic closure entirely.
+
+Instead of saying "Let R1,R2 be the roots of u_new," say "Let V(u_new, y+phi) be the residual effective divisor cut out by the two functions u_new(x) and y+phi(x)."
+
+Or, in your Dedekind-domain language, work with the prime ideals / places occurring in the factorization.
+
+Then the identity phi^2-f = u_old·u_new is entirely over K[x], and the divisor relation is also defined over K.
+
+The algebraic-closure picture can be used only as intuition.
+
+## 11. What finite-field assumptions are actually being used?
+
+For your K=F_p, you have everything you need.
+
+The important assumptions are: p≠2, and f squarefree, and deg f = 5.
+
+Those give you: the model y^2=f(x) with the usual separable hyperelliptic behavior; the involution y↦-y; a unique point at infinity; genus 2; the usual Mumford representation.
+
+Characteristic 0 is not needed.
+
+Algebraic closure is not needed.
+
+The fact that K is finite is not an obstacle at all.
+
+The only place where the finite-field nature potentially changes the presentation is factorization: u(x) need not split over F_p. But that is a representational issue, not a mathematical obstruction.
+
+## 12. The finite-field-safe replacement for "six intersection points"
+
+This is probably the form you'll eventually want Lean to formalize.
+
+Rather than phi^2-f = c·prod(x-xi) for i=1..6, use the divisor-theoretic statement div_0(y-phi) and the identity of its pushforward to the x-line.
+
+The norm gives N_{K(C)/K(x)}(y-phi) = phi^2-f.
+
+The divisor of this norm on K(x) records the pushforward of the divisor upstairs under π: C→P^1, (x,y)↦x.
+
+That statement is valid over the base field without splitting anything.
+
+So the logical order can be:
+
+phi^2-f = u_old·u_new
+⟹ the known divisor is part of the zero divisor of y-phi
+⟹ the quotient corresponds to the residual intersection divisor
+⟹ changing +phi to -phi in v_new applies the hyperelliptic involution
+⟹ h = (y-phi)/u_new has divisor D_old - D_new.
+
+That's the entire reduction proof in a form that doesn't mention a single algebraic closure.
+
+## 13. Where your u_a, P1, P2, and N fit
+
+Suppose the semi-reduced divisor you're trying to reduce is D_old = D_a + Q1+Q2 - 4δ₀, where D_a is represented by (u_a,v_a).
+
+Then the interpolation conditions are schematically phi ≡ v_a (mod u_a), plus phi(x(Q1))=y(Q1), phi(x(Q2))=y(Q2).
+
+Hence u_a(x)·(x-x1)(x-x2) | phi(x)^2-f(x).
+
+Call the known factor A(x) = u_a(x)(x-x1)(x-x2).
+
+Then N(x) = phi^2-f = A(x)·u(x) for the new quadratic u.
+
+This is precisely the algebra your code is doing.
+
+But the crucial divisor witness is not N. It is h = (y-phi)/u.
+
+Then div(h) = D_old - D_new provided the sign conventions for Qi and v_a are aligned as above.
+
+So I would strongly recommend treating N=A·u as the residual-intersection lemma, and div(h)=D_old-D_new as the class-preservation lemma.
+
+That separation will make the Lean proof much less tangled.
+
+## 14. One more subtlety: overlapping supports
+
+There is one place where the pleasant "divide by u_new, and everything cancels nicely" story can silently fail if stated too naively.
+
+If the residual divisor shares support with the old divisor, then u_old and u_new are not coprime, and you have to account for multiplicities in the valuations.
+
+That is exactly why general Cantor composition uses gcds before the reduction step. The standard algorithm first computes gcd information among u1,u2 and v1+v2, forms the semireduced composition, and only then performs the repeated reduction step.
+
+So for your proof, I would not build in a blanket assumption "all six points are distinct."
+
+Instead prove statements with valuation multiplicities. Then the distinct-point situation becomes the easy special case where every relevant valuation is 0 or 1.
+
+This is particularly valuable for Lean because it keeps the theorem correct in exactly the degenerate cases that tend to explode later.
+
+## 15. The proof skeleton I'd use
+
+Conceptually, I think your eventual formalization wants these lemmas, in this order:
+
+**Intersection/norm lemma**: For the chosen interpolation data, N = phi^2-f is divisible by the known x-factor A.
+
+**Residual polynomial lemma**: Define u = N/A. Then u is the x-polynomial of the residual intersection divisor.
+
+**Residual Mumford lemma**: Define v ≡ -phi (mod u). Then (u,v) represents the conjugate residual divisor.
+
+**Principal witness lemma**: Define h = (y-phi)/u. Then for every point/place P, ord_P(h) = coeff_P(D_old) - coeff_P(D_new). Hence div(h) = D_old - D_new.
+
+**Class-preservation lemma**: Therefore [D_old]=[D_new] in Pic^0(C).
+
+**Uniqueness/reducedness lemma**: Since deg u ≤ 2 = g and the pair is reduced, it is the unique reduced representative of that class.
+
+That last step is separate from the Cantor geometry itself. Your already-proved Mumford congruence gives you part of it; you still need the reducedness/uniqueness machinery to conclude "this is the representative," rather than merely "this represents an equal class."
+
+## The punchline
+
+phi^2 - f = N = u_old · u_new (known divisor × residual x-projection)
+
+h = (y-phi)/u_new
+
+div(h) = D_old - D_new.
+
+Your N computation is therefore not itself the proof of equality of Jacobian classes. It is the elimination step that identifies the residual support. The actual equality of classes comes from the divisor of h.
+
+And for your specific target alpha·aClass - [P1] - [P2] + 2[δ₀], the thing I would check first against your implementation is the sign convention: the interpolation function must vanish at the points representing the summands you are actually adding, so subtraction of Pi normally means interpolating through ι(Pi), or equivalently arranging your E+Yy so that its zero is at ι(Pi). That is the most likely place for a formally valid-looking N-calculation to end up proving the wrong divisor class.
+
+Cantor's original paper is the 1987 "Computing in the Jacobian of a hyperelliptic curve"; modern treatments explicitly describe the same composition/reduction structure.
+
+The really nice part is that this meshes almost perfectly with the existing ordAt setup: the central theorem you ultimately want is not "the Mumford pairs are equal," but "there exists this very explicit function-field element h whose ordAt divisor is exactly the old-minus-new divisor." Once that is proved, the Jacobian equality is basically bookkeeping.
+
+
+claude:I'm formalizing Cantor reduction correctness for genus-2 hyperelliptic
+curves in Lean 4 / Mathlib4, over a finite field F\_p (p ≠ 2), no
+algebraic closure anywhere. You previously helped me work out the math
+(three-lemma skeleton: residual-intersection, residual-Mumford,
+principal-witness). I've now confirmed the first lemma is already
+proved in my codebase. I need help turning the third lemma (the actual
+class-preservation argument) into a real Lean proof against my actual
+`ordAt` API, which I'll paste below.
+
+**Goal.** Prove `div(h) = D_old - D_new` where `h = (y - phi(x)) / u_new(x)`, by showing, for every point `P : H.Point`,
+`ordAt P h = coeff_P(D_old) - coeff_P(D_new)`, then assembling that
+into class equality in the Jacobian via a principal divisor being 0 in
+the quotient.
+
+**My actual** **`ordAt`** **API (already proved, from** **`PrincipalDivisors.lean`****
+/** **`RiemannRochGenus2.lean`** **/** **`HyperellipticClassProof.lean`****):**
+
+```
+noncomputable def ordAt [IsDedekindDomain (CoordinateRing H)]
+    (P : H.Point) (A B : k[X]) : ℤ := ...
+-- ordAt P A B is the valuation, at the place P, of the CoordinateRing
+-- element represented by the pair (A, B) (i.e. A(x) + B(x)·y).
+
+theorem ordAt_toPair_mul_of_ne_zero'
+    (P : H.Point) (h_bot : pointIdeal P ≠ ⊥) (A B A' B' A₃ B₃ : k[X])
+    (hAB : toPair H A B ≠ 0) (hA'B' : toPair H A' B' ≠ 0)
+    (hA₃ : toPair H A₃ B₃ = toPair H A B * toPair H A' B') :
+    ordAt P A₃ B₃ = ordAt P A B + ordAt P A' B'
+-- additivity of ordAt under multiplication, stated at the (A,B)-pair level
+
+theorem ordAt_linX_eq_zero_of_ne [IsDedekindDomain (CoordinateRing H)]
+    (a : k) (Q : H.Point) (h_bot : pointIdeal Q ≠ ⊥) (hne : Q.X ≠ a) :
+    ordAt Q (linX a) 0 = 0
+-- ordAt of (X - a) at a point Q not lying over a is 0
+
+theorem ordAt_linX_eq_one_of_unramified_dvd [IsDedekindDomain (CoordinateRing H)]
+    (a : k) (Q : H.Point) (heq : Q.X = a) :
+    pointIdeal Q ∣ Ideal.span ({toPair H (linX a) 0} : Set (CoordinateRing H))
+-- Q lies over a ⟹ pointIdeal Q divides the ideal generated by (X - a)
+
+theorem ordAt_linX_eq [IsDedekindDomain (CoordinateRing H)] [DecidableEq k]
+    (a : k) (Q : H.Point) (h_bot : pointIdeal Q ≠ ⊥) :
+    ordAt Q (linX a) 0 = if Q.X = a then (if Q.Y = 0 then 2 else 1) else 0
+-- the fully assembled case split: ordAt of (X - a) at Q, covering
+-- not-a-root / unramified-root / ramified(Weierstrass)-root
+
+theorem ordAt_sub_ordAt_eq_of_polePairToFraction_eq (P : H.Point)
+    (A B A' B' : k[X]) (... ) : ...
+-- relates ordAt of two pairs representing the same function-field
+-- fraction; exact hypotheses in the file, can paste more if needed
+
+theorem ordAt_add_ge_min ... 
+-- valuation inequality for sums, standard ultrametric-style bound
+
+def ordAtFrac (P : H.Point) (A B A' B' : k[X]) : ℤ := ...
+-- ordAt of a fraction A+By over A'+B'y, i.e. ordAt(num) - ordAt(denom)
+
+theorem ordAt_eq_rootMultiplicity_unramified (hchar : (2 : k) ≠ 0)
+    (a : k) (Q : H.Point) (...) : ...
+theorem ordAt_eq_rootMultiplicity_ramified (hsf : Squarefree H.f)
+    (a : k) (Q : H.Point) (...) : ...
+-- ordAt of a general polynomial-in-x factor at Q, in terms of that
+-- polynomial's root multiplicity at Q.X, split unramified/ramified
+
+```
+
+`H.Point` is `{X Y : k // Y^2 = H.f.eval X}`-shaped (curve point).
+`toPair H A B` builds the `CoordinateRing H` element `A(x) + B(x)·y`.
+`pointIdeal P` is the maximal ideal at `P`. `divToPair H A B S` builds
+a `Divisor H` (formal sum) supported on the finite point set `S`, using
+`ordAt · A B` as the coefficient function. `Divisor0 H` is the
+degree-0 divisors. `toJacobian : Divisor0 H →+ Jacobian H D` is the
+quotient map (an `AddMonoidHom`, so a principal divisor — anything in
+`AddMonoidHom.range` of the map from principal divisors — maps to 0
+automatically once membership is shown).
+
+My target theorem's statement (already typechecks with a `sorry` body,
+this is what I need to prove):
 
 ```
 theorem reducedClass_eq_of_isReduction'
-    {p : ℕ} [Fact (Nat.Prime p)] [Fact (p ≠ 2)]
-    {H : HyperellipticPolynomial (F p)} {D : PrincipalDivisorData H}
-    {aClass : Jacobian H D} {δ₀ : H.Point}
-    (sa : SampleTargetFromAlpha p H D aClass δ₀)
-    (c0 c1 c2 c3 c4 ua0 ua1 va0 va1 : F p)
-    (hcur : ...) (hgcd : ...) (hcurT : ...) (hgcdT : ...)
-    (hr : isReduction' sa c0 c1 c2 c3 c4 ua0 ua1 va0 va1 hcur hgcd hcurT hgcdT) :
-    sa.reducedClass = <the class that sa.toSampleTarget's Mumford pair
-      represents, via PrincipalDivisorSubgroup.lean's toJacobian> := by
+    ... (sa : SampleTargetFromAlpha p H D aClass δ₀) ...
+    (hr : isReduction' sa c0 c1 c2 c3 c4 ua0 ua1 va0 va1 hcur hgcd hcurT hgcdT)
+    (S : Finset H.Point)
+    (hsupp : ∀ P, P ∉ S → ordAt P
+      (X ^ 2 + C sa.toSampleTarget.u1 * X + C sa.toSampleTarget.u0)
+      (C sa.toSampleTarget.v1 * X + C sa.toSampleTarget.v0) = 0)
+    (hmem : divToPair H
+      (X ^ 2 + C sa.toSampleTarget.u1 * X + C sa.toSampleTarget.u0)
+      (C sa.toSampleTarget.v1 * X + C sa.toSampleTarget.v0) S ∈ Divisor0 H) :
+    sa.reducedClass = toJacobian D
+      ⟨divToPair H
+        (X ^ 2 + C sa.toSampleTarget.u1 * X + C sa.toSampleTarget.u0)
+        (C sa.toSampleTarget.v1 * X + C sa.toSampleTarget.v0) S, hmem⟩ := by
   sorry
+
 ```
 
-Exact signature TBD once Step 0's build check is done — the point of
-this step is only to get the statement to typecheck, with a `sorry`
-body, and present it for review before spending real effort proving it.
-This is the theorem `ROADMAP-reduce-to-zerodim.md` flagged as "not
-attempted here."
+**What I need from you.** Not the whole proof at once — walk me
+through how to structure the Lean proof of the principal-witness
+lemma (`ordAt P h = coeff_P(D_old) - coeff_P(D_new)` for all `P`,
+where `h`'s numerator/denominator are represented as `(A,B)` pairs via
+`toPair`/`divToPair` as above) using this specific API:
 
-Concretely this needs, in this order:
-1. `toJacobian`/whatever `PrincipalDivisorSubgroup.lean` calls the map
-   from a Mumford pair `(u0,u1,v0,v1)` to a class in `Jacobian H D` —
-   grep for it, don't assume a name.
-2. `reducedClass`'s definition (`AlphaLocusDegreeUniform.lean`, already
-   read this pass: `alpha • aClass - ([P1]+[P2]-2•[δ₀])`) restated
-   through that map.
-3. A genuine equality goal between (2) and "the class represented by
-   `sa.toSampleTarget`'s coordinates via (1)".
+1. How do I represent `h = (y - phi(x)) / u_new(x)` — or more precisely `g/u_new` where `g = E(x) + Y(x)·y` — as a fraction in terms of `ordAtFrac` or via `ordAt_sub_ordAt_eq_of_polePairToFraction_eq`, given I only have `ordAt` defined on `(A,B)` pairs representing numerators, not a native "divide two CoordinateRing elements" operation?
+2. For the case-split at each point P (P is one of the four known points / a residual root / a conjugate residual root / δ₀ / none of the above), which combination of `ordAt_linX_eq`, `ordAt_toPair_mul_of_ne_zero'`, and `ordAt_eq_rootMultiplicity_*` actually computes the needed valuation, and in what order should I chain them?
+3. Is there a cleaner way to avoid re-deriving the point-at-infinity (`δ₀`) pole-order bookkeeping from scratch, given my `ordAt` is defined via `pointIdeal`/`IsDedekindDomain.HeightOneSpectrum` at finite points — does `δ₀` even have a `pointIdeal` in this setup, or does infinity need separate handling (e.g. via `natDegree` directly rather than `ordAt`)?
+4. Given the "don't assume distinct roots" robustness note from before — should the Lean proof case-split on `Finset` membership / multiplicity directly, or is there a cleaner way using the `S` parameter (the explicit finite point set) already threaded through my theorem statement above?
 
-If any of 1–3 reveals `PrincipalDivisorSubgroup.lean`'s `toJacobian`
-(or equivalent) doesn't yet have the API needed to even STATE this
-(e.g. no lemma computing which class a coordinate pair represents),
-stop and flag that as its own smaller gap rather than guessing an API
-that isn't there — same policy as `toCoords` was handled last pass
-(named hypothesis until the real definition was confirmed available).
+I'd like this broken into the smallest provable chunks possible, since
+my convention is many small named lemmas rather than one large proof
+attempt.
 
-## Step 3 — attempt the proof, easiest sub-piece first
+gpt:
 
-Do not attempt this whole theorem in one pass. Classical structure of
-Cantor's reduction algorithm's correctness proof (this is genuinely
-"deep classical algebraic geometry," flagged honestly, not polynomial
-bookkeeping) — asked ChatGPT (prompt: `CHATGPT-PROMPT-step3-reduce-
-correctness.md`), answer summarized below. **The one correction to
-our own framing from Step 3's original draft above: `phi` itself is
-NOT the principal-divisor witness. The witness is a genuine
-function-field element built from `phi`, `N` is only a supporting
-computation that locates the residual support.** Read all of §3a
-before writing any Lean for this step — the old draft's item 1
-("`phi` witnesses a principal divisor") is the mistake this corrects.
+Yes — and looking at the API you pasted changes the proof strategy in a useful way. I would **not** attack the final `∀ P, ...` theorem by immediately splitting into five geometric cases. Your API is actually set up to let you factor the argument into about 6–10 tiny valuation lemmas, with the only genuinely geometric lemma being “what is the valuation of the interpolation numerator (g) at one of its zeroes?”
 
-### 3a. The math (from ChatGPT, condensed to what's actionable)
+There is also one important structural issue I want to flag up front: your `S : Finset H.Point` representation only sees (F_p)-rational affine points. A general degree-2 Mumford polynomial (u_{\rm new}) can be irreducible over (F_p), in which case its residual divisor is a degree-2 closed point, not two elements of `H.Point`. If your current theorem assumes the support splits over (F_p), that's fine; otherwise the eventual fully general theorem needs to be phrased in terms of height-one primes/closed points rather than `H.Point`. More on that below.
 
-**Setup.** `C : y² = f(x)`, deg f = 5, one point at infinity `δ₀`,
-`ord_{δ₀}(x) = -2`, `ord_{δ₀}(y) = -5`. A cubic `phi` has pole order 6
-at `δ₀`. `N(x) = phi(x)² - f(x)` is the **norm** of `y - phi` down to
-`K(x)` (i.e. `(y-phi)(y+phi) = f - phi² = -N`) — this is why `N` lives
-purely in `K[x]`: norms forget which side of the hyperelliptic
-involution `ι(x,y) = (x,-y)` a point is on.
+## 1. First: represent (h) with `ordAtFrac`
 
-**Three-lemma skeleton, in order** (this maps directly onto three
-separate Lean lemmas — do not collapse them):
+For your specific denominator,
 
-1. **Residual-intersection lemma** (algebra only, closest to what's
-   already done). `u_old ∣ N` where `u_old` is the known Mumford
-   polynomial (the input `u_a`-pair times `(x-x1)(x-x2)` for `P1,P2`,
-   in the general-composition case). Write `N = u_old · u_new`;
-   `deg N = 6`, `deg u_old = 4` ⟹ `deg u_new = 2`. **This is the
-   `hdeg2`/hdeg-shaped computation Step 1 of the OLD roadmap and
-   `ReduceGeneral_isMumfordTarget4` already prove** — it's the same
-   polynomial-divisibility fact, just now understood as "the x-
-   projection of the residual intersection divisor," not merely "a
-   degree bound." No new Lean content here, just a new interpretation
-   of an existing lemma — confirm this identification before assuming
-   any of it needs re-proving.
+[
+u_{\rm new}(x)=x^2+c_1x+c_0,
+]
 
-2. **Residual Mumford lemma.** `v_new ≡ -phi (mod u_new)` — **the minus
-   sign is load-bearing, not cosmetic.** `(u_new, v_new)` represents
-   the divisor of the hyperelliptic-*conjugate* residual points
-   `R̄ᵢ = (rᵢ, -phi(rᵢ))`, not the residual points themselves. Check
-   this sign against `GeneralSharedRoot.lean`'s actual `v_new`
-   construction before trusting it already matches — this is
-   independently exactly the kind of sign bug ChatGPT flags in §6/§13
-   below as the single most likely place for a "looks right, proves
-   the wrong class" failure.
+the numerator is
 
-3. **Principal-witness lemma — the actual theorem to state and prove.**
-   Define `h(x,y) = (y - phi(x)) / u_new(x)` as an element of the
-   function field / `CoordinateRing`. Then for every closed point `P`
-   (i.e. every place `ordAt` can be evaluated at):
-   ```
-   ordAt(h, P) = coeff_P(D_old) - coeff_P(D_new)
-   ```
-   equivalently `div(h) = D_old - D_new` globally. **`h`, not `phi`
-   and not `N`, is the thing whose `ordAt`-divisor you compute.** This
-   is the theorem that actually proves `[D_old] = [D_new]` in
-   `Jacobian H D` (a principal divisor is 0 in the quotient) — once
-   this is proved, `reducedClass_eq_of_isReduction'` (Step 2) should
-   follow close to mechanically via `toJacobian`'s `AddMonoidHom`
-   structure and `PrincipalDivisorData.P`'s membership.
+[
+g(x,y)=E(x)+Y(x)y.
+]
 
-   Why `div(h) = D_old - D_new`, sketched (full detail in the raw
-   ChatGPT reply, kept below for reference):
-   - At each `Rᵢ` (root of `u_new`): `y - phi = 0` there too, so the
-     zero of `u_new` and the zero of `y-phi` cancel — no contribution.
-   - At each `R̄ᵢ` (conjugate): `y - phi(rᵢ) = -2·phi(rᵢ) ≠ 0`
-     generically, while `u_new(rᵢ) = 0` — pole.
-   - At `δ₀`: `ord(y-phi) = -6`, `ord(u_new) = -4` (deg 2 poly, and
-     `ord_{δ₀}(x)=-2`), so `ord(h) = -6-(-4) = -2` — matches the `2δ₀`
-     correction term already built into `reducedClass`'s definition.
-   - Zeros at the four known points of `D_old` fall out of `phi`'s
-     interpolation conditions directly.
+So the clean representation is simply
 
-4. **Uniqueness/reducedness lemma — separate from Cantor geometry,
-   needed to finish.** §3's argument only gives `[D_old] = [D_new]` in
-   the quotient — that the Mumford pair is *the* reduced representative
-   of that class (not just *a* representative) needs the existing
-   reducedness/uniqueness machinery (deg `u ≤ 2 = g`, already-proved
-   Mumford congruence). Check what's already on file for this in
-   `DivisorClassGroup.lean`/`PrincipalDivisorsDedekind.lean` before
-   assuming it needs new work — likely mostly already available.
+```text
+ordAtFrac P E Y u_new 0
+```
 
-### 3b. Case split — confirm against existing Lean structure
+because this means
 
-Item 2 above (`P1 = P2`) further splits into two, and ChatGPT flags a
-sub-case our existing `hcurT`/`hgcdT` split does NOT yet obviously
-cover:
+[
+\operatorname{ordAtFrac}*P(g/u*{\rm new})
+=========================================
 
-- `P1 ≠ P2`: ordinary interpolation, `phi(x1)=y1, phi(x2)=y2`.
-- `P1 = P2`, `y(P) ≠ 0`: Hermite/tangent interpolation — need
-  `phi(x0)=y0` AND `phi'(x0) = f'(x0)/(2y0)` (order-2 contact).
-- `P1 = P2`, `y(P) = 0` (**Weierstrass/ramification point — not
-  currently split out anywhere in our code, check `hcurT`/`hgcdT`
-  cover this or explicitly exclude it**): the tangent formula divides
-  by `y0 = 0` and is undefined; geometrically the tangent is vertical,
-  not a graph `y=phi(x)`. Has its own, much simpler witness:
-  `div(x - x0) = 2P - 2δ₀` directly, no interpolation needed at all.
-  **Action: check whether `H.Point`/the doubling branch already
-  excludes `y=0` points by hypothesis somewhere upstream; if not, this
-  is a genuine missing case, not just a proof-difficulty issue.**
+## \operatorname{ordAt}_P(E,Y)
 
-None of this needs algebraic closure or characteristic 0 anywhere —
-confirmed explicitly by ChatGPT (§10-§11 of the raw reply): the
-splitting-field language ("let R1,R2 be the roots of u_new") is only
-informal intuition. The actual Lean statement should stay in `K[x]`-
-divisibility / `ordAt`-at-places language throughout, which is already
-how `PrincipalDivisors.lean`'s machinery is built — good sign this
-maps cleanly onto existing infrastructure rather than needing a new
-closed-field-flavored layer.
+\operatorname{ordAt}*P(u*{\rm new},0).
+]
 
-### 3c. Sign-convention risk — check this before writing any Lean
+So your first tiny lemma should just be the definitional bridge:
 
-**Highest-priority thing to verify against the actual code, per
-ChatGPT's own flagging (§6, §13) — do this before Step 3a/3b's Lean
-work, it can invalidate the direction of the whole theorem if wrong:**
-our target is `D_old = alpha•aClass - [P1] - [P2] + 2[δ₀]` (note the
-minus signs on `P1`, `P2`). The elementary interpolation argument
-above naturally proves the statement for `alpha•aClass + [P1] + [P2] -
-2[δ₀]` (plus signs) — interpolating `phi` through `P1, P2` directly
-makes `y - phi` vanish AT `P1, P2`, not at their hyperelliptic
-conjugates `ι(P1), ι(P2)`. Since Mumford negation is `(u,v) ↦ (u,-v)`,
-subtracting `Pᵢ` means the interpolation should pass through `ι(Pᵢ)`
-(i.e. `phi(x(Pᵢ)) = -y(Pᵢ)`), NOT through `Pᵢ` itself — unless
-`GeneralSharedRoot.lean`'s actual `E`/`Y`/`va0,va1` construction has
-already absorbed this sign somewhere. **Check this first**: does the
-existing interpolation code (whatever sets up `phi`/`E`/`Y` from
-`sa.P1`, `sa.P2`) pass through the points or their conjugates? This
-determines whether Step 3's theorem, as stated in Step 2, is even
-provable as written, or needs a sign flip either in `reducedClass`'s
-definition or in the interpolation setup.
+[
+\boxed{
+\operatorname{ordAtFrac}(P,E,Y,U,0)
+===================================
 
-### 3d. General `E + Y·y` formulation (matches actual code, not just `phi`)
+\operatorname{ordAt}(P,E,Y)-\operatorname{ordAt}(P,U,0).
+}
+]
 
-The code doesn't always use literal `y - phi(x)`; the general form is
-`g = E(x) + Y(x)·y` with norm `N(x) = E(x)² - f(x)Y(x)²` (matches
-`Npoly4`/`Ypoly4`/`Epoly4` naming already in `AlphaReduce.lean`). Same
-structure applies: `N` locates zeros/poles of `g` or its conjugate
-`ḡ = E - Y·y` but doesn't by itself say which; `g` itself (not `N`)
-is the actual function-field element whose divisor matters. The
-eventual principal-witness lemma (3a item 3) should likely be phrased
-in terms of `g`/`ḡ` directly (or `g` divided by an `x`-only
-denominator) to match the existing `E,Y,N` naming already in the
-codebase, rather than reintroducing bare `phi` notation.
+If `ordAtFrac` is literally defined this way, this should be essentially `rfl`/unfolding.
 
-### 3e. Robustness note — don't over-assume distinctness
+That is preferable to `ordAt_sub_ordAt_eq_of_polePairToFraction_eq` as the primary route.
 
-Do not build in a blanket "all residual points are distinct from the
-old ones" assumption. If `u_old` and `u_new` share a root, valuations
-need multiplicity accounting rather than clean cancellation — this is
-exactly why Cantor composition ordinarily gcds `u1, u2, v1+v2` first.
-State the principal-witness lemma (3a item 3) in terms of `ordAt`
-valuations/multiplicities from the start rather than "N distinct
-roots," so the distinct-point case is the easy specialization
-(`ordAt ∈ {0,1}` everywhere) rather than a separately-proved base case
-that the multiplicity version has to redo.
+I would use the latter only when you need to prove that two *different pairs* represent the same fraction. For example, if your actual code constructs (g/U) in a less direct pair form and you want to replace it by `(E,Y,U,0)`, then use the fraction-equality lemma as the bridge.
 
-Once 3a–3e are digested, this is exactly the kind of "hard sorry" this
-project's convention says to draft a ChatGPT prompt for rather than
-grinding alone — once Step 2's statement is nailed down and
-typechecks, follow up with ChatGPT (plain, no elaborate md file) for
-help turning §3a item 3's `ordAt`-at-each-place argument into an
-actual Lean proof against `PrincipalDivisorsDedekind.lean`'s real
-`ordAt` API (exact lemma names not yet checked against it this pass).
+So conceptually:
 
-## Explicit non-goals (per project's own prior correct call in the old
-## roadmap, re-affirmed here)
+[
+\boxed{\text{First normalize every occurrence of }h\text{ to }\operatorname{ordAt}(g)-\operatorname{ordAt}(U).}
+]
 
-- Do NOT re-derive `hspec`/`Module.Finite` in `PrincipalDivisors.lean` —
-  out of scope, already correctly left as hypotheses.
-- Do NOT touch `RegularSequenceFiniteQuotient.lean`/
-  `PeelChainAssembly.lean` — old roadmap's step 3 already correctly
-  identified that connection as free once `isReduction'` is real,
-  no new Lean needed there.
-- Do NOT attempt closed-field machinery anywhere in this — `F p` only,
-  per project ground rule.
+That gets the rest of the proof into ordinary valuation arithmetic.
 
-## Status update (this pass)
+---
 
-Steps 0.5, 1, and 2 are done. Sign-convention check (§3c) confirmed:
-`reducedClass`'s minus-sign definition is correct as written (traced
-through `GeneralSharedRoot.lean`'s `hEeq`/`vRS4General := -E·Y⁻¹`,
-matching ChatGPT's §2/§4 expectation exactly) — no fix needed to either
-`reducedClass` or the interpolation setup. Step 1's `isReductionOf`
-(existential packaging `isReduction'`) is in
-`AlphaLocusDegreeUniform.lean`. Step 2's `reducedClass_eq_of_isReduction'`
-now typechecks there as a named `sorry`, built against
-`PrincipalDivisorSubgroup.lean`'s real `toPair`/`divToPair`/`ordAt`
-(newly imported into `AlphaLocusDegreeUniform.lean`) — confirmed, per
-Step 2's own instruction, that there is no ready-made "Mumford pair to
-`Divisor H`" function, so the statement takes the witnessing finite
-point set `S` (and its `hsupp`/membership-in-`Divisor0` facts) as
-hypotheses rather than computing it. Step 3 (the actual proof, §3a's
-three-lemma skeleton) is next and not yet attempted.
+# 2. Don't compute `ordAt g` from scratch point-by-point if you can avoid it
 
-## Status update (this pass, 2nd)
+This is the biggest simplification I'd make.
 
-Re-confirmed Step 2's sorry count: exactly two live `sorry`s in
-`AlphaLocusDegreeUniform.lean` (line 625, `reducedClass_eq_of_isReduction'`
-— Step 3's target; line 718, `decoupledSystem_degree_uniform` — unrelated,
-out of scope). Confirmed item 1 of §3a's three-lemma skeleton
-(residual-intersection: `u_old ∣ N`, `deg u_new = 2`) is **already fully
-proved, unconditionally**, in `Reduce/GeneralSharedRoot.lean` —
-`uRS4General_dvd_Npoly4` (no `IsCoprime` hypotheses needed) and
-`uRS4General_natDegree_eq_two`. No new Lean needed for item 1, matches
-the roadmap's own prediction.
+Let
 
-Surveyed the real `ordAt` API this file's Step 2 sorry already imports
-(`PrincipalDivisorSubgroup.lean` → `PrincipalDivisors.lean`,
-`RiemannRochGenus2.lean`, `HyperellipticClassProof.lean`). It's
-substantial and genuinely usable, not stub-shaped: `ordAt_toPair_mul_of_ne_zero'`
-(additivity under multiplication), `ordAt_linX_eq` (fully assembled
-not-root/unramified/ramified case split for a linear factor — the
-Weierstrass-point subtlety §3b flagged is *already handled* here, not
-missing), `ordAtFrac`/`ordAt_sub_ordAt_eq_of_polePairToFraction_eq`
-(fraction-level valuation). Some neighboring lemmas in
-`HyperellipticClassProof.lean` (§B sub-branches) are themselves still
-`sorry`'d in-progress work — not all of this file's API is finished —
-but the specific lemmas listed above are fully proved and directly
-reusable. Note: `RiemannRochGenus2.lean` has a file-level
-`variable [IsAlgClosed k]`, but every lemma actually used above is
-individually `omit [IsAlgClosed k] in`'d, so none of it pulls in
-closed-field machinery — confirmed compatible with the `F p`-only rule.
+[
+\bar g=E-Yy
+]
 
-Per project convention (hard sorries → draft a ChatGPT prompt), wrote
-`CHATGPT-PROMPT-step3-ordat-translation.md` asking specifically how to
-structure the principal-witness lemma's Lean proof against this real
-API (fraction representation, the point-by-point case split, `δ₀`
-handling since infinity may not have a `pointIdeal`, and how to use
-the existing `S`/`hsupp`/`hmem` parameters for the multiplicity-
-robustness note rather than assuming distinct roots). Not yet sent —
-next step is to copy that prompt to ChatGPT and bring the reply back
-before writing any proof body for the Step 2 sorry.
+be the hyperelliptic conjugate of (g=E+Yy). Then in the coordinate ring,
 
-## Status update (this pass, 3rd) — build-error fix, no new math
+[
+g\bar g
+=======
 
-Fixed the build errors blocking `AlphaLocusDegreeUniform.lean` (errors
-first, per project ordering). Root cause: `reducedClass_eq_of_isReduction'`
-(Step 2's statement) called `divToPair H A B S`, but `divToPair` in
-`PrincipalDivisorSubgroup.lean` takes `H` as an implicit **section**
-`variable`, not an explicit argument (unlike `toPair`, which genuinely
-does take `H` explicitly) — so `H` was being passed positionally into
-`divToPair`'s `A` slot, producing the `HyperellipticPolynomial (F p)` vs
-`Polynomial ?m` mismatch, which cascaded into the `Function expected at C`
-errors on the following `C`/`X` terms (their expected types collapsed to
-metavariables once the surrounding application failed to elaborate).
-Fix: dropped the explicit `H` from both `divToPair` call sites (the
-`hmem` hypothesis and the final anonymous-constructor term); `H` is
-inferred at both from the ambient `Divisor0 H` / `toJacobian D` expected
-types. Also corrected the three docstring mentions of `divToPair H A B S`
-above the theorem, which described the same (wrong) explicit-`H` calling
-convention. No sorry count changed by this pass — still exactly two live
-sorries (`reducedClass_eq_of_isReduction'` at Step 2, and the unrelated,
-explicitly-out-of-scope `decoupledSystem_degree_uniform`). Not yet
-re-verified against a live `lake build` (Claire's repl per project
-convention) — flagging as fixed-per-careful-reading, not confirmed-green.
+# E^2-fY^2
 
-## Status update (this pass, 4th) — build error persisted, real root cause
+N.
+]
 
-The 3rd pass's fix was necessary but not sufficient — Claire's rebuild
-still failed, now with `failed to synthesize instance of type class
-Membership (Divisor ?m.762) (AddSubgroup H.Divisor)` at the `hmem`
-line, plus the same cascade of `Function expected at C` errors on the
-`X`/`C` terms feeding it. Actual root cause: dropping `H` entirely (3rd
-pass's fix) relies on Lean inferring it from context, but nothing in
-`divToPair`'s own argument types (`A B : k[X]`, `S : Finset H.Point`)
-pins `k`/`H` down *before* `A`/`B` need to be elaborated — `A`/`B` are
-built from `X`/`C`, whose own expected type depends on `k`, which
-depends on `H`. This is circular under ordinary left-to-right
-unification: elaborating `A` needs `H` (for `k[X]`'s `k`), but `H`
-isn't resolved until the whole `divToPair` application's result type is
-checked against `Divisor0 H`'s ambient type in `hmem`/the goal — too
-late for `X`/`C` inside `A`/`B` to already know what ring they live in.
-**Fix: named-argument syntax at both call sites**, `divToPair (H := H)
-A B S` (and, for the same reason and to avoid asymmetric fragility even
-though this particular occurrence built cleanly last time, `ordAt (H :=
-H) P A B` in `hsupp` too) — this pins `H` immediately, before `A`/`B`
-are elaborated, so `X`/`C`'s expected type (`Polynomial (F p)`, since
-`H : HyperellipticPolynomial (F p)`) is known from the start and the
-`Function expected at C` cascade cannot occur. Updated the docstring
-above the theorem to describe this explicitly (why bare unification
-doesn't work here, unlike the more common case where an implicit is
-recoverable from a later explicit argument). Not yet re-verified
-against a live build — this is the second attempt at the same two
-call sites, so treat with slightly more scrutiny than usual on the
-next rebuild report.
+So prove the little algebra lemma
 
-## Status update (this pass, 5th) — `whnf` heartbeat timeout, statement restructured
+[
+\boxed{
+\operatorname{toPair}(H,E,Y)
+\cdot
+\operatorname{toPair}(H,E,-Y)
+=============================
 
-Claire's rebuild after the 4th pass's fix got past the type-mismatch/
-instance-synthesis errors entirely, but hit a new failure: `(deterministic)
-timeout at whnf, maximum number of heartbeats (200000) has been reached`,
-pointing at the goal/`hmem` line. Per the project's own heartbeats guidance
-("unroll the proof a bit and clear state you don't need, before increasing
-heartbeats") — but this is a *statement* elaborating, not a tactic proof (the
-body is just `sorry`), so there's no tactic state to unroll; the fix has to
-be in the statement's shape instead. Two changes:
+\operatorname{toPair}(H,N,0).
+}
+]
 
-1. The Mumford-pair polynomial encoding (`X^2 + C u1 * X + C u0`, `C v1 * X +
-   C v0`) was spelled out inline three separate times across `hsupp`, `hmem`,
-   and the goal. Each occurrence forces the elaborator to redo the same
-   `X`/`C`-against-`(F p)[X]` unification independently, compounded by
-   `divToPair (H := H)`/`ordAt (H := H)`'s own unification work at each site.
-   Factored `u v : Polynomial (F p)` out as their own named parameters with
-   defining equalities `hu`/`hv`, so the polynomial expression is elaborated
-   exactly once and every other hypothesis/the goal just refers to `u`/`v`.
-2. The goal's `⟨divToPair ..., hmem⟩` anonymous-constructor term was being
-   checked against `toJacobian D`'s expected argument type `↥(Divisor0 H)`,
-   which requires unfolding through `AddSubgroup`/`SetLike`/`Subtype`
-   coercions to accept anonymous-constructor syntax — likely the actual
-   `whnf` hotspot. Replaced with an explicit `Subtype.mk (divToPair (H := H)
-   u v S : Divisor H) hmem`, so the `Divisor H` ascription is settled as its
-   own step before the subtype-membership coercion is attempted.
+Then your already-proved theorem
 
-Updated the docstring immediately above the theorem with this rationale.
-Checked for downstream call sites of `reducedClass_eq_of_isReduction'`
-(grepped the whole `ZeroD` tree) — none exist yet, so widening its parameter
-list (`u v` as new explicit arguments) breaks nothing. Not yet re-verified
-against a live build — third attempt at this same theorem's statement, so
-if this doesn't clear it, worth considering whether `IsDedekindDomain
-(CoordinateRing H)` itself (an instance argument, not searched but still
-present in every surrounding type) is contributing unfolding cost, or
-whether `set_option maxHeartbeats` at the statement level is the more
-honest fix at that point rather than continuing to restructure.
+```text
+ordAt_toPair_mul_of_ne_zero'
+```
 
-## Status update (this pass, 6th) — heartbeat timeout cleared, one more `C`/`X` fix
+gives
 
-Claire's rebuild after the 5th pass got past the `whnf` timeout entirely
-(confirming the `u v`/`Subtype.mk` restructuring worked), but hit the same
-`Function expected at C` failure as before — now isolated to `hu`/`hv`
-themselves rather than cascading from `divToPair`. Root cause: `hu : u = X^2
-+ C ... ` relies on `u`'s declared type (`Polynomial (F p)`, two lines up)
-flowing across the `=` into the RHS to resolve `X`/`C`'s implicit ring — it
-doesn't; Lean's equality elaboration doesn't propagate the LHS's type into
-an under-constrained RHS that way. Same root issue as the `divToPair
-(H := H)` fix two passes ago, just relocated. Fix: ascribed both RHSs
-directly, `hu : u = (X ^ 2 + C ... + C ... : Polynomial (F p))` and
-similarly for `hv`. Updated the docstring above the theorem to fold this
-into the existing "statement shape, revised this pass" explanation rather
-than adding a separate note. Not yet re-verified — fourth attempt at this
-theorem's statement; if a build report still shows a `C`/`X` or elaboration
-error at this point, stop restructuring inline and instead build `u`/`v`
-as their own top-level `def`s (e.g. `mumfordU sa : Polynomial (F p) := ...`)
-so the ring is fixed once at the definition site with no `=`/ascription
-juggling needed anywhere downstream.
+[
+\boxed{
+\operatorname{ordAt}_P(g)
++
+\operatorname{ordAt}_P(\bar g)
+==============================
 
-## Status update (this pass, 7th) — same `C`/`X` error persisted, per-term ascription
+\operatorname{ordAt}_P(N,0).
+}
+]
 
-Claire reported the identical error at the identical column positions after
-the 6th pass's fix — confirmed via `md5sum` that the file she built was in
-fact the ascribed version, so this ruled out a stale-file mixup and
-confirmed the fix itself didn't work as intended. Diagnosis: ascribing the
-*whole summed expression* (`(X^2 + C u1 * X + C u0 : Polynomial (F p))`)
-still fails, because `+`'s elaboration doesn't necessarily propagate an
-outer expected-type ascription down into each individual summand before
-that summand's own head symbol (`C`) needs its implicit argument resolved —
-so `C` was still being elaborated against an unconstrained metavariable
-first, same as with no ascription at all. Real fix: ascribe `X` and each
-`C _` application *individually* — `(C sa.toSampleTarget.u1 : Polynomial (F
-p))` — which pins `Polynomial.C : R →+* R[X]`'s `R` immediately via the
-codomain, with no dependency on how the surrounding `+`/`*`/`=` propagate
-types afterward. This is a strictly more robust pattern than ascribing a
-compound expression as a whole, worth remembering for future statements in
-this file that build `k[X]` terms from `X`/`C` this way. Not yet
-re-verified.
+That turns the valuation of the non-polynomial-in-(x) object (g) into the valuation of the ordinary polynomial (N(x)), which is exactly what your `ordAt_eq_rootMultiplicity_*` lemmas understand.
 
-## Ordering summary (errors first, then sorries, easiest first)
+This is the central trick I would exploit in Lean.
 
-0. Re-run comment-stripped sorry scan on `AlphaLocusDegreeUniform.lean`
-   + `GeneralSharedRoot.lean`; confirm both build clean.
-0.5. **New, cheap, do early**: check the sign-convention question in
-   §3c against the actual `GeneralSharedRoot.lean` interpolation setup
-   (does `phi`/`E,Y` pass through `P1,P2` or their conjugates
-   `ι(P1),ι(P2)`?). Answering this doesn't require writing any new
-   Lean, just reading existing code — but it determines whether
-   `reducedClass`'s definition or the interpolation code needs a sign
-   fix before Step 2/3 are worth attempting at all. Do this before
-   Step 1, since a sign mismatch could change what Step 1's
-   unification should even state.
-1. `isReduction`/`isReduction'` unification (mechanical, no new math).
-2. State `reducedClass_eq_of_isReduction'` as a `sorry`, present for
-   review before proving.
-3. Prove it via the three-lemma skeleton in §3a (residual-intersection
-   → residual-Mumford → principal-witness via `ordAt(h,P)` → class
-   equality), checking §3b's Weierstrass-point case is actually
-   excluded or covered, and §3e's multiplicity-robustness note. The
-   classical math for this step is now in hand (§3a-§3e above,
-   confirmed to need no closed-field or char-0 machinery) — what
-   remains is turning §3a item 3's `ordAt`-at-each-place argument into
-   Lean against `PrincipalDivisorsDedekind.lean`'s actual API; draft a
-   follow-up ChatGPT prompt for that translation once Step 2 typechecks.
+---
 
-## Status update (this pass, 8th) — Step 3 started: two statement gaps
-## fixed (errors first), first stack lemma proved
+# 3. The local lemma you actually need for the numerator
 
-Before writing any proof body, re-checked `reducedClass_eq_of_isReduction'`'s
-statement itself against the real `PrincipalDivisorSubgroup.lean`/
-`DivisorClassGroup.lean` API (not just against what Step 2 needed to
-typecheck) and found two genuine gaps — both fixed now, not deferred:
+At an ordinary point (P=(a,b)) with (b\neq0), there are two points above (x=a):
 
-1. **`D` was fully generic.** `PrincipalDivisorData H` places no constraint
-   on `D.P` beyond `≤ Divisor0 H` — nothing ties it to `CoordinateRing H`
-   or the genuine principal divisors. The Step-3 argument can only ever
-   produce `D_old - D_new ∈ principalSubgroup H hdeg`
-   (`PrincipalDivisorSubgroup.lean`), so `toJacobian D (D_old - D_new) = 0`
-   is FALSE for an arbitrary `D` without an extra hypothesis. Added
-   `hdeg : H.f.natDegree = 5` and `hD : principalSubgroup H hdeg ≤ D.P` —
-   the weakest fix that doesn't force `D` to be the concrete
-   `principalDivisorData H hdeg` instance, keeping `D` abstract elsewhere
-   in the file per its existing convention.
-2. **`H.f` was never linked to `curvePoly p c0 c1 c2 c3 c4`.** The norm
-   argument (`toPair_mul_involution`, `pairNorm H A B = A²-B²·H.f`) is
-   stated against `H.f`; `Npoly4`/`Epoly4`/`Ypoly4` are stated against
-   `curvePoly p c0..c4`. Nothing previously connected the two. Added
-   `hf : H.f = curvePoly p c0 c1 c2 c3 c4`.
+[
+P=(a,b),\qquad \iota(P)=(a,-b).
+]
 
-No downstream call sites of `reducedClass_eq_of_isReduction'` exist yet
-(re-checked), so widening the hypothesis list breaks nothing. Sorry count
-unchanged (still exactly the same two live sorries as the 7th pass) — this
-was a statement fix, not proof progress, and is flagged as such rather than
-counted as Step 3 work.
+Suppose (g(P)=0).
 
-**Actual Step 3 work started**: new file
-`Genus2Lean/ZeroD/Reduce/PrincipalWitness.lean`, kept deliberately ignorant
-of `SampleTargetFromAlpha`/`aClass`/`hr` per the ChatGPT reply's own §16
-recommendation (the principal-witness lemma stack should be provable
-generically against `E Y : k[X]`/`H : HyperellipticPolynomial k`, with only
-the final assembly theorem back in `AlphaLocusDegreeUniform.lean` touching
-project-specific names). Contains:
+Then automatically
 
-- `toPair_mul_toPair_neg_eq_algebraMap_pairNorm`: the norm identity
-  `g·ḡ = N` (ChatGPT §2/§13 step 2), proved — essentially
-  `toPair_mul_involution` with `involution H (toPair H E Y)` unfolded to
-  the concrete pair `toPair H E (-Y)` via `toPair_involution`, since the
-  next lemma in the stack (`ordAt_toPair_mul_of_ne_zero'`) needs a
-  concrete `(A', B')` pair, not the abstract `involution` application.
-- `pairNorm_eq_of_eq_curvePoly`: bridges `pairNorm H E Y` to the
-  `Npoly4`-shaped `E² - Y²·curvePoly p c0..c4` using the new `hf`
-  hypothesis, so later lemmas can rewrite `Npoly4 ...` directly into
-  `pairNorm`/`toPair` form.
+[
+\bar g(P)\neq0
+]
 
-No `sorry` in this new file — both lemmas are complete, small, and close
-to definitional unfolding, matching "easiest first." Not yet build-checked
-(same caveat as every pass — Claire's REPL is the source of truth).
+provided (b\neq0) and you aren't in a degenerate situation where both (g) and (\bar g) vanish.
 
-## Status update (this pass, 9th) — `PrincipalWitness.lean` build errors fixed
+Indeed,
 
-Claire's rebuild: `AlphaLocusDegreeUniform.lean` built clean (both sorries
-are the expected two, per Step 3/`decoupledSystem_degree_uniform`), but the
-new `PrincipalWitness.lean` failed with `Unknown identifier 'curvePoly'` and
-`Function expected at F`. Root cause: that file never imported/opened
-`Genus2Lean.TheDataDerivation` — `curvePoly`, and `F` itself, are defined
-inside `namespace Genus2Lean.TheDataDerivation` (`AlphaReduce.lean`/
-`DataDerivationBasics.lean` both live there), and `AlphaLocusDegreeUniform.
-lean` only sees them unqualified because it has its own `open
-TheDataDerivation` at file scope — a fact I'd read but didn't carry over to
-the new file. Fix: added `open Genus2Lean.TheDataDerivation` to
-`PrincipalWitness.lean`, and added the missing `[Fact (Nat.Prime p)]`
-instance to `pairNorm_eq_of_eq_curvePoly` (`curvePoly`'s own section
-`variable`s require it; `H`'s `Field (F p)` instance doesn't necessarily
-force Lean to synthesize it automatically at this call site). Also added
-`set_option linter.style.header false` to match every other file in this
-project (avoids the same copyright-header lint warning the build log
-otherwise flags). Not yet re-verified against a live build.
+[
+g(P)=E(a)+Y(a)b=0,
+]
 
-## Status update (this pass, 10th) — confirmed clean; lemmas 2-4 added
+whereas
 
-Claire confirmed `PrincipalWitness.lean` (9th pass's fix, using fully-
-qualified `Genus2Lean.TheDataDerivation.F`/`curvePoly` rather than an
-`open`) builds cleanly. Added the next three lemmas in the stack, still
-kept generic (no `SampleTargetFromAlpha` dependence):
+[
+\bar g(P)=E(a)-Y(a)b=-2Y(a)b.
+]
 
-- `ordAt_eq_zero_of_eval_ne_zero` (lemma 2, ChatGPT §4/§13 step 4): the
-  "residue-nonzero ⇒ valuation-zero" lemma ChatGPT flagged as possibly
-  missing from the pasted API — it isn't missing, it's `toPair_mem_
-  pointIdeal_iff` (`LCanonicalElementary.lean`) composed with `ordAt_eq_
-  zero_of_notMem` (`RiemannRochGenus2.lean`), both already proved and
-  confirmed `[IsAlgClosed k]`-free.
-- `toPair_right_zero`: the `B=0` unfolding of `toPair`, restated as its own
-  named lemma (same idiom already used in `LPairFinrankOneOrdAtFrac.lean`)
-  since the next lemma needs it by name.
-- `toPair_pairNorm_eq_toPair_mul_toPair_neg` (lemma 3, ChatGPT §2/§13 step
-  3): the norm identity restated in the `(A,B)`-pair shape
-  `ordAt_toPair_mul_of_ne_zero'`'s `hA₃` hypothesis actually needs
-  (`toPair H N 0`, not `algebraMap _ _ N`) — trivial composition of lemma 1
-  and `toPair_right_zero`.
-- `ordAt_eq_ordAt_pairNorm_of_eval_eq_zero` (lemma 4, ChatGPT §3/§5/§13
-  step 5): given `g ≠ 0` as a ring element and `ḡ(P) ≠ 0`,
-  `ordAt P g = ordAt P N`. **Deliberately does NOT take `g(P) = 0` as a
-  hypothesis** — checked and confirmed it isn't needed for this step (only
-  motivates why `ḡ(P) ≠ 0` is the case worth supplying), so the lemma stays
-  usable at points other than "ordinary zeros of `g`" too (e.g. eventually
-  at `δ₀`-adjacent points, if that ever needs a similar move). Also
-  deliberately takes `hg_ne : toPair H E Y ≠ 0` as an explicit hypothesis
-  rather than trying to derive it from an eval-equals-zero fact — caught
-  a genuine error in an earlier draft of this proof (`E=0,Y=0` vacuously
-  satisfies "vanishes at one point" but does NOT give `toPair H E Y ≠ 0`;
-  fixed before presenting, per §3e's "don't over-assume" discipline applied
-  to the lemma's own hypotheses, not just to point-distinctness).
+So if (Y(a)\neq0),
 
-Also caught and fixed, before presenting: an editing mistake left two
-adjacent block-comment docstrings (stale draft + final version) directly
-above lemma 4 — exactly the "comment block followed by another comment
-block" issue this project's conventions warn about. Removed the stale one.
+[
+\bar g(P)\neq0
+]
 
-No `sorry` anywhere in the file; all four lemmas fully proved. Updated the
-file's own module-docstring status note to list lemmas 1-4 rather than
-lemma 1 only. Not yet re-verified against a live build.
+because (2b\neq0).
 
-**Not yet done, next in the stack** (ChatGPT §13's numbered list, items
-6 onward): the root-multiplicity translation for `N`/`u_new` via
-`ordAt_eq_rootMultiplicity_unramified`/`_ramified` (§6-§8), the
-factorization `N = A·U` at the pair level and the resulting
-`ordAt P N = ordAt P A + ordAt P U` (§6/§13 step 7), the pointwise
-coefficient identity (§13 step 9), and the `δ₀`-avoidance argument via
-`Divisor0`'s degree-zero property (§12) rather than defining an infinity
-valuation from scratch. Each should be its own small named lemma per
-project convention — do not attempt the `∀ P` theorem in one pass.
+That means the conjugate factor has valuation zero:
 
-## Status update (this pass, 11th) — build error fix: missing imports,
-## not a namespace bug
+[
+\operatorname{ordAt}_P(\bar g)=0.
+]
 
-Claire's rebuild failed on three `Unknown identifier` errors
-(`ordAt_eq_zero_of_notMem`, `toPair_mem_pointIdeal_iff`,
-`ordAt_toPair_mul_of_ne_zero'`) plus a cascading `unsolved goals` at
-lemma 4's `:=` (an expected consequence of the third unknown identifier —
-`hstep` never got defined, so `omega` had nothing to close the goal with;
-not a separate bug). Root cause, confirmed by tracing the actual import
-graph rather than re-guessing: all three lemmas genuinely live inside
-`namespace HyperellipticPolynomial` (so the earlier "namespace" framing in
-this file's own comments was right about *where* they're declared) but
-**`PrincipalWitness.lean`'s import chain never reaches the files that
-declare them** — `ordAt_eq_zero_of_notMem`/`ordAt_toPair_mul_of_ne_zero'`
-are in `RiemannRochGenus2.lean`; `toPair_mem_pointIdeal_iff` is in
-`LCanonicalElementary.lean`; neither is imported by
-`PrincipalDivisorSubgroup.lean` (whose own chain stops one file short, at
-`PrincipalDivisors.lean`) or by any of this file's other imports. This was
-checked by existence (`grep` for the theorem name) last pass, not by
-reachability (`grep` for the import chain) — the actual gap.
+Then norm multiplicativity gives
 
-Fix: added `import Genus2Lean.RiemannRochGenus2` and
-`import Genus2Lean.LCanonicalElementary` directly. Confirmed cycle-safe
-before adding: both of those files already import
-`Genus2Lean.PrincipalDivisorSubgroup` themselves (the reverse direction),
-and grepped the whole tree to confirm nothing imports
-`PrincipalWitness.lean` yet (new file, no consumers). Not yet re-verified
-against a live build.
+[
+\boxed{
+\operatorname{ordAt}_P(g)
+=========================
+
+\operatorname{ordAt}_P(N,0).
+}
+]
+
+Now your existing
+
+```text
+ordAt_eq_rootMultiplicity_unramified
+```
+
+can compute the right-hand side.
+
+So I would create this as a named lemma, something like conceptually:
+
+```text
+ordAt_g_of_g_eval_eq_zero_of_unramified
+```
+
+whose proof is:
+
+1. prove `g * gbar = N`;
+2. apply `ordAt_toPair_mul_of_ne_zero'`;
+3. prove `ordAt P gbar = 0` from `gbar(P) ≠ 0`;
+4. conclude `ordAt P g = ordAt P N`;
+5. rewrite `ordAt P N` using `ordAt_eq_rootMultiplicity_unramified`.
+
+That is much cleaner than trying to reason directly about the local expansion of (E+Yy).
+
+---
+
+# 4. You will probably want one tiny “nonzero residue ⇒ valuation zero” lemma
+
+Your listed API doesn't explicitly include one.
+
+I suspect you either already have one under a different name, or it is buried in the proof of `ordAt`.
+
+You want something morally like:
+
+[
+g(P)\neq0
+\quad\Longrightarrow\quad
+\operatorname{ordAt}_P(g)=0.
+]
+
+More algebraically, if the image of the coordinate-ring element in the residue field
+
+[
+\kappa(P)
+=========
+
+R/\operatorname{pointIdeal}(P)
+]
+
+is nonzero, then that element is a unit in the local DVR, hence valuation zero.
+
+For Lean, this is worth extracting as a tiny reusable lemma. It will immediately give you:
+
+[
+g(P)\neq0\implies\operatorname{ordAt}_P g=0,
+]
+
+and similarly for (\bar g).
+
+I would expect to use it constantly.
+
+---
+
+# 5. Then the numerator/denominator calculation becomes almost mechanical
+
+Set
+
+[
+U=u_{\rm new}.
+]
+
+Your target is
+
+[
+\operatorname{ordAt}(h)
+=======================
+
+\operatorname{ordAt}(g)-\operatorname{ordAt}(U).
+]
+
+Suppose we're at a residual point (R) where (g(R)=0) and (U(R)=0).
+
+Then:
+
+[
+\operatorname{ordAt}(g)
+=======================
+
+\operatorname{ordAt}(N),
+]
+
+and from
+
+[
+N=A,U
+]
+
+where (A) is your known anchor factor,
+
+[
+\operatorname{ordAt}(N)
+=======================
+
+\operatorname{ordAt}(A)
++
+\operatorname{ordAt}(U).
+]
+
+Therefore
+
+[
+\operatorname{ordAt}(h)
+=======================
+
+\operatorname{ordAt}(A).
+]
+
+That's exactly the cancellation you want.
+
+Notice what happened: **you didn't need to directly determine the order of (g) and subtract 1.**
+
+You use the factorization
+
+[
+N=A,U
+]
+
+to make the denominator valuation cancel automatically.
+
+This is very attractive for Lean.
+
+---
+
+# 6. In fact, the cleanest formal route is probably to factor the whole divisor computation
+
+Suppose
+
+[
+A(x)=u_a(x)(x-x_1)(x-x_2)
+]
+
+is the known factor, and
+
+[
+N=A,U.
+]
+
+Suppose the prescribed interpolation makes (g) vanish along the old effective divisor (D_{\rm old}^{+}) and the residual effective divisor (R).
+
+Then conceptually you have
+
+[
+\operatorname{div}(g)
+=====================
+
+D_{\rm old}^{+}+R-6\delta_0
+]
+
+and
+
+[
+\operatorname{div}(U)
+=====================
+
+R+\iota(R)-4\delta_0.
+]
+
+Subtracting gives
+
+[
+\operatorname{div}(g/U)
+=======================
+
+D_{\rm old}^{+}-\iota(R)-2\delta_0.
+]
+
+The right-hand side is exactly
+
+[
+D_{\rm old}-D_{\rm new}
+]
+
+once the sign convention for the Mumford (v_{\rm new}) is fixed.
+
+So the proof doesn't fundamentally need to know whether a point is “one of the six points” at every stage. It needs the two divisor identities.
+
+That suggests a useful hierarchy:
+
+```text
+local valuation of g at an ordinary zero
+        ↓
+valuation of N = A * U
+        ↓
+valuation of g/U
+        ↓
+pointwise coefficient identity
+        ↓
+divisor equality
+        ↓
+principal divisor / Jacobian equality
+```
+
+---
+
+# 7. How `ordAt_linX_eq` fits in
+
+For the denominator
+
+[
+U=(X-r_1)(X-r_2)
+]
+
+when it splits, `ordAt_linX_eq` is perfect.
+
+For each (P),
+
+[
+\operatorname{ordAt}_P(X-r)
+===========================
+
+\begin{cases}
+0,&P.X\neq r,\
+1,&P.X=r,\ P.Y\neq0,\
+2,&P.X=r,\ P.Y=0.
+\end{cases}
+]
+
+Then multiplicativity gives
+
+[
+\operatorname{ordAt}_P(U)
+=========================
+
+\operatorname{ordAt}_P(X-r_1)
++
+\operatorname{ordAt}_P(X-r_2).
+]
+
+So if you *are* working in the split-over-(F_p) situation, this is the easiest way to prove the denominator coefficient formula.
+
+But if (U) is not split over (F_p), don't factor it into linear terms. Use your
+
+```text
+ordAt_eq_rootMultiplicity_unramified
+ordAt_eq_rootMultiplicity_ramified
+```
+
+directly on (U).
+
+That gives you a much more robust theorem:
+
+[
+\boxed{
+\operatorname{ordAt}_P(U,0)
+===========================
+
+\text{root multiplicity of }U\text{ at }P.X,
+}
+]
+
+with the ramified factor of (2) automatically handled.
+
+So I'd actually make the root-multiplicity lemma the *main* denominator theorem, and make `ordAt_linX_eq` a corollary useful in the split case.
+
+---
+
+# 8. Don't case-split on “is (P) a residual root?” if root multiplicity can do it for you
+
+This answers your second question pretty strongly.
+
+I would avoid a giant proof like:
+
+```text
+by_cases P = P1
+by_cases P = P2
+by_cases P = R1
+by_cases P = R2
+...
+```
+
+That will become horrible when points collide.
+
+Instead, case-split on the **valuation source**, not on geometric identity.
+
+For an ordinary point (P), the useful logical cases are:
+
+1. (g(P)\neq0);
+2. (g(P)=0).
+
+Inside case 2, distinguish whether (P) is ramified.
+
+Then the norm identity converts case 2 into a root-multiplicity calculation for (N).
+
+Likewise the denominator is handled entirely by the root-multiplicity theorem for (U).
+
+This means collisions are absorbed automatically into multiplicities.
+
+That's exactly what you want.
+
+---
+
+# 9. The `S` parameter is useful, but don't use it to encode multiplicity
+
+Your `divToPair ... S` construction is actually a nice abstraction.
+
+You want `S` to be a **support set**, not a multiplicity set.
+
+The coefficient at (P) is already
+
+[
+\operatorname{ordAt}_P(u,v),
+]
+
+so if a point occurs with multiplicity (2), it should still occur just once in `S`; its coefficient will be (2).
+
+Therefore the clean support theorem is:
+
+[
+P\notin S
+\implies
+\operatorname{ordAt}_P(u,v)=0.
+]
+
+That's exactly what your
+
+```text
+hsupp :
+  ∀ P, P ∉ S →
+    ordAt P ... ... = 0
+```
+
+already says.
+
+So I would prove your final equality by using:
+
+[
+P\notin S
+\Rightarrow
+\operatorname{coeff}*P(D*{\rm new})=0.
+]
+
+And inside (S), calculate the coefficient from `ordAt`.
+
+But here's an even cleaner option: if your definition of `divToPair` lets you characterize the coefficient directly, prove one lemma of the form
+
+[
+\boxed{
+\operatorname{coeff}_P(\operatorname{divToPair}(A,B,S))
+=======================================================
+
+\begin{cases}
+\operatorname{ordAt}_P(A,B),&P\in S,\
+0,&P\notin S.
+\end{cases}}
+]
+
+Then all later divisor calculations become rewriting rather than Finset gymnastics.
+
+---
+
+# 10. There is an important issue with `S : Finset H.Point`
+
+This deserves special emphasis because you're deliberately avoiding algebraic closure.
+
+A quadratic (U\in F_p[x]) can be irreducible.
+
+For example,
+
+[
+U(x)=x^2+1
+]
+
+may have no root in (F_p).
+
+But it still corresponds to a degree-2 effective divisor on (C).
+
+There are then no two `H.Point`s (R_1,R_2) you can put into `S`.
+
+So a theorem whose entire new divisor is
+
+```text
+divToPair ... S
+```
+
+with `S : Finset H.Point`
+is not a representation of arbitrary genus-2 Mumford reduction over (F_p).
+
+It represents the split/rational-support special case.
+
+That's not necessarily a problem. But it needs to be explicit.
+
+For the fully general finite-field theorem, the natural support object is something like height-one primes of the coordinate ring, exactly the machinery your `ordAt` was built from.
+
+And this is actually mathematically nicer for the proof you're working toward: an irreducible (u_{\rm new}) is just a prime divisor of degree (2), and `ordAt` is fundamentally a valuation at a prime ideal anyway.
+
+---
+
+# 11. Infinity: I would not try to force `δ₀` into this `ordAt`
+
+This is the other major architectural point.
+
+Your
+
+```text
+P : H.Point
+pointIdeal P
+```
+
+is clearly describing an affine rational point.
+
+The unique point at infinity is not an element of the affine coordinate ring, so it does **not** have a corresponding maximal ideal of the same form.
+
+Therefore I would expect infinity to require a separate valuation:
+
+[
+\operatorname{ord}_{\delta_0}.
+]
+
+And I would absolutely make that separate rather than trying to fake it through `pointIdeal`.
+
+For your model (\deg f=5),
+
+[
+\operatorname{ord}*{\delta_0}(x)=-2,
+\qquad
+\operatorname{ord}*{\delta_0}(y)=-5.
+]
+
+For a polynomial (A(x)),
+
+[
+\operatorname{ord}_{\delta_0}(A(x))
+===================================
+
+-2\deg A
+]
+
+provided (A\neq0).
+
+For
+
+[
+g=E(x)+Y(x)y,
+]
+
+you can compute the pole order from
+
+[
+\max(2\deg E,;2\deg Y+5)
+]
+
+provided the leading terms don't cancel.
+
+In your actual cubic-interpolation situation, (E) and (Y) will presumably have controlled degrees, so this should be a finite collection of degree lemmas.
+
+But there is an even nicer escape hatch for the *final* divisor equality.
+
+---
+
+# 12. You may be able to avoid proving the infinity coefficient directly
+
+Suppose you prove
+
+[
+\operatorname{coeff}*P(D*{\rm old}-D_{\rm new})=0
+]
+
+for every finite affine point (P).
+
+Then the difference is supported entirely at infinity.
+
+If you also know
+
+[
+\deg(D_{\rm old}-D_{\rm new})=0,
+]
+
+the only divisor supported at a single point and having degree zero is zero.
+
+So:
+
+[
+\boxed{
+\text{finite coefficients agree}
++
+\text{degree zero}
+\Longrightarrow
+D_{\rm old}=D_{\rm new}.
+}
+]
+
+That could save you a *lot* of Lean pain.
+
+You still need some theorem that says the degree of the difference is zero, but you may already have this in `Divisor0`.
+
+Then the entire principal-witness theorem can be proved entirely with affine `ordAt`, followed by one degree argument for infinity.
+
+I would strongly prefer this over introducing an infinity valuation into this particular theorem unless you actually need infinity valuations elsewhere.
+
+---
+
+# 13. The smallest useful lemma stack
+
+If I were building this file, I'd aim for roughly this sequence.
+
+First:
+
+[
+\operatorname{ordAtFrac}(P,E,Y,U,0)
+===================================
+
+\operatorname{ordAt}(P,E,Y)-\operatorname{ordAt}(P,U,0).
+]
+
+Second, the norm identity:
+
+[
+(E+Yy)(E-Yy)=E^2-fY^2.
+]
+
+Third:
+
+[
+\operatorname{ordAt}_P(g)+\operatorname{ordAt}_P(\bar g)
+========================================================
+
+\operatorname{ordAt}_P(N).
+]
+
+Fourth, residue-nonzero implies valuation zero:
+
+[
+g(P)\neq0\Rightarrow\operatorname{ordAt}_P(g)=0.
+]
+
+Fifth, ordinary zero of (g):
+
+[
+P.Y\neq0,\quad g(P)=0
+\Rightarrow
+\operatorname{ordAt}_P(g)=\operatorname{ordAt}_P(N).
+]
+
+Sixth, convert `ordAt N` to root multiplicity using your existing theorem.
+
+Seventh, prove the factorization
+
+[
+N=A,U
+]
+
+at the pair level and derive
+
+[
+\operatorname{ordAt}_P(N)
+=========================
+
+\operatorname{ordAt}_P(A)
++
+\operatorname{ordAt}_P(U).
+]
+
+Eighth:
+
+[
+\operatorname{ordAt}_P(h)
+=========================
+
+\operatorname{ordAt}_P(A)
+]
+
+at a residual point.
+
+Ninth, package the old/new coefficients and show
+
+[
+\operatorname{coeff}*P(D*{\rm old})-\operatorname{coeff}*P(D*{\rm new})
+=======================================================================
+
+\operatorname{ordAt}_P(A)
+]
+
+with whatever your exact sign convention is.
+
+Then the `∀ P` theorem becomes almost entirely `rw`/`linarith`-style valuation bookkeeping.
+
+---
+
+# 14. The one place where doubling really needs a different lemma
+
+For (P_1\neq P_2), the argument above works with ordinary simple zeros.
+
+For (P_1=P_2=P), you want
+
+[
+\operatorname{ord}_P(g)=2
+]
+
+in the usual unramified tangent case.
+
+The norm route is actually still excellent:
+
+if (g(P)=0) and (\bar g(P)\neq0), then
+
+[
+\operatorname{ord}_P(g)
+=======================
+
+\operatorname{ord}_P(N).
+]
+
+Hermite interpolation gives
+
+[
+N=(x-x(P))^2\cdot(\text{something nonzero at }P)
+]
+
+in the unramified case, so your root-multiplicity lemma gives
+
+[
+\operatorname{ord}_P(N)=2.
+]
+
+Therefore
+
+[
+\operatorname{ord}_P(g)=2.
+]
+
+So you do **not** need a bespoke local-parameter proof of “tangency implies order two” inside the principal-witness theorem. The existing root-multiplicity machinery can carry it.
+
+That's a very nice fit with your existing API.
+
+The ramified (Y=0) case is different because (P=\iota(P)), so you lose the argument that (\bar g(P)\neq0). That case needs its own tiny lemma. I would isolate it rather than contaminate the main proof.
+
+---
+
+# 15. So the actual pointwise proof should look like this conceptually
+
+For finite (P):
+
+[
+\begin{aligned}
+\operatorname{ordAtFrac}(P,E,Y,U,0)
+&=
+\operatorname{ordAt}_P(g)-\operatorname{ordAt}_P(U)\
+&=
+\bigl(\operatorname{ordAt}_P(N)-\operatorname{ordAt}_P(\bar g)\bigr)
+-\operatorname{ordAt}_P(U)\
+&=
+\operatorname{ordAt}_P(A)
++\operatorname{ordAt}_P(U)
+-\operatorname{ordAt}_P(\bar g)
+-\operatorname{ordAt}_P(U).
+\end{aligned}
+]
+
+So
+
+[
+\boxed{
+\operatorname{ordAtFrac}(P,g/U)
+===============================
+
+## \operatorname{ordAt}_P(A)
+
+\operatorname{ordAt}_P(\bar g).
+}
+]
+
+Now the geometry says:
+
+* at an old point, (g) vanishes and (\bar g) doesn't, so this gives the old coefficient;
+* at the “opposite” residual point, (\bar g) vanishes instead, so this gives the negative new coefficient;
+* elsewhere neither contributes.
+
+That is a much cleaner pointwise identity than trying to separately compute numerator and denominator at five classes of points.
+
+And it explains why the hyperelliptic involution is so central to the reduction proof.
+
+---
+
+# 16. The final Jacobian step should be downstream, not mixed into this
+
+Once you've got
+
+[
+\operatorname{div}(h)=D_{\rm old}-D_{\rm new},
+]
+
+don't immediately start wrestling with `toJacobian`.
+
+Make a separate theorem:
+
+[
+D_{\rm old}-D_{\rm new}\in\operatorname{PrincipalDivisors}(H)
+]
+
+using (h).
+
+Then separately:
+
+[
+\operatorname{toJacobian}(D_{\rm old}-D_{\rm new})=0.
+]
+
+Then because `toJacobian` is additive,
+
+[
+[D_{\rm old}]=[D_{\rm new}].
+]
+
+That separation will make the eventual `reducedClass_eq_of_isReduction'` theorem vastly easier to read.
+
+In other words, I would make the main principal-divisor theorem completely ignorant of `aClass`, `SampleTargetFromAlpha`, `hr`, `sa.reducedClass`, etc. Those should only appear in the final assembly theorem.
+
+---
+
+## One thing I'd check before writing any Lean
+
+The next useful piece of your codebase to inspect is the exact definition/theorems around `divToPair`, especially:
+
+```text
+coeff_P (divToPair H A B S)
+```
+
+and the definition of `Divisor H` itself.
+
+That will determine whether we can make the pointwise theorem almost literally:
+
+[
+\operatorname{coeff}*P(D*{\rm old})
+-----------------------------------
+
+# \operatorname{coeff}*P(D*{\rm new})
+
+\operatorname{ordAtFrac}(P,E,Y,U,0),
+]
+
+or whether there is one intermediate `if P ∈ S then ... else ...` rewrite we need.
+
+And I'd also want to see the exact hypotheses of `ordAt_eq_rootMultiplicity_unramified` and `..._ramified`; those two lemmas are probably the workhorses that let us avoid a huge amount of local algebra.
