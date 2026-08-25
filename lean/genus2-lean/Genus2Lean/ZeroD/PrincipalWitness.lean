@@ -76,14 +76,36 @@ point witness `div(x-x0) = 2•[P]`, restating the already-fully-proved
 `divToPair_eq_of_coeffAt_diff_eq_zero`, the pointwise-coefficient
 assembly per ChatGPT §15's boxed identity, packaging lemmas 2/8/9/10 into
 a `D_old = D_new` conclusion given their per-point case-split facts as
-hypotheses). Not yet attempted: the actual assembly theorem in
+hypotheses). Also done, this pass, following up on ChatGPT's second reply
+(the residual-point/`A`-valuation follow-up): **lemma 12**
+(`pairNorm_neg_eq`, `pairNorm H E (-Y) = pairNorm H E Y`) and **lemma 13**
+(`ordAt_neg_eq_ordAt_of_pairNorm_eq_mul`, the residual-point mirror of
+lemma 8 — needs neither `hchar` nor `P.Y ≠ 0`, unlike lemma 8 itself,
+since it goes through lemma 4 rather than lemma 6's `rootMultiplicity`
+detour); and the three "layers" ChatGPT's follow-up reply recommended for
+computing `ordAt P A 0` at the four/six named points WITHOUT going through
+`Polynomial.roots`: **Layer 1** (`ordAt_linX_eq_one_of_ne_zero`/
+`ordAt_linX_eq_zero_of_ne'`, thin restatements of the already-proved
+`ordAt_linX_eq`), **Layer 2** (`ordAt_mul_eq_one_of_ordAt_eq_one_zero`/
+`ordAt_mul4_eq_one_of_ordAt_eq_one_zero_zero_zero`, "one factor order 1 +
+the rest order 0 ⟹ product order 1", generic multiplicativity), and
+**Layer 3** (`ordAt_A_eq_one_of_eval_ne_zero`, the Cantor-specific
+instantiation: given the other three factors' plain polynomial-evaluation
+nonvanishing at the point in question — exactly the shape this project's
+existing `isCoprime_lcm12_lcm34_of_no_shared_root`-style hypotheses already
+supply — concludes `ordAt P (((linX a * F₁) * F₂) * F₃) 0 = 1`, no
+`rootMultiplicity`/`Polynomial.roots` reasoning exposed at the call site).
+Not yet attempted: the actual assembly theorem in
 `AlphaLocusDegreeUniform.lean` itself — wiring the four/six named points
-of the concrete `SampleTargetFromAlpha` situation through lemmas 2/8/9/10
-to discharge `coeffAt_sub_eq_of_forall`'s hypothesis and conclude
-`reducedClass_eq_of_isReduction'`. That's genuinely project-specific
-(needs `sa.P1`/`sa.P2`/`E`/`Y`/`U`/`A` instantiated), so it belongs in
-`AlphaLocusDegreeUniform.lean`, not this file, matching this file's
-stated design (ChatGPT §16: stay ignorant of `SampleTargetFromAlpha`/
+of the concrete `SampleTargetFromAlpha` situation through lemmas 2/8/9/10/
+13 and the three layers to discharge `coeffAt_sub_eq_of_forall`'s
+hypothesis and conclude `reducedClass_eq_of_isReduction'`. That's
+genuinely project-specific (needs `sa.P1`/`sa.P2`/`Epoly4`/`Ypoly4`/
+`uRS4General`/`npoly4Lcm4` instantiated, plus bridging `npoly4Lcm4`'s
+`EuclideanDomain.lcm`-nested definition to the plain-product form Layer 2/3
+consume — flagged as its own remaining sub-step, not yet started), so it
+belongs in `AlphaLocusDegreeUniform.lean`, not this file, matching this
+file's stated design (ChatGPT §16: stay ignorant of `SampleTargetFromAlpha`/
 `aClass`/`hr`/`sa.reducedClass` until the final assembly step).**
 -/
 
@@ -594,6 +616,178 @@ theorem divToPair_eq_of_coeffAt_diff_eq_zero
   rw [h1, h2]
   have := hzero P
   omega
+
+/-- **Lemma 12 of the stack: `pairNorm H E (-Y) = pairNorm H E Y`.** Pure
+algebra (`pairNorm H A B := A^2 - B^2*H.f`, and `(-Y)^2 = Y^2`) — needed so
+the "residual point" case (where `ḡ = toPair H E (-Y)` vanishes, not `g`)
+can reuse the SAME factorization `pairNorm H E Y = A * U` that the "old
+point" case (lemmas 6/7/8) already uses for `g`, rather than needing a
+second, independently-supplied factorization of a different-looking norm.
+This is exactly why the hyperelliptic involution is central to the whole
+argument (ChatGPT §15's closing remark): `g` and `ḡ` are norm-conjugate,
+so `N`'s factorization `A * U` governs both sides' zero loci at once. -/
+theorem pairNorm_neg_eq (E Y : k[X]) :
+    pairNorm H E (-Y) = pairNorm H E Y := by
+  unfold pairNorm
+  ring
+
+/-- **Lemma 13 of the stack (the residual-point mirror of lemma 8):
+`ordAt P E (-Y) = ordAt P A 0` at a residual point where `ḡ = toPair H E
+(-Y)` vanishes at `P` (as a ring element, `hgbar_ne`) but `g` doesn't
+(`hg_ne_eval`).** Mirrors lemma 8's own composition
+(`ordAtFrac_eq_ordAt_of_pairNorm_eq_mul`) with the roles of `g`/`ḡ`
+swapped: lemma 4 (`ordAt_eq_ordAt_pairNorm_of_eval_eq_zero`) applied
+directly to the pair `(E,-Y)` gives `ordAt P E (-Y) = ordAt P (pairNorm H E
+(-Y)) 0` with NO unramified/ramified case split needed (lemma 4, unlike
+lemma 6, doesn't go through `rootMultiplicity` at all) — so, unlike lemma
+8's own derivation (which routes through lemma 6 and hence needs `hchar`/
+`P.Y ≠ 0`), this lemma needs neither: it holds uniformly whether or not `P`
+is a Weierstrass point. `pairNorm_neg_eq` (lemma 12) then rewrites
+`pairNorm H E (-Y)` back to `pairNorm H E Y`, so the SAME caller-supplied
+factorization `hAU : pairNorm H E Y = A * U` (not a second one) feeds
+lemma 7 (`ordAt_add_of_pairNorm_eq_mul`) directly, and the `+ordAt P U 0`
+term cancels by `omega` exactly as in lemma 8. -/
+theorem ordAt_neg_eq_ordAt_of_pairNorm_eq_mul
+    [IsDedekindDomain (CoordinateRing H)]
+    (P : H.Point) (h_bot : pointIdeal P ≠ ⊥) (E Y A U : k[X])
+    (hgbar_ne : toPair H E (-Y) ≠ 0)
+    (hg_ne_eval : E.eval P.X + (-(-Y)).eval P.X * P.Y ≠ 0)
+    (hAU : pairNorm H E Y = A * U) (hA_ne : toPair H A (0 : k[X]) ≠ 0)
+    (hU_ne : toPair H U (0 : k[X]) ≠ 0) :
+    ordAt P E (-Y) = ordAt P A (0 : k[X]) := by
+  have hN_eq_mult : ordAt P E (-Y) = ordAt P (pairNorm H E (-Y)) (0 : k[X]) :=
+    ordAt_eq_ordAt_pairNorm_of_eval_eq_zero P h_bot E (-Y) hgbar_ne hg_ne_eval
+  have hAU' : pairNorm H E (-Y) = A * U := by rw [pairNorm_neg_eq]; exact hAU
+  rw [hN_eq_mult, hAU', ordAt_add_of_pairNorm_eq_mul P h_bot (A * U) A U rfl hA_ne hU_ne]
+  omega
+
+/-- **Layer 1 (per ChatGPT's follow-up reply): `ordAt P (linX a) 0 = 1` at
+an unramified point `P` with `P.X = a`.** Thin restatement of the
+already-fully-proved `ordAt_linX_eq` (`HyperellipticClassProof.lean`)
+specialized to its middle branch (`Q.X = a`, `Q.Y ≠ 0`) — avoids exposing
+the `if`-`if` case split to callers who already know they're in the
+unramified case, matching the follow-up reply's recommended "boring and
+local" Layer 1 API (`ordAt P (X - C a) 0 = 1` when `P.X = a`). Deliberately
+does NOT go through `Polynomial.roots`/`rootMultiplicity` at the call
+site — `ordAt_linX_eq`'s own proof already did that work once. -/
+theorem ordAt_linX_eq_one_of_ne_zero [IsDedekindDomain (CoordinateRing H)] [DecidableEq k]
+    (hchar : (2 : k) ≠ 0) (hsf : Squarefree H.f) (a : k) (P : H.Point)
+    (h_bot : pointIdeal P ≠ ⊥) (hPX : P.X = a) (hPY : P.Y ≠ 0) :
+    ordAt P (linX a) 0 = 1 := by
+  rw [ordAt_linX_eq hchar hsf a P h_bot]
+  rw [if_neg (not_ne_iff.mpr hPX), if_pos hPY]
+
+/-- **Layer 1, the "not this point" companion**: `ordAt P (linX a) 0 = 0`
+when `P.X ≠ a` — same restatement idiom, other branch of `ordAt_linX_eq`
+(the `Q.X ≠ a` case doesn't even need `hchar`/`hsf`, but takes them anyway
+to keep this lemma's signature interchangeable with the one above at call
+sites that don't yet know which branch applies). -/
+theorem ordAt_linX_eq_zero_of_ne' [IsDedekindDomain (CoordinateRing H)] [DecidableEq k]
+    (hchar : (2 : k) ≠ 0) (hsf : Squarefree H.f) (a : k) (P : H.Point)
+    (h_bot : pointIdeal P ≠ ⊥) (hPX : P.X ≠ a) :
+    ordAt P (linX a) 0 = 0 := by
+  rw [ordAt_linX_eq hchar hsf a P h_bot, if_pos hPX]
+
+/-- **Layer 2 (per ChatGPT's follow-up reply): a product of two pure-`x`
+factors where exactly one has `ordAt`-order 1 and the other 0, has order 1
+overall.** Direct application of `ordAt_add_of_pairNorm_eq_mul` (lemma 7,
+despite its `pairNorm`-flavored name — it is really a general "`ordAt` of
+a product" fact, `N = A*U ⟹ ordAt P N = ordAt P A + ordAt P U`, not
+specific to `pairNorm`'s own use) with the two given order values summed
+via `omega`. `hL_ne`/`hF_ne` (both factors nonzero as ring elements) are
+required by `ordAt_add_of_pairNorm_eq_mul` itself — supplied here rather
+than derived, matching this stack's existing "don't over-assume, take the
+minimal needed fact as a hypothesis" discipline. -/
+theorem ordAt_mul_eq_one_of_ordAt_eq_one_zero
+    [IsDedekindDomain (CoordinateRing H)]
+    (P : H.Point) (h_bot : pointIdeal P ≠ ⊥) (L F : k[X])
+    (hL_ne : toPair H L (0 : k[X]) ≠ 0) (hF_ne : toPair H F (0 : k[X]) ≠ 0)
+    (hL : ordAt P L (0 : k[X]) = 1) (hF : ordAt P F (0 : k[X]) = 0) :
+    ordAt P (L * F) (0 : k[X]) = 1 := by
+  rw [ordAt_add_of_pairNorm_eq_mul P h_bot (L * F) L F rfl hL_ne hF_ne, hL, hF]
+
+/-- **Layer 2, four-factor form — the exact shape this project's `A =
+(x-x₁)(x-x₂)·uₐ·u_target` needs.** One "designated" factor `L` contributes
+order `1` (via Layer 1 at the point in question); the other three
+(`F₁ F₂ F₃`) each contribute order `0` (via `ordAt_eq_zero_of_eval_ne_zero`,
+lemma 2, at whichever evaluation-nonvanishing fact the caller supplies —
+this lemma stays agnostic to WHY each `ordAt = 0`, taking it as a
+hypothesis, so it composes with `ordAt_linX_eq_zero_of_ne'` just as well as
+with lemma 2 directly). Built by iterating the two-factor case
+(`ordAt_mul_eq_one_of_ordAt_eq_one_zero`) three times, associating `((L*F₁)
+*F₂)*F₃` — matches how the actual `A` is nested in this project's
+`npoly4LcmRaw`/`npoly4Lcm4` (`lcm(lcm(q1,q2),lcm(q3,q4))`, itself
+associating pairwise), so the call site should not need any extra
+`mul_assoc` bookkeeping beyond possibly re-bracketing to match. -/
+theorem ordAt_mul4_eq_one_of_ordAt_eq_one_zero_zero_zero
+    [IsDedekindDomain (CoordinateRing H)]
+    (P : H.Point) (h_bot : pointIdeal P ≠ ⊥) (L F₁ F₂ F₃ : k[X])
+    (hL_ne : toPair H L (0 : k[X]) ≠ 0) (hF₁_ne : toPair H F₁ (0 : k[X]) ≠ 0)
+    (hF₂_ne : toPair H F₂ (0 : k[X]) ≠ 0) (hF₃_ne : toPair H F₃ (0 : k[X]) ≠ 0)
+    (hL : ordAt P L (0 : k[X]) = 1)
+    (hF₁ : ordAt P F₁ (0 : k[X]) = 0) (hF₂ : ordAt P F₂ (0 : k[X]) = 0)
+    (hF₃ : ordAt P F₃ (0 : k[X]) = 0) :
+    ordAt P (((L * F₁) * F₂) * F₃) (0 : k[X]) = 1 := by
+  have h1 : ordAt P (L * F₁) (0 : k[X]) = 1 :=
+    ordAt_mul_eq_one_of_ordAt_eq_one_zero P h_bot L F₁ hL_ne hF₁_ne hL hF₁
+  have h1_ne : toPair H (L * F₁) (0 : k[X]) ≠ 0 := by
+    rw [toPair_mul_right_zero']
+    exact mul_ne_zero hL_ne hF₁_ne
+  have h2 : ordAt P ((L * F₁) * F₂) (0 : k[X]) = 1 :=
+    ordAt_mul_eq_one_of_ordAt_eq_one_zero P h_bot (L * F₁) F₂ h1_ne hF₂_ne h1 hF₂
+  have h2_ne : toPair H ((L * F₁) * F₂) (0 : k[X]) ≠ 0 := by
+    rw [toPair_mul_right_zero']
+    exact mul_ne_zero h1_ne hF₂_ne
+  exact ordAt_mul_eq_one_of_ordAt_eq_one_zero P h_bot ((L * F₁) * F₂) F₃ h2_ne hF₃_ne h2 hF₃
+
+/-- **Layer 3 (Cantor-specific instantiation): `ordAt P (((linX a * F₁) * F₂)
+* F₃) 0 = 1` at a point `P` with `P.X = a`, `P.Y ≠ 0`, given the other three
+factors don't vanish AT `a` (evaluation-level, per the follow-up reply's
+explicit recommendation to phrase these at `eval`, not via roots).**
+Composes Layer 1 (`ordAt_linX_eq_one_of_ne_zero`, giving `L`'s own order 1)
+with lemma 2 (`ordAt_eq_zero_of_eval_ne_zero`) applied three times (giving
+each `Fᵢ`'s order 0 from its evaluation-nonvanishing at `a`, not from any
+root-multiplicity reasoning) and Layer 2's four-factor product lemma. This
+is the exact shape needed for `A = (x-x(P1))·(x-x(P2))·u_a(x)·u_target(x)`
+evaluated at `P = P1` (`a := P1.X`, `F₁,F₂,F₃ := (x-x(P2)), u_a, u_target`)
+— the caller supplies `hF₁/hF₂/hF₃` as plain polynomial-evaluation facts
+(`(x-x(P2)).eval P1.X ≠ 0` i.e. `P1.X ≠ P2.X`, `u_a.eval P1.X ≠ 0`,
+`u_target.eval P1.X ≠ 0`), matching this project's existing
+`isCoprime_lcm12_lcm34_of_no_shared_root`-style no-shared-root hypotheses
+exactly (those are stated at the same evaluation level already, so the
+bridge from "no shared root" facts already on file to this lemma's
+`hF₁/hF₂/hF₃` should be direct, no new root-multiplicity work needed at
+call sites). Each `Fᵢ.eval a ≠ 0` also gives `Fᵢ ≠ 0` as a ring element
+directly (`Polynomial.eval_zero`-contrapositive is NOT needed — `toPair H
+Fᵢ 0 ≠ 0` follows via `toPair_eq_zero_iff`: if `Fᵢ = 0` its eval would be
+`0`, contradicting `hFᵢ_eval`), avoided as a SEPARATE hypothesis (`hL_ne`
+etc. in Layer 2) by deriving it inline here from the eval fact, so this
+lemma's own hypothesis list stays at exactly the four evaluation facts a
+call site naturally has on hand. -/
+theorem ordAt_A_eq_one_of_eval_ne_zero
+    [IsDedekindDomain (CoordinateRing H)] [DecidableEq k]
+    (hchar : (2 : k) ≠ 0) (hsf : Squarefree H.f)
+    (P : H.Point) (h_bot : pointIdeal P ≠ ⊥) (a : k) (hPX : P.X = a) (hPY : P.Y ≠ 0)
+    (F₁ F₂ F₃ : k[X])
+    (hF₁_eval : F₁.eval a ≠ 0) (hF₂_eval : F₂.eval a ≠ 0) (hF₃_eval : F₃.eval a ≠ 0) :
+    ordAt P (((linX a * F₁) * F₂) * F₃) (0 : k[X]) = 1 := by
+  have hL_ne : toPair H (linX a) (0 : k[X]) ≠ 0 := by
+    rw [Ne, toPair_eq_zero_iff]
+    exact fun ⟨hA, _⟩ => linX_ne_zero a hA
+  have hFi_ne : ∀ F : k[X], F.eval a ≠ 0 → toPair H F (0 : k[X]) ≠ 0 := by
+    intro F hFeval
+    rw [Ne, toPair_eq_zero_iff]
+    exact fun ⟨hA, _⟩ => hFeval (hA ▸ Polynomial.eval_zero)
+  have hL : ordAt P (linX a) (0 : k[X]) = 1 :=
+    ordAt_linX_eq_one_of_ne_zero hchar hsf a P h_bot hPX hPY
+  have hF₁ : ordAt P F₁ (0 : k[X]) = 0 :=
+    ordAt_eq_zero_of_eval_ne_zero P F₁ (0 : k[X]) (by rw [hPX]; simpa using hF₁_eval)
+  have hF₂ : ordAt P F₂ (0 : k[X]) = 0 :=
+    ordAt_eq_zero_of_eval_ne_zero P F₂ (0 : k[X]) (by rw [hPX]; simpa using hF₂_eval)
+  have hF₃ : ordAt P F₃ (0 : k[X]) = 0 :=
+    ordAt_eq_zero_of_eval_ne_zero P F₃ (0 : k[X]) (by rw [hPX]; simpa using hF₃_eval)
+  exact ordAt_mul4_eq_one_of_ordAt_eq_one_zero_zero_zero P h_bot (linX a) F₁ F₂ F₃
+    hL_ne (hFi_ne F₁ hF₁_eval) (hFi_ne F₂ hF₂_eval) (hFi_ne F₃ hF₃_eval) hL hF₁ hF₂ hF₃
 
 end HyperellipticPolynomial
 

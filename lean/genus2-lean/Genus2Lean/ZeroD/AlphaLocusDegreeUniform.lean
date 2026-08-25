@@ -647,7 +647,81 @@ rather than assuming the Step-2-typechecked signature was already complete:**
    `principalDivisorData H hdeg` (any `D` whose `P` is principal-compatible
    still works), matching this file's existing preference for `D` staying
    abstract elsewhere. No downstream call sites exist yet (checked, same as
-   prior passes), so widening the hypothesis list breaks nothing. -/
+   prior passes), so widening the hypothesis list breaks nothing.
+
+**Statement bug found and fixed this pass, before any proof body was
+attempted — the previous `divToPair (H := H) u v S` call was proving the
+wrong thing.** `divToPair A B S := ∑ P ∈ S, ordAt P A B • single P`, and
+`ordAt P A B` is the order of `toPair H A B = A + B·y` — NOT some
+pair-to-divisor encoding specific to Mumford coordinates. Calling it with
+`A := u` (degree 2), `B := v` (degree ≤ 1) computes the divisor of the
+coordinate-ring element `u + v·y`, which is a totally different function
+from the one a Mumford pair `(u,v)` is supposed to represent. Concretely:
+`ordInfOfPair A B = -(max(2 deg A, 2 deg B + 5))`, so `ordInfOfPair u v =
+-(max(4,7)) = -7`, hence (via `deg_div_eq_zero_deg5`, `(∑ ordAt) +
+ordInfOfPair = 0`) `deg (divToPair u v S) = 7`, not `0` — `divToPair u v S`
+can never land in `Divisor0 H` as `hmem` asked, for any `S`. The old
+`hmem`/goal were asking for something generically false.
+
+The correct construction (confirmed against the `mumfordB`/
+`toPair H (-mumfordB Q₁ Q₂ hne) 1` precedent already in
+`LCanonicalElementary.lean`, which is exactly the two-point special case of
+this): a Mumford pair `(u,v)` represents the effective divisor `[R₁]+[R₂]`
+(the points with `u`-coordinate a root of `u` and `v`-coordinate matching
+`v` there) via the function `y - v(x)`, i.e. `toPair H (-v) 1`, NOT via
+`toPair H u v = u + v·y`. `u` itself only enters as "the polynomial whose
+roots pick out `S`" — it does not appear inside the `divToPair` call at
+all. Since `ordInfOfPair (-v) 1 = -(max(2·1, 2·0+5)) = -5` (`B=1` has
+degree `0`), `divToPair (-v) 1 S` has degree `5`, still not `0` — the
+existing `-2•single δ₀` correction that `reducedClass` already carries is
+exactly what's needed to bring it down to the honest degree-`2 - 2 = 0`
+representative once `S` really is a 2-point root set, matching
+`reducedClass`'s own shape (`... - toJacobian D ⟨... - 2•single δ₀, ...⟩`).
+So both `hmem` and the goal now subtract `(2:ℤ) • single δ₀` from
+`divToPair (H := H) (-v) 1 S` directly, rather than asking `divToPair u v S`
+alone to already be degree-zero. `hu`/`u` are kept as parameters (still
+needed to pin down which points populate `S` — Step 3's proof will need
+`S` to be exactly `u`'s root set), but no longer feed `divToPair`'s
+argument slots. `hsupp` is restated over `ordAt (H := H) P (-v) 1` to match.
+No downstream call sites of this theorem exist yet (re-checked), so this
+correction is free.
+
+**New hypothesis added this pass, before the proof body: `hAlphaRep`, the
+missing semantic bridge from `alpha • aClass` (an abstract `Jacobian H D`
+element) to a concrete divisor.** Traced through the actual math needed
+(§3a item 3 of the roadmap; confirmed independently while starting Step 3):
+the whole principal-witness argument shows `[D_old] = [D_new]` where
+`D_old`/`D_new` are BOTH concrete divisors built from Mumford data — but
+`sa.reducedClass`'s LHS, `alpha • aClass - ...`, only ever refers to
+`aClass` abstractly. Nothing in this file (or `SampleTargetFromAlpha`'s
+fields) previously said `alpha • aClass` equals `toJacobian D` of any
+particular divisor — `ua0 ua1 va0 va1` were documented in `isReduction'`'s
+own docstring as "`alpha • aClass`'s already-reduced Mumford pair," but
+that was prose, not a hypothesis; `Jacobian H D`'s quotient-type structure
+means `aClass` trivially HAS some representative divisor (it's a quotient
+of `Divisor0 H`), but nothing pins that representative down to the
+`ua0,ua1,va0,va1` coordinates the rest of the theorem already depends on.
+Without this link the theorem cannot be proved: `hr`/`hcur`/`hgcd`/etc. all
+talk about `ua0..va1` and `sa.toSampleTarget`'s coordinates, but the goal's
+LHS has no route back to those coordinates without it.
+
+Added `hAlphaRep`, matching the anchor divisor to the same `divToPair (-·)
+1 · - 2•single δ₀` shape already fixed above for the target divisor (so
+the two sides of the eventual principal-witness argument, `D_old` for the
+anchor and `D_new` for the target, are stated uniformly): a fresh point set
+`Sanchor : Finset H.Point`, `va : Polynomial (F p)` for the anchor's
+Mumford `v`-polynomial (`hva`, ascribed exactly like `u`/`v` above for the
+same `C`/`X` elaboration-order reasons), `hmemAnchor` for its `Divisor0 H`
+membership, and `hAlphaRep` itself asserting `sa.alpha • aClass` literally
+equals `toJacobian D` of that anchor divisor. This is not an artificial
+weakening of the theorem — it is stating precisely what `isReduction'`'s
+own docstring already claims `ua0,ua1,va0,va1` mean, as an actual
+hypothesis rather than a comment. No downstream call sites of this theorem
+exist yet, so this addition is free; the anchor's own `u_a`-polynomial
+(`X^2+C ua1*X+C ua0`) is not needed as a separate parameter since (matching
+`u`/`v` above) only `va` feeds `divToPair` directly — `ua0,ua1` remain used
+elsewhere in this signature (`hcur`/`hgcd`/`hcurT`/`hgcdT`/`hr`) exactly as
+before. -/
 theorem reducedClass_eq_of_isReduction' {p : ℕ} [Fact (Nat.Prime p)] [Fact (p ≠ 2)]
     {H : HyperellipticPolynomial (F p)} [IsDedekindDomain (CoordinateRing H)]
     {D : PrincipalDivisorData H}
@@ -685,14 +759,20 @@ theorem reducedClass_eq_of_isReduction' {p : ℕ} [Fact (Nat.Prime p)] [Fact (p 
           sa.toSampleTarget.u0 sa.toSampleTarget.u1
           sa.toSampleTarget.v0 sa.toSampleTarget.v1))
     (hr : isReduction' sa c0 c1 c2 c3 c4 ua0 ua1 va0 va1 hcur hgcd hcurT hgcdT)
-    (S : Finset H.Point) (u v : Polynomial (F p))
+    (Sanchor S : Finset H.Point) (va u v : Polynomial (F p))
+    (hva : va = (Polynomial.C va1 : Polynomial (F p)) * (Polynomial.X : Polynomial (F p))
+      + (Polynomial.C va0 : Polynomial (F p)))
     (hu : u = (Polynomial.X : Polynomial (F p)) ^ 2 + (Polynomial.C sa.toSampleTarget.u1 : Polynomial (F p)) * Polynomial.X
       + (Polynomial.C sa.toSampleTarget.u0 : Polynomial (F p)))
     (hv : v = (Polynomial.C sa.toSampleTarget.v1 : Polynomial (F p)) * (Polynomial.X : Polynomial (F p))
       + (Polynomial.C sa.toSampleTarget.v0 : Polynomial (F p)))
-    (hsupp : ∀ P, P ∉ S → ordAt (H := H) P u v = 0)
-    (hmem : (divToPair (H := H) u v S : Divisor H) ∈ Divisor0 H) :
-    sa.reducedClass = toJacobian D (Subtype.mk (divToPair (H := H) u v S : Divisor H) hmem) := by
+    (hmemAnchor : (divToPair (H := H) (-va) 1 Sanchor - (2 : ℤ) • single δ₀ : Divisor H) ∈ Divisor0 H)
+    (hAlphaRep : sa.alpha • aClass =
+      toJacobian D (Subtype.mk (divToPair (H := H) (-va) 1 Sanchor - (2 : ℤ) • single δ₀ : Divisor H) hmemAnchor))
+    (hsupp : ∀ P, P ∉ S → ordAt (H := H) P (-v) 1 = 0)
+    (hmem : (divToPair (H := H) (-v) 1 S - (2 : ℤ) • single δ₀ : Divisor H) ∈ Divisor0 H) :
+    sa.reducedClass =
+      toJacobian D (Subtype.mk (divToPair (H := H) (-v) 1 S - (2 : ℤ) • single δ₀ : Divisor H) hmem) := by
   sorry
 
 /-! ## Task (B): the exceptional locus `Bad` (left abstract — see module
