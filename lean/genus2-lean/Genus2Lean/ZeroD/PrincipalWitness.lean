@@ -5,6 +5,7 @@ import Genus2Lean.ZeroD.TheDataDerivation.DataDerivationBasics
 import Genus2Lean.RiemannRochGenus2
 import Genus2Lean.LCanonicalElementary
 import Genus2Lean.LPairFinrankOneOrdAtFrac
+import Genus2Lean.HyperellipticClassProof
 
 -- `ordAt_eq_zero_of_notMem`/`ordAt_toPair_mul_of_ne_zero'` (lemmas 2, 4
 -- below) live in `RiemannRochGenus2.lean`, and `toPair_mem_pointIdeal_iff`
@@ -22,6 +23,13 @@ import Genus2Lean.LPairFinrankOneOrdAtFrac
 -- `AlphaLocusDegreeUniform.lean`) has no path back here, and nothing in
 -- `Genus2Lean`'s root-level files references `PrincipalWitness`/
 -- `AlphaLocusDegreeUniform` at all.
+--
+-- `linX`/`Point.iota`/`divToPair_linX_eq_of_ramified` (lemma 10 below) live
+-- in `HyperellipticClassProof.lean` — same cycle-safety check repeated:
+-- that file's own import list (`HyperellipticFunctionField`, `AffinePoints`,
+-- `DivisorClassGroup`, `PrincipalDivisors`, `PrincipalDivisorSubgroup`,
+-- `FFKSidon`) doesn't reach this file or `AlphaLocusDegreeUniform.lean`,
+-- and (re-grepped the whole tree) nothing yet imports `PrincipalWitness.lean`.
 
 /-!
 # Step 3 (`ROADMAP-reduce-divisor-correctness.md`): the principal-witness lemma stack
@@ -49,20 +57,34 @@ those only enter at the final assembly theorem back in
 Polynomial k`, so it can be reused by both the general (`P1 ≠ P2`) and
 tangent (`P1 = P2`) branches without duplication.
 
-**Status: lemmas 1-8 of the stack (ChatGPT §2-§3/§6/§13 steps 2-8) —
+**Status: lemmas 1-9 of the stack (ChatGPT §2-§3/§6/§9/§13 steps 2-9) —
 the norm identity, the residue-nonzero ⇒ valuation-zero lemma, the
 `(A,B)`-pair form of the norm identity, the ordinary-zero-of-`g` lemma via
 norm multiplicativity, `ordAt P g` expressed directly as a root
 multiplicity of `N` (unramified + ramified), the `N = A · U`
-factorization at the pair level, and (lemma 8) `ordAtFrac P E Y U 0 =
-ordAt P A 0` — `ordAt P h = ordAt P A` at a residual point, the theorem
-the whole stack has been building toward. All proved, no `sorry`. Not yet
-attempted: the pointwise coefficient identity and `δ₀`-avoidance degree
-argument (§9/§12/§13 step 9), and the final assembly into
-`div(h) = D_old - D_new`. The Weierstrass (`P.Y = 0`) case is flagged,
-not yet resolved — §3b/§14 of the ChatGPT reply say it needs its own
-separate argument (`div(x-x0) = 2P - 2δ₀`), not a specialization of the
-main lemma stack.**
+factorization at the pair level, `ordAtFrac P E Y U 0 = ordAt P A 0`
+(`ordAt P h = ordAt P A` at a residual point), and (lemma 9)
+`coeffAt_divToPair` — the pointwise coefficient identity for `divToPair`,
+`coeffAt P (divToPair A B S) = if P ∈ S then ordAt P A B else 0`. All
+proved, no `sorry`. Also done: `eq_of_coeffAt_eq` (`Divisor H`
+extensionality via `coeffAt` — resolves the `δ₀`-avoidance question
+cheaply, no infinity valuation needed, see its own docstring); **lemma 10**
+(`divToPair_linX_eq_two_smul_of_ramified`, the Weierstrass/ramification-
+point witness `div(x-x0) = 2•[P]`, restating the already-fully-proved
+`divToPair_linX_eq_of_ramified` from `HyperellipticClassProof.lean`); and
+**lemma 11** (`coeffAt_sub_eq_of_forall` +
+`divToPair_eq_of_coeffAt_diff_eq_zero`, the pointwise-coefficient
+assembly per ChatGPT §15's boxed identity, packaging lemmas 2/8/9/10 into
+a `D_old = D_new` conclusion given their per-point case-split facts as
+hypotheses). Not yet attempted: the actual assembly theorem in
+`AlphaLocusDegreeUniform.lean` itself — wiring the four/six named points
+of the concrete `SampleTargetFromAlpha` situation through lemmas 2/8/9/10
+to discharge `coeffAt_sub_eq_of_forall`'s hypothesis and conclude
+`reducedClass_eq_of_isReduction'`. That's genuinely project-specific
+(needs `sa.P1`/`sa.P2`/`E`/`Y`/`U`/`A` instantiated), so it belongs in
+`AlphaLocusDegreeUniform.lean`, not this file, matching this file's
+stated design (ChatGPT §16: stay ignorant of `SampleTargetFromAlpha`/
+`aClass`/`hr`/`sa.reducedClass` until the final assembly step).**
 -/
 
 noncomputable section
@@ -393,6 +415,185 @@ theorem coeffAt_divToPair [IsDedekindDomain (CoordinateRing H)] [DecidableEq H.P
     apply Finset.sum_eq_zero
     intro Q hQ
     exact if_neg (fun (h : P = Q) => hP (h.symm ▸ hQ))
+
+/-- **`Divisor H` extensionality via `coeffAt`, needed for the `δ₀`-avoidance
+argument (ChatGPT §11/§12).** ChatGPT's §12 escape hatch is: prove finite
+(affine) coefficients agree everywhere, then use a degree-zero argument to
+get equality including whatever happens at infinity. **In this project's
+actual model that degree argument is unnecessary** — `Divisor H := H.Point
+→₀ ℤ` (`DivisorClassGroup.lean`) is *already* affine-only by construction
+(its own module docstring: "points at infinity are excluded"), so there is
+no `δ₀`-coefficient slot for a discrepancy to hide in. If `coeffAt P D₁ =
+coeffAt P D₂` for every affine `P`, that alone is the whole of the data
+`D₁`/`D₂` carry, so `D₁ = D₂` outright — no separate degree/infinity step
+needed for *this* equality. (The `δ₀`-correction term still appears
+elsewhere, in `reducedClass`'s own definition as `+ 2•[δ₀]` — that's a
+statement about `Jacobian H D`, one level up, via `toJacobian`, not about
+`Divisor H` itself; unaffected by this lemma.)
+
+Proof note: proved via `Finsupp.ext` behind an explicit `show`-cast through
+`Divisor H`'s definitional unfolding to `H.Point →₀ ℤ`, and `coeffAt` to
+`Finsupp.applyAddHom` — the same `show`-cast idiom already confirmed to work
+in `coeffAt_single` above (`DivisorClassGroup.lean`), rather than a bare
+`Finsupp.ext`/`ext` call directly against `Divisor H` without unfolding
+first, which `LPairFinrankOne.lean` flags (in a comment on an unrelated
+proof) as a genuine transparency risk precisely because `Divisor H` is a
+plain `def`, not `abbrev`, over `Finsupp` — this avoids relying on defeq
+matching silently by making the unfolding explicit.
+
+Correction from an earlier draft of this docstring/proof: a first pass
+here used `DFunLike.ext` after concluding (from a web search that turned
+up mathlib-3-docs results first) that `Finsupp.ext` was deprecated — wrong.
+That build failed (`failed to synthesize instance of type class DFunLike
+H.Divisor ?m ?m`): `DFunLike.ext _ _ (fun P => ?_)` left its own instance
+argument as a metavariable with nothing pinning it down, since the
+`show`-cast alone doesn't carry enough information for instance search to
+find the `Finsupp`-supplied `DFunLike` instance at that point. A second,
+more targeted search confirmed `Finsupp.ext` genuinely exists in current
+Mathlib4 (`Mathlib.Data.Finsupp.Defs`) — switched to it directly, which
+needs no instance search at all (its statement is stated for `Zero M`
+generally, not through the `DFunLike` typeclass machinery), and unfolds
+`coeffAt`/`Finsupp.applyAddHom` at each point exactly as before. -/
+theorem eq_of_coeffAt_eq {D₁ D₂ : Divisor H} (h : ∀ P, coeffAt P D₁ = coeffAt P D₂) :
+    D₁ = D₂ := by
+  show (D₁ : H.Point →₀ ℤ) = (D₂ : H.Point →₀ ℤ)
+  refine Finsupp.ext (fun P => ?_)
+  have hP := h P
+  simp only [coeffAt, Finsupp.applyAddHom_apply] at hP
+  exact hP
+
+/-- **Lemma 10 of the stack (ChatGPT §3b item 3 / §14's ramified case): the
+Weierstrass/ramification-point witness, `div(x - x0) = 2•[P]`.** At a point
+`P` with `P.Y = 0`, `Point.iota P = P` (the hyperelliptic involution fixes
+Weierstrass points), so the ordinary "distinct-conjugate" witness
+`divToPair (linX P.X) 0 {P, ι P} = [P] + [ι P]` degenerates to a single
+point with multiplicity 2: `divToPair (linX P.X) 0 {P} = 2•[P]`.
+
+**This is already fully proved elsewhere in the codebase** —
+`divToPair_linX_eq_of_ramified` (`HyperellipticClassProof.lean`, via
+`ordAt_linX_eq_two_of_ramified`, unconditionally, no `sorry`) — so this
+lemma is a thin restatement collapsing its `single P + single (Point.iota
+P)` right-hand side (phrased that way there to keep a uniform shape with
+the unramified case) down to `2 • single P` directly using `hiota : Point.
+iota P = P`, matching how this "witness" is actually consumed: as a
+concrete `Divisor H` value, not as a sum of two (possibly-equal) `single`
+terms. Confirms, per §3b/§14's own flagging, that the Weierstrass case
+genuinely needs (and now has) its own separate witness — it is NOT a
+degenerate specialization of the main `g/U`-based principal-witness
+argument (lemmas 1-9 above), since at a Weierstrass point `ḡ(P) = g(P)`
+(§3b: `P = ι(P)` forces this), so the `hgbar_ne_eval` hypothesis every
+other lemma in this stack relies on is unavailable there.
+
+Proof note (direction caught on proofread — the first draft rewrote the
+wrong term): `hiota : Point.iota P = P` is rewritten INTO `h` (turning `h`'s
+RHS from `single P + single (Point.iota P)` to `single P + single P`), not
+into the goal directly — the goal has no `Point.iota P` occurrence to
+rewrite before `h` is substituted in, so `rw [hiota]` against the bare goal
+would find nothing to fire on. Once `h` reads `... = single P + single P`,
+`rw [h, two_smul]` rewrites the goal's LHS via `h` and closes the resulting
+`single P + single P = 2 • single P` by unfolding `two_smul` on the RHS
+(reflexivity closes it automatically once both sides match). -/
+theorem divToPair_linX_eq_two_smul_of_ramified
+    [IsDedekindDomain (CoordinateRing H)]
+    (hchar : (2 : k) ≠ 0) (hsf : Squarefree H.f) (P : H.Point) (hY : P.Y = 0) :
+    divToPair (linX P.X) (0 : k[X]) ({P} : Finset H.Point) = (2 : ℤ) • single P := by
+  have h := divToPair_linX_eq_of_ramified hchar hsf P hY
+  have hiota : Point.iota P = P := by
+    apply Subtype.ext
+    apply Prod.ext
+    · exact Point.iota_X P
+    · change (Point.iota P).Y = P.Y
+      rw [Point.iota_Y, hY, neg_zero]
+  rw [hiota] at h
+  rw [h, two_smul]
+
+/-- **Lemma 11 of the stack (ChatGPT §15's boxed pointwise identity): the
+final packaging of lemmas 2/8/9 into a `coeffAt`-of-`divToPair` statement
+about `D_old - D_new` directly.** Per §15's derivation: `ordAtFrac P E Y U 0
+= ordAt P A 0 - ordAt P (E) (-Y) 0`-shaped bookkeeping reduces, at each
+affine point, to exactly one of three cases —
+- `P` an "old" point (`g(P) = 0`, i.e. `E.eval P.X + Y.eval P.X*P.Y = 0`,
+  and `ḡ(P) ≠ 0`): contributes `+1` to `D_old`'s side, `0` to `D_new`'s
+  (lemma 2 applied to `ḡ`, giving `ordAt P E (-Y) = 0`, composed with
+  lemma 8's `ordAtFrac = ordAt P A`, itself `0` here since `A`'s multiplicity
+  only shows up at residual points — see hypothesis shape below);
+- `P` a residual point (`ḡ(P) = 0`, i.e. old point's conjugate is NOT `P`,
+  `U(P) = 0`): contributes `0`/`+1` the other way;
+- elsewhere: both sides `0`.
+
+Rather than re-deriving this three-way case split generically (which would
+duplicate lemmas 2/6/8's own case analysis), this lemma packages the
+**already-established per-point facts as explicit hypotheses** (`hold`,
+`hnew`, `helse`, covering the three cases above respectively) and concludes
+the `coeffAt`-difference identity directly — the assembly theorem at the
+call site is expected to discharge `hold`/`hnew`/`helse` via lemmas 2/8/9
+(and lemma 10 for any Weierstrass point among the four/six named points),
+not by re-proving the case split here. This mirrors this file's existing
+discipline (lemmas 6/7/8 all take their key structural fact — root
+multiplicity shape, factorization, `hN_eq_mult` — as an explicit hypothesis
+rather than re-deriving it), keeping each lemma a single composition step.
+
+`D_old`/`D_new` here are given directly as `divToPair`-values (not yet
+specialized to this project's actual `alpha•aClass ± [P1]+[P2] ∓ 2[δ₀]`
+shape — that specialization, and the `Jacobian`/`toJacobian` step per
+ChatGPT §16, belongs in the final assembly theorem back in
+`AlphaLocusDegreeUniform.lean`, not here, matching this file's stated
+design of staying ignorant of `SampleTargetFromAlpha`/`aClass`/`hr`). -/
+theorem coeffAt_sub_eq_of_forall
+    [IsDedekindDomain (CoordinateRing H)] [DecidableEq H.Point]
+    (Aold Bold Anew Bnew : k[X]) (Sold Snew : Finset H.Point)
+    (h : ∀ P : H.Point,
+      coeffAt P (divToPair Aold Bold Sold) - coeffAt P (divToPair Anew Bnew Snew) =
+        (if P ∈ Sold then ordAt P Aold Bold else 0) -
+          (if P ∈ Snew then ordAt P Anew Bnew else 0)) :
+    ∀ P : H.Point,
+      coeffAt P (divToPair Aold Bold Sold - divToPair Anew Bnew Snew) =
+        (if P ∈ Sold then ordAt P Aold Bold else 0) -
+          (if P ∈ Snew then ordAt P Anew Bnew else 0) := by
+  intro P
+  rw [map_sub]
+  exact h P
+
+/-- **Corollary: `D_old = D_new` as `Divisor H` values, given the pointwise
+`coeffAt`-agreement hypothesis of `coeffAt_sub_eq_of_forall`'s conclusion
+collapses to `0` at every point.** Composes `coeffAt_sub_eq_of_forall` with
+`eq_of_coeffAt_eq` — this is the shape the assembly theorem in
+`AlphaLocusDegreeUniform.lean` is expected to invoke directly: once the
+per-point `if`-`if` difference above is shown to vanish everywhere (via
+lemmas 2/8/9/10 supplying which case each of the finitely many relevant
+points falls into, and both `if`-conditions being false with equal
+`ordAt`-values elsewhere), `D_old = D_new` follows with no further
+`Divisor H`-level algebra needed, and no `δ₀`/infinity valuation
+machinery anywhere in the proof (per the `eq_of_coeffAt_eq` docstring
+above — this project's `Divisor H` model has no `δ₀` coefficient slot to
+begin with).
+
+Proof note: after `rw [h1, h2]` the goal is `X = Y` (the two `if`-guarded
+`ordAt`-expressions directly), while `hzero P`'s shape is `X - Y = 0` — not
+the same term syntactically, so `exact hzero P` alone doesn't typecheck.
+Closed with `omega` instead of reaching for a named Mathlib bridging lemma
+(considered `sub_eq_zero`, but couldn't confirm its exact name/orientation
+via web search, and this project's own convention is to search rather than
+guess) — `omega` treats the `if`-expressions as opaque `ℤ` atoms and closes
+`X = Y` directly from `X - Y = 0` in context, the same pattern already used
+successfully by lemma 8 above for an analogous integer-arithmetic
+cancellation. -/
+theorem divToPair_eq_of_coeffAt_diff_eq_zero
+    [IsDedekindDomain (CoordinateRing H)] [DecidableEq H.Point]
+    (Aold Bold Anew Bnew : k[X]) (Sold Snew : Finset H.Point)
+    (hzero : ∀ P : H.Point,
+      (if P ∈ Sold then ordAt P Aold Bold else 0) -
+        (if P ∈ Snew then ordAt P Anew Bnew else 0) = 0) :
+    divToPair Aold Bold Sold = divToPair Anew Bnew Snew := by
+  apply eq_of_coeffAt_eq
+  intro P
+  have h1 : coeffAt P (divToPair Aold Bold Sold) = if P ∈ Sold then ordAt P Aold Bold else 0 :=
+    coeffAt_divToPair Aold Bold Sold P
+  have h2 : coeffAt P (divToPair Anew Bnew Snew) = if P ∈ Snew then ordAt P Anew Bnew else 0 :=
+    coeffAt_divToPair Anew Bnew Snew P
+  rw [h1, h2]
+  have := hzero P
+  omega
 
 end HyperellipticPolynomial
 

@@ -899,3 +899,180 @@ land, the final assembly into `div(h) = D_old - D_new` and back to
 `reducedClass_eq_of_isReduction'` itself (`AlphaLocusDegreeUniform.lean`)
 should, per ChatGPT's own closing line in §13, become "almost entirely
 `rw`/`linarith`-style valuation bookkeeping."
+
+## Status update (this pass, 16th) — lemma 9 confirmed present (module
+## docstring was stale), `δ₀`-avoidance resolved cheaply via a `Divisor H`
+## structural fact rather than a degree argument
+
+Found on re-reading the file top-to-bottom before continuing: **lemma 9,
+`coeffAt_divToPair` (ChatGPT §9/§13 step 9's pointwise coefficient identity
+for `divToPair`), was already present in the file and fully proved** — the
+module docstring's "not yet done" note for it was stale (an earlier pass's
+status text that never got updated once the lemma landed). Checked its
+proof against the real `divToPair`/`coeffAt`/`map_zsmul`/`map_sum` API
+directly (not just trusted the docstring) — sound, matches
+`divToPair`'s actual definition (`∑ P ∈ S, ordAt P A B • single P`) exactly.
+Corrected the module docstring to list it as done.
+
+Then read ChatGPT §11/§12 in full (the `δ₀`-avoidance material, not yet
+acted on) before writing anything new. §12's escape hatch — prove finite
+coefficients agree everywhere, then a *degree-zero* argument gives equality
+including infinity — turns out to be **more machinery than this project's
+actual model needs**: `Divisor H := H.Point →₀ ℤ` (`DivisorClassGroup.lean`)
+already excludes points at infinity from its definition (confirmed by
+reading that file's own module docstring directly, not assumed). There is
+no `δ₀` coefficient slot in `Divisor H` for a discrepancy to hide in, so
+"finite coefficients agree everywhere" is not a partial fact needing a
+degree argument to complete — it already *is* the whole equality. Added
+`eq_of_coeffAt_eq` (`Divisor H` extensionality via `coeffAt`) to capture
+this directly: `(∀ P, coeffAt P D₁ = coeffAt P D₂) → D₁ = D₂`.
+
+Proof care: searched the web first (per project convention, don't guess
+Mathlib API) and confirmed `Finsupp.ext` is Lean-3-era/deprecated in
+current Mathlib4 — the live extensionality lemma for `Finsupp` (via its
+`DFunLike` coercion) is `DFunLike.ext`. Used the `show`-cast-through-
+`Divisor H` idiom already confirmed working in `coeffAt_single`
+(`DivisorClassGroup.lean`) rather than calling `DFunLike.ext`/`ext`
+directly against `Divisor H` un-unfolded, which `LPairFinrankOne.lean`
+separately flags (in a comment on an unrelated proof) as a genuine
+transparency risk since `Divisor H` is a `def`, not `abbrev`, over
+`Finsupp`. Caught on proofread, before presenting: the hypothesis `h P :
+coeffAt P D₁ = coeffAt P D₂` is not yet literally in the `D₁ P = D₂ P`
+shape `DFunLike.ext` needs — `coeffAt`/`Finsupp.applyAddHom` still need
+unfolding at each `P`, not just at the top-level goal — fixed by
+`simp only [coeffAt, Finsupp.applyAddHom_apply] at hP` before handing it
+to `DFunLike.ext`, rather than passing `h` straight through as first
+drafted (which would not have typechecked as written).
+
+**Important scope note for the eventual assembly theorem**: this lemma
+means the assembly theorem for `div(h) = D_old - D_new` (Step 3's actual
+goal) does NOT need any `δ₀`/infinity valuation machinery at all — once
+`coeffAt P (D_old - D_new) = 0` (equivalently `= ordAt P A - ordAt P A`
+after the sign bookkeeping, i.e. the two `ordAt`-derived divisors agree
+pointwise) is shown for every affine `P` via lemma 8 (residual points) +
+lemma 2 (non-residual, `g(P) ≠ 0` points, giving `ordAt P g = 0` directly)
++ lemma 9 (packaging both into `coeffAt`-of-`divToPair` form), `eq_of_
+coeffAt_eq` closes the whole thing. This simplifies the roadmap's own
+Step 3 ordering: the `δ₀`-avoidance argument is no longer a separate,
+open sub-task — it's this one lemma, already done. What remains before
+assembly is: the Weierstrass (`P.Y = 0`) case's own separate argument
+(§3b item 3 / §14, `div(x-x0) = 2P - 2δ₀`), and the actual `∀ P`
+pointwise-coefficient assembly proof itself (wiring lemmas 2/8/9 together
+per-point, then invoking `eq_of_coeffAt_eq`).
+
+No `sorry` anywhere in the file; ten `theorem`s now (nine numbered stack
+lemmas plus `eq_of_coeffAt_eq`), all fully proved. Sanity checks passed
+(paren/bracket balance, no adjacent block comments, live-sorry grep
+clean). Not yet re-verified against a live build.
+
+## Status update (this pass, 17th) — both remaining open items from the
+## 16th pass done: Weierstrass witness (lemma 10) and pointwise assembly
+## (lemma 11)
+
+Continuing directly from the 16th pass's own "what's left" note (the
+Weierstrass case's separate argument, and the actual pointwise-coefficient
+assembly per §15). Did both.
+
+**Lemma 10 (Weierstrass witness).** Before writing anything, searched the
+codebase for the concrete `div(x-x0) = 2P` witness §3b/§14 call for — found
+it **already fully proved**: `divToPair_linX_eq_of_ramified`
+(`HyperellipticClassProof.lean`), built on `ordAt_linX_eq_two_of_ramified`
+(also already proved, unconditional). So no new geometric content was
+needed here, only a thin restatement (`divToPair_linX_eq_two_smul_of_ramified`)
+collapsing that lemma's `single P + single (Point.iota P)` right-hand side
+into `2 • single P` via `Point.iota P = P` (true at Weierstrass points).
+Added the needed import (`HyperellipticClassProof.lean`, for `linX`/
+`Point.iota`/`divToPair_linX_eq_of_ramified`) — checked cycle-safe first
+the same way as passes 11/12 (that file's own imports don't reach this
+file or `AlphaLocusDegreeUniform.lean`; re-grepped the whole tree, nothing
+yet imports `PrincipalWitness.lean`).
+
+Caught on proofread, before presenting: the first draft's proof rewrote
+`hiota : Point.iota P = P` directly against the goal (`rw [hiota,
+two_smul]`), but the bare goal (`divToPair ... = 2 • single P`) has no
+`Point.iota P` occurrence to fire on — `hiota` is only relevant to the
+*source* lemma `h`'s right-hand side, not the goal as stated. Fixed by
+rewriting `hiota` into `h` first (`rw [hiota] at h`, turning `h`'s RHS
+into `single P + single P`), then closing the goal via `rw [h, two_smul]`.
+
+**Lemma 11 (pointwise assembly, §15's boxed identity).** Rather than
+re-deriving the three-way case split (old point / residual point /
+elsewhere) generically inside this file — which would duplicate lemmas
+2/6/8's own case analysis — packaged it as two small composable pieces
+taking the per-point facts as explicit hypotheses (matching this file's
+existing discipline, e.g. lemma 8's `hN_eq_mult`):
+`coeffAt_sub_eq_of_forall` (unfolds `coeffAt`'s `map_sub` to restate a
+`coeffAt`-difference hypothesis as a fact about `coeffAt` of the actual
+`Divisor H` difference `D_old - D_new`) and
+`divToPair_eq_of_coeffAt_diff_eq_zero` (the real payoff: given the
+`if`-guarded `ordAt`-difference is `0` at every point, concludes
+`D_old = D_new` outright, composing `coeffAt_divToPair` (lemma 9) with
+`eq_of_coeffAt_eq` from the 16th pass — no `δ₀`/infinity machinery
+anywhere, confirming the 16th pass's own scope note).
+
+Caught on proofread: the first draft of `divToPair_eq_of_coeffAt_diff_eq_zero`
+closed with `exact hzero P` directly, but after `rw [h1, h2]` the goal is
+`X = Y` while `hzero P`'s shape is `X - Y = 0` — different terms, doesn't
+typecheck as `exact`. Considered `sub_eq_zero` as a bridging lemma but
+couldn't confirm its exact name/orientation via web search (per project
+convention, didn't guess); used `omega` instead, matching lemma 8's own
+established pattern for this kind of integer-arithmetic cancellation
+(`omega` treats the `if`-expressions as opaque `ℤ` atoms and closes `X = Y`
+from `X - Y = 0` in context directly).
+
+**This closes out everything ChatGPT's reply flagged as open for the
+principal-witness lemma stack itself.** What's left before
+`reducedClass_eq_of_isReduction'` (`AlphaLocusDegreeUniform.lean`) can be
+proved is genuinely project-specific wiring, not new math: instantiate
+`E`/`Y`/`U`/`A` to `Epoly4`/`Ypoly4`/`uRS4General`/(the cofactor from
+`uRS4General_dvd_Npoly4`), identify the concrete four/six named points
+(`sa.P1`, `sa.P2`, the residual roots, and any Weierstrass point among
+them), discharge `divToPair_eq_of_coeffAt_diff_eq_zero`'s `hzero`
+hypothesis pointwise via lemmas 2/8/9/10, and connect the resulting
+`D_old = D_new : Divisor H` fact to `sa.reducedClass`/`toJacobian`/
+`Jacobian H D` per ChatGPT §16 (principal-divisor membership, then
+`toJacobian`'s additivity). No `sorry` anywhere in `PrincipalWitness.lean`;
+twelve `theorem`s total now. Sanity checks passed (paren/bracket balance,
+no adjacent block comments, live-sorry grep clean). Not yet re-verified
+against a live build — Claire's own note: not enough progress yet this
+session for a REPL check, more still to come before that's worthwhile.
+
+## Status update (this pass, 18th) — build error fix: wrong Mathlib lemma
+## name, `DFunLike.ext` swapped for `Finsupp.ext`
+
+Claire's build attempt (this pass's first real REPL check, per her own
+note last pass) failed exactly at `eq_of_coeffAt_eq`:
+
+```
+error: ...PrincipalWitness.lean:456:9: failed to synthesize instance of type class
+  DFunLike H.Divisor ?m.29 ?m.30
+error: ...PrincipalWitness.lean:457:2: No goals to be solved
+```
+
+Root cause: the 16th pass's web search for "does `Finsupp.ext` still exist
+in current Mathlib4" returned a mathlib-3-docs page prominently in the
+results and was misread as confirming deprecation — it does not; `Finsupp.
+ext` is a genuine, current `Mathlib.Data.Finsupp.Defs` lemma. Acting on
+that wrong conclusion, the 16th pass used `DFunLike.ext _ _ (fun P => ?_)`
+instead, leaving `DFunLike.ext`'s own typeclass instance argument as an
+unresolved metavariable — the `show`-cast to `H.Point →₀ ℤ` alone doesn't
+supply enough for instance search to locate the `Finsupp`→`DFunLike`
+instance at that goal, hence the synthesis failure (and the second error,
+`No goals to be solved`, is downstream: with the `refine` failing to
+produce the expected subgoal shape, the following `have`/`simp`/`exact`
+block had nothing left to apply to).
+
+Fix: re-searched more specifically and confirmed `Finsupp.ext`'s real
+current signature (`Mathlib.Data.Finsupp.Defs`: `{f g : α →₀ M} (h : ∀ a,
+f a = g a) : f = g`, no `DFunLike` typeclass search involved in its own
+statement). Swapped `refine DFunLike.ext _ _ (fun P => ?_)` for `refine
+Finsupp.ext (fun P => ?_)` — everything downstream (`Finsupp.applyAddHom_
+apply` unfolding `coeffAt` at each point) is unchanged, since that part of
+the proof was never the problem. Corrected the docstring to describe the
+right lemma and record the mistake plainly rather than silently
+overwriting it (per project convention: explain fixes, don't just patch
+quietly). No other lemma in the file was affected — this was an isolated,
+single-lemma naming error, not a structural issue with the surrounding
+stack. Sanity checks re-passed (paren/bracket balance, no adjacent block
+comments, live-sorry grep clean). Not yet re-verified against a live
+rebuild.
