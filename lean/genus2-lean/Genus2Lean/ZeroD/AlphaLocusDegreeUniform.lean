@@ -618,13 +618,45 @@ unfolds through `AddSubgroup`/`SetLike`/`Subtype` coercions to accept
 anonymous-constructor syntax — the likely `whnf` hotspot) was replaced with
 an explicit `Subtype.mk (divToPair (H := H) u v S : Divisor H) hmem`, so the
 `Divisor H` ascription is settled as its own step before the
-subtype-membership coercion is attempted. -/
+subtype-membership coercion is attempted.
+
+**Two more hypotheses added this pass (Step 3 prep, before any proof body
+was attempted) — both are gaps in the STATEMENT, not proof difficulty, found
+by reading `PrincipalDivisorSubgroup.lean`/`DivisorClassGroup.lean` directly
+rather than assuming the Step-2-typechecked signature was already complete:**
+
+1. **`hf : H.f = curvePoly p c0 c1 c2 c3 c4`.** The theorem takes `c0..c4`
+   (feeding `curvePoly p c0 c1 c2 c3 c4`, via `Npoly4`/`Epoly4`/`Ypoly4`) but
+   also an ambient `H : HyperellipticPolynomial (F p)` with its own `H.f`.
+   Nothing previously linked the two — `E,Y,N`'s norm identity
+   (`toPair_mul_involution`) is stated against `H.f`, so without `hf` there
+   is no way to connect `Npoly4`'s value to anything `ordAt`/`toPair`-level
+   can see. Genuinely missing, not previously needed since Step 2's sorry
+   never had to unfold that far.
+2. **`hdeg`/`hD : principalSubgroup H hdeg ≤ D.P`.** `D : PrincipalDivisorData
+   H` is fully generic (`DivisorClassGroup.lean`: any `AddSubgroup (Divisor
+   H)` with `P ≤ Divisor0 H`, no connection to `CoordinateRing H` required).
+   `toJacobian D (D_old - D_new) = 0` needs `D_old - D_new ∈ D.P`; the
+   Step-3 argument only ever produces membership in the GENUINE principal
+   divisors, i.e. `HyperellipticPolynomial.principalSubgroup H hdeg`
+   (`PrincipalDivisorSubgroup.lean`). For an arbitrary `D` there is no
+   reason `D.P` contains that subgroup, so the theorem is false as stated
+   without this hypothesis — confirmed by re-reading `PrincipalDivisorData`'s
+   definition, which places no constraint on `D.P` beyond `≤ Divisor0 H`.
+   `hD` is the weakest honest fix: it doesn't force `D` to be exactly
+   `principalDivisorData H hdeg` (any `D` whose `P` is principal-compatible
+   still works), matching this file's existing preference for `D` staying
+   abstract elsewhere. No downstream call sites exist yet (checked, same as
+   prior passes), so widening the hypothesis list breaks nothing. -/
 theorem reducedClass_eq_of_isReduction' {p : ℕ} [Fact (Nat.Prime p)] [Fact (p ≠ 2)]
     {H : HyperellipticPolynomial (F p)} [IsDedekindDomain (CoordinateRing H)]
     {D : PrincipalDivisorData H}
     {aClass : Jacobian H D} {δ₀ : H.Point}
     (sa : SampleTargetFromAlpha p H D aClass δ₀)
     (c0 c1 c2 c3 c4 ua0 ua1 va0 va1 : F p)
+    (hf : H.f = curvePoly p c0 c1 c2 c3 c4)
+    (hdeg : H.f.natDegree = 5)
+    (hD : principalSubgroup H hdeg ≤ D.P)
     (hcur : (sa.P1.X, sa.P1.Y) ≠ (sa.P2.X, sa.P2.Y) →
       curBeforeMonic4General p c0 c1 c2 c3 c4
         (sa.P1.X, sa.P1.Y) (sa.P2.X, sa.P2.Y) ua0 ua1 va0 va1

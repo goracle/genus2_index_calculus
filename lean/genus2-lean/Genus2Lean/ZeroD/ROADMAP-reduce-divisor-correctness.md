@@ -503,3 +503,84 @@ re-verified.
    remains is turning §3a item 3's `ordAt`-at-each-place argument into
    Lean against `PrincipalDivisorsDedekind.lean`'s actual API; draft a
    follow-up ChatGPT prompt for that translation once Step 2 typechecks.
+
+## Status update (this pass, 8th) — Step 3 started: two statement gaps
+## fixed (errors first), first stack lemma proved
+
+Before writing any proof body, re-checked `reducedClass_eq_of_isReduction'`'s
+statement itself against the real `PrincipalDivisorSubgroup.lean`/
+`DivisorClassGroup.lean` API (not just against what Step 2 needed to
+typecheck) and found two genuine gaps — both fixed now, not deferred:
+
+1. **`D` was fully generic.** `PrincipalDivisorData H` places no constraint
+   on `D.P` beyond `≤ Divisor0 H` — nothing ties it to `CoordinateRing H`
+   or the genuine principal divisors. The Step-3 argument can only ever
+   produce `D_old - D_new ∈ principalSubgroup H hdeg`
+   (`PrincipalDivisorSubgroup.lean`), so `toJacobian D (D_old - D_new) = 0`
+   is FALSE for an arbitrary `D` without an extra hypothesis. Added
+   `hdeg : H.f.natDegree = 5` and `hD : principalSubgroup H hdeg ≤ D.P` —
+   the weakest fix that doesn't force `D` to be the concrete
+   `principalDivisorData H hdeg` instance, keeping `D` abstract elsewhere
+   in the file per its existing convention.
+2. **`H.f` was never linked to `curvePoly p c0 c1 c2 c3 c4`.** The norm
+   argument (`toPair_mul_involution`, `pairNorm H A B = A²-B²·H.f`) is
+   stated against `H.f`; `Npoly4`/`Epoly4`/`Ypoly4` are stated against
+   `curvePoly p c0..c4`. Nothing previously connected the two. Added
+   `hf : H.f = curvePoly p c0 c1 c2 c3 c4`.
+
+No downstream call sites of `reducedClass_eq_of_isReduction'` exist yet
+(re-checked), so widening the hypothesis list breaks nothing. Sorry count
+unchanged (still exactly the same two live sorries as the 7th pass) — this
+was a statement fix, not proof progress, and is flagged as such rather than
+counted as Step 3 work.
+
+**Actual Step 3 work started**: new file
+`Genus2Lean/ZeroD/Reduce/PrincipalWitness.lean`, kept deliberately ignorant
+of `SampleTargetFromAlpha`/`aClass`/`hr` per the ChatGPT reply's own §16
+recommendation (the principal-witness lemma stack should be provable
+generically against `E Y : k[X]`/`H : HyperellipticPolynomial k`, with only
+the final assembly theorem back in `AlphaLocusDegreeUniform.lean` touching
+project-specific names). Contains:
+
+- `toPair_mul_toPair_neg_eq_algebraMap_pairNorm`: the norm identity
+  `g·ḡ = N` (ChatGPT §2/§13 step 2), proved — essentially
+  `toPair_mul_involution` with `involution H (toPair H E Y)` unfolded to
+  the concrete pair `toPair H E (-Y)` via `toPair_involution`, since the
+  next lemma in the stack (`ordAt_toPair_mul_of_ne_zero'`) needs a
+  concrete `(A', B')` pair, not the abstract `involution` application.
+- `pairNorm_eq_of_eq_curvePoly`: bridges `pairNorm H E Y` to the
+  `Npoly4`-shaped `E² - Y²·curvePoly p c0..c4` using the new `hf`
+  hypothesis, so later lemmas can rewrite `Npoly4 ...` directly into
+  `pairNorm`/`toPair` form.
+
+No `sorry` in this new file — both lemmas are complete, small, and close
+to definitional unfolding, matching "easiest first." Not yet build-checked
+(same caveat as every pass — Claire's REPL is the source of truth).
+
+## Status update (this pass, 9th) — `PrincipalWitness.lean` build errors fixed
+
+Claire's rebuild: `AlphaLocusDegreeUniform.lean` built clean (both sorries
+are the expected two, per Step 3/`decoupledSystem_degree_uniform`), but the
+new `PrincipalWitness.lean` failed with `Unknown identifier 'curvePoly'` and
+`Function expected at F`. Root cause: that file never imported/opened
+`Genus2Lean.TheDataDerivation` — `curvePoly`, and `F` itself, are defined
+inside `namespace Genus2Lean.TheDataDerivation` (`AlphaReduce.lean`/
+`DataDerivationBasics.lean` both live there), and `AlphaLocusDegreeUniform.
+lean` only sees them unqualified because it has its own `open
+TheDataDerivation` at file scope — a fact I'd read but didn't carry over to
+the new file. Fix: added `open Genus2Lean.TheDataDerivation` to
+`PrincipalWitness.lean`, and added the missing `[Fact (Nat.Prime p)]`
+instance to `pairNorm_eq_of_eq_curvePoly` (`curvePoly`'s own section
+`variable`s require it; `H`'s `Field (F p)` instance doesn't necessarily
+force Lean to synthesize it automatically at this call site). Also added
+`set_option linter.style.header false` to match every other file in this
+project (avoids the same copyright-header lint warning the build log
+otherwise flags). Not yet re-verified against a live build.
+
+**Not yet done, next in the stack** (ChatGPT §13's numbered list, items
+4 onward): the residue-nonzero ⇒ valuation-zero lemma (§4), the ordinary-
+zero-of-`g` lemma via norm multiplicativity (§3/§5), the root-multiplicity
+translation for `N`/`u_new` (§6-§8), and the `δ₀`-avoidance argument via
+`Divisor0`'s degree-zero property (§12) rather than defining an infinity
+valuation from scratch. Each should be its own small named lemma per
+project convention — do not attempt the `∀ P` theorem in one pass.
