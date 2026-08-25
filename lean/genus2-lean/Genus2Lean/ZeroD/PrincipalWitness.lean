@@ -4,6 +4,7 @@ import Genus2Lean.ZeroD.Reduce.AlphaReduce
 import Genus2Lean.ZeroD.TheDataDerivation.DataDerivationBasics
 import Genus2Lean.RiemannRochGenus2
 import Genus2Lean.LCanonicalElementary
+import Genus2Lean.LPairFinrankOneOrdAtFrac
 
 -- `ordAt_eq_zero_of_notMem`/`ordAt_toPair_mul_of_ne_zero'` (lemmas 2, 4
 -- below) live in `RiemannRochGenus2.lean`, and `toPair_mem_pointIdeal_iff`
@@ -14,6 +15,13 @@ import Genus2Lean.LCanonicalElementary
 -- Genus2.lean` and `LCanonicalElementary.lean` themselves import
 -- `PrincipalDivisorSubgroup.lean` (the reverse direction), and neither
 -- file (nor anything in their own import chains) references this file.
+--
+-- `ordAt_eq_rootMultiplicity_unramified`/`_ramified` (lemma 6 below) live
+-- in `LPairFinrankOneOrdAtFrac.lean` — also cycle-safe: that file's own
+-- import list (checked directly, doesn't include this file or
+-- `AlphaLocusDegreeUniform.lean`) has no path back here, and nothing in
+-- `Genus2Lean`'s root-level files references `PrincipalWitness`/
+-- `AlphaLocusDegreeUniform` at all.
 
 /-!
 # Step 3 (`ROADMAP-reduce-divisor-correctness.md`): the principal-witness lemma stack
@@ -41,14 +49,20 @@ those only enter at the final assembly theorem back in
 Polynomial k`, so it can be reused by both the general (`P1 ≠ P2`) and
 tangent (`P1 = P2`) branches without duplication.
 
-**Status: lemmas 1-4 of the stack (ChatGPT §2-§5/§13 steps 2-5) —
+**Status: lemmas 1-8 of the stack (ChatGPT §2-§3/§6/§13 steps 2-8) —
 the norm identity, the residue-nonzero ⇒ valuation-zero lemma, the
-`(A,B)`-pair form of the norm identity, and the ordinary-zero-of-`g`
-lemma via norm multiplicativity. All proved, no `sorry`. Not yet attempted:
-the root-multiplicity translation for `N`/`u_new` (ChatGPT §6-§8), the
-factorization `N = A·U` at the pair level (§6/§13 step 7), the pointwise
-coefficient identity and `δ₀`-avoidance degree argument (§9/§12/§13 steps
-8-9), and the final assembly into `div(h) = D_old - D_new`.**
+`(A,B)`-pair form of the norm identity, the ordinary-zero-of-`g` lemma via
+norm multiplicativity, `ordAt P g` expressed directly as a root
+multiplicity of `N` (unramified + ramified), the `N = A · U`
+factorization at the pair level, and (lemma 8) `ordAtFrac P E Y U 0 =
+ordAt P A 0` — `ordAt P h = ordAt P A` at a residual point, the theorem
+the whole stack has been building toward. All proved, no `sorry`. Not yet
+attempted: the pointwise coefficient identity and `δ₀`-avoidance degree
+argument (§9/§12/§13 step 9), and the final assembly into
+`div(h) = D_old - D_new`. The Weierstrass (`P.Y = 0`) case is flagged,
+not yet resolved — §3b/§14 of the ChatGPT reply say it needs its own
+separate argument (`div(x-x0) = 2P - 2δ₀`), not a specialization of the
+main lemma stack.**
 -/
 
 noncomputable section
@@ -56,6 +70,7 @@ noncomputable section
 namespace HyperellipticPolynomial
 
 open Polynomial
+open Divisor
 
 variable {k : Type*} [Field k]
 variable {H : HyperellipticPolynomial k}
@@ -179,6 +194,205 @@ theorem pairNorm_eq_of_eq_curvePoly {p : ℕ} [hp : Fact (Nat.Prime p)]
       E ^ 2 - Y ^ 2 * Genus2Lean.TheDataDerivation.curvePoly p c0 c1 c2 c3 c4 := by
   unfold pairNorm
   rw [hf]
+
+/-- **Lemma 6 of the stack (ChatGPT §3/§13 step 6): `ordAt P g` at an
+ordinary (`P.Y ≠ 0`) zero of `g`, expressed as a root multiplicity of
+`N = pairNorm H E Y`, instead of left as `ordAt P N`.** Composes lemma 4
+(`ordAt_eq_ordAt_pairNorm_of_eval_eq_zero`) with
+`ordAt_eq_rootMultiplicity_unramified` (`LPairFinrankOneOrdAtFrac.lean`,
+already proved, `[IsAlgClosed k]`-free) — the same move ChatGPT's own
+step 5→6 in §13 describes: "rewrite `ordAt P N` using
+`ordAt_eq_rootMultiplicity_unramified`."
+
+`pairNorm H E Y ≠ 0` is taken as an explicit hypothesis (`hN_ne`) rather
+than derived from `hg_ne`/`hgbar_ne_eval`: an integral domain has no zero
+divisors, so `g ≠ 0` and `ḡ ≠ 0` (as ring elements, via
+`toPair_mul_toPair_neg_eq_algebraMap_pairNorm` and injectivity of
+`algebraMap` — not yet established here) *should* give `N ≠ 0`, but that
+extra step isn't needed for this lemma's proof and stating it as an
+explicit hypothesis keeps the "don't over-assume" discipline consistent
+with lemma 4's own `hg_ne`. -/
+theorem ordAt_eq_rootMultiplicity_pairNorm_of_eval_eq_zero
+    [IsDedekindDomain (CoordinateRing H)] (hchar : (2 : k) ≠ 0)
+    (P : H.Point) (h_bot : pointIdeal P ≠ ⊥) (E Y : k[X])
+    (hg_ne : toPair H E Y ≠ 0)
+    (hgbar_ne_eval : E.eval P.X + (-Y).eval P.X * P.Y ≠ 0)
+    (hN_ne : pairNorm H E Y ≠ 0) (hY : P.Y ≠ 0) :
+    ordAt P E Y = ((pairNorm H E Y).rootMultiplicity P.X : ℤ) := by
+  rw [ordAt_eq_ordAt_pairNorm_of_eval_eq_zero P h_bot E Y hg_ne hgbar_ne_eval]
+  exact ordAt_eq_rootMultiplicity_unramified hchar (pairNorm H E Y) hN_ne P.X P h_bot rfl hY
+
+/-- **Ramified analogue of lemma 6 (`P.Y = 0`, the Weierstrass case).**
+Same composition, using `ordAt_eq_rootMultiplicity_ramified` (needs
+`Squarefree H.f`) instead of the unramified lemma — per §3b/§3e of the
+roadmap, this is the case the existing `hcurT`/`hgcdT` split may not yet
+cover explicitly; flagged here as its own named lemma (not yet wired into
+the assembly theorem) rather than silently assumed excluded. Note this
+case is geometrically degenerate for the *interpolation* argument itself
+(§3b: at a Weierstrass point `ḡ(P) = g(P)` since `P = ι(P)`, so
+`hgbar_ne_eval` here is a real, not vacuous, extra assumption — it does
+NOT follow automatically from `hg_ne` the way it does in the unramified
+case via `-2·Y(a)·b ≠ 0`) — stated for completeness of the lemma stack,
+but the assembly theorem will likely need a separate argument for
+Weierstrass points per §3b item 3 (`div(x-x0) = 2P - 2δ₀` directly),
+not this lemma. -/
+theorem ordAt_eq_rootMultiplicity_pairNorm_of_eval_eq_zero_ramified
+    [IsDedekindDomain (CoordinateRing H)] (hsf : Squarefree H.f)
+    (P : H.Point) (h_bot : pointIdeal P ≠ ⊥) (E Y : k[X])
+    (hg_ne : toPair H E Y ≠ 0)
+    (hgbar_ne_eval : E.eval P.X + (-Y).eval P.X * P.Y ≠ 0)
+    (hN_ne : pairNorm H E Y ≠ 0) (hY : P.Y = 0) :
+    ordAt P E Y = (2 * (pairNorm H E Y).rootMultiplicity P.X : ℤ) := by
+  rw [ordAt_eq_ordAt_pairNorm_of_eval_eq_zero P h_bot E Y hg_ne hgbar_ne_eval]
+  exact ordAt_eq_rootMultiplicity_ramified hsf (pairNorm H E Y) hN_ne P.X P h_bot rfl hY
+
+/-- **`toPair H (A * U) 0 = toPair H A 0 * toPair H U 0`, the `(A,B)`-pair
+form of `k[X]`-multiplicativity for pure polynomials (`B = 0` throughout).**
+Special case of `toPair_mul` (`RiemannRochGenus2.lean`) with both `B`-slots
+zero — `toPair_mul`'s general formula `toPair H (A*A'+B*B'*H.f) (A*B'+A'*B)`
+collapses to `toPair H (A*A') 0` when `B = B' = 0`. Restated here as its own
+lemma (rather than inlining `toPair_mul ... 0 ... 0` plus `simp` at every
+call site) since lemma 7 below needs it by name.
+
+Proof note: `have h := toPair_mul (H := H) A 0 U 0` fixes `h`'s statement
+concretely (`toPair H A 0 * toPair H U 0 = toPair H (A*U+0*0*H.f)
+(A*0+U*0)`) *before* any simplification, then `simp only [...] at h`
+normalizes its right-hand side down to `toPair H (A*U) 0` in place — this
+is more robust than trying to `rw [toPair_mul ...]` directly on the goal,
+since the goal's two sides have `toPair` applied to different numbers of
+arguments-in-a-product (`A*U` singular on the left vs. a product of two
+`toPair`s on the right), which risks the rewrite matching ambiguously or
+not firing where intended. -/
+theorem toPair_mul_right_zero' [IsDedekindDomain (CoordinateRing H)] (A U : k[X]) :
+    toPair H (A * U) (0 : k[X]) = toPair H A (0 : k[X]) * toPair H U (0 : k[X]) := by
+  have h := toPair_mul (H := H) A (0 : k[X]) U (0 : k[X])
+  simp only [mul_zero, zero_mul, add_zero] at h
+  exact h.symm
+
+/-- **Lemma 7 of the stack (ChatGPT §6/§13 step 7): the factorization
+`N = A · U` at the pair level, giving `ordAt P N = ordAt P A + ordAt P U`.**
+This is ChatGPT's own recommended "cleanest formal route" (§6): rather than
+tracking which of the six points `P` is, factor the whole divisor
+computation through `N = A · U` (`A` the known/old factor, `U` the residual
+Mumford polynomial — `uRS4General` in this project's naming, already known
+`∣ Npoly4` via `uRS4General_dvd_Npoly4`) and let valuations add.
+
+Takes `hAU : N = A * U` as an explicit hypothesis (the caller supplies the
+concrete factorization, e.g. via `uRS4General_dvd_Npoly4`'s witness) rather
+than re-deriving divisibility here — this file stays generic/project-
+agnostic per its own stated design (module docstring), so it shouldn't
+reach for `uRS4General`-specific lemmas directly.
+
+Needs `[IsDedekindDomain (CoordinateRing H)]` explicitly (this file has no
+ambient `variable` supplying it the way the source file
+`RiemannRochGenus2.lean` does at the point `ordAt_toPair_mul_of_ne_zero'`
+is declared) — same pattern as lemmas 2/4/6 above; missed on the first
+draft of this lemma, causing a build failure (instance-synthesis errors
+cascading into every line that used `ordAt`/`ordAt_toPair_mul_of_ne_zero'`,
+plus a downstream "unknown identifier `hAU`" from the `apply` call failing
+to elaborate at all) — fixed here. Also switched the proof from
+`apply ... ; rw [...]` to a single term-mode `▸`-rewrite
+(`hAU.symm ▸ toPair_mul_right_zero' A U`, transporting
+`toPair_mul_right_zero'`'s `A*U` to `N` via `hAU.symm : A*U = N`),
+matching the term-style already used successfully by lemma 4 above rather
+than an `apply`+`rw` split that turned out fragile here. (`toPair_mul_right_zero'`
+also picked up its own explicit `[IsDedekindDomain (CoordinateRing H)]` in
+Claire's confirmed-building version, plus explicit `(0 : k[X])`
+ascriptions throughout both lemmas rather than bare `0` — belt-and-braces
+against the same kind of elaboration-order fragility as the earlier
+`C`/`X` build-error passes.) -/
+theorem ordAt_add_of_pairNorm_eq_mul
+    [IsDedekindDomain (CoordinateRing H)]
+    (P : H.Point) (h_bot : pointIdeal P ≠ ⊥) (N A U : k[X])
+    (hAU : N = A * U) (hA_ne : toPair H A (0 : k[X]) ≠ 0)
+    (hU_ne : toPair H U (0 : k[X]) ≠ 0) :
+    ordAt P N (0 : k[X]) = ordAt P A (0 : k[X]) + ordAt P U (0 : k[X]) :=
+  ordAt_toPair_mul_of_ne_zero' P h_bot A (0 : k[X]) U (0 : k[X]) N (0 : k[X]) hA_ne hU_ne
+    (hAU.symm ▸ toPair_mul_right_zero' A U)
+
+/-- **Lemma 8 of the stack (ChatGPT §13 step 8): `ordAtFrac P E Y U 0 =
+ordAt P A 0` at a residual, ordinary (`P.Y ≠ 0`) point — i.e. `ordAt P h =
+ordAt P A` where `h := g/U`.** This is the theorem the whole stack has
+been building toward: it collapses `ordAt P U 0` out of the picture
+entirely, leaving only `ordAt P A 0` — matching ChatGPT's own §13 step 8
+statement verbatim, and (via `ordAtFrac`'s definition, `ordAt P E Y -
+ordAt P U 0`) exactly reproduces raw reply §1's "definitional bridge"
+composed with lemma 6 + lemma 7 above.
+
+Composition, per §13's own ordering: `ordAtFrac P E Y U 0 = ordAt P E Y -
+ordAt P U 0` (`ordAtFrac`'s definition, unfolds by `rfl`) `= (pairNorm H E
+Y).rootMultiplicity P.X - ordAt P U 0` (lemma 6, needs `g(P) = 0` via
+`hgbar_ne_eval`/`hg_ne`/`hN_ne`/`hchar`/`hY : P.Y ≠ 0`) `= (ordAt P A 0 +
+ordAt P U 0) - ordAt P U 0` (lemma 7, needs `pairNorm H E Y = A * U` as
+`hAU` plus both factors' `toPair`-nonvanishing) `= ordAt P A 0` (integer
+arithmetic, `omega`/`ring`-level cancellation — no positivity assumption
+on `ordAt P U 0` needed since these are `ℤ`-valued, not `ℕ`-valued).
+
+`hN_eq_mult` bundles lemma 6's conclusion as a hypothesis rather than
+re-deriving lemma 6's own hypothesis list here, to keep this lemma's
+signature from ballooning to lemma 6's full list plus lemma 7's full list
+simultaneously — the assembly theorem in `AlphaLocusDegreeUniform.lean`
+is expected to supply `hN_eq_mult` via a direct application of lemma 6 at
+its own call site instead. -/
+theorem ordAtFrac_eq_ordAt_of_pairNorm_eq_mul
+    [IsDedekindDomain (CoordinateRing H)]
+    (P : H.Point) (h_bot : pointIdeal P ≠ ⊥) (E Y A U : k[X])
+    (hAU : pairNorm H E Y = A * U) (hA_ne : toPair H A (0 : k[X]) ≠ 0)
+    (hU_ne : toPair H U (0 : k[X]) ≠ 0)
+    (hN_eq_mult : ordAt P E Y = ordAt P (pairNorm H E Y) (0 : k[X])) :
+    ordAtFrac P E Y U (0 : k[X]) = ordAt P A (0 : k[X]) := by
+  unfold ordAtFrac
+  rw [hN_eq_mult, ordAt_add_of_pairNorm_eq_mul P h_bot (pairNorm H E Y) A U hAU hA_ne hU_ne]
+  omega
+
+/-- **Lemma 9 of the stack (ChatGPT §9/§13 step 9): the pointwise
+coefficient identity for `divToPair`.** `coeffAt P (divToPair A B S) =
+if P ∈ S then ordAt P A B else 0` — matches raw reply §9's own boxed
+statement verbatim ("prove one lemma... then all later divisor
+calculations become rewriting rather than `Finset` gymnastics"). `S` is a
+support set, not a multiplicity set (§9): a point occurring with
+multiplicity `2` still occurs once in `S`, with `coeffAt` (not
+`Finset.card`-type membership) carrying the multiplicity via `ordAt`.
+
+Proof: unfold `divToPair` to the defining `∑ Q ∈ S, ordAt Q A B • single
+Q`, push `coeffAt P` through the finite sum (`map_sum`, `coeffAt` an
+`AddMonoidHom`) via an explicit `Finset.sum_congr`-driven pointwise step
+(`hstep`) rather than a bare `simp`, so each rewrite lemma
+(`map_zsmul`/`coeffAt_single`/`smul_eq_mul`) is applied under an explicit
+binder rather than relying on `simp`'s automatic congruence through the
+sum — every summand collapses to `if P = Q then ordAt Q A B else 0`
+(`split_ifs <;> ring` closes both branches: `ordAt Q A B * 1 = ordAt Q A B`
+and `ordAt Q A B * 0 = 0`). Then `by_cases hP : P ∈ S`: when true,
+`Finset.sum_eq_single P` (Mathlib, confirmed signature: `(a) (h₀ : ∀ b ∈
+s, b ≠ a → f b = 0) (h₁ : a ∉ s → f a = 0) : ∑ x ∈ s, f x = f a`) picks out
+the `Q = P` term directly; when false, `Finset.sum_eq_zero` shows every
+summand vanishes since `P ≠ Q` for every `Q ∈ S`. Avoided the initially
+tempting one-line `Finset.sum_eq_ite` (`∑ x ∈ s, f x = if a ∈ s then f a
+else 0` — a seemingly exact match) because its conclusion's `f a` term
+(`if P = P then ordAt P A B else 0`) is not syntactically `ordAt P A B`
+even though propositionally equal, which risked `exact` failing to unify
+without an extra normalization step — the `by_cases` split avoids
+depending on that unification succeeding silently. -/
+theorem coeffAt_divToPair [IsDedekindDomain (CoordinateRing H)] [DecidableEq H.Point]
+    (A B : k[X]) (S : Finset H.Point) (P : H.Point) :
+    coeffAt P (divToPair A B S) = if P ∈ S then ordAt P A B else 0 := by
+  unfold divToPair
+  rw [map_sum]
+  have hstep : ∀ Q ∈ S, coeffAt P ((ordAt Q A B) • single Q) =
+      if P = Q then ordAt Q A B else 0 := by
+    intro Q _
+    rw [map_zsmul, coeffAt_single, smul_eq_mul]
+    split_ifs <;> ring
+  rw [Finset.sum_congr rfl hstep]
+  by_cases hP : P ∈ S
+  · rw [if_pos hP,
+      Finset.sum_eq_single P (fun Q _ hQP => if_neg (fun h => hQP h.symm))
+        (fun hPnotin => absurd hP hPnotin)]
+    exact if_pos rfl
+  · rw [if_neg hP]
+    apply Finset.sum_eq_zero
+    intro Q hQ
+    exact if_neg (fun (h : P = Q) => hP (h.symm ▸ hQ))
 
 end HyperellipticPolynomial
 

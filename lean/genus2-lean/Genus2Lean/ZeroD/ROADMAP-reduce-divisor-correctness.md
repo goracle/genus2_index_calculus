@@ -630,3 +630,272 @@ coefficient identity (§13 step 9), and the `δ₀`-avoidance argument via
 `Divisor0`'s degree-zero property (§12) rather than defining an infinity
 valuation from scratch. Each should be its own small named lemma per
 project convention — do not attempt the `∀ P` theorem in one pass.
+
+## Status update (this pass, 11th) — build error fix: missing imports,
+## not a namespace bug
+
+Claire's rebuild failed on three `Unknown identifier` errors
+(`ordAt_eq_zero_of_notMem`, `toPair_mem_pointIdeal_iff`,
+`ordAt_toPair_mul_of_ne_zero'`) plus a cascading `unsolved goals` at
+lemma 4's `:=` (an expected consequence of the third unknown identifier —
+`hstep` never got defined, so `omega` had nothing to close the goal with;
+not a separate bug). Root cause, confirmed by tracing the actual import
+graph rather than re-guessing: all three lemmas genuinely live inside
+`namespace HyperellipticPolynomial` (so the earlier "namespace" framing in
+this file's own comments was right about *where* they're declared) but
+**`PrincipalWitness.lean`'s import chain never reaches the files that
+declare them** — `ordAt_eq_zero_of_notMem`/`ordAt_toPair_mul_of_ne_zero'`
+are in `RiemannRochGenus2.lean`; `toPair_mem_pointIdeal_iff` is in
+`LCanonicalElementary.lean`; neither is imported by
+`PrincipalDivisorSubgroup.lean` (whose own chain stops one file short, at
+`PrincipalDivisors.lean`) or by any of this file's other imports. This was
+checked by existence (`grep` for the theorem name) last pass, not by
+reachability (`grep` for the import chain) — the actual gap.
+
+Fix: added `import Genus2Lean.RiemannRochGenus2` and
+`import Genus2Lean.LCanonicalElementary` directly. Confirmed cycle-safe
+before adding: both of those files already import
+`Genus2Lean.PrincipalDivisorSubgroup` themselves (the reverse direction),
+and grepped the whole tree to confirm nothing imports
+`PrincipalWitness.lean` yet (new file, no consumers).
+
+Claire confirmed this rebuild came back clean.
+
+## Status update (this pass, 12th) — lemma 6 (root-multiplicity
+## translation), unramified + ramified
+
+ChatGPT §13 step 6 ("rewrite `ordAt P N` using
+`ordAt_eq_rootMultiplicity_unramified`"). Confirmed the exact source
+lemmas (`ordAt_eq_rootMultiplicity_unramified`/`_ramified`) already exist,
+fully proved, `[IsAlgClosed k]`-free, in `LPairFinrankOneOrdAtFrac.lean` —
+not previously imported by `PrincipalWitness.lean`; added that import,
+checked cycle-safe first the same way as the 11th pass (that file's own
+import list doesn't reach back to this one; nothing in `Genus2Lean`'s
+root-level files references `PrincipalWitness`/`AlphaLocusDegreeUniform`
+at all).
+
+Added two lemmas, both direct compositions of lemma 4
+(`ordAt_eq_ordAt_pairNorm_of_eval_eq_zero`) with the root-multiplicity
+lemmas — no new proof technique, just chaining:
+
+- `ordAt_eq_rootMultiplicity_pairNorm_of_eval_eq_zero` (unramified,
+  `P.Y ≠ 0`): `ordAt P E Y = (pairNorm H E Y).rootMultiplicity P.X`.
+- `ordAt_eq_rootMultiplicity_pairNorm_of_eval_eq_zero_ramified`
+  (`P.Y = 0`, needs `Squarefree H.f`): `ordAt P E Y = 2 *
+  (pairNorm H E Y).rootMultiplicity P.X`. Flagged in its docstring — not
+  yet resolved, just stated for completeness — that per §3b/§14 of the raw
+  ChatGPT reply, the Weierstrass case is geometrically different from a
+  specialization of this lemma stack (`ḡ(P) = g(P)` there, so
+  `hgbar_ne_eval` is a real extra assumption, not automatic from `hg_ne`
+  the way it is in the unramified case) and the assembly theorem will
+  likely need `div(x-x0) = 2P - 2δ₀` directly instead (§3b item 3), not
+  this lemma. Matches the roadmap's own earlier §3b flag that the
+  Weierstrass/ramification case isn't yet confirmed covered by the
+  existing `hcurT`/`hgcdT` split.
+
+One care point while writing the ramified lemma: matched the source
+lemma's RHS shape (`2 * c.rootMultiplicity α : ℤ`, the whole product cast
+at once) verbatim rather than writing `(2:ℕ) * (...).rootMultiplicity ...
+: ℤ` (product formed at ℕ first, then cast) — the two ascriptions can
+elaborate to different terms even though they're propositionally equal,
+and matching the source exactly avoids relying on `omega`/`push_cast` to
+bridge them inside a one-line `exact`.
+
+Both `pairNorm H E Y ≠ 0` (`hN_ne`) is taken as an explicit hypothesis in
+both lemmas rather than derived from `hg_ne`/`hgbar_ne_eval` — same
+"don't over-assume" discipline as lemma 4's `hg_ne`; docstring flags that
+it *should* be derivable (integral domain, no zero divisors, via lemma 1 +
+`algebraMap` injectivity) but that step isn't established in this file yet
+and isn't needed for lemma 6's own proof.
+
+No `sorry` anywhere in the file; six lemmas now, all fully proved. Updated
+the module-docstring status note. Sanity checks passed (paren/bracket
+balance, no adjacent block comments, live-sorry grep clean). Not yet
+re-verified against a live build.
+
+**Not yet done, next in the stack** (ChatGPT §13 steps 7-9, per the raw
+reply's §6-§9): the factorization `N = A · U` at the `(A,B)`-pair level
+(where `U := u_new`/`uRS4General`'s Mumford `u`-polynomial and `A` is the
+complementary cofactor) and the resulting `ordAt P N = ordAt P A +
+ordAt P U` (§6, "cleanest formal route is probably to factor the whole
+divisor computation"); `ordAt P h = ordAt P A` at a residual point (`h :=
+g/U`, §13 step 8); the pointwise coefficient identity assembling
+`coeff_P(D_old) - coeff_P(D_new) = ordAt P A` (§13 step 9); and the
+`δ₀`-avoidance argument. Per §11/§12 of the raw reply: do NOT try to force
+`δ₀` into the `ordAt`/`pointIdeal` machinery directly (it's built for
+affine points only, confirmed in an earlier pass) — §12 has a
+finite-field-safe replacement for reasoning about the point at infinity
+that avoids defining an infinity valuation from scratch; read that section
+carefully before attempting the `δ₀` piece. The Weierstrass (`P.Y = 0`)
+case's own separate argument (§3b item 3 / §14) is also still open.
+
+## Status update (this pass, 13th) — lemma 7 (`N = A·U` factorization at
+## the pair level)
+
+Claire's rebuild of the 12th pass's `PrincipalWitness.lean` (lemma 6, root-
+multiplicity translation) came back clean. Continuing with ChatGPT §13
+step 7 / raw reply §6 ("the cleanest formal route is probably to factor
+the whole divisor computation").
+
+Confirmed the concrete factorization this abstracts over already exists in
+the codebase: `uRS4General_dvd_Npoly4` (`GeneralSharedRoot.lean`,
+unconditionally proved, no new Lean needed there) gives exactly `N = A · U`
+with `U := uRS4General` (the residual Mumford `u`-polynomial) — matches the
+raw reply's own naming (§6: `N = A·U`, `U` the residual factor) once
+translated into this project's variable names. Kept `PrincipalWitness.lean`
+itself generic per its stated design (module docstring): lemma 7 below
+takes the factorization `N = A * U` as an explicit hypothesis rather than
+importing `GeneralSharedRoot.lean`-specific lemmas, so the eventual
+assembly theorem in `AlphaLocusDegreeUniform.lean` supplies
+`uRS4General_dvd_Npoly4`'s witness at the call site instead.
+
+Added two lemmas:
+
+- `toPair_mul_right_zero'`: the `(A,B)`-pair form of `k[X]`-multiplicativity
+  for pure polynomials, `toPair H (A*U) 0 = toPair H A 0 * toPair H U 0` —
+  the `B = B' = 0` special case of the existing `toPair_mul`
+  (`RiemannRochGenus2.lean`). One care point while writing this: the naive
+  `rw [toPair_mul]; simp` doesn't target the right occurrence (the goal's
+  LHS is a single `toPair`, not a product, so an un-instantiated
+  `toPair_mul` rewrite has nothing obviously to fire on, or could match
+  ambiguously) — fixed by giving `toPair_mul` its explicit arguments
+  (`toPair_mul A 0 U 0`), which pins the rewrite to the RHS's
+  `toPair H A 0 * toPair H U 0` occurrence specifically, turning it into
+  `toPair_mul`'s expanded form, which `simp` then collapses back to
+  `toPair H (A*U) 0` (`0*0*H.f = 0`, `A*0+U*0 = 0`) to close the goal.
+- `ordAt_add_of_pairNorm_eq_mul` (lemma 7, ChatGPT §6/§13 step 7): given
+  `N = A * U` and both `toPair H A 0`, `toPair H U 0` nonzero,
+  `ordAt P N 0 = ordAt P A 0 + ordAt P U 0`. Direct application of
+  `ordAt_toPair_mul_of_ne_zero'` (already used by lemma 4) through
+  `toPair_mul_right_zero'`.
+
+No `sorry` anywhere in the file; seven lemmas now (plus the `Npoly4`-bridge
+corollary), all fully proved. Updated the module-docstring status note.
+Sanity checks passed (paren/bracket/comment balance, live-sorry grep
+clean). Not yet re-verified against a live build.
+
+**Not yet done, next in the stack**: `ordAt P h = ordAt P A` at a residual
+point (`h := g/U`, ChatGPT §13 step 8) — needs `ordAtFrac`
+(`ordAtFrac(P,E,Y,U,0) = ordAt(P,E,Y) - ordAt(P,U,0)` per §13 step 1,
+already noted as essentially definitional/`rfl` in an earlier pass) plus
+lemma 6/7 above composed together; the pointwise coefficient identity
+(§13 step 9); and the `δ₀`-avoidance argument (§11-§12, finite-field-safe
+replacement for the point at infinity — read that section before
+attempting it, do not build an infinity valuation from scratch). The
+Weierstrass (`P.Y = 0`) case's own separate argument (§3b item 3 / §14)
+is also still open.
+
+## Status update (this pass, 14th) — build error fix: missing
+## `[IsDedekindDomain (CoordinateRing H)]`, plus an `apply`/`rw` fragility
+
+Claire's rebuild of the 13th pass's lemma 7 failed with a cluster of
+`failed to synthesize instance of type class IsDedekindDomain
+(CoordinateRing H)` errors at `ordAt_add_of_pairNorm_eq_mul`, plus an
+`unknown identifier hAU` and unsolved-goals errors cascading from it.
+Two genuine bugs, both in that one lemma (`toPair_mul_right_zero'` itself
+was fine as *stated*, but its proof needed hardening too — see below):
+
+1. **Missing instance hypothesis.** `ordAt_add_of_pairNorm_eq_mul` calls
+   `ordAt_toPair_mul_of_ne_zero'`, which needs
+   `[IsDedekindDomain (CoordinateRing H)]` — but unlike that theorem's own
+   declaration site (`RiemannRochGenus2.lean`, where an ambient `variable`
+   supplies it silently), this file has no such `variable` in scope, and
+   every other lemma here that calls into that machinery (2, 4, 6) states
+   the instance explicitly. Lemma 7's first draft simply omitted it — a
+   plain oversight, not a deeper issue. Fixed by adding
+   `[IsDedekindDomain (CoordinateRing H)]` to `ordAt_add_of_pairNorm_eq_mul`'s
+   own signature, matching the others.
+2. **`apply ... ; rw [...]` didn't survive the instance failure cleanly.**
+   Once the instance couldn't synthesize, the `apply` itself failed to
+   elaborate, which is why the *next* line's `rw [hAU, ...]` reported
+   `hAU` as an unknown identifier — `hAU` genuinely was in scope as a
+   hypothesis, but Lean had already abandoned the tactic block's goal
+   state by that point, so the error message is a symptom of bug 1, not a
+   second independent naming bug. Still, switched the proof to a single
+   term-mode expression (`ordAt_toPair_mul_of_ne_zero' P h_bot A 0 U 0 N 0
+   hA_ne hU_ne (hAU ▸ toPair_mul_right_zero' A U)`) matching lemma 4's
+   already-proven-working term style, rather than re-trying the same
+   `apply`+`rw` split now that the instance is fixed — less exposed to the
+   same class of cascading failure if anything else is subtly off.
+
+Also hardened `toPair_mul_right_zero'`'s proof (which built successfully
+as far as the log shows, but its `rw [toPair_mul]; simp` draft was fragile
+by construction — the goal's LHS is a single `toPair` application while
+`toPair_mul`'s LHS is a product of two, so an unapplied `rw [toPair_mul]`
+has no guaranteed unique match to fire on): rewrote it to fix
+`toPair_mul`'s statement concretely first via `have h := toPair_mul
+(H := H) A 0 U 0`, simplify `h`'s right-hand side in place with `simp only`
+(explicit lemma list: `mul_zero, zero_mul, add_zero, zero_add`, rather than
+a bare `simp` that could silently do more or less depending on the
+simp-set's future contents), then close with `exact h.symm` — no
+ambiguous top-level rewrite involved.
+
+No `sorry` anywhere in the file; seven lemmas, all fully proved (assuming
+this fix is confirmed — not yet re-verified against a live build). Updated
+both lemmas' docstrings to record the fix and reasoning, per project
+convention (errors get fixed and explained, not just silently patched).
+
+## Status update (this pass, 15th) — confirmed clean; lemma 8, the
+## `ordAt P h = ordAt P A` theorem the stack was built toward
+
+Claire confirmed the 14th pass's fix builds — with two small further
+robustness tweaks beyond what I'd written: `toPair_mul_right_zero'` also
+took its own explicit `[IsDedekindDomain (CoordinateRing H)]` (needed once
+it's called from a context requiring that instance, even though the
+lemma's own statement doesn't otherwise reference `CoordinateRing H`'s
+Dedekind-ness), explicit `(0 : k[X])` ascriptions throughout both lemmas
+in place of bare `0`, and `hAU.symm ▸ ...` in place of `hAU ▸ ...` (the
+`▸`-direction needed flipping — `A*U = N`, not `N = A*U`, to transport
+`toPair_mul_right_zero'`'s `A*U`-shaped conclusion into the `N`-shaped one
+`ordAt_toPair_mul_of_ne_zero'` needs). Adopted Claire's confirmed-building
+version verbatim and corrected this file's own docstring to describe
+`hAU.symm ▸` rather than the earlier (wrong) `hAU ▸`.
+
+Added ChatGPT §13 step 8 — "the theorem the whole stack has been building
+toward" per the raw reply's own framing (§1: "First normalize every
+occurrence of `h` to `ordAt(g) - ordAt(U)`... that gets the rest of the
+proof into ordinary valuation arithmetic"):
+
+- `ordAtFrac_eq_ordAt_of_pairNorm_eq_mul` (lemma 8): given `pairNorm H E Y
+  = A * U`, both factors' `toPair`-nonvanishing, and lemma 6's conclusion
+  (`ordAt P E Y = ordAt P (pairNorm H E Y) 0`, i.e. "`P` is an ordinary
+  zero of `g`" already established via lemma 6 at the call site) as an
+  explicit hypothesis `hN_eq_mult`, concludes `ordAtFrac P E Y U 0 =
+  ordAt P A 0` — i.e. `ordAt P h = ordAt P A` for `h := g/U`, collapsing
+  `ordAt P U 0` out entirely. Proof: `unfold ordAtFrac` (per raw reply §1,
+  `ordAtFrac`'s definition is literally `ordAt P A B - ordAt P A' B'`, so
+  this is the "essentially `rfl`/unfolding" bridge step ChatGPT names),
+  then `rw [hN_eq_mult, ordAt_add_of_pairNorm_eq_mul ...]` chains lemma 6
+  into lemma 7, and `omega` closes the resulting `(ordAt P A 0 + ordAt P U
+  0) - ordAt P U 0 = ordAt P A 0` cancellation (no positivity assumption
+  needed — `ordAt` is `ℤ`-valued).
+
+`hN_eq_mult` is taken as a hypothesis rather than re-derived from lemma
+6's own (longer) hypothesis list, so lemma 8's signature doesn't need to
+carry both lemma 6's full preconditions (`hchar`, `hg_ne`, `hgbar_ne_eval`,
+`hN_ne`, `hY`) and lemma 7's (`hAU`, `hA_ne`, `hU_ne`) simultaneously — the
+eventual assembly theorem is expected to apply lemma 6 first at its own
+call site and pass the result in, keeping each lemma here focused on one
+composition step rather than accumulating every upstream precondition.
+
+No `sorry` anywhere in the file; eight numbered lemmas (plus the small
+`toPair_right_zero`/`toPair_mul_right_zero'` helpers and the `Npoly4`
+bridge corollary — eleven `theorem`s total), all fully proved. Updated the
+module-docstring status note. Sanity checks passed (paren/bracket/comment
+balance, live-sorry grep clean). Not yet re-verified against a live build.
+
+**Not yet done, next in the stack** (ChatGPT §13 step 9, raw reply §9):
+the pointwise coefficient identity — packaging `coeff_P(D_old) -
+coeff_P(D_new) = ordAt P A 0` with the project's actual sign convention
+(per the roadmap's own §3c sign-check finding: `reducedClass`'s
+minus-sign convention is the geometrically correct target, matching
+`vRS4General := -E·Y⁻¹`, so this step should mostly be bookkeeping once
+the residual-point case (this file's lemmas) and the non-residual/`g(P)≠0`
+case (lemma 2 above, already done — `ordAt P g = 0` there) are both in
+hand) — then the `δ₀`-avoidance argument (§11-§12, read before attempting;
+do not build an infinity valuation from scratch), and the Weierstrass
+(`P.Y = 0`) case's own separate argument (§3b item 3 / §14). Once those
+land, the final assembly into `div(h) = D_old - D_new` and back to
+`reducedClass_eq_of_isReduction'` itself (`AlphaLocusDegreeUniform.lean`)
+should, per ChatGPT's own closing line in §13, become "almost entirely
+`rw`/`linarith`-style valuation bookkeeping."
