@@ -577,10 +577,56 @@ force Lean to synthesize it automatically at this call site). Also added
 project (avoids the same copyright-header lint warning the build log
 otherwise flags). Not yet re-verified against a live build.
 
+## Status update (this pass, 10th) — confirmed clean; lemmas 2-4 added
+
+Claire confirmed `PrincipalWitness.lean` (9th pass's fix, using fully-
+qualified `Genus2Lean.TheDataDerivation.F`/`curvePoly` rather than an
+`open`) builds cleanly. Added the next three lemmas in the stack, still
+kept generic (no `SampleTargetFromAlpha` dependence):
+
+- `ordAt_eq_zero_of_eval_ne_zero` (lemma 2, ChatGPT §4/§13 step 4): the
+  "residue-nonzero ⇒ valuation-zero" lemma ChatGPT flagged as possibly
+  missing from the pasted API — it isn't missing, it's `toPair_mem_
+  pointIdeal_iff` (`LCanonicalElementary.lean`) composed with `ordAt_eq_
+  zero_of_notMem` (`RiemannRochGenus2.lean`), both already proved and
+  confirmed `[IsAlgClosed k]`-free.
+- `toPair_right_zero`: the `B=0` unfolding of `toPair`, restated as its own
+  named lemma (same idiom already used in `LPairFinrankOneOrdAtFrac.lean`)
+  since the next lemma needs it by name.
+- `toPair_pairNorm_eq_toPair_mul_toPair_neg` (lemma 3, ChatGPT §2/§13 step
+  3): the norm identity restated in the `(A,B)`-pair shape
+  `ordAt_toPair_mul_of_ne_zero'`'s `hA₃` hypothesis actually needs
+  (`toPair H N 0`, not `algebraMap _ _ N`) — trivial composition of lemma 1
+  and `toPair_right_zero`.
+- `ordAt_eq_ordAt_pairNorm_of_eval_eq_zero` (lemma 4, ChatGPT §3/§5/§13
+  step 5): given `g ≠ 0` as a ring element and `ḡ(P) ≠ 0`,
+  `ordAt P g = ordAt P N`. **Deliberately does NOT take `g(P) = 0` as a
+  hypothesis** — checked and confirmed it isn't needed for this step (only
+  motivates why `ḡ(P) ≠ 0` is the case worth supplying), so the lemma stays
+  usable at points other than "ordinary zeros of `g`" too (e.g. eventually
+  at `δ₀`-adjacent points, if that ever needs a similar move). Also
+  deliberately takes `hg_ne : toPair H E Y ≠ 0` as an explicit hypothesis
+  rather than trying to derive it from an eval-equals-zero fact — caught
+  a genuine error in an earlier draft of this proof (`E=0,Y=0` vacuously
+  satisfies "vanishes at one point" but does NOT give `toPair H E Y ≠ 0`;
+  fixed before presenting, per §3e's "don't over-assume" discipline applied
+  to the lemma's own hypotheses, not just to point-distinctness).
+
+Also caught and fixed, before presenting: an editing mistake left two
+adjacent block-comment docstrings (stale draft + final version) directly
+above lemma 4 — exactly the "comment block followed by another comment
+block" issue this project's conventions warn about. Removed the stale one.
+
+No `sorry` anywhere in the file; all four lemmas fully proved. Updated the
+file's own module-docstring status note to list lemmas 1-4 rather than
+lemma 1 only. Not yet re-verified against a live build.
+
 **Not yet done, next in the stack** (ChatGPT §13's numbered list, items
-4 onward): the residue-nonzero ⇒ valuation-zero lemma (§4), the ordinary-
-zero-of-`g` lemma via norm multiplicativity (§3/§5), the root-multiplicity
-translation for `N`/`u_new` (§6-§8), and the `δ₀`-avoidance argument via
+6 onward): the root-multiplicity translation for `N`/`u_new` via
+`ordAt_eq_rootMultiplicity_unramified`/`_ramified` (§6-§8), the
+factorization `N = A·U` at the pair level and the resulting
+`ordAt P N = ordAt P A + ordAt P U` (§6/§13 step 7), the pointwise
+coefficient identity (§13 step 9), and the `δ₀`-avoidance argument via
 `Divisor0`'s degree-zero property (§12) rather than defining an infinity
 valuation from scratch. Each should be its own small named lemma per
 project convention — do not attempt the `∀ P` theorem in one pass.

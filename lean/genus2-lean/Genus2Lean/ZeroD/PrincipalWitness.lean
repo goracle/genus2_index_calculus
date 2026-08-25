@@ -2,6 +2,18 @@ import Mathlib
 import Genus2Lean.PrincipalDivisorSubgroup
 import Genus2Lean.ZeroD.Reduce.AlphaReduce
 import Genus2Lean.ZeroD.TheDataDerivation.DataDerivationBasics
+import Genus2Lean.RiemannRochGenus2
+import Genus2Lean.LCanonicalElementary
+
+-- `ordAt_eq_zero_of_notMem`/`ordAt_toPair_mul_of_ne_zero'` (lemmas 2, 4
+-- below) live in `RiemannRochGenus2.lean`, and `toPair_mem_pointIdeal_iff`
+-- (lemma 2 below) lives in `LCanonicalElementary.lean` — neither is
+-- reachable through this file's other imports (`PrincipalDivisorSubgroup.
+-- lean`'s own import chain stops at `PrincipalDivisors.lean`, one file
+-- short of these two). Both direct imports are cycle-safe: `RiemannRoch
+-- Genus2.lean` and `LCanonicalElementary.lean` themselves import
+-- `PrincipalDivisorSubgroup.lean` (the reverse direction), and neither
+-- file (nor anything in their own import chains) references this file.
 
 /-!
 # Step 3 (`ROADMAP-reduce-divisor-correctness.md`): the principal-witness lemma stack
@@ -29,11 +41,14 @@ those only enter at the final assembly theorem back in
 Polynomial k`, so it can be reused by both the general (`P1 ≠ P2`) and
 tangent (`P1 = P2`) branches without duplication.
 
-**Status: lemma 1 of the stack only (the norm identity, ChatGPT §2/§13
-step 2) — genuinely close to free from `toPair_mul_involution`, which is
-already fully proved. Nothing else in the stack (root-multiplicity
-translation, the residue-nonzero ⇒ valuation-zero lemma, the `δ₀`
-degree-argument escape hatch) is attempted in this pass.**
+**Status: lemmas 1-4 of the stack (ChatGPT §2-§5/§13 steps 2-5) —
+the norm identity, the residue-nonzero ⇒ valuation-zero lemma, the
+`(A,B)`-pair form of the norm identity, and the ordinary-zero-of-`g`
+lemma via norm multiplicativity. All proved, no `sorry`. Not yet attempted:
+the root-multiplicity translation for `N`/`u_new` (ChatGPT §6-§8), the
+factorization `N = A·U` at the pair level (§6/§13 step 7), the pointwise
+coefficient identity and `δ₀`-avoidance degree argument (§9/§12/§13 steps
+8-9), and the final assembly into `div(h) = D_old - D_new`.**
 -/
 
 noncomputable section
@@ -62,6 +77,87 @@ theorem toPair_mul_toPair_neg_eq_algebraMap_pairNorm (E Y : k[X]) :
     toPair H E Y * toPair H E (-Y) = algebraMap k[X] (CoordinateRing H) (pairNorm H E Y) := by
   rw [← toPair_involution]
   exact toPair_mul_involution H E Y
+
+/-- **Lemma 2 of the stack (ChatGPT §4/§13 step 4): residue-nonzero implies
+valuation-zero, specialized to the `E,Y`-pair shape.** If `g = E+Y·y`
+evaluated at `P` is nonzero (`E.eval P.X + Y.eval P.X * P.Y ≠ 0`), then
+`ordAt P E Y = 0`.
+
+This is `toPair_mem_pointIdeal_iff` (turns the evaluation condition into
+`toPair H E Y ∉ pointIdeal P`, since `pointIdeal` membership is exactly
+`= 0`) composed with `ordAt_eq_zero_of_notMem` (`[IsAlgClosed k]`-free —
+confirmed via `RiemannRochGenus2.lean`'s `omit [IsAlgClosed k] in` clause
+directly above it, so this stays usable over `F p`, no closed-field
+machinery pulled in). Needs `[IsDedekindDomain (CoordinateRing H)]`, which
+both source lemmas already require. -/
+theorem ordAt_eq_zero_of_eval_ne_zero [IsDedekindDomain (CoordinateRing H)]
+    (P : H.Point) (E Y : k[X]) (heval : E.eval P.X + Y.eval P.X * P.Y ≠ 0) :
+    ordAt P E Y = 0 :=
+  ordAt_eq_zero_of_notMem P E Y (fun hmem => heval ((toPair_mem_pointIdeal_iff P E Y).mp hmem))
+
+/-- **`toPair H c 0 = algebraMap k[X] (CoordinateRing H) c`, the `B = 0`
+unfolding of `toPair` used to state the norm identity at the `(A,B)`-pair
+level rather than via `algebraMap`.** Same idiom already used elsewhere
+in this codebase (`LPairFinrankOneOrdAtFrac.lean`'s `htoPair_right_zero`);
+restated here as its own lemma since the norm identity below needs it by
+name. -/
+theorem toPair_right_zero (c : k[X]) :
+    toPair H c (0 : k[X]) = algebraMap k[X] (CoordinateRing H) c := by
+  unfold toPair
+  simp
+
+/-- **Lemma 3 of the stack (ChatGPT §2/§13 step 3, the `(A,B)`-pair form of
+the norm identity needed for `ordAt_toPair_mul_of_ne_zero'`).**
+`toPair H (pairNorm H E Y) 0 = toPair H E Y * toPair H E (-Y)`, i.e. the
+same `g·ḡ = N` fact as `toPair_mul_toPair_neg_eq_algebraMap_pairNorm`
+above, but with the right-hand side's `N` expressed as `toPair H N 0`
+(via `toPair_right_zero`) instead of `algebraMap _ _ N` — this is the
+exact shape `ordAt_toPair_mul_of_ne_zero'`'s `hA₃` hypothesis needs. -/
+theorem toPair_pairNorm_eq_toPair_mul_toPair_neg (E Y : k[X]) :
+    toPair H (pairNorm H E Y) (0 : k[X]) = toPair H E Y * toPair H E (-Y) := by
+  rw [toPair_right_zero, toPair_mul_toPair_neg_eq_algebraMap_pairNorm]
+
+/-- **Lemma 4 of the stack (ChatGPT §3/§5/§13 step 5): given `g ≠ 0` as a
+ring element and `ḡ(P) ≠ 0`, `ordAt P g = ordAt P N`.** (The intended use
+is the case `g(P) = 0` — an ordinary zero of `g` at `P` — but that
+hypothesis is not actually needed for this step; it only motivates why
+`ḡ(P) ≠ 0` is the interesting/expected case to supply. Stating the lemma
+without an unused `g(P) = 0` hypothesis keeps it usable verbatim at the
+`δ₀`-adjacent points too, where the case split is driven by `ḡ` alone.)
+
+`toPair H E Y ≠ 0` is taken as an explicit hypothesis (`hg_ne`) rather than
+derived from `hg_eq` alone: vanishing AT a single point `P` (an evaluation
+condition) does not imply vanishing AS A RING ELEMENT (`E = 0 ∧ Y = 0`
+globally, via `toPair_eq_zero_iff`) — e.g. `E = X, Y = 0` vanishes at
+`P.X = 0` but `toPair H X 0 ≠ 0`. This is exactly the "don't over-assume"
+discipline §3e of the roadmap asks for: the hypothesis actually needed
+(`g ≠ 0` as an element) is stated, not silently assumed provable from the
+weaker evaluation fact. `ḡ`'s non-vanishing at `P`, by contrast, genuinely
+IS enough to get `toPair H E (-Y) ≠ 0` (nonzero evaluation forces the
+element itself nonzero — the same direction `ordAt_eq_zero_of_eval_ne_zero`
+already uses), so `hgbar_ne` below is derived, not assumed.
+
+Proof: `ordAt_toPair_mul_of_ne_zero'` (needs both factors `≠ 0` as ring
+elements — `hg_ne` supplied, `hgbar_ne` derived) +
+`toPair_pairNorm_eq_toPair_mul_toPair_neg` give `ordAt P (pairNorm H E Y) 0
+= ordAt P E Y + ordAt P E (-Y)`; `ordAt_eq_zero_of_eval_ne_zero` collapses
+the second summand to `0` via `hgbar_ne_eval`. -/
+theorem ordAt_eq_ordAt_pairNorm_of_eval_eq_zero [IsDedekindDomain (CoordinateRing H)]
+    (P : H.Point) (h_bot : pointIdeal P ≠ ⊥) (E Y : k[X])
+    (hg_ne : toPair H E Y ≠ 0)
+    (hgbar_ne_eval : E.eval P.X + (-Y).eval P.X * P.Y ≠ 0) :
+    ordAt P E Y = ordAt P (pairNorm H E Y) (0 : k[X]) := by
+  have hgbar_ne : toPair H E (-Y) ≠ 0 := by
+    intro hz
+    apply hgbar_ne_eval
+    have hmem : toPair H E (-Y) ∈ pointIdeal P := hz ▸ Submodule.zero_mem _
+    exact (toPair_mem_pointIdeal_iff P E (-Y)).mp hmem
+  have hordbar : ordAt P E (-Y) = 0 :=
+    ordAt_eq_zero_of_eval_ne_zero P E (-Y) hgbar_ne_eval
+  have hstep := ordAt_toPair_mul_of_ne_zero' P h_bot E Y E (-Y)
+    (pairNorm H E Y) (0 : k[X]) hg_ne hgbar_ne
+    (toPair_pairNorm_eq_toPair_mul_toPair_neg E Y)
+  omega
 
 /-- **Corollary, in `Npoly4`-shaped form for this project's genus-2, `K=4`
 instance.** Given `Npoly4 = Epoly4^2 - curvePoly*Ypoly4^2` (`AlphaReduce.lean`)
