@@ -51,3 +51,4 @@ import Genus2Lean.ZeroD.Reduce.P2TargetSharedRoot
 import Genus2Lean.ZeroD.Reduce.P1UaSharedRoot
 import Genus2Lean.ZeroD.Reduce.P2UaSharedRoot
 import Genus2Lean.ZeroD.Reduce.GeneralSharedRoot
+import Genus2Lean.ZeroD.RegularSequenceFiniteQuotient
