@@ -5,6 +5,13 @@ import Genus2Lean.ZeroD.Reduce.AlphaReduce
 import Genus2Lean.ZeroD.Reduce.GeneralSharedRoot
 import Genus2Lean.ZeroD.PeelChainAssembly
 import Genus2Lean.ZeroD.RegularSequenceFiniteQuotient
+import Genus2Lean.PrincipalDivisorSubgroup
+
+-- `PrincipalDivisorSubgroup.lean` supplies `toPair`/`divToPair`/`ordAt`/
+-- `pointIdeal`, needed below (`ROADMAP-reduce-divisor-correctness.md` Step 2)
+-- to state what divisor class a Mumford coordinate pair `(u0,u1,v0,v1)`
+-- actually represents, so `reducedClass_eq_of_isReduction'` can be stated
+-- (as a `sorry`) against a real right-hand side rather than a placeholder.
 
 -- `Module.Finite.quotient_of_isRegular_of_length_eq_card` (used by
 -- `decoupledSystem_zeroDimensional` below) lives in
@@ -325,9 +332,19 @@ structure SampleTargetFromAlpha (p : ℕ) [Fact (Nat.Prime p)]
   **Update: `Reduce` now exists (`Reduce.AlphaReduce`/`Reduce.GeneralSharedRoot`,
   `ReduceDispatchGeneral` specifically — the `h12`–`h34`-collision-free
   dispatcher), at the level of concrete Mumford/affine coordinates
-  `F p × F p × F p × F p`. This field is NOT yet restated against it — see
-  `isReduction'` below for the restatement and exactly what's still
-  missing to make that the definition rather than a parallel candidate. -/
+  `F p × F p × F p × F p`. `isReduction'` below restates this field's
+  intent against `ReduceDispatchGeneral` directly, and `isReductionOf`
+  (further below, `ROADMAP-reduce-divisor-correctness.md` Step 1) packages
+  `isReduction'` plus its witnessing coordinates/hypotheses into a single
+  `Prop` with no free parameters beyond `sa` itself — that is what any
+  caller instantiating this field should supply from now on, rather than
+  an arbitrary unconstrained `Prop`. Kept as a free field (not literally
+  replaced by `isReductionOf` in the structure signature) because no
+  instance of this structure exists anywhere in the project yet to force
+  a choice, and because `isReductionOf` needs `H : HyperellipticPolynomial
+  (F p)` specifically while this structure is stated over a generic field
+  `k` — pinning that down is exactly the kind of thing best done at an
+  actual call site, not preemptively here. -/
   isReduction : Prop
 
 /-- Convenience: read off `alpha`'s companion `alpha'` from a *pair* of
@@ -451,6 +468,161 @@ def isReduction' {p : ℕ} [Fact (Nat.Prime p)] [Fact (p ≠ 2)]
       sa.toSampleTarget.u0 sa.toSampleTarget.u1
       sa.toSampleTarget.v0 sa.toSampleTarget.v1
       hcur hgcd hcurT hgcdT
+
+/-- **`isReduction'` is the real, load-bearing content; `isReduction`
+should be understood through it, not as a free-standing `Prop`.**
+Per `ROADMAP-reduce-divisor-correctness.md` Step 1: `isReduction` (the
+structure field above) was left as an unconstrained `Prop` precisely
+because nothing had been built yet to give it real content — that
+placeholder status is itself effectively an escape hatch (any `Prop`,
+including `True`, typechecks as a witness). `isReduction'` closes that
+gap **as a definition**, not merely as a parallel candidate: this
+`abbrev` packages "there exist witnessing coordinates/hypotheses making
+`isReduction'` hold" as the concrete existential a caller should supply
+for `isReduction` from now on. This does not yet prove the two are
+provably EQUIVALENT to `reducedClass`'s divisor-class-level statement
+(that is `reducedClass_eq_of_isReduction'`, the real target theorem —
+Step 2/3 below) — it only stops the file from carrying two unrelated,
+confusingly-similar-named notions side by side, per Step 1's own scope
+("cheap, mechanical... does not touch the divisor-class gap"). Any
+future `isReduction : Prop` argument/field should be instantiated with
+this existential rather than left free. -/
+abbrev isReductionOf {p : ℕ} [Fact (Nat.Prime p)] [Fact (p ≠ 2)]
+    {H : HyperellipticPolynomial (F p)} {D : PrincipalDivisorData H}
+    {aClass : Jacobian H D} {δ₀ : H.Point}
+    (sa : SampleTargetFromAlpha p H D aClass δ₀) : Prop :=
+  ∃ (c0 c1 c2 c3 c4 ua0 ua1 va0 va1 : F p)
+    (hcur : (sa.P1.X, sa.P1.Y) ≠ (sa.P2.X, sa.P2.Y) →
+      curBeforeMonic4General p c0 c1 c2 c3 c4
+        (sa.P1.X, sa.P1.Y) (sa.P2.X, sa.P2.Y) ua0 ua1 va0 va1
+        sa.toSampleTarget.u0 sa.toSampleTarget.u1
+        sa.toSampleTarget.v0 sa.toSampleTarget.v1 ≠ 0)
+    (hgcd : (sa.P1.X, sa.P1.Y) ≠ (sa.P2.X, sa.P2.Y) →
+      IsCoprime (Ypoly4 p (sa.P1.X, sa.P1.Y) (sa.P2.X, sa.P2.Y)
+          ua0 ua1 va0 va1 sa.toSampleTarget.u0 sa.toSampleTarget.u1
+          sa.toSampleTarget.v0 sa.toSampleTarget.v1)
+        (uRS4General p c0 c1 c2 c3 c4
+          (sa.P1.X, sa.P1.Y) (sa.P2.X, sa.P2.Y) ua0 ua1 va0 va1
+          sa.toSampleTarget.u0 sa.toSampleTarget.u1
+          sa.toSampleTarget.v0 sa.toSampleTarget.v1))
+    (hcurT : (sa.P1.X, sa.P1.Y) = (sa.P2.X, sa.P2.Y) →
+      curBeforeMonic4Tangent p c0 c1 c2 c3 c4
+        sa.P1.X sa.P1.Y ua0 ua1 va0 va1
+        sa.toSampleTarget.u0 sa.toSampleTarget.u1
+        sa.toSampleTarget.v0 sa.toSampleTarget.v1 ≠ 0)
+    (hgcdT : (sa.P1.X, sa.P1.Y) = (sa.P2.X, sa.P2.Y) →
+      IsCoprime (Ypoly4Tangent p c0 c1 c2 c3 c4
+          sa.P1.X sa.P1.Y ua0 ua1 va0 va1
+          sa.toSampleTarget.u0 sa.toSampleTarget.u1
+          sa.toSampleTarget.v0 sa.toSampleTarget.v1)
+        (uRS4Tangent p c0 c1 c2 c3 c4
+          sa.P1.X sa.P1.Y ua0 ua1 va0 va1
+          sa.toSampleTarget.u0 sa.toSampleTarget.u1
+          sa.toSampleTarget.v0 sa.toSampleTarget.v1)),
+    isReduction' sa c0 c1 c2 c3 c4 ua0 ua1 va0 va1 hcur hgcd hcurT hgcdT
+
+-- `X`/`C` below (Step 2's Mumford-pair-as-polynomial encoding) are
+-- `Polynomial.X`/`Polynomial.C`; this file otherwise has no need for bare
+-- `Polynomial` names, so `open` it only from here on rather than at the top.
+open Polynomial
+
+/-! ## `ROADMAP-reduce-divisor-correctness.md` Step 2: stating (not proving)
+`reducedClass_eq_of_isReduction'`
+
+Per Step 2's own instructions: get this to TYPECHECK with a `sorry` body and
+present it for review before attempting a proof. The three concretely-needed
+ingredients, checked against the actual files this pass (not guessed):
+
+1. **The Mumford-pair-to-class map.** `PrincipalDivisorSubgroup.lean` (now
+   imported above) has no single lemma "the class a coordinate pair
+   `(u0,u1,v0,v1)` represents" — per the roadmap's own flag, this is a real,
+   confirmed gap, not an oversight to fix by reading harder. What DOES exist:
+   `toPair H A B : CoordinateRing H` for `A B : k[X]` (so `toPair H
+   (X^2 + C u1 * X + C u0) (C v1 * X + C v0)` is the actual coordinate-ring
+   element `u(x) + v(x)·y` a Mumford pair names), and `divToPair H A B S :
+   Divisor H := ∑ P ∈ S, ordAt P A B • single P` for an EXPLICIT finite point
+   set `S` (`PrincipalDivisorSubgroup.lean`). There is no lemma computing `S`
+   from `(A,B)` alone (that would need root-finding/`Polynomial.roots`-type
+   machinery over `F p`, specifically the finitely many affine points where
+   `u(x)=0 ∧ v(x)=y`, matched against `H.Equation`). So the map is expressed
+   here as an existential over the witnessing point set and the fact that it
+   really is the coordinate pair's full zero locus (`hsupp`, matching
+   `divToPair`'s own precondition pattern) — this is the "flag it as its own
+   smaller gap" move Step 2 asks for, not a proof that the map exists as a
+   clean function.
+2. **`reducedClass`'s definition**, already on file, unchanged (`alpha •
+   aClass - toJacobian D (⟨single P1 + single P2 - 2•single δ₀, _⟩)`).
+3. **The equality goal**: `reducedClass` equals `toJacobian D` applied to
+   `divToPair H u v S` (packaged into `Divisor0 H` via `hmem`), for whichever
+   `S` witnesses `isReductionOf`'s underlying `(u0,u1,v0,v1)`.
+
+**Not yet resolved, flagged rather than guessed**: whether `S` should be
+required to be exactly `sa.toSampleTarget`'s zero locus (`hsupp` below) or
+something weaker — Step 3's proof attempt (residual-intersection /
+residual-Mumford / principal-witness, per §3a) will determine which
+`hsupp`-shape is actually provable; the one below is the literal reading of
+"S is the point set the divToPair is taken over" and may need revision once
+Step 3 is attempted. -/
+
+/-- **Step 2's target theorem, stated as a `sorry` for review — not attempted
+here.** Given `sa : SampleTargetFromAlpha` whose Mumford pair satisfies
+`isReduction'` (i.e. really is `ReduceDispatchGeneral`'s output on `P1,P2`
+and `alpha•aClass`'s reduced pair), and given a finite point set `S`
+witnessing that `sa.toSampleTarget`'s `(u0,u1,v0,v1)` names exactly the
+coordinate-ring element `toPair H u v` vanishing on `S` (`hsupp`) and that
+this lands in `Divisor0 H` (`hmem`, needed to apply `toJacobian`), the claim
+is that `sa.reducedClass` (the divisor-class-level specification already on
+file) equals `toJacobian D` of that same divisor. This is exactly the
+theorem `ROADMAP-reduce-to-zerodim.md` flagged as "not attempted here," now
+typechecking; the proof (§3a's three-lemma skeleton: residual-intersection →
+residual-Mumford → principal-witness via `ordAt`) is Step 3, deliberately not
+attempted in this pass. -/
+theorem reducedClass_eq_of_isReduction' {p : ℕ} [Fact (Nat.Prime p)] [Fact (p ≠ 2)]
+    {H : HyperellipticPolynomial (F p)} [IsDedekindDomain (CoordinateRing H)]
+    {D : PrincipalDivisorData H}
+    {aClass : Jacobian H D} {δ₀ : H.Point}
+    (sa : SampleTargetFromAlpha p H D aClass δ₀)
+    (c0 c1 c2 c3 c4 ua0 ua1 va0 va1 : F p)
+    (hcur : (sa.P1.X, sa.P1.Y) ≠ (sa.P2.X, sa.P2.Y) →
+      curBeforeMonic4General p c0 c1 c2 c3 c4
+        (sa.P1.X, sa.P1.Y) (sa.P2.X, sa.P2.Y) ua0 ua1 va0 va1
+        sa.toSampleTarget.u0 sa.toSampleTarget.u1
+        sa.toSampleTarget.v0 sa.toSampleTarget.v1 ≠ 0)
+    (hgcd : (sa.P1.X, sa.P1.Y) ≠ (sa.P2.X, sa.P2.Y) →
+      IsCoprime (Ypoly4 p (sa.P1.X, sa.P1.Y) (sa.P2.X, sa.P2.Y)
+          ua0 ua1 va0 va1 sa.toSampleTarget.u0 sa.toSampleTarget.u1
+          sa.toSampleTarget.v0 sa.toSampleTarget.v1)
+        (uRS4General p c0 c1 c2 c3 c4
+          (sa.P1.X, sa.P1.Y) (sa.P2.X, sa.P2.Y) ua0 ua1 va0 va1
+          sa.toSampleTarget.u0 sa.toSampleTarget.u1
+          sa.toSampleTarget.v0 sa.toSampleTarget.v1))
+    (hcurT : (sa.P1.X, sa.P1.Y) = (sa.P2.X, sa.P2.Y) →
+      curBeforeMonic4Tangent p c0 c1 c2 c3 c4
+        sa.P1.X sa.P1.Y ua0 ua1 va0 va1
+        sa.toSampleTarget.u0 sa.toSampleTarget.u1
+        sa.toSampleTarget.v0 sa.toSampleTarget.v1 ≠ 0)
+    (hgcdT : (sa.P1.X, sa.P1.Y) = (sa.P2.X, sa.P2.Y) →
+      IsCoprime (Ypoly4Tangent p c0 c1 c2 c3 c4
+          sa.P1.X sa.P1.Y ua0 ua1 va0 va1
+          sa.toSampleTarget.u0 sa.toSampleTarget.u1
+          sa.toSampleTarget.v0 sa.toSampleTarget.v1)
+        (uRS4Tangent p c0 c1 c2 c3 c4
+          sa.P1.X sa.P1.Y ua0 ua1 va0 va1
+          sa.toSampleTarget.u0 sa.toSampleTarget.u1
+          sa.toSampleTarget.v0 sa.toSampleTarget.v1))
+    (hr : isReduction' sa c0 c1 c2 c3 c4 ua0 ua1 va0 va1 hcur hgcd hcurT hgcdT)
+    (S : Finset H.Point)
+    (hsupp : ∀ P, P ∉ S → ordAt P
+      (X ^ 2 + C sa.toSampleTarget.u1 * X + C sa.toSampleTarget.u0)
+      (C sa.toSampleTarget.v1 * X + C sa.toSampleTarget.v0) = 0)
+    (hmem : divToPair H
+      (X ^ 2 + C sa.toSampleTarget.u1 * X + C sa.toSampleTarget.u0)
+      (C sa.toSampleTarget.v1 * X + C sa.toSampleTarget.v0) S ∈ Divisor0 H) :
+    sa.reducedClass = toJacobian D
+      ⟨divToPair H
+        (X ^ 2 + C sa.toSampleTarget.u1 * X + C sa.toSampleTarget.u0)
+        (C sa.toSampleTarget.v1 * X + C sa.toSampleTarget.v0) S, hmem⟩ := by
+  sorry
 
 /-! ## Task (B): the exceptional locus `Bad` (left abstract — see module
 docstring; Step 2 of the roadmap has to happen, empirically, before this
@@ -727,6 +899,23 @@ theorem decoupledSystem_zeroDimensional (p : ℕ) [Fact (Nat.Prime p)]
    should be expected to stay that way until (2) and (3) are substantially
    further along — its value right now is as a real, checkable target
    statement, not as a proof.
+4.5. **`ROADMAP-reduce-divisor-correctness.md` Steps 0.5/1/2 done this
+   pass**: the sign-convention check (§3c) confirmed `reducedClass`'s
+   minus-sign definition is correct as written, no fix needed; `isReduction'`
+   is now the load-bearing predicate (`isReductionOf` packages it as the
+   existential any future `isReduction` field should be instantiated with);
+   and `reducedClass_eq_of_isReduction'` above now TYPECHECKS as a named
+   `sorry`, closing the "state it, don't prove it yet" half of Step 2. Two
+   things flagged rather than resolved while stating it: (a) there is
+   genuinely no Mumford-pair-to-`Divisor H` function in
+   `PrincipalDivisorSubgroup.lean` — the statement above takes the
+   witnessing finite point set `S` and its `hsupp`/`hmem` facts as
+   hypotheses rather than computing them, which is the confirmed gap, not
+   an oversight; (b) whether `hsupp`'s exact shape (`S` = the coordinate
+   pair's full zero locus) is the right one to demand is left open for
+   Step 3 to determine empirically while attempting the proof. Step 3
+   itself (the three-lemma skeleton, §3a-§3e) is NOT attempted in this
+   pass, per the roadmap's own ordering.
 5. ~~**`decoupledSystem_zeroDimensional` is `sorry`**~~ **Closed this
    pass**, wired against `RegularSequenceFiniteQuotient.lean`'s
    `Module.Finite.quotient_of_isRegular_of_length_eq_card` (imported
