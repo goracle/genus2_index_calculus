@@ -312,7 +312,14 @@ structure SampleTargetFromAlpha (p : ℕ) [Fact (Nat.Prime p)]
   form `N(x)=E(x)²-f(x)Y(x)²`, divide out the known anchor/target factors,
   the quotient's roots are `reducedClass`'s Mumford data — but that
   algorithm is not ported here, so this field is still exactly as
-  unconstructed as before this pass. -/
+  unconstructed as before this pass.
+
+  **Update: `Reduce` now exists (`Reduce.AlphaReduce`/`Reduce.GeneralSharedRoot`,
+  `ReduceDispatchGeneral` specifically — the `h12`–`h34`-collision-free
+  dispatcher), at the level of concrete Mumford/affine coordinates
+  `F p × F p × F p × F p`. This field is NOT yet restated against it — see
+  `isReduction'` below for the restatement and exactly what's still
+  missing to make that the definition rather than a parallel candidate. -/
   isReduction : Prop
 
 /-- Convenience: read off `alpha`'s companion `alpha'` from a *pair* of
@@ -325,6 +332,117 @@ time. Purely notational; carries no new mathematical content beyond
 abbrev alphaPairDelta {p : ℕ} [Fact (Nat.Prime p)] {aClass : Jacobian H D}
     {δ₀ : H.Point} (sa sb : SampleTargetFromAlpha p H D aClass δ₀) : ℤ :=
   sa.alpha - sb.alpha
+
+/-! ## Restating `isReduction` against the now-existing `Reduce`
+
+`Reduce`/`ReduceGeneral`/`ReduceDispatchGeneral` (`Reduce.AlphaReduce`,
+`Reduce.GeneralSharedRoot`) exist and are `sorry`-free, but they work at
+the level of concrete coordinate pairs `F p × F p`, not the abstract
+`H.Point`/`Jacobian H D` level `SampleTargetFromAlpha` is stated at. Two
+bridges are needed to connect the two levels, and only one of them is
+buildable from what's on file in THIS session's upload:
+
+1. **`alpha • aClass`'s own Mumford pair `(ua0,ua1,va0,va1)`.** Per
+   `ROADMAP-alpha-locus.md`'s "`alpha • a` is NOT computed by `Reduce`"
+   resolution, this is supplied by the caller (whatever Cantor/group-law
+   code produced the DLP instance), not derived here — so it is added
+   below as an explicit hypothesis bundle, matching that resolution
+   exactly, not reopened as a new gap.
+2. **`H.Point → F p × F p`, the affine-coordinate projection.** This is
+   the one genuinely new gap this restatement surfaces: `Reduce`'s inputs
+   `P1 P2 : F p × F p` need to come from `SampleTargetFromAlpha`'s
+   `P1 P2 : H.Point` somehow, and nothing in this session's upload defines
+   that map — `HyperellipticPolynomial`/`AffinePoints.lean` (which define
+   `H.Point` itself) are not part of this upload, only reachable
+   transitively via `bridge.zip` per the file's own top-of-file import
+   note. Guessing `H.Point`'s field names here (whether it exposes
+   `.1`/`.2` directly, is a subtype of `F p × F p`, or something else)
+   would risk a proof term that looks plausible but doesn't typecheck
+   against the real definition, so this is left as an explicit named
+   hypothesis (`toCoords`) rather than invented. Once `H.Point`'s actual
+   shape is available, `toCoords` should collapse to a concrete
+   projection (likely `fun pt => (pt.x, pt.y)` or similar) and the
+   `isReduction'` predicate below should become provable-from-that rather
+   than assumed.
+
+**Update: gap 2 is closed.** `AffinePoints.lean` (now available this
+pass, from `bridge.zip`) defines `H.Point := {p : k × k // H.Equation
+p.1 p.2}` with real, already-proved projections `Point.X`/`Point.Y :
+H.Point → k` (`P.X := P.1.1`, `P.Y := P.1.2`) — so the coordinate
+extraction is `fun P => (P.X, P.Y) : H.Point → k × k`, a genuine
+definition, not a guess. `toCoords` below is accordingly no longer a free
+hypothesis; it is fixed to this projection. What remains open is only
+what the docstring above already separately flagged: whether this
+coordinate pair, for `H : HyperellipticPolynomial (F p)` specifically,
+is what `ReduceDispatchGeneral` actually needs to be fed (i.e. `Reduce`'s
+own correctness, unrelated to `toCoords`'s definedness). -/
+
+/-- **`isReduction`, restated against `ReduceDispatchGeneral`.** Specializes
+`k := F p` (the ambient section variable `k` is otherwise a generic field,
+but `Reduce`/`ReduceDispatchGeneral` are stated over `F p = ZMod p`
+specifically, so this definition needs a curve `H` fixed over that field,
+not left generic — matching how `SampleTarget p`'s own `(u0,u1,v0,v1)`
+fields are already `F p`-valued). Given:
+- `ua0 ua1 va0 va1 : F p`, `alpha • aClass`'s already-reduced Mumford pair
+  (gap 1 from the note above — supplied by the caller, per the roadmap's
+  resolution, not computed here);
+- `hcur`/`hgcd` (`P1 ≠ P2` branch) and `hcurT`/`hgcdT` (`P1 = P2` branch),
+  `ReduceDispatchGeneral`'s own case-split hypotheses, now demanding NO
+  pairwise `IsCoprime` facts among `P1,P2,u_a,` target (that's exactly
+  what `ReduceGeneral`/`GeneralSharedRoot.lean` bought over the plain
+  `Reduce`/`ReduceDispatch`) —
+
+asserts `.toSampleTarget`'s `(u0,u1,v0,v1)` literally equals
+`ReduceDispatchGeneral`'s output on `(sa.P1.X, sa.P1.Y)`, `(sa.P2.X,
+sa.P2.Y)` and `alpha • a`'s Mumford pair. This is a genuine equation with
+a computable RHS (unlike `isReduction` above, which names no witness),
+but it is a SEPARATE predicate, not a proof that `isReduction` holds —
+connecting the two still needs gap 1's data at any actual call site, and
+needs a theorem (not attempted here) that `reducedClass`'s
+divisor-class-level description and `ReduceDispatchGeneral`'s
+coordinate-level output agree, i.e. that `Reduce`'s algorithm is CORRECT
+(computes the Mumford reduction it claims to), which is exactly the open
+item `ROADMAP-alpha-locus.md`/`AlphaReduce.lean`'s own docstrings flag as
+"`Reduce`'s correctness... a fully open, not-yet-attempted theorem." -/
+def isReduction' {p : ℕ} [Fact (Nat.Prime p)] [Fact (p ≠ 2)]
+    {H : HyperellipticPolynomial (F p)} {D : PrincipalDivisorData H}
+    {aClass : Jacobian H D} {δ₀ : H.Point}
+    (sa : SampleTargetFromAlpha p H D aClass δ₀)
+    (c0 c1 c2 c3 c4 : F p) (ua0 ua1 va0 va1 : F p)
+    (hcur : (sa.P1.X, sa.P1.Y) ≠ (sa.P2.X, sa.P2.Y) →
+      curBeforeMonic4General p c0 c1 c2 c3 c4
+        (sa.P1.X, sa.P1.Y) (sa.P2.X, sa.P2.Y) ua0 ua1 va0 va1
+        sa.toSampleTarget.u0 sa.toSampleTarget.u1
+        sa.toSampleTarget.v0 sa.toSampleTarget.v1 ≠ 0)
+    (hgcd : (sa.P1.X, sa.P1.Y) ≠ (sa.P2.X, sa.P2.Y) →
+      IsCoprime (Ypoly4 p (sa.P1.X, sa.P1.Y) (sa.P2.X, sa.P2.Y)
+          ua0 ua1 va0 va1 sa.toSampleTarget.u0 sa.toSampleTarget.u1
+          sa.toSampleTarget.v0 sa.toSampleTarget.v1)
+        (uRS4General p c0 c1 c2 c3 c4
+          (sa.P1.X, sa.P1.Y) (sa.P2.X, sa.P2.Y) ua0 ua1 va0 va1
+          sa.toSampleTarget.u0 sa.toSampleTarget.u1
+          sa.toSampleTarget.v0 sa.toSampleTarget.v1))
+    (hcurT : (sa.P1.X, sa.P1.Y) = (sa.P2.X, sa.P2.Y) →
+      curBeforeMonic4Tangent p c0 c1 c2 c3 c4
+        sa.P1.X sa.P1.Y ua0 ua1 va0 va1
+        sa.toSampleTarget.u0 sa.toSampleTarget.u1
+        sa.toSampleTarget.v0 sa.toSampleTarget.v1 ≠ 0)
+    (hgcdT : (sa.P1.X, sa.P1.Y) = (sa.P2.X, sa.P2.Y) →
+      IsCoprime (Ypoly4Tangent p c0 c1 c2 c3 c4
+          sa.P1.X sa.P1.Y ua0 ua1 va0 va1
+          sa.toSampleTarget.u0 sa.toSampleTarget.u1
+          sa.toSampleTarget.v0 sa.toSampleTarget.v1)
+        (uRS4Tangent p c0 c1 c2 c3 c4
+          sa.P1.X sa.P1.Y ua0 ua1 va0 va1
+          sa.toSampleTarget.u0 sa.toSampleTarget.u1
+          sa.toSampleTarget.v0 sa.toSampleTarget.v1)) : Prop :=
+  (sa.toSampleTarget.u0, sa.toSampleTarget.u1,
+   sa.toSampleTarget.v0, sa.toSampleTarget.v1) =
+    ReduceDispatchGeneral p c0 c1 c2 c3 c4
+      (sa.P1.X, sa.P1.Y) (sa.P2.X, sa.P2.Y) ua0 ua1 va0 va1
+      sa.toSampleTarget.u0 sa.toSampleTarget.u1
+      sa.toSampleTarget.v0 sa.toSampleTarget.v1
+      hcur hgcd hcurT hgcdT
 
 /-! ## Task (B): the exceptional locus `Bad` (left abstract — see module
 docstring; Step 2 of the roadmap has to happen, empirically, before this

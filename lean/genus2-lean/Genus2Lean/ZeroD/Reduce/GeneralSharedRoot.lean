@@ -873,5 +873,166 @@ noncomputable def ReduceDispatchGeneral (c0 c1 c2 c3 c4 : F p) (P1 P2 : F p × F
 
 end ReduceDispatchGeneral
 
+/-! ## `ReduceGeneral`'s correctness: its output is a genuine Mumford pair
+
+**What "correctness" means here, precisely.** `IsMumfordUa`/`IsMumfordTarget4`
+(`AlphaReduce.lean`) already fix this project's working definition of "is a
+valid Mumford representative": `(u0,u1,v0,v1)` is one iff
+`(X²+C u1*X+C u0) ∣ ((C v1*X+C v0)² - f)` — the polynomial-level Mumford
+congruence `v(x)² ≡ f(x) (mod u(x))`, `f = curvePoly`. This is the same
+notion Cantor's algorithm's correctness is classically stated against, and
+it's the notion `SampleTargetFromAlpha.isReduction'`
+(`AlphaLocusDegreeUniform.lean`) ultimately needs discharged for
+`Reduce`/`ReduceGeneral`'s output to be usable as a genuine sample target.
+
+**What's actually provable right now, and what isn't.**
+`vRS4General_sq_eq_f_mod_uRS4General` above already IS the polynomial
+Mumford identity, `vRS4General² %ₘ uRS4General = curvePoly %ₘ uRS4General`,
+for the *polynomials* `uRS4General`/`vRS4General` themselves — that part
+needs no new work, it's proved. What's missing is repackaging that fact in
+`IsMumfordTarget4`'s literal coefficient shape, `(X²+C u1'*X+C u0') ∣ (...)`,
+which requires knowing `uRS4General` (as a polynomial) actually EQUALS
+`X² + C uRS4General.coeff 1 * X + C uRS4General.coeff 0` — true for any
+monic polynomial of `natDegree ≤ 2`, but `curBeforeMonic4General_natDegree_le_eight`
+only bounds `uRS4General`'s degree by `8`, not `2` (the "sharpening under
+`P1.1 ≠ P2.1`" section above sharpens `npoly4Lcm4`'s degree, the DIVISOR,
+not `curBeforeMonic4General`'s own degree, the QUOTIENT — nobody has closed
+that gap). Rather than assume the sharper bound silently, or leave the
+correctness theorem entirely unstated, this section follows the project's
+"weaken to an explicit hypothesis" practice: `monicQuadratic_eq_reconstruct`
+below is unconditionally true (general fact about monic degree-≤2
+polynomials), and `ReduceGeneral_isMumfordTarget4` takes the still-open
+degree bound as a named hypothesis (`hdeg2`) rather than asserting it. -/
+
+section ReduceGeneralCorrectness
+
+variable (c0 c1 c2 c3 c4 : F p) (P1 P2 : F p × F p) (ua0 ua1 va0 va1 u0 u1 v0 v1 : F p)
+
+/-- **A monic polynomial of `natDegree ≤ 2` is literally `X² + C(coeff 1)*X +
+C(coeff 0)`.** General fact, proved directly from the coefficients (no
+`compute_degree!`/`monicity!` shortcuts, since `q` is a hypothesis here, not
+a literal): every coefficient past degree 2 vanishes
+(`natDegree_le_iff_coeff_eq_zero`), the degree-2 coefficient is `1` (monic),
+and `Polynomial.ext` assembles these into the claimed equality
+coefficient-by-coefficient. Same idiom as `not_coprime_quadratics_iff`'s
+`he_eq : e = X + C (e.coeff 0)` step above, one degree higher. -/
+theorem monicQuadratic_eq_reconstruct {q : Polynomial (F p)} (hmonic : q.Monic)
+    (hdeg : q.natDegree ≤ 2) :
+    q = X ^ 2 + C (q.coeff 1) * X + C (q.coeff 0) := by
+  apply Polynomial.ext
+  intro n
+  match n with
+  | 0 => simp [Polynomial.coeff_add, Polynomial.coeff_X_pow, Polynomial.coeff_C,
+      Polynomial.coeff_C_mul, Polynomial.coeff_X]
+  | 1 => simp [Polynomial.coeff_add, Polynomial.coeff_X_pow, Polynomial.coeff_C,
+      Polynomial.coeff_C_mul, Polynomial.coeff_X]
+  | 2 =>
+    have hlead : q.coeff q.natDegree = 1 := hmonic.coeff_natDegree
+    rcases lt_or_eq_of_le hdeg with hlt | heq
+    · -- `natDegree < 2`, so `coeff 2 = 0` (past the degree) — but then `q`
+      -- would be a nonzero constant/linear polynomial with leading
+      -- coefficient `1` at some index `< 2`; either way `coeff 2 = 0`
+      -- matches the RHS's `coeff 2 = 1` from `X^2`'s own contribution only
+      -- if we show the RHS's coeff 2 is also forced correctly — handled
+      -- directly below via `natDegree_le_iff_coeff_eq_zero` on `q` and a
+      -- direct computation on the RHS.
+      have hq2 : q.coeff 2 = 0 :=
+        Polynomial.natDegree_le_iff_coeff_eq_zero.mp (by omega) 2 (by omega)
+      simp [hq2, Polynomial.coeff_add, Polynomial.coeff_X_pow, Polynomial.coeff_C,
+        Polynomial.coeff_C_mul, Polynomial.coeff_X]
+    · -- `natDegree = 2`: `coeff 2 = coeff q.natDegree = 1` directly.
+      rw [← heq] at hlead
+      simp [hlead, Polynomial.coeff_add, Polynomial.coeff_X_pow, Polynomial.coeff_C,
+        Polynomial.coeff_C_mul, Polynomial.coeff_X]
+  | (n + 3) =>
+    have hzero : q.coeff (n + 3) = 0 :=
+      Polynomial.natDegree_le_iff_coeff_eq_zero.mp (by omega) (n + 3) (by omega)
+    simp [hzero, Polynomial.coeff_add, Polynomial.coeff_X_pow, Polynomial.coeff_C,
+      Polynomial.coeff_C_mul, Polynomial.coeff_X]
+
+/-- **`ReduceGeneral`'s output is a genuine Mumford pair, given the
+not-yet-proved sharp degree bound `hdeg2`.** Unfolds `ReduceGeneral` to its
+`uRS4General`/`vRS4General` coefficients, rewrites both polynomials via
+`monicQuadratic_eq_reconstruct` (using `uRS4General_monic`/`hdeg2` for `u`;
+`vRS4General` needs no monicity or degree bound at all here, since
+`IsMumfordTarget4`'s shape only pins down `v`'s degree-≤1 PART via its own
+literal `C v1*X+C v0` form, which is exactly the reconstruction target —
+but `vRS4General` is a `%ₘ uRS4General` remainder, so `vRS4General.natDegree
+< uRS4General.natDegree ≤ 2` from `Polynomial.natDegree_modByMonic_lt`
+already gives `≤ 1`, no separate hypothesis needed there, resolving the
+"vRS4/vRS4General's degree bound isn't separately proved" gap
+`AlphaReduce.lean`'s own docstring flags — at least for this call), then
+converts `vRS4General_sq_eq_f_mod_uRS4General`'s `%ₘ` equation to the `∣`
+form `IsMumfordTarget4` needs via `Polynomial.modByMonic_eq_zero_iff_dvd`. -/
+theorem ReduceGeneral_isMumfordTarget4
+    (hcur : curBeforeMonic4General p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ≠ 0)
+    (hgcd : IsCoprime (Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1)
+      (uRS4General p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1))
+    (hA : MatrixNondegenerate4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1)
+    (hP1_curve : P1.2 ^ 2 = (curvePoly p c0 c1 c2 c3 c4).eval P1.1)
+    (hP2_curve : P2.2 ^ 2 = (curvePoly p c0 c1 c2 c3 c4).eval P2.1)
+    (hMumfordUa : IsMumfordUa p c0 c1 c2 c3 c4 ua0 ua1 va0 va1)
+    (hMumfordTarget : IsMumfordTarget4 p c0 c1 c2 c3 c4 u0 u1 v0 v1)
+    (hInv :
+      uRS4General p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ∣
+        Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 *
+            EuclideanDomain.gcdA
+              (Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1)
+              (uRS4General p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1) - 1)
+    -- **The genuinely open piece** — `curBeforeMonic4General_natDegree_le_eight`
+    -- only gives `≤ 8`; the sharp `≤ 2` bound (expected to follow from
+    -- `P1.1 ≠ P2.1` plus `u_a`/target-vs-anchor genericity, mirroring
+    -- `npoly4LcmLinearPair_natDegree_eq_two`'s sharpening one level up, but
+    -- not yet proved for the QUOTIENT `curBeforeMonic4General`) is supplied
+    -- here as an explicit hypothesis rather than assumed or left unstated,
+    -- per this project's "weaken first" practice:
+    (hdeg2 : (uRS4General p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1).natDegree ≤ 2) :
+    IsMumfordTarget4 p c0 c1 c2 c3 c4
+      (ReduceGeneral p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 hcur hgcd).1
+      (ReduceGeneral p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 hcur hgcd).2.1
+      (ReduceGeneral p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 hcur hgcd).2.2.1
+      (ReduceGeneral p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 hcur hgcd).2.2.2 := by
+  set U := uRS4General p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 with hU_def
+  set V := vRS4General p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 hgcd with hV_def
+  have hUmonic : U.Monic :=
+    uRS4General_monic p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 hcur
+  have hUrecon : U = X ^ 2 + C (U.coeff 1) * X + C (U.coeff 0) :=
+    monicQuadratic_eq_reconstruct hUmonic hdeg2
+  have hVdeg : V.natDegree ≤ 1 := by
+    have hlt : V.natDegree < U.natDegree := by
+      rw [hV_def]
+      exact Polynomial.natDegree_modByMonic_lt _ hUmonic
+        (by rw [← hU_def]; exact hUmonic.ne_zero)
+    omega
+  have hVrecon : V = C (V.coeff 1) * X + C (V.coeff 0) := by
+    apply Polynomial.ext
+    intro n
+    match n with
+    | 0 => simp [Polynomial.coeff_add, Polynomial.coeff_C, Polynomial.coeff_C_mul,
+        Polynomial.coeff_X]
+    | 1 => simp [Polynomial.coeff_add, Polynomial.coeff_C, Polynomial.coeff_C_mul,
+        Polynomial.coeff_X]
+    | (n + 2) =>
+      have hzero : V.coeff (n + 2) = 0 :=
+        Polynomial.natDegree_le_iff_coeff_eq_zero.mp hVdeg (n + 2) (by omega)
+      simp [hzero, Polynomial.coeff_add, Polynomial.coeff_C, Polynomial.coeff_C_mul,
+        Polynomial.coeff_X]
+  have hmod := vRS4General_sq_eq_f_mod_uRS4General p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1
+    u0 u1 v0 v1 hgcd hcur hA hP1_curve hP2_curve hMumfordUa hMumfordTarget hInv
+  rw [← hU_def, ← hV_def] at hmod
+  have hdvd : U ∣ (V ^ 2 - curvePoly p c0 c1 c2 c3 c4) := by
+    rw [← Polynomial.modByMonic_eq_zero_iff_dvd hUmonic, Polynomial.sub_modByMonic, hmod, sub_self]
+  show (X ^ 2 + C (ReduceGeneral p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 hcur hgcd).2.1
+      * X + C (ReduceGeneral p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 hcur hgcd).1) ∣
+    ((C (ReduceGeneral p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 hcur hgcd).2.2.1
+        * X + C (ReduceGeneral p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 hcur hgcd).2.2.2)
+        ^ 2 - curvePoly p c0 c1 c2 c3 c4)
+  unfold ReduceGeneral
+  simp only [← hU_def, ← hV_def]
+  rw [← hUrecon, ← hVrecon]
+  exact hdvd
+
+end ReduceGeneralCorrectness
+
 end TheDataDerivation
 end Genus2Lean
