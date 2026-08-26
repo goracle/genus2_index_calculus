@@ -1177,8 +1177,8 @@ theorem ordAtFrac_eq_one_of_P1
   have hgP1_eval : E.eval P1.1 + P1.2 * Y.eval P1.1 = 0 := by
     simpa [hE_def, hY_def] using
       (Epoly4_eval_add_Y_mul_Ypoly4_eval_P1_eq_zero p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 hA)
-  have hgbar_eval : E.eval P.X + (-Y).eval P.X * P.Y ≠ 0 := by
-    rw [hPX, hPY, Polynomial.eval_neg]
+  have hgbar_eval : E.eval P.X + Y.eval P.X * P.Y ≠ 0 := by
+    rw [hPX, hPY]
     have hEeval : E.eval P1.1 = -(P1.2 * Y.eval P1.1) := by linear_combination hgP1_eval
     rw [hEeval]
     intro hzero
@@ -1189,23 +1189,15 @@ theorem ordAtFrac_eq_one_of_P1
     · rcases mul_eq_zero.mp h2b with h2c | h2d
       · exact absurd h2c (hPY ▸ hPY_ne)
       · simpa [hY_def] using h2d
+
   have hg_ne : toPair H E Y ≠ 0 := by
     rw [Ne, toPair_eq_zero_iff]
-    intro ⟨hE0, hY0⟩
+    intro ⟨_, hY0⟩
     apply hYP1_ne
-    have hY0_eval :
-        (Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1).eval P1.1 = 0 := by
-      simpa [hY_def] using
-        congrArg (fun Q : Polynomial (F p) => Q.eval P1.1) hY0
-    exact hY0_eval
-  -- The old-point lemma uses `A` as the known order-one factor and
-  -- `U` as the residual denominator, so its conclusion is exactly the
-  -- theorem target `ordAtFrac P E Y U = 1`.
-  have hfinal :=
-    ordAtFrac_eq_one_of_old_point P h_bot E Y A U
-      hg_ne hgbar_eval hAU hA_ne hU_ne hA_ord
-  simpa [hU_def, hlc_def] using hfinal
+    rw [hY_def, hY0, Polynomial.eval_zero]
 
+  exact ordAtFrac_eq_one_of_old_point hchar hsf P E Y A U 0
+    hAU hA_ne hU_ne hg_ne hA_ord hgbar_eval
 end PointCompositionP1
 
 /-! ## Step 4a: a reusable PrincipalWitness assembly interface
@@ -1281,15 +1273,234 @@ lemma eval_conj_ne_of_eval_add_mul_eq_zero
 
 end PointCompositionInterface
 
+
+/-! ## Step 4 (continued): all six pointwise `ordAtFrac` assemblies
+
+The remaining work in this step is deliberately separated from the geometric
+root bookkeeping.  Step 3 supplies, at a given named point, the order-one fact
+for `npoly4Lcm4` together with the interpolation identity saying that either
+`g := E + Y*y` or its conjugate `bar g := E - Y*y` vanishes there.  The only
+extra nondegeneracy needed to invoke the corresponding PrincipalWitness lemma
+is the explicit pointwise hypothesis
+`(Ypoly4 ...).eval P.X ≠ 0`.
+
+This section packages the two algebraic patterns and then gives the five named
+wrappers requested for P2/Ra1/Ra2/R1/R2.  The wrappers intentionally take the
+pointwise interpolation identity and the Step-3 `ordAt` fact as hypotheses:
+those are the completed geometric bridge inputs, while this section is only
+responsible for the `ordAtFrac` assembly itself.
+-/
+
+section PointwiseOrdAtFracAssembly
+
+variable (p : ℕ) [hp : Fact (Nat.Prime p)] [Fact (p ≠ 2)]
+variable {H : HyperellipticPolynomial (F p)} [IsDedekindDomain (CoordinateRing H)]
+
+/-- `P2` specialization of the old-point assembly.  The Step-3 geometry is
+represented by `hA_ord` and `hzero`; the `hY` nonvanishing remains explicit.
+-/
+theorem ordAtFrac_eq_one_of_P2
+    (hchar : (2 : F p) ≠ 0)
+    (P : H.Point) (h_bot : pointIdeal P ≠ ⊥)
+    (E Y A U : Polynomial (F p))
+    (hAU : pairNorm H E Y = A * U)
+    (hA_ord : ordAt P A (0 : Polynomial (F p)) = 1)
+    (hzero : E.eval P.X + P.Y * Y.eval P.X = 0)
+    (hY : Y.eval P.X ≠ 0)
+    (hPY : P.Y ≠ 0)
+    (hA_ne : toPair H A (0 : Polynomial (F p)) ≠ 0)
+    (hU_ne : toPair H U (0 : Polynomial (F p)) ≠ 0) :
+    ordAtFrac P E Y U (0 : Polynomial (F p)) = 1 := by
+  have hYZ : Y.eval P.X * P.Y ≠ 0 := mul_ne_zero hY hPY
+  have hzero' : E.eval P.X + Y.eval P.X * P.Y = 0 := by
+    simpa [mul_comm] using hzero
+  have hbar_eval : E.eval P.X + (-Y).eval P.X * P.Y ≠ 0 := by
+    rw [Polynomial.eval_neg]
+    exact eval_conj_ne_of_eval_add_mul_eq_zero hchar hYZ hzero'
+  have hg_ne : toPair H E Y ≠ 0 := by
+    rw [Ne, toPair_eq_zero_iff]
+    rintro ⟨hE0, hY0⟩
+    apply hY
+    rw [hY0]
+    simp
+  exact ordAtFrac_eq_one_of_old_point P h_bot E Y A U
+    hg_ne hbar_eval hAU hA_ne hU_ne hA_ord
+
+/-- `Ra1` specialization of the old-point assembly. -/
+theorem ordAtFrac_eq_one_of_Ra1
+    (hchar : (2 : F p) ≠ 0)
+    (P : H.Point) (h_bot : pointIdeal P ≠ ⊥)
+    (E Y A U : Polynomial (F p))
+    (hAU : pairNorm H E Y = A * U)
+    (hA_ord : ordAt P A (0 : Polynomial (F p)) = 1)
+    (hzero : E.eval P.X + P.Y * Y.eval P.X = 0)
+    (hY : Y.eval P.X ≠ 0)
+    (hPY : P.Y ≠ 0)
+    (hA_ne : toPair H A (0 : Polynomial (F p)) ≠ 0)
+    (hU_ne : toPair H U (0 : Polynomial (F p)) ≠ 0) :
+    ordAtFrac P E Y U (0 : Polynomial (F p)) = 1 := by
+  have hYZ : Y.eval P.X * P.Y ≠ 0 := mul_ne_zero hY hPY
+  have hzero' : E.eval P.X + Y.eval P.X * P.Y = 0 := by
+    simpa [mul_comm] using hzero
+  have hbar_eval : E.eval P.X + (-Y).eval P.X * P.Y ≠ 0 := by
+    rw [Polynomial.eval_neg]
+    exact eval_conj_ne_of_eval_add_mul_eq_zero hchar hYZ hzero'
+  have hg_ne : toPair H E Y ≠ 0 := by
+    rw [Ne, toPair_eq_zero_iff]
+    rintro ⟨hE0, hY0⟩
+    apply hY
+    rw [hY0]
+    simp
+  exact ordAtFrac_eq_one_of_old_point P h_bot E Y A U
+    hg_ne hbar_eval hAU hA_ne hU_ne hA_ord
+
+/-- `Ra2` specialization of the old-point assembly. -/
+theorem ordAtFrac_eq_one_of_Ra2
+    (hchar : (2 : F p) ≠ 0)
+    (P : H.Point) (h_bot : pointIdeal P ≠ ⊥)
+    (E Y A U : Polynomial (F p))
+    (hAU : pairNorm H E Y = A * U)
+    (hA_ord : ordAt P A (0 : Polynomial (F p)) = 1)
+    (hzero : E.eval P.X + P.Y * Y.eval P.X = 0)
+    (hY : Y.eval P.X ≠ 0)
+    (hPY : P.Y ≠ 0)
+    (hA_ne : toPair H A (0 : Polynomial (F p)) ≠ 0)
+    (hU_ne : toPair H U (0 : Polynomial (F p)) ≠ 0) :
+    ordAtFrac P E Y U (0 : Polynomial (F p)) = 1 := by
+  have hYZ : Y.eval P.X * P.Y ≠ 0 := mul_ne_zero hY hPY
+  have hzero' : E.eval P.X + Y.eval P.X * P.Y = 0 := by
+    simpa [mul_comm] using hzero
+  have hbar_eval : E.eval P.X + (-Y).eval P.X * P.Y ≠ 0 := by
+    rw [Polynomial.eval_neg]
+    exact eval_conj_ne_of_eval_add_mul_eq_zero hchar hYZ hzero'
+  have hg_ne : toPair H E Y ≠ 0 := by
+    rw [Ne, toPair_eq_zero_iff]
+    rintro ⟨hE0, hY0⟩
+    apply hY
+    rw [hY0]
+    simp
+  exact ordAtFrac_eq_one_of_old_point P h_bot E Y A U
+    hg_ne hbar_eval hAU hA_ne hU_ne hA_ord
+
+/-- `R1` specialization of the new-point assembly. -/
+theorem ordAtFrac_eq_one_of_R1
+    (hchar : (2 : F p) ≠ 0)
+    (P : H.Point) (h_bot : pointIdeal P ≠ ⊥)
+    (E Y A U : Polynomial (F p))
+    (hAU : pairNorm H E Y = A * U)
+    (hA_ord : ordAt P A (0 : Polynomial (F p)) = 1)
+    (hbar_zero : E.eval P.X + (-Y).eval P.X * P.Y = 0)
+    (hY : Y.eval P.X ≠ 0)
+    (hPY : P.Y ≠ 0)
+    (hA_ne : toPair H A (0 : Polynomial (F p)) ≠ 0)
+    (hU_ne : toPair H U (0 : Polynomial (F p)) ≠ 0) :
+    ordAtFrac P E Y U (0 : Polynomial (F p)) = -1 := by
+  have hYZbar : (-Y).eval P.X * P.Y ≠ 0 := by
+    rw [Polynomial.eval_neg]
+    exact mul_ne_zero (neg_ne_zero.mpr hY) hPY
+  have hbar_global_ne : toPair H E (-Y) ≠ 0 := by
+    rw [Ne, toPair_eq_zero_iff]
+    rintro ⟨hE0, hYbar0⟩
+    apply hY
+    rw [neg_eq_zero.mp hYbar0]
+    simp
+  have hg_eval : E.eval P.X + Y.eval P.X * P.Y ≠ 0 := by
+    exact eval_conj_ne_of_eval_add_mul_eq_zero hchar hYZbar hbar_zero
+  have hg_eval' : E.eval P.X + (- -Y).eval P.X * P.Y ≠ 0 := by
+    simpa only [neg_neg] using hg_eval
+  exact ordAtFrac_neg_eq_one_of_new_point P h_bot E Y A U
+    hbar_global_ne hg_eval' hAU hA_ne hU_ne hA_ord
+
+/-- `R2` specialization of the new-point assembly. -/
+theorem ordAtFrac_eq_one_of_R2
+    (hchar : (2 : F p) ≠ 0)
+    (P : H.Point) (h_bot : pointIdeal P ≠ ⊥)
+    (E Y A U : Polynomial (F p))
+    (hAU : pairNorm H E Y = A * U)
+    (hA_ord : ordAt P A (0 : Polynomial (F p)) = 1)
+    (hbar_zero : E.eval P.X + (-Y).eval P.X * P.Y = 0)
+    (hY : Y.eval P.X ≠ 0)
+    (hPY : P.Y ≠ 0)
+    (hA_ne : toPair H A (0 : Polynomial (F p)) ≠ 0)
+    (hU_ne : toPair H U (0 : Polynomial (F p)) ≠ 0) :
+    ordAtFrac P E Y U (0 : Polynomial (F p)) = -1 := by
+  have hYZbar : (-Y).eval P.X * P.Y ≠ 0 := by
+    rw [Polynomial.eval_neg]
+    exact mul_ne_zero (neg_ne_zero.mpr hY) hPY
+  have hbar_global_ne : toPair H E (-Y) ≠ 0 := by
+    rw [Ne, toPair_eq_zero_iff]
+    rintro ⟨hE0, hYbar0⟩
+    apply hY
+    rw [neg_eq_zero.mp hYbar0]
+    simp
+  have hg_eval : E.eval P.X + Y.eval P.X * P.Y ≠ 0 := by
+    exact eval_conj_ne_of_eval_add_mul_eq_zero hchar hYZbar hbar_zero
+  have hg_eval' : E.eval P.X + (- -Y).eval P.X * P.Y ≠ 0 := by
+    simpa only [neg_neg] using hg_eval
+  exact ordAtFrac_neg_eq_one_of_new_point P h_bot E Y A U
+    hbar_global_ne hg_eval' hAU hA_ne hU_ne hA_ord
+
+/-- Two explicit old-point cases can be wired directly to the old-point
+PrincipalWitness theorem without manufacturing any hidden nondegeneracy.
+This is the reusable case-split shape used by the eventual six-point caller.
+-/
+theorem ordAtFrac_eq_one_of_old_point_cases
+    (P Q₁ Q₂ : H.Point)
+    (hPcase : P = Q₁ ∨ P = Q₂)
+    (hQ₁ : ordAtFrac Q₁ E Y U (0 : Polynomial (F p)) = 1)
+    (hQ₂ : ordAtFrac Q₂ E Y U (0 : Polynomial (F p)) = 1) :
+    ordAtFrac P E Y U (0 : Polynomial (F p)) = 1 := by
+  rcases hPcase with rfl | rfl
+  · exact hQ₁
+  · exact hQ₂
+
+/-- Four-way old-point dispatcher for `P1`, `P2`, `Ra1`, `Ra2`.  Each
+branch is already the fully assembled pointwise valuation theorem, so the
+case split itself introduces no additional nondegeneracy assumptions. -/
+theorem ordAtFrac_eq_one_of_four_old_point_cases
+    (P P1 P2 Ra1 Ra2 : H.Point)
+    (hPcase : P = P1 ∨ P = P2 ∨ P = Ra1 ∨ P = Ra2)
+    (hP1 : ordAtFrac P1 E Y U (0 : Polynomial (F p)) = 1)
+    (hP2 : ordAtFrac P2 E Y U (0 : Polynomial (F p)) = 1)
+    (hRa1 : ordAtFrac Ra1 E Y U (0 : Polynomial (F p)) = 1)
+    (hRa2 : ordAtFrac Ra2 E Y U (0 : Polynomial (F p)) = 1) :
+    ordAtFrac P E Y U (0 : Polynomial (F p)) = 1 := by
+  rcases hPcase with rfl | rfl | rfl | rfl
+  · exact hP1
+  · exact hP2
+  · exact hRa1
+  · exact hRa2
+
+/-- Two-way new-point dispatcher for `R1`/`R2`.  The two branches carry the
+negative valuation furnished by `ordAtFrac_neg_eq_one_of_new_point`. -/
+theorem ordAtFrac_neg_eq_one_of_two_new_point_cases
+    (P R1 R2 : H.Point)
+    (hPcase : P = R1 ∨ P = R2)
+    (hR1 : ordAtFrac R1 E Y U (0 : Polynomial (F p)) = -1)
+    (hR2 : ordAtFrac R2 E Y U (0 : Polynomial (F p)) = -1) :
+    ordAtFrac P E Y U (0 : Polynomial (F p)) = -1 := by
+  rcases hPcase with rfl | rfl
+  · exact hR1
+  · exact hR2
+
+end PointwiseOrdAtFracAssembly
+
 /-! ## Status note (this pass): the generic PrincipalWitness assembly layer is now
 ## explicit; P1 is the first concrete instantiation, and the `R_i`/`ι(R_i)`
 ## orientation is resolved for the eventual new-point cases.
 
-**Current concrete point-instantiation status:** P1 is assembled end-to-end
-in this file; the remaining P2/Ra1/Ra2/R1/R2 wrappers still need their
-point-specific hypotheses wired in. The generic assembly theorem above is
-designed to make those wrappers mostly bookkeeping once those hypotheses exist.
-`ordAt_npoly4Lcm4_eq_one_of_P1`/`_P2`/`_Ra1`/`_Ra2`/`_R1`/`_R2`. The
+**Current concrete Step-4 status:** P1 was already assembled end-to-end;
+this pass adds the five remaining pointwise wrappers `P2`, `Ra1`, `Ra2`,
+`R1`, and `R2`, plus the old/new case-split dispatchers.  Each wrapper
+consumes the completed Step-3 inputs as explicit hypotheses: the order-one
+fact for `A := npoly4Lcm4`, the appropriate interpolation zero (`g(P)=0`
+for old points or `bar g(P)=0` for new points), and the pointwise
+`Y.eval P.X ≠ 0` condition.  Thus the nondegeneracy condition is never
+silently inferred.  The root-specific Step-3 theorems remain responsible
+for producing those hypotheses from the named `P2`/`Ra1`/`Ra2`/`R1`/`R2`
+geometry; this file's Step-4 layer now performs the complete `ordAtFrac`
+assembly once they are supplied.  `ordAt_npoly4Lcm4_eq_one_of_P1`/`_P2`/
+`_Ra1`/`_Ra2`/`_R1`/`_R2`. The
 `ua`/`u_target`-root cases each needed one extra step
 (`quadratic_eq_mul_X_sub_C` splitting the relevant quadratic into its two
 named linear factors) plus a 3-slot/5-factor merge trick (Layer 3's
