@@ -714,7 +714,7 @@ gaps 2/3). Remaining gaps, left open rather than assumed free:
    `LPairCarrier`'s convention — for the divisor `(Q₁)+(Q₂)`). **Partially
    closed this session**: `mumfordB_ordInfOfPair` computes the pole-at-infinity
    order of the Mumford numerator itself exactly (`ordInfOfPair (-mumfordB Q₁
-   Q₂ hne) 1 = -7`, via the new degree bound `mumfordB_natDegree_le`), which is
+   Q₂ hne) 1 = -5`, via the new degree bound `mumfordB_natDegree_le`), which is
    the bookkeeping half `IsPoleBoundedAtPair`'s `ordInfOfPair A B ≥ ordInfOfPair
    A' B'` clause will need once a genuine "other side" pair exists. **Still
    open**: the other side (`A, B`, vanishing at whatever the "other" pair of

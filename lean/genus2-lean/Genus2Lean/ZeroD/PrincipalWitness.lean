@@ -83,7 +83,22 @@ hypotheses). Also done, this pass, following up on ChatGPT's second reply
 (`ordAtFrac_neg_eq_ordAt_of_pairNorm_eq_mul`, the residual-point mirror of
 lemma 8 — needs neither `hchar` nor `P.Y ≠ 0`, unlike lemma 8 itself,
 since it goes through lemma 4 rather than lemma 6's `rootMultiplicity`
-detour); and the three "layers" ChatGPT's follow-up reply recommended for
+detour). Also done, this pass: **lemma 13b**
+(`ordAtFrac_add_ordAtFracNeg_eq_ordAt_pairNorm_sub`, the unconditional `g`/
+`ḡ` sum identity — resolves, from the actual `ordAt_toPair_mul_of_ne_zero'`
+multiplicativity fact rather than a guess, what `h := g/U`'s OWN valuation
+is at a residual point given only lemma 13's conjugate-valuation fact) and
+**lemma 13c** (`ordAtFrac_eq_neg_one_of_residual_point`, the concrete `= -1`
+composition of lemma 13 + lemma 13b + lemma 7, for the standard "simple
+residual root, disjoint from the old/anchor factor" hypotheses) — together
+these settle a genuine three-way sign ambiguity (`+1`/`-1`/`-2`) that could
+not be resolved by inspection of lemmas 8/13's conclusions alone, since
+those two lemmas only ever state facts about `ḡ`'s (or `g`'s) OWN
+valuation at a point where that same function vanishes, never about `g`'s
+valuation at a point where `ḡ`, not `g`, vanishes — the sum identity is
+what bridges the two.
+
+The three "layers" ChatGPT's follow-up reply recommended for
 computing `ordAt P A 0` at the four/six named points WITHOUT going through
 `Polynomial.roots`: **Layer 1** (`ordAt_linX_eq_one_of_ne_zero`/
 `ordAt_linX_eq_zero_of_ne'`, thin restatements of the already-proved
@@ -668,6 +683,71 @@ theorem ordAtFrac_neg_eq_ordAt_of_pairNorm_eq_mul
   have hAU' : pairNorm H E (-Y) = A * U := by rw [pairNorm_neg_eq]; exact hAU
   unfold ordAtFrac
   rw [hN_eq_mult, hAU', ordAt_add_of_pairNorm_eq_mul P h_bot (A * U) A U rfl hA_ne hU_ne]
+  omega
+
+/-- **Lemma 13b of the stack (new): the unconditional `g`/`ḡ` sum identity
+for `ordAtFrac`, `h := g/U` versus `h̄ := ḡ/U`.** `g * ḡ = toPair H
+(pairNorm H E Y) 0` always (`toPair_pairNorm_eq_toPair_mul_toPair_neg`,
+no hypothesis needed beyond both factors being nonzero ring elements), so
+`ordAt_toPair_mul_of_ne_zero'` gives `ordAt P (pairNorm H E Y) 0 = ordAt P
+E Y + ordAt P E (-Y)` UNCONDITIONALLY — no `g(P) = 0`/`ḡ(P) = 0` case
+split needed at all, unlike lemmas 8/13 individually (which each need one
+side's evaluation-vanishing hypothesis to identify `ordAt P E Y` — or `E
+(-Y)` — with a `pairNorm`-rootMultiplicity fact in the first place). This
+is the bridge lemma the case-split assembly in `AlphaLocusDegreeUniform.lean`
+actually needs: given only lemma 13's `ordAtFrac P E (-Y) U 0 = ordAt P A 0`
+at a residual point (`ḡ` vanishes there), this lemma lets the caller solve
+for `ordAtFrac P E Y U 0` (i.e. `h`'s OWN valuation, not `h̄`'s) directly,
+via `ordAtFrac P E Y U 0 = (ordAt P (pairNorm H E Y) 0 - 2 • ordAt P U 0) -
+ordAtFrac P E (-Y) U 0`, itself following from unfolding both `ordAtFrac`s
+and this lemma's conclusion by `omega`-level arithmetic — resolving, from
+first principles rather than a guess, the exact question the last two
+ChatGPT rounds could not settle (whether `h`'s valuation at a residual
+point is `+1`, `-1`, or `-2`): it depends on `ordAt P (pairNorm H E Y) 0`
+and `ordAt P U 0` at that specific point, which the caller must supply,
+not on a universal constant. -/
+theorem ordAtFrac_add_ordAtFracNeg_eq_ordAt_pairNorm_sub
+    [IsDedekindDomain (CoordinateRing H)]
+    (P : H.Point) (h_bot : pointIdeal P ≠ ⊥) (E Y U : k[X])
+    (hg_ne : toPair H E Y ≠ 0) (hgbar_ne : toPair H E (-Y) ≠ 0) :
+    ordAtFrac P E Y U (0 : k[X]) + ordAtFrac P E (-Y) U (0 : k[X]) =
+      ordAt P (pairNorm H E Y) (0 : k[X]) - 2 * ordAt P U (0 : k[X]) := by
+  have hmul : ordAt P (pairNorm H E Y) (0 : k[X]) = ordAt P E Y + ordAt P E (-Y) :=
+    ordAt_toPair_mul_of_ne_zero' P h_bot E Y E (-Y) (pairNorm H E Y) (0 : k[X])
+      hg_ne hgbar_ne (toPair_pairNorm_eq_toPair_mul_toPair_neg E Y)
+  unfold ordAtFrac
+  omega
+
+/-- **Lemma 13c of the stack (new): `h`'s OWN valuation at a residual point,
+`ordAtFrac P E Y U 0 = -1`, given the standard "simple residual root"
+hypotheses.** This is the concrete number the case-split assembly in
+`AlphaLocusDegreeUniform.lean` needs at a root of `U` disjoint from `A`'s
+roots — resolved here, once, via lemma 13b plus lemma 7's `N = A*U`
+factorization applied at the bare-polynomial level (`ordAt P N 0 = ordAt P
+A 0 + ordAt P U 0`, via `ordAt_add_of_pairNorm_eq_mul`), rather than left
+to a per-call-site `omega` guess. Hypotheses: `hAU : pairNorm H E Y = A *
+U` (the standard factorization); `hA_ord : ordAt P A 0 = 0` (`P` is NOT a
+root of the old/anchor factor — the genuine "residual, not old" condition);
+`hU_ord : ordAt P U 0 = 1` (`P` IS a simple root of the new/residual
+factor); `hgbar_ne`/`hg_ne_eval` (lemma 13's own hypotheses, identifying
+`P` as a point where `ḡ` vanishes) so lemma 13 supplies `ordAtFrac P E
+(-Y) U 0 = ordAt P A 0 = 0` directly. -/
+theorem ordAtFrac_eq_neg_one_of_residual_point
+    [IsDedekindDomain (CoordinateRing H)]
+    (P : H.Point) (h_bot : pointIdeal P ≠ ⊥) (E Y A U : k[X])
+    (hg_ne : toPair H E Y ≠ 0)
+    (hgbar_ne : toPair H E (-Y) ≠ 0)
+    (hg_ne_eval : E.eval P.X + (-(-Y)).eval P.X * P.Y ≠ 0)
+    (hAU : pairNorm H E Y = A * U) (hA_ne : toPair H A (0 : k[X]) ≠ 0)
+    (hU_ne : toPair H U (0 : k[X]) ≠ 0)
+    (hA_ord : ordAt P A (0 : k[X]) = 0) (hU_ord : ordAt P U (0 : k[X]) = 1) :
+    ordAtFrac P E Y U (0 : k[X]) = -1 := by
+  have hbar : ordAtFrac P E (-Y) U (0 : k[X]) = ordAt P A (0 : k[X]) :=
+    ordAtFrac_neg_eq_ordAt_of_pairNorm_eq_mul P h_bot E Y A U hgbar_ne hg_ne_eval hAU hA_ne hU_ne
+  have hsum := ordAtFrac_add_ordAtFracNeg_eq_ordAt_pairNorm_sub P h_bot E Y U hg_ne hgbar_ne
+  have hN : ordAt P (pairNorm H E Y) (0 : k[X]) = ordAt P A (0 : k[X]) + ordAt P U (0 : k[X]) :=
+    ordAt_add_of_pairNorm_eq_mul P h_bot (pairNorm H E Y) A U hAU hA_ne hU_ne
+  rw [hN, hbar, hA_ord, hU_ord] at hsum
   omega
 
 /-- **Layer 1 (per ChatGPT's follow-up reply): `ordAt P (linX a) 0 = 1` at

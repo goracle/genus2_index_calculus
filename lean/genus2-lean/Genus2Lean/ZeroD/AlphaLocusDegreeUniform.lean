@@ -721,7 +721,23 @@ exist yet, so this addition is free; the anchor's own `u_a`-polynomial
 (`X^2+C ua1*X+C ua0`) is not needed as a separate parameter since (matching
 `u`/`v` above) only `va` feeds `divToPair` directly — `ua0,ua1` remain used
 elsewhere in this signature (`hcur`/`hgcd`/`hcurT`/`hgcdT`/`hr`) exactly as
-before. -/
+before.
+
+**Gap found and fixed this pass, before any proof attempt: `Sanchor` had
+no support hypothesis at all.** `S` (the target support) is properly
+constrained by `hsupp : ∀ P, P ∉ S → ordAt P (-v) 1 = 0` — i.e. `S`
+can only be as big as `(-v,1)`'s actual zero-divisor support, not an
+arbitrary `Finset H.Point`. `Sanchor` had no analogous hypothesis:
+nothing in the signature stopped `Sanchor` from being any `Finset` at
+all for which `hmemAnchor`'s degree-0 condition merely happened to
+hold, disconnected from `va`'s actual roots. That makes `hAlphaRep`
+satisfiable by an `Sanchor` that has nothing to do with the real anchor
+points, which would let the theorem be proved (or left unprovable) for
+reasons unrelated to the genuine Cantor-reduction content it's supposed
+to capture. Added `hsuppAnchor : ∀ P, P ∉ Sanchor → ordAt P (-va) 1 = 0`,
+the exact mirror of `hsupp`, closing this before Step 3's proof body is
+attempted. No downstream call sites exist yet (re-checked), so this is
+free. -/
 theorem reducedClass_eq_of_isReduction' {p : ℕ} [Fact (Nat.Prime p)] [Fact (p ≠ 2)]
     {H : HyperellipticPolynomial (F p)} [IsDedekindDomain (CoordinateRing H)]
     {D : PrincipalDivisorData H}
@@ -766,6 +782,7 @@ theorem reducedClass_eq_of_isReduction' {p : ℕ} [Fact (Nat.Prime p)] [Fact (p 
       + (Polynomial.C sa.toSampleTarget.u0 : Polynomial (F p)))
     (hv : v = (Polynomial.C sa.toSampleTarget.v1 : Polynomial (F p)) * (Polynomial.X : Polynomial (F p))
       + (Polynomial.C sa.toSampleTarget.v0 : Polynomial (F p)))
+    (hsuppAnchor : ∀ P, P ∉ Sanchor → ordAt (H := H) P (-va) 1 = 0)
     (hmemAnchor : (divToPair (H := H) (-va) 1 Sanchor - (2 : ℤ) • single δ₀ : Divisor H) ∈ Divisor0 H)
     (hAlphaRep : sa.alpha • aClass =
       toJacobian D (Subtype.mk (divToPair (H := H) (-va) 1 Sanchor - (2 : ℤ) • single δ₀ : Divisor H) hmemAnchor))
