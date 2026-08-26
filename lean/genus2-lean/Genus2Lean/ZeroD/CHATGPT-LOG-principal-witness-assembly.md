@@ -345,3 +345,26 @@ orientation question as the one remaining convention-dependent unknown —
 kept in full in this project's chat/session record; condensed into the
 roadmap's own status-update section rather than duplicated here
 verbatim a second time.]
+
+---
+
+## Reply to the deferred orientation/correction-term consultation — two
+## replies received (`g/ĝ` framing and `g/U` framing), condensed into
+## roadmap "Status update, pass #11"
+
+Two full ChatGPT replies came back for the question left open above (the
+`R_i` vs `ι(R_i)` orientation, and independent confirmation of the
+`-4•[δ₀]` correction term). Both replies are long and mathematically
+detailed (first derives `div(g/ĝ) = D_g - ι(D_g)` via the quotient-by-
+hyperelliptic-conjugate identity; second derives `div(g/U) = S - ι(Q1) -
+ι(Q2) - 4∞` directly). Full text not duplicated here — condensed into
+`ROADMAP-principal-witness-assembly.md`'s "Status update (this pass, #11)"
+section, which is the canonical record of what these replies confirm (the
+file's own `ι(R1),ι(R2)` orientation note, and the `-4•[δ₀]` correction
+term), what new caution they add (no auxiliary function can vanish at a
+proper subset of a witness's full zero locus without extra unaccounted
+zeros — pole order at infinity fixes total zero count), and one
+deferred alternative for item 1 (packaging the residual pair as
+`uRS4General`'s own Mumford data `(U,V)` instead of naming `ι(R1)`/
+`ι(R2)` as explicit points — flagged as a fallback, not adopted, since the
+explicit-point route is already confirmed sound and closer to done).

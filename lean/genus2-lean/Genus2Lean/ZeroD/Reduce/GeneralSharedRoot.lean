@@ -1144,6 +1144,59 @@ theorem vRS4General_sq_eq_f_mod_uRS4General
   have hmod := sq_mod_eq_of_dvd_4 hU hNu' hInv'
   simpa only [vRS4General, U, E, Y, G, f] using hmod
 
+set_option maxHeartbeats 4000000 in
+/-- **`uRS4General ∣ (Epoly4 + Ypoly4 * vRS4General)`, unconditional given
+`hInv` — the residual-pair analogue of `ua_dvd_Epoly4_add_Ypoly4_mul_va`/
+`u_dvd_Epoly4_add_Ypoly4_mul_v` (`AlphaReduce.lean`), but for
+`uRS4General`/`vRS4General` (the genuinely FRESH residual pair) instead of
+the INPUT `u_a`/`u_target` pairs those two lemmas cover.** This is the
+"Mumford pair, not named roots" bridge fact the "package as `(U,V)`"
+strategy (`ROADMAP-principal-witness-assembly.md`, "Status update, this
+pass, #11") needs: it lets a caller conclude `g(P) = 0` or `ḡ(P) = 0`
+directly from `P.X` being ANY root of `uRS4General`, without ever
+constructing that root as a named field element the way
+`Epoly4_eval_add_v_eval_mul_Ypoly4_eval_eq_zero_of_root_u` does for `u`.
+
+Proof, linear (not squared) analogue of `vRS4General_sq_eq_f_mod_uRS4General`'s
+own derivation: writing `U := uRS4General`, `E := Epoly4`, `Y := Ypoly4`,
+`G := EuclideanDomain.gcdA Y U`, `vRS4General` unfolds to `(-E*G) %ₘ U`.
+`Polynomial.dvd_modByMonic_sub` gives `U ∣ ((-E*G) %ₘ U) - (-E*G)`, i.e.
+`U ∣ V - (-E*G)` where `V := vRS4General`. Then
+`E + Y*V = E + Y*(-E*G) + Y*(V - (-E*G)) = E*(1 - Y*G) + Y*(V-(-E*G))`
+— the first summand is divisible by `U` via `hInv : U ∣ Y*G - 1` (negate
+and scale by `E`), the second directly via the remainder fact just
+derived (scale by `Y`) — so `U` divides the sum. This is the SAME `hInv`
+hypothesis `vRS4General_sq_eq_f_mod_uRS4General` already takes (Bézout
+invertibility of `Y` mod `U`), not a new assumption. -/
+theorem uRS4General_dvd_Epoly4_add_Ypoly4_mul_vRS4General
+    (hInv :
+      uRS4General p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ∣
+        Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 *
+            EuclideanDomain.gcdA
+              (Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1)
+              (uRS4General p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1) - 1) :
+    uRS4General p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ∣
+      (Epoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 +
+        Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 *
+          vRS4General p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 hgcd) := by
+  let U := uRS4General p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1
+  let E := Epoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1
+  let Y := Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1
+  let G := EuclideanDomain.gcdA Y U
+  have hV_def : vRS4General p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 hgcd =
+      (-E * G) %ₘ U := rfl
+  have hInv' : U ∣ Y * G - 1 := hInv
+  have hrem : U ∣ ((-E * G) %ₘ U) - (-E * G) := Polynomial.dvd_modByMonic_sub (-E * G) U
+  have hpart1 : U ∣ (Y * G - 1) * (-E) := dvd_mul_of_dvd_left hInv' (-E)
+  have hpart2 : U ∣ Y * (((-E * G) %ₘ U) - (-E * G)) := dvd_mul_of_dvd_right hrem Y
+  have hid : (Y * G - 1) * (-E) + Y * (((-E * G) %ₘ U) - (-E * G)) =
+      E + Y * ((-E * G) %ₘ U) := by ring
+  have hfinal : U ∣ (E + Y * ((-E * G) %ₘ U)) := by
+    rw [← hid]
+    exact dvd_add hpart1 hpart2
+  rw [hV_def]
+  exact hfinal
+
 end MumfordIdentity4General
 
 /-! ## `ReduceGeneral`: `Reduce`'s output, with `h12`–`h34` gone

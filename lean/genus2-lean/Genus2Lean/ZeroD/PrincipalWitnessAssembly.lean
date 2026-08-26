@@ -2143,7 +2143,283 @@ theorem ordAtFrac_neg_eq_one_of_two_new_point_cases
 
 end PointwiseOrdAtFracAssembly
 
-/-! ## Status note (this pass): the generic PrincipalWitness assembly layer is now
+/-! ## Step 4 (Mumford-pair strategy, per Claire's instruction): the residual
+## case discharged via `uRS4General`/`vRS4General`'s OWN Mumford data,
+## with no `H.Point` for the residual pair ever named
+
+Per `ROADMAP-principal-witness-assembly.md`'s "Status update (this pass,
+#11)", both ChatGPT replies suggested packaging the residual pair as
+`uRS4General`'s own Mumford data `(U, V) := (uRS4General, vRS4General)`
+rather than naming `ι(R1)`/`ι(R2)` as explicit `H.Point`s the way
+`PointCompositionR1`/`PointCompositionR2` (old-point case, per pass #13)
+do for `u_target`'s roots. This section implements that strategy for the
+GENUINELY residual pair (`uRS4General`'s own two roots — the fresh output
+of the reduction, distinct from `u_target`'s roots, which pass #13 already
+confirmed are old-support, not residual). Nothing here replaces
+`PointCompositionR1`/`R2` (those are correct, and about a different pair
+of points); this section is the piece that was previously missing
+entirely — no explicit-point composition for `uRS4General`'s own roots
+existed anywhere in this file before this pass.
+
+**The key move**: instead of extracting a named root `r` of `uRS4General`
+(which is what `Epoly4_eval_add_v_eval_mul_Ypoly4_eval_eq_zero_of_root_u`
+does for `u_target`), this section works directly with `P : H.Point` such
+that `uRS4General.eval P.X = 0` — i.e. `P` ranges over `uRS4General`'s
+zero locus abstractly, the same way `reducedClass_eq_of_isReduction'`'s
+own `S`/`hsupp` hypotheses already range over `(-v,1)`'s support without
+naming individual points. The new divisibility fact
+`uRS4General_dvd_Epoly4_add_Ypoly4_mul_vRS4General` (`GeneralSharedRoot.lean`,
+added this pass, same file/section as `vRS4General_sq_eq_f_mod_uRS4General`,
+same `hInv` hypothesis — no new assumption) is exactly the "no named root"
+analogue of `u_dvd_Epoly4_add_Ypoly4_mul_v`: derived via the SAME Bézout
+remainder idiom `vRS4General_sq_eq_f_mod_uRS4General`'s own proof uses
+(`Polynomial.dvd_modByMonic_sub` giving `U ∣ V - (-E*G)`, combined with
+`hInv : U ∣ Y*G - 1` scaled by `E`), just for the linear identity
+`E + Y*V ≡ 0` instead of the quadratic `V² ≡ f`. -/
+
+section MumfordPairResidualCase
+
+variable (p : ℕ) [hp : Fact (Nat.Prime p)] [Fact (p ≠ 2)]
+variable {H : HyperellipticPolynomial (F p)} [IsDedekindDomain (CoordinateRing H)]
+
+set_option maxHeartbeats 4000000 in
+/-- **The residual-point `ordAtFrac` fact, stated for ANY `P` with
+`P.X` a root of `uRS4General` — no named root, no `ι(R_i)`.** Given
+`P.X`'s root-membership in `uRS4General` (`huRoot`), `P.Y` matching
+`vRS4General`'s value at `P.X` up to sign (`hPY : P.Y = -vRS4General.eval
+P.X`). This residual case needs `ḡ(P) = 0` (`toPair H E (-Y)` vanishing),
+not `g(P) = 0` — matching `ordAtFrac_eq_one_of_R1`'s own `hbar_zero`-shaped
+hypothesis, lemma 13c's actual requirement. The `+`-sign divisibility fact
+`uRS4General_dvd_Epoly4_add_Ypoly4_mul_vRS4General` gives `E(P) +
+Y(P)*V(P) = 0`, i.e. `E(P) = -Y(P)*V(P)`; with `P.Y = -V(P)` this makes
+`ḡ(P) = E(P) - Y(P)*P.Y = -Y(P)*V(P) - Y(P)*(-V(P)) = 0`, and the usual
+nondegeneracy data (`P.Y ≠ 0`, `Ypoly4.eval P.X ≠ 0`, `ordAt P A 0 = 0` —
+`P` is genuinely NOT an old point), concludes `ordAtFrac P E Y U 0 = -1`
+directly via lemma 13c
+(`ordAtFrac_eq_neg_one_of_residual_point`, `PrincipalWitness.lean`).
+
+This is the residual-case analogue of `ordAtFrac_eq_one_of_R1_full`
+(the explicit-point route), but takes `huRoot : U.eval P.X = 0` and
+`hPY` as its geometric input instead of a named field element `R1` plus
+`htargetRoot1`/`hRne`/etc. Composing this with `hsupp`/`S` at the
+eventual `AlphaLocusDegreeUniform.lean` call site should mean: for
+`P ∈ S`, `hsupp`'s own definition of `S` (once pinned to `uRS4General`'s
+zero locus, matching this theorem's own `huRoot` hypothesis) supplies
+`huRoot` directly, with no per-point case split into "is `P` the first or
+second root" ever needed — the six-way case split (Step 4's
+`PointwiseOrdAtFracAssembly` dispatchers) collapses to a TWO-way split
+(`P ∈ Sold` vs `P ∈ S`) for the residual half. **This collapse is the
+actual payoff of the Mumford-pair strategy** — not proved as its own
+composed theorem in this pass (that composition needs `S`'s concrete
+definition fixed at the `AlphaLocusDegreeUniform.lean` call site, which
+is out of scope for this file per its own module docstring), but this
+theorem is the piece that makes it possible.
+
+**Build error found and fixed (this pass): `g`/`ḡ` branch confusion.**
+The first version of this proof derived `g(P) = 0` (`E(P) + P.Y*Y(P) =
+0`) from `huRoot`/`hPY`/`heval` and fed that into `hg_eval`/the final
+`ordAtFrac_eq_neg_one_of_residual_point` call — but lemma 13c's own
+signature (checked directly, `PrincipalWitness.lean`) needs `ḡ(P) = 0`
+or `g(P) ≠ 0`, matching `ordAtFrac_eq_one_of_R1`'s already-build-clean
+`hbar_zero`-shaped hypothesis, not `g(P) = 0`. Confirmed this is a real
+mismatch (not just a naming coincidence) by checking `ring`'s exact
+failure residue (`-(V*Y*2) = 0`, i.e. off by a factor of `2*Y*V` — the
+signature of a `g` vs `ḡ` sign flip, not a typo) and by cross-referencing
+`ordAtFrac_eq_one_of_R1`'s working pattern line-for-line. **Fixed** by
+renaming the derived fact to `hbar_zero : E.eval P.X + (-Y).eval P.X *
+P.Y = 0` (proved the same way, via `huRoot`/`hdvd`/`heval`, just with an
+extra `Polynomial.eval_neg` unfold before `hPY`) and deriving `hg_eval`
+(`g(P) ≠ 0`) from it via the standard char-`≠2` conjugate argument
+(same shape as `eval_conj_ne_of_eval_add_mul_eq_zero`'s own proof body).
+`hPY`'s signature-level negation (`P.Y = -vRS4General.eval P.X`) was
+NOT the bug and is unchanged — the doc comment above was corrected to
+explain why it needs to stay negated. The second error (`hg_eval`'s
+`simpa` mismatch, a `neg_neg`/`eval_neg` normal-form clash) is
+subsumed by this same rewrite — `hg_eval` is now proved directly rather
+than via `simpa using hgbar_eval`. **Still not build-tested — Claire's
+REPL to confirm.** One risk remains: `uRS4General_dvd_Epoly4_add_Ypoly4_mul_vRS4General`
+itself (`GeneralSharedRoot.lean`) is new this pass and not yet
+build-tested either — if it fails, this theorem fails with it, and the
+`GeneralSharedRoot.lean` proof should be checked first. -/
+theorem ordAtFrac_eq_neg_one_of_uRS4General_root
+    (hchar : (2 : F p) ≠ 0)
+    (c0 c1 c2 c3 c4 ua0 ua1 va0 va1 u0 u1 v0 v1 : F p)
+    (hf : H.f = curvePoly p c0 c1 c2 c3 c4)
+    (P1 P2 : F p × F p)
+    (hcurne : curBeforeMonic4General p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ≠ 0)
+    (hA : MatrixNondegenerate4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1)
+    (hP1_curve : P1.2 ^ 2 = (curvePoly p c0 c1 c2 c3 c4).eval P1.1)
+    (hP2_curve : P2.2 ^ 2 = (curvePoly p c0 c1 c2 c3 c4).eval P2.1)
+    (hMumfordUa : IsMumfordUa p c0 c1 c2 c3 c4 ua0 ua1 va0 va1)
+    (hMumfordTarget : IsMumfordTarget4 p c0 c1 c2 c3 c4 u0 u1 v0 v1)
+    (hgcd : IsCoprime (Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1)
+      (uRS4General p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1))
+    (hInv :
+      uRS4General p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ∣
+        Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 *
+            EuclideanDomain.gcdA
+              (Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1)
+              (uRS4General p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1) - 1)
+    (P : H.Point)
+    (huRoot : (uRS4General p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1).eval P.X = 0)
+    (hPY : P.Y = -(vRS4General p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 hgcd).eval P.X)
+    (hPY_ne : P.Y ≠ 0)
+    (hYP_ne : (Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1).eval P.X ≠ 0)
+    (A : Polynomial (F p))
+    (hA_def : A = npoly4Lcm4 p P1 P2 ua0 ua1 u0 u1)
+    (hA_ord : ordAt P A (0 : Polynomial (F p)) = 0) :
+    ordAtFrac P (Epoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1)
+      (Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1)
+      (C ((curBeforeMonic4General p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1).leadingCoeff) *
+        uRS4General p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1)
+      (0 : Polynomial (F p)) = -1 := by
+  have h_bot : pointIdeal P ≠ ⊥ := pointIdeal_ne_bot P
+  set E := Epoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 with hE_def
+  set Y := Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 with hY_def
+  set V := vRS4General p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 hgcd with hV_def
+  set lc := (curBeforeMonic4General p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1).leadingCoeff
+    with hlc_def
+  set U := C lc * uRS4General p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 with hU_def
+  -- `ḡ(P) = 0`: `E.eval P.X + (-Y).eval P.X * P.Y = 0`, from `huRoot`/`hInv`
+  -- via `uRS4General_dvd_Epoly4_add_Ypoly4_mul_vRS4General` evaluated at
+  -- `P.X` (giving `E(P) + Y(P)*V(P) = 0`), combined with `hPY : P.Y =
+  -- -V(P)`. This is the residual case's actual geometric fact — lemma 13c
+  -- needs `ḡ(P) = 0`/`g(P) ≠ 0`, matching `ordAtFrac_eq_one_of_R1`'s own
+  -- `hbar_zero`-shaped hypothesis, not `g(P) = 0`.
+  have hbar_zero : E.eval P.X + (-Y).eval P.X * P.Y = 0 := by
+    have hdvd := uRS4General_dvd_Epoly4_add_Ypoly4_mul_vRS4General p c0 c1 c2 c3 c4 P1 P2
+      ua0 ua1 va0 va1 u0 u1 v0 v1 hgcd hInv
+    have hrdvd : (Polynomial.X - Polynomial.C P.X) ∣
+        (uRS4General p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1) :=
+      Polynomial.dvd_iff_isRoot.mpr huRoot
+    have hfulldvd : (Polynomial.X - Polynomial.C P.X) ∣ (E + Y * V) :=
+      hrdvd.trans hdvd
+    have heval := Polynomial.dvd_iff_isRoot.mp hfulldvd
+    rw [Polynomial.IsRoot, Polynomial.eval_add, Polynomial.eval_mul] at heval
+    rw [Polynomial.eval_neg, hPY]
+    linear_combination heval
+  have hYZ : Y.eval P.X * P.Y ≠ 0 := mul_ne_zero hYP_ne hPY_ne
+  -- `g(P) ≠ 0`: the conjugate of `ḡ(P) = 0` under char ≠ 2. If it also
+  -- vanished, `ḡ(P) - g(P) = -2*Y(P)*P.Y = 0` forces `Y(P)*P.Y = 0`
+  -- (since `2 ≠ 0`), contradicting `hYZ`.
+  have hg_eval : E.eval P.X + (-(-Y)).eval P.X * P.Y ≠ 0 := by
+    rw [neg_neg]
+    intro hcontra
+    have hbar_zero' : E.eval P.X + -(Y.eval P.X) * P.Y = 0 := by
+      rw [← Polynomial.eval_neg]; exact hbar_zero
+    have h2 : (2 : F p) * (Y.eval P.X * P.Y) = 0 := by
+      linear_combination hcontra - hbar_zero'
+    rcases mul_eq_zero.mp h2 with h2c | h2yz
+    · exact absurd h2c hchar
+    · exact absurd h2yz hYZ
+  have hg_ne : toPair H E Y ≠ 0 := by
+    rw [Ne, toPair_eq_zero_iff]
+    rintro ⟨-, hY0⟩
+    apply hYP_ne
+    rw [hY0]; simp
+  have hgbar_global_ne : toPair H E (-Y) ≠ 0 := by
+    rw [Ne, toPair_eq_zero_iff]
+    rintro ⟨-, hY0⟩
+    apply hYP_ne
+    have : Y = 0 := neg_eq_zero.mp hY0
+    rw [this]; simp
+  have hAU : pairNorm H E Y = A * U := by
+    have hfact := Npoly4_eq_npoly4Lcm4_mul_uRS4General p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1
+      u0 u1 v0 v1 hcurne hA hP1_curve hP2_curve hMumfordUa hMumfordTarget
+    have hpn := pairNorm_eq_of_eq_curvePoly hf E Y
+    have hNpoly4_eq₀ : Npoly4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 =
+        E ^ 2 - curvePoly p c0 c1 c2 c3 c4 * Y ^ 2 := by
+      simp only [hE_def, hY_def]; rfl
+    rw [← hlc_def, ← hU_def, ← hA_def] at hfact
+    have hpn' : pairNorm H E Y = E ^ 2 - curvePoly p c0 c1 c2 c3 c4 * Y ^ 2 := by
+      rw [hpn]; ring
+    rw [hpn', ← hNpoly4_eq₀, hfact]
+  have hAmonic : A.Monic := by rw [hA_def]; exact npoly4Lcm4_monic p P1 P2 ua0 ua1 u0 u1
+  have hA_ne : toPair H A (0 : Polynomial (F p)) ≠ 0 := by
+    rw [Ne, toPair_eq_zero_iff]; exact fun h => hAmonic.ne_zero h.1
+  have hUmonic : (uRS4General p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1).Monic :=
+    uRS4General_monic p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 hcurne
+  have hU_ne0 : U ≠ 0 := by
+    rw [hU_def]
+    exact mul_ne_zero (Polynomial.C_ne_zero.mpr
+      ((not_congr Polynomial.leadingCoeff_eq_zero).mpr hcurne)) hUmonic.ne_zero
+  have hU_ne : toPair H U (0 : Polynomial (F p)) ≠ 0 := by
+    rw [Ne, toPair_eq_zero_iff]; exact fun h => hU_ne0 h.1
+  have hU_ord : ordAt P U (0 : Polynomial (F p)) = 1 := by
+    sorry -- Genuinely open: `ordAt P U 0 = 1` needs `P.X` a SIMPLE root of
+          -- `uRS4General` (squarefreeness of the residual quadratic), not
+          -- yet threaded through this theorem's hypothesis list. See the
+          -- trailing status note below for the precise scoping of this gap.
+  exact ordAtFrac_eq_neg_one_of_residual_point P h_bot E Y A U
+    hg_ne hgbar_global_ne hg_eval hAU hA_ne hU_ne hA_ord hU_ord
+
+end MumfordPairResidualCase
+
+/-! ## Status note (this pass): Mumford-pair residual case scoped and
+## mostly written; one genuine gap left as an honest `sorry`, not guessed
+
+Per Claire's instruction to implement the Mumford-pair strategy (packaging
+the residual pair as `uRS4General`/`vRS4General`'s own data rather than
+naming `ι(R1)`/`ι(R2)` as explicit points), this pass adds:
+
+1. **`uRS4General_dvd_Epoly4_add_Ypoly4_mul_vRS4General`**
+   (`GeneralSharedRoot.lean`, `MumfordIdentity4General` section, right
+   after `vRS4General_sq_eq_f_mod_uRS4General`) — the polynomial-level
+   divisibility fact `uRS4General ∣ (Epoly4 + Ypoly4 * vRS4General)`,
+   proved from the SAME `hInv` hypothesis
+   `vRS4General_sq_eq_f_mod_uRS4General` already takes, via the same
+   Bézout-remainder idiom (`Polynomial.dvd_modByMonic_sub` plus scaling),
+   just for the linear identity instead of the quadratic one. This is new
+   mathematical content (not previously on file in any form — confirmed
+   by grep before writing it), but low-risk: every step is either a
+   direct Mathlib lemma (`Polynomial.dvd_modByMonic_sub`) or `ring`/
+   `dvd_add`-level algebra, matching the file's own `sq_mod_eq_of_dvd_4`
+   proof style step-for-step.
+2. **`ordAtFrac_eq_neg_one_of_uRS4General_root`** (this file,
+   `MumfordPairResidualCase` section) — the residual-point `ordAtFrac`
+   fact for an ARBITRARY `P` with `P.X` a root of `uRS4General`, no named
+   root anywhere. Composes (1) with `Polynomial.dvd_iff_isRoot` (same
+   two-step idiom `Epoly4_eval_add_v_eval_mul_Ypoly4_eval_eq_zero_of_root_u`
+   uses, but applied to `P.X` directly rather than a separately-quantified
+   `r`), the `ḡ(P) ≠ 0`/`g(P) ≠ 0` sign-flip argument (copied from
+   `PointCompositionR1`'s own confirmed-shape argument), the exact
+   factorization equation (Step 1, already on file), and lemma 13c
+   (`ordAtFrac_eq_neg_one_of_residual_point`, `PrincipalWitness.lean`).
+
+**One genuine gap, left as an honest `sorry` rather than guessed**:
+`hU_ord : ordAt P U 0 = 1`. This needs `P.X` to be a SIMPLE root of
+`uRS4General` (i.e. `uRS4General` squarefree, or at least squarefree at
+this particular root) — a genuinely different fact from `huRoot`
+(`uRS4General.eval P.X = 0`, which only says `P.X` IS a root, not that
+it's simple). Every other explicit-point composition in this file
+(`PointCompositionRa1`/`Ra2`/`R1`/`R2`) gets this from `Layer 3`
+(`ordAt_unit_mul_A_eq_one_of_eval_ne_zero`, Step 3 above), which needs
+the OTHER named root and the OTHER quadratic's evaluation to both be
+nonzero at the point in question — i.e. it inherently used a two-roots-
+named setup to establish simplicity by exhibiting a distinct partner root.
+Since this section deliberately does NOT name `uRS4General`'s second root
+(that's the whole point of the strategy), `Layer 3`'s existing proof
+doesn't directly apply here, and no other on-file route to
+`uRS4General`'s squarefreeness (or simple-root-ness at `P.X` specifically)
+was found this pass. This is NOT a re-litigation of an already-resolved
+question (unlike the `ι(R_i)` orientation, which stays resolved and
+unaffected by this gap) — it's a new proof obligation specific to the
+"don't name the second root" strategy, and per this project's own
+convention (never fake past a `sorry`, search/ask rather than guess),
+left open rather than filled with an unjustified `omega`/`decide`.
+
+**Recommended next step**: either (a) thread a `Squarefree uRS4General`
+(or `IsCoprime (X - C P.X) ((uRS4General) /ₘ (X - C P.X))`-shaped simple-
+root) hypothesis into this theorem's signature — mirroring how
+`hnoroot34`/`hRne`-style hypotheses already supply exactly this kind of
+fact elsewhere in this file, just for `uRS4General`'s own two roots
+instead of across different quadratics — or (b) a fresh ChatGPT
+consultation on whether `uRS4General`'s squarefreeness follows from
+`hgcd`/`MatrixNondegenerate4` automatically (plausible, since a repeated
+root would likely break the Bézout/`gcdA`-invertibility `hInv`/`hgcd`
+already assume, but not yet checked). **Not attempted this pass** — this
+status note exists so the gap is precise and visible rather than silently
+absorbed into a guessed `sorry`-free proof. 
 ## explicit; P1 is the first concrete instantiation, and the `R_i`/`ι(R_i)`
 ## orientation is resolved for the eventual new-point cases.
 

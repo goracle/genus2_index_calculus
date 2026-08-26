@@ -932,3 +932,237 @@ four new theorems are confirmed build-clean, start the actual composition
 in `PrincipalWitnessAssembly.lean` (or a new file) for the `P1` case
 first (simplest — direct point, no root-naming layer), as a template
 before repeating the pattern five more times.
+
+## Status update (this pass, #11): pass #7's deferred ChatGPT consultation
+## reply received — CONFIRMS the file's own `ι(R1),ι(R2)` orientation and
+## the `-4•[δ₀]` correction term; adds one new caution and one alternative
+## worth flagging for item 1, not yet adopted
+
+Two replies came back (via `g/ĝ` and `g/U` framings respectively) to the
+pass-#7-flagged consultation. Both **independently confirm**, from first
+principles (not just pattern-matching against K=2), what
+`PrincipalWitnessAssembly.lean`'s own "Resolved this pass" note already
+concluded:
+
+- **`D_new`'s two points are the hyperelliptic conjugates of `g`'s own
+  selected residual zeros, not the zeros themselves** — the replies phrase
+  this as `S ~ ι(Q1)+ι(Q2)+4∞` (first reply's `Q_i` = this file's `R_i`,
+  `ι` = this file's conjugation), same conclusion as the in-file note's
+  `⟨R_i, -v(R_i)⟩` (i.e. `ι(R_i)`), not `⟨R_i, v(R_i)⟩`.
+- **The `-4•[δ₀]`-shaped leftover term is real and expected, not a bug** —
+  confirmed via an independent from-scratch pole-order recomputation
+  (`ordAt_∞ g = -8`, `ordAt_∞ U = -4`, net `-4∞`), matching item 2's
+  existing plan (`div(g) - div(U) = D_old - D_new - 4•[δ₀]`, via
+  `eq_of_coeffAt_eq`, bypassing `principalSubgroup`).
+
+**One new caution surfaced, not previously flagged anywhere in this
+roadmap**: don't attempt to build an auxiliary function vanishing at
+exactly a chosen 2 (or 4, or 6) of the old points with pole order matched
+to `g`'s. A nonconstant function with a single pole at infinity of order
+8 must have exactly 8 zeros counting multiplicity — it cannot vanish at
+only a proper subset of the 6+2 named points without additional,
+unaccounted-for zeros elsewhere. Concretely relevant here: this rules out
+ever looking for a "function vanishing at just `Ra1,Ra2` and `R1,R2`, not
+`P1,P2`" as a shortcut — any genuine witness function's zero locus is
+fixed by its own construction (`g`'s is exactly the 6+2 points;
+`uRS4General`'s is the residual quadratic's roots at both lifts if used
+as a bare `x`-polynomial), not choosable after the fact to match a
+target subset.
+
+**One alternative surfaced for item 1, flagged but NOT adopted this
+pass**: both replies suggest, for the eventual `∀P` assembly, packaging
+the residual pair as **`uRS4General`'s own Mumford data** (`(U, V)` with
+`V := vRS4General`) rather than naming `ι(R1)`/`ι(R2)` as two individual
+`H.Point`s at the call site. This would sidestep ever constructing
+`⟨R_i, -v(R_i)⟩` explicitly. This is a genuine alternative to the current
+plan (`PrincipalWitnessAssembly.lean`'s own note already commits to the
+explicit-point route via lemma 15 at each of `R1`/`R2`) — **not a
+correction of it**, since the explicit-point route is mathematically
+sound (confirmed by both replies) and already has all six point
+compositions built (`_full` theorems, passes #6-#13, all `P1`/`P2`/`Ra1`/
+`Ra2`/`R1`/`R2`). Adopting the `(U,V)`-packaged alternative now would mean
+discarding that already-built, not-yet-composed work in favor of an
+un-started different architecture. **Recommend**: keep the current
+explicit-point plan for item 1 (it is closer to done, and correct per
+both replies), and only reconsider the `(U,V)`-packaged alternative if the
+six-point `∀P` case-split assembly turns out to be significantly harder
+to close than expected — this is a fallback design to keep in mind, not
+a redirect to take now.
+
+**Not yet written as Lean this pass.** Nothing in `PrincipalWitnessAssembly.
+lean` was touched — this is purely a consultation-log update confirming
+existing Lean-side reasoning and recording one new caution plus one
+deferred design alternative. Item 1 (composing the six `_full` theorems
+into the `∀P` case split) and item 2 (the `-4•[δ₀]`-corrected
+`eq_of_coeffAt_eq` identity) remain exactly as scoped in status update
+#10/the file's own trailing note — this pass changes confidence, not
+scope.
+
+## Status update (this pass, #12): Claire instructed adopting the
+## Mumford-pair strategy after all — implemented for the residual case;
+## one new, genuine `sorry` surfaced (`uRS4General` simple-root-ness),
+## left honest rather than guessed
+
+Despite pass #11's "keep the explicit-point plan, treat `(U,V)` as a
+fallback" recommendation, Claire decided the Mumford-pair packaging is
+the better overall strategy and asked for it directly. Implemented for
+the genuinely residual pair (`uRS4General`'s own two roots — NOT
+`u_target`'s roots, which pass #13 already confirmed are old-support;
+`PointCompositionR1`/`R2` are unaffected and still correct, just about a
+different pair of points):
+
+1. **New lemma `uRS4General_dvd_Epoly4_add_Ypoly4_mul_vRS4General`**
+   (`GeneralSharedRoot.lean`, `MumfordIdentity4General` section,
+   immediately after `vRS4General_sq_eq_f_mod_uRS4General`) — the
+   polynomial-level fact `uRS4General ∣ (Epoly4 + Ypoly4 * vRS4General)`.
+   This did NOT already exist (confirmed by grep before writing): the
+   on-file `ua_dvd_.../u_dvd_...`-named lemmas are for the INPUT `u_a`/
+   `u_target` pairs, not the FRESH output pair. Derived from the SAME
+   `hInv` (Bézout invertibility of `Ypoly4` mod `uRS4General`) hypothesis
+   `vRS4General_sq_eq_f_mod_uRS4General` already needs — no new
+   assumption — via the same `Polynomial.dvd_modByMonic_sub`-based
+   remainder idiom that theorem's own proof uses, just for the linear
+   identity `E + Y·V ≡ 0` instead of the quadratic `V² ≡ f`.
+2. **New theorem `ordAtFrac_eq_neg_one_of_uRS4General_root`**
+   (`PrincipalWitnessAssembly.lean`, new `MumfordPairResidualCase`
+   section, right after `PointwiseOrdAtFracAssembly`) — the residual-case
+   `ordAtFrac` fact for an ARBITRARY `P` with `P.X` a root of
+   `uRS4General`, taking `huRoot : uRS4General.eval P.X = 0` and
+   `hPY : P.Y = -vRS4General.eval P.X` as its geometric input instead of
+   a named field element (`R1`) plus a separate second-root/`hRne`
+   disjointness hypothesis. This is the actual "no named `ι(R_i)`"
+   payoff the strategy promised, and (once composed with `hsupp`/`S` at
+   the `AlphaLocusDegreeUniform.lean` call site — not attempted this
+   pass, out of scope for `PrincipalWitnessAssembly.lean` per its own
+   module docstring) should collapse the residual half of the six-way
+   case split to a plain `P ∈ S` check, no sub-casing into "first or
+   second root" ever needed.
+
+**One new, genuine gap surfaced, left as an honest `sorry`, NOT guessed**:
+`ordAt P U 0 = 1` (i.e. `P.X` is a SIMPLE root of `uRS4General`) has no
+proof in this new theorem. Every existing explicit-point composition
+(`Ra1`/`Ra2`/`R1`/`R2`) gets this fact from Layer 3
+(`ordAt_unit_mul_A_eq_one_of_eval_ne_zero`), which establishes simplicity
+by exhibiting a DISTINCT second named root and checking the OTHER
+quadratic doesn't vanish there — an inherently "two roots named" argument.
+Since this section's whole point is NOT to name `uRS4General`'s second
+root, that argument doesn't transfer, and no on-file route to
+`uRS4General`'s squarefreeness (or simple-root-ness at an arbitrary root)
+was found this pass. **This is a real, new cost of the Mumford-pair
+strategy that pass #11 did not anticipate**: avoiding named roots for the
+"which point is this" bookkeeping trades that cost for a new
+"squarefreeness of `uRS4General`" proof obligation that the explicit-point
+route gets for free (by construction, via the second root). Flagged
+precisely in `PrincipalWitnessAssembly.lean`'s own trailing status note,
+with two candidate next steps (thread a `Squarefree uRS4General` hypothesis
+in directly, matching how `hnoroot34`/`hRne`-shaped hypotheses already do
+this elsewhere in the file; or ask ChatGPT whether squarefreeness follows
+automatically from `hgcd`/`MatrixNondegenerate4`, plausible but unchecked).
+**Not attempted this pass** — per project convention, left open rather
+than filled with a guessed `omega`/`decide`.
+
+**Not yet build-tested at all — Claire's REPL to confirm both new
+theorems.** Given the genuinely new mathematical content in (1)
+(previously unproved in any form) and the more intricate `set`/`rw`
+sequence in (2) (heavier than a typical "reuse an existing point
+composition" pass), risk here is higher than most of this project's
+recent passes — flagged honestly rather than claimed low-risk by
+default.
+
+## Status update (this pass, #13): heartbeat timeout fixed in
+## `uRS4General_dvd_Epoly4_add_Ypoly4_mul_vRS4General` — a `simp only
+## [vRS4General, ...]` mid-proof unfold/refold was the culprit
+
+Claire reported `(deterministic) timeout at whnf, maximum number of
+heartbeats (200000) has been reached` at `GeneralSharedRoot.lean:1147:0`
+— the declaration line of `uRS4General_dvd_Epoly4_add_Ypoly4_mul_vRS4General`
+itself (pass #12's new lemma). Diagnosed and fixed:
+
+- **Root cause**: the proof's `hV_def` step used
+  `set U := ... with hU_def` / `set E := ...` / etc., THEN
+  `simp only [vRS4General, ← hU_def, ← hE_def, ← hY_def, ← hG_def]` to
+  simultaneously unfold `vRS4General`'s own definition (itself a `%ₘ`/
+  `gcdA`/nested-application term) and re-fold the result back through the
+  `set`-introduced local abbreviations — an unfold-then-refold in one
+  `simp` call against a deeply nested definition, the same failure shape
+  this file's own docstrings elsewhere warn is expensive (`Npoly4`'s
+  `set`-introduced abbreviations, `Ra1_full`'s doc comment on large
+  polynomial `whnf`). `set ... with h` additionally keeps the original
+  term available for unification, compounding the cost.
+- **Fix**: switched from `set` to plain `let` (matching
+  `vRS4General_sq_eq_f_mod_uRS4General`'s OWN proof, right above this
+  lemma, which already uses `let` not `set` for exactly this reason), and
+  replaced the `simp only [vRS4General, ...]` unfold/refold with a direct
+  `rfl` — `vRS4General`'s definition, once `U`/`E`/`Y`/`G` are `let`-bound
+  to literally the same subterms `vRS4General`'s own body uses, reduces to
+  `(-E*G) %ₘ U` by definitional unfolding alone, no `simp` search needed.
+  Also restructured the proof's tail to build the `let`-stated conclusion
+  as its own `have hfinal`, then `rw [hV_def]; exact hfinal` at the very
+  end, instead of rewriting mid-proof — matches
+  `vRS4General_sq_eq_f_mod_uRS4General`'s own "prove in terms of the
+  `let`s, unfold only once, at the end" shape exactly.
+- **Belt-and-braces**: added `set_option maxHeartbeats 4000000 in` to
+  both this lemma and `ordAtFrac_eq_neg_one_of_uRS4General_root`
+  (`PrincipalWitnessAssembly.lean`, pass #12's other new theorem, which
+  has an even heavier declaration and was flagged pass #12 as unbuilt) —
+  matching `AlphaReduce.lean`'s own `sq_mod_eq_of_dvd_*` precedent for
+  this exact class of proof (large polynomial identities over `F p`).
+
+**Not yet build-tested — Claire's REPL to confirm the fix actually
+resolves the timeout** (the diagnosis matches this project's own
+documented failure pattern closely enough to be confident, but per
+project convention this is not claimed proven until confirmed). If the
+timeout persists even after this fix, the next thing to check is whether
+`ordAtFrac_eq_neg_one_of_uRS4General_root`'s OWN declaration (heavier
+than this lemma's) is the actual source rather than this one — Claire's
+error pointed at `GeneralSharedRoot.lean:1147`, so this lemma is the
+confirmed target, but the sibling theorem was fixed preemptively rather
+than waiting for a second report.
+
+## Status update (this pass, #14): two build errors from pass #13's own
+## fix, both caught and corrected — `set_option` placement and a
+## `dvd_add` argument-shape mismatch
+
+Claire reported two fresh errors from pass #13's edit, both introduced by
+that pass itself (not pre-existing):
+
+1. **`unexpected token 'set_option'; expected 'lemma'`** at
+   `GeneralSharedRoot.lean:1169:55` — pass #13 placed
+   `set_option maxHeartbeats 4000000 in` AFTER the theorem's doc comment
+   (between the comment and `theorem uRS4General_dvd_...`), the exact
+   violation of Claire's own stated convention ("set_option/omit keywords
+   must appear above doc comments, not between comment and theorem") this
+   project's preferences explicitly warn about. Ironic given pass #13 was
+   itself fixing an unrelated bug — the `set_option` line was added
+   correctly in `PrincipalWitnessAssembly.lean` (confirmed by direct
+   re-check: that one sits above its doc comment) but incorrectly in
+   `GeneralSharedRoot.lean`. **Fixed**: moved `set_option maxHeartbeats
+   4000000 in` to directly above the `/-- ... -/` doc comment.
+2. **`Application type mismatch`** on `dvd_add (Dvd.dvd.mul_left hInv'
+   ?m.220) ...` — pass #13's `hpart1`/`hpart2` used
+   `Dvd.dvd.mul_left h _` guessing it produces `U ∣ c * b` from `h : U ∣
+   b`, but the actual output shape didn't match the `E * (Y*G-1) * (-1)`
+   term `hid` needed, causing elaboration to fail with a metavariable
+   left over. **Fixed**: switched to `dvd_mul_of_dvd_left`/
+   `dvd_mul_of_dvd_right` — already used successfully elsewhere in this
+   exact codebase (`sq_mod_eq_of_dvd_step1_4`/`_step2_4`,
+   `AlphaReduce.lean`, confirmed by direct grep before reusing rather than
+   guessed again) — with their confirmed signatures (`dvd_mul_of_dvd_left
+   (h : a ∣ b) (c) : a ∣ b * c`, `dvd_mul_of_dvd_right (h : a ∣ b) (c) :
+   a ∣ c * b`). Rewrote `hid`'s algebraic identity to match the resulting
+   term shapes exactly (`(Y*G-1)*(-E) + Y*(rem) = E + Y*(V)`, checked by
+   hand: expands to `-E*Y*G + E + Y*V + Y*E*G = E + Y*V`, correct) rather
+   than leaving the mismatched shape from pass #13 in place.
+
+**Still not build-tested — Claire's REPL to confirm this time.** Both
+errors were straightforward mechanical mistakes (a misplaced keyword, a
+guessed lemma-application shape) rather than a wrong mathematical
+argument — the underlying algebra pass #13 described in prose was correct
+throughout; only the literal Lean syntax/term-shape was off. Flagging
+that this file's new content (this lemma and the untested
+`ordAtFrac_eq_neg_one_of_uRS4General_root` in `PrincipalWitnessAssembly.
+lean`) has now had two build-error rounds without a clean pass — if a
+third error surfaces, the next move should be pasting the exact
+`dvd_mul_of_dvd_left`/`_right`/`dvd_add` signatures from a Mathlib search
+before touching the proof again, rather than a third guess at term
+shapes.
