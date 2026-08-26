@@ -2215,29 +2215,54 @@ definition fixed at the `AlphaLocusDegreeUniform.lean` call site, which
 is out of scope for this file per its own module docstring), but this
 theorem is the piece that makes it possible.
 
-**Build error found and fixed (this pass): `g`/`ḡ` branch confusion.**
+**Build error found and fixed (previous pass): `g`/`ḡ` branch confusion,
+confirmed resolved — Claire's REPL reports this section now builds.**
 The first version of this proof derived `g(P) = 0` (`E(P) + P.Y*Y(P) =
 0`) from `huRoot`/`hPY`/`heval` and fed that into `hg_eval`/the final
 `ordAtFrac_eq_neg_one_of_residual_point` call — but lemma 13c's own
 signature (checked directly, `PrincipalWitness.lean`) needs `ḡ(P) = 0`
 or `g(P) ≠ 0`, matching `ordAtFrac_eq_one_of_R1`'s already-build-clean
-`hbar_zero`-shaped hypothesis, not `g(P) = 0`. Confirmed this is a real
-mismatch (not just a naming coincidence) by checking `ring`'s exact
-failure residue (`-(V*Y*2) = 0`, i.e. off by a factor of `2*Y*V` — the
-signature of a `g` vs `ḡ` sign flip, not a typo) and by cross-referencing
-`ordAtFrac_eq_one_of_R1`'s working pattern line-for-line. **Fixed** by
-renaming the derived fact to `hbar_zero : E.eval P.X + (-Y).eval P.X *
-P.Y = 0` (proved the same way, via `huRoot`/`hdvd`/`heval`, just with an
-extra `Polynomial.eval_neg` unfold before `hPY`) and deriving `hg_eval`
-(`g(P) ≠ 0`) from it via the standard char-`≠2` conjugate argument
-(same shape as `eval_conj_ne_of_eval_add_mul_eq_zero`'s own proof body).
-`hPY`'s signature-level negation (`P.Y = -vRS4General.eval P.X`) was
-NOT the bug and is unchanged — the doc comment above was corrected to
-explain why it needs to stay negated. The second error (`hg_eval`'s
-`simpa` mismatch, a `neg_neg`/`eval_neg` normal-form clash) is
-subsumed by this same rewrite — `hg_eval` is now proved directly rather
-than via `simpa using hgbar_eval`. **Still not build-tested — Claire's
-REPL to confirm.** One risk remains: `uRS4General_dvd_Epoly4_add_Ypoly4_mul_vRS4General`
+`hbar_zero`-shaped hypothesis, not `g(P) = 0`. Fixed by renaming the
+derived fact to `hbar_zero : E.eval P.X + (-Y).eval P.X * P.Y = 0` and
+deriving `hg_eval` (`g(P) ≠ 0`) from it via the standard char-`≠2`
+conjugate argument. `hPY`'s signature-level negation (`P.Y =
+-vRS4General.eval P.X`) was correct throughout and unchanged.
+
+**The `hU_ord`/squarefreeness gap (this pass): closed via a new scoped
+hypothesis, per a ChatGPT consultation confirming it's genuinely not
+derivable.** Asked ChatGPT directly whether `Squarefree uRS4General` (or
+simple-root-ness of `uRS4General` at `P.X`) follows from `hgcd`/`hInv`
+(Bézout invertibility of `Ypoly4` mod `uRS4General`) alone, or together
+with `uRS4General ∣ Npoly4 = E^2 - f*Y^2`. **Answer: no** — ChatGPT gave
+an explicit counterexample (`U = (X-r)^2`, `Y = 1`, `G = 1` satisfies
+`hInv` trivially since `Y*G - 1 = 0`; taking `E = f = 1` also satisfies
+`U ∣ N` trivially) showing a repeated root is fully compatible with both
+hypotheses. This matches the project's own existing convention:
+`Squarefree H.f` is ALREADY taken as a bare hypothesis everywhere else in
+this codebase (`LPairFinrankOneOrdAtFrac.lean`, `HyperellipticClassProof.lean`,
+etc. — grepped and confirmed, never derived), so following that same
+convention here rather than searching further for a derivation. Added
+two new hypotheses to this theorem's signature: `hsf : Squarefree H.f`
+(needed by `ordAt_linX_eq_one_of_ne_zero`, the existing Layer-1 lemma —
+NOT a new axiom, just wiring in what Layer 1 already requires) and
+`hUfac : ∃ Fco, uRS4General ... = linX P.X * Fco ∧ Fco.eval P.X ≠ 0` — the
+MINIMAL local fact actually needed (simple-root-ness of `uRS4General`
+AT `P.X` specifically, via an explicit factorization witness), not full
+`Squarefree uRS4General` (a stronger, global statement this proof never
+uses). This keeps the "no named second root" spirit of the Mumford-pair
+strategy: `hUfac`'s witness `Fco` is a polynomial, never a named field
+element for the second root's VALUE. `hU_ord` itself is now proved (no
+`sorry`) via the exact Layer-1/Layer-2 composition
+(`ordAt_linX_eq_one_of_ne_zero` + `ordAt_mul_eq_one_of_ordAt_eq_one_zero`)
+already used elsewhere in this file for the named-point cases, plus
+`ordAt_C_mul_eq` to strip the `C lc` unit scalar — same idiom as
+`ordAt_unit_mul_A_eq_one_of_eval_ne_zero` above. **Not yet build-tested —
+Claire's REPL to confirm**; the eventual `AlphaLocusDegreeUniform.lean`
+call site will need to supply `hUfac` concretely (almost certainly via
+`X^2 + bX + c = (X - r)*(X - r')` factorization once `uRS4General`'s
+actual two roots are in hand there — still no NAMED root needed in
+THIS file's signature, just at that downstream call site). One further
+risk remains: `uRS4General_dvd_Epoly4_add_Ypoly4_mul_vRS4General`
 itself (`GeneralSharedRoot.lean`) is new this pass and not yet
 build-tested either — if it fails, this theorem fails with it, and the
 `GeneralSharedRoot.lean` proof should be checked first. -/
@@ -2262,6 +2287,10 @@ theorem ordAtFrac_eq_neg_one_of_uRS4General_root
               (uRS4General p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1) - 1)
     (P : H.Point)
     (huRoot : (uRS4General p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1).eval P.X = 0)
+    (hsf : Squarefree H.f)
+    (hUfac : ∃ Fco : Polynomial (F p),
+      uRS4General p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 = linX P.X * Fco ∧
+        Fco.eval P.X ≠ 0)
     (hPY : P.Y = -(vRS4General p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 hgcd).eval P.X)
     (hPY_ne : P.Y ≠ 0)
     (hYP_ne : (Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1).eval P.X ≠ 0)
@@ -2346,17 +2375,38 @@ theorem ordAtFrac_eq_neg_one_of_uRS4General_root
   have hU_ne : toPair H U (0 : Polynomial (F p)) ≠ 0 := by
     rw [Ne, toPair_eq_zero_iff]; exact fun h => hU_ne0 h.1
   have hU_ord : ordAt P U (0 : Polynomial (F p)) = 1 := by
-    sorry -- Genuinely open: `ordAt P U 0 = 1` needs `P.X` a SIMPLE root of
-          -- `uRS4General` (squarefreeness of the residual quadratic), not
-          -- yet threaded through this theorem's hypothesis list. See the
-          -- trailing status note below for the precise scoping of this gap.
+    obtain ⟨Fco, hFeq, hFeval⟩ := hUfac
+    have hL : ordAt P (linX P.X) (0 : Polynomial (F p)) = 1 :=
+      ordAt_linX_eq_one_of_ne_zero hchar hsf P.X P h_bot rfl hPY_ne
+    have hF_ord : ordAt P Fco (0 : Polynomial (F p)) = 0 :=
+      ordAt_eq_zero_of_eval_ne_zero P Fco (0 : Polynomial (F p)) (by simpa using hFeval)
+    have hL_ne : toPair H (linX P.X) (0 : Polynomial (F p)) ≠ 0 := by
+      rw [Ne, toPair_eq_zero_iff]
+      exact fun ⟨hA, _⟩ => linX_ne_zero P.X hA
+    have hF_ne0 : Fco ≠ 0 := fun h => hFeval (by rw [h]; simp)
+    have hF_ne : toPair H Fco (0 : Polynomial (F p)) ≠ 0 := by
+      rw [Ne, toPair_eq_zero_iff]
+      exact fun ⟨hA, _⟩ => hF_ne0 hA
+    have hflat : ordAt P (linX P.X * Fco) (0 : Polynomial (F p)) = 1 :=
+      ordAt_mul_eq_one_of_ordAt_eq_one_zero P h_bot (linX P.X) Fco hL_ne hF_ne hL hF_ord
+    have hlc_ne : lc ≠ 0 := by
+      rw [hlc_def]
+      exact (not_congr Polynomial.leadingCoeff_eq_zero).mpr hcurne
+    have hflat_ne0 : (linX P.X * Fco : Polynomial (F p)) ≠ 0 :=
+      mul_ne_zero (linX_ne_zero P.X) hF_ne0
+    have hPQ : ¬ ((linX P.X * Fco : Polynomial (F p)) = 0 ∧ (0 : Polynomial (F p)) = 0) :=
+      fun h => hflat_ne0 h.1
+    have hstep := ordAt_C_mul_eq lc hlc_ne (linX P.X * Fco) (0 : Polynomial (F p)) hPQ P
+    rw [hU_def, hFeq]
+    simpa using hstep.trans hflat
   exact ordAtFrac_eq_neg_one_of_residual_point P h_bot E Y A U
     hg_ne hgbar_global_ne hg_eval hAU hA_ne hU_ne hA_ord hU_ord
 
 end MumfordPairResidualCase
 
-/-! ## Status note (this pass): Mumford-pair residual case scoped and
-## mostly written; one genuine gap left as an honest `sorry`, not guessed
+/-! ## Status note: Mumford-pair residual case scoped and written;
+## the one genuine gap (`hU_ord`) closed via a scoped hypothesis, not a
+## derivation — see update below
 
 Per Claire's instruction to implement the Mumford-pair strategy (packaging
 the residual pair as `uRS4General`/`vRS4General`'s own data rather than
@@ -2386,40 +2436,41 @@ naming `ι(R1)`/`ι(R2)` as explicit points), this pass adds:
    factorization equation (Step 1, already on file), and lemma 13c
    (`ordAtFrac_eq_neg_one_of_residual_point`, `PrincipalWitness.lean`).
 
-**One genuine gap, left as an honest `sorry` rather than guessed**:
-`hU_ord : ordAt P U 0 = 1`. This needs `P.X` to be a SIMPLE root of
-`uRS4General` (i.e. `uRS4General` squarefree, or at least squarefree at
-this particular root) — a genuinely different fact from `huRoot`
-(`uRS4General.eval P.X = 0`, which only says `P.X` IS a root, not that
-it's simple). Every other explicit-point composition in this file
-(`PointCompositionRa1`/`Ra2`/`R1`/`R2`) gets this from `Layer 3`
-(`ordAt_unit_mul_A_eq_one_of_eval_ne_zero`, Step 3 above), which needs
-the OTHER named root and the OTHER quadratic's evaluation to both be
-nonzero at the point in question — i.e. it inherently used a two-roots-
-named setup to establish simplicity by exhibiting a distinct partner root.
-Since this section deliberately does NOT name `uRS4General`'s second root
-(that's the whole point of the strategy), `Layer 3`'s existing proof
-doesn't directly apply here, and no other on-file route to
-`uRS4General`'s squarefreeness (or simple-root-ness at `P.X` specifically)
-was found this pass. This is NOT a re-litigation of an already-resolved
-question (unlike the `ι(R_i)` orientation, which stays resolved and
-unaffected by this gap) — it's a new proof obligation specific to the
-"don't name the second root" strategy, and per this project's own
-convention (never fake past a `sorry`, search/ask rather than guess),
-left open rather than filled with an unjustified `omega`/`decide`.
+**Update (this pass): the `sorry` is closed, via a scoped hypothesis, not
+a derivation.** `hU_ord : ordAt P U 0 = 1` needed `P.X` to be a SIMPLE
+root of `uRS4General` — genuinely different from `huRoot` (`P.X` IS a
+root, not necessarily a simple one). Every explicit-point composition
+elsewhere in this file gets this from `Layer 3`
+(`ordAt_unit_mul_A_eq_one_of_eval_ne_zero`), which inherently needs a
+named second root to establish simplicity — unavailable here by design
+(that's the whole point of the Mumford-pair strategy). Consulted ChatGPT
+on whether `uRS4General`'s squarefreeness (or simple-root-ness at `P.X`)
+follows automatically from `hgcd`/`hInv`/`MatrixNondegenerate4`: **it does
+not** — ChatGPT supplied an explicit counterexample (`U = (X-r)^2`, `Y =
+1` satisfies both `hInv` and `U ∣ Npoly4` trivially while `U` is maximally
+non-squarefree), closing off that route for good rather than leaving it
+an open question. This also matches the project's existing convention —
+`Squarefree H.f` is already a bare, never-derived hypothesis throughout
+this codebase.
 
-**Recommended next step**: either (a) thread a `Squarefree uRS4General`
-(or `IsCoprime (X - C P.X) ((uRS4General) /ₘ (X - C P.X))`-shaped simple-
-root) hypothesis into this theorem's signature — mirroring how
-`hnoroot34`/`hRne`-style hypotheses already supply exactly this kind of
-fact elsewhere in this file, just for `uRS4General`'s own two roots
-instead of across different quadratics — or (b) a fresh ChatGPT
-consultation on whether `uRS4General`'s squarefreeness follows from
-`hgcd`/`MatrixNondegenerate4` automatically (plausible, since a repeated
-root would likely break the Bézout/`gcdA`-invertibility `hInv`/`hgcd`
-already assume, but not yet checked). **Not attempted this pass** — this
-status note exists so the gap is precise and visible rather than silently
-absorbed into a guessed `sorry`-free proof. 
+**Fix applied**: added `hsf : Squarefree H.f` (wiring in what
+`ordAt_linX_eq_one_of_ne_zero`, i.e. Layer 1, already requires — not a
+new axiom) and `hUfac : ∃ Fco, uRS4General ... = linX P.X * Fco ∧ Fco.eval P.X
+≠ 0` to this theorem's signature — the MINIMAL local fact needed (simple-
+root-ness of `uRS4General` at `P.X` specifically, via an explicit
+factorization witness `F`), not the stronger global `Squarefree
+uRS4General`. Still no NAMED root anywhere in this file's signature —
+`hUfac`'s witness `Fco` is a polynomial, not a field-element value for the
+second root; naming that root's actual value (if ever needed) is pushed
+to the `AlphaLocusDegreeUniform.lean` call site, exactly where the
+Mumford-pair strategy's docstring already says root-specific bookkeeping
+belongs. `hU_ord` is now proved (no `sorry`) via the same Layer-1/Layer-2
+composition (`ordAt_linX_eq_one_of_ne_zero` +
+`ordAt_mul_eq_one_of_ordAt_eq_one_zero`) used elsewhere in this file for
+the named-point cases, plus `ordAt_C_mul_eq` to strip the `C lc` unit
+scalar. **Not yet build-tested — Claire's REPL to confirm** (the `g`/`ḡ`
+fix from the previous pass IS confirmed build-clean; this `hU_ord` fix is
+new and untested).
 ## explicit; P1 is the first concrete instantiation, and the `R_i`/`ι(R_i)`
 ## orientation is resolved for the eventual new-point cases.
 
