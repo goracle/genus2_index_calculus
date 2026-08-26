@@ -368,3 +368,46 @@ deferred alternative for item 1 (packaging the residual pair as
 `uRS4General`'s own Mumford data `(U,V)` instead of naming `ι(R1)`/
 `ι(R2)` as explicit points — flagged as a fallback, not adopted, since the
 explicit-point route is already confirmed sound and closer to done).
+
+## Reply received (pass #17 in the roadmap) — CONTRADICTS pass #11's own
+## `-4•[δ₀]` reading, and pass #11's own reply text (re-read) turns out to
+## support the correction, not the earlier summary of it
+
+Sent a fresh, precise prompt (`ROADMAP-principal-witness-assembly.md`
+pass #16) asking specifically how the `-4•[δ₀]` term interacts with
+`reducedClass`'s own `-2•[δ₀]`. **The reply flatly states `div(g)-
+div(u_new) = D_old - D_new - 4•[δ₀]` is NOT the correct literal `Divisor H`
+identity** — `Divisor H` is affine-only (no infinity slot), `δ₀` never
+enters `div_aff(g)-div_aff(u_new)` at all (it equals `A+C-I`, degree `2`,
+no `δ₀` term), and the actual net correction once `A,C,I` are each
+independently degree-0-normalized is `-2•[δ₀]`, not `-4•[δ₀]` (see
+roadmap's own "Status update, pass #17" for the full derivation: two
+`-2δ₀` copies from the old side, one `+2δ₀` added back from subtracting
+`I`'s own `-2δ₀`, net `-2δ₀`).
+
+**This directly contradicts this section's own condensed summary above**
+("independent confirmation of the `-4•[δ₀]` correction term"). Went back
+and re-read the ORIGINAL pass-#11 reply text (kept in this file, not just
+the roadmap's summary of it) to check whether the replies themselves said
+`-4•[δ₀]`, or whether that number was a summarization error introduced
+when condensing into the roadmap. **Finding: the second pass-#11 reply's
+own formula, quoted directly above, is `div(g/U) = S - ι(Q1) - ι(Q2) -
+4∞`** — note this is `-4∞` (a statement about the POLE at the point at
+infinity, i.e. a fact belonging to the separate, not-yet-formalized
+infinity/pole-order bookkeeping this project's `Divisor H` type
+deliberately excludes), NOT `-4•[δ₀]` (a coefficient on an AFFINE
+basepoint inside `Divisor H` itself. Conflating "`-4` at the point at
+infinity" with "`-4•[δ₀]` for some affine `δ₀`" was the actual error, and
+it happened at the condensing-into-roadmap step (this file's own summary
+line), not in either ChatGPT reply — both replies were internally correct
+about their own respective objects (`∞` vs `δ₀` are different points), the
+roadmap's summary just merged them. **Correcting the record here
+explicitly**: pass #11's `4∞` and pass #17's `-2•[δ₀]` are talking about
+DIFFERENT things (a pole at infinity vs. an affine basepoint correction)
+and are NOT in tension with each other once that's recognized — there is
+no actual contradiction in the mathematics, only in how pass #11's finding
+was summarized in the roadmap. Flagging this prominently since acting on
+the roadmap's summary alone (rather than the replies' own text) would have
+produced a false `-4•[δ₀]` theorem statement, caught only because pass #16
+happened to ask a fresh, precise-enough question to surface the
+discrepancy.

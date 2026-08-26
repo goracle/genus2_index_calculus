@@ -737,7 +737,27 @@ reasons unrelated to the genuine Cantor-reduction content it's supposed
 to capture. Added `hsuppAnchor : ∀ P, P ∉ Sanchor → ordAt P (-va) 1 = 0`,
 the exact mirror of `hsupp`, closing this before Step 3's proof body is
 attempted. No downstream call sites exist yet (re-checked), so this is
-free. -/
+free.
+
+**Checked this pass, not changed: whether `u` (the INPUT target Mumford
+pair fed into the K=4 interpolation) needs its own named support `Finset`,
+the way `ROADMAP-principal-witness-assembly.md`'s status-update #5 once
+proposed (`Sg := {P1,P2} ∪ Sanchor ∪ Starget`, routed through
+`divToPairRatio`/`principalSubgroup` membership).** That plan is
+SUPERSEDED, per that same roadmap's later status-update #7/`Principal
+WitnessAssembly.lean`'s own trailing note: `ordInfOfPair(Epoly4,Ypoly4) =
+-8` vs `ordInfOfPair(uRS4General,0) = -4` do not match, so
+`divToPairRatio`'s exact-pole-order-match requirement can never be
+satisfied by this witness — `principalSubgroup` membership was never the
+right tool here. The confirmed replacement route is a direct `div(g) -
+div(uRS4General) = D_old - D_new - 4•[δ₀]` identity via `eq_of_coeffAt_eq`
+(already on file, `PrincipalWitness.lean`), bypassing `principalSubgroup`
+and any `Sg`/`Su`-style support union entirely. No `Starget`-shaped
+hypothesis is added here accordingly — it would scaffold an abandoned
+plan. The proof body below is still `sorry`; the `eq_of_coeffAt_eq` route
+(and its `4•[δ₀]` correction-term bookkeeping) is the single largest
+remaining piece, per `PrincipalWitnessAssembly.lean`'s own trailing status
+note. -/
 theorem reducedClass_eq_of_isReduction' {p : ℕ} [Fact (Nat.Prime p)] [Fact (p ≠ 2)]
     {H : HyperellipticPolynomial (F p)} [IsDedekindDomain (CoordinateRing H)]
     {D : PrincipalDivisorData H}
