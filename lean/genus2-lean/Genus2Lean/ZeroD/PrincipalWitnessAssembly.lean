@@ -627,29 +627,447 @@ end GeometricInstantiation
 
 end GeometricBridge
 
-/-! ## Status note (this pass): Part D is genuinely started, not finished
+section GeometricInstantiationQuadratic
 
-`ordAt_npoly4Lcm4_eq_one_of_P1` is ONE of the six point-instantiations Part
-D needs (the `P1` case; `P2` is the exact mirror via `mul_comm`-style
-reshaping; `ua`'s two roots and `u_target`'s two roots additionally need
-`quadratic_eq_mul_X_sub_C` to split the quadratic factor into linear
-factors before this same technique applies, NOT attempted this pass). Not
-yet build-tested — Claire's REPL to confirm, in particular the `hshape`
-`ring` step and the final unit-nonzero assembly's associativity against
-`ordAt_unit_mul_A_eq_one_of_eval_ne_zero`'s expected argument order.
+variable (p : ℕ) [hp : Fact (Nat.Prime p)] [Fact (p ≠ 2)]
+variable {H : HyperellipticPolynomial (F p)} [IsDedekindDomain (CoordinateRing H)]
+
+/-- **`ordAt` of `npoly4Lcm4` at the point built from `Ra1`'s own
+coordinates is `1`**, where `Ra1, Ra2` are `ua`'s two distinct roots over
+`F p` (the split case; the irreducible-quadratic fork is out of scope,
+per the roadmap's "scope to the split case first" decision). Same overall
+composition as the `P1`/`P2` cases (`npoly4Lcm4_eq_flat_product` +
+`ordAt_unit_mul_A_eq_one_of_eval_ne_zero`), but with one extra step
+first: `quadratic_eq_mul_X_sub_C` rewrites `ua` itself into
+`(X-C Ra1)*(X-C Ra2)` before the flat product is reshaped. Since Layer
+3's underlying lemma only has 3 "other-factor" slots (`F₁ F₂ F₃`) and
+splitting `ua` leaves 4 remaining flat factors (`Ra2`, `P1`, `P2`,
+`u_target`), `P2` and `u_target` are merged into a single `F₃ := (X-C
+P2.1) * u_target`, discharged via `Polynomial.eval_mul`/`mul_ne_zero` —
+`F₁`/`F₂`/`F₃` carry no shape restriction in Layer 3's statement, only
+`eval a ≠ 0`, so this merge is free. -/
+theorem ordAt_npoly4Lcm4_eq_one_of_Ra1
+    (hchar : (2 : F p) ≠ 0) (hsf : Squarefree H.f)
+    (P1 P2 : F p × F p) (ua0 ua1 u0 u1 : F p)
+    (Ra1 Ra2 : F p)
+    (huaRoot1 : (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).IsRoot Ra1)
+    (huaRoot2 : (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).IsRoot Ra2)
+    (hRane : Ra1 ≠ Ra2)
+    (P : H.Point) (h_bot : pointIdeal P ≠ ⊥) (hPX : P.X = Ra1) (hPY : P.Y ≠ 0)
+    (h12 : P1.1 ≠ P2.1)
+    (hne34 : (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)) ≠ X ^ 2 + C u1 * X + C u0)
+    (hnoroot34 : ¬ ∃ r : F p, (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).eval r = 0 ∧
+        (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).eval r = 0)
+    (hP1ua : ¬ (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).eval P1.1 = 0)
+    (hP1target : ¬ (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).eval P1.1 = 0)
+    (hP2ua : ¬ (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).eval P2.1 = 0)
+    (hP2target : ¬ (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).eval P2.1 = 0)
+    (hRa1P1 : Ra1 ≠ P1.1) (hRa1P2 : Ra1 ≠ P2.1)
+    (hRa1target : ¬ (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).eval Ra1 = 0) :
+    ordAt P (npoly4Lcm4 p P1 P2 ua0 ua1 u0 u1) (0 : Polynomial (F p)) = 1 := by
+  rw [npoly4Lcm4_eq_flat_product p P1 P2 ua0 ua1 u0 u1 h12 hne34 hnoroot34
+    hP1ua hP1target hP2ua hP2target]
+  -- Split `ua` into its two named linear factors, then reshape so
+  -- `linX Ra1` sits at the front and `(X-C P2.1) * u_target` is merged
+  -- into a single `F₃` slot.
+  have huaSplit : (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)) =
+      (X - C Ra1) * (X - C Ra2) := by
+    have hmonic : (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).Monic := by monicity!
+    have hdeg : (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).natDegree = 2 := by
+      compute_degree!
+    exact quadratic_eq_mul_X_sub_C p hmonic hdeg huaRoot1 huaRoot2 hRane
+  have hshape :
+      (((X - C P1.1 : Polynomial (F p)) * (X - C P2.1)) *
+        ((X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)) * (X ^ 2 + C u1 * X + C u0))) =
+      ((linX Ra1 * (X - C Ra2 : Polynomial (F p))) *
+        (X - C P1.1)) * ((X - C P2.1) * (X ^ 2 + C u1 * X + C u0)) := by
+    simp only [linX]; rw [huaSplit]; ring
+  rw [hshape]
+  have hune : ∀ q : Polynomial (F p), q.Monic → q ≠ 0 → q.leadingCoeff⁻¹ ≠ 0 := by
+    intro q _ hq0
+    exact inv_ne_zero ((not_congr Polynomial.leadingCoeff_eq_zero).mpr hq0)
+  have hm1 : (X - C P1.1 : Polynomial (F p)).Monic := Polynomial.monic_X_sub_C _
+  have hm2 : (X - C P2.1 : Polynomial (F p)).Monic := Polynomial.monic_X_sub_C _
+  have hm3 : (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).Monic := by monicity!
+  have hm4 : (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).Monic := by monicity!
+  have hL12ne : (EuclideanDomain.lcm (X - C P1.1 : Polynomial (F p)) (X - C P2.1)) ≠ 0 :=
+    fun h => (EuclideanDomain.lcm_eq_zero_iff.mp h).elim hm1.ne_zero hm2.ne_zero
+  have hL34ne :
+      (EuclideanDomain.lcm (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p))
+        (X ^ 2 + C u1 * X + C u0)) ≠ 0 :=
+    fun h => (EuclideanDomain.lcm_eq_zero_iff.mp h).elim hm3.ne_zero hm4.ne_zero
+  have hGne :
+      (EuclideanDomain.gcd
+        (EuclideanDomain.lcm (X - C P1.1 : Polynomial (F p)) (X - C P2.1))
+        (EuclideanDomain.lcm (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p))
+          (X ^ 2 + C u1 * X + C u0))) ≠ 0 :=
+    fun h => hL12ne (EuclideanDomain.gcd_eq_zero_iff.mp h).1
+  have hgcd12ne : (EuclideanDomain.gcd (X - C P1.1 : Polynomial (F p)) (X - C P2.1)) ≠ 0 :=
+    fun h => hm1.ne_zero (EuclideanDomain.gcd_eq_zero_iff.mp h).1
+  have hgcd34ne :
+      (EuclideanDomain.gcd (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p))
+        (X ^ 2 + C u1 * X + C u0)) ≠ 0 :=
+    fun h => hm3.ne_zero (EuclideanDomain.gcd_eq_zero_iff.mp h).1
+  have hrawne : (npoly4LcmRaw p P1 P2 ua0 ua1 u0 u1) ≠ 0 :=
+    npoly4LcmRaw_ne_zero p P1 P2 ua0 ua1 u0 u1
+  have hF3_eval :
+      ((X - C P2.1 : Polynomial (F p)) * (X ^ 2 + C u1 * X + C u0)).eval Ra1 ≠ 0 := by
+    rw [Polynomial.eval_mul, Polynomial.eval_sub, Polynomial.eval_X, Polynomial.eval_C]
+    exact mul_ne_zero (sub_ne_zero.mpr hRa1P2) hRa1target
+  exact ordAt_unit_mul_A_eq_one_of_eval_ne_zero hchar hsf P h_bot _ _
+    (mul_ne_zero (mul_ne_zero (mul_ne_zero
+      ((not_congr Polynomial.leadingCoeff_eq_zero).mpr hrawne |> inv_ne_zero)
+      ((not_congr Polynomial.leadingCoeff_eq_zero).mpr hGne |> inv_ne_zero))
+      ((not_congr Polynomial.leadingCoeff_eq_zero).mpr hgcd12ne |> inv_ne_zero))
+      ((not_congr Polynomial.leadingCoeff_eq_zero).mpr hgcd34ne |> inv_ne_zero))
+    hPX hPY (X - C Ra2) (X - C P1.1) ((X - C P2.1) * (X ^ 2 + C u1 * X + C u0))
+    (by rw [hPX] at *; simpa using sub_ne_zero.mpr hRane)
+    (by rw [hPX] at *; simpa using sub_ne_zero.mpr hRa1P1)
+    (by rw [hPX] at *; exact hF3_eval)
+
+end GeometricInstantiationQuadratic
+
+section GeometricInstantiationQuadratic2
+
+variable (p : ℕ) [hp : Fact (Nat.Prime p)] [Fact (p ≠ 2)]
+variable {H : HyperellipticPolynomial (F p)} [IsDedekindDomain (CoordinateRing H)]
+
+/-- **`ordAt` of `npoly4Lcm4` at the point built from `Ra2`'s own
+coordinates is `1`** — the exact mirror of `ordAt_npoly4Lcm4_eq_one_of_Ra1`,
+with `Ra1`/`Ra2` swapped throughout: `linX Ra2` sits at the front, `(X-C
+Ra1)` is the designated-factor's companion, and the "no shared root"
+hypotheses are `Ra2`'s own versions. Same composition and same
+`P2`/`u_target` merge-into-`F₃` trick as the `Ra1` case. -/
+theorem ordAt_npoly4Lcm4_eq_one_of_Ra2
+    (hchar : (2 : F p) ≠ 0) (hsf : Squarefree H.f)
+    (P1 P2 : F p × F p) (ua0 ua1 u0 u1 : F p)
+    (Ra1 Ra2 : F p)
+    (huaRoot1 : (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).IsRoot Ra1)
+    (huaRoot2 : (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).IsRoot Ra2)
+    (hRane : Ra1 ≠ Ra2)
+    (P : H.Point) (h_bot : pointIdeal P ≠ ⊥) (hPX : P.X = Ra2) (hPY : P.Y ≠ 0)
+    (h12 : P1.1 ≠ P2.1)
+    (hne34 : (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)) ≠ X ^ 2 + C u1 * X + C u0)
+    (hnoroot34 : ¬ ∃ r : F p, (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).eval r = 0 ∧
+        (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).eval r = 0)
+    (hP1ua : ¬ (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).eval P1.1 = 0)
+    (hP1target : ¬ (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).eval P1.1 = 0)
+    (hP2ua : ¬ (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).eval P2.1 = 0)
+    (hP2target : ¬ (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).eval P2.1 = 0)
+    (hRa2P1 : Ra2 ≠ P1.1) (hRa2P2 : Ra2 ≠ P2.1)
+    (hRa2target : ¬ (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).eval Ra2 = 0) :
+    ordAt P (npoly4Lcm4 p P1 P2 ua0 ua1 u0 u1) (0 : Polynomial (F p)) = 1 := by
+  rw [npoly4Lcm4_eq_flat_product p P1 P2 ua0 ua1 u0 u1 h12 hne34 hnoroot34
+    hP1ua hP1target hP2ua hP2target]
+  -- Split `ua` into its two named linear factors, then reshape so
+  -- `linX Ra2` sits at the front and `(X-C P2.1) * u_target` is merged
+  -- into a single `F₃` slot.
+  have huaSplit : (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)) =
+      (X - C Ra1) * (X - C Ra2) := by
+    have hmonic : (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).Monic := by monicity!
+    have hdeg : (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).natDegree = 2 := by
+      compute_degree!
+    exact quadratic_eq_mul_X_sub_C p hmonic hdeg huaRoot1 huaRoot2 hRane
+  have hshape :
+      (((X - C P1.1 : Polynomial (F p)) * (X - C P2.1)) *
+        ((X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)) * (X ^ 2 + C u1 * X + C u0))) =
+      ((linX Ra2 * (X - C Ra1 : Polynomial (F p))) *
+        (X - C P1.1)) * ((X - C P2.1) * (X ^ 2 + C u1 * X + C u0)) := by
+    simp only [linX]; rw [huaSplit]; ring
+  rw [hshape]
+  have hune : ∀ q : Polynomial (F p), q.Monic → q ≠ 0 → q.leadingCoeff⁻¹ ≠ 0 := by
+    intro q _ hq0
+    exact inv_ne_zero ((not_congr Polynomial.leadingCoeff_eq_zero).mpr hq0)
+  have hm1 : (X - C P1.1 : Polynomial (F p)).Monic := Polynomial.monic_X_sub_C _
+  have hm2 : (X - C P2.1 : Polynomial (F p)).Monic := Polynomial.monic_X_sub_C _
+  have hm3 : (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).Monic := by monicity!
+  have hm4 : (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).Monic := by monicity!
+  have hL12ne : (EuclideanDomain.lcm (X - C P1.1 : Polynomial (F p)) (X - C P2.1)) ≠ 0 :=
+    fun h => (EuclideanDomain.lcm_eq_zero_iff.mp h).elim hm1.ne_zero hm2.ne_zero
+  have hL34ne :
+      (EuclideanDomain.lcm (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p))
+        (X ^ 2 + C u1 * X + C u0)) ≠ 0 :=
+    fun h => (EuclideanDomain.lcm_eq_zero_iff.mp h).elim hm3.ne_zero hm4.ne_zero
+  have hGne :
+      (EuclideanDomain.gcd
+        (EuclideanDomain.lcm (X - C P1.1 : Polynomial (F p)) (X - C P2.1))
+        (EuclideanDomain.lcm (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p))
+          (X ^ 2 + C u1 * X + C u0))) ≠ 0 :=
+    fun h => hL12ne (EuclideanDomain.gcd_eq_zero_iff.mp h).1
+  have hgcd12ne : (EuclideanDomain.gcd (X - C P1.1 : Polynomial (F p)) (X - C P2.1)) ≠ 0 :=
+    fun h => hm1.ne_zero (EuclideanDomain.gcd_eq_zero_iff.mp h).1
+  have hgcd34ne :
+      (EuclideanDomain.gcd (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p))
+        (X ^ 2 + C u1 * X + C u0)) ≠ 0 :=
+    fun h => hm3.ne_zero (EuclideanDomain.gcd_eq_zero_iff.mp h).1
+  have hrawne : (npoly4LcmRaw p P1 P2 ua0 ua1 u0 u1) ≠ 0 :=
+    npoly4LcmRaw_ne_zero p P1 P2 ua0 ua1 u0 u1
+  have hF3_eval :
+      ((X - C P2.1 : Polynomial (F p)) * (X ^ 2 + C u1 * X + C u0)).eval Ra2 ≠ 0 := by
+    rw [Polynomial.eval_mul, Polynomial.eval_sub, Polynomial.eval_X, Polynomial.eval_C]
+    exact mul_ne_zero (sub_ne_zero.mpr hRa2P2) hRa2target
+  exact ordAt_unit_mul_A_eq_one_of_eval_ne_zero hchar hsf P h_bot _ _
+    (mul_ne_zero (mul_ne_zero (mul_ne_zero
+      ((not_congr Polynomial.leadingCoeff_eq_zero).mpr hrawne |> inv_ne_zero)
+      ((not_congr Polynomial.leadingCoeff_eq_zero).mpr hGne |> inv_ne_zero))
+      ((not_congr Polynomial.leadingCoeff_eq_zero).mpr hgcd12ne |> inv_ne_zero))
+      ((not_congr Polynomial.leadingCoeff_eq_zero).mpr hgcd34ne |> inv_ne_zero))
+    hPX hPY (X - C Ra1) (X - C P1.1) ((X - C P2.1) * (X ^ 2 + C u1 * X + C u0))
+    (by rw [hPX] at *; simpa using sub_ne_zero.mpr hRane.symm)
+    (by rw [hPX] at *; simpa using sub_ne_zero.mpr hRa2P1)
+    (by rw [hPX] at *; exact hF3_eval)
+
+end GeometricInstantiationQuadratic2
+
+section GeometricInstantiationQuadratic3
+
+variable (p : ℕ) [hp : Fact (Nat.Prime p)] [Fact (p ≠ 2)]
+variable {H : HyperellipticPolynomial (F p)} [IsDedekindDomain (CoordinateRing H)]
+
+/-- **`ordAt` of `npoly4Lcm4` at the point built from `R1`'s own
+coordinates is `1`**, where `R1, R2` are `u_target`'s two distinct roots
+over `F p` (split case, per the same scoping as `Ra1`/`Ra2`). Mirrors
+`ordAt_npoly4Lcm4_eq_one_of_Ra1` with the roles of `ua` and `u_target`
+swapped: `u_target` is the quadratic that gets split via
+`quadratic_eq_mul_X_sub_C`, `linX R1` is the designated factor, `(X-C R2)`
+its companion, and `ua`/`P2` are merged into `F₃` this time (the mirror
+of `Ra1`'s `P2`/`u_target` merge). -/
+theorem ordAt_npoly4Lcm4_eq_one_of_R1
+    (hchar : (2 : F p) ≠ 0) (hsf : Squarefree H.f)
+    (P1 P2 : F p × F p) (ua0 ua1 u0 u1 : F p)
+    (R1 R2 : F p)
+    (htargetRoot1 : (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).IsRoot R1)
+    (htargetRoot2 : (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).IsRoot R2)
+    (hRne : R1 ≠ R2)
+    (P : H.Point) (h_bot : pointIdeal P ≠ ⊥) (hPX : P.X = R1) (hPY : P.Y ≠ 0)
+    (h12 : P1.1 ≠ P2.1)
+    (hne34 : (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)) ≠ X ^ 2 + C u1 * X + C u0)
+    (hnoroot34 : ¬ ∃ r : F p, (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).eval r = 0 ∧
+        (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).eval r = 0)
+    (hP1ua : ¬ (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).eval P1.1 = 0)
+    (hP1target : ¬ (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).eval P1.1 = 0)
+    (hP2ua : ¬ (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).eval P2.1 = 0)
+    (hP2target : ¬ (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).eval P2.1 = 0)
+    (hR1P1 : R1 ≠ P1.1) (hR1P2 : R1 ≠ P2.1)
+    (hR1ua : ¬ (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).eval R1 = 0) :
+    ordAt P (npoly4Lcm4 p P1 P2 ua0 ua1 u0 u1) (0 : Polynomial (F p)) = 1 := by
+  rw [npoly4Lcm4_eq_flat_product p P1 P2 ua0 ua1 u0 u1 h12 hne34 hnoroot34
+    hP1ua hP1target hP2ua hP2target]
+  -- Split `u_target` into its two named linear factors, then reshape so
+  -- `linX R1` sits at the front and `(X-C P2.1) * ua` is merged into a
+  -- single `F₃` slot.
+  have htargetSplit : (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)) =
+      (X - C R1) * (X - C R2) := by
+    have hmonic : (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).Monic := by monicity!
+    have hdeg : (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).natDegree = 2 := by
+      compute_degree!
+    exact quadratic_eq_mul_X_sub_C p hmonic hdeg htargetRoot1 htargetRoot2 hRne
+  have hshape :
+      (((X - C P1.1 : Polynomial (F p)) * (X - C P2.1)) *
+        ((X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)) * (X ^ 2 + C u1 * X + C u0))) =
+      ((linX R1 * (X - C R2 : Polynomial (F p))) *
+        (X - C P1.1)) * ((X - C P2.1) * (X ^ 2 + C ua1 * X + C ua0)) := by
+    simp only [linX]; rw [htargetSplit]; ring
+  rw [hshape]
+  have hune : ∀ q : Polynomial (F p), q.Monic → q ≠ 0 → q.leadingCoeff⁻¹ ≠ 0 := by
+    intro q _ hq0
+    exact inv_ne_zero ((not_congr Polynomial.leadingCoeff_eq_zero).mpr hq0)
+  have hm1 : (X - C P1.1 : Polynomial (F p)).Monic := Polynomial.monic_X_sub_C _
+  have hm2 : (X - C P2.1 : Polynomial (F p)).Monic := Polynomial.monic_X_sub_C _
+  have hm3 : (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).Monic := by monicity!
+  have hm4 : (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).Monic := by monicity!
+  have hL12ne : (EuclideanDomain.lcm (X - C P1.1 : Polynomial (F p)) (X - C P2.1)) ≠ 0 :=
+    fun h => (EuclideanDomain.lcm_eq_zero_iff.mp h).elim hm1.ne_zero hm2.ne_zero
+  have hL34ne :
+      (EuclideanDomain.lcm (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p))
+        (X ^ 2 + C u1 * X + C u0)) ≠ 0 :=
+    fun h => (EuclideanDomain.lcm_eq_zero_iff.mp h).elim hm3.ne_zero hm4.ne_zero
+  have hGne :
+      (EuclideanDomain.gcd
+        (EuclideanDomain.lcm (X - C P1.1 : Polynomial (F p)) (X - C P2.1))
+        (EuclideanDomain.lcm (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p))
+          (X ^ 2 + C u1 * X + C u0))) ≠ 0 :=
+    fun h => hL12ne (EuclideanDomain.gcd_eq_zero_iff.mp h).1
+  have hgcd12ne : (EuclideanDomain.gcd (X - C P1.1 : Polynomial (F p)) (X - C P2.1)) ≠ 0 :=
+    fun h => hm1.ne_zero (EuclideanDomain.gcd_eq_zero_iff.mp h).1
+  have hgcd34ne :
+      (EuclideanDomain.gcd (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p))
+        (X ^ 2 + C u1 * X + C u0)) ≠ 0 :=
+    fun h => hm3.ne_zero (EuclideanDomain.gcd_eq_zero_iff.mp h).1
+  have hrawne : (npoly4LcmRaw p P1 P2 ua0 ua1 u0 u1) ≠ 0 :=
+    npoly4LcmRaw_ne_zero p P1 P2 ua0 ua1 u0 u1
+  have hF3_eval :
+      ((X - C P2.1 : Polynomial (F p)) * (X ^ 2 + C ua1 * X + C ua0)).eval R1 ≠ 0 := by
+    rw [Polynomial.eval_mul, Polynomial.eval_sub, Polynomial.eval_X, Polynomial.eval_C]
+    exact mul_ne_zero (sub_ne_zero.mpr hR1P2) hR1ua
+  exact ordAt_unit_mul_A_eq_one_of_eval_ne_zero hchar hsf P h_bot _ _
+    (mul_ne_zero (mul_ne_zero (mul_ne_zero
+      ((not_congr Polynomial.leadingCoeff_eq_zero).mpr hrawne |> inv_ne_zero)
+      ((not_congr Polynomial.leadingCoeff_eq_zero).mpr hGne |> inv_ne_zero))
+      ((not_congr Polynomial.leadingCoeff_eq_zero).mpr hgcd12ne |> inv_ne_zero))
+      ((not_congr Polynomial.leadingCoeff_eq_zero).mpr hgcd34ne |> inv_ne_zero))
+    hPX hPY (X - C R2) (X - C P1.1) ((X - C P2.1) * (X ^ 2 + C ua1 * X + C ua0))
+    (by rw [hPX] at *; simpa using sub_ne_zero.mpr hRne)
+    (by rw [hPX] at *; simpa using sub_ne_zero.mpr hR1P1)
+    (by rw [hPX] at *; exact hF3_eval)
+
+end GeometricInstantiationQuadratic3
+
+section GeometricInstantiationQuadratic4
+
+variable (p : ℕ) [hp : Fact (Nat.Prime p)] [Fact (p ≠ 2)]
+variable {H : HyperellipticPolynomial (F p)} [IsDedekindDomain (CoordinateRing H)]
+
+/-- **`ordAt` of `npoly4Lcm4` at the point built from `R2`'s own
+coordinates is `1`** — the exact mirror of `ordAt_npoly4Lcm4_eq_one_of_R1`,
+with `R1`/`R2` swapped throughout: `linX R2` sits at the front, `(X-C R1)`
+is the designated-factor's companion, and the "no shared root" hypotheses
+are `R2`'s own versions. Same composition and same `P2`/`ua`
+merge-into-`F₃` trick as the `R1` case. **This is the sixth and final
+point-instantiation Part D needs** — completes the `P1`/`P2`/`Ra1`/`Ra2`/
+`R1`/`R2` set. -/
+theorem ordAt_npoly4Lcm4_eq_one_of_R2
+    (hchar : (2 : F p) ≠ 0) (hsf : Squarefree H.f)
+    (P1 P2 : F p × F p) (ua0 ua1 u0 u1 : F p)
+    (R1 R2 : F p)
+    (htargetRoot1 : (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).IsRoot R1)
+    (htargetRoot2 : (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).IsRoot R2)
+    (hRne : R1 ≠ R2)
+    (P : H.Point) (h_bot : pointIdeal P ≠ ⊥) (hPX : P.X = R2) (hPY : P.Y ≠ 0)
+    (h12 : P1.1 ≠ P2.1)
+    (hne34 : (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)) ≠ X ^ 2 + C u1 * X + C u0)
+    (hnoroot34 : ¬ ∃ r : F p, (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).eval r = 0 ∧
+        (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).eval r = 0)
+    (hP1ua : ¬ (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).eval P1.1 = 0)
+    (hP1target : ¬ (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).eval P1.1 = 0)
+    (hP2ua : ¬ (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).eval P2.1 = 0)
+    (hP2target : ¬ (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).eval P2.1 = 0)
+    (hR2P1 : R2 ≠ P1.1) (hR2P2 : R2 ≠ P2.1)
+    (hR2ua : ¬ (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).eval R2 = 0) :
+    ordAt P (npoly4Lcm4 p P1 P2 ua0 ua1 u0 u1) (0 : Polynomial (F p)) = 1 := by
+  rw [npoly4Lcm4_eq_flat_product p P1 P2 ua0 ua1 u0 u1 h12 hne34 hnoroot34
+    hP1ua hP1target hP2ua hP2target]
+  -- Split `u_target` into its two named linear factors, then reshape so
+  -- `linX R2` sits at the front and `(X-C P2.1) * ua` is merged into a
+  -- single `F₃` slot.
+  have htargetSplit : (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)) =
+      (X - C R1) * (X - C R2) := by
+    have hmonic : (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).Monic := by monicity!
+    have hdeg : (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).natDegree = 2 := by
+      compute_degree!
+    exact quadratic_eq_mul_X_sub_C p hmonic hdeg htargetRoot1 htargetRoot2 hRne
+  have hshape :
+      (((X - C P1.1 : Polynomial (F p)) * (X - C P2.1)) *
+        ((X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)) * (X ^ 2 + C u1 * X + C u0))) =
+      ((linX R2 * (X - C R1 : Polynomial (F p))) *
+        (X - C P1.1)) * ((X - C P2.1) * (X ^ 2 + C ua1 * X + C ua0)) := by
+    simp only [linX]; rw [htargetSplit]; ring
+  rw [hshape]
+  have hune : ∀ q : Polynomial (F p), q.Monic → q ≠ 0 → q.leadingCoeff⁻¹ ≠ 0 := by
+    intro q _ hq0
+    exact inv_ne_zero ((not_congr Polynomial.leadingCoeff_eq_zero).mpr hq0)
+  have hm1 : (X - C P1.1 : Polynomial (F p)).Monic := Polynomial.monic_X_sub_C _
+  have hm2 : (X - C P2.1 : Polynomial (F p)).Monic := Polynomial.monic_X_sub_C _
+  have hm3 : (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).Monic := by monicity!
+  have hm4 : (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).Monic := by monicity!
+  have hL12ne : (EuclideanDomain.lcm (X - C P1.1 : Polynomial (F p)) (X - C P2.1)) ≠ 0 :=
+    fun h => (EuclideanDomain.lcm_eq_zero_iff.mp h).elim hm1.ne_zero hm2.ne_zero
+  have hL34ne :
+      (EuclideanDomain.lcm (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p))
+        (X ^ 2 + C u1 * X + C u0)) ≠ 0 :=
+    fun h => (EuclideanDomain.lcm_eq_zero_iff.mp h).elim hm3.ne_zero hm4.ne_zero
+  have hGne :
+      (EuclideanDomain.gcd
+        (EuclideanDomain.lcm (X - C P1.1 : Polynomial (F p)) (X - C P2.1))
+        (EuclideanDomain.lcm (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p))
+          (X ^ 2 + C u1 * X + C u0))) ≠ 0 :=
+    fun h => hL12ne (EuclideanDomain.gcd_eq_zero_iff.mp h).1
+  have hgcd12ne : (EuclideanDomain.gcd (X - C P1.1 : Polynomial (F p)) (X - C P2.1)) ≠ 0 :=
+    fun h => hm1.ne_zero (EuclideanDomain.gcd_eq_zero_iff.mp h).1
+  have hgcd34ne :
+      (EuclideanDomain.gcd (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p))
+        (X ^ 2 + C u1 * X + C u0)) ≠ 0 :=
+    fun h => hm3.ne_zero (EuclideanDomain.gcd_eq_zero_iff.mp h).1
+  have hrawne : (npoly4LcmRaw p P1 P2 ua0 ua1 u0 u1) ≠ 0 :=
+    npoly4LcmRaw_ne_zero p P1 P2 ua0 ua1 u0 u1
+  have hF3_eval :
+      ((X - C P2.1 : Polynomial (F p)) * (X ^ 2 + C ua1 * X + C ua0)).eval R2 ≠ 0 := by
+    rw [Polynomial.eval_mul, Polynomial.eval_sub, Polynomial.eval_X, Polynomial.eval_C]
+    exact mul_ne_zero (sub_ne_zero.mpr hR2P2) hR2ua
+  exact ordAt_unit_mul_A_eq_one_of_eval_ne_zero hchar hsf P h_bot _ _
+    (mul_ne_zero (mul_ne_zero (mul_ne_zero
+      ((not_congr Polynomial.leadingCoeff_eq_zero).mpr hrawne |> inv_ne_zero)
+      ((not_congr Polynomial.leadingCoeff_eq_zero).mpr hGne |> inv_ne_zero))
+      ((not_congr Polynomial.leadingCoeff_eq_zero).mpr hgcd12ne |> inv_ne_zero))
+      ((not_congr Polynomial.leadingCoeff_eq_zero).mpr hgcd34ne |> inv_ne_zero))
+    hPX hPY (X - C R1) (X - C P1.1) ((X - C P2.1) * (X ^ 2 + C ua1 * X + C ua0))
+    (by rw [hPX] at *; simpa using sub_ne_zero.mpr hRne.symm)
+    (by rw [hPX] at *; simpa using sub_ne_zero.mpr hR2P1)
+    (by rw [hPX] at *; exact hF3_eval)
+
+end GeometricInstantiationQuadratic4
+
+/-! ## Status note (this pass): all six Part-D point-instantiations done;
+## the `R_i` vs `ι(R_i)` orientation question is now RESOLVED
+
+**All six point-instantiations Part D needs are now on file**:
+`ordAt_npoly4Lcm4_eq_one_of_P1`/`_P2`/`_Ra1`/`_Ra2`/`_R1`/`_R2`. The
+`ua`/`u_target`-root cases each needed one extra step
+(`quadratic_eq_mul_X_sub_C` splitting the relevant quadratic into its two
+named linear factors) plus a 3-slot/5-factor merge trick (Layer 3's
+underlying lemma only has `F₁ F₂ F₃` slots, but splitting a quadratic
+leaves 5 flat factors total — the "other" linear/quadratic pair not
+containing the designated root is merged into a single `F₃`, which is
+free since Layer 3 only needs `Fᵢ.eval a ≠ 0`, no shape constraint). Not
+yet build-tested past `Ra2`/`R1`/`R2` as of writing this note — Claire's
+REPL to confirm.
+
+**Resolved this pass: the `R_i` vs `ι(R_i)` orientation question flagged
+by the roadmap's "Status update, pass #7" section.** Traced directly
+against two already-proved facts, not assumed either way:
+
+- `vRS4General := -Epoly4 * gcdA(Ypoly4, uRS4General) mod uRS4General`
+  (`GeneralSharedRoot.lean`, confirmed by direct read) — the standard
+  Cantor/Mumford sign convention `v ≡ -E/Y mod U`. This means `g := toPair
+  H Epoly4 Ypoly4`'s OWN zero at a root `r` of `uRS4General` is the point
+  `(r, v(r))` — `g`'s interpolation was built to vanish there, by
+  construction.
+- Lemma 15 (`ordAtFrac_neg_eq_one_of_new_point`, `PrincipalWitness.lean`)
+  identifies a "residual/new" point via `hgbar_ne : toPair H E (-Y) ≠ 0`
+  becoming the VANISHING side at the call site (the lemma's own docstring:
+  *"at a point where `ḡ(P) = 0`... `g(P) ≠ 0`"*) — i.e. the point that
+  actually contributes to `D_new` in the assembly is where `ḡ := toPair H
+  E (-Y)` vanishes, NOT where `g` itself vanishes.
+
+Since `toPair H E (-Y)` vanishing at `(x_0,y_0)` means `E(x_0) -
+Y(x_0)·y_0 = 0`, i.e. `y_0 = E(x_0)/Y(x_0) = -v(x_0)` (using
+`vRS4General`'s confirmed minus sign), the point lemma 15 actually
+selects at a root `r` of `uRS4General` is `(r, -v(r))` — the
+HYPERELLIPTIC CONJUGATE of `g`'s own zero `(r, v(r))`.
+
+**Conclusion: `D_new`'s two points are `ι(R1), ι(R2)` — the conjugates of
+`R1`/`R2` as `g`'s own Mumford-selected points — NOT `R1, R2` directly.**
+This is a real orientation fact the call-site assembly (composing lemmas
+14/15 at each of the 6 named points, item 2 below) must get right: at
+each of `R1`/`R2`, the "new point" case (lemma 15) is the one that
+applies, and the `H.Point` it concludes about is `⟨R_i, -v(R_i)⟩`, not
+`⟨R_i, v(R_i)⟩`. The 6 `ordAt_npoly4Lcm4_eq_one_of_*` theorems above are
+unaffected by this (they only pin down `P.X`, taking `P.Y ≠ 0` and
+`h_bot` as hypotheses rather than constructing `H.Point.mk` internally —
+per each theorem's own docstring) — the orientation only matters once a
+caller instantiates `P` concretely at the assembly call site.
 
 **What is still missing, honestly, before `reducedClass_eq_of_isReduction'`
 can lose its `sorry`** (do not attempt to fake past this list):
 
-1. The five remaining point-instantiations (`P2`, `ua`'s two roots,
-   `u_target`'s two roots) — mechanical repeats of this section's pattern,
-   not new content, but not yet written.
-2. Composing `ordAt P npoly4Lcm4 0 = 1` (this section) with `Npoly4 =
-   npoly4Lcm4 * uRS4General` (Step 1) to get `ordAt P A 0 = 1` in
-   `PrincipalWitness.lean`'s lemma-14/15 sense (`A := npoly4Lcm4` there),
-   then applying lemmas 14/15 themselves at each of the 6 points — not
-   attempted this pass.
-3. **The `Sg`/`Su`/`divToPairRatio`/`principalSubgroup`-membership half of
+1. Composing each `ordAt P npoly4Lcm4 0 = 1` fact (the six theorems above)
+   with `Npoly4 = npoly4Lcm4 * uRS4General` (Step 1, already proved) to
+   get `ordAt P A 0 = 1` in `PrincipalWitness.lean`'s lemma-14/15 sense
+   (`A := npoly4Lcm4` there), then applying lemmas 14/15 themselves at
+   each of the 6 points — using the NOW-RESOLVED orientation above for the
+   `R1`/`R2` cases (lemma 15, point `⟨R_i, -v(R_i)⟩`) versus `P1`/`P2`/
+   `Ra1`/`Ra2` (lemma 14, point as constructed). Not attempted this pass.
+2. **The `Sg`/`Su`/`divToPairRatio`/`principalSubgroup`-membership half of
    the roadmap's corrected two-step plan (its "Status update, pass #4/#5"
    sections) — SUPERSEDED, not just unstarted.** `ordInfOfPair` was found
    (`PrincipalDivisors.lean`) and computed directly: `ordInfOfPair(Epoly4,
@@ -662,8 +1080,10 @@ can lose its `sorry`** (do not attempt to fake past this list):
    prove `div(g) - div(uRS4General) = D_old - D_new - 4 • [δ₀]` directly
    via `eq_of_coeffAt_eq` (already on file), bypassing `principalSubgroup`
    membership entirely, then separately check how `reducedClass`/
-   `toJacobian` absorb the leftover `4•[δ₀]` term. **Not yet written as
-   Lean** — this is the next pass's actual target for this piece.
+   `toJacobian` absorb the leftover `4•[δ₀]` term — `D_new`'s point labels
+   in this identity use the now-resolved `ι(R1), ι(R2)` orientation above,
+   not `R1, R2`. **Not yet written as Lean** — this is the next pass's
+   actual target for this piece.
 
 `reducedClass_eq_of_isReduction'` itself is NOT touched this pass and stays
 `sorry` — the gap above is too large to close with a guessed proof term,
