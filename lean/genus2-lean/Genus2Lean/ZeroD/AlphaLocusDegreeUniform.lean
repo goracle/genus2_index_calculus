@@ -749,13 +749,22 @@ WitnessAssembly.lean`'s own trailing note: `ordInfOfPair(Epoly4,Ypoly4) =
 -8` vs `ordInfOfPair(uRS4General,0) = -4` do not match, so
 `divToPairRatio`'s exact-pole-order-match requirement can never be
 satisfied by this witness — `principalSubgroup` membership was never the
-right tool here. The confirmed replacement route is a direct `div(g) -
-div(uRS4General) = D_old - D_new - 4•[δ₀]` identity via `eq_of_coeffAt_eq`
-(already on file, `PrincipalWitness.lean`), bypassing `principalSubgroup`
-and any `Sg`/`Su`-style support union entirely. No `Starget`-shaped
-hypothesis is added here accordingly — it would scaffold an abandoned
-plan. The proof body below is still `sorry`; the `eq_of_coeffAt_eq` route
-(and its `4•[δ₀]` correction-term bookkeeping) is the single largest
+right tool here. The confirmed replacement route is a direct
+`div_aff(g) - div_aff(uRS4General) = D_old - D_new` identity via
+`eq_of_coeffAt_eq` (already on file, `PrincipalWitness.lean`), bypassing
+`principalSubgroup` and any `Sg`/`Su`-style support union entirely.
+**This identity carries no `δ₀` term at all** — `Divisor H` is
+affine-only (`eq_of_coeffAt_eq`'s own docstring is explicit that this
+project's model has no `δ₀`-coefficient slot), and the `-8`/`-4`
+pole-order gap between `g` and `uRS4General` is a fact about the point at
+infinity, not a `δ₀` coefficient; an earlier draft of this note said
+`-4•[δ₀]` here, which conflated the two (see
+`CHATGPT-LOG-principal-witness-assembly.md`'s "pass #17" entry). No
+`Starget`-shaped hypothesis is added here accordingly — it would scaffold
+an abandoned plan. The proof body below is still `sorry`; the
+`eq_of_coeffAt_eq` route from `D_old - D_new` (no correction term) to
+this theorem's own `-2•[δ₀]`-per-Mumford-pair goal (via `hmem`/
+`hmemAnchor`, already the right shape above) is the single largest
 remaining piece, per `PrincipalWitnessAssembly.lean`'s own trailing status
 note. -/
 theorem reducedClass_eq_of_isReduction' {p : ℕ} [Fact (Nat.Prime p)] [Fact (p ≠ 2)]

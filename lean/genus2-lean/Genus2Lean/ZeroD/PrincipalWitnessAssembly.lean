@@ -1203,6 +1203,117 @@ theorem ordAtFrac_eq_one_of_P1
 
   exact ordAtFrac_eq_one_of_old_point P h_bot E Y A U
     hg_ne hgbar_eval hAU hA_ne hU_ne hA_ord
+
+set_option maxHeartbeats 400000 in
+-- Large polynomial whnf from `set`-introduced abbreviations in the proof body.
+/-- **The bare `ordAt P E Y = 1` fact at `P1`** (`PrincipalWitness.lean`'s
+lemma 16, `ordAt_eq_one_of_old_point`), as distinct from
+`ordAtFrac_eq_one_of_P1`'s `ordAtFrac`-of-`h` conclusion just above —
+needed for `ROADMAP-principal-witness-assembly.md`'s step 1
+(`div_aff(g) = A+C+T` as a literal `divToPair`-value `Divisor H`
+equality, which needs `ordAt P E Y` itself, not `h`'s valuation). Exact
+copy of `ordAtFrac_eq_one_of_P1`'s derivation up to `hA_ord`/`hg_ne`/
+`hgbar_eval`, plus one new hypothesis `hU_eval : U.eval P1.1 ≠ 0` (the
+direct analogue of `ordAtFrac_eq_neg_one_of_uRS4General_root`'s `hUfac`
+for this side — `hgcd`'s coprimality is between `Ypoly4`/`uRS4General`,
+unrelated to whether `uRS4General` vanishes at `P1.1`, so this is a
+genuinely separate fact, not derivable from anything already on file). -/
+theorem ordAt_eq_one_of_P1
+    (hchar : (2 : F p) ≠ 0) (hsf : Squarefree H.f)
+    (c0 c1 c2 c3 c4 ua0 ua1 va0 va1 u0 u1 v0 v1 : F p)
+    (hf : H.f = curvePoly p c0 c1 c2 c3 c4)
+    (P1 P2 : F p × F p)
+    (P : H.Point) (hPX : P.X = P1.1) (hPY : P.Y = P1.2) (hPY_ne : P.Y ≠ 0)
+    (h12 : P1.1 ≠ P2.1)
+    (hne34 : (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)) ≠ X ^ 2 + C u1 * X + C u0)
+    (hnoroot34 : ¬ ∃ r : F p, (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).eval r = 0 ∧
+        (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).eval r = 0)
+    (hP1ua : ¬ (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).eval P1.1 = 0)
+    (hP1target : ¬ (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).eval P1.1 = 0)
+    (hP2ua : ¬ (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).eval P2.1 = 0)
+    (hP2target : ¬ (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).eval P2.1 = 0)
+    (hA : MatrixNondegenerate4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1)
+    (hP1_curve : P1.2 ^ 2 = (curvePoly p c0 c1 c2 c3 c4).eval P1.1)
+    (hP2_curve : P2.2 ^ 2 = (curvePoly p c0 c1 c2 c3 c4).eval P2.1)
+    (hMumfordUa : IsMumfordUa p c0 c1 c2 c3 c4 ua0 ua1 va0 va1)
+    (hMumfordTarget : IsMumfordTarget4 p c0 c1 c2 c3 c4 u0 u1 v0 v1)
+    (hcurne : curBeforeMonic4General p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ≠ 0)
+    (hYP1_ne : (Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1).eval P1.1 ≠ 0)
+    (hU_eval : (uRS4General p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1).eval P1.1 ≠ 0)
+    (E Y A : Polynomial (F p))
+    (hE_def : E = Epoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1)
+    (hY_def : Y = Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1)
+    (hA_def : A = npoly4Lcm4 p P1 P2 ua0 ua1 u0 u1) :
+    ordAt P E Y = 1 := by
+  have h_bot : pointIdeal P ≠ ⊥ := pointIdeal_ne_bot P
+  have hNpoly4_eq₀ : Npoly4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 =
+      Epoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ^ 2 -
+        curvePoly p c0 c1 c2 c3 c4 * Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ^ 2 := rfl
+  set lc := (curBeforeMonic4General p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1).leadingCoeff
+    with hlc_def
+  set U := C lc * uRS4General p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 with hU_def
+  have hAU : pairNorm H E Y = A * U := by
+    have hfact := Npoly4_eq_npoly4Lcm4_mul_uRS4General p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1
+      u0 u1 v0 v1 hcurne hA hP1_curve hP2_curve hMumfordUa hMumfordTarget
+    have hpn := pairNorm_eq_of_eq_curvePoly hf E Y
+    have hNpoly4_eq : Npoly4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 = E ^ 2 -
+        curvePoly p c0 c1 c2 c3 c4 * Y ^ 2 := hE_def ▸ hY_def ▸ hNpoly4_eq₀
+    rw [← hlc_def, ← hU_def, ← hA_def] at hfact
+    have hpn' : pairNorm H E Y = E ^ 2 - curvePoly p c0 c1 c2 c3 c4 * Y ^ 2 := by
+      calc
+        pairNorm H E Y = E ^ 2 - Y ^ 2 * curvePoly p c0 c1 c2 c3 c4 := hpn
+        _ = E ^ 2 - curvePoly p c0 c1 c2 c3 c4 * Y ^ 2 := by
+          rw [mul_comm (Y ^ 2) (curvePoly p c0 c1 c2 c3 c4)]
+    calc
+      pairNorm H E Y = E ^ 2 - curvePoly p c0 c1 c2 c3 c4 * Y ^ 2 := hpn'
+      _ = Npoly4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 := hNpoly4_eq.symm
+      _ = A * U := hfact
+  have hAmonic : A.Monic := by
+    rw [hA_def]
+    exact npoly4Lcm4_monic p P1 P2 ua0 ua1 u0 u1
+  have hA_ne0 : A ≠ 0 := hAmonic.ne_zero
+  have hA_ne : toPair H A (0 : Polynomial (F p)) ≠ 0 := by
+    rw [Ne, toPair_eq_zero_iff]; exact fun h => hA_ne0 h.1
+  have hUmonic : (uRS4General p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1).Monic :=
+    uRS4General_monic p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 hcurne
+  have hU_ne0 : U ≠ 0 := by
+    rw [hU_def]
+    exact mul_ne_zero (Polynomial.C_ne_zero.mpr
+      ((not_congr Polynomial.leadingCoeff_eq_zero).mpr hcurne)) hUmonic.ne_zero
+  have hU_ne : toPair H U (0 : Polynomial (F p)) ≠ 0 := by
+    rw [Ne, toPair_eq_zero_iff]; exact fun h => hU_ne0 h.1
+  have hA_ord : ordAt P A (0 : Polynomial (F p)) = 1 := by
+    rw [hA_def]
+    exact ordAt_npoly4Lcm4_eq_one_of_P1 p hchar hsf P1 P2 ua0 ua1 u0 u1
+      P h_bot hPX hPY_ne h12 hne34 hnoroot34 hP1ua hP1target hP2ua hP2target
+  have hgP1_eval : E.eval P1.1 + P1.2 * Y.eval P1.1 = 0 := by
+    simpa [hE_def, hY_def] using
+      (Epoly4_eval_add_Y_mul_Ypoly4_eval_P1_eq_zero p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 hA)
+  have hgbar_eval : E.eval P.X + (-Y).eval P.X * P.Y ≠ 0 := by
+    rw [hPX, hPY, Polynomial.eval_neg]
+    have hYZ : Y.eval P1.1 * P1.2 ≠ 0 :=
+      mul_ne_zero (by simpa [hY_def] using hYP1_ne) (hPY ▸ hPY_ne)
+    have hgP1_eval' : E.eval P1.1 + Y.eval P1.1 * P1.2 = 0 := by
+      linear_combination hgP1_eval
+    intro hcontra
+    have h2 : (2 : F p) * (Y.eval P1.1 * P1.2) = 0 := by
+      linear_combination hgP1_eval' - hcontra
+    rcases mul_eq_zero.mp h2 with h2c | h2yz
+    · exact absurd h2c hchar
+    · exact absurd h2yz hYZ
+  have hg_ne : toPair H E Y ≠ 0 := by
+    rw [Ne, toPair_eq_zero_iff]
+    rintro ⟨-, hY0⟩
+    apply hYP1_ne
+    rw [← hY_def, hY0]
+    simp
+  have hU_eval' : U.eval P.X ≠ 0 := by
+    rw [hPX, hU_def, Polynomial.eval_mul, Polynomial.eval_C]
+    exact mul_ne_zero
+      ((not_congr Polynomial.leadingCoeff_eq_zero).mpr hcurne) hU_eval
+  exact ordAt_eq_one_of_old_point P h_bot E Y A U
+    hg_ne hgbar_eval hAU hA_ne hU_ne hA_ord hU_eval'
+
 end PointCompositionP1
 
 section PointCompositionP2
@@ -2551,13 +2662,27 @@ can lose its `sorry`** (do not attempt to fake past this list):
    (confirmed via ChatGPT consultation, see
    `ROADMAP-principal-witness-assembly.md`'s "Status update, pass #7"
    and `CHATGPT-LOG-principal-witness-assembly.md` for the exact exchange):
-   prove `div(g) - div(uRS4General) = D_old - D_new - 4 • [δ₀]` directly
-   via `eq_of_coeffAt_eq` (already on file), bypassing `principalSubgroup`
-   membership entirely, then separately check how `reducedClass`/
-   `toJacobian` absorb the leftover `4•[δ₀]` term — `D_new`'s point labels
-   in this identity use the now-resolved `ι(R1), ι(R2)` orientation above,
-   not `R1, R2`. **Not yet written as Lean** — this is the next pass's
-   actual target for this piece.
+   prove `div_aff(g) - div_aff(uRS4General) = D_old - D_new` directly via
+   `eq_of_coeffAt_eq` (already on file), bypassing `principalSubgroup`
+   membership entirely. **`Divisor H` is affine-only, so this identity
+   carries NO `δ₀` term of any kind** — `eq_of_coeffAt_eq`'s own docstring
+   (`PrincipalWitness.lean`) is explicit that this project's `Divisor H`
+   model has no `δ₀`-coefficient slot to begin with; the `-8`/`-4` pole
+   orders above are a fact about the point at infinity, invisible to
+   `Divisor H`, and never surface as a `δ₀` coefficient. (An earlier
+   version of this note claimed a `-4•[δ₀]` correction term here — that
+   was a summarization error conflating a pole of order `4` at the point
+   at infinity with a coefficient on the affine basepoint `δ₀`; see
+   `CHATGPT-LOG-principal-witness-assembly.md`'s "pass #17" entry for the
+   full trace of the error and its correction. `δ₀` only ever enters at
+   the SEPARATE, one-level-up step of converting `D_old`/`D_new` into
+   `Jacobian H D` elements via `reducedClass`'s own `- 2•[δ₀]` per
+   2-point Mumford pair — see `AlphaLocusDegreeUniform.lean`'s
+   `reducedClass` field — and that `2•[δ₀]` is unrelated to, and not
+   derived from, the `g`/`uRS4General` pole-order gap.) `D_new`'s point
+   labels in this identity use the now-resolved `ι(R1), ι(R2)` orientation
+   above, not `R1, R2`. **Not yet written as Lean** — this is the next
+   pass's actual target for this piece.
 
 `reducedClass_eq_of_isReduction'` itself is NOT touched this pass and stays
 `sorry` — the gap above is too large to close with a guessed proof term,
@@ -2682,10 +2807,11 @@ actual `∀ P` case split `reducedClass_eq_of_isReduction'` needs (via the
 `support_cases`/`by_cases P ∈ S`-style dispatch ChatGPT recommended, using
 the `ordAtFrac_eq_one_of_four_old_point_cases`/
 `ordAtFrac_neg_eq_one_of_two_new_point_cases` dispatchers already on file
-above), plus the still-open `Sg`/`div(g)`-to-`D_old - D_new`-with-`4•[δ₀]`
-correction-term step (item 2 of the earlier status note). Both remain for
-`AlphaLocusDegreeUniform.lean`'s own proof body, per this file's stated
-scoping. -/
+above), plus the still-open `Sg`/`div_aff(g)`-to-`D_old - D_new` step
+(item 2 of the earlier status note — a bare `Divisor H` equality with NO
+`δ₀` term; see that note for why an earlier `-4•[δ₀]` phrasing here was
+wrong). Both remain for `AlphaLocusDegreeUniform.lean`'s own proof body,
+per this file's stated scoping. -/
 -/
 
 end DecoupledSystem

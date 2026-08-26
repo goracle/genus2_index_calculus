@@ -123,6 +123,36 @@ consume — flagged as its own remaining sub-step, not yet started), so it
 belongs in `AlphaLocusDegreeUniform.lean`, not this file, matching this
 file's stated design (ChatGPT §16: stay ignorant of `SampleTargetFromAlpha`/
 `aClass`/`hr`/`sa.reducedClass` until the final assembly step).**
+
+**This pass: started `ROADMAP-principal-witness-assembly.md`'s "corrected
+chain" step 1 (`div_aff(g) = A+C+T`, `div_aff(u_new) = ρ+I`, both as
+literal `divToPair`-value `Divisor H` equalities — distinct from lemmas
+14/15's `ordAtFrac`-of-`h` conclusion, which discards `ordAt P U 0` by
+design). Found a genuine gap doing so, symmetric to the one already
+closed on the residual side (`hUfac`, `PrincipalWitnessAssembly.lean`):
+lemmas 14/15 give `ordAtFrac P E Y U 0`, not the bare `ordAt P E Y` that
+`div_aff(g)`'s own `divToPair`-value needs, and recovering the latter
+from the former needs `ordAt P U 0` independently — which nothing on file
+pins down at the six old/anchor/target points (`hgcd`'s coprimality is
+between `Ypoly4`/`uRS4General`, unrelated to `uRS4General`'s roots versus
+`npoly4Lcm4`'s). Added **lemma 16** (`ordAt_eq_one_of_old_point`), taking
+`U.eval P.X ≠ 0` as an explicit caller-supplied hypothesis — the direct
+analogue of `hUfac` for this side, to be discharged at each of the six
+`AlphaLocusDegreeUniform.lean`/`PrincipalWitnessAssembly.lean` call sites
+via `isCoprime_X_sub_C_of_not_isRoot`-style reasoning
+(`GeneralSharedRoot.lean`), matching how the OLD/anchor/target
+pairwise-disjointness hypotheses (`hP1ua`/`hRa1target`/etc.) already work,
+just against `uRS4General` instead of `ua`/`u_target`. The `ρ+I` side
+needs no new lemma (see lemma 17's docstring note): `u_new` has no
+`y`-dependence, so its own `ordAt` bookkeeping is plain polynomial Layer
+1/2 composition, already available. **Not yet wired into a
+`AlphaLocusDegreeUniform.lean`/`PrincipalWitnessAssembly.lean` call site
+this pass** — the six new `hU_eval`-style hypotheses still need adding to
+the six `_full` theorems (or a new `_full2` layer built on top of them),
+and step 1's actual `div_aff(g) = A+C+T`/`div_aff(u_new) = ρ+I`
+`Divisor H`-equalities (via `eq_of_coeffAt_eq`/`coeffAt_sub_eq_of_forall`,
+lemma 11's machinery) still need assembling from the resulting six-plus-
+residual pointwise facts — that assembly is the next concrete step.
 -/
 
 noncomputable section
@@ -930,6 +960,63 @@ theorem ordAtFrac_neg_eq_one_of_new_point
   rw [ordAtFrac_neg_eq_ordAt_of_pairNorm_eq_mul P h_bot E Y A U hgbar_ne hg_ne_eval
     hAU hA_ne hU_ne, hA_ord]
 
+/-- **Lemma 16 of the stack (new — the bare `ordAt P E Y = 1` fact step 1
+of `ROADMAP-principal-witness-assembly.md`'s corrected chain actually
+needs, as distinct from lemmas 14/15's `ordAtFrac`-of-`h` conclusion).**
+`div_aff(g) = A + C + T` (the roadmap's step 1) requires computing
+`ordAt P E Y` — the order of `g := toPair H E Y` itself at each old point
+— not `ordAtFrac P E Y U 0` (`h := g/U`'s order, which lemma 14 already
+gives and which silently discards `ordAt P U 0` by design, exactly as
+lemma 8's own docstring flags). At an old point, `U := uRS4General`'s
+scaled form is disjoint from the old/anchor/target root locus (`hgcd`'s
+whole point is coprimality of `Ypoly4`/`uRS4General`, which says nothing
+about `uRS4General`'s roots relative to `npoly4Lcm4`'s — a genuinely
+separate fact, matching how the residual-side theorem
+`ordAtFrac_eq_neg_one_of_uRS4General_root` needed its own separate
+`hUfac` witness for the symmetric gap on `uRS4General`'s own side). So
+this lemma takes `U.eval P.X ≠ 0` as an explicit caller-supplied
+hypothesis (`hU_eval`) — the direct analogue of `hUfac`, phrased as a
+bare evaluation fact rather than a factorization witness since `U`'s
+`B`-slot is always `0` here (`ordAt_eq_zero_of_eval_ne_zero` only needs
+evaluation, not simple-root-ness, to conclude `ordAt = 0` in the `B = 0`
+case) — and composes `ordAt_eq_ordAt_pairNorm_of_eval_eq_zero` (lemma 4,
+`ordAt P E Y = ordAt P (pairNorm H E Y) 0`) with `ordAt_add_of_pairNorm_eq_mul`
+(lemma 7, `= ordAt P A 0 + ordAt P U 0`) and `hA_ord`/`ordAt_eq_zero_of_eval_ne_zero`
+to collapse the sum to `1 + 0 = 1`. At the call site, `hU_eval` is
+supplied via `isCoprime_X_sub_C_of_not_isRoot`-style reasoning
+(`GeneralSharedRoot.lean`) or directly as a bare `¬ IsRoot` fact — the
+same shape already used throughout `PrincipalWitnessAssembly.lean` for
+the OLD/anchor/target pairwise-disjointness hypotheses
+(`hP1ua`/`hRa1target`/etc.), just against `uRS4General` instead of `ua`/
+`u_target`. -/
+theorem ordAt_eq_one_of_old_point
+    [IsDedekindDomain (CoordinateRing H)]
+    (P : H.Point) (h_bot : pointIdeal P ≠ ⊥) (E Y A U : k[X])
+    (hg_ne : toPair H E Y ≠ 0) (hg_ne_eval : E.eval P.X + (-Y).eval P.X * P.Y ≠ 0)
+    (hAU : pairNorm H E Y = A * U) (hA_ne : toPair H A (0 : k[X]) ≠ 0)
+    (hU_ne : toPair H U (0 : k[X]) ≠ 0) (hA_ord : ordAt P A (0 : k[X]) = 1)
+    (hU_eval : U.eval P.X ≠ 0) :
+    ordAt P E Y = 1 := by
+  have hN_eq_mult : ordAt P E Y = ordAt P (pairNorm H E Y) (0 : k[X]) :=
+    ordAt_eq_ordAt_pairNorm_of_eval_eq_zero P h_bot E Y hg_ne hg_ne_eval
+  have hU_ord : ordAt P U (0 : k[X]) = 0 :=
+    ordAt_eq_zero_of_eval_ne_zero P U (0 : k[X]) (by simpa using hU_eval)
+  rw [hN_eq_mult, hAU, ordAt_add_of_pairNorm_eq_mul P h_bot (A * U) A U rfl hA_ne hU_ne,
+    hA_ord, hU_ord]
+
 end HyperellipticPolynomial
+
+/-! ## Note (not a lemma): the `ρ + I` side of step 1 needs no new lemma
+here
+
+`div_aff(u_new) = ρ + I` (`ROADMAP-principal-witness-assembly.md`'s step
+1, other half) needs `ordAt P uRS4General 0` at points of `u_new`'s own
+zero locus — but `U := uRS4General` has no `y`-dependence, so this is
+plain polynomial `ordAt` bookkeeping (`ordAt_linX_eq_one_of_ne_zero`/
+`ordAt_mul_eq_one_of_ordAt_eq_one_zero`, Layers 1/2 above), not a
+`toPair`/`ordAtFrac` composition like lemma 16's `g`-side fact. No new
+lemma is needed in this file for it — only the call site's own Layer-1/2
+composition, exactly matching `hU_ord`'s own proof inside
+`ordAtFrac_eq_neg_one_of_uRS4General_root` (`PrincipalWitnessAssembly.lean`). -/
 
 end

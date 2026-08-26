@@ -164,64 +164,65 @@ The corrected chain:
 
 ## Concrete next steps, in order
 
-1. **Find a membership route for `Z ∈ D.P` (step 4)** — draft a focused
-   ChatGPT prompt on this specifically, since `principalSubgroup`'s
-   generator shape is confirmed not to fit `g`/`u_new` directly and no
-   alternative has been checked. This is the one piece with no confirmed
-   route at all right now — do this first.
-
-   **This pass: pinned down the exact pole-order mismatch (confirms the
-   roadmap's own earlier finding, no change) and drafted one concrete
-   candidate route, not yet validated — see
-   `CHATGPT-LOG-principal-witness-assembly.md`'s queued Prompt #4 for the
-   exact question sent.** `ordInfOfPair (Epoly4, Ypoly4) = -max(2·4, 2·1+5)
-   = -8` (`Epoly4_natDegree_eq_four`/`Ypoly4_natDegree_le_one`,
-   `AlphaReduce.lean`); `ordInfOfPair (uRS4General, 0) = -2·deg(uRS4General)
-   = -4`. Confirmed genuinely irreconcilable as a SINGLE
-   `divToPairRatio` generator (matches roadmap's prior finding exactly,
-   re-derived from first principles rather than assumed).
-
-   **Candidate route (unvalidated): `Z` as a SUM of two
-   matching-pole-order generators, not one.** `principalSubgroup` is an
-   `AddSubgroup.closure`, so membership doesn't require `Z` itself to be a
-   single generator — a SUM of generators is automatically also a member.
-   Idea: introduce a bridging polynomial pair with `ordInfOfPair` matching
-   each side separately (e.g. `w := X^4` has `ordInfOfPair (w,0) = -8`,
-   matching `g`; `X^2` has `ordInfOfPair = -4`, matching `u_new`), giving
-   two individually-valid `divToPairRatio` generators (`g` vs `w`, `u_new`
-   vs `X^2`) whose difference, plus a THIRD generator for `w` vs `X^2`
-   (both matching at whatever pole order is convenient, e.g. scale so the
-   exponents align, or chain through `X^4`-vs-`X^2` directly if that pair's
-   own pole orders can be matched — needs checking, they're `-8` and `-4`
-   themselves, same mismatch one level down, so this may need a genuinely
-   different bridge, not literal powers of `X`), reassembles to `Z`. **Not
-   checked whether this actually closes** — in particular whether a clean
-   bridging pair exists whose own affine divisor is easy to compute (unlike
-   `g`/`u_new`, whose affine zeros are the whole point of steps 1-2), and
-   whether the resulting sum's `hsupp`/`hspec`/`Module.Finite` side
-   conditions (per `hyperellipticClass_principalDivisorData`'s existing
-   pattern, `HyperellipticClassProof.lean`) are actually dischargeable for
-   these particular bridging functions. This is exactly the shape of
-   question drafted for ChatGPT below (Prompt #4) rather than pursued
-   further here.
-2. **Prove step 1** (`div_aff(g) = A+C+R`, `div_aff(u_new) = R+I`) via
+1. **Prove step 1** (`div_aff(g) = A+C+T`, `div_aff(u_new) = ρ+I`) via
    `eq_of_coeffAt_eq`, using the six `_full` theorems/dispatchers and
    `ordAtFrac_eq_neg_one_of_uRS4General_root` already on file — this is
-   mechanical composition of existing lemmas, the least risky remaining
-   piece, and can proceed in parallel with (1).
-3. **Assemble steps 2–7** into `reducedClass_eq_of_isReduction'`'s proof
-   body once (1) and (2) are in hand — the bookkeeping (steps 2, 3, 5, 6)
-   is now fully resolved algebra, just needs transcribing.
-4. Tangent branch (`P1 = P2`) and the Weierstrass sub-case (`P1 = P2 ∧
+   mechanical composition of existing lemmas already on file, the least
+   risky remaining piece.
+2. **Assemble step 2** (`div_aff(g) - div_aff(u_new) = A+C+T-ρ-I`, no
+   `δ₀` term — `Divisor H` is affine-only, see below) directly from (1)
+   by `Divisor H`-level subtraction.
+3. **Work out step 4** (how `T`'s role as the actual target divisor
+   composes with `C`/`Sanchor`'s existing role in `hAlphaRep`) — this is
+   the one structural question with no confirmed route yet. Once pinned
+   down, the degree-0 divisor that needs `toJacobian D (...) = 0` is
+   fully determined and can be discharged directly against `hD :
+   principalSubgroup H hdeg ≤ D.P` applied to the `A`-vs-`T` (or
+   `C`-vs-`T`) principal-witness identity from (1)/(2) — **no
+   `divToPairRatio`/`principalSubgroup`-membership route for `g` vs
+   `u_new` itself is needed**: that pairing's pole orders (`-8` vs `-4`)
+   are irreconcilable as a single `divToPairRatio` generator (confirmed,
+   see "Workflow reminders" below), but the identity this proof actually
+   needs is `Divisor H`-level equality between old and new *point*
+   divisors (`D_old = D_new`, degree 2 each), not a `divToPairRatio`
+   membership claim about `g`/`u_new` at all — `principalSubgroup`
+   membership only enters (if at all) one level further out, once (3)
+   identifies the genuinely degree-0, principal-divisor-shaped quantity
+   `reducedClass_eq_of_isReduction'` needs.
+4. **Assemble the rest** into `reducedClass_eq_of_isReduction'`'s proof
+   body once (1)-(3) are in hand.
+5. Tangent branch (`P1 = P2`) and the Weierstrass sub-case (`P1 = P2 ∧
    Y = 0`, needs lemma 10, `div(x-x0) = 2•[P]`) are separate, smaller
    follow-ups after the general case above is closed.
 
 ## Workflow reminders specific to this file
 
-- Don't reintroduce `Sg`/`Su`/`Starget`/`divToPairRatio` for this
-  witness — confirmed dead, see above.
-- Don't write `-4•[δ₀]` anywhere — the correct affine correction is
-  `-2•[δ₀]`; `-4∞` is a different, not-yet-formalized fact about the
-  point at infinity, not `δ₀`.
+- Don't reintroduce `Sg`/`Su`/`Starget`/`divToPairRatio` as a membership
+  route for `g` vs `u_new` directly — confirmed dead: `ordInfOfPair(Epoly4,
+  Ypoly4) = -8` vs `ordInfOfPair(uRS4General, 0) = -4` don't match, so
+  `divToPairRatio`'s exact-pole-order-match requirement can never be
+  satisfied by this pair. A past pass explored bridging this via a SUM of
+  matching-pole-order `divToPairRatio` generators (e.g. via `X^4`/`X^2`
+  as pole-order-matched bridges) — never validated, and superseded by the
+  direct `eq_of_coeffAt_eq` route (steps 1-2 above), which needs no
+  `divToPairRatio` membership claim about `g`/`u_new` at all. Don't
+  resurrect the bridging idea without a concrete reason the direct route
+  fails.
+- **`div_aff(g) - div_aff(u_new)` (steps 1-2) has NO `δ₀` term of any
+  kind** — `Divisor H` is affine-only by construction, so nothing here
+  should ever carry a `δ₀` correction; `eq_of_coeffAt_eq`'s own docstring
+  (`PrincipalWitness.lean`) says so explicitly. Do NOT write `-4•[δ₀]`
+  (or any other `k•[δ₀]`) as a correction term on this identity — a past
+  pass did, by conflating "pole of order `4` at the point at infinity"
+  (`-4∞`, a fact about infinity this project's `Divisor H` deliberately
+  doesn't model) with "coefficient `-4` on the affine basepoint `δ₀`"
+  (a different, false claim); see
+  `CHATGPT-LOG-principal-witness-assembly.md`'s "pass #17" entry for the
+  full trace. The ONLY place `δ₀` legitimately appears in this whole
+  argument is one level up, in `reducedClass`'s own definition
+  (`AlphaLocusDegreeUniform.lean`), which subtracts `2•[δ₀]` once per
+  2-point Mumford-pair divisor (`S`, and separately `Sanchor`) to make it
+  degree-0 before applying `toJacobian` — that `2•[δ₀]` is unrelated to,
+  and not derived from, the `g`/`u_new` pole-order gap.
 - `D_new`'s points are `ι(R1), ι(R2)` (hyperelliptic conjugates), not
   `R1, R2` themselves.
