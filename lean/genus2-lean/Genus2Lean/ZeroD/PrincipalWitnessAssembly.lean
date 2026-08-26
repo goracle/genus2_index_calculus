@@ -1343,6 +1343,7 @@ section PointCompositionInterface
 variable (p : ℕ) [hp : Fact (Nat.Prime p)] [Fact (p ≠ 2)]
 variable {H : HyperellipticPolynomial (F p)} [IsDedekindDomain (CoordinateRing H)]
 
+omit [Fact (p ≠ 2)] in
 /--
 Generic old-point assembly for the `PrincipalWitness` lemma 14.
 
@@ -1352,7 +1353,6 @@ The geometric part of the proof is completely abstracted into
 `g := toPair H E Y` from `ḡ := toPair H E (-Y)` are available, the conclusion is
 exactly the desired order-one statement for the fraction with denominator `U`.
 -/
-omit [Fact (p ≠ 2)] in
 theorem ordAtFrac_eq_one_of_old_point_of_pairNorm
     (P : H.Point) (h_bot : pointIdeal P ≠ ⊥)
     (E Y A U : Polynomial (F p))
@@ -1366,11 +1366,11 @@ theorem ordAtFrac_eq_one_of_old_point_of_pairNorm
   exact ordAtFrac_eq_one_of_old_point P h_bot E Y A U
     hg_ne hgbar_eval hAU hA_ne hU_ne hA_ord
 
+omit [Fact (p ≠ 2)] [IsDedekindDomain (CoordinateRing H)] in
 /-- A zero-coefficient witness cannot vanish as a pair at `P` when its `Y`
 coefficient is nonzero at `P.X`.  This is the small bridge needed repeatedly
 when feeding the PrincipalWitness lemmas: `toPair_eq_zero_iff` is global,
 whereas the pointwise hypotheses are stated using polynomial evaluation. -/
-omit [Fact (p ≠ 2)] [IsDedekindDomain (CoordinateRing H)] in
 lemma toPair_ne_zero_of_eval_snd_ne
     (P : H.Point) (E Y : Polynomial (F p))
     (hY_eval : Y.eval P.X ≠ 0) :
@@ -1421,10 +1421,10 @@ section PointwiseOrdAtFracAssembly
 variable (p : ℕ) [hp : Fact (Nat.Prime p)] [Fact (p ≠ 2)]
 variable {H : HyperellipticPolynomial (F p)} [IsDedekindDomain (CoordinateRing H)]
 
+omit [Fact (p ≠ 2)] in
 /-- `P2` specialization of the old-point assembly.  The Step-3 geometry is
 represented by `hA_ord` and `hzero`; the `hY` nonvanishing remains explicit.
 -/
-omit [Fact (p ≠ 2)] in
 theorem ordAtFrac_eq_one_of_P2
     (hchar : (2 : F p) ≠ 0)
     (P : H.Point) (h_bot : pointIdeal P ≠ ⊥)
@@ -1452,8 +1452,8 @@ theorem ordAtFrac_eq_one_of_P2
   exact ordAtFrac_eq_one_of_old_point P h_bot E Y A U
     hg_ne hbar_eval hAU hA_ne hU_ne hA_ord
 
-/-- `Ra1` specialization of the old-point assembly. -/
 omit [Fact (p ≠ 2)] in
+/-- `Ra1` specialization of the old-point assembly. -/
 theorem ordAtFrac_eq_one_of_Ra1
     (hchar : (2 : F p) ≠ 0)
     (P : H.Point) (h_bot : pointIdeal P ≠ ⊥)
@@ -1481,10 +1481,10 @@ theorem ordAtFrac_eq_one_of_Ra1
   exact ordAtFrac_eq_one_of_old_point P h_bot E Y A U
     hg_ne hbar_eval hAU hA_ne hU_ne hA_ord
 
+omit [Fact (p ≠ 2)] in
 set_option maxHeartbeats 400000 in
 -- Accumulated elaboration context in PointwiseOrdAtFracAssembly section.
 /-- `Ra2` specialization of the old-point assembly. -/
-omit [Fact (p ≠ 2)] in
 theorem ordAtFrac_eq_one_of_Ra2
     (hchar : (2 : F p) ≠ 0)
     (P : H.Point) (h_bot : pointIdeal P ≠ ⊥)
