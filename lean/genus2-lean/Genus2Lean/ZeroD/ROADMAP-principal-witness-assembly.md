@@ -1166,3 +1166,96 @@ third error surfaces, the next move should be pasting the exact
 `dvd_mul_of_dvd_left`/`_right`/`dvd_add` signatures from a Mathlib search
 before touching the proof again, rather than a third guess at term
 shapes.
+
+## Status update (pass #15): `ordAtFrac_eq_neg_one_of_uRS4General_root`
+## now builds clean — three rounds of errors, all fixed, all confirmed
+## by Claire's REPL
+
+Claire reported `PrincipalWitnessAssembly.lean` errors at the
+`ordAtFrac_eq_neg_one_of_uRS4General_root` declaration
+(`ring failed`/`Type mismatch` around lines 2276/2300 of that pass's
+version). Three separate rounds of fixes were needed; **all confirmed
+build-clean by Claire's REPL as of this update**.
+
+**Round 1 — `g`/`ḡ` branch confusion (the original reported errors).**
+The proof derived `g(P) = 0` (`E(P) + P.Y*Y(P) = 0`) from
+`huRoot`/`hPY`/`heval` and fed that into the final
+`ordAtFrac_eq_neg_one_of_residual_point` call (lemma 13c,
+`PrincipalWitness.lean`) — but that lemma's own signature needs
+`ḡ(P) = 0`/`g(P) ≠ 0` instead, matching `ordAtFrac_eq_one_of_R1`'s
+already-build-clean `hbar_zero`-shaped hypothesis. Confirmed by checking
+`ring`'s exact failure residue (`-(V*Y*2) = 0`, the signature of a
+`g`-vs-`ḡ` sign flip, not a typo) and cross-referencing
+`ordAtFrac_eq_one_of_R1`'s working pattern line-for-line. **Fixed** by
+renaming the derived fact to `hbar_zero : E.eval P.X + (-Y).eval P.X *
+P.Y = 0` and deriving `g(P) ≠ 0` from it via the standard char-`≠2`
+conjugate argument. `hPY`'s signature-level negation (`P.Y =
+-vRS4General.eval P.X`) was correct throughout and was NOT the bug (an
+earlier hypothesis in this same investigation briefly misdiagnosed it as
+such and had to walk that back — the negation stays).
+
+**Round 2 — the `hU_ord : ordAt P U 0 = 1` gap, a genuine mathematical
+question, resolved via ChatGPT rather than guessed.** This was flagged in
+pass #12/#13 as an honest `sorry`: every explicit-point composition
+elsewhere in this file gets `ordAt = 1` from Layer 3
+(`ordAt_unit_mul_A_eq_one_of_eval_ne_zero`), which needs a NAMED second
+root to establish simplicity — unavailable here by design, since the
+whole point of the Mumford-pair strategy is not naming `uRS4General`'s
+second root. Asked ChatGPT directly whether `Squarefree uRS4General` (or
+simple-root-ness at `P.X`) follows automatically from
+`hgcd`/`hInv`/`MatrixNondegenerate4`. **Answer: no** — ChatGPT gave an
+explicit counterexample (`U = (X-r)^2`, `Y = 1`, `G = 1` satisfies `hInv`
+trivially since `Y*G-1 = 0`; `E = f = 1` also satisfies `U ∣ Npoly4 =
+E^2 - f*Y^2` trivially) showing a repeated root is fully compatible with
+both hypotheses — closing off the "maybe it's free" question for good.
+This matches the project's own existing convention: `Squarefree H.f` is
+ALREADY a bare, never-derived hypothesis throughout this codebase
+(`LPairFinrankOneOrdAtFrac.lean`, `HyperellipticClassProof.lean`, etc.,
+confirmed by grep). **Fixed** by adding two new hypotheses to this
+theorem's signature: `hsf : Squarefree H.f` (just wiring in what Layer 1,
+`ordAt_linX_eq_one_of_ne_zero`, already requires — not a new axiom) and
+`hUfac : ∃ Fco, uRS4General ... = linX P.X * Fco ∧ Fco.eval P.X ≠ 0` —
+the MINIMAL local fact actually needed (simple-root-ness of
+`uRS4General` at `P.X` specifically, via an explicit factorization
+witness), not the stronger global `Squarefree uRS4General`. Still no
+NAMED root VALUE anywhere in this file's signature — `Fco` is a
+polynomial, not a field element; naming the second root's actual value
+is deferred to the `AlphaLocusDegreeUniform.lean` call site, exactly
+where the strategy's own docstring already says root-specific
+bookkeeping belongs. `hU_ord` itself is proved via the same
+Layer-1/Layer-2 composition (`ordAt_linX_eq_one_of_ne_zero` +
+`ordAt_mul_eq_one_of_ordAt_eq_one_zero`) already used elsewhere in this
+file for named-point cases, plus `ordAt_C_mul_eq` to strip the `C lc`
+unit scalar — no new proof machinery invented.
+
+**Round 3 — a naming collision, `F` shadowing the ambient `F p`
+notation.** Round 2's fix named the existential witness `F`, colliding
+with this file's global `abbrev F (p : ℕ) : Type := ZMod p`
+(`DecoupledSystemRegular.lean`) — the notation used everywhere as `F p`.
+Once `F` was locally bound as a polynomial, every later `F p` in the
+proof parsed as "apply polynomial `F` to `p`" instead of "the type `F`
+applied to `p`", producing `Function expected at F` errors plus a
+downstream heartbeat timeout (elaborator churn on the malformed terms,
+not a separate issue). **Fixed** by renaming the witness from `F` to
+`Fco` throughout (signature, proof body, doc-comment prose) — no logic
+changed, pure rename.
+
+**Build confirmed clean by Claire's REPL after round 3.** No `sorry`
+remains anywhere in `PrincipalWitnessAssembly.lean`. The Mumford-pair
+residual-case theorem (`ordAtFrac_eq_neg_one_of_uRS4General_root`) is now
+a complete, `sorry`-free proof, modulo the two new hypotheses
+`hsf`/`hUfac` a downstream caller must supply (expected — `Squarefree
+H.f` is standard project-wide, and `hUfac` is the honest, minimal
+"don't name the root, just its factorization witness" cost of the
+strategy, to be discharged concretely at the `AlphaLocusDegreeUniform.lean`
+call site when that composition is attempted).
+
+**Next step** (not started, per this file's own scope — belongs in
+`AlphaLocusDegreeUniform.lean`): compose
+`ordAtFrac_eq_neg_one_of_uRS4General_root` with `hsupp`/`S`'s concrete
+definition to collapse the residual half of Step 4's six-way case split
+down to the two-way `P ∈ Sold` vs `P ∈ S` split — the actual payoff of
+the Mumford-pair strategy, flagged as the goal since pass #11 and still
+not attempted. That call site will need to supply `hUfac` concretely,
+almost certainly via `uRS4General`'s actual two-root factorization once
+they're in hand there (still no named root anywhere in THIS file).
