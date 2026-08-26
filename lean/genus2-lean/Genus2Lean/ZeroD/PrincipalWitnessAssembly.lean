@@ -515,26 +515,25 @@ theorem ordAt_npoly4Lcm4_eq_one_of_P1
   have hm3 : (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).Monic := by monicity!
   have hm4 : (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).Monic := by monicity!
   have hL12ne : (EuclideanDomain.lcm (X - C P1.1 : Polynomial (F p)) (X - C P2.1)) ≠ 0 :=
-    fun h => hm1.ne_zero (eq_zero_of_zero_dvd (h ▸ EuclideanDomain.dvd_lcm_left _ _))
+    fun h => (EuclideanDomain.lcm_eq_zero_iff.mp h).elim hm1.ne_zero hm2.ne_zero
   have hL34ne :
       (EuclideanDomain.lcm (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p))
         (X ^ 2 + C u1 * X + C u0)) ≠ 0 :=
-    fun h => hm3.ne_zero (eq_zero_of_zero_dvd (h ▸ EuclideanDomain.dvd_lcm_left _ _))
+    fun h => (EuclideanDomain.lcm_eq_zero_iff.mp h).elim hm3.ne_zero hm4.ne_zero
   have hGne :
       (EuclideanDomain.gcd
         (EuclideanDomain.lcm (X - C P1.1 : Polynomial (F p)) (X - C P2.1))
         (EuclideanDomain.lcm (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p))
           (X ^ 2 + C u1 * X + C u0))) ≠ 0 :=
-    fun h => hL12ne (eq_zero_of_zero_dvd (h ▸ EuclideanDomain.gcd_dvd_left _ _))
+    fun h => hL12ne (EuclideanDomain.gcd_eq_zero_iff.mp h).1
   have hgcd12ne : (EuclideanDomain.gcd (X - C P1.1 : Polynomial (F p)) (X - C P2.1)) ≠ 0 :=
-    fun h => hm1.ne_zero (eq_zero_of_zero_dvd (h ▸ EuclideanDomain.gcd_dvd_left _ _))
+    fun h => hm1.ne_zero (EuclideanDomain.gcd_eq_zero_iff.mp h).1
   have hgcd34ne :
       (EuclideanDomain.gcd (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p))
         (X ^ 2 + C u1 * X + C u0)) ≠ 0 :=
-    fun h => hm3.ne_zero (eq_zero_of_zero_dvd (h ▸ EuclideanDomain.gcd_dvd_left _ _))
-  have hrawne : (npoly4LcmRaw p P1 P2 ua0 ua1 u0 u1) ≠ 0 := by
-    simp only [npoly4LcmRaw]
-    exact fun h => hL12ne (eq_zero_of_zero_dvd (h ▸ EuclideanDomain.dvd_lcm_left _ _))
+    fun h => hm3.ne_zero (EuclideanDomain.gcd_eq_zero_iff.mp h).1
+  have hrawne : (npoly4LcmRaw p P1 P2 ua0 ua1 u0 u1) ≠ 0 :=
+    npoly4LcmRaw_ne_zero p P1 P2 ua0 ua1 u0 u1
   exact ordAt_unit_mul_A_eq_one_of_eval_ne_zero hchar hsf P h_bot _ _
     (mul_ne_zero (mul_ne_zero (mul_ne_zero
       ((not_congr Polynomial.leadingCoeff_eq_zero).mpr hrawne |> inv_ne_zero)
@@ -542,11 +541,91 @@ theorem ordAt_npoly4Lcm4_eq_one_of_P1
       ((not_congr Polynomial.leadingCoeff_eq_zero).mpr hgcd12ne |> inv_ne_zero))
       ((not_congr Polynomial.leadingCoeff_eq_zero).mpr hgcd34ne |> inv_ne_zero))
     hPX hPY (X - C P2.1) (X ^ 2 + C ua1 * X + C ua0) (X ^ 2 + C u1 * X + C u0)
-    (by rw [hPX] at *; simpa using sub_ne_zero.mpr (Ne.symm h12))
+    (by rw [hPX] at *; simpa using sub_ne_zero.mpr h12)
     (by rw [hPX] at *; exact hP1ua)
     (by rw [hPX] at *; exact hP1target)
 
 end GeometricInstantiation
+
+section GeometricInstantiation
+
+variable (p : ℕ) [hp : Fact (Nat.Prime p)] [Fact (p ≠ 2)]
+variable {H : HyperellipticPolynomial (F p)} [IsDedekindDomain (CoordinateRing H)]
+
+/-- **`ordAt` of `npoly4Lcm4` at the point built from `P2`'s own coordinates
+is `1`** — the exact mirror of `ordAt_npoly4Lcm4_eq_one_of_P1`, reshaping
+the flat product so `linX P2.1` sits at the front instead of `linX P1.1`
+(via `mul_comm`/`ring`, same as the `P1` case but with the two linear
+factors swapped). Same composition (`npoly4Lcm4_eq_flat_product` +
+`ordAt_unit_mul_A_eq_one_of_eval_ne_zero`), same four `leadingCoeff⁻¹`
+nonzero-unit argument, only the designated linear factor and the
+correspondingly-reordered `eval`-nonvanishing hypotheses change. -/
+theorem ordAt_npoly4Lcm4_eq_one_of_P2
+    (hchar : (2 : F p) ≠ 0) (hsf : Squarefree H.f)
+    (P1 P2 : F p × F p) (ua0 ua1 u0 u1 : F p)
+    (P : H.Point) (h_bot : pointIdeal P ≠ ⊥) (hPX : P.X = P2.1) (hPY : P.Y ≠ 0)
+    (h12 : P1.1 ≠ P2.1)
+    (hne34 : (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)) ≠ X ^ 2 + C u1 * X + C u0)
+    (hnoroot34 : ¬ ∃ r : F p, (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).eval r = 0 ∧
+        (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).eval r = 0)
+    (hP1ua : ¬ (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).eval P1.1 = 0)
+    (hP1target : ¬ (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).eval P1.1 = 0)
+    (hP2ua : ¬ (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).eval P2.1 = 0)
+    (hP2target : ¬ (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).eval P2.1 = 0) :
+    ordAt P (npoly4Lcm4 p P1 P2 ua0 ua1 u0 u1) (0 : Polynomial (F p)) = 1 := by
+  rw [npoly4Lcm4_eq_flat_product p P1 P2 ua0 ua1 u0 u1 h12 hne34 hnoroot34
+    hP1ua hP1target hP2ua hP2target]
+  -- Reshape the flat product so `linX P2.1 = X - C P2.1` sits at the front,
+  -- matching `ordAt_unit_mul_A_eq_one_of_eval_ne_zero`'s expected shape
+  -- `C u * (((linX a * F₁) * F₂) * F₃)`.
+  have hshape :
+      (((X - C P1.1 : Polynomial (F p)) * (X - C P2.1)) *
+        ((X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)) * (X ^ 2 + C u1 * X + C u0))) =
+      ((linX P2.1 * (X - C P1.1 : Polynomial (F p))) *
+        (X ^ 2 + C ua1 * X + C ua0)) * (X ^ 2 + C u1 * X + C u0) := by
+    simp only [linX]; ring
+  rw [hshape]
+  have hune : ∀ q : Polynomial (F p), q.Monic → q ≠ 0 → q.leadingCoeff⁻¹ ≠ 0 := by
+    intro q _ hq0
+    exact inv_ne_zero ((not_congr Polynomial.leadingCoeff_eq_zero).mpr hq0)
+  have hm1 : (X - C P1.1 : Polynomial (F p)).Monic := Polynomial.monic_X_sub_C _
+  have hm2 : (X - C P2.1 : Polynomial (F p)).Monic := Polynomial.monic_X_sub_C _
+  have hm3 : (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).Monic := by monicity!
+  have hm4 : (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).Monic := by monicity!
+  have hL12ne : (EuclideanDomain.lcm (X - C P1.1 : Polynomial (F p)) (X - C P2.1)) ≠ 0 :=
+    fun h => (EuclideanDomain.lcm_eq_zero_iff.mp h).elim hm1.ne_zero hm2.ne_zero
+  have hL34ne :
+      (EuclideanDomain.lcm (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p))
+        (X ^ 2 + C u1 * X + C u0)) ≠ 0 :=
+    fun h => (EuclideanDomain.lcm_eq_zero_iff.mp h).elim hm3.ne_zero hm4.ne_zero
+  have hGne :
+      (EuclideanDomain.gcd
+        (EuclideanDomain.lcm (X - C P1.1 : Polynomial (F p)) (X - C P2.1))
+        (EuclideanDomain.lcm (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p))
+          (X ^ 2 + C u1 * X + C u0))) ≠ 0 :=
+    fun h => hL12ne (EuclideanDomain.gcd_eq_zero_iff.mp h).1
+  have hgcd12ne : (EuclideanDomain.gcd (X - C P1.1 : Polynomial (F p)) (X - C P2.1)) ≠ 0 :=
+    fun h => hm1.ne_zero (EuclideanDomain.gcd_eq_zero_iff.mp h).1
+  have hgcd34ne :
+      (EuclideanDomain.gcd (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p))
+        (X ^ 2 + C u1 * X + C u0)) ≠ 0 :=
+    fun h => hm3.ne_zero (EuclideanDomain.gcd_eq_zero_iff.mp h).1
+  have hrawne : (npoly4LcmRaw p P1 P2 ua0 ua1 u0 u1) ≠ 0 :=
+    npoly4LcmRaw_ne_zero p P1 P2 ua0 ua1 u0 u1
+  exact ordAt_unit_mul_A_eq_one_of_eval_ne_zero hchar hsf P h_bot _ _
+    (mul_ne_zero (mul_ne_zero (mul_ne_zero
+      ((not_congr Polynomial.leadingCoeff_eq_zero).mpr hrawne |> inv_ne_zero)
+      ((not_congr Polynomial.leadingCoeff_eq_zero).mpr hGne |> inv_ne_zero))
+      ((not_congr Polynomial.leadingCoeff_eq_zero).mpr hgcd12ne |> inv_ne_zero))
+      ((not_congr Polynomial.leadingCoeff_eq_zero).mpr hgcd34ne |> inv_ne_zero))
+    hPX hPY (X - C P1.1) (X ^ 2 + C ua1 * X + C ua0) (X ^ 2 + C u1 * X + C u0)
+    (by rw [hPX] at *; simpa using sub_ne_zero.mpr h12.symm)
+    (by rw [hPX] at *; exact hP2ua)
+    (by rw [hPX] at *; exact hP2target)
+
+end GeometricInstantiation
+
+end GeometricBridge
 
 /-! ## Status note (this pass): Part D is genuinely started, not finished
 
@@ -594,6 +673,4 @@ doubly hard to a correction-term computation not yet checked against
 
 end DecoupledSystem
 end Genus2Lean
-
-end
 
