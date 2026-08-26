@@ -1073,6 +1073,8 @@ section PointCompositionP1
 variable (p : ℕ) [hp : Fact (Nat.Prime p)] [Fact (p ≠ 2)]
 variable {H : HyperellipticPolynomial (F p)} [IsDedekindDomain (CoordinateRing H)]
 
+set_option maxHeartbeats 400000 in
+-- Large polynomial whnf from `set`-introduced abbreviations in the proof body.
 /-- **The `P1` case of the pointwise `ordAtFrac`-assembly:** the old-point
 factor `A = npoly4Lcm4` has order one at `P1`, and the residual factor
 `U` is therefore the denominator in `ordAtFrac P E Y U`. This is the exact
@@ -1177,27 +1179,29 @@ theorem ordAtFrac_eq_one_of_P1
   have hgP1_eval : E.eval P1.1 + P1.2 * Y.eval P1.1 = 0 := by
     simpa [hE_def, hY_def] using
       (Epoly4_eval_add_Y_mul_Ypoly4_eval_P1_eq_zero p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 hA)
-  have hgbar_eval : E.eval P.X + Y.eval P.X * P.Y ≠ 0 := by
-    rw [hPX, hPY]
-    have hEeval : E.eval P1.1 = -(P1.2 * Y.eval P1.1) := by linear_combination hgP1_eval
-    rw [hEeval]
-    intro hzero
-    apply hYP1_ne
-    have h2 : (2 : F p) * (P1.2 * Y.eval P1.1) = 0 := by linear_combination -hzero
-    rcases mul_eq_zero.mp h2 with h2a | h2b
-    · exact absurd h2a hchar
-    · rcases mul_eq_zero.mp h2b with h2c | h2d
-      · exact absurd h2c (hPY ▸ hPY_ne)
-      · simpa [hY_def] using h2d
+  -- `ḡ(P1) ≠ 0`: since `g(P1) = 0` gives `E(P1) = -P1.2 * Y(P1)`,
+  -- we have `ḡ(P1) = E(P1) - Y(P1)*P1.2 = -2*Y(P1)*P1.2 ≠ 0`.
+  have hgbar_eval : E.eval P.X + (-Y).eval P.X * P.Y ≠ 0 := by
+    rw [hPX, hPY, Polynomial.eval_neg]
+    have hYZ : Y.eval P1.1 * P1.2 ≠ 0 :=
+      mul_ne_zero (by simpa [hY_def] using hYP1_ne) (hPY ▸ hPY_ne)
+    have hgP1_eval' : E.eval P1.1 + Y.eval P1.1 * P1.2 = 0 := by
+      linear_combination hgP1_eval
+    intro hcontra
+    have h2 : (2 : F p) * (Y.eval P1.1 * P1.2) = 0 := by
+      linear_combination hgP1_eval' - hcontra
+    rcases mul_eq_zero.mp h2 with h2c | h2yz
+    · exact absurd h2c hchar
+    · exact absurd h2yz hYZ
 
   have hg_ne : toPair H E Y ≠ 0 := by
     rw [Ne, toPair_eq_zero_iff]
-    intro ⟨_, hY0⟩
+    rintro ⟨-, hY0⟩
     apply hYP1_ne
-    rw [hY_def, hY0, Polynomial.eval_zero]
+    simp [hY_def, hY0]
 
-  exact ordAtFrac_eq_one_of_old_point hchar hsf P E Y A U 0
-    hAU hA_ne hU_ne hg_ne hA_ord hgbar_eval
+  exact ordAtFrac_eq_one_of_old_point P h_bot E Y A U
+    hg_ne hgbar_eval hAU hA_ne hU_ne hA_ord
 end PointCompositionP1
 
 /-! ## Step 4a: a reusable PrincipalWitness assembly interface
@@ -1354,6 +1358,8 @@ theorem ordAtFrac_eq_one_of_Ra1
   exact ordAtFrac_eq_one_of_old_point P h_bot E Y A U
     hg_ne hbar_eval hAU hA_ne hU_ne hA_ord
 
+set_option maxHeartbeats 400000 in
+-- Accumulated elaboration context in PointwiseOrdAtFracAssembly section.
 /-- `Ra2` specialization of the old-point assembly. -/
 theorem ordAtFrac_eq_one_of_Ra2
     (hchar : (2 : F p) ≠ 0)
@@ -1382,63 +1388,66 @@ theorem ordAtFrac_eq_one_of_Ra2
   exact ordAtFrac_eq_one_of_old_point P h_bot E Y A U
     hg_ne hbar_eval hAU hA_ne hU_ne hA_ord
 
-/-- `R1` specialization of the new-point assembly. -/
+set_option maxHeartbeats 400000 in
+-- new-point (residual) case: P is a root of U, not A; uses lemma 13c.
 theorem ordAtFrac_eq_one_of_R1
     (hchar : (2 : F p) ≠ 0)
     (P : H.Point) (h_bot : pointIdeal P ≠ ⊥)
     (E Y A U : Polynomial (F p))
     (hAU : pairNorm H E Y = A * U)
-    (hA_ord : ordAt P A (0 : Polynomial (F p)) = 1)
+    (hA_ord : ordAt P A (0 : Polynomial (F p)) = 0)
+    (hU_ord : ordAt P U (0 : Polynomial (F p)) = 1)
     (hbar_zero : E.eval P.X + (-Y).eval P.X * P.Y = 0)
     (hY : Y.eval P.X ≠ 0)
     (hPY : P.Y ≠ 0)
     (hA_ne : toPair H A (0 : Polynomial (F p)) ≠ 0)
     (hU_ne : toPair H U (0 : Polynomial (F p)) ≠ 0) :
     ordAtFrac P E Y U (0 : Polynomial (F p)) = -1 := by
-  have hYZbar : (-Y).eval P.X * P.Y ≠ 0 := by
-    rw [Polynomial.eval_neg]
-    exact mul_ne_zero (neg_ne_zero.mpr hY) hPY
+  have hYZbar : (-Y).eval P.X * P.Y ≠ 0 :=
+    mul_ne_zero (by simp [hY]) hPY
+  have hg_ne : toPair H E Y ≠ 0 := by
+    rw [Ne, toPair_eq_zero_iff]; rintro ⟨-, hY0⟩; simp [hY0] at hY
   have hbar_global_ne : toPair H E (-Y) ≠ 0 := by
     rw [Ne, toPair_eq_zero_iff]
-    rintro ⟨hE0, hYbar0⟩
-    apply hY
-    rw [neg_eq_zero.mp hYbar0]
-    simp
-  have hg_eval : E.eval P.X + Y.eval P.X * P.Y ≠ 0 := by
-    exact eval_conj_ne_of_eval_add_mul_eq_zero hchar hYZbar hbar_zero
-  have hg_eval' : E.eval P.X + (- -Y).eval P.X * P.Y ≠ 0 := by
-    simpa only [neg_neg] using hg_eval
-  exact ordAtFrac_neg_eq_one_of_new_point P h_bot E Y A U
-    hbar_global_ne hg_eval' hAU hA_ne hU_ne hA_ord
+    rintro ⟨-, hY0⟩; apply hY
+    have : Y = 0 := neg_eq_zero.mp hY0
+    simp [this]
+  have hg_eval : E.eval P.X + (-(-Y)).eval P.X * P.Y ≠ 0 := by
+    simp only [Polynomial.eval_neg, neg_neg]
+    have h := eval_conj_ne_of_eval_add_mul_eq_zero hchar hYZbar hbar_zero
+    simpa [Polynomial.eval_neg] using h
+  exact ordAtFrac_eq_neg_one_of_residual_point P h_bot E Y A U
+    hg_ne hbar_global_ne hg_eval hAU hA_ne hU_ne hA_ord hU_ord
 
+set_option maxHeartbeats 400000 in
+-- new-point (residual) case: same as R1.
 /-- `R2` specialization of the new-point assembly. -/
 theorem ordAtFrac_eq_one_of_R2
     (hchar : (2 : F p) ≠ 0)
     (P : H.Point) (h_bot : pointIdeal P ≠ ⊥)
     (E Y A U : Polynomial (F p))
     (hAU : pairNorm H E Y = A * U)
-    (hA_ord : ordAt P A (0 : Polynomial (F p)) = 1)
+    (hA_ord : ordAt P A (0 : Polynomial (F p)) = 0)
+    (hU_ord : ordAt P U (0 : Polynomial (F p)) = 1)
     (hbar_zero : E.eval P.X + (-Y).eval P.X * P.Y = 0)
     (hY : Y.eval P.X ≠ 0)
     (hPY : P.Y ≠ 0)
     (hA_ne : toPair H A (0 : Polynomial (F p)) ≠ 0)
     (hU_ne : toPair H U (0 : Polynomial (F p)) ≠ 0) :
     ordAtFrac P E Y U (0 : Polynomial (F p)) = -1 := by
-  have hYZbar : (-Y).eval P.X * P.Y ≠ 0 := by
-    rw [Polynomial.eval_neg]
-    exact mul_ne_zero (neg_ne_zero.mpr hY) hPY
+  have hYZbar : (-Y).eval P.X * P.Y ≠ 0 :=
+    mul_ne_zero (by simp [hY]) hPY
+  have hg_ne : toPair H E Y ≠ 0 := by
+    rw [Ne, toPair_eq_zero_iff]; rintro ⟨-, hY0⟩; simp [hY0] at hY
   have hbar_global_ne : toPair H E (-Y) ≠ 0 := by
     rw [Ne, toPair_eq_zero_iff]
-    rintro ⟨hE0, hYbar0⟩
-    apply hY
-    rw [neg_eq_zero.mp hYbar0]
-    simp
-  have hg_eval : E.eval P.X + Y.eval P.X * P.Y ≠ 0 := by
-    exact eval_conj_ne_of_eval_add_mul_eq_zero hchar hYZbar hbar_zero
-  have hg_eval' : E.eval P.X + (- -Y).eval P.X * P.Y ≠ 0 := by
-    simpa only [neg_neg] using hg_eval
-  exact ordAtFrac_neg_eq_one_of_new_point P h_bot E Y A U
-    hbar_global_ne hg_eval' hAU hA_ne hU_ne hA_ord
+    rintro ⟨-, hY0⟩; apply hY; simpa using hY0
+  have hg_eval : E.eval P.X + (-(-Y)).eval P.X * P.Y ≠ 0 := by
+    simp only [Polynomial.eval_neg, neg_neg]
+    have h := eval_conj_ne_of_eval_add_mul_eq_zero hchar hYZbar hbar_zero
+    simpa [Polynomial.eval_neg] using h
+  exact ordAtFrac_eq_neg_one_of_residual_point P h_bot E Y A U
+    hg_ne hbar_global_ne hg_eval hAU hA_ne hU_ne hA_ord hU_ord
 
 /-- Two explicit old-point cases can be wired directly to the old-point
 PrincipalWitness theorem without manufacturing any hidden nondegeneracy.
