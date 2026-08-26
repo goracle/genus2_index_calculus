@@ -1758,6 +1758,33 @@ private theorem row01_defining_eq_aux (P1 P2 : F p × F p) (ua0 ua1 va0 va1 u0 u
       <;> ring
   exact hEval.trans hsum7'
 
+/-- **Public restatement of `row01_defining_eq_aux` at `a = 0` (i.e. `P1`):
+`g(P1) = 0`.** `row01_defining_eq_aux` itself is `private` to this file;
+`PrincipalWitnessAssembly.lean`'s old-point case (lemma 14 of the
+`PrincipalWitness.lean` stack) needs this fact by name, in plain
+`Epoly4.eval + Y*Ypoly4.eval = 0` form rather than the `Matrix.cramer`
+derivation, so this just specializes `a := 0` and simplifies the `Fin 2 →
+F p × F p` matrix-literal indexing away. No new math. -/
+theorem Epoly4_eval_add_Y_mul_Ypoly4_eval_P1_eq_zero
+    (P1 P2 : F p × F p) (ua0 ua1 va0 va1 u0 u1 v0 v1 : F p)
+    (hA : MatrixNondegenerate4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1) :
+    (Epoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1).eval P1.1 +
+      P1.2 * (Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1).eval P1.1 = 0 := by
+  have h := row01_defining_eq_aux p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 hA (0 : Fin 2)
+  simpa [Matrix.cons_val_zero] using h
+
+/-- **Public restatement of `row01_defining_eq_aux` at `a = 1` (i.e. `P2`):
+`g(P2) = 0`.** The mirror of
+`Epoly4_eval_add_Y_mul_Ypoly4_eval_P1_eq_zero` above, for `P2` instead of
+`P1`. -/
+theorem Epoly4_eval_add_Y_mul_Ypoly4_eval_P2_eq_zero
+    (P1 P2 : F p × F p) (ua0 ua1 va0 va1 u0 u1 v0 v1 : F p)
+    (hA : MatrixNondegenerate4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1) :
+    (Epoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1).eval P2.1 +
+      P2.2 * (Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1).eval P2.1 = 0 := by
+  have h := row01_defining_eq_aux p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 hA (1 : Fin 2)
+  simpa [Matrix.cons_val_one] using h
+
 /-- **The seven-slot defining identity for the mod-`u_a` rows** (rows
 2–3) — the K=4 analogue of `row23_defining_eq_aux`
 (`DataDerivationSolve.lean`), reducing against `(ua0,ua1,va0,va1)` instead
@@ -3054,6 +3081,100 @@ theorem dvd_N_u4 (c0 c1 c2 c3 c4 : F p) (P1 P2 : F p × F p) (ua0 ua1 va0 va1 u0
       (E - Y * V) * (E + Y * V) + (V ^ 2 - f) * Y ^ 2 := by
     unfold Npoly4; ring
   rw [hNeq]; exact hadd
+
+/-- **Public extraction of `dvd_N_ua`'s internal `huY` fact: `u_a ∣ (E +
+Y*v_a)`.** `dvd_N_ua` itself only exposes the combined `u_a ∣ Npoly4`
+conclusion (via `IsMumfordUa`'s extra `v_a² ≡ f` input) — this is just
+the `row23_defining_eq_aux`/`dvd_of_row_identity4` half, without needing
+`IsMumfordUa` at all, since `hA` (`MatrixNondegenerate4`) alone suffices.
+Needed by `PrincipalWitnessAssembly.lean`'s `Ra1`/`Ra2` point cases: at a
+root `r` of `u_a`, this gives `g(r) := E.eval r + v_a.eval r * Y.eval r =
+0`, the same "old point" fact `Epoly4_eval_add_Y_mul_Ypoly4_eval_P1_eq_zero`
+supplies for `P1`/`P2`, but for the two roots of `u_a` instead — matching
+this file's own naming convention (`row23`/`dvd_of_row_identity4`'s
+production, `row01`'s consumption pattern) rather than re-deriving from
+scratch. Both `row23_defining_eq_aux` and `dvd_of_row_identity4` are
+`private` to this file, so this had no public name anywhere before this
+pass — same gap as the `P1`/`P2` case, caught by the same direct-grep
+check. -/
+theorem ua_dvd_Epoly4_add_Ypoly4_mul_va
+    (P1 P2 : F p × F p) (ua0 ua1 va0 va1 u0 u1 v0 v1 : F p)
+    (hA : MatrixNondegenerate4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1) :
+    (X ^ 2 + C ua1 * X + C ua0) ∣
+      (Epoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 +
+        Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 * (C va1 * X + C va0)) :=
+  dvd_of_row_identity4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ua0 ua1 va0 va1
+    (fun a => row23_defining_eq_aux p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 hA a)
+
+/-- **Public extraction of `dvd_N_u4`'s internal `huY` fact: `u ∣ (E +
+Y*v)`** — the mirror of `ua_dvd_Epoly4_add_Ypoly4_mul_va` above, for the
+actual target quadratic `(u0,u1,v0,v1)` instead of the anchor's `u_a`.
+Needed by `PrincipalWitnessAssembly.lean`'s `R1`/`R2` point cases. -/
+theorem u_dvd_Epoly4_add_Ypoly4_mul_v
+    (P1 P2 : F p × F p) (ua0 ua1 va0 va1 u0 u1 v0 v1 : F p)
+    (hA : MatrixNondegenerate4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1) :
+    (X ^ 2 + C u1 * X + C u0) ∣
+      (Epoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 +
+        Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 * (C v1 * X + C v0)) :=
+  dvd_of_row_identity4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 u0 u1 v0 v1
+    (fun a => row45_defining_eq_aux p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 hA a)
+
+/-- **Point-evaluation form of `ua_dvd_Epoly4_add_Ypoly4_mul_va`, at a named
+root `r` of `u_a`.** The `Ra1`/`Ra2` analogue of `Epoly4_eval_add_Y_mul_
+Ypoly4_eval_P1_eq_zero`/`_P2_eq_zero` — same "old point" fact
+(`g(r) = 0`), but for a root of `u_a` (given as an explicit evaluation
+hypothesis `hroot`, since — unlike `P1`/`P2` — `u_a`'s two roots are not
+named parameters anywhere upstream of this file; the caller supplies
+whichever root it has in hand) rather than for `P1`/`P2` directly.
+
+Proof: `hroot` gives `(X - C r) ∣ u_a` via `Polynomial.dvd_iff_isRoot`;
+compose with `ua_dvd_Epoly4_add_Ypoly4_mul_va` via `dvd_trans` to get
+`(X - C r) ∣ (E + Y·v_a)`; `Polynomial.dvd_iff_isRoot` again turns that
+into `(E + Y·v_a).eval r = 0`, and `Polynomial.eval_add`/`eval_mul`
+unfolds the sum into the stated `E.eval r + v_a.eval r * Y.eval r = 0`
+form (`v_a.eval r * Y.eval r`, not `Y.eval r * v_a.eval r`, matching
+`(C va1*X+C va0)` sitting on the right of the `*` in `ua_dvd_..`'s own
+statement — same idiom `dvd_N_P1`/`dvd_N_P2` use for `(X-C P1.1) ∣
+Npoly4`, just aimed at the simpler `E+Y·v_a` target instead of `Npoly4`
+itself, and taking the root as a hypothesis instead of a named `P1`/`P2`
+coordinate. -/
+theorem Epoly4_eval_add_va_eval_mul_Ypoly4_eval_eq_zero_of_root_ua
+    (P1 P2 : F p × F p) (ua0 ua1 va0 va1 u0 u1 v0 v1 : F p)
+    (hA : MatrixNondegenerate4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1)
+    (r : F p) (hroot : (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).eval r = 0) :
+    (Epoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1).eval r +
+      (C va1 * X + C va0 : Polynomial (F p)).eval r *
+        (Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1).eval r = 0 := by
+  have hrdvd : (X - C r) ∣ (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)) :=
+    Polynomial.dvd_iff_isRoot.mpr hroot
+  have hdvd : (X - C r) ∣
+      (Epoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 +
+        Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 * (C va1 * X + C va0)) :=
+    hrdvd.trans (ua_dvd_Epoly4_add_Ypoly4_mul_va p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 hA)
+  have heval := Polynomial.dvd_iff_isRoot.mp hdvd
+  rw [Polynomial.IsRoot, Polynomial.eval_add, Polynomial.eval_mul] at heval
+  linear_combination heval
+
+/-- **Point-evaluation form of `u_dvd_Epoly4_add_Ypoly4_mul_v`, at a named
+root `r` of the target `u`.** The `R1`/`R2` analogue — mirror of
+`Epoly4_eval_add_va_eval_mul_Ypoly4_eval_eq_zero_of_root_ua` above, for the
+target quadratic `(u0,u1,v0,v1)` instead of the anchor's `u_a`. -/
+theorem Epoly4_eval_add_v_eval_mul_Ypoly4_eval_eq_zero_of_root_u
+    (P1 P2 : F p × F p) (ua0 ua1 va0 va1 u0 u1 v0 v1 : F p)
+    (hA : MatrixNondegenerate4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1)
+    (r : F p) (hroot : (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).eval r = 0) :
+    (Epoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1).eval r +
+      (C v1 * X + C v0 : Polynomial (F p)).eval r *
+        (Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1).eval r = 0 := by
+  have hrdvd : (X - C r) ∣ (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)) :=
+    Polynomial.dvd_iff_isRoot.mpr hroot
+  have hdvd : (X - C r) ∣
+      (Epoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 +
+        Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 * (C v1 * X + C v0)) :=
+    hrdvd.trans (u_dvd_Epoly4_add_Ypoly4_mul_v p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 hA)
+  have heval := Polynomial.dvd_iff_isRoot.mp hdvd
+  rw [Polynomial.IsRoot, Polynomial.eval_add, Polynomial.eval_mul] at heval
+  linear_combination heval
 
 /-! ## The two tangent-case divisibility facts — `hUa`/`hU` for
 `Npoly4Tangent`, closing the gap flagged in the "Tangent-anchor quotient

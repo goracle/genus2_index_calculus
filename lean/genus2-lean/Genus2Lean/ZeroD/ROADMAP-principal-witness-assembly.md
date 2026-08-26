@@ -754,3 +754,181 @@ Lean, since getting this wrong a third time wastes another pass. A
 refined prompt for this (drafted below, at the bottom of
 `PrincipalWitnessAssembly.lean`) is ready to run — **not yet sent, Claire
 to run it and report back before any more Part-D Lean is attempted**.
+
+## Status update (this pass, #8): found and closed a real, previously
+## unnoticed gap — `g(P1)=0`/`g(P2)=0` had no public name anywhere
+
+Before attempting item 1 of the "what is still missing" list at the
+bottom of `PrincipalWitnessAssembly.lean` (composing the six
+`ordAt_npoly4Lcm4_eq_one_of_*` facts with `Npoly4 = npoly4Lcm4 *
+uRS4General` and invoking lemmas 14/15), checked whether the actual
+"`g(P1) = 0`" / "`g(P2) = 0`" facts lemma 14's `hg_ne_eval` hypothesis
+needs at those two points are available by name anywhere. **They are
+not** — `row01_defining_eq_aux` (`AlphaReduce.lean`) proves exactly this
+(`Epoly4.eval P1.1 + P1.2 * Ypoly4.eval P1.1 = 0`, for both `a=0` (`P1`)
+and `a=1` (`P2`) via the `![P1,P2] a` matrix-literal indexing), but it is
+declared `private`, so nothing outside `AlphaReduce.lean` — including
+`PrincipalWitnessAssembly.lean` — can invoke it by name. Grepped the
+whole tree for a public re-export; none exists. This was a genuine,
+previously-unflagged infrastructure gap, not a re-derivation of known
+content.
+
+**Fixed this pass**: added two new public theorems to `AlphaReduce.lean`
+itself (same file, so they can call the `private` lemma directly),
+immediately after `row01_defining_eq_aux`:
+- `Epoly4_eval_add_Y_mul_Ypoly4_eval_P1_eq_zero`
+- `Epoly4_eval_add_Y_mul_Ypoly4_eval_P2_eq_zero`
+
+Each is `row01_defining_eq_aux` specialized at `a = 0`/`a = 1`, with the
+`(![P1,P2] : Fin 2 → F p × F p) a` matrix-literal indexing simplified away
+via `simpa [Matrix.cons_val_zero]` / `simpa [Matrix.cons_val_one]` (no
+existing precedent in this file for simplifying a concrete `![_,_] a`
+application, so this is a genuinely new — if small — proof step, not a
+copy of an existing pattern). **Not yet build-tested — Claire's REPL to
+confirm**, in particular whether `simpa [Matrix.cons_val_zero/_one]`
+alone closes the goal or needs an extra `Prod.mk.injEq`/`and_self`-style
+unfold for the `.1`/`.2` projections.
+
+**Still not attempted this pass** (the actual item 1/2 assembly from the
+status note): composing these two new facts (plus the mirror `ḡ(P)≠0`
+side, and the analogous facts for `Ra1`/`Ra2`/`R1`/`R2`, which likely need
+their own similar public-wrapper treatment — `row23_defining_eq_aux`/
+`row45_defining_eq_aux` are ALSO `private`, same gap, not yet checked in
+detail this pass) with the six `ordAt_npoly4Lcm4_eq_one_of_*` theorems and
+lemmas 14/15 to actually discharge the `∀P` case split. This remains the
+single largest piece of `reducedClass_eq_of_isReduction'`'s `sorry`.
+**Recommend the next pass's first move be checking whether `row23_
+defining_eq_aux`/`row45_defining_eq_aux` need the same public-wrapper
+treatment as `row01_defining_eq_aux` did here** (near-certain they do,
+same privacy pattern, not yet confirmed by direct read this pass) before
+attempting the full six-point assembly.
+
+## Status update (this pass, #9): `P1`/`P2` wrappers confirmed build-clean
+## by the user's REPL; `Ra1`/`Ra2`/`R1`/`R2`'s analogous gap found and closed
+
+**`Epoly4_eval_add_Y_mul_Ypoly4_eval_P1_eq_zero`/`_P2_eq_zero` (pass #8)
+confirmed build-clean** — the user reports the build succeeded with no
+errors, so the `simpa [Matrix.cons_val_zero/_one]` step does close the
+`![P1,P2] a` indexing goal as hoped, no fallback needed.
+
+Checked the predicted follow-up: `row23_defining_eq_aux`/
+`row45_defining_eq_aux` (the `Ra1`/`Ra2`/`R1`/`R2`-side analogues of
+`row01_defining_eq_aux`) are indeed both `private`, confirmed by direct
+grep. But their *shape* is different from `row01`'s — they don't state
+`g(point) = 0` directly (there is no single named point at this stage,
+just the abstract mod-`u_a`/mod-`u` reduction), they state a `∑ bidx, ...
+= 0` coefficient identity that only becomes `u_a ∣ (E + Y·v_a)` after
+`dvd_of_row_identity4` (itself ALSO `private`) processes it. Grepped
+further and found: `dvd_N_ua`/`dvd_N_u4` (public, already on file) each
+build this exact divisibility fact (`u_a ∣ (E+Y·v_a)`, resp. `u ∣
+(E+Y·v)`) as an unnamed internal `have huY := ...` on the way to their own
+stronger `u_a ∣ Npoly4`/`u ∣ Npoly4` conclusions (which additionally fold
+in `IsMumfordUa`/`IsMumfordTarget4`) — so `huY` itself, the fact actually
+needed for the `Ra1`/`Ra2`/`R1`/`R2` point cases (a root `r` of `u_a`/`u`
+makes `g(r) := E.eval r + v_a.eval r · Y.eval r = 0`, without needing the
+`v_a²≡f` Mumford condition at all), had no public name anywhere — same
+gap in kind as pass #8's `P1`/`P2` fix, just one level of composition
+deeper.
+
+**Fixed this pass**: added two new public theorems to `AlphaReduce.lean`,
+immediately after `dvd_N_u4`:
+- `ua_dvd_Epoly4_add_Ypoly4_mul_va` : `u_a ∣ (Epoly4 + Ypoly4·v_a)`
+- `u_dvd_Epoly4_add_Ypoly4_mul_v` : `u ∣ (Epoly4 + Ypoly4·v)`
+
+Both are one-line extractions — literally the same
+`dvd_of_row_identity4 ... (fun a => row23/45_defining_eq_aux ... hA a)`
+call `dvd_N_ua`/`dvd_N_u4`'s own proof already makes internally as `huY`,
+just given their own top-level statement and name instead of staying
+buried as an unnamed `have`. No new tactics, no new math — pure
+extraction, same discipline as pass #8. **Not yet build-tested — Claire's
+REPL to confirm**, though the risk here is lower than pass #8's (no
+`simpa`/simp-normalization step at all; it's a direct term-mode
+`:=`-proof copied verbatim from a passage that's already part of the
+existing, presumably-working `dvd_N_ua`/`dvd_N_u4` proofs).
+
+**All four public wrapper facts (`P1`, `P2`, `u_a`, `u`) are now on file.**
+What's still needed before the `Ra1`/`Ra2`/`R1`/`R2` point cases can be
+assembled: converting `ua_dvd_Epoly4_add_Ypoly4_mul_va`'s DIVISIBILITY
+statement into the actual `E.eval r + Y.eval r * v_a.eval r = 0` EVALUATION
+fact at each of `u_a`'s two named roots (`Ra1`, `Ra2` — not yet given
+their own coordinates/names as a hypothesis anywhere in
+`PrincipalWitnessAssembly.lean`; the six `ordAt_npoly4Lcm4_eq_one_of_*`
+theorems take the point's `.X`-coordinate as an opaque hypothesis
+`hPX : P.X = <root>`, they don't themselves name or construct the two
+roots of `u_a`/`u` as field elements). This is a real remaining gap, not
+mechanical: it needs `(X-C r) ∣ u_a` (from `r` being a stated root) composed
+with `(X-C r) ∣ u_a ∣ (E+Y·v_a)` via `dvd_trans`, then
+`Polynomial.dvd_iff_isRoot`/`Polynomial.IsRoot.eval_eq_zero`-style unfolding —
+the exact same `Polynomial.dvd_iff_isRoot` idiom `dvd_N_P1`/`dvd_N_P2`
+already use (see line ~2796-2805 for a working precedent applying this
+exact idiom, just needs re-aiming at `ua_dvd_Epoly4_add_Ypoly4_mul_va`
+composed with an explicit root of `u_a` rather than at `Npoly4` composed
+with `P1`/`P2`'s own coordinates directly).
+
+**Not attempted this pass**: the root-extraction step above, and the
+actual six-point `∀P` assembly into `reducedClass_eq_of_isReduction'`
+using lemmas 14/15. Both remain open. `PrincipalWitnessAssembly.lean`
+itself was not edited this pass (only `AlphaReduce.lean` gained the two
+new theorems) — the assembly file's own consumption of these four public
+facts is still future work.
+
+## Status update (this pass, #10): the root-extraction gap flagged by pass
+## #9 is closed; all six point-evaluation facts are now on file
+
+The user confirmed pass #9's `P1`/`P2` wrappers (from pass #8) build
+clean, no errors. Proceeded to close pass #9's flagged remaining gap:
+converting `ua_dvd_Epoly4_add_Ypoly4_mul_va`/`u_dvd_Epoly4_add_Ypoly4_mul_v`
+(divisibility facts) into the actual point-evaluation facts the `Ra1`/
+`Ra2`/`R1`/`R2` cases need.
+
+Added two new theorems to `AlphaReduce.lean`, right after the divisibility
+pair:
+- `Epoly4_eval_add_va_eval_mul_Ypoly4_eval_eq_zero_of_root_ua` — given an
+  explicit root `r` of `u_a` (as a hypothesis `hroot : u_a.eval r = 0`,
+  since `u_a`'s two roots have no field-element names anywhere upstream
+  of this file), concludes `E.eval r + v_a.eval r * Y.eval r = 0`.
+- `Epoly4_eval_add_v_eval_mul_Ypoly4_eval_eq_zero_of_root_u` — the mirror
+  for the target `u`/`v`.
+
+Proof idiom: `hroot` gives `(X-C r) ∣ u_a` via `Polynomial.dvd_iff_isRoot`;
+`.trans` with the divisibility fact gives `(X-C r) ∣ (E+Y·v_a)`;
+`Polynomial.dvd_iff_isRoot` again (the `.mp` direction this time) turns
+that into `(E+Y·v_a).IsRoot r`; `rw [Polynomial.IsRoot, Polynomial.eval_add,
+Polynomial.eval_mul]` unfolds it to the sum/product form — this exact
+`rw` sequence is a **confirmed working precedent already in this file**
+(`dvd_N_P1`/`dvd_N_P2`, lines ~2783/2798, same three lemmas in the same
+order), not a guessed API call. Closed with `linear_combination heval`
+rather than `linarith` — flagged explicitly during this pass, since
+`linarith` is for linearly-ordered fields and this project is
+finite-field-only (`F p`), so reaching for it here would have been
+exactly the kind of "closed-field machinery" mistake the project's own
+conventions warn against; `linear_combination` works over any
+commutative ring and is the correct tool for a goal that's `A = B` up to
+one hypothesis and a `mul_comm`-shaped rearrangement.
+
+**Not yet build-tested — Claire's REPL to confirm**, though risk is
+assessed as low: every individual step (`dvd_iff_isRoot` used twice,
+`IsRoot`/`eval_add`/`eval_mul` unfolding) has a working precedent
+elsewhere in this exact file, and `linear_combination` is a standard,
+well-tested tactic for exactly this kind of "goal follows from one
+hypothesis by ring arithmetic" shape.
+
+**All six point-evaluation facts needed for the `PrincipalWitnessAssembly.
+lean` old/new-point cases are now on file**: `P1`, `P2` (direct, pass
+#8), and the `ua`-root/`u`-root forms usable at `Ra1`/`Ra2`/`R1`/`R2`
+(pass #10, this pass — the caller supplies each of `u_a`'s/`u`'s two
+actual roots as `r` once it has them in hand, e.g. via the "does `u_a`
+split" fork the roadmap already flags as scoped-to-the-split-case).
+
+**Still not attempted, honestly**: `PrincipalWitnessAssembly.lean` itself
+was not touched this pass (only `AlphaReduce.lean` gained the four new
+theorems across passes #8-#10). The actual assembly — composing these six
+point facts with the six `ordAt_npoly4Lcm4_eq_one_of_*` theorems (already
+in `PrincipalWitnessAssembly.lean`) and `PrincipalWitness.lean`'s lemmas
+14/15 into the `∀P` case split `reducedClass_eq_of_isReduction'` needs —
+remains the single largest piece of that theorem's `sorry`, and has not
+been started. Recommend the next pass's first move be: once pass #8-#10's
+four new theorems are confirmed build-clean, start the actual composition
+in `PrincipalWitnessAssembly.lean` (or a new file) for the `P1` case
+first (simplest — direct point, no root-naming layer), as a template
+before repeating the pattern five more times.

@@ -36,6 +36,28 @@ namespace DecoupledSystem
 
 open TheDataDerivation
 
+/-!
+The following three wrappers are deliberately opaque (`def`, not `abbrev`).
+The P1 point-composition theorem has an unusually large declaration type:
+`ordAtFrac` is fed three large polynomial expressions, and elaborating the
+same expressions repeatedly was enough to hit the default 200k heartbeat
+limit at the theorem declaration itself, before the proof body was entered.
+Keeping the constructions behind named constants makes the declaration cheap;
+the definitions unfold where the proof explicitly asks for them.
+-/
+
+def witnessE4 (p : ℕ) [Fact (Nat.Prime p)]
+    (P1 P2 : F p × F p) (ua0 ua1 va0 va1 u0 u1 v0 v1 : F p) : Polynomial (F p) :=
+  Epoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1
+
+def witnessY4 (p : ℕ) [Fact (Nat.Prime p)]
+    (P1 P2 : F p × F p) (ua0 ua1 va0 va1 u0 u1 v0 v1 : F p) : Polynomial (F p) :=
+  Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1
+
+def witnessA4 (p : ℕ) [Fact (Nat.Prime p)]
+    (P1 P2 : F p × F p) (ua0 ua1 u0 u1 : F p) : Polynomial (F p) :=
+  npoly4Lcm4 p P1 P2 ua0 ua1 u0 u1
+
 /-! ## Step 1: the exact factorization equation
 
 `npoly4Lcm4_dvd_Npoly4` only gives divisibility; the `PrincipalWitness.lean`
@@ -1006,6 +1028,185 @@ theorem ordAt_npoly4Lcm4_eq_one_of_R2
     (by rw [hPX] at *; exact hF3_eval)
 
 end GeometricInstantiationQuadratic4
+
+/-! ## Step 4 (roadmap item 1): composing the `P1` case — the first of six
+point compositions
+
+This is the actual assembly the roadmap's "what is still missing" list
+(item 1) asks for, done here for `P1` as a template for the remaining
+five points (`P2`, `Ra1`, `Ra2`, `R1`, `R2`). Composes:
+- Step 1's exact factorization (`Npoly4_eq_npoly4Lcm4_mul_uRS4General`),
+  reshaped into `pairNorm H Epoly4 Ypoly4 = A * U` form (`hAU` in
+  `PrincipalWitness.lean`'s sense) via `pairNorm_eq_of_eq_curvePoly` and
+  `Npoly4`'s own definition;
+- Part D's `ordAt_npoly4Lcm4_eq_one_of_P1` (`ordAt P npoly4Lcm4 0 = 1`);
+- `AlphaReduce.lean`'s `Epoly4_eval_add_Y_mul_Ypoly4_eval_P1_eq_zero`
+  (`g(P1) = 0`, added this project — see `ROADMAP-principal-witness-
+  assembly.md`'s pass #8);
+- `PrincipalWitness.lean`'s lemma 14 (`ordAtFrac_eq_one_of_old_point`).
+
+**One new hypothesis, not on file anywhere before this pass, added
+honestly rather than derived or hidden**: `hYP1_ne : (Ypoly4 ...).eval
+P1.1 ≠ 0`. Lemma 14's `hg_ne_eval` (misleadingly named — it is actually
+the `ḡ(P) ≠ 0` hypothesis, per that lemma's own docstring/proof) needs
+`ḡ(P1) ≠ 0`. Since `g(P1) = 0` gives `E.eval P1.1 = -P1.2 * Y.eval P1.1`,
+`ḡ(P1) = E.eval P1.1 - P1.2 * Y.eval P1.1 = -2 * P1.2 * Y.eval P1.1`,
+which is nonzero (given `hchar : (2:F p) ≠ 0`) iff `P1.2 ≠ 0` (already
+`hPY` in `ordAt_npoly4Lcm4_eq_one_of_P1`'s hypothesis list) AND
+`Y.eval P1.1 ≠ 0`. The latter is NOT derivable from any hypothesis
+currently on file (checked: `hgcd`'s coprimality is between `Ypoly4` and
+`uRS4General`, the RESIDUAL quadratic — not `npoly4Lcm4`/`A`, the OLD
+factor `P1` is a root of; no lemma anywhere states or implies `Ypoly4`
+doesn't vanish at `P1.X`). This is a genuine mathematical gap, not a
+notational one — stating it as an explicit hypothesis here (rather than
+guessing a derivation) matches this project's "don't over-assume, but
+state what's actually needed" discipline, same as `hP1ua`/`hP1target`
+etc. already do for the geometric-distinctness side. **Flagged for a
+ChatGPT consult or direct check**: is `Ypoly4.eval P1.1 ≠ 0` actually true
+unconditionally (geometrically: does the interpolating `Y`-component ever
+vanish at one of the two points it's built to pass through, for generic
+input data)?  or does it need a further nondegeneracy hypothesis on
+`(P1,P2,ua,u)` beyond `MatrixNondegenerate4`? Not resolved this pass. -/
+
+section PointCompositionP1
+
+variable (p : ℕ) [hp : Fact (Nat.Prime p)] [Fact (p ≠ 2)]
+variable {H : HyperellipticPolynomial (F p)} [IsDedekindDomain (CoordinateRing H)]
+
+/-- **The `P1` case of the pointwise `ordAtFrac`-assembly:** the old-point
+factor `A = npoly4Lcm4` has order one at `P1`, and the residual factor
+`U` is therefore the denominator in `ordAtFrac P E Y U`. This is the exact
+conclusion provided by `ordAtFrac_eq_one_of_old_point`. First of six point
+compositions the assembly needs (see module-level status note above for the
+other five, not yet done). -/
+theorem ordAtFrac_eq_one_of_P1
+    (hchar : (2 : F p) ≠ 0) (hsf : Squarefree H.f)
+    (c0 c1 c2 c3 c4 ua0 ua1 va0 va1 u0 u1 v0 v1 : F p)
+    (hf : H.f = curvePoly p c0 c1 c2 c3 c4)
+    (P1 P2 : F p × F p)
+    (P : H.Point) (hPX : P.X = P1.1) (hPY : P.Y = P1.2) (hPY_ne : P.Y ≠ 0)
+    (h12 : P1.1 ≠ P2.1)
+    (hne34 : (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)) ≠ X ^ 2 + C u1 * X + C u0)
+    (hnoroot34 : ¬ ∃ r : F p, (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).eval r = 0 ∧
+        (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).eval r = 0)
+    (hP1ua : ¬ (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).eval P1.1 = 0)
+    (hP1target : ¬ (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).eval P1.1 = 0)
+    (hP2ua : ¬ (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).eval P2.1 = 0)
+    (hP2target : ¬ (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).eval P2.1 = 0)
+    (hA : MatrixNondegenerate4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1)
+    (hP1_curve : P1.2 ^ 2 = (curvePoly p c0 c1 c2 c3 c4).eval P1.1)
+    (hP2_curve : P2.2 ^ 2 = (curvePoly p c0 c1 c2 c3 c4).eval P2.1)
+    (hMumfordUa : IsMumfordUa p c0 c1 c2 c3 c4 ua0 ua1 va0 va1)
+    (hMumfordTarget : IsMumfordTarget4 p c0 c1 c2 c3 c4 u0 u1 v0 v1)
+    (hcurne : curBeforeMonic4General p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ≠ 0)
+    (hYP1_ne : (Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1).eval P1.1 ≠ 0)
+    (E Y A : Polynomial (F p))
+    (hE_def : E = Epoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1)
+    (hY_def : Y = Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1)
+    (hA_def : A = npoly4Lcm4 p P1 P2 ua0 ua1 u0 u1) :
+    ordAtFrac P E Y
+      (C ((curBeforeMonic4General p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1).leadingCoeff) *
+        uRS4General p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1)
+      (0 : Polynomial (F p)) = 1 := by
+  have h_bot : pointIdeal P ≠ ⊥ := pointIdeal_ne_bot P
+  -- `hNpoly4_eq₀`: proved BEFORE the `set`s above are introduced, and by
+  -- `rfl` alone (this is definitional — `Npoly4`'s `def` body IS
+  -- `Epoly4^2 - curvePoly*Ypoly4^2`, verbatim) rather than `unfold ...;
+  -- ring`, which was timing out: with `E,Y,A,lc,U` all sitting in context
+  -- as `set`-local-defs, `unfold`/`ring`'s `whnf` calls had to thread
+  -- through all of them, not just `Npoly4`, to normalize a degree-≤8
+  -- polynomial identity. Proving this cheap fact in terms of the plain
+  -- `Epoly4 p ...`/`Ypoly4 p ...` names (no `E`/`Y` abbreviations yet)
+  -- keeps the `rfl` local to `Npoly4`'s own unfolding.
+  have hNpoly4_eq₀ : Npoly4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 =
+      Epoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ^ 2 -
+        curvePoly p c0 c1 c2 c3 c4 * Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ^ 2 := rfl
+  set lc := (curBeforeMonic4General p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1).leadingCoeff
+    with hlc_def
+  set U := C lc * uRS4General p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 with hU_def
+  -- `hAU`: `pairNorm H E Y = A * U`, from Step 1's factorization plus
+  -- `Npoly4`'s definition and `hf`.
+  have hAU : pairNorm H E Y = A * U := by
+    -- `hfact : Npoly4 = npoly4Lcm4 * (C leadingCoeff * uRS4General)`, and
+    -- `Npoly4` unfolds (definitionally) to `E^2 - curvePoly*Y^2`; `pairNorm
+    -- H E Y` unfolds (via `hf`) to `E^2 - Y^2*curvePoly` — the same value,
+    -- differing only by `mul_comm`, so `linear_combination` (not `rw`,
+    -- which would need exact syntactic matches on both sides) closes the
+    -- gap directly from the two component facts.
+    have hfact := Npoly4_eq_npoly4Lcm4_mul_uRS4General p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1
+      u0 u1 v0 v1 hcurne hA hP1_curve hP2_curve hMumfordUa hMumfordTarget
+    have hpn := pairNorm_eq_of_eq_curvePoly hf E Y
+    have hNpoly4_eq : Npoly4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 = E ^ 2 -
+        curvePoly p c0 c1 c2 c3 c4 * Y ^ 2 := hE_def ▸ hY_def ▸ hNpoly4_eq₀
+    -- Orient the local set-equalities backwards.  `hfact` already contains
+    -- the fully expanded definitions on its right-hand side, so rewriting
+    -- forwards cannot see `A`, while rewriting backwards exposes `A * U`
+    -- without unfolding any of the large polynomial definitions.
+    rw [← hlc_def, ← hU_def, ← hA_def] at hfact
+    have hpn' : pairNorm H E Y = E ^ 2 - curvePoly p c0 c1 c2 c3 c4 * Y ^ 2 := by
+      calc
+        pairNorm H E Y = E ^ 2 - Y ^ 2 * curvePoly p c0 c1 c2 c3 c4 := hpn
+        _ = E ^ 2 - curvePoly p c0 c1 c2 c3 c4 * Y ^ 2 := by
+          rw [mul_comm (Y ^ 2) (curvePoly p c0 c1 c2 c3 c4)]
+    calc
+      pairNorm H E Y = E ^ 2 - curvePoly p c0 c1 c2 c3 c4 * Y ^ 2 := hpn'
+      _ = Npoly4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 := hNpoly4_eq.symm
+      _ = A * U := hfact
+  -- `A ≠ 0`, `U ≠ 0` as ring elements (`toPair H · 0`).
+  have hAmonic : A.Monic := by
+    rw [hA_def]
+    exact npoly4Lcm4_monic p P1 P2 ua0 ua1 u0 u1
+  have hA_ne0 : A ≠ 0 := hAmonic.ne_zero
+  have hA_ne : toPair H A (0 : Polynomial (F p)) ≠ 0 := by
+    rw [Ne, toPair_eq_zero_iff]; exact fun h => hA_ne0 h.1
+  have hUmonic : (uRS4General p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1).Monic :=
+    uRS4General_monic p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 hcurne
+  have hU_ne0 : U ≠ 0 := by
+    rw [hU_def]
+    exact mul_ne_zero (Polynomial.C_ne_zero.mpr
+      ((not_congr Polynomial.leadingCoeff_eq_zero).mpr hcurne)) hUmonic.ne_zero
+  have hU_ne : toPair H U (0 : Polynomial (F p)) ≠ 0 := by
+    rw [Ne, toPair_eq_zero_iff]; exact fun h => hU_ne0 h.1
+  -- `ordAt P A 0 = 1`, from Part D.
+  have hA_ord : ordAt P A (0 : Polynomial (F p)) = 1 := by
+    rw [hA_def]
+    exact ordAt_npoly4Lcm4_eq_one_of_P1 p hchar hsf P1 P2 ua0 ua1 u0 u1
+      P h_bot hPX hPY_ne h12 hne34 hnoroot34 hP1ua hP1target hP2ua hP2target
+  -- `g(P1) = 0`, giving both `hg_ne` (as a ring element) and (combined
+  -- with `hYP1_ne`) `hg_ne_eval` (really `ḡ(P1) ≠ 0`).
+  have hgP1_eval : E.eval P1.1 + P1.2 * Y.eval P1.1 = 0 := by
+    simpa [hE_def, hY_def] using
+      (Epoly4_eval_add_Y_mul_Ypoly4_eval_P1_eq_zero p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 hA)
+  have hgbar_eval : E.eval P.X + (-Y).eval P.X * P.Y ≠ 0 := by
+    rw [hPX, hPY, Polynomial.eval_neg]
+    have hEeval : E.eval P1.1 = -(P1.2 * Y.eval P1.1) := by linear_combination hgP1_eval
+    rw [hEeval]
+    intro hzero
+    apply hYP1_ne
+    have h2 : (2 : F p) * (P1.2 * Y.eval P1.1) = 0 := by linear_combination -hzero
+    rcases mul_eq_zero.mp h2 with h2a | h2b
+    · exact absurd h2a hchar
+    · rcases mul_eq_zero.mp h2b with h2c | h2d
+      · exact absurd h2c (hPY ▸ hPY_ne)
+      · simpa [hY_def] using h2d
+  have hg_ne : toPair H E Y ≠ 0 := by
+    rw [Ne, toPair_eq_zero_iff]
+    intro ⟨hE0, hY0⟩
+    apply hYP1_ne
+    have hY0_eval :
+        (Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1).eval P1.1 = 0 := by
+      simpa [hY_def] using
+        congrArg (fun Q : Polynomial (F p) => Q.eval P1.1) hY0
+    exact hY0_eval
+  -- The old-point lemma uses `A` as the known order-one factor and
+  -- `U` as the residual denominator, so its conclusion is exactly the
+  -- theorem target `ordAtFrac P E Y U = 1`.
+  have hfinal :=
+    ordAtFrac_eq_one_of_old_point P h_bot E Y A U
+      hg_ne hgbar_eval hAU hA_ne hU_ne hA_ord
+  simpa [hU_def, hlc_def] using hfinal
+
+end PointCompositionP1
 
 /-! ## Status note (this pass): all six Part-D point-instantiations done;
 ## the `R_i` vs `ι(R_i)` orientation question is now RESOLVED
