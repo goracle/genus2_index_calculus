@@ -1208,10 +1208,87 @@ theorem ordAtFrac_eq_one_of_P1
 
 end PointCompositionP1
 
-/-! ## Status note (this pass): all six Part-D point-instantiations done;
-## the `R_i` vs `ι(R_i)` orientation question is now RESOLVED
+/-! ## Step 4a: a reusable PrincipalWitness assembly interface
 
-**All six point-instantiations Part D needs are now on file**:
+The `P1` proof above contains an important bit of logic that is independent of
+how the order-one fact was obtained.  Once the geometric side has supplied
+`ordAt P A 0 = 1`, the remaining input to `ordAtFrac_eq_one_of_old_point` is
+exactly the pair-norm factorization together with the two nonvanishing facts.
+Making that interface explicit is useful for the other five points: each
+geometric instantiation should now only have to produce the point-specific
+`g = 0` / `bar g ≠ 0` facts and the common factorization data.
+
+This theorem is intentionally just an interface theorem.  In particular, it
+does not manufacture any of the point-specific hypotheses; doing so here would
+hide precisely the nondegeneracy obligations that still need to be checked at
+`P2`, `Ra1`, `Ra2`, `R1`, and `R2`.
+-/
+section PointCompositionInterface
+
+variable (p : ℕ) [hp : Fact (Nat.Prime p)] [Fact (p ≠ 2)]
+variable {H : HyperellipticPolynomial (F p)} [IsDedekindDomain (CoordinateRing H)]
+
+/--
+Generic old-point assembly for the `PrincipalWitness` lemma 14.
+
+The geometric part of the proof is completely abstracted into
+`hA_ord`.  The algebraic part is the equality
+`pairNorm H E Y = A * U`; once that and the two evaluations distinguishing
+`g := toPair H E Y` from `ḡ := toPair H E (-Y)` are available, the conclusion is
+exactly the desired order-one statement for the fraction with denominator `U`.
+-/
+theorem ordAtFrac_eq_one_of_old_point_of_pairNorm
+    (P : H.Point) (h_bot : pointIdeal P ≠ ⊥)
+    (E Y A U : Polynomial (F p))
+    (hAU : pairNorm H E Y = A * U)
+    (hg_ne : toPair H E Y ≠ 0)
+    (hgbar_eval : E.eval P.X + (-Y).eval P.X * P.Y ≠ 0)
+    (hA_ne : toPair H A (0 : Polynomial (F p)) ≠ 0)
+    (hU_ne : toPair H U (0 : Polynomial (F p)) ≠ 0)
+    (hA_ord : ordAt P A (0 : Polynomial (F p)) = 1) :
+    ordAtFrac P E Y U (0 : Polynomial (F p)) = 1 := by
+  exact ordAtFrac_eq_one_of_old_point P h_bot E Y A U
+    hg_ne hgbar_eval hAU hA_ne hU_ne hA_ord
+
+/-- A zero-coefficient witness cannot vanish as a pair at `P` when its `Y`
+coefficient is nonzero at `P.X`.  This is the small bridge needed repeatedly
+when feeding the PrincipalWitness lemmas: `toPair_eq_zero_iff` is global,
+whereas the pointwise hypotheses are stated using polynomial evaluation. -/
+lemma toPair_ne_zero_of_eval_snd_ne
+    (P : H.Point) (E Y : Polynomial (F p))
+    (hY_eval : Y.eval P.X ≠ 0) :
+    toPair H E Y ≠ 0 := by
+  rw [Ne, toPair_eq_zero_iff]
+  intro hzero
+  exact hY_eval (by simpa [hzero.2])
+
+/-- Characteristic-`≠ 2` algebraic bridge for conjugating the `Y`-coefficient.
+If `E + Y*y = 0` at a point, but `Y*y` is nonzero, then the conjugate
+expression `E - Y*y` cannot also vanish.  This packages the recurring
+`linear_combination`/`mul_eq_zero` argument from the point instantiations. -/
+lemma eval_conj_ne_of_eval_add_mul_eq_zero
+    {K : Type*} [Field K] (hchar : (2 : K) ≠ 0)
+    {e y z : K} (hyz : y * z ≠ 0)
+    (h : e + y * z = 0) :
+    e + (-y) * z ≠ 0 := by
+  intro h'
+  have h2 : (2 : K) * (y * z) = 0 := by
+    linear_combination h - h'
+  exact hyz (by
+    rcases mul_eq_zero.mp h2 with h2c | h2yz
+    · exact absurd h2c hchar
+    · exact h2yz)
+
+end PointCompositionInterface
+
+/-! ## Status note (this pass): the generic PrincipalWitness assembly layer is now
+## explicit; P1 is the first concrete instantiation, and the `R_i`/`ι(R_i)`
+## orientation is resolved for the eventual new-point cases.
+
+**Current concrete point-instantiation status:** P1 is assembled end-to-end
+in this file; the remaining P2/Ra1/Ra2/R1/R2 wrappers still need their
+point-specific hypotheses wired in. The generic assembly theorem above is
+designed to make those wrappers mostly bookkeeping once those hypotheses exist.
 `ordAt_npoly4Lcm4_eq_one_of_P1`/`_P2`/`_Ra1`/`_Ra2`/`_R1`/`_R2`. The
 `ua`/`u_target`-root cases each needed one extra step
 (`quadratic_eq_mul_X_sub_C` splitting the relevant quadratic into its two
