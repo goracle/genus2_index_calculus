@@ -330,5 +330,159 @@ theorem ordAt_npoly4Lcm4_eq_two_of_R1_eq_R2_rootMultiplicity
       hnoroot34 hP1ua hP1target hP2ua hP2target hRP1 hRP2 hRua]
   norm_num
 
+/-- **The `ua`-slot mirror: `Ra1 = Ra2` (repeated root of `ua`).**
+Everything above unifies `R1 ≠ R2` and `R1 = R2` for `u_target`'s slot,
+leaving `ua`'s own `rootMultiplicity` opaque (guarded by `hαua`, a bare
+nonvanishing hypothesis on `ua` at the query point `α`). The `Ra1 = Ra2`
+case (`ua` a perfect square) is the exact mirror with the roles of `ua`
+and `u_target` swapped: `rootMultiplicity_npoly4Lcm4_eq_add` itself is not
+reused directly (its conclusion is phrased in terms of `u_target`'s
+`rootMultiplicity`, with `hαua` fixed as the nonvanishing side) — a
+symmetric restatement is proved below by the identical `rootMultiplicity_mul`
+computation with `hαtarget`/`hαua` swapped, since `npoly4Lcm4`'s
+flat-product shape treats all four factors uniformly (per this file's own
+top note on why the mirror is "a comparatively mechanical rewrite").
+
+**`npoly4Lcm4`'s `rootMultiplicity` at any point `α`, unconditionally,
+in terms of `ua`'s own `rootMultiplicity`** — the `ua`-slot mirror of
+`rootMultiplicity_npoly4Lcm4_eq_add`. Same additive decomposition
+(`Polynomial.rootMultiplicity_mul`/`_C`/`_X_sub_C`), but now `u_target`'s
+contribution is pinned to `0` (`hαtarget`, the nonvanishing hypothesis) and
+`ua`'s own `rootMultiplicity` is left opaque — the number that is `1` when
+`ua` splits with two distinct roots and `2` when `α` is `ua`'s repeated
+root. -/
+theorem rootMultiplicity_npoly4Lcm4_eq_add'
+    (P1 P2 : F p × F p) (ua0 ua1 u0 u1 : F p) (α : F p)
+    (h12 : P1.1 ≠ P2.1)
+    (hne34 : (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)) ≠ X ^ 2 + C u1 * X + C u0)
+    (hnoroot34 : ¬ ∃ r : F p, (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).eval r = 0 ∧
+        (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).eval r = 0)
+    (hP1ua : ¬ (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).eval P1.1 = 0)
+    (hP1target : ¬ (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).eval P1.1 = 0)
+    (hP2ua : ¬ (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).eval P2.1 = 0)
+    (hP2target : ¬ (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).eval P2.1 = 0)
+    (hαP1 : α ≠ P1.1) (hαP2 : α ≠ P2.1)
+    (hαtarget : ¬ (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).eval α = 0) :
+    (npoly4Lcm4 p P1 P2 ua0 ua1 u0 u1).rootMultiplicity α =
+      (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).rootMultiplicity α := by
+  classical
+  have hm1 : (X - C P1.1 : Polynomial (F p)).Monic := Polynomial.monic_X_sub_C _
+  have hm2 : (X - C P2.1 : Polynomial (F p)).Monic := Polynomial.monic_X_sub_C _
+  have hm3 : (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).Monic := by monicity!
+  have hm4 : (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).Monic := by monicity!
+  have hne1 : (X - C P1.1 : Polynomial (F p)) ≠ 0 := hm1.ne_zero
+  have hne2 : (X - C P2.1 : Polynomial (F p)) ≠ 0 := hm2.ne_zero
+  have hne3 : (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)) ≠ 0 := hm3.ne_zero
+  have hne4 : (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)) ≠ 0 := hm4.ne_zero
+  rw [npoly4Lcm4_eq_flat_product p P1 P2 ua0 ua1 u0 u1 h12 hne34 hnoroot34
+    hP1ua hP1target hP2ua hP2target]
+  set u : F p := (npoly4LcmRaw p P1 P2 ua0 ua1 u0 u1).leadingCoeff⁻¹ *
+        (EuclideanDomain.gcd
+          (EuclideanDomain.lcm (X - C P1.1 : Polynomial (F p)) (X - C P2.1))
+          (EuclideanDomain.lcm (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p))
+            (X ^ 2 + C u1 * X + C u0))).leadingCoeff⁻¹ *
+        (EuclideanDomain.gcd (X - C P1.1 : Polynomial (F p)) (X - C P2.1)).leadingCoeff⁻¹ *
+        (EuclideanDomain.gcd (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p))
+          (X ^ 2 + C u1 * X + C u0)).leadingCoeff⁻¹ with hudef
+  by_cases hu0 : u = 0
+  · exfalso
+    have hraw_ne : (npoly4LcmRaw p P1 P2 ua0 ua1 u0 u1) ≠ 0 :=
+      npoly4LcmRaw_ne_zero p P1 P2 ua0 ua1 u0 u1
+    have hgcd12ne : (EuclideanDomain.gcd (X - C P1.1 : Polynomial (F p)) (X - C P2.1)) ≠ 0 :=
+      fun h => hm1.ne_zero (EuclideanDomain.gcd_eq_zero_iff.mp h).1
+    have hgcd34ne :
+        (EuclideanDomain.gcd (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p))
+          (X ^ 2 + C u1 * X + C u0)) ≠ 0 :=
+      fun h => hm3.ne_zero (EuclideanDomain.gcd_eq_zero_iff.mp h).1
+    have hL12ne : (EuclideanDomain.lcm (X - C P1.1 : Polynomial (F p)) (X - C P2.1)) ≠ 0 :=
+      fun h => (EuclideanDomain.lcm_eq_zero_iff.mp h).elim hm1.ne_zero hm2.ne_zero
+    have hL34ne :
+        (EuclideanDomain.lcm (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p))
+          (X ^ 2 + C u1 * X + C u0)) ≠ 0 :=
+      fun h => (EuclideanDomain.lcm_eq_zero_iff.mp h).elim hm3.ne_zero hm4.ne_zero
+    have hGne :
+        (EuclideanDomain.gcd (EuclideanDomain.lcm (X - C P1.1 : Polynomial (F p)) (X - C P2.1))
+          (EuclideanDomain.lcm (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p))
+            (X ^ 2 + C u1 * X + C u0))) ≠ 0 :=
+      fun h => hL12ne (EuclideanDomain.gcd_eq_zero_iff.mp h).1
+    have h1 : (npoly4LcmRaw p P1 P2 ua0 ua1 u0 u1).leadingCoeff⁻¹ ≠ 0 :=
+      inv_ne_zero ((not_congr Polynomial.leadingCoeff_eq_zero).mpr hraw_ne)
+    have h2 : (EuclideanDomain.gcd
+        (EuclideanDomain.lcm (X - C P1.1 : Polynomial (F p)) (X - C P2.1))
+        (EuclideanDomain.lcm (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p))
+          (X ^ 2 + C u1 * X + C u0))).leadingCoeff⁻¹ ≠ 0 :=
+      inv_ne_zero ((not_congr Polynomial.leadingCoeff_eq_zero).mpr hGne)
+    have h3 : (EuclideanDomain.gcd (X - C P1.1 : Polynomial (F p)) (X - C P2.1)).leadingCoeff⁻¹
+        ≠ 0 := inv_ne_zero ((not_congr Polynomial.leadingCoeff_eq_zero).mpr hgcd12ne)
+    have h4 : (EuclideanDomain.gcd (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p))
+        (X ^ 2 + C u1 * X + C u0)).leadingCoeff⁻¹ ≠ 0 :=
+      inv_ne_zero ((not_congr Polynomial.leadingCoeff_eq_zero).mpr hgcd34ne)
+    exact (mul_ne_zero (mul_ne_zero (mul_ne_zero h1 h2) h3) h4) (hudef ▸ hu0)
+  have hCu_unit : IsUnit (C u : Polynomial (F p)) :=
+    Polynomial.isUnit_C.mpr (isUnit_iff_ne_zero.mpr hu0)
+  have hCu_ne : (C u : Polynomial (F p)) ≠ 0 := hCu_unit.ne_zero
+  have hprod_ne : (((X - C P1.1 : Polynomial (F p)) * (X - C P2.1)) *
+      ((X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)) * (X ^ 2 + C u1 * X + C u0))) ≠ 0 :=
+    mul_ne_zero (mul_ne_zero hne1 hne2) (mul_ne_zero hne3 hne4)
+  rw [Polynomial.rootMultiplicity_mul (mul_ne_zero hCu_ne hprod_ne),
+    Polynomial.rootMultiplicity_C, zero_add,
+    Polynomial.rootMultiplicity_mul hprod_ne,
+    Polynomial.rootMultiplicity_mul (mul_ne_zero hne1 hne2),
+    Polynomial.rootMultiplicity_mul (mul_ne_zero hne3 hne4),
+    Polynomial.rootMultiplicity_X_sub_C, Polynomial.rootMultiplicity_X_sub_C,
+    Polynomial.rootMultiplicity_eq_zero hαtarget,
+    if_neg hαP1, if_neg hαP2]
+  ring
+
+/-- **The `Ra1 = Ra2` repeated-root value, as a corollary of the `ua`-slot
+unifying lemma above** — `ua.rootMultiplicity R = 2` when `ua = (X-C R)^2`,
+via `Polynomial.rootMultiplicity_X_sub_C_pow`. The mirror of
+`rootMultiplicity_npoly4Lcm4_eq_two_of_R1_eq_R2`. -/
+theorem rootMultiplicity_npoly4Lcm4_eq_two_of_Ra1_eq_Ra2
+    (P1 P2 : F p × F p) (ua0 ua1 u0 u1 : F p) (Ra : F p)
+    (huaSq : (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)) = (X - C Ra) ^ 2)
+    (h12 : P1.1 ≠ P2.1)
+    (hne34 : (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)) ≠ X ^ 2 + C u1 * X + C u0)
+    (hnoroot34 : ¬ ∃ r : F p, (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).eval r = 0 ∧
+        (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).eval r = 0)
+    (hP1ua : ¬ (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).eval P1.1 = 0)
+    (hP1target : ¬ (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).eval P1.1 = 0)
+    (hP2ua : ¬ (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).eval P2.1 = 0)
+    (hP2target : ¬ (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).eval P2.1 = 0)
+    (hRaP1 : Ra ≠ P1.1) (hRaP2 : Ra ≠ P2.1)
+    (hRatarget : ¬ (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).eval Ra = 0) :
+    (npoly4Lcm4 p P1 P2 ua0 ua1 u0 u1).rootMultiplicity Ra = 2 := by
+  rw [rootMultiplicity_npoly4Lcm4_eq_add' p P1 P2 ua0 ua1 u0 u1 Ra h12 hne34 hnoroot34
+    hP1ua hP1target hP2ua hP2target hRaP1 hRaP2 hRatarget, huaSq,
+    Polynomial.rootMultiplicity_X_sub_C_pow]
+
+/-- **`ordAt P npoly4Lcm4 0` at `Ra`, when `Ra` is `ua`'s REPEATED root** —
+the case `ordAt_npoly4Lcm4_eq_one_of_Ra1`/`_Ra2` (and their `hRane`
+hypothesis) cannot express, resolved to `2` via the `rootMultiplicity`
+bridge. The mirror of `ordAt_npoly4Lcm4_eq_two_of_R1_eq_R2_rootMultiplicity`. -/
+theorem ordAt_npoly4Lcm4_eq_two_of_Ra1_eq_Ra2_rootMultiplicity
+    (hchar : (2 : F p) ≠ 0)
+    (P1 P2 : F p × F p) (ua0 ua1 u0 u1 : F p) (Ra : F p)
+    (huaSq : (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)) = (X - C Ra) ^ 2)
+    (P : H.Point) (h_bot : pointIdeal P ≠ ⊥) (hPX : P.X = Ra) (hPY : P.Y ≠ 0)
+    (h12 : P1.1 ≠ P2.1)
+    (hne34 : (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)) ≠ X ^ 2 + C u1 * X + C u0)
+    (hnoroot34 : ¬ ∃ r : F p, (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).eval r = 0 ∧
+        (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).eval r = 0)
+    (hP1ua : ¬ (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).eval P1.1 = 0)
+    (hP1target : ¬ (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).eval P1.1 = 0)
+    (hP2ua : ¬ (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).eval P2.1 = 0)
+    (hP2target : ¬ (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).eval P2.1 = 0)
+    (hRaP1 : Ra ≠ P1.1) (hRaP2 : Ra ≠ P2.1)
+    (hRatarget : ¬ (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).eval Ra = 0) :
+    ordAt P (npoly4Lcm4 p P1 P2 ua0 ua1 u0 u1) (0 : Polynomial (F p)) = 2 := by
+  have hraw_ne : (npoly4Lcm4 p P1 P2 ua0 ua1 u0 u1) ≠ 0 :=
+    (npoly4Lcm4_monic p P1 P2 ua0 ua1 u0 u1).ne_zero
+  rw [ordAt_eq_rootMultiplicity_unramified hchar (npoly4Lcm4 p P1 P2 ua0 ua1 u0 u1) hraw_ne
+    Ra P h_bot hPX hPY,
+    rootMultiplicity_npoly4Lcm4_eq_two_of_Ra1_eq_Ra2 p P1 P2 ua0 ua1 u0 u1 Ra huaSq h12 hne34
+      hnoroot34 hP1ua hP1target hP2ua hP2target hRaP1 hRaP2 hRatarget]
+  norm_num
+
 end DecoupledSystem
 end Genus2Lean
