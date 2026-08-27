@@ -355,7 +355,8 @@ DecoupledSystem`** (unlike a first draft, which closed the namespace
 before this section and then had to fully-qualify `bPlus`/
 `tangentInterpMatrix`/`bPlus_eval_*` throughout the next section below —
 moved back in to use those names unqualified, matching this file's own
-existing convention). -/
+existing convention).
+
 `[Field k]` port of `AlphaReduce.lean`'s `comp_X_add_C_coeff_one`. -/
 theorem comp_X_add_C_coeff_one' (f : Polynomial k) (t : k) :
     (f.comp (X + C t)).coeff 1 = (derivative f).eval t := by
@@ -578,10 +579,14 @@ one squared linear factor: `1+1+2 = 4`. -/
 theorem denomPoly_natDegree (Ra1X Ra2X delta0X : k) :
     (denomPoly Ra1X Ra2X delta0X).natDegree = 4 := by
   unfold denomPoly
-  rw [Polynomial.natDegree_mul (Polynomial.X_sub_C_ne_zero Ra1X)
-      (Polynomial.X_sub_C_ne_zero Ra2X),
-    Polynomial.natDegree_X_sub_C, Polynomial.natDegree_X_sub_C,
-    Polynomial.natDegree_pow, Polynomial.natDegree_X_sub_C]
+  rw [Polynomial.natDegree_mul
+      (mul_ne_zero (Polynomial.X_sub_C_ne_zero Ra1X) (Polynomial.X_sub_C_ne_zero Ra2X))
+      (pow_ne_zero 2 (Polynomial.X_sub_C_ne_zero delta0X)),
+    Polynomial.natDegree_mul (Polynomial.X_sub_C_ne_zero Ra1X) (Polynomial.X_sub_C_ne_zero Ra2X),
+    Polynomial.natDegree_pow, Polynomial.natDegree_X_sub_C, Polynomial.natDegree_X_sub_C,
+    Polynomial.natDegree_X_sub_C]
+
+
 
 /-- **`uA_new`, the derived residual quadratic.** The exact quotient
 `(H.f - bPlus²) /ₘ denomPoly` — well-defined with zero remainder by
@@ -619,10 +624,13 @@ theorem pairNormBPlus_eq_denomPoly_mul_uANew (H : HyperellipticPolynomial k)
   have hmod : (H.f - (bPlus Ra1X Ra2X delta0X Ra1Y Ra2Y delta0Y branchDerivAtDelta0) ^ 2) %ₘ
       denomPoly Ra1X Ra2X delta0X = 0 :=
     (Polynomial.modByMonic_eq_zero_iff_dvd (denomPoly_monic Ra1X Ra2X delta0X)).mpr
-      (by unfold denomPoly at hdvd ⊢; exact hdvd)
+      (by
+        change (X - C Ra1X) * (X - C Ra2X) * (X - C delta0X) ^ 2 ∣
+          (H.f - (bPlus Ra1X Ra2X delta0X Ra1Y Ra2Y delta0Y branchDerivAtDelta0) ^ 2)
+        exact hdvd)
   have hadd := Polynomial.modByMonic_add_div
     (H.f - (bPlus Ra1X Ra2X delta0X Ra1Y Ra2Y delta0Y branchDerivAtDelta0) ^ 2)
-    (denomPoly_monic Ra1X Ra2X delta0X)
+    (q := denomPoly Ra1X Ra2X delta0X)
   rw [hmod, zero_add] at hadd
   unfold uANew
   exact hadd.symm
