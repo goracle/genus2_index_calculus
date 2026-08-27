@@ -261,5 +261,91 @@ theorem rootMultiplicity_npoly4Lcm4_eq_two_of_R1_eq_R2
     hP1ua hP1target hP2ua hP2target hRP1 hRP2 hRua, htargetSq,
     Polynomial.rootMultiplicity_X_sub_C_pow]
 
+theorem rootMultiplicity_npoly4Lcm4_eq_two_of_R1_eq_R2
+    (P1 P2 : F p × F p) (ua0 ua1 u0 u1 : F p) (R : F p)
+    (htargetSq : (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)) = (X - C R) ^ 2)
+    (h12 : P1.1 ≠ P2.1)
+    (hne34 : (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)) ≠ X ^ 2 + C u1 * X + C u0)
+    (hnoroot34 : ¬ ∃ r : F p, (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).eval r = 0 ∧
+        (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).eval r = 0)
+    (hP1ua : ¬ (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).eval P1.1 = 0)
+    (hP1target : ¬ (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).eval P1.1 = 0)
+    (hP2ua : ¬ (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).eval P2.1 = 0)
+    (hP2target : ¬ (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).eval P2.1 = 0)
+    (hRP1 : R ≠ P1.1) (hRP2 : R ≠ P2.1)
+    (hRua : ¬ (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).eval R = 0) :
+    (npoly4Lcm4 p P1 P2 ua0 ua1 u0 u1).rootMultiplicity R = 2 := by
+  rw [rootMultiplicity_npoly4Lcm4_eq_add p P1 P2 ua0 ua1 u0 u1 R h12 hne34 hnoroot34
+    hP1ua hP1target hP2ua hP2target hRP1 hRP2 hRua, htargetSq,
+    Polynomial.rootMultiplicity_X_sub_C_pow]
+
+/-- **`ordAt P npoly4Lcm4 0 = 1` at `R1`, WITHOUT `hRne : R1 ≠ R2`** — the
+actual `hRne`-free drop-in replacement for `ordAt_npoly4Lcm4_eq_one_of_R1`.
+Takes `u_target.rootMultiplicity R1 = 1` (`hmult1`) as an explicit
+hypothesis instead of deriving it from named-distinct-root splitting —
+the caller discharges `hmult1` via
+`rootMultiplicity_npoly4Lcm4_eq_one_of_R1_ne_R2` in the split case (which
+still needs `R1 ≠ R2` internally, but that dependency now lives at the
+CALL site, not baked into this theorem's signature) or via any other
+route (e.g. directly from `IsRoot`/`natDegree` facts) in a future
+repeated-root case, without this theorem itself changing. Composes
+`ordAt_eq_rootMultiplicity_unramified` (lemma 6) with `rootMultiplicity_
+npoly4Lcm4_eq_add` restated at the `u_target.rootMultiplicity` level via
+`hmult1`. -/
+theorem ordAt_npoly4Lcm4_eq_one_of_R1_rootMultiplicity
+    (hchar : (2 : F p) ≠ 0)
+    (P1 P2 : F p × F p) (ua0 ua1 u0 u1 : F p) (R1 : F p)
+    (hmult1 : (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).rootMultiplicity R1 = 1)
+    (P : H.Point) (h_bot : pointIdeal P ≠ ⊥) (hPX : P.X = R1) (hPY : P.Y ≠ 0)
+    (h12 : P1.1 ≠ P2.1)
+    (hne34 : (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)) ≠ X ^ 2 + C u1 * X + C u0)
+    (hnoroot34 : ¬ ∃ r : F p, (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).eval r = 0 ∧
+        (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).eval r = 0)
+    (hP1ua : ¬ (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).eval P1.1 = 0)
+    (hP1target : ¬ (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).eval P1.1 = 0)
+    (hP2ua : ¬ (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).eval P2.1 = 0)
+    (hP2target : ¬ (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).eval P2.1 = 0)
+    (hR1P1 : R1 ≠ P1.1) (hR1P2 : R1 ≠ P2.1)
+    (hR1ua : ¬ (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).eval R1 = 0) :
+    ordAt P (npoly4Lcm4 p P1 P2 ua0 ua1 u0 u1) (0 : Polynomial (F p)) = 1 := by
+  have hraw_ne : (npoly4Lcm4 p P1 P2 ua0 ua1 u0 u1) ≠ 0 :=
+    (npoly4Lcm4_monic p P1 P2 ua0 ua1 u0 u1).ne_zero
+  rw [ordAt_eq_rootMultiplicity_unramified hchar (npoly4Lcm4 p P1 P2 ua0 ua1 u0 u1) hraw_ne
+    R1 P h_bot hPX hPY,
+    rootMultiplicity_npoly4Lcm4_eq_add p P1 P2 ua0 ua1 u0 u1 R1 h12 hne34 hnoroot34
+      hP1ua hP1target hP2ua hP2target hR1P1 hR1P2 hR1ua, hmult1]
+
+/-- **`ordAt P npoly4Lcm4 0` at `R1`, when `R1` is `u_target`'s REPEATED
+root** — the case `ordAt_npoly4Lcm4_eq_one_of_R1` (and its `hRne`
+hypothesis) cannot express at all, resolved to `2` (not `1`) via the same
+`rootMultiplicity` bridge. This is the genuinely new numeric fact the
+repeated-root branch of the assembly proof will need — not yet wired into
+`ordAtFrac_eq_one_of_R1_full`'s conclusion (which is hardcoded to `= 1`,
+the old-point-contributes-one-coefficient case; the repeated-root branch
+needs its OWN version of that theorem, tracked as a follow-up, not
+attempted here). -/
+theorem ordAt_npoly4Lcm4_eq_two_of_R1_eq_R2_rootMultiplicity
+    (hchar : (2 : F p) ≠ 0)
+    (P1 P2 : F p × F p) (ua0 ua1 u0 u1 : F p) (R : F p)
+    (htargetSq : (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)) = (X - C R) ^ 2)
+    (P : H.Point) (h_bot : pointIdeal P ≠ ⊥) (hPX : P.X = R) (hPY : P.Y ≠ 0)
+    (h12 : P1.1 ≠ P2.1)
+    (hne34 : (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)) ≠ X ^ 2 + C u1 * X + C u0)
+    (hnoroot34 : ¬ ∃ r : F p, (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).eval r = 0 ∧
+        (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).eval r = 0)
+    (hP1ua : ¬ (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).eval P1.1 = 0)
+    (hP1target : ¬ (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).eval P1.1 = 0)
+    (hP2ua : ¬ (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).eval P2.1 = 0)
+    (hP2target : ¬ (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).eval P2.1 = 0)
+    (hRP1 : R ≠ P1.1) (hRP2 : R ≠ P2.1)
+    (hRua : ¬ (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).eval R = 0) :
+    ordAt P (npoly4Lcm4 p P1 P2 ua0 ua1 u0 u1) (0 : Polynomial (F p)) = 2 := by
+  have hraw_ne : (npoly4Lcm4 p P1 P2 ua0 ua1 u0 u1) ≠ 0 :=
+    (npoly4Lcm4_monic p P1 P2 ua0 ua1 u0 u1).ne_zero
+  rw [ordAt_eq_rootMultiplicity_unramified hchar (npoly4Lcm4 p P1 P2 ua0 ua1 u0 u1) hraw_ne
+    R P h_bot hPX hPY,
+    rootMultiplicity_npoly4Lcm4_eq_two_of_R1_eq_R2 p P1 P2 ua0 ua1 u0 u1 R htargetSq h12 hne34
+      hnoroot34 hP1ua hP1target hP2ua hP2target hRP1 hRP2 hRua]
+
 end DecoupledSystem
 end Genus2Lean
