@@ -27,11 +27,12 @@ history this file was compacted from.
 - **`GeneralSharedRoot.lean`** — `ReduceGeneral`, `uRS4General`,
   `vRS4General`, and `uRS4General_dvd_Epoly4_add_Ypoly4_mul_vRS4General`
   (the "no named root" divisibility fact for the residual pair).
-- **`PrincipalWitnessAssembly.lean`** (2693 lines) — composes the above
-  into:
-  - Six `ordAt_npoly4Lcm4_eq_one_of_{P1,P2,Ra1,Ra2,R1,R2}` theorems.
+- **`PrincipalWitnessAssembly.lean`** (3454 lines — over the 1500-line
+  guideline, flagged, not yet split) — composes the above into:
+  - Six `ordAt_npoly4Lcm4_eq_one_of_{P1,P2,Ra1,Ra2,R1,R2}` theorems
+    (fully-split case only, `hRne`/`hRane` required).
   - Six `ordAtFrac_eq_one_of_{P1,P2,Ra1,Ra2,R1,R2}_full` theorems (the
-    full old/new-point compositions).
+    full old/new-point compositions, same fully-split restriction).
   - Dispatcher lemmas (`ordAtFrac_eq_one_of_four_old_point_cases`,
     `ordAtFrac_neg_eq_one_of_two_new_point_cases`) for the six-way case
     split.
@@ -39,6 +40,17 @@ history this file was compacted from.
     residual-case theorem (no named root; takes `hsf : Squarefree H.f`
     and `hUfac : ∃ Fco, uRS4General = linX P.X * Fco ∧ Fco.eval P.X ≠ 0`
     as caller-supplied hypotheses).
+  - `ordAtFrac_eq_two_of_R1_eq_R2_full`/`ordAt_eq_two_of_R1_eq_R2` (added
+    this pass) — the `R1 = R2` repeated-root mirrors of
+    `ordAtFrac_eq_one_of_R1_full`/`ordAt_eq_one_of_R1`, for when
+    `u_target` is a perfect square. **No `Ra1 = Ra2` mirror exists yet**
+    — see the note before "Concrete next steps" below.
+- **`OrdAtRootMultiplicityUnified.lean`** (added this pass) — the
+  valuation-side generalization behind the `R1 = R2` mirrors above:
+  `rootMultiplicity_npoly4Lcm4_eq_add`/`_eq_two_of_R1_eq_R2` and
+  `ordAt_npoly4Lcm4_eq_two_of_R1_eq_R2_rootMultiplicity`, none of which
+  need `hRne`. See the note before "Concrete next steps" below for how
+  this relates to `GeneralSharedRoot.lean` and to step 1.
 
 None of this is yet composed into `reducedClass_eq_of_isReduction'`
 itself — that composition is the entire remaining gap.
@@ -168,7 +180,12 @@ The corrected chain:
    `eq_of_coeffAt_eq`, using the six `_full` theorems/dispatchers and
    `ordAtFrac_eq_neg_one_of_uRS4General_root` already on file — this is
    mechanical composition of existing lemmas already on file, the least
-   risky remaining piece.
+   risky remaining piece. **Read "Note (read before touching step 1)"
+   below before starting this** — the six `_full` theorems this step
+   depends on are only proved in the `hRne`-requiring (no-repeated-root)
+   form today, and `OrdAtRootMultiplicityUnified.lean` (valuation side)
+   is the fix for the `R1=R2`/`Ra1=Ra2` case, but it isn't fully wired
+   into step 1 yet (only the `R1=R2` half is).
 2. **Assemble step 2** (`div_aff(g) - div_aff(u_new) = A+C+T-ρ-I`, no
    `δ₀` term — `Divisor H` is affine-only, see below) directly from (1)
    by `Divisor H`-level subtraction.
@@ -194,6 +211,102 @@ The corrected chain:
 5. Tangent branch (`P1 = P2`) and the Weierstrass sub-case (`P1 = P2 ∧
    Y = 0`, needs lemma 10, `div(x-x0) = 2•[P]`) are separate, smaller
    follow-ups after the general case above is closed.
+
+## Note (read before touching step 1): the affine side (`GeneralSharedRoot.lean`)
+## vs. the valuation side (`OrdAtRootMultiplicityUnified.lean`) — how they
+## relate to step 1, and what step 1 is NOT yet accounting for
+
+Two files do genuinely different jobs and it's easy to conflate them or
+to jump straight to the big `reducedClass_eq_of_isReduction'` assembly
+without grounding in either first. Read both before attempting step 1.
+
+**`GeneralSharedRoot.lean` (the affine/quotient side).** This is where
+`npoly4Lcm4`, `curBeforeMonic4General`, `uRS4General`, `vRS4General`, and
+the flat-product identity `npoly4Lcm4_eq_flat_product` all actually live
+(the last three moved here from `PrincipalWitnessAssembly.lean` to break
+an import cycle — see its own trailing `/-! ## npoly4Lcm4's flat-product
+identity` note). Its whole point: replace the old `P1TargetSharedRoot`/
+etc. one-collision-pattern-per-file family with `lcm`-based objects that
+divide `Npoly4` and satisfy the Mumford identity UNCONDITIONALLY — no
+`h12`–`h34` pairwise-coprimality hypotheses baked into the objects
+themselves. `h12`–`h34` (equivalently `hne34`/`hnoroot34`/`hP1ua`/etc.,
+the "no two of the six roots coincide" hypotheses) only re-enter later,
+as hypotheses on theorems ABOUT these objects (e.g.
+`npoly4Lcm4_natDegree_eq_six`, `npoly4Lcm4_eq_flat_product`), not as
+constraints on the objects' definitions. This file says nothing about
+`ordAt`/valuations at all — it is pure polynomial-ring bookkeeping
+(`lcm`, `gcd`, `/ₘ`, `IsCoprime`, `natDegree`).
+
+**`OrdAtRootMultiplicityUnified.lean` (the valuation side).** Takes
+`npoly4Lcm4_eq_flat_product` (the affine side's output) and asks: at a
+`H.Point` `P` lying over a root `α` of `npoly4Lcm4`, what is `ordAt P
+npoly4Lcm4 0`? The existing six `ordAt_npoly4Lcm4_eq_one_of_{P1,P2,Ra1,
+Ra2,R1,R2}` theorems (`PrincipalWitnessAssembly.lean`) answer this ONLY
+under `hRne : R1 ≠ R2` (resp. `Ra1 ≠ Ra2`) — i.e. only when `ua`/
+`u_target` each have two DISTINCT roots — because they route through
+`quadratic_eq_mul_X_sub_C`, which needs two named distinct roots to split
+a quadratic into linear factors, then Layers 1-3's `linX a * F₁*F₂*F₃`
+shape, which needs each `Fᵢ` NONVANISHING at `a` (impossible if `a` is a
+double root). `OrdAtRootMultiplicityUnified.lean` bypasses this by
+working with `Polynomial.rootMultiplicity` directly (defined for ANY
+polynomial, no pre-split needed) composed with `ordAt_eq_rootMultiplicity_
+unramified` (`LPairFinrankOneOrdAtFrac.lean`, lemma 6, already 0-`sorry`,
+unconditional). Its two "eq_two" theorems —
+`rootMultiplicity_npoly4Lcm4_eq_two_of_R1_eq_R2` and
+`ordAt_npoly4Lcm4_eq_two_of_R1_eq_R2_rootMultiplicity` — give the
+`u_target = (X-C R)^2` repeated-root case's actual `ordAt` value (`2`,
+not `1`), which the `hRne`-based six theorems literally cannot state.
+`PrincipalWitnessAssembly.lean`'s `PointCompositionR1` section now ALSO
+has `ordAtFrac_eq_two_of_R1_eq_R2_full`/`ordAt_eq_two_of_R1_eq_R2` (added
+this pass), the `R1=R2` mirrors of `ordAtFrac_eq_one_of_R1_full`/
+`ordAt_eq_one_of_R1` — but **only for the `R1`/`u_target` slot**. The
+symmetric `Ra1=Ra2`/`ua` repeated-root case has NO mirror yet anywhere —
+neither the `rootMultiplicity`-level fact in `OrdAtRootMultiplicityUnified.
+lean` nor the assembly-level `_full` theorem in `PrincipalWitnessAssembly.
+lean` — this is a real gap, not yet even started.
+
+**Why this matters for step 1, specifically.** Step 1's `A+C+T = div_aff(g)`
+claim, proved via the six `_full` theorems, is currently only provable
+when EVERY quadratic among `ua`/`u_target` has two distinct roots
+(`hRne`/`hRane` both hold) — i.e. step 1 as scoped today silently assumes
+the fully-split generic case throughout, the same restriction
+`OrdAtRootMultiplicityUnified.lean` exists to lift on the `u_target` side
+alone. Concretely:
+- If `u_target` is a perfect square (`R1 = R2`), `div_aff(g)`'s `T` term
+  is `2•[R1]` (one point, multiplicity `2`), not `[R1]+[R2]` for two
+  distinct points — `ordAtFrac_eq_two_of_R1_eq_R2_full`/
+  `ordAt_eq_two_of_R1_eq_R2` are the pieces needed for THIS case, already
+  on file (this pass).
+- If `ua` is a perfect square (`Ra1 = Ra2`), `div_aff(g)`'s `C` term
+  needs the same treatment — but nothing exists for this yet. Whoever
+  attempts step 1 for the repeated-`ua`-root case needs to FIRST build
+  the `Ra1=Ra2` mirror of everything `OrdAtRootMultiplicityUnified.lean`
+  + this pass's `PointCompositionR1` additions did for `R1=R2`, before
+  attempting the assembly composition itself. Do not try to shortcut this
+  by reusing the `R1=R2` theorems with `ua`/`u_target` swapped by hand at
+  the call site — the underlying `rootMultiplicity` lemma
+  (`rootMultiplicity_npoly4Lcm4_eq_add`) IS already symmetric enough to
+  support this (it treats all four flat-product factors uniformly), so
+  the mirror should be a comparatively mechanical rewrite of
+  `OrdAtRootMultiplicityUnified.lean`'s own repeated-root theorems with
+  `ua0,ua1`/`Ra1,Ra2` in `u_target`/`R1,R2`'s slot — but it is NOT yet
+  done, and step 1 should not be attempted for this case by assuming it
+  already exists.
+- The fully-split case (`hRne ∧ hRane` both hold) is unaffected by any of
+  this and can proceed with today's six `_full` theorems as-is.
+
+**Practical scoping for step 1, given the above**: either (a) scope step
+1's first attempt explicitly to the fully-split case only (`hRne`/
+`hRane` as caller hypotheses, matching what the six existing `_full`
+theorems already assume) and defer both repeated-root branches as
+follow-ups, or (b) if the repeated-`u_target`-root case is specifically
+wanted, use this pass's `ordAtFrac_eq_two_of_R1_eq_R2_full`/
+`ordAt_eq_two_of_R1_eq_R2` for the `T` term while still assuming `hRane`
+(no repeated `ua` root) — a genuine partial case, not the fully general
+one. Do NOT attempt the doubly-repeated case (`R1=R2 ∧ Ra1=Ra2`
+simultaneously) or the `Ra1=Ra2`-only case until the `Ra1=Ra2` mirror
+described above is built first.
+
 
 ## Workflow reminders specific to this file
 
