@@ -920,3 +920,62 @@ sized to degree-3 basis and with the value-row for `δ₀` now correctly
 included as its own 4th row. Not yet re-drafted in Lean (previous
 3-row/degree-≤2 draft deleted as wrong before being saved anywhere
 committed) — the 4×4 version is next.
+
+## Status update (fresh pass): `f-`'s scaffolding started — `CantorAddWitness.lean`
+
+`f+` (item 1 above, `TangentMumfordWitness.lean`) is confirmed 0-`sorry`
+and build-green (Claire's REPL). This pass starts `f-` (item 2): a new
+file, `CantorAddWitness.lean`, with `bMinus`/`cantorAddMatrix`/
+`bMinusCoeff` — the degree-≤3 `b_-` solving `b_- ≡ vC (mod uC)`,
+`b_- ≡ -vA (mod uA)` (the `-vA` sign is the `ι(A)` substitution
+`CHATGPT-REPLY-step3-reduce-correctness.md` identifies as necessary —
+feeding `C + ι(A)` into the Cantor-addition interpolation, not `C+A`,
+so the output witnesses the subtraction `C - A` the theorem actually
+needs).
+
+**Design choice made this pass, worth recording:** a direct hand-derived
+Bezout/CRT closed form was tried first (`s·uC+t·uA=1`, then combine with
+`vC,vA`) and abandoned — correct but each of `v`'s 4 coefficients came
+out as a ratio of degree-4-in-`(a0,a1,c0,c1)` polynomials over their
+shared resultant, unwieldy to encode faithfully in Lean by hand. Used
+the same 4×4-Cramer's-rule idiom `bPlus` already established instead:
+unfold the two congruences directly into 4 linear equations on `b_-`'s
+own 4 coefficients (no Bezout identity, no root-splitting), confirmed
+against sympy's `Poly.rem` before writing any Lean. The resulting
+matrix's determinant is confirmed (sympy) to equal `Res(uC,uA)` — a
+clean, well-understood invariant, nonzero exactly under coprimality.
+
+**This pass's file is scaffolding only — 4 `sorry`s remain**
+(`cantorAddMatrix_det_ne_zero`, `bMinus_mod_uC_eq_vC`,
+`bMinus_mod_uA_eq_neg_vA`, and implicitly `bMinus_ordInfOfPair` which
+isn't even stated yet). Per this project's convention (errors/sorries
+are normal, ship the shape first), this was written and left rather
+than blocking on closing every proof this pass. Not yet build-tested —
+Claire's REPL next.
+
+**Concrete next steps for `f-`:**
+1. Close `cantorAddMatrix_det_ne_zero` — likely `Matrix.det_succ_row_zero`
+   down to `Matrix.det_fin_three` + `ring` (same recipe as
+   `tangentInterpMatrix_det_ne_zero`), landing on the `Res(uC,uA)` closed
+   form, then relate `≠ 0` to `hcoprime` via
+   `Polynomial.resultant`-family lemmas (search Mathlib4 docs for the
+   exact resultant-nonvanishing-iff-coprime statement — not yet looked
+   up this pass).
+2. Close the two `bMinus_mod_*` row lemmas — same `bPlus_row_eq`-style
+   Cramer's-rule unfolding (`Matrix.mulVec_cramer`), then relate the
+   resulting coefficient sum back to `%ₘ` via `Polynomial.mod_by_monic`
+   lemmas (the quadratics `uC,uA` are monic by construction, needed for
+   `%ₘ` to behave as ordinary division).
+3. Once (1)-(2) are in hand, add `bMinus_ordInfOfPair` mirroring
+   `bPlus_ordInfOfPair` (`hlead`-style hypothesis on `bMinusCoeff ... 3`,
+   giving `-6`).
+4. **Not yet drafted, genuinely open, ChatGPT-worthy per this project's
+   own convention (deep function-field construction, not lemma
+   composition):** the actual residual/divisor-level facts —
+   `div_aff(y - bMinus) ⊇ A + T` (or the `ι`-conjugated version matching
+   whichever sign convention (2) lands on) and the matching degree-2
+   residual `[R]`, PLUS confirming this `R` is the SAME `R` as `f+`'s own
+   residual (the roadmap's whole point in pairing `f+`/`f-`). This is the
+   next thing to hand to ChatGPT once (1)-(3) are closed and the exact
+   sign/labeling conventions are pinned down in Lean rather than guessed
+   in prose.
