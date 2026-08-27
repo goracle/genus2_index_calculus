@@ -329,5 +329,303 @@ theorem bPlus_deriv_eval_delta0 (Ra1X Ra2X delta0X Ra1Y Ra2Y delta0Y branchDeriv
   rw [hderiv]
   simpa using hrow3
 
+/-! ## Generic `[Field k]` value/derivative → squared-factor divisibility
+
+Ported from `AlphaReduce.lean`'s `comp_X_add_C_coeff_one`/
+`comp_X_add_C_coeff_zero`/`rootMultiplicity_ge_two_of_eval_derivative_eq_zero`/
+`sq_dvd_of_eval_derivative_eq_zero`, which are stated there over the
+concrete prime field `F p := ZMod p` (`DecoupledSystemRegular.lean`) even
+though nothing in their proofs is `ZMod`/characteristic-specific — every
+step (`Polynomial.taylor_coeff`, `Polynomial.taylor_apply`,
+`Polynomial.hasseDeriv_one`/`_zero`, `Polynomial.rootMultiplicity_eq_natTrailingDegree`,
+`Polynomial.le_natTrailingDegree`, `Polynomial.taylor_eq_zero`,
+`Polynomial.pow_mul_divByMonic_rootMultiplicity_eq`, `pow_dvd_pow`) is
+generic commutative-ring/field polynomial theory. Re-proved here over a
+bare `[Field k]` so `TangentMumfordWitness.lean`'s generic `bPlus`
+machinery can use them without depending on `DecoupledSystemRegular.lean`'s
+`F p`-specific setting — this project's convention (avoid closed-field
+machinery, work over general finite fields) makes the generic statement
+the right level of abstraction, not a mere convenience port. No `p ≠ 2`
+side condition is needed for THESE four lemmas specifically (unlike
+`AlphaReduce.lean`'s `dvd_N_P1P2_tangent`, whose `branchDeriv4` divides by
+`2*py`) — that division only enters once `branchDeriv`'s own defining
+property is invoked at a call site, not in the generic value/derivative
+→ multiplicity machinery itself. **Kept inside `namespace Genus2Lean.
+DecoupledSystem`** (unlike a first draft, which closed the namespace
+before this section and then had to fully-qualify `bPlus`/
+`tangentInterpMatrix`/`bPlus_eval_*` throughout the next section below —
+moved back in to use those names unqualified, matching this file's own
+existing convention). -/
+`[Field k]` port of `AlphaReduce.lean`'s `comp_X_add_C_coeff_one`. -/
+theorem comp_X_add_C_coeff_one' (f : Polynomial k) (t : k) :
+    (f.comp (X + C t)).coeff 1 = (derivative f).eval t := by
+  have h := Polynomial.taylor_coeff (r := t) (f := f) 1
+  rw [Polynomial.taylor_apply] at h
+  rw [h, Polynomial.hasseDeriv_one]
+
+/-- **Taylor-shift coefficient 0 is the value.** Generic `[Field k]` port
+of `AlphaReduce.lean`'s `comp_X_add_C_coeff_zero`. -/
+theorem comp_X_add_C_coeff_zero' (f : Polynomial k) (t : k) :
+    (f.comp (X + C t)).coeff 0 = f.eval t := by
+  have h := Polynomial.taylor_coeff (r := t) (f := f) 0
+  rw [Polynomial.taylor_apply] at h
+  rw [h, Polynomial.hasseDeriv_zero]
+  rfl
+
+/-- **Value + derivative vanishing at `t` gives root multiplicity `≥ 2`.**
+Generic `[Field k]` port of `AlphaReduce.lean`'s
+`rootMultiplicity_ge_two_of_eval_derivative_eq_zero`. -/
+theorem rootMultiplicity_ge_two_of_eval_derivative_eq_zero'
+    {f : Polynomial k} {t : k} (hf : f ≠ 0)
+    (h0 : f.eval t = 0) (h1 : (derivative f).eval t = 0) :
+    2 ≤ f.rootMultiplicity t := by
+  rw [Polynomial.rootMultiplicity_eq_natTrailingDegree]
+  refine Polynomial.le_natTrailingDegree ?_ ?_
+  · have h := (Polynomial.taylor_eq_zero (r := t) (f := f)).not.mpr hf
+    rwa [Polynomial.taylor_apply] at h
+  · intro m hm
+    interval_cases m
+    · rw [comp_X_add_C_coeff_zero']; exact h0
+    · rw [comp_X_add_C_coeff_one']; exact h1
+
+/-- **Squared-factor divisibility from value + derivative vanishing.**
+Generic `[Field k]` port of `AlphaReduce.lean`'s
+`sq_dvd_of_eval_derivative_eq_zero` — this is the tool the following
+section (`bPlus`'s residual construction) invokes directly, e.g. at
+`delta0X` once both `bPlus_eval_delta0` and `bPlus_deriv_eval_delta0`
+transport into value/derivative vanishing of `H.f - bPlus²`. -/
+theorem sq_dvd_of_eval_derivative_eq_zero'
+    {f : Polynomial k} {t : k} (hf : f ≠ 0)
+    (h0 : f.eval t = 0) (h1 : (derivative f).eval t = 0) :
+    (X - C t) ^ 2 ∣ f := by
+  have hge := rootMultiplicity_ge_two_of_eval_derivative_eq_zero' (f := f) (t := t) hf h0 h1
+  have hmul := Polynomial.pow_mul_divByMonic_rootMultiplicity_eq f t
+  have hdvd : (X - C t) ^ f.rootMultiplicity t ∣ f :=
+    ⟨f /ₘ (X - C t) ^ f.rootMultiplicity t, hmul.symm⟩
+  exact (pow_dvd_pow (X - C t) hge).trans hdvd
+
+/-! ## `f+`'s residual construction: `H.f - bPlus² = uC · (X-δ₀X)² · uA_new`
+
+Per `ROADMAP-principal-witness-assembly.md`'s "Round 2 verdict" redirect
+(ChatGPT consultation, ZeroD/CHATGPT-LOG): instead of pairing `f+` against
+a second interpolated `f-` (dead — the CRT-built `f-` provably vanishes
+on `C+T`, not `A+T`, and a genuine common residual is obstructed by a
+short polynomial argument, `uC ∣ (bPlus - bMinus)` with `deg ≤ 3`), pair
+`f+` directly against `uA_new`, DEFINED as the exact polynomial quotient
+`(H.f - bPlus²) /ₘ (uC · (X-δ₀X)²)`. This section proves the divisibility
+`uC · (X-δ₀X)² ∣ (H.f - bPlus²)` that makes `uA_new` well-defined with no
+remainder — the first concrete step towards that construction. `uA_new`
+itself, its degree-2 fact, and the final `div(f+/uA_new) = C+2[δ₀]-A`
+assembly are NOT yet built here; this section only supplies the
+divisibility fact those need. -/
+
+/-- **`H.f - bPlus² = 0` at `Ra1.X`.** Direct consequence of
+`bPlus_eval_Ra1` (`bPlus.eval Ra1X = Ra1Y`) plus the curve relation
+`Ra1Y² = H.f.eval Ra1X`, supplied as an explicit hypothesis (same honest-
+precondition convention as `AlphaReduce.lean`'s `hP1_curve`/`hP2_curve`:
+"`Ra1` actually lies on the curve" is not automatic from bare field
+elements and has to be assumed at the call site). -/
+theorem pairNormBPlus_eval_Ra1_eq_zero (H : HyperellipticPolynomial k)
+    (Ra1X Ra2X delta0X Ra1Y Ra2Y delta0Y branchDerivAtDelta0 : k)
+    (hdet : (tangentInterpMatrix Ra1X Ra2X delta0X).det ≠ 0)
+    (hRa1_curve : Ra1Y ^ 2 = H.f.eval Ra1X) :
+    (H.f - (bPlus Ra1X Ra2X delta0X Ra1Y Ra2Y delta0Y branchDerivAtDelta0) ^ 2).eval Ra1X = 0 := by
+  rw [Polynomial.eval_sub, Polynomial.eval_pow,
+    bPlus_eval_Ra1 Ra1X Ra2X delta0X Ra1Y Ra2Y delta0Y branchDerivAtDelta0 hdet, hRa1_curve]
+  ring
+
+/-- **`H.f - bPlus² = 0` at `Ra2.X`.** Mirror of
+`pairNormBPlus_eval_Ra1_eq_zero`. -/
+theorem pairNormBPlus_eval_Ra2_eq_zero (H : HyperellipticPolynomial k)
+    (Ra1X Ra2X delta0X Ra1Y Ra2Y delta0Y branchDerivAtDelta0 : k)
+    (hdet : (tangentInterpMatrix Ra1X Ra2X delta0X).det ≠ 0)
+    (hRa2_curve : Ra2Y ^ 2 = H.f.eval Ra2X) :
+    (H.f - (bPlus Ra1X Ra2X delta0X Ra1Y Ra2Y delta0Y branchDerivAtDelta0) ^ 2).eval Ra2X = 0 := by
+  rw [Polynomial.eval_sub, Polynomial.eval_pow,
+    bPlus_eval_Ra2 Ra1X Ra2X delta0X Ra1Y Ra2Y delta0Y branchDerivAtDelta0 hdet, hRa2_curve]
+  ring
+
+/-- **`(X - Ra1.X) ∣ H.f - bPlus²`.** Simple-root divisibility from
+`pairNormBPlus_eval_Ra1_eq_zero` via `Polynomial.dvd_iff_isRoot`, same
+idiom as `AlphaReduce.lean`'s `dvd_N_P1`. -/
+theorem dvd_pairNormBPlus_Ra1 (H : HyperellipticPolynomial k)
+    (Ra1X Ra2X delta0X Ra1Y Ra2Y delta0Y branchDerivAtDelta0 : k)
+    (hdet : (tangentInterpMatrix Ra1X Ra2X delta0X).det ≠ 0)
+    (hRa1_curve : Ra1Y ^ 2 = H.f.eval Ra1X) :
+    (X - C Ra1X) ∣ (H.f - (bPlus Ra1X Ra2X delta0X Ra1Y Ra2Y delta0Y branchDerivAtDelta0) ^ 2) := by
+  rw [Polynomial.dvd_iff_isRoot, Polynomial.IsRoot]
+  exact pairNormBPlus_eval_Ra1_eq_zero H Ra1X Ra2X delta0X Ra1Y Ra2Y delta0Y
+    branchDerivAtDelta0 hdet hRa1_curve
+
+/-- **`(X - Ra2.X) ∣ H.f - bPlus²`.** Mirror of `dvd_pairNormBPlus_Ra1`. -/
+theorem dvd_pairNormBPlus_Ra2 (H : HyperellipticPolynomial k)
+    (Ra1X Ra2X delta0X Ra1Y Ra2Y delta0Y branchDerivAtDelta0 : k)
+    (hdet : (tangentInterpMatrix Ra1X Ra2X delta0X).det ≠ 0)
+    (hRa2_curve : Ra2Y ^ 2 = H.f.eval Ra2X) :
+    (X - C Ra2X) ∣ (H.f - (bPlus Ra1X Ra2X delta0X Ra1Y Ra2Y delta0Y branchDerivAtDelta0) ^ 2) := by
+  rw [Polynomial.dvd_iff_isRoot, Polynomial.IsRoot]
+  exact pairNormBPlus_eval_Ra2_eq_zero H Ra1X Ra2X delta0X Ra1Y Ra2Y delta0Y
+    branchDerivAtDelta0 hdet hRa2_curve
+
+/-- **`(X - δ₀.X)² ∣ H.f - bPlus²`.** The tangency-case squared factor,
+via `sq_dvd_of_eval_derivative_eq_zero'`: needs both value vanishing
+(`bPlus_eval_delta0` + the curve relation `δ₀.Y² = H.f.eval δ₀.X`) and
+derivative vanishing at `δ₀.X`. The derivative computation mirrors
+`AlphaReduce.lean`'s `dvd_N_P1P2_tangent`: `derivative (H.f - bPlus²) =
+H.f' - 2·bPlus·bPlus'`, so at `δ₀.X` this is `H.f'(δ₀.X) -
+2·δ₀.Y·branchDerivAtDelta0` (using `bPlus_eval_delta0` and
+`bPlus_deriv_eval_delta0`), which vanishes exactly when
+`branchDerivAtDelta0` is genuinely the branch derivative
+`H.f'(δ₀.X)/(2·δ₀.Y)` — supplied here as the hypothesis `hbranch :
+2 * delta0Y * branchDerivAtDelta0 = H.f.derivative.eval delta0X` (the
+same shape as `AlphaReduce.lean`'s `branchDeriv4`-defining identity,
+requiring `δ₀.Y ≠ 0` at the call site to actually construct
+`branchDerivAtDelta0` this way — not re-derived here, taken as a
+hypothesis exactly as `dvd_N_P1P2_tangent` does). -/
+theorem dvd_sq_pairNormBPlus_delta0 (H : HyperellipticPolynomial k)
+    (Ra1X Ra2X delta0X Ra1Y Ra2Y delta0Y branchDerivAtDelta0 : k)
+    (hdet : (tangentInterpMatrix Ra1X Ra2X delta0X).det ≠ 0)
+    (hdelta0_curve : delta0Y ^ 2 = H.f.eval delta0X)
+    (hbranch : 2 * delta0Y * branchDerivAtDelta0 = (derivative H.f).eval delta0X)
+    (hne : H.f - (bPlus Ra1X Ra2X delta0X Ra1Y Ra2Y delta0Y branchDerivAtDelta0) ^ 2 ≠ 0) :
+    (X - C delta0X) ^ 2 ∣
+      (H.f - (bPlus Ra1X Ra2X delta0X Ra1Y Ra2Y delta0Y branchDerivAtDelta0) ^ 2) := by
+  have h0 : (H.f - (bPlus Ra1X Ra2X delta0X Ra1Y Ra2Y delta0Y branchDerivAtDelta0) ^ 2).eval
+      delta0X = 0 := by
+    rw [Polynomial.eval_sub, Polynomial.eval_pow,
+      bPlus_eval_delta0 Ra1X Ra2X delta0X Ra1Y Ra2Y delta0Y branchDerivAtDelta0 hdet,
+      hdelta0_curve]
+    ring
+  have h1 : (derivative
+      (H.f - (bPlus Ra1X Ra2X delta0X Ra1Y Ra2Y delta0Y branchDerivAtDelta0) ^ 2)).eval
+      delta0X = 0 := by
+    rw [Polynomial.derivative_sub, Polynomial.derivative_sq, Polynomial.eval_sub,
+      Polynomial.eval_mul, Polynomial.eval_mul, Polynomial.eval_C,
+      bPlus_eval_delta0 Ra1X Ra2X delta0X Ra1Y Ra2Y delta0Y branchDerivAtDelta0 hdet,
+      bPlus_deriv_eval_delta0 Ra1X Ra2X delta0X Ra1Y Ra2Y delta0Y branchDerivAtDelta0 hdet,
+      ← hbranch]
+    ring
+  exact sq_dvd_of_eval_derivative_eq_zero' hne h0 h1
+
+/-- **The full residual divisibility: `(X-Ra1X)(X-Ra2X)(X-δ₀X)² ∣ H.f -
+bPlus²`.** Combines the three factors above via pairwise coprimality
+(`Ra1X, Ra2X, δ₀X` pairwise distinct, from `tangentInterpMatrix`'s own
+nondegeneracy hypotheses — the same three distinctness facts
+`tangentInterpMatrix_det_ne_zero` already needs, threaded through via
+`hdet` here rather than re-derived). This is the divisibility fact
+`uA_new := (H.f - bPlus²) /ₘ ((X-Ra1X)*(X-Ra2X)*(X-δ₀X)^2)` needs to be
+well-defined with zero remainder — `uA_new` itself is not yet
+constructed here, this theorem only supplies its precondition. -/
+theorem dvd_pairNormBPlus_full (H : HyperellipticPolynomial k)
+    (Ra1X Ra2X delta0X Ra1Y Ra2Y delta0Y branchDerivAtDelta0 : k)
+    (hdet : (tangentInterpMatrix Ra1X Ra2X delta0X).det ≠ 0)
+    (h1 : Ra1X ≠ Ra2X) (h2 : Ra1X ≠ delta0X) (h3 : Ra2X ≠ delta0X)
+    (hRa1_curve : Ra1Y ^ 2 = H.f.eval Ra1X) (hRa2_curve : Ra2Y ^ 2 = H.f.eval Ra2X)
+    (hdelta0_curve : delta0Y ^ 2 = H.f.eval delta0X)
+    (hbranch : 2 * delta0Y * branchDerivAtDelta0 = (derivative H.f).eval delta0X)
+    (hne : H.f - (bPlus Ra1X Ra2X delta0X Ra1Y Ra2Y delta0Y branchDerivAtDelta0) ^ 2 ≠ 0) :
+    (X - C Ra1X) * (X - C Ra2X) * (X - C delta0X) ^ 2 ∣
+      (H.f - (bPlus Ra1X Ra2X delta0X Ra1Y Ra2Y delta0Y branchDerivAtDelta0) ^ 2) := by
+  have hd1 := dvd_pairNormBPlus_Ra1 H Ra1X Ra2X delta0X Ra1Y Ra2Y delta0Y
+    branchDerivAtDelta0 hdet hRa1_curve
+  have hd2 := dvd_pairNormBPlus_Ra2 H Ra1X Ra2X delta0X Ra1Y Ra2Y delta0Y
+    branchDerivAtDelta0 hdet hRa2_curve
+  have hd3 := dvd_sq_pairNormBPlus_delta0 H Ra1X Ra2X delta0X Ra1Y Ra2Y delta0Y
+    branchDerivAtDelta0 hdet hdelta0_curve hbranch hne
+  have hc12 : IsCoprime (X - C Ra1X : k[X]) (X - C Ra2X) :=
+    (Polynomial.isCoprime_X_sub_C_of_isUnit_sub (by
+      rw [isUnit_iff_ne_zero, sub_ne_zero]; exact h1))
+  have hc1d : IsCoprime (X - C Ra1X : k[X]) ((X - C delta0X) ^ 2) :=
+    (Polynomial.isCoprime_X_sub_C_of_isUnit_sub (by
+      rw [isUnit_iff_ne_zero, sub_ne_zero]; exact h2)).pow_right
+  have hc2d : IsCoprime (X - C Ra2X : k[X]) ((X - C delta0X) ^ 2) :=
+    (Polynomial.isCoprime_X_sub_C_of_isUnit_sub (by
+      rw [isUnit_iff_ne_zero, sub_ne_zero]; exact h3)).pow_right
+  have hc12d : IsCoprime ((X - C Ra1X : k[X]) * (X - C Ra2X)) ((X - C delta0X) ^ 2) :=
+    hc1d.mul_left hc2d
+  have hd12 : (X - C Ra1X) * (X - C Ra2X) ∣
+      (H.f - (bPlus Ra1X Ra2X delta0X Ra1Y Ra2Y delta0Y branchDerivAtDelta0) ^ 2) :=
+    hc12.mul_dvd hd1 hd2
+  exact hc12d.mul_dvd hd12 hd3
+
+/-! ## `uA_new`, the derived residual quadratic
+
+Per `ROADMAP-principal-witness-assembly.md`'s "Round 2 verdict" redirect
+(ChatGPT consultation): `uA_new := (H.f - bPlus²) /ₘ ((X-Ra1X)*(X-Ra2X)*
+(X-δ₀X)^2)`, DEFINED as the exact polynomial quotient — `A`'s two points
+(and their conjugates `T := ι(A)`) are recovered as `uA_new`'s roots
+rather than supplied as separate named data, exactly the way `uRS4General`
+falls out of the K=4 construction as "whatever's left over," per this
+same roadmap's own precedent. `dvd_pairNormBPlus_full` above is exactly
+the well-definedness precondition (zero remainder) this quotient needs. -/
+
+/-- **The degree-4 monic divisor `(X-Ra1X)(X-Ra2X)(X-δ₀X)²`, as a single
+polynomial.** Named separately so `uA_new`'s definition and degree proof
+don't have to repeat the four-factor product inline. -/
+noncomputable def denomPoly (Ra1X Ra2X delta0X : k) : Polynomial k :=
+  (X - C Ra1X) * (X - C Ra2X) * (X - C delta0X) ^ 2
+
+/-- **`denomPoly` is monic.** Product of monic `(X - C _)` factors —
+`Polynomial.monic_X_sub_C` for each linear factor, closed under `Monic.mul`
+and `Monic.pow`. -/
+theorem denomPoly_monic (Ra1X Ra2X delta0X : k) : (denomPoly Ra1X Ra2X delta0X).Monic := by
+  unfold denomPoly
+  exact ((Polynomial.monic_X_sub_C Ra1X).mul (Polynomial.monic_X_sub_C Ra2X)).mul
+    ((Polynomial.monic_X_sub_C delta0X).pow 2)
+
+/-- **`denomPoly` has degree exactly 4.** Two simple linear factors plus
+one squared linear factor: `1+1+2 = 4`. -/
+theorem denomPoly_natDegree (Ra1X Ra2X delta0X : k) :
+    (denomPoly Ra1X Ra2X delta0X).natDegree = 4 := by
+  unfold denomPoly
+  rw [Polynomial.natDegree_mul (Polynomial.X_sub_C_ne_zero Ra1X)
+      (Polynomial.X_sub_C_ne_zero Ra2X),
+    Polynomial.natDegree_X_sub_C, Polynomial.natDegree_X_sub_C,
+    Polynomial.natDegree_pow, Polynomial.natDegree_X_sub_C]
+
+/-- **`uA_new`, the derived residual quadratic.** The exact quotient
+`(H.f - bPlus²) /ₘ denomPoly` — well-defined with zero remainder by
+`dvd_pairNormBPlus_full` (used at the point of proving its degree/
+divisibility facts, not baked into this bare definition, matching this
+project's convention of keeping definitions unconditional and moving
+hypotheses to the theorems about them). -/
+noncomputable def uANew (H : HyperellipticPolynomial k)
+    (Ra1X Ra2X delta0X Ra1Y Ra2Y delta0Y branchDerivAtDelta0 : k) : Polynomial k :=
+  (H.f - (bPlus Ra1X Ra2X delta0X Ra1Y Ra2Y delta0Y branchDerivAtDelta0) ^ 2) /ₘ
+    denomPoly Ra1X Ra2X delta0X
+
+/-- **`H.f - bPlus² = denomPoly * uA_new`** — the defining factorization,
+directly from `dvd_pairNormBPlus_full`'s zero-remainder divisibility via
+`Polynomial.mul_divByMonic_eq_iff_isRoot`-style cancellation (concretely:
+`Polynomial.div_add_mod` with vanishing remainder collapses to bare
+multiplication once `denomPoly ∣ (H.f - bPlus²)` is known). This is the
+identity Reply 2's construction needs: `H.f(X) - bPlus(X)² = uC(X) ·
+(X-δ₀.X)² · uA_new(X)` (with `uC := (X-Ra1X)(X-Ra2X)` folded into
+`denomPoly`, matching `CantorAddWitness.lean`'s `uCPoly` up to this
+file's choice not to import it). -/
+theorem pairNormBPlus_eq_denomPoly_mul_uANew (H : HyperellipticPolynomial k)
+    (Ra1X Ra2X delta0X Ra1Y Ra2Y delta0Y branchDerivAtDelta0 : k)
+    (hdet : (tangentInterpMatrix Ra1X Ra2X delta0X).det ≠ 0)
+    (h1 : Ra1X ≠ Ra2X) (h2 : Ra1X ≠ delta0X) (h3 : Ra2X ≠ delta0X)
+    (hRa1_curve : Ra1Y ^ 2 = H.f.eval Ra1X) (hRa2_curve : Ra2Y ^ 2 = H.f.eval Ra2X)
+    (hdelta0_curve : delta0Y ^ 2 = H.f.eval delta0X)
+    (hbranch : 2 * delta0Y * branchDerivAtDelta0 = (derivative H.f).eval delta0X)
+    (hne : H.f - (bPlus Ra1X Ra2X delta0X Ra1Y Ra2Y delta0Y branchDerivAtDelta0) ^ 2 ≠ 0) :
+    H.f - (bPlus Ra1X Ra2X delta0X Ra1Y Ra2Y delta0Y branchDerivAtDelta0) ^ 2 =
+      denomPoly Ra1X Ra2X delta0X *
+        uANew H Ra1X Ra2X delta0X Ra1Y Ra2Y delta0Y branchDerivAtDelta0 := by
+  have hdvd := dvd_pairNormBPlus_full H Ra1X Ra2X delta0X Ra1Y Ra2Y delta0Y
+    branchDerivAtDelta0 hdet h1 h2 h3 hRa1_curve hRa2_curve hdelta0_curve hbranch hne
+  have hmod : (H.f - (bPlus Ra1X Ra2X delta0X Ra1Y Ra2Y delta0Y branchDerivAtDelta0) ^ 2) %ₘ
+      denomPoly Ra1X Ra2X delta0X = 0 :=
+    (Polynomial.modByMonic_eq_zero_iff_dvd (denomPoly_monic Ra1X Ra2X delta0X)).mpr
+      (by unfold denomPoly at hdvd ⊢; exact hdvd)
+  have hadd := Polynomial.modByMonic_add_div
+    (H.f - (bPlus Ra1X Ra2X delta0X Ra1Y Ra2Y delta0Y branchDerivAtDelta0) ^ 2)
+    (denomPoly_monic Ra1X Ra2X delta0X)
+  rw [hmod, zero_add] at hadd
+  unfold uANew
+  exact hadd.symm
+
 end DecoupledSystem
 end Genus2Lean
