@@ -2951,7 +2951,63 @@ THIS file's signature, just at that downstream call site). One further
 risk remains: `uRS4General_dvd_Epoly4_add_Ypoly4_mul_vRS4General`
 itself (`GeneralSharedRoot.lean`) is new this pass and not yet
 build-tested either — if it fails, this theorem fails with it, and the
-`GeneralSharedRoot.lean` proof should be checked first. -/
+`GeneralSharedRoot.lean` proof should be checked first. 
+
+ **The bare `ordAt P U 0 = 1` fact at a root of `U := C lc *
+uRS4General`, extracted standalone from `ordAtFrac_eq_neg_one_of_
+uRS4General_root`'s own `hU_ord` derivation.** Needed for
+`ROADMAP-principal-witness-assembly.md`'s step 1, second half
+(`div_aff(u_new) = ρ+I`): `u_new := uRS4General` has no `y`-dependence, so
+its own affine divisor is plain polynomial `ordAt`-bookkeeping at each of
+its two roots `ρ1,ρ2` (ranged over abstractly here via `P`, per the
+Mumford-pair strategy's deliberate choice not to name them) — this is
+exactly the fact, not the `ordAtFrac`-of-`h = g/U` valuation that
+`ordAtFrac_eq_neg_one_of_uRS4General_root` computes. Identical hypotheses
+and proof to that theorem's own `hU_ord` `have`-block (Layer 1:
+`ordAt_linX_eq_one_of_ne_zero` at `linX P.X`; Layer 2:
+`ordAt_mul_eq_one_of_ordAt_eq_one_zero` combining with `Fco`'s zero order
+via `hUfac`; `ordAt_C_mul_eq` to strip the `C lc` unit scalar) — pulled out
+so the call site doesn't need to re-derive `E`/`Y`/`A`/`hAU`/`g`-side
+machinery just to get this `U`-only fact. -/
+theorem ordAt_eq_one_of_uRS4General_root
+    (hchar : (2 : F p) ≠ 0) (hsf : Squarefree H.f)
+    (c0 c1 c2 c3 c4 ua0 ua1 va0 va1 u0 u1 v0 v1 : F p)
+    (P1 P2 : F p × F p)
+    (hcurne : curBeforeMonic4General p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ≠ 0)
+    (P : H.Point) (h_bot : pointIdeal P ≠ ⊥) (hPY_ne : P.Y ≠ 0)
+    (hUfac : ∃ Fco : Polynomial (F p),
+      uRS4General p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 = linX P.X * Fco ∧
+        Fco.eval P.X ≠ 0)
+    (U : Polynomial (F p))
+    (hU_def : U = C ((curBeforeMonic4General p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1).leadingCoeff) *
+      uRS4General p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1) :
+    ordAt P U (0 : Polynomial (F p)) = 1 := by
+  obtain ⟨Fco, hFeq, hFeval⟩ := hUfac
+  have hL : ordAt P (linX P.X) (0 : Polynomial (F p)) = 1 :=
+    ordAt_linX_eq_one_of_ne_zero hchar hsf P.X P h_bot rfl hPY_ne
+  have hF_ord : ordAt P Fco (0 : Polynomial (F p)) = 0 :=
+    ordAt_eq_zero_of_eval_ne_zero P Fco (0 : Polynomial (F p)) (by simpa using hFeval)
+  have hL_ne : toPair H (linX P.X) (0 : Polynomial (F p)) ≠ 0 := by
+    rw [Ne, toPair_eq_zero_iff]
+    exact fun ⟨hA, _⟩ => linX_ne_zero P.X hA
+  have hF_ne0 : Fco ≠ 0 := fun h => hFeval (by rw [h]; simp)
+  have hF_ne : toPair H Fco (0 : Polynomial (F p)) ≠ 0 := by
+    rw [Ne, toPair_eq_zero_iff]
+    exact fun ⟨hA, _⟩ => hF_ne0 hA
+  have hflat : ordAt P (linX P.X * Fco) (0 : Polynomial (F p)) = 1 :=
+    ordAt_mul_eq_one_of_ordAt_eq_one_zero P h_bot (linX P.X) Fco hL_ne hF_ne hL hF_ord
+  have hlc_ne : (curBeforeMonic4General p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1).leadingCoeff ≠ 0 :=
+    (not_congr Polynomial.leadingCoeff_eq_zero).mpr hcurne
+  have hflat_ne0 : (linX P.X * Fco : Polynomial (F p)) ≠ 0 :=
+    mul_ne_zero (linX_ne_zero P.X) hF_ne0
+  have hPQ : ¬ ((linX P.X * Fco : Polynomial (F p)) = 0 ∧ (0 : Polynomial (F p)) = 0) :=
+    fun h => hflat_ne0 h.1
+  have hstep := ordAt_C_mul_eq
+    (curBeforeMonic4General p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1).leadingCoeff
+    hlc_ne (linX P.X * Fco) (0 : Polynomial (F p)) hPQ P
+  rw [hU_def, hFeq]
+  simpa using hstep.trans hflat
+
 theorem ordAtFrac_eq_neg_one_of_uRS4General_root
     (hchar : (2 : F p) ≠ 0)
     (c0 c1 c2 c3 c4 ua0 ua1 va0 va1 u0 u1 v0 v1 : F p)
