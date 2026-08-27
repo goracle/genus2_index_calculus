@@ -1003,6 +1003,8 @@ theorem ordAt_eq_one_of_old_point
     ordAt_eq_zero_of_eval_ne_zero P U (0 : k[X]) (by simpa using hU_eval)
   rw [hN_eq_mult, hAU, ordAt_add_of_pairNorm_eq_mul P h_bot (A * U) A U rfl hA_ne hU_ne,
     hA_ord, hU_ord]
+  -- `rw` leaves the goal `1 + 0 = 1` in `ℤ` (ordAt's codomain); close it.
+  norm_num
 
 end HyperellipticPolynomial
 
