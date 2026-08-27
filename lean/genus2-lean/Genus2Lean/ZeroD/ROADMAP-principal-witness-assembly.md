@@ -339,3 +339,213 @@ described above is built first.
   and not derived from, the `g`/`u_new` pole-order gap.
 - `D_new`'s points are `ι(R1), ι(R2)` (hyperelliptic conjugates), not
   `R1, R2` themselves.
+
+## Status update (fresh pass): item 4 re-derived from scratch against the
+## CURRENT `reducedClass_eq_of_isReduction'` signature — the exact identity
+## still needed, and why it is NOT the same claim Step 1/2 already proved
+
+**Context for this pass.** Re-read `AlphaLocusDegreeUniform.lean`'s actual
+current theorem signature directly (not this roadmap's own prose summary of
+it, which predates several signature revisions) before doing any algebra.
+Confirmed: `hAlphaRep`, `Sanchor`, `va`, `hmemAnchor` are already on file as
+hypotheses (not just prose) — the theorem's shape has moved on since this
+roadmap's item 4 was last written, and item 4's "structural question" can
+now be answered precisely rather than left open-ended.
+
+**The exact identity now needed** (worked out algebraically from the
+current signature, using `toJacobian`'s `AddMonoidHom` additivity):
+
+Let `x := ⟨A - 2•[δ₀], _⟩`, `y := ⟨C - 2•[δ₀], hmemAnchor⟩`,
+`z := ⟨T - 2•[δ₀], hmem⟩`, all `: Divisor0 H` (`A := [P1]+[P2]`,
+`C := [Ra1]+[Ra2]` via `Sanchor`/`va`, `T := [R1]+[R2]` via `S`/`v`, same
+`δ₀` throughout).
+
+- `sa.reducedClass = alpha•aClass - toJacobian D x` (definitional, already
+  on file).
+- `hAlphaRep : alpha•aClass = toJacobian D y` (already a hypothesis).
+- Goal: `sa.reducedClass = toJacobian D z`.
+
+Substituting and using additivity, the goal is equivalent to
+`toJacobian D (y - x - z) = 0`, i.e.
+
+    (y - x - z) ∈ D.P,  where  y - x - z = C - A - T + 2•[δ₀]  (as Divisor H)
+
+— note **all three `-2•[δ₀]` terms combine to `+2•[δ₀]`**, not to zero;
+`δ₀` does NOT cancel away entirely the way it does in `s_add_s_eq_s_add_s_iff`
+(`DivisorClassGroup.lean`)'s 2-vs-2-point case, because here it's 3 terms
+(`x`,`y`,`z`) each contributing `-2•[δ₀]` combined with a `+`/`-`/`-` sign
+pattern, not an even number of terms in matched pairs. **Confirmed via
+`hD : principalSubgroup H hdeg ≤ D.P`**: it suffices to show
+
+    C - A - T + 2•[δ₀]  ∈  principalSubgroup H hdeg.
+
+**This is a genuinely different divisor combination from anything Step 1/2
+prove.** Step 1/2 give `A+C+T = div_aff(g)` and `ρ+I = div_aff(u_new)` (an
+unrelated 6-vs-4-point split, with `ρ,I` — `u_new`'s own roots — not
+appearing in `C - A - T + 2δ₀` at all). There is no algebraic manipulation
+of `A+C+T-ρ-I` that produces `C-A-T+2δ₀`; these are different linear
+combinations of different point sets. **Do not attempt to derive one from
+the other by rearranging signs** — a past instinct to do exactly this was
+checked and confirmed impossible (they don't even involve the same points:
+`ρ,I` vs `δ₀`).
+
+**Checked whether `principalSubgroup` can witness this directly, since it
+IS closed under addition (`AddSubgroup.closure`), not just single-generator
+membership.** `principalSubgroup H hdeg` (`PrincipalDivisorSubgroup.lean`)
+is generated ONLY by `divToPairRatio A₁ B₁ S₁ A₂ B₂ S₂` — differences of two
+`toPair`-functions with **matching** `ordInfOfPair` — but a `closure`, so
+finite SUMS of such generators are automatically members too, not just
+individual matched pairs. This means `C-A-T+2δ₀` being principal does NOT
+strictly require `g`/`u_new` (or any single pair) to have matching pole
+order — it only requires *some* finite decomposition into matched-pole-order
+pieces to exist. This is a strictly weaker (and more plausible) requirement
+than the already-confirmed-dead `divToPairRatio(g, u_new)` route, and has
+NOT been checked either way — genuinely open, not previously considered in
+this form.
+
+**Why this is being handed to ChatGPT rather than attempted directly in
+Lean this pass.** Finding the right auxiliary function(s) to build such a
+decomposition (if one exists) is real function-field construction work, not
+composition of lemmas already on file — the project's own convention is to
+ask for help here rather than guess a proof term. A prompt has been drafted
+(`CHATGPT-PROMPT-step3-C-A-T-principal.md`, this directory) asking
+specifically: (1) whether `C-A-T+2δ₀`'s principality can be exhibited as an
+explicit sum of pole-matched `divToPairRatio` generators given what's
+already proved (`div_aff(g)=A+C+T`, `div_aff(u_new)=ρ+I`), or (2) whether
+this is irreducibly "Cantor reduction's correctness" and needs its own
+classical proof (uniqueness of reduced Mumford representatives in a linear
+equivalence class), in which case a proof sketch for the K=4→K=2 case
+specifically is requested. **Not yet sent.**
+
+**One clarification this pass adds to the earlier "Concrete next steps"
+list**: step 3 there ("work out step 4... how T's role composes with
+C/Sanchor's role") is now answered structurally (the identity above is the
+precise, final target), but proving that identity is NOT the same
+remaining-work item as steps 1-2 (which are pure `eq_of_coeffAt_eq`
+composition, safe/mechanical) — it is open math, gated on the ChatGPT
+consultation above. Do not attempt to close `reducedClass_eq_of_isReduction'`'s
+`sorry` by guessing a `principalSubgroup` membership proof for
+`C-A-T+2δ₀` without either (a) a decomposition confirmed by the ChatGPT
+consultation, or (b) explicit new Lean lemmas establishing it — a plausible-
+looking `sorry`-free proof term here that doesn't actually correspond to a
+true mathematical fact would be worse than leaving the `sorry` in place.
+
+## Status update (ChatGPT consultation received; SECOND, more serious bug
+## found while checking its reply against the actual Lean) — Step 1's own
+## claimed identity is incomplete, not just wrongly signed
+
+**ChatGPT's reply (`CHATGPT-REPLY-step3-C-A-T-principal.md`, this
+directory — save it there) makes two claims.** First, that no finite sum of
+pole-matched `linX`-ratio generators can repair a sign mismatch — a
+subtraction-shaped target (`C-A`) cannot be manufactured from an
+addition-shaped fact (`A+C+T`) by bridging with fiber-difference-type
+generators alone, since those only ever kill already-Jacobian-trivial
+fiber relations. This point is accepted: it is a valid general fact about
+what `linX`-ratio generators can express, independent of any bug in our
+own files. Second, and more consequentially, it flagged that our stated
+`div_aff(g)=A+C+T` (degree 6) together with `ord_∞(g)=-8` cannot both be
+literally true of a genuine global principal divisor, since global degree
+must balance to `0`.
+
+**Checking this against the actual Lean (not the roadmap's prose gloss of
+it) found the second claim is right, but for a different, more basic
+reason than ChatGPT's own framing (multiple points at infinity) — which
+does not apply here at all, see below.**
+
+1. **`divToPair_eq_A_add_C_add_T_of_split` (`PrincipalWitnessStep1.lean`)
+   never claims completeness.** Its conclusion is `divToPair E Y
+   {six named points} = A+C+T` — literally true, and literally
+   `divToPair`'s definition (`∑ P ∈ S, ordAt P E Y • single P`) restricted
+   to the given six-point `Finset`. Nothing in the theorem's hypothesis or
+   conclusion says `g` vanishes NOWHERE else affine. The roadmap's own
+   prose (both the original notation section and this file's status
+   notes) has been calling this "`div_aff(g) = A+C+T`" as though it were
+   the complete divisor — **that gloss is wrong**, and every downstream
+   status note inherited the error uncritically. This is now flagged
+   explicitly so it stops propagating.
+2. **`g`'s actual complete affine zero-degree is 8, matching
+   `ordInfOfPair(E,Y)=-8` via `deg_div_eq_zero_deg5`** (`(∑ affine ordAt) +
+   ordInfOfPair = 0`, applied to `g` itself, not to `pairNorm`/`N` — these
+   are different applications of the same lemma and should not be
+   conflated). So `g` has TWO more affine zeros beyond the six named
+   points.
+3. **Found the missing two zeros directly, by unfolding `g`/`ḡ`'s
+   definitions rather than guessing.** `ḡ(x,y) := E(x)-Y(x)y = g(x,-y) =
+   g(ι(x,y))` (immediate from `toPair`'s definition and `Point.iota P =
+   (P.X,-P.Y)`, confirmed against `AffinePoints.lean`'s actual `iota_Y`
+   lemma, not assumed). `PrincipalWitnessAssembly.lean`'s own residual-case
+   proof (`PointCompositionMumfordPairResidualCase` section, the
+   `hbar_zero`/`hg_eval` block) already establishes `ḡ(ρ_i)=0` at each of
+   `u_new`'s two named roots `ρ1,ρ2` (with the specific lift `P.Y =
+   -V(P.X)`) — so by the identity above, `g(ι ρ_i) = ḡ(ρ_i) = 0`. **`g`'s
+   complete affine divisor is `A+C+T+[ιρ1]+[ιρ2]`, degree 8** — the two
+   missing zeros are the CONJUGATES of `u_new`'s own roots, not anything
+   new to construct. Symmetrically, `div(ḡ) = ι(div(g)) = ιA+ιC+ιT+ρ1+ρ2`
+   (degree 8), and `N=g·ḡ`'s bare-polynomial 8 roots each lift to 2
+   `H.Point`s across the two divisors, consistent with `Npoly4`'s degree 8
+   throughout — everything now balances with no contradiction, unlike my
+   own first attempt at this same check, which used the wrong comparison
+   (`deg(pairNorm)` is a bare-polynomial-degree fact via
+   `natDegree_pairNorm_eq_neg_ordInfOfPair`, NOT `ord_∞(g)+ord_∞(ḡ)` added
+   together as two independent hyperelliptic pole orders — conflating
+   those two is a distinct trap from the one described here, noted so
+   nobody re-falls into it).
+4. **ChatGPT's own diagnostic framing (possibly-multiple points at
+   infinity sharing the pole load) does NOT apply to this project.**
+   `H.f.natDegree = 5` (odd-degree model) means a SINGLE ramified point at
+   infinity, and `ordInfOfPair`'s `-max(2 deg A, 2 deg B + 5)` formula
+   already prices in that ramification (the `+5` term). So the resolution
+   here is "Step 1's own theorem was never claiming completeness," not
+   "the curve has an extra point at infinity we forgot."
+5. **Bigger, structural fact, worth stating plainly: `H.Point` in this
+   codebase is PURELY AFFINE.** `DivisorClassGroup.lean`'s own docstring:
+   "points at infinity are excluded" — confirmed, there is no
+   point-at-infinity type or value anywhere in `AffinePoints.lean` or
+   `DivisorClassGroup.lean`. `δ₀ : H.Point` is therefore necessarily an
+   AFFINE basepoint — it is not, and cannot be instantiated as, "the point
+   at infinity," however natural that would be classically (Mumford
+   reduction's usual basepoint). Any future math (ours or ChatGPT's) that
+   silently reaches for `δ₀ = ∞`-style reasoning does not typecheck against
+   this project's actual types and must be translated into a purely-affine
+   argument, or `δ₀` must be treated as a genuinely-abstract affine point
+   with no special relationship to infinity assumed.
+
+**Where this leaves `reducedClass_eq_of_isReduction'`.** ChatGPT's
+mathematical content (§2-3 of its reply: the real fix is feeding `-A`, i.e.
+`ι(A)`, into the interpolation, not `A` itself; the correct construction
+uses `C+ι(A)+D_res` shaped divisor identity to get `[C]-[A]=[T]` correctly
+signed) still stands and is NOT undone by the completeness bug found this
+pass — if anything, the newly-found `g(ιρ_i)=0` fact is a small, concrete
+example of exactly the `ι`-conjugation bookkeeping ChatGPT's proof sketch
+says is unavoidable. **Do not attempt to patch this by treating the
+existing `g` (built via the ORIGINAL `A` orientation, not `ι(A)`) as
+already sufficient** — per ChatGPT's §3/§5, this project's current `g` most
+likely witnesses the wrong (addition-shaped) relation for what
+`hAlphaRep`'s subtraction-shaped target needs, independent of the
+completeness bug. A second, corrected function (interpolating through
+`C` and `ι(A)`, not `A` directly) is very likely still needed — this pass's
+finding only corrects the bookkeeping/degree-accounting bug in the
+EXISTING `g`, it does not supply the new function ChatGPT's §5 constructs.
+
+**Concrete next steps, this pass's addition:**
+1. Fix this roadmap's own prose (and any downstream file's docstrings that
+   copy it) to stop calling `divToPair_eq_A_add_C_add_T_of_split`
+   "`div_aff(g) = A+C+T`" outright — it is `g`'s divisor restricted to six
+   named points, true and useful, but not complete. Consider proving the
+   COMPLETE identity `div(g) = A+C+T+[ιρ1]+[ιρ2]` as a new, separate
+   theorem (composing the six existing `_full` theorems with the residual
+   case's `hbar_zero`/`ι`-conjugation argument above) — this is likely
+   mechanical, using lemmas already on file, and would be honest,
+   real Step-1-completing progress regardless of how the ChatGPT
+   consultation below resolves.
+2. Send a follow-up to ChatGPT (not yet drafted) presenting: (a) the
+   corrected complete `div(g)=A+C+T+ιρ` fact from this pass, (b) the
+   `H.Point`-is-purely-affine constraint from item 5 above (so `δ₀` cannot
+   be `∞`), and (c) ask it to redo its §5 proof sketch entirely within
+   this constrained, affine-only, single-ramified-point-at-infinity model
+   — its existing §5 sketch freely uses "`2∞`"/"`6∞`"-style terms that may
+   not translate directly into a statement about `Divisor H`/`Divisor0 H`
+   the way this codebase needs (a principal divisor argument stated with
+   an explicit `∞`-coefficient has no home in a type with no
+   point-at-infinity slot; the "no `δ₀` term" discipline earlier in this
+   roadmap exists for exactly this reason).
