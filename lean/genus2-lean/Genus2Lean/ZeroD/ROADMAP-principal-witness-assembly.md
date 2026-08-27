@@ -705,3 +705,218 @@ constraint. Step 3 (`C-A-T+2δ₀ ∈ principalSubgroup H hdeg`, "Checked
 whether `principalSubgroup` can witness this directly" above) is the
 live open mathematical question — not this `[δ₀]`/`[∞]` reconciliation,
 which is now closed.
+
+## Status update (fresh pass): the `C-A-T+2δ₀` witness question, resolved
+## down to a concrete construction target — `-4` is impossible, `-5` with
+## one shared residual point `R` is the real target
+
+Three more ChatGPT exchanges this pass (prompts/replies not yet saved as
+separate files — summarized here; ask if the raw transcripts are wanted).
+
+**Round 1 finding: the theorem's own `S`/`Sanchor` witnesses (`hv`/`hva`,
+i.e. `toPair(-v,1)` for `T`, `toPair(-va,1)` for the anchor `C`) already
+have `ordInf = -5` exactly, unconditionally** — `v`/`va` are both
+degree-≤1 by construction (`hu`/`hv`/`hva`'s own shape in
+`AlphaLocusDegreeUniform.lean`), so `ordInfOfPair(-v,1) =
+-(max(2·deg(-v), 2·0+5)) = -5` (the `B`-term `2·deg(1)+5=5` always wins
+since `2·deg v ≤ 2 < 5`). This is the CLASSICAL two-point Mumford
+`(u,v)`-representation witness (`y - v(x)`), not `g`. `A := [P1]+[P2]`
+has the identical-shaped witness via `mumfordB` (`LCanonicalElementary.lean`
+— `mumfordB Q₁ Q₂ hne`, degree ≤1 Lagrange interpolation through 2 named
+points, with `mumfordB_ordInfOfPair` already proving `ordInfOfPair
+(-mumfordB Q₁ Q₂ hne) 1 = -5` exactly, generically, no new work needed for
+that fact). So `A`, `C`, `T` are ALL naturally witnessed at `ordInf = -5`,
+independent of `g` (which witnesses something different, at `-8`) —
+this was a genuinely new fact ChatGPT's earlier replies didn't have.
+
+**Round 1 verdict (checked against ChatGPT): these three `-5` witnesses
+alone are NOT sufficient.** Any combination of the pairwise differences
+`D_C - D_A`, `D_T - D_A` (the only things `principalSubgroup`'s closure
+gives you from 3 pole-matched generators) has coefficients on `D_A, D_C,
+D_T` summing to zero — i.e. spans only a rank-≤2 lattice — and expanding
+`D_X = X + R_X` (residual degree-3 pieces, since each witness has 5 total
+zeros = 2 named + 3 residual), there is no way to isolate `C - A - T +
+2δ₀` from that lattice without an EXTRA fact relating the `R_X` residuals
+to `2δ₀` — not a formal consequence of the three `-5` facts alone.
+
+**Round 2: asked whether a pole-order-`4` bridge exists instead (`f+`
+with `div_aff(f+) = C+2[δ₀]`, `f-` with `div_aff(f-) = A+T`, same `ordInf
+= -4`, degree-4 divisors on both sides, no residual term at all — the
+"cleanest possible" shape per ChatGPT's own framing).** Verdict:
+**impossible in general**, via a clean Riemann-Roch argument, independently
+worth recording:
+
+- `L(4∞) = span{1, x, x²}` for this curve shape (`ordInf(x) = -2`,
+  `ordInf(y) = -5`; a `y`-term's pole order is always ODD (`2·deg B + 5`)
+  while an `x`-only term's is always EVEN (`2·deg A`), so nothing with
+  `ordInf = -4` (even) can have a nonzero `y`-part — nothing here is
+  specific to this codebase's `Divisor H` model, it's the actual
+  classical fact `ℓ(4∞) = 4-2+1 = 3` via Riemann-Roch, genus 2).
+- Consequently any `ordInf = -4` function is a bare quadratic `q(x) = ax²
+  +bx+c`, and `div_aff(q)` is NECESSARILY of the shape `m₁([P]+[ιP]) +
+  m₂([Q]+[ιQ])` — a sum of COMPLETE conjugate fibers with multiplicity,
+  since an `x`-only polynomial cannot distinguish a point from its own
+  hyperelliptic conjugate (`(x-a)`'s zero locus is always the full fiber
+  over `a`). `A = [P1]+[P2]` and `T = [R1]+[R2]` are generic 2-point
+  divisors, NOT arranged as conjugate-fiber pairs in general (that's
+  exactly what `hR1P1`/`hR1P2`/etc.'s nondegeneracy hypotheses already
+  rule out) — so no pole-4 function can have `div_aff = A+T` (or
+  `C+2δ₀`) for the generic case this theorem needs to cover.
+- At `ordInf = -5` (`ℓ(5∞) = 4`), `L(5∞) = span{1,x,x²,y}` — the extra
+  `y` is exactly what permits sheet-separation, matching why the `mumfordB`
+  /`(-v,1)` witnesses above first become possible exactly at `-5`, not
+  before.
+
+**Round 2 verdict / new target: the realistic bridge is a MATCHED PAIR
+of `ordInf = -5` functions sharing ONE common residual point `R`:**
+
+```
+div_aff(f+) = C + 2•[δ₀] + [R]      (degree 4 = 2+2, matches ordInf=-5's
+                                      "one residual zero beyond degree 4")
+div_aff(f-) = A + T + [R]            (same shape, same R)
+ordInf(f+) = ordInf(f-) = -5
+```
+
+giving `div_aff(f+) - div_aff(f-) = C - A - T + 2•[δ₀]` directly, a single
+`divToPairRatio`-shaped principalSubgroup generator — no other
+combination needed. `deg(C+2δ₀) = 4` and `deg(A+T) = 4` both being
+one short of `5` (the total zero count a genuine `ordInf=-5` function
+has, since `(∑ordAt) + ordInf = 0` forces 5 affine zeros) is exactly
+why a SINGLE shared residual point `[R]` (not `[R]+[R']` or `0`) is the
+right shape — checked via this exact degree arithmetic, not assumed.
+
+**What this needs to actually build in Lean, not yet started:**
+
+1. **`f+`**: a degree-≤2 `b_+(x)` (NOT degree-≤1 like the plain
+   `mumfordB`/`(-v,1)`/`(-va,1)` witnesses above — those interpolate
+   through only 2 simple points) such that `y - b_+(x)` vanishes
+   *simply* at `Ra1, Ra2` (`C`'s two named roots) AND *to order 2* at
+   `δ₀` (the `2•[δ₀]` term — a genuine tangency condition: `b_+(δ₀.X) =
+   δ₀.Y` AND `b_+`'s derivative at `δ₀.X` matches the curve's own
+   implicit-differentiation slope there, `2•δ₀.Y•b_+'(δ₀.X) =
+   H.f'.eval δ₀.X`, the standard Mumford/Cantor tangent-row condition).
+   Three linear constraints (2 value + 1 derivative) pin down `b_+`'s 3
+   coefficients (degree ≤2) via a linear solve — same SHAPE as the
+   existing `matrixA4Tangent`/`branchDeriv4`/`tangentRowEntryX4`/
+   `tangentRowEntryXY4` machinery in `AlphaReduce.lean` (built for the
+   DIFFERENT case of `P1=P2` tangency among the K=4 interpolation's own
+   two named points), which is a genuine, reusable PATTERN — same
+   derivative-row idea — but not directly callable, since that machinery
+   is specific to a 4-points-total interpolation with `P1=P2` as ONE of
+   the four, not a 3-points-total (`Ra1,Ra2,δ₀`-doubled) interpolation.
+   `R` (the residual point) then falls out as whatever the 5th zero of
+   `y-b_+` turns out to be, exactly analogous to how `uRS4General`/`ρ`
+   fell out of the K=4 construction as "whatever's left over" — NOT
+   separately chosen or constrained in advance.
+2. **`f-`**: same shape, interpolating `P1, P2, R1, R2` — wait, that's 4
+   points already (degree 4), which would force `ordInf ≤ -8` like `g`
+   itself, contradiction. **Re-derive `f-`'s actual shape before coding
+   anything** — per the `A+T` target (`A:=[P1]+[P2]`, `T:=[R1]+[R2]`,
+   FOUR named points total, not 3), and per Round 2's own degree
+   arithmetic (`ordInf=-5` functions have exactly 5 affine zeros, and
+   `A+T` alone is already 4 named points), the residual `[R]` here
+   would be the ONLY remaining slot — meaning `f-`'s own `b_-(x)` must
+   be built by interpolating FOUR named points (`P1,P2,R1,R2`, no
+   tangency needed, all simple) via a degree-≤? `b_-`. But `mumfordB`-
+   style linear interpolation through `2` points needs `b` degree ≤1;
+   through `4` points generically needs `b` degree ≤3 — and `ordInf(y-b)
+   = -max(2·deg b, 5)` would need `2·deg b ≤ 4` i.e. `deg b ≤ 2` to stay
+   at `-5`, but 4 generic point-constraints need degree ≤3 to solve
+   exactly (4 unknowns... a degree-≤3 poly has 4 coefficients, matching
+   4 constraints) — **this does NOT obviously fit inside `ordInf=-5`, it
+   looks like it wants `ordInf ≤ -7` (`2·3=6 <7`, so `-7`, matching a
+   degree-3 `b`), a DIFFERENT parity/order than `f+`'s `-5`.** This
+   arithmetic mismatch is NOT yet resolved — before writing any Lean for
+   `f-`, re-derive very carefully (by hand, then re-confirm with ChatGPT
+   if needed) exactly how many named points `f-` needs to interpolate
+   and what `deg b_-` that forces, since the natural first guess
+   (`A+T`, 4 named points) does not obviously land at the SAME pole
+   order as `f+`'s 3-named-point (`Ra1,Ra2,δ₀`-doubled) construction,
+   and `divToPairRatio` needs the two pole orders to match EXACTLY. This
+   is the very next thing to work out, before any Lean scaffolding for
+   `f-` — `f+`'s construction (item 1 above) is comparatively well-
+   scoped and can be started independently in the meantime.
+
+**Not yet attempted in Lean**: neither `f+` nor `f-`'s construction
+exists anywhere in the codebase. `AlphaReduce.lean`'s tangent-row
+machinery (`branchDeriv4`, `tangentRowEntryX4`, `tangentRowEntryXY4`,
+`matrixA4Tangent`) is the closest existing PATTERN for `f+`'s tangency-
+at-`δ₀` condition, but is wired for a different (4-points-total,
+`P1=P2` tangent) case — reusing the pattern, not the code, is the
+plan. No degree-4-anchor-plus-target K=2-style interpolation
+(`Epoly`/`Ypoly` in `TheDataDerivation/DataDerivationSolve.lean`) was
+found reusable either — checked, it's a K2-tower-abstract construction
+for a different downstream purpose (symbolic residual-bound derivation),
+degree pattern doesn't match what's needed here (`ordInf=-5` via
+`E`-degree-≤2, `Y`-degree-0 — i.e. also NOT what `f+`/`f-` need, since
+those need `Y` non-constant to carry the tangency/4-point information).
+
+**Update within this same pass: the `f-` degree question above worked out
+by hand (classical CRT Cantor addition), not yet re-confirmed by ChatGPT
+(prompt sent, reply pending).** `f-`'s natural construction is the
+STANDARD Cantor "addition" step for two degree-2 Mumford pairs
+`(u1,v1) := A`, `(u2,v2) := T`: solve `v ≡ v1 (mod u1)`, `v ≡ v2 (mod
+u2)` via CRT (`deg u1 = deg u2 = 2` ⟹ `deg v ≤ 3`, one degree higher
+than `f+`'s `deg b_+ ≤ 2`), giving `ordInf(y-v) = -max(2·3,5) = -6`, and
+`u3 := (f - v²)/(u1·u2)` has degree `max(5, 2·3) - 4 = 6-4 = 2` — **a
+DEGREE-2 residual `R` (two points), not the degree-1 single residual
+point this section's item 2 originally guessed.** This makes `f-`'s pole
+order `-6`, one more than `f+`'s `-5` — **the two sides as scoped do NOT
+match**, contradicting `divToPairRatio`'s exact-pole-order-match
+requirement, exactly the kind of mismatch ChatGPT's own diagnostic
+process has caught twice already in this file (the `g`/`h` `-8`-vs-varies
+mismatches above) — flagging immediately rather than building Lean
+against unconfirmed arithmetic. **Not yet resolved**: whether `f+` needs
+upgrading to also carry a degree-2 residual (matching `-6`), or whether
+`f-`'s 4-point target can be reformulated with a smaller residual some
+other way. ChatGPT consultation sent this pass, reply pending — check
+for it before starting `f-`'s Lean construction. `f+`'s construction
+(item 1, previous section) is unaffected by this specific question and
+can proceed independently.
+
+**Update within this same pass: found and fixed a real miscount while
+starting `f+`'s Lean scaffolding — resolves the `f+`-vs-`f-` pole-order
+mismatch above WITHOUT needing the pending ChatGPT reply.**
+
+While drafting `f+`'s 3×3 tangent-interpolation linear system
+(`tangentInterpMatrix`/`tangentInterpRHS`, degree-≤2 `b_+`, 3 conditions:
+value at `Ra1`, value at `Ra2`, DERIVATIVE-only at `δ₀`), realized the
+derivative-only row at `δ₀` is wrong: "vanishes to order `2` at `δ₀`"
+for `y - b_+(x)` needs BOTH `δ₀.Y = b_+(δ₀.X)` (value, order ≥1) AND the
+branch-derivative condition (order ≥2) — TWO conditions at `δ₀`, not one.
+`AlphaReduce.lean`'s own `P1=P2` tangent-row precedent
+(`matrixA4Tangent`) confirms this: its own row 0 (ordinary evaluation)
+and row 1 (derivative) are BOTH present for the single tangent point —
+this file's original draft only ported row 1's idea and dropped row 0's
+counterpart for `δ₀`, an asymmetry that was wrong on inspection, not a
+subtle new fact.
+
+**Corrected condition count: 4 total** (1 value at `Ra1`, 1 value at
+`Ra2`, 1 value + 1 derivative at `δ₀`), needing **`b_+` of degree ≤3**
+(four coefficients), not ≤2. This changes `f+`'s own pole order:
+`ordInf(y-b_+) = -max(2·3, 5) = -6`, matching `f-`'s independently-
+derived `-6` from the Cantor-addition computation above **exactly** —
+the two sides now match without needing any further adjustment, and
+without needing to wait on the ChatGPT reply already sent (that
+consultation is still worth reading when it arrives, as a
+cross-check, but is no longer blocking). Residual-degree check: `f+`
+has `ordInf=-6` ⟹ 6 affine zeros ⟹ `2 (Ra1,Ra2, simple) + 2 (δ₀, mult.
+2) + deg R = 6` ⟹ `deg R = 2`, matching `f-`'s own `deg R = 2` (from
+`u3`'s degree in the Cantor-addition computation) exactly as well —
+both the pole order AND the residual degree now agree on both sides,
+which is the actual requirement for `divToPairRatio`, not just the pole
+order alone (the residual `R`s themselves still need to be shown to be
+literally the SAME degree-2 divisor on both sides for the final
+cancellation `div_aff(f+)-div_aff(f-) = C-A-T+2δ₀` to go through — not
+yet checked, is the next thing to verify once both constructions exist
+concretely).
+
+**Revised construction target for `f+`:** `b_+` degree ≤3 (four
+coefficients), solving a 4×4 linear system: value-rows at `Ra1.X`,
+`Ra2.X`, `δ₀.X` (three ordinary evaluation rows, `(1,x,x²,x³)` each) plus
+one derivative row at `δ₀.X` (`(0,1,2x,3x²)` evaluated there) — same
+`tangentRowEntryX4`-style derivative-coefficient pattern as before, just
+sized to degree-3 basis and with the value-row for `δ₀` now correctly
+included as its own 4th row. Not yet re-drafted in Lean (previous
+3-row/degree-≤2 draft deleted as wrong before being saved anywhere
+committed) — the 4×4 version is next.
