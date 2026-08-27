@@ -9,90 +9,75 @@ import Genus2Lean.LCanonicalElementary
 /-! # The `f-` witness for `ROADMAP-principal-witness-assembly.md`'s
 `A + T` construction (companion to `TangentMumfordWitness.lean`'s `f+`)
 
-Per that roadmap's "Round 2 verdict / new target" section: `f- := y -
-b_-(x)`, where `b_-` is the UNIQUE degree-≤3 polynomial solving the
-**CRT/Cantor-addition congruences**
+**REBUILT THIS PASS — the previous version of this file was wrong and is
+discarded.** The earlier draft built `bMinus` via a CRT/Cantor-addition
+congruence pair (`bMinus ≡ vC mod uC`, `bMinus ≡ -vA mod uA`), which
+witnesses `C + ι(A)`, not `A + T`. A ChatGPT consultation (prompted
+against that wrong construction) confirmed algebraically that no such
+pair can ever cancel against `f+` to produce `C - A - T + 2•[δ₀]`: `f+`
+and that old `f-` don't even share a common residual on the same sheet
+(`gcd`/`dvd` argument: `u_C ∣ (bPlus - bMinus_old)`, and a shared
+same-sheet residual `q` would need `q ∣ (bPlus - bMinus_old)` too, forcing
+`q ∣ ℓ` for a degree-≤1 `ℓ`, impossible for `deg q = 2`). That whole
+construction is the wrong pair of witnesses and is not being repaired.
 
-    b_- ≡ vC  (mod uC)      -- `C`'s own Mumford `v`-coefficient, `uC :=
-                                X²+C c1*X+C c0`, `vC := C vC1*X + C vC0`
-    b_- ≡ -vA (mod uA)      -- `-A`'s Mumford data, `uA := X²+C a1*X+C a0`,
-                                `vA := C vA1*X + C vA0` (negated: this
-                                witness needs `C + ι(A)`, NOT `C+A`, per
-                                `CHATGPT-REPLY-step3-reduce-correctness.md`
-                                §2-3 and the roadmap's own Round 1/2
-                                write-up)
+**The correct construction, per the roadmap's own resolved arithmetic**
+(`ROADMAP-principal-witness-assembly.md`, "Update within this same pass:
+found and fixed a real miscount..." section): `f-` must be built the
+SAME way `f+` was — direct interpolation through the actual named
+points, then square-and-divide against `H.f` to read off the residual —
+not as a composition of two independently-built two-point Mumford
+witnesses. Concretely:
 
-This is the classical Cantor-addition step for two degree-2 Mumford
-divisors, done at the polynomial/coefficient level (per ChatGPT's own
-recommendation: "the cleanest route may... formulate the residual
-divisor initially at the polynomial/Mumford level rather than
-immediately splitting it into `R1,R2`" — this file follows that advice,
-taking `uC,uA,vC,vA`'s four coefficients as bare `k`-field inputs, never
-naming or splitting either quadratic's roots).
+`f- := y - b_-(x)`, where `b_-` is the UNIQUE degree-≤3 polynomial
+solving FOUR ORDINARY evaluation conditions (no tangency, no CRT, no
+named quadratic `uC`/`uA` — this is deliberately simpler than the old
+wrong draft):
 
-**Why a 4×4 linear system, not a hand-derived Bezout/CRT closed form.**
-A direct Bezout computation (find `s,t` with `s·uC+t·uA=1`, then
-`v = vC·t·uA - vA·s·uC mod uC·uA`) was tried by hand first and produces
-correct but extremely unwieldy closed-form coefficients (each a ratio of
-degree-4 polynomials in `a0,a1,c0,c1` over their shared resultant). Per
-this project's own conventions (deep, error-prone algebra is exactly
-what should be avoided in favor of something mechanically checkable),
-the congruences were instead unfolded directly into 4 LINEAR equations
-on `b_-`'s 4 unknown coefficients (`b0,b1,b2,b3`) — `v mod uC` and
-`v mod uA` are each computed by ordinary polynomial division by a monic
-quadratic, giving 2 linear conditions apiece, no root-splitting or
-Bezout identity needed at all. This is the exact same idiom
-`TangentMumfordWitness.lean`'s `bPlus`/`tangentInterpMatrix` already
-uses (Cramer's rule on an explicit 4×4 matrix) — `bMinus` below is that
-same machinery, one new 4×4 matrix, confirmed independently via sympy
-(`sympy.rem(Poly(b0+b1*X+b2*X²+b3*X³,X), Poly(X²+c1*X+c0,X))` etc.,
-matched against the matrix rows below term-by-term before writing any
-Lean).
+    b_-(P1.X) = P1.Y
+    b_-(P2.X) = P2.Y
+    b_-(R1.X) = R1.Y
+    b_-(R2.X) = R2.Y
 
-**The matrix, derived (sympy-confirmed) as:**
-```
-row 0 (const. coeff of  b_- mod uC = vC):   b0        - c0*b2 + c0*c1*b3        = vC0
-row 1 (X coeff of       b_- mod uC = vC):        b1  - c1*b2 + (c1²-c0)*b3      = vC1
-row 2 (const. coeff of  b_- mod uA = -vA):  b0        - a0*b2 + a0*a1*b3        = -vA0
-row 3 (X coeff of       b_- mod uA = -vA):       b1  - a1*b2 + (a1²-a0)*b3      = -vA1
-```
-**Determinant, confirmed (sympy) to equal `Res(uC,uA)`** (the resultant
-of the two quadratics) — nonzero exactly when `uC,uA` are coprime, i.e.
-share no common root, the natural nondegeneracy hypothesis (`C` and `A`
-disjoint as point-pairs). No further factorization of this resultant is
-attempted or needed; it is used only as an opaque nonzero scalar via
-`hdet`, exactly as `tangentInterpMatrix_det_ne_zero`'s conclusion is used
-by `bPlus`'s row lemmas without ever re-deriving its closed form at a
-call site.
+Four simple point-value constraints pin down `b_-`'s four coefficients
+via a PLAIN (non-confluent) 4×4 Vandermonde solve — actually simpler
+than `bPlus`'s confluent case (`TangentMumfordWitness.lean`), which had
+a repeated node (`δ₀`) carrying both a value and a derivative row. Here
+all four nodes (`P1.X, P2.X, R1.X, R2.X`) are ordinary evaluation rows,
+so `minusInterpMatrix` is a genuine Vandermonde matrix, invertible iff
+the four x-coordinates are pairwise distinct (the classical Vandermonde
+nondegeneracy condition, no confluent/Hermite subtlety).
 
-**Status: 0-`sorry`.** `cantorAddMatrix_det_ne_zero` is closed via a
-kernel-vector argument (`Matrix.exists_mulVec_eq_zero_iff` gives a
-nonzero kernel vector from `det = 0`; its rows unfold via
-`modByMonic_uCPoly_eq`/`modByMonic_uAPoly_eq` to a degree contradiction
-against coprimality — no resultant needed). Both `bMinus_mod_*`
-congruence theorems (`bMinus_mod_uC_eq_vC`, `bMinus_mod_uA_eq_neg_vA`)
-are filled via that same closed-form-remainder pair composed with
-Cramer's-rule row extraction (`bMinus_coeff0_coeff1`/
-`bMinus_coeff2_coeff3`). `bMinus_ordInfOfPair` (added this pass, mirrors
-`bPlus_ordInfOfPair`'s weakened `hlead`-on-top-coefficient shape) gives
-`ordInfOfPair(-bMinus,1) = -6`, matching `f+`'s own `-6` exactly — the
-matched pole order the roadmap's "Round 2 verdict" pairing needs. Not
-yet build-tested (no live Lean toolchain in this environment) — Claire's
-REPL to confirm, per this project's own workflow convention.
+**Degree/pole-order arithmetic** (confirmed by hand, matches `f+`'s own
+corrected `-6` exactly — see the roadmap's "Update... found and fixed a
+real miscount" section): `deg b_- ≤ 3` (generically `= 3`), so
+`ordInfOfPair(-b_-, 1) = -max(2·3, 5) = -6`. This means `y - b_-(x)` has
+6 total affine zeros. Four of them are the named points `P1, P2, R1, R2`
+(assuming they're distinct and generic); `H.f - b_-² = denomPolyMinus *
+uMinusNew` where `denomPolyMinus := (X-P1.X)(X-P2.X)(X-R1.X)(X-R2.X)`
+(degree 4) and `uMinusNew` is the resulting degree-2 residual quotient —
+exactly mirroring `TangentMumfordWitness.lean`'s `denomPoly`/`uANew`
+pair, one level simpler (no squared factor, since there's no tangency
+point here). `uMinusNew`'s two roots, lifted with `y = b_-(x)` (the SAME
+sheet-choice `f+`'s own residual `uANew`-lift uses — see
+`TangentMumfordWitness.lean`'s `pairNormBPlus_eq_denomPoly_mul_uANew`),
+are `f-`'s residual pair.
 
-**Still open (unchanged from before, genuinely ChatGPT-worthy):** the
-divisor-level facts — `div_aff(y - bMinus) ⊇ A + T` (or the `ι`-conjugated
-version matching the `bMinus ≡ -vA mod uA` sign convention already fixed
-here) plus the matching degree-1 residual `[R]`, and confirming this `R`
-is the SAME `R` as `f+`'s own residual. This is the next thing to hand to
-ChatGPT — the sign/labeling conventions and both pole orders (`-6`/`-6`)
-are now pinned down in actual Lean, not guessed in prose. -/
+**Whether this residual matches `f+`'s own residual (the roadmap's
+`R+ ?= R-` question) is NOT decided here.** That is real
+divisor/Jacobian content (the actual Abel–Jacobi/Cantor relation this
+whole construction exists to witness), not mechanical composition — see
+this project's convention of handing genuinely open math to ChatGPT
+rather than guessing a `sorry`-free proof. This file only builds `b_-`
+and its basic polynomial-level facts (degree bound, evaluation-row
+lemmas, the factorization `H.f - b_-² = denomPolyMinus * uMinusNew`, and
+`ordInfOfPair(-b_-, 1) = -6` under a nondegeneracy hypothesis mirroring
+`bPlus_ordInfOfPair`'s). The residual-matching question is the next
+thing to hand to ChatGPT once this file is confirmed build-green. -/
 
 noncomputable section
 
-set_option maxHeartbeats 5000000
--- The explicit polynomial division/Cramer proofs below normalize several nested
--- `Fin`/`Matrix`/`Polynomial.C` expressions; the larger budget is local to this file.
+set_option maxHeartbeats 1000000
 
 open Polynomial
 open HyperellipticPolynomial
@@ -102,477 +87,379 @@ namespace DecoupledSystem
 
 variable {k : Type*} [Field k]
 
-/-- **The 4×4 Cantor-addition matrix.** Unknowns are `b_-`'s four
-coefficients `(b0,b1,b2,b3)`. Rows 0-1: the two coefficients of
-`b_- mod uC` (`uC := X²+C c1*X+C c0`), matched against `vC`'s own two
-coefficients. Rows 2-3: the two coefficients of `b_- mod uA`
-(`uA := X²+C a1*X+C a0`), matched against `-vA`'s two coefficients.
-Confirmed against sympy's `Poly.rem` before being written down (see
-module docstring). -/
-def cantorAddMatrix (c0 c1 a0 a1 : k) : Matrix (Fin 4) (Fin 4) k :=
-  !![1, 0, -c0,      c0 * c1;
-     0, 1, -c1,      c1 ^ 2 - c0;
-     1, 0, -a0,      a0 * a1;
-     0, 1, -a1,      a1 ^ 2 - a0]
+/-- **The plain 4×4 Vandermonde interpolation matrix for `b_-`.** Row 0:
+evaluation at `P1.X` (`1, x, x², x³`). Row 1: evaluation at `P2.X`. Row
+2: evaluation at `R1.X`. Row 3: evaluation at `R2.X` — all four rows the
+SAME ordinary-evaluation shape (unlike `tangentInterpMatrix`, which has
+a derivative row; there is no tangency condition anywhere in this
+file). -/
+def minusInterpMatrix (P1X P2X R1X R2X : k) : Matrix (Fin 4) (Fin 4) k :=
+  !![1, P1X, P1X ^ 2, P1X ^ 3;
+     1, P2X, P2X ^ 2, P2X ^ 3;
+     1, R1X, R1X ^ 2, R1X ^ 3;
+     1, R2X, R2X ^ 2, R2X ^ 3]
 
-/-- **The RHS vector for `b_-`'s 4×4 solve.** Rows 0-1: `vC`'s own
-coefficients `vC0, vC1`. Rows 2-3: `-vA`'s coefficients, `-vA0, -vA1` —
-the negation is exactly the `ι(A)` (hyperelliptic-conjugate-of-`A`)
-substitution `CHATGPT-REPLY-step3-reduce-correctness.md` identifies as
-the fix for the theorem's subtraction-shaped target (`C - A`, not
-`C + A`). -/
-def cantorAddRHS (vC0 vC1 vA0 vA1 : k) : Fin 4 → k :=
-  ![vC0, vC1, -vA0, -vA1]
+/-- **The RHS vector for `b_-`'s 4×4 solve.** The target `y`-values
+`P1.Y, P2.Y, R1.Y, R2.Y`. -/
+def minusInterpRHS (P1Y P2Y R1Y R2Y : k) : Fin 4 → k :=
+  ![P1Y, P2Y, R1Y, R2Y]
 
-/-- **The quadratic `uC := X² + C c1 * X + C c0`.** Named once here so
-the kernel-vector argument below and both row lemmas share the exact
-same term (avoids any risk of an accidental definitional mismatch
-between `unfold`-ed occurrences). -/
-def uCPoly (c0 c1 : k) : Polynomial k := (X : k[X]) ^ 2 + Polynomial.C c1 * X + Polynomial.C c0
+/-- **Nondegeneracy of the plain 4×4 Vandermonde system.** Invertible
+iff `P1.X, P2.X, R1.X, R2.X` are pairwise distinct — the classical
+Vandermonde determinant formula, `∏_{i<j} (xⱼ - xᵢ)` up to sign, no
+confluent/Hermite subtlety since every row is an ordinary evaluation
+row. Proved the same way `tangentInterpMatrix_det_ne_zero` was: cofactor
+expansion via `Matrix.det_succ_row_zero` down to `Matrix.det_fin_three`,
+then `ring`, rather than betting on an unverified `Matrix.det_vandermonde`
+Mathlib name. -/
+theorem minusInterpMatrix_det_ne_zero (P1X P2X R1X R2X : k)
+    (h12 : P1X ≠ P2X) (h1R1 : P1X ≠ R1X) (h1R2 : P1X ≠ R2X)
+    (h2R1 : P2X ≠ R1X) (h2R2 : P2X ≠ R2X) (hRR : R1X ≠ R2X) :
+    (minusInterpMatrix P1X P2X R1X R2X).det ≠ 0 := by
+  have hdet : (minusInterpMatrix P1X P2X R1X R2X).det =
+      (P2X - P1X) * (R1X - P1X) * (R2X - P1X) *
+        (R1X - P2X) * (R2X - P2X) * (R2X - R1X) := by
+    unfold minusInterpMatrix
+    rw [Matrix.det_succ_row_zero]
+    simp [Fin.sum_univ_four, Matrix.det_fin_three, Fin.succAbove,
+      Matrix.cons_val_zero, Matrix.cons_val_one, Matrix.head_cons,
+      Matrix.cons_val_two, Matrix.tail_cons, Matrix.cons_val_three]
+    ring
+  rw [hdet]
+  exact mul_ne_zero (mul_ne_zero (mul_ne_zero (mul_ne_zero
+    (mul_ne_zero (sub_ne_zero.mpr (Ne.symm h12)) (sub_ne_zero.mpr (Ne.symm h1R1)))
+    (sub_ne_zero.mpr (Ne.symm h1R2)))
+    (sub_ne_zero.mpr (Ne.symm h2R1)))
+    (sub_ne_zero.mpr (Ne.symm h2R2)))
+    (sub_ne_zero.mpr (Ne.symm hRR))
 
-/-- **The quadratic `uA := X² + C a1 * X + C a0`.** -/
-def uAPoly (a0 a1 : k) : Polynomial k := (X : k[X]) ^ 2 + Polynomial.C a1 * X + Polynomial.C a0
+/-- **`b_-`'s coefficients, via Cramer's rule.** Same idiom as
+`bPlusCoeff` — `det⁻¹ * cramer`, one size (still 4×4, but non-confluent)
+mirroring `TangentMumfordWitness.lean`'s pattern exactly. -/
+def minusCoeff (P1X P2X R1X R2X P1Y P2Y R1Y R2Y : k) (i : Fin 4) : k :=
+  (minusInterpMatrix P1X P2X R1X R2X).det⁻¹ *
+    (Matrix.cramer (minusInterpMatrix P1X P2X R1X R2X)
+      (minusInterpRHS P1Y P2Y R1Y R2Y) i)
 
-@[simp] theorem uCPoly_monic (c0 c1 : k) : (uCPoly c0 c1 : k[X]).Monic := by
-  unfold uCPoly
-  monicity!
-
-@[simp] theorem uAPoly_monic (a0 a1 : k) : (uAPoly a0 a1 : k[X]).Monic := by
-  unfold uAPoly
-  monicity!
-
-/-- **Degree-≤3 quotient-remainder identity for `uCPoly`.** For ANY
-`b0,b1,b2,b3`, writing `q := C b0 + C b1*X + C b2*X² + C b3*X³`, this is
-the explicit division `q = uCPoly*(C b3*X + C(b2-b3*c1)) + (remainder)`,
-confirmed against sympy's `Poly.div` before being written down (module
-docstring). Purely a `ring` identity — no coprimality or nonvanishing
-needed for this lemma itself, it is shared by both the kernel-vector
-argument (`cantorAddMatrix_det_ne_zero`) and `bMinus_mod_uC_eq_vC`. -/
-private theorem uCPoly_div_eq (c0 c1 b0 b1 b2 b3 : k) :
-    (Polynomial.C b1 - Polynomial.C b2 * Polynomial.C c1 - Polynomial.C b3 * Polynomial.C c0 +
-        Polynomial.C b3 * Polynomial.C c1 ^ 2) * X +
-      (Polynomial.C b0 - Polynomial.C b2 * Polynomial.C c0 +
-        Polynomial.C b3 * Polynomial.C c0 * Polynomial.C c1) +
-      uCPoly c0 c1 * (Polynomial.C b3 * X + (Polynomial.C b2 - Polynomial.C b3 * Polynomial.C c1)) =
-      Polynomial.C b0 + Polynomial.C b1 * X + Polynomial.C b2 * X ^ 2 + Polynomial.C b3 * X ^ 3 := by
-  unfold uCPoly
-  ring
-
-/-- **Degree-≤3 quotient-remainder identity for `uAPoly`.** Same shape as
-`uCPoly_div_eq`, `a0,a1` in place of `c0,c1`. -/
-private theorem uAPoly_div_eq (a0 a1 b0 b1 b2 b3 : k) :
-    (Polynomial.C b1 - Polynomial.C b2 * Polynomial.C a1 - Polynomial.C b3 * Polynomial.C a0 +
-        Polynomial.C b3 * Polynomial.C a1 ^ 2) * X +
-      (Polynomial.C b0 - Polynomial.C b2 * Polynomial.C a0 +
-        Polynomial.C b3 * Polynomial.C a0 * Polynomial.C a1) +
-      uAPoly a0 a1 * (Polynomial.C b3 * X + (Polynomial.C b2 - Polynomial.C b3 * Polynomial.C a1)) =
-      Polynomial.C b0 + Polynomial.C b1 * X + Polynomial.C b2 * X ^ 2 + Polynomial.C b3 * X ^ 3 := by
-  unfold uAPoly
-  ring
-
-/-- **`q %ₘ uCPoly` in closed form, for `q`'s coefficients `b0,b1,b2,b3`.**
-Immediate from `uCPoly_div_eq` plus `Polynomial.div_modByMonic_unique`
-(the remainder's `degree < 2 = degree uCPoly` since it's an explicit
-linear polynomial, `Polynomial.degree_linear_le`-style bound). -/
-private theorem modByMonic_uCPoly_eq (c0 c1 b0 b1 b2 b3 : k) :
-    (Polynomial.C b0 + Polynomial.C b1 * X + Polynomial.C b2 * X ^ 2 + Polynomial.C b3 * X ^ 3)
-        %ₘ uCPoly c0 c1 =
-      (Polynomial.C b1 - Polynomial.C b2 * Polynomial.C c1 - Polynomial.C b3 * Polynomial.C c0 +
-          Polynomial.C b3 * Polynomial.C c1 ^ 2) * X +
-        (Polynomial.C b0 - Polynomial.C b2 * Polynomial.C c0 +
-          Polynomial.C b3 * Polynomial.C c0 * Polynomial.C c1) := by
-  have hdeg : ((Polynomial.C b1 - Polynomial.C b2 * Polynomial.C c1 -
-        Polynomial.C b3 * Polynomial.C c0 + Polynomial.C b3 * Polynomial.C c1 ^ 2) * X +
-      (Polynomial.C b0 - Polynomial.C b2 * Polynomial.C c0 +
-        Polynomial.C b3 * Polynomial.C c0 * Polynomial.C c1) : k[X]).degree <
-      (uCPoly c0 c1 : k[X]).degree := by
-    have hlin : ((Polynomial.C b1 - Polynomial.C b2 * Polynomial.C c1 -
-        Polynomial.C b3 * Polynomial.C c0 + Polynomial.C b3 * Polynomial.C c1 ^ 2) * X +
-      (Polynomial.C b0 - Polynomial.C b2 * Polynomial.C c0 +
-        Polynomial.C b3 * Polynomial.C c0 * Polynomial.C c1) : k[X]).degree < 2 := by
-      convert (Polynomial.degree_linear_lt
-        (a := b1 - b2 * c1 - b3 * c0 + b3 * c1 ^ 2)
-        (b := b0 - b2 * c0 + b3 * c0 * c1)) using 1 <;>
-        simp only [map_sub, map_add, map_mul, map_pow]
-    have hCdeg : (uCPoly c0 c1 : k[X]).degree = 2 := by
-      change ((X : k[X]) ^ 2 + Polynomial.C c1 * X + Polynomial.C c0).degree = 2
-      convert (Polynomial.degree_quadratic (a := (1 : k)) (b := c1) (c := c0) (by simp)) using 1 <;>
-        simp
-    rw [hCdeg]
-    exact hlin
-  exact ((Polynomial.div_modByMonic_unique
-    (Polynomial.C b3 * X + (Polynomial.C b2 - Polynomial.C b3 * Polynomial.C c1))
-    ((Polynomial.C b1 - Polynomial.C b2 * Polynomial.C c1 - Polynomial.C b3 * Polynomial.C c0 +
-        Polynomial.C b3 * Polynomial.C c1 ^ 2) * X +
-      (Polynomial.C b0 - Polynomial.C b2 * Polynomial.C c0 +
-        Polynomial.C b3 * Polynomial.C c0 * Polynomial.C c1))
-    (uCPoly_monic c0 c1) ⟨uCPoly_div_eq c0 c1 b0 b1 b2 b3, hdeg⟩).2)
-
-/-- **`q %ₘ uAPoly` in closed form.** Mirror of `modByMonic_uCPoly_eq`. -/
-private theorem modByMonic_uAPoly_eq (a0 a1 b0 b1 b2 b3 : k) :
-    (Polynomial.C b0 + Polynomial.C b1 * X + Polynomial.C b2 * X ^ 2 + Polynomial.C b3 * X ^ 3)
-        %ₘ uAPoly a0 a1 =
-      (Polynomial.C b1 - Polynomial.C b2 * Polynomial.C a1 - Polynomial.C b3 * Polynomial.C a0 +
-          Polynomial.C b3 * Polynomial.C a1 ^ 2) * X +
-        (Polynomial.C b0 - Polynomial.C b2 * Polynomial.C a0 +
-          Polynomial.C b3 * Polynomial.C a0 * Polynomial.C a1) := by
-  have hdeg : ((Polynomial.C b1 - Polynomial.C b2 * Polynomial.C a1 -
-        Polynomial.C b3 * Polynomial.C a0 + Polynomial.C b3 * Polynomial.C a1 ^ 2) * X +
-      (Polynomial.C b0 - Polynomial.C b2 * Polynomial.C a0 +
-        Polynomial.C b3 * Polynomial.C a0 * Polynomial.C a1) : k[X]).degree <
-      (uAPoly a0 a1 : k[X]).degree := by
-    have hlin : ((Polynomial.C b1 - Polynomial.C b2 * Polynomial.C a1 -
-        Polynomial.C b3 * Polynomial.C a0 + Polynomial.C b3 * Polynomial.C a1 ^ 2) * X +
-      (Polynomial.C b0 - Polynomial.C b2 * Polynomial.C a0 +
-        Polynomial.C b3 * Polynomial.C a0 * Polynomial.C a1) : k[X]).degree < 2 := by
-      convert (Polynomial.degree_linear_lt
-        (a := b1 - b2 * a1 - b3 * a0 + b3 * a1 ^ 2)
-        (b := b0 - b2 * a0 + b3 * a0 * a1)) using 1 <;>
-        simp only [map_sub, map_add, map_mul, map_pow]
-    have hAdeg : (uAPoly a0 a1 : k[X]).degree = 2 := by
-      change ((X : k[X]) ^ 2 + Polynomial.C a1 * X + Polynomial.C a0).degree = 2
-      convert (Polynomial.degree_quadratic (a := (1 : k)) (b := a1) (c := a0) (by simp)) using 1 <;>
-        simp
-    rw [hAdeg]
-    exact hlin
-  exact ((Polynomial.div_modByMonic_unique
-    (Polynomial.C b3 * X + (Polynomial.C b2 - Polynomial.C b3 * Polynomial.C a1))
-    ((Polynomial.C b1 - Polynomial.C b2 * Polynomial.C a1 - Polynomial.C b3 * Polynomial.C a0 +
-        Polynomial.C b3 * Polynomial.C a1 ^ 2) * X +
-      (Polynomial.C b0 - Polynomial.C b2 * Polynomial.C a0 +
-        Polynomial.C b3 * Polynomial.C a0 * Polynomial.C a1))
-    (uAPoly_monic a0 a1) ⟨uAPoly_div_eq a0 a1 b0 b1 b2 b3, hdeg⟩).2)
-
-/-- **Nondegeneracy of the 4×4 Cantor-addition system, proved directly
-from `IsCoprime`, no resultant needed.** Earlier draft of this file
-planned to go via a closed-form determinant `= Res(uC,uA)` plus a
-resultant-nonvanishing-iff-coprime Mathlib lemma; no such lemma was
-found in the Mathlib4 API surface searched, so this pass instead proves
-it directly: **kernel-vector argument.** If `det = 0`, `cantorAddMatrix`
-has a nonzero vector `b` in its (right) kernel (`Matrix.exists_mulVec_eq_zero_iff`
-kind of statement — via `¬(det ≠ 0) → ¬Function.Injective (mulVec M) →
-∃ b ≠ 0, M.mulVec b = 0`, `LinearMap` non-injectivity from `det = 0`).
-Writing `q := C b0+C b1*X+C b2*X²+C b3*X³`, `M.mulVec b = 0`'s four rows
-are EXACTLY `q %ₘ uCPoly = 0` (rows 0-1, via `modByMonic_uCPoly_eq`
-above with the RHS's `vC0=vC1=0` specialization) and `q %ₘ uAPoly = 0`
-(rows 2-3, similarly) — so `uCPoly ∣ q` and `uAPoly ∣ q`
-(`Polynomial.modByMonic_eq_zero_iff_dvd`). By `hcoprime`,
-`uCPoly*uAPoly ∣ q` (`IsCoprime.mul_dvd`). But `deg q ≤ 3 <
-4 = deg(uCPoly*uAPoly)`, forcing `q = 0` (a nonzero multiple of a
-degree-4 polynomial has degree ≥ 4) — hence `b = 0`, contradicting `b ≠
-0`. **Found the needed lemma this pass:** `Matrix.exists_mulVec_eq_zero_iff`
-(`Mathlib.LinearAlgebra.Matrix.ToLinearEquiv` — `[Fintype n] [DecidableEq
-n] [CommRing A] [IsDomain A] {M : Matrix n n A} : (∃ v ≠ 0, M.mulVec v =
-0) ↔ M.det = 0`), applicable here since a field is an `IsDomain`. -/
-theorem cantorAddMatrix_det_ne_zero (c0 c1 a0 a1 : k)
-    (hcoprime : IsCoprime (uCPoly c0 c1 : k[X]) (uAPoly a0 a1 : k[X])) :
-    (cantorAddMatrix c0 c1 a0 a1).det ≠ 0 := by
-  intro hdet0
-  obtain ⟨b, hbne, hbker⟩ := Matrix.exists_mulVec_eq_zero_iff.mpr hdet0
-  set q : k[X] := Polynomial.C (b 0) + Polynomial.C (b 1) * X +
-    Polynomial.C (b 2) * X ^ 2 + Polynomial.C (b 3) * X ^ 3 with hq
-  have hrow0 : b 0 - c0 * b 2 + c0 * c1 * b 3 = 0 := by
-    have h := congrFun hbker (0 : Fin 4)
-    simp only [Matrix.mulVec, dotProduct, cantorAddMatrix, Fin.sum_univ_four,
-      Matrix.of_apply, Matrix.cons_val', Matrix.cons_val_zero, Matrix.cons_val_one,
-      Matrix.head_cons, Matrix.cons_val_two, Matrix.tail_cons,
-      Matrix.cons_val_three, Pi.zero_apply] at h
-    linear_combination h
-  have hrow1 : b 1 - c1 * b 2 + (c1 ^ 2 - c0) * b 3 = 0 := by
-    have h := congrFun hbker (1 : Fin 4)
-    simp only [Matrix.mulVec, dotProduct, cantorAddMatrix, Fin.sum_univ_four,
-      Matrix.of_apply, Matrix.cons_val', Matrix.cons_val_zero, Matrix.cons_val_one,
-      Matrix.head_cons, Matrix.cons_val_two, Matrix.tail_cons,
-      Matrix.cons_val_three, Pi.zero_apply] at h
-    linear_combination h
-  have hrow2 : b 0 - a0 * b 2 + a0 * a1 * b 3 = 0 := by
-    have h := congrFun hbker (2 : Fin 4)
-    simp only [Matrix.mulVec, dotProduct, cantorAddMatrix, Fin.sum_univ_four,
-      Matrix.of_apply, Matrix.cons_val', Matrix.cons_val_zero, Matrix.cons_val_one,
-      Matrix.head_cons, Matrix.cons_val_two, Matrix.tail_cons,
-      Matrix.cons_val_three, Pi.zero_apply] at h
-    linear_combination h
-  have hrow3 : b 1 - a1 * b 2 + (a1 ^ 2 - a0) * b 3 = 0 := by
-    have h := congrFun hbker (3 : Fin 4)
-    simp only [Matrix.mulVec, dotProduct, cantorAddMatrix, Fin.sum_univ_four,
-      Matrix.of_apply, Matrix.cons_val', Matrix.cons_val_zero, Matrix.cons_val_one,
-      Matrix.head_cons, Matrix.cons_val_two, Matrix.tail_cons,
-      Matrix.cons_val_three, Pi.zero_apply] at h
-    linear_combination h
-  -- `q %ₘ uCPoly = 0` from rows 0-1, via `modByMonic_uCPoly_eq` at `vC0=vC1=0`.
-  have hqC : q %ₘ (uCPoly c0 c1 : k[X]) = 0 := by
-    rw [hq, modByMonic_uCPoly_eq]
-    have e0 : Polynomial.C (b 0) - Polynomial.C (b 2) * Polynomial.C c0 +
-        Polynomial.C (b 3) * Polynomial.C c0 * Polynomial.C c1 = 0 := by
-      have hc := congrArg Polynomial.C hrow0
-      simp only [map_sub, map_add, map_mul, map_pow, map_zero] at hc
-      linear_combination hc
-    have e1 : Polynomial.C (b 1) - Polynomial.C (b 2) * Polynomial.C c1 -
-        Polynomial.C (b 3) * Polynomial.C c0 + Polynomial.C (b 3) * Polynomial.C c1 ^ 2 = 0 := by
-      have hc := congrArg Polynomial.C hrow1
-      simp only [map_sub, map_add, map_mul, map_pow, map_zero] at hc
-      linear_combination hc
-    rw [e1, e0]; simp
-  -- `q %ₘ uAPoly = 0` from rows 2-3, via `modByMonic_uAPoly_eq` at `vA0=vA1=0`
-  -- (using `-vA0=0 ↔ vA0=0`, likewise `vA1`).
-  have hqA : q %ₘ (uAPoly a0 a1 : k[X]) = 0 := by
-    rw [hq, modByMonic_uAPoly_eq]
-    have e0 : Polynomial.C (b 0) - Polynomial.C (b 2) * Polynomial.C a0 +
-        Polynomial.C (b 3) * Polynomial.C a0 * Polynomial.C a1 = 0 := by
-      have hc := congrArg Polynomial.C hrow2
-      simp only [map_sub, map_add, map_mul, map_pow, map_zero] at hc
-      linear_combination hc
-    have e1 : Polynomial.C (b 1) - Polynomial.C (b 2) * Polynomial.C a1 -
-        Polynomial.C (b 3) * Polynomial.C a0 + Polynomial.C (b 3) * Polynomial.C a1 ^ 2 = 0 := by
-      have hc := congrArg Polynomial.C hrow3
-      simp only [map_sub, map_add, map_mul, map_pow, map_zero] at hc
-      linear_combination hc
-    rw [e1, e0]; simp
-  have hdvdC : (uCPoly c0 c1 : k[X]) ∣ q :=
-    (Polynomial.modByMonic_eq_zero_iff_dvd (uCPoly_monic c0 c1)).mp hqC
-  have hdvdA : (uAPoly a0 a1 : k[X]) ∣ q :=
-    (Polynomial.modByMonic_eq_zero_iff_dvd (uAPoly_monic a0 a1)).mp hqA
-  have hdvd : (uCPoly c0 c1 : k[X]) * (uAPoly a0 a1 : k[X]) ∣ q :=
-    IsCoprime.mul_dvd hcoprime hdvdC hdvdA
-  -- `q`'s coefficients ARE `b`'s entries (immediate from `q`'s own definition), so `q = 0`
-  -- forces `b = 0` via `Polynomial.coeff` at `0,1,2,3` — proved first, used in both branches.
-  have hcoeff0 : q.coeff 0 = b 0 := by
-    simp [hq, Polynomial.coeff_add, Polynomial.coeff_C_mul, Polynomial.coeff_X_pow]
-  have hcoeff1 : q.coeff 1 = b 1 := by
-    simp [hq, Polynomial.coeff_add, Polynomial.coeff_C_mul, Polynomial.coeff_X_pow]
-  have hcoeff2 : q.coeff 2 = b 2 := by
-    simp [hq, Polynomial.coeff_add, Polynomial.coeff_C_mul, Polynomial.coeff_X_pow]
-  have hcoeff3 : q.coeff 3 = b 3 := by
-    simp [hq, Polynomial.coeff_add, Polynomial.coeff_C_mul, Polynomial.coeff_X_pow]
-  have hqne : q ≠ 0 := by
-    intro hq0
-    apply hbne
-    have hb0 : b 0 = 0 := by rw [← hcoeff0, hq0, Polynomial.coeff_zero]
-    have hb1 : b 1 = 0 := by rw [← hcoeff1, hq0, Polynomial.coeff_zero]
-    have hb2 : b 2 = 0 := by rw [← hcoeff2, hq0, Polynomial.coeff_zero]
-    have hb3 : b 3 = 0 := by rw [← hcoeff3, hq0, Polynomial.coeff_zero]
-    funext i
-    match i with
-    | 0 => exact hb0
-    | 1 => exact hb1
-    | 2 => exact hb2
-    | 3 => exact hb3
-  have hqdeg : q.degree < 4 := by
-    rw [hq]
-    have hnd : (Polynomial.C (b 0) + Polynomial.C (b 1) * X + Polynomial.C (b 2) * X ^ 2 +
-        Polynomial.C (b 3) * X ^ 3 : k[X]).natDegree ≤ 3 := by
-      compute_degree
-    have hle : (Polynomial.C (b 0) + Polynomial.C (b 1) * X + Polynomial.C (b 2) * X ^ 2 +
-        Polynomial.C (b 3) * X ^ 3 : k[X]).degree ≤ (3 : ℕ) :=
-      Polynomial.degree_le_of_natDegree_le hnd
-    exact lt_of_le_of_lt hle (by exact_mod_cast (by norm_num : (3 : ℕ) < 4))
-  have hCdeg : (uCPoly c0 c1 : k[X]).degree = 2 := by
-    simpa [uCPoly, one_mul] using
-      (Polynomial.degree_quadratic (a := (1 : k)) (b := c1) (c := c0) (by simp))
-  have hAdeg : (uAPoly a0 a1 : k[X]).degree = 2 := by
-    simpa [uAPoly, one_mul] using
-      (Polynomial.degree_quadratic (a := (1 : k)) (b := a1) (c := a0) (by simp))
-  have hprod_deg : ((uCPoly c0 c1 : k[X]) * (uAPoly a0 a1 : k[X])).degree = 4 := by
-    rw [Polynomial.degree_mul, hCdeg, hAdeg]; norm_num
-  have hlt : q.degree < ((uCPoly c0 c1 : k[X]) * (uAPoly a0 a1 : k[X])).degree := by
-    rw [hprod_deg]; exact hqdeg
-  exact hqne (Polynomial.eq_zero_of_dvd_of_degree_lt hdvd hlt)
-
-/-- **`b_-`'s coefficients, via Cramer's rule.** Same idiom as `bPlusCoeff`
-(`TangentMumfordWitness.lean`), one new 4×4 system. -/
-noncomputable def bMinusCoeff (c0 c1 a0 a1 vC0 vC1 vA0 vA1 : k) (i : Fin 4) : k :=
-  (cantorAddMatrix c0 c1 a0 a1).det⁻¹ *
-    (Matrix.cramer (cantorAddMatrix c0 c1 a0 a1)
-      (cantorAddRHS vC0 vC1 vA0 vA1) i)
-
-/-- **`b_-` itself, as a polynomial.** `∑_{i<4} C (bMinusCoeff i) * X^i` —
-degree ≤ 3 by construction, same shape as `bPlus`. -/
-noncomputable def bMinus (c0 c1 a0 a1 vC0 vC1 vA0 vA1 : k) : Polynomial k :=
-  Polynomial.C (bMinusCoeff c0 c1 a0 a1 vC0 vC1 vA0 vA1 0) +
-  Polynomial.C (bMinusCoeff c0 c1 a0 a1 vC0 vC1 vA0 vA1 1) * X +
-  Polynomial.C (bMinusCoeff c0 c1 a0 a1 vC0 vC1 vA0 vA1 2) * X ^ 2 +
-  Polynomial.C (bMinusCoeff c0 c1 a0 a1 vC0 vC1 vA0 vA1 3) * X ^ 3
+/-- **`b_-` itself, as a polynomial.** `∑_{i<4} C (minusCoeff i) * X^i` —
+degree ≤ 3 by construction. -/
+def bMinus (P1X P2X R1X R2X P1Y P2Y R1Y R2Y : k) : Polynomial k :=
+  Polynomial.C (minusCoeff P1X P2X R1X R2X P1Y P2Y R1Y R2Y 0) +
+  Polynomial.C (minusCoeff P1X P2X R1X R2X P1Y P2Y R1Y R2Y 1) * X +
+  Polynomial.C (minusCoeff P1X P2X R1X R2X P1Y P2Y R1Y R2Y 2) * X ^ 2 +
+  Polynomial.C (minusCoeff P1X P2X R1X R2X P1Y P2Y R1Y R2Y 3) * X ^ 3
 
 /-- **`b_-`'s degree bound: `≤ 3`.** Same style as `bPlus_natDegree_le`. -/
-theorem bMinus_natDegree_le (c0 c1 a0 a1 vC0 vC1 vA0 vA1 : k) :
-    (bMinus c0 c1 a0 a1 vC0 vC1 vA0 vA1).natDegree ≤ 3 := by
+theorem bMinus_natDegree_le (P1X P2X R1X R2X P1Y P2Y R1Y R2Y : k) :
+    (bMinus P1X P2X R1X R2X P1Y P2Y R1Y R2Y).natDegree ≤ 3 := by
   unfold bMinus
   compute_degree
 
-/-- **`ordInfOfPair(-bMinus, 1) = -6`**, matching `f+`'s
-`bPlus_ordInfOfPair` exactly (same weakened `hlead`-on-top-coefficient
-shape: `bMinusCoeff ... 3` can vanish for special input data, so it is
-an explicit hypothesis, not derived). `A := -bMinus`, `B := 1`:
-`ordInfOfPair A B = -(max (2·deg A) (2·deg B + 5))`. `deg B = 0`, second
-term `5`. `hlead` plus `bMinus_natDegree_le` pin `deg A = 3` exactly, so
-`2·deg A = 6 > 5`, giving `-6` — the same pole order as `f+`, as the
-roadmap's "Round 2 verdict" matched-pole-order pairing needs. -/
-theorem bMinus_ordInfOfPair (c0 c1 a0 a1 vC0 vC1 vA0 vA1 : k)
-    (hlead : bMinusCoeff c0 c1 a0 a1 vC0 vC1 vA0 vA1 3 ≠ 0) :
-    ordInfOfPair (-bMinus c0 c1 a0 a1 vC0 vC1 vA0 vA1) (1 : k[X]) = -6 := by
-  have hdeg3 : (bMinus c0 c1 a0 a1 vC0 vC1 vA0 vA1).natDegree = 3 := by
-    apply le_antisymm (bMinus_natDegree_le c0 c1 a0 a1 vC0 vC1 vA0 vA1)
-    unfold bMinus
-    have hcoeff3 : (Polynomial.C (bMinusCoeff c0 c1 a0 a1 vC0 vC1 vA0 vA1 0) +
-      Polynomial.C (bMinusCoeff c0 c1 a0 a1 vC0 vC1 vA0 vA1 1) * X +
-      Polynomial.C (bMinusCoeff c0 c1 a0 a1 vC0 vC1 vA0 vA1 2) * X ^ 2 +
-      Polynomial.C (bMinusCoeff c0 c1 a0 a1 vC0 vC1 vA0 vA1 3) *
-        X ^ 3).coeff 3 =
-        bMinusCoeff c0 c1 a0 a1 vC0 vC1 vA0 vA1 3 := by
-      simp [coeff_add, coeff_C_mul, coeff_X_pow]
-    exact Polynomial.le_natDegree_of_ne_zero (by rw [hcoeff3]; exact hlead)
-  have hAdeg :
-      (-bMinus c0 c1 a0 a1 vC0 vC1 vA0 vA1).natDegree = 3 := by
-    rw [natDegree_neg]; exact hdeg3
-  unfold ordInfOfPair
-  have hB1 : ¬ ((-bMinus c0 c1 a0 a1 vC0 vC1 vA0 vA1) = 0 ∧
-      (1 : k[X]) = 0) := fun h => one_ne_zero h.2
-  rw [if_neg hB1, if_neg (one_ne_zero (α := k[X]))]
-  rw [natDegree_one, hAdeg]
-  rw [show (2 * ((3 : ℕ) : ℤ)) = 6 by norm_num,
-    show (2 * ((0 : ℕ) : ℤ) + 5) = 5 by norm_num]
-  rw [max_eq_left (by norm_num : (5 : ℤ) ≤ 6)]
-
-/-- **Row identity, shared core for both `bMinus_mod_*` theorems.** Same
-role and proof idiom as `TangentMumfordWitness.lean`'s `bPlus_row_eq`
-(`Matrix.mulVec_cramer`-based): for any row `r`, `∑ⱼ M r j * bMinusCoeff j
-= RHS r`. -/
-private theorem bMinus_row_eq (c0 c1 a0 a1 vC0 vC1 vA0 vA1 : k)
-    (hdet : (cantorAddMatrix c0 c1 a0 a1).det ≠ 0) (r : Fin 4) :
-    ∑ j : Fin 4, cantorAddMatrix c0 c1 a0 a1 r j *
-      bMinusCoeff c0 c1 a0 a1 vC0 vC1 vA0 vA1 j =
-      cantorAddRHS vC0 vC1 vA0 vA1 r := by
-  have hexpand : ∑ j : Fin 4, cantorAddMatrix c0 c1 a0 a1 r j *
-      bMinusCoeff c0 c1 a0 a1 vC0 vC1 vA0 vA1 j =
-      (cantorAddMatrix c0 c1 a0 a1).det⁻¹ *
-        (cantorAddMatrix c0 c1 a0 a1 r ⬝ᵥ
-          (Matrix.cramer (cantorAddMatrix c0 c1 a0 a1)
-            (cantorAddRHS vC0 vC1 vA0 vA1))) := by
-    unfold bMinusCoeff dotProduct
+private theorem minus_row_eq (P1X P2X R1X R2X P1Y P2Y R1Y R2Y : k)
+    (hdet : (minusInterpMatrix P1X P2X R1X R2X).det ≠ 0) (r : Fin 4) :
+    ∑ j : Fin 4, minusInterpMatrix P1X P2X R1X R2X r j *
+      minusCoeff P1X P2X R1X R2X P1Y P2Y R1Y R2Y j =
+      minusInterpRHS P1Y P2Y R1Y R2Y r := by
+  have hexpand : ∑ j : Fin 4, minusInterpMatrix P1X P2X R1X R2X r j *
+      minusCoeff P1X P2X R1X R2X P1Y P2Y R1Y R2Y j =
+      (minusInterpMatrix P1X P2X R1X R2X).det⁻¹ *
+        (minusInterpMatrix P1X P2X R1X R2X r ⬝ᵥ
+          (Matrix.cramer (minusInterpMatrix P1X P2X R1X R2X)
+            (minusInterpRHS P1Y P2Y R1Y R2Y))) := by
+    unfold minusCoeff dotProduct
     rw [Finset.mul_sum]
     congr 1
     ext j
     ring
   rw [hexpand]
-  have hmul := Matrix.mulVec_cramer (cantorAddMatrix c0 c1 a0 a1)
-    (cantorAddRHS vC0 vC1 vA0 vA1)
+  have hmul := Matrix.mulVec_cramer (minusInterpMatrix P1X P2X R1X R2X)
+    (minusInterpRHS P1Y P2Y R1Y R2Y)
   have hrow := congrFun hmul r
   simp only [Matrix.mulVec, Pi.smul_apply, smul_eq_mul] at hrow
   rw [hrow, ← mul_assoc, inv_mul_cancel₀ hdet, one_mul]
 
-/-- **`bMinus`'s coefficients unfolded against a row, as a dot product.**
-Direct analogue of `TangentMumfordWitness.lean`'s `bPlus_eval_eq_row`,
-but for `bMinus` itself (not an evaluation) — since `bMinus`'s defining
-conditions are congruences, this just re-exposes `bMinus`'s coefficient
-tuple `(bMinusCoeff 0, ..., bMinusCoeff 3)` as `∑ⱼ (row r) j * coeff j`
-for the two "identity-shaped" rows (rows whose entries are `0`/`1`
-selectors) — used to read off `bMinusCoeff 0`/`bMinusCoeff 1` from rows
-0-1 of `bMinus_row_eq` directly. -/
-private theorem bMinus_coeff0_coeff1 (c0 c1 a0 a1 vC0 vC1 vA0 vA1 : k)
-    (hdet : (cantorAddMatrix c0 c1 a0 a1).det ≠ 0) :
-    bMinusCoeff c0 c1 a0 a1 vC0 vC1 vA0 vA1 0 -
-        c0 * bMinusCoeff c0 c1 a0 a1 vC0 vC1 vA0 vA1 2 +
-        c0 * c1 * bMinusCoeff c0 c1 a0 a1 vC0 vC1 vA0 vA1 3 = vC0 ∧
-      bMinusCoeff c0 c1 a0 a1 vC0 vC1 vA0 vA1 1 -
-        c1 * bMinusCoeff c0 c1 a0 a1 vC0 vC1 vA0 vA1 2 +
-        (c1 ^ 2 - c0) * bMinusCoeff c0 c1 a0 a1 vC0 vC1 vA0 vA1 3 = vC1 := by
-  have hrow0 := bMinus_row_eq c0 c1 a0 a1 vC0 vC1 vA0 vA1 hdet 0
-  have hrow1 := bMinus_row_eq c0 c1 a0 a1 vC0 vC1 vA0 vA1 hdet 1
-  have hmat0 : cantorAddMatrix c0 c1 a0 a1 0 = ![(1 : k), 0, -c0, c0 * c1] := by
-    unfold cantorAddMatrix; ext j; fin_cases j <;> rfl
-  have hmat1 : cantorAddMatrix c0 c1 a0 a1 1 = ![(0 : k), 1, -c1, c1 ^ 2 - c0] := by
-    unfold cantorAddMatrix; ext j; fin_cases j <;> rfl
-  rw [hmat0] at hrow0
-  rw [hmat1] at hrow1
-  simp only [cantorAddRHS, Fin.sum_univ_four, Matrix.cons_val_zero, Matrix.cons_val_one,
-    Matrix.head_cons, Matrix.cons_val_two, Matrix.tail_cons, Matrix.cons_val_three] at hrow0 hrow1
-  constructor
-  · linear_combination hrow0
-  · linear_combination hrow1
-
-/-- **Same as `bMinus_coeff0_coeff1`, for rows 2-3 (the `uA`/`-vA` pair).** -/
-private theorem bMinus_coeff2_coeff3 (c0 c1 a0 a1 vC0 vC1 vA0 vA1 : k)
-    (hdet : (cantorAddMatrix c0 c1 a0 a1).det ≠ 0) :
-    bMinusCoeff c0 c1 a0 a1 vC0 vC1 vA0 vA1 0 -
-        a0 * bMinusCoeff c0 c1 a0 a1 vC0 vC1 vA0 vA1 2 +
-        a0 * a1 * bMinusCoeff c0 c1 a0 a1 vC0 vC1 vA0 vA1 3 = -vA0 ∧
-      bMinusCoeff c0 c1 a0 a1 vC0 vC1 vA0 vA1 1 -
-        a1 * bMinusCoeff c0 c1 a0 a1 vC0 vC1 vA0 vA1 2 +
-        (a1 ^ 2 - a0) * bMinusCoeff c0 c1 a0 a1 vC0 vC1 vA0 vA1 3 = -vA1 := by
-  have hrow2 := bMinus_row_eq c0 c1 a0 a1 vC0 vC1 vA0 vA1 hdet 2
-  have hrow3 := bMinus_row_eq c0 c1 a0 a1 vC0 vC1 vA0 vA1 hdet 3
-  have hmat2 : cantorAddMatrix c0 c1 a0 a1 2 = ![(1 : k), 0, -a0, a0 * a1] := by
-    unfold cantorAddMatrix; ext j; fin_cases j <;> rfl
-  have hmat3 : cantorAddMatrix c0 c1 a0 a1 3 = ![(0 : k), 1, -a1, a1 ^ 2 - a0] := by
-    unfold cantorAddMatrix; ext j; fin_cases j <;> rfl
-  rw [hmat2] at hrow2
-  rw [hmat3] at hrow3
-  simp only [cantorAddRHS, Fin.sum_univ_four, Matrix.cons_val_zero, Matrix.cons_val_one,
-    Matrix.head_cons, Matrix.cons_val_two, Matrix.tail_cons, Matrix.cons_val_three] at hrow2 hrow3
-  constructor
-  · linear_combination hrow2
-  · linear_combination hrow3
-
-/-- **`b_-` reduces to `vC` modulo `uC`.** Rows 0-1 of the linear system,
-composed into the actual congruence statement (unlike `bPlus`, whose
-four conditions are plain evaluations, `b_-`'s conditions are polynomial
-congruences). Via `modByMonic_uCPoly_eq` (closed form of `q %ₘ uCPoly`
-in terms of `q`'s coefficients) plus `bMinus_coeff0_coeff1` (those
-coefficients satisfy exactly the equations making the closed form
-collapse to `C vC1 * X + C vC0`). -/
-theorem bMinus_mod_uC_eq_vC (c0 c1 a0 a1 vC0 vC1 vA0 vA1 : k)
-    (hdet : (cantorAddMatrix c0 c1 a0 a1).det ≠ 0) :
-    (bMinus c0 c1 a0 a1 vC0 vC1 vA0 vA1) %ₘ (uCPoly c0 c1 : k[X]) =
-      Polynomial.C vC1 * X + Polynomial.C vC0 := by
+/-- **`b_-`'s evaluation at an arbitrary `x`, as a row-vector dot
+product.** Mirror of `bPlus_eval_eq_row`. -/
+private theorem bMinus_eval_eq_row (P1X P2X R1X R2X P1Y P2Y R1Y R2Y x : k) :
+    (bMinus P1X P2X R1X R2X P1Y P2Y R1Y R2Y).eval x =
+      ∑ j : Fin 4, ![1, x, x ^ 2, x ^ 3] j *
+        minusCoeff P1X P2X R1X R2X P1Y P2Y R1Y R2Y j := by
   unfold bMinus
-  rw [modByMonic_uCPoly_eq]
-  obtain ⟨h0, h1⟩ := bMinus_coeff0_coeff1 c0 c1 a0 a1 vC0 vC1 vA0 vA1 hdet
-  have e0 : Polynomial.C (bMinusCoeff c0 c1 a0 a1 vC0 vC1 vA0 vA1 0) -
-      Polynomial.C (bMinusCoeff c0 c1 a0 a1 vC0 vC1 vA0 vA1 2) * Polynomial.C c0 +
-      Polynomial.C (bMinusCoeff c0 c1 a0 a1 vC0 vC1 vA0 vA1 3) * Polynomial.C c0 *
-        Polynomial.C c1 = Polynomial.C vC0 := by
-    have hc := congrArg Polynomial.C h0
-    simp only [map_sub, map_add, map_mul] at hc
-    linear_combination hc
-  have e1 : Polynomial.C (bMinusCoeff c0 c1 a0 a1 vC0 vC1 vA0 vA1 1) -
-      Polynomial.C (bMinusCoeff c0 c1 a0 a1 vC0 vC1 vA0 vA1 2) * Polynomial.C c1 -
-      Polynomial.C (bMinusCoeff c0 c1 a0 a1 vC0 vC1 vA0 vA1 3) * Polynomial.C c0 +
-      Polynomial.C (bMinusCoeff c0 c1 a0 a1 vC0 vC1 vA0 vA1 3) * Polynomial.C c1 ^ 2 =
-      Polynomial.C vC1 := by
-    have hc := congrArg Polynomial.C h1
-    simp only [map_sub, map_add, map_mul, map_pow] at hc
-    linear_combination hc
-  rw [e1, e0]
-
-
-/-- **`b_-` reduces to `-vA` modulo `uA`.** Rows 2-3, mirror of
-`bMinus_mod_uC_eq_vC`. -/
-theorem bMinus_mod_uA_eq_neg_vA (c0 c1 a0 a1 vC0 vC1 vA0 vA1 : k)
-    (hdet : (cantorAddMatrix c0 c1 a0 a1).det ≠ 0) :
-    (bMinus c0 c1 a0 a1 vC0 vC1 vA0 vA1) %ₘ (uAPoly a0 a1 : k[X]) =
-      -(Polynomial.C vA1 * X + Polynomial.C vA0) := by
-  unfold bMinus
-  rw [modByMonic_uAPoly_eq]
-  obtain ⟨h0, h1⟩ := bMinus_coeff2_coeff3 c0 c1 a0 a1 vC0 vC1 vA0 vA1 hdet
-  have e0 : Polynomial.C (bMinusCoeff c0 c1 a0 a1 vC0 vC1 vA0 vA1 0) -
-      Polynomial.C (bMinusCoeff c0 c1 a0 a1 vC0 vC1 vA0 vA1 2) * Polynomial.C a0 +
-      Polynomial.C (bMinusCoeff c0 c1 a0 a1 vC0 vC1 vA0 vA1 3) * Polynomial.C a0 *
-        Polynomial.C a1 = Polynomial.C (-vA0) := by
-    have hc := congrArg Polynomial.C h0
-    simp only [map_sub, map_add, map_mul] at hc
-    linear_combination hc
-  have e1 : Polynomial.C (bMinusCoeff c0 c1 a0 a1 vC0 vC1 vA0 vA1 1) -
-      Polynomial.C (bMinusCoeff c0 c1 a0 a1 vC0 vC1 vA0 vA1 2) * Polynomial.C a1 -
-      Polynomial.C (bMinusCoeff c0 c1 a0 a1 vC0 vC1 vA0 vA1 3) * Polynomial.C a0 +
-      Polynomial.C (bMinusCoeff c0 c1 a0 a1 vC0 vC1 vA0 vA1 3) * Polynomial.C a1 ^ 2 =
-      Polynomial.C (-vA1) := by
-    have hc := congrArg Polynomial.C h1
-    simp only [map_sub, map_add, map_mul, map_pow] at hc
-    linear_combination hc
-  rw [e1, e0]
-  simp only [map_neg]
+  rw [Fin.sum_univ_four]
+  simp only [Matrix.cons_val_zero, Matrix.cons_val_one, Matrix.head_cons, Matrix.cons_val_two,
+    Matrix.tail_cons, Matrix.cons_val_three, eval_add, eval_mul, eval_pow, eval_C, eval_X]
   ring
 
+/-- **`b_-` evaluates to `P1.Y` at `P1.X`.** Row 0. -/
+theorem bMinus_eval_P1 (P1X P2X R1X R2X P1Y P2Y R1Y R2Y : k)
+    (hdet : (minusInterpMatrix P1X P2X R1X R2X).det ≠ 0) :
+    (bMinus P1X P2X R1X R2X P1Y P2Y R1Y R2Y).eval P1X = P1Y := by
+  rw [bMinus_eval_eq_row]
+  have hrow0 := minus_row_eq P1X P2X R1X R2X P1Y P2Y R1Y R2Y hdet 0
+  have hmat0 : minusInterpMatrix P1X P2X R1X R2X 0 =
+      ![(1 : k), P1X, P1X ^ 2, P1X ^ 3] := by
+    unfold minusInterpMatrix
+    ext j; fin_cases j <;> rfl
+  rw [hmat0] at hrow0
+  simpa [minusInterpRHS] using hrow0
+
+/-- **`b_-` evaluates to `P2.Y` at `P2.X`.** Row 1. -/
+theorem bMinus_eval_P2 (P1X P2X R1X R2X P1Y P2Y R1Y R2Y : k)
+    (hdet : (minusInterpMatrix P1X P2X R1X R2X).det ≠ 0) :
+    (bMinus P1X P2X R1X R2X P1Y P2Y R1Y R2Y).eval P2X = P2Y := by
+  rw [bMinus_eval_eq_row]
+  have hrow1 := minus_row_eq P1X P2X R1X R2X P1Y P2Y R1Y R2Y hdet 1
+  have hmat1 : minusInterpMatrix P1X P2X R1X R2X 1 =
+      ![(1 : k), P2X, P2X ^ 2, P2X ^ 3] := by
+    unfold minusInterpMatrix
+    ext j; fin_cases j <;> rfl
+  rw [hmat1] at hrow1
+  simpa [minusInterpRHS] using hrow1
+
+/-- **`b_-` evaluates to `R1.Y` at `R1.X`.** Row 2. -/
+theorem bMinus_eval_R1 (P1X P2X R1X R2X P1Y P2Y R1Y R2Y : k)
+    (hdet : (minusInterpMatrix P1X P2X R1X R2X).det ≠ 0) :
+    (bMinus P1X P2X R1X R2X P1Y P2Y R1Y R2Y).eval R1X = R1Y := by
+  rw [bMinus_eval_eq_row]
+  have hrow2 := minus_row_eq P1X P2X R1X R2X P1Y P2Y R1Y R2Y hdet 2
+  have hmat2 : minusInterpMatrix P1X P2X R1X R2X 2 =
+      ![(1 : k), R1X, R1X ^ 2, R1X ^ 3] := by
+    unfold minusInterpMatrix
+    ext j; fin_cases j <;> rfl
+  rw [hmat2] at hrow2
+  simpa [minusInterpRHS] using hrow2
+
+/-- **`b_-` evaluates to `R2.Y` at `R2.X`.** Row 3. -/
+theorem bMinus_eval_R2 (P1X P2X R1X R2X P1Y P2Y R1Y R2Y : k)
+    (hdet : (minusInterpMatrix P1X P2X R1X R2X).det ≠ 0) :
+    (bMinus P1X P2X R1X R2X P1Y P2Y R1Y R2Y).eval R2X = R2Y := by
+  rw [bMinus_eval_eq_row]
+  have hrow3 := minus_row_eq P1X P2X R1X R2X P1Y P2Y R1Y R2Y hdet 3
+  have hmat3 : minusInterpMatrix P1X P2X R1X R2X 3 =
+      ![(1 : k), R2X, R2X ^ 2, R2X ^ 3] := by
+    unfold minusInterpMatrix
+    ext j; fin_cases j <;> rfl
+  rw [hmat3] at hrow3
+  simpa [minusInterpRHS] using hrow3
+
+/-- **`H.f - bMinus² = 0` at `P1.X`.** Mirror of
+`pairNormBPlus_eval_Ra1_eq_zero`. -/
+theorem pairNormBMinus_eval_P1_eq_zero (Hc : HyperellipticPolynomial k)
+    (P1X P2X R1X R2X P1Y P2Y R1Y R2Y : k)
+    (hdet : (minusInterpMatrix P1X P2X R1X R2X).det ≠ 0)
+    (hP1_curve : P1Y ^ 2 = Hc.f.eval P1X) :
+    (Hc.f - (bMinus P1X P2X R1X R2X P1Y P2Y R1Y R2Y) ^ 2).eval P1X = 0 := by
+  rw [Polynomial.eval_sub, Polynomial.eval_pow,
+    bMinus_eval_P1 P1X P2X R1X R2X P1Y P2Y R1Y R2Y hdet, hP1_curve]
+  ring
+
+/-- **`H.f - bMinus² = 0` at `P2.X`.** Mirror of the above. -/
+theorem pairNormBMinus_eval_P2_eq_zero (Hc : HyperellipticPolynomial k)
+    (P1X P2X R1X R2X P1Y P2Y R1Y R2Y : k)
+    (hdet : (minusInterpMatrix P1X P2X R1X R2X).det ≠ 0)
+    (hP2_curve : P2Y ^ 2 = Hc.f.eval P2X) :
+    (Hc.f - (bMinus P1X P2X R1X R2X P1Y P2Y R1Y R2Y) ^ 2).eval P2X = 0 := by
+  rw [Polynomial.eval_sub, Polynomial.eval_pow,
+    bMinus_eval_P2 P1X P2X R1X R2X P1Y P2Y R1Y R2Y hdet, hP2_curve]
+  ring
+
+/-- **`H.f - bMinus² = 0` at `R1.X`.** Mirror of the above. -/
+theorem pairNormBMinus_eval_R1_eq_zero (Hc : HyperellipticPolynomial k)
+    (P1X P2X R1X R2X P1Y P2Y R1Y R2Y : k)
+    (hdet : (minusInterpMatrix P1X P2X R1X R2X).det ≠ 0)
+    (hR1_curve : R1Y ^ 2 = Hc.f.eval R1X) :
+    (Hc.f - (bMinus P1X P2X R1X R2X P1Y P2Y R1Y R2Y) ^ 2).eval R1X = 0 := by
+  rw [Polynomial.eval_sub, Polynomial.eval_pow,
+    bMinus_eval_R1 P1X P2X R1X R2X P1Y P2Y R1Y R2Y hdet, hR1_curve]
+  ring
+
+/-- **`H.f - bMinus² = 0` at `R2.X`.** Mirror of the above. -/
+theorem pairNormBMinus_eval_R2_eq_zero (Hc : HyperellipticPolynomial k)
+    (P1X P2X R1X R2X P1Y P2Y R1Y R2Y : k)
+    (hdet : (minusInterpMatrix P1X P2X R1X R2X).det ≠ 0)
+    (hR2_curve : R2Y ^ 2 = Hc.f.eval R2X) :
+    (Hc.f - (bMinus P1X P2X R1X R2X P1Y P2Y R1Y R2Y) ^ 2).eval R2X = 0 := by
+  rw [Polynomial.eval_sub, Polynomial.eval_pow,
+    bMinus_eval_R2 P1X P2X R1X R2X P1Y P2Y R1Y R2Y hdet, hR2_curve]
+  ring
+
+/-- **`(X - P1.X) ∣ H.f - bMinus²`.** Mirror of `dvd_pairNormBPlus_Ra1`. -/
+theorem dvd_pairNormBMinus_P1 (Hc : HyperellipticPolynomial k)
+    (P1X P2X R1X R2X P1Y P2Y R1Y R2Y : k)
+    (hdet : (minusInterpMatrix P1X P2X R1X R2X).det ≠ 0)
+    (hP1_curve : P1Y ^ 2 = Hc.f.eval P1X) :
+    (X - C P1X) ∣ (Hc.f - (bMinus P1X P2X R1X R2X P1Y P2Y R1Y R2Y) ^ 2) := by
+  rw [Polynomial.dvd_iff_isRoot, Polynomial.IsRoot]
+  exact pairNormBMinus_eval_P1_eq_zero Hc P1X P2X R1X R2X P1Y P2Y R1Y R2Y hdet hP1_curve
+
+/-- **`(X - P2.X) ∣ H.f - bMinus²`.** Mirror of the above. -/
+theorem dvd_pairNormBMinus_P2 (Hc : HyperellipticPolynomial k)
+    (P1X P2X R1X R2X P1Y P2Y R1Y R2Y : k)
+    (hdet : (minusInterpMatrix P1X P2X R1X R2X).det ≠ 0)
+    (hP2_curve : P2Y ^ 2 = Hc.f.eval P2X) :
+    (X - C P2X) ∣ (Hc.f - (bMinus P1X P2X R1X R2X P1Y P2Y R1Y R2Y) ^ 2) := by
+  rw [Polynomial.dvd_iff_isRoot, Polynomial.IsRoot]
+  exact pairNormBMinus_eval_P2_eq_zero Hc P1X P2X R1X R2X P1Y P2Y R1Y R2Y hdet hP2_curve
+
+/-- **`(X - R1.X) ∣ H.f - bMinus²`.** Mirror of the above. -/
+theorem dvd_pairNormBMinus_R1 (Hc : HyperellipticPolynomial k)
+    (P1X P2X R1X R2X P1Y P2Y R1Y R2Y : k)
+    (hdet : (minusInterpMatrix P1X P2X R1X R2X).det ≠ 0)
+    (hR1_curve : R1Y ^ 2 = Hc.f.eval R1X) :
+    (X - C R1X) ∣ (Hc.f - (bMinus P1X P2X R1X R2X P1Y P2Y R1Y R2Y) ^ 2) := by
+  rw [Polynomial.dvd_iff_isRoot, Polynomial.IsRoot]
+  exact pairNormBMinus_eval_R1_eq_zero Hc P1X P2X R1X R2X P1Y P2Y R1Y R2Y hdet hR1_curve
+
+/-- **`(X - R2.X) ∣ H.f - bMinus²`.** Mirror of the above. -/
+theorem dvd_pairNormBMinus_R2 (Hc : HyperellipticPolynomial k)
+    (P1X P2X R1X R2X P1Y P2Y R1Y R2Y : k)
+    (hdet : (minusInterpMatrix P1X P2X R1X R2X).det ≠ 0)
+    (hR2_curve : R2Y ^ 2 = Hc.f.eval R2X) :
+    (X - C R2X) ∣ (Hc.f - (bMinus P1X P2X R1X R2X P1Y P2Y R1Y R2Y) ^ 2) := by
+  rw [Polynomial.dvd_iff_isRoot, Polynomial.IsRoot]
+  exact pairNormBMinus_eval_R2_eq_zero Hc P1X P2X R1X R2X P1Y P2Y R1Y R2Y hdet hR2_curve
+
+/-- **`denomPolyMinus`, the degree-4 monic divisor
+`(X-P1.X)(X-P2.X)(X-R1.X)(X-R2.X)`, as a single polynomial.** Mirror of
+`denomPoly` — one degree simpler shape (four DISTINCT simple linear
+factors, no squared factor, since there's no tangency point in this
+construction). -/
+def denomPolyMinus (P1X P2X R1X R2X : k) : Polynomial k :=
+  (X - C P1X) * (X - C P2X) * (X - C R1X) * (X - C R2X)
+
+/-- **`denomPolyMinus` is monic.** Product of monic `(X - C _)`
+factors. -/
+theorem denomPolyMinus_monic (P1X P2X R1X R2X : k) :
+    (denomPolyMinus P1X P2X R1X R2X).Monic := by
+  unfold denomPolyMinus
+  exact (((Polynomial.monic_X_sub_C P1X).mul (Polynomial.monic_X_sub_C P2X)).mul
+    (Polynomial.monic_X_sub_C R1X)).mul (Polynomial.monic_X_sub_C R2X)
+
+/-- **`denomPolyMinus` has degree exactly 4.** Four simple linear
+factors: `1+1+1+1 = 4`. -/
+theorem denomPolyMinus_natDegree (P1X P2X R1X R2X : k) :
+    (denomPolyMinus P1X P2X R1X R2X).natDegree = 4 := by
+  unfold denomPolyMinus
+  rw [Polynomial.natDegree_mul
+      (mul_ne_zero (mul_ne_zero (Polynomial.X_sub_C_ne_zero P1X) (Polynomial.X_sub_C_ne_zero P2X))
+        (Polynomial.X_sub_C_ne_zero R1X))
+      (Polynomial.X_sub_C_ne_zero R2X),
+    Polynomial.natDegree_mul
+      (mul_ne_zero (Polynomial.X_sub_C_ne_zero P1X) (Polynomial.X_sub_C_ne_zero P2X))
+      (Polynomial.X_sub_C_ne_zero R1X),
+    Polynomial.natDegree_mul (Polynomial.X_sub_C_ne_zero P1X) (Polynomial.X_sub_C_ne_zero P2X),
+    Polynomial.natDegree_X_sub_C, Polynomial.natDegree_X_sub_C,
+    Polynomial.natDegree_X_sub_C, Polynomial.natDegree_X_sub_C]
+
+/-- **All four simple factors divide `H.f - bMinus²` at once.** Direct
+assembly from the four individual `dvd_pairNormBMinus_*` facts via
+pairwise coprimality of distinct linear factors — mirror of
+`dvd_pairNormBPlus_full`, one factor simpler (no squared term, so no
+`.pow_right` needed anywhere). -/
+theorem dvd_pairNormBMinus_full (Hc : HyperellipticPolynomial k)
+    (P1X P2X R1X R2X P1Y P2Y R1Y R2Y : k)
+    (hdet : (minusInterpMatrix P1X P2X R1X R2X).det ≠ 0)
+    (h12 : P1X ≠ P2X) (h1R1 : P1X ≠ R1X) (h1R2 : P1X ≠ R2X)
+    (h2R1 : P2X ≠ R1X) (h2R2 : P2X ≠ R2X) (hRR : R1X ≠ R2X)
+    (hP1_curve : P1Y ^ 2 = Hc.f.eval P1X) (hP2_curve : P2Y ^ 2 = Hc.f.eval P2X)
+    (hR1_curve : R1Y ^ 2 = Hc.f.eval R1X) (hR2_curve : R2Y ^ 2 = Hc.f.eval R2X) :
+    (X - C P1X) * (X - C P2X) * (X - C R1X) * (X - C R2X) ∣
+      (Hc.f - (bMinus P1X P2X R1X R2X P1Y P2Y R1Y R2Y) ^ 2) := by
+  have hd1 := dvd_pairNormBMinus_P1 Hc P1X P2X R1X R2X P1Y P2Y R1Y R2Y hdet hP1_curve
+  have hd2 := dvd_pairNormBMinus_P2 Hc P1X P2X R1X R2X P1Y P2Y R1Y R2Y hdet hP2_curve
+  have hd3 := dvd_pairNormBMinus_R1 Hc P1X P2X R1X R2X P1Y P2Y R1Y R2Y hdet hR1_curve
+  have hd4 := dvd_pairNormBMinus_R2 Hc P1X P2X R1X R2X P1Y P2Y R1Y R2Y hdet hR2_curve
+  have hc12 : IsCoprime (X - C P1X : k[X]) (X - C P2X) :=
+    Polynomial.isCoprime_X_sub_C_of_isUnit_sub (by
+      rw [isUnit_iff_ne_zero, sub_ne_zero]; exact h12)
+  have hc1R1 : IsCoprime (X - C P1X : k[X]) (X - C R1X) :=
+    Polynomial.isCoprime_X_sub_C_of_isUnit_sub (by
+      rw [isUnit_iff_ne_zero, sub_ne_zero]; exact h1R1)
+  have hc2R1 : IsCoprime (X - C P2X : k[X]) (X - C R1X) :=
+    Polynomial.isCoprime_X_sub_C_of_isUnit_sub (by
+      rw [isUnit_iff_ne_zero, sub_ne_zero]; exact h2R1)
+  have hc1R2 : IsCoprime (X - C P1X : k[X]) (X - C R2X) :=
+    Polynomial.isCoprime_X_sub_C_of_isUnit_sub (by
+      rw [isUnit_iff_ne_zero, sub_ne_zero]; exact h1R2)
+  have hc2R2 : IsCoprime (X - C P2X : k[X]) (X - C R2X) :=
+    Polynomial.isCoprime_X_sub_C_of_isUnit_sub (by
+      rw [isUnit_iff_ne_zero, sub_ne_zero]; exact h2R2)
+  have hcR1R2 : IsCoprime (X - C R1X : k[X]) (X - C R2X) :=
+    Polynomial.isCoprime_X_sub_C_of_isUnit_sub (by
+      rw [isUnit_iff_ne_zero, sub_ne_zero]; exact hRR)
+  have hd12 : (X - C P1X) * (X - C P2X) ∣
+      (Hc.f - (bMinus P1X P2X R1X R2X P1Y P2Y R1Y R2Y) ^ 2) :=
+    hc12.mul_dvd hd1 hd2
+  have hc12R1 : IsCoprime ((X - C P1X : k[X]) * (X - C P2X)) (X - C R1X) :=
+    hc1R1.mul_left hc2R1
+  have hd123 : (X - C P1X) * (X - C P2X) * (X - C R1X) ∣
+      (Hc.f - (bMinus P1X P2X R1X R2X P1Y P2Y R1Y R2Y) ^ 2) :=
+    hc12R1.mul_dvd hd12 hd3
+  have hc123R2 : IsCoprime ((X - C P1X : k[X]) * (X - C P2X) * (X - C R1X)) (X - C R2X) :=
+    (hc1R2.mul_left hc2R2).mul_left hcR1R2
+  exact hc123R2.mul_dvd hd123 hd4
+
+/-- **`uMinusNew`, the derived residual quadratic.** The exact quotient
+`(H.f - bMinus²) /ₘ denomPolyMinus` — well-defined with zero remainder
+by `dvd_pairNormBMinus_full`, mirror of `uANew`. -/
+def uMinusNew (Hc : HyperellipticPolynomial k)
+    (P1X P2X R1X R2X P1Y P2Y R1Y R2Y : k) : Polynomial k :=
+  (Hc.f - (bMinus P1X P2X R1X R2X P1Y P2Y R1Y R2Y) ^ 2) /ₘ
+    denomPolyMinus P1X P2X R1X R2X
+
+/-- **`H.f - bMinus² = denomPolyMinus * uMinusNew`** — the defining
+factorization, directly from `dvd_pairNormBMinus_full`'s zero-remainder
+divisibility, mirror of `pairNormBPlus_eq_denomPoly_mul_uANew`. -/
+theorem pairNormBMinus_eq_denomPolyMinus_mul_uMinusNew (Hc : HyperellipticPolynomial k)
+    (P1X P2X R1X R2X P1Y P2Y R1Y R2Y : k)
+    (hdet : (minusInterpMatrix P1X P2X R1X R2X).det ≠ 0)
+    (h12 : P1X ≠ P2X) (h1R1 : P1X ≠ R1X) (h1R2 : P1X ≠ R2X)
+    (h2R1 : P2X ≠ R1X) (h2R2 : P2X ≠ R2X) (hRR : R1X ≠ R2X)
+    (hP1_curve : P1Y ^ 2 = Hc.f.eval P1X) (hP2_curve : P2Y ^ 2 = Hc.f.eval P2X)
+    (hR1_curve : R1Y ^ 2 = Hc.f.eval R1X) (hR2_curve : R2Y ^ 2 = Hc.f.eval R2X) :
+    Hc.f - (bMinus P1X P2X R1X R2X P1Y P2Y R1Y R2Y) ^ 2 =
+      denomPolyMinus P1X P2X R1X R2X *
+        uMinusNew Hc P1X P2X R1X R2X P1Y P2Y R1Y R2Y := by
+  have hdvd := dvd_pairNormBMinus_full Hc P1X P2X R1X R2X P1Y P2Y R1Y R2Y hdet
+    h12 h1R1 h1R2 h2R1 h2R2 hRR hP1_curve hP2_curve hR1_curve hR2_curve
+  have hmod : (Hc.f - (bMinus P1X P2X R1X R2X P1Y P2Y R1Y R2Y) ^ 2) %ₘ
+      denomPolyMinus P1X P2X R1X R2X = 0 :=
+    (Polynomial.modByMonic_eq_zero_iff_dvd (denomPolyMinus_monic P1X P2X R1X R2X)).mpr
+      (by
+        change (X - C P1X) * (X - C P2X) * (X - C R1X) * (X - C R2X) ∣
+          (Hc.f - (bMinus P1X P2X R1X R2X P1Y P2Y R1Y R2Y) ^ 2)
+        exact hdvd)
+  have hadd := Polynomial.modByMonic_add_div
+    (Hc.f - (bMinus P1X P2X R1X R2X P1Y P2Y R1Y R2Y) ^ 2)
+    (q := denomPolyMinus P1X P2X R1X R2X)
+  rw [hmod, zero_add] at hadd
+  unfold uMinusNew
+  exact hadd.symm
+
+/-- **`b_-`'s pole order at infinity: `-6`, matching `f+`'s own `-6`
+exactly.** WEAKENED, same shape as `bPlus_ordInfOfPair`: needs
+`bMinusCoeff ... 3 ≠ 0` (`b_-` genuinely has degree 3, not less), since
+the unconditional `= -6` claim is false when the four named points
+happen to lie on a lower-degree curve. -/
+theorem bMinus_ordInfOfPair (P1X P2X R1X R2X P1Y P2Y R1Y R2Y : k)
+    (hlead : minusCoeff P1X P2X R1X R2X P1Y P2Y R1Y R2Y 3 ≠ 0) :
+    ordInfOfPair (-bMinus P1X P2X R1X R2X P1Y P2Y R1Y R2Y) (1 : k[X]) = -6 := by
+  have hdeg3 : (bMinus P1X P2X R1X R2X P1Y P2Y R1Y R2Y).natDegree = 3 := by
+    apply le_antisymm (bMinus_natDegree_le P1X P2X R1X R2X P1Y P2Y R1Y R2Y)
+    unfold bMinus
+    have hcoeff3 : (Polynomial.C (minusCoeff P1X P2X R1X R2X P1Y P2Y R1Y R2Y 0) +
+      Polynomial.C (minusCoeff P1X P2X R1X R2X P1Y P2Y R1Y R2Y 1) * X +
+      Polynomial.C (minusCoeff P1X P2X R1X R2X P1Y P2Y R1Y R2Y 2) * X ^ 2 +
+      Polynomial.C (minusCoeff P1X P2X R1X R2X P1Y P2Y R1Y R2Y 3) *
+        X ^ 3).coeff 3 =
+        minusCoeff P1X P2X R1X R2X P1Y P2Y R1Y R2Y 3 := by
+      simp [coeff_add, coeff_C_mul, coeff_X_pow]
+    exact Polynomial.le_natDegree_of_ne_zero (by rw [hcoeff3]; exact hlead)
+  have hAdeg : (-bMinus P1X P2X R1X R2X P1Y P2Y R1Y R2Y).natDegree = 3 := by
+    rw [natDegree_neg]; exact hdeg3
+  unfold ordInfOfPair
+  rw [hAdeg, natDegree_one]
+  norm_num
 
 end DecoupledSystem
 end Genus2Lean
