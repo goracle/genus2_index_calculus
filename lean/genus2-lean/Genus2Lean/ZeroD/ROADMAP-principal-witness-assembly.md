@@ -979,3 +979,42 @@ Claire's REPL next.
    next thing to hand to ChatGPT once (1)-(3) are closed and the exact
    sign/labeling conventions are pinned down in Lean rather than guessed
    in prose.
+
+## Status update (fresh pass): `f-`'s scaffolding now 0-`sorry`
+
+All 3 remaining `sorry`s in `CantorAddWitness.lean` closed this pass:
+- `cantorAddMatrix_det_ne_zero`: closed directly from `IsCoprime`, no
+  resultant needed — found `Matrix.exists_mulVec_eq_zero_iff`
+  (`Mathlib.LinearAlgebra.Matrix.ToLinearEquiv`) gives a nonzero kernel
+  vector `b` from `det = 0`; its 4 rows unfold (via the same
+  `modByMonic_uCPoly_eq`/`modByMonic_uAPoly_eq` closed forms used
+  elsewhere in the file, at `vC=vA=0`) to `q %ₘ uCPoly = 0` and
+  `q %ₘ uAPoly = 0` for `q := ∑ C(b i)*X^i`; coprimality then gives
+  `uCPoly*uAPoly ∣ q` (degree 4), contradicting `deg q ≤ 3` unless
+  `q = 0`, which forces `b = 0` (`q`'s coefficients ARE `b`'s entries),
+  contradicting `b ≠ 0`.
+- `bMinus_mod_uC_eq_vC`/`bMinus_mod_uA_eq_neg_vA`: closed via a shared
+  `modByMonic_uCPoly_eq`/`modByMonic_uAPoly_eq` pair (explicit
+  quotient-remainder identity, sympy-confirmed, plus
+  `Polynomial.div_modByMonic_unique`) composed with a `bPlus_row_eq`-style
+  Cramer's-rule row extraction.
+
+`CantorAddWitness.lean` is now 507 lines, 0-`sorry`, matching `f+`'s own
+status. **Not yet build-tested** — Claire's REPL next, as always.
+
+**Concrete next steps for `f-`, updated:**
+1. ~~Close `cantorAddMatrix_det_ne_zero`~~ **Done this pass.**
+2. ~~Close the two `bMinus_mod_*` row lemmas~~ **Done this pass.**
+3. Add `bMinus_ordInfOfPair` mirroring `bPlus_ordInfOfPair` (`hlead`-style
+   hypothesis on `bMinusCoeff ... 3`, giving `-6`) — not yet attempted,
+   straightforward given `bPlus_ordInfOfPair`'s own template plus
+   `bMinus_natDegree_le` already on file.
+4. **Still genuinely open, ChatGPT-worthy per this project's own
+   convention:** the residual/divisor-level facts — `div_aff(y -
+   bMinus) ⊇ C + ι(A)` (matching whichever sign convention (2) settled
+   on: `bMinus ≡ -vA mod uA`, i.e. the witness vanishes at `A`'s
+   HYPERELLIPTIC CONJUGATE, not `A` itself) plus the matching degree-2
+   residual `[R]`, and confirming this `R` is the SAME `R` as `f+`'s own
+   residual. This is the next thing to hand to ChatGPT, now that (1)-(3)
+   are closed/near-closed and the sign/labeling conventions are pinned
+   down in actual Lean rather than guessed in prose.
