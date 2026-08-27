@@ -766,7 +766,23 @@ an abandoned plan. The proof body below is still `sorry`; the
 this theorem's own `-2•[δ₀]`-per-Mumford-pair goal (via `hmem`/
 `hmemAnchor`, already the right shape above) is the single largest
 remaining piece, per `PrincipalWitnessAssembly.lean`'s own trailing status
-note. -/
+note.
+ **Pass note: closed the "`S` unlinked to `u`" statement gap flagged
+above (line ~682's "kept as parameters... still needed" comment) and its
+unflagged anchor-side twin.** This does NOT close the `sorry` — it makes
+the theorem actually say what it was meant to say. Before this pass, `S`
+could be any `Finset` satisfying `hsupp`/`hmem` with zero connection to
+`u`'s roots; the theorem was consequently either unprovable-as-intended
+(vacuously true for a `T`-decoupled `S`) or simply not the claim anyone
+meant. `hSmem`/`hufree`/`hScard` (and the anchor mirrors) pin `S` down to
+be exactly `u`'s root set, stated without ever splitting `u` over `F p`.
+This is the concrete, checkable prerequisite that had to exist before
+`ROADMAP-principal-witness-assembly.md`'s `f+`/`f-` residual-matching
+question is even well-posed: `S` is now the Lean object the roadmap's
+prose has been calling `T`, and `Sanchor` is what it calls `C`. Next real
+step (not done here): connect `f+`'s residual (`uANew`'s root set) and
+`f-`'s residual (`uMinusNew`'s root set) to `S`/`u` via this link, rather
+than treating them as free-floating point pairs. -/
 theorem reducedClass_eq_of_isReduction' {p : ℕ} [Fact (Nat.Prime p)] [Fact (p ≠ 2)]
     {H : HyperellipticPolynomial (F p)} [IsDedekindDomain (CoordinateRing H)]
     {D : PrincipalDivisorData H}
@@ -816,6 +832,38 @@ theorem reducedClass_eq_of_isReduction' {p : ℕ} [Fact (Nat.Prime p)] [Fact (p 
     (hAlphaRep : sa.alpha • aClass =
       toJacobian D (Subtype.mk (divToPair (H := H) (-va) 1 Sanchor - (2 : ℤ) • single δ₀ : Divisor H) hmemAnchor))
     (hsupp : ∀ P, P ∉ S → ordAt (H := H) P (-v) 1 = 0)
+    -- **THE MISSING LINK, added this pass (was flagged in the docstring
+    -- above as "still needed" but never actually written).** Without this,
+    -- `S` is an arbitrary `Finset` satisfying `hsupp`/`hmem` with no
+    -- connection to `u` (equivalently, to `sa.toSampleTarget`'s reduced
+    -- Mumford pair) at all — nothing prevents `S` from being some unrelated
+    -- point set that happens to make `(-v,1)`'s divisor degree-0. Stated the
+    -- only way sound for a possibly-irreducible `u` (no splitting over
+    -- `F p` assumed): every `P ∈ S` is a genuine root of the Mumford pair
+    -- `(u,v)` (`hSmem`), and conversely `S`'s cardinality already accounts
+    -- for all of `u`'s roots with multiplicity — via `u`'s squarefreeness
+    -- (`hufree`, from `hgcd`/`hgcdT`'s coprimality, which already rules out
+    -- repeated roots at this stage) forcing exactly `u.natDegree` many
+    -- points, matching `S.card = u.natDegree` (`hScard`). Mirrors the
+    -- analogous unstated gap on the anchor side (`hSanchorMem`/`hufreeAnchor`
+    -- /`hSanchorCard`, against the anchor's own quadratic — see the note
+    -- below on why the anchor quadratic itself needed naming for the first
+    -- time here, it wasn't previously a parameter).
+    (hSmem : ∀ P ∈ S, u.eval P.X = 0 ∧ P.Y = v.eval P.X)
+    (hufree : Squarefree u)
+    (hScard : S.card = u.natDegree)
+    -- **Anchor-side mirror.** `ua0,ua1` (already parameters, feeding `hcur`/
+    -- `hgcd`/etc.) were never assembled into a polynomial the way `u` is
+    -- (`hu`) — `hAlphaRep`'s `va`/`Sanchor` had no linked quadratic at all
+    -- before this pass, which is the anchor-side half of the same gap.
+    -- Named `ua` here for the first time, mirroring `hu`'s shape exactly.
+    (ua : Polynomial (F p))
+    (hua : ua = (Polynomial.X : Polynomial (F p)) ^ 2
+      + (Polynomial.C ua1 : Polynomial (F p)) * Polynomial.X
+      + (Polynomial.C ua0 : Polynomial (F p)))
+    (hSanchorMem : ∀ P ∈ Sanchor, ua.eval P.X = 0 ∧ P.Y = va.eval P.X)
+    (huafree : Squarefree ua)
+    (hSanchorCard : Sanchor.card = ua.natDegree)
     (hmem : (divToPair (H := H) (-v) 1 S - (2 : ℤ) • single δ₀ : Divisor H) ∈ Divisor0 H) :
     sa.reducedClass =
       toJacobian D (Subtype.mk (divToPair (H := H) (-v) 1 S - (2 : ℤ) • single δ₀ : Divisor H) hmem) := by

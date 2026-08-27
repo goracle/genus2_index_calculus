@@ -59,3 +59,4 @@ import Genus2Lean.ZeroD.PrincipalWitnessStep1
 import Genus2Lean.ZeroD.PrincipalWitnessStep2
 import Genus2Lean.ZeroD.TangentMumfordWitness
 import Genus2Lean.ZeroD.CantorAddWitness
+import Genus2Lean.ZeroD.CAWitness
