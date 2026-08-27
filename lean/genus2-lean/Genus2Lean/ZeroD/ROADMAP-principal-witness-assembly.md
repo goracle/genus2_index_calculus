@@ -549,3 +549,159 @@ EXISTING `g`, it does not supply the new function ChatGPT's §5 constructs.
    an explicit `∞`-coefficient has no home in a type with no
    point-at-infinity slot; the "no `δ₀` term" discipline earlier in this
    roadmap exists for exactly this reason).
+
+## Two-pass Claude audit (this pass): `div(g)` re-derived independently, twice
+
+Requested independently of the ChatGPT consultation above, to check
+whether the whole Step-3 difficulty was actually just a misstated
+valuation/divisor formula for `g`. Two passes, narrowing each time. Full
+transcripts not kept here; findings only.
+
+**Pass 1 (broad audit).** Re-derived, straight from source (not from this
+roadmap's own prose): `deg Epoly4 = 4`, `deg Ypoly4 ≤ 1`,
+`ordInfOfPair(Epoly4,Ypoly4) = -8` (`ordInfOfPair`'s actual definition,
+`PrincipalDivisors.lean:122`), `npoly4Lcm4` has degree 6
+(`npoly4Lcm4_natDegree_eq_six`), `uRS4General` has degree 2
+(`uRS4General_natDegree_eq_two`), and `Npoly4 = npoly4Lcm4 *
+uRS4General` with `deg Npoly4 = 8` (`Npoly4_eq_npoly4Lcm4_mul_uRS4General`,
+`Npoly4_natDegree_eq_eight`) — so `6+2=8` exactly, confirming the missing
+degree-2 lives in `uRS4General`'s two roots, not in a sign/multiplicity
+error on the six named points, and not in a mistranslated `ord∞`. This
+matches this file's own "Bigger, structural fact" findings above,
+independently re-derived rather than re-quoted. Pass 1 initially described
+the residual contribution loosely as "`ρ`"/"`R`" without pinning down
+*which* lift (`+v` or `-v`) is `g`'s own zero versus the ratio `g/U`'s
+pole — flagged by Claire as the one place the audit moved too fast.
+
+**Pass 2 (narrow follow-up, the ι-labeling question only).** Traced the
+sign convention through the actual theorem bodies rather than the
+notation:
+
+- `uRS4General_dvd_Epoly4_add_Ypoly4_mul_vRS4General`
+  (`GeneralSharedRoot.lean:1171`) proves `U ∣ (E + Y·V)` — literally `g`
+  with `y := V := vRS4General` (the `+v` lift) substituted in. So **`g`
+  itself vanishes at `(r, +v(r))`** for any root `r` of `U`, unconditionally.
+- `ordAtFrac_eq_neg_one_of_uRS4General_root`
+  (`PrincipalWitnessAssembly.lean:3247`) is built around the *other* lift:
+  its hypothesis `hPY : P.Y = -(vRS4General ...).eval P.X` pins `P` to
+  `(r, -v(r))`, and its own proof derives `ḡ(P)=0`/`g(P)≠0` there (comment
+  at line 3290: "this is the residual case's actual geometric fact...
+  needs `ḡ(P) = 0`/`g(P) ≠ 0`, matching `ordAtFrac_eq_one_of_R1`'s own
+  `hbar_zero`-shaped hypothesis, not `g(P) = 0`"). So the ratio `h=g/U`'s
+  pole (order `-1`, lemma 13c) sits at the `-v` lift, not the `+v` lift.
+
+Writing `ρ := (r,+v(r))` (`g`'s own zero) and `ι(ρ) = (r,-v(r))` (where
+`ḡ` vanishes instead, per `HyperellipticFunctionField.lean`'s
+`involution_y`/`AffinePoints.lean`'s `iota_Y : (iota P).Y = -P.Y`, both
+confirmed directly): **this exactly reconciles with the "Bigger,
+structural fact" finding recorded above in this same file** — that
+earlier finding's own `ρ1,ρ2` were defined via the `P.Y = -V(P.X)` lift
+(see its point 3: "`u_new`'s two named roots `ρ1,ρ2` (with the specific
+lift `P.Y = -V(P.X))`"), i.e. that pass's `ρ` = this pass's `ι(ρ)`, and
+that pass's `ι(ρ)` = this pass's `ρ`. **Same underlying fact, opposite
+choice of which lift to call the unprimed name** — not a contradiction
+between the two passes, once the labeling is made explicit. Recording
+both labelings here so neither is mistaken for a live discrepancy later.
+
+**Net, label-independent conclusion (this is the fact to trust, not
+either pass's choice of which point to call "`ρ`"):**
+
+```
+div_aff(g)      = A + C + T + {the +v-lift pair}          degree 8
+div_aff(g/U)    = A + C + T − {the -v-lift pair} − 4·[∞]  (projective; degree 0)
+```
+with the two lift-pairs being `ι` of each other, `ord∞(g) = -8`,
+`ord∞(uRS4General,0) = -4`, hence `ord∞(g/U) = -4` (valuations subtract on
+a ratio; verified explicitly, not assumed to cancel to 0 — the *affine*
+part `A+C+T−{residual pair}` alone has degree `6-2=4 ≠ 0`, only the full
+projective divisor with `−4[∞]` included has degree 0).
+
+**Consequence for the `2[δ₀]` target.** The already-proved lemma-14/15
+stack gives `A+C+T = {the -v-lift pair}` only modulo the ratio's own
+`4[∞]` pole — it is a genuinely projective identity, not a bare affine
+one. This means the original Step-3 target's coefficient `2[δ₀]` cannot
+be taken for granted just because the six-point/two-point accounting
+degree-matches (`6` vs `2`, needing a "`+4`" of correction one way or
+another) — reconciling `reducedClass`'s Abel–Jacobi `[δ₀]` convention
+against this `4[∞]`-pole ratio identity (is it `2[δ₀]`, `4[δ₀]`, or does
+the fixed-basepoint map absorb the factor differently?) is now the
+single concrete open question, and has NOT yet been checked against
+`reducedClass`'s literal definition. This is the next narrow thing to
+audit, once budget allows — do not re-litigate the `ρ` vs `ι(ρ)` question
+above, it is closed and reconciled.
+
+## RESOLVED: the `2[δ₀]` vs `4[∞]` question above — checked directly
+## against `reducedClass`'s literal Lean definition, not reasoned about
+## in the abstract
+
+The open question above asked whether `reducedClass`'s `2[δ₀]`
+coefficient needs to be reconciled with, derived from, or checked
+against the `4[∞]` pole order found in the `div(g/U)` computation. It
+does not, and cannot — **they are facts about two structurally
+unrelated objects, not two accountings of the same quantity.** This was
+checked by reading the actual definitions (`AlphaLocusDegreeUniform.lean:
+286-330`, `DivisorClassGroup.lean:109-186`), not by re-deriving anything
+new.
+
+**Where `2[δ₀]` actually comes from.** `reducedClass` is defined
+(`AlphaLocusDegreeUniform.lean:304-314`) as
+
+```
+alpha • aClass -
+  toJacobian D ⟨single P1 + single P2 - 2•single δ₀, ⟨proof⟩⟩
+```
+
+and the `⟨proof⟩` is built by calling `single_sub_single_mem_Divisor0`
+**twice** — once for `(P1, δ₀)`, once for `(P2, δ₀)` — and adding:
+`(single P1 - single δ₀) + (single P2 - single δ₀) = single P1 + single
+P2 - 2•single δ₀`. `single_sub_single_mem_Divisor0`
+(`DivisorClassGroup.lean:125-127`) proves `Divisor0 H` membership via
+`deg_single_sub_single`, i.e. purely because `deg(single P - single δ₀)
+= 1 - 1 = 0` — a counting fact about `Finsupp` degree (`deg` is the
+`AddMonoidHom` whose kernel literally defines `Divisor0 H`,
+`DivisorClassGroup.lean:119-120`). **There is no `ordAt`, no
+`ordInfOfPair`, no pole anywhere in this definition or its proof.** The
+`2` is just "two points, individually normalized against a fixed
+basepoint `δ₀`, added together" — this is exactly the `s`-map pattern
+(`DivisorClassGroup.lean:171-176`, `x ↦ (x)-(δ)`) applied twice and
+summed. It would be `2•[δ₀]` for *any* degree-2 affine point divisor
+`[P1]+[P2]`, completely independent of what curve, function, or pole
+structure produced `P1,P2` — `δ₀` here is not even required to relate
+to the curve `H` beyond being one of its points.
+
+**Where `4[∞]` comes from.** It is the literal valuation `ord∞(g/U) =
+-4`, i.e. the pole order at infinity of one specific rational function
+(`g` divided by `uRS4General`) on this specific curve — a fact that
+lives entirely in `ordInfOfPair`'s formula
+(`PrincipalDivisors.lean:122`) and has nothing to do with `Finsupp`
+degree bookkeeping at all.
+
+**Why no reconciliation is possible or needed.** These aren't two
+labelings of one number that happen to both be "4-ish" (`2•2=4`) —
+they're outputs of two disjoint computations over two disjoint
+universes of objects: `2[δ₀]`'s `2` counts *points in a fixed finite
+set* (`{P1,P2}`); `4[∞]`'s `4` measures *the order of vanishing of a
+ratio of polynomials at a point that isn't even in this codebase's
+point type* (`H.Point` is confirmed affine-only, no infinity
+constructor — see "Bigger, structural fact" above, independently
+re-confirmed here against `AffinePoints.lean`'s `mk`/`iota`). Nothing
+about `ordInfOfPair(g,u_new)` feeds into, constrains, or needs to match
+`reducedClass`'s `2•[δ₀]` term. The earlier framing of this as an open
+"is it `2[δ₀]` or `4[δ₀]`, does the basepoint map absorb the factor
+differently" question was itself still carrying a residue of the
+original `4[∞]`-vs-`2[δ₀]` conflation this file diagnosed and fixed
+earlier (see "BUG FOUND AND FIXED THIS PASS" above) — restated here so
+the file's own ending doesn't relapse into the bug its middle section
+already killed.
+
+**What this means for next steps.** `reducedClass`'s `2[δ₀]` is fully
+understood and requires no further audit — it's definitional Finsupp
+bookkeeping, correct as written, with nothing left to check against the
+`g/U` pole-order work. The actual remaining gap is exactly what
+"Concrete next steps, this pass's addition" (above) already says:
+finish the complete `div(g)=A+C+T+[ιρ1]+[ιρ2]` theorem, then send the
+ChatGPT follow-up re-deriving §5 within the affine-only, no-`δ₀`-as-`∞`
+constraint. Step 3 (`C-A-T+2δ₀ ∈ principalSubgroup H hdeg`, "Checked
+whether `principalSubgroup` can witness this directly" above) is the
+live open mathematical question — not this `[δ₀]`/`[∞]` reconciliation,
+which is now closed.
