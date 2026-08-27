@@ -65,30 +65,28 @@ attempted or needed; it is used only as an opaque nonzero scalar via
 by `bPlus`'s row lemmas without ever re-deriving its closed form at a
 call site.
 
-**Status update (this pass): both `bMinus_mod_*` congruence theorems
-filled** (`bMinus_mod_uC_eq_vC`, `bMinus_mod_uA_eq_neg_vA`), via a shared
-`modByMonic_uCPoly_eq`/`modByMonic_uAPoly_eq` closed-form-remainder pair
-(proved from an explicit quotient-remainder identity, sympy-confirmed,
-plus `Polynomial.div_modByMonic_unique`) composed with a
-`bPlus_row_eq`-style Cramer's-rule row extraction
-(`bMinus_coeff0_coeff1`/`bMinus_coeff2_coeff3`). **One `sorry` remains:**
-`cantorAddMatrix_det_ne_zero`. The proof STRATEGY is fully worked out in
-that theorem's own docstring (a kernel-vector argument reusing the same
-`%ₘ`/coprimality machinery just built for the row lemmas — no resultant
-needed, an earlier plan to go via `det = Res(uC,uA)` plus a
-resultant-nonvanishing-iff-coprime Mathlib lemma was abandoned when no
-such lemma turned up in the searched API surface) — what's missing is
-one Mathlib lemma name (`det = 0 → ∃ nonzero vector in the kernel`, for
-a field-valued square matrix) not yet looked up. Left as the single
-`sorry`, per this project's convention of shipping the shape rather than
-blocking on one lemma lookup. Not yet build-tested (no live Lean
-toolchain in this environment) — Claire's REPL to confirm, per this
-project's own workflow convention. `ordInfOfPair(-bMinus,1) = -6`
-(matching `f+`, needed for the roadmap's matched-pole-order pairing) is
-NOT yet stated here — deferred to the next pass, once
-`cantorAddMatrix_det_ne_zero` is closed and a `hlead`-style hypothesis on
-`bMinusCoeff ... 3` (mirroring `bPlus_ordInfOfPair`'s own weakening) can
-be computed explicitly against it. -/
+**Status: 0-`sorry`.** `cantorAddMatrix_det_ne_zero` is closed via a
+kernel-vector argument (`Matrix.exists_mulVec_eq_zero_iff` gives a
+nonzero kernel vector from `det = 0`; its rows unfold via
+`modByMonic_uCPoly_eq`/`modByMonic_uAPoly_eq` to a degree contradiction
+against coprimality — no resultant needed). Both `bMinus_mod_*`
+congruence theorems (`bMinus_mod_uC_eq_vC`, `bMinus_mod_uA_eq_neg_vA`)
+are filled via that same closed-form-remainder pair composed with
+Cramer's-rule row extraction (`bMinus_coeff0_coeff1`/
+`bMinus_coeff2_coeff3`). `bMinus_ordInfOfPair` (added this pass, mirrors
+`bPlus_ordInfOfPair`'s weakened `hlead`-on-top-coefficient shape) gives
+`ordInfOfPair(-bMinus,1) = -6`, matching `f+`'s own `-6` exactly — the
+matched pole order the roadmap's "Round 2 verdict" pairing needs. Not
+yet build-tested (no live Lean toolchain in this environment) — Claire's
+REPL to confirm, per this project's own workflow convention.
+
+**Still open (unchanged from before, genuinely ChatGPT-worthy):** the
+divisor-level facts — `div_aff(y - bMinus) ⊇ A + T` (or the `ι`-conjugated
+version matching the `bMinus ≡ -vA mod uA` sign convention already fixed
+here) plus the matching degree-1 residual `[R]`, and confirming this `R`
+is the SAME `R` as `f+`'s own residual. This is the next thing to hand to
+ChatGPT — the sign/labeling conventions and both pole orders (`-6`/`-6`)
+are now pinned down in actual Lean, not guessed in prose. -/
 
 noncomputable section
 
@@ -97,6 +95,7 @@ set_option maxHeartbeats 5000000
 -- `Fin`/`Matrix`/`Polynomial.C` expressions; the larger budget is local to this file.
 
 open Polynomial
+open HyperellipticPolynomial
 
 namespace Genus2Lean
 namespace DecoupledSystem
@@ -399,6 +398,40 @@ theorem bMinus_natDegree_le (c0 c1 a0 a1 vC0 vC1 vA0 vA1 : k) :
     (bMinus c0 c1 a0 a1 vC0 vC1 vA0 vA1).natDegree ≤ 3 := by
   unfold bMinus
   compute_degree
+
+/-- **`ordInfOfPair(-bMinus, 1) = -6`**, matching `f+`'s
+`bPlus_ordInfOfPair` exactly (same weakened `hlead`-on-top-coefficient
+shape: `bMinusCoeff ... 3` can vanish for special input data, so it is
+an explicit hypothesis, not derived). `A := -bMinus`, `B := 1`:
+`ordInfOfPair A B = -(max (2·deg A) (2·deg B + 5))`. `deg B = 0`, second
+term `5`. `hlead` plus `bMinus_natDegree_le` pin `deg A = 3` exactly, so
+`2·deg A = 6 > 5`, giving `-6` — the same pole order as `f+`, as the
+roadmap's "Round 2 verdict" matched-pole-order pairing needs. -/
+theorem bMinus_ordInfOfPair (c0 c1 a0 a1 vC0 vC1 vA0 vA1 : k)
+    (hlead : bMinusCoeff c0 c1 a0 a1 vC0 vC1 vA0 vA1 3 ≠ 0) :
+    ordInfOfPair (-bMinus c0 c1 a0 a1 vC0 vC1 vA0 vA1) (1 : k[X]) = -6 := by
+  have hdeg3 : (bMinus c0 c1 a0 a1 vC0 vC1 vA0 vA1).natDegree = 3 := by
+    apply le_antisymm (bMinus_natDegree_le c0 c1 a0 a1 vC0 vC1 vA0 vA1)
+    unfold bMinus
+    have hcoeff3 : (Polynomial.C (bMinusCoeff c0 c1 a0 a1 vC0 vC1 vA0 vA1 0) +
+      Polynomial.C (bMinusCoeff c0 c1 a0 a1 vC0 vC1 vA0 vA1 1) * X +
+      Polynomial.C (bMinusCoeff c0 c1 a0 a1 vC0 vC1 vA0 vA1 2) * X ^ 2 +
+      Polynomial.C (bMinusCoeff c0 c1 a0 a1 vC0 vC1 vA0 vA1 3) *
+        X ^ 3).coeff 3 =
+        bMinusCoeff c0 c1 a0 a1 vC0 vC1 vA0 vA1 3 := by
+      simp [coeff_add, coeff_C_mul, coeff_X_pow]
+    exact Polynomial.le_natDegree_of_ne_zero (by rw [hcoeff3]; exact hlead)
+  have hAdeg :
+      (-bMinus c0 c1 a0 a1 vC0 vC1 vA0 vA1).natDegree = 3 := by
+    rw [natDegree_neg]; exact hdeg3
+  unfold ordInfOfPair
+  have hB1 : ¬ ((-bMinus c0 c1 a0 a1 vC0 vC1 vA0 vA1) = 0 ∧
+      (1 : k[X]) = 0) := fun h => one_ne_zero h.2
+  rw [if_neg hB1, if_neg (one_ne_zero (α := k[X]))]
+  rw [natDegree_one, hAdeg]
+  rw [show (2 * ((3 : ℕ) : ℤ)) = 6 by norm_num,
+    show (2 * ((0 : ℕ) : ℤ) + 5) = 5 by norm_num]
+  rw [max_eq_left (by norm_num : (5 : ℤ) ≤ 6)]
 
 /-- **Row identity, shared core for both `bMinus_mod_*` theorems.** Same
 role and proof idiom as `TangentMumfordWitness.lean`'s `bPlus_row_eq`

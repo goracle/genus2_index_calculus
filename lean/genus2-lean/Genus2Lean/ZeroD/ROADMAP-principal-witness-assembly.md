@@ -1005,16 +1005,22 @@ status. **Not yet build-tested** — Claire's REPL next, as always.
 **Concrete next steps for `f-`, updated:**
 1. ~~Close `cantorAddMatrix_det_ne_zero`~~ **Done this pass.**
 2. ~~Close the two `bMinus_mod_*` row lemmas~~ **Done this pass.**
-3. Add `bMinus_ordInfOfPair` mirroring `bPlus_ordInfOfPair` (`hlead`-style
-   hypothesis on `bMinusCoeff ... 3`, giving `-6`) — not yet attempted,
-   straightforward given `bPlus_ordInfOfPair`'s own template plus
-   `bMinus_natDegree_le` already on file.
+3. ~~Add `bMinus_ordInfOfPair` mirroring `bPlus_ordInfOfPair`~~ **Done
+   (fresh pass): `bMinus_ordInfOfPair` added to `CantorAddWitness.lean`,
+   same weakened `hlead : bMinusCoeff ... 3 ≠ 0` shape as `f+`'s own
+   theorem, giving `ordInfOfPair(-bMinus,1) = -6` — matches `f+`'s `-6`
+   exactly, confirming both sides of the roadmap's "Round 2 verdict"
+   matched-pole-order pairing now exist concretely in Lean, not just in
+   the hand-derived arithmetic above. `CantorAddWitness.lean` is now 578
+   lines, still 0-`sorry`. Not yet build-tested — Claire's REPL next.**
 4. **Still genuinely open, ChatGPT-worthy per this project's own
    convention:** the residual/divisor-level facts — `div_aff(y -
-   bMinus) ⊇ C + ι(A)` (matching whichever sign convention (2) settled
-   on: `bMinus ≡ -vA mod uA`, i.e. the witness vanishes at `A`'s
+   bMinus) ⊇ C + ι(A)` (matching the sign convention already fixed:
+   `bMinus ≡ -vA mod uA`, i.e. the witness vanishes at `A`'s
    HYPERELLIPTIC CONJUGATE, not `A` itself) plus the matching degree-2
    residual `[R]`, and confirming this `R` is the SAME `R` as `f+`'s own
-   residual. This is the next thing to hand to ChatGPT, now that (1)-(3)
-   are closed/near-closed and the sign/labeling conventions are pinned
-   down in actual Lean rather than guessed in prose.
+   residual. This is the next thing to hand to ChatGPT — (1)-(3) are now
+   fully closed and BOTH pole orders (`f+`'s `-6`, `f-`'s `-6`) are
+   pinned down in actual Lean, not guessed in prose, so the prompt can
+   state the matched-pole-order fact as an established lemma rather than
+   an open arithmetic claim.
