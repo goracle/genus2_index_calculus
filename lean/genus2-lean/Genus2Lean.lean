@@ -56,3 +56,4 @@ import Genus2Lean.ZeroD.PrincipalWitness
 import Genus2Lean.ZeroD.OrdAtRootMultiplicityUnified
 import Genus2Lean.ZeroD.PrincipalWitnessAssembly
 import Genus2Lean.ZeroD.PrincipalWitnessStep1
+import Genus2Lean.ZeroD.PrincipalWitnessStep2
