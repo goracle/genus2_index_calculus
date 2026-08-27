@@ -53,5 +53,5 @@ import Genus2Lean.ZeroD.Reduce.P2UaSharedRoot
 import Genus2Lean.ZeroD.Reduce.GeneralSharedRoot
 import Genus2Lean.ZeroD.RegularSequenceFiniteQuotient
 import Genus2Lean.ZeroD.PrincipalWitness
-import Genus2Lean.ZeroD.PrincipalWitnessAssembly
 import Genus2Lean.ZeroD.OrdAtRootMultiplicityUnified
+import Genus2Lean.ZeroD.PrincipalWitnessAssembly

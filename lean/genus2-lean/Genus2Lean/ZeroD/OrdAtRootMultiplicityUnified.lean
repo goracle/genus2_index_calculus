@@ -1,6 +1,5 @@
 import Mathlib
 import Genus2Lean.ZeroD.PrincipalWitness
-import Genus2Lean.ZeroD.PrincipalWitnessAssembly
 import Genus2Lean.LPairFinrankOneOrdAtFrac
 
 /-!
@@ -261,24 +260,6 @@ theorem rootMultiplicity_npoly4Lcm4_eq_two_of_R1_eq_R2
     hP1ua hP1target hP2ua hP2target hRP1 hRP2 hRua, htargetSq,
     Polynomial.rootMultiplicity_X_sub_C_pow]
 
-theorem rootMultiplicity_npoly4Lcm4_eq_two_of_R1_eq_R2
-    (P1 P2 : F p × F p) (ua0 ua1 u0 u1 : F p) (R : F p)
-    (htargetSq : (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)) = (X - C R) ^ 2)
-    (h12 : P1.1 ≠ P2.1)
-    (hne34 : (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)) ≠ X ^ 2 + C u1 * X + C u0)
-    (hnoroot34 : ¬ ∃ r : F p, (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).eval r = 0 ∧
-        (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).eval r = 0)
-    (hP1ua : ¬ (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).eval P1.1 = 0)
-    (hP1target : ¬ (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).eval P1.1 = 0)
-    (hP2ua : ¬ (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).eval P2.1 = 0)
-    (hP2target : ¬ (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).eval P2.1 = 0)
-    (hRP1 : R ≠ P1.1) (hRP2 : R ≠ P2.1)
-    (hRua : ¬ (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).eval R = 0) :
-    (npoly4Lcm4 p P1 P2 ua0 ua1 u0 u1).rootMultiplicity R = 2 := by
-  rw [rootMultiplicity_npoly4Lcm4_eq_add p P1 P2 ua0 ua1 u0 u1 R h12 hne34 hnoroot34
-    hP1ua hP1target hP2ua hP2target hRP1 hRP2 hRua, htargetSq,
-    Polynomial.rootMultiplicity_X_sub_C_pow]
-
 /-- **`ordAt P npoly4Lcm4 0 = 1` at `R1`, WITHOUT `hRne : R1 ≠ R2`** — the
 actual `hRne`-free drop-in replacement for `ordAt_npoly4Lcm4_eq_one_of_R1`.
 Takes `u_target.rootMultiplicity R1 = 1` (`hmult1`) as an explicit
@@ -314,6 +295,7 @@ theorem ordAt_npoly4Lcm4_eq_one_of_R1_rootMultiplicity
     R1 P h_bot hPX hPY,
     rootMultiplicity_npoly4Lcm4_eq_add p P1 P2 ua0 ua1 u0 u1 R1 h12 hne34 hnoroot34
       hP1ua hP1target hP2ua hP2target hR1P1 hR1P2 hR1ua, hmult1]
+  norm_num
 
 /-- **`ordAt P npoly4Lcm4 0` at `R1`, when `R1` is `u_target`'s REPEATED
 root** — the case `ordAt_npoly4Lcm4_eq_one_of_R1` (and its `hRne`
@@ -346,6 +328,7 @@ theorem ordAt_npoly4Lcm4_eq_two_of_R1_eq_R2_rootMultiplicity
     R P h_bot hPX hPY,
     rootMultiplicity_npoly4Lcm4_eq_two_of_R1_eq_R2 p P1 P2 ua0 ua1 u0 u1 R htargetSq h12 hne34
       hnoroot34 hP1ua hP1target hP2ua hP2target hRP1 hRP2 hRua]
+  norm_num
 
 end DecoupledSystem
 end Genus2Lean

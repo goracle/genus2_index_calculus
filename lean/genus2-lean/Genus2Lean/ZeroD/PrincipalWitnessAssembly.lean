@@ -1,6 +1,10 @@
 import Mathlib
 import Genus2Lean.ZeroD.PrincipalWitness
 import Genus2Lean.ZeroD.AlphaLocusDegreeUniform
+import Genus2Lean.ZeroD.OrdAtRootMultiplicityUnified
+-- `OrdAtRootMultiplicityUnified.lean` no longer imports this file (see
+-- `GeneralSharedRoot.lean`'s "flat-product identity" note for why) — this
+-- import direction is now acyclic.
 
 /-!
 # Assembling `reducedClass_eq_of_isReduction'` from `PrincipalWitness.lean`'s
@@ -138,240 +142,6 @@ theorem Npoly4_eq_npoly4Lcm4_mul_uRS4General
   rw [hscale]
 
 end ExactFactorization
-
-/-! ## Step 2 (roadmap step 3, part 1): the flat-product identity for
-`npoly4Lcm4`
-
-Per the ChatGPT reply: prove `lcm f g = f * g` as a literal equation
-(not just an associate) for monic coprime `f g`, then apply it in the
-same binary-tree shape as `npoly4Lcm4`'s own definition
-(`lcm(lcm q1 q2, lcm q3 q4)`) — inner-then-outer, matching the reply's
-explicit recommendation not to try to flatten in one shot. All three
-coprimality facts this needs (`isCoprime_linear_pair_of_ne`,
-`isCoprime_quadratic_pair_of_ne_of_no_shared_root`,
-`isCoprime_lcm12_lcm34_of_no_shared_root`) are already proved in
-`GeneralSharedRoot.lean` — this section only adds the "coprime ⟹ literal
-product" step (previously only "coprime ⟹ associate, hence same degree"
-was on file) and the final 3-step assembly. -/
-
-section FlatProduct
-
-variable (p : ℕ) [hp : Fact (Nat.Prime p)]
-
-/-- **`lcm f g = C u * (f * g)` for monic coprime `f g`, for the specific
-unit `u := (gcd f g).leadingCoeff⁻¹`** — i.e. `lcm f g` IS an exact unit
-multiple of the product, with the unit pinned down concretely (not left
-existential), by reusing this project's own established scaling idiom
-(`npoly4Lcm4`/`uRS4General`'s `C leadingCoeff⁻¹ * ·` normalization,
-already used four times over in `GeneralSharedRoot.lean`). This is the
-version actually needed downstream (`npoly4Lcm4_eq_flat_product`), since
-`npoly4Lcm4` is ITSELF built via exactly this `C leadingCoeff⁻¹ * ·`
-normalization applied to `npoly4LcmRaw` — composing two normalizations
-telescopes cleanly, whereas asserting the bare `lcm f g = f * g` (no unit)
-would additionally require proving `EuclideanDomain.lcm` returns the
-monic representative outright, which is false in general (flagged
-already in this file's own `npoly4Lcm4` construction: the whole reason
-`npoly4Lcm4` needs its own rescaling step is that the raw
-`EuclideanDomain.lcm`/`npoly4LcmRaw` is NOT automatically monic). -/
-theorem lcm_eq_C_leadingCoeff_inv_mul_of_monic_coprime {f g : Polynomial (F p)}
-    (hf : f.Monic) (hg : g.Monic) (hcop : IsCoprime f g) :
-    EuclideanDomain.lcm f g =
-      C (EuclideanDomain.gcd f g).leadingCoeff⁻¹ * (f * g) := by
-  have hgcdunit : IsUnit (EuclideanDomain.gcd f g) := EuclideanDomain.gcd_isUnit_iff.mpr hcop
-  have hprod := EuclideanDomain.gcd_mul_lcm f g
-  have hfne : f ≠ 0 := hf.ne_zero
-  have hgne : g ≠ 0 := hg.ne_zero
-  have hgcdne : EuclideanDomain.gcd f g ≠ 0 := by
-    intro hz
-    have := EuclideanDomain.gcd_dvd_left f g
-    rw [hz] at this
-    exact hfne (eq_zero_of_zero_dvd this)
-  have hlc_ne : (EuclideanDomain.gcd f g).leadingCoeff ≠ 0 :=
-    (not_congr Polynomial.leadingCoeff_eq_zero).mpr hgcdne
-  -- `hprod : gcd f g * lcm f g = f * g`. Multiply both sides by
-  -- `C (gcd f g).leadingCoeff⁻¹` and use that `gcd f g` is a unit (hence
-  -- `C leadingCoeff⁻¹ * gcd f g` is `1` exactly — same
-  -- `inv_mul_cancel₀`-on-`leadingCoeff` idiom `uRS4General_monic`'s own
-  -- proof already uses for a monic-normalization step) to isolate `lcm f g`.
-  have hcancel : C (EuclideanDomain.gcd f g).leadingCoeff⁻¹ * EuclideanDomain.gcd f g = 1 := by
-    -- A UNIT polynomial over a field has `natDegree = 0` (it divides `1`),
-    -- hence is `C` of its own constant coefficient
-    -- (`Polynomial.eq_C_of_natDegree_eq_zero`), which IS its leading
-    -- coefficient (`Polynomial.leadingCoeff_C`) — no `IsUnit.exists`
-    -- destructuring needed, avoiding the `c.val : (F p)[X]`/`C : F p → (F p)[X]`
-    -- type mismatch that destructuring runs into.
-    have hcdeg0 : (EuclideanDomain.gcd f g).natDegree = 0 := by
-      have hdvd1 : (EuclideanDomain.gcd f g) ∣ (1 : Polynomial (F p)) := hgcdunit.dvd
-      have hle := Polynomial.natDegree_le_of_dvd hdvd1 one_ne_zero
-      simpa using hle
-    have hcC : (EuclideanDomain.gcd f g) = C ((EuclideanDomain.gcd f g).coeff 0) :=
-      Polynomial.eq_C_of_natDegree_eq_zero hcdeg0
-    have hlcC : (EuclideanDomain.gcd f g).leadingCoeff = (EuclideanDomain.gcd f g).coeff 0 := by
-      conv_lhs => rw [Polynomial.leadingCoeff, hcdeg0]
-    have hcoeff : (EuclideanDomain.gcd f g).coeff 0 ≠ 0 := by
-      simpa [← hlcC] using hlc_ne
-    rw [hlcC]
-    nth_rewrite 2 [hcC]
-    rw [← map_mul, inv_mul_cancel₀ hcoeff, map_one]
-  calc EuclideanDomain.lcm f g
-      = 1 * EuclideanDomain.lcm f g := (one_mul _).symm
-    _ = (C (EuclideanDomain.gcd f g).leadingCoeff⁻¹ * EuclideanDomain.gcd f g) *
-          EuclideanDomain.lcm f g := by rw [hcancel]
-    _ = C (EuclideanDomain.gcd f g).leadingCoeff⁻¹ *
-          (EuclideanDomain.gcd f g * EuclideanDomain.lcm f g) := by ring
-    _ = C (EuclideanDomain.gcd f g).leadingCoeff⁻¹ * (f * g) := by rw [hprod]
-
-/-- **A monic quadratic with two known distinct roots equals the product
-of its two linear factors** — the symmetric splitting lemma the ChatGPT
-reply recommended (deliberately NOT privileging either root, since `F p`
-has no useful order for this purpose; both `ua`'s two roots and
-`u_target`'s two roots reuse this ONE lemma, 4 call sites total, rather
-than a bespoke argument per point). Proof follows the reply's recommended
-route exactly: each root gives a linear-factor divisor
-(`Polynomial.dvd_iff_isRoot`), the two linear factors are coprime
-(`r1 ≠ r2`, `isCoprime_linear_pair_of_ne`-style —
-`Polynomial.isCoprime_X_sub_C_of_isUnit_sub` directly, since this lemma
-is stated for a general monic quadratic `q`, not literally
-`ua`/`u_target`, so it can't call the project-specific
-`isCoprime_linear_pair_of_ne` which is hardcoded to `P1.1`/`P2.1`), hence
-`IsCoprime.mul_dvd` gives `(X-C r1)*(X-C r2) ∣ q`; both sides are monic of
-degree 2 (`hdeg` supplies `q`'s degree so this works for any degree-2
-monic `q`, not hardcoding "quadratic" via a literal `X^2+...` shape), so
-`Polynomial.eq_of_monic_of_dvd_of_natDegree_le` (with the natDegree
-inequality direction flipped, since the divisor here is the DEGREE-2
-side and the dividend is `q` itself) closes it. -/
-theorem quadratic_eq_mul_X_sub_C {q : Polynomial (F p)} (hq : q.Monic)
-    (hdeg : q.natDegree = 2) {r1 r2 : F p} (hr1 : q.IsRoot r1) (hr2 : q.IsRoot r2)
-    (hne : r1 ≠ r2) :
-    q = (X - C r1) * (X - C r2) := by
-  have hd1 : (X - C r1 : Polynomial (F p)) ∣ q := Polynomial.dvd_iff_isRoot.mpr hr1
-  have hd2 : (X - C r2 : Polynomial (F p)) ∣ q := Polynomial.dvd_iff_isRoot.mpr hr2
-  have hcop : IsCoprime (X - C r1 : Polynomial (F p)) (X - C r2) :=
-    Polynomial.isCoprime_X_sub_C_of_isUnit_sub (isUnit_iff_ne_zero.mpr (sub_ne_zero.mpr hne))
-  have hdvd : (X - C r1 : Polynomial (F p)) * (X - C r2) ∣ q := hcop.mul_dvd hd1 hd2
-  have hm1 : (X - C r1 : Polynomial (F p)).Monic := Polynomial.monic_X_sub_C _
-  have hm2 : (X - C r2 : Polynomial (F p)).Monic := Polynomial.monic_X_sub_C _
-  have hprodmonic : ((X - C r1 : Polynomial (F p)) * (X - C r2)).Monic := hm1.mul hm2
-  have hproddeg : ((X - C r1 : Polynomial (F p)) * (X - C r2)).natDegree = 2 := by
-    rw [Polynomial.natDegree_mul hm1.ne_zero hm2.ne_zero,
-      Polynomial.natDegree_X_sub_C, Polynomial.natDegree_X_sub_C]
-  have hle22 : q.natDegree ≤ ((X - C r1 : Polynomial (F p)) * (X - C r2)).natDegree :=
-    le_of_eq (hdeg.trans hproddeg.symm)
-  have hqeq : q = (X - C r1 : Polynomial (F p)) * (X - C r2) :=
-    Polynomial.eq_of_monic_of_dvd_of_natDegree_le
-      (p := (X - C r1 : Polynomial (F p)) * (X - C r2))
-      (q := q) hprodmonic hq hdvd hle22
-  exact hqeq
-
-/-- **`npoly4Lcm4` equals the flat product `(X-C P1.x)*(X-C P2.x)*ua*u_target`
-up to an explicit, named unit, in the fully-split/no-shared-root generic
-case** — the actual target of roadmap step 3's "flat-product bridge",
-assembled in the SAME binary-tree shape as `npoly4Lcm4`'s own definition
-(`lcm(lcm q1 q2, lcm q3 q4)`, then re-normalized by ONE more
-`leadingCoeff⁻¹`-rescaling to match `npoly4Lcm4`'s own outer
-normalization), per the ChatGPT reply's explicit recommendation ("prove
-it in the same tree shape as the definition... rather than trying to
-prove the fully flattened statement in one shot"). Composes
-`lcm_eq_C_leadingCoeff_inv_mul_of_monic_coprime` (inner-left, inner-right)
-plus a direct `EuclideanDomain.gcd_mul_lcm` step at the outer level
-(sidesteps needing `L12`/`L34` themselves monic, which they are not) —
-against the coprimality facts ALREADY proved in `GeneralSharedRoot.lean`
-(`isCoprime_linear_pair_of_ne`, `isCoprime_quadratic_pair_of_ne_of_no_shared_root`,
-`isCoprime_lcm12_lcm34_of_no_shared_root`) — confirmed by the reply that
-these three hypotheses are exactly "all six pairwise roots distinct"
-repackaged to match the tree shape, not a separate/stronger condition.
-
-The unit is named concretely (`unitConst`, a `Polynomial (F p)`, together
-with `hunit : IsUnit unitConst`) rather than left existential, so the
-call sites in step 4 (Layer 3 instantiation at each of the 6 named
-points) can `rw` the flat-product identity directly without first
-destructuring an anonymous existential witness. -/
-theorem npoly4Lcm4_eq_flat_product
-    (P1 P2 : F p × F p) (ua0 ua1 u0 u1 : F p)
-    (h12 : P1.1 ≠ P2.1)
-    (hne34 : (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)) ≠ X ^ 2 + C u1 * X + C u0)
-    (hnoroot34 : ¬ ∃ r : F p, (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).eval r = 0 ∧
-        (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).eval r = 0)
-    (hP1ua : ¬ (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).eval P1.1 = 0)
-    (hP1target : ¬ (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).eval P1.1 = 0)
-    (hP2ua : ¬ (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).eval P2.1 = 0)
-    (hP2target : ¬ (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).eval P2.1 = 0) :
-    npoly4Lcm4 p P1 P2 ua0 ua1 u0 u1 =
-      C ((npoly4LcmRaw p P1 P2 ua0 ua1 u0 u1).leadingCoeff⁻¹ *
-        (EuclideanDomain.gcd
-          (EuclideanDomain.lcm (X - C P1.1 : Polynomial (F p)) (X - C P2.1))
-          (EuclideanDomain.lcm (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p))
-            (X ^ 2 + C u1 * X + C u0))).leadingCoeff⁻¹ *
-        (EuclideanDomain.gcd (X - C P1.1 : Polynomial (F p)) (X - C P2.1)).leadingCoeff⁻¹ *
-        (EuclideanDomain.gcd (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p))
-          (X ^ 2 + C u1 * X + C u0)).leadingCoeff⁻¹) *
-      (((X - C P1.1 : Polynomial (F p)) * (X - C P2.1)) *
-        ((X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)) * (X ^ 2 + C u1 * X + C u0))) := by
-  have hm1 : (X - C P1.1 : Polynomial (F p)).Monic := Polynomial.monic_X_sub_C _
-  have hm2 : (X - C P2.1 : Polynomial (F p)).Monic := Polynomial.monic_X_sub_C _
-  have hm3 : (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).Monic := by monicity!
-  have hm4 : (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).Monic := by monicity!
-  have hcop12 : IsCoprime (X - C P1.1 : Polynomial (F p)) (X - C P2.1) :=
-    isCoprime_linear_pair_of_ne p P1 P2 h12
-  have hcop34 : IsCoprime (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p))
-      (X ^ 2 + C u1 * X + C u0) :=
-    isCoprime_quadratic_pair_of_ne_of_no_shared_root p ua0 ua1 u0 u1 hne34 hnoroot34
-  -- Name the two inner lcms so the outer step's algebra stays short and
-  -- avoids re-typing (hence re-risking parenthesization typos on) these
-  -- long expressions repeatedly.
-  set L12 : Polynomial (F p) := EuclideanDomain.lcm (X - C P1.1 : Polynomial (F p)) (X - C P2.1)
-    with hL12def
-  set L34 : Polynomial (F p) := EuclideanDomain.lcm
-      (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)) (X ^ 2 + C u1 * X + C u0) with hL34def
-  have hcopOuter : IsCoprime L12 L34 :=
-    isCoprime_lcm12_lcm34_of_no_shared_root p P1 P2 ua0 ua1 u0 u1 h12 hP1ua hP1target hP2ua
-      hP2target
-  have hL12 :
-      L12 = C (EuclideanDomain.gcd (X - C P1.1 : Polynomial (F p)) (X - C P2.1)).leadingCoeff⁻¹ *
-      ((X - C P1.1 : Polynomial (F p)) * (X - C P2.1)) :=
-    lcm_eq_C_leadingCoeff_inv_mul_of_monic_coprime p hm1 hm2 hcop12
-  have hL34 : L34 = C (EuclideanDomain.gcd (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p))
-        (X ^ 2 + C u1 * X + C u0)).leadingCoeff⁻¹ *
-      ((X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)) * (X ^ 2 + C u1 * X + C u0)) :=
-    lcm_eq_C_leadingCoeff_inv_mul_of_monic_coprime p hm3 hm4 hcop34
-  -- Outer step: `gcd L12 L34 * lcm L12 L34 = L12 * L34` directly
-  -- (`EuclideanDomain.gcd_mul_lcm`), no monicity of `L12`/`L34` needed —
-  -- only `IsCoprime`'s gcd-is-a-unit consequence, isolating `lcm L12 L34`
-  -- by the same `inv_mul_cancel₀`-on-`leadingCoeff` idiom as
-  -- `lcm_eq_C_leadingCoeff_inv_mul_of_monic_coprime`'s own proof.
-  set G : Polynomial (F p) := EuclideanDomain.gcd L12 L34 with hGdef
-  have hprodOuter : G * EuclideanDomain.lcm L12 L34 = L12 * L34 :=
-    EuclideanDomain.gcd_mul_lcm L12 L34
-  have hgcdOuterUnit : IsUnit G := EuclideanDomain.gcd_isUnit_iff.mpr hcopOuter
-  have hgcdOuterne : G ≠ 0 := hgcdOuterUnit.ne_zero
-  have hlcOuterne : G.leadingCoeff ≠ 0 :=
-    (not_congr Polynomial.leadingCoeff_eq_zero).mpr hgcdOuterne
-  have hcdeg0 : G.natDegree = 0 := by
-    have hdvd1 : G ∣ (1 : Polynomial (F p)) := hgcdOuterUnit.dvd
-    have hle := Polynomial.natDegree_le_of_dvd hdvd1 one_ne_zero
-    simpa using hle
-  have hcOuterC : G = C (G.coeff 0) := Polynomial.eq_C_of_natDegree_eq_zero hcdeg0
-  have hlcOuterC : G.leadingCoeff = G.coeff 0 := by
-    conv_lhs => rw [Polynomial.leadingCoeff, hcdeg0]
-  have hcancelOuter : C G.leadingCoeff⁻¹ * G = 1 := by
-    have hcoeff : G.coeff 0 ≠ 0 := by
-      simpa [← hlcOuterC] using hlcOuterne
-    rw [hlcOuterC]
-    nth_rewrite 2 [hcOuterC]
-    rw [← map_mul, inv_mul_cancel₀ hcoeff, map_one]
-  have houterLcm : EuclideanDomain.lcm L12 L34 = C G.leadingCoeff⁻¹ * (L12 * L34) := by
-    calc EuclideanDomain.lcm L12 L34
-        = 1 * EuclideanDomain.lcm L12 L34 := (one_mul _).symm
-      _ = (C G.leadingCoeff⁻¹ * G) * EuclideanDomain.lcm L12 L34 := by rw [hcancelOuter]
-      _ = C G.leadingCoeff⁻¹ * (G * EuclideanDomain.lcm L12 L34) := by ring
-      _ = C G.leadingCoeff⁻¹ * (L12 * L34) := by rw [hprodOuter]
-  simp only [npoly4Lcm4, npoly4LcmRaw, ← hL12def, ← hL34def]
-  rw [houterLcm, hL12, hL34]
-  simp only [map_mul]
-  ring_nf
-
-
-end FlatProduct
 
 /-! ## Step 3: the geometric-classification bridge (roadmap step 3 proper)
 
@@ -2286,6 +2056,239 @@ theorem ordAt_eq_one_of_R1
     exact mul_ne_zero
       ((not_congr Polynomial.leadingCoeff_eq_zero).mpr hcurne) hU_eval
   exact ordAt_eq_one_of_old_point P h_bot E Y A U
+    hg_ne hgbar_eval hAU hA_ne hU_ne hA_ord hU_eval'
+
+set_option maxHeartbeats 400000 in
+-- Large polynomial whnf from `set`-introduced abbreviations in the proof body.
+/-- **The `R1 = R2` repeated-root case of the pointwise `ordAtFrac`-assembly**
+— the mirror of `ordAtFrac_eq_one_of_R1_full` for the case
+`OrdAtRootMultiplicityUnified.lean` flags as previously unreachable: when
+`u_target`'s two roots coincide (`u_target = (X - C R)^2`), the old point
+over `R` contributes coefficient `2`, not `1`, to `h`'s divisor. Exact
+copy of `ordAtFrac_eq_one_of_R1_full`'s derivation with `hA_ord` supplied
+by `ordAt_npoly4Lcm4_eq_two_of_R1_eq_R2_rootMultiplicity` instead of
+`ordAt_npoly4Lcm4_eq_one_of_R1`, and the final step routed through
+`ordAtFrac_eq_two_of_old_point` instead of lemma 14. No `hRne`/`R2` in the
+signature — `htargetSq` alone pins down the repeated root, matching how
+`OrdAtRootMultiplicityUnified.lean`'s own repeated-root lemmas drop
+`hRne`/`R2` in favor of `htargetSq`. -/
+theorem ordAtFrac_eq_two_of_R1_eq_R2_full
+    (hchar : (2 : F p) ≠ 0) (hsf : Squarefree H.f)
+    (c0 c1 c2 c3 c4 ua0 ua1 va0 va1 u0 u1 v0 v1 : F p)
+    (hf : H.f = curvePoly p c0 c1 c2 c3 c4)
+    (P1 P2 : F p × F p)
+    (R : F p)
+    (htargetSq : (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)) = (X - C R) ^ 2)
+    (P : H.Point) (hPX : P.X = R)
+    (hPY : P.Y = (C v1 * X + C v0 : Polynomial (F p)).eval R) (hPY_ne : P.Y ≠ 0)
+    (h12 : P1.1 ≠ P2.1)
+    (hne34 : (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)) ≠ X ^ 2 + C u1 * X + C u0)
+    (hnoroot34 : ¬ ∃ r : F p, (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).eval r = 0 ∧
+        (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).eval r = 0)
+    (hP1ua : ¬ (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).eval P1.1 = 0)
+    (hP1target : ¬ (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).eval P1.1 = 0)
+    (hP2ua : ¬ (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).eval P2.1 = 0)
+    (hP2target : ¬ (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).eval P2.1 = 0)
+    (hRP1 : R ≠ P1.1) (hRP2 : R ≠ P2.1)
+    (hRua : ¬ (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).eval R = 0)
+    (hA : MatrixNondegenerate4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1)
+    (hP1_curve : P1.2 ^ 2 = (curvePoly p c0 c1 c2 c3 c4).eval P1.1)
+    (hP2_curve : P2.2 ^ 2 = (curvePoly p c0 c1 c2 c3 c4).eval P2.1)
+    (hMumfordUa : IsMumfordUa p c0 c1 c2 c3 c4 ua0 ua1 va0 va1)
+    (hMumfordTarget : IsMumfordTarget4 p c0 c1 c2 c3 c4 u0 u1 v0 v1)
+    (hcurne : curBeforeMonic4General p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ≠ 0)
+    (hYR_ne : (Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1).eval R ≠ 0)
+    (E Y A : Polynomial (F p))
+    (hE_def : E = Epoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1)
+    (hY_def : Y = Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1)
+    (hA_def : A = npoly4Lcm4 p P1 P2 ua0 ua1 u0 u1) :
+    ordAtFrac P E Y
+      (C ((curBeforeMonic4General p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1).leadingCoeff) *
+        uRS4General p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1)
+      (0 : Polynomial (F p)) = 2 := by
+  have h_bot : pointIdeal P ≠ ⊥ := pointIdeal_ne_bot P
+  have htargetRoot : (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).eval R = 0 := by
+    rw [htargetSq]; simp
+  have hNpoly4_eq₀ : Npoly4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 =
+      Epoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ^ 2 -
+        curvePoly p c0 c1 c2 c3 c4 * Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ^ 2 := rfl
+  set lc := (curBeforeMonic4General p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1).leadingCoeff
+    with hlc_def
+  set U := C lc * uRS4General p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 with hU_def
+  have hAU : pairNorm H E Y = A * U := by
+    have hfact := Npoly4_eq_npoly4Lcm4_mul_uRS4General p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1
+      u0 u1 v0 v1 hcurne hA hP1_curve hP2_curve hMumfordUa hMumfordTarget
+    have hpn := pairNorm_eq_of_eq_curvePoly hf E Y
+    have hNpoly4_eq : Npoly4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 = E ^ 2 -
+        curvePoly p c0 c1 c2 c3 c4 * Y ^ 2 := hE_def ▸ hY_def ▸ hNpoly4_eq₀
+    rw [← hlc_def, ← hU_def, ← hA_def] at hfact
+    have hpn' : pairNorm H E Y = E ^ 2 - curvePoly p c0 c1 c2 c3 c4 * Y ^ 2 := by
+      calc
+        pairNorm H E Y = E ^ 2 - Y ^ 2 * curvePoly p c0 c1 c2 c3 c4 := hpn
+        _ = E ^ 2 - curvePoly p c0 c1 c2 c3 c4 * Y ^ 2 := by
+          rw [mul_comm (Y ^ 2) (curvePoly p c0 c1 c2 c3 c4)]
+    calc
+      pairNorm H E Y = E ^ 2 - curvePoly p c0 c1 c2 c3 c4 * Y ^ 2 := hpn'
+      _ = Npoly4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 := hNpoly4_eq.symm
+      _ = A * U := hfact
+  have hAmonic : A.Monic := by
+    rw [hA_def]
+    exact npoly4Lcm4_monic p P1 P2 ua0 ua1 u0 u1
+  have hA_ne0 : A ≠ 0 := hAmonic.ne_zero
+  have hA_ne : toPair H A (0 : Polynomial (F p)) ≠ 0 := by
+    rw [Ne, toPair_eq_zero_iff]; exact fun h => hA_ne0 h.1
+  have hUmonic : (uRS4General p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1).Monic :=
+    uRS4General_monic p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 hcurne
+  have hU_ne0 : U ≠ 0 := by
+    rw [hU_def]
+    exact mul_ne_zero (Polynomial.C_ne_zero.mpr
+      ((not_congr Polynomial.leadingCoeff_eq_zero).mpr hcurne)) hUmonic.ne_zero
+  have hU_ne : toPair H U (0 : Polynomial (F p)) ≠ 0 := by
+    rw [Ne, toPair_eq_zero_iff]; exact fun h => hU_ne0 h.1
+  have hA_ord : ordAt P A (0 : Polynomial (F p)) = 2 := by
+    rw [hA_def]
+    exact ordAt_npoly4Lcm4_eq_two_of_R1_eq_R2_rootMultiplicity p hchar P1 P2 ua0 ua1 u0 u1 R
+      htargetSq P h_bot hPX hPY_ne h12 hne34 hnoroot34
+      hP1ua hP1target hP2ua hP2target hRP1 hRP2 hRua
+  have hgR_eval : E.eval R + P.Y * Y.eval R = 0 := by
+    rw [hPY]
+    simpa [hE_def, hY_def] using
+      (Epoly4_eval_add_v_eval_mul_Ypoly4_eval_eq_zero_of_root_u p P1 P2 ua0 ua1 va0 va1
+        u0 u1 v0 v1 hA R htargetRoot)
+  have hgbar_eval : E.eval P.X + (-Y).eval P.X * P.Y ≠ 0 := by
+    rw [hPX, Polynomial.eval_neg]
+    have hYZ : Y.eval R * P.Y ≠ 0 :=
+      mul_ne_zero (by simpa [hY_def] using hYR_ne) hPY_ne
+    have hgR_eval' : E.eval R + Y.eval R * P.Y = 0 := by
+      linear_combination hgR_eval
+    intro hcontra
+    have h2 : (2 : F p) * (Y.eval R * P.Y) = 0 := by
+      linear_combination hgR_eval' - hcontra
+    rcases mul_eq_zero.mp h2 with h2c | h2yz
+    · exact absurd h2c hchar
+    · exact absurd h2yz hYZ
+  have hg_ne : toPair H E Y ≠ 0 := by
+    rw [Ne, toPair_eq_zero_iff]
+    rintro ⟨-, hY0⟩
+    apply hYR_ne
+    rw [← hY_def, hY0]
+    simp
+  exact ordAtFrac_eq_two_of_old_point P h_bot E Y A U
+    hg_ne hgbar_eval hAU hA_ne hU_ne hA_ord
+
+set_option maxHeartbeats 400000 in
+-- Large polynomial whnf from `set`-introduced abbreviations in the proof body.
+/-- **The bare `ordAt P E Y = 2` fact at the `R1 = R2` repeated root** —
+the repeated-root mirror of `ordAt_eq_one_of_R1`, needed for the same
+`div_aff(g) = A + C + T` step-1 bookkeeping in the case where `T`'s two
+named points collapse to a single point with multiplicity `2`. Exact copy
+of `ordAtFrac_eq_two_of_R1_eq_R2_full`'s derivation up to `hA_ord`/`hg_ne`/
+`hgbar_eval`, plus `hU_eval : U.eval R ≠ 0`, routed through
+`ordAt_eq_two_of_old_point` instead of `ordAtFrac_eq_two_of_old_point`. -/
+theorem ordAt_eq_two_of_R1_eq_R2
+    (hchar : (2 : F p) ≠ 0) (hsf : Squarefree H.f)
+    (c0 c1 c2 c3 c4 ua0 ua1 va0 va1 u0 u1 v0 v1 : F p)
+    (hf : H.f = curvePoly p c0 c1 c2 c3 c4)
+    (P1 P2 : F p × F p)
+    (R : F p)
+    (htargetSq : (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)) = (X - C R) ^ 2)
+    (P : H.Point) (hPX : P.X = R)
+    (hPY : P.Y = (C v1 * X + C v0 : Polynomial (F p)).eval R) (hPY_ne : P.Y ≠ 0)
+    (h12 : P1.1 ≠ P2.1)
+    (hne34 : (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)) ≠ X ^ 2 + C u1 * X + C u0)
+    (hnoroot34 : ¬ ∃ r : F p, (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).eval r = 0 ∧
+        (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).eval r = 0)
+    (hP1ua : ¬ (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).eval P1.1 = 0)
+    (hP1target : ¬ (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).eval P1.1 = 0)
+    (hP2ua : ¬ (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).eval P2.1 = 0)
+    (hP2target : ¬ (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).eval P2.1 = 0)
+    (hRP1 : R ≠ P1.1) (hRP2 : R ≠ P2.1)
+    (hRua : ¬ (X ^ 2 + C ua1 * X + C ua0 : Polynomial (F p)).eval R = 0)
+    (hA : MatrixNondegenerate4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1)
+    (hP1_curve : P1.2 ^ 2 = (curvePoly p c0 c1 c2 c3 c4).eval P1.1)
+    (hP2_curve : P2.2 ^ 2 = (curvePoly p c0 c1 c2 c3 c4).eval P2.1)
+    (hMumfordUa : IsMumfordUa p c0 c1 c2 c3 c4 ua0 ua1 va0 va1)
+    (hMumfordTarget : IsMumfordTarget4 p c0 c1 c2 c3 c4 u0 u1 v0 v1)
+    (hcurne : curBeforeMonic4General p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ≠ 0)
+    (hYR_ne : (Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1).eval R ≠ 0)
+    (hU_eval : (uRS4General p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1).eval R ≠ 0)
+    (E Y A : Polynomial (F p))
+    (hE_def : E = Epoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1)
+    (hY_def : Y = Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1)
+    (hA_def : A = npoly4Lcm4 p P1 P2 ua0 ua1 u0 u1) :
+    ordAt P E Y = 2 := by
+  have h_bot : pointIdeal P ≠ ⊥ := pointIdeal_ne_bot P
+  have htargetRoot : (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).eval R = 0 := by
+    rw [htargetSq]; simp
+  have hNpoly4_eq₀ : Npoly4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 =
+      Epoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ^ 2 -
+        curvePoly p c0 c1 c2 c3 c4 * Ypoly4 p P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 ^ 2 := rfl
+  set lc := (curBeforeMonic4General p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1).leadingCoeff
+    with hlc_def
+  set U := C lc * uRS4General p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 with hU_def
+  have hAU : pairNorm H E Y = A * U := by
+    have hfact := Npoly4_eq_npoly4Lcm4_mul_uRS4General p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1
+      u0 u1 v0 v1 hcurne hA hP1_curve hP2_curve hMumfordUa hMumfordTarget
+    have hpn := pairNorm_eq_of_eq_curvePoly hf E Y
+    have hNpoly4_eq : Npoly4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 = E ^ 2 -
+        curvePoly p c0 c1 c2 c3 c4 * Y ^ 2 := hE_def ▸ hY_def ▸ hNpoly4_eq₀
+    rw [← hlc_def, ← hU_def, ← hA_def] at hfact
+    have hpn' : pairNorm H E Y = E ^ 2 - curvePoly p c0 c1 c2 c3 c4 * Y ^ 2 := by
+      calc
+        pairNorm H E Y = E ^ 2 - Y ^ 2 * curvePoly p c0 c1 c2 c3 c4 := hpn
+        _ = E ^ 2 - curvePoly p c0 c1 c2 c3 c4 * Y ^ 2 := by
+          rw [mul_comm (Y ^ 2) (curvePoly p c0 c1 c2 c3 c4)]
+    calc
+      pairNorm H E Y = E ^ 2 - curvePoly p c0 c1 c2 c3 c4 * Y ^ 2 := hpn'
+      _ = Npoly4 p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 := hNpoly4_eq.symm
+      _ = A * U := hfact
+  have hAmonic : A.Monic := by
+    rw [hA_def]
+    exact npoly4Lcm4_monic p P1 P2 ua0 ua1 u0 u1
+  have hA_ne0 : A ≠ 0 := hAmonic.ne_zero
+  have hA_ne : toPair H A (0 : Polynomial (F p)) ≠ 0 := by
+    rw [Ne, toPair_eq_zero_iff]; exact fun h => hA_ne0 h.1
+  have hUmonic : (uRS4General p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1).Monic :=
+    uRS4General_monic p c0 c1 c2 c3 c4 P1 P2 ua0 ua1 va0 va1 u0 u1 v0 v1 hcurne
+  have hU_ne0 : U ≠ 0 := by
+    rw [hU_def]
+    exact mul_ne_zero (Polynomial.C_ne_zero.mpr
+      ((not_congr Polynomial.leadingCoeff_eq_zero).mpr hcurne)) hUmonic.ne_zero
+  have hU_ne : toPair H U (0 : Polynomial (F p)) ≠ 0 := by
+    rw [Ne, toPair_eq_zero_iff]; exact fun h => hU_ne0 h.1
+  have hA_ord : ordAt P A (0 : Polynomial (F p)) = 2 := by
+    rw [hA_def]
+    exact ordAt_npoly4Lcm4_eq_two_of_R1_eq_R2_rootMultiplicity p hchar P1 P2 ua0 ua1 u0 u1 R
+      htargetSq P h_bot hPX hPY_ne h12 hne34 hnoroot34
+      hP1ua hP1target hP2ua hP2target hRP1 hRP2 hRua
+  have hgR_eval : E.eval R + P.Y * Y.eval R = 0 := by
+    rw [hPY]
+    simpa [hE_def, hY_def] using
+      (Epoly4_eval_add_v_eval_mul_Ypoly4_eval_eq_zero_of_root_u p P1 P2 ua0 ua1 va0 va1
+        u0 u1 v0 v1 hA R htargetRoot)
+  have hgbar_eval : E.eval P.X + (-Y).eval P.X * P.Y ≠ 0 := by
+    rw [hPX, Polynomial.eval_neg]
+    have hYZ : Y.eval R * P.Y ≠ 0 :=
+      mul_ne_zero (by simpa [hY_def] using hYR_ne) hPY_ne
+    have hgR_eval' : E.eval R + Y.eval R * P.Y = 0 := by
+      linear_combination hgR_eval
+    intro hcontra
+    have h2 : (2 : F p) * (Y.eval R * P.Y) = 0 := by
+      linear_combination hgR_eval' - hcontra
+    rcases mul_eq_zero.mp h2 with h2c | h2yz
+    · exact absurd h2c hchar
+    · exact absurd h2yz hYZ
+  have hg_ne : toPair H E Y ≠ 0 := by
+    rw [Ne, toPair_eq_zero_iff]
+    rintro ⟨-, hY0⟩
+    apply hYR_ne
+    rw [← hY_def, hY0]
+    simp
+  have hU_eval' : U.eval P.X ≠ 0 := by
+    rw [hPX, hU_def, Polynomial.eval_mul, Polynomial.eval_C]
+    exact mul_ne_zero
+      ((not_congr Polynomial.leadingCoeff_eq_zero).mpr hcurne) hU_eval
+  exact ordAt_eq_two_of_old_point P h_bot E Y A U
     hg_ne hgbar_eval hAU hA_ne hU_ne hA_ord hU_eval'
 
 end PointCompositionR1

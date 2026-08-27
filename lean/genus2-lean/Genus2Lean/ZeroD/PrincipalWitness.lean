@@ -1006,6 +1006,43 @@ theorem ordAt_eq_one_of_old_point
   -- `rw` leaves the goal `1 + 0 = 1` in `ℤ` (ordAt's codomain); close it.
   norm_num
 
+/-- **`= 2` mirror of lemma 14 (`ordAtFrac_eq_one_of_old_point`), for the
+`R1 = R2` repeated-root branch.** `ordAtFrac_eq_ordAt_of_pairNorm_eq_mul`
+(lemma 8) is already generic in the RHS — it concludes `ordAtFrac P E Y U
+0 = ordAt P A 0` for ANY value of `ordAt P A 0`, not just `1` — so this is
+the exact same one-line composition as lemma 14, with `hA_ord` supplying
+`2` instead of `1`. No new machinery; just not hardcoding the `1`. -/
+theorem ordAtFrac_eq_two_of_old_point
+    [IsDedekindDomain (CoordinateRing H)]
+    (P : H.Point) (h_bot : pointIdeal P ≠ ⊥) (E Y A U : k[X])
+    (hg_ne : toPair H E Y ≠ 0) (hg_ne_eval : E.eval P.X + (-Y).eval P.X * P.Y ≠ 0)
+    (hAU : pairNorm H E Y = A * U) (hA_ne : toPair H A (0 : k[X]) ≠ 0)
+    (hU_ne : toPair H U (0 : k[X]) ≠ 0) (hA_ord : ordAt P A (0 : k[X]) = 2) :
+    ordAtFrac P E Y U (0 : k[X]) = 2 := by
+  have hN_eq_mult : ordAt P E Y = ordAt P (pairNorm H E Y) (0 : k[X]) :=
+    ordAt_eq_ordAt_pairNorm_of_eval_eq_zero P h_bot E Y hg_ne hg_ne_eval
+  rw [ordAtFrac_eq_ordAt_of_pairNorm_eq_mul P h_bot E Y A U hAU hA_ne hU_ne hN_eq_mult, hA_ord]
+
+/-- **`= 2` mirror of lemma 16 (`ordAt_eq_one_of_old_point`), for the
+`R1 = R2` repeated-root branch.** Same composition (lemma 4 + lemma 7 +
+`hU_eval`-driven `ordAt P U 0 = 0`), collapsing `2 + 0 = 2` instead of
+`1 + 0 = 1`. -/
+theorem ordAt_eq_two_of_old_point
+    [IsDedekindDomain (CoordinateRing H)]
+    (P : H.Point) (h_bot : pointIdeal P ≠ ⊥) (E Y A U : k[X])
+    (hg_ne : toPair H E Y ≠ 0) (hg_ne_eval : E.eval P.X + (-Y).eval P.X * P.Y ≠ 0)
+    (hAU : pairNorm H E Y = A * U) (hA_ne : toPair H A (0 : k[X]) ≠ 0)
+    (hU_ne : toPair H U (0 : k[X]) ≠ 0) (hA_ord : ordAt P A (0 : k[X]) = 2)
+    (hU_eval : U.eval P.X ≠ 0) :
+    ordAt P E Y = 2 := by
+  have hN_eq_mult : ordAt P E Y = ordAt P (pairNorm H E Y) (0 : k[X]) :=
+    ordAt_eq_ordAt_pairNorm_of_eval_eq_zero P h_bot E Y hg_ne hg_ne_eval
+  have hU_ord : ordAt P U (0 : k[X]) = 0 :=
+    ordAt_eq_zero_of_eval_ne_zero P U (0 : k[X]) (by simpa using hU_eval)
+  rw [hN_eq_mult, hAU, ordAt_add_of_pairNorm_eq_mul P h_bot (A * U) A U rfl hA_ne hU_ne,
+    hA_ord, hU_ord]
+  norm_num
+
 end HyperellipticPolynomial
 
 /-! ## Note (not a lemma): the `ρ + I` side of step 1 needs no new lemma
