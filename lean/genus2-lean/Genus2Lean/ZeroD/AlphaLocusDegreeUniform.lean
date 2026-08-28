@@ -1129,14 +1129,14 @@ theorem reducedClass_eq_of_isReduction' {p : ℕ} [Fact (Nat.Prime p)] [Fact (p 
   -- `sa.P1,sa.P2` (a different, independently-existing pair).
   have hRa12ne : Ra1 ≠ Ra2 := fun h => hRa12Xne (by rw [h])
   have hSanchorEq : Sanchor = ({Ra1, Ra2} : Finset H.Point) :=
-    Sanchor_eq_of_anchor_roots (va0 := va0) (va1 := va1) ua va hua huafree
+    Sanchor_eq_of_anchor_roots ua va hua huafree
       Ra1 Ra2 hRa12ne hRa12Xne ⟨hRa1Root, hRa2Root⟩ hRa1Y hRa2Y Sanchor
       hSanchorMem hSanchorCard
   -- **`S`'s own split**, same lemma applied to `u`/`v`/`S`/`T1`/`T2`.
   have hT12ne : T1 ≠ T2 := fun h => hT12Xne (by rw [h])
   have hSEq : S = ({T1, T2} : Finset H.Point) :=
     Sanchor_eq_of_anchor_roots (ua0 := sa.toSampleTarget.u0) (ua1 := sa.toSampleTarget.u1)
-      (va0 := sa.toSampleTarget.v0) (va1 := sa.toSampleTarget.v1) u v hu hufree
+      u v hu hufree
       T1 T2 hT12ne hT12Xne ⟨hT1Root, hT2Root⟩ hT1Y hT2Y S hSmem hScard
   -- **Collapse `divToPair (-va) 1 Sanchor` and `divToPair (-v) 1 S`** to
   -- the concrete two-point sums, via `PrincipalWitnessCAConnection.lean`.

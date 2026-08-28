@@ -52,11 +52,35 @@ coefficient), rather than two independently-asserted objects. This is
 the ground truth `PrincipalWitnessStep4.lean`'s Part 2/Part 3 sign
 questions (`S := ι(T)` vs `S := T`, etc.) can finally be checked against.
 
-**Tangent branch (`sa.P1 = sa.P2`) is out of scope here** — mirrors the
-existing `hcurT`/`hgcdT` split elsewhere in this file's neighbors;
-`Sanchor` would then be a repeated-root singleton and needs its own
-`rootMultiplicity = 2` argument (`OrdAtRootMultiplicityUnified.lean`'s
-pattern), not attempted in this file. -/
+**Tangent branch (`sa.P1 = sa.P2`) is a genuine, separate case, NOT a
+restriction to defer.** Diagnosed: the split hypothesis `hP1Xne`/
+`hRa12Xne`/`hT12Xne` propagating up into
+`reducedClass_eq_of_isReduction'`'s signature is an ARTIFACT of
+`Sanchor_eq_of_anchor_roots` reaching for `quadratic_eq_mul_X_sub_C`
+(which only factors a monic quadratic against two named DISTINCT roots)
+instead of the unconditional route `SanchorMumfordOrdAt.lean`,
+`CAWitnessResidual.lean`, and `OrdAtRootMultiplicityUnified.lean`
+already use everywhere else (`ordAt_eq_rootMultiplicity_unramified` +
+squarefreeness, no distinctness needed). It is not a real mathematical
+restriction — `huafree : Squarefree ua` does NOT force `P1.X ≠ P2.X`
+when `P1.X = P2.X` isn't itself given as a root pair to split (a single
+`IsRoot` fact only pins `rootMultiplicity ≥ 1`, not `≥ 2`); the tangent
+case is instead genuinely reached when the CALLER supplies `ua = (X - C
+R)^2` directly (`hP1eqP2 : P1 = P2`, `R := P1.X = P2.X`), mirroring
+`OrdAtRootMultiplicityUnified.lean`'s
+`rootMultiplicity_npoly4Lcm4_eq_two_of_R1_eq_R2` pattern: the repeated
+root is caller-supplied data (from `hMumfordUa`'s concrete `(ua0,ua1)`),
+not derived from squarefreeness. `Sanchor_eq_of_anchor_roots_tangent`
+below handles this: `Sanchor` collapses to the singleton `{P1}`, and
+`hSanchorCard` (`= ua.natDegree = 2`) is then impossible to satisfy
+UNLESS `Sanchor` is being counted with a convention that doesn't apply
+to a plain `Finset` — so the actual caller-facing fact in this branch is
+`Sanchor = {P1}` as a `Finset` (cardinality 1), with the multiplicity-2
+information living in `ordAt`/`rootMultiplicity`, not in `Finset.card`.
+Downstream code that assumed `Sanchor.card = ua.natDegree` unconditionally
+needs to drop that assumption for the tangent branch specifically — this
+is the actual scope of the bug, not the split case, which was already
+correct and needed no repair beyond this docstring. -/
 
 noncomputable section
 
@@ -90,7 +114,7 @@ first place); the reverse inclusion plus matching cardinalities
 (`Finset.eq_of_subset_of_card_le`) closes it. -/
 theorem Sanchor_eq_of_anchor_roots
     [DecidableEq H.Point]
-    {ua0 ua1 va0 va1 : Genus2Lean.TheDataDerivation.F p}
+    {ua0 ua1 : Genus2Lean.TheDataDerivation.F p}
     (ua va : Polynomial (Genus2Lean.TheDataDerivation.F p))
     (hua : ua = (X : Polynomial (Genus2Lean.TheDataDerivation.F p)) ^ 2
       + C ua1 * X + C ua0)
@@ -139,6 +163,44 @@ theorem Sanchor_eq_of_anchor_roots
       Finset.card_singleton]
   have hSanchorCard2 : Sanchor.card = 2 := by rw [hSanchorCard, hdeg2]
   exact Finset.eq_of_subset_of_card_le hsub (by rw [hcard2, hSanchorCard2])
+
+/-- **The missing link, tangent case: `Sanchor = {P1}`.** Mirrors
+`OrdAtRootMultiplicityUnified.lean`'s `rootMultiplicity_npoly4Lcm4_eq_
+two_of_R1_eq_R2` pattern: the repeated root is CALLER-supplied
+(`hua : ua = (X - C P1.X) ^ 2`), not derived from `Squarefree ua` (which
+would be false for a genuine double root — `Squarefree` and `IsRoot`
+alone never force this branch). `Sanchor`'s membership test
+(`hSanchorMem`) then only ever matches `Q.X = P1.X`, so `Sanchor ⊆
+{P1}`; `P1 ∈ Sanchor` (from `hP1mem`) gives the reverse inclusion. Note
+`Sanchor.card = 1 ≠ 2 = ua.natDegree` here — `hSanchorCard`'s usual form
+does NOT hold in this branch, so this theorem takes membership only,
+not the cardinality hypothesis (any caller in the tangent case must
+supply `hP1mem` directly, e.g. from `hAlphaRep`/`hMumfordUa`, rather
+than deriving it from a cardinality argument as the split case does). -/
+theorem Sanchor_eq_of_anchor_roots_tangent
+    [DecidableEq H.Point]
+    (ua va : Polynomial (Genus2Lean.TheDataDerivation.F p))
+    (P1 : H.Point)
+    (hua : ua = (X - C P1.X) ^ 2)
+    (hsaP1Y : P1.Y = va.eval P1.X)
+    (Sanchor : Finset H.Point)
+    (hSanchorMem : ∀ Q ∈ Sanchor, ua.eval Q.X = 0 ∧ Q.Y = va.eval Q.X)
+    (hP1mem : P1 ∈ Sanchor) :
+    Sanchor = ({P1} : Finset H.Point) := by
+  classical
+  have hsub : Sanchor ⊆ ({P1} : Finset H.Point) := by
+    intro Q hQ
+    obtain ⟨hQroot, hQY⟩ := hSanchorMem Q hQ
+    have hQX : Q.X = P1.X := by
+      rw [hua] at hQroot
+      simp only [Polynomial.eval_pow, Polynomial.eval_sub, Polynomial.eval_X,
+        Polynomial.eval_C, pow_eq_zero_iff, ne_eq, OfNat.ofNat_ne_zero,
+        not_false_eq_true] at hQroot
+      exact sub_eq_zero.mp hQroot
+    rw [Finset.mem_singleton]
+    have hQeqY : Q.Y = P1.Y := by rw [hQY, hQX, ← hsaP1Y]
+    exact Subtype.ext (Prod.ext hQX hQeqY)
+  exact Finset.Subset.antisymm hsub (Finset.singleton_subset_iff.mpr hP1mem)
 
 end DecoupledSystem
 end Genus2Lean
