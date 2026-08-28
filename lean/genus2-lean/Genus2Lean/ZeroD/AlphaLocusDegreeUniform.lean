@@ -7,6 +7,7 @@ import Genus2Lean.ZeroD.PeelChainAssembly
 import Genus2Lean.ZeroD.RegularSequenceFiniteQuotient
 import Genus2Lean.PrincipalDivisorSubgroup
 import Genus2Lean.ZeroD.SanchorEqAlphaPoints
+import Genus2Lean.ZeroD.PrincipalWitnessCAConnection
 
 -- `PrincipalDivisorSubgroup.lean` supplies `toPair`/`divToPair`/`ordAt`/
 -- `pointIdeal`, needed below (`ROADMAP-reduce-divisor-correctness.md` Step 2)
@@ -569,6 +570,16 @@ residual-Mumford / principal-witness, per §3a) will determine which
 "S is the point set the divToPair is taken over" and may need revision once
 Step 3 is attempted. -/
 
+-- **`maxHeartbeats` bump, this pass.** `reducedClass_eq_of_isReduction'`'s
+-- signature grew substantially (the final-assembly wiring hypotheses,
+-- Step 4 of the roadmap) and its elaboration now times out at the default
+-- limit — a `whnf` timeout on the declaration itself, not a tactic-block
+-- issue, so this is a signature-elaboration cost, not something
+-- "unroll the proof state" (the usual heartbeat fix for tactic blocks)
+-- addresses. Placed above the doc comment, per project convention
+-- (`set_option`/`omit` go above the `/--`, never between it and the
+-- theorem).
+set_option maxHeartbeats 800000 in
 /-- **Step 2's target theorem, stated as a `sorry` for review — not attempted
 here.** Given `sa : SampleTargetFromAlpha` whose Mumford pair satisfies
 `isReduction'` (i.e. really is `ReduceDispatchGeneral`'s output on `P1,P2`
@@ -768,12 +779,16 @@ infinity, not a `δ₀` coefficient; an earlier draft of this note said
 `-4•[δ₀]` here, which conflated the two (see
 `CHATGPT-LOG-principal-witness-assembly.md`'s "pass #17" entry). No
 `Starget`-shaped hypothesis is added here accordingly — it would scaffold
-an abandoned plan. The proof body below is still `sorry`; the
-`eq_of_coeffAt_eq` route from `D_old - D_new` (no correction term) to
-this theorem's `hmem`/`hmemAnchor`-shaped goal (via `hmem`/
-`hmemAnchor`, already the right shape above) is the single largest
-remaining piece, per `PrincipalWitnessAssembly.lean`'s own trailing status
-note.
+an abandoned plan. **Update, this pass: the proof body below is no
+longer `sorry`** — the actual route taken ended up being the concrete
+`cAmιTmδmιδ_mem_of_le` assembly (`PrincipalWitnessFinalAssembly.lean`),
+composed with `PrincipalWitnessCAConnection.lean`'s `divToPair`-collapse
+lemmas and a direct `toJacobian`/`D.P`-membership bridge, NOT the
+`eq_of_coeffAt_eq`/`D_old - D_new` route this paragraph originally
+anticipated — left here for history, but superseded; see the theorem's
+proof body and its inline comments for what was actually used. **Not yet
+REPL-tested** — Claire's confirmation is the next step, per project
+convention (this file never runs the Lean REPL itself).
  **Pass note: closed the "`S` unlinked to `u`" statement gap flagged
 above (line ~682's "kept as parameters... still needed" comment) and its
 unflagged anchor-side twin.** This does NOT close the `sorry` — it makes
@@ -795,6 +810,23 @@ theorem reducedClass_eq_of_isReduction' {p : ℕ} [Fact (Nat.Prime p)] [Fact (p 
     {D : PrincipalDivisorData H}
     {aClass : Jacobian H D} {δ₀ : H.Point}
     (sa : SampleTargetFromAlpha p H D aClass δ₀)
+    /- The `reducedClass` projection is a defaulted STRUCTURE FIELD, not a
+    definitional function of `sa`; an arbitrary `sa` may override the default.
+    Therefore the divisor-class formula used below must be supplied explicitly. -/
+    (hReducedClass :
+      sa.reducedClass =
+        sa.alpha • aClass -
+          toJacobian D
+            (⟨single sa.P1 + single sa.P2 - (2 : ℤ) • single δ₀,
+              by
+                have h1 := single_sub_single_mem_Divisor0 sa.P1 δ₀
+                have h2 := single_sub_single_mem_Divisor0 sa.P2 δ₀
+                have heq2 : single sa.P1 + single sa.P2 - (2 : ℤ) • single δ₀ =
+                    (single sa.P1 - single δ₀) + (single sa.P2 - single δ₀) := by
+                  rw [two_zsmul]
+                  abel
+                rw [heq2]
+                exact add_mem h1 h2⟩ : Divisor0 H))
     (c0 c1 c2 c3 c4 ua0 ua1 va0 va1 : F p)
     (hf : H.f = curvePoly p c0 c1 c2 c3 c4)
     (hdeg : H.f.natDegree = 5)
@@ -940,23 +972,29 @@ theorem reducedClass_eq_of_isReduction' {p : ℕ} [Fact (Nat.Prime p)] [Fact (p 
     -- same-normalization divisors are normalization-independent, so (†)
     -- composes cleanly to `Nι(Sanchor) - Nι({P1,P2}) = Nι(S)`, no `q`
     -- needed internally). The ONLY place `q` has to appear is bridging
-    -- `reducedClass`'s own `N₂({P1,P2})` term to that `Nι({P1,P2})`:
-    -- `N₂(X) - Nι(X) = 2•[δ₀] - ([δ₀]+[ιδ₀]) = [δ₀]-[ιδ₀] =: q` (as
-    -- `Jacobian H D` classes), so `N₂(X) = Nι(X) + q`, giving
+    -- `reducedClass`'s own `N₂({P1,P2})` term to that `Nι({P1,P2})`.
+    -- **Sign correction, this pass**: an earlier draft of this note computed
+    -- `N₂(X) - Nι(X) = 2•[δ₀] - ([δ₀]+[ιδ₀]) = [δ₀]-[ιδ₀]` and called that
+    -- `q` — but `2•[δ₀] - ([δ₀]+[ιδ₀]) = [δ₀] - [ιδ₀]` is right arithmetic,
+    -- the mislabeling was calling it `N₂(X)-Nι(X)` when it is in fact
+    -- `Nι(X)-N₂(X)` (`Nι(X) - N₂(X) = -([δ₀]+[ιδ₀]) - (-2•[δ₀]) =
+    -- [δ₀]-[ιδ₀]`, whereas `N₂(X)-Nι(X)` is the negative of that,
+    -- `[ιδ₀]-[δ₀]`). Re-derived directly rather than trusted: `q` is
+    -- defined below as `[ιδ₀]-[δ₀]` (not `[δ₀]-[ιδ₀]`) so that `N₂(X) =
+    -- Nι(X) + q` holds as stated (checked: `Nι(X)+q = X-([δ₀]+[ιδ₀]) +
+    -- [ιδ₀]-[δ₀] = X - 2[δ₀] = N₂(X)`, correct). This gives
     -- `sa.reducedClass = alpha•aClass - Nι({P1,P2}) - q`. Composed with
     -- `hAlphaRep`/(†)'s `Nι(Sanchor) - Nι({P1,P2}) = Nι(S)`, this gives
     -- `sa.reducedClass = Nι(S) - q`, i.e. `sa.reducedClass + q = Nι(S)`
-    -- — matching the sign below. This is exactly the
-    -- `CHATGPT-REPLY`-confirmed fact (§2 of the pasted reply, this pass)
-    -- that `N₂`/`Nι` do not agree on a single divisor without an
-    -- explicit `q` correction: stated as an explicit additive term here,
-    -- not silently assumed to cancel. `q = 0` exactly when `δ₀ - (a
-    -- fixed point at infinity)` is 2-torsion on the smooth model — a
-    -- genuine extra condition on the caller-supplied `δ₀`, not proved or
-    -- assumed here. -/
+    -- — matching the sign below, now with `q`'s definition actually
+    -- consistent with that derivation (checked by hand this pass, not
+    -- carried forward from the earlier mislabeled version). `q = 0`
+    -- exactly when `δ₀ - (a fixed point at infinity)` is 2-torsion on the
+    -- smooth model — a genuine extra condition on the caller-supplied
+    -- `δ₀`, not proved or assumed here. -/
     (q : Jacobian H D)
-    (hq : q = toJacobian D (Subtype.mk (single δ₀ - single (Point.iota δ₀) : Divisor H)
-      (single_sub_single_mem_Divisor0 δ₀ (Point.iota δ₀))) )
+    (hq : q = toJacobian D (Subtype.mk (single (Point.iota δ₀) - single δ₀ : Divisor H)
+      (single_sub_single_mem_Divisor0 (Point.iota δ₀) δ₀)) )
     -- **Correction, this pass: the previous pass's `hAnchorRoots`/
     -- `hSanchorEq` (`Sanchor = {sa.P1, sa.P2}`) was WRONG and is removed
     -- here.** Re-reading `CAWitness.lean`'s own module docstring
@@ -989,7 +1027,97 @@ theorem reducedClass_eq_of_isReduction' {p : ℕ} [Fact (Nat.Prime p)] [Fact (p 
     (T1 T2 : H.Point)
     (hT12Xne : T1.X ≠ T2.X)
     (hT1Root : u.IsRoot T1.X) (hT2Root : u.IsRoot T2.X)
-    (hT1Y : T1.Y = v.eval T1.X) (hT2Y : T2.Y = v.eval T2.X) :
+    (hT1Y : T1.Y = v.eval T1.X) (hT2Y : T2.Y = v.eval T2.X)
+    -- **Final assembly wiring, added this pass — closes the `sorry`.**
+    -- Everything below is "caller supplies the real Mumford/witness data,"
+    -- same category as `hMumfordUa`/`hMumfordTarget`/`hAnchorRoots` above,
+    -- not a proof obligation: it instantiates
+    -- `PrincipalWitnessCAConnection.lean`'s `divToPair_negVa_one_Sanchor_eq`/
+    -- `divToPair_negV_one_S_eq` (collapsing `divToPair (-va) 1 Sanchor` and
+    -- `divToPair (-v) 1 S` to `single Ra1 + single Ra2` /
+    -- `single T1 + single T2`) and `PrincipalWitnessFinalAssembly.lean`'s
+    -- `cAmιTmδmιδ_mem_of_le` (the concrete-coordinate (†), giving `D.P`
+    -- membership of exactly the divisor this goal needs).
+    [DecidableEq H.Point]
+    (hchar : (2 : F p) ≠ 0) (hsf : Squarefree H.f)
+    -- Cofactor data for `Sanchor_eq..`'s `ordAt`-at-a-Mumford-point route
+    -- (`SanchorMumfordOrdAt.lean`'s own required shape), anchor and target
+    -- side. `Uco`/`UcoT` are `pairNorm H (-va) 1`/`pairNorm H (-v) 1`'s
+    -- cofactor after dividing out `ua`/`u`.
+    (Uco UcoT : Polynomial (F p))
+    (hAU : pairNorm H (-va) (1 : Polynomial (F p)) = ua * Uco)
+    (hUco_ne : Uco ≠ 0)
+    (hUco_evalRa1 : Uco.eval Ra1.X ≠ 0) (hUco_evalRa2 : Uco.eval Ra2.X ≠ 0)
+    (hAUT : pairNorm H (-v) (1 : Polynomial (F p)) = u * UcoT)
+    (hUcoT_ne : UcoT ≠ 0)
+    (hUcoT_evalT1 : UcoT.eval T1.X ≠ 0) (hUcoT_evalT2 : UcoT.eval T2.X ≠ 0)
+    (hRa1Y_ne : Ra1.Y ≠ 0) (hRa2Y_ne : Ra2.Y ≠ 0)
+    (hT1Y_ne : T1.Y ≠ 0) (hT2Y_ne : T2.Y ≠ 0)
+    -- **The `CAWitness` identification** (`ua,va` ARE `uCANew,-bCA` built
+    -- from `Ra1,Ra2,sa.P1,sa.P2`), the honest minimal hypothesis per
+    -- `PrincipalWitnessCAConnection.lean`'s header — matches this project's
+    -- "caller supplies the real Mumford data" convention, not derived.
+    (hdet : (caInterpMatrix Ra1.X Ra2.X sa.P1.X sa.P2.X).det ≠ 0)
+    (hlead : caCoeff Ra1.X Ra2.X sa.P1.X sa.P2.X Ra1.Y Ra2.Y sa.P1.Y sa.P2.Y 3 ≠ 0)
+    (h1P1 : Ra1.X ≠ sa.P1.X) (h1P2 : Ra1.X ≠ sa.P2.X)
+    (h2P1 : Ra2.X ≠ sa.P1.X) (h2P2 : Ra2.X ≠ sa.P2.X) (hPP : sa.P1.X ≠ sa.P2.X)
+    (hRa1_curve : Ra1.Y ^ 2 = H.f.eval Ra1.X) (hRa2_curve : Ra2.Y ^ 2 = H.f.eval Ra2.X)
+    (hP1_curve : sa.P1.Y ^ 2 = H.f.eval sa.P1.X) (hP2_curve : sa.P2.Y ^ 2 = H.f.eval sa.P2.X)
+    (hP1Y_ne : sa.P1.Y ≠ 0) (hP2Y_ne : sa.P2.Y ≠ 0)
+    (hU_evalRa1 : (uCANew H Ra1.X Ra2.X sa.P1.X sa.P2.X Ra1.Y Ra2.Y sa.P1.Y sa.P2.Y).eval Ra1.X ≠ 0)
+    (hU_evalRa2 : (uCANew H Ra1.X Ra2.X sa.P1.X sa.P2.X Ra1.Y Ra2.Y sa.P1.Y sa.P2.Y).eval Ra2.X ≠ 0)
+    (hU_evalP1 : (uCANew H Ra1.X Ra2.X sa.P1.X sa.P2.X Ra1.Y Ra2.Y sa.P1.Y sa.P2.Y).eval sa.P1.X ≠ 0)
+    (hU_evalP2 : (uCANew H Ra1.X Ra2.X sa.P1.X sa.P2.X Ra1.Y Ra2.Y sa.P1.Y sa.P2.Y).eval sa.P2.X ≠ 0)
+    (hU_ne0 : uCANew H Ra1.X Ra2.X sa.P1.X sa.P2.X Ra1.Y Ra2.Y sa.P1.Y sa.P2.Y ≠ 0)
+    -- `PtT1,PtT2`: `uCANew`'s own (unconjugated) residual roots — the
+    -- `S := ι(T)` convention means `T1,T2` (this theorem's, roots of `u`)
+    -- are their hyperelliptic conjugates.
+    (PtT1 PtT2 : H.Point)
+    (hPtT1X : PtT1.X ≠ PtT2.X)
+    (hPtT1 : (uCANew H Ra1.X Ra2.X sa.P1.X sa.P2.X Ra1.Y Ra2.Y sa.P1.Y sa.P2.Y).IsRoot PtT1.X)
+    (hPtT2 : (uCANew H Ra1.X Ra2.X sa.P1.X sa.P2.X Ra1.Y Ra2.Y sa.P1.Y sa.P2.Y).IsRoot PtT2.X)
+    (Q1 Q2 : Polynomial (F p))
+    (hQ1_def : uCANew H Ra1.X Ra2.X sa.P1.X sa.P2.X Ra1.Y Ra2.Y sa.P1.Y sa.P2.Y =
+      (Polynomial.X - Polynomial.C PtT1.X) * (Polynomial.X - Polynomial.C PtT2.X) * Q1)
+    (hQ1T1 : Q1.eval PtT1.X ≠ 0)
+    (hQ2_def : uCANew H Ra1.X Ra2.X sa.P1.X sa.P2.X Ra1.Y Ra2.Y sa.P1.Y sa.P2.Y =
+      (Polynomial.X - Polynomial.C PtT2.X) * (Polynomial.X - Polynomial.C PtT1.X) * Q2)
+    (hQ2T2 : Q2.eval PtT2.X ≠ 0)
+    (hAeval1 : (denomPolyCA Ra1.X Ra2.X sa.P1.X sa.P2.X : Polynomial (F p)).eval PtT1.X ≠ 0)
+    (hAeval2 : (denomPolyCA Ra1.X Ra2.X sa.P1.X sa.P2.X : Polynomial (F p)).eval PtT2.X ≠ 0)
+    (hPtT1Y : PtT1.Y = (bCA Ra1.X Ra2.X sa.P1.X sa.P2.X Ra1.Y Ra2.Y sa.P1.Y sa.P2.Y).eval PtT1.X)
+    (hPtT1Y_ne : PtT1.Y ≠ 0)
+    (hPtT2Y : PtT2.Y = (bCA Ra1.X Ra2.X sa.P1.X sa.P2.X Ra1.Y Ra2.Y sa.P1.Y sa.P2.Y).eval PtT2.X)
+    (hPtT2Y_ne : PtT2.Y ≠ 0)
+    (h1δ : PtT1.X ≠ δ₀.X) (h2δ : PtT2.X ≠ δ₀.X) (hδY : δ₀.Y ≠ 0)
+    (hT1eq : T1 = Point.iota PtT1) (hT2eq : T2 = Point.iota PtT2)
+    (hsupp_f : ∀ P, P ∉ ({Ra1, Ra2, Point.iota sa.P1, Point.iota sa.P2, PtT1, PtT2} :
+        Finset H.Point) →
+      ordAt P (-bCA Ra1.X Ra2.X sa.P1.X sa.P2.X Ra1.Y Ra2.Y sa.P1.Y sa.P2.Y) (1 : Polynomial (F p)) = 0)
+    (hspec_f : ∀ vv : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H),
+      (Associates.mk vv.asIdeal).count (Associates.mk (Ideal.span
+        ({toPair H (-bCA Ra1.X Ra2.X sa.P1.X sa.P2.X Ra1.Y Ra2.Y sa.P1.Y sa.P2.Y) 1} :
+          Set (CoordinateRing H)))).factors ≠ 0 → ∃ P, vv.asIdeal = pointIdeal P)
+    [∀ P : ({Ra1, Ra2, Point.iota sa.P1, Point.iota sa.P2, PtT1, PtT2} : Finset H.Point),
+      Module.Finite (F p) (CoordinateRing H ⧸ pointIdeal P.1 ^
+        (ordAt P.1 (-bCA Ra1.X Ra2.X sa.P1.X sa.P2.X Ra1.Y Ra2.Y sa.P1.Y sa.P2.Y)
+          (1 : Polynomial (F p))).toNat)]
+    (hsupp_hT : ∀ P, P ∉ ({PtT1, PtT2, Point.iota PtT1, Point.iota PtT2, δ₀, Point.iota δ₀} :
+        Finset H.Point) →
+      ordAt P ((linX PtT1.X * linX PtT2.X) * linX δ₀.X) (0 : Polynomial (F p)) = 0)
+    (hspec_hT : ∀ vv : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H),
+      (Associates.mk vv.asIdeal).count (Associates.mk (Ideal.span
+        ({toPair H ((linX PtT1.X * linX PtT2.X) * linX δ₀.X) 0} :
+          Set (CoordinateRing H)))).factors ≠ 0 → ∃ P, vv.asIdeal = pointIdeal P)
+    [∀ P : ({PtT1, PtT2, Point.iota PtT1, Point.iota PtT2, δ₀, Point.iota δ₀} : Finset H.Point),
+      Module.Finite (F p) (CoordinateRing H ⧸ pointIdeal P.1 ^
+        (ordAt P.1 ((linX PtT1.X * linX PtT2.X) * linX δ₀.X) (0 : Polynomial (F p))).toNat)]
+    [∀ (a : F p) (Sfin : Finset H.Point),
+      ∀ P : Sfin, Module.Finite (F p) (CoordinateRing H ⧸ pointIdeal P.1 ^ (ordAt P.1 (linX a) 0).toNat)]
+    (hspec_linX : ∀ (a : F p), ∀ vv : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H),
+      (Associates.mk vv.asIdeal).count
+        (Associates.mk (Ideal.span ({toPair H (linX a) 0} : Set (CoordinateRing H)))).factors
+          ≠ 0 → ∃ P, vv.asIdeal = pointIdeal P) :
     sa.reducedClass + q =
       toJacobian D (Subtype.mk (divToPair (H := H) (-v) 1 S -
         (single δ₀ + single (Point.iota δ₀)) : Divisor H) hmem) := by
@@ -1010,7 +1138,187 @@ theorem reducedClass_eq_of_isReduction' {p : ℕ} [Fact (Nat.Prime p)] [Fact (p 
     Sanchor_eq_of_anchor_roots (ua0 := sa.toSampleTarget.u0) (ua1 := sa.toSampleTarget.u1)
       (va0 := sa.toSampleTarget.v0) (va1 := sa.toSampleTarget.v1) u v hu hufree
       T1 T2 hT12ne hT12Xne ⟨hT1Root, hT2Root⟩ hT1Y hT2Y S hSmem hScard
-  sorry
+  -- **Collapse `divToPair (-va) 1 Sanchor` and `divToPair (-v) 1 S`** to
+  -- the concrete two-point sums, via `PrincipalWitnessCAConnection.lean`.
+  -- `huafree`/`hufree` have type `Squarefree ua`/`Squarefree u`; the
+  -- callees below want `Squarefree (X^2+C ua1*X+C ua0)`/the `u` mirror —
+  -- the same polynomial via `hua`/`hu`, but not syntactically, so rewrite
+  -- the root hypotheses before passing them to the connection lemmas.
+  have huafree' : Squarefree (Polynomial.X ^ 2 + Polynomial.C ua1 * Polynomial.X
+      + Polynomial.C ua0 : Polynomial (F p)) := hua ▸ huafree
+  have hufree' : Squarefree (Polynomial.X ^ 2 +
+      Polynomial.C sa.toSampleTarget.u1 * Polynomial.X
+      + Polynomial.C sa.toSampleTarget.u0 : Polynomial (F p)) := hu ▸ hufree
+  -- `hAU`/`hAUT` are stated against `ua`/`u` (this theorem's own named
+  -- polynomials); the callees below want the spelled-out quadratic
+  -- `X^2+C ua1*X+C ua0`/the `u` mirror — same object via `hua`/`hu`, not
+  -- syntactically, so rewrite here too (same pattern as `huafree'`/`hufree'`
+  -- just above).
+  have hRa1Root' :
+      (Polynomial.X ^ 2 + Polynomial.C ua1 * Polynomial.X + Polynomial.C ua0 : Polynomial (F p)).IsRoot Ra1.X := by
+    rw [← hua]
+    exact hRa1Root
+  have hRa2Root' :
+      (Polynomial.X ^ 2 + Polynomial.C ua1 * Polynomial.X + Polynomial.C ua0 : Polynomial (F p)).IsRoot Ra2.X := by
+    rw [← hua]
+    exact hRa2Root
+  have hT1Root' :
+      (Polynomial.X ^ 2 + Polynomial.C sa.toSampleTarget.u1 * Polynomial.X +
+        Polynomial.C sa.toSampleTarget.u0 : Polynomial (F p)).IsRoot T1.X := by
+    rw [← hu]
+    exact hT1Root
+  have hT2Root' :
+      (Polynomial.X ^ 2 + Polynomial.C sa.toSampleTarget.u1 * Polynomial.X +
+        Polynomial.C sa.toSampleTarget.u0 : Polynomial (F p)).IsRoot T2.X := by
+    rw [← hu]
+    exact hT2Root
+  have hAU' : pairNorm H (-va) (1 : Polynomial (F p)) =
+      (Polynomial.X ^ 2 + Polynomial.C ua1 * Polynomial.X + Polynomial.C ua0 : Polynomial (F p)) * Uco :=
+    hua ▸ hAU
+  have hAUT' : pairNorm H (-v) (1 : Polynomial (F p)) =
+      (Polynomial.X ^ 2 + Polynomial.C sa.toSampleTarget.u1 * Polynomial.X
+        + Polynomial.C sa.toSampleTarget.u0 : Polynomial (F p)) * UcoT :=
+    hu ▸ hAUT
+  have hSanchorSum : divToPair (H := H) (-va) 1 Sanchor = single Ra1 + single Ra2 :=
+    DecoupledSystem.divToPair_negVa_one_Sanchor_eq (H := H) hchar
+      (c0 := c0) (c1 := c1) (c2 := c2) (c3 := c3) (c4 := c4)
+      (ua0 := ua0) (ua1 := ua1) (va0 := va0) (va1 := va1)
+      hf hMumfordUa huafree' va hva Uco hAU' hUco_ne
+      Ra1 Ra2 hRa12ne hRa1Y_ne hRa2Y_ne hRa1Root' hRa2Root' hRa1Y hRa2Y
+      hUco_evalRa1 hUco_evalRa2 Sanchor hSanchorEq
+  have hSSum : divToPair (H := H) (-v) 1 S = single T1 + single T2 :=
+    DecoupledSystem.divToPair_negV_one_S_eq (H := H) hchar
+      (c0 := c0) (c1 := c1) (c2 := c2) (c3 := c3) (c4 := c4)
+      (u0 := sa.toSampleTarget.u0) (u1 := sa.toSampleTarget.u1)
+      (v0 := sa.toSampleTarget.v0) (v1 := sa.toSampleTarget.v1)
+      hf hMumfordTarget hufree' v hv UcoT hAUT' hUcoT_ne
+      T1 T2 hT12ne hT1Y_ne hT2Y_ne hT1Root' hT2Root' hT1Y hT2Y
+      hUcoT_evalT1 hUcoT_evalT2 S hSEq
+  -- **The concrete-coordinate assembly (†)**: `C - A - ι(T) + [δ₀] + [ιδ₀]
+  -- ∈ D.P`, `C := {Ra1,Ra2}`, `A := {sa.P1,sa.P2}`, instantiated at the
+  -- actual named points. `T1cur T2cur := T1 T2` via `hT1eq`/`hT2eq`
+  -- (`S := ι(T)` convention). `hspec_linX` is the explicit arg right after
+  -- `hD` (the `Module.Finite` bracket before it is instance-implicit,
+  -- auto-resolved) — an earlier draft of this call jumped straight to
+  -- `Ra1.X` and landed it in `hspec_linX`'s slot; fixed here.
+  have hDP := cAmιTmδmιδ_mem_of_le (H := H) hdeg hchar hsf D hD
+    hspec_linX
+    Ra1.X Ra2.X sa.P1.X sa.P2.X Ra1.Y Ra2.Y sa.P1.Y sa.P2.Y
+    hdet hlead hRa12Xne h1P1 h1P2 h2P1 h2P2 hPP
+    hRa1_curve hRa2_curve hP1_curve hP2_curve
+    hRa1Y_ne hRa2Y_ne hP1Y_ne hP2Y_ne
+    Ra1 Ra2 sa.P1 sa.P2 (Point.iota sa.P1) (Point.iota sa.P2)
+    rfl rfl rfl rfl rfl rfl rfl rfl rfl rfl rfl rfl
+    hU_evalRa1 hU_evalRa2 hU_evalP1 hU_evalP2 hU_ne0
+    PtT1.X PtT2.X hPtT1 hPtT2 hPtT1X
+    Q1 Q2 hQ1_def hQ1T1 hQ2_def hQ2T2
+    PtT1 PtT2 δ₀ hAeval1 hAeval2 rfl hPtT1Y hPtT1Y_ne rfl hPtT2Y hPtT2Y_ne
+    h1δ h2δ hδY hsupp_f hspec_f hsupp_hT hspec_hT
+    T1 T2 hT1eq hT2eq
+  -- **Bridge `D.P` membership to a `toJacobian` equation**, exactly the
+  -- `s_add_s_eq_s_add_s_iff` pattern (`DivisorClassGroup.lean`), applied to
+  -- the concrete divisor `hDP` supplies rather than re-derived generically.
+  -- `sa.reducedClass + q - toJacobian D aTarget`, unfolded all the way to
+  -- `Divisor0 H` representatives, is EXACTLY `hDP`'s divisor (checked by
+  -- hand, this pass, via a symbolic recomputation after the earlier
+  -- `N₂(X)-Nι(X)` sign bug was found and `q`'s definition corrected above
+  -- to `[ιδ₀]-[δ₀]`) — so this is a single `abel`-after-unfolding argument,
+  -- not a multi-step `set`/`map_sub` composition (an earlier draft of this
+  -- proof used the latter and had a mismatched decomposition; this version
+  -- is the direct, re-verified one).
+  set aAnchor : Divisor0 H := ⟨divToPair (H := H) (-va) 1 Sanchor -
+    (single δ₀ + single (Point.iota δ₀)), hmemAnchor⟩ with haAnchor_def
+  set aTarget : Divisor0 H := ⟨divToPair (H := H) (-v) 1 S -
+    (single δ₀ + single (Point.iota δ₀)), hmem⟩ with haTarget_def
+  set aP1P2Nι : Divisor0 H := ⟨single sa.P1 + single sa.P2 -
+      (single δ₀ + single (Point.iota δ₀)),
+    by
+      have h1 := single_sub_single_mem_Divisor0 sa.P1 δ₀
+      have h2 := single_sub_single_mem_Divisor0 sa.P2 (Point.iota δ₀)
+      have heq2 : single sa.P1 + single sa.P2 - (single δ₀ + single (Point.iota δ₀)) =
+          (single sa.P1 - single δ₀) + (single sa.P2 - single (Point.iota δ₀)) := by abel
+      rw [heq2]; exact add_mem h1 h2⟩ with haP1P2Nι_def
+  set aQ : Divisor0 H := ⟨single (Point.iota δ₀) - single δ₀,
+    single_sub_single_mem_Divisor0 (Point.iota δ₀) δ₀⟩ with haQ_def
+  -- `reducedClass`'s `N₂({P1,P2})` term equals `Nι({P1,P2}) + q` at the
+  -- `Divisor0 H` level (checked: `Nι(P1P2) + q = (P1+P2-δ₀-ιδ₀) +
+  -- (ιδ₀-δ₀) = P1+P2-2δ₀ = N₂(P1P2)`, matching `reducedClass`'s structure
+  -- default exactly). **Proved via `Subtype.ext`/`congrArg` on the
+  -- underlying divisor value, NOT `show`-matching the whole term** — an
+  -- earlier draft tried to `show` the RHS of `sa.reducedClass`'s
+  -- definitional unfolding verbatim and failed: the `Subtype.mk` proof
+  -- component built inline differs syntactically from `reducedClass`'s
+  -- own stored proof term, and `show` needs full syntactic (up to defeq)
+  -- reconstruction of BOTH components, not just the value, so it never
+  -- matched. Proof irrelevance makes the two proof terms interchangeable
+  -- for `Jacobian`-level equality, but reaching that needs `Subtype.ext`
+  -- (which only asks the VALUES to agree) rather than a raw `show`.
+  have hred : sa.reducedClass = sa.alpha • aClass - (toJacobian D aP1P2Nι + q) := by
+    have hN2 :
+        (⟨single sa.P1 + single sa.P2 - (2 : ℤ) • single δ₀,
+          by
+            have h1 := single_sub_single_mem_Divisor0 sa.P1 δ₀
+            have h2 := single_sub_single_mem_Divisor0 sa.P2 δ₀
+            have heq2 : single sa.P1 + single sa.P2 - (2 : ℤ) • single δ₀ =
+                (single sa.P1 - single δ₀) + (single sa.P2 - single δ₀) := by
+              rw [two_zsmul]
+              abel
+            rw [heq2]
+            exact add_mem h1 h2⟩ : Divisor0 H) = aP1P2Nι + aQ := by
+      apply Subtype.ext
+      show single sa.P1 + single sa.P2 - (2 : ℤ) • single δ₀ =
+        (aP1P2Nι : Divisor H) + (aQ : Divisor H)
+      rw [haP1P2Nι_def, haQ_def]
+      show single sa.P1 + single sa.P2 - (2 : ℤ) • single δ₀ =
+        (single sa.P1 + single sa.P2 - (single δ₀ + single (Point.iota δ₀))) +
+          (single (Point.iota δ₀) - single δ₀)
+      rw [two_zsmul]
+      abel
+    rw [hReducedClass, hN2, map_add, hq]
+  rw [hred, hAlphaRep]
+  -- Goal now: `toJacobian D aAnchor - (toJacobian D aP1P2Nι + q) + q = toJacobian D aTarget`,
+  -- which simplifies (the two `q`s cancel) to
+  -- `toJacobian D aAnchor - toJacobian D aP1P2Nι = toJacobian D aTarget`,
+  -- i.e. `toJacobian D (aAnchor - aP1P2Nι - aTarget) = 0`, i.e.
+  -- `aAnchor - aP1P2Nι - aTarget ∈ D.P` (as `Divisor0 H` mod `D.P`) —
+  -- exactly `hDP` once `hSanchorSum`/`hSSum` unfold the `divToPair` terms.
+  have hcancel : toJacobian D aAnchor - (toJacobian D aP1P2Nι + q) + q =
+      toJacobian D aAnchor - toJacobian D aP1P2Nι := by abel
+  have hcoe : ((aAnchor - aP1P2Nι : Divisor0 H) : Divisor H) -
+      ((aTarget : Divisor0 H) : Divisor H) =
+      (single Ra1 + single Ra2 - single sa.P1 - single sa.P2 -
+        single T1 - single T2 + single δ₀ + single (Point.iota δ₀) : Divisor H) := by
+    show (aAnchor.1 - aP1P2Nι.1) - aTarget.1 =
+      single Ra1 + single Ra2 - single sa.P1 - single sa.P2 -
+        single T1 - single T2 + single δ₀ + single (Point.iota δ₀)
+    rw [haAnchor_def, haP1P2Nι_def, haTarget_def]
+    show (divToPair (H := H) (-va) 1 Sanchor - (single δ₀ + single (Point.iota δ₀))) -
+        (single sa.P1 + single sa.P2 - (single δ₀ + single (Point.iota δ₀))) -
+        (divToPair (H := H) (-v) 1 S - (single δ₀ + single (Point.iota δ₀))) =
+      single Ra1 + single Ra2 - single sa.P1 - single sa.P2 -
+        single T1 - single T2 + single δ₀ + single (Point.iota δ₀)
+    rw [hSanchorSum, hSSum]
+    abel
+  have hmemD : (((aAnchor - aP1P2Nι : Divisor0 H) : Divisor H) -
+      ((aTarget : Divisor0 H) : Divisor H)) ∈ D.P := by
+    rw [hcoe]; exact hDP
+  have hmemD' : (((aAnchor - aP1P2Nι - aTarget : Divisor0 H)) : Divisor H) ∈ D.P := by
+    have hval : (((aAnchor - aP1P2Nι - aTarget : Divisor0 H)) : Divisor H) =
+        (((aAnchor - aP1P2Nι : Divisor0 H) : Divisor H) -
+          ((aTarget : Divisor0 H) : Divisor H)) := by
+      show aAnchor.1 - aP1P2Nι.1 - aTarget.1 = (aAnchor.1 - aP1P2Nι.1) - aTarget.1
+      rfl
+    rw [hval]; exact hmemD
+  have hmemAddSub : (aAnchor - aP1P2Nι - aTarget : Divisor0 H) ∈
+      D.P.addSubgroupOf (Divisor0 H) := by
+    rw [AddSubgroup.mem_addSubgroupOf]; exact hmemD'
+  have hJeq := (QuotientAddGroup.eq_iff_sub_mem
+    (N := D.P.addSubgroupOf (Divisor0 H))).mpr hmemAddSub
+  rw [hcancel, ← map_sub]
+  change
+    QuotientAddGroup.mk' (D.P.addSubgroupOf (Divisor0 H)) (aAnchor - aP1P2Nι) =
+      QuotientAddGroup.mk' (D.P.addSubgroupOf (Divisor0 H)) aTarget
+  exact hJeq
 
 /-! ## Task (B): the exceptional locus `Bad` (left abstract — see module
 docstring; Step 2 of the roadmap has to happen, empirically, before this
