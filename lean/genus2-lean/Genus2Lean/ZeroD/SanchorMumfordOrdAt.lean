@@ -82,8 +82,23 @@ theorem ordAt_ua_eq_one_of_mem_Sanchor
       Polynomial (Genus2Lean.TheDataDerivation.F p)).rootMultiplicity Q.X :=
     Polynomial.rootMultiplicity_pos hua_ne |>.mpr hQua
   have h2 : (X ^ 2 + C ua1 * X + C ua0 :
-      Polynomial (Genus2Lean.TheDataDerivation.F p)).rootMultiplicity Q.X ≤ 1 :=
-    Polynomial.Squarefree.rootMultiplicity_le_one huafree Q.X
+      Polynomial (Genus2Lean.TheDataDerivation.F p)).rootMultiplicity Q.X ≤ 1 := by
+    by_contra hlt
+    push_neg at hlt
+    obtain ⟨q, hq, -⟩ := Polynomial.exists_eq_pow_rootMultiplicity_mul_and_not_dvd
+      (X ^ 2 + C ua1 * X + C ua0 : Polynomial (Genus2Lean.TheDataDerivation.F p)) hua_ne Q.X
+    have hdvd : (X - C Q.X) ^ 2 ∣ (X ^ 2 + C ua1 * X + C ua0 :
+        Polynomial (Genus2Lean.TheDataDerivation.F p)) :=
+      (pow_dvd_pow (X - C Q.X) hlt).trans ⟨q, hq⟩
+    have hnotunit : ¬ IsUnit (X - C Q.X :
+        Polynomial (Genus2Lean.TheDataDerivation.F p)) := by
+      intro hu
+      obtain ⟨r, hr⟩ := Polynomial.isUnit_iff.mp hu
+      have hdeg : (X - C Q.X : Polynomial (Genus2Lean.TheDataDerivation.F p)).natDegree = 0 := by
+        rw [← hr.2]; simp
+      rw [Polynomial.natDegree_X_sub_C] at hdeg
+      exact one_ne_zero hdeg
+    exact hnotunit (huafree (X - C Q.X) (by simpa [sq] using hdvd))
   norm_cast
   omega
 
@@ -119,7 +134,15 @@ theorem ordAt_negVa_one_eq_one_of_mem_Sanchor
   have hg_ne_eval : (-va).eval Q.X +
       (-(1 : Polynomial (Genus2Lean.TheDataDerivation.F p))).eval Q.X * Q.Y ≠ 0 := by
     simp only [Polynomial.eval_neg, Polynomial.eval_one]
-    rw [hQY]; intro hz; apply hQY_ne; linarith [hz]
+    rw [hQY]
+    intro hz
+    apply hQY_ne
+    rw [hQY]
+    have h2 : (2 : Genus2Lean.TheDataDerivation.F p) * va.eval Q.X = 0 := by
+      linear_combination -hz
+    rcases mul_eq_zero.mp h2 with h2' | h2'
+    · exact absurd h2' hchar
+    · exact h2'
   have hua_ne : (X ^ 2 + C ua1 * X + C ua0 :
       Polynomial (Genus2Lean.TheDataDerivation.F p)) ≠ 0 := huafree.ne_zero
   have hA_ne : toPair H (X ^ 2 + C ua1 * X + C ua0 :

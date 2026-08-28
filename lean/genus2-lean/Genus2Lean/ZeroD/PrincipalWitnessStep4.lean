@@ -116,24 +116,28 @@ theorem ordAt_linX_mul3_eq_zero_of_notMem
   have hne : ∀ x : k, toPair H (linX x) (0 : k[X]) ≠ 0 := fun x => by
     rw [Ne, toPair_eq_zero_iff]; exact fun ⟨hA, _⟩ => linX_ne_zero x hA
   have h0a : ordAt Q (linX a) (0 : k[X]) = 0 := ordAt_eq_zero_of_eval_ne_zero Q (linX a) 0 (by
-    simp only [Polynomial.eval_zero, mul_zero, add_zero]
-    unfold linX; simp only [Polynomial.eval_sub, Polynomial.eval_X, Polynomial.eval_C]
+    unfold linX
+    simp only [Polynomial.eval_sub, Polynomial.eval_X, Polynomial.eval_C,
+      Polynomial.eval_zero, zero_mul, add_zero]
     exact sub_ne_zero.mpr hQa)
   have h0b : ordAt Q (linX b) (0 : k[X]) = 0 := ordAt_eq_zero_of_eval_ne_zero Q (linX b) 0 (by
-    simp only [Polynomial.eval_zero, mul_zero, add_zero]
-    unfold linX; simp only [Polynomial.eval_sub, Polynomial.eval_X, Polynomial.eval_C]
+    unfold linX
+    simp only [Polynomial.eval_sub, Polynomial.eval_X, Polynomial.eval_C,
+      Polynomial.eval_zero, zero_mul, add_zero]
     exact sub_ne_zero.mpr hQb)
   have h0c : ordAt Q (linX c) (0 : k[X]) = 0 := ordAt_eq_zero_of_eval_ne_zero Q (linX c) 0 (by
-    simp only [Polynomial.eval_zero, mul_zero, add_zero]
-    unfold linX; simp only [Polynomial.eval_sub, Polynomial.eval_X, Polynomial.eval_C]
+    unfold linX
+    simp only [Polynomial.eval_sub, Polynomial.eval_X, Polynomial.eval_C,
+      Polynomial.eval_zero, zero_mul, add_zero]
     exact sub_ne_zero.mpr hQc)
   have hab_ne : toPair H (linX a * linX b) (0 : k[X]) ≠ 0 := by
     rw [toPair_mul_right_zero']; exact mul_ne_zero (hne a) (hne b)
   have hab : ordAt Q (linX a * linX b) (0 : k[X]) = 0 := by
-    rw [ordAt_add_of_pairNorm_eq_mul Q h_bot (linX a * linX b) (linX a) (linX b) rfl (hne a) (hne b),
-      h0a, h0b]
+    rw [ordAt_add_of_pairNorm_eq_mul Q h_bot (linX a * linX b) (linX a) (linX b) rfl (hne a) (hne b)]
+    omega
   rw [ordAt_add_of_pairNorm_eq_mul Q h_bot ((linX a * linX b) * linX c) (linX a * linX b) (linX c) rfl
-    hab_ne (hne c), hab, h0c]
+    hab_ne (hne c)]
+  omega
 
 end DecoupledSystem
 end Genus2Lean
