@@ -27,3 +27,33 @@ Please redo your §5 proof sketch (the K=4→K=2 correctness proof via `h = y - 
 3. If it's cleaner, feel free to propose the whole thing as: prove `div_aff(h) - div_aff(g') = 0` for some explicit combination `g'` built from our existing `g` (e.g. `g' := g` itself, or `g` composed with something), with matching pole order at infinity confirmed explicitly by degree count, so that the final principality argument is a single, direct `divToPairRatio` membership check we can port immediately — that would be the ideal shape for us to formalize, since it reuses 100% of our existing `principalSubgroup`/`divToPairRatio` machinery with no widening needed.
 
 As before, please be concrete and explicit about degrees/pole orders at every step — we've now twice found that "should balance/cancel" claims needed a literal degree count to confirm, and we'd rather check the arithmetic together now than discover another mismatch after starting to formalize this.
+
+---
+
+## Pass N (this session): `S := T` vs `S := ι(T)` sign bug
+
+Asked ChatGPT to reconcile a discrepancy: the roadmap's step-3 target
+`C - A - T + 2•[δ₀] ∈ principalSubgroup` (bare `T`) vs. what
+`div(f) = C + ι(A) + T` (single-witness `f := y - bCA(x)` construction,
+`CAWitness.lean`) actually forces via the matching-`ordInfOfPair`
+generators. ChatGPT's answer (confirmed correct by Claire, who
+identified where the actual bug lived): `div(f) = C + ι(A) + T` forces
+`C - A - ι(T) + 2•[δ₀] ∈ principalSubgroup` (equivalently
+`C - A + T - 2•[δ₀]`, bare `T` but opposite signs from the roadmap's
+stated target) — NOT `C - A - T + 2•[δ₀]`. Checked and ruled out: no
+alternative `y ± (degree≤3 poly)` witness can share `f`'s four named
+zeros while flipping only the residual's sign (the 4-point Vandermonde
+interpolation producing `bCA` is unique, so `T` bare is forced).
+Conclusion: the bug was in `CAWitness.lean`'s own claimed identification
+"`T := S`" (i.e. `AlphaLocusDegreeUniform.lean`'s target Mumford pair
+`S` should have `v := -bCA`, i.e. `S := ι(T)`, not `S := T`/`v := bCA`).
+Fixed: `CAWitness.lean`'s module docstring and `uCANew`'s docstring, and
+`ROADMAP-principal-witness-assembly.md`'s step 3. No proof code changed
+— `AlphaLocusDegreeUniform.lean`'s theorem statement is generic in
+`u`/`v`/`S` (no hardcoded sign), so it was never literally broken, only
+the *plan* for how to instantiate `v` at the eventual call site was
+wrong. Three matching-`ordInfOfPair`-`(-6)` generators identified for
+the eventual proof: `div(f) - div(h)` (`h := (x-R1.X)(x-R2.X)(x-δ₀.X)`,
+`{R1,R2} := C`), plus `div(x-P1.X)-div(x-δ₀.X)` and
+`div(x-P2.X)-div(x-δ₀.X)` (the latter two via `divToPair_linX_eq`,
+already on file, 0-`sorry`).

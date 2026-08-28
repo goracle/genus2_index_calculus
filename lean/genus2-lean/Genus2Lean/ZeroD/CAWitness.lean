@@ -53,15 +53,40 @@ the other side using `div(f) `'s support and `A := [P1]+[P2]`,
 
     div_aff(f) = C + ι(A) + T          (C := [Ra1]+[Ra2])
 
-which is exactly `C - A + T` at the divisor-class level (`ι(P) ~ -P` in
-the sense the Jacobian's own group law already uses `ι` for inversion —
-`DivisorClassGroup.lean`'s existing convention, not a new one introduced
-here). This is now a SINGLE `divToPairRatio`-eligible fact on its own
-(no second function needed to pair against): the class of
-`C + ι(A) + T - 2•[δ₀]` (mod the fixed basepoint correction) is
-`toJacobian D` of a divisor built from one witness `f`, directly
-matching `hAlphaRep`'s target shape once `T := S` (this file's `uCANew`)
-is substituted into `AlphaLocusDegreeUniform.lean`'s `u`.
+**Sign correction, this pass (Claire + ChatGPT, working the
+`principalSubgroup` chain through explicitly):** the class-level
+identity is `C - A + T - 2•[δ₀]` (bare `T`, `+T`/`-2δ₀`), NOT
+`C - A - T + 2•[δ₀]` as an earlier draft of this note claimed — and the
+target-Mumford-pair identification is `S := ι(T)`, NOT `S := T`.
+Concretely: `T = {(r, bCA(r)) : uCANew(r) = 0}` (bare, same sign as `f`
+itself — `f = y - bCA(x)`, so `f`'s own zero set is `y = bCA(x)`, and
+`T` is *defined* to be that zero set, not a free choice). The three
+matching-`ordInfOfPair`-`(-6)` generators
+(`div(f) - div(h)` for `h := (x-R1.X)(x-R2.X)(x-δ₀.X)`, `R1,R2` = `C`'s
+points; plus `div(x-P1.X) - div(x-δ₀.X)` and `div(x-P2.X) -
+div(x-δ₀.X)`) compose to give
+`C - A - ι(T) + 2•[δ₀] ∈ principalSubgroup` directly from `div(f) = C +
+ι(A) + T`, equivalently (using `T + ι(T) - 4[δ₀]` principal)
+`C - A + T - 2•[δ₀] ∈ principalSubgroup`. Checked exhaustively (ChatGPT
+consultation, `CHATGPT-LOG-principal-witness-assembly.md`): there is no
+alternative `y ± (degree-≤3 poly)` witness sharing `f`'s four named
+zeros `{Ra1,Ra2,ι(P1),ι(P2)}` but with residual `ι(T)` instead of `T`
+— the 4-point Vandermonde interpolation through those four zeros is
+already unique (`b` is forced), so `T` (bare) is genuinely the only
+residual `f`'s own construction can produce. **`uCANew` (the degree-2
+polynomial) is still exactly right as `u` for both `T` and `ι(T)`** —
+only the *point-pair* identification needs the `ι`, not the underlying
+quadratic. `AlphaLocusDegreeUniform.lean`'s `S`/`v` (`hSmem : P.Y =
+v.eval P.X`) should therefore be built with `v := -bCA` (mod `u`), i.e.
+`S`'s points are `ι(T)`'s points `(r, -bCA(r))`, not `T`'s own
+`(r, bCA(r))` — matching `hAlphaRep`'s target shape (`C - A - ι(T) +
+2•[δ₀]`) once this substitution is made. This does NOT change `f`,
+`bCA`, `uCANew`, or any theorem already proved in this file or
+`CAWitnessDivisor.lean`/`CAWitnessResidual.lean`/
+`PrincipalWitnessStep3.lean` — those all correctly state facts about
+`T` (bare); the correction is entirely in how `AlphaLocusDegreeUniform.
+lean`'s `S`/`v` should be built from `uCANew`/`bCA`, not in this file's
+own content.
 
 **Supersedes `TangentMumfordWitness.lean` (`f+`) and
 `CantorAddWitness.lean` (`f-`) for the purpose of
@@ -353,13 +378,17 @@ theorem dvd_pairNormBCA_full (H : HyperellipticPolynomial k)
     (hc1P2.mul_left hc2P2).mul_left hcPP
   exact hc123P2.mul_dvd hd123 hd4
 
-/-- **`uCANew` — THE OBJECT THAT IS `T`.** The exact quotient
-`(H.f - bCA²) /ₘ denomPolyCA`. This is not "a residual we hope matches
-`T`" — per this file's construction, `T` is DEFINED to be this, the
-residual of the `C-A` interpolation. Any downstream file identifying `T`
-(e.g. `AlphaLocusDegreeUniform.lean`'s `u`, once the missing link added
-this pass is discharged) should substitute `u := uCANew` here, not
-introduce a second independently-built quadratic. -/
+/-- **`uCANew` — THE QUADRATIC SHARED BY BOTH `T` AND `ι(T)`.** The exact
+quotient `(H.f - bCA²) /ₘ denomPolyCA`. `T := {(r, bCA.eval r) :
+uCANew.IsRoot r}` (bare, `f`'s own zero set) and `ι(T) := {(r,
+-bCA.eval r) : uCANew.IsRoot r}` share this SAME `u := uCANew` as their
+defining quadratic — only the `v`-polynomial's sign distinguishes them
+(`v := bCA` names `T`; `v := -bCA` names `ι(T)`). Any downstream file
+identifying `AlphaLocusDegreeUniform.lean`'s `u`/`S` should substitute
+`u := uCANew` (unconditionally correct — this part was never wrong) AND
+`v := -bCA mod uCANew` (`S := ι(T)`, per this pass's sign correction
+above — see this file's module docstring — NOT `v := bCA`/`S := T`,
+which was the earlier, incorrect claim). -/
 def uCANew (H : HyperellipticPolynomial k)
     (Ra1X Ra2X P1X P2X Ra1Y Ra2Y P1Y P2Y : k) : Polynomial k :=
   (H.f - (bCA Ra1X Ra2X P1X P2X Ra1Y Ra2Y P1Y P2Y) ^ 2) /ₘ

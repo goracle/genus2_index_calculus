@@ -118,18 +118,41 @@ now applied to `f = y - bCA(x)` instead of `g = E+Y·y`.
    rewrites lining up `PtT1.X`/`T1X` across `CAWitnessResidual.lean`'s own
    `P.X`-parametrized statement.
 3. **Connect to `reducedClass_eq_of_isReduction'`'s actual target.**
-   Worked out algebraically last pass, still the correct target — restate
-   here since it's short: with `x := ⟨A-2δ₀,_⟩`, `y := ⟨C-2δ₀,hmemAnchor⟩`
-   (`hAlphaRep`), `z := ⟨T-2δ₀,hmem⟩` all `: Divisor0 H`, the goal
-   `sa.reducedClass = toJacobian D z` reduces (via `hAlphaRep` and
-   `toJacobian` additivity) to showing
-   `C - A - T + 2•[δ₀] ∈ principalSubgroup H hdeg`. `div_aff(f) = C+ι(A)+T`
-   is exactly the single `divToPairRatio`-eligible generator for this —
-   no second witness, no sign-juggling of an addition-shaped fact into a
-   subtraction-shaped one (that was the old `g`/`A+C+T` plan's dead end;
-   `f`'s `ι(A)` substitution already has the right sign built in). This
-   step is: turn `div_aff(f) = C+ι(A)+T` plus `ordInfOfPair(f) = -6` into
-   the `principalSubgroup` membership directly, then compose with (2).
+   **Sign bug found and fixed this pass** (Claire + ChatGPT) in the
+   algebra this step previously stated — the "restate here since it's
+   short" version below was WRONG in an earlier draft (`C - A - T +
+   2•[δ₀]`, bare `T`, wrong signs); corrected version follows, with the
+   actual fix landing as a naming/identification correction in
+   `CAWitness.lean` (see that file's module docstring), not a change to
+   `f`/`bCA`/`uCANew` themselves. With `x := ⟨A-2δ₀,_⟩`, `y :=
+   ⟨C-2δ₀,hmemAnchor⟩` (`hAlphaRep`), `z := ⟨S-2δ₀,hmem⟩` (`S` =
+   `AlphaLocusDegreeUniform.lean`'s target Mumford point set) all
+   `: Divisor0 H`, the goal `sa.reducedClass = toJacobian D z` reduces
+   (via `hAlphaRep` and `toJacobian` additivity) to showing
+   `C - A - S + 2•[δ₀] ∈ principalSubgroup H hdeg`. `div_aff(f) =
+   C+ι(A)+T` gives, via the three matching-`ordInfOfPair`-`(-6)`
+   generators (`div(f) - div(h)` for `h := (x-R1.X)(x-R2.X)(x-δ₀.X)`,
+   `{R1,R2} := C`'s points, plus `div(x-P1.X)-div(x-δ₀.X)` and
+   `div(x-P2.X)-div(x-δ₀.X)`), the relation
+   `C - A - ι(T) + 2•[δ₀] ∈ principalSubgroup H hdeg` — **`ι(T)`, not
+   bare `T`**. This matches the goal's `C - A - S + 2•[δ₀]` exactly once
+   `S := ι(T)` (`v := -bCA` mod `uCANew`, NOT `v := bCA` — see
+   `CAWitness.lean`'s corrected docstring), not `S := T` as an earlier
+   pass claimed. Checked exhaustively that no alternative witness
+   shares `f`'s four named zeros while producing `ι(T)` directly as its
+   OWN residual (the 4-point Vandermonde interpolation is unique, so
+   `T` bare is the only residual `f`'s construction can produce) — the
+   `ι` has to be applied at the `S := ι(T)` identification step, not
+   absorbed into a different witness. This step is: turn `div_aff(f) =
+   C+ι(A)+T` plus `ordInfOfPair(f) = -6`, together with the two
+   `[Pi]+ι[Pi]-2[δ₀]`-type generators for `P1`/`P2` (`divToPair_linX_eq`,
+   `HyperellipticClassProof.lean`, already on file, 0-`sorry`), into the
+   `principalSubgroup` membership directly, then compose with (2) —
+   **and separately, fix `AlphaLocusDegreeUniform.lean`'s `S`/`v`
+   construction to use `v := -bCA` (mod `uCANew`) as its `S := ι(T)`
+   witness**, since as stated (`S := T`, `v := bCA`) the theorem's own
+   `hSmem`/`u`/`v` parameters would be asking for the wrong divisor
+   class and the goal would be false as currently spelled out.
 4. **Assemble into `reducedClass_eq_of_isReduction'`'s proof body** once
    (1)-(3) are in hand.
 5. Tangent branch (`P1 = P2`) and Weierstrass sub-case (`P1 = P2 ∧ Y = 0`)
