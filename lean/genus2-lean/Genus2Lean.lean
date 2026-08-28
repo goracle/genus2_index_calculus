@@ -63,3 +63,5 @@ import Genus2Lean.ZeroD.CAWitness
 import Genus2Lean.ZeroD.CAWitnessDivisor
 import Genus2Lean.ZeroD.CAWitnessResidual
 import Genus2Lean.ZeroD.PrincipalWitnessStep3
+import Genus2Lean.ZeroD.PrincipalWitnessStep4
+import Genus2Lean.ZeroD.SanchorMumfordOrdAt

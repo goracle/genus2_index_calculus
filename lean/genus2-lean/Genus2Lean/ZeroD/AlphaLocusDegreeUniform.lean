@@ -820,6 +820,26 @@ theorem reducedClass_eq_of_isReduction' {p : ℕ} [Fact (Nat.Prime p)] [Fact (p 
           sa.toSampleTarget.u0 sa.toSampleTarget.u1
           sa.toSampleTarget.v0 sa.toSampleTarget.v1))
     (hr : isReduction' sa c0 c1 c2 c3 c4 ua0 ua1 va0 va1 hcur hgcd hcurT hgcdT)
+    -- **Added this pass — the two missing Mumford-identity hypotheses
+    -- flagged (but not yet added) in an earlier pass's note near line
+    -- ~698.** Without these, nothing pins `(ua,va)` down as an actual
+    -- Mumford representative of `alpha•aClass` (equivalently, nothing
+    -- gives `ordAt Q (-va) 1 = 1` at `Q ∈ Sanchor`, which the assembly
+    -- needs to connect `hAlphaRep`'s `divToPair (-va) 1 Sanchor` to
+    -- `CAWitness.lean`'s `f`-construction at the point-set level — see
+    -- `ROADMAP-principal-witness-assembly.md`'s latest pass note). `alpha`,
+    -- `alpha'`, and `a` (`aClass`) are already given to this theorem via
+    -- `sa`; these two hypotheses are the same kind of "caller supplies the
+    -- real Mumford data" premise `hcur`/`hgcd`/`hr` already are — not a
+    -- gap needing a separate proof, just parameters that were missing
+    -- from the signature. `hMumfordUa` pins `(ua,va)` to `alpha•aClass`
+    -- itself; `hMumfordTarget` pins `(u,v)` (via `sa.toSampleTarget`) to
+    -- the reduced target — the `Ypoly4`-shaped analogue already required
+    -- by `dvd_N_ua`/`dvd_N_u4` (`Reduce/AlphaReduce.lean`) wherever this
+    -- theorem's proof needs to reach into that machinery.
+    (hMumfordUa : IsMumfordUa p c0 c1 c2 c3 c4 ua0 ua1 va0 va1)
+    (hMumfordTarget : IsMumfordTarget4 p c0 c1 c2 c3 c4
+      sa.toSampleTarget.u0 sa.toSampleTarget.u1 sa.toSampleTarget.v0 sa.toSampleTarget.v1)
     (Sanchor S : Finset H.Point) (va u v : Polynomial (F p))
     (hva : va = (Polynomial.C va1 : Polynomial (F p)) * (Polynomial.X : Polynomial (F p))
       + (Polynomial.C va0 : Polynomial (F p)))
