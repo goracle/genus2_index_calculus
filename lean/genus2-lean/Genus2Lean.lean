@@ -70,3 +70,4 @@ import Genus2Lean.ZeroD.PrincipalWitnessFinalAssembly
 import Genus2Lean.ZeroD.PrincipalWitnessCAConnection
 import Genus2Lean.ZeroD.CAWitnessTangent
 import Genus2Lean.ZeroD.CAWitnessDivisorTangent
+import Genus2Lean.ZeroD.CAWitnessAssemblyTangent
