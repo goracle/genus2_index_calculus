@@ -152,5 +152,88 @@ theorem divToPair_negV_one_S_eq
   unfold divToPair
   rw [Finset.sum_pair hT12ne, hordT1, hordT2, one_smul, one_smul]
 
+/-! ## Tangent branch (`Ra1 = Ra2`, resp. `T1 = T2`): `2 • single _` mirrors
+
+Roadmap `ROADMAP-split-hypothesis-elimination.md`, Tier 1 item 1a.1.
+Mirrors `divToPair_negVa_one_Sanchor_eq`/`divToPair_negV_one_S_eq` above,
+swapping in `Sanchor_eq_of_anchor_roots_tangent` for the set-equality
+input and `ordAt_negVa_one_eq_two_of_mem_Sanchor_tangent` for the
+multiplicity, and collapsing the resulting `divToPair` over a
+*singleton* via `Finset.sum_singleton` (rather than `Finset.sum_pair`).
+Since the target RHS is already stated as `(2:ℤ) • single _` (matching
+`ordAt`'s own output type directly), no separate `two_smul` step is
+needed here — simpler than
+`divToPair_linX_eq_two_smul_of_ramified` (`PrincipalWitness.lean` line
+564), which has to convert from a `single P + single P` shape first. -/
+
+/-- **Anchor side, tangent case: `divToPair (-va) 1 Sanchor = 2 • single
+P1`**, given `Sanchor = {P1}` (`hSanchorEq`, from
+`Sanchor_eq_of_anchor_roots_tangent`, applied at the call site) and
+`P1`'s `ordAt = 2` (`ordAt_negVa_one_eq_two_of_mem_Sanchor_tangent`).
+Pure bookkeeping: rewrite `Sanchor` to `{P1}`, unfold `divToPair` over
+the singleton (`Finset.sum_singleton`), and discharge the `ordAt` via
+the cited lemma — both sides then read `(2:ℤ) • single P1` literally. -/
+theorem divToPair_negVa_one_Sanchor_eq_tangent
+    [DecidableEq H.Point]
+    (hchar : (2 : Genus2Lean.TheDataDerivation.F p) ≠ 0)
+    {R va0 va1 : Genus2Lean.TheDataDerivation.F p}
+    (hua_eq : (X ^ 2 + C (-2 * R) * X + C (R * R) :
+      Polynomial (Genus2Lean.TheDataDerivation.F p)) =
+      (X - C R) ^ 2)
+    (va : Polynomial (Genus2Lean.TheDataDerivation.F p))
+    (hva : va = (C va1 : Polynomial (Genus2Lean.TheDataDerivation.F p)) * X + C va0)
+    (Uco : Polynomial (Genus2Lean.TheDataDerivation.F p))
+    (hAU : pairNorm H (-va) (1 : Polynomial (Genus2Lean.TheDataDerivation.F p)) =
+      (X ^ 2 + C (-2 * R) * X + C (R * R)) * Uco)
+    (hUco_ne : Uco ≠ 0)
+    (P1 : H.Point)
+    (hP1Y_ne : P1.Y ≠ 0)
+    (hP1X : P1.X = R)
+    (hP1Y : P1.Y = va.eval P1.X)
+    (hUco_evalP1 : Uco.eval P1.X ≠ 0)
+    (Sanchor : Finset H.Point)
+    (hSanchorEq : Sanchor = ({P1} : Finset H.Point)) :
+    divToPair (H := H) (-va) 1 Sanchor = (2 : ℤ) • single P1 := by
+  classical
+  have hordP1 := ordAt_negVa_one_eq_two_of_mem_Sanchor_tangent (H := H) hchar hua_eq
+    va hva Uco hAU hUco_ne P1 (pointIdeal_ne_bot P1) hP1Y hP1Y_ne hP1X hUco_evalP1
+  rw [hSanchorEq]
+  unfold divToPair
+  rw [Finset.sum_singleton, hordP1]
+
+/-- **Target side, tangent case: `divToPair (-v) 1 S = 2 • single T1cur`**,
+the `S`-analogue of `divToPair_negVa_one_Sanchor_eq_tangent` above.
+Same "unfold to the same `Prop`" move `divToPair_negV_one_S_eq` already
+relies on for the split case: `hua_eq`'s shape is symmetric in
+which named variables fill its slots, so it is reused verbatim with
+`va := v`. -/
+theorem divToPair_negV_one_S_eq_tangent
+    [DecidableEq H.Point]
+    (hchar : (2 : Genus2Lean.TheDataDerivation.F p) ≠ 0)
+    {R v0 v1 : Genus2Lean.TheDataDerivation.F p}
+    (hua_eq : (X ^ 2 + C (-2 * R) * X + C (R * R) :
+      Polynomial (Genus2Lean.TheDataDerivation.F p)) =
+      (X - C R) ^ 2)
+    (v : Polynomial (Genus2Lean.TheDataDerivation.F p))
+    (hv : v = (C v1 : Polynomial (Genus2Lean.TheDataDerivation.F p)) * X + C v0)
+    (Uco : Polynomial (Genus2Lean.TheDataDerivation.F p))
+    (hAU : pairNorm H (-v) (1 : Polynomial (Genus2Lean.TheDataDerivation.F p)) =
+      (X ^ 2 + C (-2 * R) * X + C (R * R)) * Uco)
+    (hUco_ne : Uco ≠ 0)
+    (T1cur : H.Point)
+    (hT1Y_ne : T1cur.Y ≠ 0)
+    (hT1X : T1cur.X = R)
+    (hT1Y : T1cur.Y = v.eval T1cur.X)
+    (hUco_evalT1 : Uco.eval T1cur.X ≠ 0)
+    (S : Finset H.Point)
+    (hSEq : S = ({T1cur} : Finset H.Point)) :
+    divToPair (H := H) (-v) 1 S = (2 : ℤ) • single T1cur := by
+  classical
+  have hordT1 := ordAt_negVa_one_eq_two_of_mem_Sanchor_tangent (H := H) hchar hua_eq
+    v hv Uco hAU hUco_ne T1cur (pointIdeal_ne_bot T1cur) hT1Y hT1Y_ne hT1X hUco_evalT1
+  rw [hSEq]
+  unfold divToPair
+  rw [Finset.sum_singleton, hordT1]
+
 end DecoupledSystem
 end Genus2Lean

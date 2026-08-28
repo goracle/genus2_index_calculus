@@ -170,7 +170,8 @@ squarefreeness). Mirrors `OrdAtRootMultiplicityUnified.lean`'s
 Direct: `Polynomial.rootMultiplicity_X_sub_C_pow` gives `rootMultiplicity
 R ((X - C R)^2) = 2` unconditionally (no case split, unlike the
 squarefree/`by_contra` route in the split-case lemma above), then
-`ordAt_eq_rootMultiplicity_unramified` transports it to `ordAt`. -/
+`ordAt_eq_rootMultiplicity_unramified` transports it to `ordAt`; a
+final `norm_num` discharges the resulting `(↑(2:ℕ):ℤ) = 2` cast. -/
 theorem ordAt_ua_eq_two_of_mem_Sanchor_tangent
     (hchar : (2 : Genus2Lean.TheDataDerivation.F p) ≠ 0)
     {R : Genus2Lean.TheDataDerivation.F p}
@@ -186,8 +187,9 @@ theorem ordAt_ua_eq_two_of_mem_Sanchor_tangent
     rw [hua_eq]
     exact ((Polynomial.monic_X_sub_C R).pow 2).ne_zero
   have hmult := ordAt_eq_rootMultiplicity_unramified hchar
-    (X ^ 2 + C (-2 * R) * X + C (R * R)) hua_ne Q.X Q h_bot hQX hQY_ne
-  rw [hmult, hua_eq, hQX, Polynomial.rootMultiplicity_X_sub_C_pow]
+    (X ^ 2 + C (-2 * R) * X + C (R * R)) hua_ne R Q h_bot hQX hQY_ne
+  rw [hmult, hua_eq, Polynomial.rootMultiplicity_X_sub_C_pow]
+  norm_num
 
 /-- **The point-level payoff, tangent branch: `ordAt Q (-va) 1 = 2`.**
 Mirrors `ordAt_negVa_one_eq_one_of_mem_Sanchor`, swapping in
@@ -203,7 +205,7 @@ theorem ordAt_negVa_one_eq_two_of_mem_Sanchor_tangent
       Polynomial (Genus2Lean.TheDataDerivation.F p)) =
       (X - C R) ^ 2)
     (va : Polynomial (Genus2Lean.TheDataDerivation.F p))
-    (hva : va = (C va1 : Polynomial (Genus2Lean.TheDataDerivation.F p)) * X + C va0)
+    (_hva : va = (C va1 : Polynomial (Genus2Lean.TheDataDerivation.F p)) * X + C va0)
     (Uco : Polynomial (Genus2Lean.TheDataDerivation.F p))
     (hAU : pairNorm H (-va) (1 : Polynomial (Genus2Lean.TheDataDerivation.F p)) =
       (X ^ 2 + C (-2 * R) * X + C (R * R)) * Uco)
@@ -233,7 +235,8 @@ theorem ordAt_negVa_one_eq_two_of_mem_Sanchor_tangent
     rw [hua_eq]
     exact ((Polynomial.monic_X_sub_C R).pow 2).ne_zero
   have hA_ne : toPair H (X ^ 2 + C (-2 * R) * X + C (R * R) :
-      Polynomial (Genus2Lean.TheDataDerivation.F p)) (0 : Polynomial (Genus2Lean.TheDataDerivation.F p)) ≠ 0 := by
+      Polynomial (Genus2Lean.TheDataDerivation.F p))
+      (0 : Polynomial (Genus2Lean.TheDataDerivation.F p)) ≠ 0 := by
     rw [Ne, toPair_eq_zero_iff]
     exact fun ⟨hA0, _⟩ => hua_ne hA0
   have hU_ne : toPair H Uco (0 : Polynomial (Genus2Lean.TheDataDerivation.F p)) ≠ 0 := by
