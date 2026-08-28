@@ -15,6 +15,23 @@ membership
 is `C - A - ι(T) + 2•[δ₀]`, NOT the earlier (wrong) `C - A - T +
 2•[δ₀]`.**
 
+**Second correction, this pass: the `T + ι(T) - 4•[δ₀] ∈ principalSubgroup`
+"separately-principal fact" Part 3 was going to use (bullet 3 below, as
+originally planned) is FALSE for a generic (non-Weierstrass) `δ₀`.**
+Checked via ChatGPT consultation (`CHATGPT-LOG-principal-witness-assembly.md`):
+passing to the smooth projective model, `div(x-a) = (P)+(ιP)-2[∞]` for any
+`a = P.X`, so `T+ι(T) ~ 4[∞]` always — meaning `T+ι(T)-4[δ₀]` is principal
+iff `4([δ₀]-[∞]) = 0` in the Jacobian, a special 4-torsion condition on
+`δ₀`, not a general fact. The honest `linX`-witness fact is
+`T + ι(T) - [δ₀] - [ι δ₀] - [δ₀] - [ι δ₀] ∈ principalSubgroup` (i.e.
+`(x-T1.X)(x-T2.X)` against `(x-δ₀.X)²`, both pole order `-4`) — carries a
+genuine `ι δ₀` term that does NOT reduce to a `δ₀`-multiple for generic
+`δ₀`. **Part 2 below is unaffected — its own docstring never actually
+needed the false `2•[δ₀]` simplification (see its corrected docstring) —
+but Part 3 (bullet 3 below) needs a different derivation route than
+originally planned, not yet found; see that section for status.** -/
+
+/-!
 Starting point: `PrincipalWitnessStep3.lean`'s
 `divToPair_eq_C_add_iotaA_add_T_of_split`, a literal `Divisor H` equality
 `div_aff(f) = C + ι(A) + T` over the six named points
@@ -24,7 +41,7 @@ ratio generator, `f` against `h_A := linX(P1.X) * linX(P2.X) *
 linX(δ₀.X)`.
 
 **Plan, three pieces (`Part 1`/`Part 2`/`Part 3` below):**
-1. `div(h_A) = A + ι(A) + 2•[δ₀]` (`divToPair_hA_eq`) — an
+1. `div(h_A) = A + ι(A) + [δ₀] + [ι δ₀]` (`divToPair_hA_eq`) — an
    `eq_of_coeffAt_eq`/six-way-`by_cases` computation, same idiom as
    `PrincipalWitnessStep3.lean`'s own six-point assembly and
    `CAWitnessDivisor.lean`'s four-point one, here for a plain
@@ -34,18 +51,34 @@ linX(δ₀.X)`.
    `PrincipalWitness.lean`'s existing `ordAt_mul4_...` composition
    lemmas (themselves built from `ordAt_mul_eq_one_of_ordAt_eq_one_zero`
    iterated).
-2. `div(f) - div(h_A) = C - A + T - 2•[δ₀]` (the ratio generator itself,
-   `ordInfOfPair(f) = ordInfOfPair(h_A) = -6`), hence
-   `C - A + T - 2•[δ₀] ∈ principalSubgroup` (`cAmT_mem_principalSubgroup`).
-3. Restate as `C - A - ι(T) + 2•[δ₀] ∈ principalSubgroup`
+2. `div(f) - div(h_A) = C - A + T - [δ₀] - [ι δ₀]` (the ratio generator
+   itself, `ordInfOfPair(f) = ordInfOfPair(h_A) = -6`), hence
+   `C - A + T - [δ₀] - [ι δ₀] ∈ principalSubgroup`
+   (`cAmT_mem_principalSubgroup`) — **DONE, build-green.**
+3. **NOT YET DONE — blocked on finding the right derivation.** Originally
+   planned as: restate as `C - A - ι(T) + 2•[δ₀] ∈ principalSubgroup`
    (`cAmIotaT_mem_principalSubgroup`, the shape
    `AlphaLocusDegreeUniform.lean`'s goal actually needs, matching
    `S := ι(T)`), using the separately-principal fact
-   `T + ι(T) - 4•[δ₀] ∈ principalSubgroup` (two single-`linX`
-   generators, mirroring `HyperellipticClassProof.lean`'s
-   `hyperellipticClass_principalDivisorData` pattern).
+   `T + ι(T) - 4•[δ₀] ∈ principalSubgroup`. **That auxiliary fact is
+   false for generic `δ₀` (see the correction above) — this route does
+   not work as stated.** `CAWitness.lean`'s own module docstring
+   proposes an alternative direct route (three generators: `div(f) -
+   div(h)` for `h := (x-Ra1.X)(x-Ra2.X)(x-δ₀.X)`, plus
+   `div(x-P1.X)-div(x-δ₀.X)` and `div(x-P2.X)-div(x-δ₀.X)`) claimed to
+   compose directly to `C - A - ι(T) + 2•[δ₀]` without the false
+   `4•[δ₀]` step — but a by-hand term-by-term check of that route this
+   pass did NOT close (extra `ι Ra1`, `ι Ra2`, `ι δ₀` terms appeared that
+   don't cancel against the claimed target). A fresh ChatGPT pass has
+   been asked to find the exact correct generator set; not yet returned.
+   **Do not attempt to prove `T+ι(T)-4•[δ₀] ∈ principalSubgroup` or
+   any Lean statement asserting it — it is false for a generic `δ₀`.**
+   If `δ₀` genuinely needs a stronger hypothesis (e.g. its own
+   `principalSubgroup`-related constraint, or fixing `δ₀` as a
+   Weierstrass point elsewhere in the assembly) to make this step true,
+   that is itself worth surfacing as a finding, not routed around.
 
-**All three `hspec`/`Module.Finite` Nullstellensatz-style side
+**All `hspec`/`Module.Finite` Nullstellensatz-style side
 conditions `principalSubgroup`'s own generating-set membership demands
 (per `PrincipalDivisorSubgroup.lean`) are threaded through as extra
 hypotheses, matching every other file in this stack that reaches
@@ -286,7 +319,7 @@ theorem divToPair_hA_eq
     rw [if_neg hnmemS]
     ring
 
-/-! ## Part 2: `div(f) - div(h_A) = C - A + T - 2•[δ₀] ∈ principalSubgroup` -/
+/-! ## Part 2: `div(f) - div(h_A) = C - A + T - [δ₀] - [ι δ₀] ∈ principalSubgroup` -/
 
 /-- **`ordInfOfPair` of `h_A := (linX P1.X * linX P2.X) * linX δ₀.X` (as an
 `(A,B)`-pair with `B = 0`) is `-6`.** Pure degree computation: each `linX`
@@ -313,13 +346,25 @@ theorem ordInfOfPair_hA (a b c : k) :
   simp [hdeg_abc]
 
 /-- **The ratio generator itself: `div_aff(f) - div_aff(h_A) =
-(P1) + (P2) + (T1) + (T2) - (P1) - (P2) - (ι P1) - (ι P2) - 2•[δ₀]`, as
-membership in `principalSubgroup H hdeg` — i.e.
-`C - A + T - 2•[δ₀] ∈ principalSubgroup H hdeg`** (`C := {Ra1,Ra2}`,
-`A := {P1,P2}`, `T := {PtT1,PtT2}`, matching this file's module docstring).
-`f := toPair H (-bCA) 1` and `h_A := toPair H h_A_poly 0` share
-`ordInfOfPair = -6` (`bCA_ordInfOfPair`/`ordInfOfPair_hA`), which is
-EXACTLY `deg_divToPairRatio_eq_zero`'s matching condition — the two
+Ra1 + Ra2 + ι(P1) + ι(P2) + T1 + T2 - P1 - P2 - ι(P1) - ι(P2) - δ₀ - ι(δ₀)
+= C - A + T - [δ₀] - [ι δ₀]`, as membership in `principalSubgroup H hdeg`**
+(`C := {Ra1,Ra2}`, `A := {P1,P2}`, `T := {PtT1,PtT2}`, matching this file's
+module docstring). **Correction from an earlier pass's docstring here:**
+`div(h_A)`'s own support is `{P1,ιP1,P2,ιP2,δ₀,ιδ₀}` (`divToPair_hA_eq`,
+Part 1 above) — `h_A`'s `δ₀`-factor `linX δ₀.X` vanishes at BOTH `δ₀` and
+`ι δ₀` (any single `linX` always hits its whole fiber), not `δ₀` alone, so
+the honest difference carries `- [δ₀] - [ι δ₀]`, not `-2•[δ₀]`. A ChatGPT
+consultation this pass (see `CHATGPT-LOG-principal-witness-assembly.md`)
+confirmed the bare-`2•[δ₀]` claim in an earlier draft of this file's module
+docstring was FALSE for a generic (non-Weierstrass) `δ₀`: it is equivalent
+to the special 4-torsion condition `4([δ₀]-[∞]) = 0` in the Jacobian, not a
+general fact. This theorem's actual Lean statement was never affected by
+that error — it is a literal `Finset`-level divisor difference over eight
+named points total (six from `f`, six from `h_A`, four shared), true and
+provable regardless of how its docstring summarized it; only the prose
+label needed fixing. `f := toPair H (-bCA) 1` and `h_A := toPair H h_A_poly
+0` share `ordInfOfPair = -6` (`bCA_ordInfOfPair`/`ordInfOfPair_hA`), which
+is EXACTLY `deg_divToPairRatio_eq_zero`'s matching condition — the two
 individually-nonzero-pole-order functions cancel in the ratio, landing the
 difference divisor in `principalSubgroup` even though neither summand alone
 would. The `hsupp`/`hspec`/`Module.Finite` Nullstellensatz-style side
