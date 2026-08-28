@@ -409,5 +409,30 @@ theorem pairNormBCATangent_eq_denomPolyCATangent_mul_uCANewTangent
   unfold uCANewTangent
   exact hadd.symm
 
+/-- **`bCATangent`'s pole order at infinity: `-6`.** Tangent-case sibling
+of `CAWitness.lean`'s `bCA_ordInfOfPair`, same weakened shape (needs
+`caTangentCoeff ... 3 ≠ 0`). Needed by `cIotaAmIotaT_mem_principalSubgroup_
+tangent` (`PrincipalWitnessStep4Tangent.lean`) the same way the split
+case's `cIotaAmIotaT_mem_principalSubgroup` needs `bCA_ordInfOfPair`. -/
+theorem bCATangent_ordInfOfPair (RaX P1X P2X RaY vaDerivAtRa P1Y P2Y : k)
+    (hlead : caTangentCoeff RaX P1X P2X RaY vaDerivAtRa P1Y P2Y 3 ≠ 0) :
+    ordInfOfPair (-bCATangent RaX P1X P2X RaY vaDerivAtRa P1Y P2Y) (1 : k[X]) = -6 := by
+  have hdeg3 : (bCATangent RaX P1X P2X RaY vaDerivAtRa P1Y P2Y).natDegree = 3 := by
+    apply le_antisymm (bCATangent_natDegree_le RaX P1X P2X RaY vaDerivAtRa P1Y P2Y)
+    unfold bCATangent
+    have hcoeff3 : (Polynomial.C (caTangentCoeff RaX P1X P2X RaY vaDerivAtRa P1Y P2Y 0) +
+      Polynomial.C (caTangentCoeff RaX P1X P2X RaY vaDerivAtRa P1Y P2Y 1) * X +
+      Polynomial.C (caTangentCoeff RaX P1X P2X RaY vaDerivAtRa P1Y P2Y 2) * X ^ 2 +
+      Polynomial.C (caTangentCoeff RaX P1X P2X RaY vaDerivAtRa P1Y P2Y 3) *
+        X ^ 3).coeff 3 =
+        caTangentCoeff RaX P1X P2X RaY vaDerivAtRa P1Y P2Y 3 := by
+      simp [coeff_add, coeff_C_mul, coeff_X_pow]
+    exact Polynomial.le_natDegree_of_ne_zero (by rw [hcoeff3]; exact hlead)
+  have hAdeg : (-bCATangent RaX P1X P2X RaY vaDerivAtRa P1Y P2Y).natDegree = 3 := by
+    rw [natDegree_neg]; exact hdeg3
+  unfold ordInfOfPair
+  rw [hAdeg, natDegree_one]
+  norm_num
+
 end DecoupledSystem
 end Genus2Lean
