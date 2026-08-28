@@ -65,9 +65,8 @@ now applied to `f = y - bCA(x)` instead of `g = E+Y·y`.
 
 1. **State and prove the residual-point divisor fact for `f`**: at a root
    `r` of `uCANew`, what is `ordAt` of the corresponding `H.Point`?
-   **Drafted this pass**, `CAWitnessResidual.lean`
-   (`ordAt_eq_rootMultiplicity_of_uCANew_root`) — **not yet build-tested,
-   Claire's REPL next.** Goes through `uCANew`'s own `rootMultiplicity`
+   **Done, build-green** (Claire confirmed), `CAWitnessResidual.lean`
+   (`ordAt_eq_rootMultiplicity_of_uCANew_root`). Goes through `uCANew`'s own `rootMultiplicity`
    directly (via `ordAt_eq_rootMultiplicity_unramified`,
    `LPairFinrankOneOrdAtFrac.lean` lemma 6, unconditional), NOT a
    pre-split `hUfac`-style hypothesis — a first draft used `hUfac : ∃
@@ -94,6 +93,30 @@ now applied to `f = y - bCA(x)` instead of `g = E+Y·y`.
 2. **Assemble the complete divisor**: `div_aff(f) = C + ι(A) + T` (four
    named points from step 1 above, residual pair from step 1 here),
    giving `f`'s full 6-zero affine divisor matching `ordInfOfPair = -6`.
+   **Drafted this pass**, `PrincipalWitnessStep3.lean`
+   (`divToPair_eq_C_add_iotaA_add_T_of_split`) — **not yet build-tested,
+   Claire's REPL next.** `uCANew`'s two residual roots had to be named
+   (`T1X, T2X`) to state a concrete `Finset`-level `divToPair` fact —
+   deliberately NOT via `quadratic_eq_mul_X_sub_C` + `uCANew`'s degree
+   (would need `uCANew.natDegree = 2` from scratch); instead a local
+   `rootMultiplicity_uCANew_eq_one` helper gets `rootMultiplicity = 1` at
+   each named root straight from `IsRoot`/coprimality/a per-point
+   quotient-nonvanishing hypothesis (`hQT1`/`hQT2`), then feeds
+   `CAWitnessResidual.lean`'s theorem with `m := 1`. Combined with
+   `CAWitnessDivisor.lean`'s four-point fact via one `eq_of_coeffAt_eq`/
+   `coeffAt_divToPair`/six-way-`by_cases` proof (not two separate
+   `divToPair`s subtracted, unlike the old `PrincipalWitnessStep2.lean`
+   precedent — simpler here since both halves share the same `(E,Y) =
+   (-bCA,1)` pair, so one direct six-point Finset suffices). If the REPL
+   rejects this file, likely trouble spots: `Polynomial.rootMultiplicity_mul`
+   (non-primed, `IsDomain`, confirmed via web search this pass, not
+   REPL-checked) vs `rootMultiplicity_mul'`'s eval-side-condition variant;
+   the `hQ1_def`/`hQ2_def` argument-order mismatch (`(X-C T1X)*(X-C T2X)`
+   vs `(X-C T2X)*(X-C T1X)`, deliberately swapped between the two calls so
+   each `Q.eval` hypothesis is about the OTHER factor's quotient) reaching
+   `rootMultiplicity_uCANew_eq_one` correctly; and the `hPtT1X ▸ hmult1`-style
+   rewrites lining up `PtT1.X`/`T1X` across `CAWitnessResidual.lean`'s own
+   `P.X`-parametrized statement.
 3. **Connect to `reducedClass_eq_of_isReduction'`'s actual target.**
    Worked out algebraically last pass, still the correct target — restate
    here since it's short: with `x := ⟨A-2δ₀,_⟩`, `y := ⟨C-2δ₀,hmemAnchor⟩`
