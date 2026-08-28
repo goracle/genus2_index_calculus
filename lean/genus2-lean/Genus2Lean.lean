@@ -67,3 +67,4 @@ import Genus2Lean.ZeroD.PrincipalWitnessStep4
 import Genus2Lean.ZeroD.SanchorMumfordOrdAt
 import Genus2Lean.ZeroD.SanchorEqAlphaPoints
 import Genus2Lean.ZeroD.PrincipalWitnessFinalAssembly
+import Genus2Lean.ZeroD.PrincipalWitnessCAConnection

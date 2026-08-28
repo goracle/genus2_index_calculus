@@ -401,3 +401,98 @@ needed — not yet build-tested.
   is genuine function-field construction, not lemma composition, if the
   adaptation from `ordAtFrac_eq_neg_one_of_uRS4General_root` isn't
   mechanical.
+
+
+
+## Status update (this pass): step 0 fully closed; ChatGPT consulted on
+## `uCANew` vs `uRS4General`; `PrincipalWitnessCAConnection.lean` landed,
+## 0-`sorry`, build-green
+
+**Step 0 (all of a/b/c) is now confirmed complete.** Re-verified directly
+from the files this pass, not carried forward from old prose:
+- **0c**: `PrincipalWitnessFinalAssembly.lean` (0-`sorry`) assembles
+  `G₁ - G₂ - G₃` into the honest `(†) : C - A - ι(T) + [δ₀] + [ιδ₀] ∈ D.P`
+  generically in `D : PrincipalDivisorData H` (`cAmιTmδmιδ_mem_of_le`).
+  This file's own header already says "closing step 0 (part c)" —
+  confirmed accurate.
+- **0a/0b**: the `Sanchor = {Ra1,Ra2}` / `S = {T1,T2}` splits are done
+  directly in `AlphaLocusDegreeUniform.lean`'s proof body (via
+  `Sanchor_eq_of_anchor_roots`, applied twice — once to `ua`/`va`/`Sanchor`,
+  once to `u`/`v`/`S`). What's left after this is the theorem's own
+  `sorry`, not step 0 machinery.
+
+**The `sorry` itself.** `AlphaLocusDegreeUniform.lean`'s `u`/`v`/`ua`/`va`
+(pinned by `hu`/`hv`/`hua`, reasoned about via `hcur`/`hgcd`'s
+`curBeforeMonic4General`/`uRS4General`, the K=4 Riemann–Roch/Cramer's-rule
+machinery in `Reduce/GeneralSharedRoot.lean`) and
+`PrincipalWitnessFinalAssembly.lean`'s `uCANew`/`bCA` (the simple 4×4
+Vandermonde witness in `CAWitness.lean`) turned out to be **two
+independently-built polynomial constructions with no proven bridge**.
+`cAmιTmδmιδ_mem_of_le` needs `uCANew`'s roots to actually be `T1,T2`
+(equivalently `u`'s roots) — nothing said that.
+
+**ChatGPT consulted** (`CHATGPT-PROMPT-cawitness-uRS4General-bridge.md`,
+reply logged inline in that pass's transcript). Verdict, do not deviate
+from without re-consulting: **do NOT try to prove `uCANew = uRS4General`.**
+The two constructions solve genuinely different interpolation problems —
+Construction A (`CAWitness`) is `y - b(x)` for a plain degree-≤3
+Vandermonde interpolant; Construction B (`uRS4General`) is `E(x)+Y(x)y`
+from a 7-dim Riemann–Roch basis, with `ua`/`u` threaded into its LCM
+denominator in a way that changes its degree bookkeeping under the exact
+specialization this project needs (`ua = ℓ_Ra1·ℓ_Ra2`). Forcing the
+equality risks proving something false. **Recommendation: abandon
+`uRS4General`/`curBeforeMonic4General`/`Npoly4` for this theorem entirely,
+in favor of `CAWitness.lean`'s simpler route** (already has the 0-`sorry`
+supporting lemmas and the `principalSubgroup` membership fact this
+theorem needs). ChatGPT's sufficient-condition writeup (§5/§6: if
+`Y = c ∈ kˣ` and `E = ±c·bCA`, they agree) is the honest shape of
+hypothesis to add if a future pass ever wants B back — this project's
+`CAWitness` construction already lives in the `Y = 1`/`c = 1`
+specialization of that condition.
+
+**Landed this pass**: `PrincipalWitnessCAConnection.lean` (0-`sorry`,
+Claire confirmed build-green). Does NOT touch `uCANew`/`bCA`/
+`uRS4General` at all — it only needs `IsMumfordUa`/`IsMumfordTarget4`
+(noting `IsMumfordTarget4` unfolds to literally the same `Prop` shape as
+`IsMumfordUa`, so one anchor-side lemma covers both without a separate
+target-side proof). Two theorems:
+- `divToPair_negVa_one_Sanchor_eq` : `divToPair (-va) 1 Sanchor =
+  single Ra1 + single Ra2`, given `Sanchor = {Ra1,Ra2}` plus the usual
+  Mumford-pair/nonvanishing data (`Uco`,`hAU`,`hUco_ne`,`hUco_eval` all
+  taken as caller-supplied hypotheses, matching
+  `ordAt_negVa_one_eq_one_of_mem_Sanchor`'s own signature — not
+  re-derived).
+- `divToPair_negV_one_S_eq` : the `S`/`T1cur,T2cur` mirror, same proof,
+  reusing the anchor-side lemma directly via `IsMumfordUa' :=
+  hMumfordTarget`.
+Needed `[DecidableEq H.Point]` on both (missing on first pass — the
+`{Ra1,Ra2}`/`{T1cur,T2cur}` Finset literals need `Insert`/`Singleton`
+instances; `divToPair` itself doesn't need it). Fixed, confirmed
+build-green.
+
+**What `PrincipalWitnessCAConnection.lean` does NOT do** (next step,
+in progress): it collapses the `divToPair` sums assuming `Sanchor`/`S`
+are already known to equal `{Ra1,Ra2}`/`{T1,T2}` — it does not connect
+`Ra1,Ra2,sa.P1,sa.P2` to `CAWitness.lean`'s `uCANew`/`bCA` construction at
+all. That's the actual remaining wiring: `cAmιTmδmιδ_mem_of_le`
+(`PrincipalWitnessFinalAssembly.lean`) has its own `Ra1X,Ra2X,P1X,P2X,...`/
+`hdet`/`hlead`/`hU_eval*`/`hQ1_def`/`hQ2_def`/etc. parameter list (all
+`CAWitness`-specific, built from raw `k`-coordinates) that has to be
+instantiated at `Ra1.X,Ra1.Y,Ra2.X,Ra2.Y,sa.P1.X,sa.P1.Y,sa.P2.X,sa.P2.Y`
+and supplied alongside NEW hypotheses identifying `ua := uCANew ...` /
+`va := -bCA ...` (the honest, minimal version of ChatGPT's sufficient
+condition, per the verdict above) — not yet done. This is the next thing
+being worked on.
+
+## Workflow reminders specific to this file (continued)
+
+- **Do not attempt `uCANew = uRS4General`** — see ChatGPT verdict above.
+  If a future pass is tempted to revisit `uRS4General`/
+  `curBeforeMonic4General`/`Npoly4` for this theorem, re-read that
+  consultation first; the recommendation was explicit and reasoned, not
+  a shrug.
+- `IsMumfordTarget4`/`IsMumfordUa` are literally the same `Prop` shape
+  (just different variable names) — don't write a second copy of an
+  `IsMumfordUa`-parametrized lemma for the target side; instantiate the
+  anchor-side one directly (`PrincipalWitnessCAConnection.lean`'s
+  `divToPair_negV_one_S_eq` is the template).
