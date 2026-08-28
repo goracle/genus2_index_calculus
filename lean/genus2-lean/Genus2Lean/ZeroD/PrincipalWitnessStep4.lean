@@ -463,5 +463,296 @@ theorem cAmT_mem_principalSubgroup
     exact mul_ne_zero (mul_ne_zero (linX_ne_zero P1X) (linX_ne_zero P2X)) (linX_ne_zero δ₀.X) hA
   · rw [bCA_ordInfOfPair Ra1X Ra2X P1X P2X Ra1Y Ra2Y P1Y P2Y hlead, ordInfOfPair_hA]
 
+/-! ## Part 3: the honest generic-`δ₀` fact, and the confirmed gap
+
+**ChatGPT consultation this pass (see `CHATGPT-LOG-principal-witness-assembly.md`)
+confirmed, via an explicit three-generator computation, that the
+originally-planned target `C - A - ι(T) + 2•[δ₀] ∈ principalSubgroup` is
+FALSE for a generic (non-Weierstrass) `δ₀`.** The three matching-pole
+generators available from this stack —
+
+* `G₁ := div(f) - div(h_T)`, `h_T := (x-T1.X)(x-T2.X)(x-δ₀.X)`
+  (`ordInfOfPair = -6` both sides, mirroring Part 1/2's `h_A` construction
+  but against `T` instead of `A`) — gives
+  `C + ι(A) + T - (T + ι(T) + [δ₀] + [ιδ₀]) = C + ι(A) - ι(T) - [δ₀] - [ιδ₀]`;
+* `G₂ := div(x-P1.X) - div(x-δ₀.X)` (`divToPair_linX_eq`,
+  `HyperellipticClassProof.lean`, already 0-`sorry`) — gives
+  `P1 + ι(P1) - δ₀ - ιδ₀`;
+* `G₃`, the `P2` mirror of `G₂` —
+
+compose (`G₁ - G₂ - G₃`, term-by-term cancellation confirmed by hand and
+by ChatGPT independently) to exactly
+
+  `C - A - ι(T) + [δ₀] + [ιδ₀] ∈ principalSubgroup`     (†)
+
+**not** the `2•[δ₀]` version. The discrepancy `(2•[δ₀]) - ([δ₀]+[ιδ₀]) =
+[δ₀] - [ιδ₀]` is a genuine extra condition — equivalent, on the smooth
+projective model, to `2([δ₀]-[∞]) = 0` in the Jacobian, a special
+torsion condition on the basepoint `δ₀`, not a general fact. `δ₀` in
+`AlphaLocusDegreeUniform.lean`'s `SampleTargetFromAlpha` is an arbitrary
+caller-supplied basepoint with no such constraint, so **no proof of the
+`2•[δ₀]` statement from this stack's generators exists, and none should
+be attempted** — `[δ₀] - [ιδ₀] ∈ principalSubgroup` is false for generic
+`δ₀`, exactly the same category of false statement as the already-rejected
+`T + ι(T) - 4•[δ₀] ∈ principalSubgroup` from an earlier pass.
+
+**This is a real finding about `AlphaLocusDegreeUniform.lean`'s theorem
+statement, not a gap in this file's proof technique.** The `2•[δ₀]`
+normalization there comes from the `s`-embedding (`DivisorClassGroup.lean`'s
+`s D δ₀ P := toJacobian D ⟨single P - single δ₀, _⟩`, applied twice — a
+*formal* `2•[δ₀]` inside `Divisor0 H`, unrelated to any `linX`-fiber
+divisor) — it is not, and was never claimed to be, `div(x - δ₀.X) =
+[δ₀]+[ιδ₀]`. Conflating the two is exactly the error (†) rules out.
+**Next step, not done here**: `reducedClass_eq_of_isReduction'`'s own
+`sorry` needs either (a) an added hypothesis pinning `δ₀` to a
+Weierstrass point (`δ₀.Y = 0`, forcing `ι δ₀ = δ₀`, hence `[δ₀]+[ιδ₀] =
+2•[δ₀]` trivially — the cheapest fix, but narrows the theorem's scope),
+or (b) accepting (†)'s weaker conclusion and checking whether
+`reducedClass_eq_of_isReduction'`'s actual goal can be restated/weakened
+to match `[δ₀]+[ιδ₀]` throughout instead of `2•[δ₀]` (i.e. whether the
+`s`-embedding itself could use `[δ₀]+[ιδ₀]` — unlikely, since that breaks
+`s`'s degree-1 embedding property `DivisorClassGroup.lean` relies on
+elsewhere), or (c) finding a genuinely different generator set not built
+from this stack's `linX`/`f` ratios. Do not attempt (†)'s `2•[δ₀]`
+strengthening directly — confirmed false, per above. -/
+
+/-- **The honest fact: `C - A - ι(T) + [δ₀] + [ιδ₀] ∈ principalSubgroup`**,
+for generic (not necessarily Weierstrass) `δ₀` — the correct three-generator
+composition `G₁ - G₂ - G₃` described in this file's Part 3 docstring above.
+`G₁` needs `h_T`'s own divisor fact (`divToPair_hT_eq` below, mirroring
+Part 1's `divToPair_hA_eq` but against `T1X, T2X, δ₀` instead of
+`P1X, P2X, δ₀`); `G₂`/`G₃` reuse `divToPair_linX_eq`
+(`HyperellipticClassProof.lean`) directly at `P1`/`P2` against `δ₀`. -/
+theorem divToPair_hT_eq
+    [DecidableEq k] [DecidableEq H.Point]
+    (hchar : (2 : k) ≠ 0) (hsf : Squarefree H.f)
+    (PtT1 PtT2 δ₀ : H.Point)
+    (h12 : PtT1.X ≠ PtT2.X) (h1δ : PtT1.X ≠ δ₀.X) (h2δ : PtT2.X ≠ δ₀.X)
+    (hT1Y : PtT1.Y ≠ 0) (hT2Y : PtT2.Y ≠ 0) (hδY : δ₀.Y ≠ 0) :
+    divToPair ((linX PtT1.X * linX PtT2.X) * linX δ₀.X) (0 : k[X])
+        ({PtT1, PtT2, Point.iota PtT1, Point.iota PtT2, δ₀, Point.iota δ₀} : Finset H.Point) =
+      single PtT1 + single PtT2 + single (Point.iota PtT1) + single (Point.iota PtT2) +
+        single δ₀ + single (Point.iota δ₀) := by
+  classical
+  have h_bot : ∀ P : H.Point, pointIdeal P ≠ ⊥ := pointIdeal_ne_bot
+  have hOrdT1 : ordAt PtT1 ((linX PtT1.X * linX PtT2.X) * linX δ₀.X) (0 : k[X]) = 1 :=
+    ordAt_linX_mul3_eq_one_of_ne hchar hsf PtT1 (h_bot PtT1) PtT1.X PtT2.X δ₀.X rfl hT1Y
+      (Ne.symm h12) (Ne.symm h1δ)
+  have hOrdT2 : ordAt PtT2 ((linX PtT1.X * linX PtT2.X) * linX δ₀.X) (0 : k[X]) = 1 := by
+    have h := ordAt_linX_mul3_eq_one_of_ne hchar hsf PtT2 (h_bot PtT2) PtT2.X PtT1.X δ₀.X rfl hT2Y
+      h12 (Ne.symm h2δ)
+    have heq : (linX PtT1.X * linX PtT2.X) * linX δ₀.X =
+        (linX PtT2.X * linX PtT1.X) * linX δ₀.X := by ring
+    rw [heq]; exact h
+  have hOrdιT1 : ordAt (Point.iota PtT1) ((linX PtT1.X * linX PtT2.X) * linX δ₀.X) (0 : k[X]) = 1 :=
+    ordAt_linX_mul3_eq_one_of_ne hchar hsf (Point.iota PtT1) (h_bot _) PtT1.X PtT2.X δ₀.X
+      (Point.iota_X PtT1) (by simpa using hT1Y) (Ne.symm h12) (Ne.symm h1δ)
+  have hOrdιT2 : ordAt (Point.iota PtT2) ((linX PtT1.X * linX PtT2.X) * linX δ₀.X) (0 : k[X]) = 1 := by
+    have h := ordAt_linX_mul3_eq_one_of_ne hchar hsf (Point.iota PtT2) (h_bot _) PtT2.X PtT1.X δ₀.X
+      (Point.iota_X PtT2) (by simpa using hT2Y) h12 (Ne.symm h2δ)
+    have heq : (linX PtT1.X * linX PtT2.X) * linX δ₀.X =
+        (linX PtT2.X * linX PtT1.X) * linX δ₀.X := by ring
+    rw [heq]; exact h
+  have hOrdδ : ordAt δ₀ ((linX PtT1.X * linX PtT2.X) * linX δ₀.X) (0 : k[X]) = 1 := by
+    have h := ordAt_linX_mul3_eq_one_of_ne hchar hsf δ₀ (h_bot δ₀) δ₀.X PtT1.X PtT2.X rfl hδY
+      h1δ h2δ
+    have heq : (linX PtT1.X * linX PtT2.X) * linX δ₀.X =
+        (linX δ₀.X * linX PtT1.X) * linX PtT2.X := by ring
+    rw [heq]; exact h
+  have hOrdιδ : ordAt (Point.iota δ₀) ((linX PtT1.X * linX PtT2.X) * linX δ₀.X) (0 : k[X]) = 1 := by
+    have h := ordAt_linX_mul3_eq_one_of_ne hchar hsf (Point.iota δ₀) (h_bot _) δ₀.X PtT1.X PtT2.X
+      (Point.iota_X δ₀) (by simpa using hδY) h1δ h2δ
+    have heq : (linX PtT1.X * linX PtT2.X) * linX δ₀.X =
+        (linX δ₀.X * linX PtT1.X) * linX PtT2.X := by ring
+    rw [heq]; exact h
+  have hne_of_X : ∀ {Q1 Q2 : H.Point}, Q1.X ≠ Q2.X → Q1 ≠ Q2 :=
+    fun hX heq => hX (heq ▸ rfl)
+  have hT1T2 : PtT1 ≠ PtT2 := hne_of_X h12
+  have hT1ιT1 : PtT1 ≠ Point.iota PtT1 := (Point.iota_ne_self_of_Y_ne_zero hchar hT1Y).symm
+  have hT1ιT2 : PtT1 ≠ Point.iota PtT2 := hne_of_X (by rw [Point.iota_X]; exact h12)
+  have hT1δ : PtT1 ≠ δ₀ := hne_of_X h1δ
+  have hT1ιδ : PtT1 ≠ Point.iota δ₀ := hne_of_X (by rw [Point.iota_X]; exact h1δ)
+  have hT2ιT1 : PtT2 ≠ Point.iota PtT1 := hne_of_X (by rw [Point.iota_X]; exact Ne.symm h12)
+  have hT2ιT2 : PtT2 ≠ Point.iota PtT2 := (Point.iota_ne_self_of_Y_ne_zero hchar hT2Y).symm
+  have hT2δ : PtT2 ≠ δ₀ := hne_of_X h2δ
+  have hT2ιδ : PtT2 ≠ Point.iota δ₀ := hne_of_X (by rw [Point.iota_X]; exact h2δ)
+  have hιT1ιT2 : Point.iota PtT1 ≠ Point.iota PtT2 := hne_of_X (by
+    rw [Point.iota_X, Point.iota_X]; exact h12)
+  have hιT1δ : Point.iota PtT1 ≠ δ₀ := hne_of_X (by rw [Point.iota_X]; exact h1δ)
+  have hιT1ιδ : Point.iota PtT1 ≠ Point.iota δ₀ := hne_of_X (by
+    rw [Point.iota_X, Point.iota_X]; exact h1δ)
+  have hιT2δ : Point.iota PtT2 ≠ δ₀ := hne_of_X (by rw [Point.iota_X]; exact h2δ)
+  have hιT2ιδ : Point.iota PtT2 ≠ Point.iota δ₀ := hne_of_X (by
+    rw [Point.iota_X, Point.iota_X]; exact h2δ)
+  have hδιδ : δ₀ ≠ Point.iota δ₀ := (Point.iota_ne_self_of_Y_ne_zero hchar hδY).symm
+  apply eq_of_coeffAt_eq
+  intro P
+  rw [coeffAt_divToPair]
+  simp only [map_add, coeffAt_single]
+  by_cases hEqT1 : P = PtT1
+  · rw [hEqT1]
+    have hMem : PtT1 ∈ ({PtT1, PtT2, Point.iota PtT1, Point.iota PtT2, δ₀, Point.iota δ₀} :
+        Finset H.Point) := by
+      simp only [Finset.mem_insert, Finset.mem_singleton, true_or, or_true, eq_self]
+    rw [if_pos hMem, if_pos rfl, if_neg hT1T2, if_neg hT1ιT1, if_neg hT1ιT2,
+      if_neg hT1δ, if_neg hT1ιδ, hOrdT1]
+    ring
+  by_cases hEqT2 : P = PtT2
+  · rw [hEqT2]
+    have hMem : PtT2 ∈ ({PtT1, PtT2, Point.iota PtT1, Point.iota PtT2, δ₀, Point.iota δ₀} :
+        Finset H.Point) := by
+      simp only [Finset.mem_insert, Finset.mem_singleton, true_or, or_true, eq_self]
+    rw [if_pos hMem, if_neg (Ne.symm hT1T2), if_pos rfl, if_neg hT2ιT1, if_neg hT2ιT2,
+      if_neg hT2δ, if_neg hT2ιδ, hOrdT2]
+    ring
+  by_cases hEqιT1 : P = Point.iota PtT1
+  · rw [hEqιT1]
+    have hMem : Point.iota PtT1 ∈ ({PtT1, PtT2, Point.iota PtT1, Point.iota PtT2, δ₀,
+        Point.iota δ₀} : Finset H.Point) := by
+      simp only [Finset.mem_insert, Finset.mem_singleton, true_or, or_true, eq_self]
+    rw [if_pos hMem, if_neg (Ne.symm hT1ιT1), if_neg (Ne.symm hT2ιT1), if_pos rfl,
+      if_neg hιT1ιT2, if_neg hιT1δ, if_neg hιT1ιδ, hOrdιT1]
+    ring
+  by_cases hEqιT2 : P = Point.iota PtT2
+  · rw [hEqιT2]
+    have hMem : Point.iota PtT2 ∈ ({PtT1, PtT2, Point.iota PtT1, Point.iota PtT2, δ₀,
+        Point.iota δ₀} : Finset H.Point) := by
+      simp only [Finset.mem_insert, Finset.mem_singleton, true_or, or_true, eq_self]
+    rw [if_pos hMem, if_neg (Ne.symm hT1ιT2), if_neg (Ne.symm hT2ιT2), if_neg (Ne.symm hιT1ιT2),
+      if_pos rfl, if_neg hιT2δ, if_neg hιT2ιδ, hOrdιT2]
+    ring
+  by_cases hEqδ : P = δ₀
+  · rw [hEqδ]
+    have hMem : δ₀ ∈ ({PtT1, PtT2, Point.iota PtT1, Point.iota PtT2, δ₀, Point.iota δ₀} :
+        Finset H.Point) := by
+      simp only [Finset.mem_insert, Finset.mem_singleton, true_or, or_true, eq_self]
+    rw [if_pos hMem, if_neg (Ne.symm hT1δ), if_neg (Ne.symm hT2δ), if_neg (Ne.symm hιT1δ),
+      if_neg (Ne.symm hιT2δ), if_pos rfl, if_neg hδιδ, hOrdδ]
+    ring
+  by_cases hEqιδ : P = Point.iota δ₀
+  · rw [hEqιδ]
+    have hMem : Point.iota δ₀ ∈ ({PtT1, PtT2, Point.iota PtT1, Point.iota PtT2, δ₀,
+        Point.iota δ₀} : Finset H.Point) := by
+      simp only [Finset.mem_insert, Finset.mem_singleton, true_or, or_true, eq_self]
+    rw [if_pos hMem, if_neg (Ne.symm hT1ιδ), if_neg (Ne.symm hT2ιδ), if_neg (Ne.symm hιT1ιδ),
+      if_neg (Ne.symm hιT2ιδ), if_neg (Ne.symm hδιδ), if_pos rfl, hOrdιδ]
+    ring
+  · rw [if_neg hEqT1, if_neg hEqT2, if_neg hEqιT1, if_neg hEqιT2, if_neg hEqδ, if_neg hEqιδ]
+    have hnmemS : P ∉ ({PtT1, PtT2, Point.iota PtT1, Point.iota PtT2, δ₀, Point.iota δ₀} :
+        Finset H.Point) := by
+      intro h
+      simp only [Finset.mem_insert, Finset.mem_singleton] at h
+      rcases h with rfl | rfl | rfl | rfl | rfl | rfl
+      · exact hEqT1 rfl
+      · exact hEqT2 rfl
+      · exact hEqιT1 rfl
+      · exact hEqιT2 rfl
+      · exact hEqδ rfl
+      · exact hEqιδ rfl
+    rw [if_neg hnmemS]
+    ring
+
+/-- **`ordInfOfPair` of `h_T := (linX T1.X * linX T2.X) * linX δ₀.X` is
+`-6`.** Identical degree computation to `ordInfOfPair_hA` above, restated
+for `T1, T2` in place of `P1, P2` (the underlying fact is generic in the
+three linear-factor roots, so this is the same proof verbatim). -/
+theorem ordInfOfPair_hT (a b c : k) :
+    ordInfOfPair ((linX a * linX b) * linX c) (0 : k[X]) = -6 :=
+  ordInfOfPair_hA a b c
+
+/-- **`G₁ := div(f) - div(h_T) = C + ι(A) - ι(T) - [δ₀] - [ιδ₀] ∈
+principalSubgroup`**, the first of the three generators in this file's
+Part 3 docstring. Same `divToPairRatio`/`AddSubgroup.subset_closure`
+idiom as `cAmT_mem_principalSubgroup` (Part 2), with `h_A` replaced by
+`h_T` (`divToPair_hT_eq` above) and the matching `ordInfOfPair = -6`
+fact supplied by `ordInfOfPair_hT`. -/
+theorem cIotaAmIotaT_mem_principalSubgroup
+    [DecidableEq k] [DecidableEq H.Point]
+    (hdeg : H.f.natDegree = 5)
+    (hchar : (2 : k) ≠ 0) (hsf : Squarefree H.f)
+    (Ra1X Ra2X P1X P2X Ra1Y Ra2Y P1Y P2Y : k)
+    (hdet : (caInterpMatrix Ra1X Ra2X P1X P2X).det ≠ 0)
+    (hlead : caCoeff Ra1X Ra2X P1X P2X Ra1Y Ra2Y P1Y P2Y 3 ≠ 0)
+    (h12 : Ra1X ≠ Ra2X) (h1P1 : Ra1X ≠ P1X) (h1P2 : Ra1X ≠ P2X)
+    (h2P1 : Ra2X ≠ P1X) (h2P2 : Ra2X ≠ P2X) (hPP : P1X ≠ P2X)
+    (hRa1_curve : Ra1Y ^ 2 = H.f.eval Ra1X) (hRa2_curve : Ra2Y ^ 2 = H.f.eval Ra2X)
+    (hP1_curve : P1Y ^ 2 = H.f.eval P1X) (hP2_curve : P2Y ^ 2 = H.f.eval P2X)
+    (hRa1Y_ne : Ra1Y ≠ 0) (hRa2Y_ne : Ra2Y ≠ 0) (hP1Y_ne : P1Y ≠ 0) (hP2Y_ne : P2Y ≠ 0)
+    (PtRa1 PtRa2 PtιP1 PtιP2 δ₀ : H.Point)
+    (hPtRa1X : PtRa1.X = Ra1X) (hPtRa1Y : PtRa1.Y = Ra1Y)
+    (hPtRa2X : PtRa2.X = Ra2X) (hPtRa2Y : PtRa2.Y = Ra2Y)
+    (hPtιP1X : PtιP1.X = P1X) (hPtιP1Y : PtιP1.Y = -P1Y)
+    (hPtιP2X : PtιP2.X = P2X) (hPtιP2Y : PtιP2.Y = -P2Y)
+    (hU_evalRa1 : (uCANew H Ra1X Ra2X P1X P2X Ra1Y Ra2Y P1Y P2Y).eval Ra1X ≠ 0)
+    (hU_evalRa2 : (uCANew H Ra1X Ra2X P1X P2X Ra1Y Ra2Y P1Y P2Y).eval Ra2X ≠ 0)
+    (hU_evalP1 : (uCANew H Ra1X Ra2X P1X P2X Ra1Y Ra2Y P1Y P2Y).eval P1X ≠ 0)
+    (hU_evalP2 : (uCANew H Ra1X Ra2X P1X P2X Ra1Y Ra2Y P1Y P2Y).eval P2X ≠ 0)
+    (hU_ne0 : uCANew H Ra1X Ra2X P1X P2X Ra1Y Ra2Y P1Y P2Y ≠ 0)
+    (T1X T2X : k)
+    (hT1 : (uCANew H Ra1X Ra2X P1X P2X Ra1Y Ra2Y P1Y P2Y).IsRoot T1X)
+    (hT2 : (uCANew H Ra1X Ra2X P1X P2X Ra1Y Ra2Y P1Y P2Y).IsRoot T2X)
+    (hTne : T1X ≠ T2X)
+    (Q1 Q2 : Polynomial k)
+    (hQ1_def : uCANew H Ra1X Ra2X P1X P2X Ra1Y Ra2Y P1Y P2Y =
+      (X - C T1X) * (X - C T2X) * Q1)
+    (hQ1T1 : Q1.eval T1X ≠ 0)
+    (hQ2_def : uCANew H Ra1X Ra2X P1X P2X Ra1Y Ra2Y P1Y P2Y =
+      (X - C T2X) * (X - C T1X) * Q2)
+    (hQ2T2 : Q2.eval T2X ≠ 0)
+    (PtT1 PtT2 : H.Point)
+    (hAeval1 : (denomPolyCA Ra1X Ra2X P1X P2X : k[X]).eval PtT1.X ≠ 0)
+    (hAeval2 : (denomPolyCA Ra1X Ra2X P1X P2X : k[X]).eval PtT2.X ≠ 0)
+    (hPtT1X : PtT1.X = T1X)
+    (hPtT1Y : PtT1.Y = (bCA Ra1X Ra2X P1X P2X Ra1Y Ra2Y P1Y P2Y).eval PtT1.X)
+    (hPtT1Y_ne : PtT1.Y ≠ 0)
+    (hPtT2X : PtT2.X = T2X)
+    (hPtT2Y : PtT2.Y = (bCA Ra1X Ra2X P1X P2X Ra1Y Ra2Y P1Y P2Y).eval PtT2.X)
+    (hPtT2Y_ne : PtT2.Y ≠ 0)
+    (h1δ : T1X ≠ δ₀.X) (h2δ : T2X ≠ δ₀.X) (hδY : δ₀.Y ≠ 0)
+    (hsupp_f : ∀ P, P ∉ ({PtRa1, PtRa2, PtιP1, PtιP2, PtT1, PtT2} : Finset H.Point) →
+      ordAt P (-bCA Ra1X Ra2X P1X P2X Ra1Y Ra2Y P1Y P2Y) (1 : k[X]) = 0)
+    (hspec_f : ∀ v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H),
+      (Associates.mk v.asIdeal).count (Associates.mk (Ideal.span
+        ({toPair H (-bCA Ra1X Ra2X P1X P2X Ra1Y Ra2Y P1Y P2Y) 1} :
+          Set (CoordinateRing H)))).factors ≠ 0 → ∃ P, v.asIdeal = pointIdeal P)
+    [∀ P : ({PtRa1, PtRa2, PtιP1, PtιP2, PtT1, PtT2} : Finset H.Point),
+      Module.Finite k (CoordinateRing H ⧸ pointIdeal P.1 ^
+        (ordAt P.1 (-bCA Ra1X Ra2X P1X P2X Ra1Y Ra2Y P1Y P2Y) (1 : k[X])).toNat)]
+    (hsupp_hT : ∀ P, P ∉ ({PtT1, PtT2, Point.iota PtT1, Point.iota PtT2, δ₀, Point.iota δ₀} :
+        Finset H.Point) →
+      ordAt P ((linX T1X * linX T2X) * linX δ₀.X) (0 : k[X]) = 0)
+    (hspec_hT : ∀ v : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H),
+      (Associates.mk v.asIdeal).count (Associates.mk (Ideal.span
+        ({toPair H ((linX T1X * linX T2X) * linX δ₀.X) 0} :
+          Set (CoordinateRing H)))).factors ≠ 0 → ∃ P, v.asIdeal = pointIdeal P)
+    [∀ P : ({PtT1, PtT2, Point.iota PtT1, Point.iota PtT2, δ₀, Point.iota δ₀} : Finset H.Point),
+      Module.Finite k (CoordinateRing H ⧸ pointIdeal P.1 ^
+        (ordAt P.1 ((linX T1X * linX T2X) * linX δ₀.X) (0 : k[X])).toNat)] :
+    (divToPair (-bCA Ra1X Ra2X P1X P2X Ra1Y Ra2Y P1Y P2Y) (1 : k[X])
+        ({PtRa1, PtRa2, PtιP1, PtιP2, PtT1, PtT2} : Finset H.Point) -
+      divToPair ((linX T1X * linX T2X) * linX δ₀.X) (0 : k[X])
+        ({PtT1, PtT2, Point.iota PtT1, Point.iota PtT2, δ₀, Point.iota δ₀} : Finset H.Point)) ∈
+      principalSubgroup H hdeg := by
+  have hgoal_eq :
+      (divToPair (-bCA Ra1X Ra2X P1X P2X Ra1Y Ra2Y P1Y P2Y) (1 : k[X])
+          ({PtRa1, PtRa2, PtιP1, PtιP2, PtT1, PtT2} : Finset H.Point) -
+        divToPair ((linX T1X * linX T2X) * linX δ₀.X) (0 : k[X])
+          ({PtT1, PtT2, Point.iota PtT1, Point.iota PtT2, δ₀, Point.iota δ₀} : Finset H.Point)) =
+      divToPairRatio (-bCA Ra1X Ra2X P1X P2X Ra1Y Ra2Y P1Y P2Y) (1 : k[X])
+          ({PtRa1, PtRa2, PtιP1, PtιP2, PtT1, PtT2} : Finset H.Point)
+        ((linX T1X * linX T2X) * linX δ₀.X) (0 : k[X])
+          ({PtT1, PtT2, Point.iota PtT1, Point.iota PtT2, δ₀, Point.iota δ₀} : Finset H.Point) := rfl
+  rw [hgoal_eq]
+  apply AddSubgroup.subset_closure
+  refine ⟨-bCA Ra1X Ra2X P1X P2X Ra1Y Ra2Y P1Y P2Y, 1,
+    ({PtRa1, PtRa2, PtιP1, PtιP2, PtT1, PtT2} : Finset H.Point),
+    fun ⟨_, hB⟩ => one_ne_zero hB, hsupp_f, hspec_f, ‹_›,
+    (linX T1X * linX T2X) * linX δ₀.X, 0,
+    ({PtT1, PtT2, Point.iota PtT1, Point.iota PtT2, δ₀, Point.iota δ₀} : Finset H.Point),
+    ?_, hsupp_hT, hspec_hT, ‹_›, ?_, rfl⟩
+  · refine fun ⟨hA, _⟩ => ?_
+    exact mul_ne_zero (mul_ne_zero (linX_ne_zero T1X) (linX_ne_zero T2X)) (linX_ne_zero δ₀.X) hA
+  · rw [bCA_ordInfOfPair Ra1X Ra2X P1X P2X Ra1Y Ra2Y P1Y P2Y hlead, ordInfOfPair_hT]
+
 end DecoupledSystem
 end Genus2Lean

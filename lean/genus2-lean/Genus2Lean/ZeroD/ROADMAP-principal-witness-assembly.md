@@ -283,6 +283,39 @@ signature, plus rewiring the downstream call sites to actually use
    witness**, since as stated (`S := T`, `v := bCA`) the theorem's own
    `hSmem`/`u`/`v` parameters would be asking for the wrong divisor
    class and the goal would be false as currently spelled out.
+   **Correction, this pass: step 3's `2•[δ₀]` target is FALSE for
+   generic `δ₀` — confirmed by an explicit three-generator computation
+   (Claire + ChatGPT, `CHATGPT-LOG-principal-witness-assembly.md`).**
+   The same three generators listed above (`G₁ := div(f)-div(h)`,
+   `G₂ := div(x-P1.X)-div(x-δ₀.X)`, `G₃` the `P2` mirror) compose,
+   term-by-term, to `C - A - ι(T) + [δ₀] + [ιδ₀] ∈ principalSubgroup` —
+   **`[δ₀]+[ιδ₀]`, not `2•[δ₀]`**. The gap `2•[δ₀] - ([δ₀]+[ιδ₀]) =
+   [δ₀]-[ιδ₀]` is a genuine extra condition (equivalent to `2([δ₀]-[∞])
+   = 0` in the Jacobian on the smooth model — a torsion condition on the
+   basepoint, not general). `AlphaLocusDegreeUniform.lean`'s `δ₀` is a
+   fully generic basepoint (the `s`-embedding's `2•[δ₀]` is a *formal*
+   double, from `s` applied twice — unrelated to a `linX`-fiber divisor,
+   which is where `[δ₀]+[ιδ₀]` actually comes from), so **the `2•[δ₀]`
+   target as originally planned cannot be proved from this stack's
+   generators, and no other generator set is expected to fix it** — this
+   is a fact about the Jacobian, not a missing Lean lemma. **Landed this
+   pass**: `PrincipalWitnessStep4.lean` Part 3
+   (`cIotaAmIotaT_mem_principalSubgroup`, `divToPair_hT_eq`,
+   `ordInfOfPair_hT`), proving the honest `[δ₀]+[ιδ₀]` version,
+   build-green pending Claire's REPL confirmation. **Open question for
+   next session** (not resolved here): does
+   `reducedClass_eq_of_isReduction'` need (a) a Weierstrass hypothesis on
+   `δ₀` (`δ₀.Y = 0` ⟹ `ι δ₀ = δ₀` ⟹ `[δ₀]+[ιδ₀] = 2•[δ₀]` trivially — the
+   cheapest fix, narrows scope), (b) a restatement of the whole
+   `SampleTargetFromAlpha`/`s`-embedding pipeline in terms of
+   `[δ₀]+[ιδ₀]` instead of `2•[δ₀]` (checked as unlikely — probably
+   breaks `s`'s use elsewhere as a degree-1 embedding), or (c) a
+   different generator set entirely. Ask ChatGPT to weigh (a) vs (b)
+   before picking one, since (a) requires touching every downstream
+   caller of `SampleTargetFromAlpha`/`reducedClass_eq_of_isReduction'`
+   to supply the new hypothesis, and (b) requires auditing
+   `DivisorClassGroup.lean`'s `s`/`s_add_s_eq_s_add_s_iff` for any use of
+   `s`'s degree-1-embedding property that `[δ₀]+[ιδ₀]` would break.
 4. **Assemble into `reducedClass_eq_of_isReduction'`'s proof body** once
    (1)-(3) are in hand.
 5. Tangent branch (`P1 = P2`) and Weierstrass sub-case (`P1 = P2 ∧ Y = 0`)
