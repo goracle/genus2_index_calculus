@@ -673,14 +673,20 @@ this): a Mumford pair `(u,v)` represents the effective divisor `[R₁]+[R₂]`
 `toPair H u v = u + v·y`. `u` itself only enters as "the polynomial whose
 roots pick out `S`" — it does not appear inside the `divToPair` call at
 all. Since `ordInfOfPair (-v) 1 = -(max(2·1, 2·0+5)) = -5` (`B=1` has
-degree `0`), `divToPair (-v) 1 S` has degree `5`, still not `0` — the
-existing `-2•single δ₀` correction that `reducedClass` already carries is
-exactly what's needed to bring it down to the honest degree-`2 - 2 = 0`
-representative once `S` really is a 2-point root set, matching
-`reducedClass`'s own shape (`... - toJacobian D ⟨... - 2•single δ₀, ...⟩`).
-So both `hmem` and the goal now subtract `(2:ℤ) • single δ₀` from
-`divToPair (H := H) (-v) 1 S` directly, rather than asking `divToPair u v S`
-alone to already be degree-zero. `hu`/`u` are kept as parameters (still
+degree `0`), `divToPair (-v) 1 S` has degree `5`, still not `0` — a
+degree-2 correction is needed to bring it down to the honest
+degree-`2 - 2 = 0` representative once `S` really is a 2-point root set.
+**Historical note, corrected in a later pass:** an earlier draft of this
+paragraph said the correction was `-2•single δ₀`, matching
+`reducedClass`'s own structure-default shape. That was superseded once
+`PrincipalWitnessStep4.lean`'s (†) showed the only correction this
+project's witness construction can actually derive is
+`-(single δ₀ + single (Point.iota δ₀))`, NOT `-2•single δ₀` (see this
+theorem's own hypothesis-block comments, further down, for the full
+`N₂`/`Nι`/`q` derivation). So both `hmem` and the goal subtract
+`single δ₀ + single (Point.iota δ₀)` from `divToPair (H := H) (-v) 1 S`
+directly, rather than `(2:ℤ) • single δ₀` as this paragraph originally
+said. `hu`/`u` are kept as parameters (still
 needed to pin down which points populate `S` — Step 3's proof will need
 `S` to be exactly `u`'s root set), but no longer feed `divToPair`'s
 argument slots. `hsupp` is restated over `ordAt (H := H) P (-v) 1` to match.
@@ -764,7 +770,7 @@ infinity, not a `δ₀` coefficient; an earlier draft of this note said
 `Starget`-shaped hypothesis is added here accordingly — it would scaffold
 an abandoned plan. The proof body below is still `sorry`; the
 `eq_of_coeffAt_eq` route from `D_old - D_new` (no correction term) to
-this theorem's own `-2•[δ₀]`-per-Mumford-pair goal (via `hmem`/
+this theorem's `hmem`/`hmemAnchor`-shaped goal (via `hmem`/
 `hmemAnchor`, already the right shape above) is the single largest
 remaining piece, per `PrincipalWitnessAssembly.lean`'s own trailing status
 note.
@@ -951,39 +957,59 @@ theorem reducedClass_eq_of_isReduction' {p : ℕ} [Fact (Nat.Prime p)] [Fact (p 
     (q : Jacobian H D)
     (hq : q = toJacobian D (Subtype.mk (single δ₀ - single (Point.iota δ₀) : Divisor H)
       (single_sub_single_mem_Divisor0 δ₀ (Point.iota δ₀))) )
-    -- **Step 0 of `ROADMAP-principal-witness-assembly.md`, added this
-    -- pass: the missing `Sanchor ↔ {sa.P1, sa.P2}` link.**
-    -- `SanchorEqAlphaPoints.lean`'s own docstring flagged this as a
-    -- genuinely new hypothesis, not derivable from anything already in
-    -- this signature — `hMumfordUa` only says `(ua,va)` is SOME valid
-    -- Mumford pair for `alpha•aClass`, not that its roots are
-    -- `sa.P1.X, sa.P2.X` specifically. Fully-split case only (mirrors
-    -- `hcur`/`hgcd`'s own `sa.P1.X ≠ sa.P2.X`-shaped branch; the tangent
-    -- case `sa.P1 = sa.P2` is explicitly out of scope for
-    -- `Sanchor_eq_of_anchor_roots` too, per that file's docstring).
-    -- `hP1Xne` is NOT derivable from `hcur`'s guard
-    -- `(sa.P1.X,sa.P1.Y) ≠ (sa.P2.X,sa.P2.Y)` — two distinct points can
-    -- share an `X`-coordinate (`ι` of each other) — so it is stated as
-    -- its own explicit hypothesis here, not derived.
-    (hP1Xne : sa.P1.X ≠ sa.P2.X)
-    (hAnchorRoots : ua.IsRoot sa.P1.X ∧ ua.IsRoot sa.P2.X)
-    (hsaP1Y : sa.P1.Y = va.eval sa.P1.X) (hsaP2Y : sa.P2.Y = va.eval sa.P2.X) :
+    -- **Correction, this pass: the previous pass's `hAnchorRoots`/
+    -- `hSanchorEq` (`Sanchor = {sa.P1, sa.P2}`) was WRONG and is removed
+    -- here.** Re-reading `CAWitness.lean`'s own module docstring
+    -- carefully: `C := [Ra1]+[Ra2] := Sanchor` (the anchor, a
+    -- representative of `alpha•aClass` itself) and `A := [P1]+[P2] :=
+    -- {sa.P1,sa.P2}` (the SEPARATE pair being subtracted, `C - A`) are
+    -- two genuinely different divisors — `Sanchor` is not, and has no
+    -- reason to be, `{sa.P1,sa.P2}`. The roadmap's "Gap found and
+    -- closed" note (`ROADMAP-principal-witness-assembly.md`) was
+    -- similarly re-checked this pass: it only ever asks that `A` (=
+    -- `CAWitness.lean`'s `P1,P2` slot) be tied to `sa.P1,sa.P2` — which
+    -- the structure default already does for free, no proof needed —
+    -- never that `Sanchor` equal `{sa.P1,sa.P2}`. What (†)
+    -- (`PrincipalWitnessStep4.lean`'s `cIotaAmIotaT_mem_principalSubgroup`)
+    -- actually needs is `Sanchor`'s OWN two named points (its `Ra1,Ra2`
+    -- slot), independent of `sa.P1,sa.P2` — supplied here as fresh
+    -- points `Ra1 Ra2 : H.Point`, split off `ua` via
+    -- `quadratic_eq_mul_X_sub_C` exactly the way `sa.P1,sa.P2` split off
+    -- `u` elsewhere in this file (`hcur`/`hgcd`'s fully-split branch).
+    -- Fully-split case only (`hRa12Xne`); tangent case for `Sanchor`
+    -- left out of scope, mirroring `hcurT`/`hgcdT`'s existing split.
+    (Ra1 Ra2 : H.Point)
+    (hRa12Xne : Ra1.X ≠ Ra2.X)
+    (hRa1Root : ua.IsRoot Ra1.X) (hRa2Root : ua.IsRoot Ra2.X)
+    (hRa1Y : Ra1.Y = va.eval Ra1.X) (hRa2Y : Ra2.Y = va.eval Ra2.X)
+    -- **`S`'s own split, mirroring `Sanchor`'s.** Same shape as
+    -- `Ra1,Ra2` above but against `u`/`v`/`S` instead of `ua`/`va`/
+    -- `Sanchor` — named `T1,T2` to match `PrincipalWitnessStep4.lean`'s
+    -- own `T1X,T2X` naming for (†)'s residual points.
+    (T1 T2 : H.Point)
+    (hT12Xne : T1.X ≠ T2.X)
+    (hT1Root : u.IsRoot T1.X) (hT2Root : u.IsRoot T2.X)
+    (hT1Y : T1.Y = v.eval T1.X) (hT2Y : T2.Y = v.eval T2.X) :
     sa.reducedClass + q =
       toJacobian D (Subtype.mk (divToPair (H := H) (-v) 1 S -
         (single δ₀ + single (Point.iota δ₀)) : Divisor H) hmem) := by
   classical
-  -- **Step 0, discharged**: `Sanchor` really is `{sa.P1, sa.P2}`, not an
-  -- independently-floating `Finset` — `CAWitness.lean`'s `A := Sanchor`
-  -- naming is now backed by an actual proof, not an assumption.
-  have hP1ne : sa.P1 ≠ sa.P2 := fun h => hP1Xne (by rw [h])
-  -- `va0, va1` are unused dangling implicits in `Sanchor_eq_of_anchor_roots`
-  -- (only `ua0, ua1` are actually constrained via `hua`; `va0, va1` never
-  -- occur in that theorem's own proof) — supplied explicitly here since
-  -- nothing in this call lets Lean infer them by unification.
-  have hSanchorEq : Sanchor = ({sa.P1, sa.P2} : Finset H.Point) :=
+  -- **`Sanchor`'s own split, correctly**: `Sanchor = {Ra1, Ra2}`
+  -- (`Sanchor`'s own two named points), NOT `{sa.P1, sa.P2}`. Same
+  -- `Sanchor_eq_of_anchor_roots` lemma as before, but instantiated at
+  -- `Ra1,Ra2` (fresh points naming `Sanchor`'s own roots) instead of
+  -- `sa.P1,sa.P2` (a different, independently-existing pair).
+  have hRa12ne : Ra1 ≠ Ra2 := fun h => hRa12Xne (by rw [h])
+  have hSanchorEq : Sanchor = ({Ra1, Ra2} : Finset H.Point) :=
     Sanchor_eq_of_anchor_roots (va0 := va0) (va1 := va1) ua va hua huafree
-      sa.P1 sa.P2 hP1ne hP1Xne hAnchorRoots hsaP1Y hsaP2Y Sanchor hSanchorMem
-      hSanchorCard
+      Ra1 Ra2 hRa12ne hRa12Xne ⟨hRa1Root, hRa2Root⟩ hRa1Y hRa2Y Sanchor
+      hSanchorMem hSanchorCard
+  -- **`S`'s own split**, same lemma applied to `u`/`v`/`S`/`T1`/`T2`.
+  have hT12ne : T1 ≠ T2 := fun h => hT12Xne (by rw [h])
+  have hSEq : S = ({T1, T2} : Finset H.Point) :=
+    Sanchor_eq_of_anchor_roots (ua0 := sa.toSampleTarget.u0) (ua1 := sa.toSampleTarget.u1)
+      (va0 := sa.toSampleTarget.v0) (va1 := sa.toSampleTarget.v1) u v hu hufree
+      T1 T2 hT12ne hT12Xne ⟨hT1Root, hT2Root⟩ hT1Y hT2Y S hSmem hScard
   sorry
 
 /-! ## Task (B): the exceptional locus `Bad` (left abstract — see module
