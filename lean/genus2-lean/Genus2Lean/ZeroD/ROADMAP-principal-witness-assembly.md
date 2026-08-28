@@ -327,6 +327,61 @@ signature, plus rewiring the downstream call sites to actually use
    once step 3 lands, so the next pass doesn't get misled by its own
    file's comment the way this roadmap file itself was.
 
+## Status update (this pass): `2•[δ₀]` on the alpha-locus side was the
+## actual bug, not `(†)`'s `[δ₀]+[ιδ₀]` — fixed by restating, not by
+## making `δ₀` Weierstrass
+
+**Diagnosis, confirmed against `PrincipalWitnessAssembly.lean`'s own
+pre-existing note (search "unrelated to, and not derived from"):
+`AlphaLocusDegreeUniform.lean`'s `hmemAnchor`/`hAlphaRep`/`hmem` all used
+a `2•[δ₀]` correction that was never derived — it was copied from
+`SampleTargetFromAlpha.reducedClass`'s own `-2•[δ₀]` field (which IS
+honestly derived, as `s(P1)+s(P2)`, `s` applied twice via the
+`s`-embedding) by shape-matching alone, with no argument that a
+Mumford-reduced representative of an arbitrary `alpha•aClass` needs that
+same normalization.** The only correction term actually derivable in
+this project, unconditionally (no Weierstrass hypothesis on `δ₀`
+needed), is `[δ₀]+[ιδ₀]`, via `divToPair_linX_eq`
+(`HyperellipticClassProof.lean`, 0-`sorry`): `linX(δ₀.X)`'s own zero
+divisor.
+
+**Fix landed:** `hmemAnchor`, `hAlphaRep`, and `hmem` in
+`AlphaLocusDegreeUniform.lean`'s `reducedClass_eq_of_isReduction'` now
+all use `single δ₀ + single (Point.iota δ₀)` instead of
+`(2:ℤ)•single δ₀`. This makes them match the normalization
+`PrincipalWitnessStep4.lean`'s `cIotaAmIotaT_mem_principalSubgroup` (†)
+actually produces, so (†) composes with `hAlphaRep` directly (via §5 of
+this pass's ChatGPT consultation: differences of two divisors under the
+*same* normalization are normalization-independent, so switching both
+sides of a difference from `N₂` to `Nι` together is sound and introduces
+no extra term).
+
+**`sa.reducedClass`'s own structure-default field was deliberately left
+untouched** — it stays `N₂`-normalized (`alpha•aClass -
+([P1]+[P2]-2•[δ₀])`), since it's the one place the `2•[δ₀]` genuinely IS
+derived (from `s` applied twice), not a copy-paste. This means the
+`N₂`/`Nι` mismatch does not vanish — it resurfaces as a single explicit
+term at the one place `reducedClass`'s own `N₂({P1}+{P2})` meets the
+`Nι`-normalized chain coming from `hAlphaRep`/(†). Worked by hand (see
+the theorem's own new docstring, `q`'s hypothesis block, for the full
+derivation): `sa.reducedClass + q = toJacobian(Nι(S))`, where `q :=
+toJacobian D [δ₀] - [ιδ₀]`, added as a new explicit hypothesis/parameter
+`q`/`hq` rather than silently assumed to cancel. `q = 0` iff
+`δ₀ - (a fixed point at infinity)` is 2-torsion — a genuine extra
+condition on `δ₀`, not proved or assumed here.
+
+**Not done — do not skip when resuming:** (1) the `Sanchor = A :=
+{sa.P1,sa.P2}` identification this derivation's docstring calls out as
+`PrincipalWitnessStep4.lean`'s own `A`/`C` naming (`C := Sanchor`, `A :=
+{P1,P2}` — these are DIFFERENT objects in Step4, not the same one my
+first draft of this derivation conflated them as — re-derive by hand
+before trusting this file's docstring blindly, it corrects an error made
+mid-pass) still has to be wired in per step 0 of this roadmap before the
+`sorry` can actually be discharged; (2) the theorem itself is still
+`sorry` — this pass only restated the goal to the provable shape, no
+proof attempt was made; (3) Claire's REPL check of this file is still
+needed — not yet build-tested.
+
 ## Workflow reminders specific to this file
 
 - Don't reintroduce `f+`/`f-` (`TangentMumfordWitness.lean` /

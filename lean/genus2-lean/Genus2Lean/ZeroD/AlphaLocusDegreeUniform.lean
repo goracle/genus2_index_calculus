@@ -6,6 +6,7 @@ import Genus2Lean.ZeroD.Reduce.GeneralSharedRoot
 import Genus2Lean.ZeroD.PeelChainAssembly
 import Genus2Lean.ZeroD.RegularSequenceFiniteQuotient
 import Genus2Lean.PrincipalDivisorSubgroup
+import Genus2Lean.ZeroD.SanchorEqAlphaPoints
 
 -- `PrincipalDivisorSubgroup.lean` supplies `toPair`/`divToPair`/`ordAt`/
 -- `pointIdeal`, needed below (`ROADMAP-reduce-divisor-correctness.md` Step 2)
@@ -848,9 +849,36 @@ theorem reducedClass_eq_of_isReduction' {p : ℕ} [Fact (Nat.Prime p)] [Fact (p 
     (hv : v = (Polynomial.C sa.toSampleTarget.v1 : Polynomial (F p)) * (Polynomial.X : Polynomial (F p))
       + (Polynomial.C sa.toSampleTarget.v0 : Polynomial (F p)))
     (hsuppAnchor : ∀ P, P ∉ Sanchor → ordAt (H := H) P (-va) 1 = 0)
-    (hmemAnchor : (divToPair (H := H) (-va) 1 Sanchor - (2 : ℤ) • single δ₀ : Divisor H) ∈ Divisor0 H)
+    -- **Corrected this pass — `2•[δ₀]` replaced by `[δ₀]+[ιδ₀]`.** The
+    -- `2•[δ₀]` correction here was never derived from anything; it was
+    -- copied from `sa.reducedClass`'s own `-2•[δ₀]` (which IS honestly
+    -- derived, as `s(P1)+s(P2)` applied twice via the `s`-embedding,
+    -- `DivisorClassGroup.lean`) by pattern-matching shape alone, with no
+    -- actual argument that a Mumford-reduced representative of an
+    -- arbitrary `alpha•aClass` needs the SAME normalization `s` happens
+    -- to produce. `PrincipalWitnessAssembly.lean`'s own note (search
+    -- "unrelated to, and not derived from") already flagged this as
+    -- unjustified. The only correction term this project can actually
+    -- derive unconditionally (Weierstrass or not) is `[δ₀]+[ιδ₀]`, via
+    -- `divToPair_linX_eq` (`HyperellipticClassProof.lean`, 0-`sorry`):
+    -- `linX(δ₀.X)`'s own zero divisor is *exactly* `single δ₀ +
+    -- single (Point.iota δ₀)`, unconditionally. This is also the
+    -- normalization `PrincipalWitnessStep4.lean`'s
+    -- `cIotaAmIotaT_mem_principalSubgroup` (†) actually produces — that
+    -- theorem was checked (ChatGPT + Claire) to be FALSE if its own
+    -- `2•[δ₀]` version is attempted, precisely because `2[δ₀] -
+    -- ([δ₀]+[ιδ₀]) = [δ₀]-[ιδ₀]` is a nontrivial extra class for generic
+    -- `δ₀` (confirmed independently via a second ChatGPT consultation,
+    -- this pass — see the `q := [δ₀]-[ιδ₀]` discussion there). Restating
+    -- `hmemAnchor`/`hAlphaRep` here to match removes the mismatch at its
+    -- root, rather than trying to bridge `2•[δ₀]` and `[δ₀]+[ιδ₀]` after
+    -- the fact (which would need `2[δ₀]-[ιδ₀]` provably principal — false
+    -- in general, exactly the discrepancy just described).
+    (hmemAnchor : (divToPair (H := H) (-va) 1 Sanchor -
+      (single δ₀ + single (Point.iota δ₀)) : Divisor H) ∈ Divisor0 H)
     (hAlphaRep : sa.alpha • aClass =
-      toJacobian D (Subtype.mk (divToPair (H := H) (-va) 1 Sanchor - (2 : ℤ) • single δ₀ : Divisor H) hmemAnchor))
+      toJacobian D (Subtype.mk (divToPair (H := H) (-va) 1 Sanchor -
+        (single δ₀ + single (Point.iota δ₀)) : Divisor H) hmemAnchor))
     (hsupp : ∀ P, P ∉ S → ordAt (H := H) P (-v) 1 = 0)
     -- **THE MISSING LINK, added this pass (was flagged in the docstring
     -- above as "still needed" but never actually written).** Without this,
@@ -884,9 +912,78 @@ theorem reducedClass_eq_of_isReduction' {p : ℕ} [Fact (Nat.Prime p)] [Fact (p 
     (hSanchorMem : ∀ P ∈ Sanchor, ua.eval P.X = 0 ∧ P.Y = va.eval P.X)
     (huafree : Squarefree ua)
     (hSanchorCard : Sanchor.card = ua.natDegree)
-    (hmem : (divToPair (H := H) (-v) 1 S - (2 : ℤ) • single δ₀ : Divisor H) ∈ Divisor0 H) :
-    sa.reducedClass =
-      toJacobian D (Subtype.mk (divToPair (H := H) (-v) 1 S - (2 : ℤ) • single δ₀ : Divisor H) hmem) := by
+    -- **Corrected this pass, matching `hmemAnchor`/`hAlphaRep` above.**
+    -- Same `2•[δ₀] → [δ₀]+[ιδ₀]` fix, same reason: this is `S`'s own
+    -- Mumford-reduced-representative correction, and `[δ₀]+[ιδ₀]` is the
+    -- one this project can actually derive (`divToPair_linX_eq`), not
+    -- `2•[δ₀]`.
+    (hmem : (divToPair (H := H) (-v) 1 S -
+      (single δ₀ + single (Point.iota δ₀)) : Divisor H) ∈ Divisor0 H)
+    -- **`q`, the compensating term the goal now genuinely needs.**
+    -- `sa.reducedClass := alpha•aClass - N₂({P1}+{P2})` where
+    -- `N₂(X) := X - 2•[δ₀]` (`reducedClass`'s own structure-default
+    -- field, unchanged by this pass — it is honestly derived from the
+    -- `s`-embedding applied twice, `s(P1)+s(P2)`, and stays `N₂`
+    -- deliberately: it is NOT the same object as `hAlphaRep`'s anchor
+    -- `Sanchor`, so it does not automatically inherit `hAlphaRep`'s
+    -- `Nι` normalization just because that field was edited above).
+    -- `PrincipalWitnessStep4.lean`'s proved fact (†) is stated in terms
+    -- of `Nι(X) := X - ([δ₀]+[ιδ₀])` throughout (its own `C`, `A :=
+    -- {P1,P2}`, and `S := ι(T)` are ALL `Nι`-normalized there — §5 of
+    -- this pass's ChatGPT consultation confirms `Nι`-differences of
+    -- same-normalization divisors are normalization-independent, so (†)
+    -- composes cleanly to `Nι(Sanchor) - Nι({P1,P2}) = Nι(S)`, no `q`
+    -- needed internally). The ONLY place `q` has to appear is bridging
+    -- `reducedClass`'s own `N₂({P1,P2})` term to that `Nι({P1,P2})`:
+    -- `N₂(X) - Nι(X) = 2•[δ₀] - ([δ₀]+[ιδ₀]) = [δ₀]-[ιδ₀] =: q` (as
+    -- `Jacobian H D` classes), so `N₂(X) = Nι(X) + q`, giving
+    -- `sa.reducedClass = alpha•aClass - Nι({P1,P2}) - q`. Composed with
+    -- `hAlphaRep`/(†)'s `Nι(Sanchor) - Nι({P1,P2}) = Nι(S)`, this gives
+    -- `sa.reducedClass = Nι(S) - q`, i.e. `sa.reducedClass + q = Nι(S)`
+    -- — matching the sign below. This is exactly the
+    -- `CHATGPT-REPLY`-confirmed fact (§2 of the pasted reply, this pass)
+    -- that `N₂`/`Nι` do not agree on a single divisor without an
+    -- explicit `q` correction: stated as an explicit additive term here,
+    -- not silently assumed to cancel. `q = 0` exactly when `δ₀ - (a
+    -- fixed point at infinity)` is 2-torsion on the smooth model — a
+    -- genuine extra condition on the caller-supplied `δ₀`, not proved or
+    -- assumed here. -/
+    (q : Jacobian H D)
+    (hq : q = toJacobian D (Subtype.mk (single δ₀ - single (Point.iota δ₀) : Divisor H)
+      (single_sub_single_mem_Divisor0 δ₀ (Point.iota δ₀))) )
+    -- **Step 0 of `ROADMAP-principal-witness-assembly.md`, added this
+    -- pass: the missing `Sanchor ↔ {sa.P1, sa.P2}` link.**
+    -- `SanchorEqAlphaPoints.lean`'s own docstring flagged this as a
+    -- genuinely new hypothesis, not derivable from anything already in
+    -- this signature — `hMumfordUa` only says `(ua,va)` is SOME valid
+    -- Mumford pair for `alpha•aClass`, not that its roots are
+    -- `sa.P1.X, sa.P2.X` specifically. Fully-split case only (mirrors
+    -- `hcur`/`hgcd`'s own `sa.P1.X ≠ sa.P2.X`-shaped branch; the tangent
+    -- case `sa.P1 = sa.P2` is explicitly out of scope for
+    -- `Sanchor_eq_of_anchor_roots` too, per that file's docstring).
+    -- `hP1Xne` is NOT derivable from `hcur`'s guard
+    -- `(sa.P1.X,sa.P1.Y) ≠ (sa.P2.X,sa.P2.Y)` — two distinct points can
+    -- share an `X`-coordinate (`ι` of each other) — so it is stated as
+    -- its own explicit hypothesis here, not derived.
+    (hP1Xne : sa.P1.X ≠ sa.P2.X)
+    (hAnchorRoots : ua.IsRoot sa.P1.X ∧ ua.IsRoot sa.P2.X)
+    (hsaP1Y : sa.P1.Y = va.eval sa.P1.X) (hsaP2Y : sa.P2.Y = va.eval sa.P2.X) :
+    sa.reducedClass + q =
+      toJacobian D (Subtype.mk (divToPair (H := H) (-v) 1 S -
+        (single δ₀ + single (Point.iota δ₀)) : Divisor H) hmem) := by
+  classical
+  -- **Step 0, discharged**: `Sanchor` really is `{sa.P1, sa.P2}`, not an
+  -- independently-floating `Finset` — `CAWitness.lean`'s `A := Sanchor`
+  -- naming is now backed by an actual proof, not an assumption.
+  have hP1ne : sa.P1 ≠ sa.P2 := fun h => hP1Xne (by rw [h])
+  -- `va0, va1` are unused dangling implicits in `Sanchor_eq_of_anchor_roots`
+  -- (only `ua0, ua1` are actually constrained via `hua`; `va0, va1` never
+  -- occur in that theorem's own proof) — supplied explicitly here since
+  -- nothing in this call lets Lean infer them by unification.
+  have hSanchorEq : Sanchor = ({sa.P1, sa.P2} : Finset H.Point) :=
+    Sanchor_eq_of_anchor_roots (va0 := va0) (va1 := va1) ua va hua huafree
+      sa.P1 sa.P2 hP1ne hP1Xne hAnchorRoots hsaP1Y hsaP2Y Sanchor hSanchorMem
+      hSanchorCard
   sorry
 
 /-! ## Task (B): the exceptional locus `Bad` (left abstract — see module
