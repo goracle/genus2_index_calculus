@@ -143,7 +143,7 @@ theorem divToPair_eq_C_add_iotaA_add_T_of_split_tangent
   have hιP1T2' : PtιP1 ≠ PtT2 := hne_of_X (hPtιP1X ▸ hPtT2X ▸ hP1T2)
   have hιP2T1' : PtιP2 ≠ PtT1 := hne_of_X (hPtιP2X ▸ hPtT1X ▸ hP2T1)
   have hιP2T2' : PtιP2 ≠ PtT2 := hne_of_X (hPtιP2X ▸ hPtT2X ▸ hP2T2)
-  have hT1T2' : PtT1 ≠ PtT2 := hne_of_X hTne
+  have hT1T2' : PtT1 ≠ PtT2 := hne_of_X (hPtT1X ▸ hPtT2X ▸ hTne)
   -- Extract the three original pointwise `ordAt` facts from `h3` via `coeffAt`,
   -- mirroring `coeffAt_divToPair`'s own `if P ∈ S then ordAt P A B else 0` shape
   -- explicitly rather than packing the case analysis into one `simp only` set.
@@ -152,27 +152,27 @@ theorem divToPair_eq_C_add_iotaA_add_T_of_split_tangent
     rw [coeffAt_divToPair] at hL
     have hMem : PtRa ∈ ({PtRa, PtιP1, PtιP2} : Finset H.Point) := by simp
     rw [if_pos hMem] at hL
-    rw [← hL]
-    simp only [map_add, map_zsmul, coeffAt_single, smul_eq_mul]
-    rw [if_pos rfl, if_neg (Ne.symm hRaιP1'), if_neg (Ne.symm hRaιP2')]
+    rw [hL]
+    simp only [map_add, map_zsmul, coeffAt_single, smul_eq_mul, eq_self, ite_true]
+    rw [if_neg hRaιP1', if_neg hRaιP2']
     ring
   have hOrdιP1 : ordAt PtιP1 (-bCATangent RaX P1X P2X RaY vaDerivAtRa P1Y P2Y) (1 : k[X]) = 1 := by
     have hL := congrArg (coeffAt PtιP1) h3
     rw [coeffAt_divToPair] at hL
     have hMem : PtιP1 ∈ ({PtRa, PtιP1, PtιP2} : Finset H.Point) := by simp
     rw [if_pos hMem] at hL
-    rw [← hL]
-    simp only [map_add, map_zsmul, coeffAt_single, smul_eq_mul]
-    rw [if_neg hRaιP1', if_pos rfl, if_neg (Ne.symm hιPP')]
+    rw [hL]
+    simp only [map_add, map_zsmul, coeffAt_single, smul_eq_mul, eq_self, ite_true]
+    rw [if_neg (Ne.symm hRaιP1'), if_neg hιPP']
     ring
   have hOrdιP2 : ordAt PtιP2 (-bCATangent RaX P1X P2X RaY vaDerivAtRa P1Y P2Y) (1 : k[X]) = 1 := by
     have hL := congrArg (coeffAt PtιP2) h3
     rw [coeffAt_divToPair] at hL
     have hMem : PtιP2 ∈ ({PtRa, PtιP1, PtιP2} : Finset H.Point) := by simp
     rw [if_pos hMem] at hL
-    rw [← hL]
-    simp only [map_add, map_zsmul, coeffAt_single, smul_eq_mul]
-    rw [if_neg hRaιP2', if_neg hιPP', if_pos rfl]
+    rw [hL]
+    simp only [map_add, map_zsmul, coeffAt_single, smul_eq_mul, eq_self, ite_true]
+    rw [if_neg (Ne.symm hRaιP2'), if_neg (Ne.symm hιPP')]
     ring
   -- The two new residual-point `ordAt = 1` facts.
   have hmult1 : Polynomial.rootMultiplicity T1X
@@ -200,32 +200,32 @@ theorem divToPair_eq_C_add_iotaA_add_T_of_split_tangent
   by_cases hEqRa : P = PtRa
   · rw [hEqRa]
     have hMem : PtRa ∈ ({PtRa, PtιP1, PtιP2, PtT1, PtT2} : Finset H.Point) := by simp
-    rw [if_pos hMem, hOrdRa, if_pos rfl, if_neg (Ne.symm hRaιP1'), if_neg (Ne.symm hRaιP2'),
-      if_neg (Ne.symm hRaT1'), if_neg (Ne.symm hRaT2')]
+    rw [if_pos hMem, hOrdRa, if_pos rfl, if_neg hRaιP1', if_neg hRaιP2',
+      if_neg hRaT1', if_neg hRaT2']
     ring
   by_cases hEqιP1 : P = PtιP1
   · rw [hEqιP1]
     have hMem : PtιP1 ∈ ({PtRa, PtιP1, PtιP2, PtT1, PtT2} : Finset H.Point) := by simp
-    rw [if_pos hMem, hOrdιP1, if_neg hRaιP1', if_pos rfl, if_neg (Ne.symm hιPP'),
-      if_neg (Ne.symm hιP1T1'), if_neg (Ne.symm hιP1T2')]
+    rw [if_pos hMem, hOrdιP1, if_neg (Ne.symm hRaιP1'), if_pos rfl, if_neg hιPP',
+      if_neg hιP1T1', if_neg hιP1T2']
     ring
   by_cases hEqιP2 : P = PtιP2
   · rw [hEqιP2]
     have hMem : PtιP2 ∈ ({PtRa, PtιP1, PtιP2, PtT1, PtT2} : Finset H.Point) := by simp
-    rw [if_pos hMem, hOrdιP2, if_neg hRaιP2', if_neg hιPP', if_pos rfl,
-      if_neg (Ne.symm hιP2T1'), if_neg (Ne.symm hιP2T2')]
+    rw [if_pos hMem, hOrdιP2, if_neg (Ne.symm hRaιP2'), if_neg (Ne.symm hιPP'), if_pos rfl,
+      if_neg hιP2T1', if_neg hιP2T2']
     ring
   by_cases hEqT1 : P = PtT1
   · rw [hEqT1]
     have hMem : PtT1 ∈ ({PtRa, PtιP1, PtιP2, PtT1, PtT2} : Finset H.Point) := by simp
-    rw [if_pos hMem, hOrdT1, if_neg hRaT1', if_neg hιP1T1', if_neg hιP2T1', if_pos rfl,
-      if_neg (Ne.symm hT1T2')]
+    rw [if_pos hMem, hOrdT1, if_neg (Ne.symm hRaT1'), if_neg (Ne.symm hιP1T1'),
+      if_neg (Ne.symm hιP2T1'), if_pos rfl, if_neg hT1T2']
     ring
   by_cases hEqT2 : P = PtT2
   · rw [hEqT2]
     have hMem : PtT2 ∈ ({PtRa, PtιP1, PtιP2, PtT1, PtT2} : Finset H.Point) := by simp
-    rw [if_pos hMem, hOrdT2, if_neg hRaT2', if_neg hιP1T2', if_neg hιP2T2', if_neg hT1T2',
-      if_pos rfl]
+    rw [if_pos hMem, hOrdT2, if_neg (Ne.symm hRaT2'), if_neg (Ne.symm hιP1T2'),
+      if_neg (Ne.symm hιP2T2'), if_neg (Ne.symm hT1T2'), if_pos rfl]
     ring
   · have hnmemS : P ∉ ({PtRa, PtιP1, PtιP2, PtT1, PtT2} : Finset H.Point) := by
       simp only [Finset.mem_insert, Finset.mem_singleton]

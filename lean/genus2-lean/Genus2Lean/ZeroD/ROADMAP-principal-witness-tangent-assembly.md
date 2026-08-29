@@ -247,25 +247,27 @@ throughout), not the ones this doc originally sketched.
 ### Step 5 — only then: wire into `reducedClass_eq_of_isReduction'`
 itself
 
-**Next up — not started.** This is where `ROADMAP-split-hypothesis-
-elimination.md`'s Tier 1a step 2 (the `_split`/`_tangent` top-level
-theorem split, `AlphaLocusDegreeUniformTangent.lean` or similar) finally
-becomes attemptable — Step 4 being done means the LAST blocker is clear.
-At this point ALSO revisit `hPtT1X : PtT1.X ≠ PtT2.X` (Tier 1's item 2b,
-`AlphaLocusDegreeUniform.lean` line ~1076) and the `hQ1_def`/`hQ2_def`
-factored-shape hypotheses flagged there — the main roadmap's own note
-that these should "fold into the same follow-up piece of work" as this
-doc's Step 1 turns out to be correct: `uCANewTangent`'s own
-residual-splitting story is the same shape of problem one more layer
-down, and should reuse this doc's Step 1 pattern rather than being scoped
-separately. **Also account for the corrected `-[T1]-[T2]` conclusion
-shape from Step 4** when tracing how `cAmιTmδmιδ_mem_of_le_tangent`'s
-output threads into `reducedClass_eq_of_isReduction'`'s own `hDP`-shaped
-usage — the split case's `hDP` has no such terms, so the tangent branch's
-version of whatever consumes `hDP` will need to either absorb or
-explicitly carry these two extra terms; this has NOT been traced yet and
-should be the first thing checked before writing Step 5's proof body, not
-assumed away.
+**Prerequisite now resolved.** `PrincipalWitnessFinalAssemblyTangent.lean`
+(`cIotaAmIotaT_mem_of_le_tangent`/`cAmιTmδmιδ_mem_of_le_tangent`) has been
+rewritten against Step 4's corrected 5-point
+`cIotaAmIotaT_mem_principalSubgroup_tangent`/`divToPair_eq_C_add_iotaA_add_T_
+of_split_tangent` — was previously calling the stale pre-fix 3-point
+signature (a leftover from before Step 4's own support-widening fix
+landed), causing an argument-count mismatch. **Answer to the open question
+below, now traced**: the extra `-[T1]-[T2]` terms this doc originally
+expected to survive into `hDP`-shaped usage do NOT survive — with the
+corrected 5-point `f`-support, `T1,T2` appear on both sides of the raw
+membership (`f`'s divisor and `h_T`'s divisor both carry them with
+coefficient 1) and cancel exactly as in the split case. Both theorems'
+conclusions now match the split case's own shape with no leftover terms:
+`cIotaAmIotaT_mem_of_le_tangent` gives `2•[Ra]+[ιP1]+[ιP2]-[ιT1]-[ιT2]-[δ₀]
+-[ιδ₀] ∈ D.P`; `cAmιTmδmιδ_mem_of_le_tangent` gives `2•[Ra]-[P1]-[P2]
+-[T1cur]-[T2cur]+[δ₀]+[ιδ₀] ∈ D.P` (where `T1cur=ιT1,T2cur=ιT2`). **Not yet
+REPL-confirmed by Claire** — written and internally cross-checked
+(argument order against callee signatures, `heq`/`abel` algebra worked by
+hand) but pending an actual build. Next: wire this into
+`reducedClass_eq_of_isReduction'` itself, matching against
+`cAmιTmδmιδ_mem_of_le`'s (split case's) own usage pattern there.
 
 
 ## What NOT to do
