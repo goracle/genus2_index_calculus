@@ -89,3 +89,5 @@ import Genus2Lean.ZeroD.CAWitnessCrossTangentV2
 import Genus2Lean.ZeroD.CAWitnessCrossTangentV3
 import Genus2Lean.ZeroD.CAWitnessCrossTangentV4
 import Genus2Lean.ZeroD.CAWitnessCrossTangent3Assembly
+import Genus2Lean.ZeroD.CAWitnessCrossTangent4Assembly
+import Genus2Lean.ZeroD.CAWitnessCrossTangent2Assembly
