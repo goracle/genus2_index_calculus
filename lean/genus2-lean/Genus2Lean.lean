@@ -84,3 +84,4 @@ import Genus2Lean.ZeroD.PrincipalWitnessFinalAssemblyTangentTarget
 import Genus2Lean.ZeroD.AlphaLocusDegreeUniformTangentTarget
 import Genus2Lean.ZeroD.CAWitnessCrossTangent
 import Genus2Lean.ZeroD.CAWitnessCrossTangent2
+import Genus2Lean.ZeroD.CAWitnessCrossTangent3
