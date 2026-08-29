@@ -19,6 +19,16 @@ the earlier `SanchorEqAlphaPoints.lean`/`SanchorMumfordOrdAt.lean` pass
 mirroring `TangentMumfordWitness.lean`'s size) plus tangent siblings in
 3-4 existing files.
 
+**Status: Steps 1-4 done, build green (Claire's REPL).** `CAWitnessTangent.
+lean`, `CAWitnessDivisorTangent.lean`, `CAWitnessAssemblyTangent.lean`,
+`PrincipalWitnessStep4Tangent.lean`, `PrincipalWitnessFinalAssemblyTangent.
+lean` all exist, no sorries. Step 4's writeup below flags one real
+correction found mid-pass (extra `-[T1]-[T2]` terms in two theorems'
+conclusions, not present in the split case) — anyone picking up Step 5
+should read that note before assuming the split case's shapes carry over
+unchanged. **Step 5 (wiring into `reducedClass_eq_of_isReduction'` itself)
+is next, not started.**
+
 ## The chain, traced (earliest link first)
 
 1. **`caInterpMatrix`/`caInterpMatrix_det_ne_zero`** (`CAWitness.lean`
@@ -199,31 +209,64 @@ single PtT2`.
 
 ### Step 4 — tangent siblings for layers 4-7 of the chain
 
-Once Step 3 exists, `cIotaAmIotaT_mem_principalSubgroup`,
-`cIotaAmIotaT_mem_of_le`, `cAmιTmδmιδ_mem_of_le` (all in
-`PrincipalWitnessFinalAssembly.lean`/`PrincipalWitnessStep4.lean`)
-each need a `_tangent` sibling — but per the "innocent pass-through"
-observation above, these should be genuinely mechanical once Step 3
-is in hand (swap the `2•single Ra` shape through the same `abel`-style
-composition each of these already uses). **Do not attempt these
-before Step 3 is REPL-confirmed** — their proofs are thin compositions
-and any error in Step 3 will surface as confusing failures here
-instead of at its actual source.
+**Done, build green (Claire's REPL).** `cIotaAmIotaT_mem_principalSubgroup_
+tangent` (`PrincipalWitnessStep4Tangent.lean`, plus a needed
+`bCATangent_ordInfOfPair` addition to `CAWitnessTangent.lean` — the
+tangent mirror of `bCA_ordInfOfPair`, didn't exist yet, mechanical port),
+`cIotaAmIotaT_mem_of_le_tangent`, and `cAmιTmδmιδ_mem_of_le_tangent` (both
+`PrincipalWitnessFinalAssemblyTangent.lean`) are all written and
+REPL-confirmed, no sorries. The "innocent pass-through" framing above was
+directionally right for the PROOF SHAPE (each is a thin composition, same
+`AddSubgroup.subset_closure`/`abel` idiom as its split counterpart) but
+undersold one thing, caught only after a REPL round-trip:
+
+**Genuine extra `-[T1]-[T2]` terms in both `cIotaAmIotaT_mem_of_le_tangent`'s
+and `cAmιTmδmιδ_mem_of_le_tangent`'s conclusions, not present in the split
+case's analogues.** Root cause: the split case's `cIotaAmIotaT_mem_of_le`
+gets `+single PtT1+single PtT2` for free, because `f`'s SIX-point support
+there (`{PtRa1,PtRa2,PtιP1,PtιP2,PtT1,PtT2}`) already includes `PtT1,PtT2`,
+and those exactly cancel `divToPair_hT_eq`'s matching `+PtT1+PtT2` term.
+`divToPair_eq_C_add_iotaA_of_split_tangent`'s support is only the THREE
+anchor/`ιP` points (`{PtRa,PtιP1,PtιP2}`) — `PtT1,PtT2` were never part of
+it (Step 3's own conclusion above already states this correctly: `2•single
+Ra + single ιP1 + single ιP2`, no `PtT1,PtT2` terms) — so nothing cancels
+`hRHS`'s `+PtT1+PtT2` on the tangent side, and the honest conclusion has
+`-single PtT1 - single PtT2` surviving that the split case's conclusion
+does not. First drafted these two theorems copying the split case's
+`heq`/conclusion shape verbatim (assuming the cancellation would happen
+the same way); `abel` failed twice in the REPL round-trip pinpointing
+exactly this, both times against a real math discrepancy, not a syntax
+slip. Fixed by adding the `-single PtT1 - single PtT2` terms to both
+theorems' stated conclusions (and downstream `heq`s), matching what the
+generators actually prove — not papering over the shape mismatch. See
+`PrincipalWitnessFinalAssemblyTangent.lean`'s module docstring and each
+theorem's own docstring for the corrected statement. **Anyone doing Step
+5 needs to use these corrected signatures** (extra `-[T1]-[T2]`
+throughout), not the ones this doc originally sketched.
 
 ### Step 5 — only then: wire into `reducedClass_eq_of_isReduction'`
 itself
 
-This is where `ROADMAP-split-hypothesis-elimination.md`'s Tier 1a step
-2 (the `_split`/`_tangent` top-level theorem split, `AlphaLocusDegree
-UniformTangent.lean` or similar) finally becomes attemptable — not
-before. At that point ALSO revisit `hPtT1X : PtT1.X ≠ PtT2.X` (Tier
-1's item 2b, `AlphaLocusDegreeUniform.lean` line ~1076) and the
-`hQ1_def`/`hQ2_def` factored-shape hypotheses flagged there — the main
-roadmap's own note that these should "fold into the same follow-up
-piece of work" as this doc's Step 1 turns out to be correct: `uCANew
-Tangent`'s own residual-splitting story is the same shape of problem
-one more layer down, and should reuse this doc's Step 1 pattern rather
-than being scoped separately.
+**Next up — not started.** This is where `ROADMAP-split-hypothesis-
+elimination.md`'s Tier 1a step 2 (the `_split`/`_tangent` top-level
+theorem split, `AlphaLocusDegreeUniformTangent.lean` or similar) finally
+becomes attemptable — Step 4 being done means the LAST blocker is clear.
+At this point ALSO revisit `hPtT1X : PtT1.X ≠ PtT2.X` (Tier 1's item 2b,
+`AlphaLocusDegreeUniform.lean` line ~1076) and the `hQ1_def`/`hQ2_def`
+factored-shape hypotheses flagged there — the main roadmap's own note
+that these should "fold into the same follow-up piece of work" as this
+doc's Step 1 turns out to be correct: `uCANewTangent`'s own
+residual-splitting story is the same shape of problem one more layer
+down, and should reuse this doc's Step 1 pattern rather than being scoped
+separately. **Also account for the corrected `-[T1]-[T2]` conclusion
+shape from Step 4** when tracing how `cAmιTmδmιδ_mem_of_le_tangent`'s
+output threads into `reducedClass_eq_of_isReduction'`'s own `hDP`-shaped
+usage — the split case's `hDP` has no such terms, so the tangent branch's
+version of whatever consumes `hDP` will need to either absorb or
+explicitly carry these two extra terms; this has NOT been traced yet and
+should be the first thing checked before writing Step 5's proof body, not
+assumed away.
+
 
 ## What NOT to do
 

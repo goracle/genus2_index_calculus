@@ -69,6 +69,25 @@ itself is blocked on a 3-layer-deep assembly chain
 of_split`) that has no tangent branch anywhere yet, traced in detail
 in 1b.
 
+**Update, later pass — build green (Claire's REPL):** that 3-layer chain
+now DOES have a tangent branch, all the way through. Scoped as its own
+doc (`ROADMAP-principal-witness-tangent-assembly.md`, spun off from 1b
+below) and its Steps 1-4 are done: `CAWitnessTangent.lean`,
+`CAWitnessDivisorTangent.lean`, `CAWitnessAssemblyTangent.lean`,
+`PrincipalWitnessStep4Tangent.lean`, `PrincipalWitnessFinalAssemblyTangent.
+lean`, no sorries. One correction surfaced mid-pass and is now reflected
+in those files' signatures: `cIotaAmIotaT_mem_of_le_tangent` and
+`cAmιTmδmιδ_mem_of_le_tangent`'s conclusions carry genuine extra
+`-single PtT1 - single PtT2` terms that the split case's analogues don't
+have (root cause: the tangent case's `f`-divisor support is three points,
+not six, so `PtT1,PtT2` never cancel against `divToPair_hT_eq`'s matching
+terms the way they do in the split case) — see that roadmap's own Step 4
+writeup for the full explanation. **This means Tier 1a's step 2 (splitting
+`reducedClass_eq_of_isReduction'` itself, below) is now unblocked in
+principle, but the person who does it needs to trace how these two extra
+terms interact with `hDP`'s downstream usage first** — not yet done, not
+assumed away, see the tangent-assembly roadmap's own Step 5 note.
+
 ## Tier 1: same bug, fix is a continuation of what's already started
 
 These are the ONLY hypotheses where the underlying machinery is already
@@ -375,14 +394,17 @@ hypothesis, not assumed by default the way `h1P1`/etc. wrongly were.
    style unfolding (plus a small pre-existing-bug fix in
    `ordAt_ua_eq_two_of_mem_Sanchor_tangent`, unrelated to the
    split/tangent question itself).
-2. **Next, and now correctly scoped as real work, not wiring:** Tier
-   1b's 3-layer assembly chain (`cAmιTmδmιδ_mem_of_le` →
-   `cIotaAmIotaT_mem_of_le` → `cIotaAmIotaT_mem_principalSubgroup`/
-   `divToPair_eq_C_add_iotaA_add_T_of_split`) needs its own scoping
-   pass and likely its own roadmap doc before being attempted — see
-   1b's revised writeup above. Only once that chain has a tangent path
-   can 1a's step 2 (splitting `reducedClass_eq_of_isReduction'` itself)
-   proceed.
+2. **Done, build green:** Tier 1b's 3-layer assembly chain
+   (`cAmιTmδmιδ_mem_of_le` → `cIotaAmIotaT_mem_of_le` →
+   `cIotaAmIotaT_mem_principalSubgroup`/`divToPair_eq_C_add_iotaA_add_T_
+   of_split`) now has a full tangent path — scoped and built in
+   `ROADMAP-principal-witness-tangent-assembly.md` (its Steps 1-4), no
+   sorries. **Next:** that doc's own Step 5 — actually splitting
+   `reducedClass_eq_of_isReduction'` itself (1a's step 2, immediately
+   below) — including tracing how the two extra `-[T1]-[T2]` terms found
+   during Step 4 (see that doc, and the "Status as of this pass" update
+   above) interact with `hDP`'s downstream usage, which has not been
+   done yet.
 3. Only after that, scope Tier 2 (2a/2b) properly, probably as its own
    roadmap doc — it's a different, bigger piece of work (new
    interpolation construction) and shouldn't block or get tangled with
