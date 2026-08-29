@@ -88,6 +88,44 @@ principle, but the person who does it needs to trace how these two extra
 terms interact with `hDP`'s downstream usage first** — not yet done, not
 assumed away, see the tangent-assembly roadmap's own Step 5 note.
 
+**Update, this pass — build green, REPL-confirmed: Tier 1 is now FULLY
+CLOSED.** `ROADMAP-principal-witness-tangent-assembly.md`'s Step 5 is
+done — the extra `-[T1]-[T2]` terms flagged above turned out NOT to
+survive into `hDP`-shaped usage (traced in that doc: with the corrected
+5-point `f`-support, `T1,T2` cancel exactly as in the split case, so
+`cIotaAmIotaT_mem_of_le_tangent`/`cAmιTmδmιδ_mem_of_le_tangent`'s final
+conclusions match the split case's shape with no leftover terms). New
+file `AlphaLocusDegreeUniformTangent.lean`
+(`reducedClass_eq_of_isReduction'_tangent`) now exists, mirrors the split
+theorem's proof exactly with `Ra1,Ra2` collapsed to one doubled point
+`Ra`, and is REPL-confirmed, no sorries. **Tier 1a's option (a) was taken**
+(two top-level theorems, `_tangent` in a new file) per this doc's own
+recommendation, avoiding further growth of the already-oversized split
+file. Took three REPL round-trips to land; every failure was
+proof-engineering friction specific to large dependent-record assemblies
+in this codebase, not a math bug — worth remembering for future work of
+this shape:
+- `F p` is a finite field, not a linear order — `linarith`/`nlinarith`
+  never apply to `F p`-valued algebra; use `linear_combination` instead.
+- `[DecidableEq H.Point]` needs to be an explicit hypothesis on any
+  theorem whose *proof body* elaborates a `{a, b} : Finset H.Point`
+  literal in term mode — a bare `classical` in the proof doesn't
+  reliably cover it, and the failure mode when it's missing (`Insert`/
+  "not a field of `Finset`") doesn't obviously point at the instance.
+- `rw` on a `set`-introduced variable's auto-generated equation lemma,
+  when that variable is `Subtype`/`Divisor0`-valued and appears under a
+  coercion, drags the bundled proof term into the rewrite motive and
+  fails ("motive is not type correct"). Use `show` (definitional
+  unfolding) instead wherever this pattern shows up.
+
+**With Tier 1 (1a AND 1b) done, the split-hypothesis-elimination
+picture is: `reducedClass_eq_of_isReduction'` (fully split) and
+`reducedClass_eq_of_isReduction'_tangent` (anchor-tangent) both exist
+and are proven, covering the ANCHOR axis (`Ra1=Ra2` vs. `Ra1≠Ra2`)
+completely. The TARGET axis (`T1=T2`) is untouched by this pass — see
+Tier 1a's item 2 below, now the actual next piece, and Tier 2
+(2a/2b) remains real, separate, unstarted work.**
+
 ## Tier 1: same bug, fix is a continuation of what's already started
 
 These are the ONLY hypotheses where the underlying machinery is already
@@ -95,7 +133,8 @@ proven unconditional and the fix is "finish wiring the tangent branch
 through," not new mathematics.
 
 ### 1a. `hRa12Xne : Ra1.X ≠ Ra2.X` (`AlphaLocusDegreeUniform.lean`
-line ~1020) and `hT12Xne : T1.X ≠ T2.X` (line ~1028)
+line ~1020) and `hT12Xne : T1.X ≠ T2.X` (line ~1028) — **CLOSED for the
+anchor axis this pass; target axis is the new item 2 below**
 
 Consumed at lines ~1130-1140 (`hSanchorEq`/`hSEq` derivation, calling
 `Sanchor_eq_of_anchor_roots`). **Item 1a.1 done, build green** —
@@ -111,20 +150,43 @@ to `Q.X` instead of the fixed root `R`, plus a missing `norm_num` for
 the resulting `ℕ→ℤ` cast — unrelated to the split/tangent bug itself,
 just a mechanical slip in a lemma nothing had called yet.)
 
-**Still open, and now properly scoped (see 1b below, substantially
-revised after tracing the actual call chain this pass): splitting
-`reducedClass_eq_of_isReduction'` itself does NOT stop at swapping in
-the two lemmas above.** The theorem's proof body calls
+**Item 1a's step 1 (the top-level theorem split, option (a)) is now
+ALSO done, build green, REPL-confirmed.** `AlphaLocusDegreeUniformTangent.
+lean` (new file, per option (a) below) has
+`reducedClass_eq_of_isReduction'_tangent`, mirroring the split theorem's
+proof exactly with `Ra1,Ra2,hRa12Xne,hRa1Root,hRa2Root,hRa1Y,hRa2Y`
+replaced by one doubled point `Ra` and its tangency data. This closes the
+`hRa12Xne`/anchor half of item 1a entirely — `reducedClass_eq_of_isReduction'`
+now has a genuine tangent sibling covering `Ra1=Ra2`, no bare
+`hRa12Xne`-shaped hypothesis stands between the caller and a repeated
+anchor root anymore.
+
+**The `hT12Xne`/target half of item 1a is UNTOUCHED and is now the actual
+next item — see "item 2 (new)" below.** `AlphaLocusDegreeUniformTangent.
+lean`'s docstring says this explicitly: target-side (`T1,T2`/`u`/`v`/`S`)
+machinery is unchanged from the split theorem, by design — this pass only
+ever scoped the anchor axis.
+
+**Historical note, no longer blocking (kept for context): "Still open"
+below described 1a as blocked on 1b's 4-layer `hDP` assembly chain
+lacking a tangent branch.** That blocker is now cleared —
+`ROADMAP-principal-witness-tangent-assembly.md`'s Steps 1-5 are all done,
+`cAmιTmδmιδ_mem_of_le_tangent` exists and is what
+`reducedClass_eq_of_isReduction'_tangent` actually calls (via
+`hDP_tangent_aux`, same file). 1b below is fully closed as a result — see
+its own updated status.
+
+**Original "still open" text, preserved for the historical record of how
+this was scoped (now resolved as of this pass):**
+
+Splitting `reducedClass_eq_of_isReduction'` itself does NOT stop at
+swapping in the two lemmas above. The theorem's proof body calls
 `cAmιTmδmιδ_mem_of_le` (`PrincipalWitnessFinalAssembly.lean`) to
 produce `hDP`, and *that* theorem's own signature unconditionally
 requires `h12 : Ra1X ≠ Ra2X` — independent of, and downstream of,
 `hRa12Xne`. So finishing 1a.1's split still leaves the assembly step
-itself split-only. That deeper chain is now 1b's actual subject, not a
-follow-on afterthought — see there for why this turned out to be much
-bigger than "swap two lemma calls."
-
-**Once 1b unblocks `cAmιTmδmιδ_mem_of_le` for the tangent axis, the
-remaining edits here are:**
+itself split-only. That deeper chain was 1b's actual subject, not a
+follow-on afterthought.
 
 1. In `AlphaLocusDegreeUniform.lean`, split
    `reducedClass_eq_of_isReduction'` itself. Two sub-choices, pick one:
@@ -135,31 +197,28 @@ remaining edits here are:**
      lines of shared proof body between the two. Given the file is
      already at the 1500-line ceiling, put `_tangent` in a **new**
      file (`AlphaLocusDegreeUniformTangent.lean` or similar) rather
-     than growing this one further.
-   - **(b) One theorem, hypotheses reshaped as implications** exactly
-     like `hcur`/`hcurT` already are (`Ra1 = Ra2 → ...` /
-     `Ra1 ≠ Ra2 → ...`), with the proof body `rcases`-ing on
-     `Classical.em (Ra1 = Ra2)` near the top and routing to whichever
-     branch's lemmas apply. Keeps everything in one place but the
-     proof body itself needs restructuring into two sub-cases, which
-     is more invasive than (a).
+     than growing this one further. **This is the option taken —
+     done, build green.**
+   - **(b) One theorem, hypotheses reshaped as implications** — not
+     taken; (a) was cleaner and is now merged.
 
    Given the 50-line-per-theorem guideline and the file already being
-   oversized, **(a) is very likely the better default** — but this is
-   a judgment call worth revisiting once the actual case-split proof
-   is drafted and its real duplication cost is visible.
-2. Note `Sanchor`'s tangency (`Ra1 = Ra2`) and `S`'s tangency
-   (`T1 = T2`) are **independent axes** — the caller could have a split
-   anchor but tangent target, or vice versa. If pursuing (b) above,
-   this means a genuine 2×2 case split (four branches), not just 2. If
-   pursuing (a), it likely means either 4 top-level theorems, or 2
-   theorems each still containing an inner split on the *other* axis —
-   worth deciding explicitly before writing rather than discovering it
-   mid-proof.
+   oversized, (a) was the better default and is now done.
+2. **`Sanchor`'s tangency (`Ra1 = Ra2`, done this pass) and `S`'s
+   tangency (`T1 = T2`, NOT YET STARTED) are independent axes** — the
+   caller could have a split anchor but tangent target, or vice versa.
+   With (a) taken for the anchor axis, the natural continuation is the
+   SAME two-top-level-theorem pattern for the target axis: a
+   `reducedClass_eq_of_isReduction'_target_tangent` (or similar name)
+   sibling for `T1=T2` with the anchor side left fully split, and in
+   principle a fourth, doubly-tangent theorem if both axes need to be
+   tangent simultaneously — worth deciding explicitly before writing
+   whether all 4 combinations are needed or whether callers only ever
+   hit one axis being tangent at a time (see "item 2 (new)" below for
+   the concrete next-step scoping).
 
-### 1b. The assembly chain beneath `hDP`, REVISED this pass — this is
-where the real remaining work is, and it is bigger and deeper than
-this doc previously said
+### 1b. The assembly chain beneath `hDP` — **CLOSED this pass, build
+green, REPL-confirmed**
 
 **Traced the full call chain this pass** (starting from
 `reducedClass_eq_of_isReduction'`'s `hDP := cAmιTmδmιδ_mem_of_le ...`
@@ -168,8 +227,7 @@ the ordAt-tangent session traced `hRa12Xne` back to its origin before
 touching anything. Previous pass's framing — "almost certainly needs
 its own tangent version... not yet scoped in detail" — undersold this:
 it is not one theorem needing a tangent sibling, it is **four,
-stacked**, none of which has a tangent branch anywhere in the codebase
-today:
+stacked**, none of which had a tangent branch when this was scoped:
 
 1. `cAmιTmδmιδ_mem_of_le` (`PrincipalWitnessFinalAssembly.lean` line
    213) — takes `h12 : Ra1X ≠ Ra2X` unconditionally (`hPP : P1X ≠ P2X`
@@ -192,27 +250,94 @@ So the real blocker is at layer 3, not layer 1 — `cAmιTmδmιδ_mem_of_le`
 and `cIotaAmIotaT_mem_of_le` are themselves innocent pass-throughs;
 they will fall out for free once layer 3's two theorems have tangent
 siblings, mechanically the same way `cAmιTmδmιδ_mem_of_le` itself was
-built as a thin composition over `cIotaAmIotaT_mem_of_le`. **This is
+built as a thin composition over `cIotaAmIotaT_mem_of_le`. **This was
 genuinely new mathematics, not a wiring job.** Traced one layer
-further this pass, past `divToPair_eq_C_add_iotaA_add_T_of_split`
+further, past `divToPair_eq_C_add_iotaA_add_T_of_split`
 itself, down to its actual root: `CAWitness.lean`'s `caInterpMatrix`,
 a plain 4×4 Vandermonde matrix that is genuinely SINGULAR when `Ra1X =
 Ra2X` (closed-form determinant has `(Ra2X-Ra1X)` as a literal factor)
 — a real linear-algebra fact, not a proof-technique artifact like
 `Sanchor_eq_of_anchor_roots`'s `quadratic_eq_mul_X_sub_C` dependency
 (the original bug this whole roadmap is about). **Scoped as its own
-doc this pass: `ROADMAP-principal-witness-tangent-assembly.md`.**
-Good news found there: `TangentMumfordWitness.lean` already solves the
+doc: `ROADMAP-principal-witness-tangent-assembly.md`.**
+`TangentMumfordWitness.lean` already solved the
 identical shape of problem (confluent Vandermonde replacing a plain
-one) and is fully proven — that doc maps its machinery onto this case
-step-by-step, and the `bCA` version turns out to be simpler (no
+one) and is fully proven — that doc mapped its machinery onto this case
+step-by-step, and the `bCA` version turned out to be simpler (no
 branch-derivative detour needed; `va`'s own polynomial derivative
-suffices). **Start there, not from scratch** — it is comparable in
-size to this session's `SanchorEqAlphaPoints.lean`/
-`SanchorMumfordOrdAt.lean` work, not a quick follow-up, and should not
-block 1a.1's already-completed piece from staying merged. Until that
-doc's Steps 1-4 are done, 1a's step 2 (the top-level theorem split) is
-blocked, not "next."
+suffices).
+
+**CLOSED, this pass: all Steps 1-5 of that roadmap are done, build
+green, REPL-confirmed, no sorries.** `cAmιTmδmιδ_mem_of_le_tangent`
+(`PrincipalWitnessFinalAssemblyTangent.lean`) exists and is exactly
+what `AlphaLocusDegreeUniformTangent.lean`'s `hDP_tangent_aux` calls to
+discharge `hDP`. 1b is fully closed — `hDP` now has a genuine tangent
+derivation with no remaining `Ra1X ≠ Ra2X`-shaped blocker anywhere in
+the 4-layer chain. See that roadmap's own file for the full history,
+including three REPL round-trips of proof-engineering fixes (none of
+them math bugs) needed to actually land Step 5's wiring — worth reading
+before starting the mirror-image target-axis work below, since the same
+classes of friction (finite-field `linarith` failures, `set`+coercion
+`rw` motive failures, missing `DecidableEq` in-signature) will likely
+recur there too.
+
+## Item 2 (new this pass): the target axis (`T1 = T2`) is the direct
+mirror of everything just closed, and is the natural next piece
+
+**Scoping, not yet started.** Everything in 1a/1b above was about the
+ANCHOR axis (`Sanchor`/`Ra1,Ra2`/`ua`/`va`). The exact same shape of gap
+exists on the TARGET axis (`S`/`T1,T2`/`u`/`v`) and was explicitly left
+untouched by this pass — `AlphaLocusDegreeUniformTangent.lean`'s own
+docstring flags this: "target-side (`T1,T2`/`u`/`v`/`S`) machinery is
+UNCHANGED from the split theorem." Concretely, tracing the same chain
+against the target axis:
+
+- `hT12Xne : T1.X ≠ T2.X` is still a bare, unconditional hypothesis of
+  `reducedClass_eq_of_isReduction'` (both the split original and the new
+  `_tangent` sibling — neither touches this axis).
+- `Sanchor_eq_of_anchor_roots`'s call at `hSEq` (both theorems) still
+  uses the split-only route for `S`'s cardinality/factoring, exactly
+  the way the anchor's `hSanchorEq` did before this pass's fix —
+  `Sanchor_eq_of_anchor_roots_tangent`'s target-side mirror should
+  already exist per Tier 1's original "Status" section
+  (`divToPair_negV_one_S_eq_tangent` is listed there as already built,
+  alongside the anchor version) — **check whether that target-side
+  tangent divisor-sum lemma is already sitting unused, the way
+  `ordAt_eq_two_of_old_point` was found unused before the anchor work
+  started.**
+- The `hDP`-assembly chain (1b's four layers) needs to be re-traced
+  against `T1=T2` specifically: does `cAmιTmδmιδ_mem_of_le`'s `hTne :
+  T1X ≠ T2X` hit the same `caInterpMatrix`/Vandermonde-singularity root
+  cause as `h12` did, or is the target side's interpolation
+  construction (`uCANew`/`bCA`'s OWN internal structure, as opposed to
+  `caInterpMatrix`'s row-per-named-point setup) different enough that
+  the fix looks different? **Not yet traced — do this first, the way
+  1b's own tracing (rather than assuming the fix looks the same as
+  1a.1) was what caught the real 4-layer/Vandermonde-singularity shape
+  of the anchor problem.**
+
+**Concretely, if the trace confirms the mirror-image shape:** the
+follow-up work is (a) confirm/build the target-side tangent divisor-sum
+lemma, (b) confirm/build a target-side tangent Vandermonde replacement
+mirroring `caTangentInterpMatrix`, (c) confirm/build the 4-layer
+`hDP`-assembly tangent chain against `T1X=T2X` instead of `Ra1X=Ra2X`,
+(d) write the actual top-level sibling. Given how close a mirror this
+looks on paper, it's tempting to assume it's a smaller lift than the
+anchor axis was — **resist that assumption until the trace is actually
+done**; 1b's own history this pass is a direct warning that "looks like
+a mirror" undersold real scope twice before the actual root cause
+(Vandermonde singularity) was found. If the target-side interpolation
+construction turns out structurally different from the anchor's, this
+could easily be comparable in size to the anchor work, not a quick
+follow-up.
+
+**Naming, once done:** decide whether this becomes a THIRD top-level
+theorem (`reducedClass_eq_of_isReduction'_target_tangent`, anchor split
++ target tangent) or whether, since `AlphaLocusDegreeUniformTangent.lean`
+already exists, it's cleaner to ALSO handle "both axes tangent
+simultaneously" as a fourth theorem in the same pass — decide by whether
+any caller in the codebase actually needs the doubly-tangent case, not
+speculatively.
 
 ## Tier 2: same bug as Tier 1, but the codebase already has the right
 tool — just not applied here yet
@@ -394,18 +519,30 @@ hypothesis, not assumed by default the way `h1P1`/etc. wrongly were.
    style unfolding (plus a small pre-existing-bug fix in
    `ordAt_ua_eq_two_of_mem_Sanchor_tangent`, unrelated to the
    split/tangent question itself).
-2. **Done, build green:** Tier 1b's 3-layer assembly chain
+2. **Done, build green:** Tier 1b's 4-layer assembly chain
    (`cAmιTmδmιδ_mem_of_le` → `cIotaAmIotaT_mem_of_le` →
    `cIotaAmIotaT_mem_principalSubgroup`/`divToPair_eq_C_add_iotaA_add_T_
-   of_split`) now has a full tangent path — scoped and built in
-   `ROADMAP-principal-witness-tangent-assembly.md` (its Steps 1-4), no
-   sorries. **Next:** that doc's own Step 5 — actually splitting
-   `reducedClass_eq_of_isReduction'` itself (1a's step 2, immediately
-   below) — including tracing how the two extra `-[T1]-[T2]` terms found
-   during Step 4 (see that doc, and the "Status as of this pass" update
-   above) interact with `hDP`'s downstream usage, which has not been
-   done yet.
-3. Only after that, scope Tier 2 (2a/2b) properly, probably as its own
+   of_split` → `CAWitness.lean`'s `caInterpMatrix`) now has a full tangent
+   path, built in `ROADMAP-principal-witness-tangent-assembly.md`
+   (its Steps 1-5), no sorries, REPL-confirmed.
+3. **Done, build green, REPL-confirmed:** 1a's step 2 —
+   `reducedClass_eq_of_isReduction'_tangent`
+   (`AlphaLocusDegreeUniformTangent.lean`, new file, option (a) taken)
+   — the anchor-axis (`Ra1=Ra2`) top-level sibling. Took three REPL
+   round-trips; every failure was proof-engineering friction (finite-field
+   `linarith`, `set`+coercion `rw` motives, missing in-signature
+   `DecidableEq`), not a math bug — see that roadmap's closing section
+   for the specific fixes, worth reading before starting item 4.
+4. **Next, not yet started:** the target axis (`T1=T2`) mirror of
+   everything above — scoped as "Item 2 (new this pass)" under Tier 1
+   above. Start by tracing (not assuming) whether the target-side
+   `hDP`-assembly chain hits the same Vandermonde-singularity root cause
+   `Ra1X=Ra2X` did, and check whether a target-side tangent divisor-sum
+   lemma is already sitting built-but-unused in
+   `PrincipalWitnessCAConnection.lean` (`divToPair_negV_one_S_eq_tangent`
+   is listed as already existing in this doc's "Status" section — confirm
+   whether anything calls it yet).
+5. Only after that, scope Tier 2 (2a/2b) properly, probably as its own
    roadmap doc — it's a different, bigger piece of work (new
    interpolation construction) and shouldn't block or get tangled with
    Tier 1's completion. Worth noting Tier 1b and Tier 2a turned out to
@@ -414,4 +551,4 @@ hypothesis, not assumed by default the way `h1P1`/etc. wrongly were.
    construction — scoping them together, once both are separately
    understood, may reveal shared machinery worth factoring out rather
    than solving each in isolation.
-4. Leave Tier 3 alone throughout.
+6. Leave Tier 3 alone throughout.

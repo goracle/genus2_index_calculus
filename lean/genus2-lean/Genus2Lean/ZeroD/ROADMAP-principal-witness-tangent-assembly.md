@@ -291,10 +291,66 @@ existed and were REPL-confirmed before this pass (Step 4, this doc, plus
 `PrincipalWitnessCAConnection.lean`'s tangent branch). Argument order for
 each of these three calls was checked positionally against the callee's
 actual signature (not re-derived from the split call by pattern-matching
-alone) before considering this done. **Next: Claire's REPL confirmation
-of `AlphaLocusDegreeUniformTangent.lean`** — this closes the roadmap once
-green.
+alone) before considering this done.
 
+**REPL-confirmed, build green — roadmap CLOSED.** Took three REPL rounds
+to land, all real bugs caught by the round-trip, none of them the anchor
+math itself (that part — `Sanchor_eq_of_anchor_roots_tangent`,
+`divToPair_negVa_one_Sanchor_eq_tangent`, `cAmιTmδmιδ_mem_of_le_tangent`,
+all three already proven in earlier passes — worked first try):
+
+1. **`isDefEq` timeout in `tangent_anchor_sum_of_data`.** Its caller-facing
+   `hua_eq : X²+C ua1·X+C ua0 = (X-C Ra.X)²` (general coefficient names) was
+   passed straight through to `divToPair_negVa_one_Sanchor_eq_tangent`,
+   whose signature wants the specific `-2R`/`R·R` shape with implicit
+   `R,va0,va1` unified off it syntactically. Forcing that through
+   `isDefEq` timed out. Fixed by extracting `ua1 = -2·Ra.X`/`ua0 = Ra.X·Ra.X`
+   explicitly first (by evaluating `hua_eq` at `X=0,-1` — NOT via `coeff`,
+   see next point — then `linear_combination`, NOT `linarith`/`nlinarith`,
+   since `F p` is a finite field with no linear order), then building the
+   exact-shape hypothesis by hand before the call.
+2. **Missing `[DecidableEq H.Point]`.** Three theorems in the new file
+   (`tangent_anchor_sum_of_data`, `target_sum_of_data`,
+   `reducedClass_eq_of_isReduction'_tangent`) needed it explicitly in
+   their own signatures — `classical` in the proof body doesn't reliably
+   cover term-mode `{a,b} : Finset _` elaboration, and its absence
+   surfaced as a confusing `Insert`/"not a field of `Finset`"
+   error, not an obviously-instance-shaped one. (The linter now nags
+   that two of these don't syntactically *need* it in their own type —
+   true, but it's still required to call the tangent lemmas each of them
+   invokes; left in.)
+3. **Point-level vs. X-level `≠` confused for each other, twice**, once
+   each direction — a `hT12ne : T1.X ≠ T2.X` passed where `T1 ≠ T2` was
+   wanted, and (after fixing that) the reverse mix-up at a second call
+   site reusing the wrong local `hT12ne`. Neither is defeq to the other;
+   fixed by deriving whichever shape was actually needed at each call
+   site explicitly (`fun h => hT12Xne (by rw [h])` pattern), rather than
+   assuming a single `hT12ne` local could serve both callers.
+4. **An unused `{D : PrincipalDivisorData H}` implicit** on
+   `target_sum_of_data` — never referenced anywhere in the theorem's own
+   statement, so Lean had nothing to unify it against at the call site
+   ("don't know how to synthesize implicit argument `D`"). Deleted the
+   dead argument.
+5. **`rw` motive failures on `set`-introduced `Divisor0` variables,
+   recurring three times** (`hN2`'s inner proof, `hcoe`'s inner proof, the
+   final `calc` step) — `rw [haAnchor_def, ...]` etc. tried to unfold a
+   `set` variable back to its `⟨_, _⟩` definition through a
+   `Subtype.val`/coercion, dragging the bundled membership proof into the
+   rewrite motive, which doesn't typecheck. Fix: since `set ... with h`
+   makes the variable *definitionally* equal to its RHS, use `show`
+   (definitional unfolding, no motive construction) instead of `rw` with
+   the `set`-generated equation lemma, everywhere this pattern occurred.
+   The final `calc` step collapses to `rfl` once done this way.
+
+None of these were math bugs — the anchor-tangent mathematics (Tier 1's
+whole point) was right from the first draft each time; every round was
+proof-engineering friction specific to this file's larger context (`F p`
+not being ordered, `set`+coercion interacting badly with `rw`, `Finset`
+literal elaboration needing `DecidableEq` in-signature rather than
+via `classical`). Worth remembering for future large dependent-record
+assemblies in this codebase: prefer `show` over `rw` when unfolding
+`set` variables under a coercion, and reach for `linear_combination`
+over `nlinarith`/`linarith` by default in any `F p`-valued algebra.
 
 ## What NOT to do
 
