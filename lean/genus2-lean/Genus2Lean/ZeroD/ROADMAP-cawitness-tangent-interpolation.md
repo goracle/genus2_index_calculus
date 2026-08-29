@@ -320,21 +320,44 @@ roadmap's Tier 2 notes), just not yet ported to
    `uCANewTangentTarget` directly). **No new proof work needed for case
    2 either** — same unverified-determinant caveat as case 1, nothing
    more.
-5. **Done, this pass — case 3 (cross-pair, `Ra1X=P1X`-style) confirmed
-   reachable and genuinely unbuilt.** Traced `h1P1,h1P2,h2P1,h2P2`
-   directly to their live use in `AlphaLocusDegreeUniform.lean`'s
-   top-level theorem (feeding `cAmιTmδmιδ_mem_of_le`'s call, line
-   1207) and confirmed via grep that no cross-pair confluent
-   construction exists yet anywhere. **This is now the actual next
-   substantive task** — see the case-3 writeup above for what's
-   confirmed vs. still open. Next concrete step when picked up: work
-   out the cross-pair confluent matrix's shape (which two rows become
-   confluent — this is DIFFERENT from cases 1/2's shape, since the
-   colliding pair here is one anchor row and one target row, not two
-   rows from the same axis) before writing anything, the same way this
-   pass read `caInterpMatrix_det_ne_zero`'s and
-   `caTangentInterpMatrix_det_ne_zero`'s closed forms directly rather
-   than assuming the pattern carries over.
+5. **Case 3 (cross-pair, `Ra1X=P1X`-style): all four symmetric
+   variants now built, build pending REPL confirmation on the newest
+   two.** `Ra1 = ι(sa.P1)` was already built (`CAWitnessCrossTangent2.lean`
+   + `CAWitnessCrossTangent3.lean`, two files) before this session.
+   `Ra1 = ι(sa.P2)` was built earlier this session
+   (`CAWitnessCrossTangentV2.lean`, single-file, no sorries, REPL-
+   confirmed, build green). `Ra2 = ι(sa.P1)`
+   (`CAWitnessCrossTangentV3.lean`, single-file, no sorries in source)
+   and `Ra2 = ι(sa.P2)` (`CAWitnessCrossTangentV4.lean`, single-file,
+   no sorries in source) were both built this pass, completing all
+   four. Neither of these last two has been run through Claire's REPL
+   yet.
+
+   **Determinant signs, confirmed via independent sympy check for each
+   variant separately — do NOT assume a pattern from row-adjacency
+   alone:**
+   - `Ra1=ι(sa.P1)` (rows 0/2, non-adjacent): `-(x-P2X)^2(P2X-Ra2X)(x-Ra2X)^2`
+   - `Ra1=ι(sa.P2)` (rows 0/3, non-adjacent): `-(RaX-Ra2X)^2(Ra2X-P1X)(RaX-P1X)^2`
+   - `Ra2=ι(sa.P1)` (rows 1/2, adjacent): `(RaX-P2X)^2(P2X-Ra1X)(RaX-Ra1X)^2`
+     — **NO leading minus sign**, the one exception among the four.
+   - `Ra2=ι(sa.P2)` (rows 1/3, non-adjacent): `-(x-P1X)^2(P1X-Ra1X)(x-Ra1X)^2`
+   So sign does not correlate cleanly with adjacent-vs-non-adjacent row
+   position; each variant's sign was checked on its own, and any future
+   variant of this shape (should one ever be needed) should be too.
+
+   **Still open, the actual remaining substance of case 3 as a
+   whole:** none of the four variants are wired into
+   `AlphaLocusDegreeUniform.lean`'s top-level theorem yet (confirmed by
+   grep — nothing outside each variant's own file references
+   `uCANewCross`/`uCANewCross2`/`uCANewCross3`/`uCANewCross4`). That
+   wiring — building the actual `h1P1,h1P2,h2P1,h2P2`-eliminating
+   top-level consequence out of these four building blocks, the same
+   way Tier 1's anchor/target tangent siblings were wired into their
+   own top-level theorems — is the next task, along with the
+   impossibility-lemma half of each variant (the `Ra1=sa.P1`-style
+   same-point, non-tangent sub-case; already handled in general by
+   `CAWitnessCrossTangent.lean`'s `eq_iota_of_X_eq_of_ne`, just needs
+   threading through each of the four call sites).
 6. **Case 4** (double collision) — checked: both single-axis top-level
    theorems already exist independently
    (`reducedClass_eq_of_isReduction'_tangent`/`_tangent_target`), so
