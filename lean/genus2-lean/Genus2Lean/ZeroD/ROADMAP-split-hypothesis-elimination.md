@@ -118,13 +118,14 @@ this shape:
   fails ("motive is not type correct"). Use `show` (definitional
   unfolding) instead wherever this pattern shows up.
 
-**With Tier 1 (1a AND 1b) done, the split-hypothesis-elimination
-picture is: `reducedClass_eq_of_isReduction'` (fully split) and
-`reducedClass_eq_of_isReduction'_tangent` (anchor-tangent) both exist
-and are proven, covering the ANCHOR axis (`Ra1=Ra2` vs. `Ra1≠Ra2`)
-completely. The TARGET axis (`T1=T2`) is untouched by this pass — see
-Tier 1a's item 2 below, now the actual next piece, and Tier 2
-(2a/2b) remains real, separate, unstarted work.**
+**With Tier 1 (1a AND 1b) done, and the target-axis item (item 4 in
+"Suggested order" below) also now done, build green, REPL-confirmed:
+`reducedClass_eq_of_isReduction'` (fully split),
+`reducedClass_eq_of_isReduction'_tangent` (anchor-tangent), and
+`reducedClass_eq_of_isReduction'_tangent_target` (target-tangent) all
+exist and are proven — Tier 1 is CLOSED for both axes. Tier 2 remains
+real, separate work, now scoped in its own doc,
+`ROADMAP-cawitness-tangent-interpolation.md`.**
 
 ## Tier 1: same bug, fix is a continuation of what's already started
 
@@ -533,22 +534,36 @@ hypothesis, not assumed by default the way `h1P1`/etc. wrongly were.
    `linarith`, `set`+coercion `rw` motives, missing in-signature
    `DecidableEq`), not a math bug — see that roadmap's closing section
    for the specific fixes, worth reading before starting item 4.
-4. **Next, not yet started:** the target axis (`T1=T2`) mirror of
-   everything above — scoped as "Item 2 (new this pass)" under Tier 1
-   above. Start by tracing (not assuming) whether the target-side
-   `hDP`-assembly chain hits the same Vandermonde-singularity root cause
-   `Ra1X=Ra2X` did, and check whether a target-side tangent divisor-sum
-   lemma is already sitting built-but-unused in
-   `PrincipalWitnessCAConnection.lean` (`divToPair_negV_one_S_eq_tangent`
-   is listed as already existing in this doc's "Status" section — confirm
-   whether anything calls it yet).
-5. Only after that, scope Tier 2 (2a/2b) properly, probably as its own
-   roadmap doc — it's a different, bigger piece of work (new
-   interpolation construction) and shouldn't block or get tangled with
-   Tier 1's completion. Worth noting Tier 1b and Tier 2a turned out to
-   be structurally the same kind of gap (a `_of_split`-named theorem
-   with no tangent sibling) at two different layers of the same overall
-   construction — scoping them together, once both are separately
-   understood, may reveal shared machinery worth factoring out rather
-   than solving each in isolation.
+4. **Done, build green, REPL-confirmed:** the target axis (`T1=T2`)
+   mirror of everything above.
+   `AlphaLocusDegreeUniformTangentTarget.lean` (new file) now has
+   `reducedClass_eq_of_isReduction'_tangent_target`, no sorries. Two
+   errors surfaced and were fixed during this item: (a) a wrong
+   hypothesis passed to `divToPair_negVa_one_Sanchor_eq` (`.X ≠ .X`
+   where the point-level `≠` was wanted — both existed on
+   `TangentTargetAssemblyData`, just needed the right one substituted),
+   (b) `TangentTargetAssemblyData` was genuinely missing an `hv` field
+   (`as_v`'s coefficient factorization) that `target_sum_of_data_tangent`
+   needs — added, mirroring the existing `hva` field's shape. No other
+   file constructs `TangentTargetAssemblyData` yet, so the added field
+   needed no downstream updates. **This closes Tier 1 completely** —
+   both axes (anchor `Ra1=Ra2`, target `T1=T2`) now have proven tangent
+   siblings.
+5. **Done, this pass:** Tier 2 scoped as its own roadmap doc,
+   `ROADMAP-cawitness-tangent-interpolation.md` — confirmed it's a
+   different, bigger piece of work (new interpolation construction at
+   `CAWitness.lean`'s `caInterpMatrix` level) and kept separate from
+   Tier 1's now-complete work. That doc splits Tier 2 into Part A
+   (`dvd_pairNormBCA_full`'s six pairwise-`IsCoprime` hypotheses —
+   direct `lcm_dvd_of_four_dvd` port, no new math, low risk) and Part B
+   (`caInterpMatrix_det_ne_zero`'s genuine Vandermonde singularity when
+   any of `{Ra1X,Ra2X,P1X,P2X}` collide, plus the matching
+   `npoly4Lcm4_natDegree_eq_six` degree-collapse in
+   `GeneralSharedRoot.lean` — real new work, but Part B's own
+   `P1X=P2X` case turns out to already be solved: this pass's item 4
+   built `caTangentTargetInterpMatrix`/`bCATangentTarget`/`vDerivAtP`/
+   `hPDeriv` for exactly that collision, confirmed by direct read, not
+   assumed). See that doc for the full case breakdown and suggested
+   order — it is now the active roadmap for this remaining work,
+   superseding Tier 2's treatment in this doc.
 6. Leave Tier 3 alone throughout.

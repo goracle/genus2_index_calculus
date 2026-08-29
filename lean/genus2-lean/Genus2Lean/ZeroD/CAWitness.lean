@@ -5,6 +5,7 @@ import Genus2Lean.DivisorClassGroup
 import Genus2Lean.PrincipalDivisors
 import Genus2Lean.PrincipalDivisorSubgroup
 import Genus2Lean.LCanonicalElementary
+import Genus2Lean.ZeroD.Reduce.GeneralSharedRoot
 
 /-! # The single `C - A` witness (replaces the `f+`/`f-` two-witness plan)
 
@@ -333,6 +334,36 @@ theorem denomPolyCA_natDegree (Ra1X Ra2X P1X P2X : k) :
     Polynomial.natDegree_mul (Polynomial.X_sub_C_ne_zero Ra1X) (Polynomial.X_sub_C_ne_zero Ra2X),
     Polynomial.natDegree_X_sub_C, Polynomial.natDegree_X_sub_C,
     Polynomial.natDegree_X_sub_C, Polynomial.natDegree_X_sub_C]
+
+/-- **All four factors' `lcm` divides `H.f - bCA²`, unconditionally —
+no distinctness hypothesis of any kind.** Direct port of
+`GeneralSharedRoot.lean`'s `lcm_dvd_of_four_dvd`: since each individual
+factor's divisibility (`dvd_pairNormBCA_Ra1/Ra2/P1/P2`) already holds
+with no `h12`/`hPP`/etc.-style hypothesis, `lcm` absorbs any collision
+among `{Ra1X,Ra2X,P1X,P2X}` automatically (`lcm(a,a) = a`), so this
+covers every collision pattern at once. This is the Tier-2/Part-A
+divisibility fact from `ROADMAP-cawitness-tangent-interpolation.md` —
+note the conclusion is an `lcm`, NOT the literal product
+`denomPolyCA` names; the two coincide (up to a unit) only when all four
+x-coordinates are pairwise distinct, which is exactly what
+`dvd_pairNormBCA_full` below still assumes to stay compatible with
+`denomPolyCA`'s existing callers. This lemma is the hypothesis-free
+building block a future tangent-case version of `dvd_pairNormBCA_full`
+would use in place of the literal product. -/
+theorem lcm_dvd_pairNormBCA_full [DecidableEq k[X]] (H : HyperellipticPolynomial k)
+    (Ra1X Ra2X P1X P2X Ra1Y Ra2Y P1Y P2Y : k)
+    (hdet : (caInterpMatrix Ra1X Ra2X P1X P2X).det ≠ 0)
+    (hRa1_curve : Ra1Y ^ 2 = H.f.eval Ra1X) (hRa2_curve : Ra2Y ^ 2 = H.f.eval Ra2X)
+    (hP1_curve : P1Y ^ 2 = H.f.eval P1X) (hP2_curve : P2Y ^ 2 = H.f.eval P2X) :
+    EuclideanDomain.lcm
+      (EuclideanDomain.lcm (X - C Ra1X : k[X]) (X - C Ra2X))
+      (EuclideanDomain.lcm (X - C P1X : k[X]) (X - C P2X)) ∣
+      (H.f - (bCA Ra1X Ra2X P1X P2X Ra1Y Ra2Y P1Y P2Y) ^ 2) := by
+  have hd1 := dvd_pairNormBCA_Ra1 H Ra1X Ra2X P1X P2X Ra1Y Ra2Y P1Y P2Y hdet hRa1_curve
+  have hd2 := dvd_pairNormBCA_Ra2 H Ra1X Ra2X P1X P2X Ra1Y Ra2Y P1Y P2Y hdet hRa2_curve
+  have hd3 := dvd_pairNormBCA_P1 H Ra1X Ra2X P1X P2X Ra1Y Ra2Y P1Y P2Y hdet hP1_curve
+  have hd4 := dvd_pairNormBCA_P2 H Ra1X Ra2X P1X P2X Ra1Y Ra2Y P1Y P2Y hdet hP2_curve
+  exact Genus2Lean.TheDataDerivation.lcm_dvd_of_four_dvd hd1 hd2 hd3 hd4
 
 /-- **All four factors divide `H.f - bCA²` at once.** -/
 theorem dvd_pairNormBCA_full (H : HyperellipticPolynomial k)
