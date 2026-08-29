@@ -61,20 +61,106 @@ open TheDataDerivation
 variable {k : Type*} [Field k] {H : HyperellipticPolynomial k}
 variable {D : PrincipalDivisorData H}
 
--- **`maxHeartbeats` bump.** Same signature-elaboration cost the split
--- theorem's own file hit (`AlphaLocusDegreeUniform.lean`'s note on
--- `reducedClass_eq_of_isReduction'`) — this theorem's signature is that
--- one's, so it times out at the default limit for the same reason (a
--- `whnf` timeout on the declaration itself, not a tactic-block issue).
--- Placed above the doc comment, per project convention (`set_option`/
--- `omit` go above the `/--`, never between it and the theorem).
--- **Testing at the split file's own `800000` first**, now that
--- `derivative H.f` is factored out of `hRaDeriv`'s type into its own
--- `hfDeriv`/`hfDeriv_eq` binder (see that binder's comment) — if the
--- `derivative`-headed subterm was the actual driver of the extra cost
--- over the split theorem's signature, this should build at the same
--- budget the split theorem needed. Bump further only if this still
--- times out.
+-- **Extracted from the main theorem's signature to cut its size** (see
+-- comment on `maxHeartbeats` below — bisection probes confirmed this
+-- `hdet..hspec_hT` zone, ~35 binders, is used ONLY to build `hDP`
+-- inside the main proof and nowhere else, so pulling it into its own
+-- lemma removes it from the main signature's elaboration cost
+-- entirely, rather than just budgeting more heartbeats for the whole
+-- thing at once). Thin specialization of `cAmιTmδmιδ_mem_of_le_tangent`
+-- (`PrincipalWitnessFinalAssemblyTangent.lean`) to this file's `Ra`/
+-- `sa.P1`/`sa.P2`/`T1`/`T2` naming; conclusion is exactly `hDP`'s type
+-- in the main theorem's proof.
+set_option maxHeartbeats 800000 in
+theorem hDP_tangent_aux {p : ℕ} [Fact (Nat.Prime p)] [Fact (p ≠ 2)]
+    {H : HyperellipticPolynomial (F p)} [IsDedekindDomain (CoordinateRing H)]
+    [DecidableEq H.Point]
+    {D : PrincipalDivisorData H}
+    (hdeg : H.f.natDegree = 5)
+    (hchar : (2 : F p) ≠ 0) (hsf : Squarefree H.f)
+    (hD : principalSubgroup H hdeg ≤ D.P)
+    [∀ (a : F p) (Sfin : Finset H.Point),
+      ∀ P : Sfin, Module.Finite (F p) (CoordinateRing H ⧸ pointIdeal P.1 ^ (ordAt P.1 (linX a) 0).toNat)]
+    (hspec_linX : ∀ (a : F p), ∀ vv : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H),
+      (Associates.mk vv.asIdeal).count
+        (Associates.mk (Ideal.span ({toPair H (linX a) 0} : Set (CoordinateRing H)))).factors
+          ≠ 0 → ∃ P, vv.asIdeal = pointIdeal P)
+    (Ra P1 P2 : H.Point) (vaDerivAtRa : F p)
+    (hdet : (caTangentInterpMatrix Ra.X P1.X P2.X).det ≠ 0)
+    (hlead : caTangentCoeff Ra.X P1.X P2.X Ra.Y vaDerivAtRa P1.Y P2.Y 3 ≠ 0)
+    (h1P1 : Ra.X ≠ P1.X) (h1P2 : Ra.X ≠ P2.X) (hPP : P1.X ≠ P2.X)
+    (hRa_curve : Ra.Y ^ 2 = H.f.eval Ra.X)
+    (hP1_curve : P1.Y ^ 2 = H.f.eval P1.X) (hP2_curve : P2.Y ^ 2 = H.f.eval P2.X)
+    (hRaDeriv : 2 * Ra.Y * vaDerivAtRa = (derivative H.f).eval Ra.X)
+    (hRaY_ne : Ra.Y ≠ 0) (hP1Y_ne : P1.Y ≠ 0) (hP2Y_ne : P2.Y ≠ 0)
+    (hne : H.f - (bCATangent Ra.X P1.X P2.X Ra.Y vaDerivAtRa P1.Y P2.Y) ^ 2 ≠ 0)
+    (hU_evalRa : (uCANewTangent H Ra.X P1.X P2.X Ra.Y vaDerivAtRa P1.Y P2.Y).eval Ra.X ≠ 0)
+    (hU_evalP1 : (uCANewTangent H Ra.X P1.X P2.X Ra.Y vaDerivAtRa P1.Y P2.Y).eval P1.X ≠ 0)
+    (hU_evalP2 : (uCANewTangent H Ra.X P1.X P2.X Ra.Y vaDerivAtRa P1.Y P2.Y).eval P2.X ≠ 0)
+    (hU_ne0 : uCANewTangent H Ra.X P1.X P2.X Ra.Y vaDerivAtRa P1.Y P2.Y ≠ 0)
+    (PtT1 PtT2 : H.Point)
+    (hPtT1X : PtT1.X ≠ PtT2.X)
+    (hPtT1 : (uCANewTangent H Ra.X P1.X P2.X Ra.Y vaDerivAtRa P1.Y P2.Y).IsRoot PtT1.X)
+    (hPtT2 : (uCANewTangent H Ra.X P1.X P2.X Ra.Y vaDerivAtRa P1.Y P2.Y).IsRoot PtT2.X)
+    (Q1 Q2 : Polynomial (F p))
+    (hQ1_def : uCANewTangent H Ra.X P1.X P2.X Ra.Y vaDerivAtRa P1.Y P2.Y =
+      (Polynomial.X - Polynomial.C PtT1.X) * (Polynomial.X - Polynomial.C PtT2.X) * Q1)
+    (hQ1T1 : Q1.eval PtT1.X ≠ 0)
+    (hQ2_def : uCANewTangent H Ra.X P1.X P2.X Ra.Y vaDerivAtRa P1.Y P2.Y =
+      (Polynomial.X - Polynomial.C PtT2.X) * (Polynomial.X - Polynomial.C PtT1.X) * Q2)
+    (hQ2T2 : Q2.eval PtT2.X ≠ 0)
+    (δ₀ : H.Point)
+    (hAeval1 : (denomPolyCATangent Ra.X P1.X P2.X : Polynomial (F p)).eval PtT1.X ≠ 0)
+    (hAeval2 : (denomPolyCATangent Ra.X P1.X P2.X : Polynomial (F p)).eval PtT2.X ≠ 0)
+    (hPtT1Y : PtT1.Y = (bCATangent Ra.X P1.X P2.X Ra.Y vaDerivAtRa P1.Y P2.Y).eval PtT1.X)
+    (hPtT1Y_ne : PtT1.Y ≠ 0)
+    (hPtT2Y : PtT2.Y = (bCATangent Ra.X P1.X P2.X Ra.Y vaDerivAtRa P1.Y P2.Y).eval PtT2.X)
+    (hPtT2Y_ne : PtT2.Y ≠ 0)
+    (hRaT1 : Ra.X ≠ PtT1.X) (hRaT2 : Ra.X ≠ PtT2.X)
+    (hP1T1 : P1.X ≠ PtT1.X) (hP1T2 : P1.X ≠ PtT2.X)
+    (hP2T1 : P2.X ≠ PtT1.X) (hP2T2 : P2.X ≠ PtT2.X)
+    (h1δ : PtT1.X ≠ δ₀.X) (h2δ : PtT2.X ≠ δ₀.X) (hδY : δ₀.Y ≠ 0)
+    (hsupp_f : ∀ P, P ∉ ({Ra, Point.iota P1, Point.iota P2, PtT1, PtT2} :
+        Finset H.Point) →
+      ordAt P (-bCATangent Ra.X P1.X P2.X Ra.Y vaDerivAtRa P1.Y P2.Y) (1 : Polynomial (F p)) = 0)
+    (hspec_f : ∀ vv : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H),
+      (Associates.mk vv.asIdeal).count (Associates.mk (Ideal.span
+        ({toPair H (-bCATangent Ra.X P1.X P2.X Ra.Y vaDerivAtRa P1.Y P2.Y) 1} :
+          Set (CoordinateRing H)))).factors ≠ 0 → ∃ P, vv.asIdeal = pointIdeal P)
+    [∀ P : ({Ra, Point.iota P1, Point.iota P2, PtT1, PtT2} : Finset H.Point),
+      Module.Finite (F p) (CoordinateRing H ⧸ pointIdeal P.1 ^
+        (ordAt P.1 (-bCATangent Ra.X P1.X P2.X Ra.Y vaDerivAtRa P1.Y P2.Y)
+          (1 : Polynomial (F p))).toNat)]
+    (hsupp_hT : ∀ P, P ∉ ({PtT1, PtT2, Point.iota PtT1, Point.iota PtT2, δ₀, Point.iota δ₀} :
+        Finset H.Point) →
+      ordAt P ((linX PtT1.X * linX PtT2.X) * linX δ₀.X) (0 : Polynomial (F p)) = 0)
+    (hspec_hT : ∀ vv : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H),
+      (Associates.mk vv.asIdeal).count (Associates.mk (Ideal.span
+        ({toPair H ((linX PtT1.X * linX PtT2.X) * linX δ₀.X) 0} :
+          Set (CoordinateRing H)))).factors ≠ 0 → ∃ P, vv.asIdeal = pointIdeal P)
+    [∀ P : ({PtT1, PtT2, Point.iota PtT1, Point.iota PtT2, δ₀, Point.iota δ₀} : Finset H.Point),
+      Module.Finite (F p) (CoordinateRing H ⧸ pointIdeal P.1 ^
+        (ordAt P.1 ((linX PtT1.X * linX PtT2.X) * linX δ₀.X) (0 : Polynomial (F p))).toNat)]
+    (T1cur T2cur : H.Point)
+    (hT1eq : T1cur = Point.iota PtT1) (hT2eq : T2cur = Point.iota PtT2) :
+    ((2 : ℤ) • single Ra - single P1 - single P2 -
+      single T1cur - single T2cur +
+      single δ₀ + single (Point.iota δ₀) : Divisor H) ∈ D.P :=
+  cAmιTmδmιδ_mem_of_le_tangent (H := H) hdeg hchar hsf D hD
+    hspec_linX
+    Ra.X P1.X P2.X Ra.Y P1.Y P2.Y vaDerivAtRa
+    hdet hlead h1P1 h1P2 hPP
+    hRa_curve hP1_curve hP2_curve hRaDeriv
+    hRaY_ne hP1Y_ne hP2Y_ne
+    Ra P1 P2 (Point.iota P1) (Point.iota P2)
+    rfl rfl rfl rfl rfl rfl rfl rfl rfl rfl
+    hne hU_evalRa hU_evalP1 hU_evalP2
+    PtT1.X PtT2.X hPtT1 hPtT2 hPtT1X hU_ne0
+    Q1 Q2 hQ1_def hQ1T1 hQ2_def hQ2T2
+    PtT1 PtT2 δ₀ hAeval1 hAeval2 rfl hPtT1Y hPtT1Y_ne rfl hPtT2Y hPtT2Y_ne
+    hRaT1 hRaT2 hP1T1 hP1T2 hP2T1 hP2T2 h1δ h2δ hδY hsupp_f hspec_f hsupp_hT hspec_hT
+    T1cur T2cur hT1eq hT2eq
+
 set_option maxHeartbeats 800000 in
 /-- **Tangent-anchor sibling of `reducedClass_eq_of_isReduction'`**: same
 conclusion, `Ra1 = Ra2` (one doubled anchor point `Ra`, tangency data
@@ -165,9 +251,7 @@ theorem reducedClass_eq_of_isReduction'_tangent {p : ℕ} [Fact (Nat.Prime p)] [
     -- pair), and `hua_eq` states that quadratic's factored form directly
     -- (caller-supplied, matching `Sanchor_eq_of_anchor_roots_tangent`'s
     -- own documented convention — not derived from `Squarefree ua`,
-    -- which would be false for a genuine double root). `vaDerivAtRa`/
-    -- `hRaDeriv` supply the tangency row's derivative value, matching
-    -- `cAmιTmδmιδ_mem_of_le_tangent`'s own `hRaDeriv` parameter.
+    -- which would be false for a genuine double root).
     (ua : Polynomial (F p))
     (hua : ua = (Polynomial.X : Polynomial (F p)) ^ 2
       + (Polynomial.C ua1 : Polynomial (F p)) * Polynomial.X
@@ -177,21 +261,13 @@ theorem reducedClass_eq_of_isReduction'_tangent {p : ℕ} [Fact (Nat.Prime p)] [
     (hRaY : Ra.Y = va.eval Ra.X)
     (hSanchorMem : ∀ Q ∈ Sanchor, ua.eval Q.X = 0 ∧ Q.Y = va.eval Q.X)
     (hRamem : Ra ∈ Sanchor)
-    (vaDerivAtRa : F p)
-    -- **`derivative H.f` factored into its own binder** (`hfDeriv`/
-    -- `hfDeriv_eq`) rather than appearing inline inside `hRaDeriv`'s type.
-    -- Diagnostic per Claire's REPL (`whnf` timeout moved from the
-    -- `set_option` line to the `theorem` line itself even at 1600000
-    -- heartbeats): `derivative` is not `@[reducible]`, and unlike the
-    -- split theorem's signature (which never mentions `derivative` at
-    -- all), this is the one term here that forces the elaborator to
-    -- carry an unreduced `derivative`-headed subterm through the rest of
-    -- signature checking. Naming it once and stating `hRaDeriv` against
-    -- the name instead should let elaboration treat it as opaque from
-    -- the start rather than repeatedly revisiting `derivative H.f`.
-    (hfDeriv : Polynomial (F p))
-    (hfDeriv_eq : hfDeriv = derivative H.f)
-    (hRaDeriv : 2 * Ra.Y * vaDerivAtRa = hfDeriv.eval Ra.X)
+    -- **`vaDerivAtRa`/`hRaDeriv` (and the `derivative H.f` term they
+    -- carried) dropped from THIS signature** — they were only ever
+    -- consumed by the old inline `hDP` derivation, which now lives in
+    -- `hDP_tangent_aux` (above) with its own copies of both. The caller
+    -- of this theorem supplies `hDP` directly (typically by calling
+    -- `hDP_tangent_aux` first), so this theorem no longer needs the
+    -- derivative-tangency data itself.
     (T1 T2 : H.Point)
     (hT12Xne : T1.X ≠ T2.X)
     (hT1Root : u.IsRoot T1.X) (hT2Root : u.IsRoot T2.X)
@@ -207,82 +283,21 @@ theorem reducedClass_eq_of_isReduction'_tangent {p : ℕ} [Fact (Nat.Prime p)] [
     (hUcoT_evalT1 : UcoT.eval T1.X ≠ 0) (hUcoT_evalT2 : UcoT.eval T2.X ≠ 0)
     (hRaY_ne : Ra.Y ≠ 0)
     (hT1Y_ne : T1.Y ≠ 0) (hT2Y_ne : T2.Y ≠ 0)
-    -- **The `CAWitness` identification, tangent case**: `ua,va` ARE
-    -- `uCANewTangent,-bCATangent` built from `Ra,sa.P1,sa.P2`.
-    (hdet : (caTangentInterpMatrix Ra.X sa.P1.X sa.P2.X).det ≠ 0)
-    (hlead : caTangentCoeff Ra.X sa.P1.X sa.P2.X Ra.Y vaDerivAtRa sa.P1.Y sa.P2.Y 3 ≠ 0)
-    (h1P1 : Ra.X ≠ sa.P1.X) (h1P2 : Ra.X ≠ sa.P2.X) (hPP : sa.P1.X ≠ sa.P2.X)
-    (hRa_curve : Ra.Y ^ 2 = H.f.eval Ra.X)
-    (hP1_curve : sa.P1.Y ^ 2 = H.f.eval sa.P1.X) (hP2_curve : sa.P2.Y ^ 2 = H.f.eval sa.P2.X)
-    (hP1Y_ne : sa.P1.Y ≠ 0) (hP2Y_ne : sa.P2.Y ≠ 0)
-    (hne : H.f - (bCATangent Ra.X sa.P1.X sa.P2.X Ra.Y vaDerivAtRa sa.P1.Y sa.P2.Y) ^ 2 ≠ 0)
-    -- **`uCANewTangent H Ra.X sa.P1.X sa.P2.X Ra.Y vaDerivAtRa sa.P1.Y
-    -- sa.P2.Y` factored into its own binder** (`uCA`/`uCA_eq`) rather
-    -- than appearing inline 8 times below. Test 1 (factoring `derivative
-    -- H.f` out of `hRaDeriv`) did not fix the `whnf` timeout (Claire's
-    -- REPL, still timed out at the split file's own `800000` budget), so
-    -- this is Test 2: the repeated fully-applied `uCANewTangent` term is
-    -- the other concrete structural difference from the split theorem's
-    -- signature (which never repeats `uCANew`'s application against the
-    -- SAME `Uco`/tangent-specific args this many times inline — the
-    -- split file's own 9 occurrences of `uCANew H Ra1.X Ra2.X sa.P1.X
-    -- sa.P2.X Ra1.Y Ra2.Y sa.P1.Y sa.P2.Y` are structurally the same
-    -- pattern, so if this doesn't help either, the two files' cost is
-    -- close enough that neither factoring alone explains the gap, and
-    -- the fix is confirmed to be finding out concretely, not guessing
-    -- further). Named once here; used as-is in the 8 hypotheses below,
-    -- and unfolded via `uCA_eq` only where the proof body needs the
-    -- expanded form (currently nowhere — all 8 pass through by name to
-    -- `cAmιTmδmιδ_mem_of_le_tangent`'s own like-named binders).
-    (uCA : Polynomial (F p))
-    (uCA_eq : uCA = uCANewTangent H Ra.X sa.P1.X sa.P2.X Ra.Y vaDerivAtRa sa.P1.Y sa.P2.Y)
-    (hU_evalRa : uCA.eval Ra.X ≠ 0)
-    (hU_evalP1 : uCA.eval sa.P1.X ≠ 0)
-    (hU_evalP2 : uCA.eval sa.P2.X ≠ 0)
-    (hU_ne0 : uCA ≠ 0)
-    (PtT1 PtT2 : H.Point)
-    (hPtT1X : PtT1.X ≠ PtT2.X)
-    (hPtT1 : uCA.IsRoot PtT1.X)
-    (hPtT2 : uCA.IsRoot PtT2.X)
-    (Q1 Q2 : Polynomial (F p))
-    (hQ1_def : uCA =
-      (Polynomial.X - Polynomial.C PtT1.X) * (Polynomial.X - Polynomial.C PtT2.X) * Q1)
-    (hQ1T1 : Q1.eval PtT1.X ≠ 0)
-    (hQ2_def : uCA =
-      (Polynomial.X - Polynomial.C PtT2.X) * (Polynomial.X - Polynomial.C PtT1.X) * Q2)
-    (hQ2T2 : Q2.eval PtT2.X ≠ 0)
-    (hAeval1 : (denomPolyCATangent Ra.X sa.P1.X sa.P2.X : Polynomial (F p)).eval PtT1.X ≠ 0)
-    (hAeval2 : (denomPolyCATangent Ra.X sa.P1.X sa.P2.X : Polynomial (F p)).eval PtT2.X ≠ 0)
-    (hPtT1Y : PtT1.Y = (bCATangent Ra.X sa.P1.X sa.P2.X Ra.Y vaDerivAtRa sa.P1.Y sa.P2.Y).eval PtT1.X)
-    (hPtT1Y_ne : PtT1.Y ≠ 0)
-    (hPtT2Y : PtT2.Y = (bCATangent Ra.X sa.P1.X sa.P2.X Ra.Y vaDerivAtRa sa.P1.Y sa.P2.Y).eval PtT2.X)
-    (hPtT2Y_ne : PtT2.Y ≠ 0)
-    (hRaT1 : Ra.X ≠ PtT1.X) (hRaT2 : Ra.X ≠ PtT2.X)
-    (hP1T1 : sa.P1.X ≠ PtT1.X) (hP1T2 : sa.P1.X ≠ PtT2.X)
-    (hP2T1 : sa.P2.X ≠ PtT1.X) (hP2T2 : sa.P2.X ≠ PtT2.X)
-    (h1δ : PtT1.X ≠ δ₀.X) (h2δ : PtT2.X ≠ δ₀.X) (hδY : δ₀.Y ≠ 0)
-    (hT1eq : T1 = Point.iota PtT1) (hT2eq : T2 = Point.iota PtT2)
-    (hsupp_f : ∀ P, P ∉ ({Ra, Point.iota sa.P1, Point.iota sa.P2, PtT1, PtT2} :
-        Finset H.Point) →
-      ordAt P (-bCATangent Ra.X sa.P1.X sa.P2.X Ra.Y vaDerivAtRa sa.P1.Y sa.P2.Y) (1 : Polynomial (F p)) = 0)
-    (hspec_f : ∀ vv : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H),
-      (Associates.mk vv.asIdeal).count (Associates.mk (Ideal.span
-        ({toPair H (-bCATangent Ra.X sa.P1.X sa.P2.X Ra.Y vaDerivAtRa sa.P1.Y sa.P2.Y) 1} :
-          Set (CoordinateRing H)))).factors ≠ 0 → ∃ P, vv.asIdeal = pointIdeal P)
-    [∀ P : ({Ra, Point.iota sa.P1, Point.iota sa.P2, PtT1, PtT2} : Finset H.Point),
-      Module.Finite (F p) (CoordinateRing H ⧸ pointIdeal P.1 ^
-        (ordAt P.1 (-bCATangent Ra.X sa.P1.X sa.P2.X Ra.Y vaDerivAtRa sa.P1.Y sa.P2.Y)
-          (1 : Polynomial (F p))).toNat)]
-    (hsupp_hT : ∀ P, P ∉ ({PtT1, PtT2, Point.iota PtT1, Point.iota PtT2, δ₀, Point.iota δ₀} :
-        Finset H.Point) →
-      ordAt P ((linX PtT1.X * linX PtT2.X) * linX δ₀.X) (0 : Polynomial (F p)) = 0)
-    (hspec_hT : ∀ vv : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H),
-      (Associates.mk vv.asIdeal).count (Associates.mk (Ideal.span
-        ({toPair H ((linX PtT1.X * linX PtT2.X) * linX δ₀.X) 0} :
-          Set (CoordinateRing H)))).factors ≠ 0 → ∃ P, vv.asIdeal = pointIdeal P)
-    [∀ P : ({PtT1, PtT2, Point.iota PtT1, Point.iota PtT2, δ₀, Point.iota δ₀} : Finset H.Point),
-      Module.Finite (F p) (CoordinateRing H ⧸ pointIdeal P.1 ^
-        (ordAt P.1 ((linX PtT1.X * linX PtT2.X) * linX δ₀.X) (0 : Polynomial (F p))).toNat)]
+    -- **`hdet`..`hspec_hT` (the CAWitness/tangent matrix-det, Cramer's-
+    -- rule, and `uCANewTangent`-applied hypotheses, ~35 binders total)
+    -- extracted into `hDP_tangent_aux`** (above this theorem), leaving
+    -- only its conclusion, `hDP`, as a single hypothesis here. This was
+    -- the fix for a `whnf` timeout on this theorem's own signature
+    -- (Claire's REPL): bisection probes confirmed the zone was used
+    -- ONLY to build `hDP` and nowhere else in this proof, so pulling it
+    -- into its own lemma (with its own, much smaller, `800000`-budget
+    -- signature) removes that cost from THIS signature's elaboration
+    -- entirely, rather than raising this theorem's own budget further
+    -- (tried up to `3200000`, 4x the split file's `800000`, still timed
+    -- out — confirmed accumulation, not a single pathological term, so
+    -- splitting the signature is the correct fix over more heartbeats).
+    (hDP : ((2 : ℤ) • single Ra - single sa.P1 - single sa.P2 -
+      single T1 - single T2 + single δ₀ + single (Point.iota δ₀) : Divisor H) ∈ D.P)
     [∀ (a : F p) (Sfin : Finset H.Point),
       ∀ P : Sfin, Module.Finite (F p) (CoordinateRing H ⧸ pointIdeal P.1 ^ (ordAt P.1 (linX a) 0).toNat)]
     (hspec_linX : ∀ (a : F p), ∀ vv : IsDedekindDomain.HeightOneSpectrum (CoordinateRing H),
@@ -352,21 +367,9 @@ theorem reducedClass_eq_of_isReduction'_tangent {p : ℕ} [Fact (Nat.Prime p)] [
       T1 T2 hT12ne hT1Y_ne hT2Y_ne hT1Root' hT2Root' hT1Y hT2Y
       hUcoT_evalT1 hUcoT_evalT2 S hSEq
   -- **The concrete-coordinate assembly (†), tangent case**: `2•[Ra] -
-  -- [P1] - [P2] - ι(T1) - ι(T2) + [δ₀] + [ιδ₀] ∈ D.P`.
-  have hDP := cAmιTmδmιδ_mem_of_le_tangent (H := H) hdeg hchar hsf D hD
-    hspec_linX
-    Ra.X sa.P1.X sa.P2.X Ra.Y sa.P1.Y sa.P2.Y vaDerivAtRa
-    hdet hlead h1P1 h1P2 hPP
-    hRa_curve hP1_curve hP2_curve (hfDeriv_eq ▸ hRaDeriv)
-    hRaY_ne hP1Y_ne hP2Y_ne
-    Ra sa.P1 sa.P2 (Point.iota sa.P1) (Point.iota sa.P2)
-    rfl rfl rfl rfl rfl rfl rfl rfl rfl rfl
-    hne (uCA_eq ▸ hU_evalRa) (uCA_eq ▸ hU_evalP1) (uCA_eq ▸ hU_evalP2)
-    PtT1.X PtT2.X (uCA_eq ▸ hPtT1) (uCA_eq ▸ hPtT2) hPtT1X (uCA_eq ▸ hU_ne0)
-    Q1 Q2 (uCA_eq ▸ hQ1_def) hQ1T1 (uCA_eq ▸ hQ2_def) hQ2T2
-    PtT1 PtT2 δ₀ hAeval1 hAeval2 rfl hPtT1Y hPtT1Y_ne rfl hPtT2Y hPtT2Y_ne
-    hRaT1 hRaT2 hP1T1 hP1T2 hP2T1 hP2T2 h1δ h2δ hδY hsupp_f hspec_f hsupp_hT hspec_hT
-    T1 T2 hT1eq hT2eq
+  -- [P1] - [P2] - ι(T1) - ι(T2) + [δ₀] + [ιδ₀] ∈ D.P` — now a direct
+  -- hypothesis (`hDP`, supplied by the caller via `hDP_tangent_aux`)
+  -- rather than derived here; see the note on `hDP`'s binder above.
   -- **Bridge `D.P` membership to a `toJacobian` equation** — identical to
   -- the split theorem from here, `hSanchorSum` now giving `2•single Ra`
   -- in place of `single Ra1 + single Ra2`.
