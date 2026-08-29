@@ -139,7 +139,7 @@ theorem cIotaAmIotaT_mem_of_le_tangent_target
     Ra1X Ra2X PX Ra1Y Ra2Y PY vDerivAtP hdet hlead h1 h2 h12
     hRa1_curve hRa2_curve hP_curve hPDeriv hRa1Y_ne hRa2Y_ne hPY_ne
     PtRa1 PtRa2 PtιP hPtRa1X hPtRa1Y hPtRa2X hPtRa2Y hPtιPX hPtιPY
-    hne hU_evalRa1 hU_evalRa2 T1X T2X hT1 hT2 hTne hU_ne0
+    hne hU_evalRa1 hU_evalRa2 hU_evalP T1X T2X hT1 hT2 hTne hU_ne0
     Q1 Q2 hQ1_def hQ1T1 hQ2_def hQ2T2
     PtT1 PtT2 δ₀ hAeval1 hAeval2 hPtT1X hPtT1Y hPtT1Y_ne hPtT2X hPtT2Y hPtT2Y_ne
     hRa1T1 hRa1T2 hRa2T1 hRa2T2 hPT1 hPT2 h1δ h2δ hδY
