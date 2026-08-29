@@ -358,6 +358,78 @@ roadmap's Tier 2 notes), just not yet ported to
    same-point, non-tangent sub-case; already handled in general by
    `CAWitnessCrossTangent.lean`'s `eq_iota_of_X_eq_of_ne`, just needs
    threading through each of the four call sites).
+
+   **Wiring chain traced this pass, before writing anything — genuinely
+   FIVE layers deep, not four, for the cross-pair case specifically.**
+   `h1P1,h1P2,h2P1,h2P2,hPP` are consumed at exactly one call site in
+   `AlphaLocusDegreeUniform.lean` (line ~1207,
+   `cAmιTmδmιδ_mem_of_le`'s call), passed straight through unused at
+   that layer. Traced the FULL chain beneath it (the same discipline
+   Tier 1b used originally):
+   1. `cAmιTmδmιδ_mem_of_le` (`PrincipalWitnessFinalAssembly.lean` line
+      213) — pass-through, `h1P1` etc. unused here directly.
+   2. → `cIotaAmIotaT_mem_of_le` (same file, line 108) — same
+      pass-through.
+   3. → `cIotaAmIotaT_mem_principalSubgroup` (`PrincipalWitnessStep4.lean`,
+      called at line 175 inside `cIotaAmIotaT_mem_of_le`'s proof) AND
+      `divToPair_eq_C_add_iotaA_add_T_of_split` (`PrincipalWitnessStep3.lean`,
+      called at line 183) — **checked via grep: NEITHER file has any
+      `_tangent`- or `_cross`-named sibling anywhere.** This is one
+      layer DEEPER than Tier 1b's own chain needed to go for the
+      anchor/target axes (those were absorbed at
+      `CAWitness.lean`'s `caInterpMatrix` level, layer 3 in THAT
+      chain) — the cross-pair collision's actual root, `Ra1X=P1X`
+      (say), doesn't just break `caInterpMatrix`'s nondegeneracy (now
+      fixed, all four variants), it ALSO breaks `divToPair_eq_C_add_
+      iotaA_add_T_of_split`'s own six pairwise-distinctness hypotheses
+      (`h12,h1P1,h1P2,h2P1,h2P2,hPP`, same names, same file line 104)
+      and `cIotaAmIotaT_mem_principalSubgroup`'s (presumably the same
+      shape — not yet read in detail, check before starting).
+
+   **So the real remaining work for case 3 is not just "wire the four
+   `uCANewCross*` constructions into the top-level theorem" — it's
+   "give `divToPair_eq_C_add_iotaA_add_T_of_split` and
+   `cIotaAmIotaT_mem_principalSubgroup` their OWN cross-pair tangent
+   siblings first" (comparable in scope to what Tier 1b already did
+   once, for a different pair of axes), and only then does the
+   `cIotaAmIotaT_mem_of_le`/`cAmιTmδmιδ_mem_of_le` layer's own
+   cross-pair siblings become a mechanical wiring exercise the way
+   Tier 1b's final step was.** Concretely, before writing any new
+   top-level theorem file:
+   1. Read `divToPair_eq_C_add_iotaA_add_T_of_split`'s full proof body
+      (`PrincipalWitnessStep3.lean`) to see exactly how/where its six
+      distinctness hypotheses get used — the same "trace before
+      assuming" discipline this whole roadmap has used throughout.
+      Likely uses `GeneralSharedRoot.lean`'s machinery (per this doc's
+      original Part A/B framing) — confirm which parts are the
+      `lcm`-divisibility (already unconditional, Part A) vs. the
+      exact-degree/multiplicity argument (Part B, genuinely needs the
+      four `bCACross*`/`uCANewCross*` constructions this pass built).
+   2. Do the same for `cIotaAmIotaT_mem_principalSubgroup`
+      (`PrincipalWitnessStep4.lean`).
+   3. Only once both of those have cross-pair-tangent siblings (four
+      variants each, or a shared generic-collision-point argument if
+      one cleanly covers all four — check before assuming four
+      separate proofs are needed) does writing
+      `cIotaAmIotaT_mem_of_le_cross`/`cAmιTmδmιδ_mem_of_le_cross`
+      become the mechanical composition Tier 1b's own final step was.
+   4. Only after that does the actual top-level
+      `reducedClass_eq_of_isReduction'_cross_tangent`-style theorem
+      (or four of them, or a shared one parametrized by which pair
+      collided — same "check before assuming four are needed"
+      caution) become buildable — expect this to be comparable in
+      line count to `AlphaLocusDegreeUniformTangent.lean` (612 lines)
+      per variant, so budget file-count accordingly against the
+      1500-line ceiling; likely wants its own new file(s) per variant,
+      following Tier 1's own established convention rather than
+      growing an existing file.
+
+   **Not started this pass** — this is real, multi-step work
+   (comparable to redoing Tier 1b's own scope, one layer deeper), not
+   a continuation of the matrix-construction work just finished. The
+   four `bCACross*`/`uCANewCross*` files are necessary inputs to it but
+   are not themselves sufficient — confirmed directly by tracing the
+   actual call chain rather than assumed from Tier 1's precedent.
 6. **Case 4** (double collision) — checked: both single-axis top-level
    theorems already exist independently
    (`reducedClass_eq_of_isReduction'_tangent`/`_tangent_target`), so
