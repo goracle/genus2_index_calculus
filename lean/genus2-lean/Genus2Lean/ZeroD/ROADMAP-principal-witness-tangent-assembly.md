@@ -265,9 +265,35 @@ conclusions now match the split case's own shape with no leftover terms:
 -[T1cur]-[T2cur]+[δ₀]+[ιδ₀] ∈ D.P` (where `T1cur=ιT1,T2cur=ιT2`). **Not yet
 REPL-confirmed by Claire** — written and internally cross-checked
 (argument order against callee signatures, `heq`/`abel` algebra worked by
-hand) but pending an actual build. Next: wire this into
-`reducedClass_eq_of_isReduction'` itself, matching against
-`cAmιTmδmιδ_mem_of_le`'s (split case's) own usage pattern there.
+hand) but pending an actual build.
+
+**Step 5 itself, this pass: written as a new theorem, not yet REPL-confirmed.**
+`reducedClass_eq_of_isReduction'` (`AlphaLocusDegreeUniform.lean`) is stated
+only for the fully-split anchor (`hRa12Xne : Ra1.X ≠ Ra2.X` is a hard
+hypothesis of that theorem, not an internal case split), so the tangent
+anchor case needed its own sibling theorem rather than an edit to the
+existing one — same reasoning as Step 4's own siblings. New file
+`AlphaLocusDegreeUniformTangent.lean`,
+`reducedClass_eq_of_isReduction'_tangent`: same conclusion as the split
+theorem, with `Ra1 Ra2 hRa12Xne hRa1Root hRa2Root hRa1Y hRa2Y` replaced by
+a single doubled point `Ra` plus its tangency data (`hua_eq : ua = (X - C
+Ra.X)^2`, `hRaY`, `hSanchorMem`/`hRamem` in place of the split case's
+cardinality-based `Sanchor_eq_of_anchor_roots`, and `vaDerivAtRa`/
+`hRaDeriv` for the derivative row `cAmιTmδmιδ_mem_of_le_tangent` needs).
+Target side (`T1,T2`/`u`/`v`/`S`) is untouched — this roadmap only ever
+scoped the ANCHOR tangent case, target-side tangency (`hcurT`/`hgcdT`'s
+own branch) is separate and not attempted here. Proof mirrors the split
+theorem's proof exactly, swapping `Sanchor_eq_of_anchor_roots` for
+`Sanchor_eq_of_anchor_roots_tangent` and `divToPair_negVa_one_Sanchor_eq`
+for `divToPair_negVa_one_Sanchor_eq_tangent`, and `cAmιTmδmιδ_mem_of_le`
+for `cAmιTmδmιδ_mem_of_le_tangent` — all three tangent ingredients already
+existed and were REPL-confirmed before this pass (Step 4, this doc, plus
+`PrincipalWitnessCAConnection.lean`'s tangent branch). Argument order for
+each of these three calls was checked positionally against the callee's
+actual signature (not re-derived from the split call by pattern-matching
+alone) before considering this done. **Next: Claire's REPL confirmation
+of `AlphaLocusDegreeUniformTangent.lean`** — this closes the roadmap once
+green.
 
 
 ## What NOT to do
