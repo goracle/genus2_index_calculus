@@ -73,3 +73,4 @@ import Genus2Lean.ZeroD.CAWitnessDivisorTangent
 import Genus2Lean.ZeroD.CAWitnessAssemblyTangent
 import Genus2Lean.ZeroD.PrincipalWitnessStep4Tangent
 import Genus2Lean.ZeroD.PrincipalWitnessFinalAssemblyTangent
+import Genus2Lean.ZeroD.CAWitnessResidualTangent

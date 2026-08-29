@@ -64,8 +64,13 @@ Pure polynomial-algebra step: `IsRoot` at `T1X`, `IsRoot` at a DIFFERENT
 point `T2X`, coprimality of the two linear factors, and the quotient
 `Q := uCANew /ₘ ((X-C T1X)*(X-C T2X))` not vanishing at `T1X` (`hQT1`) —
 together these pin `rootMultiplicity T1X uCANew = 1` without ever
-computing `uCANew`'s degree. -/
-private theorem rootMultiplicity_uCANew_eq_one
+computing `uCANew`'s degree.
+
+**Not `private`**: generic in its polynomial argument `U`, so
+`PrincipalWitnessStep4Tangent.lean` reuses it unchanged for
+`uCANewTangent` (was `private` when this file's only caller was itself;
+that stopped being true once the tangent case needed the same fact). -/
+theorem rootMultiplicity_uCANew_eq_one
     (U : Polynomial k) (hU_ne0 : U ≠ 0)
     (T1X T2X : k) (hT1 : U.IsRoot T1X) (hT2 : U.IsRoot T2X) (hTne : T1X ≠ T2X)
     (Q : Polynomial k) (hQ_def : U = (X - C T1X) * (X - C T2X) * Q)
