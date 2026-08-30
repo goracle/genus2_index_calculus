@@ -454,18 +454,63 @@ roadmap's Tier 2 notes), just not yet ported to
    conclusion — not a copy-paste of one shape across all four) — worth a
    second look if `abel` fails to close any of the four.
 
-   **Still not done**: `cAmιTmδmιδ_mem_of_le_crossN`'s own `G₁-G₂-G₃`
-   composition (needs `fiber_diff_mem_of_le`, `PrincipalWitnessFinalAssembly.lean`,
-   called against the correct un-doubled anchor/target points per
-   variant — e.g. cross1's `fiber_diff_mem_of_le` calls would need
-   `PtRa2`/something and `δ₀`, `PtιP2`/something and `δ₀`, mirroring the
-   split case's `G₂,G₃` but against the THREE surviving un-doubled
-   points per variant, not four — not yet worked out per-variant, left
-   for a follow-up pass to keep `CAWitnessCrossTangentMemOfLe.lean`'s
-   diff reviewable on its own), nor the eventual top-level
-   `reducedClass_eq_of_isReduction'_cross_tangentN`-style theorem. Budget
-   this as the next piece once the REPL confirms the current file is
-   green.
+   **`cAmιTmδmιδ_mem_of_le_crossN`'s own `G₁-G₂-G₃` composition — now DONE
+   for all four variants.** `CAWitnessCrossTangentMemOfLe.lean` (same
+   file) has `cAmιTmδmιδ_mem_of_le_cross{1,2,3,4}`, each composing its own
+   `cIotaAmIotaT_mem_of_le_crossN` (`G₁`) with two `fiber_diff_mem_of_le`
+   calls (`G₂,G₃`, against the doubled node and the surviving un-doubled
+   target point per variant) — REPL-confirmed, build green (the earlier
+   `Unknown identifier fiber_diff_mem_of_le` errors were a missing
+   `import Genus2Lean.ZeroD.PrincipalWitnessFinalAssembly`, fixed; the
+   module docstring's stale "not attempted here" note for this
+   composition has also been corrected).
+
+   **The top-level `reducedClass_eq_of_isReduction'_crossN` theorem —
+   variant 1 (`Ra1 = ι(sa.P1)`) now DONE, REPL-confirmed, build green**
+   (`AlphaLocusDegreeUniformCross1.lean`, new file). Turned out
+   SIMPLER than the anchor-tangent precedent
+   (`AlphaLocusDegreeUniformTangent.lean`, 612 lines, structure-heavy)
+   suggested it would be: cross1's anchor pair `{Ra,Ra2}` stays
+   genuinely SPLIT (`caCrossInterpMatrix`'s own `h1 : RaX≠Ra2X`,
+   confirmed directly from `CAWitnessCrossTangent2.lean`) — the
+   confluence is between the anchor point `Ra` and the TARGET point
+   `sa.P1`, via `sa.P1 = Point.iota Ra`, not a doubling of the anchor
+   pair itself. Consequently `Sanchor`'s own construction
+   (`Sanchor_eq_of_anchor_roots`, `divToPair_negVa_one_Sanchor_eq` — the
+   ORIGINAL split-case lemmas, not tangent siblings) carries over
+   completely unchanged, and no new structures
+   (`TangentCoefficientData`/`TangentReductionData`/`TangentAssemblyData`-
+   style) were needed at all — `reducedClass_eq_of_isReduction'`'s own
+   ~230-line hypothesis block (`hcur`/`hgcd`/`hcurT`/`hgcdT`/`hr`/`isReduction'`)
+   copies over VERBATIM, since it only ever consumes `sa.P1.X`/`sa.P1.Y`
+   as opaque field values and never cares whether `sa.P1` happens to
+   equal `ι(Ra)` elsewhere (confirmed by reading `isReduction'`'s
+   definition directly — it never mentions `Ra`/`Ra2` at all). The only
+   real changes, relative to the split theorem: `sa.P1` forced via a new
+   hypothesis `hP1eq : sa.P1 = Point.iota Ra` rather than free; the
+   six-hypothesis family (`h1P1,h1P2,h2P1,h2P2,hPP`) collapsed to cross1's
+   own three (`h1,h2,h3`); `caInterpMatrix`/`caCoeff`/`bCA`/`uCANew`/
+   `denomPolyCA` swapped for their `Cross`-suffixed siblings; `hP1_curve`/
+   `hP1Y_ne` derived from `hRa_curve`/`hRaY_ne` via `Point.iota_X`/
+   `Point.iota_Y` instead of taken as independent hypotheses; and six
+   extra distinctness facts (`hRaT1,hRaT2,hRa2T1,hRa2T2,hP2T1,hP2T2` —
+   anchor-points-vs-residual-`T`-roots, present in
+   `cAmιTmδmιδ_mem_of_le_cross1`'s signature but not in the split-case
+   `cAmιTmδmιδ_mem_of_le`'s) threaded through, found only by matching the
+   real signature field-by-field rather than assumed from the split
+   theorem's shape.
+
+   **Not yet done**: variants 2-4 (`Ra1=ι(sa.P2)`, `Ra2=ι(sa.P1)`,
+   `Ra2=ι(sa.P2)`) — cross1's file is the template to port from (same
+   itemized diff above should apply to each, modulo which anchor point
+   and which target point are identified, and each variant's own sign/
+   row-adjacency quirks already noted above). Do variant 1's actual
+   porting pattern (diff against `reducedClass_eq_of_isReduction'`, not
+   against `AlphaLocusDegreeUniformTangent.lean`) rather than re-deriving
+   from scratch — it is substantially shorter than the anchor-tangent
+   precedent suggested it would be, precisely because the anchor pair
+   never doubles in the cross case, only one anchor/target point
+   collides.
 6. **Case 4** (double collision) — checked: both single-axis top-level
    theorems already exist independently
    (`reducedClass_eq_of_isReduction'_tangent`/`_tangent_target`), so

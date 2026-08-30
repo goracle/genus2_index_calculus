@@ -94,3 +94,6 @@ import Genus2Lean.ZeroD.CAWitnessCrossTangent2Assembly
 import Genus2Lean.ZeroD.CAWitnessCrossTangent1Assembly
 import Genus2Lean.ZeroD.CAWitnessCrossTangentMemOfLe
 import Genus2Lean.ZeroD.AlphaLocusDegreeUniformCross1
+import Genus2Lean.ZeroD.AlphaLocusDegreeUniformCross3
+import Genus2Lean.ZeroD.AlphaLocusDegreeUniformCross2
+import Genus2Lean.ZeroD.AlphaLocusDegreeUniformCross4
