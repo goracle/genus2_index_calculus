@@ -497,3 +497,139 @@ bundle-rewrite, REPL-confirmed, before starting the next) rather than
 all five at once, so a mistake in, say, the split theorem's bundle
 fields doesn't get compounded into four cross-variant copies before
 being caught.
+
+## Status update (this pass)
+
+**Step 2-3 DONE, REPL-confirmed green, 0-`sorry`.** `ReducedClassBundles.lean`
+now holds the shared `CoefficientData` (superset, both
+`coeff_hMumfordUa`/`coeff_hMumfordTarget` fields — option (a) from the
+"Bundling" section above, confirmed landed) and shared `ReductionData`,
+plus `SplitAssemblyData`/`reducedClass_eq_of_isReduction'` (bundled base
+theorem). All four cross variants are bundled and green as their own
+files — `ReducedClassBundlesCross{1,2,3,4}.lean`, each with its own
+`Cross{N}AssemblyData` and `reducedClass_eq_of_isReduction'_cross{N}`
+(bare name, matching the base theorem's own naming, not a flat/bundled
+suffix pair). Confirmed all five bundled theorems now take exactly
+`(base : ReductionData sa) (d : Cross{N}AssemblyData sa) (hcoeff : ...)`
+plus the same `hcur/hgcd/hcurT/hgcdT/hr/hdeg/hD` tail every variant
+shares, uniformly concluding `sa.reducedClass + d.as_q = toJacobian D ...`.
+
+**Naming convention, confirmed uniform across all five bundle files,
+one fix made along the way**: `Cross{1,2,3}`'s own source files
+(`AlphaLocusDegreeUniformCross{1,2,3}.lean`) already named their
+pre-existing flat theorem `..._cross{N}_flat`, leaving the bare
+`..._cross{N}` name free for the bundled version. `AlphaLocusDegreeUniformCross4.lean`
+did NOT follow this convention — its flat theorem used the bare name,
+which collided when `ReducedClassBundlesCross4.lean` tried to declare
+its own bundled theorem under the same bare name in the same namespace.
+Fixed by renaming the SOURCE file's flat theorem to
+`reducedClass_eq_of_isReduction'_cross4_flat` (confirmed zero callers
+before renaming), rather than giving the new bundled theorem an
+off-convention suffix — all five bundled theorems now share the exact
+same `..._cross{N}` bare-name pattern the base theorem
+(`reducedClass_eq_of_isReduction'`) also uses, with no exceptions.
+
+**P1/P2 ordering — a real, recurring bug class this pass surfaced, worth
+flagging for future bundle-writing (tangent/tangent_target unification,
+if attempted, or any future bundle file)**: `SplitAssemblyData`/`Cross{1,2,3}`
+were all written assuming `ReductionData.hReducedClass`'s literal term
+order (`single sa.P1 + single sa.P2`, P1 first). **Correction, checked
+directly rather than left as an assumption**: `AlphaLocusDegreeUniformCross{1,2}.lean`'s
+own unbundled source files ALSO use `sa.P1 + sa.P2` throughout (grepped
+directly, this pass, to confirm before writing this note) — so `Cross1`/
+`Cross2`'s bundles needed no reordering at all, and only ONE of the four
+cross variants' own source files disagrees: `AlphaLocusDegreeUniformCross4.lean`
+states its internal `hReducedClass`/`aP2P1Nι`/`hN2`/`hcoe` bookkeeping
+with the OPPOSITE order (`sa.P2 + sa.P1`), self-consistently within that
+file. (`Cross3`'s two REPL-caught bugs this pass were NOT a source-order
+mismatch — `Cross3`'s own source, per the module docstring's live
+"Sanchor_eq_of_anchor_roots"/point-argument order, agrees with the shared
+convention; those two bugs were transcription slips made while hand-writing
+the bundle, not a source-file disagreement to check for. `Cross4`'s is
+the one genuine source-order disagreement.) This is harmless in the
+unbundled theorem (everything there agrees with itself) but becomes a live
+
+footgun the moment a bundle reuses the SHARED `ReductionData` — every
+P1/P2-order-sensitive line has to be checked against the shared
+struct's actual stated order, not copied verbatim from the source
+file's own (possibly opposite) convention. Two concrete instances of
+exactly this mistake were caught and fixed only via REPL round-trips
+this pass (`Cross3`'s `hSanchorSum`/`hcoe` term order, then its `hN2`
+term order, in two separate build attempts) before `Cross4` got the
+same check applied proactively. **Any future bundle-writing pass should
+diff the target source file's own `hReducedClass`/`aP2P1Nι`/`hN2`/`hcoe`
+literal term order against `ReducedClassBundles.lean`'s
+`ReductionData.hReducedClass` BEFORE transcribing those four `have`/`set`
+blocks, not after a build failure surfaces it** — cheaper to check once
+up front than to burn a REPL round-trip per swapped pair.
+
+**Still open — the two tangent-axis variants remain unbundled onto the
+SHARED types.** `_tangent`/`_tangent_target` were already bundled
+before this pass began, but onto their OWN
+`TangentCoefficientData`/`TangentReductionData`/`TangentAssemblyData`
+and `TangentTarget`-prefixed counterparts respectively — NOT onto
+`ReducedClassBundles.lean`'s shared `CoefficientData`/`ReductionData`.
+Confirmed by direct read this pass: `TangentCoefficientData` carries
+only `coeff_hMumfordTarget` (no `coeff_hMumfordUa`), the mirror image of
+`TangentTargetCoefficientData`'s own `coeff_hMumfordUa`-only field —
+exactly the asymmetry the "Bundling" section above already diagnosed
+and proposed fixing via the shared type's now-landed superset. This
+unification (rewire `_tangent`/`_tangent_target` to take the shared
+`CoefficientData`/`ReductionData` instead of their own, deleting the
+four now-redundant `Tangent(Target)?CoefficientData`/`...ReductionData`
+structs) is NOT required for the dispatcher to work — a `match`/`if`
+dispatcher can call seven theorems with seven different bundle-argument
+shapes just fine, it only loses the ability to share one coefficient
+bundle across all three branches of the OUTER `if` (per "Proposed
+shape" above). Recommend treating this as optional cleanup, not a
+dispatcher blocker — worth doing if the dispatcher's own signature
+gets awkward without it, safe to skip otherwise.
+
+**Not started: `CrossCase` and the dispatcher itself (step 4).** No
+`reducedClassDispatch` or `CrossCase` definition exists anywhere in the
+codebase yet (confirmed by grep, this pass). This is the actual
+remaining work — see "Next steps" immediately below.
+
+## Next steps
+
+1. **Write `CrossCase` as its own small inductive**, per the "Proposed
+   shape" section above — four `some`-style constructors
+   (`cross1`/`cross2`/`cross3`/`cross4`, each carrying the one
+   `H.Point`-level identity the corresponding bundled theorem's own
+   `hP1eq`/`hP2eq`-shaped hypothesis needs) plus `generic` (carrying the
+   four `h1P1,h1P2,h2P1,h2P2`-shaped nondegeneracy hypotheses
+   `SplitAssemblyData` itself already has as fields — check field names
+   directly against `SplitAssemblyData` before writing this, don't
+   assume they still match the roadmap's original sketch verbatim).
+   Small, new code — low risk, good first step.
+2. **Write `reducedClassDispatch` itself**, outer `if hRa : Ra1.X = Ra2.X
+   then ... else if hT : sa.P1.X = sa.P2.X then ... else match cc hRa hT
+   with ...`, per "Proposed shape." Each branch's `exact` call is one of
+   the seven now-bundled theorems (`reducedClass_eq_of_isReduction'`,
+   `_tangent`, `_tangent_target`, `_cross{1,2,3,4}`), each taking its own
+   bundle-argument shape — since tangent/tangent_target are NOT unified
+   onto the shared bundle (see above), the dispatcher's own signature
+   needs to take all seven bundle types as separate arguments (or
+   existentially-wrapped ones per branch), not a single shared bundle
+   parameter. Confirm the `d.as_q`/`base.hReducedClass`-shaped conclusion
+   mismatch flagged in "Concrete signature sketch" above (five variants
+   conclude with a bare `q`, `_tangent_target` — and now, since it's
+   bundled the same way, `_tangent` — conclude with `d.as_q`) still needs
+   resolving at this step; it was flagged, not resolved, by this pass.
+3. **New file** for both (`ReducedClassDispatch.lean` or similar),
+   importing all seven `AlphaLocusDegreeUniform*.lean` files plus
+   `ReducedClassBundles.lean` and `ReducedClassBundlesCross{1,2,3,4}.lean`.
+   Well under the 1500-line ceiling — the dispatcher body itself should
+   be short (new code, not edits to proven code, so no reason to expect
+   the same per-line proof weight as the bundle files).
+4. **REPL-test incrementally**: get the outer `if`/`if` skeleton
+   type-checking first with the two tangent-axis branches (simplest,
+   since they need no `CrossCase` match), then add the `CrossCase`
+   match and its four branches one constructor at a time — mirrors this
+   pass's own "one file, one REPL round-trip" discipline, which caught
+   the two P1/P2-ordering bugs and the Cross4 naming collision
+   individually rather than compounding them.
+5. Once green: this is the roadmap's actual endpoint (see original
+   step 6 above) — every one of the seven `reducedClass_eq_of_isReduction'`
+   variants gets a real caller for the first time.
+
