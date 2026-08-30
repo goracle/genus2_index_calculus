@@ -11,6 +11,21 @@ scopes it on its own, against the CURRENT state of the code (Tier 1
 anchor + target tangent cases are both done, build green, as of this
 pass), so nothing here should be assumed stale.
 
+**Status as of this pass**: all four case-3 (cross-pair) top-level
+theorems build green and are REPL-confirmed (item 5 under "Suggested
+order" has the two bugs fixed and the Cross3 consistency check). The
+impossibility-lemma half is also now written and build green
+(`CAWitnessCrossTangentImpossibility.lean`, one file covering all four
+variants generically). **Next concrete step**: none of the four
+`Cross{1,2,3,4}` theorems are wired into anything above them yet, and
+the impossibility lemma as written has a real gap for that wiring —
+it takes the doubled-row identity (`Ra.Y = -P1.Y`) as a hypothesis
+rather than deriving it, so a dispatcher starting from a bare
+`Ra1.X = sa.P1.X` (no construction chosen yet) still can't call it.
+See item 5's "Impossibility-lemma half" note below for exactly what's
+missing before a `ReduceDispatchGeneral`-level dispatcher could be
+attempted.
+
 **Endpoint**: `CAWitness.lean`'s `dvd_pairNormBCA_full` and its
 downstream consumers (`uCANew`, everything built on it) no longer
 require `h12,h1P1,h1P2,h2P1,h2P2,hPP` (six pairwise-distinctness
@@ -321,17 +336,69 @@ roadmap's Tier 2 notes), just not yet ported to
    2 either** — same unverified-determinant caveat as case 1, nothing
    more.
 5. **Case 3 (cross-pair, `Ra1X=P1X`-style): all four symmetric
-   variants now built, build pending REPL confirmation on the newest
-   two.** `Ra1 = ι(sa.P1)` was already built (`CAWitnessCrossTangent2.lean`
-   + `CAWitnessCrossTangent3.lean`, two files) before this session.
-   `Ra1 = ι(sa.P2)` was built earlier this session
-   (`CAWitnessCrossTangentV2.lean`, single-file, no sorries, REPL-
-   confirmed, build green). `Ra2 = ι(sa.P1)`
-   (`CAWitnessCrossTangentV3.lean`, single-file, no sorries in source)
-   and `Ra2 = ι(sa.P2)` (`CAWitnessCrossTangentV4.lean`, single-file,
-   no sorries in source) were both built this pass, completing all
-   four. Neither of these last two has been run through Claire's REPL
-   yet.
+   variants built AND all four top-level wiring theorems
+   (`reducedClass_eq_of_isReduction'_cross{1,2,3,4}`,
+   `AlphaLocusDegreeUniformCross{1,2,3,4}.lean`) now REPL-confirmed,
+   build green.** `Ra1 = ι(sa.P1)` was already built
+   (`CAWitnessCrossTangent2.lean` + `CAWitnessCrossTangent3.lean`, two
+   files) before this session. `Ra1 = ι(sa.P2)` was built earlier this
+   session (`CAWitnessCrossTangentV2.lean`, single-file, no sorries,
+   REPL-confirmed, build green). `Ra2 = ι(sa.P1)`
+   (`CAWitnessCrossTangentV3.lean`) and `Ra2 = ι(sa.P2)`
+   (`CAWitnessCrossTangentV4.lean`) were both built a later pass,
+   completing all four low-level constructions.
+
+   **This pass**: fixed two independent bugs surfaced by the actual
+   `lake build` (not caught by source-level `sorry`-grepping, since
+   both were term-shape mismatches, not missing proofs) in the two
+   top-level wiring files (`AlphaLocusDegreeUniformCross{2,4}.lean`),
+   confirmed green after the fix:
+   - **Cross4** (`Ra2 = ι(sa.P2)`): `hcur`/`hgcd`/`hcurT`/`hgcdT` were
+     stated with argument order `(sa.P2.X,sa.P2.Y) ≠/= (sa.P1.X,sa.P1.Y)`,
+     but `isReduction'` (`AlphaLocusDegreeUniform.lean:439-465`)
+     unconditionally expects `(sa.P1.X,sa.P1.Y) ≠/= (sa.P2.X,sa.P2.Y)`
+     regardless of which point (`P1` or `P2`) is the one later
+     identified via the case's own `hPeq`-style hypothesis — confirmed
+     by reading `isReduction'`'s definition directly, and by comparing
+     against Cross1 (`Ra1=ι(sa.P1)`), which correctly keeps
+     `(sa.P1,sa.P2)` order even though `sa.P1` is the identified point
+     there. Fixed by swapping Cross4's four hypotheses to
+     `(sa.P1,sa.P2)` order; nothing downstream needed touching, since
+     `isReduction'` only ever consumes these four opaquely.
+   - **Cross2** (`Ra1 = ι(sa.P2)`): the reverse-shaped bug. Cross2's
+     own `hReducedClass` (an actual caller-supplied hypothesis, not
+     `isReduction'`-derived) states
+     `single sa.P1 + single sa.P2 - 2•single δ₀`, but the file's
+     internal `aP2P1Nι`/`hN2` scaffolding was built with
+     `single sa.P2 + single sa.P1 - ...` — so `rw [hReducedClass, hN2,
+     ...]` failed because `hN2`'s LHS pattern didn't syntactically
+     match the term `hReducedClass` had just rewritten in. Fixed by
+     swapping `aP2P1Nι`'s definition and `hN2` to `P1+P2` order, plus
+     one downstream `show` (in `hcoe`'s proof) that still referenced
+     the stale order — `abel` closes either way, so that one was
+     cosmetic-but-necessary for the `show` to typecheck against the
+     new `set` definition, not a second independent bug.
+   - **Lesson for any future variant of this shape**: the `(P1,P2)`
+     vs `(P2,P1)` argument order is NOT determined by which point gets
+     renamed/identified in a given cross variant — it's determined
+     independently by (a) `isReduction'`'s own fixed convention for
+     `hcur`/`hgcd`/`hcurT`/`hgcdT` (always `(sa.P1,sa.P2)`, check this
+     directly, don't infer from the variant's naming) and (b) whatever
+     order that variant's own `hReducedClass` was written in (check
+     this too — Cross2 uses `P1+P2`, Cross4 uses `P2+P1`, and both are
+     internally valid AS LONG AS the internal scaffolding matches its
+     own file's `hReducedClass`, independently of what `isReduction'`
+     wants for the unrelated `hcur`-family hypotheses in the same
+     file). Cross1/Cross3 apparently got both independently right the
+     first time; Cross2/Cross4 each got exactly one of the two wrong,
+     in opposite directions. **Cross3 checked directly against this
+     same checklist this pass** (not just left green-and-unexamined):
+     its `hcur`-family uses `(sa.P1,sa.P2)` order (matching
+     `isReduction'`, correct), `hReducedClass` uses
+     `single sa.P1 + single sa.P2` order, and its internal
+     `aP1P2Nι`/`hN2` scaffolding uses that same `P1+P2` order
+     throughout (grepped every occurrence in the file, all consistent)
+     — genuinely clean, not merely accidentally green.
 
    **Determinant signs, confirmed via independent sympy check for each
    variant separately — do NOT assume a pattern from row-adjacency
@@ -345,19 +412,80 @@ roadmap's Tier 2 notes), just not yet ported to
    position; each variant's sign was checked on its own, and any future
    variant of this shape (should one ever be needed) should be too.
 
-   **Still open, the actual remaining substance of case 3 as a
-   whole:** none of the four variants are wired into
-   `AlphaLocusDegreeUniform.lean`'s top-level theorem yet (confirmed by
-   grep — nothing outside each variant's own file references
-   `uCANewCross`/`uCANewCross2`/`uCANewCross3`/`uCANewCross4`). That
-   wiring — building the actual `h1P1,h1P2,h2P1,h2P2`-eliminating
-   top-level consequence out of these four building blocks, the same
-   way Tier 1's anchor/target tangent siblings were wired into their
-   own top-level theorems — is the next task, along with the
-   impossibility-lemma half of each variant (the `Ra1=sa.P1`-style
-   same-point, non-tangent sub-case; already handled in general by
-   `CAWitnessCrossTangent.lean`'s `eq_iota_of_X_eq_of_ne`, just needs
-   threading through each of the four call sites).
+   **Now closed, this pass — but only ONE further layer than
+   previously scoped, not the full remaining substance of case 3.**
+   Each variant now has its OWN standalone top-level theorem
+   (`reducedClass_eq_of_isReduction'_cross{1,2,3,4}`), build green,
+   REPL-confirmed, taking `Ra1 Ra`/`Ra Ra2` (whichever survives
+   free) plus the identification hypothesis (`hP1eq`/`hP2eq`) as
+   inputs and delivering the SAME `sa.reducedClass + q = toJacobian D
+   (target)` conclusion `reducedClass_eq_of_isReduction'` itself
+   delivers in the fully-split case. **This is genuinely new
+   capability, not yet wired anywhere**: confirmed by grep this pass
+   that nothing outside each variant's own
+   `AlphaLocusDegreeUniformCross{1,2,3,4}.lean` file references
+   `reducedClass_eq_of_isReduction'_cross{1,2,3,4}` — these four
+   theorems are currently dead ends, reachable only by a caller who
+   already has all of `Ra1`/`Ra`/`hP1eq`-or-`hP2eq`/the three-hypothesis
+   nondegeneracy data in hand, with nothing upstream (e.g. a
+   `ReduceDispatchGeneral`-level case split, the way `isReduction'`
+   itself dispatches on `hcur`/`hcurT`) yet producing that data from a
+   more primitive collision hypothesis the way Tier 1's anchor/target
+   tangent siblings eventually got consumed. **What "wiring" concretely
+   means here, now that the four variants exist**: something at
+   `ReduceDispatchGeneral`'s own dispatch level (or a comparable single
+   entry point) needs to case-split on which of the six pairwise
+   collision patterns actually holds among `{Ra1X,Ra2X,P1X,P2X}` and
+   route to the matching one of: the fully-split
+   `reducedClass_eq_of_isReduction'`, the two Tier-1 tangent siblings
+   (`_tangent`/`_tangent_target`), or one of these four new `_cross{N}`
+   siblings — not yet started, no such dispatcher exists in any form
+   (checked: `ReduceDispatchGeneral` itself, `isReduction'`'s own
+   definition, dispatches on `hcur`/`hcurT`'s SAME-point-vs-not
+   distinction only, which is a different, lower-level split than
+   "which of six point-pairs collided"). This is a meaningfully bigger
+   task than "call the right existing lemma" — it needs the
+   impossibility-lemma half of each cross variant (below) as one of
+   its case-split branches, since "some pair's x-coordinates are equal"
+   splits further into "same point" (impossible under `hchar`/`hRaY_ne`,
+   per this doc's earlier impossibility argument) vs. "conjugate
+   points" (the genuine cross-tangent case these four theorems handle)
+   before a dispatcher could even route correctly.
+
+   **Impossibility-lemma half: written and REPL-confirmed, build
+   green, for all four variants generically — one file,
+   `CAWitnessCrossTangentImpossibility.lean` (new).** Provides `false_of_eq_and_rowZero`/`ne_of_rowZero`/
+   `eq_iota_of_X_eq_of_rowZero`, parametrized abstractly over `Ra P1 :
+   H.Point` rather than four near-duplicate copies, since all four
+   variants' doubled-row RHS convention has the identical shape
+   (doubled anchor's own unflipped `Y`, also required to equal the
+   negated target `Y`) — only the OTHER two (ordinary) rows differ
+   across variants, and those don't enter this argument. **Important
+   scoping correction, caught before writing the final version**: an
+   earlier draft this pass tried to derive the identification directly
+   from `caCrossInterpMatrix`'s rows (`bCACross_eval_Ra`/
+   `bCACross_eval_P2`-style), which is CIRCULAR — those constructions'
+   row conventions are only valid once the `ι`-identification already
+   holds (confirmed by re-reading `CAWitnessCrossTangent2.lean`'s own
+   docstring: row 0's RHS is documented as `RaY`, "also equal to
+   `-sa.P1.Y` BY the `ι`-identification", i.e. stated as a consequence
+   of the identification already being assumed, not as a fact usable
+   to derive it). The corrected, actually-sound version instead takes
+   the doubled-row identity (`Ra.Y = -P1.Y`) as an explicit hypothesis
+   (`hRowZero`) and proves only the narrower claim: `Ra.X = P1.X`
+   together with `hRowZero` and `hchar`/`Ra.Y ≠ 0` forces `Ra ≠ P1`,
+   hence (via `eq_iota_of_X_eq_of_ne`) `Ra = ι(P1)`. **This still
+   leaves a real gap for any future dispatcher**: `hRowZero` itself is
+   not yet derived from anything more primitive than "the caller
+   already has the relevant `Cross{1,2,3,4}` construction's own
+   convention in scope" — a dispatcher starting from a bare
+   `Ra1.X = sa.P1.X` hypothesis (no `hP1eq`, no construction chosen
+   yet) still cannot call these lemmas until something independently
+   justifies `hRowZero`, which is NOT the same as justifying the
+   `ι`-identification itself (that would be circular, per above) —
+   worth resolving before this file's lemmas can actually close the
+   dispatcher's case-split, not just document the conditional shape of
+   the argument. Not yet attempted.
 
    **Wiring chain traced this pass, before writing anything — genuinely
    FIVE layers deep, not four, for the cross-pair case specifically.**
