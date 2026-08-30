@@ -73,7 +73,7 @@ own, with `Ra2` renamed `Ra`, `sa.P2` forced via `hP2eq`, the six-hypothesis
 family collapsed to `h1,h2,h3`, and the CA-witness functions swapped for
 their `Cross4`-suffixed siblings; see the module docstring for the itemized
 diff. -/
-theorem reducedClass_eq_of_isReduction'_cross4 {p : ℕ} [Fact (Nat.Prime p)] [Fact (p ≠ 2)]
+theorem reducedClass_eq_of_isReduction'_cross4_flat {p : ℕ} [Fact (Nat.Prime p)] [Fact (p ≠ 2)]
     {H : HyperellipticPolynomial (F p)} [IsDedekindDomain (CoordinateRing H)]
     {D : PrincipalDivisorData H}
     {aClass : Jacobian H D} {δ₀ : H.Point}
