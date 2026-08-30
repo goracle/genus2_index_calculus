@@ -71,14 +71,23 @@ open TheDataDerivation
 variable {k : Type*} [Field k] {H : HyperellipticPolynomial k}
 variable {D : PrincipalDivisorData H}
 
-/-- **Cross variant 2 top-level wiring**: `sa.reducedClass + q = toJacobian D
-(target)`, for the case `sa.P2 = ι(Ra)` (`Ra`'s own conjugate collides with
-the target's first point). Signature is `reducedClass_eq_of_isReduction'`'s
-own, with `Ra1` renamed `Ra`, `sa.P2` forced via `hP2eq`, the six-hypothesis
-family collapsed to `h1,h2,h3`, and the CA-witness functions swapped for
-their `Cross`-suffixed siblings; see the module docstring for the itemized
-diff. -/
-theorem reducedClass_eq_of_isReduction'_cross2 {p : ℕ} [Fact (Nat.Prime p)] [Fact (p ≠ 2)]
+/-- **Cross variant 2 top-level wiring, FLAT-signature original.**
+`sa.reducedClass + q = toJacobian D (target)`, for the case `sa.P2 = ι(Ra)`
+(`Ra`'s own conjugate collides with the target's first point). Signature is
+`reducedClass_eq_of_isReduction'`'s own, with `Ra1` renamed `Ra`, `sa.P2`
+forced via `hP2eq`, the six-hypothesis family collapsed to `h1,h2,h3`, and
+the CA-witness functions swapped for their `Cross`-suffixed siblings; see
+the module docstring for the itemized diff.
+
+Renamed from `reducedClass_eq_of_isReduction'_cross2` to `..._cross2_flat`
+(per `ROADMAP-reducedClass-dispatcher.md`'s bundling work): the bundled
+version in `ReducedClassBundlesCross2.lean` now owns the unqualified name,
+matching the convention `_tangent`/`_tangent_target`/`_cross1` already
+established (bundled-only, no separate flat sibling kept under the plain
+name). This flat theorem is grep-confirmed to have no external callers, so
+the rename is safe; kept (rather than deleted) as a second,
+independently-checkable proof route to the same conclusion. -/
+theorem reducedClass_eq_of_isReduction'_cross2_flat {p : ℕ} [Fact (Nat.Prime p)] [Fact (p ≠ 2)]
     {H : HyperellipticPolynomial (F p)} [IsDedekindDomain (CoordinateRing H)]
     {D : PrincipalDivisorData H}
     {aClass : Jacobian H D} {δ₀ : H.Point}
