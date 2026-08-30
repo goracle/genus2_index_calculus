@@ -96,31 +96,31 @@ theorem reducedClass_eq_of_isReduction'_cross4 {p : ℕ} [Fact (Nat.Prime p)] [F
     (hf : H.f = curvePoly p c0 c1 c2 c3 c4)
     (hdeg : H.f.natDegree = 5)
     (hD : principalSubgroup H hdeg ≤ D.P)
-    (hcur : (sa.P2.X, sa.P2.Y) ≠ (sa.P1.X, sa.P1.Y) →
+    (hcur : (sa.P1.X, sa.P1.Y) ≠ (sa.P2.X, sa.P2.Y) →
       curBeforeMonic4General p c0 c1 c2 c3 c4
-        (sa.P2.X, sa.P2.Y) (sa.P1.X, sa.P1.Y) ua0 ua1 va0 va1
+        (sa.P1.X, sa.P1.Y) (sa.P2.X, sa.P2.Y) ua0 ua1 va0 va1
         sa.toSampleTarget.u0 sa.toSampleTarget.u1
         sa.toSampleTarget.v0 sa.toSampleTarget.v1 ≠ 0)
-    (hgcd : (sa.P2.X, sa.P2.Y) ≠ (sa.P1.X, sa.P1.Y) →
-      IsCoprime (Ypoly4 p (sa.P2.X, sa.P2.Y) (sa.P1.X, sa.P1.Y)
+    (hgcd : (sa.P1.X, sa.P1.Y) ≠ (sa.P2.X, sa.P2.Y) →
+      IsCoprime (Ypoly4 p (sa.P1.X, sa.P1.Y) (sa.P2.X, sa.P2.Y)
           ua0 ua1 va0 va1 sa.toSampleTarget.u0 sa.toSampleTarget.u1
           sa.toSampleTarget.v0 sa.toSampleTarget.v1)
         (uRS4General p c0 c1 c2 c3 c4
-          (sa.P2.X, sa.P2.Y) (sa.P1.X, sa.P1.Y) ua0 ua1 va0 va1
+          (sa.P1.X, sa.P1.Y) (sa.P2.X, sa.P2.Y) ua0 ua1 va0 va1
           sa.toSampleTarget.u0 sa.toSampleTarget.u1
           sa.toSampleTarget.v0 sa.toSampleTarget.v1))
-    (hcurT : (sa.P2.X, sa.P2.Y) = (sa.P1.X, sa.P1.Y) →
+    (hcurT : (sa.P1.X, sa.P1.Y) = (sa.P2.X, sa.P2.Y) →
       curBeforeMonic4Tangent p c0 c1 c2 c3 c4
-        sa.P2.X sa.P2.Y ua0 ua1 va0 va1
+        sa.P1.X sa.P1.Y ua0 ua1 va0 va1
         sa.toSampleTarget.u0 sa.toSampleTarget.u1
         sa.toSampleTarget.v0 sa.toSampleTarget.v1 ≠ 0)
-    (hgcdT : (sa.P2.X, sa.P2.Y) = (sa.P1.X, sa.P1.Y) →
+    (hgcdT : (sa.P1.X, sa.P1.Y) = (sa.P2.X, sa.P2.Y) →
       IsCoprime (Ypoly4Tangent p c0 c1 c2 c3 c4
-          sa.P2.X sa.P2.Y ua0 ua1 va0 va1
+          sa.P1.X sa.P1.Y ua0 ua1 va0 va1
           sa.toSampleTarget.u0 sa.toSampleTarget.u1
           sa.toSampleTarget.v0 sa.toSampleTarget.v1)
         (uRS4Tangent p c0 c1 c2 c3 c4
-          sa.P2.X sa.P2.Y ua0 ua1 va0 va1
+          sa.P1.X sa.P1.Y ua0 ua1 va0 va1
           sa.toSampleTarget.u0 sa.toSampleTarget.u1
           sa.toSampleTarget.v0 sa.toSampleTarget.v1))
     (hr : isReduction' sa c0 c1 c2 c3 c4 ua0 ua1 va0 va1 hcur hgcd hcurT hgcdT)

@@ -337,34 +337,34 @@ theorem reducedClass_eq_of_isReduction'_cross2 {p : ℕ} [Fact (Nat.Prime p)] [F
     (single δ₀ + single (Point.iota δ₀)), hmemAnchor⟩ with haAnchor_def
   set aTarget : Divisor0 H := ⟨divToPair (H := H) (-v) 1 S -
     (single δ₀ + single (Point.iota δ₀)), hmem⟩ with haTarget_def
-  set aP2P1Nι : Divisor0 H := ⟨single sa.P2 + single sa.P1 -
+  set aP2P1Nι : Divisor0 H := ⟨single sa.P1 + single sa.P2 -
       (single δ₀ + single (Point.iota δ₀)),
     by
-      have h1 := single_sub_single_mem_Divisor0 sa.P2 δ₀
-      have h2 := single_sub_single_mem_Divisor0 sa.P1 (Point.iota δ₀)
-      have heq2 : single sa.P2 + single sa.P1 - (single δ₀ + single (Point.iota δ₀)) =
-          (single sa.P2 - single δ₀) + (single sa.P1 - single (Point.iota δ₀)) := by abel
+      have h1 := single_sub_single_mem_Divisor0 sa.P1 δ₀
+      have h2 := single_sub_single_mem_Divisor0 sa.P2 (Point.iota δ₀)
+      have heq2 : single sa.P1 + single sa.P2 - (single δ₀ + single (Point.iota δ₀)) =
+          (single sa.P1 - single δ₀) + (single sa.P2 - single (Point.iota δ₀)) := by abel
       rw [heq2]; exact add_mem h1 h2⟩ with haP2P1Nι_def
   set aQ : Divisor0 H := ⟨single (Point.iota δ₀) - single δ₀,
     single_sub_single_mem_Divisor0 (Point.iota δ₀) δ₀⟩ with haQ_def
   have hred : sa.reducedClass = sa.alpha • aClass - (toJacobian D aP2P1Nι + q) := by
     have hN2 :
-        (⟨single sa.P2 + single sa.P1 - (2 : ℤ) • single δ₀,
+        (⟨single sa.P1 + single sa.P2 - (2 : ℤ) • single δ₀,
           by
-            have h1 := single_sub_single_mem_Divisor0 sa.P2 δ₀
-            have h2 := single_sub_single_mem_Divisor0 sa.P1 δ₀
-            have heq2 : single sa.P2 + single sa.P1 - (2 : ℤ) • single δ₀ =
-                (single sa.P2 - single δ₀) + (single sa.P1 - single δ₀) := by
+            have h1 := single_sub_single_mem_Divisor0 sa.P1 δ₀
+            have h2 := single_sub_single_mem_Divisor0 sa.P2 δ₀
+            have heq2 : single sa.P1 + single sa.P2 - (2 : ℤ) • single δ₀ =
+                (single sa.P1 - single δ₀) + (single sa.P2 - single δ₀) := by
               rw [two_zsmul]
               abel
             rw [heq2]
             exact add_mem h1 h2⟩ : Divisor0 H) = aP2P1Nι + aQ := by
       apply Subtype.ext
-      show single sa.P2 + single sa.P1 - (2 : ℤ) • single δ₀ =
+      show single sa.P1 + single sa.P2 - (2 : ℤ) • single δ₀ =
         (aP2P1Nι : Divisor H) + (aQ : Divisor H)
       rw [haP2P1Nι_def, haQ_def]
-      show single sa.P2 + single sa.P1 - (2 : ℤ) • single δ₀ =
-        (single sa.P2 + single sa.P1 - (single δ₀ + single (Point.iota δ₀))) +
+      show single sa.P1 + single sa.P2 - (2 : ℤ) • single δ₀ =
+        (single sa.P1 + single sa.P2 - (single δ₀ + single (Point.iota δ₀))) +
           (single (Point.iota δ₀) - single δ₀)
       rw [two_zsmul]
       abel
@@ -381,7 +381,7 @@ theorem reducedClass_eq_of_isReduction'_cross2 {p : ℕ} [Fact (Nat.Prime p)] [F
         single T1 - single T2 + single δ₀ + single (Point.iota δ₀)
     rw [haAnchor_def, haP2P1Nι_def, haTarget_def]
     show (divToPair (H := H) (-va) 1 Sanchor - (single δ₀ + single (Point.iota δ₀))) -
-        (single sa.P2 + single sa.P1 - (single δ₀ + single (Point.iota δ₀))) -
+        (single sa.P1 + single sa.P2 - (single δ₀ + single (Point.iota δ₀))) -
         (divToPair (H := H) (-v) 1 S - (single δ₀ + single (Point.iota δ₀))) =
       single Ra + single Ra2 - single sa.P2 - single sa.P1 -
         single T1 - single T2 + single δ₀ + single (Point.iota δ₀)
