@@ -103,3 +103,4 @@ import Genus2Lean.ZeroD.ReducedClassBundlesCross1
 import Genus2Lean.ZeroD.ReducedClassBundlesCross2
 import Genus2Lean.ZeroD.ReducedClassBundlesCross3
 import Genus2Lean.ZeroD.ReducedClassBundlesCross4
+import Genus2Lean.ZeroD.ReducedClassDispatch
