@@ -336,7 +336,7 @@ theorem reducedClass_eq_of_isReduction'_cross3 {p : ℕ} [Fact (Nat.Prime p)] [F
         + Polynomial.C sa.toSampleTarget.u0 : Polynomial (F p)) * d.as_UcoT :=
     d.hu ▸ d.hAUT
   have hSanchorSum : divToPair (H := H) (-d.as_va) 1 d.as_Sanchor
-      = single d.as_Ra + single d.as_Ra1 :=
+      = single d.as_Ra1 + single d.as_Ra :=
     DecoupledSystem.divToPair_negVa_one_Sanchor_eq (H := H) d.hchar
       (c0 := d.as_coeffs.coeff_c0) (c1 := d.as_coeffs.coeff_c1) (c2 := d.as_coeffs.coeff_c2)
       (c3 := d.as_coeffs.coeff_c3) (c4 := d.as_coeffs.coeff_c4)
@@ -391,21 +391,21 @@ theorem reducedClass_eq_of_isReduction'_cross3 {p : ℕ} [Fact (Nat.Prime p)] [F
     single_sub_single_mem_Divisor0 (Point.iota δ₀) δ₀⟩ with haQ_def
   have hred : sa.reducedClass = sa.alpha • aClass - (toJacobian D aP2P1Nι + d.as_q) := by
     have hN2 :
-        (⟨single sa.P2 + single sa.P1 - (2 : ℤ) • single δ₀,
+        (⟨single sa.P1 + single sa.P2 - (2 : ℤ) • single δ₀,
           by
-            have h1 := single_sub_single_mem_Divisor0 sa.P2 δ₀
-            have h2 := single_sub_single_mem_Divisor0 sa.P1 δ₀
-            have heq2 : single sa.P2 + single sa.P1 - (2 : ℤ) • single δ₀ =
-                (single sa.P2 - single δ₀) + (single sa.P1 - single δ₀) := by
+            have h1 := single_sub_single_mem_Divisor0 sa.P1 δ₀
+            have h2 := single_sub_single_mem_Divisor0 sa.P2 δ₀
+            have heq2 : single sa.P1 + single sa.P2 - (2 : ℤ) • single δ₀ =
+                (single sa.P1 - single δ₀) + (single sa.P2 - single δ₀) := by
               rw [two_zsmul]
               abel
             rw [heq2]
             exact add_mem h1 h2⟩ : Divisor0 H) = aP2P1Nι + aQ := by
       apply Subtype.ext
-      show single sa.P2 + single sa.P1 - (2 : ℤ) • single δ₀ =
+      show single sa.P1 + single sa.P2 - (2 : ℤ) • single δ₀ =
         (aP2P1Nι : Divisor H) + (aQ : Divisor H)
       rw [haP2P1Nι_def, haQ_def]
-      show single sa.P2 + single sa.P1 - (2 : ℤ) • single δ₀ =
+      show single sa.P1 + single sa.P2 - (2 : ℤ) • single δ₀ =
         (single sa.P1 + single sa.P2 - (single δ₀ + single (Point.iota δ₀))) +
           (single (Point.iota δ₀) - single δ₀)
       rw [two_zsmul]
@@ -416,18 +416,18 @@ theorem reducedClass_eq_of_isReduction'_cross3 {p : ℕ} [Fact (Nat.Prime p)] [F
       toJacobian D aAnchor - toJacobian D aP2P1Nι := by abel
   have hcoe : ((aAnchor - aP2P1Nι : Divisor0 H) : Divisor H) -
       ((aTarget : Divisor0 H) : Divisor H) =
-      (single d.as_Ra + single d.as_Ra1 - single sa.P1 - single sa.P2 -
+      (single d.as_Ra1 + single d.as_Ra - single sa.P1 - single sa.P2 -
         single d.as_T1 - single d.as_T2 + single δ₀ +
         single (Point.iota δ₀) : Divisor H) := by
     show (aAnchor.1 - aP2P1Nι.1) - aTarget.1 =
-      single d.as_Ra + single d.as_Ra1 - single sa.P1 - single sa.P2 -
+      single d.as_Ra1 + single d.as_Ra - single sa.P1 - single sa.P2 -
         single d.as_T1 - single d.as_T2 + single δ₀ + single (Point.iota δ₀)
     rw [haAnchor_def, haP2P1Nι_def, haTarget_def]
     show (divToPair (H := H) (-d.as_va) 1 d.as_Sanchor
           - (single δ₀ + single (Point.iota δ₀))) -
         (single sa.P1 + single sa.P2 - (single δ₀ + single (Point.iota δ₀))) -
         (divToPair (H := H) (-d.as_v) 1 d.as_S - (single δ₀ + single (Point.iota δ₀))) =
-      single d.as_Ra + single d.as_Ra1 - single sa.P1 - single sa.P2 -
+      single d.as_Ra1 + single d.as_Ra - single sa.P1 - single sa.P2 -
         single d.as_T1 - single d.as_T2 + single δ₀ + single (Point.iota δ₀)
     rw [hSanchorSum, hSSum]
     abel
