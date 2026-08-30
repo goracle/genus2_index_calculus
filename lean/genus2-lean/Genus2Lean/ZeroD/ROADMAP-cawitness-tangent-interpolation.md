@@ -16,15 +16,53 @@ theorems build green and are REPL-confirmed (item 5 under "Suggested
 order" has the two bugs fixed and the Cross3 consistency check). The
 impossibility-lemma half is also now written and build green
 (`CAWitnessCrossTangentImpossibility.lean`, one file covering all four
-variants generically). **Next concrete step**: none of the four
-`Cross{1,2,3,4}` theorems are wired into anything above them yet, and
-the impossibility lemma as written has a real gap for that wiring —
-it takes the doubled-row identity (`Ra.Y = -P1.Y`) as a hypothesis
-rather than deriving it, so a dispatcher starting from a bare
-`Ra1.X = sa.P1.X` (no construction chosen yet) still can't call it.
-See item 5's "Impossibility-lemma half" note below for exactly what's
-missing before a `ReduceDispatchGeneral`-level dispatcher could be
-attempted.
+variants generically, 0-`sorry`, confirmed this pass).
+
+**This pass**: worked items 6-8, the three remaining checks flagged as
+"not yet done" — no new Lean written (all three turned out to be
+checks, not proof obligations; see their entries above for the
+detail):
+- **Item 6 (double collision / Case 4)**: checked, no caller needs it
+  yet — there is no dispatcher-level file anywhere in the codebase
+  that consumes ANY of the top-level `reducedClass_eq_of_isReduction'`
+  variants (split, tangent, tangent-target, or any of the four
+  cross-pair ones), so "does a caller need both axes tangent at once"
+  doesn't yet arise. Stays open, correctly deferred.
+- **Item 7 (`npoly4Lcm4_natDegree_eq_six`'s tangent branches)**: turned
+  out to be stale — `ReduceDispatchGeneral`'s `P1=P2` branch already
+  routes to a separate, complete, 0-`sorry` construction
+  (`ReduceTangent`/`Ypoly4Tangent`/`uRS4Tangent`) that never touches
+  `npoly4Lcm4`'s degree at all, and nothing else in the codebase calls
+  the three degree lemmas this item wanted a tangent sibling for. No
+  action needed; closed.
+- **Item 8 (six-hypothesis removal reaching the top level)**: checked,
+  and it does NOT reach the top level — traced directly to `uCANew`'s
+  own definition (`/ₘ denomPolyCA`, the literal product, not the
+  `lcm`), which is a structural fact about how `uCANew` is built, not
+  a wiring oversight. This is consistent with cases 1-3's own pattern
+  (each needed its own tangent-specific `uCANew` sibling) rather than
+  a gap to close by rewiring the existing `uCANew`. No action item
+  remains; closed.
+
+**Next concrete step**: with items 6-8 resolved (two closed as
+non-issues, one — item 6 — correctly deferred pending a real
+dispatcher), the roadmap's remaining open surface is narrow. The
+honest state: Part B's actual math (cases 1/2/3, all four cross
+variants) is done and wired to their own top-level theorems; what's
+missing is a `ReduceDispatchGeneral`-style dispatcher ABOVE all of
+these (split + tangent + tangent-target + cross×4) that a real caller
+would invoke — and per items 6/8's own findings, no such dispatcher
+exists yet for ANY of these theorems, tangent or not, so building one
+(deciding its case-split shape, likely mirroring
+`ReduceDispatchGeneral`'s `if P1 = P2 then ... else ...` idiom one
+layer up, extended to the cross-pair sub-cases via
+`eq_iota_of_X_eq_of_rowZero`) is the first genuinely open, unblocked
+task. This was flagged from the start (module docstring's "Endpoint"
+above, and the parent roadmap) as the actual goal-line, not a
+by-the-way item — worth confirming with Claire before starting, since
+it's a new design surface (case-split shape, hypothesis threading
+across 8 branches) rather than a mechanical port like items 6-8 turned
+out to be.
 
 **Endpoint**: `CAWitness.lean`'s `dvd_pairNormBCA_full` and its
 downstream consumers (`uCANew`, everything built on it) no longer
@@ -639,26 +677,85 @@ roadmap's Tier 2 notes), just not yet ported to
    precedent suggested it would be, precisely because the anchor pair
    never doubles in the cross case, only one anchor/target point
    collides.
-6. **Case 4** (double collision) — checked: both single-axis top-level
-   theorems already exist independently
-   (`reducedClass_eq_of_isReduction'_tangent`/`_tangent_target`), so
-   this reduces to "does any actual caller need both axes tangent at
-   once" rather than a matrix-composition question. Not yet checked —
-   do that check first if this is ever picked up; don't assume the
-   need exists.
-7. **`npoly4Lcm4_natDegree_eq_six`'s own tangent branches** — port the
-   `OrdAtRootMultiplicityUnified.lean`-style degree-collapse argument
-   into `npoly4LcmLinearPair_natDegree_eq_two`/
-   `npoly4LcmQuadraticPair_natDegree_eq_four`'s tangent siblings. Can
-   happen in parallel with 3-6 since it's a different file
-   (`GeneralSharedRoot.lean`) with its own hypothesis surface, not
-   downstream of `CAWitness.lean`. Not yet started.
-8. Once all of 1-7 land: revisit `dvd_pairNormBCA_full`'s callers
-   (traced from `uCANew` up through `AlphaLocusDegreeUniform.lean`'s
-   `hQ1_def`/`hQ2_def`, per the original roadmap's Tier 2 item 2b) to
-   confirm the six-hypothesis removal actually reaches the top-level
-   `reducedClass_eq_of_isReduction'` variants, not just `CAWitness.lean`
-   in isolation.
+6. **Case 4 (double collision) — CHECKED this pass, no caller needs
+   it.** Grepped every `.lean` file in the codebase for callers of
+   `reducedClass_eq_of_isReduction'_tangent` and
+   `reducedClass_eq_of_isReduction'_tangent_target` outside their own
+   definition files: **zero hits for either.** More broadly, grepped
+   for `reducedClass_eq_of_isReduction'` (the base name, catching all
+   variants including the cross-pair ones) across the whole tree: every
+   file that matches is either a definition site itself
+   (`AlphaLocusDegreeUniform*.lean`) or upstream scaffolding
+   (`PrincipalWitness*.lean`, `CAWitnessCrossTangentMemOfLe.lean`,
+   `SanchorMumfordOrdAt.lean`, `SanchorEqAlphaPoints.lean`) — **no
+   dispatcher-level file exists yet anywhere that consumes any of these
+   top-level theorems**, tangent, split, or cross-pair alike. So the
+   simultaneous-double-collision question is moot for now: there is no
+   live caller needing EITHER axis tangent individually yet, let alone
+   both at once. Correctly stays out of scope until a real dispatcher
+   is built and its actual data shape is known — revisit then, not
+   before.
+7. **`npoly4Lcm4_natDegree_eq_six`'s own tangent branches — CHECKED
+   this pass, turns out NOT needed; this item is stale.** The premise
+   ("port a degree-collapse sibling for `P1.1=P2.1`") doesn't apply the
+   way this doc originally assumed, for two independent reasons, both
+   confirmed by reading the actual code (not inferred):
+   - `npoly4Lcm4_natDegree_eq_six`/`npoly4LcmLinearPair_natDegree_eq_two`/
+     `npoly4LcmQuadraticPair_natDegree_eq_four` have **zero callers
+     anywhere in the codebase outside `GeneralSharedRoot.lean` itself**
+     (grepped) — nothing downstream currently needs their tangent-case
+     sibling because nothing needs the split-case fact outside that one
+     file's own internal chain either.
+   - The actual `P1 = P2` dispatch point, `ReduceDispatchGeneral`
+     (`GeneralSharedRoot.lean` line 1277), does **not** go anywhere near
+     `npoly4Lcm4`'s degree in its tangent branch at all — its own
+     docstring (line 1244-1265, read directly) confirms the `P1 = P2`
+     case routes to `ReduceTangent`/`Ypoly4Tangent`/`uRS4Tangent`
+     (`AlphaReduce.lean`), a genuinely different, already-complete,
+     0-`sorry` tangent-row Cramer construction — not `npoly4Lcm4` with
+     `P1 = P2` substituted in. `AlphaReduce.lean` grepped clean: 0
+     actual `sorry` tactics (8 textual hits, all inside "sorry-free"
+     docstring prose, none live).
+   - Separately, the machinery that DOES need a degree/multiplicity
+     fact that's robust to `R1 = R2` (`ua`/target having a repeated
+     root) already exists and is already the right generalization for
+     real callers: `OrdAtRootMultiplicityUnified.lean`'s
+     `rootMultiplicity_npoly4Lcm4_eq_add`/
+     `rootMultiplicity_npoly4Lcm4_eq_two_of_R1_eq_R2` (and the `Ra1=Ra2`
+     mirror), which work at the `ordAt`/`rootMultiplicity` layer
+     unconditionally in `R1 ≠/= R2`, one layer more general than a
+     `natDegree`-of-the-whole-lcm fact would have been. 0 `sorry`,
+     confirmed directly. **No further action needed here** — the
+     roadmap's own Tier-2 concern is already satisfied by a different,
+     already-built piece, just not one this doc had connected to item 7
+     before this pass.
+8. **Checked this pass, real (non-dangling) gap confirmed, not yet
+   fixed.** Traced `dvd_pairNormBCA_full`'s callers directly: `uCANew`
+   (`CAWitness.lean` line 423) is DEFINED as
+   `(H.f - bCA²) /ₘ denomPolyCA` — division by the literal FOUR-FACTOR
+   PRODUCT, not the `lcm` — and its defining identity theorem
+   (`pairNormBCA_eq_denomPolyCA_mul_uCANew`, line 428) still calls the
+   six-hypothesis `dvd_pairNormBCA_full` (line 438), not Part A's
+   hypothesis-free `lcm_dvd_pairNormBCA_full`. So Part A's six-hypothesis
+   removal is real but **currently a dangling, unconsumed theorem** —
+   it doesn't reach `uCANew`, `hQ1_def`/`hQ2_def`, or any top-level
+   `reducedClass_eq_of_isReduction'` variant, because `uCANew`'s own
+   definition is structurally tied to the product (via `/ₘ
+   denomPolyCA`), not the `lcm`. This is not a bug or an oversight to
+   "just wire up" — it's the same reason cases 1/2/3 each needed their
+   own `uCANewTangent`/`uCANewTangentTarget`/`uCANewCross{1,2,3,4}`
+   sibling rather than a single hypothesis-free `uCANew`: a genuinely
+   collision-robust `uCANew` would need to be redefined against the
+   `lcm` (a real, not-yet-attempted refactor with its own knock-on
+   effects on `denomPolyCA`'s other callers — `bCA_ordInfOfPair`
+   etc. — not scoped here), or accept that Part A's value is confined
+   to being the shared low-level building block cases 1-3's own
+   tangent-specific `uCANew` siblings already used it for, not a
+   drop-in replacement for the split-case `uCANew` itself. **Net: Part
+   A's six-hypothesis removal doesn't need "finishing" — it already did
+   what it was for (feeding the tangent-specific constructions); this
+   item's original framing ("confirm it reaches the top level") was the
+   wrong question to ask of it. No action item remains here either.**
 
 ## Explicitly out of scope for this doc
 

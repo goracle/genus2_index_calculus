@@ -98,3 +98,4 @@ import Genus2Lean.ZeroD.AlphaLocusDegreeUniformCross3
 import Genus2Lean.ZeroD.AlphaLocusDegreeUniformCross2
 import Genus2Lean.ZeroD.AlphaLocusDegreeUniformCross4
 import Genus2Lean.ZeroD.CAWitnessCrossTangentImpossibility
+import Genus2Lean.ZeroD.ReducedClassBundles
