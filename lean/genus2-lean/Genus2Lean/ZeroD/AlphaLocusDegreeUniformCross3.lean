@@ -72,8 +72,16 @@ with the target's first point). Signature is `reducedClass_eq_of_isReduction'`'s
 own, with `Ra2` renamed `Ra`, `sa.P1` forced via `hP1eq`, the six-hypothesis
 family collapsed to `h1,h2,h3`, and the CA-witness functions swapped for
 their `Cross3`-suffixed siblings; see the module docstring for the itemized
-diff. -/
-theorem reducedClass_eq_of_isReduction'_cross3 {p : ℕ} [Fact (Nat.Prime p)] [Fact (p ≠ 2)]
+diff.
+
+Renamed from `reducedClass_eq_of_isReduction'_cross3` to `..._cross3_flat`
+(per `ROADMAP-reducedClass-dispatcher.md`'s bundling work, matching the
+`_cross1_flat`/`_cross2_flat` convention already established): the bundled
+version in `ReducedClassBundlesCross3.lean` now owns the unqualified name.
+This flat theorem is grep-confirmed to have no external callers, so the
+rename is safe; kept (rather than deleted) as a second, independently-
+checkable proof route to the same conclusion. -/
+theorem reducedClass_eq_of_isReduction'_cross3_flat {p : ℕ} [Fact (Nat.Prime p)] [Fact (p ≠ 2)]
     {H : HyperellipticPolynomial (F p)} [IsDedekindDomain (CoordinateRing H)]
     {D : PrincipalDivisorData H}
     {aClass : Jacobian H D} {δ₀ : H.Point}

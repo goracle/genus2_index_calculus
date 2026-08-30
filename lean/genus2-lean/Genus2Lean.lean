@@ -101,3 +101,4 @@ import Genus2Lean.ZeroD.CAWitnessCrossTangentImpossibility
 import Genus2Lean.ZeroD.ReducedClassBundles
 import Genus2Lean.ZeroD.ReducedClassBundlesCross1
 import Genus2Lean.ZeroD.ReducedClassBundlesCross2
+import Genus2Lean.ZeroD.ReducedClassBundlesCross3
