@@ -424,12 +424,48 @@ roadmap's Tier 2 notes), just not yet ported to
       following Tier 1's own established convention rather than
       growing an existing file.
 
-   **Not started this pass** — this is real, multi-step work
-   (comparable to redoing Tier 1b's own scope, one layer deeper), not
-   a continuation of the matrix-construction work just finished. The
-   four `bCACross*`/`uCANewCross*` files are necessary inputs to it but
-   are not themselves sufficient — confirmed directly by tracing the
-   actual call chain rather than assumed from Tier 1's precedent.
+   **Update, later pass**: steps 1-2 above (`divToPair_eq_C_add_iotaA_add_T_of_split_crossN`
+   and `cIotaAmIotaT_mem_principalSubgroup_crossN` for all four variants,
+   `N = 1,2,3,4`) are now DONE and sorry-free — confirmed directly by
+   reading `CAWitnessCrossTangent{1,2,3,4}Assembly.lean`, not assumed
+   from this doc's own prior "not started" note, which was stale by the
+   time this was checked. Step 3 (the `cIotaAmIotaT_mem_of_le`/
+   `cAmιTmδmιδ_mem_of_le`-layer composition, i.e. Tier 1b's own final
+   step, mirrored) is now PARTIALLY done: `CAWitnessCrossTangentMemOfLe.lean`
+   (new file) has `cIotaAmIotaT_mem_of_le_cross{1,2,3,4}`, the direct
+   `hD`-pushforward/`single`-sum-rewrite mirror of
+   `PrincipalWitnessFinalAssembly.lean`'s `cIotaAmIotaT_mem_of_le`, for
+   all four variants — **drafted this pass, NOT YET REPL-confirmed**
+   (per Claire's own instruction, REPL-testing is done by her, not
+   assumed green here). Two things to check first if this comes back
+   with errors: (1) the `rw [← hPtT1X, ← hPtT2X] at hmem` step, present
+   in the original `cIotaAmIotaT_mem_of_le` to align `hraw`'s raw
+   `linX T1X`/`linX T2X` term with `divToPair_hT_eq`'s `PtT1.X`/`PtT2.X`-
+   named conclusion before the `rw [hLHS, hRHS]` step — ported here
+   identically, but worth double-checking against each variant's actual
+   elaborated term shape, since `simp`/`rw` motive issues in this
+   codebase have previously been naming-shape-sensitive (see this
+   file's own Tier-1-derived cautions in the parent roadmap); (2) the
+   final `abel`-proved `heq` step's LHS/RHS shapes were written by hand
+   to mirror each variant's own `divToPair_eq_C_add_iotaA_add_T_of_split_crossN`
+   conclusion shape (cross1/cross2: `(2:ℤ)•single PtRa + single PtRa2/PtRa1
+   + ...`; cross3/cross4: `single PtRa1 + (2:ℤ)•single PtRa + ...`, doubled
+   term in the SECOND position, matching each variant's own asymmetric
+   conclusion — not a copy-paste of one shape across all four) — worth a
+   second look if `abel` fails to close any of the four.
+
+   **Still not done**: `cAmιTmδmιδ_mem_of_le_crossN`'s own `G₁-G₂-G₃`
+   composition (needs `fiber_diff_mem_of_le`, `PrincipalWitnessFinalAssembly.lean`,
+   called against the correct un-doubled anchor/target points per
+   variant — e.g. cross1's `fiber_diff_mem_of_le` calls would need
+   `PtRa2`/something and `δ₀`, `PtιP2`/something and `δ₀`, mirroring the
+   split case's `G₂,G₃` but against the THREE surviving un-doubled
+   points per variant, not four — not yet worked out per-variant, left
+   for a follow-up pass to keep `CAWitnessCrossTangentMemOfLe.lean`'s
+   diff reviewable on its own), nor the eventual top-level
+   `reducedClass_eq_of_isReduction'_cross_tangentN`-style theorem. Budget
+   this as the next piece once the REPL confirms the current file is
+   green.
 6. **Case 4** (double collision) — checked: both single-axis top-level
    theorems already exist independently
    (`reducedClass_eq_of_isReduction'_tangent`/`_tangent_target`), so
