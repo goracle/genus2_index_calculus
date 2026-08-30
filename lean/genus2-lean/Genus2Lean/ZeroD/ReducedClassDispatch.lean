@@ -164,48 +164,43 @@ def reducedClassDispatch {p : ℕ} [Fact (Nat.Prime p)] [Fact (p ≠ 2)]
     -- Fully-split, generic-cross branch.
     (gBase : ReductionData sa) (gD : SplitAssemblyData sa)
     (gCoeff : gD.as_coeffs = gBase.coeffs)
+    (gU0 gU1 gV0 gV1 : F p)
     (gCur : (sa.P1.X, sa.P1.Y) ≠ (sa.P2.X, sa.P2.Y) →
       curBeforeMonic4General p gD.as_coeffs.coeff_c0 gD.as_coeffs.coeff_c1 gD.as_coeffs.coeff_c2
         gD.as_coeffs.coeff_c3 gD.as_coeffs.coeff_c4
         (sa.P1.X, sa.P1.Y) (sa.P2.X, sa.P2.Y)
         gD.as_coeffs.coeff_ua0 gD.as_coeffs.coeff_ua1 gD.as_coeffs.coeff_va0 gD.as_coeffs.coeff_va1
-        sa.toSampleTarget.u0 sa.toSampleTarget.u1
-        sa.toSampleTarget.v0 sa.toSampleTarget.v1 ≠ 0)
+        gU0 gU1 gV0 gV1 ≠ 0)
     (gGcd : (sa.P1.X, sa.P1.Y) ≠ (sa.P2.X, sa.P2.Y) →
       IsCoprime (Ypoly4 p (sa.P1.X, sa.P1.Y) (sa.P2.X, sa.P2.Y)
           gD.as_coeffs.coeff_ua0 gD.as_coeffs.coeff_ua1 gD.as_coeffs.coeff_va0 gD.as_coeffs.coeff_va1
-          sa.toSampleTarget.u0 sa.toSampleTarget.u1
-          sa.toSampleTarget.v0 sa.toSampleTarget.v1)
+          gU0 gU1 gV0 gV1)
         (uRS4General p gD.as_coeffs.coeff_c0 gD.as_coeffs.coeff_c1 gD.as_coeffs.coeff_c2
           gD.as_coeffs.coeff_c3 gD.as_coeffs.coeff_c4
           (sa.P1.X, sa.P1.Y) (sa.P2.X, sa.P2.Y)
           gD.as_coeffs.coeff_ua0 gD.as_coeffs.coeff_ua1 gD.as_coeffs.coeff_va0 gD.as_coeffs.coeff_va1
-          sa.toSampleTarget.u0 sa.toSampleTarget.u1
-          sa.toSampleTarget.v0 sa.toSampleTarget.v1))
+          gU0 gU1 gV0 gV1))
     (gCurT : (sa.P1.X, sa.P1.Y) = (sa.P2.X, sa.P2.Y) →
       curBeforeMonic4Tangent p gD.as_coeffs.coeff_c0 gD.as_coeffs.coeff_c1 gD.as_coeffs.coeff_c2
         gD.as_coeffs.coeff_c3 gD.as_coeffs.coeff_c4
         sa.P1.X sa.P1.Y
         gD.as_coeffs.coeff_ua0 gD.as_coeffs.coeff_ua1 gD.as_coeffs.coeff_va0 gD.as_coeffs.coeff_va1
-        sa.toSampleTarget.u0 sa.toSampleTarget.u1
-        sa.toSampleTarget.v0 sa.toSampleTarget.v1 ≠ 0)
+        gU0 gU1 gV0 gV1 ≠ 0)
     (gGcdT : (sa.P1.X, sa.P1.Y) = (sa.P2.X, sa.P2.Y) →
       IsCoprime (Ypoly4Tangent p gD.as_coeffs.coeff_c0 gD.as_coeffs.coeff_c1 gD.as_coeffs.coeff_c2
           gD.as_coeffs.coeff_c3 gD.as_coeffs.coeff_c4
           sa.P1.X sa.P1.Y
           gD.as_coeffs.coeff_ua0 gD.as_coeffs.coeff_ua1 gD.as_coeffs.coeff_va0 gD.as_coeffs.coeff_va1
-          sa.toSampleTarget.u0 sa.toSampleTarget.u1
-          sa.toSampleTarget.v0 sa.toSampleTarget.v1)
+          gU0 gU1 gV0 gV1)
         (uRS4Tangent p gD.as_coeffs.coeff_c0 gD.as_coeffs.coeff_c1 gD.as_coeffs.coeff_c2
           gD.as_coeffs.coeff_c3 gD.as_coeffs.coeff_c4
           sa.P1.X sa.P1.Y
           gD.as_coeffs.coeff_ua0 gD.as_coeffs.coeff_ua1 gD.as_coeffs.coeff_va0 gD.as_coeffs.coeff_va1
-          sa.toSampleTarget.u0 sa.toSampleTarget.u1
-          sa.toSampleTarget.v0 sa.toSampleTarget.v1))
+          gU0 gU1 gV0 gV1))
     (gR : isReduction' sa gD.as_coeffs.coeff_c0 gD.as_coeffs.coeff_c1 gD.as_coeffs.coeff_c2
       gD.as_coeffs.coeff_c3 gD.as_coeffs.coeff_c4
       gD.as_coeffs.coeff_ua0 gD.as_coeffs.coeff_ua1 gD.as_coeffs.coeff_va0 gD.as_coeffs.coeff_va1
-      gCur gGcd gCurT gGcdT)
+      gU0 gU1 gV0 gV1 gCur gGcd gCurT gGcdT)
     (gDeg : H.f.natDegree = 5)
     (gDvd : principalSubgroup H gDeg ≤ D.P)
     (gV : gD.as_v = v) (gS : gD.as_S = S)
@@ -216,220 +211,200 @@ def reducedClassDispatch {p : ℕ} [Fact (Nat.Prime p)] [Fact (p ≠ 2)]
     -- `sa base d hcoeff` as an earlier draft of this file assumed.
     (c1Base : ReductionData sa) (c1D : Cross1AssemblyData sa)
     (c1Coeff : c1D.as_coeffs = c1Base.coeffs)
+    (c1U0 c1U1 c1V0 c1V1 : F p)
     (c1Cur : (sa.P1.X, sa.P1.Y) ≠ (sa.P2.X, sa.P2.Y) →
       curBeforeMonic4General p c1D.as_coeffs.coeff_c0 c1D.as_coeffs.coeff_c1 c1D.as_coeffs.coeff_c2
         c1D.as_coeffs.coeff_c3 c1D.as_coeffs.coeff_c4
         (sa.P1.X, sa.P1.Y) (sa.P2.X, sa.P2.Y)
         c1D.as_coeffs.coeff_ua0 c1D.as_coeffs.coeff_ua1 c1D.as_coeffs.coeff_va0
         c1D.as_coeffs.coeff_va1
-        sa.toSampleTarget.u0 sa.toSampleTarget.u1
-        sa.toSampleTarget.v0 sa.toSampleTarget.v1 ≠ 0)
+        c1U0 c1U1 c1V0 c1V1 ≠ 0)
     (c1Gcd : (sa.P1.X, sa.P1.Y) ≠ (sa.P2.X, sa.P2.Y) →
       IsCoprime (Ypoly4 p (sa.P1.X, sa.P1.Y) (sa.P2.X, sa.P2.Y)
           c1D.as_coeffs.coeff_ua0 c1D.as_coeffs.coeff_ua1 c1D.as_coeffs.coeff_va0
           c1D.as_coeffs.coeff_va1
-          sa.toSampleTarget.u0 sa.toSampleTarget.u1
-          sa.toSampleTarget.v0 sa.toSampleTarget.v1)
+          c1U0 c1U1 c1V0 c1V1)
         (uRS4General p c1D.as_coeffs.coeff_c0 c1D.as_coeffs.coeff_c1 c1D.as_coeffs.coeff_c2
           c1D.as_coeffs.coeff_c3 c1D.as_coeffs.coeff_c4
           (sa.P1.X, sa.P1.Y) (sa.P2.X, sa.P2.Y)
           c1D.as_coeffs.coeff_ua0 c1D.as_coeffs.coeff_ua1 c1D.as_coeffs.coeff_va0
           c1D.as_coeffs.coeff_va1
-          sa.toSampleTarget.u0 sa.toSampleTarget.u1
-          sa.toSampleTarget.v0 sa.toSampleTarget.v1))
+          c1U0 c1U1 c1V0 c1V1))
     (c1CurT : (sa.P1.X, sa.P1.Y) = (sa.P2.X, sa.P2.Y) →
       curBeforeMonic4Tangent p c1D.as_coeffs.coeff_c0 c1D.as_coeffs.coeff_c1 c1D.as_coeffs.coeff_c2
         c1D.as_coeffs.coeff_c3 c1D.as_coeffs.coeff_c4
         sa.P1.X sa.P1.Y
         c1D.as_coeffs.coeff_ua0 c1D.as_coeffs.coeff_ua1 c1D.as_coeffs.coeff_va0
         c1D.as_coeffs.coeff_va1
-        sa.toSampleTarget.u0 sa.toSampleTarget.u1
-        sa.toSampleTarget.v0 sa.toSampleTarget.v1 ≠ 0)
+        c1U0 c1U1 c1V0 c1V1 ≠ 0)
     (c1GcdT : (sa.P1.X, sa.P1.Y) = (sa.P2.X, sa.P2.Y) →
       IsCoprime (Ypoly4Tangent p c1D.as_coeffs.coeff_c0 c1D.as_coeffs.coeff_c1
           c1D.as_coeffs.coeff_c2 c1D.as_coeffs.coeff_c3 c1D.as_coeffs.coeff_c4
           sa.P1.X sa.P1.Y
           c1D.as_coeffs.coeff_ua0 c1D.as_coeffs.coeff_ua1 c1D.as_coeffs.coeff_va0
           c1D.as_coeffs.coeff_va1
-          sa.toSampleTarget.u0 sa.toSampleTarget.u1
-          sa.toSampleTarget.v0 sa.toSampleTarget.v1)
+          c1U0 c1U1 c1V0 c1V1)
         (uRS4Tangent p c1D.as_coeffs.coeff_c0 c1D.as_coeffs.coeff_c1 c1D.as_coeffs.coeff_c2
           c1D.as_coeffs.coeff_c3 c1D.as_coeffs.coeff_c4
           sa.P1.X sa.P1.Y
           c1D.as_coeffs.coeff_ua0 c1D.as_coeffs.coeff_ua1 c1D.as_coeffs.coeff_va0
           c1D.as_coeffs.coeff_va1
-          sa.toSampleTarget.u0 sa.toSampleTarget.u1
-          sa.toSampleTarget.v0 sa.toSampleTarget.v1))
+          c1U0 c1U1 c1V0 c1V1))
     (c1R : isReduction' sa c1D.as_coeffs.coeff_c0 c1D.as_coeffs.coeff_c1 c1D.as_coeffs.coeff_c2
       c1D.as_coeffs.coeff_c3 c1D.as_coeffs.coeff_c4
       c1D.as_coeffs.coeff_ua0 c1D.as_coeffs.coeff_ua1 c1D.as_coeffs.coeff_va0
       c1D.as_coeffs.coeff_va1
-      c1Cur c1Gcd c1CurT c1GcdT)
+      c1U0 c1U1 c1V0 c1V1 c1Cur c1Gcd c1CurT c1GcdT)
     (c1Deg : H.f.natDegree = 5)
     (c1Dvd : principalSubgroup H c1Deg ≤ D.P)
     (c1V : c1D.as_v = v) (c1S : c1D.as_S = S)
     -- Cross2 branch (`sa.P2 = ι(Ra1)`).
     (c2Base : ReductionData sa) (c2D : Cross2AssemblyData sa)
     (c2Coeff : c2D.as_coeffs = c2Base.coeffs)
+    (c2U0 c2U1 c2V0 c2V1 : F p)
     (c2Cur : (sa.P1.X, sa.P1.Y) ≠ (sa.P2.X, sa.P2.Y) →
       curBeforeMonic4General p c2D.as_coeffs.coeff_c0 c2D.as_coeffs.coeff_c1 c2D.as_coeffs.coeff_c2
         c2D.as_coeffs.coeff_c3 c2D.as_coeffs.coeff_c4
         (sa.P1.X, sa.P1.Y) (sa.P2.X, sa.P2.Y)
         c2D.as_coeffs.coeff_ua0 c2D.as_coeffs.coeff_ua1 c2D.as_coeffs.coeff_va0
         c2D.as_coeffs.coeff_va1
-        sa.toSampleTarget.u0 sa.toSampleTarget.u1
-        sa.toSampleTarget.v0 sa.toSampleTarget.v1 ≠ 0)
+        c2U0 c2U1 c2V0 c2V1 ≠ 0)
     (c2Gcd : (sa.P1.X, sa.P1.Y) ≠ (sa.P2.X, sa.P2.Y) →
       IsCoprime (Ypoly4 p (sa.P1.X, sa.P1.Y) (sa.P2.X, sa.P2.Y)
           c2D.as_coeffs.coeff_ua0 c2D.as_coeffs.coeff_ua1 c2D.as_coeffs.coeff_va0
           c2D.as_coeffs.coeff_va1
-          sa.toSampleTarget.u0 sa.toSampleTarget.u1
-          sa.toSampleTarget.v0 sa.toSampleTarget.v1)
+          c2U0 c2U1 c2V0 c2V1)
         (uRS4General p c2D.as_coeffs.coeff_c0 c2D.as_coeffs.coeff_c1 c2D.as_coeffs.coeff_c2
           c2D.as_coeffs.coeff_c3 c2D.as_coeffs.coeff_c4
           (sa.P1.X, sa.P1.Y) (sa.P2.X, sa.P2.Y)
           c2D.as_coeffs.coeff_ua0 c2D.as_coeffs.coeff_ua1 c2D.as_coeffs.coeff_va0
           c2D.as_coeffs.coeff_va1
-          sa.toSampleTarget.u0 sa.toSampleTarget.u1
-          sa.toSampleTarget.v0 sa.toSampleTarget.v1))
+          c2U0 c2U1 c2V0 c2V1))
     (c2CurT : (sa.P1.X, sa.P1.Y) = (sa.P2.X, sa.P2.Y) →
       curBeforeMonic4Tangent p c2D.as_coeffs.coeff_c0 c2D.as_coeffs.coeff_c1 c2D.as_coeffs.coeff_c2
         c2D.as_coeffs.coeff_c3 c2D.as_coeffs.coeff_c4
         sa.P1.X sa.P1.Y
         c2D.as_coeffs.coeff_ua0 c2D.as_coeffs.coeff_ua1 c2D.as_coeffs.coeff_va0
         c2D.as_coeffs.coeff_va1
-        sa.toSampleTarget.u0 sa.toSampleTarget.u1
-        sa.toSampleTarget.v0 sa.toSampleTarget.v1 ≠ 0)
+        c2U0 c2U1 c2V0 c2V1 ≠ 0)
     (c2GcdT : (sa.P1.X, sa.P1.Y) = (sa.P2.X, sa.P2.Y) →
       IsCoprime (Ypoly4Tangent p c2D.as_coeffs.coeff_c0 c2D.as_coeffs.coeff_c1
           c2D.as_coeffs.coeff_c2 c2D.as_coeffs.coeff_c3 c2D.as_coeffs.coeff_c4
           sa.P1.X sa.P1.Y
           c2D.as_coeffs.coeff_ua0 c2D.as_coeffs.coeff_ua1 c2D.as_coeffs.coeff_va0
           c2D.as_coeffs.coeff_va1
-          sa.toSampleTarget.u0 sa.toSampleTarget.u1
-          sa.toSampleTarget.v0 sa.toSampleTarget.v1)
+          c2U0 c2U1 c2V0 c2V1)
         (uRS4Tangent p c2D.as_coeffs.coeff_c0 c2D.as_coeffs.coeff_c1 c2D.as_coeffs.coeff_c2
           c2D.as_coeffs.coeff_c3 c2D.as_coeffs.coeff_c4
           sa.P1.X sa.P1.Y
           c2D.as_coeffs.coeff_ua0 c2D.as_coeffs.coeff_ua1 c2D.as_coeffs.coeff_va0
           c2D.as_coeffs.coeff_va1
-          sa.toSampleTarget.u0 sa.toSampleTarget.u1
-          sa.toSampleTarget.v0 sa.toSampleTarget.v1))
+          c2U0 c2U1 c2V0 c2V1))
     (c2R : isReduction' sa c2D.as_coeffs.coeff_c0 c2D.as_coeffs.coeff_c1 c2D.as_coeffs.coeff_c2
       c2D.as_coeffs.coeff_c3 c2D.as_coeffs.coeff_c4
       c2D.as_coeffs.coeff_ua0 c2D.as_coeffs.coeff_ua1 c2D.as_coeffs.coeff_va0
       c2D.as_coeffs.coeff_va1
-      c2Cur c2Gcd c2CurT c2GcdT)
+      c2U0 c2U1 c2V0 c2V1 c2Cur c2Gcd c2CurT c2GcdT)
     (c2Deg : H.f.natDegree = 5)
     (c2Dvd : principalSubgroup H c2Deg ≤ D.P)
     (c2V : c2D.as_v = v) (c2S : c2D.as_S = S)
     -- Cross3 branch (`sa.P1 = ι(Ra2)`).
     (c3Base : ReductionData sa) (c3D : Cross3AssemblyData sa)
     (c3Coeff : c3D.as_coeffs = c3Base.coeffs)
+    (c3U0 c3U1 c3V0 c3V1 : F p)
     (c3Cur : (sa.P1.X, sa.P1.Y) ≠ (sa.P2.X, sa.P2.Y) →
       curBeforeMonic4General p c3D.as_coeffs.coeff_c0 c3D.as_coeffs.coeff_c1 c3D.as_coeffs.coeff_c2
         c3D.as_coeffs.coeff_c3 c3D.as_coeffs.coeff_c4
         (sa.P1.X, sa.P1.Y) (sa.P2.X, sa.P2.Y)
         c3D.as_coeffs.coeff_ua0 c3D.as_coeffs.coeff_ua1 c3D.as_coeffs.coeff_va0
         c3D.as_coeffs.coeff_va1
-        sa.toSampleTarget.u0 sa.toSampleTarget.u1
-        sa.toSampleTarget.v0 sa.toSampleTarget.v1 ≠ 0)
+        c3U0 c3U1 c3V0 c3V1 ≠ 0)
     (c3Gcd : (sa.P1.X, sa.P1.Y) ≠ (sa.P2.X, sa.P2.Y) →
       IsCoprime (Ypoly4 p (sa.P1.X, sa.P1.Y) (sa.P2.X, sa.P2.Y)
           c3D.as_coeffs.coeff_ua0 c3D.as_coeffs.coeff_ua1 c3D.as_coeffs.coeff_va0
           c3D.as_coeffs.coeff_va1
-          sa.toSampleTarget.u0 sa.toSampleTarget.u1
-          sa.toSampleTarget.v0 sa.toSampleTarget.v1)
+          c3U0 c3U1 c3V0 c3V1)
         (uRS4General p c3D.as_coeffs.coeff_c0 c3D.as_coeffs.coeff_c1 c3D.as_coeffs.coeff_c2
           c3D.as_coeffs.coeff_c3 c3D.as_coeffs.coeff_c4
           (sa.P1.X, sa.P1.Y) (sa.P2.X, sa.P2.Y)
           c3D.as_coeffs.coeff_ua0 c3D.as_coeffs.coeff_ua1 c3D.as_coeffs.coeff_va0
           c3D.as_coeffs.coeff_va1
-          sa.toSampleTarget.u0 sa.toSampleTarget.u1
-          sa.toSampleTarget.v0 sa.toSampleTarget.v1))
+          c3U0 c3U1 c3V0 c3V1))
     (c3CurT : (sa.P1.X, sa.P1.Y) = (sa.P2.X, sa.P2.Y) →
       curBeforeMonic4Tangent p c3D.as_coeffs.coeff_c0 c3D.as_coeffs.coeff_c1 c3D.as_coeffs.coeff_c2
         c3D.as_coeffs.coeff_c3 c3D.as_coeffs.coeff_c4
         sa.P1.X sa.P1.Y
         c3D.as_coeffs.coeff_ua0 c3D.as_coeffs.coeff_ua1 c3D.as_coeffs.coeff_va0
         c3D.as_coeffs.coeff_va1
-        sa.toSampleTarget.u0 sa.toSampleTarget.u1
-        sa.toSampleTarget.v0 sa.toSampleTarget.v1 ≠ 0)
+        c3U0 c3U1 c3V0 c3V1 ≠ 0)
     (c3GcdT : (sa.P1.X, sa.P1.Y) = (sa.P2.X, sa.P2.Y) →
       IsCoprime (Ypoly4Tangent p c3D.as_coeffs.coeff_c0 c3D.as_coeffs.coeff_c1
           c3D.as_coeffs.coeff_c2 c3D.as_coeffs.coeff_c3 c3D.as_coeffs.coeff_c4
           sa.P1.X sa.P1.Y
           c3D.as_coeffs.coeff_ua0 c3D.as_coeffs.coeff_ua1 c3D.as_coeffs.coeff_va0
           c3D.as_coeffs.coeff_va1
-          sa.toSampleTarget.u0 sa.toSampleTarget.u1
-          sa.toSampleTarget.v0 sa.toSampleTarget.v1)
+          c3U0 c3U1 c3V0 c3V1)
         (uRS4Tangent p c3D.as_coeffs.coeff_c0 c3D.as_coeffs.coeff_c1 c3D.as_coeffs.coeff_c2
           c3D.as_coeffs.coeff_c3 c3D.as_coeffs.coeff_c4
           sa.P1.X sa.P1.Y
           c3D.as_coeffs.coeff_ua0 c3D.as_coeffs.coeff_ua1 c3D.as_coeffs.coeff_va0
           c3D.as_coeffs.coeff_va1
-          sa.toSampleTarget.u0 sa.toSampleTarget.u1
-          sa.toSampleTarget.v0 sa.toSampleTarget.v1))
+          c3U0 c3U1 c3V0 c3V1))
     (c3R : isReduction' sa c3D.as_coeffs.coeff_c0 c3D.as_coeffs.coeff_c1 c3D.as_coeffs.coeff_c2
       c3D.as_coeffs.coeff_c3 c3D.as_coeffs.coeff_c4
       c3D.as_coeffs.coeff_ua0 c3D.as_coeffs.coeff_ua1 c3D.as_coeffs.coeff_va0
       c3D.as_coeffs.coeff_va1
-      c3Cur c3Gcd c3CurT c3GcdT)
+      c3U0 c3U1 c3V0 c3V1 c3Cur c3Gcd c3CurT c3GcdT)
     (c3Deg : H.f.natDegree = 5)
     (c3Dvd : principalSubgroup H c3Deg ≤ D.P)
     (c3V : c3D.as_v = v) (c3S : c3D.as_S = S)
     -- Cross4 branch (`sa.P2 = ι(Ra2)`).
     (c4Base : ReductionData sa) (c4D : Cross4AssemblyData sa)
     (c4Coeff : c4D.as_coeffs = c4Base.coeffs)
+    (c4U0 c4U1 c4V0 c4V1 : F p)
     (c4Cur : (sa.P1.X, sa.P1.Y) ≠ (sa.P2.X, sa.P2.Y) →
       curBeforeMonic4General p c4D.as_coeffs.coeff_c0 c4D.as_coeffs.coeff_c1 c4D.as_coeffs.coeff_c2
         c4D.as_coeffs.coeff_c3 c4D.as_coeffs.coeff_c4
         (sa.P1.X, sa.P1.Y) (sa.P2.X, sa.P2.Y)
         c4D.as_coeffs.coeff_ua0 c4D.as_coeffs.coeff_ua1 c4D.as_coeffs.coeff_va0
         c4D.as_coeffs.coeff_va1
-        sa.toSampleTarget.u0 sa.toSampleTarget.u1
-        sa.toSampleTarget.v0 sa.toSampleTarget.v1 ≠ 0)
+        c4U0 c4U1 c4V0 c4V1 ≠ 0)
     (c4Gcd : (sa.P1.X, sa.P1.Y) ≠ (sa.P2.X, sa.P2.Y) →
       IsCoprime (Ypoly4 p (sa.P1.X, sa.P1.Y) (sa.P2.X, sa.P2.Y)
           c4D.as_coeffs.coeff_ua0 c4D.as_coeffs.coeff_ua1 c4D.as_coeffs.coeff_va0
           c4D.as_coeffs.coeff_va1
-          sa.toSampleTarget.u0 sa.toSampleTarget.u1
-          sa.toSampleTarget.v0 sa.toSampleTarget.v1)
+          c4U0 c4U1 c4V0 c4V1)
         (uRS4General p c4D.as_coeffs.coeff_c0 c4D.as_coeffs.coeff_c1 c4D.as_coeffs.coeff_c2
           c4D.as_coeffs.coeff_c3 c4D.as_coeffs.coeff_c4
           (sa.P1.X, sa.P1.Y) (sa.P2.X, sa.P2.Y)
           c4D.as_coeffs.coeff_ua0 c4D.as_coeffs.coeff_ua1 c4D.as_coeffs.coeff_va0
           c4D.as_coeffs.coeff_va1
-          sa.toSampleTarget.u0 sa.toSampleTarget.u1
-          sa.toSampleTarget.v0 sa.toSampleTarget.v1))
+          c4U0 c4U1 c4V0 c4V1))
     (c4CurT : (sa.P1.X, sa.P1.Y) = (sa.P2.X, sa.P2.Y) →
       curBeforeMonic4Tangent p c4D.as_coeffs.coeff_c0 c4D.as_coeffs.coeff_c1 c4D.as_coeffs.coeff_c2
         c4D.as_coeffs.coeff_c3 c4D.as_coeffs.coeff_c4
         sa.P1.X sa.P1.Y
         c4D.as_coeffs.coeff_ua0 c4D.as_coeffs.coeff_ua1 c4D.as_coeffs.coeff_va0
         c4D.as_coeffs.coeff_va1
-        sa.toSampleTarget.u0 sa.toSampleTarget.u1
-        sa.toSampleTarget.v0 sa.toSampleTarget.v1 ≠ 0)
+        c4U0 c4U1 c4V0 c4V1 ≠ 0)
     (c4GcdT : (sa.P1.X, sa.P1.Y) = (sa.P2.X, sa.P2.Y) →
       IsCoprime (Ypoly4Tangent p c4D.as_coeffs.coeff_c0 c4D.as_coeffs.coeff_c1
           c4D.as_coeffs.coeff_c2 c4D.as_coeffs.coeff_c3 c4D.as_coeffs.coeff_c4
           sa.P1.X sa.P1.Y
           c4D.as_coeffs.coeff_ua0 c4D.as_coeffs.coeff_ua1 c4D.as_coeffs.coeff_va0
           c4D.as_coeffs.coeff_va1
-          sa.toSampleTarget.u0 sa.toSampleTarget.u1
-          sa.toSampleTarget.v0 sa.toSampleTarget.v1)
+          c4U0 c4U1 c4V0 c4V1)
         (uRS4Tangent p c4D.as_coeffs.coeff_c0 c4D.as_coeffs.coeff_c1 c4D.as_coeffs.coeff_c2
           c4D.as_coeffs.coeff_c3 c4D.as_coeffs.coeff_c4
           sa.P1.X sa.P1.Y
           c4D.as_coeffs.coeff_ua0 c4D.as_coeffs.coeff_ua1 c4D.as_coeffs.coeff_va0
           c4D.as_coeffs.coeff_va1
-          sa.toSampleTarget.u0 sa.toSampleTarget.u1
-          sa.toSampleTarget.v0 sa.toSampleTarget.v1))
+          c4U0 c4U1 c4V0 c4V1))
     (c4R : isReduction' sa c4D.as_coeffs.coeff_c0 c4D.as_coeffs.coeff_c1 c4D.as_coeffs.coeff_c2
       c4D.as_coeffs.coeff_c3 c4D.as_coeffs.coeff_c4
       c4D.as_coeffs.coeff_ua0 c4D.as_coeffs.coeff_ua1 c4D.as_coeffs.coeff_va0
       c4D.as_coeffs.coeff_va1
-      c4Cur c4Gcd c4CurT c4GcdT)
+      c4U0 c4U1 c4V0 c4V1 c4Cur c4Gcd c4CurT c4GcdT)
     (c4Deg : H.f.natDegree = 5)
     (c4Dvd : principalSubgroup H c4Deg ≤ D.P)
     (c4V : c4D.as_v = v) (c4S : c4D.as_S = S) :
@@ -457,32 +432,32 @@ def reducedClassDispatch {p : ℕ} [Fact (Nat.Prime p)] [Fact (p ≠ 2)]
     · match cc hRa hT with
       | .generic h1P1 h1P2 h2P1 h2P2 =>
           subst gV; subst gS
-          have hthm := reducedClass_eq_of_isReduction' sa gBase gD gCoeff gCur gGcd gCurT gGcdT
-            gR gDeg gDvd
+          have hthm := reducedClass_eq_of_isReduction' sa gBase gD gCoeff gU0 gU1 gV0 gV1
+            gCur gGcd gCurT gGcdT gR gDeg gDvd
           rw [gD.hq] at hthm
           convert hthm using 2
       | .cross1 _h =>
           subst c1V; subst c1S
           have hthm := reducedClass_eq_of_isReduction'_cross1 sa c1Base c1D c1Coeff
-            c1Cur c1Gcd c1CurT c1GcdT c1R c1Deg c1Dvd
+            c1U0 c1U1 c1V0 c1V1 c1Cur c1Gcd c1CurT c1GcdT c1R c1Deg c1Dvd
           rw [c1D.hq] at hthm
           convert hthm using 2
       | .cross2 _h =>
           subst c2V; subst c2S
           have hthm := reducedClass_eq_of_isReduction'_cross2 sa c2Base c2D c2Coeff
-            c2Cur c2Gcd c2CurT c2GcdT c2R c2Deg c2Dvd
+            c2U0 c2U1 c2V0 c2V1 c2Cur c2Gcd c2CurT c2GcdT c2R c2Deg c2Dvd
           rw [c2D.hq] at hthm
           convert hthm using 2
       | .cross3 _h =>
           subst c3V; subst c3S
           have hthm := reducedClass_eq_of_isReduction'_cross3 sa c3Base c3D c3Coeff
-            c3Cur c3Gcd c3CurT c3GcdT c3R c3Deg c3Dvd
+            c3U0 c3U1 c3V0 c3V1 c3Cur c3Gcd c3CurT c3GcdT c3R c3Deg c3Dvd
           rw [c3D.hq] at hthm
           convert hthm using 2
       | .cross4 _h =>
           subst c4V; subst c4S
           have hthm := reducedClass_eq_of_isReduction'_cross4 sa c4Base c4D c4Coeff
-            c4Cur c4Gcd c4CurT c4GcdT c4R c4Deg c4Dvd
+            c4U0 c4U1 c4V0 c4V1 c4Cur c4Gcd c4CurT c4GcdT c4R c4Deg c4Dvd
           rw [c4D.hq] at hthm
           convert hthm using 2
 

@@ -413,6 +413,19 @@ fields are already `F p`-valued). Given:
 - `ua0 ua1 va0 va1 : F p`, `alpha • aClass`'s already-reduced Mumford pair
   (gap 1 from the note above — supplied by the caller, per the roadmap's
   resolution, not computed here);
+- `u0 u1 v0 v1 : F p`, Cantor's algorithmic SEED — the free
+  divisor-representative `ReduceDispatchGeneral` composes with `P1,P2`
+  and the anchor before reducing. **Corrected this pass**: earlier
+  drafts reused `sa.toSampleTarget`'s own fields here, which is circular
+  (the value being DEFINED as `Reduce`'s output was also being fed in as
+  `Reduce`'s input) — caught when a downstream idempotence bridge lemma
+  turned out to need `ReduceDispatchGeneral` to be idempotent in a sense
+  it structurally isn't (composes the anchor into the target rather than
+  merely canonicalizing it; see `SampleTargetFromAlphaWitness.lean`
+  chat-log discussion). Since `P1,P2` are themselves the unknowns being
+  solved for (not `sa`'s own reduced output), the seed is correctly a
+  free, independently-supplied quantity, exactly as
+  `isReductionOutputOf` (below) already has it;
 - `hcur`/`hgcd` (`P1 ≠ P2` branch) and `hcurT`/`hgcdT` (`P1 = P2` branch),
   `ReduceDispatchGeneral`'s own case-split hypotheses, now demanding NO
   pairwise `IsCoprime` facts among `P1,P2,u_a,` target (that's exactly
@@ -421,54 +434,48 @@ fields are already `F p`-valued). Given:
 
 asserts `.toSampleTarget`'s `(u0,u1,v0,v1)` literally equals
 `ReduceDispatchGeneral`'s output on `(sa.P1.X, sa.P1.Y)`, `(sa.P2.X,
-sa.P2.Y)` and `alpha • a`'s Mumford pair. This is a genuine equation with
-a computable RHS (unlike `isReduction` above, which names no witness),
-but it is a SEPARATE predicate, not a proof that `isReduction` holds —
-connecting the two still needs gap 1's data at any actual call site, and
-needs a theorem (not attempted here) that `reducedClass`'s
-divisor-class-level description and `ReduceDispatchGeneral`'s
-coordinate-level output agree, i.e. that `Reduce`'s algorithm is CORRECT
-(computes the Mumford reduction it claims to), which is exactly the open
-item `ROADMAP-alpha-locus.md`/`AlphaReduce.lean`'s own docstrings flag as
-"`Reduce`'s correctness... a fully open, not-yet-attempted theorem." -/
+sa.P2.Y)`, `alpha • a`'s Mumford pair, and the free seed above. This is a
+genuine equation with a computable RHS (unlike `isReduction` above, which
+names no witness), but it is a SEPARATE predicate, not a proof that
+`isReduction` holds — connecting the two still needs gap 1's data at any
+actual call site, and needs a theorem (not attempted here) that
+`reducedClass`'s divisor-class-level description and
+`ReduceDispatchGeneral`'s coordinate-level output agree, i.e. that
+`Reduce`'s algorithm is CORRECT (computes the Mumford reduction it
+claims to), which is exactly the open item `ROADMAP-alpha-locus.md`/
+`AlphaReduce.lean`'s own docstrings flag as "`Reduce`'s correctness... a
+fully open, not-yet-attempted theorem." -/
 def isReduction' {p : ℕ} [Fact (Nat.Prime p)] [Fact (p ≠ 2)]
     {H : HyperellipticPolynomial (F p)} {D : PrincipalDivisorData H}
     {aClass : Jacobian H D} {δ₀ : H.Point}
     (sa : SampleTargetFromAlpha p H D aClass δ₀)
-    (c0 c1 c2 c3 c4 : F p) (ua0 ua1 va0 va1 : F p)
+    (c0 c1 c2 c3 c4 : F p) (ua0 ua1 va0 va1 u0 u1 v0 v1 : F p)
     (hcur : (sa.P1.X, sa.P1.Y) ≠ (sa.P2.X, sa.P2.Y) →
       curBeforeMonic4General p c0 c1 c2 c3 c4
         (sa.P1.X, sa.P1.Y) (sa.P2.X, sa.P2.Y) ua0 ua1 va0 va1
-        sa.toSampleTarget.u0 sa.toSampleTarget.u1
-        sa.toSampleTarget.v0 sa.toSampleTarget.v1 ≠ 0)
+        u0 u1 v0 v1 ≠ 0)
     (hgcd : (sa.P1.X, sa.P1.Y) ≠ (sa.P2.X, sa.P2.Y) →
       IsCoprime (Ypoly4 p (sa.P1.X, sa.P1.Y) (sa.P2.X, sa.P2.Y)
-          ua0 ua1 va0 va1 sa.toSampleTarget.u0 sa.toSampleTarget.u1
-          sa.toSampleTarget.v0 sa.toSampleTarget.v1)
+          ua0 ua1 va0 va1 u0 u1 v0 v1)
         (uRS4General p c0 c1 c2 c3 c4
           (sa.P1.X, sa.P1.Y) (sa.P2.X, sa.P2.Y) ua0 ua1 va0 va1
-          sa.toSampleTarget.u0 sa.toSampleTarget.u1
-          sa.toSampleTarget.v0 sa.toSampleTarget.v1))
+          u0 u1 v0 v1))
     (hcurT : (sa.P1.X, sa.P1.Y) = (sa.P2.X, sa.P2.Y) →
       curBeforeMonic4Tangent p c0 c1 c2 c3 c4
         sa.P1.X sa.P1.Y ua0 ua1 va0 va1
-        sa.toSampleTarget.u0 sa.toSampleTarget.u1
-        sa.toSampleTarget.v0 sa.toSampleTarget.v1 ≠ 0)
+        u0 u1 v0 v1 ≠ 0)
     (hgcdT : (sa.P1.X, sa.P1.Y) = (sa.P2.X, sa.P2.Y) →
       IsCoprime (Ypoly4Tangent p c0 c1 c2 c3 c4
           sa.P1.X sa.P1.Y ua0 ua1 va0 va1
-          sa.toSampleTarget.u0 sa.toSampleTarget.u1
-          sa.toSampleTarget.v0 sa.toSampleTarget.v1)
+          u0 u1 v0 v1)
         (uRS4Tangent p c0 c1 c2 c3 c4
           sa.P1.X sa.P1.Y ua0 ua1 va0 va1
-          sa.toSampleTarget.u0 sa.toSampleTarget.u1
-          sa.toSampleTarget.v0 sa.toSampleTarget.v1)) : Prop :=
+          u0 u1 v0 v1)) : Prop :=
   (sa.toSampleTarget.u0, sa.toSampleTarget.u1,
    sa.toSampleTarget.v0, sa.toSampleTarget.v1) =
     ReduceDispatchGeneral p c0 c1 c2 c3 c4
       (sa.P1.X, sa.P1.Y) (sa.P2.X, sa.P2.Y) ua0 ua1 va0 va1
-      sa.toSampleTarget.u0 sa.toSampleTarget.u1
-      sa.toSampleTarget.v0 sa.toSampleTarget.v1
+      u0 u1 v0 v1
       hcur hgcd hcurT hgcdT
 
 /-- **`isReduction'` is the real, load-bearing content; `isReduction`
@@ -493,35 +500,29 @@ abbrev isReductionOf {p : ℕ} [Fact (Nat.Prime p)] [Fact (p ≠ 2)]
     {H : HyperellipticPolynomial (F p)} {D : PrincipalDivisorData H}
     {aClass : Jacobian H D} {δ₀ : H.Point}
     (sa : SampleTargetFromAlpha p H D aClass δ₀) : Prop :=
-  ∃ (c0 c1 c2 c3 c4 ua0 ua1 va0 va1 : F p)
+  ∃ (c0 c1 c2 c3 c4 ua0 ua1 va0 va1 u0 u1 v0 v1 : F p)
     (hcur : (sa.P1.X, sa.P1.Y) ≠ (sa.P2.X, sa.P2.Y) →
       curBeforeMonic4General p c0 c1 c2 c3 c4
         (sa.P1.X, sa.P1.Y) (sa.P2.X, sa.P2.Y) ua0 ua1 va0 va1
-        sa.toSampleTarget.u0 sa.toSampleTarget.u1
-        sa.toSampleTarget.v0 sa.toSampleTarget.v1 ≠ 0)
+        u0 u1 v0 v1 ≠ 0)
     (hgcd : (sa.P1.X, sa.P1.Y) ≠ (sa.P2.X, sa.P2.Y) →
       IsCoprime (Ypoly4 p (sa.P1.X, sa.P1.Y) (sa.P2.X, sa.P2.Y)
-          ua0 ua1 va0 va1 sa.toSampleTarget.u0 sa.toSampleTarget.u1
-          sa.toSampleTarget.v0 sa.toSampleTarget.v1)
+          ua0 ua1 va0 va1 u0 u1 v0 v1)
         (uRS4General p c0 c1 c2 c3 c4
           (sa.P1.X, sa.P1.Y) (sa.P2.X, sa.P2.Y) ua0 ua1 va0 va1
-          sa.toSampleTarget.u0 sa.toSampleTarget.u1
-          sa.toSampleTarget.v0 sa.toSampleTarget.v1))
+          u0 u1 v0 v1))
     (hcurT : (sa.P1.X, sa.P1.Y) = (sa.P2.X, sa.P2.Y) →
       curBeforeMonic4Tangent p c0 c1 c2 c3 c4
         sa.P1.X sa.P1.Y ua0 ua1 va0 va1
-        sa.toSampleTarget.u0 sa.toSampleTarget.u1
-        sa.toSampleTarget.v0 sa.toSampleTarget.v1 ≠ 0)
+        u0 u1 v0 v1 ≠ 0)
     (hgcdT : (sa.P1.X, sa.P1.Y) = (sa.P2.X, sa.P2.Y) →
       IsCoprime (Ypoly4Tangent p c0 c1 c2 c3 c4
           sa.P1.X sa.P1.Y ua0 ua1 va0 va1
-          sa.toSampleTarget.u0 sa.toSampleTarget.u1
-          sa.toSampleTarget.v0 sa.toSampleTarget.v1)
+          u0 u1 v0 v1)
         (uRS4Tangent p c0 c1 c2 c3 c4
           sa.P1.X sa.P1.Y ua0 ua1 va0 va1
-          sa.toSampleTarget.u0 sa.toSampleTarget.u1
-          sa.toSampleTarget.v0 sa.toSampleTarget.v1)),
-    isReduction' sa c0 c1 c2 c3 c4 ua0 ua1 va0 va1 hcur hgcd hcurT hgcdT
+          u0 u1 v0 v1)),
+    isReduction' sa c0 c1 c2 c3 c4 ua0 ua1 va0 va1 u0 u1 v0 v1 hcur hgcd hcurT hgcdT
 
 -- `X`/`C` below (Step 2's Mumford-pair-as-polynomial encoding) are
 -- `Polynomial.X`/`Polynomial.C`; this file otherwise has no need for bare

@@ -104,3 +104,4 @@ import Genus2Lean.ZeroD.ReducedClassBundlesCross2
 import Genus2Lean.ZeroD.ReducedClassBundlesCross3
 import Genus2Lean.ZeroD.ReducedClassBundlesCross4
 import Genus2Lean.ZeroD.ReducedClassDispatch
+import Genus2Lean.ZeroD.SampleTargetFromAlphaWitness

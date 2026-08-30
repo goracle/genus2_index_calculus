@@ -110,34 +110,29 @@ theorem reducedClass_eq_of_isReduction'_cross2_flat {p : ℕ} [Fact (Nat.Prime p
     (hf : H.f = curvePoly p c0 c1 c2 c3 c4)
     (hdeg : H.f.natDegree = 5)
     (hD : principalSubgroup H hdeg ≤ D.P)
+    (u0 u1 v0 v1 : F p)
     (hcur : (sa.P1.X, sa.P1.Y) ≠ (sa.P2.X, sa.P2.Y) →
       curBeforeMonic4General p c0 c1 c2 c3 c4
         (sa.P1.X, sa.P1.Y) (sa.P2.X, sa.P2.Y) ua0 ua1 va0 va1
-        sa.toSampleTarget.u0 sa.toSampleTarget.u1
-        sa.toSampleTarget.v0 sa.toSampleTarget.v1 ≠ 0)
+        u0 u1 v0 v1 ≠ 0)
     (hgcd : (sa.P1.X, sa.P1.Y) ≠ (sa.P2.X, sa.P2.Y) →
       IsCoprime (Ypoly4 p (sa.P1.X, sa.P1.Y) (sa.P2.X, sa.P2.Y)
-          ua0 ua1 va0 va1 sa.toSampleTarget.u0 sa.toSampleTarget.u1
-          sa.toSampleTarget.v0 sa.toSampleTarget.v1)
+          ua0 ua1 va0 va1 u0 u1 v0 v1)
         (uRS4General p c0 c1 c2 c3 c4
           (sa.P1.X, sa.P1.Y) (sa.P2.X, sa.P2.Y) ua0 ua1 va0 va1
-          sa.toSampleTarget.u0 sa.toSampleTarget.u1
-          sa.toSampleTarget.v0 sa.toSampleTarget.v1))
+          u0 u1 v0 v1))
     (hcurT : (sa.P1.X, sa.P1.Y) = (sa.P2.X, sa.P2.Y) →
       curBeforeMonic4Tangent p c0 c1 c2 c3 c4
         sa.P1.X sa.P1.Y ua0 ua1 va0 va1
-        sa.toSampleTarget.u0 sa.toSampleTarget.u1
-        sa.toSampleTarget.v0 sa.toSampleTarget.v1 ≠ 0)
+        u0 u1 v0 v1 ≠ 0)
     (hgcdT : (sa.P1.X, sa.P1.Y) = (sa.P2.X, sa.P2.Y) →
       IsCoprime (Ypoly4Tangent p c0 c1 c2 c3 c4
           sa.P1.X sa.P1.Y ua0 ua1 va0 va1
-          sa.toSampleTarget.u0 sa.toSampleTarget.u1
-          sa.toSampleTarget.v0 sa.toSampleTarget.v1)
+          u0 u1 v0 v1)
         (uRS4Tangent p c0 c1 c2 c3 c4
           sa.P1.X sa.P1.Y ua0 ua1 va0 va1
-          sa.toSampleTarget.u0 sa.toSampleTarget.u1
-          sa.toSampleTarget.v0 sa.toSampleTarget.v1))
-    (hr : isReduction' sa c0 c1 c2 c3 c4 ua0 ua1 va0 va1 hcur hgcd hcurT hgcdT)
+          u0 u1 v0 v1))
+    (hr : isReduction' sa c0 c1 c2 c3 c4 ua0 ua1 va0 va1 u0 u1 v0 v1 hcur hgcd hcurT hgcdT)
     (hMumfordUa : IsMumfordUa p c0 c1 c2 c3 c4 ua0 ua1 va0 va1)
     (hMumfordTarget : IsMumfordTarget4 p c0 c1 c2 c3 c4
       sa.toSampleTarget.u0 sa.toSampleTarget.u1 sa.toSampleTarget.v0 sa.toSampleTarget.v1)

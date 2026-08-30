@@ -249,48 +249,43 @@ theorem reducedClass_eq_of_isReduction'_cross1 {p : ℕ} [Fact (Nat.Prime p)] [F
     (base : ReductionData sa)
     (d : Cross1AssemblyData sa)
     (hcoeff : d.as_coeffs = base.coeffs)
+    (u0 u1 v0 v1 : F p)
     (hcur : (sa.P1.X, sa.P1.Y) ≠ (sa.P2.X, sa.P2.Y) →
       curBeforeMonic4General p d.as_coeffs.coeff_c0 d.as_coeffs.coeff_c1 d.as_coeffs.coeff_c2
         d.as_coeffs.coeff_c3 d.as_coeffs.coeff_c4
         (sa.P1.X, sa.P1.Y) (sa.P2.X, sa.P2.Y)
         d.as_coeffs.coeff_ua0 d.as_coeffs.coeff_ua1 d.as_coeffs.coeff_va0 d.as_coeffs.coeff_va1
-        sa.toSampleTarget.u0 sa.toSampleTarget.u1
-        sa.toSampleTarget.v0 sa.toSampleTarget.v1 ≠ 0)
+        u0 u1 v0 v1 ≠ 0)
     (hgcd : (sa.P1.X, sa.P1.Y) ≠ (sa.P2.X, sa.P2.Y) →
       IsCoprime (Ypoly4 p (sa.P1.X, sa.P1.Y) (sa.P2.X, sa.P2.Y)
           d.as_coeffs.coeff_ua0 d.as_coeffs.coeff_ua1 d.as_coeffs.coeff_va0 d.as_coeffs.coeff_va1
-          sa.toSampleTarget.u0 sa.toSampleTarget.u1
-          sa.toSampleTarget.v0 sa.toSampleTarget.v1)
+          u0 u1 v0 v1)
         (uRS4General p d.as_coeffs.coeff_c0 d.as_coeffs.coeff_c1 d.as_coeffs.coeff_c2
           d.as_coeffs.coeff_c3 d.as_coeffs.coeff_c4
           (sa.P1.X, sa.P1.Y) (sa.P2.X, sa.P2.Y)
           d.as_coeffs.coeff_ua0 d.as_coeffs.coeff_ua1 d.as_coeffs.coeff_va0 d.as_coeffs.coeff_va1
-          sa.toSampleTarget.u0 sa.toSampleTarget.u1
-          sa.toSampleTarget.v0 sa.toSampleTarget.v1))
+          u0 u1 v0 v1))
     (hcurT : (sa.P1.X, sa.P1.Y) = (sa.P2.X, sa.P2.Y) →
       curBeforeMonic4Tangent p d.as_coeffs.coeff_c0 d.as_coeffs.coeff_c1 d.as_coeffs.coeff_c2
         d.as_coeffs.coeff_c3 d.as_coeffs.coeff_c4
         sa.P1.X sa.P1.Y
         d.as_coeffs.coeff_ua0 d.as_coeffs.coeff_ua1 d.as_coeffs.coeff_va0 d.as_coeffs.coeff_va1
-        sa.toSampleTarget.u0 sa.toSampleTarget.u1
-        sa.toSampleTarget.v0 sa.toSampleTarget.v1 ≠ 0)
+        u0 u1 v0 v1 ≠ 0)
     (hgcdT : (sa.P1.X, sa.P1.Y) = (sa.P2.X, sa.P2.Y) →
       IsCoprime (Ypoly4Tangent p d.as_coeffs.coeff_c0 d.as_coeffs.coeff_c1 d.as_coeffs.coeff_c2
           d.as_coeffs.coeff_c3 d.as_coeffs.coeff_c4
           sa.P1.X sa.P1.Y
           d.as_coeffs.coeff_ua0 d.as_coeffs.coeff_ua1 d.as_coeffs.coeff_va0 d.as_coeffs.coeff_va1
-          sa.toSampleTarget.u0 sa.toSampleTarget.u1
-          sa.toSampleTarget.v0 sa.toSampleTarget.v1)
+          u0 u1 v0 v1)
         (uRS4Tangent p d.as_coeffs.coeff_c0 d.as_coeffs.coeff_c1 d.as_coeffs.coeff_c2
           d.as_coeffs.coeff_c3 d.as_coeffs.coeff_c4
           sa.P1.X sa.P1.Y
           d.as_coeffs.coeff_ua0 d.as_coeffs.coeff_ua1 d.as_coeffs.coeff_va0 d.as_coeffs.coeff_va1
-          sa.toSampleTarget.u0 sa.toSampleTarget.u1
-          sa.toSampleTarget.v0 sa.toSampleTarget.v1))
+          u0 u1 v0 v1))
     (hr : isReduction' sa d.as_coeffs.coeff_c0 d.as_coeffs.coeff_c1 d.as_coeffs.coeff_c2
       d.as_coeffs.coeff_c3 d.as_coeffs.coeff_c4
       d.as_coeffs.coeff_ua0 d.as_coeffs.coeff_ua1 d.as_coeffs.coeff_va0 d.as_coeffs.coeff_va1
-      hcur hgcd hcurT hgcdT)
+      u0 u1 v0 v1 hcur hgcd hcurT hgcdT)
     (hdeg : H.f.natDegree = 5)
     (hD : principalSubgroup H hdeg ≤ D.P) :
     sa.reducedClass + d.as_q =
