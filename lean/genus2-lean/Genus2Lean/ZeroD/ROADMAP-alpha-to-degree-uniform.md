@@ -1,5 +1,112 @@
 # Roadmap: from `reducedClassDispatch` to `decoupledSystem_degree_uniform`
 
+## Status, this pass (read this first)
+
+**Part A is DONE, build green.** `SampleTargetFromAlphaWitness.lean`
+exists and gives `SampleTargetFromAlpha` its first real, non-`sorry`
+instance genuinely built from `ReduceDispatchGeneral`'s output
+(`isReductionOutputOf`, `exists_sampleTargetFromAlpha_of_reduceDispatch`).
+Along the way, a real bug was found and fixed in `isReduction'`/
+`isReductionOf` themselves (`AlphaLocusDegreeUniform.lean`) — see
+"Bug found and fixed this pass" below — and propagated through all 11
+files that carried the broken shape (`AlphaLocusDegreeUniformCross1-4`,
+`ReducedClassBundles(Cross1-4)`, `ReducedClassDispatch`), all
+REPL-confirmed green.
+
+**Part B's numerical prerequisite is DONE.** Claire ran the
+`HomotopyContinuation.jl` pipeline (outside Lean, per this roadmap's own
+prior instruction not to start Part B before this): **the system comes
+back 0-dimensional, with witness points missing/dropped, consistent
+across multiple independent re-runs.** This is the decisive empirical
+signal the "Suggested order" step 3 was gating on — see "Numerical
+check: result" below for what this means and what it does NOT yet
+settle.
+
+**What comes next**: Part B, `decoupledSystem_degree_uniform` itself, is
+now unblocked and is the actual next work. See "What comes next,
+concretely" at the bottom.
+
+## Bug found and fixed this pass: `isReduction'` was circular
+
+While building `SampleTargetFromAlphaWitness.lean`, a REPL error
+(`Application type mismatch` on an `e0 : ... = out.1` vs. `... = u0`
+goal) traced back to a real modeling bug in `isReduction'`'s own
+definition, not just a wiring issue in the new file.
+
+**The bug**: `ReduceDispatchGeneral` takes curve coefficients, the two
+affine points `P1,P2`, an anchor Mumford pair `(ua0,ua1,va0,va1)`
+(`alpha•a`'s own known coordinates), and a SEED Mumford pair
+`(u0,u1,v0,v1)` that Cantor composition acts on together with `P1,P2`
+and the anchor before reducing. `isReduction'`, as originally written,
+fed `sa.toSampleTarget`'s own `(u0,u1,v0,v1)` fields into BOTH roles at
+once: the thing being asserted equal to `Reduce`'s output, AND the seed
+argument to that same call. That's circular — `x = f(..., x)` instead
+of `x = f(..., y)` for an independent `y` — not a real "is this already
+reduced" condition.
+
+Concretely, this was caught by asking what `isReductionOutputOf sa →
+isReduction' sa` (a candidate bridge lemma) would actually require: it
+reduces to an idempotence claim `ReduceDispatchGeneral(...,
+ReduceDispatchGeneral(..., x)) = ReduceDispatchGeneral(..., x)`, which
+is false in general for this function (it composes the anchor into the
+seed rather than merely canonicalizing an already-reduced pair — see
+chat log for the full ChatGPT-assisted derivation). That falseness was
+the signal the definition itself, not just a proof attempt, was wrong.
+
+**The fix**: `isReduction'` (and its existential wrapper `isReductionOf`)
+now take `u0 u1 v0 v1 : F p` as genuinely free parameters — the seed is
+independent of `sa`'s own coordinates, which appear only on the LHS of
+the final equation (`sa.toSampleTarget`'s fields = `Reduce`'s output on
+that free seed). This matches `isReductionOutputOf`'s already-correct
+shape in `SampleTargetFromAlphaWitness.lean`.
+
+**Propagation, confirmed mechanical**: `reducedClass_eq_of_isReduction'`
+and all 6 tangent/cross siblings, plus `reducedClassDispatch`, carry
+`hcur/hgcd/hcurT/hgcdT/hr`-style hypotheses whose OLD type had the same
+self-feeding bug baked in directly (not just via calling `isReduction'`).
+Checked file-by-file before editing: in every one of these theorems,
+these hypotheses are declared in the signature and passed to `isReduction'`'s
+own application, but never destructured or otherwise inspected anywhere
+in the proof body. So this was a signature-only fix — add the same free
+`u0 u1 v0 v1` (or `gU0/gU1/gV0/gV1`, `c1U0..c4V1` in the dispatcher,
+per-branch) — with zero proof-content changes required. All REPL-
+confirmed green after the change.
+
+**Files touched this pass**: `AlphaLocusDegreeUniform.lean` (the fix
+itself), `AlphaLocusDegreeUniformCross{1,2,3,4}.lean`,
+`ReducedClassBundles.lean`, `ReducedClassBundlesCross{1,2,3,4}.lean`,
+`ReducedClassDispatch.lean`, `SampleTargetFromAlphaWitness.lean` (new).
+**Untouched, confirmed not needing this fix**: the two tangent-anchor
+theorems `reducedClass_eq_of_isReduction'_tangent`/`_tangent_target`
+route through `TangentReductionData`/`TangentAssemblyData` instead and
+never call `isReduction'` at all.
+
+## Numerical check: result
+
+Per this roadmap's own prior gate ("do not start Part B until this has
+been run"): Claire ran the existing `HomotopyContinuation.jl` pipeline
+on several independent `(alpha,alpha')` pairs.
+
+**Result: 0-dimensional, with witness points missing, consistent across
+multiple re-runs.**
+
+What this supports: the uniform degree bound
+`decoupledSystem_degree_uniform` is targeting is plausible — the
+solution variety is NOT the naive 2-dimensional "plug in two points and
+solve" reading; something is genuinely cutting it down to finitely many
+points, matching a real uniform-degree phenomenon rather than a
+coincidence of one instance.
+
+What this does NOT yet settle (open items Part B still needs, see
+below): WHY it's 0D (which nondegeneracy condition is doing the work),
+whether the "missing witness points" indicate `Bad`-locus degeneration
+specifically (vs. numerical/path-tracking failure unrelated to the
+math), and how large the exceptional set is as a fraction of the whole
+`F_ell` domain — the number the eventual counting argument's usefulness
+depends on. The "`D ~ K_C` correlates with a degree jump" check
+mentioned below is still open and should be looked at together with the
+missing-witness-point pattern, since they may be the same phenomenon.
+
 ## Why this doc exists
 
 `ROADMAP-reducedClass-dispatcher.md` just closed (build green,
@@ -19,7 +126,9 @@ first place — recovers the big picture:
 - The project's actual target is `decoupledSystem_degree_uniform`
   (`AlphaLocusDegreeUniform.lean` line 886, still `sorry`): a uniform-
   in-`(alpha,alpha')` bound on the solution-variety degree of the
-  4-point matching system `[P1]+[P2]-alpha•a = [P3]+[P4]-alpha'•a`.
+  4-point matching system `[P1]+[P2]-alpha•a = [P3]+[P4]-alpha'•a`,
+  where `alpha•a` and `alpha'•a` are GIVEN (known Jacobian points) and
+  `P1,P2,P3,P4` are the unknowns being solved for.
 - Per `ROADMAP-alpha-locus.md`'s corrected picture (its own TL;DR,
   superseding an earlier wrong framing): if this uniform bound holds
   outside a genuinely small exceptional set `Bad`, it closes
@@ -39,180 +148,114 @@ first place — recovers the big picture:
   it doesn't yet mean anything to say "`sa` satisfies `isReduction`."
 - `ROADMAP-reduce-divisor-correctness.md` gave `isReduction` real
   content in two pieces: `isReduction'` (a concrete, computable-RHS
-  restatement against `ReduceDispatchGeneral`'s actual output) and
-  `isReductionOf` (the existential-over-witnessing-coordinates version
-  meant to replace the free `isReduction` field everywhere). Then it
-  spent ~900 lines proving `reducedClass_eq_of_isReduction'` — that
-  `isReduction'` holding really does force `sa.reducedClass` to equal
-  the class the Mumford pair geometrically represents. **That's the
-  theorem the dispatcher now routes over all seven anchor/target
-  configurations of.**
+  restatement against `ReduceDispatchGeneral`'s actual output, **fixed
+  this pass, see above**) and `isReductionOf` (the existential-over-
+  witnessing-coordinates version meant to replace the free `isReduction`
+  field everywhere). Then it spent ~900 lines proving
+  `reducedClass_eq_of_isReduction'` — that `isReduction'` holding really
+  does force `sa.reducedClass` to equal the class the Mumford pair
+  geometrically represents. **That's the theorem the dispatcher now
+  routes over all seven anchor/target configurations of.**
 
-**What this means concretely**: the dispatcher answers "IF some
-`SampleTargetFromAlpha` satisfies `isReduction'` (with a given
-anchor/target configuration), THEN its `reducedClass` is what it should
-be." It does not answer, and nothing in the codebase yet answers,
-"DOES any real `SampleTargetFromAlpha` satisfy `isReduction'`" — i.e.
-**zero instances of `isReductionOf` have ever been constructed**
-(confirmed by grep this pass: `isReductionOf` has no callers anywhere
-outside its own definition). The conditional link is proved; the
-antecedent has never been discharged. This is the actual next gap,
-and it sits directly on the path to `decoupledSystem_degree_uniform`
-per task (A)'s own framing — `SampleTargetFromAlpha` isn't really
-usable as "the alpha-parametrized sample target" until some concrete
-instance of it can be exhibited with a real `isReduction'` proof, not
-just declared as a structure with a `Prop` field.
+**What this means concretely, now that Part A is done**: the dispatcher
+answers "IF some `SampleTargetFromAlpha` satisfies `isReduction'` (with
+a given anchor/target configuration), THEN its `reducedClass` is what it
+should be," AND `SampleTargetFromAlphaWitness.lean` now shows a real
+instance can be built with `isReductionOutputOf` genuinely discharged.
+The one remaining item from the original Part A framing — chaining that
+witness through `reducedClassDispatch` itself to get a fully concrete
+"curve + two points + alpha → divisor class in the Jacobian" instance
+with NO free parameters anywhere — is optional polish, not a blocker;
+see "What comes next" below for why Part B doesn't need it first.
 
 ## The actual chain, traced end to end
 
 ```
 ReduceDispatchGeneral (Reduce/GeneralSharedRoot.lean)
   -- concrete: given curve coeffs + two curve points + an anchor
-  -- Mumford pair, COMPUTES the reduced (u0,u1,v0,v1) via Cantor
-  -- reduction. Proved correct at the POLYNOMIAL level only
-  -- (ReduceGeneral_isMumfordTarget4: v²≡f mod u) — this is
-  -- ROADMAP-reduce-to-zerodim.md's "already done" layer.
+  -- Mumford pair + a free seed pair, COMPUTES the reduced
+  -- (u0,u1,v0,v1) via Cantor reduction. Proved correct at the
+  -- POLYNOMIAL level only (ReduceGeneral_isMumfordTarget4:
+  -- v²≡f mod u) — this is ROADMAP-reduce-to-zerodim.md's
+  -- "already done" layer.
         |
         | isReduction' packages "sa.toSampleTarget's (u0,u1,v0,v1)
-        | literally equals ReduceDispatchGeneral's output"
+        | literally equals ReduceDispatchGeneral's output on some
+        | FREE seed (u0,u1,v0,v1)" -- fixed this pass, no longer
+        | self-referential
         v
 isReduction'  (AlphaLocusDegreeUniform.lean, coordinate-level, Prop)
         |
         | reducedClass_eq_of_isReduction' + its 6 tangent/cross
-        | siblings, NOW DISPATCHED (this session) — proves
+        | siblings, DISPATCHED, proves
         | isReduction' ⟹ sa.reducedClass = <the geometric class>
         v
 sa.reducedClass = alpha•aClass - ([P1]+[P2]-2•[δ₀])   (divisor-class
                                                          level, Jacobian H D)
         |
-        | *** NOTHING HERE YET ***  — no SampleTargetFromAlpha
-        | instance has ever been built with a real isReduction'
-        | proof attached (isReductionOf: 0 callers)
+        | isReductionOutputOf / exists_sampleTargetFromAlpha_of_
+        | reduceDispatch (SampleTargetFromAlphaWitness.lean, DONE
+        | this pass) -- a real SampleTargetFromAlpha, genuinely
+        | built from ReduceDispatchGeneral's own output, exists
         v
 SampleTargetFromAlpha, actually usable as "the alpha-parametrized
 family the degree-uniform theorem quantifies over"
         |
         | decoupledSystem_degree_uniform's own statement already
         | quantifies over `sa sb : SampleTargetFromAlpha p H D aClass δ₀`
-        | (AlphaLocusDegreeUniform.lean line 890) — this part is
-        | ALREADY WIRED, no further Lean plumbing needed there
+        | (AlphaLocusDegreeUniform.lean line 890) — ALREADY WIRED
         v
 decoupledSystem_degree_uniform  (sorry — task (B)'s Bad + the actual
-                                  degree-uniformity argument, both
-                                  entirely unstarted)
+                                  degree-uniformity argument;
+                                  NUMERICAL PREREQUISITE NOW DONE,
+                                  came back 0D -- this is the actual
+                                  next work, see below)
 ```
 
-**Two separate gaps remain on this chain, not one**, and they should
-not be conflated (same discipline `ROADMAP-cawitness-tangent-
-interpolation.md`'s "two independent problems" section used):
+## Part A: give `isReductionOf`/`isReductionOutputOf` a first real
+instance — DONE
 
-1. **Exhibiting a real `isReductionOf` witness** (this doc's Part A) —
-   purely mechanical once you have concrete curve/point data:
-   instantiate `c0..c4`, `P1,P2`, run `ReduceDispatchGeneral` (or state
-   the existence claim abstractly via `ReduceDispatchGeneral`'s own
-   correctness lemma), and produce the six existential witnesses
-   `isReductionOf` asks for. No new mathematics — this is *using*
-   already-proved machinery (`ReduceDispatchGeneral`,
-   `reducedClassDispatch`) for the first time, not extending it.
-2. **`decoupledSystem_degree_uniform` itself** (task (B) + the actual
-   degree argument, `ROADMAP-alpha-locus.md` Steps 2-3) — genuinely
-   open, genuinely hard (numerically-informed exceptional-set
-   definition, then a real algebraic-geometry degree bound). This is
-   the actual `p^(4/5)`-closure content and should not be started until
-   Step 2's numerical check (below) has actually been run.
+`SampleTargetFromAlphaWitness.lean` exists, build green, REPL-confirmed.
+It builds `isReductionOutputOf` (a narrower, self-contained sibling of
+`isReduction'` — see that file's own module docstring for why it's a
+separate predicate rather than a patch to `isReduction'`) with a real,
+non-`sorry` witness: `mk_sampleTargetFromAlpha_of_reduceDispatch` +
+`exists_sampleTargetFromAlpha_of_reduceDispatch`. Along the way this
+surfaced and fixed the `isReduction'` circularity bug described above.
 
-## Part A: give `isReductionOf` its first real instance
-
-**Goal**: prove a lemma of the shape
-
-```lean
-theorem exists_sampleTargetFromAlpha_of_reduceDispatch
-    {p : ℕ} [Fact (Nat.Prime p)] [Fact (p ≠ 2)]
-    {H : HyperellipticPolynomial (F p)} [IsDedekindDomain (CoordinateRing H)]
-    {D : PrincipalDivisorData H} {aClass : Jacobian H D} {δ₀ : H.Point}
-    (alpha : ℤ) (P1 P2 : H.Point)
-    (c0 c1 c2 c3 c4 ua0 ua1 va0 va1 : F p)
-    (hcur : ...) (hgcd : ...) (hcurT : ...) (hgcdT : ...) :
-    ∃ sa : SampleTargetFromAlpha p H D aClass δ₀,
-      sa.alpha = alpha ∧ sa.P1 = P1 ∧ sa.P2 = P2 ∧ isReductionOf sa := by
-  -- `sa.toSampleTarget := ⟨ReduceDispatchGeneral p c0 c1 c2 c3 c4
-  --   (P1.X,P1.Y) (P2.X,P2.Y) ua0 ua1 va0 va1 ... hcur hgcd hcurT hgcdT⟩`
-  -- (unpacking the 4-tuple `ReduceDispatchGeneral` returns into
-  -- `u0,u1,v0,v1` fields), then `isReductionOf`'s witness is `rfl` by
-  -- construction — `isReduction'` IS the statement that
-  -- `sa.toSampleTarget`'s fields equal `ReduceDispatchGeneral`'s output,
-  -- and that's exactly how `sa.toSampleTarget` was just built.
-  sorry
-```
-
-This is the FIRST concrete `SampleTargetFromAlpha` with a genuinely
-discharged `isReduction'`, rather than a structure whose `isReduction`
-field is asserted rather than proved. Concretely:
-
-1. **Check `ReduceDispatchGeneral`'s exact return type first** — grep
-   `Reduce/GeneralSharedRoot.lean` directly rather than assuming a
-   4-tuple `(F p × F p × F p × F p)` (the module docstring above uses
-   that shape informally; confirm before writing the `sa.toSampleTarget`
-   construction).
-2. **Build `sa.toSampleTarget`** by projecting `ReduceDispatchGeneral`'s
-   output into `SampleTarget`'s four fields.
-3. **Build `sa.reducedClass`** — this is already computed
-   automatically by `SampleTargetFromAlpha`'s own default-field
-   definition (`alpha•aClass - toJacobian D ⟨single P1 + single P2 -
-   2•single δ₀, ...⟩`), no new work.
-4. **Discharge `sa.isReduction`** with `isReductionOf sa`, itself
-   discharged by `⟨c0,c1,c2,c3,c4,ua0,ua1,va0,va1,hcur,hgcd,hcurT,hgcdT,
-   rfl⟩` — the `rfl` should go through since `sa.toSampleTarget`'s
-   fields were LITERALLY defined as `ReduceDispatchGeneral`'s output in
-   step 2; if it doesn't (defeq issues through the tuple-projection),
-   that's a real, small bug to fix, not a sign of a deeper problem.
-5. **Once this exists, compose it with `reducedClassDispatch`**
-   (this session's file) to get a genuinely end-to-end theorem: given
-   real curve/point data and a chosen anchor pair `Ra1,Ra2` satisfying
-   whichever of the seven configurations applies, produce a real
-   `SampleTargetFromAlpha` AND the proof that its `reducedClass` equals
-   the concrete geometric divisor class — the first fully-instantiated,
-   no-`sorry`, no-free-`Prop` link from "curve + two points + alpha"
-   all the way to "divisor class in the Jacobian," anywhere in this
-   project.
-
-**Where this belongs**: new file, `SampleTargetFromAlphaWitness.lean`
-or similar, importing `AlphaLocusDegreeUniform.lean` (for
-`SampleTargetFromAlpha`/`isReduction'`/`isReductionOf`),
-`ReducedClassDispatch.lean` (for `reducedClassDispatch`/`CrossCase`),
-and `Reduce.GeneralSharedRoot` (for `ReduceDispatchGeneral`) directly.
-Small — this is wiring, not new mathematical content, so should stay
-well under 200 lines.
-
-**Do this before Part B.** It's cheap, it's the natural next step given
-what's already built, and it's a real correctness check on everything
-proved so far: if `ReduceDispatchGeneral`'s output can't actually be
-packaged into a real `isReductionOf` witness cleanly, that's worth
-finding out now rather than after investing in the much harder Part B
-work.
+**Not done, and not currently blocking**: composing this witness with
+`reducedClassDispatch` itself for a single, fully-closed, no-free-
+parameter "curve + two points + alpha → divisor class" instance (the
+original Part A step 5). This remains a cheap, mechanical follow-up
+whenever it's useful (e.g. as a sanity check while working Part B), but
+Part B does not need it as a prerequisite — Part B's own work is at the
+level of the general theorem statement (`decoupledSystem_degree_uniform`
+quantifies over abstract `sa sb`, not one concrete instance), not a
+specific numerical instantiation.
 
 ## Part B: `decoupledSystem_degree_uniform` itself (the actual
-`p^(4/5)` closure) — genuinely open, do the empirical check first
+`p^(4/5)` closure) — genuinely open, NOW THE ACTIVE WORK
 
 This is `ROADMAP-alpha-locus.md`'s Steps 2-3, restated here only to
 keep this doc as the single up-to-date pointer (that roadmap's own
 content is not stale and shouldn't be re-derived — read it directly for
 the full argument, not just this summary):
 
-1. **Numerical check first (Julia/Oscar, not Lean)**: generate several
-   independent `(alpha,alpha')` pairs, run the existing
-   `HomotopyContinuation.jl` pipeline, record the witness-point count
-   for each. If it's the same small number every time, that's decisive
-   evidence the uniform bound is even TRUE before spending Lean effort
-   proving it. Separately, check whether `D ~ K_C` (the natural
-   candidate for the exceptional locus `Bad`) actually correlates with
-   a degree jump, and how large the flagged-bad set is as a *fraction
-   of `F ell`* (not just "positive-dimensional over `C`") — this is the
-   number that determines whether the eventual counting argument gives
-   a useful bound or a vacuous one.
-2. **Only once (1) comes back encouraging**: pin down `Bad`'s real
-   definition (replacing `IsSmallExceptionalSet`'s current `True` stub,
-   `AlphaLocusDegreeUniform.lean` line 838) and attempt
+1. ~~**Numerical check first (Julia/Oscar, not Lean)**~~ **DONE, this
+   pass.** Claire ran the `HomotopyContinuation.jl` pipeline on several
+   independent `(alpha,alpha')` pairs: **result is 0-dimensional, with
+   witness points missing, consistent on multiple re-runs.** See
+   "Numerical check: result" above for what this does and doesn't
+   settle. Still open, and worth doing before/alongside step 2 below:
+   check whether `D ~ K_C` (the natural candidate for the exceptional
+   locus `Bad`) correlates with the missing-witness-point pattern, and
+   how large the flagged-bad set is as a *fraction of `F_ell`* (not just
+   "positive-dimensional over `C`") — this is the number that determines
+   whether the eventual counting argument gives a useful bound or a
+   vacuous one.
+2. **Now unblocked, this is the actual next step**: pin down `Bad`'s
+   real definition (replacing `IsSmallExceptionalSet`'s current `True`
+   stub, `AlphaLocusDegreeUniform.lean` line 838) and attempt
    `decoupledSystem_degree_uniform` itself, via the strategy
    `ROADMAP-alpha-locus.md` Step 3 already lays out: show the
    peel-chain's own nondegeneracy resultants/discriminants
@@ -220,19 +263,37 @@ the full argument, not just this summary):
    are bounded-degree polynomials in `alpha,alpha'`, so degree jumps
    are confined to their vanishing locus.
 
-**This part should not be started until Part A is done and (1) above
-has actually been run** — per this project's own "settle on paper
-first" instinct (used correctly earlier in `ROADMAP-alpha-locus.md`'s
-own history), there's no point building Lean machinery for a
-uniformity claim nobody has checked is even numerically true yet.
+## What comes next, concretely
 
-## Suggested order
+1. **Correlate the missing-witness-point pattern with `D ~ K_C`**
+   (Claire, Julia/Oscar, not Lean) — same numerical setup as the check
+   just run, extended to flag which `(alpha,alpha')` instances show
+   missing witnesses and check whether those correlate with the
+   candidate `Bad` locus. This directly informs step 2's real
+   definition of `Bad` — don't guess the definition in Lean before this
+   comes back, per this project's own "settle on paper first"
+   discipline.
+2. **Measure `Bad`'s size as a fraction of `F_ell`** (Claire,
+   Julia/Oscar) — needed regardless of `Bad`'s exact definition, since a
+   `Bad` set that's a large fraction of the domain makes the eventual
+   counting argument vacuous even if everything else goes through.
+3. **Pin down `Bad`'s real Lean definition** (replacing the `True` stub)
+   once (1)-(2) give a concrete candidate to formalize — don't attempt
+   this from first principles in Lean; transcribe whatever the numerics
+   converge on.
+4. **Attempt `decoupledSystem_degree_uniform` itself** via
+   `ROADMAP-alpha-locus.md` Step 3's strategy (bounded-degree
+   nondegeneracy resultants confine degree jumps to `Bad`'s vanishing
+   locus) — this is the genuinely hard, open algebraic-geometry content,
+   and the actual `p^(4/5)`-closure work. Expect this to be the longest
+   remaining phase of the project; break it into sub-lemmas rather than
+   attempting the whole theorem in one pass, same discipline used for
+   `reducedClass_eq_of_isReduction'` (bundled hypothesis structures,
+   `_flat` drafts before bundling, dispatched over cases only once each
+   piece is separately proved).
+5. **(Low-priority, whenever convenient)**: close out Part A's original
+   step 5 — compose `exists_sampleTargetFromAlpha_of_reduceDispatch`
+   with `reducedClassDispatch` for one fully-concrete, no-free-parameter
+   instance, as a standing sanity check / regression test on the whole
+   chain.
 
-1. Part A, step 1: confirm `ReduceDispatchGeneral`'s exact signature
-   (5 minutes, unblocks everything else).
-2. Part A, steps 2-5: write `SampleTargetFromAlphaWitness.lean`,
-   REPL-test.
-3. Stop and run Part B's numerical check (Claire, outside Lean) before
-   writing any more Lean for the degree-uniformity theorem itself.
-4. Only after (3) comes back: pin down `Bad`, attempt
-   `decoupledSystem_degree_uniform`'s actual proof.
