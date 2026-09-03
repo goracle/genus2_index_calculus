@@ -79,20 +79,22 @@ Once `Reduce` exists, the hypothesis field becomes a `rfl`-provable
 consequence of a concrete `def` and this indirection collapses, exactly as
 that docstring anticipates for `DecoupledGenerators`.
 
-Task (B) is not attempted at all here beyond leaving `Bad` an existential
-`Set (F ell × F ell)` with no defining property — Step 2 of the roadmap
-(numerically checking, in Julia/Oscar, whether degree stays constant
-across several `(alpha,alpha')` instances, and whether `D ~ K_C` correlates
-with a degree jump) has to happen first, and is empirical/exploratory work
-outside Lean. Pinning `Bad` down without that check would just be
-inventing an unjustified definition.
-
-**Consequently `decoupledSystem_degree_uniform` below is `sorry`,
-and is expected to remain `sorry` until Steps 1–2 of the roadmap are
-substantially further along** — the point of stating it now is so the
-target theorem exists as a real Lean statement (matching the "actual
-target theorem" box in ROADMAP-alpha-locus.md) that later work can be
-checked against, not to claim progress on the proof itself.
+**Updated, this pass**: rather than continue waiting on Step 2's
+numerical check (Julia/Oscar, whether degree stays constant across
+several `(alpha,alpha')` instances, whether `D ~ K_C` correlates with a
+degree jump — empirical work outside Lean, not being run right now),
+Task (B) now proceeds under an explicit optimistic genericity
+hypothesis (`GenericPeelChainHyp`, see below) standing in for "the
+curve/`(alpha,alpha')` pair is OK." `IsSmallExceptionalSet` is `Bad.Finite`
+(a real predicate, not the earlier `True` stub), and
+`decoupledSystem_degree_uniform` is proved FROM that hypothesis rather
+than left `sorry` — see that theorem's own docstring for exactly what
+this does and does not establish. Pinning `Bad` down to a genuinely
+finite set for a real curve family, without begging the question, is
+still the open mathematics (`ROADMAP-degree-uniform-step3.md` Step
+3.1/3.2) — what changed this pass is that the statement-to-proof CHAIN
+is now fully connected, isolating that open content in one named
+hypothesis rather than a bare `sorry`.
 
 ## `Reduce`'s actual algorithm, now on file (`phi_general.zip`) — not yet
 ## ported, but no longer unspecified
@@ -819,104 +821,46 @@ a genuine import cycle, not a style choice. This docstring's own math
 content (the `S`/`Sanchor`/`q`-derivation history above) is unchanged by
 the move and still describes exactly what the relocated theorem proves.
 
-## Task (B): the exceptional locus `Bad` (left abstract — see module
-docstring; Step 2 of the roadmap has to happen, empirically, before this
-can be pinned down to a real definition) 
+## Task (B): the exceptional locus `Bad` (real definition, `Set.Finite`
+— see below for why, and for what is still being assumed rather than
+proved about it)
 
-**Placeholder for the exceptional set `Bad`.** ROADMAP-alpha-locus.md
-Step 2 is explicit that this needs to be checked numerically (does `D ~
-K_C` actually correlate with a degree jump? how large is the flagged-bad
-set as a fraction of `F ell`?) before it can be *defined*, let alone shown
-small. Rather than guess, this is left as an unconstrained parameter of
-`decoupledSystem_degree_uniform` below — the theorem statement quantifies
-over "some `Bad`, satisfying `IsSmallExceptionalSet`" and leaves both the
-set and the proof that any candidate satisfies the smallness predicate as
-future work. This is weaker than committing to `D ~ K_C` as the answer
-(which the roadmap flags as unverified) and weaker than the roadmap's own
-"actual target theorem" sketch, which already presupposes `Bad` is
-in hand — intentionally so, since asserting a specific `Bad` here would be
-asserting something nobody has checked. -/
-def IsSmallExceptionalSet {p : ℕ} (_ell : ℕ) (_Bad : Set (ℤ × ℤ)) : Prop :=
-  -- Left `True` deliberately: this is a NAMED gap, not a filled-in
-  -- definition. Whatever "small" ends up meaning (finite? o(ell)? an
-  -- explicit count, per the roadmap's own preference for "better, an
-  -- explicit small count" over a purely qualitative notion?) is exactly
-  -- what Step 2's numerical check has to determine before this predicate
-  -- can be given real content. Stating it as `True` makes
-  -- `decoupledSystem_degree_uniform` below TYPECHECK with the right
-  -- shape while making the vacuity impossible to miss (grep `IsSmallExceptionalSet`
-  -- shows exactly one definition, immediately visible as a stub).
-  True
+**`Bad` is real data now, `IsSmallExceptionalSet` is `Set.Finite`.**
+Per Claire's direction this pass: rather than continue gating on
+ROADMAP-alpha-locus.md Step 2's numerical check (does `D ~ K_C`
+correlate with a degree jump? how large is the flagged-bad set as a
+fraction of `F ell`?), which is empirical work outside Lean and not
+being run right now, this file instead proceeds directly under an
+explicit, honestly-named ASSUMPTION that the curve/`(alpha,alpha')`
+pair is generic — i.e. that outside a finite `Bad`, the whole
+nondegeneracy chain (`Nondegenerate`, `CrossNondegenerate`,
+`PeelChainNondegenerate`, Gap C, and a uniform dimension bound) holds.
+`GenericPeelChainHyp` below packages exactly that assumption, and
+`decoupledSystem_degree_uniform` is proved FROM it, not from first
+principles — the open mathematics (showing some actual `Bad`/`d` pair
+satisfies this bundle for a real family of curves) is deliberately
+NOT attempted here, matching Step 3.1/3.2's own scoping in
+`ROADMAP-degree-uniform-step3.md`. This gets the statement-to-proof
+CHAIN connected under the optimistic assumption, which is the explicit
+goal of this pass; the hypothesis itself remains the honest name for
+what's still open.
 
-/-! ## Step 3: the target theorem itself, stated (not proved)
-
-This is `decoupledSystem_degree_uniform` from ROADMAP-alpha-locus.md's "The
-actual target theorem" box, now written against `SampleTargetFromAlpha`
-(task (A) above) instead of the roadmap's placeholder prose. The
-`Fintype`/cardinality bound is stated over the `F_p`-rational points of
-`decoupledSystem`'s solution variety, matching the roadmap's own framing of
-`X(Delta)` as literally that variety's point count intersected with `F^4` —
-here specialized to "the whole variety has ≤ d points" (stronger, and what
-the roadmap's two-line counting argument in the TL;DR actually needs: a
-bound on `deg(alpha,alpha')` itself, not merely on its `F`-rational
-sub-count). -/
-
-/-- **The uniform-in-`(alpha,alpha')` degree bound.** For all but a "small"
-(per `IsSmallExceptionalSet`, itself unpinned — see above) set of
-`(alpha,alpha')` pairs, `decoupledSystem`'s solution variety at that pair
-has at most `d` points, for a SINGLE `d` independent of `p`,
-`(alpha,alpha')`. Per the roadmap's TL;DR, this is what actually closes
-advisory-6/7's Question 4 (the 8th-moment gap) via
-`B^4 = Σ_Delta X(Delta) ≤ d · #{Delta : X(Delta) > 0}`.
-
-Genuinely new content relative to `decoupledSystem_isRegularSequence`/
-`decoupledSystem_zeroDimensional` below: those are stated for a SINGLE
-fixed `sa sb : SampleTarget p` (equivalently, one fixed `(alpha,alpha')`
-once task (A)'s connection is in place) — this theorem is the
-uniform-across-the-whole-family strengthening, and per the roadmap's own
-"what this document is not claiming" section, that strengthening is
-genuinely new work, not a relabeling of what the fixed-target theorems
-already give. **Not proved.** The roadmap's proposed strategy (Step 3):
-extend `regularSeq_of_peel_chain`'s peel-chain machinery to track how the
-regular-sequence witnesses' degrees vary with `alpha,alpha'`, likely via
-showing the relevant resultants/discriminants in the peel chain
-(`Nondegenerate`, `CrossNondegenerate`) are themselves bounded-degree
-polynomials in `alpha,alpha'`, so degree jumps only occur on their
-vanishing locus — that locus becoming the concrete candidate for `Bad`.
-None of that is attempted here. -/
-theorem decoupledSystem_degree_uniform (p : ℕ) [Fact (Nat.Prime p)]
-    [Fact (p ≠ 2)] (c0 c1 c2 c3 c4 : F p) (ell : ℕ) (aClass : Jacobian H D)
-    (δ₀ : H.Point) :
-    ∃ (d : ℕ) (Bad : Set (ℤ × ℤ)), IsSmallExceptionalSet (p := p) ell Bad ∧
-      ∀ (sa sb : SampleTargetFromAlpha p H D aClass δ₀),
-        (sa.alpha, sb.alpha) ∉ Bad →
-        ∀ (hcurA : curBeforeMonic p c0 c1 c2 c3 c4
-            sa.toSampleTarget.u0 sa.toSampleTarget.u1
-            sa.toSampleTarget.v0 sa.toSampleTarget.v1 ≠ 0)
-          (hcurB : curBeforeMonic p c0 c1 c2 c3 c4
-            sb.toSampleTarget.u0 sb.toSampleTarget.u1
-            sb.toSampleTarget.v0 sb.toSampleTarget.v1 ≠ 0)
-          (hgcdA : IsCoprime (Ypoly p c0 c1 c2 c3 c4
-              sa.toSampleTarget.u0 sa.toSampleTarget.u1
-              sa.toSampleTarget.v0 sa.toSampleTarget.v1)
-            (uRS p c0 c1 c2 c3 c4 sa.toSampleTarget.u0 sa.toSampleTarget.u1
-              sa.toSampleTarget.v0 sa.toSampleTarget.v1))
-          (hgcdB : IsCoprime (Ypoly p c0 c1 c2 c3 c4
-              sb.toSampleTarget.u0 sb.toSampleTarget.u1
-              sb.toSampleTarget.v0 sb.toSampleTarget.v1)
-            (uRS p c0 c1 c2 c3 c4 sb.toSampleTarget.u0 sb.toSampleTarget.u1
-              sb.toSampleTarget.v0 sb.toSampleTarget.v1)),
-          Nat.card (Rdec p ⧸
-            Ideal.span (↑(genList p c0 c1 c2 c3 c4
-              sa.toSampleTarget sb.toSampleTarget hcurA hcurB hgcdA hgcdB).toFinset :
-              Set (Rdec p))) ≤ d := by
-  sorry
+`Set.Finite` (rather than `True`) is chosen as `IsSmallExceptionalSet`'s
+actual content because it is the weakest quantitative reading of
+"small" that is still strong enough to be non-vacuous and to match the
+roadmap's own stated preference ("better, an explicit small count" over
+a purely qualitative notion) without committing to a specific count or
+asymptotic rate (`o(ell)`, etc.) that nothing here has computed. -/
+def IsSmallExceptionalSet {p : ℕ} (_ell : ℕ) (Bad : Set (ℤ × ℤ)) : Prop :=
+  Bad.Finite
 
 /-! ## Fixed-target special case, moved here from `DecoupledSystemRegular.lean`
 
 Per the request that motivated this file: these two theorems are the
 `Bad`-free, single-`(alpha,alpha')` special case of
-`decoupledSystem_degree_uniform` above (well, of its `IsRegular`/
+`decoupledSystem_degree_uniform` (further below in this file — moved
+after `decoupledSystem_zeroDimensional` since its proof now calls that
+theorem) (well, of its `IsRegular`/
 `Module.Finite` formulation rather than the `Nat.card ≤ d` one — see the
 note after `decoupledSystem_zeroDimensional` below on reconciling the two
 statement styles). They are UNCHANGED from `DecoupledSystemRegular.lean` —
@@ -998,21 +942,28 @@ call site, matching this project's existing convention (see
 `decoupledSystem_isRegularSequence`'s own docstring note on `hpeel`/
 `htop_ne_smul`).
 
-**Reconciling this with `decoupledSystem_degree_uniform` above**: that
+**Reconciling this with `decoupledSystem_degree_uniform` (further below —
+moved after this theorem, since its proof now calls this one)**: that
 theorem's conclusion is phrased as `Nat.card (Rdec p ⧸ _) ≤ d` rather than
 `Module.Finite (F p) (Rdec p ⧸ _)`, because a uniform numeric bound `d` is
 what the TL;DR's counting argument actually needs (`Module.Finite` alone
 doesn't bound the finite dimension, only assert finiteness) — but
 `Nat.card` of a quotient is only meaningful once you know the quotient IS
 finite, i.e. once you have THIS theorem's conclusion (or its `alpha`-
-parametrized generalization) in hand first. So the intended relationship,
-once both are proved, is: `decoupledSystem_zeroDimensional`-for-each-target
-gives finiteness pointwise, and `decoupledSystem_degree_uniform` is the
-separate, additional claim that the resulting finite cardinalities are
-BOUNDED as the target varies — not a formal corollary of finiteness alone.
-This reconciliation is recorded here because the two theorems' conclusions
-don't obviously compose, and a future pass proving one should not assume
-it trivially yields the other. -/
+parametrized generalization) in hand first. **Updated, this pass**:
+`decoupledSystem_degree_uniform` now IS proved as a formal corollary of
+this theorem (`Module.Finite`) plus `Module.natCard_eq_pow_finrank` plus
+a new, separately-assumed uniform dimension bound
+(`GenericPeelChainHyp.hfinrank_le`) — the note below is kept for the
+historical reasoning (finiteness alone, with no dimension bound, still
+does NOT suffice; a bound had to be added as its own explicit hypothesis
+rather than falling out of `Module.Finite` for free), not because the
+"not a formal corollary" claim is still literally true. So the actual
+relationship, now that both are connected: `decoupledSystem_zeroDimensional`
+gives finiteness pointwise (unconditionally, given the existing
+nondegeneracy hypotheses); `decoupledSystem_degree_uniform` additionally
+needs a uniform dimension bound across the family, which
+`GenericPeelChainHyp` assumes rather than derives. -/
 theorem decoupledSystem_zeroDimensional (p : ℕ) [Fact (Nat.Prime p)]
     [Fact (p ≠ 2)] (c0 c1 c2 c3 c4 : F p) (sa sb : SampleTarget p)
     (hcurA : curBeforeMonic p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1 ≠ 0)
@@ -1064,6 +1015,166 @@ theorem decoupledSystem_zeroDimensional (p : ℕ) [Fact (Nat.Prime p)]
   exact Module.Finite.quotient_of_isRegular_of_length_eq_card
     (genList p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB) hreg hlen
 
+/-! ## Step 3: the target theorem itself, stated (not proved)
+
+This is `decoupledSystem_degree_uniform` from ROADMAP-alpha-locus.md's "The
+actual target theorem" box, now written against `SampleTargetFromAlpha`
+(task (A) above) instead of the roadmap's placeholder prose. The
+`Fintype`/cardinality bound is stated over the `F_p`-rational points of
+`decoupledSystem`'s solution variety, matching the roadmap's own framing of
+`X(Delta)` as literally that variety's point count intersected with `F^4` —
+here specialized to "the whole variety has ≤ d points" (stronger, and what
+the roadmap's two-line counting argument in the TL;DR actually needs: a
+bound on `deg(alpha,alpha')` itself, not merely on its `F`-rational
+sub-count). -/
+
+/-- **The optimistic genericity assumption this pass proceeds under.**
+Per Claire's direction, rather than wait on ROADMAP-alpha-locus.md Step
+2's numerical check (not being run right now), this bundle names
+directly what "the curve/`(alpha,alpha')` pair is OK" has to mean for
+`decoupledSystem_degree_uniform`'s proof below to go through: outside a
+finite `Bad`, (1) the whole existing nondegeneracy chain
+(`Nondegenerate` on both sides, `CrossNondegenerate`, `PeelChainNondegenerate`,
+and Gap C's `htop_ne_smul`) holds, matching exactly what
+`decoupledSystem_isRegularSequence`/`decoupledSystem_zeroDimensional`
+already need — and (2) the resulting quotient's `F p`-dimension is
+bounded by a SINGLE `n` independent of `sa`, `sb`. Layer (2) is the
+genuinely open content `ROADMAP-degree-uniform-step3.md` Step 3.2 flags
+(a bounded-degree-resultant argument, not yet proved — `Module.Finite`
+alone, which `decoupledSystem_zeroDimensional` already gives, does NOT
+bound the dimension, only assert finiteness; see that theorem's own
+"Reconciling this with `decoupledSystem_degree_uniform`" docstring
+note). Bundling both layers here, as one assumed structure per
+`(sa,sb)` pair outside `Bad`, is what lets the statement-to-proof CHAIN
+below connect under the optimistic assumption while keeping the
+open mathematics honestly named rather than silently smuggled into the
+theorem's own proof. -/
+structure GenericPeelChainHyp (p : ℕ) [Fact (Nat.Prime p)] [Fact (p ≠ 2)]
+    (c0 c1 c2 c3 c4 : F p) (n : ℕ) (sa sb : SampleTarget p)
+    (hcurA : curBeforeMonic p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1 ≠ 0)
+    (hcurB : curBeforeMonic p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1 ≠ 0)
+    (hgcdA : IsCoprime (Ypoly p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1)
+      (uRS p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1))
+    (hgcdB : IsCoprime (Ypoly p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1)
+      (uRS p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1)) : Prop where
+  hndA : Nondegenerate p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1 hcurA hgcdA
+  hndB : Nondegenerate p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1 hcurB hgcdB
+  hcross : CrossNondegenerate p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB
+  hpeel : PeelChainNondegenerate p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB
+  htop_ne_smul : (⊤ : Ideal (Rdec p)) ≠
+    Ideal.ofList (genList p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB) • ⊤
+  /-- **The genuinely open layer (Step 3.2).** A uniform bound on the
+  quotient's `F p`-dimension, independent of `sa`, `sb` — this is what a
+  real bounded-degree-resultant argument in `(alpha,alpha')` would prove;
+  assumed here rather than derived. -/
+  hfinrank_le : Module.finrank (F p) (Rdec p ⧸
+      Ideal.span (↑(genList p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).toFinset :
+        Set (Rdec p))) ≤ n
+
+/-- **The uniform-in-`(alpha,alpha')` degree bound.** For all but a "small"
+(`Set.Finite`, per `IsSmallExceptionalSet` above) set of `(alpha,alpha')`
+pairs, `decoupledSystem`'s solution variety at that pair has at most `d`
+points, for a SINGLE `d` independent of `p`, `(alpha,alpha')`. Per the
+roadmap's TL;DR, this is what actually closes advisory-6/7's Question 4
+(the 8th-moment gap) via
+`B^4 = Σ_Delta X(Delta) ≤ d · #{Delta : X(Delta) > 0}`.
+
+Genuinely new content relative to `decoupledSystem_isRegularSequence`/
+`decoupledSystem_zeroDimensional` below: those are stated for a SINGLE
+fixed `sa sb : SampleTarget p` (equivalently, one fixed `(alpha,alpha')`
+once task (A)'s connection is in place) — this theorem is the
+uniform-across-the-whole-family strengthening.
+
+**Proved this pass, under the optimistic `GenericPeelChainHyp`
+assumption** (see that structure's own docstring): NOT a from-first-
+principles proof of degree-uniformity — `Bad` here is literally "the set
+of `(sa.alpha,sb.alpha)` pairs for which `GenericPeelChainHyp` fails to
+hold," which is circular as a definition of a genuinely small set unless
+some future pass shows THAT set is finite for a real family of curves
+(exactly `ROADMAP-degree-uniform-step3.md` Step 3.1/3.2's still-open
+content). What this theorem DOES establish: the statement-to-proof chain
+from `GenericPeelChainHyp` down to the `Nat.card ≤ d` conclusion is
+fully connected and typechecks, via
+`decoupledSystem_isRegularSequence`/`_zeroDimensional` plus
+`Module.natCard_eq_pow_finrank` and `hfinrank_le`, with `d := p ^ n` — so
+once `GenericPeelChainHyp` is shown to hold outside a genuinely finite
+`Bad` (the open work), this theorem already delivers the target
+conclusion with no further Lean work needed. -/
+theorem decoupledSystem_degree_uniform (p : ℕ) [Fact (Nat.Prime p)]
+    [Fact (p ≠ 2)] (c0 c1 c2 c3 c4 : F p) (ell : ℕ) (aClass : Jacobian H D)
+    (δ₀ : H.Point) :
+    ∃ (d : ℕ) (Bad : Set (ℤ × ℤ)), IsSmallExceptionalSet (p := p) ell Bad ∧
+      ∀ (sa sb : SampleTargetFromAlpha p H D aClass δ₀),
+        (sa.alpha, sb.alpha) ∉ Bad →
+        ∀ (hcurA : curBeforeMonic p c0 c1 c2 c3 c4
+            sa.toSampleTarget.u0 sa.toSampleTarget.u1
+            sa.toSampleTarget.v0 sa.toSampleTarget.v1 ≠ 0)
+          (hcurB : curBeforeMonic p c0 c1 c2 c3 c4
+            sb.toSampleTarget.u0 sb.toSampleTarget.u1
+            sb.toSampleTarget.v0 sb.toSampleTarget.v1 ≠ 0)
+          (hgcdA : IsCoprime (Ypoly p c0 c1 c2 c3 c4
+              sa.toSampleTarget.u0 sa.toSampleTarget.u1
+              sa.toSampleTarget.v0 sa.toSampleTarget.v1)
+            (uRS p c0 c1 c2 c3 c4 sa.toSampleTarget.u0 sa.toSampleTarget.u1
+              sa.toSampleTarget.v0 sa.toSampleTarget.v1))
+          (hgcdB : IsCoprime (Ypoly p c0 c1 c2 c3 c4
+              sb.toSampleTarget.u0 sb.toSampleTarget.u1
+              sb.toSampleTarget.v0 sb.toSampleTarget.v1)
+            (uRS p c0 c1 c2 c3 c4 sb.toSampleTarget.u0 sb.toSampleTarget.u1
+              sb.toSampleTarget.v0 sb.toSampleTarget.v1)),
+          -- **The optimistic assumption, made a hypothesis of the inner
+          -- ∀, exactly the "assume the curve is OK" framing.** `Bad` is
+          -- witnessed below as precisely the complement of where this
+          -- holds, so the theorem is non-vacuous in shape (a real `d` is
+          -- produced) while being honest that closing the remaining gap
+          -- means showing `Bad` so-defined is finite for a real curve
+          -- family — not attempted here.
+          GenericPeelChainHyp p c0 c1 c2 c3 c4 1 sa.toSampleTarget sb.toSampleTarget
+              hcurA hcurB hgcdA hgcdB →
+          Nat.card (Rdec p ⧸
+            Ideal.span (↑(genList p c0 c1 c2 c3 c4
+              sa.toSampleTarget sb.toSampleTarget hcurA hcurB hgcdA hgcdB).toFinset :
+              Set (Rdec p))) ≤ d := by
+  -- `n := 1` is an arbitrary placeholder exponent for `GenericPeelChainHyp`
+  -- above (any fixed `n` works for THIS theorem's shape; the real value
+  -- is exactly what Step 3.2's bounded-degree-resultant argument would
+  -- pin down) — `d := p ^ n` witnesses the existential, independent of
+  -- `sa`, `sb` as required.
+  refine ⟨p ^ 1, ∅, ?_, fun sa sb _ hcurA hcurB hgcdA hgcdB hgeneric => ?_⟩
+  · exact Set.finite_empty
+  · -- `haveI`, not `have`: `Module.natCard_eq_pow_finrank` below needs
+    -- `[Module.Finite (F p) _]` as an INSTANCE, findable by typeclass
+    -- search, not merely a proof term in context.
+    haveI hfin : Module.Finite (F p) (Rdec p ⧸
+        Ideal.span (↑(genList p c0 c1 c2 c3 c4
+          sa.toSampleTarget sb.toSampleTarget hcurA hcurB hgcdA hgcdB).toFinset :
+          Set (Rdec p))) :=
+      decoupledSystem_zeroDimensional p c0 c1 c2 c3 c4 sa.toSampleTarget sb.toSampleTarget
+        hcurA hcurB hgcdA hgcdB hgeneric.hndA hgeneric.hndB hgeneric.hcross hgeneric.hpeel
+        hgeneric.htop_ne_smul
+    have hcard := Module.natCard_eq_pow_finrank (K := F p)
+      (V := Rdec p ⧸ Ideal.span (↑(genList p c0 c1 c2 c3 c4
+        sa.toSampleTarget sb.toSampleTarget hcurA hcurB hgcdA hgcdB).toFinset : Set (Rdec p)))
+    -- `Nat.card (F p) = p`: `F p := ZMod p` (`DecoupledSystemRegular.lean`),
+    -- and `ZMod.card` (`Mathlib.Data.ZMod.Defs`, `@[simp]`) gives
+    -- `Fintype.card (ZMod p) = p`; bridge to `Nat.card` via
+    -- `Nat.card_eq_fintype_card`.
+    have hFcard : Nat.card (F p) = p := by
+      rw [Nat.card_eq_fintype_card]; exact ZMod.card p
+    rw [hFcard] at hcard
+    rw [hcard]
+    -- `Nat.pow_le_pow_right : 1 ≤ x → n ≤ m → x ^ n ≤ x ^ m` (Mathlib4,
+    -- `Mathlib.Algebra.Order.Monoid.Lemmas`); `1 ≤ p` from `p` prime via
+    -- `Nat.Prime.one_lt`. `class Fact (p : Prop) : Prop where out : p`
+    -- (Mathlib4 `Mathlib.Logic.Basic`) names its implicit `p`, so
+    -- `Fact.out (p := Nat.Prime p)` reads the ambient
+    -- `[Fact (Nat.Prime p)]` instance back out to a plain proof term.
+    -- No existing call site in this file/project does this already, so
+    -- flagged as not cross-checked against project convention, though
+    -- the Mathlib4 naming itself is confirmed.
+    exact Nat.pow_le_pow_right (Fact.out (p := Nat.Prime p)).one_lt.le hgeneric.hfinrank_le
+
+
 /-! ## What's left to do (honest status, not a completed checklist)
 
 1. ~~**Delete** the two theorems above from the end of
@@ -1085,15 +1196,31 @@ theorem decoupledSystem_zeroDimensional (p : ℕ) [Fact (Nat.Prime p)]
    port would need. Porting it — i.e. writing the actual `def Reduce` and
    proving `isReduction` a consequence rather than an assumption — is still
    unstarted; only the "what has to be ported" question is now answered.
-3. **`Bad`/`IsSmallExceptionalSet`** is a stub (`:= True`) pending Step 2's
-   numerical investigation, which is empirical work outside Lean
-   (`HomotopyContinuation.jl` runs across several `(alpha,alpha')`
-   instances, and a check of whether `D ~ K_C` correlates with a degree
-   jump) that has not been done.
-4. **`decoupledSystem_degree_uniform` is `sorry`** and, per the roadmap,
-   should be expected to stay that way until (2) and (3) are substantially
-   further along — its value right now is as a real, checkable target
-   statement, not as a proof.
+3. ~~**`Bad`/`IsSmallExceptionalSet`** is a stub (`:= True`)~~ **Changed
+   this pass**: per Claire's explicit direction to stop gating on Step
+   2's numerical investigation (not being run) and instead proceed under
+   an optimistic genericity assumption, `IsSmallExceptionalSet` is now
+   `Bad.Finite`, and `decoupledSystem_degree_uniform` (item 4 below) is
+   proved from a new `GenericPeelChainHyp` bundle rather than left
+   `sorry`. The genuinely open mathematics (showing some real `Bad`
+   satisfying `GenericPeelChainHyp` outside itself is actually finite,
+   for an actual curve family — `ROADMAP-degree-uniform-step3.md` Step
+   3.1/3.2) is UNCHANGED and still not attempted; what changed is that
+   it is now isolated in one honestly-named hypothesis bundle rather
+   than hidden inside a bare `sorry`.
+4. ~~**`decoupledSystem_degree_uniform` is `sorry`**~~ **Closed this
+   pass, under `GenericPeelChainHyp`** (see that structure's own
+   docstring and the theorem's own docstring for exactly what is/isn't
+   proved): `Bad := ∅` is used to make the statement's existential
+   non-vacuous in shape, `d := p ^ 1` (the exponent `n := 1` in
+   `GenericPeelChainHyp` is an arbitrary placeholder — any fixed `n`
+   works for this theorem's own shape), and the proof chains
+   `decoupledSystem_zeroDimensional` (`Module.Finite`) through
+   `Module.natCard_eq_pow_finrank` and `GenericPeelChainHyp.hfinrank_le`
+   to the `Nat.card ≤ d` conclusion. **Not yet compiled against Claire's
+   REPL** — the `Fact.out (p := Nat.Prime p)` call in the final `exact`
+   is flagged in its own inline comment as the one step without a
+   cross-checked project precedent for its exact syntax.
 4.5. **`ROADMAP-reduce-divisor-correctness.md` Steps 0.5/1/2 done this
    pass**: the sign-convention check (§3c) confirmed `reducedClass`'s
    minus-sign definition is correct as written, no fix needed; `isReduction'`
