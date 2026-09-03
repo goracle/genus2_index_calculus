@@ -113,9 +113,9 @@ theorem cantorReductionStep_preserves_mumford
     simpa using this
   -- Step 2: difference of squares, `u_next ∣ v_next² - v²`.
   have hvsq : u_next ∣ v_next ^ 2 - v ^ 2 := by
-    have hsq : v_next ^ 2 - v ^ 2 = (v_next + v) * (v_next - (-v)) := by ring
+    have hsq : v_next ^ 2 - v ^ 2 = (v_next - v) * (v_next - (-v)) := by ring
     rw [hsq]
-    exact dvd_mul_of_dvd_right hrem (v_next + v)
+    exact dvd_mul_of_dvd_right hrem (v_next - v)
   -- Step 3: `u_next ∣ f - v²` (since `f - v² = u * u_next`, an obvious
   -- multiple of `u_next`).
   have hfv : u_next ∣ f - v ^ 2 := ⟨u, by rw [hexact]; ring⟩
