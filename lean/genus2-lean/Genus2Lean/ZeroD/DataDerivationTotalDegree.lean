@@ -11,11 +11,15 @@ uniform in `(c0,...,c4)`/`(sa,sb)` (neither appears as a ring variable), on
 `towerToRdec`'s `(num, den)` output, propagated down through the three-level
 recursion `K2 → K1 → K0 → Rdec` to `CrossNondegenerate`'s four resultants.
 
-**Not run against Claire's REPL yet.** Per project convention, Claude drafts
-and scopes, Claire tests. Every Mathlib lemma name below needs REPL
-confirmation before trusting the proof compiles — see the per-lemma notes.
-`_flat`, one level at a time, per the roadmap's own stated discipline (do not
-bundle the three-level recursion into one theorem).
+**Confirmed against Claire's REPL, this pass**: `aeval_X_comp_totalDegree_le`
+(build green, per Claire's report). **Not yet REPL-confirmed**: the two
+`IsFractionRing.num`/`.den` UFD lemmas (`isFractionRing_num_totalDegree_le`,
+`isFractionRing_den_totalDegree_le`) and `baseFracToRing_totalDegree_le`
+that depends on them — all drafted this pass, sourced against GitHub reads
+of current Mathlib (not just docs search) but not yet built. Per project
+convention, Claude drafts and scopes, Claire tests. `_flat`, one level at
+a time, per the roadmap's own stated discipline (do not bundle the
+three-level recursion into one theorem).
 
 **This pass covers only the base case** (`baseFracToRing`'s bound, including
 the `IsFractionRing.num`/`.den` UFD wrinkle the roadmap flags by name) — the
@@ -42,49 +46,68 @@ directly saying "if `v = a/b` for some concrete `(a,b)`, then
 `totalDegree (IsFractionRing.num v) ≤ totalDegree a`" — this is exactly the
 gap the roadmap flags and this lemma closes.
 
-If `v : K0 p` is exhibited as `a / b` for `b ≠ 0`, then `IsFractionRing.
-num` of `v` has `totalDegree` bounded by `a`'s. Proof route (per the
-roadmap): from `IsFractionRing.mk'_num_den'`-style identities, `num v`
-divides `a * den v`; reducedness (`num v` coprime to `den v`) plus `num v`
-a nonzero divisor in the UFD `MvPolynomial (Fin 2) (F p)` then forces `num v
-∣ a` outright (`IsRelPrime.dvd_of_dvd_mul_right`), and a nonzero divisor's
-`totalDegree` is `≤` the dividend's whenever the dividend is nonzero
-(`MvPolynomial.totalDegree_mul` on the witness `a = num v * k`, `k ≠ 0`
-forced since `a ≠ 0`, `totalDegree k ≥ 0` making `totalDegree (num v) ≤
-totalDegree a` immediate — no reverse-triangle-inequality lemma needed
-beyond `totalDegree_mul`'s equality form for a domain). **Names not yet
-REPL-confirmed**: `IsFractionRing.mk'_num_den'`, `IsRelPrime.dvd_of_dvd_
-mul_right`, and whether `MvPolynomial.totalDegree_mul` is stated as an
-equality (needs `IsDomain`, which `MvPolynomial (Fin 2) (F p)` has since
-`F p` is a field) or only as `totalDegree_mul_le`. If only the `≤` form
-exists for a domain too, swap the last step for the `≤` version applied to
-`num v * k = a` directly (still gives `totalDegree (num v) ≤ totalDegree a`
-via `omega` against `totalDegree_mul_le : (num v * k).totalDegree ≤
-totalDegree (num v) + totalDegree k`, which is a strictly weaker fact than
-needed here in the wrong direction — flagged for Claire's REPL check
-first, this may need the `IsDomain` equality form specifically, not just
-`_le`). -/
+**REPL-confirmed route** (via GitHub source read of current Mathlib, not
+just docs search): `IsLocalization.mk'_eq_iff_eq' : mk' S x₁ y₁ = mk' S x₂
+y₂ ↔ algebraMap R S (x₁ * y₂) = algebraMap R S (x₂ * y₁)` applied to `hv`
+(read as `mk' (K0 p) a b = mk' (K0 p) (num v) (den v)`, via
+`IsFractionRing.mk'_num_den`) cross-multiplies directly, and
+`FaithfulSMul.algebraMap_injective` strips the `algebraMap` to land the
+cross-multiplication identity `a * den v = num v * b` in the base ring
+`MvPolynomial (Fin 2) (F p)` itself — this is the exact pattern
+`IsFractionRing.num_den_unique`'s own Mathlib proof uses, mirrored here
+rather than routed through `field_simp`/division. From there,
+`IsFractionRing.num_den_reduced` (`IsRelPrime (num v) (den v)`) plus
+`IsRelPrime.dvd_of_dvd_mul_right`/`_left` (needs `[DecompositionMonoid A]`,
+automatic from `UniqueFactorizationMonoid A`) gives `num v ∣ a` and `den v
+∣ b` respectively, and `MvPolynomial.totalDegree_le_of_dvd_of_isDomain : f
+∣ g → g ≠ 0 → f.totalDegree ≤ g.totalDegree` (`Mathlib.Algebra.
+MvPolynomial.NoZeroDivisors`, `[NoZeroDivisors R]` only) finishes both
+theorems below in one step each. -/
+private theorem numDen_cross_mul {a b : MvPolynomial (Fin 2) (F p)} {v : K0 p}
+    (hb : b ≠ 0)
+    (hv : v = IsLocalization.mk' (K0 p) a ⟨b, mem_nonZeroDivisors_of_ne_zero hb⟩) :
+    a * (IsFractionRing.den (MvPolynomial (Fin 2) (F p)) v : MvPolynomial (Fin 2) (F p)) =
+      IsFractionRing.num (MvPolynomial (Fin 2) (F p)) v * b := by
+  have hmk : IsLocalization.mk' (K0 p) a ⟨b, mem_nonZeroDivisors_of_ne_zero hb⟩ =
+      IsLocalization.mk' (K0 p) (IsFractionRing.num (MvPolynomial (Fin 2) (F p)) v)
+        (IsFractionRing.den (MvPolynomial (Fin 2) (F p)) v) := by
+    rw [← hv]; exact (IsFractionRing.mk'_num_den (MvPolynomial (Fin 2) (F p)) v).symm
+  have heq := IsLocalization.mk'_eq_iff_eq'.mp hmk
+  exact (FaithfulSMul.algebraMap_injective (MvPolynomial (Fin 2) (F p)) (K0 p)) heq
+
 theorem isFractionRing_num_totalDegree_le
     {a b : MvPolynomial (Fin 2) (F p)} {v : K0 p} (hb : b ≠ 0)
     (hv : v = IsLocalization.mk' (K0 p) a ⟨b, mem_nonZeroDivisors_of_ne_zero hb⟩)
     (ha : a ≠ 0) :
     (IsFractionRing.num (MvPolynomial (Fin 2) (F p)) v).totalDegree ≤ a.totalDegree := by
-  sorry
+  have hcross := numDen_cross_mul p hb hv
+  have hdvd' : IsFractionRing.num (MvPolynomial (Fin 2) (F p)) v ∣
+      a * (IsFractionRing.den (MvPolynomial (Fin 2) (F p)) v : MvPolynomial (Fin 2) (F p)) :=
+    ⟨b, hcross⟩
+  have hdvd : IsFractionRing.num (MvPolynomial (Fin 2) (F p)) v ∣ a :=
+    (IsFractionRing.num_den_reduced (MvPolynomial (Fin 2) (F p)) v).dvd_of_dvd_mul_right hdvd'
+  exact MvPolynomial.totalDegree_le_of_dvd_of_isDomain hdvd ha
 
 /-- Companion bound for the denominator side: `IsFractionRing.den v`
 (coerced to `MvPolynomial (Fin 2) (F p)`) has `totalDegree ≤ totalDegree b`
-under the same hypotheses, by the symmetric argument (`den v ∣ b` via the
-same coprimality/UFD route, using `num v * b = a * den v`
-(`IsFractionRing.mk'_num_den'` again) the other way). Stated separately
-from `isFractionRing_num_totalDegree_le` rather than bundled, matching this
-project's `_flat`-first discipline — a future pass can combine them into
-one corollary once both are REPL-confirmed. -/
+under the same hypotheses, by the symmetric argument on the same
+`a * den v = num v * b` identity (`numDen_cross_mul`): `den v ∣ num v * b`
+directly, and `(num_den_reduced).symm.dvd_of_dvd_mul_left` gives `den v ∣
+b`. Stated separately from `isFractionRing_num_totalDegree_le` rather than
+bundled, matching this project's `_flat`-first discipline. -/
 theorem isFractionRing_den_totalDegree_le
     {a b : MvPolynomial (Fin 2) (F p)} {v : K0 p} (hb : b ≠ 0)
     (hv : v = IsLocalization.mk' (K0 p) a ⟨b, mem_nonZeroDivisors_of_ne_zero hb⟩) :
     (↑(IsFractionRing.den (MvPolynomial (Fin 2) (F p)) v) :
         MvPolynomial (Fin 2) (F p)).totalDegree ≤ b.totalDegree := by
-  sorry
+  have hcross := numDen_cross_mul p hb hv
+  have hdvd' : (IsFractionRing.den (MvPolynomial (Fin 2) (F p)) v :
+      MvPolynomial (Fin 2) (F p)) ∣ IsFractionRing.num (MvPolynomial (Fin 2) (F p)) v * b :=
+    ⟨a, by linear_combination -hcross⟩
+  have hdvd : (IsFractionRing.den (MvPolynomial (Fin 2) (F p)) v :
+      MvPolynomial (Fin 2) (F p)) ∣ b :=
+    (IsFractionRing.num_den_reduced (MvPolynomial (Fin 2) (F p)) v).symm.dvd_of_dvd_mul_left hdvd'
+  exact MvPolynomial.totalDegree_le_of_dvd_of_isDomain hdvd hb
 
 /-! ## Base case: `baseFracToRing`'s `totalDegree` bound
 
