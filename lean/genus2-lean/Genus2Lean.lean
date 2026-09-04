@@ -106,3 +106,4 @@ import Genus2Lean.ZeroD.ReducedClassBundlesCross4
 import Genus2Lean.ZeroD.ReducedClassDispatch
 import Genus2Lean.ZeroD.SampleTargetFromAlphaWitness
 import Genus2Lean.ZeroD.CantorReductionStep
+import Genus2Lean.ZeroD.DataDerivationTotalDegree
