@@ -84,28 +84,40 @@ never call `isReduction'` at all.
 ## Numerical check: result
 
 Per this roadmap's own prior gate ("do not start Part B until this has
-been run"): Claire ran the existing `HomotopyContinuation.jl` pipeline
-on several independent `(alpha,alpha')` pairs.
+been run"): Claire ran two independent checks on several/random
+`(alpha,alpha')` pairs on one fixed curve.
+
+1. **Resultant-based check**: solved the system directly down to the
+   U,V resultants (not via homotopy continuation), then plugged in two
+   random values of `P`. No solution was visible — the expected outcome
+   if the solution variety has dimension ≤1, not the naive 2-dimensional
+   reading (a genuinely 2D variety would have produced a solution for
+   generic `P`'s).
+2. **`HomotopyContinuation.jl` check**: run on several independent
+   `(alpha,alpha')` pairs.
 
 **Result: 0-dimensional, with witness points missing, consistent across
-multiple re-runs.**
+multiple re-runs** (check 2) — **consistent with** check 1's dimension
+≤1 finding. Two independently-run methods on the same regime agree.
 
 What this supports: the uniform degree bound
 `decoupledSystem_degree_uniform` is targeting is plausible — the
 solution variety is NOT the naive 2-dimensional "plug in two points and
 solve" reading; something is genuinely cutting it down to finitely many
 points, matching a real uniform-degree phenomenon rather than a
-coincidence of one instance.
+coincidence of one instance or one method.
 
 What this does NOT yet settle (open items Part B still needs, see
 below): WHY it's 0D (which nondegeneracy condition is doing the work),
 whether the "missing witness points" indicate `Bad`-locus degeneration
 specifically (vs. numerical/path-tracking failure unrelated to the
-math), and how large the exceptional set is as a fraction of the whole
-`F_ell` domain — the number the eventual counting argument's usefulness
-depends on. The "`D ~ K_C` correlates with a degree jump" check
-mentioned below is still open and should be looked at together with the
-missing-witness-point pattern, since they may be the same phenomenon.
+math), whether this holds across *different curves* (both checks used
+one fixed curve — curve dependence is untested), and how large the
+exceptional set is as a fraction of the whole `F_ell` domain — the
+number the eventual counting argument's usefulness depends on. The
+"`D ~ K_C` correlates with a degree jump" check mentioned below is still
+open and should be looked at together with the missing-witness-point
+pattern, since they may be the same phenomenon.
 
 ## Why this doc exists
 

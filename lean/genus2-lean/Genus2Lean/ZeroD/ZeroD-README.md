@@ -149,19 +149,23 @@ mentions of the word in prose -- those inflate a raw grep hugely) across
 `PrincipalSubgroupCollapse.lean` x1 -- see `STATUS.md` for exactly which
 theorems). See `STATUS.md` for the scan script and how to re-run it.
 
-**This contradicts several `ROADMAP-*.md` files in this directory**,
-which describe `decoupledSystem_degree_uniform` and
-`decoupledSystem_zeroDimensional` as still-open `sorry`s. Checked
-directly: `AlphaLocusDegreeUniform.lean`'s own module docstring (its
-last dated entry) says both were closed in a later pass, under a new
-hypothesis bundle `GenericPeelChainHyp` -- not proved unconditionally,
-but not a bare `sorry` either. **That docstring itself flags the result
-as "not yet compiled against Claire's REPL"** -- so "zero live `sorry`
-tokens" is not the same claim as "confirmed to typecheck." Read
-`AlphaLocusDegreeUniform.lean`'s module docstring directly (its last
-~150 lines) before trusting either the roadmaps' "still sorry" framing
-or this doc's "zero sorry" framing -- both are snapshots, and only a
-`lake build` settles which one is live right now.
+**This contradicted several `ROADMAP-*.md` files in this directory**
+(now fixed, see "Known stale claims" in `STATUS.md` and the correction
+notice at the top of `ROADMAP-alpha-locus.md`), which described
+`decoupledSystem_degree_uniform` and `decoupledSystem_zeroDimensional`
+as still-open `sorry`s. As of this pass, Claire confirms the whole
+project builds green. **But "sorry-free and builds green" is not the
+same as "proved."** `decoupledSystem_degree_uniform` closes via a
+hypothesis bundle, `GenericPeelChainHyp`, whose `hfinrank_le` field
+states the uniform degree bound *itself* as an assumption (with
+`Bad := ∅`) -- the theorem typechecks by assuming its own conclusion.
+This is a genuinely circular closure, not an honest weakening in the
+style of this project's other hypothesis bundles (`Nondegenerate`,
+which names concrete checkable coefficient conditions, is fine;
+`hfinrank_le`, which just restates the goal, is not). See
+`ROADMAP-degree-uniform-step3.md` (rewritten this pass) for the
+corrected breakdown of what's actually still open, and read on for the
+real open risk this surfaced.
 
 ## Sorry-free is not the same as done
 
@@ -181,37 +185,75 @@ see "What's actually still open" below.
 
 ## What's actually still open (the real remaining work, as of this pass)
 
-Distilled from `ROADMAP-alpha-locus.md`, `ROADMAP-alpha-to-degree-
-uniform.md`, and `ROADMAP-degree-uniform-step3.md` -- read those directly
-for the full argument, this is a pointer, not a replacement:
+Distilled from `ROADMAP-alpha-locus.md` (status-corrected this pass) and
+`ROADMAP-degree-uniform-step3.md` (rewritten this pass) -- read those
+directly for the full argument, this is a pointer, not a replacement.
+**Ranked by actual risk, not by document order** -- earlier drafts of
+this list ranked `GenericPeelChainHyp` and `Reduce` as comparable
+unknowns; they are not. `Reduce` is in good shape. The real open risk is
+item 1:
 
-1. **`GenericPeelChainHyp` itself is unproved.** The theorem
-   `decoupledSystem_degree_uniform` currently gets its uniform bound
-   *by assuming* this hypothesis holds outside a finite exceptional set.
-   Whether that's true -- for real curves, real `(alpha,alpha')` -- is
-   exactly advisory-6/7's Question 4, restated one layer deeper. This is
-   the single biggest remaining question in the whole subsystem.
-2. **`Reduce` (`ReduceDispatchGeneral`, `Reduce/GeneralSharedRoot.lean`)
-   is proved correct only at the polynomial level** (`v^2 = f mod u`,
-   the Mumford congruence) -- not yet connected to the actual *group-law*
-   semantics (that it computes the literal divisor-class reduction of
-   `alpha*a - P1 - P2`). `reducedClass_eq_of_isReduction'` and its six
-   siblings are the layer that makes that connection, and per the
-   docstring evidence above, at least the base case now typechecks as a
-   real theorem (not a bare `sorry`) -- but budget time to re-verify this
-   against the actual current file state before relying on it, per the
-   "stale claims" warning above.
-3. **The exceptional set's actual size is an open empirical question.**
-   Claire's `HomotopyContinuation.jl` runs came back 0-dimensional
-   (encouraging), but *how small* the bad locus is as a fraction of
-   `F_ell` -- the number the eventual counting argument's usefulness
-   depends on -- has not been measured. This is Julia/Oscar work, not
-   Lean work; see `ROADMAP-degree-uniform-step3.md` Step 3.1.
-4. **No dispatcher exists yet above `ReducedClassDispatch.lean`'s own
+1. **Attempt the degree bound for `CrossNondegenerate`/
+   `PeelChainNondegenerate` directly — this is the actual next work, not
+   an unmeasured risk requiring more numerics.** This condition's own
+   docstring in `DecoupledSystemRegular.lean` says, in Claire's own
+   words: "expected to be FALSE for at least some, quite possibly most,
+   choices of `(c0,...,c4)`" -- found via a genuine counterexample shape
+   during a ChatGPT-assisted debugging session, not a hedge. This is a
+   cross-sample resultant regularity condition. **Update, this pass**:
+   two independent numerical checks have been run on one fixed curve,
+   several `(alpha,alpha')` pairs -- (1) a direct resultant solve down
+   to the U,V resultants with two random `P`'s plugged in, no visible
+   solution (consistent with dimension ≤1), and (2) a separate
+   `HomotopyContinuation.jl` run, 0-dimensional with witness points
+   missing/dropped, consistent across re-runs. **These agree.**
+   **Corrected framing, this pass**: an earlier version of this
+   document treated a further numerical sweep across *multiple curves*
+   as the necessary next step before a degree bound could be attempted.
+   Per Claire, that's the wrong lens -- the peel-chain construction is a
+   fixed, finite sequence of algebraic operations, so this is a
+   bounded-degree resultant condition directly amenable to
+   Sylvester-matrix-style degree counting on `uRS`/`vRS`'s own known
+   degrees (the same style of argument that already fully characterized
+   `MatrixNondegenerate`'s `det(A)`), not something requiring
+   cross-curve empirical screening to understand. `alpha`/`alpha'`
+   draws aren't expected to matter except at `alpha ≡ alpha' (mod
+   ell)`, which `Bad` already exists to exclude. **The actual next
+   step is to attempt the degree bound directly** -- see
+   `ROADMAP-degree-uniform-step3.md`'s rewritten Obligation 2/3 sections
+   for the corrected plan (fold Obligation 2 into Obligation 3: prove
+   the bound, and let the specific per-stage nonvanishing conditions
+   fall out of that proof as named, checkable hypotheses). This is
+   still the single highest-priority next action in the whole
+   subsystem, higher priority than any further numerical work.
+2. **`decoupledSystem_degree_uniform`'s current proof is circular and
+   needs to be redone, not just re-verified.** It currently closes via
+   `GenericPeelChainHyp`, a hypothesis bundle whose `hfinrank_le` field
+   states the uniform bound itself as an assumption (`Bad := ∅`
+   witnesses the existential). This is not a "weakened but honest"
+   hypothesis in the style of `Nondegenerate` -- it's the goal restated
+   as its own premise. Item 1's degree-bound work is exactly what
+   resolves this: once the bound is proved, `GenericPeelChainHyp` gets
+   replaced with the actual proved pieces (or a strictly narrower
+   bundle, dropping `hfinrank_le`). See `ROADMAP-degree-uniform-step3.md`'s
+   three-obligation breakdown for the full plan, and do not let a future
+   pass re-collapse these back into one bundle.
+3. **`htop_ne_smul` (solution existence -- the 12-generator ideal is
+   proper) is unproved but likely tractable**, and doesn't depend on
+   item 1's outcome -- reasonable to attempt in parallel.
+4. **`Reduce` (`ReduceDispatchGeneral`, `Reduce/GeneralSharedRoot.lean`)
+   is in good shape, not a live risk.** Proved correct at the polynomial
+   level (`v^2 = f mod u`, the Mumford congruence), and
+   `reducedClass_eq_of_isReduction'` plus its six case-split siblings
+   (connecting that to the actual divisor-class/group-law semantics) are
+   sorry-free. Worth a REPL re-confirmation if you're about to build
+   directly on top of it, but this is not where the project's risk sits.
+5. **No dispatcher exists yet above `ReducedClassDispatch.lean`'s own
    level** that would take a bare "these two points collided" fact and
    route to the right one of the 7 theorem variants automatically from
    first principles -- `ReducedClassDispatch.lean` dispatches, but
-   something still has to hand it pre-classified case data.
+   something still has to hand it pre-classified case data. Low priority
+   relative to items 1-3.
 
 ## Directory map (one line each -- see each file's own module docstring for real detail)
 

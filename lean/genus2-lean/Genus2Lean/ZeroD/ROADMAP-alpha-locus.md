@@ -1,6 +1,75 @@
 # Roadmap: proving eq 1 is 0-dimensional *uniformly in `(alpha,alpha')`* —
 # why this is the real target, and how it closes the 8th-moment gap
 
+## Status correction, added this pass — read before anything below
+
+Everything from the TL;DR through "Step 4" below is the *conceptual*
+argument for why a uniform degree bound closes the 8th-moment gap, and
+that argument is still correct and worth reading in full — nothing in
+this status correction changes it. What's stale is the **file-status
+claims** scattered through this document's own later "Update (this
+pass)" sections (Steps 1-3's reported completion, sorry counts,
+`AlphaLocusDegreeUniform.lean`'s claimed content): several passes have
+happened since the last edit here, and the file was left in a state
+that materially misled a later Claude instance into closing the target
+theorem circularly. Concretely, so it doesn't happen again:
+
+- **`decoupledSystem_degree_uniform` is no longer `sorry`, but it is
+  also not actually proved.** A later pass introduced a hypothesis
+  bundle, `GenericPeelChainHyp`, whose `hfinrank_le` field states the
+  uniform degree bound *itself* as an assumption, and instantiated
+  `Bad := ∅`. The theorem typechecks and the project builds green, but
+  the proof is circular — it assumes its own conclusion and hands it
+  back. **Do not read "sorry-free" or "build green" as this roadmap's
+  Step 3 being done.** See `ROADMAP-degree-uniform-step3.md` (rewritten
+  this pass) for the corrected, three-obligation breakdown of what
+  Step 3 actually still requires, and for why the circularity happened
+  (the hard part — a genuine, per-instance-uncertain cross-sample
+  resultant condition, `CrossNondegenerate`/`PeelChainNondegenerate` —
+  got folded into the same bundle as the thing that should have been
+  *derived from* it, rather than kept separate and visibly open).
+- **Task (A) (`Reduce`, this document's Step 1) is not the source of
+  the problem.** It's in good shape — `Reduce/GeneralSharedRoot.lean`'s
+  `ReduceDispatchGeneral` exists, is sorry-free, and is proved correct
+  at the polynomial (Mumford-congruence) level; `reducedClass_eq_of_
+  isReduction'` and its six case-split siblings connect that to the
+  actual divisor-class semantics and are also sorry-free (see
+  `ROADMAP-reduce-divisor-correctness.md`/`ROADMAP-reducedClass-
+  dispatcher.md` for that layer's own history). If you're looking for
+  where the real remaining risk is, it is NOT here.
+- **The real remaining risk is `CrossNondegenerate`.** Its own docstring
+  in `DecoupledSystemRegular.lean` says, in Claire's own words: this
+  condition is "expected to be FALSE for at least some, quite possibly
+  most, choices of `(c0,...,c4)`." That is a claim about the curve
+  coefficients, found via a genuine counterexample shape during a
+  ChatGPT-assisted debugging session. Two independent numerical checks
+  (a direct resultant solve and a separate `HomotopyContinuation.jl`
+  run, both on one fixed curve, varying `(alpha,alpha')`) agree and are
+  consistent with dimension ≤1/0D. **Corrected framing, this pass**: an
+  earlier version of this note treated a further numerical sweep across
+  *multiple curves* as the necessary next step before attempting a
+  degree bound. Per Claire, that's not right — the peel-chain
+  construction is a fixed, finite sequence of algebraic operations, so
+  this is a bounded-degree resultant condition amenable to direct
+  Sylvester-matrix-style degree counting (comparable to how
+  `MatrixNondegenerate`'s `det(A)` was fully characterized), not
+  something that needs cross-curve numerical screening to understand.
+  `alpha`/`alpha'` draws aren't expected to matter except at `alpha ≡
+  alpha' (mod ell)`, which `Bad` already exists to exclude. **The actual
+  next step is to attempt the degree bound directly** — see
+  `ROADMAP-degree-uniform-step3.md`'s rewritten Obligation 2/3 sections
+  for the corrected plan. This is still the single most important open
+  work in the whole `ZeroD` subsystem — more important than anything in
+  this document's own Step 1-4 list below, which predates the
+  discovery of this issue.
+- **Read `ZeroD/README.md` and `ZeroD/STATUS.md` first**, and
+  `ROADMAP-degree-uniform-step3.md` for Step 3 specifically, before
+  trusting this document's own later inline status updates (the
+  "Update (this pass)" sections starting below) — those were accurate
+  when written but have not been re-verified against the current file
+  state, and at least one of them (Step 3's completion) is now known
+  wrong in the way described above.
+
 ## TL;DR (supersedes the previous version of this roadmap)
 
 The previous version of this roadmap treated "is the matching system
@@ -318,6 +387,15 @@ bundle `regularSeq_of_peel_chain` now also depends on; see
 `alpha,alpha'` of bounded degree, so that "degree jumps" can only happen
 on their vanishing locus — which is exactly the kind of set `Bad` needs
 to be, and connects back to Step 2's numerical check directly.
+
+**Status note, added this pass (see the top-of-file correction for full
+detail): this strategy is still the right one and is still unattempted.**
+A later pass made `decoupledSystem_degree_uniform` typecheck by
+assuming its own conclusion via `GenericPeelChainHyp.hfinrank_le`
+instead of executing this paragraph's actual plan. Executing this
+paragraph's plan — degree bounds on the peel chain's resultants, not an
+assumed bound — is still exactly the open work. See
+`ROADMAP-degree-uniform-step3.md` for the current, corrected breakdown.
 
 ### Step 4: revisit `genus2-index-calculus-advisory-6.md` once Step 3 lands
 
@@ -809,7 +887,18 @@ numerical Julia/Oscar investigation of whether `D ~ K_C` correlates with
 a degree jump, per Step 2). Whether the bad `alpha`'s end up being
 literally readable off a formula (e.g. `D ~ K_C`) or something the
 computer algebra has to determine per-instance is exactly Step 2's open
-question — nobody has run that check yet.
+question. **Stale as of this pass — both Task A and part of Task B have
+since moved**: `Reduce` was ported and is sorry-free (see the top-of-
+file "Status correction"), and two independent numerical checks have
+been run and agree: a direct resultant solve (two random `P`'s plugged
+in, no visible solution — consistent with dimension ≤1) and an
+`HomotopyContinuation.jl` run (0D, missing witnesses, consistent across
+re-runs) — see `ROADMAP-alpha-to-degree-uniform.md`'s "Numerical check:
+result" for the full writeup. Per the top-of-file "Status correction",
+the actual next step from here is to attempt the degree bound directly
+(fixed, finite algebraic operations — Sylvester-matrix-style degree
+counting, not a further numerical sweep), not to keep gathering more
+numerical instances or sweep across curves.
 
 **Attempted `decoupledSystem_zeroDimensional` this pass; not closed —
 routed to a ChatGPT consultation instead, per project convention for
