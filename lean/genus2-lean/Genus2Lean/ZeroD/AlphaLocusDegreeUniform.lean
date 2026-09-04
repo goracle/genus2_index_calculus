@@ -972,7 +972,7 @@ relationship, now that both are connected: `decoupledSystem_zeroDimensional`
 gives finiteness pointwise (unconditionally, given the existing
 nondegeneracy hypotheses); `decoupledSystem_degree_uniform` additionally
 needs a uniform dimension bound across the family, which
-`GenericPeelChainHyp` assumes rather than derives.
+`GenericPeelChainHyp` assumes rather than derives.-/
 theorem decoupledSystem_zeroDimensional (p : ℕ) [Fact (Nat.Prime p)]
     [Fact (p ≠ 2)] (c0 c1 c2 c3 c4 : F p) (sa sb : SampleTarget p)
     (hcurA : curBeforeMonic p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1 ≠ 0)
