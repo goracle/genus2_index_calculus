@@ -79,22 +79,31 @@ Once `Reduce` exists, the hypothesis field becomes a `rfl`-provable
 consequence of a concrete `def` and this indirection collapses, exactly as
 that docstring anticipates for `DecoupledGenerators`.
 
-**Updated, this pass**: rather than continue waiting on Step 2's
-numerical check (Julia/Oscar, whether degree stays constant across
-several `(alpha,alpha')` instances, whether `D ~ K_C` correlates with a
-degree jump — empirical work outside Lean, not being run right now),
-Task (B) now proceeds under an explicit optimistic genericity
-hypothesis (`GenericPeelChainHyp`, see below) standing in for "the
-curve/`(alpha,alpha')` pair is OK." `IsSmallExceptionalSet` is `Bad.Finite`
+**Updated, this pass**: `ROADMAP-alpha-to-degree-uniform.md`'s own
+numerical prerequisite (`HomotopyContinuation.jl`, several independent
+`(alpha,alpha')` pairs) is DONE, not outstanding — Claire ran it,
+result was 0-dimensional, consistent across multiple re-runs (see that
+roadmap's "Numerical check: result" section). That already answers the
+question this whole theorem hinges on: the solution variety genuinely
+is finite, not a 2-dimensional family, so degree-uniformity is a
+plausible target rather than a vacuous one. What is NOT yet done is the
+FINER numerical question `ROADMAP-degree-uniform-step3.md` Step 3.1
+separately asks for (does the `CrossNondegenerate`/`PeelChainNondegenerate`
+bad locus cluster thin-in-`(alpha,alpha')` per curve, or spread across
+whole curves — the input a real closed-form degree bound would need)
+and the closed-form bounded-degree-resultant argument itself (Step
+3.2) — those remain open, and per Claire's explicit direction this pass
+proceeds under an optimistic genericity hypothesis standing in for them
+rather than waiting further. `GenericPeelChainHyp` (see below) packages
+that hypothesis. `IsSmallExceptionalSet` is `Bad.Finite`
 (a real predicate, not the earlier `True` stub), and
 `decoupledSystem_degree_uniform` is proved FROM that hypothesis rather
 than left `sorry` — see that theorem's own docstring for exactly what
 this does and does not establish. Pinning `Bad` down to a genuinely
-finite set for a real curve family, without begging the question, is
-still the open mathematics (`ROADMAP-degree-uniform-step3.md` Step
-3.1/3.2) — what changed this pass is that the statement-to-proof CHAIN
-is now fully connected, isolating that open content in one named
-hypothesis rather than a bare `sorry`.
+finite set for a real curve family, via the actual bounded-degree
+argument, is still the open mathematics — what changed this pass is
+that the statement-to-proof CHAIN is now fully connected, isolating
+that open content in one named hypothesis rather than a bare `sorry`.
 
 ## `Reduce`'s actual algorithm, now on file (`phi_general.zip`) — not yet
 ## ported, but no longer unspecified
@@ -963,7 +972,7 @@ relationship, now that both are connected: `decoupledSystem_zeroDimensional`
 gives finiteness pointwise (unconditionally, given the existing
 nondegeneracy hypotheses); `decoupledSystem_degree_uniform` additionally
 needs a uniform dimension bound across the family, which
-`GenericPeelChainHyp` assumes rather than derives. -/
+`GenericPeelChainHyp` assumes rather than derives.
 theorem decoupledSystem_zeroDimensional (p : ℕ) [Fact (Nat.Prime p)]
     [Fact (p ≠ 2)] (c0 c1 c2 c3 c4 : F p) (sa sb : SampleTarget p)
     (hcurA : curBeforeMonic p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1 ≠ 0)
@@ -1029,9 +1038,16 @@ bound on `deg(alpha,alpha')` itself, not merely on its `F`-rational
 sub-count). -/
 
 /-- **The optimistic genericity assumption this pass proceeds under.**
-Per Claire's direction, rather than wait on ROADMAP-alpha-locus.md Step
-2's numerical check (not being run right now), this bundle names
-directly what "the curve/`(alpha,alpha')` pair is OK" has to mean for
+`ROADMAP-alpha-to-degree-uniform.md`'s own numerical prerequisite is
+DONE (0-dimensional, multiple re-runs, per that roadmap's own "Numerical
+check: result" section) — this bundle is not standing in for an
+un-run check, it is standing in for the FURTHER content that check does
+not by itself supply: `ROADMAP-degree-uniform-step3.md` Step 3.1's
+finer per-curve clustering question and Step 3.2's actual closed-form
+bounded-degree-resultant argument, neither of which has been carried
+out. Per Claire's direction, rather than block further on those, this
+bundle names directly what "the curve/`(alpha,alpha')` pair is OK" has
+to mean for
 `decoupledSystem_degree_uniform`'s proof below to go through: outside a
 finite `Bad`, (1) the whole existing nondegeneracy chain
 (`Nondegenerate` on both sides, `CrossNondegenerate`, `PeelChainNondegenerate`,
@@ -1197,15 +1213,19 @@ theorem decoupledSystem_degree_uniform (p : ℕ) [Fact (Nat.Prime p)]
    proving `isReduction` a consequence rather than an assumption — is still
    unstarted; only the "what has to be ported" question is now answered.
 3. ~~**`Bad`/`IsSmallExceptionalSet`** is a stub (`:= True`)~~ **Changed
-   this pass**: per Claire's explicit direction to stop gating on Step
-   2's numerical investigation (not being run) and instead proceed under
-   an optimistic genericity assumption, `IsSmallExceptionalSet` is now
+   this pass**: `ROADMAP-alpha-to-degree-uniform.md`'s own numerical
+   prerequisite (0-dimensional, Claire's `HomotopyContinuation.jl`
+   runs) is DONE, not outstanding. Per Claire's explicit direction, the
+   FINER numerics (`ROADMAP-degree-uniform-step3.md` Step 3.1's
+   per-curve clustering check) and the actual closed-form degree bound
+   (Step 3.2) are what's left, and rather than block further on those,
+   `IsSmallExceptionalSet` is now
    `Bad.Finite`, and `decoupledSystem_degree_uniform` (item 4 below) is
    proved from a new `GenericPeelChainHyp` bundle rather than left
    `sorry`. The genuinely open mathematics (showing some real `Bad`
    satisfying `GenericPeelChainHyp` outside itself is actually finite,
-   for an actual curve family — `ROADMAP-degree-uniform-step3.md` Step
-   3.1/3.2) is UNCHANGED and still not attempted; what changed is that
+   for an actual curve family — Step 3.1/3.2 specifically) is UNCHANGED
+   and still not attempted; what changed is that
    it is now isolated in one honestly-named hypothesis bundle rather
    than hidden inside a bare `sorry`.
 4. ~~**`decoupledSystem_degree_uniform` is `sorry`**~~ **Closed this
