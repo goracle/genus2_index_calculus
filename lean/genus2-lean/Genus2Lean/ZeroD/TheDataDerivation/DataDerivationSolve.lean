@@ -2184,10 +2184,65 @@ theorem Npoly_eq_curBeforeMonic_mul
     with hU_def
   have hmon1 : t1X.Monic := Polynomial.monic_X_sub_C _
   have hmon2 : t2X.Monic := Polynomial.monic_X_sub_C _
-  have hmonU : U.Monic := by
+  -- Same pattern as `dvd_E_add_Y_mul_v`'s `hUMonic` above: derive monicity
+  -- via `Polynomial.Monic.map` from the already-proven base-field fact
+  -- `uPoly_monic`, rather than re-deriving it against `K2` directly (the
+  -- previous `apply Polynomial.monic_X_pow_add_C` used a lemma name that
+  -- does not exist in Mathlib4 — the real lemma, `monic_X_pow_add`, expects
+  -- the goal in `X^n + p` shape with `p.degree < n`, which does not match
+  -- syntactically here, and unifying against it directly over the `K2`
+  -- tower is exactly the kind of expensive `isDefEq` search this file's
+  -- comments elsewhere warn about).
+  have hUmap : U = (X ^ 2 + C u1 * X + C u0 : Polynomial (F p)).map
+      (algebraMap (F p) (K2 p c0 c1 c2 c3 c4)) := by
     rw [hU_def]
-    apply Polynomial.monic_X_pow_add_C -- placeholder name; see note below if this fails
-  sorry
+    simp [Polynomial.map_add, Polynomial.map_mul, Polynomial.map_pow, Polynomial.map_C,
+      Polynomial.map_X]
+  have hmonU : U.Monic := hUmap ▸ (uPoly_monic p u0 u1).map _
+  -- Unfold `curBeforeMonic` to its three-layer `/ₘ` definition and fold
+  -- the goal's spelled-out `t1X`/`t2X`/`U` subterms back to their `set`
+  -- names, so the peeling below lines up syntactically at each layer.
+  show Npoly p c0 c1 c2 c3 c4 u0 u1 v0 v1 =
+      (((Npoly p c0 c1 c2 c3 c4 u0 u1 v0 v1 /ₘ t1X) /ₘ t2X) /ₘ U) * (t1X * t2X * U)
+  set Q1 := Npoly p c0 c1 c2 c3 c4 u0 u1 v0 v1 /ₘ t1X with hQ1_def
+  set Q2 := Q1 /ₘ t2X with hQ2_def
+  -- Layer 1 (innermost): `t1X ∣ Npoly`, `t1X` monic ⟹ `Npoly = t1X * Q1`.
+  have hdvd1 : t1X ∣ Npoly p c0 c1 c2 c3 c4 u0 u1 v0 v1 := dvd_N_anchor1 p c0 c1 c2 c3 c4 u0 u1 v0 v1 hA
+  have hsplit1 : Npoly p c0 c1 c2 c3 c4 u0 u1 v0 v1 = t1X * Q1 :=
+    eq_mul_divByMonic_of_dvd hmon1 hdvd1
+  -- Layer 2: `t2X ∣ Npoly = t1X * Q1`; `t2X` coprime to `t1X` (symm of
+  -- `anchor1_coprime_anchor2`) ⟹ `t2X ∣ Q1`; `t2X` monic ⟹ `Q1 = t2X * Q2`.
+  have hdvd2 : t2X ∣ Npoly p c0 c1 c2 c3 c4 u0 u1 v0 v1 := dvd_N_anchor2 p c0 c1 c2 c3 c4 u0 u1 v0 v1 hA
+  have hcop21 : IsCoprime t2X t1X := (anchor1_coprime_anchor2 p c0 c1 c2 c3 c4).symm
+  have hdvd2' : t2X ∣ Q1 := hcop21.dvd_of_dvd_mul_left (hsplit1 ▸ hdvd2)
+  have hsplit2 : Q1 = t2X * Q2 := eq_mul_divByMonic_of_dvd hmon2 hdvd2'
+  -- Layer 3 (outermost): `U ∣ Npoly = t1X * (t2X * Q2) = (t1X * t2X) * Q2`;
+  -- `U` coprime to `t1X` and to `t2X` ⟹ coprime to `t1X * t2X` ⟹ `U ∣ Q2`;
+  -- `U` monic ⟹ `Q2 = U * curBeforeMonic` (this IS `curBeforeMonic`'s own
+  -- definition, so this closes the goal after re-association).
+  have hdvdU : U ∣ Npoly p c0 c1 c2 c3 c4 u0 u1 v0 v1 :=
+    dvd_N_u p c0 c1 c2 c3 c4 u0 u1 v0 v1 hA hMumford
+  have hcopU1 : IsCoprime U t1X := (anchor1_coprime_U p c0 c1 c2 c3 c4 u0 u1).symm
+  have hcopU2 : IsCoprime U t2X := (anchor2_coprime_U p c0 c1 c2 c3 c4 u0 u1).symm
+  have hcopU12 : IsCoprime U (t1X * t2X) := hcopU1.mul_right hcopU2
+  have hsplitN : Npoly p c0 c1 c2 c3 c4 u0 u1 v0 v1 = (t1X * t2X) * Q2 := by
+    rw [hsplit1, hsplit2, mul_assoc]
+  have hdvdU' : U ∣ Q2 := hcopU12.dvd_of_dvd_mul_left (hsplitN ▸ hdvdU)
+  -- Assemble: the goal, after unfolding `curBeforeMonic` to `Q2 /ₘ U` and
+  -- `set`-folding, is `Npoly = (Q2 /ₘ U) * (t1X * t2X * U)`. Build it via an
+  -- explicit `calc` rather than a blanket `rw [hsplit1, hsplit2, hsplit3]`:
+  -- a blanket `rw` with `hsplit3 : Q2 = U * (Q2 /ₘ U)` rewrites EVERY `Q2`
+  -- occurrence, including the one already sitting inside the goal's own
+  -- `Q2 /ₘ U` (= `curBeforeMonic`), producing a spurious nested
+  -- `(U * (Q2 /ₘ U)) /ₘ U` that `ring` cannot simplify (`/ₘ` isn't a ring
+  -- operation it knows). The `calc` chain below only ever rewrites the LHS
+  -- `Npoly`-side `Q2`, leaving the goal's RHS `Q2 /ₘ U` atom untouched, so
+  -- the final `ring` step only needs to re-associate/commute multiplication.
+  have hsplit3 : Q2 = U * (Q2 /ₘ U) := eq_mul_divByMonic_of_dvd hmonU hdvdU'
+  calc Npoly p c0 c1 c2 c3 c4 u0 u1 v0 v1
+      = t1X * (t2X * Q2) := by rw [hsplit1, hsplit2]
+    _ = t1X * (t2X * (U * (Q2 /ₘ U))) := by conv_lhs => rw [hsplit3]
+    _ = (Q2 /ₘ U) * (t1X * t2X * U) := by ring
 
 end ExactDivision
 
