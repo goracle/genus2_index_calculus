@@ -14,10 +14,13 @@ recursion `K2 → K1 → K0 → Rdec` to `CrossNondegenerate`'s four resultants.
 **Confirmed against Claire's REPL**: `aeval_X_comp_totalDegree_le`, the
 `IsFractionRing.num`/`.den` UFD lemmas (`isFractionRing_num_totalDegree_le`,
 `isFractionRing_den_totalDegree_le`), `baseFracToRing_totalDegree_le`,
-`combine_totalDegree_le`, `towerToRdecK1_totalDegree_le`, and
-`towerToRdec_totalDegree_le` (build green, per Claire's reports). **Not
-yet REPL-confirmed**: `towerToRdec_coeff_totalDegree_le`, new this pass —
-a pure substitution corollary (`v := poly.coeff i.val`), low risk.
+`combine_totalDegree_le`, `towerToRdecK1_totalDegree_le`,
+`towerToRdec_totalDegree_le`, and now `fAtT_eq_mk'_one` (build green, per
+Claire's reports). **Not yet REPL-confirmed**: `towerToRdec_coeff_
+totalDegree_le`, a pure substitution corollary (`v := poly.coeff i.val`),
+low risk; and `curvePoly_eval_C_totalDegree_le`, written this pass against
+confirmed Mathlib signatures (`eval₂_eq_sum_range'`, `totalDegree_C`/
+`_X_pow`/`_mul`, `totalDegree_finsetSum_le`) but not yet run.
 
 **This pass adds the `coeffsToNumDen`-shaped corollary**
 (`towerToRdec_coeff_totalDegree_le`), completing the roadmap's step 4/5
@@ -250,19 +253,88 @@ theorem towerToRdecK1_totalDegree_le {Vars : Type*}
   obtain ⟨h00, h01, h10, h11⟩ := h
   exact combine_totalDegree_le p (sg.wGen 0) h00 h01 h10 h11
 
-/-! ## Not attempted this pass: the concrete `fAtT` instance
+/-! ## `fAtT`'s concrete `mk'` witness — attempted this pass
 
-`fAtT p c0 c1 c2 c3 c4 i` has an "obvious" witness numerator
-(`curvePoly.eval₂ (algebraMap (F p) (MvPolynomial (Fin 2) (F p))) (X i)`
--shaped) of `totalDegree ≤ 5` (`curvePoly_natDegree`, `DataDerivationBasics.
-lean`, already proved) and denominator `1`. This is the concrete corollary
-`baseFracToRing_totalDegree_le` exists to support, but the exact
-witness-numerator polynomial for `fAtT` still needs pinning down against
-`K0 p := FractionRing (MvPolynomial (Fin 2) (F p))`'s actual `algebraMap`/
-`IsLocalization.mk'` conventions — the roadmap's own "Concrete numbers"
-section flags this as real remaining tracing work, not guessed here.
+`fAtT p c0 c1 c2 c3 c4 i := curvePoly.eval₂ (algebraMap (F p) (K0 p)) (t0 p i)`
+(`DataDerivationTower.lean`). `curvePoly_eval_eq_fAtT_shape`
+(`DataDerivationBasics.lean`, already proved, `rfl`) confirms this is
+literally `curvePoly.eval₂ (algebraMap (F p) (K0 p)) (algebraMap
+(MvPolynomial (Fin 2) (F p)) (K0 p) (X i))` — `K0 p`'s `abbrev`-transparency
+means no cross-ring subtlety hides here. `Polynomial.hom_eval₂` (already
+used elsewhere in this project for exactly this `eval₂`-under-`algebraMap`
+move, e.g. `DataDerivationSolve.lean`'s `hcoeff`/`hom_eval₂` steps) pushes
+the outer `algebraMap` through: taking `g := algebraMap (MvPolynomial (Fin
+2) (F p)) (K0 p)`, `f := algebraMap (F p) (MvPolynomial (Fin 2) (F p))`,
+`g.comp f = algebraMap (F p) (K0 p)` by the scalar tower `F p → MvPolynomial
+(Fin 2) (F p) → K0 p` (`IsScalarTower.algebraMap_eq`, unverified this pass
+which exact instance path Lean resolves this through — flagged below
+rather than guessed), giving `fAtT p ... i = algebraMap (MvPolynomial (Fin
+2) (F p)) (K0 p) a` for `a := curvePoly.eval₂ (algebraMap (F p)
+(MvPolynomial (Fin 2) (F p))) (X i) : MvPolynomial (Fin 2) (F p)`, i.e.
+`mk' (K0 p) a 1` (`IsLocalization.mk'_one`, denominator `1`). `a.totalDegree
+≤ 5`: `algebraMap (F p) (MvPolynomial (Fin 2) (F p)) = MvPolynomial.C`, and
+`Polynomial.eval₂` at a `totalDegree ≤ 1` point (`X i`) of a `natDegree = 5`
+polynomial is bounded by the sum-of-monomials route below —
+**not yet REPL-confirmed**, this pass's one new unverified claim, flagged
+rather than left silently assumed. -/
 
-## Level 2: `towerToRdec`'s `totalDegree` bound
+/-- **`fAtT`'s `mk'` witness.** `fAtT p ... i` equals `algebraMap
+(MvPolynomial (Fin 2) (F p)) (K0 p)` applied to `curvePoly`'s own `eval₂`
+straight into `MvPolynomial (Fin 2) (F p)` (via `C`, not `K0 p`) at `X i` —
+i.e. `mk' (K0 p) a 1` for that same `a`, via `IsLocalization.mk'_spec'`
+(confirmed Mathlib name) rather than an assumed `mk'_one` lemma.
+Purely mechanical (`hom_eval₂` plus unfolding `t0`/`K0`), no new
+mathematics; **not yet REPL-confirmed this pass**, unlike the theorems
+above it in this file. -/
+theorem fAtT_eq_mk'_one (c0 c1 c2 c3 c4 : F p) (i : Fin 2) :
+    fAtT p c0 c1 c2 c3 c4 i =
+      IsLocalization.mk' (K0 p)
+        ((curvePoly p c0 c1 c2 c3 c4).eval₂
+          (algebraMap (F p) (MvPolynomial (Fin 2) (F p))) (MvPolynomial.X i))
+        (1 : ↥(nonZeroDivisors (MvPolynomial (Fin 2) (F p)))) := by
+  unfold fAtT t0
+  rw [IsScalarTower.algebraMap_eq (F p) (MvPolynomial (Fin 2) (F p)) (K0 p),
+    ← Polynomial.hom_eval₂]
+  set a : MvPolynomial (Fin 2) (F p) :=
+    (curvePoly p c0 c1 c2 c3 c4).eval₂ (algebraMap (F p) (MvPolynomial (Fin 2) (F p)))
+      (MvPolynomial.X i) with ha
+  -- `mk' (K0 p) a 1 = algebraMap _ (K0 p) a` -- derived from `mk'_spec'`
+  -- (`algebraMap R S ↑y * mk' S x y = algebraMap R S x`, confirmed Mathlib
+  -- name) with `y := (1 : ↥(nonZeroDivisors _))` rather than an assumed
+  -- `mk'_one` lemma name: `↑(1 : ↥M) = 1` (`OneMemClass.coe_one` /
+  -- `Submonoid.coe_one`) and `algebraMap _ _ 1 = 1` (`map_one`) turn
+  -- `mk'_spec'` into `1 * mk' (K0 p) a 1 = algebraMap _ (K0 p) a`.
+  have hspec := IsLocalization.mk'_spec' (K0 p) a
+    (1 : ↥(nonZeroDivisors (MvPolynomial (Fin 2) (F p))))
+  simp only [OneMemClass.coe_one, map_one, one_mul] at hspec
+  rw [← hspec]
+
+/-- **The concrete degree-`5` bound `fAtT`'s witness numerator satisfies.**
+`curvePoly.eval₂ C (X i)` (`C := algebraMap (F p) (MvPolynomial (Fin 2)
+(F p))`) unfolds via `Polynomial.eval₂_eq_sum_range'` (`curvePoly.natDegree
+< 6`, from `curvePoly_natDegree`) to `∑ j ∈ range 6, C (curvePoly.coeff j) *
+(X i)^j`; each summand has `totalDegree ≤ j ≤ 5`
+(`MvPolynomial.totalDegree_C`/`totalDegree_X_pow`/`totalDegree_mul`), and
+`MvPolynomial.totalDegree_finsetSum_le` (confirmed Mathlib name, GitHub
+source read this pass — `(∀ i ∈ s, (f i).totalDegree ≤ d) → (s.sum
+f).totalDegree ≤ d`, exactly this shape) caps the whole sum at `5`.
+**Not yet REPL-confirmed this pass** — written against the confirmed
+Mathlib signatures but not yet run through Claire's REPL. -/
+theorem curvePoly_eval_C_totalDegree_le (c0 c1 c2 c3 c4 : F p) (i : Fin 2) :
+    ((curvePoly p c0 c1 c2 c3 c4).eval₂
+        (algebraMap (F p) (MvPolynomial (Fin 2) (F p))) (MvPolynomial.X i) :
+      MvPolynomial (Fin 2) (F p)).totalDegree ≤ 5 := by
+  rw [Polynomial.eval₂_eq_sum_range' (algebraMap (F p) (MvPolynomial (Fin 2) (F p)))
+      (by rw [curvePoly_natDegree]; omega : (curvePoly p c0 c1 c2 c3 c4).natDegree < 6)]
+  refine MvPolynomial.totalDegree_finsetSum_le (fun j hj => ?_)
+  simp only [Finset.mem_range] at hj
+  show (MvPolynomial.C ((curvePoly p c0 c1 c2 c3 c4).coeff j) *
+      MvPolynomial.X i ^ j : MvPolynomial (Fin 2) (F p)).totalDegree ≤ 5
+  refine le_trans (MvPolynomial.totalDegree_mul _ _) ?_
+  rw [MvPolynomial.totalDegree_C, zero_add, MvPolynomial.totalDegree_X_pow]
+  omega
+
+/-! ## Level 2: `towerToRdec`'s `totalDegree` bound
 
 `towerToRdec` (`K2 → Rdec`, the top-level entry point `theData`'s assembly
 actually calls) has the identical combination shape one level up:
