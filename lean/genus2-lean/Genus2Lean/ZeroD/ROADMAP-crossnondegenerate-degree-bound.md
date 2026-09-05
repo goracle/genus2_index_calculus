@@ -203,3 +203,132 @@ yet grep-confirmed against this specific Mathlib snapshot this pass).
   `ROADMAP-degree-uniform-step3.md`'s rewrite: it isn't, for this part
   of the argument, since neither `(alpha,alpha')` nor `(c0,...,c4)` are
   ring variables in the object being bounded.
+
+## Update — step 2 traced one layer further, still open
+
+`DataDerivationTotalDegree.lean` now has steps 1/3/4 (of "Proposed next
+steps" above) done and REPL-confirmed: `MvPolynomial.totalDegree_mul`/
+`totalDegree_C`/`totalDegree_X_pow`/`totalDegree_finsetSum_le` all
+confirmed present (step 1); `towerToRdecK1_totalDegree_le`/
+`towerToRdec_totalDegree_le`/`towerToRdec_coeff_totalDegree_le` state and
+prove the three-level bound generically, given ANY base-case bound `D`
+on `baseFracToRing`'s output (step 4, done as a hypothesis-parametrized
+theorem rather than blocked on step 2's concrete number — the generic
+form is proved and green regardless of what `D` turns out to be
+concretely). `fAtT_eq_mk'_one`/`curvePoly_eval_C_totalDegree_le` handle
+the SIMPLEST possible base case (`fAtT` itself, `totalDegree ≤ 5`) but
+that is not yet what actually reaches `baseFracToRing` from `uRS`/`vRS`
+— see below.
+
+**Traced this pass**: `uRS.coeff j`/`vRS.coeff j` (the actual `K2`-
+elements `towerToRdec` is applied to, per `coeffsToNumDen`) are NOT
+simple `fAtT`-images. The chain, concretely:
+
+```
+uRS := C curBeforeMonic.leadingCoeff⁻¹ * curBeforeMonic      (DataDerivationMumford.lean)
+curBeforeMonic := ((Npoly /ₘ (X - C anchor1.1)) /ₘ (X - C anchor2.1)) /ₘ U
+  where U := X^2 + C(g u1) X + C(g u0)                        (DataDerivationSolve.lean)
+Npoly := Epoly^2 - fAtX * Ypoly^2
+```
+
+Every piece here (`Epoly`, `Ypoly`, `fAtX`, `anchor1`, `anchor2`) is
+itself a `K2`-valued (or `K2 × K2`-valued) object built from the LINEAR
+SYSTEM's solution (§4.2 items 3–5, `DataDerivationSolve.lean`) — i.e.
+`w1`/`w2` (the tower's own adjoined roots, not `fAtT`-images at all) and
+field-arithmetic combinations of them with `(u0,u1,v0,v1)`-parametrized
+coefficients. **`w1`/`w2` are `AdjoinRoot.root` of their respective
+minimal polynomials** (`DataDerivationTower.lean`) — their OWN
+`towerToRdecK1`/`towerToRdec` image is comparatively simple to bound
+directly (a root's `modByMonicHom` normal form is the trivial `X`
+itself, i.e. `d0 = 0, d1 = 1` in the `{1,X}` basis — needs checking
+against `AdjoinRoot.modByMonicHom_mk`/`AdjoinRoot.root`'s actual
+definition, not yet done this pass), but `curBeforeMonic`'s THREE nested
+`/ₘ` (polynomial division, not multiplication) steps are the genuine new
+difficulty: **Mathlib has no general `totalDegree`-style bound for
+`Polynomial.divByMonic`'s coefficients in terms of the dividend's
+`MvPolynomial`-coefficient degrees** (division is not a "fixed, finite
+sequence of ring operations" in the same sense multiplication/addition
+are — a `/ₘ` quotient's coefficients are, in general, complicated
+rational functions of the dividend's and divisor's coefficients, even
+though here the RESULT is guaranteed polynomial by the `dvd_N_*`
+hypotheses). This is a materially different, and likely harder, wrinkle
+than the "one UFD lemma" flagged in "The one genuine wrinkle" above
+(which is about `IsFractionRing.num/.den`, a DIFFERENT step — the base
+case's `K0 → Rdec` step, not this `K2`-level division step upstream of
+it).
+
+**Not yet resolved — options, not yet chosen between**:
+1. Bound `curBeforeMonic`'s coefficients directly via `Polynomial.
+   divByMonic`'s recursive/`natDegree`-recursion definition (Mathlib's
+   `divModByMonicAux`) — likely requires induction on `natDegree`, real
+   new Lean work, not a quick lemma lookup.
+2. Sidestep `/ₘ` entirely: since `dvd_N_anchor1`/`dvd_N_anchor2`/
+   `dvd_N_u` (once proved — currently `sorry` upstream, per
+   `DataDerivationMumford.lean`'s own header) assert EXACT divisibility,
+   `curBeforeMonic * (divisor product) = Npoly` holds as an equation,
+   which might let a `totalDegree` bound be derived from `Npoly`'s
+   bound via a DIVISOR-side argument (bound `curBeforeMonic` by degree
+   subtraction: `natDegree` arithmetic is exact for exact division, and
+   `totalDegree` might follow a parallel argument) rather than needing
+   division's coefficient formula directly. Not checked whether Mathlib
+   has the right lemma for this (something like: exact quotient's
+   coefficients are polynomial combinations of dividend/divisor
+   coefficients via Cramer's-rule-style resultant formulas — bounded,
+   but needs the actual lemma name).
+3. Ask ChatGPT for the general "totalDegree of an exact polynomial
+   quotient, in terms of totalDegree of dividend and divisor's
+   coefficients" fact, if option 2's Mathlib search comes up empty —
+   this is exactly the kind of well-defined, non-curve-specific algebra
+   fact the project's own convention flags as fair game to consult on.
+
+This is now the concrete blocker for step 2 (not "unstarted" as before,
+but not resolved) — `DataDerivationMumford.lean`'s upstream `sorry`s
+(`dvd_N_u`, coprimality) also sit in the same file as `curBeforeMonic`
+and would need discharging before `uRS`'s divisibility identity is even
+available to exploit under option 2 above, so this and that file's own
+open work are coupled, not independent.
+
+## Update — option 2 attempted, generic half landed, concrete half blocked
+
+**Landed, REPL-pending**: `eq_mul_divByMonic_of_dvd` (`DataDerivationSolve.
+lean`, end of the `ExactDivision` section) — the fully general lemma
+option 2 needs: for `g` monic and `g ∣ f`, `f = g * (f /ₘ g)`. Proved
+cleanly via `Polynomial.dvd_iff_modByMonic_eq_zero` + `Polynomial.
+modByMonic_eq_sub_mul_div` + `sub_eq_zero`, `CommRing R` generic (not
+`K2`-specific), so it's the right tool regardless of how the rest of this
+plays out. Not yet run against Claire's REPL.
+
+**Blocked, not forced into a `sorry`**: applying this three times to
+unwind `curBeforeMonic`'s actual `/ₘ` chain into `Npoly = curBeforeMonic *
+((X-t1)(X-t2)*U)` needs propagating `dvd_N_anchor2`'s fact (`(X - C t2) ∣
+Npoly`) down to the INTERMEDIATE quotient `Npoly /ₘ (X - C t1)`, which
+needs `(X - C t1)`/`(X - C t2)` coprime — for two linear factors, that's
+exactly `t1 ≠ t2`. **This is not established anywhere in the codebase.**
+`MatrixNondegenerate` is only `A.det ≠ 0`; nothing here derives `t1 ≠ t2`
+from it. Attempted this pass, hit the gap, and stopped rather than
+papering over it with `sorry` — the abandoned attempt (routing through
+`Polynomial.monic_X_sub_C _ |>.coprime_of_ne`, which needs exactly this
+fact) is documented in a `/-! -/` note in `DataDerivationSolve.lean`
+right after `eq_mul_divByMonic_of_dvd`, not left as dead code in the
+file.
+
+**New, smaller concrete next step, sharper than before**: prove `t1 ≠
+t2` — i.e. `(anchor1 p ...).1 ≠ (anchor2 p ...).1` — from
+`MatrixNondegenerate`, presumably via a Vandermonde-style argument (`t1 =
+t2` would make two of `matrixA`'s rows proportional, forcing `det = 0`).
+This is now the single sharpest blocker on option 2's path, upstream of
+both the `curBeforeMonic`-unwinding step above AND (per `vRS`'s own
+docstring) `vRS`'s coprimality hypothesis — so resolving it likely
+unblocks more than just this one lemma. Once available, finishing
+`Npoly_eq_curBeforeMonic_mul` should be direct: `eq_mul_divByMonic_of_dvd`
+three times, `IsCoprime.dvd_of_dvd_mul_left`/`_right` to propagate each
+`dvd_N_*` fact through the prior layers' quotients (using `t1 ≠ t2` for
+the anchor pair, and a not-yet-checked `(X-t_i)`-vs-`U` coprimality
+argument for the third layer, likely from `U`'s roots being genuinely
+different target-side values, itself needing its own sourcing check).
+
+Still fully unresolved, independent of the above: bounding `Npoly`'s own
+`totalDegree` (traces to `cramerSolution`'s Cramer's-rule structure — see
+"Concrete numbers" above, `w1`/`w2` are `AdjoinRoot.root`s not
+`fAtT`-images, `Epoly`/`Ypoly`'s coefficients are `cramerSolution`
+outputs). Not attempted this pass.

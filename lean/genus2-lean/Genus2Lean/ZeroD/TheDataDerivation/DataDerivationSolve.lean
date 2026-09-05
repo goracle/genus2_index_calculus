@@ -87,6 +87,55 @@ noncomputable def anchor2 (c0 c1 c2 c3 c4 : F p) : K2 p c0 c1 c2 c3 c4 × K2 p c
       (algebraMap (K0 p) (K1 p c0 c1 c2 c3 c4) (t0 p 1)),
     w2 p c0 c1 c2 c3 c4 )
 
+/-- **`t1 ≠ t2` in `K2`, proved unconditionally — no `MatrixNondegenerate`
+needed.** `ROADMAP-crossnondegenerate-degree-bound.md` flagged this as a
+blocker for `Npoly_eq_curBeforeMonic_mul` (needed to propagate
+`dvd_N_anchor2` down into the intermediate quotient after dividing by
+`X - C t1`) and proposed deriving it from `MatrixNondegenerate` via a
+Vandermonde argument. That's unnecessary: `t1 := anchor1.1` and `t2 :=
+anchor2.1` are not solution-dependent quantities at all — tracing
+`anchor1`/`anchor2` above, both are `t0 p 0`/`t0 p 1` (`DataDerivationTower.
+lean`), which are themselves just `algebraMap (MvPolynomial (Fin 2) (F p))
+(K0 p) (X 0)`/`(X 1)` — the two independent free generators of the base
+`MvPolynomial` ring, before any of the linear-system solving that
+`MatrixNondegenerate` gates. So `t1 ≠ t2` reduces to `X 0 ≠ X 1` in
+`MvPolynomial (Fin 2) (F p)` (`MvPolynomial.X_inj`, needs `Nontrivial (F p)`,
+which holds since `F p = ZMod p` is a field), pushed forward through two
+injective ring maps: `IsFractionRing.injective (MvPolynomial (Fin 2) (F p))
+(K0 p)` (the `K0 := FractionRing _` step) and `RingHom.injective (algebraMap
+(K1 ...) (K2 ...))` (an `AdjoinRoot` step into a field, hence injective by
+`RingHom.injective` off the `Field`/`DivisionRing` instance — matches this
+file's own `h_inj`-style pattern used elsewhere, e.g.
+`DataDerivationBasics.lean`'s `h_inj_KA'`). -/
+theorem anchor1_ne_anchor2 (c0 c1 c2 c3 c4 : F p) :
+    (anchor1 p c0 c1 c2 c3 c4).1 ≠ (anchor2 p c0 c1 c2 c3 c4).1 := by
+  simp only [anchor1, anchor2]
+  have hX : (MvPolynomial.X 0 : MvPolynomial (Fin 2) (F p)) ≠ MvPolynomial.X 1 := by
+    rw [Ne, MvPolynomial.X_inj]
+    decide
+  have h0 : t0 p 0 ≠ t0 p 1 := by
+    unfold t0
+    exact fun h => hX (IsFractionRing.injective (MvPolynomial (Fin 2) (F p)) (K0 p) h)
+  have h1 : Function.Injective
+      (algebraMap (K0 p) (K1 p c0 c1 c2 c3 c4)) := RingHom.injective _
+  have h2 : Function.Injective
+      (algebraMap (K1 p c0 c1 c2 c3 c4) (K2 p c0 c1 c2 c3 c4)) := RingHom.injective _
+  exact fun h => h0 (h1 (h2 h))
+
+/-- **`(X - t1)` and `(X - t2)` coprime in `Polynomial (K2 ...)`** — the
+first of the two coprimality facts `ROADMAP-crossnondegenerate-degree-
+bound.md`'s abandoned-attempt note (see the `/-! -/` block after
+`eq_mul_divByMonic_of_dvd` below) needs to unwind `curBeforeMonic`'s
+three-step `/ₘ` chain into a single multiplication equation. Direct from
+`anchor1_ne_anchor2` (`t1 - t2 ≠ 0`, hence a unit since `K2` is a field)
+via `Polynomial.isCoprime_X_sub_C_of_isUnit_sub`. -/
+theorem anchor1_coprime_anchor2 (c0 c1 c2 c3 c4 : F p) :
+    IsCoprime (X - C (anchor1 p c0 c1 c2 c3 c4).1 : Polynomial (K2 p c0 c1 c2 c3 c4))
+      (X - C (anchor2 p c0 c1 c2 c3 c4).1) := by
+  apply Polynomial.isCoprime_X_sub_C_of_isUnit_sub
+  rw [isUnit_iff_ne_zero, sub_ne_zero]
+  exact anchor1_ne_anchor2 p c0 c1 c2 c3 c4
+
 /-- `y_idx`: the position of `(0,1)` in `rrBasis5`, i.e. the basis element
 `x^0 * y = y` itself, singled out as the linear system's RHS (§4.0 step 3).
 Computed rather than asserted, so a change to `rrBasis5`'s construction
@@ -1865,6 +1914,280 @@ noncomputable def curBeforeMonic : Polynomial (K2 p c0 c1 c2 c3 c4) :=
       /ₘ (X - C (anchor2 p c0 c1 c2 c3 c4).1))
     /ₘ (X ^ 2 + C (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u1) * X +
         C (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u0))
+
+/-- **`t1` (and by the identical argument `t2`) is not a root of
+`U := X² + C(g u1) X + C(g u0)`**, `g := algebraMap (F p) (K2 ...)` — the
+"named next step" flagged in the `/-! -/` block below (this pass closes it).
+
+**The argument, traced through the tower, not assumed**: `t1 :=
+(anchor1 p ...).1`, which by construction (see `anchor1_ne_anchor2` above)
+equals `algebraMap (K1 ...) (K2 ...) (algebraMap (K0 p) (K1 ...) (t0 p 0))`
+— i.e. `t1` is the image, under the SAME tower composite used throughout
+this file, of `t0 p 0 = algebraMap (MvPolynomial (Fin 2) (F p)) (K0 p)
+(MvPolynomial.X 0)`. `U`'s own coefficients use `algebraMap (F p) (K2 ...)`
+directly rather than routed through the tower explicitly, but `K2` is an
+`F p`-algebra via that SAME tower (`K2`'s `Algebra (F p) _` instance is
+derived, not separately supplied), so `IsScalarTower.algebraMap_apply`
+(this file's own established pattern — see e.g.
+`DataDerivationBasics.lean`'s repeated use of exactly this lemma) gives
+`algebraMap (F p) (K2 ...) x = algebraMap (K0 p) (K2 ...) (algebraMap (F p)
+(K0 p) x)` for `x : F p`, so `U`'s coefficients also factor through `K0`.
+This reduces the whole claim to a statement entirely inside `K0 p =
+FractionRing (MvPolynomial (Fin 2) (F p))`: is `algebraMap (MvPolynomial ...)
+(K0 p) (MvPolynomial.X 0)` a root of the quadratic with coefficients
+`algebraMap (F p) (K0 p) u1`, `algebraMap (F p) (K0 p) u0`? Pulling back
+through `IsFractionRing.injective` (the SAME injectivity fact
+`anchor1_ne_anchor2` already uses), this is equivalent to: is
+`(MvPolynomial.X 0)² + C u1 * MvPolynomial.X 0 + C u0` the zero element of
+`MvPolynomial (Fin 2) (F p)`? It manifestly is NOT — `MvPolynomial.X 0 ^ 2`
+has nonzero coefficient `1` at the monomial `2•(single 0 1)`, a monomial
+no other summand (`C u1 * X 0`, of multidegree `single 0 1`, or `C u0`, of
+multidegree `0`) can contribute to, so the sum's coefficient there is `1 ≠
+0` and the whole expression is nonzero — checked directly via
+`MvPolynomial.coeff` rather than any general "transcendental element"
+machinery, since `X 0` is a literal free generator, not merely an
+abstractly-transcendental element found some other way. -/
+theorem anchor1_not_isRoot_U (c0 c1 c2 c3 c4 u0 u1 : F p) :
+    (X ^ 2 + C (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u1) * X +
+        C (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u0) :
+      Polynomial (K2 p c0 c1 c2 c3 c4)).eval (anchor1 p c0 c1 c2 c3 c4).1 ≠ 0 := by
+  have htower : algebraMap (F p) (K2 p c0 c1 c2 c3 c4) =
+      (algebraMap (K0 p) (K2 p c0 c1 c2 c3 c4)).comp (algebraMap (F p) (K0 p)) := by
+    ext x
+    exact IsScalarTower.algebraMap_apply (F p) (K0 p) (K2 p c0 c1 c2 c3 c4) x
+  -- Reduce the whole eval to a `K0`-level statement: `t1` factors through
+  -- `K0` (per `anchor1_ne_anchor2`'s own unfolding), and now so do `U`'s
+  -- coefficients (via `htower`), so the eval itself equals the image, under
+  -- the tower's `K0 → K2` step, of the analogous eval computed inside `K0`.
+  have ht1 : (anchor1 p c0 c1 c2 c3 c4).1 =
+      algebraMap (K0 p) (K2 p c0 c1 c2 c3 c4) (t0 p 0) := by
+    simp only [anchor1]
+    exact (IsScalarTower.algebraMap_apply (K0 p) (K1 p c0 c1 c2 c3 c4)
+      (K2 p c0 c1 c2 c3 c4) (t0 p 0)).symm
+  have hK0 : (X ^ 2 + C (algebraMap (F p) (K0 p) u1) * X +
+      C (algebraMap (F p) (K0 p) u0) : Polynomial (K0 p)).eval (t0 p 0) ≠ 0 := by
+    unfold t0
+    intro hzero
+    simp only [Polynomial.eval_add, Polynomial.eval_mul, Polynomial.eval_pow,
+      Polynomial.eval_C, Polynomial.eval_X] at hzero
+    apply (show (MvPolynomial.X 0 : MvPolynomial (Fin 2) (F p)) ^ 2 +
+        MvPolynomial.C u1 * MvPolynomial.X 0 + MvPolynomial.C u0 ≠ 0 from ?_)
+    · apply IsFractionRing.injective (MvPolynomial (Fin 2) (F p)) (K0 p)
+      simp only [map_add, map_mul, map_pow, map_zero]
+      exact hzero
+    · intro hcontra
+      have hcoeff := congrArg
+        (fun q => MvPolynomial.coeff (Finsupp.single (0 : Fin 2) 2) q) hcontra
+      simp only [MvPolynomial.coeff_add, MvPolynomial.coeff_zero,
+        MvPolynomial.coeff_X_pow, MvPolynomial.coeff_C_mul, MvPolynomial.coeff_X,
+        MvPolynomial.coeff_C] at hcoeff
+      have h1 : (Finsupp.single (0 : Fin 2) 1 : Fin 2 →₀ ℕ) ≠
+          Finsupp.single (0 : Fin 2) 2 := by
+        intro h
+        have := congrArg (fun f => f (0 : Fin 2)) h
+        simp [Finsupp.single_eq_same] at this
+      have h2 : (0 : Fin 2 →₀ ℕ) ≠ Finsupp.single (0 : Fin 2) 2 := by
+        intro h
+        have := congrArg (fun f => f (0 : Fin 2)) h
+        simp [Finsupp.single_eq_same] at this
+      simp only [if_true, ite_true, if_neg h1, if_neg h2, add_zero] at hcoeff
+      norm_num at hcoeff
+  intro heval
+  apply hK0
+  have hstep : (X ^ 2 + C (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u1) * X +
+      C (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u0) :
+      Polynomial (K2 p c0 c1 c2 c3 c4)).eval (anchor1 p c0 c1 c2 c3 c4).1 =
+      algebraMap (K0 p) (K2 p c0 c1 c2 c3 c4)
+        ((X ^ 2 + C (algebraMap (F p) (K0 p) u1) * X +
+          C (algebraMap (F p) (K0 p) u0) : Polynomial (K0 p)).eval (t0 p 0)) := by
+    rw [ht1, htower]
+    simp only [Polynomial.eval_add, Polynomial.eval_mul, Polynomial.eval_pow,
+      Polynomial.eval_C, Polynomial.eval_X, RingHom.comp_apply, map_add, map_mul, map_pow]
+  rw [hstep] at heval
+  have hinj : Function.Injective (algebraMap (K0 p) (K2 p c0 c1 c2 c3 c4)) :=
+    RingHom.injective _
+  have : algebraMap (K0 p) (K2 p c0 c1 c2 c3 c4)
+      ((X ^ 2 + C (algebraMap (F p) (K0 p) u1) * X +
+        C (algebraMap (F p) (K0 p) u0) : Polynomial (K0 p)).eval (t0 p 0)) =
+      algebraMap (K0 p) (K2 p c0 c1 c2 c3 c4) 0 := by
+    rw [heval, map_zero]
+  exact hinj this
+
+/-- **`t2` is not a root of `U`, the `anchor2`/`t0 p 1` analogue of
+`anchor1_not_isRoot_U`** — identical argument, substituting `w2`'s
+tower-position: `(anchor2 p ...).1` is `algebraMap (K0 p) (K2 ...) (t0 p
+1)` directly (no intermediate `K1`-hop needed in `ht2`'s proof, since
+`anchor2`'s first component is built with a single `algebraMap (K0 p) (K1
+...)` then the same `algebraMap (K1 ...) (K2 ...)` as `anchor1` — see
+`anchor2`'s definition above, identical shape to `anchor1`'s but with `t0 p
+1`). -/
+theorem anchor2_not_isRoot_U (c0 c1 c2 c3 c4 u0 u1 : F p) :
+    (X ^ 2 + C (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u1) * X +
+        C (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u0) :
+      Polynomial (K2 p c0 c1 c2 c3 c4)).eval (anchor2 p c0 c1 c2 c3 c4).1 ≠ 0 := by
+  have htower : algebraMap (F p) (K2 p c0 c1 c2 c3 c4) =
+      (algebraMap (K0 p) (K2 p c0 c1 c2 c3 c4)).comp (algebraMap (F p) (K0 p)) := by
+    ext x
+    exact IsScalarTower.algebraMap_apply (F p) (K0 p) (K2 p c0 c1 c2 c3 c4) x
+  have ht2 : (anchor2 p c0 c1 c2 c3 c4).1 =
+      algebraMap (K0 p) (K2 p c0 c1 c2 c3 c4) (t0 p 1) := by
+    simp only [anchor2]
+    exact (IsScalarTower.algebraMap_apply (K0 p) (K1 p c0 c1 c2 c3 c4)
+      (K2 p c0 c1 c2 c3 c4) (t0 p 1)).symm
+  have hK0 : (X ^ 2 + C (algebraMap (F p) (K0 p) u1) * X +
+      C (algebraMap (F p) (K0 p) u0) : Polynomial (K0 p)).eval (t0 p 1) ≠ 0 := by
+    unfold t0
+    intro hzero
+    simp only [Polynomial.eval_add, Polynomial.eval_mul, Polynomial.eval_pow,
+      Polynomial.eval_C, Polynomial.eval_X] at hzero
+    apply (show (MvPolynomial.X 1 : MvPolynomial (Fin 2) (F p)) ^ 2 +
+        MvPolynomial.C u1 * MvPolynomial.X 1 + MvPolynomial.C u0 ≠ 0 from ?_)
+    · apply IsFractionRing.injective (MvPolynomial (Fin 2) (F p)) (K0 p)
+      simp only [map_add, map_mul, map_pow, map_zero]
+      exact hzero
+    · intro hcontra
+      have hcoeff := congrArg
+        (fun q => MvPolynomial.coeff (Finsupp.single (1 : Fin 2) 2) q) hcontra
+      simp only [MvPolynomial.coeff_add, MvPolynomial.coeff_zero,
+        MvPolynomial.coeff_X_pow, MvPolynomial.coeff_C_mul, MvPolynomial.coeff_X,
+        MvPolynomial.coeff_C] at hcoeff
+      have h1 : (Finsupp.single (1 : Fin 2) 1 : Fin 2 →₀ ℕ) ≠
+          Finsupp.single (1 : Fin 2) 2 := by
+        intro h
+        have := congrArg (fun f => f (1 : Fin 2)) h
+        simp [Finsupp.single_eq_same] at this
+      have h2 : (0 : Fin 2 →₀ ℕ) ≠ Finsupp.single (1 : Fin 2) 2 := by
+        intro h
+        have := congrArg (fun f => f (1 : Fin 2)) h
+        simp [Finsupp.single_eq_same] at this
+      simp only [if_true, ite_true, if_neg h1, if_neg h2, add_zero] at hcoeff
+      norm_num at hcoeff
+  intro heval
+  apply hK0
+  have hstep : (X ^ 2 + C (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u1) * X +
+      C (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u0) :
+      Polynomial (K2 p c0 c1 c2 c3 c4)).eval (anchor2 p c0 c1 c2 c3 c4).1 =
+      algebraMap (K0 p) (K2 p c0 c1 c2 c3 c4)
+        ((X ^ 2 + C (algebraMap (F p) (K0 p) u1) * X +
+          C (algebraMap (F p) (K0 p) u0) : Polynomial (K0 p)).eval (t0 p 1)) := by
+    rw [ht2, htower]
+    simp only [Polynomial.eval_add, Polynomial.eval_mul, Polynomial.eval_pow,
+      Polynomial.eval_C, Polynomial.eval_X, RingHom.comp_apply, map_add, map_mul, map_pow]
+  rw [hstep] at heval
+  have hinj : Function.Injective (algebraMap (K0 p) (K2 p c0 c1 c2 c3 c4)) :=
+    RingHom.injective _
+  have : algebraMap (K0 p) (K2 p c0 c1 c2 c3 c4)
+      ((X ^ 2 + C (algebraMap (F p) (K0 p) u1) * X +
+        C (algebraMap (F p) (K0 p) u0) : Polynomial (K0 p)).eval (t0 p 1)) =
+      algebraMap (K0 p) (K2 p c0 c1 c2 c3 c4) 0 := by
+    rw [heval, map_zero]
+  exact hinj this
+
+/-- **`(X - t1)` coprime to `U`** — the mechanical piece the trailing `/-!
+-/` block (below `eq_mul_divByMonic_of_dvd`) flags as still needed once
+`anchor1_not_isRoot_U` is available. Over a field, `X - C a` has degree 1,
+hence is `Irreducible` (`Polynomial.irreducible_of_degree_eq_one`); a
+Euclidean domain's `dvd_or_coprime` (`Polynomial (K2 ...)` is Euclidean,
+since `K2` is a field) then gives `(X - C t1) ∣ U ∨ IsCoprime (X - C t1) U`.
+The left disjunct is ruled out by `Polynomial.dvd_iff_isRoot` together with
+`anchor1_not_isRoot_U`, leaving `IsCoprime`. -/
+theorem anchor1_coprime_U (c0 c1 c2 c3 c4 u0 u1 : F p) :
+    IsCoprime (X - C (anchor1 p c0 c1 c2 c3 c4).1 : Polynomial (K2 p c0 c1 c2 c3 c4))
+      (X ^ 2 + C (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u1) * X +
+        C (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u0)) := by
+  have hirr : Irreducible
+      (X - C (anchor1 p c0 c1 c2 c3 c4).1 : Polynomial (K2 p c0 c1 c2 c3 c4)) :=
+    Polynomial.irreducible_of_degree_eq_one (Polynomial.degree_X_sub_C _)
+  rcases EuclideanDomain.dvd_or_coprime
+      (X - C (anchor1 p c0 c1 c2 c3 c4).1 : Polynomial (K2 p c0 c1 c2 c3 c4))
+      (X ^ 2 + C (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u1) * X +
+        C (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u0)) hirr with hdvd | hcop
+  · exact absurd (Polynomial.dvd_iff_isRoot.mp hdvd) (anchor1_not_isRoot_U p c0 c1 c2 c3 c4 u0 u1)
+  · exact hcop
+
+/-- **`(X - t2)` coprime to `U`**, the `anchor2` analogue. -/
+theorem anchor2_coprime_U (c0 c1 c2 c3 c4 u0 u1 : F p) :
+    IsCoprime (X - C (anchor2 p c0 c1 c2 c3 c4).1 : Polynomial (K2 p c0 c1 c2 c3 c4))
+      (X ^ 2 + C (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u1) * X +
+        C (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u0)) := by
+  have hirr : Irreducible
+      (X - C (anchor2 p c0 c1 c2 c3 c4).1 : Polynomial (K2 p c0 c1 c2 c3 c4)) :=
+    Polynomial.irreducible_of_degree_eq_one (Polynomial.degree_X_sub_C _)
+  rcases EuclideanDomain.dvd_or_coprime
+      (X - C (anchor2 p c0 c1 c2 c3 c4).1 : Polynomial (K2 p c0 c1 c2 c3 c4))
+      (X ^ 2 + C (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u1) * X +
+        C (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u0)) hirr with hdvd | hcop
+  · exact absurd (Polynomial.dvd_iff_isRoot.mp hdvd) (anchor2_not_isRoot_U p c0 c1 c2 c3 c4 u0 u1)
+  · exact hcop
+
+/-- **Generic exact-monic-division equation.** If a monic `g` divides `f`,
+then `f = g * (f /ₘ g)` — the sidestep for the degree-bound roadmap's
+"option 2": rather than bounding `/ₘ`'s coefficients via its recursive
+definition (`divModByMonicAux`, no direct `totalDegree`-style API in
+Mathlib), turn exact division into a multiplication equation and bound
+THAT via ordinary `totalDegree_mul`/`_add`-style reasoning instead. Proof:
+`Polynomial.dvd_iff_modByMonic_eq_zero hg` turns `g ∣ f` into `f %ₘ g = 0`;
+`Polynomial.modByMonic_eq_sub_mul_div f hg` rewrites `f %ₘ g` as
+`f - g * (f /ₘ g)`, so the zero-remainder fact becomes `f - g*(f/ₘg) = 0`,
+i.e. `f = g*(f/ₘg)` after `sub_eq_zero`. Fully general (`CommRing R`, not
+`K2`-specific), so reusable at all three of `curBeforeMonic`'s division
+steps without restating.
+
+**Named `f`/`g`, not `p`/`q`**: this file has an ambient `variable (p :
+ℕ) [Fact (Nat.Prime p)] ...` in scope, so a local `{p q : Polynomial R}`
+would shadow the prime `p` throughout this theorem's statement and proof
+— confusing at best, a latent bug at worst if some tactic silently picks
+up the wrong `p`. `f`/`g` avoid the collision entirely; this lemma
+otherwise needs neither `p` (the prime) nor any of this file's other
+ambient variables. -/
+theorem eq_mul_divByMonic_of_dvd {R : Type*} [CommRing R] {f g : Polynomial R}
+    (hg : g.Monic) (hdvd : g ∣ f) : f = g * (f /ₘ g) := by
+  have hmod : f %ₘ g = 0 := (Polynomial.modByMonic_eq_zero_iff_dvd hg).mpr hdvd
+  have hsub : f %ₘ g = f - g * (f /ₘ g) := Polynomial.modByMonic_eq_sub_mul_div f g
+  rw [hsub] at hmod
+  exact sub_eq_zero.mp hmod
+
+/-- **`Npoly = curBeforeMonic * ((X-t1)*(X-t2)*U)`** — the target this
+whole `/-! -/` sequence (last several passes) was building toward: unwinds
+`curBeforeMonic`'s three nested `/ₘ` steps into a single exact
+multiplication equation, now that all three coprimality facts
+(`anchor1_coprime_anchor2`, `anchor1_coprime_U`, `anchor2_coprime_U`) are
+available.
+
+**Strategy**: apply `eq_mul_divByMonic_of_dvd` at each of the three `/ₘ`
+layers, from the OUTERMOST in (i.e. peel `U` first, since it's applied
+last in `curBeforeMonic`'s definition, hence is the outermost division),
+propagating the ORIGINAL `dvd_N_*` facts down to each intermediate
+quotient via `IsCoprime.dvd_of_dvd_mul_left`/`_right` before applying
+`eq_mul_divByMonic_of_dvd` at the next layer in. Concretely: `dvd_N_u`
+gives `U ∣ Npoly`; since `U` is coprime to `(X-t1)` and to `(X-t2)`
+(hence, via `IsCoprime.mul_right`, to their product), `U` divides the
+degree-2-stripped-of-those-factors part, but that's not what's needed —
+instead the DIRECT route is: at each stage, show the divisor of THAT
+stage's `/ₘ` divides the numerator supplied to it, via `IsCoprime.
+dvd_of_dvd_mul_left`/`_right` applied to the ORIGINAL `Npoly`-level dvd
+facts combined pairwise. -/
+theorem Npoly_eq_curBeforeMonic_mul
+    (hA : MatrixNondegenerate p c0 c1 c2 c3 c4 u0 u1 v0 v1)
+    (hMumford : IsMumfordTarget p c0 c1 c2 c3 c4 u0 u1 v0 v1) :
+    Npoly p c0 c1 c2 c3 c4 u0 u1 v0 v1 =
+      curBeforeMonic p c0 c1 c2 c3 c4 u0 u1 v0 v1 *
+        ((X - C (anchor1 p c0 c1 c2 c3 c4).1) * (X - C (anchor2 p c0 c1 c2 c3 c4).1) *
+          (X ^ 2 + C (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u1) * X +
+            C (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u0))) := by
+  set t1X := (X - C (anchor1 p c0 c1 c2 c3 c4).1 : Polynomial (K2 p c0 c1 c2 c3 c4))
+    with ht1X_def
+  set t2X := (X - C (anchor2 p c0 c1 c2 c3 c4).1 : Polynomial (K2 p c0 c1 c2 c3 c4))
+    with ht2X_def
+  set U := (X ^ 2 + C (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u1) * X +
+    C (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u0) : Polynomial (K2 p c0 c1 c2 c3 c4))
+    with hU_def
+  have hmon1 : t1X.Monic := Polynomial.monic_X_sub_C _
+  have hmon2 : t2X.Monic := Polynomial.monic_X_sub_C _
+  have hmonU : U.Monic := by
+    rw [hU_def]
+    apply Polynomial.monic_X_pow_add_C -- placeholder name; see note below if this fails
+  sorry
 
 end ExactDivision
 

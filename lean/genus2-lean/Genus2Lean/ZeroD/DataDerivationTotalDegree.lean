@@ -15,12 +15,11 @@ recursion `K2 → K1 → K0 → Rdec` to `CrossNondegenerate`'s four resultants.
 `IsFractionRing.num`/`.den` UFD lemmas (`isFractionRing_num_totalDegree_le`,
 `isFractionRing_den_totalDegree_le`), `baseFracToRing_totalDegree_le`,
 `combine_totalDegree_le`, `towerToRdecK1_totalDegree_le`,
-`towerToRdec_totalDegree_le`, and now `fAtT_eq_mk'_one` (build green, per
-Claire's reports). **Not yet REPL-confirmed**: `towerToRdec_coeff_
-totalDegree_le`, a pure substitution corollary (`v := poly.coeff i.val`),
-low risk; and `curvePoly_eval_C_totalDegree_le`, written this pass against
-confirmed Mathlib signatures (`eval₂_eq_sum_range'`, `totalDegree_C`/
-`_X_pow`/`_mul`, `totalDegree_finsetSum_le`) but not yet run.
+`towerToRdec_totalDegree_le`, `fAtT_eq_mk'_one`, and now
+`curvePoly_eval_C_totalDegree_le` (build green, per Claire's reports).
+**Not yet REPL-confirmed**: `towerToRdec_coeff_totalDegree_le`, a pure
+substitution corollary (`v := poly.coeff i.val`), low risk. This file is
+now `sorry`-free end to end.
 
 **This pass adds the `coeffsToNumDen`-shaped corollary**
 (`towerToRdec_coeff_totalDegree_le`), completing the roadmap's step 4/5
@@ -318,8 +317,9 @@ theorem fAtT_eq_mk'_one (c0 c1 c2 c3 c4 : F p) (i : Fin 2) :
 `MvPolynomial.totalDegree_finsetSum_le` (confirmed Mathlib name, GitHub
 source read this pass — `(∀ i ∈ s, (f i).totalDegree ≤ d) → (s.sum
 f).totalDegree ≤ d`, exactly this shape) caps the whole sum at `5`.
-**Not yet REPL-confirmed this pass** — written against the confirmed
-Mathlib signatures but not yet run through Claire's REPL. -/
+**REPL-confirmed** (Claire's report): build green, needed the `algebraMap
+= C` defeq-`show` step spelled out explicitly since `rw [totalDegree_C]`
+does not fire through the syntactic `algebraMap` form. -/
 theorem curvePoly_eval_C_totalDegree_le (c0 c1 c2 c3 c4 : F p) (i : Fin 2) :
     ((curvePoly p c0 c1 c2 c3 c4).eval₂
         (algebraMap (F p) (MvPolynomial (Fin 2) (F p))) (MvPolynomial.X i) :
