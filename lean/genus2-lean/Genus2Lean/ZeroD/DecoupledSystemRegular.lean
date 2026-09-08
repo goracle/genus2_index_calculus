@@ -1355,10 +1355,11 @@ elements. So `(towerToRdec p sg v).2 ≠ 0` should follow from `v ≠ 0`
 bookkeeping over an already-fully-proved recursion (`towerToRdec`/
 `towerToRdecK1`/`baseFracToRing` all have **no `sorry`**), not new math, but
 was never assembled into its own lemma. Isolated below as
-`towerToRdec_den_ne_zero`, **left `sorry`** since the three-level induction
-(base case via `IsFractionRing`, then twice through `towerToRdecK1`/
-`towerToRdec`'s `den0*den1` combination step) is real work, just mechanical
-rather than mathematical.
+`towerToRdec_den_ne_zero`, **left `sorry` as of this note** since the
+three-level induction (base case via `IsFractionRing`, then twice through
+`towerToRdecK1`/`towerToRdec`'s `den0*den1` combination step) was real
+work, just mechanical rather than mathematical. **Since proved** — see
+`towerToRdec_den_ne_zero`'s own docstring and proof below, no `sorry`.
 
 **Piece B — the actual `K2`-level coefficient nonvanishing, UPDATE: this is
 NOT a consequence of `hcurA/B`/`hgcdA/B` at all — resolved, not just
@@ -2103,14 +2104,17 @@ the `R`-side. Confirmed against Mathlib: `IsSMulRegular.of_flat_of_isBaseChange`
 and `IsSMulRegular.of_flat` (`Mathlib.RingTheory.Flat.Basic`), and
 `MvPolynomial.sumAlgEquiv : MvPolynomial (S₁ ⊕ S₂) R ≃ₐ[R] MvPolynomial S₁
 (MvPolynomial S₂ R)` (`Mathlib.Algebra.MvPolynomial.Equiv`) all exist as
-named. **Not yet proved below** -- the composition (reindex `Idx` into a sum
+named. **Not yet proved below, as of this note** -- the composition (reindex `Idx` into a sum
 matching the "already-quotiented side" vs. "the side `e` lives in", transport
-along `sumAlgEquiv`, then invoke the flat-base-change lemma) is sketched but
-left as a `sorry`, since it needs a REPL to get the `IsBaseChange`
+along `sumAlgEquiv`, then invoke the flat-base-change lemma) was sketched but
+left as a `sorry`, since it needed a REPL to get the `IsBaseChange`
 side-condition (that `MvPolynomial σ₁ (A ⧸ J) ⧸ ...` really is the base
 change of `A ⧸ J` along the fresh-variable polynomial extension) into exactly
 the shape `IsSMulRegular.of_flat_of_isBaseChange` wants, which is fiddly
-`AlgHom`/`LinearMap` bookkeeping that is easy to get wrong blind.
+`AlgHom`/`LinearMap` bookkeeping that is easy to get wrong blind. **Since
+proved** — see `regular_of_disjoint_extension` below, no `sorry`; it
+carries out exactly this composition via `sumAlgEquiv`/
+`algebraTensorAlgEquiv` and `Module.Flat.of_linearEquiv`.
 
 No local `Module.Flat R (MvPolynomial σ R)` instance is declared below --
 Mathlib already provides `MvPolynomial.instFree : Module.Free R
@@ -2151,7 +2155,9 @@ theorem MvPolynomial.isSMulRegular_C_of_isSMulRegular {R : Type*} [CommRing R]
     IsSMulRegular.of_flat (R := R) (S := MvPolynomial σ₁ R) he
   rwa [MvPolynomial.algebraMap_eq] at h
 
-/-- **The genuinely new lemma**, still `sorry`-backed: regularity of `e`
+/-- **The genuinely new lemma** — `sorry`-backed as of the pass that
+wrote this docstring, since proved outright (see the proof below):
+regularity of `e`
 (living in `MvPolynomial σ₂ R`, disjoint from `σ₁`) survives passing to
 `MvPolynomial (σ₁ ⊕ σ₂) R`, THEN quotienting by an ideal generated entirely
 from the `σ₁`-side (`g : MvPolynomial σ₁ R`, included into the sum type via
@@ -2353,7 +2359,9 @@ theorem regular_of_disjoint_extension {R : Type*} [Field R]
   -- that but then broke on `▸`/`subst`, which needs a bare free variable, not a
   -- `let`-bound one. Fix: `apply` against the ALREADY-STATED goal type below --
   -- this pins `N` from the goal itself before the equiv is elaborated, so the
-  -- remaining `sorry` goal is `MvPolynomial σ₁ (MvPolynomial σ₂ R) ⧸ I' ≃ₗ[(MvPolynomial σ₂ R)] TensorProduct R (MvPolynomial σ₂ R) Q`
+  -- remaining goal at that point in the derivation (not a live `sorry` — the
+  -- proof continues and closes it below) is
+  -- `MvPolynomial σ₁ (MvPolynomial σ₂ R) ⧸ I' ≃ₗ[(MvPolynomial σ₂ R)] TensorProduct R (MvPolynomial σ₂ R) Q`
   -- with the LHS universe already fixed, avoiding the ordering problem entirely.
   have hflat_quot_B : Module.Flat (MvPolynomial σ₂ R) (MvPolynomial σ₁ (MvPolynomial σ₂ R) ⧸ I') := by
     apply Module.Flat.of_linearEquiv (R := (MvPolynomial σ₂ R)) (M := TensorProduct R (MvPolynomial σ₂ R) Q)
@@ -2913,10 +2921,12 @@ theorem Polynomial.isSMulRegular_of_leadingCoeff_isSMulRegular
 /-! ### §5bis-0a-bis. The quotient-transport lemma (Layer 2)
 
 Per the second ChatGPT consultation: this is the one piece it deliberately
-left as a `sorry` rather than guess blind, since it depends on exactly how
-this file's own quotient/peel machinery is set up. `regular_of_linear_elim`
-above already proves the special case of this transport for the linear
-shape `C c - X * C d`; this generalizes that SAME transport argument
+left as a `sorry` at the time, rather than guess blind, since it depends
+on exactly how this file's own quotient/peel machinery is set up.
+**Since proved** — see `regular_of_peeled_leadingCoeff` below, no
+`sorry`. `regular_of_linear_elim` above already proves the special case
+of this transport for the linear shape `C c - X * C d`; this generalizes
+that SAME transport argument
 (`optionEquivLeft` + `Ideal.polynomialQuotientEquivQuotientPolynomial`,
 verbatim the same equivalence-chasing steps) to an ARBITRARY polynomial `g
 : MvPolynomial (Option τ) R` of the form `rename some (coeffs of g, as a
@@ -3099,25 +3109,42 @@ theorem curveCoeffRegular (x anchor : Idx) (hne : anchor ≠ x)
 
 /-! ## §6. The actual target theorems
 
-**These did not exist anywhere in the file before this pass — flagged in
-review as the single most important gap: the paper's claim ("this variety
-has dimension 0") was never stated as a Lean theorem at all, so it could
-not have a `sorry`, `True`-stub, or any other marker of incompleteness.
-Both statements below are added now, `sorry`-backed, precisely so that an
-audit (`#print axioms`, or just `grep sorry`) reports the true state of the
-file instead of reporting a false "complete" signal by omission.
+**These did not exist anywhere in the file before the pass that added
+them — flagged in review as the single most important gap: the paper's
+claim ("this variety has dimension 0") was never stated as a Lean
+theorem at all, so it could not have a `sorry`, `True`-stub, or any other
+marker of incompleteness. Both statements were added `sorry`-backed at
+the time, precisely so that an audit (`#print axioms`, or just `grep
+sorry`) would report the true state of the file instead of reporting a
+false "complete" signal by omission.
 
-Neither proof is attempted here. The dependency chain each one would
-actually need, if attacked, is:
-`regular_of_linear_elim` (proved) + `regular_of_norm_eliminate` (`sorry`
-above) + `eightVar_finiteQuotient` (`sorry` above) +
-`fourVar_finiteQuotient` (`sorry` above) + the wiring roadmap §5 step 5
-describes (not attempted, not even stubbed as its own lemma) +
-every upstream `sorry` in `TheDataDerivation` that `theData` transitively
-depends on (`dvd_N_u`'s hypotheses, `towerToRdec_spec`, the four
-`u1_indep`-style fields' correctness — note `u1_indep` etc. themselves ARE
-proved, but only establish variable-support, not that `theData`'s numerators/
-denominators are the numbers they claim to be). -/
+**Stale dependency chain, flagged this pass — the two named blockers no
+longer exist and the route actually taken is different.** This paragraph
+originally read: neither proof attempted here, dependency chain needed
+is `regular_of_linear_elim` (proved) + `regular_of_norm_eliminate`
+(`sorry` above) + `eightVar_finiteQuotient` (`sorry` above) +
+`fourVar_finiteQuotient` (`sorry` above) + roadmap §5 step 5's wiring +
+every upstream `TheDataDerivation` `sorry`. None of that is accurate any
+longer: `regular_of_norm_eliminate` is now proved outright (see its own
+docstring above); `eightVar_finiteQuotient`/`fourVar_finiteQuotient`
+were deleted entirely, not filled in — per the "§5 steps 3-4: NOT YET
+STATEABLE, deliberately not stubbed" note above, keeping them as
+hypothesis-gated stubs (`hgens : True`) was itself an unjustified
+`sorry`-avoidance in disguise, so they were removed rather than kept
+around as false progress markers. The actual route that superseded this
+whole plan is the peel-chain approach scaffolded just below this note
+("§5bis-0a", peeling `genList`'s twelve generators one variable at a
+time via `regular_of_linear_elim`/`Polynomial.Monic.isRegular`) — that
+approach was carried to completion in `PeelChainAssembly.lean`
+(`regularSeq_of_peel_chain`, `sorry`-free), which is what
+`decoupledSystem_isRegularSequence` (now in `AlphaLocusDegreeUniform.lean`,
+also proved) actually calls. The two theorems this section originally
+introduced were themselves later relocated to `AlphaLocusDegreeUniform.lean`
+and proved there — see this file's own "have moved to
+`AlphaLocusDegreeUniform.lean`" note near the end for the full story;
+this §6 header and its stale dependency-chain paragraph are kept here as
+history of the abandoned eight/four-variable route, not as a live
+description of how the target theorems are actually proved today. -/
 
 /-! ## `decoupledSystem_isRegularSequence` / `decoupledSystem_zeroDimensional`
 have moved to `AlphaLocusDegreeUniform.lean`
@@ -3125,9 +3152,13 @@ have moved to `AlphaLocusDegreeUniform.lean`
 **Coherentized this pass.** These two theorems ("the paper's actual claim,
 fixed-target case" and "the dimension-0 corollary") used to be stated here,
 verbatim, at the end of this file. They now live in
-`AlphaLocusDegreeUniform.lean` instead — same statements, same `sorry`s,
-same proof term where one exists, just relocated — because that file is
-the one organized around `alpha,alpha'` and the eq-1 divisor-class picture
+`AlphaLocusDegreeUniform.lean` instead — as of this move, same statements,
+same `sorry`s, same proof term where one exists, just relocated (**since
+then, both have been proved outright in their new home — see
+`AlphaLocusDegreeUniform.lean`'s own docstrings for
+`decoupledSystem_isRegularSequence`/`decoupledSystem_zeroDimensional**) —
+because that file is the one organized around `alpha,alpha'` and the eq-1
+divisor-class picture
 `[P1]+[P2]-alpha*a = [P3]+[P4]-alpha'*a` this file's own header docstring
 already describes, and these two theorems are exactly that picture's
 *fixed-target* special case: `SampleTarget p` here is deliberately

@@ -1,6 +1,27 @@
 # Roadmap: proving eq 1 is 0-dimensional *uniformly in `(alpha,alpha')`* —
 # why this is the real target, and how it closes the 8th-moment gap
 
+## Newer status update — read this one first, then the correction below
+
+**The solution variety is not simply 0-dimensional the way this whole
+document (TL;DR through the numerical updates further down) describes
+it.** A chain of reasoning (outside Lean, not yet formalized, and not
+yet written up as its own document — see `ZeroD-README.md`'s "What's
+actually still open" item 1 for the fuller note) shows it is actually a
+**2-dimensional space of 0-dimensional fibers**, where the 1-dimensional
+sub-family of fibers sharing a fixed `(alpha,alpha')` all carry the SAME
+solution — i.e. that direction is trivial copies, not genuine variation.
+This is the best-case structure for the actual complexity goal, not a
+setback: the trivial-copy direction collapses to one relation, so
+`decoupledSystem_degree_uniform`'s target is still very much alive and
+arguably easier to formalize through this structure than through a
+naively-2D family. Nothing below in this file (or in
+`ROADMAP-degree-uniform-step3.md`) reflects this yet — both still
+describe the plain 0D picture the two earlier numerical checks (below)
+were reading it as. Update both in place once the 2D/1D-collapse
+structure is actually elucidated and formalized, rather than leaving
+this as a second uncorrected layer on top of the correction below.
+
 ## Status correction, added this pass — read before anything below
 
 Everything from the TL;DR through "Step 4" below is the *conceptual*
@@ -26,6 +47,7 @@ theorem circularly. Concretely, so it doesn't happen again:
   Step 3 actually still requires, and for why the circularity happened
   (the hard part — a genuine, per-instance-uncertain cross-sample
   resultant condition, `CrossNondegenerate`/`PeelChainNondegenerate` —
+
   got folded into the same bundle as the thing that should have been
   *derived from* it, rather than kept separate and visibly open).
 - **Task (A) (`Reduce`, this document's Step 1) is not the source of
@@ -206,11 +228,17 @@ explicitly.)
   `sorry`**, a one-line term proof delegating to
   `PeelChainAssembly.lean`'s `regularSeq_of_peel_chain`) and
   `decoupledSystem_zeroDimensional` (fixed-target `IsRegular →
-  Module.Finite` corollary — **still `sorry`**, a separate Mathlib-API
-  gap unrelated to the regular-sequence content). Also the current home
-  of `decoupledSystem_degree_uniform` — the actual target theorem this
-  roadmap is about — stated but `sorry`, exactly per Steps 1-2 below not
-  having landed yet, and `SampleTargetFromAlpha`, task (A)'s
+  Module.Finite` corollary — **still `sorry`** as of this pass, a
+  separate Mathlib-API gap unrelated to the regular-sequence content;
+  since closed in a later pass via
+  `Module.Finite.quotient_of_isRegular_of_length_eq_card`, no `sorry` —
+  see the status correction at the top of this file). Also the current
+  home of `decoupledSystem_degree_uniform` — the actual target theorem
+  this roadmap is about — stated but `sorry` as of this pass, exactly
+  per Steps 1-2 below not having landed yet (since closed in a later
+  pass via the circular `GenericPeelChainHyp` bundle — again see the
+  status correction at the top of this file — so the real target
+  theorem is still open), and `SampleTargetFromAlpha`, task (A)'s
   `alpha`-parametrized extension of `SampleTarget`, with `isReduction`
   still an assumed `Prop` field rather than a constructed witness (task
   (A) itself, still open — see Step 1).
@@ -235,8 +263,10 @@ explicitly.)
 
 The object to prove is not "does `decoupledSystem` have a small solution
 set for one `(alpha,alpha')`" (already the target of
-`decoupledSystem_zeroDimensional`, still `sorry`, but scoped correctly) —
-it is the **uniform-in-`(alpha,alpha')` strengthening**:
+`decoupledSystem_zeroDimensional`, scoped correctly, and — per a later
+pass than this section, see the status correction at the top of this
+file — since closed, no `sorry`) — it is the **uniform-in-`(alpha,alpha')`
+strengthening**:
 
 ```
 theorem decoupledSystem_degree_uniform :
@@ -749,9 +779,11 @@ genuinely new relative to what K=2 already had to handle).
 4. Restate `SampleTargetFromAlpha.isReduction` as `(u0,u1,v0,v1) = Reduce
    u_a v_a P1 P2` (a `rfl`-provable/computed equation) rather than an
    assumed `Prop` field, once (1)-(3) land.
-5. `decoupledSystem_zeroDimensional`'s `sorry` and task (B)'s `Bad`
-   definition are UNCHANGED by this pass — still open, still separate
-   pieces of work, not addressed here.
+5. `decoupledSystem_zeroDimensional`'s proof (since closed in a later
+   pass — see the status correction at the top of this file; it was
+   still `sorry` as of this pass) and task (B)'s `Bad` definition are
+   UNCHANGED by this pass — still open, still separate pieces of work,
+   not addressed here.
 
 **Explicitly not started**: no Lean code for any of the above was written
 this pass, per Claire's instruction to hold off until the roadmap itself
@@ -1003,9 +1035,12 @@ reasoning checked against the file's own existing idioms, but the fix
 itself (as opposed to everything upstream of it) has not been compiled.
 
 **Correction to this document's own "Task" framing above**: the
-`decoupledSystem_degree_uniform` sorry's blocking-task description
-("Task A... unstarted... Task B... nobody has run that check yet") is
-UNCHANGED by this pass — `uRS4_dvd_Npoly4`'s six coprimality hypotheses
+blocking-task description for what was, as of this pass,
+`decoupledSystem_degree_uniform`'s `sorry` (since closed in a later pass
+via the `GenericPeelChainHyp` bundle — see the status correction at the
+top of this file; that closure is circular, not a real resolution of
+this task) ("Task A... unstarted... Task B... nobody has run that check
+yet") is UNCHANGED by this pass — `uRS4_dvd_Npoly4`'s six coprimality hypotheses
 are exactly task (B)'s `Bad` locus, still assumed rather than derived or
 bounded, so this pass's fix is entirely about internal consistency within
 `AlphaReduce.lean` (not re-proving `hNu` from scratch each time it's

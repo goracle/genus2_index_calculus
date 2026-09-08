@@ -226,6 +226,40 @@ item 1:
    fall out of that proof as named, checkable hypotheses). This is
    still the single highest-priority next action in the whole
    subsystem, higher priority than any further numerical work.
+
+   **Major update, not yet formalized anywhere -- flagged here first,
+   NOT yet reflected in `ROADMAP-alpha-locus.md`/`ROADMAP-degree-uniform-
+   step3.md`'s own text (both still describe the plain "0-dimensional"
+   picture above; read this note as superseding, not replacing, that
+   text until those files are updated in place).** A chain of reasoning
+   (outside Lean, not yet written up as its own document) shows the
+   solution variety is NOT simply 0-dimensional in the naive sense both
+   numerical checks above were reading it as -- it is a **2-dimensional
+   space of 0-dimensional fibers**, where the whole 1-dimensional
+   sub-family of fibers sharing a fixed `(alpha,alpha')` all carry the
+   SAME solution (i.e. that 1D direction is foliated by trivial copies
+   of one fiber's solution set, not by genuinely varying solutions).
+   Consequence for the actual complexity target: this is **the best-case
+   scenario**, not a setback -- the trivial-copy direction collapses to a
+   single relation, so the uniform degree bound this whole subsystem is
+   chasing (`decoupledSystem_degree_uniform`, closing advisory-6/7's
+   `p^(4/5)` Question-4 gap) is still very much alive, and if anything
+   this structure is more tractable to formalize than a genuinely
+   2-dimensional family would be (one fiber's degree bound, plus "the
+   other fibers are copies," rather than a uniform bound needing to hold
+   across a truly 2-parameter family). **This has not been elucidated or
+   formalized in Lean yet** -- no `.lean` file states or uses this fact,
+   and the two numerical checks documented above (resultant solve,
+   `HomotopyContinuation.jl`) were run and interpreted before this
+   finding, so their "0-dimensional, witness points missing/dropped"
+   read is consistent with but does not by itself establish the sharper
+   2D-fibers-with-collapsing-copies picture. Formalizing this (stating
+   the 2D/1D-collapse structure precisely, then re-deriving the degree
+   bound through it) is now part of item 1's real scope, not a separate
+   item -- update this note in place once that formalization starts,
+   rather than letting this become a ninth stale claim for a future pass
+   to untangle.
+
 2. **`decoupledSystem_degree_uniform`'s current proof is circular and
    needs to be redone, not just re-verified.** It currently closes via
    `GenericPeelChainHyp`, a hypothesis bundle whose `hfinrank_le` field

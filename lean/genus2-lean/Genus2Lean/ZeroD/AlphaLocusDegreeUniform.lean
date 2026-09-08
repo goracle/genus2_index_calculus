@@ -543,6 +543,20 @@ open Polynomial
 /-! ## `ROADMAP-reduce-divisor-correctness.md` Step 2: stating (not proving)
 `reducedClass_eq_of_isReduction'`
 
+**Orphaned section header, flagged this pass**: `reducedClass_eq_of_isReduction'`
+itself no longer lives in this file — see the "**Moved this pass**" note
+below (originally written when the move happened) — it now lives in
+`ReducedClassBundles.lean`, rewritten to take a `(base, d)` bundle rather
+than this file's flat ~100-hypothesis signature. Everything from here
+down to `IsSmallExceptionalSet` is retained history explaining that
+theorem's statement/proof evolution up to the point it moved; read it as
+a design-history record, not as a description of a theorem defined in
+this file. In particular the very next line's "stated as a `sorry`" is a
+snapshot of Step 2's original instruction to typecheck-then-defer, not
+this file's current content — see "Update, this pass: the proof body
+below is no longer `sorry`" further down for when that changed, and the
+"Moved this pass" note for where it lives now.
+
 Per Step 2's own instructions: get this to TYPECHECK with a `sorry` body and
 present it for review before attempting a proof. The three concretely-needed
 ingredients, checked against the actual files this pass (not guessed):
@@ -872,12 +886,17 @@ after `decoupledSystem_zeroDimensional` since its proof now calls that
 theorem) (well, of its `IsRegular`/
 `Module.Finite` formulation rather than the `Nat.card ≤ d` one — see the
 note after `decoupledSystem_zeroDimensional` below on reconciling the two
-statement styles). They are UNCHANGED from `DecoupledSystemRegular.lean` —
-same statement, same `sorry`, same proof term where one exists — only
-relocated, so that file's `Idx`/`Rdec`/peel-chain apparatus stays scoped to
-"machinery for one fixed target" and this file stays scoped to "how the
-family varies with `alpha`," matching the module docstring's stated
-organizing principle.
+statement styles). **As of the move, they were UNCHANGED from
+`DecoupledSystemRegular.lean` — same statement, same `sorry`, same proof
+term where one exists — only relocated**, so that file's `Idx`/`Rdec`/
+peel-chain apparatus stays scoped to "machinery for one fixed target" and
+this file stays scoped to "how the family varies with `alpha`," matching
+the module docstring's stated organizing principle. **Since then, both
+theorems below have been proved outright** — see each one's own
+docstring (`decoupledSystem_isRegularSequence`'s one-line delegation to
+`regularSeq_of_peel_chain`, and `decoupledSystem_zeroDimensional`'s
+`Module.Finite.quotient_of_isRegular_of_length_eq_card` instantiation) —
+so "same `sorry`" describes their state at the time of the move, not now.
 
 **Action required to actually finish this move**: delete
 `decoupledSystem_isRegularSequence` and `decoupledSystem_zeroDimensional`

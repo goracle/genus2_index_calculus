@@ -1,5 +1,22 @@
 # Roadmap: `decoupledSystem_degree_uniform` (Step 3 of `ROADMAP-alpha-locus.md`)
 
+## Newer update — read this before the numerical update below
+
+The "0-dimensional" reading in the numerical update immediately below
+(and the "naive 2-dimensional reading" it's contrasted against) has
+since been sharpened by a chain of reasoning outside Lean, not yet
+formalized: the true picture is a **2-dimensional space of
+0-dimensional fibers**, with the 1-dimensional sub-family sharing a
+fixed `(alpha,alpha')` collapsing to trivial copies of one solution —
+see `ROADMAP-alpha-locus.md`'s own "Newer status update" section and
+`ZeroD-README.md`'s "What's actually still open" item 1 for the full
+note. This is good news for the complexity target (best-case structure
+for the degree bound), but it means the two checks below, and this
+file's Obligation 2/3 plan, were built against the plainer 0D/1D-vs-2D
+framing, not yet against the sharper 2D-fibers-with-collapse picture.
+Treat the rest of this file as still directionally correct but due for
+a rewrite once the new structure is formalized, not as the final word.
+
 ## Numerical update (this pass) — read this first, then the rewrite notice below
 
 Two independent numerical checks have now been run, outside Lean

@@ -136,7 +136,10 @@ actually motivated proving `reducedClass_eq_of_isReduction'` in the
 first place — recovers the big picture:
 
 - The project's actual target is `decoupledSystem_degree_uniform`
-  (`AlphaLocusDegreeUniform.lean` line 886, still `sorry`): a uniform-
+  (`AlphaLocusDegreeUniform.lean` line 886, still `sorry` as of this
+  pass — since closed via the `GenericPeelChainHyp` bundle, but that
+  closure is circular; see `ZeroD-README.md`/`ROADMAP-degree-uniform-
+  step3.md`, so the real target described here is unchanged): a uniform-
   in-`(alpha,alpha')` bound on the solution-variety degree of the
   4-point matching system `[P1]+[P2]-alpha•a = [P3]+[P4]-alpha'•a`,
   where `alpha•a` and `alpha'•a` are GIVEN (known Jacobian points) and
@@ -217,11 +220,19 @@ family the degree-uniform theorem quantifies over"
         | quantifies over `sa sb : SampleTargetFromAlpha p H D aClass δ₀`
         | (AlphaLocusDegreeUniform.lean line 890) — ALREADY WIRED
         v
-decoupledSystem_degree_uniform  (sorry — task (B)'s Bad + the actual
-                                  degree-uniformity argument;
-                                  NUMERICAL PREREQUISITE NOW DONE,
-                                  came back 0D -- this is the actual
-                                  next work, see below)
+decoupledSystem_degree_uniform  (was `sorry` as of this pass — task (B)'s
+                                  Bad + the actual degree-uniformity
+                                  argument; NUMERICAL PREREQUISITE NOW
+                                  DONE, came back 0D -- this is the actual
+                                  next work, see below. Since closed in a
+                                  later pass via the `GenericPeelChainHyp`
+                                  bundle -- see `ZeroD-README.md`/
+                                  `ROADMAP-degree-uniform-step3.md` --
+                                  but that closure is circular
+                                  (`hfinrank_le` assumes the bound it's
+                                  meant to give), so the degree-uniformity
+                                  argument described here is still the
+                                  real open work.)
 ```
 
 ## Part A: give `isReductionOf`/`isReductionOutputOf` a first real

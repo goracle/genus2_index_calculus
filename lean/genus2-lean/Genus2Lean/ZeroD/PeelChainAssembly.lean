@@ -127,15 +127,19 @@ documented) to make that re-parametrization straightforward later.
 namespace Genus2Lean
 namespace DecoupledSystem
 
-/-! REFACTOR REVISION
+/-! REFACTOR REVISION (historical — describes a `sorry` since closed)
 
 This revision extracts the `optionSplit` rename identities from the large
-second-peel proof.  In particular, the old `congrArg MvPolynomial.rename`
+second-peel proof. In particular, the old `congrArg MvPolynomial.rename`
 call at the `hFu0'_maps` step left the `CommSemiring` parameter unresolved.
 The typed helper lemmas below make both the source variable type and the
-coefficient ring explicit.  The remaining Step-F `sorry` is intentionally
-kept as a single named local bottleneck: it is the actual unproved
-regularity/coprimality step, not a Lean elaboration problem.
+coefficient ring explicit. **At the time this note was written, "the
+remaining Step-F `sorry`" (the actual unproved regularity/coprimality
+step this refactor isolated, not a Lean elaboration problem) was left as
+a single named local bottleneck. Per the file's own status note just
+above ("the file is `sorry`-free"), this has since been closed** — kept
+here as history of why the refactor was structured this way, not as a
+live pointer to an open `sorry`.
 -/
 
 open MvPolynomial

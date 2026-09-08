@@ -3509,8 +3509,9 @@ unaffected by this (they only pin down `P.X`, taking `P.Y ≠ 0` and
 per each theorem's own docstring) — the orientation only matters once a
 caller instantiates `P` concretely at the assembly call site.
 
-**What is still missing, honestly, before `reducedClass_eq_of_isReduction'`
-can lose its `sorry`** (do not attempt to fake past this list):
+**What was still missing, as of this pass, before `reducedClass_eq_of_isReduction'`
+could lose its `sorry`** (do not attempt to fake past this list) — **since
+resolved, see the note at the end of this section**:
 
 1. Composing each `ordAt P npoly4Lcm4 0 = 1` fact (the six theorems above)
    with `Npoly4 = npoly4Lcm4 * uRS4General` (Step 1, already proved) to
@@ -3551,11 +3552,19 @@ can lose its `sorry`** (do not attempt to fake past this list):
    above, not `R1, R2`. **Not yet written as Lean** — this is the next
    pass's actual target for this piece.
 
-`reducedClass_eq_of_isReduction'` itself is NOT touched this pass and stays
-`sorry` — the gap above is too large to close with a guessed proof term,
-and this project's own convention (search/ask rather than guess) applies
-doubly hard to a correction-term computation not yet checked against
-`reducedClass`'s actual definition. -/
+`reducedClass_eq_of_isReduction'` itself is NOT touched this pass and, as
+of this pass, stays `sorry` — the gap above is too large to close with a
+guessed proof term, and this project's own convention (search/ask rather
+than guess) applies doubly hard to a correction-term computation not yet
+checked against `reducedClass`'s actual definition. **Since closed, later
+pass**: the theorem this note describes has moved to
+`ReducedClassBundles.lean` (bundled into `(base : ReductionData sa) (d :
+SplitAssemblyData sa)` form — see that file's own docstring) and is
+proved there, no `sorry` — the composing-lemmas-14/15 assembly and the
+`eq_of_coeffAt_eq`-based `D_old - D_new` route sketched in items 1-2
+above are what that proof actually carries out, per its own inline
+documentation. Kept here as the historical record of what was missing
+at the time this note was written. -/
 
 /-! ## Status note (this pass, #11): `P2`'s full concrete composition
 ## (item 1's pattern, second of six) is now on file, alongside `P1`'s

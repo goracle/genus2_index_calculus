@@ -263,8 +263,8 @@ it).
    `divModByMonicAux`) — likely requires induction on `natDegree`, real
    new Lean work, not a quick lemma lookup.
 2. Sidestep `/ₘ` entirely: since `dvd_N_anchor1`/`dvd_N_anchor2`/
-   `dvd_N_u` (once proved — currently `sorry` upstream, per
-   `DataDerivationMumford.lean`'s own header) assert EXACT divisibility,
+   `dvd_N_u` (`sorry` upstream as of this pass — since proved, see
+   `DataDerivationSolve.lean`) assert EXACT divisibility,
    `curBeforeMonic * (divisor product) = Npoly` holds as an equation,
    which might let a `totalDegree` bound be derived from `Npoly`'s
    bound via a DIVISOR-side argument (bound `curBeforeMonic` by degree
@@ -283,10 +283,14 @@ it).
 
 This is now the concrete blocker for step 2 (not "unstarted" as before,
 but not resolved) — `DataDerivationMumford.lean`'s upstream `sorry`s
-(`dvd_N_u`, coprimality) also sit in the same file as `curBeforeMonic`
-and would need discharging before `uRS`'s divisibility identity is even
-available to exploit under option 2 above, so this and that file's own
-open work are coupled, not independent.
+(`dvd_N_u`, coprimality), as of this pass, also sit in the same file as
+`curBeforeMonic` and would need discharging before `uRS`'s divisibility
+identity is even available to exploit under option 2 above, so this and
+that file's own open work were coupled, not independent. **Since
+resolved**: `dvd_N_u` and the relevant coprimality facts are now proved
+(see `DataDerivationSolve.lean`/`DataDerivationMumford.lean`, both
+`sorry`-free), so this particular coupling is no longer a blocker — the
+`t1 ≠ t2` gap identified below is the remaining concrete issue.
 
 ## Update — option 2 attempted, generic half landed, concrete half blocked
 
@@ -298,34 +302,43 @@ modByMonic_eq_sub_mul_div` + `sub_eq_zero`, `CommRing R` generic (not
 `K2`-specific), so it's the right tool regardless of how the rest of this
 plays out. Not yet run against Claire's REPL.
 
-**Blocked, not forced into a `sorry`**: applying this three times to
-unwind `curBeforeMonic`'s actual `/ₘ` chain into `Npoly = curBeforeMonic *
+**Blocked, not forced into a `sorry`, as of this pass** — since resolved,
+see the update below: applying this three times to unwind
+`curBeforeMonic`'s actual `/ₘ` chain into `Npoly = curBeforeMonic *
 ((X-t1)(X-t2)*U)` needs propagating `dvd_N_anchor2`'s fact (`(X - C t2) ∣
 Npoly`) down to the INTERMEDIATE quotient `Npoly /ₘ (X - C t1)`, which
 needs `(X - C t1)`/`(X - C t2)` coprime — for two linear factors, that's
-exactly `t1 ≠ t2`. **This is not established anywhere in the codebase.**
-`MatrixNondegenerate` is only `A.det ≠ 0`; nothing here derives `t1 ≠ t2`
-from it. Attempted this pass, hit the gap, and stopped rather than
-papering over it with `sorry` — the abandoned attempt (routing through
-`Polynomial.monic_X_sub_C _ |>.coprime_of_ne`, which needs exactly this
-fact) is documented in a `/-! -/` note in `DataDerivationSolve.lean`
-right after `eq_mul_divByMonic_of_dvd`, not left as dead code in the
-file.
+exactly `t1 ≠ t2`. **This was not established anywhere in the codebase
+as of this pass.** `MatrixNondegenerate` is only `A.det ≠ 0`; nothing
+here derives `t1 ≠ t2` from it. Attempted this pass, hit the gap, and
+stopped rather than papering over it with `sorry` — the abandoned
+attempt (routing through `Polynomial.monic_X_sub_C _ |>.coprime_of_ne`,
+which needs exactly this fact) is documented in a `/-! -/` note in
+`DataDerivationSolve.lean` right after `eq_mul_divByMonic_of_dvd`, not
+left as dead code in the file. **Resolved, later pass**:
+`anchor1_ne_anchor2` (`DataDerivationSolve.lean`) proves `t1 ≠ t2`
+unconditionally — no `MatrixNondegenerate` needed at all, since `t1`/`t2`
+turn out to be the two free `MvPolynomial` generators pushed through
+injective ring maps, not solution-dependent quantities. See that
+theorem's own docstring for the full argument.
 
-**New, smaller concrete next step, sharper than before**: prove `t1 ≠
-t2` — i.e. `(anchor1 p ...).1 ≠ (anchor2 p ...).1` — from
-`MatrixNondegenerate`, presumably via a Vandermonde-style argument (`t1 =
-t2` would make two of `matrixA`'s rows proportional, forcing `det = 0`).
-This is now the single sharpest blocker on option 2's path, upstream of
-both the `curBeforeMonic`-unwinding step above AND (per `vRS`'s own
-docstring) `vRS`'s coprimality hypothesis — so resolving it likely
-unblocks more than just this one lemma. Once available, finishing
-`Npoly_eq_curBeforeMonic_mul` should be direct: `eq_mul_divByMonic_of_dvd`
-three times, `IsCoprime.dvd_of_dvd_mul_left`/`_right` to propagate each
-`dvd_N_*` fact through the prior layers' quotients (using `t1 ≠ t2` for
-the anchor pair, and a not-yet-checked `(X-t_i)`-vs-`U` coprimality
-argument for the third layer, likely from `U`'s roots being genuinely
-different target-side values, itself needing its own sourcing check).
+**Superseded by the resolution above, and fully closed since**: this
+section originally proposed proving `t1 ≠ t2` from `MatrixNondegenerate`
+via a Vandermonde-style argument, as the sharpest remaining blocker on
+option 2's path (upstream of both the `curBeforeMonic`-unwinding step
+AND, per `vRS`'s own docstring, `vRS`'s coprimality hypothesis).
+`anchor1_ne_anchor2` closes this unconditionally instead, by a simpler
+route (the two anchors are free generators, not solution-dependent), so
+no `MatrixNondegenerate`-based argument is needed. The remaining pieces
+flagged here as open — the third-layer `(X-t_i)`-vs-`U` coprimality
+argument (`anchor1_coprime_U`/`anchor2_coprime_U`) and the assembly
+itself — are also done: `Npoly_eq_curBeforeMonic_mul`
+(`DataDerivationSolve.lean`) is a complete, `sorry`-free term proof
+exactly along the lines sketched here (`eq_mul_divByMonic_of_dvd` three
+times, `IsCoprime.dvd_of_dvd_mul_left`/`_right` to propagate `dvd_N_*`
+through each intermediate quotient, closed by a `calc` block). This
+whole `curBeforeMonic`-unwinding obligation is closed; nothing in this
+section is still open.
 
 Still fully unresolved, independent of the above: bounding `Npoly`'s own
 `totalDegree` (traces to `cramerSolution`'s Cramer's-rule structure — see
