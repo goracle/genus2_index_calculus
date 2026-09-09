@@ -133,21 +133,123 @@ theorem w2_modByMonicHom_coeff (c0 c1 c2 c3 c4 : F p) :
   rw [heq]
   simp
 
+/-! ## Leaf 2, continued: `baseFracToRing`'s output on the trivial `K0`
+values `0`/`1` -- needed to finish `w1`/`w2`'s tower descent
+
+`w1_modByMonicHom_coeff`/`w2_modByMonicHom_coeff` give `d0 = 0, d1 = 1 : K0 p`
+at `towerToRdecK1`'s first recursion step. To get `towerToRdecK1_totalDegree_le`'s
+own hypothesis (a `totalDegree` bound on `baseFracToRing p sg d0`/`d1`), the
+missing piece is bounding `baseFracToRing p sg 0` and `baseFracToRing p sg 1`
+directly -- a genuinely separate case from `baseFracToRing_totalDegree_le`
+above, since that theorem's proof needs `a ≠ 0` (the UFD `num v ∣ a`
+divisibility argument is vacuous at `a = 0`), which fails exactly at `v = 0`.
+Handled here as its own pair of small lemmas rather than forcing the general
+theorem to cover a case its own proof structure can't reach. -/
+
+/-- **`baseFracToRing p sg 0`'s `totalDegree` bound: `(0, ≤1)`.** `v = 0`'s
+numerator is `0` outright (`IsFractionRing.num_zero`, Mathlib), so the first
+component is trivially `totalDegree 0`. The denominator side still needs the
+general cross-multiplication argument (`isFractionRing_den_totalDegree_le`
+with the witness `a := 0, b := 1`), since `den v` need not be `1` merely
+because `num v = 0` (only guaranteed to be *some* nonzero-divisor). -/
+theorem baseFracToRing_zero_totalDegree_le {Vars : Type*} (sg : SideGens Vars) :
+    (baseFracToRing p sg (0 : K0 p)).1.totalDegree ≤ 1 ∧
+    (baseFracToRing p sg (0 : K0 p)).2.totalDegree ≤ 1 := by
+  have hv0 : (0 : K0 p) = IsLocalization.mk' (K0 p)
+      (0 : MvPolynomial (Fin 2) (F p))
+      ⟨(1 : MvPolynomial (Fin 2) (F p)), mem_nonZeroDivisors_of_ne_zero one_ne_zero⟩ := by
+    -- Same `mk'_spec'` pattern as `t0_eq_mk'_one`: `algebraMap _ _ ↑y * mk' K 0 y =
+    -- algebraMap _ _ 0 = 0`; `algebraMap _ (K0 p) ↑(1:...) = 1 ≠ 0` in the field `K0 p`,
+    -- so `mk' K0 0 y = 0` follows by cancelling a nonzero factor (`mul_eq_zero`).
+    have hspec := IsLocalization.mk'_spec' (K0 p) (0 : MvPolynomial (Fin 2) (F p))
+      (⟨(1 : MvPolynomial (Fin 2) (F p)), mem_nonZeroDivisors_of_ne_zero one_ne_zero⟩ :
+        ↥(nonZeroDivisors (MvPolynomial (Fin 2) (F p))))
+    simp only [map_zero, map_one, one_mul] at hspec
+    exact hspec.symm
+  have hnum : IsFractionRing.num (MvPolynomial (Fin 2) (F p)) (0 : K0 p) = 0 :=
+    IsFractionRing.num_zero
+  have hden := isFractionRing_den_totalDegree_le p (a := (0 : MvPolynomial (Fin 2) (F p)))
+    (b := (1 : MvPolynomial (Fin 2) (F p))) one_ne_zero hv0
+  constructor
+  · have : (baseFracToRing p sg (0 : K0 p)).1 =
+        MvPolynomial.aeval (fun i : Fin 2 => MvPolynomial.X (sg.tGen i))
+          (IsFractionRing.num (MvPolynomial (Fin 2) (F p)) (0 : K0 p)) := rfl
+    rw [this, hnum]
+    simp
+  · have hle := aeval_X_comp_totalDegree_le p sg.tGen
+      (↑(IsFractionRing.den (MvPolynomial (Fin 2) (F p)) (0 : K0 p)) :
+        MvPolynomial (Fin 2) (F p))
+    have : (baseFracToRing p sg (0 : K0 p)).2 =
+        MvPolynomial.aeval (fun i : Fin 2 => MvPolynomial.X (sg.tGen i))
+          (↑(IsFractionRing.den (MvPolynomial (Fin 2) (F p)) (0 : K0 p)) :
+            MvPolynomial (Fin 2) (F p)) := rfl
+    rw [this]
+    calc _ ≤ (↑(IsFractionRing.den (MvPolynomial (Fin 2) (F p)) (0 : K0 p)) :
+          MvPolynomial (Fin 2) (F p)).totalDegree := hle
+      _ ≤ (1 : MvPolynomial (Fin 2) (F p)).totalDegree := hden
+      _ ≤ 1 := by simp
+
+/-- **`baseFracToRing p sg 1`'s `totalDegree` bound: `(≤1, ≤1)`.** `v = 1`
+via `mk' K0 1 1`, matching `t0_eq_mk'_one`'s pattern one step further (`a=1`
+instead of `a=X i`) -- `a ≠ 0` holds here, so this DOES go through the
+general `baseFracToRing_totalDegree_le` directly, no special-casing needed. -/
+theorem baseFracToRing_one_totalDegree_le {Vars : Type*} (sg : SideGens Vars) :
+    (baseFracToRing p sg (1 : K0 p)).1.totalDegree ≤ 1 ∧
+    (baseFracToRing p sg (1 : K0 p)).2.totalDegree ≤ 1 := by
+  have hv1 : (1 : K0 p) = IsLocalization.mk' (K0 p)
+      (1 : MvPolynomial (Fin 2) (F p))
+      ⟨(1 : MvPolynomial (Fin 2) (F p)), mem_nonZeroDivisors_of_ne_zero one_ne_zero⟩ := by
+    -- Same `mk'_spec'` pattern as `hv0`/`t0_eq_mk'_one`, rather than assuming
+    -- `IsLocalization.mk'_one`'s exact argument shape (it turned out not to unify
+    -- directly against `mk' S 1 y`, so this sidesteps that guess entirely).
+    have hspec := IsLocalization.mk'_spec' (K0 p) (1 : MvPolynomial (Fin 2) (F p))
+      (⟨(1 : MvPolynomial (Fin 2) (F p)), mem_nonZeroDivisors_of_ne_zero one_ne_zero⟩ :
+        ↥(nonZeroDivisors (MvPolynomial (Fin 2) (F p))))
+    simp only [OneMemClass.coe_one, map_one, one_mul] at hspec
+    exact hspec.symm
+  have h := baseFracToRing_totalDegree_le p sg one_ne_zero one_ne_zero hv1
+  refine ⟨le_trans h.1 ?_, le_trans h.2 ?_⟩ <;> simp
+
 /-! ## Status, this pass
 
-Leaf-level facts for `t0`/`w1`/`w2` are drafted (`t0_eq_mk'_one`,
-`modByMonicHom_root_eq_X` and its two instances). **Not yet assembled** into
-an actual `totalDegree` bound on `anchor1`/`anchor2`'s coordinates after full
-`towerToRdec` descent, nor threaded through `matrixA`/`rhsVec`'s
-`if`-branching formula, nor composed with `det_totalDegree_le`/
-`cramerRatioDet_num_totalDegree_le` to get a concrete `E` for
-`cramerSolution`/`coeffsOut` -- that assembly is the next step, deliberately
-not attempted in the same pass as these foundational leaf lemmas, per this
-project's "state and check small pieces before assembling" discipline.
-`reduceMonomialModU`'s leaf bound (the third kind, `F p`-constants) is
-immediate from `MvPolynomial.totalDegree_C` and not separately stated as its
-own theorem here since it needs no new lemma, only a one-line `simp` at the
-point it's actually used.
+Leaf-level facts for `t0`/`w1`/`w2` are drafted and completed:
+`t0_eq_mk'_one`, `modByMonicHom_root_eq_X` and its two instances
+(`w1_modByMonicHom_coeff`/`w2_modByMonicHom_coeff`), plus the trivial-value
+`baseFracToRing` bounds (`baseFracToRing_zero_totalDegree_le`/
+`baseFracToRing_one_totalDegree_le`) needed to actually feed
+`towerToRdecK1_totalDegree_le`'s hypothesis from `w1`/`w2`'s `(0,1)`
+`modByMonicHom` normal form. **Not yet assembled** into an actual
+`totalDegree` bound on `anchor1`/`anchor2`'s coordinates after full
+`towerToRdec` descent (two more recursion levels, `K1 → K0` already covered
+above, `K2 → K1` still needs `towerToRdec_totalDegree_le` applied on top),
+nor threaded through `matrixA`/`rhsVec`'s `if`-branching formula, nor
+composed with `det_totalDegree_le`/`cramerRatioDet_num_totalDegree_le` to
+get a concrete `E` for `cramerSolution`/`coeffsOut` -- that assembly is the
+next step, deliberately not attempted in the same pass as these foundational
+leaf lemmas, per this project's "state and check small pieces before
+assembling" discipline. `reduceMonomialModU`'s leaf bound (the third kind,
+`F p`-constants) is immediate from `MvPolynomial.totalDegree_C` and not
+separately stated as its own theorem here since it needs no new lemma, only
+a one-line `simp` at the point it's actually used.
+
+**Sent to Claire's REPL, four build errors found and fixed across two
+passes**:
+1. `hden`'s conclusion is `≤ b.totalDegree` (`isFractionRing_den_totalDegree_le`'s
+   actual shape, `b := 1` here), not the literal equality `= 0` an earlier
+   fix attempt assumed — corrected by chaining through
+   `(1 : MvPolynomial (Fin 2) (F p)).totalDegree` explicitly in the `calc`,
+   then closing `≤ 1` with `simp` (via `MvPolynomial.totalDegree_one`)
+   rather than asserting an equality that doesn't match the lemma's stated
+   return type.
+2. Same tightness issue in `baseFracToRing_one_totalDegree_le`'s final step
+   -- fixed with explicit `le_trans` + `simp` on each side rather than
+   `simpa` guessing the reconciliation.
+3. `IsLocalization.mk'_one` did not unify against the `1 = mk' (K0 p) 1 ⟨1,_⟩`
+   goal shape (its actual argument convention differs from the guessed
+   `mk' S 1 y` pattern) — replaced with the same `mk'_spec'`+`simp` route
+   `hv0` and `t0_eq_mk'_one` already use, avoiding the guess entirely.
+Also cleared an unused-`simp`-argument lint (`OneMemClass.coe_one` in
+`hv0`'s proof, not needed once `map_zero` is in the simp set).
 -/
 
 end TheDataDerivation

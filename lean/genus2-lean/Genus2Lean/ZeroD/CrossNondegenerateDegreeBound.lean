@@ -34,16 +34,10 @@ bound; nothing about this theorem's proof needs to change when that happens,
 since it never unfolds `uRS`/`vRS`'s own construction, only takes their
 coefficient bounds as given.
 
-**Not yet REPL-confirmed** (this pass wrote the statement and proof term but
-had no build environment available) -- send to Claire's REPL before treating
-this as load-bearing. The most likely failure points, flagged rather than
-hidden: (1) exact argument order / implicit-vs-explicit status of
-`towerToRdec_coeff_totalDegree_le`'s hypothesis bundle `h`, since it is a
-4-way `∧` that must be assembled from four separate `towerToRdecK1`-level
-facts; (2) whether `aSideGens`/`bSideGens` need to be unfolded before
-`coeffsToNumDen`'s definition lines up with `towerToRdec_coeff_totalDegree_le`'s
-statement shape (both are `towerToRdec p sg (poly.coeff i.val)`, but Lean's
-unifier may need `show`/`unfold` help to see through `coeffsToNumDen`'s `def`).
+**REPL-confirmed, later pass**: build green, both theorems below, no changes
+needed to either statement or proof term. Both flagged risks (argument order
+into `towerToRdec_coeff_totalDegree_le`; the `rfl` unfolds through
+`coeffsToNumDen`'s `def`) turned out fine as originally written.
 -/
 
 namespace Genus2Lean
@@ -175,8 +169,8 @@ discipline, but the proof body itself is line-for-line the same shape as
 `crossResultant_totalDegree_le` above (same `rfl`-unfolding step, same
 `totalDegree_mul`/`totalDegree_sub` combination), just against `v1_num i =
 (towerToRdec p aSideGens ((vRS ... hgcdA).coeff i.val)).1` etc. in place of
-the `u1_num`/`u2_num` unfoldings. **Not yet REPL-confirmed** (same caveat as
-the u-side theorem above -- no build environment available this pass). -/
+the `u1_num`/`u2_num` unfoldings. **REPL-confirmed, later pass**, same as
+the u-side theorem above. -/
 theorem crossResultantV_totalDegree_le
     (c0 c1 c2 c3 c4 : F p) (sa sb : SampleTarget p)
     (hcurA : curBeforeMonic p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1 ≠ 0)
@@ -275,9 +269,10 @@ theorem crossResultantV_totalDegree_le
 
 Both `crossResultant_totalDegree_le` (u-side, `hu0`/`hu1`'s shape) and
 `crossResultantV_totalDegree_le` (v-side, `hv0`/`hv1`'s shape) are now
-drafted -- instantiate each at `i = 0`/`i = 1` for the two index values.
-Together these cover all four of `CrossNondegenerate`'s resultant fields.
-**Neither is yet REPL-confirmed this pass** (no build environment available).
+drafted and **REPL-confirmed green** -- instantiate each at `i = 0`/`i = 1`
+for the two index values. Together these cover all four of
+`CrossNondegenerate`'s resultant fields, conditional on the base-case `D`
+hypothesis (see below -- still open).
 
 **Not done here** (deliberately, per the roadmap's own step 6): using this
 bound to characterize the resultant's *vanishing* locus (the "failure modes"

@@ -227,6 +227,19 @@ item 1:
    still the single highest-priority next action in the whole
    subsystem, higher priority than any further numerical work.
 
+   **Update, later pass**: `CrossNondegenerateDegreeBound.lean` (new file)
+   closes the first concrete piece of this -- `crossResultant_totalDegree_le`/
+   `crossResultantV_totalDegree_le`, REPL-confirmed green, bound all four of
+   `CrossNondegenerate`'s resultants by `4*D+2` given a base-case bound `D`
+   on `uRS`/`vRS`'s coefficients. **Still open**: `D` is a hypothesis, not a
+   concrete number -- pinning it down requires a `totalDegree` bound through
+   `curBeforeMonic`'s three nested `/ₘ` (exact polynomial division) steps,
+   which Mathlib has no off-the-shelf lemma for. See
+   `ROADMAP-crossnondegenerate-degree-bound.md`'s own "Update, later pass"
+   section for the three candidate routes (direct induction on
+   `divByMonic`'s definition; the exact-quotient-via-`Npoly_eq_curBeforeMonic_mul`
+   route; or a ChatGPT consultation) -- this is now the single next action.
+
    **Major update, not yet formalized anywhere -- flagged here first,
    NOT yet reflected in `ROADMAP-alpha-locus.md`/`ROADMAP-degree-uniform-
    step3.md`'s own text (both still describe the plain "0-dimensional"

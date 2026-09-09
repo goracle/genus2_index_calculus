@@ -345,3 +345,39 @@ Still fully unresolved, independent of the above: bounding `Npoly`'s own
 "Concrete numbers" above, `w1`/`w2` are `AdjoinRoot.root`s not
 `fAtT`-images, `Epoly`/`Ypoly`'s coefficients are `cramerSolution`
 outputs). Not attempted this pass.
+
+## Update, later pass — step 5 done and REPL-confirmed, step 6 not started
+
+**Closed, REPL-confirmed green (Claire's build)**: `CrossNondegenerateDegreeBound.lean`
+(new file, roadmap step 5) states and proves `crossResultant_totalDegree_le`
+(u-side, `hu0`/`hu1`'s shape) and `crossResultantV_totalDegree_le` (v-side,
+`hv0`/`hv1`'s shape) — each of `CrossNondegenerate`'s four resultants
+(`d₁*c₂ - d₂*c₁`) has `totalDegree ≤ 4*D + 2`, given a common base-case bound
+`D` on `uRS`/`vRS`'s relevant `towerToRdecK1`-level coefficient data (both
+samples, both sides). Both theorems build with no changes needed from the
+drafted version — the two risks flagged when they were written (argument
+order into `towerToRdec_coeff_totalDegree_le`; whether the `rfl` unfolds
+through `coeffsToNumDen`'s `def`) were non-issues in practice.
+
+**What this does NOT close — the actual remaining gap, unchanged from the
+"still fully unresolved" note directly above**: both theorems are
+conditional on `D` as a hypothesis, not a concrete number. Making `D`
+concrete requires bounding `uRS.coeff i`/`vRS.coeff i` themselves, which
+traces through `curBeforeMonic`'s three nested `/ₘ` (`Polynomial.divByMonic`)
+steps — Mathlib has no general `totalDegree`-transfer lemma for exact
+polynomial division's coefficients (see "The one genuine wrinkle" above,
+which is a *different*, already-closed gap about `IsFractionRing.num`/`.den`
+at the base case, not this one). **This is now the single next step for
+Obligation 3** (`ROADMAP-degree-uniform-step3.md`'s framing) — nothing about
+`crossResultant_totalDegree_le`/`crossResultantV_totalDegree_le`'s proofs
+needs to change once it's closed; `D` just becomes a number instead of a
+hypothesis. Candidate routes, per that file's own earlier options list
+(unstarted): (1) direct induction on `Polynomial.divByMonic`'s recursive
+definition, (2) the exact-quotient-via-multiplication route (`Npoly =
+curBeforeMonic * (divisor product)`, already available as an equation via
+`Npoly_eq_curBeforeMonic_mul` per that file's own resolved history — bound
+`curBeforeMonic` from `Npoly`'s degree and the divisors' degrees, if Mathlib
+has the right lemma, or (3) ask ChatGPT for the general "totalDegree of an
+exact polynomial quotient" fact if (1)/(2) don't turn up a usable lemma
+quickly — this is exactly the well-defined, non-curve-specific algebra fact
+this project's convention flags as fair game to consult on.
