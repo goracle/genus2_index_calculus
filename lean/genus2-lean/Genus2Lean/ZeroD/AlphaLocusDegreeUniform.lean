@@ -898,13 +898,11 @@ docstring (`decoupledSystem_isRegularSequence`'s one-line delegation to
 `Module.Finite.quotient_of_isRegular_of_length_eq_card` instantiation) —
 so "same `sorry`" describes their state at the time of the move, not now.
 
-**Action required to actually finish this move**: delete
-`decoupledSystem_isRegularSequence` and `decoupledSystem_zeroDimensional`
-from the end of `DecoupledSystemRegular.lean` once this file compiles
-against them here — they are reproduced below, not yet removed from their
-old location, since removing them there is a one-line edit to that file
-best done alongside compiling this one (see "What's left to do" at the
-bottom of this docstring). -/
+**Move finished**: `decoupledSystem_isRegularSequence` and
+`decoupledSystem_zeroDimensional` have been deleted from the end of
+`DecoupledSystemRegular.lean` (that file now has a pointer docstring in
+their place) and live only here — see "What's left to do" item 1 at the
+bottom of this docstring for the record of that pass. -/
 
 /-- **The paper's actual claim, fixed-target case.** Moved verbatim from
 `DecoupledSystemRegular.lean` (see that file's own docstring for the full
