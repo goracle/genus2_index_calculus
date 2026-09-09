@@ -37,6 +37,17 @@ bound as one further `totalDegree_mul`/`_add` step in
 `DecoupledSystemRegular.lean` itself (roadmap step 5, the actual
 resultant, not yet attempted — needs the new import and that file's own
 `Idx`/`Rdec`/`hu0`/etc. names in scope, out of place here).
+
+**Later pass, this section**: added `cramerNumeratorEntry_totalDegree_le`/
+`cramerNumeratorDet_totalDegree_le`, the flagged degree corollary to
+`cramerDenom_det_eq`'s `Δ_A * A.det = C.det` identity (see the "Cramer
+ratio witness" section below, near end of file) — `C.det.totalDegree ≤
+(Fintype.card n)^2 * D` given entrywise `≤ D` bounds on the raw `a`/`b`
+Cramer data. **Not yet REPL-confirmed.** This closes the "Next step" this
+docstring's previous revision left open for that section; the section's
+own remaining open item (bounding `A.det`'s own `totalDegree`, which
+needs routing through `IsFractionRing.num`/`.den` since `A.det` is
+`K`-valued, not `MvPolynomial`-valued) is unchanged and still open.
 -/
 
 namespace Genus2Lean
@@ -628,14 +639,18 @@ product of `a i j` with every OTHER row's `b`-entry in column `j`) equals
 column `j`'s full `b`-product times `A`'s `(i,j)` entry `a i j / b i j`. The
 `∏ i', b i' j` on the RHS splits into `b i j` (cancelling against the
 division) times `∏ i' ≠ i, b i' j` (matching `C i j`'s own product), via
-`Finset.prod_eq_mul_prod_diff_singleton` — a single `Finset.mem_univ`-indexed
-singleton/complement split, not a full grid partition. -/
+`Finset.prod_sdiff` (applied to `{i} ⊆ univ`, `Finset.prod_singleton`
+collapsing the singleton factor to `b i j`) — a single singleton/complement
+split, not a full grid partition. -/
 theorem cramerEntry_eq_denomProd_mul_ratio {n : Type*} [DecidableEq n] [Fintype n]
     {K : Type*} [Field K] (a b : n → n → K) (hb : ∀ i j, b i j ≠ 0) (i j : n) :
     a i j * ∏ i' ∈ Finset.univ \ {i}, b i' j =
       (∏ i', b i' j) * (a i j / b i j) := by
   have hsplit : ∏ i', b i' j = b i j * ∏ i' ∈ Finset.univ \ {i}, b i' j := by
-    rw [← Finset.prod_eq_mul_prod_diff_singleton (Finset.mem_univ i)]
+    have hkey : (∏ i' ∈ Finset.univ \ {i}, b i' j) * ∏ i' ∈ ({i} : Finset n), b i' j =
+        ∏ i', b i' j := Finset.prod_sdiff (Finset.subset_univ {i})
+    rw [Finset.prod_singleton] at hkey
+    rw [← hkey]; ring
   rw [hsplit, mul_comm (b i j), mul_assoc, mul_div_cancel₀ _ (hb i j)]
   ring
 
@@ -669,13 +684,72 @@ theorem cramerDenom_det_eq {n : Type*} [DecidableEq n] [Fintype n]
   have hCeq : (Matrix.of fun i j => a i j * ∏ i' ∈ Finset.univ \ {i}, b i' j) =
       A * Matrix.diagonal d := by
     ext i j
-    rw [mul_diagonal_apply_eq_mul]
-    exact (cramerEntry_eq_denomProd_mul_ratio a b hb i j).symm
+    rw [Matrix.of_apply, mul_diagonal_apply_eq_mul]
+    show a i j * ∏ i' ∈ Finset.univ \ {i}, b i' j = (a i j / b i j) * (∏ i, b i j)
+    rw [cramerEntry_eq_denomProd_mul_ratio a b hb i j, mul_comm]
   rw [hCeq, Matrix.det_mul, Matrix.det_diagonal]
   rw [show (∏ i, ∏ i' : n, b i' i) = (∏ i, ∏ j, b i j) from Finset.prod_comm]
   ring
 
-/-! ## Status, this section: identity closed, degree corollary next
+/-- **`C`'s entries are each `totalDegree ≤ n * D`.** `C i j := a i j * ∏ i'
+∈ univ \ {i}, b i' j` is one `a`-factor (`≤ D`) times an `(n-1)`-factor
+product of `b`-entries (`≤ D` each, so `≤ (n-1)*D` by
+`finsetProd_totalDegree_le`) — `MvPolynomial.totalDegree_mul` adds the two
+bounds, giving `≤ D + (n-1)*D = n*D` after `Finset.card_sdiff_of_subset`/
+`Finset.card_singleton` pin down `(univ \ {i}).card = n - 1`. This is the
+per-entry bound `det_totalDegree_le` needs to bound `C.det` itself. -/
+theorem cramerNumeratorEntry_totalDegree_le {Vars n : Type*} [Fintype n]
+    [DecidableEq n] {D : ℕ}
+    (a b : n → n → MvPolynomial Vars (F p)) (ha : ∀ i j, (a i j).totalDegree ≤ D)
+    (hb : ∀ i j, (b i j).totalDegree ≤ D) (i j : n) :
+    (a i j * ∏ i' ∈ Finset.univ \ {i}, b i' j).totalDegree ≤ Fintype.card n * D := by
+  have hcard : (Finset.univ \ ({i} : Finset n)).card = Fintype.card n - 1 := by
+    rw [Finset.card_sdiff_of_subset (Finset.subset_univ _), Finset.card_singleton,
+      Finset.card_univ]
+  have hprod : (∏ i' ∈ Finset.univ \ {i}, b i' j).totalDegree ≤
+      (Fintype.card n - 1) * D := by
+    have := finsetProd_totalDegree_le p (fun i' => b i' j) (fun i' => hb i' j)
+      (Finset.univ \ {i})
+    rwa [hcard] at this
+  have hcardpos : 1 ≤ Fintype.card n := Fintype.card_pos_iff.mpr ⟨i⟩
+  have hstep : (a i j * ∏ i' ∈ Finset.univ \ {i}, b i' j).totalDegree ≤
+      D + (Fintype.card n - 1) * D :=
+    le_trans (MvPolynomial.totalDegree_mul _ _) (add_le_add (ha i j) hprod)
+  have heq : D + (Fintype.card n - 1) * D = Fintype.card n * D := by
+    have hsub : Fintype.card n - 1 + 1 = Fintype.card n := Nat.sub_add_cancel hcardpos
+    calc D + (Fintype.card n - 1) * D
+        = (Fintype.card n - 1) * D + D := by ring
+      _ = (Fintype.card n - 1 + 1) * D := by ring
+      _ = Fintype.card n * D := by rw [hsub]
+  rw [heq] at hstep
+  exact hstep
+
+/-- **The Cramer-numerator determinant's `totalDegree` bound.** `C.det :=
+Matrix.det (Matrix.of fun i j => a i j * ∏ i' ≠ i, b i' j)` satisfies
+`totalDegree ≤ (Fintype.card n)^2 * D` given `a i j`/`b i j` both `≤ D` —
+`det_totalDegree_le` applied with the per-entry bound
+`cramerNumeratorEntry_totalDegree_le` (`≤ Fintype.card n * D` each),
+giving `Fintype.card n * (Fintype.card n * D) = (Fintype.card n)^2 * D`
+after `sq`/`mul_assoc` bookkeeping. Combined with `cramerDenom_det_eq`
+(the `Δ_A * A.det = C.det` identity), this bounds the fraction-cleared
+Cramer numerator `C.det` uniformly, given only entrywise bounds on the raw
+`a`/`b` data — no factorization of `C.det` itself needed. -/
+theorem cramerNumeratorDet_totalDegree_le {Vars n : Type*} [Fintype n]
+    [DecidableEq n] {D : ℕ}
+    (a b : n → n → MvPolynomial Vars (F p)) (ha : ∀ i j, (a i j).totalDegree ≤ D)
+    (hb : ∀ i j, (b i j).totalDegree ≤ D) :
+    (Matrix.det (Matrix.of fun i j => a i j * ∏ i' ∈ Finset.univ \ {i}, b i' j)).totalDegree
+      ≤ (Fintype.card n) ^ 2 * D := by
+  have hentry : ∀ i j, (a i j * ∏ i' ∈ Finset.univ \ {i}, b i' j).totalDegree ≤
+      Fintype.card n * D :=
+    fun i j => cramerNumeratorEntry_totalDegree_le p a b ha hb i j
+  have := det_totalDegree_le p (Matrix.of fun i j => a i j * ∏ i' ∈ Finset.univ \ {i}, b i' j)
+    hentry
+  calc (Matrix.det (Matrix.of fun i j => a i j * ∏ i' ∈ Finset.univ \ {i}, b i' j)).totalDegree
+      ≤ Fintype.card n * (Fintype.card n * D) := this
+    _ = (Fintype.card n) ^ 2 * D := by ring
+
+/-! ## Status, this section: identity closed, degree corollary now proved
 
 **Closed, this pass**: `cramerDenom_det_eq` (the `Δ_A * A.det = C.det`
 identity ChatGPT's consultation scoped) is proved outright, via the
@@ -683,22 +757,42 @@ diagonal-matrix route (`C = A * diagonal (column-products)`, then
 `Matrix.det_mul`/`Matrix.det_diagonal`) rather than the originally-sketched
 `Finset.prod_erase` grid partition, or the column-indexed `det_mul_column`
 attempt that preceded this version and hit a genuine index-convention
-mismatch (documented, then routed around, not silently dropped). **Not yet
-REPL-confirmed** — `mul_diagonal_apply_eq_mul`'s `simp` call and
-`Finset.prod_comm`'s exact application in the final `congr` step are the
-two spots most likely to need adjusting once Claire's REPL reports the
-actual goal state, per this project's normal workflow.
+mismatch (documented, then routed around, not silently dropped).
 
-**Next step**: derive `C.det`'s `totalDegree ≤ n^2 * D` (given `a i j`/
-`b i j` both `≤ D`) from `det_totalDegree_le` above — `C`'s own entries are
-`≤ n * D` each (via `finsetProd_totalDegree_le`/`prod_totalDegree_le`-style
-reasoning on the `n-1`-factor product plus the `a i j` factor), so
-`det_totalDegree_le` gives `≤ n * (n*D) = n^2*D` directly. Not yet stated
-as its own theorem this pass — `cramerDenom_det_eq` was the harder,
-identity-level piece; the degree bound is now a direct corollary once
-stated. Once that's in place, `CrossNondegenerate`'s resultant degree bound
-(the actual next layer up, in `DecoupledSystemRegular.lean`) is one more
-application away. -/
+**Build errors found and fixed, later pass (Claire's REPL)**: four errors
+surfaced on first build, all now fixed:
+1. `cramerEntry_eq_denomProd_mul_ratio`'s `hsplit` used a nonexistent
+   lemma name (`Finset.prod_eq_mul_prod_diff_singleton`) — replaced with
+   `Finset.prod_sdiff (Finset.subset_univ {i})` (`(univ\{i}).prod f *
+   {i}.prod f = univ.prod f`) plus `Finset.prod_singleton` to collapse the
+   singleton factor, then `rw [← hkey]; ring` to close.
+2. `cramerDenom_det_eq`'s `hCeq` needed `Matrix.of_apply` to unfold
+   `Matrix.of (fun i j => ...) i j` to the raw function application before
+   `mul_diagonal_apply_eq_mul` could fire on the RHS, and needed an
+   explicit `show` (unfolding the `set`-introduced `A`/`d` to their
+   definitions) before `cramerEntry_eq_denomProd_mul_ratio` could match —
+   `rw` alone couldn't see through the `set` abstraction to unify the
+   goal with the lemma's stated shape.
+3. `cramerNumeratorEntry_totalDegree_le`'s `hcard` used
+   `Finset.card_sdiff`, which is a different (non-function) lemma in this
+   Mathlib snapshot (`(t\s).card = t.card - (s∩t).card`, no hypothesis) —
+   replaced with `Finset.card_sdiff_of_subset (h : s ⊆ t) : (t\s).card =
+   t.card - s.card`, the hypothesis-taking version actually needed here.
+4. (Same fix propagated to this docstring's own lemma-name references.)
+
+**Not yet REPL-confirmed again after these fixes** — send back to Claire's
+REPL for a fresh build.
+
+**Next step**: with `cramerDenom_det_eq` (`Δ_A * A.det = C.det`) and
+`cramerNumeratorDet_totalDegree_le` (`C.det.totalDegree ≤ n^2*D`) both in
+place, deriving a `totalDegree` bound on `A.det` itself (the actual Cramer
+ratio, `A i j = a i j / b i j`) is the natural next corollary — but note
+`A.det` is `K`-valued, not `MvPolynomial`-valued, so this needs routing
+through `IsFractionRing.num`/`.den` on `A.det` the same way `baseFracToRing_
+totalDegree_le` does at the base case, not a direct `totalDegree` call on
+`A.det` itself. Once that's in place, `CrossNondegenerate`'s resultant
+degree bound (the actual next layer up, in `DecoupledSystemRegular.lean`)
+is one more application away. -/
 
 end TheDataDerivation
 end Genus2Lean
