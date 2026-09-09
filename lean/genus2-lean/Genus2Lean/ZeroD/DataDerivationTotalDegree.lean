@@ -404,6 +404,195 @@ theorem towerToRdec_coeff_totalDegree_le {Vars : Type*}
     (towerToRdec p sg (poly.coeff i.val)).2.totalDegree ≤ 2 * D :=
   towerToRdec_totalDegree_le p c0 c1 c2 c3 c4 sg (poly.coeff i.val) h
 
+/-! ## `Matrix.det`/`Matrix.cramer`'s `totalDegree` bound
+
+New this pass, per a ChatGPT consultation (`chatgpt_prompt_cramer_totaldegree.md`,
+`Genus2Lean/` top level) on the piece the roadmap's Question 1 flagged as
+missing from Mathlib: a `totalDegree` bound for `Matrix.det`/`Matrix.cramer`
+in terms of entrywise bounds. This is generic `MvPolynomial` linear algebra,
+independent of `K0`/`K1`/`K2`/`towerToRdec` — stated here for a general
+`Fin n` matrix, not `Fin 4`-specific, matching Mathlib's own genericity and
+this project's "prove it once" preference. Two separate lemmas, per
+ChatGPT's own distinction:
+
+1. **Polynomial case** (`det_totalDegree_le`, DONE, sorry-free this pass): a
+   genuine `Matrix (Fin n) (Fin n) (MvPolynomial Vars (F p))` with all
+   entries `totalDegree ≤ D` has `det.totalDegree ≤ n * D` — every one of
+   the `n!` Leibniz terms is a product of exactly `n` entries, so
+   `totalDegree_mul` iterated `n-1` times bounds each term by `n*D`, and
+   `totalDegree_finsetSum_le` (already REPL-confirmed present in this file,
+   see `curvePoly_eval_C_totalDegree_le` above) bounds the WHOLE sum by
+   that same uniform `n*D` directly (a one-shot implication from "every
+   summand ≤ d" to "the sum ≤ d", not a max/sup computation), so the `n!`
+   term count never enters the bound at all.
+2. **Fractional/Cramer case** (`matrixA`/`rhsVec`'s ACTUAL shape — `K2`-
+   valued, not `MvPolynomial`-valued; see the correction note further down
+   this file): given entries `a_ij/b_ij` (witness numerator/denominator
+   pairs, `totalDegree ≤ D` each, `b_ij ≠ 0`), the target is an explicit
+   witness numerator/denominator pair for `cramer A b i / A.det` with
+   `totalDegree ≤ n^2*D` each — via the common-denominator identity
+   `Δ_A * det A = N_A` (`Δ_A := ∏ b_ij`, `N_A := ∑_σ sgn(σ) * ∏_j
+   (a_{σ(j),j} * ∏_{(r,c)≠(σ(j),j)} b_rc)`), applied separately to `A` and
+   to `A` with column `i` replaced by `b` (`Matrix.updateColumn`, per
+   `Matrix.cramer_apply`), then combined via `N_i * Δ_A` / `Δ_i * N_A`
+   (cross-multiplying the two fractions) — `≤ 16*D + 16*D = 32*D` for
+   `n=4`. **NOT fully closed this pass**: `Δ_A`'s own bound
+   (`cramerDeltaA_totalDegree_le`) is proved, but the identity
+   `Δ_A * det A = N_A` itself (needed before the numerator/denominator
+   pair can be assembled) is flagged, not proved — see that section's own
+   notes for exactly what remains. -/
+
+/-- **Leibniz-term bound, one summand.** For a fixed permutation `σ`, the
+product `∏ i, M (σ i) i` of `n` entries each `totalDegree ≤ D` has
+`totalDegree ≤ n * D` — plain iterated `totalDegree_mul` via
+`totalDegree_finsetProd`-shaped induction, spelled out with
+`Finset.prod_le`-style reasoning rather than assuming the exact Mathlib
+name `totalDegree_finsetProd` (unconfirmed against this Mathlib snapshot
+as of this pass) is present; if it is, this can be shortened to a one-line
+application. -/
+theorem finsetProd_totalDegree_le {Vars ι : Type*} {D : ℕ}
+    (f : ι → MvPolynomial Vars (F p)) (hf : ∀ i, (f i).totalDegree ≤ D)
+    (s : Finset ι) :
+    (∏ i ∈ s, f i).totalDegree ≤ s.card * D := by
+  classical
+  induction s using Finset.induction with
+  | empty => simp
+  | insert x s hx ih =>
+    rw [Finset.prod_insert hx, Finset.card_insert_of_notMem hx]
+    calc (f x * ∏ i ∈ s, f i).totalDegree
+        ≤ (f x).totalDegree + (∏ i ∈ s, f i).totalDegree :=
+          MvPolynomial.totalDegree_mul _ _
+      _ ≤ D + s.card * D := add_le_add (hf x) ih
+      _ = (s.card + 1) * D := by ring
+
+/-- `Fintype`-indexed corollary of `finsetProd_totalDegree_le`, specialized
+to `s := Finset.univ` — the shape `det_totalDegree_le`/`cramerDeltaA_
+totalDegree_le` below actually call. -/
+theorem prod_totalDegree_le {Vars ι : Type*} [Fintype ι] {D : ℕ}
+    (f : ι → MvPolynomial Vars (F p)) (hf : ∀ i, (f i).totalDegree ≤ D) :
+    (∏ i, f i).totalDegree ≤ Fintype.card ι * D :=
+  finsetProd_totalDegree_le p f hf Finset.univ
+
+/-- **The polynomial-matrix determinant bound.** `M.det.totalDegree ≤
+Fintype.card n * D` given every entry `totalDegree ≤ D`. Via `Matrix.
+det_apply'` (`M.det = ∑ σ : Perm n, sign σ * ∏ i, M (σ i) i`, confirmed
+present in Mathlib per a web-docs search this pass, NOT yet checked against
+this project's own Mathlib snapshot/REPL) and `totalDegree_finsetSum_le`
+(the exact confirmed shape already used above for `curvePoly_eval_C_
+totalDegree_le`: `(∀ i ∈ s, (f i).totalDegree ≤ d) → (s.sum f).totalDegree
+≤ d`, a direct implication, not a `≤ max`-then-`sup_le` two-step) to bound
+every one of the `n!` permutation terms by the SAME `Fintype.card n * D`
+directly; each term is `sign σ * (a product of n entries)`, and `sign σ`
+is a unit `±1` so `MvPolynomial.totalDegree_neg`
+handles the `sign σ = -1` case (the `sign σ = 1` case is `one_mul`,
+needing no lemma at all). **Flagged, not asserted as working**: the exact
+type/cast of `Equiv.Perm.sign σ` in `Matrix.det_apply'`'s statement (`ℤˣ`,
+possibly via a bundled `•`/`SMul` rather than a literal `(· : ℤ) → R` cast
+composed with `Int.cast`, as spelled out in the proof below) was not
+independently re-confirmed against this exact Mathlib version — the proof
+below is one reasonable spelling (`((Equiv.Perm.sign σ : ℤ) :
+MvPolynomial Vars (F p))`) but may need adjusting to whatever the ACTUAL
+elaborated cast is once Claire's REPL reports the real error, per this
+project's normal "Claude drafts, Claire tests" workflow; not a sign the
+underlying math is wrong, just that the exact cast spelling is unverified. -/
+theorem det_totalDegree_le {Vars n : Type*} [Fintype n] [DecidableEq n] {D : ℕ}
+    (M : Matrix n n (MvPolynomial Vars (F p)))
+    (hM : ∀ i j, (M i j).totalDegree ≤ D) :
+    M.det.totalDegree ≤ Fintype.card n * D := by
+  classical
+  rw [Matrix.det_apply']
+  refine MvPolynomial.totalDegree_finsetSum_le (fun σ _ => ?_)
+  have hprod : (∏ i, M (σ i) i).totalDegree ≤ Fintype.card n * D :=
+    prod_totalDegree_le p (fun i => M (σ i) i) (fun i => hM (σ i) i)
+  rcases Int.units_eq_one_or (Equiv.Perm.sign σ) with hsign | hsign
+  · simpa [hsign] using hprod
+  · have : ((Equiv.Perm.sign σ : ℤ) : MvPolynomial Vars (F p)) *
+        ∏ i, M (σ i) i = -(∏ i, M (σ i) i) := by
+      simp [hsign]
+    calc (((Equiv.Perm.sign σ : ℤ) : MvPolynomial Vars (F p)) * ∏ i, M (σ i) i).totalDegree
+        = (-(∏ i, M (σ i) i)).totalDegree := by rw [this]
+      _ = (∏ i, M (σ i) i).totalDegree := MvPolynomial.totalDegree_neg _
+      _ ≤ Fintype.card n * D := hprod
+
+/-! ## The actual `K2`-valued case: `matrixA`/`rhsVec`/`cramerSolution`
+
+**Correction, this pass**: an earlier draft of this section wrongly assumed
+`matrixA`/`rhsVec` were already `MvPolynomial`-valued (so `cramer`/`det`
+could be bounded directly via `det_totalDegree_le` with no fraction-
+clearing). They are NOT — `matrixA p c0 c1 c2 c3 c4 u0 u1 v0 v1 : Matrix
+(Fin 4) (Fin 4) (K2 p c0 c1 c2 c3 c4)` (`K2` a FIELD, per `DataDerivationSolve.
+lean`), and `cramerSolution i := (matrixA.cramer rhsVec i) / matrixA.det`
+is a genuine `K2`-valued field division. So the fractional/witness case
+(ChatGPT's `Δ_A`/`N_A` common-denominator construction) is exactly what's
+needed here, not a hypothetical future case — caught before being acted on
+further, per this project's own rule against silently assuming the easy
+case applies. -/
+
+/-- **`Δ_A`'s own bound — the one piece of the Cramer-ratio witness
+argument provable right now, independent of the rest.** The full plan
+(ChatGPT's common-denominator identity, recorded here so it isn't lost):
+given `A : Matrix (Fin 4) (Fin 4) R` (`R` any commutative ring) with each
+entry `A i j = a i j / b i j` for `b i j` a unit, `(∏ i j, b i j) * A.det =
+N_A` where `N_A := ∑ σ, sign σ * ∏ j, (a (σ j) j * ∏ (i',j') ∈ {(i',j') |
+(i',j') ≠ (σ j, j)}, b i' j')` — proved by substituting `A i j = a i j *
+(b i j)⁻¹` into `Matrix.det_apply'` and clearing every entry's own
+denominator via the other entries' numerators. **Not attempted this
+pass**: the `Finset.prod`-manipulation to actually verify `Δ_A * (sign σ *
+∏ i, A (σ i) i) = sign σ * ∏ j, (a (σ j) j * ∏ (i',j')≠(σ j,j), b i' j')`
+termwise (needs `Finset.prod_erase`/`Finset.mul_prod_erase`-style
+bookkeeping over the `Fin 4 × Fin 4` index grid, splitting `∏ (i',j'),
+b i' j'` into "the `(σ j, j)` factor" times "everything else" — a
+finite/decidable but non-trivial index manipulation) — flagged as the
+concrete remaining step rather than guessed at, since getting the exact
+`Finset` identity wrong here would be more costly to unwind later than
+leaving it open now. See `chatgpt_prompt_cramer_totaldegree.md`'s reply
+for the full derivation this is transcribing; a second ChatGPT round-trip
+focused purely on the `Finset.prod` manipulation (not the underlying math,
+already settled) is the natural next step if a direct Mathlib search for
+`Matrix.det`-vs-`Finset.prod`-splitting lemmas doesn't turn up a shortcut.
+
+**What CAN be proved now, unconditionally, without that identity**: a
+`totalDegree` bound on `Δ_A := ∏ i j, b i j` itself, via
+`prod_totalDegree_le` applied twice (rows, then columns) — `n^2 * D` for
+an `n×n` grid of `≤D`-degree factors, `16*D` for `n=4`. This is the lemma
+actually proved below; `N_A`'s own bound (also `≤ n^2*D`, same shape, `n`
+numerator factors `≤ n*D` plus `n^2-n` denominator factors `≤ (n^2-n)*D`,
+matching ChatGPT's `nD+n(n-1)D=n^2D`) and the full witness-pair assembly
+both wait on the identity above. -/
+theorem cramerDeltaA_totalDegree_le {Vars : Type*} {D : ℕ}
+    (b : Fin 4 → Fin 4 → MvPolynomial Vars (F p))
+    (hb : ∀ i j, (b i j).totalDegree ≤ D) :
+    (∏ i, ∏ j, b i j).totalDegree ≤ 16 * D := by
+  have hrow : ∀ i, (∏ j, b i j).totalDegree ≤ 4 * D := by
+    intro i
+    have hcard : (∏ j, b i j).totalDegree ≤ Fintype.card (Fin 4) * D :=
+      prod_totalDegree_le p (b i) (hb i)
+    simpa using hcard
+  have hcol : (∏ i, ∏ j, b i j).totalDegree ≤ Fintype.card (Fin 4) * (4 * D) :=
+    prod_totalDegree_le p (fun i => ∏ j, b i j) hrow
+  have : Fintype.card (Fin 4) * (4 * D) = 16 * D := by simp; ring
+  rwa [this] at hcol
+
+/-! ## Status, this section: what's left before `CrossNondegenerate`'s
+resultant bound can actually be stated
+
+The full Cramer-ratio witness bound (`cramer A rhs i / A.det`'s
+numerator/denominator, `totalDegree ≤ 32*D` per ChatGPT's `n=4` answer) is
+NOT assembled this pass — it needs the identity flagged in
+`cramerDeltaA_totalDegree_le`'s own docstring above (`Δ_A * det A = N_A` as
+an actual proved equation, not just a degree bound on the pieces) before a
+real `cramer_ratio_totalDegree_le`-style theorem can be stated rather than
+just an assumed shape. `cramerDeltaA_totalDegree_le` is the one piece
+provable independently of that identity (a bound on `Δ_A` alone needs no
+determinant identity at all). **Next step, concretely**: either (a) search
+Mathlib directly for a `Matrix.det`-as-`Finset.prod`-over-a-grid lemma that
+shortcuts the `Finset.prod_erase` bookkeeping the identity needs, or (b) a
+second, narrower ChatGPT consultation asking specifically for the
+Lean-shaped `Finset` manipulation (not the math, which this pass's
+consultation already settled) to prove `Δ_A * A.det = N_A` as stated.
+Recorded here rather than attempted blind, per this project's own
+convention to ask rather than guess at unfamiliar Mathlib `Finset`/
+`Matrix` API combinations. -/
 
 end TheDataDerivation
 end Genus2Lean
