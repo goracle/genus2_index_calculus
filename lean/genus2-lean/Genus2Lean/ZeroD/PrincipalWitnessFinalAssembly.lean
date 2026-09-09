@@ -33,10 +33,11 @@ theorem's own `hD : principalSubgroup H hdeg ≤ D.P`:
    unfolding all three to explicit `single` sums), giving exactly (†) as a
    membership in `D.P`, generic `D`.
 
-**Not done here**: wiring this into `reducedClass_eq_of_isReduction'`'s own
-`sorry` (roadmap steps 3-4) — that needs `sa.reducedClass`'s own `N₂`
-normalization bridged to (†)'s `Nι` one via `q`, which is a separate,
-theorem-specific computation left to that file's own proof body. -/
+**Not wired in by this file directly**: the pieces above are the raw
+membership facts; `reducedClass_eq_of_isReduction'` itself (now proved,
+`ReducedClassBundles.lean`, 0 live `sorry`) is where `sa.reducedClass`'s
+own `N₂` normalization actually gets bridged to (†)'s `Nι` one via `q` —
+that bridging is done in that theorem's own proof body, not here. -/
 
 noncomputable section
 

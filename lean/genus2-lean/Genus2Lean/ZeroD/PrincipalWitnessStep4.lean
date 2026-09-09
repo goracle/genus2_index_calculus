@@ -503,16 +503,27 @@ normalization there comes from the `s`-embedding (`DivisorClassGroup.lean`'s
 *formal* `2•[δ₀]` inside `Divisor0 H`, unrelated to any `linX`-fiber
 divisor) — it is not, and was never claimed to be, `div(x - δ₀.X) =
 [δ₀]+[ιδ₀]`. Conflating the two is exactly the error (†) rules out.
-**Next step, not done here**: `reducedClass_eq_of_isReduction'`'s own
-`sorry` needs either (a) an added hypothesis pinning `δ₀` to a
+**Update**: `reducedClass_eq_of_isReduction'` is now proved
+(`ReducedClassBundles.lean`, 0 live `sorry`), so the choice below was
+resolved somehow — but its bundled hypotheses include `hδY : δ₀.Y ≠ 0`
+(not `δ₀.Y = 0`), which rules out option (a) (the Weierstrass-point fix)
+as the path actually taken. Whether it went via (b), (c), or a route not
+listed here has not been traced in this pass — read
+`ReducedClassBundles.lean`'s own proof of `reducedClass_eq_of_isReduction'`
+directly rather than trusting this note's original three-option framing
+as still exhaustive. Kept below for the mathematical content of the (†)
+finding itself, which is unaffected by which option closed the gap:
+- (a) an added hypothesis pinning `δ₀` to a
 Weierstrass point (`δ₀.Y = 0`, forcing `ι δ₀ = δ₀`, hence `[δ₀]+[ιδ₀] =
-2•[δ₀]` trivially — the cheapest fix, but narrows the theorem's scope),
-or (b) accepting (†)'s weaker conclusion and checking whether
+2•[δ₀]` trivially — the cheapest fix, but narrows the theorem's scope) —
+**ruled out**, see above;
+- (b) accepting (†)'s weaker conclusion and checking whether
 `reducedClass_eq_of_isReduction'`'s actual goal can be restated/weakened
 to match `[δ₀]+[ιδ₀]` throughout instead of `2•[δ₀]` (i.e. whether the
 `s`-embedding itself could use `[δ₀]+[ιδ₀]` — unlikely, since that breaks
 `s`'s degree-1 embedding property `DivisorClassGroup.lean` relies on
-elsewhere), or (c) finding a genuinely different generator set not built
+elsewhere);
+- or (c) finding a genuinely different generator set not built
 from this stack's `linX`/`f` ratios. Do not attempt (†)'s `2•[δ₀]`
 strengthening directly — confirmed false, per above. -/
 

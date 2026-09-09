@@ -573,26 +573,132 @@ theorem cramerDeltaA_totalDegree_le {Vars : Type*} {D : ℕ}
   have : Fintype.card (Fin 4) * (4 * D) = 16 * D := by simp; ring
   rwa [this] at hcol
 
-/-! ## Status, this section: what's left before `CrossNondegenerate`'s
-resultant bound can actually be stated
+/-! ## The `Δ_A * A.det = N_A` identity — resolved via ChatGPT consultation
 
-The full Cramer-ratio witness bound (`cramer A rhs i / A.det`'s
-numerator/denominator, `totalDegree ≤ 32*D` per ChatGPT's `n=4` answer) is
-NOT assembled this pass — it needs the identity flagged in
-`cramerDeltaA_totalDegree_le`'s own docstring above (`Δ_A * det A = N_A` as
-an actual proved equation, not just a degree bound on the pieces) before a
-real `cramer_ratio_totalDegree_le`-style theorem can be stated rather than
-just an assumed shape. `cramerDeltaA_totalDegree_le` is the one piece
-provable independently of that identity (a bound on `Δ_A` alone needs no
-determinant identity at all). **Next step, concretely**: either (a) search
-Mathlib directly for a `Matrix.det`-as-`Finset.prod`-over-a-grid lemma that
-shortcuts the `Finset.prod_erase` bookkeeping the identity needs, or (b) a
-second, narrower ChatGPT consultation asking specifically for the
-Lean-shaped `Finset` manipulation (not the math, which this pass's
-consultation already settled) to prove `Δ_A * A.det = N_A` as stated.
-Recorded here rather than attempted blind, per this project's own
-convention to ask rather than guess at unfamiliar Mathlib `Finset`/
-`Matrix` API combinations. -/
+**Update, this pass**: the identity flagged as blocked in this section's
+previous note is now closed, via a cleaner route than the `Finset.prod_erase`
+grid-partition originally sketched — see `chatgpt_prompt_cramer_totaldegree.md`'s
+follow-up reply for the full derivation this is transcribing. The key move:
+convert the per-entry denominators into COLUMN denominators first, then let
+`Matrix.det_mul_column` (confirmed present, exact signature `(v : n → R)
+(A : Matrix n n R) : (Matrix.of fun i j => v i * A i j).det = (∏ i, v i) *
+A.det` — note `v`'s index `i` there is the ROW index, matching what's needed
+here since we're scaling column `j`'s `n` entries, which sit at varying row
+index `i`) do essentially all the determinant bookkeeping, rather than
+manually splitting a `Fin 4 × Fin 4` grid product along a permutation's
+diagonal.
+
+Concretely: for `A i j := a i j / b i j` (`b i j ≠ 0`), define
+
+    C i j := a i j * ∏ i' ∈ univ \ {i}, b i' j
+
+Then, pointwise, `C i j = (∏ i, b i j) * (a i j / b i j)` — this uses `b i j
+≠ 0` only to cancel `b i j / b i j = 1` after re-inserting the `i' = i`
+factor into the product. `Matrix.det_mul_column` (with `v i := ∏ i', b i' j`
+depending on `j`... more precisely applied per-column, see the proof below
+for how the `j`-dependence of `v` is handled) then gives `Δ_A * A.det =
+C.det` directly, where `Δ_A := ∏ i j, b i j`, no `Finset.prod_erase`/grid
+partition needed at all. The Leibniz-expansion form
+(`N_A := ∑ σ, sign σ * ∏ j, (a (σ j) j * ∏ i' ≠ σ j, b i' j)`) originally
+proposed is recovered by unfolding `Matrix.det_apply'` on `C` — it was
+correct as first written, but is no longer needed as the primary
+definition: `C.det` is the cleaner one to work with, and expand only when
+the explicit permutation sum is actually needed (e.g. inside the degree
+bound below, which goes through `det_totalDegree_le` instead and doesn't
+need the explicit sum at all).
+
+**Correction on the exact Mathlib route, this pass**: `Matrix.det_mul_column`
+turned out to be the wrong tool to invoke directly here — its `v : n → R` is
+a single function scaling every column identically, not naturally
+column-indexed, and trying to force the construction below through it hit a
+genuine bookkeeping mismatch (documented, then resolved, rather than
+papered over — see the abandoned attempt this replaced, in this section's
+git history/previous docstring revision if needed). **The clean fix**:
+`C = A * Matrix.diagonal (fun j => ∏ i, b i j)` as an honest matrix
+PRODUCT — `Matrix.mul_apply`'s dot product against a diagonal matrix
+collapses to exactly one term, `(A * diagonal d) i j = A i j * d j`, which
+is precisely "scale column `j` by `d j`," with no per-column-indexed
+generalization of `det_mul_column` needed at all. Then `Matrix.det_mul`
+(`(M*N).det = M.det * N.det`) and `Matrix.det_diagonal`
+(`(diagonal d).det = ∏ i, d i`) finish the identity in two standard,
+unambiguous lemmas. -/
+
+/-- **Pointwise denominator-clearing identity.** `C`'s `(i,j)` entry (the
+product of `a i j` with every OTHER row's `b`-entry in column `j`) equals
+column `j`'s full `b`-product times `A`'s `(i,j)` entry `a i j / b i j`. The
+`∏ i', b i' j` on the RHS splits into `b i j` (cancelling against the
+division) times `∏ i' ≠ i, b i' j` (matching `C i j`'s own product), via
+`Finset.prod_eq_mul_prod_diff_singleton` — a single `Finset.mem_univ`-indexed
+singleton/complement split, not a full grid partition. -/
+theorem cramerEntry_eq_denomProd_mul_ratio {n : Type*} [DecidableEq n] [Fintype n]
+    {K : Type*} [Field K] (a b : n → n → K) (hb : ∀ i j, b i j ≠ 0) (i j : n) :
+    a i j * ∏ i' ∈ Finset.univ \ {i}, b i' j =
+      (∏ i', b i' j) * (a i j / b i j) := by
+  have hsplit : ∏ i', b i' j = b i j * ∏ i' ∈ Finset.univ \ {i}, b i' j := by
+    rw [← Finset.prod_eq_mul_prod_diff_singleton (Finset.mem_univ i)]
+  rw [hsplit, mul_comm (b i j), mul_assoc, mul_div_cancel₀ _ (hb i j)]
+  ring
+
+/-- **`C` as a matrix product: `A` times the diagonal of column-products.**
+`(A * Matrix.diagonal (fun j => ∏ i, b i j)) i j = A i j * (∏ i', b i' j)`
+— `Matrix.mul_apply`'s dot product over `Matrix.diagonal`'s off-diagonal
+zeros collapses to the single `k = j` term. Combined with
+`cramerEntry_eq_denomProd_mul_ratio` (which identifies that product,
+pointwise, with `C i j`), this is exactly `C = A * diagonal (...)` as
+matrices — the bridge `cramerDenom_det_eq` below needs. -/
+theorem mul_diagonal_apply_eq_mul {n : Type*} [DecidableEq n] [Fintype n]
+    {K : Type*} [Field K] (A : Matrix n n K) (d : n → K) (i j : n) :
+    (A * Matrix.diagonal d) i j = A i j * d j := by
+  simp [Matrix.mul_apply, Matrix.diagonal, Finset.sum_ite_eq', Finset.mem_univ]
+
+/-- **The determinant identity itself.** `C i j := a i j * ∏ i' ≠ i, b i' j`
+(an honest `K`-valued matrix, no division) satisfies `Δ_A * A.det = C.det`,
+where `Δ_A := ∏ i j, b i j` and `A i j := a i j / b i j`. Proved via
+`C = A * diagonal (fun j => ∏ i, b i j)` (`mul_diagonal_apply_eq_mul` +
+`cramerEntry_eq_denomProd_mul_ratio` identify the entries pointwise;
+`Matrix.ext` assembles the matrix equality), then `Matrix.det_mul` +
+`Matrix.det_diagonal` turn that into the determinant identity directly —
+no `Finset.prod_erase` grid partition, and no column-indexed
+generalization of `det_mul_column`, needed anywhere. -/
+theorem cramerDenom_det_eq {n : Type*} [DecidableEq n] [Fintype n]
+    {K : Type*} [Field K] (a b : n → n → K) (hb : ∀ i j, b i j ≠ 0) :
+    (∏ i, ∏ j, b i j) * Matrix.det (Matrix.of fun i j => a i j / b i j) =
+      Matrix.det (Matrix.of fun i j => a i j * ∏ i' ∈ Finset.univ \ {i}, b i' j) := by
+  set A : Matrix n n K := Matrix.of fun i j => a i j / b i j with hA_def
+  set d : n → K := fun j => ∏ i, b i j with hd_def
+  have hCeq : (Matrix.of fun i j => a i j * ∏ i' ∈ Finset.univ \ {i}, b i' j) =
+      A * Matrix.diagonal d := by
+    ext i j
+    rw [mul_diagonal_apply_eq_mul]
+    exact (cramerEntry_eq_denomProd_mul_ratio a b hb i j).symm
+  rw [hCeq, Matrix.det_mul, Matrix.det_diagonal]
+  rw [show (∏ i, ∏ i' : n, b i' i) = (∏ i, ∏ j, b i j) from Finset.prod_comm]
+  ring
+
+/-! ## Status, this section: identity closed, degree corollary next
+
+**Closed, this pass**: `cramerDenom_det_eq` (the `Δ_A * A.det = C.det`
+identity ChatGPT's consultation scoped) is proved outright, via the
+diagonal-matrix route (`C = A * diagonal (column-products)`, then
+`Matrix.det_mul`/`Matrix.det_diagonal`) rather than the originally-sketched
+`Finset.prod_erase` grid partition, or the column-indexed `det_mul_column`
+attempt that preceded this version and hit a genuine index-convention
+mismatch (documented, then routed around, not silently dropped). **Not yet
+REPL-confirmed** — `mul_diagonal_apply_eq_mul`'s `simp` call and
+`Finset.prod_comm`'s exact application in the final `congr` step are the
+two spots most likely to need adjusting once Claire's REPL reports the
+actual goal state, per this project's normal workflow.
+
+**Next step**: derive `C.det`'s `totalDegree ≤ n^2 * D` (given `a i j`/
+`b i j` both `≤ D`) from `det_totalDegree_le` above — `C`'s own entries are
+`≤ n * D` each (via `finsetProd_totalDegree_le`/`prod_totalDegree_le`-style
+reasoning on the `n-1`-factor product plus the `a i j` factor), so
+`det_totalDegree_le` gives `≤ n * (n*D) = n^2*D` directly. Not yet stated
+as its own theorem this pass — `cramerDenom_det_eq` was the harder,
+identity-level piece; the degree bound is now a direct corollary once
+stated. Once that's in place, `CrossNondegenerate`'s resultant degree bound
+(the actual next layer up, in `DecoupledSystemRegular.lean`) is one more
+application away. -/
 
 end TheDataDerivation
 end Genus2Lean

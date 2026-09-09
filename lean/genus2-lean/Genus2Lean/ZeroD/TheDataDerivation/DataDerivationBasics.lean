@@ -148,10 +148,9 @@ a square, `X^2 - C a` is irreducible: degree exactly 2 (`C a` has degree
 -3) polynomial over a field is irreducible iff it has no root — a root `x`
 of `X^2 - C a` is exactly `x^2 = a`, i.e. `IsSquare a`, so `¬ IsSquare a`
 gives `roots = 0` gives `Irreducible`. This is the "clean, small" half the
-roadmap anticipated; the remaining `sorry` below (`fAtT`-specific) is the
-genuinely open part — showing the SPECIFIC field elements `fAtT p ... i`
-that `factIrreducible_K1`/`factIrreducible_K2` need are not squares, not
-this general conversion. -/
+roadmap anticipated; the `fAtT`-specific transport half (once the
+genuinely open part) is now also proved — see `fAtT_not_isSquare`'s own
+docstring below for how. -/
 theorem irreducible_X_sq_sub_C_of_not_isSquare {a : K} (ha : ¬ IsSquare a) :
     Irreducible (X ^ 2 - C a : Polynomial K) := by
   have hdeg2 : (X ^ 2 - C a : Polynomial K).natDegree = 2 := by
@@ -215,28 +214,26 @@ implies irreducible" half is `irreducible_X_sq_sub_C_of_not_isSquare` above
 `RatFunc K`" half is now ALSO complete, no `sorry`, as
 `RatFunc.not_isSquare_algebraMap_of_odd_natDegree` above (ChatGPT-assisted:
 the `RatFunc.intDegree`-based route turned out much shorter than the
-originally-planned numerator/denominator-clearing argument). What remains
-`sorry`'d — restated as its own theorem below, `fAtT_not_isSquare`, rather
-than left inline here — is the genuinely two-variable TRANSPORT of this
-fact: `factIrreducible_K1`/`factIrreducible_K2` need the analogous
-non-square fact not in `RatFunc K` (one transcendental) but in `K0 =
+originally-planned numerator/denominator-clearing argument). The
+genuinely two-variable TRANSPORT of this fact — needed because
+`factIrreducible_K1`/`factIrreducible_K2` need the analogous non-square
+fact not in `RatFunc K` (one transcendental) but in `K0 =
 FractionRing (MvPolynomial (Fin 2) (F p))` (two commuting transcendentals,
 only one of which the curve polynomial is evaluated at) and then, for
-`factIrreducible_K2`, over `K1` rather than `K0` again. The proposed
-route (ChatGPT, second round): identify `MvPolynomial (Fin 2) K` with
+`factIrreducible_K2`, over `K1` rather than `K0` again — is now ALSO
+complete, no `sorry`, as `fAtT_not_isSquare` below. The route (ChatGPT,
+second round, carried out in full): identify `MvPolynomial (Fin 2) K` with
 `Polynomial (MvPolynomial (Fin 1) K)` via `MvPolynomial.finSuccEquiv`,
 transport the resulting fraction-ring identification
 `FractionRing (MvPolynomial (Fin 2) K) ≃ₐ[K] RatFunc (MvPolynomial (Fin 1) K)`
 via `IsFractionRing.algEquivOfAlgEquiv`, and reduce to
 `RatFunc.not_isSquare_algebraMap_of_odd_natDegree` applied over the
-one-variable-smaller coefficient field `MvPolynomial (Fin 1) K`. Two
-supporting facts that route needs are individually named but NOT yet
-verified against this project's exact Mathlib checkout (`Polynomial.
-toMvPolynomial`'s exact name/API, and the precise current spelling of
-`natDegree` under an injective-coefficient-map `Polynomial.map` — both
-flagged by name uncertainty in the ChatGPT response this docstring is
-transcribing, not silently assumed). Left as `sorry` here rather than
-risk assembling those into a proof term sight-unseen. -/
+one-variable-smaller coefficient field `MvPolynomial (Fin 1) K` — see the
+theorem's own proof body for the concrete Mathlib API names this settled
+on (`Polynomial.eval₂_map`, `finSuccEquiv_apply`,
+`Polynomial.natDegree_map_eq_of_injective`) once the earlier
+name-uncertainty flagged in the ChatGPT response was resolved against
+this project's actual Mathlib checkout. -/
 theorem sq_sub_curve_irreducible
     (f : Polynomial K) (hf_deg : Odd f.natDegree) (hf_ne : f ≠ 0) :
     ¬ IsSquare (algebraMap (Polynomial K) (RatFunc K) f) :=
