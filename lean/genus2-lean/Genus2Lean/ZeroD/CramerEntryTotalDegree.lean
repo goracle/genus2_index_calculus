@@ -210,6 +210,125 @@ theorem baseFracToRing_one_totalDegree_le {Vars : Type*} (sg : SideGens Vars) :
   have h := baseFracToRing_totalDegree_le p sg one_ne_zero one_ne_zero hv1
   refine ⟨le_trans h.1 ?_, le_trans h.2 ?_⟩ <;> simp
 
+/-! ## Leaf 2, assembled: `w1`/`w2`'s own `towerToRdecK1`/`towerToRdec` bound
+
+With `modByMonicHom_root_eq_X`'s two instances (`w1_modByMonicHom_coeff`/
+`w2_modByMonicHom_coeff`, giving `d0=0, d1=1` at each level) and the two
+trivial-value `baseFracToRing` bounds just above (`D=1` for both `v=0` and
+`v=1`), `combine_totalDegree_le` closes `w1`'s `towerToRdecK1` image and
+`w2`'s `towerToRdec` image directly -- completing leaf 2 end to end (the
+"not yet assembled" gap this file's own status note flagged after the leaf
+facts alone). -/
+
+/-- **`w1`'s own `towerToRdecK1 p aSideGens` image has `totalDegree ≤ 3`
+(num) `/ ≤ 2` (den).** Direct application of `combine_totalDegree_le` at
+`D=1`, fed by `w1_modByMonicHom_coeff`'s `(d0,d1)=(0,1)` split and the two
+trivial-value `baseFracToRing` bounds. `sg` is left as an arbitrary
+`SideGens Idx` argument (not hardcoded to `aSideGens`) since `w1`'s
+`towerToRdecK1` image is used on both the a-side and b-side of the
+construction (via `anchor1`/`anchor2` on each sample) -- matching this
+file's other leaf theorems, which are similarly `sg`-generic. -/
+theorem w1_towerToRdecK1_totalDegree_le {Vars : Type*} (sg : SideGens Vars)
+    (c0 c1 c2 c3 c4 : F p) :
+    (towerToRdecK1 p sg (w1 p c0 c1 c2 c3 c4)).1.totalDegree ≤ 3 ∧
+    (towerToRdecK1 p sg (w1 p c0 c1 c2 c3 c4)).2.totalDegree ≤ 2 := by
+  have hcoeff := w1_modByMonicHom_coeff p c0 c1 c2 c3 c4
+  have h0 := baseFracToRing_zero_totalDegree_le p sg
+  have h1 := baseFracToRing_one_totalDegree_le p sg
+  unfold towerToRdecK1
+  simp only [hcoeff.1, hcoeff.2]
+  exact combine_totalDegree_le p (sg.wGen 0) h0.1 h0.2 h1.1 h1.2
+
+/-- **`towerToRdecK1 p sg 0`'s bound: `(0, ≤1)`.** The `K1`-level analogue of
+`baseFracToRing_zero_totalDegree_le`, needed for `w2`'s recursion (`w2`'s
+`(d0,d1)=(0,1)` are `K1`-valued, one level above `w1`'s `K0`-valued split).
+`modByMonicHom (K1_poly_monic ...) 0 = 0` (`map_zero`), so both `coeff 0`
+and `coeff 1` of the zero polynomial are `0 : K0 p`, landing back on
+`baseFracToRing_zero_totalDegree_le` (both slots, not one `0`/one `1` the
+way `w1` itself split) via `combine_totalDegree_le` at `D=1`. -/
+theorem towerToRdecK1_zero_totalDegree_le {Vars : Type*} (sg : SideGens Vars)
+    (c0 c1 c2 c3 c4 : F p) :
+    (towerToRdecK1 p sg (0 : K1 p c0 c1 c2 c3 c4)).1.totalDegree ≤ 3 ∧
+    (towerToRdecK1 p sg (0 : K1 p c0 c1 c2 c3 c4)).2.totalDegree ≤ 2 := by
+  have h0 := baseFracToRing_zero_totalDegree_le p sg
+  unfold towerToRdecK1
+  simp only [map_zero, Polynomial.coeff_zero]
+  exact combine_totalDegree_le p (sg.wGen 0) h0.1 h0.2 h0.1 h0.2
+
+/-- **`towerToRdecK1 p sg 1`'s bound.** `modByMonicHom (K1_poly_monic ...) 1`
+-- unlike the `0` case, this does NOT reduce to `1` outright in general (a
+monic-mod-reduction of the constant polynomial `1` stays `1` only when the
+divisor's degree is `> 0`, which `K1_poly_monic` satisfies, degree `2`) --
+`Polynomial.modByMonic_eq_self_iff`-style reasoning, same shape as
+`modByMonicHom_root_eq_X` itself but for the constant polynomial `C 1 = 1`
+in place of `X`. States the needed fact directly via `map_one` +
+`AdjoinRoot.modByMonicHom_mk`... **flagged, not yet proved cleanly**: unlike
+`0`, `AdjoinRoot.mk g 1`'s `modByMonicHom` normal form needs its own small
+argument (`(1 : Polynomial R).degree = 0 < g.degree` when `g.natDegree ≥
+1`), stated inline below rather than via a separate named lemma, since it's
+only needed here. -/
+theorem towerToRdecK1_one_totalDegree_le {Vars : Type*} (sg : SideGens Vars)
+    (c0 c1 c2 c3 c4 : F p) :
+    (towerToRdecK1 p sg (1 : K1 p c0 c1 c2 c3 c4)).1.totalDegree ≤ 3 ∧
+    (towerToRdecK1 p sg (1 : K1 p c0 c1 c2 c3 c4)).2.totalDegree ≤ 2 := by
+  have h0 := baseFracToRing_zero_totalDegree_le p sg
+  have h1 := baseFracToRing_one_totalDegree_le p sg
+  -- `K1 p c0 c1 c2 c3 c4 := AdjoinRoot (X^2 - C (fAtT p c0 c1 c2 c3 c4 0))`
+  -- (`DataDerivationTower.lean`'s own definition) -- referencing the
+  -- underlying monic polynomial directly here, the same object
+  -- `K1_poly_monic p c0 c1 c2 c3 c4` is a `.Monic` proof OF, rather than
+  -- guessing a `.1`/`.2` projection on `K1_poly_monic` itself (it is a
+  -- `Prop`-valued proof term, not a polynomial/degree pair).
+  have hone : (AdjoinRoot.modByMonicHom (K1_poly_monic p c0 c1 c2 c3 c4)
+      (1 : K1 p c0 c1 c2 c3 c4) : Polynomial (K0 p)) = 1 := by
+    have h1eq : (1 : K1 p c0 c1 c2 c3 c4) =
+        AdjoinRoot.mk (X ^ 2 - C (fAtT p c0 c1 c2 c3 c4 0) : Polynomial (K0 p)) 1 :=
+      (map_one (AdjoinRoot.mk
+        (X ^ 2 - C (fAtT p c0 c1 c2 c3 c4 0) : Polynomial (K0 p)))).symm
+    rw [h1eq, AdjoinRoot.modByMonicHom_mk]
+    refine (Polynomial.modByMonic_eq_self_iff (K1_poly_monic p c0 c1 c2 c3 c4)).mpr ?_
+    calc (1 : Polynomial (K0 p)).degree = 0 := Polynomial.degree_one
+      _ < 2 := by norm_num
+      _ = (X ^ 2 - C (fAtT p c0 c1 c2 c3 c4 0) : Polynomial (K0 p)).degree := by
+          rw [Polynomial.degree_eq_natDegree (K1_poly_monic p c0 c1 c2 c3 c4).ne_zero]
+          have : (X ^ 2 - C (fAtT p c0 c1 c2 c3 c4 0) : Polynomial (K0 p)).natDegree = 2 := by
+            compute_degree!
+          rw [this]
+          norm_cast
+  unfold towerToRdecK1
+  simp only [hone, Polynomial.coeff_one, if_neg (one_ne_zero (α := ℕ))]
+  exact combine_totalDegree_le p (sg.wGen 0) h1.1 h1.2 h0.1 h0.2
+
+/-- **`w2`'s own `towerToRdec p aSideGens` image, one level up.** `w2 : K2 p
+...`, so its `modByMonicHom` normal form (via `K2_poly_monic`) gives
+`(d0,d1) = (0,1) : K1 p ...` -- ONE LEVEL HIGHER than `w1`'s `(d0,d1) : K0 p
+...` split, so `towerToRdec`'s own recursion calls `towerToRdecK1 p sg`
+(NOT `baseFracToRing` directly -- `towerToRdec`'s definition recurses via
+`towerToRdecK1`, confirmed against its actual `let`-body). This needs
+`towerToRdecK1`'s own image at the trivial values `0`/`1 : K1 p ...`, which
+in turn bottom out at the SAME `baseFracToRing_zero/one_totalDegree_le`
+bounds via `modByMonicHom_root_eq_X`-style reasoning one level down -- but
+`w2`'s `(0,1)` values are elements of `K1 p ...` directly (not obtained via
+another `AdjoinRoot.root`), so `towerToRdecK1`'s own internal
+`modByMonicHom (K1_poly_monic ...)` must be evaluated AT `0`/`1 : K1 p ...`
+themselves, which is a different (easier, no root machinery needed) fact
+than `w1_towerToRdecK1_totalDegree_le` -- not yet stated. Flagged rather
+than guessed at: this theorem is NOT proved by naively reusing
+`baseFracToRing`'s bounds the way `w1`'s version did, since the recursion
+level doesn't match. See the two new `towerToRdecK1`-at-`0`/`1` lemmas
+below, which this theorem actually depends on. -/
+theorem w2_towerToRdec_totalDegree_le {Vars : Type*} (sg : SideGens Vars)
+    (c0 c1 c2 c3 c4 : F p) :
+    (towerToRdec p sg (w2 p c0 c1 c2 c3 c4)).1.totalDegree ≤ 7 ∧
+    (towerToRdec p sg (w2 p c0 c1 c2 c3 c4)).2.totalDegree ≤ 6 := by
+  have hcoeff := w2_modByMonicHom_coeff p c0 c1 c2 c3 c4
+  have h0 := towerToRdecK1_zero_totalDegree_le p sg c0 c1 c2 c3 c4
+  have h1 := towerToRdecK1_one_totalDegree_le p sg c0 c1 c2 c3 c4
+  unfold towerToRdec
+  simp only [hcoeff.1, hcoeff.2]
+  exact combine_totalDegree_le p (sg.wGen 1) h0.1 (h0.2.trans (by omega)) h1.1
+    (h1.2.trans (by omega))
+
 /-! ## Status, this pass
 
 Leaf-level facts for `t0`/`w1`/`w2` are drafted and completed:
@@ -218,38 +337,41 @@ Leaf-level facts for `t0`/`w1`/`w2` are drafted and completed:
 `baseFracToRing` bounds (`baseFracToRing_zero_totalDegree_le`/
 `baseFracToRing_one_totalDegree_le`) needed to actually feed
 `towerToRdecK1_totalDegree_le`'s hypothesis from `w1`/`w2`'s `(0,1)`
-`modByMonicHom` normal form. **Not yet assembled** into an actual
-`totalDegree` bound on `anchor1`/`anchor2`'s coordinates after full
-`towerToRdec` descent (two more recursion levels, `K1 → K0` already covered
-above, `K2 → K1` still needs `towerToRdec_totalDegree_le` applied on top),
-nor threaded through `matrixA`/`rhsVec`'s `if`-branching formula, nor
-composed with `det_totalDegree_le`/`cramerRatioDet_num_totalDegree_le` to
-get a concrete `E` for `cramerSolution`/`coeffsOut` -- that assembly is the
-next step, deliberately not attempted in the same pass as these foundational
-leaf lemmas, per this project's "state and check small pieces before
-assembling" discipline. `reduceMonomialModU`'s leaf bound (the third kind,
-`F p`-constants) is immediate from `MvPolynomial.totalDegree_C` and not
-separately stated as its own theorem here since it needs no new lemma, only
-a one-line `simp` at the point it's actually used.
+`modByMonicHom` normal form. **Now assembled end to end for `w1`/`w2`
+themselves**: `w1_towerToRdecK1_totalDegree_le` closes the `K1 → K0` level
+directly; `towerToRdecK1_zero_totalDegree_le`/`towerToRdecK1_one_totalDegree_le`
+handle `towerToRdecK1` at the trivial `K1`-values `0`/`1` (needed since `w2`'s
+own `(d0,d1)=(0,1)` split lands one level higher, in `K1`, not `K0`); and
+`w2_towerToRdec_totalDegree_le` composes those with `combine_totalDegree_le`
+to close the `K2 → K1` level for `w2` itself. **Still not done**: threading
+these `anchor1`/`anchor2`-coordinate bounds through `matrixA`/`rhsVec`'s own
+`if`-branching formula, nor composing with `det_totalDegree_le`/
+`cramerRatioDet_num_totalDegree_le` to get a concrete `E` for
+`cramerSolution`/`coeffsOut` -- that assembly is the next step, deliberately
+not attempted in the same pass as these foundational leaf lemmas, per this
+project's "state and check small pieces before assembling" discipline.
+`reduceMonomialModU`'s leaf bound (the third kind, `F p`-constants) is
+immediate from `MvPolynomial.totalDegree_C` and not separately stated as its
+own theorem here since it needs no new lemma, only a one-line `simp` at the
+point it's actually used.
 
-**Sent to Claire's REPL, four build errors found and fixed across two
-passes**:
-1. `hden`'s conclusion is `≤ b.totalDegree` (`isFractionRing_den_totalDegree_le`'s
-   actual shape, `b := 1` here), not the literal equality `= 0` an earlier
-   fix attempt assumed — corrected by chaining through
-   `(1 : MvPolynomial (Fin 2) (F p)).totalDegree` explicitly in the `calc`,
-   then closing `≤ 1` with `simp` (via `MvPolynomial.totalDegree_one`)
-   rather than asserting an equality that doesn't match the lemma's stated
-   return type.
-2. Same tightness issue in `baseFracToRing_one_totalDegree_le`'s final step
-   -- fixed with explicit `le_trans` + `simp` on each side rather than
-   `simpa` guessing the reconciliation.
-3. `IsLocalization.mk'_one` did not unify against the `1 = mk' (K0 p) 1 ⟨1,_⟩`
-   goal shape (its actual argument convention differs from the guessed
-   `mk' S 1 y` pattern) — replaced with the same `mk'_spec'`+`simp` route
-   `hv0` and `t0_eq_mk'_one` already use, avoiding the guess entirely.
-Also cleared an unused-`simp`-argument lint (`OneMemClass.coe_one` in
-`hv0`'s proof, not needed once `map_zero` is in the simp set).
+**Fix round this pass** (in response to Claire's build errors): (1) reordered
+`towerToRdecK1_zero_totalDegree_le`/`towerToRdecK1_one_totalDegree_le` to be
+defined BEFORE `w2_towerToRdec_totalDegree_le`, which depends on them (they
+were previously defined after their use site -- an ordering bug, not a math
+error); (2) replaced `rw [hcoeff.1, hcoeff.2]`/`rw [hone]` with
+`simp only [...]` in `w1_towerToRdecK1_totalDegree_le`,
+`w2_towerToRdec_totalDegree_le`, and `towerToRdecK1_one_totalDegree_le` --
+after `unfold`, the goal's `let`-chain elaborates to a `have`/`match` term,
+and `rw` cannot find a pattern hidden behind a `have`-bound name the way
+`simp only` (which zeta-reduces) can; (3) fixed the `compute_degree!`
+misuse inside `towerToRdecK1_one_totalDegree_le`'s `hone` block -- after
+`congr 1` the goal had `natDegree ...` on the RHS of the equation, not the
+LHS, which `compute_degree!` doesn't accept, so this now proves
+`natDegree ... = 2` as its own `have` and rewrites with it instead; (4)
+dropped the unused `if_pos rfl` simp arg per Claire's linter hint. **Not yet
+REPL-confirmed** after this round -- these are analysis-based fixes, not yet
+tested against Claire's build.
 -/
 
 end TheDataDerivation
