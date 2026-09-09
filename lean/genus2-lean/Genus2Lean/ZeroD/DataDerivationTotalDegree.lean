@@ -43,11 +43,20 @@ resultant, not yet attempted — needs the new import and that file's own
 `cramerDenom_det_eq`'s `Δ_A * A.det = C.det` identity (see the "Cramer
 ratio witness" section below, near end of file) — `C.det.totalDegree ≤
 (Fintype.card n)^2 * D` given entrywise `≤ D` bounds on the raw `a`/`b`
-Cramer data. **Not yet REPL-confirmed.** This closes the "Next step" this
-docstring's previous revision left open for that section; the section's
-own remaining open item (bounding `A.det`'s own `totalDegree`, which
-needs routing through `IsFractionRing.num`/`.den` since `A.det` is
-`K`-valued, not `MvPolynomial`-valued) is unchanged and still open.
+Cramer data. Build-confirmed green by Claire's REPL after fixing four
+lemma-name/unification errors on first build (see that section's own
+status note for the fix list).
+
+**This pass**: closed the section's own remaining open item — bounding
+`A.det`'s own `totalDegree` (the actual Cramer ratio, not just its
+fraction-cleared numerator `C.det`). Added `numDen_cross_mul'`/
+`isFractionRing_num_totalDegree_le'` (`Vars`-parametrized generalizations
+of `numDen_cross_mul`/`isFractionRing_num_totalDegree_le` above, identical
+proof, just not hardcoded to `MvPolynomial (Fin 2) (F p)`) and
+`cramerRatioDet_num_totalDegree_le`, which composes that generic bound
+with `cramerNumeratorDet_totalDegree_le` via the `Δ_A * A.det = C.det`
+identity to bound `A.det`'s `IsFractionRing.num` by `(Fintype.card n)^2 *
+D`. **Not yet REPL-confirmed.**
 -/
 
 namespace Genus2Lean
@@ -748,6 +757,86 @@ theorem cramerNumeratorDet_totalDegree_le {Vars n : Type*} [Fintype n]
   calc (Matrix.det (Matrix.of fun i j => a i j * ∏ i' ∈ Finset.univ \ {i}, b i' j)).totalDegree
       ≤ Fintype.card n * (Fintype.card n * D) := this
     _ = (Fintype.card n) ^ 2 * D := by ring
+
+/-! ## `A.det`'s own `totalDegree` bound: the actual Cramer ratio
+
+`A i j := a i j / b i j` (`A` from `cramerDenom_det_eq`) lives in `K :=
+FractionRing (MvPolynomial Vars (F p))` once `A.det` is actually formed as
+a genuine field-valued quantity, not the honest `MvPolynomial`-valued `C`.
+`A.det`'s `IsFractionRing.num`/`.den` therefore need the SAME cross-
+multiplication route as `isFractionRing_num_totalDegree_le`/
+`isFractionRing_den_totalDegree_le` above — those two are specialized to
+`K0 p = FractionRing (MvPolynomial (Fin 2) (F p))`; this section restates
+the identical argument generically over any `Vars`, since the Cramer
+application needs it at whatever variable set is in play at that point,
+not just `Fin 2`. -/
+
+/-- **Generic cross-multiplication identity**, `Vars`-parametrized version
+of `numDen_cross_mul` above (identical proof, only the base ring
+generalized from `MvPolynomial (Fin 2) (F p)` to `MvPolynomial Vars
+(F p)` for arbitrary `Vars`). -/
+private theorem numDen_cross_mul' {Vars : Type*}
+    {a b : MvPolynomial Vars (F p)} {v : FractionRing (MvPolynomial Vars (F p))}
+    (hb : b ≠ 0)
+    (hv : v = IsLocalization.mk' (FractionRing (MvPolynomial Vars (F p))) a
+      ⟨b, mem_nonZeroDivisors_of_ne_zero hb⟩) :
+    a * (IsFractionRing.den (MvPolynomial Vars (F p)) v : MvPolynomial Vars (F p)) =
+      IsFractionRing.num (MvPolynomial Vars (F p)) v * b := by
+  have hmk : IsLocalization.mk' (FractionRing (MvPolynomial Vars (F p))) a
+      ⟨b, mem_nonZeroDivisors_of_ne_zero hb⟩ =
+      IsLocalization.mk' (FractionRing (MvPolynomial Vars (F p)))
+        (IsFractionRing.num (MvPolynomial Vars (F p)) v)
+        (IsFractionRing.den (MvPolynomial Vars (F p)) v) := by
+    rw [← hv]; exact (IsFractionRing.mk'_num_den (MvPolynomial Vars (F p)) v).symm
+  have heq := IsLocalization.mk'_eq_iff_eq'.mp hmk
+  exact (FaithfulSMul.algebraMap_injective (MvPolynomial Vars (F p))
+    (FractionRing (MvPolynomial Vars (F p)))) heq
+
+/-- **`Vars`-parametrized generic version of `isFractionRing_num_totalDegree_le`.**
+Same proof, generalized base ring — the numerator side of the Cramer
+ratio's `totalDegree` bound. -/
+theorem isFractionRing_num_totalDegree_le' {Vars : Type*}
+    {a b : MvPolynomial Vars (F p)} {v : FractionRing (MvPolynomial Vars (F p))}
+    (hb : b ≠ 0)
+    (hv : v = IsLocalization.mk' (FractionRing (MvPolynomial Vars (F p))) a
+      ⟨b, mem_nonZeroDivisors_of_ne_zero hb⟩)
+    (ha : a ≠ 0) :
+    (IsFractionRing.num (MvPolynomial Vars (F p)) v).totalDegree ≤ a.totalDegree := by
+  have hcross := numDen_cross_mul' p hb hv
+  have hdvd' : IsFractionRing.num (MvPolynomial Vars (F p)) v ∣
+      a * (IsFractionRing.den (MvPolynomial Vars (F p)) v : MvPolynomial Vars (F p)) :=
+    ⟨b, hcross⟩
+  have hdvd : IsFractionRing.num (MvPolynomial Vars (F p)) v ∣ a :=
+    (IsFractionRing.num_den_reduced (MvPolynomial Vars (F p)) v).dvd_of_dvd_mul_right hdvd'
+  exact MvPolynomial.totalDegree_le_of_dvd_of_isDomain hdvd ha
+
+/-- **The actual target: `A.det`'s numerator has `totalDegree ≤
+(Fintype.card n)^2 * D`.** Given `cramerDenom_det_eq`'s identity `Δ_A *
+A.det = C.det` (`Δ_A := ∏ i j, b i j ≠ 0` when every `b i j ≠ 0`, so
+`A.det = C.det / Δ_A` as a genuine `IsLocalization.mk'`-shaped fraction),
+`isFractionRing_num_totalDegree_le'` bounds `A.det`'s `IsFractionRing.num`
+by `C.det`'s own `totalDegree` — which `cramerNumeratorDet_totalDegree_le`
+already bounds by `(Fintype.card n)^2 * D`. This is the theorem
+`ROADMAP-crossnondegenerate-degree-bound.md`'s "Next step" note asked for:
+a `totalDegree` bound on the Cramer ratio itself, not just its
+fraction-cleared numerator `C.det`. -/
+theorem cramerRatioDet_num_totalDegree_le {Vars n : Type*} [Fintype n]
+    [DecidableEq n] {D : ℕ}
+    (a b : n → n → MvPolynomial Vars (F p)) (ha : ∀ i j, (a i j).totalDegree ≤ D)
+    (hb : ∀ i j, (b i j).totalDegree ≤ D) (hbne : ∀ i j, b i j ≠ 0)
+    (v : FractionRing (MvPolynomial Vars (F p)))
+    (hv : v = IsLocalization.mk' (FractionRing (MvPolynomial Vars (F p)))
+      (Matrix.det (Matrix.of fun i j => a i j * ∏ i' ∈ Finset.univ \ {i}, b i' j))
+      ⟨∏ i, ∏ j, b i j, mem_nonZeroDivisors_of_ne_zero (Finset.prod_ne_zero_iff.mpr
+        (fun i _ => Finset.prod_ne_zero_iff.mpr (fun j _ => hbne i j)))⟩)
+    (hCdet_ne : Matrix.det (Matrix.of fun i j =>
+      a i j * ∏ i' ∈ Finset.univ \ {i}, b i' j) ≠ 0) :
+    (IsFractionRing.num (MvPolynomial Vars (F p)) v).totalDegree ≤
+      (Fintype.card n) ^ 2 * D := by
+  have hDelta_ne : (∏ i, ∏ j, b i j : MvPolynomial Vars (F p)) ≠ 0 :=
+    Finset.prod_ne_zero_iff.mpr (fun i _ => Finset.prod_ne_zero_iff.mpr (fun j _ => hbne i j))
+  have hCdet_bound := cramerNumeratorDet_totalDegree_le p a b ha hb
+  exact le_trans (isFractionRing_num_totalDegree_le' p hDelta_ne hv hCdet_ne) hCdet_bound
 
 /-! ## Status, this section: identity closed, degree corollary now proved
 
