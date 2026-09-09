@@ -260,6 +260,55 @@ item 1:
    rather than letting this become a ninth stale claim for a future pass
    to untangle.
 
+   **The actual mechanism behind "1D collapses to trivial copies"
+   (worked out this pass, chat only, not yet Lean) -- a corollary OF the
+   degree bound, not a separate thing to prove first, and downstream of
+   it, so it does not compete with item 1 for priority.** The equation,
+   un-reduced, is `P1+P2-P3-P4 = (alpha-alpha')*a` (working in the
+   `p^2`-size subgroup `⟨a⟩`, so everything IS a multiple of `a` -- this
+   is the "1D family" itself, parametrized by the shared value
+   `alpha-alpha' = const`). Given any two solutions `(P1,P2,P3,P4)`,
+   `(P1',P2',P3',P4')` of the SAME instance (fixed `alpha,alpha'`,
+   hence fixed RHS), defining `Delta := (P1+P2)-(P1'+P2')` and
+   subtracting the two instances of the equation gives, for free (no
+   gap, pure linearity): `(P3+P4)-(P3'+P4') = Delta` too -- i.e.
+   `Delta`-translation maps one solution to another solution of the
+   SAME instance. Since (once `decoupledSystem_degree_uniform` is
+   proved) the solution set `S` for that instance is finite, `O(1)`
+   size `d`, `Delta`-translation is an invertible self-map of `S`, i.e.
+   `Delta`-translation is a **permutation of a `d`-element set**, for
+   EVERY valid `Delta` in the shared-shift family. **The family of valid
+   `Delta`'s scales with `p`** (roughly `O(p)`/`O(p^2)`, not literally
+   the whole field, but growing with `p`; `d` does NOT grow with `p` --
+   that is exactly the "uniform" in `decoupledSystem_degree_uniform`).
+   A family of size `~p` mapping into `Sym(S)`, `|Sym(S)| = d!` FIXED,
+   cannot inject once `p > d!` -- pigeonhole, not "only finitely many
+   permutations exist" (that part of an earlier draft of this note, chat
+   only, was for an infinite-field version and is WRONG here; over
+   `F_p` the family of `Delta`'s is itself finite, just growing with
+   `p`, so the argument has to be pigeonhole-on-a-growing-family-vs-a-
+   fixed-target, not counting-permutations-of-an-infinite-family). Once
+   `p` is large enough (`p > d!`, or whatever the precise bound works
+   out to), MOST `Delta`'s in the family must act as the IDENTITY on
+   `S` (two distinct `Delta`'s inducing the same permutation, by
+   pigeonhole, and composing -- their difference then fixes `S`
+   pointwise, and this can be pushed to show a positive-density/generic
+   subfamily fixes `S` entirely) -- that is the actual "1D direction
+   foliated by trivial copies" mechanism, made precise. **This is the
+   real risk this note exists to flag, in Claire's own words**: the
+   `alpha-alpha'=const` family is large and if it acted nontrivially
+   AND transitively on the `O(1)` solution set instead of generically
+   trivially, the `E(S,S)` counting argument (`B^4 = sum_Delta X(Delta)
+   <= d*#{Delta : X(Delta)>0}`, `ZeroD-README.md`'s own summary above)
+   would break, since that counting step implicitly needs each `Delta`
+   to correspond to essentially one solution-copy, not a nontrivially-
+   shuffled orbit. The pigeonhole fix handles this ONLY once `p` is
+   large relative to `d` -- `p > d!` (or a sharper bound) needs to
+   become an explicit, tracked hypothesis wherever this gets formalized,
+   not silently assumed. **Not yet stated or proved in Lean; this is a
+   corollary to attempt once `decoupledSystem_degree_uniform` itself is
+   proved (needs `d` in hand first), not before.**
+
 2. **`decoupledSystem_degree_uniform`'s current proof is circular and
    needs to be redone, not just re-verified.** It currently closes via
    `GenericPeelChainHyp`, a hypothesis bundle whose `hfinrank_le` field
