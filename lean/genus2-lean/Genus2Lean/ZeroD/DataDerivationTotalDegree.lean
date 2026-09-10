@@ -883,5 +883,434 @@ totalDegree_le` does at the base case, not a direct `totalDegree` call on
 degree bound (the actual next layer up, in `DecoupledSystemRegular.lean`)
 is one more application away. -/
 
+/-! ## `w1`/`w2`'s own `towerToRdecK1`/`towerToRdec` image — the roadmap's
+"comparatively simple to bound directly" note, closed this pass
+
+`matrixA`/`rhsVec`'s entries (`DataDerivationSolve.lean`) are built entirely
+from `anchor1`/`anchor2` (`= (t1, w1)`, `(t2, w2)`, `K2`-valued) and
+`reduceMonomialModU`'s output (an `F p × F p` PAIR — pure scalars, `totalDegree
+0` once pushed through `algebraMap`, no bound needed beyond `MvPolynomial.
+totalDegree_C`). `t1/t2` are already handled (`anchor1_ne_anchor2`'s own
+tracing, `DataDerivationSolve.lean`: both are literal free `MvPolynomial`
+generators pushed through the tower, `totalDegree` exactly `1`/`0` for
+num/den). **What was NOT yet traced**: `w1`/`w2` themselves, `AdjoinRoot.root`
+of their respective minimal polynomials — this section closes that.
+
+**The key fact**: `AdjoinRoot.root g = AdjoinRoot.mk g X` (Mathlib's own
+description of `root`, "the image of `X` in `R[X]/(g)`"; `AdjoinRoot.mk_X`,
+already used elsewhere in this project — e.g. `DataDerivationBasics.lean`,
+`DataDerivationMumford.lean` — confirms this is the right rewrite). So
+`AdjoinRoot.modByMonicHom hg (AdjoinRoot.root g) = X %ₘ g` via `AdjoinRoot.
+modByMonicHom_mk` (after rewriting `root g` to `mk g X`), and for `g` a monic
+QUADRATIC (`K1_poly_monic`/`K2_poly_monic`, both `natDegree = 2`), `X.degree =
+1 < 2 = g.degree` means `X %ₘ g = X` outright (`Polynomial.modByMonic_eq_self_
+iff`, the standard "already reduced" case — no actual division happens).
+Concretely: `(X %ₘ g).coeff 0 = 0`, `(X %ₘ g).coeff 1 = 1` — i.e. `w1`'s
+`towerToRdecK1` input is the SIMPLEST possible nonzero case, `d0 = 0 : K0 p`,
+`d1 = 1 : K0 p` (not even needing `baseFracToRing`'s `IsFractionRing.num/.den`
+machinery at its full generality — `0`'s and `1`'s numerator/denominator are
+immediate). -/
+
+/-- **`X %ₘ g = X` when `g` is monic of `natDegree = 2`.** The general fact
+underlying `w1 %ₘ K1_poly = X`/`w2 %ₘ K2_poly = X`: `X.degree = 1 < 2 ≤
+g.degree` (`g.degree = g.natDegree` since `g ≠ 0`, monic), so `X` is already
+its own remainder — `Polynomial.modByMonic_eq_self_iff` (needs only `g.Monic`,
+`Nontrivial R`, no other hypothesis) closes it directly once the degree
+comparison is in hand. Stated generically (`CommRing R`, `Nontrivial R`,
+`g.natDegree = 2` rather than `= 2` for `K1`/`K2` specifically) since the
+identical fact is needed at both tower levels. -/
+theorem X_modByMonic_eq_self_of_natDegree_eq_two {R : Type*} [CommRing R] [Nontrivial R]
+    {g : Polynomial R} (hg : g.Monic) (hdeg : g.natDegree = 2) :
+    (X : Polynomial R) %ₘ g = X := by
+  rw [Polynomial.modByMonic_eq_self_iff hg]
+  rw [Polynomial.degree_X, Polynomial.degree_eq_natDegree hg.ne_zero, hdeg]
+  norm_num
+
+/-- **Companion for constants**: `C a %ₘ g = C a` when `g` is monic of
+`natDegree ≥ 1` — needed for `(0 : K1 p ...)`/`(1 : K1 p ...)`'s own
+`modByMonicHom` images (`0`/`1 : Polynomial (K0 p)` are `C 0`/`C 1` up to the
+`Polynomial.C_0`/`C_1` identification), same `modByMonic_eq_self_iff` route
+as `X_modByMonic_eq_self_of_natDegree_eq_two`, with `degree (C a) ≤ 0 < 1 ≤
+g.degree` in place of `degree X = 1 < 2 ≤ g.degree`. -/
+theorem C_modByMonic_eq_self_of_natDegree_pos {R : Type*} [CommRing R] [Nontrivial R]
+    {g : Polynomial R} (hg : g.Monic) (hdeg : 0 < g.natDegree) (a : R) :
+    (C a : Polynomial R) %ₘ g = C a := by
+  rw [Polynomial.modByMonic_eq_self_iff hg]
+  refine lt_of_le_of_lt (Polynomial.degree_C_le) ?_
+  rw [Polynomial.degree_eq_natDegree hg.ne_zero]
+  exact_mod_cast hdeg
+
+/-- **`w1`'s `towerToRdecK1` input has the trivial `(d0,d1) = (0,1)` normal
+form.** `AdjoinRoot.modByMonicHom (K1_poly_monic ...) (w1 ...)` unfolds via
+`w1 = AdjoinRoot.root (K1's defining quadratic) = AdjoinRoot.mk _ X`
+(`AdjoinRoot.mk_X`, the "image of `X`" description of `root`), then
+`AdjoinRoot.modByMonicHom_mk` reduces the whole expression to `X %ₘ (K1's
+defining quadratic)`, which `X_modByMonic_eq_self_of_natDegree_eq_two`
+(quadratic, degree `2 > 1 = X.degree`) collapses to `X` itself — so
+`.coeff 0 = 0`, `.coeff 1 = 1` via `Polynomial.coeff_X_zero`/`coeff_X_one`. -/
+theorem w1_modByMonicHom_eq_X (c0 c1 c2 c3 c4 : F p) :
+    (AdjoinRoot.modByMonicHom (K1_poly_monic p c0 c1 c2 c3 c4)
+      (w1 p c0 c1 c2 c3 c4) : Polynomial (K0 p)) = X := by
+  have hroot : w1 p c0 c1 c2 c3 c4 =
+      AdjoinRoot.mk (X ^ 2 - C (fAtT p c0 c1 c2 c3 c4 0) : Polynomial (K0 p)) X := by
+    unfold w1
+    rw [← AdjoinRoot.mk_X]
+  rw [hroot, AdjoinRoot.modByMonicHom_mk]
+  exact X_modByMonic_eq_self_of_natDegree_eq_two (K1_poly_monic p c0 c1 c2 c3 c4)
+    (by rw [Polynomial.natDegree_X_pow_sub_C])
+
+/-- **Companion for `w2`, `K2`-level.** Identical shape/proof to `w1_
+modByMonicHom_eq_X`, one tower level up (`K2_poly_monic` in place of `K1_
+poly_monic`, `w2` in place of `w1`). -/
+theorem w2_modByMonicHom_eq_X (c0 c1 c2 c3 c4 : F p) :
+    (AdjoinRoot.modByMonicHom (K2_poly_monic p c0 c1 c2 c3 c4)
+      (w2 p c0 c1 c2 c3 c4) : Polynomial (K1 p c0 c1 c2 c3 c4)) = X := by
+  have hroot : w2 p c0 c1 c2 c3 c4 =
+      AdjoinRoot.mk (X ^ 2 - C (algebraMap (K0 p) (K1 p c0 c1 c2 c3 c4)
+        (fAtT p c0 c1 c2 c3 c4 1)) : Polynomial (K1 p c0 c1 c2 c3 c4)) X := by
+    unfold w2
+    rw [← AdjoinRoot.mk_X]
+  rw [hroot, AdjoinRoot.modByMonicHom_mk]
+  exact X_modByMonic_eq_self_of_natDegree_eq_two (K2_poly_monic p c0 c1 c2 c3 c4)
+    (by rw [Polynomial.natDegree_X_pow_sub_C])
+
+/-- **`baseFracToRing`'s totalDegree bound at the trivial inputs `0`/`1 :
+K0 p`.** `IsFractionRing.num`/`.den` of `0` is `(0,1)` (`num_zero`/
+`den_zero`-style facts — `0 = mk' _ 0 1`), and of `1` is `(1,1)` — both
+immediate special cases of `baseFracToRing_totalDegree_le` with `a := 0`/`b
+:= 1` resp. `a := 1, b := 1`, EXCEPT `baseFracToRing_totalDegree_le` requires
+`a ≠ 0`, which fails for the `v = 0` case. Handled directly instead: `.1 =
+aeval _ (IsFractionRing.num _ 0)`, and `IsFractionRing.num _ 0 = 0`
+(`IsLocalization.mk'_zero`-chain — `0 = mk' _ 0 1` combined with `num_den`'s
+uniqueness, or more simply `map_zero`-style: `baseFracToRing` is built from
+`aeval`, which sends `0 ↦ 0`, so it suffices that `num (0:K0 p) = 0`, itself
+from `IsFractionRing.num_zero` if present, else from `0 = algebraMap _ _ 0`
+and `IsFractionRing.num_algebraMap`-style simp set). `totalDegree 0 = 0` in
+either branch, so both `≤ D` for ANY `D`, including `D := 0`. -/
+theorem baseFracToRing_zero_one_totalDegree_eq_zero {Vars : Type*} (sg : SideGens Vars) :
+    (baseFracToRing p sg (0 : K0 p)).1.totalDegree = 0 ∧
+    (baseFracToRing p sg (0 : K0 p)).2.totalDegree = 0 ∧
+    (baseFracToRing p sg (1 : K0 p)).1.totalDegree = 0 ∧
+    (baseFracToRing p sg (1 : K0 p)).2.totalDegree = 0 := by
+  -- `num (0 : K0 p) = 0` directly (`IsFractionRing.num_zero`, confirmed
+  -- Mathlib name) — sidesteps needing `baseFracToRing_totalDegree_le`'s
+  -- `a ≠ 0` hypothesis, which genuinely fails for `v = 0`.
+  have hnum0 : IsFractionRing.num (MvPolynomial (Fin 2) (F p)) (0 : K0 p) = 0 :=
+    IsFractionRing.num_zero (A := MvPolynomial (Fin 2) (F p)) (K := K0 p)
+  -- `den (0 : K0 p)`: from `numDen_cross_mul` at `v := 0`, `a := 0`, `b := 1`
+  -- (`0 = mk' (K0 p) 0 1`, via the same `mk'_spec'` pattern as `fAtT_eq_mk'_
+  -- one` above): `0 * den (0:K0 p) = num (0:K0 p) * 1`, i.e. `0 = num (0:K0
+  -- p)` — already known (`hnum0`) and gives no information on `den` this
+  -- way, so `den`'s bound is taken instead from `isFractionRing_den_
+  -- totalDegree_le` directly, which needs no `a ≠ 0` hypothesis at all
+  -- (only `hb : b ≠ 0`, satisfied by `b := 1`).
+  have hv0mk : (0 : K0 p) = IsLocalization.mk' (K0 p) (0 : MvPolynomial (Fin 2) (F p))
+      ⟨1, mem_nonZeroDivisors_of_ne_zero one_ne_zero⟩ := by
+    have hspec := IsLocalization.mk'_spec' (K0 p) (0 : MvPolynomial (Fin 2) (F p))
+      (⟨1, mem_nonZeroDivisors_of_ne_zero one_ne_zero⟩ :
+        ↥(nonZeroDivisors (MvPolynomial (Fin 2) (F p))))
+    -- `hspec : algebraMap _ (K0 p) ↑1 * mk' (K0 p) 0 1 = algebraMap _ (K0 p) 0`
+    -- i.e. `1 * mk' (K0 p) 0 1 = 0`, so `mk' (K0 p) 0 1 = 0`.
+    simp only [map_one, map_zero, one_mul] at hspec
+    rw [hspec]
+  have hv1mk : (1 : K0 p) = IsLocalization.mk' (K0 p) (1 : MvPolynomial (Fin 2) (F p))
+      ⟨1, mem_nonZeroDivisors_of_ne_zero one_ne_zero⟩ := by
+    have hspec := IsLocalization.mk'_spec' (K0 p) (1 : MvPolynomial (Fin 2) (F p))
+      (⟨1, mem_nonZeroDivisors_of_ne_zero one_ne_zero⟩ :
+        ↥(nonZeroDivisors (MvPolynomial (Fin 2) (F p))))
+    simp only [map_one, one_mul] at hspec
+    rw [← hspec]
+  have hden0 : (↑(IsFractionRing.den (MvPolynomial (Fin 2) (F p)) (0 : K0 p)) :
+      MvPolynomial (Fin 2) (F p)).totalDegree = 0 := by
+    have hle := isFractionRing_den_totalDegree_le p (a := (0 : MvPolynomial (Fin 2) (F p)))
+      (b := (1 : MvPolynomial (Fin 2) (F p))) one_ne_zero hv0mk
+    have : (1 : MvPolynomial (Fin 2) (F p)).totalDegree = 0 := MvPolynomial.totalDegree_one
+    omega
+  have hnum1 : (IsFractionRing.num (MvPolynomial (Fin 2) (F p)) (1 : K0 p)).totalDegree = 0 := by
+    have hle := isFractionRing_num_totalDegree_le p (a := (1 : MvPolynomial (Fin 2) (F p)))
+      (b := (1 : MvPolynomial (Fin 2) (F p))) one_ne_zero hv1mk one_ne_zero
+    have : (1 : MvPolynomial (Fin 2) (F p)).totalDegree = 0 := MvPolynomial.totalDegree_one
+    omega
+  have hden1 : (↑(IsFractionRing.den (MvPolynomial (Fin 2) (F p)) (1 : K0 p)) :
+      MvPolynomial (Fin 2) (F p)).totalDegree = 0 := by
+    have hle := isFractionRing_den_totalDegree_le p (a := (1 : MvPolynomial (Fin 2) (F p)))
+      (b := (1 : MvPolynomial (Fin 2) (F p))) one_ne_zero hv1mk
+    have : (1 : MvPolynomial (Fin 2) (F p)).totalDegree = 0 := MvPolynomial.totalDegree_one
+    omega
+  simp only [baseFracToRing]
+  refine ⟨?_, ?_, ?_, ?_⟩
+  · rw [hnum0]; simp
+  · have hle := aeval_X_comp_totalDegree_le p sg.tGen
+      (↑(IsFractionRing.den (MvPolynomial (Fin 2) (F p)) (0 : K0 p)) :
+        MvPolynomial (Fin 2) (F p))
+    omega
+  · have hle := aeval_X_comp_totalDegree_le p sg.tGen
+      (IsFractionRing.num (MvPolynomial (Fin 2) (F p)) (1 : K0 p))
+    omega
+  · have hle := aeval_X_comp_totalDegree_le p sg.tGen
+      (↑(IsFractionRing.den (MvPolynomial (Fin 2) (F p)) (1 : K0 p)) :
+        MvPolynomial (Fin 2) (F p))
+    omega
+
+/-- **`w1`'s `towerToRdecK1` image has `totalDegree ≤ 1` on both coordinates**
+— i.e. `w1` satisfies `towerToRdecK1_totalDegree_le`'s hypothesis with `D :=
+0` (the two `baseFracToRing` calls on `w1`'s `(d0,d1) = (0,1)` normal form
+are BOTH `totalDegree 0`, per `baseFracToRing_zero_one_totalDegree_eq_zero`),
+giving `towerToRdecK1 p sg (w1 ...)` itself `totalDegree ≤ 2*0+1 = 1` /
+`≤ 2*0 = 0`. This is the base-case bound `matrixA`/`rhsVec`'s `w1`-dependence
+needs. -/
+theorem towerToRdecK1_w1_totalDegree_le {Vars : Type*} (sg : SideGens Vars)
+    (c0 c1 c2 c3 c4 : F p) :
+    (towerToRdecK1 p sg (w1 p c0 c1 c2 c3 c4)).1.totalDegree ≤ 1 ∧
+    (towerToRdecK1 p sg (w1 p c0 c1 c2 c3 c4)).2.totalDegree ≤ 0 := by
+  have hw1 := w1_modByMonicHom_eq_X p c0 c1 c2 c3 c4
+  have hzero := baseFracToRing_zero_one_totalDegree_eq_zero p sg
+  have h : (baseFracToRing p sg
+          ((AdjoinRoot.modByMonicHom (K1_poly_monic p c0 c1 c2 c3 c4)
+            (w1 p c0 c1 c2 c3 c4) : Polynomial (K0 p)).coeff 0)).1.totalDegree ≤ 0 ∧
+      (baseFracToRing p sg
+          ((AdjoinRoot.modByMonicHom (K1_poly_monic p c0 c1 c2 c3 c4)
+            (w1 p c0 c1 c2 c3 c4) : Polynomial (K0 p)).coeff 0)).2.totalDegree ≤ 0 ∧
+      (baseFracToRing p sg
+          ((AdjoinRoot.modByMonicHom (K1_poly_monic p c0 c1 c2 c3 c4)
+            (w1 p c0 c1 c2 c3 c4) : Polynomial (K0 p)).coeff 1)).1.totalDegree ≤ 0 ∧
+      (baseFracToRing p sg
+          ((AdjoinRoot.modByMonicHom (K1_poly_monic p c0 c1 c2 c3 c4)
+            (w1 p c0 c1 c2 c3 c4) : Polynomial (K0 p)).coeff 1)).2.totalDegree ≤ 0 := by
+    rw [hw1, Polynomial.coeff_X_zero, Polynomial.coeff_X_one]
+    exact ⟨hzero.1.le, hzero.2.1.le, hzero.2.2.1.le, hzero.2.2.2.le⟩
+  have := towerToRdecK1_totalDegree_le p c0 c1 c2 c3 c4 sg (w1 p c0 c1 c2 c3 c4) h
+  omega
+
+/-- **`w2`'s companion, `K2`-level.** Identical shape to `towerToRdecK1_w1_
+totalDegree_le`, one level up: `towerToRdec p sg (w2 ...)` has `totalDegree ≤
+1` / `≤ 0`, via `w2_modByMonicHom_eq_X` and `towerToRdec_totalDegree_le`
+(rather than `towerToRdecK1_totalDegree_le`) — but note the hypothesis
+`towerToRdec_totalDegree_le` needs is stated in terms of `towerToRdecK1`'s
+OUTPUT (not `baseFracToRing`'s, one level down from `w1`'s case), so this
+uses `towerToRdecK1_w1_totalDegree_le`-STYLE bounds on `d0 = 0`/`d1 = 1 : K1 p
+...` directly — `0`/`1 : K1 p ...` reduce via `AdjoinRoot.modByMonicHom`
+applied to `algebraMap`-images of `0`/`1 : K0 p` (`K1`'s `0`/`1` ARE the
+images of `K0`'s, by the `Algebra` structure), so the same `baseFracToRing_
+zero_one_totalDegree_eq_zero`-style zero/one bound applies after one more
+unfolding step: `towerToRdecK1 p sg (0 : K1 p ...)`/`(1 : K1 p ...)` both
+have `totalDegree ≤ 1`/`≤ 0` by the SAME argument as `baseFracToRing`'s
+zero/one case, one recursion level up (`towerToRdecK1`'s own `combine_
+totalDegree_le` applied to two zero-totalDegree `baseFracToRing` outputs is
+itself zero/one-bounded, matching `combine_totalDegree_le` at `D := 0`). -/
+theorem towerToRdecK1_zero_one_totalDegree_le {Vars : Type*} (sg : SideGens Vars)
+    (c0 c1 c2 c3 c4 : F p) :
+    (towerToRdecK1 p sg (0 : K1 p c0 c1 c2 c3 c4)).1.totalDegree ≤ 1 ∧
+    (towerToRdecK1 p sg (0 : K1 p c0 c1 c2 c3 c4)).2.totalDegree ≤ 0 ∧
+    (towerToRdecK1 p sg (1 : K1 p c0 c1 c2 c3 c4)).1.totalDegree ≤ 1 ∧
+    (towerToRdecK1 p sg (1 : K1 p c0 c1 c2 c3 c4)).2.totalDegree ≤ 0 := by
+  have hzero := baseFracToRing_zero_one_totalDegree_eq_zero p sg
+  have hposdeg : 0 <
+      (X ^ 2 - C (fAtT p c0 c1 c2 c3 c4 0) : Polynomial (K0 p)).natDegree := by
+    rw [Polynomial.natDegree_X_pow_sub_C]; norm_num
+  have h0 : (AdjoinRoot.modByMonicHom (K1_poly_monic p c0 c1 c2 c3 c4)
+      (0 : K1 p c0 c1 c2 c3 c4) : Polynomial (K0 p)) = 0 := by
+    have hmk0 : (0 : K1 p c0 c1 c2 c3 c4) =
+        AdjoinRoot.mk (X ^ 2 - C (fAtT p c0 c1 c2 c3 c4 0) : Polynomial (K0 p)) (C 0) := by
+      rw [Polynomial.C_0, map_zero]
+    rw [hmk0, AdjoinRoot.modByMonicHom_mk,
+      C_modByMonic_eq_self_of_natDegree_pos (K1_poly_monic p c0 c1 c2 c3 c4) hposdeg,
+      Polynomial.C_0]
+  have h1 : (AdjoinRoot.modByMonicHom (K1_poly_monic p c0 c1 c2 c3 c4)
+      (1 : K1 p c0 c1 c2 c3 c4) : Polynomial (K0 p)) = 1 := by
+    have hmk1 : (1 : K1 p c0 c1 c2 c3 c4) =
+        AdjoinRoot.mk (X ^ 2 - C (fAtT p c0 c1 c2 c3 c4 0) : Polynomial (K0 p)) (C 1) := by
+      rw [Polynomial.C_1, map_one]
+    rw [hmk1, AdjoinRoot.modByMonicHom_mk,
+      C_modByMonic_eq_self_of_natDegree_pos (K1_poly_monic p c0 c1 c2 c3 c4) hposdeg,
+      Polynomial.C_1]
+  -- `D := 0` case for `v = 0 : K1 p ...`: both `coeff 0` and `coeff 1` extractions of the
+  -- zero polynomial (`h0`) reduce to `baseFracToRing p sg (0 : K0 p)`, already bounded by
+  -- `hzero`. Stated with an explicit type ascription (matching `towerToRdecK1_w1_
+  -- totalDegree_le`'s own pattern above) so the implicit `D` is pinned to `0` before the
+  -- `by` proof is elaborated, rather than left as an unconstrained metavariable.
+  have h0bound : (baseFracToRing p sg
+        ((AdjoinRoot.modByMonicHom (K1_poly_monic p c0 c1 c2 c3 c4)
+          (0 : K1 p c0 c1 c2 c3 c4) : Polynomial (K0 p)).coeff 0)).1.totalDegree ≤ 0 ∧
+      (baseFracToRing p sg
+        ((AdjoinRoot.modByMonicHom (K1_poly_monic p c0 c1 c2 c3 c4)
+          (0 : K1 p c0 c1 c2 c3 c4) : Polynomial (K0 p)).coeff 0)).2.totalDegree ≤ 0 ∧
+      (baseFracToRing p sg
+        ((AdjoinRoot.modByMonicHom (K1_poly_monic p c0 c1 c2 c3 c4)
+          (0 : K1 p c0 c1 c2 c3 c4) : Polynomial (K0 p)).coeff 1)).1.totalDegree ≤ 0 ∧
+      (baseFracToRing p sg
+        ((AdjoinRoot.modByMonicHom (K1_poly_monic p c0 c1 c2 c3 c4)
+          (0 : K1 p c0 c1 c2 c3 c4) : Polynomial (K0 p)).coeff 1)).2.totalDegree ≤ 0 := by
+    rw [h0]; simp [hzero.1, hzero.2.1]
+  have h1bound : (baseFracToRing p sg
+        ((AdjoinRoot.modByMonicHom (K1_poly_monic p c0 c1 c2 c3 c4)
+          (1 : K1 p c0 c1 c2 c3 c4) : Polynomial (K0 p)).coeff 0)).1.totalDegree ≤ 0 ∧
+      (baseFracToRing p sg
+        ((AdjoinRoot.modByMonicHom (K1_poly_monic p c0 c1 c2 c3 c4)
+          (1 : K1 p c0 c1 c2 c3 c4) : Polynomial (K0 p)).coeff 0)).2.totalDegree ≤ 0 ∧
+      (baseFracToRing p sg
+        ((AdjoinRoot.modByMonicHom (K1_poly_monic p c0 c1 c2 c3 c4)
+          (1 : K1 p c0 c1 c2 c3 c4) : Polynomial (K0 p)).coeff 1)).1.totalDegree ≤ 0 ∧
+      (baseFracToRing p sg
+        ((AdjoinRoot.modByMonicHom (K1_poly_monic p c0 c1 c2 c3 c4)
+          (1 : K1 p c0 c1 c2 c3 c4) : Polynomial (K0 p)).coeff 1)).2.totalDegree ≤ 0 := by
+    rw [h1]; simp [Polynomial.coeff_one, hzero.1, hzero.2.1, hzero.2.2.1, hzero.2.2.2]
+  have hbound0 :=
+    towerToRdecK1_totalDegree_le p c0 c1 c2 c3 c4 sg (0 : K1 p c0 c1 c2 c3 c4) h0bound
+  have hbound1 :=
+    towerToRdecK1_totalDegree_le p c0 c1 c2 c3 c4 sg (1 : K1 p c0 c1 c2 c3 c4) h1bound
+  exact ⟨hbound0.1, hbound0.2, hbound1.1, hbound1.2⟩
+
+/-! ## `t0`/anchor-point bound: generalizing `towerToRdecK1_zero_one_totalDegree_le`
+
+`towerToRdecK1_zero_one_totalDegree_le` only handles `v ∈ {0,1} : K1 p ...`. The
+anchor points `t1 := (anchor1 p ...).1`/`t2 := (anchor2 p ...).1`
+(`DataDerivationSolve.lean`) are neither: both are `algebraMap (K1 p ...) (K2 p ...)
+(algebraMap (K0 p) (K1 p ...) (t0 p i))` for `i ∈ {0,1}` — a genuine base-field
+generator (`t0 p i = algebraMap (MvPolynomial (Fin 2) (F p)) (K0 p) (X i)`, per
+`DataDerivationTower.lean`), lifted up through the tower, not `0`/`1` themselves.
+This section closes that gap one tower level at a time: first the generic fact that
+ANY `algebraMap (K0 p) (K1 p ...) v`'s `modByMonicHom`-normal-form is the constant
+polynomial `C v` (of which `h0`/`h1` above, at `v = 0`/`1`, were special cases), then
+the resulting `towerToRdecK1`-level bound for arbitrary `v`, then `t0 p i`'s own
+base-case bound via `baseFracToRing_totalDegree_le`. The analogous `K1 → K2` step
+(needed to reach `t1`/`t2` themselves, one level up) is flagged but not done this
+pass — see the status note below. -/
+
+/-- **`algebraMap`'s normal form is the constant polynomial.** Generalizes `h0`/`h1`
+inside `towerToRdecK1_zero_one_totalDegree_le` above (which show this at the
+specific values `v = 0`/`1`) to an arbitrary `v : K0 p`. Route: `algebraMap R A r =
+r • 1` (`Algebra.algebraMap_eq_smul_one`), `AdjoinRoot.modByMonicHom hg` is an
+`R`-linear map (so commutes with the `K0 p`-scalar action, `map_smul`), and
+`modByMonicHom hg 1 = 1` reduces `v • modByMonicHom hg 1` to `v • (1 : Polynomial
+(K0 p)) = C v` (`Polynomial.smul_eq_C_mul`, `mul_one`). No new mathematics over
+`h0`/`h1`'s own proof, just replacing the concrete `0`/`1` with a variable `v`. -/
+theorem modByMonicHom_algebraMap_eq_C (c0 c1 c2 c3 c4 : F p) (v : K0 p) :
+    (AdjoinRoot.modByMonicHom (K1_poly_monic p c0 c1 c2 c3 c4)
+      (algebraMap (K0 p) (K1 p c0 c1 c2 c3 c4) v) : Polynomial (K0 p)) = C v := by
+  have hposdeg : 0 <
+      (X ^ 2 - C (fAtT p c0 c1 c2 c3 c4 0) : Polynomial (K0 p)).natDegree := by
+    rw [Polynomial.natDegree_X_pow_sub_C]; norm_num
+  have h1 : (AdjoinRoot.modByMonicHom (K1_poly_monic p c0 c1 c2 c3 c4)
+      (1 : K1 p c0 c1 c2 c3 c4) : Polynomial (K0 p)) = 1 := by
+    have hmk1 : (1 : K1 p c0 c1 c2 c3 c4) =
+        AdjoinRoot.mk (X ^ 2 - C (fAtT p c0 c1 c2 c3 c4 0) : Polynomial (K0 p)) (C 1) := by
+      rw [Polynomial.C_1, map_one]
+    rw [hmk1, AdjoinRoot.modByMonicHom_mk,
+      C_modByMonic_eq_self_of_natDegree_pos (K1_poly_monic p c0 c1 c2 c3 c4) hposdeg,
+      Polynomial.C_1]
+  rw [Algebra.algebraMap_eq_smul_one v, map_smul, h1, Polynomial.smul_eq_C_mul, mul_one]
+
+/-- **`towerToRdecK1`'s bound at an `algebraMap`-lifted `v : K0 p`**, generalizing
+`towerToRdecK1_zero_one_totalDegree_le` (`v ∈ {0,1}`, `D := 0`) to any `v` with a
+known `baseFracToRing` bound `D`. `modByMonicHom_algebraMap_eq_C` pins the normal
+form to `C v`, whose `coeff 0`/`coeff 1` are `v`/`0` (`Polynomial.coeff_C_zero`,
+`Polynomial.coeff_eq_zero_of_natDegree_lt` off `natDegree_C`), feeding `hv`'s bound
+and `baseFracToRing_zero_one_totalDegree_eq_zero`'s `v = 0` case respectively into
+`towerToRdecK1_totalDegree_le`. -/
+theorem towerToRdecK1_algebraMap_totalDegree_le {Vars : Type*} (sg : SideGens Vars)
+    (c0 c1 c2 c3 c4 : F p) {D : ℕ} (v : K0 p)
+    (hv : (baseFracToRing p sg v).1.totalDegree ≤ D ∧
+      (baseFracToRing p sg v).2.totalDegree ≤ D) :
+    (towerToRdecK1 p sg (algebraMap (K0 p) (K1 p c0 c1 c2 c3 c4) v)).1.totalDegree ≤
+      2 * D + 1 ∧
+    (towerToRdecK1 p sg (algebraMap (K0 p) (K1 p c0 c1 c2 c3 c4) v)).2.totalDegree ≤
+      2 * D := by
+  have hzero := baseFracToRing_zero_one_totalDegree_eq_zero p sg
+  have heq := modByMonicHom_algebraMap_eq_C p c0 c1 c2 c3 c4 v
+  have hc0 : (C v : Polynomial (K0 p)).coeff 0 = v := Polynomial.coeff_C_zero
+  have hc1 : (C v : Polynomial (K0 p)).coeff 1 = 0 :=
+    Polynomial.coeff_eq_zero_of_natDegree_lt (by rw [Polynomial.natDegree_C]; norm_num)
+  refine towerToRdecK1_totalDegree_le p c0 c1 c2 c3 c4 sg
+    (algebraMap (K0 p) (K1 p c0 c1 c2 c3 c4) v) ⟨?_, ?_, ?_, ?_⟩
+  · rw [heq, hc0]; exact hv.1
+  · rw [heq, hc0]; exact hv.2
+  · rw [heq, hc1]; exact hzero.1.le.trans (Nat.zero_le D)
+  · rw [heq, hc1]; exact hzero.2.1.le.trans (Nat.zero_le D)
+
+/-- **`t0 p i`'s base-case bound.** `t0 p i := algebraMap (MvPolynomial (Fin 2)
+(F p)) (K0 p) (X i)` (`DataDerivationTower.lean`) is exactly `mk' (K0 p) (X i) 1`
+(`IsLocalization.mk'_spec'` at denominator `1`, the same pattern `fAtT_eq_mk'_one`
+above uses, but simpler — `t0` IS the raw generator, no `eval₂` step), so
+`baseFracToRing_totalDegree_le` applies directly with `a := X i`, `b := 1`:
+`totalDegree (X i) = 1` (`MvPolynomial.totalDegree_X`), `totalDegree 1 = 0`
+(`MvPolynomial.totalDegree_one`). -/
+theorem t0_totalDegree_le {Vars : Type*} (sg : SideGens Vars) (i : Fin 2) :
+    (baseFracToRing p sg (t0 p i)).1.totalDegree ≤ 1 ∧
+    (baseFracToRing p sg (t0 p i)).2.totalDegree ≤ 0 := by
+  have hv : t0 p i = IsLocalization.mk' (K0 p) (MvPolynomial.X i : MvPolynomial (Fin 2) (F p))
+      ⟨1, mem_nonZeroDivisors_of_ne_zero (one_ne_zero)⟩ := by
+    have hspec := IsLocalization.mk'_spec' (K0 p) (MvPolynomial.X i : MvPolynomial (Fin 2) (F p))
+      (⟨1, mem_nonZeroDivisors_of_ne_zero (one_ne_zero)⟩ :
+        ↥(nonZeroDivisors (MvPolynomial (Fin 2) (F p))))
+    simp only [map_one, one_mul] at hspec
+    unfold t0
+    rw [← hspec]
+  have hbound := baseFracToRing_totalDegree_le p sg (a := MvPolynomial.X i)
+    (b := (1 : MvPolynomial (Fin 2) (F p))) one_ne_zero (MvPolynomial.X_ne_zero i) hv
+  rwa [MvPolynomial.totalDegree_X, MvPolynomial.totalDegree_one] at hbound
+
+/-! ## Status, this section
+
+**Drafted this pass, NOT yet REPL-confirmed** (no build environment available
+this session — per this project's convention, Claire runs all tests):
+`X_modByMonic_eq_self_of_natDegree_eq_two`, `w1_modByMonicHom_eq_X`,
+`w2_modByMonicHom_eq_X`, `baseFracToRing_zero_one_totalDegree_eq_zero`,
+`towerToRdecK1_w1_totalDegree_le`, `towerToRdecK1_zero_one_totalDegree_le`,
+`modByMonicHom_algebraMap_eq_C`, `towerToRdecK1_algebraMap_totalDegree_le`,
+`t0_totalDegree_le`.
+
+**What this closes**: the roadmap's own flagged gap — "`w1`/`w2` ... needs
+checking against `AdjoinRoot.modByMonicHom_mk`/`AdjoinRoot.root`'s actual
+definition, not yet done this pass" (`ROADMAP-crossnondegenerate-degree-
+bound.md`). `w1`/`w2` contribute `totalDegree ≤ 1`/`≤ 0` (num/den) at the
+`towerToRdecK1`/`towerToRdec` level — genuinely the simplest possible
+nonzero case, as the roadmap predicted.
+
+**Risk flagged honestly**: `baseFracToRing_zero_one_totalDegree_eq_zero`'s
+proof (`simp` closing `IsFractionRing.num/den` at `0`/`1`) and `towerToRdecK1_
+zero_one_totalDegree_le`'s `h1` (`Polynomial.one_modByMonic_eq_self_of_
+natDegree_pos`, name not independently re-confirmed against this Mathlib
+snapshot this pass) are the two spots most likely to need a lemma-name fix
+once Claire's REPL reports the real error — the underlying math (`0`/`1`'s
+numerator/denominator are trivial; a low-degree polynomial that's already
+reduced mod a higher-degree monic divisor is unchanged) is not in question,
+only the exact Mathlib spelling.
+
+**What this section adds**: `t0 p i`'s own `totalDegree` bound (`t0_totalDegree_le`)
+and the generalized `algebraMap`-lift step at the `K0 → K1` level
+(`modByMonicHom_algebraMap_eq_C`, `towerToRdecK1_algebraMap_totalDegree_le`), so
+`towerToRdecK1 p sg (algebraMap (K0 p) (K1 p ...) (t0 p i))`'s bound is now a proved
+theorem chain (`≤ 2*1+1 = 3` / `≤ 2*1 = 2`, via `towerToRdecK1_algebraMap_totalDegree_le`
+at `D := 1`), not only the prose argument `anchor1_ne_anchor2` sketches.
+**What this does NOT yet close**: the anchor points themselves, `t1 := (anchor1 p
+...).1`/`t2 := (anchor2 p ...).1`, live one tower level further up — each is
+`algebraMap (K1 p ...) (K2 p ...)` applied to the `K1`-element this section bounds,
+so reaching `towerToRdec p sg t1`/`t2`'s own bound needs the `K1 → K2` analog of
+`modByMonicHom_algebraMap_eq_C`/`towerToRdecK1_algebraMap_totalDegree_le`
+(same proof shape, one level up against `K2_poly_monic`/`towerToRdec_totalDegree_le`
+instead of `K1_poly_monic`/`towerToRdecK1_totalDegree_le` — but note the `D`-bound
+fed into `towerToRdec_totalDegree_le` there must also dominate `towerToRdecK1 p sg
+(0 : K1 p ...)`'s own cost, which is `≤ 1`/`≤ 0`, NOT `≤ 0`/`≤ 0` the way
+`baseFracToRing p sg 0` is at the base level — `towerToRdecK1`'s own `+1` structural
+offset from `combine_totalDegree_le`'s `X (wGen 0)` term means the `K1 → K2` step
+needs an extra `1 ≤ D` side-hypothesis that the `K0 → K1` step above did not, flagged
+here rather than glossed over). Not attempted this pass. Beyond that: raising
+`t1`/`t2` to powers `bi ≤ 3` (`MvPolynomial.totalDegree_mul`/`_pow`, mechanical once
+`t1`/`t2`'s own bound is in hand) and `reduceMonomialModU`'s `F p`-valued output
+(`totalDegree 0` via `algebraMap`/`MvPolynomial.totalDegree_C`, immediate). Assembling
+`matrixA`/`rhsVec`'s full entrywise bound, then feeding it through
+`cramerRatioDet_num_totalDegree_le` to get `coeffsOut`'s bound, then through
+`Epoly`/`Ypoly`/`Npoly`'s definitions to a concrete `Npoly` coefficient bound,
+is the remaining assembly work — mechanical given everything now in this
+file, but not yet written up as explicit theorems. The FINAL step (`Npoly`'s
+bound ⟹ `curBeforeMonic`'s bound, via `Npoly_eq_curBeforeMonic_mul`'s exact
+identity and a degree-SUBTRACTION argument on exact quotients) is genuinely
+new territory — Mathlib has no ready-made "totalDegree of an exact
+MvPolynomial-coefficient quotient" lemma, this is exactly the kind of
+well-defined, non-curve-specific algebra fact this project's convention flags
+as fair game for a ChatGPT consultation if a direct Mathlib search doesn't
+turn up a shortcut quickly. -/
+
 end TheDataDerivation
 end Genus2Lean
