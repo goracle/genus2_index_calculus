@@ -24,10 +24,9 @@ this project's "small pieces before assembling" discipline.
 **REPL-confirmed through at least one full build pass** (see "Status,
 latest pass" below for the errors that build surfaced and how they were
 fixed) — not a guarantee every theorem in this file is final: `row = 0`
-specifically has round-tripped through Claire's REPL at least twice and
-is confirmed; `row = 1` has been through two rounds of real REPL-
-reported build errors, both fixed (fix #8, below), pending Claire's
-final green confirmation; `row = 2`/`3` are still unattempted.
+and `row = 1` are both REPL-confirmed green; `row = 2`/`row = 3` have had
+one real build error reported (a heartbeat timeout, not an unsolved-goal
+error — fix #9, below) and fixed, pending Claire's re-confirmation.
 -/
 
 namespace Genus2Lean
@@ -416,6 +415,127 @@ theorem matrixA_row1_totalDegree_le {Vars : Type*} [DecidableEq Vars]
     · show ((towerToRdec p sg (anchor2 p c0 c1 c2 c3 c4).1).2 ^ bi).totalDegree ≤ 20
       exact le_trans (anchorPow_totalDegree_le p _ _ hbi3 hwx.1 hwx.2).2 (by norm_num)
 
+/-! ## `matrixA row 2`/`matrixA row 3`'s entry witness and degree bound
+
+The mod-`u` rows, `matrixA`'s `else` branch (`reduceMonomialModU`, a bare
+`F p`-valued pair, `algebraMap`-lifted into `K2 p ...`). Structurally
+simpler than `row = 0`/`row = 1` above: no `bj = 1`/`bj ≠ 1` product
+split (the entry is a single `algebraMap`-lifted scalar, not `px^bi *
+(py or 1)`), so no `IsRdecWitness.mul`/induction-on-`bi` needed here —
+`algebraMap_Fp_towerToRdec_totalDegree_eq` (this file, above, already
+proved) gives the `≤7`/`≤6` witness-degree bound directly at `a := (if
+row.val = 2 then r0 else r1)`, widened to the shared `≤24`/`≤20` via
+`le_trans`/`norm_num` the same way `row = 0`/`1`'s `bj ≠ 1` branch widens
+its own tighter `≤21`/`≤18`. -/
+
+set_option maxHeartbeats 2000000 in
+/-- **`matrixA row col`'s value, for `row.val = 2`, has an explicit
+`IsRdecWitness` pair with a `totalDegree` bound.** `matrixA`'s `else`
+branch at `row = ⟨2,_⟩` is `algebraMap (F p) (K2 ...) r0`, `(r0,r1) :=
+reduceMonomialModU p u0 u1 v0 v1 bi bj` — `towerToRdec_isRdecWitness`
+applied directly at `v := algebraMap (F p) (K2 ...) r0` supplies the
+witness (generic in `v`, no product structure needed), and
+`algebraMap_Fp_towerToRdec_totalDegree_eq` supplies its `≤7`/`≤6` degree
+bound, widened to `≤24`/`≤20`. **Genuinely new, not yet REPL-confirmed**
+— per this file's own repeated experience with `row = 0`/`row = 1`'s
+`hentry` step, expect the three-clause `if row.val = 0 then ... else if
+row.val = 1 then ... else ...` unfolding to need the SAME two-`if_neg`-
+then-close pattern flagged in the status note below, checked against
+whatever Claire's REPL actually reports rather than assumed to transfer
+cleanly from the two-clause cases above. -/
+theorem matrixA_row2_totalDegree_le {Vars : Type*} [DecidableEq Vars]
+    (sg : SideGens Vars) (u0 u1 v0 v1 : F p) (col : Fin 4)
+    (ι : K2 p c0 c1 c2 c3 c4 →+* FractionRing (MvPolynomial Vars (F p)))
+    (hι_t : ∀ i : Fin 2, ι (algebraMap (K1 p c0 c1 c2 c3 c4) (K2 p c0 c1 c2 c3 c4)
+        (algebraMap (K0 p) (K1 p c0 c1 c2 c3 c4)
+          (algebraMap (MvPolynomial (Fin 2) (F p)) (K0 p) (MvPolynomial.X i)))) =
+      algebraMap (MvPolynomial Vars (F p)) (FractionRing (MvPolynomial Vars (F p)))
+        (MvPolynomial.X (sg.tGen i)))
+    (hι_w1 : ι (algebraMap (K1 p c0 c1 c2 c3 c4) (K2 p c0 c1 c2 c3 c4) (w1 p c0 c1 c2 c3 c4)) =
+      algebraMap (MvPolynomial Vars (F p)) (FractionRing (MvPolynomial Vars (F p)))
+        (MvPolynomial.X (sg.wGen 0)))
+    (hι_w2 : ι (w2 p c0 c1 c2 c3 c4) =
+      algebraMap (MvPolynomial Vars (F p)) (FractionRing (MvPolynomial Vars (F p)))
+        (MvPolynomial.X (sg.wGen 1))) :
+    ∃ nd : MvPolynomial Vars (F p) × MvPolynomial Vars (F p),
+      IsRdecWitness p ι
+        (algebraMap (MvPolynomial Vars (F p)) (FractionRing (MvPolynomial Vars (F p))))
+        (matrixA p c0 c1 c2 c3 c4 u0 u1 v0 v1 ⟨2, by norm_num⟩ col)
+        nd ∧ nd.1.totalDegree ≤ 24 ∧ nd.2.totalDegree ≤ 20 := by
+  set bidx := otherIdx.getD col.val 0 with hbidx_def
+  set bi := (rrBasis5.getD bidx (0, 0, 0)).2.1 with hbi_def
+  set bj := (rrBasis5.getD bidx (0, 0, 0)).2.2 with hbj_def
+  have hentry : matrixA p c0 c1 c2 c3 c4 u0 u1 v0 v1 ⟨2, by norm_num⟩ col =
+      algebraMap (F p) (K2 p c0 c1 c2 c3 c4) (reduceMonomialModU p u0 u1 v0 v1 bi bj).1 := by
+    show (if (2 : ℕ) = 0 then
+        (anchor1 p c0 c1 c2 c3 c4).1 ^ bi * (if bj = 1 then (anchor1 p c0 c1 c2 c3 c4).2 else 1)
+      else if (2 : ℕ) = 1 then
+        (anchor2 p c0 c1 c2 c3 c4).1 ^ bi * (if bj = 1 then (anchor2 p c0 c1 c2 c3 c4).2 else 1)
+      else
+        algebraMap (F p) (K2 p c0 c1 c2 c3 c4)
+          (if (2 : ℕ) = 2 then (reduceMonomialModU p u0 u1 v0 v1 bi bj).1
+            else (reduceMonomialModU p u0 u1 v0 v1 bi bj).2)) =
+      algebraMap (F p) (K2 p c0 c1 c2 c3 c4) (reduceMonomialModU p u0 u1 v0 v1 bi bj).1
+    rw [if_neg (by norm_num : ¬ (2 : ℕ) = 0), if_neg (by norm_num : ¬ (2 : ℕ) = 1),
+      if_pos rfl]
+  rw [hentry]
+  refine ⟨towerToRdec p sg
+      (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) (reduceMonomialModU p u0 u1 v0 v1 bi bj).1),
+    towerToRdec_isRdecWitness p c0 c1 c2 c3 c4 sg _ ι hι_t hι_w1 hι_w2, ?_, ?_⟩
+  · exact le_trans (algebraMap_Fp_towerToRdec_totalDegree_eq p c0 c1 c2 c3 c4 sg _).1
+      (by norm_num)
+  · exact le_trans (algebraMap_Fp_towerToRdec_totalDegree_eq p c0 c1 c2 c3 c4 sg _).2
+      (by norm_num)
+
+set_option maxHeartbeats 2000000 in
+/-- **The `row = 3` companion.** `matrixA`'s `else` branch at `row =
+⟨3,_⟩` takes `reduceMonomialModU`'s SECOND component (`r1` in place of
+`r0`) — otherwise identical to `matrixA_row2_totalDegree_le` above, same
+proof shape throughout. -/
+theorem matrixA_row3_totalDegree_le {Vars : Type*} [DecidableEq Vars]
+    (sg : SideGens Vars) (u0 u1 v0 v1 : F p) (col : Fin 4)
+    (ι : K2 p c0 c1 c2 c3 c4 →+* FractionRing (MvPolynomial Vars (F p)))
+    (hι_t : ∀ i : Fin 2, ι (algebraMap (K1 p c0 c1 c2 c3 c4) (K2 p c0 c1 c2 c3 c4)
+        (algebraMap (K0 p) (K1 p c0 c1 c2 c3 c4)
+          (algebraMap (MvPolynomial (Fin 2) (F p)) (K0 p) (MvPolynomial.X i)))) =
+      algebraMap (MvPolynomial Vars (F p)) (FractionRing (MvPolynomial Vars (F p)))
+        (MvPolynomial.X (sg.tGen i)))
+    (hι_w1 : ι (algebraMap (K1 p c0 c1 c2 c3 c4) (K2 p c0 c1 c2 c3 c4) (w1 p c0 c1 c2 c3 c4)) =
+      algebraMap (MvPolynomial Vars (F p)) (FractionRing (MvPolynomial Vars (F p)))
+        (MvPolynomial.X (sg.wGen 0)))
+    (hι_w2 : ι (w2 p c0 c1 c2 c3 c4) =
+      algebraMap (MvPolynomial Vars (F p)) (FractionRing (MvPolynomial Vars (F p)))
+        (MvPolynomial.X (sg.wGen 1))) :
+    ∃ nd : MvPolynomial Vars (F p) × MvPolynomial Vars (F p),
+      IsRdecWitness p ι
+        (algebraMap (MvPolynomial Vars (F p)) (FractionRing (MvPolynomial Vars (F p))))
+        (matrixA p c0 c1 c2 c3 c4 u0 u1 v0 v1 ⟨3, by norm_num⟩ col)
+        nd ∧ nd.1.totalDegree ≤ 24 ∧ nd.2.totalDegree ≤ 20 := by
+  set bidx := otherIdx.getD col.val 0 with hbidx_def
+  set bi := (rrBasis5.getD bidx (0, 0, 0)).2.1 with hbi_def
+  set bj := (rrBasis5.getD bidx (0, 0, 0)).2.2 with hbj_def
+  have hentry : matrixA p c0 c1 c2 c3 c4 u0 u1 v0 v1 ⟨3, by norm_num⟩ col =
+      algebraMap (F p) (K2 p c0 c1 c2 c3 c4) (reduceMonomialModU p u0 u1 v0 v1 bi bj).2 := by
+    show (if (3 : ℕ) = 0 then
+        (anchor1 p c0 c1 c2 c3 c4).1 ^ bi * (if bj = 1 then (anchor1 p c0 c1 c2 c3 c4).2 else 1)
+      else if (3 : ℕ) = 1 then
+        (anchor2 p c0 c1 c2 c3 c4).1 ^ bi * (if bj = 1 then (anchor2 p c0 c1 c2 c3 c4).2 else 1)
+      else
+        algebraMap (F p) (K2 p c0 c1 c2 c3 c4)
+          (if (3 : ℕ) = 2 then (reduceMonomialModU p u0 u1 v0 v1 bi bj).1
+            else (reduceMonomialModU p u0 u1 v0 v1 bi bj).2)) =
+      algebraMap (F p) (K2 p c0 c1 c2 c3 c4) (reduceMonomialModU p u0 u1 v0 v1 bi bj).2
+    rw [if_neg (by norm_num : ¬ (3 : ℕ) = 0), if_neg (by norm_num : ¬ (3 : ℕ) = 1),
+      if_neg (by norm_num : ¬ (3 : ℕ) = 2)]
+  rw [hentry]
+  refine ⟨towerToRdec p sg
+      (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) (reduceMonomialModU p u0 u1 v0 v1 bi bj).2),
+    towerToRdec_isRdecWitness p c0 c1 c2 c3 c4 sg _ ι hι_t hι_w1 hι_w2, ?_, ?_⟩
+  · exact le_trans (algebraMap_Fp_towerToRdec_totalDegree_eq p c0 c1 c2 c3 c4 sg _).1
+      (by norm_num)
+  · exact le_trans (algebraMap_Fp_towerToRdec_totalDegree_eq p c0 c1 c2 c3 c4 sg _).2
+      (by norm_num)
+
 /-! ## Status, latest pass
 
 **Attempted this pass**: `matrixA_row0_totalDegree_le`, the `row = 0`
@@ -562,16 +682,48 @@ snd_totalDegree_le` in place of `anchor1`'s versions throughout.
    checked against the actual REPL-reported goal rather than guessed
    from the file's structure alone.
 
-**`row = 2`/`row = 3` (the `reduceMonomialModU` rows) remain
-undrafted** — expect the SAME three-clause `if`-chain unfolding
-difficulty as `row = 1` (fix #8, corrected above), likely needing TWO
-`if_neg`s (both `row.val = 0` and `row.val = 1` are false at `row = 2`
-or `row = 3`) before reaching the final `else` branch's own inner `if
-row.val = 2` split — send to the REPL early and iterate on the actual
-reported goal shape rather than assuming the pattern from `row0`/`row1`
-transfers cleanly. Their shape differs more besides (no `bj=1`/`bj≠1`
-witness-combination split, just `algebraMap_Fp_towerToRdec_totalDegree_
-eq` directly, already proved above in this file). -/
+**`row = 2`/`row = 3` drafted this pass #4, then REPL-fixed (Claire's
+actual build error)**: `matrixA_row2_totalDegree_le`/`matrixA_row3_
+totalDegree_le`, the `reduceMonomialModU`-row companions. Structurally
+simpler than `row = 0`/`row = 1` — no `bj=1`/`bj≠1` witness-combination
+split (the entry is a single `algebraMap`-lifted scalar, not a product),
+so no `IsRdecWitness.mul`/induction-on-`bi` needed: `towerToRdec_
+isRdecWitness` (generic in its value argument) supplies the witness
+directly, and `algebraMap_Fp_towerToRdec_totalDegree_eq` (this file,
+proved earlier this pass) supplies the `≤7`/`≤6` bound, widened to
+`≤24`/`≤20` via `le_trans`/`norm_num` exactly as `row0`/`row1`'s `bj≠1`
+branch widens.
+
+9. **Genuinely new failure mode, not the `if`-unfolding kind hit by
+   `row0`/`row1`**: both theorems' `hentry` step (originally `simp only
+   [matrixA, hbidx_def.symm, hbi_def.symm, hbj_def.symm]` then `rw
+   [if_neg ..., if_neg ..., if_true/if_neg ...]`, following the `row0`/
+   `row1` pattern) hit a HEARTBEAT TIMEOUT at the `rw` line, not an
+   unsolved-goal error — `simp only [matrixA]`'s default unfolding
+   dives not just into `matrixA`'s own `let`/`if` chain (needed) but
+   also into the LIVE branch's `reduceMonomialModU p u0 u1 v0 v1 bi bj`
+   call, trying to `whnf`-reduce `reduceMonomialModU`/`xmodUTable`'s own
+   structurally-recursive definition against `bi` — which is not a
+   literal here (`bi` is a `set`-bound opaque local, `(rrBasis5.getD
+   bidx (0,0,0)).2.1`), so the reduction has nothing concrete to
+   recurse on and burns heartbeats trying anyway. `row0`/`row1` never
+   hit this because neither of their live branches ever mentions
+   `reduceMonomialModU` at all. Fixed by replacing `simp only [matrixA,
+   ...]` with an explicit `show` restating the goal in its target-
+   unfolded form directly (defeq-checked, not `simp`-normalized) —
+   critically, keeping `reduceMonomialModU p u0 u1 v0 v1 bi bj` as an
+   IDENTICAL, unreduced applied subterm on both sides of the `show`, so
+   defeq-checking can close that part by syntactic match without ever
+   unfolding `reduceMonomialModU`/`xmodUTable`'s body. The subsequent
+   `rw [if_neg ..., if_neg ..., if_true/if_neg ...]` chain (only
+   touching `matrixA`'s own three `row.val = _` conditions, never
+   `reduceMonomialModU`'s internals) is otherwise exactly what `row0`/
+   `row1`'s pattern predicted. **Lesson for any future row/entry
+   theorem that touches `reduceMonomialModU`/`xmodUTable` symbolically**
+   (non-literal `bi`/`bj`): never `simp only [matrixA]`/`unfold
+   reduceMonomialModU` directly — use `show` with the target already
+   unfolded, keeping `reduceMonomialModU`'s application opaque, and let
+   `rw`/`if_neg`/`if_pos` do only the `matrixA`-level `if`-chain work. -/
 
 end TheDataDerivation
 end Genus2Lean
