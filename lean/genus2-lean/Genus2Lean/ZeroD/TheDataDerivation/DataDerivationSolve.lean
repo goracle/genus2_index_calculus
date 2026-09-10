@@ -354,6 +354,155 @@ theorem rrBasis5_yIdx_eq : rrBasis5.getD yIdx (0, 0, 0) = (5, 0, 1) := by
   rw [hcast]
   simpa using hpred
 
+/-- **Every `bj=1` candidate in the full list has order `(5,0,1)` itself or
+order `≥ 7`.** Generalizes `rrBasis5_yIdx_eq`'s `hunique` (which was scoped
+to `bi=0 ∧ bj=1`) to ALL `bj=1` candidates regardless of `bi`: the
+`rrBasisCandidates`-`flatMap` only ever produces `bj=1` via its `(2i+5,i,1)`
+branch, so `i=0` gives `(5,0,1)` and `i≥1` gives order `2i+5≥7`. -/
+theorem rrBasisCandidates_bj_one_shape :
+    ∀ t ∈ rrBasisCandidates 20, t.2.2 = 1 → t = (5, 0, 1) ∨ 7 ≤ t.1 := by
+  intro t ht hbj
+  simp only [rrBasisCandidates, List.mem_flatMap, List.mem_range] at ht
+  obtain ⟨i, _, hti⟩ := ht
+  simp only [List.mem_cons, List.not_mem_nil, or_false] at hti
+  rcases hti with hti | hti
+  · exfalso; rw [hti] at hbj; simp at hbj
+  · rcases Nat.eq_zero_or_pos i with hi0 | hipos
+    · left; rw [hti, hi0]
+    · right; rw [hti]; simp only; omega
+
+/-- **Every `rrBasis5` element other than the one at `yIdx` has flag
+`bj = 0`.** The fact `rrBasis5_yIdx_eq`'s own docstring flagged as still
+needed for `Ypoly`'s degree bound ("`bj = 0` everywhere else ... ruling
+out `bj = 1` colliding at any other index"), now proved. Combines
+`rrBasisCandidates_bj_one_shape` (any `bj=1` candidate is `(5,0,1)` or has
+order `≥7`) with a sortedness argument ruling out the order-`≥7` case: five
+explicit, pairwise-distinct, order-`≤6` candidates already exist
+(`(0,0,0),(2,1,0),(4,2,0),(5,0,1),(6,3,0)`), so if a 6th, order-`≥7`
+candidate `t` also sat in the first 5 sorted positions (`rrBasis5 =
+s.take 5`), `List.Sorted.rel_of_mem_take_of_mem_drop` would force every one
+of those 5 witnesses to ALSO lie in `s.take 5` (an order-`≤6` witness
+sitting in `s.drop 5` would need `t.1 ≤` that witness's order via
+sortedness, contradicting `t.1 ≥ 7`) -- six distinct elements crammed into
+a 5-slot list, contradicting `Nodup`+`length`. Rules out the `t = (5,0,1)`
+case separately via `rrBasis5_yIdx_eq` plus `Nodup` (two positions with the
+same value in a `Nodup` list must coincide). -/
+theorem rrBasis5_bj_eq_zero_of_ne_yIdx (bidx : ℕ) (hbidx : bidx < 5) (hne : bidx ≠ yIdx) :
+    (rrBasis5.getD bidx (0, 0, 0)).2.2 = 0 := by
+  have hlen : rrBasis5.length = 5 := by
+    simp [rrBasis5, rrBasisCandidates, List.length_flatMap]
+  have hblt : bidx < rrBasis5.length := hlen ▸ hbidx
+  have htget : rrBasis5.getD bidx (0, 0, 0) = rrBasis5[bidx] := List.getD_eq_getElem _ _ hblt
+  have htmem : rrBasis5.getD bidx (0, 0, 0) ∈ rrBasis5 := by
+    rw [htget]; exact List.getElem_mem hblt
+  -- Abbreviate the element under study.
+  generalize ht : rrBasis5.getD bidx (0, 0, 0) = t at htget htmem ⊢
+  have hpairnodup : (rrBasisCandidates 20).Nodup := by
+    native_decide
+  have hmergeNodup : ((rrBasisCandidates 20).mergeSort
+      (fun a b => decide (a.1 ≤ b.1))).Nodup :=
+    (List.mergeSort_perm (rrBasisCandidates 20) (fun a b => decide (a.1 ≤ b.1))).nodup_iff.mpr
+      hpairnodup
+  have hsnodup5 : rrBasis5.Nodup := hmergeNodup.sublist (List.take_sublist 5 _)
+  have hsub : t ∈ rrBasisCandidates 20 := by
+    have ht' : t ∈ (rrBasisCandidates 20).mergeSort (fun a b => decide (a.1 ≤ b.1)) :=
+      List.mem_of_mem_take htmem
+    exact (List.mem_mergeSort).mp ht'
+  by_contra hbj
+  have hbj1 : t.2.2 = 1 := by
+    have := rrBasis5_flag t htmem
+    omega
+  rcases rrBasisCandidates_bj_one_shape t hsub hbj1 with heq | hge
+  · -- `t = (5,0,1) = rrBasis5.getD yIdx _`, so `bidx = yIdx` by `Nodup`.
+    have hyidx_val : rrBasis5.getD yIdx (0, 0, 0) = (5, 0, 1) := rrBasis5_yIdx_eq
+    have hylt : yIdx < rrBasis5.length := hlen ▸ yIdx_lt_five
+    have hyget : rrBasis5.getD yIdx (0, 0, 0) = rrBasis5[yIdx] :=
+      List.getD_eq_getElem _ _ hylt
+    have hval_eq : rrBasis5[bidx] = rrBasis5[yIdx] := by
+      rw [← htget, heq, ← hyget, hyidx_val]
+    exact hne ((List.Nodup.getElem_inj_iff hsnodup5).mp hval_eq)
+  · -- `t.1 ≥ 7`: five pairwise-distinct order-`≤6` candidates would then
+    -- all have to join `t` inside `rrBasis5` (the first 5 sorted slots),
+    -- six elements in a 5-slot `Nodup` list.
+    have hwit_nodup : ([(0,0,0), (2,1,0), (4,2,0), (5,0,1), (6,3,0)] :
+        List (ℕ × ℕ × ℕ)).Nodup := by decide
+    have hwit_facts : ∀ w ∈ ([(0,0,0), (2,1,0), (4,2,0), (5,0,1), (6,3,0)] :
+        List (ℕ × ℕ × ℕ)), w ∈ rrBasisCandidates 20 ∧ w.1 ≤ 6 := by
+      intro w hw
+      fin_cases hw <;> exact ⟨by decide, by norm_num⟩
+    have hs : List.Pairwise (fun a b => decide (a.1 ≤ b.1) = true)
+        ((rrBasisCandidates 20).mergeSort (fun a b => decide (a.1 ≤ b.1))) := by
+      apply List.pairwise_mergeSort
+      · intro a b c hab hbc
+        exact decide_eq_true (Nat.le_trans (of_decide_eq_true hab) (of_decide_eq_true hbc))
+      · intro a b
+        rcases Nat.le_total a.1 b.1 with h | h
+        · simp [decide_eq_true h]
+        · simp [decide_eq_true h]
+    have htake5 : t ∈ ((rrBasisCandidates 20).mergeSort
+        (fun a b => decide (a.1 ≤ b.1))).take 5 := htmem
+    have hwitness_in_take : ∀ w ∈ ([(0,0,0), (2,1,0), (4,2,0), (5,0,1), (6,3,0)] :
+        List (ℕ × ℕ × ℕ)),
+        w ∈ ((rrBasisCandidates 20).mergeSort (fun a b => decide (a.1 ≤ b.1))).take 5 := by
+      intro w hw
+      obtain ⟨hwcand, hworder⟩ := hwit_facts w hw
+      have hwmem : w ∈ (rrBasisCandidates 20).mergeSort (fun a b => decide (a.1 ≤ b.1)) :=
+        (List.mem_mergeSort).mpr hwcand
+      by_contra hwnottake
+      have hwdrop : w ∈ ((rrBasisCandidates 20).mergeSort
+          (fun a b => decide (a.1 ≤ b.1))).drop 5 := by
+        have hsplit := List.take_append_drop 5 ((rrBasisCandidates 20).mergeSort
+          (fun a b => decide (a.1 ≤ b.1)))
+        rw [← hsplit, List.mem_append] at hwmem
+        tauto
+      have hrel := hs.rel_of_mem_take_of_mem_drop htake5 hwdrop
+      have hle : t.1 ≤ w.1 := of_decide_eq_true hrel
+      omega
+    have hsub6 : ([(0,0,0), (2,1,0), (4,2,0), (5,0,1), (6,3,0), t] :
+        List (ℕ × ℕ × ℕ)).Nodup := by
+      have h0 : (0,0,0) ≠ t := by
+        intro h
+        have hfirst := congrArg Prod.fst h
+        omega
+      have h1 : (2,1,0) ≠ t := by
+        intro h
+        have hfirst := congrArg Prod.fst h
+        omega
+      have h2 : (4,2,0) ≠ t := by
+        intro h
+        have hfirst := congrArg Prod.fst h
+        omega
+      have h3 : (5,0,1) ≠ t := by
+        intro h
+        have hfirst := congrArg Prod.fst h
+        omega
+      have h4 : (6,3,0) ≠ t := by
+        intro h
+        have hfirst := congrArg Prod.fst h
+        omega
+      simp [List.nodup_cons, h0, h1, h2, h3, h4]
+    have hsub6mem : ([(0,0,0), (2,1,0), (4,2,0), (5,0,1), (6,3,0), t] :
+        List (ℕ × ℕ × ℕ)) ⊆ ((rrBasisCandidates 20).mergeSort
+          (fun a b => decide (a.1 ≤ b.1))).take 5 := by
+      intro w hw
+      simp only [List.mem_cons, List.not_mem_nil, or_false] at hw
+      rcases hw with h | h | h | h | h | h
+      · exact h ▸ hwitness_in_take _ (by simp)
+      · exact h ▸ hwitness_in_take _ (by simp)
+      · exact h ▸ hwitness_in_take _ (by simp)
+      · exact h ▸ hwitness_in_take _ (by simp)
+      · exact h ▸ hwitness_in_take _ (by simp)
+      · exact h ▸ htake5
+    have hsubperm : ([(0,0,0), (2,1,0), (4,2,0), (5,0,1), (6,3,0), t] :
+        List (ℕ × ℕ × ℕ)).Subperm (((rrBasisCandidates 20).mergeSort
+          (fun a b => decide (a.1 ≤ b.1))).take 5) :=
+      List.Nodup.subperm hsub6 hsub6mem
+    have hlen6 : ([(0,0,0), (2,1,0), (4,2,0), (5,0,1), (6,3,0), t] :
+        List (ℕ × ℕ × ℕ)).length ≤ (((rrBasisCandidates 20).mergeSort
+          (fun a b => decide (a.1 ≤ b.1))).take 5).length := hsubperm.length_le
+    simp only [List.length_cons, List.length_take] at hlen6
+    omega
+
 theorem otherIdx_length : otherIdx.length = 4 := by
   have hy := yIdx_lt_five
   have hy_cases : yIdx = 0 ∨ yIdx = 1 ∨ yIdx = 2 ∨ yIdx = 3 ∨ yIdx = 4 := by omega
