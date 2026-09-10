@@ -142,24 +142,175 @@ theorem algebraMap_Fp_isRdecWitness {Vars : Type*}
   -- `MvPolynomial.C_natCast`/an equivalent `simp` normal form).
   simp only [map_natCast, map_one, one_mul]
 
+/-! ## Step A: `Ypoly = C (coeffsOut yIdx)` outright
+
+**Route**: reuses `Ypoly_natDegree_le_zero`'s own proof shape
+(`DecoupledSystemRegular.lean`) — `yIdx = 3` via `rrBasis5_yIdx_eq` plus
+`interval_cases`/`native_decide`, then `Finset.sum_eq_single` collapses
+`Ypoly`'s `Fin 5` sum to its single `bj = 1` summand (every other index
+ruled out via `fin_cases bidx <;> native_decide` against `rrBasis5`'s
+literal five entries) — but stops one step earlier, at the EQUATION
+`Ypoly = C (coeffsOut yIdx)` itself, rather than pushing on to a
+`natDegree` bound. That equation is the reusable fact `Ypoly.coeff k`'s
+`IsRdecWitness` bound (below) actually needs; `Ypoly_natDegree_le_zero`
+proves a strictly weaker consequence of it inline and does not export the
+equation itself, hence re-derived here rather than imported. -/
+
+theorem Ypoly_eq_C_coeffsOut (c0 c1 c2 c3 c4 u0 u1 v0 v1 : F p) :
+    Ypoly p c0 c1 c2 c3 c4 u0 u1 v0 v1 =
+      C (coeffsOut p c0 c1 c2 c3 c4 u0 u1 v0 v1
+        (⟨3, by norm_num⟩ : Fin 5)) := by
+  have hlen : rrBasis5.length = 5 := by
+    simp [rrBasis5, rrBasisCandidates, List.length_flatMap]
+  have hylt : yIdx < rrBasis5.length := hlen ▸ yIdx_lt_five
+  have hyidx : yIdx = 3 := by
+    have hylt5 : yIdx < 5 := hylt.trans_eq hlen
+    have hyidxeq := rrBasis5_yIdx_eq
+    interval_cases yIdx <;> revert hyidxeq <;> native_decide
+  -- `yidx5` is `⟨yIdx, _⟩` (matching `rrBasis5_yIdx_eq`'s own indexing
+  -- exactly, no `.val` mismatch to bridge), with `hyidx5_three`
+  -- separately recording its numeral value for the theorem statement's
+  -- own `⟨3, _⟩` literal.
+  set yidx5 : Fin 5 := ⟨yIdx, yIdx_lt_five⟩ with hyidx5_def
+  have hyidx5_three : yidx5 = (⟨3, by norm_num⟩ : Fin 5) := by
+    apply Fin.ext; simpa [yidx5] using hyidx
+  have hsingle : ∀ bidx : Fin 5, bidx ≠ yidx5 →
+      (let (_, bi, bj) := rrBasis5.getD bidx.val (0, 0, 0)
+       if bj = 1 then C (coeffsOut p c0 c1 c2 c3 c4 u0 u1 v0 v1 bidx) *
+         (X : Polynomial (K2 p c0 c1 c2 c3 c4)) ^ bi else 0) = 0 := by
+    intro bidx hne
+    have hcases3 : bidx = (⟨3, by norm_num⟩ : Fin 5) ∨
+        (rrBasis5.getD bidx.val (0, 0, 0)).2.2 ≠ 1 := by
+      fin_cases bidx <;> native_decide
+    have hcases : bidx = yidx5 ∨ (rrBasis5.getD bidx.val (0, 0, 0)).2.2 ≠ 1 := by
+      rcases hcases3 with h | h
+      · left; simpa [hyidx5_three] using h
+      · exact Or.inr h
+    rcases hcases with h | h
+    · exact absurd h hne
+    · dsimp; rw [if_neg h]
+  have hcollapse : Ypoly p c0 c1 c2 c3 c4 u0 u1 v0 v1 =
+      (let (_, bi, bj) := rrBasis5.getD yidx5.val (0, 0, 0)
+       if bj = 1 then C (coeffsOut p c0 c1 c2 c3 c4 u0 u1 v0 v1 yidx5) *
+         (X : Polynomial (K2 p c0 c1 c2 c3 c4)) ^ bi else 0) := by
+    unfold Ypoly
+    exact Finset.sum_eq_single yidx5 (fun bidx _ hne => hsingle bidx hne)
+      (fun h => absurd (Finset.mem_univ _) h)
+  rw [hcollapse]
+  show (let (_, bi, bj) := rrBasis5.getD yidx5.val (0, 0, 0)
+      if bj = 1 then C (coeffsOut p c0 c1 c2 c3 c4 u0 u1 v0 v1 yidx5) *
+        (X : Polynomial (K2 p c0 c1 c2 c3 c4)) ^ bi else 0) =
+      C (coeffsOut p c0 c1 c2 c3 c4 u0 u1 v0 v1 (⟨3, by norm_num⟩ : Fin 5))
+  rw [show yidx5.val = yIdx from rfl, rrBasis5_yIdx_eq]
+  simp [hyidx5_three]
+
+/-- **`Ypoly.coeff k`'s `IsRdecWitness` bound.** Immediate corollary of
+`Ypoly_eq_C_coeffsOut`: `Ypoly = C (coeffsOut yIdx) * X ^ 0` (`pow_zero`/
+`mul_one`), so `coeff_C_mul`/`coeff_X_pow` (the established combination
+this project's `CAWitness*.lean` family already uses via `simp`, not the
+unconfirmed `Polynomial.coeff_C_mul_X`) give `Ypoly.coeff k = if k = 0
+then coeffsOut yIdx else 0` outright — no `Finset.antidiagonal`/`coeff_pow`
+machinery needed at all (that's `Npoly.coeff k`'s own later problem, not
+`Ypoly`'s). **`coeffsOut yIdx = 1` on the nose** (`coeffsOut`'s own
+`dif_pos` branch, since `(⟨3,_⟩ : Fin 5).val = yIdx` by `Ypoly_eq_C_
+coeffsOut`'s own already-proved `hyidx`-equivalent fact, re-derived here
+rather than threaded through since `Ypoly_eq_C_coeffsOut` doesn't export
+it separately) — so the `k = 0` branch reduces to `IsRdecWitness _ 1 _`,
+inheriting `coeffsOut_yIdx_isRdecWitness`'s witness pair directly (that
+theorem is stated for the literal value `1`, matching after the `dif_pos`
+rewrite, bound `(384, 320)`, both `≤ 704`); the `k ≠ 0` branch gets the
+trivial zero-witness `(0, 1)` (`IsRdecWitness p ι evalNd 0 (0, 1)` reduces
+to `evalNd 0 = evalNd 1 * ι 0`, i.e. `0 = 0`, via `map_zero`/`map_one`/
+`mul_zero`), bound `(0, 0)` — both branches' bounds are `≤ 704` uniformly,
+so no `max`/case-split on the bound itself is needed downstream. -/
+theorem Ypoly_coeff_isRdecWitness {Vars : Type*} [DecidableEq Vars]
+    (u0 u1 v0 v1 : F p)
+    (ι : K2 p c0 c1 c2 c3 c4 →+* FractionRing (MvPolynomial Vars (F p)))
+    (k : ℕ) :
+    ∃ nd : MvPolynomial Vars (F p) × MvPolynomial Vars (F p),
+      IsRdecWitness p ι
+        (algebraMap (MvPolynomial Vars (F p)) (FractionRing (MvPolynomial Vars (F p))))
+        ((Ypoly p c0 c1 c2 c3 c4 u0 u1 v0 v1).coeff k) nd ∧
+      nd.1.totalDegree ≤ 704 ∧ nd.2.totalDegree ≤ 704 := by
+  have hlen : rrBasis5.length = 5 := by
+    simp [rrBasis5, rrBasisCandidates, List.length_flatMap]
+  have hylt : yIdx < rrBasis5.length := hlen ▸ yIdx_lt_five
+  have hyidx : yIdx = 3 := by
+    have hylt5 : yIdx < 5 := hylt.trans_eq hlen
+    have hyidxeq := rrBasis5_yIdx_eq
+    interval_cases yIdx <;> revert hyidxeq <;> native_decide
+  have hcoeffsOut_one : coeffsOut p c0 c1 c2 c3 c4 u0 u1 v0 v1 (⟨3, by norm_num⟩ : Fin 5) = 1 := by
+    unfold coeffsOut
+    rw [dif_pos (show ((⟨3, by norm_num⟩ : Fin 5) : Fin 5).val = yIdx from hyidx.symm)]
+  have hYeq : Ypoly p c0 c1 c2 c3 c4 u0 u1 v0 v1 = C (1 : K2 p c0 c1 c2 c3 c4) * X ^ 0 := by
+    rw [pow_zero, mul_one, ← hcoeffsOut_one]
+    exact Ypoly_eq_C_coeffsOut p c0 c1 c2 c3 c4 u0 u1 v0 v1
+  rw [hYeq]
+  rcases eq_or_ne k 0 with hk | hk
+  · have hck : (C (1 : K2 p c0 c1 c2 c3 c4) * X ^ 0).coeff k = 1 := by
+      subst hk; simp [coeff_C_mul, coeff_X_pow]
+    rw [hck]
+    obtain ⟨nd, hwit, hn, hd⟩ := coeffsOut_yIdx_isRdecWitness p c0 c1 c2 c3 c4 ι
+    exact ⟨nd, hwit, hn.trans (by norm_num), hd.trans (by norm_num)⟩
+  · have hck : (C (1 : K2 p c0 c1 c2 c3 c4) * X ^ 0).coeff k = 0 := by
+      simp [coeff_C_mul, coeff_X_pow, hk, Ne.symm hk, Polynomial.coeff_one]
+    rw [hck]
+    exact ⟨(0, 1), by unfold IsRdecWitness; simp, by simp, by simp⟩
+
 /-! ## Status, this pass
 
 **Drafted, not yet REPL-confirmed.** Lands `IsRdecWitness.add` (the
 missing addition combinator, alongside the already-proved `.mul`/`.neg`/
-`.div`) and `algebraMap_Fp_isRdecWitness` (the constant-embedding
-witness `fAtX`'s coefficients need, unconditional on `ι` beyond being a
-ring hom — proved via the same `ZMod.natCast_zmod_surjective` argument
+`.div`), `algebraMap_Fp_isRdecWitness` (the constant-embedding witness
+`fAtX`'s coefficients need, unconditional on `ι` beyond being a ring
+hom — proved via the same `ZMod.natCast_zmod_surjective` argument
 `towerToRdec_spec`'s own `hcomp` step already relies on,
-`DataDerivationMumford.lean`).
+`DataDerivationMumford.lean`), `Ypoly_eq_C_coeffsOut` (`Ypoly`'s exact
+value as a single `C (coeffsOut _)` term, re-derived from `Ypoly_
+natDegree_le_zero`'s own proof shape, `DecoupledSystemRegular.lean`), and
+(this pass, new) `Ypoly_coeff_isRdecWitness` — `Ypoly.coeff k`'s
+`IsRdecWitness` bound, closing item A's `Ypoly` half in full: `Ypoly =
+C 1 * X ^ 0` (`coeffsOut yIdx = 1` on the nose, via `coeffsOut`'s own
+`dif_pos` branch once `yIdx = 3` is known), so `coeff_C_mul`/`coeff_X_pow`
+gives `Ypoly.coeff k = if k = 0 then 1 else 0` outright, and the two
+branches get `coeffsOut_yIdx_isRdecWitness`'s witness (weakened from its
+own `≤384/≤320` bound to `≤704` both sides, matching this file's other
+theorems' shared numeral) and the trivial `(0,1)` zero-witness
+respectively.
 
-**What this does NOT yet close**: the actual `Npoly.coeff k`
-`IsRdecWitness`/`totalDegree` bound — needs (step A, unattempted) that
-`Epoly.coeff k`/`Ypoly.coeff k` each collapse to a single `coeffsOut`
-slot or `0`, and (step 3's remaining half, unattempted) unrolling
-`Polynomial.coeff_pow`/`coeff_mul`'s `Finset.antidiagonal`-indexed sums
-through repeated `IsRdecWitness.add`/`.mul` applications. Scoped in this
-file's header rather than attempted this pass, given the size — the
-next concrete step, not a separate unmeasured risk. -/
+**One risk flagged, not independently confirmed against this Mathlib
+snapshot**: `hcoeffsOut_one`'s `unfold coeffsOut; rw [dif_pos ...]` step
+assumes `unfold` exposes the `dif_pos`/`dif_neg` match in a form `rw`
+can rewrite directly — this project's own `coeffsOut` definition uses a
+dependent `if hy : ... then ... else ...` (Lean 4's `dite`), and whether
+a bare `unfold` here needs an accompanying `dsimp only` first to beta-
+reduce the resulting term into `dif_pos`-rewritable shape was not
+checked against an actual build. If `rw [dif_pos ...]` fails to fire,
+the likely fix is `simp only [coeffsOut, dif_pos ...]` in place of the
+two-step `unfold`/`rw`, following this file's own established pattern
+elsewhere (`hlen`'s `simp [rrBasis5, rrBasisCandidates, ...]` unfolds a
+`def` and computes in one `simp` call rather than `unfold` then a
+separate tactic) — flagged rather than silently assumed to work.
+
+**What this does NOT yet close**:
+1. `Epoly.coeff k`'s analogous fact — genuinely harder than `Ypoly`'s,
+   since FOUR `bj = 0` slots survive (not one), so no single
+   `Finset.sum_eq_single` collapse applies; needs either a full
+   `Epoly = C(_) + C(_)*X + C(_)*X^2 + C(_)*X^3` expansion (via
+   `rrBasis5`'s four `bj = 0` entries, `bi ∈ {0,1,2,3}` all distinct, so
+   `coeff k` picks out at most one nonzero term by `bi = k`) or a
+   `Finset.sum` argument keyed on `bi = k` rather than `bidx = yidx5` —
+   not attempted this pass.
+2. Step 3 (`Npoly.coeff k`'s own `IsRdecWitness`, unrolling
+   `Polynomial.coeff_pow`/`coeff_mul`'s `Finset.antidiagonal`-indexed sums
+   through repeated `IsRdecWitness.add`/`.mul` applications, built on
+   `Epoly`/`Ypoly`/`fAtX`'s coefficient witnesses) — unattempted,
+   unchanged from before this pass.
+
+Scoped precisely here rather than attempted in one oversized theorem —
+per this project's own 50-line-per-theorem guideline, `Epoly`'s four-slot
+case is a genuinely different (not just longer) argument and deserves
+its own theorem, not a hasty extension of this file's `Ypoly` work. -/
 
 end TheDataDerivation
 end Genus2Lean
