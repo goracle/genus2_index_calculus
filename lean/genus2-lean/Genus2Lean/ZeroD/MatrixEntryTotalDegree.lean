@@ -12,21 +12,24 @@ notes flag (`ROADMAP-crossnondegenerate-degree-bound.md`'s item 1/2):
 threading `anchor1`/`anchor2`'s `towerToRdec` bounds through `matrixA`'s
 `px ^ bi * (py or 1)` shape and `reduceMonomialModU`'s constant rows.
 
-**This file supplies the pieces, not yet the full `matrixA`/`rhsVec`
-entry theorem itself**: `matrixA`/`rhsVec`'s actual `let`/`if`-laden
-definitions (`DataDerivationSolve.lean`) need `unfold`+`simp only`-style
-unfolding whose exact shape is only safely pinned down against a real
-build (`CramerEntryTotalDegree.lean`'s own status note documents several
-`let`-elaboration surprises hit this way) — assembling the final entry
-theorem is left to a following pass once these pieces are confirmed, per
-this project's "small pieces before assembling" discipline.
+**This file supplies the pieces AND, as of pass #5, a first assembled
+entry theorem** (`matrixA_entry_totalDegree_le`, covering `matrixA row
+col` for any `row : Fin 4`) — see below for its confirmation status.
+`rhsVec`'s own entry theorem is NOT attempted here: `rhsVec`'s row-0/1
+split uses a different unfolding shape (`Vector`-indexed lookup via `if
+h : row.val < 2 then ... pxy ⟨row.val,h⟩ ...`, not `matrixA`'s sequential
+`if row.val = 0 then ... else if row.val = 1 ...` chain) and its own
+`bi_n`/`bj_n` are FIXED from `rrBasis5.getD yIdx (0,1,1)` rather than
+`col`-dependent — genuinely separate work, not a copy of this file's
+`matrixA` pattern, left for a following pass.
 
 **REPL-confirmed through at least one full build pass** (see "Status,
 latest pass" below for the errors that build surfaced and how they were
-fixed) — not a guarantee every theorem in this file is final: `row = 0`
-and `row = 1` are both REPL-confirmed green; `row = 2`/`row = 3` have had
-one real build error reported (a heartbeat timeout, not an unsolved-goal
-error — fix #9, below) and fixed, pending Claire's re-confirmation.
+fixed) — not a guarantee every theorem in this file is final: `matrixA_
+row0`–`row3_totalDegree_le` are all REPL-confirmed green (`row2`/`row3`
+needed both a `show`-based `hentry` fix AND a raised heartbeat limit,
+fix #9 below); `matrixA_entry_totalDegree_le` (the assembly theorem) is
+drafted (pass #5, below) but NOT yet sent to the REPL.
 -/
 
 namespace Genus2Lean
@@ -536,6 +539,53 @@ theorem matrixA_row3_totalDegree_le {Vars : Type*} [DecidableEq Vars]
   · exact le_trans (algebraMap_Fp_towerToRdec_totalDegree_eq p c0 c1 c2 c3 c4 sg _).2
       (by norm_num)
 
+/-! ## `matrixA`'s full entry theorem: assembling rows 0–3
+
+The piece this file's own header flagged from the start as the remaining
+work ("this file supplies the pieces, not yet the full `matrixA`/`rhsVec`
+entry theorem itself") — now that all four row-specific theorems above
+(`matrixA_row0`–`matrixA_row3_totalDegree_le`) are REPL-confirmed green,
+assembling them into one theorem dispatched over `row : Fin 4` is pure
+case-split, no new unfolding risk: each case is exactly one of the four
+already-proved theorems, applied verbatim. -/
+
+/-- **`matrixA row col`'s value, for ANY `row : Fin 4`, has an explicit
+`IsRdecWitness` pair with a `totalDegree` bound `≤24`/`≤20`.** Dispatches
+on `row.val` (`interval_cases` against `row.isLt : row.val < 4`) to the
+four row-specific theorems above — `row.val = 0`/`1` need `hbidx` (only
+those two theorems use it, via `rrBasis5_getD_bi_le_three`), `row.val =
+2`/`3` don't (unused hypothesis, harmless to carry through all four
+cases uniformly). Restates each case's own `matrixA p ... ⟨row.val,
+_⟩ col` conclusion against the ambient `row` via `Fin.eta`/`show`, since
+`interval_cases` leaves `row.val` as a literal but the goal is stated in
+terms of `row` itself. -/
+theorem matrixA_entry_totalDegree_le {Vars : Type*} [DecidableEq Vars]
+    (sg : SideGens Vars) (u0 u1 v0 v1 : F p) (row col : Fin 4)
+    (ι : K2 p c0 c1 c2 c3 c4 →+* FractionRing (MvPolynomial Vars (F p)))
+    (hι_t : ∀ i : Fin 2, ι (algebraMap (K1 p c0 c1 c2 c3 c4) (K2 p c0 c1 c2 c3 c4)
+        (algebraMap (K0 p) (K1 p c0 c1 c2 c3 c4)
+          (algebraMap (MvPolynomial (Fin 2) (F p)) (K0 p) (MvPolynomial.X i)))) =
+      algebraMap (MvPolynomial Vars (F p)) (FractionRing (MvPolynomial Vars (F p)))
+        (MvPolynomial.X (sg.tGen i)))
+    (hι_w1 : ι (algebraMap (K1 p c0 c1 c2 c3 c4) (K2 p c0 c1 c2 c3 c4) (w1 p c0 c1 c2 c3 c4)) =
+      algebraMap (MvPolynomial Vars (F p)) (FractionRing (MvPolynomial Vars (F p)))
+        (MvPolynomial.X (sg.wGen 0)))
+    (hι_w2 : ι (w2 p c0 c1 c2 c3 c4) =
+      algebraMap (MvPolynomial Vars (F p)) (FractionRing (MvPolynomial Vars (F p)))
+        (MvPolynomial.X (sg.wGen 1)))
+    (hbidx : otherIdx.getD col.val 0 < 5) :
+    ∃ nd : MvPolynomial Vars (F p) × MvPolynomial Vars (F p),
+      IsRdecWitness p ι
+        (algebraMap (MvPolynomial Vars (F p)) (FractionRing (MvPolynomial Vars (F p))))
+        (matrixA p c0 c1 c2 c3 c4 u0 u1 v0 v1 row col)
+        nd ∧ nd.1.totalDegree ≤ 24 ∧ nd.2.totalDegree ≤ 20 := by
+  obtain ⟨rv, hrv⟩ := row
+  interval_cases rv
+  · exact matrixA_row0_totalDegree_le p c0 c1 c2 c3 c4 sg u0 u1 v0 v1 col ι hι_t hι_w1 hι_w2 hbidx
+  · exact matrixA_row1_totalDegree_le p c0 c1 c2 c3 c4 sg u0 u1 v0 v1 col ι hι_t hι_w1 hι_w2 hbidx
+  · exact matrixA_row2_totalDegree_le p c0 c1 c2 c3 c4 sg u0 u1 v0 v1 col ι hι_t hι_w1 hι_w2
+  · exact matrixA_row3_totalDegree_le p c0 c1 c2 c3 c4 sg u0 u1 v0 v1 col ι hι_t hι_w1 hι_w2
+
 /-! ## Status, latest pass
 
 **Attempted this pass**: `matrixA_row0_totalDegree_le`, the `row = 0`
@@ -723,7 +773,36 @@ branch widens.
    (non-literal `bi`/`bj`): never `simp only [matrixA]`/`unfold
    reduceMonomialModU` directly — use `show` with the target already
    unfolded, keeping `reduceMonomialModU`'s application opaque, and let
-   `rw`/`if_neg`/`if_pos` do only the `matrixA`-level `if`-chain work. -/
+   `rw`/`if_neg`/`if_pos` do only the `matrixA`-level `if`-chain work.
+   **Correction on what actually shipped**: Claire's green build kept
+   this `show`-based `hentry` fix AND additionally added `set_option
+   maxHeartbeats 2000000 in` immediately above both `matrixA_row2_
+   totalDegree_le`/`matrixA_row3_totalDegree_le` — i.e. the `show` fix
+   alone was not sufficient on its own to guarantee headroom, and the
+   heartbeat limit was raised as well (per this project's own stated
+   order of operations: unroll/simplify first, THEN raise the limit —
+   both were needed here, not either alone).
+
+**Drafted this pass #5, NOT yet REPL-confirmed**: `matrixA_entry_
+totalDegree_le`, the assembly theorem this file's own header has flagged
+as the remaining work since pass #1 — combines `matrixA_row0`–`row3_
+totalDegree_le` (all four now REPL-confirmed green) into one theorem
+covering `matrixA row col` for ANY `row : Fin 4`, not just a literal
+`⟨0,_⟩`/`⟨1,_⟩`/`⟨2,_⟩`/`⟨3,_⟩`. Dispatches via `obtain ⟨rv, hrv⟩ := row;
+interval_cases rv`, four cases, each closed by `exact`ing the
+corresponding row-specific theorem directly — no new mathematical
+content, pure case-split assembly, so the risk here should be low
+relative to the `hentry`-unfolding work in the row theorems themselves.
+**The one place this is still genuinely unconfirmed**: whether `exact`
+unifies each case's goal (stated in terms of the destructured `⟨rv,
+hrv⟩` with whatever proof term `interval_cases` leaves for `hrv`)
+against each row theorem's own conclusion (stated with `⟨0, by
+norm_num⟩`-style literals) — this should hold by `Prop` proof
+irrelevance on `Fin`'s bound argument (`Fin.mk n h₁` and `Fin.mk n h₂`
+are defeq for any two proofs `h₁ h₂ : n < 4`), but per this file's own
+repeated experience with `hentry`'s unfolding, treat any "should hold by
+defeq" claim as unconfirmed until Claire's REPL says otherwise, not as
+settled. -/
 
 end TheDataDerivation
 end Genus2Lean
