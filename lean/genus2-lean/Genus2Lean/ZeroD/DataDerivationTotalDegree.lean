@@ -1250,56 +1250,139 @@ theorem t0_totalDegree_le {Vars : Type*} (sg : SideGens Vars) (i : Fin 2) :
     (b := (1 : MvPolynomial (Fin 2) (F p))) one_ne_zero (MvPolynomial.X_ne_zero i) hv
   rwa [MvPolynomial.totalDegree_X, MvPolynomial.totalDegree_one] at hbound
 
+/-! ## `K1 → K2` analog: reaching `t1`/`t2` themselves
+
+One tower level up from the previous section. `anchor1.1`/`anchor2.1` (`t1`/`t2`,
+`DataDerivationSolve.lean`) are each `algebraMap (K1 p ...) (K2 p ...) w` for `w`
+itself an `algebraMap (K0 p) (K1 p ...) (t0 p i)` — so bounding `towerToRdec p sg
+t1`/`t2` needs this section's `towerToRdec_algebraMap_totalDegree_le` applied on top
+of the previous section's `towerToRdecK1_algebraMap_totalDegree_le`. The proof shape
+is identical to the `K0 → K1` step (`modByMonicHom_algebraMap_eq_C`/
+`towerToRdecK1_algebraMap_totalDegree_le`), with `K2_poly_monic`/`towerToRdec_
+totalDegree_le` in place of `K1_poly_monic`/`towerToRdecK1_totalDegree_le` — EXCEPT
+for the `1 ≤ D` side-hypothesis flagged in the previous status note, needed because
+`towerToRdecK1 p sg (0 : K1 p ...)`'s own cost is `≤ 1`/`≤ 0` (`towerToRdecK1_zero_
+one_totalDegree_le`'s `+1` structural offset from `combine_totalDegree_le`'s
+`X (wGen 0)` term), not `≤ 0`/`≤ 0` the way `baseFracToRing p sg 0` is at the base
+level — so `D` must be large enough to cover BOTH `w`'s own bound and this `≤ 1`
+floor. -/
+
+set_option maxHeartbeats 2000000 in
+/-- **`algebraMap`'s normal form is the constant polynomial, one level up.**
+Identical proof to `modByMonicHom_algebraMap_eq_C`, against `K2_poly_monic`/
+`K1 p ... → K2 p ...` instead of `K1_poly_monic`/`K0 p → K1 p ...`. -/
+theorem modByMonicHom_algebraMap_eq_C' (c0 c1 c2 c3 c4 : F p) (w : K1 p c0 c1 c2 c3 c4) :
+    (AdjoinRoot.modByMonicHom (K2_poly_monic p c0 c1 c2 c3 c4)
+      (algebraMap (K1 p c0 c1 c2 c3 c4) (K2 p c0 c1 c2 c3 c4) w) :
+      Polynomial (K1 p c0 c1 c2 c3 c4)) = C w := by
+  have hposdeg : 0 <
+      (X ^ 2 - C (algebraMap (K0 p) (K1 p c0 c1 c2 c3 c4) (fAtT p c0 c1 c2 c3 c4 1)) :
+        Polynomial (K1 p c0 c1 c2 c3 c4)).natDegree := by
+    rw [Polynomial.natDegree_X_pow_sub_C]; norm_num
+  have h1 : (AdjoinRoot.modByMonicHom (K2_poly_monic p c0 c1 c2 c3 c4)
+      (1 : K2 p c0 c1 c2 c3 c4) : Polynomial (K1 p c0 c1 c2 c3 c4)) = 1 := by
+    have hmk1 : (1 : K2 p c0 c1 c2 c3 c4) =
+        AdjoinRoot.mk (X ^ 2 - C (algebraMap (K0 p) (K1 p c0 c1 c2 c3 c4)
+            (fAtT p c0 c1 c2 c3 c4 1)) : Polynomial (K1 p c0 c1 c2 c3 c4)) (C 1) := by
+      rw [Polynomial.C_1, map_one]
+    rw [hmk1, AdjoinRoot.modByMonicHom_mk,
+      C_modByMonic_eq_self_of_natDegree_pos (K2_poly_monic p c0 c1 c2 c3 c4) hposdeg,
+      Polynomial.C_1]
+  rw [Algebra.algebraMap_eq_smul_one w, map_smul, h1, Polynomial.smul_eq_C_mul, mul_one]
+
+/-- **`towerToRdec`'s bound at an `algebraMap`-lifted `w : K1 p ...`**, generalizing
+`towerToRdec_totalDegree_le` the same way `towerToRdecK1_algebraMap_totalDegree_le`
+generalizes `towerToRdecK1_totalDegree_le`. The extra `hD : 1 ≤ D` hypothesis (absent
+from the `K0 → K1` version) is exactly the side-condition flagged in the section
+comment above: `D` has to dominate both `w`'s own bound (`hw`) and `towerToRdecK1
+p sg (0 : K1 p ...)`'s fixed `≤ 1`/`≤ 0` cost (`towerToRdecK1_zero_one_totalDegree_
+le`), so it cannot be taken smaller than `1` regardless of how good `hw` is. -/
+theorem towerToRdec_algebraMap_totalDegree_le {Vars : Type*} (sg : SideGens Vars)
+    (c0 c1 c2 c3 c4 : F p) {D : ℕ} (hD : 1 ≤ D) (w : K1 p c0 c1 c2 c3 c4)
+    (hw : (towerToRdecK1 p sg w).1.totalDegree ≤ D ∧
+      (towerToRdecK1 p sg w).2.totalDegree ≤ D) :
+    (towerToRdec p sg
+        (algebraMap (K1 p c0 c1 c2 c3 c4) (K2 p c0 c1 c2 c3 c4) w)).1.totalDegree ≤
+      2 * D + 1 ∧
+    (towerToRdec p sg
+        (algebraMap (K1 p c0 c1 c2 c3 c4) (K2 p c0 c1 c2 c3 c4) w)).2.totalDegree ≤
+      2 * D := by
+  have hzero1 := towerToRdecK1_zero_one_totalDegree_le p sg c0 c1 c2 c3 c4
+  have heq := modByMonicHom_algebraMap_eq_C' p c0 c1 c2 c3 c4 w
+  have hc0 : (C w : Polynomial (K1 p c0 c1 c2 c3 c4)).coeff 0 = w := Polynomial.coeff_C_zero
+  have hc1 : (C w : Polynomial (K1 p c0 c1 c2 c3 c4)).coeff 1 = 0 :=
+    Polynomial.coeff_eq_zero_of_natDegree_lt (by rw [Polynomial.natDegree_C]; norm_num)
+  refine towerToRdec_totalDegree_le p c0 c1 c2 c3 c4 sg
+    (algebraMap (K1 p c0 c1 c2 c3 c4) (K2 p c0 c1 c2 c3 c4) w) ⟨?_, ?_, ?_, ?_⟩
+  · rw [heq, hc0]; exact hw.1
+  · rw [heq, hc0]; exact hw.2
+  · rw [heq, hc1]; exact hzero1.1.trans hD
+  · rw [heq, hc1]; exact hzero1.2.1.trans (Nat.zero_le D)
+
+/-- **`t1`/`t2` themselves.** Chains `t0_totalDegree_le` (base case, `i ∈ {0,1}`),
+`towerToRdecK1_algebraMap_totalDegree_le` (`K0 → K1`, at `D := 1` since `t0 p i`'s
+own bound is `≤ 1`/`≤ 0`, giving `towerToRdecK1`'s output `≤ 3`/`≤ 2`), and
+`towerToRdec_algebraMap_totalDegree_le` (`K1 → K2`, at `D := 3` — dominates both the
+`K0 → K1` step's `≤ 3`/`≤ 2` output and the required `1 ≤ D` floor) to bound
+`towerToRdec p sg` applied to `algebraMap (K1 p ...) (K2 p ...) (algebraMap (K0 p)
+(K1 p ...) (t0 p i))`, i.e. `anchor1.1`/`anchor2.1` unfolded (`anchor1`/`anchor2`,
+`DataDerivationSolve.lean`) — the two anchor points' own promotion chain, verbatim. -/
+theorem t0_promoted_totalDegree_le {Vars : Type*} (sg : SideGens Vars)
+    (c0 c1 c2 c3 c4 : F p) (i : Fin 2) :
+    (towerToRdec p sg
+        (algebraMap (K1 p c0 c1 c2 c3 c4) (K2 p c0 c1 c2 c3 c4)
+          (algebraMap (K0 p) (K1 p c0 c1 c2 c3 c4) (t0 p i)))).1.totalDegree ≤ 7 ∧
+    (towerToRdec p sg
+        (algebraMap (K1 p c0 c1 c2 c3 c4) (K2 p c0 c1 c2 c3 c4)
+          (algebraMap (K0 p) (K1 p c0 c1 c2 c3 c4) (t0 p i)))).2.totalDegree ≤ 6 := by
+  have h0 := t0_totalDegree_le p sg i
+  have h1 := towerToRdecK1_algebraMap_totalDegree_le p sg c0 c1 c2 c3 c4 (t0 p i)
+    ⟨h0.1, h0.2.trans (Nat.zero_le 1)⟩
+  have h2 := towerToRdec_algebraMap_totalDegree_le p sg c0 c1 c2 c3 c4
+    (D := 3) (by norm_num) (algebraMap (K0 p) (K1 p c0 c1 c2 c3 c4) (t0 p i))
+    ⟨h1.1, h1.2.trans (by norm_num)⟩
+  exact h2
+
 /-! ## Status, this section
 
-**Drafted this pass, NOT yet REPL-confirmed** (no build environment available
-this session — per this project's convention, Claire runs all tests):
+**REPL-confirmed green this pass** (per report): every theorem in this file up
+through `t0_totalDegree_le`, including the previously-flagged-as-unconfirmed
 `X_modByMonic_eq_self_of_natDegree_eq_two`, `w1_modByMonicHom_eq_X`,
 `w2_modByMonicHom_eq_X`, `baseFracToRing_zero_one_totalDegree_eq_zero`,
 `towerToRdecK1_w1_totalDegree_le`, `towerToRdecK1_zero_one_totalDegree_le`,
 `modByMonicHom_algebraMap_eq_C`, `towerToRdecK1_algebraMap_totalDegree_le`,
-`t0_totalDegree_le`.
+`t0_totalDegree_le` — the two risks flagged in earlier passes (the exact
+Mathlib spelling of `baseFracToRing_zero_one_totalDegree_eq_zero`'s `simp` set
+and `towerToRdecK1_zero_one_totalDegree_le`'s `h1`) were non-issues in practice.
 
-**What this closes**: the roadmap's own flagged gap — "`w1`/`w2` ... needs
-checking against `AdjoinRoot.modByMonicHom_mk`/`AdjoinRoot.root`'s actual
-definition, not yet done this pass" (`ROADMAP-crossnondegenerate-degree-
-bound.md`). `w1`/`w2` contribute `totalDegree ≤ 1`/`≤ 0` (num/den) at the
-`towerToRdecK1`/`towerToRdec` level — genuinely the simplest possible
-nonzero case, as the roadmap predicted.
+**Drafted this pass, NOT yet REPL-confirmed**: `modByMonicHom_algebraMap_eq_C'`,
+`towerToRdec_algebraMap_totalDegree_le`, `t0_promoted_totalDegree_le` (the
+`K1 → K2` analog of the previous pass's `K0 → K1` step, flagged as the next
+step in that pass's own status note). Same proof shape and same Mathlib names
+as the already-confirmed `K0 → K1` versions, so risk should be low, but the
+extra `1 ≤ D` side-hypothesis (`towerToRdec_algebraMap_totalDegree_le`'s `hD`)
+is new machinery this pass hasn't seen a build for yet.
 
-**Risk flagged honestly**: `baseFracToRing_zero_one_totalDegree_eq_zero`'s
-proof (`simp` closing `IsFractionRing.num/den` at `0`/`1`) and `towerToRdecK1_
-zero_one_totalDegree_le`'s `h1` (`Polynomial.one_modByMonic_eq_self_of_
-natDegree_pos`, name not independently re-confirmed against this Mathlib
-snapshot this pass) are the two spots most likely to need a lemma-name fix
-once Claire's REPL reports the real error — the underlying math (`0`/`1`'s
-numerator/denominator are trivial; a low-degree polynomial that's already
-reduced mod a higher-degree monic divisor is unchanged) is not in question,
-only the exact Mathlib spelling.
+**What this section closes**: the previous pass's own flagged gap —
+reaching `t1 := (anchor1 p ...).1`/`t2 := (anchor2 p ...).1` themselves, one
+tower level above where `towerToRdecK1_algebraMap_totalDegree_le` stops.
+`t0_promoted_totalDegree_le` bounds `towerToRdec p sg` applied to `t0 p i`'s
+full two-step promotion (`algebraMap (K1 p ...) (K2 p ...) ∘ algebraMap (K0 p)
+(K1 p ...)`) by `≤ 7`/`≤ 6` — and since `anchor1`/`anchor2`'s own definitions
+(`DataDerivationSolve.lean`) show `(anchor1 p ...).1`/`(anchor2 p ...).1` ARE
+exactly this promotion chain applied to `t0 p 0`/`t0 p 1` respectively, `t1`/
+`t2`'s own `towerToRdec` bound is now `t0_promoted_totalDegree_le p sg c0 c1
+c2 c3 c4 0`/`1` directly (not restated as separate `anchor1_totalDegree_le`/
+`anchor2_totalDegree_le` theorems this pass, since that would just be an
+`unfold anchor1/anchor2` away from what's already here — low-value busywork
+until the next assembly step actually needs the `anchor1`/`anchor2` names in
+scope).
 
-**What this section adds**: `t0 p i`'s own `totalDegree` bound (`t0_totalDegree_le`)
-and the generalized `algebraMap`-lift step at the `K0 → K1` level
-(`modByMonicHom_algebraMap_eq_C`, `towerToRdecK1_algebraMap_totalDegree_le`), so
-`towerToRdecK1 p sg (algebraMap (K0 p) (K1 p ...) (t0 p i))`'s bound is now a proved
-theorem chain (`≤ 2*1+1 = 3` / `≤ 2*1 = 2`, via `towerToRdecK1_algebraMap_totalDegree_le`
-at `D := 1`), not only the prose argument `anchor1_ne_anchor2` sketches.
-**What this does NOT yet close**: the anchor points themselves, `t1 := (anchor1 p
-...).1`/`t2 := (anchor2 p ...).1`, live one tower level further up — each is
-`algebraMap (K1 p ...) (K2 p ...)` applied to the `K1`-element this section bounds,
-so reaching `towerToRdec p sg t1`/`t2`'s own bound needs the `K1 → K2` analog of
-`modByMonicHom_algebraMap_eq_C`/`towerToRdecK1_algebraMap_totalDegree_le`
-(same proof shape, one level up against `K2_poly_monic`/`towerToRdec_totalDegree_le`
-instead of `K1_poly_monic`/`towerToRdecK1_totalDegree_le` — but note the `D`-bound
-fed into `towerToRdec_totalDegree_le` there must also dominate `towerToRdecK1 p sg
-(0 : K1 p ...)`'s own cost, which is `≤ 1`/`≤ 0`, NOT `≤ 0`/`≤ 0` the way
-`baseFracToRing p sg 0` is at the base level — `towerToRdecK1`'s own `+1` structural
-offset from `combine_totalDegree_le`'s `X (wGen 0)` term means the `K1 → K2` step
-needs an extra `1 ≤ D` side-hypothesis that the `K0 → K1` step above did not, flagged
-here rather than glossed over). Not attempted this pass. Beyond that: raising
-`t1`/`t2` to powers `bi ≤ 3` (`MvPolynomial.totalDegree_mul`/`_pow`, mechanical once
-`t1`/`t2`'s own bound is in hand) and `reduceMonomialModU`'s `F p`-valued output
-(`totalDegree 0` via `algebraMap`/`MvPolynomial.totalDegree_C`, immediate). Assembling
-`matrixA`/`rhsVec`'s full entrywise bound, then feeding it through
+**What this does NOT yet close**: raising `t1`/`t2` to powers `bi ≤ 3`
+(`MvPolynomial.totalDegree_mul`/`_pow`, mechanical now that `t1`/`t2`'s own
+bound is a proved theorem) and `reduceMonomialModU`'s `F p`-valued output
+(`totalDegree 0` via `algebraMap`/`MvPolynomial.totalDegree_C`, immediate).
+Assembling `matrixA`/`rhsVec`'s full entrywise bound, then feeding it through
 `cramerRatioDet_num_totalDegree_le` to get `coeffsOut`'s bound, then through
 `Epoly`/`Ypoly`/`Npoly`'s definitions to a concrete `Npoly` coefficient bound,
 is the remaining assembly work — mechanical given everything now in this
