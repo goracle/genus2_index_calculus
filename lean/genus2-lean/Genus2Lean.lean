@@ -115,3 +115,4 @@ import Genus2Lean.ZeroD.MatrixEntryTotalDegree
 import Genus2Lean.ZeroD.TowerToRdecMul
 import Genus2Lean.ZeroD.RhsVecTotalDegree
 import Genus2Lean.ZeroD.CramerWitnessAssembly
+import Genus2Lean.ZeroD.CoeffsOutTotalDegree

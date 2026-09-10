@@ -39,8 +39,7 @@ recursively-computed one, since `totalDegree`-bounding a witness pair only
 needs the cross-multiplied equation to hold, not that it's the CANONICAL
 witness.
 
-**Not yet REPL-confirmed** — no build environment available this session;
-per project convention, Claude drafts, Claire tests.
+**REPL-confirmed green** (Claire's build).
 -/
 
 namespace Genus2Lean
@@ -144,9 +143,7 @@ theorem towerToRdec_mul_isRdecWitness {Vars : Type*} [DecidableEq Vars]
 
 /-! ## Status, this pass
 
-**Drafted, NOT yet REPL-confirmed** — no build environment available this
-session (per project convention, Claude drafts, Claire tests). Per a
-ChatGPT consultation (prompt/reply not separately filed as an `.md`, per
+**Drafted, REPL-confirmed green.** Per a ChatGPT consultation (prompt/reply not separately filed as an `.md`, per
 project convention of asking directly): `IsRdecWitness` is the field-
 agnostic cross-multiplied predicate, `IsRdecWitness.mul` is the "essentially
 trivial algebra" multiplicativity corollary (`map_mul` + `ring`, no
