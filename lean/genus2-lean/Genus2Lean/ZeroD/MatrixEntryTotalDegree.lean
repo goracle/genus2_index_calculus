@@ -135,7 +135,8 @@ theorem algebraMap_Fp_towerToRdec_totalDegree_eq {Vars : Type*} (sg : SideGens V
   -- Propagate through `K1 → K2` exactly as `t0_promoted_totalDegree_le` does
   -- for `t0 p i`, `D := 1` throughout (same floor, same route).
   have h1 := towerToRdecK1_algebraMap_totalDegree_le p sg c0 c1 c2 c3 c4
-    (algebraMap (F p) (K0 p) a) ⟨hbase.1.trans (Nat.zero_le 1), hbase.2⟩
+    (algebraMap (F p) (K0 p) a)
+    ⟨hbase.1.trans (Nat.zero_le 1), hbase.2.trans (Nat.zero_le 1)⟩
   have h2 := towerToRdec_algebraMap_totalDegree_le p sg c0 c1 c2 c3 c4
     (D := 3) (by norm_num) (algebraMap (K0 p) (K1 p c0 c1 c2 c3 c4) (algebraMap (F p) (K0 p) a))
     ⟨h1.1, h1.2.trans (by norm_num)⟩
