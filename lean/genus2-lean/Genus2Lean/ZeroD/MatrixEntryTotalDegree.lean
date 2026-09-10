@@ -1,6 +1,7 @@
 import Mathlib
 import Genus2Lean.ZeroD.AnchorTotalDegree
 import Genus2Lean.ZeroD.RRBasisTotalDegree
+import Genus2Lean.ZeroD.TowerToRdecMul
 
 /-!
 # `matrixA`/`rhsVec`'s entrywise `totalDegree` building blocks
@@ -20,8 +21,12 @@ build (`CramerEntryTotalDegree.lean`'s own status note documents several
 theorem is left to a following pass once these pieces are confirmed, per
 this project's "small pieces before assembling" discipline.
 
-**Not yet REPL-confirmed** — no build environment available this session;
-per project convention, Claude drafts, Claire tests.
+**REPL-confirmed through at least one full build pass** (see "Status,
+latest pass" below for the errors that build surfaced and how they were
+fixed) — not a guarantee every theorem in this file is final, since
+later passes may add more (`row = 1`/`2`/`3` are still unattempted), but
+the `matrixA_row0_totalDegree_le` route specifically has now round-
+tripped through Claire's REPL at least twice.
 -/
 
 namespace Genus2Lean
@@ -185,88 +190,248 @@ directly rather than needing them threaded through as arguments). -/
 theorem anchorPow_totalDegree_le {Vars : Type*}
     (nx dx : MvPolynomial Vars (F p)) {bi : ℕ} (hbi : bi ≤ 3)
     (hx1 : nx.totalDegree ≤ 7) (hx2 : dx.totalDegree ≤ 6) :
-    (nx ^ bi * 1).totalDegree ≤ 21 ∧ (dx ^ bi * 1).totalDegree ≤ 18 := by
-  simp only [mul_one]
+    (nx ^ bi).totalDegree ≤ 21 ∧ (dx ^ bi).totalDegree ≤ 18 := by
   have hp1 : (nx ^ bi).totalDegree ≤ bi * nx.totalDegree := totalDegree_pow_le p nx bi
   have hp2 : (dx ^ bi).totalDegree ≤ bi * dx.totalDegree := totalDegree_pow_le p dx bi
   have hp1' : bi * nx.totalDegree ≤ 21 := by nlinarith
   have hp2' : bi * dx.totalDegree ≤ 18 := by nlinarith
   omega
 
-/-! ## Status, this pass
+/-! ## `matrixA row 0`/`matrixA row 1`'s entry witness and degree bound
 
-**All four theorems drafted and closed, no `sorry`** — `totalDegree_pow_le`,
-`anchor1_fst_totalDegree_le`, `anchor2_fst_totalDegree_le`, and
-`algebraMap_Fp_towerToRdec_totalDegree_eq`. Not yet REPL-confirmed (no
-build environment available this session), but every proof step composes
-already-proved, already-used lemmas from `DataDerivationTotalDegree.lean`
-— no new Mathlib API beyond `MvPolynomial.algebraMap_apply` (confirmed via
-web search against the current mathlib4 docs, not guessed) and
-`IsScalarTower.algebraMap_apply` (standard, used for tower-composition
-rewrites elsewhere in this style of proof).
+The actual assembly step `TowerToRdecMul.lean`'s own status note flags as
+"still the next step, not attempted in this file", and this file's own
+earlier status note flagged as "not yet unfolded". Attempted now that
+`anchorPow_mul_totalDegree_le`/`anchorPow_totalDegree_le` (above) and
+`IsRdecWitness`/`.mul`/`towerToRdec_mul_isRdecWitness` (`TowerToRdecMul.lean`)
+are both in place. -/
 
-**One thing worth flagging plainly**: an earlier draft of
-`algebraMap_Fp_towerToRdec_totalDegree_eq` in this same pass used `sorry`
-as a placeholder for the `a = 0`/`a ≠ 0` case split before working out the
-actual argument — that was a mistake given this project's zero-sorry
-state going in, caught and fixed before finalizing this file rather than
-left in. The final proof case-splits on `a = 0`/`a ≠ 0` directly (mirroring
-`baseFracToRing_zero_one_totalDegree_eq_zero`'s own `v = 0` handling one
-level up) and contains no `sorry` or other placeholder.
+/-- **`matrixA row col`'s value, for `row.val = 0`, has an explicit
+`IsRdecWitness` pair with a `totalDegree` bound.** `matrixA`'s `row = 0`
+branch is `px ^ bi * (if bj = 1 then py else 1)` for `(px,py) := anchor1
+p c0 c1 c2 c3 c4`, `(_, bi, bj) := rrBasis5.getD (otherIdx.getD col.val 0)
+(0,0,0)` — a PRODUCT of two `K2`-valued factors, each individually
+`towerToRdec`-witnessed (`anchor1_fst/snd_totalDegree_le`), so
+`towerToRdec_mul_isRdecWitness`/`IsRdecWitness.mul`-style pointwise
+products of those two witnesses are a valid witness for the whole entry
+(NOT `towerToRdec` applied to the entry directly, which this file's
+sibling `TowerToRdecMul.lean` already flags as generally a different,
+more-reduced pair — a valid witness is all `totalDegree`-bounding needs).
+States the `bj = 1` branch via `anchorPow_mul_totalDegree_le` and the
+`bj ≠ 1` branch via `anchorPow_totalDegree_le`, matching `matrixA`'s own
+`if bj = 1 then py else 1` split rather than trying to combine both into
+one statement. **Genuinely new, not yet REPL-confirmed** — the one piece
+of this file that actually unfolds `matrixA`'s `let`/`if` chain, which
+this file's own earlier status note flagged as the real risk (`let`-
+elaboration surprises need a real build to pin down safely per
+`CramerEntryTotalDegree.lean`'s own documented experience with this exact
+kind of unfolding) — send to Claire's REPL first, expect possible
+`simp`/`unfold` adjustments before this closes. -/
+theorem matrixA_row0_totalDegree_le {Vars : Type*} [DecidableEq Vars]
+    (sg : SideGens Vars) (u0 u1 v0 v1 : F p) (col : Fin 4)
+    (ι : K2 p c0 c1 c2 c3 c4 →+* FractionRing (MvPolynomial Vars (F p)))
+    (hι_t : ∀ i : Fin 2, ι (algebraMap (K1 p c0 c1 c2 c3 c4) (K2 p c0 c1 c2 c3 c4)
+        (algebraMap (K0 p) (K1 p c0 c1 c2 c3 c4)
+          (algebraMap (MvPolynomial (Fin 2) (F p)) (K0 p) (MvPolynomial.X i)))) =
+      algebraMap (MvPolynomial Vars (F p)) (FractionRing (MvPolynomial Vars (F p)))
+        (MvPolynomial.X (sg.tGen i)))
+    (hι_w1 : ι (algebraMap (K1 p c0 c1 c2 c3 c4) (K2 p c0 c1 c2 c3 c4) (w1 p c0 c1 c2 c3 c4)) =
+      algebraMap (MvPolynomial Vars (F p)) (FractionRing (MvPolynomial Vars (F p)))
+        (MvPolynomial.X (sg.wGen 0)))
+    (hι_w2 : ι (w2 p c0 c1 c2 c3 c4) =
+      algebraMap (MvPolynomial Vars (F p)) (FractionRing (MvPolynomial Vars (F p)))
+        (MvPolynomial.X (sg.wGen 1)))
+    (hbidx : otherIdx.getD col.val 0 < 5) :
+    ∃ nd : MvPolynomial Vars (F p) × MvPolynomial Vars (F p),
+      IsRdecWitness p ι
+        (algebraMap (MvPolynomial Vars (F p)) (FractionRing (MvPolynomial Vars (F p))))
+        (matrixA p c0 c1 c2 c3 c4 u0 u1 v0 v1 ⟨0, by norm_num⟩ col)
+        nd ∧ nd.1.totalDegree ≤ 24 ∧ nd.2.totalDegree ≤ 20 := by
+  set bidx := otherIdx.getD col.val 0 with hbidx_def
+  set bi := (rrBasis5.getD bidx (0, 0, 0)).2.1 with hbi_def
+  set bj := (rrBasis5.getD bidx (0, 0, 0)).2.2 with hbj_def
+  have hbi3 : bi ≤ 3 := by
+    rw [hbi_def]; exact rrBasis5_getD_bi_le_three bidx hbidx
+  -- `matrixA`'s `row = 0` branch, unfolded: `let` destructuring on
+  -- `rrBasis5.getD bidx (0,0,0)` picks out exactly `bi`/`bj` as just
+  -- defined (its first component, unused here, is left anonymous by
+  -- `matrixA`'s own `let (_, bi, bj) := ...` pattern), and `⟨0,_⟩.val = 0`
+  -- makes the `if row.val = 0 then ... else ...` reduce via `if_pos rfl`.
+  have hentry : matrixA p c0 c1 c2 c3 c4 u0 u1 v0 v1 ⟨0, by norm_num⟩ col =
+      (anchor1 p c0 c1 c2 c3 c4).1 ^ bi *
+        (if bj = 1 then (anchor1 p c0 c1 c2 c3 c4).2 else 1) := by
+    simp only [matrixA, hbidx_def.symm, hbi_def.symm, hbj_def.symm, if_true]
+  rw [hentry]
+  have hwx := anchor1_fst_totalDegree_le p c0 c1 c2 c3 c4 sg
+  have hwy := anchor1_snd_totalDegree_le p c0 c1 c2 c3 c4 sg
+  have hwitx := towerToRdec_isRdecWitness p c0 c1 c2 c3 c4 sg
+    (anchor1 p c0 c1 c2 c3 c4).1 ι hι_t hι_w1 hι_w2
+  have hwity := towerToRdec_isRdecWitness p c0 c1 c2 c3 c4 sg
+    (anchor1 p c0 c1 c2 c3 c4).2 ι hι_t hι_w1 hι_w2
+  -- `bi` is `set`-bound to `(rrBasis5.getD bidx (0,0,0)).2.1`; `induction`
+  -- needs a genuinely free local variable, not one pinned by a `set`
+  -- equation, so `clear_value bi` first drops the `let`-value, and
+  -- `clear hbi_def` drops the separate equation hypothesis `set` also
+  -- introduced (keeping just `bi` as a plain variable) — `clear_value`
+  -- alone leaves `hbi_def` behind, and `induction bi` then tries to
+  -- generalize over it too, corrupting the motive (REPL-confirmed).
+  clear_value bi
+  have hpow : IsRdecWitness p ι
+      (algebraMap (MvPolynomial Vars (F p)) (FractionRing (MvPolynomial Vars (F p))))
+      ((anchor1 p c0 c1 c2 c3 c4).1 ^ bi)
+      ((towerToRdec p sg (anchor1 p c0 c1 c2 c3 c4).1).1 ^ bi,
+        (towerToRdec p sg (anchor1 p c0 c1 c2 c3 c4).1).2 ^ bi) := by
+    clear hbi3 hentry hbi_def
+    induction bi with
+    | zero => simp [IsRdecWitness]
+    | succ k ih =>
+        show IsRdecWitness p ι
+          (algebraMap (MvPolynomial Vars (F p)) (FractionRing (MvPolynomial Vars (F p))))
+          ((anchor1 p c0 c1 c2 c3 c4).1 ^ k * (anchor1 p c0 c1 c2 c3 c4).1)
+          ((towerToRdec p sg (anchor1 p c0 c1 c2 c3 c4).1).1 ^ k *
+              (towerToRdec p sg (anchor1 p c0 c1 c2 c3 c4).1).1,
+            (towerToRdec p sg (anchor1 p c0 c1 c2 c3 c4).1).2 ^ k *
+              (towerToRdec p sg (anchor1 p c0 c1 c2 c3 c4).1).2)
+        exact IsRdecWitness.mul p ih hwitx
+  by_cases hbj : bj = 1
+  · -- `px ^ bi * py` branch: pointwise product of the two witnesses, via
+    -- `IsRdecWitness.mul` applied to `px ^ bi`'s own witness (`hpow`,
+    -- itself built from `bi` copies of `px`'s witness) and `py`'s witness
+    -- directly.
+    rw [if_pos hbj]
+    refine ⟨((towerToRdec p sg (anchor1 p c0 c1 c2 c3 c4).1).1 ^ bi *
+      (towerToRdec p sg (anchor1 p c0 c1 c2 c3 c4).2).1,
+      (towerToRdec p sg (anchor1 p c0 c1 c2 c3 c4).1).2 ^ bi *
+      (towerToRdec p sg (anchor1 p c0 c1 c2 c3 c4).2).2),
+      IsRdecWitness.mul p hpow hwity, ?_, ?_⟩
+    · show ((towerToRdec p sg (anchor1 p c0 c1 c2 c3 c4).1).1 ^ bi *
+        (towerToRdec p sg (anchor1 p c0 c1 c2 c3 c4).2).1).totalDegree ≤ 24
+      exact (anchorPow_mul_totalDegree_le p _ _ _ _ hbi3
+        hwx.1 hwx.2 hwy.1 hwy.2).1
+    · show ((towerToRdec p sg (anchor1 p c0 c1 c2 c3 c4).1).2 ^ bi *
+        (towerToRdec p sg (anchor1 p c0 c1 c2 c3 c4).2).2).totalDegree ≤ 20
+      exact (anchorPow_mul_totalDegree_le p _ _ _ _ hbi3
+        hwx.1 hwx.2 hwy.1 hwy.2).2
+  · -- `px ^ bi * 1` branch. Its own bound (`anchorPow_totalDegree_le`) is
+    -- `≤21`/`≤18`, tighter than the shared `≤24`/`≤20` this theorem states
+    -- (which has to cover the `bj=1` branch too) — `le_trans` widens.
+    rw [if_neg hbj, mul_one]
+    refine ⟨((towerToRdec p sg (anchor1 p c0 c1 c2 c3 c4).1).1 ^ bi,
+      (towerToRdec p sg (anchor1 p c0 c1 c2 c3 c4).1).2 ^ bi), hpow, ?_, ?_⟩
+    · show ((towerToRdec p sg (anchor1 p c0 c1 c2 c3 c4).1).1 ^ bi).totalDegree ≤ 24
+      exact le_trans (anchorPow_totalDegree_le p _ _ hbi3 hwx.1 hwx.2).1 (by norm_num)
+    · show ((towerToRdec p sg (anchor1 p c0 c1 c2 c3 c4).1).2 ^ bi).totalDegree ≤ 20
+      exact le_trans (anchorPow_totalDegree_le p _ _ hbi3 hwx.1 hwx.2).2 (by norm_num)
 
-**What remains after this file, still unstarted**: the actual `matrixA`/
-`rhsVec` entry theorem, composing `anchor1_fst/snd_totalDegree_le`,
-`anchor2_fst/snd_totalDegree_le`, `rrBasis5_getD_bi_le_three`,
-`totalDegree_pow_le`, and `algebraMap_Fp_towerToRdec_totalDegree_eq`
-through `matrixA`/`rhsVec`'s own `if`-branching — four cases (`row = 0`,
-`row = 1`, `row = 2`, `row = 3`), each a `combine_totalDegree_le`-style
-`mul`/`add` chain. Then one more step (`cramerRatioDet_num_totalDegree_le`,
-`DataDerivationTotalDegree.lean`) to reach `coeffsOut`'s own bound.
+/-! ## Status, latest pass
 
-## Status, later pass
+**Attempted this pass**: `matrixA_row0_totalDegree_le`, the `row = 0`
+entry witness/degree theorem — the assembly step `TowerToRdecMul.lean`
+and this file's own earlier status note both flagged as next. **No
+`sorry`** — an earlier draft in this same pass left the witness-validity
+goal as `sorry` in both branches while the degree bounds were filled in;
+per this project's rule against leaving `sorry` in as a placeholder
+rather than working out the actual argument, that draft was replaced with
+a real proof before finalizing this file: `px^bi`'s own witness is built
+by induction on `bi` (`IsRdecWitness.mul` applied `bi` times to `px`'s own
+`towerToRdec_isRdecWitness` witness, base case `bi=0` closing by `simp`
+since `IsRdecWitness _ _ 1 (1,1)` is `1 = 1*1`), then combined with `py`'s
+witness (`bj=1` branch) or left bare (`bj≠1` branch, `mul_one`) via one
+more `IsRdecWitness.mul` — no gap left unproved.
 
-**Added this pass**: `anchorPow_mul_totalDegree_le`/`anchorPow_totalDegree_le`
-— the `px^bi * (py or 1)` degree bound `matrixA`'s row-0/row-1 entries
-actually need, composing `totalDegree_pow_le`/`MvPolynomial.totalDegree_mul`
-against `anchor1_fst/snd_totalDegree_le`/`anchor2_fst/snd_totalDegree_le`'s
-already-proved bounds and `rrBasis5_getD_bi_le_three`'s `bi ≤ 3`. **Revised
-later in this same pass**: an earlier draft tried `interval_cases bi` to
-turn `bi` into a literal before calling `omega`, on the theory that a
-concrete `bi` makes `bi * nx.totalDegree` linear — this did not work as
-expected inside the `<;> (...)` combinator (REPL-confirmed: `omega` still
-saw `bi` as a live, unbounded atom in every branch, i.e. `interval_cases`
-was not actually substituting it before the combined tactic block ran),
-and a follow-up attempt bridging via `gcongr` had the same problem since
-it was still downstream of the same `interval_cases` step. **Final
-approach**: skip `interval_cases` entirely — `hp1' : bi * nx.totalDegree
-≤ 21`/`hp2' : bi * dx.totalDegree ≤ 18` are proved directly from
-`hbi : bi ≤ 3` and `hx1`/`hx2` via `nlinarith` (which, unlike `omega`, can
-multiply two bound hypotheses together — genuinely nonlinear, since both
-`bi` and `nx.totalDegree` are variables), then `omega` closes the rest
-linearly from `h1`/`h2`/`hp1`/`hp2`/`hp1'`/`hp2'`. Avoids needing to name
-`Nat.mul_le_mul`/`Nat.mul_le_mul_left`'s exact current signature at all.
-Bounds are not tight (`≤24`/`≤20` for the `bj=1` case, `≤21`/`≤18`
-for `bj≠1`) — no attempt made to sharpen them, since a loose-but-correct
-uniform bound is all `CrossNondegenerate`'s resultant degree bound
-ultimately needs, and tightening later (if the numbers turn out to matter
-for the `p > d!`-style pigeonhole argument `ZeroD-README.md` flags) is
-cheap once the shape is confirmed working. States the two cases
-(`bj = 1` vs `bj ≠ 1`, i.e. `× py` vs `× 1`) as separate theorems rather
-than one `if`-branching theorem, matching `matrixA`'s own two-branch shape
-so the eventual entry theorem can dispatch on `bj` directly to whichever
-applies, rather than needing to `simp`/case-split inside a single combined
-statement.
+**Build errors found and fixed, this pass (Claire's REPL)**:
+1. `rrBasis5_getD_bi_le_three` takes no `p` argument (`rrBasis5` and its
+   lemmas, `RRBasisTotalDegree.lean`, are entirely `p`-independent — no
+   `variable (p ...)` in that file) — the call site wrongly passed `p`
+   first, matching this file's own `variable (p ...)` convention rather
+   than checking the callee's actual signature.
+2. `hentry`'s `simp only [matrixA, ...]` call left a residual `(if True
+   then X else Y) = X` goal — `if_pos rfl` (the lemma originally in the
+   simp set) never fired because `decide`-normalization inside `simp`
+   already reduced `⟨0,_⟩.val = 0` to the literal `True` before `if_pos`
+   could match on `rfl`; replaced with `if_true`, which directly closes
+   `if True then X else Y = X`.
+3. `induction bi` inside `hpow`'s proof corrupted its own motive
+   (`CommRing` instance mismatch on `rw [pow_succ]`) — `clear_value bi`
+   detaches `bi`'s `let`-value but leaves the SEPARATE equation
+   hypothesis `hbi_def : bi = (rrBasis5.getD bidx (0,0,0)).2.1` (`set`'s
+   own naming) in context; `induction bi` then tries to generalize over
+   `hbi_def` too, since it mentions `bi`, producing a malformed motive.
+   Fixed by `clear hbi3 hentry hbi_def` (not just `hbi3 hentry`) right
+   before the `induction` call.
+4. The assembly theorem's own stated bound, `nd.2.totalDegree ≤ 21`, was
+   wrong — `anchorPow_mul_totalDegree_le` (the `bj=1` branch) proves
+   `≤20` on that side, not `≤21` (`anchorPow_totalDegree_le`, the `bj≠1`
+   branch, proves `≤21`/`≤18` — the two branches have DIFFERENT bounds,
+   and the shared statement needs the pointwise max, `≤24`/`≤20`, not a
+   number copied from the wrong branch). Fixed the theorem statement to
+   `≤24 ∧ ≤20`, and added `show`+`le_trans` in the `bj≠1` branch to widen
+   its own tighter `≤21`/`≤18` up to the shared `≤24`/`≤20`.
+5. Both branches' final two goals showed as `(a,b).1.totalDegree ≤ N`/
+   `(a,b).2.totalDegree ≤ N` rather than reducing to `a.totalDegree ≤ N`/
+   `b.totalDegree ≤ N` after `refine ⟨(a,b), ..., ?_, ?_⟩` — Lean does not
+   automatically project through the anonymous pair constructor here;
+   added an explicit `show` restating each goal in reduced form before
+   `exact`/`le_trans`.
 
-**Deliberately does NOT yet unfold `matrixA`/`rhsVec` themselves** — these
-two theorems are pure `MvPolynomial` degree facts about the SHAPE
-`px^bi * (py or 1)` takes, not yet connected to `matrixA row col`'s literal
-`let`/`if`-laden definition (still the next step, and still the place this
-file's own earlier note flags as the real unfolding risk — `let`-elaboration
-surprises need a real build to pin down safely). Also not yet connected to
-`reduceMonomialModU`'s rows (`matrixA`'s `row = 2`/`row = 3` cases,
-untouched this pass) or to `cramerRatioDet_num_totalDegree_le`
-(`DataDerivationTotalDegree.lean`), which is what actually turns a
-per-entry bound into `coeffsOut`'s own bound. -/
+**The one place this pass's confidence is still genuinely lower**:
+`hentry`'s overall unfolding strategy (`simp only [matrixA, ...]`) is now
+REPL-confirmed to work (per the fixes above, which came from Claire's
+actual build errors, not further blind guessing) — but this was the
+`let`-elaboration territory this file's earlier status note and
+`CramerEntryTotalDegree.lean`'s own documented build-error history both
+flagged as needing a real build to pin down, and it took multiple
+REPL-reported errors to get right rather than being correct on the first
+attempt, so any structurally similar unfolding elsewhere in this file
+(`row = 1`/`row = 2`/`row = 3`, not yet attempted) should expect the same
+and not assume the `row = 0` fix pattern transfers without its own
+REPL check.
+
+**`row = 1`** (companion, `anchor2` in place of `anchor1`) deliberately
+not yet drafted — same shape as `row = 0`, left for a following pass now
+that `row = 0`'s `hentry`/`clear`/`show` fixes are confirmed, so the same
+three fixes can be applied directly rather than rediscovering them.
+**`row = 2`/`row = 3`** (the `reduceMonomialModU` rows) are NOT yet
+connected here either, though their underlying degree fact
+(`algebraMap_Fp_towerToRdec_totalDegree_eq`, this file, above) is already
+proved — same unfolding risk applies there too, and per this pass's
+experience, budget for at least one round of REPL-driven fixes rather
+than expecting it to close on the first attempt.
+
+**Build errors found and fixed, this pass #2 (Claire's REPL)**:
+6. `hpow`'s `succ` case (`induction bi`) failed with "motive is not type
+   correct" on `rw [pow_succ, pow_succ, pow_succ]` — rewriting the
+   `^(k+1)` pattern directly inside the ambient goal tries to abstract a
+   motive over a term whose type carries `K2 p c0 c1 c2 c3 c4`'s
+   `CommRing` instance (built via `AdjoinRoot`), and that instance
+   doesn't survive the abstraction, so `rw` produces an ill-typed motive.
+   Fixed by replacing the three `rw [pow_succ]`s with a single `show`
+   that restates the goal in its already-expanded (`^k * _`) form
+   directly — valid because `a^(k+1)` is definitionally `a^k * a` for
+   `Monoid.npow` in Lean4 Mathlib, so `show` closes by defeq with no
+   motive abstraction at all, then `IsRdecWitness.mul p ih hwitx` closes
+   it directly.
+7. `anchorPow_totalDegree_le`'s call sites (`le_trans (anchorPow_
+   totalDegree_le ...).1 (by norm_num)`) failed with an application type
+   mismatch: the lemma's STATED conclusion was `(nx^bi * 1).totalDegree
+   ≤ 21`, but its proof opened with `simp only [mul_one]`, so the actual
+   term produced proves `(nx^bi).totalDegree ≤ 21` — a mismatch between
+   the stated type and the elaborated proof term once Lean tries to
+   unify it against `le_trans`'s expected argument. Fixed by dropping
+   the spurious `* 1` from the theorem's stated conclusion (and the
+   now-redundant `simp only [mul_one]` from its proof) so the signature
+   matches what the proof actually produces; no change needed at the
+   call sites, which already expected the `* 1`-free form.
+
+**Superseded by this pass's fixes above** (kept for history): earlier
+status notes in this file described `anchorPow_mul_totalDegree_le`/
+`anchorPow_totalDegree_le` as using `interval_cases bi`, then as using
+`gcongr`, before landing on the current `nlinarith`-based proof (see
+those theorems' own doc comments above for the final, correct version);
+described `matrixA`/`rhsVec`'s entry theorem as "still unstarted" (no
+longer true — `matrixA_row0_totalDegree_le`, this pass, is a first
+instance of it); and stated the assembly bound as `≤24`/`≤21` before this
+pass's fix #4 above corrected it to `≤24`/`≤20`. -/
 
 end TheDataDerivation
 end Genus2Lean
