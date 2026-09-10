@@ -51,10 +51,28 @@ from `MatrixNondegenerate` — that derivation (if even true; the chosen
 witness could in principle vanish at a point where `matrixA.det` itself
 doesn't) is flagged as separate future work, not attempted here.
 
-**`cramerSolution_totalDegree_le`: REPL-confirmed green** (Claire's build,
+**`cramerNumerator_totalDegree_le`: REPL-confirmed green** (Claire's build,
 after fixing the `D := 24`/`D := 20` numerator/denominator mismatch this
-pass — see that theorem's own `calc` blocks). **`coeffsOut_yIdx_isRdecWitness`
-(added same pass, below): not yet REPL-confirmed** — Claire tests next.
+pass — see that theorem's own `calc` blocks). **`coeffsOut_yIdx_isRdecWitness`:
+REPL-confirmed green.**
+
+**This pass**: the gap this file's earlier draft left open (a `cramer
+Numerator_totalDegree_le` bounding `Matrix.cramer matrixA rhsVec i`, the
+`matrixA.det`-SCALED value per `Matrix.mulVec_cramer`, but no theorem
+actually reaching `cramerSolution i` itself — despite five separate prose
+references to a `cramerSolution_totalDegree_le` theorem that was never
+written in this file, caught this pass by direct `grep`, not by the REPL)
+is now closed for real: `matrixDet_totalDegree_le` (new, mirrors
+`cramerNumerator_totalDegree_le`'s own proof shape but for `matrixA.det`
+alone, via `matrixDet_isRdecWitness_of_entries` in place of `cramerSolution_
+isRdecWitness_of_entries`) gives `matrixA.det`'s own `IsRdecWitness`
+pair/bound, and `cramerSolution_totalDegree_le` (new) combines it with
+`cramerNumerator_totalDegree_le` via `IsRdecWitness.div` (`TowerToRdecMul.
+lean`) to bound `cramerSolution i := matrixA.cramer rhsVec i / matrixA.det`
+directly, at `≤ 704` both sides (`384 + 320`, the sum of the two input
+witnesses' complementary bounds, via `MvPolynomial.totalDegree_mul`).
+**Not yet REPL-confirmed** — Claire tests next, same as every other
+theorem in this file before this pass's fix.
 -/
 
 namespace Genus2Lean
@@ -198,6 +216,166 @@ theorem cramerNumerator_totalDegree_le {Vars : Type*} [DecidableEq Vars]
         ≤ Fintype.card (Fin 4) * (4 * 20) := hcol
       _ = 320 := by simp
 
+set_option maxHeartbeats 2000000 in
+set_option linter.unusedDecidableInType false in
+/-- **`matrixA.det`'s own `IsRdecWitness` pair, with an explicit
+`totalDegree` bound.** The piece `cramerNumerator_totalDegree_le`'s own
+docstring said was still missing (see this file's header — that theorem
+was mis-named `cramerSolution_totalDegree_le` in an earlier draft, before
+this lemma existed to actually finish the job). Built exactly like
+`cramerNumerator_totalDegree_le` itself, but applied to `matrixA` alone
+(no `rhsVec`/`if col = i then ea/eb` splice — `matrixA.det` doesn't
+involve the right-hand side at all) via `matrixDet_isRdecWitness_of_entries`
+(`CramerWitnessAssembly.lean`) in place of `cramerSolution_isRdecWitness_
+of_entries`, then the SAME two `cramerNumeratorDet_totalDegree_le`/
+`cramerDeltaA_totalDegree_le` calls (`DataDerivationTotalDegree.lean`) at
+the SAME merged bound `D := 24`/`D := 20` (`matrixA`'s own per-entry
+bounds, `matrixA_entry_totalDegree_le`), landing on the same `≤384`/`≤320`
+numerals as `cramerNumerator_totalDegree_le` — expected, since both
+theorems bound a `4×4` determinant-shaped Cramer expression built from the
+same `matrixA`-entry witnesses, `cramerDeltaA_totalDegree_le`'s `16*D`
+shape being `cramerNumeratorDet_totalDegree_le`'s `n²*D` at `n=4`
+specialized to the plain product (no numerator splice), so `16*20=320`
+matches the denominator case exactly and the numerator case's `4²*24=384`
+likewise. -/
+theorem matrixDet_totalDegree_le {Vars : Type*} [DecidableEq Vars]
+    (sg : SideGens Vars) (u0 u1 v0 v1 : F p)
+    (ι : K2 p c0 c1 c2 c3 c4 →+* FractionRing (MvPolynomial Vars (F p)))
+    (hι_t : ∀ i : Fin 2, ι (algebraMap (K1 p c0 c1 c2 c3 c4) (K2 p c0 c1 c2 c3 c4)
+        (algebraMap (K0 p) (K1 p c0 c1 c2 c3 c4)
+          (algebraMap (MvPolynomial (Fin 2) (F p)) (K0 p) (MvPolynomial.X i)))) =
+      algebraMap (MvPolynomial Vars (F p)) (FractionRing (MvPolynomial Vars (F p)))
+        (MvPolynomial.X (sg.tGen i)))
+    (hι_w1 : ι (algebraMap (K1 p c0 c1 c2 c3 c4) (K2 p c0 c1 c2 c3 c4) (w1 p c0 c1 c2 c3 c4)) =
+      algebraMap (MvPolynomial Vars (F p)) (FractionRing (MvPolynomial Vars (F p)))
+        (MvPolynomial.X (sg.wGen 0)))
+    (hι_w2 : ι (w2 p c0 c1 c2 c3 c4) =
+      algebraMap (MvPolynomial Vars (F p)) (FractionRing (MvPolynomial Vars (F p)))
+        (MvPolynomial.X (sg.wGen 1)))
+    (hbidx : ∀ col : Fin 4, otherIdx.getD col.val 0 < 5)
+    (hAne : ∀ row col : Fin 4,
+      (algebraMap (MvPolynomial Vars (F p)) (FractionRing (MvPolynomial Vars (F p))))
+        ((matrixA_entry_totalDegree_le p c0 c1 c2 c3 c4 sg u0 u1 v0 v1 row col ι
+          hι_t hι_w1 hι_w2 (hbidx col)).choose.2) ≠ 0) :
+    ∃ nd : MvPolynomial Vars (F p) × MvPolynomial Vars (F p),
+      IsRdecWitness p ι
+        (algebraMap (MvPolynomial Vars (F p)) (FractionRing (MvPolynomial Vars (F p))))
+        (matrixA p c0 c1 c2 c3 c4 u0 u1 v0 v1).det
+        nd ∧ nd.1.totalDegree ≤ 384 ∧ nd.2.totalDegree ≤ 320 := by
+  classical
+  set a : Fin 4 → Fin 4 → MvPolynomial Vars (F p) := fun row col =>
+    (matrixA_entry_totalDegree_le p c0 c1 c2 c3 c4 sg u0 u1 v0 v1 row col ι
+      hι_t hι_w1 hι_w2 (hbidx col)).choose.1 with ha_def
+  set b : Fin 4 → Fin 4 → MvPolynomial Vars (F p) := fun row col =>
+    (matrixA_entry_totalDegree_le p c0 c1 c2 c3 c4 sg u0 u1 v0 v1 row col ι
+      hι_t hι_w1 hι_w2 (hbidx col)).choose.2 with hb_def
+  have hwit : ∀ row col : Fin 4, IsRdecWitness p ι
+      (algebraMap (MvPolynomial Vars (F p)) (FractionRing (MvPolynomial Vars (F p))))
+      (matrixA p c0 c1 c2 c3 c4 u0 u1 v0 v1 row col) (a row col, b row col) := by
+    intro row col
+    exact (matrixA_entry_totalDegree_le p c0 c1 c2 c3 c4 sg u0 u1 v0 v1 row col ι
+      hι_t hι_w1 hι_w2 (hbidx col)).choose_spec.1
+  have ha_bound : ∀ row col : Fin 4, (a row col).totalDegree ≤ 24 := fun row col =>
+    (matrixA_entry_totalDegree_le p c0 c1 c2 c3 c4 sg u0 u1 v0 v1 row col ι
+      hι_t hι_w1 hι_w2 (hbidx col)).choose_spec.2.1
+  have hb_bound : ∀ row col : Fin 4, (b row col).totalDegree ≤ 20 := fun row col =>
+    (matrixA_entry_totalDegree_le p c0 c1 c2 c3 c4 sg u0 u1 v0 v1 row col ι
+      hι_t hι_w1 hι_w2 (hbidx col)).choose_spec.2.2
+  refine ⟨_, matrixDet_isRdecWitness_of_entries p hwit hAne, ?_, ?_⟩
+  · have hnum := cramerNumeratorDet_totalDegree_le p (D := 24) a b ha_bound
+      (fun row col => (hb_bound row col).trans (by norm_num))
+    calc _ ≤ (Fintype.card (Fin 4)) ^ 2 * 24 := hnum
+      _ = 384 := by simp
+  · have hdelta := cramerDeltaA_totalDegree_le p (D := 20) b hb_bound
+    simpa using hdelta
+
+set_option linter.unusedDecidableInType false in
+set_option maxHeartbeats 2000000 in
+/-- **`cramerSolution i`'s own `totalDegree` bound — the true target this
+file exists for** (see the header's naming caveat: `cramerNumerator_
+totalDegree_le` bounds the un-normalized `Matrix.cramer` expression,
+`matrixDet_totalDegree_le` bounds `matrixA.det`, and THIS theorem divides
+the two witnesses via `IsRdecWitness.div` (`TowerToRdecMul.lean`) to reach
+`cramerSolution i := matrixA.cramer rhsVec i / matrixA.det` itself,
+`cramerSolution`'s own definition, `DataDerivationSolve.lean`).
+
+Needs one more hypothesis beyond `cramerNumerator_totalDegree_le`/
+`matrixDet_totalDegree_le`'s own `hAne`/`hRne`: `IsRdecWitness.div`'s own
+side conditions, `evalNd (matrixA.det's chosen witness denominator) ≠ 0`
+(`hDne`, parallel in shape to `hAne`/`hRne`) and `ι matrixA.det ≠ 0`
+(`hιdet_ne`, i.e. `MatrixNondegenerate` pushed through `ι` — NOT derived
+from `MatrixNondegenerate` itself here, same reason as `hAne`/`hRne`, see
+the header). The resulting bound is the SUM of the numerator and
+denominator witnesses' own bounds (`IsRdecWitness.div`'s witness pair is
+`(na*db, da*nb)`, a product of one side from each witness), i.e.
+`≤ 384 + 320 = 704` on the numerator side and `≤ 320 + 384 = 704` on the
+denominator side — both come out to the same numeral only because
+`cramerNumerator_totalDegree_le`/`matrixDet_totalDegree_le`'s own
+`(384, 320)` bounds are shared by both theorems (same `matrixA`-entry
+source data), not for any deeper reason. -/
+theorem cramerSolution_totalDegree_le {Vars : Type*} [DecidableEq Vars]
+    (sg : SideGens Vars) (u0 u1 v0 v1 : F p)
+    (ι : K2 p c0 c1 c2 c3 c4 →+* FractionRing (MvPolynomial Vars (F p)))
+    (hι_t : ∀ i : Fin 2, ι (algebraMap (K1 p c0 c1 c2 c3 c4) (K2 p c0 c1 c2 c3 c4)
+        (algebraMap (K0 p) (K1 p c0 c1 c2 c3 c4)
+          (algebraMap (MvPolynomial (Fin 2) (F p)) (K0 p) (MvPolynomial.X i)))) =
+      algebraMap (MvPolynomial Vars (F p)) (FractionRing (MvPolynomial Vars (F p)))
+        (MvPolynomial.X (sg.tGen i)))
+    (hι_w1 : ι (algebraMap (K1 p c0 c1 c2 c3 c4) (K2 p c0 c1 c2 c3 c4) (w1 p c0 c1 c2 c3 c4)) =
+      algebraMap (MvPolynomial Vars (F p)) (FractionRing (MvPolynomial Vars (F p)))
+        (MvPolynomial.X (sg.wGen 0)))
+    (hι_w2 : ι (w2 p c0 c1 c2 c3 c4) =
+      algebraMap (MvPolynomial Vars (F p)) (FractionRing (MvPolynomial Vars (F p)))
+        (MvPolynomial.X (sg.wGen 1)))
+    (hbidx : ∀ col : Fin 4, otherIdx.getD col.val 0 < 5)
+    (hAne : ∀ row col : Fin 4,
+      (algebraMap (MvPolynomial Vars (F p)) (FractionRing (MvPolynomial Vars (F p))))
+        ((matrixA_entry_totalDegree_le p c0 c1 c2 c3 c4 sg u0 u1 v0 v1 row col ι
+          hι_t hι_w1 hι_w2 (hbidx col)).choose.2) ≠ 0)
+    (hRne : ∀ row : Fin 4,
+      (algebraMap (MvPolynomial Vars (F p)) (FractionRing (MvPolynomial Vars (F p))))
+        ((rhsVec_entry_totalDegree_le p c0 c1 c2 c3 c4 sg u0 u1 v0 v1 row ι
+          hι_t hι_w1 hι_w2).choose.2) ≠ 0)
+    (hDne : (algebraMap (MvPolynomial Vars (F p)) (FractionRing (MvPolynomial Vars (F p))))
+        ((matrixDet_totalDegree_le p c0 c1 c2 c3 c4 sg u0 u1 v0 v1 ι
+          hι_t hι_w1 hι_w2 hbidx hAne).choose.2) ≠ 0)
+    (hιdet_ne : ι (matrixA p c0 c1 c2 c3 c4 u0 u1 v0 v1).det ≠ 0)
+    (i : Fin 4) :
+    ∃ nd : MvPolynomial Vars (F p) × MvPolynomial Vars (F p),
+      IsRdecWitness p ι
+        (algebraMap (MvPolynomial Vars (F p)) (FractionRing (MvPolynomial Vars (F p))))
+        (cramerSolution p c0 c1 c2 c3 c4 u0 u1 v0 v1 i)
+        nd ∧ nd.1.totalDegree ≤ 704 ∧ nd.2.totalDegree ≤ 704 := by
+  classical
+  set evalNd := algebraMap (MvPolynomial Vars (F p))
+    (FractionRing (MvPolynomial Vars (F p))) with hevalNd
+  obtain ⟨ndNum, hwitNum, hnumBound, hdenBound⟩ :=
+    cramerNumerator_totalDegree_le p c0 c1 c2 c3 c4 sg u0 u1 v0 v1 ι
+      hι_t hι_w1 hι_w2 hbidx hAne hRne i
+  set ndDet := (matrixDet_totalDegree_le p c0 c1 c2 c3 c4 sg u0 u1 v0 v1 ι
+    hι_t hι_w1 hι_w2 hbidx hAne).choose with hndDet_def
+  have hwitDet : IsRdecWitness p ι evalNd
+      (matrixA p c0 c1 c2 c3 c4 u0 u1 v0 v1).det ndDet :=
+    (matrixDet_totalDegree_le p c0 c1 c2 c3 c4 sg u0 u1 v0 v1 ι
+      hι_t hι_w1 hι_w2 hbidx hAne).choose_spec.1
+  have hdetNumBound : ndDet.1.totalDegree ≤ 384 :=
+    (matrixDet_totalDegree_le p c0 c1 c2 c3 c4 sg u0 u1 v0 v1 ι
+      hι_t hι_w1 hι_w2 hbidx hAne).choose_spec.2.1
+  have hdetDenBound : ndDet.2.totalDegree ≤ 320 :=
+    (matrixDet_totalDegree_le p c0 c1 c2 c3 c4 sg u0 u1 v0 v1 ι
+      hι_t hι_w1 hι_w2 hbidx hAne).choose_spec.2.2
+  have hdiv := IsRdecWitness.div p hwitNum hwitDet hDne hιdet_ne
+  refine ⟨(ndNum.1 * ndDet.2, ndNum.2 * ndDet.1), hdiv, ?_, ?_⟩
+  · calc (ndNum.1 * ndDet.2).totalDegree
+        ≤ ndNum.1.totalDegree + ndDet.2.totalDegree := MvPolynomial.totalDegree_mul _ _
+      _ ≤ 384 + 320 := add_le_add hnumBound hdetDenBound
+      _ = 704 := by norm_num
+  · calc (ndNum.2 * ndDet.1).totalDegree
+        ≤ ndNum.2.totalDegree + ndDet.1.totalDegree := MvPolynomial.totalDegree_mul _ _
+      _ ≤ 320 + 384 := add_le_add hdenBound hdetNumBound
+      _ = 704 := by norm_num
+
+set_option linter.unusedDecidableInType false in
 /-- **`coeffsOut`'s `yIdx` slot — the trivial `= 1` case.** `coeffsOut`
 takes the value `1 : K2 p c0 c1 c2 c3 c4` at `yIdx` (by its own `dif_pos`
 branch), and `IsRdecWitness p ι evalNd 1 (1, 1)` holds unconditionally —
@@ -215,7 +393,7 @@ theorem coeffsOut_yIdx_isRdecWitness {Vars : Type*} [DecidableEq Vars]
         (1 : K2 p c0 c1 c2 c3 c4) nd ∧
       nd.1.totalDegree ≤ 384 ∧ nd.2.totalDegree ≤ 320 := by
   refine ⟨(1, 1), ?_, ?_, ?_⟩
-  · show (algebraMap (MvPolynomial Vars (F p)) (FractionRing (MvPolynomial Vars (F p)))) 1 =
+  · change (algebraMap (MvPolynomial Vars (F p)) (FractionRing (MvPolynomial Vars (F p)))) 1 =
       (algebraMap (MvPolynomial Vars (F p)) (FractionRing (MvPolynomial Vars (F p)))) 1 * ι 1
     simp
   · simp [MvPolynomial.totalDegree_one]
@@ -253,15 +431,21 @@ successfully for the identical `Fintype.card (Fin 4) * (4 * D) = 16 * D`
 shape.
 
 **What this closes**: `coeffsOut`'s bound at every `otherIdx` slot
-(`cramerSolution_totalDegree_le`) AND at the remaining `yIdx` slot
-(`coeffsOut_yIdx_isRdecWitness`, added this pass — the trivial `= 1` case,
-witness `(1,1)`, bound `(0,0)`, both `≤ 384`/`≤ 320` so no `max`/case-split
-is needed to cover both slots with the same two numerals). `coeffsOut`'s
-own `totalDegree` bound is now fully closed across all 5 slots, modulo the
-two open `hAne`/`hRne` hypotheses `cramerSolution_totalDegree_le` still
-carries (see this file's header). `Epoly`/`Ypoly`/`fAtX`/`Npoly`'s own
-bounds (per `RhsVecTotalDegree.lean`'s closing note) are the next assembly
-layer up, not attempted in this file. -/
+(`cramerSolution_totalDegree_le`, at `≤ 704` both sides — see that
+theorem's own docstring for why the numeral is `384+320`, not `384`/`320`
+separately) AND at the remaining `yIdx` slot (`coeffsOut_yIdx_isRdecWitness`
+— the trivial `= 1` case, witness `(1,1)`, bound `(0,0)`, trivially
+`≤ 704`). `coeffsOut`'s own `totalDegree` bound is now fully closed across
+all 5 slots, modulo FOUR open hypotheses `cramerSolution_totalDegree_le`
+carries: `hAne`/`hRne` (per-entry witness-denominator nonvanishing for
+`matrixA`/`rhsVec`, inherited from `cramerNumerator_totalDegree_le`) plus
+`hDne` (the same nonvanishing condition for `matrixDet_totalDegree_le`'s
+own chosen witness denominator) and `hιdet_ne` (`ι matrixA.det ≠ 0`,
+`IsRdecWitness.div`'s own side condition) — none of the four derived from
+`MatrixNondegenerate` (see this file's header for why that bridge is
+separate, unattempted work). `Epoly`/`Ypoly`/`fAtX`/`Npoly`'s own bounds
+(per `RhsVecTotalDegree.lean`'s closing note) are the next assembly layer
+up, not attempted in this file. -/
 
 end TheDataDerivation
 end Genus2Lean
