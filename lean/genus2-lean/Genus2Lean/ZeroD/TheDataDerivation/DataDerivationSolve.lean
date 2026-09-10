@@ -849,7 +849,7 @@ duplicates (`otherIdx_nodup`), any two witnessing indices for the same
 `col.val` regardless of which witness `Classical.choose` happens to pick —
 this is exactly what makes `coeffsOut (otherMap col) = cramerSolution col`
 provable without pinning down `Classical.choose`'s actual output. -/
-private theorem coeffsOut_otherMap (col : Fin 4) :
+theorem coeffsOut_otherMap (col : Fin 4) :
     coeffsOut p c0 c1 c2 c3 c4 u0 u1 v0 v1 (otherMap col) =
       cramerSolution p c0 c1 c2 c3 c4 u0 u1 v0 v1 col := by
   have hcol : col.val < otherIdx.length := by rw [otherIdx_length]; exact col.isLt

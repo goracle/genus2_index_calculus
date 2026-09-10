@@ -66,12 +66,12 @@ variable (p : ℕ) [hp : Fact (Nat.Prime p)] [hp2 : Fact (p ≠ 2)]
 variable (c0 c1 c2 c3 c4 : F p)
 
 set_option maxHeartbeats 2000000 in
-/-- **`cramerSolution`'s own `totalDegree` bound — the actual assembly
-target.** Given per-entry witness-denominator nonvanishing for both
-`matrixA` and `rhsVec` (`hAne`/`hRne` — see this file's header for why
-these are taken as hypotheses rather than derived from `MatrixNondegenerate`),
-`Matrix.cramer (matrixA ...) (rhsVec ...) i`'s `Classical.choose`-extracted
-`IsRdecWitness` numerator/denominator pair has `totalDegree ≤ 4^2 * 24 =
+/-- **The un-normalized Cramer NUMERATOR's `totalDegree` bound.** Given
+per-entry witness-denominator nonvanishing for both `matrixA` and `rhsVec`
+(`hAne`/`hRne` — see this file's header for why these are taken as
+hypotheses rather than derived from `MatrixNondegenerate`), `Matrix.cramer
+(matrixA ...) (rhsVec ...) i`'s `Classical.choose`-extracted `IsRdecWitness`
+numerator/denominator pair has `totalDegree ≤ 4^2 * 24 =
 384` (numerator, via `cramerNumeratorDet_totalDegree_le` at `D := 24`,
 `matrixA`'s own witness-numerator bound, `Fintype.card (Fin 4) = 4`) and
 `≤ 4^2 * 20 = 320` (denominator, via `prod_totalDegree_le` applied twice
@@ -85,8 +85,21 @@ branches uniformly, avoiding a `max`/case-split in the final numeral. Both
 `hAne`/`hRne` are stated directly against the SAME `Classical.choose`
 extraction the proof itself later `set`s as `b`/`eb`, so they line up with
 `cramerSolution_isRdecWitness_of_entries`'s implicit `b`/`eb` arguments by
-literal syntactic match once `set` folds them, not merely by defeq. -/
-theorem cramerSolution_totalDegree_le {Vars : Type*} [DecidableEq Vars]
+literal syntactic match once `set` folds them, not merely by defeq.
+
+**IMPORTANT naming caveat, caught this pass**: despite this file's original
+name for this theorem, `Matrix.cramer (matrixA ...) (rhsVec ...) i` is NOT
+the same `K2`-value as `cramerSolution i` — `cramerSolution i := matrixA.
+cramer rhsVec i / matrixA.det` (`DataDerivationSolve.lean`'s own
+definition), and `Matrix.cramer`'s defining property (`Matrix.mulVec_cramer`,
+Mathlib) is `A.cramer b = A.det • x` when `A x = b`, i.e. `A.cramer b i =
+A.det * x i` — a `matrixA.det`-SCALED version of the solution, not the
+solution itself, whenever `matrixA.det ≠ 1`. This theorem is renamed
+`cramerNumerator_totalDegree_le` to reflect what it actually bounds; the
+TRUE `cramerSolution i` bound is `cramerSolution_totalDegree_le` below,
+which divides this numerator's witness by a separate witness for
+`matrixA.det` itself via the new `IsRdecWitness.div` (`TowerToRdecMul.lean`). -/
+theorem cramerNumerator_totalDegree_le {Vars : Type*} [DecidableEq Vars]
     (sg : SideGens Vars) (u0 u1 v0 v1 : F p)
     (ι : K2 p c0 c1 c2 c3 c4 →+* FractionRing (MvPolynomial Vars (F p)))
     (hι_t : ∀ i : Fin 2, ι (algebraMap (K1 p c0 c1 c2 c3 c4) (K2 p c0 c1 c2 c3 c4)

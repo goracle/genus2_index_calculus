@@ -83,6 +83,38 @@ theorem IsRdecWitness.mul {Vars K L : Type*} [CommRing K] [CommRing L]
   rw [ha, hb]
   ring
 
+/-- **Division.** Given valid witnesses for `a` and `b` under the SAME
+`ι`/`evalNd` pair, PLUS `evalNd db ≠ 0` and `ι b ≠ 0` (both needed so
+`ι (a / b) = ι a / ι b` is the honest field quotient, not the junk
+`0`-denominator convention), the cross-multiplied pair `(na*db, da*nb)`
+is a valid witness for `a / b` — mirrors `IsRdecWitness.mul` but needs
+`K`/`L` to be `Field`s (not just `CommRing`s): `ι (a / b) = ι a / ι b`
+(`map_div₀`) needs `ι` to be a genuine field homomorphism, and the proof
+itself divides inside `L`, which needs `L` a field too (the only
+instantiation this project actually uses, `L := FractionRing
+(MvPolynomial Vars (F p))`, already is one). Needed to convert a witness
+for `Matrix.cramer M rhs i` (the un-normalized Cramer NUMERATOR, `=
+M.det * (cramer solution)`) into a witness for the actual Cramer
+SOLUTION `M.cramer rhs i / M.det` itself — see
+`CoeffsOutTotalDegree.lean`'s own use. -/
+theorem IsRdecWitness.div {Vars K L : Type*} [Field K] [Field L]
+    {ι : K →+* L} {evalNd : MvPolynomial Vars (F p) →+* L}
+    {a b : K} {na da nb db : MvPolynomial Vars (F p)}
+    (ha : IsRdecWitness p ι evalNd a (na, da))
+    (hb : IsRdecWitness p ι evalNd b (nb, db))
+    (hdb : evalNd db ≠ 0) (hιb : ι b ≠ 0) :
+    IsRdecWitness p ι evalNd (a / b) (na * db, da * nb) := by
+  unfold IsRdecWitness at *
+  -- Goal: `evalNd (na * db) = evalNd (da * nb) * ι (a / b)`. Substitute
+  -- `ha`/`hb` directly (eliminating `evalNd na`/`evalNd nb` in favor of
+  -- `ι a`/`ι b`) and `ι (a / b) = ι a * (ι b)⁻¹` (`map_div₀`), then the
+  -- remaining identity `evalNd da * ι a * evalNd db = evalNd da *
+  -- (evalNd db * ι b) * (ι a * (ι b)⁻¹)` is pure field algebra given
+  -- `ι b ≠ 0` (`mul_inv_cancel₀`), closed by `field_simp`/`ring`.
+  rw [map_mul, map_mul, map_div₀, ha, hb]
+  field_simp
+  ring
+
 /-- **`towerToRdec_spec`, restated as `IsRdecWitness`.** `towerToRdec_spec`
 (`DataDerivationMumford.lean`, already proved, no `sorry`) is EXACTLY
 `IsRdecWitness` at `K := K2 p c0 c1 c2 c3 c4`, `L := FractionRing
