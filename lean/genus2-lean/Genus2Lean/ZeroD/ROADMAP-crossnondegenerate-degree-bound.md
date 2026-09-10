@@ -346,7 +346,142 @@ Still fully unresolved, independent of the above: bounding `Npoly`'s own
 `fAtT`-images, `Epoly`/`Ypoly`'s coefficients are `cramerSolution`
 outputs). Not attempted this pass.
 
-## Update, later pass — step 5 done and REPL-confirmed, step 6 not started
+## Update, later pass — the `matrixA`/`rhsVec` → `coeffsOut` bridge, scoped
+
+**Status check confirms both prerequisites now closed and REPL-green**:
+`matrixA_entry_totalDegree_le` (`MatrixEntryTotalDegree.lean`) and
+`rhsVec_entry_totalDegree_le` (`RhsVecTotalDegree.lean`) both give, for
+every entry, an `IsRdecWitness p ι evalNd (entry) nd` pair with
+`nd.1.totalDegree ≤ 24`/`≤7`, `nd.2.totalDegree ≤ 20`/`≤6` respectively
+(`ι`/`evalNd` the same ambient field embedding `K2 → FractionRing
+(MvPolynomial Vars (F p))` throughout). `cramerRatioDet_num_totalDegree_le`
+(`DataDerivationTotalDegree.lean`) is also proved, but is stated for
+matrices ALREADY given as literal `a i j / b i j` fractions of
+`MvPolynomial Vars (F p)` elements — not for `K2`-valued matrices related
+to such fractions only via `IsRdecWitness`'s cross-multiplied equation.
+**This is the actual remaining gap** (the "correction note" flagged, but
+never resolved, earlier in `DataDerivationTotalDegree.lean` — see that
+file's own "The actual `K2`-valued case" section): a bridging theorem
+connecting `IsRdecWitness`-per-entry to `IsRdecWitness` (or an
+`IsFractionRing.num`/`.den`-shaped bound) on the matrix's `Matrix.cramer`/
+`.det`, i.e. on `cramerSolution`/`coeffsOut` themselves.
+
+**The bridge, traced concretely**:
+1. `IsRdecWitness p ι evalNd (M i j) (a i j, b i j)` unfolds to `evalNd
+   (a i j) = evalNd (b i j) * ι (M i j)` — i.e. `ι (M i j) = evalNd (a i j)
+   / evalNd (b i j)` whenever `evalNd (b i j) ≠ 0` (`ι`/`evalNd` land in a
+   FIELD, `FractionRing (MvPolynomial Vars (F p))`, so division is always
+   defined, just not always the honest inverse when the denominator
+   vanishes — matching `cramerSolution`'s own `MatrixNondegenerate`-
+   conditional well-definedness).
+2. `ι` is a ring hom, so `ι (M.det) = (M.map ι).det` (`RingHom.map_det`,
+   confirmed present in Mathlib — exact name to re-confirm against this
+   project's snapshot once sent to Claire's REPL, `Mathlib.LinearAlgebra.
+   Matrix.Determinant.Basic`-adjacent) — this converts `ι`'s action on the
+   `K2`-valued determinant into a determinant of `L`-valued (`L :=
+   FractionRing (MvPolynomial Vars (F p))`) entries, each entry now a
+   literal `evalNd (a i j) / evalNd (b i j)` fraction by step 1 — EXACTLY
+   `cramerRatioDet_num_totalDegree_le`'s hypothesis shape, with `evalNd
+   (a i j)`/`evalNd (b i j)` playing the role of that theorem's own `a i
+   j`/`b i j` (both already `MvPolynomial`-valued there; here they arrive
+   as `evalNd` applied to `MvPolynomial`-valued witnesses, so no type
+   mismatch — `evalNd (a i j)` IS an `MvPolynomial Vars (F p)`-indexed
+   value only after `evalNd`'s codomain is unfolded... **correction,
+   catch this before writing**: `evalNd : MvPolynomial Vars (F p) →+* L`,
+   so `evalNd (a i j) : L`, NOT `MvPolynomial Vars (F p)` — `cramerRatioDet_
+   num_totalDegree_le`'s own `a`/`b` are `MvPolynomial`-valued, feeding
+   INTO `L` only via the `v := IsLocalization.mk' ... a ⟨b,...⟩` hypothesis,
+   not via a further homomorphism. **So the right substitution is `a i j`/
+   `b i j` themselves (the WITNESS pair, `MvPolynomial`-valued, already
+   totalDegree-bounded) directly as that theorem's `a`/`b`**, with `v :=
+   ι (M.cramer rhs col) / ι (M.det)` (or the appropriate cramer-ratio
+   entry) — NOT `evalNd (a i j)` — and the hypothesis `hv` needs `ι (M.det)
+   ⁻¹`-shaped reasoning to connect `Matrix.cramer`'s OWN determinant
+   identity (`Matrix.cramer_apply`/`Matrix.det_smul_...`-style) to the
+   `a i j * ∏ b i' j` numerator/`∏ b i j` denominator shape
+   `cramerRatioDet_num_totalDegree_le` expects — this is genuinely the
+   crux of the bridge, not a relabeling, and needs its own small lemma
+   (see step 3).
+3. **The crux, stated precisely**: given `IsRdecWitness p ι evalNd (M i j)
+   (a i j, b i j)` for every `(i,j)`, PLUS `∀ i j, evalNd (b i j) ≠ 0`
+   (so `ι (M i j) = evalNd (a i j) / evalNd (b i j)` honestly, not just
+   via the zero-denominator convention), show `ι (M.det) = evalNd
+   (Matrix.det (Matrix.of fun i j => a i j / b i j))` — i.e. `ι ∘ M.det =
+   (M.map (fun x => ...))`... **the cleanest route**: define `A : Matrix n
+   n L := Matrix.of fun i j => evalNd (a i j) / evalNd (b i j)`, show `A =
+   M.map ι` entrywise (from `IsRdecWitness`'s equation, `evalNd (b i j) ≠
+   0` needed to divide), then `ι (M.det) = (M.map ι).det = A.det` via
+   `RingHom.map_det`, and `A.det`'s own `IsFractionRing.num`/`.den` bound
+   comes from `cramerRatioDet_num_totalDegree_le` applied at `a := (fun i
+   j => a i j)`, `b := (fun i j => b i j)` (now genuinely `MvPolynomial`-
+   valued as that theorem wants), PROVIDED `A.det`'s value is expressed
+   as that theorem's specific `v := IsLocalization.mk' ... (Matrix.det
+   (Matrix.of fun i j => a i j * ∏ ...)) ⟨∏∏ b i j, ...⟩` — which is
+   `cramerDenom_det_eq`'s own `Δ_A * A.det = C.det` identity, ALREADY
+   PROVED, generic over any field `K` (here `K := L`), applied with `a i j
+   := evalNd (a i j)`, `b i j := evalNd (b i j)` (i.e. `cramerDenom_det_eq`
+   takes FIELD-valued `a`/`b`, so it's `evalNd (a i j)`/`evalNd (b i j)`
+   feeding IT, while the totalDegree bound is tracked on the
+   `MvPolynomial`-valued `a i j`/`b i j` themselves via
+   `cramerRatioDet_num_totalDegree_le`'s separate, `MvPolynomial`-level
+   argument list) — so the full chain is `cramerDenom_det_eq` (instantiate
+   at `evalNd ∘ a`, `evalNd ∘ b`) to get the `L`-valued identity, combined
+   with `cramerRatioDet_num_totalDegree_le` (instantiate at the
+   `MvPolynomial`-valued `a`, `b` directly) to get the `totalDegree` bound
+   on the RESULT's `IsFractionRing.num`, and these two instantiations
+   share the same `a`/`b` names but operate one level apart (`evalNd ∘ a`
+   is what `cramerDenom_det_eq` sees; `a` itself is what `cramerRatioDet_
+   num_totalDegree_le` bounds) — matching cleanly PROVIDED `v`'s defining
+   equation (`hv` in `cramerRatioDet_num_totalDegree_le`'s signature) is
+   proved to hold for `v := ι (M.det)` specifically, which is exactly
+   `cramerDenom_det_eq` composed with `RingHom.map_det`/`IsLocalization.
+   mk'`'s own characterization of division in a field via `mk'`. **This
+   composition (not either piece alone) is the new lemma to write** —
+   tentatively `IsRdecWitness_det` or `matrixDet_isRdecWitness_of_entries`
+   — taking the same `∀ i j, IsRdecWitness ... (M i j) (a i j, b i j)`
+   hypothesis this section opened with, `∀ i j, evalNd (b i j) ≠ 0`, and
+   producing `IsRdecWitness p ι evalNd (M.det) (C.det, ∏ i j, b i j)`
+   directly (`C := Matrix.of fun i j => a i j * ∏ i' ≠ i, b i' j`, exactly
+   `cramerDenom_det_eq`'s own `C`) — an `IsRdecWitness` CONCLUSION rather
+   than an `IsFractionRing.num`/`.den` one, so it composes with
+   `IsRdecWitness`'s OWN downstream degree-bound story
+   (`towerToRdec_isRdecWitness`'s sibling, not a detour through
+   `IsFractionRing` at all) — cleaner than routing through
+   `cramerRatioDet_num_totalDegree_le`'s `IsFractionRing.num`-specific
+   statement, since `IsRdecWitness (M.det) (C.det, Δ)` plus `C.det`'s own
+   `totalDegree ≤ n²D` (`cramerNumeratorDet_totalDegree_le`, already
+   proved) and `Δ`'s own `totalDegree ≤ n²D` (`cramerDeltaA_totalDegree_le`,
+   already proved) gives the SAME final bound with no `IsFractionRing`
+   machinery needed downstream at all — **this is the corrected plan,
+   superseding this file's earlier `cramerRatioDet_num_totalDegree_le`-
+   centric framing**: bound the WITNESS PAIR `(C.det, Δ)` directly via
+   `IsRdecWitness`, not `A.det`'s `IsFractionRing.num`.
+4. **`Matrix.cramer`'s own entries** need the same treatment as `Matrix.
+   det`'s — `Matrix.cramer A b i = (A.updateColumn i b).det`
+   (`Matrix.cramer_apply`), so `matrixDet_isRdecWitness_of_entries`
+   applied to `A.updateColumn i rhsVec` (whose entries are `A`'s own
+   `IsRdecWitness` witnesses in every column except `i`, `rhsVec`'s in
+   column `i`) gives `cramerSolution i`'s numerator/denominator witness
+   directly, by the SAME lemma, no separate cramer-specific version
+   needed.
+
+**Next step**: write `matrixDet_isRdecWitness_of_entries` (step 3's crux)
+as its own theorem in a new file (`CramerWitnessAssembly.lean`, per this
+project's 1500-line-per-file / one-lemma-at-a-time discipline), building
+on `cramerDenom_det_eq`, `cramerNumeratorDet_totalDegree_le`,
+`cramerDeltaA_totalDegree_le` (all `DataDerivationTotalDegree.lean`,
+already proved) plus `RingHom.map_det` (Mathlib, name to confirm against
+this snapshot). Then instantiate it twice — once for `matrixA.det`
+directly, once for `matrixA.updateColumn i rhsVec).det` (`= Matrix.cramer
+matrixA rhsVec i` via `Matrix.cramer_apply`) — to get `IsRdecWitness`
+witnesses (with explicit `totalDegree` bounds) for both `cramerSolution`'s
+numerator-side and denominator-side pieces. `coeffsOut`'s own bound
+follows immediately at the `otherIdx` slots (`cramerSolution` directly)
+and trivially at `yIdx` (`coeffsOut yIdx = 1`, `totalDegree` bound `(0,1)`
+via `IsRdecWitness`'s own reflexivity-style base case, not yet named as
+a lemma but a one-line `map_one`/`mul_one` fact). **Not yet written as
+Lean** — this section is scoping only, per this project's convention of
+scoping multi-file bridging work before writing tactic-level proofs.
 
 **Closed, REPL-confirmed green (Claire's build)**: `CrossNondegenerateDegreeBound.lean`
 (new file, roadmap step 5) states and proves `crossResultant_totalDegree_le`
