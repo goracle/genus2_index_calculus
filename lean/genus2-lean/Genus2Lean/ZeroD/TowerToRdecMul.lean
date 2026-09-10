@@ -113,7 +113,6 @@ theorem IsRdecWitness.div {Vars K L : Type*} [Field K] [Field L]
   -- `ι b ≠ 0` (`mul_inv_cancel₀`), closed by `field_simp`/`ring`.
   rw [map_mul, map_mul, map_div₀, ha, hb]
   field_simp
-  ring
 
 /-- **`towerToRdec_spec`, restated as `IsRdecWitness`.** `towerToRdec_spec`
 (`DataDerivationMumford.lean`, already proved, no `sorry`) is EXACTLY
