@@ -1378,6 +1378,13 @@ c2 c3 c4 0`/`1` directly (not restated as separate `anchor1_totalDegree_le`/
 until the next assembly step actually needs the `anchor1`/`anchor2` names in
 scope).
 
+**Added this pass, NOT yet REPL-confirmed**: `towerToRdec_w1_totalDegree_le`/
+`towerToRdec_w2_totalDegree_le` — the `anchor1.2`/`anchor2.2` companions to
+`t0_promoted_totalDegree_le`'s `anchor1.1`/`anchor2.1` bound, both `≤3`/`≤2`.
+With these plus `t0_promoted_totalDegree_le`, all four of `anchor1`/`anchor2`'s
+components now have an explicit `towerToRdec` bound — `matrixA`/`rhsVec`'s
+`px`/`py` factors are fully covered.
+
 **What this does NOT yet close**: raising `t1`/`t2` to powers `bi ≤ 3`
 (`MvPolynomial.totalDegree_mul`/`_pow`, mechanical now that `t1`/`t2`'s own
 bound is a proved theorem) and `reduceMonomialModU`'s `F p`-valued output
