@@ -111,3 +111,4 @@ import Genus2Lean.ZeroD.CrossNondegenerateDegreeBound
 import Genus2Lean.ZeroD.CramerEntryTotalDegree
 import Genus2Lean.ZeroD.AnchorTotalDegree
 import Genus2Lean.ZeroD.RRBasisTotalDegree
+import Genus2Lean.ZeroD.MatrixEntryTotalDegree
