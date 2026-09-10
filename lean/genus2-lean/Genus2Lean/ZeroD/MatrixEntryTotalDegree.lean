@@ -146,6 +146,53 @@ theorem algebraMap_Fp_towerToRdec_totalDegree_eq {Vars : Type*} (sg : SideGens V
     rw [← IsScalarTower.algebraMap_apply, ← IsScalarTower.algebraMap_apply]
   rw [heq]; exact h2
 
+/-- **`px ^ bi * (py or 1)`'s witness pair has a `totalDegree` bound**, the
+shape `matrixA`'s row-0/row-1 entries actually take (`px,py := anchor1`/
+`anchor2`'s two components). Composes `totalDegree_pow_le` (on `px`'s own
+`towerToRdec`-image degree, via `anchor1_fst_totalDegree_le`/`anchor2_fst_
+totalDegree_le`, `≤7`/`≤6`) with `totalDegree_mul` (against `py`'s own
+image, via `anchor1_snd_totalDegree_le`/`anchor2_snd_totalDegree_le` in
+`AnchorTotalDegree.lean`, `≤3`/`≤2`, or against `(1,1)`'s trivial `totalDegree
+0` in the `bj ≠ 1` branch) directly on the witness COMPONENTS — not via
+`IsRdecWitness` (`TowerToRdecMul.lean`), which only certifies that
+`((towerToRdec px).1 * (towerToRdec (py or 1)).1, ...)` is legitimately a
+witness for the VALUE `px^bi * (py or 1)`, a separate concern from its
+degree. `bi ≤ 3` (`rrBasis5_getD_bi_le_three`) bounds the power. -/
+theorem anchorPow_mul_totalDegree_le {Vars : Type*}
+    (nx dx ny dy : MvPolynomial Vars (F p)) {bi : ℕ} (hbi : bi ≤ 3)
+    (hx1 : nx.totalDegree ≤ 7) (hx2 : dx.totalDegree ≤ 6)
+    (hy1 : ny.totalDegree ≤ 3) (hy2 : dy.totalDegree ≤ 2) :
+    (nx ^ bi * ny).totalDegree ≤ 24 ∧ (dx ^ bi * dy).totalDegree ≤ 20 := by
+  have h1 : (nx ^ bi * ny).totalDegree ≤ (nx ^ bi).totalDegree + ny.totalDegree :=
+    MvPolynomial.totalDegree_mul _ _
+  have h2 : (dx ^ bi * dy).totalDegree ≤ (dx ^ bi).totalDegree + dy.totalDegree :=
+    MvPolynomial.totalDegree_mul _ _
+  have hp1 : (nx ^ bi).totalDegree ≤ bi * nx.totalDegree := totalDegree_pow_le p nx bi
+  have hp2 : (dx ^ bi).totalDegree ≤ bi * dx.totalDegree := totalDegree_pow_le p dx bi
+  -- `bi * nx.totalDegree ≤ 3 * 7` is a product of two bounded naturals
+  -- (`hbi : bi ≤ 3`, `hx1 : nx.totalDegree ≤ 7`) — genuinely nonlinear, so
+  -- `omega` alone can't multiply the two bounds together; `nlinarith` can,
+  -- by considering the product of the two hypotheses directly.
+  have hp1' : bi * nx.totalDegree ≤ 21 := by nlinarith
+  have hp2' : bi * dx.totalDegree ≤ 18 := by nlinarith
+  omega
+
+/-- **The `bj ≠ 1` companion**: `px ^ bi * 1`'s witness pair, i.e. just
+`px ^ bi`'s own bound (`ny,dy := 1,1`, `totalDegree 0` each — the trivial
+case of `anchorPow_mul_totalDegree_le`, restated without the unused
+`(ny,dy)` hypotheses since `MvPolynomial.totalDegree_one = 0` closes them
+directly rather than needing them threaded through as arguments). -/
+theorem anchorPow_totalDegree_le {Vars : Type*}
+    (nx dx : MvPolynomial Vars (F p)) {bi : ℕ} (hbi : bi ≤ 3)
+    (hx1 : nx.totalDegree ≤ 7) (hx2 : dx.totalDegree ≤ 6) :
+    (nx ^ bi * 1).totalDegree ≤ 21 ∧ (dx ^ bi * 1).totalDegree ≤ 18 := by
+  simp only [mul_one]
+  have hp1 : (nx ^ bi).totalDegree ≤ bi * nx.totalDegree := totalDegree_pow_le p nx bi
+  have hp2 : (dx ^ bi).totalDegree ≤ bi * dx.totalDegree := totalDegree_pow_le p dx bi
+  have hp1' : bi * nx.totalDegree ≤ 21 := by nlinarith
+  have hp2' : bi * dx.totalDegree ≤ 18 := by nlinarith
+  omega
+
 /-! ## Status, this pass
 
 **All four theorems drafted and closed, no `sorry`** — `totalDegree_pow_le`,
@@ -174,7 +221,52 @@ level up) and contains no `sorry` or other placeholder.
 through `matrixA`/`rhsVec`'s own `if`-branching — four cases (`row = 0`,
 `row = 1`, `row = 2`, `row = 3`), each a `combine_totalDegree_le`-style
 `mul`/`add` chain. Then one more step (`cramerRatioDet_num_totalDegree_le`,
-`DataDerivationTotalDegree.lean`) to reach `coeffsOut`'s own bound. -/
+`DataDerivationTotalDegree.lean`) to reach `coeffsOut`'s own bound.
+
+## Status, later pass
+
+**Added this pass**: `anchorPow_mul_totalDegree_le`/`anchorPow_totalDegree_le`
+— the `px^bi * (py or 1)` degree bound `matrixA`'s row-0/row-1 entries
+actually need, composing `totalDegree_pow_le`/`MvPolynomial.totalDegree_mul`
+against `anchor1_fst/snd_totalDegree_le`/`anchor2_fst/snd_totalDegree_le`'s
+already-proved bounds and `rrBasis5_getD_bi_le_three`'s `bi ≤ 3`. **Revised
+later in this same pass**: an earlier draft tried `interval_cases bi` to
+turn `bi` into a literal before calling `omega`, on the theory that a
+concrete `bi` makes `bi * nx.totalDegree` linear — this did not work as
+expected inside the `<;> (...)` combinator (REPL-confirmed: `omega` still
+saw `bi` as a live, unbounded atom in every branch, i.e. `interval_cases`
+was not actually substituting it before the combined tactic block ran),
+and a follow-up attempt bridging via `gcongr` had the same problem since
+it was still downstream of the same `interval_cases` step. **Final
+approach**: skip `interval_cases` entirely — `hp1' : bi * nx.totalDegree
+≤ 21`/`hp2' : bi * dx.totalDegree ≤ 18` are proved directly from
+`hbi : bi ≤ 3` and `hx1`/`hx2` via `nlinarith` (which, unlike `omega`, can
+multiply two bound hypotheses together — genuinely nonlinear, since both
+`bi` and `nx.totalDegree` are variables), then `omega` closes the rest
+linearly from `h1`/`h2`/`hp1`/`hp2`/`hp1'`/`hp2'`. Avoids needing to name
+`Nat.mul_le_mul`/`Nat.mul_le_mul_left`'s exact current signature at all.
+Bounds are not tight (`≤24`/`≤20` for the `bj=1` case, `≤21`/`≤18`
+for `bj≠1`) — no attempt made to sharpen them, since a loose-but-correct
+uniform bound is all `CrossNondegenerate`'s resultant degree bound
+ultimately needs, and tightening later (if the numbers turn out to matter
+for the `p > d!`-style pigeonhole argument `ZeroD-README.md` flags) is
+cheap once the shape is confirmed working. States the two cases
+(`bj = 1` vs `bj ≠ 1`, i.e. `× py` vs `× 1`) as separate theorems rather
+than one `if`-branching theorem, matching `matrixA`'s own two-branch shape
+so the eventual entry theorem can dispatch on `bj` directly to whichever
+applies, rather than needing to `simp`/case-split inside a single combined
+statement.
+
+**Deliberately does NOT yet unfold `matrixA`/`rhsVec` themselves** — these
+two theorems are pure `MvPolynomial` degree facts about the SHAPE
+`px^bi * (py or 1)` takes, not yet connected to `matrixA row col`'s literal
+`let`/`if`-laden definition (still the next step, and still the place this
+file's own earlier note flags as the real unfolding risk — `let`-elaboration
+surprises need a real build to pin down safely). Also not yet connected to
+`reduceMonomialModU`'s rows (`matrixA`'s `row = 2`/`row = 3` cases,
+untouched this pass) or to `cramerRatioDet_num_totalDegree_le`
+(`DataDerivationTotalDegree.lean`), which is what actually turns a
+per-entry bound into `coeffsOut`'s own bound. -/
 
 end TheDataDerivation
 end Genus2Lean
