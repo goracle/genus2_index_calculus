@@ -113,3 +113,4 @@ import Genus2Lean.ZeroD.AnchorTotalDegree
 import Genus2Lean.ZeroD.RRBasisTotalDegree
 import Genus2Lean.ZeroD.MatrixEntryTotalDegree
 import Genus2Lean.ZeroD.TowerToRdecMul
+import Genus2Lean.ZeroD.RhsVecTotalDegree
