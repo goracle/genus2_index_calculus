@@ -3,7 +3,7 @@ import Genus2Lean.ZeroD.NpolyCoeffTotalDegreeUniform
 import Genus2Lean.ZeroD.TheDataDerivation.DataDerivationSolve
 import Genus2Lean.ZeroD.DecoupledSystemRegular
 
-/-! Revision 08: move coeff-zero equality transport outside IsRdecWitness to avoid isDefEq timeout. -/
+/-! Revision 08: move coeff-zero equality transport outside IsRdecWitness to avoid isDefEq timeout.  This version takes forever to build, please do not add more stuff to it -/
 
 /-!
 # `curBeforeMonic.coeff {0,1,2}`'s own `IsRdecWitness` bound
