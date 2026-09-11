@@ -123,3 +123,4 @@ import Genus2Lean.ZeroD.NpolyCoeffTotalDegreeUniform
 import Genus2Lean.ZeroD.CurBeforeMonicCoeffTotalDegree
 import Genus2Lean.ZeroD.URSCoeffIsRdecWitness
 import Genus2Lean.ZeroD.MvPolynomialTotalDegreeMulEq
+import Genus2Lean.ZeroD.AlgebraMapFpLiteralTotalDegree
