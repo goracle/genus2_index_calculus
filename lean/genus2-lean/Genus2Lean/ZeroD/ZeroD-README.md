@@ -231,14 +231,37 @@ item 1:
    closes the first concrete piece of this -- `crossResultant_totalDegree_le`/
    `crossResultantV_totalDegree_le`, REPL-confirmed green, bound all four of
    `CrossNondegenerate`'s resultants by `4*D+2` given a base-case bound `D`
-   on `uRS`/`vRS`'s coefficients. **Still open**: `D` is a hypothesis, not a
-   concrete number -- pinning it down requires a `totalDegree` bound through
-   `curBeforeMonic`'s three nested `/ₘ` (exact polynomial division) steps,
-   which Mathlib has no off-the-shelf lemma for. See
-   `ROADMAP-crossnondegenerate-degree-bound.md`'s own "Update, later pass"
-   section for the three candidate routes (direct induction on
-   `divByMonic`'s definition; the exact-quotient-via-`Npoly_eq_curBeforeMonic_mul`
-   route; or a ChatGPT consultation) -- this is now the single next action.
+   on `uRS`/`vRS`'s coefficients, conditional on `D` as a hypothesis.
+
+   **Update, later pass -- the `/ₘ`-chain gap is CLOSED, read this before
+   trusting the paragraph above**: `curBeforeMonic_coeff_totalDegree_le`
+   (`CurBeforeMonicCoeffTotalDegree.lean`) is REPL-confirmed green and gives
+   a concrete `≤315448` bound on `curBeforeMonic.coeff {0,1,2}` -- the three
+   nested-`/ₘ` obstacle the paragraph above describes is resolved (via the
+   exact-multiplication-identity route, `Npoly = curBeforeMonic * Q`, a
+   triangular coefficient system solved top-down, no division-coefficient
+   lemma needed after all). **If you are reading this file to figure out
+   what to do next, the "pin down `D`" framing above is STALE -- do not
+   re-attempt it.** The actual remaining gap is one level higher: that
+   bound is stated via `IsRdecWitness` (an existential witness), while
+   `crossResultant_totalDegree_le`/`crossResultantV_totalDegree_le` need
+   the literal `towerToRdec`-COMPUTED pair bounded -- two different
+   strengths (a witness bound never implies a computed-pair bound, since
+   witnesses aren't unique). `URSCoeffIsRdecWitness.lean` (new file, later
+   pass still) closes half of this -- `uRS.coeff i`'s own `IsRdecWitness`
+   bound (`≤630896`), via `IsRdecWitness.div`'s witness-swap trick for the
+   `leadingCoeff⁻¹` factor -- but has NOT yet been REPL-confirmed (three
+   build errors already found and fixed one round; awaiting a fresh test).
+   **The real single next action**: rewrite `crossResultant_totalDegree_le`/
+   `crossResultantV_totalDegree_le` themselves to conclude in `IsRdecWitness`
+   form (losing nothing real -- `CrossNondegenerate`'s downstream
+   `IsSMulRegular` argument only needs the resultant's zero/nonzero status,
+   never a canonical representation), then plug in `URSCoeffIsRdecWitness.
+   lean`'s bound directly. See `ROADMAP-crossnondegenerate-degree-bound.md`'s
+   own "Update, later pass -- `D` bridge started" section (bottom of that
+   file) for the full trace -- this supersedes that file's older
+   "candidate routes" list too, which was aimed at the wrong (already-closed)
+   gap.
 
    **Major update, not yet formalized anywhere -- flagged here first,
    NOT yet reflected in `ROADMAP-alpha-locus.md`/`ROADMAP-degree-uniform-

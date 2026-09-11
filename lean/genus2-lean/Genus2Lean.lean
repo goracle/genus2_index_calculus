@@ -121,3 +121,4 @@ import Genus2Lean.ZeroD.EpolyTotalDegree
 import Genus2Lean.ZeroD.NpolyCoeffTotalDegree
 import Genus2Lean.ZeroD.NpolyCoeffTotalDegreeUniform
 import Genus2Lean.ZeroD.CurBeforeMonicCoeffTotalDegree
+import Genus2Lean.ZeroD.URSCoeffIsRdecWitness
