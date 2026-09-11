@@ -3,6 +3,8 @@ import Genus2Lean.ZeroD.NpolyCoeffTotalDegreeUniform
 import Genus2Lean.ZeroD.TheDataDerivation.DataDerivationSolve
 import Genus2Lean.ZeroD.DecoupledSystemRegular
 
+/-! Revision 02: factor the shared coeff-1 witness/bound and fix equality transport direction. -/
+
 /-!
 # `curBeforeMonic.coeff {0,1,2}`'s own `IsRdecWitness` bound
 
@@ -369,9 +371,332 @@ theorem Qpoly_coeff_three_and_two_eq :
       Polynomial.coeff_C, Polynomial.coeff_X]
     norm_num
 
+omit hp2 in
+/-- **Generic bound propagation for `IsRdecWitness.add`/`.mul`/`.neg`.**
+Given witness pairs for `a`/`b` whose BOTH components are `≤ Da`/`≤ Db`
+uniformly, the combined witness for `a+b` (`.add`, pair `(na*db+nb*da,
+da*db)`) and `a*b` (`.mul`, pair `(na*nb, da*db)`) both have BOTH
+components `≤ Da+Db`, and `-a`'s witness (`.neg`, pair `(-na,da)`) has
+the SAME uniform bound `Da` as `a`'s. Packaged as one small reusable
+lemma (rather than re-deriving `totalDegree_add_le`/`_mul`/`_neg` by hand
+at each call site) since this file's final assembly needs the SAME
+"both components share one uniform numeral" bookkeeping repeatedly. -/
+theorem uniformBound_add {Vars : Type*}
+    {n1 d1 n2 d2 : MvPolynomial Vars (F p)} {D1 D2 : ℕ}
+    (h1 : n1.totalDegree ≤ D1 ∧ d1.totalDegree ≤ D1)
+    (h2 : n2.totalDegree ≤ D2 ∧ d2.totalDegree ≤ D2) :
+    (n1 * d2 + n2 * d1).totalDegree ≤ D1 + D2 ∧ (d1 * d2).totalDegree ≤ D1 + D2 := by
+  refine ⟨le_trans (MvPolynomial.totalDegree_add _ _) ?_, ?_⟩
+  · exact max_le
+      (le_trans (MvPolynomial.totalDegree_mul _ _) (Nat.add_le_add h1.1 h2.2))
+      (le_trans (MvPolynomial.totalDegree_mul _ _)
+        ((Nat.add_le_add h2.1 h1.2).trans_eq (Nat.add_comm D2 D1)))
+  · exact le_trans (MvPolynomial.totalDegree_mul _ _) (Nat.add_le_add h1.2 h2.2)
+
+omit hp2 in
+theorem uniformBound_mul {Vars : Type*}
+    {n1 d1 n2 d2 : MvPolynomial Vars (F p)} {D1 D2 : ℕ}
+    (h1 : n1.totalDegree ≤ D1 ∧ d1.totalDegree ≤ D1)
+    (h2 : n2.totalDegree ≤ D2 ∧ d2.totalDegree ≤ D2) :
+    (n1 * n2).totalDegree ≤ D1 + D2 ∧ (d1 * d2).totalDegree ≤ D1 + D2 :=
+  ⟨le_trans (MvPolynomial.totalDegree_mul _ _) (Nat.add_le_add h1.1 h2.1),
+   le_trans (MvPolynomial.totalDegree_mul _ _) (Nat.add_le_add h1.2 h2.2)⟩
+
+omit hp2 in
+theorem uniformBound_neg {Vars : Type*}
+    {n d : MvPolynomial Vars (F p)} {D : ℕ}
+    (h : n.totalDegree ≤ D ∧ d.totalDegree ≤ D) :
+    (-n).totalDegree ≤ D ∧ d.totalDegree ≤ D :=
+  ⟨(MvPolynomial.totalDegree_neg _).le.trans h.1, h.2⟩
+
+set_option maxHeartbeats 20000000 in
+/-- **The final assembly: a single uniform `totalDegree` bound `≤315448`
+on `curBeforeMonic.coeff {0,1,2}`.** This is the file's own stated
+deliverable. Given the SAME hypothesis bundle `Npoly_coeff_isRdecWitness_
+uniform` needs, produces `IsRdecWitness` witnesses for `g.coeff 2`,
+`g.coeff 1`, `g.coeff 0` (`g := curBeforeMonic`) with `totalDegree ≤
+78848`/`≤157710`/`≤315448` respectively, via `uniformBound_add`/`_mul`/
+`_neg` composed exactly as this file's header derives: `t1`/`t2` (`≤7`
+via `t0_promoted_totalDegree_le`) and `gu0`/`gu1` (`≤0`, trivial) combine
+to `Q.coeff 3`/`Q.coeff 2`, matching the header's own estimate: `Q.coeff 3
+≤ 14` (`7+7+0`) and `Q.coeff 2 ≤ 28` (`7+7+(7+0)+(7+0)+0`). **Note on an
+earlier draft of this comment**: an intermediate pass here mistakenly
+claimed the composition gives `Q.coeff 2 ≤ 21`, dropping one `(7+0)` term
+from the addition tree (`uniformBound_mul hbt2 hbgu1`'s own contribution);
+that arithmetic was wrong, and the resulting `≤315441` final bound it
+implied was never actually the type this file's `have hQ2bound`/
+`hg0bound` proved (the underlying `have`s were untyped `_ ∧ _`+bare
+`norm_num` at the time and the elaborator never actually forced a
+numeral, which is how the error went unnoticed until `norm_num` was given
+an explicit target). `28`/`315448` are the correct, REPL-confirmed
+numbers — this docstring now matches the header again. These combine with
+`Npoly`'s own `≤78848` witnesses (`Npoly_coeff_isRdecWitness_uniform`) to
+give `g.coeff 2 ≤ 78848`, `g.coeff 1 ≤ 157710`, `g.coeff 0 ≤ 315448`,
+solved top-down via `curBeforeMonic_coeff_{two,one,zero}_eq` rearranged. -/
+theorem curBeforeMonic_coeff_totalDegree_le {Vars : Type*} [DecidableEq Vars]
+    (sg : SideGens Vars)
+    (ι : K2 p c0 c1 c2 c3 c4 →+* FractionRing (MvPolynomial Vars (F p)))
+    (hι_t : ∀ i : Fin 2, ι (algebraMap (K1 p c0 c1 c2 c3 c4) (K2 p c0 c1 c2 c3 c4)
+        (algebraMap (K0 p) (K1 p c0 c1 c2 c3 c4)
+          (algebraMap (MvPolynomial (Fin 2) (F p)) (K0 p) (MvPolynomial.X i)))) =
+      algebraMap (MvPolynomial Vars (F p)) (FractionRing (MvPolynomial Vars (F p)))
+        (MvPolynomial.X (sg.tGen i)))
+    (hι_w1 : ι (algebraMap (K1 p c0 c1 c2 c3 c4) (K2 p c0 c1 c2 c3 c4) (w1 p c0 c1 c2 c3 c4)) =
+      algebraMap (MvPolynomial Vars (F p)) (FractionRing (MvPolynomial Vars (F p)))
+        (MvPolynomial.X (sg.wGen 0)))
+    (hι_w2 : ι (w2 p c0 c1 c2 c3 c4) =
+      algebraMap (MvPolynomial Vars (F p)) (FractionRing (MvPolynomial Vars (F p)))
+        (MvPolynomial.X (sg.wGen 1)))
+    (hbidx : ∀ col : Fin 4, otherIdx.getD col.val 0 < 5)
+    (hAne : ∀ row col : Fin 4,
+      (algebraMap (MvPolynomial Vars (F p)) (FractionRing (MvPolynomial Vars (F p))))
+        ((matrixA_entry_totalDegree_le p c0 c1 c2 c3 c4 sg u0 u1 v0 v1 row col ι
+          hι_t hι_w1 hι_w2 (hbidx col)).choose.2) ≠ 0)
+    (hRne : ∀ row : Fin 4,
+      (algebraMap (MvPolynomial Vars (F p)) (FractionRing (MvPolynomial Vars (F p))))
+        ((rhsVec_entry_totalDegree_le p c0 c1 c2 c3 c4 sg u0 u1 v0 v1 row ι
+          hι_t hι_w1 hι_w2).choose.2) ≠ 0)
+    (hDne : (algebraMap (MvPolynomial Vars (F p)) (FractionRing (MvPolynomial Vars (F p))))
+        ((matrixDet_totalDegree_le p c0 c1 c2 c3 c4 sg u0 u1 v0 v1 ι
+          hι_t hι_w1 hι_w2 hbidx hAne).choose.2) ≠ 0)
+    (hιdet_ne : ι (matrixA p c0 c1 c2 c3 c4 u0 u1 v0 v1).det ≠ 0)
+    (hA : MatrixNondegenerate p c0 c1 c2 c3 c4 u0 u1 v0 v1)
+    (hMumford : IsMumfordTarget p c0 c1 c2 c3 c4 u0 u1 v0 v1) :
+    (∃ nd : MvPolynomial Vars (F p) × MvPolynomial Vars (F p),
+      IsRdecWitness p ι
+        (algebraMap (MvPolynomial Vars (F p)) (FractionRing (MvPolynomial Vars (F p))))
+        ((curBeforeMonic p c0 c1 c2 c3 c4 u0 u1 v0 v1).coeff 2) nd ∧
+      nd.1.totalDegree ≤ 78848 ∧ nd.2.totalDegree ≤ 78848) ∧
+    (∃ nd : MvPolynomial Vars (F p) × MvPolynomial Vars (F p),
+      IsRdecWitness p ι
+        (algebraMap (MvPolynomial Vars (F p)) (FractionRing (MvPolynomial Vars (F p))))
+        ((curBeforeMonic p c0 c1 c2 c3 c4 u0 u1 v0 v1).coeff 1) nd ∧
+      nd.1.totalDegree ≤ 157710 ∧ nd.2.totalDegree ≤ 157710) ∧
+    (∃ nd : MvPolynomial Vars (F p) × MvPolynomial Vars (F p),
+      IsRdecWitness p ι
+        (algebraMap (MvPolynomial Vars (F p)) (FractionRing (MvPolynomial Vars (F p))))
+        ((curBeforeMonic p c0 c1 c2 c3 c4 u0 u1 v0 v1).coeff 0) nd ∧
+      nd.1.totalDegree ≤ 315448 ∧ nd.2.totalDegree ≤ 315448) := by
+  set evalNd := algebraMap (MvPolynomial Vars (F p)) (FractionRing (MvPolynomial Vars (F p)))
+  -- `t1`/`t2`'s witness, uniform `≤7` both components.
+  have ht1 : IsRdecWitness p ι evalNd (anchor1 p c0 c1 c2 c3 c4).1
+      (towerToRdec p sg (anchor1 p c0 c1 c2 c3 c4).1) :=
+    towerToRdec_isRdecWitness p c0 c1 c2 c3 c4 sg _ ι hι_t hι_w1 hι_w2
+  have ht2 : IsRdecWitness p ι evalNd (anchor2 p c0 c1 c2 c3 c4).1
+      (towerToRdec p sg (anchor2 p c0 c1 c2 c3 c4).1) :=
+    towerToRdec_isRdecWitness p c0 c1 c2 c3 c4 sg _ ι hι_t hι_w1 hι_w2
+  have hb1 := t0_promoted_totalDegree_le p sg c0 c1 c2 c3 c4 0
+  have hb2 := t0_promoted_totalDegree_le p sg c0 c1 c2 c3 c4 1
+  have hbt1 : (towerToRdec p sg (anchor1 p c0 c1 c2 c3 c4).1).1.totalDegree ≤ 7 ∧
+      (towerToRdec p sg (anchor1 p c0 c1 c2 c3 c4).1).2.totalDegree ≤ 7 :=
+    ⟨hb1.1, hb1.2.trans (by norm_num)⟩
+  have hbt2 : (towerToRdec p sg (anchor2 p c0 c1 c2 c3 c4).1).1.totalDegree ≤ 7 ∧
+      (towerToRdec p sg (anchor2 p c0 c1 c2 c3 c4).1).2.totalDegree ≤ 7 :=
+    ⟨hb2.1, hb2.2.trans (by norm_num)⟩
+  -- `gu0`/`gu1`'s trivial witness, `totalDegree 0`.
+  have hgu1 : IsRdecWitness p ι evalNd (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u1)
+      (MvPolynomial.C u1, (1 : MvPolynomial Vars (F p))) :=
+    algebraMap_Fp_isRdecWitness p ι u1
+  have hgu0 : IsRdecWitness p ι evalNd (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u0)
+      (MvPolynomial.C u0, (1 : MvPolynomial Vars (F p))) :=
+    algebraMap_Fp_isRdecWitness p ι u0
+  have hbgu1 : (MvPolynomial.C u1 : MvPolynomial Vars (F p)).totalDegree ≤ 0 ∧
+      (1 : MvPolynomial Vars (F p)).totalDegree ≤ 0 := by
+    simp [MvPolynomial.totalDegree_C]
+  have hbgu0 : (MvPolynomial.C u0 : MvPolynomial Vars (F p)).totalDegree ≤ 0 ∧
+      (1 : MvPolynomial Vars (F p)).totalDegree ≤ 0 := by
+    simp [MvPolynomial.totalDegree_C]
+  -- `Q.coeff 3 = -t1-t2+gu1`, `≤14` both components (`7+7+0`).
+  have hQ3wit := IsRdecWitness.add p
+    (IsRdecWitness.add p (IsRdecWitness.neg p ht1) (IsRdecWitness.neg p ht2)) hgu1
+  have hQ3boundRaw := uniformBound_add p
+    (uniformBound_add p (uniformBound_neg p hbt1) (uniformBound_neg p hbt2)) hbgu1
+  have hQ3bound : _ ∧ _ :=
+    ⟨hQ3boundRaw.1.trans (by norm_num : (7+7+0:ℕ) ≤ 14),
+     hQ3boundRaw.2.trans (by norm_num : (7+7+0:ℕ) ≤ 14)⟩
+  -- `Q.coeff 2 = t1*t2-t1*gu1-t2*gu1+gu0`. Composition tree: `(t1*t2) +
+  -- (-(t1*gu1)) + (-(t2*gu1)) + gu0`, bounds `7+7 + (7+0) + (7+0) + 0 = 28`
+  -- summed left-to-right by `uniformBound_add`'s nesting below.
+  have hQ2wit := IsRdecWitness.add p
+    (IsRdecWitness.add p
+      (IsRdecWitness.add p (IsRdecWitness.mul p ht1 ht2)
+        (IsRdecWitness.neg p (IsRdecWitness.mul p ht1 hgu1)))
+      (IsRdecWitness.neg p (IsRdecWitness.mul p ht2 hgu1))) hgu0
+  have hQ2boundRaw := uniformBound_add p
+    (uniformBound_add p
+      (uniformBound_add p (uniformBound_mul p hbt1 hbt2)
+        (uniformBound_neg p (uniformBound_mul p hbt1 hbgu1)))
+      (uniformBound_neg p (uniformBound_mul p hbt2 hbgu1))) hbgu0
+  have hQ2bound : _ ∧ _ :=
+    ⟨hQ2boundRaw.1.trans (by norm_num : (7+7+(7+0)+(7+0)+0:ℕ) ≤ 28),
+     hQ2boundRaw.2.trans (by norm_num : (7+7+(7+0)+(7+0)+0:ℕ) ≤ 28)⟩
+  -- `Q.coeff 2 ≤ 28` matches the header's estimate exactly (`7+7+(7+0)+
+  -- (7+0)+0`); an earlier pass here mistakenly claimed `≤21` after
+  -- dropping a `(7+0)` term from the addition tree. `28` is what this
+  -- composition actually gives and is used from here on.
+  have hgcoeff2eq := curBeforeMonic_coeff_two_eq p c0 c1 c2 c3 c4 u0 u1 v0 v1 hA hMumford
+  have hgcoeff1eq := curBeforeMonic_coeff_one_eq p c0 c1 c2 c3 c4 u0 u1 v0 v1 hA hMumford
+  have hgcoeff0eq := curBeforeMonic_coeff_zero_eq p c0 c1 c2 c3 c4 u0 u1 v0 v1 hA hMumford
+  obtain ⟨ndN6, hwitN6, hbN6a, hbN6b⟩ :=
+    Npoly_coeff_isRdecWitness_uniform p c0 c1 c2 c3 c4 sg u0 u1 v0 v1 ι
+      hι_t hι_w1 hι_w2 hbidx hAne hRne hDne hιdet_ne 6
+  obtain ⟨ndN5, hwitN5, hbN5a, hbN5b⟩ :=
+    Npoly_coeff_isRdecWitness_uniform p c0 c1 c2 c3 c4 sg u0 u1 v0 v1 ι
+      hι_t hι_w1 hι_w2 hbidx hAne hRne hDne hιdet_ne 5
+  obtain ⟨ndN4, hwitN4, hbN4a, hbN4b⟩ :=
+    Npoly_coeff_isRdecWitness_uniform p c0 c1 c2 c3 c4 sg u0 u1 v0 v1 ι
+      hι_t hι_w1 hι_w2 hbidx hAne hRne hDne hιdet_ne 4
+  -- `g.coeff 2 = Npoly.coeff 6`: reuse `ndN6` directly, `≤78848`.
+  have hgwit2 : IsRdecWitness p ι evalNd
+      ((curBeforeMonic p c0 c1 c2 c3 c4 u0 u1 v0 v1).coeff 2) ndN6 := by
+    rw [← hgcoeff2eq]; exact hwitN6
+  -- Build the coefficient-1 witness once.  Both the coefficient-1 and
+  -- coefficient-0 branches need the same expression and bound; keeping it
+  -- outside the branches avoids duplicating a fairly expensive term tree.
+  have hg1wit := IsRdecWitness.add p hwitN5
+    (IsRdecWitness.neg p (IsRdecWitness.mul p hgwit2 hQ3wit))
+  have hg1bound := uniformBound_add p ⟨hbN5a, hbN5b⟩
+    (uniformBound_neg p (uniformBound_mul p ⟨hbN6a, hbN6b⟩ hQ3bound))
+  have hg1bound' : _ ∧ _ :=
+    ⟨hg1bound.1.trans (by norm_num : (78848+(78848+14):ℕ) ≤ 157710),
+     hg1bound.2.trans (by norm_num : (78848+(78848+14):ℕ) ≤ 157710)⟩
+  -- Expand only the two Q-coefficients that occur below.  Doing this once
+  -- avoids asking `ring` to normalize the enormous `curBeforeMonic` terms.
+  have hQ3coeff :
+      ((X - C (anchor1 p c0 c1 c2 c3 c4).1) *
+          (X - C (anchor2 p c0 c1 c2 c3 c4).1) *
+          (X ^ 2 + C (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u1) * X +
+            C (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u0))).coeff 3 =
+        -(anchor1 p c0 c1 c2 c3 c4).1 +
+          -(anchor2 p c0 c1 c2 c3 c4).1 +
+            (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u1) := by
+    have hQexpand :
+        (X - C (anchor1 p c0 c1 c2 c3 c4).1) *
+            (X - C (anchor2 p c0 c1 c2 c3 c4).1) *
+            (X ^ 2 + C (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u1) * X +
+              C (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u0)) =
+          X ^ 4 +
+            C (-(anchor1 p c0 c1 c2 c3 c4).1 -
+              (anchor2 p c0 c1 c2 c3 c4).1 +
+              (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u1)) * X ^ 3 +
+            C ((anchor1 p c0 c1 c2 c3 c4).1 *
+                (anchor2 p c0 c1 c2 c3 c4).1 -
+              (anchor1 p c0 c1 c2 c3 c4).1 *
+                (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u1) -
+              (anchor2 p c0 c1 c2 c3 c4).1 *
+                (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u1) +
+              (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u0)) * X ^ 2 +
+            C ((anchor1 p c0 c1 c2 c3 c4).1 *
+                (anchor2 p c0 c1 c2 c3 c4).1 *
+                (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u1) -
+              (anchor1 p c0 c1 c2 c3 c4).1 *
+                (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u0) -
+              (anchor2 p c0 c1 c2 c3 c4).1 *
+                (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u0)) * X +
+            C ((anchor1 p c0 c1 c2 c3 c4).1 *
+                (anchor2 p c0 c1 c2 c3 c4).1 *
+                (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u0)) := by
+      simp only [map_sub, map_add, map_neg, map_mul]
+      ring
+    rw [hQexpand]
+    simp only [Polynomial.coeff_add, Polynomial.coeff_X_pow,
+      Polynomial.coeff_C_mul_X_pow, Polynomial.coeff_C_mul_X, Polynomial.coeff_C]
+    norm_num
+  have hQ2coeff :
+      ((X - C (anchor1 p c0 c1 c2 c3 c4).1) *
+          (X - C (anchor2 p c0 c1 c2 c3 c4).1) *
+          (X ^ 2 + C (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u1) * X +
+            C (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u0))).coeff 2 =
+        (anchor1 p c0 c1 c2 c3 c4).1 * (anchor2 p c0 c1 c2 c3 c4).1 +
+          -((anchor1 p c0 c1 c2 c3 c4).1 *
+            (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u1)) +
+          -((anchor2 p c0 c1 c2 c3 c4).1 *
+            (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u1)) +
+          (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u0) := by
+    have hQexpand2 :
+        (X - C (anchor1 p c0 c1 c2 c3 c4).1) *
+            (X - C (anchor2 p c0 c1 c2 c3 c4).1) *
+            (X ^ 2 + C (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u1) * X +
+              C (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u0)) =
+          X ^ 4 +
+            C (-(anchor1 p c0 c1 c2 c3 c4).1 -
+              (anchor2 p c0 c1 c2 c3 c4).1 +
+              (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u1)) * X ^ 3 +
+            C ((anchor1 p c0 c1 c2 c3 c4).1 *
+                (anchor2 p c0 c1 c2 c3 c4).1 -
+              (anchor1 p c0 c1 c2 c3 c4).1 *
+                (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u1) -
+              (anchor2 p c0 c1 c2 c3 c4).1 *
+                (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u1) +
+              (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u0)) * X ^ 2 +
+            C ((anchor1 p c0 c1 c2 c3 c4).1 *
+                (anchor2 p c0 c1 c2 c3 c4).1 *
+                (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u1) -
+              (anchor1 p c0 c1 c2 c3 c4).1 *
+                (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u0) -
+              (anchor2 p c0 c1 c2 c3 c4).1 *
+                (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u0)) * X +
+            C ((anchor1 p c0 c1 c2 c3 c4).1 *
+                (anchor2 p c0 c1 c2 c3 c4).1 *
+                (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u0)) := by
+      simp only [map_sub, map_add, map_neg, map_mul]
+      ring
+    rw [hQexpand2]
+    simp only [Polynomial.coeff_add, Polynomial.coeff_X_pow,
+      Polynomial.coeff_C_mul_X_pow, Polynomial.coeff_C_mul_X, Polynomial.coeff_C]
+    norm_num
+  have hgcoeff1eq' : (curBeforeMonic p c0 c1 c2 c3 c4 u0 u1 v0 v1).coeff 1 =
+      (Npoly p c0 c1 c2 c3 c4 u0 u1 v0 v1).coeff 5 +
+      (-((curBeforeMonic p c0 c1 c2 c3 c4 u0 u1 v0 v1).coeff 2 *
+        (-(anchor1 p c0 c1 c2 c3 c4).1 +
+          -(anchor2 p c0 c1 c2 c3 c4).1 +
+            (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u1)))) := by
+    rw [hgcoeff1eq, hQ3coeff]
+    ring
+  refine ⟨⟨ndN6, hgwit2, hbN6a, hbN6b⟩, ?_, ?_⟩
+  · -- `g.coeff 1 = Npoly.coeff 5 - g.coeff 2 * Q.coeff 3`.
+    -- IMPORTANT: `hg1wit` proves the RHS.  The equality is `LHS = RHS`,
+    -- so transport it with the symmetric equality (`RHS = LHS`).
+    -- `hg1bound'` has already discharged the arithmetic to the concrete
+    -- target `157710`, so do not invoke `norm_num` again here.
+    exact ⟨_, hgcoeff1eq'.symm ▸ hg1wit, hg1bound'.1, hg1bound'.2⟩
+  · -- `g.coeff 0 = Npoly.coeff 4 - g.coeff 1*Q.coeff 3 - g.coeff 2*Q.coeff 2`.
+    have hg1q3mul := IsRdecWitness.mul p hg1wit hQ3wit
+    have hneg_g1q3 := IsRdecWitness.neg p hg1q3mul
+    have hN4part := IsRdecWitness.add p hwitN4 hneg_g1q3
+    have hg2q2mul := IsRdecWitness.mul p hgwit2 hQ2wit
+    have hneg_g2q2 := IsRdecWitness.neg p hg2q2mul
+    have hg0wit := IsRdecWitness.add p hN4part hneg_g2q2
+
+    have hg1q3bound := uniformBound_mul p hg1bound' hQ3bound
+    have hneg_g1q3bound := uniformBound_neg p hg1q3bound
+    have hN4partbound := uniformBound_add p ⟨hbN4a, hbN4b⟩ hneg_g1q3bound
+    have hg2q2bound := uniformBound_mul p ⟨hbN6a, hbN6b⟩ hQ2bound
+    have hneg_g2q2bound := uniformBound_neg p hg2q2bound
+    have hg0bound := uniformBound_add p hN4partbound hneg_g2q2bound
+    have hgcoeff0eq' : (curBeforeMonic p c0 c1 c2 c3 c4 u0 u1 v0 v1).coeff 0 =
+        (Npoly p c0 c1 c2 c3 c4 u0 u1 v0 v1).coeff 4 +
+        (-((curBeforeMonic p c0 c1 c2 c3 c4 u0 u1 v0 v1).coeff 1 *
+          (-(anchor1 p c0 c1 c2 c3 c4).1 +
+            -(anchor2 p c0 c1 c2 c3 c4).1 +
+              (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u1)))) +
+        (-((curBeforeMonic p c0 c1 c2 c3 c4 u0 u1 v0 v1).coeff 2 *
+          ((anchor1 p c0 c1 c2 c3 c4).1 * (anchor2 p c0 c1 c2 c3 c4).1 +
+            -((anchor1 p c0 c1 c2 c3 c4).1 *
+              (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u1)) +
+            -((anchor2 p c0 c1 c2 c3 c4).1 *
+              (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u1)) +
+            (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u0)))) := by
+      rw [hgcoeff0eq, hQ3coeff, hQ2coeff]
+      ring
+    have hbound315448 : (78848+(157710+14)+(78848+28):ℕ) ≤ 315448 := by decide
+    have hg0bound' : _ ∧ _ :=
+      ⟨hg0bound.1.trans hbound315448, hg0bound.2.trans hbound315448⟩
+    exact ⟨_, hgcoeff0eq'.symm ▸ hg0wit, hg0bound'.1, hg0bound'.2⟩
+
 /-! ## Status, this pass
 
-**Drafted, NOT yet REPL-confirmed** (rewritten this edit to fix a REPL-
+**Rev05: patched, NOT yet REPL-confirmed** (rewritten this edit to fix a REPL-
 reported `Unknown constant` error — see below). Adds `curBeforeMonic_
 coeff_two_eq` (`Npoly.coeff 6 = curBeforeMonic.coeff 2`), the top-
 coefficient case of the triangular system.
