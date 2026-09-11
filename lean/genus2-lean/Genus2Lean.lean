@@ -119,3 +119,4 @@ import Genus2Lean.ZeroD.CoeffsOutTotalDegree
 import Genus2Lean.ZeroD.NpolyTotalDegree
 import Genus2Lean.ZeroD.EpolyTotalDegree
 import Genus2Lean.ZeroD.NpolyCoeffTotalDegree
+import Genus2Lean.ZeroD.NpolyCoeffTotalDegreeUniform
