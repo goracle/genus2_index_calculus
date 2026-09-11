@@ -89,8 +89,11 @@ uniform bound `315448` covers all three (`g.coeff 0`'s is the largest,
 monotone by construction), which is this file's final stated result.
 
 **Not yet REPL-confirmed** — per project convention, Claude drafts,
-Claire tests. See the `/-! ## Status -/` block at the end of this file
-for the most recent REPL feedback and fixes applied.
+Claire tests. As of this pass, the file's full deliverable
+(`curBeforeMonic_coeff_totalDegree_le`, the `≤315448` composition) is
+written and sorry-free; nothing in this file is still unstarted. See the
+`/-! ## Status -/` block at the end of this file for the most recent
+fixes applied and REPL feedback so far.
 -/
 
 namespace Genus2Lean
@@ -772,7 +775,7 @@ and the bare `C d` term into an `if 4 = 0 then d else 0` term) followed by
 finish the arithmetic. REPL-confirmed green this pass (whole project
 builds).
 
-**This pass — added the two remaining coefficient equations plus the
+**Earlier pass — added the two remaining coefficient equations plus the
 `Q.coeff {3,2}` literal formulas.** `curBeforeMonic_coeff_one_eq`
 (`Npoly.coeff 5 = g.coeff 1 + g.coeff 2 * Q.coeff 3`) and
 `curBeforeMonic_coeff_zero_eq` (`Npoly.coeff 4 = g.coeff 0 + g.coeff 1 *
@@ -795,13 +798,28 @@ two_eq` packages `Q.coeff 3 = -t1-t2+gu1` and `Q.coeff 2 = t1*t2-t1*gu1-
 t2*gu1+gu0` as a single `∧`-conjunction theorem (both come from the same
 `heq` rewrite, always needed together downstream), proved via `refine
 ⟨?_, ?_⟩ <;> · simp only [...]; norm_num`, same coefficient-lemma list as
-`hQ4`. **Not yet REPL-confirmed** — sent for testing this pass.
+`hQ4`.
 
-**Still not attempted**: the final `IsRdecWitness` composition
-(`towerToRdec`-style bound assembly, target uniform numeral `≤315448` per
-this file's header) that turns these four algebraic identities into the
-actual `totalDegree` bound on `curBeforeMonic.coeff {0,1,2}` — this is
-the file's actual stated deliverable and is still open. -/
+**This pass — the final `IsRdecWitness` composition, the file's actual
+stated deliverable, is now written and closed.**
+`curBeforeMonic_coeff_totalDegree_le` assembles `t1`/`t2`'s `≤7` witness
+(`towerToRdec_isRdecWitness` + `t0_promoted_totalDegree_le`), `gu0`/`gu1`'s
+trivial `≤0` witness (`algebraMap_Fp_isRdecWitness`), and
+`Npoly_coeff_isRdecWitness_uniform`'s `≤78848` witnesses at `k=4,5,6`,
+composed through `uniformBound_add`/`_mul`/`_neg` and the four coefficient
+identities (`curBeforeMonic_coeff_{two,one,zero}_eq` plus
+`Qpoly_coeff_three_and_two_eq`, expanded inline via `hQ3coeff`/`hQ2coeff`
+rather than reusing the packaged theorem, to avoid re-deriving the `Q`
+expansion under a different `set`/`clear_value` context) to close
+`g.coeff 2 ≤ 78848`, `g.coeff 1 ≤ 157710`, `g.coeff 0 ≤ 315448` — exactly
+the header's numbers, no discrepancy found this pass. One earlier-flagged
+arithmetic slip (`Q.coeff 2 ≤ 21` instead of `28`, from a dropped
+`(7+0)` term) was already caught and fixed before this composition was
+written, so it did not recur here. **Not yet REPL-confirmed** — sent for
+testing this pass; this closes `ROADMAP-crossnondegenerate-degree-bound.md`'s
+"still fully unresolved" gap once Claire's build confirms it (`D` becomes
+the concrete numeral `315448` in `crossResultant_totalDegree_le`/
+`crossResultantV_totalDegree_le`, `CrossNondegenerateDegreeBound.lean`). -/
 
 end TheDataDerivation
 end Genus2Lean
