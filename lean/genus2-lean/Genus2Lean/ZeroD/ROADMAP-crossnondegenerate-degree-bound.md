@@ -516,3 +516,353 @@ has the right lemma, or (3) ask ChatGPT for the general "totalDegree of an
 exact polynomial quotient" fact if (1)/(2) don't turn up a usable lemma
 quickly — this is exactly the well-defined, non-curve-specific algebra fact
 this project's convention flags as fair game to consult on.
+
+## Update, latest pass: route (2) was taken and closed `curBeforeMonic.coeff{0,1,2}`'s bound — but exposed a DEEPER, still-open mismatch
+
+`CurBeforeMonicCoeffTotalDegree.lean` (route 2 above) closed the
+`curBeforeMonic.coeff{0,1,2} ≤ 315448` bound, and `URSCoeffIsRdecWitness.lean`
+bridged that to `uRS.coeff i ≤ 630896` via the `leadingCoeff⁻¹` swap trick —
+both REPL-confirmed green. **But both are stated as an `IsRdecWitness`
+EXISTENTIAL** (`∃ nd, IsRdecWitness p ι evalNd x nd ∧ nd.1/.2.totalDegree ≤
+bound`), proved by composing `IsRdecWitness.add`/`.mul`/`.neg`/`.div`
+combinators over `curBeforeMonic.coeff i`'s algebraic sub-expressions —
+**NOT a `totalDegree` bound on `towerToRdec p sg (curBeforeMonic.coeff i)`
+itself, the SPECIFIC deterministic pair that function computes** (three-
+level recursive `def`, `K2 → K1 → K0 → Rdec`, combining sub-results via
+`n0*d1 + n1*d0*X(wgen), d0*d1` at each level — see
+`TheDataDerivation/DataDerivationMumford.lean`'s `towerToRdec` `def`).
+
+**Why this actually matters, checked directly against `CrossNondegenerate`'s
+own definition** (`DecoupledSystemRegular.lean` ~line 1992): `hu0`/`hu1`/
+`hv0`/`hv1` state `IsSMulRegular` on `theData`'s LITERAL `u1_num`/`u1_den`/
+etc. fields, which are `towerToRdec p sg (uRS.coeff i)`'s literal
+`.1`/`.2` — used directly as `MvPolynomial` ring elements inside `Fu0 :=
+u1_num i - X_target * u1_den i` and the resultant `u1_den*u2_num -
+u2_den*u1_num`, INSIDE `Rdec p ⧸ ⟨Fu0⟩`. `IsRdecWitness`'s existential only
+claims `evalNd nd.1 = evalNd nd.2 * ι v` for SOME `(nd.1,nd.2)` under a
+chosen `ι`/`evalNd` pair — it does NOT claim `nd = towerToRdec p sg v`
+syntactically, and a witness for `v` is not unique (`(n*k,d*k)` also
+witnesses `v` for any `k`). So `curBeforeMonic_leadingCoeff_isRdecWitness`/
+`uRS_coeff_isRdecWitness`'s existential bounds **cannot be substituted
+in place of `towerToRdec`'s own computed pair** in `CrossNondegenerateDegreeBound.lean`'s
+hypotheses `hA`/`hB` — confirming, by direct inspection this pass (not
+just re-asserting the file's own prior docstring caveat), that this really
+is a structural mismatch, not a bookkeeping gap closeable by more Lean
+tactics alone.
+
+**Also checked and ruled out this pass**: restating `CrossNondegenerateDegreeBound.
+lean`'s conclusion in `IsRdecWitness` form (the file's own earlier
+speculative "next step") does NOT sidestep this — `CrossNondegenerate`'s
+consumer needs `IsSMulRegular` on the SPECIFIC `theData`-computed resultant
+value, a property of that literal ring element, not of an arbitrary
+equal-valued-under-some-eval witness; an `IsRdecWitness`-shaped bound on
+"some witness for the resultant" doesn't transfer to `IsSMulRegular` on the
+actual `theData` value without exactly the same "is this really the
+`towerToRdec`-computed pair" identification problem re-appearing one level
+up.
+
+**Correct next step, this pass's conclusion**: the degree bound needs to
+be proved DIRECTLY on `towerToRdec`'s own recursive formula — i.e. trace
+concrete `totalDegree` bounds through the SAME `n0*d1+n1*d0*X(wgen),
+d0*d1`-style recursive combination `towerToRdec`/`towerToRdecK1` actually
+compute, for the SPECIFIC sub-terms (`t1`, `t2`, `u0`, `u1`, `curBeforeMonic.
+coeff{0,1,2}`, etc.) that `curBeforeMonic.coeff i` decomposes into — rather
+than routing through `IsRdecWitness`'s abstract existential combinators.
+This is plausibly "the same triangle-inequality bookkeeping, one recursion
+layer over", since `DataDerivationTotalDegree.lean`'s existing
+`towerToRdecK1_totalDegree_le`/`towerToRdec_totalDegree_le` ALREADY prove
+exactly this shape (concrete bound on `towerToRdec`'s literal output, given
+a bound on its input) — for a SINGLE `K2`-element `v` treated as an opaque
+input. What's missing is applying that machinery with `v :=
+curBeforeMonic.coeff i` and tracing the `K2`-degree bound `315448` for the
+INPUT side (`v` itself, meaning: what does `towerToRdecK1_totalDegree_le`'s
+own hypothesis actually need bounded, at the `K1`-internal
+`modByMonicHom`-extracted level — likely NOT the same `315448` number, since
+that number bounds the WITNESS's degree, not `v`'s own "size" in any
+sense `towerToRdecK1_totalDegree_le` consumes) — this substitution has NOT
+yet been checked and is genuinely unclear without either (a) re-reading
+`towerToRdecK1_totalDegree_le`'s hypothesis shape very carefully against
+what's actually available about `curBeforeMonic.coeff i`, or (b) a
+ChatGPT consult.
+
+## Update, latest pass: prompt actually written to disk (previous pass's claim was stale — no such file existed)
+
+**`chatgpt_prompt_isrdecwitness_to_concrete_bound.md`** (`Genus2Lean/` top
+level) is now actually on disk — a prior pass claimed this was "drafted"
+but no file existed anywhere in the repo; written fresh this pass,
+grounded directly against the verified current code rather than
+re-asserting the prior pass's framing. Confirms, by direct inspection of
+`TowerToRdecMul.lean`'s own docstring plus `uRS := C leadingCoeff⁻¹ *
+curBeforeMonic` (`DataDerivationMumford.lean`) and `theData.u1_num i :=
+(coeffsToNumDen ... (uRS.coeff i)).1` (`DecoupledSystemRegular.lean`),
+that the obstruction is specifically MULTIPLICATION of two
+independently-obtained `towerToRdec` values — sums and algebraMap-
+promotion already have working, REPL-confirmed direct machinery
+(`combine_totalDegree_le`, `towerToRdec_algebraMap_totalDegree_le`,
+`t0_promoted_totalDegree_le`), and `towerToRdec (a*b) ≠ (product of
+witnesses)` in general is itself an already-proved fact, not a bookkeeping
+gap. `uRS.coeff i` inherits this exactly because `uRS` is a product of two
+independently-obtained `curBeforeMonic`-derived values (`leadingCoeff⁻¹`
+and `curBeforeMonic` itself). The prompt asks three concrete questions:
+(1) whether `towerToRdec`'s literal output and any `IsRdecWitness` witness
+are related by a UNIT in `MvPolynomial Vars (F p)` (hence a nonzero `F p`
+scalar, since that's this ring's whole unit group) whenever both arise
+from a "reduced" construction — which would make `IsSMulRegular` transfer
+for free, since units preserve zero/nonzero and regularity; (2) whether
+`uRS.coeff i` can be shown LITERALLY EQUAL (not just IsRdecWitness-
+related) to an expression that avoids `curBeforeMonic`'s `/ₘ`-chain
+definition and its triangular-coefficient-equation detour entirely, so
+the whole chain becomes rewrite-transportable into `CrossNondegenerate`'s
+literal `IsSMulRegular (Rdec p ⧸ ⟨Fu0⟩) ...` goal; (3) failing both,
+whether computer-algebra/resultant theory (subresultants, content/
+primitive-part tracking, pseudo-remainder sequences) has a standard
+technique for tracking a boundable "correction factor" between a literal
+recursive output and an abstract witness, that this project should
+borrow rather than reinvent from scratch.
+
+## Update, latest pass: ChatGPT reply received and cross-checked against this snapshot's actual Mathlib API — concrete, verified plan below
+
+**Reply's headline claim**: for REDUCED witness pairs (`IsRelPrime` numerator/
+denominator, not an arbitrary `IsRdecWitness`), two witnesses for the same
+value are related by a UNIT of `MvPolynomial Vars (F p)` — and since that
+ring's units are exactly the nonzero constants `C c` (`c : F p`), a unit
+correction factor has `totalDegree = 0` for free, and `Ideal.span {u*g} =
+Ideal.span {g}` for a unit `u`, so `IsSMulRegular` transfers across the
+substitution at NO extra bound cost. This would resolve question 1 cleanly
+IF `towerToRdec`'s output is provably "reduced" in the relevant sense at
+each tower level.
+
+**Checked against this snapshot's real Mathlib docs this pass (not
+guessed)** — both key facts the reply leans on are REAL, confirmed via
+direct doc lookup: `IsFractionRing.num_den_reduced`/`IsFractionRing.
+exists_reduced_fraction` exist in `Mathlib.RingTheory.Localization.NumDen`,
+requiring `[UniqueFactorizationMonoid A]` on the base ring; and
+`MvPolynomial.uniqueFactorizationMonoid` (`Mathlib.RingTheory.Polynomial.
+Basic`) gives exactly that instance for `A := MvPolynomial (Fin 2) (F p)`
+(our `K0`'s base ring) since `F p` is a field, hence trivially a UFD. So
+`IsFractionRing.num`/`.den`'s BASE-CASE reducedness (the `K0` level, where
+`towerToRdec`'s recursion bottoms out via `baseFracToRing`) is real,
+available Mathlib content, not a hoped-for fact. **Did NOT find a named
+Mathlib lemma for "units of `MvPolynomial σ R` over a field/domain are
+exactly `C c`"** — searched directly, no hit under any plausible name.
+**Decision: don't depend on that lemma name at all.** In this project's
+actual use, the correction-factor unit that would arise IS concretely `C
+c` by construction (it comes from `IsFractionRing.num_den_reduced`-style
+uniqueness applied to elements of `MvPolynomial (Fin 2) (F p)` — i.e. a
+UFD associate relation `a' = c * a` for `c` a constant, not an abstract
+`Aˣ` element), so the degree-zero fact needed is just `MvPolynomial.
+totalDegree_C` (already used repeatedly elsewhere in this project,
+confirmed-safe name) applied directly to that constant — no unit-
+characterization lemma needed, no guessed name risk.
+
+**The genuine remaining gap, not yet closed by the reply or this pass**:
+the reducedness argument only gives canonicality at the LEVEL where
+`IsFractionRing.num_den_reduced` applies directly — the `K0`-level base
+case inside `baseFracToRing`. Whether `towerToRdecK1`/`towerToRdec`'s
+OWN one-level-up combination (`n0*den1+n1*den0*X(w), den0*den1`) preserves
+reducedness, or whether `AdjoinRoot.modByMonicHom`'s remainder extraction
+at each tower level could reintroduce a common factor, has NOT been
+checked against either this project's code or Mathlib — this is exactly
+the "same K2 value → same rational function → cross-multiplied equality →
+both pairs reduced → associates → same totalDegree" chain the reply's own
+section 1 flags as having a real bottleneck, and that bottleneck is now
+the precise open question, not the general existence of the reduced-
+witness theory (which IS real Mathlib content, confirmed above).
+
+**Priority order, per the reply's own recommendation and consistent with
+what this pass verified**:
+1. ~~Try the reply's route 3 FIRST for `uRS` specifically~~ **CORRECTED
+   this pass, after checking Mathlib's actual `AdjoinRoot.modByMonicHom`
+   API directly**: the reply's point that `uRS.coeff i = curBeforeMonic.
+   leadingCoeff⁻¹ * curBeforeMonic.coeff i` is "not the generic bad case"
+   because one factor is "a literal K2 scalar" does NOT actually give a
+   free ride the way it first looked. `AdjoinRoot.modByMonicHom` (the
+   operation `towerToRdec`'s recursion is built from at each tower level)
+   is `R`-LINEAR where `R` is the AdjoinRoot's BASE ring — e.g. for
+   `K2 := AdjoinRoot (K2_poly_monic ...)`, base ring `K1` — so it commutes
+   with scalar multiplication by `K1`-lifted elements (already exploited,
+   confirmed, by `towerToRdec_algebraMap_totalDegree_le`'s existing proof)
+   but NOT with multiplication by an arbitrary OPAQUE `K2` element like
+   `curBeforeMonic.leadingCoeff⁻¹`, which need not be (and has no reason
+   to be) a `K1`-lift. So `modByMonicHom (s * v) ≠ s • modByMonicHom v`
+   in general for `s : K2` arbitrary — this really is a genuine instance
+   of the SAME multiplication-of-two-independent-K2-values obstruction,
+   not a free scalar case. **Item 1 is therefore NOT the cheap win it
+   looked like; withdrawn as a "does not require route 1" claim.** Left
+   here, struck through rather than deleted, since the corrected
+   reasoning (why the obvious-looking shortcut fails) is itself useful
+   for whoever picks this up next, per this project's "note stale claims
+   in place" convention.
+2. For `curBeforeMonic.coeff i` itself (genuinely has no closed form —
+   confirmed this pass, `curBeforeMonic := (.../ₘ.../ₘ...)/ₘ...` with no
+   alternate closed-form expression anywhere in this codebase or the
+   Julia reference it was ported from): the reply's route 2 (avoid
+   unfolding `/ₘ`, use `Polynomial.divByMonic` uniqueness instead) is
+   ALREADY substantially what `eq_mul_divByMonic_of_dvd`/`Npoly_eq_
+   curBeforeMonic_mul` do (`DataDerivationSolve.lean`, REPL-confirmed
+   green, checked this pass) — but that route bottoms out needing a
+   DIRECT (non-existential) bound on `Npoly.coeff k`, which in turn
+   requires direct bounds on `Epoly`/`Ypoly.coeff` (`NpolyCoeffTotalDegree.
+   lean`), which are built from `coeffsOut`/Cramer-solution entries that
+   ARE genuine independent-`towerToRdec`-value products (`matrixA_row0_
+   totalDegree_le` etc., `MatrixEntryTotalDegree.lean`, confirmed this
+   pass to already be `IsRdecWitness`-based for exactly this reason —
+   NOT a route-2-closeable gap, a genuine route-1 (reduced-witness) case).
+   So route 2 does NOT fully sidestep route 1 for this specific project —
+   it pushes the SAME multiplication obstruction down to `coeffsOut`'s
+   own construction, one layer earlier than previously thought.
+3. **Corrected conclusion, this pass**: with item 1 withdrawn (see above
+   — the "cheap scalar case" doesn't actually avoid the obstruction
+   either, since `modByMonicHom`'s linearity is only over the AdjoinRoot's
+   OWN base ring, not over arbitrary opaque elements of the tower field
+   itself), route 1 (the reduced-witness/unit theorem) is not just the
+   fallback but the load-bearing piece needed EVERYWHERE multiplication
+   of two independently-obtained `K2` values occurs in this dependency
+   chain — `uRS`'s own normalization step included, not exempt from it.
+   **Actual next action**: attempt the reduced-witness/unit theorem
+   (reply's route 1) specifically for `IsFractionRing.num`/`.den` at the
+   `K0` base case first (confirmed-real Mathlib content this pass:
+   `IsFractionRing.num_den_reduced`/`exists_reduced_fraction` in
+   `Mathlib.RingTheory.Localization.NumDen`, needing `[UniqueFactorization
+   Monoid A]` on `A := MvPolynomial (Fin 2) (F p)`, itself available via
+   `MvPolynomial.uniqueFactorizationMonoid` since `F p` is a field —
+   both confirmed present in this snapshot's Mathlib docs this pass, not
+   guessed), THEN check whether `towerToRdecK1`/`towerToRdec`'s own
+   one-level-up combination formula (`n0*den1+n1*den0*X(w), den0*den1`)
+   preserves reducedness. This is NOT yet checked and is genuinely
+   unclear: there's no obvious reason `n0*den1+n1*den0*X(w)` stays
+   coprime to `den0*den1` even granting `n0`⊥`den0` and `n1`⊥`den1`
+   individually — if reducedness does NOT propagate up the tower, the
+   reduced-witness route may only apply at the bare `K0` level and a
+   different argument is needed for how far up the tower canonicality
+   (or a weaker but still useful invariant) survives. **Not yet analyzed
+   — the next thing to check, by hand or via a further ChatGPT
+   consultation, before writing any Lean for this route.** Also note:
+   `MvPolynomial`'s unit group was NOT confirmed under any named Mathlib
+   lemma this pass (searched, no hit) — don't depend on an "units are
+   constants" lemma name; the concrete correction factors that arise from
+   `IsFractionRing.num_den_reduced`-style UFD-associate reasoning are
+   literal `C c` terms by construction, so `MvPolynomial.totalDegree_C`
+   (already a confirmed-safe, already-used name in this codebase) is
+   sufficient — no new lemma-name risk needed for the degree-zero part
+   of this argument.
+
+## Update, latest pass: the flagged open question is RESOLVED — reducedness does NOT propagate, with a concrete counterexample (hand computation, `sympy`-checked, no Lean/Mathlib dependency)
+
+**Answer: no, `towerToRdecK1`'s combination formula does NOT preserve
+reducedness in general**, settling the question the previous pass left
+open. Concrete counterexample (single-variable case suffices to disprove
+the general claim; verified with `sympy`, exact polynomial division, not
+approximate): take `n0 = x+5`, `den0 = x*(x-2)`, `n1 = x+7`, `den1 =
+x*(x+3)`. Individually, `IsRelPrime n0 den0` and `IsRelPrime n1 den1`
+both hold (`gcd(x+5, x(x-2)) = 1`, `gcd(x+7, x(x+3)) = 1`, confirmed).
+But the combined pair
+
+```
+num := n0*den1 + n1*den0*w = w*x^3+5*w*x^2-14*w*x + x^3+8*x^2+15*x
+den := den0*den1           = x^4+x^3-6*x^2
+```
+
+(`w` a fresh variable, exactly matching `towerToRdecK1`'s own `X
+(sg.wGen 0)` role) has `gcd(num, den) = x`, confirmed by exact polynomial
+division both ways (`num/x` and `den/x` are both genuine polynomials, no
+remainder). **The mechanism**: nothing in `IsFractionRing.num_den_
+reduced`'s guarantee (`IsRelPrime n_i den_i` for EACH `i` separately)
+ever forces `den0` and `den1` — denominators of TWO DIFFERENT `K0`
+coefficients of the same `v : K1` — to be coprime TO EACH OTHER. Here
+both share the factor `x`, and that shared factor survives into the
+combined numerator too (since `num = n0*den1 + n1*den0*w`, and `x | den0`,
+`x | den1` together force `x | n1*den0*w` trivially and `x | n0*den1`
+since `x | den1` — both summands divisible by `x` even though `n0`,`n1`
+individually aren't).
+
+**This does NOT kill route 1, but it does kill the naive form of it.**
+The fix is straightforward and still well inside real Mathlib content:
+apply `UniqueFactorizationMonoid.exists_reduced_factors'` (confirmed
+real this pass — searched directly, `Mathlib.RingTheory.
+UniqueFactorizationDomain.Basic`: `(a b : R) (hb : b ≠ 0) : ∃ a' b' c',
+IsRelPrime a' b' ∧ c'*a' = a ∧ c'*b' = b`) to the COMBINED, possibly-
+unreduced pair `(num, den)` AFTER each `towerToRdecK1`/`towerToRdec`
+combination step, rather than assuming the recursive construction stays
+reduced automatically. This still gives canonicality of the REDUCED
+form (`a'`, `b'` are unique up to unit, by the same UFD argument as
+before), and still gives what's needed for the `IsSMulRegular` transfer
+— the cofactor `c'` extracted this way is a legitimate `MvPolynomial`
+element, not necessarily a unit, so IT needs its own `totalDegree` bound
+too (unlike the fantasy "unit correction factor" of the naive version),
+but that's a much easier ask than the original problem: `c'` divides
+BOTH `den0*den1` (known bound) and the combined numerator (known bound),
+so `totalDegree c' ≤ totalDegree den` trivially (a divisor's totalDegree
+is bounded by the dividend's, for a nonzero dividend in a domain — needs
+its own confirmed Mathlib lemma before use, not yet checked this pass).
+
+**Revised route 1, concretely, for the next pass**:
+1. At each combination step (`baseFracToRing`'s output combined via
+   `towerToRdecK1`, then `towerToRdecK1`'s output combined via
+   `towerToRdec`), DON'T assume the combined pair is already reduced.
+   Instead apply `exists_reduced_factors'` to `(num, den)` to extract a
+   GENUINELY reduced pair `(num', den')` plus cofactor `c'` with `c'*num'
+   = num`, `c'*den' = den`.
+2. Bound `totalDegree c'` via `c' ∣ den` (or `c' ∣ num` if `den = 0`,
+   edge case to handle) and a to-be-confirmed "totalDegree of a divisor
+   ≤ totalDegree of dividend" Mathlib lemma (NOT yet searched/confirmed
+   this pass — flagged as the next concrete lemma-existence check before
+   writing any Lean for this).
+3. `totalDegree num' ≤ totalDegree num` and `totalDegree den' ≤
+   totalDegree den` then follow the same way (both `num'`, `den'` divide
+   `num`, `den` respectively via `c'*num'=num` etc.) — so the REDUCED
+   pair's degree bound is dominated by whatever bound was already
+   available for the unreduced combined pair. **This means the degree
+   bound itself doesn't get WORSE by reducing** — reducing only helps
+   the uniqueness/canonicality argument, it doesn't need a separate
+   degree analysis.
+4. Whether `towerToRdec`'s OWN literal output (the actual recursively-
+   computed pair, not this reduced alternate one) equals `(num', den')`
+   up to a further unit, or merely `IsRdecWitness`-relates to it via
+   ANOTHER cofactor, is the piece that closes the loop back to the
+   original goal (bounding `towerToRdec`'s literal output) — not yet
+   worked out. This is genuinely the crux: `towerToRdec p sg v`'s literal
+   pair `(num,den)` before this reduction step IS the thing we need
+   bounded; reducing it to `(num',den')` doesn't help unless we can also
+   show `IsSMulRegular` transfers along `(num,den) = c' • (num',den')`-
+   style relations (`Ideal.span {c' * g'} ` vs `Ideal.span {g'}` differ
+   by the ideal generated by `c'` too, UNLESS `c'` happens to be a unit
+   — so this only fully closes the `IsSMulRegular` transfer if `c'` is
+   forced to be constant, which is not established and may not be true).
+   **Flagged, not resolved**: the reduction step controls the DEGREE
+   bound cleanly (step 3 above) but does NOT obviously control the
+   `IsSMulRegular`-transfer requirement the way the original naive
+   "unit correction factor" idea would have — that transfer needs a
+   genuinely separate argument, likely requiring `c' ≠ 0` (probably
+   available — `den ≠ 0` should be provable from the construction, though
+   not yet checked) plus a fact like "if `g = c*g'` with `c ≠ 0` in a
+   domain, then `x` is `IsSMulRegular` mod `⟨g⟩` iff [some related but
+   NOT identical condition] mod `⟨g'⟩`" — genuinely unclear whether this
+   holds without more structure (e.g. it plausibly fails if `c'` and `x`
+   share a factor). **This is a real, currently-unresolved gap, flagged
+   honestly rather than assumed away** — a good candidate for the next
+   ChatGPT consultation once the degree-bound half (steps 1-3) is
+   written up and REPL-tested, since the `IsSMulRegular`-transfer
+   question is now sharply and concretely stated (not the vague
+   "does canonicality help" framing of earlier passes).
+
+**Small blocking lemma identified this pass, own prompt drafted**: step 2
+above needs "in a domain, `c*a' = a`, `a ≠ 0` ⟹ `totalDegree c ≤
+totalDegree a`" for `MvPolynomial`. Searched Mathlib docs directly this
+pass — `MvPolynomial.totalDegree_mul` (the ≤-only upper-bound direction)
+is confirmed and already used throughout this codebase, but no equality
+or reverse-direction lemma surfaced under any plausible name. The
+underlying math is definitely true (verified by hand via the standard
+"top-total-degree homogeneous part is nonzero in a domain" argument, and
+spot-checked numerically) — this is a real gap in what's easily findable,
+not a false claim. `chatgpt_prompt_totaldegree_of_divisor.md` (`Genus2Lean/`
+top level) asks for the exact Mathlib name/route, scoped narrowly (no
+project-specific content, pure `MvPolynomial` algebra over a domain) —
+**not yet sent/resolved**. If Mathlib has no ready lemma, `MvPolynomial.
+IsHomogeneous.totalDegree` (confirmed real — a nonzero homogeneous
+component has totalDegree exactly `n`) is the natural route for a from-
+scratch proof: take `p`'s totalDegree-`d` homogeneous part `P` and `q`'s
+totalDegree-`e` part `Q`; `P*Q` is the totalDegree-`(d+e)` homogeneous
+part of `p*q` and is nonzero (domain, `P≠0≠Q`), giving `totalDegree(p*q) =
+d+e` exactly — not yet written up as Lean, flagged as the fallback route
+if the ChatGPT consult doesn't turn up a direct lemma quickly.

@@ -257,11 +257,39 @@ item 1:
    form (losing nothing real -- `CrossNondegenerate`'s downstream
    `IsSMulRegular` argument only needs the resultant's zero/nonzero status,
    never a canonical representation), then plug in `URSCoeffIsRdecWitness.
-   lean`'s bound directly. See `ROADMAP-crossnondegenerate-degree-bound.md`'s
-   own "Update, later pass -- `D` bridge started" section (bottom of that
-   file) for the full trace -- this supersedes that file's older
-   "candidate routes" list too, which was aimed at the wrong (already-closed)
-   gap.
+   **Update, latest pass -- `URSCoeffIsRdecWitness.lean` REPL-confirmed
+   green, but the "rewrite in `IsRdecWitness` form" plan above is WRONG,
+   corrected here**: checked `CrossNondegenerate`'s own definition directly
+   (`DecoupledSystemRegular.lean` ~line 1992) this pass -- its `hu0`/`hu1`/
+   `hv0`/`hv1` fields state `IsSMulRegular` on `theData`'s LITERAL
+   `u1_num`/`u1_den`/etc. fields (`= towerToRdec p sg (uRS.coeff i)`'s
+   literal `.1`/`.2`), used directly as `MvPolynomial` ring elements inside
+   an actual quotient ring `Rdec p ⧸ ⟨Fu0⟩`. `IsRdecWitness`'s existential
+   (`∃ nd, evalNd nd.1 = evalNd nd.2 * ι v`) does NOT claim `nd` equals
+   `towerToRdec`'s own computed pair -- witnesses for the same value aren't
+   unique (`(n*k,d*k)` also witnesses for any `k`) -- so an `IsRdecWitness`-
+   shaped bound on "some witness for the resultant" cannot be substituted
+   for `IsSMulRegular` on the SPECIFIC `theData`-computed resultant; the
+   substitution problem just reappears one level up, on a property
+   (`IsSMulRegular`) that's arguably harder to restate generically than
+   `totalDegree` was. **The actual right next step, per direct inspection
+   this pass, not superseded speculation**: bound `towerToRdec`'s own
+   recursive formula directly (it already has exactly this shape of lemma,
+   `towerToRdecK1_totalDegree_le`/`towerToRdec_totalDegree_le` in
+   `DataDerivationTotalDegree.lean`, for an arbitrary opaque `K2`-element
+   input) -- the missing piece is tracing what `totalDegree`-shaped fact
+   about `curBeforeMonic.coeff i` (NOT the `IsRdecWitness` existential
+   bound already proved) those lemmas' own hypotheses actually need, which
+   has not yet been checked. A ChatGPT prompt asking exactly this
+   (`chatgpt_prompt_isrdecwitness_to_concrete_bound.md`, `Genus2Lean/` top
+   level) is now actually written to disk as of the latest pass — an
+   earlier pass claimed this file existed and it did not; it's grounded
+   directly against the verified current code (the `towerToRdec (a*b) ≠
+   product-of-witnesses` obstruction, `uRS`'s own multiplication-of-two-
+   independent-towerToRdec-values shape, `CrossNondegenerate`'s literal
+   `IsSMulRegular` quotient-ring consumer). Not yet sent/resolved. See
+   `ROADMAP-crossnondegenerate-degree-bound.md`'s latest "Update, latest
+   pass" section for the full trace.
 
    **Major update, not yet formalized anywhere -- flagged here first,
    NOT yet reflected in `ROADMAP-alpha-locus.md`/`ROADMAP-degree-uniform-
