@@ -3,7 +3,7 @@ import Genus2Lean.ZeroD.NpolyCoeffTotalDegreeUniform
 import Genus2Lean.ZeroD.TheDataDerivation.DataDerivationSolve
 import Genus2Lean.ZeroD.DecoupledSystemRegular
 
-/-! Revision 02: factor the shared coeff-1 witness/bound and fix equality transport direction. -/
+/-! Revision 08: move coeff-zero equality transport outside IsRdecWitness to avoid isDefEq timeout. -/
 
 /-!
 # `curBeforeMonic.coeff {0,1,2}`'s own `IsRdecWitness` bound
@@ -599,9 +599,9 @@ theorem curBeforeMonic_coeff_totalDegree_le {Vars : Type*} [DecidableEq Vars]
       simp only [map_sub, map_add, map_neg, map_mul]
       ring
     rw [hQexpand]
-    simp only [Polynomial.coeff_add, Polynomial.coeff_X_pow,
-      Polynomial.coeff_C_mul_X_pow, Polynomial.coeff_C_mul_X, Polynomial.coeff_C]
-    norm_num
+    simp only [Polynomial.coeff_add, Polynomial.coeff_C_mul, Polynomial.coeff_X_pow,
+      Polynomial.coeff_C, Polynomial.coeff_X]
+    norm_num <;> ring
   have hQ2coeff :
       ((X - C (anchor1 p c0 c1 c2 c3 c4).1) *
           (X - C (anchor2 p c0 c1 c2 c3 c4).1) *
@@ -642,9 +642,9 @@ theorem curBeforeMonic_coeff_totalDegree_le {Vars : Type*} [DecidableEq Vars]
       simp only [map_sub, map_add, map_neg, map_mul]
       ring
     rw [hQexpand2]
-    simp only [Polynomial.coeff_add, Polynomial.coeff_X_pow,
-      Polynomial.coeff_C_mul_X_pow, Polynomial.coeff_C_mul_X, Polynomial.coeff_C]
-    norm_num
+    simp only [Polynomial.coeff_add, Polynomial.coeff_C_mul, Polynomial.coeff_X_pow,
+      Polynomial.coeff_C, Polynomial.coeff_X]
+    norm_num <;> ring
   have hgcoeff1eq' : (curBeforeMonic p c0 c1 c2 c3 c4 u0 u1 v0 v1).coeff 1 =
       (Npoly p c0 c1 c2 c3 c4 u0 u1 v0 v1).coeff 5 +
       (-((curBeforeMonic p c0 c1 c2 c3 c4 u0 u1 v0 v1).coeff 2 *
@@ -661,7 +661,9 @@ theorem curBeforeMonic_coeff_totalDegree_le {Vars : Type*} [DecidableEq Vars]
     -- target `157710`, so do not invoke `norm_num` again here.
     exact ⟨_, hgcoeff1eq'.symm ▸ hg1wit, hg1bound'.1, hg1bound'.2⟩
   · -- `g.coeff 0 = Npoly.coeff 4 - g.coeff 1*Q.coeff 3 - g.coeff 2*Q.coeff 2`.
-    have hg1q3mul := IsRdecWitness.mul p hg1wit hQ3wit
+    have hgwit1 := hg1wit
+    rw [← hgcoeff1eq'] at hgwit1
+    have hg1q3mul := IsRdecWitness.mul p hgwit1 hQ3wit
     have hneg_g1q3 := IsRdecWitness.neg p hg1q3mul
     have hN4part := IsRdecWitness.add p hwitN4 hneg_g1q3
     have hg2q2mul := IsRdecWitness.mul p hgwit2 hQ2wit
@@ -692,7 +694,24 @@ theorem curBeforeMonic_coeff_totalDegree_le {Vars : Type*} [DecidableEq Vars]
     have hbound315448 : (78848+(157710+14)+(78848+28):ℕ) ≤ 315448 := by decide
     have hg0bound' : _ ∧ _ :=
       ⟨hg0bound.1.trans hbound315448, hg0bound.2.trans hbound315448⟩
-    exact ⟨_, hgcoeff0eq'.symm ▸ hg0wit, hg0bound'.1, hg0bound'.2⟩
+    have hthird :
+        (∃ nd : MvPolynomial Vars (F p) × MvPolynomial Vars (F p),
+          IsRdecWitness p ι evalNd
+            ((Npoly p c0 c1 c2 c3 c4 u0 u1 v0 v1).coeff 4 +
+              (-((curBeforeMonic p c0 c1 c2 c3 c4 u0 u1 v0 v1).coeff 1 *
+                (-(anchor1 p c0 c1 c2 c3 c4).1 +
+                  -(anchor2 p c0 c1 c2 c3 c4).1 +
+                    (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u1)))) +
+              (-((curBeforeMonic p c0 c1 c2 c3 c4 u0 u1 v0 v1).coeff 2 *
+                ((anchor1 p c0 c1 c2 c3 c4).1 * (anchor2 p c0 c1 c2 c3 c4).1 +
+                  -((anchor1 p c0 c1 c2 c3 c4).1 *
+                    (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u1)) +
+                  -((anchor2 p c0 c1 c2 c3 c4).1 *
+                    (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u1)) +
+                  (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u0))))) nd ∧
+          nd.1.totalDegree ≤ 315448 ∧ nd.2.totalDegree ≤ 315448) := by
+      exact ⟨_, hg0wit, hg0bound'.1, hg0bound'.2⟩
+    simpa only [hgcoeff0eq'] using hthird
 
 /-! ## Status, this pass
 
