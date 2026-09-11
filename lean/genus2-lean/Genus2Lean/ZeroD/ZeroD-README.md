@@ -279,17 +279,26 @@ item 1:
    `DataDerivationTotalDegree.lean`, for an arbitrary opaque `K2`-element
    input) -- the missing piece is tracing what `totalDegree`-shaped fact
    about `curBeforeMonic.coeff i` (NOT the `IsRdecWitness` existential
-   bound already proved) those lemmas' own hypotheses actually need, which
-   has not yet been checked. A ChatGPT prompt asking exactly this
-   (`chatgpt_prompt_isrdecwitness_to_concrete_bound.md`, `Genus2Lean/` top
-   level) is now actually written to disk as of the latest pass — an
-   earlier pass claimed this file existed and it did not; it's grounded
-   directly against the verified current code (the `towerToRdec (a*b) ≠
-   product-of-witnesses` obstruction, `uRS`'s own multiplication-of-two-
-   independent-towerToRdec-values shape, `CrossNondegenerate`'s literal
-   `IsSMulRegular` quotient-ring consumer). Not yet sent/resolved. See
-   `ROADMAP-crossnondegenerate-degree-bound.md`'s latest "Update, latest
-   pass" section for the full trace.
+   bound already proved) those lemmas' own hypotheses actually need.
+
+   **Update, later pass -- traced precisely, prompt actually written this
+   time.** `crossResultant_totalDegree_le`/`crossResultantV_totalDegree_le`
+   (`CrossNondegenerateDegreeBound.lean`, the theorem this whole chain feeds)
+   ARE already stated against the literal `towerToRdec_coeff_totalDegree_le`
+   shape, not `IsRdecWitness` -- their `hA`/`hB` hypotheses want a literal
+   bound on `towerToRdecK1`'s output for `uRS.coeff i`'s two `K1`-extracted
+   children, exactly what `towerToRdec_coeff_totalDegree_le` needs as input.
+   Nothing currently supplies `hA`/`hB`: `uRS_coeff_isRdecWitness`'s
+   existential-witness bound is a different, weaker fact, and there is no
+   direct route from one to the other without knowing how a witness pair
+   relates to `towerToRdec`'s own (possibly differently-reduced) computed
+   pair. `chatgpt_prompt_literal_towertordec_bound.md` (`Genus2Lean/` top
+   level, written this pass -- the earlier-named `chatgpt_prompt_
+   isrdecwitness_to_concrete_bound.md` was never actually written to disk
+   despite an earlier pass's claim otherwise; don't go looking for it)
+   asks whether `exists_reduced_factors'` can bridge the two. Not yet
+   sent/resolved. See `ROADMAP-crossnondegenerate-degree-bound.md`'s final
+   two "Update" sections for the full trace.
 
    **Major update, not yet formalized anywhere -- flagged here first,
    NOT yet reflected in `ROADMAP-alpha-locus.md`/`ROADMAP-degree-uniform-

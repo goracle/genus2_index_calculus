@@ -284,7 +284,19 @@ not attempted in this pass.
 `curBeforeMonic`/`Npoly` `/ₘ`-chain gap `ROADMAP-crossnondegenerate-degree-
 bound.md` flags as still fully unresolved) -- both theorems above stay
 conditional on `D` as a hypothesis until that separate gap is closed.
--/
+
+**Update, later pass**: the base-case `D` gap flagged above as "still fully
+unresolved" is now closed — `curBeforeMonic_coeff_totalDegree_le`
+(`CurBeforeMonicCoeffTotalDegree.lean`, REPL-confirmed green) gives a
+concrete `D = 315448` bound, but stated via `IsRdecWitness` (an existential
+witness), not the literal `towerToRdec`-computed pair this file's `hA`/`hB`
+hypotheses need — see `ZeroD-README.md`'s "Current state" section for the
+full trace of why that gap doesn't close this file's theorems directly and
+what the actual next step is (bounding `towerToRdec`'s own recursive
+formula, not reusing the `IsRdecWitness` bound as-is). Both theorems below
+remain REPL-confirmed green as stated (conditional on `D`); nothing here is
+now stale, but don't read the base-case gap as still open elsewhere in the
+project. -/
 
 end DecoupledSystem
 end Genus2Lean

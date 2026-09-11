@@ -253,7 +253,10 @@ fix.**
 2. Instantiating both of the above at `matrixA`/`rhsVec`'s own `a`/`b`
    (i.e. `matrixA_entry_totalDegree_le`/`rhsVec_entry_totalDegree_le`'s
    own witness pairs) to get `coeffsOut`'s full bound — the actual
-   original target, still one assembly pass away. -/
+   original target, still one assembly pass away.
+
+**REPL-confirmed green** (whole project build) — supersedes the "Not yet
+REPL-confirmed again after this" note above. -/
 
 end TheDataDerivation
 end Genus2Lean

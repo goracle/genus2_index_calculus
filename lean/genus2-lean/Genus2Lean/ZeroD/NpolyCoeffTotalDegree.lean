@@ -557,7 +557,11 @@ territory" step `ROADMAP-crossnondegenerate-degree-bound.md`'s closing
 section and `AnchorTotalDegree.lean`'s own status note both flag as
 needing a from-scratch `totalDegree`-of-exact-quotient lemma, good
 ChatGPT-consultation material per that note), is the next assembly step —
-not attempted here. -/
+not attempted here.
+
+**REPL-confirmed green** (whole project build) — supersedes both "not yet
+REPL-confirmed"/"Drafted, not yet REPL-confirmed" notes earlier in this
+file. -/
 
 end TheDataDerivation
 end Genus2Lean

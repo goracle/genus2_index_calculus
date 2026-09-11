@@ -819,7 +819,13 @@ written, so it did not recur here. **Not yet REPL-confirmed** — sent for
 testing this pass; this closes `ROADMAP-crossnondegenerate-degree-bound.md`'s
 "still fully unresolved" gap once Claire's build confirms it (`D` becomes
 the concrete numeral `315448` in `crossResultant_totalDegree_le`/
-`crossResultantV_totalDegree_le`, `CrossNondegenerateDegreeBound.lean`). -/
+`crossResultantV_totalDegree_le`, `CrossNondegenerateDegreeBound.lean`).
+
+**REPL-confirmed green** (whole project build) — supersedes every "not
+yet REPL-confirmed"/"Rev05: patched, NOT yet REPL-confirmed" note earlier
+in this file, including the final composition theorem
+`curBeforeMonic_coeff_totalDegree_le`. `D = 315448` is now a confirmed,
+not merely claimed, concrete bound. -/
 
 end TheDataDerivation
 end Genus2Lean

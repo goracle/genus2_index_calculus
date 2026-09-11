@@ -25,8 +25,7 @@ general form (`∀ t ∈ rrBasis5, t.1 ≤ 6`, no `bj` hypothesis), then
 directly into `t.2.1 ≤ 3` (`i ≤ 3` either way: `2i ≤ 6 → i ≤ 3`,
 `2i+5 ≤ 6 → i ≤ 0 ≤ 3`).
 
-**Not yet REPL-confirmed** — no build environment available this session;
-per project convention, Claude drafts, Claire tests.
+**REPL-confirmed green** (whole project build).
 -/
 
 namespace Genus2Lean

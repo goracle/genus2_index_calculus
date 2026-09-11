@@ -447,6 +447,9 @@ monomials), then `Npoly = Epoly^2 - fAtX*Ypoly^2` — the piece `ROADMAP-
 crossnondegenerate-degree-bound.md`'s "still fully unresolved" note
 flags as needed before `curBeforeMonic`'s own bound (via `Npoly_eq_
 curBeforeMonic_mul`'s exact-quotient identity) can be attempted.
+
+**REPL-confirmed green** (whole project build) — supersedes the "not yet
+REPL-confirmed" note earlier in this file.
 -/
 
 end TheDataDerivation

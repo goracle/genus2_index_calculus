@@ -866,3 +866,132 @@ totalDegree-`e` part `Q`; `P*Q` is the totalDegree-`(d+e)` homogeneous
 part of `p*q` and is nonzero (domain, `P≠0≠Q`), giving `totalDegree(p*q) =
 d+e` exactly — not yet written up as Lean, flagged as the fallback route
 if the ChatGPT consult doesn't turn up a direct lemma quickly.
+
+## Update, later pass: the small blocking lemma above is RESOLVED, from scratch, no ChatGPT reply needed
+
+`MvPolynomialTotalDegreeMulEq.lean` (new file) proves both
+`MvPolynomial.totalDegree_mul_of_ne_zero` (the `=` strengthening) and
+`MvPolynomial.totalDegree_le_of_mul_eq_of_ne_zero` (the direct target
+this section asked for) via exactly the "fallback route" sketched above
+(`IsHomogeneous.totalDegree` on the top homogeneous components) — no
+ready-made Mathlib lemma turned up, so the fallback was needed, but it
+was straightforward. **REPL-confirmed green.** `chatgpt_prompt_totaldegree_
+of_divisor.md` was never actually sent — this closed without it.
+
+## Update, later pass — the SAME gap resurfaces one level up, genuinely unresolved this time
+
+`crossResultant_totalDegree_le`/`crossResultantV_totalDegree_le`
+(`CrossNondegenerateDegreeBound.lean`) are conditional on `hA`/`hB`, a
+LITERAL bound on `towerToRdecK1`'s output when fed `uRS.coeff i`'s two
+`K1`-extracted children — i.e. exactly `towerToRdec_coeff_totalDegree_le`'s
+own hypothesis shape (`DataDerivationTotalDegree.lean`), which bounds
+`towerToRdec`'s literal recursive output GIVEN a literal base-case bound.
+`uRS_coeff_isRdecWitness`/`curBeforeMonic_leadingCoeff_isRdecWitness`
+(`URSCoeffIsRdecWitness.lean`, REPL-confirmed green) give a DIFFERENT kind
+of bound — an existential `IsRdecWitness` witness, not necessarily
+`towerToRdec`'s own computed pair, since witnesses for the same value
+aren't unique. **These two do not connect**: nothing currently derives
+`hA`/`hB` (or anything else literal-shaped) from the `IsRdecWitness`
+bound in hand. This is the "Revised route 1, step 4" gap this document's
+earlier section already flagged as "genuinely the crux, not yet worked
+out" — traced precisely this pass (not re-derived from vague memory):
+`crossResultant_totalDegree_le`'s proof, checked directly, never goes
+through `IsRdecWitness` at all, so there is no obvious rewrite of its
+conclusion into `IsRdecWitness` form that would let the witness bound
+discharge it — the mismatch is at the HYPOTHESIS level (`hA`/`hB` want a
+literal base-case bound), not a form-of-conclusion mismatch. `chatgpt_
+prompt_literal_towertordec_bound.md` (`Genus2Lean/` top level) asked
+whether route 2's witness bound can be pushed to a literal bound via
+`exists_reduced_factors'` (mirroring the earlier-flagged "Revised route
+1" plan) or whether this is a genuinely separate obstruction. **Sent and
+answered — see the next section, which supersedes this one.** Both
+`crossResultant_totalDegree_le`/`crossResultantV_totalDegree_le` remain
+conditional on `hA`/`hB` as stated; nothing regresses, this just
+documents precisely why they weren't closeable from what was proved as
+of this section.
+
+## Update, later pass — ChatGPT reply received, route confirmed to work, AND SIMPLER than expected (verified against real Mathlib docs, not yet written as Lean)
+
+**Bottom line: the gap above closes without `exists_reduced_factors'` at
+all.** ChatGPT's proposed route (bound a witness → bound the canonical
+`IsFractionRing.num`/`.den` via `exists_reduced_factors'` +
+`IsFractionRing.num_den_unique`) is real and its cited lemma names are
+all confirmed present in current Mathlib4 (`IsFractionRing.num_den_unique`,
+`IsFractionRing.mk'_num_den`, `UniqueFactorizationMonoid.
+exists_reduced_factors'` all checked directly against mathlib4_docs this
+pass). But tracing it against this project's OWN code turned up a
+shortcut: `baseFracToRing` — the base case (`K0` level) of the whole
+`towerToRdec` recursion — is defined LITERALLY as `IsFractionRing.num`/
+`.den` (via `aeval (X ∘ tGen)`), and `DataDerivationTotalDegree.lean`
+ALREADY has `isFractionRing_num_totalDegree_le`/
+`isFractionRing_den_totalDegree_le` bounding those directly from a
+`v = IsLocalization.mk' (K0 p) a ⟨b,_⟩` witness — via `IsFractionRing.
+num_den_reduced` + `dvd_of_dvd_mul_right`/`_left` + `MvPolynomial.
+totalDegree_le_of_dvd_of_isDomain`, NO `exists_reduced_factors'`/
+`Associated`/`num_den_unique` needed. `baseFracToRing_totalDegree_le`
+(same file) already composes this with the `aeval` renaming step
+(degree-non-increasing, `aeval_X_comp_totalDegree_le`) to give the
+FULL base-case bound in exactly the shape `towerToRdecK1_totalDegree_le`'s
+`h` hypothesis wants. **This is already fully proved and REPL-confirmed
+— nothing new needed at the base case.**
+
+**The one missing piece, precisely identified this pass**: everything
+above needs `v` (a `K0 p` element — e.g. one of `curBeforeMonic`'s two
+`K1`-extracted-then-further-extracted `K0` pieces, NOT `uRS.coeff i`
+itself, which lives three tower levels higher at `K2`) exhibited as
+`v = IsLocalization.mk' (K0 p) a ⟨b,hb⟩` for some EXPLICIT, bounded
+`(a,b)`. What `IsRdecWitness`/`uRS_coeff_isRdecWitness` actually supply
+is the cross-multiplied equation `evalNd n = evalNd d * ι v` — a
+DIFFERENT but equivalent shape. The exact bridging lemma, confirmed
+present in Mathlib4 this pass (`Mathlib.RingTheory.Localization.Defs`):
+`IsLocalization.mk'_eq_iff_eq_mul {x:R}{y:↥M}{z:S} : mk' S x y = z ↔
+algebraMap R S x = z * algebraMap R S ↑y` — symmetrized, this is
+LITERALLY `IsRdecWitness`'s defining equation (`evalNd n = evalNd d *
+ι v`) with `evalNd = algebraMap`, `ι = id`, at exactly the base level
+(`K0`, where `IsRdecWitness`'s generic `ι`/`evalNd` genuinely
+specialize to plain `algebraMap`, unlike at `K1`/`K2` where they're the
+composite tower embeddings). So: an `IsRdecWitness`-shaped hypothesis on
+a `K0`-element, PLUS `b ≠ 0` (needed for the `⟨b,hb⟩ : ↥(nonZeroDivisors
+_)` packaging — `mem_nonZeroDivisors_of_ne_zero`, already used by
+`numDen_cross_mul` in the same file), converts via
+`mk'_eq_iff_eq_mul.mpr` into exactly `baseFracToRing_totalDegree_le`'s
+`hv` hypothesis.
+
+**The actual remaining work, concretely scoped**: this bridge only
+closes the base case (`K0` level). The `uRS.coeff i`/`vRS.coeff i`
+values `crossResultant_totalDegree_le`'s `hA`/`hB` need are `K2`-level,
+three tower steps above `K0`, and `URSCoeffIsRdecWitness.lean`'s witness
+bound is built via `IsRdecWitness.mul`/`.div` operating at the `K2`
+level directly (composing `curBeforeMonic`'s own `K2`-valued
+leadingCoeff/coeff witnesses), NOT by recursing back down through
+`towerToRdecK1`/`towerToRdec`'s own base-case-forward construction. So
+the base-case bridge above, while now fully understood, does NOT by
+itself produce `hA`/`hB` — what's actually needed is either (a) tracing
+`curBeforeMonic.coeff i`'s OWN `K0`-level sub-pieces (`t1`/`t2`/`gu0`/
+`gu1` per `CurBeforeMonicCoeffTotalDegree.lean`'s own composition) and
+re-deriving THEIR `IsLocalization.mk'`-witness form directly (bypassing
+`IsRdecWitness` for this purpose, going straight to
+`baseFracToRing_totalDegree_le`'s hypothesis at each base case, then
+propagating up through `towerToRdecK1_totalDegree_le`/
+`towerToRdec_totalDegree_le`'s ALREADY-PROVED recursive step — this is
+the "obvious" route and avoids `IsRdecWitness` for this particular goal
+entirely), or (b) finding/proving an analogous bridge one level up (`K1`,
+`K2`) connecting `IsRdecWitness` witnesses to the LITERAL
+`towerToRdecK1`/`towerToRdec`-computed pair at those levels specifically
+(harder — `towerToRdecK1`/`towerToRdec` are NOT built from `IsFractionRing.
+num`/`.den` the way `baseFracToRing` is, so no analogous direct bridge is
+known to exist at those levels; this is where `exists_reduced_factors'`
+might still be needed, if route (a) turns out to be blocked). **Route (a)
+is the one to attempt first** — it reuses proved infrastructure top to
+bottom and needs no new Mathlib-level lemma, only re-deriving
+`curBeforeMonic.coeff i`'s pieces in `IsLocalization.mk'`-witness form
+(which `CurBeforeMonicCoeffTotalDegree.lean`'s own construction already
+implicitly has, from `t0_promoted_totalDegree_le`/`Npoly_coeff_
+isRdecWitness_uniform` — these were built as `IsRdecWitness` witnesses,
+but per the bridge above, an `IsRdecWitness` witness on a `K0`-level
+piece converts to an `IsLocalization.mk'` witness for free via
+`mk'_eq_iff_eq_mul`, so nothing needs to be RE-PROVED from scratch, only
+RESHAPED). **Not yet attempted in Lean** — this is a plan, precisely
+scoped against verified Mathlib names and this project's own existing
+lemma set, for the next pass to implement directly rather than
+re-deriving the trace above from scratch.

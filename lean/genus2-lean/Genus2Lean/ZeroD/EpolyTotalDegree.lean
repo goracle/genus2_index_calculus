@@ -403,7 +403,11 @@ native_decide` step for the 3-way disjunction closes cleanly (mirrors
 2-way disjunction, since `Epoly` needs both a `bj`-check and a `bi`-check
 to single out a slot, unlike `Ypoly`'s single `bj = 1` check); (2) whether
 `yIdx_eq_three`'s copied proof still elaborates standalone outside
-`DecoupledSystemRegular.lean`'s/`NpolyTotalDegree.lean`'s own context. -/
+`DecoupledSystemRegular.lean`'s/`NpolyTotalDegree.lean`'s own context.
+
+**REPL-confirmed green** (whole project build) — supersedes both "not yet
+REPL-confirmed"/"Drafted, not yet REPL-confirmed" notes earlier in this
+file. -/
 
 end TheDataDerivation
 end Genus2Lean

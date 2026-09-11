@@ -59,7 +59,7 @@ every contributing pair, so the two coefficient-sums agree termwise. Since
 hence `n + m ≤ (p*q).totalDegree` (`MvPolynomial.le_totalDegree`). Combined
 with `MvPolynomial.totalDegree_mul`'s `≤` direction, equality follows.
 
-## Status — build-error fixes applied this pass, NOT YET REPL-CONFIRMED
+## Status — REPL-confirmed green (whole project build)
 
 Per this project's convention, Claude drafts/scopes, Claire tests. The
 file's original "Status" section (guessing `Finsupp.degree` was

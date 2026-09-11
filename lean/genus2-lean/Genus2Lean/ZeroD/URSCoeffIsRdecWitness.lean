@@ -390,6 +390,10 @@ alone, matching the rest of the project's practice of only suppressing
 `linter.style.header`/`linter.unusedDecidableInType` in files that
 explicitly choose to (e.g. `RegularSequenceFiniteQuotient.lean`), not as a
 blanket default.
+
+**REPL-confirmed green** (whole project build) — supersedes every "not
+yet REPL-confirmed"/"Drafted, NOT yet REPL-confirmed" note earlier in
+this file, including `uRS_coeff_isRdecWitness`'s three fix rounds above.
 -/
 
 end TheDataDerivation

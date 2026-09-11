@@ -310,7 +310,11 @@ separate tactic) — flagged rather than silently assumed to work.
 Scoped precisely here rather than attempted in one oversized theorem —
 per this project's own 50-line-per-theorem guideline, `Epoly`'s four-slot
 case is a genuinely different (not just longer) argument and deserves
-its own theorem, not a hasty extension of this file's `Ypoly` work. -/
+its own theorem, not a hasty extension of this file's `Ypoly` work.
+
+**REPL-confirmed green** (whole project build) — supersedes both "not yet
+REPL-confirmed"/"Drafted, not yet REPL-confirmed" notes earlier in this
+file. -/
 
 end TheDataDerivation
 end Genus2Lean

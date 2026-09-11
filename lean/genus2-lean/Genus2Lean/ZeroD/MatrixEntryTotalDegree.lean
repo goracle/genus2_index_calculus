@@ -802,7 +802,11 @@ irrelevance on `Fin`'s bound argument (`Fin.mk n h₁` and `Fin.mk n h₂`
 are defeq for any two proofs `h₁ h₂ : n < 4`), but per this file's own
 repeated experience with `hentry`'s unfolding, treat any "should hold by
 defeq" claim as unconfirmed until Claire's REPL says otherwise, not as
-settled. -/
+settled.
+
+**REPL-confirmed green** (whole project build) — supersedes the three
+"not yet REPL-confirmed"/"genuinely new" notes earlier in this file; the
+"defeq" claim above did hold as written. -/
 
 end TheDataDerivation
 end Genus2Lean

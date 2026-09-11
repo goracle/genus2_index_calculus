@@ -1400,7 +1400,11 @@ new territory — Mathlib has no ready-made "totalDegree of an exact
 MvPolynomial-coefficient quotient" lemma, this is exactly the kind of
 well-defined, non-curve-specific algebra fact this project's convention flags
 as fair game for a ChatGPT consultation if a direct Mathlib search doesn't
-turn up a shortcut quickly. -/
+turn up a shortcut quickly.
+
+**REPL-confirmed green** (whole project build) — every "not yet REPL-
+confirmed" marker earlier in this file's docstrings is stale as of this
+note; build status, not proof content, is what changed. -/
 
 end TheDataDerivation
 end Genus2Lean

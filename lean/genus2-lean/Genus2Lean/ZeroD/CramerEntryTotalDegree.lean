@@ -372,6 +372,9 @@ LHS, which `compute_degree!` doesn't accept, so this now proves
 dropped the unused `if_pos rfl` simp arg per Claire's linter hint. **Not yet
 REPL-confirmed** after this round -- these are analysis-based fixes, not yet
 tested against Claire's build.
+
+**REPL-confirmed green** (whole project build) — supersedes the "Not yet
+REPL-confirmed" note above.
 -/
 
 end TheDataDerivation

@@ -445,7 +445,11 @@ own chosen witness denominator) and `hιdet_ne` (`ι matrixA.det ≠ 0`,
 `MatrixNondegenerate` (see this file's header for why that bridge is
 separate, unattempted work). `Epoly`/`Ypoly`/`fAtX`/`Npoly`'s own bounds
 (per `RhsVecTotalDegree.lean`'s closing note) are the next assembly layer
-up, not attempted in this file. -/
+up, not attempted in this file.
+
+**REPL-confirmed green** (whole project build) — supersedes both "not yet
+REPL-confirmed"/"Drafted, not yet REPL-confirmed" notes earlier in this
+file. -/
 
 end TheDataDerivation
 end Genus2Lean

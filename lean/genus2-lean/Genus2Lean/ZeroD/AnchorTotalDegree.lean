@@ -159,6 +159,10 @@ degree-bound.md`):
    crossnondegenerate-degree-bound.md`'s own final section flag, good
    ChatGPT-consultation material once items 1-3 above are closed and a
    concrete `Npoly` coefficient bound is in hand to consult about).
+
+**REPL-confirmed green** (whole project build) — supersedes both "not yet
+REPL-confirmed" notes earlier in this file (no build environment was
+available at draft time; that's no longer the case).
 -/
 
 end TheDataDerivation
