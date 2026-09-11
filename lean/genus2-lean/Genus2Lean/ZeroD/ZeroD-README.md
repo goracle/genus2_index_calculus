@@ -300,6 +300,37 @@ item 1:
    sent/resolved. See `ROADMAP-crossnondegenerate-degree-bound.md`'s final
    two "Update" sections for the full trace.
 
+   **Update, latest pass**: `AlgebraMapFpLiteralTotalDegree.lean` (new file)
+   closes the `gu0`/`gu1` half of the literal-`towerToRdec` route the
+   previous update above was chasing, but its own closing note correctly
+   identifies that route as a dead end for `hA`/`hB` regardless --
+   `towerToRdec` is not a ring homomorphism, so no amount of literal
+   per-generator bounds composes into a literal bound on `curBeforeMonic.
+   coeff i` (an arithmetic combination of those generators). Per that
+   file's own redirection, `CrossResultantIsRdecWitness.lean` (new file,
+   REPL-confirmed green) instead proves `uResultant_isRdecWitness`/
+   `vResultant_isRdecWitness`: the LITERAL `theData`-computed resultant
+   element (`u1_den i * u2_num i - u2_den i * u1_num i`, the exact `Rdec p`
+   element `CrossNondegenerate`'s `hu0`/etc. state `IsSMulRegular`-ness
+   about) is an honest `IsRdecWitness` witness numerator for `uRS_B.coeff i
+   - uRS_A.coeff i` (resp. `vRS`), built directly from two
+   `towerToRdec_isRdecWitness` applications (already proved,
+   unconditional) via `.neg` -- no reshaping of the existing `≤630896`/
+   `≤315448` existential bounds, no attempt to bound `towerToRdecK1`'s own
+   recursive formula. **Read this precisely, don't over-credit it**: this
+   does NOT discharge `hA`/`hB` -- those still want a `totalDegree` bound on
+   a strictly deeper quantity (`towerToRdecK1`'s intermediate output) that
+   `IsRdecWitness` carries no information about at all (it is a bare
+   cross-multiplied equation, no degree content). `hA`/`hB` remain exactly
+   as open as the update above left them. What this DOES do: it is the
+   concrete witness-shaped resultant statement that `AlgebraMapFpLiteralTotalDegree.lean`'s
+   own closing note flagged as needing an `IsSMulRegular`-transfer-between-
+   witnesses lemma before it could be used for anything -- that transfer
+   question (does `IsSMulRegular` on one witness of a value imply it on
+   another witness of the same value?) is now the concrete next thing to
+   attempt, against these two theorems specifically, rather than a further
+   detour into `hA`/`hB`'s own degree-bound chain.
+
    **Major update, not yet formalized anywhere -- flagged here first,
    NOT yet reflected in `ROADMAP-alpha-locus.md`/`ROADMAP-degree-uniform-
    step3.md`'s own text (both still describe the plain "0-dimensional"
@@ -428,6 +459,14 @@ item 1:
   Cross1-4) -- the seven case-split variants of
   `reducedClass_eq_of_isReduction'`, plus the target theorem
   `decoupledSystem_degree_uniform` itself, in the base file.
+- `CrossNondegenerateDegreeBound.lean` -- `crossResultant_totalDegree_le`/
+  `crossResultantV_totalDegree_le`, conditional on an unmet `hA`/`hB`
+  hypothesis; `CrossResultantIsRdecWitness.lean` -- a separate, genuinely
+  weaker honest fact (`uResultant_isRdecWitness`/`vResultant_isRdecWitness`,
+  `IsRdecWitness` not `totalDegree`) about the same literal resultant
+  elements, REPL-confirmed green, does NOT discharge the other file's
+  `hA`/`hB` -- see item 1's latest "Update" above before assuming either
+  closes the other.
 - `CAWitness*.lean`, `SanchorMumfordOrdAt.lean`,
   `SanchorEqAlphaPoints.lean`, `TangentMumfordWitness.lean`,
   `CantorAddWitness.lean`, `CantorReductionStep.lean`,

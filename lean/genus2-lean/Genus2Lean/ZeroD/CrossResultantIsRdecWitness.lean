@@ -65,8 +65,26 @@ hypothesis) is a SEPARATE, still-open question this file does not attempt
 to close — seeded by `towerToRdec_coeff_totalDegree_le`'s own hypothesis on
 `curBeforeMonic.coeff i`'s pre-`uRS` value, not by anything proved here.
 
-**Not yet REPL-confirmed** — drafted this pass per project convention
-(Claude drafts, Claire tests via the REPL).
+**REPL-confirmed green** (Claire's build) — both `uResultant_isRdecWitness`
+and `vResultant_isRdecWitness` below build with no changes needed to either
+statement or proof term.
+
+**Scope, stated precisely so this isn't over-read as more progress than it
+is**: this file does NOT discharge `crossResultant_totalDegree_le`'s `hA`/
+`hB` — those want a `totalDegree` bound on `towerToRdecK1`'s own
+INTERMEDIATE recursive output (`towerToRdec_coeff_totalDegree_le`'s
+hypothesis shape, `DataDerivationTotalDegree.lean`), which is a strictly
+deeper quantity than anything `IsRdecWitness`/`towerToRdec_isRdecWitness`
+talk about — `IsRdecWitness` only asserts a cross-multiplied EQUATION holds,
+carrying no degree information at all. That gap remains exactly as open as
+`AlgebraMapFpLiteralTotalDegree.lean`'s closing note left it. **What this
+file DOES set up**: `AlgebraMapFpLiteralTotalDegree.lean`'s own closing note
+flagged, as the one thing a witness-shaped resultant theorem would need to
+re-examine, whether `IsSMulRegular`-ness (not mere `≠0`) transfers between
+two witnesses of the same value — this file's two theorems are the
+witness-shaped resultant statements that question is actually about, so
+the natural next step is attempting that transfer lemma directly against
+them, not re-attempting the `hA`/`hB` degree-bound route.
 -/
 
 namespace Genus2Lean
@@ -155,6 +173,71 @@ theorem uResultant_isRdecWitness
   -- `hA`/`hB` directly wherever `evalNd n1`/`evalNd n2` appear; `ring`
   -- closes the resulting pure commutative-ring identity in `evalNd d1`/
   -- `evalNd d2`/`ι a`/`ι b` alone.
+  simp only [map_sub, map_mul, hA, hB]
+  ring
+
+/-- **The literal `v`-side resultant, as an honest `IsRdecWitness` fact.**
+Exact mirror of `uResultant_isRdecWitness`, `vRS` in place of `uRS`
+throughout — `vRS` additionally needs `hgcdA`/`hgcdB` (the `Ypoly`/`uRS`
+coprimality `vRS`'s own definition requires) threaded through, same as
+`crossResultantV_totalDegree_le` itself already does. -/
+theorem vResultant_isRdecWitness
+    (c0 c1 c2 c3 c4 : F p) (sa sb : SampleTarget p)
+    (hcurA : curBeforeMonic p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1 ≠ 0)
+    (hcurB : curBeforeMonic p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1 ≠ 0)
+    (hgcdA : IsCoprime (Ypoly p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1)
+      (uRS p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1))
+    (hgcdB : IsCoprime (Ypoly p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1)
+      (uRS p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1))
+    (i : Fin 2)
+    (ι : K2 p c0 c1 c2 c3 c4 →+* FractionRing (Rdec p))
+    (hι_tA : ∀ j : Fin 2, ι (algebraMap (K1 p c0 c1 c2 c3 c4) (K2 p c0 c1 c2 c3 c4)
+        (algebraMap (K0 p) (K1 p c0 c1 c2 c3 c4)
+          (algebraMap (MvPolynomial (Fin 2) (F p)) (K0 p) (MvPolynomial.X j)))) =
+      algebraMap (Rdec p) (FractionRing (Rdec p))
+        (MvPolynomial.X (aSideGens.tGen j)))
+    (hι_w1A : ι (algebraMap (K1 p c0 c1 c2 c3 c4) (K2 p c0 c1 c2 c3 c4)
+        (w1 p c0 c1 c2 c3 c4)) =
+      algebraMap (Rdec p) (FractionRing (Rdec p)) (MvPolynomial.X (aSideGens.wGen 0)))
+    (hι_w2A : ι (w2 p c0 c1 c2 c3 c4) =
+      algebraMap (Rdec p) (FractionRing (Rdec p)) (MvPolynomial.X (aSideGens.wGen 1)))
+    (hι_tB : ∀ j : Fin 2, ι (algebraMap (K1 p c0 c1 c2 c3 c4) (K2 p c0 c1 c2 c3 c4)
+        (algebraMap (K0 p) (K1 p c0 c1 c2 c3 c4)
+          (algebraMap (MvPolynomial (Fin 2) (F p)) (K0 p) (MvPolynomial.X j)))) =
+      algebraMap (Rdec p) (FractionRing (Rdec p))
+        (MvPolynomial.X (bSideGens.tGen j)))
+    (hι_w1B : ι (algebraMap (K1 p c0 c1 c2 c3 c4) (K2 p c0 c1 c2 c3 c4)
+        (w1 p c0 c1 c2 c3 c4)) =
+      algebraMap (Rdec p) (FractionRing (Rdec p)) (MvPolynomial.X (bSideGens.wGen 0)))
+    (hι_w2B : ι (w2 p c0 c1 c2 c3 c4) =
+      algebraMap (Rdec p) (FractionRing (Rdec p)) (MvPolynomial.X (bSideGens.wGen 1))) :
+    IsRdecWitness p ι (algebraMap (Rdec p) (FractionRing (Rdec p)))
+      ((vRS p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1 hgcdB).coeff i.val -
+        (vRS p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1 hgcdA).coeff i.val)
+      ((theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_den i *
+          (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v2_num i -
+        (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v2_den i *
+          (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_num i,
+       (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_den i *
+          (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v2_den i) := by
+  have hA := towerToRdec_isRdecWitness p c0 c1 c2 c3 c4 aSideGens
+    ((vRS p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1 hgcdA).coeff i.val) ι hι_tA hι_w1A hι_w2A
+  have hB := towerToRdec_isRdecWitness p c0 c1 c2 c3 c4 bSideGens
+    ((vRS p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1 hgcdB).coeff i.val) ι hι_tB hι_w1B hι_w2B
+  have hv1n : (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_num i
+      = (towerToRdec p aSideGens
+          ((vRS p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1 hgcdA).coeff i.val)).1 := rfl
+  have hv1d : (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v1_den i
+      = (towerToRdec p aSideGens
+          ((vRS p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1 hgcdA).coeff i.val)).2 := rfl
+  have hv2n : (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v2_num i
+      = (towerToRdec p bSideGens
+          ((vRS p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1 hgcdB).coeff i.val)).1 := rfl
+  have hv2d : (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB).v2_den i
+      = (towerToRdec p bSideGens
+          ((vRS p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1 hgcdB).coeff i.val)).2 := rfl
+  rw [hv1n, hv1d, hv2n, hv2d]
+  unfold IsRdecWitness at hA hB ⊢
   simp only [map_sub, map_mul, hA, hB]
   ring
 
