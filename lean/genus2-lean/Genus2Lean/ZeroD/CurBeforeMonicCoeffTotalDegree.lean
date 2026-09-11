@@ -213,6 +213,162 @@ theorem curBeforeMonic_coeff_two_eq
   rcases hz0 with hz0 | hz0 <;> rcases hz1 with hz1 | hz1 <;>
     simp [hz0, hz1, hz3, hz4, hz5, hz6, hQ4]
 
+set_option maxHeartbeats 20000000 in
+/-- **`Npoly.coeff 5 = curBeforeMonic.coeff 1 + curBeforeMonic.coeff 2 *
+Q.coeff 3`.** The second-from-top coefficient case, same route as
+`curBeforeMonic_coeff_two_eq`: `(g*Q).coeff 5` unfolds (via `Polynomial.
+coeff_mul` + `Finset.Nat.sum_antidiagonal_eq_sum_range_succ` into a
+6-term `Finset.range` sum) to `g.coeff 1 * Q.coeff 4 + g.coeff 2 *
+Q.coeff 3` (every other term killed by `g.natDegree ≤ 2`/`Q.natDegree ≤
+4`), and `Q.coeff 4 = 1` (same `hQ4` computation) collapses the first
+term to `g.coeff 1`. -/
+theorem curBeforeMonic_coeff_one_eq
+    (hA : MatrixNondegenerate p c0 c1 c2 c3 c4 u0 u1 v0 v1)
+    (hMumford : IsMumfordTarget p c0 c1 c2 c3 c4 u0 u1 v0 v1) :
+    (Npoly p c0 c1 c2 c3 c4 u0 u1 v0 v1).coeff 5 =
+      (curBeforeMonic p c0 c1 c2 c3 c4 u0 u1 v0 v1).coeff 1 +
+      (curBeforeMonic p c0 c1 c2 c3 c4 u0 u1 v0 v1).coeff 2 *
+        ((X - C (anchor1 p c0 c1 c2 c3 c4).1) * (X - C (anchor2 p c0 c1 c2 c3 c4).1) *
+          (X ^ 2 + C (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u1) * X +
+            C (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u0))).coeff 3 := by
+  have hgdeg := Genus2Lean.DecoupledSystem.curBeforeMonic_natDegree_le_two
+    p c0 c1 c2 c3 c4 u0 u1 v0 v1
+  have hQdeg := Qpoly_natDegree_le_four p c0 c1 c2 c3 c4 u0 u1
+  have hfeq := Npoly_eq_curBeforeMonic_mul p c0 c1 c2 c3 c4 u0 u1 v0 v1 hA hMumford
+  set t1 := (anchor1 p c0 c1 c2 c3 c4).1
+  set t2 := (anchor2 p c0 c1 c2 c3 c4).1
+  set gu1 := algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u1
+  set gu0 := algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u0
+  clear_value t1 t2 gu1 gu0
+  set g := curBeforeMonic p c0 c1 c2 c3 c4 u0 u1 v0 v1
+  set Q := (X - C t1) * (X - C t2) * (X ^ 2 + C gu1 * X + C gu0) with hQ_def
+  rw [hfeq]
+  have hrange : (g * Q).coeff 5 =
+      ∑ i ∈ Finset.range 6, g.coeff i * Q.coeff (5 - i) := by
+    rw [Polynomial.coeff_mul]
+    exact Finset.Nat.sum_antidiagonal_eq_sum_range_succ
+      (fun i j => g.coeff i * Q.coeff j) 5
+  rw [hrange]
+  simp only [Finset.sum_range_succ, Finset.sum_range_zero, zero_add]
+  -- Surviving terms: `i = 1` (`Q.coeff 4`) and `i = 2` (`Q.coeff 3`);
+  -- `i = 0` needs `Q.coeff 5 = 0` (kills it since `Q.natDegree ≤ 4`).
+  have hz0 : g.coeff 0 = 0 ∨ Q.coeff 5 = 0 := Or.inr
+    (Polynomial.coeff_eq_zero_of_natDegree_lt (by omega))
+  have hz3 : g.coeff 3 = 0 := Polynomial.coeff_eq_zero_of_natDegree_lt (by omega)
+  have hz4 : g.coeff 4 = 0 := Polynomial.coeff_eq_zero_of_natDegree_lt (by omega)
+  have hz5 : g.coeff 5 = 0 := Polynomial.coeff_eq_zero_of_natDegree_lt (by omega)
+  have hQ4 : Q.coeff 4 = 1 := by
+    have heq : Q = X ^ 4 + C (- t1 - t2 + gu1) * X ^ 3 +
+        C (t1 * t2 - t1 * gu1 - t2 * gu1 + gu0) * X ^ 2 +
+        C (t1 * t2 * gu1 - t1 * gu0 - t2 * gu0) * X +
+        C (t1 * t2 * gu0) := by
+      rw [hQ_def]
+      simp only [map_sub, map_add, map_neg, map_mul]
+      ring
+    rw [heq]
+    simp only [Polynomial.coeff_add, Polynomial.coeff_C_mul, Polynomial.coeff_X_pow,
+      Polynomial.coeff_C, Polynomial.coeff_X]
+    norm_num
+  rcases hz0 with hz0 | hz0 <;> simp [hz0, hz3, hz4, hz5, hQ4]
+
+set_option maxHeartbeats 20000000 in
+/-- **`Npoly.coeff 4 = curBeforeMonic.coeff 0 + curBeforeMonic.coeff 1 *
+Q.coeff 3 + curBeforeMonic.coeff 2 * Q.coeff 2`.** The bottom
+coefficient case, same route once more: `(g*Q).coeff 4` unfolds (5-term
+`Finset.range` sum) to `g.coeff 0 * Q.coeff 4 + g.coeff 1 * Q.coeff 3 +
+g.coeff 2 * Q.coeff 2` (all other terms killed by degree), and `Q.coeff
+4 = 1` collapses the first term to `g.coeff 0`. -/
+theorem curBeforeMonic_coeff_zero_eq
+    (hA : MatrixNondegenerate p c0 c1 c2 c3 c4 u0 u1 v0 v1)
+    (hMumford : IsMumfordTarget p c0 c1 c2 c3 c4 u0 u1 v0 v1) :
+    (Npoly p c0 c1 c2 c3 c4 u0 u1 v0 v1).coeff 4 =
+      (curBeforeMonic p c0 c1 c2 c3 c4 u0 u1 v0 v1).coeff 0 +
+      (curBeforeMonic p c0 c1 c2 c3 c4 u0 u1 v0 v1).coeff 1 *
+        ((X - C (anchor1 p c0 c1 c2 c3 c4).1) * (X - C (anchor2 p c0 c1 c2 c3 c4).1) *
+          (X ^ 2 + C (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u1) * X +
+            C (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u0))).coeff 3 +
+      (curBeforeMonic p c0 c1 c2 c3 c4 u0 u1 v0 v1).coeff 2 *
+        ((X - C (anchor1 p c0 c1 c2 c3 c4).1) * (X - C (anchor2 p c0 c1 c2 c3 c4).1) *
+          (X ^ 2 + C (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u1) * X +
+            C (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u0))).coeff 2 := by
+  have hgdeg := Genus2Lean.DecoupledSystem.curBeforeMonic_natDegree_le_two
+    p c0 c1 c2 c3 c4 u0 u1 v0 v1
+  have hQdeg := Qpoly_natDegree_le_four p c0 c1 c2 c3 c4 u0 u1
+  have hfeq := Npoly_eq_curBeforeMonic_mul p c0 c1 c2 c3 c4 u0 u1 v0 v1 hA hMumford
+  set t1 := (anchor1 p c0 c1 c2 c3 c4).1
+  set t2 := (anchor2 p c0 c1 c2 c3 c4).1
+  set gu1 := algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u1
+  set gu0 := algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u0
+  clear_value t1 t2 gu1 gu0
+  set g := curBeforeMonic p c0 c1 c2 c3 c4 u0 u1 v0 v1
+  set Q := (X - C t1) * (X - C t2) * (X ^ 2 + C gu1 * X + C gu0) with hQ_def
+  rw [hfeq]
+  have hrange : (g * Q).coeff 4 =
+      ∑ i ∈ Finset.range 5, g.coeff i * Q.coeff (4 - i) := by
+    rw [Polynomial.coeff_mul]
+    exact Finset.Nat.sum_antidiagonal_eq_sum_range_succ
+      (fun i j => g.coeff i * Q.coeff j) 4
+  rw [hrange]
+  simp only [Finset.sum_range_succ, Finset.sum_range_zero, zero_add]
+  -- Surviving terms: `i = 0` (`Q.coeff 4`), `i = 1` (`Q.coeff 3`),
+  -- `i = 2` (`Q.coeff 2`); nothing else to kill here since the range
+  -- only has 5 terms (`i = 0,1,2,3,4`) and `g.coeff {3,4} = 0` already
+  -- kills the remaining two.
+  have hz3 : g.coeff 3 = 0 := Polynomial.coeff_eq_zero_of_natDegree_lt (by omega)
+  have hz4 : g.coeff 4 = 0 := Polynomial.coeff_eq_zero_of_natDegree_lt (by omega)
+  have hQ4 : Q.coeff 4 = 1 := by
+    have heq : Q = X ^ 4 + C (- t1 - t2 + gu1) * X ^ 3 +
+        C (t1 * t2 - t1 * gu1 - t2 * gu1 + gu0) * X ^ 2 +
+        C (t1 * t2 * gu1 - t1 * gu0 - t2 * gu0) * X +
+        C (t1 * t2 * gu0) := by
+      rw [hQ_def]
+      simp only [map_sub, map_add, map_neg, map_mul]
+      ring
+    rw [heq]
+    simp only [Polynomial.coeff_add, Polynomial.coeff_C_mul, Polynomial.coeff_X_pow,
+      Polynomial.coeff_C, Polynomial.coeff_X]
+    norm_num
+  simp only [hz3, hz4, hQ4, mul_zero, mul_one, add_zero, zero_add]
+  ring
+
+set_option maxHeartbeats 20000000 in
+/-- **`Q.coeff 3` and `Q.coeff 2`'s literal formulas**, as reusable
+facts — same `heq` expansion `hQ4` above uses, read off at coefficients
+3 and 2 instead of 4. Packaged as a pair rather than two separate
+theorems since both come from the same `heq` rewrite and are always
+needed together downstream (the `IsRdecWitness` composition for
+`g.coeff 1`/`g.coeff 0`). -/
+theorem Qpoly_coeff_three_and_two_eq :
+    ((X - C (anchor1 p c0 c1 c2 c3 c4).1) * (X - C (anchor2 p c0 c1 c2 c3 c4).1) *
+        (X ^ 2 + C (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u1) * X +
+          C (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u0))).coeff 3 =
+      - (anchor1 p c0 c1 c2 c3 c4).1 - (anchor2 p c0 c1 c2 c3 c4).1 +
+        algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u1 ∧
+    ((X - C (anchor1 p c0 c1 c2 c3 c4).1) * (X - C (anchor2 p c0 c1 c2 c3 c4).1) *
+        (X ^ 2 + C (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u1) * X +
+          C (algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u0))).coeff 2 =
+      (anchor1 p c0 c1 c2 c3 c4).1 * (anchor2 p c0 c1 c2 c3 c4).1 -
+        (anchor1 p c0 c1 c2 c3 c4).1 * algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u1 -
+        (anchor2 p c0 c1 c2 c3 c4).1 * algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u1 +
+        algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u0 := by
+  set t1 := (anchor1 p c0 c1 c2 c3 c4).1
+  set t2 := (anchor2 p c0 c1 c2 c3 c4).1
+  set gu1 := algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u1
+  set gu0 := algebraMap (F p) (K2 p c0 c1 c2 c3 c4) u0
+  clear_value t1 t2 gu1 gu0
+  have heq : (X - C t1) * (X - C t2) * (X ^ 2 + C gu1 * X + C gu0) =
+      X ^ 4 + C (- t1 - t2 + gu1) * X ^ 3 +
+      C (t1 * t2 - t1 * gu1 - t2 * gu1 + gu0) * X ^ 2 +
+      C (t1 * t2 * gu1 - t1 * gu0 - t2 * gu0) * X +
+      C (t1 * t2 * gu0) := by
+    simp only [map_sub, map_add, map_neg, map_mul]
+    ring
+  rw [heq]
+  refine ⟨?_, ?_⟩ <;>
+  · simp only [Polynomial.coeff_add, Polynomial.coeff_C_mul, Polynomial.coeff_X_pow,
+      Polynomial.coeff_C, Polynomial.coeff_X]
+    norm_num
+
 /-! ## Status, this pass
 
 **Drafted, NOT yet REPL-confirmed** (rewritten this edit to fix a REPL-
@@ -269,7 +425,39 @@ coeff_X_pow, Polynomial.coeff_C, Polynomial.coeff_X]` (turns every
 `(C a * X^n).coeff 4` into `a * (if n = 4 then 1 else 0)`-shaped terms,
 and the bare `C d` term into an `if 4 = 0 then d else 0` term) followed by
 `norm_num` to discharge the resulting `if`-conditions (`4 ≠ 3,2,1,0`) and
-finish the arithmetic. Not yet REPL-confirmed. -/
+finish the arithmetic. REPL-confirmed green this pass (whole project
+builds).
+
+**This pass — added the two remaining coefficient equations plus the
+`Q.coeff {3,2}` literal formulas.** `curBeforeMonic_coeff_one_eq`
+(`Npoly.coeff 5 = g.coeff 1 + g.coeff 2 * Q.coeff 3`) and
+`curBeforeMonic_coeff_zero_eq` (`Npoly.coeff 4 = g.coeff 0 + g.coeff 1 *
+Q.coeff 3 + g.coeff 2 * Q.coeff 2`) follow `curBeforeMonic_coeff_two_eq`'s
+exact route (`Polynomial.coeff_mul` + `Finset.Nat.sum_antidiagonal_eq_
+sum_range_succ` + `Finset.sum_range_succ`/`_zero` unfolding, `hQ4`'s same
+`Q.coeff 4 = 1` computation), just with more surviving terms per the
+6-term/5-term ranges. `curBeforeMonic_coeff_one_eq`'s closing step needed
+an `hz0 : g.coeff 0 = 0 ∨ Q.coeff 5 = 0` disjunction (same pattern as
+`curBeforeMonic_coeff_two_eq`'s `hz0`/`hz1`) since `g.natDegree ≤ 2` alone
+doesn't kill the `i=0` term directly — `rcases`'d before the closing
+`simp`. `curBeforeMonic_coeff_zero_eq`'s closing step needed no
+disjunction (`g.coeff 3 = 0`/`g.coeff 4 = 0` suffice outright), but its
+final `simp [...]; ring` was changed to `simp only [...]; ring` to avoid
+a "no goals" error if `simp` alone happened to fully close the arithmetic
+identity — `simp only` with this specific lemma list normalizes the
+zero/one terms but leaves genuine commutativity/associativity to `ring`,
+guaranteeing there's always a goal left for it. `Qpoly_coeff_three_and_
+two_eq` packages `Q.coeff 3 = -t1-t2+gu1` and `Q.coeff 2 = t1*t2-t1*gu1-
+t2*gu1+gu0` as a single `∧`-conjunction theorem (both come from the same
+`heq` rewrite, always needed together downstream), proved via `refine
+⟨?_, ?_⟩ <;> · simp only [...]; norm_num`, same coefficient-lemma list as
+`hQ4`. **Not yet REPL-confirmed** — sent for testing this pass.
+
+**Still not attempted**: the final `IsRdecWitness` composition
+(`towerToRdec`-style bound assembly, target uniform numeral `≤315448` per
+this file's header) that turns these four algebraic identities into the
+actual `totalDegree` bound on `curBeforeMonic.coeff {0,1,2}` — this is
+the file's actual stated deliverable and is still open. -/
 
 end TheDataDerivation
 end Genus2Lean
