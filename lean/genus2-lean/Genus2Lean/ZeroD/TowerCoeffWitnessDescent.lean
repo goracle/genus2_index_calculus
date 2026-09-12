@@ -321,5 +321,143 @@ direction from `towerToRdecK1`/`towerToRdec`'s own construction:
   that witness's actual construction inspected first, not guessed. -/
 theorem coeffDescent_purpose_note : True := trivial
 
+/-! ## The bridge from a whole-element `IsRdecWitness` to `coeffDescent_core`'s
+hypotheses, at the `K2`/`w2` level
+
+New this pass. `coeffDescent_purpose_note` above flags the concrete next
+step as: given an EXISTING `IsRdecWitness` pair `(n,d)` for some
+`v : K2 p ...` (e.g. `curBeforeMonic_coeff_totalDegree_le`'s own witnesses),
+extract `N0,N1,D0,D1` — `evalNd n`/`evalNd d`'s own `1,ι(w2)`-coordinates in
+the target ring `L` — satisfying `coeffDescent_core`'s `hN0`/`hN1`. This was
+flagged as needing `evalNd n`/`evalNd d` to ALREADY come with their own
+basis decomposition, "not yet attempted anywhere."
+
+**The fix.** No such decomposition needs to be assumed or separately
+supplied: `evalNd n`, `evalNd d` are already concrete elements of `L`, and
+`v`'s OWN normal form (`K2_quadratic_normal_form`, `QuadraticCoordinateBridge.
+lean`: `v = ι0 e0 + ι0 e1 * w2`, `ι0 := algebraMap (K1 p ...) (K2 p ...)`)
+substituted into the witness equation `evalNd n = evalNd d * ι v` directly
+produces the required decomposition, without needing `evalNd n`/`evalNd d`
+individually pre-split into basis pieces at all: taking
+`N0 := evalNd n`, `N1 := 0`, `D0 := evalNd d`, `D1 := 0` trivially satisfies
+`coeffDescent_core`'s `b = 0` hypotheses `hN0 : N0 = D0*e0 - c*D1*e1` — NO,
+this is wrong (flagging the wrong turn explicitly rather than silently
+erasing it, per this file's own established practice of recording a caught
+mistake): `N0 := evalNd n` is the WHOLE witness numerator, but
+`coeffDescent_core`'s `N0` needs to be the numerator's `1`-coefficient
+against a `1,w2`-basis of the AMBIENT ring `L`, and `L` (a `FractionRing`,
+or `FractionRing (MvPolynomial Vars (F p))` concretely) is not literally
+presented as a free module over a `1,ι(w2)` basis the way `K2` is over
+`K1` — `ι(w2)` is just SOME element of `L` (a plain polynomial variable
+image, per `hι_w2`), not a basis vector `L` is internally graded by, so
+`evalNd n` has no canonical "coefficient of `ι(w2)`" to extract in general.
+
+**Correct diagnosis, replacing the above**: `coeffDescent_core`'s intended
+use here is NOT "decompose `evalNd n` against `ι(w2)`" (a decomposition
+that doesn't exist in `L`) but the one `coeffDescent_purpose_note` itself
+already correctly describes: applied to the `K2`-level normal form
+DIRECTLY, with `R := K2 p c0 c1 c2 c3 c4` itself (not `L`), `e0/e1 :=
+v`'s own `K1`-coefficients, and `N0,N1,D0,D1 : K1 p ...` the `n`/`d`
+POLYNOMIALS' OWN `K1`-normal-form coefficients (via `K2_quadratic_normal_
+form` applied to `n`,`d` themselves) — but `n,d` here are `IsRdecWitness`'s
+`MvPolynomial Vars (F p)`-valued witness pair, not `K2`-valued at all
+(`IsRdecWitness`'s own signature, `TowerToRdecMul.lean`: `nd : MvPolynomial
+Vars (F p) × MvPolynomial Vars (F p)`), so `K2_quadratic_normal_form`
+doesn't even typecheck against them. **This confirms, precisely, why no
+generic bridge from an arbitrary `IsRdecWitness` pair works**: the
+witness lives in the BASE ring (`MvPolynomial Vars (F p)`, no tower
+structure at all), while `coeffDescent_core` needs coordinates of a TOWER
+element (`K1`/`K2`-valued). The two are related only via `evalNd`/`ι`,
+which are ring homs with no obligation to carry a tower's basis structure
+across.
+
+**What DOES work, stated precisely instead**: exactly the case already
+verified by direct inspection of `towerToRdec`/`towerToRdecK1`'s
+definitions (`DataDerivationMumford.lean`, confirmed this pass, matching
+`coeffDescent_purpose_note`'s own "likely true by inspection" guess).
+`towerToRdec p sg v`'s output pair, for ANY `v : K2 p ...`, is BY
+DEFINITION `(n0 * den1 + n1 * den0 * X (sg.wGen 1), den0 * den1)` where
+`(n0, den0) := towerToRdecK1 p sg d0`, `(n1, den1) := towerToRdecK1 p sg
+d1`, `d0 := (modByMonicHom v).coeff 0`, `d1 := (modByMonicHom v).coeff 1`
+— i.e. `d0,d1` ARE `v`'s own `K2_quadratic_normal_form` coordinates
+(`e0 e1`, matching that theorem's `.coeff 0`/`.coeff 1` naming exactly),
+and `(n0,den0)`/`(n1,den1)` are themselves valid `IsRdecWitness` witnesses
+for `d0`/`d1` (one tower level down, via `towerToRdecK1`'s own analogous
+structure — not proved as a named theorem in this project yet, but this
+file does not need that fact: only the SHAPE of the pair, not a
+separate witness property of its parts, is used below). This means: for
+this SPECIFIC witness pair (the one `towerToRdec_isRdecWitness` produces,
+NOT an arbitrary `IsRdecWitness` pair), the decomposition
+`coeffDescent_core` needs is available for FREE, by unfolding `towerToRdec`
+itself — `N0 := evalNd (n0 * den1)`, `N1 := evalNd (n1 * den0)`, `D0 :=
+evalNd (den0 * den1)`, `D1 := 0` (the pair's `X (sg.wGen 1)`-coefficient in
+the sense that matters here is exactly `n1*den0`, appearing literally
+multiplied by `X (sg.wGen 1)` in `towerToRdec`'s own formula — NOT a
+"coefficient of `ι(w2)` inside `L`" in the sense ruled out above, but a
+coefficient in the LITERAL `MvPolynomial` PRE-`evalNd` expression, which is
+exactly what's needed since `ι(w2) = evalNd (X (sg.wGen 1))` by `hι_w2`).
+Stated as a genuinely new theorem below, `towerToRdec_output_shape`,
+proved by `unfold`/`rfl` against the definition directly (matching this
+project's discipline of checking a claimed definitional shape by direct
+`unfold`, not asserting it from the docstring's prose alone). **This is a
+narrower, more honest deliverable than a general "any witness decomposes"
+bridge would have been** — it applies to `towerToRdec`'s own canonical
+output specifically, not to `curBeforeMonic_coeff_totalDegree_le`'s
+witnesses (which are hand-assembled from `IsRdecWitness.add`/`.mul`/`.neg`
+combinators over PIECES that are each `towerToRdec`-shaped, but the
+COMBINED witness is not itself literally `towerToRdec`'s output for
+`curBeforeMonic.coeff i` — composing `towerToRdec_output_shape` through
+that combinator tree, so the SAME basis-coefficient bookkeeping survives
+`.add`/`.mul`/`.neg`, is genuine further work, not attempted here). -/
+
+
+set_option maxHeartbeats 2000000 in
+/-- **`towerToRdec`'s output pair, unfolded to its `1, X(sg.wGen 1)`
+"coefficient" shape.** For any `v : K2 p ...`, writing `d0/d1 := v`'s own
+`K2_quadratic_normal_form` coordinates (`(modByMonicHom v).coeff 0/1`) and
+`(n0,den0)/(n1,den1) := towerToRdecK1 p sg d0/d1`, `towerToRdec p sg v`'s
+numerator is literally `n0*den1 + (n1*den0) * X (sg.wGen 1)` and its
+denominator is literally `den0*den1` — the exact `N0 := n0*den1`, `N1 :=
+n1*den0`, `D0 := den0*den1`, `D1 := 0` shape `coeffDescent_core`'s `b=0`
+case needs, with the `X (sg.wGen 1)` factor standing in for `w2`'s image
+under `evalNd`/`ι` (`hι_w2` below identifies the two). Proof: pure
+`unfold`/`rfl` against `towerToRdec`'s definition — no algebra, since this
+is definitional, not derived. -/
+theorem towerToRdec_output_shape {Vars : Type*}
+    (sg : SideGens Vars) (v : K2 p c0 c1 c2 c3 c4) :
+    (towerToRdec p sg v).1 =
+      (towerToRdecK1 p sg
+          ((AdjoinRoot.modByMonicHom (K2_poly_monic p c0 c1 c2 c3 c4) v).coeff 0)).1 *
+        (towerToRdecK1 p sg
+            ((AdjoinRoot.modByMonicHom (K2_poly_monic p c0 c1 c2 c3 c4) v).coeff 1)).2 +
+      (towerToRdecK1 p sg
+          ((AdjoinRoot.modByMonicHom (K2_poly_monic p c0 c1 c2 c3 c4) v).coeff 1)).1 *
+        (towerToRdecK1 p sg
+            ((AdjoinRoot.modByMonicHom (K2_poly_monic p c0 c1 c2 c3 c4) v).coeff 0)).2 *
+        MvPolynomial.X (sg.wGen 1) ∧
+    (towerToRdec p sg v).2 =
+      (towerToRdecK1 p sg
+          ((AdjoinRoot.modByMonicHom (K2_poly_monic p c0 c1 c2 c3 c4) v).coeff 0)).2 *
+        (towerToRdecK1 p sg
+            ((AdjoinRoot.modByMonicHom (K2_poly_monic p c0 c1 c2 c3 c4) v).coeff 1)).2 := by
+  unfold towerToRdec
+  constructor <;> rfl
+
+/-- **The corresponding `ι(w2)` identification, for plugging into
+`coeffDescent_core`.** Restates `hι_w2` (`towerToRdec_isRdecWitness`'s own
+hypothesis) in the `evalNd`-applied form `towerToRdec_output_shape`'s
+numerator needs: `evalNd (X (sg.wGen 1)) = ι (w2 p ...)`, the reverse
+direction of the usual statement, so it composes directly with
+`map_add`/`map_mul` applied to `towerToRdec_output_shape`'s two equations
+without an extra `.symm` at each call site. -/
+theorem evalNd_X_wGen_one_eq {Vars : Type*} (sg : SideGens Vars)
+    (ι : K2 p c0 c1 c2 c3 c4 →+* FractionRing (MvPolynomial Vars (F p)))
+    (hι_w2 : ι (w2 p c0 c1 c2 c3 c4) =
+      algebraMap (MvPolynomial Vars (F p)) (FractionRing (MvPolynomial Vars (F p)))
+        (MvPolynomial.X (sg.wGen 1))) :
+    algebraMap (MvPolynomial Vars (F p)) (FractionRing (MvPolynomial Vars (F p)))
+        (MvPolynomial.X (sg.wGen 1)) = ι (w2 p c0 c1 c2 c3 c4) :=
+  hι_w2.symm
+
 end TheDataDerivation
 end Genus2Lean
