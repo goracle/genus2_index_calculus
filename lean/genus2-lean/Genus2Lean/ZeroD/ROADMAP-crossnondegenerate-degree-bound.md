@@ -995,3 +995,68 @@ RESHAPED). **Not yet attempted in Lean** — this is a plan, precisely
 scoped against verified Mathlib names and this project's own existing
 lemma set, for the next pass to implement directly rather than
 re-deriving the trace above from scratch.
+
+## Update, later pass — Route (a)'s premise was WRONG; corrected route found, via ChatGPT, matching this project's own already-proved machinery
+
+**Route (a) above does not apply.** Traced directly this pass: `t1`,
+`t2`, `gu0`, `gu1` (`CurBeforeMonicCoeffTotalDegree.lean`'s own
+`anchor1`/`anchor2`/`algebraMap (F p) (K2 ...)`-built pieces) are `K2`
+p `c0 c1 c2 c3 c4`-VALUED, not `K0`-valued as this document's "Route (a)"
+assumed — `baseFracToRing_totalDegree_le` (a `K0`-level lemma) does not
+apply to them directly, contrary to what the paragraph above claims.
+This was caught by direct inspection of `anchor1`'s return type
+(`K2 p c0 c1 c2 c3 c4 × K2 p c0 c1 c2 c3 c4`), not assumed from the
+existing prose.
+
+**ChatGPT consultation, this discrepancy specifically.** Confirmed the
+above and diagnosed the real obstruction precisely: an existential
+`IsRdecWitness` witness for a whole `K2`-element `v` (or `K1`-element)
+constrains only the VALUE `v` represents, not its canonical
+`AdjoinRoot.modByMonicHom`-coordinates (`v0,v1` with `v = v0 + v1*w`,
+`modByMonicHom` not being a ring hom means no generic operation turns a
+witness for `v` into witnesses for `v0`/`v1`). Proposed fix: exploit the
+QUADRATIC structure explicitly. Given `v = v0 + v1*w` (`w^2 = c` the
+extension's defining relation) and a witness `a/b` for `v` in the
+surrounding fraction field, clearing denominators mod `w^2-c` gives a
+2×2 LINEAR system in `v0,v1` (`a0 = b0*v0 + c*b1*v1`, `a1 = b0*v1 +
+b1*v0`, writing `a = a0+a1*w`, `b = b0+b1*w`) — solvable via this
+project's own existing Cramer's-rule infrastructure
+(`CoeffsOutTotalDegree.lean`'s `matrixDet_totalDegree_le`/
+`cramerNumeratorDet_totalDegree_le` etc., already built for an unrelated
+4×4 system one level up — same technique, smaller system).
+
+**Independently confirmed this pass, and better than a new lemma is
+needed**: `adjoinRoot_quadratic_normal_form` (`DataDerivationMumford.
+lean`, already proved, fully generic over any monic quadratic) IS
+exactly the canonical-form identity ChatGPT's route needs (`x = algebraMap
+... (modByMonicHom x).coeff 0 + algebraMap ... (modByMonicHom x).coeff 1
+* root`), and `towerToRdec_spec`'s OWN proof (same file, already proved,
+REPL-confirmed) already builds the FULL chain from a hypothesis-supplied
+`ι` down through both quadratic levels using exactly this identity
+(`hK1repr`/`hK2repr`/`hK1spec` locals inside that proof) to show the
+literal `towerToRdec` output's `algebraMap`-image equals `ι v` exactly —
+i.e. `towerToRdec_isRdecWitness` (`TowerToRdecMul.lean`) already IS the
+witness fact this whole chain was trying to derive from scratch. **The
+open gap was never "does a witness exist for the literal pair" — that
+was already closed. The gap is a DEGREE bound on that same literal
+pair**, which needs `d0`/`d1` (the coeff-0/coeff-1 extractions at each
+level) individually exhibited as bounded-degree `mk'`-witnesses, not
+merely as *some* value satisfying a cross-multiplied equation together
+with the rest of the tower.
+
+**Concrete next step, not yet attempted in Lean**: adapt
+`towerToRdec_spec`'s own proof structure (`hK1repr`/`hK2repr`'s
+`algebraMap`-decomposition identities, combined with a per-level 2×2
+Cramer solve mirroring `CoeffsOutTotalDegree.lean`'s existing 4×4
+machinery) into a DEGREE-BOUND-carrying version: given a bounded-degree
+witness for `v : K2` (e.g. `curBeforeMonic_coeff_totalDegree_le`'s
+existing `≤315448` `IsRdecWitness` fact), derive bounded-degree
+`IsLocalization.mk'`-witnesses for `(modByMonicHom v).coeff 0`/`.coeff 1`
+(`K1`-valued), then repeat one level down for THEIR `K0`-level
+coefficient pairs, finally feeding `isFractionRing_num_totalDegree_le`/
+`baseFracToRing_totalDegree_le`/`towerToRdecK1_totalDegree_le`/
+`towerToRdec_totalDegree_le` (all already proved) to close `hA`/`hB`.
+This is real, nontrivial new Lean work (a per-level linear-system
+inversion, not a reshaping of an existing fact) — flagged honestly as
+such, not yet attempted.
+
