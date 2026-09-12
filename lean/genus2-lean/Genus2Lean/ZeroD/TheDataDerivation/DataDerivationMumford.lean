@@ -758,6 +758,144 @@ theorem adjoinRoot_quadratic_normal_form {R : Type*} [CommRing R]
         AdjoinRoot.algebraMap_eq] using hmap
 
 set_option maxHeartbeats 4000000 in
+/-- **Extracted, one level down: `towerToRdecK1`'s own `IsRdecWitness`
+spec.** This is `towerToRdec_spec`'s proof's own internal `hK1spec`
+`have`, promoted to a standalone theorem — same content, not new math,
+just no longer buried inside the bigger proof where it couldn't be
+reused. States exactly the `K1`-level analogue of `towerToRdec_spec`:
+for `x : K1`, `towerToRdecK1 p sg x` is an honest numerator/denominator
+witness for `x` itself (as an element of `K2`, via the same ambient
+`ι : K2 →+* L` `towerToRdec_spec` takes — deliberately not `K1 →+* L`,
+matching how the original proof actually invokes it, composed against
+`algebraMap K1 K2`). Needs only `hι_t`/`hι_w1` (no `hι_w2`): `K1`'s own
+tower level never touches `w2`. **Why this matters**: this is exactly
+the fact `TowerCoeffWitnessDescent.lean`'s `coeffDescent_totalDegree_le`
+needs at the call site — `towerToRdec p sg v`'s definition destructures
+into `towerToRdecK1 p sg d0`/`towerToRdecK1 p sg d1` (`d0,d1` the
+`K2_poly`-normal-form coefficients of `v`), and this theorem says
+those two calls are themselves valid `IsRdecWitness` pairs for `d0,d1`
+respectively — i.e. `towerToRdec`'s own `(n0,den0)`/`(n1,den1)`
+intermediate pairs ARE the `(N0,D0)`/`(N1,D1)` witness pairs that
+lemma's hypotheses ask for, not merely opaque intermediate `let`
+bindings. Proof is a verbatim copy of the original `hK1spec` block,
+unindented. **Heartbeats raised as a precaution**: the original
+`towerToRdec_spec` needed this for its combined `unfold towerToRdecK1`/
+`unfold towerToRdec` steps; this proof only does the lighter
+`unfold towerToRdecK1` half, so may not need the raised limit, but
+matching the neighboring theorem's guard rather than assuming it's
+unnecessary. -/
+theorem towerToRdecK1_spec {Vars : Type*}
+    (sg : SideGens Vars) (x : K1 p c0 c1 c2 c3 c4)
+    (ι : K2 p c0 c1 c2 c3 c4 →+* FractionRing (MvPolynomial Vars (F p)))
+    (hι_t : ∀ i : Fin 2, ι (algebraMap (K1 p c0 c1 c2 c3 c4) (K2 p c0 c1 c2 c3 c4)
+        (algebraMap (K0 p) (K1 p c0 c1 c2 c3 c4)
+          (algebraMap (MvPolynomial (Fin 2) (F p)) (K0 p) (MvPolynomial.X i)))) =
+      algebraMap (MvPolynomial Vars (F p)) (FractionRing (MvPolynomial Vars (F p)))
+        (MvPolynomial.X (sg.tGen i)))
+    (hι_w1 : ι (algebraMap (K1 p c0 c1 c2 c3 c4) (K2 p c0 c1 c2 c3 c4) (w1 p c0 c1 c2 c3 c4)) =
+      algebraMap (MvPolynomial Vars (F p)) (FractionRing (MvPolynomial Vars (F p)))
+        (MvPolynomial.X (sg.wGen 0))) :
+    (algebraMap (MvPolynomial Vars (F p)) (FractionRing (MvPolynomial Vars (F p)))
+        (towerToRdecK1 p sg x).1) =
+      (algebraMap (MvPolynomial Vars (F p)) (FractionRing (MvPolynomial Vars (F p)))
+        (towerToRdecK1 p sg x).2) *
+        ι (algebraMap (K1 p c0 c1 c2 c3 c4) (K2 p c0 c1 c2 c3 c4) x) := by
+  classical
+  let A := MvPolynomial (Fin 2) (F p)
+  let B := MvPolynomial Vars (F p)
+  let L := FractionRing B
+  let ι0 : K0 p →+* L :=
+    (ι.comp (algebraMap (K1 p c0 c1 c2 c3 c4) (K2 p c0 c1 c2 c3 c4))).comp
+      (algebraMap (K0 p) (K1 p c0 c1 c2 c3 c4))
+  let g : A →+* L :=
+    (algebraMap B L).comp
+      ((MvPolynomial.aeval
+        (fun i : Fin 2 => MvPolynomial.X (sg.tGen i)) :
+        A →ₐ[F p] B).toRingHom)
+  have hcomp : ι0.comp (algebraMap A (K0 p)) = g := by
+    apply MvPolynomial.ringHom_ext
+    · intro a
+      obtain ⟨n, rfl⟩ := ZMod.natCast_zmod_surjective a
+      simp [ι0, g, RingHom.comp_apply]
+    · intro i
+      simpa [ι0, g] using hι_t i
+  have hbase : ∀ w : K0 p,
+      algebraMap B L (baseFracToRing p sg w).1 =
+        algebraMap B L (baseFracToRing p sg w).2 * ι0 w := by
+    intro w
+    let n := IsFractionRing.num A w
+    let d := IsFractionRing.den A w
+    have hw : (algebraMap A (K0 p)) n /
+        (algebraMap A (K0 p)) (d : A) = w := by
+      simpa [n, d] using (IsFractionRing.mk'_num_den' A w)
+    have hdK : (algebraMap A (K0 p)) (d : A) ≠ 0 := by
+      exact IsFractionRing.to_map_ne_zero_of_mem_nonZeroDivisors d.property
+    have hmul : (algebraMap A (K0 p)) n =
+        (algebraMap A (K0 p)) (d : A) * w := by
+      have h := (div_eq_iff hdK).mp hw
+      simpa [mul_comm] using h
+    have hmulι : g n = g (d : A) * ι0 w := by
+      calc
+        g n = ι0 ((algebraMap A (K0 p)) n) := by
+          symm
+          exact DFunLike.congr_fun hcomp n
+        _ = ι0 ((algebraMap A (K0 p)) (d : A) * w) := by
+          rw [hmul]
+        _ = g (d : A) * ι0 w := by
+          have hd := DFunLike.congr_fun hcomp (d : A)
+          rw [RingHom.comp_apply] at hd
+          rw [map_mul, hd]
+    change algebraMap B L
+        (MvPolynomial.aeval (fun i : Fin 2 => MvPolynomial.X (sg.tGen i)) n) =
+      algebraMap B L
+        (MvPolynomial.aeval (fun i : Fin 2 => MvPolynomial.X (sg.tGen i)) (d : A)) * ι0 w
+    change algebraMap B L
+        (MvPolynomial.aeval (fun i : Fin 2 => MvPolynomial.X (sg.tGen i)) n) =
+      algebraMap B L
+        (MvPolynomial.aeval (fun i : Fin 2 => MvPolynomial.X (sg.tGen i)) (d : A)) * ι0 w at hmulι
+    exact hmulι
+  have hK1repr (y : K1 p c0 c1 c2 c3 c4) :
+      y = algebraMap (K0 p) (K1 p c0 c1 c2 c3 c4)
+          ((AdjoinRoot.modByMonicHom (K1_poly_monic p c0 c1 c2 c3 c4) y).coeff 0) +
+        algebraMap (K0 p) (K1 p c0 c1 c2 c3 c4)
+          ((AdjoinRoot.modByMonicHom (K1_poly_monic p c0 c1 c2 c3 c4) y).coeff 1) *
+            w1 p c0 c1 c2 c3 c4 := by
+    exact adjoinRoot_quadratic_normal_form
+      (K1_poly_monic p c0 c1 c2 c3 c4) (natDegree_X_pow_sub_C) y
+  unfold towerToRdecK1
+  dsimp only
+  set d0 := (AdjoinRoot.modByMonicHom (K1_poly_monic p c0 c1 c2 c3 c4) x).coeff 0
+  set d1 := (AdjoinRoot.modByMonicHom (K1_poly_monic p c0 c1 c2 c3 c4) x).coeff 1
+  have h0 := hbase d0
+  have h1 := hbase d1
+  have hr := hK1repr x
+  have hrK2 : algebraMap (K1 p c0 c1 c2 c3 c4) (K2 p c0 c1 c2 c3 c4) x =
+      algebraMap (K1 p c0 c1 c2 c3 c4) (K2 p c0 c1 c2 c3 c4)
+          (algebraMap (K0 p) (K1 p c0 c1 c2 c3 c4) d0) +
+        algebraMap (K1 p c0 c1 c2 c3 c4) (K2 p c0 c1 c2 c3 c4)
+          (algebraMap (K0 p) (K1 p c0 c1 c2 c3 c4) d1) *
+          algebraMap (K1 p c0 c1 c2 c3 c4) (K2 p c0 c1 c2 c3 c4) (w1 p c0 c1 c2 c3 c4) := by
+    rw [← map_mul, ← map_add, ← hr]
+  have hrι := congrArg ι hrK2
+  rw [map_add, map_mul] at hrι
+  rw [hι_w1] at hrι
+  simp only [map_add, map_mul]
+  rw [h0, h1, hrι]
+  simp only [ι0, RingHom.comp_apply]
+  have hring : ∀ a b c d e : L,
+      (a * c) * b + (b * d) * a * e = (a * b) * (c + d * e) := by
+    intro a b c d e
+    ring
+  simpa [mul_assoc] using hring
+    (algebraMap B L (baseFracToRing p sg d0).2)
+    (algebraMap B L (baseFracToRing p sg d1).2)
+    (ι (algebraMap (K1 p c0 c1 c2 c3 c4) (K2 p c0 c1 c2 c3 c4)
+        (algebraMap (K0 p) (K1 p c0 c1 c2 c3 c4) d0)))
+    (ι (algebraMap (K1 p c0 c1 c2 c3 c4) (K2 p c0 c1 c2 c3 c4)
+        (algebraMap (K0 p) (K1 p c0 c1 c2 c3 c4) d1)))
+    (algebraMap B L (MvPolynomial.X (sg.wGen 0)))
+
+set_option maxHeartbeats 4000000 in
 /-- **Heartbeats raised**: this proof's `unfold towerToRdecK1`/`unfold
 towerToRdec` steps (rewriting through the `let`-chain, tuple-destructuring
 definitions above) hit the default ceiling during elaboration, same
