@@ -128,3 +128,4 @@ import Genus2Lean.ZeroD.CrossResultantIsRdecWitness
 import Genus2Lean.ZeroD.QuadraticCoordinateBridge
 import Genus2Lean.ZeroD.IdealOfListNeTopFromEval
 import Genus2Lean.ZeroD.MvPolynomialLinearSolve
+import Genus2Lean.ZeroD.NegateVarTotalDegree
