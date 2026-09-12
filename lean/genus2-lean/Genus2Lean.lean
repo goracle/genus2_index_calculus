@@ -126,3 +126,4 @@ import Genus2Lean.ZeroD.MvPolynomialTotalDegreeMulEq
 import Genus2Lean.ZeroD.AlgebraMapFpLiteralTotalDegree
 import Genus2Lean.ZeroD.CrossResultantIsRdecWitness
 import Genus2Lean.ZeroD.QuadraticCoordinateBridge
+import Genus2Lean.ZeroD.IdealOfListNeTopFromEval
