@@ -1,6 +1,7 @@
 import Mathlib
 import Genus2Lean.ZeroD.TowerToRdecMul
 import Genus2Lean.ZeroD.TheDataDerivation.DataDerivationMumford
+import Genus2Lean.ZeroD.QuadraticCoordinateBridge
 
 /-!
 # Descending an `IsRdecWitness` bound through one quadratic tower level
@@ -458,6 +459,125 @@ theorem evalNd_X_wGen_one_eq {Vars : Type*} (sg : SideGens Vars)
     algebraMap (MvPolynomial Vars (F p)) (FractionRing (MvPolynomial Vars (F p)))
         (MvPolynomial.X (sg.wGen 1)) = ι (w2 p c0 c1 c2 c3 c4) :=
   hι_w2.symm
+
+/-! ## Propagating the `towerToRdec_output_shape` decomposition through
+`IsRdecWitness.add`/`.mul`/`.neg`
+
+New this pass, the "genuine further work" `towerToRdec_output_shape`'s
+closing note flagged: `curBeforeMonic_coeff_totalDegree_le`'s actual
+witness (`CurBeforeMonicCoeffTotalDegree.lean`) is not literally
+`towerToRdec`'s raw output for `curBeforeMonic.coeff i` — it is hand-built
+via `IsRdecWitness.add`/`.mul`/`.neg` from PIECES (`t1`,`t2`,`gu0`,`gu1`)
+that are each `towerToRdec`-shaped. Whether the SAME `1,X(sg.wGen 1)`-
+linear decomposition `towerToRdec_output_shape` names survives that
+combinator tree, and how, was left open. Checked by hand this pass
+(`sympy`, not guessed) before writing anything down:
+
+Say a witness pair `(n,d)` for some `v : K2 p ...` is "clean" at
+`w := X (sg.wGen 1)` if `n = N0 + N1*w`, `d = D0` (`D1 = 0` identically —
+matching `towerToRdec_output_shape`'s own shape exactly, since its
+denominator `den0*den1` never mentions `sg.wGen 1` at all — only
+`towerToRdecK1`'s OWN generator `sg.wGen 0`, one tower level down, per
+`towerToRdec_vars_subset`) for some `N0,N1,D0 : MvPolynomial Vars (F p)`
+themselves free of `w`.
+
+- **`.add`** preserves cleanliness EXACTLY, no extra hypothesis: for clean
+  `(N0a+N1a*w, D0a)`/`(N0b+N1b*w, D0b)`, `.add`'s formula `(na*db+nb*da,
+  da*db)` expands (`ring`-checkable, degree-1 in `w` throughout since no
+  factor contributes a second `w`) to `((D0a*N0b+D0b*N0a) + (D0a*N1b+
+  D0b*N1a)*w, D0a*D0b)` — clean, with `D1` still `0`. No `w^2 = c` needed.
+- **`.neg`** trivially preserves cleanliness (`(-N0,-N1,D0)`, immediate).
+- **`.mul`** does NOT preserve cleanliness as a literal `MvPolynomial`
+  identity: `(na*nb, da*db)` expands to `(N0a*N0b + (N0a*N1b+N0b*N1a)*w +
+  N1a*N1b*w^2, D0a*D0b)` — a genuine `w^2` monomial appears, and
+  `X (sg.wGen 1) : MvPolynomial Vars (F p)` is a literal free polynomial
+  variable with NO internal relation `w^2 = (anything)` — `w2_sq_eq_public`
+  (`QuadraticCoordinateBridge.lean`) is a fact about `w2 p ... : K2 p ...`
+  as a TOWER ELEMENT, and only becomes a fact about `w := X (sg.wGen 1)`
+  after applying `evalNd`/`ι` via `hι_w2` — i.e. `.mul`'s literal witness
+  polynomial is NOT clean, only its `evalNd`-IMAGE is (once reduced using
+  the lemma below), which is exactly what `coeffDescent_core` needs (its
+  hypotheses are equations in the value ring `R`, i.e. post-`evalNd`, not
+  about `MvPolynomial` shape) — so this is not a gap, just the reason the
+  reduction step has to happen at the `evalNd` level, stated precisely
+  next rather than smuggled past as if `.mul` were shape-preserving on
+  the nose. -/
+
+/-- **The `evalNd`-level squaring fact `.mul`'s cleanliness reduction
+needs.** `evalNd (X (sg.wGen 1)) ^ 2 = ι (algebraMap (K1 p ...) (K2 p ...)
+(algebraMap (K0 p) (K1 p ...) (fAtT p c0 c1 c2 c3 c4 1)))` — i.e. `w2`'s
+own defining relation (`w2_sq_eq_public`), pushed through `ι` and
+identified with `evalNd (X (sg.wGen 1))` via `hι_w2`. This is what turns
+`.mul`'s literal `w^2` monomial into the constant `ι c` `coeffDescent_core`
+expects, AFTER `evalNd` — not before. Proof: `ι` applied to
+`w2_sq_eq_public`, rewritten via `map_pow`, then `hι_w2` substituted for
+`ι (w2 p ...)`. -/
+theorem evalNd_X_wGen_one_sq_eq {Vars : Type*} (sg : SideGens Vars)
+    (ι : K2 p c0 c1 c2 c3 c4 →+* FractionRing (MvPolynomial Vars (F p)))
+    (hι_w2 : ι (w2 p c0 c1 c2 c3 c4) =
+      algebraMap (MvPolynomial Vars (F p)) (FractionRing (MvPolynomial Vars (F p)))
+        (MvPolynomial.X (sg.wGen 1))) :
+    (algebraMap (MvPolynomial Vars (F p)) (FractionRing (MvPolynomial Vars (F p)))
+        (MvPolynomial.X (sg.wGen 1))) ^ 2 =
+      ι (algebraMap (K1 p c0 c1 c2 c3 c4) (K2 p c0 c1 c2 c3 c4)
+          (algebraMap (K0 p) (K1 p c0 c1 c2 c3 c4) (fAtT p c0 c1 c2 c3 c4 1))) := by
+  rw [← hι_w2, ← map_pow, w2_sq_eq_public]
+
+/-- **`.mul`'s cleanliness reduction, spelled out.** Given clean witnesses
+`(N0a+N1a*w, D0a)`/`(N0b+N1b*w, D0b)` (`w := X (sg.wGen 1)`, `c := ι`'s
+image of `w2`'s defining constant, per `evalNd_X_wGen_one_sq_eq`) for
+`va, vb : K2 p ...`, `.mul`'s raw witness pair for `va*vb`, AFTER
+`evalNd`, reduces to the clean pair `(N0a*N0b + c*N1a*N1b) + (N0a*N1b +
+N0b*N1a)*w` over denominator `D0a*D0b` — i.e. `evalNd (na*nb) =
+(N0a*N0b + c*N1a*N1b) + (N0a*N1b + N0b*N1a) * w` where `na := N0a+N1a*w`,
+`nb := N0b+N1b*w` (as `MvPolynomial`s) and `evalNd` is applied throughout.
+This is the literal `coeffDescent_core`-shaped `hN0`/`hN1` pair for the
+PRODUCT witness's numerator (with `D1 = 0` still, `.mul`'s denominator
+`D0a*D0b` being a plain product of `w`-free terms) — stated here as its
+own lemma so a future assembly (composing this with `.add`'s exact
+preservation above, across `curBeforeMonic_coeff_totalDegree_le`'s actual
+`t1`,`t2`,`gu0`,`gu1` combination tree) can invoke it directly rather than
+re-deriving the `w^2 → c` substitution inline at each `.mul` node in that
+tree. **Not yet composed against that actual tree** — this lemma is the
+one-`.mul`-node building block; threading it through the full
+`hQ2wit`/`hQ3wit`-style assembly (`CurBeforeMonicCoeffTotalDegree.lean`)
+is the concrete remaining step. -/
+theorem mul_clean_reduce {Vars : Type*} (sg : SideGens Vars)
+    (ι : K2 p c0 c1 c2 c3 c4 →+* FractionRing (MvPolynomial Vars (F p)))
+    (hι_w2 : ι (w2 p c0 c1 c2 c3 c4) =
+      algebraMap (MvPolynomial Vars (F p)) (FractionRing (MvPolynomial Vars (F p)))
+        (MvPolynomial.X (sg.wGen 1)))
+    (N0a N1a N0b N1b : MvPolynomial Vars (F p)) :
+    (algebraMap (MvPolynomial Vars (F p)) (FractionRing (MvPolynomial Vars (F p))))
+        ((N0a + N1a * MvPolynomial.X (sg.wGen 1)) *
+          (N0b + N1b * MvPolynomial.X (sg.wGen 1))) =
+      ((algebraMap (MvPolynomial Vars (F p)) (FractionRing (MvPolynomial Vars (F p))))
+          N0a *
+        (algebraMap (MvPolynomial Vars (F p)) (FractionRing (MvPolynomial Vars (F p))))
+          N0b +
+        ι (algebraMap (K1 p c0 c1 c2 c3 c4) (K2 p c0 c1 c2 c3 c4)
+            (algebraMap (K0 p) (K1 p c0 c1 c2 c3 c4) (fAtT p c0 c1 c2 c3 c4 1))) *
+          ((algebraMap (MvPolynomial Vars (F p)) (FractionRing (MvPolynomial Vars (F p))))
+              N1a *
+            (algebraMap (MvPolynomial Vars (F p)) (FractionRing (MvPolynomial Vars (F p))))
+              N1b)) +
+      ((algebraMap (MvPolynomial Vars (F p)) (FractionRing (MvPolynomial Vars (F p))))
+          N0a *
+        (algebraMap (MvPolynomial Vars (F p)) (FractionRing (MvPolynomial Vars (F p))))
+          N1b +
+        (algebraMap (MvPolynomial Vars (F p)) (FractionRing (MvPolynomial Vars (F p))))
+          N0b *
+        (algebraMap (MvPolynomial Vars (F p)) (FractionRing (MvPolynomial Vars (F p))))
+          N1a) *
+        (algebraMap (MvPolynomial Vars (F p)) (FractionRing (MvPolynomial Vars (F p))))
+          (MvPolynomial.X (sg.wGen 1)) := by
+  have hsq := evalNd_X_wGen_one_sq_eq p sg ι hι_w2
+  simp only [map_mul, map_add]
+  linear_combination
+    (algebraMap (MvPolynomial Vars (F p)) (FractionRing (MvPolynomial Vars (F p))))
+        N1a *
+      (algebraMap (MvPolynomial Vars (F p)) (FractionRing (MvPolynomial Vars (F p))))
+        N1b * hsq
 
 end TheDataDerivation
 end Genus2Lean
