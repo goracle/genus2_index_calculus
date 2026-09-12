@@ -437,7 +437,14 @@ item 1:
    strictly weaker, checkable, per-point fact than full `IsSMulRegular`,
    but a real dependency, not zero). See
    `ROADMAP-degree-uniform-step3.md`'s Obligation 1 section (rewritten
-   later pass) for the corrected account.
+   later pass) for the corrected account. **Update, this pass**:
+   `TowerToRdecRenameSymmetry.lean` (new file) proves all four slots
+   (`U0,U1,V0,V1`, via one generalized lemma) of the cross-resultant
+   vanish identically for the special case
+   `sa = sb` plus an `idxSwap`-symmetric assignment -- a genuine
+   instance of Obligation 1's (c) "good case" for all four slots at
+   once, not yet the general `sa ≠ sb` test. See the roadmap's
+   Obligation 1 section for exactly what remains.
 4. **`Reduce` (`ReduceDispatchGeneral`, `Reduce/GeneralSharedRoot.lean`)
    is in good shape, not a live risk.** Proved correct at the polynomial
    level (`v^2 = f mod u`, the Mumford congruence), and

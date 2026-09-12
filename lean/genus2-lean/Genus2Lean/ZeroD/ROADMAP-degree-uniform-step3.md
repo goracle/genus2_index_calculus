@@ -255,16 +255,57 @@ with `theData`'s actual resultant definitions). Splitting the three:
   kept separate from "and `U(F p)` is nonempty for this specific `p`"
   as a second, distinct step — not one blended claim.
 
-**Next step, not yet done**: paste `theData`'s actual `u1_num`/`u1_den`/
-`u2_num`/`u2_den` (and `v1_.../v2_...`) resultant definitions — from
-`DataDerivationSolve.lean`/`DecoupledSystemRegular.lean` — into a follow-up
-consult and run the substitute-and-reduce test above on the 4
-cross-resultant polynomials. That check settles (c) one way or the
-other and determines whether Obligation 1's remaining gap is "prove a
+**Update, this pass — all four slots of (c)'s good case are now proved,
+for the special-case `(sa,sb)`, not yet the general test.** New file
+`TowerToRdecRenameSymmetry.lean` proves `towerToRdec_rename`: renaming
+`SideGens` along any `ρ` intertwining two `SideGens` records' `tGen`/
+`wGen` maps commutes with `towerToRdec` (the `K0→K1→K2` tower descent
+into `Rdec`), by structural induction on the underlying `MvPolynomial
+(Fin 2) (F p)` element. Specializing `ρ` to `idxSwap` (the involution
+pairing `a1↔b1, a2↔b2, wa1↔wb1, wa2↔wb2`, fixing `U0,U1,V0,V1`) gives
+`towerToRdec_bSideGens_eq_rename_idxSwap`: `bSideGens`'s tower output is
+literally `aSideGens`'s output with variables renamed along `idxSwap`.
+**Update, later this pass**: the corollary is now stated once, in full
+generality, as `cross_resultant_slot_eq_zero_of_symmetric` — parametrized
+over an arbitrary `poly : Polynomial (K2 p c0 c1 c2 c3 c4)` and slot
+`i : Fin 2`, since nothing in the original `U0`-only proof actually used
+`uRS` or `i = 0` specifically once `poly`/`v` were introduced via `set`.
+Four one-line corollaries (`cross_resultant_u0_eq_zero_of_symmetric`,
+`_u1_`, `_v0_`, `_v1_`) instantiate it at `(uRS, 0)`, `(uRS, 1)`,
+`(vRS, 0)`, `(vRS, 1)` — matching `CrossNondegenerate`'s own `hu0`/`hu1`/
+`hv0`/`hv1` fields exactly. So: **for the special case `sa = sb` (one
+shared `SampleTarget`) and an `idxSwap`-symmetric assignment**
+(`assign ∘ idxSwap = assign`), all four cross-resultants
+(`u1_num·u2_den = u2_num·u1_den` and its `U1`/`V0`/`V1` analogues) hold at
+`assign` *identically* — no curve relations substituted, no degree
+counting, purely from the `aSideGens`/`bSideGens` symmetry. This is the
+full "good case" described above (`P` vanishes identically, not just on
+a proper closed subset) for all four slots at once, but note precisely
+what it does NOT yet establish:
+- Only under `assign`'s `idxSwap`-symmetry and `sa = sb` — the actual
+  substitute-and-reduce test described above is for general `sa ≠ sb`,
+  which this file does not address. Whether `idxSwap`-symmetric
+  assignments are exactly the family (a)/(b)'s existence question can
+  supply, or only a sub-family, is still open — this result narrows
+  *where* to look for the (a) witness (toward symmetric points), not
+  eliminates (a)'s number-theoretic content.
+- (a)/(b) themselves (curve-relation satisfaction, denominator
+  nonvanishing) are completely untouched by this file.
+
+**Next step, not yet done**: run the general substitute-and-reduce test
+(paste `theData`'s actual `u1_num`/`u1_den`/`u2_num`/`u2_den` (and
+`v1_.../v2_...`) resultant definitions — from `DataDerivationSolve.lean`/
+`DecoupledSystemRegular.lean` — into a follow-up consult) for the case
+`sa ≠ sb`, since the symmetric-`sa=sb` result above doesn't cover it.
+That check settles (c) one way or the other in the general case and
+determines whether Obligation 1's remaining gap is "prove a
 genericity/nonemptiness statement" (good case) or "characterize + work
 around a real constraint on `(sa,sb)`" (bad case) — worth knowing before
 sinking more time into either the Lean formalization or a numerical
-sweep.
+sweep. Separately, and lower-priority than the `sa ≠ sb` test: (a)/(b)
+themselves (a symmetric curve-point witness existing at all, and the 8
+denominators being nonzero there) are still fully open number-theoretic/
+genericity content this file's reduction does not touch.
 
 ### Obligation 2 — `CrossNondegenerate`/`PeelChainNondegenerate` (cross-sample resultant regularity)
 

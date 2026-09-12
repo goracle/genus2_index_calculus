@@ -31,13 +31,18 @@ a genuine involutive bijection, `towerToRdec p bSideGens v` is *literally*
 `§1` below proves this in general, for any two `SideGens` related by a
 bijection intertwining their `tGen`/`wGen` maps, not just this specific
 pair. `§2` specializes to `idxSwap`/`aSideGens`/`bSideGens`. `§3` draws the
-corollary: if `sa = sb` and the witness assignment itself is symmetric
-under `idxSwap` (i.e. assigns the same value to `wa1`/`wb1`, `a1`/`b1`,
-etc.), the cross-resultant vanishes automatically, no curve computation
-needed — reducing Obligation 1's remaining gap to finding a symmetric
-witness point on `curveA1`/`curveA2` alone (`curveB1`/`curveB2` then hold
-for free, being `curveA1`/`curveA2` with variables renamed along the same
-swap that fixes the assignment).
+corollary in full generality (any `poly`/slot `i`, not just `uRS`/`0` as in
+an earlier pass): if `sa = sb` and the witness assignment itself is
+symmetric under `idxSwap` (i.e. assigns the same value to `wa1`/`wb1`,
+`a1`/`b1`, etc.), the cross-resultant vanishes automatically, no curve
+computation needed — reducing Obligation 1's remaining gap to finding a
+symmetric witness point on `curveA1`/`curveA2` alone (`curveB1`/`curveB2`
+then hold for free, being `curveA1`/`curveA2` with variables renamed along
+the same swap that fixes the assignment). `§3` closes with the four named
+corollaries matching `CrossNondegenerate`'s own `hu0`/`hu1`/`hv0`/`hv1`
+fields exactly (`uRS`/slot-0, `uRS`/slot-1, `vRS`/slot-0, `vRS`/slot-1) —
+all four slots, not only `U0`, since the general lemma makes the other
+three free.
 
 **What this file does NOT do**: exhibit the actual curve-side witness
 (a genuine `(a1,a2,wa1,wa2)` satisfying `curveA1`/`curveA2`, plus the 8
@@ -45,7 +50,10 @@ denominator-nonvanishing side conditions) — that is `§3`'s own remaining
 hypothesis, `hsym`/`hcurve`, left as explicit input. Constructing it (does
 a symmetric point always exist? for which `p`/`(c0,...,c4)`?) is future
 work, using this file's reduction as the target to hit rather than the
-full asymmetric cross-resultant story.
+full asymmetric cross-resultant story. This file also does not address
+the general `sa ≠ sb` case (the substitute-and-reduce test the roadmap
+describes) — the result here is the special-case `sa = sb`, symmetric-
+`assign` shortcut only.
 
 **Not yet REPL-confirmed** -- drafted this pass; Claire tests via the REPL.
 -/
@@ -297,7 +305,7 @@ theorem eval_rename_idxSwap (assign : Idx → F p) (q : Rdec p) :
       MvPolynomial.eval (assign ∘ idxSwap) q :=
   MvPolynomial.eval_rename idxSwap assign q
 
-/-- **The headline corollary.** Given a single target `s` used for BOTH
+/- **The headline corollary.** Given a single target `s` used for BOTH
 samples, and an `idxSwap`-symmetric assignment (`assign ∘ idxSwap =
 assign`), the `U0`-slot cross-resultant vanishes at `assign`
 automatically -- no curve-specific computation, purely from the
@@ -309,36 +317,126 @@ verbatim copy of this proof at a different `theData` field, per this
 project's own "don't repeat a proof shape, name it once" convention
 (flagged as the immediate next step once this one instance is
 REPL-confirmed, rather than pre-multiplying a possible mistake by four). -/
-theorem cross_resultant_u_slot0_eq_zero_of_symmetric
-    (c0 c1 c2 c3 c4 : F p) (s : SampleTarget p)
-    (assign : Idx → F p) (hsym : assign ∘ idxSwap = assign) :
-    MvPolynomial.eval assign
-        ((coeffsToNumDen p c0 c1 c2 c3 c4 aSideGens
-          (uRS p c0 c1 c2 c3 c4 s.u0 s.u1 s.v0 s.v1) 0).1) *
-      MvPolynomial.eval assign
-        ((coeffsToNumDen p c0 c1 c2 c3 c4 bSideGens
-          (uRS p c0 c1 c2 c3 c4 s.u0 s.u1 s.v0 s.v1) 0).2) =
-      MvPolynomial.eval assign
-        ((coeffsToNumDen p c0 c1 c2 c3 c4 bSideGens
-          (uRS p c0 c1 c2 c3 c4 s.u0 s.u1 s.v0 s.v1) 0).1) *
-      MvPolynomial.eval assign
-        ((coeffsToNumDen p c0 c1 c2 c3 c4 aSideGens
-          (uRS p c0 c1 c2 c3 c4 s.u0 s.u1 s.v0 s.v1) 0).2) := by
-  set poly := uRS p c0 c1 c2 c3 c4 s.u0 s.u1 s.v0 s.v1
-  set v := poly.coeff (0 : Fin 2).val with hv
+/-- **The general shape, factored out.** Same statement as
+`cross_resultant_u_slot0_eq_zero_of_symmetric` below, but for an
+arbitrary `poly : Polynomial (K2 p c0 c1 c2 c3 c4)` and an arbitrary
+slot `i : Fin 2` — nothing downstream of `set poly`/`set v` in that
+proof actually used `uRS` or `i = 0` specifically, so this is the
+literal generalization, proved once. Instantiating `poly := uRS ...`
+or `poly := vRS ...` and `i := 0` or `i := 1` gives all four of
+`CrossNondegenerate`'s named slots (`U0,U1,V0,V1`) as one-line
+corollaries below — this is the infrastructure the roadmap's "next
+step (i), generalize to the remaining three slots" asked for. -/
+theorem cross_resultant_slot_eq_zero_of_symmetric
+    (c0 c1 c2 c3 c4 : F p) (poly : Polynomial (K2 p c0 c1 c2 c3 c4))
+    (i : Fin 2) (assign : Idx → F p) (hsym : assign ∘ idxSwap = assign) :
+    MvPolynomial.eval assign (coeffsToNumDen p c0 c1 c2 c3 c4 aSideGens poly i).1 *
+      MvPolynomial.eval assign (coeffsToNumDen p c0 c1 c2 c3 c4 bSideGens poly i).2 =
+      MvPolynomial.eval assign (coeffsToNumDen p c0 c1 c2 c3 c4 bSideGens poly i).1 *
+      MvPolynomial.eval assign (coeffsToNumDen p c0 c1 c2 c3 c4 aSideGens poly i).2 := by
+  set v := poly.coeff i.val with hv
   have hb : towerToRdec p bSideGens v =
       (MvPolynomial.rename idxSwap (towerToRdec p aSideGens v).1,
         MvPolynomial.rename idxSwap (towerToRdec p aSideGens v).2) :=
     towerToRdec_bSideGens_eq_rename_idxSwap p v
-  have hnum2 : (coeffsToNumDen p c0 c1 c2 c3 c4 bSideGens poly 0).1 =
-      MvPolynomial.rename idxSwap (coeffsToNumDen p c0 c1 c2 c3 c4 aSideGens poly 0).1 := by
+  have hnum2 : (coeffsToNumDen p c0 c1 c2 c3 c4 bSideGens poly i).1 =
+      MvPolynomial.rename idxSwap (coeffsToNumDen p c0 c1 c2 c3 c4 aSideGens poly i).1 := by
     unfold coeffsToNumDen
     rw [← hv, hb]
-  have hden2 : (coeffsToNumDen p c0 c1 c2 c3 c4 bSideGens poly 0).2 =
-      MvPolynomial.rename idxSwap (coeffsToNumDen p c0 c1 c2 c3 c4 aSideGens poly 0).2 := by
+  have hden2 : (coeffsToNumDen p c0 c1 c2 c3 c4 bSideGens poly i).2 =
+      MvPolynomial.rename idxSwap (coeffsToNumDen p c0 c1 c2 c3 c4 aSideGens poly i).2 := by
     unfold coeffsToNumDen
     rw [← hv, hb]
   rw [hnum2, hden2, eval_rename_idxSwap, eval_rename_idxSwap, hsym]
+
+/-- **`U0`'s instance** (`poly := uRS ..., i := 0`) — matches
+`CrossNondegenerate.hu0`'s own `u1_num 0`/`u2_num 0`/`u1_den 0`/
+`u2_den 0` shape exactly, evaluated at `assign` rather than asserted
+`IsSMulRegular`; see this file's docstring for the gap between the two. -/
+theorem cross_resultant_u0_eq_zero_of_symmetric
+    (c0 c1 c2 c3 c4 : F p) (s : SampleTarget p)
+    (assign : Idx → F p) (hsym : assign ∘ idxSwap = assign) :
+    MvPolynomial.eval assign
+        (coeffsToNumDen p c0 c1 c2 c3 c4 aSideGens
+          (uRS p c0 c1 c2 c3 c4 s.u0 s.u1 s.v0 s.v1) 0).1 *
+      MvPolynomial.eval assign
+        (coeffsToNumDen p c0 c1 c2 c3 c4 bSideGens
+          (uRS p c0 c1 c2 c3 c4 s.u0 s.u1 s.v0 s.v1) 0).2 =
+      MvPolynomial.eval assign
+        (coeffsToNumDen p c0 c1 c2 c3 c4 bSideGens
+          (uRS p c0 c1 c2 c3 c4 s.u0 s.u1 s.v0 s.v1) 0).1 *
+      MvPolynomial.eval assign
+        (coeffsToNumDen p c0 c1 c2 c3 c4 aSideGens
+          (uRS p c0 c1 c2 c3 c4 s.u0 s.u1 s.v0 s.v1) 0).2 :=
+  cross_resultant_slot_eq_zero_of_symmetric p c0 c1 c2 c3 c4
+    (uRS p c0 c1 c2 c3 c4 s.u0 s.u1 s.v0 s.v1) 0 assign hsym
+
+/-- **`U1`'s instance** (`poly := uRS ..., i := 1`), matching
+`CrossNondegenerate.hu1`. -/
+theorem cross_resultant_u1_eq_zero_of_symmetric
+    (c0 c1 c2 c3 c4 : F p) (s : SampleTarget p)
+    (assign : Idx → F p) (hsym : assign ∘ idxSwap = assign) :
+    MvPolynomial.eval assign
+        (coeffsToNumDen p c0 c1 c2 c3 c4 aSideGens
+          (uRS p c0 c1 c2 c3 c4 s.u0 s.u1 s.v0 s.v1) 1).1 *
+      MvPolynomial.eval assign
+        (coeffsToNumDen p c0 c1 c2 c3 c4 bSideGens
+          (uRS p c0 c1 c2 c3 c4 s.u0 s.u1 s.v0 s.v1) 1).2 =
+      MvPolynomial.eval assign
+        (coeffsToNumDen p c0 c1 c2 c3 c4 bSideGens
+          (uRS p c0 c1 c2 c3 c4 s.u0 s.u1 s.v0 s.v1) 1).1 *
+      MvPolynomial.eval assign
+        (coeffsToNumDen p c0 c1 c2 c3 c4 aSideGens
+          (uRS p c0 c1 c2 c3 c4 s.u0 s.u1 s.v0 s.v1) 1).2 :=
+  cross_resultant_slot_eq_zero_of_symmetric p c0 c1 c2 c3 c4
+    (uRS p c0 c1 c2 c3 c4 s.u0 s.u1 s.v0 s.v1) 1 assign hsym
+
+/-- **`V0`'s instance** (`poly := vRS ..., i := 0`), matching
+`CrossNondegenerate.hv0`. Takes the same `hgcd` coprimality hypothesis
+`vRS` itself needs to be well-defined (see `DecoupledSystemRegular.lean`'s
+`theData`) — `vRS` is only ever a value once that side condition holds,
+same as everywhere else it's used in this project. -/
+theorem cross_resultant_v0_eq_zero_of_symmetric
+    (c0 c1 c2 c3 c4 : F p) (s : SampleTarget p)
+    (hgcd : IsCoprime (Ypoly p c0 c1 c2 c3 c4 s.u0 s.u1 s.v0 s.v1)
+      (uRS p c0 c1 c2 c3 c4 s.u0 s.u1 s.v0 s.v1))
+    (assign : Idx → F p) (hsym : assign ∘ idxSwap = assign) :
+    MvPolynomial.eval assign
+        (coeffsToNumDen p c0 c1 c2 c3 c4 aSideGens
+          (vRS p c0 c1 c2 c3 c4 s.u0 s.u1 s.v0 s.v1 hgcd) 0).1 *
+      MvPolynomial.eval assign
+        (coeffsToNumDen p c0 c1 c2 c3 c4 bSideGens
+          (vRS p c0 c1 c2 c3 c4 s.u0 s.u1 s.v0 s.v1 hgcd) 0).2 =
+      MvPolynomial.eval assign
+        (coeffsToNumDen p c0 c1 c2 c3 c4 bSideGens
+          (vRS p c0 c1 c2 c3 c4 s.u0 s.u1 s.v0 s.v1 hgcd) 0).1 *
+      MvPolynomial.eval assign
+        (coeffsToNumDen p c0 c1 c2 c3 c4 aSideGens
+          (vRS p c0 c1 c2 c3 c4 s.u0 s.u1 s.v0 s.v1 hgcd) 0).2 :=
+  cross_resultant_slot_eq_zero_of_symmetric p c0 c1 c2 c3 c4
+    (vRS p c0 c1 c2 c3 c4 s.u0 s.u1 s.v0 s.v1 hgcd) 0 assign hsym
+
+/-- **`V1`'s instance** (`poly := vRS ..., i := 1`), matching
+`CrossNondegenerate.hv1`. -/
+theorem cross_resultant_v1_eq_zero_of_symmetric
+    (c0 c1 c2 c3 c4 : F p) (s : SampleTarget p)
+    (hgcd : IsCoprime (Ypoly p c0 c1 c2 c3 c4 s.u0 s.u1 s.v0 s.v1)
+      (uRS p c0 c1 c2 c3 c4 s.u0 s.u1 s.v0 s.v1))
+    (assign : Idx → F p) (hsym : assign ∘ idxSwap = assign) :
+    MvPolynomial.eval assign
+        (coeffsToNumDen p c0 c1 c2 c3 c4 aSideGens
+          (vRS p c0 c1 c2 c3 c4 s.u0 s.u1 s.v0 s.v1 hgcd) 1).1 *
+      MvPolynomial.eval assign
+        (coeffsToNumDen p c0 c1 c2 c3 c4 bSideGens
+          (vRS p c0 c1 c2 c3 c4 s.u0 s.u1 s.v0 s.v1 hgcd) 1).2 =
+      MvPolynomial.eval assign
+        (coeffsToNumDen p c0 c1 c2 c3 c4 bSideGens
+          (vRS p c0 c1 c2 c3 c4 s.u0 s.u1 s.v0 s.v1 hgcd) 1).1 *
+      MvPolynomial.eval assign
+        (coeffsToNumDen p c0 c1 c2 c3 c4 aSideGens
+          (vRS p c0 c1 c2 c3 c4 s.u0 s.u1 s.v0 s.v1 hgcd) 1).2 :=
+  cross_resultant_slot_eq_zero_of_symmetric p c0 c1 c2 c3 c4
+    (vRS p c0 c1 c2 c3 c4 s.u0 s.u1 s.v0 s.v1 hgcd) 1 assign hsym
 
 end DecoupledSystem
 end Genus2Lean
