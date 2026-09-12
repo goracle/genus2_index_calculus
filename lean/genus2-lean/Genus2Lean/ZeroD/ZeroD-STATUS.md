@@ -126,3 +126,20 @@ free is not the same as done" section for the specific bundles
   file is internally inconsistent (stale early sections, accurate late
   sections) rather than uniformly wrong. Read its last "Update" section,
   not its opening framing.
+- `RiemannRochGenus2.lean` (top-level `Genus2Lean/`, outside `ZeroD/`)
+  states `finrank_L_pair` and `finrank_L_canonical` as live `sorry`s
+  (its own docstring calls them "the two hardest remaining steps in
+  the project"). Per Claire, this is stale: the actual genus-2
+  Riemann-Roch dimension counts were carried through elsewhere, in
+  more general form (arbitrary `k`, no `IsAlgClosed`) --
+  `LPairFinrankOneOrdAtFracSpec.lean`'s `uniqueDegree2MapToP1_general`
+  / `isOnlyEffectiveInClass_of_uniqueDegree2MapToP1_general`, which
+  `SidonDichotomyGeneral.lean`'s `sidonDichotomy_nonInvolution_general`
+  builds on, and which `Complexity.lean` already stands on
+  unconditionally for its proved pieces (per that file's own "What is
+  proved vs. assumed" section). `RiemannRochGenus2.lean` itself was
+  not edited to reflect this -- its two `sorry`s are superseded, not
+  fixed. Not fixed this pass (outside `ZeroD/`'s scope) -- flagged
+  here so the next person doesn't re-derive genus-2 Riemann-Roch from
+  scratch or misjudge project difficulty ceiling against a stale
+  docstring.
