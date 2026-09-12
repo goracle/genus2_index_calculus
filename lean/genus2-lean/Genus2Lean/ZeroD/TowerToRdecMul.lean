@@ -172,6 +172,47 @@ theorem towerToRdec_mul_isRdecWitness {Vars : Type*} [DecidableEq Vars]
     (towerToRdec_isRdecWitness p c0 c1 c2 c3 c4 sg a ι hι_t hι_w1 hι_w2)
     (towerToRdec_isRdecWitness p c0 c1 c2 c3 c4 sg b ι hι_t hι_w1 hι_w2)
 
+/-- **Cross-consistency of two witnesses for the same value, under an
+INJECTIVE `evalNd`.** If `evalNd` is injective (the only instantiation this
+project actually uses it at, `evalNd := algebraMap (Rdec p) (FractionRing
+(Rdec p))`, since `Rdec p := MvPolynomial Idx (F p)` is a domain and
+`FractionRing (Rdec p)` is its canonical fraction field -- `IsFractionRing.
+injective` gives exactly this), then two `IsRdecWitness` witnesses `(n,d)`,
+`(n',d')` for the SAME value `v` satisfy the honest, division-free
+`MvPolynomial`-level equation `n * d' = n' * d` -- not merely `evalNd (n *
+d') = evalNd (n' * d)`. Proved by cross-multiplying the two witness
+equations inside `L` (`evalNd n * evalNd d' = evalNd d * ι v * evalNd d' =
+evalNd d * evalNd d' * ι v = evalNd d * evalNd n'`, i.e. `evalNd (n * d') =
+evalNd (n' * d)`), then cancelling `evalNd` via injectivity.
+
+**Why this is the missing first ingredient for the `IsSMulRegular`-transfer
+question flagged in `CrossResultantIsRdecWitness.lean`'s closing note**:
+`IsRdecWitness`'s bare defining equation only lives in `L` (after `evalNd`),
+so a priori two witnesses for the same value need not be related at all
+inside `MvPolynomial Vars (F p)`/`Rdec p` itself -- exactly the gap that
+made the transfer question look open. This lemma closes that gap AT THE
+EQUATION LEVEL (an honest `n*d' = n'*d` identity in `Rdec p`), which is
+necessary infrastructure for any attempt at the transfer question, but
+does NOT by itself decide it: whether `IsSMulRegular` (on the literal `n`,
+in some quotient) transfers to `n'` given `n*d' = n'*d` still depends on
+`d`/`d'`'s own regularity/unit status in that quotient, which this lemma
+does not address and which is NOT free in general (a genuine cofactor `d,
+d'` that becomes a zero-divisor after quotienting can break the transfer
+even given this equation) -- flagged honestly rather than overclaiming a
+full transfer result here. -/
+theorem IsRdecWitness.cross_eq {Vars K L : Type*} [CommRing K] [CommRing L]
+    {ι : K →+* L} {evalNd : MvPolynomial Vars (F p) →+* L}
+    (hevalNd : Function.Injective evalNd)
+    {v : K} {n d n' d' : MvPolynomial Vars (F p)}
+    (h : IsRdecWitness p ι evalNd v (n, d))
+    (h' : IsRdecWitness p ι evalNd v (n', d')) :
+    n * d' = n' * d := by
+  apply hevalNd
+  unfold IsRdecWitness at h h'
+  simp only [map_mul]
+  rw [h, h']
+  ring
+
 /-! ## Status, this pass
 
 **Drafted, REPL-confirmed green.** Per a ChatGPT consultation (prompt/reply not separately filed as an `.md`, per
@@ -182,6 +223,16 @@ induction), and `towerToRdec_isRdecWitness`/`towerToRdec_mul_isRdecWitness`
 connect it to `towerToRdec_spec` (`DataDerivationMumford.lean`, already
 proved, no `sorry`) — no new tower induction needed, since `towerToRdec_spec`
 already did that work; this file only repackages it.
+
+**New this pass**: `IsRdecWitness.cross_eq`, proved directly against
+`CrossResultantIsRdecWitness.lean`'s own closing note (which flags the
+`IsSMulRegular`-transfer-between-witnesses question as the concrete next
+thing to attempt against `uResultant_isRdecWitness`/`vResultant_
+isRdecWitness`). Not yet REPL-confirmed (drafted this pass) -- Claire
+tests via the REPL. Read its own docstring before assuming it closes the
+transfer question: it only supplies the honest `Rdec p`-level cross-
+equation between two witnesses, which the transfer question's own
+`d`/`d'`-regularity half still needs separately.
 
 **What this does NOT yet close**: `IsRdecWitness`'s witness pair still
 needs its own `totalDegree` bound before `matrixA`/`rhsVec`'s entry theorem
