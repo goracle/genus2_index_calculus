@@ -136,3 +136,4 @@ import Genus2Lean.ZeroD.TowerToRdecRenameSymmetry
 import Genus2Lean.ZeroD.CurvePointExistenceFromCounting
 import Genus2Lean.ZeroD.TowerCoeffWitnessDescent
 import Genus2Lean.ZeroD.QuadCoordBound
+import Genus2Lean.ZeroD.HasRdecBound
