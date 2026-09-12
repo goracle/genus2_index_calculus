@@ -135,3 +135,4 @@ import Genus2Lean.ZeroD.GenListNeTopFromCurvePoint
 import Genus2Lean.ZeroD.TowerToRdecRenameSymmetry
 import Genus2Lean.ZeroD.CurvePointExistenceFromCounting
 import Genus2Lean.ZeroD.TowerCoeffWitnessDescent
+import Genus2Lean.ZeroD.QuadCoordBound

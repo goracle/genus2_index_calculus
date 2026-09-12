@@ -1,20 +1,22 @@
 # Degree-bound files: index
 
-**Purpose**: a single file to read instead of paging through the ~7,000
-lines / 23 files that make up the `totalDegree`/`IsRdecWitness` degree-bound
-effort (`ROADMAP-crossnondegenerate-degree-bound.md`'s Lean work). Written
-by reading every file's imports, module docstring, and top-level
-declarations directly — not copied from any roadmap's own summary.
-Re-derive this (or at least spot-check it) if you've touched any of these
-files since it was written, the same way `ZeroD-STATUS.md` warns for the
-sorry inventory.
+**Purpose**: a single file to read instead of paging through the ~9,000
+lines / 29 files that make up the `totalDegree`/`IsRdecWitness` degree-bound
+effort AND the separate Obligation-1 (`htop_ne_smul`) sub-effort that
+shares this directory. Written by reading every file's imports, module
+docstring, and top-level declarations directly — not copied from any
+roadmap's own summary. Re-derive this (or at least spot-check it) if
+you've touched any of these files since it was written, the same way
+`ZeroD-STATUS.md` warns for the sorry inventory.
 
 **Sorry status, verified this pass** (comment-stripped scan, whole-word
-`sorry` token, all 23 files below): **zero live sorries**, project-wide,
+`sorry` token, all 29 files below): **zero live sorries**, project-wide,
 across this entire group. Any mention of "sorry" you find inside one of
 these files is docstring prose about the project's history/conventions,
 not a live tactic use — matches the top-level `ZeroD-STATUS.md` claim
-that all of `ZeroD/` is currently sorry-free.
+that all of `ZeroD/` is currently sorry-free. (Files 28/29 also carry a
+couple of honestly-named `True := trivial` placeholder theorems for open
+work — not sorries, but not proved content either; see their entries.)
 
 Ordered by recency (oldest first, most recent last) — later files build on
 earlier ones and the later docstrings are more likely to reflect current
@@ -325,6 +327,122 @@ the actual 2×2 Cramer solve the conjugate trick needs, or touch any
 `Genus2Lean`-specific type — pure generic algebra, left for a later
 pass. **Status: sorry-free.**
 
+### 24. `QuadraticCoordArith.lean` (215 lines)
+Imports: `TowerToRdecMul`.
+
+Attacks file 20's coordinate-bound gap from a different angle than the
+(ruled-out) "reverse-engineer from a whole-value witness" route: traces
+the arithmetic construction directly. For a monic quadratic
+`g := X^2 - C c`, proves the explicit closed-form coordinate
+multiplication rule `(x0+x1 w)(y0+y1 w) = (x0 y0 + c x1 y1) + (x0 y1 + x1
+y0) w` (`mk_mul_coord_eq`), fully generically (`CommRing R`, no
+`Field`/`Genus2Lean` content) — reusable verbatim at both the `K1` and `K2`
+tower levels. **§1 (the identity) is complete and REPL-tested; §2
+(packaging it as an `IsRdecWitness` bridge) is explicitly NOT drafted** —
+its own header records why a first attempt was type-incorrect and lists
+two concrete options for next time. Closing `hA`/`hB` fully still needs
+§1/§2 threaded through `curBeforeMonic.coeff i`'s actual construction
+(file 15), not attempted here. **Status: sorry-free** (as far as it goes
+— §2 is scoped, not proved).
+
+### 25. `TowerToRdecRenameSymmetry.lean` (442 lines)
+Imports: `TheDataDerivation.DataDerivationMumford`, `DecoupledSystemRegular`.
+
+Separate sub-effort — Obligation 1 (`htop_ne_smul`), not the `hA`/`hB`
+chain. Proves `towerToRdec`'s rename-equivariance in full generality
+(`towerToRdec_rename`: renaming `SideGens` along any `ρ` intertwining two
+records' `tGen`/`wGen` maps commutes with `towerToRdec`), then specializes
+to `idxSwap` (the a-side/b-side variable-pairing involution) to get
+`towerToRdec_bSideGens_eq_rename_idxSwap`. **Punchline, stated in full
+generality as `cross_resultant_slot_eq_zero_of_symmetric`, with four named
+one-line corollaries matching `CrossNondegenerate`'s `hu0`/`hu1`/`hv0`/`hv1`
+exactly**: for the special case `sa = sb` and an `idxSwap`-symmetric
+assignment, all four cross-resultants vanish identically, no curve
+computation needed. **Note the later ChatGPT consult recorded in
+`CurvePointExistenceFromCounting.lean`/`ROADMAP-degree-uniform-step3.md`
+found this `sa = sb` specialization unnecessary for the counting-existence
+argument** — this file's result is still a genuine, useful fact (a free
+proof of (c) in the symmetric sub-case), just not on the critical path the
+project ended up taking. **Status: sorry-free.**
+
+### 26. `MvPolynomialSharedTargetSolve.lean` (105 lines)
+Imports: `MvPolynomialLinearSolve`.
+
+Corrects file 22's own closing note. `FuList`/`FvList` do NOT have one
+generator per target variable — each of `U0,U1,V0,V1` is shared by TWO
+generators (one per sample), which can only vanish simultaneously if the
+corresponding `CrossNondegenerate` cross-resultant vanishes at the chosen
+point. Proves the actual solve for one shared-target pair given that
+vanishing. **Flags precisely that Obligation 1's closure is NOT
+independent of the cross-resultant story the way an earlier roadmap
+framing suggested.** **Status: sorry-free.**
+
+### 27. `GenListNeTopFromCurvePoint.lean` (770 lines)
+Imports: `MvPolynomialSharedTargetSolve`, `IdealOfListNeTopFromEval`,
+`DecoupledSystemRegular`.
+
+The actual `Genus2Lean`-specific composition files 21/22/26 were all
+building toward. Chains file 26's single-pair solver across all 4 targets
+from one shared curve-side assignment (`genList_exists_common_zero_of_
+curve_witness`), using a new general lemma
+(`MvPolynomial.eval_eq_eval_of_update_notMem`) to show each later update
+leaves earlier pairs'/the curve relations' evaluations undisturbed, then
+composes with file 21 into `ideal_ofList_genList_ne_top_of_curve_witness`.
+**`genList_exists_common_zero_of_curve_witness` is REPL-confirmed green;
+`ideal_ofList_genList_ne_top_of_curve_witness` was not yet independently
+re-confirmed as of this file's own last status note.** Narrows Obligation
+1's remaining gap to exactly: a curve-side assignment satisfying (a) the 4
+curve relations, (b) the 8 denominators nonzero, (c) the 4 cross-resultants
+vanishing — everything else is now built. **Status: sorry-free.**
+
+### 28. `TowerCoeffWitnessDescent.lean` (583 lines)
+Imports: `TowerToRdecMul`, `TheDataDerivation.DataDerivationMumford`,
+`QuadraticCoordinateBridge`.
+
+Continues file 20/24's coordinate-bound line, per a ChatGPT consult on
+exactly this question. `coeffDescent_core` (the `Δ*e0=R0`/`Δ*e1=R1`
+algebraic identity, pure `ring`) and `coeffDescent_totalDegree_le` (the
+degree-bound half, direct `totalDegree_mul`/`_add`/`_sub` chasing) are
+both proved, plus `_b0` specializations matching the fact that this
+project's actual `K1_poly_monic`/`K2_poly_monic` always have `b = 0`.
+**Corrects an earlier wrong assumption in-file**: `coeffDescent_core` and
+`towerToRdec`/`towerToRdecK1` solve *opposite-direction* problems and do
+not compose the way a first draft assumed — caught and documented
+(`coeffDescent_purpose_note`) before being asserted as a theorem, not
+after. **Still genuinely open**: `norm_ne_zero_iff_placeholder` needs a
+real Mathlib `AdjoinRoot`/norm API lookup (not attempted, per the
+project's "don't guess an API shape" convention), and the actual assembly
+decomposing an existing whole-element witness (e.g. file 15's `≤315448`
+fact) via `coeffDescent_core` still needs that witness's construction
+inspected directly — flagged as the concrete next step, not attempted
+this pass. **Status: sorry-free** (two `True := trivial` placeholder
+theorems, `norm_ne_zero_iff_placeholder`/`coeffDescent_purpose_note`,
+mark open work honestly rather than hiding it — not live sorries, but
+don't mistake them for proved content either).
+
+### 29. `CurvePointExistenceFromCounting.lean` (210 lines)
+Imports: `Mathlib` only — **fully generic, no `Genus2Lean` content**.
+
+Separate sub-effort — Obligation 1's part (a) (curve-point existence),
+not the `hA`/`hB` chain. First ChatGPT consult produced the general
+finite-combinatorics package: `exists_good_not_mem_bad`/`_fintype` (a
+union-bound existence lemma: if `#good` strictly exceeds the sum of `#bad
+i` bounds, some point avoids every `bad i`) and `hasseWeil_gives_surplus`/
+`exists_good_not_mem_bad_of_hasseWeil` (packaging a Hasse-Weil-style
+`n ≥ p - k` hypothesis into that lemma's `hcard` side condition). **Second
+consult, later pass**, added the piece needed to actually apply this:
+`poleOrderBound_of_monomial` (exact `2r+5s` pole-order-at-infinity weight
+for a genus-2 curve `y²=f(x)`, `deg f = 5`), `poleOrderBound_le_five_mul_
+totalDegree` (crude `≤5d` fallback from ordinary total degree), and
+`hasseWeil_of_uniform_totalDegree` (composed form taking a single uniform
+degree bound `d` straight to the existence conclusion). **Also determined,
+this consult: the doubled-point (`sa=sb`,`a1=a2`) specialization file
+25 built is not needed here** — no argument beats plain Hasse-Weil for
+this case, so the general `sa≠sb` statement is the right target to
+instantiate directly. **Not yet REPL-confirmed** — drafted this pass;
+Claire tests via the REPL. Curve-specific instantiation (plugging in
+`theData`'s actual denominators' degree bounds) is still future work.
+
 ---
 
 ## Open gaps, cross-referenced (read this before assuming the chain is done)
@@ -345,3 +463,14 @@ pass. **Status: sorry-free.**
   from the `totalDegree`/`hA`/`hB` chain above — don't conflate the two
   when scoping new work; they share this directory but not a dependency
   edge.
+- **Files 25–29 continue both sub-efforts and are the current frontier**:
+  25 (Obligation 1, `sa=sb` cross-resultant symmetry — later found
+  unnecessary for the counting-existence route file 29 takes), 26–27
+  (Obligation 1, the actual `genList`/`htop_ne_smul` composition, now
+  narrowing the remaining gap to a curve-side witness satisfying (a)/(b)/
+  (c)), 24/28 (the `hA`/`hB` coordinate-bound line, still open — 24's §2
+  unwritten, 28's final assembly unattempted), 29 (Obligation 1's part (a),
+  general counting machinery now complete pending curve-specific
+  instantiation). Cross-reference `ROADMAP-degree-uniform-step3.md`'s own
+  three-obligation split before assuming any one of these closes more than
+  it actually does.

@@ -307,6 +307,44 @@ themselves (a symmetric curve-point witness existing at all, and the 8
 denominators being nonzero there) are still fully open number-theoretic/
 genericity content this file's reduction does not touch.
 
+**Update, this pass — REPL-confirmed green** (Claire) — one fix needed
+along the way: `poleOrderBound_of_monomial`'s `Finset.le_sup` application
+needed its binding function supplied explicitly (`Finset.le_sup (f := ...)
+hrs`) since Lean couldn't infer it from the goal shape alone, now noted as
+a Lean-syntax gotcha for future `Finset.sup` proofs in this style. See
+`CurvePointExistenceFromCounting.lean`'s own docstring update for the
+full detail on the underlying consult; new theorems
+`poleOrderBound_of_monomial`, `poleOrderBound_le_five_mul_totalDegree`,
+`hasseWeil_of_uniform_totalDegree` added there. Two corrections worth
+recording here specifically:
+
+- **The doubled-point (`sa = sb`, `a1 = a2`) restriction this file and
+  `CurvePointExistenceFromCounting.lean` both previously assumed the
+  curve-specific instantiation would need is NOT necessary.** The
+  consult was asked directly whether the hyperelliptic `±w` involution
+  symmetry gives a cleaner existence argument for the doubled-point
+  case specifically, and the answer is no: there's no uniformly better
+  argument than plain Hasse-Weil plus the union bound, so the *general*
+  (non-doubled, `sa ≠ sb`) statement is the right target to instantiate
+  directly — not a special case first. This removes a planned
+  intermediate step, not adds one.
+- **The counting bound itself is now fully generic, needing only a
+  total-degree bound on each denominator** (`hasseWeil_of_uniform_totalDegree`),
+  via the hyperelliptic pole-order weighting `ord_∞(x) = -2`,
+  `ord_∞(y) = -5`, giving `2r+5s` per monomial and the crude fallback
+  `≤ 5·(total degree)`. So the *only* remaining Lean work to fully
+  instantiate (a)'s existence machinery is: (i) a concrete total-degree
+  bound `d` on each of `theData`'s 8 `Rdec p` denominators (should
+  follow from the same `towerToRdec`/degree-tracking machinery already
+  used for `CrossNondegenerate`'s degree bound, `ROADMAP-crossnondegenerate-
+  degree-bound.md`), and (ii) checking the resulting numeric threshold
+  `p - 4*Nat.sqrt p > (Fintype.card ι) * 5 * d` is satisfiable for
+  primes of interest to this project (worked numeric example in the
+  consult: `B_tot = 160` needs `p ≥ 223`) — no further open mathematical
+  content, just arithmetic once `d` is known. (b)/(c) — the denominators'
+  actual nonvanishing/cross-resultant-vanishing structure at the witness
+  point — remain what they were, untouched by this update.
+
 ### Obligation 2 — `CrossNondegenerate`/`PeelChainNondegenerate` (cross-sample resultant regularity)
 
 **Corrected framing, this pass**: an earlier version of this document
