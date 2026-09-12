@@ -203,16 +203,27 @@ bound *a* witness for the resultant (`IsRdecWitness`-shaped conclusion, not a
 literal-pair hypothesis), which `uRS_coeff_isRdecWitness`/`IsRdecWitness.mul`/
 `.add`/`.neg` (already proved, `≤630896`-level) CAN supply directly, no new
 gap. This is not yet done (a new theorem, not this file's job to add given
-this file's own scope) -- **but note the one thing that restated theorem would
-need to re-examine before use**: `CrossNondegenerate`'s `hu0`/etc. fields state
-`IsSMulRegular` on the LITERAL `theData`-computed `u1_den i * u2_num i -
-u2_den i * u1_num i` element of `Rdec p`; a bound on a DIFFERENT witness's
-resultant is a bound on a possibly-different `Rdec p` element, and whether
-`IsSMulRegular`-ness (as opposed to mere `≠0`) transfers between two witnesses
-for the same `K2`-value is not obviously automatic (unlike `≠0` transfer,
-which follows from injectivity-style reasoning) -- flagging this precisely so
-whoever writes that theorem checks it rather than assuming it, per this
-project's own "don't paper over a gap" convention. -/
+this file's own scope).
+
+**Correction, later pass**: the paragraph originally here warned that such a
+restated theorem would need an `IsSMulRegular`-transfers-between-witnesses
+lemma before it could be used against `CrossNondegenerate`'s `hu0`/etc. That
+concern was overstated. `CrossResultantIsRdecWitness.lean` (new file, later
+pass) checked `hu0`/etc.'s actual statement directly: they quantify
+`IsSMulRegular` over the LITERAL `Rdec p`-element `theData` computes (`Rdec p`
+is concretely `MvPolynomial Idx (F p)`, no `K2`-level abstraction in sight at
+that point), not over an abstract `K2`-value reachable through multiple
+witnesses -- so there is no "different witness" for `hu0` to be confused
+with, and no transfer lemma is needed to state or use a fact about that
+specific element. The transfer question only arises for a hypothetical
+theorem that tries to conclude `IsSMulRegular`-ness FROM a bound on an
+arbitrarily-chosen `IsRdecWitness` witness of an abstract `K2`-value (which
+is what an `IsRdecWitness`-shaped restatement of `crossResultant_totalDegree_
+le` would produce, per the paragraph above) -- see `CrossResultantIsRdecWitness.
+lean`'s own closing note for the full corrected account. `hu0`/etc. remain
+fully open regardless (an `IsRdecWitness` fact about an element carries no
+`IsSMulRegular` information about it either way), but not for the reason
+this note originally gave. -/
 
 end TheDataDerivation
 end Genus2Lean

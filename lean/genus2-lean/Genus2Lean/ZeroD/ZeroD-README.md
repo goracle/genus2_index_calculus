@@ -427,7 +427,17 @@ item 1:
    pass re-collapse these back into one bundle.
 3. **`htop_ne_smul` (solution existence -- the 12-generator ideal is
    proper) is unproved but likely tractable**, and doesn't depend on
-   item 1's outcome -- reasonable to attempt in parallel.
+   item 1's outcome -- reasonable to attempt in parallel. **Correction,
+   later pass**: it depends on item 1's outcome MORE than this line
+   suggests -- `MvPolynomialSharedTargetSolve.lean` (new file) found that
+   `FuList`/`FvList`'s two generators per target variable can only be
+   solved simultaneously at a point where the corresponding
+   `CrossNondegenerate` resultant vanishes, so `htop_ne_smul`'s own
+   witness point needs the resultant to vanish there specifically (a
+   strictly weaker, checkable, per-point fact than full `IsSMulRegular`,
+   but a real dependency, not zero). See
+   `ROADMAP-degree-uniform-step3.md`'s Obligation 1 section (rewritten
+   later pass) for the corrected account.
 4. **`Reduce` (`ReduceDispatchGeneral`, `Reduce/GeneralSharedRoot.lean`)
    is in good shape, not a live risk.** Proved correct at the polynomial
    level (`v^2 = f mod u`, the Mumford congruence), and

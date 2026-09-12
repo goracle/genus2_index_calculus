@@ -77,14 +77,48 @@ hypothesis shape, `DataDerivationTotalDegree.lean`), which is a strictly
 deeper quantity than anything `IsRdecWitness`/`towerToRdec_isRdecWitness`
 talk about — `IsRdecWitness` only asserts a cross-multiplied EQUATION holds,
 carrying no degree information at all. That gap remains exactly as open as
-`AlgebraMapFpLiteralTotalDegree.lean`'s closing note left it. **What this
-file DOES set up**: `AlgebraMapFpLiteralTotalDegree.lean`'s own closing note
-flagged, as the one thing a witness-shaped resultant theorem would need to
-re-examine, whether `IsSMulRegular`-ness (not mere `≠0`) transfers between
-two witnesses of the same value — this file's two theorems are the
-witness-shaped resultant statements that question is actually about, so
-the natural next step is attempting that transfer lemma directly against
-them, not re-attempting the `hA`/`hB` degree-bound route.
+`AlgebraMapFpLiteralTotalDegree.lean`'s closing note left it.
+
+**Correction to `AlgebraMapFpLiteralTotalDegree.lean`'s closing note, worked
+out this pass — the flagged "`IsSMulRegular`-transfer-between-witnesses"
+question does NOT apply to `CrossNondegenerate.hu0`/`hu1`/`hv0`/`hv1`
+themselves, and no transfer lemma is needed to use this file's theorems
+against them.** That closing note worried whether `IsSMulRegular`-ness
+transfers from a bound on one `IsRdecWitness` witness to a different
+witness of "the same value" — a real concern IF `hu0` etc. were stated
+about an abstract `K2`-value reachable through multiple witnesses. They are
+not: `Rdec p` is literally `MvPolynomial Idx (F p)` (`DecoupledSystemRegular.
+lean`'s own `abbrev`), and `theData`'s `u1_num`/`u1_den`/`u2_num`/`u2_den`
+fields (also `Rdec p`-valued, by `DecoupledGenerators`'s own field types) are
+concrete elements of that one fixed ring — not opaque stand-ins for a `K2`-
+value that could be represented by a different witness pair. `hu0`'s
+`IsSMulRegular` hypothesis is stated directly about `Ideal.Quotient.mk _
+(u1_den 0 * u2_num 0 - u2_den 0 * u1_num 0)`, i.e. about THIS SPECIFIC
+`Rdec p`-element in THIS SPECIFIC quotient ring — a self-contained
+`MvPolynomial`-level statement with no reference to `ι`, `evalNd`, or any
+`K2`-value at all. `uResultant_isRdecWitness`/`vResultant_isRdecWitness`
+above happen to ALSO prove a fact about this exact same literal element
+(that it's a valid `IsRdecWitness` numerator for a `K2`-level difference of
+coefficients), but that is an independent, additional fact about it, not a
+different representative needing reconciliation — there is only one
+"witness" in play for the purposes of `hu0`, because `hu0` was never stated
+in witness-relative terms to begin with. The transfer question the previous
+closing note flagged is a real one, but only for a hypothetical FUTURE
+theorem that concludes `IsSMulRegular`-ness FROM an `IsRdecWitness` bound on
+an arbitrarily-chosen witness for an abstract `K2`-value (exactly the
+"restate `crossResultant_totalDegree_le` itself in `IsRdecWitness` form"
+option `URSCoeffIsRdecWitness.lean`'s own closing note raises and explicitly
+does not attempt) — it is not a gap in using THIS file's theorems, whose
+conclusions are already about the literal element `hu0` etc. quantify over.
+**Net effect**: this file's two theorems are usable as-is (mathematical
+facts about the correct element), but they do not by themselves discharge
+`hu0`/`hu1`/`hv0`/`hv1` either, since `IsRdecWitness`-ness of an element
+says nothing about its `IsSMulRegular`-ness in a quotient ring — that
+remains a separate, still fully open obligation about the same element,
+requiring its own argument (e.g. the Sylvester-resultant-style regularity
+argument `DecoupledSystemRegular.lean`'s own docstring above `hu0` already
+sketches), not a corollary of anything proved here or of any witness-
+transfer lemma.
 -/
 
 namespace Genus2Lean

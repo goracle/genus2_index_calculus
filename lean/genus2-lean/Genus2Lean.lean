@@ -130,3 +130,5 @@ import Genus2Lean.ZeroD.IdealOfListNeTopFromEval
 import Genus2Lean.ZeroD.MvPolynomialLinearSolve
 import Genus2Lean.ZeroD.NegateVarTotalDegree
 import Genus2Lean.ZeroD.QuadraticCoordArith
+import Genus2Lean.ZeroD.MvPolynomialSharedTargetSolve
+import Genus2Lean.ZeroD.GenListNeTopFromCurvePoint

@@ -174,10 +174,97 @@ did. Track them separately because they have different risk profiles:
 
 ### Obligation 1 — `htop_ne_smul` (solution existence)
 
+**Update, this pass**: the bridge described in step 3 below (points (a)
+and (b), used to reach `htop_ne_smul` from a witness) is now built and
+REPL-confirmed: `GenListNeTopFromCurvePoint.lean` proves
+`genList_exists_common_zero_of_curve_witness` (chains the 4
+`MvPolynomialSharedTargetSolve.lean`-solved target pairs from one
+curve-side assignment) and composes it with
+`IdealOfListNeTopFromEval.lean` into
+`ideal_ofList_genList_ne_top_of_curve_witness` — i.e.
+`Ideal.ofList (genList ...) ≠ ⊤` is now proved **conditional on** a
+curve-side assignment `assign` satisfying (a)/(b)/(c) exactly as listed
+in that file's docstring. What remains open for this obligation is
+narrower than before: not "build the bridge," but purely "exhibit or
+prove existence of `assign`" — genuine
+elliptic/hyperelliptic-curve-point-existence over `F p = ZMod p`, not
+attempted here or anywhere else in this project so far. Still real, but
+the honest remaining gap has shrunk to exactly that one piece.
+
 Real, but likely the most tractable of the three: showing the
 12-generator ideal is proper amounts to exhibiting (or proving the
 existence of) an actual common zero — which, for a genuine DLP match,
-should exist by construction. Not attempted yet. Low-to-medium risk.
+should exist by construction. Low-to-medium risk.
+
+**Analysis from a ChatGPT consult, this pass — read before attempting
+existence.** Prompted with the exact shape of (a)/(b)/(c) above (not yet
+with `theData`'s actual resultant definitions). Splitting the three:
+
+- **(a)** is essentially free: over the algebraic closure (or any field
+  where each Mumford `u`-polynomial splits with distinct roots — the
+  generic case), `u(x) = (x-a1)(x-a2)` forces `u1 = a1+a2`, `u0 = -a1·a2`,
+  and the Mumford condition `v(x)² ≡ f(x) mod u(x)` becomes exactly
+  `w_i = v(a_i)` satisfying `w_i² = f(a_i)` at each root. So (a)'s point
+  assignment is automatic on the open "divisor splits with distinct
+  roots" locus — no separate argument needed there.
+- **(b)** is a genuine but tractable Zariski-genericity question: restrict
+  each of the 8 denominator polynomials to the "split-point incidence
+  variety" `X` (the variety of tuples `(a1,w1,a2,w2,b1,z1,b2,z2)`
+  satisfying the 4 curve relations). Each denominator is either
+  identically zero on `X` (an intrinsic obstruction — would mean no
+  choice of `sa,sb` ever works) or not, in which case its zero locus is
+  a **proper** closed subset of `X` and (b) holds generically outside
+  it. Deciding which case applies is a concrete, mechanical check once
+  `theData`'s actual denominator formulas are in hand — not open-ended.
+  Caveat: if the denominators depend on which root of each Mumford `u`
+  is labeled `a1` vs `a2` (they plausibly do), there's really an
+  `S_2×S_2` cover of root-orderings to consider, and it's possible one
+  labeling avoids the vanishing locus while another doesn't.
+- **(c) is the one that actually needs settling, and is qualitatively
+  different from (a)/(b).** The 4 cross-resultant equalities
+  (`u1_num i · u2_den i = u2_num i · u1_den i` etc.) are polynomial
+  conditions on `X`, and there are two genuinely different possibilities
+  with no general reason to prefer one:
+  - If, after substituting the 4 curve relations, each cross-resultant
+    polynomial `P := u1_num·u2_den − u2_num·u1_den` (and its 3 analogues)
+    reduces **identically to zero** — i.e. `P` lies in the ideal generated
+    by the curve relations — then (c) is an algebraic *identity* and
+    holds automatically wherever the relevant denominators are nonzero.
+    This is the good case, and matches project's `_flat`-style pattern of
+    two formulas that are secretly the same rational function.
+  - If instead `P` is **not** identically zero on `X`, its vanishing locus
+    is a proper closed subvariety, and (c) becomes a genuine extra
+    compatibility condition constraining `sa,sb` relative to each other
+    — not obtainable from "the formulas were meant to agree" alone.
+    Dimension heuristic: generic degree-2 divisors form a 2-dimensional
+    family each, so `(sa,sb)` pairs are generically 4-dimensional; each
+    genuinely independent equation in (c) would generically cut this
+    down by one dimension. A real dimension drop here would need
+    accounting for, not just assuming away.
+  - **The decisive test**: substitute the 4 curve relations into each of
+    the 4 cross-resultant polynomials and reduce. Zero remainder →
+    identity (good case). Nonzero remainder → genuine constraint (bad
+    case, needs its own argument for when `(sa,sb)` avoid it).
+- **Finite-field wrinkle, worth keeping in mind for whatever final Lean
+  statement results**: "generic" is a statement over the algebraic
+  closure; a geometrically-proper closed subset can still contain a
+  large fraction — or over small parameter ranges, even all — of a
+  particular finite field's rational points. The robust shape for a
+  final theorem is "there exists a nonempty Zariski-open `U` (over the
+  coefficient field) where (a)/(b)/(c) hold" as the geometric content,
+  kept separate from "and `U(F p)` is nonempty for this specific `p`"
+  as a second, distinct step — not one blended claim.
+
+**Next step, not yet done**: paste `theData`'s actual `u1_num`/`u1_den`/
+`u2_num`/`u2_den` (and `v1_.../v2_...`) resultant definitions — from
+`DataDerivationSolve.lean`/`DecoupledSystemRegular.lean` — into a follow-up
+consult and run the substitute-and-reduce test above on the 4
+cross-resultant polynomials. That check settles (c) one way or the
+other and determines whether Obligation 1's remaining gap is "prove a
+genericity/nonemptiness statement" (good case) or "characterize + work
+around a real constraint on `(sa,sb)`" (bad case) — worth knowing before
+sinking more time into either the Lean formalization or a numerical
+sweep.
 
 ### Obligation 2 — `CrossNondegenerate`/`PeelChainNondegenerate` (cross-sample resultant regularity)
 
@@ -292,8 +379,34 @@ starting it.
    `Nondegenerate`'s four concrete coefficient conditions — rather than
    inheriting `CrossNondegenerate`'s current broad `IsSMulRegular`
    framing unexamined.
-3. **Attempt Obligation 1** (`htop_ne_smul`) in parallel — independent
-   of steps 1-2, and likely the cheapest of the three to actually close.
+3. **Attempt Obligation 1** (`htop_ne_smul`) in parallel — **correction,
+   later pass: NOT fully independent of steps 1-2 after all.**
+   `IdealOfListNeTopFromEval.lean`/`MvPolynomialLinearSolve.lean` (drafted
+   toward this obligation) give general infrastructure for exhibiting a
+   common zero of `genList`'s 12 generators, but `MvPolynomialSharedTargetSolve.lean`
+   (new file) found a real gap in that plan: `FuList`/`FvList` don't have
+   one generator per target variable (`U0,U1,V0,V1`) — each target variable
+   is shared by TWO generators, one per sample, and both can only vanish
+   at the SAME assignment point if the corresponding cross-resultant
+   (`CrossNondegenerate`'s own `hu0`/`hu1`/`hv0`/`hv1` element) vanishes
+   there. So constructing the witness point `htop_ne_smul` needs already
+   requires the cross-resultant to vanish at that specific point — a
+   strictly weaker, per-point condition than `CrossNondegenerate`'s full
+   `IsSMulRegular` requirement, but not nothing, and not obtainable from
+   Obligation 1's own infrastructure alone. **Update, later pass: this gap
+   is now closed.** `GenListNeTopFromCurvePoint.lean` chains
+   `MvPolynomialSharedTargetSolve.lean`'s single-pair solver across all 4
+   targets from one shared curve-side assignment (using a new general
+   lemma, `MvPolynomial.eval_eq_eval_of_update_notMem`, to show each
+   later update leaves earlier pairs' — and the curve relations' —
+   evaluations undisturbed), and composes the result with
+   `IdealOfListNeTopFromEval.lean` into
+   `ideal_ofList_genList_ne_top_of_curve_witness`, REPL-confirmed green.
+   The remaining gap for Obligation 1 is exactly (a) alone now: a point
+   on all 4 curve equations that ALSO makes the point's 8 `theData`
+   denominators nonzero and its 4 cross-resultants vanish — (b)/(c) from
+   the honest-input list are folded into what "the witness" must satisfy,
+   not separately unaddressed infrastructure.
 4. **Replace `GenericPeelChainHyp` in `AlphaLocusDegreeUniform.lean`**
    once 1-3 give real content to put in its place — either delete it in
    favor of the actual proved pieces, or keep it strictly narrower
