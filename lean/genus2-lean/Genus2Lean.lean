@@ -132,3 +132,4 @@ import Genus2Lean.ZeroD.NegateVarTotalDegree
 import Genus2Lean.ZeroD.QuadraticCoordArith
 import Genus2Lean.ZeroD.MvPolynomialSharedTargetSolve
 import Genus2Lean.ZeroD.GenListNeTopFromCurvePoint
+import Genus2Lean.ZeroD.TowerToRdecRenameSymmetry
