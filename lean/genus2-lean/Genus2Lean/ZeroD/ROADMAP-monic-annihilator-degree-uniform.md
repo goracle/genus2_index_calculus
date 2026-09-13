@@ -562,3 +562,205 @@ curveB1, curveB2]`, using THESE finiteness-exporting theorems rather
 than the original non-exporting ones) is still the next concrete step,
 and is now actually startable — the base-case obstruction this section
 existed to flag is gone, not merely reduced.
+
+## CORRECTION, later pass — the above Progress note's optimism was wrong; the base case is not actually reachable this way
+
+Attempting to actually write `GenListFinrankAssembly.lean`'s
+`genList_finrank_le` against `finrank_le_and_finite_of_append`
+(`PeelChainAssemblyFinrank.lean`) surfaced that the "base-case
+obstruction... is gone" claim above is **false, not merely
+optimistic**: `finrank_le_and_finite_of_append`'s own hypothesis
+`hfin : Module.Finite k (R ⧸ Ideal.ofList gens)` still has to be
+discharged at the TRUE starting point `gens = []`, and `Ideal.ofList []
+= ⊥` (`Ideal.ofList_nil`), so that hypothesis unfolds to `Module.Finite
+(F p) (Rdec p ⧸ ⊥) ≃ Module.Finite (F p) (Rdec p)` — literally false,
+since `Rdec p = MvPolynomial Idx (F p)` is a 12-variable FREE polynomial
+ring, infinite-dimensional over `F p`. Route (a) (finiteness flowing
+FORWARD via `Module.Finite.trans` inside `finrank_le_of_monic_
+annihilator_of_finite`) fixes the induction's DIRECTION, exactly as
+diagnosed — but does nothing about the induction's DOMAIN: every ring
+in the chain `Rdec p ⧸ Ideal.ofList gens`, for every prefix `gens`
+including the empty one, still contains all 12 unpeeled `Idx` variables
+free. `OptionSplitPolynomialEquiv.lean`'s own module docstring already
+said this outright ("no prefix `gens`... ever makes that ring
+finite-dimensional over `F p`") — that file's caveat was the accurate
+read; this roadmap's own Progress section above was the stale-optimistic
+one, and should be read as superseded by this correction, not as a
+completed step.
+
+**Consulted ChatGPT on the right fix — result below, confirmed against
+current Mathlib4 (`MvPolynomial.finSuccEquiv` exists exactly as
+described, `Mathlib.Algebra.MvPolynomial.Equiv`) before committing to
+it.** Verdict: do NOT build a literal `Idx ≃ Option (Option (...))`
+chain (twelve bespoke `Option`-nested types, one recognizability lemma
+each) even though `optionSplitQuotientAlgEquiv` is stated in exactly
+that shape — reindex through `Fin` instead and reuse Mathlib's own
+`finSuccEquiv`, which is already built from the same `renameEquiv` +
+`optionEquivLeft` machinery `optionSplitQuotientAlgEquiv` re-derives by
+hand. Concretely:
+
+1. **Fix the peel order as data, once**: a single explicit equivalence
+   `idxEquivFin : Idx ≃ Fin 12` (a 12-line `rfl`-checkable table, e.g.
+   `wa1↦0, wa2↦1, wb1↦2, wb2↦3, a1↦4, a2↦5, b1↦6, b2↦7, U0↦8, U1↦9,
+   V0↦10, V1↦11` — curve-relation variables first, matching-generator
+   variables last, per the ALREADY-RESOLVED Open Questions triangularity
+   finding earlier in this document: `FuList`/`FvList`'s coefficients
+   depend on the curve variables, so the curve variables must be peeled
+   first for each stage's coefficients to already be constants in the
+   NOT-YET-peeled ring). `MvPolynomial.renameEquiv (F p) idxEquivFin :
+   Rdec p ≃ₐ[F p] MvPolynomial (Fin 12) (F p)` transports the whole
+   ambient ring once, up front — no further `Idx`-vs-`Fin`
+   bookkeeping needed inside the induction itself.
+2. **Generic one-variable peel step, over `Fin (n+1)` not `Idx`**:
+   `MvPolynomial.finSuccEquiv (F p) n : MvPolynomial (Fin (n+1)) (F p)
+   ≃ₐ[F p] Polynomial (MvPolynomial (Fin n) (F p))`, exactly the object
+   `optionSplitQuotientAlgEquiv` already builds by hand for `Option τ` —
+   Mathlib's version needs no re-derivation, and its `X 0 ↦ Polynomial.X`
+   / `X i.succ ↦ Polynomial.C (X i)` behavior (via `finSuccEquiv_apply`,
+   confirmed present) is exactly the recognizability fact each stage's
+   generator-matching step needs, supplied once generically rather than
+   per-stage.
+3. **State the induction generically over `n : ℕ` and `gens : List
+   (MvPolynomial (Fin n) K)`, NOT over `Idx` directly** — i.e. write a
+   new generic `finrank_peel_fin`-shaped theorem (bounding `Module.
+   finrank K (MvPolynomial (Fin n) K ⧸ Ideal.ofList gens)` by induction
+   on `n`, base case `n = 0` genuinely trivial: `MvPolynomial (Fin 0) K
+   ≃ₐ[K] K` is `Module.Finite K K` for free, unlike the old false
+   `Rdec p` base case) and only convert to the literal `Idx`/`Rdec p`/
+   `genList` statement at the very end, via `idxEquivFin` from step 1.
+   This keeps the twelve `Idx`-specific generator names
+   (`Fu0,...,curveB2`) readable in `PeelChainFinrankHyp` and the final
+   theorem statement, while the actual induction machinery stays fully
+   generic and reusable.
+4. **Do NOT reach for `MvPolynomial.pUnitAlgEquiv`/`uniqueAlgEquiv`
+   as the main chaining step** — it's the right tool ONLY for the very
+   last one-variable-left case (`MvPolynomial (Fin 1) K ≃ₐ[K]
+   Polynomial K`, if that shape is ever needed standalone), not for
+   iterating the whole 12-step peel; forcing every intermediate stage
+   through a `PUnit`/`Option`-flavored presentation is exactly the
+   bespoke-bookkeeping overhead this correction is trying to avoid.
+   `MvPolynomial.sumAlgEquiv` (splitting `Fin 12` into two blocks at
+   once) is a plausible alternative if stages 0–7 vs 8–11 ever need to
+   be peeled as two separate batches rather than one generator at a
+   time, but is not obviously needed for a straight 12-step induction
+   and should only be reached for if the one-at-a-time version proves
+   awkward.
+
+**Revised file plan for the true remainder** (supersedes this
+document's original item-5 sub-plan; items 1–5's already-landed files
+are NOT invalidated — `FinrankLeOfMonicAnnihilator(Finite).lean`,
+`CurveRelationStageWiring.lean`/`LinearElimStageWiring.lean`,
+`PeelChainStageFinite.lean` all still supply the per-stage `finrank`
+BOUND content this new architecture will still call; only the ASSEMBLY
+layer changes, from "induct directly on `Ideal.ofList` prefixes of
+`Rdec p`" to "induct on `Fin n` via `finSuccEquiv`, converting to the
+`Rdec p`/`Ideal.ofList` presentation only per-stage via
+`optionSplitQuotientAlgEquiv`-style transport, or possibly bypassing
+`optionSplitQuotientAlgEquiv` entirely in favor of `finSuccEquiv`
+directly — TBD once the generic peel step is actually attempted, see
+Open question below"):
+
+- (a) `idxEquivFin : Idx ≃ Fin 12`, the fixed order table (step 1
+  above) — small, standalone, `rfl`-checkable, no dependency on
+  anything else in this plan. Do this first.
+- (b) The generic `Fin n`-indexed one-step peel lemma (step 2/3 above),
+  bounding `finrank` across one `finSuccEquiv` application plus a monic
+  annihilator (reusing `finrank_le_of_monic_annihilator_of_finite`,
+  already proved) — generic over `K`/`n`/`gens`, no `Idx`/`Rdec p`/
+  `theData` content. Self-contained, de-risks the new architecture
+  early, same spirit as this roadmap's original item-1 ordering advice.
+- (c) The generic `Fin n`-indexed n-stage FOLD (mirroring
+  `PeelChainAssemblyFinrank.lean`'s existing `finrank_le_and_finite_of_
+  append`, but with the TRUE base case `n = 0` built in rather than
+  taken as a hypothesis) — this is where the old false base-case
+  assumption gets replaced with a real proof.
+- (d) The `Idx`-specific wiring: transporting `genList`'s twelve
+  literal generators across `idxEquivFin`/`renameEquiv` to their `Fin
+  12`-indexed images, confirming each lands where the peel order
+  expects (curve relations at indices 0–3, matching generators at
+  4–11), and specializing (c) to conclude the actual `genList_finrank_
+  le` statement. Likely the largest single piece of new work in this
+  plan — this is where `PeelChainFinrankHyp`'s twelve hypotheses need
+  to be restated (or transported) against the `Fin`-indexed generators,
+  and where it will become concrete whether `optionSplitQuotientAlgEquiv`
+  is still needed at all or whether `finSuccEquiv` directly supersedes
+  it for this project's purposes.
+
+**Open question, not yet resolved**: does `OptionSplitPolynomialEquiv
+.lean`'s existing `optionSplitQuotientAlgEquiv` become dead code once
+(b)/(c)/(d) are built directly on `finSuccEquiv`, or does the `Ideal.
+ofList`-quotient presentation (rather than a bare `MvPolynomial`
+presentation) still need `optionSplitQuotientAlgEquiv`'s specific
+`Ideal.ofList (gens'.map (rename some))`-vs-`Polynomial (... ⧸ Ideal.
+ofList gens')` bridge somewhere inside (d)? Likely yes, still needed,
+since `genList`'s generators are stated as elements of `Rdec p` being
+quotiented by an `Ideal.ofList`, not as an ABSTRACT `Fin`-indexed
+polynomial ring with no ideal structure yet — `finSuccEquiv` alone
+identifies the RING, `optionSplitQuotientAlgEquiv` is what additionally
+carries the IDEAL/GENERATOR-LIST structure across that identification.
+Resolve this while attempting (b), not by guessing in advance.
+
+**Not proved, not build-tested — `IdealOfListPerm.lean`'s `Ideal.
+ofList_perm`/`Ideal.quotient_ofList_perm_eq` (build-green, REPL-
+confirmed by Claire) remain correct and reusable regardless of how this
+question resolves — they are order-independent facts about `Ideal.
+ofList`, needed either way to transport a bound proved against a
+REORDERED/reindexed generator list back onto `genList`'s own literal
+stated order.**
+
+## Update, later pass — items (a) and (b) written, not yet REPL-confirmed
+
+**Item (a) — done, not yet REPL-confirmed.** `IdxEquivFin.lean`:
+`idxEquivFin : Idx ≃ Fin 12`, the fixed triangular peel-order table —
+`0↦wa1, 1↦a1, 2↦wa2, 3↦a2, 4↦wb1, 5↦b1, 6↦wb2, 7↦b2, 8↦U0, 9↦U1, 10↦V0,
+11↦V1` (each curve-relation variable immediately followed by its own
+sample-point variable, confirmed against `curveA1`/`curveA2`/`curveB1`/
+`curveB2`'s actual definitions — `DecoupledSystemRegular.lean` §3 — not
+assumed). Both directions closed by `decide` (cheap — finite pattern
+match against finite pattern match, no real search).
+
+**Item (b) — done, not yet REPL-confirmed.** `FinSuccSplitPolynomialEquiv
+.lean`: the `Fin`-indexed analogue of `OptionSplitPolynomialEquiv.lean`'s
+bridge, built directly on Mathlib's `MvPolynomial.finSuccEquiv` (`Fin.succ`
+plays the role `some` plays there) instead of re-deriving `renameEquiv`/
+`optionEquivLeft` by hand for a bespoke `Option`-nested type per the
+ChatGPT-consulted correction above. `finSuccSplitQuotientRingEquiv`/
+`finSuccSplitQuotientAlgEquiv` mirror `optionSplitQuotientRingEquiv`/
+`optionSplitQuotientAlgEquiv`'s exact statement and proof skeleton
+(`Ideal.quotientEquiv` + `Ideal.map_ofList` + `polynomialQuotientEquiv
+QuotientPolynomial`, confirmed present and used successfully in the
+existing file) with `Fin (n+1)`/`Fin.succ` substituted for `Option τ`/
+`some`. **One deliberate proof-safety change versus blindly copying that
+file's pattern**: `optionSplitQuotientRingEquiv`'s `hIdealMap` proof
+closes its per-generator recognizability fact via `MvPolynomial.
+induction_on`, but this file instead proves the underlying RING HOM
+equality (`finSuccEquiv K n ∘ (rename Fin.succ) = Polynomial.C`, as
+`→+*`s) via `MvPolynomial.ringHom_ext` — checking agreement on `C`/`X`
+only — because `induction_on`'s actual Lean 4 case names (`C`/`add`/
+`mul_X`, confirmed via direct doc lookup) don't match what a
+memory-guess would produce (`h_C`/`h_add`/`h_X`, the Lean-3-flavored
+names that seemed initially plausible and were caught and corrected
+before presenting), and `ringHom_ext` sidesteps needing those case names
+or their exact induction shape at all. Also confirmed via search rather
+than assumed: `MvPolynomial.eval₂_X`/`MvPolynomial.coe_eval₂Hom` (the
+`eval₂Hom_X'` name floated initially does not appear to exist and was
+replaced before presenting) and `MvPolynomial.isEmptyAlgEquiv` (`MvPolynomial
+σ R ≃ₐ[R] R` for `[IsEmpty σ]`) — the fact that actually makes `n = 0`
+(`Fin 0`, empty) a genuine base case, confirming the whole `Fin`-reindexing
+plan actually closes the base-case gap this correction exists to fix,
+not just relocates it.
+
+**Not yet done**: item (c) (the generic `Fin n`-indexed n-stage fold with
+a real `n=0` base case, using `MvPolynomial.isEmptyAlgEquiv` — mirroring
+`PeelChainAssemblyFinrank.lean`'s existing `finrank_le_and_finite_of_
+append` but fixing its false-base-case issue) and item (d) (the
+`Idx`-specific wiring via `idxEquivFin`, transporting `genList`'s twelve
+literal generators and specializing (c) to the real `genList_finrank_le`
+statement) are both still open. The Open Question about whether
+`optionSplitQuotientAlgEquiv`/its new `finSuccSplit`-named analogue fully
+supersedes the old file, or whether both remain needed for different
+purposes, is also still unresolved — likely moot in practice since this
+pass's `FinSuccSplitPolynomialEquiv.lean` is what item (c)/(d) will
+actually use; `OptionSplitPolynomialEquiv.lean` may end up genuinely
+unused going forward, a question for whoever does the final cleanup
+pass once (c)/(d) are proved.
