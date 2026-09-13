@@ -147,3 +147,5 @@ import Genus2Lean.ZeroD.LinearElimDegreeBound
 import Genus2Lean.ZeroD.LinearElimDegreeBoundExt
 import Genus2Lean.ZeroD.QuotOfListChain
 import Genus2Lean.ZeroD.QuotOfListChainFinrankStep
+import Genus2Lean.ZeroD.CurveRelationStageWiring
+import Genus2Lean.ZeroD.QuotOfListChainAdjoinTop
