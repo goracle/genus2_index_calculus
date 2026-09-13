@@ -160,3 +160,4 @@ import Genus2Lean.ZeroD.IdxEquivFin
 import Genus2Lean.ZeroD.FinSuccSplitPolynomialEquiv
 import Genus2Lean.ZeroD.FinSuccPeelChainFinrank
 import Genus2Lean.ZeroD.FinSuccPeelChainFold
+import Genus2Lean.ZeroD.RenameEquivOfListFinrankTransport

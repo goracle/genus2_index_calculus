@@ -33,16 +33,38 @@ reality when they disagree with an earlier file's own status note.
 **Files 36–49 added, later pass**: a separate sub-effort from files
 1–35 above — `ROADMAP-monic-annihilator-degree-uniform.md`'s
 finite-dimension (`finrank`) bound track, not the
-`totalDegree`/`IsRdecWitness` chain those 35 files cover. This index now
-covers 49 files total (build green for all, per direct confirmation at
-write time). **Sorry status for files 36–49, verified this pass**
-(same comment-stripped, whole-word `sorry` scan as the note above):
-**zero live sorries** across all fourteen. File 49
-(`GenListFinrankAssembly.lean`) is the current stub — see its own entry
-below — carrying one honestly-named `True := trivial` placeholder for
-its not-yet-attempted final wiring, matching this project's convention
-(files 28/29's own placeholders, same convention, same distinction from
-a live `sorry`).
+`totalDegree`/`IsRdecWitness` chain those 35 files cover. **Sorry status
+for files 36–49, verified this pass** (same comment-stripped, whole-word
+`sorry` scan as the note above): **zero live sorries** across all
+fourteen. File 49 (`GenListFinrankAssembly.lean`) was the stub as of that
+pass — since superseded, see the note below and files 50–54's own
+entries: it now carries one genuine LIVE `sorry` (not a `True := trivial`
+placeholder any more), and the correction that made this necessary
+(`ROADMAP-monic-annihilator-degree-uniform.md`'s "CORRECTION, later
+pass" section) is exactly what files 50–54 exist to eventually close.
+
+**Files 50–54 added, later pass still — the base-case correction and its
+partial resolution.** A re-run of the whole-project sorry scan this pass
+(the same script `ZeroD-STATUS.md` documents) found `ZeroD-STATUS.md`'s
+own "zero sorries under `ZeroD/`" claim already stale: `genList_finrank_
+assembly_placeholder`'s honest `True := trivial` stub was, at some point
+after file 49 was first written, replaced with a genuine `sorry` in
+`genList_finrank_le` — because the file plan file 49 describes (routes
+(a)/(b), both inducting directly on `Ideal.ofList` prefixes of the
+fixed-arity `Rdec p`) turned out to have **no valid base case**: no
+prefix of a fixed-arity polynomial ring is finite-dimensional until every
+variable is eliminated, including the empty prefix (`Rdec p` itself, a
+12-variable free polynomial ring). Files 50–54 are the ChatGPT-consulted
+fix: instead of inducting on `Ideal.ofList` prefixes of `Rdec p`, induct
+on the ambient ring's ARITY via `MvPolynomial.finSuccEquiv`, so the
+`n = 0` case genuinely is `K`-finite (`MvPolynomial (Fin 0) K ≃ₐ[K] K`).
+This index now covers 55 files total. **Sorry status for files 50–55,
+verified this pass**: **zero live sorries** across files 50–54 — but file
+55 (`GenListFinrankAssembly.lean`, re-entered below under its
+post-correction status) is the one file in this whole 55-file index that
+currently has a live `sorry`, and closing it (the literal `Idx`-specific
+wiring, item (d) of the roadmap's revised plan) is the actual next step,
+not yet done as of this pass.
 
 ---
 
@@ -878,40 +900,191 @@ sequence and separately prove `Ideal.ofList`'s `List.Perm`-invariance to
 transport the bound back. **Status: sorry-free** (per its own
 docstring; not itself flagged untested, unlike file 35).
 
-### 49. `GenListFinrankAssembly.lean` (202 lines) — ⚠ current stub, next step
+### 49. (superseded — see file 55) `GenListFinrankAssembly.lean` as it
+stood at the ORIGINAL time of writing this index entry: a `True :=
+trivial` placeholder, `genList_finrank_assembly_placeholder`, standing in
+for the not-yet-attempted final wiring, with two candidate routes
+reasoned through in its docstring (twelve sequential explicit
+applications vs. an `hstep` reformulated to case-split on a positional
+index). **This description is stale as of files 50–55** — the file's
+actual current content (same filename, since revised) is entry 55 below,
+which describes what it now contains and why the placeholder became a
+live `sorry` instead of getting filled in directly. Kept as its own
+numbered entry (rather than deleted) only so this index's file-50-onward
+numbering doesn't retroactively renumber files 1–48 above; treat entry 55
+as the authoritative description of `GenListFinrankAssembly.lean` and
+do not act on this entry's placeholder-era description.
+
+### 50. `IdxEquivFin.lean` (117 lines)
+Imports: `DecoupledSystemRegular`.
+
+Same sub-effort. Step 1 of the ChatGPT-consulted correction described in
+the note above `ROADMAP-monic-annihilator-degree-uniform.md`'s
+"CORRECTION, later pass" section: rather than hand-rolling an `Idx ≃
+Option (Option (...))` chain, reindex `Idx` through `Fin 12` and peel
+via Mathlib's own `MvPolynomial.finSuccEquiv`. Provides `idxToFin`/
+`finToIdx` (explicit case-matching tables, not derived from `Fintype`,
+so the specific TRIANGULAR order below is guaranteed rather than left to
+an unspecified `Fintype`-derived enumeration) and the packaged
+`idxEquivFin : Idx ≃ Fin 12`, both directions closed by `decide`. **The
+order is deliberately NOT `Idx`'s own constructor order**: curve-relation
+variables (`wa1,wa2,wb1,wb2`) must be peeled before the matching-generator
+variables (`U0,U1,V0,V1`), since `FuList`/`FvList`'s coefficients depend
+on the curve-relation variables — peeling `U0`,etc. first would leave a
+non-constant leading coefficient at the step that needs one. Chosen
+order: `0↦wa1,1↦a1,2↦wa2,3↦a2,4↦wb1,5↦b1,6↦wb2,7↦b2,8↦U0,9↦U1,10↦V0,
+11↦V1` — each curve variable immediately followed by its own sample
+variable, matching `genList`'s own stated tail order for the four curve
+relations. Also provides twelve `@[simp]` point lemmas
+(`idxEquivFin_wa1`, etc.), each `rfl`. **Status: sorry-free.**
+
+### 51. `FinSuccSplitPolynomialEquiv.lean` (170 lines)
+Imports: `DecoupledSystemRegular`.
+
+Same sub-effort. Step 2 of the correction: the `Ideal.ofList`/generator-
+list-carrying analogue of Mathlib's `MvPolynomial.finSuccEquiv`, exactly
+mirroring file 48 (`OptionSplitPolynomialEquiv.lean`)'s statement and
+proof skeleton (`Ideal.quotientEquiv` + `Ideal.map_ofList` +
+`polynomialQuotientEquivQuotientPolynomial`) but with `Fin (n+1)`/
+`Fin.succ` in place of `Option τ`/`some`, so later Assembly never needs
+to construct or reason about an `Option`-nested type at all. Fixes the
+base ring to a field `K` (unlike file 48's general `CommRing R`), since
+this project only ever instantiates it at `K = F p` and `Module.finrank`/
+`Module.Finite` need a field to make sense of directly. Provides
+`finSuccEquiv_comp_rename_succ_eq_C`/`finSuccEquiv_rename_succ_apply`
+(the key computation, proved via `MvPolynomial.ringHom_ext` rather than a
+hand-rolled `induction_on` — deliberately, since a first attempt guessed
+Lean-3-flavored case names, `h_C`/`h_add`/`h_X`, that don't match Lean
+4's actual `C`/`add`/`mul_X`, caught and corrected before presenting),
+`finSuccSplitQuotientRingEquiv` (the ring isomorphism itself),
+`finSuccSplitQuotientRingEquiv_apply_rename_succ`/`_apply_X_zero` (point-
+tracking corollaries), and the `K`-algebra upgrade
+`finSuccSplitQuotientAlgEquiv`. **Status: sorry-free.**
+
+### 52. `FinSuccPeelChainFinrank.lean` (311 lines)
+Imports: `FinSuccSplitPolynomialEquiv`, `FinrankLeOfMonicAnnihilatorFinite`,
+`QuotOfListChain`.
+
+Same sub-effort. Item (b) of the roadmap's revised file plan: the
+ONE-STAGE `Fin`-indexed peel, composing three already-proved facts (no
+new core mathematical content, per its own docstring) — (1)
+`finSuccSplitQuotientAlgEquiv`, restricted one level further via
+`Ideal.quotientEquiv`, identifies the literal two-step quotient
+`(MvPolynomial (Fin (n+1)) K ⧸ Ideal.ofList gens') ⧸ Ideal.span {mk g}`
+with `Polynomial A ⧸ Ideal.span {G}` as `K`-algebras; (2)
+`finrank_le_of_monic_annihilator_of_finite` (file 45) bounds `finrank` on
+that two-step ring; (3) `quotOfListCons_ringEquiv` (file 40) identifies
+the two-step quotient with the literal ONE-STEP quotient the caller
+actually wants. Provides the headline
+`finrank_le_and_finite_finSucc_peel`, concluding `Module.Finite`/
+`Nontrivial`/the `finrank` bound on `MvPolynomial (Fin (n+1)) K ⧸
+Ideal.ofList (gens.map (rename Fin.succ) ++ [g])`, given the new
+generator's monic image `G` under the split (pinned by an explicit
+hypothesis `hg`) and its non-unit-ness (`hg_ne`). Fully generic over
+`n`/`K`/`gens`/`g` — zero `Idx`/`Rdec p`/`theData` content. Needed a
+raised heartbeat limit (`set_option maxHeartbeats 2000000`), flagged
+in-file. **Status: sorry-free.**
+
+### 53. `FinSuccPeelChainFold.lean` (124 lines)
+Imports: `FinSuccPeelChainFinrank`.
+
+Same sub-effort. Item (c) of the roadmap's revised file plan and the
+actual fix for the base-case gap file 55 (formerly file 49's stub)
+exposed: the GENERIC `n`-stage fold, mirroring file 47's
+`finrank_le_and_finite_of_append` in interface shape (a single
+dependently-typed `hstep` proof recipe, callable again at whatever stage
+the induction has reached, since each stage's own witness data is only
+determined once the induction gets there) but with a GENUINE `n = 0`
+base case built in rather than assumed: `MvPolynomial (Fin 0) K ≃ₐ[K] K`
+(`MvPolynomial.isEmptyAlgEquiv`, since `Fin 0` is empty) really is
+`K`-finite, unlike file 47's `Rdec p`-prefix base case, which is provably
+false for `gens = []`. `hstep` is stated to return a witness bundle
+(`g`,`G`, proofs) EXISTENTIALLY, since the generic fold has no fixed
+formula for the per-stage generator at this level of genericity — the
+headline `finrank_le_finSucc_peel_chain` therefore concludes an
+EXISTENTIAL `∃ gensN bound, ...` rather than a bound on a caller-specified
+list. **Load-bearing caveat for file 55's wiring, confirmed by direct
+ChatGPT consult (see `ZeroD-README.md`/this project's working chat log
+for the full exchange)**: this existential shape cannot, by itself, be
+used to recover a bound on any SPECIFIC list like `genList` — the
+induction existentially forgets every choice it makes along the way, so
+file 55's actual closing proof needs either a non-existential 12-step
+direct unfolding (calling file 52's one-stage lemma twelve times
+explicitly against `genList`'s literal generators) or a strengthened
+fold that threads the generator list through as data; this file supplies
+only the existential version, useful as a generic reusability statement
+but NOT the form file 55 ends up calling directly. Fully generic — zero
+`Idx`/`Rdec p`/`theData` content. **Status: sorry-free.**
+
+### 54. `IdealOfListPerm.lean` (97 lines)
+Imports: none project-internal (`Mathlib` only — fully generic).
+
+Same sub-effort (infrastructure needed by the base-case correction, files
+50–53/55, though the fact itself is stated with no `Genus2Lean`-specific
+content). Proves `Ideal.ofList` only depends on a list's underlying
+elements, not its order: `Ideal.ofList_perm {l₁ l₂ : List R} (h :
+l₁.Perm l₂) : Ideal.ofList l₁ = Ideal.ofList l₂`, plus the quotient-ring
+corollary `Ideal.quotient_ofList_perm_eq`. **Load-bearing for file 55's
+wiring**: `genList`'s literal stated order (`FuList ++ FvList ++
+[curveA1,...]`) is NOT the triangular peel order `idxEquivFin` (file 50)
+induces, so closing file 55's `sorry` needs exactly this fact to
+transport a bound proved against the triangular reordering back onto
+`Ideal.ofList genList` in its own stated order. Proof deliberately avoids
+`unfold`ing `Ideal.ofList`'s raw definition (not independently
+re-confirmed via direct source inspection this pass, only its public
+API) — proceeds instead by structural induction on `List.Perm`'s four
+constructors (`nil`/`cons`/`swap`/`trans`), using only already-confirmed
+project-trusted lemmas (`Ideal.ofList_nil`, `Ideal.ofList_cons`) plus
+`sup_assoc`/`sup_left_comm` for the `swap` case. **Status: sorry-free.**
+(Numbered after files 50–53 despite being logically closer to a
+generic-infrastructure file like 40/42 — placed here rather than
+earlier since it was written in the same later pass as the arity-peel
+correction and is only actually needed once that correction's wiring,
+file 55, is attempted.)
+
+### 55. `GenListFinrankAssembly.lean` (310 lines, current — supersedes
+entry 49's description) — ⚠ current live `sorry`, next step
 Imports: `PeelChainAssemblyFinrank`, `PeelChainStageFinite`.
 
-Same sub-effort. Assembly part 4, the specialization of file 47's
-generic fold to `genList`'s literal 12 generators — the roadmap's own
-stated next concrete step. Provides `PeelChainFinrankHyp`, a structure
-bundling the twelve genuinely-open per-stage side conditions (eight
-`IsUnit (mk d)` facts for the linear-elimination stages' leading
-coefficients, plus twelve `¬IsUnit (mk g)` non-unit facts needed for
-`Nontrivial` at each stage — see files 46/44's own hypothesis
-`hgu`/`hd_unit`) as free structure parameters over an abstract
-`d : DecoupledGenerators p`/`Fu Fv : List (Rdec p)`, deliberately NOT
-tied to `theData`/`FuList`/`FvList` internally (an earlier draft that
-carried a `d = theData ...`-shaped equality field hit a `whnf`
-heartbeat timeout merely STATING that equality's type, not from
-repetition — connecting `d`/`Fu`/`Fv` to the real values is left as the
-caller's job at instantiation). Its own docstring is explicit that
-these twelve conditions are asserted as open hypotheses, not proved,
-derived, or claimed likely to hold for a generic curve. **The file's
-actual deliverable — applying file 47's fold to `genList`'s 12
-generators and `PeelChainFinrankHyp`, producing the numeric bound
-`finrank (F p) (...) ≤ 2^4` — is NOT yet attempted.** In its place,
-`genList_finrank_assembly_placeholder : True := trivial` stands as a
-named, self-documenting placeholder (per this project's convention of
-distinguishing genuinely-open work from live `sorry` tactic use). Its
-own docstring reasons through two candidate routes for finishing this
-(twelve sequential explicit applications, mirroring
-`PeelChainAssembly.lean`'s own 12-way case split, vs. reformulating
-`hstep` to case-split on a positional index) and flags route (a) as the
-more promising but UNCHECKED direction — in particular, whether the
-`List.take`/`getD` bookkeeping in `PeelChainFinrankHyp` actually unifies
-against `genList`'s own associativity of `++` has not been verified.
-**This is the file to pick up next**: replace
-`genList_finrank_assembly_placeholder` with the real wiring.
+Same sub-effort. Assembly part 4, **now on its post-correction revision**:
+entry 49 described an earlier state of this same file (a `True :=
+trivial` placeholder, `genList_finrank_assembly_placeholder`). That
+placeholder has since been superseded by an actual attempt at the
+specialization, written against the twelve literal `Ideal.ofList`-prefix
+generators directly (route (a) from entry 49's docstring: twelve
+separately-named fields — `hd_unit_Fu0`,...,`hgu_curveB2` — rather than
+an indexed `List.take`/`getD` lookup, sidestepping the associativity-
+unification risk entry 49 flagged as unchecked). Provides
+`PeelChainFinrankHyp` (the twelve-field bundle, generic over
+`d : DecoupledGenerators p` and `c0,...,c4 : F p`, deliberately not tied
+to `theData` internally — same `whnf` heartbeat-timeout reasoning entry
+49 already recorded) and the headline `genList_finrank_le`, which states
+the actual target — `Module.finrank (F p) (Rdec p ⧸ Ideal.ofList
+(genList ...)) ≤ 16` — but **ends in a live `sorry`, not a placeholder**:
+its own docstring is explicit that the twelve-sequential-application
+proof sketch it describes cannot actually start, because the base case
+(`Module.Finite (F p) (Rdec p ⧸ Ideal.ofList [])`, i.e. `Module.Finite
+(F p) (Rdec p)`) is FALSE — `Rdec p` is a 12-variable polynomial ring,
+infinite-dimensional over `F p`. This is the exact gap files 50–54 exist
+to fix (peel by ARITY via `finSuccEquiv`, not by `Ideal.ofList` prefix),
+but as of this pass that fix has not yet been wired THROUGH this
+specific theorem. **This is the one live `sorry` anywhere in this whole
+54-file index, and the one live `sorry` anywhere under `ZeroD/` per this
+pass's fresh whole-project scan** (superseding `ZeroD-STATUS.md`'s own
+"zero sorries under `ZeroD/`" claim, which predates this file's
+placeholder-to-`sorry` transition). **Closing it needs**: either (i) a
+non-existential 12-step direct unfolding calling file 52's one-stage
+lemma explicitly against `genList`'s twelve literal generators in
+`idxEquivFin`'s triangular order (not `genList`'s own stated order), or
+(ii) file 53's existential fold instantiated some other way — see this
+project's working chat log for a ChatGPT-consulted architecture
+(`explicit 12-step peeling → List.Perm → Ideal.ofList_perm (file 54) →
+Ideal.map_ofList + Ideal.quotientEquiv → LinearEquiv.finrank_eq`) that
+recommends (i), plus a reusable rename-transport lemma
+(`finrank_ofList_le_of_finrank_ofList_map_rename_le`, not yet written as
+its own file) bridging the `MvPolynomial (Fin 12) K`-side bound back to
+`Rdec p`/`Idx` via `MvPolynomial.renameEquiv`. **This is the file (and
+gap) to pick up next.**
 
 ---
 
