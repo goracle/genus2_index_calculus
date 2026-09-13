@@ -146,3 +146,4 @@ import Genus2Lean.ZeroD.CurveRelationsDegreeBound
 import Genus2Lean.ZeroD.LinearElimDegreeBound
 import Genus2Lean.ZeroD.LinearElimDegreeBoundExt
 import Genus2Lean.ZeroD.QuotOfListChain
+import Genus2Lean.ZeroD.QuotOfListChainFinrankStep
