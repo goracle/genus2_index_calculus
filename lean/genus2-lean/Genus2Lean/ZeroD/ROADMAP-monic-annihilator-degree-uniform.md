@@ -300,13 +300,35 @@ groundwork already exists.
   the isolated leading coefficient `v_den i` in the PREVIOUS-STAGE
   ring that `finrank_le_of_linear_elim`'s `hd : IsUnit d` hypothesis
   needs. Neither gap closes for free — see the Open Questions section
-  above for the full writeup. **Item 3 needs fresh `IsUnit (v_den i)`
-  hypotheses, not a reuse of `hv_ext`.**
-- **Not yet started**: item 3 (stages 4–7 — diagnosis above now
-  cleared, ready to write; will mirror `LinearElimDegreeBound.lean`'s
-  shape with a freshly-stated `IsUnit` hypothesis per stage rather than
-  reusing `hv_ext`), item 5 (assembly), item 6 (`Bad` sizing, still
-  blocked on examining `v_den i`'s actual symbolic
-  `(c0,...,c4,alpha,alpha')`-dependence per the Open Questions update
-  above), and the final `AlphaLocusDegreeUniform.lean` replacement.
-
+  above for the full writeup.
+- **Item 3 / suggested-order step 4 (stages 4–7) — done, REPL-confirmed
+  build-green.** `LinearElimDegreeBoundExt.lean`: `finrank_le_of_Fv0`
+  through `finrank_le_of_Fv3`, four thin re-exports of item 2's
+  `finrank_le_of_linear_elim` under stage-facing names — `Fv0`–`Fv3` are
+  literally the same `c − X·d` shape as `Fu0`–`Fu3`, so no new proof
+  content was needed, only the fresh `hv_den_unit : IsUnit d` hypothesis
+  per stage the Open Questions diagnosis flagged as NOT already supplied
+  by `hv_ext`.
+- **Item 5 / suggested-order step 5 (Assembly) — part 1 in progress, not
+  yet REPL-confirmed.** `QuotOfListChain.lean`: `quotOfListCons_ringEquiv`,
+  a generic (any `CommRing R`, `MvPolynomial`/`τ`-free) ring isomorphism
+  `(R ⧸ Ideal.ofList gens) ⧸ Ideal.span {mk gens g} ≃+* R ⧸ Ideal.ofList
+  (gens ++ [g])`, plus `quotOfListCons_ringEquiv_apply_mk_mk` pinning down
+  where it sends the basepoint `mk (mk gens x)`. This is the missing link
+  between each per-stage `finrank` lemma's ABSTRACT `B := A ⧸ Ideal.span
+  {c}` shape and the LITERAL one-step `Rdec p ⧸ Ideal.ofList (prefix ++
+  [newGen])` quotients the 12-stage chain actually produces — needed
+  before the twelve per-stage facts can be composed via
+  `Module.finrank_mul_finrank` at all. Built on the same
+  `DoubleQuot.quotQuotEquivQuotSup` + `Ideal.ofList_append` content
+  `PeelChainAssembly.lean`'s own regularity-transport proof already uses
+  internally, extracted here without that proof's `MvPolynomial`/`τ`
+  machinery (not needed for this file's weaker job — transporting an
+  isomorphism's basepoint, not regularity, across it).
+- **Not yet started**: item 5's SECOND file (specializing
+  `QuotOfListChain.lean`'s generic bridge to `Rdec p`/`genList`, applying
+  it + the per-stage `finrank` facts 12 times via
+  `Module.finrank_mul_finrank`), item 6 (`Bad` sizing, still blocked on
+  examining `v_den i`'s actual symbolic `(c0,...,c4,alpha,alpha')`-
+  dependence per the Open Questions update above), and the final
+  `AlphaLocusDegreeUniform.lean` replacement.
