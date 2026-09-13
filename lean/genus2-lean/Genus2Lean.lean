@@ -154,3 +154,4 @@ import Genus2Lean.ZeroD.FinrankLeOfMonicAnnihilatorFinite
 import Genus2Lean.ZeroD.PeelChainStageFinite
 import Genus2Lean.ZeroD.PeelChainAssemblyFinrank
 import Genus2Lean.ZeroD.OptionSplitPolynomialEquiv
+import Genus2Lean.ZeroD.GenListFinrankAssembly
