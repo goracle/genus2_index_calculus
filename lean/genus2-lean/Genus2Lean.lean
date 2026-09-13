@@ -161,3 +161,5 @@ import Genus2Lean.ZeroD.FinSuccSplitPolynomialEquiv
 import Genus2Lean.ZeroD.FinSuccPeelChainFinrank
 import Genus2Lean.ZeroD.FinSuccPeelChainFold
 import Genus2Lean.ZeroD.RenameEquivOfListFinrankTransport
+import Genus2Lean.ZeroD.GenListTriangularReorder
+import Genus2Lean.ZeroD.FinSuccStageGenerators

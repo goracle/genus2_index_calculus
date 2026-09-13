@@ -750,17 +750,144 @@ replaced before presenting) and `MvPolynomial.isEmptyAlgEquiv` (`MvPolynomial
 plan actually closes the base-case gap this correction exists to fix,
 not just relocates it.
 
-**Not yet done**: item (c) (the generic `Fin n`-indexed n-stage fold with
-a real `n=0` base case, using `MvPolynomial.isEmptyAlgEquiv` — mirroring
-`PeelChainAssemblyFinrank.lean`'s existing `finrank_le_and_finite_of_
-append` but fixing its false-base-case issue) and item (d) (the
-`Idx`-specific wiring via `idxEquivFin`, transporting `genList`'s twelve
-literal generators and specializing (c) to the real `genList_finrank_le`
-statement) are both still open. The Open Question about whether
-`optionSplitQuotientAlgEquiv`/its new `finSuccSplit`-named analogue fully
-supersedes the old file, or whether both remain needed for different
-purposes, is also still unresolved — likely moot in practice since this
-pass's `FinSuccSplitPolynomialEquiv.lean` is what item (c)/(d) will
-actually use; `OptionSplitPolynomialEquiv.lean` may end up genuinely
-unused going forward, a question for whoever does the final cleanup
-pass once (c)/(d) are proved.
+**Update, later pass — item (c) now done, not yet REPL-confirmed.**
+Two files close item (c) in full:
+
+- `FinSuccPeelChainFinrank.lean`: `finrank_le_and_finite_finSucc_peel`,
+  the ONE-STAGE `Fin`-indexed peel — given a prefix `gens : List
+  (MvPolynomial (Fin n) K)`, a new generator `g : MvPolynomial (Fin
+  (n+1)) K`, its monic image `G` under `finSuccSplitQuotientAlgEquiv`
+  (pinned by hypothesis `hg`), and `g`'s image a non-unit (`hg_ne`),
+  concludes `Module.Finite`/`Nontrivial`/the `finrank` bound
+  (`≤ G.natDegree * finrank at n`) on the literal one-step-extended
+  quotient `MvPolynomial (Fin (n+1)) K ⧸ Ideal.ofList (gens.map (rename
+  Fin.succ) ++ [g])`. Composes three already-proved facts end to end
+  (`finSuccSplitQuotientAlgEquiv`, `finrank_le_of_monic_annihilator_of_
+  finite`, `quotOfListChain.lean`'s `quotOfListCons_ringEquiv`) — no new
+  core content, all bookkeeping.
+- `FinSuccPeelChainFold.lean`: `finrank_le_finSucc_peel_chain`, the
+  `n`-STAGE FOLD with the genuine `n = 0` base case
+  (`MvPolynomial.isEmptyAlgEquiv K (Fin 0) : MvPolynomial (Fin 0) K
+  ≃ₐ[K] K`, since `Fin 0` is empty) — the fix this whole correction
+  exists to deliver. `hstep` is a dependently-typed per-stage recipe
+  (quantified over an arbitrary already-reached stage `i`/prefix
+  `gens`, existentially producing that stage's `g`/`G`/proof
+  obligations), called once per step of the outer `induction n`.
+  Concludes: `∃ gensN bound, Module.Finite ∧ Nontrivial ∧ finrank ≤
+  bound` at `Fin n`.
+
+Both files are generic over `n`/`K`/the per-stage recipe — zero
+`Idx`/`Rdec p`/`theData` content, matching this project's established
+split.
+
+**Item (d) — now the sole remaining piece, in progress.** Transporting
+`genList`'s twelve literal generators across `idxEquivFin`/`renameEquiv`
+to actually specialize (c) and discharge `GenListFinrankAssembly.lean`'s
+`genList_finrank_le` `sorry`. One sub-piece landed so far:
+
+- `RenameEquivOfListFinrankTransport.lean`: the GENERIC half of (d) —
+  fully `Idx`-free, any `σ ≃ τ` bijection `e`. Proves renaming a
+  generator list along `e` doesn't change the `finrank` of the
+  resulting `Ideal.ofList`-quotient: `renameRingEquiv`/
+  `renameEquiv_ofList_quotientAlgEquiv` (the underlying `K`-algebra
+  isomorphism, built from `MvPolynomial.renameEquiv` + `Ideal.map_ofList`
+  + `Ideal.quotientEquiv`, exactly mirroring `finSuccSplitQuotientAlgEquiv`'s
+  proof shape with `rename e` in place of `rename Fin.succ`) and
+  **`finrank_ofList_le_of_finrank_ofList_map_rename_le`**, the actual
+  reusable transport lemma: a bound proved after renaming already held
+  before renaming. This is the tool `genList_finrank_le`'s proof will
+  call; it does not yet call it.
+
+**Update, later pass — steps 1–2 (partial) now landed, not yet
+REPL-confirmed.** `GenListTriangularReorder.lean`: `genListTriangular`
+(`genList`'s same twelve elements, reordered to `[curveA1,curveA2,curveB1,
+curveB2] ++ FuList ++ FvList` — curve relations moved to the front, `Fu`/
+`Fv`'s own internal order untouched), `genListTriangular_perm_genList`
+(`genListTriangular.Perm genList`, via `List.append_assoc` +
+`List.perm_append_comm` — generic block-shuffling, doesn't unfold
+`FuList`/`FvList`/the curve list's own contents), and the two corollaries
+`quot_genListTriangular_eq_quot_genList` (the quotient-ring equality via
+`Ideal.quotient_ofList_perm_eq`, ready for step 4) and
+`genListTriangular_length` (12-element sanity check). **Deliberately only
+a COARSE reordering (curve-block-then-Fu-then-Fv), not yet the full
+per-variable interleaving `idxEquivFin` actually specifies** (each `wa`/
+`wb` threaded with its own sample variable, the eight matching generators
+individually split across `U0,U1,V0,V1`) — sharpening this down to the
+literal 12-step one-variable-at-a-time sequence is deferred to whichever
+file builds `hstep` next (step 3 below), since the coarser split already
+suffices to prove the permutation and doesn't commit early to bookkeeping
+step 3 might want to shape differently once it's actually attempted.
+
+**Update, later pass — step 3's generic half now landed (linear-elimination
+and curve-relation stage generators), not yet REPL-confirmed.**
+`FinSuccStageGenerators.lean`:
+
+- **Curve-relation stages (already-monic, straightforward)**:
+  `finSuccCurveRelationGen`/`finSuccCurveRelationGen_image`/
+  `finSuccCurveRelationGen_hstep_data` — the `Fin`-indexed generator
+  `X 0 ^ 2 - rename Fin.succ q`, its image under `finSuccSplitQuotientAlgEquiv`
+  computed directly (`curveRelationPoly (mk q)`, already monic), and the
+  fully-packaged `hstep` witness needing only the standing `hg_ne`
+  hypothesis (no unit condition, matching stages 8–11's `d = 2` shape).
+- **Linear-elimination stages (needed a real fix, not just a restatement)**:
+  the naive approach — take `g := rename Fin.succ q₁ - X 0 * rename
+  Fin.succ q₂` (`finSuccLinearElimGen`) and try to hand `hstep` the
+  monic rescaling `linearElimMonicPoly (mk q₁) (mk q₂) hd_unit` as `G` —
+  **does not typecheck as `hstep` needs it**: `g`'s actual image is the
+  RAW `linearElimPoly (mk q₁) (mk q₂)` (`finSuccLinearElimGen_image`),
+  and `linearElimPoly = (unit) * linearElimMonicPoly` is only an
+  ELEMENT-level unit-multiple identity in `Polynomial A` — it shows the
+  image is A unit multiple of the monic target, not literally equal to
+  it, and `hstep`'s `hg` field demands literal equality. **Fix**: don't
+  reuse `finSuccLinearElimGen`'s raw form; instead choose (via
+  `Ideal.Quotient.mk`'s surjectivity, `finSuccLinearElimCoeff`/
+  `finSuccLinearElimCoeff_spec`) a genuine `MvPolynomial (Fin n) K`
+  preimage of the ALREADY-RESCALED coefficient `hd_unit.unit⁻¹ * mk q₁`,
+  and build `g` directly from THAT (`finSuccLinearElimGenMonic := X 0 -
+  rename Fin.succ (finSuccLinearElimCoeff ...)`), so its image is
+  literally `linearElimMonicPoly` on the nose by construction, no
+  ideal-level argument needed. `finSuccLinearElimGen_hstep_data` is the
+  resulting packaged witness (needs `hd_unit`, plus the standing `hg_ne`
+  on the RESCALED generator specifically — not on the raw one).
+  `finSuccLinearElimGen`/`finSuccLinearElimGen_image`/`linearElimPoly_eq_
+  unit_mul` are kept as independently-true, reusable infrastructure
+  (documented as insufficient for `hstep` directly, not deleted) rather
+  than discarded once the gap was found.
+
+**Not yet done, the true remainder of item (d)**:
+1. (Coarse reordering done, see above — `GenListTriangularReorder.lean`.)
+2. Rename the (possibly further-reordered) list along `idxEquivFin`
+   and confirm it lands on `finSuccPeelChainFold`'s expected `Fin
+   12`-indexed shape at each of the 12 steps, matching `idxToFin`'s
+   table — genuinely not yet attempted; `FinSuccStageGenerators.lean`'s
+   generators are fully generic over `q₁`/`q₂`/`q` and have not yet been
+   specialized to `genList`'s actual `u1_num 0`/`u1_den 0`/etc. values or
+   to a specific `Idx` peel position.
+3. (Generic per-stage `hstep` witnesses now done, see above — the two
+   `_hstep_data` theorems.) Still needed: identify each of the 12 real
+   stages with a call to one of these two theorems at the right `q₁`/
+   `q₂`/`q`/`hd_unit`/`hg_ne` values (drawn from `theData`/`genList`'s
+   literal definitions and `PeelChainFinrankHyp`'s twelve named fields),
+   in the right order (matching `idxEquivFin`'s interleaving, from step 2
+   above), and confirm `finrank_le_finSucc_peel_chain`'s `hstep` argument
+   (which is quantified over an arbitrary already-reached stage `i`/
+   prefix `gens`, called once per induction step) can actually be
+   supplied as ONE function covering all 12 stages' differing shapes —
+   likely via a `Fin 12`-indexed case split inside `hstep` itself
+   (curve-relation shape at 4 positions, linear-elimination shape at the
+   other 8, per whatever final interleaving step 2 settles on), not yet
+   attempted.
+4. Compose steps 1–3 with `finrank_ofList_le_of_finrank_ofList_map_
+   rename_le` (transport back from `Fin 12` to `Idx`,
+   `RenameEquivOfListFinrankTransport.lean`) and
+   `quot_genListTriangular_eq_quot_genList` (transport back from
+   the triangular order to `genList`'s literal stated order,
+   `GenListTriangularReorder.lean`) to close `genList_finrank_le` for
+   real.
+
+The Open Question about whether `optionSplitQuotientAlgEquiv`/its new
+`finSuccSplit`-named analogue fully supersedes the old file is now
+effectively resolved in practice: item (c)/(d) are built entirely on
+`FinSuccSplitPolynomialEquiv.lean`, and `OptionSplitPolynomialEquiv.lean`
+has not been touched by any file since — a candidate for a final
+cleanup/dead-code pass once (d) is fully closed, not before.
