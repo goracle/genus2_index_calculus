@@ -1,7 +1,7 @@
 # Degree-bound files: index
 
 **Purpose**: a single file to read instead of paging through the ~10,000
-lines / 33 files that make up the `totalDegree`/`IsRdecWitness` degree-bound
+lines / 35 files that make up the `totalDegree`/`IsRdecWitness` degree-bound
 effort AND the separate Obligation-1 (`htop_ne_smul`) sub-effort that
 shares this directory. Written by reading every file's imports, module
 docstring, and top-level declarations directly — not copied from any
@@ -9,8 +9,16 @@ roadmap's own summary. Re-derive this (or at least spot-check it) if
 you've touched any of these files since it was written, the same way
 `ZeroD-STATUS.md` warns for the sorry inventory.
 
+**Note on file 34/35's overlap with the extended index**: `CleanWitness.
+lean` (file 34) and `SymmetricCurveWitness.lean` (file 35) are ALSO
+indexed in `ZERO-D-EXTENDED-INDEX-README.md` (as its files 77/82) — a
+genuine accidental double-entry from the two indexing passes, not an
+intentional shared appendix. This file keeps the full write-up for both;
+the extended index now just points back here. Don't double-count these
+two when tallying `ZeroD/`'s total file coverage across both documents.
+
 **Sorry status, verified this pass** (comment-stripped scan, whole-word
-`sorry` token, all 33 files below): **zero live sorries**, project-wide,
+`sorry` token, all 35 files below): **zero live sorries**, project-wide,
 across this entire group. Any mention of "sorry" you find inside one of
 these files is docstring prose about the project's history/conventions,
 not a live tactic use — matches the top-level `ZeroD-STATUS.md` claim
@@ -102,7 +110,7 @@ this project's heartbeats convention); `matrixA_entry_totalDegree_le`
 itself was drafted but not yet independently re-sent to the REPL as of
 this file's own last status note. **Status: sorry-free.**
 
-### 7. `TowerToRdecMul.lean` (206 lines)
+### 7. `TowerToRdecMul.lean` (206 lines at write time, 257 now — grown since)
 Imports: `TheDataDerivation.DataDerivationMumford`.
 
 Defines the key abstraction the rest of the chain depends on:
@@ -239,7 +247,7 @@ existed under any plausible name; proved via
 trivially (`[CommRing R] [IsDomain R]`, no closed-field or curve-specific
 content). **Status: sorry-free.**
 
-### 18. `AlgebraMapFpLiteralTotalDegree.lean` (218 lines)
+### 18. `AlgebraMapFpLiteralTotalDegree.lean` (218 lines at write time, 229 now — grown since)
 Imports: `DataDerivationTotalDegree`.
 
 Closes the second half of the literal (not existential) `hA`/`hB` gap
@@ -251,7 +259,7 @@ for the same purpose) then propagating via file 1's tower-step theorems.
 The first half (`t1`/`t2`'s literal bound) was already done in file 1.
 **Status: sorry-free.**
 
-### 19. `CrossResultantIsRdecWitness.lean` (245 lines)
+### 19. `CrossResultantIsRdecWitness.lean` (245 lines at write time, 279 now — grown since)
 Imports: `DecoupledSystemRegular`, `TowerToRdecMul`.
 
 The actual resolution of file 2's `hA`/`hB` hypothesis, found after two
@@ -420,7 +428,7 @@ theorems, `norm_ne_zero_iff_placeholder`/`coeffDescent_purpose_note`,
 mark open work honestly rather than hiding it — not live sorries, but
 don't mistake them for proved content either).
 
-### 29. `CurvePointExistenceFromCounting.lean` (210 lines)
+### 29. `CurvePointExistenceFromCounting.lean` (210 lines at write time, 214 now — grown since)
 Imports: `Mathlib` only — **fully generic, no `Genus2Lean` content**.
 
 Separate sub-effort — Obligation 1's part (a) (curve-point existence),
@@ -543,6 +551,78 @@ explicitly flags the degree half as NOT attempted in this file. **Status:
 sorry-free** (as far as it goes — no degree-bound theorem is proved
 here; superseded in intent, not contradicted, by file 32's from-scratch
 `K2`-native route).
+
+### 34. `CleanWitness.lean` (285 lines)
+Imports: `TowerCoeffWitnessDescent`.
+
+A reusable structure, `CleanWitness` (a triple `(N0,N1,D0)` representing
+a "clean at `w`" witness pair `n = N0+N1·w`, `d = D0` — no `w` at all in
+the denominator, for a fixed generator `w := X (sg.wGen 1)`), for
+propagating cleanliness through `IsRdecWitness.add`/`.mul`/`.neg`
+without re-deriving the bookkeeping by hand at every node of every
+future `Q.coeff i`/`g.coeff i` witness tree — packaging what
+`TowerCoeffWitnessDescent.lean` (file 28) established by hand for one
+specific tree (`Q.coeff 3`) into a reusable gadget. **Deliberately
+scoped, not general-purpose**: matches exactly the shape
+`towerToRdec_output_shape` produces (whose denominator never contains
+`sg.wGen 1`), which is why a `D1` (`w`-coefficient on the denominator)
+is never carried at all — mirroring this project's `b=0` convention
+throughout (`K1_poly_monic`/`K2_poly_monic` are always `X² - C(const)`).
+Provides `CleanWitness.toPair` (the bridge to `IsRdecWitness`'s own pair
+shape), `.add`/`.mul`/`.neg` (the algebraic operations), `toPair_add`/
+`toPair_neg` (proved as pure `MvPolynomial` identities, `ring`-checkable,
+no `w²=c` relation needed — `.add`/`.neg` never create a `w²` term),
+`evalNd_toPair_mul` (`.mul` matches `IsRdecWitness.mul`'s raw pair only
+AFTER `evalNd`, proved directly from `w² = φc` rather than via
+`mul_clean_reduce` composition, which mismatched `κ`/`φc` bookkeeping on
+a first attempt), and the matching `totalDegree` bounds
+(`add_totalDegree_le`/`neg_totalDegree_le`/`mul_totalDegree_le`) for all
+three operations, stated using the same `hA`/`hB`-named hypothesis shape
+files 2/18/19/32 already use. **Does not itself close file 2's `hA`/`hB`**
+— it's infrastructure for assembling a concrete witness tree (e.g.
+`Q.coeff 3`'s), not a proof that such a tree closes the bound; the
+concrete next step (naming each base witness's own `(N0,N1,D0)` triple
+and folding it through `.add`/`.mul`/`.neg`) is flagged in the file's own
+docstring as not attempted here. **Status: REPL-confirmed this pass** —
+build green, all four theorems (`toPair_add`, `toPair_neg`,
+`evalNd_toPair_mul`, and the three `totalDegree` bounds) typecheck;
+sorry-free.
+
+### 35. `SymmetricCurveWitness.lean` (212 lines) — ⚠ not yet REPL-tested, per its own docstring
+Imports: `GenListNeTopFromCurvePoint`, `TowerToRdecRenameSymmetry`.
+
+Builds a concrete, symbolic curve witness for `ROADMAP-degree-uniform-
+step3.md`'s Obligation 1, **deliberately avoiding Hasse-Weil entirely**
+(unlike file 29's `CurvePointExistenceFromCounting.lean` counting/
+genericity approach): for a genuine DLP-attack instance, the attacker
+already HAS two known curve points (that's what a discrete-log match
+consists of), so existence of SOME point is never actually in question —
+what's needed is turning "one known point" into a full `assign`
+satisfying the curve relations (a), the nonvanishing-denominators
+condition (b), and the vanishing cross-resultants (c). File 25
+(`TowerToRdecRenameSymmetry.lean`) already supplies (c) for free (its
+`cross_resultant_*_eq_zero_of_symmetric` facts hold identically, by pure
+symmetry, at any `assign` fixed by `idxSwap` — the same symmetry file 25
+found unnecessary for the counting-existence route file 29 actually
+took, reused here for a different route instead). **Plan**: take one
+curve point pair, build the symmetric `assign` that copies it onto the
+b-side coordinates verbatim (`symmetricAssign`), get (c) free from the
+reused symmetry file, and reduce (a) from 4 independent conditions to
+the 2 the input point already satisfies (the b-side conditions become
+identical to the a-side ones under the copy). **(b) is explicitly NOT
+attempted here** — a genuine nonvanishing check on `theData`'s 8
+denominators at this specific `assign`, left for later.
+`symmetricAssign_idxSwap_fixed`, `symmetricAssign_curveA{1,2}_eq_
+curveB{1,2}`, `symmetricAssign_curve_relations`, and
+`symmetricAssign_cross_resultants` are the resulting theorems. **The
+file's own final line reads "Status: new file, not yet REPL-tested"** —
+distinct from every other file in this index, all of which describe
+themselves as REPL-confirmed; treat this one with correspondingly more
+caution until Claire's REPL has actually run it. **No live `sorry` token
+anywhere in the file** (confirmed by direct grep), which is a weaker
+guarantee than usual here given the untested status — a `sorry`-free
+file that hasn't been built can still fail to typecheck for other
+reasons.
 
 ---
 
