@@ -424,7 +424,17 @@ item 1:
    replaced with the actual proved pieces (or a strictly narrower
    bundle, dropping `hfinrank_le`). See `ROADMAP-degree-uniform-step3.md`'s
    three-obligation breakdown for the full plan, and do not let a future
-   pass re-collapse these back into one bundle.
+   pass re-collapse these back into one bundle. **For the actual concrete
+   architecture to build this from (not just the high-level plan)**, see
+   `ROADMAP-monic-annihilator-degree-uniform.md` -- a ChatGPT-consulted,
+   Mathlib-API-checked strategy (iterated monic-annihilator elimination,
+   stage-by-stage through the peel chain's 12 stages, replacing
+   `IsSMulRegular`/witness-existence framing entirely for this specific
+   goal) with a concrete file plan and an explicit open-questions section.
+   Read that file before starting new work here -- it supersedes
+   `ROADMAP-degree-uniform-step3.md`'s "Proposed order" section's own
+   Sylvester-resultant sketch with an actual buildable plan, though the
+   three-obligation framing there is still accurate context.
 3. **`htop_ne_smul` (solution existence -- the 12-generator ideal is
    proper) is unproved but likely tractable**, and doesn't depend on
    item 1's outcome -- reasonable to attempt in parallel. **Correction,

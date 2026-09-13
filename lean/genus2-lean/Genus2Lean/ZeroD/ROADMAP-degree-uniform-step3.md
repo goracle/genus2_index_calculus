@@ -507,21 +507,22 @@ starting it.
    sub-lemmas per peel-chain stage.** This is now the single
    highest-value next action — do not gate it on further numerical
    sweeping; the two checks already run (see "Numerical update" above)
-   are sufficient sanity-check evidence to proceed. Use Sylvester-matrix
-   degree counting on `uRS`/`vRS`'s known degrees through the peel
-   chain, the same style of argument that already fully solved
-   `MatrixNondegenerate`'s factorization. **Scoping for this step's
-   first sub-lemma is done** — see
-   `ROADMAP-crossnondegenerate-degree-bound.md` (new this pass): the
-   `CrossNondegenerate` resultants are polynomials purely in the 8
-   sample-local variables (no `(alpha,alpha')`/`(c0,...,c4)` dependence
-   as ring variables at all, confirming they're a uniform structural
-   bound, not something needing per-instance measurement), built via
-   `towerToRdec`'s fixed three-level recursion — that document traces
-   the recursion, flags the one genuine technical wrinkle
-   (`IsFractionRing.num`/`.den`'s reducedness needs its own small
-   degree-monotonicity lemma, not otherwise available off-the-shelf in
-   Mathlib), and lays out the concrete next steps.
+   are sufficient sanity-check evidence to proceed. **Superseded, later
+   pass: don't use the Sylvester-matrix-on-`uRS`/`vRS` sketch originally
+   written here.** See `ROADMAP-monic-annihilator-degree-uniform.md`
+   instead — a ChatGPT-consulted, Mathlib-API-checked architecture
+   (iterated monic-annihilator elimination through the peel chain's 12
+   stages, replacing `IsSMulRegular`-style regularity framing entirely
+   for this specific goal) with a traced-out stage table and a concrete
+   file plan. That document is the current scoping for this item; treat
+   it as this item's real content rather than the paragraph below.
+   **`ROADMAP-crossnondegenerate-degree-bound.md`'s own attempt at this
+   step's first sub-lemma (`hA`/`hB`, a literal `totalDegree` bound via
+   witness-existence machinery) is CLOSED, not a lead to follow** — that
+   document's own final section proves the approach is a structural dead
+   end (`towerToRdec` is not a ring homomorphism), moved to
+   `oldroadmaps/` accordingly. The monic-annihilator roadmap does not
+   depend on resolving that question and does not reopen it.
 2. **Let Obligation 2's real content emerge from step 1.** As each
    peel-chain stage's degree bound is proved, note what nonvanishing
    condition it actually needs (the resultant's failure mode at that
