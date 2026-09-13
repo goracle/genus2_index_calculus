@@ -158,3 +158,4 @@ import Genus2Lean.ZeroD.GenListFinrankAssembly
 import Genus2Lean.ZeroD.IdealOfListPerm
 import Genus2Lean.ZeroD.IdxEquivFin
 import Genus2Lean.ZeroD.FinSuccSplitPolynomialEquiv
+import Genus2Lean.ZeroD.FinSuccPeelChainFinrank
