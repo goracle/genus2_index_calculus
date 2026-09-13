@@ -219,10 +219,63 @@ groundwork already exists.
   which may or may not be "small" in the sense
   `IsSmallExceptionalSet` actually needs — check that definition
   before assuming either outcome is acceptable.
-- **Symbolic vs. mod-`p` nonvanishing** (ChatGPT's point 3): the
-  project's whole tower is built symbolically over `(c0,...,c4)` before
-  specializing to a fixed `p`. A leading-coefficient-is-a-unit
-  condition proved symbolically nonzero can still vanish after
+- **NEW, discovered while scoping Assembly (item 5's true remainder) —
+  NOT YET RESOLVED: does the naive per-stage induction even have a
+  valid base case / intermediate steps?** Every one of the 12 wired
+  per-stage lemmas (`finrank_le_curveRelation_ofList_cons`,
+  `finrank_le_linearElim_ofList_cons`) takes `[Module.Finite (F p)
+  (Rdec p ⧸ Ideal.ofList gens)]` (among others) as an EXPLICIT
+  hypothesis on the PREFIX ring, meaning a naive Assembly induction
+  ("chain stage 0, then stage 1, ..., proving each stage's
+  `Module.Finite`/`StrongRankCondition`/`Nontrivial` from the previous
+  stage's already-established instance of the same") needs
+  `Module.Finite (F p) (Rdec p ⧸ Ideal.ofList gens)` to hold at EVERY
+  intermediate prefix, starting from `gens = []`, i.e. `Rdec p` itself.
+  But `Rdec p = MvPolynomial Idx (F p)` is NOT finite-dimensional over
+  `F p` (`Module.Finite (F p) (Rdec p)` is false — it's a polynomial
+  ring, infinite `F p`-dimension), so the induction's base case fails
+  outright as naively conceived. Worse, `RegularSequenceFiniteQuotient
+  .lean`'s existing `Module.Finite.quotient_of_isRegular_of_length_eq_
+  card` (the ONLY existing finiteness fact for any `Rdec p ⧸
+  Ideal.ofList (...)` quotient in this project) genuinely needs the
+  FULL regular sequence (`hlen : rs.length = Nat.card ι`, i.e. all 12
+  generators) to conclude `Ring.KrullDimLE 0` and hence
+  `Module.Finite` — its proof goes through `ringKrullDim (MvPolynomial
+  ι k) = Nat.card ι` dropping to exactly `0` only once the FULL-length
+  regular sequence is quotiented by; a PREFIX of length `i < 12`
+  generically leaves Krull dimension `12 - i > 0`, i.e. genuinely NOT
+  finite-dimensional in general. **This means finiteness is not an
+  incrementally-provable-per-stage fact along this peel chain — it is
+  a global fact that only becomes true at the very last step**, so the
+  per-stage lemmas' `[Module.Finite (F p) (...)]` hypothesis on the
+  PREFIX ring cannot be discharged by a straightforward induction the
+  way `StrongRankCondition`/`Nontrivial` plausibly could be (those
+  don't have the same "only true at full length" character —
+  `Nontrivial`/`StrongRankCondition` likely DO hold at every prefix,
+  since they don't need the dimension-drop argument, though this has
+  NOT been separately verified either). **This needs to be resolved
+  before writing the Assembly chaining file** — options include: (a)
+  restating each per-stage lemma to only need `Module.Finite` on the
+  EXTENDED ring `B` as a CONCLUSION rather than a hypothesis on the
+  prefix (checking whether `finrank_le_of_monic_annihilator`'s own
+  proof already establishes `Module.Finite k B` along the way — its
+  docstring says it does, via `Module.Finite.trans`, suggesting the
+  per-stage lemmas COULD in principle export finiteness forward rather
+  than needing it as an input, which would fix the induction's
+  direction — but the current wired theorems don't expose this output,
+  only consume it as a hypothesis, so this may need a signature change,
+  not just a new proof); (b) proving finiteness of every INTERMEDIATE
+  prefix quotient by a different argument than the full-length Krull
+  dimension one (e.g. if each individual generator, once monic/unit-
+  normalized, genuinely makes its one-step extension finite over the
+  PREVIOUS stage — which is very plausibly true and is arguably what
+  `finrank_le_of_monic_annihilator`'s proof already shows for `B`
+  relative to `A`, again suggesting route (a) is more natural); (c)
+  something not yet considered. Route (a) looks most promising on
+  first read but has not been checked against
+  `FinrankLeOfMonicAnnihilator.lean`'s actual proof term — do that
+  check before committing to a fix.
+
   reduction mod a specific `p` — keep this distinction explicit in
   whatever hypothesis each stage ends up stating, the same way
   `ROADMAP-crossnondegenerate-degree-bound.md` already flags it for
@@ -363,12 +416,149 @@ groundwork already exists.
   can get stuck on a metavariable before the term is unified against
   its use site — supply it explicitly (`(k := F p)`) rather than
   relying on inference.
-- **Not yet started**: item 5's remaining specialization work (stages
-  0–7's matching-generator wiring against a literal `Ideal.ofList`
-  prefix, mirroring what `CurveRelationStageWiring.lean` just did for
-  stages 8–11) and the final Assembly step chaining all twelve
-  per-stage bounds via `Module.finrank_mul_finrank` against `genList`'s
-  actual 12-element list, item 6 (`Bad` sizing, still blocked on
-  examining `v_den i`'s actual symbolic `(c0,...,c4,alpha,alpha')`-
-  dependence per the Open Questions update above), and the final
-  `AlphaLocusDegreeUniform.lean` replacement.
+- **Item 5 part 2, matching-generator slice (stages 0–7) — done,
+  REPL-confirmed build-green.** `LinearElimStageWiring.lean`:
+  `linearElimGen` (the literal `Rdec p`-valued matching-generator
+  relation `c - X u * d`, generic over the peeled `Idx` symbol `u` and
+  already-fixed `c d : Rdec p`) and **`finrank_le_linearElim_ofList_cons`**
+  — the counterpart to `CurveRelationStageWiring.lean`'s wiring, this
+  time specializing `finrank_le_of_linear_elim`
+  (`LinearElimDegreeBound.lean`) instead of
+  `finrank_le_of_monic_annihilator` directly. Stated fully generically
+  over `c d : Rdec p` and `u : Idx`, so — same reasoning
+  `LinearElimDegreeBoundExt.lean`'s own docstring already gives for why
+  `finrank_le_of_linear_elim` needs no new per-stage theorem for
+  stages 4–7 — **this one file's wiring already covers all eight
+  matching-generator stages (0–7), not just 0–3**: nothing in its
+  statement or proof is specific to which `Idx` symbol or which
+  concrete `c`/`d` expressions are plugged in, so `finrank_le_of_Fv0`
+  through `_Fv3`'s stage-4–7 `hv_den_unit` hypothesis is exactly this
+  file's `hd_unit` argument, already present. Takes the same three
+  `StrongRankCondition`/`Module.Finite`/`Nontrivial` hypotheses as
+  `CurveRelationStageWiring.lean` (same undischargeable-until-Assembly
+  reasoning) plus `hd_unit : IsUnit (mk_A d)`, the roadmap's own
+  correctly-scoped "leading coefficient is a unit" condition (distinct
+  from, and not implied by, the existing `hFu*_reg`/`hv*_ext`
+  regularity hypotheses per the roadmap's resolved Open Questions).
+  Two more REPL-driven fixes worth remembering, beyond the four
+  `CurveRelationStageWiring.lean` already logged: (5) when the target
+  theorem's conclusion has NO explicit multiplier (degree-1 stages
+  conclude bare `finrank B ≤ finrank A`, unlike degree-2's `2 *
+  finrank A`) but the chaining lemma `finrank_le_ofList_cons` always
+  concludes `... ≤ ?d * finrank A` with an explicit `?d : ℕ`, `apply`
+  cannot unify a bare `X` against `?d * X` on its own — bracket the
+  goal with `rw [← one_mul X]` before `apply` (turning it into `1 *
+  X`, which unifies with `?d := 1`) and `rw [one_mul]` again just
+  before the final `exact`, to strip the same `1 *` back off before
+  handing the goal to the degree-1 per-stage lemma; (6) `set dA := expr
+  with hdA_def` doesn't just introduce a new local name — it rewrites
+  every existing occurrence of `expr` everywhere in the current goal
+  AND context, including inside hypotheses that were already in scope
+  (here, `hd_unit : IsUnit (mk_A d)` was silently already `IsUnit dA`
+  the moment `set dA := ...` ran) — a follow-up `rw [← hdA_def] at
+  hd_unit` to "catch up" that hypothesis is not just unnecessary but a
+  hard error (`rewrite` fails to find the now-absent original pattern).
+- **Item 5 (all 12 per-stage wirings) — complete.** Between
+  `CurveRelationStageWiring.lean` (stages 8–11) and
+  `LinearElimStageWiring.lean` (stages 0–7, covering all eight
+  matching-generator stages in one generic file), every one of the 12
+  peel-chain stages now has a `finrank` bound wired against a literal
+  `Ideal.ofList gens ++ [newGen]` one-step quotient, each still taking
+  its own genuinely-undischargeable-for-an-arbitrary-prefix hypotheses
+  (`StrongRankCondition`/`Module.Finite`/`Nontrivial`, plus `IsUnit
+  d`/`hd_unit` for the eight linear stages) as explicit arguments for
+  Assembly to supply.
+- **Not yet started**: the final Assembly step (item 5's true
+  remainder) — using `QuotOfListChain.lean`'s
+  `quotOfListCons_ringEquiv` plus `Module.finrank_mul_finrank` to chain
+  all twelve now-proved per-stage bounds against `genList`'s literal
+  12-element list (`FuList ++ FvList ++ [curveA1, curveA2, curveB1,
+  curveB2]`), discharging each stage's `StrongRankCondition`/
+  `Module.Finite`/`Nontrivial`/`IsUnit d` hypotheses along the way by
+  induction (each stage's `A` being the previous stage's already-proved
+  `B`) — producing the actual replacement for
+  `GenericPeelChainHyp.hfinrank_le`; item 6 (`Bad` sizing, still
+  blocked on examining `v_den i`'s actual symbolic
+  `(c0,...,c4,alpha,alpha')`-dependence per the Open Questions update
+  above); and the final `AlphaLocusDegreeUniform.lean` replacement.
+
+## Update, later pass — the "does the naive induction even have a valid
+## base case" Open Question is RESOLVED; two new files, not yet REPL-confirmed
+
+The Open Questions section's "NEW, discovered while scoping Assembly"
+entry (route (a) vs (b) vs "something not yet considered", for how each
+stage's `[Module.Finite (F p) (Rdec p ⧸ Ideal.ofList gens)]` prefix
+hypothesis gets discharged along a 12-step induction whose true base
+case, `Rdec p` itself, is NOT finite-dimensional) is now resolved in
+favor of **route (a)**, checked directly against
+`FinrankLeOfMonicAnnihilator.lean`'s actual proof term rather than left
+as an unconfirmed guess: that proof already constructs `Module.Finite k
+(AdjoinRoot G)` internally via `Module.Finite.trans A (AdjoinRoot G)`,
+i.e. it derives the EXTENDED algebra's finiteness from the BASE algebra's
+— exactly the direction an induction starting from the genuinely-true
+base case `Module.Finite (F p) (F p)` (any field over itself, trivial)
+needs. Route (a)'s own docstring in `FinrankLeOfMonicAnnihilator.lean`
+(the "`[Module.Finite k A]` is a real hypothesis, not incidental"
+paragraph) already flagged this reading; this pass just confirmed it by
+reading the proof term line by line rather than trusting the docstring's
+own claim uncross-checked.
+
+**Two new files, both untested (no REPL access this pass — see this
+project's working agreement; Claire's build is the only real signal)**:
+
+- `FinrankLeOfMonicAnnihilatorFinite.lean`: `finrank_le_of_monic_
+  annihilator_of_finite`, a thin repackaging of `finrank_le_of_monic_
+  annihilator` taking `Module.Finite k A` as an explicit hypothesis
+  argument (not a typeclass assumption an induction can't aim at a
+  specific previous stage) and exporting `Module.Finite k B` as an
+  explicit second conclusion alongside the same `finrank` bound, via one
+  new step (`Module.Finite.of_surjective`, confirmed present in current
+  Mathlib4 under `Mathlib.RingTheory.Finiteness.Basic`) applied to the
+  same surjection `φ` the existing proof already builds. Also
+  `nontrivial_of_span_ne_top`: `B := A ⧸ Ideal.span {g}` is `Nontrivial`
+  whenever `g` is not a unit, via `Submodule.Quotient.nontrivial_of_ne_top`
+  + `Ideal.span_singleton_ne_top` (both confirmed present in current
+  Mathlib4).
+- `PeelChainStageFinite.lean`: `finrank_le_and_finite_curveRelation_
+  ofList_cons` / `finrank_le_and_finite_linearElim_ofList_cons`, the
+  finiteness-exporting counterparts of `finrank_le_curveRelation_ofList_
+  cons`/`finrank_le_linearElim_ofList_cons`, each now concluding
+  `Module.Finite`/`Nontrivial` on the EXTENDED one-step quotient `Rdec p
+  ⧸ Ideal.ofList (gens ++ [g])` (not just the abstract two-step `B`),
+  via a new generic transport lemma `finite_and_nontrivial_ofList_cons_
+  of_two_step` that pushes both facts across `quotOfListCons_ringEquiv`
+  using `Module.Finite.of_surjective` (again) and `Function.Surjective.
+  nontrivial` (also confirmed present in current Mathlib4, under
+  `Mathlib.Logic.Nontrivial.Defs` — note its direction is "pull back
+  nontriviality from the CODOMAIN to the DOMAIN along a surjection",
+  i.e. concluding `Nontrivial target` from `Nontrivial (two-step ring)`
+  needs the surjection `target → two-step ring`, which is `e'.symm`, NOT
+  `e'` — got this backwards in an early draft of this file this same
+  pass, caught and fixed before presenting, flagged here as a genuine
+  gotcha for whoever touches this lemma next).
+
+**Each of these two finiteness-exporting per-stage theorems adds one
+new honest per-stage hypothesis versus its non-finiteness-exporting
+counterpart**: `hgu : ¬ IsUnit (mk_A g)` (the newly-appended generator's
+image is not itself a unit in the prefix quotient — needed for
+`nontrivial_of_span_ne_top` to apply). This is NOT implied by the
+existing `hd_unit`/curve-relation hypotheses (see each theorem's own
+docstring in `PeelChainStageFinite.lean` for why the two conditions
+don't collide) — it is a fresh, honest, per-stage side-condition in the
+same spirit as `hd_unit` itself, left for the Assembly file to discharge
+against `theData`'s actual values, not asserted here without
+justification.
+
+**What is still NOT done, precisely**: these two files supply the
+per-stage BUILDING BLOCKS an inductive Assembly proof needs (each stage
+now both consumes AND produces `Module.Finite`/`Nontrivial`, so the
+induction's base case is genuinely `k` rather than an unreachable prefix
+fact) — they do not themselves run the 12-step induction against
+`genList`'s literal generators, discharge `hgu`/`hd_unit` against
+`theData`'s actual symbolic values, or touch `Bad`/`GenericPeelChainHyp`
+at all. The true Assembly file (chaining all 12 stages via `Module.
+finrank_mul_finrank` against `FuList ++ FvList ++ [curveA1, curveA2,
+curveB1, curveB2]`, using THESE finiteness-exporting theorems rather
+than the original non-exporting ones) is still the next concrete step,
+and is now actually startable — the base-case obstruction this section
+existed to flag is gone, not merely reduced.

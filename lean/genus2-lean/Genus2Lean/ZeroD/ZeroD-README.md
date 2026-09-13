@@ -185,13 +185,39 @@ see "What's actually still open" below.
 
 ## What's actually still open (the real remaining work, as of this pass)
 
+**Correction notice, later pass -- read this before item 1 below, which
+is now STALE and kept only for its historical trace.** Item 1's `hA`/`hB`
+degree-bound effort (the long "Update, [...] pass" chain below) is now
+CLOSED, not open: `ROADMAP-crossnondegenerate-degree-bound.md`'s own
+final sections (moved to `oldroadmaps/`) settle it as a genuine
+structural dead end -- `towerToRdec` is not a ring homomorphism, so no
+witness-existence-style machinery (`IsRdecWitness`, `HasRdecBound`,
+`K2CoordArith.lean`'s coordinate-level closure included) can ever
+produce the LITERAL computed-pair bound `hA`/`hB` ask for, and `hA`/`hB`
+is now correctly understood as a standing per-instance hypothesis, the
+same status `Nondegenerate`/`CrossNondegenerate` already have -- not a
+target for a future unconditional proof. `ZeroD-STATUS.md`'s own later
+section ("`hA`/`hB` and `hu0`/`hu1`/`hv0`/`hv1`: both settled as
+intentional hypotheses, not open proof debt") already records this; this
+file's item 1 below was never updated to match, which is exactly the
+kind of staleness this README exists to flag when found. Item 1's actual
+successor is `ROADMAP-monic-annihilator-degree-uniform.md` (replacing
+`GenericPeelChainHyp.hfinrank_le`, item 2 below) -- that document
+explicitly confirms it does not depend on or reopen the `hA`/`hB`
+question. **The real current priority is item 2, not item 1.** Item 1's
+trace is left in place below rather than deleted, since it is a real,
+useful record of why that route doesn't work (the same reasoning a
+future pass might otherwise waste time re-deriving) -- but it should be
+read as closed history, not as a live task list.
+
 Distilled from `ROADMAP-alpha-locus.md` (status-corrected this pass) and
 `ROADMAP-degree-uniform-step3.md` (rewritten this pass) -- read those
 directly for the full argument, this is a pointer, not a replacement.
 **Ranked by actual risk, not by document order** -- earlier drafts of
 this list ranked `GenericPeelChainHyp` and `Reduce` as comparable
-unknowns; they are not. `Reduce` is in good shape. The real open risk is
-item 1:
+unknowns; they are not. `Reduce` is in good shape. **Stale as of the
+correction notice just above: at the time of THIS pass, item 2
+(`GenericPeelChainHyp`) is the real open risk, not item 1.**
 
 1. **Attempt the degree bound for `CrossNondegenerate`/
    `PeelChainNondegenerate` directly — this is the actual next work, not
@@ -435,6 +461,33 @@ item 1:
    `ROADMAP-degree-uniform-step3.md`'s "Proposed order" section's own
    Sylvester-resultant sketch with an actual buildable plan, though the
    three-obligation framing there is still accurate context.
+
+   **Update, later pass -- this is now the correctly-identified top
+   priority (see the correction notice at the top of this section) and
+   real progress has been made, though the true Assembly file is still
+   not written.** All 12 per-stage `finrank` bounds are wired and
+   REPL-confirmed green (`ROADMAP-monic-annihilator-degree-uniform.md`'s
+   own Progress log). The remaining blocker the roadmap's own Open
+   Questions flagged -- a naive Assembly induction's base case fails,
+   since `Module.Finite (F p) (Rdec p)` is false and the existing
+   regularity-based finiteness fact only fires at the full 12-generator
+   length, not at any prefix -- is now resolved (checked directly
+   against `finrank_le_of_monic_annihilator`'s own proof term: it already
+   derives the EXTENDED ring's finiteness from the base ring's, so an
+   induction starting from `Module.Finite (F p) (F p)` and threading
+   finiteness FORWARD as each stage's output, rather than needing it
+   independently re-derived as an input at each prefix, is the right
+   shape). `FinrankLeOfMonicAnnihilatorFinite.lean` and
+   `PeelChainStageFinite.lean` (both new, NOT yet REPL-confirmed -- no
+   toolchain access this pass, per this project's working agreement)
+   supply the finiteness-exporting per-stage building blocks this
+   induction needs. The true Assembly file -- running the 12-step
+   induction against `genList`'s literal generators using these new
+   theorems, and finally replacing `GenericPeelChainHyp` in
+   `AlphaLocusDegreeUniform.lean` -- is still not written; see
+   `ROADMAP-monic-annihilator-degree-uniform.md`'s own latest "Update"
+   section for the precise state and the one new per-stage hypothesis
+   (`hgu : ¬ IsUnit (mk_A g)`) these building blocks add.
 3. **`htop_ne_smul` (solution existence -- the 12-generator ideal is
    proper) is unproved but likely tractable**, and doesn't depend on
    item 1's outcome -- reasonable to attempt in parallel. **Correction,
@@ -487,13 +540,29 @@ item 1:
   `reducedClass_eq_of_isReduction'`, plus the target theorem
   `decoupledSystem_degree_uniform` itself, in the base file.
 - `CrossNondegenerateDegreeBound.lean` -- `crossResultant_totalDegree_le`/
-  `crossResultantV_totalDegree_le`, conditional on an unmet `hA`/`hB`
-  hypothesis; `CrossResultantIsRdecWitness.lean` -- a separate, genuinely
-  weaker honest fact (`uResultant_isRdecWitness`/`vResultant_isRdecWitness`,
-  `IsRdecWitness` not `totalDegree`) about the same literal resultant
-  elements, REPL-confirmed green, does NOT discharge the other file's
-  `hA`/`hB` -- see item 1's latest "Update" above before assuming either
-  closes the other.
+  `crossResultantV_totalDegree_le`, conditional on `hA`/`hB`, now
+  correctly understood as a standing per-instance hypothesis (see the
+  correction notice at the top of "What's actually still open" above),
+  not open proof debt; `CrossResultantIsRdecWitness.lean` -- a separate,
+  genuinely weaker honest fact (`uResultant_isRdecWitness`/
+  `vResultant_isRdecWitness`, `IsRdecWitness` not `totalDegree`) about
+  the same literal resultant elements, REPL-confirmed green, does NOT
+  discharge the other file's `hA`/`hB` and per that section's own final
+  update never will (`towerToRdec` is not a ring homomorphism).
+- `FinrankLeOfMonicAnnihilator.lean`, `FinrankLeOfMonicAnnihilatorFinite.lean`,
+  `CurveRelationsDegreeBound.lean`, `LinearElimDegreeBound.lean`,
+  `LinearElimDegreeBoundExt.lean`, `CurveRelationStageWiring.lean`,
+  `LinearElimStageWiring.lean`, `PeelChainStageFinite.lean`,
+  `QuotOfListChain.lean`, `QuotOfListChainAdjoinTop.lean`,
+  `QuotOfListChainFinrankStep.lean` -- `ROADMAP-monic-annihilator-
+  degree-uniform.md`'s file plan: the actual replacement for
+  `GenericPeelChainHyp.hfinrank_le`, via iterated monic-annihilator
+  elimination through the peel chain's 12 stages. All 12 per-stage
+  bounds are wired and REPL-confirmed green; the `*Finite.lean` pair are
+  new, NOT yet REPL-confirmed, finiteness-exporting versions needed to
+  make the still-unwritten Assembly file's induction actually start from
+  a true base case -- see that roadmap's own latest "Update" for the
+  precise state.
 - `CAWitness*.lean`, `SanchorMumfordOrdAt.lean`,
   `SanchorEqAlphaPoints.lean`, `TangentMumfordWitness.lean`,
   `CantorAddWitness.lean`, `CantorReductionStep.lean`,

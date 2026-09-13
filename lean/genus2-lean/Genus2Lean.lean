@@ -150,3 +150,5 @@ import Genus2Lean.ZeroD.QuotOfListChainFinrankStep
 import Genus2Lean.ZeroD.CurveRelationStageWiring
 import Genus2Lean.ZeroD.QuotOfListChainAdjoinTop
 import Genus2Lean.ZeroD.LinearElimStageWiring
+import Genus2Lean.ZeroD.FinrankLeOfMonicAnnihilatorFinite
+import Genus2Lean.ZeroD.PeelChainStageFinite
