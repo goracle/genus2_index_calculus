@@ -175,20 +175,48 @@ groundwork already exists.
 ## Open questions — resolve before or during the file work, not after
 
 - **Do `hv0_ext`–`hv3_ext` already supply what a degree bound needs,
-  or only regularity?** These hypotheses were added to fix a
-  regularity gap (`gapA_disjoint_bridge`'s hypotheses being
-  unsatisfiable for this project's actual variable-sharing pattern,
-  per ChatGPT's own counterexample at the time). Regularity
-  (non-zero-divisor) and "leading coefficient is a unit" are related
-  but not obviously identical conditions here — check directly rather
-  than assuming one implies the other.
-- **Where does `Bad`'s eventual size land?** Not decided yet — depends
-  on the answer above. If the stage-4–7 unit conditions turn out to
-  split cleanly per-sample (one depending only on `sa`'s data, the
-  other only on `sb`'s), `Bad` lands in the cheap `O(D)` case from
-  ChatGPT's own table; if they genuinely entangle `alpha` and `alpha'`
-  together the way the *regularity* obstruction did, expect `O(D·p)`
-  instead, which may or may not be "small" in the sense
+  or only regularity? — RESOLVED (checked directly against
+  `PeelChainAssembly.lean`'s literal field definitions, not assumed):
+  no, they don't, and the gap is sharper than "related but not
+  obviously identical."** `hv0_ext`–`hv3_ext` are `IsSMulRegular
+  <the specific difference `v{i}_num j − V·v{i}_den j`> <the extended
+  quotient ring>` — i.e. "multiplication by the WHOLE linear-form
+  VALUE `v_num − V·v_den` is injective on the further-extended
+  quotient," matching `linearElimPoly`'s shape `c − X·d` evaluated at
+  the peeled variable, not `linearElimPoly_span_eq`'s antecedent
+  `IsUnit d` about the ISOLATED leading coefficient `d = v_den`. Two
+  distinct gaps, not one: (1) regularity (injective-on-multiplication)
+  is a strictly weaker condition than `IsUnit` in general — a
+  nonzerodivisor need not be a unit — so `hv_ext` being `IsSMulRegular`
+  rather than `IsUnit`-flavored is real content missing, not a
+  relabeling; (2) even granting unit-strength, `hv_ext`'s subject is
+  the whole evaluated linear form in the EXTENDED (further-quotiented)
+  ring, not the bare leading coefficient `v_den i` in the
+  PREVIOUS-STAGE ring `A` that `finrank_le_of_linear_elim`'s `hd :
+  IsUnit d` hypothesis is about. Stages 4–7 therefore need a genuinely
+  new, separately-supplied `IsUnit (v_den i)`-shaped hypothesis (at
+  the previous stage's ring, before the extension) — not a
+  restatement or corollary of `hv_ext`, and not automatic from it.
+  **Consequence for the file plan**: item 3 (stages 4–7) cannot reuse
+  `hv0_ext`–`hv3_ext` as its unit hypothesis; it needs new hypotheses
+  of the `IsUnit (v_den i)` shape (mirroring stages 0–3's `IsUnit d`
+  in `LinearElimDegreeBound.lean`), stated fresh, likely alongside
+  (not replacing) the existing `hv_ext` regularity fields once wired
+  into `PeelChainAssembly.lean`'s structure at Assembly time (item 5).
+- **Where does `Bad`'s eventual size land?** Now informed by the
+  resolution above: since stages 4–7's needed `IsUnit (v_den i)`
+  condition is a FRESH hypothesis (not derived from the existing,
+  already-`(alpha,alpha')`-entangled `hv_ext` regularity fields), its
+  `(alpha,alpha')`-dependence is not yet fixed by anything already
+  proved — it depends on what `v_den i` (previous-stage denominator)
+  actually looks like as a symbolic expression in `(c0,...,c4)`,
+  `alpha`, `alpha'`, which has NOT yet been examined (separate task,
+  still open). If the stage-4–7 unit conditions turn out to split
+  cleanly per-sample (one depending only on `sa`'s data, the other
+  only on `sb`'s), `Bad` lands in the cheap `O(D)` case from ChatGPT's
+  own table; if they genuinely entangle `alpha` and `alpha'` together
+  the way the *regularity* obstruction did, expect `O(D·p)` instead,
+  which may or may not be "small" in the sense
   `IsSmallExceptionalSet` actually needs — check that definition
   before assuming either outcome is acceptable.
 - **Symbolic vs. mod-`p` nonvanishing** (ChatGPT's point 3): the
@@ -219,3 +247,66 @@ groundwork already exists.
   hypotheses once.
 - **Not moved by**: the (separate, already-closed) `hA`/`hB`
   question — nothing here depends on revisiting that.
+
+## Progress (updated as files land)
+
+- **Item 1 (core lemma) — done, REPL-confirmed build-green.**
+  `FinrankLeOfMonicAnnihilator.lean`: `finrank_le_of_monic_annihilator`
+  (two revisions needed to get the `AdjoinRoot.liftAlgHom`/
+  `liftAlgHom_root` API instantiation right — see that file's own
+  docstring for the corrected API note).
+- **Item 4 / suggested-order step 2 (stages 8–11, curve relations) —
+  done, REPL-confirmed build-green.** `CurveRelationsDegreeBound.lean`:
+  `finrank_le_of_curve_relation`, a generic per-stage fact (`Module.finrank
+  k (AdjoinRoot (X² − C f)) ≤ 2 * Module.finrank k A`) built on item 1's
+  lemma. Deliberately abstract — not yet wired to `Rdec p`'s literal
+  `curveA1`/`curveA2`/`curveB1`/`curveB2` or their actual quotient rings;
+  that identification is item 5's job.
+- **Item 2 / suggested-order step 3 (stages 0–3, matching generators) —
+  done, REPL-confirmed build-green.** `LinearElimDegreeBound.lean`:
+  `linearElimPoly`/`linearElimMonicPoly` (the non-monic `c − X·d` vs.
+  its monic unit-rescaling `X − C(d⁻¹c)`), `linearElimPoly_eq_unit_mul`
+  + `linearElimPoly_span_eq` (they generate the same ideal, via
+  `Ideal.span_singleton_mul_left_unit` — no `IsDomain` needed, unlike
+  an earlier draft's `Ideal.span_singleton_eq_span_singleton` attempt),
+  `aeval_linearElimPoly_eq_zero_iff` (transports a root across the
+  unit-rescaling directly, algebraically — the route actually used by
+  the headline theorem, not the `Ideal.span` machinery above, which
+  stayed in as independently-true reusable infrastructure), and
+  **`finrank_le_of_linear_elim`** (the file's stated deliverable):
+  `IsUnit d → aeval t (linearElimPoly c d) = 0 → Algebra.adjoin A {t}
+  = ⊤ → finrank k B ≤ finrank k A`. Two REPL-driven fixes worth
+  remembering for future files with a similarly heavy ambient
+  typeclass stack on `A` (`CommRing`, `Nontrivial`, `StrongRankCondition`,
+  `Module.Finite k A`): (1) a `conv_lhs => rw [show d = ↑hd.unit from
+  ...]`-style rewrite that touches EVERY occurrence of a variable,
+  including one buried inside a hypothesis term that itself depends on
+  that variable (here, `d` inside `hd.unit⁻¹`, where `hd : IsUnit d`),
+  produces a "motive is not type correct" error — fix by targeting a
+  single occurrence (`nth_rewrite 1 [...]`) instead of a blanket `rw`;
+  (2) applying a general unit-multiple-ideal lemma DIRECTLY against
+  unfolded, project-specific definitions (rather than bare variables)
+  can blow the `whnf` heartbeat budget during unification even after
+  raising `maxHeartbeats`, purely from the ambient instance search —
+  fix by first proving a definition-free helper lemma over plain
+  variables, THEN specializing it via `rw` + `exact`, so the heavy
+  unification never has to see the project-specific `def`s at all.
+- **Open Questions diagnosis (stages 4–7, prerequisite for item 3) —
+  resolved.** Checked `hv0_ext`–`hv3_ext`'s literal field definitions
+  in `PeelChainAssembly.lean` directly: they are `IsSMulRegular
+  <the evaluated linear form v_num − V·v_den> <the further-extended
+  quotient ring>`, which is (a) regularity, not `IsUnit`-strength, and
+  (b) about the whole evaluated expression in the EXTENDED ring, not
+  the isolated leading coefficient `v_den i` in the PREVIOUS-STAGE
+  ring that `finrank_le_of_linear_elim`'s `hd : IsUnit d` hypothesis
+  needs. Neither gap closes for free — see the Open Questions section
+  above for the full writeup. **Item 3 needs fresh `IsUnit (v_den i)`
+  hypotheses, not a reuse of `hv_ext`.**
+- **Not yet started**: item 3 (stages 4–7 — diagnosis above now
+  cleared, ready to write; will mirror `LinearElimDegreeBound.lean`'s
+  shape with a freshly-stated `IsUnit` hypothesis per stage rather than
+  reusing `hv_ext`), item 5 (assembly), item 6 (`Bad` sizing, still
+  blocked on examining `v_den i`'s actual symbolic
+  `(c0,...,c4,alpha,alpha')`-dependence per the Open Questions update
+  above), and the final `AlphaLocusDegreeUniform.lean` replacement.
+
