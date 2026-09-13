@@ -30,6 +30,20 @@ Ordered by recency (oldest first, most recent last) — later files build on
 earlier ones and the later docstrings are more likely to reflect current
 reality when they disagree with an earlier file's own status note.
 
+**Files 36–49 added, later pass**: a separate sub-effort from files
+1–35 above — `ROADMAP-monic-annihilator-degree-uniform.md`'s
+finite-dimension (`finrank`) bound track, not the
+`totalDegree`/`IsRdecWitness` chain those 35 files cover. This index now
+covers 49 files total (build green for all, per direct confirmation at
+write time). **Sorry status for files 36–49, verified this pass**
+(same comment-stripped, whole-word `sorry` scan as the note above):
+**zero live sorries** across all fourteen. File 49
+(`GenListFinrankAssembly.lean`) is the current stub — see its own entry
+below — carrying one honestly-named `True := trivial` placeholder for
+its not-yet-attempted final wiring, matching this project's convention
+(files 28/29's own placeholders, same convention, same distinction from
+a live `sorry`).
+
 ---
 
 ### 1. `DataDerivationTotalDegree.lean` (1410 lines)
@@ -623,6 +637,281 @@ anywhere in the file** (confirmed by direct grep), which is a weaker
 guarantee than usual here given the untested status — a `sorry`-free
 file that hasn't been built can still fail to typecheck for other
 reasons.
+
+### 36. `FinrankLeOfMonicAnnihilator.lean` (148 lines)
+Imports: none project-internal (`Mathlib` only).
+
+Belongs to a separate sub-effort from files 1–35 above:
+`ROADMAP-monic-annihilator-degree-uniform.md`'s finite-dimension-bound
+track, not the `totalDegree`/`IsRdecWitness` chain. Item 1 of that
+roadmap's file plan and the engine the rest of the track is built on.
+States `finrank_le_of_monic_annihilator`: if `B` is an `A`-algebra, `A`
+is `k`-finite, `t : B` satisfies a monic degree-`d` polynomial relation
+over `A`, and `t` generates `B` as an `A`-algebra
+(`Algebra.adjoin A {t} = ⊤`), then `finrank k B ≤ d * finrank k A`. Proof
+route: `AdjoinRoot.liftAlgHom` surjects `AdjoinRoot G ↠ B`, and
+`AdjoinRoot G` is a finite free `A`-module of rank `d`
+(`AdjoinRoot.powerBasis'`), giving `finrank k (AdjoinRoot G) = finrank k
+A * d` via the tower law, from which a surjective `k`-linear image
+(`LinearMap.finrank_le_finrank_of_surjective`) cannot exceed. Its own
+docstring flags one API-correction pass (the `AdjoinRoot.liftAlgHom`
+instantiation: `i := Algebra.ofId A B`, not `AlgHom.id A A`). **Status:
+sorry-free.**
+
+### 37. `CurveRelationsDegreeBound.lean` (143 lines)
+Imports: `FinrankLeOfMonicAnnihilator`.
+
+Same sub-effort as file 36. Item 4 of the roadmap's file plan (done
+before the harder linear-elimination stages, since curve relations are
+already literally monic). Specializes file 36 to the shape
+`X² − C f`(degree 2, matching stages 8–11's `curveA1`/`curveA2`/
+`curveB1`/`curveB2`, per `DecoupledSystemRegular.lean` §3) — abstractly
+over any `f : A`, not yet tied to `Rdec p`. Provides
+`curveRelationPoly`/`curveRelationPoly_monic`/`_natDegree`, and the
+headline `finrank_le_of_curve_relation : finrank k (AdjoinRoot
+(curveRelationPoly f)) ≤ 2 * finrank k A`. Its own comments flag a
+heartbeat-budget fix mid-proof (pulling a polynomial-induction `have`
+out of a case split, and swapping a `coeff`-level case-split proof of
+`C a * X^n = monomial n a` for the direct lemma
+`C_mul_X_pow_eq_monomial`). **Status: sorry-free.**
+
+### 38. `LinearElimDegreeBound.lean` (162 lines)
+Imports: `FinrankLeOfMonicAnnihilator`.
+
+Same sub-effort. Item 2 of the roadmap's file plan, covering stages
+0–3's shape: `c − X·d`, linear but NOT monic as written (leading
+coefficient `-d`). Takes `IsUnit d` (not bare `d ≠ 0`, per the roadmap's
+own "Strategy" section) and rescales to the monic `X − C(d⁻¹c)` (a unit
+multiple, so it generates the same ideal via
+`Ideal.span_singleton_mul_left_unit`), then applies file 36's core fact
+with `d_deg := 1`. Provides `linearElimPoly`/`linearElimMonicPoly` (+
+monic/natDegree facts), the unit-multiple identity
+`linearElimPoly_eq_unit_mul`, the ideal-equality corollary
+`linearElimPoly_span_eq`, the root-transport iff
+`aeval_linearElimPoly_eq_zero_iff`, and the headline
+`finrank_le_of_linear_elim : finrank k B ≤ finrank k A`. **Status:
+sorry-free.**
+
+### 39. `LinearElimDegreeBoundExt.lean` (104 lines)
+Imports: `LinearElimDegreeBound`.
+
+Same sub-effort. Item 3 of the roadmap's file plan, covering stages 4–7
+(`Fv0`–`Fv3`). Its own docstring notes these are LITERALLY the same
+`c − X·d` shape as stages 0–3, so no new proof content is needed — file
+38's `finrank_le_of_linear_elim` already covers them as-is. This file's
+only content is four re-exported corollaries
+(`finrank_le_of_Fv0`/`_Fv1`/`_Fv2`/`_Fv3`) under stage-facing names for
+Assembly to call, each a direct application of file 38's lemma. Flags
+(per the roadmap's now-resolved Open Question) that each stage's
+`IsUnit (v*_den i)` hypothesis is genuinely new data Assembly must
+supply — NOT already available from the existing `hv0_ext`–`hv3_ext`
+(`IsSMulRegular`) hypotheses, a different-strength condition about a
+different ring. **Status: sorry-free.**
+
+### 40. `QuotOfListChain.lean` (119 lines)
+Imports: none project-internal (`Mathlib` only).
+
+Same sub-effort. Item 5 of the roadmap's file plan, Assembly part 1: the
+purely ring-theoretic bridge needed to chain the abstract per-stage
+`finrank` facts (files 36–39, 37) onto the literal one-step quotients
+`Rdec p ⧸ Ideal.ofList (...)` — since each abstract lemma's `B` is a
+generic `A`-algebra, but the real target is a ONE-STEP quotient by the
+WHOLE extended generator list, not literally a quotient-of-a-quotient.
+Provides `quotOfListCons_ringEquiv : (R ⧸ Ideal.ofList gens) ⧸ Ideal.span
+{mk gens g} ≃+* R ⧸ Ideal.ofList (gens ++ [g])` (via
+`Ideal.ofList_append` + `DoubleQuot.quotQuotEquivQuotSup` +
+`Ideal.quotEquivOfEq`), and the point-tracking corollary
+`quotOfListCons_ringEquiv_apply_mk_mk` (needed since the per-stage
+hypotheses are about specific elements, not just an abstract ring
+shape). **Status: sorry-free.**
+
+### 41. `QuotOfListChainFinrankStep.lean` (137 lines)
+Imports: `QuotOfListChain`.
+
+Same sub-effort. Item 5, Assembly part 2: bridges file 40's ring
+isomorphism to an actual `finrank` inequality on the literal one-step
+quotients. Provides the GENERIC one-stage step
+`finrank_le_ofList_cons`, taking an already-proved abstract-`B`
+`finrank` bound (`hstep`) as a bare hypothesis and transporting it
+across `quotOfListCons_ringEquiv` — upgraded to a `k`-algebra
+isomorphism via `AlgEquiv.ofRingEquiv` plus an `algebraMap`-agreement
+check, then `LinearEquiv.finrank_eq`. Deliberately one step at a time
+rather than a whole-chain fold, since the two per-stage shapes (linear
+vs. degree-2) don't share one hypothesis form. **Status: sorry-free.**
+
+### 42. `QuotOfListChainAdjoinTop.lean` (48 lines)
+Imports: none project-internal (`Mathlib` only).
+
+Same sub-effort. Item 5, a small but load-bearing Assembly observation:
+every per-stage `finrank` lemma (files 36, 38, 37) needs
+`Algebra.adjoin A {t} = ⊤`, but at every real peel-chain stage `B` is
+literally `A ⧸ Ideal.span {c}` — a QUOTIENT of `A`, not a genuine
+extension — so `algebraMap A B` is already surjective and
+`Algebra.adjoin A {t} = ⊤` holds for ANY `t`, not just a genuinely
+generating one. Provides `adjoin_singleton_eq_top_of_quotient`, making
+every stage's `hgen` hypothesis free at Assembly time; only each
+stage's own annihilation fact `ht` needs real proof. **Status:
+sorry-free.**
+
+### 43. `CurveRelationStageWiring.lean` (183 lines)
+Imports: `QuotOfListChainFinrankStep`, `QuotOfListChainAdjoinTop`,
+`CurveRelationsDegreeBound`, `DecoupledSystemRegular`.
+
+Same sub-effort. Item 5, the first concrete stage specialization
+(stages 8–11): wires file 36's core lemma (applied directly, not via
+file 37's `AdjoinRoot`, to avoid an extra identification step — see its
+own docstring) and file 41's one-step transport to the literal shape a
+curve-relation generator takes in `Rdec p`. Provides `curveFImage`,
+`curveRelationGen` (`X w² − (curve expression in x)`, matching
+`curveA1`'s literal shape generically over which two `Idx` symbols play
+`wa1`/`a1`), and the headline
+`finrank_le_curveRelation_ofList_cons`, generic over an arbitrary prefix
+`gens` — NOT yet plugged into `genList`'s literal 8-element prefix.
+Takes `[StrongRankCondition ...]`/`[Module.Finite (F p) ...]`/
+`[Nontrivial ...]` on the prefix as explicit hypotheses, since none is
+derivable for an arbitrary `gens` (left to later Assembly). **Status:
+sorry-free.**
+
+### 44. `LinearElimStageWiring.lean` (168 lines)
+Imports: `QuotOfListChainFinrankStep`, `QuotOfListChainAdjoinTop`,
+`LinearElimDegreeBound`, `DecoupledSystemRegular`.
+
+Same sub-effort. Item 5, the counterpart to file 43 for stages 0–3
+(and, shape-identically, 4–7). Provides `linearElimGen` (`c − X u * d`,
+matching `Fu0`'s literal shape) and the headline
+`finrank_le_linearElim_ofList_cons`, taking `hd_unit : IsUnit (mk_A d)`
+as a fourth genuinely-needed per-stage hypothesis (matching file 39's
+`hv_den_unit`) alongside the same `[StrongRankCondition]`/
+`[Module.Finite]`/`[Nontrivial]` hypotheses file 43 needs. **Status:
+sorry-free.**
+
+### 45. `FinrankLeOfMonicAnnihilatorFinite.lean` (145 lines)
+Imports: `FinrankLeOfMonicAnnihilator`.
+
+Same sub-effort. Fixes a real gap the roadmap's "Open questions" section
+flags as discovered while scoping Assembly: the wired per-stage lemmas
+(files 43, 44) take `[Module.Finite (F p) (...)]` on the PREFIX as an
+explicit hypothesis, but a naive 12-step induction's base case
+(`gens = []`, i.e. `A = Rdec p` itself, a polynomial ring) is simply
+false for that instance — `Module.Finite (F p) (Rdec p)` does not hold.
+The fix (checked directly against file 36's actual proof, not assumed):
+file 36's proof already INTERNALLY derives `Module.Finite k B` from
+`Module.Finite k A`, so finiteness should be THREADED FORWARD by the
+induction as an output, starting from the true base case
+`Module.Finite (F p) (F p)`, rather than independently re-derived at
+each prefix. Provides `finrank_le_of_monic_annihilator_of_finite` (file
+36's core lemma, restated with `Module.Finite k A` as an explicit
+argument and `Module.Finite k B` exported alongside the `finrank`
+bound) and `nontrivial_of_span_ne_top` (the companion `Nontrivial`
+fact for `B := A ⧸ Ideal.span {g}` whenever `g` is a non-unit).
+Project-agnostic, no `Rdec p`/`genList` content. **Status: sorry-free.**
+
+### 46. `PeelChainStageFinite.lean` (323 lines)
+Imports: `FinrankLeOfMonicAnnihilatorFinite`, `QuotOfListChain`,
+`QuotOfListChainAdjoinTop`, `CurveRelationStageWiring`,
+`LinearElimStageWiring`, `DecoupledSystemRegular`.
+
+Same sub-effort. Continuation of file 45's fix, specialized to the
+literal `Rdec p ⧸ Ideal.ofList gens` one-step quotients files 43/44
+already wire. Provides `finite_and_nontrivial_ofList_cons_of_two_step`
+(generic transport of `Module.Finite`/`Nontrivial`/`finrank`-equality
+across file 40's ring isomorphism, upgraded to a `k`-algebra
+isomorphism), then the finiteness-exporting versions of files 43/44's
+headline theorems:
+`finrank_le_and_finite_curveRelation_ofList_cons` and
+`finrank_le_and_finite_linearElim_ofList_cons`, each concluding
+`Module.Finite`/`Nontrivial` on the EXTENDED quotient alongside the
+`finrank` bound, so a not-yet-written Assembly induction can thread
+these forward starting from the true `F p`-over-itself base case. Both
+new theorems take an honest new hypothesis `hgu : ¬ IsUnit (mk_A g)`
+(the generator's own non-unit-ness at its accumulated prefix, needed
+for `Nontrivial` via `nontrivial_of_span_ne_top`) — its own docstring is
+explicit that this is NOT automatic from the generator's non-unit-ness
+in `Rdec p` alone, since quotienting can manufacture units. **Status:
+sorry-free.**
+
+### 47. `PeelChainAssemblyFinrank.lean` (130 lines)
+Imports: `PeelChainStageFinite`.
+
+Same sub-effort. Assembly part 3, per the roadmap's Progress section
+("the final Assembly step ... is now actually startable"): the GENERIC
+n-stage chaining primitive, `finrank_le_and_finite_of_append`, folding
+an arbitrary list of generators onto a starting prefix by induction,
+given a single caller-supplied per-stage proof recipe `hstep` (called
+again at each new prefix the induction produces, since a stage's own
+`Module.Finite`/`Nontrivial` hypotheses aren't known until the previous
+stage's conclusion exists). Threads a per-generator multiplier function
+`d : R → ℕ` through `Module.finrank_mul_finrank`, so the final bound's
+multiplier is `(newGens.map d).prod`. Notes `StrongRankCondition` never
+needs threading separately since any `Nontrivial` `CommRing` gets it for
+free (`commRing_strongRankCondition`, confirmed via direct web search,
+not assumed from memory). Still fully generic — NOT yet applied to
+`genList`'s literal 12 generators. **Status: sorry-free.**
+
+### 48. `OptionSplitPolynomialEquiv.lean` (164 lines)
+Imports: `DecoupledSystemRegular`.
+
+Same sub-effort. Addresses a deeper gap surfaced via ChatGPT
+consultation (logged in the roadmap): the whole `Rdec p ⧸
+Ideal.ofList gens`-based induction (files 43/44/46/47) has NO valid base
+case for ANY prefix, since `Rdec p` is a 12-variable free polynomial
+ring end-to-end — the fix is to run the finiteness/finrank induction on
+a genuinely finite TOWER built one `Polynomial`-quotient at a time, and
+bridge back to the literal `Ideal.ofList genList` presentation only at
+the end. This file extracts, as its own reusable theorem, a ring
+isomorphism `regular_of_linear_elim` (`DecoupledSystemRegular.lean`)
+already builds and proves internally for a different purpose
+(transporting `IsSMulRegular`): `optionSplitQuotientRingEquiv :
+(MvPolynomial (Option τ) R ⧸ Ideal.ofList (gens'.map (rename some))) ≃+*
+Polynomial (MvPolynomial τ R ⧸ Ideal.ofList gens')` — i.e. "the ambient
+ring mod everything already eliminated, with one new variable still
+free" IS `Polynomial` over "the same ring with that variable already
+gone." Provides the two point-tracking corollaries
+(`_apply_rename_some`, `_apply_X_none`) and the `R`-algebra upgrade
+`optionSplitQuotientAlgEquiv`. Its own docstring is explicit about a
+caveat it does NOT resolve: this bridge only applies along a genuinely
+TRIANGULAR peel order, and `genList`'s literal order (`FuList ++
+FvList ++ [curveA1,...]`) is NOT triangular (`FuList`/`FvList`'s
+coefficients depend on the curve-relation variables, peeled only at
+stages 8–11) — Assembly must apply this bridge along a REORDERED
+sequence and separately prove `Ideal.ofList`'s `List.Perm`-invariance to
+transport the bound back. **Status: sorry-free** (per its own
+docstring; not itself flagged untested, unlike file 35).
+
+### 49. `GenListFinrankAssembly.lean` (202 lines) — ⚠ current stub, next step
+Imports: `PeelChainAssemblyFinrank`, `PeelChainStageFinite`.
+
+Same sub-effort. Assembly part 4, the specialization of file 47's
+generic fold to `genList`'s literal 12 generators — the roadmap's own
+stated next concrete step. Provides `PeelChainFinrankHyp`, a structure
+bundling the twelve genuinely-open per-stage side conditions (eight
+`IsUnit (mk d)` facts for the linear-elimination stages' leading
+coefficients, plus twelve `¬IsUnit (mk g)` non-unit facts needed for
+`Nontrivial` at each stage — see files 46/44's own hypothesis
+`hgu`/`hd_unit`) as free structure parameters over an abstract
+`d : DecoupledGenerators p`/`Fu Fv : List (Rdec p)`, deliberately NOT
+tied to `theData`/`FuList`/`FvList` internally (an earlier draft that
+carried a `d = theData ...`-shaped equality field hit a `whnf`
+heartbeat timeout merely STATING that equality's type, not from
+repetition — connecting `d`/`Fu`/`Fv` to the real values is left as the
+caller's job at instantiation). Its own docstring is explicit that
+these twelve conditions are asserted as open hypotheses, not proved,
+derived, or claimed likely to hold for a generic curve. **The file's
+actual deliverable — applying file 47's fold to `genList`'s 12
+generators and `PeelChainFinrankHyp`, producing the numeric bound
+`finrank (F p) (...) ≤ 2^4` — is NOT yet attempted.** In its place,
+`genList_finrank_assembly_placeholder : True := trivial` stands as a
+named, self-documenting placeholder (per this project's convention of
+distinguishing genuinely-open work from live `sorry` tactic use). Its
+own docstring reasons through two candidate routes for finishing this
+(twelve sequential explicit applications, mirroring
+`PeelChainAssembly.lean`'s own 12-way case split, vs. reformulating
+`hstep` to case-split on a positional index) and flags route (a) as the
+more promising but UNCHECKED direction — in particular, whether the
+`List.take`/`getD` bookkeeping in `PeelChainFinrankHyp` actually unifies
+against `genList`'s own associativity of `++` has not been verified.
+**This is the file to pick up next**: replace
+`genList_finrank_assembly_placeholder` with the real wiring.
 
 ---
 
