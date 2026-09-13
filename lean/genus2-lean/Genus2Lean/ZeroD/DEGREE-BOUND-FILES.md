@@ -1,7 +1,7 @@
 # Degree-bound files: index
 
-**Purpose**: a single file to read instead of paging through the ~9,000
-lines / 29 files that make up the `totalDegree`/`IsRdecWitness` degree-bound
+**Purpose**: a single file to read instead of paging through the ~10,000
+lines / 33 files that make up the `totalDegree`/`IsRdecWitness` degree-bound
 effort AND the separate Obligation-1 (`htop_ne_smul`) sub-effort that
 shares this directory. Written by reading every file's imports, module
 docstring, and top-level declarations directly — not copied from any
@@ -10,7 +10,7 @@ you've touched any of these files since it was written, the same way
 `ZeroD-STATUS.md` warns for the sorry inventory.
 
 **Sorry status, verified this pass** (comment-stripped scan, whole-word
-`sorry` token, all 29 files below): **zero live sorries**, project-wide,
+`sorry` token, all 33 files below): **zero live sorries**, project-wide,
 across this entire group. Any mention of "sorry" you find inside one of
 these files is docstring prose about the project's history/conventions,
 not a live tactic use — matches the top-level `ZeroD-STATUS.md` claim
@@ -443,18 +443,126 @@ instantiate directly. **Not yet REPL-confirmed** — drafted this pass;
 Claire tests via the REPL. Curve-specific instantiation (plugging in
 `theData`'s actual denominators' degree bounds) is still future work.
 
+### 30. `QuadCoordBound.lean` (306 lines)
+Imports: `QuadraticCoordArith`.
+
+Continues file 24's "trace the arithmetic construction directly" route
+against the coordinate-bound gap: `HasQuadBound dg c x a0 a1`, a
+coordinate-level bound predicate parametrized by an abstract "degree"
+function `dg : R → ℕ` (not fixed to `MvPolynomial.totalDegree`, so the
+same machinery serves both the `K0→K1` and `K1→K2` tower steps by
+instantiating `dg` differently at each call site). Proves the full
+closure suite `.zero`/`.one`/`.add`/`.neg`/`.sub`/`.pow`/`.mul` — the last
+needs a genuine extra hypothesis (`dc`, a bound on the extension's own
+constant `c`), matching the same structural need `K2CoordArith.lean`
+(file 32) inherits one level up. **REPL-confirmed green, later pass**
+(five issues surfaced and fixed on the first REPL run — see the file's
+own "Update" note — including a `mul` proof rewritten twice before
+landing on a `set`/`rw`-free final form to avoid a `whnf` timeout, the
+same failure mode file 32 hit and fixed the same way). **Status:
+sorry-free.**
+
+### 31. `HasRdecBound.lean` (179 lines)
+Imports: `QuadCoordBound`, `TowerToRdecMul`, `NpolyTotalDegree`,
+`RhsVecTotalDegree`.
+
+Instantiates file 30's abstract `dg` slot with a RELATION rather than a
+function: **`HasRdecBound ι evalNd v D`** := `v` has *some*
+`IsRdecWitness` (file 7) numerator/denominator pair both `totalDegree ≤
+D` — needed because "has a bounded witness" doesn't fit `dg : R → ℕ`'s
+shape (a value can have witnesses at many degrees, no canonical one).
+Proves the four closure lemmas fresh against this relation
+(`hasRdecBound_zero/_neg/_add/_mul`, confirmed against the actual
+combinator suite in files 7/11/8, not assumed) — `.add`'s bound is a SUM
+not a `max` (unlike file 30's abstract `.add`, since clearing a common
+denominator via cross-multiplication genuinely costs more than plain
+coordinate addition), documented explicitly as a deliberate, harmless
+divergence from file 30's shape. Also defines `HasQuadCoordBound`,
+file 30's `HasQuadBound` restated against `HasRdecBound` for both
+coordinates directly. **Not yet independently REPL-confirmed as of this
+file's own last status note** (though file 32, built on top of it,
+subsequently was). **Status: sorry-free.**
+
+### 32. `K2CoordArith.lean` (401 lines)
+Imports: `QuadraticCoordArith`, `QuadraticCoordinateBridge`, `HasRdecBound`.
+
+**`K2`-native version of files 24/30/31's machinery, purpose-built (per
+its own header) as a THIRD route around file 20's coordinate-bound dead
+end**: propagate degree bounds FORWARD through a construction's own
+`.add`/`.mul`/`.neg` arithmetic, rather than extracting them backward from
+an opaque whole-value witness (both of file 20's ruled-out routes were
+backward-extraction attempts). Provides `coord0`/`coord1` (`K2`'s own
+canonical `AdjoinRoot.modByMonicHom`-coordinate extraction, no
+representative-choice ambiguity), the identities `coord{0,1}_add/_neg/
+_sub/_mul` (`coord_mul` proved via `mk_mul_coord_eq`, file 24), and
+`HasCoordBoundK2` with closure lemmas `hasCoordBoundK2_add/_neg/_sub/
+_mul` built on file 31's `HasRdecBound`. **REPL-confirmed green**, after
+three rounds of fixes (all now recorded in the file's own "Update" note):
+(1) `coord_mul`'s multiplication-identity proof originally timed out at
+`whnf`/hit an `isDefEq` timeout from combining a surjection-witness
+substitution (`rw [← hfa]`) with a heavy lemma rewrite
+(`AdjoinRoot.modByMonicHom_mk`/`mk_mul_coord_eq`) in one `rw` call —
+fixed by splitting into standalone `have`s plus `congrArg`, mirroring
+file 30's own documented fix for the identical failure mode, plus
+correcting a wrong-direction `rw [hfa]` that should have been `rw [←
+hfa]`; (2) `hasCoordBoundK2_add/_neg/_sub` originally used `rw
+[coord{0,1}_{add,neg,sub}]` directly against a `HasRdecBound` goal, which
+fails with "motive is not type correct" (`HasRdecBound` is generic in an
+implicit `[CommRing K]`, and `K1 p ...` is reducibly-but-not-syntactically
+an `AdjoinRoot`, so `rw`'s automatic motive search generalizes the wrong
+instance) — fixed with explicit `Eq.mpr (congrArg (fun t => HasRdecBound
+p ι evalNd t D) heq) proof` in place of every such `rw`; (3)
+`hasCoordBoundK2_mul`'s first branch built a bound for the wrong
+parenthesization of `k2Const * coord1 a * coord1 b` (left-associative
+`*`, so `(k2Const * coord1 a) * coord1 b`, not `k2Const * (coord1 a *
+coord1 b)`) — fixed by regrouping the two `.mul` applications to match.
+Claire also raised `coord_mul`'s own heartbeat limit for the final green
+build. **Does NOT close file 2's `hA`/`hB`, confirmed by direct
+comparison against files 18/19's own closing notes (both predate this
+file): `towerToRdec` is not a ring homomorphism, so this file's closure
+lemmas — built on the same existential-witness category as `IsRdecWitness`
+itself — inherit the identical structural limitation those two files
+already independently found. See `ROADMAP-crossnondegenerate-degree-
+bound.md`'s final "Update" section for the full account.** **Status:
+sorry-free** (correct, reusable `K2`-arithmetic infrastructure; not
+itself a step toward `hA`/`hB`).
+
+### 33. `UrsVrsCoeffQuadCoordBound.lean` (95 lines)
+Imports: `URSCoeffIsRdecWitness`, `HasRdecBound`.
+
+An earlier, narrower attempt at the same gap file 32 was built to work
+around — predates file 32 (see the two files' timestamps) and reaches an
+incomplete state consistent with (not contradicted by) file 32's later,
+more general finding. Proves only the representative-existence half of
+a "reshape a whole-value witness into its own coordinates" bridge
+(`uRS_coeff_exists_rep`: `uRS.coeff i` has SOME `Polynomial (K1 ...)`
+representative whose `%ₘ`-remainder computes its canonical
+`modByMonicHom` coordinates) — pure `AdjoinRoot.mk_surjective` +
+`AdjoinRoot.modByMonicHom_mk`, no degree content. Its own header
+explicitly flags the degree half as NOT attempted in this file. **Status:
+sorry-free** (as far as it goes — no degree-bound theorem is proved
+here; superseded in intent, not contradicted, by file 32's from-scratch
+`K2`-native route).
+
 ---
 
 ## Open gaps, cross-referenced (read this before assuming the chain is done)
 
 - **File 2's `hA`/`hB` hypothesis** (a literal, not merely existential,
   `totalDegree` bound on `uRS.coeff i`/`vRS.coeff i`) is the throughline
-  most of files 15–20 exist to close. As of file 20's own header, the
-  "conjugate trick" (extracting per-coordinate bounds from a whole-value
-  witness) has **two ruled-out routes** and no proved route yet — the
-  coordinate-level bound itself is still open. File 19 closes an adjacent
-  but weaker fact (`IsRdecWitness`, not `totalDegree`) and does **not**
-  discharge `hA`/`hB` on its own.
+  most of files 15–20/24/30–33 exist to address. **Settled, later pass,
+  as a structural dead end rather than an open target** — see files
+  18/19's closing notes, confirmed independently again from file 32's
+  own investigation and cross-referenced in `ROADMAP-crossnondegenerate-
+  degree-bound.md`'s final "Update" section: `towerToRdec` is not a ring
+  homomorphism, so no witness-existence-based closure (`IsRdecWitness`,
+  `HasRdecBound`, `HasCoordBoundK2` — files 7/31/32 alike) can produce
+  the literal computed-pair bound `hA`/`hB` want, regardless of whether
+  the closure operates at the whole-value or coordinate level. File 19
+  already supplies the correct, weaker, actually-reachable fact instead
+  (an `IsRdecWitness` bound on the literal resultant element). `hA`/`hB`
+  should be read as an intentional hypothesis from here on, not
+  unproved-but-provable debt — there is no live "next step" against it.
 - **File 10's open hypothesis** (`evalNd (b i j) ≠ 0` for chosen
   witnesses, distinct from `MatrixNondegenerate`) had no bridge anywhere
   in the project as of that file's writing — check whether one has been
@@ -463,14 +571,30 @@ Claire tests via the REPL. Curve-specific instantiation (plugging in
   from the `totalDegree`/`hA`/`hB` chain above — don't conflate the two
   when scoping new work; they share this directory but not a dependency
   edge.
-- **Files 25–29 continue both sub-efforts and are the current frontier**:
-  25 (Obligation 1, `sa=sb` cross-resultant symmetry — later found
-  unnecessary for the counting-existence route file 29 takes), 26–27
-  (Obligation 1, the actual `genList`/`htop_ne_smul` composition, now
-  narrowing the remaining gap to a curve-side witness satisfying (a)/(b)/
-  (c)), 24/28 (the `hA`/`hB` coordinate-bound line, still open — 24's §2
-  unwritten, 28's final assembly unattempted), 29 (Obligation 1's part (a),
-  general counting machinery now complete pending curve-specific
-  instantiation). Cross-reference `ROADMAP-degree-uniform-step3.md`'s own
-  three-obligation split before assuming any one of these closes more than
-  it actually does.
+- **Files 25–29 continue both sub-efforts**: 25 (Obligation 1, `sa=sb`
+  cross-resultant symmetry — later found unnecessary for the
+  counting-existence route file 29 takes), 26–27 (Obligation 1, the
+  actual `genList`/`htop_ne_smul` composition, now narrowing the
+  remaining gap to a curve-side witness satisfying (a)/(b)/(c)), 28
+  (the `hA`/`hB` coordinate-bound line, as it stood before files 30–33 —
+  see below), 29 (Obligation 1's part (a), general counting machinery
+  now complete pending curve-specific instantiation).
+- **Files 30–33 are the most recent continuation of the `hA`/`hB`
+  coordinate-bound line (files 20/24/28) and are where that line ends,
+  per the point above** — not because the gap closed, but because it was
+  determined to be structurally unreachable this way. File 30
+  generalizes file 24's identity into a reusable `HasQuadBound` closure
+  suite; file 31 instantiates it as `HasRdecBound`, a relation rather
+  than a function; file 32 (`K2CoordArith.lean`) builds the `K2`-native
+  version of the same machinery as a deliberate third attempt at file
+  20's dead end, gets it fully REPL-confirmed, and is the file whose own
+  investigation finally nails down why no version of this approach can
+  reach `hA`/`hB`; file 33 is an earlier, narrower, superseded-in-intent
+  attempt at the same idea. Anyone tempted to build a *fourth*
+  witness/coordinate-bound-closure attempt against `hA`/`hB` should read
+  file 32's closing note and `ROADMAP-crossnondegenerate-degree-bound.
+  md`'s final section first — the obstruction is structural
+  (non-homomorphism), not a matter of finding the right closure lemma
+  shape.
+- Cross-reference `ROADMAP-degree-uniform-step3.md`'s own three-obligation
+  split before assuming any one file closes more than it actually does.

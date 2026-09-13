@@ -143,3 +143,30 @@ free is not the same as done" section for the specific bundles
   here so the next person doesn't re-derive genus-2 Riemann-Roch from
   scratch or misjudge project difficulty ceiling against a stale
   docstring.
+
+## `hA`/`hB` and `hu0`/`hu1`/`hv0`/`hv1`: both settled as intentional hypotheses, not open proof debt (later pass)
+
+`ROADMAP-crossnondegenerate-degree-bound.md`'s own "Update, later pass"
+section (bottom of that file) now records this in full; summarized here
+since this status file is the first thing future passes should check.
+`K2CoordArith.lean` (new file, REPL-confirmed green this pass) is genuine,
+correct, reusable `K2`-coordinate-arithmetic infrastructure, but it does
+NOT close `crossResultant_totalDegree_le`'s `hA`/`hB` -- that gap is a
+structural dead end for any `HasRdecBound`/`IsRdecWitness`-style closure
+(`towerToRdec` is not a ring homomorphism, so per-piece literal bounds
+don't compose through `+`/`-`/`*` into a bound on an arithmetic
+combination of those pieces), independently confirmed by
+`AlgebraMapFpLiteralTotalDegree.lean` and `CrossResultantIsRdecWitness.
+lean`'s own closing notes (both predate `K2CoordArith.lean`). The honest
+alternative (restate the bound in `IsRdecWitness` form) is also already
+done and REPL-confirmed (`CrossResultantIsRdecWitness.lean`'s
+`uResultant_isRdecWitness`/`vResultant_isRdecWitness`). Separately,
+`CrossNondegenerate`'s `hu0`/`hu1`/`hv0`/`hv1` fields
+(`DecoupledSystemRegular.lean`) are, by that struct's own docstring,
+*designed* as a per-instance exceptional-locus hypothesis expected to be
+false for many curves (parallel to `Nondegenerate`), not a target for a
+future unconditional proof. Net effect: both of this document's
+longest-running open questions are now understood as correctly-placed
+hypotheses rather than unproved-but-provable debt. There is no
+outstanding "next Lean step" tracked against either of them as of this
+pass.

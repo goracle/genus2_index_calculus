@@ -1060,3 +1060,96 @@ This is real, nontrivial new Lean work (a per-level linear-system
 inversion, not a reshaping of an existing fact) — flagged honestly as
 such, not yet attempted.
 
+
+## Update, later pass — `K2CoordArith.lean` built and REPL-confirmed green; does NOT close `hA`/`hB`; the `hA`/`hB` gap and `hu0`/`hu1`/`hv0`/`hv1` are both correctly hypotheses, not open proof debt
+
+**`K2CoordArith.lean` (new file, this pass): `K2`-native `coord0`/`coord1`
+extraction, `.add`/`.neg`/`.sub`/`.mul` identities, and `HasCoordBoundK2`
+(closure lemmas built on `HasRdecBound`). REPL-confirmed green** (Claire's
+build, after fixing: a wrong-direction `rw [hfa]`/`rw [hfb]` inside
+`coord_mul` that should have been `rw [← hfa]`/`rw [← hfb]`; three `rw
+[coord{0,1}_{add,neg,sub}]` calls inside `HasCoordBoundK2` goals that fail
+with "motive is not type correct" since `HasRdecBound` is generic in an
+implicit `[CommRing K]` and `K1 p ...` is reducibly-but-not-syntactically
+an `AdjoinRoot`, replaced with explicit `Eq.mpr (congrArg (fun t =>
+HasRdecBound p ι evalNd t D) heq) proof`; and an associativity mismatch in
+`hasCoordBoundK2_mul`'s first branch, `hasRdecBound_mul p hc (hasRdecBound_
+mul p ha1 hb1)` proving a bound on the wrong grouping of `k2Const *
+coord1 a * coord1 b`, fixed by regrouping to `hasRdecBound_mul p
+(hasRdecBound_mul p hc ha1) hb1`; Claire also raised `coord_mul`'s own
+heartbeat limit for the final pass).
+
+**This file does NOT close `crossResultant_totalDegree_le`'s `hA`/`hB`,
+traced carefully this pass rather than assumed.** Checked directly against
+`AlgebraMapFpLiteralTotalDegree.lean`'s and `CrossResultantIsRdecWitness.
+lean`'s own closing notes (both already in the tree, predating this file):
+those two files independently already worked out, and REPL-confirmed,
+that this exact gap is a structural dead end for `HasRdecBound`/
+`IsRdecWitness`-style machinery, `K2CoordArith.lean` included —
+`towerToRdec` is not a ring homomorphism (`towerToRdec_spec`'s own
+docstring is explicit about this), so literal degree bounds on individual
+pieces (`t1`,`t2`,`gu0`,`gu1` — all already done, `t0_promoted_totalDegree_
+le` / `AlgebraMapFpLiteralTotalDegree.lean`) do not compose through
+`+`/`-`/`*` into a literal bound on `towerToRdec` applied to an arithmetic
+combination of them (`curBeforeMonic.coeff i`) — only `IsRdecWitness`'s
+own `.add`/`.mul`/`.neg` combinators compose that way, and those bound
+*some* valid witness, not necessarily the literal `towerToRdecK1`-computed
+pair `hA`/`hB` are stated against. `HasCoordBoundK2` is built on
+`HasRdecBound` (an existential-witness relation, same category as
+`IsRdecWitness`), so it inherits the same limitation — closing `.add`/
+`.mul` on witness EXISTENCE was never going to produce the literal-pair
+fact `hA`/`hB` need, regardless of whether the closure is phrased at the
+whole-`K2`-value level (`IsRdecWitness.add`/`.mul`, already existing) or
+the coordinate level (`HasCoordBoundK2`, this file). Nothing about this
+file's correctness is in question — it is genuine, reusable infrastructure
+for closing bounds under `K2`'s own `+`/`-`/`*` — it simply is not the
+piece that bridges witness-existence to the literal computed pair, because
+no such bridge exists for a construction built through a non-ring-hom
+normal-form extraction.
+
+**The honestly-recommended alternative — restate the resultant bound in
+`IsRdecWitness` form instead of a literal-pair hypothesis — is ALSO
+already done, and REPL-confirmed.** `CrossResultantIsRdecWitness.lean`
+(already in the tree) proves `uResultant_isRdecWitness`/
+`vResultant_isRdecWitness`: the literal `Rdec p`-element `theData` computes
+(`u1_den i * u2_num i - u2_den i * u1_num i`, etc.) IS a valid
+`IsRdecWitness` numerator for the corresponding `K2`-level coefficient
+difference, built directly from `towerToRdec_isRdecWitness` plus
+`IsRdecWitness.add`/`.neg` — no witness-reshaping needed, since `theData`'s
+fields are (by `rfl`) literally `towerToRdec`'s own output, not some other
+representative needing reconciliation.
+
+**Net position on this document's own long-running "Route (a) vs (b)"
+question, settled**: neither route reaches `hA`/`hB` as a literal
+unconditional bound, and this is now understood as structural rather than
+as a gap in current effort — `crossResultant_totalDegree_le`'s `hA`/`hB`
+hypothesis is the correct, honest way to state the theorem given that
+structural fact, matching this project's own stated practice (weaken to a
+named hypothesis rather than force a proof that doesn't exist). `hA`/`hB`
+should be read the same way `Nondegenerate`/`CrossNondegenerate` already
+are: a per-instance hypothesis, not unproved-but-provable debt.
+
+**`CrossNondegenerate`'s `hu0`/`hu1`/`hv0`/`hv1` fields (`DecoupledSystemRegular.
+lean`) are, independently, ALSO correctly a hypothesis, not open proof
+debt** — confirmed by reading that struct's own docstring directly this
+pass (not re-derived): it is explicitly documented as expected to be FALSE
+for at least some, quite possibly most, choices of `(c0,...,c4)` (a
+genuine per-instance exceptional-locus condition, parallel to
+`Nondegenerate` itself), backed by Claire's own homotopy-continuation run
+on a real curve. `CrossResultantIsRdecWitness.lean`'s closing note
+correctly states that proving `hu0` etc. from anything currently available
+is a separate, still fully open regularity argument (Sylvester-resultant
+style, sketched but not attempted in `DecoupledSystemRegular.lean`'s own
+docstring) — but per the struct's own framing this is not meant to be
+discharged unconditionally in the first place.
+
+**Where this leaves `ZeroD/`'s open-work ledger**: per `ZeroD-STATUS.md`,
+zero live `sorry`s remain in `ZeroD/`, and — as of this update — the two
+main hypothesis-shaped gaps this document spent the most effort on
+(`hA`/`hB`, `hu0`/`hu1`/`hv0`/`hv1`) are both now understood as
+*deliberately* hypotheses rather than as targets for a future unconditional
+proof. There is no further action item this document is tracking as
+"next to attempt" — any future work here (e.g. actually attempting the
+Sylvester-style regularity argument for `hu0`/etc., for specific
+`(c0,...,c4)`, if ever needed) is new scope, not a continuation of what
+this document was scoping.

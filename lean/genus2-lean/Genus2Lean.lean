@@ -140,3 +140,4 @@ import Genus2Lean.ZeroD.HasRdecBound
 import Genus2Lean.ZeroD.CleanWitness
 import Genus2Lean.ZeroD.UrsVrsCoeffQuadCoordBound
 import Genus2Lean.ZeroD.K2CoordArith
+import Genus2Lean.ZeroD.SymmetricCurveWitness
