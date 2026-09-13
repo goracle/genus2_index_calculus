@@ -325,10 +325,50 @@ groundwork already exists.
   internally, extracted here without that proof's `MvPolynomial`/`τ`
   machinery (not needed for this file's weaker job — transporting an
   isomorphism's basepoint, not regularity, across it).
-- **Not yet started**: item 5's SECOND file (specializing
-  `QuotOfListChain.lean`'s generic bridge to `Rdec p`/`genList`, applying
-  it + the per-stage `finrank` facts 12 times via
-  `Module.finrank_mul_finrank`), item 6 (`Bad` sizing, still blocked on
+- **Item 5 part 2, curve-relation slice (stages 8–11 specifically) —
+  done, REPL-confirmed build-green.** `CurveRelationStageWiring.lean`:
+  `curveFImage`/`curveRelationGen` (the literal `Rdec p`-valued curve
+  relation, generic over which two `Idx` symbols play the `w`/`x`
+  roles) and **`finrank_le_curveRelation_ofList_cons`** — the actual
+  wiring of `finrank_le_of_monic_annihilator` +
+  `finrank_le_ofList_cons` + `QuotOfListChainAdjoinTop.lean`'s free
+  `hgen` fact against a literal `Ideal.ofList gens` prefix, giving
+  `Module.finrank (F p) (Rdec p ⧸ Ideal.ofList (gens ++ [curveRelationGen
+  ...])) ≤ 2 * Module.finrank (F p) (Rdec p ⧸ Ideal.ofList gens)` for
+  an arbitrary prefix `gens`. Takes `[StrongRankCondition (Rdec p ⧸
+  Ideal.ofList gens)]`, `[Module.Finite (F p) (Rdec p ⧸ Ideal.ofList
+  gens)]`, and `[Nontrivial (Rdec p ⧸ Ideal.ofList gens)]` as explicit
+  hypotheses (needed by `finrank_le_of_monic_annihilator` and by
+  `CurveRelationsDegreeBound.lean`'s `[Nontrivial A]`-scoped section
+  respectively) — genuinely undischargeable for an arbitrary prefix,
+  left for true Assembly time per this roadmap's own item-5 split.
+  Four REPL-driven fixes worth remembering for future stage-wiring
+  files: (1) `Rdec p`/`Idx`/`F p` live under the nested
+  `Genus2Lean.DecoupledSystem` namespace (`DecoupledSystemRegular.lean`)
+  — a file using them needs both the import AND to be nested inside
+  `namespace DecoupledSystem`, not just `Genus2Lean`; (2) `F p`'s
+  `Field` instance needs `[Fact (Nat.Prime p)]` in scope, easy to
+  forget on a bare `variable (p : ℕ)` line; (3) rewriting a `set`-frozen
+  local definition's own unfolding (`rw [hg_def, ...]`) fails with
+  "motive is not type correct" whenever that definition also appears
+  inside a LATER `set`'s type (here, `g` inside `B`'s `Ideal.span {mk_A
+  g}`) — `show ... := by ...` sidesteps this by using defeq instead of
+  propositional rewriting, since it never touches the frozen type;
+  relatedly, closing such a `show`d goal needs `simp only [...]`, not a
+  single-pass `rw [...]`, when the target lemmas (`map_sub`/`map_pow`)
+  need to fire on a nested ring-hom application, not just the outermost
+  one; (4) when a lemma's base field/ring argument (here
+  `finrank_le_of_monic_annihilator`'s `{k : Type*}`) appears ONLY in the
+  conclusion, never in any explicit argument's type, instance search
+  can get stuck on a metavariable before the term is unified against
+  its use site — supply it explicitly (`(k := F p)`) rather than
+  relying on inference.
+- **Not yet started**: item 5's remaining specialization work (stages
+  0–7's matching-generator wiring against a literal `Ideal.ofList`
+  prefix, mirroring what `CurveRelationStageWiring.lean` just did for
+  stages 8–11) and the final Assembly step chaining all twelve
+  per-stage bounds via `Module.finrank_mul_finrank` against `genList`'s
+  actual 12-element list, item 6 (`Bad` sizing, still blocked on
   examining `v_den i`'s actual symbolic `(c0,...,c4,alpha,alpha')`-
   dependence per the Open Questions update above), and the final
   `AlphaLocusDegreeUniform.lean` replacement.
