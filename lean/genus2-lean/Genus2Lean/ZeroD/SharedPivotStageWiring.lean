@@ -71,6 +71,9 @@ namespace DecoupledSystem
 
 variable (p : ℕ) [Fact (Nat.Prime p)]
 
+
+
+set_option maxHeartbeats 2000000 in
 /-- **The shared-pivot resultant bound, wired to a literal two-generator
 `Ideal.ofList` extension.** Given a prefix `gens`, base field `k := F p`,
 a peeled variable symbol `u : Idx`, four already-fixed coefficients
@@ -280,27 +283,101 @@ theorem finrank_le_sharedPivotResultantElim_ofList_cons2
   have hB_le_A : Module.finrank (F p) B ≤
       Module.finrank (F p) (A ⧸ Ideal.span ({n2A * d1A - n1A * d2A} : Set A)) :=
     le_trans hbound htransport
-  -- Remaining gap: `B` (the abstract `A1 ⧸ span {φ1 g2}` ring `hB_le_A`
-  -- is stated about) needs identifying, `finrank`-wise, with the goal's
-  -- actual LHS `Rdec p ⧸ Ideal.ofList ((gens ++ [g1]) ++ [g2])` — i.e.
-  -- `finrank (F p) B = finrank (F p) (Rdec p ⧸ Ideal.ofList ((gens ++
-  -- [g1]) ++ [g2]))`, THEN `rw` that equality into the goal and close
-  -- with `hB_le_A`. This is genuinely just `quotOfListCons_ringEquiv`
-  -- applied at `gens := gens ++ [g1]`, `g := g2` (`B`'s literal
-  -- definition, `A1 ⧸ span {φ1 g2}`, is already exactly that lemma's
-  -- domain PROVIDED `A1` and `φ1` are first identified with
-  -- `Rdec p ⧸ Ideal.ofList (gens ++ [g1])` and its own `mk`, via
-  -- `quotOfListCons_ringEquiv gens g1` one level down — a nested
-  -- application of the same lemma this file already imports
-  -- (`QuotOfListChainFinrankStep.lean`/`QuotOfListChain.lean`) — not new
-  -- mathematical content, but enough live API surface (`Ideal.
-  -- quotientEquiv`'s exact argument order, whether `Ideal.map_span`
-  -- needs `Set.image_singleton` alongside it, `AlgEquiv.ofRingEquiv`'s
-  -- `algebraMap`-agreement obligation unfolding through TWO nested
-  -- quotients rather than one) that it is worth a fresh ChatGPT consult
-  -- rather than more guessing here, per this project's working
-  -- agreement (hard sorries get a prompt, not a struggle-in-place).
-  sorry
+  clear hbound htransport hsurj hsurj' hgenEq hf1_def f1 hd1A1 ht1 ht2 hgen
+  -- Remaining gap: identify `finrank B` with `finrank (Rdec p ⧸
+  -- Ideal.ofList ((gens ++ [g1]) ++ [g2]))` (the goal's actual LHS, after
+  -- the leading `rw`), as an EQUALITY — not by chaining another weak
+  -- one-relation inequality (that would only give the useless bound
+  -- `≤ finrank (gens ++ [g1])`, exactly what this whole file exists to
+  -- avoid). Two nested applications of `quotOfListCons_ringEquiv`'s
+  -- isomorphism, one below `A1`'s own `set`-definition
+  -- (`A1 = (Rdec p ⧸ ofList gens) ⧸ span {mk_gens g1}`, via
+  -- `quotOfListCons_ringEquiv gens g1 : A1 ≃+* Rdec p ⧸ ofList (gens ++
+  -- [g1])`) and one lifting that isomorphism across the further quotient
+  -- by `g2`'s image (via `Ideal.quotientEquiv`, matching `φ1 g2` on the
+  -- `A1` side to `mk_{gens++[g1]} g2` on the other, using
+  -- `quotOfListCons_ringEquiv_apply_mk_mk` for the correspondence), give
+  -- `B := A1 ⧸ span {φ1 g2} ≃+* Rdec p ⧸ ofList ((gens ++ [g1]) ++ [g2])`
+  -- directly, and any ring isomorphism between `F p`-algebras that
+  -- respects `algebraMap` (automatic here, both factor through
+  -- `algebraMap (F p) (Rdec p)`) preserves `finrank`.
+  have hgenEq2 : Ideal.span ({Ideal.Quotient.mk (Ideal.ofList (gens ++ [g1])) g2} :
+        Set (Rdec p ⧸ Ideal.ofList (gens ++ [g1]))) =
+      Ideal.map (quotOfListCons_ringEquiv gens g1) (Ideal.span ({φ1 g2} : Set A1)) := by
+    rw [Ideal.map_span, Set.image_singleton]
+    congr 1
+  let e2 : B ≃+* (Rdec p ⧸ Ideal.ofList (gens ++ [g1])) ⧸
+      Ideal.span ({Ideal.Quotient.mk (Ideal.ofList (gens ++ [g1])) g2} :
+        Set (Rdec p ⧸ Ideal.ofList (gens ++ [g1]))) :=
+    Ideal.quotientEquiv (Ideal.span ({φ1 g2} : Set A1))
+      (Ideal.span ({Ideal.Quotient.mk (Ideal.ofList (gens ++ [g1])) g2} :
+        Set (Rdec p ⧸ Ideal.ofList (gens ++ [g1]))))
+      (quotOfListCons_ringEquiv gens g1) hgenEq2
+  let e3 : (Rdec p ⧸ Ideal.ofList (gens ++ [g1])) ⧸
+      Ideal.span ({Ideal.Quotient.mk (Ideal.ofList (gens ++ [g1])) g2} :
+        Set (Rdec p ⧸ Ideal.ofList (gens ++ [g1]))) ≃+*
+      Rdec p ⧸ Ideal.ofList ((gens ++ [g1]) ++ [g2]) :=
+    quotOfListCons_ringEquiv (gens ++ [g1]) g2
+  let e23 : B ≃+* Rdec p ⧸ Ideal.ofList ((gens ++ [g1]) ++ [g2]) :=
+    e2.trans e3
+  -- Upgrade `e23` to an `F p`-algebra isomorphism (needed for
+  -- `.toLinearEquiv`/`finrank`-preservation): both sides' `algebraMap
+  -- (F p) _` factor through `algebraMap (F p) (Rdec p)` followed by
+  -- successive `Ideal.Quotient.mk`s, and `e23` (built purely from
+  -- `Ideal.quotientEquiv`/`quotOfListCons_ringEquiv`, both of which send
+  -- `mk (mk (mk x))`-shaped elements to `mk x`-shaped ones on the nose)
+  -- carries every such basepoint to the matching one on the other side.
+  have halg23 : ∀ c : F p, e23 (algebraMap (F p) B c) = algebraMap (F p)
+      (Rdec p ⧸ Ideal.ofList ((gens ++ [g1]) ++ [g2])) c := by
+    intro c
+    -- `algebraMap (F p) B c` unfolds (through `B := A1 ⧸ span {φ1 g2}`,
+    -- `A1 := A ⧸ span {mk_A g1}`, `A := Rdec p ⧸ ofList gens`, each a
+    -- successive `RingHom.toAlgebra`-via-`Ideal.Quotient.mk` structure)
+    -- to `mk_B (mk_A1 (mk_A (algebraMap (F p) (Rdec p) c)))`.
+    have hlhs0 : algebraMap (F p) B c =
+        Ideal.Quotient.mk (Ideal.span ({φ1 g2} : Set A1))
+          (Ideal.Quotient.mk (Ideal.span ({Ideal.Quotient.mk (Ideal.ofList gens) g1} : Set A))
+            (Ideal.Quotient.mk (Ideal.ofList gens) (algebraMap (F p) (Rdec p) c))) := by
+      rw [IsScalarTower.algebraMap_apply (F p) A1 B,
+        IsScalarTower.algebraMap_apply (F p) A A1,
+        IsScalarTower.algebraMap_apply (F p) (Rdec p) A]
+      rfl
+    show e23 (algebraMap (F p) B c) = _
+    rw [hlhs0]
+    show e2.trans e3 _ = _
+    rw [RingEquiv.trans_apply]
+    show e3 (e2 _) = _
+    rw [show e2 (Ideal.Quotient.mk (Ideal.span ({φ1 g2} : Set A1))
+          (Ideal.Quotient.mk (Ideal.span ({Ideal.Quotient.mk (Ideal.ofList gens) g1} : Set A))
+            (Ideal.Quotient.mk (Ideal.ofList gens) (algebraMap (F p) (Rdec p) c)))) =
+        Ideal.Quotient.mk (Ideal.span ({Ideal.Quotient.mk (Ideal.ofList (gens ++ [g1])) g2} :
+            Set (Rdec p ⧸ Ideal.ofList (gens ++ [g1]))))
+          (quotOfListCons_ringEquiv gens g1
+            (Ideal.Quotient.mk (Ideal.span
+              ({Ideal.Quotient.mk (Ideal.ofList gens) g1} : Set A))
+              (Ideal.Quotient.mk (Ideal.ofList gens) (algebraMap (F p) (Rdec p) c))))
+      from Ideal.quotientEquiv_mk (Ideal.span ({φ1 g2} : Set A1))
+        (Ideal.span ({Ideal.Quotient.mk (Ideal.ofList (gens ++ [g1])) g2} :
+          Set (Rdec p ⧸ Ideal.ofList (gens ++ [g1]))))
+        (quotOfListCons_ringEquiv gens g1) hgenEq2
+        (Ideal.Quotient.mk (Ideal.span ({Ideal.Quotient.mk (Ideal.ofList gens) g1} : Set A))
+          (Ideal.Quotient.mk (Ideal.ofList gens) (algebraMap (F p) (Rdec p) c)))]
+    rw [quotOfListCons_ringEquiv_apply_mk_mk gens g1 (algebraMap (F p) (Rdec p) c)]
+    show e3 (Ideal.Quotient.mk _ (Ideal.Quotient.mk (Ideal.ofList (gens ++ [g1]))
+      (algebraMap (F p) (Rdec p) c))) = _
+    have hrhs : algebraMap (F p) (Rdec p ⧸ Ideal.ofList ((gens ++ [g1]) ++ [g2])) c =
+        Ideal.Quotient.mk (Ideal.ofList ((gens ++ [g1]) ++ [g2]))
+          (algebraMap (F p) (Rdec p) c) := by
+      rw [IsScalarTower.algebraMap_apply (F p) (Rdec p)
+        (Rdec p ⧸ Ideal.ofList ((gens ++ [g1]) ++ [g2]))]
+      rfl
+    rw [hrhs]
+    exact quotOfListCons_ringEquiv_apply_mk_mk (gens ++ [g1]) g2 (algebraMap (F p) (Rdec p) c)
+  have hBeq : Module.finrank (F p) B =
+      Module.finrank (F p) (Rdec p ⧸ Ideal.ofList ((gens ++ [g1]) ++ [g2])) :=
+    LinearEquiv.finrank_eq (AlgEquiv.ofRingEquiv (f := e23) halg23).toLinearEquiv
+  rw [← hBeq]
+  exact hB_le_A
 
 end DecoupledSystem
 end Genus2Lean
