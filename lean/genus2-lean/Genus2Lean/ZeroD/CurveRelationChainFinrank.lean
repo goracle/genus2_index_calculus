@@ -210,14 +210,11 @@ theorem finrank_le_and_finite_curveRelationGenChain
           [curveRelationGen p c0 c1 c2 c3 c4 wa1 a1] ++
           [curveRelationGen p c0 c1 c2 c3 c4 wa2 a2]))) := by
         gcongr
-        exact hbound3
     _ ≤ 2 * (2 * (2 * Module.finrank (F p) (Rdec p ⧸ Ideal.ofList (gens ++
           [curveRelationGen p c0 c1 c2 c3 c4 wa1 a1])))) := by
         gcongr
-        exact hbound2
     _ ≤ 2 * (2 * (2 * (2 * Module.finrank (F p) (Rdec p ⧸ Ideal.ofList gens)))) := by
         gcongr
-        exact hbound1
     _ = 16 * Module.finrank (F p) (Rdec p ⧸ Ideal.ofList gens) := by ring
 
 /-- **The same result, restated in `curveA1`/`curveA2`/`curveB1`/
@@ -257,6 +254,34 @@ theorem finrank_le_and_finite_curveRelationChain
   rw [curveA2_eq_curveRelationGen] at hgu2 hgu3 hgu4 ⊢
   rw [curveB1_eq_curveRelationGen] at hgu3 hgu4 ⊢
   rw [curveB2_eq_curveRelationGen] at hgu4 ⊢
+  -- After the rewrites above, `hgu3`/`hgu4`/goal are stated in terms of
+  -- `curveRelationGen` (not `curveA1` etc.), but still as flat list literals
+  -- (`gens ++ [g1, g2, ...]`), while the chain lemma below expects chained
+  -- singleton appends (`gens ++ [g1] ++ [g2] ++ ...`). Same list, different
+  -- `List` terms, so `exact` won't unify them directly — bridge with an
+  -- explicit list equality (proved by plain `simp` on `cons_append`/
+  -- `nil_append`/`append_assoc`) and `rw` each into exactly the
+  -- hypothesis/goal whose literal it matches.
+  have e3 : gens ++ [curveRelationGen p c0 c1 c2 c3 c4 wa1 a1,
+        curveRelationGen p c0 c1 c2 c3 c4 wa2 a2]
+      = gens ++ [curveRelationGen p c0 c1 c2 c3 c4 wa1 a1] ++
+        [curveRelationGen p c0 c1 c2 c3 c4 wa2 a2] := by
+    simp
+  have e4 : gens ++ [curveRelationGen p c0 c1 c2 c3 c4 wa1 a1,
+        curveRelationGen p c0 c1 c2 c3 c4 wa2 a2, curveRelationGen p c0 c1 c2 c3 c4 wb1 b1]
+      = gens ++ [curveRelationGen p c0 c1 c2 c3 c4 wa1 a1] ++
+        [curveRelationGen p c0 c1 c2 c3 c4 wa2 a2] ++ [curveRelationGen p c0 c1 c2 c3 c4 wb1 b1] := by
+    simp
+  have e5 : gens ++ [curveRelationGen p c0 c1 c2 c3 c4 wa1 a1,
+        curveRelationGen p c0 c1 c2 c3 c4 wa2 a2, curveRelationGen p c0 c1 c2 c3 c4 wb1 b1,
+        curveRelationGen p c0 c1 c2 c3 c4 wb2 b2]
+      = gens ++ [curveRelationGen p c0 c1 c2 c3 c4 wa1 a1] ++
+        [curveRelationGen p c0 c1 c2 c3 c4 wa2 a2] ++ [curveRelationGen p c0 c1 c2 c3 c4 wb1 b1] ++
+        [curveRelationGen p c0 c1 c2 c3 c4 wb2 b2] := by
+    simp
+  rw [e3] at hgu3
+  rw [e4] at hgu4
+  rw [e5]
   exact finrank_le_and_finite_curveRelationGenChain p gens c0 c1 c2 c3 c4 hfin hgu1 hgu2 hgu3 hgu4
 
 end DecoupledSystem
