@@ -167,3 +167,4 @@ import Genus2Lean.ZeroD.IdxCurveStage0Wiring
 import Genus2Lean.ZeroD.SharedPivotResultantElim
 import Genus2Lean.ZeroD.SharedPivotStageWiring
 import Genus2Lean.ZeroD.FinrankLeOfSpanSurjective
+import Genus2Lean.ZeroD.CurveRelationChainFinrank
