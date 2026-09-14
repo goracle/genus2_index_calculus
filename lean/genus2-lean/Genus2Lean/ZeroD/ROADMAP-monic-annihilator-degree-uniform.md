@@ -885,6 +885,185 @@ and curve-relation stage generators), not yet REPL-confirmed.**
    `GenListTriangularReorder.lean`) to close `genList_finrank_le` for
    real.
 
+## Update, later pass — a real gap found attempting step 2/3's `Idx`
+## wiring, not yet closed
+
+**`IdxCurveStage0Wiring.lean`** (new file, no live sorry — it proves one
+small sanity lemma and otherwise only documents the gap) attempted the
+very first concrete specialization: connecting `genListTriangular`'s
+head (`curveA1`) to `FinSuccStageGenerators.lean`'s generic
+`finSuccCurveRelationGen_hstep_data`. It does not close the stage — it
+found that **`FinSuccPeelChainFold.lean`'s `hstep` interface, as
+currently stated, cannot literally accept any of the four curve-relation
+stages**, for a reason unrelated to unit/non-unit side conditions:
+
+- `finSuccCurveRelationGen n q := X 0 ^ 2 - rename Fin.succ q` requires
+  `q : MvPolynomial (Fin n) K` — i.e. the curve relation's OTHER variable
+  (`f`'s argument) must already be among the `n` PRIOR peeled variables
+  before this stage's call. `hstep`'s contract (`FinSuccPeelChainFold
+  .lean`) is one new `Fin` slot introduced per call (`Fin i → Fin (i+1)`).
+- But `curveA1 = X wa1 ^ 2 - f(X a1)` (confirmed against
+  `DecoupledSystemRegular.lean`'s literal definition, and against
+  `idxEquivFin`'s table placing `wa1 ↦ 0`, `a1 ↦ 1`) is a relation in TWO
+  variables, NEITHER of which has any other generator pinning it down —
+  `a1` is not separately peeled by any of the other 11 generators
+  (confirmed: `genList` has exactly 12 generators for 12 `Idx` values,
+  and `u1_indep`/etc. only bound `FuList`/`FvList`'s dependence on
+  `wa1,wa2,wb1,wb2,a1,a2,b1,b2` collectively, saying nothing about `a1`
+  individually being fixed before `curveA1` runs). So there is no valid
+  choice of `q` at `n = 0` (no prior stage has fixed `a1`), and stage 0
+  is NOT a one-`Fin`-slot step in the sense `hstep` currently requires.
+- This is NOT a new mathematical difficulty — `PeelChainStageFinite
+  .lean`'s existing literal-prefix machinery (`curveRelationGen`,
+  `finrank_le_and_finite_of_curve_relation`) already handles this
+  correctly, because it works over `Rdec p ⧸ Ideal.ofList gens` directly
+  and simply requires `w ≠ x` as TWO DISTINCT `Idx` symbols in an ambient
+  ring that already has all 12 variables present — it never needed to
+  introduce them one `Fin` slot at a time. **The gap is specific to the
+  `Fin n`/`finSuccEquiv` reindexing this roadmap's "CORRECTION, later
+  pass" section introduced to fix the OTHER (base-case) problem** — that
+  fix's one-variable-per-step interface doesn't accommodate a stage that
+  legitimately needs to introduce two new variables jointly.
+
+**Two candidate fixes, neither attempted yet**:
+
+(a) **Generalize `hstep`/`finrank_le_finSucc_peel_chain` to a
+`k`-variable-per-call step** (`Fin i → Fin (i+k)` for a caller-chosen
+`k`, existing `k = 1` linear-elimination stages as a special case,
+`k = 2` for each curve stage introducing `w` and `x` together). This
+touches `FinSuccPeelChainFinrank.lean`/`FinSuccPeelChainFold.lean`
+themselves (item (c), previously believed done) — the induction would
+need to advance by `k` rather than by `1` at each step, and the
+monic-annihilator bound would need restating over a `k`-variable
+polynomial quotient rather than `Polynomial` (a single-variable
+construction) — likely `MvPolynomial (Fin k)` in place of `Polynomial`
+at the one-step lemma, a bigger restatement than it may first appear.
+
+(b) **Pre-peel each curve stage's sample variable "for free" as its own
+degenerate 1-variable step with no relation yet** (e.g. treat `a1` as
+entering with a trivial/no-op generator, deferring the real constraint
+to when `wa1` arrives), if some such presentation exists that is
+faithful to `Ideal.ofList genListTriangular` — not obviously available,
+since `Ideal.ofList` genuinely has only 12 generators for 12 variables,
+with no slack generator to spend on introducing `a1` alone.
+
+**Correction to this document's own previous entry, before either (a) or
+(b) above is attempted.** Checked "iterate the existing one-step lemma
+twice" directly: it does NOT work, but not merely as an interface
+mismatch — `finrank_le_and_finite_finSucc_peel` takes `hfinA : Module
+.Finite K (... prior prefix ...)` as a HARD hypothesis at every call, and
+there genuinely is no valid intermediate finiteness fact available:
+`curveA1` alone, in a ring where `wa1` and `a1` are the only two free
+variables (or the only two among a longer list with nothing else yet
+constraining `a1`), defines an honest AFFINE CURVE — infinite over `F p`
+— so no assignment of "peel `a1` freely, then constrain it with `wa1`"
+can be finite at the intermediate step, regardless of how `hstep` is
+reshaped. This is a real fact about the mathematics, not an artifact of
+the `Fin`/`finSuccEquiv` machinery. **However — caught by outside review
+before acting on it further — the conclusion drawn from this fact in
+this document's previous entry ("fundamental chicken-and-egg
+obstruction", implicitly framed as ruling out the whole prefix-by-prefix
+strategy) is TOO STRONG, and is corrected here.**
+
+**What's actually true, checked directly against this project's own
+working finiteness proof** (`RegularSequenceFiniteQuotient.lean`'s
+`Module.Finite.quotient_of_isRegular_of_length_eq_card`, the ONLY
+theorem in this codebase that establishes `Module.Finite` for `Rdec p ⧸
+Ideal.ofList (...)` at all, used by `regularSeq_of_peel_chain`): it is a
+GLOBAL Krull-dimension argument — a regular sequence of length exactly
+`Nat.card Idx = 12` forces the FULL quotient finite — and it neither
+needs nor produces finiteness at any intermediate prefix. Confirmed by
+direct search: no file in this project proves `Module.Finite` for any
+proper prefix like `Rdec p ⧸ Ideal.ofList (FuList ++ FvList)` (the
+8-generator prefix) — this document's own earlier prose ("finite already
+because eight relations have narrowed things down") was an unverified
+assertion, not a fact drawn from an actual proof, and should not have
+been relied on. **The right conclusion is: `Module.Finite` at every
+prefix is a much STRONGER requirement than what final zero-dimensionality
+actually needs, and demanding it at each step (as EVERY version of the
+prefix-by-prefix induction in this document, `finSuccEquiv`-based or
+not, has done so far) may simply be asking for something false at
+several of the 12 prefixes, independent of which `Idx`↦`Fin` order is
+chosen.**
+
+**The concrete structure, traced directly against `genList`'s literal
+12 generators (not assumed) — a pivot/coefficient table:**
+
+| Generator | Pivot variable(s) | Coefficient variables |
+|---|---|---|
+| `curveA1` | `wa1` | `a1` |
+| `curveA2` | `wa2` | `a2` |
+| `curveB1` | `wb1` | `b1` |
+| `curveB2` | `wb2` | `b2` |
+| `Fu0` | `U0` | `⊆ {wa1,wa2,a1,a2}` |
+| `Fu1` | `U0` | `⊆ {wb1,wb2,b1,b2}` |
+| `Fu2` | `U1` | `⊆ {wa1,wa2,a1,a2}` |
+| `Fu3` | `U1` | `⊆ {wb1,wb2,b1,b2}` |
+| `Fv0` | `V0` | `⊆ {wa1,wa2,a1,a2}` |
+| `Fv1` | `V0` | `⊆ {wb1,wb2,b1,b2}` |
+| `Fv2` | `V1` | `⊆ {wa1,wa2,a1,a2}` |
+| `Fv3` | `V1` | `⊆ {wb1,wb2,b1,b2}` |
+
+(`u1_indep`/`u2_indep`/`v1_indep`/`v2_indep`, `DecoupledSystemRegular
+.lean` §4bis, confirmed as the source of the coefficient-variable-set
+column.) **This is NOT a naive one-pivot-per-generator triangular
+system**: `U0` is the pivot of BOTH `Fu0` and `Fu1` (one linear relation
+each, but with disjoint coefficient-variable sets — the a-side vs
+b-side data) — a genuinely over-determined pair for one variable, not a
+clean triangular step — and likewise for `U1`/`V0`/`V1`. Meanwhile
+`a1,a2,b1,b2` are NEVER a pivot of any of the 12 generators — they only
+ever appear as coefficients. Exactly 8 distinct pivot slots (`wa1,wa2,
+wb1,wb2,U0,U1,V0,V1`, each pivoted once or twice) for 12 generators
+and 12 variables — matching this project's own already-identified
+"Gap A" cross-index obstruction (`decoupled-system-alpha-locus`
+tracking) and `MvPolynomialSharedTargetSolve.lean`'s prior finding:
+solving `Fu0`/`Fu1` for the SHARED variable `U0` simultaneously is only
+possible where their CROSS-RESULTANT (in `U0`) vanishes — exactly
+`CrossNondegenerate`'s `hu0` hypothesis — and doing so ELIMINATES `U0`
+entirely rather than treating it as an ordinary triangular pivot.
+
+**The right target, per outside review, is a SIMULTANEOUS finiteness
+argument, not a sharper one-prefix-at-a-time induction**: eliminate
+`U0,U1,V0,V1` first via their four cross-resultants (rational
+functions of `wa1,wa2,wb1,wb2,a1,a2,b1,b2` alone — the genuinely
+8-variable "coefficient block"), reducing the real content to
+finiteness of `F p [wa1,wa2,wb1,wb2,a1,a2,b1,b2] ⧸ (curveA1,curveA2,
+curveB1,curveB2, [the 4 resultant conditions])` — a system where the
+four curve relations ARE now honest degree-2 monic pivots (`wa1,wa2,
+wb1,wb2`) over a ring where `a1,a2,b1,b2` remain free until the
+resultant conditions cut them down to a finite set — rather than trying
+to force `U0,U1,V0,V1`'s LINEAR generators to serve as intermediate
+finiteness checkpoints in some fixed one-variable-at-a-time order, which
+this session's investigation confirms cannot work for ANY choice of
+order (curves-first genuinely leaves `a`/`b` free at the point a curve
+relation fires; matching-generators-first genuinely leaves
+non-constant, not-yet-fixed coefficients at the point `Fu`/`Fv` fire —
+this document's own "Open Questions" section already found the second
+half of this tension; the first half is what this pass adds).
+
+**Concretely, per outside review's own proposed theorem shape**: the
+next file to attempt is closer to a "triangular monic system" finiteness
+lemma — generic over a FINITE, not one-at-a-time, family of monic
+relations with a distinguished pivot each, where coefficients may depend
+on OTHER pivots/free variables not yet eliminated, rather than a
+refinement of `finrank_le_finSucc_peel_chain`'s strictly-sequential
+`hstep`. This likely supersedes, rather than extends,
+`FinSuccPeelChainFinrank.lean`/`FinSuccPeelChainFold.lean`'s whole
+one-`Fin`-slot-per-call architecture for THIS project's specific
+12-generator system (though those two files' underlying one-step lemma,
+`finrank_le_and_finite_finSucc_peel`, may still be reusable as one
+building block inside a correctly-ordered chain — once `U0,U1,V0,V1`
+are eliminated via resultants first, the remaining curve-relation chain
+`curveA1,curveA2,curveB1,curveB2` IS a genuine 4-step one-variable-at-
+a-time triangular peel: `wa1` pivots over `{a1}` alone, `wa2` over
+`{a1,wa1,a2}`, etc., each step's prior prefix now honestly finite once
+the corresponding sample variable has itself been bounded by the
+resultant elimination). **Not yet attempted — this is a proposal for
+the next session, not a coded result.** Options (a)/(b) above (extending
+`hstep` to `k`-ary steps, or a trivial pre-peel) are both now understood
+to be solving the wrong problem and should NOT be pursued as stated;
+this entry supersedes them.
+
 The Open Question about whether `optionSplitQuotientAlgEquiv`/its new
 `finSuccSplit`-named analogue fully supersedes the old file is now
 effectively resolved in practice: item (c)/(d) are built entirely on
