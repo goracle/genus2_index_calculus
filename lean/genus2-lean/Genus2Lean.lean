@@ -173,3 +173,4 @@ import Genus2Lean.ZeroD.SharedPivotResultantElimFinite
 import Genus2Lean.ZeroD.MatchingEquationTranslation
 import Genus2Lean.ZeroD.OrbitMapConstant
 import Genus2Lean.ZeroD.MatchingEquationDeltaInvariance
+import Genus2Lean.ZeroD.GenListFinrankResultantAssembly
