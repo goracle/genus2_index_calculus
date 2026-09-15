@@ -42,6 +42,22 @@ a false derivation), this is exactly the "named, checkable, per-stage
 condition" the roadmap's Core Strategy section already asks for, just
 discovered to have no free derivation rather than assumed to have one.
 
+**Route chosen, this pass: option (b), "agree up to sign."** Rather than
+chasing a sign convention down into `Reduce/AlphaReduce.lean`'s
+Mumford-coordinate construction, this file now also provides
+`curveRelationGen_ofList_pairwise_eq_up_to_sign`, the unconditional
+companion to `curveRelationGen_ofList_pairwise_eq` above that drops
+`hsign` and concludes `t = t' ∨ t = -t'` instead
+(`curveRelation_forces_eq_up_to_sign`, `PeelChainPairwiseAgreement.lean`).
+This is the version Assembly should chain going forward: four curve
+stages each contributing one binary sign choice gives `2^4 = 16`
+candidate sign patterns, matching the roadmap's "unique up to the 4
+independent `w`-sign choices" target. The `hsign`-requiring theorem above
+is kept in place (still true, still buildable) rather than deleted, since
+it remains the right statement if the `Reduce`-side sign fact is ever
+established later, but it is no longer the one this project's Assembly
+chain is being built against.
+
 ## What this file wires, concretely
 
 - **Linear stages (`Fu0`–`Fu3`, `Fv0`–`Fv3`) — unconditional, matching
@@ -134,6 +150,24 @@ theorem curveRelationGen_ofList_pairwise_eq
     (hsign : t ≠ -t') :
     t = t' :=
   curveRelation_forces_eq (curveFImage p gens c0 c1 c2 c3 c4 x) t t' ht ht' hsign
+
+/-- **Pairwise agreement up to sign, wired to `curveRelationGen`'s literal
+shape — unconditional, chosen route per the roadmap's option (b).**
+Replaces `curveRelationGen_ofList_pairwise_eq` above as the version
+actually used by Assembly: since `hsign` has no derivation from `theData`
+(this file's own module docstring), the two candidate values `t, t'` of
+the newly-peeled `w`-variable are only known to agree up to a sign flip,
+matching `curveRelation_forces_eq_up_to_sign`'s abstract shape exactly. -/
+theorem curveRelationGen_ofList_pairwise_eq_up_to_sign
+    (gens : List (Rdec p)) (c0 c1 c2 c3 c4 : F p) (x : Idx)
+    [IsDomain (Rdec p ⧸ Ideal.ofList gens)]
+    (t t' : Rdec p ⧸ Ideal.ofList gens)
+    (ht : (Polynomial.aeval t)
+      (curveRelationPoly (curveFImage p gens c0 c1 c2 c3 c4 x)) = 0)
+    (ht' : (Polynomial.aeval t')
+      (curveRelationPoly (curveFImage p gens c0 c1 c2 c3 c4 x)) = 0) :
+    t = t' ∨ t = -t' :=
+  curveRelation_forces_eq_up_to_sign (curveFImage p gens c0 c1 c2 c3 c4 x) t t' ht ht'
 
 end DecoupledSystem
 end Genus2Lean

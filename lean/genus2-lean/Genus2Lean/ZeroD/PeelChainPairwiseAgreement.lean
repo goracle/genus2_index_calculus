@@ -184,4 +184,38 @@ theorem curveRelation_forces_eq {B : Type*} [CommRing B] [Algebra A B] [IsDomain
   · exact sub_eq_zero.mp h
   · exact absurd (eq_neg_of_add_eq_zero_left h) hsign
 
+/-! ## Curve-relation stages, weakened target: agreement up to sign
+
+Per `ROADMAP-monic-annihilator-degree-uniform.md`'s "Next concrete steps"
+(option (b), now the chosen route, since `PeelChainPairwiseAgreementWiring
+.lean` confirmed `hsign` above has no free derivation from `theData`):
+drop the `hsign` hypothesis entirely and settle for the unconditional
+two-way disjunction `curveRelation_sq_sub_sq_eq_zero` already gives,
+restated as an `Or` so downstream chaining can case on it per curve stage
+without threading an unprovable side condition through. Four independent
+curve stages (`curveA1,curveA2,curveB1,curveB2`) each contribute one such
+sign choice, for `2^4 = 16` candidate sign patterns total — matching the
+roadmap's "unique up to the 4 independent `w`-sign choices" target
+exactly.
+
+**Pairwise agreement up to sign, curve-relation stages — unconditional,
+no `hsign` needed.** Two roots `t, t'` of the same `X² − C f` agree
+either outright or up to a sign flip: immediate restatement of
+`curveRelation_sq_sub_sq_eq_zero`'s `(t-t')*(t+t') = 0` via `mul_eq_zero`,
+needing only `IsDomain B` to split the product (no extra hypothesis to
+discharge, unlike `curveRelation_forces_eq`). This is the weakened
+replacement for that theorem used by the rest of the Assembly chain:
+rather than asserting `t = t'` under an unprovable `hsign`, callers
+case-split on this `Or` and carry the sign choice forward as one of
+`2^4` possibilities across the four curve stages. -/
+theorem curveRelation_forces_eq_up_to_sign {B : Type*} [CommRing B] [Algebra A B]
+    [IsDomain B] (f : A) (t t' : B)
+    (ht : (Polynomial.aeval t) (curveRelationPoly f) = 0)
+    (ht' : (Polynomial.aeval t') (curveRelationPoly f) = 0) :
+    t = t' ∨ t = -t' := by
+  have hzero := curveRelation_sq_sub_sq_eq_zero f t t' ht ht'
+  rcases mul_eq_zero.mp hzero with h | h
+  · exact Or.inl (sub_eq_zero.mp h)
+  · exact Or.inr (eq_neg_of_add_eq_zero_left h)
+
 end Genus2Lean
