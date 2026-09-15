@@ -360,8 +360,8 @@ compete).
 
 ## Step 1 (pairwise agreement), current state
 
-`PeelChainPairwiseAgreement.lean` (new this pass) formalizes the
-per-stage half of step 1, mirroring `LinearElimDegreeBound.lean`/
+`PeelChainPairwiseAgreement.lean` formalizes the abstract per-stage half
+of step 1, mirroring `LinearElimDegreeBound.lean`/
 `CurveRelationsDegreeBound.lean`'s exact per-stage split:
 
 - **Linear stages (`Fu0`–`Fu3`, `Fv0`–`Fv3`) — DONE, unconditional.**
@@ -377,20 +377,52 @@ per-stage half of step 1, mirroring `LinearElimDegreeBound.lean`/
   `X² = f` satisfy `(t-t')(t+t') = 0` unconditionally; closing this to
   `t = t'` needs ruling out the `t = -t'` branch, done in
   `curveRelation_forces_eq` via an explicit `t ≠ -t'` hypothesis (plus
-  `IsDomain B`, needed for `mul_eq_zero`'s two-branch split). **Not yet
-  resolved**: whether `theData`'s literal `wa1,wa2,wb1,wb2` values
-  actually satisfy `t ≠ -t'` for the SampleTarget pairs this project
-  needs — expected to come from whatever sign convention `Reduce`'s
-  Mumford-coordinate construction already fixes for `w`, but this has
-  not been checked against that file yet.
+  `IsDomain B`, needed for `mul_eq_zero`'s two-branch split).
 
-**Not yet done, still needed for step 1 to be complete**: chaining these
-two per-stage facts across all twelve stages of `genList`'s literal
-generators into one `x = x'` (coordinatewise, all 12 variables)
-statement — the pairwise-agreement analogue of
-`GenListFinrankResultantAssembly.lean`'s not-yet-written chaining, and
-the actual identification of each stage's `t ≠ -t'` side condition
-against `theData`'s formulas for the four curve stages.
+`PeelChainPairwiseAgreementWiring.lean` (new this pass) specializes both
+facts against `genList`'s literal `linearElimGen`/`curveRelationGen`
+shapes (`LinearElimStageWiring.lean`/`CurveRelationStageWiring.lean`'s
+own conventions), and settles — negatively — the open question the
+previous pass left about the curve-relation side condition:
+
+- **Confirmed by direct inspection, not merely still-unresolved: there
+  is NO sign convention anywhere in `theData`'s symbolic algebra pinning
+  `wa1`/`wa2`/`wb1`/`wb2` to one square root over the other.**
+  `SampleTarget` (`DecoupledSystemRegular.lean`) carries only
+  `u0,u1,v0,v1` — no `w`-fields at all — and each `curveA1 = wa1'² −
+  f(a1')`-shaped relation is the ONLY place `wa1` appears anywhere in
+  `Rdec p`'s free-polynomial presentation. So `wa1` and `-wa1` are
+  genuinely interchangeable in this symbolic system; the earlier guess
+  that a Mumford-coordinate sign convention would resolve this for free
+  does not hold at the level this project's `Rdec p` presentation lives
+  at. `curveRelation_forces_eq`'s `t ≠ -t'` hypothesis is stated
+  explicitly at each of the four curve-relation call sites in the new
+  wiring file, not derived — the honest per-stage condition the roadmap's
+  Core Strategy always asked for, now confirmed to need an outside input
+  rather than being free.
+- **Two live options going forward, not yet chosen between**: (a) chase
+  the needed sign fact down into `Reduce/AlphaReduce.lean`'s actual
+  Mumford-coordinate/Cantor-reduction construction (a materially
+  different part of the codebase from `theData`'s symbolic algebra, not
+  yet examined for this purpose), or (b) weaken the eventual uniqueness
+  target from "the fiber is a single point" to "the fiber is a single
+  point up to the `2⁴ = 16` independent `w`-sign choices" — which may
+  still be enough to conclude `Δ = 0` if the four sign flips act
+  trivially on `A = [P1]+[P2]` and `B = [P3]+[P4]` (not yet checked).
+  Neither is attempted in this pass.
+- The linear-stage wiring (`linearElim_ofList_pairwise_eq`) has no such
+  gap — it is unconditional, matching the abstract lemma.
+
+**Not yet done, still needed for step 1 to be complete**: choosing
+between options (a)/(b) above for the curve-relation sign gap, then
+chaining all twelve stages' pairwise-agreement facts (now all wired
+against `genList`'s literal generators) into one `x = x'` (coordinatewise,
+all 12 variables, or "up to sign" per option (b)) statement — the
+pairwise-agreement analogue of `GenListFinrankResultantAssembly.lean`'s
+own not-yet-finished chaining (that file, discovered already
+partially-built this pass, closes the SEPARATE `finrank ≤ 16` numeric
+bound via route 3's curve-then-shared-pivot order; it does not address
+pairwise agreement and is not modified by this work).
 
 ## `Bad`/exceptional-set sizing — still open, blocked on the above
 
@@ -407,12 +439,11 @@ itself may need to change once `sa,sb` are properly linked via
 ## Next concrete steps, in order
 
 1. **Linear-stage half DONE** (`PeelChainPairwiseAgreement.lean`,
-   `linearElim_pairwise_eq`). Remaining for step 1: identify the `t ≠
-   -t'`-shaped side condition each of the four curve-relation stages
-   needs (`curveRelation_forces_eq`'s hypothesis) against `theData`'s
-   literal `wa1,wa2,wb1,wb2` formulas, then chain all twelve stages'
-   pairwise-agreement facts into one coordinatewise `x = x'` statement
-   over `genList`'s literal generators.
+   `PeelChainPairwiseAgreementWiring.lean`). **Curve-relation sign gap
+   CONFIRMED genuinely open, not just unresolved** (see above) — choose
+   between chasing the sign fact in `Reduce/AlphaReduce.lean`, or
+   weakening the target to "unique up to the 4 independent `w`-sign
+   choices," before proceeding further on this thread.
 2. Compose with the already-proved `matching_solutions_translate_by_delta`
    (`MatchingEquationTranslation.lean`) to conclude `Δ = 0`, closing the
    statement-correction gap without any topology/connectedness work.
