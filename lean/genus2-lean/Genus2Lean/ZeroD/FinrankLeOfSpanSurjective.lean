@@ -106,4 +106,60 @@ theorem finrank_le_of_span_surjective (f : A →ₐ[k] A1) (hf : Function.Surjec
       (Ideal.Quotient.mk_surjective)
   exact LinearMap.finrank_le_finrank_of_surjective hψₗ_surj
 
+/-- **Finiteness-exporting companion to `finrank_le_of_span_surjective`.**
+Same hypotheses, concluding `Module.Finite k (A1 ⧸ Ideal.span {f r})`
+directly — needed by `SharedPivotStageWiringFinite.lean`'s own
+finiteness-exporting wiring, which must hand `Module.Finite` forward to
+the next resultant-elimination stage or to the curve chain, not merely a
+`finrank` bound (`Module.finrank` alone is junk-valued `0` on an
+infinite-dimensional module, so it cannot substitute for `Module.Finite`
+as an input to a later stage). Reuses `finrank_le_of_span_surjective`'s
+own proof up through constructing the surjective linear map `ψₗ`
+(duplicated rather than factored out, since `ψₗ` is `set`-local to that
+proof and not otherwise exposed), then applies `Module.Finite.of_
+surjective` to `ψₗ` directly — the source `A ⧸ Ideal.span {r}` is
+`Module.Finite` via `hfin` (from `[Module.Finite k A]`), and `Module.
+Finite` transports forward along any surjective linear map out of a
+finite module. -/
+theorem finite_of_span_surjective (f : A →ₐ[k] A1) (hf : Function.Surjective f) (r : A) :
+    Module.Finite k (A1 ⧸ Ideal.span ({f r} : Set A1)) := by
+  have hmem : ∀ x ∈ Ideal.span ({r} : Set A),
+      (Ideal.Quotient.mk (Ideal.span ({f r} : Set A1))).comp f.toRingHom x = 0 := by
+    intro x hx
+    rw [Ideal.mem_span_singleton] at hx
+    obtain ⟨c, rfl⟩ := hx
+    show Ideal.Quotient.mk (Ideal.span ({f r} : Set A1)) (f (r * c)) = 0
+    rw [map_mul]
+    apply Ideal.Quotient.eq_zero_iff_mem.mpr
+    exact Ideal.mem_span_singleton.mpr ⟨f c, rfl⟩
+  set ψ : (A ⧸ Ideal.span ({r} : Set A)) →+* A1 ⧸ Ideal.span ({f r} : Set A1) :=
+    Ideal.Quotient.lift (Ideal.span ({r} : Set A))
+      ((Ideal.Quotient.mk (Ideal.span ({f r} : Set A1))).comp f.toRingHom) hmem with hψ_def
+  have hψ_surj : Function.Surjective ψ := by
+    intro b
+    obtain ⟨b1, rfl⟩ := Ideal.Quotient.mk_surjective b
+    obtain ⟨a, rfl⟩ := hf b1
+    refine ⟨Ideal.Quotient.mk (Ideal.span ({r} : Set A)) a, ?_⟩
+    rw [hψ_def]
+    exact Ideal.Quotient.lift_mk _ _ _
+  have hψ_lin : ∀ (c : k) (x : A ⧸ Ideal.span ({r} : Set A)), ψ (c • x) = c • ψ x := by
+    have hcomm : ∀ a : A, ψ (algebraMap A (A ⧸ Ideal.span ({r} : Set A)) a) =
+        algebraMap A1 (A1 ⧸ Ideal.span ({f r} : Set A1)) (f a) := by
+      intro a
+      rw [hψ_def]
+      exact Ideal.Quotient.lift_mk (Ideal.span ({r} : Set A))
+        ((Ideal.Quotient.mk (Ideal.span ({f r} : Set A1))).comp f.toRingHom) hmem
+    intro c x
+    rw [Algebra.smul_def, Algebra.smul_def, map_mul,
+      IsScalarTower.algebraMap_apply k A (A ⧸ Ideal.span ({r} : Set A)),
+      IsScalarTower.algebraMap_apply k A1 (A1 ⧸ Ideal.span ({f r} : Set A1)), hcomm, f.commutes]
+  set ψₗ : (A ⧸ Ideal.span ({r} : Set A)) →ₗ[k] A1 ⧸ Ideal.span ({f r} : Set A1) :=
+    { toFun := ψ, map_add' := map_add ψ, map_smul' := hψ_lin } with hψₗ_def
+  have hψₗ_surj : Function.Surjective ψₗ := hψ_surj
+  have hfin : Module.Finite k (A ⧸ Ideal.span ({r} : Set A)) :=
+    Module.Finite.of_surjective
+      (Ideal.Quotient.mkₐ k (Ideal.span ({r} : Set A))).toLinearMap
+      (Ideal.Quotient.mk_surjective)
+  exact Module.Finite.of_surjective ψₗ hψₗ_surj
+
 end Genus2Lean

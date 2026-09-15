@@ -1070,3 +1070,250 @@ effectively resolved in practice: item (c)/(d) are built entirely on
 `FinSuccSplitPolynomialEquiv.lean`, and `OptionSplitPolynomialEquiv.lean`
 has not been touched by any file since — a candidate for a final
 cleanup/dead-code pass once (d) is fully closed, not before.
+
+## CORRECTION, later pass — the "resultant elimination" proposal above
+## was carried out; this document undersells how far it's gotten and is
+## now the stale one, not the code
+
+This document's own previous entry ended by *proposing* eliminating
+`U0,U1,V0,V1` via their four cross-resultants first, then chaining the
+remaining four curve relations as a genuine one-variable-at-a-time
+peel — flagged there as "not yet attempted... a proposal for the next
+session, not a coded result." **That proposal has since been built.**
+None of it lives under this roadmap's own file-plan naming, which is
+why a scan of *this document* alone misses it entirely — check
+`.lean` files directly, per this directory's own `ZeroD-README.md`
+guidance, not this roadmap's file list:
+
+- `SharedPivotResultantElim.lean` /
+  `SharedPivotResultantElimFinite.lean` — the two-generator-sharing-
+  one-pivot core lemma the pivot/coefficient table above identified as
+  the real obstruction (`U0` pivoted by both `Fu0` and `Fu1`, etc.):
+  given `n1 - X·d1` and `n2 - X·d2` both vanishing at the same `X`,
+  bounds (and, in the `Finite`-suffixed file, also concludes
+  `Module.Finite`) via their classical resultant `n2*d1 - n1*d2`,
+  exactly the "eliminate the shared pivot via cross-resultant, no
+  `AdjoinRoot` detour" argument this document's outside-review section
+  sketched in prose.
+- `SharedPivotStageWiring.lean` / `SharedPivotStageWiringFinite.lean`
+  — literal `Ideal.ofList`-prefix wiring of the above, the same role
+  `LinearElimStageWiring.lean`/`CurveRelationStageWiring.lean` played
+  for the old one-generator-per-stage plan.
+- `GenListTriangularReorder.lean` — **superseded, do not use as the
+  ordering guide.** This file's own `genListTriangular` puts the four
+  curve relations FIRST (`[curveA1,...,curveB2] ++ FuList ++ FvList`),
+  which is exactly the order ChatGPT's own analysis (see below) and
+  `CurveRelationChainFinrank.lean`'s own docstring both rule out —
+  curves-first leaves `a1` etc. genuinely free (an infinite affine
+  curve) at the moment a curve relation fires, before any resultant
+  has pinned the coefficient variables down. This document's own
+  previous correction pass (the entry right above this one) repeated
+  that same wrong order without checking it against
+  `CurveRelationChainFinrank.lean`'s actual docstring, which already
+  stated the opposite. **The real order is resultant/coefficient layer
+  FIRST, curve relations LAST** — see below.
+- `FinrankLeOfSpanSurjective.lean` — the `Module.Finite`-transport
+  helper (`finite_of_span_surjective`) needed to bridge the OUTER
+  resultant quotient's finiteness down to the INTERMEDIATE ring's,
+  along the same surjection the finrank-only proof already builds;
+  `SharedPivotStageWiringFinite.lean`'s own docstring names this
+  exactly.
+- `CurveRelationChainFinrank.lean` — **also already built**, and not
+  previously listed in this correction. `finrank_le_and_finite_
+  curveRelationChain`: generic over an ARBITRARY starting prefix
+  `gens` with `Module.Finite (F p) (Rdec p ⧸ Ideal.ofList gens)`
+  already established, appending all four curve relations
+  (`curveA1,...,curveB2`) to the end costs a factor `≤ 16` and
+  preserves `Module.Finite`/`Nontrivial`. This is the curve-relation
+  half of the final assembly, and per its own docstring it is meant
+  to be called AFTER the resultant-elimination stage, not before —
+  confirming the ordering correction above.
+
+## CORRECTION, later pass still — the integrality goal is the actual
+## crux, and it is NOT yet proved anywhere in this codebase
+
+The previous correction pass named `GenListFinrankResultantAssembly
+.lean` as the sole missing piece and implied assembling it was a
+matter of composing already-proved building blocks. **That
+undersold the real gap by a wide margin.** ChatGPT was consulted
+directly on how to close `genList_finrank_le` (the `sorry` in
+`GenListFinrankAssembly.lean` — see below) once the naive per-stage
+`Ideal.ofList`-prefix induction was shown to have no valid base case
+at all (no prefix of `Rdec p`, including the empty one, is
+`Module.Finite` over `F p` until every variable is eliminated). The
+key correction from that consult, not previously recorded anywhere in
+this document:
+
+**Four resultants in eight variables do NOT, by themselves, make the
+eight-variable quotient finite over `F p`.** They can only do that
+together with the four curve relations, and only if the combination
+actually forces integrality — i.e. makes `wa1,wa2,wb1,wb2,a1,a2,b1,b2`
+each satisfy a monic polynomial over `F p` (equivalently, an
+`Algebra.IsIntegral (F p) (...)` fact on the resulting quotient ring).
+**This has not been proved.** It is exactly the open question
+`ROADMAP-alpha-locus.md` already flags in passing (its own "likely
+via showing the relevant resultants/[degree bounds]" language) and
+that this document's own earlier "Open questions" section circled
+around without ever stating it this sharply.
+
+**Traced as far as the code allows, this pass**: `u1_num i`/`u1_den i`
+(`Fu0`/`Fu1`'s coefficients) are `towerToRdec`'s image of `(uRS ...).coeff
+i.val`, where `uRS` is built via `curBeforeMonic` — a literal Mumford-
+reduction polynomial division (`Npoly /ₘ (X - anchor1) /ₘ (X - anchor2)
+/ₘ (target u-polynomial)`) inside the field tower `K0 → K1 → K2`
+(`DataDerivationTower.lean`/`DataDerivationMumford.lean`). `K1 :=
+AdjoinRoot (X² - C(fAtT 0))`, `K2 := AdjoinRoot (X² - C(fAtT 1))` — each
+step IS the curve relation by construction (`wa1² = f(a1)` is literally
+what `AdjoinRoot` quotients by), so `K2` is a rank-4 `K0`-vector space,
+sorry-free, already proved (`factIrreducible_K1_proved`/
+`factIrreducible_K2_proved`). But `K0 := FractionRing (MvPolynomial
+(Fin 2) (F p))` is genuinely infinite-dimensional over `F p` — `a1,a2`
+(`K0`'s two free generators, images under `t0`) are free there BY
+CONSTRUCTION, exactly matching this document's own earlier finding
+that no prefix of `Rdec p` is finite until every variable is gone.
+**So `K2` is finite RELATIVE TO `K0` (rank 4), not finite over `F p`**
+— the curve relations alone were never going to supply integrality of
+`a1,a2,b1,b2`; only the four resultants (which involve `u0,u1,v0,v1`,
+i.e. `curBeforeMonic`'s FIXED target constants) have any chance of
+doing that, and whether they actually do depends on the literal
+symbolic content of the Mumford-reduction division — real algebraic
+geometry about this specific curve construction (is the
+`(u0,u1,v0,v1) ↦ (a1,a2,b1,b2)` correspondence actually finite-to-one
+once the resultants are imposed?), not something derivable from the
+Lean source by inspection or from generic Mathlib lemmas.
+
+**Status of the actual `sorry`, precisely**: `GenListFinrankAssembly
+.lean`'s `genList_finrank_le` carries a genuine, honestly-flagged
+`sorry` (confirmed by a fresh whole-project scan this pass — NOT a
+`True := trivial` placeholder) with a docstring explaining exactly why
+its proof cannot start from `gens = []`. `DEGREE-BOUND-FILES-INDEX
+-README.md`'s own file-50-55 entries already document this same
+finding from an earlier pass. This is the file the resultant-
+elimination architecture (`SharedPivot*`/`CurveRelationChainFinrank
+.lean`) is meant to replace, not extend — its current proof attempt
+is dead, not merely incomplete.
+
+**What is genuinely still the pending next step**: two things, not
+one.
+1. **The integrality/finiteness fact itself** — `Module.Finite (F p)`
+   on the 8-variable ring quotiented by the four resultants and four
+   curve relations (equivalently: the four resultants, together with
+   the curve relations' rank-4-over-`K0` structure, actually pin
+   `a1,a2,b1,b2` to finitely many values over `F p`). Not proved
+   anywhere in this codebase as of this pass. Being investigated
+   directly (mathematically, and via a from-scratch symbolic
+   computation check) before further Lean work is attempted against
+   it, rather than assumed as a fresh hypothesis or left as a bare
+   `sorry` — see whichever later entry in this document (or a
+   successor roadmap file) records the outcome of that investigation.
+2. **`GenListFinrankResultantAssembly.lean`** — referenced by name in
+   `SharedPivotStageWiringFinite.lean`'s docstring as the file that
+   will chain the four resultant-elimination stages (`U0,U1,V0,V1`)
+   together with `CurveRelationChainFinrank.lean`'s four-stage curve
+   chain into the actual replacement for `GenListFinrankAssembly
+   .lean`'s dead `sorry`. **Does not exist yet as a file**, and
+   — this pass's correction — cannot be honestly completed until
+   item 1 above is resolved, since its own base case IS item 1.
+
+**Consequence for anyone reading this roadmap top-to-bottom**: read
+this correction as authoritative over every earlier "Proposed file
+plan" / "Suggested order" / numbered-item-plan section above, AND over
+the immediately-preceding correction's ordering claim (curves-first
+was wrong) and its implication that assembly was just a wiring
+exercise (it is not — item 1 above is genuinely open mathematics).
+
+## CORRECTION, later pass still — item 1's own premise was wrong; the
+## true structure is already recorded elsewhere in this directory and
+## was never cross-checked against this document
+
+The previous correction's item 1 asked whether `a1,a2,b1,b2` become
+integral over `F p` — i.e. whether `finrank ≤ 16` holds for a FIXED,
+arbitrary pair of targets `sa, sb : SampleTarget p`. **This premise is
+false, and checking it against `ROADMAP-alpha-locus.md` (this same
+directory, not cross-referenced by this document until now) shows
+why.**
+
+A ChatGPT consult run directly against this question (see the two
+prompt files this pass produced, not stored in this repo) confirmed,
+via an explicit geometric trace of `curBeforeMonic`'s construction
+(genuinely a symbolic Cantor-addition composition step, confirmed
+row-by-row against `matrixA`'s own docstring — `uRS(x)` is the Mumford
+`u`-polynomial of the composed divisor class `[anchor pair] +
+[target]`, up to a sign convention this codebase's own `vRS` inverse-
+identification `sorry`s leave unresolved): for **arbitrary fixed**
+targets `T_A, T_B`, the matching condition `Fu0=...=Fv3=0` reduces to
+
+    [D_anchorA] + [T_A] = [D_anchorB] + [T_B]      (as classes in J)
+
+which, for FIXED `T_A, T_B`, is a single class-level equation tying
+two independent degree-2-divisor parameters (`D_anchorA`, `D_anchorB`,
+each 2-dimensional) together — a **2-dimensional** solution locus, NOT
+zero-dimensional, since only the difference `[D_anchorA]-[D_anchorB] =
+[T_B]-[T_A]` is pinned, leaving one of the two divisors (2 parameters)
+free. **`finrank ≤ 16` is therefore FALSE for a literal fixed,
+arbitrary `sa, sb : SampleTarget p`** — this is not a proof-search gap,
+it is the wrong theorem statement, confirmed independently by ChatGPT's
+own dimension count and by direct inspection of `ROADMAP-alpha-locus
+.md`'s already-existing "2-dimensional space of 0-dimensional fibers"
+finding (see below).
+
+**`ROADMAP-alpha-locus.md` already has the correct structure, recorded
+before this document's own integrality/resultant sub-effort existed,
+and never connected to it until this pass.** Its "Newer status update"
+section (top of that file) states plainly: the true solution variety
+is **not** simply 0-dimensional — it is a 2-dimensional space of
+0-dimensional fibers, where the 2 free dimensions are exactly
+`(alpha, alpha')` (the discrete log/index-calculus parameters this
+whole project exists to attack), and — crucially — the 1-dimensional
+sub-family of solutions sharing one FIXED `(alpha,alpha')` all carry
+the SAME solution, i.e. that direction is trivial copies, not genuine
+extra freedom. `genList`'s `sa, sb : SampleTarget p` are not
+independent arbitrary data at all — per that same document and
+`ZeroD-README.md`'s dependency-chain diagram, they are literally
+`alpha·a` and `alpha'·a` (fixed multiples of one fixed base Jacobian
+point `a`), not free targets — matching ChatGPT's own diagnosis (its
+point 6.C, "the actual target data are not fixed external constants,"
+was the right instinct, just not chased far enough to find this
+file). **`finrank ≤ 16` is the FIBER bound, for a FIXED `(alpha,
+alpha')` — not a bound that should hold for `sa, sb` varying
+arbitrarily over all of `SampleTarget p × SampleTarget p`.**
+
+**What this means for `genList_finrank_le`'s actual correct
+statement, and for this whole sub-effort**: the theorem as currently
+stated in `GenListFinrankAssembly.lean` (universally quantified over
+arbitrary `sa sb : SampleTarget p`, no `alpha`/`alpha'`/base-point `a`
+field connecting them) is not merely unproved — **it is not even the
+right statement to be attempting**, independent of whether the
+resultant/integrality architecture this document spent several
+passes building is otherwise sound. The correct statement needs
+`sa, sb` to come from a shared `SampleTargetFromAlpha`-style
+structure (`AlphaLocusDegreeUniform.lean` already has exactly this —
+see that file's `SampleTargetFromAlpha`, `.toSampleTarget`), fixing
+`alpha, alpha'` and the base point `a` explicitly, before any
+finiteness bound is attempted — matching `ROADMAP-alpha-locus.md`'s
+own already-stated position that turning "regular sequence for one
+fixed target" into "degree bound uniform across the
+`(alpha,alpha')`-parametrized family" is the real remaining work, not
+yet done anywhere.
+
+**What is NOT yet resolved, even now**: `ROADMAP-alpha-locus.md`
+itself says outright that the mechanism by which the
+`(alpha,alpha')`-direction "collapses to trivial copies" is not yet
+elucidated or formalized anywhere — checked this pass, no file in
+`ZeroD/` proves it, and `ZeroD-README.md`'s pointer to "item 1" for the
+fuller note leads to a section about a different, already-closed
+question (the `hA`/`hB` degree-bound dead end), not this one. **This is
+the actual open mathematical task**, more fundamental than
+`GenListFinrankResultantAssembly.lean`'s wiring or the integrality
+question this document spent several passes chasing under the wrong
+premise: work out and record, precisely, why fixing `(alpha,alpha')`
+collapses the `SampleTarget`-level freedom to a single 0-dimensional
+fiber, in a form that can actually be formalized. Until that exists,
+`genList_finrank_le` cannot be correctly restated, let alone proved —
+and this document's own resultant-elimination file family
+(`SharedPivot*`, `CurveRelationChainFinrank.lean`) may still be exactly
+the right LOCAL per-fiber machinery once the statement is corrected to
+fix `(alpha,alpha')` first, since a fixed-target fiber genuinely is
+(conjecturally) 0-dimensional — but that has not been re-examined
+under the corrected statement, and should be, before resuming file
+work in this sub-effort.
