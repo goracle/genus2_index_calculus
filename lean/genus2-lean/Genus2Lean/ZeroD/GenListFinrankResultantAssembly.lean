@@ -44,28 +44,30 @@ sharedPivotResultantElim_ofList_cons2`, each called as a black box via
 `obtain`, matching `CurveRelationChainFinrank.lean`'s own established
 proof pattern — not re-derived or unfolded by hand.
 
-**NOT proved, isolated in exactly one `sorry`**: the base case itself.
-Every stage-wiring theorem this file chains takes `Module.Finite (F p)
-(Rdec p ⧸ Ideal.ofList gens)` as a hypothesis on whatever prefix `gens`
-is already built — none of them establish finiteness at `gens = []`,
-and `gens = []` genuinely is NOT finite (`Rdec p ⧸ ⊥ ≃ Rdec p`, a
-12-variable free polynomial ring). Nor is finiteness available after
-just `curveA1` alone: `curveA1 = wa1² - f(a1)` pins `wa1` in terms of
-`a1`, but `a1` itself is never separately peeled by anything else in
-this 12-generator system, so `Rdec p ⧸ Ideal.span {curveA1}` still has a
-totally free variable. The only proved finiteness fact on file
-(`RegularSequenceFiniteQuotient.lean`) is a GLOBAL argument needing the
-full 12-generator regular sequence at once — it cannot supply finiteness
-at any strict prefix, so route 3 does NOT actually avoid route 1's
-original base-case dead end the way earlier passes assumed; it only
-pushes the same unresolved gap to a different, more local place
-(`base_finite` below), where `OptionSplitPolynomialEquiv.lean`'s
-`Option`-split bridge is the flagged, not-yet-attempted fix. This is
-real, scoped, remaining work — not attempted here, and marked with a
-genuine `sorry`, not a vacuous placeholder, per the working agreement's
-"errors are recoverable, hedging is the risk" mindset: writing the real
-goal down with an honest gap beats writing something that looks
-complete and isn't.
+**Base case: now proved, `sorry`-free, via a different route than
+originally planned.** Earlier passes assumed the base case had to come
+from a finite PREFIX of `genList` (`gens = []`, or `{curveA1}`, etc.),
+and found every candidate prefix genuinely infinite-dimensional — `Rdec
+p ⧸ ⊥ ≃ Rdec p` is a 12-variable free polynomial ring, and no strict
+prefix is finite either, since `a1` (likewise `a2,b1,b2`) is never
+peeled alone, only jointly with `U0..V1` via the shared-pivot
+resultants. **The fix is to skip prefixes entirely**: `genList_finite_
+of_regular` below uses `regularSeq_of_peel_chain`'s existing proof that
+the FULL 12-generator `genList` is `IsRegular`, together with
+`RegularSequenceFiniteQuotient.lean`'s general fact that a regular
+sequence of length `Nat.card ι` in `MvPolynomial ι k` forces the
+quotient finite — a genuinely global argument, but one that concludes
+directly on `Ideal.ofList genList` itself, with no induction and no
+intermediate prefix ever needing to be finite. This closes the honest
+gap the previous revision left as `base_prefix_finite_sorry`.
+
+**Still NOT proved by this**: the `≤ 16` numeric bound.
+`Module.Finite.quotient_of_isRegular_of_length_eq_card`'s proof goes
+through Krull dimension and yields no `finrank` estimate — it only
+establishes that `finrank` is a well-defined finite number. The
+quantitative bound is still route 3's job
+(`genList_triangular_finrank_le_of_base` above), applied on top of this
+finiteness fact, not replaced by it.
 
 **Also NOT attempted here**: restating any of this over
 `SampleTargetFromAlpha` (the separate "why does fixing `(alpha,alpha')`
@@ -256,30 +258,72 @@ theorem genList_triangular_finrank_le_of_base
            curveB1 p c0 c1 c2 c3 c4, curveB2 p c0 c1 c2 c3 c4])))),
     hfinU0, hnontrivU0, hboundU0⟩
 
-/-! ## The still-open base case
+/-! ## The base case, resolved differently than this file originally
+## planned — via the *global* regularity of `genList`, not a finite prefix
 
-Every theorem above is conditional on an already-finite starting prefix
-`gens`. `genList_finrank_le`'s actual proof needs `gens = []`, which is
-where the gap this file's own docstring describes actually lives —
-`RegularSequenceFiniteQuotient.lean`'s global 12-generator argument
-cannot supply it, and `OptionSplitPolynomialEquiv.lean`'s bridge has
-not been wired through `curveA1`'s two-variables-at-once shape. Stated
-here as its own theorem, `sorry`-backed, rather than silently assumed
-or hidden inside a vacuous conclusion — matching this project's
-"errors first, honest sorries over hedging" convention. -/
+**Correction to this file's earlier framing.** `base_prefix_finite_sorry`
+(this theorem's predecessor) asked for `Module.Finite (F p) (Rdec p ⧸
+Ideal.ofList [])`, which is `Rdec p` itself — a 12-variable free
+polynomial ring, genuinely infinite-dimensional, so that statement was
+FALSE, not merely hard. Chasing a finite PREFIX (`{curveA1}`, etc.) was
+also examined and abandoned: `a1` (and likewise `a2,b1,b2`) is never a
+pivot of anything in `genList` on its own — it is only ever eliminated
+jointly with `U0..V1` via the shared-pivot resultants — so no strict
+prefix of `genList` is finite either, independent of ordering.
 
-set_option maxHeartbeats 1000000 in
-/-- **The genuinely missing base case: `Rdec p ⧸ Ideal.ofList []` is NOT
-finite, so this is FALSE as literally stated** — recorded here, `sorry`-
-backed, as an explicit marker of exactly what `genList_triangular_
-finrank_le_of_base` above needs supplied at `gens := []` before it can
-be composed into an unconditional bound. Do not attempt to prove this
-as stated; the honest fix is to restate it against a genuinely finite
-starting object (the `Option`-split tower, `wa1`/`a1` peeled jointly),
-not to force this literal statement through. -/
-theorem base_prefix_finite_sorry (c0 c1 c2 c3 c4 : F p) :
-    Module.Finite (F p) (Rdec p ⧸ Ideal.ofList ([] : List (Rdec p))) := by
-  sorry
+**Correction, this revision: this theorem already existed.**
+`AlphaLocusDegreeUniform.lean`'s `decoupledSystem_zeroDimensional` proves
+exactly this fact — `regularSeq_of_peel_chain` composed with
+`Module.Finite.quotient_of_isRegular_of_length_eq_card` — already
+sorry-free, already in the project, just stated with `Ideal.span
+(↑genList.toFinset)` instead of `Ideal.ofList genList` as the quotient's
+presentation (the same ideal; `ideal_span_toFinset_eq_ofList`, also
+already on file, is the standard identification, and
+`decoupledSystem_zeroDimensional`'s own proof already uses it internally
+to bridge into `Module.Finite.quotient_of_isRegular_of_length_eq_card`,
+which wants `Ideal.ofList` on the nose). The lemma below is a two-line
+wrapper converting that theorem's conclusion to the `Ideal.ofList`
+presentation this file's other theorems use — not a reproof.
+Reinventing the proof (an earlier revision of this file did exactly
+that, hitting an avoidable `Nat.card`-vs-`Fintype.card` argument-order
+error along the way) was unnecessary; finding the existing theorem
+first is the honest fix.
+
+**What this does NOT prove, flagged honestly**: only finiteness, not a
+numeric bound. `Module.Finite.quotient_of_isRegular_of_length_eq_card`'s
+proof goes through Krull dimension and produces no `finrank` estimate.
+The `≤ 16` target in `genList_finrank_le` still needs route 3's
+monic-annihilator/degree machinery (`genList_triangular_finrank_le_of_base`
+above) — this theorem only supplies the finiteness fact that machinery's
+own hypotheses (and any caller needing a bare `Module.Finite` instance)
+can now legitimately assume, in place of the old false `sorry`.
+
+**Signature**: identical to `decoupledSystem_zeroDimensional`'s own —
+`hndA, hndB, hcross, hpeel, htop_ne_smul` are genuine hypotheses
+`regularSeq_of_peel_chain` requires and are not derivable from `hcurA,
+hcurB, hgcdA, hgcdB` alone. Any caller wiring this against
+`genList_finrank_le` will need to add the same five hypotheses to that
+theorem's signature (matching `GenericPeelChainHyp`'s existing bundle)
+— not attempted here, left for that wiring step. -/
+theorem genList_finite_of_regular
+    (c0 c1 c2 c3 c4 : F p) (sa sb : SampleTarget p)
+    (hcurA : curBeforeMonic p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1 ≠ 0)
+    (hcurB : curBeforeMonic p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1 ≠ 0)
+    (hgcdA : IsCoprime (Ypoly p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1)
+      (uRS p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1))
+    (hgcdB : IsCoprime (Ypoly p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1)
+      (uRS p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1))
+    (hndA : Nondegenerate p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1 hcurA hgcdA)
+    (hndB : Nondegenerate p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1 hcurB hgcdB)
+    (hcross : CrossNondegenerate p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB)
+    (hpeel : PeelChainNondegenerate p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB)
+    (htop_ne_smul : (⊤ : Ideal (Rdec p)) ≠
+      Ideal.ofList (genList p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB) • ⊤) :
+    Module.Finite (F p)
+      (Rdec p ⧸ Ideal.ofList (genList p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB)) := by
+  rw [← ideal_span_toFinset_eq_ofList]
+  exact decoupledSystem_zeroDimensional p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB
+    hndA hndB hcross hpeel htop_ne_smul
 
 end DecoupledSystem
 end Genus2Lean
