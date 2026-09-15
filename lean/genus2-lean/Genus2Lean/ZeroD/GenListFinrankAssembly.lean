@@ -1,6 +1,7 @@
 import Mathlib
 import Genus2Lean.ZeroD.PeelChainAssemblyFinrank
 import Genus2Lean.ZeroD.PeelChainStageFinite
+import Genus2Lean.ZeroD.AlphaLocusDegreeUniform
 
 /-!
 # Assembly, part 4: specializing the n-stage fold to `genList`'s literal
@@ -80,8 +81,12 @@ namespace DecoupledSystem
 
 open Polynomial
 open TheDataDerivation
+open HyperellipticPolynomial
+open HyperellipticPolynomial.Divisor
 
 variable (p : ℕ) [Fact (Nat.Prime p)] [Fact (p ≠ 2)]
+variable {k : Type*} [Field k] {H : HyperellipticPolynomial k}
+variable {D : PrincipalDivisorData H}
 
 /-- **The twelve genuinely-open per-stage side conditions, bundled, one
 separately-named field per stage** (superseding the previous revision's
@@ -248,7 +253,26 @@ structure PeelChainFinrankHyp (d : DecoupledGenerators p) (c0 c1 c2 c3 c4 : F p)
       curveB1 p c0 c1 c2 c3 c4])
     (curveB2 p c0 c1 c2 c3 c4))
 
-/-- **The true final wiring theorem.** Given `PeelChainFinrankHyp`'s
+/-- **The true final wiring theorem — restated over `SampleTargetFromAlpha`,
+NOT arbitrary `SampleTarget p`.** Per `ROADMAP-monic-annihilator-degree-
+uniform.md`'s own final correction: the previous signature (universally
+quantified over arbitrary `sa sb : SampleTarget p`, no `alpha`/`alpha'`/
+base-point `a` connecting them) is not merely unproved, it is **not even
+the right statement** — the true solution variety is 2-dimensional in
+`(alpha, alpha')` (`ROADMAP-alpha-locus.md`'s "2-dimensional space of
+0-dimensional fibers" finding), so `finrank ≤ 16` can only hold as a
+FIBER bound, for `sa, sb` sharing a fixed `(alpha, alpha')` and base
+point `a` — exactly what `SampleTargetFromAlpha p H D aClass δ₀`
+(`AlphaLocusDegreeUniform.lean`) packages, and exactly the shape
+`decoupledSystem_degree_uniform` in that same file already uses for its
+own `GenericPeelChainHyp`-based version of this statement. This is a
+restatement of the signature only, mechanical and requiring no new
+mathematics — the roadmap's own genuinely-open task (why fixing
+`(alpha,alpha')` collapses the family to a single 0-dimensional fiber)
+is NOT addressed here and remains open; this theorem still concludes
+with `sorry` below, now at least asking the right question.
+
+Given `PeelChainFinrankHyp`'s
 twelve side conditions, `Rdec p ⧸ Ideal.ofList (genList ...)` is a
 finite-dimensional `F p`-vector space of dimension at most `2^4 = 16`
 (the product `[1,1,1,1,1,1,1,1,2,2,2,2].prod`), matching the
@@ -281,29 +305,51 @@ over `F p`) -- exactly the base-case obstruction
 .lean`'s own docstrings already diagnose and flag as needing the
 `Option`-split tower route, NOT the literal `Ideal.ofList gens`-indexed
 induction this theorem's proof sketch above describes. **This theorem
-is therefore NOT yet callable as stated** -- its statement is the
-correct target (matching `GenericPeelChainHyp.hfinrank_le`'s needed
-shape), but its proof cannot start from `gens = []` in `Rdec p` itself
-using only `PeelChainStageFinite.lean`'s existing two theorems, which is
-exactly the gap `OptionSplitPolynomialEquiv.lean` was built to eventually
-close (bridging the `Ideal.ofList gens`-quotient picture to a genuinely
-finite `Option`-split `Polynomial`-tower picture) but has not yet been
-wired THROUGH this specific theorem. Left unproved here (as `sorry`
-would be dishonest to hide and a `True` placeholder would obscure the
-now-precisely-identified remaining gap) -- see the "Next step" note
-below for what closing it actually requires. -/
+is therefore NOT yet callable as stated even setting aside the signature
+question this pass addresses** -- its proof cannot start from `gens = []`
+in `Rdec p` itself using only `PeelChainStageFinite.lean`'s existing two
+theorems, which is exactly the gap `OptionSplitPolynomialEquiv.lean` was
+built to eventually close (bridging the `Ideal.ofList gens`-quotient
+picture to a genuinely finite `Option`-split `Polynomial`-tower picture)
+but has not yet been wired THROUGH this specific theorem -- see the
+"Next step" note below for what closing it actually requires. **On top
+of that pre-existing gap, this pass's own signature restatement adds a
+SECOND, more fundamental one**: even a fully-wired proof of the base-case
+obstruction above would not close this theorem as newly stated, because
+`hyp : PeelChainFinrankHyp p (theData p ... sa.toSampleTarget
+sb.toSampleTarget ...) ...`'s twelve fields say nothing about why
+`sa.isReduction`/`sb.isReduction` sharing `alpha`/`sa.alpha`,
+`sb.alpha`/`aClass` should make those fields collapse to something
+provable rather than merely restatable -- that connection is exactly
+`ROADMAP-monic-annihilator-degree-uniform.md`'s own still-open task (why
+fixing `(alpha,alpha')` collapses the family to a single 0-dimensional
+fiber), untouched by this restatement and not attempted here. -/
 theorem genList_finrank_le
-    (c0 c1 c2 c3 c4 : F p) (sa sb : SampleTarget p)
-    (hcurA : curBeforeMonic p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1 ≠ 0)
-    (hcurB : curBeforeMonic p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1 ≠ 0)
-    (hgcdA : IsCoprime (Ypoly p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1)
-      (uRS p c0 c1 c2 c3 c4 sa.u0 sa.u1 sa.v0 sa.v1))
-    (hgcdB : IsCoprime (Ypoly p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1)
-      (uRS p c0 c1 c2 c3 c4 sb.u0 sb.u1 sb.v0 sb.v1))
-    (hyp : PeelChainFinrankHyp p (theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB)
+    (c0 c1 c2 c3 c4 : F p) (aClass : Jacobian H D) (δ₀ : H.Point)
+    (sa sb : SampleTargetFromAlpha p H D aClass δ₀)
+    (hcurA : curBeforeMonic p c0 c1 c2 c3 c4
+      sa.toSampleTarget.u0 sa.toSampleTarget.u1
+      sa.toSampleTarget.v0 sa.toSampleTarget.v1 ≠ 0)
+    (hcurB : curBeforeMonic p c0 c1 c2 c3 c4
+      sb.toSampleTarget.u0 sb.toSampleTarget.u1
+      sb.toSampleTarget.v0 sb.toSampleTarget.v1 ≠ 0)
+    (hgcdA : IsCoprime (Ypoly p c0 c1 c2 c3 c4
+        sa.toSampleTarget.u0 sa.toSampleTarget.u1
+        sa.toSampleTarget.v0 sa.toSampleTarget.v1)
+      (uRS p c0 c1 c2 c3 c4 sa.toSampleTarget.u0 sa.toSampleTarget.u1
+        sa.toSampleTarget.v0 sa.toSampleTarget.v1))
+    (hgcdB : IsCoprime (Ypoly p c0 c1 c2 c3 c4
+        sb.toSampleTarget.u0 sb.toSampleTarget.u1
+        sb.toSampleTarget.v0 sb.toSampleTarget.v1)
+      (uRS p c0 c1 c2 c3 c4 sb.toSampleTarget.u0 sb.toSampleTarget.u1
+        sb.toSampleTarget.v0 sb.toSampleTarget.v1))
+    (hyp : PeelChainFinrankHyp p
+      (theData p c0 c1 c2 c3 c4 sa.toSampleTarget sb.toSampleTarget
+        hcurA hcurB hgcdA hgcdB)
       c0 c1 c2 c3 c4) :
     Module.finrank (F p)
-      (Rdec p ⧸ Ideal.ofList (genList p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB)) ≤ 16 := by
+      (Rdec p ⧸ Ideal.ofList (genList p c0 c1 c2 c3 c4
+        sa.toSampleTarget sb.toSampleTarget hcurA hcurB hgcdA hgcdB)) ≤ 16 := by
   sorry
 
 end DecoupledSystem

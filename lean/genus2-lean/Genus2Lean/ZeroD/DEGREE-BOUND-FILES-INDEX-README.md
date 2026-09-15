@@ -1088,6 +1088,256 @@ gap) to pick up next.**
 
 ---
 
+### 56. `FinSuccPeelChainFinrank.lean` (311 lines)
+Imports: `FinSuccSplitPolynomialEquiv`, `FinrankLeOfMonicAnnihilatorFinite`,
+`QuotOfListChain`.
+
+Item (c)'s fix for entry 55's actual obstruction: induct on the ambient
+ring's ARITY (`Fin n → Fin (n+1)` via `MvPolynomial.finSuccEquiv`), not on
+`Ideal.ofList` prefixes of a fixed-arity ring — the latter never reaches a
+genuine base case, since even the empty prefix of `Rdec p` is still
+infinite-dimensional. At `n = 0`, `MvPolynomial (Fin 0) K ≃ₐ[K] K`
+(`Fin 0` empty) is genuinely finite, giving the real base case this
+project needed. Supplies the ONE-STAGE peel lemma only, fully generic
+over `n`/`K`/`gens`, zero `Idx` content. `sorry` mentions are docstring
+prose only (referencing entry 55's live sorry), not live in this file.
+
+### 57. `FinSuccPeelChainFold.lean` (124 lines)
+Imports: `FinSuccPeelChainFinrank`.
+
+The n-stage fold of entry 56's one-stage lemma, starting the induction at
+the genuine `n = 0`/`gens = []` base case. `hstep` here is a single
+dependently-typed proof recipe (quantified over an arbitrary
+already-reached stage `i` and prefix), not a fixed shape repeated `n`
+times, mirroring `PeelChainAssemblyFinrank.lean`'s `hstep` shape one level
+more dependent. `sorry` mention is docstring prose only.
+
+### 58. `RenameEquivOfListFinrankTransport.lean` (169 lines)
+Imports: none beyond `Mathlib`.
+
+The transport lemma bridging a `finrank` bound proved in
+`MvPolynomial (Fin 12) K` (via entries 56–57's peel over `idxEquivFin`)
+back onto the literal `Rdec p ⧸ Ideal.ofList genList` statement in
+`MvPolynomial Idx K`. Built from `Ideal.map_ofList` +
+`Ideal.quotientEquiv` composed once, using `MvPolynomial.renameEquiv`
+re-derived as a plain `RingEquiv` (`renameRingEquiv`) since the
+ideal/quotient machinery wants `≃+*` not `≃ₐ[K]`. Fully generic over an
+arbitrary variable-set equivalence `e : σ ≃ τ` — no `Idx`/`Rdec p`/
+`theData` content, reusable for any future `MvPolynomial`-reindexing
+transport.
+
+### 59. `GenListTriangularReorder.lean` (139 lines)
+Imports: `DecoupledSystemRegular`, `IdxEquivFin`, `IdealOfListPerm`,
+`CurveRelationStageWiring`, `LinearElimStageWiring`.
+
+Item (d) steps 1–2: reorders `genList`'s literal stated order
+(`FuList ++ FvList ++` curve relations) into `genListTriangular`
+(curve relations FIRST, `Fu`/`Fv` after) — the order `idxEquivFin`'s peel
+actually needs, since `Fu`/`Fv`'s coefficients are only guaranteed
+constant in `U0,U1,V0,V1`, not in the curve-relation variables
+`wa1,wa2,wb1,wb2,a1,a2,b1,b2`; peeling a matching generator before its
+curve variables are eliminated would leave a non-constant "leading
+coefficient" where `finSuccEquiv`'s monic-annihilator machinery needs an
+actual constant. Proves the reorder is ideal-preserving via
+`Ideal.ofList_perm`. Does not yet touch step 3 (`hstep` itself) or step 4
+(final assembly).
+
+### 60. `FinSuccStageGenerators.lean` (256 lines)
+Imports: `FinSuccSplitPolynomialEquiv`, `LinearElimDegreeBound`,
+`CurveRelationsDegreeBound`.
+
+Item (d) step 3, generic half: for each of the 12 peel-chain stages,
+supplies a `Fin`-indexed generator and its `finSuccSplitQuotientAlgEquiv`
+image, covering both stage shapes the roadmap's peel-chain table
+identifies — linear-elimination stages 0–7 (`finSuccLinearElimGen q1 q2
+:= rename Fin.succ q1 - X 0 * rename Fin.succ q2`, image exactly
+`linearElimPoly (mk q1) (mk q2)`) and curve-relation stages 8–11. Zero
+`Idx`/`Rdec p`/`theData` content — the actual `Idx`-specific wiring
+(identifying these with `genList`'s literal `u1_num`/`u1_den`/`curveF`
+etc.) is separate, later work (see entry 61).
+
+### 61. `IdxCurveStage0Wiring.lean` (90 lines) — documents a gap, no live sorry
+Imports: `FinSuccStageGenerators`, `IdxEquivFin`, `GenListTriangularReorder`.
+
+Item (d)'s true remainder: the `Idx`-specific `hstep` specialization,
+attempted for exactly ONE stage (stage 0 of the triangular order,
+`curveA1`, also `n = 0`) as a deliberately small first step rather than
+committing to all twelve at once. **Finds a genuine architectural gap**,
+recorded (not worked around): `curveA1 = X wa1^2 - f(X a1)` is a relation
+in TWO `Idx` variables (`wa1` and `a1`), neither separately peeled by any
+other generator, so it does not fit `finSuccCurveRelationGen`'s one-new-
+variable-at-a-time shape at `n = 0`. This is exactly the finding
+`CurveRelationChainFinrank.lean` (entry 65) supersedes — see that entry
+and `ROADMAP-monic-annihilator-degree-uniform.md`'s "What's actually
+true" correction for why the literal-`Ideal.ofList`-prefix approach
+(entry 46) sidesteps this obstruction entirely, making entries 56–61's
+`Fin`-arity architecture unnecessary for the curve-relation stages
+specifically (it may still be relevant for the linear-elimination
+stages, unresolved as of this pass).
+
+### 62. `SharedPivotResultantElim.lean` (186 lines)
+Imports: `LinearElimDegreeBound`, `FinrankLeOfMonicAnnihilatorFinite`.
+
+The roadmap's shared-pivot correction's key missing piece: bounds
+`finrank` for a ring extended by ONE new variable `X` subject to TWO
+simultaneous linear relations `n1 - X*d1`/`n2 - X*d2` (exactly `U0`'s
+`Fu0`/`Fu1` shape, etc.), in terms of `finrank` of the SAME base ring
+further quotiented by the classical resultant `n1*d2 - n2*d1` alone — no
+`X` involved. The ideal/finrank-level upgrade of
+`MvPolynomialSharedTargetSolve.lean`'s point-existence finding that two
+such relations are simultaneously satisfiable exactly where their
+resultant vanishes.
+
+### 63. `SharedPivotStageWiring.lean` (383 lines)
+Imports: `QuotOfListChainFinrankStep`, `QuotOfListChainAdjoinTop`,
+`SharedPivotResultantElim`, `LinearElimStageWiring`,
+`FinrankLeOfSpanSurjective`.
+
+Wires entry 62's abstract resultant bound to the literal `Ideal.ofList`
+two-generator extension `gens ++ [g1, g2]` — the shape `FuList`/`FvList`'s
+pairs actually take in `genList` — by composing
+`finrank_le_ofList_cons` (entry 41) with itself once. Generic over the
+prefix, the peeled symbol `u : Idx`, and the four coefficients
+`n1 d1 n2 d2 : Rdec p` — not yet specialized to which of `U0/U1/V0/V1`
+this is or to `theData`'s actual values.
+
+### 64. `FinrankLeOfSpanSurjective.lean` (165 lines)
+Imports: none beyond `Mathlib`.
+
+Small standalone lemma the shared-pivot wiring needs: if `f : A →ₐ[k] A1`
+is a surjective `k`-algebra map and `r : A`, then
+`finrank k (A1 ⧸ span {f r}) ≤ finrank k (A ⧸ span {r})` — needed because
+entry 62's bound is naturally stated over an earlier prefix ring `A0`,
+but the literal peel chain's next stage needs it transported across the
+surjection `A0 ↠ A`. Also exports the `Module.Finite`-transport analogue
+(`finite_of_span_surjective`), used by entry 67.
+
+### 65. `CurveRelationChainFinrank.lean` (288 lines)
+Imports: `PeelChainStageFinite`, `DecoupledSystemRegular`.
+
+**Resolves entry 61's gap by taking a different architecture, not by
+patching it.** Supplies the four-stage `curveA1,curveA2,curveB1,curveB2`
+chain directly over the literal `Ideal.ofList` prefix presentation
+(entry 46's `finrank_le_and_finite_curveRelation_ofList_cons`), which
+never needed a curve relation's sample-point variable to be pre-peeled by
+any earlier stage — it evaluates `X x` symbolically in whatever ring the
+prefix quotient already is. So `curveA1`'s "two new variables at once"
+shape, which broke the `Fin`-arity approach (entry 61), is simply not an
+obstruction here — the difficulty was specific to the superseded
+`finSuccEquiv`-based architecture (entries 56–61), not to the underlying
+mathematics. Generic over the starting prefix; not yet specialized to
+`gens = FuList ++ FvList` (pending entry 63's own instantiation against
+`theData`).
+
+### 66. `SharedPivotStageWiringFinite.lean` (292 lines)
+Imports: `QuotOfListChainFinrankStep`, `QuotOfListChainAdjoinTop`,
+`SharedPivotResultantElim`, `SharedPivotResultantElimFinite`,
+`SharedPivotStageWiring`, `LinearElimStageWiring`,
+`FinrankLeOfSpanSurjective`.
+
+The `Module.Finite`/`Nontrivial`-exporting sibling of entry 63, needed so
+the eventual four-stage `U0,U1,V0,V1` resultant elimination can hand
+finiteness forward to the next stage (or to entry 65's curve chain,
+which needs it as an explicit hypothesis on its starting prefix) — a
+`finrank` bound alone doesn't supply that, same gap `PeelChainStageFinite
+.lean` (entry 46) already diagnosed and fixed for the single-generator
+case.
+
+### 67. `SharedPivotResultantElimFinite.lean` (148 lines)
+Imports: `SharedPivotResultantElim`.
+
+The `Module.Finite`-exporting sibling of entry 62 itself (one level below
+entry 66): re-derives entry 62's proof to additionally export
+`Module.Finite k B` via the same surjective `k`-linear map
+`ψₗ : (A ⧸ span {resultant}) →ₗ[k] B` its `finrank` bound already builds,
+using `Module.Finite.of_surjective` — the same transport
+`FinrankLeOfSpanSurjective.lean`'s `hfin` step uses for the one-hop
+version.
+
+### 68. `MatchingEquationTranslation.lean` (145 lines) — separate
+`matching-equation` sub-effort, not part of the `totalDegree` chain above
+Imports: `DivisorClassGroup`.
+
+Two standalone `AddCommGroup` facts about the matching equation
+`[P1]+[P2]-[P3]-[P4] = (alpha-alpha')•a` in `Jacobian H D`, with no
+curve-specific or Mumford-coordinate content. Proves
+`matching_solutions_translate_by_delta`: any two solutions of the same
+matching equation are related by a single common `Δ` translating both
+sides simultaneously (`Δ := (P1+P2)-(P1'+P2')`). Explicit about what it
+does NOT prove: that the solution set for a fixed `(alpha,alpha')` is a
+single point — that is asserted in `ROADMAP-alpha-locus.md` from
+reasoning done outside Lean, flagged there as "not yet formalized." Was
+building-red as of this pass (see the Fix note below); now green.
+
+### 69. `OrbitMapConstant.lean` (120 lines) — same sub-effort as entry 68
+Imports: `Mathlib` only — deliberately no `DivisorClassGroup` import,
+since it never names `Jacobian`/`PrincipalDivisorData` directly (see the
+Fix note below for why that matters).
+
+The general-topology core of entry 68's "actual rigidity mechanism"
+update: proves `orbit_map_constant_of_preconnected_of_discrete` (a
+continuous map from a preconnected space to a discrete space is
+constant, via genuine current-Mathlib4 `PreconnectedSpace.constant`) and
+composes it with an explicit `Faithful`-style hypothesis
+(`delta_eq_zero_of_orbit_constant_and_faithful`) to conclude `Δ = 0`.
+Explicit about what it does NOT attempt: giving `Jacobian H D` an actual
+`TopologicalSpace` instance, let alone proving it `PreconnectedSpace` —
+this project has zero uses of `TopologicalSpace`/`Scheme`/`PrimeSpectrum`
+anywhere, and current Mathlib4 has no Jacobian-of-a-curve machinery to
+build on. Both theorems therefore take `PreconnectedSpace`/
+`DiscreteTopology`/faithfulness as explicit hypotheses on abstract
+`J`/`S`, not yet instantiated against `Jacobian H D` itself.
+
+### Fix, this pass: `MatchingEquationTranslation.lean` (entry 68 above)
+was building-red as of this pass's `lake build`, fixed here. Root cause:
+the file wrapped its content in `namespace Genus2Lean` then `namespace
+HyperellipticPolynomial`, but `Jacobian`/`PrincipalDivisorData`
+(`DivisorClassGroup.lean`) live in a TOP-LEVEL `namespace
+HyperellipticPolynomial`, not inside `Genus2Lean` — so the file's own
+`namespace HyperellipticPolynomial` declaration created a distinct,
+empty `Genus2Lean.HyperellipticPolynomial` namespace that could not see
+those definitions, producing "unknown identifier" errors at every use.
+`AlphaLocusDegreeUniform.lean` already documents this exact namespace
+shape in its own comment (just above its `open HyperellipticPolynomial`
+line) and uses the correct pattern: `open HyperellipticPolynomial` at
+top level, THEN enter `namespace Genus2Lean` under a different inner
+namespace name. Fixed by following that pattern exactly (`open
+HyperellipticPolynomial` before `namespace Genus2Lean`, inner namespace
+renamed to `HyperellipticPolynomialMatching` to avoid re-shadowing) — no
+downstream file referenced the old fully-qualified name
+(`Genus2Lean.HyperellipticPolynomial.matching_solutions_translate_by_delta`),
+so nothing else needed updating. The proof body itself (pure
+`AddCommGroup`/`abel` algebra) was already correct; the `abel_nf made no
+progress` error the build log also showed was a downstream symptom of
+the same unresolved-identifier cascade, not a separate bug.
+`OrbitMapConstant.lean` (entry 69) was unaffected — it never names
+`Jacobian`/`PrincipalDivisorData`, only abstract `J`/`S`, so the same
+namespace mistake had nothing to break there.
+
+### 70. `MatchingEquationDeltaInvariance.lean` (new, this session) — same
+`matching-equation` sub-effort as entries 68–69
+Imports: `DivisorClassGroup`.
+
+Formalizes "Lemma 0" from this session's GPT consult (a genuinely new
+fact, not previously in this codebase, distinct from entry 68's own
+`matching_solutions_translate_by_delta`): the matching equation
+`P1+P2-P3-P4 = (alpha-alpha') • a` depends on `(alpha,alpha')` only
+through `delta := alpha - alpha'` — two pairs sharing the same `delta`
+define the literal same equation (`matching_target_eq_of_sub_eq`,
+`ring`/`zsmul`-level, not an isomorphism claim) and hence the literal
+same solution set (`solution_set_eq_of_sub_eq`, `Set` equality). Also
+proves the auxiliary "`D`-coordinate" gauge-shift fact
+(`dcoord_shift`: `P1+P2-(alpha+beta)•a = (P1+P2-alpha•a)-beta•a`) the
+writeup uses to describe common `(alpha,alpha')`-shifts as moving only
+the auxiliary coordinate, not the `Pᵢ` themselves. States its own
+caveat explicitly, reproduced from the GPT writeup rather than dropped:
+`alpha • a` for `alpha : ℤ` only sweeps out `AddSubgroup.zmultiples a`
+as `alpha` varies, not all of `Jacobian H D` — so this file's results do
+NOT by themselves justify constructing `G(Δ)` for an arbitrary
+`Δ ∈ Jacobian H D` (needed for the full rigidity argument via entry 69);
+that remains a separate fact about the `Reduce`/Mumford construction,
+not attempted here or anywhere else in this project yet.
+
 ## Open gaps, cross-referenced (read this before assuming the chain is done)
 
 - **File 2's `hA`/`hB` hypothesis** (a literal, not merely existential,
@@ -1140,3 +1390,54 @@ gap) to pick up next.**
   shape.
 - Cross-reference `ROADMAP-degree-uniform-step3.md`'s own three-obligation
   split before assuming any one file closes more than it actually does.
+- **Two competing peel architectures now coexist for item (d)/entry 55's
+  sorry, and they are NOT both live.** Entries 56–61 build a `Fin
+  n`-arity-indexed peel (`finSuccEquiv`-based) and, at entry 61, find it
+  cannot accept `curveA1`-shaped two-new-variable-at-once relations —
+  that finding is real and stands, but entry 65
+  (`CurveRelationChainFinrank.lean`) shows the underlying difficulty was
+  specific to the `Fin`-arity architecture, not to the mathematics: the
+  literal-`Ideal.ofList`-prefix approach (entry 46, extended by entries
+  62–67's shared-pivot resultant machinery) handles `curveA1` directly,
+  with no analogous obstruction. As of this pass the literal-prefix +
+  shared-pivot line (46, 62–67, 65) is the one still being extended;
+  entries 56–60's generic `Fin`-arity machinery is not itself wrong, but
+  entry 61 is its last active use — don't resume building more
+  `Fin`-arity-specific stage wiring against `curveA1`-style relations
+  without first checking whether entry 65's route has since closed that
+  need. **Also unresolved as of this pass**: whether the literal-prefix
+  route is being used for the linear-elimination stages (0–7) too, or
+  whether those still route through entries 56–60/`idxEquivFin` — check
+  before assuming either.
+- **`GenListFinrankResultantAssembly.lean` still does not exist as a
+  file** (named by entries 63/66's own docstrings as the file that will
+  chain the four resultant-elimination stages together with entry 65's
+  curve chain into entry 55's actual replacement). Building it is the
+  next concrete wiring step on the literal-prefix line, PROVIDED the
+  deeper gap below is closed first.
+- **The actual blocker for entry 55, per `ROADMAP-monic-annihilator-
+  degree-uniform.md`'s latest corrections, is not wiring at all.** Two
+  corrections deep: (1) the "integrality" question (does `finrank ≤ 16`
+  hold for `sa, sb` ranging over ALL of `SampleTarget p`?) turned out to
+  be the wrong question — it's false, because for fixed arbitrary
+  targets the solution locus is 2-dimensional, not 0-dimensional
+  (`D_anchorA`/`D_anchorB` only pinned in their difference). (2) The
+  roadmap's own correction identifies the fix: `sa, sb` must come from a
+  shared `SampleTargetFromAlpha`-style structure with `alpha`, `alpha'`,
+  and a base point `a` FIXED first (`AlphaLocusDegreeUniform.lean`
+  already has this shape) — entry 55's theorem, quantified over
+  arbitrary `sa sb : SampleTarget p` with no `alpha`/`alpha'`/`a` link,
+  is therefore not just unproved but not even the right statement to
+  attempt. **What is genuinely still missing, per that same roadmap
+  section**: a formalizable account of WHY fixing `(alpha, alpha')`
+  collapses the family to a single 0-dimensional fiber — flagged there
+  as not elucidated anywhere in this project. `MatchingEquationTranslation
+  .lean`/`OrbitMapConstant.lean` (the separate matching-equation
+  sub-effort, not part of this `totalDegree` chain) supply half of an
+  answer to exactly this question. **Update, same session**: the
+  `alpha - alpha'`-invariance half of that mechanism is now formalized
+  as entry 70, `MatchingEquationDeltaInvariance.lean` — still not wired
+  into this roadmap section or into `OrbitMapConstant.lean`'s
+  hypotheses, and entry 70's own docstring flags the same `zmultiples
+  a`-vs-all-of-`Jacobian H D` caveat the roadmap should account for
+  before treating this as closing the gap.
