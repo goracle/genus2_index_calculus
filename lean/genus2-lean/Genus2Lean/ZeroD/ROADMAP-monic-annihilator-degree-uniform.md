@@ -94,16 +94,55 @@ Assembly architecture — see below.
 Three architectures were tried, in order; the third is the one that
 worked and is being actively extended.
 
-**1. Naive `Ideal.ofList`-prefix induction — dead end.** Chaining the
-twelve per-stage lemmas by induction directly on `Ideal.ofList` prefixes
-of `Rdec p` needs `Module.Finite (F p) (Rdec p ⧸ Ideal.ofList gens)` at
-EVERY prefix, starting from `gens = []`, i.e. `Rdec p` itself — false,
-since `Rdec p` is a 12-variable free polynomial ring, infinite-
-dimensional over `F p`. `RegularSequenceFiniteQuotient.lean`'s existing
-finiteness proof is a GLOBAL Krull-dimension argument needing the FULL
-12-generator regular sequence at once; it neither needs nor produces
-finiteness at any intermediate prefix, so this route's base case is
-unreachable no matter how the twelve stages are ordered.
+**1. Naive `Ideal.ofList`-prefix induction — corrected, not abandoned.**
+An earlier pass of this document treated this route as a dead end,
+reasoning that chaining the twelve per-stage lemmas needs
+`Module.Finite (F p) (Rdec p ⧸ Ideal.ofList gens)` re-derived
+independently at EVERY prefix, starting from `gens = []`, i.e.
+`Rdec p` itself — false, since `Rdec p` is a 12-variable free polynomial
+ring, infinite-dimensional over `F p`. **That diagnosis was wrong about
+which invariant the induction actually needs, confirmed via a ChatGPT
+consult (this pass) and cross-checked directly against this codebase's
+own already-correct fix**: `finrank_le_of_monic_annihilator`
+(`FinrankLeOfMonicAnnihilator.lean`) does not require its base ring `A`
+to be independently re-established finite at each stage from some
+global argument — it takes `[Module.Finite k A]` as an ordinary
+hypothesis and *produces* `Module.Finite k B` on the extended ring as
+part of its own proof (via `Module.Finite.trans A (AdjoinRoot G)`,
+documented explicitly in that file). The correct induction invariant is
+therefore "`A` is finite over `k` of SOME rank, threaded forward stage
+by stage from the genuinely-true base case `Module.Finite k k`
+(rank 1)" — never "`A` is finite over `k`" asserted as a standalone fact
+about an intermediate polynomial quotient in isolation, and never a
+claim that any intermediate prefix has a FIXED, predetermined finrank
+before the chain reaches it. `FinrankLeOfMonicAnnihilatorFinite.lean`
+and `PeelChainStageFinite.lean` already implement exactly this
+forward-threading fix (their docstrings independently reach the same
+diagnosis this consult reached). So route 1's ARCHITECTURE — inducting
+directly on literal `Ideal.ofList` prefixes, never leaving that
+presentation for an `Option`/`Fin`-indexed tower — was always sound;
+only the base-case reasoning in this document's earlier pass, and in
+one still-unfixed downstream file (see below), stated the wrong
+invariant. `RegularSequenceFiniteQuotient.lean`'s existing finiteness
+proof (a GLOBAL Krull-dimension argument needing the FULL 12-generator
+regular sequence at once) is unrelated to this fix and still gives no
+intermediate-prefix finiteness of its own — it simply isn't needed for
+this route once the invariant above is used instead.
+
+**Stale file flagged by this correction**: `GenListFinrankAssembly.lean`
+(route (a)'s superseded 12-sequential-application attempt at Assembly,
+predating route 3's shared-pivot reordering below) still narrates the
+OLD, incorrect base-case reasoning in its own docstring — literally
+stating `Module.Finite (F p) (Rdec p ⧸ Ideal.ofList [])` reduces to
+`Module.Finite (F p) (Rdec p)` and calling this a blocking gap, without
+noting that `PeelChainStageFinite.lean`'s forward-threading fix (already
+present elsewhere in this same codebase) resolves it. That file's
+`genList_finrank_le` is the one live `sorry` under `ZeroD/` and should
+either be rewritten to use the corrected invariant directly, or (more in
+line with "Next concrete steps" below) left as dead-code-in-place and
+superseded outright by route 3's own assembly file once written — do
+not treat its docstring's base-case caveat as a still-open problem when
+picking this up again.
 
 **2. `Fin n`/`finSuccEquiv`-indexed reindexing — fixes the base case,
 but hits a different wall.** Reindex `Idx ≃ Fin 12` (`IdxEquivFin.lean`)
@@ -223,27 +262,135 @@ no `alpha`/`alpha'`/base-point `a` field connecting them. But:
   reasoning done outside Lean, not yet formalized or its mechanism
   elucidated.
 
-**Progress toward that missing account, this session**: a separate,
-smaller sub-effort (`MatchingEquationTranslation.lean`,
+**Progress toward that missing account, this session — CORRECTED, the
+orbit/connectedness route is a dead end, not a hard-but-right approach.**
+A separate, smaller sub-effort (`MatchingEquationTranslation.lean`,
 `MatchingEquationDeltaInvariance.lean`, `OrbitMapConstant.lean` — see
-file index entries 68–70) has started formalizing a candidate
-mechanism: any two solutions of the matching equation differ by a
-common translation `Δ` (entry 68); the equation, and hence its solution
-set, depends on `(alpha,alpha')` only through `delta = alpha − alpha'`
-(entry 70); and a connected group acting on a 0-dimensional target via
-an algebraic orbit map must act trivially, i.e. `Δ = 0` (entry 69's
-general-topology core, hypotheses not yet instantiated). **Not yet
-wired into this roadmap's actual goal, and entry 70 states its own
-caveat plainly**: `alpha • a` for `alpha : ℤ` only sweeps out the
-cyclic subgroup `AddSubgroup.zmultiples a`, not all of `Jacobian H D`,
-so constructing `G(Δ)` for an ARBITRARY `Δ ∈ Jacobian H D` (needed for
-the full argument) is a separate fact about the `Reduce`/Mumford
-construction, not established by any of these three files. Until that
-account exists in usable form, `genList_finrank_le` cannot be correctly
-restated, let alone proved — route 3's resultant-elimination machinery
-above is still expected to be the right LOCAL per-fiber tool once the
-statement is corrected to fix `(alpha,alpha')` first, but this has not
-been re-examined under the corrected statement.
+file index entries 68–70) built toward a candidate mechanism: any two
+solutions of the matching equation differ by a common translation `Δ`
+(entry 68, proved, stays valid); the equation depends on `(alpha,
+alpha')` only through `delta = alpha − alpha'` (entry 70, proved, stays
+valid); and — this was the candidate closing step — a connected group
+acting on a 0-dimensional target via an algebraic orbit map must act
+trivially, forcing `Δ = 0` (entry 69's general-topology core).
+
+**A ChatGPT consult this pass identified that the closing step is
+mathematically wrong, not merely unformalized, for two independent
+reasons — do not pursue it further:**
+
+1. The set `D = {Δ ∈ J : some two solutions differ by Δ}` is NOT shown
+   to be a subgroup, and isn't one from what's proved: `0 ∈ D` and
+   `D = -D` are free, but `Δ, Γ ∈ D ⟹ Δ + Γ ∈ D` needs an actual group
+   action `T_Δ` on the WHOLE solution set with `T_Δ ∘ T_Γ = T_{Δ+Γ}`,
+   which a single witnessed pair of solutions does not supply. Worse,
+   the raw Jacobian equation `A − B = δ·a` (with `A = [P1]+[P2]`,
+   `B = [P3]+[P4]`) is satisfied by a positive-dimensional family of
+   `(A,B)` on its own — genus 2 makes the Abel map `Sym²C → Pic²(C)`
+   surjective, so for essentially any `A` some `B` exists — meaning
+   **the Jacobian equation alone cannot possibly force `Δ = 0`; all of
+   the rigidity has to come from the SampleTarget polynomial equations
+   themselves**, which the orbit-map framing never used.
+2. Separately, no algebraic `J`-action on the fixed-`delta` solution set
+   was ever constructed (translating a degree-2 divisor by an arbitrary
+   `Δ` doesn't canonically land back in the SampleTarget locus or
+   preserve the fiber), so `OrbitMapConstant.lean`'s
+   `PreconnectedSpace`/`DiscreteTopology` machinery has nothing to apply
+   to even setting the first issue aside — and over a finite base field,
+   `J`'s own point group is finite/torsion-heavy, so "constant on a
+   finite orbit" would prove nothing useful even if the action existed.
+
+**The corrected target, per that consult, and the one to actually
+pursue**: stop trying to prove `Δ = 0` inside the abstract Jacobian.
+Instead strengthen the existing 0-dimensional result
+(`decoupledSystem_zeroDimensional`, i.e. `finrank ≤ 16` at the ring
+level for one fixed `(sa,sb)`) to a **degree-1 / uniqueness** statement
+about the polynomial system itself:
+
+- **0-dimensional is not enough** — a 0-dimensional fiber can have
+  anywhere from 1 to 16 (or however many) geometric points, and knowing
+  a translation relation holds between two of them says nothing about
+  whether they coincide. This is a hard logical gap, not a formalization
+  gap: `finrank ≤ 16` and `Δ = 0` are different strengths of claim, and
+  the former was never going to imply the latter.
+- **The right statement**: introduce a SECOND copy of the 12 SampleTarget
+  variables `x'`, impose the SAME ideal `I_δ` on both `x` and `x'`
+  (i.e. both solve the fixed-`delta` system), and prove `x = x'`
+  (coordinatewise) follows — using exactly the triangular/monic
+  elimination structure route 3 already builds (shared-pivot resultant
+  elimination for `U0,U1,V0,V1`, then the 4 curve relations), just run
+  in "pairwise agreement" form rather than "bounded finrank" form: at
+  each stage, if `x` and `x'` agree on all previously-eliminated
+  coordinates and both satisfy the same monic/linear relation for the
+  next coordinate with the same coefficients, the two values of that
+  next coordinate agree too (immediate for a linear relation with a
+  shared unit leading coefficient; for the degree-2 curve relations,
+  needs the curve to not have both square roots coincide — likely an
+  easy nondegeneracy side-condition, not yet checked). Once `x = x'`,
+  `A(x) = A(x')` and `B(x) = B(x')` follow directly, giving `Δ = 0` via
+  the already-proved `matching_solutions_translate_by_delta` — so entry
+  68's translation fact is NOT wasted, only entry 69/70's connectedness
+  closing step is discarded.
+- **Do not build a Zariski topology on `Jacobian H D` or attempt to
+  prove it connected** — confirmed by the consult as unnecessary for
+  this argument (and would be substantial, out-of-scope work with
+  nothing here to actually use it for). `OrbitMapConstant.lean` can stay
+  in the codebase as an independently-true, currently-unused general
+  topology fact, but is not on the path to closing this gap.
+- This pairwise-agreement statement is a strictly better fit for the
+  codebase's existing machinery than the abandoned orbit approach: it's
+  a direct strengthening of the SAME triangular-elimination stages route
+  3 already has (`SharedPivotResultantElim*.lean`,
+  `CurveRelationChainFinrank.lean`), rather than a wholly separate
+  topological development.
+
+**Restated remaining task**: prove, for two tuples `x, x'` both
+satisfying `genList`'s twelve equations at the same `(alpha, alpha')`
+(equivalently, both giving valid `SampleTargetFromAlpha p H D aClass
+δ₀` structures with the same `alpha, alpha'`), that `x = x'`
+coordinatewise, via the same 12-stage elimination order route 3 already
+uses. This is likely EASIER to formalize than the `finrank ≤ 16` bound
+itself (pairwise agreement per stage is a smaller inductive claim than
+counting a full spanning set), and directly gives `genList_finrank_le`
+as a corollary once stated over `SampleTargetFromAlpha`-linked `sa, sb`
+(a 0-dimensional fiber that's additionally a single point has `finrank`
+equal to its own field-extension degree at that point, ≤ the same
+per-stage product bound route 3's `finrank` machinery already
+establishes at the ring level — so the two threads combine rather than
+compete).
+
+## Step 1 (pairwise agreement), current state
+
+`PeelChainPairwiseAgreement.lean` (new this pass) formalizes the
+per-stage half of step 1, mirroring `LinearElimDegreeBound.lean`/
+`CurveRelationsDegreeBound.lean`'s exact per-stage split:
+
+- **Linear stages (`Fu0`–`Fu3`, `Fv0`–`Fv3`) — DONE, unconditional.**
+  `linearElim_forces_eq` (pulled out of `SharedPivotResultantElim.lean`'s
+  own inline `htval` computation as a standalone reusable fact — that
+  file's proof is untouched, still green, this is purely additive) shows
+  a linear-elimination relation forces its variable to a single value
+  `d⁻¹ * c`; `linearElim_pairwise_eq` concludes two solutions of the SAME
+  relation agree, with no side hypothesis at all.
+- **Curve-relation stages (`curveA1`,...,`curveB2`) — genuinely needs a
+  side condition, correctly flagged rather than assumed.**
+  `curveRelation_sq_sub_sq_eq_zero` shows two roots `t, t'` of the same
+  `X² = f` satisfy `(t-t')(t+t') = 0` unconditionally; closing this to
+  `t = t'` needs ruling out the `t = -t'` branch, done in
+  `curveRelation_forces_eq` via an explicit `t ≠ -t'` hypothesis (plus
+  `IsDomain B`, needed for `mul_eq_zero`'s two-branch split). **Not yet
+  resolved**: whether `theData`'s literal `wa1,wa2,wb1,wb2` values
+  actually satisfy `t ≠ -t'` for the SampleTarget pairs this project
+  needs — expected to come from whatever sign convention `Reduce`'s
+  Mumford-coordinate construction already fixes for `w`, but this has
+  not been checked against that file yet.
+
+**Not yet done, still needed for step 1 to be complete**: chaining these
+two per-stage facts across all twelve stages of `genList`'s literal
+generators into one `x = x'` (coordinatewise, all 12 variables)
+statement — the pairwise-agreement analogue of
+`GenListFinrankResultantAssembly.lean`'s not-yet-written chaining, and
+the actual identification of each stage's `t ≠ -t'` side condition
+against `theData`'s formulas for the four curve stages.
 
 ## `Bad`/exceptional-set sizing — still open, blocked on the above
 
@@ -259,19 +406,27 @@ itself may need to change once `sa,sb` are properly linked via
 
 ## Next concrete steps, in order
 
-1. Resolve the statement-correction gap: work out (on paper or via a
-   ChatGPT consult, then formalize) why fixing `(alpha,alpha')`
-   collapses the fiber, building on entries 68–70's partial mechanism
-   and its `zmultiples a` caveat.
-2. Once resolved, restate `genList_finrank_le` (or its replacement)
-   over `SampleTargetFromAlpha`-linked `sa, sb` with fixed
-   `alpha, alpha'`.
-3. Write `GenListFinrankResultantAssembly.lean`, chaining route 3's
+1. **Linear-stage half DONE** (`PeelChainPairwiseAgreement.lean`,
+   `linearElim_pairwise_eq`). Remaining for step 1: identify the `t ≠
+   -t'`-shaped side condition each of the four curve-relation stages
+   needs (`curveRelation_forces_eq`'s hypothesis) against `theData`'s
+   literal `wa1,wa2,wb1,wb2` formulas, then chain all twelve stages'
+   pairwise-agreement facts into one coordinatewise `x = x'` statement
+   over `genList`'s literal generators.
+2. Compose with the already-proved `matching_solutions_translate_by_delta`
+   (`MatchingEquationTranslation.lean`) to conclude `Δ = 0`, closing the
+   statement-correction gap without any topology/connectedness work.
+3. Restate `genList_finrank_le` (or its replacement) over
+   `SampleTargetFromAlpha`-linked `sa, sb` with fixed `alpha, alpha'`,
+   using step 1's uniqueness result alongside route 3's existing
+   `finrank` bound (a fiber that is both ≤16-dimensional and a single
+   point has `finrank` equal to the point's own field-extension degree).
+4. Write `GenListFinrankResultantAssembly.lean`, chaining route 3's
    already-built resultant-elimination + curve-relation stages against
    the corrected per-fiber statement.
-4. Revisit `Bad` sizing now that the corrected statement pins down what
+5. Revisit `Bad` sizing now that the corrected statement pins down what
    `Bad` actually needs to range over.
-5. Replace `GenericPeelChainHyp` in `AlphaLocusDegreeUniform.lean` with
+6. Replace `GenericPeelChainHyp` in `AlphaLocusDegreeUniform.lean` with
    the proved pieces (delete the hypothesis bundle, or narrow it,
    dropping `hfinrank_le` specifically), per `ROADMAP-degree-uniform-
    step3.md`'s existing instruction.
