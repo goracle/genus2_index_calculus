@@ -1,3 +1,25 @@
+## SUPERSEDED — moved to `oldroadmaps/` this pass
+
+**This entire route is abandoned.** `genList_finrank_le`
+(`GenListFinrankAssembly.lean`, still `sorry`) was this roadmap's target
+theorem — chaining twelve monic-annihilator elimination stages through
+the peel chain toward `finrank ≤ 16`. Per Claire's direction: this was
+solving a much harder problem than the project actually needs. A far
+simpler group-theory/set-cardinality argument
+(`MatchingSolutionSwapSymmetry.lean`'s `fixedTargetSolutions_ncard_le_
+four`, ≤4, unconditional in `p`, sorry-free, no `GenericPeelChainHyp`,
+no `Rdec p ⧸ Ideal.span (genList ...)`) now closes the actual goal
+directly. See `ROADMAP-alpha-locus.md` (still live, top-level) for the
+current route, `AlphaLocusDegreeUniform.lean`'s `SampleTargetFromAlpha
+.memZmultiplesA` field, and `DecoupledSystemDegreeUniformFixedTarget
+.lean` for the real closing theorem. Kept here as a historical record
+of why the monic-annihilator route doesn't work / was harder than
+needed — not a live task list. `GenListFinrankAssembly.lean` itself
+still has the one live `sorry` this roadmap was chasing; it is not
+being pursued further.
+
+---
+
 # Roadmap: replacing `GenericPeelChainHyp.hfinrank_le` with a real bound
 
 **Compressed, this pass.** This document had grown to ~1300 lines of
