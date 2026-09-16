@@ -470,6 +470,155 @@ statement-correction gap above is resolved, since `Bad`'s definition
 itself may need to change once `sa,sb` are properly linked via
 `SampleTargetFromAlpha`.
 
+## Corrections, this pass — checked directly against the actual `.lean`
+## files (build green, all sorry-free) rather than against this
+## document's own prior summary. Read this before touching item 3/4 below.
+
+**1. `toCoords` (item 3's named blocker) is already closed — stale
+pointer in this document, not in the code.** `AlphaLocusDegreeUniform
+.lean`'s own "Restating `isReduction` against the now-existing `Reduce`"
+section resolves it: `AffinePoints.lean`'s `H.Point.X`/`.Y` give the
+`H.Point → F p × F p` projection directly, and `isReduction'` already
+uses `(sa.P1.X, sa.P1.Y)` etc. This document's item 3 below still
+describes `toCoords` as the concrete open gap — it isn't, anymore. What
+IS still missing is described in point 3 below, which is a different,
+larger gap than `toCoords` ever was.
+
+**2. `GenericPeelChainHyp`/`decoupledSystem_degree_uniform`
+(`AlphaLocusDegreeUniform.lean`) already exist, are already stated over
+`SampleTargetFromAlpha`, and are already proved — but do NOT resolve
+this roadmap's own "actual remaining blocker" section; they route
+around it, unlabeled as such.** Checked directly: `GenericPeelChainHyp`
+is instantiated on `sa.toSampleTarget sb.toSampleTarget : SampleTarget p`
+with no `alpha`/`alpha'` constraint anywhere — `CrossNondegenerate`/
+`PeelChainNondegenerate` (`DecoupledSystemRegular.lean`) take `sa sb :
+SampleTarget p` as plain, unrelated targets, exactly the shape this
+roadmap's own "actual remaining blocker" section already showed gives a
+2-dimensional (not 0-dimensional) solution locus for a bare `finrank`
+claim. `decoupledSystem_degree_uniform`'s own docstring is candid about
+this: `Bad` is defined circularly as "wherever `GenericPeelChainHyp`
+fails," and whether that set is actually finite for a real curve family
+is exactly this document's still-open Step 3.1/3.2 content — restated
+under a different name, not resolved. **Do not read
+`decoupledSystem_degree_uniform`'s existing proof as having closed the
+alpha-linkage gap** — it hasn't; it isolates the same open content in
+`GenericPeelChainHyp.hfinrank_le`, one level further from the surface.
+
+**3. `genList_finrank_le`'s live `sorry` (`GenListFinrankAssembly.lean`)
+is stated against `PeelChainFinrankHyp`, a TWELVE-FIELD hypothesis over
+`genList`'s LITERAL order (`Fu`s, then `Fv`s, then curves) — not the
+`genListTriangular`-order hypotheses (entries 71/77/78,
+`DEGREE-BOUND-FILES-INDEX-README.md`) route 3 actually produces.**
+`genList_finrank_le` is ALSO already stated over `SampleTargetFromAlpha`
+(`sa sb : SampleTargetFromAlpha p H D aClass δ₀`), not bare `SampleTarget
+p` as this document's item 3 (below) describes it — another stale
+pointer. Its own docstring is explicit and should be trusted over this
+document's older framing: even a fully-wired route 3 proof would not
+close it, because nothing connects `sa.isReduction`/`sb.isReduction`
+sharing `alpha`/`aClass` to `PeelChainFinrankHyp`'s twelve fields
+collapsing to something provable. This is the SAME gap as point 2 above,
+seen from the other end of the codebase, not a new one — the codebase
+currently has this open question written down in two unconnected
+places (`GenericPeelChainHyp.hfinrank_le` and `genList_finrank_le`'s own
+`PeelChainFinrankHyp` hypothesis) with no theorem tying either to route
+3's actual output shape.
+
+**4. A more basic gap than either of the above, not previously flagged
+anywhere in this codebase: route 3's own `finrank` chain has never
+actually been instantiated at a real base case, for ANY `sa,sb`,
+`alpha`-linked or not.** `genList_triangular_finrank_le_of_base`/
+`_fourStage` (entries 71/77/78) are generic over an abstract already-
+`Module.Finite` starting prefix `gens : List (Rdec p)` — but no file
+anywhere supplies such a `gens` with a real proof. `gens := []` is the
+natural candidate and is FALSE (`Rdec p ⧸ Ideal.ofList [] ≃ Rdec p`,
+infinite-dimensional — the exact obstruction this document's own
+"Naive `Ideal.ofList`-prefix induction" section already diagnosed), and
+no strict prefix of `genListTriangular` is finite either (`a1,a2,b1,b2`
+are never a pivot alone, only jointly via the shared-pivot resultants —
+same reason this document's route-1/route-2 sections already give).
+`genList_finite_of_regular` (entry 71, `GenListFinrankResultantAssembly
+.lean`) is NOT a fix for this — it proves `Module.Finite` for the FULL
+twelve-generator `Ideal.ofList genList` via the global regular-sequence
+argument, which is an END state, not a starting `gens` the induction can
+consume; it was never wired as such, and cannot be (there is no smaller
+`gens` it bears on). **Net effect: `genList_triangular_finrank_le_of_base_
+fourStage`'s numeric `≤ B` conclusion has never actually been produced
+for a real ring — every existing use of it in this codebase is at the
+level of "if some finite base existed, here is how the bound would be
+built," not "here is the bound."** Confirmed by grep: no file calls
+`genList_triangular_finrank_le_of_base` or `..._fourStage` anywhere
+except their own defining/adjacent files' docstrings.
+
+**What this means for scope, going forward**: point 4 is the most
+concrete and most tractable of the four — it needs a genuinely new
+finiteness argument for *some* starting prefix (most plausibly: prove
+`Module.Finite` for the curve-relations-alone quotient, `gens := []`
+extended by just the four curve relations, directly — this is a
+4-variable-over-8-coefficients situation, likely far more tractable than
+the full 12-generator regularity argument `genList_finite_of_regular`
+uses), not a resolution of the deeper alpha-linkage question (points 2/3,
+still exactly as open as this document's pre-existing "actual remaining
+blocker" section already says). Doing point 4 does NOT touch points 2/3
+and should not be read as progress against them.
+
+**Update, same pass, before any proof of `RouteThreeHasBaseCase` was
+attempted — the curve-relations-alone route above is FALSE, not merely
+hard, checked directly against `curveA1`'s literal definition.**
+`curveA1 = wa1'² − f(a1')` (`DecoupledSystemRegular.lean` §3) constrains
+`wa1` given `a1`, but leaves `a1` itself completely free — and nothing
+else among the four curve relations, or any proper sublist of `genList`,
+pins `a1,a2,b1,b2` down at all: these four variables are NEVER a pivot
+of any of the twelve generators (already established earlier in this
+document, "The twelve stages" section) — they appear only as
+COEFFICIENTS, inside `u1_num i` etc. (`theData`'s concrete values, via
+`aSideGens`/`bSideGens`), which are exactly the generators that pin down
+`U0,U1,V0,V1`. So `Rdec p ⧸ Ideal.ofList [curveA1,...,curveB2]` is
+`(F p)[a1,a2,b1,b2][wa1,wa2,wb1,wb2] ⧸ (4 monic quadratics)` — finite
+RANK 16 over `(F p)[a1,a2,b1,b2]`, but `(F p)[a1,a2,b1,b2]` is itself a
+4-variable free polynomial ring, infinite-dimensional over `F p`. The
+same argument rules out EVERY proper sublist of `genList` (in any
+order): `a1,a2,b1,b2` are pinned down only by the joint interaction of
+ALL twelve generators together (`U0,U1,V0,V1`'s own defining relations
+depend on the curve variables through their coefficients, and the curve
+relations depend on `U0,U1,V0,V1` through nothing — the dependency is
+one-directional, but finiteness needs the OTHER direction closed too,
+which only happens once every generator is in). **Conclusion:
+`RouteThreeHasBaseCase` (`GenListFinrankFourStageTransport.lean`) is
+unprovable as stated — there is no `gens` strictly smaller than the
+full `genList`/`genListTriangular`, in any order, giving a finite
+quotient over `F p`.** This is a genuine mathematical fact about this
+specific 12-generator system, not a Lean gimmick or an artifact of
+choosing the wrong prefix — matching (and now sharpening) this
+document's own much earlier "Naive `Ideal.ofList`-prefix induction"
+finding, which already suspected no strict prefix works but had not
+traced the reason to `a1,a2,b1,b2` specifically being coefficients-only,
+never pivots.
+
+**What this actually forces**: route 3's entire "finite-prefix induction"
+architecture (entries 71/77/78,
+`GenListFinrankFourStageTransport.lean`) can never be given a witness
+for its own generic `gens` hypothesis — not "not yet," but structurally,
+for this system. The `finrank ≤ 16` NUMBER itself is very likely still
+correct (route 3's per-stage multiplier accounting — `×1` per linear
+stage, `×2` per curve stage, `16` total — is sound reasoning about how
+much EACH stage's own generator constrains things RELATIVE TO the
+previous stage), but that reasoning cannot be assembled via an induction
+that needs an intermediate finite ring to exist, because none does
+before the twelfth generator is added. **The correct fix, not yet
+attempted**: prove the `finrank ≤ 16` bound as a property of the FULL
+ideal directly (using `genList_finite_of_regular`'s existing finiteness
+fact as a start, then bounding the DEGREE/LENGTH of the finite quotient
+via a genuinely global argument — e.g. Bézout/degree-multiplicativity for
+a genuine 0-dimensional complete intersection, not a stage-by-stage
+tower), rather than via any induction that passes through smaller
+`Ideal.ofList` prefixes of `Rdec p`. This is a different, and likely
+harder, argument than anything route 3 has built — route 3's twelve
+per-stage lemmas (entries 36–70 and 71–78) are not wasted (the per-stage
+"how much does THIS relation cost, given the ambient ring is already
+correctly-shaped" content is genuine and reusable), but the ASSEMBLY
+strategy chaining them via `gens := []` upward needs to be abandoned, not
+merely finished.
+
 ## Next concrete steps, in order
 
 1. **DONE, this pass.** Linear-stage half
@@ -504,28 +653,21 @@ itself may need to change once `sa,sb` are properly linked via
    the matching equation directly), not a dead end — UNLESS a later step
    needs a literal canonical point rather than an efficiently-decidable
    candidate set, which nothing currently on file needs.
-3. Restate `genList_finrank_le` (or its replacement) over
-   `SampleTargetFromAlpha`-linked `sa, sb` with fixed `alpha, alpha'`,
-   using step 1's fiber-level uniqueness result (route (ii): "one
-   quotient-level configuration, ≤16 lifts", not pointwise) alongside
-   route 3's existing `finrank` bound. A fiber that is a single
-   x-coordinate configuration with ≤16 geometric lifts has `finrank ≤ 16`
-   directly from route 3's own bound — no extra work needed to go from
-   "≤16 lifts" to "finrank ≤ 16", since route 3's bound was already
-   stated at exactly that granularity (it never assumed the fiber was a
-   single point to begin with, per `GenListFinrankResultantAssembly
-   .lean`'s own docstring: "≤16-dimensional" was always the target, a
-   single point was the ASPIRATION for step 5's `Bad`-sizing, not
-   something step 3 itself needs). This step is therefore mostly about
-   the `SampleTargetFromAlpha`-linkage of `sa,sb` (tying `alpha,alpha'`
-   to `genList`'s `sa,sb` arguments), not about upgrading the uniqueness
-   strength — genuinely new work, not yet started (see "Not yet started"
-   below for the concrete gap: `SampleTargetFromAlpha` lives at the
-   `Jacobian H D`/`H.Point` level, `genList`/`GenListPairwiseAgreement
-   Assembly.lean` at the `Rdec p`/Mumford-coefficient level; connecting
-   them needs `H.Point → F p × F p` coordinates, already flagged as an
-   open gap by `AlphaLocusDegreeUniform.lean`'s own "Task (A)" section,
-   `toCoords`).
+3. **Superseded by the "Corrections, this pass" section above — read
+   that first.** `toCoords` (this item's originally-named concrete gap)
+   is closed; `SampleTargetFromAlpha`-linkage of `sa,sb` is NOT closed by
+   `toCoords` being closed, and remains exactly as open as this
+   document's own "actual remaining blocker" section describes —
+   `GenericPeelChainHyp`/`genList_finrank_le` both currently route around
+   it rather than resolve it (Corrections points 2/3). Restating
+   `genList_finrank_le` (or a genuinely new replacement theorem) over
+   `SampleTargetFromAlpha`-linked `sa,sb` with fixed `alpha,alpha'`, using
+   step 1's fiber-level uniqueness result (route (ii): "one quotient-level
+   configuration, ≤16 lifts") alongside route 3's `finrank` machinery, is
+   still the right target and is still not started — but it is blocked on
+   Corrections point 4 (route 3 has no working base case yet) at least as
+   much as on the alpha-linkage question itself, so point 4 is the more
+   tractable place to start.
 4. Write `GenListFinrankResultantAssembly.lean`, chaining route 3's
    already-built resultant-elimination + curve-relation stages against
    the corrected per-fiber statement. **Update: this file already exists

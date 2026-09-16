@@ -1338,6 +1338,164 @@ NOT by themselves justify constructing `G(Δ)` for an arbitrary
 that remains a separate fact about the `Reduce`/Mumford construction,
 not attempted here or anywhere else in this project yet.
 
+### 71. `GenListFinrankResultantAssembly.lean` (329 lines)
+Imports: `CurveRelationChainFinrank`, `SharedPivotStageWiringFinite`,
+`GenListTriangularReorder`, `GenListFinrankAssembly`.
+
+**The file entries 63/66 named as not-yet-existing — now written, and now
+the correct entry point for "does `GenListFinrankResultantAssembly.lean`
+exist" instead of the stale "no" this index gave at the bottom of this
+document before this pass.** Chains entry 65's four-stage curve-relation
+chain with entry 66's shared-pivot machinery, over `genListTriangular`
+(curves first, matching generators second — order is load-bearing, not
+stylistic: `FuList`/`FvList`'s coefficients are only guaranteed constant
+once the curve variables are already eliminated). Proves
+`genList_triangular_finrank_le`, a real bound GIVEN the starting (empty)
+prefix is already `Module.Finite` — supplied honestly, not smuggled in,
+since `Module.Finite (F p) (F p)` (rank 1) is the genuinely-true base case
+(no longer `base_prefix_finite_sorry`, an earlier false placeholder this
+file's own docstring flags as corrected this pass).
+
+**Read the gap this file leaves before treating it as "genList_finrank_le,
+closed" — it is not, quite.** Its own module docstring calls out only
+applying the shared-pivot stage ONCE (for `U0`), not all four
+(`U0,U1,V0,V1`) its docstring otherwise describes — entry 78 below is
+what actually closes that. Also not done here: the final mechanical
+transport of the bound from `genListTriangular`'s reordered presentation
+back onto `genList`'s own literal stated order
+(`quot_genListTriangular_eq_quot_genList`, one `rw`, explicitly left for
+"whoever calls this file against `genList_finrank_le` itself"). Sorry-free
+throughout (checked directly, comment-stripped).
+
+### 72. `PeelChainPairwiseAgreement.lean` (221 lines)
+Imports: `LinearElimDegreeBound`, `CurveRelationsDegreeBound`.
+
+**Starts the "pairwise agreement" line — the roadmap's corrected
+replacement for the abandoned orbit-map/connectedness route to `Δ = 0`**
+(see `ROADMAP-monic-annihilator-degree-uniform.md`'s "actual remaining
+blocker" section; entries 68/69's connectedness machinery is NOT reused
+here, per that roadmap's own explicit correction). A genuinely smaller
+claim than the `finrank` bound: two abstract copies of the same base ring
+`A` (not an extended `B`), asking whether two elements `t t' : A`
+satisfying the same relation must be equal, not how big the extension is.
+Linear stages (`d=1`): unconditional — `t`'s value is literally forced to
+`d⁻¹·c` (`linearElim_forces_eq`/`linearElim_pairwise_eq`, pulled out of
+entry 62's own inline computation as a reusable lemma, that file's proof
+untouched). Curve stages (`d=2`): needs an explicit side condition —
+`curveRelation_sq_sub_sq_eq_zero` gives `(t-t')(t+t')=0` unconditionally,
+closed to `t=t'` only via a stated `t ≠ -t'` hypothesis
+(`curveRelation_forces_eq`, `IsDomain B` needed for the two-branch split).
+Sorry-free.
+
+### 73. `PeelChainPairwiseAgreementWiring.lean` (185 lines)
+Imports: `PeelChainPairwiseAgreement`, `CurveRelationStageWiring`,
+`LinearElimStageWiring`, `DecoupledSystemRegular`.
+
+Specializes entry 72's abstract facts against `genList`'s literal
+`linearElimGen`/`curveRelationGen` shapes (entries 43/44's own
+conventions). **Records a genuinely negative finding, checked directly
+against `curveA1`'s literal definition and `SampleTarget`'s field list,
+not assumed**: there is NO sign convention anywhere in `theData`'s
+symbolic algebra pinning `wa1`/`wa2`/`wb1`/`wb2` to one square root over
+the other — `wa1` and `-wa1` are genuinely interchangeable in `Rdec p`'s
+free-polynomial presentation. So the curve-relation `t ≠ -t'` hypothesis
+from entry 72 is stated explicitly at each of the four call sites here,
+not derived. Also settles — negatively — the once-open "16 sign patterns"
+framing: `[P]+[ι(P)]=0` in `J` always (Mumford, *Tata Lectures on Theta
+II* ch. IIIa §1), so flipping a subset of the four points changes the
+matching equation by `-2·Σ ε_i[P_i]`, zero only under a genuine 2-torsion
+condition — most of the naive 16 patterns do NOT satisfy the matching
+equation in general, so treat every "up to sign" theorem in this file and
+its downstream users (entries 74/76) as fiber-level content only, not
+`Δ = 0` content, without a separate non-degeneracy input. Linear-stage
+wiring (`linearElim_ofList_pairwise_eq`) has no such gap — unconditional.
+Sorry-free.
+
+### 74. `PeelChainPairwiseAgreementLinearChain.lean` (107 lines)
+Imports: `PeelChainPairwiseAgreementWiring`, `DecoupledSystemRegular`.
+
+The eight matching-generator stages (`Fu0`–`Fu3`,`Fv0`–`Fv3`), chained.
+**Shared-pivot structure again** (`U0` pivoted by both `Fu0` and `Fu1`,
+etc. — same shape entries 62/66's `finrank` treatment has), but pairwise
+agreement is strictly cheaper here than the `finrank` bound: it needs
+only ONE of each pivot's two generators (whichever has a supplied
+`IsUnit` denominator), not both-via-resultant. This file's fixed
+convention: uses the FIRST generator of each shared pair (`Fu0` for `U0`,
+`Fu2` for `U1`, `Fv0` for `V0`, `Fv2` for `V1`) — a caller with only the
+second generator's hypothesis should call entry 73's
+`linearElim_ofList_pairwise_eq` directly instead. Sorry-free.
+
+### 75. `PeelChainPairwiseAgreementCurveChain.lean` (101 lines)
+Imports: `PeelChainPairwiseAgreementWiring`, `CurveRelationChainFinrank`,
+`DecoupledSystemRegular`.
+
+The four curve-relation stages, agreement-up-to-sign form, mirroring
+entry 65's `finrank_le_and_finite_curveRelationGenChain` in shape and
+stage order — but, unlike that theorem's genuinely sequential four
+stages (each over the PREVIOUS stage's extended ring), all four `t_i,t_i'`
+pairs here live in the SAME base ring `A` from the start, so the four
+per-stage facts are independent: no `obtain`/`haveI` instance-threading
+between stages, just four applications of
+`curveRelation_forces_eq_up_to_sign` packaged into one conjunction.
+Sorry-free.
+
+### 76. `GenListPairwiseAgreementAssembly.lean` (150 lines)
+Imports: `PeelChainPairwiseAgreementCurveChain`,
+`PeelChainPairwiseAgreementLinearChain`, `GenListTriangularReorder`.
+
+**Closes the roadmap's "Next concrete steps" item 2** — chains entries
+74/75 into one statement about two candidate solutions of all twelve of
+`genList`'s generators. Order: curves first, matching generators second,
+same reason as entry 71 (`FuList`/`FvList`'s coefficients aren't constant
+until the curve variables are eliminated) and the same
+`genListTriangular` presentation entry 71 uses. Unlike the `finrank`
+assembly, needs no stage-by-stage ring extension — pairwise agreement is
+a claim about two elements of the SAME fixed quotient at every stage, so
+all eight facts (four up-to-sign, four exact) combine in one flat
+conjunction over one shared prefix. Concludes: `(t1=t1' ∨ t1=-t1') ∧ ...`
+(curve `w`-values, up to sign) `∧ (U0v=U0v' ∧ U1v=U1v' ∧ V0v=V0v' ∧
+V1v=V1v')` (matching-generator values, exact) — note `a1,a2,b1,b2` never
+appear as a conclusion here, matching the roadmap's own observation that
+these four are coefficients only, never a pivot. **Does not yet address**
+the roadmap's own still-open (i)/(ii) fork (route (ii): keep the ≤16
+bound, defer sharpening 16→1) or the `SampleTargetFromAlpha` linkage
+(roadmap "Next concrete steps" item 3) — this file closes item 2 only.
+Sorry-free.
+
+### 77. `SharedPivotFourStageFinrank.lean` (423 lines)
+Imports: `SharedPivotStageWiringFinite`.
+
+**Fixes a real gap discovered in entry 71, not merely documented by it**:
+entry 71's `genList_triangular_finrank_le_of_base` calls the shared-pivot
+stage lemma exactly ONCE (for `U0`) despite its own module docstring
+describing all four shared-pivot stages (`U0,U1,V0,V1`). This file
+supplies the missing three (`U1,V0,V1`), generic over an arbitrary
+already-`Module.Finite`/`Nontrivial` starting prefix (composes with
+entry 71's `U0`-stage output, but nothing here is specific to
+curve-extended prefixes). One wrapper theorem rather than three separate
+ones, since each stage's hypotheses must be stated against the previous
+stage's already-extended (syntactically nested, genuinely large) prefix
+type — accepted honestly here via `obtain`/`haveI` chaining rather than
+hidden. Sorry-free.
+
+### 78. `GenListFinrankFourStageAssembly.lean` (744 lines)
+Imports: `GenListFinrankResultantAssembly`, `SharedPivotFourStageFinrank`.
+
+**The file that actually closes the four-shared-pivot-stage gap entry 71
+left open** — chains entry 71's curve-then-`U0` output prefix into entry
+77's `U1,V0,V1` stages. Pure composition, both halves used as black
+boxes via `obtain`; the only new content is the final `finrank` bound via
+`le_trans`/`Nat.mul_le_mul` (the second stage's bound genuinely depends on
+the first stage's witness ring — the two `∃`s combine by instantiation,
+not by multiplying two independent naturals). **Still not done, per its
+own docstring, and the one remaining item before `genList_finrank_le`
+itself can cite this file**: the `genListTriangular` → `genList` order
+transport (entry 71's `quot_genListTriangular_eq_quot_genList`,
+mechanical, not yet invoked here either). Sorry-free. As of this pass,
+this file — not entry 71 — is the true terminus of the `finrank` numeric
+chain (route 3's "Core reusable fact" list should be read as entries
+36/45/62/65/66/71/77/78 together, not entry 71 alone).
+
 ## Open gaps, cross-referenced (read this before assuming the chain is done)
 
 - **File 2's `hA`/`hB` hypothesis** (a literal, not merely existential,
@@ -1409,12 +1567,20 @@ not attempted here or anywhere else in this project yet.
   route is being used for the linear-elimination stages (0–7) too, or
   whether those still route through entries 56–60/`idxEquivFin` — check
   before assuming either.
-- **`GenListFinrankResultantAssembly.lean` still does not exist as a
-  file** (named by entries 63/66's own docstrings as the file that will
-  chain the four resultant-elimination stages together with entry 65's
-  curve chain into entry 55's actual replacement). Building it is the
-  next concrete wiring step on the literal-prefix line, PROVIDED the
-  deeper gap below is closed first.
+- **Stale as of this pass — corrected: `GenListFinrankResultantAssembly.
+  lean` now exists (entry 71)**, and the four-shared-pivot-stage gap it
+  initially left half-done (only `U0`, not `U0,U1,V0,V1`) is also closed,
+  by entries 77–78. The true terminus of the `finrank` numeric chain is
+  entry 78 (`GenListFinrankFourStageAssembly.lean`), not entry 71 alone —
+  see entries 71/77/78 above for the honest account of what each piece
+  does and does not close. What entry 78 still leaves undone: the
+  mechanical `genListTriangular` → `genList` order transport, needed
+  before this chain can be cited as literally proving
+  `genList_finrank_le` as stated in entry 55/`GenListFinrankAssembly
+  .lean`. Separately, entries 72–76 close the roadmap's Step 1
+  (pairwise agreement) in full — see entry 76's own docstring for what
+  it does and does not yet feed into (the `SampleTargetFromAlpha`
+  linkage, roadmap item 3, is still not started).
 - **The actual blocker for entry 55, per `ROADMAP-monic-annihilator-
   degree-uniform.md`'s latest corrections, is not wiring at all.** Two
   corrections deep: (1) the "integrality" question (does `finrank ≤ 16`

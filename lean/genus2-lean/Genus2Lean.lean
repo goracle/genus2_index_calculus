@@ -181,3 +181,4 @@ import Genus2Lean.ZeroD.PeelChainPairwiseAgreementLinearChain
 import Genus2Lean.ZeroD.GenListPairwiseAgreementAssembly
 import Genus2Lean.ZeroD.SharedPivotFourStageFinrank
 import Genus2Lean.ZeroD.GenListFinrankFourStageAssembly
+import Genus2Lean.ZeroD.GenListFinrankFourStageTransport
