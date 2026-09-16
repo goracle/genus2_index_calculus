@@ -97,7 +97,10 @@ noncomputable def mk_sampleTargetFromAlpha_of_reduceDispatch
       IsCoprime (Ypoly4Tangent p c0 c1 c2 c3 c4 P1.X P1.Y
           ua0 ua1 va0 va1 u0 u1 v0 v1)
         (uRS4Tangent p c0 c1 c2 c3 c4 P1.X P1.Y
-          ua0 ua1 va0 va1 u0 u1 v0 v1)) :
+          ua0 ua1 va0 va1 u0 u1 v0 v1))
+    (hmemZmultiplesA :
+      HyperellipticPolynomial.s D δ₀ P1 + HyperellipticPolynomial.s D δ₀ P2 ∈
+        AddSubgroup.zmultiples aClass) :
     SampleTargetFromAlpha p H D aClass δ₀ :=
   let out := ReduceDispatchGeneral p c0 c1 c2 c3 c4 (P1.X, P1.Y) (P2.X, P2.Y)
     ua0 ua1 va0 va1 u0 u1 v0 v1 hcur hgcd hcurT hgcdT
@@ -105,7 +108,8 @@ noncomputable def mk_sampleTargetFromAlpha_of_reduceDispatch
     alpha := alpha
     P1 := P1
     P2 := P2
-    isReduction := True }
+    isReduction := True
+    memZmultiplesA := hmemZmultiplesA }
 
 -- Marked `irreducible` so nothing that mentions
 -- `mk_sampleTargetFromAlpha_of_reduceDispatch` applied to arguments,
@@ -142,22 +146,25 @@ theorem toSampleTarget_mk_sampleTargetFromAlpha_of_reduceDispatch
       IsCoprime (Ypoly4Tangent p c0 c1 c2 c3 c4 P1.X P1.Y
           ua0 ua1 va0 va1 u0 u1 v0 v1)
         (uRS4Tangent p c0 c1 c2 c3 c4 P1.X P1.Y
-          ua0 ua1 va0 va1 u0 u1 v0 v1)) :
+          ua0 ua1 va0 va1 u0 u1 v0 v1))
+    (hmemZmultiplesA :
+      HyperellipticPolynomial.s D δ₀ P1 + HyperellipticPolynomial.s D δ₀ P2 ∈
+        AddSubgroup.zmultiples aClass) :
     (mk_sampleTargetFromAlpha_of_reduceDispatch
         aClass δ₀ alpha P1 P2 c0 c1 c2 c3 c4 ua0 ua1 va0 va1 u0 u1 v0 v1
-        hcur hgcd hcurT hgcdT).toSampleTarget.u0 = (ReduceDispatchGeneral p c0 c1 c2 c3 c4
+        hcur hgcd hcurT hgcdT hmemZmultiplesA).toSampleTarget.u0 = (ReduceDispatchGeneral p c0 c1 c2 c3 c4
         (P1.X, P1.Y) (P2.X, P2.Y) ua0 ua1 va0 va1 u0 u1 v0 v1 hcur hgcd hcurT hgcdT).1
     ∧ (mk_sampleTargetFromAlpha_of_reduceDispatch
         aClass δ₀ alpha P1 P2 c0 c1 c2 c3 c4 ua0 ua1 va0 va1 u0 u1 v0 v1
-        hcur hgcd hcurT hgcdT).toSampleTarget.u1 = (ReduceDispatchGeneral p c0 c1 c2 c3 c4
+        hcur hgcd hcurT hgcdT hmemZmultiplesA).toSampleTarget.u1 = (ReduceDispatchGeneral p c0 c1 c2 c3 c4
         (P1.X, P1.Y) (P2.X, P2.Y) ua0 ua1 va0 va1 u0 u1 v0 v1 hcur hgcd hcurT hgcdT).2.1
     ∧ (mk_sampleTargetFromAlpha_of_reduceDispatch
         aClass δ₀ alpha P1 P2 c0 c1 c2 c3 c4 ua0 ua1 va0 va1 u0 u1 v0 v1
-        hcur hgcd hcurT hgcdT).toSampleTarget.v0 = (ReduceDispatchGeneral p c0 c1 c2 c3 c4
+        hcur hgcd hcurT hgcdT hmemZmultiplesA).toSampleTarget.v0 = (ReduceDispatchGeneral p c0 c1 c2 c3 c4
         (P1.X, P1.Y) (P2.X, P2.Y) ua0 ua1 va0 va1 u0 u1 v0 v1 hcur hgcd hcurT hgcdT).2.2.1
     ∧ (mk_sampleTargetFromAlpha_of_reduceDispatch
         aClass δ₀ alpha P1 P2 c0 c1 c2 c3 c4 ua0 ua1 va0 va1 u0 u1 v0 v1
-        hcur hgcd hcurT hgcdT).toSampleTarget.v1 = (ReduceDispatchGeneral p c0 c1 c2 c3 c4
+        hcur hgcd hcurT hgcdT hmemZmultiplesA).toSampleTarget.v1 = (ReduceDispatchGeneral p c0 c1 c2 c3 c4
         (P1.X, P1.Y) (P2.X, P2.Y) ua0 ua1 va0 va1 u0 u1 v0 v1 hcur hgcd hcurT hgcdT).2.2.2 := by
   exact ⟨rfl, rfl, rfl, rfl⟩
 
@@ -186,16 +193,19 @@ theorem alpha_P1_P2_mk_sampleTargetFromAlpha_of_reduceDispatch
       IsCoprime (Ypoly4Tangent p c0 c1 c2 c3 c4 P1.X P1.Y
           ua0 ua1 va0 va1 u0 u1 v0 v1)
         (uRS4Tangent p c0 c1 c2 c3 c4 P1.X P1.Y
-          ua0 ua1 va0 va1 u0 u1 v0 v1)) :
+          ua0 ua1 va0 va1 u0 u1 v0 v1))
+    (hmemZmultiplesA :
+      HyperellipticPolynomial.s D δ₀ P1 + HyperellipticPolynomial.s D δ₀ P2 ∈
+        AddSubgroup.zmultiples aClass) :
     (mk_sampleTargetFromAlpha_of_reduceDispatch
         aClass δ₀ alpha P1 P2 c0 c1 c2 c3 c4 ua0 ua1 va0 va1 u0 u1 v0 v1
-        hcur hgcd hcurT hgcdT).alpha = alpha
+        hcur hgcd hcurT hgcdT hmemZmultiplesA).alpha = alpha
     ∧ (mk_sampleTargetFromAlpha_of_reduceDispatch
         aClass δ₀ alpha P1 P2 c0 c1 c2 c3 c4 ua0 ua1 va0 va1 u0 u1 v0 v1
-        hcur hgcd hcurT hgcdT).P1 = P1
+        hcur hgcd hcurT hgcdT hmemZmultiplesA).P1 = P1
     ∧ (mk_sampleTargetFromAlpha_of_reduceDispatch
         aClass δ₀ alpha P1 P2 c0 c1 c2 c3 c4 ua0 ua1 va0 va1 u0 u1 v0 v1
-        hcur hgcd hcurT hgcdT).P2 = P2 := by
+        hcur hgcd hcurT hgcdT hmemZmultiplesA).P2 = P2 := by
   exact ⟨rfl, rfl, rfl⟩
 
 -- ============================================================
@@ -395,15 +405,18 @@ theorem exists_sampleTargetFromAlpha_of_reduceDispatch
       IsCoprime (Ypoly4Tangent p c0 c1 c2 c3 c4 P1.X P1.Y
           ua0 ua1 va0 va1 u0 u1 v0 v1)
         (uRS4Tangent p c0 c1 c2 c3 c4 P1.X P1.Y
-          ua0 ua1 va0 va1 u0 u1 v0 v1)) :
+          ua0 ua1 va0 va1 u0 u1 v0 v1))
+    (hmemZmultiplesA :
+      HyperellipticPolynomial.s D δ₀ P1 + HyperellipticPolynomial.s D δ₀ P2 ∈
+        AddSubgroup.zmultiples aClass) :
     ∃ sa : SampleTargetFromAlpha p H D aClass δ₀,
       sa.alpha = alpha ∧ sa.P1 = P1 ∧ sa.P2 = P2 ∧ isReductionOutputOf sa := by
   obtain ⟨e0, e1, e2, e3⟩ := toSampleTarget_mk_sampleTargetFromAlpha_of_reduceDispatch
     aClass δ₀ alpha P1 P2 c0 c1 c2 c3 c4 ua0 ua1 va0 va1 u0 u1 v0 v1
-    hcur hgcd hcurT hgcdT
+    hcur hgcd hcurT hgcdT hmemZmultiplesA
   obtain ⟨ea, eP1, eP2⟩ := alpha_P1_P2_mk_sampleTargetFromAlpha_of_reduceDispatch
     aClass δ₀ alpha P1 P2 c0 c1 c2 c3 c4 ua0 ua1 va0 va1 u0 u1 v0 v1
-    hcur hgcd hcurT hgcdT
+    hcur hgcd hcurT hgcdT hmemZmultiplesA
   -- Introduce the witness as a bound local `sa` via `generalize` BEFORE
   -- `refine`, same discipline as `isReductionOutputOf_of_fields_eq`'s
   -- call site logic below — this keeps
@@ -411,7 +424,7 @@ theorem exists_sampleTargetFromAlpha_of_reduceDispatch
   -- `refine` would otherwise leave.
   generalize hsa : mk_sampleTargetFromAlpha_of_reduceDispatch
     aClass δ₀ alpha P1 P2 c0 c1 c2 c3 c4 ua0 ua1 va0 va1 u0 u1 v0 v1
-    hcur hgcd hcurT hgcdT = sa at e0 e1 e2 e3 ea eP1 eP2
+    hcur hgcd hcurT hgcdT hmemZmultiplesA = sa at e0 e1 e2 e3 ea eP1 eP2
   refine ⟨sa, ea, eP1, eP2, ?_⟩
   -- `e0 e1 e2 e3` state `sa.toSampleTarget`'s fields equal `out`'s
   -- projections, where `out := ReduceDispatchGeneral ... u0 u1 v0 v1
