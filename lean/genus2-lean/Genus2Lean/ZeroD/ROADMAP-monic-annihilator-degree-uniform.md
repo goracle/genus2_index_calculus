@@ -653,6 +653,16 @@ merely finished.
    the matching equation directly), not a dead end — UNLESS a later step
    needs a literal canonical point rather than an efficiently-decidable
    candidate set, which nothing currently on file needs.
+2b. **Transport step ("Not yet done" note at the end of the earlier
+    "Step 1 (pairwise agreement), current state" section) — ATTEMPTED
+    this pass, not yet REPL-confirmed.** `GenListPairwiseAgreementTransport
+    .lean`'s `genList_pairwise_eq_up_to_sign` restates
+    `genListTriangular_pairwise_eq_up_to_sign` over `Ideal.ofList
+    (genList ...)` instead of `genListTriangular`'s reordered list. See
+    the "Update, this pass" section below for the full account, including
+    the one unverified tactic step (`simp only [← Ideal.ofList_perm ...]
+    at *`) and its documented fallback if that step fails in Claire's
+    REPL.
 3. **Superseded by the "Corrections, this pass" section above — read
    that first.** `toCoords` (this item's originally-named concrete gap)
    is closed; `SampleTargetFromAlpha`-linkage of `sa,sb` is NOT closed by
@@ -696,6 +706,330 @@ merely finished.
    check this against — premature before then, since it needs concrete
    `(P1,P2)` data this project does not yet construct (`Reduce` is still
    unported, per `AlphaLocusDegreeUniform.lean`'s own status list).
+
+## Item 4 revisited, this pass: route 3's chain confirmed uninvokable
+## end-to-end, not just at the `gens := []` base case — the numeric
+## bound needs a genuinely global (Bézout-style) argument, which does
+## not exist in this codebase or in Mathlib
+
+Direct inspection this pass, checking `GenListFinrankFourStageAssembly.lean`
+and `GenListFinrankFourStageTransport.lean` (entries 77/78, both already
+sorry-free and REPL-confirmed per the file index) against their own literal
+signatures, not against either file's own summary prose:
+
+- `genList_triangular_finrank_le_of_base_fourStage` (entry 78, the true
+  terminus of route 3's numeric chain, chaining curves + all four
+  shared-pivot pairs `U0,U1,V0,V1`) still takes `hfin : Module.Finite (F p)
+  (Rdec p ⧸ Ideal.ofList gens)` as an ordinary hypothesis on an arbitrary
+  starting `gens`. It has never been discharged — confirmed by grep, as
+  `RouteThreeHasBaseCase`'s own docstring already says, it has zero call
+  sites anywhere in this codebase.
+- `RouteThreeHasBaseCase` (`GenListFinrankFourStageTransport.lean`) names
+  this precisely: `∃ gens, Module.Finite (F p) (Rdec p ⧸ Ideal.ofList gens)
+  ∧ ...`. No file proves this `Prop`. `gens := []` is false (`Rdec p ⧸ ⊥ ≃
+  Rdec p`, infinite-dimensional); this document's own "Update, same pass"
+  section (above) already proved, directly from `curveA1`'s literal
+  definition, that NO strict prefix of `genList`/`genListTriangular`, in
+  any order, is finite either — `a1,a2,b1,b2` are coefficients-only,
+  pinned down only by the joint action of all twelve generators together.
+- **New this pass: block-reshuffling does not rescue this.** One might
+  hope the tower doesn't need to peel one polynomial at a time — group the
+  twelve generators into blocks (e.g. treat `FuList++FvList` as one
+  simultaneous 8-generator elimination stage) and look for a smaller block
+  that's already finite. This doesn't work either, for the same reason:
+  any PROPER sub-block still omits at least one of the twelve generators,
+  and the missing-pivot argument above (`a1,a2,b1,b2` never constrained
+  except jointly) is about which variables are constrained, not about
+  what order or grouping the constraining generators are applied in.
+  Finiteness over `F p` for a genuinely proper subset of `genList` is
+  false as a fact about this system, independent of how that subset's
+  own elements are packaged into "stages."
+- **Consequence, confirmed via a ChatGPT consult this pass on what the
+  fix would actually require**: `genList_finite_of_regular`
+  (`GenListFinrankResultantAssembly.lean`, the theorem that DOES work) is
+  finite via a pure Krull-dimension argument
+  (`Module.Finite.quotient_of_isRegular_of_length_eq_card`,
+  `RegularSequenceFiniteQuotient.lean`) that only ever concludes
+  finiteness, never a numeric bound — Krull dimension is insensitive to
+  multiplicity/length by design. There is no way to extract `finrank ≤ 16`
+  (or any number) from that proof; a length bound for a zero-dimensional
+  complete intersection is a **different, strictly stronger** fact, the
+  mathematical content of which is essentially Bézout's theorem for
+  complete intersections (length of the quotient equals the product of
+  the generators' degrees, in the appropriate graded/leading-term sense).
+  Standard proofs of that fact go through either (a) Hilbert series /
+  graded free resolutions of the associated graded ring, (b) a
+  Gröbner-basis/initial-ideal degeneration argument (the length is
+  preserved under passing to the initial ideal, which decomposes as a
+  monomial count), or (c) a Koszul-complex Euler-characteristic count.
+  **None of these three routes' building blocks — Hilbert series,
+  standard-monomial/initial-ideal bases, or Koszul complexes — exist
+  anywhere in this codebase, and a Mathlib search this pass (web search,
+  `leanprover-community.github.io/mathlib4_docs`, multiple query angles)
+  turned up nothing for any of them at the generality needed** (Mathlib
+  has `IsRegular`/Koszul-adjacent material for depth/Ext-vanishing
+  characterizations, and the Krull-dimension route already used, but
+  nothing connecting regular-sequence length to a degree/multiplicity
+  bound). This is genuinely new infrastructure, not a wiring gap — on the
+  order of weeks, not a session, and not attempted this pass.
+- **Route 3's twelve per-stage lemmas are NOT wasted by this finding** —
+  unchanged from this document's earlier framing: the per-stage
+  monic-annihilator accounting (`×1` per linear stage, `×2` per curve
+  stage) is genuine, reusable content, and would very likely appear again
+  as the "expected" bound inside whichever Hilbert-series/Gröbner argument
+  eventually closes this — it just cannot itself be assembled into that
+  bound via a finite-prefix induction, because no finite prefix exists.
+  Don't discard `GenListFinrankResultantAssembly.lean`/
+  `GenListFinrankFourStageAssembly.lean`/`GenListFinrankFourStageTransport
+  .lean` — keep them as-is; they are correct, complete answers to a
+  narrower question ("given a finite base, what's the bound") that turned
+  out not to compose the way route 3 originally hoped.
+- **What this means for item 3 (the `SampleTargetFromAlpha` linkage,
+  `genList_finrank_le`'s own remaining sorry)**: item 3 cannot currently
+  be closed by citing route 3's chain, full stop — there is no path from
+  what's on file to a discharged `hfin` for any starting `gens`. Writing
+  `SampleTargetFromAlpha`-linked wiring on top of `genList_triangular_
+  finrank_le_of_base_fourStage` right now would either fail to typecheck
+  (no witness for `gens`) or silently need its own new `sorry`/hypothesis
+  restating finiteness of some sub-block, which is false and should not
+  be introduced. The honest next step, not yet started, is scoping the
+  minimal genuinely-new lemma (see below) rather than more wiring.
+
+**Concrete next step, not yet attempted**: rather than trying to build
+full Hilbert-series or Koszul-complex machinery from scratch, the
+minimal useful target is likely a SINGLE lemma, specific to this
+system's actual shape, that a ChatGPT consult could scope precisely:
+given the regular sequence `genList` (or `genListTriangular`) in
+`Rdec p = MvPolynomial Idx (F p)`, `Idx` finite of card 12, with
+`genList`'s own known per-generator structure (8 linear-in-one-variable
+generators, 4 generators quadratic in one variable and otherwise linear
+in the rest), derive `Module.finrank (F p) (Rdec p ⧸ Ideal.ofList
+genList) ≤ 16` directly from `IsRegular`-ness plus the per-generator
+degree data, without needing any intermediate prefix to be finite. This
+is likely provable via a Gröbner/initial-ideal argument specific to this
+system's simple per-generator shape (each generator's leading term, for
+a suitable monomial order, is visibly a single variable's top-degree
+term times a constant/unit — the same shape the monic-annihilator route
+already exploited stage-by-stage) even if the fully general Bézout
+theorem is out of reach.
+
+## ChatGPT consult, this pass — the clean `≤16` prompt as posed was
+## answered correctly: it's FALSE as a general theorem, and the reply
+## also corrects a mischaracterization in this document's own framing
+## of what `GenListFinrankResultantAssembly.lean` already does
+
+**Self-correction first, checked directly against the file before
+accepting the consult's framing of the "problem": this document's own
+above section overstated what was actually being claimed anywhere in
+this codebase.** `genList_triangular_finrank_le_of_base`'s own docstring
+(`GenListFinrankResultantAssembly.lean`, unchanged, re-read this pass)
+already says explicitly: the bound is `16 * B` **times the product of
+the four shared-pivot resultant quotients' own `finrank`s**, "NOT a
+clean numeric constant on its own." `finrank_le_of_shared_linear_elim_pair`
+(`SharedPivotResultantElim.lean`) bounds each shared-pivot pair's cost by
+`Module.finrank k (A ⧸ Ideal.span {resultant})` — the resultant
+quotient's OWN dimension — never by a bare `1`, and already requires
+`hd1 : IsUnit d1` (one of the pair's two denominators a unit), matching
+what the consult below calls "route A," not a bare `IsRegular` hypothesis.
+`finrank_le_sixteen_genList_of_finrank_le_sixteen_genListTriangular`
+(`GenListFinrankFourStageTransport.lean`) takes `hchain : ... ≤ 16` as an
+explicit HYPOTHESIS, not a conclusion it derives. **So no file in this
+codebase ever actually asserted "regular sequence + degree-1-shaped
+generators ⇒ finrank ≤ 16" as a theorem** — the ChatGPT prompt above
+posed that exact (false) claim as the target, which was this document's
+own scoping error, not a preexisting bug in the Lean.
+
+**What the consult actually gets right and adds, genuinely new**:
+
+1. **Confirms the four resultant quotients' finranks are NOT free of the
+   `d` coefficients — a concrete counterexample** (§2 of the reply,
+   `h1 = 1 - U*a^N`, `h2 = a - U`, regular, giving dimension `2(N+1)` not
+   `2`) shows that `IsUnit d1` alone (route A's own stated hypothesis)
+   is not enough either — `finrank_le_of_shared_linear_elim_pair`'s bound
+   via the resultant quotient is CORRECT as stated (it never claimed the
+   resultant quotient has dimension 1), but nothing in this codebase yet
+   shows `theData`'s actual `u1_den 0`/`u2_den 0` etc. give a resultant
+   whose OWN quotient has `finrank` exactly matching what the clean-16
+   count needs. This is exactly `GenListFinrankResultantAssembly.lean`'s
+   own already-honest caveat ("that bound is `theData`-specific content,
+   deferred") — the consult independently confirms via a concrete
+   counterexample that this deferral is load-bearing, not a formality.
+2. **The Gröbner/initial-ideal/Hilbert-series routes (this document's
+   own proposed "next step" above) are confirmed dead ends for the
+   general statement, and MORE SPECIFICALLY explained why**: the
+   generators' naive leading terms (`U · LT(d)`, not `U` alone, since `d`
+   is a non-unit polynomial in general) don't generate the true initial
+   ideal, so "take the obvious leading terms and count standard
+   monomials" doesn't work without first knowing the twelve generators
+   form a Gröbner basis — itself an unproven, and not obviously true,
+   extra fact. Mathlib4's `MonomialOrder`/`Groebner` files (checked by
+   the consult against current docs) provide `leadingTerm`/division-with-
+   invertible-leading-coefficient but no initial-ideal/Hilbert-series
+   package — confirming this document's own earlier finding, not
+   contradicting it.
+3. **The homogeneous-regular-sequence Hilbert-series calculation
+   (degrees `2,2,2,2,1,1,1,1,1,1,1,1` ⇒ Hilbert series `(1+t)^4` ⇒ total
+   dimension `16`) is exactly right IF the sequence were homogeneous in
+   the ordinary grading — but `genList`'s actual generators are not**
+   (`c_j - U d_j` isn't homogeneous unless `c_j,d_j` have matching
+   constant degree; `w^2 - f(a)` isn't homogeneous in the ordinary
+   grading either). A weighted grading might rescue this but needs
+   `theData`'s actual `c_j,d_j`/`f` to satisfy specific compatibility
+   conditions not yet checked against.
+4. **Reframes the actual target theorem, and this is the useful
+   redirection**: rather than "prove `finrank ≤ 16` from abstractions,"
+   the consult's own recommended path (§9) is to prove a narrower,
+   `theData`-specific structural fact — that the four shared-pivot pairs
+   admit an explicit triangular elimination (`U_i` solved in terms of one
+   new coefficient-side pivot each, not merely "a resultant exists"),
+   so the system becomes literally `4 explicit linear eliminations for
+   U0,U1,V0,V1` + `4 coefficient-side pivots among a1,a2,b1,b2` (or
+   equivalent) + `4 monic quadratics in wa1,wa2,wb1,wb2` — at which point
+   `16 = 2^4` falls out as an EXPLICIT spanning set
+   (`w_{a1}^{ε1} w_{a2}^{ε2} w_{b1}^{ε3} w_{b2}^{ε4}`, `ε_i ∈ {0,1}`),
+   not an abstract dimension count. This is a genuinely different, and
+   per the consult, cheaper target than Gröbner/Hilbert machinery.
+
+**Where this actually leaves the project, corrected**: this document's
+own "Item 4 revisited" framing above (treating the missing piece as
+"prove a general Bézout/Koszul-style theorem") was aimed at the wrong
+target — the general theorem is false, so no amount of Hilbert-series
+infrastructure would ever close it as originally posed. **The real
+remaining task is `theData`-specific, not abstract**: check whether
+`u1_den 0, u2_den 0` etc. (`theData`'s actual denominators at each of
+the four shared pivots) admit the triangular structure route A/point 4
+above describes — i.e. whether one of the two pair's denominators is
+provably a unit (`IsUnit`, matching `finrank_le_of_shared_linear_elim_pair`'s
+existing hypothesis) AND the resulting single resultant relation is
+itself provably degree-1/monic in one of the remaining coefficient
+variables (`a1,a2,b1,b2`), which is exactly the fact this document's much
+earlier "Correction, this pass" sections (the `hA`/`hB`,
+`CrossNondegenerate`-degree-bound chain, now a settled-hypothesis dead
+end per that section) already spent significant effort on, from a
+different angle, and did NOT resolve. **This connects two threads of
+this document that had drifted apart**: the "clean 16" numeric target
+and the old `hA`/`hB`/`CrossNondegenerate` degree-bound effort are the
+SAME open question, seen from two directions — a triangular-elimination
+proof for the shared pivots is precisely what would supply the
+resultant-quotient `finrank` bound `GenListFinrankResultantAssembly.lean`
+already defers, AND would settle whether `CrossNondegenerate`'s resultant
+nonvanishing can ever be upgraded to something checkable. Neither thread
+has closed this from either direction; **do not treat "prove a global
+degree/Hilbert-series theorem" as live work going forward** — it answers
+a question this project doesn't actually need answered, per the
+counterexample above, and the genuinely open piece is the concrete
+`theData` triangularity check, not yet attempted from this specific
+angle (checking `u1_den`/`u2_den`/etc.'s actual symbolic form for a
+one-denominator-is-a-unit-and-the-resultant-is-monic property) even
+though closely related efforts (`hA`/`hB`) were tried and hit a
+different, but related, structural wall.
+
+## Update, this pass: the `theData` triangularity check (the previous
+## section's "genuinely open piece") is now a settled dead end, not an
+## open TODO — and step 1 (pairwise agreement) is further along
+
+**Part A: the `theData` denominator-triangularity check is closed,
+negatively.** The previous section left this as "not yet attempted from
+this specific angle." It has now been attempted, by tracing `u1_den`
+(and `u2_den`/`v1_den`/`v2_den`) all the way to their literal defining
+recursion (`TheDataDerivation/DataDerivationMumford.lean`'s `towerToRdec`
+→ `towerToRdecK1` → `baseFracToRing`) rather than reasoning about their
+type signature alone. Finding: `u1_den i` is `den0 * den1`, where `den0,
+den1` are themselves each a product of TWO further such denominators one
+level down, bottoming out at `IsFractionRing.num`/`.den` of an arbitrary
+`K0 p` element (`baseFracToRing`) — i.e. `u1_den i` is a product of up to
+four independently-arbitrary fraction-field denominators, chained through
+three division-clearing steps with NO GCD reduction at any step
+(deliberately dropped, per `baseFracToRing`'s own docstring, "Lean's
+kernel doesn't care about term-count bloat"). Nothing in this
+construction gives `u1_den` any reason to be monic or degree-1 in any of
+`a1,a2,b1,b2` — `IsFractionRing.num`/`.den` supply *some* representative
+with no shape guarantee, and the compounding through three levels only
+makes this worse, not better. **Do not attempt this check again by
+looking harder at the definitions** — the conclusion is structural (no
+shape guarantee exists to find), not a matter of not having looked hard
+enough; confirming it numerically in Julia against a real `(c0,...,c4)`
+instance is the only way this could still surprise us, and even a
+positive numerical hit would only be evidence for ONE instance, not a
+proof. Route 3's numeric `finrank ≤ 16` target is now dead by two
+independent findings (this one, and the earlier Hilbert-series/Koszul
+one above) — treat it as closed, not "still open, needs checking,"
+for any future pass.
+
+**Part B: step 1 (pairwise agreement) does NOT depend on this finding,
+and is why the pivot to it (this pass) is sound, not just a fallback.**
+`genListTriangular_pairwise_eq_up_to_sign`'s four `hdU0`/`hdU1`/`hdV0`/
+`hdV1` hypotheses only need `IsUnit (u1_den i)` etc. as bare EXISTENTIAL
+facts (some inverse exists in the quotient ring) — never the polynomial's
+degree, shape, or any expansion of the four-deep composite above. This
+is exactly the same kind of hypothesis `GenListFinrankResultantAssembly
+.lean`'s own `hd1_U0` already is (confirmed by direct inspection: that
+file states `hd1_U0` as a bare hypothesis too, not derived from `hcurA/
+hcurB/hgcdA/hgcdB`) — the established project pattern (parallel to
+`Nondegenerate`/`CrossNondegenerate`) is to name such conditions as
+per-instance genericity hypotheses and move on, not to derive them from
+first principles. So `IsUnit(u1_den i)` etc. is correctly a standing
+hypothesis in `genListTriangular_pairwise_eq_up_to_sign`'s signature
+already, not a gap blocking it — nothing to do here, confirmed rather
+than assumed.
+
+**Part C: item 2 of "Next concrete steps" (the `genListTriangular` →
+`genList` transport for pairwise agreement) is now attempted — REVISED
+once already this pass, after Claire's REPL caught two real errors in
+the first draft.** New file `GenListPairwiseAgreementTransport.lean`,
+theorem `genList_pairwise_eq_up_to_sign` — restates
+`genListTriangular_pairwise_eq_up_to_sign`'s conclusion over `Rdec p ⧸
+Ideal.ofList gens` for `gens := genList ...` (the presentation every
+other `genList`-facing theorem in this project already uses) instead of
+the reordered `genListTriangular`'s quotient, by rewriting the IDEAL
+equality `Ideal.ofList_perm (genListTriangular_perm_genList ...)` — the
+same fix `GenListFinrankFourStageTransport.lean`'s docstring already
+records for the sibling `finrank` transport (rewrite the ideal, not the
+quotient-ring TYPE equality, to avoid a "motive is not type correct"
+failure).
+
+**First draft's two REPL-reported errors, both fixed in the current
+file**: (1) missing `open TheDataDerivation` — `curBeforeMonic`/`Ypoly`/
+`uRS` live in that namespace and the first draft never opened it,
+despite every sibling file (`GenListTriangularReorder.lean`,
+`DecoupledSystemRegular.lean`) doing so; (2) a `whnf` heartbeat timeout,
+traced to the first draft's signature literally repeating the fully-
+applied term `genList p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB` 31
+times and `theData p c0 c1 c2 c3 c4 sa sb hcurA hcurB hgcdA hgcdB` 21
+times — an elaboration-cost problem in the SIGNATURE itself, independent
+of error (1), of the same kind `dvd_N_u`'s own docstring
+(`TheDataDerivation/DataDerivationSolve.lean`) already diagnosed for a
+proof body via `let`/`clear_value`. **Fixed by following
+`GenListFinrankFourStageTransport.lean`'s own documented design choice**
+("takes the conclusion as a hypothesis, not its ~200-line hypothesis
+list, to avoid a transcription mismatch"): the current file states
+`genList_pairwise_eq_up_to_sign` generically over `gens : List (Rdec p)`
+and `d : DecoupledGenerators p`, tied to `genList`/`theData` via two
+`Eq` hypotheses (`hgens`, `hd`) that a concrete caller discharges with
+`rfl` — mirroring how `genListTriangular_pairwise_eq_up_to_sign` itself
+already keeps `gens`/`d` generic rather than inlining `genListTriangular`/
+`theData` throughout its own statement.
+
+**NOT REPL-confirmed — flagged honestly in the file itself too, and this
+remains true after the revision above.** Errors (1)/(2) are fixed, but
+the core tactic step — `subst hgens; subst hd`, then `simp only [←
+Ideal.ofList_perm ...] at *` — has never itself been run. Whether `simp
+... at *` can rewrite through the `[IsDomain (Rdec p ⧸ Ideal.ofList
+gens)]` INSTANCE argument specifically (as opposed to an ordinary
+hypothesis) without its own motive/instance-synthesis snag is genuinely
+untested — per this project's convention, Claude does not run Lean, so
+this is scoped in good faith but unverified. If it fails in Claire's
+REPL, the documented fallback (also recorded in the new file) is
+`generalize` on `Ideal.ofList gens` to a fresh variable first, rewrite
+there, then re-specialize. **Send any further REPL errors back exactly
+as reported** (as happened this pass) — that is how errors (1)/(2) got
+found and fixed, faster than guessing at what might be wrong.
+
+**Still not done, unchanged from before**: item 2's other half (deciding
+whether to actually chain this against a `SampleTargetFromAlpha`-linked
+restatement is folded into item 3, not item 2), and items 3–7 below are
+otherwise all exactly as open as previously recorded — this update only
+closes the `theData`-triangularity distraction and advances item 2.
 
 ## Reference fact worth formalizing, if route (i)/(ii) above ends up
 
