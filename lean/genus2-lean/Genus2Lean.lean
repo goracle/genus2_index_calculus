@@ -176,3 +176,4 @@ import Genus2Lean.ZeroD.MatchingEquationDeltaInvariance
 import Genus2Lean.ZeroD.GenListFinrankResultantAssembly
 import Genus2Lean.ZeroD.PeelChainPairwiseAgreement
 import Genus2Lean.ZeroD.PeelChainPairwiseAgreementWiring
+import Genus2Lean.ZeroD.PeelChainPairwiseAgreementCurveChain

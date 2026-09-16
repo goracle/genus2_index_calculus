@@ -400,29 +400,63 @@ previous pass left about the curve-relation side condition:
   wiring file, not derived — the honest per-stage condition the roadmap's
   Core Strategy always asked for, now confirmed to need an outside input
   rather than being free.
-- **Two live options going forward, not yet chosen between**: (a) chase
-  the needed sign fact down into `Reduce/AlphaReduce.lean`'s actual
-  Mumford-coordinate/Cantor-reduction construction (a materially
-  different part of the codebase from `theData`'s symbolic algebra, not
-  yet examined for this purpose), or (b) weaken the eventual uniqueness
-  target from "the fiber is a single point" to "the fiber is a single
-  point up to the `2⁴ = 16` independent `w`-sign choices" — which may
-  still be enough to conclude `Δ = 0` if the four sign flips act
-  trivially on `A = [P1]+[P2]` and `B = [P3]+[P4]` (not yet checked).
-  Neither is attempted in this pass.
+- **Option (a), chased and closed off — no sign convention exists to
+  find.** Traced `H.Point` (`AffinePoints.lean`), `SampleTargetFromAlpha`
+  (`P1 P2 : H.Point` are genuinely free structure fields, not derived),
+  `Reduce`/`ReduceDispatch` (`Reduce/AlphaReduce.lean`, fully built and
+  `sorry`-free, but a function OF `P1,P2` — it can't retroactively pin
+  which root was "meant"), and `reducedClass_eq_of_isReduction'`
+  (`ReducedClassBundles.lean`, also `sorry`-free) end to end. None of
+  these fix `wa1`'s sign relative to anything external; the ambiguity is
+  real geometry (choice of which of the two points in a fiber `{P, ιP}`
+  is "the" point), not a Lean gap. Option (a) is closed: there is
+  nothing to find.
+- **Option (b), attempted then corrected via ChatGPT consult
+  (transcript, this pass) — the naive "16 sign patterns" framing was
+  WRONG, not just unproven.** The standard hyperelliptic fact, confirmed
+  against Mumford's *Tata Lectures on Theta II* (ch. IIIa §1): for the
+  odd-degree model with basepoint `∞`, **`[P] + [ι(P)] = 0` in `J` for
+  EVERY `P`** (including Weierstrass points, via `2[W]=0` there — no
+  exceptional case), so `[ι(P)] = -[P]`. Consequently, flipping a subset
+  `S ⊆ {1,2,3,4}` of the four points to their `ι`-images changes the
+  matching-equation LHS by `-2·Σ_{i∈S} ε_i[P_i]` (`ε_i = +1` for
+  `i∈{1,2}`, `−1` for `i∈{3,4}`), so the flip preserves `Δ` **iff
+  `2·Σ_{i∈S} ε_i[P_i] = 0`** — a genuine arithmetic condition on rational
+  2-torsion in `J(𝔽_p)`, not automatic. Most of the naive "16 patterns"
+  do NOT satisfy the matching equation in general; asserting "unique up
+  to 16 sign patterns [each satisfying the matching equation]" would
+  have been false, not merely a weaker true statement. **Option (b) as
+  originally framed is dead — do not resurrect the flat 16-pattern
+  claim.**
+- **What IS true and useful, salvaged from the same consult — the actual
+  target now**: the elimination argument already gives
+  x-coordinate/fiber-level uniqueness, independent of the 2-torsion
+  question above: `P_i' = P_i ∨ P_i' = ι(P_i)` for each `i`, equivalently
+  `{x(P1),...,x(P4)} = {x(P1'),...,x(P4')}`. This is real, standalone
+  content (proved by `curveRelation_forces_eq_up_to_sign` /
+  `curveChain_pairwise_eq_up_to_sign`, already written this pass in
+  `PeelChainPairwiseAgreement*.lean` — keep these files, they're correct
+  and needed, just retarget their downstream use away from the dead
+  16-pattern framing) — it does NOT by itself give `Δ = 0` or resolve
+  which of the `2^4` sign patterns actually holds; that needs either (i)
+  a separate non-degeneracy input ruling out 2-torsion coincidences among
+  `[P1],...,[P4]` under the specific `(alpha,alpha')` targets in play, or
+  (ii) restating the ultimate goal at the fiber level (x-coordinates
+  only) rather than chasing `Δ = 0` pointwise. Neither (i) nor (ii) is
+  chosen yet.
 - The linear-stage wiring (`linearElim_ofList_pairwise_eq`) has no such
   gap — it is unconditional, matching the abstract lemma.
 
-**Not yet done, still needed for step 1 to be complete**: choosing
-between options (a)/(b) above for the curve-relation sign gap, then
-chaining all twelve stages' pairwise-agreement facts (now all wired
-against `genList`'s literal generators) into one `x = x'` (coordinatewise,
-all 12 variables, or "up to sign" per option (b)) statement — the
-pairwise-agreement analogue of `GenListFinrankResultantAssembly.lean`'s
-own not-yet-finished chaining (that file, discovered already
-partially-built this pass, closes the SEPARATE `finrank ≤ 16` numeric
-bound via route 3's curve-then-shared-pivot order; it does not address
-pairwise agreement and is not modified by this work).
+**Not yet done, still needed for step 1 to be complete**: decide between
+(i)/(ii) above for the curve-relation stages, then chain all twelve
+stages' pairwise-agreement facts (now all wired against `genList`'s
+literal generators) into one statement at whichever strength (i)/(ii)
+lands on — the pairwise-agreement analogue of
+`GenListFinrankResultantAssembly.lean`'s own not-yet-finished chaining
+(that file, discovered already partially-built this pass, closes the
+SEPARATE `finrank ≤ 16` numeric bound via route 3's curve-then-shared-
+pivot order; it does not address pairwise agreement and is not modified
+by this work).
 
 ## `Bad`/exceptional-set sizing — still open, blocked on the above
 
@@ -439,19 +473,40 @@ itself may need to change once `sa,sb` are properly linked via
 ## Next concrete steps, in order
 
 1. **Linear-stage half DONE** (`PeelChainPairwiseAgreement.lean`,
-   `PeelChainPairwiseAgreementWiring.lean`). **Curve-relation sign gap
-   CONFIRMED genuinely open, not just unresolved** (see above) — choose
-   between chasing the sign fact in `Reduce/AlphaReduce.lean`, or
-   weakening the target to "unique up to the 4 independent `w`-sign
-   choices," before proceeding further on this thread.
-2. Compose with the already-proved `matching_solutions_translate_by_delta`
-   (`MatchingEquationTranslation.lean`) to conclude `Δ = 0`, closing the
-   statement-correction gap without any topology/connectedness work.
+   `PeelChainPairwiseAgreementWiring.lean`). **Curve-relation sign gap:
+   option (a) CLOSED (no sign convention exists anywhere to find, traced
+   end to end — see above), option (b) as flat "16 patterns" CLOSED as
+   FALSE (ChatGPT consult, this pass — ​`[P]+[ι(P)]=0` always, so a
+   sign-flip on subset `S` preserves `Δ` iff `2·Σ_{i∈S} ε_i[P_i]=0`, a
+   real 2-torsion condition, not automatic).** The `curveRelation_forces
+   _eq_up_to_sign`/`curveChain_pairwise_eq_up_to_sign` lemmas already
+   written this pass remain correct and worth keeping — they prove real
+   fiber-level (x-coordinate) uniqueness — but do NOT feed the matching
+   equation for free. Decide between (i) finding/assuming a
+   non-degeneracy hypothesis ruling out the relevant 2-torsion
+   coincidences (would need `2([P1]+[P2]) ≠ 0` etc., or the stronger
+   `J(𝔽_p)[2] = 0`, for the specific `(alpha,alpha')`-linked targets in
+   play — not yet checked whether that's plausible or how it'd be
+   derived), or (ii) restating the ultimate `AlphaLocusDegreeUniform.lean`
+   goal at the fiber/x-coordinate level from the start, sidestepping `Δ`
+   pointwise-uniqueness entirely, before proceeding further on this
+   thread. (ii) is the safer default absent a clean source for the
+   non-degeneracy input (i) would need.
+2. Once (i)/(ii) is chosen: either derive the needed 2-torsion
+   non-degeneracy fact and then compose with the already-proved
+   `matching_solutions_translate_by_delta`
+   (`MatchingEquationTranslation.lean`) to conclude `Δ = 0` (route (i)),
+   or restate the target at the fiber level and skip this composition
+   (route (ii)).
 3. Restate `genList_finrank_le` (or its replacement) over
    `SampleTargetFromAlpha`-linked `sa, sb` with fixed `alpha, alpha'`,
-   using step 1's uniqueness result alongside route 3's existing
-   `finrank` bound (a fiber that is both ≤16-dimensional and a single
-   point has `finrank` equal to the point's own field-extension degree).
+   using step 1's uniqueness result (at whichever strength step 1 lands
+   on — pointwise via route (i), or fiber-level via route (ii)) alongside
+   route 3's existing `finrank` bound (a fiber that is both
+   ≤16-dimensional and a single point — or a single `{P,ιP}` pair, under
+   route (ii) — has `finrank` equal to the corresponding field-extension
+   degree; route (ii) may need this step reworked slightly since "single
+   point" becomes "single fiber" throughout).
 4. Write `GenListFinrankResultantAssembly.lean`, chaining route 3's
    already-built resultant-elimination + curve-relation stages against
    the corrected per-fiber statement.
@@ -461,3 +516,17 @@ itself may need to change once `sa,sb` are properly linked via
    the proved pieces (delete the hypothesis bundle, or narrow it,
    dropping `hfinrank_le` specifically), per `ROADMAP-degree-uniform-
    step3.md`'s existing instruction.
+
+## Reference fact worth formalizing, if route (i)/(ii) above ends up
+
+## needing it explicitly
+
+`[P] + [ι(P)] = 0` in `J` for every affine `P` on the odd-degree model
+(basepoint `∞`), per Mumford's *Tata Lectures on Theta II*, ch. IIIa §1.
+Elementary proof, likely formalizable directly from what already exists:
+`div(x − x(P)) = P + ι(P) − 2∞` (the `HyperellipticClassProof.lean`
+building blocks `divToPair_linX_eq_of_unramified`/`_of_ramified`/
+`divToPair_linX_eq` already give this divisor identity, `sorry`-free);
+subtracting `2•[∞]`'s own principal-divisor witness (not yet located/
+built) turns it into `[P]+[ι(P)] − 2[∞] = 0`, i.e. `[P]+[ι(P)]=0` once
+`[∞]` is the basepoint. Not started.

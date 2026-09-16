@@ -15,6 +15,18 @@ against a generic `Ideal.ofList gens` prefix — mirroring those two files'
 own conventions exactly (`gens : List (Rdec p)`, `w x : Idx`, `curveFImage`
 for the curve stages), rather than introducing new naming.
 
+**Correction, later pass (ChatGPT consult recorded in
+`ROADMAP-monic-annihilator-degree-uniform.md`): the "16 sign patterns"
+facts below are real (x-coordinate/fiber-level uniqueness: `P_i' = P_i ∨
+P_i' = ι(P_i)`) but do NOT by themselves imply the two candidate
+solutions satisfy the same matching equation `Δ`. `[P]+[ι(P)]=0` in `J`
+always, so flipping a subset `S` changes the matching equation's LHS by
+`-2·Σ_{i∈S} ε_i[P_i]`, zero only under a genuine 2-torsion condition, not
+automatically. Treat every "up to sign"/"16 patterns" theorem below as
+fiber-level content only — do not chain it into a `Δ = 0` claim without
+that separate non-degeneracy input. See the roadmap's "Next concrete
+steps" for the corrected plan.
+
 ## The genuinely negative finding this file records
 
 **Checked directly against `curveA1`'s literal definition
