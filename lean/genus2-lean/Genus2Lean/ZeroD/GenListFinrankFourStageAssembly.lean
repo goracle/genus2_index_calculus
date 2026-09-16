@@ -624,6 +624,40 @@ theorem genList_triangular_finrank_le_of_base_fourStage
        linearElimGen p (d.u2_num 0) (d.u2_den 0) U0])) := hfin4
   -- Stage 2: `U1,V0,V1`, via `finrank_le_and_finite_sharedPivot_
   -- U1V0V1_chain`, called as a black box against the curve+`U0` prefix.
+  --
+  -- The chain lemma's own `hd1_V1`/`hfinRes_V1`/`hnontrivB_V1` parameters
+  -- are stated against `(chain's own gens) ++ [Fu1a,Fu1b,Fv0a,Fv0b]` -- a
+  -- SINGLE 4-element list literal in one `++` -- whereas this theorem's
+  -- own same-named hypotheses are stated against `gens ++ [curves] ++
+  -- [Fu0..] ++ [Fu1..] ++ [Fv0..]`, four separate two-element-list `++`s.
+  -- These list values are equal (by `List.append_assoc`) but not
+  -- syntactically/definitionally equal, so Lean's unifier rejects the
+  -- hypotheses outright at the call below unless we rewrite them first.
+  have hlist_eq_V1 : gens ++
+      [curveA1 p c0 c1 c2 c3 c4, curveA2 p c0 c1 c2 c3 c4,
+       curveB1 p c0 c1 c2 c3 c4, curveB2 p c0 c1 c2 c3 c4] ++
+      [linearElimGen p (d.u1_num 0) (d.u1_den 0) U0,
+       linearElimGen p (d.u2_num 0) (d.u2_den 0) U0] ++
+      [linearElimGen p (d.u1_num 1) (d.u1_den 1) U1,
+       linearElimGen p (d.u2_num 1) (d.u2_den 1) U1] ++
+      [linearElimGen p (d.v1_num 0) (d.v1_den 0) V0,
+       linearElimGen p (d.v2_num 0) (d.v2_den 0) V0] =
+    (gens ++
+      [curveA1 p c0 c1 c2 c3 c4, curveA2 p c0 c1 c2 c3 c4,
+       curveB1 p c0 c1 c2 c3 c4, curveB2 p c0 c1 c2 c3 c4] ++
+      [linearElimGen p (d.u1_num 0) (d.u1_den 0) U0,
+       linearElimGen p (d.u2_num 0) (d.u2_den 0) U0]) ++
+      [linearElimGen p (d.u1_num 1) (d.u1_den 1) U1,
+       linearElimGen p (d.u2_num 1) (d.u2_den 1) U1,
+       linearElimGen p (d.v1_num 0) (d.v1_den 0) V0,
+       linearElimGen p (d.v2_num 0) (d.v2_den 0) V0] := by
+    simp [List.append_assoc]
+  -- `hV1_1_nontriv` is an instance-implicit in this file's own signature
+  -- (not passed positionally below), stated against the same
+  -- wrongly-associated list as `hd1_V1` et al. -- it must be rewritten
+  -- too so that the chain lemma's instance search can find it under its
+  -- expected (correctly-associated) type.
+  rw [hlist_eq_V1] at hd1_V1 hfinRes_V1 hnontrivB_V1 hV1_1_nontriv
   obtain ⟨B', hfin8, hnontriv8, hbound8⟩ :=
     finrank_le_and_finite_sharedPivot_U1V0V1_chain p
       (gens ++ [curveA1 p c0 c1 c2 c3 c4, curveA2 p c0 c1 c2 c3 c4,
