@@ -1044,3 +1044,118 @@ building blocks `divToPair_linX_eq_of_unramified`/`_of_ramified`/
 subtracting `2•[∞]`'s own principal-divisor witness (not yet located/
 built) turns it into `[P]+[ι(P)] − 2[∞] = 0`, i.e. `[P]+[ι(P)]=0` once
 `[∞]` is the basepoint. Not started.
+
+## Second ChatGPT consult, this pass: why the sharp `16` bound needs
+## denominator control no matter what, and what to try instead of
+## explicit triangular expansion
+
+Prompted directly with the counterexample from the first consult (`h1 =
+1 - U*a^N`, `h2 = a - U`, dimension `2(N+1)`) and asked for alternatives
+to expanding `towerToRdec` symbolically. **Confirms, independently, that
+the obstruction is real and structural, not an artifact of the resultant
+trick specifically**: for a shared pivot `h0 = c0 - U*d0`, `h1 = c1 -
+U*d1`, inverting `d0` gives `A[d0⁻¹]/(h0,h1) ≅ A[d0⁻¹]/(r)` for the
+resultant `r = c0*d1 - c1*d0`, but there can be extra torsion supported
+on `V(d0,d1)` — "resultant controls the generic part; denominator
+geometry controls the torsion part." `IsUnit d1` alone (the hypothesis
+`finrank_le_of_shared_linear_elim_pair`, `SharedPivotResultantElim.lean`,
+already carries) bounds by the resultant quotient's OWN `finrank`, never
+claims that quotient is small — exactly matching the first consult's
+finding, now re-derived from the general algebra rather than only the
+numeric example.
+
+**Confirms `theData`'s denominators are the specific thing that has to
+be understood, but reframes what "understood" needs to mean** — checked
+against this codebase's own `SharedPivotResultantElim.lean` hypothesis
+shape (`hd1 : IsUnit d1` only) directly, not just against the abstract
+algebra: a literal triangular/monic expansion (this document's Part A,
+above — confirmed a dead end by direct trace through `towerToRdec` →
+`towerToRdecK1` → `baseFracToRing`) is **one** way to supply the missing
+control, not the only one. **Five alternative structural statements**,
+any ONE of which would close the gap without a symbolic expansion, in
+roughly increasing order of expected effort:
+
+- **(A) Comaximality/unimodularity**: `IsCoprime d0 d1` (equivalently
+  `(d0,d1) = ⊤` as an ideal) in the relevant quotient ring. If true,
+  `U` is forced (`U = s*c0 + t*c1` for Bézout coefficients `s,d0 + t,d1
+  = 1`) with **no torsion at all** — strictly stronger than `IsUnit d1`
+  alone, and the cleanest fix if it holds. **Checked this pass: no
+  `IsCoprime`/`IsUnit` fact about `u1_den`/`u2_den`/`v1_den`/`v2_den`
+  specifically exists anywhere in `TheDataDerivation/` as of now** (grep
+  confirmed) — this is new content to attempt, not something already on
+  file and merely unwired.
+- **(B) Direct finite-rank-≤1 statement**: prove `A[U]/(h0,h1)` embeds
+  into some `A'` as a rank-≤1 `A`-submodule directly, sidestepping the
+  resultant-quotient framing entirely.
+- **(C) Saturation**: let `D = d0*d1` (or the product of all four pairs'
+  denominators); prove the ORIGINAL ideal already equals its saturation
+  `I : D^∞` — i.e. denominator-clearing introduces no spurious
+  zero-dimensional components. A genuinely different, more geometric
+  target than (A)/(B).
+- **(D) Matching-uniqueness + reducedness**: over the algebraic closure,
+  each curve relation has ≤2 roots, so if the four matching pairs pin
+  down `U0,U1,V0,V1` uniquely given the curve data, that's a
+  set-theoretic `≤16` bound; converting it to the `finrank` bound needs
+  the zero-dimensional scheme to be REDUCED (e.g. via a Jacobian/
+  full-rank-at-every-solution argument) — **note this route reaches
+  toward algebraically-closed-field reasoning, which the working
+  agreement's finite-fields-only constraint rules out attempting
+  directly; would need translating to a finite-field-native argument
+  before it's usable here, not attempted.**
+- **(E) Fallback, no sharp bound**: prove `Rdec p ⧸ Ideal.ofList genList`
+  is zero-dimensional (already available — `genList_finite_of_regular`,
+  `GenListFinrankResultantAssembly.lean`, via the Krull-dimension route)
+  and invoke a generic affine-Bézout-style degree bound
+  (`∏ deg(g_i)`) instead of the sharp `16`. **Confirmed this pass: no
+  such Bézout/degree-bound lemma exists in Mathlib4** (consistent with
+  this document's earlier Hilbert-series/Gröbner finding) — this route
+  needs the SAME missing infrastructure already flagged as weeks-not-
+  a-session, so it is not actually cheaper than (A)–(C) despite sounding
+  more generic; listed for completeness, not recommended.
+
+**Recommended order to attempt, per the consult and cross-checked
+against what's actually on file**: (A) first — it's the cleanest
+theorem shape, composes directly with the existing
+`finrank_le_of_shared_linear_elim_pair` signature (replacing `hd1 :
+IsUnit d1` with something like `hcop : IsCoprime d0 d1`, or a new
+sibling lemma taking that hypothesis), and per the "recursive structural
+invariant" suggestion below, may be provable by INDUCTION on
+`towerToRdec`'s three-level fraction-clearing recursion (each level's
+denominator is a product of the previous level's, so a coprimality
+invariant might thread forward stage-by-stage the same way
+`Module.Finite` already does in the unrelated `finrank`-threading fix
+this document recorded earlier) rather than by expanding the final
+closed-form product — genuinely different from, and not foreclosed by,
+Part A's already-dead literal-expansion finding. If (A) turns out false
+for the actual denominators, (C) is the next most promising target,
+specifically because it is a property of the CONSTRUCTION (does
+clearing denominators introduce spurious components) rather than of the
+denominators' individual algebraic form. **Not attempted yet — this is
+scoping only, from this consult, cross-checked against the current file
+state; the next session's concrete step is to attempt (A) as a
+standalone lemma about `towerToRdec`'s recursive structure, before
+touching `SharedPivotResultantElim.lean` or `GenListFinrankResultantAssembly
+.lean` themselves.**
+
+**One relevant Mathlib4 API fact, found this pass (web search, current
+docs, not yet used in any proof)**: `IsFractionRing.num_den_reduced`
+gives `IsRelPrime (num x) (den x)` for `x` in a fraction field of a
+`UniqueFactorizationMonoid` base ring — i.e. `baseFracToRing`'s BASE
+CASE (`IsFractionRing.num`/`.den` on a `K0 p` element, before any
+`aeval`/substitution) is automatically reduced at that one call, for
+free, since `MvPolynomial (Fin 2) (F p)` is a UFD (polynomial rings over
+a field are). **This does NOT by itself give (A)** — it only supplies
+coprimality of one `num`/`den` pair at the base of the recursion, before
+`aeval (fun i => X (sg.tGen i))` is applied (which can itself destroy
+coprimality, since ring homomorphisms don't preserve `IsRelPrime` in
+general) and before the three-level combination (`den = den0 * den1`
+at each of `towerToRdecK1`/`towerToRdec`) that actually produces
+`u1_den`/`u2_den`/etc. Whether coprimality survives that `aeval` step,
+and whether SOME invariant (not necessarily literal `IsCoprime`) then
+threads forward through the `den0 * den1` combination across three
+levels, is genuinely unchecked — flagged as a concrete lead, not a
+result. If picking this up: check `aeval`-preservation of `IsRelPrime`
+first (likely false in general, true under extra hypotheses on the
+`aeval` map or on `theData`'s specific `tGen`/`wGen` images), since
+that's the cheapest sub-question to resolve before touching the
+three-level recursion at all.

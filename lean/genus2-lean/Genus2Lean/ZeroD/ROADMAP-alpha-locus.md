@@ -1,6 +1,127 @@
 # Roadmap: proving eq 1 is 0-dimensional *uniformly in `(alpha,alpha')`* —
 # why this is the real target, and how it closes the 8th-moment gap
 
+## Newest status update — the `Stab(S)` argument for `Δ=0` (read this one
+## first; it supersedes `OrbitMapConstant.lean`'s connectedness route as
+## the mechanism for the "2D/1D-collapse" finding directly below)
+
+This section records a NEW, unformalized argument (worked out directly
+with Claire this pass, not yet ported to Lean) for exactly the fact the
+"Newer status update" section right below asks for — why the
+1-dimensional sub-family of fibers sharing a fixed `(alpha,alpha')`
+collapses to a single solution, i.e. why `Δ = 0` — and it succeeds where
+`MatchingEquationTranslation.lean`/`OrbitMapConstant.lean`'s earlier
+connectedness attempt failed, for a reason specific to the cryptographic
+setting rather than to `J`'s algebraic-geometry structure.
+
+**Why the earlier attempt failed, briefly** (full detail in
+`MatchingEquationTranslation.lean`'s own docstring): "the acting group is
+finite ⟹ trivial" is FALSE in general (a finite abelian group can have
+small nontrivial subgroups — confirmed independently by this project's
+own finding that `J(F_p)[2] = 0` is true for only ~1/5 of curves, so `J`
+generically DOES have small torsion). The fix attempted there was
+`J`'s connectedness as an algebraic variety — correct in principle, but
+needs a Zariski topology on `Jacobian H D` that does not exist in this
+codebase and is a substantial independent undertaking (`OrbitMapConstant
+.lean`'s own docstring already flags this).
+
+**The new argument avoids needing `J`'s connectedness at all**, by using
+a fact specific to THIS setting that a generic point of `J` doesn't have:
+every point in play — `a`, and both pairs `P1,P2,P3,P4` / `P1',P2',P3',P4'`
+— lives inside ONE fixed cyclic subgroup `⟨a⟩ ≤ J`, of prime,
+cryptographically-large order `ell` (`|⟨a⟩| ~ p²`). This is a standing
+fact about how advisory-7's actual DLP instance samples its points
+(e.g. via cofactor-clearing against `J`'s true order `h·ell`), NOT
+something derivable inside this Lean development from `H.Point`/
+`Jacobian H D` alone — flagged here as an explicit new standing
+hypothesis this argument needs, exactly the same honest-hypothesis style
+this project already uses for `CrossNondegenerate`/`isReduction`. **How
+to actually construct/verify `P1,P2 ∈ ⟨a⟩` in Lean (or at the level of
+`SampleTargetFromAlpha`) is not worked out — flagged as new territory,
+not attempted this pass.**
+
+**The argument, given that hypothesis:**
+
+1. Fix `(alpha,alpha')`. Let `S` be the (already known 0-dimensional,
+   `finrank ≤ 16` per route (ii)) solution set of the matching equation
+   `[P1]+[P2]-[P3]-[P4] = (alpha-alpha')•a` for this fixed
+   `(alpha,alpha')`.
+2. For any two solutions in `S`, `matching_solutions_translate_by_delta`
+   (`MatchingEquationTranslation.lean`, already proved, unconditional)
+   gives a single `Δ ∈ Jacobian H D` with `[P1]+[P2] = [P1']+[P2']+Δ` and
+   `[P3]+[P4] = [P3']+[P4']+Δ` — i.e. `Δ`-translation carries one
+   solution to the other, so (both solutions being in `S`) `Δ` stabilizes
+   `S` as a set (`Δ + S ⊆ S`, and by the same argument run in reverse,
+   `Δ + S = S`).
+3. **`Δ ∈ ⟨a⟩` for free, given the standing hypothesis above**: `Δ` is
+   *defined* as `([P1]+[P2]) - ([P1']+[P2'])`, a difference of two
+   elements already assumed to lie in the subgroup `⟨a⟩`, hence itself in
+   `⟨a⟩` by subgroup closure — no new geometric content needed here
+   beyond step-2's algebra plus the standing hypothesis.
+4. `⟨a⟩` has prime order `ell`, so `Stab(S) := {δ : δ • a stabilizes S}`
+   (a genuine subgroup of `⟨a⟩ ≅ ZMod ell` by construction) is either
+   trivial or all of `⟨a⟩`, no third option (only two subgroups of a
+   prime-order cyclic group).
+5. `|S| ≤ 16` (route (ii)'s bound), a constant independent of `p`, while
+   `ell ~ p²` grows with the security parameter. A NONTRIVIAL subgroup
+   action forces every orbit to have size dividing `|Stab(S)|`; if
+   `Stab(S) = ⟨a⟩` (order `ell`), any solution's orbit under it has size
+   `ell` (an orbit under a nontrivial-order cyclic group's full action is
+   either a single fixed point — impossible here since `a ≠ 0` acts by an
+   honest nontrivial translation — or has size exactly the subgroup's
+   order), forcing `|S| ≥ ell`, contradicting `|S| ≤ 16 < ell` for any
+   cryptographically-sized `ell`. So `Stab(S) = {0}`.
+6. Hence `Δ = 0` for ANY two solutions in `S`, i.e. `S` is a singleton.
+
+**What this closes, and what it still needs before it's real content,
+not just a sketch**:
+
+- Closes exactly the gap `MatchingEquationTranslation.lean`'s docstring
+  flags as "the actual rigidity mechanism" and that document's later
+  connectedness attempt failed to close — this is a DIFFERENT, and
+  (given the standing hypothesis) complete, mechanism for `Δ = 0`.
+  `OrbitMapConstant.lean` is superseded as the route to this specific
+  conclusion (kept in the codebase as independently-true general
+  topology, per that file's own docstring, but no longer on the critical
+  path).
+- **Still needs, before this is Lean content**:
+  (a) An honest formal home for the standing hypothesis "`P1,P2,P3,P4`
+  (all four points across BOTH solutions in an `S`-comparison) lie in
+  `AddSubgroup.zmultiples aClass`" — likely as a new field on
+  `SampleTargetFromAlpha`, or a separate hypothesis bundle threaded
+  alongside it. Not yet drafted.
+  (b) `Jacobian H D` (or at least `AddSubgroup.zmultiples aClass`) needs
+  a `Fintype`/finite-order instance for `addOrderOf aClass` to be
+  well-typed as a concrete `ell`, plus `Fact (Nat.Prime ell)` — neither
+  exists in `DivisorClassGroup.lean` currently; both are standing facts
+  about the actual cryptographic group, not provable from this project's
+  abstract `Jacobian H D` construction, so they too become new,
+  explicitly-flagged hypotheses, not derived.
+  (c) The abstract group-theory core (steps 3-6 above, stripped of all
+  curve-specific content) is a clean, self-contained, REUSABLE lemma —
+  roughly: `[AddCommGroup G] (a : G) (ell : ℕ) [Fact (Nat.Prime ell)]
+  (ha : addOrderOf a = ell) (S : Set G) (hS : S.Finite) (hScard :
+  S.ncard < ell) (hSne : S.Nonempty) (Δ : G) (hΔ : Δ ∈
+  AddSubgroup.zmultiples a) (hstab : Δ +ᵥ S = S) : Δ = 0` — worth
+  writing and checking against Mathlib as its own file (candidate name:
+  `StabOfSmallSetTrivial.lean`) independent of (a)/(b), since it has no
+  dependency on this project's curve/Jacobian machinery at all. Candidate
+  Mathlib lemma for the "prime order ⟹ only two subgroups" step:
+  `zmultiples_eq_top_of_prime_card`/`IsSimpleAddGroup` machinery
+  (`Mathlib.GroupTheory.SpecificGroups.Cyclic`,
+  `Mathlib.GroupTheory.Subgroup.Simple` — names confirmed to exist in
+  current Mathlib4 docs this pass, exact combination into the orbit-size
+  argument NOT yet checked against a live goal state). Not yet written or
+  REPL-tested.
+  (d) Once (a)-(c) land, this needs assembling with the pairwise-
+  agreement work (`ROADMAP-monic-annihilator-degree-uniform.md`, route
+  (ii) and `GenListPairwiseAgreementTransport.lean`) and Step 3's
+  `SampleTargetFromAlpha` linkage to actually produce a Lean-checked
+  `genList_finrank_le`-style theorem with `finrank = 1` (the 16→1
+  sharpening item 7 in that roadmap's "Next concrete steps" already
+  anticipates, now via a concrete mechanism instead of "worth
+  investigating once instances exist").
+
 ## Newer status update — read this one first, then the correction below
 
 **The solution variety is not simply 0-dimensional the way this whole
