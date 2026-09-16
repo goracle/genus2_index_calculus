@@ -472,50 +472,88 @@ itself may need to change once `sa,sb` are properly linked via
 
 ## Next concrete steps, in order
 
-1. **Linear-stage half DONE** (`PeelChainPairwiseAgreement.lean`,
-   `PeelChainPairwiseAgreementWiring.lean`). **Curve-relation sign gap:
-   option (a) CLOSED (no sign convention exists anywhere to find, traced
-   end to end — see above), option (b) as flat "16 patterns" CLOSED as
-   FALSE (ChatGPT consult, this pass — ​`[P]+[ι(P)]=0` always, so a
-   sign-flip on subset `S` preserves `Δ` iff `2·Σ_{i∈S} ε_i[P_i]=0`, a
-   real 2-torsion condition, not automatic).** The `curveRelation_forces
-   _eq_up_to_sign`/`curveChain_pairwise_eq_up_to_sign` lemmas already
-   written this pass remain correct and worth keeping — they prove real
-   fiber-level (x-coordinate) uniqueness — but do NOT feed the matching
-   equation for free. Decide between (i) finding/assuming a
-   non-degeneracy hypothesis ruling out the relevant 2-torsion
-   coincidences (would need `2([P1]+[P2]) ≠ 0` etc., or the stronger
-   `J(𝔽_p)[2] = 0`, for the specific `(alpha,alpha')`-linked targets in
-   play — not yet checked whether that's plausible or how it'd be
-   derived), or (ii) restating the ultimate `AlphaLocusDegreeUniform.lean`
-   goal at the fiber/x-coordinate level from the start, sidestepping `Δ`
-   pointwise-uniqueness entirely, before proceeding further on this
-   thread. (ii) is the safer default absent a clean source for the
-   non-degeneracy input (i) would need.
-2. Once (i)/(ii) is chosen: either derive the needed 2-torsion
-   non-degeneracy fact and then compose with the already-proved
-   `matching_solutions_translate_by_delta`
-   (`MatchingEquationTranslation.lean`) to conclude `Δ = 0` (route (i)),
-   or restate the target at the fiber level and skip this composition
-   (route (ii)).
+1. **DONE, this pass.** Linear-stage half
+   (`PeelChainPairwiseAgreement.lean`, `PeelChainPairwiseAgreementWiring
+   .lean`) and curve-relation half (`PeelChainPairwiseAgreementCurveChain
+   .lean`, "agree up to sign") both chained per-generator, then combined
+   across all twelve of `genListTriangular`'s generators into one
+   statement (`GenListPairwiseAgreementAssembly.lean`,
+   `genListTriangular_pairwise_eq_up_to_sign` — curve facts up to sign,
+   `U0,U1,V0,V1` exact, one flat conjunction, no ring-extension threading
+   needed since every stage's claim lives in the same fixed quotient).
+2. **(i)/(ii) fork — DECIDED, ChatGPT consult this pass: route (ii),
+   with route (i) demoted to an optional later sharpening, not a
+   blocker.** Global `J(𝔽_p)[2] = 0` (the strong form of route (i)) is
+   NOT generic for this curve family — for an odd-degree genus-2 model
+   `y² = f(x)` with `deg f = 5`, `J(𝔽_p)[2] = 0` iff `f` is irreducible
+   over `𝔽_p`, and irreducible quintics are only a ~1/5 fraction of
+   squarefree quintics, not "most curves." A weaker, construction-local
+   route-(i) lemma may still be cheap later (a nondegenerate divisor
+   `D = [P1-∞]+[P2-∞]` with nonzero Mumford `v`-polynomial has `2D ≠ 0`
+   automatically, without any global Jacobian hypothesis — worth
+   revisiting as a sharpening, NOT attempted here, see item 6 below) but
+   the main theorem should not be built on it or wait for it. **Route
+   (ii) is the one to build now**: keep the 16-bound (really: at most one
+   x-coordinate/quotient-level configuration, whose geometric lift has
+   size ≤ 16 — the consult flagged "at most 16 fibers" as a
+   mis-statement; it is "one configuration, ≤16 point-lifts"), finish the
+   degree/finiteness theorem on that basis, defer sharpening 16→1. This
+   also answers the DLP-reduction worry the fork was blocking on: a
+   16-way sign ambiguity is a constant-size, efficiently-testable branch
+   (`[ι(P)] = -[P]` makes each branch a known negation, checkable against
+   the matching equation directly), not a dead end — UNLESS a later step
+   needs a literal canonical point rather than an efficiently-decidable
+   candidate set, which nothing currently on file needs.
 3. Restate `genList_finrank_le` (or its replacement) over
    `SampleTargetFromAlpha`-linked `sa, sb` with fixed `alpha, alpha'`,
-   using step 1's uniqueness result (at whichever strength step 1 lands
-   on — pointwise via route (i), or fiber-level via route (ii)) alongside
-   route 3's existing `finrank` bound (a fiber that is both
-   ≤16-dimensional and a single point — or a single `{P,ιP}` pair, under
-   route (ii) — has `finrank` equal to the corresponding field-extension
-   degree; route (ii) may need this step reworked slightly since "single
-   point" becomes "single fiber" throughout).
+   using step 1's fiber-level uniqueness result (route (ii): "one
+   quotient-level configuration, ≤16 lifts", not pointwise) alongside
+   route 3's existing `finrank` bound. A fiber that is a single
+   x-coordinate configuration with ≤16 geometric lifts has `finrank ≤ 16`
+   directly from route 3's own bound — no extra work needed to go from
+   "≤16 lifts" to "finrank ≤ 16", since route 3's bound was already
+   stated at exactly that granularity (it never assumed the fiber was a
+   single point to begin with, per `GenListFinrankResultantAssembly
+   .lean`'s own docstring: "≤16-dimensional" was always the target, a
+   single point was the ASPIRATION for step 5's `Bad`-sizing, not
+   something step 3 itself needs). This step is therefore mostly about
+   the `SampleTargetFromAlpha`-linkage of `sa,sb` (tying `alpha,alpha'`
+   to `genList`'s `sa,sb` arguments), not about upgrading the uniqueness
+   strength — genuinely new work, not yet started (see "Not yet started"
+   below for the concrete gap: `SampleTargetFromAlpha` lives at the
+   `Jacobian H D`/`H.Point` level, `genList`/`GenListPairwiseAgreement
+   Assembly.lean` at the `Rdec p`/Mumford-coefficient level; connecting
+   them needs `H.Point → F p × F p` coordinates, already flagged as an
+   open gap by `AlphaLocusDegreeUniform.lean`'s own "Task (A)" section,
+   `toCoords`).
 4. Write `GenListFinrankResultantAssembly.lean`, chaining route 3's
    already-built resultant-elimination + curve-relation stages against
-   the corrected per-fiber statement.
+   the corrected per-fiber statement. **Update: this file already exists
+   and already proves the ≤16 `finrank` bound at the ring level for an
+   abstract fixed `(sa,sb)`** (this pass discovered it partially built);
+   what remains of this step is specifically linking it to
+   `SampleTargetFromAlpha` per item 3, not writing the file itself.
 5. Revisit `Bad` sizing now that the corrected statement pins down what
-   `Bad` actually needs to range over.
+   `Bad` actually needs to range over — still open, per route (ii)'s own
+   framing this now means sizing `Bad` against "configuration is unique"
+   rather than "point is unique", likely no harder than before since
+   `Bad`'s role was always to rule out degenerate `(alpha,alpha')`, not
+   to control the 16-fold multiplicity.
 6. Replace `GenericPeelChainHyp` in `AlphaLocusDegreeUniform.lean` with
    the proved pieces (delete the hypothesis bundle, or narrow it,
    dropping `hfinrank_le` specifically), per `ROADMAP-degree-uniform-
    step3.md`'s existing instruction.
+7. **New, from this pass's consult — optional, not blocking.** The
+   construction-local route-(i) sharpening: if the actual `(P1,P2)`
+   pairs `SampleTargetFromAlpha` produces are provably non-degenerate
+   (not `P2 = ι(P1)`, not both Weierstrass) and their Mumford
+   `v`-polynomial is provably nonzero, then `2([P1]+[P2]) ≠ 0` follows
+   with NO global `J(𝔽_p)[2]=0` assumption, upgrading 16→1 for real
+   instances. Worth investigating once items 3–6 are done and there is
+   an actual `SampleTargetFromAlpha`/`Reduce` construction on file to
+   check this against — premature before then, since it needs concrete
+   `(P1,P2)` data this project does not yet construct (`Reduce` is still
+   unported, per `AlphaLocusDegreeUniform.lean`'s own status list).
 
 ## Reference fact worth formalizing, if route (i)/(ii) above ends up
 
