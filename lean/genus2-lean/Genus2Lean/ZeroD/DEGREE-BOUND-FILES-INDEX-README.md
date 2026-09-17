@@ -66,6 +66,24 @@ currently has a live `sorry`, and closing it (the literal `Idx`-specific
 wiring, item (d) of the roadmap's revised plan) is the actual next step,
 not yet done as of this pass.
 
+**Files 79–84 added, this pass — six files found unindexed in either
+this document or `ZERO-D-EXTENDED-INDEX-README.md`.** Two threads: (79)
+`StabOfSmallSetTrivial`, (80) `MatchingSolutionSwapSymmetry`, (81)
+`SampleTargetFromAlphaPairMemA`, (82)
+`DecoupledSystemDegreeUniformFixedTarget` are the `Δ=0`/fixed-target
+line that supersedes the old `genList_finrank_le`/`Stab(S)` route for
+closing the 8th-moment gap's degree-uniform target outright (see entry
+82's own note). (83) `GenListFinrankFourStageTransport` and (84)
+`GenListPairwiseAgreementTransport` are mechanical order-transport
+files for the still-live `finrank`/pairwise-agreement chain (entries
+55/78/76), each naming a genuinely open base-case gap as a hypothesis
+rather than closing it. This index now covers 84 files total. **Sorry
+status for files 79–84, verified this pass**: **zero live sorries**
+across all six — file 55's `sorry` (above) remains the only live sorry
+project-wide across this whole 84-file index, and per entry 82's note it
+may now be moot: the fixed-target route entries 79–82 build does not
+need `genList_finrank_le` at all.
+
 ---
 
 ### 1. `DataDerivationTotalDegree.lean` (1410 lines)
@@ -1495,6 +1513,145 @@ mechanical, not yet invoked here either). Sorry-free. As of this pass,
 this file — not entry 71 — is the true terminus of the `finrank` numeric
 chain (route 3's "Core reusable fact" list should be read as entries
 36/45/62/65/66/71/77/78 together, not entry 71 alone).
+
+### 79. `StabOfSmallSetTrivial.lean` (194 lines)
+Imports: none from this project (pure `Mathlib`).
+
+**A separate sub-effort from the `totalDegree`/`finrank` chain above —
+the `Δ = 0` group-theory argument for `ROADMAP-alpha-locus.md`'s "Newest
+status update" section.** Deliberately has zero dependency on this
+project's curve/Jacobian machinery: proves the abstract fact that if `a`
+has prime additive order `ell`, `Δ` is a multiple of `a`, and `Δ`
+translation-stabilizes a finite nonempty set `S` with `S.ncard < ell`,
+then `Δ = 0` (`delta_eq_zero_of_stabilizes_small_set`). Proof: `ell •
+Δ = 0` forces `addOrderOf Δ ∈ {1, ell}`; if `Δ ≠ 0` then `addOrderOf Δ =
+ell`, giving `ell` pairwise-distinct elements `s₀ + k•Δ` (`k : Fin ell`)
+all in `S` (via `orbit_injective_of_addOrderOf_eq`/`orbit_mem_of_stable`),
+contradicting `S.ncard < ell`. Third-pass file per its own status note
+(two Mathlib4-naming/`rw`-unification fixes: `Set.ncard_le_of_subset` →
+`Set.ncard_le_ncard`; a brittle `rw` on a double-cast `Fin ell` term
+replaced with `simp only [natCast_zsmul]`). Whether `P1,P2,P3,P4 ∈ ⟨a⟩`
+actually holds for this project's real setup is explicitly left open —
+this file proves only the unconditional group theory. **Status:
+sorry-free.**
+
+### 80. `MatchingSolutionSwapSymmetry.lean` (290 lines)
+Imports: `DivisorClassGroup`, `RiemannRochGenus2`,
+`LPairFinrankOneOrdAtFracSpec`.
+
+**Corrected, this pass, per ChatGPT consult, from a previous version that
+tried to bound the wrong set.** The earlier draft attempted a
+difference-only solution set (`s P1 + s P2 - s P3 - s P4 = target`),
+which is NOT `p`-independently bounded (the pair-sum class can range over
+infinitely many values with only their difference pinned) — its two
+`sorry`s were symptoms of a false statement, not a technique gap. Fixed
+by pinning BOTH pair-sums separately to fixed classes `A B : Jacobian H
+D` (`FixedTargetSolutions`): `IsOnlyEffectiveInClass` now applies
+directly to each fixed-class condition independently, giving
+`fixedTargetSolutions_ncard_le_four`: at most 4 elements, unconditional
+in `p`, no `Bad`/exceptional set. Standing hypothesis carried, not
+discharged: `hbridge : D.P ≤ principalSubgroup H hdeg` (the
+`IsOnlyEffectiveInClass`/`s_add_s_eq_s_add_s_iff` bridge direction).
+`swapImages`/`swapImages_ncard_le`/`pairFiber_ncard_le_two` are reused
+unchanged from the pre-correction version (already correct, sorry-free).
+**Status: sorry-free** (the two `sorry`s the docstring mentions are
+historical, describing the superseded prior version, not live in this
+file).
+
+### 81. `SampleTargetFromAlphaPairMemA.lean` (111 lines)
+Imports: `AlphaLocusDegreeUniform`, `MatchingSolutionSwapSymmetry`,
+`StabOfSmallSetTrivial`.
+
+Proves the one honest unconditional consequence of
+`SampleTargetFromAlpha`'s `memZmultiplesA` field — roadmap step 3,
+subgroup closure: two samples' pair-sum classes both lying in
+`⟨aClass⟩` implies their difference does too
+(`sub_mem_zmultiples_of_mem_mem`, pure `AddSubgroup` closure, no
+curve-specific content), then instantiated for two
+`SampleTargetFromAlpha` samples as
+`sampleTargetFromAlpha_pairSum_sub_mem_zmultiplesA`. **Explicitly flags
+what does NOT follow next**: composing this `Δ`-membership fact with
+entry 79's `delta_eq_zero_of_stabilizes_small_set` is not the one-line
+corollary the roadmap's steps 4–6 sketch might suggest, because entry
+80's corrected `FixedTargetSolutions` pins both pair-sums to constants —
+its image under the pair-sum map is a singleton, leaving no room for
+genuine `Δ`-translation to act on. Diagnosed as a real reconciliation
+gap between the roadmap's original (difference-only) `S` and the
+corrected `FixedTargetSolutions`, not a Lean-engineering shortcut to hunt
+for. **Status: sorry-free.**
+
+### 82. `DecoupledSystemDegreeUniformFixedTarget.lean` (122 lines)
+Imports: `AlphaLocusDegreeUniform`, `MatchingSolutionSwapSymmetry`.
+
+**The file that actually closes the 8th-moment gap's degree-uniform
+target, superseding the old `genList_finrank_le`/`Stab(S)` route
+entirely, per Claire's direction this pass.** The old route
+(`decoupledSystem_degree_uniform` in `AlphaLocusDegreeUniform.lean`, via
+`GenericPeelChainHyp`/`Rdec p ⧸ Ideal.span (genList ...)`) was chasing a
+strictly harder problem than needed. Entry 80's
+`fixedTargetSolutions_ncard_le_four` already **is** the needed
+`p`-independent bound; this file just restates it directly in terms of
+`SampleTargetFromAlpha` (`fixedTargetSolutions_ncard_le_four_
+sampleTargetFromAlpha`, `d := 4`, proved outright — no existential search
+over a `p^n` placeholder). No new mathematical content: pure assembly.
+Note the conclusion type genuinely differs from the old target
+(`Set.ncard` over a point-tuple set, not `Nat.card` over a ring
+quotient) — see the file's own docstring for why this is the same
+underlying goal, not the same statement shape. Hypotheses carried
+unchanged from entry 80: `hbridge`, and `IsOnlyEffectiveInClass` for both
+pairs. **Status: sorry-free** (the single `sorry` the docstring mentions
+is a reference to the OLD superseded route's `genList_finrank_le`, not
+live in this file).
+
+### 83. `GenListFinrankFourStageTransport.lean` (145 lines)
+Imports: `GenListFinrankFourStageAssembly`, `GenListTriangularReorder`.
+
+Closes the mechanical half of the two gaps
+`ROADMAP-monic-annihilator-degree-uniform.md`'s "Corrections, this pass"
+flags after entry 78: entry 78's conclusion is stated over
+`genListTriangular`'s reordered generator list, not `genList`'s literal
+stated order — closed here via one application of
+`quot_genListTriangular_eq_quot_genList` (entry 59). The genuinely open
+half is NOT closed here and is named as a hypothesis rather than assumed
+away: `RouteThreeHasBaseCase`, "no file anywhere proves `Module.Finite (F
+p) (Rdec p ⧸ Ideal.ofList gens)` for any `gens` this induction could
+legitimately start from" — `gens := []` is false (a 12-variable free
+polynomial ring), and no strict prefix of `genListTriangular` is finite
+either. **Design choice**: takes entry 78's ~200-hypothesis conclusion as
+an opaque `hchain` hypothesis rather than re-typing its full signature,
+to avoid a transcription mismatch invisible until REPL-caught — matches
+this project's "read the actual file, not a summary" discipline.
+Delivers `finrank_le_genList_of_finrank_le_genListTriangular` (generic
+bound `B`) and `finrank_le_sixteen_genList_of_finrank_le_sixteen_
+genListTriangular` (the concrete `≤ 16` corollary route 3's four-stage
+accounting is expected to instantiate, pending gap 2 above). **Status:
+sorry-free.**
+
+### 84. `GenListPairwiseAgreementTransport.lean` (559 lines)
+Imports: `GenListPairwiseAgreementAssembly`, `GenListTriangularReorder`.
+
+The identical transport problem one file over, for the pairwise-agreement
+line instead of the `finrank` line: entry 76's
+`genListTriangular_pairwise_eq_up_to_sign` is generic in `gens`/`d` and
+only meaningful for the project's real twelve equations once specialized
+at `gens := genListTriangular ...` — this file does that specialization,
+concluding `genList_pairwise_eq_up_to_sign`. Mechanical, not new
+content: the pairwise-agreement theorem never depended on `gens`'s order
+(confirmed by direct inspection of entries 74/75's generic evaluation
+against `Ideal.ofList gens`). **Two real REPL errors surfaced and fixed
+this pass**, both documented as reusable lessons: (1) a missing `open
+TheDataDerivation`; (2) a `whnf` heartbeat timeout from a first-draft
+signature that repeated the fully-applied `genList .../theData ...` terms
+52 times combined — fixed structurally (not by unrolling) by stating the
+theorem generically over `gens : List (Rdec p)` and `d :
+DecoupledGenerators p`, tied in via `Eq` hypotheses `hgens`/`hd` rather
+than inlining applied terms, mirroring entry 84's own source theorem and
+entry 83's documented design choice. Also documents a related but
+distinct gotcha: rewrite the IDEAL equality (`Ideal.ofList_perm`), not
+the quotient-RING type equality (`quot_genListTriangular_eq_quot_
+genList`) — rewriting the ring-type equality directly hits "motive is not
+type correct," since the domain/ring structure derives from that type.
+**Status: sorry-free.**
 
 ## Open gaps, cross-referenced (read this before assuming the chain is done)
 
