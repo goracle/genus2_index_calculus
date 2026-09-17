@@ -1,6 +1,110 @@
 # Roadmap: proving eq 1 is 0-dimensional *uniformly in `(alpha,alpha')`* —
 # why this is the real target, and how it closes the 8th-moment gap
 
+## Investigation note (this pass, per Claire's request to explain the
+## discrepancy between the ≤4 orbit-stabilizer bound and the O(p^2)
+## "plug in any P1,P2" argument) — read this before the CRITICAL
+## CORRECTION below; it doesn't change that section's conclusion, it
+## traces a further layer under it
+
+**What was asked**: Claire observed that (a) the ≤4 bound
+(`fixedTargetSolutions_ncard_le_four`, `MatchingSolutionSwapSymmetry.lean`)
+seems solid, (b) the plain equation `P1+P2-P3-P4=(alpha-alpha')*a`, taken
+at face value with `P1..P4` free, admits a solution for roughly half of
+random `(P1,P2)` choices (an `O(p^2)`-sized family), and (c) numerically
+plugging random `(P1,P2)` into "the system of 12 equations" gives 0
+solutions almost always — and asked whether (b)/(c) are secretly
+different systems.
+
+**Traced this pass, code-grounded**: `genList`'s `sa, sb : SampleTarget p`
+(`DecoupledSystemRegular.lean`) are literal fixed field-element constants
+embedded into `uRS`/`vRS`'s formulas (§4bis; see `theData`'s own
+docstring, "Deliberately `alpha`-agnostic"). `FuList`/`FvList` do NOT
+pin `[P1]+[P2]` to `sa` directly — they equate SAMPLE 1's own
+`Reduce(sa-P1-P2)` output to SAMPLE 2's `Reduce(sb-P3-P4)` output via a
+*shared, otherwise-free* unknown (`U0,U1,V0,V1`). Read as a divisor-class
+statement this is `sa - A = sb - B`, i.e. `A - B = sa - sb`, for
+`A:=[P1]+[P2]`, `B:=[P3]+[P4]` — this is **exactly eq 1's difference-only
+reading** (the same one the CRITICAL CORRECTION below diagnoses as
+`O(p^2)`), not the doubly-pinned `FixedTargetSolutions D δ₀ A B` object
+`fixedTargetSolutions_ncard_le_four` bounds (which fixes `A` and `B`
+*individually*, each to a literal given class — a strictly more
+restrictive, and different, condition). So (b) and (c) are not
+obviously different systems by construction — `genList`, correctly
+parsed, appears to encode the same free-`A` equation as (b).
+
+**The genuine, still-open puzzle this creates**: since the sum map
+`C^(2) -> J` is (birationally, up to the single `D ~ K_C` exceptional
+fiber — advisory-6 §6.2's own locus) essentially bijective for genus 2,
+naive fiber-product dimension counting says `{(a1,a2,b1,b2) :
+Reduce(sa-P1-P2) = Reduce(sb-P3-P4)}` should be **2-dimensional** (a
+copy of `J`, parametrized by the shared unknown value), not the
+0-dimensional variety `decoupledSystem_isRegularSequence` claims to
+prove (sorry-free) for a fixed `(sa,sb)`. This is not a new observation —
+`GenListPairwiseAgreementTransport.lean`'s own note that Phase 1.5
+"diagnosed why the ... matching system comes out 0D instead of the
+expected 2D" and this file's "Newer status update"/`ZeroD-README.md`
+"2-dimensional space of 0-dimensional fibers" language are the project's
+own prior sightings of the identical tension — still explicitly flagged
+there as unformalized, not resolved. Claire's own two earlier numerical
+checks (`ROADMAP-alpha-to-degree-uniform.md`'s "Numerical check: result":
+a direct resultant solve plus an independent `HomotopyContinuation.jl`
+run, both on one real curve) found 0-dimensional/near-empty behavior for
+random `(P1,P2)` — the same finding Claire's fresh experiment this pass
+reproduces — genuinely in tension with the dimension count above, not
+merely a bookkeeping mismatch.
+
+**Two candidate reconciliations, neither checked this pass — recommended
+next steps, in order of cheapness**:
+1. **"Missing witness points" may be a false negative for dimension, not
+   evidence against it.** In numerical algebraic geometry, paths that
+   fail to converge to isolated points during a plain `solve` are a
+   textbook symptom of an unexpected *positive-dimensional* component,
+   not of a smaller-than-expected variety — a plain witness-point solve
+   isn't the right tool to see a 2D component with. Worth explicitly
+   rerunning `HomotopyContinuation.jl`'s (or Oscar/Singular's) numerical
+   *irreducible decomposition* (looking for positive-dimensional
+   components directly, e.g. `witness_set`/monodromy-based methods, not
+   `solve`) on the same curve/`(alpha,alpha')` before concluding the
+   variety really is finite.
+2. **`CrossNondegenerate`'s `hv0`/`hv1` are exactly the ring-theoretic
+   symptom this would produce.** If the true locus really is a whole 2D
+   component rather than isolated points, the "second generator per
+   target variable" (the `v1_*`/`v2_*` resultant) would vanish
+   *identically on that whole component*, not just at isolated points —
+   which is precisely what makes an element fail `IsSMulRegular` (a
+   zero-divisor on a positive-dimensional component) rather than merely
+   `≠ 0`. This lines up with the project's own already-recorded
+   suspicion (`DecoupledSystemRegular.lean`'s `CrossNondegenerate`
+   docstring, and `MvPolynomialSharedTargetSolve.lean`'s finding that the
+   two per-target generators can only be solved simultaneously where the
+   resultant vanishes) that `hv0`/`hv1` are "expected to be FALSE for at
+   least some, quite possibly most, choices of `(c0,...,c4)`" — same
+   phenomenon, not a separate risk. If so, `decoupledSystem_isRegularSequence`
+   is likely either vacuous (no real `(c0,...,c4,sa,sb)` satisfies all of
+   `Nondegenerate`/`CrossNondegenerate`/`PeelChainNondegenerate`
+   simultaneously) or only fires on a genuinely small locus — worth
+   directly testing `CrossNondegenerate` (symbolically, small `p`) rather
+   than assuming it from the `≠0` framing.
+3. Re-examine Phase 1.5's own not-yet-re-investigated suspect
+   (`GenListPairwiseAgreementTransport.lean`'s docstring: "independent
+   per-coefficient gcd reduction decoupling u/v", `ROADMAP-regular-
+   sequence.md` §4.0 step 7/8's `_reduce_tower_coeffs` gcd-cancellation,
+   flagged there as "NOT obviously identity-preserving") — a bug at this
+   specific step could independently explain a spurious dimension drop
+   in the Julia pipeline's own numerics, separate from (1)/(2) above.
+
+**Bottom line for now**: the ≤4 bound and the free-`A` equation are very
+likely NOT contradictory — they bound genuinely different objects
+(`FixedTargetSolutions` doubly-pins `A,B`; `genList`/eq 1 pins only their
+difference). The open question is why `genList`'s own regular-sequence
+proof and Claire's numerics both point to 0D/finite when the
+divisor-class algebra says the true variety should be 2D generically —
+not yet resolved, but no longer merely "maybe a different system": the
+most likely explanations (above) both point at the same place,
+`CrossNondegenerate`/the missing-witness-point numerics, as **one**
+underlying phenomenon rather than two unrelated risks.
+
 ## CRITICAL CORRECTION (this pass, per Claire) — read this before
 ## anything else in this document, including the "Newest status update"
 ## immediately below. This invalidates the TL;DR's counting argument as
