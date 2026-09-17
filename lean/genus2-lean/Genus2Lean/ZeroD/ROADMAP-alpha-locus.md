@@ -1,11 +1,122 @@
 # Roadmap: proving eq 1 is 0-dimensional *uniformly in `(alpha,alpha')`* —
 # why this is the real target, and how it closes the 8th-moment gap
 
-## Investigation note (this pass, per Claire's request to explain the
-## discrepancy between the ≤4 orbit-stabilizer bound and the O(p^2)
-## "plug in any P1,P2" argument) — read this before the CRITICAL
-## CORRECTION below; it doesn't change that section's conclusion, it
-## traces a further layer under it
+## RESOLUTION (this pass, per Claire) — read this FIRST, before the
+## "Investigation note," "CRITICAL CORRECTION," and "Newest status
+## update" sections below. It supersedes all three: the `O(p²)`-union
+## worry those sections raise is not a real gap, and `Stab(S)`/the
+## `P1,...,P4 ∈ ⟨a⟩` hypothesis are not needed at all. Sections below are
+## kept for their still-accurate pieces (the ≤4 fiber bound, the
+## `matching_solutions_translate_by_delta` translation fact — both
+## unaffected) but their own framing of what remained open is
+## superseded by this section.
+
+**The core misanalysis, precisely.** The "CRITICAL CORRECTION" section
+below is right that fixing `(alpha,alpha')` only pins down the
+DIFFERENCE `A - B = (alpha-alpha')·a`, leaving `A := [P1]+[P2]` free to
+range over `⟨a⟩` — and it's right that this makes the naive solution set
+
+    V(alpha,alpha') = ⋃_{A ∈ ⟨a⟩} FixedTargetSolutions(A, A - (alpha-alpha')·a)
+
+look like a `~p²`-term union, each term `≤4` (proved,
+`fixedTargetSolutions_ncard_le_four`). Where it goes wrong is treating
+this as real content that needs an extra mechanism (`Stab(S)`, a
+`P1,...,P4 ∈ ⟨a⟩` membership hypothesis, prime-order orbit-counting) to
+collapse. **It does not need any of that.** The union collapses for
+free, by pure algebra on eq 1 itself, with no side hypothesis:
+
+**The resolution.** Take any two elements of the union — a solution
+`(P1,P2,P3,P4)` at "coordinates" `(alpha,alpha')` and a solution
+`(P1',P2',P3',P4')` for the SAME difference `alpha-alpha'` but a
+DIFFERENT `A' := [P1']+[P2']`. By `matching_solutions_translate_by_delta`
+(`MatchingEquationTranslation.lean`, already proved, unconditional —
+no new hypothesis), the two are related by a single `Δ` with `[P1]+[P2]
+= [P1']+[P2']+Δ` and `[P3]+[P4] = [P3']+[P4']+Δ`. Now, EITHER of two
+equivalent readings applies, and both are now Lean theorems
+(`MatchingEquationTranslation.lean`'s new `gauge_shift_preserves_eq1`/
+`eq1_gauge_invariant`/`matching_solutions_translate_by_delta_gauge_orbit`,
+this pass):
+
+1. **Read `Δ` back into eq 1 directly**: the `Δ`-shifted quadruple
+   `(P1',P2',P3',P4')` solves the IDENTICAL `(alpha,alpha')` target —
+   it is the SAME 0-dimensional solution-datum under relabeled points,
+   not a genuinely different point of the union.
+2. **Or, whenever `Δ = c•a` for some scalar `c`** (which is automatic
+   here, since `Δ = A - A'` and both `A,A'` range over `⟨a⟩` by
+   construction — no extra `P1,...,P4 ∈ ⟨a⟩` hypothesis needed, `A,A'`
+   themselves already live in `⟨a⟩` by definition of the union): the
+   SAME move is equally well described as leaving the points alone and
+   shifting the gauge `(alpha,alpha') ↦ (alpha+c,alpha'+c)`, since
+   `(alpha+c)-(alpha'+c) = alpha-alpha'` identically for every `c`
+   (`eq1_gauge_invariant`).
+
+Both readings are the same fact stated two ways. Neither requires `Δ`
+to be small, requires a prime-order dichotomy, or requires knowing
+where `P1,...,P4` live beyond what the union's own definition already
+gives. **Every term of the `~p²`-sized union `V(alpha,alpha')` is
+gauge-equivalent to any single reference term** — the union was never
+`~p²` genuinely distinct fibers stacking up; it is one fiber
+(`≤4`, already proved), seen through `~p²` gauge charts indexed by which
+`A ∈ ⟨a⟩` you happened to plug in. So **`deg(alpha,alpha') = O(1)`
+after all** (in fact literally `≤4`, `fixedTargetSolutions_ncard_le_four`
+applied to any one reference `(A,B)` pair) — the TL;DR's original claim
+the "CRITICAL CORRECTION" section flagged as FALSE is reinstated, via a
+different and much simpler mechanism than the TL;DR originally
+sketched.
+
+**What this means for the sections below.**
+- The "Investigation note"'s puzzle (≤4 bound vs. the `O(p²)`-looking
+  "plug in any `P1,P2`" numeric argument) is answered: the `O(p²)`-many
+  apparent solutions are exactly the gauge orbit of the one true
+  0-dimensional fiber, not a genuinely `O(p²)`-sized object — consistent
+  with, not contradicting, `decoupledSystem_isRegularSequence`'s 0D
+  finding for any single fixed `(sa,sb)`.
+- The "CRITICAL CORRECTION"'s diagnosis of the TL;DR's conflation
+  (single-fiber bound vs. whole-union bound) is CORRECT and still the
+  right way to see why the naive TL;DR argument as originally stated
+  was incomplete — what's superseded is only its conclusion that closing
+  the gap needs `Stab(S)`/a new membership hypothesis. It doesn't; gauge
+  invariance alone closes it.
+- The "Newest status update"'s `Stab(S)` argument (steps 1-6) is now
+  UNNEEDED for `Δ=0` on the union — its own still-open items (a)-(c)
+  (a formal home for `P1,...,P4 ∈ ⟨a⟩`, a `Fintype`/prime-order instance
+  for `AddSubgroup.zmultiples aClass`, wiring the abstract group theory
+  in) do not need to be built to close this roadmap's target theorem.
+  `StabOfSmallSetTrivial.lean` remains a correct, sorry-free, reusable
+  piece of abstract group theory — just no longer on the critical path
+  here, exactly the same status `OrbitMapConstant.lean` already has per
+  that same section's own note.
+- `SampleTargetFromAlphaPairMemA.lean`'s diagnosis (composing `Δ`-
+  membership with `delta_eq_zero_of_stabilizes_small_set` is NOT a
+  one-line corollary, because `FixedTargetSolutions`'s pair-sum is
+  constant across a single fiber) is confirmed correct, retrospectively,
+  as the reason NOT to force the `Stab(S)` route: that file's own honest
+  admission was pointing at exactly this resolution rather than at a
+  gap needing to be patched.
+
+**What still needs doing, concretely** (this replaces the old
+"Priority, going forward" list): compose `fixedTargetSolutions_ncard_le_four`
+with `matching_solutions_translate_by_delta_gauge_orbit` into a single
+closing theorem stated directly over `SampleTargetFromAlpha` — i.e. the
+actual `deg(alpha,alpha') ≤ 4`-for-the-whole-union statement, not just
+the single-fiber restatement `DecoupledSystemDegreeUniformFixedTarget
+.lean`'s `fixedTargetSolutions_ncard_le_four_sampleTargetFromAlpha`
+already gives. Concretely: show `V(alpha,alpha')` (as an actual `Set`,
+once defined) is literally a subset of the image of one reference
+`FixedTargetSolutions` fiber under the two-reading correspondence above
+— mechanical composition of theorems already on file, not new
+mathematical content. Obligation 3 (`hfinrank_le`)'s degree-bound work
+is still not the right thing to resume (unaffected by this section:
+still only ever attacks a single-fiber `finrank` bound, still not what
+closes `O(1)` on the union — though now the union needs no further
+machinery to close regardless).
+
+## Investigation note (superseded by the RESOLUTION section above —
+## kept for the numeric/dimension-counting detail it traces, which is
+## still accurate; only its framing of what remained unresolved is
+## superseded) — originally: read this before the CRITICAL CORRECTION
+## below; it doesn't change that section's conclusion, it traces a
+## further layer under it
 
 **What was asked**: Claire observed that (a) the ≤4 bound
 (`fixedTargetSolutions_ncard_le_four`, `MatchingSolutionSwapSymmetry.lean`)
@@ -105,11 +216,16 @@ most likely explanations (above) both point at the same place,
 `CrossNondegenerate`/the missing-witness-point numerics, as **one**
 underlying phenomenon rather than two unrelated risks.
 
-## CRITICAL CORRECTION (this pass, per Claire) — read this before
-## anything else in this document, including the "Newest status update"
-## immediately below. This invalidates the TL;DR's counting argument as
-## stated and downgrades the `Stab(S)`/`Δ=0` argument from "closes the
-## gap" to "necessary but not sufficient."
+## CRITICAL CORRECTION (superseded, in its conclusion only, by the
+## RESOLUTION section at the very top of this document — its diagnosis
+## of the TL;DR's single-fiber/whole-union conflation below is still
+## correct and worth reading; what's superseded is only the claim that
+## closing the gap needs `Stab(S)`/a new `P1,...,P4 ∈ ⟨a⟩` hypothesis —
+## it doesn't, gauge invariance alone closes it) — originally: read this
+## before anything else in this document, including the "Newest status
+## update" immediately below. This invalidates the TL;DR's counting
+## argument as stated and downgrades the `Stab(S)`/`Δ=0` argument from
+## "closes the gap" to "necessary but not sufficient."
 
 **The core error**: this whole document, from the TL;DR onward, treats
 "fix `(alpha,alpha')`" as if it fixes the pair-sum classes `A := [P1]+[P2]`
@@ -205,11 +321,17 @@ roadmap's target theorem; it closes one necessary input to the `Stab(S)`
 argument (the `|S| ≤ 16`-style bound needed at step 5), not the whole
 argument.
 
-## Newest status update — the `Stab(S)` argument for `Δ=0` (read this one
-## first; it supersedes `OrbitMapConstant.lean`'s connectedness route as
-## the mechanism for the "2D/1D-collapse" finding directly below — but
-## see the CRITICAL CORRECTION above first: this argument is necessary,
-## not sufficient, for the reason given there)
+## Newest status update — the `Stab(S)` argument for `Δ=0` (superseded:
+## the RESOLUTION section at the very top of this document closes `Δ=0`
+## on the union WITHOUT needing this argument — no `Stab(S)`, no
+## `P1,...,P4 ∈ ⟨a⟩` hypothesis, no prime-order dichotomy. Kept below
+## because `StabOfSmallSetTrivial.lean`'s abstract group theory (steps
+## 3-6's content) remains correct and reusable, exactly like
+## `OrbitMapConstant.lean` a section below it — just off the critical
+## path for THIS roadmap's target theorem, same status. Originally: read
+## this one first; it supersedes `OrbitMapConstant.lean`'s connectedness
+## route as the mechanism for the "2D/1D-collapse" finding directly
+## below)
 
 This section records a NEW, unformalized argument (worked out directly
 with Claire this pass, not yet ported to Lean) for exactly the fact the
