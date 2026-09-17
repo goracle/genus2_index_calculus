@@ -1272,20 +1272,43 @@ using `Module.Finite.of_surjective` — the same transport
 `FinrankLeOfSpanSurjective.lean`'s `hfin` step uses for the one-hop
 version.
 
-### 68. `MatchingEquationTranslation.lean` (145 lines) — separate
+### 68. `MatchingEquationTranslation.lean` (250 lines, grown from 145 —
+this entry's description supersedes its earlier version) — separate
 `matching-equation` sub-effort, not part of the `totalDegree` chain above
 Imports: `DivisorClassGroup`.
 
-Two standalone `AddCommGroup` facts about the matching equation
+**Fact 1** (the original content this entry used to describe in full):
+two standalone `AddCommGroup` facts about the matching equation
 `[P1]+[P2]-[P3]-[P4] = (alpha-alpha')•a` in `Jacobian H D`, with no
 curve-specific or Mumford-coordinate content. Proves
 `matching_solutions_translate_by_delta`: any two solutions of the same
 matching equation are related by a single common `Δ` translating both
-sides simultaneously (`Δ := (P1+P2)-(P1'+P2')`). Explicit about what it
-does NOT prove: that the solution set for a fixed `(alpha,alpha')` is a
-single point — that is asserted in `ROADMAP-alpha-locus.md` from
-reasoning done outside Lean, flagged there as "not yet formalized." Was
-building-red as of this pass (see the Fix note below); now green.
+sides simultaneously (`Δ := (P1+P2)-(P1'+P2')`). Was building-red as of
+an earlier pass (see the Fix note below); now green.
+
+**Fact 2, new this pass — the gauge-invariance/collapse result
+`ROADMAP-alpha-locus.md`'s top "RESOLUTION" section now cites as closing
+the `Δ=0` question outright.** Where Fact 1 only relates two solutions by
+some `Δ`, Fact 2 shows that `Δ` is never genuine new freedom: eq 1 only
+ever depends on `alpha,alpha'` through their difference, so (a)
+`eq1_gauge_invariant`: shifting `(alpha,alpha')` by a common `c` leaves
+eq 1's target unchanged (`(alpha-alpha') • a = ((alpha+c)-(alpha'+c)) •
+a`, pure `ring` on the exponent); (b) `gauge_shift_preserves_eq1`: a
+common `Δ`-translate of both pair-sums leaves eq 1's target unchanged for
+ANY `Δ`, no `⟨a⟩`-membership needed; (c)
+`matching_solutions_translate_by_delta_gauge_orbit` packages both
+readings together: every solution of eq 1 for a fixed `alpha-alpha'`
+lies in the gauge orbit of any one reference solution — no `Stab(S)`, no
+`P1,...,P4 ∈ ⟨a⟩` hypothesis, no prime-order dichotomy needed,
+superseding the "Newest status update" `Stab(S)` argument
+`ROADMAP-alpha-locus.md` previously carried as the load-bearing
+mechanism. **Does NOT itself prove the solution set has exactly one
+element** — it proves the apparent `~p²`-sized union of fibers (one per
+choice of the free pair-sum class `A ∈ ⟨a⟩`) is gauge-equivalent to a
+single fiber, which combined with the already-proved
+`fixedTargetSolutions_ncard_le_four` (`MatchingSolutionSwapSymmetry.lean`)
+gives the `deg(alpha,alpha') ≤ 4` bound the roadmap's TL;DR originally
+wanted. **Status: sorry-free** (both facts).
 
 ### 69. `OrbitMapConstant.lean` (120 lines) — same sub-effort as entry 68
 Imports: `Mathlib` only — deliberately no `DivisorClassGroup` import,
