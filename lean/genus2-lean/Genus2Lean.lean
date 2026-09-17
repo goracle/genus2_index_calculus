@@ -188,3 +188,4 @@ import Genus2Lean.ZeroD.MatchingSolutionSwapSymmetry
 import Genus2Lean.ZeroD.SampleTargetFromAlphaPairMemA
 import Genus2Lean.ZeroD.DecoupledSystemDegreeUniformFixedTarget
 import Genus2Lean.UniformFiberBoundOffDiagonal
+import Genus2Lean.ZeroD.AlphaUnionGaugeCollapse
