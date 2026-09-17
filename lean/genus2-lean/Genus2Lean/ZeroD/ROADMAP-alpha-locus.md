@@ -1,9 +1,111 @@
 # Roadmap: proving eq 1 is 0-dimensional *uniformly in `(alpha,alpha')`* —
 # why this is the real target, and how it closes the 8th-moment gap
 
+## CRITICAL CORRECTION (this pass, per Claire) — read this before
+## anything else in this document, including the "Newest status update"
+## immediately below. This invalidates the TL;DR's counting argument as
+## stated and downgrades the `Stab(S)`/`Δ=0` argument from "closes the
+## gap" to "necessary but not sufficient."
+
+**The core error**: this whole document, from the TL;DR onward, treats
+"fix `(alpha,alpha')`" as if it fixes the pair-sum classes `A := [P1]+[P2]`
+and `B := [P3]+[P4]` themselves. **It does not.** `alpha` is a scalar;
+`A` is only pinned down once `P1,P2` (equivalently, once the specific
+divisor class `A` itself) are also fixed. Nothing in `eq 1` —
+
+    [P1]+[P2] - alpha*a = [P3]+[P4] - alpha'*a      (eq 1)
+
+— constrains `A = [P1]+[P2]` to a single value for fixed `alpha,alpha'`.
+Only the *difference* `A - B = (alpha-alpha')*a` is pinned down. `A`
+itself is free to range over the entire cyclic subgroup `⟨a⟩` (order
+`ell ~ p²`, per the "Newest status update" section's own standing
+hypothesis `P1,P2,P3,P4 ∈ ⟨a⟩`), with `B := A - (alpha-alpha')*a`
+determined afterward, once `A` is chosen.
+
+**Consequence for the counting argument.** `MatchingSolutionSwapSymmetry
+.fixedTargetSolutions_ncard_le_four` (≤4) is a true, correctly-proved
+bound — but it bounds the fiber over ONE FIXED PAIR `(A,B)`, not over
+fixed `(alpha,alpha')`. The actual solution set for fixed `(alpha,alpha')`
+is the UNION of these fibers over every value `A` can take:
+
+    V(alpha,alpha') = ⋃_{A ∈ ⟨a⟩} FixedTargetSolutions(A, A - (alpha-alpha')·a)
+
+Each term is ≤4 (proved), but there are `~ell ~ p²` terms in the union
+(one per choice of `A`), roughly half of which are expected to be
+nonempty (whether a given `B` is itself an effective/reachable pair-sum
+is the same "splits about half the time" fact this project's own
+`IsOnlyEffectiveInClass`/genericity results already rely on elsewhere).
+So **`deg(alpha,alpha') = O(p²)`, not `O(1)`, even for `alpha,alpha'`
+literally fixed as integers.** The TL;DR's central claim (lines below,
+"If `deg(alpha,alpha') = O(1)` uniformly... closes advisory-6/7's
+Question 4 outright") is FALSE as stated — not because the `≤4` lemma is
+wrong, but because `deg(alpha,alpha')` itself was never `O(1)` to begin
+with; the document conflated a single-fiber bound with a whole-fiber-union
+bound throughout.
+
+**What this means for `decoupledSystem_isRegularSequence`,
+`decoupledSystem_zeroDimensional`, `regularSeq_of_peel_chain`.** These
+are all stated for a single fixed `sa, sb : SampleTarget p` — i.e. for a
+single fixed Mumford-coordinate target, which is a single point of
+`⟨a⟩ × ⟨a⟩`, not a single `(alpha,alpha')` pair. They are each correct as
+proved and are NOT contradicted by anything above — the confusion is
+entirely at the level of what varying `sa, sb` "for fixed `alpha,alpha'`"
+was assumed to mean. There is no bug in the regular-sequence machinery.
+
+**What this means for the `Stab(S)`/`Δ=0` argument (section immediately
+below).** That argument is the one place in this document actually
+attempting to control the union over `A`, not just a single fiber — and
+it is NECESSARY for any hope of an `O(1)` bound, but it is **not
+sufficient on its own**, and the gap matters:
+
+- The `Stab(S)` argument's `S` is, per its own step 1, "the solution set
+  of the matching equation... for this fixed `(alpha,alpha')`" — i.e.
+  exactly `V(alpha,alpha')` as redefined above, the union over `A`. If
+  `Stab(S) = {0}` genuinely forces `|S| = 1` (steps 4-6, granting the
+  `P1,...,P4 ∈ ⟨a⟩` hypothesis), that WOULD directly refute the `O(p²)`
+  count above — collapsing the ~`p²`-term union to a single surviving
+  term. This is the right shape of argument to resolve the discrepancy,
+  and is why it should stay the load-bearing candidate mechanism, not be
+  discarded.
+- But two things stand between "the right shape" and "actually closes
+  this": (i) the argument's own step 1 already assumes `|S| ≤ 16`
+  (route (ii)'s bound) as an input — that bound is itself a
+  single-`(sa,sb)`-instance `finrank` bound (`decoupledSystem_isRegularSequence`
+  chain), not yet shown to also bound the UNION `S` defined here; the
+  document has never distinguished these two objects clearly enough to
+  know whether "route (ii)'s bound" was ever meant to apply to the union
+  in the first place. (ii) `Stab(S)`'s own machimery (`StabOfSmallSetTrivial
+  .lean`) needs `S` finite and `Δ +ᵥ S = S` — both plausible but neither
+  checked against the UNION reading of `S`; every existing Lean file
+  building toward this (`SampleTargetFromAlphaPairMemA.lean` included)
+  was written against a single-`(sa,sb)`-fiber intuition, per its own
+  docstring's honest admission that composing `Δ`-membership with
+  `delta_eq_zero_of_stabilizes_small_set` "is NOT a one-line corollary,"
+  precisely because `FixedTargetSolutions`'s pair-sum is CONSTANT across
+  a single fiber (no room for `Δ` to act nontrivially) — which is a
+  symptom of exactly this fiber-vs-union confusion, not a separate bug.
+  **`SampleTargetFromAlphaPairMemA.lean`'s own diagnosis of this
+  mismatch was correct and should be treated as the state of the art on
+  this point, not superseded by anything else in this document.**
+
+**Priority, going forward.** The single most valuable next step is
+formalizing precisely what `S` is at each layer (single-fiber vs.
+`A`-union) and checking whether the `Stab(S)` mechanism, correctly
+targeted at the UNION, actually closes it — not extending Obligation 3
+(`hfinrank_le`)'s degree-bound work, which (per `ROADMAP-degree-uniform-
+step3.md`, now in `oldroadmaps/`) only ever attacked a single-fiber
+`finrank` bound and, even if fully closed, would NOT by itself deliver
+`O(1)` on the union — exactly the gap this correction identifies. Do not
+resume Obligation 3 under the belief that closing it finishes this
+roadmap's target theorem; it closes one necessary input to the `Stab(S)`
+argument (the `|S| ≤ 16`-style bound needed at step 5), not the whole
+argument.
+
 ## Newest status update — the `Stab(S)` argument for `Δ=0` (read this one
 ## first; it supersedes `OrbitMapConstant.lean`'s connectedness route as
-## the mechanism for the "2D/1D-collapse" finding directly below)
+## the mechanism for the "2D/1D-collapse" finding directly below — but
+## see the CRITICAL CORRECTION above first: this argument is necessary,
+## not sufficient, for the reason given there)
 
 This section records a NEW, unformalized argument (worked out directly
 with Claire this pass, not yet ported to Lean) for exactly the fact the
@@ -124,6 +226,17 @@ not just a sketch**:
 
 ## Newer status update — read this one first, then the correction below
 
+**Superseded in part by the "CRITICAL CORRECTION" section at the very
+top of this document — read that first.** The "2D-fibers-with-collapse"
+picture this section describes is directionally the same discovery as
+that correction (both are noticing that fixing `(alpha,alpha')` alone
+does not pin down a 0-dimensional object), but this section's framing
+(below) still describes it through the single-`(sa,sb)`-instance lens
+rather than the `A ∈ ⟨a⟩`-union lens the top correction makes explicit.
+Read the top correction for the precise reason the TL;DR's counting
+argument fails, then this section for the earlier, less precise version
+of the same finding.
+
 **The solution variety is not simply 0-dimensional the way this whole
 document (TL;DR through the numerical updates further down) describes
 it.** A chain of reasoning (outside Lean, not yet formalized, and not
@@ -144,6 +257,15 @@ structure is actually elucidated and formalized, rather than leaving
 this as a second uncorrected layer on top of the correction below.
 
 ## Status correction, added this pass — read before anything below
+
+**Superseded, this pass: the claim in the paragraph immediately below
+("that argument is still correct") is no longer accurate — see the
+CRITICAL CORRECTION at the top of this document.** The TL;DR's two-line
+counting argument is NOT correct as stated: it silently assumes fixing
+`(alpha,alpha')` fixes the pair-sum classes `A,B` themselves, which it
+does not. The rest of this "Status correction" section (Task (A)'s good
+shape, `CrossNondegenerate`'s expected-false status) is unaffected and
+still accurate.
 
 Everything from the TL;DR through "Step 4" below is the *conceptual*
 argument for why a uniform degree bound closes the 8th-moment gap, and
@@ -262,6 +384,27 @@ across the relevant range of `(alpha,alpha')`, closes advisory-6/7's
 Question 4 outright, by a two-line counting argument, not by anything in
 section 7.**
 
+**Correction, this pass (see the CRITICAL CORRECTION at the top of this
+document for the full account): the logic above (`X(Delta) <=
+deg(alpha,alpha')`) is correct, but `deg(alpha,alpha') = O(1)` is FALSE,
+not merely unproved.** `V(alpha,alpha')` — the full solution variety for
+fixed `alpha,alpha'` — is genuinely the union, over every choice of
+`A := [P1]+[P2] ∈ ⟨a⟩` (order `~p²`), of the fiber
+`FixedTargetSolutions(A, A-(alpha-alpha')·a)`; nothing about fixing the
+two SCALARS `alpha,alpha'` fixes `A` itself. Each such fiber is ≤4
+(`MatchingSolutionSwapSymmetry.fixedTargetSolutions_ncard_le_four`,
+correctly proved), but there are `~p²` fibers in the union, roughly half
+nonempty, so `deg(alpha,alpha') = O(p²)`, not `O(1)`. The two-line
+counting argument above is therefore not enough BY ITSELF to close
+Question 4 — it correctly reduces the problem to bounding
+`deg(alpha,alpha')`, but that quantity is large unless a further
+mechanism (see the `Stab(S)`/`Δ=0` argument, and the CRITICAL CORRECTION's
+assessment of what it does and doesn't yet establish) collapses the
+`~p²`-term union down to `O(1)` surviving terms. Nothing else in this
+TL;DR's reasoning is wrong — this is the one place a hidden assumption
+was smuggled in, and it is exactly the assumption this whole roadmap
+needs to either justify or route around.
+
 This reclassifies what was previously called "Question 3" (uniform
 fiber-degree stability, §6.3) from a downgraded "detail" back to the single
 highest-value target in the whole project: it is not a nice-to-have that
@@ -302,10 +445,27 @@ only `alpha,alpha'` and solves for **all four points at once**,
 `F^4`-rational-point-count of `decoupledSystem`'s own solution variety at
 that `(alpha,alpha')` — not a union of `B^2` separate fiber counts, one
 per `(P1,P2)`. There is exactly one variety per `(alpha,alpha')`, and
-`X(Delta)` is bounded by its degree directly. The union-of-fibers picture
-was a mistranslation of what "0-dimensional" was a claim about, introduced
-partway through the discussion that produced the previous version of this
-roadmap, and it should be discarded.
+`X(Delta)` is bounded by its degree directly.
+
+**Correction, this pass — the paragraph above's dismissal was itself
+wrong, and the "union-of-fibers picture" it discards is, after all, the
+right way to think about `V(alpha,alpha')`'s size.** See the CRITICAL
+CORRECTION at the top of this document. "There is exactly one variety per
+`(alpha,alpha')`" is true (it always was — nobody disputed the variety is
+singular), but that variety's OWN degree is not thereby `O(1)`: it
+decomposes as a union, over the `~p²` choices of `A := [P1]+[P2] ∈ ⟨a⟩`,
+of ≤4-point fibers — genuinely a union of `~p²` separate fiber counts,
+just re-parametrized by `A` rather than by `(P1,P2)` directly (the two
+parametrizations have the same cardinality, since fixing `A` still leaves
+the ≤2 `(P1,P2)`-representations of it, per `pairFiber_ncard_le_two`, not
+a single pair). The original objection's arithmetic (`~B²`-many terms
+summing to something not obviously `O(1)`) was correct; only its
+bookkeeping (parametrizing by `(P1,P2)` instead of by `A`) obscured that
+`decoupledSystem`'s own variety, singular though it is as an object,
+still has this internal union structure and is not automatically small
+merely for being one variety rather than many. The "toy counterexample"
+discussion in the next paragraph is unaffected by this correction and
+remains a genuinely useful data point.
 
 (For the record, the earlier "toy counterexample" involving `Delta=0` and
 `X(0)=E(T,T)` is not actually a counterexample to the corrected claim
@@ -381,6 +541,18 @@ explicitly.)
   would be built from. Not re-read this pass.
 
 ## The actual target theorem, stated precisely
+
+**This section's theorem shape is still the right one — see the CRITICAL
+CORRECTION at the top of this document for why proving it is harder than
+the TL;DR assumed, not for any change to the statement itself.** The
+`≤ d` cardinality bound below, quantified over `alpha,alpha'` with `Bad`
+excluded, is exactly asking whether `deg(alpha,alpha') = O(1)` — which
+the top correction shows is false for the reason given there (the
+variety decomposes as a union over `~p²` choices of the pair-sum class
+`A`) UNLESS the `Stab(S)`/`Δ=0` mechanism (or something like it) is
+actually completed and shown to collapse that union. Nothing about the
+formal statement changes; what changes is the assessment of how far from
+proved it currently is, and which piece of work would actually move it.
 
 The object to prove is not "does `decoupledSystem` have a small solution
 set for one `(alpha,alpha')`" (already the target of
