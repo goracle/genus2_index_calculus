@@ -192,3 +192,4 @@ import Genus2Lean.ZeroD.AlphaUnionGaugeCollapse
 import Genus2Lean.ZeroD.GaugeOrbitMatchCountBound
 import Genus2Lean.IndexCalculusRelations
 import Genus2Lean.IndexCalculusComplexity
+import Genus2Lean.CantorCompositionStep
