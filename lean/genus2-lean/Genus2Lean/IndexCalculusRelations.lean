@@ -282,4 +282,60 @@ theorem not_gaugeRelated_of_distinctRHS {a : G} {ι : Type*} {s : ι → Matchin
     ¬ GaugeRelated (s i) (s j) :=
   fun h => hij (hd ((gaugeRelated_iff_same_rhsElt (s i) (s j)).1 h))
 
+/-! ## Deduplication by right-hand side loses no rank
+
+The point of the gauge-redundancy facts above: a relation `r₂` sharing its
+`rhsElt` with some already-kept relation `r₁` contributes nothing a linear
+solve needs beyond `r₁` — their difference is a `sum = 0` row, a pure
+syzygy, not a new equation tying factor-base logs to a nonzero target. So a
+family can be deduplicated down to *one relation per distinct `rhsElt`*
+without losing any `rhsElt` the original family realized. This is the
+precise sense in which "at most one usable relation per right-hand side" is
+already fully justified by `gaugeRelated_iff_same_rhsElt` — no bound on how
+many point-quadruples share a `Δ`, and no Sidon/second-moment input, is
+needed for this claim; it is about redundancy of rows, not cardinality of
+fibers. -/
+
+/-- **A relation whose `rhsElt` is realized is gauge-redundant with some
+member of a chosen representative sub-family, if that sub-family already
+realizes the same `rhsElt`.** Precisely: given a target family `s : ι →
+MatchingSolve a` and a representative `s' : ι → MatchingSolve a` (e.g. `s`
+restricted to one index per distinct `rhsElt`) such that every `rhsElt` `s`
+realizes is also realized by `s'`, every solve in `s` is gauge-related to
+some solve in `s'`, hence its relation differs from that representative's
+by a zero row. This is `gaugeRelated_iff_same_rhsElt` applied pointwise; the
+content is packaging, not new algebra. -/
+theorem exists_gaugeRelated_repr_of_rhsElt_mem {a : G} {ι ι' : Type*}
+    (s : ι → MatchingSolve a) (s' : ι' → MatchingSolve a)
+    (hcover : ∀ i : ι, ∃ i' : ι', (s' i').toRelation.rhsElt = (s i).toRelation.rhsElt)
+    (i : ι) :
+    ∃ i' : ι', GaugeRelated (s i) (s' i') ∧
+      (s i).toRelation.terms.sum - (s' i').toRelation.terms.sum = 0 := by
+  obtain ⟨i', hi'⟩ := hcover i
+  refine ⟨i', (gaugeRelated_iff_same_rhsElt (s i) (s' i')).2 hi'.symm, ?_⟩
+  exact relation_sub_zero_of_same_rhsElt _ _ hi'.symm
+
+/-- **Deduplicating by `rhsElt` preserves every realized right-hand side,
+and every discarded relation is gauge-redundant with the kept one.** Given
+any family `s : ι → MatchingSolve a`, pick a section `rep : G → ι` of
+`rhsElt ∘ s` over its image (i.e. for every realized target `g`, `rep g` is
+some index whose relation has `rhsElt = g` — this is just "choose one
+representative per right-hand side," available by choice since the image is
+a set of realized targets, no further hypothesis needed beyond `s i₀`
+witnessing `g` is realized). Then every `i : ι` is gauge-related to the
+chosen representative `rep ((s i).toRelation.rhsElt)` for its own
+right-hand side, so the deduplicated family `fun g => s (rep g)`
+(ranging over the realized right-hand sides `g`) realizes the same set of
+right-hand sides as `s` and every discarded solve differs from its kept
+representative by a zero row. -/
+theorem dedup_by_rhsElt_loses_no_rhs {a : G} {ι : Type*} (s : ι → MatchingSolve a)
+    (rep : G → ι) (hrep : ∀ i : ι, (s (rep ((s i).toRelation.rhsElt))).toRelation.rhsElt =
+      (s i).toRelation.rhsElt) (i : ι) :
+    GaugeRelated (s i) (s (rep ((s i).toRelation.rhsElt))) ∧
+      (s i).toRelation.terms.sum -
+        (s (rep ((s i).toRelation.rhsElt))).toRelation.terms.sum = 0 := by
+  have h := hrep i
+  refine ⟨(gaugeRelated_iff_same_rhsElt (s i) (s (rep ((s i).toRelation.rhsElt)))).2 h.symm, ?_⟩
+  exact relation_sub_zero_of_same_rhsElt _ _ h.symm
+
 end IndexCalculus
