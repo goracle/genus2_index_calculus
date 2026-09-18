@@ -74,6 +74,53 @@ variable {k : Type*} [Field k] {H : HyperellipticPolynomial k}
 variable {D : PrincipalDivisorData H}
 variable [IsDedekindDomain (CoordinateRing H)]
 
+/-- **`reducedClass`'s intended unfolding — restated directly in terms of
+`s D δ₀`, GIVEN that the unfolding holds.** `reducedClass` carries a
+DEFAULT value in the structure definition (`AlphaLocusDegreeUniform.lean`),
+but a default only fills in a field when a constructor call omits it — it
+is not a theorem binding that field for every value of the structure's
+type. Concretely: `cases sa` on an arbitrary `sa : SampleTargetFromAlpha
+p H D aClass δ₀` reveals `reducedClass` as a free field, independent of
+`alpha`/`P1`/`P2`, so `sa.reducedClass = sa.alpha • aClass - toJacobian D
+⟨...⟩` is NOT provable by `rfl`/`cases`+`rfl` for an opaque `sa` — a caller
+could hand-build a `SampleTargetFromAlpha` with any `reducedClass` value
+at all. (An earlier pass tried exactly this `cases sa; rfl` route and it
+correctly failed to typecheck — the goal after `cases` shows `reducedClass`
+as a free local variable unconnected to `alpha`/`P1`/`P2`.) So the
+unfolding genuinely has to be a HYPOTHESIS, supplied by whoever holds a
+concrete `sa` satisfying it — matching every other place in this codebase
+that needs this fact (`ReducedClassBundles.lean`'s `ReductionData.
+hReducedClass`, `AlphaLocusDegreeUniformTangent.lean`'s
+`TangentReductionData.hReducedClass`, and their `Cross1`–`Cross4`
+siblings, all of which take it as a field to be proved by the bundle's
+constructor, never derived from nothing).
+
+This lemma just composes that hypothesis with `s_eq_toJacobian_sub`/
+`map_add`, so callers can go straight to the `s D δ₀ P1 + s D δ₀ P2` shape
+without re-deriving the `Subtype.ext`/`two_zsmul`/`abel` step inline every
+time. -/
+theorem reducedClass_eq_alpha_smul_sub_s_add_s
+    {p : ℕ} [Fact (Nat.Prime p)]
+    {aClass : Jacobian H D} {δ₀ : H.Point}
+    (sa : SampleTargetFromAlpha p H D aClass δ₀)
+    (hRed : sa.reducedClass = sa.alpha • aClass -
+        toJacobian D (⟨single sa.P1 + single sa.P2 - (2 : ℤ) • single δ₀,
+          by
+            have h1 := single_sub_single_mem_Divisor0 sa.P1 δ₀
+            have h2 := single_sub_single_mem_Divisor0 sa.P2 δ₀
+            have : single sa.P1 + single sa.P2 - (2 : ℤ) • single δ₀ =
+                (single sa.P1 - single δ₀) + (single sa.P2 - single δ₀) := by
+              rw [two_zsmul]; abel
+            rw [this]
+            exact add_mem h1 h2⟩ : Divisor0 H)) :
+    sa.reducedClass = sa.alpha • aClass - (s D δ₀ sa.P1 + s D δ₀ sa.P2) := by
+  rw [hRed, s_eq_toJacobian_sub D δ₀ sa.P1, s_eq_toJacobian_sub D δ₀ sa.P2, ← map_add]
+  refine congrArg (fun x => sa.alpha • aClass - toJacobian D x) ?_
+  apply Subtype.ext
+  show single sa.P1 + single sa.P2 - (2 : ℤ) • single δ₀ =
+    (single sa.P1 - single δ₀) + (single sa.P2 - single δ₀)
+  rw [two_zsmul]; abel
+
 /-- **The union-collapse theorem.** Fix a reference sample pair `sa, sb`
 (sharing `aClass`/`δ₀`) and let `sa', sb'` be ANY other sample pair sharing
 the same difference `sa.alpha - sb.alpha`. Then every solution of `sa'/sb'`'s
@@ -90,7 +137,8 @@ Concretely: `Δ := A - A'` witnesses `A = A' + Δ` and `B = B' + Δ`
 (`matching_solutions_translate_by_delta`, applied to `target := A - B =
 A' - B'`, which holds since both equal `(sa.alpha - sb.alpha) •
 aClass` — the "eq 1" reading, unwound from each sample's own `reducedClass`
-field). -/
+field via `reducedClass_eq_alpha_smul_sub_s_add_s`, given each sample's own
+unfolding hypothesis). -/
 theorem sameDifference_gauge_orbit
     [DecidableEq H.Point]
     {p : ℕ} [Fact (Nat.Prime p)]
@@ -98,53 +146,63 @@ theorem sameDifference_gauge_orbit
     (sa sb sa' sb' : SampleTargetFromAlpha p H D aClass δ₀)
     (hdiff : sa.alpha - sb.alpha = sa'.alpha - sb'.alpha)
     (hred : sa.reducedClass = sb.reducedClass)
-    (hred' : sa'.reducedClass = sb'.reducedClass) :
+    (hred' : sa'.reducedClass = sb'.reducedClass)
+    -- **Unavoidable, per `reducedClass_eq_alpha_smul_sub_s_add_s`'s own
+    -- docstring**: `reducedClass` is a genuinely free field of
+    -- `SampleTargetFromAlpha` (its structure-default only applies when a
+    -- constructor call omits it), so its intended meaning has to be
+    -- supplied as a hypothesis for each of the four samples here — there
+    -- is no way to derive it from nothing for an opaque `sa`. This matches
+    -- every other file in the project that needs this fact.
+    (hRedA : sa.reducedClass = sa.alpha • aClass -
+        toJacobian D (⟨single sa.P1 + single sa.P2 - (2 : ℤ) • single δ₀,
+          by
+            have h1 := single_sub_single_mem_Divisor0 sa.P1 δ₀
+            have h2 := single_sub_single_mem_Divisor0 sa.P2 δ₀
+            have heq2 : single sa.P1 + single sa.P2 - (2 : ℤ) • single δ₀ =
+                (single sa.P1 - single δ₀) + (single sa.P2 - single δ₀) := by
+              rw [two_zsmul]; abel
+            rw [heq2]; exact add_mem h1 h2⟩ : Divisor0 H))
+    (hRedB : sb.reducedClass = sb.alpha • aClass -
+        toJacobian D (⟨single sb.P1 + single sb.P2 - (2 : ℤ) • single δ₀,
+          by
+            have h1 := single_sub_single_mem_Divisor0 sb.P1 δ₀
+            have h2 := single_sub_single_mem_Divisor0 sb.P2 δ₀
+            have heq2 : single sb.P1 + single sb.P2 - (2 : ℤ) • single δ₀ =
+                (single sb.P1 - single δ₀) + (single sb.P2 - single δ₀) := by
+              rw [two_zsmul]; abel
+            rw [heq2]; exact add_mem h1 h2⟩ : Divisor0 H))
+    (hRedA' : sa'.reducedClass = sa'.alpha • aClass -
+        toJacobian D (⟨single sa'.P1 + single sa'.P2 - (2 : ℤ) • single δ₀,
+          by
+            have h1 := single_sub_single_mem_Divisor0 sa'.P1 δ₀
+            have h2 := single_sub_single_mem_Divisor0 sa'.P2 δ₀
+            have heq2 : single sa'.P1 + single sa'.P2 - (2 : ℤ) • single δ₀ =
+                (single sa'.P1 - single δ₀) + (single sa'.P2 - single δ₀) := by
+              rw [two_zsmul]; abel
+            rw [heq2]; exact add_mem h1 h2⟩ : Divisor0 H))
+    (hRedB' : sb'.reducedClass = sb'.alpha • aClass -
+        toJacobian D (⟨single sb'.P1 + single sb'.P2 - (2 : ℤ) • single δ₀,
+          by
+            have h1 := single_sub_single_mem_Divisor0 sb'.P1 δ₀
+            have h2 := single_sub_single_mem_Divisor0 sb'.P2 δ₀
+            have heq2 : single sb'.P1 + single sb'.P2 - (2 : ℤ) • single δ₀ =
+                (single sb'.P1 - single δ₀) + (single sb'.P2 - single δ₀) := by
+              rw [two_zsmul]; abel
+            rw [heq2]; exact add_mem h1 h2⟩ : Divisor0 H)) :
     ∃ Δ : Jacobian H D,
       (s D δ₀ sa.P1 + s D δ₀ sa.P2) =
         (s D δ₀ sa'.P1 + s D δ₀ sa'.P2) + Δ ∧
       (s D δ₀ sb.P1 + s D δ₀ sb.P2) =
         (s D δ₀ sb'.P1 + s D δ₀ sb'.P2) + Δ := by
   -- Unwind each sample's `reducedClass` field into the "eq 1" shape
-  -- `A = alpha • aClass - reducedClass`, i.e. `reducedClass`'s own default
-  -- definition rearranged. `reducedClass` is definitionally (`rfl`, per
-  -- the structure default) `alpha • aClass - toJacobian D ⟨single P1 +
-  -- single P2 - 2•single δ₀, _⟩`; rewrite that anchor term as
-  -- `s D δ₀ P1 + s D δ₀ P2` via `s_eq_toJacobian_sub` (also `rfl`) and
-  -- `map_add` (`toJacobian` is an `AddMonoidHom`, the same route
-  -- `s_add_s_eq_s_add_s_iff`'s own proof already uses for `map_add`), then
-  -- rearrange with `eq_sub_iff_add_eq`/`abel`.
-  have hdefA : sa.reducedClass = sa.alpha • aClass - (s D δ₀ sa.P1 + s D δ₀ sa.P2) := by
-    show sa.alpha • aClass -
-        toJacobian D ⟨single sa.P1 + single sa.P2 - (2 : ℤ) • single δ₀, _⟩ =
-      sa.alpha • aClass - (s D δ₀ sa.P1 + s D δ₀ sa.P2)
-    congr 1
-    rw [s_eq_toJacobian_sub D δ₀ sa.P1, s_eq_toJacobian_sub D δ₀ sa.P2, ← map_add]
-    congr 1
-    rw [two_zsmul]; abel
-  have hdefB : sb.reducedClass = sb.alpha • aClass - (s D δ₀ sb.P1 + s D δ₀ sb.P2) := by
-    show sb.alpha • aClass -
-        toJacobian D ⟨single sb.P1 + single sb.P2 - (2 : ℤ) • single δ₀, _⟩ =
-      sb.alpha • aClass - (s D δ₀ sb.P1 + s D δ₀ sb.P2)
-    congr 1
-    rw [s_eq_toJacobian_sub D δ₀ sb.P1, s_eq_toJacobian_sub D δ₀ sb.P2, ← map_add]
-    congr 1
-    rw [two_zsmul]; abel
-  have hdefA' : sa'.reducedClass = sa'.alpha • aClass - (s D δ₀ sa'.P1 + s D δ₀ sa'.P2) := by
-    show sa'.alpha • aClass -
-        toJacobian D ⟨single sa'.P1 + single sa'.P2 - (2 : ℤ) • single δ₀, _⟩ =
-      sa'.alpha • aClass - (s D δ₀ sa'.P1 + s D δ₀ sa'.P2)
-    congr 1
-    rw [s_eq_toJacobian_sub D δ₀ sa'.P1, s_eq_toJacobian_sub D δ₀ sa'.P2, ← map_add]
-    congr 1
-    rw [two_zsmul]; abel
-  have hdefB' : sb'.reducedClass = sb'.alpha • aClass - (s D δ₀ sb'.P1 + s D δ₀ sb'.P2) := by
-    show sb'.alpha • aClass -
-        toJacobian D ⟨single sb'.P1 + single sb'.P2 - (2 : ℤ) • single δ₀, _⟩ =
-      sb'.alpha • aClass - (s D δ₀ sb'.P1 + s D δ₀ sb'.P2)
-    congr 1
-    rw [s_eq_toJacobian_sub D δ₀ sb'.P1, s_eq_toJacobian_sub D δ₀ sb'.P2, ← map_add]
-    congr 1
-    rw [two_zsmul]; abel
+  -- `A = alpha • aClass - reducedClass` via
+  -- `reducedClass_eq_alpha_smul_sub_s_add_s`, given each sample's own
+  -- `hRed*` hypothesis.
+  have hdefA := reducedClass_eq_alpha_smul_sub_s_add_s sa hRedA
+  have hdefB := reducedClass_eq_alpha_smul_sub_s_add_s sb hRedB
+  have hdefA' := reducedClass_eq_alpha_smul_sub_s_add_s sa' hRedA'
+  have hdefB' := reducedClass_eq_alpha_smul_sub_s_add_s sb' hRedB'
   have hA : s D δ₀ sa.P1 + s D δ₀ sa.P2 = sa.alpha • aClass - sa.reducedClass := by
     rw [hdefA]; abel
   have hB : s D δ₀ sb.P1 + s D δ₀ sb.P2 = sb.alpha • aClass - sb.reducedClass := by
