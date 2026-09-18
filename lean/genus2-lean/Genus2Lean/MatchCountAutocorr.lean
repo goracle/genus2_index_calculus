@@ -125,3 +125,25 @@ theorem matchCount_le_two_card_sq (T : Finset G) (hSidon : SidonRepBound T) (Δ 
     _ = 2 * ∑ g : G, repCount T (g - Δ) := by rw [Finset.mul_sum]
     _ = 2 * ∑ g : G, repCount T g := by rw [sum_repCount_shift]
     _ = 2 * T.card ^ 2 := by rw [sum_repCount_eq_card_sq]
+
+/-- **Trivial, unconditional pointwise cap on `matchCount`, no Sidon needed
+— `matchCount T Δ ≤ T.card³`, at every `Δ`.** Same proof shape as
+`matchCount_le_two_card_sq` above, with `SidonRepBound`'s `repCount ≤ 2`
+replaced by the free `repCount_le_card` (`SidonEnergy.lean`). Weaker than
+the Sidon bound (`B³` vs `2B²`) but requires no geometric input at all —
+holds for EVERY factor base `T`. This is the bound `IndexCalculusComplexity
+.lean`'s relation-count theorem (`matchCount_distinct_hits_ge`) can use to
+get a fully self-contained complexity claim, with no external theorem
+(Forey–Fresán–Kowalski or otherwise) anywhere in the chain. -/
+theorem matchCount_le_card_cubed (T : Finset G) (Δ : G) :
+    matchCount T Δ ≤ T.card ^ 3 := by
+  rw [matchCount_eq_autocorr]
+  have hpt : ∀ g : G, repCount T g * repCount T (g - Δ) ≤ T.card * repCount T (g - Δ) := by
+    intro g
+    exact Nat.mul_le_mul_right _ (repCount_le_card T g)
+  calc ∑ g : G, repCount T g * repCount T (g - Δ)
+      ≤ ∑ g : G, T.card * repCount T (g - Δ) := Finset.sum_le_sum (fun g _ => hpt g)
+    _ = T.card * ∑ g : G, repCount T (g - Δ) := by rw [Finset.mul_sum]
+    _ = T.card * ∑ g : G, repCount T g := by rw [sum_repCount_shift]
+    _ = T.card * T.card ^ 2 := by rw [sum_repCount_eq_card_sq]
+    _ = T.card ^ 3 := by ring

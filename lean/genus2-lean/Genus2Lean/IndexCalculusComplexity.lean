@@ -1,5 +1,6 @@
 import Mathlib
 import Genus2Lean.AverageComplexity
+import Genus2Lean.MatchCountAutocorr
 set_option linter.style.header false
 
 /-!
@@ -199,6 +200,26 @@ theorem matchCount_distinct_hits_ge (F : Finset G) (M : ℕ)
         (fun Δ => 0 < matchCount F Δ)).card :=
   card_pos_ge_of_sum_le_mul (Finset.univ.filter (fun Δ : G => Δ ≠ 0)) (matchCount F)
     (F.card ^ 4 - matchCount F 0) M (sum_matchCount_ne_zero_eq F) hbound
+
+/-- **Fully self-contained, hypothesis-free relation-count lower bound.**
+Instantiating `matchCount_distinct_hits_ge` at `M := F.card³`
+(`matchCount_le_card_cubed`, `MatchCountAutocorr.lean` — free, no Sidon, no
+Forey–Fresán–Kowalski, holds for every factor base) gives a genuine
+relation-count guarantee with NO external hypothesis at all: `B⁴ -
+matchCount F 0 ≤ B³ · (usable relation count)`, i.e. at least `(B⁴ -
+matchCount F 0)/B³ ~ B` distinct usable relations, for `B := F.card`. This
+is weaker than what Sidon would give (Sidon's `M = 2B²` yields `~ B²`
+distinct relations, a better bound) — but it is unconditional, closing the
+`hRate` question with no assumed input whatsoever, at the cost of a worse
+quantitative rate. Whether `~ B` (this bound) or `~ B²` (Sidon-derived) is
+the right exponent to feed into the complexity balance is a modeling
+choice, not a gap in what's proved either way. -/
+theorem matchCount_distinct_hits_ge_unconditional (F : Finset G) :
+    F.card ^ 4 - matchCount F 0 ≤
+      F.card ^ 3 * ((Finset.univ.filter (fun Δ : G => Δ ≠ 0)).filter
+        (fun Δ => 0 < matchCount F Δ)).card :=
+  matchCount_distinct_hits_ge F (F.card ^ 3)
+    (fun Δ _ => matchCount_le_card_cubed F Δ)
 
 /-- **Expected number of DISTINCT relations from `N` solves.** Restated
 (this pass) as a coupon-collector-style rate — the expected number of

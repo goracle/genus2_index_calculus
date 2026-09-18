@@ -61,6 +61,30 @@ theorem sum_repCount_eq_card_sq (T : Finset G) :
   rw [← hcard, hfiber]
   rfl
 
+/-- **Free, unconditional cap**: `r_{T,T}(g) ≤ #T` for every `g`, with no Sidon
+input. An ordered pair `(a, b) ∈ T × T` with `a + b = g` is determined by its
+first coordinate (since `b = g - a`), so `p ↦ p.1` injects the representation
+set into `T`. This is the trivial counterpart to `SidonRepBound` (which asks for
+the much stronger `≤ 2`); it holds for every finite subset of every group and is
+what `matchCount_le_card_cubed` (`MatchCountAutocorr.lean`) uses. -/
+theorem repCount_le_card (T : Finset G) (g : G) : repCount T g ≤ T.card := by
+  unfold repCount
+  apply Finset.card_le_card_of_injOn (fun p : G × G => p.1)
+  · intro p hp
+    have hp' := Finset.mem_coe.mp hp
+    rw [Finset.mem_filter, Finset.mem_product] at hp'
+    exact Finset.mem_coe.mpr hp'.1.1
+  · intro p hp q hq hpq
+    have hp' := Finset.mem_coe.mp hp
+    have hq' := Finset.mem_coe.mp hq
+    rw [Finset.mem_filter] at hp' hq'
+    have h1 : p.1 = q.1 := hpq
+    have h2 : p.2 = q.2 := by
+      have hsum : p.1 + p.2 = q.1 + q.2 := hp'.2.trans hq'.2.symm
+      rw [h1] at hsum
+      exact add_left_cancel hsum
+    exact Prod.ext h1 h2
+
 /-- Named hypothesis (advisory-7, eq 5): `T` is Sidon, meaning every group
 element has at most 2 ordered representations as a sum of two elements of
 `T`. This is NOT proved here — it is exactly the Forey–Fresán–Kowalski
