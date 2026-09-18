@@ -195,3 +195,4 @@ import Genus2Lean.IndexCalculusComplexity
 import Genus2Lean.CantorCompositionStep
 import Genus2Lean.AlphaReducedClassShift
 import Genus2Lean.CantorMulMumford
+import Genus2Lean.GaugeShiftAssembly
