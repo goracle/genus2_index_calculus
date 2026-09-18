@@ -1,4 +1,5 @@
 import Mathlib
+import Genus2Lean.AverageComplexity
 set_option linter.style.header false
 
 /-!
@@ -144,6 +145,60 @@ theorem card_pos_ge_of_sum_le_mul {ι : Type*} (s : Finset ι) (f : ι → ℕ) 
         Finset.sum_le_sum (fun i hi => hbound i (Finset.mem_filter.mp hi).1)
     _ = M * (s.filter (fun i => 0 < f i)).card := by
         simp [Finset.sum_const, mul_comm]
+
+/-! ## Applying the pigeonhole bound to `matchCount` itself
+
+The abstract lemma above, specialized: given ANY cap `M` on every nonzero-`Δ`
+fiber's multiplicity (not assumed small — see the module docstring), the
+number of nonzero `Δ` actually realized (`matchCount F Δ > 0`) is at least
+`(B⁴ - matchCount F 0) / M`. No Sidon property is used to prove this
+theorem; `SidonRepBound`/`sidon_energy_bound` would only ever be one
+particular way to instantiate `M` (namely `M = 2·B²`, from
+`matchCount_le_two_card_sq` in `MatchCountAutocorr.lean`) — a valid choice,
+but not the only one, and per the correction above, not one this project's
+complexity claim needs at all: any finite `M`, however large, still yields
+a genuine, correct relation-count lower bound, it merely yields a smaller
+one. -/
+
+variable {G : Type*} [AddCommGroup G] [Fintype G] [DecidableEq G]
+
+/-- **The exact nonzero-`Δ` mass**: `∑_{Δ≠0} matchCount F Δ = B⁴ - matchCount F 0`.
+Immediate from `sum_matchCount_eq_card_pow_four` by peeling off the `Δ = 0`
+term (a singleton fiber of `univ`). -/
+theorem sum_matchCount_ne_zero_eq (F : Finset G) :
+    ∑ Δ ∈ (Finset.univ.filter (fun Δ : G => Δ ≠ 0)), matchCount F Δ
+      = F.card ^ 4 - matchCount F 0 := by
+  have htotal := sum_matchCount_eq_card_pow_four F
+  have hsum := (Finset.sum_filter_add_sum_filter_not
+    (Finset.univ : Finset G) (fun Δ : G => Δ = 0) (fun Δ => matchCount F Δ)).symm
+  -- `hsum : ∑ Δ : G, matchCount F Δ =
+  --   ∑ Δ ∈ univ.filter (Δ = 0), matchCount F Δ +
+  --   ∑ Δ ∈ univ.filter (¬ Δ = 0), matchCount F Δ`.
+  -- The first summand is a singleton sum at `Δ = 0`; the second summand's
+  -- filter predicate `¬ Δ = 0` is definitionally `Δ ≠ 0`, matching the goal.
+  have hz : (Finset.univ.filter (fun Δ : G => Δ = 0) : Finset G) = {(0 : G)} := by
+    ext Δ; simp
+  rw [hz, Finset.sum_singleton] at hsum
+  have hne_eq : (Finset.univ.filter (fun Δ : G => ¬ Δ = 0) : Finset G) =
+      Finset.univ.filter (fun Δ : G => Δ ≠ 0) := rfl
+  rw [hne_eq] at hsum
+  omega
+
+/-- **The relation-count lower bound, `matchCount`-facing.** Given a cap `M`
+on every nonzero-`Δ` fiber's size (`hbound`), the number of nonzero `Δ`
+realized — i.e. the number of USABLE, pairwise-non-redundant relations a
+factor base `F` of size `B` can supply (by `dedup_by_rhsElt_loses_no_rhs`,
+`IndexCalculusRelations.lean`) — is at least `(B⁴ - matchCount F 0) / M`,
+stated division-free as `B⁴ - matchCount F 0 ≤ M · (relation count)`. No
+Sidon, no second moment, no Fourier: `card_pos_ge_of_sum_le_mul` plus the
+exact identity `sum_matchCount_ne_zero_eq` above. -/
+theorem matchCount_distinct_hits_ge (F : Finset G) (M : ℕ)
+    (hbound : ∀ Δ ∈ (Finset.univ.filter (fun Δ : G => Δ ≠ 0)), matchCount F Δ ≤ M) :
+    F.card ^ 4 - matchCount F 0 ≤
+      M * ((Finset.univ.filter (fun Δ : G => Δ ≠ 0)).filter
+        (fun Δ => 0 < matchCount F Δ)).card :=
+  card_pos_ge_of_sum_le_mul (Finset.univ.filter (fun Δ : G => Δ ≠ 0)) (matchCount F)
+    (F.card ^ 4 - matchCount F 0) M (sum_matchCount_ne_zero_eq F) hbound
 
 /-- **Expected number of DISTINCT relations from `N` solves.** Restated
 (this pass) as a coupon-collector-style rate — the expected number of
