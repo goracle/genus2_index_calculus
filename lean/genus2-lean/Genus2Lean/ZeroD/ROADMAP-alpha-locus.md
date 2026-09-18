@@ -1,6 +1,97 @@
 # Roadmap: proving eq 1 is 0-dimensional *uniformly in `(alpha,alpha')`* —
 # why this is the real target, and how it closes the 8th-moment gap
 
+**SUPERSEDED (2026-09-18) — the entire `matchCount T Δ ≤ K` target this
+roadmap chases is stale. Read this block first; it overrides every
+"actual gap"/"Next steps" section below that talks about bounding
+`matchCount`, `Δ`-fibers, or wiring into
+`UniformFiberBoundOffDiagonal.lean`.**
+
+`IndexCalculusRelations.lean` (new, sorry-free) reframes what a
+"relation" the attack actually collects even is, and the reframing
+dissolves this roadmap's target rather than closing it:
+
+- **CORRECTED (2026-09-18, Claire) — a relation's right-hand side is
+  `(alpha - alpha')·a`, NOT `alpha·a`.** A matching solve produces
+  `P1+P2-P3-P4 = (alpha-alpha')·a` (eq 1), so its relation has terms
+  `[P1,P2,-P3,-P4]` and `rhs = alpha - alpha'`
+  (`MatchingSolve.toRelation`). An earlier version of this block and of
+  `IndexCalculusRelations.lean` keyed everything on `alpha` alone; that was
+  wrong. `DistinctRHS` is keyed on the group element `rhs • a`, not on
+  `alpha` and not even on the integer `alpha - alpha'` (integers differing
+  by a multiple of `ord a` are the same element of `G`).
+- **Both kinds of gauge redundancy are "same right-hand side".**
+  (Write `A = P1+P2`, `B = P3+P4`.)
+  1. *Common shift* `(alpha,alpha') ↦ (alpha+c,alpha'+c)`: same points (the
+     shift lands on the auxiliary target `D`), same terms, same `rhs`
+     (`MatchingSolve.shift_toRelation_terms`, `shift_toRelation_rhs`). It is
+     the identical relation re-derived, but `alpha` differs
+     (`shift_alpha_ne`) — which is exactly why `alpha`-keying accepted the
+     duplicate.
+  2. *Translation* (`matching_solutions_translate_by_delta`): two solves
+     with the same `rhs` have `A = A'+Δ`, `B = B'+Δ`. Over the columns
+     `(A,B,A',B',Δ)`, `row1 - row2 = (A-B)-(A'-B') = (1,-1,-1,1,0) =
+     t₁ - t₂` with `t₁ = A-A'-Δ`, `t₂ = B-B'-Δ` the translation
+     relations (`translation_rows_differ_by_translation_relations`;
+     equivalently substitute `A'=A-Δ`, `B'=B-Δ` into row 2: the `Δ`
+     coefficient is `-1+1 = 0`). The right-hand sides agree too, so the
+     difference is a pure `sum = 0` row with no `a`-component
+     (`relation_sub_zero_of_same_rhsElt`). At the level of the POINT factor
+     base the two rows are different vectors; they differ by translation
+     relations only after the pair-sum classes and `Δ` are adjoined as
+     columns.
+  These are exhaustive: `gaugeRelated_iff_same_rhsElt` — two solves are
+  translation-related iff their right-hand-side elements are equal — so
+  `DistinctRHS` (`not_gaugeRelated_of_distinctRHS`) excludes every gauge
+  duplicate at once, and there is no third kind. That such rows hurt the
+  solver's kernel is a claim about the linear algebra the attack runs; it is
+  not formalized, only its algebraic content (difference row has rhs `0`).
+- Consequently: `matchCount T Δ ≤ 4` (this roadmap's whole target),
+  `UniformFiberBoundOffDiagonal.lean`'s
+  `offDiagonalBound_of_uniform_matchCount_bound_four`, and the Sidon/
+  second-moment apparatus in `Complexity.lean`/advisory-7 §7 this was all
+  built to feed are OBSOLETE — `IndexCalculusComplexity.lean` (new,
+  sorry-free) derives the attack's complexity (`B ~ p^(2/5)`, total cost
+  `p^(4/5)`) directly from a per-solve success-rate hypothesis (`hRate`,
+  `B⁴/p²`) and `DistinctRHS`-style bookkeeping, with NO dependence on any
+  `matchCount`/off-diagonal/Sidon bound. Nothing in that file imports or
+  needs this roadmap's target.
+
+  **CAVEAT on the "OBSOLETE" verdict (2026-09-18) — not re-verified under
+  the corrected model.** That verdict was argued from the `alpha`-keyed
+  picture. Under the corrected one, two solves share a right-hand-side
+  element iff they are translation-related, i.e. iff they lie in the same
+  `Δ`-fiber; a relation set with distinct RHS can use at most one solve per
+  `Δ`, so the yield lost to discarding is governed by how many quadruples
+  share a `Δ` — the `matchCount` / off-diagonal quantity. Under a
+  random-RHS heuristic that loss is negligible at `B ~ p^(2/5)` (about
+  `B²/p²` colliding pairs among `~B` relations), so nothing here breaks
+  `IndexCalculusComplexity.lean`; but a worst-case guarantee is what the
+  `OffDiagonalBound` machinery was for, and `hRate` silently assumes the
+  loss is small. Treat "matchCount is irrelevant" as heuristic, not proved.
+
+**What is still real and worth keeping** (do not delete): `swapImages`/
+`fixedTargetSolutions_ncard_le_four`
+(`MatchingSolutionSwapSymmetry.lean`) — the ≤4-solutions-per-fixed-
+`(alpha,alpha')` fact — is unaffected and still true; it was never
+wrong, just aimed at a target (`matchCount`) that turned out not to be
+the thing the attack needs. `GaugeShiftAssembly.lean`
+(`gaugeShift_fixedTargetSolutions_ncard_le_four`) is likewise correct as
+stated but was solving the wrong problem — built in service of exactly
+this now-superseded target — and should not be extended further for
+that purpose. `AlphaReducedClassShift.lean`'s transport lemmas are pure
+algebra, harmless, and may still be useful elsewhere, but are no longer
+"Next steps" for THIS roadmap's stated goal, because that goal is gone.
+
+**What to actually work on instead**: `IndexCalculusComplexity.lean`'s
+`hRate` (the per-solve success probability `B⁴/p²`) is the real
+remaining assumed hypothesis feeding the complexity derivation — see
+that file's own "What is assumed, and what is not." If further Lean
+work on this thread is wanted, that is the honest next target, not
+anything below this block.
+
+---
+
 ## Current status (condensed this pass — see "History" at the end for how
 ## we got here; nothing below is new content, this is a rewrite for
 ## clarity, not a new pass of investigation)
@@ -290,6 +381,10 @@ to close the gap** — see "Next steps" below.
 
 ## Next steps
 
+**STALE — see the "SUPERSEDED (2026-09-18)" block at the top of this
+file. The items below are the old `matchCount`-bounding plan; do not
+resume them. Kept for archaeology only.**
+
 **CORRECTED (this pass) — not fully closed; see step 2's "Consequence"
 note above.** The transport half is real and provable today; the overall
 conclusion still honestly carries a per-`c` `isReduction` hypothesis
@@ -337,6 +432,52 @@ Ideal.span(genList ...)` is confirmed dead — it assumed its own
 conclusion (`decoupledSystem_degree_uniform`'s existing statement is
 circular, see "What's actually in the files" below) and should not be
 resumed as-is.
+
+**CHECKED (2026-09-18) — `CantorMulMumford.lean` does NOT yet let us
+*construct* a per-`c` `isReduction` witness; item 1's "Consequence"
+caveat above still stands exactly as written.** `CantorMulMumford.lean`
+(companion `CantorCompositionStep.lean`, both new this pass, both
+sorry-free) was written to supply `isReduction'`'s "gap 1" — `alpha •
+aClass`'s own Mumford pair `(ua0,ua1,va0,va1)`, which `isReduction'`'s
+docstring (`AlphaLocusDegreeUniform.lean`) already flags as
+"supplied by the caller, not derived." Checked directly whether it
+closes that gap (and hence lets item 1's per-`c` `isReduction`
+hypothesis be discharged rather than assumed): it doesn't, for three
+compounding reasons `CantorMulMumford.lean`'s own "still open" section
+already names precisely:
+
+1. `cantorMulPair_isMumfordPair` (the file's main theorem) is proved
+   *given* a `CantorMulWitness` — the Bézout coefficients and reduction
+   quotients at every level of `alpha`'s binary expansion. Nobody has
+   produced one; it's existence data, exactly the same *kind* of
+   standing hypothesis as `isReduction` itself, not a discharge of it.
+   Swapping "`(ua0,ua1,va0,va1)` exists and is correct" for
+   "`CantorMulWitness` exists" is not a reduction in what's assumed.
+2. `CantorAddWitness` models exactly one reduction step, not
+   `cantor_add`'s full `while` loop — so even given a full
+   `CantorMulWitness`, nothing here guarantees the output actually
+   reaches `natDegree ≤ 2` after finitely many applications.
+3. `CantorMulMumford.lean` works over abstract `Polynomial K`/`f`;
+   `Reduce`/`ReduceDispatchGeneral` want four `F p` field elements
+   (`.coeff 0`/`.coeff 1` of a degree-≤2 pair, specialized at
+   `K := F p`). Neither the specialization nor the degree bound is
+   established in this file.
+
+And that's only gap 1 of `isReduction'`. Even a fully-discharged
+`CantorMulWitness` would only hand `ReduceDispatchGeneral` its input —
+it says nothing about `Reduce`'s *correctness* (that its output equals
+`reducedClass`'s divisor-class-level description), which
+`isReduction'`'s own docstring already calls "a fully open,
+not-yet-attempted theorem." **Conclusion: `CantorMulMumford.lean` is
+real, useful progress — the concrete recipe for what kind of witness
+gap 1 needs, and an unconditional proof of the structural half (`cantorAdd`
+preserves the Mumford identity, given any witness) — but it adds a new
+named open item (`CantorMulWitness`, for a concrete `base`/`n`) to the
+stack rather than closing the existing one. Item 1's assembled theorem,
+when written, should still honestly carry the per-`c` `isReduction`
+hypothesis (or, if built via this route, a `CantorMulWitness` hypothesis
+plus `Reduce`'s correctness) rather than presenting either as
+discharged.**
 
 ## What's actually in the files
 

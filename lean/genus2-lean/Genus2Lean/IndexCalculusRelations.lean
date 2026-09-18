@@ -2,80 +2,284 @@ import Mathlib
 set_option linter.style.header false
 
 /-!
-# What a relation is, and why gauge-shifted duplicates are not wanted
+# What a relation is, and what "the same relation" means (gauge redundancy)
 
 `IndexCalculusComplexity.lean` counts solves. This file fixes what one solve
-*produces*, so that "a relation" and "the right-hand side of a relation" are
-Lean objects and the requirement that relations have DIFFERENT right-hand
-sides is a definition, not prose.
+*produces*, so that "a relation", "its right-hand side", and "two relations
+that are gauge-redundant" are Lean objects rather than prose.
 
-## The model
+## The model (CORRECTED — an earlier version keyed everything on `alpha`)
 
 `G` is the cryptographic subgroup `<a>`. A **relation** is a finite formal sum
-of factor-base elements together with a right-hand side `alpha • a`:
+of group elements together with a right-hand side `rhs • a`:
 
-    (sum of factor-base terms) = alpha • a          (*)
+    (sum of terms) = rhs • a                                (*)
 
-Two relations with the same right-hand side, subtracted, give a row
+A **matching solve** at `(alpha, alpha')` finds points with (eq 1)
 
-    (sum of factor-base terms) = 0
+    P1 + P2 - P3 - P4 = (alpha - alpha') • a.
 
-whose right-hand side carries no information about the target divisor. That
-is what a gauge-shifted duplicate is: same points, shifted `alpha`, and the
-shift lands on both sides identically. Such a row can only put a vector into
-the kernel of the relation matrix that does not point toward the target, so
-the implementation asks for pairwise distinct right-hand sides.
+So the relation it produces has terms `[P1, P2, -P3, -P4]` and
+
+    rhs = alpha - alpha'      (NOT `alpha`).
+
+The earlier version of this file, and the roadmap block that cited it, took the
+right-hand side to be `alpha` alone. That is wrong: eq 1 only ever sees the
+difference (`eq1_gauge_invariant`, `MatchingEquationTranslation.lean`).
+
+## Two kinds of gauge redundancy — both are "same right-hand side"
+
+Write `A = P1 + P2`, `B = P3 + P4`, so eq 1 is `A - B = (alpha - alpha') • a`.
+
+1. **Translation** (`matching_solutions_translate_by_delta`). Two solves with
+   the same right-hand side have pair-sums related by one common `Δ`:
+   `A = A' + Δ`, `B = B' + Δ`. Over the columns `(A, B, A', B', Δ)`:
+
+        row 1   A  - B          1  -1   0   0   0
+        row 2   A' - B'         0   0   1  -1   0
+        t₁      A - A' - Δ      1   0  -1   0  -1
+        t₂      B - B' - Δ      0   1   0  -1  -1
+
+   `row 1 - row 2 = t₁ - t₂ = (1,-1,-1,1,0)`: the two rows differ by a
+   combination of the translation relations only (equivalently, substitute
+   `A' = A - Δ`, `B' = B - Δ` into row 2: the `Δ` coefficient is `-1 + 1 = 0`
+   and row 2 becomes row 1). The right-hand sides agree as well, so their
+   difference is a pure `sum = 0` row with no `a`-component. Formalized as
+   `translation_rows_differ_by_translation_relations`.
+
+2. **Common shift** `(alpha, alpha') ↦ (alpha + c, alpha' + c)`. The points
+   stay put and the shift lands on the auxiliary target `D` instead. The
+   relation is literally the same: same terms, same right-hand side
+   (`MatchingSolve.shift_toRelation_terms`, `shift_toRelation_rhs`).
+
+Type 2 is the case `Δ = 0` of type 1's shape, and *conversely* type 1 is
+exhaustive: `gaugeRelated_iff_same_rhsElt` shows that two solves are
+translation-related iff their right-hand sides are equal. So "same
+right-hand side" is the single condition that captures every gauge
+redundancy, and no third kind exists.
+
+## Why `DistinctRHS` is keyed on the group element `rhs • a`
+
+* Keying on `alpha` (old) accepts `(alpha, alpha')` and `(alpha + c, alpha' + c)`
+  as different (`MatchingSolve.shift_alpha_ne`) — exactly the duplicates to
+  reject.
+* Keying on the integer `alpha - alpha'` still misses pairs whose integers
+  differ by a multiple of `ord a`, which are the same element of `G`. The
+  relation matrix lives in `G`, so the right notion of "same" is `rhs • a`.
+  Distinct group elements imply distinct integers (`DistinctRHS.rhs_injective`),
+  not conversely.
+
+## What is NOT proved here
+
+That gauge-redundant rows harm the solver's kernel is a claim about the linear
+algebra the attack runs, not something this file formalizes. The algebraic
+content is: same right-hand side ⟹ the difference row has right-hand side `0`
+(`relation_sub_zero_of_same_rhsElt`). Also note: over the *point* factor base
+the two rows of a translation pair are different vectors (different points);
+they are related by translation relations only once the pair-sum classes and
+`Δ` are adjoined as columns, as in the table above.
 
 Nothing here is about the Jacobian, `Reduce`, or the 12x12 system: those
-produce relations of shape `(*)`, and this file only says what to do with
-them once they exist.
+produce relations of shape `(*)`. The abstract `translate_of_same_diff` below
+restates `MatchingEquationTranslation.matching_solutions_translate_by_delta`
+for an arbitrary abelian group, so this file need not import the Jacobian layer.
 -/
 
 namespace IndexCalculus
 
 variable {G : Type*} [AddCommGroup G]
 
-/-- A relation: a list of factor-base elements whose sum, in `G`, equals
-`alpha • a`. The list is data (which factor-base elements, with repetition);
-`alpha` is the right-hand side's coefficient of the base element `a`. -/
+/-! ## Relations and right-hand sides -/
+
+/-- A relation: a list of group elements whose sum equals `rhs • a`. For a
+matching solve, `rhs = alpha - alpha'` (see `MatchingSolve.toRelation`). -/
 structure Relation (a : G) where
   terms : List G
-  alpha : ℤ
-  sum_eq : terms.sum = alpha • a
+  rhs : ℤ
+  sum_eq : terms.sum = rhs • a
 
-/-- The right-hand-side coefficient of a relation. -/
-def Relation.rhs {a : G} (r : Relation a) : ℤ := r.alpha
+/-- The right-hand side as an element of `G`. Two relations are "the same
+right-hand side" when this agrees, which is weaker than `rhs` agreeing as
+integers (they may differ by a multiple of `ord a`). -/
+def Relation.rhsElt {a : G} (r : Relation a) : G := r.rhs • a
 
-/-- **Distinct right-hand sides.** A family of relations has pairwise
-distinct right-hand-side coefficients. This is the property the
-implementation wants of the relation set. -/
+/-- Equal integer right-hand sides give equal right-hand-side elements. -/
+theorem Relation.rhsElt_eq_of_rhs_eq {a : G} {r₁ r₂ : Relation a}
+    (h : r₁.rhs = r₂.rhs) : r₁.rhsElt = r₂.rhsElt := by
+  unfold Relation.rhsElt
+  rw [h]
+
+/-- **Distinct right-hand sides.** A family of relations whose right-hand-side
+*elements* `rhs • a` are pairwise distinct. -/
 def DistinctRHS {a : G} {ι : Type*} (r : ι → Relation a) : Prop :=
-  Function.Injective (fun i => (r i).alpha)
+  Function.Injective (fun i => (r i).rhsElt)
 
-/-- **Subtracting two relations subtracts their right-hand sides.** The row
-`r₁ - r₂` has right-hand side `(alpha₁ - alpha₂) • a`. -/
+/-- Distinct right-hand-side elements force distinct integer right-hand sides. -/
+theorem DistinctRHS.rhs_injective {a : G} {ι : Type*} {r : ι → Relation a}
+    (hd : DistinctRHS r) : Function.Injective (fun i => (r i).rhs) := by
+  intro i j hij
+  exact hd (Relation.rhsElt_eq_of_rhs_eq hij)
+
+/-- **Subtracting two relations subtracts their right-hand sides.** -/
 theorem relation_sub_rhs {a : G} (r₁ r₂ : Relation a) :
-    r₁.terms.sum - r₂.terms.sum = (r₁.alpha - r₂.alpha) • a := by
+    r₁.terms.sum - r₂.terms.sum = (r₁.rhs - r₂.rhs) • a := by
   rw [r₁.sum_eq, r₂.sum_eq, sub_smul]
 
-/-- **A gauge-shifted duplicate has right-hand-side difference zero.** If two
-relations have the same `alpha`, their difference row has right-hand side `0`:
-it is a relation `(sum of factor-base terms) = 0` and carries no information
-about the target. -/
-theorem relation_sub_rhs_zero_of_same_alpha {a : G} (r₁ r₂ : Relation a)
-    (h : r₁.alpha = r₂.alpha) :
+/-- **Same right-hand side ⟹ the difference row has right-hand side `0`.** It
+is a `sum = 0` row carrying no `a`-component. -/
+theorem relation_sub_zero_of_same_rhsElt {a : G} (r₁ r₂ : Relation a)
+    (h : r₁.rhsElt = r₂.rhsElt) :
     r₁.terms.sum - r₂.terms.sum = 0 := by
-  rw [relation_sub_rhs, h, sub_self, zero_smul]
+  rw [r₁.sum_eq, r₂.sum_eq]
+  exact sub_eq_zero.mpr h
 
-/-- **Under `DistinctRHS`, no two distinct relations in the family have
-equal right-hand sides.** The contrapositive form used when building the
-relation matrix: distinct indices give distinct `alpha`, so the difference
-row's right-hand side coefficient `alpha_i - alpha_j` is nonzero as an
-integer. -/
-theorem sub_alpha_ne_zero_of_distinctRHS {a : G} {ι : Type*} {r : ι → Relation a}
+/-- Under `DistinctRHS`, distinct indices have distinct right-hand-side
+elements, so the difference row's right-hand side is nonzero in `G`. -/
+theorem sub_rhsElt_ne_zero_of_distinctRHS {a : G} {ι : Type*} {r : ι → Relation a}
     (hd : DistinctRHS r) {i j : ι} (hij : i ≠ j) :
-    (r i).alpha - (r j).alpha ≠ 0 := by
+    (r i).rhsElt - (r j).rhsElt ≠ 0 := by
   intro h
   exact hij (hd (sub_eq_zero.mp h))
+
+/-- Integer form: distinct indices give `rhs_i - rhs_j ≠ 0` in `ℤ`. -/
+theorem sub_rhs_ne_zero_of_distinctRHS {a : G} {ι : Type*} {r : ι → Relation a}
+    (hd : DistinctRHS r) {i j : ι} (hij : i ≠ j) :
+    (r i).rhs - (r j).rhs ≠ 0 := by
+  intro h
+  exact hij (hd.rhs_injective (sub_eq_zero.mp h))
+
+/-! ## Abstract translation algebra (no Jacobian needed) -/
+
+/-- **Translated pair-sums have the same difference.** Type 1's row identity at
+the level of group elements: `A = A' + Δ`, `B = B' + Δ` gives `A - B = A' - B'`
+(the `Δ` cancels: `-1 + 1 = 0`). -/
+theorem diff_eq_of_translate (A B A' B' Δ : G)
+    (hA : A = A' + Δ) (hB : B = B' + Δ) : A - B = A' - B' := by
+  rw [hA, hB]
+  abel
+
+/-- **The row identity, as an `abel` fact.** `row 1 - row 2 = t₁ - t₂`, i.e.
+`(A - B) - (A' - B') = (A - (A' + Δ)) - (B - (B' + Δ))`, for arbitrary
+elements, no hypotheses. Being an identity in the free abelian group on
+`A, B, A', B', Δ`, it is exactly the coefficient-vector computation
+`(1,-1,-1,1,0) = (1,0,-1,0,-1) - (0,1,0,-1,-1)`. -/
+theorem translation_rows_differ_by_translation_relations (A B A' B' Δ : G) :
+    (A - B) - (A' - B') = (A - (A' + Δ)) - (B - (B' + Δ)) := by
+  abel
+
+/-- Same four-point difference ⟹ pair-sums differ by a common `Δ`. Abstract
+form of `matching_solutions_translate_by_delta`. -/
+theorem translate_of_same_diff (P1 P2 P3 P4 P1' P2' P3' P4' : G)
+    (h : P1 + P2 - P3 - P4 = P1' + P2' - P3' - P4') :
+    ∃ Δ : G, P1 + P2 = P1' + P2' + Δ ∧ P3 + P4 = P3' + P4' + Δ := by
+  refine ⟨(P1 + P2) - (P1' + P2'), by abel, ?_⟩
+  rw [← sub_eq_zero]
+  have hre : P3 + P4 - (P3' + P4' + ((P1 + P2) - (P1' + P2')))
+      = (P1' + P2' - P3' - P4') - (P1 + P2 - P3 - P4) := by abel
+  rw [hre, ← h, sub_self]
+
+/-- Common translation of both pair-sums ⟹ same four-point difference. -/
+theorem same_diff_of_translate (P1 P2 P3 P4 P1' P2' P3' P4' Δ : G)
+    (hA : P1 + P2 = P1' + P2' + Δ) (hB : P3 + P4 = P3' + P4' + Δ) :
+    P1 + P2 - P3 - P4 = P1' + P2' - P3' - P4' := by
+  calc P1 + P2 - P3 - P4 = (P1 + P2) - (P3 + P4) := by abel
+    _ = (P1' + P2') - (P3' + P4') := diff_eq_of_translate _ _ _ _ Δ hA hB
+    _ = P1' + P2' - P3' - P4' := by abel
+
+/-! ## Matching solves, their relations, and the two gauge types -/
+
+/-- A solve of eq 1 at `(alpha, alpha')`: four group elements (the classes of
+the four points) with `P1 + P2 - P3 - P4 = (alpha - alpha') • a`. -/
+structure MatchingSolve (a : G) where
+  alpha : ℤ
+  alpha' : ℤ
+  P1 : G
+  P2 : G
+  P3 : G
+  P4 : G
+  eq1 : P1 + P2 - P3 - P4 = (alpha - alpha') • a
+
+/-- The relation a solve produces. **Its right-hand side is `alpha - alpha'`.** -/
+def MatchingSolve.toRelation {a : G} (s : MatchingSolve a) : Relation a where
+  terms := [s.P1, s.P2, -s.P3, -s.P4]
+  rhs := s.alpha - s.alpha'
+  sum_eq := by
+    rw [← s.eq1]
+    simp only [List.sum_cons, List.sum_nil, add_zero]
+    abel
+
+theorem MatchingSolve.toRelation_rhs {a : G} (s : MatchingSolve a) :
+    s.toRelation.rhs = s.alpha - s.alpha' := rfl
+
+/-- The relation's right-hand-side element is the four-point sum. -/
+theorem MatchingSolve.toRelation_rhsElt {a : G} (s : MatchingSolve a) :
+    s.toRelation.rhsElt = s.P1 + s.P2 - s.P3 - s.P4 := s.eq1.symm
+
+/-- **Gauge type 2.** Shift `(alpha, alpha') ↦ (alpha + c, alpha' + c)`, keeping
+the points fixed. -/
+def MatchingSolve.shift {a : G} (s : MatchingSolve a) (c : ℤ) : MatchingSolve a where
+  alpha := s.alpha + c
+  alpha' := s.alpha' + c
+  P1 := s.P1
+  P2 := s.P2
+  P3 := s.P3
+  P4 := s.P4
+  eq1 := by
+    rw [s.eq1]
+    congr 1
+    ring
+
+/-- A common shift produces literally the same terms. -/
+theorem MatchingSolve.shift_toRelation_terms {a : G} (s : MatchingSolve a) (c : ℤ) :
+    (s.shift c).toRelation.terms = s.toRelation.terms := rfl
+
+/-- A common shift produces the same right-hand side: the shifts cancel. -/
+theorem MatchingSolve.shift_toRelation_rhs {a : G} (s : MatchingSolve a) (c : ℤ) :
+    (s.shift c).toRelation.rhs = s.toRelation.rhs := by
+  show (s.alpha + c) - (s.alpha' + c) = s.alpha - s.alpha'
+  ring
+
+/-- **Why keying on `alpha` was wrong.** A nonzero shift changes `alpha`, so an
+`alpha`-keyed distinctness check accepts the shifted duplicate as new. -/
+theorem MatchingSolve.shift_alpha_ne {a : G} (s : MatchingSolve a) {c : ℤ}
+    (hc : c ≠ 0) : (s.shift c).alpha ≠ s.alpha := by
+  show s.alpha + c ≠ s.alpha
+  omega
+
+/-- Two solves are **gauge-related** when their pair-sums are translates of one
+another by a single common `Δ` (gauge type 1; type 2 is the case of equal
+points). -/
+def GaugeRelated {a : G} (s₁ s₂ : MatchingSolve a) : Prop :=
+  ∃ Δ : G, s₁.P1 + s₁.P2 = s₂.P1 + s₂.P2 + Δ ∧ s₁.P3 + s₁.P4 = s₂.P3 + s₂.P4 + Δ
+
+/-- **Gauge-relatedness is exactly "same right-hand side".** -/
+theorem gaugeRelated_iff_same_rhsElt {a : G} (s₁ s₂ : MatchingSolve a) :
+    GaugeRelated s₁ s₂ ↔ s₁.toRelation.rhsElt = s₂.toRelation.rhsElt := by
+  simp only [MatchingSolve.toRelation_rhsElt]
+  unfold GaugeRelated
+  constructor
+  · rintro ⟨Δ, hA, hB⟩
+    exact same_diff_of_translate _ _ _ _ _ _ _ _ Δ hA hB
+  · intro h
+    exact translate_of_same_diff _ _ _ _ _ _ _ _ h
+
+/-- A common shift is gauge-related to the original (with `Δ = 0`). -/
+theorem MatchingSolve.gaugeRelated_shift {a : G} (s : MatchingSolve a) (c : ℤ) :
+    GaugeRelated s (s.shift c) :=
+  ⟨0, (add_zero _).symm, (add_zero _).symm⟩
+
+/-- **Gauge-related solves subtract to a `sum = 0` row.** -/
+theorem toRelation_sub_zero_of_gaugeRelated {a : G} {s₁ s₂ : MatchingSolve a}
+    (h : GaugeRelated s₁ s₂) :
+    s₁.toRelation.terms.sum - s₂.toRelation.terms.sum = 0 :=
+  relation_sub_zero_of_same_rhsElt _ _ ((gaugeRelated_iff_same_rhsElt s₁ s₂).1 h)
+
+/-- **`DistinctRHS` excludes both gauge types at once.** In a family of solves
+whose relations have distinct right-hand-side elements, no two distinct
+members are gauge-related. -/
+theorem not_gaugeRelated_of_distinctRHS {a : G} {ι : Type*} {s : ι → MatchingSolve a}
+    (hd : DistinctRHS (fun i => (s i).toRelation)) {i j : ι} (hij : i ≠ j) :
+    ¬ GaugeRelated (s i) (s j) :=
+  fun h => hij (hd ((gaugeRelated_iff_same_rhsElt (s i) (s j)).1 h))
 
 end IndexCalculus
