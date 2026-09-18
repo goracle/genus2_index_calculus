@@ -141,15 +141,60 @@ re-doubted from scratch):
 2. Shift `alpha ↦ alpha+c`, `alpha' ↦ alpha'+c` — same `c` both sides, so
    `alpha-alpha'` (hence `Δ`) is unchanged, staying in the same gauge
    orbit. **Key move: keep `P1,P2,P3,P4` fixed and let the shift land on
-   `D` instead.** `Reduce((P1+P2-alpha·a) - c·a) = Reduce(P1+P2-alpha·a) -
-   Delta(c) = D - Delta(c)` for some `Delta(c)` depending only on `c`
-   (`Reduce`'s shift-equivariance — **flagged below as needing
-   confirmation**, not yet checked against the actual `Reduce`
-   implementation in `AlphaReduce.lean`). Identically on the other side,
-   same `c`, same `Delta(c)`. So the **same four points**, unchanged,
-   solve the `(alpha+c,alpha'+c)` system too, with target `D-Delta(c)`
-   instead of `D`. No existence question, no "does some other pair
-   realize this class" — it's literally the same quadruple.
+   `D` instead.**
+
+   **CORRECTED (this pass) — get the order of operations right: shift
+   FIRST, then call `Reduce`/invoke `isReduction` fresh on the
+   already-shifted class. Do NOT try to derive the shifted target from
+   the ORIGINAL `Reduce` output via an equivariance law on `Reduce`
+   itself.** An earlier draft of this step wrote
+   `Reduce((P1+P2-alpha·a)-c·a) = Reduce(P1+P2-alpha·a) - Delta(c)`, i.e.
+   reduce once at `alpha`, then try to move the *answer* by some
+   `Delta(c)` depending on how `Reduce` interacts with a shift — that
+   framing needs a real equivariance theorem about `Reduce` as a
+   function, which doesn't exist and can't even be checked yet (`Reduce`
+   isn't assembled as a callable function anywhere in this project — see
+   `AlphaReduce.lean`'s own "not yet built" note). That was the wrong
+   order and the real source of the "flagged as needing confirmation"
+   caveat below — not a genuine gap in the *math*.
+
+   The right order needs no equivariance law at all, because
+   `SampleTargetFromAlpha.reducedClass` is a **plain algebraic
+   definition** in `alpha`, `aClass`, `P1`, `P2` (see
+   `AlphaLocusDegreeUniform.lean`) — NOT something computed by calling
+   `Reduce`. So: first form `reducedClass_c := (alpha+c)•aClass -
+   toJacobian D (single P1+single P2-2•single δ₀)`, which by pure
+   `AddCommGroup`/`zsmul` algebra equals `reducedClass + c•aClass` (no
+   `Reduce` involved at all in this step — provable outright, today).
+   THEN separately instantiate a fresh `SampleTargetFromAlpha` at
+   `alpha+c` whose `reducedClass` field is (by construction)
+   `reducedClass_c`, and assume `isReduction` for THAT instance the same
+   way every other instance in this project already assumes it (it's a
+   standing per-instance hypothesis, not something derived from a single
+   global `Reduce` equivariance fact). Do this identically on the other
+   side (`alpha'+c`), same `c`. Given both fresh `isReduction`
+   assumptions, the same four points solve the `(alpha+c,alpha'+c)`
+   system too — no existence question, no "does some other pair realize
+   this class," it's literally the same quadruple, now paired with a
+   freshly-asserted (not derived) reduced target.
+
+   **Consequence for what's actually provable right now:** the transport
+   step itself (`reducedClass_c = reducedClass + c•aClass`) is pure
+   algebra and can be proved today, `sorry`-free, independent of
+   `Reduce`. But turning that into "the same 4 points solve every
+   `(alpha+c,alpha'+c)` system, for every `c`" still requires a
+   fresh `isReduction` witness per `c` — currently an assumed `Prop`
+   field with no constructed witness anywhere in the project (see
+   `SampleTargetFromAlpha`'s docstring). So the assembled theorem (Next
+   steps item 1) will honestly still need to quantify over "for every
+   `c` such that a `SampleTargetFromAlpha` at `alpha+c` with this shifted
+   `reducedClass` and `isReduction` exists" — not a hypothesis-free
+   closure. This is a real, provable, useful theorem (and removes the
+   need for any equivariance claim about `Reduce`), but it is not the
+   unconditional "`matchCount T Δ ≤ 4`, full stop" line 132's heading
+   suggests until `Reduce` itself is assembled as a callable, and
+   `isReduction` is upgraded from an assumed field to a proved one (see
+   `AlphaReduce.lean`, "not yet built").
 3. This applies individually to all 4 elements of
    `swapImages(P1,P2,P3,P4)` (`MatchingSolutionSwapSymmetry.lean`), not
    just the base quadruple — swapping `P1,P2` (or `P3,P4`) doesn't change
@@ -192,17 +237,27 @@ hypotheses this project always carries, not new gaps). Siblings
 (`_tangent`, `_cross1`–`_cross4`, `_tangent_target`) cover the other
 geometric cases and are dispatched via `ReducedClassDispatch.lean`.
 
-**So: the gauge-shift/transport argument (transport `D` to `D_c`, invoke
-`Reduce`'s correctness fresh at each `c`) now has every piece it needs,
-for real, checked against the actual files rather than stale docstrings
-or forward-references. `matchCount T Δ ≤ 4` for the whole gauge orbit is
-CLOSED, modulo only formally writing the Lean proof (mechanical assembly
-of already-proved pieces — `reducedClass_eq_of_isReduction'` +
+**So: the gauge-shift/transport argument — shift `alpha` FIRST (pure
+algebra on `reducedClass`, no `Reduce` needed for this part), THEN
+invoke `Reduce`'s correctness/`isReduction` fresh at each `c` (a new
+standing per-instance hypothesis each time, same as every other use of
+`isReduction` in this project) — has every piece it needs to be written
+as a real, `sorry`-free theorem, for real, checked against the actual
+files rather than stale docstrings or forward-references. What that
+theorem concludes is NOT an unconditional `matchCount T Δ ≤ 4` for the
+whole gauge orbit — see the "Consequence for what's actually provable
+right now" note under step 2 above — it's the same bound conditional on
+an `isReduction` witness existing at each `c` in the orbit, which is
+real, useful progress but is honestly still "modulo standing hypotheses
+this project already carries" in a stronger sense than `hbridge`/
+`IsOnlyEffectiveInClass` (those are per-quadruple; this is per-`c`, i.e.
+per-element-of-a-`p`-size orbit). Formally writing it is: mechanical
+assembly of already-proved pieces — `reducedClass_eq_of_isReduction'` +
 `swapImages`/`fixedTargetSolutions_ncard_le_four` + basic
-`AddCommGroup`/`Jacobian` algebra for the `D_c := D - c·a` transport
-step) and the standing hypotheses every piece already carries
-(`hbridge`, `IsOnlyEffectiveInClass`, `ReductionData`/`SplitAssemblyData`
-witnesses, `hdeg`/`hD`) at an actual call site.**
+`AddCommGroup`/`Jacobian` algebra for the `reducedClass_c := reducedClass
++ c•aClass` transport step (this part fully provable today) — plus the
+per-`c` `isReduction` hypothesis threaded through explicitly rather than
+hidden.**
 
 **Where the confusion came from, worth recording so it doesn't recur.**
 A "RESOLUTION" pass (superseded by this rewrite) argued the union
@@ -235,18 +290,33 @@ to close the gap** — see "Next steps" below.
 
 ## Next steps
 
-**Closed, this pass — see the "RESOLVED, CONFIRMED" block above.** All
-mathematical content for `matchCount T Δ ≤ 4` is now proved somewhere in
-the codebase; what remains is formal assembly, not open mathematics:
+**CORRECTED (this pass) — not fully closed; see step 2's "Consequence"
+note above.** The transport half is real and provable today; the overall
+conclusion still honestly carries a per-`c` `isReduction` hypothesis
+until `Reduce` is assembled as a callable function. What remains:
 
-1. Write the Lean proof assembling: `reducedClass_eq_of_isReduction'`
-   (`ReducedClassBundles.lean`, proved) + the `D_c := D - c·a` transport
-   step (pure `AddCommGroup` algebra) + `swapImages`/
-   `fixedTargetSolutions_ncard_le_four` (`MatchingSolutionSwapSymmetry.lean`,
-   proved) into one theorem concluding `matchCount T Δ ≤ 4`, carrying
+1. Write the Lean proof assembling, in the CORRECT order (shift `alpha`
+   before invoking `isReduction`, not after — see step 2 above for why
+   the reverse order was wrong):
+   (a) the `reducedClass_c := reducedClass + c•aClass` transport step —
+   pure `AddCommGroup`/`zsmul` algebra, provable today, no `Reduce`
+   dependency;
+   (b) `reducedClass_eq_of_isReduction'` (`ReducedClassBundles.lean`,
+   proved) applied twice — once to the original `sa`, once to a fresh
+   `SampleTargetFromAlpha` instance at `alpha+c` built from (a)'s shifted
+   class, carrying its OWN `isReduction` hypothesis (don't try to derive
+   it from the first instance's);
+   (c) `swapImages`/`fixedTargetSolutions_ncard_le_four`
+   (`MatchingSolutionSwapSymmetry.lean`, proved) applied to both.
+   The resulting theorem's conclusion should honestly state its
+   hypothesis as "for every `c` in [whatever range matters] such that a
+   `SampleTargetFromAlpha` at `alpha+c` with the transported
+   `reducedClass` and its own `isReduction` witness exists" — carrying
    forward the standing hypotheses each piece already needs (`hbridge`,
    `IsOnlyEffectiveInClass`, `ReductionData`/`SplitAssemblyData`
-   witnesses, `hdeg`/`hD`) rather than re-deriving them.
+   witnesses, `hdeg`/`hD`) rather than re-deriving them, and rather than
+   silently dropping the per-`c` `isReduction` requirement to make the
+   statement look unconditional.
 2. Wire the result into `UniformFiberBoundOffDiagonal.lean`'s
    `offDiagonalBound_of_uniform_matchCount_bound_four` (already proved,
    waiting for exactly this hypothesis) to close `OffDiagonalBound`.
