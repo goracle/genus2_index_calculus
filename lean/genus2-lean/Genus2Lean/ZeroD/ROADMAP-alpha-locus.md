@@ -109,6 +109,26 @@ ordered pairs from `F`), giving `matchCount T Δ ≤ 4·B²` at best — matchin
 `matchCount_le_two_card_sq` (`MatchCountAutocorr.lean`)'s existing,
 weaker, already-proved bound, not the `O(1)` bound this roadmap wants.
 
+**CORRECTION (2026-09-18) — the "RESOLVED" block below does NOT reach the
+whole `Δ`-fiber; `GaugeOrbitMatchCountBound.lean`'s old main theorem was
+false, not merely unproved.** Step 4 below shows the same four points persist
+in each `(alpha+c,alpha'+c)` 0D system *with the transported target*
+`D - Delta(c)`. Transported targets leave the pair-sums `(A,B)` UNCHANGED
+(`Reduce(P1+P2-(alpha+c)a) = D - Delta(c)` is the same class equation as at
+`c=0`), so every one of those systems is the single fiber
+`FixedTargetSolutions A B` (≤4, already known). A `Δ`-fiber solution whose own
+pair-sums are `(A',A'-Δ)` with `A' ≠ A` lies in none of them; e.g. any
+quadruple with pair-sums `(A+a, B+a)` has the same difference and is not a
+swap of the reference unless `a = 0`. Formally: `GaugeOrbitSolutions`'s `c` is
+vacuous (`(alpha+c)-(alpha'+c) = alpha-alpha'`), so it is the difference-only
+set, which `MatchingSolutionSwapSymmetry.lean` already records as unbounded.
+What IS proved (see the new file): the `Δ`-fiber is the union over pair-sum
+classes of fixed-target fibers (`gaugeOrbit_eq_iUnion_fixedTarget`), and the
+gauge orbit intersected with the reference's own pair-sum fiber is exactly
+`swapImages` (`gaugeOrbit_inter_fixedTarget_eq_swapImages`). So the "actual
+gap" paragraph above stands: bounding the number of realized classes `A'`
+is still open, and `matchCount T Δ ≤ 4` is NOT closed by this argument.
+
 **RESOLVED (this pass, Claire — via the gauge-shift-on-`D`-not-`P`
 argument; verified step by step, not just asserted): `matchCount T Δ ≤ 4`
 after all, for any `Δ` realized by some non-degenerate base quadruple.**
