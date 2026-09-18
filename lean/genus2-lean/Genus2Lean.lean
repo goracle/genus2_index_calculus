@@ -194,3 +194,4 @@ import Genus2Lean.IndexCalculusRelations
 import Genus2Lean.IndexCalculusComplexity
 import Genus2Lean.CantorCompositionStep
 import Genus2Lean.AlphaReducedClassShift
+import Genus2Lean.CantorMulMumford
