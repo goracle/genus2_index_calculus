@@ -461,3 +461,94 @@ theorem hitCount_le_card_pow_four (T : Finset G) :
     _ = (pairSumSet T).card ^ 2 := hprod
     _ ≤ (T.card ^ 2) ^ 2 := Nat.pow_le_pow_left hpss 2
     _ = T.card ^ 4 := by ring
+
+/-! ## Part 4: `good` for the real matching step (open item 1 of
+`ROADMAP-current.md`)
+
+`hitRate_of_good_overlap` takes an arbitrary `good : G → Prop`; nothing
+about it is specific to `good := fun Δ => ¬ ∃ x ∈ T, ∃ y ∈ T, Δ = x - y`.
+`ROADMAP-current.md`'s stated model has THREE direct-relation shortcuts, not
+one: a solve whose target `Δ` already splits as `Δ ∈ T - T`, `Δ ∈ T`
+(read: as a single element, `Δ = t` for `t ∈ T` — the model's `a`-shift
+convention makes a lone factor-base element itself a free relation), or
+`Δ ∈ T + T` is accepted directly and never reaches the `(U,V)`-matching step
+this file's `matchCount`/`overlap` machinery models. So the matching regime
+only ever sees `Δ` outside the union of all three, and `goodMatch` below is
+that union's complement — the honest `good` for THIS model, as opposed to
+`good := fun Δ => ¬ ∃ x ∈ T, ∃ y ∈ T, Δ = x - y` (`T - T` alone), which was
+only ever a stand-in exactly for Part 0's narrower claim (that the *trivial
+cancelling quadruples* live only on `T - T`) and was never claimed to be the
+model's actual exclusion set.
+
+Widening the exclusion from `T - T` alone to all three sets can only help:
+`goodMatch` is a SUBSET of `good` from Part 0/2 (`goodMatch_subset_good`
+below), so the "no trivial cancelling family here" guarantee
+(`not_trivial_of_not_mem_sub`) still applies unchanged, and the mass moved
+from `good` into `¬goodMatch` (the `T` and `T + T` pieces) is mass that was
+never part of the attack's accounting in the first place — it strengthens
+`hitRate_of_good_overlap`'s premises to `hgood`/`hbad` on `goodMatch`
+without weakening what those premises need to say. -/
+
+/-- **The model's real exclusion set.** `Δ` triggers one of the three
+direct-relation shortcuts: `Δ ∈ T - T`, `Δ ∈ T` (as a singleton element), or
+`Δ ∈ T + T` (as a sumset element, `Δ = t₁ + t₂` for `t₁, t₂ ∈ T`). Stated,
+like `trivial_quadruple_mem_sub`, as explicit existentials rather than via
+`Finset`'s `-`/`+` instances, for the same reason given there. -/
+def DirectRelation (T : Finset G) (Δ : G) : Prop :=
+  (∃ x ∈ T, ∃ y ∈ T, Δ = x - y) ∨ (Δ ∈ T) ∨ (∃ x ∈ T, ∃ y ∈ T, Δ = x + y)
+
+/-- **`goodMatch`: the `Δ` the matching step actually sees.** Complement of
+`DirectRelation`. This is the `good` `ROADMAP-current.md` open item 1 asks
+for, in place of the narrower `T - T`-only exclusion Part 0/2 used. -/
+def goodMatch (T : Finset G) (Δ : G) : Prop := ¬ DirectRelation T Δ
+
+instance (T : Finset G) : DecidablePred (goodMatch T) := fun Δ => by
+  unfold goodMatch DirectRelation
+  infer_instance
+
+/-- **`goodMatch` is at least as strong an exclusion as Part 0's `T - T`-only
+`good`.** Anything passing `goodMatch` (avoiding all three shortcuts) in
+particular avoids `T - T`, so `not_trivial_of_not_mem_sub` applies to any
+`goodMatch`-satisfying `Δ` unchanged: no cancelling quadruple realizes it. -/
+theorem goodMatch_not_mem_sub {T : Finset G} {Δ : G} (h : goodMatch T Δ) :
+    ¬ ∃ x ∈ T, ∃ y ∈ T, Δ = x - y := fun hex => h (Or.inl hex)
+
+/-- **The `T - T`-only `good` set contains `goodMatch`.** Restated as a
+`Finset.filter` subset, matching the shape `hitRate_of_good_overlap`'s
+`hbad` sum ranges over: moving from `good := ¬ mem (T-T)` to `goodMatch`
+only ever moves `Δ` from the "good" side to the "bad" side, never the
+other way, so it cannot invalidate an `hgood` bound already established for
+the wider `good`. -/
+theorem goodMatch_subset_good (T : Finset G) :
+    (Finset.univ.filter (goodMatch T)) ⊆
+      (Finset.univ.filter (fun Δ : G => ¬ ∃ x ∈ T, ∃ y ∈ T, Δ = x - y)) := by
+  intro Δ hΔ
+  rw [Finset.mem_filter] at hΔ ⊢
+  exact ⟨hΔ.1, goodMatch_not_mem_sub hΔ.2⟩
+
+/-- **The overlap cap transfers to `goodMatch` for free.** `overlap_le_sidon_energy`
+is unconditional in `Δ` (Part 3), so it holds on `goodMatch` in particular —
+`hitRate_of_good_overlap`'s `hgood` premise is never the obstruction, for
+EITHER choice of `good`. What remains open, exactly as flagged in the module
+docstring's Part 2 "What this does NOT prove", is `hbad`: the mass carried
+by `DirectRelation`, which is now honestly three pieces (`T - T`, `T`, and
+`T + T`) instead of one, and is not bounded by anything on file — closing it
+is still the outstanding content of open item 1, not this lemma. -/
+theorem goodMatch_overlap_cap (T : Finset G) (hSidon : SidonRepBound T) :
+    ∀ Δ : G, goodMatch T Δ → shiftOverlap (pairSumSet T) Δ ≤ 2 * T.card ^ 2 :=
+  fun Δ _ => overlap_le_sidon_energy T hSidon Δ
+
+/-- **`HitRate` via `goodMatch`, modulo the one open input.** Packages
+`hitRate_of_good_overlap` with `good := goodMatch T` and the overlap cap
+already discharged by `goodMatch_overlap_cap`, leaving exactly the mass bound
+on `DirectRelation` (`hbad`) as the caller's hypothesis — the same open gap
+`ROADMAP-current.md` names, now pinned to the model's actual three-part
+exclusion set instead of the `T - T`-only stand-in. -/
+theorem hitRate_of_goodMatch (T : Finset G) (hSidon : SidonRepBound T) (hT : 0 < T.card)
+    (badMass : ℕ)
+    (hbad : ∑ Δ ∈ Finset.univ.filter (fun Δ : G => ¬ goodMatch T Δ), matchCount T Δ ≤ badMass)
+    (hhalf : 2 * badMass ≤ T.card ^ 4) :
+    HitRate T (2 * ((4 * (2 * T.card ^ 2) : ℕ) : ℝ)) := by
+  have hKpos : 0 < 2 * T.card ^ 2 := by positivity
+  apply hitRate_of_good_overlap T hSidon (goodMatch T) (2 * T.card ^ 2) badMass
+    hKpos (goodMatch_overlap_cap T hSidon) hbad hhalf

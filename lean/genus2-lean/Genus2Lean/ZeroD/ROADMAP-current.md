@@ -33,19 +33,27 @@ no draw is made on the reduce equation. So the matching regime only ever sees
 | `IndexCalculusRelations` | a solve's relation has `rhs = (α-α')·a`; two solves are gauge-related iff same `rhs`; `DistinctRHS` excludes all gauge duplicates. |
 | `IndexCalculusComplexity` | balance `B ~ p^(2/5)`, cost `p^(4/5)` from a named per-solve rate `hRate = B⁴/p²`. |
 | `IndexCalculusHitRate` | `hRate` made explicit as `HitRate F c`; proved sufficient conditions (`hitRate_of_tight_secondMoment`, `_of_uniform_cap`, `_of_good_mass`). Corrects Complexity: repeated hits are free of error but not free of cost, so average multiplicity over realized `Δ` must be `O(1)`. |
-| `HitRateSumsetReduction` | (1) NEGATIVE: no constant cap `matchCount T Δ ≤ K` at `Δ ≠ 0` (trivial `(x,b,b,y)` family gives `≥ |T|`), so the pointwise-cap route is closed. (2) POSITIVE: `matchCount ≤ 4·overlap(T+T)` under `SidonRepBound`; `hitRate_of_good_overlap`. |
+| `HitRateSumsetReduction` | (1) NEGATIVE: no constant cap `matchCount T Δ ≤ K` at `Δ ≠ 0` (trivial `(x,b,b,y)` family gives `≥ |T|`), so the pointwise-cap route is closed. (2) POSITIVE: `matchCount ≤ 4·overlap(T+T)` under `SidonRepBound`; `hitRate_of_good_overlap`. (3) `overlap(Δ) ≤ 2B²` unconditionally (Cauchy-Schwarz), but that's `c=Θ(B²)` not `O(1)`. (4) `goodMatch`/`DirectRelation`/`hitRate_of_goodMatch`: the real 3-part exclusion set, overlap cap discharged, `hbad` isolated as the one open input — **not yet REPL-tested this pass**. |
 | `ZeroD/GaugeOrbitMatchCountBound` | earlier "gauge orbit = swapImages" claim was false; honest replacement: the `Δ`-fiber is a union over pair-sum classes of `≤4` fibers. |
 | `ZeroD/AlphaUnionGaugeCollapse` | any second sample with the same `α-α'` is gauge-accounted for by the reference `≤4` fiber. |
 
 ## Open, in order of importance
 
-1. **`HitRate` for the real factor base.** `hitRate_of_good_overlap` still
-   wants (i) an overlap cap on `good` `Δ` and (ii) the mass off `good` at most
-   half of `B⁴`. The stated logic says `good` should be exactly the set the
-   solver actually reaches the matching step for (`Δ ∉ T-T ∪ T ∪ T+T`), and
-   that the mass on the excluded set is not part of the attack. Aligning
-   `good`/`hbad` with that, and stating the result as the random-`(U,V)`
-   count `~B⁴/p²`, is the next Lean statement. *(read)*
+1. **`HitRate` for the real factor base — `good` now pinned down; `hbad` is the
+   remaining gap.** `HitRateSumsetReduction` Part 4 (this pass) defines
+   `DirectRelation T Δ := (Δ ∈ T-T) ∨ (Δ ∈ T) ∨ (Δ ∈ T+T)` (as existentials,
+   project convention) and `goodMatch T := ¬ DirectRelation T`, matching the
+   stated model exactly. `goodMatch_overlap_cap` discharges the overlap-cap
+   input for free (Part 3's `overlap_le_sidon_energy` is unconditional in
+   `Δ`), and `hitRate_of_goodMatch` packages the whole thing, so the ONLY
+   remaining input is `hbad`: a bound on `∑_{Δ ∈ DirectRelation} matchCount T Δ`
+   (now honestly three pieces — `T-T`, `T`, `T+T` — not just the `T-T` energy
+   discussed in Part 2's "What this does NOT prove"). Still not supplied by
+   anything on file; still needs either the third-additive-energy bound on
+   `T-T` already flagged, or a fresh argument for the `T` and `T+T` pieces
+   (heuristically smaller, `~B` and `~B²` against a `B⁴/2` budget, but
+   unproved). Restating the whole thing as the random-`(U,V)` count `~B⁴/p²`
+   is still open too.
 2. **`SidonRepBound T` for the actual `T = s(F)`** is an explicit hypothesis
    everywhere it is used.
 3. **`IndexCalculusReachability`'s `SolverReaches` takes `|Sol Δ| ≤ d`.**
