@@ -13,6 +13,18 @@ set_option linter.style.header false
 fixed-target work of `ZeroD/` feeds `SidonRepBound T` (`repCount ≤ 2`). This
 file records exactly how far that reaches, in two parts.
 
+## Part 0 — the exclusion is exact, not just directionally suggestive
+
+`trivial_quadruple_mem_sub`/`not_trivial_of_not_mem_sub`: the trivial
+cancelling family (`(x,b,b,y)` and its three sign/position variants) occurs
+ONLY on `Δ ∈ T - T`, no more and no less — i.e. `good := {Δ | Δ ∉ T - T}` is
+exactly the complement of where cancellation can happen, not merely a set
+chosen to make the bound below go through. This formalizes the "the rest of
+the solutions have to be outside the fb" reading of Part 1: a `(U,V)` draw
+whose resulting `Δ` avoids `T - T` is never secretly one of the forced
+trivial hits, so restricting to `good` genuinely removes the pollution
+Part 1 identifies, rather than just avoiding its worst instances.
+
 ## Part 1 — a NEGATIVE result: no constant cap on `matchCount` at `Δ ≠ 0`
 
 For `x ≠ y` in `T`, the quadruples `(x, b, b, y)`, `b ∈ T`, all solve
@@ -124,6 +136,58 @@ theorem not_uniform_matchCount_cap {T : Finset G} {x y : G} (hx : x ∈ T) (hy :
   have h1 := hcap (x - y) (sub_ne_zero.mpr hxy)
   have h2 := card_le_matchCount_sub hx hy
   omega
+
+/-- **The trivial family lives exactly on `T - T`, and nowhere else.**
+Converse to `card_le_matchCount_sub`: if `Δ` is realized by a "trivial"
+quadruple — one with a cancelling repeated entry, `(x,b,b,y)` or any of its
+three sign/position variants `(x,b,y,b)`, `(b,x,b,y)`, `(b,x,y,b)` — then
+`Δ = x - y` for some `x, y ∈ T`. Stated as the existential directly
+(`∃ x ∈ T, ∃ y ∈ T, Δ = x - y`) rather than via `Finset`'s `-` instance or a
+`Finset.mem_sub`-style lemma, to sidestep checking that instance's exact
+definitional unfolding without a Lean toolchain; a caller with `Δ ∈ T - T`
+in hand should be able to unfold that to this existential in one step, but
+that translation is left to the caller.
+
+This is the precise converse the model needs: it says a solve landing on
+`Δ ∉ T - T` is *never* one of the trivial cancelling quadruples, so on that
+set `matchCount` carries no forced floor and its whole value is genuine
+overlap content, not an artifact of the cancelling family
+`not_uniform_matchCount_cap` uses to kill the uniform-cap route. This is
+exactly why `good := {Δ | Δ ∉ T - T}` (as used in `hitRate_of_good_overlap`)
+is the right exceptional set, rather than an arbitrary choice: it is exactly
+the complement of where the trivial family can occur, not merely a set that
+happens to make the bound go through. -/
+theorem trivial_quadruple_mem_sub {T : Finset G} {a b c d Δ : G}
+    (hmatch : a + b - c - d = Δ)
+    (ha : a ∈ T) (hb : b ∈ T) (hc : c ∈ T) (hd : d ∈ T)
+    (htrivial : (a = c) ∨ (a = d) ∨ (b = c) ∨ (b = d)) :
+    ∃ x ∈ T, ∃ y ∈ T, Δ = x - y := by
+  rcases htrivial with hac | had | hbc | hbd
+  · -- a = c: Δ = a + b - a - d = b - d
+    exact ⟨b, hb, d, hd, by rw [← hmatch, hac]; abel⟩
+  · -- a = d: Δ = a + b - c - a = b - c
+    exact ⟨b, hb, c, hc, by rw [← hmatch, had]; abel⟩
+  · -- b = c: Δ = a + b - b - d = a - d
+    exact ⟨a, ha, d, hd, by rw [← hmatch, hbc]; abel⟩
+  · -- b = d: Δ = a + b - c - b = a - c
+    exact ⟨a, ha, c, hc, by rw [← hmatch, hbd]; abel⟩
+
+/-- **Corollary, in `good`-exclusion form.** If `Δ ∉ T - T` (no `x, y ∈ T`
+with `Δ = x - y`), then no quadruple of `T⁴` solving `matchCount`'s equation
+has a cancelling repeated entry in any of the four trivial positions. This is
+the contrapositive of `trivial_quadruple_mem_sub`, stated the way
+`hitRate_of_good_overlap`'s `good` predicate will actually be used: as a
+membership test on `Δ`, not on the witnessing quadruple. -/
+theorem not_trivial_of_not_mem_sub {T : Finset G} {Δ : G}
+    (hΔ : ¬ ∃ x ∈ T, ∃ y ∈ T, Δ = x - y)
+    {a b c d : G} (hmatch : a + b - c - d = Δ)
+    (ha : a ∈ T) (hb : b ∈ T) (hc : c ∈ T) (hd : d ∈ T) :
+    a ≠ c ∧ a ≠ d ∧ b ≠ c ∧ b ≠ d := by
+  refine ⟨?_, ?_, ?_, ?_⟩ <;> intro heq <;> apply hΔ
+  · exact trivial_quadruple_mem_sub hmatch ha hb hc hd (Or.inl heq)
+  · exact trivial_quadruple_mem_sub hmatch ha hb hc hd (Or.inr (Or.inl heq))
+  · exact trivial_quadruple_mem_sub hmatch ha hb hc hd (Or.inr (Or.inr (Or.inl heq)))
+  · exact trivial_quadruple_mem_sub hmatch ha hb hc hd (Or.inr (Or.inr (Or.inr heq)))
 
 /-! ## Part 2: reduction to the plain sumset `T + T` -/
 
