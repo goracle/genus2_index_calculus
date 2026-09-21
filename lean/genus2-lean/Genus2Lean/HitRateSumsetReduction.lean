@@ -11,7 +11,9 @@ set_option linter.style.header false
 `IndexCalculusHitRate.lean` reduces `hRate` (`HitRate T c`) to bounds on
 `matchCount T Δ = #{(a,b,c,d) ∈ T⁴ : a+b-c-d = Δ}`. The point-level `≤ 4`
 fixed-target work of `ZeroD/` feeds `SidonRepBound T` (`repCount ≤ 2`). This
-file records exactly how far that reaches, in two parts.
+file records exactly how far that reaches, in four parts (Part 0, Parts 1-2,
+Part 3 — see each part's own heading; Part 3 also corrects an error in an
+earlier pass of this docstring, flagged there).
 
 ## Part 0 — the exclusion is exact, not just directionally suggestive
 
@@ -87,9 +89,16 @@ off `good`.
   A constant `c` is not refuted, and that is the shape
   `hitRate_of_tight_secondMoment` consumes, so the viable target is the second
   moment (equivalently the good-mass form here), not a pointwise cap.
-* (i), the overlap cap off `T - T`, i.e. that the SET `T + T` has bounded
-  difference multiplicity away from the trivial differences. That is a
-  genuinely additive-combinatorial statement about the actual factor base.
+* ~~(i), the overlap cap off `T - T`~~ — **RESOLVED, Part 3, this pass**:
+  `overlap_le_sidon_energy` gives `overlap(Δ) ≤ 2B²` for EVERY `Δ`
+  unconditionally from `SidonRepBound`, no `T - T` exclusion needed. An
+  earlier pass of this docstring called this "a genuinely
+  additive-combinatorial statement about the actual factor base" needing
+  more than Sidon; that was wrong (Cauchy-Schwarz on the autocorrelation
+  identity gets it directly, see Part 3). What (i)'s resolution does NOT
+  buy: the resulting constant is `c = Θ(B²)`, not the `O(1)` `hRate` needs —
+  see Part 3's module note for exactly what closing that gap would still
+  require (a low-energy hypothesis on the sumset `T+T` itself, not on `T`).
 * Nothing here shows `SidonRepBound T` for an actual `T = s(F)`; it is an
   explicit hypothesis, exactly as in `MatchCountAutocorr.lean`.
 
@@ -322,3 +331,133 @@ theorem hitRate_of_good_overlap (T : Finset G) (hSidon : SidonRepBound T)
   calc matchCount T Δ ≤ 4 * shiftOverlap (pairSumSet T) Δ :=
         matchCount_le_four_mul_shiftOverlap T hSidon Δ
     _ ≤ 4 * K := Nat.mul_le_mul (le_refl 4) (hgood Δ hΔ)
+
+/-! ## Part 3: the unconditional overlap cap (correction, this pass)
+
+**Correction to Part 0's framing.** An earlier pass of this docstring
+claimed `SidonRepBound` alone cannot bound `shiftOverlap` — that this was a
+genuinely additive-combinatorial fact needing more structure than Sidon
+supplies. That claim was WRONG, caught by an external check (ChatGPT,
+prompted with exactly this question): `SidonRepBound` gives
+`overlap (pairSumSet T) Δ ≤ 2 · T.card ^ 2` for EVERY `Δ`, unconditionally,
+via Cauchy–Schwarz on the autocorrelation identity — no `T - T` exclusion,
+no `good` set, no extra hypothesis needed. The confusion was mixing up
+`|T+T|` (which Sidon forces to be LARGE, `≥ B²/2`) with `overlap(Δ)` (which
+Cauchy–Schwarz bounds regardless of how large the ambient set `T+T` is).
+
+**What this does and does not buy.** `overlap_le_sidon_energy` below,
+combined with `hitRate_of_good_overlap` (`good := fun _ => True`, trivial),
+gives `HitRate T c` for `c = Θ(B²)`. This is a real, unconditional theorem —
+but it is far weaker than the `c = O(1)` the model actually wants
+(`hitCount ≳ B⁴`, not `≳ B²`): plugging `c ~ B²` into `HitRate` only gives
+`hitCount ≳ B²`, four orders of `B` short. So Part 0's exclusion of the
+trivial family and this section's overlap cap are both real and both
+necessary, but neither is SUFFICIENT for `hRate`; genuinely closing that gap
+would need something like `E(T+T) ≲ |T+T|⁴/|G|` (a low-energy/genericity
+hypothesis on the SUMSET `T+T`, not on `T` itself — Sidon-ness of `T` says
+nothing about it) — a new named hypothesis, not derivable from `SidonRepBound`
+alone, and not attempted here.
+
+`hitCount_le_card_pow_four` records the complementary elementary fact
+(no Sidon needed): `hitCount T ≤ B⁴`, since `hitCount = |pairSumSet T -
+pairSumSet T|` as a plain set difference, and `|S - S| ≤ |S|² ≤ (B²)²`. This
+puts `HitRate`'s target `hitCount ≳ B⁴/c` (for constant `c`) in context: it
+asks `hitCount` to be within a constant factor of its own a priori MAXIMUM,
+not for any kind of positive density inside `G` — `HitRate`'s two sides both
+divide by `|G|`, so `|G|` cancels out of the actual content. (An external
+check that first read `HitRate` as a density-in-`G` claim consequently
+flagged `B⁴/|G| → 0` in the `B ~ p^(2/5)`, `|G| ~ p²` regime as an
+"arithmetic impossibility" — correctly computed, but for a different,
+stronger statement than the one `HitRate` actually makes; recorded here so a
+future pass doesn't need to re-derive which reading is the right one.) -/
+
+/-- **Overlap is bounded by the additive energy `E(T)`, unconditionally in
+`Δ`.** `overlap(Δ) = |{g ∈ pairSumSet T : g - Δ ∈ pairSumSet T}|`, and every
+such `g` contributes at least `1 ≤ r(g)·r(g-Δ)` to
+`Q(Δ) := ∑_h r(h)·r(h-Δ) = matchCount T Δ` (`matchCount_eq_autocorr`). So
+`overlap(Δ) ≤ matchCount T Δ` (this direction is `shiftOverlap_le_matchCount`,
+already on file, no Sidon needed). Cauchy–Schwarz then bounds `matchCount`
+itself: `Q(Δ)² = (∑_h r(h)·r(h-Δ))² ≤ (∑_h r(h)²)·(∑_h r(h-Δ)²) = E(T)²`
+(`Finset.sum_mul_sq_le_sq_mul_sq`, reindexing the second factor by
+`h ↦ h - Δ`, a bijection of `G`), so `Q(Δ) ≤ E(T) ≤ 2B²`
+(`sidon_energy_bound_nat`). Composing the two gives the bound stated. -/
+theorem overlap_le_sidon_energy (T : Finset G) (hSidon : SidonRepBound T) (Δ : G) :
+    shiftOverlap (pairSumSet T) Δ ≤ 2 * T.card ^ 2 := by
+  have hoverlap_le_match : shiftOverlap (pairSumSet T) Δ ≤ matchCount T Δ :=
+    shiftOverlap_le_matchCount T Δ
+  have hcs : (matchCount T Δ : ℝ) ^ 2 ≤
+      (∑ g : G, (repCount T g : ℝ) ^ 2) * ∑ g : G, (repCount T (g - Δ) : ℝ) ^ 2 := by
+    have heq : (matchCount T Δ : ℝ) =
+        ∑ g : G, (repCount T g : ℝ) * (repCount T (g - Δ) : ℝ) := by
+      rw [matchCount_eq_autocorr, Nat.cast_sum]
+      apply Finset.sum_congr rfl
+      intro g _
+      exact Nat.cast_mul _ _
+    rw [heq]
+    exact Finset.sum_mul_sq_le_sq_mul_sq Finset.univ
+      (fun g => (repCount T g : ℝ)) (fun g => (repCount T (g - Δ) : ℝ))
+  have hreindex : (∑ g : G, (repCount T (g - Δ) : ℝ) ^ 2) = ∑ g : G, (repCount T g : ℝ) ^ 2 := by
+    have hgoal := Fintype.sum_equiv (Equiv.addRight (-Δ))
+      (fun g : G => (repCount T (g - Δ) : ℝ) ^ 2)
+      (fun g : G => (repCount T g : ℝ) ^ 2)
+      (fun g => by
+        have : (Equiv.addRight (-Δ)) g = g - Δ := by
+          simp [Equiv.coe_addRight, sub_eq_add_neg]
+        rw [this])
+    exact hgoal
+  rw [hreindex] at hcs
+  have hE : (∑ g : G, (repCount T g : ℝ) ^ 2) ≤ 2 * (T.card : ℝ) ^ 2 := by
+    have h := sidon_energy_bound_nat T hSidon
+    have h' : (∑ g : G, (repCount T g) ^ 2 : ℝ) ≤ ((2 * T.card ^ 2 : ℕ) : ℝ) := by
+      exact_mod_cast h
+    simpa using h'
+  have hcs' : (matchCount T Δ : ℝ) ^ 2 ≤ (2 * (T.card : ℝ) ^ 2) ^ 2 := by
+    calc (matchCount T Δ : ℝ) ^ 2
+        ≤ (∑ g : G, (repCount T g : ℝ) ^ 2) * (∑ g : G, (repCount T g : ℝ) ^ 2) := hcs
+      _ ≤ (2 * (T.card : ℝ) ^ 2) * (2 * (T.card : ℝ) ^ 2) :=
+          mul_le_mul hE hE (by positivity) (by positivity)
+      _ = (2 * (T.card : ℝ) ^ 2) ^ 2 := by ring
+  have hmatch_le : (matchCount T Δ : ℝ) ≤ 2 * (T.card : ℝ) ^ 2 := by
+    have hnn : (0:ℝ) ≤ 2 * (T.card : ℝ) ^ 2 := by positivity
+    nlinarith [sq_nonneg ((matchCount T Δ : ℝ) - 2 * (T.card : ℝ) ^ 2)]
+  have hmatch_le' : matchCount T Δ ≤ 2 * T.card ^ 2 := by exact_mod_cast hmatch_le
+  exact le_trans hoverlap_le_match hmatch_le'
+
+/-- **`hitCount` is bounded by `B⁴`, unconditionally — no Sidon needed.**
+`hitCount T = |{Δ : matchCount T Δ ≠ 0}| = |{Δ : overlap(Δ) ≠ 0}|`
+(`hitCount_eq_card_overlap_ne_zero`) `= |pairSumSet T - pairSumSet T|` (as a
+plain set difference: `Δ` is realized iff `Δ = g - g'` for some
+`g, g' ∈ pairSumSet T`), and the difference map `pairSumSet T ×ˢ pairSumSet T
+→ G` has image of size at most `(pairSumSet T).card ^ 2 ≤ (T.card ^ 2) ^ 2`
+(`Finset.card_image_le`). Puts `HitRate`'s target `hitCount ≳ B⁴/c` in its
+correct place: near the top of `hitCount`'s own possible range, not a
+density claim about `|G|` (see the Part 3 module note above). -/
+theorem hitCount_le_card_pow_four (T : Finset G) :
+    hitCount T ≤ T.card ^ 4 := by
+  have hset : (Finset.univ.filter (fun Δ : G => matchCount T Δ ≠ 0)) ⊆
+      (pairSumSet T ×ˢ pairSumSet T).image (fun p : G × G => p.1 - p.2) := by
+    intro Δ hΔ
+    rw [Finset.mem_filter] at hΔ
+    have hov : shiftOverlap (pairSumSet T) Δ ≠ 0 := (matchCount_ne_zero_iff T Δ).mp hΔ.2
+    unfold shiftOverlap at hov
+    obtain ⟨g, hg⟩ := Finset.card_pos.mp (Nat.pos_of_ne_zero hov)
+    rw [Finset.mem_filter] at hg
+    apply Finset.mem_image.mpr
+    exact ⟨(g, g - Δ), Finset.mem_product.mpr ⟨hg.1, hg.2⟩, by
+      show g - (g - Δ) = Δ
+      exact sub_sub_cancel g Δ⟩
+  have hcard := Finset.card_le_card hset
+  have himg : ((pairSumSet T ×ˢ pairSumSet T).image (fun p : G × G => p.1 - p.2)).card ≤
+      (pairSumSet T ×ˢ pairSumSet T).card := Finset.card_image_le
+  have hprod : (pairSumSet T ×ˢ pairSumSet T).card = (pairSumSet T).card ^ 2 := by
+    rw [Finset.card_product, sq]
+  have hpss : (pairSumSet T).card ≤ T.card ^ 2 := by
+    calc (pairSumSet T).card ≤ (T ×ˢ T).card := Finset.card_image_le
+      _ = T.card ^ 2 := by rw [Finset.card_product, sq]
+  unfold hitCount
+  calc (Finset.univ.filter (fun Δ : G => matchCount T Δ ≠ 0)).card
+      ≤ ((pairSumSet T ×ˢ pairSumSet T).image (fun p : G × G => p.1 - p.2)).card := hcard
+    _ ≤ (pairSumSet T ×ˢ pairSumSet T).card := himg
+    _ = (pairSumSet T).card ^ 2 := hprod
+    _ ≤ (T.card ^ 2) ^ 2 := Nat.pow_le_pow_left hpss 2
+    _ = T.card ^ 4 := by ring
