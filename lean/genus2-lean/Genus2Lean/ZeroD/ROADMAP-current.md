@@ -7,6 +7,94 @@ roadmap/README that used to live at the top of `ZeroD/`; those are now in
 this file is a map, not a spec.** Lines marked *(read)* are my reading of
 the files and should be corrected if wrong.
 
+## Correction, this pass: the `HitRate`/`hbad` branch is superseded, not open
+
+**`IndexCalculusHitRate.lean` and everything built on it —
+`HitRateSumsetReduction`'s `good`/`goodMatch`/`DirectRelation`/`hbad`
+machinery (Parts 2 and 4–5) included — solves a problem the project's own
+`IndexCalculusComplexity.lean` already declared unnecessary, for an
+independent reason.** `IndexCalculusComplexity.lean`'s own docstring:
+`matchCount`'s fiber *multiplicity* (how many quadruples land on a given
+`Δ`) is the wrong quantity to bound at all, because
+`IndexCalculusRelations.lean`'s `translate_of_same_diff` +
+`dedup_by_rhsElt_loses_no_rhs` prove that any two solves sharing a `Δ` are
+gauge-related, so a big fiber is worth exactly ONE relation regardless of
+its size. The complexity claim goes through `expectedRelations` /
+`matchCount_distinct_hits_ge_unconditional` (a coupon-collector /
+distinct-count argument, unconditional, no Sidon) and
+`IndexCalculusReachability`'s `SolverReaches` (also unconditional, "pure
+double counting" per its own docstring) instead. Neither of those imports
+or calls `hitRate_of_good_overlap`, `hitRate_of_goodMatch`, or
+`hitRate_of_good_mass` — grepped this pass, confirmed zero live callers
+outside `IndexCalculusHitRate.lean`/`HitRateSumsetReduction.lean`
+themselves. (`IndexCalculusReachability` imports `IndexCalculusHitRate`
+only for the bare `HitRate` type/def, not for anything `good`-related.)
+
+So the `T+T`/Fourier gap surfaced this session (bounding `hbad`'s `T+T`
+piece needs Plancherel on the finite-abelian dual, nothing else in the
+project uses that Mathlib area) is **not a hole to fill** — it's a
+symptom of continuing to build out a branch the project moved past. Same
+shape as the already-flagged-dead gauge-shift branch (open item 5 below):
+built for a target (`matchCount ≤ K` pointwise, then `good`/`hbad`
+accounting) that a later, better argument made unnecessary, but nobody
+went back to prune or flag it at the time.
+
+**Confirmed this pass:** `expectedRelations_le_of_hitRate` and
+`expected_successes_at_balance` — `IndexCalculusHitRate.lean`'s only
+bridge-to-the-model theorems — are also uncalled anywhere outside their
+own file. `IndexCalculusComplexity.lean`'s actual headline result
+(`index_calculus_complexity`) is built entirely from
+`expectedRelations_at_balance`/`balance_forces_fifth_power`/
+`total_cost_eq_rpow`, none of which touch `HitRate`. So the whole
+`IndexCalculusHitRate.lean` file — not just its `good`/`hbad` corner — is
+disconnected from the live proof graph.
+
+**Downgraded this pass:** `IndexCalculusHitRate.lean` and
+`HitRateSumsetReduction.lean` Parts 2, 4, 5 (the `good`/`goodMatch`/
+`DirectRelation`/`hbad` material) are superseded, kept for reference,
+same status as the gauge-shift branch (item 5 below) — not further open
+work. `HitRateSumsetReduction` Part 1 (negative pointwise-cap result) and
+Part 3 (`overlap_le_sidon_energy`, `matchCount_le_two_card_sq`) are also
+only reachable via this now-superseded branch — checked, nothing live
+imports `HitRateSumsetReduction` outside `IndexCalculusReachability`'s
+bare-type import chain traced above, so the whole file is downstream of
+the superseded branch, not just Parts 2/4/5.
+
+## Correction, this pass (2): `SidonRepBound T` for the real `T = s(F)` is
+already proved, `sorry`-free — but stranded, same pattern as above
+
+**`SidonDichotomyGeneral.lean` already proves `SidonRepBound (sidonSet
+(principalDivisorData H hdeg) δ₀ F)` for the actual `T = s(F)`, over the
+real field, unconditionally — no `sorry`, no unproved `SidonDichotomy`
+needed.** The degree-2 argument (`P1+P2` and its collisions are governed
+by `H.Point`'s degree-2-map-to-`ℙ¹` structure, per Riemann–Roch) is exactly
+right and is what
+`isOnlyEffectiveInClass_of_uniqueDegree2MapToP1_general`
+(`LPairFinrankOneOrdAtFracSpec.lean`) already formalizes. Chain:
+`sidonRepBound_of_sidonDichotomy_nonInvolution_general` needs only
+`hchar`, `hsf`, and two checkable-by-construction side conditions on `F`
+— `AvoidsInvolutionPairs F` and `NoWeierstrassPoints F` (`SidonBridge.lean`;
+costs at most `2g+2=6` points out of `~p` available, per that file's own
+docstring) — and sidesteps the one genuinely-open piece
+(`sidonDichotomy_general`'s involution-branch `sorry`, `x₂ = ι x₁`, needing
+`IsOnlyFibersInCanonicalClass` general-`k`, proved nowhere in the
+codebase) entirely, by construction, rather than needing it discharged.
+
+**But: same stranding pattern as `HitRate`/`hbad` above.** `SidonRepBound`
+is called only from `Complexity.lean` (in prose, and by
+`UniformFiberBoundOffDiagonal.lean`, neither in the live 13-file import
+closure) — `IndexCalculusComplexity.lean`'s own correction already says
+the whole Sidon/second-moment apparatus `SidonRepBound` feeds is
+unnecessary for the live model (fiber multiplicity is irrelevant, see
+correction (1) above). So former item 1 (`SidonRepBound T` open) is now:
+proved, but for a branch (`Complexity.lean`/`SidonDichotomyGeneral.lean`
+→ `HitRateSumsetReduction`'s Sidon-fed parts) that the live proof graph
+doesn't currently call into. Not renumbered off the open list below by
+deletion (per "don't touch completed proofs, just note and move on") —
+removed as a numbered open item since there's nothing left to prove here,
+kept as a note in case the live model ever needs `SidonRepBound` again
+(e.g. if `HitRateSumsetReduction`'s branch gets revisited).
+
 ## The model in one paragraph
 
 A solve at fixed `(α, α')` looks for points with `P1+P2-P3-P4 = (α-α')·a`
@@ -32,73 +120,31 @@ no draw is made on the reduce equation. So the matching regime only ever sees
 | `ZeroD/InvolutionPairsCount` | involution pairs are exactly `#H.Point` of `#H.Point²`: rejecting them costs a factor `1 - 1/#Points`. (`#Points ~ p` is Hasse–Weil, not on file.) |
 | `IndexCalculusRelations` | a solve's relation has `rhs = (α-α')·a`; two solves are gauge-related iff same `rhs`; `DistinctRHS` excludes all gauge duplicates. |
 | `IndexCalculusComplexity` | balance `B ~ p^(2/5)`, cost `p^(4/5)` from a named per-solve rate `hRate = B⁴/p²`. |
-| `IndexCalculusHitRate` | `hRate` made explicit as `HitRate F c`; proved sufficient conditions (`hitRate_of_tight_secondMoment`, `_of_uniform_cap`, `_of_good_mass`). Corrects Complexity: repeated hits are free of error but not free of cost, so average multiplicity over realized `Δ` must be `O(1)`. |
-| `HitRateSumsetReduction` | (1) NEGATIVE: no constant cap `matchCount T Δ ≤ K` at `Δ ≠ 0` (trivial `(x,b,b,y)` family gives `≥ |T|`), so the pointwise-cap route is closed. (2) POSITIVE: `matchCount ≤ 4·overlap(T+T)` under `SidonRepBound`; `hitRate_of_good_overlap`. (3) `overlap(Δ) ≤ 2B²` unconditionally (Cauchy-Schwarz), but that's `c=Θ(B²)` not `O(1)`. (4) `goodMatch`/`DirectRelation`/`hitRate_of_goodMatch`: the real 3-part exclusion set, overlap cap discharged, `hbad` isolated as the one open input — **not yet REPL-tested this pass**. |
+| `IndexCalculusHitRate` | **Superseded, this pass** — see correction (1) above. `hRate` made explicit as `HitRate F c` with sufficient conditions, but disconnected from the live proof graph: `IndexCalculusComplexity`'s actual result doesn't route through it. |
+| `HitRateSumsetReduction` | **Downstream of the superseded branch, this pass** — see correction (1) above. Content kept for reference: (1) NEGATIVE: no constant cap `matchCount T Δ ≤ K` at `Δ ≠ 0`. (2) POSITIVE: `matchCount ≤ 4·overlap(T+T)` under `SidonRepBound`. (3) `overlap(Δ) ≤ 2B²` unconditionally. (4)–(5) `goodMatch`/`DirectRelation`/`hbad` 3-piece split, `T`-piece proved, `T-T`/`T+T` pieces open — moot per the correction, not pursued further. |
+| `SidonDichotomyGeneral` | **Proved, `sorry`-free, this pass** — see correction (2) above. `sidonRepBound_of_sidonDichotomy_nonInvolution_general`: `SidonRepBound (sidonSet (principalDivisorData H hdeg) δ₀ F)` for the real `T = s(F)`, general `k`, from `hchar`/`hsf`/`AvoidsInvolutionPairs F`/`NoWeierstrassPoints F` only — sidesteps the one open `sorry` (`sidonDichotomy_general`'s involution branch) by construction. Stranded off the live path, same as `IndexCalculusHitRate` above. |
 | `ZeroD/GaugeOrbitMatchCountBound` | earlier "gauge orbit = swapImages" claim was false; honest replacement: the `Δ`-fiber is a union over pair-sum classes of `≤4` fibers. |
 | `ZeroD/AlphaUnionGaugeCollapse` | any second sample with the same `α-α'` is gauge-accounted for by the reference `≤4` fiber. |
 
 ## Open, in order of importance
 
-1. **`HitRate` for the real factor base — decisive answer from ChatGPT this
-   pass.** Full result, to be formalized:
-   - **NEGATIVE, sharp:** Sidon alone gives NO bound on `hbad`, not even
-     `o(B⁴)`. Explicit counterexample: `T = {(t,t²) : t ∈ 𝔽_q}` (a parabola)
-     is Sidon (`repCount ≤ 2`, elementary quadratic-roots argument) but has
-     `T - T = 𝔽_q² ∖ {(0,k) : k≠0}`, missing only `B-1` points, forcing
-     `hbad ≥ B⁴ - 2B³ + 2B²` — i.e. `(1-o(1))` of the ENTIRE mass `B⁴` can
-     sit on `T-T` alone. Holds even embedded in a bigger ambient group at the
-     model's own scaling `|G| ≍ B⁵`. So Part 2's "what this does not prove"
-     was right to flag this as open, but understated how bad it is: no
-     Sidon-only fix exists, full stop.
-   - **POSITIVE, conditional:** new hypothesis `(H3): E₃⁺(T) ≤ K·B³` where
-     `E₃⁺(T) = #{(a,b,c,a',b',c') ∈ T⁶ : a+b+c = a'+b'+c'}` (three-fold
-     additive energy) gives `hbad ≤ 2(K+1)·B³`, comfortably under `B⁴/2` for
-     `B` large. Proof, per-piece:
-     - `T` piece: `∑_{Δ∈T} matchCount(Δ) ≤ B · 2B² = 2B³` — fully elementary,
-       Sidon-only (`matchCount ≤ 2B²` everywhere, already on file as
-       `matchCount_le_two_card_sq`/`overlap_le_sidon_energy`'s upstream
-       fact), no `(H3)` needed. **Ready to formalize now, no new machinery.**
-     - `T-T` piece: `h₋ ≤ E₃⁺(T) ≤ K·B³` via a sandwich `h₋ ≤ E₃⁺(T) ≤
-       B·matchCount(0) + 2h₋` (elementary rearrangement identity plus the
-       Sidon fact `r_{T-T}(δ) ≤ 2` for `δ≠0`, itself a short elementary
-       argument from `repCount ≤ 2`). **Ready to formalize, no new
-       machinery** — the sandwich and the `r_{T-T}(δ)≤2` fact are both
-       elementary `Finset`/counting arguments.
-     - `T+T` piece: `h₊ ≤ E₃⁺(T) ≤ K·B³` — but the only proof found needs
-       Parseval/Plancherel on the finite abelian dual group (`f=𝟙_T`,
-       `matchCount = r * r̃` in Fourier, `|∑_δ r(δ)matchCount(δ)| ≤
-       ∑_χ|f̂(χ)|⁶ = N·E₃⁺(T)`). Confirmed (by direct combinatorial
-       expansion, this session) that this does NOT reduce to an elementary
-       identity — it computes a genuinely different 4-vs-2 energy, not
-       `E₃⁺`, so Fourier appears to be load-bearing here, not just the
-       first proof found. **Needs Mathlib's finite-abelian-group Fourier
-       API** (`AddChar`, Pontryagin duality — see
-       `Mathlib/Analysis/Fourier/FiniteAbelian/PontryaginDuality.lean` and
-       neighboring files), which nothing else in this project uses yet.
-       Bigger lift; decide separately whether to attempt it, ask ChatGPT for
-       a from-scratch elementary substitute (possibly with a worse
-       constant), or accept a weaker/partial theorem that only covers the
-       `T` and `T-T` pieces plus an explicit hypothesis absorbing `T+T`.
-   - `(H3)` itself is not proved for `T = s(F)`; two candidate sufficient
-     conditions given (not yet assessed against this project): `B₃`-ness of
-     `T` (strong, `E₃⁺≤6B³` trivially, `K=6`), or Fourier-bias smallness
-     `λ ≤ C√B` combined with `|G| ≳ B³` (weaker, more plausible for a
-     genuinely random-looking factor base, but itself unproved for `s(F)`).
-   - Restating as the random-`(U,V)` count `~B⁴/p²` is still separately open.
-2. **`SidonRepBound T` for the actual `T = s(F)`** is an explicit hypothesis
-   everywhere it is used.
-3. **`IndexCalculusReachability`'s `SolverReaches` takes `|Sol Δ| ≤ d`.**
+1. **`IndexCalculusReachability`'s `SolverReaches` takes `|Sol Δ| ≤ d`.**
    *(read)* By `GaugeOrbitMatchCountBound` the full `Δ`-fiber is a union of
    `≤4` fibers over ~`p²` divisors `(U,V)`; the `≤4` is per `(U,V)`, not per
    `Δ`. Decide whether that file's model should be restated per-`(U,V)`.
-4. **Sampler must reject `P2 = ι P1`** (cost quantified above); nothing on
+2. **Sampler must reject `P2 = ι P1`** (cost quantified above); nothing on
    file enforces it.
-5. **Gauge-shift branch** (`CantorCompositionStep`, `CantorMulMumford`,
+3. **Gauge-shift branch** (`CantorCompositionStep`, `CantorMulMumford`,
    `AlphaReducedClassShift`, `GaugeShiftAssembly`): built to support a
    shift-then-reduce argument for the pointwise `matchCount ≤ K` target, which
    `HitRateSumsetReduction` Part 1 closes as unviable. *(read)* Probably no
    longer on the critical path; `CantorMulMumford` still carries the
-   `CantorAddWitness` existence hypothesis. Confirm before archiving.
+   `CantorAddWitness` existence hypothesis. Confirm before archiving. Same
+   status as `IndexCalculusHitRate`/`HitRateSumsetReduction` (superseded,
+   above) — worth archiving both branches together in one pass.
+
+*(Former item 1, `SidonRepBound T` for the real `T = s(F)`: resolved, see
+correction (2) above — proved, not open, just stranded off the live path.)*
 
 ## Deprecated branch (kept, not extended)
 
@@ -118,8 +164,9 @@ modules are in the import closure of the 13 files below.
 (`isOnlyFibersInCanonicalClass_of_elementary`), `ZeroD/GenListFinrankAssembly`
 (`genList_finrank_le`). The scan script is in `oldroadmaps/ZeroD-STATUS.md`.
 Importing a file with a `sorry` is not depending on it: to check the headline
-results, run `#print axioms` on `fixedTargetSolutions_ncard_le_four_canonical`
-and `hitRate_of_good_overlap` and look for `sorryAx`.
+result, run `#print axioms` on `fixedTargetSolutions_ncard_le_four_canonical`
+and look for `sorryAx`. (`hitRate_of_good_overlap` dropped from this check —
+superseded, see correction above; not a headline result.)
 
 ## Files this map is built from (oldest to newest)
 
@@ -128,4 +175,6 @@ and `hitRate_of_good_overlap` and look for `sorryAx`.
 `AlphaReducedClassShift`, `CantorMulMumford`, `GaugeShiftAssembly`,
 `IndexCalculusHitRate`, `IndexCalculusReachability`,
 `ZeroD/FixedTargetBoundCanonical`, `ZeroD/InvolutionPairsCount`,
-`HitRateSumsetReduction`.
+`HitRateSumsetReduction`. Plus, read this pass while chasing item 1
+(now resolved, correction (2) above): `SidonDichotomyGeneral`,
+`SidonBridge`, `FFKSidon`, `DivisorClassGroup`.

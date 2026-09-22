@@ -28,11 +28,15 @@ Both are dischargeable for the concrete `D := principalDivisorData H hdeg`:
 
 ## What is left, and why it CANNOT be dropped
 
-The residual hypotheses `hne12 : sa.P2 ≠ ι sa.P1` and
-`hne34 : sb.P2 ≠ ι sb.P1` are not artifacts of the proof technique. The
-`≤ 4` bound is **false** without them, and `SampleTargetFromAlpha` does
-nothing to exclude the involution case (no field of that structure
-constrains `P2` against `ι P1`).
+**Update (roadmap open item 2, this pass): now enforced structurally.**
+`SampleTargetFromAlpha` (`AlphaLocusDegreeUniform.lean`) previously had
+no field constraining `P2` against `ι P1` — any sampler could hand it an
+involution pair with nothing on file to reject it. It now carries a
+required field `hne : P2 ≠ Point.iota P1`, so `sa.hne`/`sb.hne` below
+supply what used to be separate caller-supplied hypotheses `hne12`/
+`hne34`. The math is unchanged: the `≤ 4` bound is still **false**
+without this fact, it is just no longer possible to construct a
+`SampleTargetFromAlpha` that omits it.
 
 Concretely, if `P2 = ι P1` then `[P1] + [P2] - 2[δ₀]` is the canonical
 class `K`, and *every* fiber `{x, ι x}` lies in it (this is the content of
@@ -55,10 +59,12 @@ fiber over `K` grows linearly in `p`; the `p`-independent constant `4` only
 holds away from involution pairs.
 
 Consequence for the project: whichever code SAMPLES `(P1,P2)` must reject
-`P2 = ι P1`, or the `p`-independent bound must be stated with that case
-carved out and handled separately (its probability is `O(1/p)` per sample,
-so it is negligible for the complexity count but it is NOT excluded by any
-hypothesis currently on file).
+`P2 = ι P1`. **This pass:** `SampleTargetFromAlpha` now enforces that
+rejection as a required field (`.hne`), rather than leaving it as an
+unexercised precondition — its probability is `O(1/p)` per sample
+(`ZeroD/InvolutionPairsCount.lean`), so the rejection is negligible for
+the complexity count but was not, until this pass, excluded by anything
+on file.
 
 ## Verification status
 
@@ -95,8 +101,13 @@ Residual hypotheses, all genuinely needed (see module docstring):
 * `hchar`, `hsf` — standing curve hypotheses (`char ≠ 2`, `f` squarefree),
   exactly what `isOnlyEffectiveInClass_of_uniqueDegree2MapToP1_general`
   takes.
-* `hne12`, `hne34` — the two sampled pairs are not involution pairs. The
-  bound is FALSE without these (canonical-class fiber has size `~p`).
+
+The non-involution fact (`sa.P2 ≠ ι sa.P1`, `sb.P2 ≠ ι sb.P1`) no longer
+needs to be threaded in separately here: `SampleTargetFromAlpha` now
+carries it as a required field (`.hne`, `AlphaLocusDegreeUniform.lean`,
+roadmap open item 2 — any sampler must reject involution pairs, and the
+bound below is FALSE without that rejection, see module docstring), so
+`sa.hne`/`sb.hne` supply it directly.
 
 The conclusion is stated for `principalDivisorData H hdeg` directly, so
 there is no `D`-genericity and no `hbridge` argument. -/
@@ -105,9 +116,7 @@ theorem fixedTargetSolutions_ncard_le_four_canonical
     {p : ℕ} [Fact (Nat.Prime p)]
     (hdeg : H.f.natDegree = 5) (hchar : (2 : k) ≠ 0) (hsf : Squarefree H.f)
     {aClass : Jacobian H (principalDivisorData H hdeg)} {δ₀ : H.Point}
-    (sa sb : SampleTargetFromAlpha p H (principalDivisorData H hdeg) aClass δ₀)
-    (hne12 : sa.P2 ≠ Point.iota sa.P1)
-    (hne34 : sb.P2 ≠ Point.iota sb.P1) :
+    (sa sb : SampleTargetFromAlpha p H (principalDivisorData H hdeg) aClass δ₀) :
     (FixedTargetSolutions (principalDivisorData H hdeg) δ₀
       (s (principalDivisorData H hdeg) δ₀ sa.P1 +
         s (principalDivisorData H hdeg) δ₀ sa.P2)
@@ -117,9 +126,9 @@ theorem fixedTargetSolutions_ncard_le_four_canonical
     (hdeg := hdeg)
     (principalDivisorData_P_le_principalSubgroup hdeg)
     (isOnlyEffectiveInClass_of_uniqueDegree2MapToP1_general hdeg hchar hsf
-      sa.P1 sa.P2 hne12)
+      sa.P1 sa.P2 sa.hne)
     (isOnlyEffectiveInClass_of_uniqueDegree2MapToP1_general hdeg hchar hsf
-      sb.P1 sb.P2 hne34)
+      sb.P1 sb.P2 sb.hne)
 
 
 

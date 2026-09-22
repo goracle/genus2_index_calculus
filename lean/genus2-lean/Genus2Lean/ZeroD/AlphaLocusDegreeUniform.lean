@@ -399,6 +399,20 @@ structure SampleTargetFromAlpha (p : ℕ) [Fact (Nat.Prime p)]
   fact. -/
   memZmultiplesA :
     s D δ₀ P1 + s D δ₀ P2 ∈ AddSubgroup.zmultiples aClass
+  /-- **Non-involution constraint: `P2 ≠ ι P1`, required at construction.**
+  `FixedTargetBoundCanonical.lean`'s module docstring shows the `≤ 4`
+  fixed-target bound is FALSE for a sample with `P2 = ι P1` (the
+  involution-class pair-fiber grows with `#H.Point`, not bounded by a
+  `p`-independent constant), and that nothing about `.toSampleTarget` or
+  any other field here excludes that case — `P1`/`P2` were otherwise
+  free. Any sampler must reject involution pairs (roadmap open item 2);
+  this field makes that rejection a precondition of building a
+  `SampleTargetFromAlpha` at all, rather than an extra hypothesis every
+  downstream theorem has to remember to demand separately. Cost of the
+  rejection is quantified exactly in `ZeroD/InvolutionPairsCount.lean`:
+  density `1 / #H.Point` among all ordered pairs, i.e. `O(1/p)` and
+  negligible for the complexity count. -/
+  hne : P2 ≠ Point.iota P1
 
 /-- Convenience: read off `alpha`'s companion `alpha'` from a *pair* of
 `SampleTargetFromAlpha` values sharing the same `aClass` — matches

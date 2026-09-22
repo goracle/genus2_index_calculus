@@ -100,7 +100,8 @@ noncomputable def mk_sampleTargetFromAlpha_of_reduceDispatch
           ua0 ua1 va0 va1 u0 u1 v0 v1))
     (hmemZmultiplesA :
       HyperellipticPolynomial.s D δ₀ P1 + HyperellipticPolynomial.s D δ₀ P2 ∈
-        AddSubgroup.zmultiples aClass) :
+        AddSubgroup.zmultiples aClass)
+    (hne : P2 ≠ HyperellipticPolynomial.Point.iota P1) :
     SampleTargetFromAlpha p H D aClass δ₀ :=
   let out := ReduceDispatchGeneral p c0 c1 c2 c3 c4 (P1.X, P1.Y) (P2.X, P2.Y)
     ua0 ua1 va0 va1 u0 u1 v0 v1 hcur hgcd hcurT hgcdT
@@ -109,7 +110,8 @@ noncomputable def mk_sampleTargetFromAlpha_of_reduceDispatch
     P1 := P1
     P2 := P2
     isReduction := True
-    memZmultiplesA := hmemZmultiplesA }
+    memZmultiplesA := hmemZmultiplesA
+    hne := hne }
 
 -- Marked `irreducible` so nothing that mentions
 -- `mk_sampleTargetFromAlpha_of_reduceDispatch` applied to arguments,
@@ -149,22 +151,23 @@ theorem toSampleTarget_mk_sampleTargetFromAlpha_of_reduceDispatch
           ua0 ua1 va0 va1 u0 u1 v0 v1))
     (hmemZmultiplesA :
       HyperellipticPolynomial.s D δ₀ P1 + HyperellipticPolynomial.s D δ₀ P2 ∈
-        AddSubgroup.zmultiples aClass) :
+        AddSubgroup.zmultiples aClass)
+    (hne : P2 ≠ HyperellipticPolynomial.Point.iota P1) :
     (mk_sampleTargetFromAlpha_of_reduceDispatch
         aClass δ₀ alpha P1 P2 c0 c1 c2 c3 c4 ua0 ua1 va0 va1 u0 u1 v0 v1
-        hcur hgcd hcurT hgcdT hmemZmultiplesA).toSampleTarget.u0 = (ReduceDispatchGeneral p c0 c1 c2 c3 c4
+        hcur hgcd hcurT hgcdT hmemZmultiplesA hne).toSampleTarget.u0 = (ReduceDispatchGeneral p c0 c1 c2 c3 c4
         (P1.X, P1.Y) (P2.X, P2.Y) ua0 ua1 va0 va1 u0 u1 v0 v1 hcur hgcd hcurT hgcdT).1
     ∧ (mk_sampleTargetFromAlpha_of_reduceDispatch
         aClass δ₀ alpha P1 P2 c0 c1 c2 c3 c4 ua0 ua1 va0 va1 u0 u1 v0 v1
-        hcur hgcd hcurT hgcdT hmemZmultiplesA).toSampleTarget.u1 = (ReduceDispatchGeneral p c0 c1 c2 c3 c4
+        hcur hgcd hcurT hgcdT hmemZmultiplesA hne).toSampleTarget.u1 = (ReduceDispatchGeneral p c0 c1 c2 c3 c4
         (P1.X, P1.Y) (P2.X, P2.Y) ua0 ua1 va0 va1 u0 u1 v0 v1 hcur hgcd hcurT hgcdT).2.1
     ∧ (mk_sampleTargetFromAlpha_of_reduceDispatch
         aClass δ₀ alpha P1 P2 c0 c1 c2 c3 c4 ua0 ua1 va0 va1 u0 u1 v0 v1
-        hcur hgcd hcurT hgcdT hmemZmultiplesA).toSampleTarget.v0 = (ReduceDispatchGeneral p c0 c1 c2 c3 c4
+        hcur hgcd hcurT hgcdT hmemZmultiplesA hne).toSampleTarget.v0 = (ReduceDispatchGeneral p c0 c1 c2 c3 c4
         (P1.X, P1.Y) (P2.X, P2.Y) ua0 ua1 va0 va1 u0 u1 v0 v1 hcur hgcd hcurT hgcdT).2.2.1
     ∧ (mk_sampleTargetFromAlpha_of_reduceDispatch
         aClass δ₀ alpha P1 P2 c0 c1 c2 c3 c4 ua0 ua1 va0 va1 u0 u1 v0 v1
-        hcur hgcd hcurT hgcdT hmemZmultiplesA).toSampleTarget.v1 = (ReduceDispatchGeneral p c0 c1 c2 c3 c4
+        hcur hgcd hcurT hgcdT hmemZmultiplesA hne).toSampleTarget.v1 = (ReduceDispatchGeneral p c0 c1 c2 c3 c4
         (P1.X, P1.Y) (P2.X, P2.Y) ua0 ua1 va0 va1 u0 u1 v0 v1 hcur hgcd hcurT hgcdT).2.2.2 := by
   exact ⟨rfl, rfl, rfl, rfl⟩
 
@@ -196,16 +199,17 @@ theorem alpha_P1_P2_mk_sampleTargetFromAlpha_of_reduceDispatch
           ua0 ua1 va0 va1 u0 u1 v0 v1))
     (hmemZmultiplesA :
       HyperellipticPolynomial.s D δ₀ P1 + HyperellipticPolynomial.s D δ₀ P2 ∈
-        AddSubgroup.zmultiples aClass) :
+        AddSubgroup.zmultiples aClass)
+    (hne : P2 ≠ HyperellipticPolynomial.Point.iota P1) :
     (mk_sampleTargetFromAlpha_of_reduceDispatch
         aClass δ₀ alpha P1 P2 c0 c1 c2 c3 c4 ua0 ua1 va0 va1 u0 u1 v0 v1
-        hcur hgcd hcurT hgcdT hmemZmultiplesA).alpha = alpha
+        hcur hgcd hcurT hgcdT hmemZmultiplesA hne).alpha = alpha
     ∧ (mk_sampleTargetFromAlpha_of_reduceDispatch
         aClass δ₀ alpha P1 P2 c0 c1 c2 c3 c4 ua0 ua1 va0 va1 u0 u1 v0 v1
-        hcur hgcd hcurT hgcdT hmemZmultiplesA).P1 = P1
+        hcur hgcd hcurT hgcdT hmemZmultiplesA hne).P1 = P1
     ∧ (mk_sampleTargetFromAlpha_of_reduceDispatch
         aClass δ₀ alpha P1 P2 c0 c1 c2 c3 c4 ua0 ua1 va0 va1 u0 u1 v0 v1
-        hcur hgcd hcurT hgcdT hmemZmultiplesA).P2 = P2 := by
+        hcur hgcd hcurT hgcdT hmemZmultiplesA hne).P2 = P2 := by
   exact ⟨rfl, rfl, rfl⟩
 
 -- ============================================================
@@ -408,15 +412,16 @@ theorem exists_sampleTargetFromAlpha_of_reduceDispatch
           ua0 ua1 va0 va1 u0 u1 v0 v1))
     (hmemZmultiplesA :
       HyperellipticPolynomial.s D δ₀ P1 + HyperellipticPolynomial.s D δ₀ P2 ∈
-        AddSubgroup.zmultiples aClass) :
+        AddSubgroup.zmultiples aClass)
+    (hne : P2 ≠ HyperellipticPolynomial.Point.iota P1) :
     ∃ sa : SampleTargetFromAlpha p H D aClass δ₀,
       sa.alpha = alpha ∧ sa.P1 = P1 ∧ sa.P2 = P2 ∧ isReductionOutputOf sa := by
   obtain ⟨e0, e1, e2, e3⟩ := toSampleTarget_mk_sampleTargetFromAlpha_of_reduceDispatch
     aClass δ₀ alpha P1 P2 c0 c1 c2 c3 c4 ua0 ua1 va0 va1 u0 u1 v0 v1
-    hcur hgcd hcurT hgcdT hmemZmultiplesA
+    hcur hgcd hcurT hgcdT hmemZmultiplesA hne
   obtain ⟨ea, eP1, eP2⟩ := alpha_P1_P2_mk_sampleTargetFromAlpha_of_reduceDispatch
     aClass δ₀ alpha P1 P2 c0 c1 c2 c3 c4 ua0 ua1 va0 va1 u0 u1 v0 v1
-    hcur hgcd hcurT hgcdT hmemZmultiplesA
+    hcur hgcd hcurT hgcdT hmemZmultiplesA hne
   -- Introduce the witness as a bound local `sa` via `generalize` BEFORE
   -- `refine`, same discipline as `isReductionOutputOf_of_fields_eq`'s
   -- call site logic below — this keeps
@@ -424,7 +429,7 @@ theorem exists_sampleTargetFromAlpha_of_reduceDispatch
   -- `refine` would otherwise leave.
   generalize hsa : mk_sampleTargetFromAlpha_of_reduceDispatch
     aClass δ₀ alpha P1 P2 c0 c1 c2 c3 c4 ua0 ua1 va0 va1 u0 u1 v0 v1
-    hcur hgcd hcurT hgcdT hmemZmultiplesA = sa at e0 e1 e2 e3 ea eP1 eP2
+    hcur hgcd hcurT hgcdT hmemZmultiplesA hne = sa at e0 e1 e2 e3 ea eP1 eP2
   refine ⟨sa, ea, eP1, eP2, ?_⟩
   -- `e0 e1 e2 e3` state `sa.toSampleTarget`'s fields equal `out`'s
   -- projections, where `out := ReduceDispatchGeneral ... u0 u1 v0 v1
